@@ -1,7 +1,7 @@
 # 前端任务 01：Design Token 与 shadcn/ui 基础
 
 ## 状态
-待认领
+已完成
 
 ## 依赖
 无。
@@ -26,3 +26,9 @@
 - 所有新增 UI 不直接散落重复颜色和尺寸常量。
 - 基础组件在中文桌面界面下文字不溢出。
 - `npm run typecheck --workspace=@dilee/web` 和 `npm run build --workspace=@dilee/web` 通过。
+
+## 完成记录
+
+负责人：Codex
+完成日期：2026-08-19
+验证：前端 typecheck/build 通过；已加入初始 token、cn 工具、shadcn 风格 Button/Badge 和 lucide-react 依赖。

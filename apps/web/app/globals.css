@@ -1,10 +1,26 @@
 :root {
   color-scheme: light;
+  --background: #f5f7fa;
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --border: #dce2e9;
+  --text: #172033;
+  --text-muted: #647184;
+  --primary: #176b87;
+  --primary-foreground: #ffffff;
+  --success: #147d59;
+  --warning: #a56500;
+  --danger: #b42318;
+  --info: #2458a6;
+  --radius: 6px;
+  --sidebar-width: 232px;
+  --topbar-height: 56px;
   font-family: Arial, "Microsoft YaHei", sans-serif;
-  background: #f8fafc;
-  color: #172033;
+  background: var(--background);
+  color: var(--text);
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; }
-main { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
+body { margin: 0; background: var(--background); color: var(--text); }
+button, input, select, textarea { font: inherit; }
+button { cursor: pointer; }
