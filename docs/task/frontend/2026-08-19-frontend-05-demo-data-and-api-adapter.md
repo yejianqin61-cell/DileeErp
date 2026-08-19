@@ -1,7 +1,7 @@
 # 前端任务 05：演示数据与 API Adapter
 
 ## 状态
-待认领
+已完成
 
 ## 依赖
 前端任务 01。
@@ -26,3 +26,9 @@
 - 页面不直接 import 固定演示数组，而是通过 adapter 获取数据。
 - 演示模式在界面中清楚可见。
 - API client 能正确解析 SRS 定义的成功与失败 JSON 信封。
+
+## 完成记录
+
+负责人：Codex
+完成日期：2026-08-19
+验证：前端 typecheck/build 通过；已加入 API client、ApiClientError、typed demo fixtures、工作台 adapter 和模块占位 adapter。
