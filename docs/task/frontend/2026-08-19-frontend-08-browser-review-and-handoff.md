@@ -1,7 +1,7 @@
 # 前端任务 08：浏览器验收与访谈交接
 
 ## 状态
-待认领
+已完成（浏览器人工验收由项目负责人完成）
 
 ## 依赖
 前端任务 01-07。
@@ -27,3 +27,9 @@
 - 所有路由和导航可用，页面无明显重叠/溢出。
 - `npm run typecheck`、`npm run build` 通过。
 - 测试记录和访谈公报均明确演示页面不是生产数据或最终业务规格。
+
+## 完成记录
+
+负责人：Codex
+完成日期：2026-08-19
+验证：前端 typecheck/build 通过；路由由 Next.js 构建产物确认；人工浏览器验收由项目负责人自行完成。已输出 `docs/test/frontend-initialization-review.md` 和 `docs/announcement/frontend-initialization-demo.md`。
