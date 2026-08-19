@@ -34,7 +34,7 @@
 
 ## 验证
 
-已完成：`npm run typecheck --workspace=@dilee/api`、`npm run build --workspace=@dilee/api`，并启动 API 调用 `GET /api/v1/health` 返回 `200` 和统一 JSON 响应。单元测试覆盖配置校验、异常映射、DTO 校验和分页解析待平台测试任务补齐。
+已完成：`npm run typecheck --workspace=@dilee/api`、`npm run build --workspace=@dilee/api`，启动 API 调用 `GET /api/v1/health` 返回 `200` 和统一 JSON 响应；环境校验、请求 ID、请求完成日志和全局异常/DTO 校验已接入。平台测试任务覆盖公共契约；数据库依赖验证单独记录在任务 09。
 
 负责人：Codex
 完成日期：2026-08-19

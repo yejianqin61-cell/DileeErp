@@ -6,6 +6,7 @@ import { ResponseEnvelopeInterceptor } from "./platform/http/response-envelope.i
 import { ApiExceptionFilter } from "./platform/http/api-exception.filter";
 import { StructuredLogger } from "./platform/logging/structured-logger";
 import cookieParser from "cookie-parser";
+import { RequestLogMiddleware } from "./platform/http/request-log.middleware";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
@@ -13,6 +14,7 @@ async function bootstrap() {
   app.enableCors();
   app.use(cookieParser());
   app.use(new RequestIdMiddleware().use);
+  app.use(new RequestLogMiddleware().use);
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
   app.useGlobalInterceptors(new ResponseEnvelopeInterceptor());
   app.useGlobalFilters(new ApiExceptionFilter());
