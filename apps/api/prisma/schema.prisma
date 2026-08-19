@@ -120,8 +120,40 @@ model StateDefinition {
   deletedBy String? @map("deleted_by") @db.Uuid
   fromTransitions StateTransition[] @relation("from_state")
   toTransitions StateTransition[] @relation("to_state")
+  stateRecords StateRecord[]
   @@unique([machineKey, key])
   @@map("state_definitions")
+}
+
+model StateRecord {
+  id            String   @id @default(uuid()) @db.Uuid
+  machineKey    String   @map("machine_key") @db.VarChar(80)
+  entityType    String   @map("entity_type") @db.VarChar(80)
+  entityId      String   @map("entity_id") @db.Uuid
+  currentStateId String  @map("current_state_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  createdBy     String   @map("created_by") @db.Uuid
+  updatedBy     String   @map("updated_by") @db.Uuid
+  currentState  StateDefinition @relation(fields: [currentStateId], references: [id])
+  changes       StateChange[]
+  @@unique([machineKey, entityType, entityId])
+  @@map("state_records")
+}
+
+model StateChange {
+  id          String   @id @default(uuid()) @db.Uuid
+  recordId    String   @map("record_id") @db.Uuid
+  fromStateId String?  @map("from_state_id") @db.Uuid
+  toStateId   String   @map("to_state_id") @db.Uuid
+  remark      String?  @db.VarChar(500)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdBy   String   @map("created_by") @db.Uuid
+  updatedBy   String   @map("updated_by") @db.Uuid
+  record      StateRecord @relation(fields: [recordId], references: [id])
+  @@index([recordId, createdAt])
+  @@map("state_changes")
 }
 
 model StateTransition {
