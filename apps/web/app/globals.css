@@ -75,6 +75,9 @@ button { cursor: pointer; }
 .status-danger { color: var(--danger); background: #fff0ef; border-color: #f2c4c0; }
 .status-info { color: var(--info); background: #eef4ff; border-color: #cbdaf8; }
 .workbench-grid { display: grid; gap: 16px; }
+.module-placeholder-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); gap: 16px; }
+.module-note { margin-top: 14px !important; color: var(--warning) !important; }
+.back-workbench { display: inline-block; margin-top: 18px; color: var(--primary); font-size: 13px; text-decoration: none; }
 .table-panel .panel-body { padding: 0; }
 .table-panel .data-table { border: 0; }
 .panel-note { color: var(--text-muted); font-size: 12px; }
