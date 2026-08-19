@@ -1,7 +1,7 @@
 # 平台任务 09：平台质量门禁与备份恢复
 
 ## 状态
-待认领
+已完成（数据库集成验收待 PostgreSQL）
 
 ## 依赖
 平台任务 01-08、10。
@@ -24,3 +24,9 @@
 - 关键失败场景有明确断言，不只验证 HTTP 200。
 - 空 PostgreSQL 可重复迁移并恢复平台数据。
 - 备份文件和恢复步骤存放厂内，不依赖云端。
+
+## 完成记录
+
+负责人：Codex
+完成日期：2026-08-19
+已完成：根级 `npm test`、平台公共契约/审计自动测试、厂内 PostgreSQL 备份/恢复 PowerShell 脚本及演练记录规范。验证：`npm test`、`npm run typecheck`、`npm run build` 通过。数据库依赖集成测试与实际备份恢复演练待 Docker Desktop/PostgreSQL 环境可用。
