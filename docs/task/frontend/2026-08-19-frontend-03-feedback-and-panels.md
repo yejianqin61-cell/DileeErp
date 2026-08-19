@@ -1,7 +1,7 @@
 # 前端任务 03：统一反馈与面板容器
 
 ## 状态
-待认领
+已完成
 
 ## 依赖
 前端任务 01、02。
@@ -26,3 +26,9 @@
 - 每个反馈组件具备可读中文文案和稳定布局。
 - 表单容器能展示校验失败而不依赖业务字段。
 - 公共组件不 import 任何业务 feature。
+
+## 完成记录
+
+负责人：Codex
+完成日期：2026-08-19
+验证：前端 typecheck/build 通过；已加入 EmptyState、LoadingState、ErrorState、DemoNotice、DetailPanel、FormPanel 和 AttachmentPanel。
