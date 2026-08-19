@@ -1,6 +1,6 @@
 # 开发任务
 
-每个可执行子任务使用独立 Markdown 文件，建议文件名为 `YYYY-MM-DD-简短主题.md`。
+每个可执行子任务使用独立 Markdown 文件，并收束在对应工作流子目录中，例如平台任务位于 `docs/task/platform/`。
 
 ```markdown
 # 任务标题
