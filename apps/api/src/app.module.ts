@@ -4,9 +4,10 @@ import { ConfigModule } from "@nestjs/config";
 import { DatabaseModule } from "./platform/database/database.module";
 import { AuthModule } from "./platform/auth/auth.module";
 import { AuthorizationModule } from "./platform/authorization/authorization.module";
+import { AuditModule } from "./platform/audit/audit.module";
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AuthModule, AuthorizationModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), DatabaseModule, AuthModule, AuthorizationModule, AuditModule],
   controllers: [HealthController],
 })
 export class AppModule {}
