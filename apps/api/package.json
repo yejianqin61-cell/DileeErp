@@ -6,7 +6,9 @@
     "dev": "nest start --watch",
     "build": "nest build",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint \"{src,test}/**/*.ts\""
+    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",
@@ -15,6 +17,7 @@
     "@nestjs/platform-express": "^11.1.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
+    "@prisma/client": "^6.15.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
@@ -22,6 +25,7 @@
     "@nestjs/cli": "^11.0.10",
     "@nestjs/schematics": "^11.0.5",
     "@nestjs/testing": "^11.1.0",
+    "prisma": "^6.15.0",
     "@types/express": "^5.0.1",
     "@types/node": "^22.15.0",
     "typescript": "^5.8.0"

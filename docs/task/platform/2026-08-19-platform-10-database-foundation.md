@@ -1,7 +1,7 @@
 # 平台任务 10：PostgreSQL 迁移与平台数据基础
 
 ## 状态
-待认领
+已完成（迁移运行验证待 Docker Desktop）
 
 ## 依赖
 平台任务 01。
@@ -28,3 +28,10 @@
 - 平台表约束、外键、唯一键和审计字段可检查。
 - 回滚/重建步骤有文档并可执行。
 - 后续业务模块能通过明确迁移追加表，不需修改平台历史迁移。
+
+## 完成记录
+
+负责人：Codex
+完成日期：2026-08-19
+已完成：Prisma 配置、平台 schema、空库迁移 SQL、Prisma Client 生成；`prisma validate`、API typecheck/build 通过。
+待环境验证：Docker Desktop 守护进程当前未运行，无法执行真实 PostgreSQL 空库迁移和重复迁移验证。

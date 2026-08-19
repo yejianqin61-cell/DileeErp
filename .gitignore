@@ -5,4 +5,5 @@ coverage/
 *.tsbuildinfo
 .env
 .env.local
+apps/api/var/
 *.log
