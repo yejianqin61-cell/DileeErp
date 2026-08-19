@@ -1,7 +1,7 @@
 # 平台任务 02：REST/JSON API 契约
 
 ## 状态
-待认领
+已完成
 
 ## 依赖
 平台任务 01。
@@ -28,3 +28,9 @@
 - 示例控制器能展示全部成功/失败结构。
 - 契约测试验证状态码、字段命名、分页和错误结构。
 - 破坏性契约变更有明确版本升级说明。
+
+## 完成记录
+
+负责人：Codex
+完成日期：2026-08-19
+验证：`npm run typecheck --workspace=@dilee/api`、`npm run build --workspace=@dilee/api` 通过；非法分页参数返回 `400`、`VALIDATION_ERROR` 和统一错误结构。
