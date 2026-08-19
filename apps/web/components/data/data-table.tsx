@@ -4,7 +4,7 @@ import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tan
 import type { ReactNode } from "react";
 import { EmptyState, LoadingState } from "../feedback/states";
 
-export function DataTable<T>({ columns, data, loading = false, empty }: { columns: ColumnDef<T, unknown>[]; data: T[]; loading?: boolean; empty?: ReactNode }) {
+export function DataTable<T>({ columns, data, loading = false, empty }: { columns: ColumnDef<T, any>[]; data: T[]; loading?: boolean; empty?: ReactNode }) {
   const table = useReactTable({ data, columns, getCoreRowModel: getCoreRowModel() });
   if (loading) return <LoadingState />;
   if (!data.length) return <>{empty ?? <EmptyState />}</>;

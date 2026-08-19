@@ -74,3 +74,7 @@ button { cursor: pointer; }
 .status-warning { color: var(--warning); background: #fff6df; border-color: #f0d69b; }
 .status-danger { color: var(--danger); background: #fff0ef; border-color: #f2c4c0; }
 .status-info { color: var(--info); background: #eef4ff; border-color: #cbdaf8; }
+.workbench-grid { display: grid; gap: 16px; }
+.table-panel .panel-body { padding: 0; }
+.table-panel .data-table { border: 0; }
+.panel-note { color: var(--text-muted); font-size: 12px; }
