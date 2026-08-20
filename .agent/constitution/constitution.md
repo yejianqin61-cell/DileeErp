@@ -14,3 +14,11 @@
 1. Build only confirmed business rules. Record unconfirmed module details in `docs/memo/` or the corresponding design document.
 2. Before implementing a business module, create or update its module specification and task document.
 3. Verify code changes with the narrowest meaningful automated check and record the result in the daily log.
+
+## Reversible Business Changes
+
+1. The ERP must provide a recoverable correction path for business data. A permitted correction must preserve the original business fact, the editor, time, reason, and before/after values; it must not silently overwrite history.
+2. Before a change that can affect upstream or downstream records, the system must identify the affected records and present the resulting recalculation, state impact, and unresolved risk to the operator. The operator must explicitly confirm the change after seeing that impact.
+3. After confirmation, related derived data, statuses, warnings, balances, and reports must be recalculated or marked for review in the same business transaction. The system must never leave dependent records silently stale.
+4. Where a downstream record is an independent business fact, it must not be rewritten by an upstream edit. Keep its source linkage, raise a discrepancy or review warning, and use a separate reversal or adjustment record when correction is needed.
+5. The detailed impact rules, allowed edit scopes, warnings, and reversal actions belong to each module design. Unconfirmed rules remain in `docs/memo/`.
