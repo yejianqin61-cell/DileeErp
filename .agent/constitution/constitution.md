@@ -28,3 +28,4 @@
 1. Business form types, categories, adjustment items, departments, positions, employee types, attendance types, and other non-invariant classifications must be configurable through management interfaces.
 2. Administrators may add, edit, disable, or logically delete configurable categories. A category already used by business data must be retained as a historical snapshot and normally disabled instead of removed.
 3. Configurability does not weaken fixed data integrity rules: required source links, audit records, state transitions, financial balances, and inventory facts remain protected by the relevant module rules.
+4. Where a business form requires customer- or company-specific fields, sections, repeating details, or export layouts, use versioned configurable form definitions and templates rather than hardcoding one spreadsheet layout. Existing records retain their field values, form definition version, and export template version.
