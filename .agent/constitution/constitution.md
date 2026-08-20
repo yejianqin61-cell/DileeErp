@@ -17,8 +17,8 @@
 
 ## Reversible Business Changes
 
-1. The ERP must provide a recoverable correction path for business data. A permitted correction must preserve the original business fact, the editor, time, reason, and before/after values; it must not silently overwrite history.
-2. Before a change that can affect upstream or downstream records, the system must identify the affected records and present the resulting recalculation, state impact, and unresolved risk to the operator. The operator must explicitly confirm the change after seeing that impact.
-3. After confirmation, related derived data, statuses, warnings, balances, and reports must be recalculated or marked for review in the same business transaction. The system must never leave dependent records silently stale.
-4. Where a downstream record is an independent business fact, it must not be rewritten by an upstream edit. Keep its source linkage, raise a discrepancy or review warning, and use a separate reversal or adjustment record when correction is needed.
-5. The detailed impact rules, allowed edit scopes, warnings, and reversal actions belong to each module design. Unconfirmed rules remain in `docs/memo/`.
+1. The ERP follows the principle of reversible progress: a permitted correction must preserve the original fact, editor, time, reason, and before/after values. It must never silently overwrite history.
+2. Before an edit that affects upstream or downstream records, show the operator the affected records, recalculated quantities or amounts, state changes, warnings, and remaining risks. The operator must explicitly confirm the impact.
+3. After confirmation, update or recalculate derived records in the same business transaction. An independent downstream fact must not be overwritten; preserve its source link and require a reversal, adjustment, or review record instead.
+4. Inventory designs must distinguish static inventory records from dynamic transaction documents. Inventory balances are derived from effective transactions and adjustments, never directly edited.
+5. Module designs define detailed edit scopes, returns, reversals, warnings, and reconciliation rules. Unconfirmed rules stay in `docs/memo/`.
