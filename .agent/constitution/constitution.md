@@ -22,3 +22,9 @@
 3. After confirmation, update or recalculate derived records in the same business transaction. An independent downstream fact must not be overwritten; preserve its source link and require a reversal, adjustment, or review record instead.
 4. Inventory designs must distinguish static inventory records from dynamic transaction documents. Inventory balances are derived from effective transactions and adjustments, never directly edited.
 5. Module designs define detailed edit scopes, returns, reversals, warnings, and reconciliation rules. Unconfirmed rules stay in `docs/memo/`.
+
+## Configurable Business Categories
+
+1. Business form types, categories, adjustment items, departments, positions, employee types, attendance types, and other non-invariant classifications must be configurable through management interfaces.
+2. Administrators may add, edit, disable, or logically delete configurable categories. A category already used by business data must be retained as a historical snapshot and normally disabled instead of removed.
+3. Configurability does not weaken fixed data integrity rules: required source links, audit records, state transitions, financial balances, and inventory facts remain protected by the relevant module rules.
