@@ -2,12 +2,12 @@
 
 ## 状态
 
-待认领
+已完成（PostgreSQL 实例验证待环境恢复）
 
 ## 认领
 
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-21
 
 ## 目标
 
@@ -49,6 +49,6 @@
 
 ## 完成记录
 
-负责人：
-完成日期：
-验证：
+负责人：Codex
+完成日期：2026-08-21
+验证：Prisma Client 生成、API build、API typecheck 和 `git diff --check` 通过；迁移 SQL 已生成并包含客户、联系人、销售单、版本、BOM 外键/唯一索引。Docker Hub 网络阻断导致暂未在真实 PostgreSQL 空库执行迁移。

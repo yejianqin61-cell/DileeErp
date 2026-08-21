@@ -216,3 +216,119 @@ model AuditEvent {
   @@index([actorId, createdAt])
   @@map("audit_events")
 }
+
+model Customer {
+  id            String            @id @default(uuid()) @db.Uuid
+  customerCode  String            @unique @map("customer_code") @db.VarChar(80)
+  name          String            @unique @db.VarChar(200)
+  countryRegion String?           @map("country_region") @db.VarChar(100)
+  address       String?           @db.VarChar(500)
+  paymentTerms  String?           @map("payment_terms") @db.VarChar(200)
+  currency      String?           @db.VarChar(10)
+  remark        String?           @db.VarChar(1000)
+  isActive      Boolean           @default(true) @map("is_active")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  createdBy     String            @map("created_by") @db.Uuid
+  updatedBy     String            @map("updated_by") @db.Uuid
+  deletedAt     DateTime?         @map("deleted_at")
+  deletedBy     String?           @map("deleted_by") @db.Uuid
+  contacts      CustomerContact[]
+  salesOrders   SalesOrder[]
+  @@map("customers")
+}
+
+model CustomerContact {
+  id           String   @id @default(uuid()) @db.Uuid
+  customerId   String   @map("customer_id") @db.Uuid
+  name         String   @db.VarChar(100)
+  position     String?  @db.VarChar(100)
+  phone        String?  @db.VarChar(50)
+  email        String?  @db.VarChar(200)
+  isDefault    Boolean  @default(false) @map("is_default")
+  remark       String?  @db.VarChar(500)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdBy    String   @map("created_by") @db.Uuid
+  updatedBy    String   @map("updated_by") @db.Uuid
+  deletedAt    DateTime? @map("deleted_at")
+  deletedBy    String?  @map("deleted_by") @db.Uuid
+  customer     Customer @relation(fields: [customerId], references: [id])
+  salesOrders  SalesOrder[]
+  @@index([customerId, isActive])
+  @@map("customer_contacts")
+}
+
+model SalesOrder {
+  id                    String                 @id @default(uuid()) @db.Uuid
+  orderNo               String                 @unique @map("order_no") @db.VarChar(100)
+  customerId            String                 @map("customer_id") @db.Uuid
+  contactId             String?                @map("contact_id") @db.Uuid
+  customerSnapshot      Json                   @map("customer_snapshot")
+  contactSnapshot       Json?                  @map("contact_snapshot")
+  customerPoNo          String?                @map("customer_po_no") @db.VarChar(100)
+  externalContractNo    String?                @map("external_contract_no") @db.VarChar(100)
+  orderDate             DateTime               @map("order_date")
+  productName           String                 @map("product_name") @db.VarChar(200)
+  productSpec           String?                @map("product_spec") @db.VarChar(1000)
+  quantity              Decimal                @db.Decimal(18, 4)
+  unit                  String                 @db.VarChar(30)
+  deliveryDate          DateTime?              @map("delivery_date")
+  currency              String                 @db.VarChar(10)
+  unitPrice             Decimal?               @map("unit_price") @db.Decimal(18, 4)
+  totalAmount           Decimal?               @map("total_amount") @db.Decimal(18, 4)
+  taxRate               Decimal?               @map("tax_rate") @db.Decimal(8, 4)
+  status                String                 @default("draft") @db.VarChar(30)
+  currentVersion        Int                    @default(1) @map("current_version")
+  extensionData         Json                   @default("{}") @map("extension_data")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+  createdBy             String                 @map("created_by") @db.Uuid
+  updatedBy             String                 @map("updated_by") @db.Uuid
+  deletedAt             DateTime?              @map("deleted_at")
+  deletedBy             String?                @map("deleted_by") @db.Uuid
+  customer              Customer               @relation(fields: [customerId], references: [id])
+  contact               CustomerContact?       @relation(fields: [contactId], references: [id])
+  versions              SalesOrderVersion[]
+  boms                  Bom[]
+  @@index([customerId, status])
+  @@index([orderDate])
+  @@map("sales_orders")
+}
+
+model SalesOrderVersion {
+  id            String     @id @default(uuid()) @db.Uuid
+  salesOrderId  String     @map("sales_order_id") @db.Uuid
+  version       Int
+  snapshot      Json
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+  createdBy     String     @map("created_by") @db.Uuid
+  updatedBy     String     @map("updated_by") @db.Uuid
+  salesOrder    SalesOrder @relation(fields: [salesOrderId], references: [id])
+  boms          Bom[]
+  @@unique([salesOrderId, version])
+  @@map("sales_order_versions")
+}
+
+model Bom {
+  id                 String            @id @default(uuid()) @db.Uuid
+  orderNo            String            @map("order_no") @db.VarChar(100)
+  salesOrderId       String            @map("sales_order_id") @db.Uuid
+  salesOrderVersionId String           @map("sales_order_version_id") @db.Uuid
+  version            Int               @default(1)
+  status             String            @default("draft") @db.VarChar(30)
+  extensionData      Json              @default("{}") @map("extension_data")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  createdBy          String            @map("created_by") @db.Uuid
+  updatedBy          String            @map("updated_by") @db.Uuid
+  deletedAt          DateTime?         @map("deleted_at")
+  deletedBy          String?           @map("deleted_by") @db.Uuid
+  salesOrder         SalesOrder        @relation(fields: [salesOrderId], references: [id])
+  salesOrderVersion  SalesOrderVersion @relation(fields: [salesOrderVersionId], references: [id])
+  @@unique([salesOrderId, version])
+  @@index([orderNo])
+  @@map("boms")
+}
