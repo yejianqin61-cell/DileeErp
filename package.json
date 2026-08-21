@@ -7,9 +7,10 @@
   "scripts": {
     "dev": "npm run dev --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run build --workspace=@dilee/api && node --test apps/api/test/**/*.test.cjs",
-    "test:unit": "npm run build --workspace=@dilee/api && node --test apps/api/test/**/*.test.cjs",
-    "test:api": "npm run build --workspace=@dilee/api && node --test apps/api/test/**/*.test.cjs",
+    "test": "npm run build --workspace=@dilee/api && node --test apps/api/test/*.test.cjs apps/api/test/unit/**/*.test.cjs",
+    "test:unit": "npm run build --workspace=@dilee/api && node --test apps/api/test/*.test.cjs apps/api/test/unit/**/*.test.cjs",
+    "test:api": "node scripts/run-tests.mjs api",
+    "test:api:raw": "node --test apps/api/test/http/**/*.test.cjs",
     "test:integration": "node scripts/run-tests.mjs integration",
     "test:integration:raw": "node --test apps/api/test/integration/**/*.test.cjs",
     "test:e2e": "node scripts/run-tests.mjs e2e",

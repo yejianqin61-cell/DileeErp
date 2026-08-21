@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 const mode = process.argv[2] ?? "unit";
 const commands = {
   unit: ["npm", ["run", "build", "--workspace=@dilee/api"]],
-  api: ["npm", ["run", "build", "--workspace=@dilee/api"]],
+  api: ["npm", ["run", "test:api:raw"]],
   integration: ["npm", ["run", "test:integration:raw"]],
   e2e: ["npm", ["run", "test:e2e:raw"]],
   chain: ["npm", ["run", "test:api"]],
@@ -16,6 +16,11 @@ if (!commands[mode]) {
 
 if (mode === "integration" && !process.env.DATABASE_URL) {
   console.error("TEST_BLOCKED: DATABASE_URL is required for PostgreSQL integration tests");
+  process.exit(3);
+}
+
+if (mode === "api" && !process.env.API_BASE_URL) {
+  console.error("TEST_BLOCKED: API_BASE_URL is required for HTTP API tests");
   process.exit(3);
 }
 
