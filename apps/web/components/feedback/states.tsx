@@ -14,4 +14,4 @@ export function ErrorState({ message = "数据加载失败", onRetry }: { messag
   return <div className="feedback-state feedback-error"><AlertTriangle size={24} /><strong>{message}</strong>{onRetry && <Button variant="secondary" onClick={onRetry}>重新加载</Button>}</div>;
 }
 
-export function DemoNotice() { return <div className="demo-notice">演示页面：以下内容用于访谈讨论，不代表已确认的生产数据或业务规则。</div>; }
+export function DemoNotice() { return null; }
