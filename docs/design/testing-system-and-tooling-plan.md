@@ -4,7 +4,7 @@
 
 - 文档类型：测试体系与工程工具建设方案
 - 版本：V1.0 初版
-- 状态：待实施
+- 状态：已实施，真实链路环境待接通
 - 编制日期：2026-08-21
 - 适用范围：API、数据库、Web 前端、跨模块业务链路、部署验收
 - 上游依据：`docs/task/coding-roadmap-todolist.md`、各模块设计文档、`.agent/constitution/constitution.md`
