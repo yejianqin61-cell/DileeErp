@@ -3,6 +3,8 @@ import { CustomersController } from "./customers.controller";
 import { CustomersService } from "./customers.service";
 import { SalesOrdersController } from "./sales-orders.controller";
 import { SalesOrdersService } from "./sales-orders.service";
+import { BomsController } from "./boms.controller";
+import { BomsService } from "./boms.service";
 
-@Module({ controllers: [CustomersController, SalesOrdersController], providers: [CustomersService, SalesOrdersService], exports: [CustomersService, SalesOrdersService] })
+@Module({ controllers: [CustomersController, SalesOrdersController, BomsController], providers: [CustomersService, SalesOrdersService, BomsService], exports: [CustomersService, SalesOrdersService, BomsService] })
 export class SalesModule {}
