@@ -2,12 +2,12 @@
 
 ## 状态
 
-待认领
+已实现（环境阻断）
 
 ## 认领
 
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-21
 
 ## 目标
 
@@ -46,6 +46,6 @@
 
 ## 完成记录
 
-负责人：
-完成日期：
-验证：
+负责人：Codex
+完成日期：2026-08-21
+验证：`npm run test:unit`，14 tests passed；`npm run db:test:prepare` 和 `npm run test:integration` 均因未设置专用 `TEST_DATABASE_URL` 以 `TEST_BLOCKED` 退出。测试库脚本拒绝非 test 命名数据库并将 Prisma 连接限定为该环境变量。

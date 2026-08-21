@@ -13,6 +13,7 @@
     "test:api:raw": "node --test apps/api/test/http/**/*.test.cjs",
     "test:integration": "node scripts/run-tests.mjs integration",
     "test:integration:raw": "node --test apps/api/test/integration/**/*.test.cjs",
+    "db:test:prepare": "node scripts/prepare-test-database.mjs",
     "test:e2e": "node scripts/run-tests.mjs e2e",
     "test:e2e:raw": "playwright test",
     "verify:chain": "node scripts/run-tests.mjs chain",

@@ -14,8 +14,8 @@ if (!commands[mode]) {
   process.exit(2);
 }
 
-if (mode === "integration" && !process.env.DATABASE_URL) {
-  console.error("TEST_BLOCKED: DATABASE_URL is required for PostgreSQL integration tests");
+if (mode === "integration" && !process.env.TEST_DATABASE_URL) {
+  console.error("TEST_BLOCKED: TEST_DATABASE_URL is required for PostgreSQL integration tests");
   process.exit(3);
 }
 
@@ -30,5 +30,6 @@ if (mode === "e2e" && !process.env.PLAYWRIGHT_BASE_URL) {
 }
 
 const [command, args] = commands[mode];
-const result = spawnSync(command, args, { stdio: "inherit", shell: process.platform === "win32" });
+const env = mode === "integration" ? { ...process.env, DATABASE_URL: process.env.TEST_DATABASE_URL } : process.env;
+const result = spawnSync(command, args, { env, stdio: "inherit", shell: process.platform === "win32" });
 process.exit(result.status ?? 1);
