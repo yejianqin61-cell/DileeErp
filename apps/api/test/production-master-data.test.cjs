@@ -16,3 +16,13 @@ test("employee rejects a position that does not belong to its active department"
   const service = new ProductionMasterDataService(prisma, audit);
   await assert.rejects(() => service.createEmployee({ employee_no: "E-1", name: "员工", department_id: "5a6b93f4-e3e2-45e0-a0c4-4cf5f9bf3ee5", position_id: "0ec5168a-bc9d-4c8c-ac0d-cb269fbd1a76", employee_type: "worker" }, user), (error) => error instanceof NotFoundException && error.getResponse().code === "ORGANIZATION_NOT_FOUND");
 });
+
+test("operation rates reject overlapping effective date ranges", async () => {
+  const prisma = {
+    employee: { findFirst: async () => ({ id: "employee-1" }) },
+    operationCatalog: { findFirst: async () => ({ id: "operation-1" }) },
+    operationRate: { findMany: async () => [{ id: "rate-1", effectiveFrom: new Date("2026-01-01"), effectiveTo: new Date("2026-12-31") }] },
+  };
+  const service = new ProductionMasterDataService(prisma, audit);
+  await assert.rejects(() => service.createRate({ employee_id: "employee-1", operation_id: "operation-1", wage_mode: "piece_rate", unit_price: "1.50", effective_from: "2026-06-01", effective_to: "2026-06-30" }, user), (error) => error instanceof ConflictException && error.getResponse().code === "OPERATION_RATE_OVERLAP");
+});

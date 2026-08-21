@@ -439,6 +439,7 @@ model Unit {
   purchaseOrderItems  PurchaseOrderItem[]
   rawMaterialInbounds RawMaterialInbound[]
   inventoryFacts      InventoryFact[]
+  operationCatalogs   OperationCatalog[]
 
   @@map("units")
 }
@@ -748,6 +749,7 @@ model Employee {
   deletedBy      String?    @map("deleted_by") @db.Uuid
   department     Department @relation(fields: [departmentId], references: [id])
   position       Position   @relation(fields: [positionId], references: [id])
+  operationRates OperationRate[]
 
   @@index([departmentId, employmentStatus])
   @@index([positionId, employmentStatus])
@@ -773,4 +775,45 @@ model ProductionLocation {
   @@unique([name, locationType])
   @@index([locationType, isActive])
   @@map("production_locations")
+}
+
+model OperationCatalog {
+  id             String              @id @default(uuid()) @db.Uuid
+  operationCode  String?             @unique @map("operation_code") @db.VarChar(80)
+  operationName  String              @map("operation_name") @db.VarChar(150)
+  defaultUnitId  String?             @map("default_unit_id") @db.Uuid
+  isActive       Boolean             @default(true) @map("is_active")
+  remark         String?             @db.VarChar(500)
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+  createdBy      String              @map("created_by") @db.Uuid
+  updatedBy      String              @map("updated_by") @db.Uuid
+  deletedAt      DateTime?           @map("deleted_at")
+  deletedBy      String?             @map("deleted_by") @db.Uuid
+  defaultUnit    Unit?               @relation(fields: [defaultUnitId], references: [id])
+  rates          OperationRate[]
+
+  @@map("operation_catalogs")
+}
+
+model OperationRate {
+  id             String           @id @default(uuid()) @db.Uuid
+  employeeId     String           @map("employee_id") @db.Uuid
+  operationId    String           @map("operation_id") @db.Uuid
+  wageMode       String           @map("wage_mode") @db.VarChar(20)
+  unitPrice      Decimal          @map("unit_price") @db.Decimal(18, 4)
+  effectiveFrom  DateTime         @map("effective_from") @db.Date
+  effectiveTo    DateTime?        @map("effective_to") @db.Date
+  remark         String?          @db.VarChar(500)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  createdBy      String           @map("created_by") @db.Uuid
+  updatedBy      String           @map("updated_by") @db.Uuid
+  deletedAt      DateTime?        @map("deleted_at")
+  deletedBy      String?          @map("deleted_by") @db.Uuid
+  employee       Employee         @relation(fields: [employeeId], references: [id])
+  operation      OperationCatalog @relation(fields: [operationId], references: [id])
+
+  @@index([employeeId, operationId, wageMode, effectiveFrom])
+  @@map("operation_rates")
 }
