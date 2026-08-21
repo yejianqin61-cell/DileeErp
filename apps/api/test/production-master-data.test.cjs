@@ -46,3 +46,16 @@ test("in-house production order cannot start without an active operation", async
   const service = new ProductionOrdersService(prisma, audit);
   await assert.rejects(() => service.transition("po-1", "in_progress", "启动生产", user), (error) => error instanceof require("@nestjs/common").UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATIONS_REQUIRED");
 });
+
+test("production impact preview keeps the order identity and marks unbuilt downstream facts", async () => {
+  const prisma = {
+    productionOrder: { findFirst: async () => ({ id: "po-1", orderNo: "SO-1", productionOrderNo: "MO-1", status: "draft", bomId: "bom-1", bomVersion: 1, operations: [] }) },
+    purchaseOrder: { findMany: async () => [] },
+    auditEvent: { count: async () => 2 },
+  };
+  const service = new ProductionOrdersService(prisma, audit);
+  const preview = await service.impactPreview("po-1");
+  assert.equal(preview.order_no, "SO-1");
+  assert.equal(preview.downstream.inventory_facts, "本批尚未建立");
+  assert.equal(preview.audit_event_count, 2);
+});

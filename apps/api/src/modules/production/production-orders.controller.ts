@@ -24,4 +24,6 @@ export class ProductionOrdersController {
   @Patch(":id/operations/:operationId") async updateOperation(@Param("id") id: string, @Param("operationId") operationId: string, @Body() body: Partial<OperationDto>, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.updateOperation(id, operationId, body, user), meta: {} }; }
   @Post(":id/operations/:operationId/cancel") async cancelOperation(@Param("id") id: string, @Param("operationId") operationId: string, @Body() body: CancelOperationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.cancelOperation(id, operationId, body.reason, user), meta: {} }; }
   @Post(":id/transition") async transition(@Param("id") id: string, @Body() body: TransitionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.transition(id, body.target, body.reason, user), meta: {} }; }
+  @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
+  @Get(":id/audit-events") async auditEvents(@Param("id") id: string) { return { data: await this.orders.auditEvents(id), meta: {} }; }
 }
