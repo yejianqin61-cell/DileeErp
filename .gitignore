@@ -6,4 +6,5 @@ coverage/
 .env
 .env.local
 apps/api/var/
+.playwright-cli/
 *.log
