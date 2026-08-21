@@ -32,6 +32,11 @@ export class RawMaterialMovementsService {
     return movement;
   }
 
+  async auditEvents(id: string) {
+    await this.get(id);
+    return this.prisma.auditEvent.findMany({ where: { entityType: "raw_material_movement", entityId: id }, orderBy: { createdAt: "desc" } });
+  }
+
   async preview(input: IssueInput) {
     const order = await this.requireInHouseOrder(input.production_order_id);
     return this.previewLines(order, input.lines);

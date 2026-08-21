@@ -29,6 +29,7 @@ export class RawMaterialMovementsController {
   @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.removeIssue(id, user), meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.movements.impactPreview(id), meta: {} }; }
   @Get(":id/reversal-preview") async reversalPreview(@Param("id") id: string) { return { data: await this.movements.reversalPreview(id), meta: {} }; }
+  @Get(":id/audit-events") async auditEvents(@Param("id") id: string) { return { data: await this.movements.auditEvents(id), meta: {} }; }
   @Post(":id/post") async post(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postIssue(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/post-return") async postReturn(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postReturn(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/post-scrap") async postScrap(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postScrap(id, body.idempotency_key, user), meta: {} }; }

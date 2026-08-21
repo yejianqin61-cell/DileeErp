@@ -43,4 +43,4 @@
 
 完成日期：2026-08-21
 
-验证：仓库占位页已替换为真实原料流转工作台，接入厂内生产单、启用物料、流转历史、领料影响预览、领料/退料/报废过账、草稿删除、冲销和服务端错误提示；不在前端计算库存或使用演示数据。`npm run typecheck --workspace=@dilee/web` 与 `npm run build --workspace=@dilee/web` 通过。
+验证：仓库占位页已替换为真实原料流转工作台，接入厂内生产单、启用物料、流转历史筛选、领料影响预览、领料草稿创建/过账/删除、退料/报废过账、冲销、审计下钻和服务端错误提示；不在前端计算库存或使用演示数据。`npm run typecheck --workspace=@dilee/web` 与 `npm run build --workspace=@dilee/web` 通过。
