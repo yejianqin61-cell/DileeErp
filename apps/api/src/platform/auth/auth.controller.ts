@@ -13,11 +13,11 @@ export class AuthController {
   constructor(private readonly auth: AuthService) {}
   @Post("login") async login(@Body() payload: LoginDto, @Res({ passthrough: true }) response: Response) {
     const result = await this.auth.login(payload.username, payload.password);
-    response.cookie("dilee_session", result.token, { httpOnly: true, sameSite: "lax", secure: false, maxAge: 1000 * 60 * 60 * 12 });
+    response.cookie("dilee_session", result.token, { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", maxAge: 1000 * 60 * 60 * 12, path: "/" });
     return { data: { user: result.user }, meta: {} };
   }
   @Get("me") async me(@Req() request: Request) { return { data: await this.auth.currentUser(request.cookies?.dilee_session), meta: {} }; }
   @Post("logout") @HttpCode(204) async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
-    await this.auth.logout(request.cookies?.dilee_session); response.clearCookie("dilee_session");
+    await this.auth.logout(request.cookies?.dilee_session); response.clearCookie("dilee_session", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/" });
   }
 }

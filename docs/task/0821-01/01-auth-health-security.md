@@ -2,12 +2,12 @@
 
 ## 状态
 
-待认领
+已完成（PostgreSQL/浏览器实测待环境恢复）
 
 ## 认领
 
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-21
 
 ## 目标
 
@@ -52,6 +52,6 @@
 
 ## 完成记录
 
-负责人：
-完成日期：
-验证：
+负责人：Codex
+完成日期：2026-08-21
+验证：`npm run build --workspace=@dilee/api`、`npm run typecheck --workspace=@dilee/api`、`npm test` 通过；健康检查数据库成功/失败和登录限流离线测试通过。Docker Desktop 已启动，但 PostgreSQL 镜像因当前网络无法连接 Docker Hub，迁移/初始管理员/真实 Cookie 登录验证待环境恢复。

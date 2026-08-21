@@ -202,3 +202,17 @@ model AttachmentLink {
   @@index([entityType, entityId])
   @@map("attachment_links")
 }
+
+model AuditEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  action     String   @db.VarChar(100)
+  entityType String   @map("entity_type") @db.VarChar(80)
+  entityId   String?  @map("entity_id") @db.Uuid
+  actorId    String?  @map("actor_id") @db.Uuid
+  orderNo    String?  @map("order_no") @db.VarChar(100)
+  details    Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+  @@index([entityType, entityId, createdAt])
+  @@index([actorId, createdAt])
+  @@map("audit_events")
+}
