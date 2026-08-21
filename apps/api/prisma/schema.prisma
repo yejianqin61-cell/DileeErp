@@ -398,6 +398,7 @@ model BomItem {
   id               String    @id @default(uuid()) @db.Uuid
   bomId            String    @map("bom_id") @db.Uuid
   materialId       String    @map("material_id") @db.Uuid
+  unitId           String?   @map("unit_id") @db.Uuid
   materialSnapshot Json      @map("material_snapshot")
   requiredQuantity Decimal   @map("required_quantity") @db.Decimal(18, 4)
   unit             String    @db.VarChar(30)
@@ -411,8 +412,66 @@ model BomItem {
   deletedAt        DateTime? @map("deleted_at")
   deletedBy        String?   @map("deleted_by") @db.Uuid
   bom              Bom       @relation(fields: [bomId], references: [id])
+  material         Material  @relation(fields: [materialId], references: [id])
+  unitRecord       Unit?     @relation(fields: [unitId], references: [id])
 
   @@index([bomId])
   @@index([materialId])
   @@map("bom_items")
+}
+
+model Unit {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String     @unique @db.VarChar(30)
+  isActive  Boolean    @default(true) @map("is_active")
+  remark    String?    @db.VarChar(500)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+  createdBy String     @map("created_by") @db.Uuid
+  updatedBy String     @map("updated_by") @db.Uuid
+  deletedAt DateTime?  @map("deleted_at")
+  deletedBy String?    @map("deleted_by") @db.Uuid
+  materials Material[]
+  bomItems  BomItem[]
+
+  @@map("units")
+}
+
+model Material {
+  id            String    @id @default(uuid()) @db.Uuid
+  materialCode  String    @unique @map("material_code") @db.VarChar(80)
+  name          String    @unique @db.VarChar(200)
+  defaultUnitId String    @map("default_unit_id") @db.Uuid
+  isActive      Boolean   @default(true) @map("is_active")
+  remark        String?   @db.VarChar(1000)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  createdBy     String    @map("created_by") @db.Uuid
+  updatedBy     String    @map("updated_by") @db.Uuid
+  deletedAt     DateTime? @map("deleted_at")
+  deletedBy     String?   @map("deleted_by") @db.Uuid
+  defaultUnit   Unit      @relation(fields: [defaultUnitId], references: [id])
+  bomItems      BomItem[]
+
+  @@index([defaultUnitId])
+  @@map("materials")
+}
+
+model Supplier {
+  id             String    @id @default(uuid()) @db.Uuid
+  supplierCode   String    @unique @map("supplier_code") @db.VarChar(80)
+  name           String    @unique @db.VarChar(200)
+  contactName    String?   @map("contact_name") @db.VarChar(100)
+  phone          String?   @db.VarChar(50)
+  settlementInfo Json      @default("{}") @map("settlement_info")
+  isActive       Boolean   @default(true) @map("is_active")
+  remark         String?   @db.VarChar(1000)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  createdBy      String    @map("created_by") @db.Uuid
+  updatedBy      String    @map("updated_by") @db.Uuid
+  deletedAt      DateTime? @map("deleted_at")
+  deletedBy      String?   @map("deleted_by") @db.Uuid
+
+  @@map("suppliers")
 }

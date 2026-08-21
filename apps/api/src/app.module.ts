@@ -11,9 +11,10 @@ import { AttachmentsModule } from "./platform/attachments/attachments.module";
 import { validateEnvironment } from "./platform/config/validate-environment";
 import { SalesModule } from "./modules/sales/sales.module";
 import { FormsModule } from "./platform/forms/forms.module";
+import { ProcurementModule } from "./modules/procurement/procurement.module";
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, StateMachineModule, AttachmentsModule, FormsModule, SalesModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, SalesModule],
   controllers: [HealthController],
 })
 export class AppModule {}

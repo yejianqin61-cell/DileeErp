@@ -19,6 +19,9 @@ async function main() {
     const role = await tx.role.upsert({ where: { key: "administrator" }, update: { name: "管理员", updatedBy: id }, create: { id: randomUUID(), key: "administrator", name: "管理员", createdBy: id, updatedBy: id } });
     const user = await tx.user.create({ data: { id, username, passwordHash: await argon2.hash(password, { type: argon2.argon2id }), displayName, createdBy: id, updatedBy: id } });
     await tx.userRole.create({ data: { userId: user.id, roleId: role.id } });
+    for (const name of ["打", "码", "个", "包", "捆"]) {
+      await tx.unit.upsert({ where: { name }, update: { isActive: true, updatedBy: id }, create: { id: randomUUID(), name, createdBy: id, updatedBy: id } });
+    }
   });
 }
 
