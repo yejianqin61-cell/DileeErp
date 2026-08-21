@@ -121,10 +121,12 @@ export class OperationDailyReportsService {
     if (!latest) return;
     const existing = await tx.productionDailyAlert.findUnique({ where: { productionOrderOperationId_reportDate_alertType: { productionOrderOperationId: operationId, reportDate: latest.reportDate, alertType: "over_order" } } });
     if (over.gt(0)) {
-      const data = { productionOrderId: orderId, orderNo: latest.orderNo, targetQuantity: target, operationReportQuantity: latest.completedQuantity, cumulativeQuantity: cumulative, overOrderQuantity: over, status: "pending", recoveredAt: null, updatedBy: user.id };
+      const unchanged = existing && existing.status === "confirmed" && existing.operationReportQuantity?.eq(latest.completedQuantity) && existing.cumulativeQuantity?.eq(cumulative) && existing.overOrderQuantity?.eq(over);
+      const data = { productionOrderId: orderId, orderNo: latest.orderNo, targetQuantity: target, operationReportQuantity: latest.completedQuantity, cumulativeQuantity: cumulative, overOrderQuantity: over, status: unchanged ? "confirmed" : "pending", recoveredAt: null, updatedBy: user.id };
       if (existing) await tx.productionDailyAlert.update({ where: { id: existing.id }, data });
       else await tx.productionDailyAlert.create({ data: { productionOrderOperationId: operationId, reportDate: latest.reportDate, alertType: "over_order", ...data, createdBy: user.id } });
-    } else if (existing && existing.status !== "recovered") await tx.productionDailyAlert.update({ where: { id: existing.id }, data: { status: "recovered", recoveredAt: new Date(), updatedBy: user.id } });
+      await tx.auditEvent.create({ data: { action: existing ? "production_daily_alert.recalculate" : "production_daily_alert.create", entityType: "production_daily_alert", actorId: user.id, entityId: existing?.id, details: { order_no: latest.orderNo, alert_type: "over_order", cumulative_quantity: cumulative.toString(), over_order_quantity: over.toString(), status: data.status } } });
+    } else if (existing && existing.status !== "recovered") { await tx.productionDailyAlert.update({ where: { id: existing.id }, data: { status: "recovered", recoveredAt: new Date(), updatedBy: user.id } }); await tx.auditEvent.create({ data: { action: "production_daily_alert.recover", entityType: "production_daily_alert", actorId: user.id, entityId: existing.id, details: { order_no: latest.orderNo, alert_type: "over_order", status: "recovered" } } }); }
   }
 
   private date(value: string) { const result = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(result.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_REPORT_DATE", message: "日报日期必须是有效日期", details: [] }); return result; }
