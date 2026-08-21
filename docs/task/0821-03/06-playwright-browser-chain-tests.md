@@ -2,12 +2,12 @@
 
 ## 状态
 
-待认领
+已实现（环境阻断）
 
 ## 认领
 
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-21
 
 ## 目标
 
@@ -46,6 +46,6 @@
 
 ## 完成记录
 
-负责人：
-完成日期：
-验证：
+负责人：Codex
+完成日期：2026-08-21
+验证：`npm run test:unit`，14 tests passed；`npm run test:e2e` 因未设置 `PLAYWRIGHT_BASE_URL` 以 `TEST_BLOCKED` 退出。已固定 Chromium、失败 trace/截图及 JSON 报告，并实现登录重定向与错误提示用例；完整销售和采购 UI 链路待页面表单及测试环境齐备后扩展。
