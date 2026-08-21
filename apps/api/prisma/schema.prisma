@@ -337,6 +337,7 @@ model Bom {
   salesOrderVersionId String            @map("sales_order_version_id") @db.Uuid
   version             Int               @default(1)
   status              String            @default("draft") @db.VarChar(30)
+  formDefinitionId    String?           @map("form_definition_id") @db.Uuid
   extensionData       Json              @default("{}") @map("extension_data")
   createdAt           DateTime          @default(now()) @map("created_at")
   updatedAt           DateTime          @updatedAt @map("updated_at")
@@ -346,8 +347,72 @@ model Bom {
   deletedBy           String?           @map("deleted_by") @db.Uuid
   salesOrder          SalesOrder        @relation(fields: [salesOrderId], references: [id])
   salesOrderVersion   SalesOrderVersion @relation(fields: [salesOrderVersionId], references: [id])
+  formDefinition      FormDefinition?   @relation(fields: [formDefinitionId], references: [id])
+  items               BomItem[]
 
   @@unique([salesOrderId, version])
   @@index([orderNo])
   @@map("boms")
+}
+
+model FormDefinition {
+  id        String      @id @default(uuid()) @db.Uuid
+  formKey   String      @map("form_key") @db.VarChar(80)
+  version   Int
+  status    String      @default("draft") @db.VarChar(30)
+  name      String      @db.VarChar(100)
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+  createdBy String      @map("created_by") @db.Uuid
+  updatedBy String      @map("updated_by") @db.Uuid
+  deletedAt DateTime?   @map("deleted_at")
+  deletedBy String?     @map("deleted_by") @db.Uuid
+  fields    FormField[]
+  boms      Bom[]
+
+  @@unique([formKey, version])
+  @@index([formKey, status])
+  @@map("form_definitions")
+}
+
+model FormField {
+  id               String         @id @default(uuid()) @db.Uuid
+  formDefinitionId String         @map("form_definition_id") @db.Uuid
+  fieldKey         String         @map("field_key") @db.VarChar(80)
+  label            String         @db.VarChar(100)
+  fieldType        String         @map("field_type") @db.VarChar(30)
+  isRequired       Boolean        @default(false) @map("is_required")
+  sortOrder        Int            @default(0) @map("sort_order")
+  options          Json           @default("{}")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+  createdBy        String         @map("created_by") @db.Uuid
+  updatedBy        String         @map("updated_by") @db.Uuid
+  formDefinition   FormDefinition @relation(fields: [formDefinitionId], references: [id])
+
+  @@unique([formDefinitionId, fieldKey])
+  @@map("form_fields")
+}
+
+model BomItem {
+  id               String    @id @default(uuid()) @db.Uuid
+  bomId            String    @map("bom_id") @db.Uuid
+  materialId       String    @map("material_id") @db.Uuid
+  materialSnapshot Json      @map("material_snapshot")
+  requiredQuantity Decimal   @map("required_quantity") @db.Decimal(18, 4)
+  unit             String    @db.VarChar(30)
+  lossQuantity     Decimal?  @map("loss_quantity") @db.Decimal(18, 4)
+  lossRate         Decimal?  @map("loss_rate") @db.Decimal(8, 4)
+  extensionData    Json      @default("{}") @map("extension_data")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  createdBy        String    @map("created_by") @db.Uuid
+  updatedBy        String    @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at")
+  deletedBy        String?   @map("deleted_by") @db.Uuid
+  bom              Bom       @relation(fields: [bomId], references: [id])
+
+  @@index([bomId])
+  @@index([materialId])
+  @@map("bom_items")
 }
