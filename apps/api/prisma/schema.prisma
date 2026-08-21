@@ -688,3 +688,89 @@ model PayableSource {
   @@index([orderNo])
   @@map("payable_sources")
 }
+
+model Department {
+  id          String     @id @default(uuid()) @db.Uuid
+  code        String     @unique @db.VarChar(80)
+  name        String     @unique @db.VarChar(100)
+  isActive    Boolean    @default(true) @map("is_active")
+  remark      String?    @db.VarChar(500)
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  createdBy   String     @map("created_by") @db.Uuid
+  updatedBy   String     @map("updated_by") @db.Uuid
+  deletedAt   DateTime?  @map("deleted_at")
+  deletedBy   String?    @map("deleted_by") @db.Uuid
+  positions   Position[]
+  employees   Employee[]
+
+  @@map("departments")
+}
+
+model Position {
+  id           String     @id @default(uuid()) @db.Uuid
+  departmentId String     @map("department_id") @db.Uuid
+  code         String     @db.VarChar(80)
+  name         String     @db.VarChar(100)
+  isActive     Boolean    @default(true) @map("is_active")
+  remark       String?    @db.VarChar(500)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  createdBy    String     @map("created_by") @db.Uuid
+  updatedBy    String     @map("updated_by") @db.Uuid
+  deletedAt    DateTime?  @map("deleted_at")
+  deletedBy    String?    @map("deleted_by") @db.Uuid
+  department   Department @relation(fields: [departmentId], references: [id])
+  employees    Employee[]
+
+  @@unique([departmentId, code])
+  @@index([departmentId, isActive])
+  @@map("positions")
+}
+
+model Employee {
+  id             String     @id @default(uuid()) @db.Uuid
+  employeeNo     String     @unique @map("employee_no") @db.VarChar(80)
+  name           String     @db.VarChar(100)
+  departmentId   String     @map("department_id") @db.Uuid
+  positionId     String     @map("position_id") @db.Uuid
+  employeeType   String     @map("employee_type") @db.VarChar(40)
+  employmentStatus String   @default("active") @map("employment_status") @db.VarChar(30)
+  userId         String?    @map("user_id") @db.Uuid
+  hiredOn       DateTime?   @map("hired_on") @db.Date
+  leftOn        DateTime?   @map("left_on") @db.Date
+  remark         String?    @db.VarChar(500)
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+  createdBy      String     @map("created_by") @db.Uuid
+  updatedBy      String     @map("updated_by") @db.Uuid
+  deletedAt      DateTime?  @map("deleted_at")
+  deletedBy      String?    @map("deleted_by") @db.Uuid
+  department     Department @relation(fields: [departmentId], references: [id])
+  position       Position   @relation(fields: [positionId], references: [id])
+
+  @@index([departmentId, employmentStatus])
+  @@index([positionId, employmentStatus])
+  @@map("employees")
+}
+
+model ProductionLocation {
+  id           String    @id @default(uuid()) @db.Uuid
+  name         String    @db.VarChar(150)
+  locationType String    @map("location_type") @db.VarChar(30)
+  contactName  String?   @map("contact_name") @db.VarChar(100)
+  contactPhone String?   @map("contact_phone") @db.VarChar(50)
+  address      String?   @db.VarChar(500)
+  isActive     Boolean   @default(true) @map("is_active")
+  remark       String?   @db.VarChar(500)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  createdBy    String    @map("created_by") @db.Uuid
+  updatedBy    String    @map("updated_by") @db.Uuid
+  deletedAt    DateTime? @map("deleted_at")
+  deletedBy    String?   @map("deleted_by") @db.Uuid
+
+  @@unique([name, locationType])
+  @@index([locationType, isActive])
+  @@map("production_locations")
+}
