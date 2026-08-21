@@ -642,27 +642,37 @@ model RawMaterialInbound {
   supplier             Supplier           @relation(fields: [supplierId], references: [id])
   inventoryFacts       InventoryFact[]
   payableSources       PayableSource[]
-  unit                 Unit?              @relation(fields: [unitId], references: [id])
-  unitId               String?            @map("unit_id") @db.Uuid
+  unit                 Unit               @relation(fields: [unitId], references: [id])
+  unitId               String             @map("unit_id") @db.Uuid
 
   @@index([orderNo])
   @@map("raw_material_inbounds")
 }
 
 model InventoryFact {
-  id                   String             @id @default(uuid()) @db.Uuid
-  rawMaterialInboundId String             @map("raw_material_inbound_id") @db.Uuid
-  materialId           String             @map("material_id") @db.Uuid
-  inventoryCategory    String             @map("inventory_category") @db.VarChar(30)
-  quantityDelta        Decimal            @map("quantity_delta") @db.Decimal(18, 4)
-  createdAt            DateTime           @default(now()) @map("created_at")
-  createdBy            String             @map("created_by") @db.Uuid
-  rawMaterialInbound   RawMaterialInbound @relation(fields: [rawMaterialInboundId], references: [id])
-  material             Material           @relation(fields: [materialId], references: [id])
-  unit                 Unit?              @relation(fields: [unitId], references: [id])
-  unitId               String?            @map("unit_id") @db.Uuid
+  id                       String             @id @default(uuid()) @db.Uuid
+  rawMaterialInboundId     String?            @map("raw_material_inbound_id") @db.Uuid
+  materialId               String             @map("material_id") @db.Uuid
+  inventoryCategory        String             @map("inventory_category") @db.VarChar(30)
+  quantityDelta            Decimal            @map("quantity_delta") @db.Decimal(18, 4)
+  sourceType               String?            @map("source_type") @db.VarChar(50)
+  sourceId                 String?            @map("source_id") @db.Uuid
+  sourceVersion            String?            @map("source_version") @db.VarChar(50)
+  orderNo                  String?            @map("order_no") @db.VarChar(100)
+  productionOrderId        String?            @map("production_order_id") @db.Uuid
+  rawMaterialMovementLineId String?           @map("raw_material_movement_line_id") @db.Uuid
+  createdAt                DateTime           @default(now()) @map("created_at")
+  createdBy                String             @map("created_by") @db.Uuid
+  rawMaterialInbound       RawMaterialInbound? @relation(fields: [rawMaterialInboundId], references: [id])
+  material                 Material           @relation(fields: [materialId], references: [id])
+  productionOrder          ProductionOrder?   @relation(fields: [productionOrderId], references: [id])
+  unit                     Unit               @relation(fields: [unitId], references: [id])
+  unitId                   String             @map("unit_id") @db.Uuid
 
-  @@index([materialId, inventoryCategory])
+  @@index([materialId, inventoryCategory, unitId])
+  @@index([sourceType, sourceId])
+  @@index([orderNo])
+  @@index([productionOrderId])
   @@map("inventory_facts")
 }
 
@@ -730,6 +740,7 @@ model ProductionOrder {
   executionLocation       ProductionLocation @relation(fields: [executionLocationId], references: [id])
   unit                    Unit      @relation(fields: [unitId], references: [id])
   operations              ProductionOrderOperation[]
+  inventoryFacts          InventoryFact[]
 
   @@index([orderNo, status])
   @@index([salesOrderId, productionOrderType])

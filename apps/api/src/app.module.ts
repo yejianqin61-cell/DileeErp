@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { HealthController } from "./health.controller";
 import { ConfigModule } from "@nestjs/config";
 import { DatabaseModule } from "./platform/database/database.module";
+import { InventoryModule } from "./platform/inventory/inventory.module";
 import { AuthModule } from "./platform/auth/auth.module";
 import { AuthorizationModule } from "./platform/authorization/authorization.module";
 import { AuditModule } from "./platform/audit/audit.module";
@@ -15,7 +16,7 @@ import { ProcurementModule } from "./modules/procurement/procurement.module";
 import { ProductionModule } from "./modules/production/production.module";
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, InventoryModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule],
   controllers: [HealthController],
 })
 export class AppModule {}

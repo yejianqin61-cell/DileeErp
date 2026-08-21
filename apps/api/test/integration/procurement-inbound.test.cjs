@@ -3,6 +3,7 @@ const { randomUUID } = require("node:crypto");
 const { test } = require("node:test");
 const { PrismaClient } = require("@prisma/client");
 const { RawMaterialInboundsService } = require("../../dist/modules/procurement/raw-material-inbounds.service.js");
+const { InventoryService } = require("../../dist/platform/inventory/inventory.service.js");
 const { assertInventoryFacts, assertNoDuplicateSource, assertOrderNo } = require("../../../../tests/helpers/business-invariants.cjs");
 const { requireTestDatabaseUrl, testRun } = require("../../../../tests/helpers/test-context.cjs");
 
@@ -11,6 +12,7 @@ test("procurement.inbound.post_generates_inventory_and_a_single_payable_source",
   const run = testRun("procurement");
   const user = { id: randomUUID(), username: "integration", display_name: "集成测试" };
   const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: () => Promise.resolve() };
+  const inventory = new InventoryService();
   const ids = [];
   try {
     const unit = await prisma.unit.create({ data: { name: `件-${run.id}`, ...audit.create() } });
@@ -25,7 +27,7 @@ test("procurement.inbound.post_generates_inventory_and_a_single_payable_source",
     const item = await prisma.purchaseOrderItem.create({ data: { purchaseOrderId: po.id, materialId: material.id, materialSnapshot: {}, unitId: unit.id, unitSnapshot: {}, bomItemId: bomItem.id, quantity: "10", unitPrice: "2", amount: "20", ...audit.create() } });
     const receipt = await prisma.purchaseReceipt.create({ data: { purchaseOrderId: po.id, purchaseOrderItemId: item.id, orderNo: run.orderNo, receiptNo: `GR-${run.id}`, receivedDate: new Date(), quantity: "10", ...audit.create() } });
     const inspection = await prisma.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: run.orderNo, inspectedQuantity: "10", acceptedQuantity: "10", conditionalQuantity: "0", rejectedQuantity: "0", status: "accepted", ...audit.create() } });
-    const service = new RawMaterialInboundsService(prisma, audit);
+    const service = new RawMaterialInboundsService(prisma, audit, inventory);
     const inbound = await service.create({ incoming_inspection_id: inspection.id, quantity: "10" }, user);
     await service.post(inbound.id, user);
     await assert.rejects(() => service.post(inbound.id, user), (error) => error.getResponse().code === "INVALID_INBOUND_STATE");
@@ -33,6 +35,11 @@ test("procurement.inbound.post_generates_inventory_and_a_single_payable_source",
     assert.equal(posted.status, "posted");
     assertOrderNo("procurement order chain", run.orderNo, [po, receipt, inspection, posted, posted.payableSources[0]]);
     assertInventoryFacts("procurement posted inbound", posted.inventoryFacts, "10");
+    assert.equal(posted.inventoryFacts[0].sourceType, "raw_material_inbound");
+    assert.equal(posted.inventoryFacts[0].sourceId, inbound.id);
+    assert.equal(posted.inventoryFacts[0].orderNo, run.orderNo);
+    assert.equal(posted.inventoryFacts[0].unitId, unit.id);
+    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "10");
     assertNoDuplicateSource("payable source idempotency", posted.payableSources);
   } finally {
     await prisma.$executeRawUnsafe(`DELETE FROM audit_events WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
