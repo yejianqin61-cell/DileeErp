@@ -5,6 +5,7 @@ import { SalesOrdersController } from "./sales-orders.controller";
 import { SalesOrdersService } from "./sales-orders.service";
 import { BomsController } from "./boms.controller";
 import { BomsService } from "./boms.service";
+import { AuditModule } from "../../platform/audit/audit.module";
 
-@Module({ controllers: [CustomersController, SalesOrdersController, BomsController], providers: [CustomersService, SalesOrdersService, BomsService], exports: [CustomersService, SalesOrdersService, BomsService] })
+@Module({ imports: [AuditModule], controllers: [CustomersController, SalesOrdersController, BomsController], providers: [CustomersService, SalesOrdersService, BomsService], exports: [CustomersService, SalesOrdersService, BomsService] })
 export class SalesModule {}
