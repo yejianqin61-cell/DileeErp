@@ -1,6 +1,8 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
 import type { Request, Response } from "express";
 
+type ExceptionPayload = { code?: string; message?: string | string[]; details?: unknown[] };
+
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost) {
@@ -9,12 +11,20 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const response = context.getResponse<Response>();
     const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     const payload = exception instanceof HttpException ? exception.getResponse() : undefined;
-    const message = typeof payload === "string" ? payload : payload && typeof payload === "object" && "message" in payload ? payload.message : "服务器内部错误";
-    const details = payload && typeof payload === "object" && "message" in payload && Array.isArray(payload.message) ? payload.message : [];
+    const normalized = this.normalizePayload(payload, status);
     response.status(status).json({
-      error: { code: status === 500 ? "INTERNAL_ERROR" : this.errorCode(status), message: Array.isArray(message) ? "请求参数校验失败" : message, details },
+      error: normalized,
       meta: { path: request.url, request_id: request.header("x-request-id") },
     });
+  }
+
+  private normalizePayload(payload: unknown, status: number) {
+    if (typeof payload === "string") return { code: this.errorCode(status), message: payload, details: [] };
+
+    const candidate = payload && typeof payload === "object" ? payload as ExceptionPayload : {};
+    const message = Array.isArray(candidate.message) ? "请求参数校验失败" : candidate.message ?? (status === 500 ? "服务器内部错误" : "请求处理失败");
+    const details = candidate.details ?? (Array.isArray(candidate.message) ? candidate.message.map((item) => ({ message: item })) : []);
+    return { code: candidate.code ?? this.errorCode(status), message, details };
   }
 
   private errorCode(status: number) {
@@ -22,6 +32,8 @@ export class ApiExceptionFilter implements ExceptionFilter {
     if (status === 401) return "UNAUTHENTICATED";
     if (status === 403) return "FORBIDDEN";
     if (status === 404) return "NOT_FOUND";
+    if (status === 409) return "CONFLICT";
+    if (status === 422) return "BUSINESS_RULE_VIOLATION";
     return "REQUEST_ERROR";
   }
 }
