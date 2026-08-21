@@ -1,0 +1,56 @@
+const assert = require("node:assert/strict");
+const { randomUUID } = require("node:crypto");
+const { test } = require("node:test");
+const { PrismaClient } = require("@prisma/client");
+const { RawMaterialInboundsService } = require("../../dist/modules/procurement/raw-material-inbounds.service.js");
+const { assertInventoryFacts, assertNoDuplicateSource, assertOrderNo } = require("../../../../tests/helpers/business-invariants.cjs");
+const { requireTestDatabaseUrl, testRun } = require("../../../../tests/helpers/test-context.cjs");
+
+test("procurement.inbound.post_generates_inventory_and_a_single_payable_source", async () => {
+  const prisma = new PrismaClient({ datasources: { db: { url: requireTestDatabaseUrl() } } });
+  const run = testRun("procurement");
+  const user = { id: randomUUID(), username: "integration", display_name: "集成测试" };
+  const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: () => Promise.resolve() };
+  const ids = [];
+  try {
+    const unit = await prisma.unit.create({ data: { name: `件-${run.id}`, ...audit.create() } });
+    const material = await prisma.material.create({ data: { materialCode: `M-${run.id}`, name: `物料-${run.id}`, defaultUnitId: unit.id, ...audit.create() } });
+    const supplier = await prisma.supplier.create({ data: { supplierCode: `S-${run.id}`, name: `供应商-${run.id}`, ...audit.create() } });
+    const customer = await prisma.customer.create({ data: { customerCode: `C-${run.id}`, name: `客户-${run.id}`, ...audit.create() } });
+    const salesOrder = await prisma.salesOrder.create({ data: { orderNo: run.orderNo, customerId: customer.id, customerSnapshot: { name: customer.name }, orderDate: new Date(), productName: "测试雨伞", quantity: "10", unit: "件", currency: "USD", status: "confirmed", ...audit.create() } });
+    const version = await prisma.salesOrderVersion.create({ data: { salesOrderId: salesOrder.id, version: 1, snapshot: {}, ...audit.create() } });
+    const bom = await prisma.bom.create({ data: { orderNo: run.orderNo, salesOrderId: salesOrder.id, salesOrderVersionId: version.id, status: "published", ...audit.create() } });
+    const bomItem = await prisma.bomItem.create({ data: { bomId: bom.id, materialId: material.id, unitId: unit.id, materialSnapshot: { name: material.name }, requiredQuantity: "10", unit: unit.name, ...audit.create() } });
+    const po = await prisma.purchaseOrder.create({ data: { purchaseOrderNo: `PO-${run.id}`, orderNo: run.orderNo, salesOrderId: salesOrder.id, bomId: bom.id, bomVersion: 1, bomSnapshot: {}, supplierId: supplier.id, supplierSnapshot: {}, purchaseDate: new Date(), currency: "USD", ...audit.create() } });
+    const item = await prisma.purchaseOrderItem.create({ data: { purchaseOrderId: po.id, materialId: material.id, materialSnapshot: {}, unitId: unit.id, unitSnapshot: {}, bomItemId: bomItem.id, quantity: "10", unitPrice: "2", amount: "20", ...audit.create() } });
+    const receipt = await prisma.purchaseReceipt.create({ data: { purchaseOrderId: po.id, purchaseOrderItemId: item.id, orderNo: run.orderNo, receiptNo: `GR-${run.id}`, receivedDate: new Date(), quantity: "10", ...audit.create() } });
+    const inspection = await prisma.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: run.orderNo, inspectedQuantity: "10", acceptedQuantity: "10", conditionalQuantity: "0", rejectedQuantity: "0", status: "accepted", ...audit.create() } });
+    const service = new RawMaterialInboundsService(prisma, audit);
+    const inbound = await service.create({ incoming_inspection_id: inspection.id, quantity: "10" }, user);
+    await service.post(inbound.id, user);
+    await assert.rejects(() => service.post(inbound.id, user), (error) => error.getResponse().code === "INVALID_INBOUND_STATE");
+    const posted = await prisma.rawMaterialInbound.findUnique({ where: { id: inbound.id }, include: { inventoryFacts: true, payableSources: true } });
+    assert.equal(posted.status, "posted");
+    assertOrderNo("procurement order chain", run.orderNo, [po, receipt, inspection, posted, posted.payableSources[0]]);
+    assertInventoryFacts("procurement posted inbound", posted.inventoryFacts, "10");
+    assertNoDuplicateSource("payable source idempotency", posted.payableSources);
+  } finally {
+    await prisma.$executeRawUnsafe(`DELETE FROM audit_events WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.$executeRawUnsafe(`DELETE FROM payable_sources WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.$executeRawUnsafe(`DELETE FROM inventory_facts WHERE raw_material_inbound_id IN (SELECT id FROM raw_material_inbounds WHERE order_no = '${run.orderNo.replaceAll("'", "''")}' )`);
+    await prisma.$executeRawUnsafe(`DELETE FROM raw_material_inbounds WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.$executeRawUnsafe(`DELETE FROM incoming_inspections WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.$executeRawUnsafe(`DELETE FROM purchase_receipts WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.$executeRawUnsafe(`DELETE FROM purchase_order_items WHERE purchase_order_id IN (SELECT id FROM purchase_orders WHERE order_no = '${run.orderNo.replaceAll("'", "''")}' )`);
+    await prisma.$executeRawUnsafe(`DELETE FROM purchase_orders WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.$executeRawUnsafe(`DELETE FROM bom_items WHERE bom_id IN (SELECT id FROM boms WHERE order_no = '${run.orderNo.replaceAll("'", "''")}' )`);
+    await prisma.$executeRawUnsafe(`DELETE FROM boms WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.$executeRawUnsafe(`DELETE FROM sales_order_versions WHERE sales_order_id IN (SELECT id FROM sales_orders WHERE order_no = '${run.orderNo.replaceAll("'", "''")}' )`);
+    await prisma.$executeRawUnsafe(`DELETE FROM sales_orders WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.customer.deleteMany({ where: { customerCode: `C-${run.id}` } });
+    await prisma.supplier.deleteMany({ where: { supplierCode: `S-${run.id}` } });
+    await prisma.material.deleteMany({ where: { materialCode: `M-${run.id}` } });
+    await prisma.unit.deleteMany({ where: { name: `件-${run.id}` } });
+    await prisma.$disconnect();
+  }
+});
