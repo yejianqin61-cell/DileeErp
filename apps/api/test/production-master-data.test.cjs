@@ -38,3 +38,11 @@ test("production order rejects an execution location type mismatch", async () =>
   const service = new ProductionOrdersService(prisma, audit);
   await assert.rejects(() => service.create({ order_no: "SO-1", bom_id: "bom-1", bom_version: 1, execution_mode: "in_house", execution_location_id: "location-1", planned_quantity: "10", unit_id: "unit-1" }, user), (error) => error instanceof require("@nestjs/common").UnprocessableEntityException && error.getResponse().code === "EXECUTION_LOCATION_MISMATCH");
 });
+
+test("in-house production order cannot start without an active operation", async () => {
+  const prisma = {
+    productionOrder: { findFirst: async () => ({ id: "po-1", status: "draft", executionMode: "in_house", operations: [], orderNo: "SO-1" }) },
+  };
+  const service = new ProductionOrdersService(prisma, audit);
+  await assert.rejects(() => service.transition("po-1", "in_progress", "启动生产", user), (error) => error instanceof require("@nestjs/common").UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATIONS_REQUIRED");
+});

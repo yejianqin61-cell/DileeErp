@@ -443,6 +443,7 @@ model Unit {
   inventoryFacts      InventoryFact[]
   operationCatalogs   OperationCatalog[]
   productionOrders    ProductionOrder[]
+  productionOrderOperations ProductionOrderOperation[]
 
   @@map("units")
 }
@@ -728,10 +729,36 @@ model ProductionOrder {
   children                ProductionOrder[] @relation("production_order_parent")
   executionLocation       ProductionLocation @relation(fields: [executionLocationId], references: [id])
   unit                    Unit      @relation(fields: [unitId], references: [id])
+  operations              ProductionOrderOperation[]
 
   @@index([orderNo, status])
   @@index([salesOrderId, productionOrderType])
   @@map("production_orders")
+}
+
+model ProductionOrderOperation {
+  id                   String          @id @default(uuid()) @db.Uuid
+  productionOrderId    String          @map("production_order_id") @db.Uuid
+  operationCatalogId   String          @map("operation_catalog_id") @db.Uuid
+  operationNameSnapshot String         @map("operation_name_snapshot") @db.VarChar(150)
+  unitId               String          @map("unit_id") @db.Uuid
+  sequenceNo           Int             @map("sequence_no")
+  targetQuantity       Decimal         @map("target_quantity") @db.Decimal(18,4)
+  status               String          @default("active") @db.VarChar(20)
+  cancellationReason   String?         @map("cancellation_reason") @db.VarChar(500)
+  createdAt            DateTime        @default(now()) @map("created_at")
+  updatedAt            DateTime        @updatedAt @map("updated_at")
+  createdBy            String          @map("created_by") @db.Uuid
+  updatedBy            String          @map("updated_by") @db.Uuid
+  deletedAt            DateTime?       @map("deleted_at")
+  deletedBy            String?         @map("deleted_by") @db.Uuid
+  productionOrder      ProductionOrder @relation(fields: [productionOrderId], references: [id])
+  operationCatalog     OperationCatalog @relation(fields: [operationCatalogId], references: [id])
+  unit                 Unit            @relation(fields: [unitId], references: [id])
+
+  @@unique([productionOrderId, sequenceNo])
+  @@index([productionOrderId, status])
+  @@map("production_order_operations")
 }
 
 model Department {
@@ -837,6 +864,7 @@ model OperationCatalog {
   deletedBy      String?             @map("deleted_by") @db.Uuid
   defaultUnit    Unit?               @relation(fields: [defaultUnitId], references: [id])
   rates          OperationRate[]
+  productionOrderOperations ProductionOrderOperation[]
 
   @@map("operation_catalogs")
 }
