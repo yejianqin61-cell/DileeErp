@@ -994,6 +994,8 @@ model OperationRate {
 
 model OperationDailyReport {
   id                         String                   @id @default(uuid()) @db.Uuid
+  idempotencyKey             String?                  @unique @map("idempotency_key") @db.VarChar(200)
+  version                    Int                      @default(1)
   productionOrderId          String                   @map("production_order_id") @db.Uuid
   productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
   orderNo                    String                   @map("order_no") @db.VarChar(100)
@@ -1021,6 +1023,8 @@ model OperationDailyReport {
 
 model EmployeeDailyReport {
   id                         String                   @id @default(uuid()) @db.Uuid
+  idempotencyKey             String?                  @unique @map("idempotency_key") @db.VarChar(200)
+  version                    Int                      @default(1)
   productionOrderId          String                   @map("production_order_id") @db.Uuid
   productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
   employeeId                 String                   @map("employee_id") @db.Uuid

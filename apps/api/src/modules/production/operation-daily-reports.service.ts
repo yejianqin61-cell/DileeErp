@@ -4,7 +4,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
-type ReportInput = { production_order_id: string; production_order_operation_id: string; report_date: string; completed_quantity: string; remark?: string };
+type ReportInput = { production_order_id: string; production_order_operation_id: string; report_date: string; completed_quantity: string; remark?: string; idempotency_key?: string };
 type ReportFilter = { order_no?: string; production_order_id?: string; production_order_operation_id?: string; report_date?: string };
 
 @Injectable()
@@ -33,13 +33,14 @@ export class OperationDailyReportsService {
   }
 
   async create(input: ReportInput, user: CurrentUser) {
+    if (input.idempotency_key) { const previous = await this.prisma.operationDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } }); if (previous) return this.get(previous.id); }
     const reportDate = this.validDate(input.report_date);
     const quantity = this.decimal(input.completed_quantity, "INVALID_OPERATION_REPORT_QUANTITY", "工序日报完成量必须是大于零的十进制数");
     const refs = await this.refs(input.production_order_id, input.production_order_operation_id);
     const created = await this.prisma.$transaction(async (tx) => {
       const row = await tx.operationDailyReport.create({ data: {
         productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, orderNo: refs.order.orderNo,
-        productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot,
+        idempotencyKey: input.idempotency_key, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot,
         unitId: refs.operation.unitId, reportDate, completedQuantity: quantity, remark: input.remark, ...this.audit.create(user),
       } });
       await this.recomputeOverOrder(tx, refs.order.id, refs.operation.id, user);
@@ -49,14 +50,15 @@ export class OperationDailyReportsService {
     return this.get(created.id);
   }
 
-  async update(id: string, input: Partial<Omit<ReportInput, "production_order_id" | "production_order_operation_id">> & { reason: string }, user: CurrentUser) {
+  async update(id: string, input: Partial<Omit<ReportInput, "production_order_id" | "production_order_operation_id">> & { reason: string; expected_version?: number }, user: CurrentUser) {
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "修改工序日报必须填写原因", details: [] });
     const current = await this.get(id);
+    if (input.expected_version !== undefined && input.expected_version !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "工序日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: current.version }] });
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, true);
     const reportDate = input.report_date === undefined ? current.reportDate : this.validDate(input.report_date);
     const quantity = input.completed_quantity === undefined ? current.completedQuantity : this.decimal(input.completed_quantity, "INVALID_OPERATION_REPORT_QUANTITY", "工序日报完成量必须是大于零的十进制数");
     const updated = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.operationDailyReport.update({ where: { id }, data: { reportDate, completedQuantity: quantity, ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } });
+      const row = await tx.operationDailyReport.update({ where: { id }, data: { reportDate, completedQuantity: quantity, version: { increment: 1 }, ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } });
       await this.recomputeOverOrder(tx, refs.order.id, refs.operation.id, user);
       return row;
     });
@@ -64,12 +66,13 @@ export class OperationDailyReportsService {
     return updated;
   }
 
-  async remove(id: string, reason: string, user: CurrentUser) {
+  async remove(id: string, reason: string, user: CurrentUser, expectedVersion?: number) {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "删除工序日报必须填写原因", details: [] });
     const current = await this.get(id);
+    if (expectedVersion !== undefined && expectedVersion !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "工序日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: current.version }] });
     await this.refs(current.productionOrderId, current.productionOrderOperationId, true);
     const removed = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.operationDailyReport.update({ where: { id }, data: this.audit.softDelete(user) });
+      const row = await tx.operationDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } });
       await this.recomputeOverOrder(tx, current.productionOrderId, current.productionOrderOperationId, user);
       return row;
     });
