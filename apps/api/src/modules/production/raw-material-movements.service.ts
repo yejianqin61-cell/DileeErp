@@ -140,6 +140,47 @@ export class RawMaterialMovementsService {
   async postReturn(id: string, idempotencyKey: string, user: CurrentUser) { return this.postDerived("return", id, idempotencyKey, user); }
   async postScrap(id: string, idempotencyKey: string, user: CurrentUser) { return this.postDerived("scrap", id, idempotencyKey, user); }
 
+  async reversalPreview(id: string) {
+    const movement = await this.get(id);
+    if (movement.status !== "posted") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有已过账单据可以冲销", details: [] });
+    const dependentCount = movement.documentType === "issue" ? await this.prisma.rawMaterialMovementLine.count({ where: { sourceIssueLineId: { in: movement.lines.map((line) => line.id) }, deletedAt: null, movement: { is: { status: "posted", deletedAt: null } } } }) : 0;
+    const facts = await this.prisma.inventoryFact.findMany({ where: { sourceId: movement.id } });
+    return { movement_no: movement.movementNo, order_no: movement.orderNo, document_type: movement.documentType, can_reverse: dependentCount === 0, dependent_record_count: dependentCount, inventory_facts: facts.map((fact) => ({ material_id: fact.materialId, inventory_category: fact.inventoryCategory, quantity_delta: fact.quantityDelta.negated().toString() })) };
+  }
+
+  async reverse(id: string, reason: string, idempotencyKey: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] });
+    if (!idempotencyKey?.trim()) throw new UnprocessableEntityException({ code: "IDEMPOTENCY_KEY_REQUIRED", message: "冲销必须提供幂等键", details: [] });
+    const movement = await this.get(id);
+    if (movement.status !== "posted") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有已过账单据可以冲销", details: [] });
+    const preview = await this.reversalPreview(id);
+    if (!preview.can_reverse) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "存在后续退料或报废记录，不能冲销来源领料", details: [{ count: preview.dependent_record_count }] });
+    const reversal = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.rawMaterialMovement.findFirst({ where: { id, status: "posted", deletedAt: null }, include: { lines: { where: { deletedAt: null } } } });
+      if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_REVERSED", message: "单据已被其他操作冲销", details: [] });
+      if (current.documentType === "issue") {
+        const derived = await tx.rawMaterialMovementLine.count({ where: { sourceIssueLineId: { in: current.lines.map((line) => line.id) }, deletedAt: null, movement: { is: { status: "posted", deletedAt: null } } } });
+        if (derived) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "存在后续退料或报废记录，不能冲销来源领料", details: [{ count: derived }] });
+      }
+      const facts = await tx.inventoryFact.findMany({ where: { sourceId: current.id } });
+      for (const fact of facts) {
+        if (fact.inventoryCategory === "raw_material" && fact.quantityDelta.isPositive()) {
+          const balance = await this.inventory.rawMaterialBalance(tx, fact.materialId, fact.unitId);
+          if (balance.minus(fact.quantityDelta).isNegative()) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "冲销会造成原料库存不足", details: [{ material_id: fact.materialId }] });
+        }
+      }
+      const created = await tx.rawMaterialMovement.create({ data: { movementNo: `RV-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, documentType: "reversal", status: "posted", productionOrderId: current.productionOrderId, orderNo: current.orderNo, businessDate: new Date(), reason, remark: `冲销 ${current.movementNo}`, idempotencyKey, lines: { create: current.lines.map((line) => ({ materialId: line.materialId, unitId: line.unitId, quantity: line.quantity, bomReferenceQuantity: line.bomReferenceQuantity, sourceIssueLineId: line.id, remark: `冲销 ${current.movementNo}`, ...this.audit.create(user) })) }, ...this.audit.create(user) }, include: { lines: true } });
+      for (let index = 0; index < facts.length; index += 1) {
+        const fact = facts[index];
+        await tx.inventoryFact.create({ data: { materialId: fact.materialId, unitId: fact.unitId, inventoryCategory: fact.inventoryCategory, quantityDelta: fact.quantityDelta.negated(), sourceType: "material_movement_reversal", sourceId: created.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: created.lines[index]?.id, createdBy: user.id } });
+      }
+      await tx.rawMaterialMovement.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } });
+      return created;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    await this.audit.record("raw_material_movement.reverse", "raw_material_movement", user.id, id, { order_no: movement.orderNo, production_order_id: movement.productionOrderId, reversal_movement_id: reversal.id, reason });
+    return reversal;
+  }
+
   private async createDerived(documentType: "return" | "scrap", input: DerivedInput, user: CurrentUser) {
     const order = await this.requireInHouseOrder(input.production_order_id);
     const lines = await this.derivedLines(order.id, input.lines);

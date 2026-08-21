@@ -40,12 +40,17 @@ test("production.issue_posts_inventory_facts_and_preserves_risk_and_idempotency"
     const returned = await service.createReturn({ production_order_id: productionOrder.id, lines: [{ source_issue_line_id: sourceLine.id, quantity: "2" }] }, user);
     await service.postReturn(returned.id, "return-key-1", user);
     assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "8");
+    const returnPreview = await service.reversalPreview(returned.id);
+    assert.equal(returnPreview.can_reverse, true);
+    await service.reverse(returned.id, "退料登记错误", "return-reversal-key-1", user);
+    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "6");
 
     const scrapped = await service.createScrap({ production_order_id: productionOrder.id, reason: "裁剪损耗", lines: [{ source_issue_line_id: sourceLine.id, quantity: "1" }] }, user);
     await service.postScrap(scrapped.id, "scrap-key-1", user);
-    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "8");
+    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "6");
     assert.equal(await prisma.inventoryFact.count({ where: { productionOrderId: productionOrder.id, inventoryCategory: "scrap", sourceType: "material_scrap" } }), 1);
-    await assert.rejects(() => service.createReturn({ production_order_id: productionOrder.id, lines: [{ source_issue_line_id: sourceLine.id, quantity: "2" }] }, user), (error) => error.getResponse().code === "DERIVED_QUANTITY_EXCEEDED");
+    await assert.rejects(() => service.createReturn({ production_order_id: productionOrder.id, lines: [{ source_issue_line_id: sourceLine.id, quantity: "4" }] }, user), (error) => error.getResponse().code === "DERIVED_QUANTITY_EXCEEDED");
+    await assert.rejects(() => service.reverse(issue.id, "领料登记错误", "issue-reversal-key-1", user), (error) => error.getResponse().code === "DOWNSTREAM_RECORD_EXISTS");
 
     const insufficient = await service.createIssue({ production_order_id: productionOrder.id, reason: "紧急补料", lines: [{ material_id: material.id, quantity: "9" }] }, user);
     await assert.rejects(() => service.postIssue(insufficient.id, "issue-key-2", user), (error) => error.getResponse().code === "INSUFFICIENT_INVENTORY");

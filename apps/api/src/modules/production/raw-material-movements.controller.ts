@@ -12,6 +12,7 @@ class IssueDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateSt
 class DerivedLineDto { @IsUUID() source_issue_line_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class DerivedDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() lines!: DerivedLineDto[]; }
 class PostDto { @IsString() @MaxLength(200) idempotency_key!: string; }
+class ReverseDto extends PostDto { @IsString() @MaxLength(1000) reason!: string; }
 
 @Controller("production/material-movements")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -27,7 +28,9 @@ export class RawMaterialMovementsController {
   @Patch(":id") async update(@Param("id") id: string, @Body() body: Partial<IssueDto>, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.updateIssue(id, body, user), meta: {} }; }
   @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.removeIssue(id, user), meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.movements.impactPreview(id), meta: {} }; }
+  @Get(":id/reversal-preview") async reversalPreview(@Param("id") id: string) { return { data: await this.movements.reversalPreview(id), meta: {} }; }
   @Post(":id/post") async post(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postIssue(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/post-return") async postReturn(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postReturn(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/post-scrap") async postScrap(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postScrap(id, body.idempotency_key, user), meta: {} }; }
+  @Post(":id/reverse") async reverse(@Param("id") id: string, @Body() body: ReverseDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.reverse(id, body.reason, body.idempotency_key, user), meta: {} }; }
 }
