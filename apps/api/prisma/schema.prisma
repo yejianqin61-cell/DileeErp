@@ -547,26 +547,51 @@ model PurchaseOrderItem {
 }
 
 model PurchaseReceipt {
-  id                  String            @id @default(uuid()) @db.Uuid
-  purchaseOrderId     String            @map("purchase_order_id") @db.Uuid
-  purchaseOrderItemId String            @map("purchase_order_item_id") @db.Uuid
-  orderNo             String            @map("order_no") @db.VarChar(100)
-  receiptNo           String            @unique @map("receipt_no") @db.VarChar(100)
-  referenceNo         String?           @map("reference_no") @db.VarChar(100)
-  receivedDate        DateTime          @map("received_date")
-  quantity            Decimal           @db.Decimal(18, 4)
-  status              String            @default("received") @db.VarChar(30)
-  remark              String?           @db.VarChar(1000)
-  createdAt           DateTime          @default(now()) @map("created_at")
-  updatedAt           DateTime          @updatedAt @map("updated_at")
-  createdBy           String            @map("created_by") @db.Uuid
-  updatedBy           String            @map("updated_by") @db.Uuid
-  deletedAt           DateTime?         @map("deleted_at")
-  deletedBy           String?           @map("deleted_by") @db.Uuid
-  purchaseOrder       PurchaseOrder     @relation(fields: [purchaseOrderId], references: [id])
-  purchaseOrderItem   PurchaseOrderItem @relation(fields: [purchaseOrderItemId], references: [id])
+  id                  String               @id @default(uuid()) @db.Uuid
+  purchaseOrderId     String               @map("purchase_order_id") @db.Uuid
+  purchaseOrderItemId String               @map("purchase_order_item_id") @db.Uuid
+  orderNo             String               @map("order_no") @db.VarChar(100)
+  receiptNo           String               @unique @map("receipt_no") @db.VarChar(100)
+  referenceNo         String?              @map("reference_no") @db.VarChar(100)
+  receivedDate        DateTime             @map("received_date")
+  quantity            Decimal              @db.Decimal(18, 4)
+  status              String               @default("received") @db.VarChar(30)
+  remark              String?              @db.VarChar(1000)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           String               @map("created_by") @db.Uuid
+  updatedBy           String               @map("updated_by") @db.Uuid
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedBy           String?              @map("deleted_by") @db.Uuid
+  purchaseOrder       PurchaseOrder        @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderItem   PurchaseOrderItem    @relation(fields: [purchaseOrderItemId], references: [id])
+  inspections         IncomingInspection[]
 
   @@index([purchaseOrderItemId, receivedDate])
   @@index([orderNo])
   @@map("purchase_receipts")
+}
+
+model IncomingInspection {
+  id                  String          @id @default(uuid()) @db.Uuid
+  purchaseReceiptId   String          @map("purchase_receipt_id") @db.Uuid
+  orderNo             String          @map("order_no") @db.VarChar(100)
+  inspectedQuantity   Decimal         @map("inspected_quantity") @db.Decimal(18, 4)
+  acceptedQuantity    Decimal         @map("accepted_quantity") @db.Decimal(18, 4)
+  conditionalQuantity Decimal         @map("conditional_quantity") @db.Decimal(18, 4)
+  rejectedQuantity    Decimal         @map("rejected_quantity") @db.Decimal(18, 4)
+  status              String          @default("pending") @db.VarChar(30)
+  extensionData       Json            @default("{}") @map("extension_data")
+  remark              String?         @db.VarChar(1000)
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+  createdBy           String          @map("created_by") @db.Uuid
+  updatedBy           String          @map("updated_by") @db.Uuid
+  deletedAt           DateTime?       @map("deleted_at")
+  deletedBy           String?         @map("deleted_by") @db.Uuid
+  purchaseReceipt     PurchaseReceipt @relation(fields: [purchaseReceiptId], references: [id])
+
+  @@index([purchaseReceiptId])
+  @@index([orderNo])
+  @@map("incoming_inspections")
 }

@@ -4,6 +4,8 @@ import { ProcurementMasterDataController } from "./procurement-master-data.contr
 import { ProcurementMasterDataService } from "./procurement-master-data.service";
 import { PurchaseOrdersController } from "./purchase-orders.controller";
 import { PurchaseOrdersService } from "./purchase-orders.service";
+import { IncomingInspectionsController } from "./incoming-inspections.controller";
+import { IncomingInspectionsService } from "./incoming-inspections.service";
 
-@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, PurchaseOrdersController], providers: [ProcurementMasterDataService, PurchaseOrdersService], exports: [ProcurementMasterDataService, PurchaseOrdersService] })
+@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, PurchaseOrdersController, IncomingInspectionsController], providers: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService], exports: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService] })
 export class ProcurementModule {}
