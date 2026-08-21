@@ -39,10 +39,10 @@ export class EmployeeDailyReportsService {
     const current = await this.get(id);
     if (input.expected_version !== undefined && input.expected_version !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: current.version }] });
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
-    if (input.unit_price !== undefined && !input.price_override_reason?.trim()) throw new UnprocessableEntityException({ code: "PRICE_OVERRIDE_REASON_REQUIRED", message: "覆盖单价必须填写原因", details: [] });
+    if (input.unit_price?.trim() && !input.price_override_reason?.trim()) throw new UnprocessableEntityException({ code: "PRICE_OVERRIDE_REASON_REQUIRED", message: "覆盖单价必须填写原因", details: [] });
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true, input.wage_mode ?? current.wageMode);
     const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price, price_override_reason: input.price_override_reason ?? current.priceOverrideReason ?? undefined, remark: input.remark ?? current.remark ?? undefined };
-    const values = this.values(merged, input.unit_price !== undefined ? refs.rate?.unitPrice : undefined, current.unitPrice);
+    const values = this.values(merged, input.unit_price?.trim() ? refs.rate?.unitPrice : undefined, current.unitPrice);
     const updated = await this.prisma.$transaction(async (tx) => {
       const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, priceOverrideReason: merged.price_override_reason, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
       await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
@@ -93,11 +93,13 @@ export class EmployeeDailyReportsService {
   private values(input: Input, ratePrice?: Prisma.Decimal, existingPrice?: Prisma.Decimal) {
     if (input.wage_mode !== "piece_rate" && input.wage_mode !== "time_rate") throw new UnprocessableEntityException({ code: "INVALID_WAGE_MODE", message: "计薪方式无效", details: [] });
     const quantity = this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", "员工日报件数必须大于零");
-    const durationMinutes = input.duration_minutes === undefined ? undefined : this.decimal(input.duration_minutes, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须大于零");
+    const durationInput = input.duration_minutes?.trim() ? input.duration_minutes : undefined;
+    const durationMinutes = durationInput === undefined ? undefined : this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须大于零");
     if (input.wage_mode === "time_rate" && !durationMinutes) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长", details: [] });
-    const override = input.unit_price !== undefined;
+    const unitPriceInput = input.unit_price?.trim() ? input.unit_price : undefined;
+    const override = unitPriceInput !== undefined;
     if (override && !input.price_override_reason?.trim()) throw new UnprocessableEntityException({ code: "PRICE_OVERRIDE_REASON_REQUIRED", message: "覆盖单价必须填写原因", details: [] });
-    const price = input.unit_price !== undefined ? this.decimal(input.unit_price, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true) : ratePrice ?? existingPrice;
+    const price = unitPriceInput !== undefined ? this.decimal(unitPriceInput, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true) : ratePrice ?? existingPrice;
     if (!price) throw new UnprocessableEntityException({ code: "OPERATION_RATE_NOT_FOUND", message: "日报日期没有有效工序计价", details: [] });
     const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).mul(price);
     return { quantity, durationMinutes, unitPrice: price, amount };

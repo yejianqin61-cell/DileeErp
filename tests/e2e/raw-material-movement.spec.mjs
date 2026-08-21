@@ -70,7 +70,10 @@ test("warehouse.material_movement_workflow_tracks_issue_return_scrap_and_reversa
   await page.getByRole("button", { name: "查看影响预览" }).click();
   await expect(page.getByRole("heading", { name: "影响预览" })).toBeVisible();
   await expect(page.getByText("8", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "创建并过账" }).click();
+  await page.getByRole("button", { name: "创建领料草稿" }).click();
+  await expect(page.getByRole("status")).toContainText("领料草稿已创建");
+  const issueDraftRow = page.getByRole("row").filter({ hasText: orderNo }).filter({ hasText: "领料" }).first();
+  await issueDraftRow.getByRole("button", { name: "过账" }).click();
   await expect(page.getByRole("status")).toContainText("领料已过账");
 
   await page.locator('select[name="production_order_id"]').nth(1).selectOption({ label: `MO-${runId} / ${orderNo}` });
