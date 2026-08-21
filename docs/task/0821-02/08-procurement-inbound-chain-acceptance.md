@@ -2,12 +2,12 @@
 
 ## 状态
 
-待认领
+已完成
 
 ## 认领
 
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-21
 
 ## 目标
 
@@ -53,6 +53,6 @@
 
 ## 完成记录
 
-负责人：
-完成日期：
-验证：
+负责人：Codex
+完成日期：2026-08-21
+验证：Prisma validate、API/Web typecheck、API 测试 10 项通过；Web production build 使用 `NODE_OPTIONS=--max-old-space-size=4096` 通过。真实 PostgreSQL 迁移、seed、Cookie 登录和浏览器业务流因 Docker Hub 镜像网络阻断后置。
