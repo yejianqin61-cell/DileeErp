@@ -34,11 +34,12 @@
 ## 验收与验证
 
 1. 已验证：API build、Web build、全仓 typecheck、5 项 API 单元/契约测试全部通过。
-2. 已验证：API 可启动并正确映射认证、客户、销售单、BOM 路由；数据库不可用时 `/api/v1/health` 返回 `503 DEPENDENCY_UNAVAILABLE`。
-3. 已验证：浏览器打开 `/login`；未登录访问 `/` 自动跳转 `/login`；页面不再展示演示数据工作台。
-4. 待验证：真实 PostgreSQL 迁移、初始管理员 seed、登录 Cookie、客户创建、销售单创建/确认、BOM 创建和来源追踪。
-5. 阻断原因：Docker Desktop 已启动，但拉取 `postgres:16-alpine` 时 Docker Hub HTTPS 连接被当前网络代理阻断；本机没有可用 PostgreSQL/psql 服务。
-6. 所有发现的未确认业务规则进入 `docs/memo/`，不通过临时代码绕过。
+2. 已验证：Prisma schema 通过 `prisma validate`，已执行 `prisma format`，Prisma Client 生成成功。
+3. 已验证：API 可启动并正确映射认证、客户、销售单、BOM 路由；数据库不可用时 `/api/v1/health` 返回 `503 DEPENDENCY_UNAVAILABLE`。
+4. 已验证：浏览器打开 `/login`；未登录访问 `/` 自动跳转 `/login`；页面不再展示演示数据工作台。
+5. 待验证：真实 PostgreSQL 迁移、初始管理员 seed、登录 Cookie、客户创建、销售单创建/确认、BOM 创建和来源追踪。
+6. 阻断原因：Docker Desktop 已启动，但拉取 `postgres:16-alpine` 时 Docker Hub HTTPS 连接被当前网络代理阻断；本机没有可用 PostgreSQL/psql 服务。
+7. 所有发现的未确认业务规则进入 `docs/memo/`，不通过临时代码绕过。
 
 ## 完成记录
 
