@@ -5,6 +5,7 @@ import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.se
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
+import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
 import { ProductionMasterDataService } from "./production-master-data.service";
 
 class ActiveDto { @IsBoolean() is_active!: boolean; }
@@ -21,17 +22,17 @@ class RateDto { @IsUUID() employee_id!: string; @IsUUID() operation_id!: string;
 export class ProductionMasterDataController {
   constructor(private readonly service: ProductionMasterDataService) {}
   @Get("production/departments") departments() { return this.ok(this.service.listDepartments()); }
-  @Post("production/departments") createDepartment(@Body() body: DepartmentDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createDepartment(body, user)); }
-  @Patch("production/departments/:id") updateDepartment(@Param("id") id: string, @Body() body: Partial<DepartmentDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateDepartment(id, body, user)); }
-  @Patch("production/departments/:id/active") activeDepartment(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setDepartmentActive(id, body.is_active, user)); }
+  @Post("production/departments") @RequireAdministrator() createDepartment(@Body() body: DepartmentDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createDepartment(body, user)); }
+  @Patch("production/departments/:id") @RequireAdministrator() updateDepartment(@Param("id") id: string, @Body() body: Partial<DepartmentDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateDepartment(id, body, user)); }
+  @Patch("production/departments/:id/active") @RequireAdministrator() activeDepartment(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setDepartmentActive(id, body.is_active, user)); }
   @Get("production/positions") positions(@Query("department_id") departmentId?: string) { return this.ok(this.service.listPositions(departmentId)); }
-  @Post("production/positions") createPosition(@Body() body: PositionDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createPosition(body, user)); }
-  @Patch("production/positions/:id") updatePosition(@Param("id") id: string, @Body() body: Partial<PositionDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updatePosition(id, body, user)); }
-  @Patch("production/positions/:id/active") activePosition(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setPositionActive(id, body.is_active, user)); }
+  @Post("production/positions") @RequireAdministrator() createPosition(@Body() body: PositionDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createPosition(body, user)); }
+  @Patch("production/positions/:id") @RequireAdministrator() updatePosition(@Param("id") id: string, @Body() body: Partial<PositionDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updatePosition(id, body, user)); }
+  @Patch("production/positions/:id/active") @RequireAdministrator() activePosition(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setPositionActive(id, body.is_active, user)); }
   @Get("production/employees") employees() { return this.ok(this.service.listEmployees()); }
-  @Post("production/employees") createEmployee(@Body() body: EmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createEmployee(body, user)); }
-  @Patch("production/employees/:id") updateEmployee(@Param("id") id: string, @Body() body: Partial<EmployeeDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }
-  @Patch("production/employees/:id/active") activeEmployee(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeActive(id, body.is_active, user)); }
+  @Post("production/employees") @RequireAdministrator() createEmployee(@Body() body: EmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createEmployee(body, user)); }
+  @Patch("production/employees/:id") @RequireAdministrator() updateEmployee(@Param("id") id: string, @Body() body: Partial<EmployeeDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }
+  @Patch("production/employees/:id/active") @RequireAdministrator() activeEmployee(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeActive(id, body.is_active, user)); }
   @Get("production/locations") locations() { return this.ok(this.service.listLocations()); }
   @Post("production/locations") createLocation(@Body() body: LocationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createLocation(body, user)); }
   @Patch("production/locations/:id") updateLocation(@Param("id") id: string, @Body() body: Partial<LocationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateLocation(id, body, user)); }
