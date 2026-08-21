@@ -2,7 +2,7 @@
 
 ## 状态
 
-待开发
+已完成（2026-08-22）
 
 ## 目标
 
@@ -31,6 +31,14 @@
 2. 日报可追溯到订单号、生产单、工序任务、员工（适用时）和单价/金额快照。
 3. 告警持续业务键、薪资来源只读关系和必要索引可支持后续事务重算。
 4. 既有 D1-D4 schema、迁移和集成测试不回归。
+
+## 完成记录
+
+- 新增 `OperationDailyReport`、`EmployeeDailyReport`、`ProductionDailyAlert`、`ProductionPayrollSource` 四个 Prisma 模型；
+- 为生产单、生产单工序、员工和单位补充反向关系；
+- 新增迁移 `20260822120000_production_daily_reports_alerts_payroll_sources`，包含审计字段、软删除字段、订单号冗余追溯、复合唯一键、查询索引和外键；
+- 验证：`prisma format`、`prisma validate`、`prisma generate`、`npm run build --workspace=@dilee/api` 通过；
+- 独立 PostgreSQL 尚未启动，迁移部署留待 task 07 的测试数据库回归统一验证。
 
 ## 阻塞关系
 

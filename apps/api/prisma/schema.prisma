@@ -426,47 +426,48 @@ model BomItem {
 }
 
 model Unit {
-  id                  String               @id @default(uuid()) @db.Uuid
-  name                String               @unique @db.VarChar(30)
-  isActive            Boolean              @default(true) @map("is_active")
-  remark              String?              @db.VarChar(500)
-  createdAt           DateTime             @default(now()) @map("created_at")
-  updatedAt           DateTime             @updatedAt @map("updated_at")
-  createdBy           String               @map("created_by") @db.Uuid
-  updatedBy           String               @map("updated_by") @db.Uuid
-  deletedAt           DateTime?            @map("deleted_at")
-  deletedBy           String?              @map("deleted_by") @db.Uuid
-  materials           Material[]
-  bomItems            BomItem[]
-  purchaseOrderItems  PurchaseOrderItem[]
-  rawMaterialInbounds RawMaterialInbound[]
-  inventoryFacts      InventoryFact[]
-  rawMaterialMovementLines RawMaterialMovementLine[]
-  operationCatalogs   OperationCatalog[]
-  productionOrders    ProductionOrder[]
+  id                        String                     @id @default(uuid()) @db.Uuid
+  name                      String                     @unique @db.VarChar(30)
+  isActive                  Boolean                    @default(true) @map("is_active")
+  remark                    String?                    @db.VarChar(500)
+  createdAt                 DateTime                   @default(now()) @map("created_at")
+  updatedAt                 DateTime                   @updatedAt @map("updated_at")
+  createdBy                 String                     @map("created_by") @db.Uuid
+  updatedBy                 String                     @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                  @map("deleted_at")
+  deletedBy                 String?                    @map("deleted_by") @db.Uuid
+  materials                 Material[]
+  bomItems                  BomItem[]
+  purchaseOrderItems        PurchaseOrderItem[]
+  rawMaterialInbounds       RawMaterialInbound[]
+  inventoryFacts            InventoryFact[]
+  rawMaterialMovementLines  RawMaterialMovementLine[]
+  operationCatalogs         OperationCatalog[]
+  productionOrders          ProductionOrder[]
   productionOrderOperations ProductionOrderOperation[]
+  operationDailyReports     OperationDailyReport[]
 
   @@map("units")
 }
 
 model Material {
-  id                  String               @id @default(uuid()) @db.Uuid
-  materialCode        String               @unique @map("material_code") @db.VarChar(80)
-  name                String               @unique @db.VarChar(200)
-  defaultUnitId       String               @map("default_unit_id") @db.Uuid
-  isActive            Boolean              @default(true) @map("is_active")
-  remark              String?              @db.VarChar(1000)
-  createdAt           DateTime             @default(now()) @map("created_at")
-  updatedAt           DateTime             @updatedAt @map("updated_at")
-  createdBy           String               @map("created_by") @db.Uuid
-  updatedBy           String               @map("updated_by") @db.Uuid
-  deletedAt           DateTime?            @map("deleted_at")
-  deletedBy           String?              @map("deleted_by") @db.Uuid
-  defaultUnit         Unit                 @relation(fields: [defaultUnitId], references: [id])
-  bomItems            BomItem[]
-  purchaseOrderItems  PurchaseOrderItem[]
-  rawMaterialInbounds RawMaterialInbound[]
-  inventoryFacts      InventoryFact[]
+  id                       String                    @id @default(uuid()) @db.Uuid
+  materialCode             String                    @unique @map("material_code") @db.VarChar(80)
+  name                     String                    @unique @db.VarChar(200)
+  defaultUnitId            String                    @map("default_unit_id") @db.Uuid
+  isActive                 Boolean                   @default(true) @map("is_active")
+  remark                   String?                   @db.VarChar(1000)
+  createdAt                DateTime                  @default(now()) @map("created_at")
+  updatedAt                DateTime                  @updatedAt @map("updated_at")
+  createdBy                String                    @map("created_by") @db.Uuid
+  updatedBy                String                    @map("updated_by") @db.Uuid
+  deletedAt                DateTime?                 @map("deleted_at")
+  deletedBy                String?                   @map("deleted_by") @db.Uuid
+  defaultUnit              Unit                      @relation(fields: [defaultUnitId], references: [id])
+  bomItems                 BomItem[]
+  purchaseOrderItems       PurchaseOrderItem[]
+  rawMaterialInbounds      RawMaterialInbound[]
+  inventoryFacts           InventoryFact[]
   rawMaterialMovementLines RawMaterialMovementLine[]
 
   @@index([defaultUnitId])
@@ -652,25 +653,25 @@ model RawMaterialInbound {
 }
 
 model InventoryFact {
-  id                       String             @id @default(uuid()) @db.Uuid
-  rawMaterialInboundId     String?            @map("raw_material_inbound_id") @db.Uuid
-  materialId               String             @map("material_id") @db.Uuid
-  inventoryCategory        String             @map("inventory_category") @db.VarChar(30)
-  quantityDelta            Decimal            @map("quantity_delta") @db.Decimal(18, 4)
-  sourceType               String?            @map("source_type") @db.VarChar(50)
-  sourceId                 String?            @map("source_id") @db.Uuid
-  sourceVersion            String?            @map("source_version") @db.VarChar(50)
-  orderNo                  String?            @map("order_no") @db.VarChar(100)
-  productionOrderId        String?            @map("production_order_id") @db.Uuid
-  rawMaterialMovementLineId String?           @map("raw_material_movement_line_id") @db.Uuid
-  createdAt                DateTime           @default(now()) @map("created_at")
-  createdBy                String             @map("created_by") @db.Uuid
-  rawMaterialInbound       RawMaterialInbound? @relation(fields: [rawMaterialInboundId], references: [id])
-  material                 Material           @relation(fields: [materialId], references: [id])
-  productionOrder          ProductionOrder?   @relation(fields: [productionOrderId], references: [id])
-  rawMaterialMovementLine  RawMaterialMovementLine? @relation(fields: [rawMaterialMovementLineId], references: [id])
-  unit                     Unit               @relation(fields: [unitId], references: [id])
-  unitId                   String             @map("unit_id") @db.Uuid
+  id                        String                   @id @default(uuid()) @db.Uuid
+  rawMaterialInboundId      String?                  @map("raw_material_inbound_id") @db.Uuid
+  materialId                String                   @map("material_id") @db.Uuid
+  inventoryCategory         String                   @map("inventory_category") @db.VarChar(30)
+  quantityDelta             Decimal                  @map("quantity_delta") @db.Decimal(18, 4)
+  sourceType                String?                  @map("source_type") @db.VarChar(50)
+  sourceId                  String?                  @map("source_id") @db.Uuid
+  sourceVersion             String?                  @map("source_version") @db.VarChar(50)
+  orderNo                   String?                  @map("order_no") @db.VarChar(100)
+  productionOrderId         String?                  @map("production_order_id") @db.Uuid
+  rawMaterialMovementLineId String?                  @map("raw_material_movement_line_id") @db.Uuid
+  createdAt                 DateTime                 @default(now()) @map("created_at")
+  createdBy                 String                   @map("created_by") @db.Uuid
+  rawMaterialInbound        RawMaterialInbound?      @relation(fields: [rawMaterialInboundId], references: [id])
+  material                  Material                 @relation(fields: [materialId], references: [id])
+  productionOrder           ProductionOrder?         @relation(fields: [productionOrderId], references: [id])
+  rawMaterialMovementLine   RawMaterialMovementLine? @relation(fields: [rawMaterialMovementLineId], references: [id])
+  unit                      Unit                     @relation(fields: [unitId], references: [id])
+  unitId                    String                   @map("unit_id") @db.Uuid
 
   @@index([materialId, inventoryCategory, unitId])
   @@index([sourceType, sourceId])
@@ -708,43 +709,47 @@ model PayableSource {
 }
 
 model ProductionOrder {
-  id                      String    @id @default(uuid()) @db.Uuid
-  productionOrderNo       String    @unique @map("production_order_no") @db.VarChar(100)
-  orderNo                 String    @map("order_no") @db.VarChar(100)
-  salesOrderId            String    @map("sales_order_id") @db.Uuid
-  bomId                   String?   @map("bom_id") @db.Uuid
-  bomVersion              Int?      @map("bom_version")
-  bomSnapshot             Json?     @map("bom_snapshot")
-  productionOrderType     String    @default("standard") @map("production_order_type") @db.VarChar(30)
-  parentProductionOrderId String?   @map("parent_production_order_id") @db.Uuid
-  executionMode           String    @map("execution_mode") @db.VarChar(20)
-  executionLocationId     String    @map("execution_location_id") @db.Uuid
-  plannedQuantity         Decimal   @map("planned_quantity") @db.Decimal(18,4)
-  unitId                  String    @map("unit_id") @db.Uuid
-  productSpecification    String?   @map("product_specification") @db.VarChar(1000)
-  productionProcessNote   String?   @map("production_process_note") @db.VarChar(2000)
-  status                  String    @default("draft") @db.VarChar(30)
-  plannedStartedOn        DateTime? @map("planned_started_on") @db.Date
-  deliveryDueOn           DateTime? @map("delivery_due_on") @db.Date
-  startedOn               DateTime? @map("started_on") @db.Date
-  completedOn             DateTime? @map("completed_on") @db.Date
-  actualCompletedQuantity Decimal?  @map("actual_completed_quantity") @db.Decimal(18,4)
-  remark                  String?   @db.VarChar(1000)
-  createdAt               DateTime  @default(now()) @map("created_at")
-  updatedAt               DateTime  @updatedAt @map("updated_at")
-  createdBy               String    @map("created_by") @db.Uuid
-  updatedBy               String    @map("updated_by") @db.Uuid
-  deletedAt               DateTime? @map("deleted_at")
-  deletedBy               String?   @map("deleted_by") @db.Uuid
-  salesOrder              SalesOrder @relation(fields: [salesOrderId], references: [id])
-  bom                     Bom?      @relation(fields: [bomId], references: [id])
-  parent                  ProductionOrder? @relation("production_order_parent", fields: [parentProductionOrderId], references: [id])
-  children                ProductionOrder[] @relation("production_order_parent")
-  executionLocation       ProductionLocation @relation(fields: [executionLocationId], references: [id])
-  unit                    Unit      @relation(fields: [unitId], references: [id])
+  id                      String                     @id @default(uuid()) @db.Uuid
+  productionOrderNo       String                     @unique @map("production_order_no") @db.VarChar(100)
+  orderNo                 String                     @map("order_no") @db.VarChar(100)
+  salesOrderId            String                     @map("sales_order_id") @db.Uuid
+  bomId                   String?                    @map("bom_id") @db.Uuid
+  bomVersion              Int?                       @map("bom_version")
+  bomSnapshot             Json?                      @map("bom_snapshot")
+  productionOrderType     String                     @default("standard") @map("production_order_type") @db.VarChar(30)
+  parentProductionOrderId String?                    @map("parent_production_order_id") @db.Uuid
+  executionMode           String                     @map("execution_mode") @db.VarChar(20)
+  executionLocationId     String                     @map("execution_location_id") @db.Uuid
+  plannedQuantity         Decimal                    @map("planned_quantity") @db.Decimal(18, 4)
+  unitId                  String                     @map("unit_id") @db.Uuid
+  productSpecification    String?                    @map("product_specification") @db.VarChar(1000)
+  productionProcessNote   String?                    @map("production_process_note") @db.VarChar(2000)
+  status                  String                     @default("draft") @db.VarChar(30)
+  plannedStartedOn        DateTime?                  @map("planned_started_on") @db.Date
+  deliveryDueOn           DateTime?                  @map("delivery_due_on") @db.Date
+  startedOn               DateTime?                  @map("started_on") @db.Date
+  completedOn             DateTime?                  @map("completed_on") @db.Date
+  actualCompletedQuantity Decimal?                   @map("actual_completed_quantity") @db.Decimal(18, 4)
+  remark                  String?                    @db.VarChar(1000)
+  createdAt               DateTime                   @default(now()) @map("created_at")
+  updatedAt               DateTime                   @updatedAt @map("updated_at")
+  createdBy               String                     @map("created_by") @db.Uuid
+  updatedBy               String                     @map("updated_by") @db.Uuid
+  deletedAt               DateTime?                  @map("deleted_at")
+  deletedBy               String?                    @map("deleted_by") @db.Uuid
+  salesOrder              SalesOrder                 @relation(fields: [salesOrderId], references: [id])
+  bom                     Bom?                       @relation(fields: [bomId], references: [id])
+  parent                  ProductionOrder?           @relation("production_order_parent", fields: [parentProductionOrderId], references: [id])
+  children                ProductionOrder[]          @relation("production_order_parent")
+  executionLocation       ProductionLocation         @relation(fields: [executionLocationId], references: [id])
+  unit                    Unit                       @relation(fields: [unitId], references: [id])
   operations              ProductionOrderOperation[]
   inventoryFacts          InventoryFact[]
   rawMaterialMovements    RawMaterialMovement[]
+  operationDailyReports   OperationDailyReport[]
+  employeeDailyReports    EmployeeDailyReport[]
+  productionDailyAlerts   ProductionDailyAlert[]
+  payrollSources          ProductionPayrollSource[]
 
   @@index([orderNo, status])
   @@index([salesOrderId, productionOrderType])
@@ -752,23 +757,23 @@ model ProductionOrder {
 }
 
 model RawMaterialMovement {
-  id                String                   @id @default(uuid()) @db.Uuid
-  movementNo        String                   @unique @map("movement_no") @db.VarChar(100)
-  documentType      String                   @default("issue") @map("document_type") @db.VarChar(30)
-  status            String                   @default("draft") @db.VarChar(30)
-  productionOrderId String                   @map("production_order_id") @db.Uuid
-  orderNo           String                   @map("order_no") @db.VarChar(100)
-  businessDate      DateTime                 @map("business_date") @db.Date
-  reason            String?                  @db.VarChar(1000)
-  remark            String?                  @db.VarChar(1000)
-  idempotencyKey    String                   @unique @map("idempotency_key") @db.VarChar(200)
-  createdAt         DateTime                 @default(now()) @map("created_at")
-  updatedAt         DateTime                 @updatedAt @map("updated_at")
-  createdBy         String                   @map("created_by") @db.Uuid
-  updatedBy         String                   @map("updated_by") @db.Uuid
-  deletedAt         DateTime?                @map("deleted_at")
-  deletedBy         String?                  @map("deleted_by") @db.Uuid
-  productionOrder   ProductionOrder          @relation(fields: [productionOrderId], references: [id])
+  id                String                    @id @default(uuid()) @db.Uuid
+  movementNo        String                    @unique @map("movement_no") @db.VarChar(100)
+  documentType      String                    @default("issue") @map("document_type") @db.VarChar(30)
+  status            String                    @default("draft") @db.VarChar(30)
+  productionOrderId String                    @map("production_order_id") @db.Uuid
+  orderNo           String                    @map("order_no") @db.VarChar(100)
+  businessDate      DateTime                  @map("business_date") @db.Date
+  reason            String?                   @db.VarChar(1000)
+  remark            String?                   @db.VarChar(1000)
+  idempotencyKey    String                    @unique @map("idempotency_key") @db.VarChar(200)
+  createdAt         DateTime                  @default(now()) @map("created_at")
+  updatedAt         DateTime                  @updatedAt @map("updated_at")
+  createdBy         String                    @map("created_by") @db.Uuid
+  updatedBy         String                    @map("updated_by") @db.Uuid
+  deletedAt         DateTime?                 @map("deleted_at")
+  deletedBy         String?                   @map("deleted_by") @db.Uuid
+  productionOrder   ProductionOrder           @relation(fields: [productionOrderId], references: [id])
   lines             RawMaterialMovementLine[]
   risks             RawMaterialMovementRisk[]
 
@@ -778,27 +783,27 @@ model RawMaterialMovement {
 }
 
 model RawMaterialMovementLine {
-  id                    String                   @id @default(uuid()) @db.Uuid
-  movementId            String                   @map("movement_id") @db.Uuid
-  materialId            String                   @map("material_id") @db.Uuid
-  unitId                String                   @map("unit_id") @db.Uuid
-  quantity              Decimal                  @db.Decimal(18, 4)
-  bomReferenceQuantity  Decimal?                 @map("bom_reference_quantity") @db.Decimal(18, 4)
-  sourceIssueLineId     String?                  @map("source_issue_line_id") @db.Uuid
-  remark                String?                  @db.VarChar(1000)
-  createdAt             DateTime                 @default(now()) @map("created_at")
-  updatedAt             DateTime                 @updatedAt @map("updated_at")
-  createdBy             String                   @map("created_by") @db.Uuid
-  updatedBy             String                   @map("updated_by") @db.Uuid
-  deletedAt             DateTime?                @map("deleted_at")
-  deletedBy             String?                  @map("deleted_by") @db.Uuid
-  movement              RawMaterialMovement      @relation(fields: [movementId], references: [id])
-  material              Material                 @relation(fields: [materialId], references: [id])
-  unit                  Unit                     @relation(fields: [unitId], references: [id])
-  sourceIssueLine       RawMaterialMovementLine? @relation("raw_material_movement_source_issue", fields: [sourceIssueLineId], references: [id])
-  derivedLines          RawMaterialMovementLine[] @relation("raw_material_movement_source_issue")
-  inventoryFacts        InventoryFact[]
-  risks                 RawMaterialMovementRisk[]
+  id                   String                    @id @default(uuid()) @db.Uuid
+  movementId           String                    @map("movement_id") @db.Uuid
+  materialId           String                    @map("material_id") @db.Uuid
+  unitId               String                    @map("unit_id") @db.Uuid
+  quantity             Decimal                   @db.Decimal(18, 4)
+  bomReferenceQuantity Decimal?                  @map("bom_reference_quantity") @db.Decimal(18, 4)
+  sourceIssueLineId    String?                   @map("source_issue_line_id") @db.Uuid
+  remark               String?                   @db.VarChar(1000)
+  createdAt            DateTime                  @default(now()) @map("created_at")
+  updatedAt            DateTime                  @updatedAt @map("updated_at")
+  createdBy            String                    @map("created_by") @db.Uuid
+  updatedBy            String                    @map("updated_by") @db.Uuid
+  deletedAt            DateTime?                 @map("deleted_at")
+  deletedBy            String?                   @map("deleted_by") @db.Uuid
+  movement             RawMaterialMovement       @relation(fields: [movementId], references: [id])
+  material             Material                  @relation(fields: [materialId], references: [id])
+  unit                 Unit                      @relation(fields: [unitId], references: [id])
+  sourceIssueLine      RawMaterialMovementLine?  @relation("raw_material_movement_source_issue", fields: [sourceIssueLineId], references: [id])
+  derivedLines         RawMaterialMovementLine[] @relation("raw_material_movement_source_issue")
+  inventoryFacts       InventoryFact[]
+  risks                RawMaterialMovementRisk[]
 
   @@index([movementId])
   @@index([materialId, unitId])
@@ -806,46 +811,49 @@ model RawMaterialMovementLine {
 }
 
 model RawMaterialMovementRisk {
-  id                String                   @id @default(uuid()) @db.Uuid
-  movementId        String                   @map("movement_id") @db.Uuid
-  lineId            String?                  @map("line_id") @db.Uuid
-  riskType          String                   @map("risk_type") @db.VarChar(50)
-  context           Json                     @default("{}")
-  reason            String                   @db.VarChar(1000)
-  confirmedBy       String                   @map("confirmed_by") @db.Uuid
-  confirmedAt       DateTime                 @default(now()) @map("confirmed_at")
-  createdAt         DateTime                 @default(now()) @map("created_at")
-  updatedAt         DateTime                 @updatedAt @map("updated_at")
-  createdBy         String                   @map("created_by") @db.Uuid
-  updatedBy         String                   @map("updated_by") @db.Uuid
-  deletedAt         DateTime?                @map("deleted_at")
-  deletedBy         String?                  @map("deleted_by") @db.Uuid
-  movement          RawMaterialMovement      @relation(fields: [movementId], references: [id])
-  line              RawMaterialMovementLine? @relation(fields: [lineId], references: [id])
+  id          String                   @id @default(uuid()) @db.Uuid
+  movementId  String                   @map("movement_id") @db.Uuid
+  lineId      String?                  @map("line_id") @db.Uuid
+  riskType    String                   @map("risk_type") @db.VarChar(50)
+  context     Json                     @default("{}")
+  reason      String                   @db.VarChar(1000)
+  confirmedBy String                   @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime                 @default(now()) @map("confirmed_at")
+  createdAt   DateTime                 @default(now()) @map("created_at")
+  updatedAt   DateTime                 @updatedAt @map("updated_at")
+  createdBy   String                   @map("created_by") @db.Uuid
+  updatedBy   String                   @map("updated_by") @db.Uuid
+  deletedAt   DateTime?                @map("deleted_at")
+  deletedBy   String?                  @map("deleted_by") @db.Uuid
+  movement    RawMaterialMovement      @relation(fields: [movementId], references: [id])
+  line        RawMaterialMovementLine? @relation(fields: [lineId], references: [id])
 
   @@index([movementId, riskType])
   @@map("raw_material_movement_risks")
 }
 
 model ProductionOrderOperation {
-  id                   String          @id @default(uuid()) @db.Uuid
-  productionOrderId    String          @map("production_order_id") @db.Uuid
-  operationCatalogId   String          @map("operation_catalog_id") @db.Uuid
-  operationNameSnapshot String         @map("operation_name_snapshot") @db.VarChar(150)
-  unitId               String          @map("unit_id") @db.Uuid
-  sequenceNo           Int             @map("sequence_no")
-  targetQuantity       Decimal         @map("target_quantity") @db.Decimal(18,4)
-  status               String          @default("active") @db.VarChar(20)
-  cancellationReason   String?         @map("cancellation_reason") @db.VarChar(500)
-  createdAt            DateTime        @default(now()) @map("created_at")
-  updatedAt            DateTime        @updatedAt @map("updated_at")
-  createdBy            String          @map("created_by") @db.Uuid
-  updatedBy            String          @map("updated_by") @db.Uuid
-  deletedAt            DateTime?       @map("deleted_at")
-  deletedBy            String?         @map("deleted_by") @db.Uuid
-  productionOrder      ProductionOrder @relation(fields: [productionOrderId], references: [id])
-  operationCatalog     OperationCatalog @relation(fields: [operationCatalogId], references: [id])
-  unit                 Unit            @relation(fields: [unitId], references: [id])
+  id                    String                 @id @default(uuid()) @db.Uuid
+  productionOrderId     String                 @map("production_order_id") @db.Uuid
+  operationCatalogId    String                 @map("operation_catalog_id") @db.Uuid
+  operationNameSnapshot String                 @map("operation_name_snapshot") @db.VarChar(150)
+  unitId                String                 @map("unit_id") @db.Uuid
+  sequenceNo            Int                    @map("sequence_no")
+  targetQuantity        Decimal                @map("target_quantity") @db.Decimal(18, 4)
+  status                String                 @default("active") @db.VarChar(20)
+  cancellationReason    String?                @map("cancellation_reason") @db.VarChar(500)
+  createdAt             DateTime               @default(now()) @map("created_at")
+  updatedAt             DateTime               @updatedAt @map("updated_at")
+  createdBy             String                 @map("created_by") @db.Uuid
+  updatedBy             String                 @map("updated_by") @db.Uuid
+  deletedAt             DateTime?              @map("deleted_at")
+  deletedBy             String?                @map("deleted_by") @db.Uuid
+  productionOrder       ProductionOrder        @relation(fields: [productionOrderId], references: [id])
+  operationCatalog      OperationCatalog       @relation(fields: [operationCatalogId], references: [id])
+  unit                  Unit                   @relation(fields: [unitId], references: [id])
+  operationDailyReports OperationDailyReport[]
+  employeeDailyReports  EmployeeDailyReport[]
+  productionDailyAlerts ProductionDailyAlert[]
 
   @@unique([productionOrderId, sequenceNo])
   @@index([productionOrderId, status])
@@ -853,19 +861,19 @@ model ProductionOrderOperation {
 }
 
 model Department {
-  id          String     @id @default(uuid()) @db.Uuid
-  code        String     @unique @db.VarChar(80)
-  name        String     @unique @db.VarChar(100)
-  isActive    Boolean    @default(true) @map("is_active")
-  remark      String?    @db.VarChar(500)
-  createdAt   DateTime   @default(now()) @map("created_at")
-  updatedAt   DateTime   @updatedAt @map("updated_at")
-  createdBy   String     @map("created_by") @db.Uuid
-  updatedBy   String     @map("updated_by") @db.Uuid
-  deletedAt   DateTime?  @map("deleted_at")
-  deletedBy   String?    @map("deleted_by") @db.Uuid
-  positions   Position[]
-  employees   Employee[]
+  id        String     @id @default(uuid()) @db.Uuid
+  code      String     @unique @db.VarChar(80)
+  name      String     @unique @db.VarChar(100)
+  isActive  Boolean    @default(true) @map("is_active")
+  remark    String?    @db.VarChar(500)
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+  createdBy String     @map("created_by") @db.Uuid
+  updatedBy String     @map("updated_by") @db.Uuid
+  deletedAt DateTime?  @map("deleted_at")
+  deletedBy String?    @map("deleted_by") @db.Uuid
+  positions Position[]
+  employees Employee[]
 
   @@map("departments")
 }
@@ -892,26 +900,28 @@ model Position {
 }
 
 model Employee {
-  id             String     @id @default(uuid()) @db.Uuid
-  employeeNo     String     @unique @map("employee_no") @db.VarChar(80)
-  name           String     @db.VarChar(100)
-  departmentId   String     @map("department_id") @db.Uuid
-  positionId     String     @map("position_id") @db.Uuid
-  employeeType   String     @map("employee_type") @db.VarChar(40)
-  employmentStatus String   @default("active") @map("employment_status") @db.VarChar(30)
-  userId         String?    @map("user_id") @db.Uuid
-  hiredOn       DateTime?   @map("hired_on") @db.Date
-  leftOn        DateTime?   @map("left_on") @db.Date
-  remark         String?    @db.VarChar(500)
-  createdAt      DateTime   @default(now()) @map("created_at")
-  updatedAt      DateTime   @updatedAt @map("updated_at")
-  createdBy      String     @map("created_by") @db.Uuid
-  updatedBy      String     @map("updated_by") @db.Uuid
-  deletedAt      DateTime?  @map("deleted_at")
-  deletedBy      String?    @map("deleted_by") @db.Uuid
-  department     Department @relation(fields: [departmentId], references: [id])
-  position       Position   @relation(fields: [positionId], references: [id])
-  operationRates OperationRate[]
+  id               String                    @id @default(uuid()) @db.Uuid
+  employeeNo       String                    @unique @map("employee_no") @db.VarChar(80)
+  name             String                    @db.VarChar(100)
+  departmentId     String                    @map("department_id") @db.Uuid
+  positionId       String                    @map("position_id") @db.Uuid
+  employeeType     String                    @map("employee_type") @db.VarChar(40)
+  employmentStatus String                    @default("active") @map("employment_status") @db.VarChar(30)
+  userId           String?                   @map("user_id") @db.Uuid
+  hiredOn          DateTime?                 @map("hired_on") @db.Date
+  leftOn           DateTime?                 @map("left_on") @db.Date
+  remark           String?                   @db.VarChar(500)
+  createdAt        DateTime                  @default(now()) @map("created_at")
+  updatedAt        DateTime                  @updatedAt @map("updated_at")
+  createdBy        String                    @map("created_by") @db.Uuid
+  updatedBy        String                    @map("updated_by") @db.Uuid
+  deletedAt        DateTime?                 @map("deleted_at")
+  deletedBy        String?                   @map("deleted_by") @db.Uuid
+  department       Department                @relation(fields: [departmentId], references: [id])
+  position         Position                  @relation(fields: [positionId], references: [id])
+  operationRates   OperationRate[]
+  dailyReports     EmployeeDailyReport[]
+  payrollSources   ProductionPayrollSource[]
 
   @@index([departmentId, employmentStatus])
   @@index([positionId, employmentStatus])
@@ -919,20 +929,20 @@ model Employee {
 }
 
 model ProductionLocation {
-  id           String    @id @default(uuid()) @db.Uuid
-  name         String    @db.VarChar(150)
-  locationType String    @map("location_type") @db.VarChar(30)
-  contactName  String?   @map("contact_name") @db.VarChar(100)
-  contactPhone String?   @map("contact_phone") @db.VarChar(50)
-  address      String?   @db.VarChar(500)
-  isActive     Boolean   @default(true) @map("is_active")
-  remark       String?   @db.VarChar(500)
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
-  createdBy    String    @map("created_by") @db.Uuid
-  updatedBy    String    @map("updated_by") @db.Uuid
-  deletedAt    DateTime? @map("deleted_at")
-  deletedBy    String?   @map("deleted_by") @db.Uuid
+  id               String            @id @default(uuid()) @db.Uuid
+  name             String            @db.VarChar(150)
+  locationType     String            @map("location_type") @db.VarChar(30)
+  contactName      String?           @map("contact_name") @db.VarChar(100)
+  contactPhone     String?           @map("contact_phone") @db.VarChar(50)
+  address          String?           @db.VarChar(500)
+  isActive         Boolean           @default(true) @map("is_active")
+  remark           String?           @db.VarChar(500)
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  createdBy        String            @map("created_by") @db.Uuid
+  updatedBy        String            @map("updated_by") @db.Uuid
+  deletedAt        DateTime?         @map("deleted_at")
+  deletedBy        String?           @map("deleted_by") @db.Uuid
   productionOrders ProductionOrder[]
 
   @@unique([name, locationType])
@@ -941,43 +951,165 @@ model ProductionLocation {
 }
 
 model OperationCatalog {
-  id             String              @id @default(uuid()) @db.Uuid
-  operationCode  String?             @unique @map("operation_code") @db.VarChar(80)
-  operationName  String              @map("operation_name") @db.VarChar(150)
-  defaultUnitId  String?             @map("default_unit_id") @db.Uuid
-  isActive       Boolean             @default(true) @map("is_active")
-  remark         String?             @db.VarChar(500)
-  createdAt      DateTime            @default(now()) @map("created_at")
-  updatedAt      DateTime            @updatedAt @map("updated_at")
-  createdBy      String              @map("created_by") @db.Uuid
-  updatedBy      String              @map("updated_by") @db.Uuid
-  deletedAt      DateTime?           @map("deleted_at")
-  deletedBy      String?             @map("deleted_by") @db.Uuid
-  defaultUnit    Unit?               @relation(fields: [defaultUnitId], references: [id])
-  rates          OperationRate[]
+  id                        String                     @id @default(uuid()) @db.Uuid
+  operationCode             String?                    @unique @map("operation_code") @db.VarChar(80)
+  operationName             String                     @map("operation_name") @db.VarChar(150)
+  defaultUnitId             String?                    @map("default_unit_id") @db.Uuid
+  isActive                  Boolean                    @default(true) @map("is_active")
+  remark                    String?                    @db.VarChar(500)
+  createdAt                 DateTime                   @default(now()) @map("created_at")
+  updatedAt                 DateTime                   @updatedAt @map("updated_at")
+  createdBy                 String                     @map("created_by") @db.Uuid
+  updatedBy                 String                     @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                  @map("deleted_at")
+  deletedBy                 String?                    @map("deleted_by") @db.Uuid
+  defaultUnit               Unit?                      @relation(fields: [defaultUnitId], references: [id])
+  rates                     OperationRate[]
   productionOrderOperations ProductionOrderOperation[]
 
   @@map("operation_catalogs")
 }
 
 model OperationRate {
-  id             String           @id @default(uuid()) @db.Uuid
-  employeeId     String           @map("employee_id") @db.Uuid
-  operationId    String           @map("operation_id") @db.Uuid
-  wageMode       String           @map("wage_mode") @db.VarChar(20)
-  unitPrice      Decimal          @map("unit_price") @db.Decimal(18, 4)
-  effectiveFrom  DateTime         @map("effective_from") @db.Date
-  effectiveTo    DateTime?        @map("effective_to") @db.Date
-  remark         String?          @db.VarChar(500)
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
-  createdBy      String           @map("created_by") @db.Uuid
-  updatedBy      String           @map("updated_by") @db.Uuid
-  deletedAt      DateTime?        @map("deleted_at")
-  deletedBy      String?          @map("deleted_by") @db.Uuid
-  employee       Employee         @relation(fields: [employeeId], references: [id])
-  operation      OperationCatalog @relation(fields: [operationId], references: [id])
+  id            String           @id @default(uuid()) @db.Uuid
+  employeeId    String           @map("employee_id") @db.Uuid
+  operationId   String           @map("operation_id") @db.Uuid
+  wageMode      String           @map("wage_mode") @db.VarChar(20)
+  unitPrice     Decimal          @map("unit_price") @db.Decimal(18, 4)
+  effectiveFrom DateTime         @map("effective_from") @db.Date
+  effectiveTo   DateTime?        @map("effective_to") @db.Date
+  remark        String?          @db.VarChar(500)
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+  createdBy     String           @map("created_by") @db.Uuid
+  updatedBy     String           @map("updated_by") @db.Uuid
+  deletedAt     DateTime?        @map("deleted_at")
+  deletedBy     String?          @map("deleted_by") @db.Uuid
+  employee      Employee         @relation(fields: [employeeId], references: [id])
+  operation     OperationCatalog @relation(fields: [operationId], references: [id])
 
   @@index([employeeId, operationId, wageMode, effectiveFrom])
   @@map("operation_rates")
+}
+
+model OperationDailyReport {
+  id                         String                   @id @default(uuid()) @db.Uuid
+  productionOrderId          String                   @map("production_order_id") @db.Uuid
+  productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
+  orderNo                    String                   @map("order_no") @db.VarChar(100)
+  productionOrderNoSnapshot  String                   @map("production_order_no_snapshot") @db.VarChar(100)
+  operationNameSnapshot      String                   @map("operation_name_snapshot") @db.VarChar(150)
+  unitId                     String                   @map("unit_id") @db.Uuid
+  reportDate                 DateTime                 @map("report_date") @db.Date
+  completedQuantity          Decimal                  @map("completed_quantity") @db.Decimal(18, 4)
+  remark                     String?                  @db.VarChar(1000)
+  createdAt                  DateTime                 @default(now()) @map("created_at")
+  updatedAt                  DateTime                 @updatedAt @map("updated_at")
+  createdBy                  String                   @map("created_by") @db.Uuid
+  updatedBy                  String                   @map("updated_by") @db.Uuid
+  deletedAt                  DateTime?                @map("deleted_at")
+  deletedBy                  String?                  @map("deleted_by") @db.Uuid
+  productionOrder            ProductionOrder          @relation(fields: [productionOrderId], references: [id])
+  productionOrderOperation   ProductionOrderOperation @relation(fields: [productionOrderOperationId], references: [id])
+  unit                       Unit                     @relation(fields: [unitId], references: [id])
+
+  @@index([productionOrderId, reportDate])
+  @@index([productionOrderOperationId, reportDate])
+  @@index([orderNo, reportDate])
+  @@map("operation_daily_reports")
+}
+
+model EmployeeDailyReport {
+  id                         String                   @id @default(uuid()) @db.Uuid
+  productionOrderId          String                   @map("production_order_id") @db.Uuid
+  productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
+  employeeId                 String                   @map("employee_id") @db.Uuid
+  orderNo                    String                   @map("order_no") @db.VarChar(100)
+  productionOrderNoSnapshot  String                   @map("production_order_no_snapshot") @db.VarChar(100)
+  operationNameSnapshot      String                   @map("operation_name_snapshot") @db.VarChar(150)
+  employeeNameSnapshot       String                   @map("employee_name_snapshot") @db.VarChar(100)
+  reportDate                 DateTime                 @map("report_date") @db.Date
+  wageMode                   String                   @map("wage_mode") @db.VarChar(20)
+  quantity                   Decimal                  @db.Decimal(18, 4)
+  durationMinutes            Decimal?                 @map("duration_minutes") @db.Decimal(18, 4)
+  unitPrice                  Decimal                  @map("unit_price") @db.Decimal(18, 4)
+  calculatedAmount           Decimal                  @map("calculated_amount") @db.Decimal(18, 4)
+  priceOverrideReason        String?                  @map("price_override_reason") @db.VarChar(1000)
+  remark                     String?                  @db.VarChar(1000)
+  createdAt                  DateTime                 @default(now()) @map("created_at")
+  updatedAt                  DateTime                 @updatedAt @map("updated_at")
+  createdBy                  String                   @map("created_by") @db.Uuid
+  updatedBy                  String                   @map("updated_by") @db.Uuid
+  deletedAt                  DateTime?                @map("deleted_at")
+  deletedBy                  String?                  @map("deleted_by") @db.Uuid
+  productionOrder            ProductionOrder          @relation(fields: [productionOrderId], references: [id])
+  productionOrderOperation   ProductionOrderOperation @relation(fields: [productionOrderOperationId], references: [id])
+  employee                   Employee                 @relation(fields: [employeeId], references: [id])
+
+  @@index([productionOrderId, reportDate])
+  @@index([productionOrderOperationId, reportDate])
+  @@index([employeeId, reportDate])
+  @@index([orderNo, reportDate])
+  @@map("employee_daily_reports")
+}
+
+model ProductionDailyAlert {
+  id                         String                   @id @default(uuid()) @db.Uuid
+  alertType                  String                   @map("alert_type") @db.VarChar(40)
+  productionOrderId          String                   @map("production_order_id") @db.Uuid
+  productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
+  orderNo                    String                   @map("order_no") @db.VarChar(100)
+  reportDate                 DateTime                 @map("report_date") @db.Date
+  status                     String                   @default("pending") @db.VarChar(20)
+  targetQuantity             Decimal?                 @map("target_quantity") @db.Decimal(18, 4)
+  operationReportQuantity    Decimal?                 @map("operation_report_quantity") @db.Decimal(18, 4)
+  employeeReportQuantity     Decimal?                 @map("employee_report_quantity") @db.Decimal(18, 4)
+  discrepancyQuantity        Decimal?                 @map("discrepancy_quantity") @db.Decimal(18, 4)
+  cumulativeQuantity         Decimal?                 @map("cumulative_quantity") @db.Decimal(18, 4)
+  overOrderQuantity          Decimal?                 @map("over_order_quantity") @db.Decimal(18, 4)
+  confirmRemark              String?                  @map("confirm_remark") @db.VarChar(1000)
+  confirmedBy                String?                  @map("confirmed_by") @db.Uuid
+  confirmedAt                DateTime?                @map("confirmed_at")
+  recoveredAt                DateTime?                @map("recovered_at")
+  createdAt                  DateTime                 @default(now()) @map("created_at")
+  updatedAt                  DateTime                 @updatedAt @map("updated_at")
+  createdBy                  String                   @map("created_by") @db.Uuid
+  updatedBy                  String                   @map("updated_by") @db.Uuid
+  deletedAt                  DateTime?                @map("deleted_at")
+  deletedBy                  String?                  @map("deleted_by") @db.Uuid
+  productionOrder            ProductionOrder          @relation(fields: [productionOrderId], references: [id])
+  productionOrderOperation   ProductionOrderOperation @relation(fields: [productionOrderOperationId], references: [id])
+
+  @@unique([productionOrderOperationId, reportDate, alertType])
+  @@index([productionOrderId, status])
+  @@index([orderNo, reportDate])
+  @@map("production_daily_alerts")
+}
+
+model ProductionPayrollSource {
+  id                String           @id @default(uuid()) @db.Uuid
+  employeeId        String           @map("employee_id") @db.Uuid
+  productionOrderId String?          @map("production_order_id") @db.Uuid
+  orderNo           String?          @map("order_no") @db.VarChar(100)
+  periodStart       DateTime         @map("period_start") @db.Date
+  periodEnd         DateTime         @map("period_end") @db.Date
+  wageMode          String           @map("wage_mode") @db.VarChar(20)
+  quantity          Decimal          @db.Decimal(18, 4)
+  durationMinutes   Decimal          @map("duration_minutes") @db.Decimal(18, 4)
+  amount            Decimal          @db.Decimal(18, 4)
+  sourceSnapshot    Json             @map("source_snapshot")
+  remark            String?          @db.VarChar(1000)
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  createdBy         String           @map("created_by") @db.Uuid
+  updatedBy         String           @map("updated_by") @db.Uuid
+  deletedAt         DateTime?        @map("deleted_at")
+  deletedBy         String?          @map("deleted_by") @db.Uuid
+  employee          Employee         @relation(fields: [employeeId], references: [id])
+  productionOrder   ProductionOrder? @relation(fields: [productionOrderId], references: [id])
+
+  @@unique([employeeId, productionOrderId, periodStart, periodEnd, wageMode])
+  @@index([employeeId, periodStart, periodEnd])
+  @@index([orderNo, periodStart, periodEnd])
+  @@map("production_payroll_sources")
 }
