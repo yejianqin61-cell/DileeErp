@@ -8,6 +8,8 @@ import { InventoryService } from "../../platform/inventory/inventory.service";
 
 type IssueLineInput = { material_id: string; quantity: string; remark?: string };
 type IssueInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: IssueLineInput[] };
+type DerivedLineInput = { source_issue_line_id: string; quantity: string; remark?: string };
+type DerivedInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: DerivedLineInput[] };
 
 @Injectable()
 export class RawMaterialMovementsService {
@@ -15,7 +17,7 @@ export class RawMaterialMovementsService {
 
   async list(orderNo?: string) {
     return this.prisma.rawMaterialMovement.findMany({
-      where: { deletedAt: null, documentType: "issue", ...(orderNo ? { orderNo } : {}) },
+      where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) },
       include: { productionOrder: true, lines: { include: { material: true, unit: true, risks: true } }, risks: true },
       orderBy: { createdAt: "desc" }
     });
@@ -23,7 +25,7 @@ export class RawMaterialMovementsService {
 
   async get(id: string) {
     const movement = await this.prisma.rawMaterialMovement.findFirst({
-      where: { id, deletedAt: null, documentType: "issue" },
+      where: { id, deletedAt: null },
       include: { productionOrder: { include: { executionLocation: true } }, lines: { where: { deletedAt: null }, include: { material: true, unit: true, risks: true } }, risks: true }
     });
     if (!movement) throw new NotFoundException({ code: "MATERIAL_MOVEMENT_NOT_FOUND", message: "原料领料单不存在", details: [] });
@@ -56,6 +58,9 @@ export class RawMaterialMovementsService {
     await this.audit.record("raw_material_movement.create", "raw_material_movement", user.id, movement.id, { order_no: order.orderNo, production_order_id: order.id, document_type: "issue" });
     return movement;
   }
+
+  async createReturn(input: DerivedInput, user: CurrentUser) { return this.createDerived("return", input, user); }
+  async createScrap(input: DerivedInput, user: CurrentUser) { return this.createDerived("scrap", input, user); }
 
   async updateIssue(id: string, input: Partial<IssueInput>, user: CurrentUser) {
     const movement = await this.get(id);
@@ -98,6 +103,7 @@ export class RawMaterialMovementsService {
   async postIssue(id: string, idempotencyKey: string, user: CurrentUser) {
     if (!idempotencyKey?.trim()) throw new UnprocessableEntityException({ code: "IDEMPOTENCY_KEY_REQUIRED", message: "领料过账必须提供幂等键", details: [] });
     const movement = await this.get(id);
+    if (movement.documentType !== "issue") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: "该单据不是领料单", details: [] });
     if (movement.status === "posted" && movement.idempotencyKey === idempotencyKey) return movement;
     if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有草稿领料单可以过账", details: [] });
     const order = await this.requireInHouseOrder(movement.productionOrderId);
@@ -129,6 +135,78 @@ export class RawMaterialMovementsService {
       if (error && typeof error === "object" && "code" in error && error.code === "P2034") throw new ConflictException({ code: "VERSION_CONFLICT", message: "库存已被其他操作更新，请刷新后重试", details: [] });
       throw error;
     }
+  }
+
+  async postReturn(id: string, idempotencyKey: string, user: CurrentUser) { return this.postDerived("return", id, idempotencyKey, user); }
+  async postScrap(id: string, idempotencyKey: string, user: CurrentUser) { return this.postDerived("scrap", id, idempotencyKey, user); }
+
+  private async createDerived(documentType: "return" | "scrap", input: DerivedInput, user: CurrentUser) {
+    const order = await this.requireInHouseOrder(input.production_order_id);
+    const lines = await this.derivedLines(order.id, input.lines);
+    const prefix = documentType === "return" ? "MR" : "MS";
+    const movement = await this.prisma.rawMaterialMovement.create({
+      data: {
+        movementNo: `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`,
+        documentType,
+        productionOrderId: order.id,
+        orderNo: order.orderNo,
+        businessDate: input.business_date ? new Date(input.business_date) : new Date(),
+        reason: input.reason,
+        remark: input.remark,
+        idempotencyKey: `draft:${randomUUID()}`,
+        lines: { create: lines.map((line) => ({ materialId: line.materialId, unitId: line.unitId, quantity: line.quantity, bomReferenceQuantity: line.bomReferenceQuantity, sourceIssueLineId: line.sourceIssueLineId, remark: line.remark, ...this.audit.create(user) })) },
+        ...this.audit.create(user)
+      },
+      include: { lines: true }
+    });
+    await this.audit.record("raw_material_movement.create", "raw_material_movement", user.id, movement.id, { order_no: order.orderNo, production_order_id: order.id, document_type: documentType });
+    return movement;
+  }
+
+  private async postDerived(documentType: "return" | "scrap", id: string, idempotencyKey: string, user: CurrentUser) {
+    if (!idempotencyKey?.trim()) throw new UnprocessableEntityException({ code: "IDEMPOTENCY_KEY_REQUIRED", message: "过账必须提供幂等键", details: [] });
+    const movement = await this.get(id);
+    if (movement.documentType !== documentType) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: "单据类型不匹配", details: [] });
+    if (movement.status === "posted" && movement.idempotencyKey === idempotencyKey) return movement;
+    if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有草稿单据可以过账", details: [] });
+    await this.requireInHouseOrder(movement.productionOrderId);
+    try {
+      const posted = await this.prisma.$transaction(async (tx) => {
+        const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null, status: "draft", documentType }, include: { lines: { where: { deletedAt: null } } } });
+        if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: "单据已被其他操作处理", details: [] });
+        await this.derivedLines(current.productionOrderId, current.lines.map((line) => ({ source_issue_line_id: line.sourceIssueLineId!, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
+        const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
+        for (const line of current.lines) {
+          await tx.inventoryFact.create({ data: { materialId: line.materialId, unitId: line.unitId, inventoryCategory: documentType === "return" ? "raw_material" : "scrap", quantityDelta: line.quantity, sourceType: documentType === "return" ? "material_return" : "material_scrap", sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: line.id, createdBy: user.id } });
+        }
+        return updated;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      await this.audit.record("raw_material_movement.post", "raw_material_movement", user.id, id, { order_no: movement.orderNo, production_order_id: movement.productionOrderId, document_type: documentType, idempotency_key: idempotencyKey });
+      return posted;
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "P2034") throw new ConflictException({ code: "VERSION_CONFLICT", message: "物料流转已被其他操作更新，请刷新后重试", details: [] });
+      throw error;
+    }
+  }
+
+  private async derivedLines(productionOrderId: string, lines: DerivedLineInput[], client: PrismaService | Prisma.TransactionClient = this.prisma) {
+    if (!Array.isArray(lines) || lines.length === 0) throw new UnprocessableEntityException({ code: "MATERIAL_MOVEMENT_LINES_REQUIRED", message: "单据至少需要一条物料明细", details: [] });
+    const seen = new Set<string>();
+    const result = [];
+    for (const line of lines) {
+      if (!line?.source_issue_line_id || seen.has(line.source_issue_line_id) || !Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "来源领料明细和数量必须有效且不可重复", details: [] });
+      seen.add(line.source_issue_line_id);
+      const source = await client.rawMaterialMovementLine.findFirst({ where: { id: line.source_issue_line_id, deletedAt: null, movement: { productionOrderId, documentType: "issue", status: "posted", deletedAt: null } } });
+      if (!source) throw new UnprocessableEntityException({ code: "SOURCE_ISSUE_LINE_INVALID", message: "来源领料明细不存在、未过账或不属于该生产单", details: [] });
+      const derived = await client.rawMaterialMovementLine.findMany({ where: { sourceIssueLineId: source.id, deletedAt: null }, include: { movement: true } });
+      const consumed = derived.filter((item) => item.movement.deletedAt === null && item.movement.status === "posted" && ["return", "scrap"].includes(item.movement.documentType)).reduce((sum, item) => sum.plus(item.quantity), new Prisma.Decimal(0));
+      const available = new Prisma.Decimal(source.quantity).minus(consumed);
+      if (available.lessThan(line.quantity)) {
+        throw new UnprocessableEntityException({ code: "DERIVED_QUANTITY_EXCEEDED", message: "退料或报废数量超过来源领料可处分数量", details: [{ source_issue_line_id: source.id, available_quantity: available.toString() }] });
+      }
+      result.push({ materialId: source.materialId, unitId: source.unitId, quantity: line.quantity, bomReferenceQuantity: source.bomReferenceQuantity, sourceIssueLineId: source.id, remark: line.remark });
+    }
+    return result;
   }
 
   private async requireInHouseOrder(id: string) {

@@ -35,8 +35,19 @@ test("production.issue_posts_inventory_facts_and_preserves_risk_and_idempotency"
     await service.postIssue(issue.id, "issue-key-1", user);
     assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "6");
     assert.equal(await prisma.inventoryFact.count({ where: { productionOrderId: productionOrder.id, sourceType: "material_issue" } }), 1);
+    const sourceLine = (await prisma.rawMaterialMovement.findUnique({ where: { id: issue.id }, include: { lines: true } })).lines[0];
 
-    const insufficient = await service.createIssue({ production_order_id: productionOrder.id, reason: "紧急补料", lines: [{ material_id: material.id, quantity: "7" }] }, user);
+    const returned = await service.createReturn({ production_order_id: productionOrder.id, lines: [{ source_issue_line_id: sourceLine.id, quantity: "2" }] }, user);
+    await service.postReturn(returned.id, "return-key-1", user);
+    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "8");
+
+    const scrapped = await service.createScrap({ production_order_id: productionOrder.id, reason: "裁剪损耗", lines: [{ source_issue_line_id: sourceLine.id, quantity: "1" }] }, user);
+    await service.postScrap(scrapped.id, "scrap-key-1", user);
+    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "8");
+    assert.equal(await prisma.inventoryFact.count({ where: { productionOrderId: productionOrder.id, inventoryCategory: "scrap", sourceType: "material_scrap" } }), 1);
+    await assert.rejects(() => service.createReturn({ production_order_id: productionOrder.id, lines: [{ source_issue_line_id: sourceLine.id, quantity: "2" }] }, user), (error) => error.getResponse().code === "DERIVED_QUANTITY_EXCEEDED");
+
+    const insufficient = await service.createIssue({ production_order_id: productionOrder.id, reason: "紧急补料", lines: [{ material_id: material.id, quantity: "9" }] }, user);
     await assert.rejects(() => service.postIssue(insufficient.id, "issue-key-2", user), (error) => error.getResponse().code === "INSUFFICIENT_INVENTORY");
     assert.equal(await prisma.inventoryFact.count({ where: { productionOrderId: productionOrder.id, sourceType: "material_issue" } }), 1);
 
