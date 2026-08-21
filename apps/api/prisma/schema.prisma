@@ -309,6 +309,7 @@ model SalesOrder {
   versions           SalesOrderVersion[]
   boms               Bom[]
   purchaseOrders     PurchaseOrder[]
+  productionOrders   ProductionOrder[]
 
   @@index([customerId, status])
   @@index([orderDate])
@@ -351,6 +352,7 @@ model Bom {
   formDefinition      FormDefinition?   @relation(fields: [formDefinitionId], references: [id])
   items               BomItem[]
   purchaseOrders      PurchaseOrder[]
+  productionOrders    ProductionOrder[]
 
   @@unique([salesOrderId, version])
   @@index([orderNo])
@@ -440,6 +442,7 @@ model Unit {
   rawMaterialInbounds RawMaterialInbound[]
   inventoryFacts      InventoryFact[]
   operationCatalogs   OperationCatalog[]
+  productionOrders    ProductionOrder[]
 
   @@map("units")
 }
@@ -690,6 +693,47 @@ model PayableSource {
   @@map("payable_sources")
 }
 
+model ProductionOrder {
+  id                      String    @id @default(uuid()) @db.Uuid
+  productionOrderNo       String    @unique @map("production_order_no") @db.VarChar(100)
+  orderNo                 String    @map("order_no") @db.VarChar(100)
+  salesOrderId            String    @map("sales_order_id") @db.Uuid
+  bomId                   String?   @map("bom_id") @db.Uuid
+  bomVersion              Int?      @map("bom_version")
+  bomSnapshot             Json?     @map("bom_snapshot")
+  productionOrderType     String    @default("standard") @map("production_order_type") @db.VarChar(30)
+  parentProductionOrderId String?   @map("parent_production_order_id") @db.Uuid
+  executionMode           String    @map("execution_mode") @db.VarChar(20)
+  executionLocationId     String    @map("execution_location_id") @db.Uuid
+  plannedQuantity         Decimal   @map("planned_quantity") @db.Decimal(18,4)
+  unitId                  String    @map("unit_id") @db.Uuid
+  productSpecification    String?   @map("product_specification") @db.VarChar(1000)
+  productionProcessNote   String?   @map("production_process_note") @db.VarChar(2000)
+  status                  String    @default("draft") @db.VarChar(30)
+  plannedStartedOn        DateTime? @map("planned_started_on") @db.Date
+  deliveryDueOn           DateTime? @map("delivery_due_on") @db.Date
+  startedOn               DateTime? @map("started_on") @db.Date
+  completedOn             DateTime? @map("completed_on") @db.Date
+  actualCompletedQuantity Decimal?  @map("actual_completed_quantity") @db.Decimal(18,4)
+  remark                  String?   @db.VarChar(1000)
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+  createdBy               String    @map("created_by") @db.Uuid
+  updatedBy               String    @map("updated_by") @db.Uuid
+  deletedAt               DateTime? @map("deleted_at")
+  deletedBy               String?   @map("deleted_by") @db.Uuid
+  salesOrder              SalesOrder @relation(fields: [salesOrderId], references: [id])
+  bom                     Bom?      @relation(fields: [bomId], references: [id])
+  parent                  ProductionOrder? @relation("production_order_parent", fields: [parentProductionOrderId], references: [id])
+  children                ProductionOrder[] @relation("production_order_parent")
+  executionLocation       ProductionLocation @relation(fields: [executionLocationId], references: [id])
+  unit                    Unit      @relation(fields: [unitId], references: [id])
+
+  @@index([orderNo, status])
+  @@index([salesOrderId, productionOrderType])
+  @@map("production_orders")
+}
+
 model Department {
   id          String     @id @default(uuid()) @db.Uuid
   code        String     @unique @db.VarChar(80)
@@ -771,6 +815,7 @@ model ProductionLocation {
   updatedBy    String    @map("updated_by") @db.Uuid
   deletedAt    DateTime? @map("deleted_at")
   deletedBy    String?   @map("deleted_by") @db.Uuid
+  productionOrders ProductionOrder[]
 
   @@unique([name, locationType])
   @@index([locationType, isActive])

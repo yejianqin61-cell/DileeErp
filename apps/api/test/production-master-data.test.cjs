@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { ConflictException, NotFoundException } = require("@nestjs/common");
 const { ProductionMasterDataService } = require("../dist/modules/production/production-master-data.service.js");
+const { ProductionOrdersService } = require("../dist/modules/production/production-orders.service.js");
 
 const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "operator", display_name: "操作员" };
 const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: async () => {} };
@@ -25,4 +26,15 @@ test("operation rates reject overlapping effective date ranges", async () => {
   };
   const service = new ProductionMasterDataService(prisma, audit);
   await assert.rejects(() => service.createRate({ employee_id: "employee-1", operation_id: "operation-1", wage_mode: "piece_rate", unit_price: "1.50", effective_from: "2026-06-01", effective_to: "2026-06-30" }, user), (error) => error instanceof ConflictException && error.getResponse().code === "OPERATION_RATE_OVERLAP");
+});
+
+test("production order rejects an execution location type mismatch", async () => {
+  const prisma = {
+    salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "SO-1", status: "confirmed" }) },
+    bom: { findFirst: async () => ({ id: "bom-1", orderNo: "SO-1", version: 1, status: "published" }) },
+    productionLocation: { findFirst: async () => ({ id: "location-1", locationType: "outsource_site", isActive: true }) },
+    unit: { findFirst: async () => ({ id: "unit-1", isActive: true }) },
+  };
+  const service = new ProductionOrdersService(prisma, audit);
+  await assert.rejects(() => service.create({ order_no: "SO-1", bom_id: "bom-1", bom_version: 1, execution_mode: "in_house", execution_location_id: "location-1", planned_quantity: "10", unit_id: "unit-1" }, user), (error) => error instanceof require("@nestjs/common").UnprocessableEntityException && error.getResponse().code === "EXECUTION_LOCATION_MISMATCH");
 });
