@@ -441,6 +441,7 @@ model Unit {
   purchaseOrderItems  PurchaseOrderItem[]
   rawMaterialInbounds RawMaterialInbound[]
   inventoryFacts      InventoryFact[]
+  rawMaterialMovementLines RawMaterialMovementLine[]
   operationCatalogs   OperationCatalog[]
   productionOrders    ProductionOrder[]
   productionOrderOperations ProductionOrderOperation[]
@@ -466,6 +467,7 @@ model Material {
   purchaseOrderItems  PurchaseOrderItem[]
   rawMaterialInbounds RawMaterialInbound[]
   inventoryFacts      InventoryFact[]
+  rawMaterialMovementLines RawMaterialMovementLine[]
 
   @@index([defaultUnitId])
   @@map("materials")
@@ -666,6 +668,7 @@ model InventoryFact {
   rawMaterialInbound       RawMaterialInbound? @relation(fields: [rawMaterialInboundId], references: [id])
   material                 Material           @relation(fields: [materialId], references: [id])
   productionOrder          ProductionOrder?   @relation(fields: [productionOrderId], references: [id])
+  rawMaterialMovementLine  RawMaterialMovementLine? @relation(fields: [rawMaterialMovementLineId], references: [id])
   unit                     Unit               @relation(fields: [unitId], references: [id])
   unitId                   String             @map("unit_id") @db.Uuid
 
@@ -741,10 +744,87 @@ model ProductionOrder {
   unit                    Unit      @relation(fields: [unitId], references: [id])
   operations              ProductionOrderOperation[]
   inventoryFacts          InventoryFact[]
+  rawMaterialMovements    RawMaterialMovement[]
 
   @@index([orderNo, status])
   @@index([salesOrderId, productionOrderType])
   @@map("production_orders")
+}
+
+model RawMaterialMovement {
+  id                String                   @id @default(uuid()) @db.Uuid
+  movementNo        String                   @unique @map("movement_no") @db.VarChar(100)
+  documentType      String                   @default("issue") @map("document_type") @db.VarChar(30)
+  status            String                   @default("draft") @db.VarChar(30)
+  productionOrderId String                   @map("production_order_id") @db.Uuid
+  orderNo           String                   @map("order_no") @db.VarChar(100)
+  businessDate      DateTime                 @map("business_date") @db.Date
+  reason            String?                  @db.VarChar(1000)
+  remark            String?                  @db.VarChar(1000)
+  idempotencyKey    String                   @unique @map("idempotency_key") @db.VarChar(200)
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  createdBy         String                   @map("created_by") @db.Uuid
+  updatedBy         String                   @map("updated_by") @db.Uuid
+  deletedAt         DateTime?                @map("deleted_at")
+  deletedBy         String?                  @map("deleted_by") @db.Uuid
+  productionOrder   ProductionOrder          @relation(fields: [productionOrderId], references: [id])
+  lines             RawMaterialMovementLine[]
+  risks             RawMaterialMovementRisk[]
+
+  @@index([productionOrderId, status])
+  @@index([orderNo, businessDate])
+  @@map("raw_material_movements")
+}
+
+model RawMaterialMovementLine {
+  id                    String                   @id @default(uuid()) @db.Uuid
+  movementId            String                   @map("movement_id") @db.Uuid
+  materialId            String                   @map("material_id") @db.Uuid
+  unitId                String                   @map("unit_id") @db.Uuid
+  quantity              Decimal                  @db.Decimal(18, 4)
+  bomReferenceQuantity  Decimal?                 @map("bom_reference_quantity") @db.Decimal(18, 4)
+  sourceIssueLineId     String?                  @map("source_issue_line_id") @db.Uuid
+  remark                String?                  @db.VarChar(1000)
+  createdAt             DateTime                 @default(now()) @map("created_at")
+  updatedAt             DateTime                 @updatedAt @map("updated_at")
+  createdBy             String                   @map("created_by") @db.Uuid
+  updatedBy             String                   @map("updated_by") @db.Uuid
+  deletedAt             DateTime?                @map("deleted_at")
+  deletedBy             String?                  @map("deleted_by") @db.Uuid
+  movement              RawMaterialMovement      @relation(fields: [movementId], references: [id])
+  material              Material                 @relation(fields: [materialId], references: [id])
+  unit                  Unit                     @relation(fields: [unitId], references: [id])
+  sourceIssueLine       RawMaterialMovementLine? @relation("raw_material_movement_source_issue", fields: [sourceIssueLineId], references: [id])
+  derivedLines          RawMaterialMovementLine[] @relation("raw_material_movement_source_issue")
+  inventoryFacts        InventoryFact[]
+  risks                 RawMaterialMovementRisk[]
+
+  @@index([movementId])
+  @@index([materialId, unitId])
+  @@map("raw_material_movement_lines")
+}
+
+model RawMaterialMovementRisk {
+  id                String                   @id @default(uuid()) @db.Uuid
+  movementId        String                   @map("movement_id") @db.Uuid
+  lineId            String?                  @map("line_id") @db.Uuid
+  riskType          String                   @map("risk_type") @db.VarChar(50)
+  context           Json                     @default("{}")
+  reason            String                   @db.VarChar(1000)
+  confirmedBy       String                   @map("confirmed_by") @db.Uuid
+  confirmedAt       DateTime                 @default(now()) @map("confirmed_at")
+  createdAt         DateTime                 @default(now()) @map("created_at")
+  updatedAt         DateTime                 @updatedAt @map("updated_at")
+  createdBy         String                   @map("created_by") @db.Uuid
+  updatedBy         String                   @map("updated_by") @db.Uuid
+  deletedAt         DateTime?                @map("deleted_at")
+  deletedBy         String?                  @map("deleted_by") @db.Uuid
+  movement          RawMaterialMovement      @relation(fields: [movementId], references: [id])
+  line              RawMaterialMovementLine? @relation(fields: [lineId], references: [id])
+
+  @@index([movementId, riskType])
+  @@map("raw_material_movement_risks")
 }
 
 model ProductionOrderOperation {
