@@ -2,7 +2,7 @@
 
 ## 状态
 
-待开发
+已完成（2026-08-22）
 
 ## 目标
 
@@ -32,6 +32,14 @@
 2. HTTP/API 覆盖 401、403、422、409、幂等和稳定 JSON 契约；订单号、审计和薪资来源均可读取验证。
 3. `verify:quick`、D5 相关 `verify:chain` 前置步骤稳定通过，D1-D4 回归继续通过。
 4. 测试报告明确 D6-D7、F2 最终台账、E 链路和全局告警尚未实现。
+
+## 完成记录
+
+- 新增 PostgreSQL 集成夹具 `apps/api/test/integration/production-daily-reports.test.cjs`，覆盖计件/计时金额、Decimal 快照、累计进度、超单/差异告警、确认/恢复、幂等、版本冲突、逻辑删除和审计；
+- 新增 HTTP 未登录契约测试 `apps/api/test/http/production-daily-reports-http.test.cjs`；
+- 真实测试库执行迁移并通过 5/5 集成测试；API 契约测试通过 6/6；既有 D1-D4 集成测试继续通过；API build、unit 25/25 通过；
+- 测试证据见 [2026-08-22-d5-api-regression.md](../../test/results/2026-08-22-d5-api-regression.md)；
+- D6-D7、F2 最终台账、E 链路和全局告警仍未实现，未纳入本批通过声明。
 
 ## 阻塞关系
 
