@@ -11,7 +11,7 @@ type SalesOrderUpdate = Partial<Omit<SalesOrderInput, "order_no" | "customer_id"
 export class SalesOrdersService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
-  async list(page: number, pageSize: number, search?: string, status?: string) {
+  async list(page = 1, pageSize = 20, search?: string, status?: string) {
     const where = { deletedAt: null, ...(status ? { status } : {}), ...(search ? { OR: [{ orderNo: { contains: search, mode: "insensitive" as const } }, { productName: { contains: search, mode: "insensitive" as const } }] } : {}) };
     const [data, total] = await this.prisma.$transaction([this.prisma.salesOrder.findMany({ where, orderBy: { updatedAt: "desc" }, skip: (page - 1) * pageSize, take: pageSize, include: { customer: true, contact: true, boms: { where: { deletedAt: null }, select: { id: true, version: true, status: true } } } }), this.prisma.salesOrder.count({ where })]);
     return { data, total };

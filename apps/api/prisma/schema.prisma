@@ -638,7 +638,7 @@ model RawMaterialInbound {
   inventoryFacts       InventoryFact[]
   payableSources       PayableSource[]
   unit                 Unit?              @relation(fields: [unitId], references: [id])
-  unitId               String?            @db.Uuid
+  unitId               String?            @map("unit_id") @db.Uuid
 
   @@index([orderNo])
   @@map("raw_material_inbounds")
@@ -655,7 +655,7 @@ model InventoryFact {
   rawMaterialInbound   RawMaterialInbound @relation(fields: [rawMaterialInboundId], references: [id])
   material             Material           @relation(fields: [materialId], references: [id])
   unit                 Unit?              @relation(fields: [unitId], references: [id])
-  unitId               String?            @db.Uuid
+  unitId               String?            @map("unit_id") @db.Uuid
 
   @@index([materialId, inventoryCategory])
   @@map("inventory_facts")

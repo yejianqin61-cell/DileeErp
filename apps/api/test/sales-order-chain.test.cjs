@@ -23,6 +23,21 @@ test("sales.order.rejects_confirming_a_non_draft_order", async () => {
   await assert.rejects(() => service.confirm(order.id, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_STATE_TRANSITION");
 });
 
+test("sales.order.list_uses_default_pagination_when_query_parameters_are_absent", async () => {
+  let findManyArguments;
+  const prisma = {
+    salesOrder: {
+      findMany: (arguments_) => { findManyArguments = arguments_; return Promise.resolve([]); },
+      count: () => Promise.resolve(0),
+    },
+    $transaction: async (operations) => Promise.all(operations),
+  };
+  const service = new SalesOrdersService(prisma, audit);
+  await service.list();
+  assert.equal(findManyArguments.skip, 0);
+  assert.equal(findManyArguments.take, 20);
+});
+
 test("sales.bom.created_from_confirmed_order_keeps_order_no_and_source_version", async () => {
   const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", versions: [{ id: "version-1", version: 2 }], boms: [] };
   let createData;

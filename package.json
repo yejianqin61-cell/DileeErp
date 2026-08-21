@@ -23,7 +23,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "db:up": "docker compose up -d postgres",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "db:migrate:deploy": "powershell -ExecutionPolicy Bypass -File scripts/apply-migrations.ps1"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

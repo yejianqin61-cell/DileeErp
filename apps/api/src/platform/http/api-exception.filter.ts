@@ -1,15 +1,21 @@
-import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus } from "@nestjs/common";
+import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Logger } from "@nestjs/common";
 import type { Request, Response } from "express";
 
 type ExceptionPayload = { code?: string; message?: string | string[]; details?: unknown[] };
 
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(ApiExceptionFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost) {
     const context = host.switchToHttp();
     const request = context.getRequest<Request>();
     const response = context.getResponse<Response>();
     const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      const error = exception instanceof Error ? exception : new Error(String(exception));
+      this.logger.error(`${request.method} ${request.url}`, error.stack);
+    }
     const payload = exception instanceof HttpException ? exception.getResponse() : undefined;
     const normalized = this.normalizePayload(payload, status);
     response.status(status).json({
