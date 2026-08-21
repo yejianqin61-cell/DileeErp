@@ -1,0 +1,11 @@
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { IsOptional, IsString, IsUUID } from "class-validator";
+import { CurrentUser } from "../../platform/audit/current-user.decorator";
+import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
+import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
+import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
+import { RequireModules } from "../../platform/authorization/require-modules.decorator";
+import { RawMaterialInboundsService } from "./raw-material-inbounds.service";
+class InboundDto { @IsUUID() incoming_inspection_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() inventory_category?: string; @IsOptional() @IsString() remark?: string; }
+@Controller() @UseGuards(AuthenticationGuard, ModulePermissionGuard)
+export class RawMaterialInboundsController { constructor(private readonly inbounds: RawMaterialInboundsService) {} @Get("raw-material-inbounds") @RequireModules("warehouse") async list(@Query("order_no") orderNo?: string) { return { data: await this.inbounds.list(orderNo), meta: {} }; } @Post("raw-material-inbounds") @RequireModules("warehouse") async create(@Body() body: InboundDto, @CurrentUser() user: CurrentUserType) { return { data: await this.inbounds.create(body, user), meta: {} }; } @Post("raw-material-inbounds/:id/post") @RequireModules("warehouse") async post(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.inbounds.post(id, user), meta: {} }; } @Get("payable-sources") @RequireModules("finance") async payable(@Query("order_no") orderNo?: string) { return { data: await this.inbounds.payableSources(orderNo), meta: {} }; } }

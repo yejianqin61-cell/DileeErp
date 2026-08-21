@@ -424,92 +424,100 @@ model BomItem {
 }
 
 model Unit {
-  id                 String              @id @default(uuid()) @db.Uuid
-  name               String              @unique @db.VarChar(30)
-  isActive           Boolean             @default(true) @map("is_active")
-  remark             String?             @db.VarChar(500)
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @updatedAt @map("updated_at")
-  createdBy          String              @map("created_by") @db.Uuid
-  updatedBy          String              @map("updated_by") @db.Uuid
-  deletedAt          DateTime?           @map("deleted_at")
-  deletedBy          String?             @map("deleted_by") @db.Uuid
-  materials          Material[]
-  bomItems           BomItem[]
-  purchaseOrderItems PurchaseOrderItem[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  name                String               @unique @db.VarChar(30)
+  isActive            Boolean              @default(true) @map("is_active")
+  remark              String?              @db.VarChar(500)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           String               @map("created_by") @db.Uuid
+  updatedBy           String               @map("updated_by") @db.Uuid
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedBy           String?              @map("deleted_by") @db.Uuid
+  materials           Material[]
+  bomItems            BomItem[]
+  purchaseOrderItems  PurchaseOrderItem[]
+  rawMaterialInbounds RawMaterialInbound[]
+  inventoryFacts      InventoryFact[]
 
   @@map("units")
 }
 
 model Material {
-  id                 String              @id @default(uuid()) @db.Uuid
-  materialCode       String              @unique @map("material_code") @db.VarChar(80)
-  name               String              @unique @db.VarChar(200)
-  defaultUnitId      String              @map("default_unit_id") @db.Uuid
-  isActive           Boolean             @default(true) @map("is_active")
-  remark             String?             @db.VarChar(1000)
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @updatedAt @map("updated_at")
-  createdBy          String              @map("created_by") @db.Uuid
-  updatedBy          String              @map("updated_by") @db.Uuid
-  deletedAt          DateTime?           @map("deleted_at")
-  deletedBy          String?             @map("deleted_by") @db.Uuid
-  defaultUnit        Unit                @relation(fields: [defaultUnitId], references: [id])
-  bomItems           BomItem[]
-  purchaseOrderItems PurchaseOrderItem[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  materialCode        String               @unique @map("material_code") @db.VarChar(80)
+  name                String               @unique @db.VarChar(200)
+  defaultUnitId       String               @map("default_unit_id") @db.Uuid
+  isActive            Boolean              @default(true) @map("is_active")
+  remark              String?              @db.VarChar(1000)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           String               @map("created_by") @db.Uuid
+  updatedBy           String               @map("updated_by") @db.Uuid
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedBy           String?              @map("deleted_by") @db.Uuid
+  defaultUnit         Unit                 @relation(fields: [defaultUnitId], references: [id])
+  bomItems            BomItem[]
+  purchaseOrderItems  PurchaseOrderItem[]
+  rawMaterialInbounds RawMaterialInbound[]
+  inventoryFacts      InventoryFact[]
 
   @@index([defaultUnitId])
   @@map("materials")
 }
 
 model Supplier {
-  id             String          @id @default(uuid()) @db.Uuid
-  supplierCode   String          @unique @map("supplier_code") @db.VarChar(80)
-  name           String          @unique @db.VarChar(200)
-  contactName    String?         @map("contact_name") @db.VarChar(100)
-  phone          String?         @db.VarChar(50)
-  settlementInfo Json            @default("{}") @map("settlement_info")
-  isActive       Boolean         @default(true) @map("is_active")
-  remark         String?         @db.VarChar(1000)
-  createdAt      DateTime        @default(now()) @map("created_at")
-  updatedAt      DateTime        @updatedAt @map("updated_at")
-  createdBy      String          @map("created_by") @db.Uuid
-  updatedBy      String          @map("updated_by") @db.Uuid
-  deletedAt      DateTime?       @map("deleted_at")
-  deletedBy      String?         @map("deleted_by") @db.Uuid
-  purchaseOrders PurchaseOrder[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  supplierCode        String               @unique @map("supplier_code") @db.VarChar(80)
+  name                String               @unique @db.VarChar(200)
+  contactName         String?              @map("contact_name") @db.VarChar(100)
+  phone               String?              @db.VarChar(50)
+  settlementInfo      Json                 @default("{}") @map("settlement_info")
+  isActive            Boolean              @default(true) @map("is_active")
+  remark              String?              @db.VarChar(1000)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           String               @map("created_by") @db.Uuid
+  updatedBy           String               @map("updated_by") @db.Uuid
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedBy           String?              @map("deleted_by") @db.Uuid
+  purchaseOrders      PurchaseOrder[]
+  rawMaterialInbounds RawMaterialInbound[]
+  payableSources      PayableSource[]
 
   @@map("suppliers")
 }
 
 model PurchaseOrder {
-  id               String              @id @default(uuid()) @db.Uuid
-  purchaseOrderNo  String              @unique @map("purchase_order_no") @db.VarChar(100)
-  orderNo          String              @map("order_no") @db.VarChar(100)
-  salesOrderId     String              @map("sales_order_id") @db.Uuid
-  bomId            String              @map("bom_id") @db.Uuid
-  bomVersion       Int                 @map("bom_version")
-  bomSnapshot      Json                @map("bom_snapshot")
-  supplierId       String              @map("supplier_id") @db.Uuid
-  supplierSnapshot Json                @map("supplier_snapshot")
-  purchaseDate     DateTime            @map("purchase_date")
-  expectedDate     DateTime?           @map("expected_date")
-  currency         String              @db.VarChar(10)
-  status           String              @default("draft") @db.VarChar(30)
-  totalAmount      Decimal             @default(0) @map("total_amount") @db.Decimal(18, 4)
-  extensionData    Json                @default("{}") @map("extension_data")
-  remark           String?             @db.VarChar(1000)
-  createdAt        DateTime            @default(now()) @map("created_at")
-  updatedAt        DateTime            @updatedAt @map("updated_at")
-  createdBy        String              @map("created_by") @db.Uuid
-  updatedBy        String              @map("updated_by") @db.Uuid
-  deletedAt        DateTime?           @map("deleted_at")
-  deletedBy        String?             @map("deleted_by") @db.Uuid
-  salesOrder       SalesOrder          @relation(fields: [salesOrderId], references: [id])
-  bom              Bom                 @relation(fields: [bomId], references: [id])
-  supplier         Supplier            @relation(fields: [supplierId], references: [id])
-  items            PurchaseOrderItem[]
-  purchaseReceipts PurchaseReceipt[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  purchaseOrderNo     String               @unique @map("purchase_order_no") @db.VarChar(100)
+  orderNo             String               @map("order_no") @db.VarChar(100)
+  salesOrderId        String               @map("sales_order_id") @db.Uuid
+  bomId               String               @map("bom_id") @db.Uuid
+  bomVersion          Int                  @map("bom_version")
+  bomSnapshot         Json                 @map("bom_snapshot")
+  supplierId          String               @map("supplier_id") @db.Uuid
+  supplierSnapshot    Json                 @map("supplier_snapshot")
+  purchaseDate        DateTime             @map("purchase_date")
+  expectedDate        DateTime?            @map("expected_date")
+  currency            String               @db.VarChar(10)
+  status              String               @default("draft") @db.VarChar(30)
+  totalAmount         Decimal              @default(0) @map("total_amount") @db.Decimal(18, 4)
+  extensionData       Json                 @default("{}") @map("extension_data")
+  remark              String?              @db.VarChar(1000)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           String               @map("created_by") @db.Uuid
+  updatedBy           String               @map("updated_by") @db.Uuid
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedBy           String?              @map("deleted_by") @db.Uuid
+  salesOrder          SalesOrder           @relation(fields: [salesOrderId], references: [id])
+  bom                 Bom                  @relation(fields: [bomId], references: [id])
+  supplier            Supplier             @relation(fields: [supplierId], references: [id])
+  items               PurchaseOrderItem[]
+  purchaseReceipts    PurchaseReceipt[]
+  rawMaterialInbounds RawMaterialInbound[]
+  payableSources      PayableSource[]
 
   @@index([orderNo, status])
   @@index([supplierId, status])
@@ -517,30 +525,32 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id               String            @id @default(uuid()) @db.Uuid
-  purchaseOrderId  String            @map("purchase_order_id") @db.Uuid
-  materialId       String            @map("material_id") @db.Uuid
-  materialSnapshot Json              @map("material_snapshot")
-  unitId           String            @map("unit_id") @db.Uuid
-  unitSnapshot     Json              @map("unit_snapshot")
-  bomItemId        String?           @map("bom_item_id") @db.Uuid
-  quantity         Decimal           @db.Decimal(18, 4)
-  unitPrice        Decimal           @map("unit_price") @db.Decimal(18, 4)
-  taxRate          Decimal?          @map("tax_rate") @db.Decimal(8, 4)
-  extraFee         Decimal           @default(0) @map("extra_fee") @db.Decimal(18, 4)
-  amount           Decimal           @db.Decimal(18, 4)
-  extensionData    Json              @default("{}") @map("extension_data")
-  createdAt        DateTime          @default(now()) @map("created_at")
-  updatedAt        DateTime          @updatedAt @map("updated_at")
-  createdBy        String            @map("created_by") @db.Uuid
-  updatedBy        String            @map("updated_by") @db.Uuid
-  deletedAt        DateTime?         @map("deleted_at")
-  deletedBy        String?           @map("deleted_by") @db.Uuid
-  purchaseOrder    PurchaseOrder     @relation(fields: [purchaseOrderId], references: [id])
-  material         Material          @relation(fields: [materialId], references: [id])
-  unit             Unit              @relation(fields: [unitId], references: [id])
-  bomItem          BomItem?          @relation(fields: [bomItemId], references: [id])
-  receipts         PurchaseReceipt[]
+  id                  String               @id @default(uuid()) @db.Uuid
+  purchaseOrderId     String               @map("purchase_order_id") @db.Uuid
+  materialId          String               @map("material_id") @db.Uuid
+  materialSnapshot    Json                 @map("material_snapshot")
+  unitId              String               @map("unit_id") @db.Uuid
+  unitSnapshot        Json                 @map("unit_snapshot")
+  bomItemId           String?              @map("bom_item_id") @db.Uuid
+  quantity            Decimal              @db.Decimal(18, 4)
+  unitPrice           Decimal              @map("unit_price") @db.Decimal(18, 4)
+  taxRate             Decimal?             @map("tax_rate") @db.Decimal(8, 4)
+  extraFee            Decimal              @default(0) @map("extra_fee") @db.Decimal(18, 4)
+  amount              Decimal              @db.Decimal(18, 4)
+  extensionData       Json                 @default("{}") @map("extension_data")
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           String               @map("created_by") @db.Uuid
+  updatedBy           String               @map("updated_by") @db.Uuid
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedBy           String?              @map("deleted_by") @db.Uuid
+  purchaseOrder       PurchaseOrder        @relation(fields: [purchaseOrderId], references: [id])
+  material            Material             @relation(fields: [materialId], references: [id])
+  unit                Unit                 @relation(fields: [unitId], references: [id])
+  bomItem             BomItem?             @relation(fields: [bomItemId], references: [id])
+  receipts            PurchaseReceipt[]
+  rawMaterialInbounds RawMaterialInbound[]
+  payableSources      PayableSource[]
 
   @@index([purchaseOrderId])
   @@map("purchase_order_items")
@@ -566,6 +576,7 @@ model PurchaseReceipt {
   purchaseOrder       PurchaseOrder        @relation(fields: [purchaseOrderId], references: [id])
   purchaseOrderItem   PurchaseOrderItem    @relation(fields: [purchaseOrderItemId], references: [id])
   inspections         IncomingInspection[]
+  rawMaterialInbounds RawMaterialInbound[]
 
   @@index([purchaseOrderItemId, receivedDate])
   @@index([orderNo])
@@ -573,25 +584,107 @@ model PurchaseReceipt {
 }
 
 model IncomingInspection {
-  id                  String          @id @default(uuid()) @db.Uuid
-  purchaseReceiptId   String          @map("purchase_receipt_id") @db.Uuid
-  orderNo             String          @map("order_no") @db.VarChar(100)
-  inspectedQuantity   Decimal         @map("inspected_quantity") @db.Decimal(18, 4)
-  acceptedQuantity    Decimal         @map("accepted_quantity") @db.Decimal(18, 4)
-  conditionalQuantity Decimal         @map("conditional_quantity") @db.Decimal(18, 4)
-  rejectedQuantity    Decimal         @map("rejected_quantity") @db.Decimal(18, 4)
-  status              String          @default("pending") @db.VarChar(30)
-  extensionData       Json            @default("{}") @map("extension_data")
-  remark              String?         @db.VarChar(1000)
-  createdAt           DateTime        @default(now()) @map("created_at")
-  updatedAt           DateTime        @updatedAt @map("updated_at")
-  createdBy           String          @map("created_by") @db.Uuid
-  updatedBy           String          @map("updated_by") @db.Uuid
-  deletedAt           DateTime?       @map("deleted_at")
-  deletedBy           String?         @map("deleted_by") @db.Uuid
-  purchaseReceipt     PurchaseReceipt @relation(fields: [purchaseReceiptId], references: [id])
+  id                  String               @id @default(uuid()) @db.Uuid
+  purchaseReceiptId   String               @map("purchase_receipt_id") @db.Uuid
+  orderNo             String               @map("order_no") @db.VarChar(100)
+  inspectedQuantity   Decimal              @map("inspected_quantity") @db.Decimal(18, 4)
+  acceptedQuantity    Decimal              @map("accepted_quantity") @db.Decimal(18, 4)
+  conditionalQuantity Decimal              @map("conditional_quantity") @db.Decimal(18, 4)
+  rejectedQuantity    Decimal              @map("rejected_quantity") @db.Decimal(18, 4)
+  status              String               @default("pending") @db.VarChar(30)
+  extensionData       Json                 @default("{}") @map("extension_data")
+  remark              String?              @db.VarChar(1000)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
+  createdBy           String               @map("created_by") @db.Uuid
+  updatedBy           String               @map("updated_by") @db.Uuid
+  deletedAt           DateTime?            @map("deleted_at")
+  deletedBy           String?              @map("deleted_by") @db.Uuid
+  purchaseReceipt     PurchaseReceipt      @relation(fields: [purchaseReceiptId], references: [id])
+  rawMaterialInbounds RawMaterialInbound[]
 
   @@index([purchaseReceiptId])
   @@index([orderNo])
   @@map("incoming_inspections")
+}
+
+model RawMaterialInbound {
+  id                   String             @id @default(uuid()) @db.Uuid
+  inboundNo            String             @unique @map("inbound_no") @db.VarChar(100)
+  orderNo              String             @map("order_no") @db.VarChar(100)
+  purchaseOrderId      String             @map("purchase_order_id") @db.Uuid
+  purchaseOrderItemId  String             @map("purchase_order_item_id") @db.Uuid
+  purchaseReceiptId    String             @map("purchase_receipt_id") @db.Uuid
+  incomingInspectionId String             @map("incoming_inspection_id") @db.Uuid
+  materialId           String             @map("material_id") @db.Uuid
+  supplierId           String             @map("supplier_id") @db.Uuid
+  quantity             Decimal            @db.Decimal(18, 4)
+  inventoryCategory    String             @map("inventory_category") @db.VarChar(30)
+  status               String             @default("draft") @db.VarChar(30)
+  idempotencyKey       String             @unique @map("idempotency_key") @db.VarChar(200)
+  remark               String?            @db.VarChar(1000)
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+  createdBy            String             @map("created_by") @db.Uuid
+  updatedBy            String             @map("updated_by") @db.Uuid
+  deletedAt            DateTime?          @map("deleted_at")
+  deletedBy            String?            @map("deleted_by") @db.Uuid
+  purchaseOrder        PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderItem    PurchaseOrderItem  @relation(fields: [purchaseOrderItemId], references: [id])
+  purchaseReceipt      PurchaseReceipt    @relation(fields: [purchaseReceiptId], references: [id])
+  incomingInspection   IncomingInspection @relation(fields: [incomingInspectionId], references: [id])
+  material             Material           @relation(fields: [materialId], references: [id])
+  supplier             Supplier           @relation(fields: [supplierId], references: [id])
+  inventoryFacts       InventoryFact[]
+  payableSources       PayableSource[]
+  unit                 Unit?              @relation(fields: [unitId], references: [id])
+  unitId               String?            @db.Uuid
+
+  @@index([orderNo])
+  @@map("raw_material_inbounds")
+}
+
+model InventoryFact {
+  id                   String             @id @default(uuid()) @db.Uuid
+  rawMaterialInboundId String             @map("raw_material_inbound_id") @db.Uuid
+  materialId           String             @map("material_id") @db.Uuid
+  inventoryCategory    String             @map("inventory_category") @db.VarChar(30)
+  quantityDelta        Decimal            @map("quantity_delta") @db.Decimal(18, 4)
+  createdAt            DateTime           @default(now()) @map("created_at")
+  createdBy            String             @map("created_by") @db.Uuid
+  rawMaterialInbound   RawMaterialInbound @relation(fields: [rawMaterialInboundId], references: [id])
+  material             Material           @relation(fields: [materialId], references: [id])
+  unit                 Unit?              @relation(fields: [unitId], references: [id])
+  unitId               String?            @db.Uuid
+
+  @@index([materialId, inventoryCategory])
+  @@map("inventory_facts")
+}
+
+model PayableSource {
+  id                   String             @id @default(uuid()) @db.Uuid
+  rawMaterialInboundId String             @map("raw_material_inbound_id") @db.Uuid
+  orderNo              String             @map("order_no") @db.VarChar(100)
+  purchaseOrderId      String             @map("purchase_order_id") @db.Uuid
+  purchaseOrderItemId  String             @map("purchase_order_item_id") @db.Uuid
+  supplierId           String             @map("supplier_id") @db.Uuid
+  quantity             Decimal            @db.Decimal(18, 4)
+  unitPrice            Decimal            @map("unit_price") @db.Decimal(18, 4)
+  currency             String             @db.VarChar(10)
+  taxRate              Decimal?           @map("tax_rate") @db.Decimal(8, 4)
+  amount               Decimal            @db.Decimal(18, 4)
+  status               String             @default("pending_finance") @db.VarChar(30)
+  idempotencyKey       String             @unique @map("idempotency_key") @db.VarChar(200)
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+  createdBy            String             @map("created_by") @db.Uuid
+  updatedBy            String             @map("updated_by") @db.Uuid
+  rawMaterialInbound   RawMaterialInbound @relation(fields: [rawMaterialInboundId], references: [id])
+  supplier             Supplier           @relation(fields: [supplierId], references: [id])
+  purchaseOrder        PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderItem    PurchaseOrderItem  @relation(fields: [purchaseOrderItemId], references: [id])
+
+  @@unique([rawMaterialInboundId])
+  @@index([orderNo])
+  @@map("payable_sources")
 }
