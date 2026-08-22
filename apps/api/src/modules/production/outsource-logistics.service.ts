@@ -83,6 +83,44 @@ export class OutsourceLogisticsService {
     return this.prisma.outsourcePayableSource.findMany({ where: orderNo ? { orderNo, deletedAt: null } : { deletedAt: null }, include: { outsourceReceipt: true, logisticsBatch: true }, orderBy: { createdAt: "desc" } });
   }
 
+  async impactPreview(id: string) {
+    const current = await this.get(id);
+    const received = current.receipts.reduce((sum, row) => sum + Number(row.quantity) - Number(row.reversalQuantity), 0);
+    const payable = await this.prisma.outsourcePayableSource.count({ where: { logisticsBatchId: id, deletedAt: null, status: { not: "voided" } } });
+    return { order_no: current.orderNo, batch_no: current.batchNo, status: current.status, planned_quantity: current.plannedQuantity.toString(), dispatched_quantity: current.dispatchedQuantity.toString(), received_quantity: received.toFixed(4), payable_source_count: payable, inventory_effect: "none", warnings: current.status === "received" ? [] : ["该批次尚未全部签收"] };
+  }
+
+  async auditEvents(id: string) {
+    await this.get(id);
+    return this.prisma.auditEvent.findMany({ where: { entityType: { in: ["outsource_logistics_batch", "outsource_receipt"] }, entityId: id }, orderBy: { createdAt: "desc" } });
+  }
+
+  async reverseReceipt(receiptId: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] });
+    const receipt = await this.prisma.outsourceReceipt.findFirst({ where: { id: receiptId, deletedAt: null }, include: { logisticsBatch: { include: { receipts: { where: { deletedAt: null } } } }, payableSource: true } });
+    if (!receipt) throw new NotFoundException({ code: "OUTSOURCE_RECEIPT_NOT_FOUND", message: "外加工签收记录不存在", details: [] });
+    if (receipt.status === "reversed") throw new ConflictException({ code: "OUTSOURCE_RECEIPT_ALREADY_REVERSED", message: "外加工签收已冲销", details: [] });
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.outsourceReceipt.update({ where: { id: receiptId }, data: { status: "reversed", reversalQuantity: receipt.quantity, reversalReason: reason, ...this.audit.update(user) } });
+      if (receipt.payableSource) await tx.outsourcePayableSource.update({ where: { id: receipt.payableSource.id }, data: { status: "voided", ...this.audit.update(user) } });
+      const active = receipt.logisticsBatch.receipts.filter((row) => row.id !== receiptId && row.status !== "reversed").reduce((sum, row) => sum + Number(row.quantity) - Number(row.reversalQuantity), 0);
+      const target = active === 0 ? "dispatched" : active >= Number(receipt.logisticsBatch.dispatchedQuantity) ? "received" : "partially_received";
+      await tx.outsourceLogisticsBatch.update({ where: { id: receipt.logisticsBatchId }, data: { status: target, ...this.audit.update(user) } });
+      return updated;
+    });
+    await this.audit.record("outsource_receipt.reverse", "outsource_receipt", user.id, receiptId, { order_no: receipt.orderNo, reason, before_quantity: receipt.quantity.toString() });
+    return result;
+  }
+
+  async cancelDispatch(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CANCELLATION_REASON_REQUIRED", message: "取消直发必须填写原因", details: [] });
+    const current = await this.get(id);
+    if (!["dispatched", "partially_received"].includes(current.status) || current.receipts.some((receipt) => receipt.status !== "reversed")) throw new UnprocessableEntityException({ code: "OUTSOURCE_DISPATCH_NOT_REVERSIBLE", message: "已存在有效签收的直发不能直接取消", details: [] });
+    const result = await this.prisma.outsourceLogisticsBatch.update({ where: { id }, data: { status: "cancelled", remark: `${current.remark ?? ""}\n直发取消：${reason}`, ...this.audit.update(user) } });
+    await this.audit.record("outsource_logistics_batch.cancel_dispatch", "outsource_logistics_batch", user.id, id, { order_no: current.orderNo, reason });
+    return result;
+  }
+
   async remove(id: string, user: CurrentUser) {
     const current = await this.get(id);
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_NOT_DELETABLE", message: "只有草稿外加工批次可以删除", details: [] });
