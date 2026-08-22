@@ -170,6 +170,7 @@ export class RawMaterialMovementsService {
       const facts = await tx.inventoryFact.findMany({ where: { sourceId: current.id } });
       for (const fact of facts) {
         if (fact.inventoryCategory === "raw_material" && fact.quantityDelta.isPositive()) {
+          if (!fact.materialId) throw new ConflictException({ code: "RAW_MATERIAL_FACT_MISSING_MATERIAL", message: "原料库存事实缺少物料", details: [] });
           const balance = await this.inventory.rawMaterialBalance(tx, fact.materialId, fact.unitId);
           if (balance.minus(fact.quantityDelta).isNegative()) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "冲销会造成原料库存不足", details: [{ material_id: fact.materialId }] });
         }
