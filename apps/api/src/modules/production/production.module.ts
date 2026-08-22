@@ -12,6 +12,8 @@ import { EmployeeDailyReportsController } from "./employee-daily-reports.control
 import { EmployeeDailyReportsService } from "./employee-daily-reports.service";
 import { ProductionDailyAlertsController } from "./production-daily-alerts.controller";
 import { ProductionDailyAlertsService } from "./production-daily-alerts.service";
+import { OutsourceLogisticsController } from "./outsource-logistics.controller";
+import { OutsourceLogisticsService } from "./outsource-logistics.service";
 
-@Module({ imports: [AuditModule], controllers: [ProductionMasterDataController, ProductionOrdersController, RawMaterialMovementsController, OperationDailyReportsController, EmployeeDailyReportsController, ProductionDailyAlertsController], providers: [ProductionMasterDataService, ProductionOrdersService, RawMaterialMovementsService, OperationDailyReportsService, EmployeeDailyReportsService, ProductionDailyAlertsService], exports: [ProductionMasterDataService, ProductionOrdersService, RawMaterialMovementsService, OperationDailyReportsService, EmployeeDailyReportsService, ProductionDailyAlertsService] })
+@Module({ imports: [AuditModule], controllers: [ProductionMasterDataController, ProductionOrdersController, RawMaterialMovementsController, OperationDailyReportsController, EmployeeDailyReportsController, ProductionDailyAlertsController, OutsourceLogisticsController], providers: [ProductionMasterDataService, ProductionOrdersService, RawMaterialMovementsService, OperationDailyReportsService, EmployeeDailyReportsService, ProductionDailyAlertsService, OutsourceLogisticsService], exports: [ProductionMasterDataService, ProductionOrdersService, RawMaterialMovementsService, OperationDailyReportsService, EmployeeDailyReportsService, ProductionDailyAlertsService, OutsourceLogisticsService] })
 export class ProductionModule {}
