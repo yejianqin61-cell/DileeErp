@@ -28,4 +28,14 @@ function assertInventoryFacts(name, facts, expectedDelta) {
   assert.equal(actual, Number(expectedDelta), context(name, { expectedDelta, actual }));
 }
 
-module.exports = { assertAudit, assertInventoryFacts, assertNoDuplicateSource, assertOrderNo, assertQcBalance };
+function assertOutsourceReceiptBalance(name, dispatched, receipts, incoming = 0) {
+  const received = receipts.reduce((sum, receipt) => sum + Number(receipt.quantity) - Number(receipt.reversal_quantity ?? receipt.reversalQuantity ?? 0), 0);
+  assert.ok(Number(incoming) > 0, context(name, { incoming }));
+  assert.ok(received + Number(incoming) <= Number(dispatched), context(name, { dispatched, received, incoming }));
+}
+
+function assertOutsourceNoInventoryEffect(name, facts) {
+  assert.equal(facts.filter((fact) => String(fact.source_type ?? fact.sourceType ?? "").startsWith("outsource")).length, 0, context(name, { facts }));
+}
+
+module.exports = { assertAudit, assertInventoryFacts, assertNoDuplicateSource, assertOrderNo, assertQcBalance, assertOutsourceReceiptBalance, assertOutsourceNoInventoryEffect };
