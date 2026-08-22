@@ -15,9 +15,10 @@ import { FormsModule } from "./platform/forms/forms.module";
 import { ProcurementModule } from "./modules/procurement/procurement.module";
 import { ProductionModule } from "./modules/production/production.module";
 import { FinanceModule } from "./modules/finance/finance.module";
+import { HrModule } from "./modules/hr/hr.module";
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, InventoryModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule, FinanceModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, InventoryModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule, FinanceModule, HrModule],
   controllers: [HealthController],
 })
 export class AppModule {}
