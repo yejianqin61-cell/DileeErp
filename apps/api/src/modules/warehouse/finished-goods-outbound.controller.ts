@@ -19,12 +19,14 @@ class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 export class FinishedGoodsOutboundController {
   constructor(private readonly outbound: FinishedGoodsOutboundService) {}
   @Get("outbounds") async listOutbounds(@Query("order_no") orderNo?: string) { return { data: await this.outbound.listOutbounds(orderNo), meta: {} }; }
+  @Get("outbounds/:id") async getOutbound(@Param("id") id: string) { return { data: await this.outbound.getOutbound(id), meta: {} }; }
   @Post("outbounds") async createOutbound(@Body() body: OutboundDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutbound(body, user), meta: {} }; }
   @Post("outbounds/:id/post") async postOutbound(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.postOutbound(id, user), meta: {} }; }
   @Patch("outbounds/:id/shipping") async shipping(@Param("id") id: string, @Body() body: ShippingDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.updateShipping(id, body, user), meta: {} }; }
   @Post("outbounds/:id/sign") async sign(@Param("id") id: string, @Body() body: SignDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.signOutbound(id, body, user), meta: {} }; }
   @Post("outbounds/:id/reverse") async reverseOutbound(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.reverseOutbound(id, body.reason, user), meta: {} }; }
   @Get("customer-returns") async listReturns(@Query("order_no") orderNo?: string) { return { data: await this.outbound.listReturns(orderNo), meta: {} }; }
+  @Get("customer-returns/:id") async getReturn(@Param("id") id: string) { return { data: await this.outbound.getReturn(id), meta: {} }; }
   @Post("customer-returns") async createReturn(@Body() body: ReturnDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createReturn(body, user), meta: {} }; }
   @Post("customer-returns/:id/post") async postReturn(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.postReturn(id, user), meta: {} }; }
   @Post("customer-returns/:id/reverse") async reverseReturn(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.reverseReturn(id, body.reason, user), meta: {} }; }
