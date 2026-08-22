@@ -480,23 +480,24 @@ model Material {
 }
 
 model Supplier {
-  id                  String               @id @default(uuid()) @db.Uuid
-  supplierCode        String               @unique @map("supplier_code") @db.VarChar(80)
-  name                String               @unique @db.VarChar(200)
-  contactName         String?              @map("contact_name") @db.VarChar(100)
-  phone               String?              @db.VarChar(50)
-  settlementInfo      Json                 @default("{}") @map("settlement_info")
-  isActive            Boolean              @default(true) @map("is_active")
-  remark              String?              @db.VarChar(1000)
-  createdAt           DateTime             @default(now()) @map("created_at")
-  updatedAt           DateTime             @updatedAt @map("updated_at")
-  createdBy           String               @map("created_by") @db.Uuid
-  updatedBy           String               @map("updated_by") @db.Uuid
-  deletedAt           DateTime?            @map("deleted_at")
-  deletedBy           String?              @map("deleted_by") @db.Uuid
-  purchaseOrders      PurchaseOrder[]
-  rawMaterialInbounds RawMaterialInbound[]
-  payableSources      PayableSource[]
+  id                      String                   @id @default(uuid()) @db.Uuid
+  supplierCode            String                   @unique @map("supplier_code") @db.VarChar(80)
+  name                    String                   @unique @db.VarChar(200)
+  contactName             String?                  @map("contact_name") @db.VarChar(100)
+  phone                   String?                  @db.VarChar(50)
+  settlementInfo          Json                     @default("{}") @map("settlement_info")
+  isActive                Boolean                  @default(true) @map("is_active")
+  remark                  String?                  @db.VarChar(1000)
+  createdAt               DateTime                 @default(now()) @map("created_at")
+  updatedAt               DateTime                 @updatedAt @map("updated_at")
+  createdBy               String                   @map("created_by") @db.Uuid
+  updatedBy               String                   @map("updated_by") @db.Uuid
+  deletedAt               DateTime?                @map("deleted_at")
+  deletedBy               String?                  @map("deleted_by") @db.Uuid
+  purchaseOrders          PurchaseOrder[]
+  rawMaterialInbounds     RawMaterialInbound[]
+  payableSources          PayableSource[]
+  outsourcePayableSources OutsourcePayableSource[]
 
   @@map("suppliers")
 }
@@ -532,6 +533,7 @@ model PurchaseOrder {
   rawMaterialInbounds       RawMaterialInbound[]
   payableSources            PayableSource[]
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
+  outsourcePayableSources   OutsourcePayableSource[]
 
   @@index([orderNo, status])
   @@index([supplierId, status])
@@ -566,6 +568,7 @@ model PurchaseOrderItem {
   rawMaterialInbounds       RawMaterialInbound[]
   payableSources            PayableSource[]
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
+  outsourcePayableSources   OutsourcePayableSource[]
 
   @@index([purchaseOrderId])
   @@map("purchase_order_items")
@@ -727,6 +730,8 @@ model OutsourceLogisticsBatch {
   unitId              String                    @map("unit_id") @db.Uuid
   plannedQuantity     Decimal                   @map("planned_quantity") @db.Decimal(18, 4)
   dispatchedQuantity  Decimal                   @default(0) @map("dispatched_quantity") @db.Decimal(18, 4)
+  dispatchDate        DateTime?                 @map("dispatch_date") @db.Date
+  dispatchProofRemark String?                   @map("dispatch_proof_remark") @db.VarChar(1000)
   status              String                    @default("draft") @db.VarChar(30)
   remark              String?                   @db.VarChar(1000)
   createdAt           DateTime                  @default(now()) @map("created_at")
@@ -743,6 +748,7 @@ model OutsourceLogisticsBatch {
   unit                Unit                      @relation(fields: [unitId], references: [id])
   receipts            OutsourceReceipt[]
   returnTransfers     OutsourceReturnTransfer[]
+  payableSources      OutsourcePayableSource[]
 
   @@index([orderNo, status])
   @@index([productionOrderId, status])
@@ -768,10 +774,41 @@ model OutsourceReceipt {
   deletedAt        DateTime?               @map("deleted_at")
   deletedBy        String?                 @map("deleted_by") @db.Uuid
   logisticsBatch   OutsourceLogisticsBatch @relation(fields: [logisticsBatchId], references: [id])
+  payableSource    OutsourcePayableSource?
 
   @@index([logisticsBatchId, receiptDate])
   @@index([orderNo, receiptDate])
   @@map("outsource_receipts")
+}
+
+model OutsourcePayableSource {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  outsourceReceiptId  String                  @unique @map("outsource_receipt_id") @db.Uuid
+  logisticsBatchId    String                  @map("logistics_batch_id") @db.Uuid
+  orderNo             String                  @map("order_no") @db.VarChar(100)
+  purchaseOrderId     String                  @map("purchase_order_id") @db.Uuid
+  purchaseOrderItemId String                  @map("purchase_order_item_id") @db.Uuid
+  supplierId          String                  @map("supplier_id") @db.Uuid
+  quantity            Decimal                 @db.Decimal(18, 4)
+  unitPrice           Decimal                 @map("unit_price") @db.Decimal(18, 4)
+  currency            String                  @db.VarChar(10)
+  taxRate             Decimal?                @map("tax_rate") @db.Decimal(8, 4)
+  amount              Decimal                 @db.Decimal(18, 4)
+  status              String                  @default("pending_finance") @db.VarChar(30)
+  createdAt           DateTime                @default(now()) @map("created_at")
+  updatedAt           DateTime                @updatedAt @map("updated_at")
+  createdBy           String                  @map("created_by") @db.Uuid
+  updatedBy           String                  @map("updated_by") @db.Uuid
+  deletedAt           DateTime?               @map("deleted_at")
+  deletedBy           String?                 @map("deleted_by") @db.Uuid
+  outsourceReceipt    OutsourceReceipt        @relation(fields: [outsourceReceiptId], references: [id])
+  logisticsBatch      OutsourceLogisticsBatch @relation(fields: [logisticsBatchId], references: [id])
+  purchaseOrder       PurchaseOrder           @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderItem   PurchaseOrderItem       @relation(fields: [purchaseOrderItemId], references: [id])
+  supplier            Supplier                @relation(fields: [supplierId], references: [id])
+
+  @@index([orderNo, status])
+  @@map("outsource_payable_sources")
 }
 
 model OutsourceReturnTransfer {

@@ -48,6 +48,41 @@ export class OutsourceLogisticsService {
     return result;
   }
 
+  async dispatch(id: string, input: { quantity: string; dispatch_date: string; proof_remark?: string }, user: CurrentUser) {
+    const current = await this.get(id);
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_NOT_DISPATCHABLE", message: "只有草稿批次可以直发", details: [] });
+    const quantity = this.decimal(input.quantity, "INVALID_DISPATCH_QUANTITY");
+    if (quantity > Number(current.plannedQuantity)) throw new UnprocessableEntityException({ code: "DISPATCH_QUANTITY_EXCEEDED", message: "直发数量不能超过批次计划数量", details: [] });
+    if (!input.proof_remark?.trim()) throw new UnprocessableEntityException({ code: "DISPATCH_PROOF_REQUIRED", message: "直发凭据或交接说明不能为空", details: [] });
+    const result = await this.prisma.outsourceLogisticsBatch.update({ where: { id }, data: { dispatchedQuantity: input.quantity, dispatchDate: new Date(input.dispatch_date), dispatchProofRemark: input.proof_remark, status: "dispatched", ...this.audit.update(user) } });
+    await this.audit.record("outsource_logistics_batch.dispatch", "outsource_logistics_batch", user.id, id, { order_no: current.orderNo, quantity: input.quantity });
+    return result;
+  }
+
+  async receipt(id: string, input: { quantity: string; receipt_date: string; receiver_name?: string; proof_remark?: string }, user: CurrentUser) {
+    const current = await this.get(id);
+    if (!["dispatched", "partially_received"].includes(current.status)) throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_NOT_RECEIVABLE", message: "当前批次不允许签收", details: [] });
+    const quantity = this.decimal(input.quantity, "INVALID_RECEIPT_QUANTITY");
+    const received = current.receipts.reduce((sum, row) => sum + Number(row.quantity) - Number(row.reversalQuantity), 0);
+    const remaining = Number(current.dispatchedQuantity) - received;
+    if (quantity > remaining) throw new UnprocessableEntityException({ code: "OUTSOURCE_RECEIPT_QUANTITY_EXCEEDED", message: "签收数量超过未签收直发数量", details: [{ remaining: remaining.toFixed(4) }] });
+    if (!input.proof_remark?.trim()) throw new UnprocessableEntityException({ code: "RECEIPT_PROOF_REQUIRED", message: "签收凭据或签收说明不能为空", details: [] });
+    const status = quantity === remaining ? "received" : "partially_received";
+    const result = await this.prisma.$transaction(async (tx) => {
+      const receipt = await tx.outsourceReceipt.create({ data: { logisticsBatchId: id, orderNo: current.orderNo, receiptDate: new Date(input.receipt_date), quantity: input.quantity, receiverName: input.receiver_name, proofRemark: input.proof_remark, ...this.audit.create(user) } });
+      await tx.outsourceLogisticsBatch.update({ where: { id }, data: { status, ...this.audit.update(user) } });
+      const item = current.purchaseOrderItem;
+      await tx.outsourcePayableSource.create({ data: { outsourceReceiptId: receipt.id, logisticsBatchId: id, orderNo: current.orderNo, purchaseOrderId: current.purchaseOrderId, purchaseOrderItemId: current.purchaseOrderItemId, supplierId: current.purchaseOrder.supplierId, quantity: input.quantity, unitPrice: item.unitPrice, currency: current.purchaseOrder.currency, taxRate: item.taxRate, amount: (quantity * Number(item.unitPrice)).toFixed(4), ...this.audit.create(user) } });
+      return receipt;
+    });
+    await this.audit.record("outsource_receipt.create", "outsource_receipt", user.id, result.id, { order_no: current.orderNo, logistics_batch_id: id, quantity: input.quantity, payable_source: true });
+    return this.get(id);
+  }
+
+  async payableSources(orderNo?: string) {
+    return this.prisma.outsourcePayableSource.findMany({ where: orderNo ? { orderNo, deletedAt: null } : { deletedAt: null }, include: { outsourceReceipt: true, logisticsBatch: true }, orderBy: { createdAt: "desc" } });
+  }
+
   async remove(id: string, user: CurrentUser) {
     const current = await this.get(id);
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_NOT_DELETABLE", message: "只有草稿外加工批次可以删除", details: [] });
