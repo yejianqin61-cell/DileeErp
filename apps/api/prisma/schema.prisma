@@ -426,16 +426,16 @@ model BomItem {
 }
 
 model Unit {
-  id                        String                     @id @default(uuid()) @db.Uuid
-  name                      String                     @unique @db.VarChar(30)
-  isActive                  Boolean                    @default(true) @map("is_active")
-  remark                    String?                    @db.VarChar(500)
-  createdAt                 DateTime                   @default(now()) @map("created_at")
-  updatedAt                 DateTime                   @updatedAt @map("updated_at")
-  createdBy                 String                     @map("created_by") @db.Uuid
-  updatedBy                 String                     @map("updated_by") @db.Uuid
-  deletedAt                 DateTime?                  @map("deleted_at")
-  deletedBy                 String?                    @map("deleted_by") @db.Uuid
+  id                        String                              @id @default(uuid()) @db.Uuid
+  name                      String                              @unique @db.VarChar(30)
+  isActive                  Boolean                             @default(true) @map("is_active")
+  remark                    String?                             @db.VarChar(500)
+  createdAt                 DateTime                            @default(now()) @map("created_at")
+  updatedAt                 DateTime                            @updatedAt @map("updated_at")
+  createdBy                 String                              @map("created_by") @db.Uuid
+  updatedBy                 String                              @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                           @map("deleted_at")
+  deletedBy                 String?                             @map("deleted_by") @db.Uuid
   materials                 Material[]
   bomItems                  BomItem[]
   purchaseOrderItems        PurchaseOrderItem[]
@@ -449,6 +449,7 @@ model Unit {
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
   outsourceReturnTransfers  OutsourceReturnTransfer[]
   outsourceDirectShipments  OutsourceDirectShipment[]
+  finishedGoodsInspections  FinishedGoodsInspectionSubmission[]
 
   @@map("units")
 }
@@ -871,41 +872,105 @@ model OutsourceDirectShipment {
   @@map("outsource_direct_shipments")
 }
 
+model FinishedGoodsInspectionSubmission {
+  id                           String                  @id @default(uuid()) @db.Uuid
+  submissionNo                 String                  @unique @map("submission_no") @db.VarChar(100)
+  orderNo                      String                  @map("order_no") @db.VarChar(100)
+  productionOrderId            String                  @map("production_order_id") @db.Uuid
+  sourceType                   String                  @map("source_type") @db.VarChar(40)
+  sourceId                     String                  @map("source_id") @db.Uuid
+  productionOrderNoSnapshot    String                  @map("production_order_no_snapshot") @db.VarChar(100)
+  productNameSnapshot          String?                 @map("product_name_snapshot") @db.VarChar(200)
+  productSpecificationSnapshot String?                 @map("product_specification_snapshot") @db.VarChar(1000)
+  unitId                       String                  @map("unit_id") @db.Uuid
+  unitNameSnapshot             String                  @map("unit_name_snapshot") @db.VarChar(30)
+  submittedQuantity            Decimal                 @map("submitted_quantity") @db.Decimal(18, 4)
+  submissionDate               DateTime                @map("submission_date") @db.Date
+  status                       String                  @default("draft") @db.VarChar(30)
+  remark                       String?                 @db.VarChar(1000)
+  version                      Int                     @default(1)
+  createdAt                    DateTime                @default(now()) @map("created_at")
+  updatedAt                    DateTime                @updatedAt @map("updated_at")
+  createdBy                    String                  @map("created_by") @db.Uuid
+  updatedBy                    String                  @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?               @map("deleted_at")
+  deletedBy                    String?                 @map("deleted_by") @db.Uuid
+  productionOrder              ProductionOrder         @relation(fields: [productionOrderId], references: [id])
+  unit                         Unit                    @relation(fields: [unitId], references: [id])
+  qcRecords                    FinishedGoodsQcRecord[]
+
+  @@index([orderNo, status])
+  @@index([productionOrderId, sourceType, sourceId])
+  @@index([sourceType, sourceId, status])
+  @@map("finished_goods_inspection_submissions")
+}
+
+model FinishedGoodsQcRecord {
+  id                        String                            @id @default(uuid()) @db.Uuid
+  qcNo                      String                            @unique @map("qc_no") @db.VarChar(100)
+  submissionId              String                            @map("submission_id") @db.Uuid
+  orderNo                   String                            @map("order_no") @db.VarChar(100)
+  productionOrderId         String                            @map("production_order_id") @db.Uuid
+  sourceType                String                            @map("source_type") @db.VarChar(40)
+  sourceId                  String                            @map("source_id") @db.Uuid
+  inspectionDate            DateTime                          @map("inspection_date") @db.Date
+  inspectedQuantity         Decimal                           @map("inspected_quantity") @db.Decimal(18, 4)
+  qualifiedQuantity         Decimal                           @map("qualified_quantity") @db.Decimal(18, 4)
+  conditionalAcceptQuantity Decimal                           @map("conditional_accept_quantity") @db.Decimal(18, 4)
+  rejectedQuantity          Decimal                           @map("rejected_quantity") @db.Decimal(18, 4)
+  conclusion                String                            @db.VarChar(30)
+  rejectionReason           String?                           @map("rejection_reason") @db.VarChar(1000)
+  remark                    String?                           @db.VarChar(1000)
+  version                   Int                               @default(1)
+  createdAt                 DateTime                          @default(now()) @map("created_at")
+  updatedAt                 DateTime                          @updatedAt @map("updated_at")
+  createdBy                 String                            @map("created_by") @db.Uuid
+  updatedBy                 String                            @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                         @map("deleted_at")
+  deletedBy                 String?                           @map("deleted_by") @db.Uuid
+  submission                FinishedGoodsInspectionSubmission @relation(fields: [submissionId], references: [id])
+
+  @@index([orderNo, conclusion])
+  @@index([submissionId, inspectionDate])
+  @@index([productionOrderId, sourceType, sourceId])
+  @@map("finished_goods_qc_records")
+}
+
 model ProductionOrder {
-  id                        String                     @id @default(uuid()) @db.Uuid
-  productionOrderNo         String                     @unique @map("production_order_no") @db.VarChar(100)
-  orderNo                   String                     @map("order_no") @db.VarChar(100)
-  salesOrderId              String                     @map("sales_order_id") @db.Uuid
-  bomId                     String?                    @map("bom_id") @db.Uuid
-  bomVersion                Int?                       @map("bom_version")
-  bomSnapshot               Json?                      @map("bom_snapshot")
-  productionOrderType       String                     @default("standard") @map("production_order_type") @db.VarChar(30)
-  parentProductionOrderId   String?                    @map("parent_production_order_id") @db.Uuid
-  executionMode             String                     @map("execution_mode") @db.VarChar(20)
-  executionLocationId       String                     @map("execution_location_id") @db.Uuid
-  plannedQuantity           Decimal                    @map("planned_quantity") @db.Decimal(18, 4)
-  unitId                    String                     @map("unit_id") @db.Uuid
-  productSpecification      String?                    @map("product_specification") @db.VarChar(1000)
-  productionProcessNote     String?                    @map("production_process_note") @db.VarChar(2000)
-  status                    String                     @default("draft") @db.VarChar(30)
-  plannedStartedOn          DateTime?                  @map("planned_started_on") @db.Date
-  deliveryDueOn             DateTime?                  @map("delivery_due_on") @db.Date
-  startedOn                 DateTime?                  @map("started_on") @db.Date
-  completedOn               DateTime?                  @map("completed_on") @db.Date
-  actualCompletedQuantity   Decimal?                   @map("actual_completed_quantity") @db.Decimal(18, 4)
-  remark                    String?                    @db.VarChar(1000)
-  createdAt                 DateTime                   @default(now()) @map("created_at")
-  updatedAt                 DateTime                   @updatedAt @map("updated_at")
-  createdBy                 String                     @map("created_by") @db.Uuid
-  updatedBy                 String                     @map("updated_by") @db.Uuid
-  deletedAt                 DateTime?                  @map("deleted_at")
-  deletedBy                 String?                    @map("deleted_by") @db.Uuid
-  salesOrder                SalesOrder                 @relation(fields: [salesOrderId], references: [id])
-  bom                       Bom?                       @relation(fields: [bomId], references: [id])
-  parent                    ProductionOrder?           @relation("production_order_parent", fields: [parentProductionOrderId], references: [id])
-  children                  ProductionOrder[]          @relation("production_order_parent")
-  executionLocation         ProductionLocation         @relation(fields: [executionLocationId], references: [id])
-  unit                      Unit                       @relation(fields: [unitId], references: [id])
+  id                        String                              @id @default(uuid()) @db.Uuid
+  productionOrderNo         String                              @unique @map("production_order_no") @db.VarChar(100)
+  orderNo                   String                              @map("order_no") @db.VarChar(100)
+  salesOrderId              String                              @map("sales_order_id") @db.Uuid
+  bomId                     String?                             @map("bom_id") @db.Uuid
+  bomVersion                Int?                                @map("bom_version")
+  bomSnapshot               Json?                               @map("bom_snapshot")
+  productionOrderType       String                              @default("standard") @map("production_order_type") @db.VarChar(30)
+  parentProductionOrderId   String?                             @map("parent_production_order_id") @db.Uuid
+  executionMode             String                              @map("execution_mode") @db.VarChar(20)
+  executionLocationId       String                              @map("execution_location_id") @db.Uuid
+  plannedQuantity           Decimal                             @map("planned_quantity") @db.Decimal(18, 4)
+  unitId                    String                              @map("unit_id") @db.Uuid
+  productSpecification      String?                             @map("product_specification") @db.VarChar(1000)
+  productionProcessNote     String?                             @map("production_process_note") @db.VarChar(2000)
+  status                    String                              @default("draft") @db.VarChar(30)
+  plannedStartedOn          DateTime?                           @map("planned_started_on") @db.Date
+  deliveryDueOn             DateTime?                           @map("delivery_due_on") @db.Date
+  startedOn                 DateTime?                           @map("started_on") @db.Date
+  completedOn               DateTime?                           @map("completed_on") @db.Date
+  actualCompletedQuantity   Decimal?                            @map("actual_completed_quantity") @db.Decimal(18, 4)
+  remark                    String?                             @db.VarChar(1000)
+  createdAt                 DateTime                            @default(now()) @map("created_at")
+  updatedAt                 DateTime                            @updatedAt @map("updated_at")
+  createdBy                 String                              @map("created_by") @db.Uuid
+  updatedBy                 String                              @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                           @map("deleted_at")
+  deletedBy                 String?                             @map("deleted_by") @db.Uuid
+  salesOrder                SalesOrder                          @relation(fields: [salesOrderId], references: [id])
+  bom                       Bom?                                @relation(fields: [bomId], references: [id])
+  parent                    ProductionOrder?                    @relation("production_order_parent", fields: [parentProductionOrderId], references: [id])
+  children                  ProductionOrder[]                   @relation("production_order_parent")
+  executionLocation         ProductionLocation                  @relation(fields: [executionLocationId], references: [id])
+  unit                      Unit                                @relation(fields: [unitId], references: [id])
   operations                ProductionOrderOperation[]
   inventoryFacts            InventoryFact[]
   rawMaterialMovements      RawMaterialMovement[]
@@ -916,6 +981,7 @@ model ProductionOrder {
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
   outsourceReturnTransfers  OutsourceReturnTransfer[]
   outsourceDirectShipments  OutsourceDirectShipment[]
+  finishedGoodsInspections  FinishedGoodsInspectionSubmission[]
 
   @@index([orderNo, status])
   @@index([salesOrderId, productionOrderType])
