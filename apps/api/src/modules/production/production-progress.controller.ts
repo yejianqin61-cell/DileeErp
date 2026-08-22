@@ -4,7 +4,6 @@ import { Type } from "class-transformer";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
-import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
 import { ProductionProgressService } from "./production-progress.service";
 
@@ -19,7 +18,6 @@ class ProgressQueryDto {
 
 @Controller("production-progress")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
-@RequireModules("production")
 export class ProductionProgressController {
   constructor(private readonly progress: ProductionProgressService) {}
 

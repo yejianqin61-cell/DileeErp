@@ -23,6 +23,14 @@ test("cancelled rows do not contribute to aggregates and mixed units are explici
   assert.deepEqual(result.warnings, ["mixed_units"]);
 });
 
+test("same unit across in-house and outsourced sources is not a mixed-unit warning", () => {
+  const result = aggregateMeasurementRows([
+    { order_no: "SO-2", production_order_id: "po-1", production_order_no: "MO-1", source_type: "operation_report", source_id: "r-1", unit: "个", planned_quantity: "5", actual_quantity: "5", execution_mode: "in_house" },
+    { order_no: "SO-2", production_order_id: "po-2", production_order_no: "MO-2", source_type: "outsource_direct_shipment", source_id: "s-1", unit: "个", planned_quantity: "0", actual_quantity: "2", execution_mode: "outsourced" },
+  ]);
+  assert.deepEqual(result.warnings, []);
+});
+
 test("order status prioritizes blockers and exposes unavailable downstream capabilities", () => {
   assert.equal(deriveOrderProgressStatus({ has_production_orders: true, has_started_production: true, all_production_complete: true, blockers: ["daily_discrepancy"] }).status, "blocked");
   assert.deepEqual(deriveOrderProgressStatus({ has_production_orders: true, has_started_production: true, all_production_complete: true, has_finished_goods_source: true, qc_capability_available: false }).capability_not_implemented, ["quality_control"]);

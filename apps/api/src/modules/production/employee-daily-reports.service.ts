@@ -29,10 +29,10 @@ export class EmployeeDailyReportsService {
     const created = await this.prisma.$transaction(async (tx) => {
       const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, priceOverrideReason: input.price_override_reason, remark: input.remark, ...this.audit.create(user) } });
       await this.recomputeDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
+      await this.progress.recalculateInTransaction(tx, refs.order.id, "employee_daily_report", row.id, user);
       return row;
     });
     await this.audit.record("employee_daily_report.create", "employee_daily_report", user.id, created.id, { order_no: created.orderNo, reason: input.remark ?? null });
-    await this.progress.recalculateAfterSourceChange(created.productionOrderId, "employee_daily_report", created.id, user);
     return this.get(created.id);
   }
 
@@ -49,10 +49,10 @@ export class EmployeeDailyReportsService {
       const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, priceOverrideReason: merged.price_override_reason, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
       await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
       if (refs.reportDate.getTime() !== current.reportDate.getTime()) await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, refs.reportDate, user);
+      await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", row.id, user);
       return row;
     });
     await this.audit.record("employee_daily_report.update", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason: input.reason, before_amount: current.calculatedAmount.toString(), after_amount: values.amount.toString() });
-    await this.progress.recalculateAfterSourceChange(current.productionOrderId, "employee_daily_report", id, user);
     return updated;
   }
 
@@ -61,9 +61,8 @@ export class EmployeeDailyReportsService {
     const current = await this.get(id);
     if (expectedVersion !== undefined && expectedVersion !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: current.version }] });
     await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, current.reportDate.toISOString().slice(0, 10), true);
-    const removed = await this.prisma.$transaction(async (tx) => { const row = await tx.employeeDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } }); await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user); return row; });
+    const removed = await this.prisma.$transaction(async (tx) => { const row = await tx.employeeDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } }); await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user); await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", id, user); return row; });
     await this.audit.record("employee_daily_report.delete", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason });
-    await this.progress.recalculateAfterSourceChange(current.productionOrderId, "employee_daily_report", id, user);
     return removed;
   }
 

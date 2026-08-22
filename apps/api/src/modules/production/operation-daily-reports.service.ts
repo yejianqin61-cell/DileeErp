@@ -45,10 +45,10 @@ export class OperationDailyReportsService {
         unitId: refs.operation.unitId, reportDate, completedQuantity: quantity, remark: input.remark, ...this.audit.create(user),
       } });
       await this.recomputeOverOrder(tx, refs.order.id, refs.operation.id, user);
+      await this.progressService.recalculateInTransaction(tx, refs.order.id, "operation_daily_report", row.id, user);
       return row;
     });
     await this.audit.record("operation_daily_report.create", "operation_daily_report", user.id, created.id, { order_no: created.orderNo, production_order_id: created.productionOrderId, reason: input.remark ?? null });
-    await this.progressService.recalculateAfterSourceChange(created.productionOrderId, "operation_daily_report", created.id, user);
     return this.get(created.id);
   }
 
@@ -62,10 +62,10 @@ export class OperationDailyReportsService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const row = await tx.operationDailyReport.update({ where: { id }, data: { reportDate, completedQuantity: quantity, version: { increment: 1 }, ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } });
       await this.recomputeOverOrder(tx, refs.order.id, refs.operation.id, user);
+      await this.progressService.recalculateInTransaction(tx, refs.order.id, "operation_daily_report", row.id, user);
       return row;
     });
     await this.audit.record("operation_daily_report.update", "operation_daily_report", user.id, id, { order_no: current.orderNo, reason: input.reason, before: { report_date: current.reportDate.toISOString().slice(0, 10), completed_quantity: current.completedQuantity.toString() }, after: { report_date: reportDate.toISOString().slice(0, 10), completed_quantity: quantity.toString() } });
-    await this.progressService.recalculateAfterSourceChange(current.productionOrderId, "operation_daily_report", id, user);
     return updated;
   }
 
@@ -77,10 +77,10 @@ export class OperationDailyReportsService {
     const removed = await this.prisma.$transaction(async (tx) => {
       const row = await tx.operationDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } });
       await this.recomputeOverOrder(tx, current.productionOrderId, current.productionOrderOperationId, user);
+      await this.progressService.recalculateInTransaction(tx, current.productionOrderId, "operation_daily_report", id, user);
       return row;
     });
     await this.audit.record("operation_daily_report.delete", "operation_daily_report", user.id, id, { order_no: current.orderNo, reason });
-    await this.progressService.recalculateAfterSourceChange(current.productionOrderId, "operation_daily_report", id, user);
     return removed;
   }
 

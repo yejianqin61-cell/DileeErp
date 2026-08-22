@@ -6,6 +6,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { OperationDailyReportsService } from "./operation-daily-reports.service";
+import { ProductionProgressService } from "./production-progress.service";
 
 class CreateOperationDailyReportDto { @IsUUID() production_order_id!: string; @IsUUID() production_order_operation_id!: string; @IsDateString() report_date!: string; @IsString() completed_quantity!: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class UpdateOperationDailyReportDto { @IsOptional() @IsDateString() report_date?: string; @IsOptional() @IsString() completed_quantity?: string; @IsOptional() @IsInt() expected_version?: number; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsString() reason!: string; }
@@ -15,12 +16,13 @@ class DeleteOperationDailyReportDto { @IsString() reason!: string; @IsOptional()
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("production")
 export class OperationDailyReportsController {
-  constructor(private readonly reports: OperationDailyReportsService) {}
+  constructor(private readonly reports: OperationDailyReportsService, private readonly productionProgress: ProductionProgressService) {}
   @Get("production/operation-reports") async list(@Query() query: { order_no?: string; production_order_id?: string; production_order_operation_id?: string; report_date?: string }) { return { data: await this.reports.list(query), meta: {} }; }
   @Get("production/operation-reports/:id") async get(@Param("id") id: string) { return { data: await this.reports.get(id), meta: {} }; }
   @Post("production/operation-reports") async create(@Body() body: CreateOperationDailyReportDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reports.create(body, user), meta: {} }; }
   @Patch("production/operation-reports/:id") async update(@Param("id") id: string, @Body() body: UpdateOperationDailyReportDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reports.update(id, body, user), meta: {} }; }
   @Delete("production/operation-reports/:id") async remove(@Param("id") id: string, @Body() body: DeleteOperationDailyReportDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reports.remove(id, body.reason, user, body.expected_version), meta: {} }; }
   @Get("production/operation-reports/:id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.reports.impactPreview(id), meta: {} }; }
-  @Get("production/orders/:id/progress") async progress(@Param("id") id: string) { return { data: await this.reports.progress(id), meta: {} }; }
+  @Get("production/orders/:id/progress") async progress(@Param("id") id: string) { return { data: await this.productionProgress.getProductionOrderProgress(id), meta: {} }; }
+  @Get("production/orders/:id/measurements") async measurements(@Param("id") id: string) { const result = await this.productionProgress.listMeasurements({ production_order_id: id, page: 1, page_size: 200 }); return { data: result.data, meta: { total: result.total } }; }
 }

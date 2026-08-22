@@ -14,4 +14,7 @@ export class AuditService {
   async record(action: string, entityType: string, actorId?: string, entityId?: string, details: Record<string, unknown> = {}) {
     await this.prisma.auditEvent.create({ data: { action, entityType, actorId, entityId, details: details as Prisma.InputJsonValue } });
   }
+  async recordWithOrderNo(action: string, entityType: string, orderNo: string, actorId?: string, entityId?: string, details: Record<string, unknown> = {}) {
+    await this.prisma.auditEvent.create({ data: { action, entityType, orderNo, actorId, entityId, details: details as Prisma.InputJsonValue } });
+  }
 }

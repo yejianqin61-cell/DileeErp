@@ -54,6 +54,7 @@ export type MeasurementRow = {
   operation_id?: string;
   source_type: MeasurementSourceType;
   source_id: string;
+  source_ids?: string[];
   unit: string;
   planned_quantity: string | Prisma.Decimal;
   actual_quantity: string | Prisma.Decimal;
@@ -104,12 +105,12 @@ export function aggregateMeasurementRows(rows: MeasurementRow[]): { groups: Meas
     current.planned = current.planned.plus(decimal(row.planned_quantity));
     current.actual = current.actual.plus(decimal(row.actual_quantity));
     current.source_types.add(row.source_type);
-    current.source_ids.push(row.source_id);
+    current.source_ids.push(...(row.source_ids ?? [row.source_id]));
     groups.set(key, current);
     for (const warning of row.warning_codes ?? []) if ((PRODUCTION_PROGRESS_BLOCKERS as readonly string[]).includes(warning)) warnings.add(warning as ProductionProgressBlocker);
   }
-  const modes = new Set([...groups.values()].map((group) => `${group.execution_mode}:${group.unit}`));
-  if (modes.size > 1) warnings.add("mixed_units");
+  const units = new Set(rows.filter((row) => !row.cancelled).map((row) => row.unit));
+  if (units.size > 1) warnings.add("mixed_units");
   return {
     groups: [...groups.values()].map((group) => ({ unit: group.unit, execution_mode: group.execution_mode, source_types: [...group.source_types], source_ids: group.source_ids, ...calculateQuantityProgress(group.planned, group.actual) })),
     warnings: [...warnings],
