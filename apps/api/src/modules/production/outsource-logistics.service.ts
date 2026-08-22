@@ -144,6 +144,28 @@ export class OutsourceLogisticsService {
     return result;
   }
 
+  async createFinishedReturn(input: { production_order_id: string; unit_id: string; product_description: string; quantity: string; transfer_date: string; remark?: string }, user: CurrentUser) {
+    const production = await this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, deletedAt: null }, include: { unit: true } });
+    if (!production || production.executionMode !== "outsourced") throw new NotFoundException({ code: "OUTSOURCE_PRODUCTION_NOT_FOUND", message: "外加工生产单不存在", details: [] });
+    if (["closed", "cancelled"].includes(production.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_NOT_WRITABLE", message: "当前生产单不允许登记成品回厂", details: [] });
+    await this.requireActiveUnit(input.unit_id);
+    this.decimal(input.quantity, "INVALID_RETURN_QUANTITY");
+    if (!input.product_description?.trim()) throw new UnprocessableEntityException({ code: "PRODUCT_DESCRIPTION_REQUIRED", message: "成品描述不能为空", details: [] });
+    const transferNo = `FG-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
+    const created = await this.prisma.outsourceReturnTransfer.create({ data: { transferNo, transferType: "finished_goods_return", orderNo: production.orderNo, productionOrderId: production.id, unitId: input.unit_id, productDescription: input.product_description, quantity: input.quantity, transferDate: new Date(input.transfer_date), remark: input.remark, ...this.audit.create(user) } });
+    await this.audit.record("outsource_finished_return.create", "outsource_return_transfer", user.id, created.id, { order_no: created.orderNo, transfer_no: transferNo, quantity: input.quantity });
+    return created;
+  }
+
+  async submitFinishedReturnForQc(id: string, user: CurrentUser) {
+    const current = await this.prisma.outsourceReturnTransfer.findFirst({ where: { id, deletedAt: null } });
+    if (!current || current.transferType !== "finished_goods_return") throw new NotFoundException({ code: "OUTSOURCE_FINISHED_RETURN_NOT_FOUND", message: "外加工成品回厂记录不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_RETURN_NOT_SUBMITTABLE", message: "当前回厂记录不可提交 QC", details: [] });
+    const result = await this.prisma.outsourceReturnTransfer.update({ where: { id }, data: { status: "pending_qc", ...this.audit.update(user) } });
+    await this.audit.record("outsource_finished_return.submit_qc", "outsource_return_transfer", user.id, id, { order_no: current.orderNo });
+    return result;
+  }
+
   private async returnRefs(input: { production_order_id: string; logistics_batch_id: string }) {
     const [production, batch] = await Promise.all([this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, deletedAt: null } }), this.prisma.outsourceLogisticsBatch.findFirst({ where: { id: input.logistics_batch_id, deletedAt: null } })]);
     if (!production || production.executionMode !== "outsourced") throw new NotFoundException({ code: "OUTSOURCE_PRODUCTION_NOT_FOUND", message: "外加工生产单不存在", details: [] });
@@ -151,6 +173,8 @@ export class OutsourceLogisticsService {
     if (batch.status === "cancelled") throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_CANCELLED", message: "已取消的外加工批次不能回厂", details: [] });
     return { production, batch };
   }
+
+  private async requireActiveUnit(id: string) { const unit = await this.prisma.unit.findFirst({ where: { id, deletedAt: null, isActive: true } }); if (!unit) throw new NotFoundException({ code: "UNIT_NOT_FOUND", message: "单位不存在或已停用", details: [] }); return unit; }
 
   async remove(id: string, user: CurrentUser) {
     const current = await this.get(id);
