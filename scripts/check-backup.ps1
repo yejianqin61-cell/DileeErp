@@ -1,7 +1,5 @@
 param(
-  [Parameter(Mandatory = $true)][string]$DatabaseUrl,
-  [Parameter(Mandatory = $true)][string]$BackupFile,
-  [Parameter(Mandatory = $true)][ValidateSet('RESTORE')][string]$ConfirmTarget
+  [Parameter(Mandatory = $true)][string]$BackupFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,7 +8,5 @@ $checksumFile = "$BackupFile.sha256"
 if (-not (Test-Path -LiteralPath $checksumFile)) { throw "Checksum file not found: $checksumFile" }
 $expected = (Get-Content -LiteralPath $checksumFile -Raw).Trim() -split '\s+' | Select-Object -First 1
 $actual = (Get-FileHash -LiteralPath $BackupFile -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($expected.ToLowerInvariant() -ne $actual) { throw "Backup checksum mismatch. Refusing restore." }
-Write-Output "Checksum verified: $actual"
-pg_restore --clean --if-exists --no-owner --dbname=$DatabaseUrl $BackupFile
-Write-Output "Restore completed: $BackupFile"
+if ($expected.ToLowerInvariant() -ne $actual) { throw "Backup checksum mismatch." }
+Write-Output "Backup checksum verified: $actual"

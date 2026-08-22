@@ -8,3 +8,6 @@
 6. 停止服务：`npm run factory:down`。升级前先执行备份，升级失败时固定镜像版本并回滚。
 
 数据库端口只存在于 Compose 内部网络；备份目录必须位于独立厂内存储设备。
+
+备份示例：`powershell -File scripts/backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL -BackupDirectory D:\DileeBackups`。
+恢复前先执行 `powershell -File scripts/check-backup.ps1 -BackupFile D:\DileeBackups\dilee-erp-YYYYMMDD-HHMMSS.dump`，确认目标库后再执行 `powershell -File scripts/restore-postgres.ps1 -DatabaseUrl $env:RESTORE_DATABASE_URL -BackupFile ... -ConfirmTarget RESTORE`。
