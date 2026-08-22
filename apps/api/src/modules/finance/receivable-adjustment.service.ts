@@ -44,6 +44,7 @@ export class ReceivableAdjustmentService {
     const amount = this.decimal(input.amount, "INVALID_ADJUSTMENT_AMOUNT");
     if (!TYPES.has(input.adjustment_type)) throw this.invalid("INVALID_ADJUSTMENT_TYPE", "调整类型无效");
     if (!EFFECTS.has(input.effect)) throw this.invalid("INVALID_ADJUSTMENT_EFFECT", "调整方向无效");
+    if (input.adjustment_type !== "correction" && input.effect !== "decrease") throw this.invalid("ADJUSTMENT_EFFECT_NOT_ALLOWED", "退款、红冲、折让和坏账只能减少应收");
     if (!input.reason?.trim()) throw this.invalid("ADJUSTMENT_REASON_REQUIRED", "调整原因必填");
     const date = this.date(input.adjustment_date);
     const source = input.receivable_source_id
@@ -56,10 +57,10 @@ export class ReceivableAdjustmentService {
     if (!order && !source) throw this.notFound("SALES_ORDER_NOT_FOUND", "订单不存在");
     const customerId = input.customer_id ?? source?.customerId ?? order?.customerId;
     if (!customerId) throw this.invalid("CUSTOMER_REQUIRED", "调整必须关联客户");
-    if (source && (source.orderNo !== orderNo || source.customerId !== customerId || source.currency !== input.currency)) {
+    if (source && (source.orderNo !== orderNo || source.customerId !== customerId || source.currency !== input.currency || ["draft", "cancelled"].includes(source.status))) {
       throw this.invalid("ADJUSTMENT_REFERENCE_MISMATCH", "应收来源与订单、客户或币种不一致");
     }
-    if (order && order.customerId !== customerId) throw this.invalid("ADJUSTMENT_CUSTOMER_MISMATCH", "订单与客户不一致");
+    if (order && (order.customerId !== customerId || order.currency !== input.currency)) throw this.invalid("ADJUSTMENT_REFERENCE_MISMATCH", "订单与客户或币种不一致");
     const row = await this.prisma.receivableAdjustment.create({
       data: {
         adjustmentNo: this.number("ADJ"), orderNo, salesOrderId: source?.salesOrderId ?? order?.id, customerId,
