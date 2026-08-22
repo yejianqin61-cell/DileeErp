@@ -2,7 +2,7 @@
 
 ## 状态
 
-待开发
+已完成（2026-08-22）
 
 ## 目标
 
@@ -30,4 +30,4 @@
 
 ## 完成记录
 
-待填写。
+已完成外加工回厂 QC 状态联动、D7 QC 汇总、现有仓库 RBAC 和审计复用；提交：`5c24cac feat: link e1 qc status to production progress`。

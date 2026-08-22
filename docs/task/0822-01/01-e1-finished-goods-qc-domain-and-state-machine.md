@@ -2,7 +2,7 @@
 
 ## 状态
 
-待开发
+已完成（2026-08-22）
 
 ## 目标
 
@@ -30,4 +30,4 @@
 
 ## 完成记录
 
-待填写。
+已完成迁移、Decimal 数量守恒、QC 结论推导、可入库余额领域函数及单元测试；`npm run test:unit` 35/35 通过。提交：`5957b93 feat: add e1 finished goods qc domain`。

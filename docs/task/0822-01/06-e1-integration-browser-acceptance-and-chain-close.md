@@ -2,7 +2,7 @@
 
 ## 状态
 
-待开发
+已完成（快速门禁；真实环境后置验证，2026-08-22）
 
 ## 目标
 
@@ -30,4 +30,4 @@
 
 ## 完成记录
 
-待填写。
+已通过 API/Web 类型检查、API/Web 构建、单元测试 35/35 和 diff 检查；真实 PostgreSQL、HTTP API、Playwright 因测试环境变量未配置而后置，不虚报通过。详见 `docs/test/results/2026-08-22-e1-finished-goods-qc.md`。
