@@ -277,39 +277,41 @@ model CustomerContact {
 }
 
 model SalesOrder {
-  id                 String              @id @default(uuid()) @db.Uuid
-  orderNo            String              @unique @map("order_no") @db.VarChar(100)
-  customerId         String              @map("customer_id") @db.Uuid
-  contactId          String?             @map("contact_id") @db.Uuid
-  customerSnapshot   Json                @map("customer_snapshot")
-  contactSnapshot    Json?               @map("contact_snapshot")
-  customerPoNo       String?             @map("customer_po_no") @db.VarChar(100)
-  externalContractNo String?             @map("external_contract_no") @db.VarChar(100)
-  orderDate          DateTime            @map("order_date")
-  productName        String              @map("product_name") @db.VarChar(200)
-  productSpec        String?             @map("product_spec") @db.VarChar(1000)
-  quantity           Decimal             @db.Decimal(18, 4)
-  unit               String              @db.VarChar(30)
-  deliveryDate       DateTime?           @map("delivery_date")
-  currency           String              @db.VarChar(10)
-  unitPrice          Decimal?            @map("unit_price") @db.Decimal(18, 4)
-  totalAmount        Decimal?            @map("total_amount") @db.Decimal(18, 4)
-  taxRate            Decimal?            @map("tax_rate") @db.Decimal(8, 4)
-  status             String              @default("draft") @db.VarChar(30)
-  currentVersion     Int                 @default(1) @map("current_version")
-  extensionData      Json                @default("{}") @map("extension_data")
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @updatedAt @map("updated_at")
-  createdBy          String              @map("created_by") @db.Uuid
-  updatedBy          String              @map("updated_by") @db.Uuid
-  deletedAt          DateTime?           @map("deleted_at")
-  deletedBy          String?             @map("deleted_by") @db.Uuid
-  customer           Customer            @relation(fields: [customerId], references: [id])
-  contact            CustomerContact?    @relation(fields: [contactId], references: [id])
-  versions           SalesOrderVersion[]
-  boms               Bom[]
-  purchaseOrders     PurchaseOrder[]
-  productionOrders   ProductionOrder[]
+  id                     String                  @id @default(uuid()) @db.Uuid
+  orderNo                String                  @unique @map("order_no") @db.VarChar(100)
+  customerId             String                  @map("customer_id") @db.Uuid
+  contactId              String?                 @map("contact_id") @db.Uuid
+  customerSnapshot       Json                    @map("customer_snapshot")
+  contactSnapshot        Json?                   @map("contact_snapshot")
+  customerPoNo           String?                 @map("customer_po_no") @db.VarChar(100)
+  externalContractNo     String?                 @map("external_contract_no") @db.VarChar(100)
+  orderDate              DateTime                @map("order_date")
+  productName            String                  @map("product_name") @db.VarChar(200)
+  productSpec            String?                 @map("product_spec") @db.VarChar(1000)
+  quantity               Decimal                 @db.Decimal(18, 4)
+  unit                   String                  @db.VarChar(30)
+  deliveryDate           DateTime?               @map("delivery_date")
+  currency               String                  @db.VarChar(10)
+  unitPrice              Decimal?                @map("unit_price") @db.Decimal(18, 4)
+  totalAmount            Decimal?                @map("total_amount") @db.Decimal(18, 4)
+  taxRate                Decimal?                @map("tax_rate") @db.Decimal(8, 4)
+  status                 String                  @default("draft") @db.VarChar(30)
+  currentVersion         Int                     @default(1) @map("current_version")
+  extensionData          Json                    @default("{}") @map("extension_data")
+  createdAt              DateTime                @default(now()) @map("created_at")
+  updatedAt              DateTime                @updatedAt @map("updated_at")
+  createdBy              String                  @map("created_by") @db.Uuid
+  updatedBy              String                  @map("updated_by") @db.Uuid
+  deletedAt              DateTime?               @map("deleted_at")
+  deletedBy              String?                 @map("deleted_by") @db.Uuid
+  customer               Customer                @relation(fields: [customerId], references: [id])
+  contact                CustomerContact?        @relation(fields: [contactId], references: [id])
+  versions               SalesOrderVersion[]
+  boms                   Bom[]
+  purchaseOrders         PurchaseOrder[]
+  productionOrders       ProductionOrder[]
+  finishedGoodsOutbounds FinishedGoodsOutbound[]
+  customerReturns        CustomerReturn[]
 
   @@index([customerId, status])
   @@index([orderDate])
@@ -452,6 +454,8 @@ model Unit {
   finishedGoodsInspections  FinishedGoodsInspectionSubmission[]
   finishedGoodsInbounds     FinishedGoodsInbound[]
   finishedGoodsDefectives   FinishedGoodsDefective[]
+  finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  customerReturns           CustomerReturn[]
 
   @@map("units")
 }
@@ -679,6 +683,8 @@ model InventoryFact {
   rawMaterialMovementLineId    String?                  @map("raw_material_movement_line_id") @db.Uuid
   finishedGoodsInboundId       String?                  @map("finished_goods_inbound_id") @db.Uuid
   finishedGoodsDefectiveId     String?                  @map("finished_goods_defective_id") @db.Uuid
+  finishedGoodsOutboundId      String?                  @map("finished_goods_outbound_id") @db.Uuid
+  customerReturnId             String?                  @map("customer_return_id") @db.Uuid
   productNameSnapshot          String?                  @map("product_name_snapshot") @db.VarChar(200)
   productSpecificationSnapshot String?                  @map("product_specification_snapshot") @db.VarChar(1000)
   createdAt                    DateTime                 @default(now()) @map("created_at")
@@ -689,6 +695,8 @@ model InventoryFact {
   rawMaterialMovementLine      RawMaterialMovementLine? @relation(fields: [rawMaterialMovementLineId], references: [id])
   finishedGoodsInbound         FinishedGoodsInbound?    @relation(fields: [finishedGoodsInboundId], references: [id])
   finishedGoodsDefective       FinishedGoodsDefective?  @relation(fields: [finishedGoodsDefectiveId], references: [id])
+  finishedGoodsOutbound        FinishedGoodsOutbound?   @relation(fields: [finishedGoodsOutboundId], references: [id])
+  customerReturn               CustomerReturn?          @relation(fields: [customerReturnId], references: [id])
   unit                         Unit                     @relation(fields: [unitId], references: [id])
   unitId                       String                   @map("unit_id") @db.Uuid
 
@@ -698,6 +706,8 @@ model InventoryFact {
   @@index([productionOrderId])
   @@index([finishedGoodsInboundId])
   @@index([finishedGoodsDefectiveId])
+  @@index([finishedGoodsOutboundId])
+  @@index([customerReturnId])
   @@map("inventory_facts")
 }
 
@@ -1021,6 +1031,79 @@ model FinishedGoodsDefective {
   @@map("finished_goods_defectives")
 }
 
+model FinishedGoodsOutbound {
+  id                           String          @id @default(uuid()) @db.Uuid
+  outboundNo                   String          @unique @map("outbound_no") @db.VarChar(100)
+  orderNo                      String          @map("order_no") @db.VarChar(100)
+  salesOrderId                 String          @map("sales_order_id") @db.Uuid
+  productionOrderId            String          @map("production_order_id") @db.Uuid
+  unitId                       String          @map("unit_id") @db.Uuid
+  productNameSnapshot          String?         @map("product_name_snapshot") @db.VarChar(200)
+  productSpecificationSnapshot String?         @map("product_specification_snapshot") @db.VarChar(1000)
+  quantity                     Decimal         @db.Decimal(18, 4)
+  status                       String          @default("draft") @db.VarChar(30)
+  shipmentDate                 DateTime?       @map("shipment_date") @db.Date
+  carrier                      String?         @db.VarChar(200)
+  trackingNo                   String?         @map("tracking_no") @db.VarChar(200)
+  packingListNo                String?         @map("packing_list_no") @db.VarChar(100)
+  invoiceNo                    String?         @map("invoice_no") @db.VarChar(100)
+  signedAt                     DateTime?       @map("signed_at")
+  signatureReference           String?         @map("signature_reference") @db.VarChar(500)
+  attachment                   Json            @default("[]")
+  idempotencyKey               String          @unique @map("idempotency_key") @db.VarChar(200)
+  riskReason                   String?         @map("risk_reason") @db.VarChar(1000)
+  remark                       String?         @db.VarChar(1000)
+  createdAt                    DateTime        @default(now()) @map("created_at")
+  updatedAt                    DateTime        @updatedAt @map("updated_at")
+  createdBy                    String          @map("created_by") @db.Uuid
+  updatedBy                    String          @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?       @map("deleted_at")
+  deletedBy                    String?         @map("deleted_by") @db.Uuid
+  salesOrder                   SalesOrder      @relation(fields: [salesOrderId], references: [id])
+  productionOrder              ProductionOrder @relation(fields: [productionOrderId], references: [id])
+  unit                         Unit            @relation(fields: [unitId], references: [id])
+  inventoryFacts               InventoryFact[]
+
+  @@index([orderNo, status])
+  @@index([salesOrderId, status])
+  @@index([productionOrderId, status])
+  @@map("finished_goods_outbounds")
+}
+
+model CustomerReturn {
+  id                           String          @id @default(uuid()) @db.Uuid
+  returnNo                     String          @unique @map("return_no") @db.VarChar(100)
+  orderNo                      String          @map("order_no") @db.VarChar(100)
+  salesOrderId                 String          @map("sales_order_id") @db.Uuid
+  productionOrderId            String          @map("production_order_id") @db.Uuid
+  unitId                       String          @map("unit_id") @db.Uuid
+  productNameSnapshot          String?         @map("product_name_snapshot") @db.VarChar(200)
+  productSpecificationSnapshot String?         @map("product_specification_snapshot") @db.VarChar(1000)
+  quantity                     Decimal         @db.Decimal(18, 4)
+  returnDate                   DateTime        @map("return_date") @db.Date
+  destination                  String          @db.VarChar(30)
+  reason                       String          @db.VarChar(1000)
+  status                       String          @default("draft") @db.VarChar(30)
+  idempotencyKey               String          @unique @map("idempotency_key") @db.VarChar(200)
+  attachment                   Json            @default("[]")
+  remark                       String?         @db.VarChar(1000)
+  createdAt                    DateTime        @default(now()) @map("created_at")
+  updatedAt                    DateTime        @updatedAt @map("updated_at")
+  createdBy                    String          @map("created_by") @db.Uuid
+  updatedBy                    String          @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?       @map("deleted_at")
+  deletedBy                    String?         @map("deleted_by") @db.Uuid
+  salesOrder                   SalesOrder      @relation(fields: [salesOrderId], references: [id])
+  productionOrder              ProductionOrder @relation(fields: [productionOrderId], references: [id])
+  unit                         Unit            @relation(fields: [unitId], references: [id])
+  inventoryFacts               InventoryFact[]
+
+  @@index([orderNo, status])
+  @@index([salesOrderId, status])
+  @@index([productionOrderId, status])
+  @@map("customer_returns")
+}
+
 model ProductionOrder {
   id                        String                              @id @default(uuid()) @db.Uuid
   productionOrderNo         String                              @unique @map("production_order_no") @db.VarChar(100)
@@ -1069,6 +1152,8 @@ model ProductionOrder {
   finishedGoodsInspections  FinishedGoodsInspectionSubmission[]
   finishedGoodsInbounds     FinishedGoodsInbound[]
   finishedGoodsDefectives   FinishedGoodsDefective[]
+  finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  customerReturns           CustomerReturn[]
 
   @@index([orderNo, status])
   @@index([salesOrderId, productionOrderType])
