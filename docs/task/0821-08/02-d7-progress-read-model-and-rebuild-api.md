@@ -1,11 +1,11 @@
 # D7 生产计量读模型与重算 API
 
 ## 状态
-待认领
+已完成
 
 ## 认领
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-22
 
 ## 目标
 
@@ -42,5 +42,8 @@
 
 ## 完成记录
 
-<!-- 填写实现、测试、提交哈希和剩余风险 -->
+已实现生产计量查询、订单状态查询、订单时间线和管理员重算 API，复用 D5/D6 来源事实实时汇总；未新增重复产量事实表。已接入生产模块、鉴权、生产权限、分页、Decimal 字符串和重算范围返回。
 
+验证：`npm run typecheck --workspace=@dilee/api`、`npm run build --workspace=@dilee/api`、`npm run test:unit`（30/30）通过。
+
+提交：`6b3cf3e feat: expose d7 progress read models`
