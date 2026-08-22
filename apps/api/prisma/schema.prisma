@@ -232,25 +232,27 @@ model AuditEvent {
 }
 
 model Customer {
-  id                String             @id @default(uuid()) @db.Uuid
-  customerCode      String             @unique @map("customer_code") @db.VarChar(80)
-  name              String             @unique @db.VarChar(200)
-  countryRegion     String?            @map("country_region") @db.VarChar(100)
-  address           String?            @db.VarChar(500)
-  paymentTerms      String?            @map("payment_terms") @db.VarChar(200)
-  currency          String?            @db.VarChar(10)
-  remark            String?            @db.VarChar(1000)
-  isActive          Boolean            @default(true) @map("is_active")
-  createdAt         DateTime           @default(now()) @map("created_at")
-  updatedAt         DateTime           @updatedAt @map("updated_at")
-  createdBy         String             @map("created_by") @db.Uuid
-  updatedBy         String             @map("updated_by") @db.Uuid
-  deletedAt         DateTime?          @map("deleted_at")
-  deletedBy         String?            @map("deleted_by") @db.Uuid
-  contacts          CustomerContact[]
-  salesOrders       SalesOrder[]
-  receivableSources ReceivableSource[]
-  customerPayments  CustomerPayment[]
+  id                        String                     @id @default(uuid()) @db.Uuid
+  customerCode              String                     @unique @map("customer_code") @db.VarChar(80)
+  name                      String                     @unique @db.VarChar(200)
+  countryRegion             String?                    @map("country_region") @db.VarChar(100)
+  address                   String?                    @db.VarChar(500)
+  paymentTerms              String?                    @map("payment_terms") @db.VarChar(200)
+  currency                  String?                    @db.VarChar(10)
+  remark                    String?                    @db.VarChar(1000)
+  isActive                  Boolean                    @default(true) @map("is_active")
+  createdAt                 DateTime                   @default(now()) @map("created_at")
+  updatedAt                 DateTime                   @updatedAt @map("updated_at")
+  createdBy                 String                     @map("created_by") @db.Uuid
+  updatedBy                 String                     @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                  @map("deleted_at")
+  deletedBy                 String?                    @map("deleted_by") @db.Uuid
+  contacts                  CustomerContact[]
+  salesOrders               SalesOrder[]
+  receivableSources         ReceivableSource[]
+  customerPayments          CustomerPayment[]
+  receivableAdjustments     ReceivableAdjustment[]
+  receivableReconciliations ReceivableReconciliation[]
 
   @@map("customers")
 }
@@ -279,43 +281,45 @@ model CustomerContact {
 }
 
 model SalesOrder {
-  id                     String                  @id @default(uuid()) @db.Uuid
-  orderNo                String                  @unique @map("order_no") @db.VarChar(100)
-  customerId             String                  @map("customer_id") @db.Uuid
-  contactId              String?                 @map("contact_id") @db.Uuid
-  customerSnapshot       Json                    @map("customer_snapshot")
-  contactSnapshot        Json?                   @map("contact_snapshot")
-  customerPoNo           String?                 @map("customer_po_no") @db.VarChar(100)
-  externalContractNo     String?                 @map("external_contract_no") @db.VarChar(100)
-  orderDate              DateTime                @map("order_date")
-  productName            String                  @map("product_name") @db.VarChar(200)
-  productSpec            String?                 @map("product_spec") @db.VarChar(1000)
-  quantity               Decimal                 @db.Decimal(18, 4)
-  unit                   String                  @db.VarChar(30)
-  deliveryDate           DateTime?               @map("delivery_date")
-  currency               String                  @db.VarChar(10)
-  unitPrice              Decimal?                @map("unit_price") @db.Decimal(18, 4)
-  totalAmount            Decimal?                @map("total_amount") @db.Decimal(18, 4)
-  taxRate                Decimal?                @map("tax_rate") @db.Decimal(8, 4)
-  status                 String                  @default("draft") @db.VarChar(30)
-  currentVersion         Int                     @default(1) @map("current_version")
-  extensionData          Json                    @default("{}") @map("extension_data")
-  createdAt              DateTime                @default(now()) @map("created_at")
-  updatedAt              DateTime                @updatedAt @map("updated_at")
-  createdBy              String                  @map("created_by") @db.Uuid
-  updatedBy              String                  @map("updated_by") @db.Uuid
-  deletedAt              DateTime?               @map("deleted_at")
-  deletedBy              String?                 @map("deleted_by") @db.Uuid
-  customer               Customer                @relation(fields: [customerId], references: [id])
-  contact                CustomerContact?        @relation(fields: [contactId], references: [id])
-  versions               SalesOrderVersion[]
-  boms                   Bom[]
-  purchaseOrders         PurchaseOrder[]
-  productionOrders       ProductionOrder[]
-  finishedGoodsOutbounds FinishedGoodsOutbound[]
-  customerReturns        CustomerReturn[]
-  receivableSources      ReceivableSource[]
-  customerPayments       CustomerPayment[]
+  id                        String                     @id @default(uuid()) @db.Uuid
+  orderNo                   String                     @unique @map("order_no") @db.VarChar(100)
+  customerId                String                     @map("customer_id") @db.Uuid
+  contactId                 String?                    @map("contact_id") @db.Uuid
+  customerSnapshot          Json                       @map("customer_snapshot")
+  contactSnapshot           Json?                      @map("contact_snapshot")
+  customerPoNo              String?                    @map("customer_po_no") @db.VarChar(100)
+  externalContractNo        String?                    @map("external_contract_no") @db.VarChar(100)
+  orderDate                 DateTime                   @map("order_date")
+  productName               String                     @map("product_name") @db.VarChar(200)
+  productSpec               String?                    @map("product_spec") @db.VarChar(1000)
+  quantity                  Decimal                    @db.Decimal(18, 4)
+  unit                      String                     @db.VarChar(30)
+  deliveryDate              DateTime?                  @map("delivery_date")
+  currency                  String                     @db.VarChar(10)
+  unitPrice                 Decimal?                   @map("unit_price") @db.Decimal(18, 4)
+  totalAmount               Decimal?                   @map("total_amount") @db.Decimal(18, 4)
+  taxRate                   Decimal?                   @map("tax_rate") @db.Decimal(8, 4)
+  status                    String                     @default("draft") @db.VarChar(30)
+  currentVersion            Int                        @default(1) @map("current_version")
+  extensionData             Json                       @default("{}") @map("extension_data")
+  createdAt                 DateTime                   @default(now()) @map("created_at")
+  updatedAt                 DateTime                   @updatedAt @map("updated_at")
+  createdBy                 String                     @map("created_by") @db.Uuid
+  updatedBy                 String                     @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                  @map("deleted_at")
+  deletedBy                 String?                    @map("deleted_by") @db.Uuid
+  customer                  Customer                   @relation(fields: [customerId], references: [id])
+  contact                   CustomerContact?           @relation(fields: [contactId], references: [id])
+  versions                  SalesOrderVersion[]
+  boms                      Bom[]
+  purchaseOrders            PurchaseOrder[]
+  productionOrders          ProductionOrder[]
+  finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  customerReturns           CustomerReturn[]
+  receivableSources         ReceivableSource[]
+  customerPayments          CustomerPayment[]
+  receivableAdjustments     ReceivableAdjustment[]
+  receivableReconciliations ReceivableReconciliation[]
 
   @@index([customerId, status])
   @@index([orderDate])
@@ -1140,6 +1144,7 @@ model ReceivableSource {
   outbound         FinishedGoodsOutbound  @relation(fields: [outboundId], references: [id])
   customer         Customer               @relation(fields: [customerId], references: [id])
   allocations      ReceivableAllocation[]
+  adjustments      ReceivableAdjustment[]
 
   @@index([orderNo, status])
   @@index([customerId, status])
@@ -1196,6 +1201,72 @@ model ReceivableAllocation {
   @@unique([paymentId, receivableSourceId])
   @@index([receivableSourceId, status])
   @@map("receivable_allocations")
+}
+
+model ReceivableAdjustment {
+  id                 String            @id @default(uuid()) @db.Uuid
+  adjustmentNo       String            @unique @map("adjustment_no") @db.VarChar(100)
+  orderNo            String            @map("order_no") @db.VarChar(100)
+  salesOrderId       String?           @map("sales_order_id") @db.Uuid
+  customerId         String            @map("customer_id") @db.Uuid
+  receivableSourceId String?           @map("receivable_source_id") @db.Uuid
+  adjustmentType     String            @map("adjustment_type") @db.VarChar(30)
+  effect             String            @db.VarChar(20)
+  amount             Decimal           @db.Decimal(18, 4)
+  currency           String            @db.VarChar(10)
+  reason             String            @db.VarChar(1000)
+  adjustmentDate     DateTime          @map("adjustment_date") @db.Date
+  status             String            @default("draft") @db.VarChar(30)
+  attachment         Json              @default("[]")
+  remark             String?           @db.VarChar(1000)
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  createdBy          String            @map("created_by") @db.Uuid
+  updatedBy          String            @map("updated_by") @db.Uuid
+  deletedAt          DateTime?         @map("deleted_at")
+  deletedBy          String?           @map("deleted_by") @db.Uuid
+  salesOrder         SalesOrder?       @relation(fields: [salesOrderId], references: [id])
+  customer           Customer          @relation(fields: [customerId], references: [id])
+  receivableSource   ReceivableSource? @relation(fields: [receivableSourceId], references: [id])
+
+  @@index([orderNo, status])
+  @@index([customerId, status])
+  @@index([receivableSourceId, status])
+  @@map("receivable_adjustments")
+}
+
+model ReceivableReconciliation {
+  id                       String      @id @default(uuid()) @db.Uuid
+  reconciliationNo         String      @unique @map("reconciliation_no") @db.VarChar(100)
+  orderNo                  String      @map("order_no") @db.VarChar(100)
+  salesOrderId             String?     @map("sales_order_id") @db.Uuid
+  customerId               String      @map("customer_id") @db.Uuid
+  periodStart              DateTime    @map("period_start") @db.Date
+  periodEnd                DateTime    @map("period_end") @db.Date
+  receivableAmountSnapshot Decimal     @map("receivable_amount_snapshot") @db.Decimal(18, 4)
+  paymentAmountSnapshot    Decimal     @map("payment_amount_snapshot") @db.Decimal(18, 4)
+  adjustmentAmountSnapshot Decimal     @map("adjustment_amount_snapshot") @db.Decimal(18, 4)
+  systemBalance            Decimal     @map("system_balance") @db.Decimal(18, 4)
+  externalBalance          Decimal     @map("external_balance") @db.Decimal(18, 4)
+  difference               Decimal     @db.Decimal(18, 4)
+  currency                 String      @db.VarChar(10)
+  status                   String      @default("pending") @db.VarChar(30)
+  resolutionRemark         String?     @map("resolution_remark") @db.VarChar(1000)
+  attachment               Json        @default("[]")
+  remark                   String?     @db.VarChar(1000)
+  createdAt                DateTime    @default(now()) @map("created_at")
+  updatedAt                DateTime    @updatedAt @map("updated_at")
+  createdBy                String      @map("created_by") @db.Uuid
+  updatedBy                String      @map("updated_by") @db.Uuid
+  deletedAt                DateTime?   @map("deleted_at")
+  deletedBy                String?     @map("deleted_by") @db.Uuid
+  salesOrder               SalesOrder? @relation(fields: [salesOrderId], references: [id])
+  customer                 Customer    @relation(fields: [customerId], references: [id])
+
+  @@index([orderNo, status])
+  @@index([customerId, status])
+  @@index([periodStart, periodEnd])
+  @@map("receivable_reconciliations")
 }
 
 model ProductionOrder {
