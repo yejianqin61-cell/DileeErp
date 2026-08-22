@@ -26,6 +26,7 @@ export class FinanceController {
   @Post("receivable-sources/:id/cancel") async cancelSource(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.cancel(id, body.reason, user), meta: {} }; }
   @Get("receivable-sources/:id/impact-preview") async impact(@Param("id") id: string) { return { data: await this.receivable.impactPreview(id), meta: {} }; }
   @Get("customer-payments") async listPayments(@Query("order_no") orderNo?: string, @Query("customer_id") customerId?: string) { return { data: await this.payments.list(orderNo, customerId), meta: {} }; }
+  @Get("customer-payments/:id") async getPayment(@Param("id") id: string) { return { data: await this.payments.get(id), meta: {} }; }
   @Post("customer-payments") async createPayment(@Body() body: PaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.create(body, user), meta: {} }; }
   @Post("customer-payments/:id/post") async postPayment(@Param("id") id: string, @Body() body: PostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.post(id, body.allocations, user), meta: {} }; }
   @Post("customer-payments/:id/reverse") async reversePayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.reverse(id, body.reason, user), meta: {} }; }
