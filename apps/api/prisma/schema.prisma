@@ -827,6 +827,7 @@ model OutsourceReturnTransfer {
   quantity           Decimal                  @db.Decimal(18, 4)
   transferDate       DateTime                 @map("transfer_date") @db.Date
   status             String                   @default("draft") @db.VarChar(30)
+  finishedGoodsQcStatus String                 @default("not_submitted") @map("finished_goods_qc_status") @db.VarChar(30)
   remark             String?                  @db.VarChar(1000)
   createdAt          DateTime                 @default(now()) @map("created_at")
   updatedAt          DateTime                 @updatedAt @map("updated_at")

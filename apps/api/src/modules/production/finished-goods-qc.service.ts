@@ -77,6 +77,7 @@ export class FinishedGoodsQcService {
     const current = await this.getSubmission(id);
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_SUBMITTABLE", message: "只有草稿送检单可以提交", details: [] });
     const result = await this.prisma.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "submitted", ...this.audit.update(user) } });
+    if (current.sourceType === "outsource_finished_goods_return") await this.prisma.outsourceReturnTransfer.update({ where: { id: current.sourceId }, data: { finishedGoodsQcStatus: "submitted", ...this.audit.update(user) } });
     await this.audit.record("finished_goods_inspection_submission.submit", "finished_goods_inspection_submission", user.id, id, { order_no: current.orderNo });
     return result;
   }
@@ -86,6 +87,7 @@ export class FinishedGoodsQcService {
     const current = await this.getSubmission(id);
     if (!["draft", "submitted"].includes(current.status) || current.qcRecords.length > 0) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_CANCELLABLE", message: "当前送检单不允许取消", details: [] });
     const result = await this.prisma.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "cancelled", remark: `${current.remark ?? ""}\n取消：${reason}`, ...this.audit.update(user) } });
+    if (current.sourceType === "outsource_finished_goods_return") await this.prisma.outsourceReturnTransfer.update({ where: { id: current.sourceId }, data: { finishedGoodsQcStatus: "not_submitted", ...this.audit.update(user) } });
     await this.audit.record("finished_goods_inspection_submission.cancel", "finished_goods_inspection_submission", user.id, id, { order_no: current.orderNo, reason });
     return result;
   }
@@ -108,6 +110,7 @@ export class FinishedGoodsQcService {
       const row = await tx.finishedGoodsQcRecord.create({ data: { qcNo: `FQC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, submissionId: submission.id, orderNo: submission.orderNo, productionOrderId: submission.productionOrderId, sourceType: submission.sourceType, sourceId: submission.sourceId, inspectionDate: date, inspectedQuantity: quantities.inspected_quantity, qualifiedQuantity: quantities.qualified_quantity, conditionalAcceptQuantity: quantities.conditional_accept_quantity, rejectedQuantity: quantities.rejected_quantity, conclusion: quantities.conclusion, rejectionReason: input.rejection_reason, remark: input.remark, ...this.audit.create(user) } });
       const nextStatus = used.plus(inspected).eq(submission.submittedQuantity) ? "qc_completed" : "inspecting";
       await tx.finishedGoodsInspectionSubmission.update({ where: { id: submission.id }, data: { status: nextStatus, ...this.audit.update(user) } });
+      if (submission.sourceType === "outsource_finished_goods_return") await tx.outsourceReturnTransfer.update({ where: { id: submission.sourceId }, data: { finishedGoodsQcStatus: nextStatus === "qc_completed" ? "qc_completed" : "inspecting", ...this.audit.update(user) } });
       return row;
     });
     await this.audit.record("finished_goods_qc_record.create", "finished_goods_qc_record", user.id, created.id, { order_no: created.orderNo, submission_id: created.submissionId, conclusion: created.conclusion, inspected_quantity: created.inspectedQuantity.toString() });
@@ -134,6 +137,8 @@ export class FinishedGoodsQcService {
     const replacement = await this.prisma.$transaction(async (tx) => {
       await tx.finishedGoodsQcRecord.update({ where: { id }, data: { status: "corrected", correctionReason: input.reason, correctedAt: new Date(), ...this.audit.update(user) } });
       const created = await tx.finishedGoodsQcRecord.create({ data: { qcNo: `FQC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, submissionId: current.submissionId, orderNo: current.orderNo, productionOrderId: current.productionOrderId, sourceType: current.sourceType, sourceId: current.sourceId, inspectionDate: this.date(input.inspection_date), inspectedQuantity: quantities.inspected_quantity, qualifiedQuantity: quantities.qualified_quantity, conditionalAcceptQuantity: quantities.conditional_accept_quantity, rejectedQuantity: quantities.rejected_quantity, conclusion: quantities.conclusion, rejectionReason: input.rejection_reason, remark: input.remark, ...this.audit.create(user) } });
+      await tx.finishedGoodsInspectionSubmission.update({ where: { id: current.submissionId }, data: { status: "qc_completed", ...this.audit.update(user) } });
+      if (current.sourceType === "outsource_finished_goods_return") await tx.outsourceReturnTransfer.update({ where: { id: current.sourceId }, data: { finishedGoodsQcStatus: "qc_completed", ...this.audit.update(user) } });
       return created;
     });
     await this.audit.record("finished_goods_qc_record.correct", "finished_goods_qc_record", user.id, id, { order_no: current.orderNo, replacement_qc_id: replacement.id, reason: input.reason });
