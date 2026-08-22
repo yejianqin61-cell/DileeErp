@@ -1,0 +1,10 @@
+# 厂内部署运行手册
+
+1. 复制 `.env.factory.example` 为 `.env.factory`，替换数据库密码和初始管理员密码；不要将该文件提交到 Git。
+2. 检查编排：`npm run factory:config`。
+3. 启动并构建：`npm run factory:up`。
+4. 查看状态和日志：`docker compose -f docker-compose.factory.yml --env-file .env.factory ps`、`npm run factory:logs`。
+5. 在厂内浏览器访问 `http://服务器地址:3000`，健康检查为 `http://服务器地址:3001/api/v1/health`。
+6. 停止服务：`npm run factory:down`。升级前先执行备份，升级失败时固定镜像版本并回滚。
+
+数据库端口只存在于 Compose 内部网络；备份目录必须位于独立厂内存储设备。
