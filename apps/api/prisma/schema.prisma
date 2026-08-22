@@ -1939,3 +1939,20 @@ model SalaryPaymentAllocation {
   @@index([ledgerId, status])
   @@map("salary_payment_allocations")
 }
+
+model AlertHandling {
+  id         String   @id @default(uuid()) @db.Uuid
+  sourceType String   @map("source_type") @db.VarChar(50)
+  sourceId   String   @map("source_id") @db.Uuid
+  alertType  String   @map("alert_type") @db.VarChar(50)
+  status     String   @default("acknowledged") @db.VarChar(30)
+  remark     String?  @db.VarChar(1000)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  createdBy  String   @map("created_by") @db.Uuid
+  updatedBy  String   @map("updated_by") @db.Uuid
+
+  @@unique([sourceType, sourceId, alertType])
+  @@index([status, updatedAt])
+  @@map("alert_handlings")
+}
