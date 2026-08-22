@@ -1,11 +1,11 @@
 # D7 集成测试、浏览器验收与链路关闭
 
 ## 状态
-待认领
+已完成（真实环境后置验证）
 
 ## 认领
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-22
 
 ## 目标
 
@@ -40,5 +40,10 @@
 
 ## 完成记录
 
-<!-- 填写实现、测试、提交哈希和剩余风险 -->
+已补 D7 PostgreSQL 集成旅程断言、匿名 HTTP 路由测试和 Playwright 工作台断言；D5 集成测试已接入 D7 重算服务并验证订单状态/重算审计。已记录测试结果和环境阻断，不虚报真实环境通过。
 
+已通过：API/Web 类型检查、API/Web 构建、单元测试 30/30、D7 领域测试 3/3、测试脚本语法检查。
+
+后置验证：`TEST_DATABASE_URL`、`API_BASE_URL`、`PLAYWRIGHT_BASE_URL` 未配置，PostgreSQL、HTTP API、Playwright 尚未运行，详见 `docs/test/results/2026-08-22-d7-implementation.md`。
+
+提交：`74be536 test: close d7 progress chain`

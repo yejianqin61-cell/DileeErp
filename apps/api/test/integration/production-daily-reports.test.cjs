@@ -5,6 +5,7 @@ const { PrismaClient } = require("@prisma/client");
 const { OperationDailyReportsService } = require("../../dist/modules/production/operation-daily-reports.service.js");
 const { EmployeeDailyReportsService } = require("../../dist/modules/production/employee-daily-reports.service.js");
 const { ProductionDailyAlertsService } = require("../../dist/modules/production/production-daily-alerts.service.js");
+const { ProductionProgressService } = require("../../dist/modules/production/production-progress.service.js");
 const { AuditService } = require("../../dist/platform/audit/audit.service.js");
 const { requireTestDatabaseUrl, testRun } = require("../../../../tests/helpers/test-context.cjs");
 
@@ -26,21 +27,24 @@ test("production.daily-reports.calculates-progress-payroll-and-alert-lifecycle",
     await prisma.operationRate.createMany({ data: [{ employeeId: employee.id, operationId: operation.id, wageMode: "piece_rate", unitPrice: "2", effectiveFrom: new Date("2026-01-01"), ...fixtureAudit }, { employeeId: employee.id, operationId: operation.id, wageMode: "time_rate", unitPrice: "3", effectiveFrom: new Date("2026-01-01"), ...fixtureAudit }] });
     const productionOrder = await prisma.productionOrder.create({ data: { productionOrderNo: `MO-${run.id}`, orderNo: run.orderNo, salesOrderId: sales.id, bomId: bom.id, bomVersion: 1, bomSnapshot: {}, executionMode: "in_house", executionLocationId: location.id, plannedQuantity: "5", unitId: unit.id, status: "in_progress", ...fixtureAudit } });
     const productionOperation = await prisma.productionOrderOperation.create({ data: { productionOrderId: productionOrder.id, operationCatalogId: operation.id, operationNameSnapshot: operation.operationName, unitId: unit.id, sequenceNo: 1, targetQuantity: "5", ...fixtureAudit } });
-    const operationReports = new OperationDailyReportsService(prisma, audit); const employeeReports = new EmployeeDailyReportsService(prisma, audit); const alerts = new ProductionDailyAlertsService(prisma, audit);
+    const progressService = new ProductionProgressService(prisma, audit); const operationReports = new OperationDailyReportsService(prisma, audit, progressService); const employeeReports = new EmployeeDailyReportsService(prisma, audit, progressService); const alerts = new ProductionDailyAlertsService(prisma, audit);
 
     const first = await operationReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, report_date: "2026-08-21", completed_quantity: "6", idempotency_key: "d5-operation-key" }, user);
     const duplicate = await operationReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, report_date: "2026-08-21", completed_quantity: "6", idempotency_key: "d5-operation-key" }, user); assert.equal(duplicate.id, first.id);
     let progress = await operationReports.progress(productionOrder.id); assert.equal(progress.operations[0].status, "over_order"); assert.equal(progress.operations[0].over_order_quantity, "1");
+    let d7Progress = await progressService.getProductionOrderProgress(productionOrder.id); assert.equal(d7Progress.status, "blocked"); assert.ok(d7Progress.blockers.includes("over_order_unconfirmed"));
     let dailyAlerts = await alerts.list({ alert_type: "over_order" }); assert.equal(dailyAlerts.length, 1); await alerts.confirm(dailyAlerts[0].id, "已核对超单", user);
     const piece = await employeeReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, employee_id: employee.id, report_date: "2026-08-21", wage_mode: "piece_rate", quantity: "4" }, user); assert.equal(piece.calculatedAmount.toString(), "8");
     const time = await employeeReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, employee_id: employee.id, report_date: "2026-08-21", wage_mode: "time_rate", quantity: "2", duration_minutes: "60" }, user); assert.equal(time.calculatedAmount.toString(), "180");
     dailyAlerts = await alerts.list({ alert_type: "daily_discrepancy" }); assert.equal(dailyAlerts[0].status, "recovered");
+    d7Progress = await progressService.getProductionOrderProgress(productionOrder.id); assert.equal(d7Progress.status, "production_completed"); assert.equal(d7Progress.blockers.length, 0); assert.equal(d7Progress.capability_not_implemented.length, 0);
     const sources = await employeeReports.payrollSources({ from: "2026-08-01", to: "2026-08-31" }); assert.equal(sources.length, 2); assert.deepEqual(sources.map((item) => item.amount).sort(), ["180", "8"]);
     const extra = await operationReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, report_date: "2026-08-21", completed_quantity: "1" }, user); dailyAlerts = await alerts.list({ alert_type: "over_order" }); assert.equal(dailyAlerts[0].status, "pending");
     await operationReports.update(first.id, { completed_quantity: "6", reason: "复核日报", expected_version: 1 }, user);
     await assert.rejects(() => operationReports.update(first.id, { completed_quantity: "7", reason: "并发旧版本", expected_version: 1 }, user), (error) => error.getResponse().code === "DAILY_REPORT_VERSION_CONFLICT");
     await operationReports.remove(extra.id, "撤回误报", user); progress = await operationReports.progress(productionOrder.id); assert.equal(progress.operations[0].cumulative_quantity, "6");
     assert.equal((await alerts.auditEvents(dailyAlerts[0].id)).length > 0, true);
+    assert.equal((await prisma.auditEvent.count({ where: { entityType: "production_progress", entityId: productionOrder.id } })) >= 5, true);
   } finally {
     const orderNo = run.orderNo.replaceAll("'", "''");
     await prisma.productionDailyAlert.deleteMany({ where: { orderNo: run.orderNo } });
