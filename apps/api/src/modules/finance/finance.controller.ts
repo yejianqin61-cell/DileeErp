@@ -31,4 +31,5 @@ export class FinanceController {
   @Post("customer-payments/:id/post") async postPayment(@Param("id") id: string, @Body() body: PostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.post(id, body.allocations, user), meta: {} }; }
   @Post("customer-payments/:id/reverse") async reversePayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.reverse(id, body.reason, user), meta: {} }; }
   @Get("order-summary") async orderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.payments.orderSummary(orderNo) : [], meta: {} }; }
+  @Get("receivable-order-summary") async receivableOrderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.receivable.orderSummary(orderNo) : [], meta: {} }; }
 }
