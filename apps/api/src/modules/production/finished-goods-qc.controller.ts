@@ -6,6 +6,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { FinishedGoodsQcService } from "./finished-goods-qc.service";
+import { FinishedGoodsInventoryService } from "../warehouse/finished-goods-inventory.service";
 
 class SubmissionDto { @IsUUID() production_order_id!: string; @IsString() source_type!: "in_house_completion" | "outsource_finished_goods_return"; @IsUUID() source_id!: string; @IsString() submitted_quantity!: string; @IsDateString() submission_date!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class UpdateSubmissionDto { @IsOptional() @IsString() submitted_quantity?: string; @IsOptional() @IsDateString() submission_date?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsString() reason!: string; @IsOptional() expected_version?: number; }
@@ -16,7 +17,7 @@ class CorrectQcDto { @IsDateString() inspection_date!: string; @IsString() inspe
 @Controller("finished-goods")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 export class FinishedGoodsQcController {
-  constructor(private readonly qc: FinishedGoodsQcService) {}
+  constructor(private readonly qc: FinishedGoodsQcService, private readonly inventory: FinishedGoodsInventoryService) {}
   @Get("qc/sources") @RequireModules("warehouse") async sources(@Query("order_no") orderNo?: string, @Query("production_order_id") productionOrderId?: string, @Query("source_type") sourceType?: "in_house_completion" | "outsource_finished_goods_return") { return { data: await this.qc.listSources(orderNo, productionOrderId, sourceType), meta: {} }; }
   @Get("inspection-submissions") @RequireModules("warehouse") async list(@Query("order_no") orderNo?: string) { return { data: await this.qc.listSubmissions(orderNo), meta: {} }; }
   @Get("inspection-submissions/:id") @RequireModules("warehouse") async get(@Param("id") id: string) { return { data: await this.qc.getSubmission(id), meta: {} }; }
@@ -26,7 +27,7 @@ export class FinishedGoodsQcController {
   @Post("inspection-submissions/:id/cancel") @RequireModules("warehouse") async cancel(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.qc.cancel(id, body.reason, user), meta: {} }; }
   @Get("qc-records") @RequireModules("warehouse") async qcRecords(@Query("order_no") orderNo?: string) { return { data: await this.qc.listQcRecords(orderNo), meta: {} }; }
   @Get("qc-records/available-inbound-sources") @RequireModules("warehouse") async availableInbound(@Query("order_no") orderNo?: string) { return { data: await this.qc.availableInboundSources(orderNo), meta: {} }; }
-  @Get("qc-records/:id/impact-preview") @RequireModules("warehouse") async impact(@Param("id") id: string) { return { data: await this.qc.impactPreview(id), meta: {} }; }
+  @Get("qc-records/:id/impact-preview") @RequireModules("warehouse") async impact(@Param("id") id: string) { return { data: await this.inventory.impactPreview(id), meta: {} }; }
   @Post("qc-records") @RequireModules("warehouse") async createQc(@Body() body: QcDto, @CurrentUser() user: CurrentUserType) { return { data: await this.qc.createQcRecord(body, user), meta: {} }; }
   @Post("qc-records/:id/correct") @RequireModules("warehouse") async correct(@Param("id") id: string, @Body() body: CorrectQcDto, @CurrentUser() user: CurrentUserType) { return { data: await this.qc.correctQc(id, body, user), meta: {} }; }
 }
