@@ -1,11 +1,11 @@
 # D7 来源联动与事务性重算
 
 ## 状态
-待认领
+已完成
 
 ## 认领
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-22
 
 ## 目标
 
@@ -40,5 +40,8 @@
 
 ## 完成记录
 
-<!-- 填写实现、测试、提交哈希和剩余风险 -->
+已将工序日报、员工日报和外加工成品回厂/直装柜的新增、修改、删除、提交、冲销路径接入 D7 重算，并记录 `production_progress.recalculate` 审计事件。原料直发、签收和余料回厂不触发生产完成计量。D7 不持久化可过期摘要，查询始终从来源事实重算。
 
+验证：`npm run typecheck --workspace=@dilee/api`、`npm run build --workspace=@dilee/api`、`npm run test:unit`（30/30）通过。
+
+提交：`e201752 feat: recalculate d7 progress from source changes`

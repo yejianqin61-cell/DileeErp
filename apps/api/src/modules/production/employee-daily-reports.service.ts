@@ -3,13 +3,14 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { ProductionProgressService } from "./production-progress.service";
 
 type Input = { production_order_id: string; production_order_operation_id: string; employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_minutes?: string; unit_price?: string; price_override_reason?: string; remark?: string; idempotency_key?: string };
 type Filter = { employee_id?: string; order_no?: string; production_order_id?: string; production_order_operation_id?: string; report_date?: string; from?: string; to?: string; wage_mode?: string };
 
 @Injectable()
 export class EmployeeDailyReportsService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly progress: ProductionProgressService) {}
 
   async list(filter: Filter) {
     return this.prisma.employeeDailyReport.findMany({ where: { deletedAt: null, ...(filter.employee_id ? { employeeId: filter.employee_id } : {}), ...(filter.order_no ? { orderNo: filter.order_no } : {}), ...(filter.production_order_id ? { productionOrderId: filter.production_order_id } : {}), ...(filter.production_order_operation_id ? { productionOrderOperationId: filter.production_order_operation_id } : {}), ...(filter.wage_mode ? { wageMode: filter.wage_mode } : {}), ...(filter.report_date ? { reportDate: this.date(filter.report_date) } : {}), ...(filter.from || filter.to ? { reportDate: { ...(filter.from ? { gte: this.date(filter.from) } : {}), ...(filter.to ? { lte: this.date(filter.to) } : {}) } } : {}) }, include: { employee: true, productionOrderOperation: true }, orderBy: [{ reportDate: "desc" }, { createdAt: "desc" }] });
@@ -31,6 +32,7 @@ export class EmployeeDailyReportsService {
       return row;
     });
     await this.audit.record("employee_daily_report.create", "employee_daily_report", user.id, created.id, { order_no: created.orderNo, reason: input.remark ?? null });
+    await this.progress.recalculateAfterSourceChange(created.productionOrderId, "employee_daily_report", created.id, user);
     return this.get(created.id);
   }
 
@@ -50,6 +52,7 @@ export class EmployeeDailyReportsService {
       return row;
     });
     await this.audit.record("employee_daily_report.update", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason: input.reason, before_amount: current.calculatedAmount.toString(), after_amount: values.amount.toString() });
+    await this.progress.recalculateAfterSourceChange(current.productionOrderId, "employee_daily_report", id, user);
     return updated;
   }
 
@@ -60,6 +63,7 @@ export class EmployeeDailyReportsService {
     await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, current.reportDate.toISOString().slice(0, 10), true);
     const removed = await this.prisma.$transaction(async (tx) => { const row = await tx.employeeDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } }); await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user); return row; });
     await this.audit.record("employee_daily_report.delete", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason });
+    await this.progress.recalculateAfterSourceChange(current.productionOrderId, "employee_daily_report", id, user);
     return removed;
   }
 

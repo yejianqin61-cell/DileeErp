@@ -1,13 +1,21 @@
 import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { AuditService } from "../../platform/audit/audit.service";
+import type { CurrentUser } from "../../platform/auth/auth.service";
 import { aggregateMeasurementRows, calculateQuantityProgress, deriveOrderProgressStatus, type MeasurementRow, type ProductionProgressBlocker } from "./production-progress.domain";
 
 type ProgressFilter = { order_no?: string; production_order_id?: string; from?: string; to?: string; page?: number; page_size?: number };
 
 @Injectable()
 export class ProductionProgressService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+
+  async recalculateAfterSourceChange(productionOrderId: string, sourceType: string, sourceId: string, user: CurrentUser) {
+    const summary = await this.getProductionOrderProgress(productionOrderId);
+    await this.audit.record("production_progress.recalculate", "production_progress", user.id, productionOrderId, { order_no: summary.order_no, production_order_no: summary.production_order_no, trigger: { source_type: sourceType, source_id: sourceId }, status: summary.status, blockers: summary.blockers, calculated_at: new Date().toISOString() });
+    return summary;
+  }
 
   async getProductionOrderProgress(id: string) {
     const order = await this.prisma.productionOrder.findFirst({ where: { id, deletedAt: null }, include: { unit: true, operations: { where: { deletedAt: null }, include: { unit: true }, orderBy: { sequenceNo: "asc" } } } });

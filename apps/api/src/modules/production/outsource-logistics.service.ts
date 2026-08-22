@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { ProductionProgressService } from "./production-progress.service";
 
 type CreateInput = { production_order_id: string; purchase_order_item_id: string; planned_quantity: string; remark?: string };
 
 @Injectable()
 export class OutsourceLogisticsService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly progress: ProductionProgressService) {}
 
   async list(orderNo?: string) {
     return this.prisma.outsourceLogisticsBatch.findMany({
@@ -159,6 +160,7 @@ export class OutsourceLogisticsService {
     const transferNo = `FG-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
     const created = await this.prisma.outsourceReturnTransfer.create({ data: { transferNo, transferType: "finished_goods_return", orderNo: production.orderNo, productionOrderId: production.id, unitId: input.unit_id, productDescription: input.product_description, quantity: input.quantity, transferDate: new Date(input.transfer_date), remark: input.remark, ...this.audit.create(user) } });
     await this.audit.record("outsource_finished_return.create", "outsource_return_transfer", user.id, created.id, { order_no: created.orderNo, transfer_no: transferNo, quantity: input.quantity });
+    await this.progress.recalculateAfterSourceChange(created.productionOrderId, "outsource_finished_goods_return", created.id, user);
     return created;
   }
 
@@ -168,6 +170,7 @@ export class OutsourceLogisticsService {
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_RETURN_NOT_SUBMITTABLE", message: "当前回厂记录不可提交 QC", details: [] });
     const result = await this.prisma.outsourceReturnTransfer.update({ where: { id }, data: { status: "pending_qc", ...this.audit.update(user) } });
     await this.audit.record("outsource_finished_return.submit_qc", "outsource_return_transfer", user.id, id, { order_no: current.orderNo });
+    await this.progress.recalculateAfterSourceChange(current.productionOrderId, "outsource_finished_goods_return", id, user);
     return result;
   }
 
@@ -176,14 +179,18 @@ export class OutsourceLogisticsService {
     if (!current) throw new NotFoundException({ code: "OUTSOURCE_RETURN_NOT_FOUND", message: "外加工回厂记录不存在", details: [] });
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_RETURN_NOT_EDITABLE", message: "只有草稿回厂记录可以编辑", details: [] });
     if (input.quantity !== undefined) this.decimal(input.quantity, "INVALID_RETURN_QUANTITY");
-    return this.prisma.outsourceReturnTransfer.update({ where: { id }, data: { ...(input.quantity === undefined ? {} : { quantity: input.quantity }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...(input.product_description === undefined ? {} : { productDescription: input.product_description }), ...this.audit.update(user) } });
+    const result = await this.prisma.outsourceReturnTransfer.update({ where: { id }, data: { ...(input.quantity === undefined ? {} : { quantity: input.quantity }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...(input.product_description === undefined ? {} : { productDescription: input.product_description }), ...this.audit.update(user) } });
+    if (current.transferType === "finished_goods_return") await this.progress.recalculateAfterSourceChange(current.productionOrderId, "outsource_finished_goods_return", id, user);
+    return result;
   }
 
   async removeReturn(id: string, user: CurrentUser) {
     const current = await this.prisma.outsourceReturnTransfer.findFirst({ where: { id, deletedAt: null } });
     if (!current) throw new NotFoundException({ code: "OUTSOURCE_RETURN_NOT_FOUND", message: "外加工回厂记录不存在", details: [] });
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_RETURN_NOT_DELETABLE", message: "只有草稿回厂记录可以删除", details: [] });
-    return this.prisma.outsourceReturnTransfer.update({ where: { id }, data: this.audit.softDelete(user) });
+    const result = await this.prisma.outsourceReturnTransfer.update({ where: { id }, data: this.audit.softDelete(user) });
+    if (current.transferType === "finished_goods_return") await this.progress.recalculateAfterSourceChange(current.productionOrderId, "outsource_finished_goods_return", id, user);
+    return result;
   }
 
   async updateDirectShipment(id: string, input: { quantity?: string; product_description?: string; logistics_reference?: string; remark?: string }, user: CurrentUser) {
@@ -215,6 +222,7 @@ export class OutsourceLogisticsService {
     const shipmentNo = `OS-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
     const created = await this.prisma.outsourceDirectShipment.create({ data: { shipmentNo, orderNo: production.orderNo, productionOrderId: production.id, productDescription: input.product_description, unitId: input.unit_id, quantity: input.quantity, shipmentDate: new Date(input.shipment_date), logisticsReference: input.logistics_reference, remark: input.remark, ...this.audit.create(user) } });
     await this.audit.record("outsource_direct_shipment.create", "outsource_direct_shipment", user.id, created.id, { order_no: created.orderNo, shipment_no: shipmentNo });
+    await this.progress.recalculateAfterSourceChange(created.productionOrderId, "outsource_direct_shipment", created.id, user);
     return created;
   }
 
@@ -224,6 +232,7 @@ export class OutsourceLogisticsService {
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_DISPATCHABLE", message: "当前直装柜记录不可发出", details: [] });
     const result = await this.prisma.outsourceDirectShipment.update({ where: { id }, data: { status: "dispatched", ...this.audit.update(user) } });
     await this.audit.record("outsource_direct_shipment.dispatch", "outsource_direct_shipment", user.id, id, { order_no: current.orderNo, quantity: current.quantity.toString() });
+    await this.progress.recalculateAfterSourceChange(current.productionOrderId, "outsource_direct_shipment", id, user);
     return result;
   }
 
@@ -234,6 +243,7 @@ export class OutsourceLogisticsService {
     if (current.status !== "dispatched") throw new UnprocessableEntityException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_REVERSIBLE", message: "只有已发出的直装柜记录可以冲销", details: [] });
     const result = await this.prisma.outsourceDirectShipment.update({ where: { id }, data: { status: "corrected", reversalQuantity: current.quantity, reversalReason: reason, ...this.audit.update(user) } });
     await this.audit.record("outsource_direct_shipment.reverse", "outsource_direct_shipment", user.id, id, { order_no: current.orderNo, reason });
+    await this.progress.recalculateAfterSourceChange(current.productionOrderId, "outsource_direct_shipment", id, user);
     return result;
   }
 

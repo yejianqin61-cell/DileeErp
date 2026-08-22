@@ -3,13 +3,14 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { ProductionProgressService } from "./production-progress.service";
 
 type ReportInput = { production_order_id: string; production_order_operation_id: string; report_date: string; completed_quantity: string; remark?: string; idempotency_key?: string };
 type ReportFilter = { order_no?: string; production_order_id?: string; production_order_operation_id?: string; report_date?: string };
 
 @Injectable()
 export class OperationDailyReportsService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly progressService: ProductionProgressService) {}
 
   async list(filter: ReportFilter) {
     const rows = await this.prisma.operationDailyReport.findMany({
@@ -47,6 +48,7 @@ export class OperationDailyReportsService {
       return row;
     });
     await this.audit.record("operation_daily_report.create", "operation_daily_report", user.id, created.id, { order_no: created.orderNo, production_order_id: created.productionOrderId, reason: input.remark ?? null });
+    await this.progressService.recalculateAfterSourceChange(created.productionOrderId, "operation_daily_report", created.id, user);
     return this.get(created.id);
   }
 
@@ -63,6 +65,7 @@ export class OperationDailyReportsService {
       return row;
     });
     await this.audit.record("operation_daily_report.update", "operation_daily_report", user.id, id, { order_no: current.orderNo, reason: input.reason, before: { report_date: current.reportDate.toISOString().slice(0, 10), completed_quantity: current.completedQuantity.toString() }, after: { report_date: reportDate.toISOString().slice(0, 10), completed_quantity: quantity.toString() } });
+    await this.progressService.recalculateAfterSourceChange(current.productionOrderId, "operation_daily_report", id, user);
     return updated;
   }
 
@@ -77,6 +80,7 @@ export class OperationDailyReportsService {
       return row;
     });
     await this.audit.record("operation_daily_report.delete", "operation_daily_report", user.id, id, { order_no: current.orderNo, reason });
+    await this.progressService.recalculateAfterSourceChange(current.productionOrderId, "operation_daily_report", id, user);
     return removed;
   }
 
