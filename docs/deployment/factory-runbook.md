@@ -11,3 +11,5 @@
 
 备份示例：`powershell -File scripts/backup-postgres.ps1 -DatabaseUrl $env:DATABASE_URL -BackupDirectory D:\DileeBackups`。
 恢复前先执行 `powershell -File scripts/check-backup.ps1 -BackupFile D:\DileeBackups\dilee-erp-YYYYMMDD-HHMMSS.dump`，确认目标库后再执行 `powershell -File scripts/restore-postgres.ps1 -DatabaseUrl $env:RESTORE_DATABASE_URL -BackupFile ... -ConfirmTarget RESTORE`。
+
+性能基线：设置 `PERF_BASE_URL` 后执行 `npm run perf:gate`；可用 `PERF_CONCURRENCY=3 PERF_REQUESTS=30` 调整样本。需要登录态的接口时通过 `PERF_COOKIE` 注入 Cookie。结果写入 `docs/test/results/latest-performance.json`。

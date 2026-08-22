@@ -29,6 +29,8 @@
     ,"factory:up": "docker compose -f docker-compose.factory.yml --env-file .env.factory up -d --build"
     ,"factory:down": "docker compose -f docker-compose.factory.yml --env-file .env.factory down"
     ,"factory:logs": "docker compose -f docker-compose.factory.yml --env-file .env.factory logs -f --tail=200"
+    ,"test:performance": "node --test scripts/perf-gate.test.mjs"
+    ,"perf:gate": "node scripts/perf-gate.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"
