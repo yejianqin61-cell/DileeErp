@@ -24,6 +24,29 @@ export const PRODUCTION_PROGRESS_BLOCKERS = [
 export type ProductionProgressBlocker = (typeof PRODUCTION_PROGRESS_BLOCKERS)[number];
 export type MeasurementSourceType = "operation_report" | "outsource_finished_goods_return" | "outsource_direct_shipment";
 
+export const PRODUCTION_PROGRESS_STATUS_LABELS: Record<ProductionProgressStatus, string> = {
+  not_started: "未开始",
+  in_production: "生产中",
+  production_completed: "生产完成",
+  blocked: "存在阻塞",
+  ready_for_qc: "待成品 QC",
+  ready_to_ship: "待发货",
+};
+
+export const PRODUCTION_PROGRESS_BLOCKER_DETAILS: Record<ProductionProgressBlocker, { label: string; suggestion: string }> = {
+  daily_discrepancy: { label: "日报数量差异", suggestion: "核对工序日报与员工日报件数并补录或更正" },
+  over_order_unconfirmed: { label: "超单告警待处理", suggestion: "确认超单原因，保留现场实际累计量" },
+  missing_operation_report: { label: "缺少工序日报", suggestion: "补录对应生产单工序的有效日报" },
+  outsource_pending_handoff: { label: "外加工待交接", suggestion: "登记成品回厂或直装柜事实" },
+  outsource_short_receipt: { label: "外加工签收短收", suggestion: "核对短收原因并处理补收或冲销" },
+  mixed_units: { label: "计量单位不一致", suggestion: "按单位分组核对，不要直接相加" },
+  source_reversal_pending: { label: "来源冲销待处理", suggestion: "检查被冲销来源及其下游单据" },
+};
+
+export function describeProgressBlockers(blockers: ProductionProgressBlocker[]) {
+  return [...new Set(blockers)].map((code) => ({ code, ...PRODUCTION_PROGRESS_BLOCKER_DETAILS[code] }));
+}
+
 export type MeasurementRow = {
   order_no: string;
   production_order_id: string;

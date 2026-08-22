@@ -1,11 +1,11 @@
 # D7 订单推进状态、阻塞时间线与权限
 
 ## 状态
-待认领
+已完成
 
 ## 认领
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-22
 
 ## 目标
 
@@ -40,5 +40,8 @@
 
 ## 完成记录
 
-<!-- 填写实现、测试、提交哈希和剩余风险 -->
+已实现订单状态标签、稳定阻塞代码及中文处理建议，未知订单时间线返回 404；新增任一模块权限元数据，生产、销售、财务、人事可按设计读取状态/计量，管理员重算仍受管理员权限保护。
 
+验证：`npm run typecheck --workspace=@dilee/api`、`npm run build --workspace=@dilee/api`、`npm run test:unit`（30/30）通过。
+
+提交：`236c2df feat: add d7 status timeline permissions`

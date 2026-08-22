@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
-import { aggregateMeasurementRows, calculateQuantityProgress, deriveOrderProgressStatus, type MeasurementRow, type ProductionProgressBlocker } from "./production-progress.domain";
+import { aggregateMeasurementRows, calculateQuantityProgress, describeProgressBlockers, deriveOrderProgressStatus, PRODUCTION_PROGRESS_STATUS_LABELS, type MeasurementRow, type ProductionProgressBlocker } from "./production-progress.domain";
 
 type ProgressFilter = { order_no?: string; production_order_id?: string; from?: string; to?: string; page?: number; page_size?: number };
 
@@ -41,6 +41,8 @@ export class ProductionProgressService {
   }
 
   async timeline(orderNo: string) {
+    const order = await this.prisma.productionOrder.findFirst({ where: { orderNo, deletedAt: null }, select: { id: true } });
+    if (!order) throw new NotFoundException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] });
     const rows = await this.prisma.auditEvent.findMany({ where: { orderNo, entityType: { in: ["production_progress", "production_order", "operation_daily_report", "outsource_return_transfer", "outsource_direct_shipment"] } }, orderBy: { createdAt: "desc" }, take: 200 });
     return rows;
   }
@@ -75,13 +77,15 @@ export class ProductionProgressService {
     const status = deriveOrderProgressStatus({ has_production_orders: true, has_started_production: order.status !== "draft", all_production_complete: allProductionComplete, blockers, has_outsource_pending_handoff: order.executionMode === "outsourced" && returns.length + shipments.length === 0, has_finished_goods_source: returns.length + shipments.length > 0, qc_capability_available: false, shipping_capability_available: false });
     const operationMeasurements = order.operations.map((operation) => { const current = reportByOperation.get(operation.id) ?? { actual: new Prisma.Decimal(0), sourceIds: [], dates: [] }; return { operation_id: operation.id, operation_name: operation.operationNameSnapshot, source_type: "operation_report" as const, source_ids: current.sourceIds, source_dates: current.dates, unit: operation.unit.name, execution_mode: "in_house" as const, ...calculateQuantityProgress(operation.targetQuantity, current.actual, operation.status === "cancelled") }; });
     const externalMeasurements = rows.filter((row) => row.source_type !== "operation_report").map((row) => ({ operation_id: null, operation_name: null, source_type: row.source_type, source_ids: [row.source_id], source_dates: [this.isoDate(row.source_type === "outsource_finished_goods_return" ? returns.find((item) => item.id === row.source_id)!.transferDate : shipments.find((item) => item.id === row.source_id)!.shipmentDate)], unit: row.unit, execution_mode: row.execution_mode, ...calculateQuantityProgress(row.planned_quantity, row.actual_quantity) }));
-    return { production_order_id: order.id, production_order_no: order.productionOrderNo, order_no: order.orderNo, execution_mode: order.executionMode, status: status.status, blockers: [...new Set(status.blockers)], capability_not_implemented: status.capability_not_implemented, measurements: [...operationMeasurements, ...externalMeasurements], unit_summaries: aggregate.groups, operation_count: activeOperations.length, completed_operation_count: operationMeasurements.filter((measurement) => ["completed", "over_order"].includes(measurement.status)).length, outsource_receipt_risk_count: receipts.length, source_warning_codes: aggregate.warnings };
+    const uniqueBlockers = [...new Set(status.blockers)];
+    return { production_order_id: order.id, production_order_no: order.productionOrderNo, order_no: order.orderNo, execution_mode: order.executionMode, status: status.status, status_label: PRODUCTION_PROGRESS_STATUS_LABELS[status.status], blockers: uniqueBlockers, blocker_details: describeProgressBlockers(uniqueBlockers), capability_not_implemented: status.capability_not_implemented, measurements: [...operationMeasurements, ...externalMeasurements], unit_summaries: aggregate.groups, operation_count: activeOperations.length, completed_operation_count: operationMeasurements.filter((measurement) => ["completed", "over_order"].includes(measurement.status)).length, outsource_receipt_risk_count: receipts.length, source_warning_codes: aggregate.warnings };
   }
 
   private mergeOrderSummaries(orderNo: string, summaries: Array<Awaited<ReturnType<ProductionProgressService["buildProductionOrder"]>>>) {
     const blockers = [...new Set(summaries.flatMap((summary) => summary.blockers))] as ProductionProgressBlocker[];
     const status = deriveOrderProgressStatus({ has_production_orders: summaries.length > 0, has_started_production: summaries.some((summary) => summary.status !== "not_started"), all_production_complete: summaries.every((summary) => ["production_completed", "ready_for_qc", "ready_to_ship"].includes(summary.status)), blockers });
-    return { order_no: orderNo, status: status.status, blockers: [...new Set(status.blockers)], capability_not_implemented: [...new Set(summaries.flatMap((summary) => summary.capability_not_implemented))], production_orders: summaries, production_order_count: summaries.length, blocking_count: blockers.length };
+    const uniqueBlockers = [...new Set(status.blockers)];
+    return { order_no: orderNo, status: status.status, status_label: PRODUCTION_PROGRESS_STATUS_LABELS[status.status], blockers: uniqueBlockers, blocker_details: describeProgressBlockers(uniqueBlockers), capability_not_implemented: [...new Set(summaries.flatMap((summary) => summary.capability_not_implemented))], production_orders: summaries, production_order_count: summaries.length, blocking_count: blockers.length };
   }
 
   private isoDate(value: Date) { return value.toISOString().slice(0, 10); }
