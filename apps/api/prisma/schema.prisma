@@ -513,6 +513,8 @@ model Supplier {
   rawMaterialInbounds     RawMaterialInbound[]
   payableSources          PayableSource[]
   outsourcePayableSources OutsourcePayableSource[]
+  supplierPayableEntries  SupplierPayableEntry[]
+  supplierPayments        SupplierPayment[]
 
   @@map("suppliers")
 }
@@ -549,6 +551,7 @@ model PurchaseOrder {
   payableSources            PayableSource[]
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
   outsourcePayableSources   OutsourcePayableSource[]
+  supplierPayableEntries    SupplierPayableEntry[]
 
   @@index([orderNo, status])
   @@index([supplierId, status])
@@ -584,6 +587,7 @@ model PurchaseOrderItem {
   payableSources            PayableSource[]
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
   outsourcePayableSources   OutsourcePayableSource[]
+  supplierPayableEntries    SupplierPayableEntry[]
 
   @@index([purchaseOrderId])
   @@map("purchase_order_items")
@@ -720,27 +724,28 @@ model InventoryFact {
 }
 
 model PayableSource {
-  id                   String             @id @default(uuid()) @db.Uuid
-  rawMaterialInboundId String             @map("raw_material_inbound_id") @db.Uuid
-  orderNo              String             @map("order_no") @db.VarChar(100)
-  purchaseOrderId      String             @map("purchase_order_id") @db.Uuid
-  purchaseOrderItemId  String             @map("purchase_order_item_id") @db.Uuid
-  supplierId           String             @map("supplier_id") @db.Uuid
-  quantity             Decimal            @db.Decimal(18, 4)
-  unitPrice            Decimal            @map("unit_price") @db.Decimal(18, 4)
-  currency             String             @db.VarChar(10)
-  taxRate              Decimal?           @map("tax_rate") @db.Decimal(8, 4)
-  amount               Decimal            @db.Decimal(18, 4)
-  status               String             @default("pending_finance") @db.VarChar(30)
-  idempotencyKey       String             @unique @map("idempotency_key") @db.VarChar(200)
-  createdAt            DateTime           @default(now()) @map("created_at")
-  updatedAt            DateTime           @updatedAt @map("updated_at")
-  createdBy            String             @map("created_by") @db.Uuid
-  updatedBy            String             @map("updated_by") @db.Uuid
-  rawMaterialInbound   RawMaterialInbound @relation(fields: [rawMaterialInboundId], references: [id])
-  supplier             Supplier           @relation(fields: [supplierId], references: [id])
-  purchaseOrder        PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
-  purchaseOrderItem    PurchaseOrderItem  @relation(fields: [purchaseOrderItemId], references: [id])
+  id                   String                @id @default(uuid()) @db.Uuid
+  rawMaterialInboundId String                @map("raw_material_inbound_id") @db.Uuid
+  orderNo              String                @map("order_no") @db.VarChar(100)
+  purchaseOrderId      String                @map("purchase_order_id") @db.Uuid
+  purchaseOrderItemId  String                @map("purchase_order_item_id") @db.Uuid
+  supplierId           String                @map("supplier_id") @db.Uuid
+  quantity             Decimal               @db.Decimal(18, 4)
+  unitPrice            Decimal               @map("unit_price") @db.Decimal(18, 4)
+  currency             String                @db.VarChar(10)
+  taxRate              Decimal?              @map("tax_rate") @db.Decimal(8, 4)
+  amount               Decimal               @db.Decimal(18, 4)
+  status               String                @default("pending_finance") @db.VarChar(30)
+  idempotencyKey       String                @unique @map("idempotency_key") @db.VarChar(200)
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+  createdBy            String                @map("created_by") @db.Uuid
+  updatedBy            String                @map("updated_by") @db.Uuid
+  rawMaterialInbound   RawMaterialInbound    @relation(fields: [rawMaterialInboundId], references: [id])
+  supplier             Supplier              @relation(fields: [supplierId], references: [id])
+  purchaseOrder        PurchaseOrder         @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderItem    PurchaseOrderItem     @relation(fields: [purchaseOrderItemId], references: [id])
+  supplierPayableEntry SupplierPayableEntry? @relation("RawMaterialPayableEntry")
 
   @@unique([rawMaterialInboundId])
   @@index([orderNo])
@@ -748,36 +753,37 @@ model PayableSource {
 }
 
 model OutsourceLogisticsBatch {
-  id                  String                    @id @default(uuid()) @db.Uuid
-  batchNo             String                    @unique @map("batch_no") @db.VarChar(100)
-  orderNo             String                    @map("order_no") @db.VarChar(100)
-  productionOrderId   String                    @map("production_order_id") @db.Uuid
-  outsourceLocationId String                    @map("outsource_location_id") @db.Uuid
-  purchaseOrderId     String                    @map("purchase_order_id") @db.Uuid
-  purchaseOrderItemId String                    @map("purchase_order_item_id") @db.Uuid
-  materialId          String                    @map("material_id") @db.Uuid
-  unitId              String                    @map("unit_id") @db.Uuid
-  plannedQuantity     Decimal                   @map("planned_quantity") @db.Decimal(18, 4)
-  dispatchedQuantity  Decimal                   @default(0) @map("dispatched_quantity") @db.Decimal(18, 4)
-  dispatchDate        DateTime?                 @map("dispatch_date") @db.Date
-  dispatchProofRemark String?                   @map("dispatch_proof_remark") @db.VarChar(1000)
-  status              String                    @default("draft") @db.VarChar(30)
-  remark              String?                   @db.VarChar(1000)
-  createdAt           DateTime                  @default(now()) @map("created_at")
-  updatedAt           DateTime                  @updatedAt @map("updated_at")
-  createdBy           String                    @map("created_by") @db.Uuid
-  updatedBy           String                    @map("updated_by") @db.Uuid
-  deletedAt           DateTime?                 @map("deleted_at")
-  deletedBy           String?                   @map("deleted_by") @db.Uuid
-  productionOrder     ProductionOrder           @relation(fields: [productionOrderId], references: [id])
-  outsourceLocation   ProductionLocation        @relation(fields: [outsourceLocationId], references: [id])
-  purchaseOrder       PurchaseOrder             @relation(fields: [purchaseOrderId], references: [id])
-  purchaseOrderItem   PurchaseOrderItem         @relation(fields: [purchaseOrderItemId], references: [id])
-  material            Material                  @relation(fields: [materialId], references: [id])
-  unit                Unit                      @relation(fields: [unitId], references: [id])
-  receipts            OutsourceReceipt[]
-  returnTransfers     OutsourceReturnTransfer[]
-  payableSources      OutsourcePayableSource[]
+  id                     String                    @id @default(uuid()) @db.Uuid
+  batchNo                String                    @unique @map("batch_no") @db.VarChar(100)
+  orderNo                String                    @map("order_no") @db.VarChar(100)
+  productionOrderId      String                    @map("production_order_id") @db.Uuid
+  outsourceLocationId    String                    @map("outsource_location_id") @db.Uuid
+  purchaseOrderId        String                    @map("purchase_order_id") @db.Uuid
+  purchaseOrderItemId    String                    @map("purchase_order_item_id") @db.Uuid
+  materialId             String                    @map("material_id") @db.Uuid
+  unitId                 String                    @map("unit_id") @db.Uuid
+  plannedQuantity        Decimal                   @map("planned_quantity") @db.Decimal(18, 4)
+  dispatchedQuantity     Decimal                   @default(0) @map("dispatched_quantity") @db.Decimal(18, 4)
+  dispatchDate           DateTime?                 @map("dispatch_date") @db.Date
+  dispatchProofRemark    String?                   @map("dispatch_proof_remark") @db.VarChar(1000)
+  status                 String                    @default("draft") @db.VarChar(30)
+  remark                 String?                   @db.VarChar(1000)
+  createdAt              DateTime                  @default(now()) @map("created_at")
+  updatedAt              DateTime                  @updatedAt @map("updated_at")
+  createdBy              String                    @map("created_by") @db.Uuid
+  updatedBy              String                    @map("updated_by") @db.Uuid
+  deletedAt              DateTime?                 @map("deleted_at")
+  deletedBy              String?                   @map("deleted_by") @db.Uuid
+  productionOrder        ProductionOrder           @relation(fields: [productionOrderId], references: [id])
+  outsourceLocation      ProductionLocation        @relation(fields: [outsourceLocationId], references: [id])
+  purchaseOrder          PurchaseOrder             @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderItem      PurchaseOrderItem         @relation(fields: [purchaseOrderItemId], references: [id])
+  material               Material                  @relation(fields: [materialId], references: [id])
+  unit                   Unit                      @relation(fields: [unitId], references: [id])
+  receipts               OutsourceReceipt[]
+  returnTransfers        OutsourceReturnTransfer[]
+  payableSources         OutsourcePayableSource[]
+  supplierPayableEntries SupplierPayableEntry[]
 
   @@index([orderNo, status])
   @@index([productionOrderId, status])
@@ -813,33 +819,127 @@ model OutsourceReceipt {
 }
 
 model OutsourcePayableSource {
-  id                  String                  @id @default(uuid()) @db.Uuid
-  outsourceReceiptId  String                  @unique @map("outsource_receipt_id") @db.Uuid
-  logisticsBatchId    String                  @map("logistics_batch_id") @db.Uuid
-  orderNo             String                  @map("order_no") @db.VarChar(100)
-  purchaseOrderId     String                  @map("purchase_order_id") @db.Uuid
-  purchaseOrderItemId String                  @map("purchase_order_item_id") @db.Uuid
-  supplierId          String                  @map("supplier_id") @db.Uuid
-  quantity            Decimal                 @db.Decimal(18, 4)
-  unitPrice           Decimal                 @map("unit_price") @db.Decimal(18, 4)
-  currency            String                  @db.VarChar(10)
-  taxRate             Decimal?                @map("tax_rate") @db.Decimal(8, 4)
-  amount              Decimal                 @db.Decimal(18, 4)
-  status              String                  @default("pending_finance") @db.VarChar(30)
-  createdAt           DateTime                @default(now()) @map("created_at")
-  updatedAt           DateTime                @updatedAt @map("updated_at")
-  createdBy           String                  @map("created_by") @db.Uuid
-  updatedBy           String                  @map("updated_by") @db.Uuid
-  deletedAt           DateTime?               @map("deleted_at")
-  deletedBy           String?                 @map("deleted_by") @db.Uuid
-  outsourceReceipt    OutsourceReceipt        @relation(fields: [outsourceReceiptId], references: [id])
-  logisticsBatch      OutsourceLogisticsBatch @relation(fields: [logisticsBatchId], references: [id])
-  purchaseOrder       PurchaseOrder           @relation(fields: [purchaseOrderId], references: [id])
-  purchaseOrderItem   PurchaseOrderItem       @relation(fields: [purchaseOrderItemId], references: [id])
-  supplier            Supplier                @relation(fields: [supplierId], references: [id])
+  id                   String                  @id @default(uuid()) @db.Uuid
+  outsourceReceiptId   String                  @unique @map("outsource_receipt_id") @db.Uuid
+  logisticsBatchId     String                  @map("logistics_batch_id") @db.Uuid
+  orderNo              String                  @map("order_no") @db.VarChar(100)
+  purchaseOrderId      String                  @map("purchase_order_id") @db.Uuid
+  purchaseOrderItemId  String                  @map("purchase_order_item_id") @db.Uuid
+  supplierId           String                  @map("supplier_id") @db.Uuid
+  quantity             Decimal                 @db.Decimal(18, 4)
+  unitPrice            Decimal                 @map("unit_price") @db.Decimal(18, 4)
+  currency             String                  @db.VarChar(10)
+  taxRate              Decimal?                @map("tax_rate") @db.Decimal(8, 4)
+  amount               Decimal                 @db.Decimal(18, 4)
+  status               String                  @default("pending_finance") @db.VarChar(30)
+  createdAt            DateTime                @default(now()) @map("created_at")
+  updatedAt            DateTime                @updatedAt @map("updated_at")
+  createdBy            String                  @map("created_by") @db.Uuid
+  updatedBy            String                  @map("updated_by") @db.Uuid
+  deletedAt            DateTime?               @map("deleted_at")
+  deletedBy            String?                 @map("deleted_by") @db.Uuid
+  outsourceReceipt     OutsourceReceipt        @relation(fields: [outsourceReceiptId], references: [id])
+  logisticsBatch       OutsourceLogisticsBatch @relation(fields: [logisticsBatchId], references: [id])
+  purchaseOrder        PurchaseOrder           @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderItem    PurchaseOrderItem       @relation(fields: [purchaseOrderItemId], references: [id])
+  supplier             Supplier                @relation(fields: [supplierId], references: [id])
+  supplierPayableEntry SupplierPayableEntry?   @relation("OutsourceSourcePayableEntry")
 
   @@index([orderNo, status])
   @@map("outsource_payable_sources")
+}
+
+model SupplierPayableEntry {
+  id                        String                      @id @default(uuid()) @db.Uuid
+  payableNo                 String                      @unique @map("payable_no") @db.VarChar(100)
+  orderNo                   String                      @map("order_no") @db.VarChar(100)
+  supplierId                String                      @map("supplier_id") @db.Uuid
+  sourceType                String                      @map("source_type") @db.VarChar(40)
+  payableSourceId           String?                     @unique @map("payable_source_id") @db.Uuid
+  outsourcePayableSourceId  String?                     @unique @map("outsource_payable_source_id") @db.Uuid
+  sourceNoSnapshot          String                      @map("source_no_snapshot") @db.VarChar(100)
+  quantity                  Decimal                     @db.Decimal(18, 4)
+  unitPrice                 Decimal                     @map("unit_price") @db.Decimal(18, 4)
+  taxRate                   Decimal?                    @map("tax_rate") @db.Decimal(8, 4)
+  amount                    Decimal                     @db.Decimal(18, 4)
+  currency                  String                      @db.VarChar(10)
+  confirmationDate          DateTime                    @map("confirmation_date") @db.Date
+  status                    String                      @default("draft") @db.VarChar(30)
+  attachment                Json                        @default("[]")
+  remark                    String?                     @db.VarChar(1000)
+  createdAt                 DateTime                    @default(now()) @map("created_at")
+  updatedAt                 DateTime                    @updatedAt @map("updated_at")
+  createdBy                 String                      @map("created_by") @db.Uuid
+  updatedBy                 String                      @map("updated_by") @db.Uuid
+  deletedAt                 DateTime?                   @map("deleted_at")
+  deletedBy                 String?                     @map("deleted_by") @db.Uuid
+  supplier                  Supplier                    @relation(fields: [supplierId], references: [id])
+  payableSource             PayableSource?              @relation("RawMaterialPayableEntry", fields: [payableSourceId], references: [id])
+  outsourcePayableSource    OutsourcePayableSource?     @relation("OutsourceSourcePayableEntry", fields: [outsourcePayableSourceId], references: [id])
+  allocations               SupplierPaymentAllocation[]
+  purchaseOrder             PurchaseOrder?              @relation(fields: [purchaseOrderId], references: [id])
+  purchaseOrderId           String?                     @db.Uuid
+  purchaseOrderItem         PurchaseOrderItem?          @relation(fields: [purchaseOrderItemId], references: [id])
+  purchaseOrderItemId       String?                     @db.Uuid
+  outsourceLogisticsBatch   OutsourceLogisticsBatch?    @relation(fields: [outsourceLogisticsBatchId], references: [id])
+  outsourceLogisticsBatchId String?                     @db.Uuid
+
+  @@index([orderNo, status])
+  @@index([supplierId, status])
+  @@index([sourceType, status])
+  @@map("supplier_payable_entries")
+}
+
+model SupplierPayment {
+  id            String                      @id @default(uuid()) @db.Uuid
+  paymentNo     String                      @unique @map("payment_no") @db.VarChar(100)
+  supplierId    String                      @map("supplier_id") @db.Uuid
+  orderNo       String?                     @map("order_no") @db.VarChar(100)
+  paymentDate   DateTime                    @map("payment_date") @db.Date
+  amount        Decimal                     @db.Decimal(18, 4)
+  currency      String                      @db.VarChar(10)
+  paymentMethod String                      @map("payment_method") @db.VarChar(50)
+  bankReference String?                     @map("bank_reference") @db.VarChar(200)
+  payeeName     String?                     @map("payee_name") @db.VarChar(200)
+  status        String                      @default("draft") @db.VarChar(30)
+  attachment    Json                        @default("[]")
+  remark        String?                     @db.VarChar(1000)
+  createdAt     DateTime                    @default(now()) @map("created_at")
+  updatedAt     DateTime                    @updatedAt @map("updated_at")
+  createdBy     String                      @map("created_by") @db.Uuid
+  updatedBy     String                      @map("updated_by") @db.Uuid
+  deletedAt     DateTime?                   @map("deleted_at")
+  deletedBy     String?                     @map("deleted_by") @db.Uuid
+  supplier      Supplier                    @relation(fields: [supplierId], references: [id])
+  allocations   SupplierPaymentAllocation[]
+
+  @@index([supplierId, status])
+  @@index([orderNo, status])
+  @@map("supplier_payments")
+}
+
+model SupplierPaymentAllocation {
+  id             String               @id @default(uuid()) @db.Uuid
+  paymentId      String               @map("payment_id") @db.Uuid
+  payableEntryId String               @map("payable_entry_id") @db.Uuid
+  orderNo        String               @map("order_no") @db.VarChar(100)
+  amount         Decimal              @db.Decimal(18, 4)
+  currency       String               @db.VarChar(10)
+  status         String               @default("active") @db.VarChar(30)
+  remark         String?              @db.VarChar(1000)
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  createdBy      String               @map("created_by") @db.Uuid
+  updatedBy      String               @map("updated_by") @db.Uuid
+  deletedAt      DateTime?            @map("deleted_at")
+  deletedBy      String?              @map("deleted_by") @db.Uuid
+  payment        SupplierPayment      @relation(fields: [paymentId], references: [id])
+  payableEntry   SupplierPayableEntry @relation(fields: [payableEntryId], references: [id])
+
+  @@unique([paymentId, payableEntryId])
+  @@index([payableEntryId, status])
+  @@index([orderNo, status])
+  @@map("supplier_payment_allocations")
 }
 
 model OutsourceReturnTransfer {
