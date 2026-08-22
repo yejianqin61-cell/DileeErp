@@ -32,4 +32,12 @@ export class InventoryService {
     }
     return [...balances.values()].map((row) => ({ ...row, quantity: row.quantity.toString() })).filter((row) => row.quantity !== "0");
   }
+
+  async finishedGoodsOrderSummary(orderNo: string) {
+    const facts = await this.prisma.inventoryFact.findMany({ where: { orderNo, inventoryCategory: { in: ["finished_goods", "defective_goods"] } }, orderBy: { createdAt: "asc" } });
+    const total = (category: string) => facts.filter((fact) => fact.inventoryCategory === category).reduce((sum, fact) => sum.plus(fact.quantityDelta), new Prisma.Decimal(0));
+    const outbound = facts.filter((fact) => fact.sourceType === "finished_goods_outbound").reduce((sum, fact) => sum.plus(fact.quantityDelta.abs()), new Prisma.Decimal(0));
+    const returned = facts.filter((fact) => fact.sourceType === "finished_goods_customer_return").reduce((sum, fact) => sum.plus(fact.quantityDelta), new Prisma.Decimal(0));
+    return { order_no: orderNo, finished_goods_balance: total("finished_goods").toString(), defective_goods_balance: total("defective_goods").toString(), outbound_quantity: outbound.toString(), return_quantity: returned.toString(), receivable_source_ready: outbound.gt(0), fact_count: facts.length };
+  }
 }
