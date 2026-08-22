@@ -125,7 +125,13 @@ export class FinishedGoodsQcService {
   async impactPreview(id: string) {
     const row = await this.prisma.finishedGoodsQcRecord.findFirst({ where: { id, deletedAt: null }, include: { submission: true } });
     if (!row) throw new NotFoundException({ code: "FINISHED_GOODS_QC_NOT_FOUND", message: "成品 QC 记录不存在", details: [] });
-    return { qc_id: id, qc_no: row.qcNo, order_no: row.orderNo, submission_id: row.submissionId, status: row.status, affected: { available_for_inbound_quantity: availableFinishedGoodsInboundQuantity(row.qualifiedQuantity.toString(), row.conditionalAcceptQuantity.toString(), "0"), downstream_finished_goods_inbound_count: 0 }, warnings: ["E2 成品入库尚未实现，当前仅返回可入库来源"] };
+    const [inbounds, defectives] = await Promise.all([
+      this.prisma.finishedGoodsInbound.aggregate({ where: { qcRecordId: id, deletedAt: null, status: "posted" }, _sum: { quantity: true }, _count: { _all: true } }),
+      this.prisma.finishedGoodsDefective.aggregate({ where: { qcRecordId: id, deletedAt: null, status: "posted" }, _sum: { quantity: true }, _count: { _all: true } })
+    ]);
+    const inboundQuantity = new Prisma.Decimal(inbounds._sum.quantity ?? 0);
+    const defectiveQuantity = new Prisma.Decimal(defectives._sum.quantity ?? 0);
+    return { qc_id: id, qc_no: row.qcNo, order_no: row.orderNo, submission_id: row.submissionId, status: row.status, affected: { available_for_inbound_quantity: availableFinishedGoodsInboundQuantity(row.qualifiedQuantity.toString(), row.conditionalAcceptQuantity.toString(), inboundQuantity.toString()), available_for_defective_quantity: new Prisma.Decimal(row.rejectedQuantity).minus(defectiveQuantity).toString(), downstream_finished_goods_inbound_count: inbounds._count._all, downstream_finished_goods_inbound_quantity: inboundQuantity.toString(), downstream_defective_count: defectives._count._all, downstream_defective_quantity: defectiveQuantity.toString() }, warnings: [] };
   }
 
   async correctQc(id: string, input: Omit<QcInput, "submission_id"> & { reason: string }, user: CurrentUser) {

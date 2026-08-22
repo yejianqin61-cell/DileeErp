@@ -13,4 +13,9 @@ export class InventoryService {
     });
     return result._sum.quantityDelta ?? new Prisma.Decimal(0);
   }
+
+  async finishedGoodsBalance(client: InventoryClient, productionOrderId: string, unitId: string, category: "finished_goods" | "defective_goods") {
+    const result = await client.inventoryFact.aggregate({ where: { productionOrderId, unitId, inventoryCategory: category }, _sum: { quantityDelta: true } });
+    return result._sum.quantityDelta ?? new Prisma.Decimal(0);
+  }
 }
