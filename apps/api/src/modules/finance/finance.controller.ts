@@ -9,6 +9,8 @@ import { CustomerPaymentService } from "./customer-payment.service";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
 import { ReconciliationService } from "./reconciliation.service";
 import { ReceivableService } from "./receivable.service";
+import { SupplierPayableService } from "./supplier-payable.service";
+import { SupplierPaymentService } from "./supplier-payment.service";
 
 class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() remark?: string; }
 class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
@@ -38,12 +40,35 @@ class ReconciliationDto {
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }
 class ResolutionDto { @IsString() @MaxLength(1000) resolution_remark!: string; }
+class PayableEntryDto {
+  @IsIn(["raw_material_inbound", "outsource_receipt"]) source_type!: "raw_material_inbound" | "outsource_receipt";
+  @IsUUID() source_id!: string;
+  @IsOptional() @IsString() amount?: string;
+  @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string;
+  @IsOptional() @IsDateString() confirmation_date?: string;
+  @IsOptional() @IsArray() attachment?: unknown[];
+  @IsOptional() @IsString() @MaxLength(1000) remark?: string;
+}
+class SupplierPaymentDto {
+  @IsUUID() supplier_id!: string;
+  @IsOptional() @IsString() order_no?: string;
+  @IsDateString() payment_date!: string;
+  @IsString() amount!: string;
+  @IsString() currency!: string;
+  @IsString() payment_method!: string;
+  @IsOptional() @IsString() bank_reference?: string;
+  @IsOptional() @IsString() payee_name?: string;
+  @IsOptional() @IsArray() attachment?: unknown[];
+  @IsOptional() @IsString() remark?: string;
+}
+class SupplierAllocationDto { @IsUUID() payable_entry_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }
+class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; }
 
 @Controller("finance")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("finance")
 export class FinanceController {
-  constructor(private readonly receivable: ReceivableService, private readonly payments: CustomerPaymentService, private readonly adjustments: ReceivableAdjustmentService, private readonly reconciliations: ReconciliationService) {}
+  constructor(private readonly receivable: ReceivableService, private readonly payments: CustomerPaymentService, private readonly adjustments: ReceivableAdjustmentService, private readonly reconciliations: ReconciliationService, private readonly payable: SupplierPayableService, private readonly supplierPayments: SupplierPaymentService) {}
   @Get("receivable-sources") async listSources(@Query("order_no") orderNo?: string, @Query("customer_id") customerId?: string, @Query("status") status?: string) { return { data: await this.receivable.list(orderNo, customerId, status), meta: {} }; }
   @Get("receivable-sources/:id") async getSource(@Param("id") id: string) { return { data: await this.receivable.get(id), meta: {} }; }
   @Post("receivable-sources/from-outbound/:outboundId") async createSource(@Param("outboundId") outboundId: string, @Body() body: SourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.createFromOutbound(outboundId, body, user), meta: {} }; }
@@ -67,4 +92,15 @@ export class FinanceController {
   @Post("reconciliations") async createReconciliation(@Body() body: ReconciliationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reconciliations.create(body, user), meta: {} }; }
   @Post("reconciliations/:id/resolve") async resolveReconciliation(@Param("id") id: string, @Body() body: ResolutionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reconciliations.resolve(id, body.resolution_remark, user), meta: {} }; }
   @Get("order-close-preview") async orderClosePreview(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.reconciliations.orderClosePreview(orderNo) : [], meta: {} }; }
+  @Get("payable-entries") async listPayableEntries(@Query("order_no") orderNo?: string, @Query("supplier_id") supplierId?: string, @Query("status") status?: string) { return { data: await this.payable.list(orderNo, supplierId, status), meta: {} }; }
+  @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
+  @Post("payable-entries/from-source") async createPayableEntry(@Body() body: PayableEntryDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createFromSource(body, user), meta: {} }; }
+  @Post("payable-entries/:id/confirm") async confirmPayableEntry(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.confirm(id, user), meta: {} }; }
+  @Post("payable-entries/:id/reverse") async reversePayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reverse(id, body.reason, user), meta: {} }; }
+  @Get("supplier-payments") async listSupplierPayments(@Query("order_no") orderNo?: string, @Query("supplier_id") supplierId?: string, @Query("status") status?: string) { return { data: await this.supplierPayments.list(orderNo, supplierId, status), meta: {} }; }
+  @Get("supplier-payments/:id") async getSupplierPayment(@Param("id") id: string) { return { data: await this.supplierPayments.get(id), meta: {} }; }
+  @Post("supplier-payments") async createSupplierPayment(@Body() body: SupplierPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.create(body, user), meta: {} }; }
+  @Post("supplier-payments/:id/post") async postSupplierPayment(@Param("id") id: string, @Body() body: SupplierPostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.post(id, body.allocations, user), meta: {} }; }
+  @Post("supplier-payments/:id/reverse") async reverseSupplierPayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.reverse(id, body.reason, user), meta: {} }; }
+  @Get("payable-order-summary") async payableOrderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.supplierPayments.orderSummary(orderNo) : [], meta: {} }; }
 }
