@@ -1,11 +1,11 @@
 # D7 进度领域模型、状态机与重算契约
 
 ## 状态
-待认领
+已完成
 
 ## 认领
-负责人：
-开始日期：
+负责人：Codex
+开始日期：2026-08-22
 
 ## 目标
 
@@ -40,5 +40,8 @@ D1-D6、全局 API/审计/错误契约。
 
 ## 完成记录
 
-<!-- 填写实现、测试、提交哈希和剩余风险 -->
+已新增生产计量领域函数、单位分组、取消事实排除、Decimal 计算、订单状态机和稳定阻塞代码。已补充零计划、超单、混合单位、能力未实现等单元测试。
 
+验证：`npm run build --workspace=@dilee/api`、`node --test apps/api/test/unit/production-progress-domain.test.cjs` 通过。
+
+提交：`1741f79 feat: add d7 progress domain contract`
