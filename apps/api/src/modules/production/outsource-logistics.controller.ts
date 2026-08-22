@@ -14,6 +14,7 @@ class ReceiptDto { @IsString() quantity!: string; @IsDateString() receipt_date!:
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 class MaterialReturnDto { @IsUUID() production_order_id!: string; @IsUUID() logistics_batch_id!: string; @IsUUID() material_id!: string; @IsUUID() unit_id!: string; @IsString() quantity!: string; @IsDateString() transfer_date!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class FinishedReturnDto { @IsUUID() production_order_id!: string; @IsUUID() unit_id!: string; @IsString() @MaxLength(500) product_description!: string; @IsString() quantity!: string; @IsDateString() transfer_date!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+class DirectShipmentDto { @IsUUID() production_order_id!: string; @IsUUID() unit_id!: string; @IsString() @MaxLength(500) product_description!: string; @IsString() quantity!: string; @IsDateString() shipment_date!: string; @IsString() @MaxLength(500) logistics_reference!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 
 @Controller("production/outsource-logistics-batches")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -25,6 +26,7 @@ export class OutsourceLogisticsController {
   @Get(":id/impact-preview") async impact(@Param("id") id: string) { return { data: await this.logistics.impactPreview(id), meta: {} }; }
   @Get(":id/audit-events") async audit(@Param("id") id: string) { return { data: await this.logistics.auditEvents(id), meta: {} }; }
   @Get("returns") async returns(@Query("order_no") orderNo?: string) { return { data: await this.logistics.listReturns(orderNo), meta: {} }; }
+  @Get("direct-shipments") async directShipments(@Query("order_no") orderNo?: string) { return { data: await this.logistics.listDirectShipments(orderNo), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.logistics.get(id), meta: {} }; }
   @Post() async create(@Body() body: CreateBatchDto, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.create(body, user), meta: {} }; }
   @Post(":id/dispatch") async dispatch(@Param("id") id: string, @Body() body: DispatchDto, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.dispatch(id, body, user), meta: {} }; }
@@ -35,6 +37,9 @@ export class OutsourceLogisticsController {
   @Post("returns/:id/submit-for-qc") async submitReturnForQc(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.submitReturnForQc(id, user), meta: {} }; }
   @Post("returns/finished-goods") async createFinishedReturn(@Body() body: FinishedReturnDto, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.createFinishedReturn(body, user), meta: {} }; }
   @Post("returns/:id/submit-finished-for-qc") async submitFinishedReturnForQc(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.submitFinishedReturnForQc(id, user), meta: {} }; }
+  @Post("direct-shipments") async createDirectShipment(@Body() body: DirectShipmentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.createDirectShipment(body, user), meta: {} }; }
+  @Post("direct-shipments/:id/dispatch") async dispatchDirectShipment(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.dispatchDirectShipment(id, user), meta: {} }; }
+  @Post("direct-shipments/:id/reverse") async reverseDirectShipment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.reverseDirectShipment(id, body.reason, user), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdateBatchDto, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.update(id, body, user), meta: {} }; }
   @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.logistics.remove(id, user), meta: {} }; }
 }

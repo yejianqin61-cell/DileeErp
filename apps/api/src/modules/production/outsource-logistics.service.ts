@@ -166,6 +166,42 @@ export class OutsourceLogisticsService {
     return result;
   }
 
+  async listDirectShipments(orderNo?: string) {
+    return this.prisma.outsourceDirectShipment.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { productionOrder: { select: { productionOrderNo: true, executionMode: true } }, unit: true }, orderBy: { updatedAt: "desc" } });
+  }
+
+  async createDirectShipment(input: { production_order_id: string; unit_id: string; product_description: string; quantity: string; shipment_date: string; logistics_reference: string; remark?: string }, user: CurrentUser) {
+    const production = await this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, deletedAt: null } });
+    if (!production || production.executionMode !== "outsourced") throw new NotFoundException({ code: "OUTSOURCE_PRODUCTION_NOT_FOUND", message: "外加工生产单不存在", details: [] });
+    if (["closed", "cancelled"].includes(production.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_NOT_WRITABLE", message: "当前生产单不允许直装柜", details: [] });
+    await this.requireActiveUnit(input.unit_id);
+    this.decimal(input.quantity, "INVALID_SHIPMENT_QUANTITY");
+    if (!input.product_description?.trim() || !input.logistics_reference?.trim()) throw new UnprocessableEntityException({ code: "SHIPMENT_REFERENCE_REQUIRED", message: "成品描述和物流/装柜资料不能为空", details: [] });
+    const shipmentNo = `OS-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
+    const created = await this.prisma.outsourceDirectShipment.create({ data: { shipmentNo, orderNo: production.orderNo, productionOrderId: production.id, productDescription: input.product_description, unitId: input.unit_id, quantity: input.quantity, shipmentDate: new Date(input.shipment_date), logisticsReference: input.logistics_reference, remark: input.remark, ...this.audit.create(user) } });
+    await this.audit.record("outsource_direct_shipment.create", "outsource_direct_shipment", user.id, created.id, { order_no: created.orderNo, shipment_no: shipmentNo });
+    return created;
+  }
+
+  async dispatchDirectShipment(id: string, user: CurrentUser) {
+    const current = await this.prisma.outsourceDirectShipment.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_FOUND", message: "外加工直装柜记录不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_DISPATCHABLE", message: "当前直装柜记录不可发出", details: [] });
+    const result = await this.prisma.outsourceDirectShipment.update({ where: { id }, data: { status: "dispatched", ...this.audit.update(user) } });
+    await this.audit.record("outsource_direct_shipment.dispatch", "outsource_direct_shipment", user.id, id, { order_no: current.orderNo, quantity: current.quantity.toString() });
+    return result;
+  }
+
+  async reverseDirectShipment(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] });
+    const current = await this.prisma.outsourceDirectShipment.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_FOUND", message: "外加工直装柜记录不存在", details: [] });
+    if (current.status !== "dispatched") throw new UnprocessableEntityException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_REVERSIBLE", message: "只有已发出的直装柜记录可以冲销", details: [] });
+    const result = await this.prisma.outsourceDirectShipment.update({ where: { id }, data: { status: "corrected", reversalQuantity: current.quantity, reversalReason: reason, ...this.audit.update(user) } });
+    await this.audit.record("outsource_direct_shipment.reverse", "outsource_direct_shipment", user.id, id, { order_no: current.orderNo, reason });
+    return result;
+  }
+
   private async returnRefs(input: { production_order_id: string; logistics_batch_id: string }) {
     const [production, batch] = await Promise.all([this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, deletedAt: null } }), this.prisma.outsourceLogisticsBatch.findFirst({ where: { id: input.logistics_batch_id, deletedAt: null } })]);
     if (!production || production.executionMode !== "outsourced") throw new NotFoundException({ code: "OUTSOURCE_PRODUCTION_NOT_FOUND", message: "外加工生产单不存在", details: [] });
