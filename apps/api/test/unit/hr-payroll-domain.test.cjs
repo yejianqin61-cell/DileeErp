@@ -24,7 +24,7 @@ test("F3 blocks ledger and payment over-allocation", () => {
   assert.throws(() => paymentRemaining("100", "90", "11"), /payment balance/);
 });
 
-test("F3 derives payment status and supports reversal by restoring paid balance", () => {
+test("F3 derives payment status and recalculates the balance after a reversal", () => {
   assert.equal(payrollStatus("100", "0"), "confirmed");
   assert.equal(payrollStatus("100", "40"), "partially_paid");
   assert.equal(payrollStatus("100", "100"), "paid");
