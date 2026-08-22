@@ -59,7 +59,7 @@ export class OutsourceLogisticsService {
     return result;
   }
 
-  async receipt(id: string, input: { quantity: string; receipt_date: string; receiver_name?: string; proof_remark?: string }, user: CurrentUser) {
+  async receipt(id: string, input: { quantity: string; receipt_date: string; receiver_name?: string; proof_remark?: string; difference_reason?: string; idempotency_key: string }, user: CurrentUser) {
     const current = await this.get(id);
     if (!["dispatched", "partially_received"].includes(current.status)) throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_NOT_RECEIVABLE", message: "当前批次不允许签收", details: [] });
     const quantity = this.decimal(input.quantity, "INVALID_RECEIPT_QUANTITY");
@@ -67,16 +67,19 @@ export class OutsourceLogisticsService {
     const remaining = Number(current.dispatchedQuantity) - received;
     if (quantity > remaining) throw new UnprocessableEntityException({ code: "OUTSOURCE_RECEIPT_QUANTITY_EXCEEDED", message: "签收数量超过未签收直发数量", details: [{ remaining: remaining.toFixed(4) }] });
     if (!input.proof_remark?.trim()) throw new UnprocessableEntityException({ code: "RECEIPT_PROOF_REQUIRED", message: "签收凭据或签收说明不能为空", details: [] });
+    if (quantity < remaining && !input.difference_reason?.trim()) throw new UnprocessableEntityException({ code: "RECEIPT_DIFFERENCE_REASON_REQUIRED", message: "短收必须填写差异原因", details: [] });
+    const duplicate = await this.prisma.outsourceReceipt.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });
+    if (duplicate) return this.get(id);
     const status = quantity === remaining ? "received" : "partially_received";
     const result = await this.prisma.$transaction(async (tx) => {
-      const receipt = await tx.outsourceReceipt.create({ data: { logisticsBatchId: id, orderNo: current.orderNo, receiptDate: new Date(input.receipt_date), quantity: input.quantity, receiverName: input.receiver_name, proofRemark: input.proof_remark, ...this.audit.create(user) } });
+      const receipt = await tx.outsourceReceipt.create({ data: { logisticsBatchId: id, orderNo: current.orderNo, receiptDate: new Date(input.receipt_date), quantity: input.quantity, receiverName: input.receiver_name, proofRemark: input.proof_remark, differenceReason: input.difference_reason, idempotencyKey: input.idempotency_key, ...this.audit.create(user) } });
       await tx.outsourceLogisticsBatch.update({ where: { id }, data: { status, ...this.audit.update(user) } });
       const item = current.purchaseOrderItem;
       await tx.outsourcePayableSource.create({ data: { outsourceReceiptId: receipt.id, logisticsBatchId: id, orderNo: current.orderNo, purchaseOrderId: current.purchaseOrderId, purchaseOrderItemId: current.purchaseOrderItemId, supplierId: current.purchaseOrder.supplierId, quantity: input.quantity, unitPrice: item.unitPrice, currency: current.purchaseOrder.currency, taxRate: item.taxRate, amount: (quantity * Number(item.unitPrice)).toFixed(4), ...this.audit.create(user) } });
       return receipt;
     });
     await this.audit.record("outsource_receipt.create", "outsource_receipt", user.id, result.id, { order_no: current.orderNo, logistics_batch_id: id, quantity: input.quantity, payable_source: true });
-    return this.get(id);
+    return { batch: await this.get(id), warning: quantity < remaining ? "OUTSOURCE_RECEIPT_SHORT" : null };
   }
 
   async payableSources(orderNo?: string) {
@@ -91,8 +94,9 @@ export class OutsourceLogisticsService {
   }
 
   async auditEvents(id: string) {
-    await this.get(id);
-    return this.prisma.auditEvent.findMany({ where: { entityType: { in: ["outsource_logistics_batch", "outsource_receipt"] }, entityId: id }, orderBy: { createdAt: "desc" } });
+    const batch = await this.get(id);
+    const receiptIds = batch.receipts.map((receipt) => receipt.id);
+    return this.prisma.auditEvent.findMany({ where: { OR: [{ entityType: "outsource_logistics_batch", entityId: id }, { entityType: "outsource_receipt", entityId: { in: receiptIds } }] }, orderBy: { createdAt: "desc" } });
   }
 
   async reverseReceipt(receiptId: string, reason: string, user: CurrentUser) {
@@ -121,8 +125,8 @@ export class OutsourceLogisticsService {
     return result;
   }
 
-  async listReturns(orderNo?: string, transferType = "material_return") {
-    return this.prisma.outsourceReturnTransfer.findMany({ where: { deletedAt: null, transferType, ...(orderNo ? { orderNo } : {}) }, include: { productionOrder: { select: { productionOrderNo: true, executionMode: true } }, logisticsBatch: true, material: true, unit: true }, orderBy: { updatedAt: "desc" } });
+  async listReturns(orderNo?: string, transferType?: string) {
+    return this.prisma.outsourceReturnTransfer.findMany({ where: { deletedAt: null, ...(transferType ? { transferType } : {}), ...(orderNo ? { orderNo } : {}) }, include: { productionOrder: { select: { productionOrderNo: true, executionMode: true } }, logisticsBatch: true, material: true, unit: true }, orderBy: { updatedAt: "desc" } });
   }
 
   async createMaterialReturn(input: { production_order_id: string; logistics_batch_id: string; material_id: string; unit_id: string; quantity: string; transfer_date: string; remark?: string }, user: CurrentUser) {
@@ -147,6 +151,7 @@ export class OutsourceLogisticsService {
   async createFinishedReturn(input: { production_order_id: string; unit_id: string; product_description: string; quantity: string; transfer_date: string; remark?: string }, user: CurrentUser) {
     const production = await this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, deletedAt: null }, include: { unit: true } });
     if (!production || production.executionMode !== "outsourced") throw new NotFoundException({ code: "OUTSOURCE_PRODUCTION_NOT_FOUND", message: "外加工生产单不存在", details: [] });
+    if (["closed", "cancelled"].includes(production.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_NOT_WRITABLE", message: "当前生产单不允许登记余料回厂", details: [] });
     if (["closed", "cancelled"].includes(production.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_NOT_WRITABLE", message: "当前生产单不允许登记成品回厂", details: [] });
     await this.requireActiveUnit(input.unit_id);
     this.decimal(input.quantity, "INVALID_RETURN_QUANTITY");
@@ -164,6 +169,36 @@ export class OutsourceLogisticsService {
     const result = await this.prisma.outsourceReturnTransfer.update({ where: { id }, data: { status: "pending_qc", ...this.audit.update(user) } });
     await this.audit.record("outsource_finished_return.submit_qc", "outsource_return_transfer", user.id, id, { order_no: current.orderNo });
     return result;
+  }
+
+  async updateReturn(id: string, input: { quantity?: string; remark?: string; product_description?: string }, user: CurrentUser) {
+    const current = await this.prisma.outsourceReturnTransfer.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "OUTSOURCE_RETURN_NOT_FOUND", message: "外加工回厂记录不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_RETURN_NOT_EDITABLE", message: "只有草稿回厂记录可以编辑", details: [] });
+    if (input.quantity !== undefined) this.decimal(input.quantity, "INVALID_RETURN_QUANTITY");
+    return this.prisma.outsourceReturnTransfer.update({ where: { id }, data: { ...(input.quantity === undefined ? {} : { quantity: input.quantity }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...(input.product_description === undefined ? {} : { productDescription: input.product_description }), ...this.audit.update(user) } });
+  }
+
+  async removeReturn(id: string, user: CurrentUser) {
+    const current = await this.prisma.outsourceReturnTransfer.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "OUTSOURCE_RETURN_NOT_FOUND", message: "外加工回厂记录不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_RETURN_NOT_DELETABLE", message: "只有草稿回厂记录可以删除", details: [] });
+    return this.prisma.outsourceReturnTransfer.update({ where: { id }, data: this.audit.softDelete(user) });
+  }
+
+  async updateDirectShipment(id: string, input: { quantity?: string; product_description?: string; logistics_reference?: string; remark?: string }, user: CurrentUser) {
+    const current = await this.prisma.outsourceDirectShipment.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_FOUND", message: "外加工直装柜记录不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_EDITABLE", message: "只有草稿直装柜记录可以编辑", details: [] });
+    if (input.quantity !== undefined) this.decimal(input.quantity, "INVALID_SHIPMENT_QUANTITY");
+    return this.prisma.outsourceDirectShipment.update({ where: { id }, data: { ...(input.quantity === undefined ? {} : { quantity: input.quantity }), ...(input.product_description === undefined ? {} : { productDescription: input.product_description }), ...(input.logistics_reference === undefined ? {} : { logisticsReference: input.logistics_reference }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } });
+  }
+
+  async removeDirectShipment(id: string, user: CurrentUser) {
+    const current = await this.prisma.outsourceDirectShipment.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_FOUND", message: "外加工直装柜记录不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_DIRECT_SHIPMENT_NOT_DELETABLE", message: "只有草稿直装柜记录可以删除", details: [] });
+    return this.prisma.outsourceDirectShipment.update({ where: { id }, data: this.audit.softDelete(user) });
   }
 
   async listDirectShipments(orderNo?: string) {

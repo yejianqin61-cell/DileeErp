@@ -10,5 +10,6 @@ test("D6 keeps outsourced receipt quantities bounded and reversible", () => {
 test("D6 direct dispatch and return sources do not create warehouse inventory facts", () => {
   assertOrderNo("outsource order identity", "T-D6", [{ id: "batch", order_no: "T-D6" }, { id: "receipt", orderNo: "T-D6" }, { id: "shipment", order_no: "T-D6" }]);
   assertAudit("outsource batch audit", { id: "batch", createdAt: new Date(), updatedAt: new Date(), createdBy: "user", updatedBy: "user" });
-  assertOutsourceNoInventoryEffect("outsource no inventory", [{ source_type: "outsource_direct_receipt" }, { source_type: "outsource_direct_shipment" }].filter(() => false));
+  assertOutsourceNoInventoryEffect("outsource no inventory", [{ source_type: "raw_material_inbound" }, { source_type: "sales_shipment" }]);
+  assert.throws(() => assertOutsourceNoInventoryEffect("outsource inventory leak", [{ source_type: "outsource_direct_receipt" }]), /outsource inventory leak/);
 });

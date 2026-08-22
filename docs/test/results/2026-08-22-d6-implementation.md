@@ -18,6 +18,7 @@
 - `npm run build --workspace=@dilee/api`：通过。
 - `npm run build --workspace=@dilee/web`：通过。
 - Prisma schema validate/generate：通过。
+- 代码审查后补充验证：采购/仓库/财务 RBAC 分工、短收差异原因、签收幂等键、草稿编辑/删除和批次审计关联已修正并通过 typecheck/build/unit 回归。
 
 ## 待环境具备后验证
 

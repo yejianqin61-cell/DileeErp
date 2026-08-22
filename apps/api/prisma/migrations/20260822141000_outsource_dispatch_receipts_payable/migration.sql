@@ -1,6 +1,10 @@
 ALTER TABLE "outsource_logistics_batches"
   ADD COLUMN "dispatch_date" DATE,
   ADD COLUMN "dispatch_proof_remark" VARCHAR(1000);
+ALTER TABLE "outsource_receipts"
+  ADD COLUMN "difference_reason" VARCHAR(1000),
+  ADD COLUMN "idempotency_key" VARCHAR(200) NOT NULL;
+CREATE UNIQUE INDEX "outsource_receipts_idempotency_key_key" ON "outsource_receipts"("idempotency_key");
 
 CREATE TABLE "outsource_payable_sources" (
   "id" UUID NOT NULL, "outsource_receipt_id" UUID NOT NULL, "logistics_batch_id" UUID NOT NULL,

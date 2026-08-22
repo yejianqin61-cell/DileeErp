@@ -764,6 +764,8 @@ model OutsourceReceipt {
   quantity         Decimal                 @db.Decimal(18, 4)
   receiverName     String?                 @map("receiver_name") @db.VarChar(100)
   proofRemark      String?                 @map("proof_remark") @db.VarChar(1000)
+  differenceReason String?                 @map("difference_reason") @db.VarChar(1000)
+  idempotencyKey   String                  @unique @map("idempotency_key") @db.VarChar(200)
   status           String                  @default("received") @db.VarChar(30)
   reversalQuantity Decimal                 @default(0) @map("reversal_quantity") @db.Decimal(18, 4)
   reversalReason   String?                 @map("reversal_reason") @db.VarChar(1000)
