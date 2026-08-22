@@ -121,6 +121,37 @@ export class OutsourceLogisticsService {
     return result;
   }
 
+  async listReturns(orderNo?: string, transferType = "material_return") {
+    return this.prisma.outsourceReturnTransfer.findMany({ where: { deletedAt: null, transferType, ...(orderNo ? { orderNo } : {}) }, include: { productionOrder: { select: { productionOrderNo: true, executionMode: true } }, logisticsBatch: true, material: true, unit: true }, orderBy: { updatedAt: "desc" } });
+  }
+
+  async createMaterialReturn(input: { production_order_id: string; logistics_batch_id: string; material_id: string; unit_id: string; quantity: string; transfer_date: string; remark?: string }, user: CurrentUser) {
+    const refs = await this.returnRefs(input);
+    const quantity = this.decimal(input.quantity, "INVALID_RETURN_QUANTITY");
+    if (refs.batch.materialId !== input.material_id || refs.batch.unitId !== input.unit_id) throw new UnprocessableEntityException({ code: "RETURN_REFERENCE_MISMATCH", message: "余料回厂物料或单位与直发批次不一致", details: [] });
+    const transferNo = `RT-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
+    const created = await this.prisma.outsourceReturnTransfer.create({ data: { transferNo, transferType: "material_return", orderNo: refs.production.orderNo, productionOrderId: refs.production.id, logisticsBatchId: refs.batch.id, materialId: input.material_id, unitId: input.unit_id, quantity: input.quantity, transferDate: new Date(input.transfer_date), remark: input.remark, ...this.audit.create(user) } });
+    await this.audit.record("outsource_material_return.create", "outsource_return_transfer", user.id, created.id, { order_no: created.orderNo, transfer_no: transferNo, quantity });
+    return created;
+  }
+
+  async submitReturnForQc(id: string, user: CurrentUser) {
+    const current = await this.prisma.outsourceReturnTransfer.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "OUTSOURCE_RETURN_NOT_FOUND", message: "外加工回厂记录不存在", details: [] });
+    if (current.transferType !== "material_return" || current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_RETURN_NOT_SUBMITTABLE", message: "当前回厂记录不可提交 QC", details: [] });
+    const result = await this.prisma.outsourceReturnTransfer.update({ where: { id }, data: { status: "pending_qc", ...this.audit.update(user) } });
+    await this.audit.record("outsource_material_return.submit_qc", "outsource_return_transfer", user.id, id, { order_no: current.orderNo });
+    return result;
+  }
+
+  private async returnRefs(input: { production_order_id: string; logistics_batch_id: string }) {
+    const [production, batch] = await Promise.all([this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, deletedAt: null } }), this.prisma.outsourceLogisticsBatch.findFirst({ where: { id: input.logistics_batch_id, deletedAt: null } })]);
+    if (!production || production.executionMode !== "outsourced") throw new NotFoundException({ code: "OUTSOURCE_PRODUCTION_NOT_FOUND", message: "外加工生产单不存在", details: [] });
+    if (!batch || batch.orderNo !== production.orderNo) throw new UnprocessableEntityException({ code: "RETURN_ORDER_MISMATCH", message: "回厂批次与生产单订单号不一致", details: [] });
+    if (batch.status === "cancelled") throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_CANCELLED", message: "已取消的外加工批次不能回厂", details: [] });
+    return { production, batch };
+  }
+
   async remove(id: string, user: CurrentUser) {
     const current = await this.get(id);
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "OUTSOURCE_BATCH_NOT_DELETABLE", message: "只有草稿外加工批次可以删除", details: [] });
