@@ -15,6 +15,7 @@
 | F1-F3 领域单元测试 | 通过，5/5 | `node --test apps/api/test/unit/hr-payroll-domain.test.cjs` |
 | 完整单元测试 | 通过，55/55 | `npm run test:unit` |
 | Web 构建 | 通过 | `npm run build --workspace=@dilee/web` |
+| F1-F3 审查修复后的 API 类型检查/构建 | 通过 | 补充台账关闭、更新 DTO、嵌套核销校验、审计事件和 Decimal 422 错误 |
 | 链路质量门禁 | 环境阻断 | `npm run verify:chain`；缺少 `TEST_DATABASE_URL`、`API_BASE_URL`、`PLAYWRIGHT_BASE_URL` |
 | 真实 PostgreSQL/API/浏览器链路 | 环境待具备 | 需要 `TEST_DATABASE_URL`、API 和 Web 服务 |
 
@@ -25,6 +26,9 @@
 - 独立薪资调整按 `increase/decrease` 使用 Decimal 计算。
 - 薪资台账和工资付款均禁止超额核销。
 - 薪资状态按已支付金额派生为 `confirmed/partially_paid/paid`。
+- 已付清台账可显式关闭；关闭后不允许进入支付或调整流程。
+- PATCH 和多层核销请求使用显式 DTO 校验；非法 Decimal 输入返回统一 422 业务错误。
+- 调整过账/冲销、付款分配和分配冲销均留下操作审计事件。
 
 ## 限制
 
