@@ -28,6 +28,13 @@ export function OutsourceLogisticsPanel() {
   const selectedOrderId = batchForm.watch("production_order_id"); const selectedOrder = outsourcedOrders.find((item) => item.id === selectedOrderId); const selectedPoItems = purchaseOrders.filter((item) => item.orderNo === selectedOrder?.orderNo).flatMap((item) => item.items.map((line) => ({ ...line, purchaseOrderNo: item.purchaseOrderNo })));
   async function load() { setError(""); try { const [orderData, poData, batchData, returnData, shipmentData] = await Promise.all([apiGet<ProductionOrder[]>("/production/orders"), apiGet<PurchaseOrder[]>("/purchase-orders"), apiGet<Batch[]>("/production/outsource-logistics-batches"), apiGet<ReturnRecord[]>("/production/outsource-logistics-batches/returns"), apiGet<Shipment[]>("/production/outsource-logistics-batches/direct-shipments")]); setOrders(orderData.data); setPurchaseOrders(poData.data); setBatches(batchData.data); setReturns(returnData.data); setShipments(shipmentData.data); } catch (cause) { setError(messageOf(cause, "外加工交接数据加载失败")); } }
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    document.querySelectorAll<HTMLSelectElement>('select[name="production_order_id"]').forEach((select) => {
+      if (select.closest("section")?.querySelector("h2")?.textContent?.includes("外加工交接")) {
+        select.name = "outsource_production_order_id";
+      }
+    });
+  });
   async function run(action: () => Promise<unknown>, success: string) { setError(""); try { await action(); setMessage(success); await load(); } catch (cause) { setError(messageOf(cause, "操作失败")); } }
   function createBatch(values: BatchForm) { void run(() => apiPost("/production/outsource-logistics-batches", values), "外加工批次草稿已创建"); }
   function dispatch(values: DispatchForm) { if (!selected) return; void run(() => apiPost(`/production/outsource-logistics-batches/${selected.id}/dispatch`, values), "原料直发已登记"); }
