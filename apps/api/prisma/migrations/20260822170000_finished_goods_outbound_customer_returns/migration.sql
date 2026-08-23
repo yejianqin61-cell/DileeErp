@@ -63,6 +63,11 @@ CREATE UNIQUE INDEX "customer_returns_idempotency_key_key" ON "customer_returns"
 CREATE INDEX "customer_returns_order_no_status_idx" ON "customer_returns"("order_no", "status");
 CREATE INDEX "customer_returns_sales_order_id_status_idx" ON "customer_returns"("sales_order_id", "status");
 CREATE INDEX "customer_returns_production_order_id_status_idx" ON "customer_returns"("production_order_id", "status");
+ALTER TABLE "inventory_facts"
+  ADD COLUMN "finished_goods_outbound_id" UUID,
+  ADD COLUMN "customer_return_id" UUID;
+CREATE INDEX "inventory_facts_finished_goods_outbound_id_idx" ON "inventory_facts"("finished_goods_outbound_id");
+CREATE INDEX "inventory_facts_customer_return_id_idx" ON "inventory_facts"("customer_return_id");
 ALTER TABLE "finished_goods_outbounds"
   ADD CONSTRAINT "finished_goods_outbounds_sales_order_id_fkey" FOREIGN KEY ("sales_order_id") REFERENCES "sales_orders"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
   ADD CONSTRAINT "finished_goods_outbounds_production_order_id_fkey" FOREIGN KEY ("production_order_id") REFERENCES "production_orders"("id") ON DELETE RESTRICT ON UPDATE CASCADE,

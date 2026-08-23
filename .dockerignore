@@ -1,0 +1,11 @@
+node_modules
+.next
+dist
+coverage
+.git
+.playwright-cli
+test-results
+apps/api/var
+docs/test/results/playwright-result.json
+.env*
+*.log

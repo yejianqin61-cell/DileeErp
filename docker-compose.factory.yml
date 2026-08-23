@@ -43,6 +43,8 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        API_INTERNAL_URL: http://api:3001
     restart: unless-stopped
     environment:
       API_INTERNAL_URL: http://api:3001

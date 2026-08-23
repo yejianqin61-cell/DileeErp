@@ -5,6 +5,9 @@ coverage/
 *.tsbuildinfo
 .env
 .env.local
+.env.factory
 apps/api/var/
 .playwright-cli/
+test-results/
+docs/test/results/playwright-result.json
 *.log
