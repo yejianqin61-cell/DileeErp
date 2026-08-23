@@ -10,6 +10,7 @@ import { RequestLogMiddleware } from "./platform/http/request-log.middleware";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.getHttpAdapter().getInstance().disable("etag");
   app.setGlobalPrefix("api/v1");
   app.enableCors();
   app.use(cookieParser());
