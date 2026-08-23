@@ -27,6 +27,7 @@ services:
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:?INITIAL_ADMIN_USERNAME is required}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required}
       INITIAL_ADMIN_DISPLAY_NAME: ${INITIAL_ADMIN_DISPLAY_NAME:-迪礼管理员}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     depends_on:
       postgres:
         condition: service_healthy
