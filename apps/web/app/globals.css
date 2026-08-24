@@ -63,6 +63,10 @@ button { cursor: pointer; }
 .form-grid { display: grid; gap: 14px; }
 .attachment-panel { margin-top: 16px; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.table-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 2px; color: var(--text-muted); font-size: 12px; }
+.table-pagination div { display: flex; gap: 6px; }
+.table-pagination button { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 6px 10px; color: var(--text); }
+.table-pagination button:disabled { cursor: not-allowed; opacity: .45; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
 .data-table th { background: var(--surface-muted); color: var(--text-muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .data-table th, .data-table td { height: 44px; padding: 0 14px; border-bottom: 1px solid var(--border); white-space: nowrap; }
