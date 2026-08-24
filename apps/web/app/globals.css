@@ -110,3 +110,6 @@ button { cursor: pointer; }
 .detail-list p { margin: 0; padding-bottom: 10px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
 .detail-list p:last-child { border-bottom: 0; }
 .panel h3 { margin: 0; padding: 12px 0 8px; font-size: 13px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.code-block { overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: var(--radius); background: #172033; color: #e8eef5; font-size: 12px; }
+.status-error { color: var(--danger); }
