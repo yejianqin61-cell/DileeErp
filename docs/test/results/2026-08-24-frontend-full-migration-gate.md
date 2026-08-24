@@ -22,4 +22,11 @@
 
 ## 未在本机完成
 
-真实 API、数据库和 Playwright 浏览器流程验收未在本次静态门禁中执行。需要启动可用的 API 与 PostgreSQL 后，按销售、采购、仓库、生产、人事、财务、工作台、报表和登录主流程逐页验收，并记录运行时证据。
+## 运行时 smoke
+
+- Docker 中 `dilee-api-1` 与 `dilee-postgres-1` 健康运行。
+- 临时前端 `http://localhost:3010` 的 `/`、`/login`、`/sales`、`/procurement`、`/warehouse`、`/production`、`/hr`、`/finance`、`/reports` 路由均返回 200。
+- Playwright CLI 登录页可见用户名、密码和登录按钮；使用初始管理员登录后，生产和财务页面无控制台错误。
+- 生产页面首次 smoke 暴露外加工接口路径不一致，已在 `ee5c6a0` 修正并复验无控制台错误。
+
+完整业务写入、冲销和窄屏视觉验收仍需在正式验收窗口逐模块执行；本文件不将路由 smoke 视为完整业务验收。
