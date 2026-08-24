@@ -3,154 +3,20 @@
 import { useEffect, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
 import { PageHeader } from "../../components/layout/app-shell";
+import { ActionDialog } from "../../components/ui/action-dialog";
 import { Button } from "../../components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 
 type ReportRow = Record<string, unknown>;
-type Alert = {
-  source_id: string;
-  source_type: string;
-  alert_type: string;
-  order_no: string | null;
-  severity: string;
-  title: string;
-  suggestion: string;
-  status: string;
-  handling_id: string | null;
-  remark: string | null;
-};
-
-const reports = [
-  { key: "orders", label: "订单推进" },
-  { key: "procurement-payables", label: "采购与应付" },
-  { key: "inventory", label: "库存" },
-  { key: "production-qc", label: "生产与 QC" },
-  { key: "payroll", label: "薪资" },
-];
+type Alert = { source_id: string; source_type: string; alert_type: string; order_no: string | null; severity: string; title: string; suggestion: string; status: string };
+const reports = [{ key: "orders", label: "订单推进" }, { key: "procurement-payables", label: "采购与应付" }, { key: "inventory", label: "库存" }, { key: "production-qc", label: "生产与 QC" }, { key: "payroll", label: "薪资" }];
 
 export default function ReportsPage() {
-  const [tab, setTab] = useState("orders");
-  const [rows, setRows] = useState<ReportRow[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [orderNo, setOrderNo] = useState("");
-
-  async function load() {
-    setLoading(true);
-    setError("");
-    try {
-      const query = orderNo ? `?${new URLSearchParams({ order_no: orderNo })}` : "";
-      if (tab === "alerts") {
-        const result = await apiGet<Alert[]>(`/alerts${query}`);
-        setAlerts(result.data);
-      } else {
-        const result = await apiGet<ReportRow[]>(`/reports/${tab}${query}`);
-        setRows(result.data);
-      }
-    } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "数据加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void load();
-  }, [tab]);
-
-  async function exportCsv() {
-    const query = orderNo ? `?${new URLSearchParams({ order_no: orderNo })}` : "";
-    const response = await fetch(`/api/v1/reports/${tab}/export${query}`, { credentials: "include" });
-    if (!response.ok) {
-      setError("导出失败，请缩小筛选范围后重试");
-      return;
-    }
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${tab}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function handleAlert(alert: Alert, status: "acknowledged" | "resolved") {
-    const remark = window.prompt("请输入处理备注");
-    if (!remark?.trim()) return;
-    try {
-      await apiPost(`/alerts/${alert.source_id}/handle`, { status, remark });
-      await load();
-    } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "告警处理失败");
-    }
-  }
-
-  const reportView = (
-    <section className="panel">
-      <div className="panel-heading">
-        <h2>{reports.find((item) => item.key === tab)?.label}</h2>
-        <Button variant="secondary" onClick={() => void exportCsv()}>
-          <Download size={15} /> 导出 CSV
-        </Button>
-      </div>
-      <div className="panel-body table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>{rows[0] && Object.keys(rows[0]).map((key) => <th key={key}>{key}</th>)}</tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={index}>
-                {Object.values(row).map((value, column) => (
-                  <td key={column}>{typeof value === "object" ? JSON.stringify(value) : String(value ?? "-")}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!rows.length && <EmptyState title="暂无报表数据" />}
-      </div>
-    </section>
-  );
-
-  const alertView = (
-    <section className="panel">
-      <div className="panel-body table-wrap">
-        <table className="data-table">
-          <thead><tr><th>级别</th><th>标题</th><th>订单号</th><th>状态</th><th>建议</th><th>操作</th></tr></thead>
-          <tbody>
-            {alerts.map((alert) => (
-              <tr key={`${alert.source_type}-${alert.source_id}-${alert.alert_type}`}>
-                <td>{alert.severity}</td><td>{alert.title}</td><td>{alert.order_no ?? "-"}</td><td>{alert.status}</td><td>{alert.suggestion}</td>
-                <td>
-                  {alert.status === "pending" && <Button variant="secondary" onClick={() => void handleAlert(alert, "acknowledged")}>确认</Button>}
-                  {alert.status === "acknowledged" && <Button variant="secondary" onClick={() => void handleAlert(alert, "resolved")}>解决</Button>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!alerts.length && <EmptyState title="暂无待处理告警" />}
-      </div>
-    </section>
-  );
-
-  return (
-    <>
-      <PageHeader title="报表与告警" description="按订单和业务模块筛选数据并处理待办告警">
-        <Button variant="secondary" onClick={() => void load()} title="刷新"><RefreshCw size={15} /> 刷新</Button>
-      </PageHeader>
-      <section className="panel"><div className="panel-body filter-bar">
-        <label>订单号 <input className="filter-input" value={orderNo} onChange={(event) => setOrderNo(event.target.value)} placeholder="可选" /></label>
-        <Button variant="secondary" onClick={() => void load()}>筛选</Button>
-      </div></section>
-      <div className="tabs">
-        {reports.map((item) => <Button key={item.key} variant={tab === item.key ? "default" : "secondary"} onClick={() => setTab(item.key)}>{item.label}</Button>)}
-        <Button variant={tab === "alerts" ? "default" : "secondary"} onClick={() => setTab("alerts")}>告警中心</Button>
-      </div>
-      {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
-      {loading ? <LoadingState /> : tab === "alerts" ? alertView : reportView}
-    </>
-  );
+  const [tab, setTab] = useState("orders"); const [rows, setRows] = useState<ReportRow[]>([]); const [alerts, setAlerts] = useState<Alert[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [orderNo, setOrderNo] = useState(""); const [pendingAlert, setPendingAlert] = useState<{ item: Alert; status: "acknowledged" | "resolved" } | null>(null);
+  async function load() { setLoading(true); setError(""); try { const query = orderNo ? `?${new URLSearchParams({ order_no: orderNo })}` : ""; if (tab === "alerts") setAlerts((await apiGet<Alert[]>(`/alerts${query}`)).data); else setRows((await apiGet<ReportRow[]>(`/reports/${tab}${query}`)).data); } catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "数据加载失败"); } finally { setLoading(false); } }
+  useEffect(() => { void load(); }, [tab]);
+  async function exportCsv() { const query = orderNo ? `?${new URLSearchParams({ order_no: orderNo })}` : ""; const response = await fetch(`/api/v1/reports/${tab}/export${query}`, { credentials: "include" }); if (!response.ok) { setError("导出失败，请缩小筛选范围后重试"); return; } const url = URL.createObjectURL(await response.blob()); const link = document.createElement("a"); link.href = url; link.download = `${tab}.csv`; link.click(); URL.revokeObjectURL(url); }
+  async function handleAlert(values: Record<string, string>) { if (!pendingAlert) return; try { await apiPost(`/alerts/${pendingAlert.item.source_id}/handle`, { status: pendingAlert.status, remark: values.remark }); setPendingAlert(null); await load(); } catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "告警处理失败"); } }
+  return <><PageHeader title="报表与告警" description="按订单和业务模块筛选数据并处理待办告警"><Button variant="secondary" onClick={() => void load()} title="刷新"><RefreshCw size={15} /> 刷新</Button></PageHeader><ActionDialog open={Boolean(pendingAlert)} onOpenChange={(open) => { if (!open) setPendingAlert(null); }} title="处理告警" fields={[{ name: "remark", label: "处理备注", type: "textarea", required: true }]} onSubmit={(values) => void handleAlert(values)} /><section className="panel"><div className="panel-body filter-bar"><label>订单号 <input className="filter-input" value={orderNo} onChange={(event) => setOrderNo(event.target.value)} placeholder="可选" /></label><Button variant="secondary" onClick={() => void load()}>筛选</Button></div></section><div className="tabs">{reports.map((item) => <Button key={item.key} variant={tab === item.key ? "default" : "secondary"} onClick={() => setTab(item.key)}>{item.label}</Button>)}<Button variant={tab === "alerts" ? "default" : "secondary"} onClick={() => setTab("alerts")}>告警中心</Button></div>{error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}{loading ? <LoadingState /> : tab === "alerts" ? <section className="panel"><div className="panel-body table-wrap"><table className="data-table"><thead><tr><th>级别</th><th>标题</th><th>订单号</th><th>状态</th><th>建议</th><th>操作</th></tr></thead><tbody>{alerts.map((alert) => <tr key={`${alert.source_type}-${alert.source_id}-${alert.alert_type}`}><td>{alert.severity}</td><td>{alert.title}</td><td>{alert.order_no ?? "-"}</td><td>{alert.status}</td><td>{alert.suggestion}</td><td>{alert.status === "pending" && <Button variant="secondary" onClick={() => setPendingAlert({ item: alert, status: "acknowledged" })}>确认</Button>}{alert.status === "acknowledged" && <Button variant="secondary" onClick={() => setPendingAlert({ item: alert, status: "resolved" })}>解决</Button>}</td></tr>)}</tbody></table>{!alerts.length && <EmptyState title="暂无待处理告警" />}</div></section> : <section className="panel"><div className="panel-heading"><h2>{reports.find((item) => item.key === tab)?.label}</h2><Button variant="secondary" onClick={() => void exportCsv()}><Download size={15} /> 导出 CSV</Button></div><div className="panel-body table-wrap"><table className="data-table"><thead><tr>{rows[0] && Object.keys(rows[0]).map((key) => <th key={key}>{key}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{Object.values(row).map((value, column) => <td key={column}>{typeof value === "object" ? JSON.stringify(value) : String(value ?? "-")}</td>)}</tr>)}</tbody></table>{!rows.length && <EmptyState title="暂无报表数据" />}</div></section>}</>;
 }
