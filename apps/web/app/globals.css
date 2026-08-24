@@ -76,7 +76,8 @@ button { cursor: pointer; }
 .status-warning { color: var(--warning); background: #fff6df; border-color: #f0d69b; }
 .status-danger { color: var(--danger); background: #fff0ef; border-color: #f2c4c0; }
 .status-info { color: var(--info); background: #eef4ff; border-color: #cbdaf8; }
-.workbench-grid { display: grid; gap: 16px; }
+.workbench-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); align-items: start; gap: 20px; }
+.workbench-grid > .panel { min-width: 0; }
 .progress-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
 .progress-warning { display: flex; flex-direction: column; gap: 3px; border: 1px solid currentColor; border-radius: var(--radius); padding: 9px 10px; margin-bottom: 8px; font-size: 12px; }
 .progress-warning span { color: var(--text); }
