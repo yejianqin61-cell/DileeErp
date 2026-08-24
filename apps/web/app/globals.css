@@ -79,6 +79,10 @@ button { cursor: pointer; }
 .workbench-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); align-items: start; gap: 20px; }
 .workbench-grid > .panel { min-width: 0; }
 .progress-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+.production-order-table { grid-column: 1 / -1; }
+.production-order-table .data-table td:last-child { white-space: normal; min-width: 150px; }
+.form-grid > form { display: grid; gap: 10px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.form-grid > form:last-of-type { border-bottom: 0; }
 .progress-warning { display: flex; flex-direction: column; gap: 3px; border: 1px solid currentColor; border-radius: var(--radius); padding: 9px 10px; margin-bottom: 8px; font-size: 12px; }
 .progress-warning span { color: var(--text); }
 .progress-capability { margin-top: 12px !important; color: var(--warning) !important; }
