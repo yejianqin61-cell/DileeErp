@@ -104,3 +104,9 @@ button { cursor: pointer; }
 .login-panel h1 { margin: 0; font-size: 22px; }
 .login-panel label { display: grid; gap: 6px; font-size: 13px; color: var(--text-muted); }
 .login-panel input { height: 38px; border: 1px solid var(--border); border-radius: var(--radius); padding: 0 10px; color: var(--text); background: var(--surface); }
+.module-stat { display: inline-flex; align-items: baseline; gap: 6px; color: var(--text-muted); font-size: 13px; }
+.module-stat strong { color: var(--text); font-size: 20px; }
+.detail-list { display: grid; gap: 12px; margin-top: 20px; }
+.detail-list p { margin: 0; padding-bottom: 10px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
+.detail-list p:last-child { border-bottom: 0; }
+.panel h3 { margin: 0; padding: 12px 0 8px; font-size: 13px; }
