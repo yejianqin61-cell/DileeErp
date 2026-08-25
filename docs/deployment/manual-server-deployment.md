@@ -17,14 +17,56 @@ sudo docker compose -f docker-compose.factory.yml --env-file .env.factory ps
 curl http://127.0.0.1:3001/api/v1/health
 ```
 
-## 非 Docker 部署
+## PM2 部署
 
 ```bash
+cd /opt/dilee/app
+
+# 仅使用 Docker 运行 PostgreSQL；API 和前端由 PM2 运行
+sudo docker compose -f docker-compose.factory.yml --env-file .env.factory up -d postgres
+
 npm ci
 npx prisma generate --schema apps/api/prisma/schema.prisma
+
+# .env.factory 是 Compose 格式，PM2 需要把数据库地址指向宿主机
+set -a
+. ./.env.factory
+set +a
+export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB}?schema=public"
+export NODE_ENV=production
+export COOKIE_SECURE=false
+
 npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
 npm run build --workspace=@dilee/api
 npm run build --workspace=@dilee/web
+
+sudo npm install -g pm2
+pm2 delete dilee-api 2>/dev/null || true
+pm2 delete dilee-web 2>/dev/null || true
+
+export PORT=3001
+pm2 start apps/api/dist/main.js --name dilee-api --update-env
+
+export API_INTERNAL_URL=http://127.0.0.1:3001
+export PORT=3000
+export HOSTNAME=0.0.0.0
+pm2 start apps/web/.next/standalone/apps/web/server.js --name dilee-web --update-env
+
+pm2 save
+pm2 status
+curl http://127.0.0.1:3001/api/v1/health
 ```
 
-非 Docker 进程的端口和进程托管方式由服务器现有的 PM2 或 systemd 配置决定；更新前先停止旧进程，避免 `EADDRINUSE`。
+首次配置开机自启：
+
+```bash
+pm2 startup systemd
+# 按命令输出复制并执行 sudo 提示的那一行
+pm2 save
+```
+
+PM2 更新时先执行 `pm2 delete dilee-api dilee-web`，再重新构建和启动，避免 `EADDRINUSE`。
+
+## 纯非 Docker 数据库
+
+如果服务器已安装本机 PostgreSQL，可以停止 Compose 的数据库容器，并将 `DATABASE_URL` 改为本机 PostgreSQL 地址；其余 PM2 步骤不变。
