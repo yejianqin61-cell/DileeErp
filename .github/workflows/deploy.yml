@@ -91,10 +91,17 @@ jobs:
           ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd /opt/dilee/app
-          export API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:latest
-          export WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:latest
-          sudo docker compose -f docker-compose.factory.yml --env-file .env.factory pull api web
-          sudo docker compose -f docker-compose.factory.yml --env-file .env.factory up -d --no-build --force-recreate api web
-          sudo docker compose -f docker-compose.factory.yml --env-file .env.factory ps
+          sudo env \
+            API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:latest \
+            WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:latest \
+            docker compose -f docker-compose.factory.yml --env-file .env.factory pull api web
+          sudo env \
+            API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:latest \
+            WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:latest \
+            docker compose -f docker-compose.factory.yml --env-file .env.factory up -d --no-build --force-recreate api web
+          sudo env \
+            API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:latest \
+            WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:latest \
+            docker compose -f docker-compose.factory.yml --env-file .env.factory ps
           sudo docker exec app-api-1 node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"
           REMOTE
