@@ -93,12 +93,12 @@ button { cursor: pointer; }
 .ui-toast-description { color: var(--text-muted); font-size: 13px; }
 .ui-toast-error { border-color: var(--danger); }
 .ui-toast-action { position: absolute; top: 12px; right: 12px; border: 0; background: transparent; color: var(--primary); font-size: 12px; }
-.ui-sheet-content { position: fixed; z-index: 50; display: grid; gap: 16px; border: 1px solid var(--border); background: var(--surface); padding: 20px; box-shadow: 0 18px 50px rgb(23 32 51 / 24%); }
+.ui-sheet-content { position: fixed; z-index: 50; display: grid; gap: 12px; border: 1px solid var(--border); background: var(--surface); padding: 18px; box-shadow: 0 18px 50px rgb(23 32 51 / 24%); }
 .ui-sheet-right { top: 0; right: 0; bottom: 0; width: min(520px, calc(100vw - 24px)); overflow-y: auto; }
 .ui-sheet-left { top: 0; left: 0; bottom: 0; width: min(520px, calc(100vw - 24px)); overflow-y: auto; }
 .ui-sheet-top { top: 0; left: 0; right: 0; }
 .ui-sheet-bottom { right: 0; bottom: 0; left: 0; }
-.ui-sheet-content { position: fixed; z-index: 50; display: grid; gap: 16px; border: 1px solid var(--border); background: var(--surface); padding: 20px; box-shadow: 0 18px 50px rgb(23 32 51 / 24%); }
+.ui-sheet-content { position: fixed; z-index: 50; display: grid; gap: 12px; border: 1px solid var(--border); background: var(--surface); padding: 18px; box-shadow: 0 18px 50px rgb(23 32 51 / 24%); }
 .ui-sheet-right { top: 0; right: 0; bottom: 0; width: min(520px, calc(100vw - 24px)); overflow-y: auto; }
 .ui-sheet-left { top: 0; left: 0; bottom: 0; width: min(520px, calc(100vw - 24px)); overflow-y: auto; }
 .ui-sheet-top { top: 0; left: 0; right: 0; }
@@ -136,6 +136,8 @@ button { cursor: pointer; }
 .spin { animation: spin 1.2s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.content-area > .panel { margin-bottom: 20px; }
+.content-area > .panel:last-of-type { margin-bottom: 0; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 14px 16px; }
 .panel-heading h2 { margin: 0; font-size: 15px; }
 .panel-body { padding: 16px; }
@@ -190,10 +192,11 @@ button { cursor: pointer; }
 .login-panel input { height: 38px; border: 1px solid var(--border); border-radius: var(--radius); padding: 0 10px; color: var(--text); background: var(--surface); }
 .module-stat { display: inline-flex; align-items: baseline; gap: 6px; color: var(--text-muted); font-size: 13px; }
 .module-stat strong { color: var(--text); font-size: 20px; }
-.detail-list { display: grid; gap: 12px; margin-top: 20px; }
-.detail-list p { margin: 0; padding-bottom: 10px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 13px; }
+.detail-list { display: grid; gap: 7px; margin-top: 12px; }
+.detail-list p { margin: 0; padding: 7px 0; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 13px; line-height: 1.45; }
 .detail-list p:last-child { border-bottom: 0; }
 .panel h3 { margin: 0; padding: 12px 0 8px; font-size: 13px; }
+.production-subflows { display: grid; gap: 24px; margin-top: 24px; }
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
 .code-block { overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: var(--radius); background: #172033; color: #e8eef5; font-size: 12px; }
 .status-error { color: var(--danger); }
