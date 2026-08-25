@@ -25,7 +25,8 @@ cd /opt/dilee/app
 # 仅使用 Docker 运行 PostgreSQL；API 和前端由 PM2 运行
 sudo docker compose -f docker-compose.factory.yml --env-file .env.factory up -d postgres
 
-npm ci
+# 构建需要 Nest CLI、Prisma CLI 等开发依赖，不能使用 production-only 安装
+npm ci --include=dev
 npx prisma generate --schema apps/api/prisma/schema.prisma
 
 # .env.factory 是 Compose 格式，PM2 需要把数据库地址指向宿主机
