@@ -1,10 +1,25 @@
 # 服务器手动更新部署
 
-GitHub push 只执行代码检查，不再自动发布镜像或上传镜像。服务器更新时登录服务器执行：
+GitHub push 只执行代码检查，不再自动发布镜像或上传镜像。服务器使用源码压缩包更新。
+
+本机 PowerShell 执行：
+
+```powershell
+tar -czf DileeErp-latest.tar.gz --exclude=.git --exclude=node_modules --exclude=.next --exclude=dist --exclude=coverage --exclude=test-results --exclude='*.tar' --exclude='*.tar.gz' --exclude=.env --exclude=.env.local --exclude=.env.factory .
+scp .\DileeErp-latest.tar.gz ubuntu@159.75.219.30:/tmp/
+```
+
+服务器执行，保留生产配置：
 
 ```bash
+cd /opt/dilee
+pm2 stop dilee-api dilee-web 2>/dev/null || true
+backup="/opt/dilee/app.backup-$(date +%Y%m%d-%H%M%S)"
+mv /opt/dilee/app "$backup"
+mkdir /opt/dilee/app
+tar -xzf /tmp/DileeErp-latest.tar.gz -C /opt/dilee/app
+cp "$backup/.env.factory" /opt/dilee/app/.env.factory
 cd /opt/dilee/app
-git pull --ff-only origin main
 ```
 
 ## Docker 部署
@@ -33,13 +48,18 @@ npx prisma generate --schema apps/api/prisma/schema.prisma
 set -a
 . ./.env.factory
 set +a
-export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB}?schema=public"
+export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:15432/${POSTGRES_DB}?schema=public"
 export NODE_ENV=production
 export COOKIE_SECURE=false
 
 npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
 npm run build --workspace=@dilee/api
 npm run build --workspace=@dilee/web
+
+# PM2 直接运行 standalone 时必须补齐 Next 静态资源
+mkdir -p apps/web/.next/standalone/apps/web/.next
+cp -a apps/web/.next/static apps/web/.next/standalone/apps/web/.next/
+if [ -d apps/web/public ]; then cp -a apps/web/public apps/web/.next/standalone/apps/web/; fi
 
 sudo npm install -g pm2
 pm2 delete dilee-api 2>/dev/null || true
