@@ -16,6 +16,7 @@
     "test:integration": "node scripts/run-tests.mjs integration",
     "test:integration:raw": "node --test apps/api/test/integration/**/*.test.cjs",
     "db:test:prepare": "node scripts/prepare-test-database.mjs",
+    "db:seed:mock": "node scripts/seed-mock-data.mjs",
     "test:e2e": "node scripts/run-tests.mjs e2e",
     "test:e2e:raw": "playwright test",
     "verify:quick": "node scripts/verify-quality.mjs quick",

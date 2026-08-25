@@ -43,13 +43,16 @@ class UpdateSalesOrderDto {
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
   @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
+class SalesOrderQueryDto extends PaginationQueryDto {
+  @IsOptional() @IsString() status?: string;
+}
 
 @Controller("sales-orders")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("sales")
 export class SalesOrdersController {
   constructor(private readonly orders: SalesOrdersService) {}
-  @Get() async list(@Query() query: PaginationQueryDto & { status?: string }) { const result = await this.orders.list(query.page, query.page_size, query.search, query.status); return { data: result.data, meta: { page: query.page, page_size: query.page_size, total: result.total } }; }
+  @Get() async list(@Query() query: SalesOrderQueryDto) { const result = await this.orders.list(query.page, query.page_size, query.search, query.status); return { data: result.data, meta: { page: query.page, page_size: query.page_size, total: result.total } }; }
   @Post() async create(@Body() body: SalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.create(body, user), meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.orders.get(id), meta: {} }; }

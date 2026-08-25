@@ -11,7 +11,7 @@ export const AlertDialogAction = AlertDialogPrimitive.Action;
 export function AlertDialogContent({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Content>) {
   return <AlertDialogPrimitive.Portal><AlertDialogPrimitive.Overlay className="ui-dialog-overlay" /><AlertDialogPrimitive.Content className={cn("ui-alert-dialog-content", className)} {...props} />;</AlertDialogPrimitive.Portal>;
 }
-export function AlertDialogHeader({ className, ...props }: ComponentProps<"div">) { return <div className={cn("grid gap-1.5", className)} {...props} />; }
-export function AlertDialogTitle({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Title>) { return <AlertDialogPrimitive.Title className={cn("text-base font-semibold", className)} {...props} />; }
-export function AlertDialogDescription({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Description>) { return <AlertDialogPrimitive.Description className={cn("text-sm text-[var(--text-muted)]", className)} {...props} />; }
-export function AlertDialogFooter({ className, ...props }: ComponentProps<"div">) { return <div className={cn("flex justify-end gap-2 pt-2", className)} {...props} />; }
+export function AlertDialogHeader({ className, ...props }: ComponentProps<"div">) { return <div className={cn("ui-dialog-header", className)} {...props} />; }
+export function AlertDialogTitle({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Title>) { return <AlertDialogPrimitive.Title className={cn("ui-dialog-title", className)} {...props} />; }
+export function AlertDialogDescription({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Description>) { return <AlertDialogPrimitive.Description className={cn("ui-dialog-description", className)} {...props} />; }
+export function AlertDialogFooter({ className, ...props }: ComponentProps<"div">) { return <div className={cn("ui-dialog-footer", className)} {...props} />; }

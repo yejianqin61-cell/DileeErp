@@ -878,11 +878,11 @@ model SupplierPayableEntry {
   outsourcePayableSource    OutsourcePayableSource?     @relation("OutsourceSourcePayableEntry", fields: [outsourcePayableSourceId], references: [id])
   allocations               SupplierPaymentAllocation[]
   purchaseOrder             PurchaseOrder?              @relation(fields: [purchaseOrderId], references: [id])
-  purchaseOrderId           String?                     @db.Uuid
+  purchaseOrderId           String?                     @map("purchase_order_id") @db.Uuid
   purchaseOrderItem         PurchaseOrderItem?          @relation(fields: [purchaseOrderItemId], references: [id])
-  purchaseOrderItemId       String?                     @db.Uuid
+  purchaseOrderItemId       String?                     @map("purchase_order_item_id") @db.Uuid
   outsourceLogisticsBatch   OutsourceLogisticsBatch?    @relation(fields: [outsourceLogisticsBatchId], references: [id])
-  outsourceLogisticsBatchId String?                     @db.Uuid
+  outsourceLogisticsBatchId String?                     @map("outsource_logistics_batch_id") @db.Uuid
 
   @@index([orderNo, status])
   @@index([supplierId, status])
@@ -1274,7 +1274,7 @@ model CustomerPayment {
   customer      Customer               @relation(fields: [customerId], references: [id])
   allocations   ReceivableAllocation[]
   salesOrder    SalesOrder?            @relation(fields: [salesOrderId], references: [id])
-  salesOrderId  String?                @db.Uuid
+  salesOrderId  String?                @map("sales_order_id") @db.Uuid
 
   @@index([customerId, status])
   @@index([orderNo, status])

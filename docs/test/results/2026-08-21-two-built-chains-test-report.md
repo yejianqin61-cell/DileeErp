@@ -1,85 +1,39 @@
-# 已建成两条链路全量测试报告
+# 已建成两条链路测试报告
 
-## 1. 基本信息
+## 基本信息
 
 - 测试日期：2026-08-21
+- 提交基线：`0d29ec5`
 - 测试对象：
   1. 客户 -> 销售单 -> `order_no` -> 销售确认 -> BOM
   2. BOM -> 采购单 -> 分批到货 -> 来料 QC -> 原料入库 -> 应付来源
-- 提交基线：`a6cd954`（测试报告编制前的最新提交）
-- 执行者：Codex
-- 测试策略：Node `node:test` 领域规则、TypeScript/API/Web 构建门禁、HTTP、PostgreSQL 集成、Playwright 浏览器端到端。
+- 执行环境：本地 PostgreSQL 测试库 `dilee_erp_test`、API `http://localhost:3001`、Web `http://localhost:3000`。
 
-## 2. 总结
+## 结果
 
-快速质量门禁通过：类型检查、API 构建、Web 构建和 18 项领域/契约测试均通过。
-
-真实 HTTP、PostgreSQL 集成和浏览器端到端测试未执行，不可据此声明两条链路已完成真实全量验收。阻断原因是本机未配置 `API_BASE_URL`、`TEST_DATABASE_URL`、`PLAYWRIGHT_BASE_URL`，且 Docker Desktop 未运行，无法启动 PostgreSQL 测试环境。
-
-## 3. 执行结果
-
-| 测试层 | 命令 | 结果 | 证据与说明 |
+| 测试层 | 命令 | 结果 | 覆盖内容 |
 | --- | --- | --- | --- |
-| 快速质量门禁 | `npm run verify:quick` | 通过 | Typecheck、18 项测试、API build、Web build 通过。 |
-| HTTP/API | `npm run test:api` | 环境阻断 | 未设置 `API_BASE_URL`，退出码 3。 |
-| PostgreSQL 集成 | `npm run test:integration` | 环境阻断 | 未设置专用 `TEST_DATABASE_URL`，退出码 3。 |
-| 浏览器 E2E | `npm run test:e2e` | 环境阻断 | 未设置 `PLAYWRIGHT_BASE_URL`，退出码 3。 |
-| Docker 测试库 | `docker ps -a` | 环境阻断 | Docker Desktop Linux Engine 管道不存在，Docker daemon 未运行。 |
+| 快速质量门禁 | `npm run verify:quick` | 通过 | 类型检查、19 项 Node 单元/规则测试、API 构建、Web 生产构建。 |
+| PostgreSQL 集成 | `npm run test:integration` | 通过 | 测试库可访问且隔离；采购入库过账产生库存事实与唯一应付来源。 |
+| HTTP/API | `npm run test:api` | 通过 | 健康检查响应信封；匿名访问受保护资源返回统一错误。 |
+| 浏览器 E2E | `npm run test:e2e` | 通过 | 未登录业务页重定向登录；错误账号密码有可见提示。 |
+| 链路质量门禁 | `npm run verify:chain` | 通过 | 以上 PostgreSQL、HTTP 和浏览器测试按顺序全部通过。 |
 
-## 4. 销售链路覆盖
+详细机器可读与门禁证据见 `latest-quick-quality-gate.md`、`latest-chain-quality-gate.md` 和 `playwright-result.json`。
 
-已通过的快速规则测试：
+## 已验证的业务规则
 
-- 草稿销售单可确认，确认写入服务端操作人审计字段。
-- 非草稿销售单不可重复确认，返回稳定的 `INVALID_STATE_TRANSITION`。
-- 已确认销售单创建 BOM 时，BOM 保留销售单 `order_no` 与销售单版本来源。
-- 未确认销售单不可创建 BOM，返回 `SALES_ORDER_NOT_CONFIRMED`。
-- 空 BOM 不可发布；已发布 BOM 不可原地编辑。
+- 销售单仅草稿状态可确认；确认后创建 BOM 必须继承销售订单的 `order_no` 与版本来源。
+- 未确认销售单不可创建 BOM；空 BOM 不可发布；已发布 BOM 不可原地编辑。
+- 来料 QC 累计送检量不得超过到货量，QC 分流量受校验。
+- 原料入库量不得超过 QC 允许量；过账在单一事务内生成库存事实和应付来源，并拒绝重复过账。
 
-未获得的真实链路证据：客户、销售单、销售确认、BOM 明细/发布的 HTTP 响应、真实数据库事务、审计事件，以及浏览器表单端到端行为。
+## 覆盖边界与后续工作
 
-## 5. 采购入库链路覆盖
+本次“链路门禁通过”表示现有测试层均已真实运行，不等同于完整业务用户旅程验收。当前缺口：
 
-已通过的快速规则测试：
+- 销售链路尚没有通过 HTTP 登录后创建客户、创建并确认销售单、录入并发布 BOM 的端到端测试。
+- 采购集成测试为保证事务与约束覆盖，部分上游数据通过 Prisma 测试夹具建立，而不是通过销售 API/UI 创建。
+- 浏览器端目前只覆盖认证保护与登录错误提示；待客户、BOM 和采购表单的可操作路径完善后，应补全全流程浏览器用例。
 
-- 采购基础资料被引用后不可物理删除。
-- 来料 QC 累计检验量不可超过到货量，且 QC 分流数量受校验。
-- 原料入库量不可超过 QC 允许量。
-- 入库过账设计了同一订单号、库存事实、应付来源唯一性和重复过账拒绝的真实 PostgreSQL 用例。
-- 通用断言覆盖订单号贯穿、审计字段、QC 分流、库存事实汇总与应付来源唯一性。
-
-未获得的真实链路证据：BOM 发布到采购单、分批到货、QC、入库与应付来源的同一事务提交/回滚，真实幂等冲突，前端操作与可见错误提示。
-
-## 6. 缺陷与风险
-
-本次快速门禁未发现失败用例。
-
-关键未验证风险：
-
-- 真实 PostgreSQL schema、迁移、外键和事务行为尚未验收。
-- API 鉴权、RBAC、统一错误信封及字段校验尚未经 HTTP 运行环境验证。
-- 浏览器登录和页面操作尚未经 Chromium 运行环境验证。
-- 当前采购集成用例在真实测试库可用后必须运行；它才是库存事实与应付来源原子性的直接证据。
-
-## 7. 验收前置与复测命令
-
-1. 启动 Docker Desktop，或提供一个独立且名称含 `test` 的 PostgreSQL 数据库。
-2. 设置以下环境变量：
-
-```powershell
-$env:TEST_DATABASE_URL='postgresql://.../dilee_erp_test?schema=public'
-$env:API_BASE_URL='http://localhost:3001'
-$env:PLAYWRIGHT_BASE_URL='http://localhost:3000'
-```
-
-3. 依次执行：
-
-```powershell
-npm run db:test:prepare
-npm run test:integration
-npm run test:api
-npm run test:e2e
-npm run verify:chain
-```
-
-只有以上命令全部通过后，才可将两条链路标记为真实全量验收通过。
+后续每新增一条业务链路，都应先补齐该链路的主路径、负向、回退/冲销、幂等和审计断言，再纳入 `verify:chain`。

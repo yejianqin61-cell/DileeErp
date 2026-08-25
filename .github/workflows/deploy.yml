@@ -86,11 +86,16 @@ jobs:
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "Pulling API image..."
           docker pull "$API_IMAGE:${{ github.sha }}"
+          echo "Pulling Web image..."
           docker pull "$WEB_IMAGE:${{ github.sha }}"
-          docker save "$API_IMAGE:${{ github.sha }}" "$WEB_IMAGE:${{ github.sha }}" \
+          echo "Streaming images to server..."
+          timeout 20m docker save "$API_IMAGE:${{ github.sha }}" "$WEB_IMAGE:${{ github.sha }}" \
             | gzip -1 \
-            | ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'gunzip | sudo docker load'
+            | timeout 20m ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
+                -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'gunzip | sudo docker load'
+          echo "Images loaded; starting containers..."
           ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd /opt/dilee/app
