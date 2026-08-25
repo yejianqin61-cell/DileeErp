@@ -80,28 +80,21 @@ jobs:
         run: |
           scp -i ~/.ssh/deploy_key docker-compose.factory.yml \
             ubuntu@"$DEPLOY_HOST":/opt/dilee/app/docker-compose.factory.yml
-      - name: Deploy containers
+      - name: Upload images and deploy containers
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          GHCR_USER: ${{ github.actor }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" \
-            "sudo docker login ghcr.io -u '$GHCR_USER' --password-stdin"
+          set -euo pipefail
+          docker save "$API_IMAGE:${{ github.sha }}" "$WEB_IMAGE:${{ github.sha }}" \
+            | gzip -1 \
+            | ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'gunzip | sudo docker load'
           ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd /opt/dilee/app
           sudo env \
-            API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:latest \
-            WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:latest \
-            docker compose -f docker-compose.factory.yml --env-file .env.factory pull api web
-          sudo env \
-            API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:latest \
-            WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:latest \
+            API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:${{ github.sha }} \
+            WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:${{ github.sha }} \
             docker compose -f docker-compose.factory.yml --env-file .env.factory up -d --no-build --force-recreate api web
-          sudo env \
-            API_IMAGE=ghcr.io/yejianqin61-cell/dilee-api:latest \
-            WEB_IMAGE=ghcr.io/yejianqin61-cell/dilee-web:latest \
-            docker compose -f docker-compose.factory.yml --env-file .env.factory ps
+          sudo docker compose -f docker-compose.factory.yml --env-file .env.factory ps
           sudo docker exec app-api-1 node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"
           REMOTE
