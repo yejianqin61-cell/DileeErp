@@ -178,7 +178,7 @@ button { cursor: pointer; }
 .audit-timeline time, .audit-timeline small { color: var(--text-muted); }
 .audit-timeline small { grid-column: 1 / -1; }
 @media (max-width: 900px) { .progress-detail-grid { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .content-area { padding: 20px 16px 36px; } .page-header { flex-direction: column; gap: 14px; } .page-actions { flex-wrap: wrap; } .filter-bar { align-items: stretch; } .filter-bar > * { min-width: min(100%, 220px); } }
+@media (max-width: 720px) { .content-area { padding: 20px 16px 36px; } .page-header { flex-direction: column; gap: 14px; } .page-actions { flex-wrap: wrap; } .filter-bar { align-items: stretch; } .filter-bar > * { min-width: min(100%, 220px); } .inventory-impact-metrics { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); } .inventory-impact-metrics div:last-child { grid-column: 1 / -1; } }
 .module-placeholder-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); gap: 16px; }
 .module-note { margin-top: 14px !important; color: var(--warning) !important; }
 .back-workbench { display: inline-block; margin-top: 18px; color: var(--primary); font-size: 13px; text-decoration: none; }
@@ -197,6 +197,19 @@ button { cursor: pointer; }
 .detail-list p:last-child { border-bottom: 0; }
 .panel h3 { margin: 0; padding: 12px 0 8px; font-size: 13px; }
 .production-subflows { display: grid; gap: 24px; margin-top: 24px; }
+.inventory-impact-dialog { width: min(760px, calc(100vw - 32px)); }
+.inventory-impact-list { display: grid; gap: 10px; }
+.inventory-impact-item { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-muted); padding: 14px; }
+.inventory-impact-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; font-size: 13px; }
+.inventory-impact-title strong { color: var(--text); }
+.inventory-impact-risk, .inventory-impact-safe { flex: 0 0 auto; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 600; }
+.inventory-impact-risk { background: #fff0ef; color: var(--danger); }
+.inventory-impact-safe { background: #eaf7f1; color: var(--success); }
+.inventory-impact-metrics { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; }
+.inventory-impact-metrics div { display: grid; gap: 4px; min-width: 0; }
+.inventory-impact-metrics span { color: var(--text-muted); font-size: 12px; }
+.inventory-impact-metrics strong { color: var(--text); font-size: 16px; font-weight: 700; }
+.inventory-impact-arrow { color: var(--primary) !important; font-size: 20px !important; font-weight: 700; }
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
 .code-block { overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: var(--radius); background: #172033; color: #e8eef5; font-size: 12px; }
 .status-error { color: var(--danger); }
