@@ -16,6 +16,7 @@ services:
       retries: 12
 
   api:
+    image: ${API_IMAGE:-dilee-api:latest}
     build:
       context: .
       dockerfile: apps/api/Dockerfile
@@ -41,6 +42,7 @@ services:
       retries: 12
 
   web:
+    image: ${WEB_IMAGE:-dilee-web:latest}
     build:
       context: .
       dockerfile: apps/web/Dockerfile
