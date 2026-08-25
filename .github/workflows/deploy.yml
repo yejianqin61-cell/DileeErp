@@ -90,11 +90,21 @@ jobs:
           docker pull "$API_IMAGE:${{ github.sha }}"
           echo "Pulling Web image..."
           docker pull "$WEB_IMAGE:${{ github.sha }}"
-          echo "Streaming images to server..."
-          timeout 20m docker save "$API_IMAGE:${{ github.sha }}" "$WEB_IMAGE:${{ github.sha }}" \
-            | gzip -1 \
-            | timeout 20m ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 \
-                -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'gunzip | sudo docker load'
+          echo "Preparing server storage..."
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'bash -s' <<'REMOTE_PREP'
+          set -euo pipefail
+          sudo docker image prune -af
+          df -h /tmp /var/lib/docker
+          REMOTE_PREP
+          echo "Uploading images to server..."
+          timeout 30m sh -c 'docker save "$API_IMAGE:${{ github.sha }}" "$WEB_IMAGE:${{ github.sha }}" | gzip -1 | ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" "cat > /tmp/dilee-images.tar.gz"'
+          echo "Loading images into Docker..."
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'bash -s' <<'REMOTE_LOAD'
+          set -euo pipefail
+          test -s /tmp/dilee-images.tar.gz
+          sudo sh -c 'gzip -dc /tmp/dilee-images.tar.gz | docker load'
+          rm -f /tmp/dilee-images.tar.gz
+          REMOTE_LOAD
           echo "Images loaded; starting containers..."
           ssh -i ~/.ssh/deploy_key ubuntu@"$DEPLOY_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
