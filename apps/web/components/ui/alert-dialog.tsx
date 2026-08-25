@@ -9,7 +9,7 @@ export const AlertDialogTrigger = AlertDialogPrimitive.Trigger;
 export const AlertDialogCancel = AlertDialogPrimitive.Cancel;
 export const AlertDialogAction = AlertDialogPrimitive.Action;
 export function AlertDialogContent({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Content>) {
-  return <AlertDialogPrimitive.Portal><AlertDialogPrimitive.Overlay className="fixed inset-0 z-40 bg-black/30" /><AlertDialogPrimitive.Content className={cn("fixed left-1/2 top-1/2 z-50 grid w-[min(440px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-lg", className)} {...props} />;</AlertDialogPrimitive.Portal>;
+  return <AlertDialogPrimitive.Portal><AlertDialogPrimitive.Overlay className="ui-dialog-overlay" /><AlertDialogPrimitive.Content className={cn("ui-alert-dialog-content", className)} {...props} />;</AlertDialogPrimitive.Portal>;
 }
 export function AlertDialogHeader({ className, ...props }: ComponentProps<"div">) { return <div className={cn("grid gap-1.5", className)} {...props} />; }
 export function AlertDialogTitle({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Title>) { return <AlertDialogPrimitive.Title className={cn("text-base font-semibold", className)} {...props} />; }

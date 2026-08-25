@@ -25,6 +25,16 @@
 body { margin: 0; background: var(--background); color: var(--text); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
+.ui-dialog-overlay { position: fixed; inset: 0; z-index: 40; background: rgb(0 0 0 / 30%); }
+.ui-dialog-content, .ui-alert-dialog-content { position: fixed; left: 50%; top: 50%; z-index: 50; display: grid; width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; transform: translate(-50%, -50%); gap: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 20px; box-shadow: 0 18px 50px rgb(23 32 51 / 24%); }
+.ui-alert-dialog-content { width: min(440px, calc(100vw - 32px)); }
+.ui-dialog-close { position: absolute; right: 12px; top: 12px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: var(--radius); background: transparent; padding: 4px; color: var(--text-muted); }
+.ui-dialog-close:hover { background: var(--surface-muted); }
+.ui-sheet-content { position: fixed; z-index: 50; display: grid; gap: 16px; border: 1px solid var(--border); background: var(--surface); padding: 20px; box-shadow: 0 18px 50px rgb(23 32 51 / 24%); }
+.ui-sheet-right { top: 0; right: 0; bottom: 0; width: min(520px, calc(100vw - 24px)); overflow-y: auto; }
+.ui-sheet-left { top: 0; left: 0; bottom: 0; width: min(520px, calc(100vw - 24px)); overflow-y: auto; }
+.ui-sheet-top { top: 0; left: 0; right: 0; }
+.ui-sheet-bottom { right: 0; bottom: 0; left: 0; }
 .app-shell { display: flex; min-height: 100vh; }
 .sidebar { width: var(--sidebar-width); flex: 0 0 var(--sidebar-width); border-right: 1px solid var(--border); background: var(--surface); padding: 18px 12px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 24px; }
