@@ -64,14 +64,7 @@ if [ -d apps/web/public ]; then cp -a apps/web/public apps/web/.next/standalone/
 sudo npm install -g pm2
 pm2 delete dilee-api 2>/dev/null || true
 pm2 delete dilee-web 2>/dev/null || true
-
-export PORT=3001
-pm2 start apps/api/dist/main.js --name dilee-api --update-env
-
-export API_INTERNAL_URL=http://127.0.0.1:3001
-export PORT=3000
-export HOSTNAME=0.0.0.0
-pm2 start apps/web/.next/standalone/apps/web/server.js --name dilee-web --update-env
+pm2 start ecosystem.config.cjs
 
 pm2 save
 pm2 status
@@ -86,7 +79,7 @@ pm2 startup systemd
 pm2 save
 ```
 
-PM2 更新时先执行 `pm2 delete dilee-api dilee-web`，再重新构建和启动，避免 `EADDRINUSE`。
+PM2 更新时先执行 `pm2 delete dilee-api dilee-web`，再重新构建并执行 `pm2 start ecosystem.config.cjs`。启动脚本会固定 API 使用 3001、前端使用 3000，避免环境变量串用造成 `EADDRINUSE`。
 
 ## 纯非 Docker 数据库
 
