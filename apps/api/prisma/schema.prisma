@@ -1800,6 +1800,8 @@ model AttendanceRecord {
   employeeId     String    @map("employee_id") @db.Uuid
   attendanceDate DateTime  @map("attendance_date") @db.Date
   attendanceType String    @map("attendance_type") @db.VarChar(40)
+  workStartTime  String?   @map("work_start_time") @db.VarChar(5)
+  workEndTime    String?   @map("work_end_time") @db.VarChar(5)
   workHours      Decimal?  @map("work_hours") @db.Decimal(18, 4)
   overtimeHours  Decimal?  @map("overtime_hours") @db.Decimal(18, 4)
   remark         String?   @db.VarChar(1000)
@@ -1812,7 +1814,7 @@ model AttendanceRecord {
   deletedBy      String?   @map("deleted_by") @db.Uuid
   employee       Employee  @relation(fields: [employeeId], references: [id])
 
-  @@unique([employeeId, attendanceDate, attendanceType])
+  @@unique([employeeId, attendanceDate])
   @@index([employeeId, attendanceDate])
   @@map("attendance_records")
 }

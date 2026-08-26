@@ -8,7 +8,7 @@ import { Label } from "./label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./select";
 import { Textarea } from "./textarea";
 
-export type ActionField = { name: string; label: string; type?: "text" | "date" | "number" | "textarea" | "select"; required?: boolean; defaultValue?: string; placeholder?: string; options?: Array<{ value: string; label: string }>; canAddCategory?: boolean };
+export type ActionField = { name: string; label: string; type?: "text" | "date" | "time" | "number" | "textarea" | "select"; required?: boolean; defaultValue?: string; placeholder?: string; options?: Array<{ value: string; label: string }>; canAddCategory?: boolean };
 export function ActionDialog({ open, title, fields, submitLabel = "保存", onOpenChange, onSubmit, onAddCategory }: { open: boolean; title: string; fields: ActionField[]; submitLabel?: string; onOpenChange: (open: boolean) => void; onSubmit: (values: Record<string, string>) => void | Promise<void>; onAddCategory?: (field: ActionField, values: Record<string, string>) => void | Promise<void> }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [validationError, setValidationError] = useState("");
