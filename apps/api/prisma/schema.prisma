@@ -364,7 +364,7 @@ model Bom {
   purchaseOrders      PurchaseOrder[]
   productionOrders    ProductionOrder[]
 
-  @@unique([salesOrderId, version])
+  @@unique([salesOrderId])
   @@index([orderNo])
   @@map("boms")
 }
@@ -412,6 +412,9 @@ model BomItem {
   id                 String              @id @default(uuid()) @db.Uuid
   bomId              String              @map("bom_id") @db.Uuid
   materialId         String              @map("material_id") @db.Uuid
+  materialName       String              @map("material_name") @db.VarChar(200)
+  model              String?             @db.VarChar(200)
+  color              String?             @db.VarChar(100)
   unitId             String?             @map("unit_id") @db.Uuid
   materialSnapshot   Json                @map("material_snapshot")
   requiredQuantity   Decimal             @map("required_quantity") @db.Decimal(18, 4)

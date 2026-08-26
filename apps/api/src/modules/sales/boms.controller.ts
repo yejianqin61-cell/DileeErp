@@ -10,6 +10,9 @@ import { BomsService } from "./boms.service";
 class BomDto { @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsUUID() form_definition_id?: string; }
 class BomItemDto {
   @IsString() material_id!: string;
+  @IsOptional() @IsString() material_name?: string;
+  @IsOptional() @IsString() model?: string;
+  @IsOptional() @IsString() color?: string;
   @IsObject() material_snapshot!: Record<string, unknown>;
   @IsString() required_quantity!: string;
   @IsString() unit!: string;

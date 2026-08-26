@@ -4,9 +4,8 @@
 
 **Blocked by:** None - can start immediately.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] 同一销售单的第二份 BOM 表返回稳定的冲突错误。
-- [ ] BOM 行保存名称、型号、颜色、数量和单位，且 API 返回这些字段。
-- [ ] 单元测试覆盖唯一性、编辑与行校验。
-
+- [x] 同一销售单的第二份 BOM 表返回稳定的冲突错误。
+- [x] BOM 行保存名称、型号、颜色、数量和单位，且 API 返回这些字段。
+- [x] 单元测试覆盖唯一性、编辑与行校验。
