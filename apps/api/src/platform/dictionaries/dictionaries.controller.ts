@@ -17,6 +17,8 @@ export class DictionariesController {
   constructor(private readonly dictionaries: DictionariesService) {}
   @Get("types") async listTypes() { return { data: await this.dictionaries.listTypes(), meta: {} }; }
   @Post("types") @RequireAdministrator() async createType(@Body() input: CreateTypeDto, @CurrentUser() user: CurrentUserType) { return { data: await this.dictionaries.createType(input, user), meta: {} }; }
+  @Get("hr/employee-types") async listEmployeeTypes() { return { data: await this.dictionaries.listEmployeeTypes(), meta: {} }; }
+  @Post("hr/employee-types") @RequireAdministrator() async createEmployeeType(@Body() input: CreateItemDto, @CurrentUser() user: CurrentUserType) { return { data: await this.dictionaries.createEmployeeType(input, user), meta: {} }; }
   @Get(":typeKey/items") async listItems(@Param("typeKey") typeKey: string, @Query("include_inactive") includeInactive?: string) { return { data: await this.dictionaries.listItems(typeKey, includeInactive === "true"), meta: {} }; }
   @Post(":typeKey/items") @RequireAdministrator() async createItem(@Param("typeKey") typeKey: string, @Body() input: CreateItemDto, @CurrentUser() user: CurrentUserType) { return { data: await this.dictionaries.createItem(typeKey, input, user), meta: {} }; }
   @Patch("items/:id") @RequireAdministrator() async updateItem(@Param("id") id: string, @Body() input: UpdateItemDto, @CurrentUser() user: CurrentUserType) { return { data: await this.dictionaries.updateItem(id, input, user), meta: {} }; }

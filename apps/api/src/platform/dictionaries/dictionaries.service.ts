@@ -12,6 +12,11 @@ export class DictionariesService {
     const type = await this.requireType(typeKey);
     return this.prisma.dictionaryItem.findMany({ where: { typeId: type.id, deletedAt: null, ...(includeInactive ? {} : { isActive: true }) }, orderBy: [{ sortOrder: "asc" }, { key: "asc" }] });
   }
+  async listEmployeeTypes() { return this.listItems("employee_type"); }
+  async createEmployeeType(input: { key: string; label: string }, user: CurrentUser) {
+    const type = await this.prisma.dictionaryType.upsert({ where: { key: "employee_type" }, update: { name: "员工类型", ...this.audit.update(user) }, create: { key: "employee_type", name: "员工类型", ...this.audit.create(user) } });
+    return this.prisma.dictionaryItem.create({ data: { typeId: type.id, key: input.key, label: input.label, ...this.audit.create(user) } });
+  }
   async createItem(typeKey: string, input: { key: string; label: string; sort_order?: number }, user: CurrentUser) {
     const type = await this.requireType(typeKey);
     return this.prisma.dictionaryItem.create({ data: { typeId: type.id, key: input.key, label: input.label, sortOrder: input.sort_order ?? 0, ...this.audit.create(user) } });
