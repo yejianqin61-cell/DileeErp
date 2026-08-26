@@ -26,10 +26,10 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:migrate:deploy": "powershell -ExecutionPolicy Bypass -File scripts/apply-migrations.ps1"
-    ,"factory:config": "docker compose -f docker-compose.factory.yml --env-file .env.factory config"
-    ,"factory:up": "docker compose -f docker-compose.factory.yml --env-file .env.factory up -d --build"
-    ,"factory:down": "docker compose -f docker-compose.factory.yml --env-file .env.factory down"
-    ,"factory:logs": "docker compose -f docker-compose.factory.yml --env-file .env.factory logs -f --tail=200"
+    ,"compose:config": "docker compose config"
+    ,"compose:up": "docker compose up -d --build"
+    ,"compose:down": "docker compose down"
+    ,"compose:logs": "docker compose logs -f --tail=200"
     ,"test:performance": "node --test scripts/perf-gate.test.mjs"
     ,"perf:gate": "node scripts/perf-gate.mjs"
   },

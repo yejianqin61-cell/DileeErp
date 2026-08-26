@@ -5,7 +5,7 @@ GitHub push 只执行代码检查，不再自动发布镜像或上传镜像。�
 本机 PowerShell 执行：
 
 ```powershell
-tar -czf DileeErp-latest.tar.gz --exclude=.git --exclude=node_modules --exclude=.next --exclude=dist --exclude=coverage --exclude=test-results --exclude='*.tar' --exclude='*.tar.gz' --exclude=.env --exclude=.env.local --exclude=.env.factory .
+tar -czf DileeErp-latest.tar.gz --exclude=.git --exclude=node_modules --exclude=.next --exclude=dist --exclude=coverage --exclude=test-results --exclude='*.tar' --exclude='*.tar.gz' --exclude=.env --exclude=.env.local .
 scp .\DileeErp-latest.tar.gz ubuntu@159.75.219.30:/tmp/
 ```
 
@@ -18,17 +18,17 @@ backup="/opt/dilee/app.backup-$(date +%Y%m%d-%H%M%S)"
 mv /opt/dilee/app "$backup"
 mkdir /opt/dilee/app
 tar -xzf /tmp/DileeErp-latest.tar.gz -C /opt/dilee/app
-cp "$backup/.env.factory" /opt/dilee/app/.env.factory
+cp "$backup/.env" /opt/dilee/app/.env
 cd /opt/dilee/app
 ```
 
 ## Docker 部署
 
 ```bash
-sudo docker compose -f docker-compose.factory.yml --env-file .env.factory build api web
-sudo docker compose -f docker-compose.factory.yml --env-file .env.factory up -d postgres
-sudo docker compose -f docker-compose.factory.yml --env-file .env.factory up -d api web
-sudo docker compose -f docker-compose.factory.yml --env-file .env.factory ps
+sudo docker compose build api web
+sudo docker compose up -d postgres
+sudo docker compose up -d api web
+sudo docker compose ps
 curl http://127.0.0.1:3001/api/v1/health
 ```
 
@@ -38,17 +38,17 @@ curl http://127.0.0.1:3001/api/v1/health
 cd /opt/dilee/app
 
 # 仅使用 Docker 运行 PostgreSQL；API 和前端由 PM2 运行
-sudo docker compose -f docker-compose.factory.yml --env-file .env.factory up -d postgres
+sudo docker compose up -d postgres
 
 # 构建需要 Nest CLI、Prisma CLI 等开发依赖，不能使用 production-only 安装
 npm ci --include=dev
 npx prisma generate --schema apps/api/prisma/schema.prisma
 
-# .env.factory 是 Compose 格式，PM2 需要把数据库地址指向宿主机
+# .env 供 Compose 和 PM2 共用；PM2 需要把数据库地址指向宿主机
 set -a
-. ./.env.factory
+. ./.env
 set +a
-export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:15432/${POSTGRES_DB}?schema=public"
+export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB}?schema=public"
 export NODE_ENV=production
 export COOKIE_SECURE=false
 
