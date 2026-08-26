@@ -18,6 +18,16 @@ test("employee rejects a position that does not belong to its active department"
   await assert.rejects(() => service.createEmployee({ employee_no: "E-1", name: "员工", department_id: "5a6b93f4-e3e2-45e0-a0c4-4cf5f9bf3ee5", position_id: "0ec5168a-bc9d-4c8c-ac0d-cb269fbd1a76", employee_type: "worker" }, user), (error) => error instanceof NotFoundException && error.getResponse().code === "ORGANIZATION_NOT_FOUND");
 });
 
+test("employee can leave only from active status", async () => {
+  const updates = [];
+  const prisma = { employee: { findFirst: async () => ({ id: "employee-1", employmentStatus: "active" }), update: async (input) => { updates.push(input); return input.data; } } };
+  const audit = { create: () => ({}), update: () => ({}), record: async () => {} };
+  const service = new ProductionMasterDataService(prisma, audit);
+  await service.setEmployeeLeft("employee-1", "2026-08-26", { id: "user-1" });
+  assert.equal(updates[0].data.employmentStatus, "left");
+  assert.equal(updates[0].data.leftOn.toISOString().slice(0, 10), "2026-08-26");
+});
+
 test("operation rates reject overlapping effective date ranges", async () => {
   const prisma = {
     employee: { findFirst: async () => ({ id: "employee-1" }) },

@@ -9,6 +9,7 @@ import { RequireAdministrator } from "../../platform/authorization/require-admin
 import { ProductionMasterDataService } from "./production-master-data.service";
 
 class ActiveDto { @IsBoolean() is_active!: boolean; }
+class LeaveDto { @IsDateString() left_on!: string; }
 class DepartmentDto { @IsString() @MaxLength(80) code!: string; @IsString() @MaxLength(100) name!: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
 class PositionDto { @IsUUID() department_id!: string; @IsString() @MaxLength(80) code!: string; @IsString() @MaxLength(100) name!: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
 class EmployeeDto { @IsString() @MaxLength(80) employee_no!: string; @IsString() @MaxLength(100) name!: string; @IsUUID() department_id!: string; @IsUUID() position_id!: string; @IsString() @MaxLength(40) employee_type!: string; @IsOptional() @IsUUID() user_id?: string; @IsOptional() @IsDateString() hired_on?: string; @IsOptional() @IsDateString() left_on?: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
@@ -33,6 +34,7 @@ export class ProductionMasterDataController {
   @Post("production/employees") @RequireAdministrator() createEmployee(@Body() body: EmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createEmployee(body, user)); }
   @Patch("production/employees/:id") @RequireAdministrator() updateEmployee(@Param("id") id: string, @Body() body: Partial<EmployeeDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }
   @Patch("production/employees/:id/active") @RequireAdministrator() activeEmployee(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeActive(id, body.is_active, user)); }
+  @Patch("production/employees/:id/leave") @RequireAdministrator() leaveEmployee(@Param("id") id: string, @Body() body: LeaveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeLeft(id, body.left_on, user)); }
   @Get("production/locations") locations() { return this.ok(this.service.listLocations()); }
   @Post("production/locations") createLocation(@Body() body: LocationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createLocation(body, user)); }
   @Patch("production/locations/:id") updateLocation(@Param("id") id: string, @Body() body: Partial<LocationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateLocation(id, body, user)); }
