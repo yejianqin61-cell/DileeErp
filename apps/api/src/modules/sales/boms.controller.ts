@@ -32,5 +32,4 @@ export class BomsController {
   @Post("from-sales-order/:salesOrderId") async create(@Param("salesOrderId") salesOrderId: string, @Body() body: BomDto, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.createFromSalesOrder(salesOrderId, body, user), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: BomDto, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.update(id, body.extension_data ?? {}, user), meta: {} }; }
   @Put(":id/items") async replaceItems(@Param("id") id: string, @Body() body: BomItemsDto, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.replaceItems(id, body.items, user), meta: {} }; }
-  @Post(":id/publish") async publish(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.publish(id, user), meta: {} }; }
 }

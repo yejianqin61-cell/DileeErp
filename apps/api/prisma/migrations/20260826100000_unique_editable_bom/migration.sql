@@ -7,6 +7,7 @@ BEGIN
   IF EXISTS (
     SELECT 1
     FROM "boms"
+    WHERE "deleted_at" IS NULL
     GROUP BY "sales_order_id"
     HAVING COUNT(*) > 1
   ) THEN
@@ -15,4 +16,4 @@ BEGIN
 END $$;
 
 DROP INDEX IF EXISTS "boms_sales_order_id_version_key";
-CREATE UNIQUE INDEX "boms_sales_order_id_key" ON "boms"("sales_order_id");
+CREATE UNIQUE INDEX "boms_sales_order_id_active_key" ON "boms"("sales_order_id") WHERE "deleted_at" IS NULL;

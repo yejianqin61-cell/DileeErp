@@ -364,7 +364,7 @@ model Bom {
   purchaseOrders      PurchaseOrder[]
   productionOrders    ProductionOrder[]
 
-  @@unique([salesOrderId])
+  @@index([salesOrderId])
   @@index([orderNo])
   @@map("boms")
 }

@@ -35,7 +35,7 @@ export class BomsService {
       await this.audit.record("bom.create", "bom", user.id, bom.id, { order_no: order.orderNo, sales_order_version: sourceVersion.version, bom_version: version });
       return this.get(bom.id);
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "BOM_VERSION_CONFLICT", message: "BOM 版本已存在，请重试", details: [] });
+      if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "BOM_ALREADY_EXISTS", message: "该销售单已经存在 BOM 表", details: [] });
       throw error;
     }
   }
@@ -58,15 +58,6 @@ export class BomsService {
     });
     await this.audit.record("bom.items.replace", "bom", user.id, id, { order_no: bom.orderNo, version: bom.version, item_count: items.length });
     return this.get(id);
-  }
-
-  async publish(id: string, user: CurrentUser) {
-    const bom = await this.get(id);
-    if (bom.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_STATE_TRANSITION", message: "只有草稿 BOM 可以发布", details: [{ from: bom.status, to: "published" }] });
-    if (!bom.items.length) throw new UnprocessableEntityException({ code: "BOM_ITEMS_REQUIRED", message: "发布 BOM 前至少需要一条物料明细", details: [] });
-    const updated = await this.prisma.bom.update({ where: { id }, data: { status: "published", ...this.audit.update(user) } });
-    await this.audit.record("bom.publish", "bom", user.id, id, { order_no: bom.orderNo, version: bom.version });
-    return updated;
   }
 
   private isPositiveDecimal(value: string) { return /^(?:0|[1-9]\d*)(?:\.\d{1,4})?$/.test(value) && Number(value) > 0; }

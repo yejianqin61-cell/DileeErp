@@ -8,6 +8,8 @@ import { IncomingInspectionsController } from "./incoming-inspections.controller
 import { IncomingInspectionsService } from "./incoming-inspections.service";
 import { RawMaterialInboundsController } from "./raw-material-inbounds.controller";
 import { RawMaterialInboundsService } from "./raw-material-inbounds.service";
+import { BomsController } from "../sales/boms.controller";
+import { BomsService } from "../sales/boms.service";
 
-@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, PurchaseOrdersController, IncomingInspectionsController, RawMaterialInboundsController], providers: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService], exports: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService] })
+@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, PurchaseOrdersController, IncomingInspectionsController, RawMaterialInboundsController, BomsController], providers: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, BomsService], exports: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, BomsService] })
 export class ProcurementModule {}

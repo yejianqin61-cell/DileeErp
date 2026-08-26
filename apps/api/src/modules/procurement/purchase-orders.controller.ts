@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { IsArray, IsDateString, IsOptional, IsObject, IsString, IsUUID, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
@@ -19,6 +19,7 @@ export class PurchaseOrdersController {
   constructor(private readonly orders: PurchaseOrdersService) {}
   @Get() async list(@Query("order_no") orderNo?: string) { return { data: await this.orders.list(orderNo), meta: {} }; }
   @Post() async create(@Body() body: PurchaseOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.create(body, user), meta: {} }; }
+  @Patch(":id") async update(@Param("id") id: string, @Body() body: PurchaseOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.update(id, body, user), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.orders.get(id), meta: {} }; }
   @Get(":id/impact-preview") async impact(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
   @Post(":id/order") async order(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.order(id, user), meta: {} }; }
