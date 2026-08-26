@@ -569,6 +569,7 @@ model PurchaseOrderItem {
   unitId                    String                    @map("unit_id") @db.Uuid
   unitSnapshot              Json                      @map("unit_snapshot")
   bomItemId                 String?                   @map("bom_item_id") @db.Uuid
+  model                     String?                   @db.VarChar(200)
   quantity                  Decimal                   @db.Decimal(18, 4)
   unitPrice                 Decimal                   @map("unit_price") @db.Decimal(18, 4)
   taxRate                   Decimal?                  @map("tax_rate") @db.Decimal(8, 4)
