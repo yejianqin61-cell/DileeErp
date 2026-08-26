@@ -11,6 +11,6 @@ export NODE_ENV=production
 export PORT=3001
 export COOKIE_SECURE=false
 export ATTACHMENT_STORAGE_PATH="${ATTACHMENT_STORAGE_PATH:-$PWD/var/attachments}"
-export DATABASE_URL="postgresql://${db_user}:${db_password}@127.0.0.1:5432/${POSTGRES_DB}?schema=public"
+export DATABASE_URL="${DATABASE_URL:-postgresql://${db_user}:${db_password}@127.0.0.1:5432/${POSTGRES_DB}?schema=public}"
 mkdir -p "$ATTACHMENT_STORAGE_PATH"
 exec node apps/api/dist/main.js
