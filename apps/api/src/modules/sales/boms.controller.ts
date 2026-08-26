@@ -24,7 +24,7 @@ class BomItemsDto { @IsArray() items!: BomItemDto[]; }
 
 @Controller("boms")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
-@RequireModules("sales")
+@RequireModules("procurement")
 export class BomsController {
   constructor(private readonly boms: BomsService) {}
   @Get() async list(@Query("order_no") orderNo?: string) { return { data: await this.boms.list(orderNo), meta: {} }; }
