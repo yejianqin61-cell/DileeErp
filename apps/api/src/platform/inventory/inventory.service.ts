@@ -16,6 +16,13 @@ export class InventoryService {
     return result._sum.quantityDelta ?? new Prisma.Decimal(0);
   }
 
+  async rawMaterialBalances(materialIds: string[]) {
+    const facts = await this.prisma.inventoryFact.findMany({ where: { materialId: { in: materialIds }, inventoryCategory: "raw_material" }, select: { materialId: true, unitId: true, quantityDelta: true } });
+    const balances = new Map<string, Prisma.Decimal>();
+    for (const fact of facts) balances.set(fact.materialId!, (balances.get(fact.materialId!) ?? new Prisma.Decimal(0)).plus(fact.quantityDelta));
+    return materialIds.map((id) => ({ material_id: id, quantity: (balances.get(id) ?? new Prisma.Decimal(0)).toString() }));
+  }
+
   async finishedGoodsBalance(client: InventoryClient, productionOrderId: string, unitId: string, category: "finished_goods" | "defective_goods") {
     const result = await client.inventoryFact.aggregate({ where: { productionOrderId, unitId, inventoryCategory: category }, _sum: { quantityDelta: true } });
     return result._sum.quantityDelta ?? new Prisma.Decimal(0);

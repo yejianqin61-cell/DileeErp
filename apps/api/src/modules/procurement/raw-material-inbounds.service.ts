@@ -111,6 +111,23 @@ export class RawMaterialInboundsService {
     }
   }
 
+  async update(id: string, input: { quantity: string; remark?: string }, user: CurrentUser) {
+    const current = await this.prisma.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { incomingInspection: { include: { rawMaterialInbounds: { where: { deletedAt: null } } } } } });
+    if (!current) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "INBOUND_NOT_EDITABLE", message: "只有草稿入库单可以编辑", details: [] });
+    const allowed = Number(current.incomingInspection.acceptedQuantity) + Number(current.incomingInspection.conditionalQuantity);
+    const used = current.incomingInspection.rawMaterialInbounds.filter((row) => row.id !== id).reduce((sum, row) => sum + Number(row.quantity), 0);
+    if (!Number.isFinite(Number(input.quantity)) || Number(input.quantity) <= 0 || Number(input.quantity) + used > allowed) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [] });
+    return this.prisma.rawMaterialInbound.update({ where: { id }, data: { quantity: input.quantity, remark: input.remark, ...this.audit.update(user) } });
+  }
+
+  async remove(id: string, user: CurrentUser) {
+    const current = await this.prisma.rawMaterialInbound.findFirst({ where: { id, deletedAt: null } });
+    if (!current) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
+    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "INBOUND_NOT_DELETABLE", message: "只有草稿入库单可以删除", details: [] });
+    return this.prisma.rawMaterialInbound.update({ where: { id }, data: this.audit.softDelete(user) });
+  }
+
   async payableSources(orderNo?: string) {
     return this.prisma.payableSource.findMany({ where: orderNo ? { orderNo } : {}, orderBy: { createdAt: "desc" } });
   }

@@ -225,6 +225,8 @@ button { cursor: pointer; }
 .ui-sheet-content .detail-list p { min-height: 42px; padding: 10px 0; }
 .ui-sheet-content .detail-list p:last-child { grid-column: 1 / -1; }
 .ui-sheet-content .table-wrap { margin-top: 8px; }
+.stock-ok { color: #15803d; font-weight: 700; }
+.stock-low { color: #dc2626; font-weight: 700; }
 .ui-sheet-content .detail-list > .table-wrap { grid-column: 1 / -1; width: 100%; }
 @media (max-width: 720px) { .ui-sheet-content, .ui-sheet-right, .ui-sheet-left, .ui-sheet-top, .ui-sheet-bottom { width: calc(100vw - 24px); max-height: calc(100vh - 24px); } .ui-sheet-content .detail-list { grid-template-columns: 1fr; gap: 0; } .ui-sheet-content .detail-list p:last-child { grid-column: auto; } }
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
