@@ -11,12 +11,13 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const context = host.switchToHttp();
     const request = context.getRequest<Request>();
     const response = context.getResponse<Response>();
-    const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
+    const isUniqueViolation = exception && typeof exception === "object" && "code" in exception && exception.code === "P2002";
+    const status = isUniqueViolation ? HttpStatus.CONFLICT : exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       const error = exception instanceof Error ? exception : new Error(String(exception));
       this.logger.error(`${request.method} ${request.url}`, error.stack);
     }
-    const payload = exception instanceof HttpException ? exception.getResponse() : undefined;
+    const payload = isUniqueViolation ? { code: "UNIQUE_VALUE_CONFLICT", message: "编号或代码已被占用，请更换后重试", details: [] } : exception instanceof HttpException ? exception.getResponse() : undefined;
     const normalized = this.normalizePayload(payload, status);
     response.status(status).json({
       error: normalized,
