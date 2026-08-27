@@ -5,7 +5,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 type UnitInput = { name: string; remark?: string };
-type MaterialInput = { material_code: string; name: string; default_unit_id: string; remark?: string };
+type MaterialInput = { material_code: string; name: string; default_unit_id: string; material_type?: string; remark?: string };
 type SupplierInput = { supplier_code: string; name: string; contact_name?: string; phone?: string; settlement_info?: Record<string, unknown>; remark?: string };
 
 @Injectable()
@@ -18,9 +18,9 @@ export class ProcurementMasterDataService {
   async setUnitActive(id: string, isActive: boolean, user: CurrentUser) { await this.requireUnit(id); return this.prisma.unit.update({ where: { id }, data: { isActive, ...this.audit.update(user) } }); }
   async deleteUnit(id: string, user: CurrentUser) { await this.requireUnit(id); return this.ensureUnusedAndDelete("unit", id, user); }
 
-  async listMaterials() { return this.prisma.material.findMany({ where: { deletedAt: null }, include: { defaultUnit: true }, orderBy: { materialCode: "asc" } }); }
-  async createMaterial(input: MaterialInput, user: CurrentUser) { await this.requireActiveUnit(input.default_unit_id); return this.write("material", () => this.prisma.material.create({ data: { materialCode: input.material_code, name: input.name, defaultUnitId: input.default_unit_id, remark: input.remark, ...this.audit.create(user) } }), user); }
-  async updateMaterial(id: string, input: Partial<MaterialInput>, user: CurrentUser) { await this.requireMaterial(id); if (input.default_unit_id) await this.requireActiveUnit(input.default_unit_id); return this.write("material", () => this.prisma.material.update({ where: { id }, data: { ...(input.material_code === undefined ? {} : { materialCode: input.material_code }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.default_unit_id === undefined ? {} : { defaultUnitId: input.default_unit_id }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } }), user, id); }
+  async listMaterials() { return this.prisma.material.findMany({ where: { deletedAt: null, materialType: "raw_material" }, include: { defaultUnit: true }, orderBy: { materialCode: "asc" } }); }
+  async createMaterial(input: MaterialInput, user: CurrentUser) { await this.requireActiveUnit(input.default_unit_id); const materialType = input.material_type ?? "raw_material"; if (!["raw_material", "finished_product"].includes(materialType)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_TYPE", message: "物料类型不合法", details: [] }); return this.write("material", () => this.prisma.material.create({ data: { materialCode: input.material_code, name: input.name, defaultUnitId: input.default_unit_id, materialType, remark: input.remark, ...this.audit.create(user) } }), user); }
+  async updateMaterial(id: string, input: Partial<MaterialInput>, user: CurrentUser) { await this.requireMaterial(id); if (input.default_unit_id) await this.requireActiveUnit(input.default_unit_id); if (input.material_type && !["raw_material", "finished_product"].includes(input.material_type)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_TYPE", message: "物料类型不合法", details: [] }); return this.write("material", () => this.prisma.material.update({ where: { id }, data: { ...(input.material_code === undefined ? {} : { materialCode: input.material_code }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.default_unit_id === undefined ? {} : { defaultUnitId: input.default_unit_id }), ...(input.material_type === undefined ? {} : { materialType: input.material_type }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } }), user, id); }
   async setMaterialActive(id: string, isActive: boolean, user: CurrentUser) { await this.requireMaterial(id); return this.prisma.material.update({ where: { id }, data: { isActive, ...this.audit.update(user) } }); }
   async deleteMaterial(id: string, user: CurrentUser) { await this.requireMaterial(id); return this.ensureUnusedAndDelete("material", id, user); }
 

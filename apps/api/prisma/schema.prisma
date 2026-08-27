@@ -476,6 +476,7 @@ model Material {
   materialCode              String                    @unique @map("material_code") @db.VarChar(80)
   name                      String                    @unique @db.VarChar(200)
   defaultUnitId             String                    @map("default_unit_id") @db.Uuid
+  materialType              String                    @default("raw_material") @map("material_type") @db.VarChar(30)
   isActive                  Boolean                   @default(true) @map("is_active")
   remark                    String?                   @db.VarChar(1000)
   createdAt                 DateTime                  @default(now()) @map("created_at")

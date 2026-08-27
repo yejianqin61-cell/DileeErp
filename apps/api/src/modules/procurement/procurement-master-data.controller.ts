@@ -9,7 +9,7 @@ import { ProcurementMasterDataService } from "./procurement-master-data.service"
 
 class ActiveDto { @IsBoolean() is_active!: boolean; }
 class UnitDto { @IsString() @MaxLength(30) name!: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
-class MaterialDto { @IsString() @MaxLength(80) material_code!: string; @IsString() @MaxLength(200) name!: string; @IsUUID() default_unit_id!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+class MaterialDto { @IsString() @MaxLength(80) material_code!: string; @IsString() @MaxLength(200) name!: string; @IsUUID() default_unit_id!: string; @IsOptional() @IsString() @MaxLength(30) material_type?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class SupplierDto { @IsString() @MaxLength(80) supplier_code!: string; @IsString() @MaxLength(200) name!: string; @IsOptional() @IsString() @MaxLength(100) contact_name?: string; @IsOptional() @IsString() @MaxLength(50) phone?: string; @IsOptional() @IsObject() settlement_info?: Record<string, unknown>; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 
 @Controller()
