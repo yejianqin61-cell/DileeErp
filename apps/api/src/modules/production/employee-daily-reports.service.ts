@@ -29,6 +29,7 @@ export class EmployeeDailyReportsService {
     const created = await this.prisma.$transaction(async (tx) => {
       const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, priceOverrideReason: input.price_override_reason, remark: input.remark, ...this.audit.create(user) } });
       await this.recomputeDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
+      await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, refs.order.id, "employee_daily_report", row.id, user);
       return row;
     });
@@ -49,6 +50,8 @@ export class EmployeeDailyReportsService {
       const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, priceOverrideReason: merged.price_override_reason, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
       await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
       if (refs.reportDate.getTime() !== current.reportDate.getTime()) await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, refs.reportDate, user);
+      await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, current.reportDate, current.wageMode, user);
+      await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, refs.reportDate, merged.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", row.id, user);
       return row;
     });
@@ -61,7 +64,7 @@ export class EmployeeDailyReportsService {
     const current = await this.get(id);
     if (expectedVersion !== undefined && expectedVersion !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: current.version }] });
     await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, current.reportDate.toISOString().slice(0, 10), true);
-    const removed = await this.prisma.$transaction(async (tx) => { const row = await tx.employeeDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } }); await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user); await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", id, user); return row; });
+    const removed = await this.prisma.$transaction(async (tx) => { const row = await tx.employeeDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } }); await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user); await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, current.reportDate, current.wageMode, user); await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", id, user); return row; });
     await this.audit.record("employee_daily_report.delete", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason });
     return removed;
   }
@@ -106,6 +109,22 @@ export class EmployeeDailyReportsService {
     if (!price) throw new UnprocessableEntityException({ code: "OPERATION_RATE_NOT_FOUND", message: "日报日期没有有效工序计价", details: [] });
     const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).mul(price);
     return { quantity, durationMinutes, unitPrice: price, amount };
+  }
+
+  private async syncPayrollSource(client: Prisma.TransactionClient, employeeId: string, productionOrderId: string, orderNo: string, reportDate: Date, wageMode: string, user: CurrentUser) {
+    const rows = await client.employeeDailyReport.findMany({ where: { deletedAt: null, employeeId, productionOrderId, reportDate, wageMode }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
+    const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
+    if (!rows.length) {
+      if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
+      return;
+    }
+    const quantity = rows.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
+    const durationMinutes = rows.reduce((sum, row) => sum.plus(row.durationMinutes ?? 0), new Prisma.Decimal(0));
+    const amount = rows.reduce((sum, row) => sum.plus(row.calculatedAmount), new Prisma.Decimal(0));
+    const sourceSnapshot = rows.map((row) => ({ id: row.id, report_date: row.reportDate.toISOString().slice(0, 10), employee_name: row.employeeNameSnapshot, order_no: row.orderNo, wage_mode: row.wageMode, quantity: row.quantity.toString(), duration_minutes: row.durationMinutes?.toString() ?? "0", amount: row.calculatedAmount.toString() }));
+    const data = { employeeId, productionOrderId, orderNo, periodStart: reportDate, periodEnd: reportDate, wageMode, quantity, durationMinutes, amount, sourceSnapshot: sourceSnapshot as Prisma.InputJsonValue, remark: null };
+    if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...data, ...this.audit.update(user) } });
+    else await client.productionPayrollSource.create({ data: { ...data, ...this.audit.create(user) } });
   }
 
   private async recomputeDiscrepancy(tx: Prisma.TransactionClient, orderId: string, operationId: string, reportDate: Date, user: CurrentUser) {

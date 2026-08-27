@@ -13,13 +13,10 @@ export class DictionariesService {
     return this.prisma.dictionaryItem.findMany({ where: { typeId: type.id, deletedAt: null, ...(includeInactive ? {} : { isActive: true }) }, orderBy: [{ sortOrder: "asc" }, { key: "asc" }] });
   }
   async listEmployeeTypes() {
-    const type = await this.prisma.dictionaryType.findFirst({ where: { key: "employee_type", deletedAt: null } });
-    if (!type) return [{ id: "employee_type_workshop", key: "workshop", label: "车间" }, { id: "employee_type_outsource", key: "outsource", label: "外加工" }];
-    return this.prisma.dictionaryItem.findMany({ where: { typeId: type.id, deletedAt: null, isActive: true }, orderBy: [{ sortOrder: "asc" }, { key: "asc" }] });
+    return [{ id: "employee_type_workshop", key: "workshop", label: "车间", isActive: true }, { id: "employee_type_non_workshop", key: "non_workshop", label: "非车间", isActive: true }];
   }
   async createEmployeeType(input: { key: string; label: string }, user: CurrentUser) {
-    const type = await this.prisma.dictionaryType.upsert({ where: { key: "employee_type" }, update: { name: "员工类型", ...this.audit.update(user) }, create: { key: "employee_type", name: "员工类型", ...this.audit.create(user) } });
-    return this.prisma.dictionaryItem.create({ data: { typeId: type.id, key: input.key, label: input.label, ...this.audit.create(user) } });
+    throw new NotFoundException("员工类型已固定为车间和非车间");
   }
   async createItem(typeKey: string, input: { key: string; label: string; sort_order?: number }, user: CurrentUser) {
     const type = await this.requireType(typeKey);
