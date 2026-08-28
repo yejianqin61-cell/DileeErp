@@ -33,7 +33,8 @@ export function DailyReportsPanel() {
     setError("");
     try {
       const [o, e, r] = await Promise.all([apiGet<Order[]>("/production/orders"), apiGet<Employee[]>("/production/employees"), apiGet<Report[]>("/production/employee-reports")]);
-      setOrders(o.data.filter((item) => item.executionMode === "in_house" && !["completed", "closed"].includes(item.status)));
+      // 日报只能登记正在生产的生产单；草稿单尚未启动工序，后端会拒绝保存。
+      setOrders(o.data.filter((item) => item.executionMode === "in_house" && item.status === "in_progress"));
       setEmployees(e.data.filter((item) => item.employmentStatus === "active"));
       setReports(r.data);
     } catch (cause) {
@@ -48,11 +49,11 @@ export function DailyReportsPanel() {
   function openOperation(order: Order, operation: Operation) {
     setSelectedOrder(order);
     setSelectedOperation(operation);
-    setDrafts([{ employee_id: employees[0]?.id ?? "", report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "0" }]);
+    setDrafts([{ employee_id: employees[0]?.id ?? "", report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "" }]);
   }
 
   function addDraft() {
-    setDrafts((rows) => [...rows, { employee_id: employees[0]?.id ?? "", report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "0" }]);
+    setDrafts((rows) => [...rows, { employee_id: employees[0]?.id ?? "", report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "" }]);
   }
 
   function updateDraft(index: number, patch: Partial<Draft>) {
