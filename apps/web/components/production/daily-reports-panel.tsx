@@ -16,6 +16,7 @@ type Draft = { employee_id: string; report_date: string; wage_mode: string; quan
 
 const today = new Date().toISOString().slice(0, 10);
 const errorText = (cause: unknown) => cause instanceof ApiClientError ? cause.message : "操作失败";
+const idempotencyKey = () => `daily-${typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 
 export function DailyReportsPanel() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -84,7 +85,7 @@ export function DailyReportsPanel() {
     }
     setError("");
     try {
-      await Promise.all(drafts.map((row) => apiPost("/production/employee-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, ...row, idempotency_key: "daily-" + crypto.randomUUID() })));
+      await Promise.all(drafts.map((row) => apiPost("/production/employee-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, ...row, idempotency_key: idempotencyKey() })));
       setMessage("工序员工日报已保存");
       closeDialog();
       await load();
