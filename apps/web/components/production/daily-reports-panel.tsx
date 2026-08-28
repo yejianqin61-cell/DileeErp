@@ -74,12 +74,16 @@ export function DailyReportsPanel() {
         setError("请先选择员工");
         return;
       }
-      if (!Number(row.quantity) || Number(row.quantity) <= 0) {
-        setError("请填写有效件数");
+      if (row.wage_mode === "piece_rate" && (!Number(row.quantity) || Number(row.quantity) <= 0)) {
+        setError("计件日报必须填写有效件数");
         return;
       }
       if (row.wage_mode === "time_rate" && (!row.duration_minutes || Number(row.duration_minutes) <= 0)) {
         setError("计时日报必须填写时长");
+        return;
+      }
+      if (!row.unit_price || Number(row.unit_price) < 0) {
+        setError("请填写当日人工单价");
         return;
       }
     }
@@ -126,7 +130,7 @@ export function DailyReportsPanel() {
             <table className="data-table">
               <thead><tr><th>员工</th><th>日期</th><th>计薪方式</th><th>件数</th><th>时长（分钟）</th><th>单价</th><th>操作</th></tr></thead>
               <tbody>
-                {drafts.map((row, index) => <tr key={"draft-" + index}><td><Select value={row.employee_id || undefined} onValueChange={(value) => updateDraft(index, { employee_id: value })}><SelectTrigger><SelectValue placeholder="选择员工" /></SelectTrigger><SelectContent>{employees.map((employee) => <SelectItem key={employee.id} value={employee.id}>{employee.employeeNo} / {employee.name}</SelectItem>)}</SelectContent></Select></td><td><Input type="date" value={row.report_date} onChange={(event) => updateDraft(index, { report_date: event.target.value })} /></td><td><Select value={row.wage_mode} onValueChange={(value) => updateDraft(index, { wage_mode: value })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="piece_rate">计件</SelectItem><SelectItem value="time_rate">计时</SelectItem></SelectContent></Select></td><td><Input type="number" min="0" value={row.quantity} onChange={(event) => updateDraft(index, { quantity: event.target.value })} /></td><td><Input type="number" min="0" value={row.duration_minutes} placeholder={row.wage_mode === "piece_rate" ? "计件可不填" : "计时时必填"} onChange={(event) => updateDraft(index, { duration_minutes: event.target.value })} /></td><td><Input type="number" min="0" value={row.unit_price} onChange={(event) => updateDraft(index, { unit_price: event.target.value })} /></td><td><Button size="sm" variant="ghost" onClick={() => setDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>删除</Button></td></tr>)}
+                {drafts.map((row, index) => <tr key={"draft-" + index}><td><Select value={row.employee_id || undefined} onValueChange={(value) => updateDraft(index, { employee_id: value })}><SelectTrigger><SelectValue placeholder="选择员工" /></SelectTrigger><SelectContent>{employees.map((employee) => <SelectItem key={employee.id} value={employee.id}>{employee.employeeNo} / {employee.name}</SelectItem>)}</SelectContent></Select></td><td><Input type="date" value={row.report_date} onChange={(event) => updateDraft(index, { report_date: event.target.value })} /></td><td><Select value={row.wage_mode} onValueChange={(value) => updateDraft(index, { wage_mode: value, quantity: value === "time_rate" ? "" : row.quantity, duration_minutes: value === "piece_rate" ? "" : row.duration_minutes })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="piece_rate">计件</SelectItem><SelectItem value="time_rate">计时</SelectItem></SelectContent></Select></td><td><Input type="number" min="0" disabled={row.wage_mode === "time_rate"} value={row.quantity} placeholder={row.wage_mode === "time_rate" ? "计时不填" : "必填"} onChange={(event) => updateDraft(index, { quantity: event.target.value })} /></td><td><Input type="number" min="0" disabled={row.wage_mode === "piece_rate"} value={row.duration_minutes} placeholder={row.wage_mode === "piece_rate" ? "计件不填" : "必填"} onChange={(event) => updateDraft(index, { duration_minutes: event.target.value })} /></td><td><Input type="number" min="0" value={row.unit_price} placeholder="人工填写" onChange={(event) => updateDraft(index, { unit_price: event.target.value })} /></td><td><Button size="sm" variant="ghost" onClick={() => setDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>删除</Button></td></tr>)}
               </tbody>
             </table>
           </div>

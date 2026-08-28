@@ -5,7 +5,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { ProductionProgressService } from "./production-progress.service";
 
-type Input = { production_order_id: string; production_order_operation_id: string; employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_minutes?: string; unit_price?: string; price_override_reason?: string; remark?: string; idempotency_key?: string };
+type Input = { production_order_id: string; production_order_operation_id: string; employee_id: string; report_date: string; wage_mode: string; quantity?: string; duration_minutes?: string; unit_price?: string; remark?: string; idempotency_key?: string };
 type Filter = { employee_id?: string; order_no?: string; production_order_id?: string; production_order_operation_id?: string; report_date?: string; from?: string; to?: string; wage_mode?: string };
 
 @Injectable()
@@ -24,10 +24,10 @@ export class EmployeeDailyReportsService {
 
   async create(input: Input, user: CurrentUser) {
     if (input.idempotency_key) { const previous = await this.prisma.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } }); if (previous) return this.get(previous.id); }
-    const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false, input.wage_mode);
-    const values = this.values(input, refs.rate?.unitPrice);
+    const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
+    const values = this.values(input);
     const created = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, priceOverrideReason: input.price_override_reason, remark: input.remark, ...this.audit.create(user) } });
+      const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
       await this.recomputeDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
       await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, refs.order.id, "employee_daily_report", row.id, user);
@@ -42,12 +42,11 @@ export class EmployeeDailyReportsService {
     const current = await this.get(id);
     if (input.expected_version !== undefined && input.expected_version !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: current.version }] });
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
-    if (input.unit_price?.trim() && !input.price_override_reason?.trim()) throw new UnprocessableEntityException({ code: "PRICE_OVERRIDE_REASON_REQUIRED", message: "覆盖单价必须填写原因", details: [] });
-    const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true, input.wage_mode ?? current.wageMode);
-    const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price, price_override_reason: input.price_override_reason ?? current.priceOverrideReason ?? undefined, remark: input.remark ?? current.remark ?? undefined };
-    const values = this.values(merged, input.unit_price?.trim() ? refs.rate?.unitPrice : undefined, current.unitPrice);
+    const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
+    const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: input.remark ?? current.remark ?? undefined };
+    const values = this.values(merged);
     const updated = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, priceOverrideReason: merged.price_override_reason, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
+      const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
       await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
       if (refs.reportDate.getTime() !== current.reportDate.getTime()) await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, refs.reportDate, user);
       await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, current.reportDate, current.wageMode, user);
@@ -83,7 +82,7 @@ export class EmployeeDailyReportsService {
     return [...groups.values()].map((item) => ({ ...item, quantity: item.quantity.toString(), duration_minutes: item.duration_minutes.toString(), amount: item.amount.toString(), source_read_only: true }));
   }
 
-  private async refs(orderId: string, operationId: string, employeeId: string, dateText: string, correction = false, wageMode?: string) {
+  private async refs(orderId: string, operationId: string, employeeId: string, dateText: string, correction = false) {
     const reportDate = this.validDate(dateText);
     const [order, operation, employee] = await Promise.all([this.prisma.productionOrder.findFirst({ where: { id: orderId, deletedAt: null } }), this.prisma.productionOrderOperation.findFirst({ where: { id: operationId, productionOrderId: orderId, deletedAt: null } }), this.prisma.employee.findFirst({ where: { id: employeeId, deletedAt: null } })]);
     if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
@@ -92,21 +91,18 @@ export class EmployeeDailyReportsService {
     if (!employee || employee.employmentStatus !== "active") throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_FORBIDDEN", message: "员工不存在、已停用或已离职", details: [] });
     if ((employee.hiredOn && reportDate < employee.hiredOn) || (employee.leftOn && reportDate > employee.leftOn)) throw new UnprocessableEntityException({ code: "EMPLOYEE_NOT_EMPLOYED_ON_REPORT_DATE", message: "员工在日报日期不处于可报工状态", details: [] });
     if (!(correction ? ["in_progress", "completed"] : ["in_progress", "completed"]).includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_DAILY_REPORT_FORBIDDEN", message: "当前生产单状态不允许维护员工日报", details: [] });
-    const rates = await this.prisma.operationRate.findMany({ where: { employeeId, operationId: operation.operationCatalogId, ...(wageMode ? { wageMode } : { wageMode: { in: ["piece_rate", "time_rate"] } }), deletedAt: null, effectiveFrom: { lte: reportDate }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: reportDate } }] }, orderBy: { effectiveFrom: "desc" } });
-    return { order, operation, employee, reportDate, rate: rates[0] };
+    return { order, operation, employee, reportDate };
   }
 
-  private values(input: Input, ratePrice?: Prisma.Decimal, existingPrice?: Prisma.Decimal) {
+  private values(input: Input) {
     if (input.wage_mode !== "piece_rate" && input.wage_mode !== "time_rate") throw new UnprocessableEntityException({ code: "INVALID_WAGE_MODE", message: "计薪方式无效", details: [] });
-    const quantity = this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", "员工日报件数必须大于零");
+    const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", "计件日报件数必须大于零") : new Prisma.Decimal(0);
+    if (input.wage_mode === "piece_rate" && quantity.isZero()) throw new UnprocessableEntityException({ code: "PIECE_REPORT_QUANTITY_REQUIRED", message: "计件日报必须填写件数", details: [] });
     const durationInput = input.duration_minutes?.trim() ? input.duration_minutes : undefined;
     const durationMinutes = durationInput === undefined ? undefined : this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须大于零");
     if (input.wage_mode === "time_rate" && !durationMinutes) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长", details: [] });
-    const unitPriceInput = input.unit_price?.trim() ? input.unit_price : undefined;
-    const override = unitPriceInput !== undefined;
-    if (override && !input.price_override_reason?.trim()) throw new UnprocessableEntityException({ code: "PRICE_OVERRIDE_REASON_REQUIRED", message: "覆盖单价必须填写原因", details: [] });
-    const price = unitPriceInput !== undefined ? this.decimal(unitPriceInput, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true) : ratePrice ?? existingPrice;
-    if (!price) throw new UnprocessableEntityException({ code: "OPERATION_RATE_NOT_FOUND", message: "日报日期没有有效工序计价", details: [] });
+    if (!input.unit_price?.trim()) throw new UnprocessableEntityException({ code: "DAILY_WAGE_PRICE_REQUIRED", message: "请填写当日人工单价", details: [] });
+    const price = this.decimal(input.unit_price, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true);
     const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).mul(price);
     return { quantity, durationMinutes, unitPrice: price, amount };
   }
