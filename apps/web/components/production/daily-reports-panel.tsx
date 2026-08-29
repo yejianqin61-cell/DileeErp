@@ -5,6 +5,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 
@@ -25,6 +26,8 @@ export function DailyReportsPanel() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [selectedOperation, setSelectedOperation] = useState<Operation | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -50,11 +53,14 @@ export function DailyReportsPanel() {
   function openOperation(order: Order, operation: Operation) {
     setSelectedOrder(order);
     setSelectedOperation(operation);
-    setDrafts([{ employee_id: employees[0]?.id ?? "", report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "" }]);
+    setDrafts([]);
+    setSelectedEmployeeIds([]);
   }
 
-  function addDraft() {
-    setDrafts((rows) => [...rows, { employee_id: employees[0]?.id ?? "", report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "" }]);
+  function addDraft() { setEmployeePickerOpen(true); }
+  function applyEmployees() {
+    setDrafts((rows) => [...rows, ...selectedEmployeeIds.filter((id) => !rows.some((row) => row.employee_id === id)).map((employee_id) => ({ employee_id, report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "" }))]);
+    setEmployeePickerOpen(false);
   }
 
   function updateDraft(index: number, patch: Partial<Draft>) {
@@ -123,29 +129,16 @@ export function DailyReportsPanel() {
             <DialogDescription>维护当前生产单当前工序的员工日报。</DialogDescription>
           </DialogHeader>
           <div className="page-actions">
-            <Button variant="secondary" onClick={addDraft}>添加员工</Button>
+            <Button variant="secondary" onClick={addDraft}>批量选择员工</Button>
             <Button onClick={() => void save()}>保存日报</Button>
           </div>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead><tr><th>员工</th><th>日期</th><th>计薪方式</th><th>件数</th><th>时长（分钟）</th><th>单价</th><th>操作</th></tr></thead>
-              <tbody>
-                {drafts.map((row, index) => <tr key={"draft-" + index}><td><Select value={row.employee_id || undefined} onValueChange={(value) => updateDraft(index, { employee_id: value })}><SelectTrigger><SelectValue placeholder="选择员工" /></SelectTrigger><SelectContent>{employees.map((employee) => <SelectItem key={employee.id} value={employee.id}>{employee.employeeNo} / {employee.name}</SelectItem>)}</SelectContent></Select></td><td><Input type="date" value={row.report_date} onChange={(event) => updateDraft(index, { report_date: event.target.value })} /></td><td><Select value={row.wage_mode} onValueChange={(value) => updateDraft(index, { wage_mode: value, quantity: value === "time_rate" ? "" : row.quantity, duration_minutes: value === "piece_rate" ? "" : row.duration_minutes })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="piece_rate">计件</SelectItem><SelectItem value="time_rate">计时</SelectItem></SelectContent></Select></td><td><Input type="number" min="0" disabled={row.wage_mode === "time_rate"} value={row.quantity} placeholder={row.wage_mode === "time_rate" ? "计时不填" : "必填"} onChange={(event) => updateDraft(index, { quantity: event.target.value })} /></td><td><Input type="number" min="0" disabled={row.wage_mode === "piece_rate"} value={row.duration_minutes} placeholder={row.wage_mode === "piece_rate" ? "计件不填" : "必填"} onChange={(event) => updateDraft(index, { duration_minutes: event.target.value })} /></td><td><Input type="number" min="0" value={row.unit_price} placeholder="人工填写" onChange={(event) => updateDraft(index, { unit_price: event.target.value })} /></td><td><Button size="sm" variant="ghost" onClick={() => setDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>删除</Button></td></tr>)}
-              </tbody>
-            </table>
-          </div>
+          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>日期</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长（分钟）</TableHead><TableHead>单价</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{drafts.map((row, index) => <TableRow key={row.employee_id}><TableCell>{employees.find((employee) => employee.id === row.employee_id)?.name ?? "-"}</TableCell><TableCell><Input type="date" value={row.report_date} onChange={(event) => updateDraft(index, { report_date: event.target.value })} /></TableCell><TableCell><Select value={row.wage_mode} onValueChange={(value) => updateDraft(index, { wage_mode: value, quantity: value === "time_rate" ? "" : row.quantity, duration_minutes: value === "piece_rate" ? "" : row.duration_minutes })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="piece_rate">计件</SelectItem><SelectItem value="time_rate">计时</SelectItem></SelectContent></Select></TableCell><TableCell><Input type="number" min="0" disabled={row.wage_mode === "time_rate"} value={row.quantity} placeholder={row.wage_mode === "time_rate" ? "计时不填" : "必填"} onChange={(event) => updateDraft(index, { quantity: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" disabled={row.wage_mode === "piece_rate"} value={row.duration_minutes} placeholder={row.wage_mode === "piece_rate" ? "计件不填" : "必填"} onChange={(event) => updateDraft(index, { duration_minutes: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" value={row.unit_price} placeholder="人工填写" onChange={(event) => updateDraft(index, { unit_price: event.target.value })} /></TableCell><TableCell><Button size="sm" variant="ghost" onClick={() => setDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>删除</Button></TableCell></TableRow>)}</TableBody></Table></div>
 
           <h3>已登记日报</h3>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead><tr><th>日期</th><th>员工</th><th>计划数量</th><th>是否超单</th><th>计薪方式</th><th>件数</th><th>时长</th><th>单价</th></tr></thead>
-              <tbody>
-                {visibleReports.map((report) => { const planned = Number(report.productionOrderOperation?.targetQuantity ?? 0); const quantity = Number(report.quantity); const overOrder = planned > 0 && quantity > planned; return <tr key={report.id}><td>{report.reportDate.slice(0, 10)}</td><td>{report.employeeNameSnapshot}</td><td>{report.productionOrderOperation?.targetQuantity ?? "-"}</td><td className={overOrder ? "status-error" : "status-success"}>{overOrder ? "是" : "否"}</td><td>{report.wageMode}</td><td>{report.quantity}</td><td>{report.durationMinutes ?? "-"}</td><td>{report.unitPrice}</td></tr>; })}
-              </tbody>
-            </table>
-          </div>
+          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>日期</TableHead><TableHead>员工</TableHead><TableHead>计划数量</TableHead><TableHead>是否超单</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长</TableHead><TableHead>单价</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => { const planned = Number(report.productionOrderOperation?.targetQuantity ?? 0); const quantity = Number(report.quantity); const overOrder = planned > 0 && quantity > planned; return <TableRow key={report.id}><TableCell>{report.reportDate.slice(0, 10)}</TableCell><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{report.productionOrderOperation?.targetQuantity ?? "-"}</TableCell><TableCell className={overOrder ? "status-error" : "status-success"}>{overOrder ? "是" : "否"}</TableCell><TableCell>{report.wageMode}</TableCell><TableCell>{report.quantity}</TableCell><TableCell>{report.durationMinutes ?? "-"}</TableCell><TableCell>{report.unitPrice}</TableCell></TableRow>; })}</TableBody></Table></div>
         </DialogContent>
       </Dialog>
+      <Dialog open={employeePickerOpen} onOpenChange={setEmployeePickerOpen}><DialogContent><DialogHeader><DialogTitle>批量选择员工</DialogTitle><DialogDescription>选择员工后一次生成日报行，重复员工会自动忽略。</DialogDescription></DialogHeader><div className="employee-picker-list">{employees.map((employee) => { const checked = selectedEmployeeIds.includes(employee.id); return <Button key={employee.id} type="button" variant={checked ? "default" : "secondary"} aria-pressed={checked} onClick={() => setSelectedEmployeeIds((ids) => checked ? ids.filter((id) => id !== employee.id) : [...ids, employee.id])}>{checked ? "已选 " : ""}{employee.employeeNo} / {employee.name}</Button>; })}</div><Button onClick={applyEmployees}>加入日报</Button></DialogContent></Dialog>
     </section>
   );
 }
