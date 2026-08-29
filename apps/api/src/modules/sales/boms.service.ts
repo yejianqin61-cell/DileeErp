@@ -47,14 +47,20 @@ export class BomsService {
     return updated;
   }
 
-  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; unit: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser) {
+  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; specification_model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; production_batch_base?: string; base_usage?: string; unit: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser) {
     const bom = await this.get(id);
-    if (items.some((item) => !item.material_id || !item.unit || !(item.material_name ?? String(item.material_snapshot.name ?? "")).trim() || !this.isPositiveDecimal(item.required_quantity) || (item.loss_quantity !== undefined && !this.isNonNegativeDecimal(item.loss_quantity)) || (item.loss_rate !== undefined && !this.isNonNegativeDecimal(item.loss_rate)))) {
+    const order = await this.prisma.salesOrder.findUnique({ where: { id: bom.salesOrderId }, select: { quantity: true } });
+    if (!order || items.some((item) => !item.material_id || !item.unit || !(item.material_name ?? String(item.material_snapshot.name ?? "")).trim() || !this.isPositiveDecimal(item.required_quantity) || !this.isPositiveDecimal(item.production_batch_base ?? "1") || !this.isPositiveDecimal(item.base_usage ?? item.required_quantity) || (item.loss_quantity !== undefined && !this.isNonNegativeDecimal(item.loss_quantity)) || (item.loss_rate !== undefined && !this.isNonNegativeDecimal(item.loss_rate)))) {
       throw new UnprocessableEntityException({ code: "INVALID_BOM_ITEM", message: "BOM 明细的物料、数量或单位不合法", details: [] });
     }
     await this.prisma.$transaction(async (tx) => {
       await tx.bomItem.updateMany({ where: { bomId: id, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
-      if (items.length) await tx.bomItem.createMany({ data: items.map((item) => ({ bomId: id, materialId: item.material_id, materialName: item.material_name ?? String(item.material_snapshot.name ?? ""), model: item.model, color: item.color, materialSnapshot: item.material_snapshot as Prisma.InputJsonValue, requiredQuantity: item.required_quantity, unit: item.unit, lossQuantity: item.loss_quantity, lossRate: item.loss_rate, extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) })) });
+      if (items.length) {
+        const materials = await tx.material.findMany({ where: { id: { in: items.map((item) => item.material_id) }, isActive: true, deletedAt: null }, select: { id: true, materialType: true, defaultUnitId: true } });
+        const materialMap = new Map(materials.map((material) => [material.id, material]));
+        if (items.some((item) => materialMap.get(item.material_id)?.materialType !== "raw_material")) throw new UnprocessableEntityException({ code: "BOM_RAW_MATERIAL_REQUIRED", message: "BOM 只能使用启用的原料物料", details: [] });
+        await tx.bomItem.createMany({ data: items.map((item) => { const batch = new Prisma.Decimal(item.production_batch_base ?? "1"); const base = new Prisma.Decimal(item.base_usage ?? item.required_quantity); const approved = order.quantity.div(batch).mul(base); return { bomId: id, materialId: item.material_id, materialName: item.material_name ?? String(item.material_snapshot.name ?? ""), model: item.model, specificationModel: item.specification_model ?? item.model, color: item.color, unitId: materialMap.get(item.material_id)?.defaultUnitId, materialSnapshot: item.material_snapshot as Prisma.InputJsonValue, requiredQuantity: approved, productionBatchBase: batch, baseUsage: base, approvedUsage: approved, unit: item.unit, lossQuantity: item.loss_quantity, lossRate: item.loss_rate, extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) });
+      }
     });
     await this.audit.record("bom.items.replace", "bom", user.id, id, { order_no: bom.orderNo, version: bom.version, item_count: items.length });
     return this.get(id);

@@ -12,9 +12,12 @@ class BomItemDto {
   @IsString() material_id!: string;
   @IsOptional() @IsString() material_name?: string;
   @IsOptional() @IsString() model?: string;
+  @IsOptional() @IsString() specification_model?: string;
   @IsOptional() @IsString() color?: string;
   @IsObject() material_snapshot!: Record<string, unknown>;
   @IsString() required_quantity!: string;
+  @IsOptional() @IsString() production_batch_base?: string;
+  @IsOptional() @IsString() base_usage?: string;
   @IsString() unit!: string;
   @IsOptional() @IsString() loss_quantity?: string;
   @IsOptional() @IsString() loss_rate?: string;

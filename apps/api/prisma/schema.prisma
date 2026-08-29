@@ -414,10 +414,14 @@ model BomItem {
   materialId         String              @map("material_id") @db.Uuid
   materialName       String              @map("material_name") @db.VarChar(200)
   model              String?             @db.VarChar(200)
+  specificationModel String?             @map("specification_model") @db.VarChar(200)
   color              String?             @db.VarChar(100)
   unitId             String?             @map("unit_id") @db.Uuid
   materialSnapshot   Json                @map("material_snapshot")
   requiredQuantity   Decimal             @map("required_quantity") @db.Decimal(18, 4)
+  productionBatchBase Decimal?          @map("production_batch_base") @db.Decimal(18, 4)
+  baseUsage          Decimal?            @map("base_usage") @db.Decimal(18, 4)
+  approvedUsage      Decimal?            @map("approved_usage") @db.Decimal(18, 4)
   unit               String              @db.VarChar(30)
   lossQuantity       Decimal?            @map("loss_quantity") @db.Decimal(18, 4)
   lossRate           Decimal?            @map("loss_rate") @db.Decimal(8, 4)
