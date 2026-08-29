@@ -220,6 +220,7 @@ button { cursor: pointer; }
 .inventory-impact-metrics strong { color: var(--text); font-size: 16px; font-weight: 700; }
 .inventory-impact-arrow { color: var(--primary) !important; font-size: 20px !important; font-weight: 700; }
 .ui-sheet-content { left: 50%; top: 50%; right: auto; bottom: auto; width: min(860px, calc(100vw - 40px)); max-height: min(760px, calc(100vh - 40px)); overflow-y: auto; transform: translate(-50%, -50%); border-radius: var(--radius); }
+.material-issue-sheet { width: min(1280px, calc(100vw - 40px)); max-width: 90vw; }
 .ui-sheet-right, .ui-sheet-left, .ui-sheet-top, .ui-sheet-bottom { left: 50%; top: 50%; right: auto; bottom: auto; width: min(860px, calc(100vw - 40px)); max-height: min(760px, calc(100vh - 40px)); transform: translate(-50%, -50%); }
 .ui-sheet-content .detail-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; margin-top: 8px; }
 .ui-sheet-content .detail-list p { min-height: 42px; padding: 10px 0; }
