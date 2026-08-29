@@ -263,7 +263,7 @@ export class RawMaterialMovementsService {
     return order;
   }
 
-  private async previewLines(order: { id: string; bomId: string | null }, lines: IssueLineInput[], client: PrismaService | Prisma.TransactionClient = this.prisma) {
+  private async previewLines(order: { id: string; orderNo: string; bomId: string | null }, lines: IssueLineInput[], client: PrismaService | Prisma.TransactionClient = this.prisma) {
     if (!Array.isArray(lines) || lines.length === 0) throw new UnprocessableEntityException({ code: "MATERIAL_MOVEMENT_LINES_REQUIRED", message: "领料单至少需要一条物料明细", details: [] });
     const seen = new Set<string>();
     const previewLines = [];
@@ -272,16 +272,49 @@ export class RawMaterialMovementsService {
       seen.add(line.material_id);
       const material = await client.material.findFirst({ where: { id: line.material_id, isActive: true, deletedAt: null } });
       if (!material) throw new NotFoundException({ code: "MATERIAL_NOT_FOUND", message: "物料不存在或已停用", details: [] });
+      if (material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "MATERIAL_NOT_RAW", message: "生产领料只能使用原料物料", details: [{ material_id: material.id }] });
       const bomItem = order.bomId ? await client.bomItem.findFirst({ where: { bomId: order.bomId, materialId: material.id, deletedAt: null } }) : null;
       const availableBefore = await this.inventory.rawMaterialBalance(client, material.id, material.defaultUnitId);
       const issued = await client.inventoryFact.aggregate({ where: { productionOrderId: order.id, materialId: material.id, unitId: material.defaultUnitId, inventoryCategory: "raw_material" }, _sum: { quantityDelta: true } });
       const cumulativeIssued = (issued._sum.quantityDelta ?? new Prisma.Decimal(0)).negated();
       const quantity = new Prisma.Decimal(line.quantity);
       const cumulativeAfter = cumulativeIssued.plus(quantity);
+      const [purchased, received] = await Promise.all([
+        client.purchaseOrderItem.aggregate({ where: { materialId: material.id, deletedAt: null, purchaseOrder: { orderNo: order.orderNo, deletedAt: null } }, _sum: { quantity: true } }),
+        client.rawMaterialInbound.aggregate({ where: { materialId: material.id, orderNo: order.orderNo, deletedAt: null, status: "posted" }, _sum: { quantity: true } })
+      ]);
+      const purchaseOrdered = new Prisma.Decimal(purchased._sum.quantity ?? 0);
+      const purchaseReceived = new Prisma.Decimal(received._sum.quantity ?? 0);
+      const approvedQuantity = bomItem?.approvedUsage ?? bomItem?.requiredQuantity ?? null;
+      const purchaseOutstanding = purchaseOrdered.minus(purchaseReceived);
+      const productionOutstanding = approvedQuantity ? approvedQuantity.minus(cumulativeIssued) : null;
       const risks = [] as { type: string; context: Prisma.InputJsonValue }[];
       if (!bomItem) risks.push({ type: "MATERIAL_NOT_IN_BOM_WARNING", context: { material_id: material.id, quantity: line.quantity } });
       if (bomItem && cumulativeAfter.greaterThan(bomItem.requiredQuantity)) risks.push({ type: "OVER_ISSUE_WARNING", context: { material_id: material.id, bom_reference_quantity: bomItem.requiredQuantity.toString(), cumulative_issue_quantity: cumulativeAfter.toString() } });
-      previewLines.push({ id: undefined as string | undefined, material_id: material.id, unit_id: material.defaultUnitId, quantity: line.quantity, remark: line.remark, bom_reference_quantity: bomItem?.requiredQuantity?.toString() ?? null, available_before: availableBefore, available_after: availableBefore.minus(quantity), cumulative_issued_before: cumulativeIssued, cumulative_issued_after: cumulativeAfter, risks });
+      previewLines.push({
+        id: undefined as string | undefined,
+        material_id: material.id,
+        material_name: material.name,
+        material_code: material.materialCode,
+        model: bomItem?.specificationModel ?? bomItem?.model ?? null,
+        color: bomItem?.color ?? null,
+        unit_id: material.defaultUnitId,
+        unit: bomItem?.unit ?? null,
+        quantity: line.quantity,
+        remark: line.remark,
+        bom_reference_quantity: bomItem?.requiredQuantity?.toString() ?? null,
+        approved_usage: approvedQuantity?.toString() ?? null,
+        available_before: availableBefore,
+        available_after: availableBefore.minus(quantity),
+        inventory_quantity: availableBefore.toString(),
+        purchase_received_quantity: purchaseReceived.toString(),
+        purchase_outstanding_quantity: purchaseOutstanding.toString(),
+        cumulative_issued_before: cumulativeIssued,
+        cumulative_issued_after: cumulativeAfter,
+        production_outstanding_quantity: productionOutstanding?.toString() ?? null,
+        requested_replenishment_quantity: "0",
+        risks
+      });
     }
     return { lines: previewLines };
   }
