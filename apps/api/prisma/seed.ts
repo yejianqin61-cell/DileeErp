@@ -22,6 +22,15 @@ async function main() {
     for (const name of ["打", "码", "个", "包", "捆"]) {
       await tx.unit.upsert({ where: { name }, update: { isActive: true, updatedBy: id }, create: { id: randomUUID(), name, createdBy: id, updatedBy: id } });
     }
+    const defaultUnit = await tx.unit.findFirst({ where: { deletedAt: null, isActive: true }, orderBy: { createdAt: "asc" } });
+    if (defaultUnit) {
+      for (const [index, operationName] of ["大裁", "拉边", "小裁", "验片", "合片", "剪线头", "打顶打带", "打珠尾", "缝伞", "品检", "折伞", "外发加工", "其他", "包装"].entries()) {
+        const existingOperation = await tx.operationCatalog.findFirst({ where: { operationName, deletedAt: null } });
+        if (!existingOperation) {
+          await tx.operationCatalog.create({ data: { id: randomUUID(), operationCode: `OP-${String(index + 1).padStart(3, "0")}`, operationName, defaultUnitId: defaultUnit.id, createdBy: id, updatedBy: id } });
+        }
+      }
+    }
     const employeeType = await tx.dictionaryType.upsert({ where: { key: "employee_type" }, update: { name: "员工类型", updatedBy: id }, create: { id: randomUUID(), key: "employee_type", name: "员工类型", createdBy: id, updatedBy: id } });
     for (const item of [{ key: "workshop", label: "车间员工" }, { key: "office", label: "办公室员工" }, { key: "management", label: "管理人员" }]) {
       await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: employeeType.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: employeeType.id, key: item.key, label: item.label, createdBy: id, updatedBy: id } });
