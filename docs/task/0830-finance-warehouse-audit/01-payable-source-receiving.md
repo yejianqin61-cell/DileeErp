@@ -1,6 +1,6 @@
 # 01 应付来源接收闭环
 
-**Status:** in-progress
+**Status:** completed
 **Priority:** P0
 **Depends on:** 已有原料入库、PayableSource、SupplierPayableEntry
 

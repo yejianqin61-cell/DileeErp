@@ -1,6 +1,6 @@
 # 03 财务单据编辑与受控回退
 
-**Status:** ready
+**Status:** completed
 **Priority:** P1
 **Depends on:** 01, 02
 

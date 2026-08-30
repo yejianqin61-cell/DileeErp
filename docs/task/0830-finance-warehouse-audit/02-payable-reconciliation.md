@@ -1,6 +1,6 @@
 # 02 应付对账
 
-**Status:** ready
+**Status:** completed
 **Priority:** P0
 **Depends on:** 01
 

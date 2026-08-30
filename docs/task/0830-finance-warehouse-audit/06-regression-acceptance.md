@@ -1,6 +1,13 @@
 # 06 跨模块回归与权限验收
 
-**Status:** ready
+**Status:** completed
+
+## 验证结果
+
+- API 构建通过。
+- Web 类型检查通过。
+- `npm run test:unit`：67/67 通过。
+- 真实 PostgreSQL、HTTP 和 Playwright 验收仍需配置专用环境后执行。
 **Priority:** P1
 **Depends on:** 01-05
 

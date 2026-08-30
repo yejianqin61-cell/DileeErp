@@ -1,6 +1,6 @@
 # 04 仓库库存总览与原料工作区
 
-**Status:** ready
+**Status:** completed
 **Priority:** P1
 **Depends on:** 01
 
