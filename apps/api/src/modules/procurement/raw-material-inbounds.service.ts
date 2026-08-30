@@ -130,7 +130,16 @@ export class RawMaterialInboundsService {
   }
 
   async payableSources(orderNo?: string) {
-    return this.prisma.payableSource.findMany({ where: orderNo ? { orderNo } : {}, orderBy: { createdAt: "desc" } });
+    return this.prisma.payableSource.findMany({
+      where: { ...(orderNo ? { orderNo } : {}), status: "pending_finance" },
+      include: {
+        rawMaterialInbound: { select: { inboundNo: true, purchaseReceiptId: true, status: true } },
+        purchaseOrder: { select: { purchaseOrderNo: true } },
+        purchaseOrderItem: { select: { materialId: true, unitId: true } },
+        supplier: { select: { id: true, name: true, supplierCode: true } }
+      },
+      orderBy: { createdAt: "desc" }
+    });
   }
 
   async reverse(id: string, input: { reason: string }, user: CurrentUser) {
