@@ -17,9 +17,9 @@ export class InventoryService {
   }
 
   async rawMaterialBalances(materialIds: string[]) {
-    const facts = await this.prisma.inventoryFact.findMany({ where: { ...(materialIds.length ? { materialId: { in: materialIds } } : {}), inventoryCategory: "raw_material" }, select: { materialId: true, unitId: true, quantityDelta: true, orderNo: true } });
-    const balances = new Map<string, { material_id: string; unit_id: string; order_no: string | null; quantity: Prisma.Decimal }>();
-    for (const fact of facts) { if (!fact.materialId) continue; const key = `${fact.materialId}|${fact.unitId}`; const current = balances.get(key); if (current) current.quantity = current.quantity.plus(fact.quantityDelta); else balances.set(key, { material_id: fact.materialId, unit_id: fact.unitId, order_no: fact.orderNo, quantity: fact.quantityDelta }); }
+    const facts = await this.prisma.inventoryFact.findMany({ where: { ...(materialIds.length ? { materialId: { in: materialIds } } : {}), inventoryCategory: "raw_material", material: { materialType: "raw_material", deletedAt: null }, unit: { deletedAt: null } }, select: { materialId: true, unitId: true, quantityDelta: true, orderNo: true, material: { select: { materialCode: true, name: true } }, unit: { select: { name: true } } } });
+    const balances = new Map<string, { material_id: string; material_code: string; material_name: string; unit_id: string; unit_name: string; order_no: string | null; quantity: Prisma.Decimal }>();
+    for (const fact of facts) { if (!fact.materialId || !fact.material || !fact.unit) continue; const key = `${fact.materialId}|${fact.unitId}|${fact.orderNo ?? ""}`; const current = balances.get(key); if (current) current.quantity = current.quantity.plus(fact.quantityDelta); else balances.set(key, { material_id: fact.materialId, material_code: fact.material.materialCode, material_name: fact.material.name, unit_id: fact.unitId, unit_name: fact.unit.name, order_no: fact.orderNo, quantity: fact.quantityDelta }); }
     return [...balances.values()].map((row) => ({ ...row, quantity: row.quantity.toString() })).filter((row) => row.quantity !== "0");
   }
 

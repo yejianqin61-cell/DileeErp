@@ -10,11 +10,11 @@ import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
 
-type Material = { id: string; materialCode: string; name: string };
+type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
 type Inbound = { id: string; inboundNo: string; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string };
-type Balance = { material_id: string; quantity: string; material?: Material };
+type Balance = { material_id: string; unit_id: string; unit_name: string; order_no: string | null; quantity: string; material?: Material };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -45,8 +45,9 @@ export default function RawMaterialStoragePage() {
       setInspections(i.data);
       setInbounds(ib.data);
       const balanceResult = await apiGet<Balance[]>("/inventory/raw-material-balances?material_ids=" + m.data.map((item) => item.id).join(","));
-      const balanceMap = new Map(balanceResult.data.map((item) => [item.material_id, item.quantity]));
-      setBalances(m.data.map((item) => ({ material_id: item.id, quantity: balanceMap.get(item.id) ?? "0", material: item })));
+      const balanceMap = new Map<string, number>();
+      for (const item of balanceResult.data) balanceMap.set(item.material_id, (balanceMap.get(item.material_id) ?? 0) + Number(item.quantity));
+      setBalances(m.data.map((item) => ({ material_id: item.id, unit_id: item.defaultUnitId, unit_name: "", order_no: null, quantity: String(balanceMap.get(item.id) ?? 0), material: item })));
     } catch (cause) {
       setError(messageOf(cause, "原料仓储情况加载失败"));
     } finally {
