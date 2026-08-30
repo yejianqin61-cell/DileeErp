@@ -523,6 +523,7 @@ model Supplier {
   outsourcePayableSources OutsourcePayableSource[]
   supplierPayableEntries  SupplierPayableEntry[]
   supplierPayments        SupplierPayment[]
+  supplierPayableReconciliations SupplierPayableReconciliation[]
 
   @@map("suppliers")
 }
@@ -560,6 +561,7 @@ model PurchaseOrder {
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
   outsourcePayableSources   OutsourcePayableSource[]
   supplierPayableEntries    SupplierPayableEntry[]
+  supplierPayableReconciliations SupplierPayableReconciliation[]
 
   @@index([orderNo, status])
   @@index([supplierId, status])
@@ -1381,6 +1383,40 @@ model ReceivableReconciliation {
   @@index([customerId, status])
   @@index([periodStart, periodEnd])
   @@map("receivable_reconciliations")
+}
+
+model SupplierPayableReconciliation {
+  id                       String   @id @default(uuid()) @db.Uuid
+  reconciliationNo         String   @unique @map("reconciliation_no") @db.VarChar(100)
+  orderNo                  String?  @map("order_no") @db.VarChar(100)
+  purchaseOrderId          String?  @map("purchase_order_id") @db.Uuid
+  supplierId               String   @map("supplier_id") @db.Uuid
+  periodStart              DateTime @map("period_start") @db.Date
+  periodEnd                DateTime @map("period_end") @db.Date
+  payableAmountSnapshot    Decimal  @map("payable_amount_snapshot") @db.Decimal(18, 4)
+  paymentAmountSnapshot    Decimal  @map("payment_amount_snapshot") @db.Decimal(18, 4)
+  adjustmentAmountSnapshot Decimal  @map("adjustment_amount_snapshot") @db.Decimal(18, 4)
+  systemBalance            Decimal  @map("system_balance") @db.Decimal(18, 4)
+  externalBalance          Decimal  @map("external_balance") @db.Decimal(18, 4)
+  difference               Decimal  @db.Decimal(18, 4)
+  currency                 String   @db.VarChar(10)
+  status                   String   @default("pending") @db.VarChar(30)
+  resolutionRemark        String?  @map("resolution_remark") @db.VarChar(1000)
+  attachment               Json     @default("[]")
+  remark                   String?  @db.VarChar(1000)
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+  createdBy                String   @map("created_by") @db.Uuid
+  updatedBy                String   @map("updated_by") @db.Uuid
+  deletedAt                DateTime? @map("deleted_at")
+  deletedBy                String?  @map("deleted_by") @db.Uuid
+  supplier                 Supplier @relation(fields: [supplierId], references: [id])
+  purchaseOrder            PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+
+  @@index([supplierId, status])
+  @@index([orderNo, status])
+  @@index([periodStart, periodEnd])
+  @@map("supplier_payable_reconciliations")
 }
 
 model ProductionOrder {
