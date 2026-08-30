@@ -52,6 +52,7 @@ pm2 start ecosystem.config.cjs
 pm2 save
 pm2 status
 curl -fsS http://127.0.0.1:3001/api/v1/health
+test "$(curl -fsS http://127.0.0.1:3001/api/v1/health | node -pe 'JSON.parse(fs.readFileSync(0, "utf8")).data.build')" != "development"
 curl -fsSI http://127.0.0.1:3000/manifest.webmanifest
 curl -fsSI http://127.0.0.1:3000/login
 ```
@@ -60,7 +61,7 @@ curl -fsSI http://127.0.0.1:3000/login
 
 ## 成功判定
 
-PM2 两个进程为 `online`；API health 返回数据库 `ok`；manifest 和登录页返回 HTTP 200。浏览器出现旧 ChunkLoadError 时先 `Ctrl+F5` 或清站点缓存。
+PM2 两个进程为 `online`；API health 返回数据库 `ok` 且 `data.build` 为本次归档提交指纹；manifest 和登录页返回 HTTP 200。浏览器出现旧 ChunkLoadError 时先 `Ctrl+F5` 或清站点缓存。
 
 ## 回滚
 
