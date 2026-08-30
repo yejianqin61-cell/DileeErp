@@ -168,9 +168,16 @@ export class RawMaterialInboundsService {
     return result;
   }
 
+  async impactPreview(id: string) {
+    const inbound = await this.prisma.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: true, incomingInspection: true } });
+    if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
+    const balance = await this.inventory.rawMaterialBalance(this.prisma, inbound.materialId, inbound.unitId);
+    return { inbound_id: id, order_no: inbound.orderNo, status: inbound.status, quantity: inbound.quantity.toString(), current_inventory: balance.toString(), after_reversal_inventory: balance.minus(inbound.quantity).toString(), payable_sources: inbound.payableSources.map((source) => ({ id: source.id, status: source.status, amount: source.amount.toString() })), warning: "冲销将创建反向库存事实，并将待财务应付来源置为作废" };
+  }
+
   private async requireInspection(id: string) {
     const inspection = await this.prisma.incomingInspection.findFirst({
-      where: { id, deletedAt: null, status: { in: ["accepted", "conditionally_accepted", "partially_accepted"] } },
+      where: { id, deletedAt: null, status: { in: ["accepted", "conditionally_accepted", "partially_accepted", "completed"] } },
       include: { rawMaterialInbounds: { where: { deletedAt: null } }, purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: true } } }
     });
     if (!inspection) throw new NotFoundException({ code: "INSPECTION_NOT_AVAILABLE", message: "QC 不存在或不允许入库", details: [] });
