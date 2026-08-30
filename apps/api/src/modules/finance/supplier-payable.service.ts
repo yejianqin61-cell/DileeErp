@@ -52,6 +52,15 @@ export class SupplierPayableService {
     return row;
   }
 
+  async updateDraft(id: string, input: { amount?: string; confirmation_date?: string; remark?: string }, user: CurrentUser) {
+    const current = await this.get(id);
+    if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_EDITABLE", "只有草稿应付可以编辑");
+    const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
+    const row = await this.prisma.supplierPayableEntry.update({ where: { id }, data: { amount, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : current.confirmationDate, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    await this.audit.recordWithOrderNo("supplier_payable.update", "supplier_payable_entry", row.orderNo, user.id, id, { amount: row.amount.toString() });
+    return row;
+  }
+
   async reverse(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
     const current = await this.get(id);
