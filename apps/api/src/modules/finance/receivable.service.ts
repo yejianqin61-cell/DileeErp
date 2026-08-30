@@ -27,6 +27,17 @@ export class ReceivableService {
   }
 
   async confirm(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_CONFIRMABLE", "只有草稿应收来源可以确认"); const row = await this.prisma.receivableSource.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } }); await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo }); return row; }
+  async updateDraft(id: string, input: { amount?: string; due_date?: string; amount_reason?: string; remark?: string }, user: CurrentUser) {
+    const current = await this.get(id);
+    if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_EDITABLE", "只有草稿应收来源可以编辑");
+    let amount = current.amount;
+    if (input.amount !== undefined) {
+      try { amount = new Prisma.Decimal(input.amount); if (amount.lte(0)) throw new Error(); } catch { throw this.invalid("INVALID_RECEIVABLE_AMOUNT", "应收金额必须是大于零的十进制数"); }
+    }
+    const row = await this.prisma.receivableSource.update({ where: { id }, data: { amount, dueDate: input.due_date ? this.date(input.due_date) : current.dueDate, amountReason: input.amount_reason ?? current.amountReason, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    await this.audit.record("receivable_source.update", "receivable_source", user.id, id, { order_no: row.orderNo, amount: row.amount.toString() });
+    return row;
+  }
   async cancel(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CANCELLATION_REASON_REQUIRED", message: "取消必须填写原因", details: [] }); const current = await this.get(id); if (["paid", "closed"].includes(current.status)) throw this.invalid("RECEIVABLE_SOURCE_NOT_CANCELLABLE", "已收清应收来源不可取消"); const row = await this.prisma.receivableSource.update({ where: { id }, data: { status: "cancelled", remark: `${current.remark ?? ""}\n取消：${reason}`, ...this.audit.update(user) } }); await this.audit.record("receivable_source.cancel", "receivable_source", user.id, id, { order_no: row.orderNo, reason }); return row; }
   async impactPreview(id: string) { const row = await this.get(id); const allocated = row.allocations.reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)); return { source_id: id, order_no: row.orderNo, status: row.status, amount: row.amount.toString(), allocated_amount: allocated.toString(), unallocated_amount: row.amount.minus(allocated).toString(), allocation_count: row.allocations.length }; }
   async orderSummary(orderNo: string) { const rows = await this.prisma.receivableSource.findMany({ where: { orderNo, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } }); const amount = rows.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)); const allocated = rows.reduce((sum, row) => sum.plus(row.allocations.filter((item) => item.payment.status === "posted").reduce((inner, item) => inner.plus(item.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0)); return { order_no: orderNo, source_count: rows.length, receivable_amount: amount.toString(), allocated_amount: allocated.toString(), outstanding_amount: amount.minus(allocated).toString() }; }
