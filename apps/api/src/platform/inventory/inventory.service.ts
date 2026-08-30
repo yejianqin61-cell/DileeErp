@@ -17,10 +17,10 @@ export class InventoryService {
   }
 
   async rawMaterialBalances(materialIds: string[]) {
-    const facts = await this.prisma.inventoryFact.findMany({ where: { materialId: { in: materialIds }, inventoryCategory: "raw_material" }, select: { materialId: true, unitId: true, quantityDelta: true } });
-    const balances = new Map<string, Prisma.Decimal>();
-    for (const fact of facts) balances.set(fact.materialId!, (balances.get(fact.materialId!) ?? new Prisma.Decimal(0)).plus(fact.quantityDelta));
-    return materialIds.map((id) => ({ material_id: id, quantity: (balances.get(id) ?? new Prisma.Decimal(0)).toString() }));
+    const facts = await this.prisma.inventoryFact.findMany({ where: { ...(materialIds.length ? { materialId: { in: materialIds } } : {}), inventoryCategory: "raw_material" }, select: { materialId: true, unitId: true, quantityDelta: true, orderNo: true } });
+    const balances = new Map<string, { material_id: string; unit_id: string; order_no: string | null; quantity: Prisma.Decimal }>();
+    for (const fact of facts) { if (!fact.materialId) continue; const key = `${fact.materialId}|${fact.unitId}`; const current = balances.get(key); if (current) current.quantity = current.quantity.plus(fact.quantityDelta); else balances.set(key, { material_id: fact.materialId, unit_id: fact.unitId, order_no: fact.orderNo, quantity: fact.quantityDelta }); }
+    return [...balances.values()].map((row) => ({ ...row, quantity: row.quantity.toString() })).filter((row) => row.quantity !== "0");
   }
 
   async finishedGoodsBalance(client: InventoryClient, productionOrderId: string, unitId: string, category: "finished_goods" | "defective_goods") {
