@@ -10,5 +10,6 @@
 4. `[x]` `04-incoming-qc-batches.md`：到货触发来料质检、多批质检。
 5. `[x]` `05-reversible-raw-material-inbound.md`：质检后可逆原料入库。
 6. `[x]` `06-procurement-receiving-workbench-ui.md`：采购收货工作区前端。
+7. `[x]` `07-receipt-payable-source.md`：到货批次应付来源。
 
 未完成前不得开始后续任务；不修改无关模块。
