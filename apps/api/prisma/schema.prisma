@@ -624,6 +624,7 @@ model PurchaseReceipt {
   purchaseOrderItem   PurchaseOrderItem    @relation(fields: [purchaseOrderItemId], references: [id])
   inspections         IncomingInspection[]
   rawMaterialInbounds RawMaterialInbound[]
+  payableSources      PayableSource[]
 
   @@index([purchaseOrderItemId, receivedDate])
   @@index([orderNo])
@@ -735,7 +736,8 @@ model InventoryFact {
 
 model PayableSource {
   id                   String                @id @default(uuid()) @db.Uuid
-  rawMaterialInboundId String                @map("raw_material_inbound_id") @db.Uuid
+  rawMaterialInboundId String?               @map("raw_material_inbound_id") @db.Uuid
+  purchaseReceiptId    String?               @map("purchase_receipt_id") @db.Uuid
   orderNo              String                @map("order_no") @db.VarChar(100)
   purchaseOrderId      String                @map("purchase_order_id") @db.Uuid
   purchaseOrderItemId  String                @map("purchase_order_item_id") @db.Uuid
@@ -751,13 +753,15 @@ model PayableSource {
   updatedAt            DateTime              @updatedAt @map("updated_at")
   createdBy            String                @map("created_by") @db.Uuid
   updatedBy            String                @map("updated_by") @db.Uuid
-  rawMaterialInbound   RawMaterialInbound    @relation(fields: [rawMaterialInboundId], references: [id])
+  rawMaterialInbound   RawMaterialInbound?   @relation(fields: [rawMaterialInboundId], references: [id])
+  purchaseReceipt      PurchaseReceipt?     @relation(fields: [purchaseReceiptId], references: [id])
   supplier             Supplier              @relation(fields: [supplierId], references: [id])
   purchaseOrder        PurchaseOrder         @relation(fields: [purchaseOrderId], references: [id])
   purchaseOrderItem    PurchaseOrderItem     @relation(fields: [purchaseOrderItemId], references: [id])
   supplierPayableEntry SupplierPayableEntry? @relation("RawMaterialPayableEntry")
 
   @@unique([rawMaterialInboundId])
+  @@unique([purchaseReceiptId])
   @@index([orderNo])
   @@map("payable_sources")
 }

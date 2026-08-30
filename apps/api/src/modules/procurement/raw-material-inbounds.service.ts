@@ -82,7 +82,8 @@ export class RawMaterialInboundsService {
             createdBy: user.id
           }
         });
-        await tx.payableSource.create({
+        const receiptSource = await tx.payableSource.findUnique({ where: { purchaseReceiptId: inbound.purchaseReceiptId } });
+        if (!receiptSource) await tx.payableSource.create({
           data: {
             rawMaterialInboundId: inbound.id,
             orderNo: inbound.orderNo,
