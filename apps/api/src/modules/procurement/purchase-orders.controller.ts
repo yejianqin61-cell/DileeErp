@@ -10,7 +10,7 @@ import { PurchaseOrdersService } from "./purchase-orders.service";
 
 class ItemDto { @IsUUID() material_id!: string; @IsUUID() unit_id!: string; @IsOptional() @IsUUID() bom_item_id?: string; @IsOptional() @IsString() model?: string; @IsString() quantity!: string; @IsString() unit_price!: string; @IsOptional() @IsString() tax_rate?: string; @IsOptional() @IsString() extra_fee?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; }
 class PurchaseOrderDto { @IsString() order_no!: string; @IsUUID() bom_id!: string; @IsOptional() bom_version?: number; @IsUUID() supplier_id!: string; @IsDateString() purchase_date!: string; @IsOptional() @IsDateString() expected_date?: string; @IsString() currency!: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsArray() @ValidateNested({ each: true }) @Type(() => ItemDto) items!: ItemDto[]; }
-class ReceiptDto { @IsString() quantity!: string; @IsDateString() received_date!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; }
+class ReceiptDto { @IsString() quantity!: string; @IsDateString() received_date!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() over_receipt_reason?: string; }
 
 @Controller("purchase-orders")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)

@@ -612,6 +612,7 @@ model PurchaseReceipt {
   receivedDate        DateTime             @map("received_date")
   quantity            Decimal              @db.Decimal(18, 4)
   status              String               @default("received") @db.VarChar(30)
+  extensionData       Json                 @default("{}") @map("extension_data")
   remark              String?              @db.VarChar(1000)
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
