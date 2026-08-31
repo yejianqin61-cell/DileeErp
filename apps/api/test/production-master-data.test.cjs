@@ -18,6 +18,14 @@ test("employee rejects a position that does not belong to its active department"
   await assert.rejects(() => service.createEmployee({ employee_no: "E-1", name: "员工", department_id: "5a6b93f4-e3e2-45e0-a0c4-4cf5f9bf3ee5", position_id: "0ec5168a-bc9d-4c8c-ac0d-cb269fbd1a76", employee_type: "worker" }, user), (error) => error instanceof NotFoundException && error.getResponse().code === "ORGANIZATION_NOT_FOUND");
 });
 
+test("employee accepts only workshop or non-workshop types", async () => {
+  const prisma = { position: { findFirst: async () => ({ id: "position-1", department: { isActive: true } }) }, employee: { create: async ({ data }) => data } };
+  const service = new ProductionMasterDataService(prisma, audit);
+  await assert.rejects(() => service.createEmployee({ employee_no: "E-1", name: "员工", department_id: "department-1", position_id: "position-1", employee_type: "office" }, user), (error) => error instanceof ConflictException && error.getResponse().code === "INVALID_EMPLOYEE_TYPE");
+  const employee = await service.createEmployee({ employee_no: "E-2", name: "员工", department_id: "department-1", position_id: "position-1", employee_type: "non_workshop" }, user);
+  assert.equal(employee.employeeType, "non_workshop");
+});
+
 test("employee can leave only from active status", async () => {
   const updates = [];
   const prisma = { employee: { findFirst: async () => ({ id: "employee-1", employmentStatus: "active" }), update: async (input) => { updates.push(input); return input.data; } } };

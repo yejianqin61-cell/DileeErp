@@ -32,7 +32,7 @@ async function main() {
       }
     }
     const employeeType = await tx.dictionaryType.upsert({ where: { key: "employee_type" }, update: { name: "员工类型", updatedBy: id }, create: { id: randomUUID(), key: "employee_type", name: "员工类型", createdBy: id, updatedBy: id } });
-    for (const item of [{ key: "workshop", label: "车间员工" }, { key: "office", label: "办公室员工" }, { key: "management", label: "管理人员" }]) {
+    for (const item of [{ key: "workshop", label: "车间员工" }, { key: "non_workshop", label: "非车间员工" }]) {
       await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: employeeType.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: employeeType.id, key: item.key, label: item.label, createdBy: id, updatedBy: id } });
     }
   });
