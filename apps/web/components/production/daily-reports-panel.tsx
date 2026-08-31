@@ -12,7 +12,7 @@ import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 type Operation = { id: string; operationNameSnapshot: string; targetQuantity: string; status: string };
 type Order = { id: string; productionOrderNo: string; orderNo: string; executionMode: string; status: string; operations: Operation[] };
 type Employee = { id: string; employeeNo: string; name: string; employmentStatus: string };
-type Report = { id: string; employeeNameSnapshot: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { targetQuantity: string } };
+type Report = { id: string; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { id: string; targetQuantity: string } };
 type Draft = { employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_minutes: string; unit_price: string };
 
 const today = new Date().toISOString().slice(0, 10);
@@ -25,6 +25,7 @@ export function DailyReportsPanel() {
   const [reports, setReports] = useState<Report[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [selectedOperation, setSelectedOperation] = useState<Operation | null>(null);
+  const [selectedReportDate, setSelectedReportDate] = useState(today);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
@@ -53,6 +54,7 @@ export function DailyReportsPanel() {
   function openOperation(order: Order, operation: Operation) {
     setSelectedOrder(order);
     setSelectedOperation(operation);
+    setSelectedReportDate(today);
     setDrafts([]);
     setSelectedEmployeeIds([]);
   }
@@ -104,7 +106,18 @@ export function DailyReportsPanel() {
     }
   }
 
-  const visibleReports = useMemo(() => reports.filter((report) => report.reportDate.slice(0, 10) === today), [reports]);
+  const visibleReports = useMemo(() => reports.filter((report) => report.productionOrderOperation.id === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate), [reports, selectedOperation, selectedReportDate]);
+  const dailyEmployeeTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const report of reports) {
+      if (report.reportDate.slice(0, 10) !== selectedReportDate) continue;
+      totals.set(report.employeeId, (totals.get(report.employeeId) ?? 0) + Number(report.calculatedAmount));
+    }
+    return totals;
+  }, [reports, selectedReportDate]);
+  const plannedQuantity = Number(selectedOperation?.targetQuantity ?? 0);
+  const completedQuantity = visibleReports.reduce((sum, report) => sum + Number(report.quantity), 0);
+  const isOverOrder = plannedQuantity > 0 && completedQuantity > plannedQuantity;
 
   if (loading) return <section className="panel"><LoadingState /></section>;
   if (error && !orders.length) return <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>;
@@ -128,14 +141,16 @@ export function DailyReportsPanel() {
             <DialogTitle>{selectedOrder?.productionOrderNo} / {selectedOperation?.operationNameSnapshot}</DialogTitle>
             <DialogDescription>维护当前生产单当前工序的员工日报。</DialogDescription>
           </DialogHeader>
-          <div className="page-actions">
+            <div className="page-actions">
+            <label>查看日期<Input type="date" value={selectedReportDate} onChange={(event) => setSelectedReportDate(event.target.value)} /></label>
             <Button variant="secondary" onClick={addDraft}>批量选择员工</Button>
             <Button onClick={() => void save()}>保存日报</Button>
           </div>
           <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>日期</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长（分钟）</TableHead><TableHead>单价</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{drafts.map((row, index) => <TableRow key={row.employee_id}><TableCell>{employees.find((employee) => employee.id === row.employee_id)?.name ?? "-"}</TableCell><TableCell><Input type="date" value={row.report_date} onChange={(event) => updateDraft(index, { report_date: event.target.value })} /></TableCell><TableCell><Select value={row.wage_mode} onValueChange={(value) => updateDraft(index, { wage_mode: value, quantity: value === "time_rate" ? "" : row.quantity, duration_minutes: value === "piece_rate" ? "" : row.duration_minutes })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="piece_rate">计件</SelectItem><SelectItem value="time_rate">计时</SelectItem></SelectContent></Select></TableCell><TableCell><Input type="number" min="0" disabled={row.wage_mode === "time_rate"} value={row.quantity} placeholder={row.wage_mode === "time_rate" ? "计时不填" : "必填"} onChange={(event) => updateDraft(index, { quantity: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" disabled={row.wage_mode === "piece_rate"} value={row.duration_minutes} placeholder={row.wage_mode === "piece_rate" ? "计件不填" : "必填"} onChange={(event) => updateDraft(index, { duration_minutes: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" value={row.unit_price} placeholder="人工填写" onChange={(event) => updateDraft(index, { unit_price: event.target.value })} /></TableCell><TableCell><Button size="sm" variant="ghost" onClick={() => setDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>删除</Button></TableCell></TableRow>)}</TableBody></Table></div>
 
+          <div className="daily-report-summary"><span>查看日期：{selectedReportDate}</span><span>计划数量：{selectedOperation?.targetQuantity ?? "-"}</span><span>当日登记数量：{completedQuantity}</span><span className={isOverOrder ? "status-error" : "status-success"}>是否超单：{isOverOrder ? "是" : "否"}</span></div>
           <h3>已登记日报</h3>
-          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>日期</TableHead><TableHead>员工</TableHead><TableHead>计划数量</TableHead><TableHead>是否超单</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长</TableHead><TableHead>单价</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => { const planned = Number(report.productionOrderOperation?.targetQuantity ?? 0); const quantity = Number(report.quantity); const overOrder = planned > 0 && quantity > planned; return <TableRow key={report.id}><TableCell>{report.reportDate.slice(0, 10)}</TableCell><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{report.productionOrderOperation?.targetQuantity ?? "-"}</TableCell><TableCell className={overOrder ? "status-error" : "status-success"}>{overOrder ? "是" : "否"}</TableCell><TableCell>{report.wageMode}</TableCell><TableCell>{report.quantity}</TableCell><TableCell>{report.durationMinutes ?? "-"}</TableCell><TableCell>{report.unitPrice}</TableCell></TableRow>; })}</TableBody></Table></div>
+          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长</TableHead><TableHead>单价</TableHead><TableHead>当日该员工总薪资</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => <TableRow key={report.id}><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{report.wageMode}</TableCell><TableCell>{report.quantity}</TableCell><TableCell>{report.durationMinutes ?? "-"}</TableCell><TableCell>{report.unitPrice}</TableCell><TableCell>{(dailyEmployeeTotals.get(report.employeeId) ?? 0).toFixed(2)}</TableCell></TableRow>)}</TableBody></Table></div>
         </DialogContent>
       </Dialog>
       <Dialog open={employeePickerOpen} onOpenChange={setEmployeePickerOpen}><DialogContent><DialogHeader><DialogTitle>批量选择员工</DialogTitle><DialogDescription>选择员工后一次生成日报行，重复员工会自动忽略。</DialogDescription></DialogHeader><div className="employee-picker-list">{employees.map((employee) => { const checked = selectedEmployeeIds.includes(employee.id); return <Button key={employee.id} type="button" variant={checked ? "default" : "secondary"} aria-pressed={checked} onClick={() => setSelectedEmployeeIds((ids) => checked ? ids.filter((id) => id !== employee.id) : [...ids, employee.id])}>{checked ? "已选 " : ""}{employee.employeeNo} / {employee.name}</Button>; })}</div><Button onClick={applyEmployees}>加入日报</Button></DialogContent></Dialog>

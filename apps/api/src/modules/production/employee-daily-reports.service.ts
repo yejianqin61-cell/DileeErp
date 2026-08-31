@@ -27,13 +27,18 @@ export class EmployeeDailyReportsService {
     const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
     const values = this.values(input);
     const created = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
+      await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${refs.operation.id}::uuid FOR UPDATE`;
+      const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, deletedAt: null }, orderBy: { createdAt: "asc" } });
+      if (existing && existing.wageMode !== input.wage_mode) throw new UnprocessableEntityException({ code: "EMPLOYEE_REPORT_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [] });
+      const row = existing
+        ? await tx.employeeDailyReport.update({ where: { id: existing.id }, data: { quantity: existing.quantity.plus(values.quantity), durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: existing.calculatedAmount.plus(values.amount), remark: input.remark ?? existing.remark, version: { increment: 1 }, ...this.audit.update(user) } })
+        : await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
       await this.recomputeDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
       await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, refs.order.id, "employee_daily_report", row.id, user);
       return row;
     });
-    await this.audit.record("employee_daily_report.create", "employee_daily_report", user.id, created.id, { order_no: created.orderNo, reason: input.remark ?? null });
+    await this.audit.record("employee_daily_report.create", "employee_daily_report", user.id, created.id, { order_no: created.orderNo, reason: input.remark ?? null, accumulated: true });
     return this.get(created.id);
   }
 
@@ -119,17 +124,22 @@ export class EmployeeDailyReportsService {
     const amount = rows.reduce((sum, row) => sum.plus(row.calculatedAmount), new Prisma.Decimal(0));
     const sourceSnapshot = rows.map((row) => ({ id: row.id, report_date: row.reportDate.toISOString().slice(0, 10), employee_name: row.employeeNameSnapshot, order_no: row.orderNo, wage_mode: row.wageMode, quantity: row.quantity.toString(), duration_minutes: row.durationMinutes?.toString() ?? "0", amount: row.calculatedAmount.toString() }));
     const data = { employeeId, productionOrderId, orderNo, periodStart: reportDate, periodEnd: reportDate, wageMode, quantity, durationMinutes, amount, sourceSnapshot: sourceSnapshot as Prisma.InputJsonValue, remark: null };
-    if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...data, ...this.audit.update(user) } });
-    else await client.productionPayrollSource.create({ data: { ...data, ...this.audit.create(user) } });
+    await client.productionPayrollSource.upsert({
+      where: { employeeId_productionOrderId_periodStart_periodEnd_wageMode: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode } },
+      update: { ...data, ...this.audit.update(user) },
+      create: { ...data, ...this.audit.create(user) },
+    });
   }
 
   private async recomputeDiscrepancy(tx: Prisma.TransactionClient, orderId: string, operationId: string, reportDate: Date, user: CurrentUser) {
+    // Serialize recalculation for one operation so concurrent employee rows see a complete aggregate.
+    await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${operationId}::uuid FOR UPDATE`;
     const [order, operationReports, employeeReports] = await Promise.all([tx.productionOrder.findUniqueOrThrow({ where: { id: orderId } }), tx.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, deletedAt: null }, _sum: { completedQuantity: true } }), tx.employeeDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, deletedAt: null }, _sum: { quantity: true } })]);
     const operationQuantity = new Prisma.Decimal(operationReports._sum.completedQuantity ?? 0); const employeeQuantity = new Prisma.Decimal(employeeReports._sum.quantity ?? 0); const discrepancy = operationQuantity.minus(employeeQuantity);
     const target = (await tx.productionOrderOperation.findUniqueOrThrow({ where: { id: operationId } })).targetQuantity;
     const allReports = await tx.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, deletedAt: null }, _sum: { completedQuantity: true } });
     const cumulative = new Prisma.Decimal(allReports._sum.completedQuantity ?? 0); const key = { productionOrderOperationId: operationId, reportDate, alertType: "daily_discrepancy" } as const; const existing = await tx.productionDailyAlert.findUnique({ where: { productionOrderOperationId_reportDate_alertType: key } });
-    if (!discrepancy.eq(0)) { const unchanged = existing && existing.status === "confirmed" && existing.operationReportQuantity?.eq(operationQuantity) && existing.employeeReportQuantity?.eq(employeeQuantity) && existing.discrepancyQuantity?.eq(discrepancy); const data = { productionOrderId: orderId, orderNo: order.orderNo, targetQuantity: target, operationReportQuantity: operationQuantity, employeeReportQuantity: employeeQuantity, discrepancyQuantity: discrepancy, cumulativeQuantity: cumulative, updatedBy: user.id, status: unchanged ? "confirmed" : "pending" }; if (existing) await tx.productionDailyAlert.update({ where: { id: existing.id }, data }); else await tx.productionDailyAlert.create({ data: { ...key, ...data, createdBy: user.id } }); await tx.auditEvent.create({ data: { action: existing ? "production_daily_alert.recalculate" : "production_daily_alert.create", entityType: "production_daily_alert", actorId: user.id, entityId: existing?.id, details: { order_no: order.orderNo, alert_type: "daily_discrepancy", operation_quantity: operationQuantity.toString(), employee_quantity: employeeQuantity.toString(), discrepancy_quantity: discrepancy.toString(), status: data.status } } }); }
+    if (!discrepancy.eq(0)) { const unchanged = existing && existing.status === "confirmed" && existing.operationReportQuantity?.eq(operationQuantity) && existing.employeeReportQuantity?.eq(employeeQuantity) && existing.discrepancyQuantity?.eq(discrepancy); const data = { productionOrderId: orderId, orderNo: order.orderNo, targetQuantity: target, operationReportQuantity: operationQuantity, employeeReportQuantity: employeeQuantity, discrepancyQuantity: discrepancy, cumulativeQuantity: cumulative, updatedBy: user.id, status: unchanged ? "confirmed" : "pending" }; await tx.productionDailyAlert.upsert({ where: { productionOrderOperationId_reportDate_alertType: key }, update: data, create: { ...key, ...data, createdBy: user.id } }); await tx.auditEvent.create({ data: { action: existing ? "production_daily_alert.recalculate" : "production_daily_alert.create", entityType: "production_daily_alert", actorId: user.id, entityId: existing?.id, details: { order_no: order.orderNo, alert_type: "daily_discrepancy", operation_quantity: operationQuantity.toString(), employee_quantity: employeeQuantity.toString(), discrepancy_quantity: discrepancy.toString(), status: data.status } } }); }
     else if (existing && existing.status !== "recovered") { await tx.productionDailyAlert.update({ where: { id: existing.id }, data: { status: "recovered", recoveredAt: new Date(), updatedBy: user.id } }); await tx.auditEvent.create({ data: { action: "production_daily_alert.recover", entityType: "production_daily_alert", actorId: user.id, entityId: existing.id, details: { order_no: order.orderNo, alert_type: "daily_discrepancy", status: "recovered" } } }); }
   }
 

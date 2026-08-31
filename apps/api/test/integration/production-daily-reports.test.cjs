@@ -36,9 +36,15 @@ test("production.daily-reports.calculates-progress-payroll-and-alert-lifecycle",
     let dailyAlerts = await alerts.list({ alert_type: "over_order" }); assert.equal(dailyAlerts.length, 1); await alerts.confirm(dailyAlerts[0].id, "已核对超单", user);
     const piece = await employeeReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, employee_id: employee.id, report_date: "2026-08-21", wage_mode: "piece_rate", quantity: "4" }, user); assert.equal(piece.calculatedAmount.toString(), "8");
     const time = await employeeReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, employee_id: employee.id, report_date: "2026-08-21", wage_mode: "time_rate", quantity: "2", duration_minutes: "60" }, user); assert.equal(time.calculatedAmount.toString(), "180");
+    const concurrentReports = await Promise.all([
+      employeeReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, employee_id: employee.id, report_date: "2026-08-21", wage_mode: "piece_rate", quantity: "1", unit_price: "2" }, user),
+      employeeReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, employee_id: employee.id, report_date: "2026-08-21", wage_mode: "piece_rate", quantity: "1", unit_price: "2" }, user),
+    ]);
+    assert.equal(concurrentReports.length, 2);
+    assert.equal(concurrentReports[0].id, concurrentReports[1].id);
     dailyAlerts = await alerts.list({ alert_type: "daily_discrepancy" }); assert.equal(dailyAlerts[0].status, "recovered");
     d7Progress = await progressService.getProductionOrderProgress(productionOrder.id); assert.equal(d7Progress.status, "production_completed"); assert.equal(d7Progress.blockers.length, 0); assert.equal(d7Progress.capability_not_implemented.length, 0);
-    const sources = await employeeReports.payrollSources({ from: "2026-08-01", to: "2026-08-31" }); assert.equal(sources.length, 2); assert.deepEqual(sources.map((item) => item.amount).sort(), ["180", "8"]);
+    const sources = await employeeReports.payrollSources({ from: "2026-08-01", to: "2026-08-31" }); assert.equal(sources.length, 2); assert.deepEqual(sources.map((item) => item.amount).sort(), ["12", "180"]);
     const extra = await operationReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, report_date: "2026-08-21", completed_quantity: "1" }, user); dailyAlerts = await alerts.list({ alert_type: "over_order" }); assert.equal(dailyAlerts[0].status, "pending");
     await operationReports.update(first.id, { completed_quantity: "6", reason: "复核日报", expected_version: 1 }, user);
     await assert.rejects(() => operationReports.update(first.id, { completed_quantity: "7", reason: "并发旧版本", expected_version: 1 }, user), (error) => error.getResponse().code === "DAILY_REPORT_VERSION_CONFLICT");
