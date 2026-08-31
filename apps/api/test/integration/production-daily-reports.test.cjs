@@ -54,6 +54,7 @@ test("production.daily-reports.calculates-progress-payroll-and-alert-lifecycle",
   } finally {
     const orderNo = run.orderNo.replaceAll("'", "''");
     await prisma.productionDailyAlert.deleteMany({ where: { orderNo: run.orderNo } });
+    await prisma.productionPayrollSource.deleteMany({ where: { orderNo: run.orderNo } });
     await prisma.employeeDailyReport.deleteMany({ where: { orderNo: run.orderNo } });
     await prisma.operationDailyReport.deleteMany({ where: { orderNo: run.orderNo } });
     await prisma.productionOrderOperation.deleteMany({ where: { productionOrder: { orderNo: run.orderNo } } });

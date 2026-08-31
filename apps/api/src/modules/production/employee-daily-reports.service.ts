@@ -25,11 +25,10 @@ export class EmployeeDailyReportsService {
   async create(input: Input, user: CurrentUser) {
     if (input.idempotency_key) { const previous = await this.prisma.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } }); if (previous) return this.get(previous.id); }
     const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
-    const values = this.values(input);
+    const values = this.values(input, await this.defaultRate(input, refs));
     const created = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${refs.operation.id}::uuid FOR UPDATE`;
-      const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, deletedAt: null }, orderBy: { createdAt: "asc" } });
-      if (existing && existing.wageMode !== input.wage_mode) throw new UnprocessableEntityException({ code: "EMPLOYEE_REPORT_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [] });
+      const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
       const row = existing
         ? await tx.employeeDailyReport.update({ where: { id: existing.id }, data: { quantity: existing.quantity.plus(values.quantity), durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: existing.calculatedAmount.plus(values.amount), remark: input.remark ?? existing.remark, version: { increment: 1 }, ...this.audit.update(user) } })
         : await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
@@ -49,7 +48,7 @@ export class EmployeeDailyReportsService {
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
     const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: input.remark ?? current.remark ?? undefined };
-    const values = this.values(merged);
+    const values = this.values(merged, await this.defaultRate(merged, refs));
     const updated = await this.prisma.$transaction(async (tx) => {
       const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
       await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
@@ -99,15 +98,22 @@ export class EmployeeDailyReportsService {
     return { order, operation, employee, reportDate };
   }
 
-  private values(input: Input) {
+  private async defaultRate(input: Input, refs: { operation: { operationCatalogId: string }; reportDate: Date }) {
+    if (input.unit_price?.trim()) return undefined;
+    const rate = await this.prisma.operationRate.findFirst({ where: { employeeId: input.employee_id, operationId: refs.operation.operationCatalogId, wageMode: input.wage_mode, effectiveFrom: { lte: refs.reportDate }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: refs.reportDate } }], deletedAt: null }, orderBy: { effectiveFrom: "desc" } });
+    return rate?.unitPrice.toString();
+  }
+
+  private values(input: Input, defaultUnitPrice?: string) {
     if (input.wage_mode !== "piece_rate" && input.wage_mode !== "time_rate") throw new UnprocessableEntityException({ code: "INVALID_WAGE_MODE", message: "计薪方式无效", details: [] });
     const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", "计件日报件数必须大于零") : new Prisma.Decimal(0);
     if (input.wage_mode === "piece_rate" && quantity.isZero()) throw new UnprocessableEntityException({ code: "PIECE_REPORT_QUANTITY_REQUIRED", message: "计件日报必须填写件数", details: [] });
     const durationInput = input.duration_minutes?.trim() ? input.duration_minutes : undefined;
     const durationMinutes = durationInput === undefined ? undefined : this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须大于零");
     if (input.wage_mode === "time_rate" && !durationMinutes) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长", details: [] });
-    if (!input.unit_price?.trim()) throw new UnprocessableEntityException({ code: "DAILY_WAGE_PRICE_REQUIRED", message: "请填写当日人工单价", details: [] });
-    const price = this.decimal(input.unit_price, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true);
+    const unitPrice = input.unit_price?.trim() || defaultUnitPrice;
+    if (!unitPrice) throw new UnprocessableEntityException({ code: "DAILY_WAGE_PRICE_REQUIRED", message: "请填写当日人工单价", details: [] });
+    const price = this.decimal(unitPrice, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true);
     const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).mul(price);
     return { quantity, durationMinutes, unitPrice: price, amount };
   }
@@ -134,7 +140,7 @@ export class EmployeeDailyReportsService {
   private async recomputeDiscrepancy(tx: Prisma.TransactionClient, orderId: string, operationId: string, reportDate: Date, user: CurrentUser) {
     // Serialize recalculation for one operation so concurrent employee rows see a complete aggregate.
     await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${operationId}::uuid FOR UPDATE`;
-    const [order, operationReports, employeeReports] = await Promise.all([tx.productionOrder.findUniqueOrThrow({ where: { id: orderId } }), tx.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, deletedAt: null }, _sum: { completedQuantity: true } }), tx.employeeDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, deletedAt: null }, _sum: { quantity: true } })]);
+    const [order, operationReports, employeeReports] = await Promise.all([tx.productionOrder.findUniqueOrThrow({ where: { id: orderId } }), tx.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, deletedAt: null }, _sum: { completedQuantity: true } }), tx.employeeDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, wageMode: "piece_rate", deletedAt: null }, _sum: { quantity: true } })]);
     const operationQuantity = new Prisma.Decimal(operationReports._sum.completedQuantity ?? 0); const employeeQuantity = new Prisma.Decimal(employeeReports._sum.quantity ?? 0); const discrepancy = operationQuantity.minus(employeeQuantity);
     const target = (await tx.productionOrderOperation.findUniqueOrThrow({ where: { id: operationId } })).targetQuantity;
     const allReports = await tx.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, deletedAt: null }, _sum: { completedQuantity: true } });
