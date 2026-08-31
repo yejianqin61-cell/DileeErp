@@ -30,6 +30,6 @@ export function payableStatus(amount: string, allocated: string) {
 }
 
 export function sourceType(value: string) {
-  if (value !== "raw_material_inbound" && value !== "outsource_receipt") throw new Error("invalid payable source type");
+  if (value !== "raw_material_inbound" && value !== "purchase_receipt" && value !== "outsource_receipt") throw new Error("invalid payable source type");
   return value;
 }

@@ -16,8 +16,9 @@ test("C6 blocks allocation beyond either payment or payable balance", () => {
   assert.throws(() => payableAllocationRemaining("100", "90", "11"), /payable allocation/);
 });
 
-test("C6 accepts only the two supported payable source types", () => {
+test("C6 accepts all supported payable source types", () => {
   assert.equal(sourceType("raw_material_inbound"), "raw_material_inbound");
+  assert.equal(sourceType("purchase_receipt"), "purchase_receipt");
   assert.equal(sourceType("outsource_receipt"), "outsource_receipt");
   assert.throws(() => sourceType("customer_return"), /invalid payable source/);
 });

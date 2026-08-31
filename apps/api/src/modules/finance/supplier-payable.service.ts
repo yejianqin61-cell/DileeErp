@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { sourceType } from "./supplier-payable.domain";
 
 type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
 export type PayableEntryInput = { source_type: SourceType; source_id: string; amount?: string; amount_reason?: string; confirmation_date?: string; attachment?: unknown[]; remark?: string };
@@ -23,6 +24,7 @@ export class SupplierPayableService {
   }
 
   async createFromSource(input: PayableEntryInput, user: CurrentUser) {
+    sourceType(input.source_type);
     const refs = await this.source(input.source_type, input.source_id);
     const existing = input.source_type === "raw_material_inbound"
       ? await this.prisma.supplierPayableEntry.findUnique({ where: { payableSourceId: input.source_id } })

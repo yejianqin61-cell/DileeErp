@@ -43,7 +43,7 @@ class ReconciliationDto {
 }
 class ResolutionDto { @IsString() @MaxLength(1000) resolution_remark!: string; }
 class PayableEntryDto {
-  @IsIn(["raw_material_inbound", "outsource_receipt"]) source_type!: "raw_material_inbound" | "outsource_receipt";
+  @IsIn(["raw_material_inbound", "purchase_receipt", "outsource_receipt"]) source_type!: "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
   @IsUUID() source_id!: string;
   @IsOptional() @IsString() amount?: string;
   @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string;
