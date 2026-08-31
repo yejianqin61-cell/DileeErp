@@ -258,6 +258,7 @@ button { cursor: pointer; }
 .purchase-batch-workspace .data-table { width: 100%; min-width: 1120px; table-layout: fixed; }
 .purchase-batch-workspace .data-table th,
 .purchase-batch-workspace .data-table td { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+.purchase-batch-workspace .material-name-cell { display: block; width: 360px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .purchase-batch-workspace .data-table th:nth-child(even),
 .purchase-batch-workspace .data-table td:nth-child(even):not(.status-success):not(.status-danger) { background: #f5f9fb; }
 .material-issue-sheet .detail-list { display: block; }
