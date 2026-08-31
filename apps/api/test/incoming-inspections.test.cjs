@@ -10,3 +10,18 @@ test("incoming QC cannot cumulatively exceed its receipt quantity", async () => 
   const service = new IncomingInspectionsService(prisma, { create: () => ({ createdBy: user.id, updatedBy: user.id }), record: async () => {} });
   await assert.rejects(() => service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "3", accepted_quantity: "3", conditional_quantity: "0", rejected_quantity: "0" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_QUANTITY_MISMATCH");
 });
+
+test("accepted QC can be reverted with a reason before inbound", async () => {
+  let update;
+  const prisma = { incomingInspection: { findFirst: async () => ({ id: "inspection-1", status: "accepted", remark: null, rawMaterialInbounds: [], }), update: async ({ data }) => { update = data; return { id: "inspection-1", status: data.status }; } } };
+  const service = new IncomingInspectionsService(prisma, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  const result = await service.transition("inspection-1", "pending", "数量需复核", user);
+  assert.equal(result.status, "pending");
+  assert.match(update.remark, /数量需复核/);
+});
+
+test("QC with inbound facts cannot be reverted", async () => {
+  const prisma = { incomingInspection: { findFirst: async () => ({ id: "inspection-1", status: "accepted", remark: null, rawMaterialInbounds: [{ id: "inbound-1" }] }) } };
+  const service = new IncomingInspectionsService(prisma, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  await assert.rejects(() => service.transition("inspection-1", "pending", "复核", user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
+});
