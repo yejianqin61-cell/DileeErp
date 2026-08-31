@@ -6,7 +6,7 @@ export class ApiClientError extends Error {
 }
 
 export async function apiGet<T>(path: string): Promise<ApiSuccess<T>> {
-  const response = await fetch(`/api/v1${path}`, { credentials: "include" });
+  const response = await fetch(`/api/v1${path}`, { credentials: "include", signal: AbortSignal.timeout(10000) });
   const body = await response.json() as ApiSuccess<T> | ApiFailure;
   if (!response.ok || "error" in body) { const failure = body as ApiFailure; throw new ApiClientError(failure.error.code, failure.error.message, failure.error.details); }
   return body as ApiSuccess<T>;
