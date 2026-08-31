@@ -6,6 +6,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
@@ -42,6 +43,9 @@ export default function SalaryPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [employeeQuery, setEmployeeQuery] = useState("");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
   const employeeOptions = employees.map((item) => ({ value: item.id, label: item.employeeNo + " / " + item.name + " / " + (item.employeeType === "workshop" ? "车间" : "非车间") }));
 
   async function load() {
@@ -126,8 +130,15 @@ export default function SalaryPage() {
     { id: "actions", header: "操作", cell: ({ row }) => actionColumns(row.original) }
   ];
 
-  const workshop = useMemo(() => ledgers.filter((item) => item.employee.employeeType === "workshop"), [ledgers]);
-  const office = useMemo(() => ledgers.filter((item) => item.employee.employeeType !== "workshop"), [ledgers]);
+  const filteredLedgers = useMemo(() => ledgers.filter((item) => {
+    const employeeText = `${item.employee.name} ${item.employee.employeeNo}`.toLowerCase();
+    const matchesEmployee = !employeeQuery || employeeText.includes(employeeQuery.toLowerCase());
+    const matchesStart = !periodStart || item.periodEnd.slice(0, 10) >= periodStart;
+    const matchesEnd = !periodEnd || item.periodStart.slice(0, 10) <= periodEnd;
+    return matchesEmployee && matchesStart && matchesEnd;
+  }), [employeeQuery, ledgers, periodEnd, periodStart]);
+  const workshop = useMemo(() => filteredLedgers.filter((item) => item.employee.employeeType === "workshop"), [filteredLedgers]);
+  const office = useMemo(() => filteredLedgers.filter((item) => item.employee.employeeType !== "workshop"), [filteredLedgers]);
 
   if (loading) return <><PageHeader title="工资总览" description="按车间和非车间拆分展示。"><Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button></PageHeader><LoadingState /></>;
 
@@ -140,6 +151,7 @@ export default function SalaryPage() {
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
+      <section className="panel panel-body"><div className="filter-bar"><label>员工姓名/工号<Input value={employeeQuery} onChange={(event) => setEmployeeQuery(event.target.value)} placeholder="搜索员工" /></label><label>期间开始<Input type="date" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} /></label><label>期间结束<Input type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} /></label></div></section>
       <section className="panel">
         <div className="panel-heading"><h2>车间</h2></div>
         <div className="panel-body"><DataTable columns={columns} data={workshop} empty={<EmptyState title="暂无车间工资台账" />} /></div>
