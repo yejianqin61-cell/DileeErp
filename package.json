@@ -32,6 +32,7 @@
     ,"compose:logs": "docker compose logs -f --tail=200"
     ,"test:performance": "node --test scripts/perf-gate.test.mjs"
     ,"perf:gate": "node scripts/perf-gate.mjs"
+    ,"release:verify": "node scripts/verify-release-archive.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

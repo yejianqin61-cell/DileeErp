@@ -29,6 +29,7 @@ services:
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required; copy .env.example to .env and set it}
       INITIAL_ADMIN_DISPLAY_NAME: ${INITIAL_ADMIN_DISPLAY_NAME:-迪礼管理员}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      APP_VERSION: ${APP_VERSION:-development}
     depends_on:
       postgres:
         condition: service_healthy

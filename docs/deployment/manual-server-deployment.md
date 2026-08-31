@@ -5,7 +5,8 @@ GitHub push 只执行代码检查，不再自动发布镜像或上传镜像。�
 本机 PowerShell 执行：
 
 ```powershell
-tar -czf DileeErp-latest.tar.gz --exclude=.git --exclude=node_modules --exclude=.next --exclude=dist --exclude=coverage --exclude=test-results --exclude='*.tar' --exclude='*.tar.gz' --exclude=.env --exclude=.env.local .
+powershell -ExecutionPolicy Bypass -File scripts/create-release-archive.ps1 -Output DileeErp-latest.tar.gz
+node scripts/verify-release-archive.mjs DileeErp-latest.tar.gz
 scp .\DileeErp-latest.tar.gz ubuntu@159.75.219.30:/tmp/
 ```
 
@@ -27,6 +28,7 @@ cd /opt/dilee/app
 ```bash
 sudo docker compose build api web
 sudo docker compose up -d postgres
+export APP_VERSION="$(tr -d '\r\n' < RELEASE_VERSION)"
 sudo docker compose up -d api web
 sudo docker compose ps
 curl http://127.0.0.1:3001/api/v1/health
