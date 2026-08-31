@@ -96,7 +96,8 @@ export class SupplierPayableService {
     if (type === "raw_material_inbound" || type === "purchase_receipt") {
       const row = await this.prisma.payableSource.findFirst({ where: { id, status: { not: "voided" }, OR: [{ rawMaterialInbound: { deletedAt: null } }, { purchaseReceipt: { deletedAt: null } }] }, include: { rawMaterialInbound: true, purchaseReceipt: true } });
       if (!row) throw this.notFound("PAYABLE_SOURCE_NOT_FOUND", "原料入库应付来源不存在或已作废");
-      return { orderNo: row.orderNo, supplierId: row.supplierId, sourceNo: row.rawMaterialInbound?.inboundNo ?? row.purchaseReceipt?.receiptNo ?? row.id, quantity: row.quantity, unitPrice: row.unitPrice, taxRate: row.taxRate, amount: row.amount, currency: row.currency };
+      const extensionData = (row.purchaseReceipt?.extensionData ?? {}) as { batch_sequence?: number };
+      return { orderNo: row.orderNo, supplierId: row.supplierId, sourceNo: row.rawMaterialInbound?.inboundNo ?? row.purchaseReceipt?.receiptNo ?? row.id, batchSequence: extensionData.batch_sequence ?? null, quantity: row.quantity, unitPrice: row.unitPrice, taxRate: row.taxRate, amount: row.amount, currency: row.currency };
     }
     const row = await this.prisma.outsourcePayableSource.findFirst({ where: { id, status: { not: "voided" } }, include: { logisticsBatch: true, outsourceReceipt: true } });
     if (!row) throw this.notFound("PAYABLE_SOURCE_NOT_FOUND", "外加工应付来源不存在或已作废");

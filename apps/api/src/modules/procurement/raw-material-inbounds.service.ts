@@ -134,6 +134,7 @@ export class RawMaterialInboundsService {
       where: { ...(orderNo ? { orderNo } : {}), status: "pending_finance" },
       include: {
         rawMaterialInbound: { select: { inboundNo: true, purchaseReceiptId: true, status: true } },
+        purchaseReceipt: { select: { receiptNo: true, extensionData: true } },
         purchaseOrder: { select: { purchaseOrderNo: true } },
         purchaseOrderItem: { select: { materialId: true, unitId: true } },
         supplier: { select: { id: true, name: true, supplierCode: true } }
