@@ -233,3 +233,5 @@ button { cursor: pointer; }
 .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
 .code-block { overflow: auto; margin: 12px 0 0; padding: 12px; border-radius: var(--radius); background: #172033; color: #e8eef5; font-size: 12px; }
 .status-error { color: var(--danger); }
+
+.ui-sheet-content.purchase-batch-workspace { width: min(1200px, calc(100vw - 40px)); }
