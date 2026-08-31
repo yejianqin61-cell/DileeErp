@@ -1,1 +1,2 @@
 apps/api/src/build-info.ts export-subst
+*.sh text eol=lf

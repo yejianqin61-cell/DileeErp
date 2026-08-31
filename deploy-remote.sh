@@ -7,6 +7,7 @@ backup="/opt/dilee/app.backup-$(date +%Y%m%d-%H%M%S)"
 mv /opt/dilee/app "$backup"
 mkdir /opt/dilee/app
 tar -xzf /tmp/DileeErp-latest.tar.gz -C /opt/dilee/app
+find /opt/dilee/app/scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +
 test -f /opt/dilee/app/RELEASE_VERSION
 export APP_VERSION="$(tr -d '\r\n' < /opt/dilee/app/RELEASE_VERSION)"
 test "${APP_VERSION}" != "development"

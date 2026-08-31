@@ -8,7 +8,7 @@
 cd C:\Users\USER\Desktop\Dilee
 git status --short
 npm run build
-git archive --format=tar.gz --output .\DileeErp-latest.tar.gz HEAD
+powershell -ExecutionPolicy Bypass -File scripts/create-release-archive.ps1 -Output DileeErp-latest.tar.gz
 tar -tzf .\DileeErp-latest.tar.gz | Select-Object -First 30
 scp .\DileeErp-latest.tar.gz ubuntu@159.75.219.30:/tmp/DileeErp-latest.tar.gz
 ```
