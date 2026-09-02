@@ -1,61 +1,1054 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../components/layout/app-shell";
-import { ActionDialog, type ActionField } from "../../components/ui/action-dialog";
+import {
+  ActionDialog,
+  type ActionField,
+} from "../../components/ui/action-dialog";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
 import { DataTable } from "../../components/data/data-table";
-import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
-import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import {
+  EmptyState,
+  ErrorState,
+  LoadingState,
+} from "../../components/feedback/states";
+import {
+  ApiClientError,
+  apiGet,
+  apiPatch,
+  apiPost,
+} from "../../lib/api-client";
 import { displayStatus } from "../../lib/display-text";
 
-type Employee = { id: string; employeeNo: string; name: string; employeeType: string; employmentStatus: string; hiredOn?: string; leftOn?: string; remark?: string; department?: { id: string; name: string }; position?: { id: string; name: string } };
-type RecordItem = { id: string; employeeId: string; attendanceDate?: string; attendanceType?: string; workStartTime?: string; workEndTime?: string; periodStart?: string; periodEnd?: string; score?: string; grade?: string };
-type Ledger = { id: string; employeeId: string; periodStart: string; periodEnd: string; payableAmount: string; status: string; currency: string };
-type Payment = { id: string; paymentNo: string; paymentDate: string; amount: string; currency: string; status: string };
-type OrganizationItem = { id: string; code: string; name: string; departmentId?: string; isActive: boolean };
-type EmployeeTypeItem = { id: string; key: string; label: string; isActive: boolean };
-type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
-const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+type Employee = {
+  id: string;
+  employeeNo: string;
+  name: string;
+  employeeType: string;
+  employmentStatus: string;
+  hiredOn?: string;
+  leftOn?: string;
+  remark?: string;
+  department?: { id: string; name: string };
+  position?: { id: string; name: string };
+};
+type RecordItem = {
+  id: string;
+  employeeId: string;
+  attendanceDate?: string;
+  attendanceType?: string;
+  workStartTime?: string;
+  workEndTime?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  score?: string;
+  grade?: string;
+};
+type Ledger = {
+  id: string;
+  employeeId: string;
+  periodStart: string;
+  periodEnd: string;
+  payableAmount: string;
+  status: string;
+  currency: string;
+};
+type Payment = {
+  id: string;
+  paymentNo: string;
+  paymentDate: string;
+  amount: string;
+  currency: string;
+  status: string;
+};
+type OrganizationItem = {
+  id: string;
+  code: string;
+  name: string;
+  departmentId?: string;
+  isActive: boolean;
+};
+type EmployeeTypeItem = {
+  id: string;
+  key: string;
+  label: string;
+  isActive: boolean;
+};
+type DialogState = {
+  title: string;
+  fields: ActionField[];
+  submit: (values: Record<string, string>) => void;
+};
+const messageOf = (cause: unknown, fallback: string) =>
+  cause instanceof ApiClientError ? cause.message : fallback;
 
 export default function HrPage() {
-  const [employees, setEmployees] = useState<Employee[]>([]); const [departments, setDepartments] = useState<OrganizationItem[]>([]); const [positions, setPositions] = useState<OrganizationItem[]>([]); const [employeeTypes, setEmployeeTypes] = useState<EmployeeTypeItem[]>([{ id: "employee_type_workshop", key: "workshop", label: "车间", isActive: true }, { id: "employee_type_non_workshop", key: "non_workshop", label: "非车间", isActive: true }]); const [attendance, setAttendance] = useState<RecordItem[]>([]); const [performance, setPerformance] = useState<RecordItem[]>([]); const [ledgers, setLedgers] = useState<Ledger[]>([]); const [payments, setPayments] = useState<Payment[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [message, setMessage] = useState(""); const [dialog, setDialog] = useState<DialogState | null>(null); const [categoryDialog, setCategoryDialog] = useState<DialogState | null>(null); const [employeeQuery, setEmployeeQuery] = useState(""); const [employeeStatus, setEmployeeStatus] = useState(""); const [employeeDepartment, setEmployeeDepartment] = useState(""); const [employeePosition, setEmployeePosition] = useState(""); const [employeeType, setEmployeeType] = useState("");
-  async function load() { setLoading(true); setError(""); try { const [e, d, po, a, p, l, s] = await Promise.all([apiGet<Employee[]>("/production/employees"), apiGet<OrganizationItem[]>("/production/departments"), apiGet<OrganizationItem[]>("/production/positions"), apiGet<RecordItem[]>("/hr/attendance-records"), apiGet<RecordItem[]>("/hr/performance-records"), apiGet<Ledger[]>("/hr/payroll-ledgers"), apiGet<Payment[]>("/hr/salary-payments")]); setEmployees(e.data); setDepartments(d.data); setPositions(po.data); setAttendance(a.data); setPerformance(p.data); setLedgers(l.data); setPayments(s.data); } catch (cause) { setError(messageOf(cause, "人事数据加载失败")); } finally { setLoading(false); } }
-  useEffect(() => { void load(); }, []);
-  async function action(path: string, body?: unknown, success = "操作已完成") { setError(""); try { await apiPost(path, body); setMessage(success); await load(); } catch (cause) { setError(messageOf(cause, "操作失败")); } }
-  async function runPatch(path: string, body: unknown, success: string) { setError(""); try { await apiPatch(path, body); setMessage(success); await load(); } catch (cause) { setError(messageOf(cause, "操作失败")); } }
-  const employeeOptions = employees.map((item) => ({ value: item.id, label: `${item.employeeNo} / ${item.name}` }));
-  function openDepartment(values?: Record<string, string>) { if (values && dialog) setDialog({ ...dialog, fields: dialog.fields.map((field) => ({ ...field, defaultValue: values[field.name] ?? field.defaultValue })) }); setCategoryDialog({ title: "新建部门", fields: [{ name: "code", label: "部门编码", required: true }, { name: "name", label: "部门名称", required: true }, { name: "remark", label: "备注", type: "textarea" }], submit: async (v) => { try { const result = await apiPost<OrganizationItem>("/production/departments", { ...v, remark: v.remark || undefined }); setDepartments((items) => [...items.filter((item) => item.id !== result.data.id), result.data]); setDialog((current) => current ? { ...current, fields: current.fields.map((field) => field.name === "department_id" ? { ...field, defaultValue: result.data.id, options: [...(field.options ?? []), { value: result.data.id, label: `${result.data.code} / ${result.data.name}` }] } : field) } : current); setCategoryDialog(null); setMessage("部门已创建"); } catch (cause) { setError(messageOf(cause, "部门创建失败")); } } }); }
-  function openPosition(values?: Record<string, string>) { if (values && dialog) setDialog({ ...dialog, fields: dialog.fields.map((field) => ({ ...field, defaultValue: values[field.name] ?? field.defaultValue })) }); setCategoryDialog({ title: "新建岗位", fields: [{ name: "department_id", label: "所属部门", type: "select", required: true, options: departments.filter((item) => item.isActive).map((item) => ({ value: item.id, label: `${item.code} / ${item.name}` })) }, { name: "code", label: "岗位编码", required: true }, { name: "name", label: "岗位名称", required: true }, { name: "remark", label: "备注", type: "textarea" }], submit: async (v) => { try { const result = await apiPost<OrganizationItem>("/production/positions", { ...v, remark: v.remark || undefined }); setPositions((items) => [...items.filter((item) => item.id !== result.data.id), result.data]); setDialog((current) => current ? { ...current, fields: current.fields.map((field) => field.name === "position_id" ? { ...field, defaultValue: result.data.id, options: [...(field.options ?? []), { value: result.data.id, label: `${result.data.code} / ${result.data.name}` }] } : field) } : current); setCategoryDialog(null); setMessage("岗位已创建"); } catch (cause) { setError(messageOf(cause, "岗位创建失败")); } } }); }
-  function openEmployeeType() { setError("员工类型已固定为车间和非车间"); }
-  function createEmployee(returnTo?: { dialog: DialogState; values: Record<string, string> }) {
-    setDialog({ title: "新建员工", fields: [{ name: "employee_no", label: "工号", required: true }, { name: "name", label: "姓名", required: true }, { name: "department_id", label: "部门", type: "select", required: true, canAddCategory: true, options: departments.filter((item) => item.isActive).map((item) => ({ value: item.id, label: `${item.code} / ${item.name}` })) }, { name: "position_id", label: "岗位", type: "select", required: true, canAddCategory: true, options: positions.filter((item) => item.isActive).map((item) => ({ value: item.id, label: `${item.code} / ${item.name}` })) }, { name: "employee_type", label: "员工类型", type: "select", required: true, defaultValue: "workshop", options: employeeTypes.map((item) => ({ value: item.key, label: item.label })) }, { name: "hired_on", label: "入职日期", type: "date" }, { name: "left_on", label: "离职日期", type: "date" }, { name: "remark", label: "备注", type: "textarea" }], submit: async (v) => {
-      try {
-        const result = await apiPost<Employee>("/production/employees", { ...v, hired_on: v.hired_on || undefined, left_on: v.left_on || undefined, remark: v.remark || undefined });
-        setEmployees((items) => [...items.filter((item) => item.id !== result.data.id), result.data]);
-        setMessage("员工已创建");
-        const source = returnTo;
-        if (source) setDialog({ ...source.dialog, fields: source.dialog.fields.map((field) => field.name === "employee_id" ? { ...field, defaultValue: result.data.id, options: [...(field.options ?? []), { value: result.data.id, label: `${result.data.employeeNo} / ${result.data.name}` }] } : field) }); else setDialog(null);
-        await load();
-      } catch (cause) { setError(messageOf(cause, "员工创建失败")); }
-    } });
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [departments, setDepartments] = useState<OrganizationItem[]>([]);
+  const [positions, setPositions] = useState<OrganizationItem[]>([]);
+  const [employeeTypes, setEmployeeTypes] = useState<EmployeeTypeItem[]>([
+    {
+      id: "employee_type_workshop",
+      key: "workshop",
+      label: "车间",
+      isActive: true,
+    },
+    {
+      id: "employee_type_non_workshop",
+      key: "non_workshop",
+      label: "非车间",
+      isActive: true,
+    },
+  ]);
+  const [attendance, setAttendance] = useState<RecordItem[]>([]);
+  const [performance, setPerformance] = useState<RecordItem[]>([]);
+  const [ledgers, setLedgers] = useState<Ledger[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [categoryDialog, setCategoryDialog] = useState<DialogState | null>(
+    null,
+  );
+  const [employeeQuery, setEmployeeQuery] = useState("");
+  const [employeeStatus, setEmployeeStatus] = useState("");
+  const [employeeDepartment, setEmployeeDepartment] = useState("");
+  const [employeePosition, setEmployeePosition] = useState("");
+  const [employeeType, setEmployeeType] = useState("");
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const [e, d, po, a, p, l, s] = await Promise.all([
+        apiGet<Employee[]>("/production/employees"),
+        apiGet<OrganizationItem[]>("/production/departments"),
+        apiGet<OrganizationItem[]>("/production/positions"),
+        apiGet<RecordItem[]>("/hr/attendance-records"),
+        apiGet<RecordItem[]>("/hr/performance-records"),
+        apiGet<Ledger[]>("/hr/payroll-ledgers"),
+        apiGet<Payment[]>("/hr/salary-payments"),
+      ]);
+      setEmployees(e.data);
+      setDepartments(d.data);
+      setPositions(po.data);
+      setAttendance(a.data);
+      setPerformance(p.data);
+      setLedgers(l.data);
+      setPayments(s.data);
+    } catch (cause) {
+      setError(messageOf(cause, "人事数据加载失败"));
+    } finally {
+      setLoading(false);
+    }
   }
-  function editEmployee(employee: Employee) { setDialog({ title: "编辑员工", fields: [{ name: "employee_no", label: "工号", required: true, defaultValue: employee.employeeNo }, { name: "name", label: "姓名", required: true, defaultValue: employee.name }, { name: "department_id", label: "部门", type: "select", required: true, defaultValue: employee.department?.id, options: departments.filter((item) => item.isActive).map((item) => ({ value: item.id, label: `${item.code} / ${item.name}` })) }, { name: "position_id", label: "岗位", type: "select", required: true, defaultValue: employee.position?.id, options: positions.filter((item) => item.isActive).map((item) => ({ value: item.id, label: `${item.code} / ${item.name}` })) }, { name: "employee_type", label: "员工类型", type: "select", required: true, defaultValue: employee.employeeType, options: employeeTypes.map((item) => ({ value: item.key, label: item.label })) }, { name: "hired_on", label: "入职日期", type: "date", defaultValue: employee.hiredOn?.slice(0, 10) }, { name: "left_on", label: "离职日期", type: "date", defaultValue: employee.leftOn?.slice(0, 10) }, { name: "remark", label: "备注", type: "textarea", defaultValue: employee.remark ?? "" }], submit: (v) => void runPatch(`/production/employees/${employee.id}`, { ...v, hired_on: v.hired_on || undefined, left_on: v.left_on || undefined, remark: v.remark || undefined }, "员工信息已更新") }); }
-  function leaveEmployee(employee: Employee) { setDialog({ title: "办理离职", fields: [{ name: "left_on", label: "离职日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) }], submit: (v) => void runPatch(`/production/employees/${employee.id}/leave`, { left_on: v.left_on }, "员工已办理离职") }); }
-  function createAttendance() { setDialog({ title: "登记考勤", fields: [{ name: "employee_id", label: "员工", type: "select", required: true, options: employeeOptions }, { name: "attendance_date", label: "考勤日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) }, { name: "work_start_time", label: "上班时间", type: "time", required: true, defaultValue: "09:00" }, { name: "work_end_time", label: "下班时间", type: "time", required: true, defaultValue: "18:00" }, { name: "attendance_type", label: "考勤类型", required: true, defaultValue: "出勤" }, { name: "remark", label: "备注", type: "textarea" }], submit: (v) => void action("/hr/attendance-records", { employee_id: v.employee_id, attendance_date: v.attendance_date, work_start_time: v.work_start_time, work_end_time: v.work_end_time, attendance_type: v.attendance_type, remark: v.remark || undefined }, "考勤已登记") }); }
-  function createPerformance() { setDialog({ title: "登记绩效", fields: [{ name: "employee_id", label: "员工", type: "select", required: true, options: employeeOptions }, { name: "period_start", label: "周期开始", type: "date", required: true }, { name: "period_end", label: "周期结束", type: "date", required: true }, { name: "score", label: "评分", type: "number", defaultValue: "100" }, { name: "grade", label: "等级", defaultValue: "A" }], submit: (v) => void action("/hr/performance-records", { employee_id: v.employee_id, period_start: v.period_start, period_end: v.period_end, score: v.score, grade: v.grade }, "绩效已登记") }); }
-  function generateLedger() { setDialog({ title: "生成薪资台账", fields: [{ name: "employee_id", label: "员工", type: "select", required: true, options: employeeOptions }, { name: "period_start", label: "周期开始", type: "date", required: true }, { name: "period_end", label: "周期结束", type: "date", required: true }, { name: "base_salary", label: "基本工资", type: "number", required: true, defaultValue: "0" }], submit: (v) => void action("/hr/payroll-ledgers/generate", { employee_id: v.employee_id, period_start: v.period_start, period_end: v.period_end, currency: "CNY", base_salary: v.base_salary }, "薪资台账已生成") }); }
-  function createPayment() { setDialog({ title: "登记工资支付", fields: [{ name: "amount", label: "支付金额", type: "number", required: true }, { name: "payment_date", label: "支付日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) }, { name: "payment_method", label: "支付方式", required: true, defaultValue: "银行转账" }], submit: (v) => void action("/hr/salary-payments", { payment_date: v.payment_date, amount: v.amount, currency: "CNY", payment_method: v.payment_method }, "工资支付草稿已创建") }); }
-  const employeeName = (id: string) => employees.find((item) => item.id === id)?.name ?? id;
-  const filteredEmployees = useMemo(() => employees.filter((item) => { const query = employeeQuery.trim().toLowerCase(); return (!query || `${item.employeeNo} ${item.name}`.toLowerCase().includes(query)) && (!employeeStatus || item.employmentStatus === employeeStatus) && (!employeeDepartment || item.department?.id === employeeDepartment) && (!employeePosition || item.position?.id === employeePosition) && (!employeeType || item.employeeType === employeeType); }), [employees, employeeDepartment, employeePosition, employeeQuery, employeeStatus, employeeType]);
-  const employeeColumns: ColumnDef<Employee>[] = [{ accessorKey: "employeeNo", header: "工号" }, { accessorKey: "name", header: "姓名" }, { id: "org", header: "部门/岗位", cell: ({ row }) => `${row.original.department?.name ?? "-"} / ${row.original.position?.name ?? "-"}` }, { accessorKey: "employeeType", header: "类型" }, { id: "hiredOn", header: "入职日期", cell: ({ row }) => row.original.hiredOn?.slice(0, 10) ?? "-" }, { id: "leftOn", header: "离职日期", cell: ({ row }) => row.original.leftOn?.slice(0, 10) ?? "-" }, { id: "status", header: "状态", cell: ({ row }) => displayStatus(row.original.employmentStatus) }, { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => editEmployee(row.original)}>编辑</Button>{row.original.employmentStatus === "active" && <Button size="sm" variant="destructive" onClick={() => leaveEmployee(row.original)}>离职</Button>}</div> }];
-  const recordColumns: ColumnDef<RecordItem>[] = [{ id: "type", header: "类型", cell: ({ row }) => row.original.attendanceDate ? "考勤" : "绩效" }, { id: "employee", header: "员工", cell: ({ row }) => employeeName(row.original.employeeId) }, { id: "period", header: "日期/周期", cell: ({ row }) => row.original.attendanceDate ? `${row.original.attendanceDate.slice(0, 10)} ${row.original.workStartTime ?? "-"}-${row.original.workEndTime ?? "-"}` : `${row.original.periodStart?.slice(0, 10)} 至 ${row.original.periodEnd?.slice(0, 10)}` }, { id: "result", header: "结果", cell: ({ row }) => row.original.attendanceType ?? `${row.original.grade ?? "-"} ${row.original.score ?? ""}` }];
-  const ledgerColumns: ColumnDef<Ledger>[] = [{ id: "employee", header: "员工", cell: ({ row }) => employeeName(row.original.employeeId) }, { id: "period", header: "周期", cell: ({ row }) => `${row.original.periodStart.slice(0, 10)} 至 ${row.original.periodEnd.slice(0, 10)}` }, { id: "amount", header: "应付", cell: ({ row }) => `${row.original.payableAmount} ${row.original.currency}` }, { accessorKey: "status", header: "状态" }, { id: "actions", header: "操作", cell: ({ row }) => <>{row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => void action(`/hr/payroll-ledgers/${row.original.id}/confirm`, undefined, "薪资台账已确认")}>确认</Button>}{row.original.status === "confirmed" && <Button size="sm" variant="secondary" onClick={() => void action(`/hr/payroll-ledgers/${row.original.id}/close`, undefined, "薪资台账已关闭")}>关闭</Button>}</> }];
-  const paymentColumns: ColumnDef<Payment>[] = [{ accessorKey: "paymentNo", header: "支付单号" }, { id: "date", header: "日期", cell: ({ row }) => row.original.paymentDate.slice(0, 10) }, { id: "amount", header: "金额", cell: ({ row }) => `${row.original.amount} ${row.original.currency}` }, { accessorKey: "status", header: "状态" }];
-  if (categoryDialog) return <ActionDialog open title={categoryDialog.title} fields={categoryDialog.fields} onOpenChange={(open) => { if (!open) setCategoryDialog(null); }} onSubmit={(values) => { void categoryDialog.submit(values); }} />;
-  if (loading) return <><PageHeader title="人事" /><LoadingState /></>;
-  return <><PageHeader title="人事"><div className="page-actions"><Button onClick={() => createEmployee()}>新建员工</Button><Button variant="secondary" onClick={createAttendance}>登记考勤</Button></div></PageHeader><ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field, values) => { if (field.name === "department_id") openDepartment(values); else if (field.name === "position_id") openPosition(values); else if (field.name === "employee_type") setError("员工类型已固定为车间和非车间"); else if (field.name === "employee_id" && dialog) { createEmployee({ dialog: { ...dialog, fields: dialog.fields.map((item) => ({ ...item, defaultValue: values[item.name] ?? item.defaultValue })) }, values }); } else setError("请在生产基础资料中维护"); }} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />{message && <section className="panel panel-body status-success" role="status">{message}</section>}{error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}<section className="panel"><div className="panel-heading"><h2>员工目录</h2></div><div className="panel-body"><div className="filter-bar"><Input value={employeeQuery} onChange={(event) => setEmployeeQuery(event.target.value)} placeholder="搜索工号或姓名" /><Select value={employeeStatus || "all"} onValueChange={(value) => setEmployeeStatus(value === "all" ? "" : value)}><SelectTrigger><SelectValue placeholder="员工状态" /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="active">在职</SelectItem><SelectItem value="left">离职</SelectItem><SelectItem value="inactive">停用</SelectItem></SelectContent></Select><Select value={employeeDepartment || "all"} onValueChange={(value) => setEmployeeDepartment(value === "all" ? "" : value)}><SelectTrigger><SelectValue placeholder="部门" /></SelectTrigger><SelectContent><SelectItem value="all">全部部门</SelectItem>{departments.filter((item) => item.isActive).map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><Select value={employeePosition || "all"} onValueChange={(value) => setEmployeePosition(value === "all" ? "" : value)}><SelectTrigger><SelectValue placeholder="岗位" /></SelectTrigger><SelectContent><SelectItem value="all">全部岗位</SelectItem>{positions.filter((item) => item.isActive).map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select><Select value={employeeType || "all"} onValueChange={(value) => setEmployeeType(value === "all" ? "" : value)}><SelectTrigger><SelectValue placeholder="员工类型" /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem>{employeeTypes.map((item) => <SelectItem key={item.key} value={item.key}>{item.label}</SelectItem>)}</SelectContent></Select></div><DataTable columns={employeeColumns} data={filteredEmployees} empty={<EmptyState title="暂无匹配员工" />} /></div></section><section className="panel"><div className="panel-heading"><h2>考勤与绩效</h2></div><div className="panel-body"><DataTable columns={recordColumns} data={[...attendance, ...performance]} empty={<EmptyState title="暂无考勤或绩效记录" />} /></div></section></>;
+  useEffect(() => {
+    void load();
+  }, []);
+  async function action(path: string, body?: unknown, success = "操作已完成") {
+    setError("");
+    try {
+      await apiPost(path, body);
+      setMessage(success);
+      await load();
+    } catch (cause) {
+      setError(messageOf(cause, "操作失败"));
+    }
+  }
+  async function runPatch(path: string, body: unknown, success: string) {
+    setError("");
+    try {
+      await apiPatch(path, body);
+      setMessage(success);
+      await load();
+    } catch (cause) {
+      setError(messageOf(cause, "操作失败"));
+    }
+  }
+  async function exportEmployees() {
+    setError("");
+    try {
+      const params = new URLSearchParams();
+      if (employeeQuery.trim()) params.set("query", employeeQuery.trim());
+      if (employeeStatus) params.set("employment_status", employeeStatus);
+      if (employeeDepartment) params.set("department_id", employeeDepartment);
+      if (employeePosition) params.set("position_id", employeePosition);
+      if (employeeType) params.set("employee_type", employeeType);
+      const response = await fetch(
+        `/api/v1/production/employees/export.xlsx?${params}`,
+        { credentials: "include", cache: "no-store" },
+      );
+      if (!response.ok) throw new Error(`导出失败（HTTP ${response.status}）`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `迪礼ERP-员工名单-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setMessage("员工名单已导出");
+    } catch (cause) {
+      setError(messageOf(cause, "员工名单导出失败"));
+    }
+  }
+  const employeeOptions = employees.map((item) => ({
+    value: item.id,
+    label: `${item.employeeNo} / ${item.name}`,
+  }));
+  function openDepartment(values?: Record<string, string>) {
+    if (values && dialog)
+      setDialog({
+        ...dialog,
+        fields: dialog.fields.map((field) => ({
+          ...field,
+          defaultValue: values[field.name] ?? field.defaultValue,
+        })),
+      });
+    setCategoryDialog({
+      title: "新建部门",
+      fields: [
+        { name: "code", label: "部门编码", required: true },
+        { name: "name", label: "部门名称", required: true },
+        { name: "remark", label: "备注", type: "textarea" },
+      ],
+      submit: async (v) => {
+        try {
+          const result = await apiPost<OrganizationItem>(
+            "/production/departments",
+            { ...v, remark: v.remark || undefined },
+          );
+          setDepartments((items) => [
+            ...items.filter((item) => item.id !== result.data.id),
+            result.data,
+          ]);
+          setDialog((current) =>
+            current
+              ? {
+                  ...current,
+                  fields: current.fields.map((field) =>
+                    field.name === "department_id"
+                      ? {
+                          ...field,
+                          defaultValue: result.data.id,
+                          options: [
+                            ...(field.options ?? []),
+                            {
+                              value: result.data.id,
+                              label: `${result.data.code} / ${result.data.name}`,
+                            },
+                          ],
+                        }
+                      : field,
+                  ),
+                }
+              : current,
+          );
+          setCategoryDialog(null);
+          setMessage("部门已创建");
+        } catch (cause) {
+          setError(messageOf(cause, "部门创建失败"));
+        }
+      },
+    });
+  }
+  function openPosition(values?: Record<string, string>) {
+    if (values && dialog)
+      setDialog({
+        ...dialog,
+        fields: dialog.fields.map((field) => ({
+          ...field,
+          defaultValue: values[field.name] ?? field.defaultValue,
+        })),
+      });
+    setCategoryDialog({
+      title: "新建岗位",
+      fields: [
+        {
+          name: "department_id",
+          label: "所属部门",
+          type: "select",
+          required: true,
+          options: departments
+            .filter((item) => item.isActive)
+            .map((item) => ({
+              value: item.id,
+              label: `${item.code} / ${item.name}`,
+            })),
+        },
+        { name: "code", label: "岗位编码", required: true },
+        { name: "name", label: "岗位名称", required: true },
+        { name: "remark", label: "备注", type: "textarea" },
+      ],
+      submit: async (v) => {
+        try {
+          const result = await apiPost<OrganizationItem>(
+            "/production/positions",
+            { ...v, remark: v.remark || undefined },
+          );
+          setPositions((items) => [
+            ...items.filter((item) => item.id !== result.data.id),
+            result.data,
+          ]);
+          setDialog((current) =>
+            current
+              ? {
+                  ...current,
+                  fields: current.fields.map((field) =>
+                    field.name === "position_id"
+                      ? {
+                          ...field,
+                          defaultValue: result.data.id,
+                          options: [
+                            ...(field.options ?? []),
+                            {
+                              value: result.data.id,
+                              label: `${result.data.code} / ${result.data.name}`,
+                            },
+                          ],
+                        }
+                      : field,
+                  ),
+                }
+              : current,
+          );
+          setCategoryDialog(null);
+          setMessage("岗位已创建");
+        } catch (cause) {
+          setError(messageOf(cause, "岗位创建失败"));
+        }
+      },
+    });
+  }
+  function openEmployeeType() {
+    setError("员工类型已固定为车间和非车间");
+  }
+  function createEmployee(returnTo?: {
+    dialog: DialogState;
+    values: Record<string, string>;
+  }) {
+    setDialog({
+      title: "新建员工",
+      fields: [
+        { name: "employee_no", label: "工号", required: true },
+        { name: "name", label: "姓名", required: true },
+        {
+          name: "department_id",
+          label: "部门",
+          type: "select",
+          required: true,
+          canAddCategory: true,
+          options: departments
+            .filter((item) => item.isActive)
+            .map((item) => ({
+              value: item.id,
+              label: `${item.code} / ${item.name}`,
+            })),
+        },
+        {
+          name: "position_id",
+          label: "岗位",
+          type: "select",
+          required: true,
+          canAddCategory: true,
+          options: positions
+            .filter((item) => item.isActive)
+            .map((item) => ({
+              value: item.id,
+              label: `${item.code} / ${item.name}`,
+            })),
+        },
+        {
+          name: "employee_type",
+          label: "员工类型",
+          type: "select",
+          required: true,
+          defaultValue: "workshop",
+          options: employeeTypes.map((item) => ({
+            value: item.key,
+            label: item.label,
+          })),
+        },
+        { name: "hired_on", label: "入职日期", type: "date" },
+        { name: "left_on", label: "离职日期", type: "date" },
+        { name: "remark", label: "备注", type: "textarea" },
+      ],
+      submit: async (v) => {
+        try {
+          const result = await apiPost<Employee>("/production/employees", {
+            ...v,
+            hired_on: v.hired_on || undefined,
+            left_on: v.left_on || undefined,
+            remark: v.remark || undefined,
+          });
+          setEmployees((items) => [
+            ...items.filter((item) => item.id !== result.data.id),
+            result.data,
+          ]);
+          setMessage("员工已创建");
+          const source = returnTo;
+          if (source)
+            setDialog({
+              ...source.dialog,
+              fields: source.dialog.fields.map((field) =>
+                field.name === "employee_id"
+                  ? {
+                      ...field,
+                      defaultValue: result.data.id,
+                      options: [
+                        ...(field.options ?? []),
+                        {
+                          value: result.data.id,
+                          label: `${result.data.employeeNo} / ${result.data.name}`,
+                        },
+                      ],
+                    }
+                  : field,
+              ),
+            });
+          else setDialog(null);
+          await load();
+        } catch (cause) {
+          setError(messageOf(cause, "员工创建失败"));
+        }
+      },
+    });
+  }
+  function editEmployee(employee: Employee) {
+    setDialog({
+      title: "编辑员工",
+      fields: [
+        {
+          name: "employee_no",
+          label: "工号",
+          required: true,
+          defaultValue: employee.employeeNo,
+        },
+        {
+          name: "name",
+          label: "姓名",
+          required: true,
+          defaultValue: employee.name,
+        },
+        {
+          name: "department_id",
+          label: "部门",
+          type: "select",
+          required: true,
+          defaultValue: employee.department?.id,
+          options: departments
+            .filter((item) => item.isActive)
+            .map((item) => ({
+              value: item.id,
+              label: `${item.code} / ${item.name}`,
+            })),
+        },
+        {
+          name: "position_id",
+          label: "岗位",
+          type: "select",
+          required: true,
+          defaultValue: employee.position?.id,
+          options: positions
+            .filter((item) => item.isActive)
+            .map((item) => ({
+              value: item.id,
+              label: `${item.code} / ${item.name}`,
+            })),
+        },
+        {
+          name: "employee_type",
+          label: "员工类型",
+          type: "select",
+          required: true,
+          defaultValue: employee.employeeType,
+          options: employeeTypes.map((item) => ({
+            value: item.key,
+            label: item.label,
+          })),
+        },
+        {
+          name: "hired_on",
+          label: "入职日期",
+          type: "date",
+          defaultValue: employee.hiredOn?.slice(0, 10),
+        },
+        {
+          name: "left_on",
+          label: "离职日期",
+          type: "date",
+          defaultValue: employee.leftOn?.slice(0, 10),
+        },
+        {
+          name: "remark",
+          label: "备注",
+          type: "textarea",
+          defaultValue: employee.remark ?? "",
+        },
+      ],
+      submit: (v) =>
+        void runPatch(
+          `/production/employees/${employee.id}`,
+          {
+            ...v,
+            hired_on: v.hired_on || undefined,
+            left_on: v.left_on || undefined,
+            remark: v.remark || undefined,
+          },
+          "员工信息已更新",
+        ),
+    });
+  }
+  function leaveEmployee(employee: Employee) {
+    setDialog({
+      title: "办理离职",
+      fields: [
+        {
+          name: "left_on",
+          label: "离职日期",
+          type: "date",
+          required: true,
+          defaultValue: new Date().toISOString().slice(0, 10),
+        },
+      ],
+      submit: (v) =>
+        void runPatch(
+          `/production/employees/${employee.id}/leave`,
+          { left_on: v.left_on },
+          "员工已办理离职",
+        ),
+    });
+  }
+  function createAttendance() {
+    setDialog({
+      title: "登记考勤",
+      fields: [
+        {
+          name: "employee_id",
+          label: "员工",
+          type: "select",
+          required: true,
+          options: employeeOptions,
+        },
+        {
+          name: "attendance_date",
+          label: "考勤日期",
+          type: "date",
+          required: true,
+          defaultValue: new Date().toISOString().slice(0, 10),
+        },
+        {
+          name: "work_start_time",
+          label: "上班时间",
+          type: "time",
+          required: true,
+          defaultValue: "09:00",
+        },
+        {
+          name: "work_end_time",
+          label: "下班时间",
+          type: "time",
+          required: true,
+          defaultValue: "18:00",
+        },
+        {
+          name: "attendance_type",
+          label: "考勤类型",
+          required: true,
+          defaultValue: "出勤",
+        },
+        { name: "remark", label: "备注", type: "textarea" },
+      ],
+      submit: (v) =>
+        void action(
+          "/hr/attendance-records",
+          {
+            employee_id: v.employee_id,
+            attendance_date: v.attendance_date,
+            work_start_time: v.work_start_time,
+            work_end_time: v.work_end_time,
+            attendance_type: v.attendance_type,
+            remark: v.remark || undefined,
+          },
+          "考勤已登记",
+        ),
+    });
+  }
+  function createPerformance() {
+    setDialog({
+      title: "登记绩效",
+      fields: [
+        {
+          name: "employee_id",
+          label: "员工",
+          type: "select",
+          required: true,
+          options: employeeOptions,
+        },
+        {
+          name: "period_start",
+          label: "周期开始",
+          type: "date",
+          required: true,
+        },
+        { name: "period_end", label: "周期结束", type: "date", required: true },
+        { name: "score", label: "评分", type: "number", defaultValue: "100" },
+        { name: "grade", label: "等级", defaultValue: "A" },
+      ],
+      submit: (v) =>
+        void action(
+          "/hr/performance-records",
+          {
+            employee_id: v.employee_id,
+            period_start: v.period_start,
+            period_end: v.period_end,
+            score: v.score,
+            grade: v.grade,
+          },
+          "绩效已登记",
+        ),
+    });
+  }
+  function generateLedger() {
+    setDialog({
+      title: "生成薪资台账",
+      fields: [
+        {
+          name: "employee_id",
+          label: "员工",
+          type: "select",
+          required: true,
+          options: employeeOptions,
+        },
+        {
+          name: "period_start",
+          label: "周期开始",
+          type: "date",
+          required: true,
+        },
+        { name: "period_end", label: "周期结束", type: "date", required: true },
+        {
+          name: "base_salary",
+          label: "基本工资",
+          type: "number",
+          required: true,
+          defaultValue: "0",
+        },
+      ],
+      submit: (v) =>
+        void action(
+          "/hr/payroll-ledgers/generate",
+          {
+            employee_id: v.employee_id,
+            period_start: v.period_start,
+            period_end: v.period_end,
+            currency: "CNY",
+            base_salary: v.base_salary,
+          },
+          "薪资台账已生成",
+        ),
+    });
+  }
+  function createPayment() {
+    setDialog({
+      title: "登记工资支付",
+      fields: [
+        { name: "amount", label: "支付金额", type: "number", required: true },
+        {
+          name: "payment_date",
+          label: "支付日期",
+          type: "date",
+          required: true,
+          defaultValue: new Date().toISOString().slice(0, 10),
+        },
+        {
+          name: "payment_method",
+          label: "支付方式",
+          required: true,
+          defaultValue: "银行转账",
+        },
+      ],
+      submit: (v) =>
+        void action(
+          "/hr/salary-payments",
+          {
+            payment_date: v.payment_date,
+            amount: v.amount,
+            currency: "CNY",
+            payment_method: v.payment_method,
+          },
+          "工资支付草稿已创建",
+        ),
+    });
+  }
+  const employeeName = (id: string) =>
+    employees.find((item) => item.id === id)?.name ?? id;
+  const filteredEmployees = useMemo(
+    () =>
+      employees.filter((item) => {
+        const query = employeeQuery.trim().toLowerCase();
+        return (
+          (!query ||
+            `${item.employeeNo} ${item.name}`.toLowerCase().includes(query)) &&
+          (!employeeStatus || item.employmentStatus === employeeStatus) &&
+          (!employeeDepartment || item.department?.id === employeeDepartment) &&
+          (!employeePosition || item.position?.id === employeePosition) &&
+          (!employeeType || item.employeeType === employeeType)
+        );
+      }),
+    [
+      employees,
+      employeeDepartment,
+      employeePosition,
+      employeeQuery,
+      employeeStatus,
+      employeeType,
+    ],
+  );
+  const employeeColumns: ColumnDef<Employee>[] = [
+    { accessorKey: "employeeNo", header: "工号" },
+    { accessorKey: "name", header: "姓名" },
+    {
+      id: "org",
+      header: "部门/岗位",
+      cell: ({ row }) =>
+        `${row.original.department?.name ?? "-"} / ${row.original.position?.name ?? "-"}`,
+    },
+    { accessorKey: "employeeType", header: "类型" },
+    {
+      id: "hiredOn",
+      header: "入职日期",
+      cell: ({ row }) => row.original.hiredOn?.slice(0, 10) ?? "-",
+    },
+    {
+      id: "leftOn",
+      header: "离职日期",
+      cell: ({ row }) => row.original.leftOn?.slice(0, 10) ?? "-",
+    },
+    {
+      id: "status",
+      header: "状态",
+      cell: ({ row }) => displayStatus(row.original.employmentStatus),
+    },
+    {
+      id: "actions",
+      header: "操作",
+      cell: ({ row }) => (
+        <div className="action-row">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => editEmployee(row.original)}
+          >
+            编辑
+          </Button>
+          {row.original.employmentStatus === "active" && (
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => leaveEmployee(row.original)}
+            >
+              离职
+            </Button>
+          )}
+        </div>
+      ),
+    },
+  ];
+  const recordColumns: ColumnDef<RecordItem>[] = [
+    {
+      id: "type",
+      header: "类型",
+      cell: ({ row }) => (row.original.attendanceDate ? "考勤" : "绩效"),
+    },
+    {
+      id: "employee",
+      header: "员工",
+      cell: ({ row }) => employeeName(row.original.employeeId),
+    },
+    {
+      id: "period",
+      header: "日期/周期",
+      cell: ({ row }) =>
+        row.original.attendanceDate
+          ? `${row.original.attendanceDate.slice(0, 10)} ${row.original.workStartTime ?? "-"}-${row.original.workEndTime ?? "-"}`
+          : `${row.original.periodStart?.slice(0, 10)} 至 ${row.original.periodEnd?.slice(0, 10)}`,
+    },
+    {
+      id: "result",
+      header: "结果",
+      cell: ({ row }) =>
+        row.original.attendanceType ??
+        `${row.original.grade ?? "-"} ${row.original.score ?? ""}`,
+    },
+  ];
+  const ledgerColumns: ColumnDef<Ledger>[] = [
+    {
+      id: "employee",
+      header: "员工",
+      cell: ({ row }) => employeeName(row.original.employeeId),
+    },
+    {
+      id: "period",
+      header: "周期",
+      cell: ({ row }) =>
+        `${row.original.periodStart.slice(0, 10)} 至 ${row.original.periodEnd.slice(0, 10)}`,
+    },
+    {
+      id: "amount",
+      header: "应付",
+      cell: ({ row }) =>
+        `${row.original.payableAmount} ${row.original.currency}`,
+    },
+    { accessorKey: "status", header: "状态" },
+    {
+      id: "actions",
+      header: "操作",
+      cell: ({ row }) => (
+        <>
+          {row.original.status === "draft" && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                void action(
+                  `/hr/payroll-ledgers/${row.original.id}/confirm`,
+                  undefined,
+                  "薪资台账已确认",
+                )
+              }
+            >
+              确认
+            </Button>
+          )}
+          {row.original.status === "confirmed" && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                void action(
+                  `/hr/payroll-ledgers/${row.original.id}/close`,
+                  undefined,
+                  "薪资台账已关闭",
+                )
+              }
+            >
+              关闭
+            </Button>
+          )}
+        </>
+      ),
+    },
+  ];
+  const paymentColumns: ColumnDef<Payment>[] = [
+    { accessorKey: "paymentNo", header: "支付单号" },
+    {
+      id: "date",
+      header: "日期",
+      cell: ({ row }) => row.original.paymentDate.slice(0, 10),
+    },
+    {
+      id: "amount",
+      header: "金额",
+      cell: ({ row }) => `${row.original.amount} ${row.original.currency}`,
+    },
+    { accessorKey: "status", header: "状态" },
+  ];
+  if (categoryDialog)
+    return (
+      <ActionDialog
+        open
+        title={categoryDialog.title}
+        fields={categoryDialog.fields}
+        onOpenChange={(open) => {
+          if (!open) setCategoryDialog(null);
+        }}
+        onSubmit={(values) => {
+          void categoryDialog.submit(values);
+        }}
+      />
+    );
+  if (loading)
+    return (
+      <>
+        <PageHeader title="人事" />
+        <LoadingState />
+      </>
+    );
+  return (
+    <>
+      <PageHeader title="人事">
+        <div className="page-actions">
+          <Button onClick={() => createEmployee()}>新建员工</Button>
+          <Button variant="secondary" onClick={createAttendance}>
+            登记考勤
+          </Button>
+          <Button variant="secondary" onClick={() => void exportEmployees()}>
+            导出员工名单
+          </Button>
+          <Link className="button button-secondary" href="/hr/departments">
+            部门池
+          </Link>
+          <Link className="button button-secondary" href="/hr/positions">
+            岗位池
+          </Link>
+        </div>
+      </PageHeader>
+      <ActionDialog
+        open={Boolean(dialog)}
+        onOpenChange={(open) => {
+          if (!open) setDialog(null);
+        }}
+        title={dialog?.title ?? "操作"}
+        fields={dialog?.fields ?? []}
+        onAddCategory={(field, values) => {
+          if (field.name === "department_id") openDepartment(values);
+          else if (field.name === "position_id") openPosition(values);
+          else if (field.name === "employee_type")
+            setError("员工类型已固定为车间和非车间");
+          else if (field.name === "employee_id" && dialog) {
+            createEmployee({
+              dialog: {
+                ...dialog,
+                fields: dialog.fields.map((item) => ({
+                  ...item,
+                  defaultValue: values[item.name] ?? item.defaultValue,
+                })),
+              },
+              values,
+            });
+          } else setError("请在生产基础资料中维护");
+        }}
+        onSubmit={(values) => {
+          dialog?.submit(values);
+          setDialog(null);
+        }}
+      />
+      {message && (
+        <section className="panel panel-body status-success" role="status">
+          {message}
+        </section>
+      )}
+      {error && (
+        <section className="panel">
+          <ErrorState message={error} onRetry={() => void load()} />
+        </section>
+      )}
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>员工目录</h2>
+        </div>
+        <div className="panel-body">
+          <div className="filter-bar">
+            <Input
+              value={employeeQuery}
+              onChange={(event) => setEmployeeQuery(event.target.value)}
+              placeholder="搜索工号或姓名"
+            />
+            <Select
+              value={employeeStatus || "all"}
+              onValueChange={(value) =>
+                setEmployeeStatus(value === "all" ? "" : value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="员工状态" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部状态</SelectItem>
+                <SelectItem value="active">在职</SelectItem>
+                <SelectItem value="left">离职</SelectItem>
+                <SelectItem value="inactive">停用</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={employeeDepartment || "all"}
+              onValueChange={(value) =>
+                setEmployeeDepartment(value === "all" ? "" : value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="部门" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部部门</SelectItem>
+                {departments
+                  .filter((item) => item.isActive)
+                  .map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={employeePosition || "all"}
+              onValueChange={(value) =>
+                setEmployeePosition(value === "all" ? "" : value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="岗位" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部岗位</SelectItem>
+                {positions
+                  .filter((item) => item.isActive)
+                  .map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={employeeType || "all"}
+              onValueChange={(value) =>
+                setEmployeeType(value === "all" ? "" : value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="员工类型" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部类型</SelectItem>
+                {employeeTypes.map((item) => (
+                  <SelectItem key={item.key} value={item.key}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DataTable
+            columns={employeeColumns}
+            data={filteredEmployees}
+            empty={<EmptyState title="暂无匹配员工" />}
+          />
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>考勤与绩效</h2>
+        </div>
+        <div className="panel-body">
+          <DataTable
+            columns={recordColumns}
+            data={[...attendance, ...performance]}
+            empty={<EmptyState title="暂无考勤或绩效记录" />}
+          />
+        </div>
+      </section>
+    </>
+  );
 }
