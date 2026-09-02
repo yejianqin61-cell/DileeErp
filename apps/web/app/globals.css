@@ -206,6 +206,10 @@ button { cursor: pointer; }
 .detail-list p:last-child { border-bottom: 0; }
 .panel h3 { margin: 0; padding: 12px 0 8px; font-size: 13px; }
 .production-subflows { display: grid; gap: 24px; margin-top: 24px; }
+.daily-report-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 16px; }
+.daily-report-summary > span { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-muted); }
+.daily-report-summary small { color: var(--text-muted); font-size: 12px; }
+.daily-report-summary strong { color: currentColor; font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
 .inventory-impact-dialog { width: min(760px, calc(100vw - 32px)); }
 .inventory-impact-list { display: grid; gap: 10px; }
 .inventory-impact-item { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-muted); padding: 14px; }
