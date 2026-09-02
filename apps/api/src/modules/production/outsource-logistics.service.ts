@@ -84,7 +84,7 @@ export class OutsourceLogisticsService {
   }
 
   async payableSources(orderNo?: string) {
-    return this.prisma.outsourcePayableSource.findMany({ where: orderNo ? { orderNo, deletedAt: null } : { deletedAt: null }, include: { outsourceReceipt: true, logisticsBatch: true }, orderBy: { createdAt: "desc" } });
+    return this.prisma.outsourcePayableSource.findMany({ where: orderNo ? { orderNo, deletedAt: null, status: "pending_finance" } : { deletedAt: null, status: "pending_finance" }, include: { outsourceReceipt: true, logisticsBatch: true, purchaseOrder: { select: { purchaseOrderNo: true } }, supplier: { select: { id: true, name: true, supplierCode: true } } }, orderBy: { createdAt: "desc" } });
   }
 
   async impactPreview(id: string) {
