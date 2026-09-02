@@ -119,6 +119,12 @@ export class EmployeeDailyReportsService {
   }
 
   private async syncPayrollSource(client: Prisma.TransactionClient, employeeId: string, productionOrderId: string, orderNo: string, reportDate: Date, wageMode: string, user: CurrentUser) {
+    const employee = await client.employee.findFirst({ where: { id: employeeId, deletedAt: null }, select: { employeeType: true } });
+    if (employee?.employeeType !== "workshop") {
+      const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
+      if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
+      return;
+    }
     const rows = await client.employeeDailyReport.findMany({ where: { deletedAt: null, employeeId, productionOrderId, reportDate, wageMode }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
     const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
     if (!rows.length) {

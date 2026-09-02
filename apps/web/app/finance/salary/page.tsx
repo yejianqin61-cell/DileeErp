@@ -144,7 +144,7 @@ export default function SalaryPage() {
 
   return (
     <>
-      <PageHeader title="工资总览" description="按车间和非车间拆分展示。">
+      <PageHeader title="工资总览" description="仅车间生产日报自动带入生产来源，其他收入和扣款人工填写。">
         <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
         <Button onClick={openCreate}>新建工资台账</Button>
       </PageHeader>
