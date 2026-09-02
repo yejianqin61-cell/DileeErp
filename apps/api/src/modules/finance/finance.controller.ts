@@ -66,7 +66,7 @@ class SupplierPaymentDto {
 class SupplierAllocationDto { @IsUUID() payable_entry_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }
 class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; }
 class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsString() remark?: string; }
+class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
 
 @Controller("finance")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -112,6 +112,7 @@ export class FinanceController {
   @Post("supplier-payments/:id/reverse") async reverseSupplierPayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.reverse(id, body.reason, user), meta: {} }; }
   @Get("payable-order-summary") async payableOrderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.supplierPayments.orderSummary(orderNo) : [], meta: {} }; }
   @Get("supplier-payable-reconciliations") async listSupplierReconciliations(@Query("supplier_id") supplierId?: string, @Query("order_no") orderNo?: string, @Query("status") status?: string) { return { data: await this.supplierReconciliations.list(supplierId, orderNo, status), meta: {} }; }
+  @Get("supplier-payable-reconciliations/:id") async getSupplierReconciliation(@Param("id") id: string) { return { data: await this.supplierReconciliations.get(id), meta: {} }; }
   @Post("supplier-payable-reconciliations") async createSupplierReconciliation(@Body() body: SupplierReconciliationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.create(body, user), meta: {} }; }
   @Post("supplier-payable-reconciliations/:id/resolve") async resolveSupplierReconciliation(@Param("id") id: string, @Body() body: ResolutionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.resolve(id, body.resolution_remark, user), meta: {} }; }
 }
