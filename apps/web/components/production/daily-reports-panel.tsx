@@ -50,6 +50,7 @@ export function DailyReportsPanel() {
   }
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => { const refresh = () => void load(); window.addEventListener("production-order-operation-updated", refresh); return () => window.removeEventListener("production-order-operation-updated", refresh); }, []);
 
   function openOperation(order: Order, operation: Operation) {
     setSelectedOrder(order);
