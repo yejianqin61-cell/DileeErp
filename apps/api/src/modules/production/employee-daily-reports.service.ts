@@ -52,6 +52,12 @@ export class EmployeeDailyReportsService {
     const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: input.remark ?? current.remark ?? undefined };
     const values = this.values(merged);
     const updated = await this.prisma.$transaction(async (tx) => {
+      const [sameTarget, otherMode] = await Promise.all([
+        tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: merged.wage_mode, id: { not: id }, deletedAt: null }, select: { id: true } }),
+        tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: { not: merged.wage_mode }, id: { not: id }, deletedAt: null }, select: { wageMode: true } }),
+      ]);
+      if (sameTarget) throw new UnprocessableEntityException({ code: "DAILY_REPORT_DUPLICATE_TARGET", message: "修改后的员工日报目标日期和计薪方式已存在记录，请先更正原日报", details: [] });
+      if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: merged.wage_mode }] });
       const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
       await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
       if (refs.reportDate.getTime() !== current.reportDate.getTime()) await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, refs.reportDate, user);
