@@ -9,8 +9,10 @@ export class InventoryService {
   constructor(private readonly prisma: PrismaService) {}
 
   async rawMaterialBalance(client: InventoryClient, materialId: string, unitId: string) {
+    const material = await client.material.findFirst({ where: { id: materialId, materialType: "raw_material", deletedAt: null } });
+    if (!material) return new Prisma.Decimal(0);
     const result = await client.inventoryFact.aggregate({
-      where: { materialId, unitId, inventoryCategory: "raw_material" },
+      where: { materialId: material.id, unitId, inventoryCategory: "raw_material" },
       _sum: { quantityDelta: true }
     });
     return result._sum.quantityDelta ?? new Prisma.Decimal(0);
