@@ -831,7 +831,7 @@ export default function HrPage() {
               确认
             </Button>
           )}
-          {row.original.status === "confirmed" && (
+          {row.original.status === "paid" && (
             <Button
               size="sm"
               variant="secondary"
