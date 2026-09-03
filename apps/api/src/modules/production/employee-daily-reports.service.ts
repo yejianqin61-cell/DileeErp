@@ -102,7 +102,7 @@ export class EmployeeDailyReportsService {
 
   private values(input: Input) {
     if (input.wage_mode !== "piece_rate" && input.wage_mode !== "time_rate") throw new UnprocessableEntityException({ code: "INVALID_WAGE_MODE", message: "计薪方式无效", details: [] });
-    const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", "计件日报件数必须大于零") : new Prisma.Decimal(0);
+    const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", input.wage_mode === "piece_rate" ? "计件日报件数必须大于零" : "员工日报件数必须是非负十进制数", input.wage_mode !== "piece_rate") : new Prisma.Decimal(0);
     if (input.wage_mode === "piece_rate" && quantity.isZero()) throw new UnprocessableEntityException({ code: "PIECE_REPORT_QUANTITY_REQUIRED", message: "计件日报必须填写件数", details: [] });
     const durationInput = input.duration_minutes?.trim() ? input.duration_minutes : undefined;
     const durationMinutes = durationInput === undefined ? undefined : this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须大于零");
