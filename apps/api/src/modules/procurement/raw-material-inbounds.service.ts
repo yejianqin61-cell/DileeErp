@@ -65,20 +65,19 @@ export class RawMaterialInboundsService {
   }
 
   async post(id: string, user: CurrentUser) {
-    const inbound = await this.prisma.rawMaterialInbound.findFirst({
-      where: { id, deletedAt: null },
-      include: { incomingInspection: { include: { purchaseReceipt: { include: { purchaseOrder: { include: { items: true } }, purchaseOrderItem: true } } } } }
-    });
-    if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
-    if (inbound.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_INBOUND_STATE", message: "只有草稿入库单可以过账", details: [] });
-
-    const item = inbound.incomingInspection.purchaseReceipt.purchaseOrderItem;
-    const purchaseOrder = inbound.incomingInspection.purchaseReceipt.purchaseOrder;
-    const key = `inbound:${inbound.id}`;
+    const existing = await this.prisma.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, select: { id: true, status: true } });
+    if (!existing) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
+    if (existing.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_INBOUND_STATE", message: "只有草稿入库单可以过账", details: [] });
+    const key = `inbound:${id}`;
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        const existing = await tx.inventoryFact.findFirst({ where: { rawMaterialInboundId: inbound.id } });
-        if (existing) throw new ConflictException({ code: "INBOUND_ALREADY_POSTED", message: "入库已过账", details: [] });
+        await tx.$queryRaw`SELECT id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
+        const inbound = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { incomingInspection: { include: { purchaseReceipt: { include: { purchaseOrder: { include: { items: true } }, purchaseOrderItem: true } } } } } });
+        if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
+        if (inbound.status !== "draft") throw new ConflictException({ code: "INBOUND_ALREADY_POSTED", message: "入库已被其他操作处理", details: [] });
+        await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${inbound.incomingInspectionId}::uuid FOR UPDATE`;
+        const item = inbound.incomingInspection.purchaseReceipt.purchaseOrderItem;
+        const purchaseOrder = inbound.incomingInspection.purchaseReceipt.purchaseOrder;
 
         const posted = await tx.rawMaterialInbound.update({ where: { id }, data: { status: "posted", idempotencyKey: key, ...this.audit.update(user) } });
         await tx.inventoryFact.create({
@@ -113,7 +112,7 @@ export class RawMaterialInboundsService {
         });
         return posted;
       });
-      await this.audit.record("raw_material_inbound.post", "raw_material_inbound", user.id, id, { order_no: inbound.orderNo, idempotency_key: key });
+      await this.audit.record("raw_material_inbound.post", "raw_material_inbound", user.id, id, { order_no: result.orderNo, idempotency_key: key });
       return result;
     } catch (error) {
       if (error instanceof ConflictException) throw error;
