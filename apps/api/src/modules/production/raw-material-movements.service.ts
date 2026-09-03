@@ -121,6 +121,7 @@ export class RawMaterialMovementsService {
       const posted = await this.prisma.$transaction(async (tx) => {
         const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null }, include: { lines: { where: { deletedAt: null } } } });
         if (!current || current.status !== "draft") throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: "领料单已被其他操作处理", details: [] });
+        for (const line of current.lines) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`${line.materialId}|${line.unitId}`}))`;
         const lockedPreview = await this.previewLines(order, current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         if (lockedPreview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "领料会造成原料库存不足", details: [] });
         const lockedRisks = lockedPreview.lines.flatMap((line) => line.risks.map((risk) => ({ line_id: line.id, risk_type: risk.type, context: risk.context })));
