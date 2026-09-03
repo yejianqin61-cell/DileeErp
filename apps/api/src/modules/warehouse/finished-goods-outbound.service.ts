@@ -40,10 +40,11 @@ export class FinishedGoodsOutboundService {
       if (existing) throw this.invalid("FINISHED_GOODS_OUTBOUND_ALREADY_POSTED", "成品出库单已过账");
       const balance = await this.inventory.finishedGoodsBalance(tx, current.productionOrderId, current.unitId, "finished_goods");
       if (current.quantity.gt(balance)) throw this.exceeded("FINISHED_GOODS_OUTBOUND_INVENTORY_INSUFFICIENT", balance);
+      const sales = await tx.salesOrder.findUnique({ where: { id: current.salesOrderId } });
+      if (!sales?.unitPrice || sales.unitPrice.isNegative()) throw this.invalid("SALES_UNIT_PRICE_REQUIRED", "销售单缺少有效销售单价，不能生成应收并过账");
       const posted = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity.negated(), sourceType: "finished_goods_outbound", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
-      const sales = await tx.salesOrder.findUnique({ where: { id: current.salesOrderId } });
-      if (sales?.unitPrice) await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: sales.unitPrice, taxRate: sales.taxRate, amount: sales.unitPrice.mul(current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, ...this.audit.create(user) } });
+      await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: sales.unitPrice, taxRate: sales.taxRate, amount: sales.unitPrice.mul(current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, ...this.audit.create(user) } });
       return posted;
     });
     await this.audit.record("finished_goods_outbound.post", "finished_goods_outbound", user.id, id, { order_no: result.orderNo, quantity: result.quantity.toString() });
