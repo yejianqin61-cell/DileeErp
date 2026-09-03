@@ -28,6 +28,10 @@ export class EmployeeDailyReportsService {
     const values = this.values(input);
     const created = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${refs.operation.id}::uuid FOR UPDATE`;
+      if (input.idempotency_key) {
+        const previous = await tx.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });
+        if (previous) return previous;
+      }
       const otherMode = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: { not: input.wage_mode }, deletedAt: null }, select: { wageMode: true } });
       if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: input.wage_mode }] });
       const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
@@ -52,6 +56,7 @@ export class EmployeeDailyReportsService {
     const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: input.remark ?? current.remark ?? undefined };
     const values = this.values(merged);
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${current.productionOrderOperationId}::uuid FOR UPDATE`;
       const [sameTarget, otherMode] = await Promise.all([
         tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: merged.wage_mode, id: { not: id }, deletedAt: null }, select: { id: true } }),
         tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: { not: merged.wage_mode }, id: { not: id }, deletedAt: null }, select: { wageMode: true } }),
