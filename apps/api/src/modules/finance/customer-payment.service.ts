@@ -23,19 +23,22 @@ export class CustomerPaymentService {
     if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
     if (!allocations?.length) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "收款过账至少需要核销一条有效应收");
     const result = await this.prisma.$transaction(async (tx) => {
+      const lockedPayment = await tx.customerPayment.findFirst({ where: { id, deletedAt: null } });
+      if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
       const existing = await tx.receivableAllocation.count({ where: { paymentId: id, deletedAt: null } });
       if (existing) throw this.invalid("CUSTOMER_PAYMENT_ALREADY_POSTED", "收款已存在核销分配");
       let total = new Prisma.Decimal(0);
       for (const allocation of allocations ?? []) {
         const amount = this.decimal(allocation.amount, "INVALID_ALLOCATION_AMOUNT");
+        await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${allocation.receivable_source_id}::uuid FOR UPDATE`;
         const { source, available } = await this.receivable.allocationBalance(allocation.receivable_source_id, tx);
-        if (source.customerId !== current.customerId || source.currency !== current.currency) throw this.invalid("ALLOCATION_REFERENCE_MISMATCH", "客户或币种与应收来源不一致");
+        if (source.customerId !== lockedPayment.customerId || source.currency !== lockedPayment.currency) throw this.invalid("ALLOCATION_REFERENCE_MISMATCH", "客户或币种与应收来源不一致");
         if (!["confirmed", "partially_paid"].includes(source.status)) throw this.invalid("RECEIVABLE_SOURCE_NOT_ALLOCATABLE", "应收来源尚未确认或已关闭");
         if (amount.gt(available)) throw this.exceeded("RECEIVABLE_ALLOCATION_EXCEEDED", available);
         total = total.plus(amount);
         await tx.receivableAllocation.create({ data: { paymentId: id, receivableSourceId: source.id, amount, currency: current.currency, ...this.audit.create(user) } });
       }
-      if (total.gt(current.amount)) throw this.exceeded("PAYMENT_ALLOCATION_EXCEEDED", current.amount);
+      if (total.gt(lockedPayment.amount)) throw this.exceeded("PAYMENT_ALLOCATION_EXCEEDED", lockedPayment.amount);
       const payment = await tx.customerPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const allocation of allocations ?? []) await this.receivable.refreshStatus(tx, allocation.receivable_source_id, user);
       return payment;

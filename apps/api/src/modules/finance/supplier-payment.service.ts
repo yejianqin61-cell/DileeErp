@@ -40,17 +40,20 @@ export class SupplierPaymentService {
     if (items.length === 0) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "付款过账至少需要核销一条有效应付");
     if (new Set(items.map((item) => item.payable_entry_id)).size !== items.length) throw this.invalid("DUPLICATE_PAYMENT_ALLOCATION", "同一付款不得重复核销同一应付");
     const result = await this.prisma.$transaction(async (tx) => {
+      const lockedPayment = await tx.supplierPayment.findFirst({ where: { id, deletedAt: null } });
+      if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("SUPPLIER_PAYMENT_NOT_POSTABLE", "只有草稿付款可以过账");
       let total = new Prisma.Decimal(0);
       for (const item of items) {
         const amount = this.decimal(item.amount, "INVALID_ALLOCATION_AMOUNT");
+        await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${item.payable_entry_id}::uuid FOR UPDATE`;
         const balance = await this.payable.allocationBalance(item.payable_entry_id, tx);
-        if (balance.entry.supplierId !== current.supplierId || balance.entry.currency !== current.currency || (current.orderNo && balance.entry.orderNo !== current.orderNo)) throw this.invalid("ALLOCATION_REFERENCE_MISMATCH", "供应商、币种或订单与应付不一致");
+        if (balance.entry.supplierId !== lockedPayment.supplierId || balance.entry.currency !== lockedPayment.currency || (lockedPayment.orderNo && balance.entry.orderNo !== lockedPayment.orderNo)) throw this.invalid("ALLOCATION_REFERENCE_MISMATCH", "供应商、币种或订单与应付不一致");
         if (!["confirmed", "partially_paid"].includes(balance.entry.status)) throw this.invalid("SUPPLIER_PAYABLE_NOT_ALLOCATABLE", "应付尚未确认或已关闭");
         if (amount.gt(balance.available)) throw new UnprocessableEntityException({ code: "PAYABLE_ALLOCATION_EXCEEDED", message: "核销金额超过应付未核销余额", details: [{ available_amount: balance.available.toString() }] });
         total = total.plus(amount);
         await tx.supplierPaymentAllocation.create({ data: { paymentId: id, payableEntryId: balance.entry.id, orderNo: balance.entry.orderNo, amount, currency: current.currency, remark: item.remark, ...this.audit.create(user) } });
       }
-      if (total.gt(current.amount)) throw new UnprocessableEntityException({ code: "PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过付款金额", details: [{ available_amount: current.amount.minus(total).toString() }] });
+      if (total.gt(lockedPayment.amount)) throw new UnprocessableEntityException({ code: "PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过付款金额", details: [{ available_amount: lockedPayment.amount.minus(total).toString() }] });
       const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const item of items) await this.payable.refreshStatus(tx, item.payable_entry_id, user);
       return payment;
