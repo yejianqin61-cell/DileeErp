@@ -125,14 +125,22 @@ export class RawMaterialInboundsService {
   }
 
   async update(id: string, input: { quantity: string; remark?: string }, user: CurrentUser) {
-    const current = await this.prisma.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { incomingInspection: { include: { rawMaterialInbounds: { where: { deletedAt: null } } } } } });
-    if (!current) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
-    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "INBOUND_NOT_EDITABLE", message: "只有草稿入库单可以编辑", details: [] });
     const quantity = this.positive(input.quantity, "入库数量必须是大于零的十进制数");
-    const allowed = new Prisma.Decimal(current.incomingInspection.acceptedQuantity).plus(current.incomingInspection.conditionalQuantity);
-    const used = current.incomingInspection.rawMaterialInbounds.filter((row) => row.id !== id).reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
-    if (quantity.plus(used).gt(allowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: allowed.minus(used).toString() }] });
-    return this.prisma.rawMaterialInbound.update({ where: { id }, data: { quantity: input.quantity, remark: input.remark, ...this.audit.update(user) } });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT incoming_inspection_id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { incomingInspection: { include: { rawMaterialInbounds: { where: { deletedAt: null } } } } } });
+      if (!current) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
+      if (current.status !== "draft") throw new UnprocessableEntityException({ code: "INBOUND_NOT_EDITABLE", message: "只有草稿入库单可以编辑", details: [] });
+      await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${current.incomingInspectionId}::uuid FOR UPDATE`;
+      const inspection = await tx.incomingInspection.findFirst({ where: { id: current.incomingInspectionId, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null } } } });
+      if (!inspection) throw new NotFoundException({ code: "INSPECTION_NOT_AVAILABLE", message: "QC 不存在或不允许入库", details: [] });
+      const allowed = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
+      const used = inspection.rawMaterialInbounds.filter((row) => row.id !== id).reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
+      if (quantity.plus(used).gt(allowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: allowed.minus(used).toString() }] });
+      return tx.rawMaterialInbound.update({ where: { id }, data: { quantity: input.quantity, remark: input.remark, ...this.audit.update(user) } });
+    });
+    await this.audit.record("raw_material_inbound.update", "raw_material_inbound", user.id, id, { order_no: updated.orderNo });
+    return updated;
   }
 
   async remove(id: string, user: CurrentUser) {
