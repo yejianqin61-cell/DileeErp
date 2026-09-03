@@ -37,6 +37,7 @@ export class SupplierPaymentService {
     if (!current) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
     if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYMENT_NOT_POSTABLE", "只有草稿付款可以过账");
     const items = allocations ?? [];
+    if (items.length === 0) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "付款过账至少需要核销一条有效应付");
     if (new Set(items.map((item) => item.payable_entry_id)).size !== items.length) throw this.invalid("DUPLICATE_PAYMENT_ALLOCATION", "同一付款不得重复核销同一应付");
     const result = await this.prisma.$transaction(async (tx) => {
       let total = new Prisma.Decimal(0);
@@ -50,7 +51,7 @@ export class SupplierPaymentService {
         await tx.supplierPaymentAllocation.create({ data: { paymentId: id, payableEntryId: balance.entry.id, orderNo: balance.entry.orderNo, amount, currency: current.currency, remark: item.remark, ...this.audit.create(user) } });
       }
       if (total.gt(current.amount)) throw new UnprocessableEntityException({ code: "PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过付款金额", details: [{ available_amount: current.amount.minus(total).toString() }] });
-      const payment = await tx.supplierPayment.update({ where: { id }, data: { status: total.eq(0) ? "unallocated" : "posted", ...this.audit.update(user) } });
+      const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const item of items) await this.payable.refreshStatus(tx, item.payable_entry_id, user);
       return payment;
     });
@@ -69,7 +70,7 @@ export class SupplierPaymentService {
     if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
     const current = await this.prisma.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } });
     if (!current) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
-    if (!["posted", "unallocated"].includes(current.status)) throw this.invalid("SUPPLIER_PAYMENT_NOT_REVERSIBLE", "当前付款不可冲销");
+    if (current.status !== "posted") throw this.invalid("SUPPLIER_PAYMENT_NOT_REVERSIBLE", "当前付款不可冲销");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.supplierPaymentAllocation.updateMany({ where: { paymentId: id, deletedAt: null, status: "active" }, data: { status: "reversed", ...this.audit.update(user) } });
       const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
@@ -82,7 +83,7 @@ export class SupplierPaymentService {
 
   async orderSummary(orderNo: string) {
     const entries = await this.prisma.supplierPayableEntry.findMany({ where: { orderNo, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } });
-    const payments = await this.prisma.supplierPayment.findMany({ where: { orderNo, deletedAt: null, status: { in: ["posted", "unallocated"] } } });
+    const payments = await this.prisma.supplierPayment.findMany({ where: { orderNo, deletedAt: null, status: "posted" } });
     const payable = entries.filter((entry) => entry.status !== "reversed").reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
     const paid = entries.reduce((sum, entry) => sum.plus(entry.allocations.filter((allocation) => allocation.payment.status === "posted").reduce((inner, allocation) => inner.plus(allocation.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0));
     return { order_no: orderNo, payable_amount: payable.toString(), paid_amount: paid.toString(), outstanding_amount: payable.minus(paid).toString(), payable_entry_count: entries.length, payment_count: payments.length, status: payable.eq(0) || paid.eq(0) ? "unpaid" : paid.gte(payable) ? "paid" : "partially_paid" };

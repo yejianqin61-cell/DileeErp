@@ -77,7 +77,7 @@ export class ReconciliationService {
     const endExclusive = new Date(to.getTime() + 24 * 60 * 60 * 1000);
     const [sources, payments, adjustments] = await Promise.all([
       this.prisma.receivableSource.findMany({ where: { orderNo, currency, deletedAt: null, createdAt: { gte: from, lt: endExclusive }, status: { not: "cancelled" } } }),
-      this.prisma.customerPayment.findMany({ where: { orderNo, currency, deletedAt: null, paymentDate: { gte: from, lte: to }, status: { in: ["posted", "unallocated"] } } }),
+      this.prisma.customerPayment.findMany({ where: { orderNo, currency, deletedAt: null, paymentDate: { gte: from, lte: to }, status: "posted" } }),
       this.prisma.receivableAdjustment.findMany({ where: { orderNo, currency, deletedAt: null, adjustmentDate: { gte: from, lte: to }, status: "posted" } }),
     ]);
     const receivable = sources.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0));

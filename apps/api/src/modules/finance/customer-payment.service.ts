@@ -21,6 +21,7 @@ export class CustomerPaymentService {
     const current = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null } });
     if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在");
     if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
+    if (!allocations?.length) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "收款过账至少需要核销一条有效应收");
     const result = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.receivableAllocation.count({ where: { paymentId: id, deletedAt: null } });
       if (existing) throw this.invalid("CUSTOMER_PAYMENT_ALREADY_POSTED", "收款已存在核销分配");
@@ -35,7 +36,7 @@ export class CustomerPaymentService {
         await tx.receivableAllocation.create({ data: { paymentId: id, receivableSourceId: source.id, amount, currency: current.currency, ...this.audit.create(user) } });
       }
       if (total.gt(current.amount)) throw this.exceeded("PAYMENT_ALLOCATION_EXCEEDED", current.amount);
-      const payment = await tx.customerPayment.update({ where: { id }, data: { status: total.eq(0) ? "unallocated" : "posted", ...this.audit.update(user) } });
+      const payment = await tx.customerPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const allocation of allocations ?? []) await this.receivable.refreshStatus(tx, allocation.receivable_source_id, user);
       return payment;
     });
