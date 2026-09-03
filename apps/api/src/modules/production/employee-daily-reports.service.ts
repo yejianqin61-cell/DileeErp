@@ -137,6 +137,7 @@ export class EmployeeDailyReportsService {
       update: { ...data, ...this.audit.update(user) },
       create: { ...data, ...this.audit.create(user) },
     });
+    await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
   }
 
   private async recomputeDiscrepancy(tx: Prisma.TransactionClient, orderId: string, operationId: string, reportDate: Date, user: CurrentUser) {
