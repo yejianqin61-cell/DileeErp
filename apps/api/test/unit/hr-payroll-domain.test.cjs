@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { productionSourceAmount, payrollBaseAmount, payrollPayableAmount, allocationRemaining, paymentRemaining, payrollStatus } = require("../../dist/modules/hr/hr-payroll.domain.js");
+const { productionSourceAmount, payrollBaseAmount, payrollPayableAmount, allocationRemaining, paymentRemaining, payrollStatus, canReopenPayroll } = require("../../dist/modules/hr/hr-payroll.domain.js");
 
 test("F1 attendance and performance remain outside automatic payroll calculation", () => {
   assert.equal(payrollBaseAmount({ base_salary: "1000", production_source_amount: "200", overtime_amount: "0", attendance_deduction: "0", performance_amount: "0", allowance_amount: "0", social_insurance: "0", individual_tax: "0", other_adjustment: "0" }), "1200");
@@ -29,4 +29,12 @@ test("F3 derives payment status and recalculates the balance after a reversal", 
   assert.equal(payrollStatus("100", "40"), "partially_paid");
   assert.equal(payrollStatus("100", "100"), "paid");
   assert.equal(allocationRemaining("100", "0", "40"), "60");
+});
+
+test("F4 only confirmed or expired payroll ledgers can return to draft", () => {
+  assert.equal(canReopenPayroll("confirmed"), true);
+  assert.equal(canReopenPayroll("expired"), true);
+  assert.equal(canReopenPayroll("partially_paid"), false);
+  assert.equal(canReopenPayroll("paid"), false);
+  assert.equal(canReopenPayroll("closed"), false);
 });

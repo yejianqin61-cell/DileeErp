@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { canReopenPayroll } from "./hr-payroll.domain";
 
 @Injectable()
 export class PayrollLedgerService {
@@ -37,7 +38,14 @@ export class PayrollLedgerService {
     return row;
   }
   async remove(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("PAYROLL_NOT_DELETABLE", "只有草稿台账可以删除"); return this.prisma.payrollLedger.update({ where: { id }, data: { ...this.audit.softDelete(user) } }); }
-  async reopen(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status === "draft") return current; return this.prisma.payrollLedger.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } }); }
+  async reopen(id: string, user: CurrentUser) {
+    const current = await this.get(id);
+    if (current.status === "draft") return current;
+    if (!canReopenPayroll(current.status)) throw this.invalid("PAYROLL_PAID_NOT_REOPENABLE", "部分支付、已支付或已关闭台账不可回退，请使用工资调整单");
+    const row = await this.prisma.payrollLedger.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
+    await this.audit.record("payroll_ledger.reopen", "payroll_ledger", user.id, id, { before_status: current.status, after_status: "draft" });
+    return row;
+  }
   async confirm(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("PAYROLL_NOT_CONFIRMABLE", "只有草稿台账可以确认"); const row = await this.prisma.payrollLedger.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } }); await this.audit.record("payroll_ledger.confirm", "payroll_ledger", user.id, id); return row; }
   async adjustment(id: string, input: { adjustment_type: string; effect: string; amount: string; reason: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) { const ledger = await this.get(id); if (!["draft", "confirmed", "partially_paid"].includes(ledger.status)) throw this.invalid("PAYROLL_NOT_ADJUSTABLE", "当前台账不可调整"); if (!input.reason?.trim() || !["increase", "decrease"].includes(input.effect)) throw this.invalid("INVALID_PAYROLL_ADJUSTMENT", "调整方向和原因必填"); const row = await this.prisma.payrollAdjustment.create({ data: { adjustmentNo: this.number("PADJ"), ledgerId: id, employeeId: ledger.employeeId, adjustmentType: input.adjustment_type, effect: input.effect, amount: this.positive(input.amount), reason: input.reason.trim(), attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("payroll_adjustment.create", "payroll_adjustment", user.id, row.id, { ledger_id: id, amount: row.amount.toString() }); return row; }
   async postAdjustment(id: string, user: CurrentUser) { const row = await this.prisma.payrollAdjustment.findFirst({ where: { id, deletedAt: null } }); if (!row) throw this.notFound("PAYROLL_ADJUSTMENT_NOT_FOUND", "薪资调整不存在"); if (row.status !== "draft") throw this.invalid("PAYROLL_ADJUSTMENT_NOT_POSTABLE", "只有草稿调整可以过账"); const result = await this.prisma.payrollAdjustment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } }); await this.audit.record("payroll_adjustment.post", "payroll_adjustment", user.id, id, { ledger_id: row.ledgerId }); return result; }

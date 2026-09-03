@@ -33,3 +33,7 @@ export function payrollStatus(payableAmount: string, paidAmount: string) {
   const paid = new Prisma.Decimal(paidAmount);
   return paid.eq(0) ? "confirmed" : paid.gte(payable) ? "paid" : "partially_paid";
 }
+
+export function canReopenPayroll(status: string) {
+  return status === "confirmed" || status === "expired";
+}
