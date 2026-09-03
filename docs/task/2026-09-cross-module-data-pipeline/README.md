@@ -1,5 +1,7 @@
 # 跨模块数据管线开发任务
 
+施工入口：[跨模块合并施工计划](../../design/2026-09-cross-module-merged-implementation-plan.md)
+
 来源规格：[跨模块数据管线开发改进规格](../../design/cross-module-data-pipeline-improvement-spec-2026-09-03.md)
 
 本目录将已确认的规格拆成 7 个可独立验收的垂直任务。每个任务均覆盖数据模型、API、前端和测试。
