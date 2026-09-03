@@ -119,12 +119,14 @@ export class EmployeeDailyReportsService {
     if (employee?.employeeType !== "workshop") {
       const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
       if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
+      await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
       return;
     }
     const rows = await client.employeeDailyReport.findMany({ where: { deletedAt: null, employeeId, productionOrderId, reportDate, wageMode }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
     const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
     if (!rows.length) {
       if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
+      await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
       return;
     }
     const quantity = rows.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
