@@ -138,7 +138,7 @@ export class EmployeeDailyReportsService {
     const data = { employeeId, productionOrderId, orderNo, periodStart: reportDate, periodEnd: reportDate, wageMode, quantity, durationMinutes, amount, sourceSnapshot: sourceSnapshot as Prisma.InputJsonValue, remark: null };
     await client.productionPayrollSource.upsert({
       where: { employeeId_productionOrderId_periodStart_periodEnd_wageMode: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode } },
-      update: { ...data, ...this.audit.update(user) },
+      update: { ...data, deletedAt: null, deletedBy: null, ...this.audit.update(user) },
       create: { ...data, ...this.audit.create(user) },
     });
     await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
