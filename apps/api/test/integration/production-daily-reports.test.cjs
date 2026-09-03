@@ -45,6 +45,12 @@ test("production.daily-reports.calculates-progress-payroll-and-alert-lifecycle",
     dailyAlerts = await alerts.list({ alert_type: "daily_discrepancy" }); assert.equal(dailyAlerts[0].status, "recovered");
     d7Progress = await progressService.getProductionOrderProgress(productionOrder.id); assert.equal(d7Progress.status, "production_completed"); assert.equal(d7Progress.blockers.length, 0); assert.equal(d7Progress.capability_not_implemented.length, 0);
     const sources = await employeeReports.payrollSources({ from: "2026-08-01", to: "2026-08-31" }); assert.equal(sources.length, 2); assert.deepEqual(sources.map((item) => item.amount).sort(), ["12", "180"]);
+    const sourceBeforeReentry = await prisma.productionPayrollSource.findFirst({ where: { employeeId: employee.id, productionOrderId: productionOrder.id, wageMode: "piece_rate", deletedAt: null } }); assert.ok(sourceBeforeReentry);
+    await employeeReports.remove(piece.id, "重新登记测试", user);
+    assert.equal(await prisma.productionPayrollSource.findFirst({ where: { id: sourceBeforeReentry.id, deletedAt: null } }), null);
+    const reentered = await employeeReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, employee_id: employee.id, report_date: "2026-08-21", wage_mode: "piece_rate", quantity: "6", unit_price: "2" }, user);
+    assert.equal(reentered.calculatedAmount.toString(), "12");
+    const sourceAfterReentry = await prisma.productionPayrollSource.findFirst({ where: { id: sourceBeforeReentry.id, deletedAt: null } }); assert.ok(sourceAfterReentry); assert.equal(sourceAfterReentry.amount.toString(), "12");
     const extra = await operationReports.create({ production_order_id: productionOrder.id, production_order_operation_id: productionOperation.id, report_date: "2026-08-21", completed_quantity: "1" }, user); dailyAlerts = await alerts.list({ alert_type: "over_order" }); assert.equal(dailyAlerts[0].status, "pending");
     await operationReports.update(first.id, { completed_quantity: "6", reason: "复核日报", expected_version: 1 }, user);
     await assert.rejects(() => operationReports.update(first.id, { completed_quantity: "7", reason: "并发旧版本", expected_version: 1 }, user), (error) => error.getResponse().code === "DAILY_REPORT_VERSION_CONFLICT");
