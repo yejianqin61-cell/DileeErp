@@ -22,21 +22,27 @@ export class FinishedGoodsInventoryService {
   }
 
   async createInbound(input: InventoryInput, user: CurrentUser) {
-    const qc = await this.requireQc(input.qc_record_id);
     const quantity = this.decimal(input.quantity, "INVALID_FINISHED_GOODS_INBOUND_QUANTITY");
-    const available = await this.acceptedAvailable(qc.id);
-    if (quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_INBOUND_QUANTITY_EXCEEDED", available);
-    const row = await this.prisma.finishedGoodsInbound.create({ data: { inboundNo: this.number("FGI"), orderNo: qc.orderNo, productionOrderId: qc.productionOrderId, qcRecordId: qc.id, submissionId: qc.submissionId, unitId: qc.submission.unitId, productNameSnapshot: qc.submission.productNameSnapshot, productSpecificationSnapshot: qc.submission.productSpecificationSnapshot, quantity, idempotencyKey: input.idempotency_key?.trim() || `draft:${randomUUID()}`, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_qc_records WHERE id = ${input.qc_record_id}::uuid FOR UPDATE`;
+      const qc = await this.requireQc(input.qc_record_id, tx);
+      const available = await this.acceptedAvailable(qc.id, tx);
+      if (quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_INBOUND_QUANTITY_EXCEEDED", available);
+      return tx.finishedGoodsInbound.create({ data: { inboundNo: this.number("FGI"), orderNo: qc.orderNo, productionOrderId: qc.productionOrderId, qcRecordId: qc.id, submissionId: qc.submissionId, unitId: qc.submission.unitId, productNameSnapshot: qc.submission.productNameSnapshot, productSpecificationSnapshot: qc.submission.productSpecificationSnapshot, quantity, idempotencyKey: input.idempotency_key?.trim() || `draft:${randomUUID()}`, remark: input.remark, ...this.audit.create(user) } });
+    });
     await this.audit.record("finished_goods_inbound.create", "finished_goods_inbound", user.id, row.id, { order_no: row.orderNo, qc_record_id: row.qcRecordId, quantity: quantity.toString() });
     return row;
   }
 
   async createDefective(input: InventoryInput, user: CurrentUser) {
-    const qc = await this.requireQc(input.qc_record_id);
     const quantity = this.decimal(input.quantity, "INVALID_FINISHED_GOODS_DEFECTIVE_QUANTITY");
-    const available = await this.rejectedAvailable(qc.id);
-    if (quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_DEFECTIVE_QUANTITY_EXCEEDED", available);
-    const row = await this.prisma.finishedGoodsDefective.create({ data: { defectiveNo: this.number("FGD"), orderNo: qc.orderNo, productionOrderId: qc.productionOrderId, qcRecordId: qc.id, submissionId: qc.submissionId, unitId: qc.submission.unitId, productNameSnapshot: qc.submission.productNameSnapshot, productSpecificationSnapshot: qc.submission.productSpecificationSnapshot, quantity, idempotencyKey: input.idempotency_key?.trim() || `draft:${randomUUID()}`, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_qc_records WHERE id = ${input.qc_record_id}::uuid FOR UPDATE`;
+      const qc = await this.requireQc(input.qc_record_id, tx);
+      const available = await this.rejectedAvailable(qc.id, tx);
+      if (quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_DEFECTIVE_QUANTITY_EXCEEDED", available);
+      return tx.finishedGoodsDefective.create({ data: { defectiveNo: this.number("FGD"), orderNo: qc.orderNo, productionOrderId: qc.productionOrderId, qcRecordId: qc.id, submissionId: qc.submissionId, unitId: qc.submission.unitId, productNameSnapshot: qc.submission.productNameSnapshot, productSpecificationSnapshot: qc.submission.productSpecificationSnapshot, quantity, idempotencyKey: input.idempotency_key?.trim() || `draft:${randomUUID()}`, remark: input.remark, ...this.audit.create(user) } });
+    });
     await this.audit.record("finished_goods_defective.create", "finished_goods_defective", user.id, row.id, { order_no: row.orderNo, qc_record_id: row.qcRecordId, quantity: quantity.toString() });
     return row;
   }
@@ -113,14 +119,14 @@ export class FinishedGoodsInventoryService {
     return { qc_id: qc.id, qc_no: qc.qcNo, order_no: qc.orderNo, accepted_quantity: qc.qualifiedQuantity.plus(qc.conditionalAcceptQuantity).toString(), rejected_quantity: qc.rejectedQuantity.toString(), inbound_quantity: inbound.toString(), defective_quantity: defective.toString(), available_for_inbound_quantity: qc.qualifiedQuantity.plus(qc.conditionalAcceptQuantity).minus(inbound).toString(), available_for_defective_quantity: qc.rejectedQuantity.minus(defective).toString() };
   }
 
-  private async requireQc(id: string) {
-    const qc = await this.prisma.finishedGoodsQcRecord.findFirst({ where: { id, deletedAt: null, status: "active" }, include: { submission: true } });
+  private async requireQc(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
+    const qc = await client.finishedGoodsQcRecord.findFirst({ where: { id, deletedAt: null, status: "active" }, include: { submission: true } });
     if (!qc || !["submitted", "inspecting", "qc_completed"].includes(qc.submission.status)) throw this.notFound("FINISHED_GOODS_QC_NOT_AVAILABLE", "成品 QC 不存在或不可作为库存来源");
     return qc;
   }
 
-  private async acceptedUsed(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const result = await client.finishedGoodsInbound.aggregate({ where: { qcRecordId, deletedAt: null, status: "posted" }, _sum: { quantity: true } }); return new Prisma.Decimal(result._sum.quantity ?? 0); }
-  private async rejectedUsed(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const result = await client.finishedGoodsDefective.aggregate({ where: { qcRecordId, deletedAt: null, status: "posted" }, _sum: { quantity: true } }); return new Prisma.Decimal(result._sum.quantity ?? 0); }
+  private async acceptedUsed(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const result = await client.finishedGoodsInbound.aggregate({ where: { qcRecordId, deletedAt: null, status: { in: ["draft", "posted"] } }, _sum: { quantity: true } }); return new Prisma.Decimal(result._sum.quantity ?? 0); }
+  private async rejectedUsed(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const result = await client.finishedGoodsDefective.aggregate({ where: { qcRecordId, deletedAt: null, status: { in: ["draft", "posted"] } }, _sum: { quantity: true } }); return new Prisma.Decimal(result._sum.quantity ?? 0); }
   private async acceptedAvailable(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const qc = await client.finishedGoodsQcRecord.findFirst({ where: { id: qcRecordId, deletedAt: null, status: "active" } }); if (!qc) throw this.notFound("FINISHED_GOODS_QC_NOT_AVAILABLE", "成品 QC 不存在或已更正"); return qc.qualifiedQuantity.plus(qc.conditionalAcceptQuantity).minus(await this.acceptedUsed(qcRecordId, client)); }
   private async rejectedAvailable(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const qc = await client.finishedGoodsQcRecord.findFirst({ where: { id: qcRecordId, deletedAt: null, status: "active" } }); if (!qc) throw this.notFound("FINISHED_GOODS_QC_NOT_AVAILABLE", "成品 QC 不存在或已更正"); return qc.rejectedQuantity.minus(await this.rejectedUsed(qcRecordId, client)); }
   private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.lte(0)) throw new Error(); return result; } catch { throw new UnprocessableEntityException({ code, message: "数量必须是大于零的十进制数", details: [] }); } }

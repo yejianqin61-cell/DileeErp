@@ -138,6 +138,11 @@ export class FinishedGoodsQcService {
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "更正 QC 必须填写原因", details: [] });
     const current = await this.prisma.finishedGoodsQcRecord.findFirst({ where: { id, deletedAt: null, status: "active" }, include: { submission: true } });
     if (!current) throw new NotFoundException({ code: "FINISHED_GOODS_QC_NOT_FOUND", message: "成品 QC 记录不存在或已更正", details: [] });
+    const [inboundCount, defectiveCount] = await Promise.all([
+      this.prisma.finishedGoodsInbound.count({ where: { qcRecordId: id, deletedAt: null, status: { in: ["draft", "posted"] } } }),
+      this.prisma.finishedGoodsDefective.count({ where: { qcRecordId: id, deletedAt: null, status: { in: ["draft", "posted"] } } })
+    ]);
+    if (inboundCount || defectiveCount) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_DOWNSTREAM_EXISTS", message: "已有成品入库或不良品下游事实，必须先删除草稿或冲销过账记录后再更正 QC", details: [{ inbound_count: inboundCount, defective_count: defectiveCount }] });
     const quantities = deriveFinishedGoodsQcConclusion({ inspected_quantity: input.inspected_quantity, qualified_quantity: input.qualified_quantity, conditional_accept_quantity: input.conditional_accept_quantity, rejected_quantity: input.rejected_quantity });
     if (quantities.rejected_quantity !== "0" && !input.rejection_reason?.trim()) throw new UnprocessableEntityException({ code: "QC_REJECTION_REASON_REQUIRED", message: "存在不合格数量时必须填写原因", details: [] });
     const replacement = await this.prisma.$transaction(async (tx) => {
