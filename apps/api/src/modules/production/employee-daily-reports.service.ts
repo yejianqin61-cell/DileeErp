@@ -25,7 +25,7 @@ export class EmployeeDailyReportsService {
   async create(input: Input, user: CurrentUser) {
     if (input.idempotency_key) { const previous = await this.prisma.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } }); if (previous) return this.get(previous.id); }
     const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
-    const values = this.values(input, await this.defaultRate(input, refs));
+    const values = this.values(input);
     const created = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${refs.operation.id}::uuid FOR UPDATE`;
       const otherMode = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: { not: input.wage_mode }, deletedAt: null }, select: { wageMode: true } });
@@ -50,7 +50,7 @@ export class EmployeeDailyReportsService {
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
     const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: input.remark ?? current.remark ?? undefined };
-    const values = this.values(merged, await this.defaultRate(merged, refs));
+    const values = this.values(merged);
     const updated = await this.prisma.$transaction(async (tx) => {
       const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
       await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
@@ -100,20 +100,14 @@ export class EmployeeDailyReportsService {
     return { order, operation, employee, reportDate };
   }
 
-  private async defaultRate(input: Input, refs: { operation: { operationCatalogId: string }; reportDate: Date }) {
-    if (input.unit_price?.trim()) return undefined;
-    const rate = await this.prisma.operationRate.findFirst({ where: { employeeId: input.employee_id, operationId: refs.operation.operationCatalogId, wageMode: input.wage_mode, effectiveFrom: { lte: refs.reportDate }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: refs.reportDate } }], deletedAt: null }, orderBy: { effectiveFrom: "desc" } });
-    return rate?.unitPrice.toString();
-  }
-
-  private values(input: Input, defaultUnitPrice?: string) {
+  private values(input: Input) {
     if (input.wage_mode !== "piece_rate" && input.wage_mode !== "time_rate") throw new UnprocessableEntityException({ code: "INVALID_WAGE_MODE", message: "计薪方式无效", details: [] });
     const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", "计件日报件数必须大于零") : new Prisma.Decimal(0);
     if (input.wage_mode === "piece_rate" && quantity.isZero()) throw new UnprocessableEntityException({ code: "PIECE_REPORT_QUANTITY_REQUIRED", message: "计件日报必须填写件数", details: [] });
     const durationInput = input.duration_minutes?.trim() ? input.duration_minutes : undefined;
     const durationMinutes = durationInput === undefined ? undefined : this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须大于零");
     if (input.wage_mode === "time_rate" && !durationMinutes) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长", details: [] });
-    const unitPrice = input.unit_price?.trim() || defaultUnitPrice;
+    const unitPrice = input.unit_price?.trim();
     if (!unitPrice) throw new UnprocessableEntityException({ code: "DAILY_WAGE_PRICE_REQUIRED", message: "请填写当日人工单价", details: [] });
     const price = this.decimal(unitPrice, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true);
     const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).mul(price);
