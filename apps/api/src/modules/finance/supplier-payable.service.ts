@@ -83,6 +83,7 @@ export class SupplierPayableService {
 
   async refreshStatus(client: Prisma.TransactionClient, id: string, user: CurrentUser) {
     const { entry, available } = await this.allocationBalance(id, client);
+    if (["reversed", "voided"].includes(entry.status)) return entry;
     const next = available.eq(0) ? "paid" : available.lt(entry.amount) ? "partially_paid" : "confirmed";
     return client.supplierPayableEntry.update({ where: { id }, data: { status: next, ...this.audit.update(user) } });
   }
