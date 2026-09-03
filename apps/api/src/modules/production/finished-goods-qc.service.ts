@@ -49,6 +49,7 @@ export class FinishedGoodsQcService {
     const quantity = this.decimal(input.submitted_quantity, "INVALID_FINISHED_GOODS_SUBMISSION_QUANTITY");
     const date = this.date(input.submission_date);
     const created = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${source.productionOrder.id}::uuid FOR UPDATE`;
       const available = await this.sourceAvailable(tx, source.productionOrder.id, input.source_type, input.source_id);
       if (quantity.gt(available)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED", message: "送检数量超过来源可送检数量", details: [{ available_quantity: available.toString() }] });
       const row = await tx.finishedGoodsInspectionSubmission.create({ data: { submissionNo: `FGI-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: source.productionOrder.orderNo, productionOrderId: source.productionOrder.id, sourceType: input.source_type, sourceId: input.source_id, productionOrderNoSnapshot: source.productionOrder.productionOrderNo, productNameSnapshot: source.productName, productSpecificationSnapshot: source.productionOrder.productSpecification, unitId: source.unitId, unitNameSnapshot: source.unitName, submittedQuantity: quantity, submissionDate: date, remark: input.remark, ...this.audit.create(user) } });
@@ -104,6 +105,7 @@ export class FinishedGoodsQcService {
     const inspected = new Prisma.Decimal(quantities.inspected_quantity);
     const date = this.date(input.inspection_date);
     const created = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_inspection_submissions WHERE id = ${submission.id}::uuid FOR UPDATE`;
       const existing = await tx.finishedGoodsQcRecord.aggregate({ where: { submissionId: submission.id, status: "active", deletedAt: null }, _sum: { inspectedQuantity: true } });
       const used = new Prisma.Decimal(existing._sum.inspectedQuantity ?? 0);
       if (used.plus(inspected).gt(submission.submittedQuantity)) throw new UnprocessableEntityException({ code: "QC_INSPECTION_QUANTITY_EXCEEDED", message: "累计检验数量超过送检数量", details: [{ remaining_quantity: submission.submittedQuantity.minus(used).toString() }] });
