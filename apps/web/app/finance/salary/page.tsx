@@ -79,7 +79,7 @@ export default function SalaryPage() {
     setDialog({
       title: "新建工资台账",
       fields: [
-        { name: "employee_name", label: "员工姓名", type: "select", required: true, options: employees.map((item) => ({ value: item.name, label: item.name + " / " + item.employeeNo + " / " + (item.employeeType === "workshop" ? "车间" : "非车间") })) },
+        { name: "employee_id", label: "员工", type: "select", required: true, options: employeeOptions },
         { name: "period_start", label: "周期开始", type: "date", required: true },
         { name: "period_end", label: "周期结束", type: "date", required: true },
         { name: "base_salary", label: "基本工资", type: "number", defaultValue: "0" },
@@ -111,13 +111,14 @@ export default function SalaryPage() {
         { name: "social_insurance", label: "社保", type: "number", defaultValue: ledger.socialInsurance },
         { name: "individual_tax", label: "个税", type: "number", defaultValue: ledger.individualTax },
         { name: "other_adjustment", label: "其他调整", type: "number", defaultValue: ledger.otherAdjustment },
-        { name: "remark", label: "备注", type: "textarea" }
+        { name: "remark", label: "备注", type: "textarea" },
+        ...(ledger.status === "confirmed" ? [{ name: "reason", label: "修改原因", type: "textarea", required: true } as ActionField] : [])
       ],
       submit: (values) => void run(apiPatch("/hr/payroll-ledgers/" + ledger.id, { ...values, currency: "CNY" }), "工资台账已更新")
     });
   }
 
-  const actionColumns = (ledger: Ledger) => <div className="action-row">{ledger.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/confirm"), "工资台账已确认")}>确认</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button><Button size="sm" variant="destructive" onClick={() => void run(apiRequest("/hr/payroll-ledgers/" + ledger.id, { method: "DELETE" }), "工资台账已删除")}>删除</Button></>}{ledger.status !== "draft" && <><Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/reopen"), "工资台账已回到草稿")}>回到草稿</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button></>}{ledger.status === "paid" && <Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/close"), "工资台账已关闭")}>关闭</Button>}</div>;
+  const actionColumns = (ledger: Ledger) => <div className="action-row">{ledger.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/confirm"), "工资台账已确认")}>确认</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button><Button size="sm" variant="destructive" onClick={() => void run(apiRequest("/hr/payroll-ledgers/" + ledger.id, { method: "DELETE" }), "工资台账已删除")}>删除</Button></>}{["confirmed", "expired"].includes(ledger.status) && <><Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/reopen"), "工资台账已回到草稿")}>回到草稿</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button></>}{ledger.status === "paid" && <Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/close"), "工资台账已关闭")}>关闭</Button>}</div>;
 
   const columns: ColumnDef<Ledger>[] = [
     { id: "employee", header: "员工", cell: ({ row }) => row.original.employee.employeeNo + " / " + row.original.employee.name },
