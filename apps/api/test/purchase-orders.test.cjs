@@ -21,3 +21,20 @@ test("only draft purchase orders can replace their rows", async () => {
   const service = new PurchaseOrdersService({ purchaseOrder: { findFirst: async () => ({ id: "purchase-1", status: "ordered", items: [] }) } }, {});
   await assert.rejects(() => service.update("purchase-1", {}, {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ORDER_NOT_EDITABLE");
 });
+
+test("completed receipt totals remain closable until arrival closure is recorded", async () => {
+  const rows = [
+    { id: "open", status: "arrived_complete", extensionData: { over_order: true } },
+    { id: "closed", status: "arrived_complete", extensionData: { arrival_closed: true } },
+  ];
+  const service = new PurchaseOrdersService({ purchaseOrder: { findMany: async () => rows } }, {});
+  const result = await service.list();
+  assert.equal(result.find((row) => row.id === "open").status, "partially_arrived");
+  assert.equal(result.find((row) => row.id === "closed").status, "arrived_complete");
+});
+
+test("closed arrival batches reject correction and cancellation", async () => {
+  const service = new PurchaseOrdersService({ purchaseReceipt: { findFirst: async () => ({ purchaseOrder: { extensionData: { arrival_closed: true } } }) } }, {});
+  await assert.rejects(() => service.updateReceiptV2("receipt-1", { quantity: "1", reason: "修正" }, {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ARRIVALS_CLOSED");
+  await assert.rejects(() => service.cancelReceiptV2("receipt-1", "撤销", {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ARRIVALS_CLOSED");
+});
