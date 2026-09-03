@@ -127,6 +127,7 @@ button { cursor: pointer; }
 .page-header p { margin: 7px 0 0; color: var(--text-muted); font-size: 13px; }
 .page-actions { display: flex; align-items: center; gap: 8px; }
 .action-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.action-row button:empty::after { content: "登记到货"; }
 .contact-block { border-top: 1px solid var(--border); padding: 8px 0; }
 .feedback-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; }
 .feedback-state strong { color: var(--text); font-size: 14px; }
