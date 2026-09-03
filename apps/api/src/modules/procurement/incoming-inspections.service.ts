@@ -14,12 +14,17 @@ export class IncomingInspectionsService {
     const values = [input.inspected_quantity, input.accepted_quantity, input.conditional_quantity, input.rejected_quantity].map(Number);
     const inspectedBefore = receipt.inspections.reduce((sum, inspection) => sum + Number(inspection.inspectedQuantity), 0);
     if (values.some((value) => !Number.isFinite(value) || value < 0) || values[1] + values[2] + values[3] !== values[0] || values[0] + inspectedBefore > Number(receipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] });
-    const status = values[3] === 0 && values[2] === 0 ? "accepted" : values[1] === 0 && values[2] === 0 ? "rejected" : values[2] > 0 ? "conditionally_accepted" : "partially_accepted";
-    const batchSequence = receipt.inspections.length || 1;
-    const pending = receipt.inspections.find((inspection) => Number(inspection.inspectedQuantity) === 0 && inspection.status === "pending");
-    const result = pending
-      ? await this.prisma.incomingInspection.update({ where: { id: pending.id }, data: { inspectedQuantity: input.inspected_quantity, acceptedQuantity: input.accepted_quantity, conditionalQuantity: input.conditional_quantity, rejectedQuantity: input.rejected_quantity, status, extensionData: { ...(pending.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark, ...this.audit.update(user) } })
-      : await this.prisma.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: receipt.orderNo, inspectedQuantity: input.inspected_quantity, acceptedQuantity: input.accepted_quantity, conditionalQuantity: input.conditional_quantity, rejectedQuantity: input.rejected_quantity, status, extensionData: { ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    const existing = receipt.inspections[0];
+    const inspected = (existing ? Number(existing.inspectedQuantity) : 0) + values[0];
+    const accepted = (existing ? Number(existing.acceptedQuantity) : 0) + values[1];
+    const conditional = (existing ? Number(existing.conditionalQuantity) : 0) + values[2];
+    const rejected = (existing ? Number(existing.rejectedQuantity) : 0) + values[3];
+    if (inspected > Number(receipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
+    const status = rejected === inspected ? "rejected" : accepted + conditional === inspected ? (conditional > 0 ? "conditionally_accepted" : "accepted") : "partially_accepted";
+    const batchSequence = 1;
+    const result = existing
+      ? await this.prisma.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected.toFixed(4), acceptedQuantity: accepted.toFixed(4), conditionalQuantity: conditional.toFixed(4), rejectedQuantity: rejected.toFixed(4), status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })
+      : await this.prisma.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: receipt.orderNo, inspectedQuantity: values[0].toFixed(4), acceptedQuantity: values[1].toFixed(4), conditionalQuantity: values[2].toFixed(4), rejectedQuantity: values[3].toFixed(4), status, extensionData: { ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
     await this.audit.record("incoming_inspection.create", "incoming_inspection", user.id, result.id, { order_no: receipt.orderNo, purchase_receipt_id: receipt.id, status });
     return result;
   }
