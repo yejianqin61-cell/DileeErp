@@ -22,7 +22,11 @@ export class RawMaterialInboundsService {
     });
   }
 
-  async create(input: { incoming_inspection_id: string; quantity: string; inventory_category?: string; remark?: string }, user: CurrentUser) {
+  async create(input: { incoming_inspection_id: string; quantity: string; inventory_category?: string; idempotency_key?: string; remark?: string }, user: CurrentUser) {
+    if (input.idempotency_key) {
+      const previous = await this.prisma.rawMaterialInbound.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });
+      if (previous) return previous;
+    }
     const quantity = this.positive(input.quantity, "入库数量必须是大于零的十进制数");
     if (input.inventory_category && input.inventory_category !== "raw_material") throw new UnprocessableEntityException({ code: "INVALID_INVENTORY_CATEGORY", message: "原料入库库存分类必须是 raw_material", details: [] });
     const preview = await this.requireInspection(input.incoming_inspection_id);
@@ -50,7 +54,7 @@ export class RawMaterialInboundsService {
           unitId: item.unitId,
           quantity: input.quantity,
           inventoryCategory: "raw_material",
-          idempotencyKey: `draft:${randomUUID()}`,
+          idempotencyKey: input.idempotency_key ?? `draft:${randomUUID()}`,
           remark: input.remark,
           ...this.audit.create(user)
         }

@@ -6,7 +6,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { RawMaterialInboundsService } from "./raw-material-inbounds.service";
-class InboundDto { @IsUUID() incoming_inspection_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() inventory_category?: string; @IsOptional() @IsString() remark?: string; }
+class InboundDto { @IsUUID() incoming_inspection_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() inventory_category?: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
 class ReverseDto { @IsString() reason!: string; }
 class UpdateInboundDto { @IsString() quantity!: string; @IsOptional() @IsString() remark?: string; }
 @Controller() @UseGuards(AuthenticationGuard, ModulePermissionGuard)
