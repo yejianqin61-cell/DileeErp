@@ -40,6 +40,15 @@ export class SalesOrdersService {
   async update(id: string, input: SalesOrderUpdate, user: CurrentUser) {
     const current = await this.get(id);
     if (current.status === "closed") throw new UnprocessableEntityException({ code: "SALES_ORDER_CLOSED", message: "已关闭销售单不可编辑", details: [] });
+    if (current.status === "confirmed" && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已确认销售单修改必须填写原因", details: [] });
+    const coreFields = ["product_name", "product_spec", "quantity", "unit", "currency", "unit_price", "total_amount", "tax_rate"] as const;
+    if (current.status === "confirmed" && coreFields.some((field) => input[field] !== undefined)) {
+      const [purchaseCount, productionCount] = await Promise.all([
+        this.prisma.purchaseOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
+        this.prisma.productionOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
+      ]);
+      if (current.boms.length || purchaseCount || productionCount) throw new UnprocessableEntityException({ code: "SALES_ORDER_CORE_FIELDS_LOCKED", message: "销售单已有 BOM、采购或生产下游事实，核心字段需先回退下游", details: [{ bom_count: current.boms.length, purchase_order_count: purchaseCount, production_order_count: productionCount }] });
+    }
     const refs = await this.resolveReferences({ customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined }, user);
     const nextInput = { ...input, customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined, order_no: current.orderNo, order_date: input.order_date ?? current.orderDate.toISOString(), product_name: input.product_name ?? current.productName, quantity: input.quantity ?? current.quantity.toString(), unit: input.unit ?? current.unit, currency: input.currency ?? current.currency, extension_data: input.extension_data ?? (current.extensionData as Record<string, unknown>) };
     const nextVersion = current.currentVersion + 1;
