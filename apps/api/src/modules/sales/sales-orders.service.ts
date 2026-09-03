@@ -76,6 +76,20 @@ export class SalesOrdersService {
     return updated;
   }
 
+  async revertToDraft(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "销售单回退草稿必须填写原因", details: [] });
+    const current = await this.get(id);
+    if (current.status !== "confirmed") throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_REVERTIBLE", message: "仅已确认销售单可以回退草稿", details: [] });
+    const [purchaseCount, productionCount] = await Promise.all([
+      this.prisma.purchaseOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
+      this.prisma.productionOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
+    ]);
+    if (current.boms.length || purchaseCount || productionCount) throw new UnprocessableEntityException({ code: "SALES_ORDER_DOWNSTREAM_EXISTS", message: "销售单已有 BOM、采购或生产下游事实，不能直接回退", details: [{ bom_count: current.boms.length, purchase_order_count: purchaseCount, production_order_count: productionCount }] });
+    const updated = await this.prisma.salesOrder.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
+    await this.audit.record("sales_order.revert_to_draft", "sales_order", user.id, id, { order_no: current.orderNo, reason: reason.trim(), from: "confirmed", to: "draft" });
+    return updated;
+  }
+
   async close(id: string, user: CurrentUser) {
     const order = await this.get(id);
     if (order.status !== "confirmed") throw new UnprocessableEntityException({ code: "INVALID_STATE_TRANSITION", message: "只有已确认销售单可以关闭", details: [{ from: order.status, to: "closed" }] });
