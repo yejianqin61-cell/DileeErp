@@ -30,6 +30,8 @@ export class RawMaterialInboundsService {
     }
 
     const item = inspection.purchaseReceipt.purchaseOrderItem;
+    if (input.inventory_category && input.inventory_category !== "raw_material") throw new UnprocessableEntityException({ code: "INVALID_INVENTORY_CATEGORY", message: "原料入库库存分类必须是 raw_material", details: [] });
+    if (item.material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "INBOUND_FINISHED_PRODUCT_FORBIDDEN", message: "原料入库只能接收原料物料", details: [] });
     const inbound = await this.prisma.rawMaterialInbound.create({
       data: {
         inboundNo: `RM-${randomUUID().slice(0, 12).toUpperCase()}`,
@@ -42,7 +44,7 @@ export class RawMaterialInboundsService {
         supplierId: inspection.purchaseReceipt.purchaseOrder.supplierId,
         unitId: item.unitId,
         quantity: input.quantity,
-        inventoryCategory: input.inventory_category ?? "raw_material",
+        inventoryCategory: "raw_material",
         idempotencyKey: `draft:${randomUUID()}`,
         remark: input.remark,
         ...this.audit.create(user)
@@ -189,7 +191,7 @@ export class RawMaterialInboundsService {
   private async requireInspection(id: string) {
     const inspection = await this.prisma.incomingInspection.findFirst({
       where: { id, deletedAt: null, status: { in: ["accepted", "conditionally_accepted", "partially_accepted", "completed"] } },
-      include: { rawMaterialInbounds: { where: { deletedAt: null } }, purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: true } } }
+      include: { rawMaterialInbounds: { where: { deletedAt: null } }, purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: { include: { material: true } } } } }
     });
     if (!inspection) throw new NotFoundException({ code: "INSPECTION_NOT_AVAILABLE", message: "QC 不存在或不允许入库", details: [] });
     return inspection;
