@@ -16,7 +16,7 @@ export class PayrollLedgerService {
     if (!input.employee_id && !input.employee_name?.trim()) throw this.invalid("EMPLOYEE_REQUIRED", "请选择员工姓名");
     const employees = await this.prisma.employee.findMany({ where: input.employee_id ? { id: input.employee_id, deletedAt: null } : { name: input.employee_name!.trim(), deletedAt: null }, orderBy: { employeeNo: "asc" } });
     if (!employees.length) throw this.notFound("EMPLOYEE_NOT_FOUND", "员工不存在");
-    if (!input.employee_id && employees.length > 1) throw this.invalid("EMPLOYEE_NAME_AMBIGUOUS", "存在同名员工，请选择具体工号");
+    if (!input.employee_id && employees.length > 1) throw this.invalid("EMPLOYEE_NAME_AMBIGUOUS", "存在同名员工，请选择具体工号", employees.map((item) => ({ employee_id: item.id, employee_no: item.employeeNo, name: item.name, employee_type: item.employeeType })));
     const employee = employees[0];
     const existing = await this.prisma.payrollLedger.findFirst({ where: { employeeId: employee.id, periodStart: start, periodEnd: end, deletedAt: null } }); if (existing) return this.get(existing.id);
     const sourceData = await this.collectProductionSources(employee.id, start, end);
@@ -60,5 +60,5 @@ export class PayrollLedgerService {
   private date(value: string) { const d = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(d.valueOf())) throw this.invalid("INVALID_DATE", "日期无效"); return d; }
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }
-  private invalid(code: string, message: string) { return new UnprocessableEntityException({ code, message, details: [] }); }
+  private invalid(code: string, message: string, details: unknown[] = []) { return new UnprocessableEntityException({ code, message, details }); }
 }
