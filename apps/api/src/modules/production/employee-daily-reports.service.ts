@@ -28,6 +28,8 @@ export class EmployeeDailyReportsService {
     const values = this.values(input, await this.defaultRate(input, refs));
     const created = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${refs.operation.id}::uuid FOR UPDATE`;
+      const otherMode = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: { not: input.wage_mode }, deletedAt: null }, select: { wageMode: true } });
+      if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: input.wage_mode }] });
       const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
       const row = existing
         ? await tx.employeeDailyReport.update({ where: { id: existing.id }, data: { quantity: existing.quantity.plus(values.quantity), durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: existing.calculatedAmount.plus(values.amount), remark: input.remark ?? existing.remark, version: { increment: 1 }, ...this.audit.update(user) } })

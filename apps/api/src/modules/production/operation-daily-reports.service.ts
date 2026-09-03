@@ -39,11 +39,15 @@ export class OperationDailyReportsService {
     const quantity = this.decimal(input.completed_quantity, "INVALID_OPERATION_REPORT_QUANTITY", "工序日报完成量必须是大于零的十进制数");
     const refs = await this.refs(input.production_order_id, input.production_order_operation_id);
     const created = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.operationDailyReport.create({ data: {
-        productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, orderNo: refs.order.orderNo,
-        idempotencyKey: input.idempotency_key, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot,
-        unitId: refs.operation.unitId, reportDate, completedQuantity: quantity, remark: input.remark, ...this.audit.create(user),
-      } });
+      await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${refs.operation.id}::uuid FOR UPDATE`;
+      const existing = await tx.operationDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, reportDate, deletedAt: null }, orderBy: { createdAt: "asc" } });
+      const row = existing
+        ? await tx.operationDailyReport.update({ where: { id: existing.id }, data: { completedQuantity: existing.completedQuantity.plus(quantity), remark: input.remark ?? existing.remark, version: { increment: 1 }, ...this.audit.update(user) } })
+        : await tx.operationDailyReport.create({ data: {
+          productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, orderNo: refs.order.orderNo,
+          idempotencyKey: input.idempotency_key, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot,
+          unitId: refs.operation.unitId, reportDate, completedQuantity: quantity, remark: input.remark, ...this.audit.create(user),
+        } });
       await this.recomputeOverOrder(tx, refs.order.id, refs.operation.id, user);
       await this.progressService.recalculateInTransaction(tx, refs.order.id, "operation_daily_report", row.id, user);
       return row;
