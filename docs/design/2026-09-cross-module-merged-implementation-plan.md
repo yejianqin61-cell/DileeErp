@@ -124,6 +124,7 @@
 - 工资台账回退测试：`6f96190`；当前 `npm run test:unit` 共 75 项通过，API/Web 构建和 `npm run release:verify` 通过。
 - 到货关闭状态机补强：`c8dc1b7`；达到计划量但尚未关闭的采购单仍可执行 close case，关闭后批次不可更正或撤销。
 - 成品 QC 并发数量门禁：`6738cc0`；送检来源和同一送检单的分批 QC 在累计校验前锁定来源，避免并发超量。
+- 原料库存余额物料边界：`7efa54c`；共享原料余额入口拒绝将成品物料事实计入原料库存，并新增单元回归。
 - 本次增量后 `npm run test:unit` 共 77 项通过，API/Web 构建通过；真实 PostgreSQL、HTTP 与浏览器验收仍未配置环境，未据此标记整体验收完成。
 
 真实 PostgreSQL、HTTP 和浏览器链路仍需在配置 `TEST_DATABASE_URL`、`API_BASE_URL` 的环境中执行；未完成前不将 T07 标记为整体完成。
