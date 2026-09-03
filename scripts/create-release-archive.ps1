@@ -1,7 +1,7 @@
 param([string]$Output = "DileeErp-latest.tar.gz")
 $ErrorActionPreference = "Stop"
 $version = (git rev-parse HEAD).Trim()
-if ((git status --porcelain) -ne "") { throw "工作区存在未提交改动，请先提交后再生成发布包" }
+if ((git diff --quiet) -eq $false -or (git diff --cached --quiet) -eq $false) { throw "工作区存在已跟踪的未提交改动，请先提交后再生成发布包" }
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("dilee-release-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
