@@ -38,3 +38,20 @@ test("closed arrival batches reject correction and cancellation", async () => {
   await assert.rejects(() => service.updateReceiptV2("receipt-1", { quantity: "1", reason: "修正" }, {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ARRIVALS_CLOSED");
   await assert.rejects(() => service.cancelReceiptV2("receipt-1", "撤销", {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ARRIVALS_CLOSED");
 });
+
+test("arrived-complete orders accept another receipt before close", async () => {
+  const created = { id: "receipt-2", quantity: new (require("@prisma/client").Prisma.Decimal)("2"), extensionData: {} };
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseOrder: { findFirst: async () => ({ id: "purchase-1", orderNo: "SO-1", status: "arrived_complete", extensionData: {}, supplierId: "supplier-1", currency: "CNY", items: [{ id: "item-1", quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("2"), material: { materialType: "raw_material" }, receipts: [{ id: "receipt-1", quantity: new (require("@prisma/client").Prisma.Decimal)("10"), extensionData: {} }] }] }), update: async ({ data }) => ({ id: "purchase-1", orderNo: "SO-1", extensionData: data.extensionData }) },
+    purchaseReceipt: { create: async () => created },
+    incomingInspection: { create: async () => ({ id: "inspection-2" }) },
+    payableSource: { create: async () => ({ id: "payable-2" }) },
+    purchaseOrderItem: { findMany: async () => [] },
+  };
+  tx.purchaseOrderItem.findMany = async () => [{ quantity: new (require("@prisma/client").Prisma.Decimal)("10"), receipts: [{ quantity: new (require("@prisma/client").Prisma.Decimal)("10") }, { quantity: new (require("@prisma/client").Prisma.Decimal)("2") }] }];
+  const audit = { create: () => ({}), update: () => ({}), record: async () => undefined };
+  const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, audit);
+  const result = await service.receiptV2("purchase-1", "item-1", { quantity: "2", received_date: "2026-09-03", over_receipt_reason: "追加到货" }, { id: "user-1" });
+  assert.equal(result.id, "receipt-2");
+});
