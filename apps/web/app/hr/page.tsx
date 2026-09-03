@@ -846,6 +846,21 @@ export default function HrPage() {
               关闭
             </Button>
           )}
+          {["confirmed", "expired"].includes(row.original.status) && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                void action(
+                  `/hr/payroll-ledgers/${row.original.id}/reopen`,
+                  undefined,
+                  "薪资台账已回到草稿",
+                )
+              }
+            >
+              回到草稿
+            </Button>
+          )}
         </>
       ),
     },
