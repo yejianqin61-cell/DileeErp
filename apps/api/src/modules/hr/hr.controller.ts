@@ -41,7 +41,7 @@ export class HrController {
   @Post("payroll-ledgers/generate") generateLedger(@Body() body: PayrollGenerateDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.generate(body, user)); }
   @Patch("payroll-ledgers/:id") updateLedger(@Param("id") id: string, @Body() body: PayrollUpdateDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.update(id, body, user)); }
   @Delete("payroll-ledgers/:id") removeLedger(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.remove(id, user)); }
-  @Post("payroll-ledgers/:id/reopen") reopenLedger(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.reopen(id, user)); }
+  @Post("payroll-ledgers/:id/reopen") reopenLedger(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.reopen(id, body.reason, user)); }
   @Post("payroll-ledgers/:id/confirm") confirmLedger(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.confirm(id, user)); }
   @Post("payroll-ledgers/:id/close") closeLedger(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.close(id, user)); }
   @Get("payroll-ledgers/:id/summary") summary(@Param("id") id: string) { return this.wrap(this.payroll.summary(id)); }

@@ -118,7 +118,11 @@ export default function SalaryPage() {
     });
   }
 
-  const actionColumns = (ledger: Ledger) => <div className="action-row">{ledger.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/confirm"), "工资台账已确认")}>确认</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button><Button size="sm" variant="destructive" onClick={() => void run(apiRequest("/hr/payroll-ledgers/" + ledger.id, { method: "DELETE" }), "工资台账已删除")}>删除</Button></>}{["confirmed", "expired"].includes(ledger.status) && <><Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/reopen"), "工资台账已回到草稿")}>回到草稿</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button></>}{ledger.status === "paid" && <Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/close"), "工资台账已关闭")}>关闭</Button>}</div>;
+  function reopenLedger(ledger: Ledger) {
+    setDialog({ title: "工资台账回退草稿", fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (values) => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/reopen", values), "工资台账已回到草稿") });
+  }
+
+  const actionColumns = (ledger: Ledger) => <div className="action-row">{ledger.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/confirm"), "工资台账已确认")}>确认</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button><Button size="sm" variant="destructive" onClick={() => void run(apiRequest("/hr/payroll-ledgers/" + ledger.id, { method: "DELETE" }), "工资台账已删除")}>删除</Button></>}{["confirmed", "expired"].includes(ledger.status) && <><Button size="sm" variant="secondary" onClick={() => reopenLedger(ledger)}>回到草稿</Button><Button size="sm" variant="secondary" onClick={() => editLedger(ledger)}>编辑</Button></>}{ledger.status === "paid" && <Button size="sm" variant="secondary" onClick={() => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/close"), "工资台账已关闭")}>关闭</Button>}</div>;
 
   const columns: ColumnDef<Ledger>[] = [
     { id: "employee", header: "员工", cell: ({ row }) => row.original.employee.employeeNo + " / " + row.original.employee.name },

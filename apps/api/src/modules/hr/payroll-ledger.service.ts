@@ -38,12 +38,13 @@ export class PayrollLedgerService {
     return row;
   }
   async remove(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("PAYROLL_NOT_DELETABLE", "只有草稿台账可以删除"); return this.prisma.payrollLedger.update({ where: { id }, data: { ...this.audit.softDelete(user) } }); }
-  async reopen(id: string, user: CurrentUser) {
+  async reopen(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw this.invalid("CORRECTION_REASON_REQUIRED", "工资台账回退草稿必须填写原因");
     const current = await this.get(id);
     if (current.status === "draft") return current;
     if (!canReopenPayroll(current.status)) throw this.invalid("PAYROLL_PAID_NOT_REOPENABLE", "部分支付、已支付或已关闭台账不可回退，请使用工资调整单");
     const row = await this.prisma.payrollLedger.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
-    await this.audit.record("payroll_ledger.reopen", "payroll_ledger", user.id, id, { before_status: current.status, after_status: "draft" });
+    await this.audit.record("payroll_ledger.reopen", "payroll_ledger", user.id, id, { before_status: current.status, after_status: "draft", reason: reason.trim() });
     return row;
   }
   async confirm(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("PAYROLL_NOT_CONFIRMABLE", "只有草稿台账可以确认"); const row = await this.prisma.payrollLedger.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } }); await this.audit.record("payroll_ledger.confirm", "payroll_ledger", user.id, id); return row; }
