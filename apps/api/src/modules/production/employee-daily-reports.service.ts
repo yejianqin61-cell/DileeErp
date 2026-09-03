@@ -120,6 +120,7 @@ export class EmployeeDailyReportsService {
       const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
       if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
       await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
+      await this.refreshDraftPayrollLedgers(client, employeeId, reportDate, user);
       return;
     }
     const rows = await client.employeeDailyReport.findMany({ where: { deletedAt: null, employeeId, productionOrderId, reportDate, wageMode }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
@@ -127,6 +128,7 @@ export class EmployeeDailyReportsService {
     if (!rows.length) {
       if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
       await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
+      await this.refreshDraftPayrollLedgers(client, employeeId, reportDate, user);
       return;
     }
     const quantity = rows.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
@@ -140,6 +142,17 @@ export class EmployeeDailyReportsService {
       create: { ...data, ...this.audit.create(user) },
     });
     await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
+    await this.refreshDraftPayrollLedgers(client, employeeId, reportDate, user);
+  }
+
+  private async refreshDraftPayrollLedgers(client: Prisma.TransactionClient, employeeId: string, reportDate: Date, user: CurrentUser) {
+    const ledgers = await client.payrollLedger.findMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: "draft", deletedAt: null }, select: { id: true, periodStart: true, periodEnd: true } });
+    for (const ledger of ledgers) {
+      const sources = await client.productionPayrollSource.findMany({ where: { employeeId, periodStart: { gte: ledger.periodStart }, periodEnd: { lte: ledger.periodEnd }, deletedAt: null }, orderBy: [{ periodStart: "asc" }, { orderNo: "asc" }, { wageMode: "asc" }] });
+      const production = sources.reduce((sum, source) => sum.plus(source.amount), new Prisma.Decimal(0));
+      const sourceSnapshot = sources.map((source) => ({ id: source.id, order_no: source.orderNo, wage_mode: source.wageMode, quantity: source.quantity.toString(), duration_minutes: source.durationMinutes.toString(), amount: source.amount.toString() })) as Prisma.InputJsonValue;
+      await client.payrollLedger.update({ where: { id: ledger.id }, data: { productionSourceAmount: production, sourceSnapshot, ...this.audit.update(user) } });
+    }
   }
 
   private async recomputeDiscrepancy(tx: Prisma.TransactionClient, orderId: string, operationId: string, reportDate: Date, user: CurrentUser) {
