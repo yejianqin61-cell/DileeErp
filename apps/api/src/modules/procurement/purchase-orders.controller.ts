@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsArray, IsDateString, IsOptional, IsObject, IsString, IsUUID, ValidateNested } from "class-validator";
+import { IsArray, IsDateString, IsOptional, IsObject, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
@@ -12,6 +12,7 @@ class ItemDto { @IsUUID() material_id!: string; @IsUUID() unit_id!: string; @IsO
 class PurchaseOrderDto { @IsString() order_no!: string; @IsUUID() bom_id!: string; @IsOptional() bom_version?: number; @IsUUID() supplier_id!: string; @IsDateString() purchase_date!: string; @IsOptional() @IsDateString() expected_date?: string; @IsString() currency!: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsArray() @ValidateNested({ each: true }) @Type(() => ItemDto) items!: ItemDto[]; }
 class ReceiptDto { @IsString() quantity!: string; @IsDateString() received_date!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() over_receipt_reason?: string; }
 class ReceiptUpdateDto { @IsString() quantity!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() over_receipt_reason?: string; @IsString() reason!: string; }
+class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 
 @Controller("purchase-orders")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -24,7 +25,7 @@ export class PurchaseOrdersController {
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.orders.get(id), meta: {} }; }
   @Get(":id/impact-preview") async impact(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
   @Post(":id/order") async order(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.order(id, user), meta: {} }; }
-  @Post(":id/revert-draft") async revertDraft(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.revertToDraft(id, user), meta: {} }; }
+  @Post(":id/revert-draft") async revertDraft(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.revertToDraft(id, body.reason, user), meta: {} }; }
   @Post(":id/cancel") async cancel(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.cancel(id, user), meta: {} }; }
   @Post(":id/close-arrivals") async closeArrivals(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.closeArrivals(id, user), meta: {} }; }
   @Post(":id/items/:itemId/receipts") async receipt(@Param("id") id: string, @Param("itemId") itemId: string, @Body() body: ReceiptDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.receipt(id, itemId, body, user), meta: {} }; }
