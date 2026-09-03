@@ -242,7 +242,7 @@ export class RawMaterialMovementsService {
     const seen = new Set<string>();
     const result = [];
     for (const line of lines) {
-      if (!line?.source_issue_line_id || seen.has(line.source_issue_line_id) || !Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "来源领料明细和数量必须有效且不可重复", details: [] });
+      if (!line?.source_issue_line_id || seen.has(line.source_issue_line_id) || !this.isPositiveDecimal(line.quantity)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "来源领料明细和数量必须有效且不可重复", details: [] });
       seen.add(line.source_issue_line_id);
       const source = await client.rawMaterialMovementLine.findFirst({ where: { id: line.source_issue_line_id, deletedAt: null, movement: { productionOrderId, documentType: "issue", status: "posted", deletedAt: null } } });
       if (!source) throw new UnprocessableEntityException({ code: "SOURCE_ISSUE_LINE_INVALID", message: "来源领料明细不存在、未过账或不属于该生产单", details: [] });
@@ -264,12 +264,20 @@ export class RawMaterialMovementsService {
     return order;
   }
 
+  private isPositiveDecimal(value: string) {
+    try {
+      return new Prisma.Decimal(value).gt(0);
+    } catch {
+      return false;
+    }
+  }
+
   private async previewLines(order: { id: string; orderNo: string; bomId: string | null }, lines: IssueLineInput[], client: PrismaService | Prisma.TransactionClient = this.prisma) {
     if (!Array.isArray(lines) || lines.length === 0) throw new UnprocessableEntityException({ code: "MATERIAL_MOVEMENT_LINES_REQUIRED", message: "领料单至少需要一条物料明细", details: [] });
     const seen = new Set<string>();
     const previewLines = [];
     for (const line of lines) {
-      if (!line?.material_id || seen.has(line.material_id) || !Number.isFinite(Number(line.quantity)) || Number(line.quantity) <= 0) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "领料物料和数量必须有效且不可重复", details: [] });
+      if (!line?.material_id || seen.has(line.material_id) || !this.isPositiveDecimal(line.quantity)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "领料物料和数量必须有效且不可重复", details: [] });
       seen.add(line.material_id);
       const material = await client.material.findFirst({ where: { id: line.material_id, isActive: true, deletedAt: null } });
       if (!material) throw new NotFoundException({ code: "MATERIAL_NOT_FOUND", message: "物料不存在或已停用", details: [] });
