@@ -38,3 +38,27 @@ test("paid payroll ledger cannot reopen directly", async () => {
   const { service } = serviceWithStatus("paid");
   await assert.rejects(() => service.reopen("ledger-1", "差额调整", { id: "user-1" }), (error) => error.getResponse().code === "PAYROLL_PAID_NOT_REOPENABLE");
 });
+
+test("payroll adjustment locks and rechecks the latest ledger status", async () => {
+  const audits = [];
+  let lockCount = 0;
+  let createCount = 0;
+  const prisma = {
+    payrollLedger: { findFirst: async () => ({ id: "ledger-1", status: "paid", employeeId: "employee-1" }) },
+    payrollAdjustment: { create: async () => { createCount += 1; return { id: "adjustment-1", amount: "10" }; } },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => { lockCount += 1; return []; },
+      payrollLedger: prisma.payrollLedger,
+      payrollAdjustment: prisma.payrollAdjustment,
+    }),
+  };
+  const audit = { record: async (...args) => audits.push(args) };
+  const service = new PayrollLedgerService(prisma, audit);
+  await assert.rejects(
+    () => service.adjustment("ledger-1", { adjustment_type: "bonus", effect: "increase", amount: "10", reason: "补录" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYROLL_NOT_ADJUSTABLE",
+  );
+  assert.equal(lockCount, 1);
+  assert.equal(createCount, 0);
+  assert.equal(audits.length, 0);
+});
