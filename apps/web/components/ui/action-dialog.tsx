@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "./button";
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./dialog";
 import { Input } from "./input";
@@ -14,7 +14,14 @@ export function ActionDialog({ open, title, fields, submitLabel = "保存", onOp
   const [values, setValues] = useState<Record<string, string>>({});
   const [validationError, setValidationError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  useEffect(() => { if (open) { setValues(Object.fromEntries(fields.map((field) => [field.name, field.defaultValue ?? ""]))); setValidationError(""); setSubmitting(false); } }, [open, fields]);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (!open) { wasOpen.current = false; return; }
+    setValues((current) => Object.fromEntries(fields.map((field) => [field.name, wasOpen.current ? current[field.name] ?? field.defaultValue ?? "" : field.defaultValue ?? ""])));
+    setValidationError("");
+    setSubmitting(false);
+    wasOpen.current = true;
+  }, [open, fields]);
   function update(name: string, value: string) { setValues((current) => ({ ...current, [name]: value })); }
   async function submit() { const missing = fields.find((field) => field.required && !values[field.name]?.trim()); if (missing) { setValidationError(`请填写${missing.label}`); return; } setValidationError(""); setSubmitting(true); try { await onSubmit(values); onOpenChange(false); } finally { setSubmitting(false); } }
   async function addCategory(field: ActionField) { setSubmitting(true); try { await onAddCategory?.(field, { ...values }); } finally { setSubmitting(false); } }
