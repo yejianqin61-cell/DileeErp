@@ -44,9 +44,13 @@ export class ReconciliationService {
 
   async resolve(id: string, resolutionRemark: string, user: CurrentUser) {
     if (!resolutionRemark?.trim()) throw this.invalid("RESOLUTION_REMARK_REQUIRED", "解决对账差异必须填写说明");
-    const current = await this.get(id);
-    if (current.status !== "difference") throw this.invalid("RECONCILIATION_NOT_RESOLVABLE", "只有存在差异的对账可以标记解决");
-    const row = await this.prisma.receivableReconciliation.update({ where: { id }, data: { status: "resolved", resolutionRemark: resolutionRemark.trim(), ...this.audit.update(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_reconciliations WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.receivableReconciliation.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("RECONCILIATION_NOT_FOUND", "应收对账不存在");
+      if (current.status !== "difference") throw this.invalid("RECONCILIATION_NOT_RESOLVABLE", "只有存在差异的对账可以标记解决");
+      return tx.receivableReconciliation.update({ where: { id }, data: { status: "resolved", resolutionRemark: resolutionRemark.trim(), ...this.audit.update(user) } });
+    });
     await this.audit.recordWithOrderNo("receivable_reconciliation.resolve", "receivable_reconciliation", row.orderNo, user.id, id, { resolution_remark: resolutionRemark.trim(), difference: row.difference.toString() });
     return row;
   }
