@@ -17,9 +17,21 @@ export class RawMaterialInboundsService {
   async list(orderNo?: string) {
     return this.prisma.rawMaterialInbound.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) },
-      include: { inventoryFacts: true, payableSources: true },
+      include: {
+        inventoryFacts: true,
+        payableSources: true,
+        purchaseOrder: { select: { purchaseOrderNo: true } },
+        purchaseReceipt: { select: { receiptNo: true, extensionData: true } },
+        incomingInspection: { select: { extensionData: true, status: true } },
+      },
       orderBy: { createdAt: "desc" }
-    });
+    }).then((rows) => rows.map((row) => ({
+      ...row,
+      purchase_order_no: row.purchaseOrder.purchaseOrderNo,
+      receipt_no: row.purchaseReceipt.receiptNo,
+      batch_sequence: Number((row.purchaseReceipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? (row.incomingInspection.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1),
+      inspection_status: row.incomingInspection.status,
+    })));
   }
 
   async create(input: { incoming_inspection_id: string; quantity: string; inventory_category?: string; idempotency_key?: string; remark?: string }, user: CurrentUser) {
