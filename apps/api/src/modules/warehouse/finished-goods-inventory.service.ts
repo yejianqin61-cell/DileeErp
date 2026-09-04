@@ -52,12 +52,16 @@ export class FinishedGoodsInventoryService {
     if (!current) throw this.notFound("FINISHED_GOODS_INBOUND_NOT_FOUND", "成品入库单不存在");
     if (current.status !== "draft") throw this.invalidState("FINISHED_GOODS_INBOUND_NOT_POSTABLE", "只有草稿成品入库单可以过账");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM finished_goods_qc_records WHERE id = ${current.qcRecordId}::uuid FOR UPDATE`;
+      const locked = await tx.finishedGoodsInbound.findFirst({ where: { id, deletedAt: null }, include: { qcRecord: { include: { submission: true } } } });
+      if (!locked || locked.status !== "draft") throw this.invalidState("FINISHED_GOODS_INBOUND_ALREADY_POSTED", "成品入库单已被其他操作处理");
       const existing = await tx.inventoryFact.findFirst({ where: { finishedGoodsInboundId: id, sourceType: "finished_goods_inbound" } });
       if (existing) throw this.invalidState("FINISHED_GOODS_INBOUND_ALREADY_POSTED", "成品入库单已过账");
-      const available = await this.acceptedAvailable(current.qcRecordId, tx);
-      if (current.quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_INBOUND_QUANTITY_EXCEEDED", available);
+      const available = await this.acceptedAvailable(locked.qcRecordId, tx);
+      if (locked.quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_INBOUND_QUANTITY_EXCEEDED", available);
       const posted = await tx.finishedGoodsInbound.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
-      await tx.inventoryFact.create({ data: { finishedGoodsInboundId: id, materialId: null, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity, sourceType: "finished_goods_inbound", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
+      await tx.inventoryFact.create({ data: { finishedGoodsInboundId: id, materialId: null, unitId: locked.unitId, inventoryCategory: "finished_goods", quantityDelta: locked.quantity, sourceType: "finished_goods_inbound", sourceId: id, orderNo: locked.orderNo, productionOrderId: locked.productionOrderId, productNameSnapshot: locked.productNameSnapshot, productSpecificationSnapshot: locked.productSpecificationSnapshot, createdBy: user.id } });
       return posted;
     });
     await this.audit.record("finished_goods_inbound.post", "finished_goods_inbound", user.id, id, { order_no: result.orderNo, quantity: result.quantity.toString() });
@@ -69,12 +73,16 @@ export class FinishedGoodsInventoryService {
     if (!current) throw this.notFound("FINISHED_GOODS_DEFECTIVE_NOT_FOUND", "成品不良品记录不存在");
     if (current.status !== "draft") throw this.invalidState("FINISHED_GOODS_DEFECTIVE_NOT_POSTABLE", "只有草稿不良品记录可以过账");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_defectives WHERE id = ${id}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM finished_goods_qc_records WHERE id = ${current.qcRecordId}::uuid FOR UPDATE`;
+      const locked = await tx.finishedGoodsDefective.findFirst({ where: { id, deletedAt: null }, include: { qcRecord: { include: { submission: true } } } });
+      if (!locked || locked.status !== "draft") throw this.invalidState("FINISHED_GOODS_DEFECTIVE_ALREADY_POSTED", "成品不良品记录已被其他操作处理");
       const existing = await tx.inventoryFact.findFirst({ where: { finishedGoodsDefectiveId: id, sourceType: "finished_goods_defective" } });
       if (existing) throw this.invalidState("FINISHED_GOODS_DEFECTIVE_ALREADY_POSTED", "成品不良品记录已过账");
-      const available = await this.rejectedAvailable(current.qcRecordId, tx);
-      if (current.quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_DEFECTIVE_QUANTITY_EXCEEDED", available);
+      const available = await this.rejectedAvailable(locked.qcRecordId, tx);
+      if (locked.quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_DEFECTIVE_QUANTITY_EXCEEDED", available);
       const posted = await tx.finishedGoodsDefective.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
-      await tx.inventoryFact.create({ data: { finishedGoodsDefectiveId: id, materialId: null, unitId: current.unitId, inventoryCategory: "defective_goods", quantityDelta: current.quantity, sourceType: "finished_goods_defective", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
+      await tx.inventoryFact.create({ data: { finishedGoodsDefectiveId: id, materialId: null, unitId: locked.unitId, inventoryCategory: "defective_goods", quantityDelta: locked.quantity, sourceType: "finished_goods_defective", sourceId: id, orderNo: locked.orderNo, productionOrderId: locked.productionOrderId, productNameSnapshot: locked.productNameSnapshot, productSpecificationSnapshot: locked.productSpecificationSnapshot, createdBy: user.id } });
       return posted;
     });
     await this.audit.record("finished_goods_defective.post", "finished_goods_defective", user.id, id, { order_no: result.orderNo, quantity: result.quantity.toString() });
