@@ -124,8 +124,9 @@ export function DailyReportsPanel() {
     return totals;
   }, [reports, selectedReportDate]);
   const plannedQuantity = Number(selectedOperation?.targetQuantity ?? 0);
-  const operationCompletedQuantity = operationReports.filter((report) => report.productionOrderOperationId === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate).reduce((sum, report) => sum + Number(report.completedQuantity), 0);
-  const completedQuantity = operationCompletedQuantity || visibleReports.filter((report) => report.wageMode === "piece_rate").reduce((sum, report) => sum + Number(report.quantity), 0);
+  const operationDayReports = operationReports.filter((report) => report.productionOrderOperationId === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate);
+  const operationCompletedQuantity = operationDayReports.reduce((sum, report) => sum + Number(report.completedQuantity), 0);
+  const completedQuantity = operationDayReports.length > 0 ? operationCompletedQuantity : visibleReports.filter((report) => report.wageMode === "piece_rate").reduce((sum, report) => sum + Number(report.quantity), 0);
   const isOverOrder = plannedQuantity > 0 && completedQuantity > plannedQuantity;
 
   if (loading) return <section className="panel"><LoadingState /></section>;
