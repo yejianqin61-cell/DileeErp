@@ -167,7 +167,7 @@ export class RawMaterialInboundsService {
 
   async payableSources(orderNo?: string) {
     const rows = await this.prisma.payableSource.findMany({
-      where: { ...(orderNo ? { orderNo } : {}), status: "pending_finance" },
+      where: { ...(orderNo ? { orderNo } : {}), status: { not: "voided" } },
       include: {
         rawMaterialInbound: { select: { inboundNo: true, purchaseReceiptId: true, status: true } },
         purchaseReceipt: { select: { receiptNo: true, extensionData: true } },
