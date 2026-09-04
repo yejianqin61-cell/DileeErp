@@ -23,7 +23,9 @@ test("audit helper always takes the server-side current user", () => {
 
 test("health reports database dependency status", async () => {
   const healthy = new HealthController({ $queryRaw: async () => [{ result: 1 }] });
-  assert.deepEqual(await healthy.check({}), { data: { status: "ok", database: "ok", build: "development" }, meta: {} });
+  const health = await healthy.check({});
+  assert.deepEqual(health.data, { status: "ok", database: "ok", build: process.env.APP_VERSION || "development" });
+  assert.deepEqual(health.meta, {});
   const unavailable = new HealthController({ $queryRaw: async () => { throw new Error("offline"); } });
   await assert.rejects(() => unavailable.check({}), ServiceUnavailableException);
 });
