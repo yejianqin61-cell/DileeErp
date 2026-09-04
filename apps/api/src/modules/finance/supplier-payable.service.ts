@@ -69,10 +69,14 @@ export class SupplierPayableService {
 
   async reverse(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
-    const current = await this.get(id);
-    if (!["confirmed", "partially_paid", "paid"].includes(current.status)) throw this.invalid("SUPPLIER_PAYABLE_NOT_REVERSIBLE", "当前应付不可冲销");
-    if (current.allocations.some((allocation) => allocation.status === "active" && allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "应付存在有效付款核销，必须先冲销付款");
-    const row = await this.prisma.supplierPayableEntry.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } });
+      if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
+      if (!["confirmed", "partially_paid", "paid"].includes(current.status)) throw this.invalid("SUPPLIER_PAYABLE_NOT_REVERSIBLE", "当前应付不可冲销");
+      if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "应付存在有效付款核销，必须先冲销付款");
+      return tx.supplierPayableEntry.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
+    });
     await this.audit.recordWithOrderNo("supplier_payable.reverse", "supplier_payable_entry", row.orderNo, user.id, id, { reason: reason.trim() });
     return row;
   }
