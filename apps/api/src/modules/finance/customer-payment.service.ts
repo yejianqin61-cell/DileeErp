@@ -23,6 +23,7 @@ export class CustomerPaymentService {
     if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
     if (!allocations?.length) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "收款过账至少需要核销一条有效应收");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`;
       const lockedPayment = await tx.customerPayment.findFirst({ where: { id, deletedAt: null } });
       if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
       const existing = await tx.receivableAllocation.count({ where: { paymentId: id, deletedAt: null } });
