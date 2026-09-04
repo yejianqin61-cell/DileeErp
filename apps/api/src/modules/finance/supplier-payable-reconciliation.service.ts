@@ -35,7 +35,18 @@ export class SupplierPayableReconciliationService {
     else await this.audit.record("supplier_payable_reconciliation.create", "supplier_payable_reconciliation", user.id, row.id, { difference: difference.toString() });
     return row;
   }
-  async resolve(id: string, remark: string, user: CurrentUser) { if (!remark?.trim()) throw this.invalid("RESOLUTION_REMARK_REQUIRED", "解决对账差异必须填写说明"); const current = await this.prisma.supplierPayableReconciliation.findFirst({ where: { id, deletedAt: null } }); if (!current) throw this.notFound("RECONCILIATION_NOT_FOUND", "应付对账不存在"); if (current.status !== "difference") throw this.invalid("RECONCILIATION_NOT_RESOLVABLE", "只有存在差异的应付对账可以处理"); return this.prisma.supplierPayableReconciliation.update({ where: { id }, data: { status: "resolved", resolutionRemark: remark.trim(), ...this.audit.update(user) } }); }
+  async resolve(id: string, remark: string, user: CurrentUser) {
+    if (!remark?.trim()) throw this.invalid("RESOLUTION_REMARK_REQUIRED", "解决对账差异必须填写说明");
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payable_reconciliations WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.supplierPayableReconciliation.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("RECONCILIATION_NOT_FOUND", "应付对账不存在");
+      if (current.status !== "difference") throw this.invalid("RECONCILIATION_NOT_RESOLVABLE", "只有存在差异的应付对账可以处理");
+      return tx.supplierPayableReconciliation.update({ where: { id }, data: { status: "resolved", resolutionRemark: remark.trim(), ...this.audit.update(user) } });
+    });
+    await this.audit.record("supplier_payable_reconciliation.resolve", "supplier_payable_reconciliation", user.id, id, { remark: remark.trim() });
+    return row;
+  }
   private date(value: string) { const date = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.valueOf())) throw this.invalid("INVALID_RECONCILIATION_PERIOD", "日期无效"); return date; }
   private decimal(value: string) { try { const n = new Prisma.Decimal(value); if (n.lt(0)) throw new Error(); return n; } catch { throw this.invalid("INVALID_EXTERNAL_BALANCE", "外部余额必须是有效的非负十进制数"); } }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }
