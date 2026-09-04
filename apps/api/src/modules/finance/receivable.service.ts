@@ -26,7 +26,17 @@ export class ReceivableService {
     return row;
   }
 
-  async confirm(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_CONFIRMABLE", "只有草稿应收来源可以确认"); const row = await this.prisma.receivableSource.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } }); await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo }); return row; }
+  async confirm(id: string, user: CurrentUser) {
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
+      if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_CONFIRMABLE", "只有草稿应收来源可以确认");
+      return tx.receivableSource.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+    });
+    await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo });
+    return row;
+  }
   async updateDraft(id: string, input: { amount?: string; due_date?: string; amount_reason?: string; remark?: string }, user: CurrentUser) {
     const current = await this.get(id);
     if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_EDITABLE", "只有草稿应收来源可以编辑");
