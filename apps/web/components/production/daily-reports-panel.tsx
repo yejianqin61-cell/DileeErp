@@ -36,6 +36,7 @@ export function DailyReportsPanel() {
   const [message, setMessage] = useState("");
   const [operationQuantity, setOperationQuantity] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveKey, setSaveKey] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -64,6 +65,7 @@ export function DailyReportsPanel() {
     setDrafts([]);
     setSelectedEmployeeIds([]);
     setOperationQuantity("");
+    setSaveKey(idempotencyKey());
   }
 
   function addDraft() { setEmployeePickerOpen(true); }
@@ -81,6 +83,7 @@ export function DailyReportsPanel() {
     setSelectedOperation(null);
     setDrafts([]);
     setOperationQuantity("");
+    setSaveKey(null);
   }
 
   async function save() {
@@ -107,8 +110,9 @@ export function DailyReportsPanel() {
     setError("");
     setSaving(true);
     try {
-      if (operationQuantity && Number(operationQuantity) > 0) await apiPost("/production/operation-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: selectedReportDate, completed_quantity: operationQuantity, idempotency_key: idempotencyKey() });
-      await Promise.all(drafts.map((row) => apiPost("/production/employee-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, ...row, idempotency_key: idempotencyKey() })));
+      const batchKey = saveKey ?? idempotencyKey();
+      if (operationQuantity && Number(operationQuantity) > 0) await apiPost("/production/operation-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: selectedReportDate, completed_quantity: operationQuantity, idempotency_key: `${batchKey}-operation` });
+      await Promise.all(drafts.map((row) => apiPost("/production/employee-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, ...row, idempotency_key: `${batchKey}-${row.employee_id}-${row.report_date}` })));
       setMessage("工序员工日报已保存");
       closeDialog();
       await load();
