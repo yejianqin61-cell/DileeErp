@@ -33,4 +33,22 @@ export class ProductionDailyAlertsService {
   }
 
   async auditEvents(id: string) { await this.get(id); return this.prisma.auditEvent.findMany({ where: { entityType: "production_daily_alert", entityId: id }, orderBy: { createdAt: "desc" } }); }
+
+  listMergeAnomalies(status?: string) {
+    return this.prisma.dailyReportMergeAnomaly.findMany({ where: status ? { status } : undefined, orderBy: [{ status: "asc" }, { reportDate: "desc" }] });
+  }
+
+  async resolveMergeAnomaly(id: string, remark: string, user: CurrentUser) {
+    if (!remark?.trim()) throw new UnprocessableEntityException({ code: "ANOMALY_RESOLUTION_REMARK_REQUIRED", message: "处理日报异常必须填写备注", details: [] });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.dailyReportMergeAnomaly.findUnique({ where: { id } });
+      if (!current) throw new NotFoundException({ code: "DAILY_REPORT_MERGE_ANOMALY_NOT_FOUND", message: "日报异常不存在", details: [] });
+      if (current.status === "resolved") return current;
+      const row = await tx.dailyReportMergeAnomaly.update({ where: { id }, data: { status: "resolved", resolvedAt: new Date() } });
+      await tx.auditEvent.create({ data: { action: "daily_report_merge_anomaly.resolve", entityType: "daily_report_merge_anomaly", actorId: user.id, entityId: id, details: { report_kind: current.reportKind, remark: remark.trim() } } });
+      return row;
+    });
+    await this.audit.record("daily_report_merge_anomaly.resolve", "daily_report_merge_anomaly", user.id, id, { remark: remark.trim() });
+    return updated;
+  }
 }

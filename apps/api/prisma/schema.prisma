@@ -1780,6 +1780,22 @@ model EmployeeDailyReport {
   @@map("employee_daily_reports")
 }
 
+model DailyReportMergeAnomaly {
+  id                           String    @id @default(uuid()) @db.Uuid
+  reportKind                   String    @map("report_kind") @db.VarChar(30)
+  productionOrderOperationId   String    @map("production_order_operation_id") @db.Uuid
+  employeeId                   String?   @map("employee_id") @db.Uuid
+  reportDate                   DateTime  @map("report_date") @db.Date
+  wageModes                    Json      @map("wage_modes")
+  reportIds                    Json      @map("report_ids")
+  status                       String    @default("pending") @db.VarChar(20)
+  createdAt                    DateTime  @default(now()) @map("created_at")
+  resolvedAt                   DateTime? @map("resolved_at")
+
+  @@index([status, reportDate])
+  @@map("daily_report_merge_anomalies")
+}
+
 model ProductionDailyAlert {
   id                         String                   @id @default(uuid()) @db.Uuid
   alertType                  String                   @map("alert_type") @db.VarChar(40)
