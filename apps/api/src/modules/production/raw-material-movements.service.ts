@@ -222,6 +222,7 @@ export class RawMaterialMovementsService {
       const posted = await this.prisma.$transaction(async (tx) => {
         const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null, status: "draft", documentType }, include: { lines: { where: { deletedAt: null } } } });
         if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: "单据已被其他操作处理", details: [] });
+        for (const line of current.lines) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`derived:${line.sourceIssueLineId}`}))`;
         await this.derivedLines(current.productionOrderId, current.lines.map((line) => ({ source_issue_line_id: line.sourceIssueLineId!, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
         for (const line of current.lines) {
