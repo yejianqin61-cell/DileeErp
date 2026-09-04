@@ -125,7 +125,7 @@ export class OperationDailyReportsService {
     if (!operation) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "生产单工序不存在或已删除", details: [] });
     if (order.executionMode !== "in_house") throw new UnprocessableEntityException({ code: "OUTSOURCED_DAILY_REPORT_FORBIDDEN", message: "外加工生产单不进入厂内日报", details: [] });
     if (operation.status !== "active") throw new UnprocessableEntityException({ code: "CANCELLED_OPERATION_DAILY_REPORT_FORBIDDEN", message: "已取消工序不能新增日报", details: [] });
-    const allowed = correction ? ["in_progress", "completed"] : ["in_progress", "completed"];
+    const allowed = correction ? ["in_progress", "completed"] : ["in_progress"];
     if (!allowed.includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_DAILY_REPORT_FORBIDDEN", message: "当前生产单状态不允许维护日报", details: [] });
     return { order, operation };
   }

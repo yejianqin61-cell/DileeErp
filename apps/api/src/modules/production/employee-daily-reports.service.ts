@@ -111,7 +111,7 @@ export class EmployeeDailyReportsService {
     if (!operation || operation.status !== "active") throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "生产单工序不存在或已取消", details: [] });
     if (!employee || employee.employmentStatus !== "active") throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_FORBIDDEN", message: "员工不存在、已停用或已离职", details: [] });
     if ((employee.hiredOn && reportDate < employee.hiredOn) || (employee.leftOn && reportDate > employee.leftOn)) throw new UnprocessableEntityException({ code: "EMPLOYEE_NOT_EMPLOYED_ON_REPORT_DATE", message: "员工在日报日期不处于可报工状态", details: [] });
-    if (!(correction ? ["in_progress", "completed"] : ["in_progress", "completed"]).includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_DAILY_REPORT_FORBIDDEN", message: "当前生产单状态不允许维护员工日报", details: [] });
+    if (!(correction ? ["in_progress", "completed"] : ["in_progress"]).includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_DAILY_REPORT_FORBIDDEN", message: "当前生产单状态不允许维护员工日报", details: [] });
     return { order, operation, employee, reportDate };
   }
 
