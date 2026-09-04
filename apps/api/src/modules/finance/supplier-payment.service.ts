@@ -75,10 +75,11 @@ export class SupplierPaymentService {
 
   async reverse(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
-    const current = await this.prisma.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } });
-    if (!current) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
-    if (current.status !== "posted") throw this.invalid("SUPPLIER_PAYMENT_NOT_REVERSIBLE", "当前付款不可冲销");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payments WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } });
+      if (!current) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
+      if (current.status !== "posted") throw this.invalid("SUPPLIER_PAYMENT_NOT_REVERSIBLE", "当前付款不可冲销");
       await tx.supplierPaymentAllocation.updateMany({ where: { paymentId: id, deletedAt: null, status: "active" }, data: { status: "reversed", ...this.audit.update(user) } });
       const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
       for (const allocation of current.allocations) await this.payable.refreshStatus(tx, allocation.payableEntryId, user);
