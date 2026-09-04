@@ -39,6 +39,31 @@ test("closed arrival batches reject correction and cancellation", async () => {
   await assert.rejects(() => service.cancelReceiptV2("receipt-1", "撤销", {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ARRIVALS_CLOSED");
 });
 
+test("receipt correction rechecks arrival closure after locking the purchase order", async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseReceipt: {
+      findFirst: async () => ({
+        id: "receipt-1",
+        purchaseOrderId: "purchase-1",
+        orderNo: "SO-1",
+        extensionData: {},
+        purchaseOrderItemId: "item-1",
+        purchaseOrderItem: { quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("2") },
+        inspections: [],
+        rawMaterialInbounds: [],
+        payableSources: [],
+      }),
+    },
+    purchaseOrder: { findFirst: async () => ({ extensionData: { arrival_closed: true } }) },
+  };
+  const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { record: async () => {} });
+  await assert.rejects(
+    () => service.updateReceipt("receipt-1", { quantity: "1", reason: "修正" }, {}),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ARRIVALS_CLOSED",
+  );
+});
+
 test("arrived-complete orders accept another receipt before close", async () => {
   const created = { id: "receipt-2", quantity: new (require("@prisma/client").Prisma.Decimal)("2"), extensionData: {} };
   const tx = {
