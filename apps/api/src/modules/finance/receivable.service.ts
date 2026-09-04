@@ -13,15 +13,18 @@ export class ReceivableService {
   async get(id: string) { const row = await this.prisma.receivableSource.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null } }, outbound: true } }); if (!row) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在"); return row; }
 
   async createFromOutbound(outboundId: string, input: { amount?: string; amount_reason?: string; due_date?: string; remark?: string }, user: CurrentUser) {
-    const outbound = await this.prisma.finishedGoodsOutbound.findFirst({ where: { id: outboundId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, include: { salesOrder: true } });
-    if (!outbound) throw this.notFound("OUTBOUND_NOT_RECEIVABLE", "出库不存在或尚未过账");
-    const existing = await this.prisma.receivableSource.findUnique({ where: { outboundId } });
-    if (existing) return existing;
-    const unitPrice = outbound.salesOrder.unitPrice;
-    const amount = input.amount ?? (unitPrice ? new Prisma.Decimal(outbound.quantity).mul(unitPrice).toFixed(4) : undefined);
-    if (!amount) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REQUIRED", message: "销售单没有单价，必须填写应收金额和原因", details: [] });
-    if (!input.amount_reason?.trim() && !unitPrice) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REASON_REQUIRED", message: "手工确认金额必须填写原因", details: [] });
-    const row = await this.prisma.receivableSource.create({ data: { sourceNo: this.number("AR"), orderNo: outbound.orderNo, salesOrderId: outbound.salesOrderId, outboundId: outbound.id, customerId: outbound.salesOrder.customerId, quantity: outbound.quantity, unit: outbound.salesOrder.unit, unitPrice, taxRate: outbound.salesOrder.taxRate, amount, currency: outbound.salesOrder.currency, amountReason: input.amount_reason, dueDate: input.due_date ? this.date(input.due_date) : undefined, signedAtSnapshot: outbound.signedAt, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_outbounds WHERE id = ${outboundId}::uuid FOR UPDATE`;
+      const outbound = await tx.finishedGoodsOutbound.findFirst({ where: { id: outboundId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, include: { salesOrder: true } });
+      if (!outbound) throw this.notFound("OUTBOUND_NOT_RECEIVABLE", "出库不存在或尚未过账");
+      const existing = await tx.receivableSource.findUnique({ where: { outboundId } });
+      if (existing) return existing;
+      const unitPrice = outbound.salesOrder.unitPrice;
+      const amount = input.amount ?? (unitPrice ? new Prisma.Decimal(outbound.quantity).mul(unitPrice).toFixed(4) : undefined);
+      if (!amount) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REQUIRED", message: "销售单没有单价，必须填写应收金额和原因", details: [] });
+      if (!input.amount_reason?.trim() && !unitPrice) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REASON_REQUIRED", message: "手工确认金额必须填写原因", details: [] });
+      return tx.receivableSource.create({ data: { sourceNo: this.number("AR"), orderNo: outbound.orderNo, salesOrderId: outbound.salesOrderId, outboundId: outbound.id, customerId: outbound.salesOrder.customerId, quantity: outbound.quantity, unit: outbound.salesOrder.unit, unitPrice, taxRate: outbound.salesOrder.taxRate, amount, currency: outbound.salesOrder.currency, amountReason: input.amount_reason, dueDate: input.due_date ? this.date(input.due_date) : undefined, signedAtSnapshot: outbound.signedAt, remark: input.remark, ...this.audit.create(user) } });
+    });
     await this.audit.record("receivable_source.create", "receivable_source", user.id, row.id, { order_no: row.orderNo, outbound_id: outboundId, amount: row.amount.toString() });
     return row;
   }

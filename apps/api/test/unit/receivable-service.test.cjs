@@ -55,3 +55,22 @@ test("receivable cancellation locks and blocks active posted allocations", async
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
 });
+
+test("receivable creation locks the outbound before idempotency check", async () => {
+  let lockCount = 0;
+  let createCount = 0;
+  const prisma = {
+    finishedGoodsOutbound: { findFirst: async () => ({ id: "outbound-1", status: "posted", quantity: "1", orderNo: "SO-1", salesOrderId: "sales-1", signedAt: null, salesOrder: { unitPrice: "10", customerId: "customer-1", unit: "件", taxRate: "0", currency: "CNY" } }) },
+    receivableSource: { findUnique: async () => ({ id: "source-1", orderNo: "SO-1", amount: { toString: () => "10" } }), create: async () => { createCount += 1; } },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => { lockCount += 1; return []; },
+      finishedGoodsOutbound: prisma.finishedGoodsOutbound,
+      receivableSource: prisma.receivableSource,
+    }),
+  };
+  const service = new ReceivableService(prisma, { record: async () => {} });
+  const result = await service.createFromOutbound("outbound-1", {}, { id: "user-1" });
+  assert.equal(result.id, "source-1");
+  assert.equal(lockCount, 1);
+  assert.equal(createCount, 0);
+});
