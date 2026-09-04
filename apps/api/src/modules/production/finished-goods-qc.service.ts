@@ -148,6 +148,12 @@ export class FinishedGoodsQcService {
     const quantities = deriveFinishedGoodsQcConclusion({ inspected_quantity: input.inspected_quantity, qualified_quantity: input.qualified_quantity, conditional_accept_quantity: input.conditional_accept_quantity, rejected_quantity: input.rejected_quantity });
     if (quantities.rejected_quantity !== "0" && !input.rejection_reason?.trim()) throw new UnprocessableEntityException({ code: "QC_REJECTION_REASON_REQUIRED", message: "存在不合格数量时必须填写原因", details: [] });
     const replacement = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_qc_records WHERE id = ${id}::uuid FOR UPDATE`;
+      const [lockedInboundCount, lockedDefectiveCount] = await Promise.all([
+        tx.finishedGoodsInbound.count({ where: { qcRecordId: id, deletedAt: null, status: { in: ["draft", "posted"] } } }),
+        tx.finishedGoodsDefective.count({ where: { qcRecordId: id, deletedAt: null, status: { in: ["draft", "posted"] } } }),
+      ]);
+      if (lockedInboundCount || lockedDefectiveCount) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_DOWNSTREAM_EXISTS", message: "已有成品入库或不良品下游事实，必须先删除草稿或冲销过账记录后再更正 QC", details: [{ inbound_count: lockedInboundCount, defective_count: lockedDefectiveCount }] });
       await tx.finishedGoodsQcRecord.update({ where: { id }, data: { status: "corrected", correctionReason: input.reason, correctedAt: new Date(), ...this.audit.update(user) } });
       const created = await tx.finishedGoodsQcRecord.create({ data: { qcNo: `FQC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, submissionId: current.submissionId, orderNo: current.orderNo, productionOrderId: current.productionOrderId, sourceType: current.sourceType, sourceId: current.sourceId, inspectionDate: this.date(input.inspection_date), inspectedQuantity: quantities.inspected_quantity, qualifiedQuantity: quantities.qualified_quantity, conditionalAcceptQuantity: quantities.conditional_accept_quantity, rejectedQuantity: quantities.rejected_quantity, conclusion: quantities.conclusion, rejectionReason: input.rejection_reason, remark: input.remark, ...this.audit.create(user) } });
       await tx.finishedGoodsInspectionSubmission.update({ where: { id: current.submissionId }, data: { status: "qc_completed", ...this.audit.update(user) } });
