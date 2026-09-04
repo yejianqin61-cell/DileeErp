@@ -20,7 +20,7 @@ test("raw-material inbound posting uses the locked current draft", async () => {
   const quantities = [];
   const current = {
     id: "inbound-1", status: "draft", incomingInspectionId: "inspection-1", materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", quantity: "7", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
-    incomingInspection: { purchaseReceipt: { purchaseOrderItem: { unitPrice: "2", taxRate: "0" }, purchaseOrder: { currency: "CNY" } } },
+    incomingInspection: { status: "accepted", acceptedQuantity: "7", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrderItem: { unitPrice: "2", taxRate: "0" }, purchaseOrder: { currency: "CNY" } } },
   };
   const tx = {
     $queryRaw: async () => undefined,
