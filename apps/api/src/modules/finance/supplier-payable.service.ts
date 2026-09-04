@@ -47,9 +47,13 @@ export class SupplierPayableService {
   }
 
   async confirm(id: string, user: CurrentUser) {
-    const current = await this.get(id);
-    if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_CONFIRMABLE", "只有草稿应付可以确认");
-    const row = await this.prisma.supplierPayableEntry.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
+      if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_CONFIRMABLE", "只有草稿应付可以确认");
+      return tx.supplierPayableEntry.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+    });
     await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo, user.id, id, { payable_no: row.payableNo });
     return row;
   }
