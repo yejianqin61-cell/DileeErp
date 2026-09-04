@@ -67,7 +67,7 @@ export function DailyReportsPanel() {
 
   function addDraft() { setEmployeePickerOpen(true); }
   function applyEmployees() {
-    setDrafts((rows) => [...rows, ...selectedEmployeeIds.filter((id) => !rows.some((row) => row.employee_id === id)).map((employee_id) => ({ employee_id, report_date: today, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "" }))]);
+    setDrafts((rows) => [...rows, ...selectedEmployeeIds.filter((id) => !rows.some((row) => row.employee_id === id)).map((employee_id) => ({ employee_id, report_date: selectedReportDate, wage_mode: "piece_rate", quantity: "0", duration_minutes: "", unit_price: "" }))]);
     setEmployeePickerOpen(false);
   }
 
