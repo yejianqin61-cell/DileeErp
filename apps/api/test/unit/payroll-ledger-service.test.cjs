@@ -83,3 +83,25 @@ test("payroll ledger update locks and rechecks paid status", async () => {
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
 });
+
+test("payroll ledger generation locks employee before idempotency check", async () => {
+  let lockCount = 0;
+  let createCount = 0;
+  const employee = { id: "employee-1", employeeNo: "E001", name: "张三", employeeType: "office" };
+  const existing = { id: "ledger-1", employeeId: employee.id, periodStart: new Date("2026-01-01"), periodEnd: new Date("2026-01-31") };
+  const prisma = {
+    employee: { findMany: async () => [employee], findFirst: async () => ({ employeeType: "office" }) },
+    productionPayrollSource: { findMany: async () => [] },
+    payrollLedger: { findFirst: async () => existing, create: async () => { createCount += 1; } },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => { lockCount += 1; return []; },
+      payrollLedger: prisma.payrollLedger,
+      employee: prisma.employee,
+    }),
+  };
+  const service = new PayrollLedgerService(prisma, { create: () => ({}), record: async () => {} });
+  const result = await service.generate({ employee_id: employee.id, period_start: "2026-01-01", period_end: "2026-01-31", currency: "CNY" }, { id: "user-1" });
+  assert.equal(result.id, existing.id);
+  assert.equal(lockCount, 1);
+  assert.equal(createCount, 0);
+});
