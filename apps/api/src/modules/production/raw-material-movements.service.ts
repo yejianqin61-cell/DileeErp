@@ -73,6 +73,9 @@ export class RawMaterialMovementsService {
     const order = await this.requireInHouseOrder(movement.productionOrderId);
     const preview = input.lines ? await this.previewLines(order, input.lines) : null;
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM raw_material_movements WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!current || current.status !== "draft") throw new ConflictException({ code: "MATERIAL_MOVEMENT_NOT_EDITABLE", message: "领料单已被其他操作处理，请刷新后重试", details: [] });
       if (preview) {
         await tx.rawMaterialMovementLine.updateMany({ where: { movementId: id, deletedAt: null }, data: this.audit.softDelete(user) });
       }
@@ -94,7 +97,12 @@ export class RawMaterialMovementsService {
   async removeIssue(id: string, user: CurrentUser) {
     const movement = await this.get(id);
     if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "MATERIAL_MOVEMENT_NOT_DELETABLE", message: "只有草稿领料单可以删除", details: [] });
-    const result = await this.prisma.rawMaterialMovement.update({ where: { id }, data: this.audit.softDelete(user) });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM raw_material_movements WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!current || current.status !== "draft") throw new ConflictException({ code: "MATERIAL_MOVEMENT_NOT_DELETABLE", message: "领料单已被其他操作处理，请刷新后重试", details: [] });
+      return tx.rawMaterialMovement.update({ where: { id }, data: this.audit.softDelete(user) });
+    });
     await this.audit.record("raw_material_movement.delete", "raw_material_movement", user.id, id, { order_no: movement.orderNo });
     return result;
   }
