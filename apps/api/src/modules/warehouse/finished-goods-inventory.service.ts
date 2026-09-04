@@ -95,6 +95,9 @@ export class FinishedGoodsInventoryService {
     if (!current) throw this.notFound("FINISHED_GOODS_INBOUND_NOT_FOUND", "成品入库单不存在");
     if (current.status !== "posted") throw this.invalidState("FINISHED_GOODS_INBOUND_NOT_REVERSIBLE", "只有已过账成品入库单可以冲销");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.finishedGoodsInbound.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!locked || locked.status !== "posted") throw this.invalidState("FINISHED_GOODS_INBOUND_NOT_REVERSIBLE", "成品入库单已被其他操作处理");
       const balance = await this.inventory.finishedGoodsBalance(tx, current.productionOrderId, current.unitId, "finished_goods");
       if (balance.minus(current.quantity).isNegative()) throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "冲销会造成成品库存不足", details: [] });
       const updated = await tx.finishedGoodsInbound.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${input.reason}`, ...this.audit.update(user) } });
@@ -111,6 +114,9 @@ export class FinishedGoodsInventoryService {
     if (!current) throw this.notFound("FINISHED_GOODS_DEFECTIVE_NOT_FOUND", "成品不良品记录不存在");
     if (current.status !== "posted") throw this.invalidState("FINISHED_GOODS_DEFECTIVE_NOT_REVERSIBLE", "只有已过账不良品记录可以冲销");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_defectives WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.finishedGoodsDefective.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!locked || locked.status !== "posted") throw this.invalidState("FINISHED_GOODS_DEFECTIVE_NOT_REVERSIBLE", "成品不良品记录已被其他操作处理");
       const balance = await this.inventory.finishedGoodsBalance(tx, current.productionOrderId, current.unitId, "defective_goods");
       if (balance.minus(current.quantity).isNegative()) throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "冲销会造成不良品库存不足", details: [] });
       const updated = await tx.finishedGoodsDefective.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${input.reason}`, ...this.audit.update(user) } });
