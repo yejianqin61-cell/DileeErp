@@ -46,3 +46,18 @@ test("supplier payment reversal locks and rechecks the payment", async () => {
   );
   assert.equal(lockCount, 1);
 });
+
+test("supplier payment posting locks the payment before allocation checks", async () => {
+  const calls = [];
+  const current = { id: "payment-1", status: "posted", amount: "10", currency: "CNY" };
+  const prisma = {
+    supplierPayment: { findFirst: async () => current },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => { calls.push("lock"); },
+      supplierPayment: { findFirst: async () => current },
+    }),
+  };
+  const service = new SupplierPaymentService(prisma, {}, {});
+  await assert.rejects(() => service.post(current.id, [{ payable_entry_id: "entry-1", amount: "10" }], { id: "user-1" }), (error) => error.getResponse().code === "SUPPLIER_PAYMENT_NOT_POSTABLE");
+  assert.deepEqual(calls, ["lock"]);
+});
