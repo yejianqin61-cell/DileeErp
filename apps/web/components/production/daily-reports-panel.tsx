@@ -13,6 +13,7 @@ type Operation = { id: string; operationNameSnapshot: string; targetQuantity: st
 type Order = { id: string; productionOrderNo: string; orderNo: string; executionMode: string; status: string; plannedQuantity: string; operations: Operation[] };
 type Employee = { id: string; employeeNo: string; name: string; employmentStatus: string };
 type Report = { id: string; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { id: string; targetQuantity: string } };
+type OperationReport = { id: string; productionOrderOperationId: string; reportDate: string; completedQuantity: string };
 type Draft = { employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_minutes: string; unit_price: string };
 
 const today = new Date().toISOString().slice(0, 10);
@@ -23,6 +24,7 @@ export function DailyReportsPanel() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
+  const [operationReports, setOperationReports] = useState<OperationReport[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [selectedOperation, setSelectedOperation] = useState<Operation | null>(null);
   const [selectedReportDate, setSelectedReportDate] = useState(today);
@@ -37,11 +39,12 @@ export function DailyReportsPanel() {
     setLoading(true);
     setError("");
     try {
-      const [o, e, r] = await Promise.all([apiGet<Order[]>("/production/orders"), apiGet<Employee[]>("/production/employees"), apiGet<Report[]>("/production/employee-reports")]);
+      const [o, e, r, operationRows] = await Promise.all([apiGet<Order[]>("/production/orders"), apiGet<Employee[]>("/production/employees"), apiGet<Report[]>("/production/employee-reports"), apiGet<OperationReport[]>("/production/operation-reports")]);
       // 日报只能登记正在生产的生产单；草稿单尚未启动工序，后端会拒绝保存。
       setOrders(o.data.filter((item) => item.executionMode === "in_house" && item.status === "in_progress"));
       setEmployees(e.data.filter((item) => item.employmentStatus === "active"));
       setReports(r.data);
+      setOperationReports(operationRows.data);
     } catch (cause) {
       setError(errorText(cause));
     } finally {
@@ -117,7 +120,7 @@ export function DailyReportsPanel() {
     return totals;
   }, [reports, selectedReportDate]);
   const plannedQuantity = Number(selectedOperation?.targetQuantity ?? 0);
-  const completedQuantity = visibleReports.reduce((sum, report) => sum + Number(report.quantity), 0);
+  const completedQuantity = operationReports.filter((report) => report.productionOrderOperationId === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate).reduce((sum, report) => sum + Number(report.completedQuantity), 0);
   const isOverOrder = plannedQuantity > 0 && completedQuantity > plannedQuantity;
 
   if (loading) return <section className="panel"><LoadingState /></section>;
