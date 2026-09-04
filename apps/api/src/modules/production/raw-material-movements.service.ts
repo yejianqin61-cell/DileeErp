@@ -129,8 +129,9 @@ export class RawMaterialMovementsService {
       const posted = await this.prisma.$transaction(async (tx) => {
         const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null }, include: { lines: { where: { deletedAt: null } } } });
         if (!current || current.status !== "draft") throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: "领料单已被其他操作处理", details: [] });
+        const lockedOrder = await this.requireInHouseOrder(current.productionOrderId, tx);
         for (const line of current.lines) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`${line.materialId}|${line.unitId}`}))`;
-        const lockedPreview = await this.previewLines(order, current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
+        const lockedPreview = await this.previewLines(lockedOrder, current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         if (lockedPreview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "领料会造成原料库存不足", details: [] });
         const lockedRisks = lockedPreview.lines.flatMap((line) => line.risks.map((risk) => ({ line_id: line.id, risk_type: risk.type, context: risk.context })));
         if (lockedRisks.length && !current.reason?.trim()) throw new UnprocessableEntityException({ code: "RISK_REASON_REQUIRED", message: "超领或非 BOM 物料必须填写原因", details: lockedRisks });
@@ -230,6 +231,7 @@ export class RawMaterialMovementsService {
       const posted = await this.prisma.$transaction(async (tx) => {
         const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null, status: "draft", documentType }, include: { lines: { where: { deletedAt: null } } } });
         if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: "单据已被其他操作处理", details: [] });
+        await this.requireInHouseOrder(current.productionOrderId, tx);
         for (const line of current.lines) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`derived:${line.sourceIssueLineId}`}))`;
         await this.derivedLines(current.productionOrderId, current.lines.map((line) => ({ source_issue_line_id: line.sourceIssueLineId!, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
@@ -266,8 +268,8 @@ export class RawMaterialMovementsService {
     return result;
   }
 
-  private async requireInHouseOrder(id: string) {
-    const order = await this.prisma.productionOrder.findFirst({ where: { id, deletedAt: null }, include: { bom: true, executionLocation: true } });
+  private async requireInHouseOrder(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
+    const order = await client.productionOrder.findFirst({ where: { id, deletedAt: null }, include: { bom: true, executionLocation: true } });
     if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
     if (order.executionMode !== "in_house" || order.status !== "in_progress") throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_NOT_ISSUABLE", message: "只有生产中的厂内生产单可以领料", details: [] });
     return order;
