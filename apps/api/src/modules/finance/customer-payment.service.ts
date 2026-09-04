@@ -48,10 +48,14 @@ export class CustomerPaymentService {
   }
 
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; remark?: string }, user: CurrentUser) {
-    const current = await this.get(id);
-    if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_EDITABLE", "只有草稿收款可以编辑");
-    const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYMENT_AMOUNT");
-    return this.prisma.customerPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.customerPayment.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在");
+      if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_EDITABLE", "只有草稿收款可以编辑");
+      const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYMENT_AMOUNT");
+      return tx.customerPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    });
   }
 
   async reverse(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] }); const current = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } }); if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在"); if (current.status === "reversed" || current.status === "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_REVERSIBLE", "当前收款不可冲销"); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`; const locked = await tx.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } }); if (!locked || locked.status === "reversed" || locked.status === "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_REVERSIBLE", "收款已被其他操作处理"); await tx.receivableAllocation.updateMany({ where: { paymentId: id, status: "active", deletedAt: null }, data: { status: "reversed", ...this.audit.update(user) } }); const payment = await tx.customerPayment.update({ where: { id }, data: { status: "reversed", remark: `${locked.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } }); for (const allocation of locked.allocations) await this.receivable.refreshStatus(tx, allocation.receivableSourceId, user); return payment; }); await this.audit.record("customer_payment.reverse", "customer_payment", user.id, id, { order_no: result.orderNo, reason }); return result; }
