@@ -47,6 +47,40 @@ export class EmployeeDailyReportsService {
     return this.get(created.id);
   }
 
+  async createBatch(inputs: Input[], user: CurrentUser) {
+    if (!inputs.length) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORTS_REQUIRED", message: "请至少登记一名员工日报", details: [] });
+    const first = inputs[0];
+    if (inputs.some((input) => input.production_order_id !== first.production_order_id || input.production_order_operation_id !== first.production_order_operation_id || input.report_date !== first.report_date)) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_BATCH_MISMATCH", message: "批量日报必须属于同一生产单、工序和日期", details: [] });
+    const employeeIds = new Set<string>();
+    for (const input of inputs) { if (employeeIds.has(input.employee_id)) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_BATCH_DUPLICATE", message: "同一员工不能在同一批日报中重复登记", details: [{ employee_id: input.employee_id }] }); employeeIds.add(input.employee_id); }
+    const prepared = await Promise.all(inputs.map(async (input) => ({ input, refs: await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false), values: this.values(input) })));
+    const created = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${prepared[0].refs.operation.id}::uuid FOR UPDATE`;
+      const rows = [];
+      for (const item of prepared) rows.push(await this.createInTransaction(tx, item.input, item.refs, item.values, user));
+      await this.progress.recalculateInTransaction(tx, prepared[0].refs.order.id, "employee_daily_report_batch", rows[rows.length - 1]?.id, user);
+      return rows;
+    });
+    await this.audit.record("employee_daily_report.batch_create", "employee_daily_report", user.id, undefined, { order_no: prepared[0].refs.order.orderNo, production_order_operation_id: prepared[0].refs.operation.id, report_date: first.report_date, employee_count: created.length });
+    return Promise.all(created.map((row) => this.get(row.id)));
+  }
+
+  private async createInTransaction(tx: Prisma.TransactionClient, input: Input, refs: Awaited<ReturnType<EmployeeDailyReportsService["refs"]>>, values: ReturnType<EmployeeDailyReportsService["values"]>, user: CurrentUser) {
+    if (input.idempotency_key) {
+      const previous = await tx.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });
+      if (previous) return previous;
+    }
+    const otherMode = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: { not: input.wage_mode }, deletedAt: null }, select: { wageMode: true } });
+    if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: input.wage_mode }] });
+    const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
+    const row = existing
+      ? await tx.employeeDailyReport.update({ where: { id: existing.id }, data: { quantity: existing.quantity.plus(values.quantity), durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: existing.calculatedAmount.plus(values.amount), remark: input.remark ?? existing.remark, version: { increment: 1 }, ...this.audit.update(user) } })
+      : await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
+    await this.recomputeDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
+    await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
+    return row;
+  }
+
   async update(id: string, input: Partial<Omit<Input, "production_order_id" | "production_order_operation_id" | "employee_id">> & { reason: string; expected_version?: number }, user: CurrentUser) {
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "修改员工日报必须填写原因", details: [] });
     const current = await this.get(id);

@@ -141,7 +141,7 @@ export function DailyReportsPanel() {
     try {
       const batchKey = saveKey ?? idempotencyKey();
       if (operationQuantity && Number(operationQuantity) > 0) await apiPost("/production/operation-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: selectedReportDate, completed_quantity: operationQuantity, idempotency_key: `${batchKey}-operation` });
-      await Promise.all(drafts.map((row) => apiPost("/production/employee-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, ...row, idempotency_key: `${batchKey}-${row.employee_id}-${row.report_date}` })));
+      if (drafts.length) await apiPost("/production/employee-reports/batch", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: selectedReportDate, rows: JSON.stringify(drafts.map((row) => ({ ...row, idempotency_key: `${batchKey}-${row.employee_id}-${row.report_date}` }))) });
       setMessage("工序员工日报已保存");
       closeDialog();
       await load();
