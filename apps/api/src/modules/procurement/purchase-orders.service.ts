@@ -64,10 +64,10 @@ export class PurchaseOrdersService {
       const item = po.items.find((candidate) => candidate.id === itemId);
       if (!item || item.material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "INVALID_RECEIPT", message: "到货明细或物料类型不合法", details: [] });
       const existing = input.idempotency_key ? item.receipts.find((row) => (row.extensionData as { idempotency_key?: string } | null)?.idempotency_key === input.idempotency_key) : undefined;
-      if (existing) return { created: existing, po, batchSequence: item.receipts.indexOf(existing) + 1, payableAmount: new Prisma.Decimal(((existing.extensionData as { payable_amount?: string } | null)?.payable_amount) ?? existing.quantity.mul(item.unitPrice).toFixed(4)) };
+      if (existing) return { created: existing, po, batchSequence: this.batchSequence(existing.extensionData, item.receipts.indexOf(existing) + 1), payableAmount: new Prisma.Decimal(((existing.extensionData as { payable_amount?: string } | null)?.payable_amount) ?? existing.quantity.mul(item.unitPrice).toFixed(4)) };
       const currentReceived = item.receipts.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
       if (currentReceived.plus(quantity).gt(item.quantity) && !input.over_receipt_reason?.trim()) throw new UnprocessableEntityException({ code: "PURCHASE_OVER_RECEIPT_REASON_REQUIRED", message: "到货数量超过采购数量，必须填写超收原因", details: [{ ordered_quantity: item.quantity.toString(), received_quantity: currentReceived.toString(), requested_quantity: quantity.toString() }] });
-      const batchSequence = item.receipts.length + 1;
+      const batchSequence = this.nextBatchSequence(item.receipts);
       const payableAmount = quantity.mul(item.unitPrice).toFixed(4);
       const extensionData = { idempotency_key: input.idempotency_key ?? null, batch_sequence: batchSequence, payable_status: "pending_finance", payable_amount: payableAmount, over_receipt_reason: input.over_receipt_reason ?? null };
       const created = await tx.purchaseReceipt.create({ data: { purchaseOrderId: po.id, purchaseOrderItemId: item.id, orderNo: po.orderNo, receiptNo: `GR-${randomUUID().slice(0, 12).toUpperCase()}`, referenceNo: input.reference_no, receivedDate: new Date(input.received_date), quantity, extensionData, remark: input.remark, ...this.audit.create(user) } });
@@ -117,6 +117,9 @@ export class PurchaseOrdersService {
       if (Number.isInteger(value) && value > 0) return value;
     }
     return fallback;
+  }
+  private nextBatchSequence(receipts: Array<{ extensionData: unknown }>) {
+    return receipts.reduce((max, receipt, index) => Math.max(max, this.batchSequence(receipt.extensionData, index + 1)), 0) + 1;
   }
   private arrivalClosed(extensionData: unknown) { return Boolean(extensionData && typeof extensionData === "object" && (extensionData as { arrival_closed?: unknown }).arrival_closed === true); }
 }
