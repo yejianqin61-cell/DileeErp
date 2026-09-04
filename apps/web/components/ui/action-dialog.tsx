@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Textarea } from "./textarea";
 
 export type ActionField = { name: string; label: string; type?: "text" | "date" | "time" | "number" | "textarea" | "select"; required?: boolean; defaultValue?: string; placeholder?: string; options?: Array<{ value: string; label: string }>; canAddCategory?: boolean };
-const categoryFields = new Set(["customer_id", "contact_id", "supplier_id", "material_id", "unit_id", "default_unit_id", "receipt_id", "department_id", "position_id", "employee_type", "execution_location_id"]);
+const categoryFields = new Set(["customer_id", "contact_id", "supplier_id", "material_id", "unit_id", "default_unit_id", "receipt_id", "department_id", "position_id", "employee_type", "execution_location_id", "operation_id"]);
 export function ActionDialog({ open, title, fields, submitLabel = "保存", onOpenChange, onSubmit, onAddCategory }: { open: boolean; title: string; fields: ActionField[]; submitLabel?: string; onOpenChange: (open: boolean) => void; onSubmit: (values: Record<string, string>) => void | Promise<void>; onAddCategory?: (field: ActionField, values: Record<string, string>) => void | Promise<void> }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [validationError, setValidationError] = useState("");
