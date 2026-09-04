@@ -74,10 +74,13 @@ export class ReceivableAdjustmentService {
   }
 
   async post(id: string, user: CurrentUser) {
-    const current = await this.get(id);
-    if (current.status !== "draft") throw this.invalid("RECEIVABLE_ADJUSTMENT_NOT_POSTABLE", "只有草稿调整可以过账");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_adjustments WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.receivableAdjustment.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("RECEIVABLE_ADJUSTMENT_NOT_FOUND", "应收调整不存在");
+      if (current.status !== "draft") throw this.invalid("RECEIVABLE_ADJUSTMENT_NOT_POSTABLE", "只有草稿调整可以过账");
       if (current.receivableSourceId && current.effect === "decrease") {
+        await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${current.receivableSourceId}::uuid FOR UPDATE`;
         const available = await this.sourceNetOutstanding(tx, current.receivableSourceId);
         if (current.amount.gt(available)) throw new UnprocessableEntityException({ code: "ADJUSTMENT_EXCEEDS_BALANCE", message: "调整金额超过应收未收余额", details: [{ available_amount: available.toString() }] });
       }
