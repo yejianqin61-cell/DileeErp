@@ -32,7 +32,10 @@ export class SupplierPayableService {
       const existing = input.source_type === "outsource_receipt"
         ? await tx.supplierPayableEntry.findUnique({ where: { outsourcePayableSourceId: input.source_id } })
         : await tx.supplierPayableEntry.findUnique({ where: { payableSourceId: input.source_id } });
-      if (existing && !existing.deletedAt) return existing;
+      if (existing) {
+        if (!existing.deletedAt) return existing;
+        return tx.supplierPayableEntry.update({ where: { id: existing.id }, data: { deletedAt: null, deletedBy: null, ...this.audit.update(user) } });
+      }
       const amount = input.amount ? this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT") : refs.amount;
       if (!amount.eq(refs.amount) && !input.amount_reason?.trim()) throw this.invalid("PAYABLE_AMOUNT_REASON_REQUIRED", "覆盖应付金额必须填写原因");
       return tx.supplierPayableEntry.create({ data: {
