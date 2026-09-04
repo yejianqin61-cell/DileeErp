@@ -35,6 +35,7 @@ export function DailyReportsPanel() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [operationQuantity, setOperationQuantity] = useState("");
+  const [saving, setSaving] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -84,6 +85,7 @@ export function DailyReportsPanel() {
 
   async function save() {
     if (!selectedOrder || !selectedOperation) return;
+    if (saving) return;
     for (const row of drafts) {
       if (!row.employee_id) {
         setError("请先选择员工");
@@ -103,6 +105,7 @@ export function DailyReportsPanel() {
       }
     }
     setError("");
+    setSaving(true);
     try {
       if (operationQuantity && Number(operationQuantity) > 0) await apiPost("/production/operation-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: selectedReportDate, completed_quantity: operationQuantity, idempotency_key: idempotencyKey() });
       await Promise.all(drafts.map((row) => apiPost("/production/employee-reports", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, ...row, idempotency_key: idempotencyKey() })));
@@ -111,6 +114,8 @@ export function DailyReportsPanel() {
       await load();
     } catch (cause) {
       setError(errorText(cause));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -155,7 +160,7 @@ export function DailyReportsPanel() {
             <label>查看日期<Input type="date" value={selectedReportDate} onChange={(event) => setSelectedReportDate(event.target.value)} /></label>
             <Button variant="secondary" onClick={addDraft}>批量选择员工</Button>
             <label>本次新增工序完成量<Input type="number" min="0" step="0.0001" value={operationQuantity} placeholder="可选" onChange={(event) => setOperationQuantity(event.target.value)} /></label>
-            <Button onClick={() => void save()}>保存日报</Button>
+            <Button onClick={() => void save()} disabled={saving}>{saving ? "保存中..." : "保存日报"}</Button>
           </div>
           <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>日期</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长（分钟）</TableHead><TableHead>单价</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{drafts.map((row, index) => <TableRow key={row.employee_id}><TableCell>{employees.find((employee) => employee.id === row.employee_id)?.name ?? "-"}</TableCell><TableCell><Input type="date" value={row.report_date} onChange={(event) => updateDraft(index, { report_date: event.target.value })} /></TableCell><TableCell><Select value={row.wage_mode} onValueChange={(value) => updateDraft(index, { wage_mode: value, quantity: row.quantity, duration_minutes: row.duration_minutes })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="piece_rate">计件</SelectItem><SelectItem value="time_rate">计时</SelectItem></SelectContent></Select></TableCell><TableCell><Input type="number" min="0" value={row.quantity} placeholder="可选，用于统计" onChange={(event) => updateDraft(index, { quantity: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" disabled={row.wage_mode === "piece_rate"} value={row.duration_minutes} placeholder={row.wage_mode === "piece_rate" ? "计件不填" : "必填"} onChange={(event) => updateDraft(index, { duration_minutes: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" value={row.unit_price} placeholder="人工填写" onChange={(event) => updateDraft(index, { unit_price: event.target.value })} /></TableCell><TableCell><Button size="sm" variant="ghost" onClick={() => setDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>删除</Button></TableCell></TableRow>)}</TableBody></Table></div>
 
