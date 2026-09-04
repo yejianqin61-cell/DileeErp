@@ -7,7 +7,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 @Injectable()
 export class IncomingInspectionsService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
-  async list(orderNo?: string) { const rows = await this.prisma.incomingInspection.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { purchaseReceipt: true }, orderBy: { createdAt: "asc" } }); const counters = new Map<string, number>(); return rows.map((row) => { const sequence = (counters.get(row.purchaseReceipt.purchaseOrderId) ?? 0) + 1; counters.set(row.purchaseReceipt.purchaseOrderId, sequence); return { ...row, batchSequence: sequence }; }).reverse(); }
+  async list(orderNo?: string) { const rows = await this.prisma.incomingInspection.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { purchaseReceipt: true }, orderBy: { createdAt: "asc" } }); return rows.map((row) => ({ ...row, batchSequence: Number((row.purchaseReceipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? (row.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1) })).reverse(); }
   async create(input: { purchase_receipt_id: string; inspected_quantity: string; accepted_quantity: string; conditional_quantity: string; rejected_quantity: string; extension_data?: Record<string, unknown>; remark?: string }, user: CurrentUser) {
     const values = [input.inspected_quantity, input.accepted_quantity, input.conditional_quantity, input.rejected_quantity].map((value) => { try { const decimal = new Prisma.Decimal(value); if (decimal.isNegative()) throw new Error(); return decimal; } catch { throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] }); } });
     if (!values[1].plus(values[2]).plus(values[3]).eq(values[0])) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] });
@@ -23,7 +23,7 @@ export class IncomingInspectionsService {
       const conditional = (existing?.conditionalQuantity ?? new Prisma.Decimal(0)).plus(values[2]);
       const rejected = (existing?.rejectedQuantity ?? new Prisma.Decimal(0)).plus(values[3]);
       const status = rejected.eq(inspected) ? "rejected" : accepted.plus(conditional).eq(inspected) ? (conditional.gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
-      const batchSequence = 1;
+      const batchSequence = Number((receipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1);
       return existing
         ? tx.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected, acceptedQuantity: accepted, conditionalQuantity: conditional, rejectedQuantity: rejected, status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })
         : tx.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: receipt.orderNo, inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], status, extensionData: { ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
