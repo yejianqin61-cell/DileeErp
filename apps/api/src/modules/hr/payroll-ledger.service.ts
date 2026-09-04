@@ -23,18 +23,24 @@ export class PayrollLedgerService {
     const row = await this.prisma.payrollLedger.create({ data: { ledgerNo: this.number("PAYROLL"), employeeId: employee.id, periodStart: start, periodEnd: end, currency: input.currency, baseSalary: this.dec(input.base_salary), productionSourceAmount: sourceData.production, overtimeAmount: this.dec(input.overtime_amount), attendanceDeduction: this.dec(input.attendance_deduction), performanceAmount: this.dec(input.performance_amount), allowanceAmount: this.dec(input.allowance_amount), socialInsurance: this.dec(input.social_insurance), individualTax: this.dec(input.individual_tax), otherAdjustment: this.dec(input.other_adjustment), sourceSnapshot: sourceData.snapshot, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("payroll_ledger.create", "payroll_ledger", user.id, row.id, { employee_id: row.employeeId, period_start: input.period_start, period_end: input.period_end, production_source_amount: sourceData.production.toString() }); return row;
   }
   async update(id: string, input: Partial<{ employee_id: string; period_start: string; period_end: string; currency: string; base_salary: string; overtime_amount: string; attendance_deduction: string; performance_amount: string; allowance_amount: string; social_insurance: string; individual_tax: string; other_adjustment: string; attachment?: unknown[]; remark?: string; reason?: string }>, user: CurrentUser) {
-    const current = await this.get(id);
-    if (["partially_paid", "paid", "closed"].includes(current.status)) throw this.invalid("PAYROLL_PAID_NOT_EDITABLE", "已支付或已关闭台账不可直接编辑，请使用工资调整单");
-    if (current.status === "confirmed" && !input.reason?.trim()) throw this.invalid("CORRECTION_REASON_REQUIRED", "已确认工资台账修改必须填写原因");
-    const employeeId = input.employee_id ?? current.employeeId;
-    const start = this.date(input.period_start ?? current.periodStart.toISOString().slice(0, 10));
-    const end = this.date(input.period_end ?? current.periodEnd.toISOString().slice(0, 10));
-    if (end < start) throw this.invalid("INVALID_PAYROLL_PERIOD", "薪资期间无效");
-    const employee = await this.prisma.employee.findFirst({ where: { id: employeeId, deletedAt: null } });
-    if (!employee) throw this.notFound("EMPLOYEE_NOT_FOUND", "员工不存在");
-    const sourceData = await this.collectProductionSources(employee.id, start, end);
-    const row = await this.prisma.payrollLedger.update({ where: { id }, data: { employeeId, periodStart: start, periodEnd: end, currency: input.currency ?? current.currency, baseSalary: input.base_salary ?? current.baseSalary, productionSourceAmount: sourceData.production, overtimeAmount: input.overtime_amount ?? current.overtimeAmount, attendanceDeduction: input.attendance_deduction ?? current.attendanceDeduction, performanceAmount: input.performance_amount ?? current.performanceAmount, allowanceAmount: input.allowance_amount ?? current.allowanceAmount, socialInsurance: input.social_insurance ?? current.socialInsurance, individualTax: input.individual_tax ?? current.individualTax, otherAdjustment: input.other_adjustment ?? current.otherAdjustment, sourceSnapshot: sourceData.snapshot, attachment: (input.attachment ?? current.attachment) as Prisma.InputJsonValue, remark: input.remark ?? current.remark, status: "draft", ...this.audit.update(user) } });
-    await this.audit.record("payroll_ledger.update", "payroll_ledger", user.id, id, { reason: input.reason ?? null, before_status: current.status, after_status: "draft" });
+    let beforeStatus = "";
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.payrollLedger.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在");
+      beforeStatus = current.status;
+      if (["partially_paid", "paid", "closed"].includes(current.status)) throw this.invalid("PAYROLL_PAID_NOT_EDITABLE", "已支付或已关闭台账不可直接编辑，请使用工资调整单");
+      if (current.status === "confirmed" && !input.reason?.trim()) throw this.invalid("CORRECTION_REASON_REQUIRED", "已确认工资台账修改必须填写原因");
+      const employeeId = input.employee_id ?? current.employeeId;
+      const start = this.date(input.period_start ?? current.periodStart.toISOString().slice(0, 10));
+      const end = this.date(input.period_end ?? current.periodEnd.toISOString().slice(0, 10));
+      if (end < start) throw this.invalid("INVALID_PAYROLL_PERIOD", "薪资期间无效");
+      const employee = await tx.employee.findFirst({ where: { id: employeeId, deletedAt: null } });
+      if (!employee) throw this.notFound("EMPLOYEE_NOT_FOUND", "员工不存在");
+      const sourceData = await this.collectProductionSources(employee.id, start, end);
+      return tx.payrollLedger.update({ where: { id }, data: { employeeId, periodStart: start, periodEnd: end, currency: input.currency ?? current.currency, baseSalary: input.base_salary ?? current.baseSalary, productionSourceAmount: sourceData.production, overtimeAmount: input.overtime_amount ?? current.overtimeAmount, attendanceDeduction: input.attendance_deduction ?? current.attendanceDeduction, performanceAmount: input.performance_amount ?? current.performanceAmount, allowanceAmount: input.allowance_amount ?? current.allowanceAmount, socialInsurance: input.social_insurance ?? current.socialInsurance, individualTax: input.individual_tax ?? current.individualTax, otherAdjustment: input.other_adjustment ?? current.otherAdjustment, sourceSnapshot: sourceData.snapshot, attachment: (input.attachment ?? current.attachment) as Prisma.InputJsonValue, remark: input.remark ?? current.remark, status: "draft", ...this.audit.update(user) } });
+    });
+    await this.audit.record("payroll_ledger.update", "payroll_ledger", user.id, id, { reason: input.reason ?? null, before_status: beforeStatus, after_status: "draft" });
     return row;
   }
   async remove(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("PAYROLL_NOT_DELETABLE", "只有草稿台账可以删除"); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${id}::uuid FOR UPDATE`; const locked = await tx.payrollLedger.findFirst({ where: { id, deletedAt: null } }); if (!locked || locked.status !== "draft") throw this.invalid("PAYROLL_NOT_DELETABLE", "工资台账已被其他操作处理"); return tx.payrollLedger.update({ where: { id }, data: { ...this.audit.softDelete(user) } }); }); return result; }

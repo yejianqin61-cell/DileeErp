@@ -62,3 +62,24 @@ test("payroll adjustment locks and rechecks the latest ledger status", async () 
   assert.equal(createCount, 0);
   assert.equal(audits.length, 0);
 });
+
+test("payroll ledger update locks and rechecks paid status", async () => {
+  let lockCount = 0;
+  let updateCount = 0;
+  const row = { id: "ledger-1", status: "paid", employeeId: "employee-1" };
+  const prisma = {
+    payrollLedger: { findFirst: async () => row, update: async () => { updateCount += 1; return row; } },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => { lockCount += 1; return []; },
+      payrollLedger: prisma.payrollLedger,
+    }),
+  };
+  const audit = { update: () => ({}), record: async () => {} };
+  const service = new PayrollLedgerService(prisma, audit);
+  await assert.rejects(
+    () => service.update("ledger-1", { base_salary: "20" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYROLL_PAID_NOT_EDITABLE",
+  );
+  assert.equal(lockCount, 1);
+  assert.equal(updateCount, 0);
+});
