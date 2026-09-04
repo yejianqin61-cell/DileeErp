@@ -18,7 +18,10 @@ export class ReceivableService {
       const outbound = await tx.finishedGoodsOutbound.findFirst({ where: { id: outboundId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, include: { salesOrder: true } });
       if (!outbound) throw this.notFound("OUTBOUND_NOT_RECEIVABLE", "出库不存在或尚未过账");
       const existing = await tx.receivableSource.findUnique({ where: { outboundId } });
-      if (existing) return existing;
+      if (existing) {
+        if (!existing.deletedAt) return existing;
+        return tx.receivableSource.update({ where: { id: existing.id }, data: { deletedAt: null, deletedBy: null, ...this.audit.update(user) } });
+      }
       const unitPrice = outbound.salesOrder.unitPrice;
       const amount = input.amount ?? (unitPrice ? new Prisma.Decimal(outbound.quantity).mul(unitPrice).toFixed(4) : undefined);
       if (!amount) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REQUIRED", message: "销售单没有单价，必须填写应收金额和原因", details: [] });

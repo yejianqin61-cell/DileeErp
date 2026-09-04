@@ -74,3 +74,17 @@ test("receivable creation locks the outbound before idempotency check", async ()
   assert.equal(lockCount, 1);
   assert.equal(createCount, 0);
 });
+
+test("receivable creation restores a soft-deleted outbound source", async () => {
+  let restoreCount = 0;
+  const deleted = { id: "source-1", deletedAt: new Date() };
+  const prisma = {
+    finishedGoodsOutbound: { findFirst: async () => ({ id: "outbound-1", status: "posted", quantity: "1", orderNo: "SO-1", salesOrderId: "sales-1", signedAt: null, salesOrder: { unitPrice: "10", customerId: "customer-1", unit: "件", taxRate: "0", currency: "CNY" } }) },
+    receivableSource: { findUnique: async () => deleted, update: async () => { restoreCount += 1; return { ...deleted, deletedAt: null, orderNo: "SO-1", amount: { toString: () => "10" } }; } },
+    $transaction: async (fn) => fn({ $queryRaw: async () => [], finishedGoodsOutbound: prisma.finishedGoodsOutbound, receivableSource: prisma.receivableSource }),
+  };
+  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} });
+  const result = await service.createFromOutbound("outbound-1", {}, { id: "user-1" });
+  assert.equal(result.deletedAt, null);
+  assert.equal(restoreCount, 1);
+});
