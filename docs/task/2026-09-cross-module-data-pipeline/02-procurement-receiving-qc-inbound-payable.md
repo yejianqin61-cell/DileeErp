@@ -13,6 +13,7 @@
 - 已通过 API 构建和 `apps/api/test/purchase-orders.test.cjs`（5 项）。本任务其余端到端验收项仍未标记完成。
 - `90fc889 fix: serialize raw material inbound edits` 将原料入库草稿编辑的数量校验放入事务，锁定入库单和来料质检来源后重新计算累计可入库量，避免并发编辑超出 QC 上限；新增回归测试。
 - `57040cb fix: post current raw material inbound draft` 让入库过账在锁定入库单和 QC 来源后重新读取当前草稿，再写入库存事实和应付来源，避免过账使用编辑前的旧数量；新增 2 项回归测试。
+- `481741d fix: serialize incoming inspection batches` 将来料质检创建/累计放入到货批次锁内，重新读取累计检验量后再更新唯一 QC 记录，避免并发质检越过到货数量上限；质检回归测试已适配事务桩并通过。
 
 - [ ] 采购单按每个明细累计到货量判定完成；达到或超过计划量时标记超单。
 - [ ] 所有明细达到计划量后才能关闭到货；关闭后禁止继续登记到货。
