@@ -16,10 +16,14 @@ export class SalaryPaymentService {
   async get(id: string) { const row = await this.prisma.salaryPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null }, include: { ledger: true } } } }); if (!row) throw this.notFound("SALARY_PAYMENT_NOT_FOUND", "工资付款不存在"); return row; }
   async create(input: Input, user: CurrentUser) { const amount = this.positive(input.amount); const row = await this.prisma.salaryPayment.create({ data: { paymentNo: this.number("SALARY"), paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("salary_payment.create", "salary_payment", user.id, row.id, { amount: row.amount.toString() }); return row; }
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; bank_reference?: string; remark?: string }, user: CurrentUser) {
-    const current = await this.get(id);
-    if (current.status !== "draft") throw this.invalid("SALARY_PAYMENT_NOT_EDITABLE", "只有草稿工资付款可以编辑");
-    const amount = input.amount === undefined ? current.amount : this.positive(input.amount);
-    const row = await this.prisma.salaryPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, bankReference: input.bank_reference ?? current.bankReference, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM salary_payments WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.salaryPayment.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("SALARY_PAYMENT_NOT_FOUND", "工资付款不存在");
+      if (current.status !== "draft") throw this.invalid("SALARY_PAYMENT_NOT_EDITABLE", "只有草稿工资付款可以编辑");
+      const amount = input.amount === undefined ? current.amount : this.positive(input.amount);
+      return tx.salaryPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, bankReference: input.bank_reference ?? current.bankReference, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    });
     await this.audit.record("salary_payment.update", "salary_payment", user.id, id, { amount: row.amount.toString() });
     return row;
   }
