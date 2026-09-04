@@ -82,7 +82,31 @@ export class PurchaseOrdersService {
     return { ...result.created, batchSequence: result.batchSequence, payableStatus: "pending_finance", payableAmount: result.payableAmount };
   }
   async impactPreview(id: string) { const po = await this.get(id); const planned = po.items.reduce((sum, item) => sum.plus(item.quantity), new Prisma.Decimal(0)); const received = po.items.reduce((sum, item) => sum.plus(item.receipts.reduce((subtotal, row) => subtotal.plus(row.quantity), new Prisma.Decimal(0))), new Prisma.Decimal(0)); return { order_no: po.orderNo, bom_version: po.bomVersion, status: po.status, purchase_order_no: po.purchaseOrderNo, planned_quantity: planned.toFixed(4), received_quantity: received.toFixed(4), over_order: received.gte(planned), items: po.items.map((item) => ({ id: item.id, quantity: item.quantity, received_quantity: item.receipts.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)).toFixed(4) })), warning: po.items.some((item) => item.receipts.length) ? "已存在到货事实，变更需要后续回退流程" : null }; }
-  private async refs(input: Input) { if (!input.items.length || input.items.some((item) => !this.isPositive(item.quantity) || !this.isNonNegative(item.unit_price) || (item.extra_fee !== undefined && !this.isNonNegative(item.extra_fee)))) throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_ITEM", message: "采购明细不能为空且数量/单价/费用必须有效", details: [] }); const order = await this.prisma.salesOrder.findFirst({ where: { orderNo: input.order_no, status: "confirmed", deletedAt: null } }); if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_CONFIRMED", message: "销售单不存在或未确认", details: [] }); const [bom, supplier, materials, units] = await Promise.all([this.prisma.bom.findFirst({ where: { id: input.bom_id, salesOrderId: order.id, orderNo: input.order_no, deletedAt: null } }), this.prisma.supplier.findFirst({ where: { id: input.supplier_id, isActive: true, deletedAt: null } }), this.prisma.material.findMany({ where: { id: { in: input.items.map((item) => item.material_id) }, materialType: "raw_material", isActive: true, deletedAt: null } }), this.prisma.unit.findMany({ where: { id: { in: input.items.map((item) => item.unit_id) }, isActive: true, deletedAt: null } })]); if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在或不属于该销售单", details: [] }); if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "供应商不存在或已停用", details: [] }); const materialMap = new Map(materials.map((row) => [row.id, row])); const unitMap = new Map(units.map((row) => [row.id, row])); if (input.items.some((item) => !materialMap.has(item.material_id) || !unitMap.has(item.unit_id))) throw new NotFoundException({ code: "PURCHASE_REFERENCE_NOT_FOUND", message: "物料或单位不存在或已停用", details: [] }); return { order, bom, supplier, materials: materialMap, units: unitMap }; }
+  private async refs(input: Input) {
+    if (!input.items.length || input.items.some((item) => !this.isPositive(item.quantity) || !this.isNonNegative(item.unit_price) || (item.extra_fee !== undefined && !this.isNonNegative(item.extra_fee)))) throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_ITEM", message: "采购明细不能为空且数量/单价/费用必须有效", details: [] });
+    const order = await this.prisma.salesOrder.findFirst({ where: { orderNo: input.order_no, status: "confirmed", deletedAt: null } });
+    if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_CONFIRMED", message: "销售单不存在或未确认", details: [] });
+    const [bom, supplier, materials, units] = await Promise.all([
+      this.prisma.bom.findFirst({ where: { id: input.bom_id, salesOrderId: order.id, orderNo: input.order_no, deletedAt: null } }),
+      this.prisma.supplier.findFirst({ where: { id: input.supplier_id, isActive: true, deletedAt: null } }),
+      this.prisma.material.findMany({ where: { id: { in: input.items.map((item) => item.material_id) }, materialType: "raw_material", isActive: true, deletedAt: null } }),
+      this.prisma.unit.findMany({ where: { id: { in: input.items.map((item) => item.unit_id) }, isActive: true, deletedAt: null } }),
+    ]);
+    if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在或不属于该销售单", details: [] });
+    if (!supplier) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "供应商不存在或已停用", details: [] });
+    const bomItemIds = input.items.flatMap((item) => item.bom_item_id ? [item.bom_item_id] : []);
+    const bomItems = bomItemIds.length && this.prisma.bomItem?.findMany
+      ? await this.prisma.bomItem.findMany({ where: { id: { in: bomItemIds }, bomId: bom.id, deletedAt: null }, select: { id: true, materialId: true } })
+      : [];
+    const bomItemMap = new Map(bomItems.map((row) => [row.id, row]));
+    const outsideBom = input.items.filter((item) => !item.bom_item_id);
+    if (outsideBom.some((item) => typeof item.extension_data?.outside_bom_reason !== "string" || !(item.extension_data.outside_bom_reason as string).trim())) throw new UnprocessableEntityException({ code: "PURCHASE_OUTSIDE_BOM_REASON_REQUIRED", message: "采购单明细不在 BOM 表中，必须填写新增原因", details: [] });
+    if (input.items.some((item) => item.bom_item_id && (!bomItemMap.has(item.bom_item_id) || bomItemMap.get(item.bom_item_id)?.materialId !== item.material_id))) throw new UnprocessableEntityException({ code: "PURCHASE_BOM_ITEM_MISMATCH", message: "采购明细必须引用当前 BOM 表中的对应物料", details: [] });
+    const materialMap = new Map(materials.map((row) => [row.id, row]));
+    const unitMap = new Map(units.map((row) => [row.id, row]));
+    if (input.items.some((item) => !materialMap.has(item.material_id) || !unitMap.has(item.unit_id))) throw new NotFoundException({ code: "PURCHASE_REFERENCE_NOT_FOUND", message: "物料或单位不存在或已停用", details: [] });
+    return { order, bom, supplier, materials: materialMap, units: unitMap };
+  }
   private amount(item: Item) { return new Prisma.Decimal(item.quantity).mul(item.unit_price).plus(item.extra_fee ?? 0); }
   private positive(value: string, message: string) { try { const result = new Prisma.Decimal(value); if (!result.gt(0)) throw new Error(); return result; } catch { throw new UnprocessableEntityException({ code: "INVALID_RECEIPT", message, details: [] }); } }
   private isPositive(value: string) { try { return new Prisma.Decimal(value).gt(0); } catch { return false; } }

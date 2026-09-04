@@ -10,11 +10,38 @@ test("purchase order accepts the editable BOM belonging to its confirmed sales o
     supplier: { findFirst: async () => ({ id: "supplier-1" }) },
     material: { findMany: async () => [{ id: "material-1" }] },
     unit: { findMany: async () => [{ id: "unit-1" }] },
+    bomItem: { findMany: async () => [] },
   };
   const service = new PurchaseOrdersService(prisma, {});
-  const refs = await service.refs({ order_no: "SO-1", bom_id: "bom-1", supplier_id: "supplier-1", purchase_date: new Date().toISOString(), currency: "USD", items: [{ material_id: "material-1", unit_id: "unit-1", quantity: "1", unit_price: "0" }] });
+  const refs = await service.refs({ order_no: "SO-1", bom_id: "bom-1", supplier_id: "supplier-1", purchase_date: new Date().toISOString(), currency: "USD", items: [{ material_id: "material-1", unit_id: "unit-1", quantity: "1", unit_price: "0", extension_data: { outside_bom_reason: "临时替代料" } }] });
   assert.equal(refs.bom.id, "bom-1");
   assert.equal(refs.order.id, "order-1");
+});
+
+test("purchase order requires a reason for material outside the BOM", async () => {
+  const prisma = {
+    salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "SO-1" }) },
+    bom: { findFirst: async () => ({ id: "bom-1", salesOrderId: "order-1", orderNo: "SO-1", version: 1 }) },
+    supplier: { findFirst: async () => ({ id: "supplier-1" }) },
+    material: { findMany: async () => [{ id: "material-1" }] },
+    unit: { findMany: async () => [{ id: "unit-1" }] },
+    bomItem: { findMany: async () => [] },
+  };
+  const service = new PurchaseOrdersService(prisma, {});
+  await assert.rejects(() => service.refs({ order_no: "SO-1", bom_id: "bom-1", supplier_id: "supplier-1", purchase_date: new Date().toISOString(), currency: "CNY", items: [{ material_id: "material-1", unit_id: "unit-1", quantity: "1", unit_price: "1" }] }), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_OUTSIDE_BOM_REASON_REQUIRED");
+});
+
+test("purchase order rejects a BOM item belonging to another BOM", async () => {
+  const prisma = {
+    salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "SO-1" }) },
+    bom: { findFirst: async () => ({ id: "bom-1", salesOrderId: "order-1", orderNo: "SO-1", version: 1 }) },
+    supplier: { findFirst: async () => ({ id: "supplier-1" }) },
+    material: { findMany: async () => [{ id: "material-1" }] },
+    unit: { findMany: async () => [{ id: "unit-1" }] },
+    bomItem: { findMany: async () => [] },
+  };
+  const service = new PurchaseOrdersService(prisma, {});
+  await assert.rejects(() => service.refs({ order_no: "SO-1", bom_id: "bom-1", supplier_id: "supplier-1", purchase_date: new Date().toISOString(), currency: "CNY", items: [{ material_id: "material-1", bom_item_id: "other-item", unit_id: "unit-1", quantity: "1", unit_price: "1" }] }), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_BOM_ITEM_MISMATCH");
 });
 
 test("only draft purchase orders can replace their rows", async () => {
