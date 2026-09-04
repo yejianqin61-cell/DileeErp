@@ -103,6 +103,9 @@ export class FinishedGoodsOutboundService {
     if (!current) throw this.notFound("CUSTOMER_RETURN_NOT_FOUND", "客户退货单不存在");
     if (current.status !== "draft") throw this.invalid("CUSTOMER_RETURN_NOT_POSTABLE", "只有草稿客户退货单可以过账");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customer_returns WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.customerReturn.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!locked || locked.status !== "draft") throw this.invalid("CUSTOMER_RETURN_ALREADY_POSTED", "客户退货单已被其他操作处理");
       const existing = await tx.inventoryFact.findFirst({ where: { customerReturnId: id, sourceType: "finished_goods_customer_return" } });
       if (existing) throw this.invalid("CUSTOMER_RETURN_ALREADY_POSTED", "客户退货单已过账");
       const posted = await tx.customerReturn.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
@@ -119,6 +122,9 @@ export class FinishedGoodsOutboundService {
     if (!current) throw this.notFound("CUSTOMER_RETURN_NOT_FOUND", "客户退货单不存在");
     if (current.status !== "posted") throw this.invalid("CUSTOMER_RETURN_NOT_REVERSIBLE", "只有已过账客户退货单可以冲销");
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customer_returns WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.customerReturn.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!locked || locked.status !== "posted") throw this.invalid("CUSTOMER_RETURN_NOT_REVERSIBLE", "客户退货单已被其他操作处理");
       const balance = await this.inventory.finishedGoodsBalance(tx, current.productionOrderId, current.unitId, current.destination as "finished_goods" | "defective_goods");
       if (balance.minus(current.quantity).isNegative()) throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "退货冲销会造成库存不足", details: [] });
       const updated = await tx.customerReturn.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } });
