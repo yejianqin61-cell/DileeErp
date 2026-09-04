@@ -37,7 +37,7 @@ export class PayrollLedgerService {
     await this.audit.record("payroll_ledger.update", "payroll_ledger", user.id, id, { reason: input.reason ?? null, before_status: current.status, after_status: "draft" });
     return row;
   }
-  async remove(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("PAYROLL_NOT_DELETABLE", "只有草稿台账可以删除"); return this.prisma.payrollLedger.update({ where: { id }, data: { ...this.audit.softDelete(user) } }); }
+  async remove(id: string, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft") throw this.invalid("PAYROLL_NOT_DELETABLE", "只有草稿台账可以删除"); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${id}::uuid FOR UPDATE`; const locked = await tx.payrollLedger.findFirst({ where: { id, deletedAt: null } }); if (!locked || locked.status !== "draft") throw this.invalid("PAYROLL_NOT_DELETABLE", "工资台账已被其他操作处理"); return tx.payrollLedger.update({ where: { id }, data: { ...this.audit.softDelete(user) } }); }); return result; }
   async reopen(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("CORRECTION_REASON_REQUIRED", "工资台账回退草稿必须填写原因");
     const current = await this.get(id);
