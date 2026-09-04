@@ -63,10 +63,14 @@ export class SupplierPaymentService {
   }
 
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; remark?: string }, user: CurrentUser) {
-    const current = await this.get(id);
-    if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYMENT_NOT_EDITABLE", "只有草稿付款可以编辑");
-    const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_SUPPLIER_PAYMENT_AMOUNT");
-    return this.prisma.supplierPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payments WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.supplierPayment.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
+      if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYMENT_NOT_EDITABLE", "只有草稿付款可以编辑");
+      const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_SUPPLIER_PAYMENT_AMOUNT");
+      return tx.supplierPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    });
   }
 
   async reverse(id: string, reason: string, user: CurrentUser) {
