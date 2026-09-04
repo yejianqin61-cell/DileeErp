@@ -2,17 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "../ui/button";
+import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
-import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
+import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
 
 type Operation = { id: string; operationNameSnapshot: string; targetQuantity: string; status: string };
 type Order = { id: string; productionOrderNo: string; orderNo: string; executionMode: string; status: string; plannedQuantity: string; operations: Operation[] };
 type Employee = { id: string; employeeNo: string; name: string; employmentStatus: string };
-type Report = { id: string; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { id: string; targetQuantity: string } };
+type Report = { id: string; version?: number; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { id: string; targetQuantity: string } };
 type OperationReport = { id: string; productionOrderOperationId: string; reportDate: string; completedQuantity: string };
 type Draft = { employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_minutes: string; unit_price: string };
 
@@ -37,6 +38,7 @@ export function DailyReportsPanel() {
   const [operationQuantity, setOperationQuantity] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveKey, setSaveKey] = useState<string | null>(null);
+  const [editDialog, setEditDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
 
   async function load() {
     setLoading(true);
@@ -84,6 +86,33 @@ export function DailyReportsPanel() {
     setDrafts([]);
     setOperationQuantity("");
     setSaveKey(null);
+  }
+
+  function editReport(report: Report) {
+    setEditDialog({ title: `更正日报：${report.employeeNameSnapshot}`, fields: [
+      { name: "quantity", label: "件数", type: "number", defaultValue: report.quantity },
+      { name: "duration_minutes", label: "时长（分钟）", type: "number", defaultValue: report.durationMinutes ?? "" },
+      { name: "unit_price", label: "人工单价", type: "number", required: true, defaultValue: report.unitPrice },
+      { name: "reason", label: "更正原因", type: "textarea", required: true },
+    ], submit: async (values) => {
+      try {
+        await apiRequest(`/production/employee-reports/${report.id}`, { method: "PATCH", body: JSON.stringify({ quantity: values.quantity || undefined, duration_minutes: values.duration_minutes || undefined, unit_price: values.unit_price, reason: values.reason, expected_version: report.version }) });
+        setMessage("员工日报已更正");
+        setEditDialog(null);
+        await load();
+      } catch (cause) { setError(errorText(cause)); }
+    } });
+  }
+
+  function deleteReport(report: Report) {
+    setEditDialog({ title: `删除日报：${report.employeeNameSnapshot}`, fields: [{ name: "reason", label: "删除原因", type: "textarea", required: true }], submit: async (values) => {
+      try {
+        await apiRequest(`/production/employee-reports/${report.id}`, { method: "DELETE", body: JSON.stringify({ reason: values.reason, expected_version: report.version }) });
+        setMessage("员工日报已删除");
+        setEditDialog(null);
+        await load();
+      } catch (cause) { setError(errorText(cause)); }
+    } });
   }
 
   async function save() {
@@ -154,6 +183,7 @@ export function DailyReportsPanel() {
         {orders.length ? <div className="daily-order-list">{orders.map((order) => <section className="daily-order-item" key={order.id}><div className="daily-order-heading"><strong>{order.productionOrderNo}</strong><span>订单号：{order.orderNo}</span><span>状态：{order.status}</span></div><div className="page-actions">{order.operations.filter((operation) => operation.status === "active").map((operation) => <Button key={operation.id} variant="secondary" onClick={() => openOperation(order, operation)}>{operation.operationNameSnapshot}</Button>)}</div></section>)}</div> : <EmptyState title="暂无未完成生产单" />}
       </div>
 
+      <ActionDialog open={Boolean(editDialog)} onOpenChange={(open) => { if (!open) setEditDialog(null); }} title={editDialog?.title ?? "更正日报"} fields={editDialog?.fields ?? []} onSubmit={async (values) => { await editDialog?.submit(values); }} />
       <Dialog open={Boolean(selectedOperation)} onOpenChange={(open) => { if (!open) closeDialog(); }}>
         <DialogContent className="daily-report-dialog">
           <DialogHeader>
@@ -170,7 +200,7 @@ export function DailyReportsPanel() {
 
           <div className="daily-report-summary"><span><small>查看日期</small><strong>{selectedReportDate}</strong></span><span><small>生产总数量</small><strong>{selectedOrder?.plannedQuantity ?? "-"}</strong></span><span><small>工序计划数量</small><strong>{selectedOperation?.targetQuantity ?? "-"}</strong></span><span><small>当日登记数量</small><strong>{completedQuantity}</strong></span><span className={isOverOrder ? "status-error" : "status-success"}><small>是否超单</small><strong>{isOverOrder ? "是" : "否"}</strong></span></div>
           <h3>已登记日报</h3>
-          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长</TableHead><TableHead>单价</TableHead><TableHead>当日该员工总薪资</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => <TableRow key={report.id}><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{report.wageMode}</TableCell><TableCell>{report.quantity}</TableCell><TableCell>{report.durationMinutes ?? "-"}</TableCell><TableCell>{report.unitPrice}</TableCell><TableCell>{(dailyEmployeeTotals.get(report.employeeId) ?? 0).toFixed(2)}</TableCell></TableRow>)}</TableBody></Table></div>
+          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长</TableHead><TableHead>单价</TableHead><TableHead>当日该员工总薪资</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => <TableRow key={report.id}><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{report.wageMode}</TableCell><TableCell>{report.quantity}</TableCell><TableCell>{report.durationMinutes ?? "-"}</TableCell><TableCell>{report.unitPrice}</TableCell><TableCell>{(dailyEmployeeTotals.get(report.employeeId) ?? 0).toFixed(2)}</TableCell><TableCell><div className="action-row"><Button size="sm" variant="ghost" onClick={() => editReport(report)}>更正</Button><Button size="sm" variant="ghost" onClick={() => deleteReport(report)}>删除</Button></div></TableCell></TableRow>)}</TableBody></Table></div>
         </DialogContent>
       </Dialog>
       <Dialog open={employeePickerOpen} onOpenChange={setEmployeePickerOpen}><DialogContent><DialogHeader><DialogTitle>批量选择员工</DialogTitle><DialogDescription>选择员工后一次生成日报行，重复员工会自动忽略。</DialogDescription></DialogHeader><div className="employee-picker-list">{employees.map((employee) => { const checked = selectedEmployeeIds.includes(employee.id); return <Button key={employee.id} type="button" variant={checked ? "default" : "secondary"} aria-pressed={checked} onClick={() => setSelectedEmployeeIds((ids) => checked ? ids.filter((id) => id !== employee.id) : [...ids, employee.id])}>{checked ? "已选 " : ""}{employee.employeeNo} / {employee.name}</Button>; })}</div><Button onClick={applyEmployees}>加入日报</Button></DialogContent></Dialog>
