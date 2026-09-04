@@ -10,7 +10,10 @@ try {
   if (result.status !== 0) throw new Error(result.stderr || "无法解包发布包");
   const listing = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" });
   if (listing.status !== 0) throw new Error(listing.stderr || "无法读取发布包目录");
-  const entries = listing.stdout.split(/\r?\n/).map((entry) => entry.replace(/^\.\//, "").replace(/\/$/, "")).filter(Boolean);
+  const rawEntries = listing.stdout.split(/\r?\n/).filter(Boolean);
+  const unsafe = rawEntries.filter((entry) => entry.startsWith("/") || entry.split("/").includes(".."));
+  if (unsafe.length) throw new Error(`发布包包含不安全路径: ${unsafe.slice(0, 5).join(", ")}`);
+  const entries = rawEntries.map((entry) => entry.replace(/^\.\//, "").replace(/\/$/, "")).filter(Boolean);
   const forbiddenPrefixes = [".agent-reach", ".android", ".cache", ".cargo", ".claude", ".codex", ".config", ".cursor", "AppData", "Application Data"];
   const polluted = entries.filter((entry) => forbiddenPrefixes.some((prefix) => entry === prefix || entry.startsWith(`${prefix}/`)));
   if (polluted.length) throw new Error(`发布包包含用户目录或工具目录，请从项目根目录重新生成: ${polluted.slice(0, 5).join(", ")}`);
