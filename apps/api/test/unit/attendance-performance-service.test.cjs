@@ -55,3 +55,13 @@ test("performance creation locks employee before uniqueness check", async () => 
   await assert.rejects(() => service.createPerformance({ employee_id: "employee-1", period_start: "2026-01-01", period_end: "2026-01-31" }, { id: "user-1" }), (error) => error.getResponse().code === "PERFORMANCE_ALREADY_EXISTS");
   assert.equal(lockCount, 1); assert.equal(createCount, 0);
 });
+
+test("attendance creation restores a soft-deleted unique record", async () => {
+  let updateCount = 0;
+  const existing = { id: "attendance-1", deletedAt: new Date(), workStartTime: "08:00", workEndTime: "17:00" };
+  const prisma = { employee: { findFirst: async () => ({ id: "employee-1" }) }, attendanceRecord: { findFirst: async () => existing, update: async () => { updateCount += 1; return { ...existing, deletedAt: null }; } }, $transaction: async (fn) => fn({ $queryRaw: async () => [], employee: prisma.employee, attendanceRecord: prisma.attendanceRecord }) };
+  const service = new AttendancePerformanceService(prisma, { update: () => ({}), record: async () => {} });
+  const result = await service.createAttendance({ employee_id: "employee-1", attendance_date: "2026-01-01", attendance_type: "出勤", work_start_time: "09:00", work_end_time: "18:00" }, { id: "user-1" });
+  assert.equal(result.deletedAt, null);
+  assert.equal(updateCount, 1);
+});
