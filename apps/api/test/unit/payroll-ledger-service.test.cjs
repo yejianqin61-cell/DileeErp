@@ -11,6 +11,7 @@ function serviceWithStatus(status) {
       update: async ({ data }) => ({ ...row, ...data }),
     },
   };
+  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], payrollLedger: prisma.payrollLedger });
   const audit = {
     update: () => ({ updatedBy: "user-1" }),
     record: async (...args) => audits.push(args),

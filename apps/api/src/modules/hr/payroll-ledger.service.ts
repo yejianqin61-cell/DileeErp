@@ -43,7 +43,12 @@ export class PayrollLedgerService {
     const current = await this.get(id);
     if (current.status === "draft") return current;
     if (!canReopenPayroll(current.status)) throw this.invalid("PAYROLL_PAID_NOT_REOPENABLE", "部分支付、已支付或已关闭台账不可回退，请使用工资调整单");
-    const row = await this.prisma.payrollLedger.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.payrollLedger.findFirst({ where: { id, deletedAt: null } });
+      if (!locked || !canReopenPayroll(locked.status)) throw this.invalid("PAYROLL_PAID_NOT_REOPENABLE", "台账已被其他操作处理，当前不可回退");
+      return tx.payrollLedger.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
+    });
     await this.audit.record("payroll_ledger.reopen", "payroll_ledger", user.id, id, { before_status: current.status, after_status: "draft", reason: reason.trim() });
     return row;
   }
