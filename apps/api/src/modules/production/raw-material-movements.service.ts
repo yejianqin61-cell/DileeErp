@@ -236,7 +236,7 @@ export class RawMaterialMovementsService {
         await this.derivedLines(current.productionOrderId, current.lines.map((line) => ({ source_issue_line_id: line.sourceIssueLineId!, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
         for (const line of current.lines) {
-          await tx.inventoryFact.create({ data: { materialId: line.materialId, unitId: line.unitId, inventoryCategory: documentType === "return" ? "raw_material" : "scrap", quantityDelta: line.quantity, sourceType: documentType === "return" ? "material_return" : "material_scrap", sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: line.id, createdBy: user.id } });
+          await tx.inventoryFact.create({ data: { materialId: line.materialId, unitId: line.unitId, inventoryCategory: documentType === "return" ? "raw_material" : "scrap", quantityDelta: documentType === "return" ? line.quantity : line.quantity.negated(), sourceType: documentType === "return" ? "material_return" : "material_scrap", sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: line.id, createdBy: user.id } });
         }
         return updated;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });

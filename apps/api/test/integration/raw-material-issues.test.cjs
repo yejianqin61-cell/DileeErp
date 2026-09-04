@@ -53,7 +53,7 @@ test("production.issue_posts_inventory_facts_and_preserves_risk_and_idempotency"
 
     const scrapped = await service.createScrap({ production_order_id: productionOrder.id, reason: "裁剪损耗", lines: [{ source_issue_line_id: sourceLine.id, quantity: "1" }] }, user);
     await service.postScrap(scrapped.id, "scrap-key-1", user);
-    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "6");
+    assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "5");
     assert.equal(await prisma.inventoryFact.count({ where: { productionOrderId: productionOrder.id, inventoryCategory: "scrap", sourceType: "material_scrap" } }), 1);
     assert.equal(await prisma.auditEvent.count({ where: { entityType: "raw_material_movement", entityId: scrapped.id, action: "raw_material_movement.post" } }), 1);
     await assert.rejects(() => service.createReturn({ production_order_id: productionOrder.id, lines: [{ source_issue_line_id: sourceLine.id, quantity: "4" }] }, user), (error) => error.getResponse().code === "DERIVED_QUANTITY_EXCEEDED");
