@@ -52,3 +52,27 @@ test("supplier payable reversal locks and rechecks active allocations", async ()
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
 });
+
+test("supplier payable draft update locks and rechecks the current status", async () => {
+  let lockCount = 0;
+  let updateCount = 0;
+  const row = { id: "payable-1", status: "confirmed", amount: "10", confirmationDate: new Date(), remark: null };
+  const prisma = {
+    supplierPayableEntry: {
+      findFirst: async () => row,
+      update: async () => { updateCount += 1; return row; },
+    },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => { lockCount += 1; return []; },
+      supplierPayableEntry: prisma.supplierPayableEntry,
+    }),
+  };
+  const audit = { recordWithOrderNo: async () => {}, update: () => ({}) };
+  const service = new SupplierPayableService(prisma, audit);
+  await assert.rejects(
+    () => service.updateDraft("payable-1", { amount: "12" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "SUPPLIER_PAYABLE_NOT_EDITABLE",
+  );
+  assert.equal(lockCount, 1);
+  assert.equal(updateCount, 0);
+});
