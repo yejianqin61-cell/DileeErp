@@ -64,6 +64,10 @@ export class OperationDailyReportsService {
     const reportDate = input.report_date === undefined ? current.reportDate : this.validDate(input.report_date);
     const quantity = input.completed_quantity === undefined ? current.completedQuantity : this.decimal(input.completed_quantity, "INVALID_OPERATION_REPORT_QUANTITY", "工序日报完成量必须是大于零的十进制数");
     const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM operation_daily_reports WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.operationDailyReport.findFirst({ where: { id, deletedAt: null }, select: { version: true } });
+      if (!locked) throw new NotFoundException({ code: "OPERATION_DAILY_REPORT_NOT_FOUND", message: "工序日报不存在", details: [] });
+      if (input.expected_version !== undefined && input.expected_version !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "工序日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: locked.version }] });
       const row = await tx.operationDailyReport.update({ where: { id }, data: { reportDate, completedQuantity: quantity, version: { increment: 1 }, ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } });
       await this.recomputeOverOrder(tx, refs.order.id, refs.operation.id, user);
       await this.progressService.recalculateInTransaction(tx, refs.order.id, "operation_daily_report", row.id, user);
@@ -79,6 +83,10 @@ export class OperationDailyReportsService {
     if (expectedVersion !== undefined && expectedVersion !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "工序日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: current.version }] });
     await this.refs(current.productionOrderId, current.productionOrderOperationId, true);
     const removed = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM operation_daily_reports WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.operationDailyReport.findFirst({ where: { id, deletedAt: null }, select: { version: true } });
+      if (!locked) throw new NotFoundException({ code: "OPERATION_DAILY_REPORT_NOT_FOUND", message: "工序日报不存在", details: [] });
+      if (expectedVersion !== undefined && expectedVersion !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "工序日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: locked.version }] });
       const row = await tx.operationDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } });
       await this.recomputeOverOrder(tx, current.productionOrderId, current.productionOrderOperationId, user);
       await this.progressService.recalculateInTransaction(tx, current.productionOrderId, "operation_daily_report", id, user);
