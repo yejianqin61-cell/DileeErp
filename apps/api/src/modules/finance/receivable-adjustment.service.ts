@@ -92,9 +92,13 @@ export class ReceivableAdjustmentService {
 
   async reverse(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
-    const current = await this.get(id);
-    if (current.status !== "posted") throw this.invalid("RECEIVABLE_ADJUSTMENT_NOT_REVERSIBLE", "只有已过账调整可以冲销");
-    const result = await this.prisma.receivableAdjustment.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_adjustments WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.receivableAdjustment.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("RECEIVABLE_ADJUSTMENT_NOT_FOUND", "应收调整不存在");
+      if (current.status !== "posted") throw this.invalid("RECEIVABLE_ADJUSTMENT_NOT_REVERSIBLE", "只有已过账调整可以冲销");
+      return tx.receivableAdjustment.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
+    });
     await this.audit.recordWithOrderNo("receivable_adjustment.reverse", "receivable_adjustment", result.orderNo, user.id, id, { reason: reason.trim() });
     return result;
   }

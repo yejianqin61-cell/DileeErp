@@ -12,3 +12,13 @@ test("receivable adjustment posting locks and rechecks the adjustment", async ()
   await assert.rejects(() => service.post("adjustment-1", { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_ADJUSTMENT_NOT_POSTABLE");
   assert.deepEqual(locks, ["adjustment-1"]);
 });
+
+test("receivable adjustment reversal locks and rechecks status", async () => {
+  let lockCount = 0;
+  let updateCount = 0;
+  const row = { id: "adjustment-1", status: "reversed" };
+  const prisma = { receivableAdjustment: { findFirst: async () => row, update: async () => { updateCount += 1; return row; } }, $transaction: async (fn) => fn({ $queryRaw: async () => { lockCount += 1; }, receivableAdjustment: prisma.receivableAdjustment }) };
+  const service = new ReceivableAdjustmentService(prisma, { update: () => ({}), recordWithOrderNo: async () => {} }, {});
+  await assert.rejects(() => service.reverse("adjustment-1", "撤销原因", { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_ADJUSTMENT_NOT_REVERSIBLE");
+  assert.equal(lockCount, 1); assert.equal(updateCount, 0);
+});
