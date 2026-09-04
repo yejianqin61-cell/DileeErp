@@ -8,13 +8,15 @@ const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), upda
 
 test("attendance summary stores work start and end times", async () => {
   let data;
-  const service = new AttendancePerformanceService({ employee: { findFirst: async () => ({ id: "employee-1" }) }, attendanceRecord: { create: async ({ data: input }) => { data = input; return { id: "attendance-1", ...input }; } } }, audit);
+  const prisma = { employee: { findFirst: async () => ({ id: "employee-1" }) }, attendanceRecord: { findFirst: async () => null, create: async ({ data: input }) => { data = input; return { id: "attendance-1", ...input }; } } };
+  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], employee: prisma.employee, attendanceRecord: prisma.attendanceRecord });
+  const service = new AttendancePerformanceService(prisma, audit);
   await service.createAttendance({ employee_id: "employee-1", attendance_date: "2026-08-26", attendance_type: "出勤", work_start_time: "09:00", work_end_time: "18:00" }, user);
   assert.equal(data.workStartTime, "09:00");
   assert.equal(data.workEndTime, "18:00");
 });
 
 test("attendance summary rejects an end time before the start time", async () => {
-  const service = new AttendancePerformanceService({ employee: { findFirst: async () => ({ id: "employee-1" }) } }, audit);
+  const service = new AttendancePerformanceService({ employee: { findFirst: async () => ({ id: "employee-1" }) }, $transaction: async (fn) => fn({ $queryRaw: async () => [], employee: { findFirst: async () => ({ id: "employee-1" }) } }) }, audit);
   await assert.rejects(() => service.createAttendance({ employee_id: "employee-1", attendance_date: "2026-08-26", attendance_type: "出勤", work_start_time: "18:00", work_end_time: "09:00" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_ATTENDANCE_WORK_TIME");
 });
