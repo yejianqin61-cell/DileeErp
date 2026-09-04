@@ -13,11 +13,12 @@ export class IncomingInspectionsService {
     if (!values[1].plus(values[2]).plus(values[3]).eq(values[0])) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] });
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM purchase_receipts WHERE id = ${input.purchase_receipt_id}::uuid FOR UPDATE`;
-      const receipt = await tx.purchaseReceipt.findFirst({ where: { id: input.purchase_receipt_id, deletedAt: null }, include: { inspections: { where: { deletedAt: null } } } });
+      const receipt = await tx.purchaseReceipt.findFirst({ where: { id: input.purchase_receipt_id, deletedAt: null }, include: { inspections: { where: { deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } } } } } });
       if (!receipt) throw new NotFoundException({ code: "RECEIPT_NOT_FOUND", message: "到货记录不存在", details: [] });
       const inspectedBefore = receipt.inspections.reduce((sum, inspection) => sum.plus(inspection.inspectedQuantity), new Prisma.Decimal(0));
       if (values[0].plus(inspectedBefore).gt(receipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
       const existing = receipt.inspections[0];
+      if (existing?.rawMaterialInbounds?.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可修改", details: [] });
       const inspected = (existing?.inspectedQuantity ?? new Prisma.Decimal(0)).plus(values[0]);
       const accepted = (existing?.acceptedQuantity ?? new Prisma.Decimal(0)).plus(values[1]);
       const conditional = (existing?.conditionalQuantity ?? new Prisma.Decimal(0)).plus(values[2]);
