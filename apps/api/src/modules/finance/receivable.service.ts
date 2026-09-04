@@ -38,13 +38,17 @@ export class ReceivableService {
     return row;
   }
   async updateDraft(id: string, input: { amount?: string; due_date?: string; amount_reason?: string; remark?: string }, user: CurrentUser) {
-    const current = await this.get(id);
-    if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_EDITABLE", "只有草稿应收来源可以编辑");
-    let amount = current.amount;
-    if (input.amount !== undefined) {
-      try { amount = new Prisma.Decimal(input.amount); if (amount.lte(0)) throw new Error(); } catch { throw this.invalid("INVALID_RECEIVABLE_AMOUNT", "应收金额必须是大于零的十进制数"); }
-    }
-    const row = await this.prisma.receivableSource.update({ where: { id }, data: { amount, dueDate: input.due_date ? this.date(input.due_date) : current.dueDate, amountReason: input.amount_reason ?? current.amountReason, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
+      if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_EDITABLE", "只有草稿应收来源可以编辑");
+      let amount = current.amount;
+      if (input.amount !== undefined) {
+        try { amount = new Prisma.Decimal(input.amount); if (amount.lte(0)) throw new Error(); } catch { throw this.invalid("INVALID_RECEIVABLE_AMOUNT", "应收金额必须是大于零的十进制数"); }
+      }
+      return tx.receivableSource.update({ where: { id }, data: { amount, dueDate: input.due_date ? this.date(input.due_date) : current.dueDate, amountReason: input.amount_reason ?? current.amountReason, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+    });
     await this.audit.record("receivable_source.update", "receivable_source", user.id, id, { order_no: row.orderNo, amount: row.amount.toString() });
     return row;
   }
