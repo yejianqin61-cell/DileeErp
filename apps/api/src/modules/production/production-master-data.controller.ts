@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
 import { IsBoolean, IsDateString, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
@@ -8,6 +10,7 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
 import { ProductionMasterDataService } from "./production-master-data.service";
 import type { Response } from "express";
+import type { Express } from "express";
 
 class ActiveDto { @IsBoolean() is_active!: boolean; }
 class LeaveDto { @IsDateString() left_on!: string; }
@@ -37,21 +40,23 @@ export class ProductionMasterDataController {
   @Delete("production/positions/:id") @RequireAdministrator() deletePosition(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deletePosition(id, user)); }
   @Post("production/positions/:id/restore") @RequireAdministrator() restorePosition(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restorePosition(id, user)); }
   @Get("production/employees/export.xlsx") @RequireAdministrator() async exportEmployees(@Query() query: EmployeeQueryDto, @Res() response: Response) { const body = await this.service.exportEmployees(query); const fileName = `DileeERP-employees-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}.xlsx`; response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
+  @Get("production/employees/import-template.xlsx") @RequireAdministrator() async employeeImportTemplate(@Res() response: Response) { const body = this.service.employeeImportTemplate(); response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent("迪礼ERP-员工导入模板.xlsx")}`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
+  @Post("production/employees/import") @RequireAdministrator() @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } })) async importEmployees(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) { return this.ok(await this.service.importEmployees(file, user)); }
   @Get("production/employees") employees(@Query() query: EmployeeQueryDto) { return this.ok(this.service.listEmployees(query)); }
   @Post("production/employees") @RequireAdministrator() createEmployee(@Body() body: EmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createEmployee(body, user)); }
   @Patch("production/employees/:id") @RequireAdministrator() updateEmployee(@Param("id") id: string, @Body() body: Partial<EmployeeDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }
   @Patch("production/employees/:id/active") @RequireAdministrator() activeEmployee(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeActive(id, body.is_active, user)); }
   @Patch("production/employees/:id/leave") @RequireAdministrator() leaveEmployee(@Param("id") id: string, @Body() body: LeaveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeLeft(id, body.left_on, user)); }
   @Get("production/locations") locations() { return this.ok(this.service.listLocations()); }
-  @Post("production/locations") createLocation(@Body() body: LocationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createLocation(body, user)); }
-  @Patch("production/locations/:id") updateLocation(@Param("id") id: string, @Body() body: Partial<LocationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateLocation(id, body, user)); }
-  @Patch("production/locations/:id/active") activeLocation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setLocationActive(id, body.is_active, user)); }
+  @Post("production/locations") @RequireAdministrator() createLocation(@Body() body: LocationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createLocation(body, user)); }
+  @Patch("production/locations/:id") @RequireAdministrator() updateLocation(@Param("id") id: string, @Body() body: Partial<LocationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateLocation(id, body, user)); }
+  @Patch("production/locations/:id/active") @RequireAdministrator() activeLocation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setLocationActive(id, body.is_active, user)); }
   @Get("production/operations") operations() { return this.ok(this.service.listOperations()); }
-  @Post("production/operations") createOperation(@Body() body: OperationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createOperation(body, user)); }
-  @Patch("production/operations/:id") updateOperation(@Param("id") id: string, @Body() body: Partial<OperationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateOperation(id, body, user)); }
-  @Patch("production/operations/:id/active") activeOperation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setOperationActive(id, body.is_active, user)); }
+  @Post("production/operations") @RequireAdministrator() createOperation(@Body() body: OperationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createOperation(body, user)); }
+  @Patch("production/operations/:id") @RequireAdministrator() updateOperation(@Param("id") id: string, @Body() body: Partial<OperationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateOperation(id, body, user)); }
+  @Patch("production/operations/:id/active") @RequireAdministrator() activeOperation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setOperationActive(id, body.is_active, user)); }
   @Get("production/operation-rates") rates(@Query("employee_id") employeeId?: string, @Query("operation_id") operationId?: string) { return this.ok(this.service.listRates(employeeId, operationId)); }
-  @Post("production/operation-rates") createRate(@Body() body: RateDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createRate(body, user)); }
-  @Patch("production/operation-rates/:id") updateRate(@Param("id") id: string, @Body() body: Partial<RateDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateRate(id, body, user)); }
+  @Post("production/operation-rates") @RequireAdministrator() createRate(@Body() body: RateDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createRate(body, user)); }
+  @Patch("production/operation-rates/:id") @RequireAdministrator() updateRate(@Param("id") id: string, @Body() body: Partial<RateDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateRate(id, body, user)); }
   private ok<T>(data: T) { return Promise.resolve(data).then((value) => ({ data: value, meta: {} })); }
 }
