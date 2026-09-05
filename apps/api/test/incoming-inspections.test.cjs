@@ -26,3 +26,20 @@ test("QC with inbound facts cannot be reverted", async () => {
   const service = new IncomingInspectionsService(prisma, { update: () => ({ updatedBy: user.id }), record: async () => {} });
   await assert.rejects(() => service.transition("inspection-1", "pending", "复核", user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
 });
+
+test("incoming QC can be corrected before inbound with a reason", async () => {
+  let update;
+  const current = { id: "inspection-1", orderNo: "DL260001", status: "accepted", inspectedQuantity: "3", acceptedQuantity: "3", conditionalQuantity: "0", rejectedQuantity: "0", extensionData: {}, remark: null, purchaseReceipt: { quantity: "10", rawMaterialInbounds: [] }, rawMaterialInbounds: [] };
+  const tx = { $queryRaw: async () => undefined, incomingInspection: { findFirst: async () => current, update: async ({ data }) => { update = data; return { ...current, ...data }; } } };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  const result = await service.update("inspection-1", { inspected_quantity: "4", accepted_quantity: "3", conditional_quantity: "1", rejected_quantity: "0", reason: "复核后补录条件接收" }, user);
+  assert.equal(result.acceptedQuantity.toString(), "3");
+  assert.equal(update.status, "conditionally_accepted");
+  assert.match(update.remark, /复核后补录条件接收/);
+});
+
+test("incoming QC correction is rejected after inbound facts", async () => {
+  const tx = { $queryRaw: async () => undefined, incomingInspection: { findFirst: async () => ({ id: "inspection-1", purchaseReceipt: { quantity: "10", rawMaterialInbounds: [] }, rawMaterialInbounds: [{ id: "inbound-1" }] }) } };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  await assert.rejects(() => service.update("inspection-1", { inspected_quantity: "1", accepted_quantity: "1", conditional_quantity: "0", rejected_quantity: "0", reason: "复核" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
+});
