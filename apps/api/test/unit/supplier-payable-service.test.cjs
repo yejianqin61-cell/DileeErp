@@ -77,6 +77,25 @@ test("supplier payable draft update locks and rechecks the current status", asyn
   assert.equal(updateCount, 0);
 });
 
+test("confirmed supplier payable can be reopened to draft with a reason", async () => {
+  let updated;
+  const row = { id: "payable-1", status: "confirmed", orderNo: "SO-1", remark: null, allocations: [] };
+  const prisma = {
+    supplierPayableEntry: {
+      findFirst: async () => row,
+      update: async ({ data }) => { updated = data; return { ...row, ...data }; },
+    },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      supplierPayableEntry: prisma.supplierPayableEntry,
+    }),
+  };
+  const service = new SupplierPayableService(prisma, { update: () => ({}), recordWithOrderNo: async () => {} });
+  const result = await service.reopen("payable-1", "修正供应商金额", { id: "user-1" });
+  assert.equal(result.status, "draft");
+  assert.equal(updated.status, "draft");
+});
+
 test("payable source creation restores a soft-deleted unique entry", async () => {
   let restored = 0;
   const deleted = { id: "payable-1", deletedAt: new Date(), sourceType: "raw_material_inbound" };

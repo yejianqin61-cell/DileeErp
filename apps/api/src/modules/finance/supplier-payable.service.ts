@@ -76,6 +76,20 @@ export class SupplierPayableService {
     return row;
   }
 
+  async reopen(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw this.invalid("CORRECTION_REASON_REQUIRED", "回退草稿必须填写原因");
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } });
+      if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
+      if (current.status !== "confirmed") throw this.invalid("SUPPLIER_PAYABLE_NOT_REOPENABLE", "只有未发生付款的已确认应付可以回退草稿");
+      if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "应付存在有效付款核销，必须先冲销付款");
+      return tx.supplierPayableEntry.update({ where: { id }, data: { status: "draft", remark: `${current.remark ?? ""}\n回退草稿：${reason.trim()}`, ...this.audit.update(user) } });
+    });
+    await this.audit.recordWithOrderNo("supplier_payable.reopen", "supplier_payable_entry", row.orderNo, user.id, id, { reason: reason.trim(), from: "confirmed", to: "draft" });
+    return row;
+  }
+
   async reverse(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
     const row = await this.prisma.$transaction(async (tx) => {

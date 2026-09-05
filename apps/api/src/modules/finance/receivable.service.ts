@@ -58,6 +58,20 @@ export class ReceivableService {
     await this.audit.record("receivable_source.update", "receivable_source", user.id, id, { order_no: row.orderNo, amount: row.amount.toString() });
     return row;
   }
+
+  async reopen(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "回退草稿必须填写原因", details: [] });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } });
+      if (!current) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
+      if (current.status !== "confirmed") throw this.invalid("RECEIVABLE_SOURCE_NOT_REOPENABLE", "只有未发生收款的已确认应收来源可以回退草稿");
+      if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("RECEIVABLE_SOURCE_HAS_ALLOCATIONS", "应收来源存在有效收款核销，必须先冲销收款");
+      return tx.receivableSource.update({ where: { id }, data: { status: "draft", remark: `${current.remark ?? ""}\n回退草稿：${reason.trim()}`, ...this.audit.update(user) } });
+    });
+    await this.audit.record("receivable_source.reopen", "receivable_source", user.id, id, { order_no: row.orderNo, reason: reason.trim(), from: "confirmed", to: "draft" });
+    return row;
+  }
   async cancel(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CANCELLATION_REASON_REQUIRED", message: "取消必须填写原因", details: [] });
     const row = await this.prisma.$transaction(async (tx) => {

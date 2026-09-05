@@ -38,6 +38,25 @@ test("receivable draft update locks and rechecks current status", async () => {
   assert.equal(updateCount, 0);
 });
 
+test("confirmed receivable can be reopened to draft with a reason", async () => {
+  let updated;
+  const row = { id: "source-1", status: "confirmed", orderNo: "SO-1", remark: null, allocations: [] };
+  const prisma = {
+    receivableSource: {
+      findFirst: async () => row,
+      update: async ({ data }) => { updated = data; return { ...row, ...data }; },
+    },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      receivableSource: prisma.receivableSource,
+    }),
+  };
+  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} });
+  const result = await service.reopen("source-1", "修正应收金额", { id: "user-1" });
+  assert.equal(result.status, "draft");
+  assert.equal(updated.status, "draft");
+});
+
 test("receivable cancellation locks and blocks active posted allocations", async () => {
   let lockCount = 0;
   let updateCount = 0;
