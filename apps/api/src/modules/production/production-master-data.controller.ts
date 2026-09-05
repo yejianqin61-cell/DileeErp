@@ -47,16 +47,18 @@ export class ProductionMasterDataController {
   @Patch("production/employees/:id") @RequireAdministrator() updateEmployee(@Param("id") id: string, @Body() body: Partial<EmployeeDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }
   @Patch("production/employees/:id/active") @RequireAdministrator() activeEmployee(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeActive(id, body.is_active, user)); }
   @Patch("production/employees/:id/leave") @RequireAdministrator() leaveEmployee(@Param("id") id: string, @Body() body: LeaveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeLeft(id, body.left_on, user)); }
-  @Get("production/locations") locations() { return this.ok(this.service.listLocations()); }
+  @Get("production/locations") locations(@Query("include_deleted") includeDeleted?: string) { return this.ok(this.service.listLocations(includeDeleted === "true")); }
   @Post("production/locations") @RequireAdministrator() createLocation(@Body() body: LocationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createLocation(body, user)); }
   @Patch("production/locations/:id") @RequireAdministrator() updateLocation(@Param("id") id: string, @Body() body: Partial<LocationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateLocation(id, body, user)); }
   @Patch("production/locations/:id/active") @RequireAdministrator() activeLocation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setLocationActive(id, body.is_active, user)); }
   @Delete("production/locations/:id") @RequireAdministrator() deleteLocation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deleteLocation(id, user)); }
-  @Get("production/operations") operations() { return this.ok(this.service.listOperations()); }
+  @Post("production/locations/:id/restore") @RequireAdministrator() restoreLocation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restoreLocation(id, user)); }
+  @Get("production/operations") operations(@Query("include_deleted") includeDeleted?: string) { return this.ok(this.service.listOperations(includeDeleted === "true")); }
   @Post("production/operations") @RequireAdministrator() createOperation(@Body() body: OperationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createOperation(body, user)); }
   @Patch("production/operations/:id") @RequireAdministrator() updateOperation(@Param("id") id: string, @Body() body: Partial<OperationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateOperation(id, body, user)); }
   @Patch("production/operations/:id/active") @RequireAdministrator() activeOperation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setOperationActive(id, body.is_active, user)); }
   @Delete("production/operations/:id") @RequireAdministrator() deleteOperation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deleteOperation(id, user)); }
+  @Post("production/operations/:id/restore") @RequireAdministrator() restoreOperation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restoreOperation(id, user)); }
   @Get("production/operation-rates") rates(@Query("employee_id") employeeId?: string, @Query("operation_id") operationId?: string) { return this.ok(this.service.listRates(employeeId, operationId)); }
   @Post("production/operation-rates") @RequireAdministrator() createRate(@Body() body: RateDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createRate(body, user)); }
   @Patch("production/operation-rates/:id") @RequireAdministrator() updateRate(@Param("id") id: string, @Body() body: Partial<RateDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateRate(id, body, user)); }
