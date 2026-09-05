@@ -9,9 +9,11 @@ export function PwaRegister() {
       refreshing = true;
       window.location.reload();
     };
+    const handleMessage = (event: MessageEvent) => { if (event.data?.type === "dilee-static-chunk-missing") refresh(); };
     navigator.serviceWorker.addEventListener("controllerchange", refresh);
+    navigator.serviceWorker.addEventListener("message", handleMessage);
     void navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
-    return () => navigator.serviceWorker.removeEventListener("controllerchange", refresh);
+    return () => { navigator.serviceWorker.removeEventListener("controllerchange", refresh); navigator.serviceWorker.removeEventListener("message", handleMessage); };
   }, []);
   return null;
 }

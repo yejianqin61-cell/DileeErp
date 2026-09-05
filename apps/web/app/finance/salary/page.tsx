@@ -79,7 +79,7 @@ export default function SalaryPage() {
     setDialog({
       title: "新建工资台账",
       fields: [
-        { name: "employee_id", label: "员工", type: "select", required: true, options: employeeOptions },
+        { name: "employee_name", label: "员工姓名", type: "select", required: true, options: employees.map((item) => ({ value: item.name, label: item.employeeNo + " / " + item.name + " / " + (item.employeeType === "workshop" ? "车间" : "非车间") })) },
         { name: "period_start", label: "周期开始", type: "date", required: true },
         { name: "period_end", label: "周期结束", type: "date", required: true },
         { name: "base_salary", label: "基本工资", type: "number", defaultValue: "0" },
