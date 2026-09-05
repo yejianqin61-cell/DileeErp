@@ -56,6 +56,7 @@ export class IncomingInspectionsService {
     const completedStatuses = ["accepted", "conditionally_accepted", "partially_accepted", "rejected", "completed"];
     const allowed = (current.status === "pending" && target === "inspecting") || (current.status === "inspecting" && target === "completed") || (completedStatuses.includes(current.status) && ["pending", "cancelled"].includes(target));
     if (!allowed) throw new UnprocessableEntityException({ code: "INVALID_INSPECTION_STATE", message: "来料质检状态不可流转", details: [{ from: current.status, to: target }] });
+    if (current.status === "inspecting" && target === "completed" && new Prisma.Decimal(current.inspectedQuantity).isZero()) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_REQUIRED", message: "完成质检前必须登记检验数量", details: [] });
     if (completedStatuses.includes(current.status) && !reason?.trim()) throw new UnprocessableEntityException({ code: "INSPECTION_REVERSAL_REASON_REQUIRED", message: "质检回退必须填写原因", details: [] });
     if (completedStatuses.includes(current.status) && current.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可直接回退", details: [] });
     const result = await this.prisma.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });

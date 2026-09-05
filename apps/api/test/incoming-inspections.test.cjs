@@ -27,6 +27,12 @@ test("QC with inbound facts cannot be reverted", async () => {
   await assert.rejects(() => service.transition("inspection-1", "pending", "复核", user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
 });
 
+test("QC cannot be completed before inspection quantities are recorded", async () => {
+  const prisma = { incomingInspection: { findFirst: async () => ({ id: "inspection-1", status: "inspecting", inspectedQuantity: "0", rawMaterialInbounds: [] }) } };
+  const service = new IncomingInspectionsService(prisma, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  await assert.rejects(() => service.transition("inspection-1", "completed", undefined, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_QUANTITY_REQUIRED");
+});
+
 test("incoming QC can be corrected before inbound with a reason", async () => {
   let update;
   const current = { id: "inspection-1", orderNo: "DL260001", status: "accepted", inspectedQuantity: "3", acceptedQuantity: "3", conditionalQuantity: "0", rejectedQuantity: "0", extensionData: {}, remark: null, purchaseReceipt: { quantity: "10", rawMaterialInbounds: [] }, rawMaterialInbounds: [] };
