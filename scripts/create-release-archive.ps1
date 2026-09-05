@@ -1,5 +1,10 @@
 param([string]$Output = "DileeErp-latest.tar.gz")
 $ErrorActionPreference = "Stop"
+$repoRoot = (git rev-parse --show-toplevel).Trim()
+if (-not $repoRoot) { throw "当前目录不在 Git 仓库内" }
+$outputPath = [System.IO.Path]::GetFullPath($Output, (Get-Location).Path)
+Push-Location $repoRoot
+try {
 $version = (git rev-parse HEAD).Trim()
 git diff --quiet
 $workingTreeDirty = $LASTEXITCODE -ne 0
@@ -14,6 +19,7 @@ try {
   tar -xf $sourceArchive -C $staging
   Set-Content -LiteralPath (Join-Path $staging "RELEASE_VERSION") -Value $version -NoNewline
   Remove-Item -LiteralPath $sourceArchive -Force
-  tar -czf $Output -C $staging .
-  Write-Output "Created $Output with RELEASE_VERSION=$version"
+  tar -czf $outputPath -C $staging .
+  Write-Output "Created $outputPath with RELEASE_VERSION=$version"
 } finally { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+} finally { Pop-Location }
