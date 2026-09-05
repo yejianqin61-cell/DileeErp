@@ -9,6 +9,8 @@ import {
   type ActionField,
 } from "../../components/ui/action-dialog";
 import { Button } from "../../components/ui/button";
+import { FileInput } from "../../components/ui/file-input";
+import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import {
   Select,
@@ -127,6 +129,8 @@ export default function HrPage() {
   const [employeeDepartment, setEmployeeDepartment] = useState("");
   const [employeePosition, setEmployeePosition] = useState("");
   const [employeeType, setEmployeeType] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; successCount: number; errorCount: number; errors: { row: number; field?: string; reason: string }[] } | null>(null);
   async function load() {
     setLoading(true);
     setError("");
@@ -202,6 +206,8 @@ export default function HrPage() {
       setError(messageOf(cause, "员工名单导出失败"));
     }
   }
+  async function downloadImportTemplate() { const response = await fetch("/api/v1/production/employees/import-template.xlsx", { credentials: "include", cache: "no-store" }); if (!response.ok) { setError("模板下载失败"); return; } const url = URL.createObjectURL(await response.blob()); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "迪礼ERP-员工导入模板.xlsx"; anchor.click(); URL.revokeObjectURL(url); }
+  async function importEmployees(file: File | undefined) { if (!file) return; setError(""); setImportResult(null); const form = new FormData(); form.append("file", file); try { const response = await fetch("/api/v1/production/employees/import", { method: "POST", credentials: "include", body: form }); const body = await response.json(); if (!response.ok || body.error) throw new ApiClientError(body.error?.code ?? "IMPORT_FAILED", body.error?.message ?? "导入失败", body.error?.details ?? []); setImportResult(body.data); if (body.data.errorCount === 0) { setMessage(`成功导入${body.data.imported}行`); await load(); } } catch (cause) { setError(messageOf(cause, "员工导入失败")); } }
   const employeeOptions = employees.map((item) => ({
     value: item.id,
     label: `${item.employeeNo} / ${item.name}`,
@@ -624,7 +630,7 @@ export default function HrPage() {
       title: "生成薪资台账",
       fields: [
         {
-          name: "employee_id",
+          name: "employee_name",
           label: "员工",
           type: "select",
           required: true,
@@ -649,7 +655,7 @@ export default function HrPage() {
         void action(
           "/hr/payroll-ledgers/generate",
           {
-            employee_id: v.employee_id,
+            employee_name: v.employee_name,
             period_start: v.period_start,
             period_end: v.period_end,
             currency: "CNY",
@@ -846,21 +852,6 @@ export default function HrPage() {
               关闭
             </Button>
           )}
-          {["confirmed", "expired"].includes(row.original.status) && (
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() =>
-                void action(
-                  `/hr/payroll-ledgers/${row.original.id}/reopen`,
-                  undefined,
-                  "薪资台账已回到草稿",
-                )
-              }
-            >
-              回到草稿
-            </Button>
-          )}
         </>
       ),
     },
@@ -908,9 +899,14 @@ export default function HrPage() {
           <Button variant="secondary" onClick={createAttendance}>
             登记考勤
           </Button>
+          <Button variant="secondary" onClick={createPerformance}>
+            登记绩效
+          </Button>
           <Button variant="secondary" onClick={() => void exportEmployees()}>
             导出员工名单
           </Button>
+          <Button variant="secondary" onClick={() => void downloadImportTemplate()}>下载导入模板</Button>
+          <Button variant="secondary" onClick={() => { setImportResult(null); setImportOpen(true); }}>批量导入员工</Button>
           <Link className="button button-secondary" href="/hr/departments">
             部门池
           </Link>
@@ -919,6 +915,7 @@ export default function HrPage() {
           </Link>
         </div>
       </PageHeader>
+      <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="hr-import-dialog"><DialogHeader><DialogTitle>批量导入员工</DialogTitle></DialogHeader><DialogBody><p>请使用模板填写员工信息，上传后将先完成全表校验；有任何错误时整批不导入。</p><FileInput accept=".xlsx" onChange={(event) => { void importEmployees(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importResult && <div className="panel-body"><p>成功 {importResult.successCount} 行 / 错误 {importResult.errorCount} 行</p>{importResult.errors.length > 0 && <DataTable columns={[{ accessorKey: "row", header: "行号" }, { accessorKey: "field", header: "字段" }, { accessorKey: "reason", header: "原因" }]} data={importResult.errors} empty={null} />}</div>}</DialogBody></DialogContent></Dialog>
       <ActionDialog
         open={Boolean(dialog)}
         onOpenChange={(open) => {
