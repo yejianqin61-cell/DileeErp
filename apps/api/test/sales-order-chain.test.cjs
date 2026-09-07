@@ -23,6 +23,16 @@ test("sales.order.rejects_confirming_a_non_draft_order", async () => {
   await assert.rejects(() => service.confirm(order.id, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_STATE_TRANSITION");
 });
 
+test("sales.order.revert_rechecks_downstream_facts inside the locked transaction", async () => {
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  let updateData;
+  const tx = { $queryRaw: async () => undefined, salesOrder: { findFirst: async () => ({ status: "confirmed" }), update: async ({ data }) => { updateData = data; return { ...order, ...data }; } }, bom: { count: async () => 1 }, purchaseOrder: { count: async () => 0 }, productionOrder: { count: async () => 0 } };
+  const prisma = { salesOrder: { findFirst: async () => order }, $transaction: async (fn) => fn(tx) };
+  const service = new SalesOrdersService(prisma, audit);
+  await assert.rejects(() => service.revertToDraft(order.id, "修正资料", user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_DOWNSTREAM_EXISTS");
+  assert.equal(updateData, undefined);
+});
+
 test("sales.order.list_uses_default_pagination_when_query_parameters_are_absent", async () => {
   let findManyArguments;
   const prisma = {

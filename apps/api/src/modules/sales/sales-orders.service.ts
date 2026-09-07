@@ -80,12 +80,18 @@ export class SalesOrdersService {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "销售单回退草稿必须填写原因", details: [] });
     const current = await this.get(id);
     if (current.status !== "confirmed") throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_REVERTIBLE", message: "仅已确认销售单可以回退草稿", details: [] });
-    const [purchaseCount, productionCount] = await Promise.all([
-      this.prisma.purchaseOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
-      this.prisma.productionOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
-    ]);
-    if (current.boms.length || purchaseCount || productionCount) throw new UnprocessableEntityException({ code: "SALES_ORDER_DOWNSTREAM_EXISTS", message: "销售单已有 BOM、采购或生产下游事实，不能直接回退", details: [{ bom_count: current.boms.length, purchase_order_count: purchaseCount, production_order_count: productionCount }] });
-    const updated = await this.prisma.salesOrder.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.salesOrder.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!locked || locked.status !== "confirmed") throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_REVERTIBLE", message: "销售单状态已变化，请刷新后重试", details: [] });
+      const [bomCount, purchaseCount, productionCount] = await Promise.all([
+        tx.bom.count({ where: { salesOrderId: id, deletedAt: null } }),
+        tx.purchaseOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
+        tx.productionOrder.count({ where: { salesOrderId: id, deletedAt: null } }),
+      ]);
+      if (bomCount || purchaseCount || productionCount) throw new UnprocessableEntityException({ code: "SALES_ORDER_DOWNSTREAM_EXISTS", message: "销售单已有 BOM、采购或生产下游事实，不能直接回退", details: [{ bom_count: bomCount, purchase_order_count: purchaseCount, production_order_count: productionCount }] });
+      return tx.salesOrder.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
+    });
     await this.audit.record("sales_order.revert_to_draft", "sales_order", user.id, id, { order_no: current.orderNo, reason: reason.trim(), from: "confirmed", to: "draft" });
     return updated;
   }
