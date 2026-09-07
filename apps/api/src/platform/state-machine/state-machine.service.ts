@@ -17,12 +17,13 @@ export class StateMachineService {
   }
 
   async transition(machineKey: string, entityType: string, entityId: string, targetStateKey: string, user: CurrentUser, remark?: string) {
-    const record = await this.prisma.stateRecord.findUnique({ where: { machineKey_entityType_entityId: { machineKey, entityType, entityId } } });
-    if (!record) throw new NotFoundException("状态记录不存在");
     const target = await this.activeState(machineKey, targetStateKey);
-    const allowed = await this.prisma.stateTransition.findFirst({ where: { machineKey, fromStateId: record.currentStateId, toStateId: target.id } });
-    if (!allowed) throw new BadRequestException("不允许的状态转换");
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM state_records WHERE machine_key = ${machineKey} AND entity_type = ${entityType} AND entity_id = ${entityId}::uuid FOR UPDATE`;
+      const record = await tx.stateRecord.findUnique({ where: { machineKey_entityType_entityId: { machineKey, entityType, entityId } } });
+      if (!record) throw new NotFoundException("状态记录不存在");
+      const allowed = await tx.stateTransition.findFirst({ where: { machineKey, fromStateId: record.currentStateId, toStateId: target.id } });
+      if (!allowed) throw new BadRequestException("不允许的状态转换");
       const updated = await tx.stateRecord.update({ where: { id: record.id }, data: { currentStateId: target.id, ...this.audit.update(user) } });
       await tx.stateChange.create({ data: { recordId: record.id, fromStateId: record.currentStateId, toStateId: target.id, remark, ...this.audit.create(user) } });
       return updated;
