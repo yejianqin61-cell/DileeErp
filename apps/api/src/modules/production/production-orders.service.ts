@@ -23,7 +23,19 @@ export class ProductionOrdersService {
     this.parseDecimal(input.planned_quantity, "INVALID_PLANNED_QUANTITY", "计划数量必须大于零", "计划数量");
     if (type !== "standard") { if (!input.parent_production_order_id) throw new UnprocessableEntityException({ code: "PARENT_PRODUCTION_ORDER_REQUIRED", message: "补单、返工单和拆分单必须关联父生产单", details: [] }); const parent = await this.get(input.parent_production_order_id); if (parent.orderNo !== refs.order.orderNo) throw new UnprocessableEntityException({ code: "PARENT_ORDER_MISMATCH", message: "父生产单必须属于同一订单", details: [] }); }
     const number = `MO-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`;
-    const created = await this.prisma.productionOrder.create({ data: { productionOrderNo: number, orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom.id, bomVersion: refs.bom.version, bomSnapshot: this.snapshotBom(refs.bom) as Prisma.InputJsonValue, productionOrderType: type, parentProductionOrderId: input.parent_production_order_id, executionMode: input.execution_mode, executionLocationId: input.execution_location_id, plannedQuantity: input.planned_quantity, unitId: input.unit_id, productSpecification: input.product_specification, productionProcessNote: input.production_process_note, plannedStartedOn: input.planned_started_on ? new Date(input.planned_started_on) : undefined, deliveryDueOn: input.delivery_due_on ? new Date(input.delivery_due_on) : undefined, remark: input.remark, ...this.audit.create(user) } });
+    const created = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${refs.order.id}::uuid FOR UPDATE`;
+      const locked = await tx.salesOrder.findFirst({ where: { id: refs.order.id, status: "confirmed", deletedAt: null }, select: { id: true } });
+      if (!locked) throw new NotFoundException({ code: "SALES_ORDER_NOT_CONFIRMED", message: "销售单不存在或未确认", details: [] });
+      const existing = type === "standard" && !input.parent_production_order_id ? await tx.productionOrder.findFirst({ where: { salesOrderId: locked.id, productionOrderType: "standard", parentProductionOrderId: null, deletedAt: null }, select: { id: true, productionOrderNo: true, status: true } }) : null;
+      if (existing) throw new ConflictException({ code: "PRODUCTION_ORDER_ALREADY_EXISTS", message: "该销售订单已存在未删除的主生产单，一个销售订单只允许一张主生产单", details: [{ production_order_id: existing.id, production_order_no: existing.productionOrderNo, status: existing.status }] });
+      try {
+        return await tx.productionOrder.create({ data: { productionOrderNo: number, orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom.id, bomVersion: refs.bom.version, bomSnapshot: this.snapshotBom(refs.bom) as Prisma.InputJsonValue, productionOrderType: type, parentProductionOrderId: input.parent_production_order_id, executionMode: input.execution_mode, executionLocationId: input.execution_location_id, plannedQuantity: input.planned_quantity, unitId: input.unit_id, productSpecification: input.product_specification, productionProcessNote: input.production_process_note, plannedStartedOn: input.planned_started_on ? new Date(input.planned_started_on) : undefined, deliveryDueOn: input.delivery_due_on ? new Date(input.delivery_due_on) : undefined, remark: input.remark, ...this.audit.create(user) } });
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "PRODUCTION_ORDER_ALREADY_EXISTS", message: "该销售订单已存在未删除的主生产单，一个销售订单只允许一张主生产单", details: [] });
+        throw error;
+      }
+    });
     await this.audit.record("production_order.create", "production_order", user.id, created.id, { order_no: created.orderNo, production_order_no: number, bom_version: refs.bom.version, planned_quantity: input.planned_quantity }); return this.get(created.id);
   }
   async update(id: string, input: Partial<Input>, user: CurrentUser) {
