@@ -20,7 +20,31 @@ class EmployeeDto { @IsString() @MaxLength(80) employee_no!: string; @IsString()
 class LocationDto { @IsString() @MaxLength(150) name!: string; @IsString() location_type!: string; @IsOptional() @IsString() @MaxLength(100) contact_name?: string; @IsOptional() @IsString() @MaxLength(50) contact_phone?: string; @IsOptional() @IsString() @MaxLength(500) address?: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
 class OperationDto { @IsOptional() @IsString() @MaxLength(80) operation_code?: string; @IsString() @MaxLength(150) operation_name!: string; @IsOptional() @IsUUID() default_unit_id?: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
 class RateDto { @IsUUID() employee_id!: string; @IsUUID() operation_id!: string; @IsString() wage_mode!: string; @IsString() unit_price!: string; @IsDateString() effective_from!: string; @IsOptional() @IsDateString() effective_to?: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
+
+// PATCH DTOs: declare ONLY the keys a client may change so the global
+// ValidationPipe (whitelist + forbidNonWhitelisted) rejects anything else —
+// audit/state columns (createdAt/updatedAt/createdBy/updatedBy/deletedAt/
+// deletedBy/isActive …) can therefore never be smuggled into an update body.
+// Every field is optional (PATCH semantics); constraints mirror the create DTO.
+class UpdateDepartmentDto { @IsOptional() @IsString() @MaxLength(80) code?: string; @IsOptional() @IsString() @MaxLength(100) name?: string; @IsOptional() @IsString() @MaxLength(500) remark?: string | null; }
+class UpdatePositionDto { @IsOptional() @IsUUID() department_id?: string; @IsOptional() @IsString() @MaxLength(80) code?: string; @IsOptional() @IsString() @MaxLength(100) name?: string; @IsOptional() @IsString() @MaxLength(500) remark?: string | null; }
+class UpdateEmployeeDto { @IsOptional() @IsString() @MaxLength(80) employee_no?: string; @IsOptional() @IsString() @MaxLength(100) name?: string; @IsOptional() @IsUUID() department_id?: string; @IsOptional() @IsUUID() position_id?: string; @IsOptional() @IsString() @MaxLength(40) employee_type?: string; @IsOptional() @IsUUID() user_id?: string | null; @IsOptional() @IsDateString() hired_on?: string | null; @IsOptional() @IsDateString() left_on?: string | null; @IsOptional() @IsString() @MaxLength(500) remark?: string | null; }
+class UpdateLocationDto { @IsOptional() @IsString() @MaxLength(150) name?: string; @IsOptional() @IsString() location_type?: string; @IsOptional() @IsString() @MaxLength(100) contact_name?: string | null; @IsOptional() @IsString() @MaxLength(50) contact_phone?: string | null; @IsOptional() @IsString() @MaxLength(500) address?: string | null; @IsOptional() @IsString() @MaxLength(500) remark?: string | null; }
+class UpdateOperationDto { @IsOptional() @IsString() @MaxLength(80) operation_code?: string | null; @IsOptional() @IsString() @MaxLength(150) operation_name?: string; @IsOptional() @IsUUID() default_unit_id?: string | null; @IsOptional() @IsString() @MaxLength(500) remark?: string | null; }
+class UpdateRateDto { @IsOptional() @IsUUID() employee_id?: string; @IsOptional() @IsUUID() operation_id?: string; @IsOptional() @IsString() wage_mode?: string; @IsOptional() @IsString() unit_price?: string; @IsOptional() @IsDateString() effective_from?: string; @IsOptional() @IsDateString() effective_to?: string | null; @IsOptional() @IsString() @MaxLength(500) remark?: string | null; }
 class EmployeeQueryDto { @IsOptional() @IsString() query?: string; @IsOptional() @IsString() employment_status?: string; @IsOptional() @IsUUID() department_id?: string; @IsOptional() @IsUUID() position_id?: string; @IsOptional() @IsString() employee_type?: string; @IsOptional() @IsDateString() hired_from?: string; @IsOptional() @IsDateString() hired_to?: string; @IsOptional() @IsDateString() left_from?: string; @IsOptional() @IsDateString() left_to?: string; @IsOptional() @IsString() has_user?: string; }
+
+const EMPLOYEE_IMPORT_ALLOWED_MIME = new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"]);
+// D10: file-type whitelist. Files whose extension or declared MIME is not an
+// Excel workbook are rejected before Multer stores them (cb(null, false)),
+// which surfaces as a clean 422 from the service's missing-file check. The
+// ambiguous application/octet-stream MIME is only accepted when the filename
+// also declares an Excel extension.
+function employeeImportFileFilter(_req: Express.Request, file: Express.Multer.File, callback: (error: Error | null, acceptFile: boolean) => void) {
+  const name = (file.originalname ?? "").toLowerCase();
+  const extensionOk = name.endsWith(".xlsx") || name.endsWith(".xls");
+  callback(null, extensionOk || (EMPLOYEE_IMPORT_ALLOWED_MIME.has(file.mimetype) && file.mimetype !== "application/octet-stream"));
+}
 
 @Controller()
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -29,38 +53,38 @@ export class ProductionMasterDataController {
   constructor(private readonly service: ProductionMasterDataService) {}
   @Get("production/departments") departments(@Query("include_deleted") includeDeleted?: string) { return this.ok(this.service.listDepartments(includeDeleted === "true")); }
   @Post("production/departments") @RequireAdministrator() createDepartment(@Body() body: DepartmentDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createDepartment(body, user)); }
-  @Patch("production/departments/:id") @RequireAdministrator() updateDepartment(@Param("id") id: string, @Body() body: Partial<DepartmentDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateDepartment(id, body, user)); }
+  @Patch("production/departments/:id") @RequireAdministrator() updateDepartment(@Param("id") id: string, @Body() body: UpdateDepartmentDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateDepartment(id, body, user)); }
   @Patch("production/departments/:id/active") @RequireAdministrator() activeDepartment(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setDepartmentActive(id, body.is_active, user)); }
   @Delete("production/departments/:id") @RequireAdministrator() deleteDepartment(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deleteDepartment(id, user)); }
   @Post("production/departments/:id/restore") @RequireAdministrator() restoreDepartment(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restoreDepartment(id, user)); }
   @Get("production/positions") positions(@Query("department_id") departmentId?: string) { return this.ok(this.service.listPositions(departmentId)); }
   @Post("production/positions") @RequireAdministrator() createPosition(@Body() body: PositionDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createPosition(body, user)); }
-  @Patch("production/positions/:id") @RequireAdministrator() updatePosition(@Param("id") id: string, @Body() body: Partial<PositionDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updatePosition(id, body, user)); }
+  @Patch("production/positions/:id") @RequireAdministrator() updatePosition(@Param("id") id: string, @Body() body: UpdatePositionDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updatePosition(id, body, user)); }
   @Patch("production/positions/:id/active") @RequireAdministrator() activePosition(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setPositionActive(id, body.is_active, user)); }
   @Delete("production/positions/:id") @RequireAdministrator() deletePosition(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deletePosition(id, user)); }
   @Post("production/positions/:id/restore") @RequireAdministrator() restorePosition(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restorePosition(id, user)); }
   @Get("production/employees/export.xlsx") @RequireAdministrator() async exportEmployees(@Query() query: EmployeeQueryDto, @Res() response: Response) { const body = await this.service.exportEmployees(query); const fileName = `DileeERP-employees-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}.xlsx`; response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
   @Get("production/employees/import-template.xlsx") @RequireAdministrator() async employeeImportTemplate(@Res() response: Response) { const body = this.service.employeeImportTemplate(); response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent("迪礼ERP-员工导入模板.xlsx")}`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
-  @Post("production/employees/import") @RequireAdministrator() @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } })) async importEmployees(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) { return this.ok(await this.service.importEmployees(file, user)); }
+  @Post("production/employees/import") @RequireAdministrator() @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: employeeImportFileFilter })) async importEmployees(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) { return this.ok(await this.service.importEmployees(file, user)); }
   @Get("production/employees") employees(@Query() query: EmployeeQueryDto) { return this.ok(this.service.listEmployees(query)); }
   @Post("production/employees") @RequireAdministrator() createEmployee(@Body() body: EmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createEmployee(body, user)); }
-  @Patch("production/employees/:id") @RequireAdministrator() updateEmployee(@Param("id") id: string, @Body() body: Partial<EmployeeDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }
+  @Patch("production/employees/:id") @RequireAdministrator() updateEmployee(@Param("id") id: string, @Body() body: UpdateEmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }
   @Patch("production/employees/:id/active") @RequireAdministrator() activeEmployee(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeActive(id, body.is_active, user)); }
   @Patch("production/employees/:id/leave") @RequireAdministrator() leaveEmployee(@Param("id") id: string, @Body() body: LeaveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setEmployeeLeft(id, body.left_on, user)); }
   @Get("production/locations") locations(@Query("include_deleted") includeDeleted?: string) { return this.ok(this.service.listLocations(includeDeleted === "true")); }
   @Post("production/locations") @RequireAdministrator() createLocation(@Body() body: LocationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createLocation(body, user)); }
-  @Patch("production/locations/:id") @RequireAdministrator() updateLocation(@Param("id") id: string, @Body() body: Partial<LocationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateLocation(id, body, user)); }
+  @Patch("production/locations/:id") @RequireAdministrator() updateLocation(@Param("id") id: string, @Body() body: UpdateLocationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateLocation(id, body, user)); }
   @Patch("production/locations/:id/active") @RequireAdministrator() activeLocation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setLocationActive(id, body.is_active, user)); }
   @Delete("production/locations/:id") @RequireAdministrator() deleteLocation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deleteLocation(id, user)); }
   @Post("production/locations/:id/restore") @RequireAdministrator() restoreLocation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restoreLocation(id, user)); }
   @Get("production/operations") operations(@Query("include_deleted") includeDeleted?: string) { return this.ok(this.service.listOperations(includeDeleted === "true")); }
   @Post("production/operations") @RequireAdministrator() createOperation(@Body() body: OperationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createOperation(body, user)); }
-  @Patch("production/operations/:id") @RequireAdministrator() updateOperation(@Param("id") id: string, @Body() body: Partial<OperationDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateOperation(id, body, user)); }
+  @Patch("production/operations/:id") @RequireAdministrator() updateOperation(@Param("id") id: string, @Body() body: UpdateOperationDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateOperation(id, body, user)); }
   @Patch("production/operations/:id/active") @RequireAdministrator() activeOperation(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setOperationActive(id, body.is_active, user)); }
   @Delete("production/operations/:id") @RequireAdministrator() deleteOperation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deleteOperation(id, user)); }
   @Post("production/operations/:id/restore") @RequireAdministrator() restoreOperation(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restoreOperation(id, user)); }
   @Get("production/operation-rates") rates(@Query("employee_id") employeeId?: string, @Query("operation_id") operationId?: string) { return this.ok(this.service.listRates(employeeId, operationId)); }
   @Post("production/operation-rates") @RequireAdministrator() createRate(@Body() body: RateDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createRate(body, user)); }
-  @Patch("production/operation-rates/:id") @RequireAdministrator() updateRate(@Param("id") id: string, @Body() body: Partial<RateDto>, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateRate(id, body, user)); }
+  @Patch("production/operation-rates/:id") @RequireAdministrator() updateRate(@Param("id") id: string, @Body() body: UpdateRateDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateRate(id, body, user)); }
   private ok<T>(data: T) { return Promise.resolve(data).then((value) => ({ data: value, meta: {} })); }
 }
