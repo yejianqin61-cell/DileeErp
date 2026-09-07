@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsArray, IsDateString, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsArray, IsDateString, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
+import { Type } from "class-transformer";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -8,9 +9,10 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { RawMaterialMovementsService } from "./raw-material-movements.service";
 
 class IssueLineDto { @IsUUID() material_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class IssueDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() lines!: IssueLineDto[]; }
+class IssueDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
 class DerivedLineDto { @IsUUID() source_issue_line_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class DerivedDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() lines!: DerivedLineDto[]; }
+class DerivedDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => DerivedLineDto) lines!: DerivedLineDto[]; }
+class UpdateIssueDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines?: IssueLineDto[]; }
 class PostDto { @IsString() @MaxLength(200) idempotency_key!: string; }
 class ReverseDto extends PostDto { @IsString() @MaxLength(1000) reason!: string; }
 
@@ -25,7 +27,7 @@ export class RawMaterialMovementsController {
   @Post("returns") async createReturn(@Body() body: DerivedDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createReturn(body, user), meta: {} }; }
   @Post("scraps") async createScrap(@Body() body: DerivedDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createScrap(body, user), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.movements.get(id), meta: {} }; }
-  @Patch(":id") async update(@Param("id") id: string, @Body() body: Partial<IssueDto>, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.updateIssue(id, body, user), meta: {} }; }
+  @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdateIssueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.updateIssue(id, body, user), meta: {} }; }
   @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.removeIssue(id, user), meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.movements.impactPreview(id), meta: {} }; }
   @Get(":id/reversal-preview") async reversalPreview(@Param("id") id: string) { return { data: await this.movements.reversalPreview(id), meta: {} }; }

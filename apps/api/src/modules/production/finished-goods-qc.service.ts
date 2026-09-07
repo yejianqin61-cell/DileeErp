@@ -50,6 +50,9 @@ export class FinishedGoodsQcService {
     const date = this.date(input.submission_date);
     const created = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${source.productionOrder.id}::uuid FOR UPDATE`;
+      const lockedOrder = await tx.productionOrder.findFirst({ where: { id: source.productionOrder.id, deletedAt: null } });
+      if (!lockedOrder) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
+      if (input.source_type === "in_house_completion" && !["in_progress", "completed"].includes(lockedOrder.status)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "厂内成品送检要求生产单处于生产中或已完成，当前状态不允许送检", details: [{ production_order_status: lockedOrder.status }] });
       const available = await this.sourceAvailable(tx, source.productionOrder.id, input.source_type, input.source_id);
       if (quantity.gt(available)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED", message: "送检数量超过来源可送检数量", details: [{ available_quantity: available.toString() }] });
       const row = await tx.finishedGoodsInspectionSubmission.create({ data: { submissionNo: `FGI-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: source.productionOrder.orderNo, productionOrderId: source.productionOrder.id, sourceType: input.source_type, sourceId: input.source_id, productionOrderNoSnapshot: source.productionOrder.productionOrderNo, productNameSnapshot: source.productName, productSpecificationSnapshot: source.productionOrder.productSpecification, unitId: source.unitId, unitNameSnapshot: source.unitName, submittedQuantity: quantity, submissionDate: date, remark: input.remark, ...this.audit.create(user) } });
@@ -75,21 +78,39 @@ export class FinishedGoodsQcService {
   }
 
   async submit(id: string, user: CurrentUser) {
-    const current = await this.getSubmission(id);
-    if (current.status !== "draft") throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_SUBMITTABLE", message: "只有草稿送检单可以提交", details: [] });
-    const result = await this.prisma.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "submitted", ...this.audit.update(user) } });
-    if (current.sourceType === "outsource_finished_goods_return") await this.prisma.outsourceReturnTransfer.update({ where: { id: current.sourceId }, data: { finishedGoodsQcStatus: "submitted", ...this.audit.update(user) } });
-    await this.audit.record("finished_goods_inspection_submission.submit", "finished_goods_inspection_submission", user.id, id, { order_no: current.orderNo });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_inspection_submissions WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.finishedGoodsInspectionSubmission.findFirst({ where: { id, deletedAt: null } });
+      if (!locked) throw new NotFoundException({ code: "FINISHED_GOODS_SUBMISSION_NOT_FOUND", message: "成品送检单不存在", details: [] });
+      if (locked.status !== "draft") throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_SUBMITTABLE", message: "只有草稿送检单可以提交", details: [] });
+      const updated = await tx.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "submitted", ...this.audit.update(user) } });
+      if (locked.sourceType === "outsource_finished_goods_return") {
+        await tx.$queryRaw`SELECT id FROM outsource_return_transfers WHERE id = ${locked.sourceId}::uuid FOR UPDATE`;
+        const transfer = await tx.outsourceReturnTransfer.findFirst({ where: { id: locked.sourceId, deletedAt: null } });
+        if (transfer) await tx.outsourceReturnTransfer.update({ where: { id: transfer.id }, data: { finishedGoodsQcStatus: "submitted", ...this.audit.update(user) } });
+      }
+      return updated;
+    });
+    await this.audit.record("finished_goods_inspection_submission.submit", "finished_goods_inspection_submission", user.id, id, { order_no: result.orderNo });
     return result;
   }
 
   async cancel(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CANCELLATION_REASON_REQUIRED", message: "取消送检必须填写原因", details: [] });
-    const current = await this.getSubmission(id);
-    if (!["draft", "submitted"].includes(current.status) || current.qcRecords.length > 0) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_CANCELLABLE", message: "当前送检单不允许取消", details: [] });
-    const result = await this.prisma.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "cancelled", remark: `${current.remark ?? ""}\n取消：${reason}`, ...this.audit.update(user) } });
-    if (current.sourceType === "outsource_finished_goods_return") await this.prisma.outsourceReturnTransfer.update({ where: { id: current.sourceId }, data: { finishedGoodsQcStatus: "not_submitted", ...this.audit.update(user) } });
-    await this.audit.record("finished_goods_inspection_submission.cancel", "finished_goods_inspection_submission", user.id, id, { order_no: current.orderNo, reason });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM finished_goods_inspection_submissions WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.finishedGoodsInspectionSubmission.findFirst({ where: { id, deletedAt: null }, include: { qcRecords: { where: { deletedAt: null } } } });
+      if (!locked) throw new NotFoundException({ code: "FINISHED_GOODS_SUBMISSION_NOT_FOUND", message: "成品送检单不存在", details: [] });
+      if (!["draft", "submitted"].includes(locked.status) || locked.qcRecords.length > 0) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_CANCELLABLE", message: "当前送检单不允许取消", details: [] });
+      const updated = await tx.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "cancelled", remark: `${locked.remark ?? ""}\n取消：${reason}`, ...this.audit.update(user) } });
+      if (locked.sourceType === "outsource_finished_goods_return") {
+        await tx.$queryRaw`SELECT id FROM outsource_return_transfers WHERE id = ${locked.sourceId}::uuid FOR UPDATE`;
+        const transfer = await tx.outsourceReturnTransfer.findFirst({ where: { id: locked.sourceId, deletedAt: null } });
+        if (transfer) await tx.outsourceReturnTransfer.update({ where: { id: transfer.id }, data: { finishedGoodsQcStatus: "not_submitted", ...this.audit.update(user) } });
+      }
+      return updated;
+    });
+    await this.audit.record("finished_goods_inspection_submission.cancel", "finished_goods_inspection_submission", user.id, id, { order_no: result.orderNo, reason });
     return result;
   }
 
@@ -106,13 +127,15 @@ export class FinishedGoodsQcService {
     const date = this.date(input.inspection_date);
     const created = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM finished_goods_inspection_submissions WHERE id = ${submission.id}::uuid FOR UPDATE`;
-      const existing = await tx.finishedGoodsQcRecord.aggregate({ where: { submissionId: submission.id, status: "active", deletedAt: null }, _sum: { inspectedQuantity: true } });
+      const lockedSubmission = await tx.finishedGoodsInspectionSubmission.findFirst({ where: { id: submission.id, deletedAt: null } });
+      if (!lockedSubmission || !["submitted", "inspecting"].includes(lockedSubmission.status)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_INSPECTABLE", message: "当前送检单不允许录入 QC", details: [] });
+      const existing = await tx.finishedGoodsQcRecord.aggregate({ where: { submissionId: lockedSubmission.id, status: "active", deletedAt: null }, _sum: { inspectedQuantity: true } });
       const used = new Prisma.Decimal(existing._sum.inspectedQuantity ?? 0);
-      if (used.plus(inspected).gt(submission.submittedQuantity)) throw new UnprocessableEntityException({ code: "QC_INSPECTION_QUANTITY_EXCEEDED", message: "累计检验数量超过送检数量", details: [{ remaining_quantity: submission.submittedQuantity.minus(used).toString() }] });
-      const row = await tx.finishedGoodsQcRecord.create({ data: { qcNo: `FQC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, submissionId: submission.id, orderNo: submission.orderNo, productionOrderId: submission.productionOrderId, sourceType: submission.sourceType, sourceId: submission.sourceId, inspectionDate: date, inspectedQuantity: quantities.inspected_quantity, qualifiedQuantity: quantities.qualified_quantity, conditionalAcceptQuantity: quantities.conditional_accept_quantity, rejectedQuantity: quantities.rejected_quantity, conclusion: quantities.conclusion, rejectionReason: input.rejection_reason, remark: input.remark, ...this.audit.create(user) } });
-      const nextStatus = used.plus(inspected).eq(submission.submittedQuantity) ? "qc_completed" : "inspecting";
-      await tx.finishedGoodsInspectionSubmission.update({ where: { id: submission.id }, data: { status: nextStatus, ...this.audit.update(user) } });
-      if (submission.sourceType === "outsource_finished_goods_return") await tx.outsourceReturnTransfer.update({ where: { id: submission.sourceId }, data: { finishedGoodsQcStatus: nextStatus === "qc_completed" ? "qc_completed" : "inspecting", ...this.audit.update(user) } });
+      if (used.plus(inspected).gt(lockedSubmission.submittedQuantity)) throw new UnprocessableEntityException({ code: "QC_INSPECTION_QUANTITY_EXCEEDED", message: "累计检验数量超过送检数量", details: [{ remaining_quantity: lockedSubmission.submittedQuantity.minus(used).toString() }] });
+      const row = await tx.finishedGoodsQcRecord.create({ data: { qcNo: `FQC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, submissionId: lockedSubmission.id, orderNo: lockedSubmission.orderNo, productionOrderId: lockedSubmission.productionOrderId, sourceType: lockedSubmission.sourceType, sourceId: lockedSubmission.sourceId, inspectionDate: date, inspectedQuantity: quantities.inspected_quantity, qualifiedQuantity: quantities.qualified_quantity, conditionalAcceptQuantity: quantities.conditional_accept_quantity, rejectedQuantity: quantities.rejected_quantity, conclusion: quantities.conclusion, rejectionReason: input.rejection_reason, remark: input.remark, ...this.audit.create(user) } });
+      const nextStatus = used.plus(inspected).eq(lockedSubmission.submittedQuantity) ? "qc_completed" : "inspecting";
+      await tx.finishedGoodsInspectionSubmission.update({ where: { id: lockedSubmission.id }, data: { status: nextStatus, ...this.audit.update(user) } });
+      if (lockedSubmission.sourceType === "outsource_finished_goods_return") await tx.outsourceReturnTransfer.update({ where: { id: lockedSubmission.sourceId }, data: { finishedGoodsQcStatus: nextStatus === "qc_completed" ? "qc_completed" : "inspecting", ...this.audit.update(user) } });
       return row;
     });
     await this.audit.record("finished_goods_qc_record.create", "finished_goods_qc_record", user.id, created.id, { order_no: created.orderNo, submission_id: created.submissionId, conclusion: created.conclusion, inspected_quantity: created.inspectedQuantity.toString() });
@@ -148,16 +171,31 @@ export class FinishedGoodsQcService {
     const quantities = deriveFinishedGoodsQcConclusion({ inspected_quantity: input.inspected_quantity, qualified_quantity: input.qualified_quantity, conditional_accept_quantity: input.conditional_accept_quantity, rejected_quantity: input.rejected_quantity });
     if (quantities.rejected_quantity !== "0" && !input.rejection_reason?.trim()) throw new UnprocessableEntityException({ code: "QC_REJECTION_REASON_REQUIRED", message: "存在不合格数量时必须填写原因", details: [] });
     const replacement = await this.prisma.$transaction(async (tx) => {
+      // 锁 submission 行：与 createQcRecord/并发更正串行，避免送检上限被绕过
+      await tx.$queryRaw`SELECT id FROM finished_goods_inspection_submissions WHERE id = ${current.submissionId}::uuid FOR UPDATE`;
+      const lockedSubmission = await tx.finishedGoodsInspectionSubmission.findFirst({ where: { id: current.submissionId, deletedAt: null } });
+      if (!lockedSubmission) throw new NotFoundException({ code: "FINISHED_GOODS_SUBMISSION_NOT_FOUND", message: "成品送检单不存在", details: [] });
       await tx.$queryRaw`SELECT id FROM finished_goods_qc_records WHERE id = ${id}::uuid FOR UPDATE`;
+      const lockedRecord = await tx.finishedGoodsQcRecord.findFirst({ where: { id, deletedAt: null, status: "active" } });
+      if (!lockedRecord) throw new NotFoundException({ code: "FINISHED_GOODS_QC_NOT_FOUND", message: "成品 QC 记录不存在或已更正", details: [] });
       const [lockedInboundCount, lockedDefectiveCount] = await Promise.all([
         tx.finishedGoodsInbound.count({ where: { qcRecordId: id, deletedAt: null, status: { in: ["draft", "posted"] } } }),
         tx.finishedGoodsDefective.count({ where: { qcRecordId: id, deletedAt: null, status: { in: ["draft", "posted"] } } }),
       ]);
       if (lockedInboundCount || lockedDefectiveCount) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_DOWNSTREAM_EXISTS", message: "已有成品入库或不良品下游事实，必须先删除草稿或冲销过账记录后再更正 QC", details: [{ inbound_count: lockedInboundCount, defective_count: lockedDefectiveCount }] });
-      await tx.finishedGoodsQcRecord.update({ where: { id }, data: { status: "corrected", correctionReason: input.reason, correctedAt: new Date(), ...this.audit.update(user) } });
-      const created = await tx.finishedGoodsQcRecord.create({ data: { qcNo: `FQC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, submissionId: current.submissionId, orderNo: current.orderNo, productionOrderId: current.productionOrderId, sourceType: current.sourceType, sourceId: current.sourceId, inspectionDate: this.date(input.inspection_date), inspectedQuantity: quantities.inspected_quantity, qualifiedQuantity: quantities.qualified_quantity, conditionalAcceptQuantity: quantities.conditional_accept_quantity, rejectedQuantity: quantities.rejected_quantity, conclusion: quantities.conclusion, rejectionReason: input.rejection_reason, remark: input.remark, ...this.audit.create(user) } });
-      await tx.finishedGoodsInspectionSubmission.update({ where: { id: current.submissionId }, data: { status: "qc_completed", ...this.audit.update(user) } });
-      if (current.sourceType === "outsource_finished_goods_return") await tx.outsourceReturnTransfer.update({ where: { id: current.sourceId }, data: { finishedGoodsQcStatus: "qc_completed", ...this.audit.update(user) } });
+      // 上限：该 submission 下其它 active（非 corrected）QC 的 inspected 合计 + 本次 replacement inspected ≤ submittedQuantity
+      const inspected = new Prisma.Decimal(quantities.inspected_quantity);
+      const others = await tx.finishedGoodsQcRecord.aggregate({ where: { submissionId: lockedSubmission.id, status: "active", deletedAt: null, id: { not: id } }, _sum: { inspectedQuantity: true } });
+      const othersInspected = new Prisma.Decimal(others._sum.inspectedQuantity ?? 0);
+      if (othersInspected.plus(inspected).gt(lockedSubmission.submittedQuantity)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_INSPECTION_QUANTITY_EXCEEDED", message: "更正后累计检验数量不能超过送检数量", details: [{ remaining_quantity: lockedSubmission.submittedQuantity.minus(othersInspected).toString() }] });
+      const marked = await tx.finishedGoodsQcRecord.updateMany({ where: { id, status: "active" }, data: { status: "corrected", correctionReason: input.reason, correctedAt: new Date(), ...this.audit.update(user) } });
+      if (marked.count !== 1) throw new ConflictException({ code: "VERSION_CONFLICT", message: "成品 QC 记录已被其他操作处理，请刷新后重试", details: [] });
+      const created = await tx.finishedGoodsQcRecord.create({ data: { qcNo: `FQC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, submissionId: lockedRecord.submissionId, orderNo: lockedRecord.orderNo, productionOrderId: lockedRecord.productionOrderId, sourceType: lockedRecord.sourceType, sourceId: lockedRecord.sourceId, inspectionDate: this.date(input.inspection_date), inspectedQuantity: quantities.inspected_quantity, qualifiedQuantity: quantities.qualified_quantity, conditionalAcceptQuantity: quantities.conditional_accept_quantity, rejectedQuantity: quantities.rejected_quantity, conclusion: quantities.conclusion, rejectionReason: input.rejection_reason, remark: input.remark, ...this.audit.create(user) } });
+      // 更正后按 active 记录 inspected 合计是否等于 submittedQuantity 推导 submission.status
+      const active = await tx.finishedGoodsQcRecord.aggregate({ where: { submissionId: lockedSubmission.id, status: "active", deletedAt: null }, _sum: { inspectedQuantity: true } });
+      const nextStatus = new Prisma.Decimal(active._sum.inspectedQuantity ?? 0).eq(lockedSubmission.submittedQuantity) ? "qc_completed" : "inspecting";
+      await tx.finishedGoodsInspectionSubmission.update({ where: { id: lockedSubmission.id }, data: { status: nextStatus, ...this.audit.update(user) } });
+      if (lockedRecord.sourceType === "outsource_finished_goods_return") await tx.outsourceReturnTransfer.update({ where: { id: lockedRecord.sourceId }, data: { finishedGoodsQcStatus: nextStatus === "qc_completed" ? "qc_completed" : "inspecting", ...this.audit.update(user) } });
       return created;
     });
     await this.audit.record("finished_goods_qc_record.correct", "finished_goods_qc_record", user.id, id, { order_no: current.orderNo, replacement_qc_id: replacement.id, reason: input.reason });
@@ -172,6 +210,7 @@ export class FinishedGoodsQcService {
       if (!source) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "外加工成品回厂来源尚未进入待 QC", details: [] });
       return { productionOrder, unitId: source.unitId, unitName: source.unit.name, productName: source.productDescription };
     }
+    if (!["in_progress", "completed"].includes(productionOrder.status)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "厂内成品送检要求生产单处于生产中或已完成，当前状态不允许送检", details: [{ production_order_status: productionOrder.status }] });
     if (input.source_id !== productionOrder.id) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_MISMATCH", message: "厂内成品 QC 来源必须使用生产单", details: [] });
     const available = await this.inHouseAvailable(productionOrder);
     if (available.lte(0)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "厂内生产单尚未形成可送检完工量", details: [] });
@@ -193,6 +232,12 @@ export class FinishedGoodsQcService {
     const quantities = await Promise.all(order.operations.map(async (operation) => { const rows = await client.operationDailyReport.aggregate({ where: { productionOrderOperationId: operation.id, deletedAt: null }, _sum: { completedQuantity: true } }); return new Prisma.Decimal(rows._sum.completedQuantity ?? 0); }));
     return quantities.reduce((min, current) => current.lt(min) ? current : min, new Prisma.Decimal(order.plannedQuantity));
   }
-  private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.lte(0)) throw new Error(); return result; } catch { throw new UnprocessableEntityException({ code, message: "数量必须是大于零的十进制数", details: [] }); } }
+  private decimal(value: string, code: string) {
+    if (typeof value !== "string" || value.length === 0 || !/^\d+(?:\.\d+)?$/.test(value)) throw this.quantityError(code);
+    const [integerPart, fractionPart = ""] = value.split(".");
+    if (fractionPart.length > 4 || (integerPart.replace(/^0+/, "").length || 1) > 14) throw this.quantityError(code);
+    try { const result = new Prisma.Decimal(value); if (result.lte(0)) throw new Error(); return result; } catch { throw this.quantityError(code); }
+  }
+  private quantityError(code: string) { return new UnprocessableEntityException({ code, message: "数量必须是大于零的十进制数，且最多 4 位小数、总精度不超过 18 位", details: [] }); }
   private date(value: string) { const date = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_SUBMISSION_DATE", message: "送检日期无效", details: [] }); return date; }
 }

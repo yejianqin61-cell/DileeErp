@@ -130,10 +130,17 @@ export class RawMaterialMovementsService {
         const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null }, include: { lines: { where: { deletedAt: null } } } });
         if (!current || current.status !== "draft") throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: "领料单已被其他操作处理", details: [] });
         const lockedOrder = await this.requireInHouseOrder(current.productionOrderId, tx);
-        for (const line of current.lines) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`${line.materialId}|${line.unitId}`}))`;
+        // 先收集全部物料 advisory lock key 并排序后再加锁，避免并发多物料单据以相反顺序加锁造成死锁
+        const materialKeys = current.lines.map((line) => `${line.materialId}|${line.unitId}`).sort();
+        for (const key of materialKeys) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
         const lockedPreview = await this.previewLines(lockedOrder, current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         if (lockedPreview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "领料会造成原料库存不足", details: [] });
-        const lockedRisks = lockedPreview.lines.flatMap((line) => line.risks.map((risk) => ({ line_id: line.id, risk_type: risk.type, context: risk.context })));
+        // 风险 line_id 必须指向数据库真实明细行（preview 行 id 为 undefined），按 material_id 关联 current.lines
+        const dbLineByMaterial = new Map(current.lines.map((dbLine) => [dbLine.materialId, dbLine]));
+        const lockedRisks = lockedPreview.lines.flatMap((line) => line.risks.map((risk) => {
+          const dbLine = dbLineByMaterial.get(line.material_id);
+          return { line_id: dbLine?.id ?? null, risk_type: risk.type, context: risk.context };
+        }));
         if (lockedRisks.length && !current.reason?.trim()) throw new UnprocessableEntityException({ code: "RISK_REASON_REQUIRED", message: "超领或非 BOM 物料必须填写原因", details: lockedRisks });
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
         for (const line of current.lines) {
@@ -148,6 +155,7 @@ export class RawMaterialMovementsService {
       return posted;
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "P2034") throw new ConflictException({ code: "VERSION_CONFLICT", message: "库存已被其他操作更新，请刷新后重试", details: [] });
+      if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "UNIQUE_VALUE_CONFLICT", message: "领料单号或幂等键冲突，请检查后重试", details: [] });
       throw error;
     }
   }
@@ -170,6 +178,7 @@ export class RawMaterialMovementsService {
     if (movement.status !== "posted") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有已过账单据可以冲销", details: [] });
     const preview = await this.reversalPreview(id);
     if (!preview.can_reverse) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "存在后续退料或报废记录，不能冲销来源领料", details: [{ count: preview.dependent_record_count }] });
+    try {
     const reversal = await this.prisma.$transaction(async (tx) => {
       const current = await tx.rawMaterialMovement.findFirst({ where: { id, status: "posted", deletedAt: null }, include: { lines: { where: { deletedAt: null } } } });
       if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_REVERSED", message: "单据已被其他操作冲销", details: [] });
@@ -193,8 +202,13 @@ export class RawMaterialMovementsService {
       await tx.rawMaterialMovement.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } });
       return created;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    await this.audit.record("raw_material_movement.reverse", "raw_material_movement", user.id, id, { order_no: movement.orderNo, production_order_id: movement.productionOrderId, reversal_movement_id: reversal.id, reason });
-    return reversal;
+      await this.audit.record("raw_material_movement.reverse", "raw_material_movement", user.id, id, { order_no: movement.orderNo, production_order_id: movement.productionOrderId, reversal_movement_id: reversal.id, reason });
+      return reversal;
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "P2034") throw new ConflictException({ code: "VERSION_CONFLICT", message: "库存已被其他操作更新，请刷新后重试", details: [] });
+      if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "UNIQUE_VALUE_CONFLICT", message: "冲销单号或幂等键冲突，请检查后重试", details: [] });
+      throw error;
+    }
   }
 
   private async createDerived(documentType: "return" | "scrap", input: DerivedInput, user: CurrentUser) {
@@ -232,7 +246,9 @@ export class RawMaterialMovementsService {
         const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null, status: "draft", documentType }, include: { lines: { where: { deletedAt: null } } } });
         if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: "单据已被其他操作处理", details: [] });
         await this.requireInHouseOrder(current.productionOrderId, tx);
-        for (const line of current.lines) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`derived:${line.sourceIssueLineId}`}))`;
+        // 同样先收集全部来源明细锁 key 排序后再加锁，避免相反顺序加锁死锁
+        const derivedKeys = current.lines.map((line) => `derived:${line.sourceIssueLineId}`).sort();
+        for (const key of derivedKeys) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
         await this.derivedLines(current.productionOrderId, current.lines.map((line) => ({ source_issue_line_id: line.sourceIssueLineId!, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
         for (const line of current.lines) {
@@ -244,6 +260,7 @@ export class RawMaterialMovementsService {
       return posted;
     } catch (error) {
       if (error && typeof error === "object" && "code" in error && error.code === "P2034") throw new ConflictException({ code: "VERSION_CONFLICT", message: "物料流转已被其他操作更新，请刷新后重试", details: [] });
+      if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "UNIQUE_VALUE_CONFLICT", message: "单据号或幂等键冲突，请检查后重试", details: [] });
       throw error;
     }
   }
@@ -276,10 +293,19 @@ export class RawMaterialMovementsService {
   }
 
   private isPositiveDecimal(value: string) {
+    return this.parseQuantity(value) !== null;
+  }
+
+  /** 统一数量解析护栏：正十进制、拒绝指数/符号/十六进制、小数位 ≤4、不超出 numeric(18,4)（整数 ≤14 位）。 */
+  private parseQuantity(value: string) {
+    if (typeof value !== "string" || value.length === 0 || !/^\d+(?:\.\d+)?$/.test(value)) return null;
+    const [integerPart, fractionPart = ""] = value.split(".");
+    if (fractionPart.length > 4 || (integerPart.replace(/^0+/, "").length || 1) > 14) return null;
     try {
-      return new Prisma.Decimal(value).gt(0);
+      const parsed = new Prisma.Decimal(value);
+      return parsed.gt(0) ? parsed : null;
     } catch {
-      return false;
+      return null;
     }
   }
 
