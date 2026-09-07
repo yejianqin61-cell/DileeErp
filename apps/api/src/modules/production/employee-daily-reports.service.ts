@@ -26,7 +26,6 @@ export class EmployeeDailyReportsService {
   async create(input: Input, user: CurrentUser) {
     if (input.idempotency_key) { const previous = await this.prisma.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } }); if (previous) return this.get(previous.id); }
     const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
-    this.assertBackfillReason(refs.reportDate, input.remark);
     const values = this.values(input);
     const created = await this.prisma.$transaction(async (tx) => {
       await this.lockOrderAndAssertStatus(tx, refs.order.id, ["in_progress"]);
@@ -58,7 +57,6 @@ export class EmployeeDailyReportsService {
     for (const input of inputs) { if (employeeIds.has(input.employee_id)) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_BATCH_DUPLICATE", message: "同一员工不能在同一批日报中重复登记", details: [{ employee_id: input.employee_id }] }); employeeIds.add(input.employee_id); }
     const prepared = await Promise.all(inputs.map(async (input, index) => {
       const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
-      this.assertBackfillReason(refs.reportDate, input.remark, index + 1);
       return { input, refs, values: this.values(input) };
     }));
     const created = await this.prisma.$transaction(async (tx) => {
@@ -287,15 +285,6 @@ export class EmployeeDailyReportsService {
     const operation = await tx.productionOrderOperation.findFirst({ where: { id: operationId, productionOrderId: orderId, deletedAt: null }, select: { status: true } });
     if (!operation) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "生产单工序不存在或已取消", details: [] });
     if (requireActive && operation.status !== "active") throw new UnprocessableEntityException({ code: "CANCELLED_OPERATION_DAILY_REPORT_FORBIDDEN", message: cancelledMessage, details: [{ operation_status: operation.status }] });
-  }
-
-  /** B7: a backdated (earlier than today UTC) report requires an explanatory remark so historical backfills are never silent. */
-  private assertBackfillReason(reportDate: Date, remark: string | undefined, rowIndex?: number) {
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    if (reportDate < today && !remark?.trim()) {
-      throw new UnprocessableEntityException({ code: "BACKFILL_REASON_REQUIRED", message: "补录历史员工日报必须填写备注原因", details: rowIndex === undefined ? [] : [{ row: rowIndex }] });
-    }
   }
 
   private date(value: string) { const date = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_REPORT_DATE", message: "日报日期必须是有效日期", details: [] }); return date; }

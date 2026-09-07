@@ -30,12 +30,20 @@ test("employee daily report checks idempotency after the operation lock", async 
     }),
   };
   const service = new EmployeeDailyReportsService(prisma, { record: async () => { calls.push("audit"); } }, {});
-  // 补录历史日报必须带备注原因，否则在进事务前会被 BACKFILL_REASON_REQUIRED 拦截。
-  const result = await service.create({ production_order_id: "order-1", production_order_operation_id: "operation-1", employee_id: "employee-1", report_date: "2026-09-03", wage_mode: "piece_rate", quantity: "2", unit_price: "2", remark: "回填测试", idempotency_key: "daily-key-1" }, { id: "user-1" });
+  // 历史日报补录不再强制填写备注原因。
+  const result = await service.create({ production_order_id: "order-1", production_order_operation_id: "operation-1", employee_id: "employee-1", report_date: "2026-09-03", wage_mode: "piece_rate", quantity: "2", unit_price: "2", idempotency_key: "daily-key-1" }, { id: "user-1" });
   assert.equal(result.id, "report-1");
   // 幂等复查发生在事务内 FOR UPDATE 锁（生产单、工序两道行锁）之后
   assert.equal(calls[0], "lock");
   assert.ok(calls.lastIndexOf("lock") < calls.indexOf("idempotency"), `expected lock before idempotency, got: ${JSON.stringify(calls)}`);
+});
+
+test("corrections still require a reason", async () => {
+  const service = new EmployeeDailyReportsService({ employeeDailyReport: { findFirst: async () => ({ id: "report-1", version: 1 }) } }, {}, {});
+  await assert.rejects(
+    () => service.update("report-1", { quantity: "2", reason: "   " }, { id: "user-1" }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "CORRECTION_REASON_REQUIRED",
+  );
 });
 
 test("new employee daily reports are rejected after production completion", async () => {
