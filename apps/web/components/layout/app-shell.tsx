@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { Bell, ClipboardList, Coins, Factory, LayoutDashboard, LogOut, Package, Users, WalletCards } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
-import { apiGet, apiPost } from "../../lib/api-client";
+import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { Button } from "../ui/button";
 
 const navigation = [
@@ -24,10 +24,19 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [ready, setReady] = useState(pathname === "/login");
   const [user, setUser] = useState<{ display_name: string; username: string } | null>(null);
-  useEffect(() => { if (pathname === "/login") { setReady(true); return; } apiGet<{ display_name: string; username: string }>("/auth/me").then((result) => { setUser(result.data); setReady(true); }).catch(() => { window.location.href = "/login"; }); }, [pathname]);
+  const [authError, setAuthError] = useState("");
+  useEffect(() => {
+    if (pathname === "/login") { setReady(true); setAuthError(""); return; }
+    setReady(false); setAuthError("");
+    apiGet<{ display_name: string; username: string }>("/auth/me").then((result) => { setUser(result.data); setReady(true); }).catch((cause) => {
+      if (cause instanceof ApiClientError && ["UNAUTHORIZED", "UNAUTHENTICATED", "AUTH_REQUIRED", "SESSION_EXPIRED"].includes(cause.code)) { window.location.href = "/login"; return; }
+      setAuthError(cause instanceof ApiClientError ? cause.message : "无法连接服务，请稍后重试"); setReady(true);
+    });
+  }, [pathname]);
   async function logout() { await apiPost("/auth/logout"); window.location.href = "/login"; }
   if (pathname === "/login") return <>{children}</>;
   if (!ready) return <div className="feedback-state"><span>正在验证登录状态...</span></div>;
+  if (authError) return <div className="feedback-state"><span>{authError}</span><Button variant="secondary" onClick={() => window.location.reload()}>重试</Button></div>;
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">迪</span><div><strong>迪礼管理系统</strong><small>厂内业务系统</small></div></div>

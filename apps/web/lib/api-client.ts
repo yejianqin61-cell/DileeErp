@@ -6,14 +6,15 @@ export class ApiClientError extends Error {
 }
 
 export async function apiGet<T>(path: string): Promise<ApiSuccess<T>> {
-  const response = await fetch(`/api/v1${path}`, { credentials: "include", signal: AbortSignal.timeout(10000) });
-  const body = await response.json() as ApiSuccess<T> | ApiFailure;
+  const response = await fetch(`/api/v1${path}`, { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(10000) });
+  const body = await response.json().catch(() => null) as ApiSuccess<T> | ApiFailure | null;
+  if (!body) throw new ApiClientError(response.status === 401 ? "UNAUTHENTICATED" : "REQUEST_ERROR", `请求失败（HTTP ${response.status}）`);
   if (!response.ok || "error" in body) { const failure = body as ApiFailure; throw new ApiClientError(failure.error.code, failure.error.message, failure.error.details); }
   return body as ApiSuccess<T>;
 }
 
 export async function apiRequest<T>(path: string, options: RequestInit = {}): Promise<ApiSuccess<T>> {
-  const response = await fetch(`/api/v1${path}`, { ...options, credentials: "include", headers: { "content-type": "application/json", ...(options.headers ?? {}) } });
+  const response = await fetch(`/api/v1${path}`, { ...options, credentials: "include", cache: "no-store", headers: { "content-type": "application/json", ...(options.headers ?? {}) } });
   const body = await response.json().catch(() => ({})) as ApiSuccess<T> | ApiFailure;
   if (!response.ok || "error" in body) { const failure = body as ApiFailure; throw new ApiClientError(failure.error?.code ?? "REQUEST_ERROR", failure.error?.message ?? "请求失败", failure.error?.details ?? []); }
   return body as ApiSuccess<T>;

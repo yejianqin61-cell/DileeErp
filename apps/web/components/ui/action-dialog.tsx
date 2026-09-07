@@ -17,7 +17,7 @@ export function ActionDialog({ open, title, fields, submitLabel = "保存", onOp
   const wasOpen = useRef(false);
   useEffect(() => {
     if (!open) { wasOpen.current = false; return; }
-    setValues((current) => Object.fromEntries(fields.map((field) => [field.name, wasOpen.current ? current[field.name] ?? field.defaultValue ?? "" : field.defaultValue ?? ""])));
+    setValues((current) => Object.fromEntries(fields.map((field) => [field.name, wasOpen.current ? (current[field.name] || field.defaultValue || "") : field.defaultValue ?? ""])));
     setValidationError("");
     setSubmitting(false);
     wasOpen.current = true;
