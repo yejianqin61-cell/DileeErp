@@ -65,7 +65,11 @@ export default function ProductionPage() {
     const requestId = ++orderSearchRequest.current;
     orderSearchTimer.current = setTimeout(() => {
       void apiGet<Order[]>(`/sales-orders?status=confirmed&page=1&page_size=200&search=${encodeURIComponent(search)}`).then((result) => {
-        if (requestId === orderSearchRequest.current) setOrders(result.data.filter((item) => item.status === "confirmed" && item.boms.length));
+        if (requestId === orderSearchRequest.current) {
+          const nextOrders = result.data.filter((item) => item.status === "confirmed" && item.boms.length);
+          setOrders(nextOrders);
+          setDialog((current) => current ? { ...current, fields: current.fields.map((field) => field.name === "order_no" ? { ...field, options: nextOrders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) } : field) } : current);
+        }
       }).catch((cause) => { if (requestId === orderSearchRequest.current) setError(cause instanceof ApiClientError ? cause.message : "订单搜索失败"); });
     }, 250);
   }
