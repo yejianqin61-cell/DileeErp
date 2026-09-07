@@ -44,7 +44,17 @@ export class ProductionProgressService {
     const range = this.range(filter.from, filter.to);
     const orders = await this.prisma.productionOrder.findMany({ where: { deletedAt: null, ...(filter.order_no ? { orderNo: filter.order_no } : {}), ...(filter.production_order_id ? { id: filter.production_order_id } : {}) }, include: { unit: true, salesOrder: { select: { customerSnapshot: true, productName: true } }, operations: { where: { deletedAt: null }, include: { unit: true }, orderBy: { sequenceNo: "asc" } } }, orderBy: { updatedAt: "desc" } });
     const byOrder = new Map<string, Awaited<ReturnType<ProductionProgressService["buildProductionOrder"]>>[]>();
-    for (const order of orders) { const summary = await this.buildProductionOrder(order, range); const current = byOrder.get(order.orderNo) ?? []; current.push(summary); byOrder.set(order.orderNo, current); }
+    for (const order of orders) {
+        const full = await this.buildProductionOrder(order);
+        let summary = full;
+        if (range.from || range.to) {
+          const period = await this.buildProductionOrder(order, range);
+          summary = { ...full, measurements: period.measurements, unit_summaries: period.unit_summaries };
+        }
+        const current = byOrder.get(order.orderNo) ?? [];
+        current.push(summary);
+        byOrder.set(order.orderNo, current);
+      }
     const data = [...byOrder.entries()].map(([orderNo, summaries]) => this.mergeOrderSummaries(orderNo, summaries));
     const page = filter.page ?? 1; const pageSize = filter.page_size ?? 20;
     return { data: data.slice((page - 1) * pageSize, page * pageSize), total: data.length };

@@ -124,7 +124,8 @@ export class OperationDailyReportsService {
     if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
     if (!operation) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "生产单工序不存在或已删除", details: [] });
     if (order.executionMode !== "in_house") throw new UnprocessableEntityException({ code: "OUTSOURCED_DAILY_REPORT_FORBIDDEN", message: "外加工生产单不进入厂内日报", details: [] });
-    if (operation.status !== "active") throw new UnprocessableEntityException({ code: "CANCELLED_OPERATION_DAILY_REPORT_FORBIDDEN", message: "已取消工序不能新增日报", details: [] });
+    if (!correction && operation.status !== "active") throw new UnprocessableEntityException({ code: "CANCELLED_OPERATION_DAILY_REPORT_FORBIDDEN", message: "已取消工序不能新增日报", details: [] });
+      if (correction && operation.status !== "active" && operation.status !== "cancelled") throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "生产单工序不存在或状态无效", details: [] });
     const allowed = correction ? ["in_progress", "completed"] : ["in_progress"];
     if (!allowed.includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_DAILY_REPORT_FORBIDDEN", message: "当前生产单状态不允许维护日报", details: [] });
     return { order, operation };
@@ -137,7 +138,14 @@ export class OperationDailyReportsService {
     const target = new Prisma.Decimal(operation.targetQuantity);
     const over = cumulative.gt(target) ? cumulative.minus(target) : new Prisma.Decimal(0);
     const latest = await tx.operationDailyReport.findFirst({ where: { productionOrderOperationId: operationId, deletedAt: null }, orderBy: { reportDate: "desc" } });
-    if (!latest) return;
+    if (!latest) {
+        const staleAlerts = await tx.productionDailyAlert.findMany({ where: { productionOrderOperationId: operationId, alertType: "over_order", deletedAt: null, status: { not: "recovered" } } });
+        for (const alert of staleAlerts) {
+          await tx.productionDailyAlert.update({ where: { id: alert.id }, data: { status: "recovered", recoveredAt: new Date(), updatedBy: user.id } });
+          await tx.auditEvent.create({ data: { action: "production_daily_alert.recover", entityType: "production_daily_alert", actorId: user.id, entityId: alert.id, details: { order_no: alert.orderNo, alert_type: "over_order", status: "recovered" } } });
+        }
+        return;
+      }
     const existing = await tx.productionDailyAlert.findUnique({ where: { productionOrderOperationId_reportDate_alertType: { productionOrderOperationId: operationId, reportDate: latest.reportDate, alertType: "over_order" } } });
     if (over.gt(0)) {
       const unchanged = existing && existing.status === "confirmed" && existing.operationReportQuantity?.eq(latest.completedQuantity) && existing.cumulativeQuantity?.eq(cumulative) && existing.overOrderQuantity?.eq(over);
