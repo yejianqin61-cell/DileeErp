@@ -14,7 +14,11 @@ export class SupplierPayableService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
-    return this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null } } }, orderBy: { createdAt: "desc" } });
+    const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } } } } }, orderBy: { createdAt: "desc" } });
+    return rows.map((row) => {
+      const receiptData = row.payableSource?.purchaseReceipt?.extensionData as { batch_sequence?: number } | null | undefined;
+      return { ...row, source_no: row.payableSource?.rawMaterialInbound?.inboundNo ?? row.payableSource?.purchaseReceipt?.receiptNo ?? row.outsourcePayableSource?.outsourceReceipt?.id ?? row.sourceNoSnapshot, purchase_order_no: row.payableSource?.purchaseOrder?.purchaseOrderNo ?? row.outsourcePayableSource?.purchaseOrder?.purchaseOrderNo ?? null, batch_sequence: receiptData?.batch_sequence ?? null };
+    });
   }
 
   async get(id: string) {
@@ -54,9 +58,10 @@ export class SupplierPayableService {
   async confirm(id: string, user: CurrentUser) {
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
-      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null } });
+      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } } });
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
       if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_CONFIRMABLE", "只有草稿应付可以确认");
+      if (current.payableSource?.status === "voided" || current.outsourcePayableSource?.status === "voided") throw this.invalid("PAYABLE_SOURCE_VOIDED", "应付来源已作废，不能确认");
       return tx.supplierPayableEntry.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
     });
     await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo, user.id, id, { payable_no: row.payableNo });

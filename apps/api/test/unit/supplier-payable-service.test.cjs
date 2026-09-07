@@ -2,6 +2,15 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { SupplierPayableService } = require("../../dist/modules/finance/supplier-payable.service.js");
 
+test("payable list exposes purchase batch traceability", async () => {
+  const prisma = { supplierPayableEntry: { findMany: async () => [{ id: "entry-1", sourceNoSnapshot: "GR-1", payableSource: { purchaseReceipt: { receiptNo: "GR-1", extensionData: { batch_sequence: 2 } }, rawMaterialInbound: null, purchaseOrder: { purchaseOrderNo: "PO-1" } }, outsourcePayableSource: null, allocations: [] }] } };
+  const service = new SupplierPayableService(prisma, {});
+  const [row] = await service.list();
+  assert.equal(row.source_no, "GR-1");
+  assert.equal(row.purchase_order_no, "PO-1");
+  assert.equal(row.batch_sequence, 2);
+});
+
 test("supplier payable confirmation locks and rechecks the current draft", async () => {
   let lockCount = 0;
   let updateCount = 0;
@@ -24,6 +33,13 @@ test("supplier payable confirmation locks and rechecks the current draft", async
   );
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
+});
+
+test("supplier payable confirmation rejects a voided source", async () => {
+  const row = { id: "payable-1", status: "draft", payableSource: { status: "voided" }, outsourcePayableSource: null };
+  const prisma = { supplierPayableEntry: { findFirst: async () => row, update: async () => { throw new Error("must not write"); } }, $transaction: async (fn) => fn({ $queryRaw: async () => [], supplierPayableEntry: prisma.supplierPayableEntry }) };
+  const service = new SupplierPayableService(prisma, { recordWithOrderNo: async () => {} });
+  await assert.rejects(() => service.confirm("payable-1", { id: "user-1" }), (error) => error.getResponse().code === "PAYABLE_SOURCE_VOIDED");
 });
 
 test("supplier payable reversal locks and rechecks active allocations", async () => {
