@@ -93,6 +93,24 @@ export class PurchaseOrdersService {
     await this.audit.record("purchase_receipt.create", "purchase_receipt", user.id, result.created.id, { order_no: result.po.orderNo, purchase_order_id: id, batch_sequence: result.batchSequence });
     return { ...result.created, batchSequence: result.batchSequence, payableStatus: "pending_finance", payableAmount: result.payableAmount };
   }
+  async revertArrivals(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "PURCHASE_ARRIVAL_REVERSAL_REASON_REQUIRED", message: "到货状态回退必须填写原因", details: [] });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM purchase_orders WHERE id = ${id}::uuid FOR UPDATE`;
+      const po = await tx.purchaseOrder.findFirst({ where: { id, deletedAt: null }, include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null }, include: { inspections: { where: { deletedAt: null } }, rawMaterialInbounds: { where: { deletedAt: null } }, payableSources: { where: { status: { not: "voided" } } } } } } } } });
+      if (!po) throw new NotFoundException({ code: "PURCHASE_ORDER_NOT_FOUND", message: "采购单不存在", details: [] });
+      if (!["partially_arrived", "arrived_complete"].includes(po.status)) throw new UnprocessableEntityException({ code: "PURCHASE_ARRIVAL_NOT_REVERTIBLE", message: "当前采购单不是到货状态，不能回退", details: [{ status: po.status }] });
+      const downstream = po.items.flatMap((item) => item.receipts).some((receipt) => receipt.inspections.some((inspection) => new Prisma.Decimal(inspection.inspectedQuantity).gt(0)) || receipt.rawMaterialInbounds.length > 0 || receipt.payableSources.some((source) => source.status === "posted"));
+      if (downstream) throw new UnprocessableEntityException({ code: "PURCHASE_ARRIVAL_DOWNSTREAM_EXISTS", message: "到货已有质检、入库或财务过账事实，不能回退", details: [] });
+      const extensionData = (po.extensionData ?? {}) as Record<string, unknown>;
+      const hasReceipt = po.items.some((item) => item.receipts.length > 0);
+      const updated = await tx.purchaseOrder.update({ where: { id }, data: { status: hasReceipt ? "partially_arrived" : "ordered", extensionData: { ...extensionData, arrival_closed: false, arrival_reverted_reason: reason.trim() }, ...this.audit.update(user) } });
+      return updated;
+    });
+    await this.audit.record("purchase_order.arrival_revert", "purchase_order", user.id, id, { order_no: result.orderNo, reason: reason.trim() });
+    return result;
+  }
+
   async impactPreview(id: string) { const po = await this.get(id); const planned = po.items.reduce((sum, item) => sum.plus(item.quantity), new Prisma.Decimal(0)); const received = po.items.reduce((sum, item) => sum.plus(item.receipts.reduce((subtotal, row) => subtotal.plus(row.quantity), new Prisma.Decimal(0))), new Prisma.Decimal(0)); return { order_no: po.orderNo, bom_version: po.bomVersion, status: po.status, purchase_order_no: po.purchaseOrderNo, planned_quantity: planned.toFixed(4), received_quantity: received.toFixed(4), over_order: received.gte(planned), items: po.items.map((item) => ({ id: item.id, quantity: item.quantity, received_quantity: item.receipts.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)).toFixed(4) })), warning: po.items.some((item) => item.receipts.length) ? "已存在到货事实，变更需要后续回退流程" : null }; }
   private async refs(input: Input) {
     if (!input.items.length || input.items.some((item) => !this.isPositive(item.quantity) || !this.isNonNegative(item.unit_price) || (item.extra_fee !== undefined && !this.isNonNegative(item.extra_fee)))) throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_ITEM", message: "采购明细不能为空且数量/单价/费用必须有效", details: [] });
