@@ -12,6 +12,14 @@ test("incoming QC cannot cumulatively exceed its receipt quantity", async () => 
   await assert.rejects(() => service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "3", accepted_quantity: "3", conditional_quantity: "0", rejected_quantity: "0" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_QUANTITY_MISMATCH");
 });
 
+test("an empty QC registration remains pending instead of rejected", async () => {
+  let created;
+  const tx = { $queryRaw: async () => undefined, purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", orderNo: "DL260001", quantity: "10", extensionData: {}, inspections: [] }) }, incomingInspection: { create: async ({ data }) => { created = data; return { id: "inspection-1", ...data }; } } };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx), incomingInspection: { findFirst: async () => ({ id: "inspection-1" }) } }, { create: () => ({}), record: async () => {} });
+  await service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "0", accepted_quantity: "0", conditional_quantity: "0", rejected_quantity: "0" }, user);
+  assert.equal(created.status, "pending");
+});
+
 test("accepted QC can be reverted with a reason before inbound", async () => {
   let update;
   const prisma = { incomingInspection: { findFirst: async () => ({ id: "inspection-1", status: "accepted", remark: null, rawMaterialInbounds: [], }), update: async ({ data }) => { update = data; return { id: "inspection-1", status: data.status }; } } };

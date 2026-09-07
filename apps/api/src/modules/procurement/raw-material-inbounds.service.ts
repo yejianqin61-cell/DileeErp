@@ -213,7 +213,7 @@ export class RawMaterialInboundsService {
           createdBy: user.id
         }
       });
-      await tx.payableSource.updateMany({ where: { rawMaterialInboundId: inbound.id, status: "pending_finance" }, data: { status: "voided", ...this.audit.update(user) } });
+      await tx.payableSource.updateMany({ where: { OR: [{ rawMaterialInboundId: inbound.id }, { purchaseReceiptId: inbound.purchaseReceiptId }], status: "pending_finance" }, data: { status: "voided", ...this.audit.update(user) } });
       return updated;
     });
     await this.audit.record("raw_material_inbound.reverse", "raw_material_inbound", user.id, id, { order_no: inbound.orderNo, reason: input.reason });

@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { PurchaseOrdersService } = require("../dist/modules/procurement/purchase-orders.service.js");
-const { UnprocessableEntityException } = require("@nestjs/common");
+const { NotFoundException, UnprocessableEntityException } = require("@nestjs/common");
 
 test("purchase order accepts the editable BOM belonging to its confirmed sales order", async () => {
   const prisma = {
@@ -42,6 +42,22 @@ test("purchase order rejects a BOM item belonging to another BOM", async () => {
   };
   const service = new PurchaseOrdersService(prisma, {});
   await assert.rejects(() => service.refs({ order_no: "SO-1", bom_id: "bom-1", supplier_id: "supplier-1", purchase_date: new Date().toISOString(), currency: "CNY", items: [{ material_id: "material-1", bom_item_id: "other-item", unit_id: "unit-1", quantity: "1", unit_price: "1" }] }), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_BOM_ITEM_MISMATCH");
+});
+
+test("purchase order rejects finished products even with an outside-BOM reason", async () => {
+  const prisma = {
+    salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "SO-1" }) },
+    bom: { findFirst: async () => ({ id: "bom-1", salesOrderId: "order-1", orderNo: "SO-1", version: 1 }) },
+    supplier: { findFirst: async () => ({ id: "supplier-1" }) },
+    material: { findMany: async ({ where }) => (where.materialType === "raw_material" ? [] : [{ id: "product-1", materialType: "finished_product" }]) },
+    unit: { findMany: async () => [{ id: "unit-1" }] },
+    bomItem: { findMany: async () => [] },
+  };
+  const service = new PurchaseOrdersService(prisma, {});
+  await assert.rejects(
+    () => service.refs({ order_no: "SO-1", bom_id: "bom-1", supplier_id: "supplier-1", purchase_date: new Date().toISOString(), currency: "CNY", items: [{ material_id: "product-1", unit_id: "unit-1", quantity: "1", unit_price: "1", extension_data: { outside_bom_reason: "测试" } }] }),
+    (error) => error instanceof NotFoundException,
+  );
 });
 
 test("only draft purchase orders can replace their rows", async () => {

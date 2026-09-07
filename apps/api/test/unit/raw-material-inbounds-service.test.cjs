@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { UnprocessableEntityException } = require("@nestjs/common");
 const { RawMaterialInboundsService } = require("../../dist/modules/procurement/raw-material-inbounds.service.js");
+const { Prisma } = require("@prisma/client");
 
 test("raw-material inbound edits lock and recheck the QC source", async () => {
   const calls = [];
@@ -32,4 +33,18 @@ test("raw-material inbound posting uses the locked current draft", async () => {
   const service = new RawMaterialInboundsService(prisma, { update: () => ({}), create: () => ({}), record: async () => undefined }, {});
   await service.post("inbound-1", { id: "user-1" });
   assert.deepEqual(quantities, ["7"]);
+});
+
+test("raw-material inbound reversal voids the pending receipt payable source", async () => {
+  let where;
+  const inbound = { id: "inbound-1", status: "posted", orderNo: "SO-1", materialId: "material-1", unitId: "unit-1", quantity: "3", purchaseReceiptId: "receipt-1", payableSources: [] };
+  const tx = {
+    rawMaterialInbound: { update: async ({ data }) => ({ ...inbound, ...data }) },
+    inventoryFact: { create: async () => ({}) },
+    payableSource: { updateMany: async (args) => { where = args.where; return { count: 1 }; } },
+  };
+  const prisma = { rawMaterialInbound: { findFirst: async () => inbound }, $transaction: async (fn) => fn(tx) };
+  const service = new RawMaterialInboundsService(prisma, { update: () => ({}), record: async () => undefined }, { rawMaterialBalance: async () => new Prisma.Decimal("10") });
+  await service.reverse("inbound-1", { reason: "入库登记错误" }, { id: "user-1" });
+  assert.deepEqual(where, { OR: [{ rawMaterialInboundId: "inbound-1" }, { purchaseReceiptId: "receipt-1" }], status: "pending_finance" });
 });

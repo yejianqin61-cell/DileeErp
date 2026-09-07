@@ -40,7 +40,7 @@ export class IncomingInspectionsService {
       const accepted = (existing?.acceptedQuantity ?? new Prisma.Decimal(0)).plus(values[1]);
       const conditional = (existing?.conditionalQuantity ?? new Prisma.Decimal(0)).plus(values[2]);
       const rejected = (existing?.rejectedQuantity ?? new Prisma.Decimal(0)).plus(values[3]);
-      const status = rejected.eq(inspected) ? "rejected" : accepted.plus(conditional).eq(inspected) ? (conditional.gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
+      const status = inspected.isZero() ? "pending" : rejected.eq(inspected) ? "rejected" : accepted.plus(conditional).eq(inspected) ? (conditional.gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
       const batchSequence = Number((receipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1);
       return existing
         ? tx.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected, acceptedQuantity: accepted, conditionalQuantity: conditional, rejectedQuantity: rejected, status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })

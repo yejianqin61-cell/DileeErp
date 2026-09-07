@@ -46,7 +46,19 @@ export class PurchaseOrdersService {
   async updateReceiptV2(id: string, input: { quantity: string; reference_no?: string; remark?: string; over_receipt_reason?: string; reason: string }, user: CurrentUser) {
     const receipt = await this.prisma.purchaseReceipt.findFirst({ where: { id, deletedAt: null }, include: { purchaseOrder: { select: { extensionData: true } } } });
     if (receipt && this.arrivalClosed(receipt.purchaseOrder.extensionData)) throw new UnprocessableEntityException({ code: "PURCHASE_ARRIVALS_CLOSED", message: "采购单到货已关闭，不可修改批次", details: [] });
-    return this.updateReceipt(id, input, user);
+    const result = await this.updateReceipt(id, input, user);
+    if (receipt) await this.refreshOrderStatus(receipt.purchaseOrderId, user);
+    return result;
+  }
+
+  private async refreshOrderStatus(orderId: string, user: CurrentUser) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM purchase_orders WHERE id = ${orderId}::uuid FOR UPDATE`;
+      const items = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: orderId, deletedAt: null }, include: { receipts: { where: { deletedAt: null } } } });
+      const complete = items.length > 0 && items.every((item) => item.receipts.reduce((sum, current) => sum.plus(current.quantity), new Prisma.Decimal(0)).gte(item.quantity));
+      const hasReceipt = items.some((item) => item.receipts.length > 0);
+      await tx.purchaseOrder.update({ where: { id: orderId }, data: { status: complete ? "arrived_complete" : hasReceipt ? "partially_arrived" : "ordered", ...this.audit.update(user) } });
+    });
   }
 
   async cancelReceiptV2(id: string, reason: string, user: CurrentUser) {
