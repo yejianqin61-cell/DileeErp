@@ -14,7 +14,7 @@ type Operation = { id: string; operationNameSnapshot: string; targetQuantity: st
 type Order = { id: string; productionOrderNo: string; orderNo: string; executionMode: string; status: string; plannedQuantity: string; operations: Operation[] };
 type Employee = { id: string; employeeNo: string; name: string; employmentStatus: string };
 type Report = { id: string; version?: number; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { id: string; targetQuantity: string } };
-type OperationReport = { id: string; productionOrderOperationId: string; reportDate: string; completedQuantity: string };
+type OperationReport = { id: string; productionOrderId: string; productionOrderOperationId: string; reportDate: string; completedQuantity: string };
 type Draft = { employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_minutes: string; unit_price: string };
 
 const today = new Date().toISOString().slice(0, 10);
@@ -251,10 +251,9 @@ export function DailyReportsPanel() {
     return totals;
   }, [effectiveReports, selectedReportDate]);
   const plannedQuantity = Number(selectedOperation?.targetQuantity ?? 0);
-  const operationDayReports = operationReports.filter((report) => report.productionOrderOperationId === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate);
-  const operationCompletedQuantity = operationDayReports.reduce((sum, report) => sum + Number(report.completedQuantity), 0);
-  const hasCompletedQuantity = operationDayReports.length > 0;
-    const completedQuantity = hasCompletedQuantity ? operationCompletedQuantity : 0;
+  const operationReportsForCurrentOperation = operationReports.filter((report) => report.productionOrderId === selectedOrder?.id && report.productionOrderOperationId === selectedOperation?.id);
+  const hasCompletedQuantity = operationReportsForCurrentOperation.length > 0;
+  const completedQuantity = operationReportsForCurrentOperation.reduce((sum, report) => sum + Number(report.completedQuantity), 0);
   const isOverOrder = hasCompletedQuantity && plannedQuantity > 0 && completedQuantity > plannedQuantity;
 
   if (loading) return <section className="panel"><LoadingState /></section>;
