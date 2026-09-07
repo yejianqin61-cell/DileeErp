@@ -157,7 +157,17 @@ export function DailyReportsPanel() {
         setInlineReason("");
         await load();
       } catch (cause) {
-        setError(errorText(cause));
+        // 更正失败（典型为 DAILY_REPORT_VERSION_CONFLICT：本地 expected_version 已过期）。
+        // 丢弃基于旧版本的行内编辑并整体刷新为服务端最新数据，避免残留旧版本号造成反复 422，
+        // 并提示操作员按刷新后的版本重新修改。保存按钮的禁用仍只作用于本行自身提交期间（savingReportId）。
+        const causeText = errorText(cause);
+        setReportEdits((current) => {
+          const next = { ...current };
+          delete next[report.id];
+          return next;
+        });
+        await load();
+        setError(`${causeText}；已刷新为最新日报版本，请基于当前数据重新更正后保存`);
       } finally {
         setSavingReportId(null);
       }
