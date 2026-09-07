@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "../../components/layout/app-shell";
@@ -32,6 +32,8 @@ export default function ProductionPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
+  const orderSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const orderSearchRequest = useRef(0);
 
   async function load() {
     setLoading(true); setError("");
@@ -58,6 +60,16 @@ export default function ProductionPage() {
   const activeLocations = locations.filter((item) => item.isActive);
   const defaultUnit = operations.find((item) => item.isActive && item.defaultUnitId)?.defaultUnitId;
 
+  function searchSalesOrders(search: string) {
+    if (orderSearchTimer.current) clearTimeout(orderSearchTimer.current);
+    const requestId = ++orderSearchRequest.current;
+    orderSearchTimer.current = setTimeout(() => {
+      void apiGet<Order[]>(`/sales-orders?status=confirmed&page=1&page_size=200&search=${encodeURIComponent(search)}`).then((result) => {
+        if (requestId === orderSearchRequest.current) setOrders(result.data.filter((item) => item.status === "confirmed" && item.boms.length));
+      }).catch((cause) => { if (requestId === orderSearchRequest.current) setError(cause instanceof ApiClientError ? cause.message : "订单搜索失败"); });
+    }, 250);
+  }
+
   async function openProductionOrder() {
     let candidateOrders = orders;
     try {
@@ -68,7 +80,7 @@ export default function ProductionPage() {
       setError(cause instanceof ApiClientError ? cause.message : "订单候选加载失败");
     }
     setDialog({ title: "新建生产单", fields: [
-      { name: "order_no", label: "订单号", type: "searchable-select", required: true, options: candidateOrders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) },
+      { name: "order_no", label: "订单号", type: "searchable-select", required: true, onSearch: searchSalesOrders, options: candidateOrders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) },
       { name: "execution_mode", label: "执行方式", type: "select", required: true, defaultValue: "in_house", options: [{ value: "in_house", label: "厂内生产" }, { value: "outsourced", label: "外加工" }] },
       { name: "execution_location_id", label: "执行地点", type: "select", required: true, options: activeLocations.map((item) => ({ value: item.id, label: `${item.name} / ${item.locationType === "workshop" ? "厂内" : "外加工"}` })) },
     ], submit: (values) => {

@@ -15,6 +15,7 @@ type SearchableSelectProps = {
   /** { value, label } options; may be updated dynamically while open. */
   options: SearchableSelectOption[];
   onChange: (value: string) => void;
+  onSearch?: (query: string) => void;
   disabled?: boolean;
   /** Text shown by the collapsed trigger when nothing is selected. */
   placeholder?: string;
@@ -36,6 +37,7 @@ export function SearchableSelect({
   value,
   options,
   onChange,
+  onSearch,
   disabled = false,
   placeholder = "请选择",
   label,
@@ -209,6 +211,7 @@ export function SearchableSelect({
               autoComplete="off"
               onChange={(event) => {
                 setQuery(event.target.value);
+                 onSearch?.(event.target.value);
                 setActiveIndex(-1);
               }}
               onKeyDown={handleInputKeyDown}
