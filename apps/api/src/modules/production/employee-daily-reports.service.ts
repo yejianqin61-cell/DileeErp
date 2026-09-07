@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { reconcileDailyDiscrepancy } from "./daily-report-alerts";
 import { ProductionProgressService } from "./production-progress.service";
 
 type Input = { production_order_id: string; production_order_operation_id: string; employee_id: string; report_date: string; wage_mode: string; quantity?: string; duration_minutes?: string; unit_price?: string; remark?: string; idempotency_key?: string };
@@ -25,9 +26,11 @@ export class EmployeeDailyReportsService {
   async create(input: Input, user: CurrentUser) {
     if (input.idempotency_key) { const previous = await this.prisma.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } }); if (previous) return this.get(previous.id); }
     const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
+    this.assertBackfillReason(refs.reportDate, input.remark);
     const values = this.values(input);
     const created = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${refs.operation.id}::uuid FOR UPDATE`;
+      await this.lockOrderAndAssertStatus(tx, refs.order.id, ["in_progress"]);
+      await this.lockOperationAndAssert(tx, refs.operation.id, refs.order.id, true, "已取消工序不能新增员工日报");
       if (input.idempotency_key) {
         const previous = await tx.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });
         if (previous) return previous;
@@ -36,9 +39,9 @@ export class EmployeeDailyReportsService {
       if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: input.wage_mode }] });
       const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
       const row = existing
-        ? await tx.employeeDailyReport.update({ where: { id: existing.id }, data: { quantity: existing.quantity.plus(values.quantity), durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: existing.calculatedAmount.plus(values.amount), remark: input.remark ?? existing.remark, version: { increment: 1 }, ...this.audit.update(user) } })
+        ? await this.mergeInTransaction(tx, existing, values, input.remark, user)
         : await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
-      await this.recomputeDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
+      await reconcileDailyDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
       await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, refs.order.id, "employee_daily_report", row.id, user);
       return row;
@@ -53,9 +56,14 @@ export class EmployeeDailyReportsService {
     if (inputs.some((input) => input.production_order_id !== first.production_order_id || input.production_order_operation_id !== first.production_order_operation_id || input.report_date !== first.report_date)) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_BATCH_MISMATCH", message: "批量日报必须属于同一生产单、工序和日期", details: [] });
     const employeeIds = new Set<string>();
     for (const input of inputs) { if (employeeIds.has(input.employee_id)) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_BATCH_DUPLICATE", message: "同一员工不能在同一批日报中重复登记", details: [{ employee_id: input.employee_id }] }); employeeIds.add(input.employee_id); }
-    const prepared = await Promise.all(inputs.map(async (input) => ({ input, refs: await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false), values: this.values(input) })));
+    const prepared = await Promise.all(inputs.map(async (input, index) => {
+      const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
+      this.assertBackfillReason(refs.reportDate, input.remark, index + 1);
+      return { input, refs, values: this.values(input) };
+    }));
     const created = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${prepared[0].refs.operation.id}::uuid FOR UPDATE`;
+      await this.lockOrderAndAssertStatus(tx, prepared[0].refs.order.id, ["in_progress"]);
+      await this.lockOperationAndAssert(tx, prepared[0].refs.operation.id, prepared[0].refs.order.id, true, "已取消工序不能新增员工日报");
       const rows = [];
       for (const item of prepared) rows.push(await this.createInTransaction(tx, item.input, item.refs, item.values, user));
       await this.progress.recalculateInTransaction(tx, prepared[0].refs.order.id, "employee_daily_report_batch", rows[rows.length - 1]?.id, user);
@@ -74,11 +82,33 @@ export class EmployeeDailyReportsService {
     if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: input.wage_mode }] });
     const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
     const row = existing
-      ? await tx.employeeDailyReport.update({ where: { id: existing.id }, data: { quantity: existing.quantity.plus(values.quantity), durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: existing.calculatedAmount.plus(values.amount), remark: input.remark ?? existing.remark, version: { increment: 1 }, ...this.audit.update(user) } })
+      ? await this.mergeInTransaction(tx, existing, values, input.remark, user)
       : await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
-    await this.recomputeDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
+    await reconcileDailyDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
     await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
     return row;
+  }
+
+  /** B3/P1-14: same-day same-wage merge is only legal when the unit price matches; otherwise refuse and ask to correct the original row. Merge never overwrites unitPrice nor drifts the amount. */
+  private async mergeInTransaction(tx: Prisma.TransactionClient, existing: { id: string; quantity: Prisma.Decimal; durationMinutes: Prisma.Decimal | null; unitPrice: Prisma.Decimal; calculatedAmount: Prisma.Decimal; remark: string | null }, values: { quantity: Prisma.Decimal; durationMinutes?: Prisma.Decimal; unitPrice: Prisma.Decimal; amount: Prisma.Decimal }, remark: string | undefined, user: CurrentUser) {
+    if (!existing.unitPrice.eq(values.unitPrice)) {
+      throw new UnprocessableEntityException({
+        code: "DAILY_UNIT_PRICE_CONFLICT",
+        message: "同一员工同一工序同一天同一计薪方式已按不同单价登记，请先更正原日报行",
+        details: [{ existing_unit_price: existing.unitPrice.toString(), requested_unit_price: values.unitPrice.toString() }],
+      });
+    }
+    return tx.employeeDailyReport.update({
+      where: { id: existing.id },
+      data: {
+        quantity: existing.quantity.plus(values.quantity),
+        durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes,
+        calculatedAmount: existing.calculatedAmount.plus(values.amount),
+        remark: remark ?? existing.remark ?? null,
+        version: { increment: 1 },
+        ...this.audit.update(user),
+      },
+    });
   }
 
   async update(id: string, input: Partial<Omit<Input, "production_order_id" | "production_order_operation_id" | "employee_id">> & { reason: string; expected_version?: number }, user: CurrentUser) {
@@ -89,27 +119,31 @@ export class EmployeeDailyReportsService {
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
     const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: input.remark ?? current.remark ?? undefined };
     const values = this.values(merged);
+    // B3/P1-14: a cosmetic PATCH (wage mode/quantity/unit price untouched) must not recompute the
+    // stored amount from "total × unit price" and silently drift payroll; keep the amount as-is.
+    const recomputeAmount = merged.wage_mode !== current.wageMode || input.quantity !== undefined || input.unit_price !== undefined || (merged.wage_mode === "time_rate" && input.duration_minutes !== undefined);
     const updated = await this.prisma.$transaction(async (tx) => {
+      await this.lockOrderAndAssertStatus(tx, current.productionOrderId, ["in_progress", "completed"]);
+      await this.lockOperationAndAssert(tx, current.productionOrderOperationId, current.productionOrderId, true, "已取消工序的日报不允许修改（仅允许删除纠错）");
       await tx.$queryRaw`SELECT id FROM employee_daily_reports WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.employeeDailyReport.findFirst({ where: { id, deletedAt: null }, select: { version: true } });
       if (!locked) throw new NotFoundException({ code: "EMPLOYEE_DAILY_REPORT_NOT_FOUND", message: "员工日报不存在", details: [] });
       if (input.expected_version !== undefined && input.expected_version !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: locked.version }] });
-      await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${current.productionOrderOperationId}::uuid FOR UPDATE`;
       const [sameTarget, otherMode] = await Promise.all([
         tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: merged.wage_mode, id: { not: id }, deletedAt: null }, select: { id: true } }),
         tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: { not: merged.wage_mode }, id: { not: id }, deletedAt: null }, select: { wageMode: true } }),
       ]);
       if (sameTarget) throw new UnprocessableEntityException({ code: "DAILY_REPORT_DUPLICATE_TARGET", message: "修改后的员工日报目标日期和计薪方式已存在记录，请先更正原日报", details: [] });
       if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: merged.wage_mode }] });
-      const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: merged.remark, version: { increment: 1 }, ...this.audit.update(user) } });
-      await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
-      if (refs.reportDate.getTime() !== current.reportDate.getTime()) await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, refs.reportDate, user);
+      const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, ...(recomputeAmount ? { calculatedAmount: values.amount } : {}), remark: merged.remark ?? null, version: { increment: 1 }, ...this.audit.update(user) } });
+      await reconcileDailyDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
+      if (refs.reportDate.getTime() !== current.reportDate.getTime()) await reconcileDailyDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, refs.reportDate, user);
       await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, current.reportDate, current.wageMode, user);
       await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, refs.reportDate, merged.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", row.id, user);
       return row;
     });
-    await this.audit.record("employee_daily_report.update", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason: input.reason, before_amount: current.calculatedAmount.toString(), after_amount: values.amount.toString() });
+    await this.audit.record("employee_daily_report.update", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason: input.reason, before_amount: current.calculatedAmount.toString(), after_amount: recomputeAmount ? values.amount.toString() : current.calculatedAmount.toString() });
     return updated;
   }
 
@@ -118,7 +152,19 @@ export class EmployeeDailyReportsService {
     const current = await this.get(id);
     if (expectedVersion !== undefined && expectedVersion !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: current.version }] });
     await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, current.reportDate.toISOString().slice(0, 10), true);
-    const removed = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM employee_daily_reports WHERE id = ${id}::uuid FOR UPDATE`; const locked = await tx.employeeDailyReport.findFirst({ where: { id, deletedAt: null }, select: { version: true } }); if (!locked) throw new NotFoundException({ code: "EMPLOYEE_DAILY_REPORT_NOT_FOUND", message: "员工日报不存在", details: [] }); if (expectedVersion !== undefined && expectedVersion !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: locked.version }] }); const row = await tx.employeeDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } }); await this.recomputeDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user); await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, current.reportDate, current.wageMode, user); await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", id, user); return row; });
+    const removed = await this.prisma.$transaction(async (tx) => {
+      await this.lockOrderAndAssertStatus(tx, current.productionOrderId, ["in_progress", "completed"]);
+      await this.lockOperationAndAssert(tx, current.productionOrderOperationId, current.productionOrderId, false, "");
+      await tx.$queryRaw`SELECT id FROM employee_daily_reports WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.employeeDailyReport.findFirst({ where: { id, deletedAt: null }, select: { version: true } });
+      if (!locked) throw new NotFoundException({ code: "EMPLOYEE_DAILY_REPORT_NOT_FOUND", message: "员工日报不存在", details: [] });
+      if (expectedVersion !== undefined && expectedVersion !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: locked.version }] });
+      const row = await tx.employeeDailyReport.update({ where: { id }, data: { ...this.audit.softDelete(user), version: { increment: 1 } } });
+      await reconcileDailyDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
+      await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, current.reportDate, current.wageMode, user);
+      await this.progress.recalculateInTransaction(tx, current.productionOrderId, "employee_daily_report", id, user);
+      return row;
+    });
     await this.audit.record("employee_daily_report.delete", "employee_daily_report", user.id, id, { order_no: current.orderNo, reason });
     return removed;
   }
@@ -137,14 +183,15 @@ export class EmployeeDailyReportsService {
     return [...groups.values()].map((item) => ({ ...item, quantity: item.quantity.toString(), duration_minutes: item.duration_minutes.toString(), amount: item.amount.toString(), source_read_only: true }));
   }
 
+  /** B6: in correction mode (update/remove) skip employment status and hired/left window checks so departed/deactivated employees can still be corrected or removed. Date legality and order/operation state are still validated (also re-checked inside the transaction). */
   private async refs(orderId: string, operationId: string, employeeId: string, dateText: string, correction = false) {
     const reportDate = this.validDate(dateText);
     const [order, operation, employee] = await Promise.all([this.prisma.productionOrder.findFirst({ where: { id: orderId, deletedAt: null } }), this.prisma.productionOrderOperation.findFirst({ where: { id: operationId, productionOrderId: orderId, deletedAt: null } }), this.prisma.employee.findFirst({ where: { id: employeeId, deletedAt: null } })]);
     if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
     if (order.executionMode !== "in_house") throw new UnprocessableEntityException({ code: "OUTSOURCED_DAILY_REPORT_FORBIDDEN", message: "外加工生产单不进入员工日报", details: [] });
     if (!operation || (!correction && operation.status !== "active")) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "生产单工序不存在或已取消", details: [] });
-    if (!employee || employee.employmentStatus !== "active") throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_FORBIDDEN", message: "员工不存在、已停用或已离职", details: [] });
-    if ((employee.hiredOn && reportDate < employee.hiredOn) || (employee.leftOn && reportDate > employee.leftOn)) throw new UnprocessableEntityException({ code: "EMPLOYEE_NOT_EMPLOYED_ON_REPORT_DATE", message: "员工在日报日期不处于可报工状态", details: [] });
+    if (!employee || (!correction && employee.employmentStatus !== "active")) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_FORBIDDEN", message: "员工不存在、已停用或已离职", details: [] });
+    if (!correction && ((employee.hiredOn && reportDate < employee.hiredOn) || (employee.leftOn && reportDate > employee.leftOn))) throw new UnprocessableEntityException({ code: "EMPLOYEE_NOT_EMPLOYED_ON_REPORT_DATE", message: "员工在日报日期不处于可报工状态", details: [] });
     if (!(correction ? ["in_progress", "completed"] : ["in_progress"]).includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_DAILY_REPORT_FORBIDDEN", message: "当前生产单状态不允许维护员工日报", details: [] });
     return { order, operation, employee, reportDate };
   }
@@ -153,8 +200,13 @@ export class EmployeeDailyReportsService {
     if (input.wage_mode !== "piece_rate" && input.wage_mode !== "time_rate") throw new UnprocessableEntityException({ code: "INVALID_WAGE_MODE", message: "计薪方式无效", details: [] });
     const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", input.wage_mode === "piece_rate" ? "计件日报件数必须大于零" : "员工日报件数必须是非负十进制数", input.wage_mode !== "piece_rate") : new Prisma.Decimal(0);
     if (input.wage_mode === "piece_rate" && quantity.isZero()) throw new UnprocessableEntityException({ code: "PIECE_REPORT_QUANTITY_REQUIRED", message: "计件日报必须填写件数", details: [] });
-    const durationInput = input.duration_minutes?.trim() ? input.duration_minutes : undefined;
-    const durationMinutes = durationInput === undefined ? undefined : this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须大于零");
+    // B13: duration_minutes must be a positive whole number of minutes; reject decimals/exponents/over-range via this.decimal() below.
+    const durationInput = input.duration_minutes?.trim() ? input.duration_minutes.trim() : undefined;
+    let durationMinutes: Prisma.Decimal | undefined;
+    if (durationInput !== undefined) {
+      if (!/^\d+$/.test(durationInput)) throw new UnprocessableEntityException({ code: "INVALID_EMPLOYEE_REPORT_DURATION", message: "员工日报时长必须是大于 0 的整数（分钟）", details: [] });
+      durationMinutes = this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须是大于 0 的整数（分钟）");
+    }
     if (input.wage_mode === "time_rate" && !durationMinutes) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长", details: [] });
     const unitPrice = input.unit_price?.trim();
     if (!unitPrice) throw new UnprocessableEntityException({ code: "DAILY_WAGE_PRICE_REQUIRED", message: "请填写当日人工单价", details: [] });
@@ -168,7 +220,7 @@ export class EmployeeDailyReportsService {
     if (employee?.employeeType !== "workshop") {
       const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
       if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
-      await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
+      await this.reconcilePayrollLedgers(client, employeeId, reportDate, orderNo, user);
       await this.refreshDraftPayrollLedgers(client, employeeId, reportDate, user);
       return;
     }
@@ -176,7 +228,7 @@ export class EmployeeDailyReportsService {
     const existing = await client.productionPayrollSource.findFirst({ where: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode, deletedAt: null } });
     if (!rows.length) {
       if (existing) await client.productionPayrollSource.update({ where: { id: existing.id }, data: { ...this.audit.softDelete(user) } });
-      await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
+      await this.reconcilePayrollLedgers(client, employeeId, reportDate, orderNo, user);
       await this.refreshDraftPayrollLedgers(client, employeeId, reportDate, user);
       return;
     }
@@ -190,8 +242,24 @@ export class EmployeeDailyReportsService {
       update: { ...data, deletedAt: null, deletedBy: null, ...this.audit.update(user) },
       create: { ...data, ...this.audit.create(user) },
     });
-    await client.payrollLedger.updateMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
+    await this.reconcilePayrollLedgers(client, employeeId, reportDate, orderNo, user);
     await this.refreshDraftPayrollLedgers(client, employeeId, reportDate, user);
+  }
+
+  /** B5/P1-15: a production-side report mutation may never silently expire HR ledgers. Only confirmed ledgers may auto-expire (each with an audit trail); partially paid / paid ledgers stay untouched and raise an audit event for finance handling. Draft ledgers keep the automatic recompute in refreshDraftPayrollLedgers. */
+  private async reconcilePayrollLedgers(client: Prisma.TransactionClient, employeeId: string, reportDate: Date, orderNo: string, user: CurrentUser) {
+    const affected = await client.payrollLedger.findMany({ where: { employeeId, periodStart: { lte: reportDate }, periodEnd: { gte: reportDate }, status: { in: ["confirmed", "partially_paid", "paid"] }, deletedAt: null }, select: { id: true, ledgerNo: true, periodStart: true, periodEnd: true, status: true } });
+    const expired = affected.filter((ledger) => ledger.status === "confirmed");
+    const blocked = affected.filter((ledger) => ledger.status === "partially_paid" || ledger.status === "paid");
+    if (expired.length) {
+      await client.payrollLedger.updateMany({ where: { id: { in: expired.map((ledger) => ledger.id) }, status: "confirmed", deletedAt: null }, data: { status: "expired", ...this.audit.update(user) } });
+      for (const ledger of expired) {
+        await client.auditEvent.create({ data: { action: "production_payroll_source.expire_ledger", entityType: "payroll_ledger", actorId: user.id, entityId: ledger.id, details: { order_no: orderNo, actor: user.id, ledger_no: ledger.ledgerNo, period: { start: ledger.periodStart.toISOString().slice(0, 10), end: ledger.periodEnd.toISOString().slice(0, 10) }, from_status: "confirmed", to_status: "expired" } } });
+      }
+    }
+    for (const ledger of blocked) {
+      await client.auditEvent.create({ data: { action: "production_payroll_source.paid_ledger_blocked", entityType: "payroll_ledger", actorId: user.id, entityId: ledger.id, details: { order_no: orderNo, actor: user.id, ledger_no: ledger.ledgerNo, period: { start: ledger.periodStart.toISOString().slice(0, 10), end: ledger.periodEnd.toISOString().slice(0, 10) }, status: ledger.status, note: "已付/部分付款工资台账不允许自动过期，请由财务处理后再维护生产薪资来源" } } });
+    }
   }
 
   private async refreshDraftPayrollLedgers(client: Prisma.TransactionClient, employeeId: string, reportDate: Date, user: CurrentUser) {
@@ -204,19 +272,42 @@ export class EmployeeDailyReportsService {
     }
   }
 
-  private async recomputeDiscrepancy(tx: Prisma.TransactionClient, orderId: string, operationId: string, reportDate: Date, user: CurrentUser) {
-    // Serialize recalculation for one operation so concurrent employee rows see a complete aggregate.
+  /** P1-3: after locking the production order row inside the transaction, re-read and re-validate its state so a concurrent transition cannot slip a write onto a completed/paused/closed order. */
+  private async lockOrderAndAssertStatus(tx: Prisma.TransactionClient, orderId: string, allowedStatuses: string[]) {
+    await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${orderId}::uuid FOR UPDATE`;
+    const order = await tx.productionOrder.findFirst({ where: { id: orderId, deletedAt: null }, select: { status: true, executionMode: true } });
+    if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
+    if (order.executionMode !== "in_house") throw new UnprocessableEntityException({ code: "OUTSOURCED_DAILY_REPORT_FORBIDDEN", message: "外加工生产单不进入员工日报", details: [] });
+    if (!allowedStatuses.includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_DAILY_REPORT_FORBIDDEN", message: "当前生产单状态不允许维护员工日报", details: [{ order_status: order.status }] });
+  }
+
+  /** P1-3/B14: lock the operation row and assert it still exists; when requireActive, a cancelled operation only allows removal-style corrections (update/create rejected). */
+  private async lockOperationAndAssert(tx: Prisma.TransactionClient, operationId: string, orderId: string, requireActive: boolean, cancelledMessage: string) {
     await tx.$queryRaw`SELECT id FROM production_order_operations WHERE id = ${operationId}::uuid FOR UPDATE`;
-    const [order, operationReports, employeeReports] = await Promise.all([tx.productionOrder.findUniqueOrThrow({ where: { id: orderId } }), tx.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, deletedAt: null }, _sum: { completedQuantity: true } }), tx.employeeDailyReport.aggregate({ where: { productionOrderOperationId: operationId, reportDate, deletedAt: null }, _sum: { quantity: true } })]);
-    const operationQuantity = new Prisma.Decimal(operationReports._sum.completedQuantity ?? 0); const employeeQuantity = new Prisma.Decimal(employeeReports._sum.quantity ?? 0); const discrepancy = operationQuantity.minus(employeeQuantity);
-    const target = (await tx.productionOrderOperation.findUniqueOrThrow({ where: { id: operationId } })).targetQuantity;
-    const allReports = await tx.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, deletedAt: null }, _sum: { completedQuantity: true } });
-    const cumulative = new Prisma.Decimal(allReports._sum.completedQuantity ?? 0); const key = { productionOrderOperationId: operationId, reportDate, alertType: "daily_discrepancy" } as const; const existing = await tx.productionDailyAlert.findUnique({ where: { productionOrderOperationId_reportDate_alertType: key } });
-    if (!discrepancy.eq(0)) { const unchanged = existing && existing.status === "confirmed" && existing.operationReportQuantity?.eq(operationQuantity) && existing.employeeReportQuantity?.eq(employeeQuantity) && existing.discrepancyQuantity?.eq(discrepancy); const data = { productionOrderId: orderId, orderNo: order.orderNo, targetQuantity: target, operationReportQuantity: operationQuantity, employeeReportQuantity: employeeQuantity, discrepancyQuantity: discrepancy, cumulativeQuantity: cumulative, updatedBy: user.id, status: unchanged ? "confirmed" : "pending" }; await tx.productionDailyAlert.upsert({ where: { productionOrderOperationId_reportDate_alertType: key }, update: data, create: { ...key, ...data, createdBy: user.id } }); await tx.auditEvent.create({ data: { action: existing ? "production_daily_alert.recalculate" : "production_daily_alert.create", entityType: "production_daily_alert", actorId: user.id, entityId: existing?.id, details: { order_no: order.orderNo, alert_type: "daily_discrepancy", operation_quantity: operationQuantity.toString(), employee_quantity: employeeQuantity.toString(), discrepancy_quantity: discrepancy.toString(), status: data.status } } }); }
-    else if (existing && existing.status !== "recovered") { await tx.productionDailyAlert.update({ where: { id: existing.id }, data: { status: "recovered", recoveredAt: new Date(), updatedBy: user.id } }); await tx.auditEvent.create({ data: { action: "production_daily_alert.recover", entityType: "production_daily_alert", actorId: user.id, entityId: existing.id, details: { order_no: order.orderNo, alert_type: "daily_discrepancy", status: "recovered" } } }); }
+    const operation = await tx.productionOrderOperation.findFirst({ where: { id: operationId, productionOrderId: orderId, deletedAt: null }, select: { status: true } });
+    if (!operation) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "生产单工序不存在或已取消", details: [] });
+    if (requireActive && operation.status !== "active") throw new UnprocessableEntityException({ code: "CANCELLED_OPERATION_DAILY_REPORT_FORBIDDEN", message: cancelledMessage, details: [{ operation_status: operation.status }] });
+  }
+
+  /** B7: a backdated (earlier than today UTC) report requires an explanatory remark so historical backfills are never silent. */
+  private assertBackfillReason(reportDate: Date, remark: string | undefined, rowIndex?: number) {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (reportDate < today && !remark?.trim()) {
+      throw new UnprocessableEntityException({ code: "BACKFILL_REASON_REQUIRED", message: "补录历史员工日报必须填写备注原因", details: rowIndex === undefined ? [] : [{ row: rowIndex }] });
+    }
   }
 
   private date(value: string) { const date = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_REPORT_DATE", message: "日报日期必须是有效日期", details: [] }); return date; }
   private validDate(value: string) { const date = this.date(value); const today = new Date(); today.setUTCHours(0, 0, 0, 0); if (date > today) throw new UnprocessableEntityException({ code: "FUTURE_REPORT_DATE_FORBIDDEN", message: "日报日期不能晚于今天", details: [] }); return date; }
-  private decimal(value: string, code: string, message: string, allowZero = false) { try { const decimal = new Prisma.Decimal(value); if (allowZero ? decimal.lt(0) : !decimal.gt(0)) throw new Error(); return decimal; } catch { throw new UnprocessableEntityException({ code, message, details: [] }); } }
+
+  /** B13: unified decimal input guard — rejects exponent notation, more than 4 fractional digits and values outside Decimal(18,4) (integer part beyond 14 digits). */
+  private decimal(value: string, code: string, message: string, allowZero = false) {
+    const trimmed = value.trim();
+    const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(trimmed);
+    if (!match || match[1].replace(/^0+/, "").length > 14) throw new UnprocessableEntityException({ code, message, details: [] });
+    const decimal = new Prisma.Decimal(trimmed);
+    if (allowZero ? decimal.lt(0) : !decimal.gt(0)) throw new UnprocessableEntityException({ code, message, details: [] });
+    return decimal;
+  }
 }
