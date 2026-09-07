@@ -35,6 +35,17 @@ async function main() {
     for (const item of [{ key: "workshop", label: "车间员工" }, { key: "non_workshop", label: "非车间员工" }]) {
       await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: employeeType.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: employeeType.id, key: item.key, label: item.label, createdBy: id, updatedBy: id } });
     }
+    const standardDictionaries = [
+      { key: "performance_category", name: "绩效类目", items: [{ key: "monthly", label: "月度绩效" }, { key: "quarterly", label: "季度绩效" }] },
+      { key: "quality_inspection_item", name: "质检项目", items: [{ key: "appearance", label: "外观" }, { key: "specification", label: "规格" }, { key: "quantity", label: "数量" }] },
+      { key: "submission_item", name: "送检项目", items: [{ key: "incoming_material", label: "来料检验" }, { key: "finished_goods", label: "成品检验" }] },
+    ];
+    for (const dictionary of standardDictionaries) {
+      const type = await tx.dictionaryType.upsert({ where: { key: dictionary.key }, update: { name: dictionary.name, updatedBy: id }, create: { id: randomUUID(), key: dictionary.key, name: dictionary.name, createdBy: id, updatedBy: id } });
+      for (const item of dictionary.items) {
+        await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: type.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: type.id, key: item.key, label: item.label, createdBy: id, updatedBy: id } });
+      }
+    }
   });
 }
 
