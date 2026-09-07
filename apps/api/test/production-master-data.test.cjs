@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { ConflictException, NotFoundException } = require("@nestjs/common");
+const { ConflictException, NotFoundException, UnprocessableEntityException } = require("@nestjs/common");
 const { ProductionMasterDataService } = require("../dist/modules/production/production-master-data.service.js");
 const { ProductionOrdersService } = require("../dist/modules/production/production-orders.service.js");
 
@@ -9,7 +9,7 @@ const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), upda
 
 test("production location only accepts workshop or outsource site", async () => {
   const service = new ProductionMasterDataService({}, audit);
-  await assert.rejects(() => service.createLocation({ name: "无效地点", location_type: "warehouse" }, user), (error) => error instanceof ConflictException && error.getResponse().code === "INVALID_LOCATION_TYPE");
+  await assert.rejects(() => service.createLocation({ name: "无效地点", location_type: "warehouse" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_LOCATION_TYPE");
 });
 
 test("employee rejects a position that does not belong to its active department", async () => {
@@ -21,7 +21,7 @@ test("employee rejects a position that does not belong to its active department"
 test("employee accepts only workshop or non-workshop types", async () => {
   const prisma = { position: { findFirst: async () => ({ id: "position-1", department: { isActive: true } }) }, employee: { create: async ({ data }) => data } };
   const service = new ProductionMasterDataService(prisma, audit);
-  await assert.rejects(() => service.createEmployee({ employee_no: "E-1", name: "员工", department_id: "department-1", position_id: "position-1", employee_type: "office" }, user), (error) => error instanceof ConflictException && error.getResponse().code === "INVALID_EMPLOYEE_TYPE");
+  await assert.rejects(() => service.createEmployee({ employee_no: "E-1", name: "员工", department_id: "department-1", position_id: "position-1", employee_type: "office" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_EMPLOYEE_TYPE");
   const employee = await service.createEmployee({ employee_no: "E-2", name: "员工", department_id: "department-1", position_id: "position-1", employee_type: "non_workshop" }, user);
   assert.equal(employee.employeeType, "non_workshop");
 });
@@ -41,6 +41,7 @@ test("operation rates reject overlapping effective date ranges", async () => {
     employee: { findFirst: async () => ({ id: "employee-1" }) },
     operationCatalog: { findFirst: async () => ({ id: "operation-1" }) },
     operationRate: { findMany: async () => [{ id: "rate-1", effectiveFrom: new Date("2026-01-01"), effectiveTo: new Date("2026-12-31") }] },
+    $transaction: async (fn) => fn({ ...prisma, $queryRaw: async () => [] }),
   };
   const service = new ProductionMasterDataService(prisma, audit);
   await assert.rejects(() => service.createRate({ employee_id: "employee-1", operation_id: "operation-1", wage_mode: "piece_rate", unit_price: "1.50", effective_from: "2026-06-01", effective_to: "2026-06-30" }, user), (error) => error instanceof ConflictException && error.getResponse().code === "OPERATION_RATE_OVERLAP");
@@ -60,6 +61,7 @@ test("production order rejects an execution location type mismatch", async () =>
 test("in-house production order cannot start without an active operation", async () => {
   const prisma = {
     productionOrder: { findFirst: async () => ({ id: "po-1", status: "draft", executionMode: "in_house", operations: [], orderNo: "SO-1" }) },
+    $transaction: async (fn) => fn({ ...prisma, $queryRaw: async () => [] }),
   };
   const service = new ProductionOrdersService(prisma, audit);
   await assert.rejects(() => service.transition("po-1", "in_progress", "启动生产", user), (error) => error instanceof require("@nestjs/common").UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATIONS_REQUIRED");
