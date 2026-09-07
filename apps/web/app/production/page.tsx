@@ -34,6 +34,7 @@ export default function ProductionPage() {
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
   const orderSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const orderSearchRequest = useRef(0);
+  const ordersRef = useRef<Order[]>([]);
 
   async function load() {
     setLoading(true); setError("");
@@ -45,7 +46,9 @@ export default function ProductionPage() {
         apiGet<ProductionOrder[]>("/production/orders"),
         apiGet<Unit[]>("/units"),
       ]);
-      setOrders(sales.data.filter((item) => item.status === "confirmed" && item.boms.length));
+      const nextOrders = sales.data.filter((item) => item.status === "confirmed" && item.boms.length);
+      ordersRef.current = nextOrders;
+      setOrders(nextOrders);
       setLocations(sites.data); setOperations(process.data); setRecords(production.data); setUnits(unitData.data.filter((unit) => unit.isActive));
     } catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "生产数据加载失败"); }
     finally { setLoading(false); }
@@ -67,6 +70,7 @@ export default function ProductionPage() {
       void apiGet<Order[]>(`/sales-orders?status=confirmed&page=1&page_size=200&search=${encodeURIComponent(search)}`).then((result) => {
         if (requestId === orderSearchRequest.current) {
           const nextOrders = result.data.filter((item) => item.status === "confirmed" && item.boms.length);
+          ordersRef.current = nextOrders;
           setOrders(nextOrders);
           setDialog((current) => current ? { ...current, fields: current.fields.map((field) => field.name === "order_no" ? { ...field, options: nextOrders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) } : field) } : current);
         }
@@ -79,6 +83,7 @@ export default function ProductionPage() {
     try {
       const fresh = await apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=200");
       candidateOrders = fresh.data.filter((item) => item.status === "confirmed" && item.boms.length);
+      ordersRef.current = candidateOrders;
       setOrders(candidateOrders);
     } catch (cause) {
       setError(cause instanceof ApiClientError ? cause.message : "订单候选加载失败");
@@ -88,7 +93,7 @@ export default function ProductionPage() {
       { name: "execution_mode", label: "执行方式", type: "select", required: true, defaultValue: "in_house", options: [{ value: "in_house", label: "厂内生产" }, { value: "outsourced", label: "外加工" }] },
       { name: "execution_location_id", label: "执行地点", type: "select", required: true, options: activeLocations.map((item) => ({ value: item.id, label: `${item.name} / ${item.locationType === "workshop" ? "厂内" : "外加工"}` })) },
     ], submit: (values) => {
-      const source = candidateOrders.find((item) => item.orderNo === values.order_no); const bom = source?.boms[0];
+      const source = ordersRef.current.find((item) => item.orderNo === values.order_no); const bom = source?.boms[0];
       if (!source || !bom || !defaultUnit) { setError("请选择已确认且有 BOM 表的订单，并维护带默认单位的工序"); return; }
       void run("/production/orders", { order_no: source.orderNo, bom_id: bom.id, bom_version: bom.version, execution_mode: values.execution_mode, execution_location_id: values.execution_location_id, planned_quantity: source.quantity, unit_id: defaultUnit }, "生产单草稿已创建");
     },
