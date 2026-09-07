@@ -21,7 +21,7 @@ const errorText = (cause: unknown) => cause instanceof ApiClientError ? cause.me
 const idempotencyKey = () => `daily-${typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 const wageModeLabel = (mode: string) => mode === "time_rate" ? "计时" : "计件";
 
-export function DailyReportsPanel() {
+export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: string } = {}) {
   const [orders, setOrders] = useState<Order[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
@@ -45,9 +45,11 @@ export function DailyReportsPanel() {
     setLoading(true);
     setError("");
     try {
-      const [o, e, r] = await Promise.all([apiGet<Order[]>("/production/orders"), apiGet<Employee[]>("/production/employees"), apiGet<Report[]>("/production/employee-reports")]);
+      const scope = productionOrderId ? `?production_order_id=${encodeURIComponent(productionOrderId)}` : "";
+      const [o, e, r] = await Promise.all([productionOrderId ? apiGet<Order>(`/production/orders/${productionOrderId}`) : apiGet<Order[]>("/production/orders"), apiGet<Employee[]>("/production/employees"), apiGet<Report[]>(`/production/employee-reports${scope}`)]);
       // 日报只能登记正在生产的生产单；草稿单尚未启动工序，后端会拒绝保存。
-      setOrders(o.data.filter((item) => item.executionMode === "in_house" && item.status === "in_progress"));
+      const scopedOrders = productionOrderId ? [o.data as Order] : (o.data as Order[]);
+      setOrders(scopedOrders.filter((item) => item.executionMode === "in_house" && ["in_progress", "completed"].includes(item.status)));
       setEmployees(e.data.filter((item) => item.employmentStatus === "active"));
       setReports(r.data);
     } catch (cause) {
