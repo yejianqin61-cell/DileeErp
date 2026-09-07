@@ -2,38 +2,102 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../components/ui/action-dialog";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../../components/ui/sheet";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { DataTable } from "../../components/data/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
-import { DailyReportsPanel } from "../../components/production/daily-reports-panel";
-import { OutsourceLogisticsPanel } from "../../components/production/outsource-logistics-panel";
 import { PayrollExportPanel } from "../../components/production/payroll-export-panel";
 
 type Unit = { id: string; name: string; isActive: boolean };
 type Location = { id: string; name: string; locationType: "workshop" | "outsource_site"; isActive: boolean };
-type Operation = { id: string; operationName: string; operationCode?: string | null; defaultUnitId?: string | null; defaultUnit?: { name: string } | null; isActive: boolean };
+type Operation = { id: string; operationName: string; defaultUnitId?: string | null; isActive: boolean };
 type Order = { orderNo: string; quantity: string; status: string; boms: Array<{ id: string; version: number; status: string }> };
 type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; executionMode: "in_house" | "outsourced"; status: string; plannedQuantity: string; executionLocation: Location; operations: Array<{ id: string; operationCatalogId?: string; sequenceNo?: number; operationNameSnapshot: string; targetQuantity: string; status: string }> };
 
 export default function ProductionPage() {
-  const [orders, setOrders] = useState<Order[]>([]); const [locations, setLocations] = useState<Location[]>([]); const [operations, setOperations] = useState<Operation[]>([]); const [units, setUnits] = useState<Unit[]>([]); const [records, setRecords] = useState<ProductionOrder[]>([]); const [query, setQuery] = useState(""); const [selected, setSelected] = useState<ProductionOrder | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [message, setMessage] = useState(""); const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null); const [dialogHistory, setDialogHistory] = useState<typeof dialog>(null);
-  async function load() { setLoading(true); setError(""); try { const [sales, sites, process, production, unitData] = await Promise.all([apiGet<Order[]>(`/sales-orders?${new URLSearchParams({ page_size: "200" })}`), apiGet<Location[]>("/production/locations"), apiGet<Operation[]>("/production/operations"), apiGet<ProductionOrder[]>("/production/orders"), apiGet<Unit[]>("/units")]); setOrders(sales.data.filter((item) => item.status === "confirmed" && item.boms.length)); setLocations(sites.data); setOperations(process.data); setRecords(production.data); setUnits(unitData.data.filter((unit) => unit.isActive)); } catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "生产数据加载失败"); } finally { setLoading(false); } }
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [operations, setOperations] = useState<Operation[]>([]);
+  const [units, setUnits] = useState<Unit[]>([]);
+  const [records, setRecords] = useState<ProductionOrder[]>([]);
+  const [query, setQuery] = useState(searchParams.get("order_no") ?? "");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
+
+  async function load() {
+    setLoading(true); setError("");
+    try {
+      const [sales, sites, process, production, unitData] = await Promise.all([
+        apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=200"),
+        apiGet<Location[]>("/production/locations"),
+        apiGet<Operation[]>("/production/operations"),
+        apiGet<ProductionOrder[]>("/production/orders"),
+        apiGet<Unit[]>("/units"),
+      ]);
+      setOrders(sales.data.filter((item) => item.status === "confirmed" && item.boms.length));
+      setLocations(sites.data); setOperations(process.data); setRecords(production.data); setUnits(unitData.data.filter((unit) => unit.isActive));
+    } catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "生产数据加载失败"); }
+    finally { setLoading(false); }
+  }
   useEffect(() => { void load(); }, []);
-  async function run(path: string, body: unknown, success: string) { setError(""); try { const result = await apiPost<unknown>(path, body); setMessage(success); await load(); return result.data; } catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "操作失败"); return undefined; } }
+  async function run(path: string, body: unknown, success: string) {
+    setError("");
+    try { const result = await apiPost<unknown>(path, body); setMessage(success); await load(); return result.data; }
+    catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "操作失败"); return undefined; }
+  }
   const visible = useMemo(() => records.filter((item) => !query || `${item.productionOrderNo} ${item.orderNo} ${item.status}`.toLowerCase().includes(query.toLowerCase())), [records, query]);
-  const activeLocations = locations.filter((item) => item.isActive); const defaultUnit = operations.find((item) => item.isActive && item.defaultUnitId)?.defaultUnitId;
-  function openLocation() { const parent = dialog; setDialogHistory(parent); setDialog({ title: "新建生产地点", fields: [{ name: "name", label: "地点名称", required: true }, { name: "location_type", label: "地点类型", type: "select", required: true, defaultValue: "workshop", options: [{ value: "workshop", label: "厂内车间" }, { value: "outsource_site", label: "外加工点" }] }], submit: async (v) => { await run("/production/locations", v, "生产地点已创建"); setDialog(parent); setDialogHistory(null); } }); }
-  function openOperation() { const parent = dialog; setDialogHistory(parent); setDialog({ title: "新建工序", fields: [{ name: "operation_name", label: "工序名称", required: true }, { name: "default_unit_id", label: "默认单位", type: "select", required: true, options: units.filter((unit) => unit.isActive).map((unit) => ({ value: unit.id, label: unit.name })) }], submit: async (v) => { const created = await run("/production/operations", v, "工序已创建") as Operation | undefined; if (created && parent) { setDialog({ ...parent, fields: parent.fields.map((field) => field.name === "operation_id" ? { ...field, defaultValue: created.id, options: [...(field.options ?? []), { value: created.id, label: created.operationName }] } : field) }); } else { setDialog(parent); } setDialogHistory(null); } }); }
-    function openUnit() { const parent = dialog; setDialogHistory(parent); setDialog({ title: "新建单位", fields: [{ name: "name", label: "单位名称", required: true }, { name: "remark", label: "备注", type: "textarea" }], submit: async (v) => { await run("/units", { name: v.name, remark: v.remark || undefined }, "单位已创建"); setDialog(parent); setDialogHistory(null); } }); }
-  function openProductionOrder() { setDialog({ title: "新建生产单", fields: [{ name: "order_no", label: "订单号", type: "select", required: true, options: orders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) }, { name: "execution_mode", label: "执行方式", type: "select", required: true, defaultValue: "in_house", options: [{ value: "in_house", label: "厂内生产" }, { value: "outsourced", label: "外加工" }] }, { name: "execution_location_id", label: "执行地点", type: "select", required: true, options: activeLocations.map((item) => ({ value: item.id, label: `${item.name} / ${item.locationType === "workshop" ? "厂内" : "外加工"}` })) }], submit: (v) => { const source = orders.find((item) => item.orderNo === v.order_no); const bom = source?.boms[0]; if (!source || !bom || !defaultUnit) { setError("请选择已确认且有 BOM表的订单，并维护带默认单位的工序"); return; } void run("/production/orders", { order_no: source.orderNo, bom_id: bom.id, bom_version: bom.version, execution_mode: v.execution_mode, execution_location_id: v.execution_location_id, planned_quantity: source.quantity, unit_id: defaultUnit }, "生产单草稿已创建"); } }); }
-  function addOperation(order: ProductionOrder) { const existing = new Set(order.operations.map((item) => item.operationCatalogId).filter(Boolean)); const active = operations.filter((item) => item.isActive && !existing.has(item.id)); if (!active.length) { setError(existing.size ? "该生产单的启用工序已全部添加" : "请先维护启用工序"); return; } const nextSequence = Math.max(0, ...order.operations.map((item) => item.sequenceNo ?? 0)) + 1; setDialog({ title: "添加生产工序", fields: [{ name: "operation_id", label: "工序", type: "select", required: true, options: active.map((item) => ({ value: item.id, label: item.operationName })) }, { name: "target_quantity", label: "目标数量", type: "number", required: true, defaultValue: order.plannedQuantity }], submit: async (v) => { const created = await run(`/production/orders/${order.id}/operations`, { operation_id: v.operation_id, sequence_no: nextSequence, target_quantity: v.target_quantity }, "工序任务已添加"); if (created) setSelected((current) => current?.id === order.id ? { ...current, operations: [...current.operations, created as ProductionOrder["operations"][number]] } : current); window.dispatchEvent(new CustomEvent("production-order-operation-updated", { detail: { productionOrderId: order.id } })); } }); }
-  function start(order: ProductionOrder) { void run(`/production/orders/${order.id}/transition`, { target: "in_progress", reason: "开始生产" }, "生产单已启动"); }
-  const columns: ColumnDef<ProductionOrder>[] = [{ accessorKey: "productionOrderNo", header: "生产单号", cell: ({ row }) => <Button variant="link" onClick={() => setSelected(row.original)}>{row.original.productionOrderNo}</Button> }, { accessorKey: "orderNo", header: "订单号" }, { id: "mode", header: "执行方式", cell: ({ row }) => row.original.executionMode === "in_house" ? "厂内" : "外加工" }, { id: "location", header: "地点", cell: ({ row }) => row.original.executionLocation.name }, { accessorKey: "plannedQuantity", header: "计划数" }, { id: "operations", header: "工序", cell: ({ row }) => row.original.operations.map((item) => item.operationNameSnapshot).join("、") || "未配置" }, { accessorKey: "status", header: "状态" }, { id: "actions", header: "操作", cell: ({ row }) => ["draft", "in_progress"].includes(row.original.status) ? <><Button size="sm" variant="secondary" onClick={() => addOperation(row.original)}>添加工序</Button>{row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => start(row.original)}>启动</Button>}</> : null }];
-  return <><PageHeader title="生产"><Button onClick={openProductionOrder}>新建生产单</Button></PageHeader><ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field) => { if (field.name === "execution_location_id") openLocation(); else if (field.name === "default_unit_id") openUnit(); else if (field.name === "operation_id") openOperation(); else setError(`${field.label}为业务记录，请在对应业务模块新建`); }} onSubmit={(v) => { dialog?.submit(v); setDialog(null); }} />{message && <section className="panel panel-body status-success">{message}</section>}{error ? <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section> : loading ? <LoadingState /> : <><section className="panel"><div className="panel-heading"><h2>生产基础资料</h2></div><div className="panel-body"><div className="page-actions"><Button asChild variant="secondary"><Link href="/production/operations">工序池（{operations.filter((item) => item.isActive).length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/locations">加工地点池（{activeLocations.length} 个启用）</Link></Button><span className="module-stat"><strong>{units.length}</strong> 个可用单位</span></div></div></section><section className="panel"><div className="panel-heading"><h2>生产单</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索生产单、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label></div><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无生产单" />} /></div></section></>}{<Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelected(null); }}><SheetContent><SheetHeader><SheetTitle>{selected?.productionOrderNo}</SheetTitle><SheetDescription>生产单详情</SheetDescription></SheetHeader>{selected && <div className="detail-list"><p>订单号：{selected.orderNo}</p><p>执行方式：{selected.executionMode === "in_house" ? "厂内" : "外加工"}</p><p>地点：{selected.executionLocation.name}</p><p>计划数量：{selected.plannedQuantity}</p><p>工序：{selected.operations.map((item) => `${item.operationNameSnapshot}（${item.targetQuantity}）`).join("、") || "未配置"}</p>{selected.status === "in_progress" && <Button onClick={() => window.location.assign(`/warehouse?production_order_id=${encodeURIComponent(selected.id)}`)}>新建生产领料单</Button>}</div>}</SheetContent></Sheet>}<PayrollExportPanel orders={records} operations={operations} /><div className="production-subflows"><DailyReportsPanel /><OutsourceLogisticsPanel /></div></>;
+  const activeLocations = locations.filter((item) => item.isActive);
+  const defaultUnit = operations.find((item) => item.isActive && item.defaultUnitId)?.defaultUnitId;
+
+  async function openProductionOrder() {
+    let candidateOrders = orders;
+    try {
+      const fresh = await apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=200");
+      candidateOrders = fresh.data.filter((item) => item.status === "confirmed" && item.boms.length);
+      setOrders(candidateOrders);
+    } catch (cause) {
+      setError(cause instanceof ApiClientError ? cause.message : "订单候选加载失败");
+    }
+    setDialog({ title: "新建生产单", fields: [
+      { name: "order_no", label: "订单号", type: "searchable-select", required: true, options: candidateOrders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) },
+      { name: "execution_mode", label: "执行方式", type: "select", required: true, defaultValue: "in_house", options: [{ value: "in_house", label: "厂内生产" }, { value: "outsourced", label: "外加工" }] },
+      { name: "execution_location_id", label: "执行地点", type: "select", required: true, options: activeLocations.map((item) => ({ value: item.id, label: `${item.name} / ${item.locationType === "workshop" ? "厂内" : "外加工"}` })) },
+    ], submit: (values) => {
+      const source = candidateOrders.find((item) => item.orderNo === values.order_no); const bom = source?.boms[0];
+      if (!source || !bom || !defaultUnit) { setError("请选择已确认且有 BOM 表的订单，并维护带默认单位的工序"); return; }
+      void run("/production/orders", { order_no: source.orderNo, bom_id: bom.id, bom_version: bom.version, execution_mode: values.execution_mode, execution_location_id: values.execution_location_id, planned_quantity: source.quantity, unit_id: defaultUnit }, "生产单草稿已创建");
+    },
+    });
+  }
+
+  const columns: ColumnDef<ProductionOrder>[] = [
+    { accessorKey: "productionOrderNo", header: "生产单号", cell: ({ row }) => <Button variant="link" onClick={() => router.push(`/production/orders/${row.original.id}`)}>{row.original.productionOrderNo}</Button> },
+    { accessorKey: "orderNo", header: "订单号" },
+    { id: "mode", header: "执行方式", cell: ({ row }) => row.original.executionMode === "in_house" ? "厂内" : "外加工" },
+    { id: "location", header: "地点", cell: ({ row }) => row.original.executionLocation?.name ?? "-" },
+    { accessorKey: "plannedQuantity", header: "计划数" },
+    { id: "operations", header: "工序", cell: ({ row }) => row.original.operations.map((item) => item.operationNameSnapshot).join("、") || "未配置" },
+    { accessorKey: "status", header: "状态" },
+    { id: "actions", header: "操作", cell: ({ row }) => row.original.status === "draft" ? <Button size="sm" variant="secondary" onClick={() => void run(`/production/orders/${row.original.id}/transition`, { target: "in_progress", reason: "开始生产" }, "生产单已启动")}>启动</Button> : null },
+  ];
+
+  return <>
+    <PageHeader title="生产"><Button onClick={() => void openProductionOrder()}>新建生产单</Button></PageHeader>
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
+    {message && <section className="panel panel-body status-success">{message}</section>}
+    {error ? <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section> : loading ? <LoadingState /> : <>
+      <section className="panel"><div className="panel-heading"><h2>生产单查找</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索生产单、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label></div><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无生产单" />} /></div></section>
+      <section className="panel"><div className="panel-heading"><h2>生产基础资料</h2></div><div className="panel-body"><div className="page-actions"><Button asChild variant="secondary"><Link href="/production/operations">工序池（{operations.filter((item) => item.isActive).length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/locations">加工地点池（{activeLocations.length} 个启用）</Link></Button><span className="module-stat"><strong>{units.length}</strong> 个可用单位</span></div></div></section>
+      <PayrollExportPanel orders={records} operations={operations} />
+    </>}
+  </>;
 }

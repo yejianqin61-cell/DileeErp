@@ -282,3 +282,17 @@ button { cursor: pointer; }
   transform: none;
   border-radius: 0;
 }
+
+.ui-searchable-select { position: relative; width: 100%; }
+.ui-searchable-select-searchbox { position: relative; }
+.ui-searchable-select-searchbox .ui-input { padding-right: 32px; }
+.ui-searchable-select-search-icon { position: absolute; right: 10px; top: 12px; color: var(--text-muted); pointer-events: none; }
+.ui-searchable-select-popover { position: absolute; left: 0; right: 0; z-index: 70; max-height: 288px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: 0 12px 32px rgb(23 32 51 / 24%); padding: 4px; }
+.ui-searchable-select-popover-down { top: calc(100% + 4px); }
+.ui-searchable-select-popover-up { bottom: calc(100% + 4px); }
+.ui-searchable-select-list { max-height: 280px; overflow-y: auto; }
+.ui-searchable-select-option[data-active="true"] { background: var(--surface-muted); }
+.ui-searchable-select-trigger { justify-content: space-between; text-align: left; }
+.ui-searchable-select-trigger-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-searchable-select-chevron { flex: 0 0 auto; color: var(--text-muted); }
+.ui-searchable-select-placeholder { color: var(--text-muted); }
