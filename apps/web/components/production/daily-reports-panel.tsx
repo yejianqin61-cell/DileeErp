@@ -13,8 +13,7 @@ import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-clien
 type Operation = { id: string; operationNameSnapshot: string; targetQuantity: string; status: string };
 type Order = { id: string; productionOrderNo: string; orderNo: string; executionMode: string; status: string; plannedQuantity: string; operations: Operation[] };
 type Employee = { id: string; employeeNo: string; name: string; employmentStatus: string };
-type Report = { id: string; version?: number; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { id: string; targetQuantity: string } };
-type OperationReport = { id: string; productionOrderId: string; productionOrderOperationId: string; reportDate: string; completedQuantity: string };
+type Report = { id: string; version?: number; productionOrderId: string; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; productionOrderOperation: { id: string; targetQuantity: string } };
 type Draft = { employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_minutes: string; unit_price: string };
 
 const today = new Date().toISOString().slice(0, 10);
@@ -26,7 +25,6 @@ export function DailyReportsPanel() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [reports, setReports] = useState<Report[]>([]);
-  const [operationReports, setOperationReports] = useState<OperationReport[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [selectedOperation, setSelectedOperation] = useState<Operation | null>(null);
   const [selectedReportDate, setSelectedReportDate] = useState(today);
@@ -47,12 +45,11 @@ export function DailyReportsPanel() {
     setLoading(true);
     setError("");
     try {
-      const [o, e, r, operationRows] = await Promise.all([apiGet<Order[]>("/production/orders"), apiGet<Employee[]>("/production/employees"), apiGet<Report[]>("/production/employee-reports"), apiGet<OperationReport[]>("/production/operation-reports")]);
+      const [o, e, r] = await Promise.all([apiGet<Order[]>("/production/orders"), apiGet<Employee[]>("/production/employees"), apiGet<Report[]>("/production/employee-reports")]);
       // 日报只能登记正在生产的生产单；草稿单尚未启动工序，后端会拒绝保存。
       setOrders(o.data.filter((item) => item.executionMode === "in_house" && item.status === "in_progress"));
       setEmployees(e.data.filter((item) => item.employmentStatus === "active"));
       setReports(r.data);
-      setOperationReports(operationRows.data);
     } catch (cause) {
       setError(errorText(cause));
     } finally {
@@ -251,9 +248,9 @@ export function DailyReportsPanel() {
     return totals;
   }, [effectiveReports, selectedReportDate]);
   const plannedQuantity = Number(selectedOperation?.targetQuantity ?? 0);
-  const operationReportsForCurrentOperation = operationReports.filter((report) => report.productionOrderId === selectedOrder?.id && report.productionOrderOperationId === selectedOperation?.id);
-  const hasCompletedQuantity = operationReportsForCurrentOperation.length > 0;
-  const completedQuantity = operationReportsForCurrentOperation.reduce((sum, report) => sum + Number(report.completedQuantity), 0);
+  const employeeReportsForCurrentOperation = effectiveReports.filter((report) => report.productionOrderId === selectedOrder?.id && report.productionOrderOperation.id === selectedOperation?.id && report.wageMode === "piece_rate" && report.quantity !== undefined);
+  const hasCompletedQuantity = employeeReportsForCurrentOperation.length > 0;
+  const completedQuantity = employeeReportsForCurrentOperation.reduce((sum, report) => sum + Number(report.quantity || 0), 0);
   const isOverOrder = hasCompletedQuantity && plannedQuantity > 0 && completedQuantity > plannedQuantity;
 
   if (loading) return <section className="panel"><LoadingState /></section>;
