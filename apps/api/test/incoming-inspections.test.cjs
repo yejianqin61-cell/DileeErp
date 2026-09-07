@@ -5,6 +5,17 @@ const { IncomingInspectionsService } = require("../dist/modules/procurement/inco
 
 const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "operator", display_name: "操作员" };
 
+test("passed QC creates one draft inbound in the same transaction", async () => {
+  const calls = [];
+  const tx = { $queryRaw: async () => undefined, purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", orderNo: "DL260001", quantity: "10", extensionData: {}, inspections: [] }) }, incomingInspection: { create: async ({ data }) => ({ id: "inspection-1", ...data }) } };
+  const prisma = { $transaction: async (fn) => fn(tx) };
+  const inbounds = { createDraftForInspection: async (client, id) => { calls.push([client, id]); return { id: "inbound-1", status: "draft" }; } };
+  const service = new IncomingInspectionsService(prisma, { create: () => ({}), record: async () => {} }, inbounds);
+  const result = await service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "10", accepted_quantity: "8", conditional_quantity: "2", rejected_quantity: "0" }, user);
+  assert.equal(result.status, "conditionally_accepted");
+  assert.deepEqual(calls, [[tx, "inspection-1"]]);
+});
+
 test("incoming QC cannot cumulatively exceed its receipt quantity", async () => {
   const tx = { $queryRaw: async () => undefined, purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", orderNo: "DL260001", quantity: "10", inspections: [{ inspectedQuantity: "8" }] }) }, incomingInspection: { create: async () => { throw new Error("must not write"); } } };
   const prisma = { $transaction: async (fn) => fn(tx) };

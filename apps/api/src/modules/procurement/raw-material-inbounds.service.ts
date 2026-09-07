@@ -34,6 +34,43 @@ export class RawMaterialInboundsService {
     })));
   }
 
+  /** Create the draft receiving task for a passed inspection inside its caller transaction. */
+  async createDraftForInspection(tx: Prisma.TransactionClient, inspectionId: string, user: CurrentUser) {
+    const existing = await tx.rawMaterialInbound.findFirst({ where: { idempotencyKey: `inspection:${inspectionId}` } });
+    if (existing) return existing;
+    const inspection = await tx.incomingInspection.findFirst({
+      where: { id: inspectionId, deletedAt: null, status: { in: ["accepted", "conditionally_accepted", "partially_accepted", "completed"] } },
+      include: {
+        rawMaterialInbounds: { where: { deletedAt: null } },
+        purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: { include: { material: true } } } }
+      }
+    });
+    if (!inspection) return null;
+    if (inspection.rawMaterialInbounds.length) return inspection.rawMaterialInbounds[0];
+    const item = inspection.purchaseReceipt.purchaseOrderItem;
+    if (item.material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "INBOUND_FINISHED_PRODUCT_FORBIDDEN", message: "原料入库只能接收原料物料", details: [] });
+    const quantity = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
+    if (quantity.isZero()) return null;
+    return tx.rawMaterialInbound.create({
+      data: {
+        inboundNo: `RM-${randomUUID().slice(0, 12).toUpperCase()}`,
+        orderNo: inspection.orderNo,
+        purchaseOrderId: inspection.purchaseReceipt.purchaseOrderId,
+        purchaseOrderItemId: inspection.purchaseReceipt.purchaseOrderItemId,
+        purchaseReceiptId: inspection.purchaseReceiptId,
+        incomingInspectionId: inspection.id,
+        materialId: item.materialId,
+        supplierId: inspection.purchaseReceipt.purchaseOrder.supplierId,
+        unitId: item.unitId,
+        quantity,
+        inventoryCategory: "raw_material",
+        idempotencyKey: `inspection:${inspection.id}`,
+        remark: "质检通过自动生成入库草稿",
+        ...this.audit.create(user)
+      }
+    });
+  }
+
   async create(input: { incoming_inspection_id: string; quantity: string; inventory_category?: string; idempotency_key?: string; remark?: string }, user: CurrentUser) {
     if (input.idempotency_key) {
       const previous = await this.prisma.rawMaterialInbound.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });

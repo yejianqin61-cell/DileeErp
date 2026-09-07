@@ -1,12 +1,13 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { forwardRef, Inject, Injectable, NotFoundException, Optional, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { RawMaterialInboundsService } from "./raw-material-inbounds.service";
 
 @Injectable()
 export class IncomingInspectionsService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() @Inject(forwardRef(() => RawMaterialInboundsService)) private readonly inbounds?: RawMaterialInboundsService) {}
   async list(orderNo?: string) { const rows = await this.prisma.incomingInspection.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } }, purchaseReceipt: { include: { purchaseOrder: { select: { purchaseOrderNo: true } }, rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } } } } }, orderBy: { createdAt: "asc" } }); return rows.map((row) => ({ ...row, purchase_order_no: row.purchaseReceipt?.purchaseOrder?.purchaseOrderNo ?? null, downstream_exists: Boolean(row.rawMaterialInbounds?.length || row.purchaseReceipt?.rawMaterialInbounds?.length), batchSequence: Number((row.purchaseReceipt?.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? (row.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1) })).reverse(); }
 
   async update(id: string, input: { inspected_quantity: string; accepted_quantity: string; conditional_quantity: string; rejected_quantity: string; extension_data?: Record<string, unknown>; remark?: string; reason: string }, user: CurrentUser) {
@@ -20,7 +21,9 @@ export class IncomingInspectionsService {
       if (current.rawMaterialInbounds.length || current.purchaseReceipt.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可修改", details: [] });
       if (values[0].gt(current.purchaseReceipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
       const status = values[0].isZero() ? current.status : values[3].eq(values[0]) ? "rejected" : values[1].plus(values[2]).eq(values[0]) ? (values[2].gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
-      return tx.incomingInspection.update({ where: { id }, data: { inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], status, extensionData: { ...(current.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}) } as Prisma.InputJsonValue, remark: `${current.remark ?? ""}${current.remark ? "\n" : ""}${input.reason.trim()}${input.remark?.trim() ? `\n${input.remark.trim()}` : ""}`, ...this.audit.update(user) } });
+      const updated = await tx.incomingInspection.update({ where: { id }, data: { inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], status, extensionData: { ...(current.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}) } as Prisma.InputJsonValue, remark: `${current.remark ?? ""}${current.remark ? "\n" : ""}${input.reason.trim()}${input.remark?.trim() ? `\n${input.remark.trim()}` : ""}`, ...this.audit.update(user) } });
+      if (this.inbounds && ["accepted", "conditionally_accepted", "partially_accepted"].includes(status)) await this.inbounds.createDraftForInspection(tx, updated.id, user);
+      return updated;
     });
     await this.audit.record("incoming_inspection.update", "incoming_inspection", user.id, id, { order_no: result.orderNo, reason: input.reason.trim() });
     return result;
@@ -42,9 +45,11 @@ export class IncomingInspectionsService {
       const rejected = (existing?.rejectedQuantity ?? new Prisma.Decimal(0)).plus(values[3]);
       const status = inspected.isZero() ? "pending" : rejected.eq(inspected) ? "rejected" : accepted.plus(conditional).eq(inspected) ? (conditional.gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
       const batchSequence = Number((receipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1);
-      return existing
-        ? tx.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected, acceptedQuantity: accepted, conditionalQuantity: conditional, rejectedQuantity: rejected, status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })
-        : tx.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: receipt.orderNo, inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], status, extensionData: { ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+      const result = existing
+        ? await tx.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected, acceptedQuantity: accepted, conditionalQuantity: conditional, rejectedQuantity: rejected, status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })
+        : await tx.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: receipt.orderNo, inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], status, extensionData: { ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+      if (this.inbounds && ["accepted", "conditionally_accepted", "partially_accepted"].includes(status)) await this.inbounds.createDraftForInspection(tx, result.id, user);
+      return result;
     });
     await this.audit.record("incoming_inspection.create", "incoming_inspection", user.id, result.id, { order_no: result.orderNo, purchase_receipt_id: input.purchase_receipt_id, status: result.status });
     return result;
@@ -59,7 +64,14 @@ export class IncomingInspectionsService {
     if (current.status === "inspecting" && target === "completed" && new Prisma.Decimal(current.inspectedQuantity).isZero()) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_REQUIRED", message: "完成质检前必须登记检验数量", details: [] });
     if (completedStatuses.includes(current.status) && !reason?.trim()) throw new UnprocessableEntityException({ code: "INSPECTION_REVERSAL_REASON_REQUIRED", message: "质检回退必须填写原因", details: [] });
     if (completedStatuses.includes(current.status) && current.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可直接回退", details: [] });
-    const result = await this.prisma.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });
+    const result = this.inbounds
+      ? await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${id}::uuid FOR UPDATE`;
+          const updated = await tx.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });
+          if (["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(target)) await this.inbounds!.createDraftForInspection(tx, id, user);
+          return updated;
+        })
+      : await this.prisma.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });
     await this.audit.record("incoming_inspection.transition", "incoming_inspection", user.id, id, { from: current.status, to: target, reason: reason ?? null });
     return result;
   }
