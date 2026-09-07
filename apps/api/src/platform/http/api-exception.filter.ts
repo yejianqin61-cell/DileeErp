@@ -32,7 +32,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const labels: Record<string, string> = { idempotency_key: "幂等键", employee_no: "员工编号", operation_code: "工序编码", production_order_no: "生产单号", purchase_order_no: "采购单号", receipt_no: "到货单号", inbound_no: "入库单号", material_code: "物料编码", production_order_operation_id: "工序与日期组合" };
     const field = target[0];
     const label = field ? labels[field] ?? field : "业务唯一字段";
-    const objectType = field === "idempotency_key" ? "工序员工日报" : "业务记录";
+    const objectType = field === "idempotency_key" || field === "production_order_operation_id" ? "工序员工日报" : "业务记录";
     return { code: "UNIQUE_VALUE_CONFLICT", message: `${objectType}的${label}已存在，请检查后重试`, details: [{ object: objectType, field: field ?? null, field_label: label, target }] };
   }
 
