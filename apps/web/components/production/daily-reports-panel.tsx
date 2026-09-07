@@ -20,6 +20,7 @@ type Draft = { employee_id: string; report_date: string; wage_mode: string; quan
 const today = new Date().toISOString().slice(0, 10);
 const errorText = (cause: unknown) => cause instanceof ApiClientError ? cause.message : "操作失败";
 const idempotencyKey = () => `daily-${typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+const wageModeLabel = (mode: string) => mode === "time_rate" ? "计时" : "计件";
 
 export function DailyReportsPanel() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -39,6 +40,9 @@ export function DailyReportsPanel() {
   const [saving, setSaving] = useState(false);
   const [saveKey, setSaveKey] = useState<string | null>(null);
   const [editDialog, setEditDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
+    const [reportEdits, setReportEdits] = useState<Record<string, { quantity: string; duration_minutes: string; unit_price: string }>>({});
+    const [inlineReason, setInlineReason] = useState("");
+    const [savingReportId, setSavingReportId] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -67,6 +71,9 @@ export function DailyReportsPanel() {
     setDrafts([]);
     setSelectedEmployeeIds([]);
     setOperationQuantity("");
+      setReportEdits({});
+      setInlineReason("");
+      setSavingReportId(null);
     setSaveKey(idempotencyKey());
   }
 
@@ -85,8 +92,76 @@ export function DailyReportsPanel() {
     setSelectedOperation(null);
     setDrafts([]);
     setOperationQuantity("");
+      setReportEdits({});
+      setInlineReason("");
+      setSavingReportId(null);
     setSaveKey(null);
   }
+    function updateReportField(report: Report, field: "quantity" | "duration_minutes" | "unit_price", value: string) {
+      setReportEdits((current) => ({
+        ...current,
+        [report.id]: {
+          quantity: current[report.id]?.quantity ?? report.quantity,
+          duration_minutes: current[report.id]?.duration_minutes ?? report.durationMinutes ?? "",
+          unit_price: current[report.id]?.unit_price ?? report.unitPrice,
+          [field]: value,
+        },
+      }));
+    }
+
+    function reportEditDirty(report: Report) {
+      const edit = reportEdits[report.id];
+      if (!edit) return false;
+      const original = reports.find((item) => item.id === report.id) ?? report;
+        return edit.quantity !== original.quantity || edit.duration_minutes !== (original.durationMinutes ?? "") || edit.unit_price !== original.unitPrice;
+    }
+
+    async function saveReportEdit(report: Report) {
+      const edit = reportEdits[report.id];
+      if (!edit || !reportEditDirty(report)) return;
+      if (!inlineReason.trim()) {
+        setError("请填写更正原因后再保存日报修改");
+        return;
+      }
+      if (report.wageMode === "piece_rate" && (!Number(edit.quantity) || Number(edit.quantity) <= 0)) {
+        setError("计件日报必须填写有效件数");
+        return;
+      }
+      if (report.wageMode === "time_rate" && (!edit.duration_minutes || Number(edit.duration_minutes) <= 0)) {
+        setError("计时日报必须填写有效时长");
+        return;
+      }
+      if (!edit.unit_price || Number(edit.unit_price) < 0) {
+        setError("请填写有效人工单价");
+        return;
+      }
+      setError("");
+      setSavingReportId(report.id);
+      try {
+        await apiRequest(`/production/employee-reports/${report.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            quantity: edit.quantity || undefined,
+            duration_minutes: edit.duration_minutes || undefined,
+            unit_price: edit.unit_price,
+            reason: inlineReason.trim(),
+            expected_version: report.version,
+          }),
+        });
+        setMessage("日报已更正，当日员工薪资和总薪资已联动更新");
+        setReportEdits((current) => {
+          const next = { ...current };
+          delete next[report.id];
+          return next;
+        });
+        setInlineReason("");
+        await load();
+      } catch (cause) {
+        setError(errorText(cause));
+      } finally {
+        setSavingReportId(null);
+      }
+    }
 
   function editReport(report: Report) {
     setEditDialog({ title: `更正日报：${report.employeeNameSnapshot}`, fields: [
@@ -152,20 +227,29 @@ export function DailyReportsPanel() {
     }
   }
 
-  const visibleReports = useMemo(() => reports.filter((report) => report.productionOrderOperation.id === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate), [reports, selectedOperation, selectedReportDate]);
+  const effectiveReports = useMemo(() => reports.map((report) => {
+      const edit = reportEdits[report.id];
+      if (!edit) return report;
+      const amount = report.wageMode === "time_rate"
+        ? Number(edit.duration_minutes || 0) * Number(edit.unit_price || 0)
+        : Number(edit.quantity || 0) * Number(edit.unit_price || 0);
+      return { ...report, quantity: edit.quantity, durationMinutes: edit.duration_minutes || undefined, unitPrice: edit.unit_price, calculatedAmount: Number.isFinite(amount) ? String(amount) : "0" };
+    }), [reports, reportEdits]);
+    const visibleReports = useMemo(() => effectiveReports.filter((report) => report.productionOrderOperation.id === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate), [effectiveReports, selectedOperation, selectedReportDate]);
   const dailyEmployeeTotals = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const report of reports) {
+    for (const report of effectiveReports) {
       if (report.reportDate.slice(0, 10) !== selectedReportDate) continue;
       totals.set(report.employeeId, (totals.get(report.employeeId) ?? 0) + Number(report.calculatedAmount));
     }
     return totals;
-  }, [reports, selectedReportDate]);
+  }, [effectiveReports, selectedReportDate]);
   const plannedQuantity = Number(selectedOperation?.targetQuantity ?? 0);
   const operationDayReports = operationReports.filter((report) => report.productionOrderOperationId === selectedOperation?.id && report.reportDate.slice(0, 10) === selectedReportDate);
   const operationCompletedQuantity = operationDayReports.reduce((sum, report) => sum + Number(report.completedQuantity), 0);
-  const completedQuantity = operationDayReports.length > 0 ? operationCompletedQuantity : visibleReports.reduce((sum, report) => sum + Number(report.quantity), 0);
-  const isOverOrder = plannedQuantity > 0 && completedQuantity > plannedQuantity;
+  const hasCompletedQuantity = operationDayReports.length > 0;
+    const completedQuantity = hasCompletedQuantity ? operationCompletedQuantity : 0;
+  const isOverOrder = hasCompletedQuantity && plannedQuantity > 0 && completedQuantity > plannedQuantity;
 
   if (loading) return <section className="panel"><LoadingState /></section>;
   if (error && !orders.length) return <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>;
@@ -191,16 +275,17 @@ export function DailyReportsPanel() {
             <DialogDescription>维护当前生产单当前工序的员工日报。</DialogDescription>
           </DialogHeader>
             <div className="page-actions">
-            <label>查看日期<Input type="date" value={selectedReportDate} onChange={(event) => { const value = event.target.value; setSelectedReportDate(value); setDrafts((rows) => rows.map((row) => ({ ...row, report_date: value }))); }} /></label>
+            <label>查看日期<Input type="date" value={selectedReportDate} onChange={(event) => { const value = event.target.value; setSelectedReportDate(value); setDrafts((rows) => rows.map((row) => ({ ...row, report_date: value }))); setReportEdits({}); setInlineReason(""); }} /></label>
             <Button variant="secondary" onClick={addDraft}>批量选择员工</Button>
             <label>本次新增工序完成量<Input type="number" min="0" step="0.0001" value={operationQuantity} placeholder="可选" onChange={(event) => setOperationQuantity(event.target.value)} /></label>
             <Button onClick={() => void save()} disabled={saving}>{saving ? "保存中..." : "保存日报"}</Button>
           </div>
           <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>日期</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长（分钟）</TableHead><TableHead>单价</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{drafts.map((row, index) => <TableRow key={row.employee_id}><TableCell>{employees.find((employee) => employee.id === row.employee_id)?.name ?? "-"}</TableCell><TableCell>{row.report_date}</TableCell><TableCell><Select value={row.wage_mode} onValueChange={(value) => updateDraft(index, { wage_mode: value, quantity: row.quantity, duration_minutes: row.duration_minutes })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="piece_rate">计件</SelectItem><SelectItem value="time_rate">计时</SelectItem></SelectContent></Select></TableCell><TableCell><Input type="number" min="0" value={row.quantity} placeholder="可选，用于统计" onChange={(event) => updateDraft(index, { quantity: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" disabled={row.wage_mode === "piece_rate"} value={row.duration_minutes} placeholder={row.wage_mode === "piece_rate" ? "计件不填" : "必填"} onChange={(event) => updateDraft(index, { duration_minutes: event.target.value })} /></TableCell><TableCell><Input type="number" min="0" value={row.unit_price} placeholder="人工填写" onChange={(event) => updateDraft(index, { unit_price: event.target.value })} /></TableCell><TableCell><Button size="sm" variant="ghost" onClick={() => setDrafts((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}>删除</Button></TableCell></TableRow>)}</TableBody></Table></div>
 
-          <div className="daily-report-summary"><span><small>查看日期</small><strong>{selectedReportDate}</strong></span><span><small>生产总数量</small><strong>{selectedOrder?.plannedQuantity ?? "-"}</strong></span><span><small>工序计划数量</small><strong>{selectedOperation?.targetQuantity ?? "-"}</strong></span><span><small>当日登记数量</small><strong>{completedQuantity}</strong></span><span className={isOverOrder ? "status-error" : "status-success"}><small>是否超单</small><strong>{isOverOrder ? "是" : "否"}</strong></span></div>
+          <div className="daily-report-summary"><span><small>查看日期</small><strong>{selectedReportDate}</strong></span><span><small>生产总数量</small><strong>{selectedOrder?.plannedQuantity ?? "-"}</strong></span><span><small>工序计划数量</small><strong>{selectedOperation?.targetQuantity ?? "-"}</strong></span><span><small>本工序已完成数量</small><strong>{hasCompletedQuantity ? completedQuantity : "-"}</strong></span><span className={isOverOrder ? "status-error" : "status-success"}><small>是否超单</small><strong>{isOverOrder ? "是" : "否"}</strong></span></div>
           <h3>已登记日报</h3>
-          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长</TableHead><TableHead>单价</TableHead><TableHead>当日该员工总薪资</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => <TableRow key={report.id}><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{report.wageMode}</TableCell><TableCell>{report.quantity}</TableCell><TableCell>{report.durationMinutes ?? "-"}</TableCell><TableCell>{report.unitPrice}</TableCell><TableCell>{(dailyEmployeeTotals.get(report.employeeId) ?? 0).toFixed(2)}</TableCell><TableCell><div className="action-row"><Button size="sm" variant="ghost" onClick={() => editReport(report)}>更正</Button><Button size="sm" variant="ghost" onClick={() => deleteReport(report)}>删除</Button></div></TableCell></TableRow>)}</TableBody></Table></div>
+            <div className="inline-edit-bar"><label>更正原因（保存修改时必填）<Input value={inlineReason} placeholder="例如：补录/修正单价、件数、时长" onChange={(event) => setInlineReason(event.target.value)} /></label><span className="hint">可直接编辑下方件数、时长、单价；保存后自动联动本行薪资、当日该员工总薪资与薪资来源。</span></div>
+          <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长</TableHead><TableHead>单价</TableHead><TableHead>本行薪资</TableHead><TableHead>当日该员工总薪资</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => <TableRow key={report.id}><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{wageModeLabel(report.wageMode)}</TableCell><TableCell><Input type="number" min="0" step="0.0001" value={reportEdits[report.id]?.quantity ?? report.quantity} onChange={(event) => updateReportField(report, "quantity", event.target.value)} /></TableCell><TableCell><Input type="number" min="0" disabled={report.wageMode === "piece_rate"} value={reportEdits[report.id]?.duration_minutes ?? report.durationMinutes ?? ""} onChange={(event) => updateReportField(report, "duration_minutes", event.target.value)} /></TableCell><TableCell><Input type="number" min="0" step="0.0001" value={reportEdits[report.id]?.unit_price ?? report.unitPrice} onChange={(event) => updateReportField(report, "unit_price", event.target.value)} /></TableCell><TableCell>{Number(report.calculatedAmount).toFixed(2)}</TableCell><TableCell>{(dailyEmployeeTotals.get(report.employeeId) ?? 0).toFixed(2)}</TableCell><TableCell><div className="action-row"><Button size="sm" variant="default" disabled={!reportEditDirty(report) || savingReportId === report.id} onClick={() => void saveReportEdit(report)}>{savingReportId === report.id ? "保存中..." : reportEditDirty(report) ? "保存" : "未修改"}</Button><Button size="sm" variant="ghost" onClick={() => deleteReport(report)}>删除</Button></div></TableCell></TableRow>)}</TableBody></Table></div>
         </DialogContent>
       </Dialog>
       <Dialog open={employeePickerOpen} onOpenChange={setEmployeePickerOpen}><DialogContent><DialogHeader><DialogTitle>批量选择员工</DialogTitle><DialogDescription>选择员工后一次生成日报行，重复员工会自动忽略。</DialogDescription></DialogHeader><div className="employee-picker-list">{employees.map((employee) => { const checked = selectedEmployeeIds.includes(employee.id); return <Button key={employee.id} type="button" variant={checked ? "default" : "secondary"} aria-pressed={checked} onClick={() => setSelectedEmployeeIds((ids) => checked ? ids.filter((id) => id !== employee.id) : [...ids, employee.id])}>{checked ? "已选 " : ""}{employee.employeeNo} / {employee.name}</Button>; })}</div><Button onClick={applyEmployees}>加入日报</Button></DialogContent></Dialog>
