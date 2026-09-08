@@ -15,6 +15,7 @@ import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Operation = { id: string; operationNameSnapshot: string; sequenceNo?: number; targetQuantity: string; status: string; operationCatalogId?: string };
 type Order = { id: string; productionOrderNo: string; orderNo: string; executionMode: "in_house" | "outsourced"; status: string; plannedQuantity: string; unit?: { name?: string }; executionLocation?: { name?: string }; operations: Operation[] };
+type OperationCatalogItem = { id: string; operationName: string; isActive: boolean };
 type Measurement = { operation_id?: string; operation_name?: string; source_type?: string; unit?: string; planned_quantity?: string; actual_quantity?: string; difference_quantity?: string; over_order_quantity?: string; completion_rate?: string; status?: string };
 type Progress = { status?: string; status_label?: string; blockers?: string[]; blocker_details?: Array<{ code?: string; label?: string; suggestion?: string }>; measurements?: Measurement[]; production_orders?: Array<Progress & { production_order_id?: string }> };
 
@@ -23,12 +24,27 @@ const transitions: Record<string, Array<{ target: string; label: string }>> = { 
 const errorText = (cause: unknown) => cause instanceof ApiClientError ? cause.message : "操作失败";
 
 export function ProductionOrderDetailPage({ orderId }: { orderId: string }) {
-  const [order, setOrder] = useState<Order | null>(null); const [progress, setProgress] = useState<Progress | null>(null); const [operations, setOperations] = useState<Operation[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
-  async function load() { setLoading(true); setError(""); try { const orderResult = await apiGet<Order>(`/production/orders/${orderId}`); const [measurements, summaries] = await Promise.all([apiGet<Measurement[]>(`/production-progress/measurements?production_order_id=${encodeURIComponent(orderId)}&page=1&page_size=200`), apiGet<Progress[]>(`/production-progress/order-statuses?order_no=${encodeURIComponent(orderResult.data.orderNo)}&page=1&page_size=200`)]); setOrder(orderResult.data); setOperations(orderResult.data.operations ?? []); const currentSummary = summaries.data.flatMap((summary) => summary.production_orders ?? []).find((item: { production_order_id?: string }) => item.production_order_id === orderId) ?? summaries.data[0]; setProgress({ ...(currentSummary ?? {}), measurements: measurements.data }); } catch (cause) { setError(errorText(cause)); } finally { setLoading(false); } }
+  const [order, setOrder] = useState<Order | null>(null); const [progress, setProgress] = useState<Progress | null>(null); const [operations, setOperations] = useState<Operation[]>([]); const [operationPool, setOperationPool] = useState<OperationCatalogItem[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
+  async function load() { setLoading(true); setError(""); try { const [orderResult, poolResult] = await Promise.all([apiGet<Order>(`/production/orders/${orderId}`), apiGet<OperationCatalogItem[]>("/production/operations").catch(() => ({ data: [] as OperationCatalogItem[], meta: {} }))]); const [measurements, summaries] = await Promise.all([apiGet<Measurement[]>(`/production-progress/measurements?production_order_id=${encodeURIComponent(orderId)}&page=1&page_size=200`), apiGet<Progress[]>(`/production-progress/order-statuses?order_no=${encodeURIComponent(orderResult.data.orderNo)}&page=1&page_size=200`)]); setOrder(orderResult.data); setOperations(orderResult.data.operations ?? []); setOperationPool(poolResult.data.filter((item) => item.isActive)); const currentSummary = summaries.data.flatMap((summary) => summary.production_orders ?? []).find((item: { production_order_id?: string }) => item.production_order_id === orderId) ?? summaries.data[0]; setProgress({ ...(currentSummary ?? {}), measurements: measurements.data }); } catch (cause) { setError(errorText(cause)); } finally { setLoading(false); } }
   useEffect(() => { void load(); }, [orderId]);
   async function run(path: string, body: unknown, success: string) { setError(""); try { await apiPost(path, body); notifySuccess(success); await load(); } catch (cause) { notifyError(errorText(cause)); } }
   function openTransition(target: string, label: string) { setDialog({ title: label, fields: [{ name: "reason", label: "操作原因", type: "textarea", required: true, placeholder: "请填写本次状态变更原因" }], submit: (values) => void run(`/production/orders/${orderId}/transition`, { target, reason: values.reason }, `${label}成功`) }); }
-  function openAddOperation() { setDialog({ title: "添加生产工序", fields: [{ name: "operation_id", label: "工序 ID", required: true, placeholder: "请输入工序目录 ID" }, { name: "sequence_no", label: "工序顺序", type: "number", required: true }, { name: "target_quantity", label: "目标数量", type: "number", required: true, defaultValue: order?.plannedQuantity }], submit: (values) => void run(`/production/orders/${orderId}/operations`, { operation_id: values.operation_id, sequence_no: Number(values.sequence_no), target_quantity: values.target_quantity }, "工序已添加") }); }
+  function openAddOperation() {
+    const pool = operationPool;
+    const attachedCatalogIds = new Set(operations.filter((item) => item.status !== "cancelled" && item.operationCatalogId).map((item) => item.operationCatalogId as string));
+    const options = pool.map((item) => ({ value: item.id, label: item.operationName }));
+    const disabledValues = pool.filter((item) => attachedCatalogIds.has(item.id)).map((item) => item.id);
+    setDialog({ title: "添加生产工序", fields: [
+      { name: "operation_ids", label: "选择工序（可多选）", type: "multi-checkbox", required: true, options, disabledValues, placeholder: "搜索工序名称" },
+      { name: "target_quantity", label: "目标数量（应用到所有所选工序）", type: "number", required: true, defaultValue: order?.plannedQuantity },
+    ], submit: (values) => {
+      const selectedIds = new Set(values.operation_ids.split(",").filter(Boolean));
+      // Submit in pool order: the server assigns sequence numbers automatically,
+      // ordering carries no user intent.
+      const selected = pool.filter((item) => selectedIds.has(item.id));
+      void run(`/production/orders/${orderId}/operations/batch`, { operations: selected.map((item) => ({ operation_id: item.id, target_quantity: values.target_quantity })) }, selected.length > 1 ? `已添加 ${selected.length} 道工序` : "工序已添加");
+    } });
+  }
   const transitionActions = useMemo(() => order ? transitions[order.status] ?? [] : [], [order]);
   const columns = [{ accessorKey: "sequenceNo", header: "顺序" }, { accessorKey: "operationNameSnapshot", header: "工序" }, { accessorKey: "targetQuantity", header: "目标数量" }, { accessorKey: "status", header: "状态", cell: ({ row }: { row: { original: Operation } }) => statusLabel[row.original.status] ?? row.original.status }];
   if (loading) return <LoadingState label="正在加载生产单详情" />;

@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsDateString, IsInt, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsDateString, IsInt, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
+import { Type } from "class-transformer";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -9,6 +10,8 @@ import { ProductionOrdersService } from "./production-orders.service";
 class ProductionOrderDto { @IsString() order_no!: string; @IsUUID() bom_id!: string; @IsInt() bom_version!: number; @IsOptional() @IsString() production_order_type?: string; @IsOptional() @IsUUID() parent_production_order_id?: string; @IsString() execution_mode!: string; @IsUUID() execution_location_id!: string; @IsString() planned_quantity!: string; @IsUUID() unit_id!: string; @IsOptional() @IsString() @MaxLength(1000) product_specification?: string; @IsOptional() @IsString() @MaxLength(2000) production_process_note?: string; @IsOptional() @IsDateString() planned_started_on?: string; @IsOptional() @IsDateString() delivery_due_on?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class UpdateProductionOrderDto { @IsOptional() @IsString() execution_mode?: string; @IsOptional() @IsUUID() execution_location_id?: string; @IsOptional() @IsString() planned_quantity?: string; @IsOptional() @IsUUID() unit_id?: string; @IsOptional() @IsString() @MaxLength(1000) product_specification?: string; @IsOptional() @IsString() @MaxLength(2000) production_process_note?: string; @IsOptional() @IsDateString() planned_started_on?: string; @IsOptional() @IsDateString() delivery_due_on?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class OperationDto { @IsUUID() operation_id!: string; @IsInt() sequence_no!: number; @IsString() target_quantity!: string; @IsOptional() @IsUUID() unit_id?: string; }
+class BatchOperationItemDto { @IsUUID() operation_id!: string; @IsString() target_quantity!: string; @IsOptional() @IsUUID() unit_id?: string; }
+class BatchOperationsDto { @IsArray() @ArrayNotEmpty() @ArrayMaxSize(50) @ValidateNested({ each: true }) @Type(() => BatchOperationItemDto) operations!: BatchOperationItemDto[]; }
 class UpdateOperationDto { @IsOptional() @IsInt() sequence_no?: number; @IsOptional() @IsString() target_quantity?: string; @IsOptional() @IsUUID() unit_id?: string; @IsOptional() @IsString() @MaxLength(500) reason?: string; }
 class TransitionDto { @IsString() target!: string; @IsOptional() @IsString() reason?: string; }
 class CancelOperationDto { @IsString() reason!: string; }
@@ -23,6 +26,7 @@ export class ProductionOrdersController {
   @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdateProductionOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.update(id, body, user), meta: {} }; }
   @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.delete(id, user), meta: {} }; }
   @Post(":id/operations") async addOperation(@Param("id") id: string, @Body() body: OperationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.addOperation(id, body, user), meta: {} }; }
+  @Post(":id/operations/batch") async addOperations(@Param("id") id: string, @Body() body: BatchOperationsDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.addOperations(id, body.operations, user), meta: {} }; }
   @Patch(":id/operations/:operationId") async updateOperation(@Param("id") id: string, @Param("operationId") operationId: string, @Body() body: UpdateOperationDto, @CurrentUser() user: CurrentUserType) { const { reason, ...input } = body; return { data: await this.orders.updateOperation(id, operationId, input, reason, user), meta: {} }; }
   @Post(":id/operations/:operationId/cancel") async cancelOperation(@Param("id") id: string, @Param("operationId") operationId: string, @Body() body: CancelOperationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.cancelOperation(id, operationId, body.reason, user), meta: {} }; }
   @Post(":id/transition") async transition(@Param("id") id: string, @Body() body: TransitionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.transition(id, body.target, body.reason, user), meta: {} }; }

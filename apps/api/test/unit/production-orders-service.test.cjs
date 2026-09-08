@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { ConflictException, NotFoundException } = require("@nestjs/common");
+const { ConflictException, NotFoundException, UnprocessableEntityException } = require("@nestjs/common");
 const { ProductionOrdersService } = require("../../dist/modules/production/production-orders.service.js");
 
 test("adding a production operation rechecks duplicates under the production-order lock", async () => {
@@ -122,4 +122,171 @@ test("create rethrows non-unique insert errors instead of masking them as a conf
   };
   const service = new ProductionOrdersService(prisma, { create: () => ({}), record: async () => undefined });
   await assert.rejects(() => service.create({ ...baseInput, production_order_type: "standard" }, user), (error) => error === failure);
+});
+
+function batchHarness({ catalogRows = [], unitRows = [{ id: "unit-1", isActive: true }], order, createImpl } = {}) {
+  const createCalls = [];
+  const auditRecords = [];
+  let transactions = 0;
+  const prisma = {
+    operationCatalog: { findMany: async ({ where }) => catalogRows.filter((row) => where.id.in.includes(row.id) && !row.deletedAt) },
+    unit: { findMany: async ({ where }) => unitRows.filter((row) => where.id.in.includes(row.id)) },
+    productionOrder: { findFirst: async () => order },
+    $transaction: async (fn) => { transactions += 1; return fn({
+      $queryRaw: async () => undefined,
+      productionOrder: { findFirst: async () => order },
+      productionOrderOperation: { create: async ({ data }) => {
+        if (createImpl) return createImpl({ data, createCalls });
+        createCalls.push(data);
+        return { id: `new-op-${createCalls.length}`, sequenceNo: data.sequenceNo, targetQuantity: data.targetQuantity, unitId: data.unitId, operationCatalogId: data.operationCatalogId, operationNameSnapshot: data.operationNameSnapshot };
+      } },
+    }); },
+  };
+  const audit = { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), record: async (...args) => { auditRecords.push(args); } };
+  return { service: new ProductionOrdersService(prisma, audit), createCalls, auditRecords, isTransactionCalled: () => transactions > 0 };
+}
+
+test("batch add creates every picked operation with auto-assigned sequences and one batch audit event", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [
+    { operationCatalogId: "op-x", sequenceNo: 1, status: "active" },
+    { operationCatalogId: "op-c", sequenceNo: 4, status: "cancelled" },
+  ] };
+  const catalogRows = [
+    { id: "op-a", operationName: "裁剪", defaultUnitId: "unit-2", isActive: true },
+    { id: "op-b", operationName: "缝制", defaultUnitId: null, isActive: true },
+  ];
+  const unitRows = [{ id: "unit-1", isActive: true }, { id: "unit-2", isActive: true }, { id: "unit-3", isActive: true }];
+  const { service, createCalls, auditRecords } = batchHarness({ catalogRows, unitRows, order });
+  const result = await service.addOperations("order-1", [
+    { operation_id: "op-b", target_quantity: "100" },
+    { operation_id: "op-a", target_quantity: "50", unit_id: "unit-3" },
+  ], user);
+  assert.equal(createCalls.length, 2);
+  // cancelled rows keep their sequence number, so new rows continue after the max (4)
+  assert.deepEqual(createCalls.map((row) => row.sequenceNo), [5, 6]);
+  assert.deepEqual(createCalls.map((row) => row.productionOrderId), ["order-1", "order-1"]);
+  assert.deepEqual(createCalls.map((row) => row.operationCatalogId), ["op-b", "op-a"]);
+  assert.deepEqual(createCalls.map((row) => row.operationNameSnapshot), ["缝制", "裁剪"]);
+  // unit falls back to catalog default, then to the explicit unit_id override / order unit
+  assert.deepEqual(createCalls.map((row) => row.unitId), ["unit-1", "unit-3"]);
+  assert.deepEqual(createCalls.map((row) => String(row.targetQuantity)), ["100", "50"]);
+  assert.equal(result.length, 2);
+  assert.equal(auditRecords.length, 1);
+  const [action, entityType, actorId, entityId, details] = auditRecords[0];
+  assert.equal(action, "production_order_operation.batch_create");
+  assert.equal(entityType, "production_order_operation");
+  assert.equal(actorId, "user-1");
+  assert.equal(entityId, "order-1");
+  assert.equal(details.order_no, "SO-1");
+  assert.equal(details.count, 2);
+  assert.deepEqual(details.operations.map((row) => row.sequence_no), [5, 6]);
+});
+
+test("batch add rejects a duplicated catalog id inside one submission before any write", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [] };
+  const catalogRows = [{ id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true }];
+  const { service, createCalls, isTransactionCalled } = batchHarness({ catalogRows, order });
+  await assert.rejects(() => service.addOperations("order-1", [
+    { operation_id: "op-a", target_quantity: "10" },
+    { operation_id: "op-a", target_quantity: "20" },
+  ], user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATION_BATCH_DUPLICATE");
+  assert.equal(createCalls.length, 0);
+  assert.equal(isTransactionCalled(), false);
+});
+
+test("batch add rejects missing or deactivated catalog operations with their ids listed", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [] };
+  const catalogRows = [
+    { id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true },
+    { id: "op-c", operationName: "整烫", defaultUnitId: "unit-1", isActive: false },
+  ];
+  const { service, createCalls, isTransactionCalled } = batchHarness({ catalogRows, order });
+  await assert.rejects(() => service.addOperations("order-1", [
+    { operation_id: "op-a", target_quantity: "10" },
+    { operation_id: "op-b", target_quantity: "10" },
+    { operation_id: "op-c", target_quantity: "10" },
+  ], user), (error) => {
+    assert.ok(error instanceof NotFoundException && error.getResponse().code === "OPERATION_NOT_FOUND");
+    assert.deepEqual(error.getResponse().details, [{ operation_id: "op-b" }, { operation_id: "op-c" }]);
+    return true;
+  });
+  assert.equal(createCalls.length, 0);
+  assert.equal(isTransactionCalled(), false);
+});
+
+test("batch add rejects an invalid target quantity with the offending row labelled", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [] };
+  const catalogRows = [{ id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true }];
+  const { service, createCalls, isTransactionCalled } = batchHarness({ catalogRows, order });
+  await assert.rejects(() => service.addOperations("order-1", [{ operation_id: "op-a", target_quantity: "0" }], user), (error) => {
+    assert.ok(error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_OPERATION_TARGET");
+    assert.equal(error.getResponse().details[0].field, "第 1 道工序目标数量");
+    return true;
+  });
+  assert.equal(createCalls.length, 0);
+  assert.equal(isTransactionCalled(), false);
+});
+
+test("batch add rechecks duplicates against live operations inside the lock and never writes partial rows", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [{ operationCatalogId: "op-b", sequenceNo: 1, status: "active" }] };
+  const catalogRows = [
+    { id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true },
+    { id: "op-b", operationName: "缝制", defaultUnitId: "unit-1", isActive: true },
+  ];
+  const { service, createCalls } = batchHarness({ catalogRows, order });
+  await assert.rejects(() => service.addOperations("order-1", [
+    { operation_id: "op-a", target_quantity: "10" },
+    { operation_id: "op-b", target_quantity: "10" },
+  ], user), (error) => {
+    assert.ok(error instanceof ConflictException && error.getResponse().code === "PRODUCTION_OPERATION_DUPLICATE");
+    assert.equal(error.getResponse().details[0].operation_id, "op-b");
+    return true;
+  });
+  assert.equal(createCalls.length, 0);
+});
+
+test("batch add refuses non-editable production orders inside the transaction", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "completed", operations: [] };
+  const catalogRows = [{ id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true }];
+  const { service, createCalls } = batchHarness({ catalogRows, order });
+  await assert.rejects(() => service.addOperations("order-1", [{ operation_id: "op-a", target_quantity: "10" }], user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATION_NOT_EDITABLE");
+  assert.equal(createCalls.length, 0);
+});
+
+test("batch add rejects an unresolved unit before opening the transaction", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [] };
+  const catalogRows = [{ id: "op-a", operationName: "裁剪", defaultUnitId: "unit-9", isActive: true }];
+  const { service, createCalls, isTransactionCalled } = batchHarness({ catalogRows, unitRows: [{ id: "unit-1", isActive: true }], order });
+  await assert.rejects(() => service.addOperations("order-1", [{ operation_id: "op-a", target_quantity: "10" }], user), (error) => {
+    assert.ok(error instanceof NotFoundException && error.getResponse().code === "UNIT_NOT_FOUND");
+    assert.deepEqual(error.getResponse().details, [{ unit_id: "unit-9" }]);
+    return true;
+  });
+  assert.equal(createCalls.length, 0);
+  assert.equal(isTransactionCalled(), false);
+});
+
+test("batch add rejects an empty submission", async () => {
+  const { service, isTransactionCalled } = batchHarness({});
+  await assert.rejects(() => service.addOperations("order-1", [], user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATION_BATCH_EMPTY");
+  assert.equal(isTransactionCalled(), false);
+});
+
+test("batch add propagates a row insert failure so the transaction rolls the whole batch back", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [] };
+  const catalogRows = [
+    { id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true },
+    { id: "op-b", operationName: "缝制", defaultUnitId: "unit-1", isActive: true },
+  ];
+  const failure = new Error("insert failed");
+  const { service, createCalls, auditRecords } = batchHarness({
+    catalogRows, order,
+    createImpl: ({ data, createCalls }) => { createCalls.push(data); if (createCalls.length === 2) throw failure; return { id: "x", sequenceNo: data.sequenceNo }; },
+  });
+  await assert.rejects(() => service.addOperations("order-1", [
+    { operation_id: "op-a", target_quantity: "10" },
+    { operation_id: "op-b", target_quantity: "10" },
+  ], user), (error) => error === failure);
+  assert.equal(createCalls.length, 2);
+  assert.equal(auditRecords.length, 0);
 });

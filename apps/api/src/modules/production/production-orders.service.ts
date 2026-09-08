@@ -89,6 +89,49 @@ export class ProductionOrdersService {
     await this.audit.record("production_order_operation.create", "production_order_operation", user.id, result.id, { order_no: order.orderNo, production_order_id: id, production_order_status: order.status, before: {}, after: { status: "active", sequence_no: result.sequenceNo, target_quantity: result.targetQuantity.toString(), unit_id: result.unitId, operation_catalog_id: operation.id, operation_name: operation.operationName } });
     return result;
   }
+  /**
+   * Batch add operations picked from the operation catalog. The caller submits
+   * catalog ids without any sequence: sequence numbers are assigned inside the
+   * transaction as max(existing, including cancelled)+1…, so ordering carries no
+   * user intent and can never collide with the (productionOrderId, sequenceNo)
+   * unique constraint. The whole batch is atomic — any failure rolls back every row.
+   */
+  async addOperations(id: string, inputs: Array<{ operation_id: string; target_quantity: string; unit_id?: string }>, user: CurrentUser) {
+    if (!inputs.length) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_BATCH_EMPTY", message: "请至少选择一道工序", details: [] });
+    inputs.forEach((input, index) => this.parseDecimal(input.target_quantity, "INVALID_OPERATION_TARGET", "目标数量必须大于零", `第 ${index + 1} 道工序目标数量`));
+    const duplicatedInBatch = inputs.find((input, index) => inputs.some((other, otherIndex) => otherIndex !== index && other.operation_id === input.operation_id));
+    if (duplicatedInBatch) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_BATCH_DUPLICATE", message: "一次提交中不能包含重复工序", details: [{ operation_id: duplicatedInBatch.operation_id }] });
+    const operationIds = inputs.map((input) => input.operation_id);
+    const catalogRows = await this.prisma.operationCatalog.findMany({ where: { id: { in: operationIds }, deletedAt: null } });
+    const missing = operationIds.filter((operationId) => !catalogRows.some((row) => row.id === operationId && row.isActive));
+    if (missing.length) throw new NotFoundException({ code: "OPERATION_NOT_FOUND", message: "部分工序不存在或已停用，请刷新工序池后重试", details: missing.map((operation_id) => ({ operation_id })) });
+    const orderBefore = await this.get(id);
+    const unitIds = inputs.map((input) => input.unit_id ?? catalogRows.find((row) => row.id === input.operation_id)?.defaultUnitId ?? orderBefore.unitId);
+    const units = await this.prisma.unit.findMany({ where: { id: { in: unitIds }, isActive: true, deletedAt: null } });
+    const missingUnitId = unitIds.find((unitId) => !units.some((unit) => unit.id === unitId));
+    if (missingUnitId) throw new NotFoundException({ code: "UNIT_NOT_FOUND", message: "工序单位不存在或已停用", details: [{ unit_id: missingUnitId }] });
+    const created = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${id}::uuid FOR UPDATE`;
+      const order = await tx.productionOrder.findFirst({ where: { id, deletedAt: null }, include: { operations: { where: { deletedAt: null } } } });
+      if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
+      if (!["draft", "in_progress"].includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_NOT_EDITABLE", message: "只有草稿或进行中的生产单可以添加工序", details: [] });
+      const duplicate = order.operations.find((item) => item.status !== "cancelled" && operationIds.includes(item.operationCatalogId));
+      if (duplicate) throw new ConflictException({ code: "PRODUCTION_OPERATION_DUPLICATE", message: "同一生产单不能重复添加相同工序", details: [{ operation_id: duplicate.operationCatalogId, operation_name: duplicate.operationNameSnapshot, status: duplicate.status }] });
+      // Cancelled rows keep their sequence number, so resume after the highest
+      // sequence ever used on this order (including cancelled rows).
+      let nextSequence = order.operations.reduce((max, item) => Math.max(max, item.sequenceNo), 0);
+      const rows: Array<{ id: string; sequenceNo: number; targetQuantity: Prisma.Decimal; unitId: string; operationCatalogId: string; operationNameSnapshot: string }> = [];
+      for (const input of inputs) {
+        nextSequence += 1;
+        const catalog = catalogRows.find((row) => row.id === input.operation_id)!;
+        rows.push(await tx.productionOrderOperation.create({ data: { productionOrderId: id, operationCatalogId: catalog.id, operationNameSnapshot: catalog.operationName, unitId: input.unit_id ?? catalog.defaultUnitId ?? orderBefore.unitId, sequenceNo: nextSequence, targetQuantity: input.target_quantity, ...this.audit.create(user) } }));
+      }
+      return rows;
+    });
+    const order = await this.get(id);
+    await this.audit.record("production_order_operation.batch_create", "production_order_operation", user.id, id, { order_no: order.orderNo, production_order_status: order.status, count: created.length, operations: created.map((row) => ({ production_order_operation_id: row.id, operation_catalog_id: row.operationCatalogId, operation_name: row.operationNameSnapshot, sequence_no: row.sequenceNo, target_quantity: row.targetQuantity.toString(), unit_id: row.unitId })) });
+    return created;
+  }
   async updateOperation(id: string, operationId: string, input: OperationPatch, reason: string | undefined, user: CurrentUser) {
     if (input.target_quantity !== undefined) this.parseDecimal(input.target_quantity, "INVALID_OPERATION_TARGET", "目标数量必须大于零", "目标数量");
     if (input.sequence_no !== undefined && (!Number.isInteger(input.sequence_no) || input.sequence_no <= 0)) throw new UnprocessableEntityException({ code: "INVALID_OPERATION_TARGET", message: "工序顺序必须为正整数", details: [{ reason: `工序顺序必须是正整数，收到：${input.sequence_no}` }] });
