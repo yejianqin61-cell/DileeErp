@@ -19,6 +19,35 @@ test("referenced unit cannot be physically deleted", async () => {
   await assert.rejects(() => service.deleteUnit("unit-1", user), (error) => error instanceof ConflictException && error.getResponse().code === "MASTER_DATA_IN_USE");
 });
 
+test("a supplier referenced by a purchase order or item cannot be deleted", async () => {
+  const prisma = {
+    supplier: { findFirst: async () => ({ id: "supplier-1", supplierCode: "SUP-1" }) },
+    purchaseOrder: { count: async ({ where }) => (where.supplierId === "supplier-1" ? 1 : 0) },
+    purchaseOrderItem: { count: async () => 0 },
+    $transaction: async (fn) => fn({ ...prisma, $queryRawUnsafe: async () => [] }),
+  };
+  const service = new ProcurementMasterDataService(prisma, audit);
+  await assert.rejects(() => service.deleteSupplier("supplier-1", user), (error) => error instanceof ConflictException && error.getResponse().code === "MASTER_DATA_IN_USE");
+  const itemOnly = {
+    supplier: { findFirst: async () => ({ id: "supplier-1", supplierCode: "SUP-1" }) },
+    purchaseOrder: { count: async () => 0 },
+    purchaseOrderItem: { count: async () => 2 },
+    $transaction: async (fn) => fn({ ...itemOnly, $queryRawUnsafe: async () => [] }),
+  };
+  await assert.rejects(() => new ProcurementMasterDataService(itemOnly, audit).deleteSupplier("supplier-1", user), (error) => error.getResponse().code === "MASTER_DATA_IN_USE");
+});
+
+test("an unused supplier can be soft deleted", async () => {
+  const prisma = {
+    supplier: { findFirst: async () => ({ id: "supplier-1", supplierCode: "SUP-1" }), update: async ({ data }) => ({ id: "supplier-1", ...data }) },
+    purchaseOrder: { count: async () => 0 },
+    purchaseOrderItem: { count: async () => 0 },
+    $transaction: async (fn) => fn({ ...prisma, $queryRawUnsafe: async () => [] }),
+  };
+  const deleted = await new ProcurementMasterDataService(prisma, audit).deleteSupplier("supplier-1", user);
+  assert.equal(deleted.isActive, false);
+});
+
 require("reflect-metadata");
 const { MaterialDto, UpdateMaterialDto } = require("../dist/modules/procurement/procurement-master-data.controller.js");
 const { plainToInstance } = require("class-transformer");

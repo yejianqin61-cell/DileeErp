@@ -67,7 +67,11 @@ export class ProcurementMasterDataService {
           ])
         : kind === "material"
           ? [await tx.bomItem.count({ where: { materialId: id, deletedAt: null } })]
-          : [0];
+          : // supplier：采购单头与采购明细行都会引用；任一未删除引用都应阻止删除。
+            await Promise.all([
+              tx.purchaseOrder.count({ where: { supplierId: id, deletedAt: null } }),
+              tx.purchaseOrderItem.count({ where: { supplierId: id, deletedAt: null } }),
+            ]);
       if (references.reduce((sum, count) => sum + count, 0)) throw new ConflictException({ code: "MASTER_DATA_IN_USE", message: "基础资料已被业务引用，只能停用", details: [] });
       const softDelete = { ...this.audit.softDelete(user), isActive: false };
       const deleted = kind === "unit"
