@@ -290,3 +290,132 @@ test("batch add propagates a row insert failure so the transaction rolls the who
   assert.equal(createCalls.length, 2);
   assert.equal(auditRecords.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// PATCH /production/orders/:id/operations/:operationId — 工序计量目标数量与单位编辑
+// The endpoint must stay a legal PATCH: keep the production-order FOR UPDATE
+// lock, validate the unit/quantity before writing, require a reason while the
+// order is in production, and refresh the progress measurement snapshot.
+// ---------------------------------------------------------------------------
+
+function updateOperationHarness({ order, unitRows = [{ id: "unit-1", isActive: true }, { id: "unit-2", isActive: true }], updateImpl } = {}) {
+  const updateCalls = [];
+  const auditRecords = [];
+  let lockQueries = 0;
+  let transactions = 0;
+  const progressCalls = [];
+  const progress = { recalculateInTransaction: async (...args) => { progressCalls.push(args); return { status: "in_production" }; } };
+  const prisma = {
+    unit: { findFirst: async ({ where }) => unitRows.find((row) => row.id === where.id && row.isActive) ?? null },
+    productionOrder: { findFirst: async () => order },
+    $transaction: async (fn) => {
+      transactions += 1;
+      return fn({
+        $queryRaw: async () => { lockQueries += 1; },
+        productionOrder: { findFirst: async () => order },
+        productionOrderOperation: { update: updateImpl ?? (async ({ data }) => {
+          updateCalls.push(data);
+          return { id: "op-1", status: "active", sequenceNo: 1, targetQuantity: data.targetQuantity ?? "10", unitId: data.unitId ?? "unit-1" };
+        }) },
+      });
+    },
+  };
+  const audit = {
+    create: () => ({ createdBy: "user-1", updatedBy: "user-1" }),
+    update: () => ({ updatedBy: "user-1" }),
+    record: async (...args) => { auditRecords.push(args); },
+  };
+  return {
+    service: new ProductionOrdersService(prisma, audit, progress),
+    updateCalls, auditRecords, progressCalls,
+    lockCount: () => lockQueries, transactionCount: () => transactions,
+  };
+}
+
+const editableOperation = { id: "op-1", status: "active", sequenceNo: 1, targetQuantity: "10", unitId: "unit-1" };
+
+test("updateOperation edits target quantity and unit on a draft order without a reason", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [editableOperation] };
+  const { service, updateCalls, auditRecords, lockCount } = updateOperationHarness({ order });
+  const row = await service.updateOperation("order-1", "op-1", { target_quantity: "88", unit_id: "unit-2" }, undefined, user);
+  assert.equal(lockCount(), 1);
+  assert.equal(updateCalls.length, 1);
+  assert.equal(String(updateCalls[0].targetQuantity), "88");
+  assert.equal(updateCalls[0].unitId, "unit-2");
+  assert.equal(row.unitId, "unit-2");
+  assert.equal(auditRecords.length, 1);
+  const [action, entityType, actorId, entityId, details] = auditRecords[0];
+  assert.equal(action, "production_order_operation.update");
+  assert.equal(entityType, "production_order_operation");
+  assert.equal(actorId, "user-1");
+  assert.equal(entityId, "op-1");
+  assert.deepEqual(details.changed, ["target_quantity", "unit_id"]);
+  assert.equal(details.before.target_quantity, "10");
+  assert.equal(details.after.target_quantity, "88");
+});
+
+test("updateOperation on an in-progress order requires a correction reason", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "in_progress", operations: [editableOperation] };
+  const { service, updateCalls, transactionCount } = updateOperationHarness({ order });
+  await assert.rejects(() => service.updateOperation("order-1", "op-1", { target_quantity: "20" }, undefined, user), (error) => {
+    assert.ok(error instanceof UnprocessableEntityException && error.getResponse().code === "OPERATION_UPDATE_REASON_REQUIRED");
+    return true;
+  });
+  await assert.rejects(() => service.updateOperation("order-1", "op-1", { target_quantity: "20" }, "   ", user), (error) => error.getResponse().code === "OPERATION_UPDATE_REASON_REQUIRED");
+  // The reason rule depends on the live order status, so the check legitimately runs
+  // under the FOR UPDATE lock inside the transaction — assert no row was written.
+  assert.equal(updateCalls.length, 0);
+});
+
+test("updateOperation accepts an in-progress order edit when a reason is supplied", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "in_progress", operations: [editableOperation] };
+  const { service, updateCalls, auditRecords } = updateOperationHarness({ order });
+  await service.updateOperation("order-1", "op-1", { target_quantity: "20" }, "客户改单调整目标", user);
+  assert.equal(updateCalls.length, 1);
+  assert.equal(auditRecords[0][4].reason, "客户改单调整目标");
+});
+
+test("updateOperation refuses completed or closed production orders", async () => {
+  for (const status of ["completed", "closed"]) {
+    const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status, operations: [editableOperation] };
+    const { service, updateCalls } = updateOperationHarness({ order });
+    await assert.rejects(() => service.updateOperation("order-1", "op-1", { target_quantity: "20" }, "原因", user), (error) => {
+      assert.ok(error instanceof UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATION_NOT_EDITABLE");
+      assert.equal(error.getResponse().details[0].production_order_status, status);
+      return true;
+    });
+    assert.equal(updateCalls.length, 0);
+  }
+});
+
+test("updateOperation rejects unknown or deactivated units before opening a transaction", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [editableOperation] };
+  const { service, transactionCount } = updateOperationHarness({ order, unitRows: [{ id: "unit-1", isActive: true }] });
+  await assert.rejects(() => service.updateOperation("order-1", "op-1", { unit_id: "unit-9" }, undefined, user), (error) => {
+    assert.ok(error instanceof NotFoundException && error.getResponse().code === "UNIT_NOT_FOUND");
+    return true;
+  });
+  assert.equal(transactionCount(), 0);
+});
+
+test("updateOperation rejects an invalid target quantity before opening a transaction", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [editableOperation] };
+  const { service, transactionCount } = updateOperationHarness({ order });
+  for (const target_quantity of ["0", "-3", "abc", "1.23456"]) {
+    await assert.rejects(() => service.updateOperation("order-1", "op-1", { target_quantity }, undefined, user), (error) => error.getResponse().code === "INVALID_OPERATION_TARGET");
+  }
+  assert.equal(transactionCount(), 0);
+});
+
+test("updateOperation refreshes the production progress measurement snapshot inside the transaction", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "in_progress", operations: [editableOperation] };
+  const { service, progressCalls } = updateOperationHarness({ order });
+  await service.updateOperation("order-1", "op-1", { target_quantity: "30" }, "目标调整", user);
+  assert.equal(progressCalls.length, 1);
+  const [tx, productionOrderId, sourceType, sourceId, actor] = progressCalls[0];
+  assert.ok(tx && typeof tx === "object");
+  assert.equal(productionOrderId, "order-1");
+  assert.equal(sourceType, "production_order_operation");
+  assert.equal(sourceId, "op-1");
+  assert.deepEqual(actor, user);
+});

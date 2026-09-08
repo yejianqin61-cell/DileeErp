@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { ProductionProgressService } from "./production-progress.service";
 
 type Input = { order_no: string; bom_id: string; bom_version: number; production_order_type?: string; parent_production_order_id?: string; execution_mode: string; execution_location_id: string; planned_quantity: string; unit_id: string; product_specification?: string; production_process_note?: string; planned_started_on?: string; delivery_due_on?: string; remark?: string };
 type OperationPatch = { sequence_no?: number; target_quantity?: string; unit_id?: string };
@@ -13,7 +14,7 @@ type OperationRow = { id: string; status: string; operationNameSnapshot: string;
 type CompletionOrder = { id: string; executionMode: string; plannedQuantity: Prisma.Decimal; operations: OperationRow[] };
 @Injectable()
 export class ProductionOrdersService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly progress?: ProductionProgressService) {}
   async list(orderNo?: string) { return this.prisma.productionOrder.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { executionLocation: true, unit: true, bom: true, operations: { where: { deletedAt: null }, orderBy: { sequenceNo: "asc" } } }, orderBy: { updatedAt: "desc" } }); }
   async get(id: string) { const item = await this.prisma.productionOrder.findFirst({ where: { id, deletedAt: null }, include: { executionLocation: true, unit: true, bom: true, parent: true, children: true, operations: { where: { deletedAt: null }, include: { operationCatalog: true, unit: true }, orderBy: { sequenceNo: "asc" } } } }); if (!item) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] }); return item; }
   async create(input: Input, user: CurrentUser) {
@@ -148,6 +149,7 @@ export class ProductionOrdersService {
       if (input.sequence_no !== undefined) { const occupier = order.operations.find((candidate) => candidate.id !== operationId && candidate.sequenceNo === input.sequence_no); if (occupier) throw new ConflictException({ code: "PRODUCTION_OPERATION_SEQUENCE_DUPLICATE", message: "生产单工序顺序不能重复（序号已被其他工序占用，含已取消工序）", details: [{ sequence_no: input.sequence_no, occupied_by_operation_id: occupier.id, occupied_by_status: occupier.status }] }); }
       const before = { status: operation.status, sequence_no: operation.sequenceNo, target_quantity: operation.targetQuantity.toString(), unit_id: operation.unitId };
       const row = await tx.productionOrderOperation.update({ where: { id: operationId }, data: { ...(input.sequence_no === undefined ? {} : { sequenceNo: input.sequence_no }), ...(input.target_quantity === undefined ? {} : { targetQuantity: input.target_quantity }), ...(input.unit_id === undefined ? {} : { unitId: input.unit_id }), ...this.audit.update(user) } });
+      if (this.progress && changed.some((key) => key !== "sequence_no")) await this.progress.recalculateInTransaction(tx, id, "production_order_operation", operationId, user);
       return { row, orderNo: order.orderNo, before };
     });
     await this.audit.record("production_order_operation.update", "production_order_operation", user.id, operationId, { order_no: outcome.orderNo, reason: reason?.trim() ?? null, changed, before: outcome.before, after: { status: outcome.row.status, sequence_no: outcome.row.sequenceNo, target_quantity: outcome.row.targetQuantity.toString(), unit_id: outcome.row.unitId } }); return outcome.row;
