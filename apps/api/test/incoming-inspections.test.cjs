@@ -111,3 +111,20 @@ test("a return is refused with inbound facts, posted payables, or a missing reas
   await assert.rejects(() => serviceFor({ ...base, rawMaterialInbounds: [], purchaseReceipt: { payableSources: [{ id: "payable-1", status: "posted" }] } }).returnToSupplier("inspection-1", "退货", user), (error) => error.getResponse().code === "PAYABLE_SOURCE_POSTED");
   await assert.rejects(() => serviceFor({ ...base, rawMaterialInbounds: [], purchaseReceipt: { payableSources: [] } }).returnToSupplier("inspection-1", "   ", user), (error) => error.getResponse().code === "INSPECTION_RETURN_REASON_REQUIRED");
 });
+
+test("a returned batch cannot be corrected back to life or returned twice", async () => {
+  const returned = { id: "inspection-1", orderNo: "DL260001", status: "cancelled", purchaseReceiptId: "receipt-1", remark: "整批退货：来料规格不符", extensionData: {}, rawMaterialInbounds: [], purchaseReceipt: { quantity: "10", payableSources: [], rawMaterialInbounds: [] } };
+  const txFor = () => ({ $queryRaw: async () => undefined, incomingInspection: { findFirst: async () => returned, update: async ({ data }) => { throw new Error("must not write"); } }, payableSource: { updateMany: async () => { throw new Error("must not write"); } } });
+  const correctionService = new IncomingInspectionsService({ $transaction: async (fn) => fn(txFor()) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  await assert.rejects(() => correctionService.update("inspection-1", { inspected_quantity: "1", accepted_quantity: "1", conditional_quantity: "0", rejected_quantity: "0", reason: "复核" }, user), (error) => error.getResponse().code === "INSPECTION_RETURNED_NOT_CORRECTABLE");
+  const returnService = new IncomingInspectionsService({ $transaction: async (fn) => fn(txFor()) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  await assert.rejects(() => returnService.returnToSupplier("inspection-1", "重复退货", user), (error) => error.getResponse().code === "INSPECTION_ALREADY_RETURNED");
+});
+
+test("a transition rechecks live state inside the lock before writing", async () => {
+  const initial = { id: "inspection-1", status: "accepted", remark: null, inspectedQuantity: "1", rawMaterialInbounds: [] };
+  const live = { id: "inspection-1", status: "cancelled", remark: "整批退货：规格不符", inspectedQuantity: "1", rawMaterialInbounds: [] };
+  const tx = { $queryRaw: async () => undefined, incomingInspection: { findFirst: async () => live, update: async () => { throw new Error("must not write"); } } };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx), incomingInspection: { findFirst: async () => initial } }, { update: () => ({ updatedBy: user.id }), record: async () => {} }, { createDraftForInspection: async () => ({ id: "inbound-x", status: "draft" }) });
+  await assert.rejects(() => service.transition("inspection-1", "pending", "回退", user), (error) => error.getResponse().code === "INVALID_INSPECTION_STATE");
+});

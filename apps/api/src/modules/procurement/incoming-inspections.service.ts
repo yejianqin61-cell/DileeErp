@@ -18,6 +18,7 @@ export class IncomingInspectionsService {
       await tx.$queryRaw`SELECT purchase_receipt_id FROM incoming_inspections WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { purchaseReceipt: { include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } } } }, rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } } } });
       if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
+      if (current.status === "cancelled") throw new UnprocessableEntityException({ code: "INSPECTION_RETURNED_NOT_CORRECTABLE", message: "已整批退货的质检批次不可更正", details: [] });
       if (current.rawMaterialInbounds.length || current.purchaseReceipt.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可修改", details: [] });
       if (values[0].gt(current.purchaseReceipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
       const status = values[0].isZero() ? current.status : values[3].eq(values[0]) ? "rejected" : values[1].plus(values[2]).eq(values[0]) ? (values[2].gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
@@ -56,24 +57,39 @@ export class IncomingInspectionsService {
   }
 
   async transition(id: string, target: string, reason: string | undefined, user: CurrentUser) {
-    const current = await this.prisma.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null } } } });
-    if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
-    const completedStatuses = ["accepted", "conditionally_accepted", "partially_accepted", "rejected", "completed"];
-    const allowed = (current.status === "pending" && target === "inspecting") || (current.status === "inspecting" && target === "completed") || (completedStatuses.includes(current.status) && ["pending", "cancelled"].includes(target));
-    if (!allowed) throw new UnprocessableEntityException({ code: "INVALID_INSPECTION_STATE", message: "来料质检状态不可流转", details: [{ from: current.status, to: target }] });
-    if (current.status === "inspecting" && target === "completed" && new Prisma.Decimal(current.inspectedQuantity).isZero()) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_REQUIRED", message: "完成质检前必须登记检验数量", details: [] });
-    if (completedStatuses.includes(current.status) && !reason?.trim()) throw new UnprocessableEntityException({ code: "INSPECTION_REVERSAL_REASON_REQUIRED", message: "质检回退必须填写原因", details: [] });
-    if (completedStatuses.includes(current.status) && current.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可直接回退", details: [] });
+    const initial = await this.prisma.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null } } } });
+    if (!initial) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
+    this.assertTransitionAllowed(initial, target, reason);
     const result = this.inbounds
       ? await this.prisma.$transaction(async (tx) => {
           await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${id}::uuid FOR UPDATE`;
+          // TOCTOU 防护：锁内重读最新状态并复核全部流转条件，防止并发回退/退货互相覆盖。
+          const current = await tx.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null } } } });
+          if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
+          this.assertTransitionAllowed(current, target, reason);
           const updated = await tx.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });
           if (["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(target)) await this.inbounds!.createDraftForInspection(tx, id, user);
           return updated;
         })
-      : await this.prisma.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });
-    await this.audit.record("incoming_inspection.transition", "incoming_inspection", user.id, id, { from: current.status, to: target, reason: reason ?? null });
+      : (async () => {
+          // 无入库服务注入的降级路径（仅测试桩使用）：同样锁内重读并复核，避免复刻 TOCTOU。
+          const current = await this.prisma.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null } } } });
+          if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
+          this.assertTransitionAllowed(current, target, reason);
+          return this.prisma.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });
+        })();
+    await this.audit.record("incoming_inspection.transition", "incoming_inspection", user.id, id, { from: initial.status, to: target, reason: reason ?? null });
     return result;
+  }
+
+  /** 锁外快速失败与锁内复核共用：状态流转白名单、数量与原因门禁、下游事实拦截。 */
+  private assertTransitionAllowed(current: { status: string; inspectedQuantity: Prisma.Decimal | string | null; rawMaterialInbounds: Array<{ id: string }> }, target: string, reason: string | undefined) {
+    const completedStatuses = ["accepted", "conditionally_accepted", "partially_accepted", "rejected", "completed"];
+    const allowed = (current.status === "pending" && target === "inspecting") || (current.status === "inspecting" && target === "completed") || (completedStatuses.includes(current.status) && ["pending", "cancelled"].includes(target));
+    if (!allowed) throw new UnprocessableEntityException({ code: "INVALID_INSPECTION_STATE", message: "来料质检状态不可流转", details: [{ from: current.status, to: target }] });
+    if (current.status === "inspecting" && target === "completed" && new Prisma.Decimal(current.inspectedQuantity ?? 0).isZero()) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_REQUIRED", message: "完成质检前必须登记检验数量", details: [] });
+    if (completedStatuses.includes(current.status) && !reason?.trim()) throw new UnprocessableEntityException({ code: "INSPECTION_REVERSAL_REASON_REQUIRED", message: "质检回退必须填写原因", details: [] });
+    if (completedStatuses.includes(current.status) && current.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可直接回退", details: [] });
   }
 
   /** 整批退货：锁定质检行，禁止已有入库事实或已过账应付的批次退货；未过账应付一并作废。 */
@@ -83,6 +99,7 @@ export class IncomingInspectionsService {
       await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } }, purchaseReceipt: { include: { payableSources: { where: { status: { not: "voided" } } } } } } });
       if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
+      if (current.status === "cancelled") throw new UnprocessableEntityException({ code: "INSPECTION_ALREADY_RETURNED", message: "该质检批次已整批退货，无需重复操作", details: [] });
       if (current.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不能退货", details: [] });
       if (current.purchaseReceipt.payableSources.some((source) => source.status === "posted")) throw new UnprocessableEntityException({ code: "PAYABLE_SOURCE_POSTED", message: "应付来源已过账，不能整批退货", details: [] });
       await tx.payableSource.updateMany({ where: { purchaseReceiptId: current.purchaseReceiptId, status: { not: "voided" } }, data: { status: "voided", ...this.audit.update(user) } });

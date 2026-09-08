@@ -13,7 +13,7 @@ export class BomsService {
   }
 
   async get(id: string) {
-    const bom = await this.prisma.bom.findFirst({ where: { id, deletedAt: null }, include: { salesOrder: true, salesOrderVersion: true, items: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } } } });
+    const bom = await this.prisma.bom.findFirst({ where: { id, deletedAt: null }, include: { salesOrder: true, salesOrderVersion: true, items: { where: { deletedAt: null }, orderBy: [{ sequence: "asc" }, { createdAt: "asc" }] } } });
     if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在", details: [] });
     return bom;
   }
