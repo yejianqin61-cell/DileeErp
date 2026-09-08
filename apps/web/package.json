@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "test:unit": "node --test \"lib/**/*.test.mjs\"",
     "lint": "next lint"
   },
   "dependencies": {
