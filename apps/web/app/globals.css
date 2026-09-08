@@ -146,6 +146,14 @@ button { cursor: pointer; }
 .form-grid { display: grid; gap: 14px; }
 .attachment-panel { margin-top: 16px; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+/* 数据表格滚动条：全站统一为占位、始终可见的高对比样式（Chromium/Edge + Firefox）。
+   自定义 ::-webkit-scrollbar 会禁用 Win11 覆盖式滚动条的自动隐藏，保证拖动条始终可见。 */
+.table-wrap, .ui-table-wrap { scrollbar-width: auto; scrollbar-color: #8aa2b8 var(--surface-muted); }
+.table-wrap::-webkit-scrollbar, .ui-table-wrap::-webkit-scrollbar { height: 14px; width: 14px; -webkit-appearance: none; }
+.table-wrap::-webkit-scrollbar-track, .ui-table-wrap::-webkit-scrollbar-track { background: var(--surface-muted); border-top: 1px solid var(--border); }
+.table-wrap::-webkit-scrollbar-thumb, .ui-table-wrap::-webkit-scrollbar-thumb { background: #8aa2b8; border-radius: 7px; border: 3px solid var(--surface-muted); }
+.table-wrap::-webkit-scrollbar-thumb:hover, .ui-table-wrap::-webkit-scrollbar-thumb:hover { background: var(--primary); }
+.table-wrap::-webkit-scrollbar-corner, .ui-table-wrap::-webkit-scrollbar-corner { background: var(--surface-muted); }
 .table-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 2px; color: var(--text-muted); font-size: 12px; }
 .table-pagination div { display: flex; gap: 6px; }
 .table-pagination button { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 6px 10px; color: var(--text); }
