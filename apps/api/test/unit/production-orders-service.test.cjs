@@ -419,3 +419,39 @@ test("updateOperation refreshes the production progress measurement snapshot ins
   assert.equal(sourceId, "op-1");
   assert.deepEqual(actor, user);
 });
+
+// 完工门禁与进度计量同口径：工序实际完成量 = max(工序日报累计, 员工日报累计)。
+function completionHarness({ operationReports = [], employeeReports = [] } = {}) {
+  const order = { id: "order-1", orderNo: "SO-1", productionOrderNo: "MO-1", unitId: "unit-1", status: "in_progress", executionMode: "in_house", plannedQuantity: "50", operations: [{ id: "op-1", status: "active", sequenceNo: 1, targetQuantity: "50", operationNameSnapshot: "缝伞" }] };
+  const tx = {
+    $queryRaw: async () => undefined,
+    productionOrder: {
+      findFirst: async () => order,
+      update: async ({ data }) => ({ ...order, ...data, actualCompletedQuantity: data.actualCompletedQuantity ?? null }),
+    },
+    operationDailyReport: { groupBy: async () => operationReports },
+    employeeDailyReport: { groupBy: async () => employeeReports },
+    productionDailyAlert: { count: async () => 0 },
+  };
+  const service = new ProductionOrdersService({ $transaction: async (fn) => fn(tx) }, { create: () => ({}), update: () => ({ updatedBy: user.id }), record: async () => {} });
+  return service;
+}
+
+test("completion counts employee daily report quantities toward operation targets", async () => {
+  const service = completionHarness({ employeeReports: [{ productionOrderOperationId: "op-1", _sum: { quantity: "50" } }] });
+  const row = await service.transition("order-1", "completed", "完工", user);
+  assert.equal(row.status, "completed");
+  assert.equal(row.actualCompletedQuantity.toString(), "50");
+});
+
+test("completion still refuses when the larger source is below the target", async () => {
+  const service = completionHarness({
+    operationReports: [{ productionOrderOperationId: "op-1", _sum: { completedQuantity: "30" } }],
+    employeeReports: [{ productionOrderOperationId: "op-1", _sum: { quantity: "49" } }],
+  });
+  await assert.rejects(() => service.transition("order-1", "completed", "完工", user), (error) => {
+    assert.ok(error instanceof UnprocessableEntityException && error.getResponse().code === "PRODUCTION_OPERATIONS_INCOMPLETE");
+    assert.equal(error.getResponse().details[0].completed_quantity, "49");
+    return true;
+  });
+});

@@ -173,8 +173,15 @@ export class ProductionOrdersService {
     const pendingAlerts = await client.productionDailyAlert.count({ where: { productionOrderId: order.id, deletedAt: null, status: "pending", productionOrderOperation: { status: { not: "cancelled" } } } });
     if (pendingAlerts) throw new UnprocessableEntityException({ code: "PRODUCTION_ALERTS_UNCONFIRMED", message: "存在未处理的生产告警，确认后才能完工", details: [{ count: pendingAlerts }] });
     if (order.executionMode === "in_house") {
-      const reports = await client.operationDailyReport.groupBy({ by: ["productionOrderOperationId"], where: { productionOrderId: order.id, deletedAt: null }, _sum: { completedQuantity: true } });
-      const actual = new Map(reports.map((report) => [report.productionOrderOperationId, report._sum.completedQuantity ?? new Prisma.Decimal(0)]));
+      const [reports, employeeReports] = await Promise.all([
+        client.operationDailyReport.groupBy({ by: ["productionOrderOperationId"], where: { productionOrderId: order.id, deletedAt: null }, _sum: { completedQuantity: true } }),
+        client.employeeDailyReport.groupBy({ by: ["productionOrderOperationId"], where: { productionOrderId: order.id, deletedAt: null }, _sum: { quantity: true } }),
+      ]);
+      // 完工口径与进度计量一致：工序实际完成量 = max(工序日报累计, 员工日报累计)，避免双源同填双重计数。
+      const operationActual = new Map(reports.map((report) => [report.productionOrderOperationId, new Prisma.Decimal(report._sum.completedQuantity ?? 0)]));
+      const employeeActual = new Map(employeeReports.map((report) => [report.productionOrderOperationId, new Prisma.Decimal(report._sum.quantity ?? 0)]));
+      const actual = new Map<string, Prisma.Decimal>();
+      for (const operation of order.operations) { const operationTotal = operationActual.get(operation.id) ?? new Prisma.Decimal(0); const employeeTotal = employeeActual.get(operation.id) ?? new Prisma.Decimal(0); actual.set(operation.id, employeeTotal.gt(operationTotal) ? employeeTotal : operationTotal); }
       const valid = order.operations.filter((operation) => operation.status !== "cancelled");
       const incomplete = valid.filter((operation) => !(actual.get(operation.id) ?? new Prisma.Decimal(0)).gte(operation.targetQuantity));
       if (incomplete.length) throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATIONS_INCOMPLETE", message: "所有有效工序达到计划数量后才能完工", details: incomplete.map((operation) => ({ operation_id: operation.id, operation_name: operation.operationNameSnapshot, planned_quantity: operation.targetQuantity.toString(), completed_quantity: (actual.get(operation.id) ?? new Prisma.Decimal(0)).toString() })) });

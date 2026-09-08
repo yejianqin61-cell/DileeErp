@@ -84,7 +84,7 @@ export class ProductionProgressService {
     const range = this.range(filter.from, filter.to);
     const orders = await this.findOrders(this.prisma, { order_no: filter.order_no });
     const summaries = await Promise.all(orders.map((order) => this.buildProductionOrder(order, range)));
-    return { rebuilt_at: new Date().toISOString(), order_count: summaries.length, measurement_count: summaries.reduce((count, summary) => count + summary.measurements.length, 0), source_of_truth: ["operation_daily_reports", "outsource_return_transfers", "outsource_direct_shipments"], range: { order_no: filter.order_no ?? null, from: filter.from ?? null, to: filter.to ?? null } };
+    return { rebuilt_at: new Date().toISOString(), order_count: summaries.length, measurement_count: summaries.reduce((count, summary) => count + summary.measurements.length, 0), source_of_truth: ["operation_daily_reports", "employee_daily_reports", "outsource_return_transfers", "outsource_direct_shipments"], range: { order_no: filter.order_no ?? null, from: filter.from ?? null, to: filter.to ?? null } };
   }
 
   private productionOrderWhere(filter: ProgressFilter): Prisma.ProductionOrderWhereInput {
@@ -106,8 +106,9 @@ export class ProductionProgressService {
   private async buildProductionOrder(order: ProductionOrderSnapshot, range: { from?: Date; to?: Date } = {}, client: PrismaService | Prisma.TransactionClient = this.prisma) {
     const db = client;
     const isInHouse = order.executionMode === "in_house";
-    const [reports, alerts, returns, shipments, receipts, reversals, qcSubmissions] = await Promise.all([
+    const [reports, employeeReports, alerts, returns, shipments, receipts, reversals, qcSubmissions] = await Promise.all([
       db.operationDailyReport.findMany({ where: { productionOrderId: order.id, deletedAt: null, ...(range.from || range.to ? { reportDate: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } } : {}) }, select: { id: true, productionOrderOperationId: true, reportDate: true, completedQuantity: true } }),
+      db.employeeDailyReport.findMany({ where: { productionOrderId: order.id, deletedAt: null, ...(range.from || range.to ? { reportDate: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } } : {}) }, select: { id: true, productionOrderOperationId: true, reportDate: true, quantity: true } }),
       db.productionDailyAlert.findMany({ where: { productionOrderId: order.id, deletedAt: null, status: { in: ["pending", "confirmed"] }, ...(range.from || range.to ? { reportDate: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } } : {}) }, select: { alertType: true, status: true, reportDate: true, productionOrderOperationId: true } }),
       db.outsourceReturnTransfer.findMany({ where: { productionOrderId: order.id, transferType: "finished_goods_return", deletedAt: null, status: { notIn: ["draft", "cancelled", "reversed"] }, ...(range.from || range.to ? { transferDate: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } } : {}) }, select: { id: true, quantity: true, transferDate: true, unit: { select: { name: true } }, status: true } }),
       db.outsourceDirectShipment.findMany({ where: { productionOrderId: order.id, deletedAt: null, status: "dispatched", ...(range.from || range.to ? { shipmentDate: { ...(range.from ? { gte: range.from } : {}), ...(range.to ? { lte: range.to } : {}) } } : {}) }, select: { id: true, quantity: true, reversalQuantity: true, shipmentDate: true, unit: { select: { name: true } } } }),
@@ -117,6 +118,18 @@ export class ProductionProgressService {
     ]);
     const reportByOperation = new Map<string, { actual: Prisma.Decimal; sourceIds: string[]; dates: string[] }>();
     for (const report of reports) { const current = reportByOperation.get(report.productionOrderOperationId) ?? { actual: new Prisma.Decimal(0), sourceIds: [], dates: [] }; current.actual = current.actual.plus(report.completedQuantity); current.sourceIds.push(report.id); current.dates.push(this.isoDate(report.reportDate)); reportByOperation.set(report.productionOrderOperationId, current); }
+    // 工序实际完成量口径：工序日报与员工日报是同一事实的两个人工登记面（每日差异告警负责提示二者不一致）。
+    // 取两源累计的较大者作为 actual：员工日报是唯一有 UI 录入入口的路径，只算工序日报会永远低估；
+    // 简单相加则在两源同填时双重计数。max 保证不低估、不重复。
+    const employeeByOperation = new Map<string, { actual: Prisma.Decimal; sourceIds: string[]; dates: string[] }>();
+    for (const report of employeeReports) { const current = employeeByOperation.get(report.productionOrderOperationId) ?? { actual: new Prisma.Decimal(0), sourceIds: [], dates: [] }; current.actual = current.actual.plus(report.quantity); current.sourceIds.push(report.id); current.dates.push(this.isoDate(report.reportDate)); employeeByOperation.set(report.productionOrderOperationId, current); }
+    const combinedByOperation = new Map<string, { actual: Prisma.Decimal; sourceIds: string[]; dates: string[] }>();
+    for (const [operationId, operationSource] of reportByOperation) combinedByOperation.set(operationId, { ...operationSource, sourceIds: [...operationSource.sourceIds], dates: [...operationSource.dates] });
+    for (const [operationId, employeeSource] of employeeByOperation) {
+      const current = combinedByOperation.get(operationId);
+      if (!current || employeeSource.actual.gt(current.actual)) combinedByOperation.set(operationId, { actual: employeeSource.actual, sourceIds: [...(current?.sourceIds ?? []), ...employeeSource.sourceIds], dates: [...(current?.dates ?? []), ...employeeSource.dates] });
+      else { current.sourceIds.push(...employeeSource.sourceIds); current.dates.push(...employeeSource.dates); }
+    }
 
     // B12：差异告警按工序归属——只有属于该工序（productionOrderOperationId 匹配）的 pending daily_discrepancy 告警才
     // 贴到该工序计量行；订单级 blockers 仍按整单 pending 去重（见下方 blockers 组装），避免 A 工序告警被贴到 B 工序行。
@@ -125,7 +138,7 @@ export class ProductionProgressService {
     // A9：只有 in_house 生产单才把工序展开为 in_house 计量行并参与工序完成计数；outsourced 单的工序仅作工艺说明。
     const rows: MeasurementRow[] = [];
     if (isInHouse) {
-      for (const operation of order.operations) { const current = reportByOperation.get(operation.id) ?? { actual: new Prisma.Decimal(0), sourceIds: [], dates: [] }; rows.push({ order_no: order.orderNo, production_order_id: order.id, production_order_no: order.productionOrderNo, operation_id: operation.id, source_type: "operation_report", source_id: current.sourceIds[0] ?? operation.id, source_ids: current.sourceIds, unit: operation.unit.name, planned_quantity: operation.targetQuantity, actual_quantity: current.actual, execution_mode: "in_house", cancelled: operation.status === "cancelled", warning_codes: pendingDiscrepancyOperationIds.has(operation.id) ? ["daily_discrepancy"] : undefined }); }
+      for (const operation of order.operations) { const current = combinedByOperation.get(operation.id) ?? { actual: new Prisma.Decimal(0), sourceIds: [], dates: [] }; rows.push({ order_no: order.orderNo, production_order_id: order.id, production_order_no: order.productionOrderNo, operation_id: operation.id, source_type: "operation_report", source_id: current.sourceIds[0] ?? operation.id, source_ids: current.sourceIds, unit: operation.unit.name, planned_quantity: operation.targetQuantity, actual_quantity: current.actual, execution_mode: "in_house", cancelled: operation.status === "cancelled", warning_codes: pendingDiscrepancyOperationIds.has(operation.id) ? ["daily_discrepancy"] : undefined }); }
     }
 
     // A4（外加工计量口径）：不再把每条回厂/直装柜来源都作为 planned=0 的计量行参与单位聚合
@@ -159,11 +172,11 @@ export class ProductionProgressService {
     if (reversals.length > 0) blockers.push("source_reversal_pending");
     const activeOperations = order.operations.filter((operation) => operation.status !== "cancelled");
     // A9：missing_operation_report 只适用于 in_house（outsourced 的工序不参与工序完成计数）。
-    if (isInHouse && order.status !== "draft" && activeOperations.some((operation) => !reportByOperation.has(operation.id))) blockers.push("missing_operation_report");
-    const allProductionComplete = isInHouse ? activeOperations.length > 0 && activeOperations.every((operation) => { const current = reportByOperation.get(operation.id); return current ? current.actual.gte(operation.targetQuantity) : false; }) : outsourceDeliveredTotal.gte(order.plannedQuantity);
+    if (isInHouse && order.status !== "draft" && activeOperations.some((operation) => !combinedByOperation.has(operation.id))) blockers.push("missing_operation_report");
+    const allProductionComplete = isInHouse ? activeOperations.length > 0 && activeOperations.every((operation) => { const current = combinedByOperation.get(operation.id); return current ? current.actual.gte(operation.targetQuantity) : false; }) : outsourceDeliveredTotal.gte(order.plannedQuantity);
     const status = deriveOrderProgressStatus({ has_production_orders: true, has_started_production: order.status !== "draft", all_production_complete: allProductionComplete, blockers, has_outsource_pending_handoff: !isInHouse && outsourceDeliveredTotal.eq(0), has_finished_goods_source: !isInHouse && outsourceDeliveredTotal.gt(0), qc_capability_available: true, shipping_capability_available: false });
     // A9：只有 in_house 才生成工序计量行；outsourced 的工序不再出现在 operationMeasurements 里。
-    const operationMeasurements = isInHouse ? order.operations.map((operation) => { const current = reportByOperation.get(operation.id) ?? { actual: new Prisma.Decimal(0), sourceIds: [], dates: [] }; const warningCodes = pendingDiscrepancyOperationIds.has(operation.id) ? ["daily_discrepancy"] : undefined; return { operation_id: operation.id, operation_name: operation.operationNameSnapshot, source_type: "operation_report" as const, source_ids: current.sourceIds, source_dates: current.dates, unit: operation.unit.name, execution_mode: "in_house" as const, ...calculateQuantityProgress(operation.targetQuantity, current.actual, operation.status === "cancelled"), ...(warningCodes ? { warning_codes: warningCodes } : {}) }; }) : [];
+    const operationMeasurements = isInHouse ? order.operations.map((operation) => { const current = combinedByOperation.get(operation.id) ?? { actual: new Prisma.Decimal(0), sourceIds: [], dates: [] }; const warningCodes = pendingDiscrepancyOperationIds.has(operation.id) ? ["daily_discrepancy"] : undefined; return { operation_id: operation.id, operation_name: operation.operationNameSnapshot, source_type: "operation_report" as const, source_ids: current.sourceIds, source_dates: current.dates, unit: operation.unit.name, execution_mode: "in_house" as const, ...calculateQuantityProgress(operation.targetQuantity, current.actual, operation.status === "cancelled"), ...(warningCodes ? { warning_codes: warningCodes } : {}) }; }) : [];
     const externalMeasurements = [...outsourceByUnit.values()].map((group) => {
       const planned = group.unit === order.unit.name ? order.plannedQuantity : new Prisma.Decimal(0);
       const sourceType = group.hasReturn ? "outsource_finished_goods_return" : "outsource_direct_shipment";
