@@ -47,10 +47,18 @@ export class BomsService {
     return updated;
   }
 
-  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; specification_model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; production_batch_base?: string; base_usage?: string; unit: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser) {
+  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; specification_model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; production_batch_base?: string; base_usage?: string; unit: string; unit_id?: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser) {
     const bom = await this.get(id);
+    // Material master data stays authoritative for raw-material checks only.
+    // Quantity and unit are user-maintained BOM fields: required_quantity is
+    // persisted verbatim (no silent recompute), and unit_id (unit pool) wins
+    // over the material default when provided.
+    const unitIds = items.map((item) => item.unit_id).filter((value): value is string => Boolean(value));
+    const unitRows = unitIds.length && this.prisma.unit?.findMany ? await this.prisma.unit.findMany({ where: { id: { in: [...new Set(unitIds)] }, isActive: true, deletedAt: null }, select: { id: true } }) : [];
+    const unitIdSet = new Set(unitRows.map((row) => row.id));
+    if (unitIds.some((unitId) => !unitIdSet.has(unitId))) throw new UnprocessableEntityException({ code: "BOM_UNIT_NOT_FOUND", message: "BOM 明细单位不存在或已停用", details: [] });
     const order = this.prisma.salesOrder?.findUnique ? await this.prisma.salesOrder.findUnique({ where: { id: bom.salesOrderId }, select: { quantity: true } }) : { quantity: new Prisma.Decimal(1) };
-    if (!order || items.some((item) => !item.material_id || !item.unit || !(item.material_name ?? String(item.material_snapshot.name ?? "")).trim() || !this.isPositiveDecimal(item.required_quantity) || !this.isPositiveDecimal(item.production_batch_base ?? "1") || !this.isPositiveDecimal(item.base_usage ?? item.required_quantity) || (item.loss_quantity !== undefined && !this.isNonNegativeDecimal(item.loss_quantity)) || (item.loss_rate !== undefined && !this.isNonNegativeDecimal(item.loss_rate)))) {
+    if (!order || items.some((item) => !item.material_id || !item.unit || !(item.material_name ?? String(item.material_snapshot.name ?? "")).trim() || !this.isPositiveDecimal(item.required_quantity) || (item.production_batch_base !== undefined && !this.isPositiveDecimal(item.production_batch_base)) || (item.base_usage !== undefined && !this.isPositiveDecimal(item.base_usage)) || (item.loss_quantity !== undefined && !this.isNonNegativeDecimal(item.loss_quantity)) || (item.loss_rate !== undefined && !this.isNonNegativeDecimal(item.loss_rate)))) {
       throw new UnprocessableEntityException({ code: "INVALID_BOM_ITEM", message: "BOM 明细的物料、数量或单位不合法", details: [] });
     }
     await this.prisma.$transaction(async (tx) => {
@@ -63,8 +71,10 @@ export class BomsService {
         // Auto-fill of specification_model/color happens in the web client only
         // at material-selection or BOM-import time. On save we persist the
         // submitted values verbatim: manual edits must never be replaced by
-        // material_snapshot (or a legacy model fallback) here.
-        await tx.bomItem.createMany({ data: items.map((item) => { const batch = new Prisma.Decimal(item.production_batch_base ?? "1"); const base = new Prisma.Decimal(item.base_usage ?? item.required_quantity); const approved = order.quantity.div(batch).mul(base); return { bomId: id, materialId: item.material_id, materialName: item.material_name ?? String(item.material_snapshot.name ?? ""), model: item.model, specificationModel: item.specification_model, color: item.color, unitId: materialMap.get(item.material_id)?.defaultUnitId, materialSnapshot: item.material_snapshot as Prisma.InputJsonValue, requiredQuantity: approved, productionBatchBase: batch, baseUsage: base, approvedUsage: approved, unit: item.unit, lossQuantity: item.loss_quantity, lossRate: item.loss_rate, extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) });
+        // material_snapshot (or a legacy model fallback) here. Required
+        // quantity is likewise verbatim — the historical batch-usage recompute
+        // silently discarded user edits and must not come back.
+        await tx.bomItem.createMany({ data: items.map((item, index) => { const required = new Prisma.Decimal(item.required_quantity); return { bomId: id, materialId: item.material_id, materialName: item.material_name ?? String(item.material_snapshot.name ?? ""), model: item.model, specificationModel: item.specification_model, color: item.color, unitId: item.unit_id ?? materialMap.get(item.material_id)?.defaultUnitId, materialSnapshot: item.material_snapshot as Prisma.InputJsonValue, requiredQuantity: required, productionBatchBase: item.production_batch_base ?? "1", baseUsage: item.base_usage ?? required, approvedUsage: required, sequence: index + 1, unit: item.unit, lossQuantity: item.loss_quantity, lossRate: item.loss_rate, extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) });
       }
     });
     await this.audit.record("bom.items.replace", "bom", user.id, id, { order_no: bom.orderNo, version: bom.version, item_count: items.length });

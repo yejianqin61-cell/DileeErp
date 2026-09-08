@@ -419,6 +419,7 @@ model BomItem {
   unitId             String?             @map("unit_id") @db.Uuid
   materialSnapshot   Json                @map("material_snapshot")
   requiredQuantity   Decimal             @map("required_quantity") @db.Decimal(18, 4)
+  sequence           Int?
   productionBatchBase Decimal?          @map("production_batch_base") @db.Decimal(18, 4)
   baseUsage          Decimal?            @map("base_usage") @db.Decimal(18, 4)
   approvedUsage      Decimal?            @map("approved_usage") @db.Decimal(18, 4)

@@ -19,6 +19,7 @@ class BomItemDto {
   @IsOptional() @IsString() production_batch_base?: string;
   @IsOptional() @IsString() base_usage?: string;
   @IsString() unit!: string;
+  @IsOptional() @IsUUID() unit_id?: string;
   @IsOptional() @IsString() loss_quantity?: string;
   @IsOptional() @IsString() loss_rate?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;

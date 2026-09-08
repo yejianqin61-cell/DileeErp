@@ -70,3 +70,50 @@ test("saving without a specification keeps it empty instead of resurrecting the 
   assert.equal(saved[0].specificationModel, undefined);
   assert.equal(saved[0].color, undefined);
 });
+
+test("edited required quantity is saved verbatim instead of being recomputed", async () => {
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, salesOrderId: "order-1", items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    salesOrder: { findUnique: async () => ({ quantity: { div: () => ({ mul: () => "99" }) } }) },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "7.5", unit: "米" }], user);
+  assert.equal(saved[0].requiredQuantity.toString(), "7.5");
+  assert.equal(saved[0].approvedUsage.toString(), "7.5");
+});
+
+test("a provided unit_id wins over the material default unit and unknown unit_ids are rejected", async () => {
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, salesOrderId: "order-1", items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    salesOrder: { findUnique: async () => ({ quantity: "10" }) },
+    unit: { findMany: async () => [{ id: "unit-2" }] },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "2", unit: "码", unit_id: "unit-2" }], user);
+  assert.equal(saved[0].unitId, "unit-2");
+  await assert.rejects(() => service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "2", unit: "码", unit_id: "unit-9" }], user), (error) => error.getResponse().code === "BOM_UNIT_NOT_FOUND");
+});
+
+test("bom items get sequential numbers starting from one", async () => {
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [
+    { material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "2", unit: "米" },
+    { material_id: "material-2", material_name: "伞骨", material_snapshot: { name: "伞骨" }, required_quantity: "1", unit: "根" },
+  ], user);
+  assert.deepEqual(saved.map((row) => row.sequence), [1, 2]);
+});
