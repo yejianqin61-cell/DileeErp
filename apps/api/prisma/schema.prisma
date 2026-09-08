@@ -479,6 +479,8 @@ model Material {
   id                        String                    @id @default(uuid()) @db.Uuid
   materialCode              String                    @unique @map("material_code") @db.VarChar(80)
   name                      String                    @unique @db.VarChar(200)
+  specificationModel        String?                   @map("specification_model") @db.VarChar(200)
+  color                     String?                   @db.VarChar(100)
   defaultUnitId             String                    @map("default_unit_id") @db.Uuid
   materialType              String                    @default("raw_material") @map("material_type") @db.VarChar(30)
   isActive                  Boolean                   @default(true) @map("is_active")
@@ -518,6 +520,7 @@ model Supplier {
   deletedAt               DateTime?                @map("deleted_at")
   deletedBy               String?                  @map("deleted_by") @db.Uuid
   purchaseOrders          PurchaseOrder[]
+  purchaseOrderItems      PurchaseOrderItem[]
   rawMaterialInbounds     RawMaterialInbound[]
   payableSources          PayableSource[]
   outsourcePayableSources OutsourcePayableSource[]
@@ -576,12 +579,15 @@ model PurchaseOrderItem {
   unitId                    String                    @map("unit_id") @db.Uuid
   unitSnapshot              Json                      @map("unit_snapshot")
   bomItemId                 String?                   @map("bom_item_id") @db.Uuid
+  supplierId                String                    @map("supplier_id") @db.Uuid
+  supplierSnapshot          Json                      @map("supplier_snapshot")
   model                     String?                   @db.VarChar(200)
   quantity                  Decimal                   @db.Decimal(18, 4)
   unitPrice                 Decimal                   @map("unit_price") @db.Decimal(18, 4)
   taxRate                   Decimal?                  @map("tax_rate") @db.Decimal(8, 4)
   extraFee                  Decimal                   @default(0) @map("extra_fee") @db.Decimal(18, 4)
   amount                    Decimal                   @db.Decimal(18, 4)
+  expectedDate              DateTime?                 @map("expected_date")
   extensionData             Json                      @default("{}") @map("extension_data")
   createdAt                 DateTime                  @default(now()) @map("created_at")
   updatedAt                 DateTime                  @updatedAt @map("updated_at")
@@ -592,6 +598,7 @@ model PurchaseOrderItem {
   purchaseOrder             PurchaseOrder             @relation(fields: [purchaseOrderId], references: [id])
   material                  Material                  @relation(fields: [materialId], references: [id])
   unit                      Unit                      @relation(fields: [unitId], references: [id])
+  supplier                  Supplier                  @relation(fields: [supplierId], references: [id])
   bomItem                   BomItem?                  @relation(fields: [bomItemId], references: [id])
   receipts                  PurchaseReceipt[]
   rawMaterialInbounds       RawMaterialInbound[]
@@ -601,6 +608,7 @@ model PurchaseOrderItem {
   supplierPayableEntries    SupplierPayableEntry[]
 
   @@index([purchaseOrderId])
+  @@index([supplierId])
   @@map("purchase_order_items")
 }
 
