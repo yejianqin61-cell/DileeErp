@@ -271,7 +271,20 @@ button { cursor: pointer; }
 .purchase-batch-workspace .data-table { width: 100%; min-width: 1120px; table-layout: fixed; }
 .purchase-batch-workspace .data-table th,
 .purchase-batch-workspace .data-table td { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
-.purchase-batch-workspace .material-name-cell { display: block; width: 360px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 采购明细物料名统一截断显示：长品名不再撑高单元格，完整名称通过 title 悬浮查看。 */
+.material-name-cell { display: block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 采购工作区行内下拉：选择值过长时省略号收窄，避免整行变高。 */
+.purchase-workspace .data-table .ui-select-trigger { max-width: 100%; }
+.purchase-workspace .data-table .ui-select-trigger > span { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 采购单详情“到货批次”分块时间线。 */
+.purchase-item-blocks { display: grid; gap: 14px; }
+.purchase-item-block { border: 1px solid #dbe4ec; border-radius: var(--radius); padding: 12px; background: #fff; }
+.purchase-item-block-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 8px; font-size: 13px; color: #33424f; }
+.purchase-item-block-header .material-name-cell { font-weight: 600; }
+.purchase-item-block .ui-table th,
+.purchase-item-block .ui-table td { white-space: nowrap; }
+.purchase-item-block .batch-empty { color: #8a97a3; }
+.purchase-item-block .batch-date { color: #8a97a3; }
 .purchase-batch-workspace .data-table th:nth-child(even),
 .purchase-batch-workspace .data-table td:nth-child(even):not(.status-success):not(.status-danger) { background: #f5f9fb; }
 .material-issue-sheet .detail-list { display: block; }
