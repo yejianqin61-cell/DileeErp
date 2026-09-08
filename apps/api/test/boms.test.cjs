@@ -40,3 +40,33 @@ test("BOM rows retain their name, model, and color", async () => {
   assert.equal(saved[0].model, "M-01");
   assert.equal(saved[0].color, "蓝色");
 });
+
+test("manual specification and color survive save even when the material snapshot differs", async () => {
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", model: "M-01", specification_model: "40支 手工修正", color: "墨绿", material_snapshot: { name: "主数据名称", specification_model: "40支 旧值", color: "红色" }, required_quantity: "2", unit: "米" }], user);
+  assert.equal(saved[0].materialName, "面料");
+  assert.equal(saved[0].specificationModel, "40支 手工修正");
+  assert.equal(saved[0].color, "墨绿");
+  assert.equal(saved[0].model, "M-01");
+});
+
+test("saving without a specification keeps it empty instead of resurrecting the legacy model", async () => {
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", model: "M-01", specification_model: undefined, color: undefined, material_snapshot: { specification_model: "主数据规格", color: "主数据颜色" }, required_quantity: "2", unit: "米" }], user);
+  assert.equal(saved[0].specificationModel, undefined);
+  assert.equal(saved[0].color, undefined);
+});
