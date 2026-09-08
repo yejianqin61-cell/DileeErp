@@ -75,4 +75,20 @@ export class IncomingInspectionsService {
     await this.audit.record("incoming_inspection.transition", "incoming_inspection", user.id, id, { from: current.status, to: target, reason: reason ?? null });
     return result;
   }
+
+  /** 整批退货：锁定质检行，禁止已有入库事实或已过账应付的批次退货；未过账应付一并作废。 */
+  async returnToSupplier(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "INSPECTION_RETURN_REASON_REQUIRED", message: "来料退货必须填写原因", details: [] });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } }, purchaseReceipt: { include: { payableSources: { where: { status: { not: "voided" } } } } } } });
+      if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
+      if (current.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不能退货", details: [] });
+      if (current.purchaseReceipt.payableSources.some((source) => source.status === "posted")) throw new UnprocessableEntityException({ code: "PAYABLE_SOURCE_POSTED", message: "应付来源已过账，不能整批退货", details: [] });
+      await tx.payableSource.updateMany({ where: { purchaseReceiptId: current.purchaseReceiptId, status: { not: "voided" } }, data: { status: "voided", ...this.audit.update(user) } });
+      return tx.incomingInspection.update({ where: { id }, data: { status: "cancelled", remark: `${current.remark ?? ""}${current.remark ? "\n" : ""}整批退货：${reason.trim()}`, ...this.audit.update(user) } });
+    });
+    await this.audit.record("incoming_inspection.return", "incoming_inspection", user.id, id, { order_no: result.orderNo, reason: reason.trim() });
+    return result;
+  }
 }

@@ -83,3 +83,31 @@ test("incoming QC correction is rejected after inbound facts", async () => {
   const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
   await assert.rejects(() => service.update("inspection-1", { inspected_quantity: "1", accepted_quantity: "1", conditional_quantity: "0", rejected_quantity: "0", reason: "复核" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
 });
+
+test("a full return voids pending payables and cancels the inspection", async () => {
+  let update;
+  let voided;
+  const current = { id: "inspection-1", orderNo: "DL260001", status: "accepted", remark: null, purchaseReceiptId: "receipt-1", rawMaterialInbounds: [], purchaseReceipt: { payableSources: [{ id: "payable-1", status: "pending_finance" }] } };
+  const tx = {
+    $queryRaw: async () => undefined,
+    incomingInspection: { findFirst: async () => current, update: async ({ data }) => { update = data; return { ...current, ...data }; } },
+    payableSource: { updateMany: async ({ where, data }) => { voided = { where, data }; return { count: 1 }; } },
+  };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  const result = await service.returnToSupplier("inspection-1", "来料规格不符", user);
+  assert.equal(result.status, "cancelled");
+  assert.equal(voided.where.purchaseReceiptId, "receipt-1");
+  assert.equal(voided.data.status, "voided");
+  assert.match(update.remark, /整批退货：来料规格不符/);
+});
+
+test("a return is refused with inbound facts, posted payables, or a missing reason", async () => {
+  const base = { id: "inspection-1", orderNo: "DL260001", status: "accepted", remark: null, purchaseReceiptId: "receipt-1" };
+  const serviceFor = (current) => {
+    const tx = { $queryRaw: async () => undefined, incomingInspection: { findFirst: async () => current }, payableSource: { updateMany: async () => ({ count: 0 }) } };
+    return new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  };
+  await assert.rejects(() => serviceFor({ ...base, rawMaterialInbounds: [{ id: "inbound-1" }], purchaseReceipt: { payableSources: [] } }).returnToSupplier("inspection-1", "退货", user), (error) => error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
+  await assert.rejects(() => serviceFor({ ...base, rawMaterialInbounds: [], purchaseReceipt: { payableSources: [{ id: "payable-1", status: "posted" }] } }).returnToSupplier("inspection-1", "退货", user), (error) => error.getResponse().code === "PAYABLE_SOURCE_POSTED");
+  await assert.rejects(() => serviceFor({ ...base, rawMaterialInbounds: [], purchaseReceipt: { payableSources: [] } }).returnToSupplier("inspection-1", "   ", user), (error) => error.getResponse().code === "INSPECTION_RETURN_REASON_REQUIRED");
+});
