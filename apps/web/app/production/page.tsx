@@ -12,6 +12,7 @@ import { DataTable } from "../../components/data/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { PayrollExportPanel } from "../../components/production/payroll-export-panel";
+import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
 type Unit = { id: string; name: string; isActive: boolean };
 type Location = { id: string; name: string; locationType: "workshop" | "outsource_site"; isActive: boolean };
@@ -56,8 +57,8 @@ export default function ProductionPage() {
   useEffect(() => { void load(); }, []);
   async function run(path: string, body: unknown, success: string) {
     setError("");
-    try { const result = await apiPost<unknown>(path, body); setMessage(success); await load(); return result.data; }
-    catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "操作失败"); return undefined; }
+    try { const result = await apiPost<unknown>(path, body); notifySuccess(success); setMessage(""); await load(); return result.data; }
+    catch (cause) { notifyError(cause instanceof ApiClientError ? cause.message : "操作失败"); return undefined; }
   }
   const visible = useMemo(() => records.filter((item) => !query || `${item.productionOrderNo} ${item.orderNo} ${item.status}`.toLowerCase().includes(query.toLowerCase())), [records, query]);
   const activeLocations = locations.filter((item) => item.isActive);
@@ -74,7 +75,7 @@ export default function ProductionPage() {
           setOrders(nextOrders);
           setDialog((current) => current ? { ...current, fields: current.fields.map((field) => field.name === "order_no" ? { ...field, options: nextOrders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) } : field) } : current);
         }
-      }).catch((cause) => { if (requestId === orderSearchRequest.current) setError(cause instanceof ApiClientError ? cause.message : "订单搜索失败"); });
+      }).catch((cause) => { if (requestId === orderSearchRequest.current) notifyError(cause instanceof ApiClientError ? cause.message : "订单搜索失败"); });
     }, 250);
   }
 
@@ -86,7 +87,7 @@ export default function ProductionPage() {
       ordersRef.current = candidateOrders;
       setOrders(candidateOrders);
     } catch (cause) {
-      setError(cause instanceof ApiClientError ? cause.message : "订单候选加载失败");
+      notifyError(cause instanceof ApiClientError ? cause.message : "订单候选加载失败");
     }
     setDialog({ title: "新建生产单", fields: [
       { name: "order_no", label: "订单号", type: "searchable-select", required: true, onSearch: searchSalesOrders, options: candidateOrders.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}` })) },

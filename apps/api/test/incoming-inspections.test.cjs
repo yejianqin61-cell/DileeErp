@@ -63,6 +63,21 @@ test("incoming QC can be corrected before inbound with a reason", async () => {
   assert.match(update.remark, /复核后补录条件接收/);
 });
 
+test("incoming QC rollback rejects a downstream inbound even when it is linked through the receipt", async () => {
+  const tx = {
+    $queryRaw: async () => undefined,
+    incomingInspection: { findFirst: async () => ({ id: "inspection-1", status: "accepted", remark: null, rawMaterialInbounds: [], purchaseReceipt: { rawMaterialInbounds: [{ id: "inbound-1" }] } }) },
+  };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  await assert.rejects(() => service.update("inspection-1", { inspected_quantity: "1", accepted_quantity: "1", conditional_quantity: "0", rejected_quantity: "0", reason: "复核" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
+});
+
+test("incoming QC status rollback rejects an inbound linked to the inspection", async () => {
+  const prisma = { incomingInspection: { findFirst: async () => ({ id: "inspection-1", status: "completed", remark: null, inspectedQuantity: "1", rawMaterialInbounds: [{ id: "inbound-1" }] }) } };
+  const service = new IncomingInspectionsService(prisma, { update: () => ({ updatedBy: user.id }), record: async () => {} });
+  await assert.rejects(() => service.transition("inspection-1", "pending", "回退复核", user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
+});
+
 test("incoming QC correction is rejected after inbound facts", async () => {
   const tx = { $queryRaw: async () => undefined, incomingInspection: { findFirst: async () => ({ id: "inspection-1", purchaseReceipt: { quantity: "10", rawMaterialInbounds: [] }, rawMaterialInbounds: [{ id: "inbound-1" }] }) } };
   const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { update: () => ({ updatedBy: user.id }), record: async () => {} });

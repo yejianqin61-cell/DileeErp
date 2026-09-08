@@ -10,6 +10,7 @@ import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
+import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type Employee = { id: string; employeeNo: string; name: string; employeeType: string };
 type Ledger = {
@@ -68,10 +69,10 @@ export default function SalaryPage() {
     setError("");
     try {
       await action;
-      setMessage(success);
+      notifySuccess(success);
       await load();
     } catch (cause) {
-      setError(messageOf(cause, "操作失败"));
+      notifyError(messageOf(cause, "操作失败"));
     }
   }
 

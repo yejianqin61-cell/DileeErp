@@ -5,6 +5,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { notifyError } from "../ui/toaster";
 
 type Operation = { id: string; operationNameSnapshot?: string; operationName?: string };
 type ProductionOrder = { id: string; orderNo: string; productionOrderNo: string; operations: Operation[] };
@@ -21,7 +22,7 @@ export function PayrollExportPanel({ orders, operations }: { orders: ProductionO
   const orderOperations = selectedOrder?.operations ?? [];
   async function download(path: string, fileName: string) {
     setBusy(true); setError("");
-    try { const response = await fetch(`/api/v1${path}`, { credentials: "include", cache: "no-store" }); if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.error?.message ?? `导出失败（HTTP ${response.status}）`); } const url = URL.createObjectURL(await response.blob()); const anchor = document.createElement("a"); anchor.href = url; anchor.download = fileName; anchor.click(); URL.revokeObjectURL(url); setOpen(null); } catch (cause) { setError(cause instanceof Error ? cause.message : "导出失败"); } finally { setBusy(false); }
+    try { const response = await fetch(`/api/v1${path}`, { credentials: "include", cache: "no-store" }); if (!response.ok) { const body = await response.json().catch(() => null); throw new Error(body?.error?.message ?? `导出失败（HTTP ${response.status}）`); } const url = URL.createObjectURL(await response.blob()); const anchor = document.createElement("a"); anchor.href = url; anchor.download = fileName; anchor.click(); URL.revokeObjectURL(url); setOpen(null); } catch (cause) { notifyError(cause instanceof Error ? cause.message : "导出失败"); } finally { setBusy(false); }
   }
   function exportOperation() { if (!operationId || !/^\d{4}-\d{2}$/.test(month)) { setError("请选择工序并填写有效月份"); return; } void download(`/production/reports/operation-payroll.xlsx?operation_id=${encodeURIComponent(operationId)}&month=${encodeURIComponent(month)}`, "迪礼ERP-工序盘点表.xlsx"); }
   function exportOrder() { if (!orderNo) { setError("请选择订单号"); return; } const query = new URLSearchParams({ order_no: orderNo }); if (orderOperationId !== "all") query.set("operation_id", orderOperationId); void download(`/production/reports/order-operation-payroll.xlsx?${query.toString()}`, "迪礼ERP-订单号盘点表.xlsx"); }

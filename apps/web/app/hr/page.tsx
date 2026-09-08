@@ -32,6 +32,7 @@ import {
   apiPost,
 } from "../../lib/api-client";
 import { displayStatus } from "../../lib/display-text";
+import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
 type Employee = {
   id: string;
@@ -164,20 +165,20 @@ export default function HrPage() {
     setError("");
     try {
       await apiPost(path, body);
-      setMessage(success);
+      notifySuccess(success)
       await load();
     } catch (cause) {
-      setError(messageOf(cause, "操作失败"));
+      notifyError(messageOf(cause, "操作失败"));
     }
   }
   async function runPatch(path: string, body: unknown, success: string) {
     setError("");
     try {
       await apiPatch(path, body);
-      setMessage(success);
+      notifySuccess(success)
       await load();
     } catch (cause) {
-      setError(messageOf(cause, "操作失败"));
+      notifyError(messageOf(cause, "操作失败"));
     }
   }
   async function exportEmployees() {
@@ -203,11 +204,11 @@ export default function HrPage() {
       URL.revokeObjectURL(url);
       setMessage("员工名单已导出");
     } catch (cause) {
-      setError(messageOf(cause, "员工名单导出失败"));
+      notifyError(messageOf(cause, "员工名单导出失败"));
     }
   }
   async function downloadImportTemplate() { const response = await fetch("/api/v1/production/employees/import-template.xlsx", { credentials: "include", cache: "no-store" }); if (!response.ok) { setError("模板下载失败"); return; } const url = URL.createObjectURL(await response.blob()); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "迪礼ERP-员工导入模板.xlsx"; anchor.click(); URL.revokeObjectURL(url); }
-  async function importEmployees(file: File | undefined) { if (!file) return; setError(""); setImportResult(null); const form = new FormData(); form.append("file", file); try { const response = await fetch("/api/v1/production/employees/import", { method: "POST", credentials: "include", body: form }); const body = await response.json(); if (!response.ok || body.error) throw new ApiClientError(body.error?.code ?? "IMPORT_FAILED", body.error?.message ?? "导入失败", body.error?.details ?? []); setImportResult(body.data); if (body.data.errorCount === 0) { setMessage(`成功导入${body.data.imported}行`); await load(); } } catch (cause) { setError(messageOf(cause, "员工导入失败")); } }
+  async function importEmployees(file: File | undefined) { if (!file) return; setError(""); setImportResult(null); const form = new FormData(); form.append("file", file); try { const response = await fetch("/api/v1/production/employees/import", { method: "POST", credentials: "include", body: form }); const body = await response.json(); if (!response.ok || body.error) throw new ApiClientError(body.error?.code ?? "IMPORT_FAILED", body.error?.message ?? "导入失败", body.error?.details ?? []); setImportResult(body.data); if (body.data.errorCount === 0) { setMessage(`成功导入${body.data.imported}行`); await load(); } } catch (cause) { notifyError(messageOf(cause, "员工导入失败")); } }
   const employeeOptions = employees.map((item) => ({
     value: item.id,
     label: `${item.employeeNo} / ${item.name}`,
@@ -263,7 +264,7 @@ export default function HrPage() {
           setCategoryDialog(null);
           setMessage("部门已创建");
         } catch (cause) {
-          setError(messageOf(cause, "部门创建失败"));
+          notifyError(messageOf(cause, "部门创建失败"));
         }
       },
     });
@@ -331,7 +332,7 @@ export default function HrPage() {
           setCategoryDialog(null);
           setMessage("岗位已创建");
         } catch (cause) {
-          setError(messageOf(cause, "岗位创建失败"));
+          notifyError(messageOf(cause, "岗位创建失败"));
         }
       },
     });
@@ -425,7 +426,7 @@ export default function HrPage() {
           else setDialog(null);
           await load();
         } catch (cause) {
-          setError(messageOf(cause, "员工创建失败"));
+          notifyError(messageOf(cause, "员工创建失败"));
         }
       },
     });

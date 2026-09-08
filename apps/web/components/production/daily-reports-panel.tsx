@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
+import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Operation = { id: string; operationNameSnapshot: string; targetQuantity: string; status: string };
 type Order = { id: string; productionOrderNo: string; orderNo: string; executionMode: string; status: string; plannedQuantity: string; operations: Operation[] };
@@ -33,7 +34,6 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveKey, setSaveKey] = useState<string | null>(null);
   const [editDialog, setEditDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
@@ -144,7 +144,7 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
             expected_version: report.version,
           }),
         });
-        setMessage("日报已更正，当日员工薪资和总薪资已联动更新");
+        notifySuccess("日报已更正，当日员工薪资和总薪资已联动更新");
         setReportEdits((current) => {
           const next = { ...current };
           delete next[report.id];
@@ -163,7 +163,7 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
           return next;
         });
         await load();
-        setError(`${causeText}；已刷新为最新日报版本，请基于当前数据重新更正后保存`);
+        notifyError(`${causeText}；已刷新为最新日报版本，请基于当前数据重新更正后保存`);
       } finally {
         setSavingReportId(null);
       }
@@ -178,10 +178,10 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
     ], submit: async (values) => {
       try {
         await apiRequest(`/production/employee-reports/${report.id}`, { method: "PATCH", body: JSON.stringify({ quantity: values.quantity || undefined, duration_minutes: values.duration_minutes || undefined, unit_price: values.unit_price, reason: values.reason, expected_version: report.version }) });
-        setMessage("员工日报已更正");
+        notifySuccess("员工日报已更正");
         setEditDialog(null);
         await load();
-      } catch (cause) { setError(errorText(cause)); }
+      } catch (cause) { notifyError(errorText(cause)); }
     } });
   }
 
@@ -189,10 +189,10 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
     setEditDialog({ title: `删除日报：${report.employeeNameSnapshot}`, fields: [{ name: "reason", label: "删除原因", type: "textarea", required: true }], submit: async (values) => {
       try {
         await apiRequest(`/production/employee-reports/${report.id}`, { method: "DELETE", body: JSON.stringify({ reason: values.reason, expected_version: report.version }) });
-        setMessage("员工日报已删除");
+        notifySuccess("员工日报已删除");
         setEditDialog(null);
         await load();
-      } catch (cause) { setError(errorText(cause)); }
+      } catch (cause) { notifyError(errorText(cause)); }
     } });
   }
 
@@ -222,11 +222,11 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
     try {
       const batchKey = saveKey ?? idempotencyKey();
       if (drafts.length) await apiPost("/production/employee-reports/batch", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: selectedReportDate, rows: JSON.stringify(drafts.map((row) => ({ ...row, idempotency_key: `${batchKey}-${row.employee_id}-${row.report_date}` }))) });
-      setMessage("工序员工日报已保存");
+      notifySuccess("工序员工日报已保存");
       closeDialog();
       await load();
     } catch (cause) {
-      setError(errorText(cause));
+      notifyError(errorText(cause));
     } finally {
       setSaving(false);
     }
@@ -264,7 +264,6 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
         <h2>工序员工日报</h2>
         <Button variant="ghost" onClick={() => void load()}>刷新</Button>
       </div>
-      {message && <p className="status-success panel-body">{message}</p>}
       {error && <p className="status-error panel-body">{error}</p>}
       <div className="panel-body">
         <h3>未完成生产单</h3>

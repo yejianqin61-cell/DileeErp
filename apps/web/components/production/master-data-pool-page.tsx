@@ -9,6 +9,7 @@ import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Unit = { id: string; name: string; isActive: boolean };
 type Operation = { id: string; operationName: string; operationCode?: string | null; defaultUnitId?: string | null; defaultUnit?: { name: string } | null; isActive: boolean; deletedAt?: string | null };
@@ -27,7 +28,6 @@ export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" 
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
   const isOperations = kind === "operations";
 
   async function load() {
@@ -40,7 +40,7 @@ export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" 
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, [isOperations]);
-  async function run(action: () => Promise<unknown>, success: string) { setError(""); try { await action(); setMessage(success); setDialog(null); await load(); } catch (cause) { setError(cause instanceof ApiClientError ? cause.message : "操作失败"); } }
+  async function run(action: () => Promise<unknown>, success: string) { setError(""); try { await action(); notifySuccess(success); setDialog(null); await load(); } catch (cause) { notifyError(cause instanceof ApiClientError ? cause.message : "操作失败"); } }
   const visible = useMemo(() => rows.filter((row) => {
     const label = "operationName" in row ? `${row.operationName} ${row.operationCode ?? ""}` : `${row.name} ${row.locationType}`;
     return !query || label.toLowerCase().includes(query.toLowerCase());
@@ -57,5 +57,5 @@ export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" 
   function restore(row: Operation | Location) { void run(() => apiRequest(isOperations ? `/production/operations/${row.id}/restore` : `/production/locations/${row.id}/restore`, { method: "POST" }), isOperations ? "工序已恢复" : "加工地点已恢复"); }
   const actionCell = (row: Operation | Location) => row.deletedAt ? <Button size="sm" variant="secondary" onClick={() => restore(row)}>恢复</Button> : <><Button size="sm" variant="secondary" onClick={() => openEdit(row)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => toggle(row)}>{row.isActive ? "停用" : "启用"}</Button><Button size="sm" variant="destructive" onClick={() => remove(row)}>删除</Button></>;
   const columns: ColumnDef<Operation | Location>[] = isOperations ? [{ id: "name", header: "工序名称", cell: ({ row }) => (row.original as Operation).operationName }, { id: "code", header: "编码", cell: ({ row }) => (row.original as Operation).operationCode || "-" }, { id: "unit", header: "默认单位", cell: ({ row }) => (row.original as Operation).defaultUnit?.name || "-" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }] : [{ id: "name", header: "地点名称", cell: ({ row }) => (row.original as Location).name }, { id: "type", header: "类型", cell: ({ row }) => (row.original as Location).locationType === "workshop" ? "厂内车间" : "外加工点" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }];
-  return <><PageHeader title={isOperations ? "工序池" : "加工地点池"}><Button onClick={openCreate}>新建{isOperations ? "工序" : "加工地点"}</Button></PageHeader><ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />{message && <section className="panel panel-body status-success" role="status">{message}</section>}{error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}{loading ? <LoadingState /> : <section className="panel"><div className="panel-body"><label>搜索<Input value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><DataTable columns={columns} data={visible} empty={<EmptyState title={isOperations ? "暂无工序" : "暂无加工地点"} />} /></section>}</>;
+  return <><PageHeader title={isOperations ? "工序池" : "加工地点池"}><Button onClick={openCreate}>新建{isOperations ? "工序" : "加工地点"}</Button></PageHeader><ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />{error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}{loading ? <LoadingState /> : <section className="panel"><div className="panel-body"><label>搜索<Input value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><DataTable columns={columns} data={visible} empty={<EmptyState title={isOperations ? "暂无工序" : "暂无加工地点"} />} /></section>}</>;
 }

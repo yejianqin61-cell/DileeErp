@@ -107,6 +107,55 @@ test("receipt correction rechecks arrival closure after locking the purchase ord
   );
 });
 
+test("receipt update rejects every downstream fact that would make correction unsafe", async () => {
+  const cases = [
+    { name: "positive inspection", inspections: [{ inspectedQuantity: new (require("@prisma/client").Prisma.Decimal)("1") }], rawMaterialInbounds: [], payableSources: [] },
+    { name: "raw material inbound", inspections: [], rawMaterialInbounds: [{ id: "inbound-1" }], payableSources: [] },
+    { name: "posted payable", inspections: [], rawMaterialInbounds: [], payableSources: [{ status: "posted" }] },
+  ];
+  for (const scenario of cases) {
+    const tx = {
+      $queryRaw: async () => [],
+      purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", purchaseOrderId: "purchase-1", orderNo: "SO-1", purchaseOrderItemId: "item-1", purchaseOrderItem: { quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("2") }, inspections: scenario.inspections, rawMaterialInbounds: scenario.rawMaterialInbounds, payableSources: scenario.payableSources }) },
+      purchaseOrder: { findFirst: async () => ({ extensionData: {} }) },
+    };
+    // Keep the mock intentionally minimal: the guard must run before any write.
+    tx.purchaseReceipt.findFirst = async () => ({ id: "receipt-1", purchaseOrderId: "purchase-1", orderNo: "SO-1", purchaseOrderItemId: "item-1", purchaseOrderItem: { quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("2") }, inspections: scenario.inspections, rawMaterialInbounds: scenario.rawMaterialInbounds, payableSources: scenario.payableSources });
+    const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { record: async () => {} });
+    await assert.rejects(() => service.updateReceipt("receipt-1", { quantity: "2", reason: `修正-${scenario.name}` }, {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "RECEIPT_DOWNSTREAM_EXISTS");
+  }
+});
+
+test("receipt cancellation rejects downstream facts instead of soft-deleting the batch", async () => {
+  let writes = 0;
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrder: {}, inspections: [], rawMaterialInbounds: [{ id: "inbound-1" }], payableSources: [] }), update: async () => { writes += 1; } },
+    purchaseOrder: { findFirst: async () => ({ extensionData: {} }) },
+  };
+  const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { record: async () => {} });
+  await assert.rejects(() => service.cancelReceipt("receipt-1", "撤销", {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "RECEIPT_DOWNSTREAM_EXISTS");
+  assert.equal(writes, 0);
+});
+
+test("arrival rollback rejects inspection, inbound, and posted payable downstream facts", async () => {
+  const downstreamCases = [
+    { name: "inspection", inspections: [{ inspectedQuantity: new (require("@prisma/client").Prisma.Decimal)("1") }], rawMaterialInbounds: [], payableSources: [] },
+    { name: "inbound", inspections: [], rawMaterialInbounds: [{ id: "inbound-1" }], payableSources: [] },
+    { name: "posted payable", inspections: [], rawMaterialInbounds: [], payableSources: [{ status: "posted" }] },
+  ];
+  for (const scenario of downstreamCases) {
+    const tx = {
+      $queryRaw: async () => [],
+      purchaseOrder: {
+        findFirst: async () => ({ id: "purchase-1", status: "arrived_complete", extensionData: {}, items: [{ receipts: [{ inspections: scenario.inspections, rawMaterialInbounds: scenario.rawMaterialInbounds, payableSources: scenario.payableSources }] }] }),
+      },
+    };
+    const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { record: async () => {} });
+    await assert.rejects(() => service.revertArrivals("purchase-1", `回退-${scenario.name}`, {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ARRIVAL_DOWNSTREAM_EXISTS");
+  }
+});
+
 test("arrived-complete orders accept another receipt before close", async () => {
   const created = { id: "receipt-2", quantity: new (require("@prisma/client").Prisma.Decimal)("2"), extensionData: {} };
   const tx = {
