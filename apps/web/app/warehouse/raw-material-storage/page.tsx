@@ -14,7 +14,7 @@ import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
-type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
+type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; orderNo: string; quantity: string; status: string; remark?: string; settlementUnitPrice?: string | null; settlementTotalAmount?: string | null; settlementAmountReason?: string | null; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
 type Balance = { material_id: string; unit_id: string; unit_name: string; order_no: string | null; quantity: string; material?: Material };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
@@ -93,7 +93,7 @@ export default function RawMaterialStoragePage() {
         { name: "quantity", label: "实际入库数量（通知数量以当前草稿为准）", type: "number", required: true, defaultValue: item.quantity },
         { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" }
       ],
-      submit: (values) => void run(apiPatch("/raw-material-inbounds/" + item.id, { quantity: values.quantity, remark: values.remark || undefined }), "原料入库单已更新")
+      submit: (values) => void run(apiPatch("/raw-material-inbounds/" + item.id, { quantity: values.quantity, settlement_unit_price: values.settlement_unit_price || undefined, settlement_total_amount: values.settlement_total_amount || undefined, settlement_amount_reason: values.settlement_amount_reason || undefined, remark: values.remark || undefined }), "原料入库单已更新")
     });
   }
 

@@ -22,7 +22,7 @@ export class IncomingInspectionsService {
       if (current.rawMaterialInbounds.length || current.purchaseReceipt.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可修改", details: [] });
       if (values[0].gt(current.purchaseReceipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
       const status = values[0].isZero() ? current.status : values[3].eq(values[0]) ? "rejected" : values[1].plus(values[2]).eq(values[0]) ? (values[2].gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
-        const qcResult = input.qc_result ?? (status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null);
+        const qcResult = status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null;
       const updated = await tx.incomingInspection.update({ where: { id }, data: { inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], qcResult, status, extensionData: { ...(current.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}) } as Prisma.InputJsonValue, remark: `${current.remark ?? ""}${current.remark ? "\n" : ""}${input.reason.trim()}${input.remark?.trim() ? `\n${input.remark.trim()}` : ""}`, ...this.audit.update(user) } });
       // ?????????????????
       return updated;
@@ -46,7 +46,7 @@ export class IncomingInspectionsService {
       const conditional = (existing?.conditionalQuantity ?? new Prisma.Decimal(0)).plus(values[2]);
       const rejected = (existing?.rejectedQuantity ?? new Prisma.Decimal(0)).plus(values[3]);
       const status = inspected.isZero() ? "pending" : rejected.eq(inspected) ? "rejected" : accepted.plus(conditional).eq(inspected) ? (conditional.gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
-        const qcResult = input.qc_result ?? (status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null);
+        const qcResult = status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null;
       const batchSequence = Number((receipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1);
       const result = existing
         ? await tx.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected, acceptedQuantity: accepted, conditionalQuantity: conditional, rejectedQuantity: rejected, status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, qcResult, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })
