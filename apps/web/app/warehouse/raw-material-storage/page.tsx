@@ -91,6 +91,9 @@ export default function RawMaterialStoragePage() {
       title: "编辑原料入库单",
       fields: [
         { name: "quantity", label: "实际入库数量（通知数量以当前草稿为准）", type: "number", required: true, defaultValue: item.quantity },
+        { name: "settlement_unit_price", label: "结算单价", type: "number", defaultValue: item.settlementUnitPrice ?? "" },
+        { name: "settlement_total_amount", label: "结算总价", type: "number", defaultValue: item.settlementTotalAmount ?? "" },
+        { name: "settlement_amount_reason", label: "金额差异原因", type: "textarea", defaultValue: item.settlementAmountReason ?? "" }
         { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" }
       ],
       submit: (values) => void run(apiPatch("/raw-material-inbounds/" + item.id, { quantity: values.quantity, settlement_unit_price: values.settlement_unit_price || undefined, settlement_total_amount: values.settlement_total_amount || undefined, settlement_amount_reason: values.settlement_amount_reason || undefined, remark: values.remark || undefined }), "原料入库单已更新")
