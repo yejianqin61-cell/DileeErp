@@ -29,6 +29,7 @@ export class SupplierPayableService {
 
   async createFromSource(input: PayableEntryInput, user: CurrentUser) {
     sourceType(input.source_type);
+    if (input.source_type === "purchase_receipt") throw this.invalid("PURCHASE_RECEIPT_PAYABLE_DISABLED", "到货单不是可接收应付来源，请以原料入库过账来源为准");
     const row = await this.prisma.$transaction(async (tx) => {
       if (input.source_type === "outsource_receipt") await tx.$queryRaw`SELECT id FROM outsource_payable_sources WHERE id = ${input.source_id}::uuid FOR UPDATE`;
       else await tx.$queryRaw`SELECT id FROM payable_sources WHERE id = ${input.source_id}::uuid FOR UPDATE`;

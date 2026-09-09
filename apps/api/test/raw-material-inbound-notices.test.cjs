@@ -46,7 +46,7 @@ test("inbound notice is idempotent for the same inspection", async () => {
   assert.equal(getNoticeCreates(), 0);
 });
 
-test("notice creation links existing draft inbounds without changing stock", async () => {
+test("notice creation defers inbound draft creation until warehouse acknowledgement", async () => {
   const inspection = {
     id: "inspection-1", status: "accepted", qcResult: "all_inbound", acceptedQuantity: "4", conditionalQuantity: "0", orderNo: "SO-1", purchaseReceiptId: "receipt-1",
     purchaseReceipt: { purchaseOrderId: "po-1", purchaseOrderItemId: "item-1", purchaseOrderItem: { materialId: "material-1", unitId: "unit-1", material: { materialType: "raw_material" } } },
@@ -54,6 +54,5 @@ test("notice creation links existing draft inbounds without changing stock", asy
   };
   const { service, updates } = serviceFor(inspection);
   await service.createFromInspection("inspection-1", "到货单已核对", user);
-  assert.equal(updates.length, 1);
-  assert.equal(updates[0].data.inboundNoticeId, "notice-1");
+  assert.equal(updates.length, 0);
 });

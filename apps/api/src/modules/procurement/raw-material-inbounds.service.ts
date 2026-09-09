@@ -46,7 +46,8 @@ export class RawMaterialInboundsService {
       }
     });
     if (!inspection) return null;
-    if (inspection.rawMaterialInbounds.length) return inspection.rawMaterialInbounds[0];
+    const existingDraft = inspection.rawMaterialInbounds.find((row) => row.status === "draft");
+    if (existingDraft) return existingDraft;
     const item = inspection.purchaseReceipt.purchaseOrderItem;
     if (item.material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "INBOUND_FINISHED_PRODUCT_FORBIDDEN", message: "原料入库只能接收原料物料", details: [] });
     const quantity = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
@@ -250,7 +251,7 @@ export class RawMaterialInboundsService {
       await tx.$queryRaw`SELECT id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: { include: { supplierPayableEntry: { include: { allocations: { where: { deletedAt: null, status: "active" } } } } } } } });
       if (!current || current.status !== "posted") throw new ConflictException({ code: "INBOUND_ALREADY_REVERSED", message: "入库已被其他操作冲销", details: [] });
-       if (current.payableSources.some((source) => source.supplierPayableEntry && ["confirmed", "partially_paid", "paid"].includes(source.supplierPayableEntry.status))) throw new UnprocessableEntityException({ code: "INBOUND_PAYABLE_ALREADY_CONFIRMED", message: "应付已确认或付款，不能直接冲销入库", details: [] });
+       if (current.payableSources.some((source) => source.supplierPayableEntry && ["draft", "confirmed", "partially_paid", "paid"].includes(source.supplierPayableEntry.status))) throw new UnprocessableEntityException({ code: "INBOUND_PAYABLE_ALREADY_CONFIRMED", message: "应付已确认或付款，不能直接冲销入库", details: [] });
       const balance = await this.inventory.rawMaterialBalance(tx, current.materialId, current.unitId);
       if (balance.minus(current.quantity).isNegative()) {
         throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "冲销会造成库存负数", details: [] });
