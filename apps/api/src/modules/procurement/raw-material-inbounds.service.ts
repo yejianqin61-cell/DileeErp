@@ -50,7 +50,7 @@ export class RawMaterialInboundsService {
     if (existingDraft) return existingDraft;
     const item = inspection.purchaseReceipt.purchaseOrderItem;
     if (item.material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "INBOUND_FINISHED_PRODUCT_FORBIDDEN", message: "原料入库只能接收原料物料", details: [] });
-    const quantity = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
+    const quantity = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity).minus(inspection.rawMaterialInbounds.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)));
     if (quantity.isZero()) return null;
     return tx.rawMaterialInbound.create({
       data: {

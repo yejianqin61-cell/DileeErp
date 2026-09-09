@@ -24,7 +24,7 @@ export class IncomingInspectionsService {
       const status = values[0].isZero() ? current.status : values[3].eq(values[0]) ? "rejected" : values[1].plus(values[2]).eq(values[0]) ? (values[2].gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
         const qcResult = input.qc_result ?? (status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null);
       const updated = await tx.incomingInspection.update({ where: { id }, data: { inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], qcResult, status, extensionData: { ...(current.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}) } as Prisma.InputJsonValue, remark: `${current.remark ?? ""}${current.remark ? "\n" : ""}${input.reason.trim()}${input.remark?.trim() ? `\n${input.remark.trim()}` : ""}`, ...this.audit.update(user) } });
-      if (this.inbounds && ["accepted", "conditionally_accepted"].includes(status)) await this.inbounds.createDraftForInspection(tx, updated.id, user);
+      // ?????????????????
       return updated;
     });
     await this.audit.record("incoming_inspection.update", "incoming_inspection", user.id, id, { order_no: result.orderNo, reason: input.reason.trim() });
