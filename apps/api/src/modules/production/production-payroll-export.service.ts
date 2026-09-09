@@ -67,7 +67,8 @@ export class ProductionPayrollExportService {
   }
 
   /** 订单号盘点表：单订单明细（时长小时、合计），表头附每道工序的生产日期数组、计划数量与汇总数量。 */
-  async exportOrder(filters: { order_no: string; operation_id?: string }, user: CurrentUser) {    if (!filters.order_no?.trim()) throw this.invalid("订单号不能为空");
+  async exportOrder(filters: { order_no: string; operation_id?: string; month?: string }, user: CurrentUser) {
+    if (!filters.order_no?.trim()) throw this.invalid("订单号不能为空");
     const rows = await this.fetchRows({ order_no: filters.order_no.trim(), operation_id: filters.operation_id });
     const operation = filters.operation_id ? await this.prisma.operationCatalog.findFirst({ where: { id: filters.operation_id }, select: { operationName: true } }) : null;
     const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "件数", "时长（小时）", "单价", "合计", "备注"];
@@ -98,7 +99,7 @@ export class ProductionPayrollExportService {
       this.prisma.purchaseOrder.findMany({ where: { orderNo, deletedAt: null }, orderBy: { purchaseDate: "asc" }, include: { items: { where: { deletedAt: null }, include: { material: true, receipts: { where: { deletedAt: null }, orderBy: { receivedDate: "asc" } } } }, supplier: true } }),
       this.prisma.productionOrder.findMany({ where: { orderNo, deletedAt: null, NOT: { status: "cancelled" } }, include: { executionLocation: true, operations: { where: { deletedAt: null, NOT: { status: "cancelled" } }, orderBy: { sequenceNo: "asc" } } } }),
     ]);
-    const orderQuantity = sales?.quantity ?? "";
+    const orderQuantity = sales?.quantity?.toString() ?? "";
     const materialRows: Array<Array<string | number | null>> = purchaseOrders.flatMap((po) => po.items.map((item) => {
       const arrival = (item.receipts ?? []).map((receipt) => receipt.receivedDate.toISOString().slice(0, 10)).join("、");
       const supply = item.expectedDate ? item.expectedDate.toISOString().slice(0, 10) : po.expectedDate ? po.expectedDate.toISOString().slice(0, 10) : "";
