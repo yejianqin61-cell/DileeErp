@@ -36,12 +36,12 @@ export class RawMaterialInboundsService {
 
   /** Create the draft receiving task for a passed inspection inside its caller transaction. */
   async createDraftForInspection(tx: Prisma.TransactionClient, inspectionId: string, user: CurrentUser) {
-    const existing = await tx.rawMaterialInbound.findFirst({ where: { idempotencyKey: `inspection:${inspectionId}` } });
+    const existing = await tx.rawMaterialInbound.findFirst({ where: { idempotencyKey: `inspection:${inspectionId}`, deletedAt: null, status: "draft" } });
     if (existing) return existing;
     const inspection = await tx.incomingInspection.findFirst({
       where: { id: inspectionId, deletedAt: null, status: { in: ["accepted", "conditionally_accepted", "partially_accepted", "completed"] } },
       include: {
-        rawMaterialInbounds: { where: { deletedAt: null } },
+        rawMaterialInbounds: { where: { deletedAt: null, status: { not: "reversed" } } },
         purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: { include: { material: true } } } }
       }
     });

@@ -90,7 +90,7 @@ export default function RawMaterialStoragePage() {
     setDialog({
       title: "编辑原料入库单",
       fields: [
-        { name: "quantity", label: "入库数量", type: "number", required: true, defaultValue: item.quantity },
+        { name: "quantity", label: "实际入库数量（通知数量以当前草稿为准）", type: "number", required: true, defaultValue: item.quantity },
         { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" }
       ],
       submit: (values) => void run(apiPatch("/raw-material-inbounds/" + item.id, { quantity: values.quantity, remark: values.remark || undefined }), "原料入库单已更新")
