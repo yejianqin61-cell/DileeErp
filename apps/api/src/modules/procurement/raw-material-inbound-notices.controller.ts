@@ -4,6 +4,7 @@ import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
+import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { RawMaterialInboundNoticesService } from "./raw-material-inbound-notices.service";
 
@@ -15,13 +16,13 @@ export class RawMaterialInboundNoticesController {
   constructor(private readonly notices: RawMaterialInboundNoticesService) {}
 
   @Get()
-  @RequireModules("warehouse")
+  @RequireAnyModules("procurement", "warehouse")
   async list(@Query("status") status?: string, @Query("order_no") orderNo?: string) {
     return { data: await this.notices.list(status, orderNo), meta: {} };
   }
 
   @Get(":id")
-  @RequireModules("warehouse")
+  @RequireAnyModules("procurement", "warehouse")
   async get(@Param("id") id: string) {
     return { data: await this.notices.get(id), meta: {} };
   }
