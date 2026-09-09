@@ -27,8 +27,8 @@ CREATE TABLE "raw_material_inbound_notices" (
 ALTER TABLE "raw_material_inbounds" ADD COLUMN "inbound_notice_id" UUID;
 
 CREATE UNIQUE INDEX "raw_material_inbound_notices_notice_no_key" ON "raw_material_inbound_notices"("notice_no");
-CREATE UNIQUE INDEX "raw_material_inbound_notices_purchase_receipt_id_key" ON "raw_material_inbound_notices"("purchase_receipt_id");
-CREATE UNIQUE INDEX "raw_material_inbound_notices_incoming_inspection_id_key" ON "raw_material_inbound_notices"("incoming_inspection_id");
+CREATE UNIQUE INDEX "raw_material_inbound_notices_purchase_receipt_id_key" ON "raw_material_inbound_notices"("purchase_receipt_id") WHERE "deleted_at" IS NULL;
+CREATE UNIQUE INDEX "raw_material_inbound_notices_incoming_inspection_id_key" ON "raw_material_inbound_notices"("incoming_inspection_id") WHERE "deleted_at" IS NULL;
 CREATE INDEX "raw_material_inbound_notices_order_no_status_idx" ON "raw_material_inbound_notices"("order_no", "status");
 CREATE INDEX "raw_material_inbound_notices_purchase_order_id_status_idx" ON "raw_material_inbound_notices"("purchase_order_id", "status");
 CREATE INDEX "raw_material_inbounds_inbound_notice_id_idx" ON "raw_material_inbounds"("inbound_notice_id");
