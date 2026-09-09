@@ -1,4 +1,4 @@
-﻿import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
@@ -84,7 +84,7 @@ export class PurchaseOrdersService {
       const extensionData = { idempotency_key: input.idempotency_key ?? null, batch_sequence: batchSequence, payable_status: "pending_finance", payable_amount: payableAmount, over_receipt_reason: input.over_receipt_reason ?? null };
       const created = await tx.purchaseReceipt.create({ data: { purchaseOrderId: po.id, purchaseOrderItemId: item.id, orderNo: po.orderNo, receiptNo: `GR-${randomUUID().slice(0, 12).toUpperCase()}`, referenceNo: input.reference_no, receivedDate: new Date(input.received_date), quantity, extensionData, remark: input.remark, ...this.audit.create(user) } });
       await tx.incomingInspection.create({ data: { purchaseReceiptId: created.id, orderNo: po.orderNo, inspectedQuantity: 0, acceptedQuantity: 0, conditionalQuantity: 0, rejectedQuantity: 0, status: "pending", extensionData: { batch_sequence: batchSequence }, ...this.audit.create(user) } });
-      await tx.payableSource.create({ data: { purchaseReceiptId: created.id, orderNo: po.orderNo, purchaseOrderId: po.id, purchaseOrderItemId: item.id, supplierId: item.supplierId, quantity, unitPrice: item.unitPrice, currency: po.currency, taxRate: item.taxRate, amount: payableAmount, idempotencyKey: `receipt:${created.id}`, ...this.audit.create(user) } });
+      // 到货只记录收货；原料入库过账时才创建唯一应付来源。
       const items = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: po.id, deletedAt: null }, include: { receipts: { where: { deletedAt: null } } } });
       const complete = items.length > 0 && items.every((candidate) => candidate.receipts.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)).gte(candidate.quantity));
       await tx.purchaseOrder.update({ where: { id }, data: { status: complete ? "arrived_complete" : "partially_arrived", ...this.audit.update(user) } });

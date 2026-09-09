@@ -139,7 +139,7 @@ export class RawMaterialInboundsService {
         await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${inbound.incomingInspectionId}::uuid FOR UPDATE`;
         if (!["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(inbound.incomingInspection.status)) throw new UnprocessableEntityException({ code: "INSPECTION_NOT_AVAILABLE", message: "质检尚未完成，不能入库", details: [{ status: inbound.incomingInspection.status }] });
         const allowed = new Prisma.Decimal(inbound.incomingInspection.acceptedQuantity).plus(inbound.incomingInspection.conditionalQuantity);
-        const used = inbound.incomingInspection.rawMaterialInbounds.filter((row) => row.id !== id).reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
+        const used = inbound.incomingInspection.rawMaterialInbounds.filter((row) => row.id !== id && row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
         if (used.plus(inbound.quantity).gt(allowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: allowed.minus(used).toString() }] });
         const item = inbound.incomingInspection.purchaseReceipt.purchaseOrderItem;
         const purchaseOrder = inbound.incomingInspection.purchaseReceipt.purchaseOrder;
@@ -195,6 +195,8 @@ export class RawMaterialInboundsService {
       const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { incomingInspection: { include: { rawMaterialInbounds: { where: { deletedAt: null } } } } } });
       if (!current) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
       if (current.status !== "draft") throw new UnprocessableEntityException({ code: "INBOUND_NOT_EDITABLE", message: "只有草稿入库单可以编辑", details: [] });
+       const notice = await tx.rawMaterialInboundNotice.findFirst({ where: { incomingInspectionId: current.incomingInspectionId, deletedAt: null }, select: { status: true } });
+       if (!notice || !["acknowledged", "processing"].includes(notice.status)) throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGED", message: "仓库接收入库通知后才能编辑入库", details: [] });
       await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${current.incomingInspectionId}::uuid FOR UPDATE`;
       const inspection = await tx.incomingInspection.findFirst({ where: { id: current.incomingInspectionId, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null } } } });
       if (!inspection) throw new NotFoundException({ code: "INSPECTION_NOT_AVAILABLE", message: "QC 不存在或不允许入库", details: [] });
@@ -242,14 +244,17 @@ export class RawMaterialInboundsService {
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] });
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const balance = await this.inventory.rawMaterialBalance(tx, inbound.materialId, inbound.unitId);
-      if (balance.minus(inbound.quantity).isNegative()) {
+      await tx.$queryRaw`SELECT id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: true } });
+      if (!current || current.status !== "posted") throw new ConflictException({ code: "INBOUND_ALREADY_REVERSED", message: "入库已被其他操作冲销", details: [] });
+      const balance = await this.inventory.rawMaterialBalance(tx, current.materialId, current.unitId);
+      if (balance.minus(current.quantity).isNegative()) {
         throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "冲销会造成库存负数", details: [] });
       }
 
       const updated = await tx.rawMaterialInbound.update({
         where: { id },
-        data: { status: "reversed", remark: `${inbound.remark ?? ""}\n冲销：${input.reason}`, ...this.audit.update(user) }
+        data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${input.reason}`, ...this.audit.update(user) }
       });
       await tx.inventoryFact.create({
         data: {
@@ -264,7 +269,7 @@ export class RawMaterialInboundsService {
           createdBy: user.id
         }
       });
-      await tx.payableSource.updateMany({ where: { OR: [{ rawMaterialInboundId: inbound.id }, { purchaseReceiptId: inbound.purchaseReceiptId }], status: "pending_finance" }, data: { status: "voided", ...this.audit.update(user) } });
+      await tx.payableSource.updateMany({ where: { rawMaterialInboundId: inbound.id, status: "pending_finance" }, data: { status: "voided", ...this.audit.update(user) } });
       return updated;
     });
     await this.audit.record("raw_material_inbound.reverse", "raw_material_inbound", user.id, id, { order_no: inbound.orderNo, reason: input.reason });
