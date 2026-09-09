@@ -48,3 +48,25 @@ test("raw-material inbound reversal voids the pending receipt payable source", a
   await service.reverse("inbound-1", { reason: "入库登记错误" }, { id: "user-1" });
   assert.deepEqual(where, { OR: [{ rawMaterialInboundId: "inbound-1" }, { purchaseReceiptId: "receipt-1" }], status: "pending_finance" });
 });
+
+function settlementHarness(inspection) {
+  return new RawMaterialInboundsService(
+    { incomingInspection: { findFirst: async () => inspection }, $transaction: async (fn) => fn({ incomingInspection: { findFirst: async () => inspection }, rawMaterialInbound: { create: async () => ({ id: "inbound-x" }) } }) },
+    { create: () => ({}), update: () => ({}), record: async () => undefined },
+    {},
+  );
+}
+
+test("partial inbound requires settlement price, total, and reason before any write", async () => {
+  const inspection = { id: "inspection-1", qcResult: "partial_inbound", status: "partially_accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrder: {}, purchaseOrderItem: { material: { materialType: "raw_material" } } } };
+  const service = settlementHarness(inspection);
+  await assert.rejects(() => service.create({ incoming_inspection_id: "inspection-1", quantity: "3" }, { id: "user-1" }), (error) => error.getResponse().code === "PARTIAL_INBOUND_SETTLEMENT_REQUIRED");
+  // 价+总缺原因：先命中通用“总价必须说明原因”，也属于正确拦截。
+  await assert.rejects(() => service.create({ incoming_inspection_id: "inspection-1", quantity: "3", settlement_unit_price: "2", settlement_total_amount: "6" }, { id: "user-1" }), (error) => ["PARTIAL_INBOUND_SETTLEMENT_REQUIRED", "SETTLEMENT_REASON_REQUIRED"].includes(error.getResponse().code));
+});
+
+test("a manual settlement total requires a discrepancy reason even on create", async () => {
+  const inspection = { id: "inspection-1", qcResult: "all_inbound", status: "accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrder: {}, purchaseOrderItem: { material: { materialType: "raw_material" } } } };
+  const service = settlementHarness(inspection);
+  await assert.rejects(() => service.create({ incoming_inspection_id: "inspection-1", quantity: "3", settlement_total_amount: "9" }, { id: "user-1" }), (error) => error.getResponse().code === "SETTLEMENT_REASON_REQUIRED");
+});

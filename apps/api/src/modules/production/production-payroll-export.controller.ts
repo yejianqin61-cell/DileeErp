@@ -10,7 +10,7 @@ import { RequireAdministrator } from "../../platform/authorization/require-admin
 import { ProductionPayrollExportService } from "./production-payroll-export.service";
 
 class OperationExportDto { @IsString() operation_id!: string; @Matches(/^\d{4}-\d{2}$/) month!: string; }
-class OrderExportDto { @IsString() @MaxLength(100) order_no!: string; @IsOptional() @IsString() operation_id?: string; }
+class OrderExportDto { @IsString() @MaxLength(100) order_no!: string; @IsOptional() @IsString() operation_id?: string; @IsOptional() @Matches(/^\d{4}-\d{2}$/) month?: string; }
 class MonthlyExportDto { @Matches(/^\d{4}-\d{2}$/) month!: string; }
 
 @Controller()

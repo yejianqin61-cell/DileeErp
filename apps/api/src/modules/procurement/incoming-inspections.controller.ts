@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -7,8 +7,9 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { IncomingInspectionsService } from "./incoming-inspections.service";
 
-class IncomingInspectionDto { @IsUUID() purchase_receipt_id!: string; @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsString() qc_result?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; }
-class IncomingInspectionUpdateDto { @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsString() qc_result?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; @IsString() reason!: string; }
+const QC_RESULTS = ["all_inbound", "rejected", "partial_inbound"] as const;
+class IncomingInspectionDto { @IsUUID() purchase_receipt_id!: string; @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsIn(QC_RESULTS) qc_result?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; }
+class IncomingInspectionUpdateDto { @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsIn(QC_RESULTS) qc_result?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; @IsString() reason!: string; }
 class TransitionDto { @IsString() target!: string; @IsOptional() @IsString() reason?: string; }
 class ReturnDto { @IsString() @MaxLength(1000) reason!: string; }
 @Controller("incoming-inspections") @UseGuards(AuthenticationGuard, ModulePermissionGuard) @RequireModules("warehouse")

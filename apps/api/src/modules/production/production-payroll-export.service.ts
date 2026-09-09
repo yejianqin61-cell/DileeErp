@@ -66,17 +66,19 @@ export class ProductionPayrollExportService {
     return this.buildSheet(sheetRows, "当月工序明细总表", { report_type: "当月工序明细总表", filters, row_count: rows.length }, user);
   }
 
-  /** 订单号盘点表：单订单明细（时长小时、合计），表头附每道工序的生产日期数组、计划数量与汇总数量。 */
+  /** 订单号盘点表：单订单明细（时长小时、合计），表头附每道工序的生产日期数组、计划数量与汇总数量；可选按生产日期月份过滤。 */
   async exportOrder(filters: { order_no: string; operation_id?: string; month?: string }, user: CurrentUser) {
     if (!filters.order_no?.trim()) throw this.invalid("订单号不能为空");
-    const rows = await this.fetchRows({ order_no: filters.order_no.trim(), operation_id: filters.operation_id });
+    const monthValid = /^\d{4}-\d{2}$/.test(filters.month ?? "");
+    const range = monthValid ? this.monthRange(filters.month!) : undefined;
+    const rows = await this.fetchRows({ order_no: filters.order_no.trim(), operation_id: filters.operation_id, ...(range ?? {}) });
     const operation = filters.operation_id ? await this.prisma.operationCatalog.findFirst({ where: { id: filters.operation_id }, select: { operationName: true } }) : null;
     const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "件数", "时长（小时）", "单价", "合计", "备注"];
     const operationHeader = rows.length ? this.operationHeaderRows(rows) : [];
     const sheetRows: Array<Array<string | number | null>> = [
       ["订单号盘点表"],
-      ["统计月份", filters.month ?? ""],
       ["订单号", filters.order_no],
+      ...(monthValid ? [["统计月份（按生产日期过滤）", filters.month!]] : []),
       ["工序", operation?.operationName ?? "全部工序"],
       ["数据范围", "该订单号下全部有效工序员工日报；计时展示时长（小时），总薪酬列更名为合计"],
       ["生成时间", new Date().toISOString()],
