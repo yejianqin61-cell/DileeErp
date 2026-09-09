@@ -70,8 +70,6 @@ export class RawMaterialInboundNoticesService {
           updatedBy: user.id
         }
       });
-      await this.inbounds.createDraftForInspection(tx, inspection.id, user);
-      await tx.rawMaterialInbound.updateMany({ where: { incomingInspectionId: inspection.id, deletedAt: null, inboundNoticeId: null }, data: { inboundNoticeId: notice.id } });
       return notice;
     });
     await this.audit.record("raw_material_inbound_notice.create", "raw_material_inbound_notice", user.id, result.id, { order_no: result.orderNo, incoming_inspection_id: inspectionId });
@@ -85,7 +83,10 @@ export class RawMaterialInboundNoticesService {
       if (!current) throw new NotFoundException({ code: "INBOUND_NOTICE_NOT_FOUND", message: "入库通知不存在", details: [] });
       if (current.status === "acknowledged" || current.status === "processing") return current;
       if (current.status !== "pending") throw new ConflictException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGEABLE", message: "当前入库通知不可接收", details: [{ status: current.status }] });
-      return tx.rawMaterialInboundNotice.update({ where: { id }, data: { status: "acknowledged", receivedBy: user.id, receivedAt: new Date(), updatedBy: user.id } });
+      const acknowledged = await tx.rawMaterialInboundNotice.update({ where: { id }, data: { status: "acknowledged", receivedBy: user.id, receivedAt: new Date(), updatedBy: user.id } });
+      const draft = await this.inbounds.createDraftForInspection(tx, current.incomingInspectionId, user);
+      if (draft) await tx.rawMaterialInbound.update({ where: { id: draft.id }, data: { inboundNoticeId: current.id } });
+      return acknowledged;
     });
     await this.audit.record("raw_material_inbound_notice.acknowledge", "raw_material_inbound_notice", user.id, id, { status: result.status });
     return this.get(result.id);

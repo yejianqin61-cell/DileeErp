@@ -51,7 +51,7 @@ export class IncomingInspectionsService {
       const result = existing
         ? await tx.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected, acceptedQuantity: accepted, conditionalQuantity: conditional, rejectedQuantity: rejected, status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, qcResult, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })
         : await tx.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: receipt.orderNo, inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], status, qcResult, extensionData: { ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
-      if (this.inbounds && ["accepted", "conditionally_accepted"].includes(status)) await this.inbounds.createDraftForInspection(tx, result.id, user);
+      // 入库草稿由仓库接收入库通知时创建，质检阶段只产生可入库数量。
       return result;
     });
     await this.audit.record("incoming_inspection.create", "incoming_inspection", user.id, result.id, { order_no: result.orderNo, purchase_receipt_id: input.purchase_receipt_id, status: result.status });
@@ -70,7 +70,7 @@ export class IncomingInspectionsService {
           if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
           this.assertTransitionAllowed(current, target, reason);
           const updated = await tx.incomingInspection.update({ where: { id }, data: { status: target, remark: reason?.trim() ? `${current.remark ?? ""}\n${reason.trim()}` : current.remark, ...this.audit.update(user) } });
-          if (["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(target)) await this.inbounds!.createDraftForInspection(tx, id, user);
+          // 入库草稿由仓库接收入库通知时创建。
           return updated;
         })
       : (async () => {
