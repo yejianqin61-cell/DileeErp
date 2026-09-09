@@ -36,15 +36,18 @@ export class RawMaterialInboundNoticesService {
       const inspection = await tx.incomingInspection.findFirst({
         where: { id: inspectionId, deletedAt: null },
         include: {
-          purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: true } },
+          purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: { include: { material: true } } } },
           rawMaterialInbounds: { where: { deletedAt: null }, select: { quantity: true, status: true } },
-          inboundNotice: true
+          inboundNotices: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, take: 1 }
         }
       });
       if (!inspection) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
-      if (inspection.inboundNotice && inspection.inboundNotice.deletedAt === null) return inspection.inboundNotice;
+      if (inspection.inboundNotices[0]) return inspection.inboundNotices[0];
       if (!READY_STATUSES.includes(inspection.status) || inspection.qcResult === "rejected") {
         throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_QC_NOT_READY", message: "来料质检未完成或该批次不可入库", details: [{ status: inspection.status }] });
+      }
+      if (inspection.purchaseReceipt.purchaseOrderItem.material.materialType !== "raw_material") {
+        throw new UnprocessableEntityException({ code: "INBOUND_FINISHED_PRODUCT_FORBIDDEN", message: "原料入库通知只能针对原料物料", details: [] });
       }
       const accepted = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
       const used = inspection.rawMaterialInbounds.filter((row) => row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
@@ -57,6 +60,9 @@ export class RawMaterialInboundNoticesService {
           purchaseOrderItemId: inspection.purchaseReceipt.purchaseOrderItemId,
           purchaseReceiptId: inspection.purchaseReceiptId,
           incomingInspectionId: inspection.id,
+          materialId: inspection.purchaseReceipt.purchaseOrderItem.materialId,
+          unitId: inspection.purchaseReceipt.purchaseOrderItem.unitId,
+          notifiedQuantity: accepted.minus(used),
           status: "pending",
           notifiedBy: user.id,
           remark: remark?.trim() || undefined,
@@ -64,6 +70,7 @@ export class RawMaterialInboundNoticesService {
           updatedBy: user.id
         }
       });
+      await this.inbounds.createDraftForInspection(tx, inspection.id, user);
       await tx.rawMaterialInbound.updateMany({ where: { incomingInspectionId: inspection.id, deletedAt: null, inboundNoticeId: null }, data: { inboundNoticeId: notice.id } });
       return notice;
     });

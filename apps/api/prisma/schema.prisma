@@ -458,6 +458,7 @@ model Unit {
   bomItems                  BomItem[]
   purchaseOrderItems        PurchaseOrderItem[]
   rawMaterialInbounds       RawMaterialInbound[]
+  inboundNotices            RawMaterialInboundNotice[]
   inventoryFacts            InventoryFact[]
   rawMaterialMovementLines  RawMaterialMovementLine[]
   operationCatalogs         OperationCatalog[]
@@ -496,6 +497,7 @@ model Material {
   bomItems                  BomItem[]
   purchaseOrderItems        PurchaseOrderItem[]
   rawMaterialInbounds       RawMaterialInbound[]
+  inboundNotices            RawMaterialInboundNotice[]
   inventoryFacts            InventoryFact[]
   rawMaterialMovementLines  RawMaterialMovementLine[]
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
@@ -638,7 +640,7 @@ model PurchaseReceipt {
   inspections         IncomingInspection[]
   rawMaterialInbounds RawMaterialInbound[]
   payableSources      PayableSource[]
-  inboundNotice       RawMaterialInboundNotice?
+  inboundNotices      RawMaterialInboundNotice[]
 
   @@index([purchaseOrderItemId, receivedDate])
   @@index([orderNo])
@@ -665,7 +667,7 @@ model IncomingInspection {
   deletedBy           String?              @map("deleted_by") @db.Uuid
   purchaseReceipt     PurchaseReceipt      @relation(fields: [purchaseReceiptId], references: [id])
   rawMaterialInbounds RawMaterialInbound[]
-  inboundNotice       RawMaterialInboundNotice?
+  inboundNotices      RawMaterialInboundNotice[]
 
   @@index([purchaseReceiptId])
   @@index([orderNo])
@@ -678,8 +680,11 @@ model RawMaterialInboundNotice {
   orderNo              String             @map("order_no") @db.VarChar(100)
   purchaseOrderId      String             @map("purchase_order_id") @db.Uuid
   purchaseOrderItemId  String             @map("purchase_order_item_id") @db.Uuid
-  purchaseReceiptId    String             @unique @map("purchase_receipt_id") @db.Uuid
-  incomingInspectionId String             @unique @map("incoming_inspection_id") @db.Uuid
+  purchaseReceiptId    String             @map("purchase_receipt_id") @db.Uuid
+  incomingInspectionId String             @map("incoming_inspection_id") @db.Uuid
+  materialId           String             @map("material_id") @db.Uuid
+  unitId               String             @map("unit_id") @db.Uuid
+  notifiedQuantity     Decimal            @map("notified_quantity") @db.Decimal(18, 4)
   status               String             @default("pending") @db.VarChar(30)
   notifiedBy           String             @map("notified_by") @db.Uuid
   notifiedAt           DateTime           @default(now()) @map("notified_at")
@@ -696,6 +701,8 @@ model RawMaterialInboundNotice {
   purchaseOrderItem    PurchaseOrderItem  @relation(fields: [purchaseOrderItemId], references: [id])
   purchaseReceipt      PurchaseReceipt    @relation(fields: [purchaseReceiptId], references: [id])
   incomingInspection   IncomingInspection @relation(fields: [incomingInspectionId], references: [id])
+  material             Material           @relation(fields: [materialId], references: [id])
+  unit                 Unit               @relation(fields: [unitId], references: [id])
   inbounds             RawMaterialInbound[] @relation("NoticeInbounds")
 
   @@index([orderNo, status])

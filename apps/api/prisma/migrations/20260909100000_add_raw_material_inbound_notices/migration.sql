@@ -6,6 +6,9 @@ CREATE TABLE "raw_material_inbound_notices" (
   "purchase_order_item_id" UUID NOT NULL,
   "purchase_receipt_id" UUID NOT NULL,
   "incoming_inspection_id" UUID NOT NULL,
+  "material_id" UUID NOT NULL,
+  "unit_id" UUID NOT NULL,
+  "notified_quantity" DECIMAL(18,4) NOT NULL,
   "status" VARCHAR(30) NOT NULL DEFAULT 'pending',
   "notified_by" UUID NOT NULL,
   "notified_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -34,4 +37,6 @@ ALTER TABLE "raw_material_inbound_notices" ADD CONSTRAINT "raw_material_inbound_
 ALTER TABLE "raw_material_inbound_notices" ADD CONSTRAINT "raw_material_inbound_notices_purchase_order_item_id_fkey" FOREIGN KEY ("purchase_order_item_id") REFERENCES "purchase_order_items"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "raw_material_inbound_notices" ADD CONSTRAINT "raw_material_inbound_notices_purchase_receipt_id_fkey" FOREIGN KEY ("purchase_receipt_id") REFERENCES "purchase_receipts"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "raw_material_inbound_notices" ADD CONSTRAINT "raw_material_inbound_notices_incoming_inspection_id_fkey" FOREIGN KEY ("incoming_inspection_id") REFERENCES "incoming_inspections"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "raw_material_inbound_notices" ADD CONSTRAINT "raw_material_inbound_notices_material_id_fkey" FOREIGN KEY ("material_id") REFERENCES "materials"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "raw_material_inbound_notices" ADD CONSTRAINT "raw_material_inbound_notices_unit_id_fkey" FOREIGN KEY ("unit_id") REFERENCES "units"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "raw_material_inbounds" ADD CONSTRAINT "raw_material_inbounds_inbound_notice_id_fkey" FOREIGN KEY ("inbound_notice_id") REFERENCES "raw_material_inbound_notices"("id") ON DELETE SET NULL ON UPDATE CASCADE;
