@@ -36,7 +36,7 @@ export class RawMaterialInboundsService {
 
   /** Create the draft receiving task for a passed inspection inside its caller transaction. */
   async createDraftForInspection(tx: Prisma.TransactionClient, inspectionId: string, user: CurrentUser) {
-    const existing = await tx.rawMaterialInbound.findFirst({ where: { idempotencyKey: `inspection:${inspectionId}`, deletedAt: null, status: "draft" } });
+    const existing = await tx.rawMaterialInbound.findFirst({ where: { incomingInspectionId: inspectionId, deletedAt: null, status: "draft" } });
     if (existing) return existing;
     const inspection = await tx.incomingInspection.findFirst({
       where: { id: inspectionId, deletedAt: null, status: { in: ["accepted", "conditionally_accepted", "partially_accepted", "completed"] } },
@@ -64,7 +64,7 @@ export class RawMaterialInboundsService {
         unitId: item.unitId,
         quantity,
         inventoryCategory: "raw_material",
-        idempotencyKey: `inspection:${inspection.id}`,
+        idempotencyKey: `inspection:${inspection.id}:${randomUUID()}`,
         remark: "质检通过自动生成入库草稿",
         ...this.audit.create(user)
       }
@@ -79,8 +79,10 @@ export class RawMaterialInboundsService {
     const quantity = this.positive(input.quantity, "入库数量必须是大于零的十进制数");
     if (input.inventory_category && input.inventory_category !== "raw_material") throw new UnprocessableEntityException({ code: "INVALID_INVENTORY_CATEGORY", message: "原料入库库存分类必须是 raw_material", details: [] });
     const preview = await this.requireInspection(input.incoming_inspection_id);
+    const notice = await this.prisma.rawMaterialInboundNotice.findFirst({ where: { incomingInspectionId: input.incoming_inspection_id, deletedAt: null }, select: { id: true, status: true } });
+    if (!notice || notice.status !== "acknowledged" && notice.status !== "processing") throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGED", message: "仓库接收入库通知后才能登记入库", details: [] });
     const previewAllowed = preview.qcResult === "rejected" ? new Prisma.Decimal(0) : new Prisma.Decimal(preview.acceptedQuantity).plus(preview.conditionalQuantity);
-    const previewUsed = preview.rawMaterialInbounds.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
+    const previewUsed = preview.rawMaterialInbounds.filter((row) => row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
     if (quantity.plus(previewUsed).gt(previewAllowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: previewAllowed.minus(previewUsed).toString() }] });
     // 与 update() 对齐：人工填写结算总价必须说明差异原因；部分入库批次必须携带完整结算口径。
     if (input.settlement_total_amount && !input.settlement_amount_reason?.trim()) throw new UnprocessableEntityException({ code: "SETTLEMENT_REASON_REQUIRED", message: "人工填写结算总价时必须填写金额差异原因", details: [] });
@@ -90,7 +92,9 @@ export class RawMaterialInboundsService {
       const inspection = await this.requireInspection(input.incoming_inspection_id, tx);
       if (inspection.qcResult === "rejected") throw new UnprocessableEntityException({ code: "REJECTED_INSPECTION_NOT_INBOUNDABLE", message: "拒收质检批次不得建立原料入库", details: [] });
       const allowed = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
-      const used = inspection.rawMaterialInbounds.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
+      const notice = await tx.rawMaterialInboundNotice.findFirst({ where: { incomingInspectionId: input.incoming_inspection_id, deletedAt: null }, select: { id: true, status: true } });
+       if (!notice || (notice.status !== "acknowledged" && notice.status !== "processing")) throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGED", message: "仓库接收入库通知后才能登记入库", details: [] });
+       const used = inspection.rawMaterialInbounds.filter((row) => row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
       if (quantity.plus(used).gt(allowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: allowed.minus(used).toString() }] });
       const item = inspection.purchaseReceipt.purchaseOrderItem;
       if (item.material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "INBOUND_FINISHED_PRODUCT_FORBIDDEN", message: "原料入库只能接收原料物料", details: [] });
@@ -128,9 +132,10 @@ export class RawMaterialInboundsService {
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
-        const inbound = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { incomingInspection: { include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true, quantity: true } }, purchaseReceipt: { include: { purchaseOrder: { include: { items: true } }, purchaseOrderItem: true } } } } } });
+        const inbound = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { inboundNotice: { select: { status: true } }, incomingInspection: { include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true, quantity: true, status: true } }, purchaseReceipt: { include: { purchaseOrder: { include: { items: true } }, purchaseOrderItem: true } } } } } });
         if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
         if (inbound.status !== "draft") throw new ConflictException({ code: "INBOUND_ALREADY_POSTED", message: "入库已被其他操作处理", details: [] });
+        if (!inbound.inboundNotice || !["acknowledged", "processing"].includes(inbound.inboundNotice.status)) throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGED", message: "仓库接收入库通知后才能过账", details: [] });
         await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${inbound.incomingInspectionId}::uuid FOR UPDATE`;
         if (!["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(inbound.incomingInspection.status)) throw new UnprocessableEntityException({ code: "INSPECTION_NOT_AVAILABLE", message: "质检尚未完成，不能入库", details: [{ status: inbound.incomingInspection.status }] });
         const allowed = new Prisma.Decimal(inbound.incomingInspection.acceptedQuantity).plus(inbound.incomingInspection.conditionalQuantity);
@@ -196,7 +201,7 @@ export class RawMaterialInboundsService {
       if (inspection.qcResult === "rejected") throw new UnprocessableEntityException({ code: "REJECTED_INSPECTION_NOT_INBOUNDABLE", message: "拒收质检批次不得建立原料入库", details: [] });
       const allowed = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
       if (input.settlement_total_amount && !input.settlement_amount_reason?.trim()) throw new UnprocessableEntityException({ code: "SETTLEMENT_REASON_REQUIRED", message: "人工填写结算总价时必须填写金额差异原因", details: [] });
-      const used = inspection.rawMaterialInbounds.filter((row) => row.id !== id).reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
+      const used = inspection.rawMaterialInbounds.filter((row) => row.id !== id && row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
       if (quantity.plus(used).gt(allowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: allowed.minus(used).toString() }] });
       return tx.rawMaterialInbound.update({ where: { id }, data: { quantity: input.quantity, settlementUnitPrice: input.settlement_unit_price, settlementTotalAmount: input.settlement_total_amount, settlementAmountReason: input.settlement_amount_reason, remark: input.remark, ...this.audit.update(user) } });
     });
