@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
@@ -13,7 +14,7 @@ import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
-type Inbound = { id: string; inboundNo: string; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
+type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
 type Balance = { material_id: string; unit_id: string; unit_name: string; order_no: string | null; quantity: string; material?: Material };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
@@ -29,6 +30,8 @@ export default function RawMaterialStoragePage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const searchParams = useSearchParams();
+  const noticeId = searchParams.get("notice_id");
 
   async function load() {
     setLoading(true);
@@ -58,6 +61,7 @@ export default function RawMaterialStoragePage() {
   }
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => { if (!noticeId || !inbounds.length || dialog) return; const inbound = inbounds.find((item) => item.inboundNoticeId === noticeId); if (inbound?.status === "draft") editInbound(inbound); }, [noticeId, inbounds, dialog]);
 
   async function run(action: Promise<unknown>, success: string) {
     setError("");
