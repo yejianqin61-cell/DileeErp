@@ -27,6 +27,7 @@ test("procurement.inbound.post_generates_inventory_and_a_single_payable_source",
     const item = await prisma.purchaseOrderItem.create({ data: { purchaseOrderId: po.id, materialId: material.id, materialSnapshot: {}, unitId: unit.id, unitSnapshot: {}, bomItemId: bomItem.id, supplierId: supplier.id, supplierSnapshot: { name: supplier.name }, expectedDate: new Date(), quantity: "10", unitPrice: "2", amount: "20", ...audit.create() } });
     const receipt = await prisma.purchaseReceipt.create({ data: { purchaseOrderId: po.id, purchaseOrderItemId: item.id, orderNo: run.orderNo, receiptNo: `GR-${run.id}`, receivedDate: new Date(), quantity: "10", ...audit.create() } });
     const inspection = await prisma.incomingInspection.create({ data: { purchaseReceiptId: receipt.id, orderNo: run.orderNo, inspectedQuantity: "10", acceptedQuantity: "10", conditionalQuantity: "0", rejectedQuantity: "0", status: "accepted", ...audit.create() } });
+    const notice = await prisma.rawMaterialInboundNotice.create({ data: { noticeNo: `RIN-${run.id}`, orderNo: run.orderNo, purchaseOrderId: po.id, purchaseOrderItemId: item.id, purchaseReceiptId: receipt.id, incomingInspectionId: inspection.id, materialId: material.id, unitId: unit.id, notifiedQuantity: "10", status: "acknowledged", notifiedBy: user.id, receivedBy: user.id, receivedAt: new Date(), ...audit.create() } });
     const service = new RawMaterialInboundsService(prisma, audit, inventory);
     const inbound = await service.create({ incoming_inspection_id: inspection.id, quantity: "10" }, user);
     await service.post(inbound.id, user);
@@ -43,6 +44,7 @@ test("procurement.inbound.post_generates_inventory_and_a_single_payable_source",
     assertNoDuplicateSource("payable source idempotency", posted.payableSources);
   } finally {
     await prisma.$executeRawUnsafe(`DELETE FROM audit_events WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
+    await prisma.rawMaterialInboundNotice.deleteMany({ where: { id: notice.id } });
     await prisma.$executeRawUnsafe(`DELETE FROM payable_sources WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
     await prisma.$executeRawUnsafe(`DELETE FROM inventory_facts WHERE raw_material_inbound_id IN (SELECT id FROM raw_material_inbounds WHERE order_no = '${run.orderNo.replaceAll("'", "''")}' )`);
     await prisma.$executeRawUnsafe(`DELETE FROM raw_material_inbounds WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);

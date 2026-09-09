@@ -136,6 +136,7 @@ export class RawMaterialInboundsService {
         if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
         if (inbound.status !== "draft") throw new ConflictException({ code: "INBOUND_ALREADY_POSTED", message: "入库已被其他操作处理", details: [] });
         if (!inbound.inboundNotice || !["acknowledged", "processing"].includes(inbound.inboundNotice.status)) throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGED", message: "仓库接收入库通知后才能过账", details: [] });
+         if (inbound.incomingInspection.qcResult === "partial_inbound" && (!inbound.settlementUnitPrice || !inbound.settlementTotalAmount || !inbound.settlementAmountReason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
         await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${inbound.incomingInspectionId}::uuid FOR UPDATE`;
         if (!["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(inbound.incomingInspection.status)) throw new UnprocessableEntityException({ code: "INSPECTION_NOT_AVAILABLE", message: "质检尚未完成，不能入库", details: [{ status: inbound.incomingInspection.status }] });
         const allowed = new Prisma.Decimal(inbound.incomingInspection.acceptedQuantity).plus(inbound.incomingInspection.conditionalQuantity);
@@ -245,8 +246,9 @@ export class RawMaterialInboundsService {
 
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
-      const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: true } });
+      const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: { include: { supplierPayableEntry: { include: { allocations: { where: { deletedAt: null, status: "active" } } } } } } } });
       if (!current || current.status !== "posted") throw new ConflictException({ code: "INBOUND_ALREADY_REVERSED", message: "入库已被其他操作冲销", details: [] });
+       if (current.payableSources.some((source) => source.supplierPayableEntry && ["confirmed", "partially_paid", "paid"].includes(source.supplierPayableEntry.status))) throw new UnprocessableEntityException({ code: "INBOUND_PAYABLE_ALREADY_CONFIRMED", message: "应付已确认或付款，不能直接冲销入库", details: [] });
       const balance = await this.inventory.rawMaterialBalance(tx, current.materialId, current.unitId);
       if (balance.minus(current.quantity).isNegative()) {
         throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "冲销会造成库存负数", details: [] });
