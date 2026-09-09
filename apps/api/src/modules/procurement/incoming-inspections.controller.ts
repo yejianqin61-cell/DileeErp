@@ -7,8 +7,8 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { IncomingInspectionsService } from "./incoming-inspections.service";
 
-class IncomingInspectionDto { @IsUUID() purchase_receipt_id!: string; @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; }
-class IncomingInspectionUpdateDto { @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; @IsString() reason!: string; }
+class IncomingInspectionDto { @IsUUID() purchase_receipt_id!: string; @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsString() qc_result?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; }
+class IncomingInspectionUpdateDto { @IsString() inspected_quantity!: string; @IsString() accepted_quantity!: string; @IsString() conditional_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsString() qc_result?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsString() remark?: string; @IsString() reason!: string; }
 class TransitionDto { @IsString() target!: string; @IsOptional() @IsString() reason?: string; }
 class ReturnDto { @IsString() @MaxLength(1000) reason!: string; }
 @Controller("incoming-inspections") @UseGuards(AuthenticationGuard, ModulePermissionGuard) @RequireModules("warehouse")

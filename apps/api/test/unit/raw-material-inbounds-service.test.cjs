@@ -27,7 +27,7 @@ test("raw-material inbound posting uses the locked current draft", async () => {
     $queryRaw: async () => undefined,
     rawMaterialInbound: { findFirst: async () => current, update: async () => current },
     inventoryFact: { findFirst: async () => null, create: async ({ data }) => { quantities.push(data.quantityDelta); } },
-    payableSource: { findUnique: async () => ({ id: "payable-1" }) },
+    payableSource: { findFirst: async () => ({ id: "payable-1" }), findUnique: async () => ({ id: "payable-1" }) },
   };
   const prisma = { rawMaterialInbound: { findFirst: async () => ({ id: "inbound-1", status: "draft" }) }, $transaction: async (fn) => fn(tx) };
   const service = new RawMaterialInboundsService(prisma, { update: () => ({}), create: () => ({}), record: async () => undefined }, {});

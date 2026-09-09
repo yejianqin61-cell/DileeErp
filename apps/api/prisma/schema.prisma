@@ -650,6 +650,7 @@ model IncomingInspection {
   acceptedQuantity    Decimal              @map("accepted_quantity") @db.Decimal(18, 4)
   conditionalQuantity Decimal              @map("conditional_quantity") @db.Decimal(18, 4)
   rejectedQuantity    Decimal              @map("rejected_quantity") @db.Decimal(18, 4)
+    qcResult            String?              @map("qc_result") @db.VarChar(30)
   status              String               @default("pending") @db.VarChar(30)
   extensionData       Json                 @default("{}") @map("extension_data")
   remark              String?              @db.VarChar(1000)
@@ -677,6 +678,9 @@ model RawMaterialInbound {
   incomingInspectionId String             @map("incoming_inspection_id") @db.Uuid
   materialId           String             @map("material_id") @db.Uuid
   supplierId           String             @map("supplier_id") @db.Uuid
+    settlementUnitPrice  Decimal?           @map("settlement_unit_price") @db.Decimal(18, 4)
+    settlementTotalAmount Decimal?          @map("settlement_total_amount") @db.Decimal(18, 4)
+    settlementAmountReason String?          @map("settlement_amount_reason") @db.VarChar(1000)
   quantity             Decimal            @db.Decimal(18, 4)
   inventoryCategory    String             @map("inventory_category") @db.VarChar(30)
   status               String             @default("draft") @db.VarChar(30)
@@ -772,7 +776,7 @@ model PayableSource {
   supplierPayableEntry SupplierPayableEntry? @relation("RawMaterialPayableEntry")
 
   @@unique([rawMaterialInboundId])
-  @@unique([purchaseReceiptId])
+  @@index([purchaseReceiptId])
   @@index([orderNo])
   @@map("payable_sources")
 }
