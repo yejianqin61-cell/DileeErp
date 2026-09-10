@@ -9,7 +9,8 @@ test("raw-material inbound edits lock and recheck the QC source", async () => {
   const tx = {
     $queryRaw: async () => { calls.push("lock"); },
     rawMaterialInbound: { findFirst: async () => ({ id: "inbound-1", status: "draft", incomingInspectionId: "inspection-1" }), update: async () => ({ id: "inbound-1", orderNo: "SO-1" }) },
-    incomingInspection: { findFirst: async () => ({ id: "inspection-1", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [{ id: "inbound-1", quantity: "1" }, { id: "inbound-2", quantity: "5" }] }) },
+    rawMaterialInboundNotice: { findFirst: async () => ({ status: "acknowledged" }) },
+    incomingInspection: { findFirst: async () => ({ id: "inspection-1", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [{ id: "inbound-1", quantity: new Prisma.Decimal("1"), status: "draft" }, { id: "inbound-2", quantity: new Prisma.Decimal("5"), status: "draft" }] }) },
   };
   const prisma = { $transaction: async (fn) => fn(tx) };
   const service = new RawMaterialInboundsService(prisma, { update: () => ({}), record: async () => undefined }, {});
@@ -20,7 +21,7 @@ test("raw-material inbound edits lock and recheck the QC source", async () => {
 test("raw-material inbound posting uses the locked current draft", async () => {
   const quantities = [];
   const current = {
-    id: "inbound-1", status: "draft", incomingInspectionId: "inspection-1", materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", quantity: "7", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
+    id: "inbound-1", status: "draft", incomingInspectionId: "inspection-1", materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", quantity: new Prisma.Decimal("7"), purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
     inboundNotice: { status: "acknowledged" }, incomingInspection: { qcResult: "all_inbound", status: "accepted", acceptedQuantity: "7", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrderItem: { unitPrice: "2", taxRate: "0" }, purchaseOrder: { currency: "CNY" } } },
   };
   const tx = {
@@ -32,13 +33,13 @@ test("raw-material inbound posting uses the locked current draft", async () => {
   const prisma = { rawMaterialInbound: { findFirst: async () => ({ id: "inbound-1", status: "draft" }) }, $transaction: async (fn) => fn(tx) };
   const service = new RawMaterialInboundsService(prisma, { update: () => ({}), create: () => ({}), record: async () => undefined }, {});
   await service.post("inbound-1", { id: "user-1" });
-  assert.deepEqual(quantities, ["7"]);
+  assert.deepEqual(quantities.map(String), ["7"]);
 });
 
 test("inbound posting snapshots all-inbound payable with purchase unit price", async () => {
   let created;
   const current = {
-    id: "inbound-1", status: "draft", quantity: "5", materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
+    id: "inbound-1", status: "draft", quantity: new Prisma.Decimal("5"), materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
     inboundNotice: { status: "acknowledged" },
     incomingInspection: { qcResult: "all_inbound", status: "accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrderItem: { unitPrice: "2", taxRate: "0" }, purchaseOrder: { currency: "CNY" } } },
   };
@@ -58,14 +59,14 @@ test("inbound posting snapshots all-inbound payable with purchase unit price", a
   assert.equal(created.settlementAmountReason, null);
   assert.equal(created.qcResult, "all_inbound");
   assert.equal(created.acceptedQuantity, "5");
-  assert.equal(created.actualInboundQuantity, "5");
+  assert.equal(String(created.actualInboundQuantity), "5");
 });
 
 test("inbound posting snapshots partial-inbound settlement amount and reason", async () => {
   let created;
   const current = {
-    id: "inbound-1", status: "draft", quantity: "3", materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
-    settlementUnitPrice: "2", settlementTotalAmount: "5", settlementAmountReason: "质量折价",
+    id: "inbound-1", status: "draft", quantity: new Prisma.Decimal("3"), materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
+    settlementUnitPrice: "2", settlementTotalAmount: new Prisma.Decimal("5"), settlementAmountReason: "质量折价",
     inboundNotice: { status: "acknowledged" },
     incomingInspection: { qcResult: "partial_inbound", status: "partially_accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrderItem: { unitPrice: "2", taxRate: "0" }, purchaseOrder: { currency: "CNY" } } },
   };
@@ -81,11 +82,11 @@ test("inbound posting snapshots partial-inbound settlement amount and reason", a
   assert.equal(created.unitPrice, "2");
   assert.equal(created.amount, "5.0000");
   assert.equal(created.settlementUnitPrice, "2");
-  assert.equal(created.settlementTotalAmount, "5");
+  assert.equal(String(created.settlementTotalAmount), "5");
   assert.equal(created.settlementAmountReason, "质量折价");
   assert.equal(created.qcResult, "partial_inbound");
   assert.equal(created.acceptedQuantity, "5");
-  assert.equal(created.actualInboundQuantity, "3");
+  assert.equal(String(created.actualInboundQuantity), "3");
 });
 
 
@@ -193,7 +194,7 @@ test("inbound posting restores a voided payable source instead of creating a dup
   let updated;
   let createCount = 0;
   const current = {
-    id: "inbound-1", status: "draft", quantity: "5", materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
+    id: "inbound-1", status: "draft", quantity: new Prisma.Decimal("5"), materialId: "material-1", unitId: "unit-1", inventoryCategory: "raw_material", purchaseReceiptId: "receipt-1", purchaseOrderId: "purchase-1", purchaseOrderItemId: "item-1", supplierId: "supplier-1", orderNo: "SO-1",
     inboundNotice: { status: "acknowledged" },
     incomingInspection: { qcResult: "all_inbound", status: "accepted", acceptedQuantity: "5", conditionalQuantity: "0", rejectedQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrderItem: { unitPrice: "2", taxRate: "0" }, purchaseOrder: { currency: "CNY" } } },
   };
@@ -201,16 +202,6 @@ test("inbound posting restores a voided payable source instead of creating a dup
     $queryRaw: async () => [],
     rawMaterialInbound: { findFirst: async () => current, update: async () => current },
     inventoryFact: { create: async () => ({}) },
-
-test("legacy partial inspection without qc_result still requires settlement fields", async () => {
-  const inspection = { id: "inspection-legacy", qcResult: null, status: "partially_accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrder: {}, purchaseOrderItem: { material: { materialType: "raw_material" } } } };
-  const service = settlementHarness(inspection);
-  await assert.rejects(
-    () => service.create({ incoming_inspection_id: "inspection-legacy", quantity: "3" }, { id: "user-1" }),
-    (error) => error.getResponse().code === "PARTIAL_INBOUND_SETTLEMENT_REQUIRED",
-  );
-});
-
     payableSource: {
       findFirst: async () => ({ id: "payable-existing", status: "voided" }),
       update: async ({ data }) => { updated = data; return { id: "payable-existing", ...data }; },
@@ -221,7 +212,16 @@ test("legacy partial inspection without qc_result still requires settlement fiel
   const service = new RawMaterialInboundsService(prisma, { update: () => ({}), create: () => ({}), record: async () => undefined }, {});
   await service.post("inbound-1", { id: "user-1" });
   assert.equal(updated.status, "pending_finance");
-  assert.equal(updated.actualInboundQuantity, "5");
+  assert.equal(String(updated.actualInboundQuantity), "5");
   assert.equal(updated.qcResult, "all_inbound");
   assert.equal(createCount, 0);
+});
+
+test("legacy partial inspection without qc_result still requires settlement fields", async () => {
+  const inspection = { id: "inspection-legacy", qcResult: null, status: "partially_accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrder: {}, purchaseOrderItem: { material: { materialType: "raw_material" } } } };
+  const service = settlementHarness(inspection);
+  await assert.rejects(
+    () => service.create({ incoming_inspection_id: "inspection-legacy", quantity: "3" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "PARTIAL_INBOUND_SETTLEMENT_REQUIRED",
+  );
 });

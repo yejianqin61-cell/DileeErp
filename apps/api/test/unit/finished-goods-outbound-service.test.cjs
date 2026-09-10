@@ -27,6 +27,7 @@ test("finished-goods outbound reversal cancels a draft receivable source", async
     finishedGoodsOutbound: { findFirst: async () => current, update: async () => current },
     $transaction: async (fn) => fn({
       $queryRaw: async () => [],
+      finishedGoodsOutbound: { update: async ({ data }) => ({ ...current, ...data }) },
       inventoryFact: { findFirst: async () => null, create: async () => { calls.push("inventory-reversal"); } },
       receivableSource: {
         findFirst: async () => ({ id: "receivable-1", status: "draft", remark: null, allocations: [] }),
