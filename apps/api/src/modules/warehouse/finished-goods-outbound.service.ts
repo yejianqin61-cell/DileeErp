@@ -84,6 +84,16 @@ export class FinishedGoodsOutboundService {
       await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${current.productionOrderId}::uuid FOR UPDATE`;
       const existing = await tx.inventoryFact.findFirst({ where: { finishedGoodsOutboundId: id, sourceType: "finished_goods_outbound_reversal" } });
       if (existing) throw this.invalid("FINISHED_GOODS_OUTBOUND_ALREADY_REVERSED", "成品出库单已冲销");
+      const receivable = await tx.receivableSource.findFirst({
+        where: { outboundId: id, deletedAt: null },
+        include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } },
+      });
+      if (receivable) {
+        const hasPostedPayment = receivable.allocations.some((item) => item.payment.status === "posted");
+        if (hasPostedPayment) throw new UnprocessableEntityException({ code: "OUTBOUND_REVERSAL_HAS_RECEIVABLE_PAYMENTS", message: "出库已存在有效收款核销，必须先冲销收款或完成应收调整", details: [{ receivable_source_id: receivable.id }] });
+        if (receivable.status !== "draft") throw new UnprocessableEntityException({ code: "OUTBOUND_REVERSAL_HAS_RECEIVABLE", message: "出库已生成应收来源，必须先取消或回退应收来源", details: [{ receivable_source_id: receivable.id, status: receivable.status }] });
+        await tx.receivableSource.update({ where: { id: receivable.id }, data: { status: "cancelled", remark: `${receivable.remark ?? ""}\n出库冲销自动取消：${reason.trim()}`, ...this.audit.update(user) } });
+      }
       const updated = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity, sourceType: "finished_goods_outbound_reversal", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
       return updated;
