@@ -28,3 +28,36 @@ test("inspection quantities cannot change after raw material inbound exists", as
   const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, {});
   await assert.rejects(() => service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "1", accepted_quantity: "1", conditional_quantity: "0", rejected_quantity: "0" }, { id: "user-1" }), (error) => error.getResponse().code === "INSPECTION_DOWNSTREAM_EXISTS");
 });
+
+
+test("incoming inspection rejects qc result that conflicts with quantity split", async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", orderNo: "SO-1", quantity: 2, extensionData: { batch_sequence: 1 }, inspections: [] }) },
+  };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, {});
+  await assert.rejects(
+    () => service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "2", accepted_quantity: "2", conditional_quantity: "0", rejected_quantity: "0", qc_result: "partial_inbound" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "QC_RESULT_MISMATCH",
+  );
+});
+
+
+test("inspection return is blocked when a payable entry exists", async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    incomingInspection: {
+      findFirst: async () => ({
+        id: "inspection-1", status: "accepted", rawMaterialInbounds: [], purchaseReceiptId: "receipt-1",
+        purchaseReceipt: { payableSources: [{ id: "payable-1", status: "pending_finance", supplierPayableEntry: { id: "entry-1", status: "confirmed" } }] },
+      }),
+      update: async () => { throw new Error("must not update"); },
+    },
+    payableSource: { updateMany: async () => { throw new Error("must not void"); } },
+  };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, {});
+  await assert.rejects(
+    () => service.returnToSupplier("inspection-1", "整批退货", { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYABLE_ENTRY_EXISTS",
+  );
+});

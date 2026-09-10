@@ -23,8 +23,9 @@ export class IncomingInspectionsService {
       if (values[0].gt(current.purchaseReceipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
       const status = values[0].isZero() ? current.status : values[3].eq(values[0]) ? "rejected" : values[1].plus(values[2]).eq(values[0]) ? (values[2].gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
         const qcResult = status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null;
+        if (input.qc_result && input.qc_result !== qcResult) throw new UnprocessableEntityException({ code: "QC_RESULT_MISMATCH", message: "QC 最终结果与检验数量分流不一致", details: [{ requested: input.qc_result, derived: qcResult }] });
       const updated = await tx.incomingInspection.update({ where: { id }, data: { inspectedQuantity: values[0], acceptedQuantity: values[1], conditionalQuantity: values[2], rejectedQuantity: values[3], qcResult, status, extensionData: { ...(current.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}) } as Prisma.InputJsonValue, remark: `${current.remark ?? ""}${current.remark ? "\n" : ""}${input.reason.trim()}${input.remark?.trim() ? `\n${input.remark.trim()}` : ""}`, ...this.audit.update(user) } });
-      // ?????????????????
+      // 入库草稿由仓库接收入库通知时创建，质检阶段只产生可入库数量。
       return updated;
     });
     await this.audit.record("incoming_inspection.update", "incoming_inspection", user.id, id, { order_no: result.orderNo, reason: input.reason.trim() });
@@ -47,6 +48,7 @@ export class IncomingInspectionsService {
       const rejected = (existing?.rejectedQuantity ?? new Prisma.Decimal(0)).plus(values[3]);
       const status = inspected.isZero() ? "pending" : rejected.eq(inspected) ? "rejected" : accepted.plus(conditional).eq(inspected) ? (conditional.gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
         const qcResult = status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null;
+        if (input.qc_result && input.qc_result !== qcResult) throw new UnprocessableEntityException({ code: "QC_RESULT_MISMATCH", message: "QC 最终结果与检验数量分流不一致", details: [{ requested: input.qc_result, derived: qcResult }] });
       const batchSequence = Number((receipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1);
       const result = existing
         ? await tx.incomingInspection.update({ where: { id: existing.id }, data: { inspectedQuantity: inspected, acceptedQuantity: accepted, conditionalQuantity: conditional, rejectedQuantity: rejected, status, extensionData: { ...(existing.extensionData as Record<string, unknown>), ...(input.extension_data ?? {}), batch_sequence: batchSequence } as Prisma.InputJsonValue, qcResult, remark: input.remark ?? existing.remark, ...this.audit.update(user) } })
@@ -99,11 +101,12 @@ export class IncomingInspectionsService {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "INSPECTION_RETURN_REASON_REQUIRED", message: "来料退货必须填写原因", details: [] });
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${id}::uuid FOR UPDATE`;
-      const current = await tx.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } }, purchaseReceipt: { include: { payableSources: { where: { status: { not: "voided" } } } } } } });
+      const current = await tx.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } }, purchaseReceipt: { include: { payableSources: { where: { status: { not: "voided" } }, include: { supplierPayableEntry: true } } } } } });
       if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
       if (current.status === "cancelled") throw new UnprocessableEntityException({ code: "INSPECTION_ALREADY_RETURNED", message: "该质检批次已整批退货，无需重复操作", details: [] });
       if (current.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不能退货", details: [] });
       if (current.purchaseReceipt.payableSources.some((source) => source.status === "posted")) throw new UnprocessableEntityException({ code: "PAYABLE_SOURCE_POSTED", message: "应付来源已过账，不能整批退货", details: [] });
+        if (current.purchaseReceipt.payableSources.some((source) => source.supplierPayableEntry && !["reversed", "voided"].includes(source.supplierPayableEntry.status))) throw new UnprocessableEntityException({ code: "PAYABLE_ENTRY_EXISTS", message: "应付条目已生成，不能整批退货", details: [] });
       await tx.payableSource.updateMany({ where: { purchaseReceiptId: current.purchaseReceiptId, status: { not: "voided" } }, data: { status: "voided", ...this.audit.update(user) } });
       return tx.incomingInspection.update({ where: { id }, data: { status: "cancelled", remark: `${current.remark ?? ""}${current.remark ? "\n" : ""}整批退货：${reason.trim()}`, ...this.audit.update(user) } });
     });
