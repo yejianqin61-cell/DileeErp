@@ -103,7 +103,7 @@ const LOAD_ORDER = {
   "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units"],
   "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices?status=pending"],
   "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
-  "app/sales/page.tsx": ["/customers?page_size=200", "/sales-orders?page_size=200"]
+  "app/sales/page.tsx": ["/customers?page_size=200", "/sales-orders?page_size=200", "/units"]
 };
 
 test("主要数据加载页的接口顺序与绑定表一致（防止插入/换序导致整体错位）", () => {
