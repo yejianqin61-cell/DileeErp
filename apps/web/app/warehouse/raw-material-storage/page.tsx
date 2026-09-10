@@ -10,12 +10,13 @@ import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
+import { mergeMaterialBalances } from "../../../lib/wms-balances";
 
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
 type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; orderNo: string; quantity: string; status: string; remark?: string; settlementUnitPrice?: string | null; settlementTotalAmount?: string | null; settlementAmountReason?: string | null; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
-type Balance = { material_id: string; unit_id: string; unit_name: string; order_no: string | null; quantity: string; material?: Material };
+type Balance = { material_id: string; unit_id: string | null; unit_name: string; order_no: string | null; quantity: string; material?: Material };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -48,11 +49,8 @@ export default function RawMaterialStoragePage() {
       setInspections(i.data);
       setInbounds(ib.data);
       const balanceResult = await apiGet<Balance[]>("/inventory/raw-material-balances?material_ids=" + m.data.map((item) => item.id).join(","));
-      const materialMap = new Map(m.data.map((item) => [item.id, item]));
-      const rows = balanceResult.data.filter((item) => materialMap.has(item.material_id)).map((item) => ({ ...item, material: materialMap.get(item.material_id) }));
-      const existingKeys = new Set(rows.map((item) => `${item.material_id}|${item.unit_id}`));
-      for (const item of m.data) if (!existingKeys.has(`${item.id}|${item.defaultUnitId}`)) rows.push({ material_id: item.id, unit_id: item.defaultUnitId, unit_name: unitMap.get(item.defaultUnitId) ?? "", order_no: null, quantity: "0", material: item });
-      setBalances(rows);
+      // 单位名必须用本次请求返回的 u.data 解析：渲染期派生的 unitMap 在首次加载时还是空的。
+      setBalances(mergeMaterialBalances(m.data, u.data, balanceResult.data, (row, material) => ({ ...row, material })));
     } catch (cause) {
       setError(messageOf(cause, "原料仓储情况加载失败"));
     } finally {
