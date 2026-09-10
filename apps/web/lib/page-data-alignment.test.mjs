@@ -94,8 +94,34 @@ test("每个 Promise.all 数据加载的绑定名与请求数一致", () => {
   assert.deepEqual(failures, [], `数据绑定与请求错位：\n${failures.join("\n")}`);
 });
 
+// 主要数据加载点的接口顺序表。位置型解构一旦插入/换序，这里立刻变红，
+// 迫使改动者重新核对“谁的数据写进了哪个状态”。
+// 注意（本检查的边界）：顺序表只能发现“请求序列变了”，无法发现“请求序列没变但 setter 写串了”；
+// 后者由下面针对采购页的 setter↔接口语义测试覆盖。
+const LOAD_ORDER = {
+  "app/procurement/page.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/payable-sources", "/raw-material-inbound-notices", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
+  "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units"],
+  "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices?status=pending"],
+  "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
+  "app/sales/page.tsx": ["/customers?page_size=200", "/sales-orders?page_size=200"]
+};
+
+test("主要数据加载页的接口顺序与绑定表一致（防止插入/换序导致整体错位）", () => {
+  const failures = [];
+  for (const [relativePath, expected] of Object.entries(LOAD_ORDER)) {
+    const source = readFileSync(join(webRoot, relativePath), "utf8");
+    const call = extractCalls(source).sort((left, right) => right.elements.length - left.elements.length)[0];
+    if (!call || !call.names.length) { failures.push(`${relativePath}: 未找到带绑定的 Promise.all 数据加载`); continue; }
+    const actual = call.elements;
+    if (actual.length !== expected.length || actual.some((endpoint, index) => !endpoint.startsWith(expected[index]))) {
+      failures.push(`${relativePath}: 接口顺序已变化\n  期望 [${expected.join(", ")}]\n  实际 [${actual.join(", ")}]`);
+    }
+  }
+  assert.deepEqual(failures, [], `数据加载顺序漂移：\n${failures.join("\n")}`);
+});
+
 // 采购页字段语义表：每个 setter 必须绑定到它真正对应的接口。
-// 位置型解构一旦错位，这里立刻变红（setter 与接口顺序不匹配）。
+// 位置型解构一旦错位（即使请求数不变），这里立刻变红。
 const PROCUREMENT_BINDINGS = {
   setOrders: "/purchase-orders",
   setInspections: "/incoming-inspections",
