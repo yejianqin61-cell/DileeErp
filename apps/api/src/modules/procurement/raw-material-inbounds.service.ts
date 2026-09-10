@@ -86,8 +86,8 @@ export class RawMaterialInboundsService {
     const previewUsed = preview.rawMaterialInbounds.filter((row) => row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
     if (quantity.plus(previewUsed).gt(previewAllowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: previewAllowed.minus(previewUsed).toString() }] });
     // 与 update() 对齐：人工填写结算总价必须说明差异原因；部分入库批次必须携带完整结算口径。
-     if (preview.qcResult === "partial_inbound" && (!input.settlement_unit_price?.trim() || !input.settlement_total_amount?.trim() || !input.settlement_amount_reason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
-     if (input.settlement_total_amount && !input.settlement_amount_reason?.trim()) throw new UnprocessableEntityException({ code: "SETTLEMENT_REASON_REQUIRED", message: "???????????????????", details: [] });
+     if ((preview.qcResult === "partial_inbound" || preview.status === "partially_accepted") && (!input.settlement_unit_price?.trim() || !input.settlement_total_amount?.trim() || !input.settlement_amount_reason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
+     if (input.settlement_total_amount && !input.settlement_amount_reason?.trim()) throw new UnprocessableEntityException({ code: "SETTLEMENT_REASON_REQUIRED", message: "人工填写结算总价时必须填写金额差异原因", details: [] });
 
     const inbound = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${input.incoming_inspection_id}::uuid FOR UPDATE`;
@@ -138,7 +138,7 @@ export class RawMaterialInboundsService {
         if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
         if (inbound.status !== "draft") throw new ConflictException({ code: "INBOUND_ALREADY_POSTED", message: "入库已被其他操作处理", details: [] });
         if (!inbound.inboundNotice || !["acknowledged", "processing"].includes(inbound.inboundNotice.status)) throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGED", message: "仓库接收入库通知后才能过账", details: [] });
-         if (inbound.incomingInspection.qcResult === "partial_inbound" && (!inbound.settlementUnitPrice || !inbound.settlementTotalAmount || !inbound.settlementAmountReason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
+         if ((inbound.incomingInspection.qcResult === "partial_inbound" || inbound.incomingInspection.status === "partially_accepted") && (!inbound.settlementUnitPrice || !inbound.settlementTotalAmount || !inbound.settlementAmountReason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
         await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${inbound.incomingInspectionId}::uuid FOR UPDATE`;
         if (!["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(inbound.incomingInspection.status)) throw new UnprocessableEntityException({ code: "INSPECTION_NOT_AVAILABLE", message: "质检尚未完成，不能入库", details: [{ status: inbound.incomingInspection.status }] });
         const allowed = new Prisma.Decimal(inbound.incomingInspection.acceptedQuantity).plus(inbound.incomingInspection.conditionalQuantity);
@@ -161,19 +161,32 @@ export class RawMaterialInboundsService {
             createdBy: user.id
           }
         });
-        const receiptSource = await tx.payableSource.findFirst({ where: { rawMaterialInboundId: inbound.id } });
-        if (!receiptSource) await tx.payableSource.create({
+        const isPartialInbound = inbound.incomingInspection.qcResult === "partial_inbound" || inbound.incomingInspection.status === "partially_accepted";
+          const settlementUnitPrice = isPartialInbound ? (inbound.settlementUnitPrice ?? item.unitPrice) : item.unitPrice;
+          const settlementAmount = isPartialInbound ? (inbound.settlementTotalAmount ?? inbound.quantity.mul(settlementUnitPrice)) : inbound.quantity.mul(item.unitPrice);
+          const receiptSource = await tx.payableSource.findFirst({ where: { rawMaterialInboundId: inbound.id } });
+        if (receiptSource && receiptSource.status === "voided") await tx.payableSource.update({ where: { id: receiptSource.id }, data: { orderNo: inbound.orderNo, purchaseOrderId: inbound.purchaseOrderId, purchaseOrderItemId: inbound.purchaseOrderItemId, materialId: inbound.materialId, supplierId: inbound.supplierId, quantity: inbound.quantity, unitPrice: settlementUnitPrice, settlementUnitPrice: isPartialInbound ? settlementUnitPrice : null, settlementTotalAmount: isPartialInbound ? settlementAmount : null, settlementAmountReason: isPartialInbound ? inbound.settlementAmountReason : null, currency: purchaseOrder.currency, taxRate: item.taxRate, amount: settlementAmount.toFixed(4), qcResult: inbound.incomingInspection.qcResult, acceptedQuantity: inbound.incomingInspection.acceptedQuantity, conditionalQuantity: inbound.incomingInspection.conditionalQuantity, rejectedQuantity: inbound.incomingInspection.rejectedQuantity, actualInboundQuantity: inbound.quantity, status: "pending_finance", ...this.audit.update(user) } });
+          else if (!receiptSource) await tx.payableSource.create({
           data: {
             rawMaterialInboundId: inbound.id,
             orderNo: inbound.orderNo,
             purchaseOrderId: inbound.purchaseOrderId,
             purchaseOrderItemId: inbound.purchaseOrderItemId,
-            supplierId: inbound.supplierId,
+            materialId: inbound.materialId,
+              supplierId: inbound.supplierId,
             quantity: inbound.quantity,
-            unitPrice: inbound.settlementUnitPrice ?? item.unitPrice,
+            unitPrice: settlementUnitPrice,
+              settlementUnitPrice: isPartialInbound ? settlementUnitPrice : null,
+              settlementTotalAmount: isPartialInbound ? settlementAmount : null,
+              settlementAmountReason: isPartialInbound ? inbound.settlementAmountReason : null,
             currency: purchaseOrder.currency,
             taxRate: item.taxRate,
-            amount: (inbound.settlementTotalAmount ?? inbound.quantity.mul(inbound.settlementUnitPrice ?? item.unitPrice)).toFixed(4),
+            amount: settlementAmount.toFixed(4),
+              qcResult: inbound.incomingInspection.qcResult,
+              acceptedQuantity: inbound.incomingInspection.acceptedQuantity,
+              conditionalQuantity: inbound.incomingInspection.conditionalQuantity,
+              rejectedQuantity: inbound.incomingInspection.rejectedQuantity,
+              actualInboundQuantity: inbound.quantity,
             idempotencyKey: key,
             ...this.audit.create(user)
           }
@@ -249,9 +262,13 @@ export class RawMaterialInboundsService {
 
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
-      const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: { include: { supplierPayableEntry: { include: { allocations: { where: { deletedAt: null, status: "active" } } } } } } } });
+      const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: { include: { supplierPayableEntry: { include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } } } } } });
       if (!current || current.status !== "posted") throw new ConflictException({ code: "INBOUND_ALREADY_REVERSED", message: "入库已被其他操作冲销", details: [] });
-       if (current.payableSources.some((source) => source.supplierPayableEntry && ["draft", "confirmed", "partially_paid", "paid"].includes(source.supplierPayableEntry.status))) throw new UnprocessableEntityException({ code: "INBOUND_PAYABLE_ALREADY_CONFIRMED", message: "应付已确认或付款，不能直接冲销入库", details: [] });
+       const payableEntries = current.payableSources.flatMap((source) => source.supplierPayableEntry ? [source.supplierPayableEntry] : []);
+        const hasPostedPayment = payableEntries.some((entry) => entry.allocations.some((allocation) => allocation.payment.status === "posted"));
+        if (hasPostedPayment) throw new UnprocessableEntityException({ code: "INBOUND_PAYABLE_HAS_PAYMENT", message: "应付已有有效付款核销，必须先冲销付款后再冲销入库", details: [] });
+        const nonDraftEntries = payableEntries.filter((entry) => entry.status !== "draft");
+        if (nonDraftEntries.length) throw new UnprocessableEntityException({ code: "INBOUND_PAYABLE_ALREADY_CONFIRMED", message: "应付已确认或付款，不能直接冲销入库", details: nonDraftEntries.map((entry) => ({ payable_id: entry.id, status: entry.status })) });
       const balance = await this.inventory.rawMaterialBalance(tx, current.materialId, current.unitId);
       if (balance.minus(current.quantity).isNegative()) {
         throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "冲销会造成库存负数", details: [] });
@@ -274,7 +291,9 @@ export class RawMaterialInboundsService {
           createdBy: user.id
         }
       });
-      await tx.payableSource.updateMany({ where: { rawMaterialInboundId: inbound.id, status: "pending_finance" }, data: { status: "voided", ...this.audit.update(user) } });
+      await tx.payableSource.updateMany({ where: { OR: [{ rawMaterialInboundId: inbound.id }, { purchaseReceiptId: current.purchaseReceiptId, rawMaterialInboundId: null }], status: { not: "voided" } }, data: { status: "voided", ...this.audit.update(user) } });
+        const draftEntryIds = payableEntries.filter((entry) => entry.status === "draft").map((entry) => entry.id);
+        if (draftEntryIds.length) await tx.supplierPayableEntry.updateMany({ where: { id: { in: draftEntryIds } }, data: { status: "voided", ...this.audit.update(user) } });
       return updated;
     });
     await this.audit.record("raw_material_inbound.reverse", "raw_material_inbound", user.id, id, { order_no: inbound.orderNo, reason: input.reason });
@@ -282,10 +301,10 @@ export class RawMaterialInboundsService {
   }
 
   async impactPreview(id: string) {
-    const inbound = await this.prisma.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: true, incomingInspection: true } });
+    const inbound = await this.prisma.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { payableSources: { include: { supplierPayableEntry: { include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } } } }, incomingInspection: true } });
     if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
     const balance = await this.inventory.rawMaterialBalance(this.prisma, inbound.materialId, inbound.unitId);
-    return { inbound_id: id, order_no: inbound.orderNo, status: inbound.status, quantity: inbound.quantity.toString(), current_inventory: balance.toString(), after_reversal_inventory: balance.minus(inbound.quantity).toString(), payable_sources: inbound.payableSources.map((source) => ({ id: source.id, status: source.status, amount: source.amount.toString() })), warning: "冲销将创建反向库存事实，并将待财务应付来源置为作废" };
+    return { inbound_id: id, order_no: inbound.orderNo, status: inbound.status, quantity: inbound.quantity.toString(), current_inventory: balance.toString(), after_reversal_inventory: balance.minus(inbound.quantity).toString(), payable_sources: inbound.payableSources.map((source) => ({ id: source.id, status: source.status, amount: source.amount.toString(), payable_entry_status: source.supplierPayableEntry?.status ?? null, payment_posted: source.supplierPayableEntry?.allocations.some((allocation) => allocation.payment.status === "posted") ?? false })), warning: "未确认应付将随入库冲销作废；已确认、部分支付或已有付款核销的应付必须先处理付款和应付，再冲销入库。" };
   }
 
   private async requireInspection(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
