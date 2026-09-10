@@ -19,12 +19,10 @@ import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+import { unitMutationPayload } from "../../lib/unit-options";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Unit = { id: string; name: string; remark?: string | null; isActive: boolean; createdAt?: string; updatedAt?: string };
-
-// 可选字段不允许空串（后端 DTO 是 @IsOptional + @MaxLength），提交前归一为 undefined。
-const unitPayload = (values: Record<string, string>) => ({ name: values.name.trim(), remark: values.remark?.trim() ? values.remark.trim() : undefined });
 
 export function UnitPoolPage() {
   const [rows, setRows] = useState<Unit[]>([]);
@@ -51,10 +49,10 @@ export function UnitPoolPage() {
   const visible = useMemo(() => rows.filter((row) => !query || `${row.name} ${row.remark ?? ""}`.toLowerCase().includes(query.toLowerCase())), [rows, query]);
 
   function openCreate() {
-    setDialog({ title: "新建单位", fields: [{ name: "name", label: "单位名称", required: true, placeholder: "例如：打、个、码" }, { name: "remark", label: "备注", type: "textarea" }], submit: (values) => void run(() => apiPost("/units", unitPayload(values)), "单位已创建") });
+    setDialog({ title: "新建单位", fields: [{ name: "name", label: "单位名称", required: true, placeholder: "例如：打、个、码" }, { name: "remark", label: "备注", type: "textarea" }], submit: (values) => void run(() => apiPost("/units", unitMutationPayload(values)), "单位已创建") });
   }
   function openEdit(row: Unit) {
-    setDialog({ title: `编辑单位：${row.name}`, fields: [{ name: "name", label: "单位名称", required: true, defaultValue: row.name }, { name: "remark", label: "备注", type: "textarea", defaultValue: row.remark ?? "" }], submit: (values) => void run(() => apiPatch(`/units/${row.id}`, unitPayload(values)), "单位已更新") });
+    setDialog({ title: `编辑单位：${row.name}`, fields: [{ name: "name", label: "单位名称", required: true, defaultValue: row.name }, { name: "remark", label: "备注", type: "textarea", defaultValue: row.remark ?? "" }], submit: (values) => void run(() => apiPatch(`/units/${row.id}`, unitMutationPayload(values)), "单位已更新") });
   }
   function toggle(row: Unit) { void run(() => apiPatch(`/units/${row.id}/active`, { is_active: !row.isActive }), row.isActive ? "单位已停用" : "单位已启用"); }
   function remove(row: Unit) { void run(() => apiRequest(`/units/${row.id}`, { method: "DELETE" }), "单位已删除"); }

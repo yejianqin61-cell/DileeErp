@@ -1,7 +1,7 @@
 // 单位下拉选项的回归测试（全站单位引用统一取单位池）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { activeUnitOptions, unitOptionsWithCurrent } from "./unit-options.ts";
+import { activeUnitOptions, unitOptionsWithCurrent, unitMutationPayload } from "./unit-options.ts";
 
 const units = [
   { id: "u1", name: "打", isActive: true },
@@ -45,4 +45,10 @@ test("当前值对应已停用单位时标注已停用，但仍可选（旧单�
 test("没有当前值时就是纯单位池选项", () => {
   assert.deepEqual(unitOptionsWithCurrent(units, undefined), activeUnitOptions(units));
   assert.deepEqual(unitOptionsWithCurrent(units, "   "), activeUnitOptions(units));
+});
+
+test("提交体：名称去空格，备注留空时发送 null（否则后端视为“不修改”，清空无效）", () => {
+  assert.deepEqual(unitMutationPayload({ name: " 打 ", remark: "" }), { name: "打", remark: null });
+  assert.deepEqual(unitMutationPayload({ name: "个" }), { name: "个", remark: null });
+  assert.deepEqual(unitMutationPayload({ name: " 码 ", remark: "  长度单位  " }), { name: "码", remark: "长度单位" });
 });
