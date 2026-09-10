@@ -35,15 +35,25 @@ export function unconfirmedOrders<T extends SalesOrderRef>(orders: T[]): T[] {
 
 /**
  * 生产单单位：优先使用销售单上的产品单位（按名称匹配启用单位），
- * 其次退回工序默认单位。两者都没有时返回空串，由调用方给出明确提示。
+ * 其次退回工序默认单位（且该单位必须仍是启用单位，否则后端会以“单位不存在或已停用”拒绝）。
+ * 两者都没有时返回空串，由调用方给出明确提示。
  */
 export function resolveProductionUnit(orderUnit: string | undefined, units: UnitRef[], operations: OperationRef[]): string {
+  const activeUnit = (id: string | null | undefined) => (id ? units.find((unit) => unit.id === id && unit.isActive !== false)?.id : undefined);
   const wanted = orderUnit?.trim();
   if (wanted) {
     const matched = units.find((unit) => unit.isActive !== false && unit.name.trim() === wanted);
     if (matched) return matched.id;
   }
-  return operations.find((operation) => operation.isActive && operation.defaultUnitId)?.defaultUnitId ?? "";
+  return activeUnit(operations.find((operation) => operation.isActive && operation.defaultUnitId)?.defaultUnitId) ?? "";
+}
+
+/**
+ * 生产单要用的 BOM：同一销售单可能存在历史版本，必须取版本号最大的一个，
+ * 否则后端会以 BOM_VERSION_CHANGED 拒绝（/sales-orders 返回的 boms 并不保证顺序）。
+ */
+export function latestBom<T extends { id: string; version: number; status?: string }>(boms: T[]): T | undefined {
+  return [...boms].sort((left, right) => right.version - left.version)[0];
 }
 
 /** 候选为空/不足时给用户的原因说明；没有阻塞时返回空串。 */

@@ -11,7 +11,7 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/
 import { DataTable } from "../../components/data/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
-import { productionCandidateHint, productionCandidates, resolveProductionUnit } from "../../lib/production-candidates";
+import { latestBom, productionCandidateHint, productionCandidates, resolveProductionUnit } from "../../lib/production-candidates";
 import { PayrollExportPanel } from "../../components/production/payroll-export-panel";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
@@ -98,7 +98,7 @@ export default function ProductionPage() {
       { name: "execution_mode", label: "执行方式", type: "select", required: true, defaultValue: "in_house", options: [{ value: "in_house", label: "厂内生产" }, { value: "outsourced", label: "外加工" }] },
       { name: "execution_location_id", label: "执行地点", type: "select", required: true, options: activeLocations.map((item) => ({ value: item.id, label: `${item.name} / ${item.locationType === "workshop" ? "厂内" : "外加工"}` })) },
     ], submit: (values) => {
-      const source = productionCandidates(ordersRef.current).find((item) => item.orderNo === values.order_no); const bom = source?.boms[0];
+      const source = productionCandidates(ordersRef.current).find((item) => item.orderNo === values.order_no); const bom = source ? latestBom(source.boms) : undefined;
       if (!source || !bom) { setError("请选择已确认且已建 BOM 的销售单；缺少 BOM 的订单请先在【采购 → BOM表】建立 BOM。"); return; }
       const unitId = resolveProductionUnit(source.unit, units, operations);
       if (!unitId) { setError(`无法确定订单 ${source.orderNo} 的生产单位：请先在【采购】物料清单的单位中选择「打 / 个 / 码」等单位，或为工序设置默认单位。`); return; }

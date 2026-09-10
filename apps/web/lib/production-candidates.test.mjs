@@ -3,7 +3,7 @@
 // 以及生产单单位被错误地强制依赖工序默认单位。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { productionCandidates, ordersAwaitingBom, unconfirmedOrders, resolveProductionUnit, productionCandidateHint } from "./production-candidates.ts";
+import { latestBom, productionCandidates, ordersAwaitingBom, unconfirmedOrders, resolveProductionUnit, productionCandidateHint } from "./production-candidates.ts";
 
 const order = (orderNo, status, boms = [], unit = undefined) => ({ orderNo, quantity: "10", status, unit, boms });
 
@@ -52,4 +52,19 @@ test("销售单单位缺失或对不上时退回工序默认单位；都没有�
   assert.equal(resolveProductionUnit("箱", units, [{ isActive: true, defaultUnitId: "u-ge" }]), "u-ge");
   assert.equal(resolveProductionUnit("箱", units, [{ isActive: false, defaultUnitId: "u-ge" }]), "");
   assert.equal(resolveProductionUnit(undefined, units, []), "");
+});
+
+test("退回的工序默认单位必须仍是启用单位，否则留空而不是让后端报 UNIT_NOT_FOUND", () => {
+  const units = [{ id: "u-ge", name: "个", isActive: false }, { id: "u-ma", name: "码", isActive: true }];
+  assert.equal(resolveProductionUnit(undefined, units, [{ isActive: true, defaultUnitId: "u-ge" }]), "", "停用的工序默认单位不应被使用");
+  assert.equal(resolveProductionUnit(undefined, units, [{ isActive: true, defaultUnitId: "u-unknown" }]), "", "不存在的单位不应被使用");
+  assert.equal(resolveProductionUnit("码", units, [{ isActive: true, defaultUnitId: "u-ge" }]), "u-ma", "销售单单位仍然优先");
+});
+
+test("BOM 取版本号最大的一张，避免历史版本触发 BOM_VERSION_CHANGED", () => {
+  assert.equal(latestBom([{ id: "bom-v1", version: 1 }, { id: "bom-v3", version: 3 }, { id: "bom-v2", version: 2 }]).id, "bom-v3");
+  assert.equal(latestBom([]), undefined);
+  const boms = [{ id: "bom-v1", version: 1 }];
+  assert.equal(latestBom(boms).id, "bom-v1");
+  assert.deepEqual(boms.map((bom) => bom.id), ["bom-v1"], "不得就地修改传入数组");
 });
