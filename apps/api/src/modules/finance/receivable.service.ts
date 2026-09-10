@@ -10,7 +10,28 @@ export class ReceivableService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
   async list(orderNo?: string, customerId?: string, status?: string) { return this.prisma.receivableSource.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null } } }, orderBy: { createdAt: "desc" } }); }
-  async get(id: string) { const row = await this.prisma.receivableSource.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null } }, outbound: true } }); if (!row) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在"); return row; }
+  async get(id: string) {
+    const row = await this.prisma.receivableSource.findFirst({
+      where: { id, deletedAt: null },
+      include: {
+        allocations: { where: { deletedAt: null } },
+        outbound: {
+          include: {
+            productionOrder: {
+              include: {
+                finishedGoodsInspections: {
+                  include: { qcRecords: true, finishedGoodsInbounds: true },
+                  orderBy: { createdAt: "asc" },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!row) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
+    return row;
+  }
 
   async createFromOutbound(outboundId: string, input: { amount?: string; amount_reason?: string; due_date?: string; remark?: string }, user: CurrentUser) {
     const row = await this.prisma.$transaction(async (tx) => {
@@ -85,7 +106,25 @@ export class ReceivableService {
     await this.audit.record("receivable_source.cancel", "receivable_source", user.id, id, { order_no: row.orderNo, reason });
     return row;
   }
-  async impactPreview(id: string) { const row = await this.get(id); const allocated = row.allocations.reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)); return { source_id: id, order_no: row.orderNo, status: row.status, amount: row.amount.toString(), allocated_amount: allocated.toString(), unallocated_amount: row.amount.minus(allocated).toString(), allocation_count: row.allocations.length }; }
+  async impactPreview(id: string) {
+    const row = await this.get(id);
+    const allocated = row.allocations.reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
+    const inspections = row.outbound.productionOrder?.finishedGoodsInspections ?? [];
+    return {
+      source_id: id,
+      order_no: row.orderNo,
+      status: row.status,
+      amount: row.amount.toString(),
+      allocated_amount: allocated.toString(),
+      unallocated_amount: row.amount.minus(allocated).toString(),
+      allocation_count: row.allocations.length,
+      source_trace: {
+        outbound: { id: row.outbound.id, outbound_no: row.outbound.outboundNo, status: row.outbound.status },
+        qc_records: inspections.flatMap((submission) => submission.qcRecords.map((qc) => ({ id: qc.id, qc_no: qc.qcNo, conclusion: qc.conclusion, status: qc.status }))),
+        finished_goods_inbounds: inspections.flatMap((submission) => submission.finishedGoodsInbounds.map((inbound) => ({ id: inbound.id, inbound_no: inbound.inboundNo, status: inbound.status, quantity: inbound.quantity.toString() }))),
+      },
+    };
+  }
   async orderSummary(orderNo: string) { const rows = await this.prisma.receivableSource.findMany({ where: { orderNo, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } }); const amount = rows.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)); const allocated = rows.reduce((sum, row) => sum.plus(row.allocations.filter((item) => item.payment.status === "posted").reduce((inner, item) => inner.plus(item.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0)); return { order_no: orderNo, source_count: rows.length, receivable_amount: amount.toString(), allocated_amount: allocated.toString(), outstanding_amount: amount.minus(allocated).toString() }; }
   async allocationBalance(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const source = await client.receivableSource.findFirst({ where: { id, deletedAt: null } }); if (!source) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在"); const result = await client.receivableAllocation.aggregate({ where: { receivableSourceId: id, deletedAt: null, status: "active", payment: { status: "posted" } }, _sum: { amount: true } }); return { source, allocated: new Prisma.Decimal(result._sum.amount ?? 0), available: source.amount.minus(result._sum.amount ?? 0) }; }
   async refreshStatus(client: Prisma.TransactionClient, id: string, user: CurrentUser) { const { source, available } = await this.allocationBalance(id, client); const next = available.eq(0) ? "paid" : available.lt(source.amount) ? "partially_paid" : "confirmed"; return client.receivableSource.update({ where: { id }, data: { status: next, ...this.audit.update(user) } }); }

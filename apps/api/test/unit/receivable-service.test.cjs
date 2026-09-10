@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { Prisma } = require("@prisma/client");
 const { ReceivableService } = require("../../dist/modules/finance/receivable.service.js");
 
 test("receivable confirmation locks and rechecks the current source", async () => {
@@ -107,3 +108,33 @@ test("receivable creation restores a soft-deleted outbound source", async () => 
   assert.equal(result.deletedAt, null);
   assert.equal(restoreCount, 1);
 });
+
+test("receivable impact preview traces outbound qc and finished-goods inbound", async () => {
+  const row = {
+    id: "source-1",
+    orderNo: "SO-1",
+    status: "confirmed",
+    amount: new Prisma.Decimal("100"),
+    allocations: [],
+    outbound: {
+      id: "outbound-1",
+      outboundNo: "FGO-1",
+      status: "posted",
+      productionOrder: {
+        finishedGoodsInspections: [
+          {
+            qcRecords: [{ id: "qc-1", qcNo: "QC-1", conclusion: "qualified", status: "active" }],
+            finishedGoodsInbounds: [{ id: "inbound-1", inboundNo: "FGI-1", status: "posted", quantity: new Prisma.Decimal("100") }],
+          },
+        ],
+      },
+    },
+  };
+  const prisma = { receivableSource: { findFirst: async () => row } };
+  const service = new ReceivableService(prisma, {});
+  const preview = await service.impactPreview("source-1");
+  assert.equal(preview.source_trace.outbound.outbound_no, "FGO-1");
+  assert.equal(preview.source_trace.qc_records[0].qc_no, "QC-1");
+  assert.equal(preview.source_trace.finished_goods_inbounds[0].inbound_no, "FGI-1");
+});
+
