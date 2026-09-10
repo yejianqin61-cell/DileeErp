@@ -42,9 +42,31 @@ test("procurement.inbound.post_generates_inventory_and_a_single_payable_source",
     assert.equal(posted.inventoryFacts[0].unitId, unit.id);
     assert.equal((await inventory.rawMaterialBalance(prisma, material.id, unit.id)).toString(), "10");
     assertNoDuplicateSource("payable source idempotency", posted.payableSources);
+    await prisma.supplierPayableEntry.create({
+      data: {
+        payableNo: `AP-${run.id}`,
+        orderNo: run.orderNo,
+        supplierId: supplier.id,
+        sourceType: "raw_material_inbound",
+        payableSourceId: posted.payableSources[0].id,
+        sourceNoSnapshot: posted.payableSources[0].id,
+        quantity: "10",
+        unitPrice: "2",
+        amount: "20",
+        currency: "USD",
+        confirmationDate: new Date(),
+        status: "confirmed",
+        ...audit.create(),
+      },
+    });
+    await assert.rejects(
+      () => service.reverse(inbound.id, { reason: "已确认应付不得冲销" }, user),
+      (error) => error.getResponse().code === "INBOUND_PAYABLE_ALREADY_CONFIRMED",
+    );
   } finally {
     await prisma.$executeRawUnsafe(`DELETE FROM audit_events WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
     await prisma.rawMaterialInboundNotice.deleteMany({ where: { id: notice.id } });
+    await prisma.$executeRawUnsafe(`DELETE FROM supplier_payable_entries WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
     await prisma.$executeRawUnsafe(`DELETE FROM payable_sources WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
     await prisma.$executeRawUnsafe(`DELETE FROM inventory_facts WHERE raw_material_inbound_id IN (SELECT id FROM raw_material_inbounds WHERE order_no = '${run.orderNo.replaceAll("'", "''")}' )`);
     await prisma.$executeRawUnsafe(`DELETE FROM raw_material_inbounds WHERE order_no = '${run.orderNo.replaceAll("'", "''")}'`);
