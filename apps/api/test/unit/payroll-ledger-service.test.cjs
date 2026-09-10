@@ -11,7 +11,7 @@ function serviceWithStatus(status) {
       update: async ({ data }) => ({ ...row, ...data }),
     },
   };
-  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], payrollLedger: prisma.payrollLedger });
+  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], payrollLedger: prisma.payrollLedger, payrollPayableEntry: { findFirst: async () => null } });
   const audit = {
     update: () => ({ updatedBy: "user-1" }),
     record: async (...args) => audits.push(args),
@@ -72,6 +72,7 @@ test("payroll ledger update locks and rechecks paid status", async () => {
     $transaction: async (fn) => fn({
       $queryRaw: async () => { lockCount += 1; return []; },
       payrollLedger: prisma.payrollLedger,
+        payrollPayableEntry: { findFirst: async () => null },
     }),
   };
   const audit = { update: () => ({}), record: async () => {} };
@@ -104,4 +105,77 @@ test("payroll ledger generation locks employee before idempotency check", async 
   assert.equal(result.id, existing.id);
   assert.equal(lockCount, 1);
   assert.equal(createCount, 0);
+});
+
+
+test("payroll ledger list applies period overlap and computes payable/paid/outstanding", async () => {
+  const { Prisma } = require("@prisma/client");
+  let captured;
+  const row = {
+    id: "ledger-1",
+    periodStart: new Date("2026-01-01"),
+    periodEnd: new Date("2026-01-31"),
+    baseSalary: new Prisma.Decimal("100"),
+    productionSourceAmount: new Prisma.Decimal("50"),
+    overtimeAmount: new Prisma.Decimal("0"),
+    attendanceDeduction: new Prisma.Decimal("5"),
+    performanceAmount: new Prisma.Decimal("0"),
+    allowanceAmount: new Prisma.Decimal("0"),
+    socialInsurance: new Prisma.Decimal("0"),
+    individualTax: new Prisma.Decimal("0"),
+    otherAdjustment: new Prisma.Decimal("0"),
+    adjustments: [{ status: "posted", effect: "increase", amount: new Prisma.Decimal("10") }],
+    allocations: [
+      { status: "active", amount: new Prisma.Decimal("20"), payment: { status: "posted" } },
+      { status: "active", amount: new Prisma.Decimal("100"), payment: { status: "draft" } },
+    ],
+    employee: { id: "employee-1" },
+  };
+  const prisma = { payrollLedger: { findMany: async (args) => { captured = args; return [row]; } } };
+  const service = new PayrollLedgerService(prisma, {});
+  const result = await service.list(undefined, undefined, undefined, undefined, "2026-01-01", "2026-01-31");
+  assert.ok(captured.where.AND);
+  assert.equal(result[0].payableAmount, "155.0000");
+  assert.equal(result[0].paidAmount, "20.0000");
+  assert.equal(result[0].outstandingAmount, "135.0000");
+});
+
+
+test("payroll ledger with a confirmed payroll payable cannot reopen", async () => {
+  let updateCount = 0;
+  const row = { id: "ledger-1", status: "confirmed", employeeId: "employee-1" };
+  const prisma = {
+    payrollLedger: { findFirst: async () => row, update: async () => { updateCount += 1; return row; } },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      payrollLedger: prisma.payrollLedger,
+      payrollPayableEntry: { findFirst: async () => ({ id: "payable-1", status: "confirmed" }) },
+    }),
+  };
+  const service = new PayrollLedgerService(prisma, { update: () => ({}), record: async () => {} });
+  await assert.rejects(
+    () => service.reopen("ledger-1", "重新核算", { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYROLL_LEDGER_HAS_PAYABLE",
+  );
+  assert.equal(updateCount, 0);
+});
+
+
+test("payroll ledger update is blocked when a payroll payable exists", async () => {
+  let updateCount = 0;
+  const row = { id: "ledger-1", status: "confirmed", employeeId: "employee-1" };
+  const prisma = {
+    payrollLedger: { findFirst: async () => row, update: async () => { updateCount += 1; return row; } },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      payrollLedger: prisma.payrollLedger,
+      payrollPayableEntry: { findFirst: async () => ({ id: "payable-1", status: "confirmed" }) },
+    }),
+  };
+  const service = new PayrollLedgerService(prisma, { update: () => ({}), record: async () => {} });
+  await assert.rejects(
+    () => service.update("ledger-1", { base_salary: "20", reason: "修改" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYROLL_LEDGER_HAS_PAYABLE",
+  );
+  assert.equal(updateCount, 0);
 });

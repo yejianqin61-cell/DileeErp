@@ -9,7 +9,7 @@ import { canReopenPayroll } from "./hr-payroll.domain";
 @Injectable()
 export class PayrollLedgerService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
-  async list(employeeId?: string, periodStart?: string, periodEnd?: string, status?: string) { return this.prisma.payrollLedger.findMany({ where: { deletedAt: null, ...(employeeId ? { employeeId } : {}), ...(periodStart ? { periodStart: this.date(periodStart) } : {}), ...(periodEnd ? { periodEnd: this.date(periodEnd) } : {}), ...(status ? { status } : {}) }, include: { employee: true, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null } } }, orderBy: { periodStart: "desc" } }); }
+  async list(employeeId?: string, periodStart?: string, periodEnd?: string, status?: string, from?: string, to?: string) { return this.prisma.payrollLedger.findMany({ where: { deletedAt: null, ...(employeeId ? { employeeId } : {}), ...(periodStart ? { periodStart: this.date(periodStart) } : {}), ...(periodEnd ? { periodEnd: this.date(periodEnd) } : {}), ...(status ? { status } : {}), ...(from || to ? { AND: [{ ...(to ? { periodStart: { lte: this.date(to) } } : {}) }, { ...(from ? { periodEnd: { gte: this.date(from) } } : {}) }] } : {}) }, include: { employee: true, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null }, include: { payment: true } } }, orderBy: { periodStart: "desc" } }).then((rows) => rows.map((row) => { const adjustments = row.adjustments.filter((item) => item.status === "posted").reduce((sum, item) => sum.plus(item.effect === "increase" ? item.amount : item.amount.negated()), new Prisma.Decimal(0)); const payable = row.baseSalary.plus(row.productionSourceAmount).plus(row.overtimeAmount).minus(row.attendanceDeduction).plus(row.performanceAmount).plus(row.allowanceAmount).minus(row.socialInsurance).minus(row.individualTax).plus(row.otherAdjustment).plus(adjustments); const paid = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)); return { ...row, payableAmount: payable.toFixed(4), paidAmount: paid.toFixed(4), outstandingAmount: payable.minus(paid).toFixed(4) }; }); }
   async get(id: string) { const row = await this.prisma.payrollLedger.findFirst({ where: { id, deletedAt: null }, include: { employee: true, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null } } } }); if (!row) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在"); return row; }
   async generate(input: { employee_id?: string; employee_name?: string; period_start: string; period_end: string; currency: string; base_salary?: string; overtime_amount?: string; attendance_deduction?: string; performance_amount?: string; allowance_amount?: string; social_insurance?: string; individual_tax?: string; other_adjustment?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     const start = this.date(input.period_start); const end = this.date(input.period_end); if (end < start) throw this.invalid("INVALID_PAYROLL_PERIOD", "薪资期间无效");
@@ -37,6 +37,8 @@ export class PayrollLedgerService {
       beforeStatus = current.status;
       if (["partially_paid", "paid", "closed"].includes(current.status)) throw this.invalid("PAYROLL_PAID_NOT_EDITABLE", "已支付或已关闭台账不可直接编辑，请使用工资调整单");
       if (current.status === "confirmed" && !input.reason?.trim()) throw this.invalid("CORRECTION_REASON_REQUIRED", "已确认工资台账修改必须填写原因");
+        const payable = await tx.payrollPayableEntry.findFirst({ where: { ledgerId: id, deletedAt: null, status: { in: ["draft", "confirmed", "partially_paid", "paid"] } } });
+        if (payable) throw this.invalid("PAYROLL_LEDGER_HAS_PAYABLE", "工资台账已生成工资应付，请先回退或冲销工资应付");
       const employeeId = input.employee_id ?? current.employeeId;
       const start = this.date(input.period_start ?? current.periodStart.toISOString().slice(0, 10));
       const end = this.date(input.period_end ?? current.periodEnd.toISOString().slice(0, 10));
@@ -59,6 +61,8 @@ export class PayrollLedgerService {
       await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.payrollLedger.findFirst({ where: { id, deletedAt: null } });
       if (!locked || !canReopenPayroll(locked.status)) throw this.invalid("PAYROLL_PAID_NOT_REOPENABLE", "台账已被其他操作处理，当前不可回退");
+        const payable = await tx.payrollPayableEntry.findFirst({ where: { ledgerId: id, deletedAt: null, status: { in: ["confirmed", "partially_paid", "paid"] } } });
+        if (payable) throw this.invalid("PAYROLL_LEDGER_HAS_PAYABLE", "工资台账已生成有效工资应付，请先回退或冲销工资应付");
       return tx.payrollLedger.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } });
     });
     await this.audit.record("payroll_ledger.reopen", "payroll_ledger", user.id, id, { before_status: current.status, after_status: "draft", reason: reason.trim() });

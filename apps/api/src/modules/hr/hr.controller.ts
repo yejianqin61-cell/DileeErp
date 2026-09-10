@@ -8,6 +8,7 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { AttendancePerformanceService } from "./attendance-performance.service";
 import { PayrollLedgerService } from "./payroll-ledger.service";
+import { PayrollPayableService } from "./payroll-payable.service";
 import { SalaryPaymentService } from "./salary-payment.service";
 
 class AttendanceDto { @IsUUID() employee_id!: string; @IsDateString() attendance_date!: string; @IsString() attendance_type!: string; @IsString() work_start_time!: string; @IsString() work_end_time!: string; @IsOptional() @IsString() work_hours?: string; @IsOptional() @IsString() overtime_hours?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
@@ -20,6 +21,7 @@ class PaymentDto { @IsDateString() payment_date!: string; @IsString() amount!: s
 class SalaryPaymentUpdateDto { @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() remark?: string; }
 class AllocationDto { @IsUUID() ledger_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }
 class PostPaymentDto { @IsArray() @ValidateNested({ each: true }) @Type(() => AllocationDto) allocations!: AllocationDto[]; }
+class PayrollPayableCreateDto { @IsOptional() @IsString() order_no?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
 class UpdateAttendanceDto { @IsOptional() @IsDateString() attendance_date?: string; @IsOptional() @IsString() attendance_type?: string; @IsOptional() @IsString() work_start_time?: string; @IsOptional() @IsString() work_end_time?: string; @IsOptional() @IsString() work_hours?: string; @IsOptional() @IsString() overtime_hours?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
 class UpdatePerformanceDto { @IsOptional() @IsString() score?: string; @IsOptional() @IsString() grade?: string; @IsOptional() @IsString() reward_amount?: string; @IsOptional() @IsString() comment?: string; @IsOptional() @IsArray() attachment?: unknown[]; }
 
@@ -27,7 +29,7 @@ class UpdatePerformanceDto { @IsOptional() @IsString() score?: string; @IsOption
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("hr")
 export class HrController {
-  constructor(private readonly attendance: AttendancePerformanceService, private readonly payroll: PayrollLedgerService, private readonly payments: SalaryPaymentService) {}
+  constructor(private readonly attendance: AttendancePerformanceService, private readonly payroll: PayrollLedgerService, private readonly payables: PayrollPayableService, private readonly payments: SalaryPaymentService) {}
   @Get("attendance-records") listAttendance(@Query("employee_id") employeeId?: string, @Query("from") from?: string, @Query("to") to?: string) { return this.wrap(this.attendance.listAttendance(employeeId, from, to)); }
   @Post("attendance-records") createAttendance(@Body() body: AttendanceDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.attendance.createAttendance(body, user)); }
   @Patch("attendance-records/:id") updateAttendance(@Param("id") id: string, @Body() body: UpdateAttendanceDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.attendance.updateAttendance(id, body, user)); }
@@ -36,7 +38,7 @@ export class HrController {
   @Post("performance-records") createPerformance(@Body() body: PerformanceDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.attendance.createPerformance(body, user)); }
   @Patch("performance-records/:id") updatePerformance(@Param("id") id: string, @Body() body: UpdatePerformanceDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.attendance.updatePerformance(id, body, user)); }
   @Delete("performance-records/:id") removePerformance(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.attendance.removePerformance(id, body.reason, user)); }
-  @Get("payroll-ledgers") listLedgers(@Query("employee_id") employeeId?: string, @Query("period_start") start?: string, @Query("period_end") end?: string, @Query("status") status?: string) { return this.wrap(this.payroll.list(employeeId, start, end, status)); }
+  @Get("payroll-ledgers") listLedgers(@Query("employee_id") employeeId?: string, @Query("period_start") start?: string, @Query("period_end") end?: string, @Query("status") status?: string, @Query("from") from?: string, @Query("to") to?: string) { return this.wrap(this.payroll.list(employeeId, start, end, status, from, to)); }
   @Get("payroll-ledgers/:id") getLedger(@Param("id") id: string) { return this.wrap(this.payroll.get(id)); }
   @Post("payroll-ledgers/generate") generateLedger(@Body() body: PayrollGenerateDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.generate(body, user)); }
   @Patch("payroll-ledgers/:id") updateLedger(@Param("id") id: string, @Body() body: PayrollUpdateDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.update(id, body, user)); }
@@ -45,6 +47,12 @@ export class HrController {
   @Post("payroll-ledgers/:id/confirm") confirmLedger(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.confirm(id, user)); }
   @Post("payroll-ledgers/:id/close") closeLedger(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.close(id, user)); }
   @Get("payroll-ledgers/:id/summary") summary(@Param("id") id: string) { return this.wrap(this.payroll.summary(id)); }
+  @Get("payroll-payables") listPayrollPayables(@Query("employee_id") employeeId?: string, @Query("status") status?: string, @Query("order_no") orderNo?: string) { return this.wrap(this.payables.list(employeeId, status, orderNo)); }
+  @Get("payroll-payables/:id") getPayrollPayable(@Param("id") id: string) { return this.wrap(this.payables.get(id)); }
+  @Post("payroll-ledgers/:id/payable") createPayrollPayable(@Param("id") id: string, @Body() body: PayrollPayableCreateDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payables.createFromLedger(id, body, user)); }
+  @Post("payroll-payables/:id/confirm") confirmPayrollPayable(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payables.confirm(id, user)); }
+  @Post("payroll-payables/:id/reopen") reopenPayrollPayable(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payables.reopen(id, body.reason, user)); }
+  @Post("payroll-payables/:id/reverse") reversePayrollPayable(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payables.reverse(id, body.reason, user)); }
   @Post("payroll-ledgers/:id/adjustments") adjustment(@Param("id") id: string, @Body() body: PayrollAdjustmentDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.adjustment(id, body, user)); }
   @Post("payroll-adjustments/:id/post") postAdjustment(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.postAdjustment(id, user)); }
   @Post("payroll-adjustments/:id/reverse") reverseAdjustment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return this.wrap(this.payroll.reverseAdjustment(id, body.reason, user)); }
