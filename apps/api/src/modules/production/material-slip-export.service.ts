@@ -44,7 +44,43 @@ export type MaterialIssueDocument = {
   lines: MaterialIssueDocumentLine[];
 };
 
-export type MaterialIssueFilter = { orderNo?: string; productionOrderId?: string; productionOrderOperationId?: string; from?: string; to?: string; status?: string };
+export type MaterialIssueFilter = { orderNo?: string; productionOrderId?: string; productionOrderOperationId?: string; from?: string; to?: string; status?: string; documentType?: string };
+
+/** 补料单（打印表）明细行：只有补领数量，并预留图片列。 */
+export type MaterialReplenishmentDocumentLine = {
+  sequence: number;
+  /** 图片列当前无数据源（系统未维护物料图片），保留空列供打印后手贴/手写。 */
+  imageUrl: string;
+  materialName: string;
+  materialCode: string;
+  specificationModel: string;
+  color: string;
+  unit: string;
+  /** 补领数量。 */
+  replenishQuantity: number;
+};
+
+/** 一张补料单的打印数据；字段与用户提供的补料单模板一一对应。 */
+export type MaterialReplenishmentDocument = {
+  movementNo: string;
+  status: string;
+  productionOrderNo: string;
+  orderNo: string;
+  productName: string;
+  productCode: string;
+  productSpecification: string;
+  productColor: string;
+  operationName: string;
+  issueUnit: string;
+  operatorName: string;
+  operatedAt: string;
+  /** 补料原因（坏片/生产失误等），模板第 3 行第 4 格。 */
+  reason: string;
+  remark: string;
+  lines: MaterialReplenishmentDocumentLine[];
+};
+
+const EMPTY_REPLENISHMENT: MaterialReplenishmentDocument = { movementNo: "", status: "draft", productionOrderNo: "", orderNo: "", productName: "", productCode: "", productSpecification: "", productColor: "", operationName: "", issueUnit: "", operatorName: "", operatedAt: "", reason: "", remark: "", lines: [] };
 
 const EMPTY: MaterialIssueDocument = { movementNo: "", status: "draft", productionOrderNo: "", orderNo: "", productName: "", productCode: "", productSpecification: "", productColor: "", operationName: "", issueUnit: "", plannedQuantity: 0, unitName: "", operatorName: "", operatedAt: "", remark: "", lines: [] };
 
@@ -76,6 +112,7 @@ type ExportMovement = {
   productionOrderId: string;
   createdBy: string;
   createdAt: Date;
+  reason: string | null;
   remark: string | null;
   productionOrder: {
     productionOrderNo: string;
@@ -92,7 +129,7 @@ type ExportMovement = {
 };
 
 @Injectable()
-export class MaterialIssueExportService {
+export class MaterialSlipExportService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** 组装单张领料单的打印数据（导出与页面共用同一口径）。 */
@@ -102,12 +139,19 @@ export class MaterialIssueExportService {
     return this.assemble(movement as unknown as ExportMovement);
   }
 
-  /** 按筛选条件批量组装（批量导出用）。 */
-  async buildDocuments(filter: MaterialIssueFilter): Promise<MaterialIssueDocument[]> {
+  /** 组装单张补料单的打印数据。 */
+  async buildReplenishmentDocument(movementId: string): Promise<MaterialReplenishmentDocument> {
+    const movement = await this.prisma.rawMaterialMovement.findFirst({ where: { id: movementId, deletedAt: null, documentType: "replenishment" }, include: this.include() });
+    if (!movement) throw new NotFoundException({ code: "MATERIAL_REPLENISHMENT_NOT_FOUND", message: "补料单不存在", details: [] });
+    return this.assembleReplenishment(movement as unknown as ExportMovement);
+  }
+
+  /** 按筛选条件批量组装物料单据（领料单/补料单，各自的版式）。 */
+  async buildSlips(filter: MaterialIssueFilter): Promise<Array<{ documentType: "issue"; document: MaterialIssueDocument } | { documentType: "replenishment"; document: MaterialReplenishmentDocument }>> {
     const movements = await this.prisma.rawMaterialMovement.findMany({
       where: {
         deletedAt: null,
-        documentType: "issue",
+        documentType: filter.documentType ? filter.documentType : { in: ["issue", "replenishment"] },
         ...(filter.orderNo ? { orderNo: filter.orderNo } : {}),
         ...(filter.productionOrderId ? { productionOrderId: filter.productionOrderId } : {}),
         ...(filter.productionOrderOperationId ? { productionOrderOperationId: filter.productionOrderOperationId } : {}),
@@ -117,24 +161,34 @@ export class MaterialIssueExportService {
       include: this.include(),
       orderBy: [{ orderNo: "asc" }, { productionOrderId: "asc" }, { createdAt: "asc" }]
     });
-    const documents: MaterialIssueDocument[] = [];
-    for (const movement of movements) documents.push(await this.assemble(movement as unknown as ExportMovement));
-    return documents;
+    const slips: Array<{ documentType: "issue"; document: MaterialIssueDocument } | { documentType: "replenishment"; document: MaterialReplenishmentDocument }> = [];
+    for (const movement of movements) {
+      const typed = movement as unknown as ExportMovement;
+      if (movement.documentType === "replenishment") slips.push({ documentType: "replenishment", document: await this.assembleReplenishment(typed) });
+      else slips.push({ documentType: "issue", document: await this.assemble(typed) });
+    }
+    return slips;
   }
 
-  /** 单张导出：一个工作表。 */
-  async exportIssue(movementId: string): Promise<Buffer> {
+  /** 单张导出：一个工作表（按单据类型选择版式）。 */
+  async exportSlip(movementId: string): Promise<Buffer> {
+    const movement = await this.prisma.rawMaterialMovement.findFirst({ where: { id: movementId, deletedAt: null }, select: { documentType: true } });
+    if (!movement) throw new NotFoundException({ code: "MATERIAL_SLIP_NOT_FOUND", message: "单据不存在", details: [] });
     const workbook = new ExcelJS.Workbook();
-    this.addSheet(workbook, await this.buildDocument(movementId));
+    if (movement.documentType === "replenishment") this.addReplenishmentSheet(workbook, await this.buildReplenishmentDocument(movementId));
+    else this.addSheet(workbook, await this.buildDocument(movementId));
     return this.toBuffer(workbook);
   }
 
-  /** 批量导出：每张领料单一个工作表（表名=领料单号），便于按单打印。 */
-  async exportIssues(filter: MaterialIssueFilter): Promise<{ buffer: Buffer; count: number }> {
-    const documents = await this.buildDocuments(filter);
+  /** 批量导出：每张单据一个工作表（表名=单号），领料/补料用各自的模板版式。 */
+  async exportSlips(filter: MaterialIssueFilter): Promise<{ buffer: Buffer; count: number }> {
+    const slips = await this.buildSlips(filter);
     const workbook = new ExcelJS.Workbook();
-    for (const document of documents) this.addSheet(workbook, document);
-    return { buffer: await this.toBuffer(workbook), count: documents.length };
+    for (const slip of slips) {
+      if (slip.documentType === "replenishment") this.addReplenishmentSheet(workbook, slip.document);
+      else this.addSheet(workbook, slip.document);
+    }
+    return { buffer: await this.toBuffer(workbook), count: slips.length };
   }
 
   private include() {
@@ -189,6 +243,146 @@ export class MaterialIssueExportService {
       remark: movement.remark ?? "",
       lines
     };
+  }
+
+  private async assembleReplenishment(movement: ExportMovement): Promise<MaterialReplenishmentDocument> {
+    const order = movement.productionOrder;
+    const operator = movement.createdBy ? await this.prisma.user.findFirst({ where: { id: movement.createdBy }, select: { displayName: true } }) : null;
+    const bomItems = new Map((order.bom?.items ?? []).map((item) => [item.materialId, item]));
+    const lines: MaterialReplenishmentDocumentLine[] = movement.lines.map((line, index) => {
+      const bomItem = bomItems.get(line.materialId);
+      return {
+        sequence: index + 1,
+        imageUrl: "",
+        materialName: line.material.name,
+        materialCode: line.material.materialCode,
+        specificationModel: bomItem?.specificationModel ?? bomItem?.model ?? line.material.specificationModel ?? "",
+        color: bomItem?.color ?? line.material.color ?? "",
+        unit: line.unit.name,
+        replenishQuantity: toNumber(line.quantity) ?? 0
+      };
+    });
+    return {
+      ...EMPTY_REPLENISHMENT,
+      movementNo: movement.movementNo,
+      status: movement.status,
+      productionOrderNo: order.productionOrderNo,
+      orderNo: order.orderNo,
+      productName: order.salesOrder?.productName ?? "",
+      productSpecification: order.productSpecification ?? order.salesOrder?.productSpec ?? "",
+      operationName: movement.productionOrderOperation?.operationNameSnapshot ?? "",
+      issueUnit: order.executionLocation?.name ?? "",
+      operatorName: operator?.displayName ?? "",
+      operatedAt: movement.createdAt ? new Date(movement.createdAt).toLocaleString("zh-CN", { hour12: false }) : "",
+      reason: movement.reason ?? "",
+      remark: movement.remark ?? "",
+      lines
+    };
+  }
+
+  /** 补料单版式：8 列（含预留「图片」列），表头第 2 行顺序为 颜色/领料单号/领料单位/领料工序，第 3 行第 4 格放补料原因。 */
+  private addReplenishmentSheet(workbook: ExcelJS.Workbook, document: MaterialReplenishmentDocument) {
+    const base = (document.movementNo || "补料单").slice(0, 28);
+    let name = base;
+    let suffix = 1;
+    while (workbook.getWorksheet(name)) name = `${base}-${suffix++}`.slice(0, 31);
+    const sheet = workbook.addWorksheet(name, {
+      pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
+    });
+    // 8 列：序号、图片、产品名称、产品代码、规格型号、颜色、单位、补领数量
+    sheet.columns = [6, 14, 24, 16, 18, 10, 8, 12].map((width) => ({ width }));
+    sheet.headerFooter = { oddFooter: "&C第 &P 页 / 共 &N 页" };
+
+    sheet.mergeCells("A2:H2");
+    const titleCell = sheet.getCell("A2");
+    titleCell.value = document.status === "posted" ? "【补料单】" : "【补料单】（草稿）";
+    titleCell.font = { name: "宋体", size: 16, bold: true };
+    titleCell.alignment = { horizontal: "center", vertical: "middle" };
+    sheet.getRow(2).height = 30;
+
+    const headerRows: Array<Array<[string, string] | null>> = [
+      [["生产单号：", document.productionOrderNo], ["成品名称：", document.productName], ["成品代码：", document.productCode], ["规格型号：", document.productSpecification]],
+      // 注意：补料单模板第 2 行是「单位」在前、「工序」在后，与领料单相反，按模板原样保留。
+      [["颜色：", document.productColor], ["领料单号：", document.movementNo], ["领料单位：", document.issueUnit], ["领料工序：", document.operationName]],
+      [["操作人：", document.operatorName], ["操作时间：", document.operatedAt], null, ["补料原因：", document.reason]]
+    ];
+    const labelColumns = ["A", "C", "E", "G"] as const;
+    headerRows.forEach((fields, rowIndex) => {
+      const rowNumber = 5 + rowIndex;
+      const row = sheet.getRow(rowNumber);
+      fields.forEach((field, fieldIndex) => {
+        if (!field) return;
+        const labelCell = row.getCell(labelColumns[fieldIndex]);
+        labelCell.value = field[0];
+        labelCell.font = BODY_FONT;
+        labelCell.alignment = { horizontal: "right", vertical: "middle" };
+        const valueColumn = String.fromCharCode(labelColumns[fieldIndex].charCodeAt(0) + 1);
+        const lastValueColumn = fieldIndex === 3 ? "H" : valueColumn;
+        if (valueColumn !== lastValueColumn) sheet.mergeCells(`${valueColumn}${rowNumber}:${lastValueColumn}${rowNumber}`);
+        const valueCell = sheet.getCell(`${valueColumn}${rowNumber}`);
+        valueCell.value = field[1];
+        valueCell.font = BODY_FONT;
+        valueCell.alignment = { horizontal: "left", vertical: "middle" };
+        valueCell.border = { bottom: { style: "thin" } };
+      });
+      row.height = 20;
+    });
+
+    const tableHeaderRow = 8;
+    const headers = ["序号", "图片", "产品名称", "产品代码", "规格型号", "颜色", "单位", "补领数量"];
+    const headerRow = sheet.getRow(tableHeaderRow);
+    headers.forEach((label, index) => {
+      const cell = headerRow.getCell(index + 1);
+      cell.value = label;
+      cell.font = HEADER_FONT;
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = THIN_BORDER;
+    });
+    headerRow.height = 22;
+
+    document.lines.forEach((line, index) => {
+      const row = sheet.getRow(tableHeaderRow + 1 + index);
+      const values: Array<string | number> = [line.sequence, line.imageUrl, line.materialName, line.materialCode, line.specificationModel, line.color, line.unit, line.replenishQuantity];
+      values.forEach((value, columnIndex) => {
+        const cell = row.getCell(columnIndex + 1);
+        cell.value = value;
+        cell.font = BODY_FONT;
+        cell.alignment = { horizontal: columnIndex === 2 || columnIndex === 4 ? "left" : "center", vertical: "middle" };
+        cell.border = THIN_BORDER;
+        if (columnIndex === 7) cell.numFmt = "0.####";
+      });
+      // 图片列需要行高才能贴图/手写。
+      row.height = 28;
+    });
+
+    const firstDataRow = tableHeaderRow + 1;
+    const lastDataRow = tableHeaderRow + document.lines.length;
+    const subtotalRow = sheet.getRow(lastDataRow + 1);
+    const subtotalCell = subtotalRow.getCell(1);
+    subtotalCell.value = "小计";
+    subtotalCell.font = HEADER_FONT;
+    subtotalCell.alignment = { horizontal: "center", vertical: "middle" };
+    subtotalCell.border = THIN_BORDER;
+    for (let column = 2; column <= 8; column += 1) {
+      const cell = subtotalRow.getCell(column);
+      cell.border = THIN_BORDER;
+      cell.font = BODY_FONT;
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      if (column === 8) {
+        cell.value = { formula: `SUM(H${firstDataRow}:H${lastDataRow})` };
+        cell.numFmt = "0.####";
+      }
+    }
+    subtotalRow.height = 20;
+    if (document.remark) {
+      const remarkRowNumber = lastDataRow + 2;
+      sheet.mergeCells(`A${remarkRowNumber}:H${remarkRowNumber}`);
+      const remarkCell = sheet.getCell(`A${remarkRowNumber}`);
+      remarkCell.value = `备注：${document.remark}`;
+      remarkCell.font = BODY_FONT;
+      remarkCell.alignment = { horizontal: "left", vertical: "middle" };
+    }
+    return sheet;
   }
 
   private addSheet(workbook: ExcelJS.Workbook, document: MaterialIssueDocument) {
