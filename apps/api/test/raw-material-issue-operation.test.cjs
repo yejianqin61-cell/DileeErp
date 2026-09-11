@@ -82,6 +82,27 @@ test("已过账的领料单不可编辑", async () => {
   await assert.rejects(() => service.updateIssue("movement-1", { lines: [{ material_id: "material-1", quantity: "7" }] }, user), (error) => error.getResponse().code === "MATERIAL_MOVEMENT_NOT_EDITABLE");
 });
 
+// 编辑保存会软删旧明细再建新明细；列表若不过滤软删除行，原料流转里同一物料会重复出现。
+test("原料流转列表必须过滤软删除的明细与风险（避免编辑后重复显示）", async () => {
+  let captured = null;
+  const prisma = { rawMaterialMovement: { findMany: async (args) => { captured = args; return []; } } };
+  const service = new RawMaterialMovementsService(prisma, audit, {});
+  await service.list("DL260001");
+  assert.deepEqual(captured.include.lines.where, { deletedAt: null }, "明细必须只取未删除行");
+  assert.deepEqual(captured.include.lines.include.risks.where, { deletedAt: null }, "明细下的风险也要过滤");
+  assert.deepEqual(captured.include.risks.where, { deletedAt: null }, "单据风险也要过滤");
+
+  // 同一张单编辑两次后，列表只应返回 1 条当前明细（旧行已被软删除，由 where 过滤掉）。
+  const movement = {
+    id: "movement-1", movementNo: "MI-1", documentType: "issue", status: "draft", orderNo: "DL260001",
+    lines: [{ id: "line-3", materialId: "material-1", quantity: new Prisma.Decimal("7"), deletedAt: null, material: { name: "伞骨" }, unit: { name: "根" }, risks: [] }]
+  };
+  const filtered = new RawMaterialMovementsService({ rawMaterialMovement: { findMany: async () => [movement] } }, audit, {});
+  const rows = await filtered.list();
+  assert.equal(rows.length, 1, "一张单只能出现一行");
+  assert.equal(rows[0].lines.length, 1, "明细不得重复");
+});
+
 // 领料单与补料单都只绑定生产单（本次业务变更）。
 test("补料单同样只需要生产单，不再要求工序", async () => {
   const { service, created } = harness();

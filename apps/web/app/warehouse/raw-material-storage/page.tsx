@@ -12,6 +12,7 @@ import { EmptyState, ErrorState, LoadingState } from "../../../components/feedba
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
 import { mergeMaterialBalances } from "../../../lib/wms-balances";
 import { shouldAutoOpenDraft } from "../../../lib/auto-open";
+import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
 type Unit = { id: string; name: string };
@@ -61,6 +62,13 @@ export default function RawMaterialStoragePage() {
   }
 
   useEffect(() => { void load(); }, []);
+  // 跨模块状态刷新：仓库在别处过账/冲销后，本页重新可见时自动拉取，保证入库状态及时更新。
+  useEffect(() => {
+    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load(); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, []);
   // 自动打开只做一次：早期版本把 dialog 作为依赖条件，用户一关闭就会立刻被重新打开。
   useEffect(() => {
     if (!shouldAutoOpenDraft({ targetId: noticeId, alreadyOpened: autoOpenedNoticeRef.current, hasLoaded: inbounds.length > 0 })) return;
@@ -131,7 +139,7 @@ export default function RawMaterialStoragePage() {
     { accessorKey: "receipt_no", header: "到货记录" },
     { accessorKey: "quantity", header: "数量" },
     { accessorKey: "inspection_status", header: "质检状态" },
-    { accessorKey: "status", header: "状态" },
+    { accessorKey: "status", header: "入库状态", cell: ({ row }) => <span className={row.original.status === "posted" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{inboundStatusLabels[row.original.status] ?? row.original.status}</span> },
     { accessorKey: "remark", header: "备注" },
     {
       id: "actions",
@@ -148,6 +156,7 @@ export default function RawMaterialStoragePage() {
   ];
 
   const unitMap = useMemo(() => new Map(units.map((unit) => [unit.id, unit.name])), [units]);
+  const inboundStatusLabels: Record<string, string> = { draft: "待入库登记", posted: "入库成功", reversed: "已冲销" };
   // 草稿入库单 = 已接收/已登记但还没过账的数量，按「物料|单位」汇总，供库存汇总表分列显示。
   const pendingByKey = useMemo(() => {
     const map = new Map<string, number>();
@@ -165,6 +174,7 @@ export default function RawMaterialStoragePage() {
     <>
       <PageHeader title="原料仓储情况">
         <Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button>
+        <Button variant="secondary" onClick={() => void load()}>刷新</Button>
         <Button onClick={createInbound}>新建入库单</Button>
       </PageHeader>
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />

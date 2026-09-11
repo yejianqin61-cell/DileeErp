@@ -31,7 +31,7 @@ export class RawMaterialMovementsService {
         ...(filter?.productionOrderId ? { productionOrderId: filter.productionOrderId } : {}),
         ...(filter?.productionOrderOperationId ? { productionOrderOperationId: filter.productionOrderOperationId } : {})
       },
-      include: { productionOrder: { include: { executionLocation: true } }, productionOrderOperation: true, lines: { include: { material: true, unit: true, risks: true } }, risks: true },
+      include: { productionOrder: { include: { executionLocation: true } }, productionOrderOperation: true, lines: { where: { deletedAt: null }, include: { material: true, unit: true, risks: { where: { deletedAt: null } } } }, risks: { where: { deletedAt: null } } },
       orderBy: { createdAt: "desc" }
     });
   }
@@ -39,7 +39,7 @@ export class RawMaterialMovementsService {
   async get(id: string) {
     const movement = await this.prisma.rawMaterialMovement.findFirst({
       where: { id, deletedAt: null },
-      include: { productionOrder: { include: { executionLocation: true, salesOrder: true } }, productionOrderOperation: true, lines: { where: { deletedAt: null }, include: { material: true, unit: true, risks: true } }, risks: true }
+      include: { productionOrder: { include: { executionLocation: true, salesOrder: true } }, productionOrderOperation: true, lines: { where: { deletedAt: null }, include: { material: true, unit: true, risks: { where: { deletedAt: null } } } }, risks: { where: { deletedAt: null } } }
     });
     if (!movement) throw new NotFoundException({ code: "MATERIAL_MOVEMENT_NOT_FOUND", message: "原料领料单不存在", details: [] });
     return movement;
