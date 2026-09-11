@@ -7,7 +7,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 type Tx = Prisma.TransactionClient;
 type UnitInput = { name: string; remark?: string | null };
 type MaterialInput = { material_code?: string; name: string; specification_model?: string | null; color?: string | null; default_unit_id: string; material_type?: string; remark?: string | null };
-type SupplierInput = { supplier_code: string; name: string; contact_name?: string | null; phone?: string | null; settlement_info?: Record<string, unknown>; remark?: string | null };
+type SupplierInput = { supplier_code?: string; name: string; contact_name?: string | null; phone?: string | null; settlement_info?: Record<string, unknown>; remark?: string | null };
 
 @Injectable()
 export class ProcurementMasterDataService {
@@ -43,7 +43,12 @@ export class ProcurementMasterDataService {
   async deleteMaterial(id: string, user: CurrentUser) { await this.requireMaterial(id); return this.ensureUnusedAndDelete("material", id, user); }
 
   async listSuppliers() { return this.prisma.supplier.findMany({ where: { deletedAt: null }, orderBy: { supplierCode: "asc" } }); }
-  async createSupplier(input: SupplierInput, user: CurrentUser) { return this.write("supplier", () => this.prisma.supplier.create({ data: { supplierCode: input.supplier_code, name: input.name, contactName: input.contact_name, phone: input.phone, settlementInfo: (input.settlement_info ?? {}) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }), user); }
+  async createSupplier(input: SupplierInput & { code_mode?: string }, user: CurrentUser) {
+    // 与物料一致：供应商编码支持“自动生成 / 手动填写”，由调用方选择。
+    const code = input.code_mode === "auto" ? await this.nextSupplierCode() : input.supplier_code?.trim();
+    if (!code) throw new UnprocessableEntityException({ code: "SUPPLIER_CODE_REQUIRED", message: "手动编码模式必须填写供应商编码", details: [] });
+    return this.write("supplier", () => this.prisma.supplier.create({ data: { supplierCode: code, name: input.name, contactName: input.contact_name, phone: input.phone, settlementInfo: (input.settlement_info ?? {}) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }), user);
+  }
   async updateSupplier(id: string, input: Partial<SupplierInput>, user: CurrentUser) { await this.requireSupplier(id); return this.write("supplier", () => this.prisma.supplier.update({ where: { id }, data: { ...(input.supplier_code === undefined || input.supplier_code === null ? {} : { supplierCode: input.supplier_code }), ...(input.name === undefined || input.name === null ? {} : { name: input.name }), ...(input.contact_name === undefined ? {} : { contactName: input.contact_name }), ...(input.phone === undefined ? {} : { phone: input.phone }), ...(input.settlement_info === undefined ? {} : { settlementInfo: input.settlement_info as Prisma.InputJsonValue }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } }), user, id); }
   async setSupplierActive(id: string, isActive: boolean, user: CurrentUser) { await this.requireSupplier(id); return this.prisma.supplier.update({ where: { id }, data: { isActive, ...this.audit.update(user) } }); }
   async deleteSupplier(id: string, user: CurrentUser) { await this.requireSupplier(id); return this.ensureUnusedAndDelete("supplier", id, user); }
@@ -92,5 +97,17 @@ export class ProcurementMasterDataService {
   private async requireActiveUnit(id: string) { const item = await this.prisma.unit.findFirst({ where: { id, deletedAt: null, isActive: true } }); if (!item) throw new NotFoundException({ code: "UNIT_NOT_FOUND", message: "单位不存在或已停用", details: [] }); return item; }
   private async requireMaterial(id: string) { const item = await this.prisma.material.findFirst({ where: { id, deletedAt: null } }); if (!item) throw new NotFoundException({ code: "MATERIAL_NOT_FOUND", message: "物料不存在", details: [] }); return item; }
   private async requireSupplier(id: string) { const item = await this.prisma.supplier.findFirst({ where: { id, deletedAt: null } }); if (!item) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "供应商不存在", details: [] }); return item; }
-  private async nextMaterialCode() { const prefix = `MAT-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-`; const latest = await this.prisma.material.findFirst({ where: { materialCode: { startsWith: prefix } }, orderBy: { materialCode: "desc" }, select: { materialCode: true } }); const sequence = latest ? Number(latest.materialCode.slice(prefix.length)) + 1 : 1; return `${prefix}${String(sequence).padStart(4, "0")}`; }
+  private async nextMaterialCode() { return this.nextSequenceCode("MAT", async (prefix) => (await this.prisma.material.findFirst({ where: { materialCode: { startsWith: prefix } }, orderBy: { materialCode: "desc" }, select: { materialCode: true } }))?.materialCode ?? null); }
+  private async nextSupplierCode() { return this.nextSequenceCode("SUP", async (prefix) => (await this.prisma.supplier.findFirst({ where: { supplierCode: { startsWith: prefix } }, orderBy: { supplierCode: "desc" }, select: { supplierCode: true } }))?.supplierCode ?? null); }
+
+  /**
+   * 自动编码：前缀 = 类别 + 当天日期，序号按当天已有编码的最大值 +1（4 位补零）。
+   * 物料/供应商/客户共用同一套规则，避免三种主数据各写一份。
+   */
+  private async nextSequenceCode(category: string, latestCode: (prefix: string) => Promise<string | null>) {
+    const prefix = `${category}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-`;
+    const latest = await latestCode(prefix);
+    const sequence = latest ? Number(latest.slice(prefix.length)) + 1 : 1;
+    return `${prefix}${String(Number.isFinite(sequence) ? sequence : 1).padStart(4, "0")}`;
+  }
 }

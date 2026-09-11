@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
@@ -24,9 +24,12 @@ export class CustomersService {
     });
   }
 
-  async create(input: CustomerInput, user: CurrentUser) {
+  async create(input: CustomerInput & { code_mode?: string }, user: CurrentUser) {
+    // 与物料/供应商一致：客户编码支持“自动生成 / 手动填写”，由调用方选择。
+    const code = input.code_mode === "auto" ? await this.nextCustomerCode() : input.customer_code?.trim();
+    if (!code) throw new UnprocessableEntityException({ code: "CUSTOMER_CODE_REQUIRED", message: "手动编码模式必须填写客户编码", details: [] });
     try {
-      const customer = await this.prisma.customer.create({ data: { customerCode: input.customer_code, name: input.name, countryRegion: input.country_region, address: input.address, paymentTerms: input.payment_terms, currency: input.currency, remark: input.remark, ...this.audit.create(user) } });
+      const customer = await this.prisma.customer.create({ data: { customerCode: code, name: input.name, countryRegion: input.country_region, address: input.address, paymentTerms: input.payment_terms, currency: input.currency, remark: input.remark, ...this.audit.create(user) } });
       await this.audit.record("customer.create", "customer", user.id, customer.id, { customer_code: customer.customerCode, name: customer.name });
       return customer;
     } catch (error) { this.handleUnique(error); throw error; }
@@ -86,4 +89,12 @@ export class CustomersService {
 
   private async requireContact(customerId: string, id: string) { const contact = await this.prisma.customerContact.findFirst({ where: { id, customerId, deletedAt: null } }); if (!contact) throw new NotFoundException({ code: "CUSTOMER_CONTACT_NOT_FOUND", message: "客户联系人不存在", details: [] }); return contact; }
   private handleUnique(error: unknown) { if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "CUSTOMER_CONFLICT", message: "客户名称或客户代码已存在", details: [] }); }
+
+  /** 自动编码：CUS-日期-序号（4 位补零），与物料/供应商同一套规则。 */
+  private async nextCustomerCode() {
+    const prefix = `CUS-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-`;
+    const latest = await this.prisma.customer.findFirst({ where: { customerCode: { startsWith: prefix } }, orderBy: { customerCode: "desc" }, select: { customerCode: true } });
+    const sequence = latest ? Number(latest.customerCode.slice(prefix.length)) + 1 : 1;
+    return `${prefix}${String(Number.isFinite(sequence) ? sequence : 1).padStart(4, "0")}`;
+  }
 }
