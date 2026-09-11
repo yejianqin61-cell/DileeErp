@@ -9,10 +9,11 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { RawMaterialMovementsService } from "./raw-material-movements.service";
 
 class IssueLineDto { @IsUUID() material_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class IssueDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
+class IssueDto { @IsUUID() production_order_id!: string; // 层级：订单号-生产单-工序-领料表；新建时必填（由服务层校验）。
+  @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
 class DerivedLineDto { @IsUUID() source_issue_line_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class DerivedDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => DerivedLineDto) lines!: DerivedLineDto[]; }
-class UpdateIssueDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines?: IssueLineDto[]; }
+class UpdateIssueDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines?: IssueLineDto[]; }
 class PostDto { @IsString() @MaxLength(200) idempotency_key!: string; }
 class ReverseDto extends PostDto { @IsString() @MaxLength(1000) reason!: string; }
 
@@ -21,7 +22,7 @@ class ReverseDto extends PostDto { @IsString() @MaxLength(1000) reason!: string;
 @RequireModules("production")
 export class RawMaterialMovementsController {
   constructor(private readonly movements: RawMaterialMovementsService) {}
-  @Get() async list(@Query("order_no") orderNo?: string) { return { data: await this.movements.list(orderNo), meta: {} }; }
+  @Get() async list(@Query("order_no") orderNo?: string, @Query("production_order_id") productionOrderId?: string, @Query("production_order_operation_id") operationId?: string) { return { data: await this.movements.list(orderNo, { productionOrderId, productionOrderOperationId: operationId }), meta: {} }; }
   @Post("issue-preview") async preview(@Body() body: IssueDto) { return { data: await this.movements.preview(body), meta: {} }; }
   @Post() async create(@Body() body: IssueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createIssue(body, user), meta: {} }; }
   @Post("returns") async createReturn(@Body() body: DerivedDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createReturn(body, user), meta: {} }; }

@@ -1547,6 +1547,9 @@ model RawMaterialMovement {
   documentType      String                    @default("issue") @map("document_type") @db.VarChar(30)
   status            String                    @default("draft") @db.VarChar(30)
   productionOrderId String                    @map("production_order_id") @db.Uuid
+  // 领料单归属到具体工序：同一生产单下不同工序领的物料不同（订单号-生产单-工序-领料表）。
+  // 历史数据没有工序，因此列可空；新建领料单由服务层强制要求。
+  productionOrderOperationId String?          @map("production_order_operation_id") @db.Uuid
   orderNo           String                    @map("order_no") @db.VarChar(100)
   businessDate      DateTime                  @map("business_date") @db.Date
   reason            String?                   @db.VarChar(1000)
@@ -1559,10 +1562,12 @@ model RawMaterialMovement {
   deletedAt         DateTime?                 @map("deleted_at")
   deletedBy         String?                   @map("deleted_by") @db.Uuid
   productionOrder   ProductionOrder           @relation(fields: [productionOrderId], references: [id])
+  productionOrderOperation ProductionOrderOperation? @relation(fields: [productionOrderOperationId], references: [id])
   lines             RawMaterialMovementLine[]
   risks             RawMaterialMovementRisk[]
 
   @@index([productionOrderId, status])
+  @@index([productionOrderOperationId])
   @@index([orderNo, businessDate])
   @@map("raw_material_movements")
 }
@@ -1639,6 +1644,7 @@ model ProductionOrderOperation {
   operationDailyReports OperationDailyReport[]
   employeeDailyReports  EmployeeDailyReport[]
   productionDailyAlerts ProductionDailyAlert[]
+  rawMaterialMovements  RawMaterialMovement[]
 
   @@unique([productionOrderId, sequenceNo])
   @@index([productionOrderId, status])
