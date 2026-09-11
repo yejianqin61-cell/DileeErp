@@ -101,7 +101,7 @@ test("每个 Promise.all 数据加载的绑定名与请求数一致", () => {
 const LOAD_ORDER = {
   "app/procurement/page.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/payable-sources", "/raw-material-inbound-notices", "/finance/payable-entries", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
   "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units"],
-  "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices?status=pending"],
+  "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices"],
   "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
   "app/sales/page.tsx": ["/customers?page_size=200", "/sales-orders?page_size=200", "/units"],
   "app/production/material-issues/page.tsx": ["/production/material-movements", "/production/orders"]

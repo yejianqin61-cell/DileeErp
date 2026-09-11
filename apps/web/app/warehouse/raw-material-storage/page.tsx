@@ -16,7 +16,7 @@ import { shouldAutoOpenDraft } from "../../../lib/auto-open";
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
-type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
+type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; materialId: string; unitId: string; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
 type Balance = { material_id: string; unit_id: string | null; unit_name: string; order_no: string | null; quantity: string; material?: Material };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
@@ -116,7 +116,11 @@ export default function RawMaterialStoragePage() {
   const balanceColumns: ColumnDef<Balance>[] = [
     { id: "material", header: "物料", cell: ({ row }) => row.original.material?.materialCode + " / " + row.original.material?.name },
     { accessorKey: "unit_name", header: "单位" },
-    { accessorKey: "quantity", header: "当前库存" }
+    // 接收通知后生成的是草稿，库存要过账才会变动；这里把「待入库」单独列出，
+    // 否则接收完这个页面看起来“什么都没更新”。
+    { id: "pending", header: "待入库（未过账）", cell: ({ row }) => { const quantity = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return quantity ? <span className="status-warning">{quantity}</span> : "0"; } },
+    { accessorKey: "quantity", header: "已过账库存" },
+    { id: "total", header: "合计", cell: ({ row }) => { const pending = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return (Number(row.original.quantity) + pending).toString(); } }
   ];
 
   const inboundColumns: ColumnDef<Inbound>[] = [
@@ -144,6 +148,16 @@ export default function RawMaterialStoragePage() {
   ];
 
   const unitMap = useMemo(() => new Map(units.map((unit) => [unit.id, unit.name])), [units]);
+  // 草稿入库单 = 已接收/已登记但还没过账的数量，按「物料|单位」汇总，供库存汇总表分列显示。
+  const pendingByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const inbound of inbounds) {
+      if (inbound.status !== "draft") continue;
+      const key = `${inbound.materialId}|${inbound.unitId}`;
+      map.set(key, (map.get(key) ?? 0) + Number(inbound.quantity));
+    }
+    return map;
+  }, [inbounds]);
 
   if (loading) return <><PageHeader title="原料仓储情况"><Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button></PageHeader><LoadingState /></>;
 
@@ -158,7 +172,10 @@ export default function RawMaterialStoragePage() {
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel">
         <div className="panel-heading"><h2>库存汇总</h2></div>
-        <div className="panel-body"><DataTable columns={balanceColumns} data={balances} empty={<EmptyState title="暂无原料库存" />} /></div>
+        <div className="panel-body">
+          <p className="panel-note">「待入库（未过账）」是已接收通知生成的草稿数量，登记实际数量并过账后才会计入「已过账库存」。</p>
+          <DataTable columns={balanceColumns} data={balances} empty={<EmptyState title="暂无原料库存" />} />
+        </div>
       </section>
       <section className="panel">
         <div className="panel-heading"><h2>原料入库单</h2></div>
@@ -166,7 +183,7 @@ export default function RawMaterialStoragePage() {
           <DataTable
             columns={inboundColumns}
             data={inbounds}
-            empty={<EmptyState title="暂无原料入库单" />}
+            empty={<EmptyState title="暂无原料入库单" description="在【仓库 → 待入库通知】接收入库通知后，这里会出现对应的草稿入库单；登记实际数量并过账后计入库存。" />}
           />
           <p className="panel-note">单位：{units.length ? units.map((unit) => unit.name).join("、") : "暂无"}</p>
           <p className="panel-note">质检记录：{inspections.length}</p>

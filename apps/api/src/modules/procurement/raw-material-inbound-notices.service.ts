@@ -84,11 +84,20 @@ export class RawMaterialInboundNoticesService {
       await tx.$queryRaw`SELECT id FROM raw_material_inbound_notices WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.rawMaterialInboundNotice.findFirst({ where: { id, deletedAt: null } });
       if (!current) throw new NotFoundException({ code: "INBOUND_NOTICE_NOT_FOUND", message: "入库通知不存在", details: [] });
-      if (current.status === "acknowledged" || current.status === "processing") return current;
-      if (current.status !== "pending") throw new ConflictException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGEABLE", message: "当前入库通知不可接收", details: [{ status: current.status }] });
-      const acknowledged = await tx.rawMaterialInboundNotice.update({ where: { id }, data: { status: "acknowledged", receivedBy: user.id, receivedAt: new Date(), updatedBy: user.id } });
+      if (!["pending", "acknowledged", "processing"].includes(current.status)) throw new ConflictException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGEABLE", message: "当前入库通知不可接收", details: [{ status: current.status }] });
+
+      // 先确保有可入库的草稿，再改通知状态：
+      // 早期实现是“状态一改就返回”，一旦当时没建成草稿（质检未就绪 / 通知曾被重复接收），
+      // 通知会永久停在 acknowledged 且没有草稿，之后再点接收什么都不做 —— 仓储情况永远不更新。
       const draft = await this.inbounds.createDraftForInspection(tx, current.incomingInspectionId, user);
       if (draft) await tx.rawMaterialInbound.update({ where: { id: draft.id }, data: { inboundNoticeId: current.id } });
+      const linked = draft ?? await tx.rawMaterialInbound.findFirst({ where: { incomingInspectionId: current.incomingInspectionId, deletedAt: null }, select: { id: true } });
+      if (!linked) throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_RECEIVABLE", message: "该通知对应批次当前没有可入库的草稿：请先完成来料质检，或核对该批次是否已全部入库", details: [{ inspection_id: current.incomingInspectionId }] });
+
+      // 已接收过的通知：本次只做“补建并关联草稿”，状态保持不变（幂等 + 自愈）。
+      if (current.status !== "pending") return current;
+
+      const acknowledged = await tx.rawMaterialInboundNotice.update({ where: { id }, data: { status: "acknowledged", receivedBy: user.id, receivedAt: new Date(), updatedBy: user.id } });
       return acknowledged;
     });
     await this.audit.record("raw_material_inbound_notice.acknowledge", "raw_material_inbound_notice", user.id, id, { status: result.status });
