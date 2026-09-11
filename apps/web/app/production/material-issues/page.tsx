@@ -39,6 +39,8 @@ type Issue = {
 type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; operations?: Array<{ id: string; operationNameSnapshot: string; status: string }> };
 
 const statusLabels: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
+// 领料单与补料单同属“生产单-工序”之下的原料出库单据，版式不同但层级一致。
+const typeLabels: Record<string, string> = { issue: "领料单", replenishment: "补料单", return: "退料单", scrap: "报废单", reversal: "冲销单" };
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
 export default function MaterialIssuesPage() {
@@ -48,6 +50,7 @@ export default function MaterialIssuesPage() {
   const [productionOrderId, setProductionOrderId] = useState("all");
   const [operationId, setOperationId] = useState("all");
   const [status, setStatus] = useState("all");
+  const [documentType, setDocumentType] = useState("all");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [loading, setLoading] = useState(true);
@@ -61,7 +64,7 @@ export default function MaterialIssuesPage() {
         apiGet<Issue[]>("/production/material-movements"),
         apiGet<ProductionOrder[]>("/production/orders")
       ]);
-      setIssues(movements.data.filter((item) => item.documentType === "issue"));
+      setIssues(movements.data.filter((item) => ["issue", "replenishment"].includes(item.documentType)));
       setOrders(production.data);
     } catch (cause) { setError(messageOf(cause, "领料单加载失败")); }
     finally { setLoading(false); }
@@ -74,16 +77,18 @@ export default function MaterialIssuesPage() {
     if (productionOrderId !== "all" && item.productionOrderId !== productionOrderId) return false;
     if (operationId !== "all" && item.productionOrderOperationId !== operationId) return false;
     if (status !== "all" && item.status !== status) return false;
+    if (documentType !== "all" && item.documentType !== documentType) return false;
     const businessDate = (item.businessDate ?? item.createdAt ?? "").slice(0, 10);
     if (from && businessDate < from) return false;
     if (to && businessDate > to) return false;
     return true;
   }).sort((left, right) => `${left.orderNo}|${left.productionOrder?.productionOrderNo ?? ""}|${left.productionOrderOperation?.operationNameSnapshot ?? ""}|${left.createdAt}`
-    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.productionOrderOperation?.operationNameSnapshot ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, operationId, status, from, to]);
+    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.productionOrderOperation?.operationNameSnapshot ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, operationId, status, documentType, from, to]);
 
   // 导出参数与页面筛选完全一致，避免"看到的"和"导出的"不是同一批。
   function exportQuery() {
     const params = new URLSearchParams();
+    if (documentType !== "all") params.set("document_type", documentType);
     if (orderNo) params.set("order_no", orderNo);
     if (productionOrderId !== "all") params.set("production_order_id", productionOrderId);
     if (operationId !== "all") params.set("production_order_operation_id", operationId);
@@ -92,16 +97,18 @@ export default function MaterialIssuesPage() {
     if (to) params.set("to", to);
     return params.toString();
   }
-  async function exportOne(issue: Issue) {
-    setBusy(issue.id);
-    try { await downloadFile(`/api/v1/production/reports/material-issue.xlsx?movement_id=${encodeURIComponent(issue.id)}`, `领料单-${issue.movementNo}.xlsx`); notifySuccess(`已导出 ${issue.movementNo}`); }
+  // 单张导出：后端按单据类型自动套用领料单/补料单模板。
+  async function exportOne(slip: Issue) {
+    setBusy(slip.id);
+    const label = typeLabels[slip.documentType] ?? "单据";
+    try { await downloadFile(`/api/v1/production/reports/material-issue.xlsx?movement_id=${encodeURIComponent(slip.id)}`, `${label}-${slip.movementNo}.xlsx`); notifySuccess(`已导出 ${slip.movementNo}`); }
     catch (cause) { notifyError(messageOf(cause, "导出失败")); }
     finally { setBusy(""); }
   }
   async function exportAll() {
-    if (!visible.length) { setError("当前筛选没有可导出的领料单"); return; }
+    if (!visible.length) { setError("当前筛选没有可导出的单据"); return; }
     setBusy("all");
-    try { await downloadFile(`/api/v1/production/reports/material-issues.xlsx?${exportQuery()}`, "领料单汇总.xlsx"); notifySuccess(`已导出 ${visible.length} 张领料单`); }
+    try { await downloadFile(`/api/v1/production/reports/material-slips.xlsx?${exportQuery()}`, "领料补料单汇总.xlsx"); notifySuccess(`已导出 ${visible.length} 张单据`); }
     catch (cause) { notifyError(messageOf(cause, "批量导出失败")); }
     finally { setBusy(""); }
   }
@@ -110,18 +117,19 @@ export default function MaterialIssuesPage() {
     { accessorKey: "orderNo", header: "订单号" },
     { id: "productionOrder", header: "生产单号", cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
     { id: "operation", header: "工序", cell: ({ row }) => row.original.productionOrderOperation?.operationNameSnapshot ?? <span className="status-warning">未指定工序</span> },
-    { accessorKey: "movementNo", header: "领料单号" },
+    { id: "documentType", header: "类型", cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
+    { accessorKey: "movementNo", header: "单据号" },
     { id: "status", header: "状态", cell: ({ row }) => statusLabels[row.original.status] ?? row.original.status },
     { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
-    { id: "total", header: "本次领料合计", cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
+    { id: "total", header: "数量合计", cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
     { accessorKey: "createdAt", header: "登记时间", cell: ({ row }) => new Date(row.original.createdAt).toLocaleString("zh-CN", { hour12: false }) },
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" disabled={busy === row.original.id} onClick={() => void exportOne(row.original)}>{busy === row.original.id ? "导出中..." : "导出领料单"}</Button> }
+    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" disabled={busy === row.original.id} onClick={() => void exportOne(row.original)}>{busy === row.original.id ? "导出中..." : "导出"}</Button> }
   ];
 
-  if (loading) return <><PageHeader title="领料单" /><LoadingState /></>;
+  if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
 
   return <>
-    <PageHeader title="领料单" description="层级：订单号 → 生产单 → 工序 → 领料单。导出为打印用 Excel（仅管理员）。">
+    <PageHeader title="领料单 / 补料单" description="层级：订单号 → 生产单 → 工序 → 单据。领料单与补料单各自套用对应打印模板（仅管理员可导出）。">
       <Button asChild variant="secondary"><Link href="/production">返回生产单</Link></Button>
       <Button onClick={() => void exportAll()} disabled={busy === "all" || !visible.length}>{busy === "all" ? "导出中..." : `批量导出（${visible.length} 张）`}</Button>
     </PageHeader>
@@ -132,14 +140,15 @@ export default function MaterialIssuesPage() {
         <label>订单号<Input value={orderNo} onChange={(event) => setOrderNo(event.target.value)} placeholder="输入订单号" /></label>
         <label>生产单<Select value={productionOrderId} onValueChange={(value) => { setProductionOrderId(value); setOperationId("all"); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部生产单</SelectItem>{orders.map((order) => <SelectItem key={order.id} value={order.id}>{order.productionOrderNo} / {order.orderNo}</SelectItem>)}</SelectContent></Select></label>
         <label>工序<Select value={operationId} onValueChange={setOperationId} disabled={productionOrderId === "all"}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部工序</SelectItem>{operationsOf(productionOrderId).map((operation) => <SelectItem key={operation.id} value={operation.id}>{operation.operationNameSnapshot}</SelectItem>)}</SelectContent></Select></label>
+        <label>类型<Select value={documentType} onValueChange={setDocumentType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem><SelectItem value="issue">领料单</SelectItem><SelectItem value="replenishment">补料单</SelectItem></SelectContent></Select></label>
         <label>状态<Select value={status} onValueChange={setStatus}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="posted">已过账</SelectItem></SelectContent></Select></label>
         <label>起始日期<Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
         <label>结束日期<Input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
       </div></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>领料单（按工序）</h2><span className="panel-note">共 {visible.length} 张</span></div>
-      <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无领料单" description="领料单在【仓库 → 原料出库（生产领料）】创建，创建时必须选择工序。" />} /></div>
+      <div className="panel-heading"><h2>领料单 / 补料单（按工序）</h2><span className="panel-note">共 {visible.length} 张</span></div>
+      <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="领料单在【仓库 → 原料出库（生产领料）】创建，补料单在【仓库 → 补料出库】创建；两者都必须选择工序。" />} /></div>
     </section>
   </>;
 }
