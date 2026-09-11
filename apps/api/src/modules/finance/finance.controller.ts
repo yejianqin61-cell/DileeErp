@@ -4,6 +4,7 @@ import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
+import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { CustomerPaymentService } from "./customer-payment.service";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
@@ -99,9 +100,11 @@ export class FinanceController {
   @Post("reconciliations") async createReconciliation(@Body() body: ReconciliationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reconciliations.create(body, user), meta: {} }; }
   @Post("reconciliations/:id/resolve") async resolveReconciliation(@Param("id") id: string, @Body() body: ResolutionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reconciliations.resolve(id, body.resolution_remark, user), meta: {} }; }
   @Get("order-close-preview") async orderClosePreview(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.reconciliations.orderClosePreview(orderNo) : [], meta: {} }; }
-  @Get("payable-entries") async listPayableEntries(@Query("order_no") orderNo?: string, @Query("supplier_id") supplierId?: string, @Query("status") status?: string) { return { data: await this.payable.list(orderNo, supplierId, status), meta: {} }; }
+  // 采购负责在原料入库过账后“通知财务付款”，因此这两个接口对采购模块同样开放；
+  // 其余财务接口仍限 finance 模块。
+  @Get("payable-entries") @RequireAnyModules("finance", "procurement") async listPayableEntries(@Query("order_no") orderNo?: string, @Query("supplier_id") supplierId?: string, @Query("status") status?: string) { return { data: await this.payable.list(orderNo, supplierId, status), meta: {} }; }
   @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
-  @Post("payable-entries/from-source") async createPayableEntry(@Body() body: PayableEntryDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createFromSource(body, user), meta: {} }; }
+  @Post("payable-entries/from-source") @RequireAnyModules("finance", "procurement") async createPayableEntry(@Body() body: PayableEntryDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createFromSource(body, user), meta: {} }; }
   @Post("payable-entries/:id/confirm") async confirmPayableEntry(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.confirm(id, user), meta: {} }; }
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }
   @Post("payable-entries/:id/reopen") async reopenPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reopen(id, body.reason, user), meta: {} }; }

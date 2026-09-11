@@ -99,7 +99,7 @@ test("每个 Promise.all 数据加载的绑定名与请求数一致", () => {
 // 注意（本检查的边界）：顺序表只能发现“请求序列变了”，无法发现“请求序列没变但 setter 写串了”；
 // 后者由下面针对采购页的 setter↔接口语义测试覆盖。
 const LOAD_ORDER = {
-  "app/procurement/page.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/payable-sources", "/raw-material-inbound-notices", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
+  "app/procurement/page.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/payable-sources", "/raw-material-inbound-notices", "/finance/payable-entries", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
   "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units"],
   "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices?status=pending"],
   "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
@@ -128,6 +128,7 @@ const PROCUREMENT_BINDINGS = {
   setInbounds: "/raw-material-inbounds",
   setPayables: "/payable-sources",
   setInboundNotices: "/raw-material-inbound-notices",
+  setPayableEntries: "/finance/payable-entries",
   setMaterials: "/materials",
   setUnits: "/units",
   setSuppliers: "/suppliers",
