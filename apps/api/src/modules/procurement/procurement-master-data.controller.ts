@@ -24,14 +24,13 @@ class UpdateSupplierDto { @IsOptional() @IsString() @MaxLength(80) supplier_code
 @RequireModules("procurement")
 export class ProcurementMasterDataController {
   constructor(private readonly data: ProcurementMasterDataService) {}
-  @Get("units") async units() { return { data: await this.data.listUnits(), meta: {} }; }
+  // GET /units 与 GET /materials 已移到 MasterDataReadController（仓库/生产/销售也要读，见该文件说明）。
   @Post("units") async createUnit(@Body() body: UnitDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.createUnit(body, user), meta: {} }; }
   @Patch("units/:id") async updateUnit(@Param("id") id: string, @Body() body: UpdateUnitDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.updateUnit(id, body, user), meta: {} }; }
   @Patch("units/:id/active") async activeUnit(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.setUnitActive(id, body.is_active, user), meta: {} }; }
   @Delete("units/:id") async deleteUnit(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.data.deleteUnit(id, user), meta: {} }; }
   // D8: restore a soft-deleted unit (deletedAt cleared, isActive back to true).
   @Post("units/:id/restore") async restoreUnit(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.data.restoreUnit(id, user), meta: {} }; }
-  @Get("materials") async materials() { return { data: await this.data.listMaterials(), meta: {} }; }
   @Post("materials") async createMaterial(@Body() body: MaterialDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.createMaterial(body, user), meta: {} }; }
   @Patch("materials/:id") async updateMaterial(@Param("id") id: string, @Body() body: UpdateMaterialDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.updateMaterial(id, body, user), meta: {} }; }
   @Patch("materials/:id/active") async activeMaterial(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.setMaterialActive(id, body.is_active, user), meta: {} }; }
