@@ -5,7 +5,8 @@ const { IncomingInspectionsService } = require("../dist/modules/procurement/inco
 
 const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "operator", display_name: "操作员" };
 
-test("passed QC creates one draft inbound in the same transaction", async () => {
+// 质检阶段只产生可入库数量：入库草稿由仓库“接收入库通知”时创建（见 raw-material-inbound-notices.service.acknowledge）。
+test("passed QC does not create an inbound draft by itself", async () => {
   const calls = [];
   const tx = { $queryRaw: async () => undefined, purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", orderNo: "DL260001", quantity: "10", extensionData: {}, inspections: [] }) }, incomingInspection: { create: async ({ data }) => ({ id: "inspection-1", ...data }) } };
   const prisma = { $transaction: async (fn) => fn(tx) };
@@ -13,7 +14,7 @@ test("passed QC creates one draft inbound in the same transaction", async () => 
   const service = new IncomingInspectionsService(prisma, { create: () => ({}), record: async () => {} }, inbounds);
   const result = await service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "10", accepted_quantity: "8", conditional_quantity: "2", rejected_quantity: "0" }, user);
   assert.equal(result.status, "conditionally_accepted");
-  assert.deepEqual(calls, [[tx, "inspection-1"]]);
+  assert.deepEqual(calls, [], "质检不得自行创建入库草稿，必须等仓库接收通知");
 });
 
 test("incoming QC cannot cumulatively exceed its receipt quantity", async () => {

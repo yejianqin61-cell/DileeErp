@@ -165,6 +165,7 @@ function settlementHarness(inspection) {
       incomingInspection: { findFirst: async () => inspection },
       rawMaterialInboundNotice: { findFirst: async () => ({ id: "notice-1", status: "acknowledged" }) },
       $transaction: async (fn) => fn({
+        $queryRaw: async () => [],
         incomingInspection: { findFirst: async () => inspection },
         rawMaterialInboundNotice: { findFirst: async () => ({ id: "notice-1", status: "acknowledged" }) },
         rawMaterialInbound: { create: async () => ({ id: "inbound-x" }) },
@@ -175,12 +176,12 @@ function settlementHarness(inspection) {
   );
 }
 
-test("partial inbound requires settlement price, total, and reason before any write", async () => {
-  const inspection = { id: "inspection-1", qcResult: "partial_inbound", status: "partially_accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrder: {}, purchaseOrderItem: { material: { materialType: "raw_material" } } } };
+// 结算口径属于采购：仓库登记只填实际入库数量，不再强制结算三字段（业务确认后取消该门禁）。
+test("partial inbound no longer requires settlement fields before writing", async () => {
+  const inspection = { id: "inspection-1", qcResult: "partial_inbound", status: "partially_accepted", orderNo: "DL260001", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceiptId: "receipt-1", purchaseReceipt: { purchaseOrderId: "po-1", purchaseOrderItemId: "item-1", purchaseOrder: { supplierId: "supplier-1" }, purchaseOrderItem: { materialId: "material-1", unitId: "unit-1", supplierId: "supplier-1", material: { materialType: "raw_material" } } } };
   const service = settlementHarness(inspection);
-  await assert.rejects(() => service.create({ incoming_inspection_id: "inspection-1", quantity: "3" }, { id: "user-1" }), (error) => error.getResponse().code === "PARTIAL_INBOUND_SETTLEMENT_REQUIRED");
-  // 价+总缺原因：先命中通用“总价必须说明原因”，也属于正确拦截。
-  await assert.rejects(() => service.create({ incoming_inspection_id: "inspection-1", quantity: "3", settlement_unit_price: "2", settlement_total_amount: "6" }, { id: "user-1" }), (error) => ["PARTIAL_INBOUND_SETTLEMENT_REQUIRED", "SETTLEMENT_REASON_REQUIRED"].includes(error.getResponse().code));
+  const created = await service.create({ incoming_inspection_id: "inspection-1", quantity: "3", inventory_category: "raw_material" }, { id: "user-1" });
+  assert.equal(created.id, "inbound-x");
 });
 
 test("a manual settlement total requires a discrepancy reason even on create", async () => {
@@ -217,11 +218,20 @@ test("inbound posting restores a voided payable source instead of creating a dup
   assert.equal(createCount, 0);
 });
 
-test("legacy partial inspection without qc_result still requires settlement fields", async () => {
-  const inspection = { id: "inspection-legacy", qcResult: null, status: "partially_accepted", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceipt: { purchaseOrder: {}, purchaseOrderItem: { material: { materialType: "raw_material" } } } };
+// 历史数据里 qc_result 为空但状态为 partially_accepted 的批次同样不再被门禁拦住。
+test("legacy partial inspection without qc_result also writes without settlement fields", async () => {
+  const inspection = { id: "inspection-legacy", qcResult: null, status: "partially_accepted", orderNo: "DL260001", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceiptId: "receipt-1", purchaseReceipt: { purchaseOrderId: "po-1", purchaseOrderItemId: "item-1", purchaseOrder: { supplierId: "supplier-1" }, purchaseOrderItem: { materialId: "material-1", unitId: "unit-1", supplierId: "supplier-1", material: { materialType: "raw_material" } } } };
   const service = settlementHarness(inspection);
-  await assert.rejects(
-    () => service.create({ incoming_inspection_id: "inspection-legacy", quantity: "3" }, { id: "user-1" }),
-    (error) => error.getResponse().code === "PARTIAL_INBOUND_SETTLEMENT_REQUIRED",
-  );
+  const created = await service.create({ incoming_inspection_id: "inspection-legacy", quantity: "3", inventory_category: "raw_material" }, { id: "user-1" });
+  assert.equal(created.id, "inbound-x");
+});
+
+// 反向保证：人工填写了结算值时仍然必须是正数，且填总价必须说明差异原因。
+test("manual settlement values are still validated as positive and explained", async () => {
+  const inspection = { id: "inspection-1", qcResult: "partial_inbound", status: "partially_accepted", orderNo: "DL260001", acceptedQuantity: "5", conditionalQuantity: "0", rawMaterialInbounds: [], purchaseReceiptId: "receipt-1", purchaseReceipt: { purchaseOrderId: "po-1", purchaseOrderItemId: "item-1", purchaseOrder: { supplierId: "supplier-1" }, purchaseOrderItem: { materialId: "material-1", unitId: "unit-1", supplierId: "supplier-1", material: { materialType: "raw_material" } } } };
+  const service = settlementHarness(inspection);
+  for (const value of ["0", "-2"]) {
+    await assert.rejects(() => service.create({ incoming_inspection_id: "inspection-1", quantity: "3", inventory_category: "raw_material", settlement_unit_price: value }, { id: "user-1" }), (error) => error.getResponse().code === "INVALID_SETTLEMENT_AMOUNT");
+  }
+  await assert.rejects(() => service.create({ incoming_inspection_id: "inspection-1", quantity: "3", inventory_category: "raw_material", settlement_total_amount: "6" }, { id: "user-1" }), (error) => error.getResponse().code === "SETTLEMENT_REASON_REQUIRED");
 });
