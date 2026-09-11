@@ -237,7 +237,10 @@ button { cursor: pointer; }
 .material-issue-sheet .detail-list > label { display: grid; gap: 6px; margin-bottom: 12px; }
 .material-issue-sheet .table-wrap,
 .material-issue-sheet .ui-table-wrap { overflow-x: auto; }
-.material-issue-sheet .data-table { width: 100%; min-width: 0; table-layout: fixed; font-size: 11px; }
+/* 明细列较多（领料单 13 列），必须给出最小宽度，否则 fixed 布局会把表压死在容器里、没有横向滚动条 */
+.material-issue-sheet .data-table { width: 100%; min-width: 1180px; table-layout: fixed; font-size: 11px; }
+/* 补料单只有 4 列，不需要那么宽 */
+.material-issue-sheet.material-replenishment-sheet .data-table { min-width: 720px; }
 .material-issue-sheet .data-table th,
 .material-issue-sheet .data-table td { height: auto; min-width: 0; padding: 5px 4px; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; }
 .material-issue-sheet .data-table th { font-size: 11px; }

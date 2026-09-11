@@ -219,6 +219,39 @@ export class RawMaterialMovementsService {
     return { movement_no: movement.movementNo, order_no: movement.orderNo, document_type: movement.documentType, can_reverse: dependentCount === 0, dependent_record_count: dependentCount, inventory_facts: facts.map((fact) => ({ material_id: fact.materialId, inventory_category: fact.inventoryCategory, quantity_delta: fact.quantityDelta.negated().toString() })) };
   }
 
+  /**
+   * 回退草稿（过账撤销）：把已过账的领料单/补料单退回草稿以便继续编辑。
+   *
+   * 库存侧的处理：InventoryFact 没有软删除列，库存余额是按事实聚合出来的，
+   * 所以不能删除已写的事实，而是写入等额冲抵事实（sourceType=material_movement_reopen）。
+   * 之后重新过账会再写一张出库事实；再冲销时按净额取反，因此“过账→回退→再过账→冲销”最终净额为 0。
+   * 已存在下游退料/报废的单据不允许回退（否则下游引用会失真）。
+   */
+  async reopen(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REOPEN_REASON_REQUIRED", message: "回退草稿必须填写原因", details: [] });
+    const movement = await this.get(id);
+    if (!["issue", "replenishment"].includes(movement.documentType)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: "只有领料单或补料单可以回退草稿", details: [] });
+    if (movement.status !== "posted") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有已过账单据可以回退草稿", details: [] });
+    const preview = await this.reversalPreview(id);
+    if (!preview.can_reverse) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "存在后续退料或报废记录，不能回退草稿", details: [{ count: preview.dependent_record_count }] });
+    const result = await this.prisma.$transaction(async (tx) => {
+      const current = await tx.rawMaterialMovement.findFirst({ where: { id, status: "posted", deletedAt: null }, include: { lines: { where: { deletedAt: null } } } });
+      if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_NOT_POSTED", message: "单据已被其他操作处理，请刷新后重试", details: [] });
+      if (current.documentType === "issue") {
+        const derived = await tx.rawMaterialMovementLine.count({ where: { sourceIssueLineId: { in: current.lines.map((line) => line.id) }, deletedAt: null, movement: { is: { status: "posted", deletedAt: null } } } });
+        if (derived) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "存在后续退料或报废记录，不能回退草稿", details: [{ count: derived }] });
+      }
+      const facts = await tx.inventoryFact.findMany({ where: { sourceId: current.id } });
+      for (const fact of facts) {
+        if (!fact.materialId) continue;
+        await tx.inventoryFact.create({ data: { materialId: fact.materialId, unitId: fact.unitId, inventoryCategory: fact.inventoryCategory, quantityDelta: fact.quantityDelta.negated(), sourceType: "material_movement_reopen", sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: fact.rawMaterialMovementLineId, createdBy: user.id } });
+      }
+      return tx.rawMaterialMovement.update({ where: { id }, data: { status: "draft", idempotencyKey: `draft:${randomUUID()}`, remark: `${current.remark ?? ""}\n回退过账：${reason}`, ...this.audit.update(user) } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    await this.audit.record("raw_material_movement.reopen", "raw_material_movement", user.id, id, { order_no: movement.orderNo, production_order_id: movement.productionOrderId, reason, from_movement_no: movement.movementNo });
+    return result;
+  }
+
   async reverse(id: string, reason: string, idempotencyKey: string, user: CurrentUser) {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] });
     if (!idempotencyKey?.trim()) throw new UnprocessableEntityException({ code: "IDEMPOTENCY_KEY_REQUIRED", message: "冲销必须提供幂等键", details: [] });
@@ -235,17 +268,28 @@ export class RawMaterialMovementsService {
         if (derived) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "存在后续退料或报废记录，不能冲销来源领料", details: [{ count: derived }] });
       }
       const facts = await tx.inventoryFact.findMany({ where: { sourceId: current.id } });
+      // 按「物料+单位+库存类别」取净额再取反：单据可能经历“过账 → 回退草稿 → 再过账”，
+      // 逐行取反会把回退时写入的冲抵事实也算一遍，导致库存多加/多减。
+      const netByKey = new Map<string, { materialId: string; unitId: string; inventoryCategory: string; delta: Prisma.Decimal }>();
       for (const fact of facts) {
-        if (fact.inventoryCategory === "raw_material" && fact.quantityDelta.isPositive()) {
-          if (!fact.materialId) throw new ConflictException({ code: "RAW_MATERIAL_FACT_MISSING_MATERIAL", message: "原料库存事实缺少物料", details: [] });
-          const balance = await this.inventory.rawMaterialBalance(tx, fact.materialId, fact.unitId);
-          if (balance.minus(fact.quantityDelta).isNegative()) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "冲销会造成原料库存不足", details: [{ material_id: fact.materialId }] });
+        if (!fact.materialId) continue;
+        const key = `${fact.materialId}|${fact.unitId}|${fact.inventoryCategory}`;
+        const current_ = netByKey.get(key);
+        if (current_) current_.delta = current_.delta.plus(fact.quantityDelta);
+        else netByKey.set(key, { materialId: fact.materialId, unitId: fact.unitId, inventoryCategory: fact.inventoryCategory, delta: fact.quantityDelta });
+      }
+      const netGroups = [...netByKey.values()].filter((group) => !group.delta.isZero());
+      for (const group of netGroups) {
+        // 净额为正（如退料回补）时冲销会扣减库存，必须先确认库存足够。
+        if (group.inventoryCategory === "raw_material" && group.delta.isPositive()) {
+          const balance = await this.inventory.rawMaterialBalance(tx, group.materialId, group.unitId);
+          if (balance.minus(group.delta).isNegative()) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "冲销会造成原料库存不足", details: [{ material_id: group.materialId }] });
         }
       }
       const created = await tx.rawMaterialMovement.create({ data: { movementNo: `RV-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, documentType: "reversal", status: "posted", productionOrderId: current.productionOrderId, productionOrderOperationId: current.productionOrderOperationId, orderNo: current.orderNo, businessDate: new Date(), reason, remark: `冲销 ${current.movementNo}`, idempotencyKey, lines: { create: current.lines.map((line) => ({ materialId: line.materialId, unitId: line.unitId, quantity: line.quantity, bomReferenceQuantity: line.bomReferenceQuantity, sourceIssueLineId: line.id, remark: `冲销 ${current.movementNo}`, ...this.audit.create(user) })) }, ...this.audit.create(user) }, include: { lines: true } });
-      for (let index = 0; index < facts.length; index += 1) {
-        const fact = facts[index];
-        await tx.inventoryFact.create({ data: { materialId: fact.materialId, unitId: fact.unitId, inventoryCategory: fact.inventoryCategory, quantityDelta: fact.quantityDelta.negated(), sourceType: "material_movement_reversal", sourceId: created.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: created.lines[index]?.id, createdBy: user.id } });
+      const reversalLineByMaterial = new Map(created.lines.map((line) => [line.materialId, line.id]));
+      for (const group of netGroups) {
+        await tx.inventoryFact.create({ data: { materialId: group.materialId, unitId: group.unitId, inventoryCategory: group.inventoryCategory, quantityDelta: group.delta.negated(), sourceType: "material_movement_reversal", sourceId: created.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: reversalLineByMaterial.get(group.materialId), createdBy: user.id } });
       }
       await tx.rawMaterialMovement.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } });
       return created;

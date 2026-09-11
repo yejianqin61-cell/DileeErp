@@ -18,6 +18,7 @@ class DerivedDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDate
 class UpdateIssueDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines?: IssueLineDto[]; }
 class PostDto { @IsString() @MaxLength(200) idempotency_key!: string; }
 class ReverseDto extends PostDto { @IsString() @MaxLength(1000) reason!: string; }
+class ReasonOnlyDto { @IsString() @MaxLength(1000) reason!: string; }
 
 @Controller("production/material-movements")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -41,4 +42,6 @@ export class RawMaterialMovementsController {
   @Post(":id/post-replenishment") async postReplenishment(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postReplenishment(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/post-scrap") async postScrap(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postScrap(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/reverse") async reverse(@Param("id") id: string, @Body() body: ReverseDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.reverse(id, body.reason, body.idempotency_key, user), meta: {} }; }
+  /** 回退草稿：已过账的领料单/补料单退回草稿继续编辑（库存写等额冲抵事实）。 */
+  @Post(":id/reopen") async reopen(@Param("id") id: string, @Body() body: ReasonOnlyDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.reopen(id, body.reason, user), meta: {} }; }
 }
