@@ -85,9 +85,9 @@ export class RawMaterialInboundsService {
     const previewAllowed = preview.qcResult === "rejected" ? new Prisma.Decimal(0) : new Prisma.Decimal(preview.acceptedQuantity).plus(preview.conditionalQuantity);
     const previewUsed = preview.rawMaterialInbounds.filter((row) => row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
     if (quantity.plus(previewUsed).gt(previewAllowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: previewAllowed.minus(previewUsed).toString() }] });
-    // 与 update() 对齐：人工填写结算总价必须说明差异原因；部分入库批次必须携带完整结算口径。
-     if ((preview.qcResult === "partial_inbound" || preview.status === "partially_accepted") && (!input.settlement_unit_price?.trim() || !input.settlement_total_amount?.trim() || !input.settlement_amount_reason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
-     if (input.settlement_total_amount && !input.settlement_amount_reason?.trim()) throw new UnprocessableEntityException({ code: "SETTLEMENT_REASON_REQUIRED", message: "人工填写结算总价时必须填写金额差异原因", details: [] });
+    // 结算口径属于采购：仓库登记只负责实际入库数量，不再强制填写结算三字段。
+    // 采购若填写了人工结算值，则仍必须是正数并说明差异原因（下方 assertSettlementInput 校验）。
+    this.assertSettlementInput(input);
 
     const inbound = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${input.incoming_inspection_id}::uuid FOR UPDATE`;
@@ -138,7 +138,6 @@ export class RawMaterialInboundsService {
         if (!inbound) throw new NotFoundException({ code: "INBOUND_NOT_FOUND", message: "原料入库单不存在", details: [] });
         if (inbound.status !== "draft") throw new ConflictException({ code: "INBOUND_ALREADY_POSTED", message: "入库已被其他操作处理", details: [] });
         if (!inbound.inboundNotice || !["acknowledged", "processing"].includes(inbound.inboundNotice.status)) throw new UnprocessableEntityException({ code: "INBOUND_NOTICE_NOT_ACKNOWLEDGED", message: "仓库接收入库通知后才能过账", details: [] });
-         if ((inbound.incomingInspection.qcResult === "partial_inbound" || inbound.incomingInspection.status === "partially_accepted") && (!inbound.settlementUnitPrice || !inbound.settlementTotalAmount || !inbound.settlementAmountReason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
         await tx.$queryRaw`SELECT id FROM incoming_inspections WHERE id = ${inbound.incomingInspectionId}::uuid FOR UPDATE`;
         if (!["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(inbound.incomingInspection.status)) throw new UnprocessableEntityException({ code: "INSPECTION_NOT_AVAILABLE", message: "质检尚未完成，不能入库", details: [{ status: inbound.incomingInspection.status }] });
         const allowed = new Prisma.Decimal(inbound.incomingInspection.acceptedQuantity).plus(inbound.incomingInspection.conditionalQuantity);
@@ -161,6 +160,7 @@ export class RawMaterialInboundsService {
             createdBy: user.id
           }
         });
+        // 结算口径缺省取采购明细单价：仓库只登记实际入库数量，金额由采购口径决定。
         const isPartialInbound = inbound.incomingInspection.qcResult === "partial_inbound" || inbound.incomingInspection.status === "partially_accepted";
           const settlementUnitPrice = isPartialInbound ? (inbound.settlementUnitPrice ?? item.unitPrice) : item.unitPrice;
           const settlementAmount = isPartialInbound ? (inbound.settlementTotalAmount ?? inbound.quantity.mul(settlementUnitPrice)) : inbound.quantity.mul(item.unitPrice);
@@ -206,6 +206,7 @@ export class RawMaterialInboundsService {
 
   async update(id: string, input: { quantity: string; settlement_unit_price?: string; settlement_total_amount?: string; settlement_amount_reason?: string; remark?: string }, user: CurrentUser) {
     const quantity = this.positive(input.quantity, "入库数量必须是大于零的十进制数");
+    this.assertSettlementInput(input);
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT incoming_inspection_id FROM raw_material_inbounds WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.rawMaterialInbound.findFirst({ where: { id, deletedAt: null }, include: { incomingInspection: { include: { rawMaterialInbounds: { where: { deletedAt: null } } } } } });
@@ -218,7 +219,6 @@ export class RawMaterialInboundsService {
       if (!inspection) throw new NotFoundException({ code: "INSPECTION_NOT_AVAILABLE", message: "QC 不存在或不允许入库", details: [] });
       if (inspection.qcResult === "rejected") throw new UnprocessableEntityException({ code: "REJECTED_INSPECTION_NOT_INBOUNDABLE", message: "拒收质检批次不得建立原料入库", details: [] });
       const allowed = new Prisma.Decimal(inspection.acceptedQuantity).plus(inspection.conditionalQuantity);
-       if (inspection.qcResult === "partial_inbound" && (!input.settlement_unit_price?.trim() || !input.settlement_total_amount?.trim() || !input.settlement_amount_reason?.trim())) throw new UnprocessableEntityException({ code: "PARTIAL_INBOUND_SETTLEMENT_REQUIRED", message: "部分入库必须填写结算单价、结算总价和金额差异原因", details: [] });
        if (input.settlement_total_amount && !input.settlement_amount_reason?.trim()) throw new UnprocessableEntityException({ code: "SETTLEMENT_REASON_REQUIRED", message: "人工填写结算总价时必须填写金额差异原因", details: [] });
       const used = inspection.rawMaterialInbounds.filter((row) => row.id !== id && row.status !== "reversed").reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
       if (quantity.plus(used).gt(allowed)) throw new UnprocessableEntityException({ code: "INBOUND_QUANTITY_EXCEEDED", message: "入库数量超过 QC 允许数量", details: [{ allowed: allowed.minus(used).toString() }] });
@@ -317,4 +317,20 @@ export class RawMaterialInboundsService {
   }
 
   private positive(value: string, message: string) { try { const quantity = new Prisma.Decimal(value); if (!quantity.gt(0)) throw new Error(); return quantity; } catch { throw new UnprocessableEntityException({ code: "INVALID_INBOUND_QUANTITY", message, details: [] }); } }
+
+  /**
+   * 人工结算口径校验：字段可留空（仓库不填、采购按采购单价自动结算），
+   * 但一旦填写就必须是大于零的金额，且填写结算总价时必须说明差异原因。
+   * 过账时会以采购明细单价作为缺省口径，因此不再强制要求这三个字段。
+   */
+  private assertSettlementInput(input: { settlement_unit_price?: string; settlement_total_amount?: string; settlement_amount_reason?: string }) {
+    const amounts: Array<[string | undefined, string]> = [[input.settlement_unit_price, "结算单价必须是大于零的十进制数"], [input.settlement_total_amount, "结算总价必须是大于零的十进制数"]];
+    for (const [value, message] of amounts) {
+      if (value === undefined || value === null || String(value).trim() === "") continue;
+      let parsed: Prisma.Decimal;
+      try { parsed = new Prisma.Decimal(value); } catch { throw new UnprocessableEntityException({ code: "INVALID_SETTLEMENT_AMOUNT", message, details: [] }); }
+      if (!parsed.gt(0)) throw new UnprocessableEntityException({ code: "INVALID_SETTLEMENT_AMOUNT", message, details: [] });
+    }
+    if (input.settlement_total_amount?.trim() && !input.settlement_amount_reason?.trim()) throw new UnprocessableEntityException({ code: "SETTLEMENT_REASON_REQUIRED", message: "人工填写结算总价时必须填写金额差异原因", details: [] });
+  }
 }
