@@ -11,6 +11,10 @@ type IssueInput = { production_order_id: string; business_date?: string; reason?
 type DerivedLineInput = { source_issue_line_id: string; quantity: string; remark?: string };
 type DerivedInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: DerivedLineInput[] };
 
+// RawMaterialMovementRisk.reason 是非空列；超领/非 BOM 已不再要求填写原因，
+// 未填写时写入该占位串，保证风险仍被留痕且不因缺字段而报错。
+const RISK_REASON_NOT_REQUIRED = "未填写（超领/非BOM原因门禁已取消）";
+
 @Injectable()
 export class RawMaterialMovementsService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly inventory: InventoryService) {}
@@ -122,7 +126,7 @@ export class RawMaterialMovementsService {
     const order = await this.requireInHouseOrder(movement.productionOrderId);
     const preview = await this.previewLines(order, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })));
     const risks = preview.lines.flatMap((line) => line.risks.map((risk) => ({ line_id: line.id, risk_type: risk.type, context: risk.context })));
-    if (risks.length && !movement.reason?.trim()) throw new UnprocessableEntityException({ code: "RISK_REASON_REQUIRED", message: "超领或非 BOM 物料必须填写原因", details: risks });
+    // 超领/非 BOM 物料不再阻塞过账（业务确认该门禁没有必要）；风险仍然照常记录，仅作审计留痕。
     if (preview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "领料会造成原料库存不足", details: preview.lines.filter((line) => line.available_after.isNegative()).map((line) => ({ material_id: line.material_id, available_quantity: line.available_before.toString() })) });
 
     try {
@@ -141,13 +145,12 @@ export class RawMaterialMovementsService {
           const dbLine = dbLineByMaterial.get(line.material_id);
           return { line_id: dbLine?.id ?? null, risk_type: risk.type, context: risk.context };
         }));
-        if (lockedRisks.length && !current.reason?.trim()) throw new UnprocessableEntityException({ code: "RISK_REASON_REQUIRED", message: "超领或非 BOM 物料必须填写原因", details: lockedRisks });
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
         for (const line of current.lines) {
           await tx.inventoryFact.create({ data: { materialId: line.materialId, unitId: line.unitId, inventoryCategory: "raw_material", quantityDelta: `-${line.quantity}`, sourceType: "material_issue", sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: line.id, createdBy: user.id } });
         }
         for (const risk of lockedRisks) {
-          await tx.rawMaterialMovementRisk.create({ data: { movementId: current.id, lineId: risk.line_id, riskType: risk.risk_type, context: risk.context, reason: current.reason!, confirmedBy: user.id, ...this.audit.create(user) } });
+          await tx.rawMaterialMovementRisk.create({ data: { movementId: current.id, lineId: risk.line_id, riskType: risk.risk_type, context: risk.context, reason: current.reason?.trim() || RISK_REASON_NOT_REQUIRED, confirmedBy: user.id, ...this.audit.create(user) } });
         }
         return updated;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
