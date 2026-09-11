@@ -12,6 +12,8 @@ class IssueLineDto { @IsUUID() material_id!: string; @IsString() quantity!: stri
 class IssueDto { @IsUUID() production_order_id!: string; // 层级：订单号-生产单-工序-领料表；新建时必填（由服务层校验）。
   @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
 class DerivedLineDto { @IsUUID() source_issue_line_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+// 补料单：与领料单同一套明细结构，但必须填写补料原因（坏片/生产失误等）。
+class ReplenishmentDto { @IsUUID() production_order_id!: string; @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsString() @MaxLength(1000) reason!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
 class DerivedDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => DerivedLineDto) lines!: DerivedLineDto[]; }
 class UpdateIssueDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines?: IssueLineDto[]; }
 class PostDto { @IsString() @MaxLength(200) idempotency_key!: string; }
@@ -27,6 +29,7 @@ export class RawMaterialMovementsController {
   @Post() async create(@Body() body: IssueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createIssue(body, user), meta: {} }; }
   @Post("returns") async createReturn(@Body() body: DerivedDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createReturn(body, user), meta: {} }; }
   @Post("scraps") async createScrap(@Body() body: DerivedDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createScrap(body, user), meta: {} }; }
+  @Post("replenishments") async createReplenishment(@Body() body: ReplenishmentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.createReplenishment(body, user), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.movements.get(id), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdateIssueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.updateIssue(id, body, user), meta: {} }; }
   @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.removeIssue(id, user), meta: {} }; }
@@ -35,6 +38,7 @@ export class RawMaterialMovementsController {
   @Get(":id/audit-events") async auditEvents(@Param("id") id: string) { return { data: await this.movements.auditEvents(id), meta: {} }; }
   @Post(":id/post") async post(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postIssue(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/post-return") async postReturn(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postReturn(id, body.idempotency_key, user), meta: {} }; }
+  @Post(":id/post-replenishment") async postReplenishment(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postReplenishment(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/post-scrap") async postScrap(@Param("id") id: string, @Body() body: PostDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.postScrap(id, body.idempotency_key, user), meta: {} }; }
   @Post(":id/reverse") async reverse(@Param("id") id: string, @Body() body: ReverseDto, @CurrentUser() user: CurrentUserType) { return { data: await this.movements.reverse(id, body.reason, body.idempotency_key, user), meta: {} }; }
 }
