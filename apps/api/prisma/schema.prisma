@@ -539,12 +539,12 @@ model PurchaseOrder {
   purchaseOrderNo           String                    @unique @map("purchase_order_no") @db.VarChar(100)
   orderNo                   String                    @map("order_no") @db.VarChar(100)
   salesOrderId              String                    @map("sales_order_id") @db.Uuid
-  bomId                     String                    @map("bom_id") @db.Uuid
-  bomVersion                Int                       @map("bom_version")
-  bomSnapshot               Json                      @map("bom_snapshot")
-  supplierId                String                    @map("supplier_id") @db.Uuid
-  supplierSnapshot          Json                      @map("supplier_snapshot")
-  purchaseDate              DateTime                  @map("purchase_date")
+  bomId                     String?                   @map("bom_id") @db.Uuid
+  bomVersion                Int?                      @map("bom_version")
+  bomSnapshot               Json?                     @map("bom_snapshot")
+  supplierId                String?                   @map("supplier_id") @db.Uuid
+  supplierSnapshot          Json?                     @map("supplier_snapshot")
+  purchaseDate              DateTime?                 @map("purchase_date")
   expectedDate              DateTime?                 @map("expected_date")
   currency                  String                    @db.VarChar(10)
   status                    String                    @default("draft") @db.VarChar(30)
@@ -558,8 +558,8 @@ model PurchaseOrder {
   deletedAt                 DateTime?                 @map("deleted_at")
   deletedBy                 String?                   @map("deleted_by") @db.Uuid
   salesOrder                SalesOrder                @relation(fields: [salesOrderId], references: [id])
-  bom                       Bom                       @relation(fields: [bomId], references: [id])
-  supplier                  Supplier                  @relation(fields: [supplierId], references: [id])
+  bom                       Bom?                      @relation(fields: [bomId], references: [id])
+  supplier                  Supplier?                 @relation(fields: [supplierId], references: [id])
   items                     PurchaseOrderItem[]
   purchaseReceipts          PurchaseReceipt[]
   rawMaterialInbounds       RawMaterialInbound[]

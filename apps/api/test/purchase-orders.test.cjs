@@ -268,3 +268,73 @@ test("order expected date falls back to the latest item date when the order does
   assert.equal(derived.getTime(), new Date("2026-09-18").getTime());
   assert.equal(service.orderExpectedDate({ order_no: "SO-1", bom_id: "bom-1", purchase_date: "2026-09-08", currency: "USD", items: [{ material_id: "material-1", unit_id: "unit-1", supplier_id: "supplier-1", quantity: "1", unit_price: "1" }] }), undefined);
 });
+
+// ---- 草稿（编辑一半先保存）----
+const draftRow = (overrides = {}) => ({
+  id: "purchase-1", purchaseOrderNo: "PO-1", status: "draft", orderNo: "SO-1",
+  bomId: null, supplierId: null, purchaseDate: null, currency: null,
+  expectedDate: null, extensionData: {}, remark: null, items: [], supplier: null, bom: null,
+  ...overrides,
+});
+const fullItem = (overrides = {}) => ({
+  id: "item-1", materialId: "material-1", unitId: "unit-1", supplierId: "supplier-1",
+  quantity: new (require("@prisma/client").Prisma.Decimal)("2"),
+  unitPrice: new (require("@prisma/client").Prisma.Decimal)("3"),
+  receipts: [], ...overrides,
+});
+
+test("draft purchase order saves with only a sales order and no BOM or items", async () => {
+  let captured = null;
+  const tx = { purchaseOrder: { create: async ({ data }) => { captured = data; return { id: "purchase-1", orderNo: "SO-1" }; } } };
+  const prisma = { ...refsPrisma([]), $transaction: async (fn) => fn(tx), purchaseOrder: { findFirst: async () => draftRow() } };
+  const service = new PurchaseOrdersService(prisma, { create: () => ({}), record: async () => {} });
+  await service.create({ order_no: "SO-1" }, { id: "user-1" });
+  assert.equal(captured.bomId, null);
+  assert.equal(captured.bomVersion, null);
+  assert.equal(captured.supplierId, null);
+  assert.equal(captured.currency, "CNY");
+  assert.equal(captured.totalAmount, "0.0000");
+  assert.deepEqual(captured.items.create, []);
+  assert.ok(captured.purchaseDate instanceof Date);
+});
+
+test("draft items without a BOM skip the outside-BOM reason rule", async () => {
+  let captured = null;
+  const tx = { purchaseOrder: { create: async ({ data }) => { captured = data; return { id: "purchase-1", orderNo: "SO-1" }; } } };
+  const prisma = { ...refsPrisma([{ id: "supplier-1", name: "supplier" }]), $transaction: async (fn) => fn(tx), purchaseOrder: { findFirst: async () => draftRow() } };
+  const service = new PurchaseOrdersService(prisma, { create: () => ({}), record: async () => {} });
+  await service.create({
+    order_no: "SO-1",
+    items: [{ material_id: "material-1", unit_id: "unit-1", supplier_id: "supplier-1", quantity: "2", unit_price: "3" }],
+  }, { id: "user-1" });
+  assert.equal(captured.items.create.length, 1);
+  assert.equal(captured.items.create[0].amount, "6.0000");
+  assert.equal(captured.bomId, null);
+});
+
+test("incomplete draft cannot be ordered and lists what is missing", async () => {
+  const prisma = { purchaseOrder: { findFirst: async () => draftRow({ items: [fullItem({ supplierId: null, quantity: new (require("@prisma/client").Prisma.Decimal)("0") })] }) } };
+  const service = new PurchaseOrdersService(prisma, {});
+  await assert.rejects(
+    () => service.order("purchase-1", { id: "user-1" }),
+    (error) => error.getResponse().code === "PURCHASE_ORDER_INCOMPLETE"
+      && error.getResponse().details.some((detail) => detail.code === "BOM_REQUIRED")
+      && error.getResponse().details.some((detail) => detail.code === "ITEM_INCOMPLETE"),
+  );
+});
+
+test("complete draft can be ordered and fills head supplier from the first item", async () => {
+  let updated = null;
+  const prisma = {
+    purchaseOrder: {
+      findFirst: async () => draftRow({ bomId: "bom-1", items: [fullItem()] }),
+      update: async ({ data }) => { updated = data; return { id: "purchase-1", status: data.status }; },
+    },
+  };
+  const service = new PurchaseOrdersService(prisma, { update: () => ({}), record: async () => {} });
+  await service.order("purchase-1", { id: "user-1" });
+  assert.equal(updated.status, "ordered");
+  assert.equal(updated.supplierId, "supplier-1");
+  assert.equal(updated.currency, "CNY");
+  assert.ok(updated.purchaseDate instanceof Date);
+});

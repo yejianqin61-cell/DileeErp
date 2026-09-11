@@ -112,7 +112,7 @@ export class OutsourceLogisticsService {
         if (batchUpdated.count !== 1) throw new ConflictException({ code: "VERSION_CONFLICT", message: "外加工批次已被其他操作处理，请刷新后重试", details: [] });
         const item = current.purchaseOrderItem;
         const amount = quantity.mul(item.unitPrice).toDecimalPlaces(4);
-        await tx.outsourcePayableSource.create({ data: { outsourceReceiptId: row.id, logisticsBatchId: id, orderNo: current.orderNo, purchaseOrderId: current.purchaseOrderId, purchaseOrderItemId: current.purchaseOrderItemId, supplierId: current.purchaseOrder.supplierId, quantity, unitPrice: item.unitPrice, currency: current.purchaseOrder.currency, taxRate: item.taxRate, amount, ...this.audit.create(user) } });
+        await tx.outsourcePayableSource.create({ data: { outsourceReceiptId: row.id, logisticsBatchId: id, orderNo: current.orderNo, purchaseOrderId: current.purchaseOrderId, purchaseOrderItemId: current.purchaseOrderItemId, supplierId: current.purchaseOrder.supplierId ?? item.supplierId, quantity, unitPrice: item.unitPrice, currency: current.purchaseOrder.currency ?? "CNY", taxRate: item.taxRate, amount, ...this.audit.create(user) } });
         return row;
       });
       if (!receipt) return this.get(id);

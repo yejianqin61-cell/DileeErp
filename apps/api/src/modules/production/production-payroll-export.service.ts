@@ -106,7 +106,7 @@ export class ProductionPayrollExportService {
       const arrival = (item.receipts ?? []).map((receipt) => receipt.receivedDate.toISOString().slice(0, 10)).join("、");
       const supply = item.expectedDate ? item.expectedDate.toISOString().slice(0, 10) : po.expectedDate ? po.expectedDate.toISOString().slice(0, 10) : "";
       const supplierName = (item.supplierSnapshot as { name?: string } | null)?.name ?? po.supplier?.name ?? "";
-      return [orderNo, orderQuantity, item.material?.name ?? "", item.unitPrice?.toString() ?? "", item.quantity.toString(), po.purchaseDate.toISOString().slice(0, 10), arrival, supply, supplierName, po.remark ?? ""];
+      return [orderNo, orderQuantity, item.material?.name ?? "", item.unitPrice?.toString() ?? "", item.quantity.toString(), po.purchaseDate ? po.purchaseDate.toISOString().slice(0, 10) : "", arrival, supply, supplierName, po.remark ?? ""];
     }));
     if (!materialRows.length) materialRows.push([orderNo, orderQuantity, "（无采购记录）", "", "", "", "", "", "", ""]);
     const productionIds = productionOrders.map((po) => po.id);
