@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../components/layout/app-shell";
@@ -17,6 +17,7 @@ import { FinishedGoodsQcPanel } from "../../components/warehouse/finished-goods-
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
+import { shouldAutoOpenDraft } from "../../lib/auto-open";
 
 type MovementLine = { id: string; materialId: string; quantity: string; unit?: { name: string }; material?: { materialCode?: string; name: string } };
 type Movement = { id: string; movementNo: string; documentType: string; status: string; orderNo: string; productionOrderId: string; lines: MovementLine[] };
@@ -42,9 +43,19 @@ export default function WarehousePage() {
   const [orders, setOrders] = useState<ProductionOrder[]>([]); const [materials, setMaterials] = useState<Material[]>([]); const [movements, setMovements] = useState<Movement[]>([]); const [rawBalances, setRawBalances] = useState<RawBalance[]>([]); const [inboundNotices, setInboundNotices] = useState<InboundNotice[]>([]);
   const [query, setQuery] = useState(""); const [selected, setSelected] = useState<Movement | null>(null); const [impactMovement, setImpactMovement] = useState<Movement | null>(null); const [preview, setPreview] = useState<Preview | null>(null); const [issuePreview, setIssuePreview] = useState<Preview | null>(null); const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (v: Record<string, string>) => void } | null>(null); const [issueDraft, setIssueDraft] = useState<{ id?: string; productionOrderId: string; lines: IssueDraftLine[] } | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [message, setMessage] = useState("");
+  const autoOpenedOrderRef = useRef<string | null>(null);
   async function load() { setLoading(true); setError(""); try { const [o, m, moves, balances, notices] = await Promise.all([apiGet<ProductionOrder[]>("/production/orders"), apiGet<Material[]>("/materials"), apiGet<Movement[]>("/production/material-movements"), apiGet<RawBalance[]>("/inventory/raw-material-balances"), apiGet<InboundNotice[]>("/raw-material-inbound-notices?status=pending")]); setOrders(o.data.filter((item) => item.executionMode === "in_house" && item.status === "in_progress")); setMaterials(m.data.filter((item) => item.isActive)); setMovements(moves.data); setRawBalances(balances.data); setInboundNotices(notices.data); } catch (cause) { setError(messageOf(cause, "仓库数据加载失败")); } finally { setLoading(false); } }
   useEffect(() => { void load(); }, []);
-  useEffect(() => { const productionOrderId = new URLSearchParams(window.location.search).get("production_order_id"); if (productionOrderId && orders.some((item) => item.id === productionOrderId) && !issueDraft) { const draft = { productionOrderId, lines: [{ materialId: materials[0]?.id ?? "", quantity: "1", remark: "" }] }; setIssueDraft(draft); void refreshIssuePreview(draft); } }, [orders, materials, issueDraft]);
+  // 自动打开只做一次：把 issueDraft 作为依赖条件会让用户一关闭就被重新打开。
+  useEffect(() => {
+    const productionOrderId = new URLSearchParams(window.location.search).get("production_order_id");
+    if (!shouldAutoOpenDraft({ targetId: productionOrderId, alreadyOpened: autoOpenedOrderRef.current, hasLoaded: orders.length > 0 && materials.length > 0 })) return;
+    if (!orders.some((item) => item.id === productionOrderId)) return;
+    autoOpenedOrderRef.current = productionOrderId;
+    const draft = { productionOrderId: productionOrderId!, lines: [{ materialId: materials[0]?.id ?? "", quantity: "1", remark: "" }] };
+    setIssueDraft(draft);
+    void refreshIssuePreview(draft);
+  }, [orders, materials]);
   const visible = useMemo(() => movements.filter((item) => !query || `${item.movementNo} ${item.orderNo} ${item.documentType} ${item.status}`.toLowerCase().includes(query.toLowerCase())), [movements, query]);
   const sourceLines = useMemo<SourceLine[]>(() => movements.filter((item) => item.documentType === "issue" && item.status === "posted").flatMap((movement) => movement.lines.map((line) => ({ ...line, movementNo: movement.movementNo, orderNo: movement.orderNo, productionOrderId: movement.productionOrderId }))), [movements]);
   async function run(action: () => Promise<unknown>, success: string) { setError(""); try { await action(); notifySuccess(success); await load(); } catch (cause) { notifyError(messageOf(cause, "操作失败")); } }

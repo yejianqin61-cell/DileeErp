@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
@@ -11,6 +11,7 @@ import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
 import { mergeMaterialBalances } from "../../../lib/wms-balances";
+import { shouldAutoOpenDraft } from "../../../lib/auto-open";
 
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
 type Unit = { id: string; name: string };
@@ -33,6 +34,7 @@ export default function RawMaterialStoragePage() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const searchParams = useSearchParams();
   const noticeId = searchParams.get("notice_id");
+  const autoOpenedNoticeRef = useRef<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -59,7 +61,14 @@ export default function RawMaterialStoragePage() {
   }
 
   useEffect(() => { void load(); }, []);
-  useEffect(() => { if (!noticeId || !inbounds.length || dialog) return; const inbound = inbounds.find((item) => item.inboundNoticeId === noticeId); if (inbound?.status === "draft") editInbound(inbound); }, [noticeId, inbounds, dialog]);
+  // 自动打开只做一次：早期版本把 dialog 作为依赖条件，用户一关闭就会立刻被重新打开。
+  useEffect(() => {
+    if (!shouldAutoOpenDraft({ targetId: noticeId, alreadyOpened: autoOpenedNoticeRef.current, hasLoaded: inbounds.length > 0 })) return;
+    const inbound = inbounds.find((item) => item.inboundNoticeId === noticeId);
+    if (inbound?.status !== "draft") return;
+    autoOpenedNoticeRef.current = noticeId;
+    editInbound(inbound);
+  }, [noticeId, inbounds]);
 
   async function run(action: Promise<unknown>, success: string) {
     setError("");
