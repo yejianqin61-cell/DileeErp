@@ -31,7 +31,7 @@ const productionOrder = {
     ]
   }
 };
-const slipBase = { productionOrderId: "order-1", createdBy: "user-1", productionOrder, productionOrderOperation: { operationNameSnapshot: "裁剪" } };
+const slipBase = { productionOrderId: "order-1", createdBy: "user-1", productionOrder, productionOrderOperation: null };
 
 const issue = {
   ...slipBase,

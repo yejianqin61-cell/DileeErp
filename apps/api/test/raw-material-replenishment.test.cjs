@@ -5,14 +5,13 @@ const { RawMaterialMovementsService } = require("../dist/modules/production/raw-
 
 const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "operator", display_name: "操作员" };
 const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: async () => {} };
-const activeOperation = { id: "operation-1", productionOrderId: "order-1", operationNameSnapshot: "裁剪", status: "active" };
-
-// 补料单：坏片/生产失误导致的补充领料，归属“生产单-工序”，同样参与原料出库。
-function harness(operation = activeOperation) {
+// 补料单：坏片/生产失误导致的补充领料，只绑定生产单（业务确认与领料单一致，不再绑工序），同样参与原料出库。
+function harness() {
   const created = [];
   const prisma = {
     productionOrder: { findFirst: async () => ({ id: "order-1", orderNo: "DL260001", executionMode: "in_house", status: "in_progress" }) },
-    productionOrderOperation: { findFirst: async () => operation },
+    // 若实现又去查工序，这里会返回 null 从而让测试失败（说明退回了旧的工序要求）。
+    productionOrderOperation: { findFirst: async () => null },
     rawMaterialMovement: { create: async ({ data }) => { created.push(data); return { id: "replenishment-1", ...data }; } }
   };
   const service = new RawMaterialMovementsService(prisma, audit, {});
@@ -29,31 +28,20 @@ test("补料单必须填写补料原因", async () => {
   assert.equal(created.length, 0, "缺原因时不得写入");
 });
 
-test("补料单必须归属到本生产单的工序", async () => {
-  const noOperation = harness();
-  await assert.rejects(
-    () => noOperation.service.createReplenishment({ production_order_id: "order-1", reason: "伞布坏片", lines: [{ material_id: "material-1", quantity: "8" }] }, user),
-    (error) => error.getResponse().code === "MATERIAL_ISSUE_OPERATION_REQUIRED"
-  );
-  const foreign = harness(null);
-  await assert.rejects(
-    () => foreign.service.createReplenishment({ production_order_id: "order-1", production_order_operation_id: "operation-x", reason: "伞布坏片", lines: [{ material_id: "material-1", quantity: "8" }] }, user),
-    (error) => error.getResponse().code === "PRODUCTION_OPERATION_NOT_FOUND"
-  );
-  const cancelled = harness({ ...activeOperation, status: "cancelled" });
-  await assert.rejects(
-    () => cancelled.service.createReplenishment({ production_order_id: "order-1", production_order_operation_id: "operation-1", reason: "伞布坏片", lines: [{ material_id: "material-1", quantity: "8" }] }, user),
-    (error) => error.getResponse().code === "PRODUCTION_OPERATION_CANCELLED"
-  );
+test("补料单只需要生产单，不再要求工序", async () => {
+  const { service, created } = harness();
+  const movement = await service.createReplenishment({ production_order_id: "order-1", reason: "伞布坏片", lines: [{ material_id: "material-1", quantity: "8" }] }, user);
+  assert.equal(created.length, 1, "没有工序也必须能建补料单");
+  assert.equal(movement.productionOrderId, "order-1");
+  assert.equal(created[0].productionOrderOperationId, undefined, "补料单不再写入工序字段");
 });
 
-test("补料单以 MC 前缀编号、类型为 replenishment，并记录原因与工序", async () => {
+test("补料单以 MC 前缀编号、类型为 replenishment，并记录原因", async () => {
   const { service, created } = harness();
-  await service.createReplenishment({ production_order_id: "order-1", production_order_operation_id: "operation-1", reason: " 伞布原始坏片 ", lines: [{ material_id: "material-1", quantity: "8" }] }, user);
+  await service.createReplenishment({ production_order_id: "order-1", reason: " 伞布原始坏片 ", lines: [{ material_id: "material-1", quantity: "8" }] }, user);
   assert.equal(created.length, 1);
   assert.match(created[0].movementNo, /^MC-/);
   assert.equal(created[0].documentType, "replenishment");
-  assert.equal(created[0].productionOrderOperationId, "operation-1");
   assert.equal(created[0].reason, "伞布原始坏片", "原因需去空格后保存");
   assert.equal(created[0].lines.create[0].quantity, "8");
 });

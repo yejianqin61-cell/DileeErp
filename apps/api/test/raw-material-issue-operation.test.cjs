@@ -82,11 +82,10 @@ test("已过账的领料单不可编辑", async () => {
   await assert.rejects(() => service.updateIssue("movement-1", { lines: [{ material_id: "material-1", quantity: "7" }] }, user), (error) => error.getResponse().code === "MATERIAL_MOVEMENT_NOT_EDITABLE");
 });
 
-// 补料单仍保留工序要求（这次只解绑领料单）。
-test("补料单仍然必须选择工序", async () => {
-  const { service } = harness();
-  await assert.rejects(
-    () => service.createReplenishment({ production_order_id: "order-1", reason: "伞布坏片", lines: [{ material_id: "material-1", quantity: "2" }] }, user),
-    (error) => error.getResponse().code === "MATERIAL_ISSUE_OPERATION_REQUIRED"
-  );
+// 领料单与补料单都只绑定生产单（本次业务变更）。
+test("补料单同样只需要生产单，不再要求工序", async () => {
+  const { service, created } = harness();
+  await service.createReplenishment({ production_order_id: "order-1", reason: "伞布坏片", lines: [{ material_id: "material-1", quantity: "2" }] }, user);
+  assert.equal(created.length, 1, "没有工序也必须能建补料单");
+  assert.equal(created[0].productionOrderOperationId, undefined);
 });

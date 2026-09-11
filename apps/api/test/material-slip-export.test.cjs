@@ -28,7 +28,7 @@ function issueFixture(overrides = {}) {
       salesOrder: { productName: "自动雨伞", productSpec: "22寸" },
       bom: { items: [{ materialId: "material-1", approvedUsage: new Prisma.Decimal("5"), requiredQuantity: new Prisma.Decimal("6"), specificationModel: "58cm", model: null, color: "黑色" }] }
     },
-    productionOrderOperation: { operationNameSnapshot: "裁剪" },
+    productionOrderOperation: null,
     lines: [
       { materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("2"), bomReferenceQuantity: new Prisma.Decimal("6"), material: { name: "伞骨", materialCode: "M-001", specificationModel: "58cm", color: "黑色" }, unit: { name: "根" } },
       { materialId: "material-2", unitId: "unit-2", quantity: new Prisma.Decimal("3"), bomReferenceQuantity: null, material: { name: "手柄", materialCode: "M-002", specificationModel: null, color: null }, unit: { name: "个" } }
@@ -77,7 +77,7 @@ test("领料单导出包含模板要求的表头字段与明细列", async () =>
   assert.equal(sheet.getCell("A4").value, "颜色：");
   assert.equal(sheet.getCell("B4").value, "", "系统无成品颜色，按确认口径留空");
   assert.equal(sheet.getCell("D4").value, "MI-20260910-ABCD1234");
-  assert.equal(sheet.getCell("F4").value, "裁剪", "领料工序取工序名称快照");
+  assert.equal(sheet.getCell("F4").value, "", "领料单不再绑定工序，该栏按模板保留但为空");
   assert.equal(sheet.getCell("H4").value, "一车间", "领料单位取执行地点");
   assert.equal(sheet.getCell("B5").value, "100 把");
   assert.equal(sheet.getCell("D5").value, "张三");
@@ -157,7 +157,7 @@ function replenishmentFixture(overrides = {}) {
       salesOrder: { productName: "自动雨伞", productSpec: "22寸" },
       bom: { items: [{ materialId: "material-1", approvedUsage: new Prisma.Decimal("2500"), requiredQuantity: new Prisma.Decimal("2500"), specificationModel: "EVA", model: null, color: "透明" }] }
     },
-    productionOrderOperation: { operationNameSnapshot: "裁剪" },
+    productionOrderOperation: null,
     lines: [
       { materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("12"), bomReferenceQuantity: new Prisma.Decimal("2500"), material: { name: "伞布", materialCode: "M-002", specificationModel: null, color: null }, unit: { name: "米" } }
     ],
@@ -192,7 +192,7 @@ test("补料单导出：标题、表头字段顺序、补料原因与 8 列明�
   assert.equal(sheet.getCell("E6").value, "领料单位：");
   assert.equal(sheet.getCell("F6").value, "一车间");
   assert.equal(sheet.getCell("G6").value, "领料工序：");
-  assert.equal(sheet.getCell("H6").value, "裁剪");
+  assert.equal(sheet.getCell("H6").value, "", "单据不再绑定工序，该栏按模板保留但为空");
   // 表头第 3 行：操作人/操作时间 + 补料原因（模板空出的第 4 格）
   assert.equal(sheet.getCell("A7").value, "操作人：");
   assert.equal(sheet.getCell("B7").value, "张三");
@@ -279,7 +279,7 @@ function makeMovement(id, movementNo, materialName, materialCode, quantity) {
       salesOrder: { productName: "自动雨伞", productSpec: "22寸" },
       bom: { items: [{ materialId: `${id}-material`, approvedUsage: new Prisma.Decimal("10"), requiredQuantity: new Prisma.Decimal("10"), specificationModel: "58cm", model: null, color: "黑色" }] }
     },
-    productionOrderOperation: { operationNameSnapshot: "裁剪" },
+    productionOrderOperation: null,
     lines: [{ materialId: `${id}-material`, unitId: "unit-1", quantity: new Prisma.Decimal(quantity), bomReferenceQuantity: new Prisma.Decimal("10"), material: { name: materialName, materialCode, specificationModel: "58cm", color: "黑色" }, unit: { name: "根" } }]
   };
 }

@@ -1,9 +1,9 @@
 "use client";
 
-// 生产模块 - 领料单（按工序）
+// 生产模块 - 领料单 / 补料单
 //
-// 层级：订单号 → 生产单 → 工序 → 领料单。领料单必须归属到一个工序，
-// 因此页面把四层都作为列展示，并支持两种导出：
+// 层级：订单号 → 生产单 → 单据。领料单与补料单都只绑定生产单（领料单一个生产单可有多张），
+// 因此页面把三层作为列展示，并支持两种导出：
 //   单张：每行「导出领料单」→ 一个工作表，与用户给定的模板一致；
 //   批量：按当前筛选一次导出多张 → 每张领料单一个工作表。
 // 导出接口与现有生产导出一致，仅管理员可用（非管理员会收到后端 403 提示）。
@@ -39,7 +39,7 @@ type Issue = {
 type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; operations?: Array<{ id: string; operationNameSnapshot: string; status: string }> };
 
 const statusLabels: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
-// 领料单与补料单同属“生产单-工序”之下的原料出库单据，版式不同但层级一致。
+// 领料单与补料单都是挂在生产单下的原料出库单据，版式不同但层级一致。
 const typeLabels: Record<string, string> = { issue: "领料单", replenishment: "补料单", return: "退料单", scrap: "报废单", reversal: "冲销单" };
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
@@ -48,7 +48,6 @@ export default function MaterialIssuesPage() {
   const [orders, setOrders] = useState<ProductionOrder[]>([]);
   const [orderNo, setOrderNo] = useState("");
   const [productionOrderId, setProductionOrderId] = useState("all");
-  const [operationId, setOperationId] = useState("all");
   const [status, setStatus] = useState("all");
   const [documentType, setDocumentType] = useState("all");
   const [from, setFrom] = useState("");
@@ -71,19 +70,17 @@ export default function MaterialIssuesPage() {
   }
   useEffect(() => { void load(); }, []);
 
-  const operationsOf = (id: string) => (orders.find((item) => item.id === id)?.operations ?? []).filter((operation) => operation.status !== "cancelled");
   const visible = useMemo(() => issues.filter((item) => {
     if (orderNo && !item.orderNo.toLowerCase().includes(orderNo.toLowerCase())) return false;
     if (productionOrderId !== "all" && item.productionOrderId !== productionOrderId) return false;
-    if (operationId !== "all" && item.productionOrderOperationId !== operationId) return false;
     if (status !== "all" && item.status !== status) return false;
     if (documentType !== "all" && item.documentType !== documentType) return false;
     const businessDate = (item.businessDate ?? item.createdAt ?? "").slice(0, 10);
     if (from && businessDate < from) return false;
     if (to && businessDate > to) return false;
     return true;
-  }).sort((left, right) => `${left.orderNo}|${left.productionOrder?.productionOrderNo ?? ""}|${left.productionOrderOperation?.operationNameSnapshot ?? ""}|${left.createdAt}`
-    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.productionOrderOperation?.operationNameSnapshot ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, operationId, status, documentType, from, to]);
+  }).sort((left, right) => `${left.orderNo}|${left.productionOrder?.productionOrderNo ?? ""}|${left.createdAt}`
+    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, status, documentType, from, to]);
 
   // 导出参数与页面筛选完全一致，避免"看到的"和"导出的"不是同一批。
   function exportQuery() {
@@ -91,7 +88,6 @@ export default function MaterialIssuesPage() {
     if (documentType !== "all") params.set("document_type", documentType);
     if (orderNo) params.set("order_no", orderNo);
     if (productionOrderId !== "all") params.set("production_order_id", productionOrderId);
-    if (operationId !== "all") params.set("production_order_operation_id", operationId);
     if (status !== "all") params.set("status", status);
     if (from) params.set("from", from);
     if (to) params.set("to", to);
@@ -116,7 +112,6 @@ export default function MaterialIssuesPage() {
   const columns: ColumnDef<Issue>[] = [
     { accessorKey: "orderNo", header: "订单号" },
     { id: "productionOrder", header: "生产单号", cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
-    { id: "operation", header: "工序", cell: ({ row }) => row.original.documentType === "replenishment" ? (row.original.productionOrderOperation?.operationNameSnapshot ?? <span className="status-warning">未指定工序</span>) : "-" },
     { id: "documentType", header: "类型", cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
     { accessorKey: "movementNo", header: "单据号" },
     { id: "status", header: "状态", cell: ({ row }) => statusLabels[row.original.status] ?? row.original.status },
@@ -129,7 +124,7 @@ export default function MaterialIssuesPage() {
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
 
   return <>
-    <PageHeader title="领料单 / 补料单" description="领料单只绑定生产单（一个生产单可有多张），补料单绑定到生产单的工序；两者各自套用对应打印模板（仅管理员可导出）。">
+    <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单），各自套用对应打印模板（仅管理员可导出）。">
       <Button asChild variant="secondary"><Link href="/production">返回生产单</Link></Button>
       <Button onClick={() => void exportAll()} disabled={busy === "all" || !visible.length}>{busy === "all" ? "导出中..." : `批量导出（${visible.length} 张）`}</Button>
     </PageHeader>
@@ -138,8 +133,7 @@ export default function MaterialIssuesPage() {
       <div className="panel-heading"><h2>筛选</h2></div>
       <div className="panel-body"><div className="filter-bar">
         <label>订单号<Input value={orderNo} onChange={(event) => setOrderNo(event.target.value)} placeholder="输入订单号" /></label>
-        <label>生产单<Select value={productionOrderId} onValueChange={(value) => { setProductionOrderId(value); setOperationId("all"); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部生产单</SelectItem>{orders.map((order) => <SelectItem key={order.id} value={order.id}>{order.productionOrderNo} / {order.orderNo}</SelectItem>)}</SelectContent></Select></label>
-        <label>工序<Select value={operationId} onValueChange={setOperationId} disabled={productionOrderId === "all"}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部工序</SelectItem>{operationsOf(productionOrderId).map((operation) => <SelectItem key={operation.id} value={operation.id}>{operation.operationNameSnapshot}</SelectItem>)}</SelectContent></Select></label>
+        <label>生产单<Select value={productionOrderId} onValueChange={setProductionOrderId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部生产单</SelectItem>{orders.map((order) => <SelectItem key={order.id} value={order.id}>{order.productionOrderNo} / {order.orderNo}</SelectItem>)}</SelectContent></Select></label>
         <label>类型<Select value={documentType} onValueChange={setDocumentType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem><SelectItem value="issue">领料单</SelectItem><SelectItem value="replenishment">补料单</SelectItem></SelectContent></Select></label>
         <label>状态<Select value={status} onValueChange={setStatus}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="posted">已过账</SelectItem></SelectContent></Select></label>
         <label>起始日期<Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
@@ -147,8 +141,8 @@ export default function MaterialIssuesPage() {
       </div></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>领料单 / 补料单（按工序）</h2><span className="panel-note">共 {visible.length} 张</span></div>
-      <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="领料单在【仓库 → 原料出库（生产领料）】创建，补料单在【仓库 → 补料出库】创建；两者都必须选择工序。" />} /></div>
+      <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张</span></div>
+      <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="领料单在【仓库 → 原料出库（生产领料）】创建，补料单在【仓库 → 补料出库】创建；两者都只需要选择生产单。" />} /></div>
     </section>
   </>;
 }

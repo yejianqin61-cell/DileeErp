@@ -7,10 +7,11 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { InventoryService } from "../../platform/inventory/inventory.service";
 
 type IssueLineInput = { material_id: string; quantity: string; remark?: string };
-// 领料单：只绑定生产单（一个生产单可有多张领料单），不需要工序。
-// 补料单：因坏片/生产失误等需要补充领料，仍挂在“生产单-工序”之下并参与原料出库。
+// 领料单与补料单都只绑定生产单，不再绑定工序。
+// 领料单：一个生产单可有多张（按需分批领料）。
+// 补料单：坏片/生产失误等的补充领料，同样参与原料出库。
 type IssueInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: IssueLineInput[] };
-type ReplenishmentInput = { production_order_id: string; production_order_operation_id?: string; business_date?: string; reason?: string; remark?: string; lines: IssueLineInput[] };
+type ReplenishmentInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: IssueLineInput[] };
 type DerivedLineInput = { source_issue_line_id: string; quantity: string; remark?: string };
 type DerivedInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: DerivedLineInput[] };
 
@@ -82,11 +83,10 @@ export class RawMaterialMovementsService {
 
   /**
    * 补料单：坏片/生产失误导致的补充领料。
-   * 与领料单同样归属“生产单-工序”，同样写入原料出库库存事实（sourceType=material_replenishment）。
+   * 与领料单一样只绑定生产单，同样写入原料出库库存事实（sourceType=material_replenishment）。
    */
   async createReplenishment(input: ReplenishmentInput, user: CurrentUser) {
     const order = await this.requireInHouseOrder(input.production_order_id);
-    const operation = await this.requireOperation(order.id, input.production_order_operation_id);
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "REPLENISHMENT_REASON_REQUIRED", message: "补料必须填写补料原因", details: [] });
     const preview = await this.previewLines(order, input.lines);
     const movement = await this.prisma.rawMaterialMovement.create({
@@ -94,7 +94,6 @@ export class RawMaterialMovementsService {
         movementNo: `MC-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`,
         documentType: "replenishment",
         productionOrderId: order.id,
-        productionOrderOperationId: operation.id,
         orderNo: order.orderNo,
         businessDate: input.business_date ? new Date(input.business_date) : new Date(),
         reason: input.reason.trim(),
@@ -105,7 +104,7 @@ export class RawMaterialMovementsService {
       },
       include: { lines: true }
     });
-    await this.audit.record("raw_material_movement.create", "raw_material_movement", user.id, movement.id, { order_no: order.orderNo, production_order_id: order.id, operation_id: operation.id, document_type: "replenishment", reason: input.reason.trim() });
+    await this.audit.record("raw_material_movement.create", "raw_material_movement", user.id, movement.id, { order_no: order.orderNo, production_order_id: order.id, document_type: "replenishment", reason: input.reason.trim() });
     return movement;
   }
 
@@ -263,15 +262,12 @@ export class RawMaterialMovementsService {
   private async createDerived(documentType: "return" | "scrap", input: DerivedInput, user: CurrentUser) {
     const order = await this.requireInHouseOrder(input.production_order_id);
     const lines = await this.derivedLines(order.id, input.lines);
-    // 退料/报废继承来源领料单的工序，保证反向下游同样能挂到层级上。
-    const sourceLine = await this.prisma.rawMaterialMovementLine.findFirst({ where: { id: lines[0].sourceIssueLineId ?? undefined, deletedAt: null }, include: { movement: { select: { productionOrderOperationId: true } } } });
     const prefix = documentType === "return" ? "MR" : "MS";
     const movement = await this.prisma.rawMaterialMovement.create({
       data: {
         movementNo: `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`,
         documentType,
         productionOrderId: order.id,
-        productionOrderOperationId: sourceLine?.movement.productionOrderOperationId ?? null,
         orderNo: order.orderNo,
         businessDate: input.business_date ? new Date(input.business_date) : new Date(),
         reason: input.reason,
@@ -315,18 +311,6 @@ export class RawMaterialMovementsService {
       if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "UNIQUE_VALUE_CONFLICT", message: "单据号或幂等键冲突，请检查后重试", details: [] });
       throw error;
     }
-  }
-
-  /**
-   * 领料单必须归属到本生产单下未取消的工序。
-   * 历史数据允许为空，但新建/修改时必须给出，否则无法支撑“订单号-生产单-工序-领料表”的层级。
-   */
-  private async requireOperation(productionOrderId: string, operationId: string | undefined, client: PrismaService | Prisma.TransactionClient = this.prisma) {
-    if (!operationId?.trim()) throw new UnprocessableEntityException({ code: "MATERIAL_ISSUE_OPERATION_REQUIRED", message: "领料单必须选择工序", details: [] });
-    const operation = await client.productionOrderOperation.findFirst({ where: { id: operationId, productionOrderId, deletedAt: null } });
-    if (!operation) throw new NotFoundException({ code: "PRODUCTION_OPERATION_NOT_FOUND", message: "工序不存在或不属于该生产单", details: [{ production_order_id: productionOrderId, operation_id: operationId }] });
-    if (operation.status === "cancelled") throw new UnprocessableEntityException({ code: "PRODUCTION_OPERATION_CANCELLED", message: "已取消的工序不能领料", details: [{ operation_id: operation.id }] });
-    return operation;
   }
 
   private async derivedLines(productionOrderId: string, lines: DerivedLineInput[], client: PrismaService | Prisma.TransactionClient = this.prisma) {
