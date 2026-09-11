@@ -13,6 +13,8 @@ import { RawMaterialInboundNoticesController } from "./raw-material-inbound-noti
 import { RawMaterialInboundNoticesService } from "./raw-material-inbound-notices.service";
 import { BomsController } from "../sales/boms.controller";
 import { BomsService } from "../sales/boms.service";
+import { PurchaseOrderExportController } from "./purchase-order-export.controller";
+import { PurchaseOrderExportService } from "./purchase-order-export.service";
 
-@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, MasterDataReadController, PurchaseOrdersController, IncomingInspectionsController, RawMaterialInboundsController, RawMaterialInboundNoticesController, BomsController], providers: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService], exports: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService] })
+@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, MasterDataReadController, PurchaseOrdersController, IncomingInspectionsController, RawMaterialInboundsController, RawMaterialInboundNoticesController, BomsController, PurchaseOrderExportController], providers: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService, PurchaseOrderExportService], exports: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService, PurchaseOrderExportService] })
 export class ProcurementModule {}
