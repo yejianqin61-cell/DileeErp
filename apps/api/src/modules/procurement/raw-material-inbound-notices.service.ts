@@ -65,6 +65,9 @@ export class RawMaterialInboundNoticesService {
           notifiedQuantity: accepted.minus(used),
           status: "pending",
           notifiedBy: user.id,
+          // notifiedAt 必须在这里写入：仓库待入库通知要按通知时间排序和展示，
+          // 之前只在 receive 时记录 receiveAt，通知时间一直是空。
+          notifiedAt: new Date(),
           remark: remark?.trim() || undefined,
           createdBy: user.id,
           updatedBy: user.id
