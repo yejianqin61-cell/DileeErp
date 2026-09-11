@@ -7,9 +7,9 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { InventoryService } from "../../platform/inventory/inventory.service";
 
 type IssueLineInput = { material_id: string; quantity: string; remark?: string };
-type IssueInput = { production_order_id: string; production_order_operation_id?: string; business_date?: string; reason?: string; remark?: string; lines: IssueLineInput[] };
-// 补料单：因坏片/生产失误等需要补充领料，同样挂在“生产单-工序”之下并参与原料出库。
-// 与领料单的区别是必须说明补料原因，且不要求与某张原领料单关联（单号独立编号 MC-）。
+// 领料单：只绑定生产单（一个生产单可有多张领料单），不需要工序。
+// 补料单：因坏片/生产失误等需要补充领料，仍挂在“生产单-工序”之下并参与原料出库。
+type IssueInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: IssueLineInput[] };
 type ReplenishmentInput = { production_order_id: string; production_order_operation_id?: string; business_date?: string; reason?: string; remark?: string; lines: IssueLineInput[] };
 type DerivedLineInput = { source_issue_line_id: string; quantity: string; remark?: string };
 type DerivedInput = { production_order_id: string; business_date?: string; reason?: string; remark?: string; lines: DerivedLineInput[] };
@@ -56,15 +56,13 @@ export class RawMaterialMovementsService {
 
   async createIssue(input: IssueInput, user: CurrentUser) {
     const order = await this.requireInHouseOrder(input.production_order_id);
-    // 层级：订单号 - 生产单 - 工序 - 领料表。新建领料单必须落到具体工序（历史数据可空）。
-    const operation = await this.requireOperation(order.id, input.production_order_operation_id);
+    // 领料单只绑定生产单，不再绑定工序；同一个生产单可以开多张领料单（按需分批领料）。
     const preview = await this.previewLines(order, input.lines);
     const movement = await this.prisma.rawMaterialMovement.create({
       data: {
         movementNo: `MI-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`,
         documentType: "issue",
         productionOrderId: order.id,
-        productionOrderOperationId: operation.id,
         orderNo: order.orderNo,
         businessDate: input.business_date ? new Date(input.business_date) : new Date(),
         reason: input.reason,
@@ -115,7 +113,6 @@ export class RawMaterialMovementsService {
     const movement = await this.get(id);
     if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "MATERIAL_MOVEMENT_NOT_EDITABLE", message: "只有草稿领料单可以编辑", details: [] });
     const order = await this.requireInHouseOrder(movement.productionOrderId);
-    const operation = input.production_order_operation_id === undefined ? null : await this.requireOperation(order.id, input.production_order_operation_id);
     const preview = input.lines ? await this.previewLines(order, input.lines) : null;
     const updated = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM raw_material_movements WHERE id = ${id}::uuid FOR UPDATE`;
@@ -128,7 +125,6 @@ export class RawMaterialMovementsService {
         where: { id },
         data: {
           ...(input.business_date === undefined ? {} : { businessDate: new Date(input.business_date) }),
-          ...(operation ? { productionOrderOperationId: operation.id } : {}),
           ...(input.reason === undefined ? {} : { reason: input.reason }),
           ...(input.remark === undefined ? {} : { remark: input.remark }),
           ...(preview ? { lines: { create: preview.lines.map((line) => ({ materialId: line.material_id, unitId: line.unit_id, quantity: line.quantity, bomReferenceQuantity: line.bom_reference_quantity, remark: line.remark, ...this.audit.create(user) })) } } : {}),

@@ -9,13 +9,13 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { RawMaterialMovementsService } from "./raw-material-movements.service";
 
 class IssueLineDto { @IsUUID() material_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class IssueDto { @IsUUID() production_order_id!: string; // 层级：订单号-生产单-工序-领料表；新建时必填（由服务层校验）。
-  @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
+class IssueDto { @IsUUID() production_order_id!: string; // 领料单只绑定生产单（一个生产单可有多张领料单），不再需要工序。
+  @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
 class DerivedLineDto { @IsUUID() source_issue_line_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 // 补料单：与领料单同一套明细结构，但必须填写补料原因（坏片/生产失误等）。
 class ReplenishmentDto { @IsUUID() production_order_id!: string; @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsString() @MaxLength(1000) reason!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines!: IssueLineDto[]; }
 class DerivedDto { @IsUUID() production_order_id!: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => DerivedLineDto) lines!: DerivedLineDto[]; }
-class UpdateIssueDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsUUID() production_order_operation_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines?: IssueLineDto[]; }
+class UpdateIssueDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsDateString() business_date?: string; @IsOptional() @IsString() @MaxLength(1000) reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => IssueLineDto) lines?: IssueLineDto[]; }
 class PostDto { @IsString() @MaxLength(200) idempotency_key!: string; }
 class ReverseDto extends PostDto { @IsString() @MaxLength(1000) reason!: string; }
 

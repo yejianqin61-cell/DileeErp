@@ -116,7 +116,7 @@ export default function MaterialIssuesPage() {
   const columns: ColumnDef<Issue>[] = [
     { accessorKey: "orderNo", header: "订单号" },
     { id: "productionOrder", header: "生产单号", cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
-    { id: "operation", header: "工序", cell: ({ row }) => row.original.productionOrderOperation?.operationNameSnapshot ?? <span className="status-warning">未指定工序</span> },
+    { id: "operation", header: "工序", cell: ({ row }) => row.original.documentType === "replenishment" ? (row.original.productionOrderOperation?.operationNameSnapshot ?? <span className="status-warning">未指定工序</span>) : "-" },
     { id: "documentType", header: "类型", cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
     { accessorKey: "movementNo", header: "单据号" },
     { id: "status", header: "状态", cell: ({ row }) => statusLabels[row.original.status] ?? row.original.status },
@@ -129,7 +129,7 @@ export default function MaterialIssuesPage() {
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
 
   return <>
-    <PageHeader title="领料单 / 补料单" description="层级：订单号 → 生产单 → 工序 → 单据。领料单与补料单各自套用对应打印模板（仅管理员可导出）。">
+    <PageHeader title="领料单 / 补料单" description="领料单只绑定生产单（一个生产单可有多张），补料单绑定到生产单的工序；两者各自套用对应打印模板（仅管理员可导出）。">
       <Button asChild variant="secondary"><Link href="/production">返回生产单</Link></Button>
       <Button onClick={() => void exportAll()} disabled={busy === "all" || !visible.length}>{busy === "all" ? "导出中..." : `批量导出（${visible.length} 张）`}</Button>
     </PageHeader>
