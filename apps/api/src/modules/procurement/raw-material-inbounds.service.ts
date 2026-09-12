@@ -242,7 +242,9 @@ export class RawMaterialInboundsService {
         rawMaterialInbound: { select: { inboundNo: true, purchaseReceiptId: true, status: true } },
         purchaseReceipt: { select: { receiptNo: true, extensionData: true } },
         purchaseOrder: { select: { purchaseOrderNo: true } },
-        purchaseOrderItem: { select: { materialId: true, unitId: true } },
+        // 财务列表要能看出这是哪个原料：只给 materialId 用户根本不知道是什么东西。
+        // materialSnapshot 用于物料主数据被软删除后的兜底显示。
+        purchaseOrderItem: { select: { materialId: true, unitId: true, materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } },
         supplier: { select: { id: true, name: true, supplierCode: true } }
       },
       orderBy: { createdAt: "desc" }
@@ -251,6 +253,11 @@ export class RawMaterialInboundsService {
       ...row,
       purchase_order_no: row.purchaseOrder?.purchaseOrderNo ?? null,
       batch_sequence: Number((row.purchaseReceipt?.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1),
+      material_name: row.purchaseOrderItem?.material?.name ?? (row.purchaseOrderItem?.materialSnapshot as { name?: string } | null)?.name ?? null,
+      material_code: row.purchaseOrderItem?.material?.materialCode ?? null,
+      material_specification: row.purchaseOrderItem?.material?.specificationModel ?? null,
+      material_color: row.purchaseOrderItem?.material?.color ?? null,
+      unit_name: row.purchaseOrderItem?.unit?.name ?? null,
     }));
   }
 
