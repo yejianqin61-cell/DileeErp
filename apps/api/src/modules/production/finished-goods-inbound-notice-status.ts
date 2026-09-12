@@ -17,8 +17,10 @@ export async function syncFinishedGoodsInboundNoticeStatus(tx: Prisma.Transactio
   if (!noticeId) return null;
   const notice = await tx.finishedGoodsInboundNotice.findFirst({ where: { id: noticeId, deletedAt: null }, select: { id: true, status: true, noticeQuantity: true } });
   if (!notice || notice.status === "cancelled") return null;
-  const submissions = await tx.finishedGoodsInspectionSubmission.findMany({ where: { sourceType: "finished_goods_inbound_notice", sourceId: noticeId, deletedAt: null, status: { notIn: ["cancelled", "corrected"] } }, select: { id: true, submittedQuantity: true } });
-  const submitted = submissions.reduce((sum, row) => sum.plus(row.submittedQuantity), new Prisma.Decimal(0));
+  const submissions = await tx.finishedGoodsInspectionSubmission.findMany({ where: { sourceType: "finished_goods_inbound_notice", sourceId: noticeId, deletedAt: null, status: { notIn: ["cancelled", "corrected"] } }, select: { id: true, submittedQuantity: true, status: true } });
+  // 只有真正提交过的送检才算「已送检」：草稿送检占额度但还没进入质检流程，
+  // 若把它算作完成，仓库那边一建草稿通知就变「已完成」并从未入库列表里消失。
+  const submitted = submissions.filter((row) => row.status !== "draft").reduce((sum, row) => sum.plus(row.submittedQuantity), new Prisma.Decimal(0));
   const submissionIds = submissions.map((row) => row.id);
   const draft = submissionIds.length ? await tx.finishedGoodsInbound.aggregate({ where: { submissionId: { in: submissionIds }, deletedAt: null, status: "draft" }, _sum: { quantity: true } }) : { _sum: { quantity: null } };
   const draftQuantity = new Prisma.Decimal(draft._sum.quantity ?? 0);

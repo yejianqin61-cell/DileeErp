@@ -29,8 +29,10 @@ function buildClient(state = {}) {
   const submissions = state.submissions ?? [];
   const qcRecords = state.qcRecords ?? [];
   const inbounds = state.inbounds ?? [];
+  const defectives = state.defectives ?? [];
   const facts = state.facts ?? [];
   const operationReports = state.operationReports ?? [{ productionOrderOperationId: "op-2", completedQuantity: new Prisma.Decimal("60"), deletedAt: null }];
+  const employeeReports = state.employeeReports ?? [];
   const client = {
     notices, submissions, qcRecords, inbounds, facts,
     /** 记录加锁顺序，用于验证“先锁生产单、再锁通知”的并发口径。 */
@@ -39,6 +41,19 @@ function buildClient(state = {}) {
     productionOrder: { findFirst: async () => state.order ?? order(), findMany: async () => [state.order ?? order()] },
     salesOrder: { findFirst: async () => ({ productName: "蓝色折叠伞" }) },
     operationDailyReport: { aggregate: async ({ where }) => ({ _sum: { completedQuantity: operationReports.filter((row) => row.productionOrderOperationId === where.productionOrderOperationId && !row.deletedAt).reduce((sum, row) => sum.plus(row.completedQuantity), new Prisma.Decimal(0)) } }) },
+    employeeDailyReport: { aggregate: async ({ where }) => ({ _sum: { quantity: employeeReports.filter((row) => row.productionOrderOperationId === where.productionOrderOperationId && !row.deletedAt).reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)) } }) },
+    finishedGoodsDefective: {
+      findMany: async ({ where }) => defectives.filter((row) => !row.deletedAt && where.submissionId.in.includes(row.submissionId) && where.status.in.includes(row.status)),
+      aggregate: async ({ where }) => ({ _sum: { quantity: defectives.filter((row) => !row.deletedAt && row.status === where.status && where.submissionId.in.includes(row.submissionId)).reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)) } }),
+      groupBy: async ({ where }) => {
+        const ids = where.qcRecordId.in;
+        const grouped = new Map();
+        for (const row of defectives.filter((item) => !item.deletedAt && ids.includes(item.qcRecordId) && where.status.in.includes(item.status))) {
+          grouped.set(row.qcRecordId, (grouped.get(row.qcRecordId) ?? new Prisma.Decimal(0)).plus(row.quantity));
+        }
+        return [...grouped.entries()].map(([qcRecordId, quantity]) => ({ qcRecordId, _sum: { quantity } }));
+      },
+    },
     inventoryFact: { findMany: async ({ where }) => facts.filter((fact) => !where?.inventoryCategory || fact.inventoryCategory === where.inventoryCategory || (where.inventoryCategory?.in && where.inventoryCategory.in.includes(fact.inventoryCategory))) },
     finishedGoodsInboundNotice: {
       findMany: async ({ where }) => notices.filter((row) => !row.deletedAt && (!where?.productionOrderId || row.productionOrderId === where.productionOrderId) && (!where?.status || (where.status.not ? row.status !== where.status.not : row.status === where.status)) && (!where?.id?.in || where.id.in.includes(row.id))),
@@ -81,6 +96,21 @@ function buildService(state = {}) {
 }
 
 const noticeInput = (overrides = {}) => ({ production_order_id: "order-1", notice_quantity: "20", notice_date: "2026-09-10", batch_no: "B1", ...overrides });
+
+test("包装工序累计报工量取 max(工序日报, 员工日报)：员工日报是唯一有 UI 入口的报工路径", async () => {
+  // 只有员工日报（当前 UI 唯一入口）：可通知量必须按员工日报累计量算，否则功能永远发不出通知。
+  const employeeOnly = buildService({ operationReports: [], employeeReports: [{ productionOrderOperationId: "op-2", quantity: new Prisma.Decimal("60"), deletedAt: null }] });
+  const summary = await employeeOnly.service.orderSummary("order-1");
+  assert.equal(summary.packaging_reported_quantity, "60", "只有员工日报时也必须能算出包装完工量");
+  assert.equal(summary.available_notice_quantity, "60");
+  const created = await employeeOnly.service.create(noticeInput({ notice_quantity: "10" }), { id: "user-1" });
+  assert.equal(created.noticeQuantity.toString(), "10");
+
+  // 两个录入面都填：取较大者，不能相加（避免双重计数）。
+  const both = buildService({ operationReports: [{ productionOrderOperationId: "op-2", completedQuantity: new Prisma.Decimal("40"), deletedAt: null }], employeeReports: [{ productionOrderOperationId: "op-2", quantity: new Prisma.Decimal("45"), deletedAt: null }] });
+  const bothSummary = await both.service.orderSummary("order-1");
+  assert.equal(bothSummary.packaging_reported_quantity, "45", "取 max(40,45) 而不是 85");
+});
 
 test("包装工序累计报工量是可通知上限：超过则 422 并给出可用量", async () => {
   const { service } = buildService();
@@ -226,15 +256,18 @@ test("旧的 in_house_completion 来源不再接受新建送检单", async () =>
 });
 
 test("质检合格待入库的“可入库数量”必须是净值（扣掉草稿+已过账入库）", async () => {
-  const qcRecords = [{ id: "qc-1", submissionId: "sub-1", qualifiedQuantity: new Prisma.Decimal("30"), conditionalAcceptQuantity: new Prisma.Decimal("0"), rejectedQuantity: new Prisma.Decimal("0"), status: "active", deletedAt: null, submission: { unitId: "unit-1", unitNameSnapshot: "个", unit: { name: "个" } } }];
+  const qcRecords = [{ id: "qc-1", submissionId: "sub-1", qualifiedQuantity: new Prisma.Decimal("30"), conditionalAcceptQuantity: new Prisma.Decimal("0"), rejectedQuantity: new Prisma.Decimal("4"), status: "active", deletedAt: null, submission: { unitId: "unit-1", unitNameSnapshot: "个", unit: { name: "个" } } }];
   const inbounds = [
     { id: "in-1", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("20"), status: "posted", deletedAt: null },
     { id: "in-2", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("5"), status: "draft", deletedAt: null },
   ];
-  const { service } = buildQc({ qcRecords, inbounds, submissions: [{ id: "sub-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-1", submittedQuantity: new Prisma.Decimal("30"), status: "qc_completed", deletedAt: null }], notices: [] });
+  const defectives = [{ id: "def-1", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("1"), status: "posted", deletedAt: null }];
+  const { service } = buildQc({ qcRecords, inbounds, defectives, submissions: [{ id: "sub-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-1", submittedQuantity: new Prisma.Decimal("30"), status: "qc_completed", deletedAt: null }], notices: [] });
   const sources = await service.availableInboundSources();
   assert.equal(sources.length, 1);
   assert.equal(sources[0].available_for_inbound_quantity, "5", "30 合格 − 20 已过账 − 5 在途 = 5");
+  assert.equal(sources[0].rejected_quantity, "4");
+  assert.equal(sources[0].available_for_defective_quantity, "3", "4 不合格 − 1 已登记次品 = 3");
 });
 
 test("qc-records 列表同样给出净值可入库量", async () => {
@@ -246,6 +279,18 @@ test("qc-records 列表同样给出净值可入库量", async () => {
 });
 
 // 入库过账要把来源通知推进到「已完成」：这是「分批入库」能被看见的关键一环。
+// 草稿送检只是占住额度，还没进入质检流程：不能因此把通知标成「已完成」，
+// 否则仓库那侧一建草稿，通知就从「待入库」列表里消失，而实际一步都没入库。
+test("只有草稿送检时通知状态是进行中，提交之后才可能完成", async () => {
+  const notices = [{ id: "notice-1", noticeNo: "FGN-1", orderNo: "SO-1", productionOrderId: "order-1", noticeQuantity: new Prisma.Decimal("20"), status: "pending", deletedAt: null }];
+  const submissions = [{ id: "sub-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-1", submittedQuantity: new Prisma.Decimal("20"), status: "draft", deletedAt: null }];
+  const client = buildClient({ notices, submissions });
+  const tx = { ...client };
+  assert.equal(await syncFinishedGoodsInboundNoticeStatus(tx, "notice-1", { id: "user-1" }), "partially_inbound", "草稿不算已送检");
+  submissions[0].status = "submitted";
+  assert.equal(await syncFinishedGoodsInboundNoticeStatus(tx, "notice-1", { id: "user-1" }), "completed", "真正提交且无在途入库才算完成");
+});
+
 test("成品入库过账后来源通知状态推进到已完成（分批入库闭环）", async () => {
   const { FinishedGoodsInventoryService } = require("../../dist/modules/warehouse/finished-goods-inventory.service.js");
   const notices = [{ id: "notice-1", noticeNo: "FGN-1", orderNo: "SO-1", productionOrderId: "order-1", noticeQuantity: new Prisma.Decimal("20"), status: "partially_inbound", deletedAt: null }];

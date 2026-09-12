@@ -33,17 +33,28 @@ export class ProductionOrdersService {
       if (existing) throw new ConflictException({ code: "PRODUCTION_ORDER_ALREADY_EXISTS", message: "该销售订单已存在未删除的主生产单，一个销售订单只允许一张主生产单", details: [{ production_order_id: existing.id, production_order_no: existing.productionOrderNo, status: existing.status }] });
       try {
         const order = await tx.productionOrder.create({ data: { productionOrderNo: number, orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom.id, bomVersion: refs.bom.version, bomSnapshot: this.snapshotBom(refs.bom) as Prisma.InputJsonValue, productionOrderType: type, parentProductionOrderId: input.parent_production_order_id, executionMode: input.execution_mode, executionLocationId: input.execution_location_id, plannedQuantity: input.planned_quantity, unitId: input.unit_id, productSpecification: input.product_specification, productionProcessNote: input.production_process_note, plannedStartedOn: input.planned_started_on ? new Date(input.planned_started_on) : undefined, deliveryDueOn: input.delivery_due_on ? new Date(input.delivery_due_on) : undefined, remark: input.remark, ...this.audit.create(user) } });
-        // 业务口径：包装工序是每个生产单的收尾工序，默认每个生产单都要有。
-        // 建单时若工序主数据里存在「包装」工序（按名称识别）就自动补为第一道，后续添加工序会排在其后；
-        // 主数据里没有包装工序时不阻断建单，由页面提示先建主数据或稍后补建。
-        await this.appendPackagingOperationIfMissing(tx, order, user);
-        return order;
+        // 业务口径：包装工序是每个生产单的收尾工序，默认每个生产单都要有（详见 appendPackagingOperationIfMissing）。
+        const packagingOperation = await this.appendPackagingOperationIfMissing(tx, order, user);
+        return { order, packagingOperation };
       } catch (error) {
-        if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "PRODUCTION_ORDER_ALREADY_EXISTS", message: "该销售订单已存在未删除的主生产单，一个销售订单只允许一张主生产单", details: [] });
+        // P2002 只可能是「同一销售订单的主生产单」唯一约束；其它唯一冲突（例如工序序号）
+        // 不能伪装成“该销售订单已存在主生产单”，否则会给出误导的 409。
+        if (error && typeof error === "object" && "code" in error && error.code === "P2002" && this.isStandardRootConflict(error)) throw new ConflictException({ code: "PRODUCTION_ORDER_ALREADY_EXISTS", message: "该销售订单已存在未删除的主生产单，一个销售订单只允许一张主生产单", details: [] });
         throw error;
       }
     });
-    await this.audit.record("production_order.create", "production_order", user.id, created.id, { order_no: created.orderNo, production_order_no: number, bom_version: refs.bom.version, planned_quantity: input.planned_quantity }); return this.get(created.id);
+    await this.audit.record("production_order.create", "production_order", user.id, created.order.id, { order_no: created.order.orderNo, production_order_no: number, bom_version: refs.bom.version, planned_quantity: input.planned_quantity });
+    // 审计写在事务之外（与既有 create/addOperation 一致）：事务回滚时不应留下“已补建工序”的审计。
+    if (created.packagingOperation) await this.audit.record("production_order.packaging_operation", "production_order_operation", user.id, created.packagingOperation.id, { order_no: created.order.orderNo, production_order_id: created.order.id, operation_catalog_id: created.packagingOperation.operationCatalogId, operation_name: created.packagingOperation.operationNameSnapshot, sequence_no: created.packagingOperation.sequenceNo, target_quantity: created.packagingOperation.targetQuantity.toString(), auto: true });
+    return this.get(created.order.id);
+  }
+
+  /** 判断 P2002 是否来自「同一销售订单只允许一张标准主生产单」这条唯一约束。 */
+  private isStandardRootConflict(error: object) {
+    const target = "meta" in error ? (error as { meta?: { target?: unknown } }).meta?.target : undefined;
+    const fields = Array.isArray(target) ? target.map(String) : typeof target === "string" ? [target] : [];
+    if (!fields.length) return true; // 无 target 信息时保持既有行为（仍按主生产单冲突提示）
+    return fields.some((field) => /sales_order_id_standard_root|salesOrderId|production_order_no/i.test(field));
   }
   /**
    * 补建/确认包装（收尾）工序：工序名称含「包装」即认定。
@@ -54,7 +65,7 @@ export class ProductionOrdersService {
   async ensurePackagingOperation(id: string, user: CurrentUser) {
     const existing = await this.get(id);
     const current = findPackagingOperation(existing.operations);
-    if (current) return { created: false, operation: current };
+    if (current) return { created: false, operation: this.packagingOperationView(current) };
     const catalog = await this.prisma.operationCatalog.findFirst({ where: { isActive: true, deletedAt: null, operationName: { contains: "包装" } }, orderBy: { operationCode: "asc" } });
     if (!catalog) throw new UnprocessableEntityException({ code: "PACKAGING_OPERATION_CATALOG_MISSING", message: "工序主数据里没有启用的「包装」工序，请先建立包装工序", details: [] });
     const result = await this.prisma.$transaction(async (tx) => {
@@ -63,23 +74,48 @@ export class ProductionOrdersService {
       if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
       if (["closed", "cancelled"].includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_OPERATION_NOT_ADDABLE", message: "已关闭或已取消的生产单不能再补建工序", details: [{ production_order_status: order.status }] });
       const found = findPackagingOperation(order.operations);
-      if (found) return { created: false, operation: found };
+      if (found) return { created: false, operation: this.packagingOperationView(found) };
       const sequenceNo = order.operations.reduce((max, item) => Math.max(max, item.sequenceNo), 0) + 1;
       const unitId = catalog.defaultUnitId ?? order.unitId;
       const operation = await tx.productionOrderOperation.create({ data: { productionOrderId: id, operationCatalogId: catalog.id, operationNameSnapshot: catalog.operationName, unitId, sequenceNo, targetQuantity: order.plannedQuantity, ...this.audit.create(user) } });
-      return { created: true, operation };
+      return { created: true, operation: this.packagingOperationView(operation) };
     });
-    if (result.created) await this.audit.record("production_order.packaging_operation", "production_order_operation", user.id, result.operation.id, { order_no: existing.orderNo, production_order_id: id, operation_catalog_id: catalog.id, operation_name: catalog.operationName, sequence_no: result.operation.sequenceNo, target_quantity: result.operation.targetQuantity.toString() });
+    if (result.created) await this.audit.record("production_order.packaging_operation", "production_order_operation", user.id, result.operation.id, { order_no: existing.orderNo, production_order_id: id, operation_catalog_id: catalog.id, operation_name: catalog.operationName, sequence_no: result.operation.sequence_no, target_quantity: result.operation.target_quantity });
     return result;
+  }
+
+  /** 统一补建接口的返回形状：新建（Prisma 行）与幂等命中（get() 带 include 的行）字段名不同，这里归一化。 */
+  private packagingOperationView(operation: { id: string; operationNameSnapshot?: string; name?: string; sequenceNo: number; targetQuantity: Prisma.Decimal; status?: string }) {
+    return { id: operation.id, name: operation.operationNameSnapshot ?? operation.name ?? "", sequence_no: operation.sequenceNo, target_quantity: operation.targetQuantity.toString(), status: operation.status ?? "active" };
   }
 
   /** 建单时自动补包装工序：仅在工序主数据存在「包装」工序时追加，失败不阻断建单。 */
   private async appendPackagingOperationIfMissing(tx: Prisma.TransactionClient, order: { id: string; unitId: string; plannedQuantity: Prisma.Decimal }, user: CurrentUser) {
-    const catalog = await tx.operationCatalog.findFirst({ where: { isActive: true, deletedAt: null, operationName: { contains: "包装" } }, orderBy: { operationCode: "asc" } });
-    if (!catalog || !isPackagingOperationName(catalog.operationName)) return null;
-    const operation = await tx.productionOrderOperation.create({ data: { productionOrderId: order.id, operationCatalogId: catalog.id, operationNameSnapshot: catalog.operationName, unitId: catalog.defaultUnitId ?? order.unitId, sequenceNo: 1, targetQuantity: order.plannedQuantity, ...this.audit.create(user) } });
-    await this.audit.record("production_order.packaging_operation", "production_order_operation", user.id, operation.id, { production_order_id: order.id, operation_catalog_id: catalog.id, operation_name: catalog.operationName, sequence_no: operation.sequenceNo, target_quantity: operation.targetQuantity.toString(), auto: true });
-    return operation;
+    // 「建单不被主数据问题阻断」：工序主数据查不到/插入失败都只是跳过自动补齐（页面会提示补建）。
+    try {
+      const catalog = await tx.operationCatalog.findFirst({ where: { isActive: true, deletedAt: null, operationName: { contains: "包装" } }, orderBy: { operationCode: "asc" } });
+      if (!catalog || !isPackagingOperationName(catalog.operationName)) return null;
+      // 建单时还没有其它工序，先用 1；后续添加工序时会把包装工序顺延到末尾（见 movePackagingOperationToTail）。
+      return await tx.productionOrderOperation.create({ data: { productionOrderId: order.id, operationCatalogId: catalog.id, operationNameSnapshot: catalog.operationName, unitId: catalog.defaultUnitId ?? order.unitId, sequenceNo: 1, targetQuantity: order.plannedQuantity, ...this.audit.create(user) } });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 保持「包装工序 = 收尾工序」：新增工序后如果包装工序不再排在最后，把它顺延到最大序号之后。
+   * 说明：建单时包装工序先占 1 号位，之后手工添加工序时会顺延，保证工序路线/展示中包装始终在末尾；
+   * 用户若手工调整过顺序，本条会在下次添加工序时再次纠正（与业务口径一致）。
+   */
+  private async movePackagingOperationToTail(tx: Prisma.TransactionClient, orderId: string, orderNo: string, user: CurrentUser) {
+    const operations = await tx.productionOrderOperation.findMany({ where: { productionOrderId: orderId, deletedAt: null }, select: { id: true, operationNameSnapshot: true, status: true, sequenceNo: true } });
+    const packaging = findPackagingOperation(operations);
+    if (!packaging) return null;
+    const maxSequence = operations.reduce((max, item) => Math.max(max, item.sequenceNo), 0);
+    if (packaging.sequenceNo === maxSequence) return null;
+    const updated = await tx.productionOrderOperation.update({ where: { id: packaging.id }, data: { sequenceNo: maxSequence + 1, ...this.audit.update(user) } });
+    await this.audit.record("production_order.packaging_operation_moved", "production_order_operation", user.id, packaging.id, { order_no: orderNo, production_order_id: orderId, operation_name: packaging.operationNameSnapshot, before_sequence_no: packaging.sequenceNo, after_sequence_no: updated.sequenceNo });
+    return updated;
   }
 
   async update(id: string, input: Partial<Input>, user: CurrentUser) {
@@ -127,7 +163,9 @@ export class ProductionOrdersService {
       if (order.operations.some((item) => item.operationCatalogId === operation.id && item.status !== "cancelled")) throw new ConflictException({ code: "PRODUCTION_OPERATION_DUPLICATE", message: "同一生产单不能重复添加相同工序", details: [] });
       const occupier = order.operations.find((item) => item.sequenceNo === input.sequence_no);
       if (occupier) throw new ConflictException({ code: "PRODUCTION_OPERATION_SEQUENCE_DUPLICATE", message: "生产单工序顺序不能重复（序号已被其他工序占用，含已取消工序）", details: [{ sequence_no: input.sequence_no, occupied_by_operation_id: occupier.id, occupied_by_status: occupier.status }] });
-      return tx.productionOrderOperation.create({ data: { productionOrderId: id, operationCatalogId: operation.id, operationNameSnapshot: operation.operationName, unitId: unit.id, sequenceNo: input.sequence_no, targetQuantity: input.target_quantity, ...this.audit.create(user) } });
+      const created = await tx.productionOrderOperation.create({ data: { productionOrderId: id, operationCatalogId: operation.id, operationNameSnapshot: operation.operationName, unitId: unit.id, sequenceNo: input.sequence_no, targetQuantity: input.target_quantity, ...this.audit.create(user) } });
+      await this.movePackagingOperationToTail(tx, id, order.orderNo, user);
+      return created;
     });
     const order = await this.get(id);
     await this.audit.record("production_order_operation.create", "production_order_operation", user.id, result.id, { order_no: order.orderNo, production_order_id: id, production_order_status: order.status, before: {}, after: { status: "active", sequence_no: result.sequenceNo, target_quantity: result.targetQuantity.toString(), unit_id: result.unitId, operation_catalog_id: operation.id, operation_name: operation.operationName } });
@@ -170,6 +208,8 @@ export class ProductionOrdersService {
         const catalog = catalogRows.find((row) => row.id === input.operation_id)!;
         rows.push(await tx.productionOrderOperation.create({ data: { productionOrderId: id, operationCatalogId: catalog.id, operationNameSnapshot: catalog.operationName, unitId: input.unit_id ?? catalog.defaultUnitId ?? orderBefore.unitId, sequenceNo: nextSequence, targetQuantity: input.target_quantity, ...this.audit.create(user) } }));
       }
+      // 新增工序后把包装（收尾）工序顺延到末尾，保证工序路线/展示里它始终是最后一道。
+      await this.movePackagingOperationToTail(tx, id, order.orderNo, user);
       return rows;
     });
     const order = await this.get(id);

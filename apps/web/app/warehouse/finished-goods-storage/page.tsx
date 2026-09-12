@@ -15,9 +15,10 @@ import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type Balance = { category: string; unit_id: string; production_order_id: string | null; order_no: string | null; product_name: string | null; product_specification: string | null; quantity: string };
-type Notice = { id: string; noticeNo: string; orderNo: string; batchNo?: string | null; noticeDate: string; status: string; noticeQuantity: string; submittedQuantity: string; qcQualifiedQuantity: string; inboundDraftQuantity: string; inboundPostedQuantity: string; availableSubmissionQuantity: string; operationNameSnapshot: string; unitNameSnapshot: string; productNameSnapshot?: string | null };
-type QcAvailable = { qc_id: string; qc_no: string; order_no: string; submission_id: string; source_type: string; qualified_quantity: string; conditional_accept_quantity: string; available_for_inbound_quantity: string; unit?: string; conditionally_accepted?: boolean };
+type Notice = { id: string; noticeNo: string; orderNo: string; batchNo?: string | null; noticeDate: string; status: string; noticeQuantity: string; submittedQuantity: string; qcQualifiedQuantity: string; inboundDraftQuantity: string; inboundPostedQuantity: string; availableSubmissionQuantity: string; remainingForInbound: string; operationNameSnapshot: string; unitNameSnapshot: string; productNameSnapshot?: string | null };
+type QcAvailable = { qc_id: string; qc_no: string; order_no: string; submission_id: string; source_type: string; qualified_quantity: string; conditional_accept_quantity: string; rejected_quantity: string; available_for_inbound_quantity: string; available_for_defective_quantity: string; unit?: string; conditionally_accepted?: boolean };
 type Inbound = { id: string; inboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; qcRecord?: { qcNo?: string } | null; createdAt?: string };
+type Defective = { id: string; defectiveNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null };
 type Outbound = { id: string; outboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null };
 
 const noticeStatusLabels: Record<string, string> = { pending: "待送检", partially_inbound: "入库中", completed: "已完成", cancelled: "已取消" };
@@ -35,6 +36,7 @@ export default function FinishedGoodsStoragePage() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [qcAvailable, setQcAvailable] = useState<QcAvailable[]>([]);
   const [inbounds, setInbounds] = useState<Inbound[]>([]);
+  const [defectives, setDefectives] = useState<Defective[]>([]);
   const [outbounds, setOutbounds] = useState<Outbound[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -45,20 +47,22 @@ export default function FinishedGoodsStoragePage() {
     setError("");
     const scope = targetOrderNo ? `?order_no=${encodeURIComponent(targetOrderNo)}` : "";
     try {
-      const [finishedResult, defectiveResult, noticeResult, qcResult, inboundResult, outboundResult] = await Promise.all([
+      const [finishedResult, defectiveResult, noticeResult, qcResult, inboundResult, defectiveDocResult, outboundResult] = await Promise.all([
         apiGet<Balance[]>(`/inventory/balances?category=finished_goods${targetOrderNo ? `&order_no=${encodeURIComponent(targetOrderNo)}` : ""}`),
         apiGet<Balance[]>(`/inventory/balances?category=defective_goods${targetOrderNo ? `&order_no=${encodeURIComponent(targetOrderNo)}` : ""}`),
         apiGet<Notice[]>(`/finished-goods/inbound-notices${scope}`),
         apiGet<QcAvailable[]>(`/finished-goods/qc-records/available-inbound-sources${scope}`),
         apiGet<Inbound[]>(`/finished-goods/inbounds${scope}`),
+        apiGet<Defective[]>(`/finished-goods/defectives${scope}`),
         apiGet<Outbound[]>(`/finished-goods/outbounds${scope}`),
       ]);
       setFinished(finishedResult.data);
       setDefective(defectiveResult.data);
       setNotices(noticeResult.data);
-      // 只展示还有可入库额度的质检单（额度 = QC 合格量 − 草稿/已过账入库量，由后端按净值给出）。
-      setQcAvailable(qcResult.data.filter((row) => number(row.available_for_inbound_quantity) > 0));
+      // 只展示还有可入库/可登记次品额度的质检单（额度由后端按净值给出：扣掉草稿+已过账）。
+      setQcAvailable(qcResult.data.filter((row) => number(row.available_for_inbound_quantity) > 0 || number(row.available_for_defective_quantity) > 0));
       setInbounds(inboundResult.data);
+      setDefectives(defectiveDocResult.data);
       setOutbounds(outboundResult.data);
     } catch (cause) {
       setError(messageOf(cause, "成品仓储情况加载失败"));
@@ -93,8 +97,19 @@ export default function FinishedGoodsStoragePage() {
     ], submit: (values) => void run("/finished-goods/inbounds", { qc_record_id: row.qc_id, quantity: values.quantity, remark: values.remark || undefined }, "成品入库单已登记（待过账）") });
   }
 
+  function registerDefective(row: QcAvailable) {
+    setDialog({ title: `次品登记：${row.qc_no}`, fields: [
+      { name: "quantity", label: "本次登记次品数量", type: "number", required: true, defaultValue: row.available_for_defective_quantity, placeholder: `QC 不合格可登记 ${row.available_for_defective_quantity}` },
+      { name: "remark", label: "备注", type: "textarea", placeholder: "可选" },
+    ], submit: (values) => void run("/finished-goods/defectives", { qc_record_id: row.qc_id, quantity: values.quantity, remark: values.remark || undefined }, "次品记录已登记（待过账）") });
+  }
+
   function reverseInbound(row: Inbound) {
     setDialog({ title: `冲销成品入库：${row.inboundNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void run(`/finished-goods/inbounds/${row.id}/reverse`, { reason: values.reason }, "成品入库已冲销") });
+  }
+
+  function reverseDefective(row: Defective) {
+    setDialog({ title: `冲销次品记录：${row.defectiveNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void run(`/finished-goods/defectives/${row.id}/reverse`, { reason: values.reason }, "次品记录已冲销") });
   }
 
   const balanceColumns = [
@@ -121,8 +136,10 @@ export default function FinishedGoodsStoragePage() {
     { accessorKey: "qc_no", header: "质检单" },
     { accessorKey: "order_no", header: "订单号" },
     { id: "qualified", header: "合格/条件合格", cell: ({ row }: { row: { original: QcAvailable } }) => `${row.original.qualified_quantity} / ${row.original.conditional_accept_quantity}` },
-    { accessorKey: "available_for_inbound_quantity", header: "可入库" },
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: QcAvailable } }) => number(row.original.available_for_inbound_quantity) > 0 ? <Button size="sm" variant="secondary" onClick={() => registerInbound(row.original)}>登记入库</Button> : null },
+    { id: "rejected", header: "不合格", cell: ({ row }: { row: { original: QcAvailable } }) => row.original.rejected_quantity ?? "-" },
+    { accessorKey: "available_for_inbound_quantity", header: "可入库（净值）" },
+    { accessorKey: "available_for_defective_quantity", header: "可登记次品" },
+    { id: "actions", header: "操作", cell: ({ row }: { row: { original: QcAvailable } }) => <div className="action-row">{number(row.original.available_for_inbound_quantity) > 0 ? <Button size="sm" variant="secondary" onClick={() => registerInbound(row.original)}>登记入库</Button> : null}{number(row.original.available_for_defective_quantity) > 0 ? <Button size="sm" variant="ghost" onClick={() => registerDefective(row.original)}>登记次品</Button> : null}</div> },
   ];
   const inboundColumns = [
     { accessorKey: "inboundNo", header: "入库单" },
@@ -139,6 +156,16 @@ export default function FinishedGoodsStoragePage() {
     { accessorKey: "quantity", header: "数量" },
     { id: "status", header: "状态", cell: ({ row }: { row: { original: Outbound } }) => outboundStatusLabels[row.original.status] ?? row.original.status },
   ];
+  const defectiveColumns = [
+    { accessorKey: "defectiveNo", header: "次品单" },
+    { accessorKey: "orderNo", header: "订单号" },
+    { id: "product", header: "成品", cell: ({ row }: { row: { original: Defective } }) => row.original.productNameSnapshot ?? "-" },
+    { accessorKey: "quantity", header: "数量" },
+    { id: "status", header: "状态", cell: ({ row }: { row: { original: Defective } }) => inboundStatusLabels[row.original.status] ?? row.original.status },
+    { id: "actions", header: "操作", cell: ({ row }: { row: { original: Defective } }) => row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/defectives/${row.original.id}/post`, {}, "次品已过账")}>过账</Button> : row.original.status === "posted" ? <Button size="sm" variant="ghost" onClick={() => reverseDefective(row.original)}>冲销</Button> : null },
+  ];
+  // 待入库 = 还有未入库量的通知（按实际剩余工作量统计，而不是按状态），避免“已建草稿送检就被当成完成”而漏掉待办。
+  const pendingNoticeCount = notices.filter((row) => row.status !== "cancelled" && number(row.remainingForInbound) > 0).length;
 
   if (loading && !finished.length && !notices.length) return <LoadingState label="正在加载成品仓储情况" />;
   if (error && !finished.length && !notices.length) return <ErrorState message={error} onRetry={() => void load()} />;
@@ -166,16 +193,20 @@ export default function FinishedGoodsStoragePage() {
       </div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>待入库通知 <span className="status-warning">{notices.filter((row) => row.status !== "completed" && row.status !== "cancelled").length}</span></h2><span className="panel-note">生产按包装工序累计报工分批通知；仓库按通知送检 → 质检 → 入库</span></div>
+      <div className="panel-heading"><h2>待入库通知 <span className="status-warning">{pendingNoticeCount}</span></h2><span className="panel-note">生产按包装工序累计报工分批通知；仓库按通知送检 → 质检 → 入库</span></div>
       <div className="panel-body"><DataTable columns={noticeColumns} data={notices} empty={<EmptyState title="暂无入库通知" description="生产在【生产单详情 → 成品存量与入库通知】按包装工序累计量发通知。" />} /></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>质检合格待入库</h2><span className="panel-note">按 QC 合格量分批登记入库；过账后才计入成品存量</span></div>
-      <div className="panel-body"><DataTable columns={qcColumns} data={qcAvailable} empty={<EmptyState title="暂无可入库的质检单" />} /></div>
+      <div className="panel-heading"><h2>质检合格待入库</h2><span className="panel-note">按 QC 合格量分批登记入库、按不合格量登记次品；过账后才计入对应存量</span></div>
+      <div className="panel-body"><DataTable columns={qcColumns} data={qcAvailable} empty={<EmptyState title="暂无可入库/可登记次品的质检单" />} /></div>
     </section>
     <section className="panel">
       <div className="panel-heading"><h2>成品入库单</h2></div>
       <div className="panel-body"><DataTable columns={inboundColumns} data={inbounds} empty={<EmptyState title="暂无成品入库单" />} /></div>
+    </section>
+    <section className="panel">
+      <div className="panel-heading"><h2>次品记录</h2></div>
+      <div className="panel-body"><DataTable columns={defectiveColumns} data={defectives} empty={<EmptyState title="暂无次品记录" description="质检不合格数量可在上方「登记次品」后过账。" />} /></div>
     </section>
     <section className="panel">
       <div className="panel-heading"><h2>成品出库单</h2></div>

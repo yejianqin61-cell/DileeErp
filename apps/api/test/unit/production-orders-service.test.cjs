@@ -128,6 +128,7 @@ test("create rethrows non-unique insert errors instead of masking them as a conf
 
 function batchHarness({ catalogRows = [], unitRows = [{ id: "unit-1", isActive: true }], order, createImpl } = {}) {
   const createCalls = [];
+  const moveCalls = [];
   const auditRecords = [];
   let transactions = 0;
   const prisma = {
@@ -137,15 +138,20 @@ function batchHarness({ catalogRows = [], unitRows = [{ id: "unit-1", isActive: 
     $transaction: async (fn) => { transactions += 1; return fn({
       $queryRaw: async () => undefined,
       productionOrder: { findFirst: async () => order },
-      productionOrderOperation: { create: async ({ data }) => {
-        if (createImpl) return createImpl({ data, createCalls });
-        createCalls.push(data);
-        return { id: `new-op-${createCalls.length}`, sequenceNo: data.sequenceNo, targetQuantity: data.targetQuantity, unitId: data.unitId, operationCatalogId: data.operationCatalogId, operationNameSnapshot: data.operationNameSnapshot };
-      } },
+      productionOrderOperation: {
+        create: async ({ data }) => {
+          if (createImpl) return createImpl({ data, createCalls });
+          createCalls.push(data);
+          return { id: `new-op-${createCalls.length}`, sequenceNo: data.sequenceNo, targetQuantity: data.targetQuantity, unitId: data.unitId, operationCatalogId: data.operationCatalogId, operationNameSnapshot: data.operationNameSnapshot };
+        },
+        // 新增工序后会把包装（收尾）工序顺延到末尾；findMany 需同时看到已有工序与本次新建的行。
+        findMany: async () => [...(order?.operations ?? []), ...createCalls.map((row, index) => ({ id: `new-op-${index + 1}`, operationNameSnapshot: row.operationNameSnapshot, status: "active", sequenceNo: row.sequenceNo }))],
+        update: async ({ where, data }) => { moveCalls.push({ where, data }); return { id: where.id, ...data }; },
+      },
     }); },
   };
-  const audit = { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), record: async (...args) => { auditRecords.push(args); } };
-  return { service: new ProductionOrdersService(prisma, audit), createCalls, auditRecords, isTransactionCalled: () => transactions > 0 };
+  const audit = { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), record: async (...args) => { auditRecords.push(args); } };
+  return { service: new ProductionOrdersService(prisma, audit), createCalls, moveCalls, auditRecords, isTransactionCalled: () => transactions > 0 };
 }
 
 test("batch add creates every picked operation with auto-assigned sequences and one batch audit event", async () => {
@@ -182,6 +188,32 @@ test("batch add creates every picked operation with auto-assigned sequences and 
   assert.equal(details.order_no, "SO-1");
   assert.equal(details.count, 2);
   assert.deepEqual(details.operations.map((row) => row.sequence_no), [5, 6]);
+});
+
+// 包装工序是收尾工序：新增工序后必须把包装工序顺延到末尾（建单时它先占 1 号位）。
+test("batch add moves the packaging operation back to the tail", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [
+    { id: "op-pack", operationNameSnapshot: "包装", sequenceNo: 1, status: "active" },
+  ] };
+  const catalogRows = [{ id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true }];
+  const { service, createCalls, moveCalls, auditRecords } = batchHarness({ catalogRows, order });
+  await service.addOperations("order-1", [{ operation_id: "op-a", target_quantity: "100" }], user);
+  assert.deepEqual(createCalls.map((row) => row.sequenceNo), [2], "新工序先追加到 max+1");
+  assert.equal(moveCalls.length, 1, "包装工序必须被顺延");
+  assert.equal(moveCalls[0].where.id, "op-pack");
+  assert.equal(moveCalls[0].data.sequenceNo, 3, "顺延到新的最大序号之后（2 → 3）");
+  assert.equal(auditRecords.some(([action]) => action === "production_order.packaging_operation_moved"), true, "顺延要有审计");
+});
+
+test("batch add keeps the packaging operation last when it already is last", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", operations: [
+    { id: "op-pack", operationNameSnapshot: "包装", sequenceNo: 4, status: "active" },
+  ] };
+  const catalogRows = [{ id: "op-a", operationName: "裁剪", defaultUnitId: "unit-1", isActive: true }];
+  const { service, moveCalls } = batchHarness({ catalogRows, order });
+  await service.addOperations("order-1", [{ operation_id: "op-a", target_quantity: "100" }], user);
+  assert.equal(moveCalls.length, 1, "包装在新工序（5）之前，需要顺延到 6");
+  assert.equal(moveCalls[0].data.sequenceNo, 6);
 });
 
 test("batch add rejects a duplicated catalog id inside one submission before any write", async () => {

@@ -43,6 +43,20 @@ test("成品仓储页面状态显示中文，不暴露英文原值", () => {
   assert.match(storagePage, /partially_inbound: "入库中"/);
 });
 
+test("次品链路在页面里有入口（否则次品存量永远为 0）", () => {
+  assert.match(storagePage, /\/finished-goods\/defectives\$\{scope\}/, "要拉取次品记录列表");
+  assert.match(storagePage, /label: "本次登记次品数量"/, "要有登记次品入口");
+  assert.match(storagePage, /available_for_defective_quantity/, "默认值取净值可登记次品量");
+  assert.match(storagePage, /\/finished-goods\/defectives\/\$\{row\.original\.id\}\/post/, "次品要能过账");
+  assert.match(storagePage, /\/finished-goods\/defectives\/\$\{row\.id\}\/reverse/, "次品要能冲销");
+});
+
+test("待入库通知按剩余工作量统计，而不是按状态（草稿送检不算完成）", () => {
+  assert.match(storagePage, /pendingNoticeCount/, "要有独立的待入库计数");
+  assert.match(storagePage, /number\(row\.remainingForInbound\) > 0/, "按剩余待入库量判断");
+  assert.equal(/status !== "completed" && row\.status !== "cancelled"/.test(storagePage), false, "不能再用“状态不是已完成”来统计待入库");
+});
+
 test("生产单详情挂载成品存量与入库通知面板，并支持补建包装工序", () => {
   assert.match(detailPage, /<FinishedGoodsPanel productionOrderId=\{order\.id\}/, "生产单详情必须挂载成品面板");
   assert.match(productionPanel, /\/production\/orders\/\$\{productionOrderId\}\/finished-goods-summary/, "面板要读生产单成品存量汇总");
@@ -51,6 +65,8 @@ test("生产单详情挂载成品存量与入库通知面板，并支持补建�
   assert.match(productionPanel, /\/production\/finished-goods-inbound-notices/, "要能发成品入库通知");
   assert.match(productionPanel, /defaultValue: summary\.available_notice_quantity/, "通知数量默认取可通知量（包装累计 − 已通知）");
   assert.match(productionPanel, /\/cancel/, "未送检的通知要能取消");
+  // 已有送检记录的通知后端会拒绝取消，界面不应给出必然失败的按钮。
+  assert.match(productionPanel, /Number\(row\.original\.submittedQuantity \?\? 0\) > 0 \? null/, "已有送检量时不给取消按钮");
 });
 
 test("成品面板展示包装报工、已通知、可通知、送检/QC/入库与存量", () => {

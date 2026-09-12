@@ -122,7 +122,8 @@ export function FinishedGoodsPanel({ productionOrderId, executionMode, orderStat
     { accessorKey: "inboundDraftQuantity", header: "在途入库" },
     { accessorKey: "inboundPostedQuantity", header: "已入库" },
     { accessorKey: "status", header: "状态", cell: ({ row }: { row: { original: Notice } }) => noticeStatusLabels[row.original.status] ?? row.original.status },
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: Notice } }) => row.original.status === "cancelled" ? null : <Button size="sm" variant="ghost" onClick={() => cancelNotice(row.original)}>取消</Button> },
+    // 已有送检记录的通知后端不允许取消（会 422），这里直接不给按钮，避免必然失败的操作。
+    { id: "actions", header: "操作", cell: ({ row }: { row: { original: Notice } }) => row.original.status === "cancelled" || Number(row.original.submittedQuantity ?? 0) > 0 ? null : <Button size="sm" variant="ghost" onClick={() => cancelNotice(row.original)}>取消</Button> },
   ];
 
   const packaging = summary?.packaging_operation ?? null;

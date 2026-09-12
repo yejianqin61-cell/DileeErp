@@ -185,7 +185,8 @@ export class FinishedGoodsQcService {
   async availableInboundSources(orderNo?: string) {
     const rows = await this.prisma.finishedGoodsQcRecord.findMany({ where: { deletedAt: null, status: "active", ...(orderNo ? { orderNo } : {}) }, include: { submission: { include: { unit: true } } }, orderBy: { inspectionDate: "asc" } });
     const used = await this.inboundUsedMap(rows.map((row) => row.id));
-    return rows.map((row) => ({ qc_id: row.id, qc_no: row.qcNo, submission_id: row.submissionId, order_no: row.orderNo, production_order_id: row.productionOrderId, source_type: row.sourceType, source_id: row.sourceId, unit_id: row.submission.unitId, unit: row.submission.unitNameSnapshot, qualified_quantity: row.qualifiedQuantity.toString(), conditional_accept_quantity: row.conditionalAcceptQuantity.toString(), available_for_inbound_quantity: availableFinishedGoodsInboundQuantity(row.qualifiedQuantity.toString(), row.conditionalAcceptQuantity.toString(), (used.get(row.id) ?? new Prisma.Decimal(0)).toString()), conditionally_accepted: row.conditionalAcceptQuantity.gt(0), source_read_only: true }));
+    const usedDefective = await this.defectiveUsedMap(rows.map((row) => row.id));
+    return rows.map((row) => ({ qc_id: row.id, qc_no: row.qcNo, submission_id: row.submissionId, order_no: row.orderNo, production_order_id: row.productionOrderId, source_type: row.sourceType, source_id: row.sourceId, unit_id: row.submission.unitId, unit: row.submission.unitNameSnapshot, qualified_quantity: row.qualifiedQuantity.toString(), conditional_accept_quantity: row.conditionalAcceptQuantity.toString(), rejected_quantity: row.rejectedQuantity.toString(), available_for_inbound_quantity: availableFinishedGoodsInboundQuantity(row.qualifiedQuantity.toString(), row.conditionalAcceptQuantity.toString(), (used.get(row.id) ?? new Prisma.Decimal(0)).toString()), available_for_defective_quantity: Prisma.Decimal.max(row.rejectedQuantity.minus(usedDefective.get(row.id) ?? new Prisma.Decimal(0)), new Prisma.Decimal(0)).toString(), conditionally_accepted: row.conditionalAcceptQuantity.gt(0), source_read_only: true }));
   }
 
   /** 每个 QC 已占用的入库量（草稿 + 已过账，与 acceptedAvailable 一致）。 */
@@ -193,6 +194,15 @@ export class FinishedGoodsQcService {
     const map = new Map<string, Prisma.Decimal>();
     if (!qcRecordIds.length) return map;
     const rows = await this.prisma.finishedGoodsInbound.groupBy({ by: ["qcRecordId"], where: { qcRecordId: { in: qcRecordIds }, deletedAt: null, status: { in: ["draft", "posted"] } }, _sum: { quantity: true } });
+    for (const row of rows) map.set(row.qcRecordId, new Prisma.Decimal(row._sum.quantity ?? 0));
+    return map;
+  }
+
+  /** 每个 QC 已占用的次品量（草稿 + 已过账，与 rejectedAvailable 一致）。 */
+  private async defectiveUsedMap(qcRecordIds: string[]) {
+    const map = new Map<string, Prisma.Decimal>();
+    if (!qcRecordIds.length) return map;
+    const rows = await this.prisma.finishedGoodsDefective.groupBy({ by: ["qcRecordId"], where: { qcRecordId: { in: qcRecordIds }, deletedAt: null, status: { in: ["draft", "posted"] } }, _sum: { quantity: true } });
     for (const row of rows) map.set(row.qcRecordId, new Prisma.Decimal(row._sum.quantity ?? 0));
     return map;
   }

@@ -155,10 +155,19 @@ export class FinishedGoodsInboundNoticesService {
     return syncFinishedGoodsInboundNoticeStatus(client, noticeId, user);
   }
 
-  /** 包装工序累计报工量（工序日报口径，与生产进度一致）。 */
+  /**
+   * 包装工序累计报工量：与生产进度/完工口径完全一致，取 max(工序日报累计, 员工日报累计)。
+   * 只算工序日报会永远低估——员工日报（工序员工日报表）才是当前唯一有 UI 录入入口的路径；
+   * 直接相加则会在两个录入面都填时双重计数（每日差异告警负责提示两者不一致）。
+   */
   async packagingReportedQuantity(operationId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
-    const result = await client.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, deletedAt: null }, _sum: { completedQuantity: true } });
-    return new Prisma.Decimal(result._sum.completedQuantity ?? 0);
+    const [operationRows, employeeRows] = await Promise.all([
+      client.operationDailyReport.aggregate({ where: { productionOrderOperationId: operationId, deletedAt: null }, _sum: { completedQuantity: true } }),
+      client.employeeDailyReport.aggregate({ where: { productionOrderOperationId: operationId, deletedAt: null }, _sum: { quantity: true } }),
+    ]);
+    const operationTotal = new Prisma.Decimal(operationRows._sum.completedQuantity ?? 0);
+    const employeeTotal = new Prisma.Decimal(employeeRows._sum.quantity ?? 0);
+    return employeeTotal.gt(operationTotal) ? employeeTotal : operationTotal;
   }
 
   private async notifiedQuantity(productionOrderId: string, client: PrismaService | Prisma.TransactionClient) {
