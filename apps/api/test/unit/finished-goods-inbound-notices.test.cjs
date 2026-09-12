@@ -52,10 +52,21 @@ function buildClient(state = {}) {
       count: async ({ where }) => submissions.filter((row) => !row.deletedAt && row.sourceType === where.sourceType && row.sourceId === where.sourceId && (where.status?.notIn ? !where.status.notIn.includes(row.status) : true)).length,
       create: async ({ data }) => { const row = { id: `sub-${submissions.length + 1}`, version: 1, deletedAt: null, ...data }; submissions.push(row); return row; },
     },
-    finishedGoodsQcRecord: { findMany: async ({ where }) => qcRecords.filter((row) => !row.deletedAt && row.status === "active" && where.submissionId.in.includes(row.submissionId)) },
+    finishedGoodsQcRecord: {
+      findMany: async ({ where }) => qcRecords.filter((row) => !row.deletedAt && (!where.status || row.status === where.status) && (where.submissionId?.in ? where.submissionId.in.includes(row.submissionId) : true)),
+      findFirst: async ({ where }) => qcRecords.find((row) => row.id === where.id && !row.deletedAt && (!where.status || row.status === where.status)) ?? null,
+    },
     finishedGoodsInbound: {
       findMany: async ({ where }) => inbounds.filter((row) => !row.deletedAt && where.submissionId.in.includes(row.submissionId) && where.status.in.includes(row.status)),
       aggregate: async ({ where }) => ({ _sum: { quantity: inbounds.filter((row) => !row.deletedAt && row.status === where.status && where.submissionId.in.includes(row.submissionId)).reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)) } }),
+      groupBy: async ({ where }) => {
+        const ids = where.qcRecordId.in;
+        const grouped = new Map();
+        for (const row of inbounds.filter((item) => !item.deletedAt && ids.includes(item.qcRecordId) && where.status.in.includes(item.status))) {
+          grouped.set(row.qcRecordId, (grouped.get(row.qcRecordId) ?? new Prisma.Decimal(0)).plus(row.quantity));
+        }
+        return [...grouped.entries()].map(([qcRecordId, quantity]) => ({ qcRecordId, _sum: { quantity } }));
+      },
     },
   };
   return client;
@@ -210,6 +221,49 @@ test("旧的 in_house_completion 来源不再接受新建送检单", async () =>
     () => service.createSubmission({ production_order_id: "order-1", source_type: "in_house_completion", source_id: "order-1", submitted_quantity: "5", submission_date: "2026-09-10" }, { id: "user-1" }),
     (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "FINISHED_GOODS_QC_SOURCE_TYPE_RETIRED",
   );
+});
+
+test("质检合格待入库的“可入库数量”必须是净值（扣掉草稿+已过账入库）", async () => {
+  const qcRecords = [{ id: "qc-1", submissionId: "sub-1", qualifiedQuantity: new Prisma.Decimal("30"), conditionalAcceptQuantity: new Prisma.Decimal("0"), rejectedQuantity: new Prisma.Decimal("0"), status: "active", deletedAt: null, submission: { unitId: "unit-1", unitNameSnapshot: "个", unit: { name: "个" } } }];
+  const inbounds = [
+    { id: "in-1", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("20"), status: "posted", deletedAt: null },
+    { id: "in-2", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("5"), status: "draft", deletedAt: null },
+  ];
+  const { service } = buildQc({ qcRecords, inbounds, submissions: [{ id: "sub-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-1", submittedQuantity: new Prisma.Decimal("30"), status: "qc_completed", deletedAt: null }], notices: [] });
+  const sources = await service.availableInboundSources();
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].available_for_inbound_quantity, "5", "30 合格 − 20 已过账 − 5 在途 = 5");
+});
+
+test("qc-records 列表同样给出净值可入库量", async () => {
+  const qcRecords = [{ id: "qc-1", submissionId: "sub-1", qcNo: "FQC-1", orderNo: "SO-1", productionOrderId: "order-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-1", qualifiedQuantity: new Prisma.Decimal("10"), conditionalAcceptQuantity: new Prisma.Decimal("5"), rejectedQuantity: new Prisma.Decimal("0"), status: "active", deletedAt: null }];
+  const inbounds = [{ id: "in-1", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("12"), status: "posted", deletedAt: null }];
+  const { service } = buildQc({ qcRecords, inbounds, notices: [], submissions: [] });
+  const rows = await service.listQcRecords();
+  assert.equal(rows[0].availableForInboundQuantity, "3", "10 + 5 条件合格 − 12 已过账 = 3");
+});
+
+// 入库过账要把来源通知推进到「已完成」：这是「分批入库」能被看见的关键一环。
+test("成品入库过账后来源通知状态推进到已完成（分批入库闭环）", async () => {
+  const { FinishedGoodsInventoryService } = require("../../dist/modules/warehouse/finished-goods-inventory.service.js");
+  const notices = [{ id: "notice-1", noticeNo: "FGN-1", orderNo: "SO-1", productionOrderId: "order-1", noticeQuantity: new Prisma.Decimal("20"), status: "partially_inbound", deletedAt: null }];
+  const submissions = [{ id: "sub-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-1", submittedQuantity: new Prisma.Decimal("20"), status: "qc_completed", deletedAt: null }];
+  const qcRecords = [{ id: "qc-1", submissionId: "sub-1", submission: submissions[0], qualifiedQuantity: new Prisma.Decimal("20"), conditionalAcceptQuantity: new Prisma.Decimal("0"), rejectedQuantity: new Prisma.Decimal("0"), status: "active", deletedAt: null }];
+  const inbounds = [{ id: "in-1", qcRecordId: "qc-1", submissionId: "sub-1", orderNo: "SO-1", productionOrderId: "order-1", unitId: "unit-1", quantity: new Prisma.Decimal("20"), status: "draft", qcRecord: { submission: submissions[0] }, deletedAt: null }];
+  const facts = [];
+  const client = buildClient({ notices, submissions, qcRecords, inbounds, facts });
+  client.finishedGoodsInbound.findFirst = async ({ where }) => inbounds.find((row) => row.id === where.id && !row.deletedAt) ?? null;
+  client.finishedGoodsInbound.update = async ({ where, data }) => { const row = inbounds.find((item) => item.id === where.id); Object.assign(row, data); return row; };
+  client.inventoryFact.findFirst = async () => null;
+  client.inventoryFact.create = async ({ data }) => { facts.push(data); return data; };
+  const prisma = { ...client, $transaction: async (fn) => fn(client) };
+  const inventory = { finishedGoodsBalance: async () => new Prisma.Decimal(0) };
+  const service = new FinishedGoodsInventoryService(prisma, auditStub(), inventory);
+  await service.postInbound("in-1", { id: "user-1" });
+  assert.equal(inbounds[0].status, "posted");
+  assert.equal(facts.length, 1);
+  assert.equal(facts[0].quantityDelta.toString(), "20");
+  assert.equal(notices[0].status, "completed", "通知量已全部送检且无在途入库 → 通知完成");
 });
 
 test("按通知送检：不得超过通知可送检量，成功后通知变为进行中", async () => {

@@ -49,14 +49,15 @@ export default function FinishedGoodsStoragePage() {
         apiGet<Balance[]>(`/inventory/balances?category=finished_goods${targetOrderNo ? `&order_no=${encodeURIComponent(targetOrderNo)}` : ""}`),
         apiGet<Balance[]>(`/inventory/balances?category=defective_goods${targetOrderNo ? `&order_no=${encodeURIComponent(targetOrderNo)}` : ""}`),
         apiGet<Notice[]>(`/finished-goods/inbound-notices${scope}`),
-        apiGet<QcAvailable[]>(`/finished-goods/qc-records${scope}`),
+        apiGet<QcAvailable[]>(`/finished-goods/qc-records/available-inbound-sources${scope}`),
         apiGet<Inbound[]>(`/finished-goods/inbounds${scope}`),
         apiGet<Outbound[]>(`/finished-goods/outbounds${scope}`),
       ]);
       setFinished(finishedResult.data);
       setDefective(defectiveResult.data);
       setNotices(noticeResult.data);
-      setQcAvailable(qcResult.data);
+      // 只展示还有可入库额度的质检单（额度 = QC 合格量 − 草稿/已过账入库量，由后端按净值给出）。
+      setQcAvailable(qcResult.data.filter((row) => number(row.available_for_inbound_quantity) > 0));
       setInbounds(inboundResult.data);
       setOutbounds(outboundResult.data);
     } catch (cause) {

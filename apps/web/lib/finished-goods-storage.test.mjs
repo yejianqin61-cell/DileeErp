@@ -22,7 +22,7 @@ test("仓库新增成品仓储情况页面，并从仓库首页可进入", () =>
   assert.match(storagePage, /\/inventory\/balances\?category=finished_goods/, "存量要对成品库存事实聚合");
   assert.match(storagePage, /\/inventory\/balances\?category=defective_goods/, "次品存量同样要展示");
   assert.match(storagePage, /\/finished-goods\/inbound-notices/, "要展示待入库通知（分批）");
-  assert.match(storagePage, /\/finished-goods\/qc-records/, "要展示质检合格待入库");
+  assert.match(storagePage, /\/finished-goods\/qc-records\/available-inbound-sources/, "要展示质检合格待入库（用净值化接口）");
   assert.match(storagePage, /\/finished-goods\/inbounds/, "要展示成品入库单");
   assert.match(storagePage, /\/finished-goods\/outbounds/, "要展示成品出库单");
   assert.match(storagePage, /\/finished-goods\/inbounds\/\$\{row\.original\.id\}\/post/, "成品入库要能过账");

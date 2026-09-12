@@ -99,7 +99,10 @@ export class FinishedGoodsQcService {
     const updated = await this.prisma.$transaction(async (tx) => {
       const available = await this.sourceAvailable(tx, current.productionOrderId, current.sourceType as SourceType, current.sourceId, id);
       if (quantity.gt(available)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED", message: "送检数量超过来源可送检数量", details: [{ available_quantity: available.toString() }] });
-      return tx.finishedGoodsInspectionSubmission.update({ where: { id }, data: { submittedQuantity: quantity, ...(input.submission_date ? { submissionDate: this.date(input.submission_date) } : {}), ...(input.remark === undefined ? {} : { remark: input.remark }), version: { increment: 1 }, ...this.audit.update(user) } });
+      const updated = await tx.finishedGoodsInspectionSubmission.update({ where: { id }, data: { submittedQuantity: quantity, ...(input.submission_date ? { submissionDate: this.date(input.submission_date) } : {}), ...(input.remark === undefined ? {} : { remark: input.remark }), version: { increment: 1 }, ...this.audit.update(user) } });
+      // 草稿送检量变化会影响「通知量是否已全部送检」，因此同样要刷新来源入库通知的状态。
+      if (current.sourceType === "finished_goods_inbound_notice") await syncFinishedGoodsInboundNoticeStatus(tx, current.sourceId, user);
+      return updated;
     });
     await this.audit.record("finished_goods_inspection_submission.update", "finished_goods_inspection_submission", user.id, id, { order_no: current.orderNo, reason: input.reason });
     return updated;
@@ -145,7 +148,11 @@ export class FinishedGoodsQcService {
   }
 
   async listQcRecords(orderNo?: string) {
-    return this.prisma.finishedGoodsQcRecord.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { submission: true }, orderBy: { inspectionDate: "desc" } });
+    const rows = await this.prisma.finishedGoodsQcRecord.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { submission: true }, orderBy: { inspectionDate: "desc" } });
+    // 与入库时的服务端校验（acceptedAvailable 扣减 draft+posted）保持同一口径：
+    // 列表里的“可入库数量”必须是净值，否则界面会显示一个已经用掉的额度，用户点进去才发现超量。
+    const used = await this.inboundUsedMap(rows.filter((row) => row.status === "active").map((row) => row.id));
+    return rows.map((row) => ({ ...row, availableForInboundQuantity: availableFinishedGoodsInboundQuantity(row.qualifiedQuantity.toString(), row.conditionalAcceptQuantity.toString(), (used.get(row.id) ?? new Prisma.Decimal(0)).toString()).toString() }));
   }
 
   async createQcRecord(input: QcInput, user: CurrentUser) {
@@ -174,7 +181,17 @@ export class FinishedGoodsQcService {
 
   async availableInboundSources(orderNo?: string) {
     const rows = await this.prisma.finishedGoodsQcRecord.findMany({ where: { deletedAt: null, status: "active", ...(orderNo ? { orderNo } : {}) }, include: { submission: { include: { unit: true } } }, orderBy: { inspectionDate: "asc" } });
-    return rows.map((row) => ({ qc_id: row.id, qc_no: row.qcNo, submission_id: row.submissionId, order_no: row.orderNo, production_order_id: row.productionOrderId, source_type: row.sourceType, source_id: row.sourceId, unit_id: row.submission.unitId, unit: row.submission.unitNameSnapshot, qualified_quantity: row.qualifiedQuantity.toString(), conditional_accept_quantity: row.conditionalAcceptQuantity.toString(), available_for_inbound_quantity: availableFinishedGoodsInboundQuantity(row.qualifiedQuantity.toString(), row.conditionalAcceptQuantity.toString(), "0"), conditionally_accepted: row.conditionalAcceptQuantity.gt(0), source_read_only: true }));
+    const used = await this.inboundUsedMap(rows.map((row) => row.id));
+    return rows.map((row) => ({ qc_id: row.id, qc_no: row.qcNo, submission_id: row.submissionId, order_no: row.orderNo, production_order_id: row.productionOrderId, source_type: row.sourceType, source_id: row.sourceId, unit_id: row.submission.unitId, unit: row.submission.unitNameSnapshot, qualified_quantity: row.qualifiedQuantity.toString(), conditional_accept_quantity: row.conditionalAcceptQuantity.toString(), available_for_inbound_quantity: availableFinishedGoodsInboundQuantity(row.qualifiedQuantity.toString(), row.conditionalAcceptQuantity.toString(), (used.get(row.id) ?? new Prisma.Decimal(0)).toString()), conditionally_accepted: row.conditionalAcceptQuantity.gt(0), source_read_only: true }));
+  }
+
+  /** 每个 QC 已占用的入库量（草稿 + 已过账，与 acceptedAvailable 一致）。 */
+  private async inboundUsedMap(qcRecordIds: string[]) {
+    const map = new Map<string, Prisma.Decimal>();
+    if (!qcRecordIds.length) return map;
+    const rows = await this.prisma.finishedGoodsInbound.groupBy({ by: ["qcRecordId"], where: { qcRecordId: { in: qcRecordIds }, deletedAt: null, status: { in: ["draft", "posted"] } }, _sum: { quantity: true } });
+    for (const row of rows) map.set(row.qcRecordId, new Prisma.Decimal(row._sum.quantity ?? 0));
+    return map;
   }
 
   async impactPreview(id: string) {
