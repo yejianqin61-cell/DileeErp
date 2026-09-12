@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsDateString, IsDecimal, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsDateString, IsDecimal, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -8,6 +8,9 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { SalesOrdersService } from "./sales-orders.service";
+
+/** 结算方式固定枚举（前端下拉同源展示中文）。 */
+export const SETTLEMENT_METHODS = ["tt", "letter_of_credit", "cash", "monthly", "other"] as const;
 
 // 导出以便契约测试直接用真实 ValidationPipe 校验前端请求体。
 export class SalesOrderDto {
@@ -28,6 +31,11 @@ export class SalesOrderDto {
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() tax_rate?: string;
+  // 结算口径：结算币价 / 应收金额 / 结算方式 / 本币金额。
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() settlement_unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() receivable_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsIn(SETTLEMENT_METHODS) settlement_method?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() local_currency_amount?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
 }
 export class UpdateSalesOrderDto {
@@ -44,6 +52,10 @@ export class UpdateSalesOrderDto {
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() tax_rate?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() settlement_unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() receivable_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsIn(SETTLEMENT_METHODS) settlement_method?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() local_currency_amount?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
   @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }

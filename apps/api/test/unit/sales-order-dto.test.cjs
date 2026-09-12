@@ -82,3 +82,21 @@ test("编辑销售单：必填文本字段传空串视为「不修改」而不�
   assert.equal(result.currency, undefined);
   assert.equal(result.product_name, undefined);
 });
+
+test("结算口径字段：留空通过、合法值原样保留、结算方式只接受固定枚举", async () => {
+  const filled = await validateBody(SalesOrderDto, { ...dialogBody, settlement_unit_price: "1.7", receivable_amount: "17", settlement_method: "tt", local_currency_amount: "122.4" });
+  assert.equal(filled.settlement_unit_price, "1.7");
+  assert.equal(filled.receivable_amount, "17");
+  assert.equal(filled.settlement_method, "tt");
+  assert.equal(filled.local_currency_amount, "122.4");
+
+  const blank = await validateBody(SalesOrderDto, dialogBody);
+  assert.equal(blank.settlement_unit_price, undefined);
+  assert.equal(blank.receivable_amount, undefined);
+  assert.equal(blank.settlement_method, undefined);
+  assert.equal(blank.local_currency_amount, undefined);
+
+  await assertRejected(SalesOrderDto, { ...dialogBody, settlement_method: "barter" }, "非法结算方式必须 400");
+  await assertRejected(SalesOrderDto, { ...dialogBody, receivable_amount: "abc" }, "应收金额必须是合法小数");
+  await assertRejected(UpdateSalesOrderDto, { local_currency_amount: "1e3" }, "科学计数法不是合法小数");
+});

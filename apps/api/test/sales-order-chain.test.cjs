@@ -63,3 +63,77 @@ test("sales.bom_cannot_be_created_from_an_unconfirmed_order", async () => {
   const service = new BomsService({ salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "TEST-SO-001", status: "draft", versions: [], boms: [] }) } }, audit);
   await assert.rejects(() => service.createFromSalesOrder("order-1", {}, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_NOT_CONFIRMED");
 });
+
+// 销售单新增的结算口径：结算币价 / 应收金额 / 结算方式 / 本币金额，
+// 必须落库、进版本快照，并且在有下游事实时与其它核心字段一样被锁住。
+test("sales.order.create persists settlement fields and keeps them in the version snapshot", async () => {
+  const customer = { id: "customer-1", customerCode: "CUS-1", name: "海外客户", isActive: true };
+  let createData;
+  let versionData;
+  const created = { id: "order-1", orderNo: "TEST-SO-002", status: "draft", currentVersion: 1, productName: "雨伞", quantity: "10", unit: "个", currency: "USD" };
+  const tx = {
+    salesOrder: { create: async ({ data }) => { createData = data; return created; } },
+    salesOrderVersion: { create: async ({ data }) => { versionData = data; return data; } },
+  };
+  const prisma = {
+    customer: { findFirst: async () => customer },
+    customerContact: { findFirst: async () => null },
+    salesOrder: { findFirst: async () => ({ ...created, customer, contact: null, versions: [], boms: [] }) },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new SalesOrdersService(prisma, audit);
+  await service.create({
+    order_no: "TEST-SO-002",
+    customer_id: customer.id,
+    order_date: "2026-09-12T00:00:00.000Z",
+    product_name: "雨伞",
+    quantity: "10",
+    unit: "个",
+    currency: "USD",
+    unit_price: "12",
+    settlement_unit_price: "1.7",
+    receivable_amount: "17",
+    settlement_method: "tt",
+    local_currency_amount: "122.4",
+  }, user);
+  assert.equal(createData.settlementUnitPrice, "1.7");
+  assert.equal(createData.receivableAmount, "17");
+  assert.equal(createData.settlementMethod, "tt");
+  assert.equal(createData.localCurrencyAmount, "122.4");
+  assert.equal(versionData.snapshot.settlement_unit_price, "1.7");
+  assert.equal(versionData.snapshot.settlement_method, "tt");
+});
+
+test("sales.order.update writes settlement fields only when provided", async () => {
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "draft", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  const customer = { id: "customer-1", name: "海外客户", isActive: true };
+  let updateData;
+  const tx = {
+    salesOrder: { update: async ({ data }) => { updateData = data; return { ...order, ...data }; } },
+    salesOrderVersion: { create: async ({ data }) => data },
+  };
+  const prisma = {
+    customer: { findFirst: async () => customer },
+    customerContact: { findFirst: async () => null },
+    salesOrder: { findFirst: async () => order },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new SalesOrdersService(prisma, audit);
+  await service.update("order-1", { settlement_method: "monthly" }, user);
+  assert.equal(updateData.settlementMethod, "monthly");
+  assert.equal("settlementUnitPrice" in updateData, false, "没传的结算字段不应被改写");
+});
+
+test("销售单有下游事实时，改结算金额（核心字段）必须先回退下游", async () => {
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  const prisma = {
+    salesOrder: { findFirst: async () => order },
+    purchaseOrder: { count: async () => 1 },
+    productionOrder: { count: async () => 0 },
+  };
+  const service = new SalesOrdersService(prisma, audit);
+  await assert.rejects(
+    () => service.update("order-1", { settlement_unit_price: "1.9", reason: "调价" }, user),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_CORE_FIELDS_LOCKED",
+  );
+});

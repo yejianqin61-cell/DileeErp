@@ -299,6 +299,13 @@ model SalesOrder {
   unitPrice                 Decimal?                   @map("unit_price") @db.Decimal(18, 4)
   totalAmount               Decimal?                   @map("total_amount") @db.Decimal(18, 4)
   taxRate                   Decimal?                   @map("tax_rate") @db.Decimal(8, 4)
+  // 结算口径（销售手工填写）：结算币价=按结算币种计价的单价；应收金额=本单应收总额；
+  // 结算方式=tt/letter_of_credit/cash/monthly/other；本币金额=折算成人民币的金额。
+  // 成品出库过账生成应收来源时优先取结算币价，其次取销售单价。
+  settlementUnitPrice       Decimal?                   @map("settlement_unit_price") @db.Decimal(18, 4)
+  receivableAmount          Decimal?                   @map("receivable_amount") @db.Decimal(18, 4)
+  settlementMethod          String?                    @map("settlement_method") @db.VarChar(30)
+  localCurrencyAmount       Decimal?                   @map("local_currency_amount") @db.Decimal(18, 4)
   status                    String                     @default("draft") @db.VarChar(30)
   currentVersion            Int                        @default(1) @map("current_version")
   extensionData             Json                       @default("{}") @map("extension_data")

@@ -42,13 +42,15 @@ export class FinishedGoodsOutboundService {
       const balance = await this.inventory.finishedGoodsBalance(tx, current.productionOrderId, current.unitId, "finished_goods");
       if (current.quantity.gt(balance)) throw this.exceeded("FINISHED_GOODS_OUTBOUND_INVENTORY_INSUFFICIENT", balance);
       const sales = await tx.salesOrder.findUnique({ where: { id: current.salesOrderId } });
-      if (!sales?.unitPrice || sales.unitPrice.isNegative()) throw this.invalid("SALES_UNIT_PRICE_REQUIRED", "销售单缺少有效销售单价，不能生成应收并过账");
+      // 应收金额优先按「结算币价」计价（销售单新增的结算口径），没有填时才退回销售单价。
+      const settlementPrice = sales?.settlementUnitPrice ?? sales?.unitPrice;
+      if (!sales || !settlementPrice || settlementPrice.isNegative()) throw this.invalid("SALES_UNIT_PRICE_REQUIRED", "销售单缺少有效销售单价/结算币价，不能生成应收并过账");
       const postedOutbound = await tx.finishedGoodsOutbound.aggregate({ where: { productionOrderId: current.productionOrderId, id: { not: id }, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } });
       const postedQuantity = new Prisma.Decimal(postedOutbound._sum.quantity ?? 0);
       if (postedQuantity.plus(current.quantity).gt(sales.quantity) && !current.riskReason?.trim()) throw new UnprocessableEntityException({ code: "OUTBOUND_PLAN_EXCEEDED_REASON_REQUIRED", message: "出库累计超过订单计划量，必须填写风险原因", details: [{ planned_quantity: sales.quantity.toString(), posted_quantity: postedQuantity.toString() }] });
       const posted = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity.negated(), sourceType: "finished_goods_outbound", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
-      await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: sales.unitPrice, taxRate: sales.taxRate, amount: sales.unitPrice.mul(current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, ...this.audit.create(user) } });
+      await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: settlementPrice, taxRate: sales.taxRate, amount: settlementPrice.mul(current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, ...this.audit.create(user) } });
       return posted;
     });
     await this.audit.record("finished_goods_outbound.post", "finished_goods_outbound", user.id, id, { order_no: result.orderNo, quantity: result.quantity.toString() });
