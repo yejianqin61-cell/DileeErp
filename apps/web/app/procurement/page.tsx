@@ -47,11 +47,14 @@ export default function ProcurementPage() {
   const [purchaseDraft, setPurchaseDraft] = useState<PurchaseDraft | null>(null); const [stockByMaterial, setStockByMaterial] = useState<Record<string, string>>({});
   // 采购订单导出（仅管理员）：单张按行导出，批量按当前搜索条件导出。
   const [exportBusy, setExportBusy] = useState("");
-  async function load() { setLoading(true); setError(""); try { const [po, qc, ib, payable, notices, entries, ms, us, ss, bs, so] = await Promise.all([apiGet<PurchaseOrder[]>("/purchase-orders"), apiGet<Inspection[]>("/incoming-inspections"), apiGet<Inbound[]>("/raw-material-inbounds"), apiGet<PayableSource[]>("/payable-sources"), apiGet<InboundNotice[]>("/raw-material-inbound-notices"), apiGet<PayableEntry[]>("/finance/payable-entries").catch(() => ({ data: [] as PayableEntry[], meta: {} })), apiGet<Reference[]>("/materials"), apiGet<Reference[]>("/units"), apiGet<Reference[]>("/suppliers"), apiGet<Reference[]>("/boms"), apiGet<Reference[]>("/sales-orders")]); setOrders(po.data); setInspections(qc.data); setInbounds(ib.data); setPayables(payable.data); setInboundNotices(notices.data); setPayableEntries(entries.data); setMaterials(ms.data); setUnits(us.data); setSuppliers(ss.data); setBoms(bs.data); setSalesOrders(so.data); } catch (cause) { setError(messageOf(cause, "采购数据加载失败")); } finally { setLoading(false); } }
+  // options.silent：后台刷新（窗口重新获得焦点/可见）时传 true。整页 loading 会把页面卸载，
+  // 连带卸载正在编辑的弹窗（ActionDialog 的输入是组件内部 state）——用户切到别的软件复制数据、
+  // 再切回来时刚填的内容就全没了，所以后台刷新必须静默。
+  async function load(options: { silent?: boolean } = {}) { if (!options.silent) setLoading(true); setError(""); try { const [po, qc, ib, payable, notices, entries, ms, us, ss, bs, so] = await Promise.all([apiGet<PurchaseOrder[]>("/purchase-orders"), apiGet<Inspection[]>("/incoming-inspections"), apiGet<Inbound[]>("/raw-material-inbounds"), apiGet<PayableSource[]>("/payable-sources"), apiGet<InboundNotice[]>("/raw-material-inbound-notices"), apiGet<PayableEntry[]>("/finance/payable-entries").catch(() => ({ data: [] as PayableEntry[], meta: {} })), apiGet<Reference[]>("/materials"), apiGet<Reference[]>("/units"), apiGet<Reference[]>("/suppliers"), apiGet<Reference[]>("/boms"), apiGet<Reference[]>("/sales-orders")]); setOrders(po.data); setInspections(qc.data); setInbounds(ib.data); setPayables(payable.data); setInboundNotices(notices.data); setPayableEntries(entries.data); setMaterials(ms.data); setUnits(us.data); setSuppliers(ss.data); setBoms(bs.data); setSalesOrders(so.data); } catch (cause) { setError(messageOf(cause, "采购数据加载失败")); } finally { if (!options.silent) setLoading(false); } }
   useEffect(() => { void load(); }, []);
   // 仓库侧入库过账/冲销后，本页的“入库状态/应付来源/财务付款”需要重新拉取才及时。
   useEffect(() => {
-    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load(); };
+    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load({ silent: true }); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };

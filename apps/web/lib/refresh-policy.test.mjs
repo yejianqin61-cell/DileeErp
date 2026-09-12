@@ -36,3 +36,21 @@ test("仓储页的入库状态要显示中文，不能直接暴露英文原值",
   assert.match(source, /draft: "待入库登记"/);
   assert.match(source, /posted: "入库成功"/);
 });
+
+// 用户反馈：「新建物料界面老是会重新加载，切到别的软件复制数据再切回来，刚填的内容就没了」。
+// 原因是焦点/可见性刷新调用 load() 时会 setLoading(true)，页面切回整页 loading，
+// 把正在编辑的弹窗（ActionDialog 的输入是组件内部 state）连同 DOM 一起卸载。
+test("后台刷新必须静默：不能切整页 loading（会卸载正在编辑的弹窗、清空用户输入）", () => {
+  const pages = [
+    "app/procurement/page.tsx",
+    "app/warehouse/raw-material-storage/page.tsx",
+    "app/warehouse/finished-goods-storage/page.tsx",
+    "components/production/production-order-detail-page.tsx",
+  ];
+  for (const file of pages) {
+    const source = readFileSync(join(webRoot, file), "utf8");
+    assert.match(source, /load\(\{ silent: true \}\)|load\(undefined, \{ silent: true \}\)/, `${file} 的后台刷新必须静默`);
+    assert.match(source, /if \(!options\.silent\) setLoading\(true\)/, `${file} 的 load 必须支持 silent 选项`);
+    assert.match(source, /if \(!options\.silent\) setLoading\(false\)/, `${file} 的 silent 刷新不能把 loading 置回初始态`);
+  }
+});

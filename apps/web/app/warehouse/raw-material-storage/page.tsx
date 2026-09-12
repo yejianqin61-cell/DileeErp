@@ -37,8 +37,10 @@ export default function RawMaterialStoragePage() {
   const noticeId = searchParams.get("notice_id");
   const autoOpenedNoticeRef = useRef<string | null>(null);
 
-  async function load() {
-    setLoading(true);
+  // silent：后台刷新（窗口重新获得焦点/可见）时为 true —— 不切整页 loading。
+  // 整页 loading 会把页面（包括正在编辑的弹窗）卸载掉，用户切到别的软件复制数据再切回来就白填了。
+  async function load(options: { silent?: boolean } = {}) {
+    if (!options.silent) setLoading(true);
     setError("");
     try {
       const [m, u, i, ib] = await Promise.all([
@@ -57,14 +59,14 @@ export default function RawMaterialStoragePage() {
     } catch (cause) {
       setError(messageOf(cause, "原料仓储情况加载失败"));
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
   }
 
   useEffect(() => { void load(); }, []);
   // 跨模块状态刷新：仓库在别处过账/冲销后，本页重新可见时自动拉取，保证入库状态及时更新。
   useEffect(() => {
-    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load(); };
+    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load({ silent: true }); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };

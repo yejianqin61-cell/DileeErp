@@ -42,8 +42,9 @@ export default function FinishedGoodsStoragePage() {
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
 
-  async function load(targetOrderNo = appliedOrderNo) {
-    setLoading(true);
+  // options.silent：后台刷新（焦点/可见性变化）时不切整页 loading，避免卸载正在编辑的弹窗、清掉用户刚填的内容。
+  async function load(targetOrderNo = appliedOrderNo, options: { silent?: boolean } = {}) {
+    if (!options.silent) setLoading(true);
     setError("");
     const scope = targetOrderNo ? `?order_no=${encodeURIComponent(targetOrderNo)}` : "";
     try {
@@ -67,13 +68,13 @@ export default function FinishedGoodsStoragePage() {
     } catch (cause) {
       setError(messageOf(cause, "成品仓储情况加载失败"));
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
   }
 
   useEffect(() => { void load(""); }, []);
   useEffect(() => {
-    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load(); };
+    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load(undefined, { silent: true }); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
