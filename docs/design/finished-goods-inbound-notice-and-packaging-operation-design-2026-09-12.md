@@ -1,0 +1,68 @@
+# 包装工序收尾与成品分批入库通知设计（2026-09-12）
+
+## 1. 业务口径（用户确认）
+
+1. **包装工序是每个生产单的收尾工序**：按「工序名称包含 `包装`」认定（不新增主数据字段）；多道命中取序号最大的一道，已取消的工序不算。
+2. **默认每个生产单都要有包装工序**：建单时若工序主数据存在启用的「包装」工序，自动追加为末道（同一事务内完成，失败不阻断建单）；已有单据可在生产单详情点「补建包装工序」幂等补建。
+3. **包装完成后即可通知成品入库，可边生产边入库**：生产手动发「成品入库通知」（可多次、可分批），**不需要等包装工序全部完成**，也不需要等其他工序完工。
+4. **QC 仍是入库前置**：仓库按通知送检 → 录入 QC → QC 合格量登记成品入库 → 过账后计入成品存量。
+5. **不锁定工序顺序**：包装只作为默认末道工序，允许后续再添工序；生产单完工条件不变（所有有效工序达计划量）。
+
+## 2. 数据模型
+
+`finished_goods_inbound_notices`（迁移 `20260912140000_finished_goods_inbound_notices`）：
+
+| 字段 | 说明 |
+| --- | --- |
+| notice_no | `FGN-YYYYMMDD-XXXXXXXX`，唯一 |
+| order_no / production_order_id / production_order_no_snapshot | 订单与生产单快照 |
+| production_order_operation_id / operation_name_snapshot | 包装工序及其名称快照 |
+| product_name_snapshot / product_specification_snapshot | 成品与规格快照 |
+| unit_id / unit_name_snapshot | 单位快照 |
+| notice_quantity / notice_date / batch_no | 本批通知数量、日期、批次号（可选） |
+| status | `pending` 待送检 / `partially_inbound` 入库中 / `completed` 已完成 / `cancelled` 已取消 |
+| version / idempotency_key / remark + 审计字段 | 版本、幂等键（批次重试不重复建单）、备注 |
+
+## 3. 数量与状态口径
+
+- **可通知入库量** = 包装工序累计报工量（`operation_daily_reports.completed_quantity` 口径，与生产进度一致）− 已通知未取消量。
+  超过上限返回 422 `INBOUND_NOTICE_QUANTITY_EXCEEDED` 并回带 `packaging_reported_quantity / notified_quantity / available_quantity`。
+  计算在生产单行锁（`FOR UPDATE`）内完成，与并发报工/通知串行。
+- **可送检量** = 通知数量 − 该通知下未取消（`draft/submitted/inspecting/qc_completed`）的送检量；取消送检后额度自动释放。
+- **通知状态推导**（`finished-goods-inbound-notice-status.ts`，在送检/QC/入库的同一事务内刷新）：
+  - `pending`：尚未送检；
+  - `partially_inbound`：已部分送检，或存在在途（草稿）入库；
+  - `completed`：通知量已全部送检且没有在途入库（差额通常是不合格数量，不会再有入库）；
+  - `cancelled`：取消态不参与推导。
+- 取消通知：必须填原因；已有未取消送检单时拒绝（`INBOUND_NOTICE_HAS_SUBMISSIONS`）。
+
+## 4. 送检来源变更
+
+- `GET /finished-goods/qc/sources` 的厂内来源从「整单完工量（所有工序最小完工量）」改为**按通知逐条返回**：
+  `source_type = finished_goods_inbound_notice`、`source_id = 通知 ID`，并带 `notice_no / batch_no / packaging_operation_name / available_quantity`。
+- **`in_house_completion` 不再接受新建送检**（422 `FINISHED_GOODS_QC_SOURCE_TYPE_RETIRED`）；历史送检单仍可查询、QC 与入库链路不受影响。
+  这条是刻意的一次性收紧：否则「全部工序最小完工量」会成为绕过包装工序的第二个入口。
+- 外加工仍走「成品回厂交接 → 送检」，逻辑不变。
+
+## 5. 下游展示
+
+- **生产单详情 → 成品存量与入库通知**：包装工序（名称/序号）、包装累计报工、已通知、可通知、已送检、QC 合格、在途入库、已入库、成品存量、次品存量、已出库、客户退货 + 通知列表（含每批进度与取消）。数据源 `GET /production/orders/:id/finished-goods-summary`（production 角色）。
+- **仓库 → 成品仓储情况**（`/warehouse/finished-goods-storage`）：成品/次品存量（`/inventory/balances`）、待入库通知（`/finished-goods/inbound-notices`，warehouse 只读视图）、质检合格待入库（`/finished-goods/qc-records` → 登记入库）、成品入库单（过账/冲销）、成品出库单。
+- **工作台**：成品库存卡片补充 已入库/在途/待入库/成品存量/次品存量/已出库。
+
+## 6. 权限
+
+| 动作 | 角色 |
+| --- | --- |
+| 发/取消成品入库通知、补建包装工序、查看生产单成品汇总 | production |
+| 查看入库通知（只读） | warehouse（独立只读控制器，避免仓库误改生产事实） |
+| 送检/QC/成品入库过账与冲销 | warehouse |
+
+## 7. 验收要点
+
+1. 包装工序累计报工 60 → 通知 20 成功、通知 61 失败；包装再报工后可继续通知剩余额度。
+2. 同一员工同一天多条日报不再影响本链路；通知剩余量只与包装工序报工量相关。
+3. 通知 → 送检 → QC → 分批入库 → 存量增加；分批入库时通知状态从 `pending` 变 `partially_inbound`，全部入库后变 `completed`。
+4. 通知量未全部 QC 合格（存在不合格）时，状态在「全部送检且无在途入库」后即为 `completed`，不会永远停在入库中。
+5. 没有包装工序的生产单：发通知被拒并提示补建；点「补建包装工序」后即可发通知。
+6. 外加工生产单不发成品入库通知（走成品回厂）。
