@@ -14,6 +14,7 @@ const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), upda
 function decimal(value) { return new Prisma.Decimal(value); }
 
 function salesService(overrides = {}) {
+  const balance = overrides.balance ?? decimal(50); // 库存事实余额（= 入库 − 出库 + 退货回仓）
   const prisma = {
     salesOrder: {
       findFirst: async () => ({ id: "so-1", orderNo: "SO-1", customerId: "customer-1", productName: "折叠伞", productSpec: "8K", quantity: decimal(100), unit: "把", settlementUnitPrice: decimal("12.5"), customer: { id: "customer-1", name: "海外客户" } }),
@@ -39,11 +40,11 @@ function salesService(overrides = {}) {
       finishedGoodsOutboundNotice: { aggregate: async () => ({ _sum: { noticeQuantity: overrides.pendingNotice ?? decimal(0) } }), create: async ({ data }) => { overrides.created?.push(data); return { id: "notice-1", ...data }; } },
     }),
   };
-  return new FinishedGoodsOutboundNoticeService(prisma, { finishedGoodsBalance: async () => decimal(0) }, audit);
+  return new FinishedGoodsOutboundNoticeService(prisma, { finishedGoodsBalance: async () => balance }, audit);
 }
 
-test("销售订单成品情况：可出库 = 已入库 − 已出库 − 待办通知量", async () => {
-  const service = salesService({ inbound: decimal(60), outbound: decimal(10), pendingNotice: decimal(20) });
+test("销售订单成品情况：可出库 = 库存余额 − 待办通知量（退货回仓也会算进来）", async () => {
+  const service = salesService({ inbound: decimal(60), outbound: decimal(10), pendingNotice: decimal(20), balance: decimal(50) });
   const summary = await service.summary("so-1");
   const row = summary.production_orders[0];
   assert.equal(row.inbound_quantity, "60");
@@ -51,6 +52,13 @@ test("销售订单成品情况：可出库 = 已入库 − 已出库 − 待办�
   assert.equal(row.pending_notice_quantity, "20");
   assert.equal(row.available_quantity, "30");
   assert.equal(summary.settlement_unit_price, "12.5");
+});
+
+test("客户退货回到成品仓后，可出库量随之增加（按库存余额而不是硬算入库−出库）", async () => {
+  // 入库 60、出库 10，但有一笔退货 5 回到成品仓 → 余额 55，扣掉待办通知 20 = 可出库 35
+  const service = salesService({ inbound: decimal(60), outbound: decimal(10), pendingNotice: decimal(20), balance: decimal(55) });
+  const summary = await service.summary("so-1");
+  assert.equal(summary.production_orders[0].available_quantity, "35");
 });
 
 test("通知出库按可出库量建整批通知", async () => {

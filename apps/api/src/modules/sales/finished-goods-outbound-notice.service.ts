@@ -32,7 +32,7 @@ export class FinishedGoodsOutboundNoticeService {
     });
     const rows = [];
     for (const production of productionOrders) {
-      const quantities = await this.productionQuantities(production.id);
+      const quantities = await this.productionQuantities(production.id, production.unitId);
       rows.push({
         production_order_id: production.id,
         production_order_no: production.productionOrderNo,
@@ -85,7 +85,7 @@ export class FinishedGoodsOutboundNoticeService {
           await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${target.productionOrderId}::uuid FOR UPDATE`;
           const locked = await tx.productionOrder.findFirst({ where: { id: target.productionOrderId, deletedAt: null }, include: { unit: true } });
           if (!locked) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
-          const quantities = await this.productionQuantities(target.productionOrderId, tx);
+          const quantities = await this.productionQuantities(target.productionOrderId, locked.unitId, tx);
           if (quantities.available.lte(0)) throw this.nothingToNotify(target.productionOrderId);
           const row = await tx.finishedGoodsOutboundNotice.create({
             data: {
@@ -146,23 +146,26 @@ export class FinishedGoodsOutboundNoticeService {
     const productionOrders = await this.prisma.productionOrder.findMany({ where: { salesOrderId, deletedAt: null, NOT: { status: "cancelled" }, ...(productionOrderId ? { id: productionOrderId } : {}) }, orderBy: { createdAt: "asc" } });
     const rows = [];
     for (const production of productionOrders) {
-      const quantities = await this.productionQuantities(production.id);
+      const quantities = await this.productionQuantities(production.id, production.unitId);
       if (quantities.available.gt(0)) rows.push({ productionOrderId: production.id, available: quantities.available });
     }
     return rows;
   }
 
-  /** 已入库 / 已出库 / 待办通知 / 可出库（可出库 = 已入库 − 已出库 − 待办通知）。 */
-  private async productionQuantities(productionOrderId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
-    const [inbound, outbound, pendingNotice] = await Promise.all([
+  /** 已入库 / 已出库 / 待办通知 / 可出库。
+   *  可出库取**库存事实余额**（= 入库 − 出库 + 客户退货回到成品仓的部分）再扣掉待办通知量，
+   *  不能用「入库 − 出库」硬算：客户退货、冲销都会改变真实可用量，否则通知数量会和库存对不上。 */
+  private async productionQuantities(productionOrderId: string, unitId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
+    const [inbound, outbound, pendingNotice, balance] = await Promise.all([
       client.finishedGoodsInbound.aggregate({ where: { productionOrderId, deletedAt: null, status: "posted" }, _sum: { quantity: true } }),
       client.finishedGoodsOutbound.aggregate({ where: { productionOrderId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } }),
       client.finishedGoodsOutboundNotice.aggregate({ where: { productionOrderId, deletedAt: null, status: { in: ["pending", "outbound_created"] } }, _sum: { noticeQuantity: true } }),
+      this.inventory.finishedGoodsBalance(client, productionOrderId, unitId, "finished_goods"),
     ]);
     const inboundQuantity = new Prisma.Decimal(inbound._sum.quantity ?? 0);
     const outboundQuantity = new Prisma.Decimal(outbound._sum.quantity ?? 0);
     const pendingNoticeQuantity = new Prisma.Decimal(pendingNotice._sum.noticeQuantity ?? 0);
-    const available = inboundQuantity.minus(outboundQuantity).minus(pendingNoticeQuantity);
+    const available = new Prisma.Decimal(balance).minus(pendingNoticeQuantity);
     return { inbound: inboundQuantity, outbound: outboundQuantity, pendingNotice: pendingNoticeQuantity, available: available.lt(0) ? new Prisma.Decimal(0) : available };
   }
 
