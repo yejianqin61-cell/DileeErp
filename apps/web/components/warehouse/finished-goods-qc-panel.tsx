@@ -88,17 +88,39 @@ export function FinishedGoodsQcPanel() {
   function chooseQcOrder() {
     setDialog({ title: "选择订单号", fields: [{ name: "order_no", label: "订单号", type: "searchable-select", required: true, options: orderNumbers.map((item) => ({ value: item, label: item })), placeholder: "搜索并选择订单号" }], submit: (v) => openQc(v.order_no) });
   }
+  /**
+   * 录入质检前先在前端校验数量配平。
+   * 服务端同样有这条规则（数量不配平返回 422 并说明差额），但在这里先拦可以避免用户
+   * 提交后才发现填错；历史上服务端抛的是普通 Error，界面只会显示「服务器内部错误」。
+   */
+  function qcBalanceError(values: Record<string, string>): string {
+    const round = (value: number) => Math.round(value * 10000) / 10000;
+    const inspected = Number(values.inspected_quantity);
+    const qualified = values.qualified_quantity?.trim() === "" || values.qualified_quantity === undefined ? 0 : Number(values.qualified_quantity);
+    const conditional = values.conditional_accept_quantity?.trim() === "" || values.conditional_accept_quantity === undefined ? 0 : Number(values.conditional_accept_quantity);
+    const rejected = values.rejected_quantity?.trim() === "" || values.rejected_quantity === undefined ? 0 : Number(values.rejected_quantity);
+    if (!Number.isFinite(inspected) || inspected <= 0) return "「本次检验数量」必须填写为大于 0 的数字";
+    if ([qualified, conditional, rejected].some((value) => !Number.isFinite(value) || value < 0)) return "「合格数量 / 条件接收数量 / 不合格数量」必须是不小于 0 的数字";
+    const split = round(qualified + conditional + rejected);
+    if (round(inspected) !== split) return `数量不配平：本次检验 ${round(inspected)} ≠ 合格 ${round(qualified)} + 条件接收 ${round(conditional)} + 不合格 ${round(rejected)}（拆分合计 ${split}）`;
+    if (rejected > 0 && !values.rejection_reason?.trim()) return "存在不合格数量时必须填写「不合格原因」";
+    return "";
+  }
   function openQc(orderNo: string, values: Record<string, string> = {}) {
     const orderSubmissions = submissions.filter((item) => item.orderNo === orderNo && ["submitted", "inspecting"].includes(item.status));
     setDialog({ title: orderNo ? `录入成品质检：${orderNo}` : "录入成品质检（先选订单号）", fields: [
       { name: "submission_id", label: "订单内送检批次", type: "select", required: true, options: orderSubmissions.map((item) => ({ value: item.id, label: `${item.submissionNo} / ${item.submittedQuantity} ${item.unitNameSnapshot} / ${item.status}` })), defaultValue: values.submission_id },
       { name: "inspection_date", label: "检验日期", type: "date", required: true, defaultValue: values.inspection_date ?? new Date().toISOString().slice(0, 10) },
-      { name: "inspected_quantity", label: "本次检验数量", type: "number", required: true, defaultValue: values.inspected_quantity },
+      { name: "inspected_quantity", label: "本次检验数量", type: "number", required: true, defaultValue: values.inspected_quantity, placeholder: "必须等于合格+条件接收+不合格" },
       { name: "qualified_quantity", label: "合格数量", type: "number", required: true, defaultValue: values.qualified_quantity ?? "0" },
       { name: "conditional_accept_quantity", label: "条件接收数量", type: "number", required: true, defaultValue: values.conditional_accept_quantity ?? "0" },
       { name: "rejected_quantity", label: "不合格数量", type: "number", required: true, defaultValue: values.rejected_quantity ?? "0" },
-      { name: "rejection_reason", label: "不合格原因", type: "textarea", defaultValue: values.rejection_reason },
-    ], submit: (v) => void run(() => apiPost("/finished-goods/qc-records", v), "成品质检已保存") });
+      { name: "rejection_reason", label: "不合格原因", type: "textarea", defaultValue: values.rejection_reason, placeholder: "不合格数量大于 0 时必填" },
+    ], submit: (v) => {
+      const invalid = qcBalanceError(v);
+      if (invalid) { setError(invalid); notifyError(invalid); return; }
+      void run(() => apiPost("/finished-goods/qc-records", v), "成品质检已保存");
+    } });
   }
   function openSubmission(values: Record<string, string>) {
     setPendingQcValues(values); setDialog(null);
