@@ -20,20 +20,20 @@ export class ProductionPayrollExportService {
     const { from, to } = this.monthRange(filters.month);
     const rows = await this.fetchRows({ operation_id: filters.operation_id, from, to });
     const operation = await this.prisma.operationCatalog.findFirst({ where: { id: filters.operation_id }, select: { operationName: true } });
-    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "件数", "时长（分钟）", "单价", "合计", "备注"];
-    const summaryHeader = ["当月各订单该工序汇总（按生产日期划分）", "订单号", "生产单号", "件数合计", "时长（分钟）合计", "合计"];
+    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "件数", "时长（小时）", "单价", "合计", "备注"];
+    const summaryHeader = ["当月各订单该工序汇总（按生产日期划分）", "订单号", "生产单号", "件数合计", "时长（小时）合计", "合计"];
     const summary = this.summarizeByOrder(rows);
-    const summaryRows = summary.map((row) => [null, row.orderNo, row.productionOrderNo, row.quantity.toString(), row.duration.toString(), row.amount.toString()]);
+    const summaryRows = summary.map((row) => [null, row.orderNo, row.productionOrderNo, row.quantity.toString(), this.hours(row.duration), row.amount.toString()]);
     const sheetRows: Array<Array<string | number | null>> = [
       ["工序盘点表"],
       ["统计月份", filters.month],
       ["工序", operation?.operationName ?? filters.operation_id],
-      ["数据范围", "当月（按工序生产日期划分）所有订单的该工序有效员工日报明细"],
+      ["数据范围", "当月（按工序生产日期划分）所有订单的该工序有效员工日报明细；计时展示时长（小时），合计 = 时长（小时）× 单价"],
       ["生成时间", new Date().toISOString()],
       ["操作人", user.username],
       [],
       detailHeader,
-      ...rows.map((row) => this.detailRow(row, "minute")),
+      ...rows.map((row) => this.detailRow(row)),
       [],
       summaryHeader,
       ...summaryRows,
@@ -49,16 +49,16 @@ export class ProductionPayrollExportService {
     const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "件数", "时长（小时）", "单价", "合计", "备注"];
     const summaryHeader = ["当月各工序汇总（按生产日期划分）", "工序", "件数合计", "时长（小时）合计", "合计"];
     const summary = this.summarizeByOperation(rows);
-    const summaryRows = summary.map((row) => [null, row.operationName, row.quantity.toString(), row.duration.toString(), row.amount.toString()]);
+    const summaryRows = summary.map((row) => [null, row.operationName, row.quantity.toString(), this.hours(row.duration), row.amount.toString()]);
     const sheetRows: Array<Array<string | number | null>> = [
       ["当月工序明细总表"],
       ["统计月份", filters.month],
-      ["数据范围", "当月（按工序生产日期划分）所有订单、所有工序的有效员工日报明细"],
+      ["数据范围", "当月（按工序生产日期划分）所有订单、所有工序的有效员工日报明细；计时展示时长（小时）"],
       ["生成时间", new Date().toISOString()],
       ["操作人", user.username],
       [],
       detailHeader,
-      ...rows.map((row) => this.detailRow(row, "hour")),
+      ...rows.map((row) => this.detailRow(row)),
       [],
       summaryHeader,
       ...summaryRows,
@@ -87,7 +87,7 @@ export class ProductionPayrollExportService {
       ...operationHeader,
       [],
       detailHeader,
-      ...rows.map((row) => this.detailRow(row, "hour")),
+      ...rows.map((row) => this.detailRow(row)),
     ];
     return this.buildSheet(sheetRows, "订单号盘点表", { report_type: "订单号盘点表", filters, row_count: rows.length }, user);
   }
@@ -162,9 +162,9 @@ export class ProductionPayrollExportService {
     return rows;
   }
 
-  /** 明细行。durationMode: 工序盘点表保留分钟口径，其余表按时长（小时）。合计列原为“总薪酬”。 */
-  private detailRow(row: ReportRow, durationMode: "minute" | "hour") {
-    const duration = row.wageMode === "time_rate" ? (durationMode === "minute" ? row.durationMinutes?.toString() ?? "" : this.hours(row.durationMinutes)) : "";
+  /** 明细行。全站计时单位统一为小时：计时行展示 时长（小时）＝ 落库分钟 ÷ 60；计件行时长留空。合计列原为“总薪酬”。 */
+  private detailRow(row: ReportRow) {
+    const duration = row.wageMode === "time_rate" ? this.hours(row.durationMinutes) : "";
     return [row.orderNo, row.productionOrderNoSnapshot, row.operationNameSnapshot, row.reportDate.toISOString().slice(0, 10), row.employee.employeeNo, row.employeeNameSnapshot, row.employee.department.name, row.employee.employeeType === "workshop" ? "车间" : "非车间", row.wageMode === "piece_rate" ? "计件" : "计时", row.wageMode === "piece_rate" ? row.quantity.toString() : "", duration, row.unitPrice.toString(), row.calculatedAmount.toString(), row.remark ?? ""];
   }
 
@@ -208,7 +208,12 @@ export class ProductionPayrollExportService {
     return [...groups.values()];
   }
 
-  private hours(durationMinutes: Prisma.Decimal | null) { if (durationMinutes === null || durationMinutes === undefined) return ""; const value = new Prisma.Decimal(durationMinutes).div(60).toFixed(2); return value.endsWith(".00") ? value.slice(0, -3) : value.endsWith("0") && value.includes(".") ? value.slice(0, -1) : value; }
+  /**
+   * 分钟 -> 小时展示（最多 4 位小数、去掉尾随零）。
+   * 落库单位始终是分钟，小时仅用于录入/展示，因此所有导出与接口的“小时”都必须走这里换算，
+   * 避免出现“表头写小时、单元格还是分钟”的口径错位。
+   */
+  private hours(durationMinutes: Prisma.Decimal | null) { if (durationMinutes === null || durationMinutes === undefined) return ""; return new Prisma.Decimal(durationMinutes).div(60).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); }
 
   private monthRange(month: string) {
     const from = new Date(`${month}-01T00:00:00.000Z`);

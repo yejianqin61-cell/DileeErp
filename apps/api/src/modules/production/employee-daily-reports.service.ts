@@ -6,7 +6,10 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { reconcileDailyDiscrepancy } from "./daily-report-alerts";
 import { ProductionProgressService } from "./production-progress.service";
 
-type Input = { production_order_id: string; production_order_operation_id: string; employee_id: string; report_date: string; wage_mode: string; quantity?: string; duration_minutes?: string; unit_price?: string; remark?: string; idempotency_key?: string };
+// 计时单位口径（全站统一为“小时”）：对外的录入字段是 duration_hours（小时，最多 4 位小数）；
+// duration_minutes 仅作为历史兼容字段保留（按分钟解释）。数据库 duration_minutes 列仍按分钟存储，
+// 历史数据不做迁移；界面与导出一律按小时展示。
+type Input = { production_order_id: string; production_order_operation_id: string; employee_id: string; report_date: string; wage_mode: string; quantity?: string; duration_hours?: string; duration_minutes?: string; unit_price?: string; remark?: string; idempotency_key?: string };
 type Filter = { employee_id?: string; order_no?: string; production_order_id?: string; production_order_operation_id?: string; report_date?: string; from?: string; to?: string; wage_mode?: string };
 
 @Injectable()
@@ -34,18 +37,15 @@ export class EmployeeDailyReportsService {
         const previous = await tx.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });
         if (previous) return previous;
       }
-      const otherMode = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: { not: input.wage_mode }, deletedAt: null }, select: { wageMode: true } });
-      if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: input.wage_mode }] });
-      const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
-      const row = existing
-        ? await this.mergeInTransaction(tx, existing, values, input.remark, user)
-        : await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
+      // 业务要求：同一天、同一生产单、同一工序、同一员工可以多次登记（多条日报，各自独立计薪），
+      // 因此这里不再做“同一计薪方式合并”或“只能一种计薪方式”的限制，每次提交都新增一条。
+      const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark?.trim() ? input.remark : null, ...this.audit.create(user) } });
       await reconcileDailyDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
       await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, refs.order.id, "employee_daily_report", row.id, user);
       return row;
     });
-    await this.audit.record("employee_daily_report.create", "employee_daily_report", user.id, created.id, { order_no: created.orderNo, reason: input.remark ?? null, accumulated: true });
+    await this.audit.record("employee_daily_report.create", "employee_daily_report", user.id, created.id, { order_no: created.orderNo, remark: created.remark ?? null, accumulated: false });
     return this.get(created.id);
   }
 
@@ -53,8 +53,6 @@ export class EmployeeDailyReportsService {
     if (!inputs.length) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORTS_REQUIRED", message: "请至少登记一名员工日报", details: [] });
     const first = inputs[0];
     if (inputs.some((input) => input.production_order_id !== first.production_order_id || input.production_order_operation_id !== first.production_order_operation_id || input.report_date !== first.report_date)) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_BATCH_MISMATCH", message: "批量日报必须属于同一生产单、工序和日期", details: [] });
-    const employeeIds = new Set<string>();
-    for (const input of inputs) { if (employeeIds.has(input.employee_id)) throw new UnprocessableEntityException({ code: "EMPLOYEE_DAILY_REPORT_BATCH_DUPLICATE", message: "同一员工不能在同一批日报中重复登记", details: [{ employee_id: input.employee_id }] }); employeeIds.add(input.employee_id); }
     const prepared = await Promise.all(inputs.map(async (input, index) => {
       const refs = await this.refs(input.production_order_id, input.production_order_operation_id, input.employee_id, input.report_date, false);
       return { input, refs, values: this.values(input) };
@@ -76,37 +74,11 @@ export class EmployeeDailyReportsService {
       const previous = await tx.employeeDailyReport.findFirst({ where: { idempotencyKey: input.idempotency_key, deletedAt: null } });
       if (previous) return previous;
     }
-    const otherMode = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: { not: input.wage_mode }, deletedAt: null }, select: { wageMode: true } });
-    if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: input.wage_mode }] });
-    const existing = await tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, reportDate: refs.reportDate, wageMode: input.wage_mode, deletedAt: null }, orderBy: { createdAt: "asc" } });
-    const row = existing
-      ? await this.mergeInTransaction(tx, existing, values, input.remark, user)
-      : await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark, ...this.audit.create(user) } });
+    // 同一员工在同一批里出现多次是允许的（多条目），每条独立成行。
+    const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark?.trim() ? input.remark : null, ...this.audit.create(user) } });
     await reconcileDailyDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
     await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
     return row;
-  }
-
-  /** B3/P1-14: same-day same-wage merge is only legal when the unit price matches; otherwise refuse and ask to correct the original row. Merge never overwrites unitPrice nor drifts the amount. */
-  private async mergeInTransaction(tx: Prisma.TransactionClient, existing: { id: string; quantity: Prisma.Decimal; durationMinutes: Prisma.Decimal | null; unitPrice: Prisma.Decimal; calculatedAmount: Prisma.Decimal; remark: string | null }, values: { quantity: Prisma.Decimal; durationMinutes?: Prisma.Decimal; unitPrice: Prisma.Decimal; amount: Prisma.Decimal }, remark: string | undefined, user: CurrentUser) {
-    if (!existing.unitPrice.eq(values.unitPrice)) {
-      throw new UnprocessableEntityException({
-        code: "DAILY_UNIT_PRICE_CONFLICT",
-        message: "同一员工同一工序同一天同一计薪方式已按不同单价登记，请先更正原日报行",
-        details: [{ existing_unit_price: existing.unitPrice.toString(), requested_unit_price: values.unitPrice.toString() }],
-      });
-    }
-    return tx.employeeDailyReport.update({
-      where: { id: existing.id },
-      data: {
-        quantity: existing.quantity.plus(values.quantity),
-        durationMinutes: existing.durationMinutes?.plus(values.durationMinutes ?? 0) ?? values.durationMinutes,
-        calculatedAmount: existing.calculatedAmount.plus(values.amount),
-        remark: remark ?? existing.remark ?? null,
-        version: { increment: 1 },
-        ...this.audit.update(user),
-      },
-    });
   }
 
   async update(id: string, input: Partial<Omit<Input, "production_order_id" | "production_order_operation_id" | "employee_id">> & { reason: string; expected_version?: number }, user: CurrentUser) {
@@ -115,11 +87,13 @@ export class EmployeeDailyReportsService {
     if (input.expected_version !== undefined && input.expected_version !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: current.version }] });
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
-    const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: input.remark ?? current.remark ?? undefined };
+    // 备注为可清空字段：显式提交空串表示清空（存入 null），未提交则保持原值。
+    const nextRemark = input.remark === undefined ? current.remark ?? null : (input.remark.trim() ? input.remark : null);
+    const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), ...(input.duration_hours !== undefined ? { duration_hours: input.duration_hours } : { duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()) }), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: nextRemark ?? undefined };
     const values = this.values(merged);
     // B3/P1-14: a cosmetic PATCH (wage mode/quantity/unit price untouched) must not recompute the
     // stored amount from "total × unit price" and silently drift payroll; keep the amount as-is.
-    const recomputeAmount = merged.wage_mode !== current.wageMode || input.quantity !== undefined || input.unit_price !== undefined || (merged.wage_mode === "time_rate" && input.duration_minutes !== undefined);
+    const recomputeAmount = merged.wage_mode !== current.wageMode || input.quantity !== undefined || input.unit_price !== undefined || (merged.wage_mode === "time_rate" && input.duration_minutes !== undefined) || (merged.wage_mode === "time_rate" && input.duration_hours !== undefined);
     const updated = await this.prisma.$transaction(async (tx) => {
       await this.lockOrderAndAssertStatus(tx, current.productionOrderId, ["in_progress", "completed"]);
       await this.lockOperationAndAssert(tx, current.productionOrderOperationId, current.productionOrderId, true, "已取消工序的日报不允许修改（仅允许删除纠错）");
@@ -127,13 +101,9 @@ export class EmployeeDailyReportsService {
       const locked = await tx.employeeDailyReport.findFirst({ where: { id, deletedAt: null }, select: { version: true } });
       if (!locked) throw new NotFoundException({ code: "EMPLOYEE_DAILY_REPORT_NOT_FOUND", message: "员工日报不存在", details: [] });
       if (input.expected_version !== undefined && input.expected_version !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: locked.version }] });
-      const [sameTarget, otherMode] = await Promise.all([
-        tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: merged.wage_mode, id: { not: id }, deletedAt: null }, select: { id: true } }),
-        tx.employeeDailyReport.findFirst({ where: { productionOrderOperationId: current.productionOrderOperationId, employeeId: current.employeeId, reportDate: refs.reportDate, wageMode: { not: merged.wage_mode }, id: { not: id }, deletedAt: null }, select: { wageMode: true } }),
-      ]);
-      if (sameTarget) throw new UnprocessableEntityException({ code: "DAILY_REPORT_DUPLICATE_TARGET", message: "修改后的员工日报目标日期和计薪方式已存在记录，请先更正原日报", details: [] });
-      if (otherMode) throw new UnprocessableEntityException({ code: "DAILY_WAGE_MODE_CONFLICT", message: "同一员工同一工序同一天只能使用一种计薪方式", details: [{ existing_wage_mode: otherMode.wageMode, requested_wage_mode: merged.wage_mode }] });
-      const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, ...(recomputeAmount ? { calculatedAmount: values.amount } : {}), remark: merged.remark ?? null, version: { increment: 1 }, ...this.audit.update(user) } });
+      // 业务要求：同一天、同一生产单、同一工序、同一员工允许存在多条日报（可复选、可混合计薪方式），
+      // 因此修改时也不再校验“目标日期+计薪方式是否已存在”或“只能一种计薪方式”。
+      const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, ...(recomputeAmount ? { calculatedAmount: values.amount } : {}), remark: nextRemark, version: { increment: 1 }, ...this.audit.update(user) } });
       await reconcileDailyDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, current.reportDate, user);
       if (refs.reportDate.getTime() !== current.reportDate.getTime()) await reconcileDailyDiscrepancy(tx, current.productionOrderId, current.productionOrderOperationId, refs.reportDate, user);
       await this.syncPayrollSource(tx, current.employeeId, current.productionOrderId, current.orderNo, current.reportDate, current.wageMode, user);
@@ -178,7 +148,8 @@ export class EmployeeDailyReportsService {
     const rows = await this.prisma.employeeDailyReport.findMany({ where: { deletedAt: null, reportDate: { gte: from, lte: to }, ...(filter.employee_id ? { employeeId: filter.employee_id } : {}), ...(filter.wage_mode ? { wageMode: filter.wage_mode } : {}) }, include: { employee: true }, orderBy: { reportDate: "asc" } });
     const groups = new Map<string, { employee_id: string; employee_name: string; production_order_id: string; order_no: string; wage_mode: string; period_start: string; period_end: string; quantity: Prisma.Decimal; duration_minutes: Prisma.Decimal; amount: Prisma.Decimal; report_ids: string[] }>();
     for (const row of rows) { const key = `${row.employeeId}|${row.productionOrderId}|${row.wageMode}`; const existing = groups.get(key) ?? { employee_id: row.employeeId, employee_name: row.employeeNameSnapshot, production_order_id: row.productionOrderId, order_no: row.orderNo, wage_mode: row.wageMode, period_start: filter.from, period_end: filter.to, quantity: new Prisma.Decimal(0), duration_minutes: new Prisma.Decimal(0), amount: new Prisma.Decimal(0), report_ids: [] }; existing.quantity = existing.quantity.plus(row.quantity); existing.duration_minutes = existing.duration_minutes.plus(row.durationMinutes ?? 0); existing.amount = existing.amount.plus(row.calculatedAmount); existing.report_ids.push(row.id); groups.set(key, existing); }
-    return [...groups.values()].map((item) => ({ ...item, quantity: item.quantity.toString(), duration_minutes: item.duration_minutes.toString(), amount: item.amount.toString(), source_read_only: true }));
+    // 对外统一小时口径：duration_hours 为换算值（分钟 ÷ 60，保留 4 位小数去尾零），duration_minutes 保留原始分钟（历史兼容）。
+    return [...groups.values()].map((item) => ({ ...item, quantity: item.quantity.toString(), duration_minutes: item.duration_minutes.toString(), duration_hours: item.duration_minutes.div(60).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""), amount: item.amount.toString(), source_read_only: true }));
   }
 
   /** B6: in correction mode (update/remove) skip employment status and hired/left window checks so departed/deactivated employees can still be corrected or removed. Date legality and order/operation state are still validated (also re-checked inside the transaction). */
@@ -198,19 +169,28 @@ export class EmployeeDailyReportsService {
     if (input.wage_mode !== "piece_rate" && input.wage_mode !== "time_rate") throw new UnprocessableEntityException({ code: "INVALID_WAGE_MODE", message: "计薪方式无效", details: [] });
     const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_EMPLOYEE_REPORT_QUANTITY", input.wage_mode === "piece_rate" ? "计件日报件数必须大于零" : "员工日报件数必须是非负十进制数", input.wage_mode !== "piece_rate") : new Prisma.Decimal(0);
     if (input.wage_mode === "piece_rate" && quantity.isZero()) throw new UnprocessableEntityException({ code: "PIECE_REPORT_QUANTITY_REQUIRED", message: "计件日报必须填写件数", details: [] });
-    // B13: duration_minutes must be a positive whole number of minutes; reject decimals/exponents/over-range via this.decimal() below.
-    const durationInput = input.duration_minutes?.trim() ? input.duration_minutes.trim() : undefined;
+    // 单位口径：计时统一按“小时”录入/展示（duration_hours，最多 4 位小数），
+    // duration_minutes 为历史兼容字段（按分钟解释）；两者不可同时提交。落库仍为分钟（小时 × 60）。
+    const hoursInput = input.duration_hours?.trim();
+    const minutesInput = input.duration_minutes?.trim();
+    if (hoursInput && minutesInput) throw new UnprocessableEntityException({ code: "INVALID_EMPLOYEE_REPORT_DURATION", message: "请勿同时提交时长（小时）与时长（分钟），计时单位统一为小时", details: [] });
+    let durationHours: Prisma.Decimal | undefined;
     let durationMinutes: Prisma.Decimal | undefined;
-    if (durationInput !== undefined) {
-      if (!/^\d+$/.test(durationInput)) throw new UnprocessableEntityException({ code: "INVALID_EMPLOYEE_REPORT_DURATION", message: "员工日报时长必须是大于 0 的整数（分钟）", details: [] });
-      durationMinutes = this.decimal(durationInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须是大于 0 的整数（分钟）");
+    if (hoursInput) {
+      durationHours = this.decimal(hoursInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须是大于 0 的小时数，最多 4 位小数");
+      durationMinutes = durationHours.mul(60);
+    } else if (minutesInput) {
+      durationMinutes = this.decimal(minutesInput, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长必须是大于 0 的分钟数，最多 4 位小数");
+      durationHours = durationMinutes.div(60);
     }
-    if (input.wage_mode === "time_rate" && !durationMinutes) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长", details: [] });
+    if (input.wage_mode === "time_rate" && !durationHours) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长（小时）", details: [] });
     const unitPrice = input.unit_price?.trim();
     if (!unitPrice) throw new UnprocessableEntityException({ code: "DAILY_WAGE_PRICE_REQUIRED", message: "请填写当日人工单价", details: [] });
     const price = this.decimal(unitPrice, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true);
-    const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).mul(price);
-    return { quantity, durationMinutes, unitPrice: price, amount };
+    // 计件：金额 = 件数 × 单价（元/件）；计时：金额 = 时长（小时）× 单价（元/小时）。
+    // 计时金额严格由落库的分钟数换算（分钟 ÷ 60 × 单价），保证金额与存储时长始终自洽。
+    const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).div(60).mul(price);
+    return { quantity, durationHours, durationMinutes, unitPrice: price, amount };
   }
 
   private async syncPayrollSource(client: Prisma.TransactionClient, employeeId: string, productionOrderId: string, orderNo: string, reportDate: Date, wageMode: string, user: CurrentUser) {

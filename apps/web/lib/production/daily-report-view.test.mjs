@@ -5,6 +5,9 @@ import { test } from "node:test";
 import {
   computeEmployeeDateTotals,
   employeeDateTotalKey,
+  hoursText,
+  hoursToMinutes,
+  minutesToHours,
   resolveBatchReportDate,
   resolveEntryDate,
   selectVisibleReports,
@@ -94,3 +97,36 @@ test("viewDateLabel: 未选日期展示“全部日期”", () => {
   assert.equal(viewDateLabel(""), "全部日期");
   assert.equal(viewDateLabel("2026-02-03"), "2026-02-03");
 });
+
+// 计时单位口径：接口/数据库按分钟存储，界面统一按小时录入与展示（全站统一为小时）。
+test("minutesToHours/hoursText: 分钟换算成小时展示，整数不带小数、小数去掉尾随零", () => {
+  assert.equal(minutesToHours(90), 1.5);
+  assert.equal(minutesToHours("120"), 2);
+  assert.equal(minutesToHours(0), 0);
+  assert.equal(minutesToHours(null), 0);
+  assert.equal(minutesToHours(undefined), 0);
+  assert.equal(minutesToHours("not-a-number"), 0);
+  assert.equal(hoursText(90), "1.5");
+  assert.equal(hoursText(120), "2");
+  assert.equal(hoursText(75), "1.25");
+  assert.equal(hoursText(0), "0");
+  assert.equal(hoursText(null), "");
+  assert.equal(hoursText(undefined), "");
+  assert.equal(hoursText(""), "");
+});
+
+test("hoursToMinutes: 小时换算成分钟，保留 4 位小数（与 Decimal(18,4) 一致）", () => {
+  assert.equal(hoursToMinutes(1.5), 90);
+  assert.equal(hoursToMinutes("2"), 120);
+  assert.equal(hoursToMinutes(0.0001), 0.006);
+  assert.equal(hoursToMinutes(""), 0);
+  assert.equal(hoursToMinutes(null), 0);
+});
+
+test("分钟与小时往返不丢精度：录入 1.5 小时 -> 落库 90 分钟 -> 界面仍旧 1.5 小时", () => {
+  for (const hours of ["0.5", "1", "1.25", "1.5", "7.75", "12"]) {
+    const minutes = hoursToMinutes(hours);
+    assert.equal(hoursText(minutes), String(Number(hours)), `${hours} 小时往返后应保持不变`);
+  }
+});
+

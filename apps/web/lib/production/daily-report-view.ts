@@ -58,3 +58,24 @@ export function resolveBatchReportDate(viewDate: string, draftReportDates: reado
 export function viewDateLabel(viewDate: string): string {
   return viewDate || "全部日期";
 }
+
+/**
+ * 计时单位口径：接口与数据库以“分钟”存储（durationMinutes），界面一律按“小时”录入与展示。
+ * 分钟 -> 小时（保留 4 位小数，避免 0.5 小时这类输入在往返中失真）。
+ */
+export function minutesToHours(minutes: string | number | null | undefined): number {
+  const value = Number(minutes ?? 0);
+  return Number.isFinite(value) ? Number((value / 60).toFixed(4)) : 0;
+}
+
+/** 小时 -> 分钟（保留 4 位小数，与数据库 Decimal(18,4) 口径一致）；用于行内编辑时的本地金额预览。 */
+export function hoursToMinutes(hours: string | number | null | undefined): number {
+  const value = Number(hours ?? 0);
+  return Number.isFinite(value) ? Number((value * 60).toFixed(4)) : 0;
+}
+
+/** 时长的展示文案：整数不带小数（2），小数去掉尾随零（1.5、1.25）；空值显示为空串。 */
+export function hoursText(minutes: string | number | null | undefined): string {
+  if (minutes === null || minutes === undefined || minutes === "") return "";
+  return String(minutesToHours(minutes));
+}
