@@ -94,8 +94,9 @@ export class EmployeeDailyReportsService {
     if (input.expected_version !== undefined && input.expected_version !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: current.version }] });
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
-    // 备注为可清空字段：显式提交空串表示清空（存入 null），未提交则保持原值。
-    const nextRemark = input.remark === undefined ? current.remark ?? null : (input.remark.trim() ? input.remark.trim() : null);
+    // 备注为可清空字段：显式提交 null 或空串表示清空（存 null），未提交（undefined）则保持原值。
+    // 注意 DTO 的 @IsOptional() 会放过 null，因此这里必须对 null 也安全，否则会抛 TypeError 变成 500。
+    const nextRemark = input.remark === undefined ? current.remark ?? null : (input.remark?.trim() ? input.remark.trim() : null);
     // 与新增一致：同时提交两种时长单位属于口径歧义，直接拒绝，避免静默只取其一。
     if (input.duration_hours?.trim() && input.duration_minutes?.trim()) throw new UnprocessableEntityException({ code: "INVALID_EMPLOYEE_REPORT_DURATION", message: "请勿同时提交时长（小时）与时长（分钟），计时单位统一为小时", details: [] });
     // 旧数据的分钟数换算成小时展示后会丢精度（33.333 分钟 -> "0.5556"），客户端还会把展示值整包回传；

@@ -189,7 +189,7 @@ test("更正日报：同一员工同一天可以改成与另一条不同的计�
   assert.equal(updated.durationMinutes.toString(), "120");
 });
 
-test("更正日报备注：空串表示清空（落库 null），未提交则保持原值", async () => {
+test("更正日报备注：空串或 null 都表示清空（落库 null），未提交则保持原值", async () => {
   const make = () => ({
     id: "report-1", version: 1, productionOrderId: "order-1", productionOrderOperationId: "operation-1", employeeId: "employee-1", orderNo: "SO-1", reportDate: new Date("2026-09-03T00:00:00.000Z"), wageMode: "piece_rate", quantity: new Prisma.Decimal("10"), durationMinutes: null, unitPrice: new Prisma.Decimal("2"), calculatedAmount: new Prisma.Decimal("20"), remark: "原始备注",
   });
@@ -200,6 +200,10 @@ test("更正日报备注：空串表示清空（落库 null），未提交则保
   assert.equal(kept.remark, "原始备注", "未提交备注时不得清空原备注");
   const cleared = await service.update("report-1", { remark: "", reason: "清空备注" }, { id: "user-1" });
   assert.equal(cleared.remark, null, "提交空串表示清空备注");
+  // DTO 的 @IsOptional() 会放过 null（不是 undefined），必须同样安全而不是抛 TypeError 变成 500。
+  await service.update("report-1", { remark: "再写一次", reason: "写回备注" }, { id: "user-1" });
+  const nulled = await service.update("report-1", { remark: null, reason: "清空备注" }, { id: "user-1" });
+  assert.equal(nulled.remark, null, "提交 null 也必须被当作清空而不是 500");
 });
 
 // 用户已确认的口径：切到小时单价后不得回溯重算历史日报金额（历史台账/薪资来源不能被改写）。
