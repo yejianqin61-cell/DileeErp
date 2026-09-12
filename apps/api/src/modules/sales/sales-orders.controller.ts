@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsDateString, IsDecimal, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsDateString, IsDecimal, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -11,18 +11,19 @@ import { SalesOrdersService } from "./sales-orders.service";
 
 // 导出以便契约测试直接用真实 ValidationPipe 校验前端请求体。
 export class SalesOrderDto {
-  @IsString() @MaxLength(100) order_no!: string;
-  @IsString() customer_id!: string;
+  // 必填字段先归一空串再校验："" / "   " 会变成 undefined，被 @IsNotEmpty() 拦下（旧行为会写入空订单号/空币种）。
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(100) order_no!: string;
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() customer_id!: string;
   @IsOptional() @IsString() contact_id?: string;
   @IsOptional() @IsString() @MaxLength(100) customer_po_no?: string;
   @IsOptional() @IsString() @MaxLength(100) external_contract_no?: string;
   @IsDateString() order_date!: string;
-  @IsString() @MaxLength(200) product_name!: string;
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(200) product_name!: string;
   @IsOptional() @IsString() @MaxLength(1000) product_spec?: string;
   @IsDecimal() quantity!: string;
-  @IsString() @MaxLength(30) unit!: string;
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(30) unit!: string;
   @IsOptional() @IsDateString() delivery_date?: string;
-  @IsString() @MaxLength(10) currency!: string;
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(10) currency!: string;
   // 单价/金额/税率留空时前端会提交 ""：先归一成 undefined，否则 @IsOptional() 不跳过空串 → 400。
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
@@ -34,12 +35,12 @@ export class UpdateSalesOrderDto {
   @IsOptional() @IsString() @MaxLength(100) customer_po_no?: string;
   @IsOptional() @IsString() @MaxLength(100) external_contract_no?: string;
   @IsOptional() @IsDateString() order_date?: string;
-  @IsOptional() @IsString() @MaxLength(200) product_name?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(200) product_name?: string;
   @IsOptional() @IsString() @MaxLength(1000) product_spec?: string;
   @IsOptional() @IsDecimal() quantity?: string;
-  @IsOptional() @IsString() @MaxLength(30) unit?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(30) unit?: string;
   @IsOptional() @IsDateString() delivery_date?: string;
-  @IsOptional() @IsString() @MaxLength(10) currency?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(10) currency?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
   @IsOptional() @EmptyStringToUndefined() @IsDecimal() tax_rate?: string;

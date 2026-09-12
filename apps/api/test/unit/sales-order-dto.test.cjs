@@ -69,3 +69,16 @@ test("空串归一没有放松校验：非法小数、未声明字段、缺必�
   await assertRejected(SalesOrderDto, withoutCurrency, "缺少币种必须 400");
   await assertRejected(SalesOrderDto, { ...dialogBody, quantity: "" }, "必填数量为空串必须 400");
 });
+
+test("必填文本字段留空必须 400（不能再把空订单号/空币种写进库）", async () => {
+  for (const [field, value] of [["order_no", ""], ["product_name", "   "], ["currency", ""], ["unit", " "], ["customer_id", ""]]) {
+    await assertRejected(SalesOrderDto, { ...dialogBody, [field]: value }, `${field} 为空必须 400`);
+  }
+});
+
+test("编辑销售单：必填文本字段传空串视为「不修改」而不是写入空值", async () => {
+  const result = await validateBody(UpdateSalesOrderDto, { unit: "", currency: "  ", product_name: "" });
+  assert.equal(result.unit, undefined);
+  assert.equal(result.currency, undefined);
+  assert.equal(result.product_name, undefined);
+});
