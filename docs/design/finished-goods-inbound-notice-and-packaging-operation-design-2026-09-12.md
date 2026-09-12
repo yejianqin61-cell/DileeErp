@@ -32,6 +32,8 @@
   超过上限返回 422 `INBOUND_NOTICE_QUANTITY_EXCEEDED` 并回带 `packaging_reported_quantity / notified_quantity / available_quantity`。
   计算在生产单行锁（`FOR UPDATE`）内完成，与并发报工/通知串行。
 - **可送检量** = 通知数量 − 该通知下未取消（`draft/submitted/inspecting/qc_completed`）的送检量；取消送检后额度自动释放。
+- **成品入库/次品的额度**：登记时可用量 = QC 合格量（合格 + 条件接收）− 其它 `draft/posted` 入库量；**过账时同样排除本单**（否则「可用量 − 自己」永远小于自己，任何单据都过不了账）。多批次因此既能逐批过账，又受 QC 合格量总闸门约束。
+- **仓库「待入库通知」计数**：按「可送检额度 > 0 或在途入库 > 0」统计。不能用「通知量 − 已入库」——QC 不合格的数量永远不会入库，那样会把通知永久算成待办。
 - **通知状态推导**（`finished-goods-inbound-notice-status.ts`，在送检/QC/入库的同一事务内刷新）：
   - `pending`：尚未送检；
   - `partially_inbound`：已部分送检（含只有草稿送检），或存在在途（草稿）入库；
