@@ -98,6 +98,11 @@ export default function MaterialIssuesPage() {
     finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    // 深链：生产单详情点「查看领料/补料单」带着 production_order_id 过来时直接按该生产单过滤。
+    const target = new URLSearchParams(window.location.search).get("production_order_id");
+    if (target) setProductionOrderId(target);
+  }, []);
 
   const visible = useMemo(() => issues.filter((item) => {
     if (orderNo && !item.orderNo.toLowerCase().includes(orderNo.toLowerCase())) return false;
@@ -147,7 +152,7 @@ export default function MaterialIssuesPage() {
     { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
     { id: "total", header: "数量合计", cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
     { accessorKey: "createdAt", header: "登记时间", cell: ({ row }) => new Date(row.original.createdAt).toLocaleString("zh-CN", { hour12: false }) },
-    { id: "actions", header: "操作", cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={`/production/material-issues/new?type=${slip.documentType}&movement_id=${slip.id}`}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void post(slip)}>过账出库</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}</div>; } }
+    { id: "actions", header: "操作", cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={`/production/material-issues/new?type=${slip.documentType}&movement_id=${slip.id}`}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void post(slip)}>过账出库</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}<Button size="sm" asChild variant="ghost"><Link href={`/production/material-issues/new?production_order_id=${slip.productionOrderId}`} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={`/production/material-issues/new?type=replenishment&production_order_id=${slip.productionOrderId}`} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
   ];
 
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
@@ -173,7 +178,7 @@ export default function MaterialIssuesPage() {
       </div></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张</span></div>
+      <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张（同一生产单可开多张领料单与补料单，行内「再建领料单/再建补料单」可直接续开）</span></div>
       <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="点右上角「新建领料单 / 新建补料单」进入全屏编辑页创建；两者都只需要选择生产单，物料从该订单 BOM 明细中选。" />} /></div>
     </section>
   </>;

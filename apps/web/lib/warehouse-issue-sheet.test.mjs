@@ -9,11 +9,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 const webRoot = fileURLToPath(new URL("..", import.meta.url));
-const warehouse = readFileSync(join(webRoot, "app", "warehouse", "page.tsx"), "utf8");
-const editorPage = readFileSync(join(webRoot, "app", "production", "material-issues", "new", "page.tsx"), "utf8");
-const editor = readFileSync(join(webRoot, "components", "production", "material-slip-editor.tsx"), "utf8");
-const listPage = readFileSync(join(webRoot, "app", "production", "material-issues", "page.tsx"), "utf8");
-const css = readFileSync(join(webRoot, "app", "globals.css"), "utf8");
+const read = (...parts) => readFileSync(join(webRoot, ...parts), "utf8");
+const warehouse = read("app", "warehouse", "page.tsx");
+const editorPage = read("app", "production", "material-issues", "new", "page.tsx");
+const editor = read("components", "production", "material-slip-editor.tsx");
+const listPage = read("app", "production", "material-issues", "page.tsx");
+const css = read("app", "globals.css");
 
 test("物料下拉引用生产单订单的 BOM 明细（不能再列出全部物料）", () => {
   assert.equal(/materials\.map\(/.test(editor), false, "编辑页里不得再直接用全部物料作为下拉选项");
@@ -52,4 +53,24 @@ test("已过账的领料/补料单支持回退草稿，且必须填原因", () =
   assert.match(warehouse, /\/production\/material-movements\/\$\{movement\.id\}\/reopen/, "必须调用回退草稿接口");
   assert.match(warehouse, /label: "回退原因（退回草稿后库存会相应回补）", type: "textarea", required: true/, "回退原因必填");
   assert.match(warehouse, /\["issue", "replenishment"\]\.includes\(row\.original\.documentType\)[\s\S]{0,200}?>回退草稿<\/Button>/, "只有领料/补料单显示回退按钮");
+});
+
+test("一个生产单可以开多张领料单/补料单：三处界面都要有「再建/新建」入口", () => {
+  // 单据列表：每行可以直接为该生产单续开领料单与补料单
+  assert.match(listPage, /再建领料单<\/Link>/, "列表行内要有「再建领料单」");
+  assert.match(listPage, /再建补料单<\/Link>/, "列表行内要有「再建补料单」");
+  assert.match(listPage, /new\?production_order_id=\$\{slip\.productionOrderId\}/, "续开时带上该行的生产单");
+  assert.match(listPage, /same production order can hold multiple slips|同一生产单可开多张领料单与补料单/, "页面要说明可开多张");
+  // 列表页顶部：新建入口
+  assert.match(listPage, /新建领料单<\/Link>/);
+  assert.match(listPage, /新建补料单<\/Link>/);
+  // 生产单详情：带本单 ID 的新建入口
+  const detailPage = read("components", "production", "production-order-detail-page.tsx");
+  assert.match(detailPage, /material-issues\/new\?production_order_id=\$\{order\.id\}/, "生产单详情要有新建领料单入口");
+  assert.match(detailPage, /material-issues\/new\?type=replenishment&production_order_id=\$\{order\.id\}/, "生产单详情要有新建补料单入口");
+  // 仓库页：同样两个入口
+  assert.match(warehouse, /<Link href="\/production\/material-issues\/new">新建领料单<\/Link>/);
+  assert.match(warehouse, /<Link href="\/production\/material-issues\/new\?type=replenishment">新建补料单<\/Link>/);
+  // 深链过滤：列表页要按 URL 里的 production_order_id 预筛选
+  assert.match(listPage, /new URLSearchParams\(window\.location\.search\)\.get\("production_order_id"\)/, "列表页要支持按生产单深链筛选");
 });
