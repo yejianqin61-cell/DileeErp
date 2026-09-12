@@ -25,6 +25,8 @@
 
 ## 3. 数量与状态口径
 
+**并发口径（加锁顺序）**：发通知 / 取消通知 / 按通知送检 / 修改草稿送检量 都**先锁生产单行**（`production_orders … FOR UPDATE`），再访问通知与送检；工序日报与员工日报写入同样先锁生产单，因此「包装报工 → 通知 → 送检」这条链上的数量校验彼此串行，不会出现累计超过可通知量/可送检量。禁止反序（先锁通知再锁生产单），以免与报工链路形成死锁。
+
 - **可通知入库量** = 包装工序累计报工量（`operation_daily_reports.completed_quantity` 口径，与生产进度一致）− 已通知未取消量。
   超过上限返回 422 `INBOUND_NOTICE_QUANTITY_EXCEEDED` 并回带 `packaging_reported_quantity / notified_quantity / available_quantity`。
   计算在生产单行锁（`FOR UPDATE`）内完成，与并发报工/通知串行。

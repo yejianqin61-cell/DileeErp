@@ -33,7 +33,9 @@ function buildClient(state = {}) {
   const operationReports = state.operationReports ?? [{ productionOrderOperationId: "op-2", completedQuantity: new Prisma.Decimal("60"), deletedAt: null }];
   const client = {
     notices, submissions, qcRecords, inbounds, facts,
-    $queryRaw: async () => [],
+    /** 记录加锁顺序，用于验证“先锁生产单、再锁通知”的并发口径。 */
+    lockLog: [],
+    $queryRaw: async (...args) => { const strings = Array.isArray(args[0]) ? args[0].join("?") : String(args[0]); client.lockLog.push(strings.replace(/\s+/g, " ").trim()); return []; },
     productionOrder: { findFirst: async () => state.order ?? order(), findMany: async () => [state.order ?? order()] },
     salesOrder: { findFirst: async () => ({ productName: "蓝色折叠伞" }) },
     operationDailyReport: { aggregate: async ({ where }) => ({ _sum: { completedQuantity: operationReports.filter((row) => row.productionOrderOperationId === where.productionOrderOperationId && !row.deletedAt).reduce((sum, row) => sum.plus(row.completedQuantity), new Prisma.Decimal(0)) } }) },
@@ -281,4 +283,29 @@ test("按通知送检：不得超过通知可送检量，成功后通知变为�
     () => service.createSubmission({ production_order_id: "order-1", source_type: "finished_goods_inbound_notice", source_id: "notice-1", submitted_quantity: "9", submission_date: "2026-09-10" }, { id: "user-1" }),
     (error) => error.getResponse().code === "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED" && error.getResponse().details[0].available_quantity === "8",
   );
+});
+
+// 并发口径：把草稿改大 与 新建送检 必须抢同一把生产单行锁，
+// 否则两者可以各自通过可送检量校验，累计送检量超过来源可送检量（12→20 与 8 同时成功 = 28 > 20）。
+test("修改草稿送检量会先锁生产单行，再校验可送检量", async () => {
+  const submissions = [{ id: "sub-1", submissionNo: "FGI-1", productionOrderId: "order-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-1", submittedQuantity: new Prisma.Decimal("12"), status: "draft", version: 1, deletedAt: null }];
+  const { client, service } = buildQc({ submissions });
+  client.finishedGoodsInspectionSubmission.findFirst = async ({ where }) => submissions.find((row) => row.id === where.id && !row.deletedAt) ?? null;
+  client.finishedGoodsInspectionSubmission.update = async ({ where, data }) => { const row = submissions.find((item) => item.id === where.id); Object.assign(row, data); return row; };
+  // 通知量 20，把草稿从 12 改到 20 合法；改成 21 必须被拒。
+  await assert.rejects(
+    () => service.updateSubmission("sub-1", { submitted_quantity: "21", reason: "改数量" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED" && error.getResponse().details[0].available_quantity === "20",
+  );
+  assert.match(client.lockLog[0] ?? "", /production_orders/, "必须先锁生产单行（与新建送检同一把锁）");
+  const updated = await service.updateSubmission("sub-1", { submitted_quantity: "20", reason: "改数量" }, { id: "user-1" });
+  assert.equal(updated.submittedQuantity.toString(), "20");
+});
+
+test("取消入库通知会先锁生产单行，再检查是否已有送检单", async () => {
+  const noticeRow = () => ({ id: "notice-1", noticeNo: "FGN-1", orderNo: "SO-1", productionOrderId: "order-1", noticeQuantity: new Prisma.Decimal("50"), status: "pending", remark: null, deletedAt: null });
+  const { client, service } = buildService({ notices: [noticeRow()] });
+  await service.cancel("notice-1", "重复通知", { id: "user-1" });
+  assert.match(client.lockLog[0] ?? "", /production_orders/, "必须先锁生产单行，才能与「按该通知送检」串行");
+  assert.match(client.lockLog[1] ?? "", /finished_goods_inbound_notices/, "随后才锁通知行");
 });

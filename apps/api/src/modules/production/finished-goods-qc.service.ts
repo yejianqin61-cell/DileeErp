@@ -97,6 +97,9 @@ export class FinishedGoodsQcService {
     if (input.expected_version !== undefined && input.expected_version !== current.version) throw new ConflictException({ code: "FINISHED_GOODS_SUBMISSION_VERSION_CONFLICT", message: "送检单版本已变化，请刷新后重试", details: [] });
     const quantity = input.submitted_quantity === undefined ? current.submittedQuantity : this.decimal(input.submitted_quantity, "INVALID_FINISHED_GOODS_SUBMISSION_QUANTITY");
     const updated = await this.prisma.$transaction(async (tx) => {
+      // 与 createSubmission 抢同一把锁（生产单行）：否则「把草稿 A 改大」与「新建送检 B」可以并发各自通过
+      // 可送检量校验，累计送检量超过来源可送检量（A 12→20 与 B 8 同时成功 = 28 > 20）。
+      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${current.productionOrderId}::uuid FOR UPDATE`;
       const available = await this.sourceAvailable(tx, current.productionOrderId, current.sourceType as SourceType, current.sourceId, id);
       if (quantity.gt(available)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED", message: "送检数量超过来源可送检数量", details: [{ available_quantity: available.toString() }] });
       const updated = await tx.finishedGoodsInspectionSubmission.update({ where: { id }, data: { submittedQuantity: quantity, ...(input.submission_date ? { submissionDate: this.date(input.submission_date) } : {}), ...(input.remark === undefined ? {} : { remark: input.remark }), version: { increment: 1 }, ...this.audit.update(user) } });

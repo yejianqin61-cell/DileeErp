@@ -132,6 +132,9 @@ export class FinishedGoodsInboundNoticesService {
     const current = await this.prisma.finishedGoodsInboundNotice.findFirst({ where: { id, deletedAt: null } });
     if (!current) throw new NotFoundException({ code: "FINISHED_GOODS_INBOUND_NOTICE_NOT_FOUND", message: "成品入库通知不存在", details: [] });
     const row = await this.prisma.$transaction(async (tx) => {
+      // 先抢生产单行锁（与 createSubmission 一致），再锁通知行：
+      // 否则「取消通知」与「按该通知建送检单」可以并发各自成功，出现“通知已取消但已有送检/入库”的矛盾状态。
+      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${current.productionOrderId}::uuid FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM finished_goods_inbound_notices WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.finishedGoodsInboundNotice.findFirst({ where: { id, deletedAt: null } });
       if (!locked) throw new NotFoundException({ code: "FINISHED_GOODS_INBOUND_NOTICE_NOT_FOUND", message: "成品入库通知不存在", details: [] });
