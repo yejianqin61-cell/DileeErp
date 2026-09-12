@@ -69,7 +69,9 @@ test("material create persists specification model and color", async () => {
   assert.equal(material.color, "深灰");
 });
 
-test("material create defaults specification model and color to null", async () => {
+test("material create defaults specification model and color to empty strings", async () => {
+  // 组合唯一键（名称+规格型号+颜色）依赖空串而不是 NULL：PostgreSQL 唯一索引里 NULL 互不相等，
+  // 写 NULL 会让同名同规格的物料重复落库。
   const writes = [];
   const prisma = {
     unit: { findFirst: async () => ({ id: unitId, isActive: true }) },
@@ -77,8 +79,8 @@ test("material create defaults specification model and color to null", async () 
   };
   const service = new ProcurementMasterDataService(prisma, audit);
   await service.createMaterial({ material_code: "MAT-SPEC-2", name: "棉布", default_unit_id: unitId }, user);
-  assert.equal(writes[0].specificationModel, null);
-  assert.equal(writes[0].color, null);
+  assert.equal(writes[0].specificationModel, "");
+  assert.equal(writes[0].color, "");
 });
 
 test("material update sets clears and keeps specification model and color", async () => {
@@ -89,8 +91,8 @@ test("material update sets clears and keeps specification model and color", asyn
   assert.equal(updates[0].specificationModel, "B-02");
   assert.equal(updates[0].color, "米白");
   await service.updateMaterial("material-1", { specification_model: null, color: null }, user);
-  assert.equal(updates[1].specificationModel, null);
-  assert.equal(updates[1].color, null);
+  assert.equal(updates[1].specificationModel, "", "清空规格型号要写空串（NULL 会让组合唯一索引失效）");
+  assert.equal(updates[1].color, "");
   await service.updateMaterial("material-1", { name: "改名" }, user);
   assert.equal("specificationModel" in updates[2], false);
   assert.equal("color" in updates[2], false);

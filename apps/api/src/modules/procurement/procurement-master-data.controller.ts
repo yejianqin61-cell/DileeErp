@@ -1,15 +1,16 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
-import { IsBoolean, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsBoolean, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
+import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { ProcurementMasterDataService } from "./procurement-master-data.service";
 
 class ActiveDto { @IsBoolean() is_active!: boolean; }
 class UnitDto { @IsString() @MaxLength(30) name!: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
-export class MaterialDto { @IsOptional() @IsString() @MaxLength(80) material_code?: string; @IsOptional() @IsIn(["auto", "manual"]) code_mode?: string; @IsString() @MaxLength(200) name!: string; @IsOptional() @IsString() @MaxLength(200) specification_model?: string; @IsOptional() @IsString() @MaxLength(100) color?: string; @IsUUID() default_unit_id!: string; @IsOptional() @IsString() @MaxLength(30) material_type?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+export class MaterialDto { @IsOptional() @IsString() @MaxLength(80) material_code?: string; @IsOptional() @IsIn(["auto", "manual"]) code_mode?: string; @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(200) name!: string; @IsOptional() @IsString() @MaxLength(200) specification_model?: string; @IsOptional() @IsString() @MaxLength(100) color?: string; @IsUUID() default_unit_id!: string; @IsOptional() @IsString() @MaxLength(30) material_type?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 export class SupplierDto { @IsOptional() @IsString() @MaxLength(80) supplier_code?: string; @IsOptional() @IsIn(["auto", "manual"]) code_mode?: string; @IsString() @MaxLength(200) name!: string; @IsOptional() @IsString() @MaxLength(100) contact_name?: string; @IsOptional() @IsString() @MaxLength(50) phone?: string; @IsOptional() @IsObject() settlement_info?: Record<string, unknown>; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 
 // PATCH DTOs: only modifiable keys are declared (all optional), so the global
