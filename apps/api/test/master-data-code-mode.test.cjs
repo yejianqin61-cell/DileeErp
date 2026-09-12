@@ -109,7 +109,7 @@ test("客户：自动编码撞号时重算重试，失败提示只在重试耗�
       findMany: async () => [{ customerCode: `CUS-${today}-000${attempt}` }],
       create: async ({ data }) => {
         attempt += 1;
-        if (attempt === 1) { const error = new Error("duplicate"); error.code = "P2002"; throw error; }
+        if (attempt === 1) { const error = new Error("duplicate"); error.code = "P2002"; error.meta = { target: ["customer_code"] }; throw error; }
         created.push(data);
         return { id: "customer-1", ...data };
       }
@@ -119,6 +119,22 @@ test("客户：自动编码撞号时重算重试，失败提示只在重试耗�
   await service.create({ code_mode: "auto", name: "并发客户" }, user);
   assert.equal(created.length, 1, "第一次撞 P2002 后必须自动重试成功");
   assert.equal(created[0].customerCode, `CUS-${today}-0002`);
+});
+
+test("客户：撞的是「名称」唯一索引时不重试（重算编码救不了重名）", async () => {
+  let attempts = 0;
+  const prisma = {
+    customer: {
+      findMany: async () => [],
+      create: async () => { attempts += 1; const error = new Error("duplicate"); error.code = "P2002"; error.meta = { target: ["name"] }; throw error; }
+    }
+  };
+  const service = new CustomersService(prisma, audit);
+  await assert.rejects(
+    () => service.create({ code_mode: "auto", name: "重名客户" }, user),
+    (error) => error.getResponse().code === "CUSTOMER_CONFLICT"
+  );
+  assert.equal(attempts, 1, "客户名称也唯一：撞名称不该重试");
 });
 
 test("客户：手动编码撞 P2002 不重试，直接返回冲突提示", async () => {

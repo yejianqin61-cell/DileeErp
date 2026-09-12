@@ -2,7 +2,7 @@ import { ConflictException, Injectable, NotFoundException, UnprocessableEntityEx
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
-import { isUniqueConstraintViolation } from "../../platform/database/prisma-error";
+import { isUniqueConstraintViolationOn } from "../../platform/database/prisma-error";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 // customer_code 可空：code_mode=auto 时由服务端生成（与物料/供应商一致）。
@@ -33,7 +33,7 @@ export class CustomersService {
     const manualCode = input.customer_code?.trim();
     if (!auto && !manualCode) throw new UnprocessableEntityException({ code: "CUSTOMER_CODE_REQUIRED", message: "手动编码模式必须填写客户编码", details: [] });
     // 自动编码是「读当天最大值 + 1 再写入」，两次并发可能算出同一个号。
-    // 撞唯一键时重算重试（仅自动模式），避免第二个用户明明没填编码却收到「编码已存在」。
+    // 只在撞到**客户编码**唯一索引时重算重试（客户名称也是唯一的，撞名称重试没有意义）。
     for (let attempt = 1; ; attempt += 1) {
       const code = auto ? await this.nextCustomerCode() : (manualCode as string);
       try {
@@ -41,7 +41,7 @@ export class CustomersService {
         await this.audit.record("customer.create", "customer", user.id, customer.id, { customer_code: customer.customerCode, name: customer.name });
         return customer;
       } catch (error) {
-        if (auto && attempt < 3 && isUniqueConstraintViolation(error)) continue;
+        if (auto && attempt < 3 && isUniqueConstraintViolationOn(error, "customer_code")) continue;
         this.handleUnique(error);
         throw error;
       }
