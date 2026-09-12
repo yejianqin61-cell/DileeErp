@@ -40,8 +40,12 @@ function ruleError(code: string, message: string, details: Array<Record<string, 
 function decimal(value: string, field: string) {
   const label = QUANTITY_FIELD_LABELS[field] ?? field;
   if (typeof value !== "string" || value.trim() === "" || !decimalPattern.test(value.trim())) {
-    throw ruleError("INVALID_QC_QUANTITY", `${label}必须填写为不小于 0 的数字（最多 4 位小数，不能留空）`, [{ field }]);
+    throw ruleError("INVALID_QC_QUANTITY", `${label}必须填写为不小于 0 的数字（不能留空）`, [{ field }]);
   }
+  // 与送检数量同一口径：最多 4 位小数。否则会被 DECIMAL(18,4) 静默四舍五入，
+  // 出现「界面填的数」与「库里存的数」不一致、甚至配平校验通过的假象。
+  const fraction = value.trim().split(".")[1] ?? "";
+  if (fraction.length > 4) throw ruleError("INVALID_QC_QUANTITY", `${label}最多 4 位小数`, [{ field }]);
   return new Prisma.Decimal(value.trim());
 }
 

@@ -93,10 +93,16 @@ export class ProcurementMasterDataService {
     await this.audit.record(`${kind}.delete`, kind, user.id, id, snapshot);
     return deleted;
   }
-  /** P2002 的提示要按主数据种类说清楚：物料是「名称+规格型号+颜色」组合冲突，不是单纯重名。 */
-  private async write(kind: string, action: () => Promise<any>, user: CurrentUser, id?: string) { try { const result = await action(); await this.audit.record(`${kind}.${id ? "update" : "create"}`, kind, user.id, id ?? result.id); return result; } catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "MASTER_DATA_CONFLICT", message: this.conflictMessage(kind), details: [] }); throw error; } }
-  private conflictMessage(kind: string) {
-    if (kind === "material") return "「名称 + 规格型号 + 颜色」完全相同的物料已存在：请修改规格型号或颜色（同名不同规格/颜色可以并存），或改用其它物料编码";
+  /** P2002 的提示要按主数据种类、并按冲突列说清楚：物料可能是组合冲突，也可能是物料编码重复。 */
+  private async write(kind: string, action: () => Promise<any>, user: CurrentUser, id?: string) { try { const result = await action(); await this.audit.record(`${kind}.${id ? "update" : "create"}`, kind, user.id, id ?? result.id); return result; } catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "MASTER_DATA_CONFLICT", message: this.conflictMessage(kind, error), details: [] }); throw error; } }
+  private conflictMessage(kind: string, error?: unknown) {
+    if (kind === "material") {
+      // 组合唯一索引（名称+规格型号+颜色）与物料编码是两件不同的事，提示不能混。
+      const target = (error as { meta?: { target?: unknown } } | undefined)?.meta?.target;
+      const columns = (Array.isArray(target) ? target : typeof target === "string" ? [target] : []).map((item) => String(item).toLowerCase());
+      if (columns.some((column) => column.includes("material_code"))) return "物料编码已存在：请换一个物料编码，或改用「自动生成」编码模式";
+      return "「名称 + 规格型号 + 颜色」完全相同的物料已存在：请修改规格型号或颜色（同名不同规格/颜色可以并存），或改用其它物料编码";
+    }
     if (kind === "unit") return "单位名称已存在";
     return "名称或编码已存在";
   }

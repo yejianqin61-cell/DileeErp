@@ -34,15 +34,17 @@ test("仓库页：出库通知列表 + 生成整批出库单入口", () => {
   assert.match(warehousePage, /只允许整批出库/, "界面要说明整批口径");
 });
 
-test("仓库页：出库单能过账、维护发货、登记签收、冲销", () => {
+test("仓库页：出库单能过账、取消草稿、维护发货、登记签收、冲销", () => {
   for (const path of [
     /finished-goods\/outbounds\/\$\{row\.original\.id\}\/post/,
+    /finished-goods\/outbounds\/\$\{row\.id\}\/cancel/,
     /finished-goods\/outbounds\/\$\{row\.id\}\/shipping/,
     /finished-goods\/outbounds\/\$\{row\.id\}\/sign/,
     /finished-goods\/outbounds\/\$\{row\.id\}\/reverse/,
   ]) {
     assert.match(warehousePage, path, `缺少出库单操作入口：${path}`);
   }
+  assert.match(warehousePage, />取消出库单<\/Button>/, "草稿出库单必须有取消入口（否则通知会永久卡死）");
   assert.match(warehousePage, /已生成应收来源，等待财务收款/, "过账提示要说明已通知财务收款");
 });
 

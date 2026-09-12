@@ -17,7 +17,7 @@ function service(created, options = {}) {
     material: {
       findMany: async () => options.codes ?? [],
       create: async ({ data }) => {
-        if (options.conflict) { const error = new Error("duplicate"); error.code = "P2002"; throw error; }
+        if (options.conflict || options.conflictTarget) { const error = new Error("duplicate"); error.code = "P2002"; if (options.conflictTarget) error.meta = { target: options.conflictTarget }; throw error; }
         created.push(data);
         return { id: `material-${created.length}`, ...data };
       },
@@ -58,6 +58,18 @@ test("组合冲突的提示要说清是「名称+规格型号+颜色」重复，
       const message = error.getResponse().message;
       assert.match(message, /名称 \+ 规格型号 \+ 颜色/);
       assert.match(message, /同名不同规格\/颜色可以并存/);
+      return true;
+    },
+  );
+});
+
+test("物料编码重复时提示的是编码冲突，不要把用户引向规格/颜色", async () => {
+  const service_ = service([], { conflictTarget: ["material_code"] });
+  await assert.rejects(
+    () => service_.createMaterial({ code_mode: "manual", material_code: "MAT-DUP", name: "伞布", default_unit_id: unit.id }, user),
+    (error) => {
+      assert.match(error.getResponse().message, /物料编码已存在/);
+      assert.doesNotMatch(error.getResponse().message, /规格型号/);
       return true;
     },
   );

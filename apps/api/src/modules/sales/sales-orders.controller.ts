@@ -65,7 +65,7 @@ class SalesOrderQueryDto extends PaginationQueryDto {
 }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 // 销售「通知仓库出库」：不传 production_order_id 时对该订单所有可出库的生产单各建一张整批通知。
-class OutboundNoticeDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; }
+class OutboundNoticeDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsString() @MaxLength(160) idempotency_key?: string; }
 
 @Controller("sales-orders")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)

@@ -72,8 +72,14 @@ export class FinishedGoodsOutboundNoticeService {
     const order = await this.requireOrder(salesOrderId);
     const idempotencyKey = input.idempotency_key?.trim();
     if (idempotencyKey) {
-      const existing = await this.prisma.finishedGoodsOutboundNotice.findFirst({ where: { idempotencyKey, deletedAt: null } });
-      if (existing) return [existing];
+      // 存储时键被加了「:生产单ID」后缀（一张通知一个生产单），所以重放查询要用前缀匹配，
+      // 否则永远查不到已建的通知，反而会在唯一索引上撞出 409。
+      const existing = await this.prisma.finishedGoodsOutboundNotice.findMany({ where: { idempotencyKey: { startsWith: `${idempotencyKey}:` }, deletedAt: null } });
+      if (existing.length) return existing;
+    }
+    if (input.production_order_id) {
+      const owned = await this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, salesOrderId, deletedAt: null } });
+      if (!owned) throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_PRODUCTION_ORDER_MISMATCH", message: "该生产单不属于这张销售单，不能对它发出库通知", details: [{ production_order_id: input.production_order_id }] });
     }
     const targets = await this.notifiableProductionOrders(salesOrderId, input.production_order_id);
     if (!targets.length) throw this.nothingToNotify(input.production_order_id);
@@ -128,9 +134,14 @@ export class FinishedGoodsOutboundNoticeService {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CANCELLATION_REASON_REQUIRED", message: "取消出库通知必须填写原因", details: [] });
     const notice = await this.prisma.finishedGoodsOutboundNotice.findFirst({ where: { id: noticeId, salesOrderId, deletedAt: null } });
     if (!notice) throw new NotFoundException({ code: "OUTBOUND_NOTICE_NOT_FOUND", message: "出库通知不存在", details: [] });
-    if (notice.status === "outbound_created" || notice.status === "completed") throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_NOT_CANCELLABLE", message: "仓库已按该通知建出库单：请先在仓库冲销出库单，再取消通知", details: [{ status: notice.status }] });
+    if (notice.status === "outbound_created" || notice.status === "completed") throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_NOT_CANCELLABLE", message: "仓库已按该通知建出库单：请先在仓库取消（未过账）或冲销（已过账）出库单，再取消通知", details: [{ status: notice.status }] });
     if (notice.status === "cancelled") return notice;
-    const updated = await this.prisma.finishedGoodsOutboundNotice.update({ where: { id: notice.id }, data: { status: "cancelled", remark: `${notice.remark ?? ""}\n取消：${reason.trim()}`, version: { increment: 1 }, ...this.audit.update(user) } });
+    // 带状态条件的更新：与「按通知建出库单」并发时不能把 outbound_created 覆盖成 cancelled。
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const marked = await tx.finishedGoodsOutboundNotice.updateMany({ where: { id: notice.id, status: "pending", deletedAt: null }, data: { status: "cancelled", remark: `${notice.remark ?? ""}\n取消：${reason.trim()}`, version: { increment: 1 }, ...this.audit.update(user) } });
+      if (marked.count !== 1) throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_NOT_CANCELLABLE", message: "该出库通知已被其他操作处理（可能仓库刚建了出库单），请刷新后重试", details: [] });
+      return tx.finishedGoodsOutboundNotice.findFirst({ where: { id: notice.id } });
+    });
     await this.audit.record("finished_goods_outbound_notice.cancel", "finished_goods_outbound_notice", user.id, notice.id, { order_no: notice.orderNo, reason: reason.trim() });
     return updated;
   }

@@ -21,23 +21,34 @@ function salesService(overrides = {}) {
     },
     productionOrder: {
       findMany: async () => [{ id: "po-1", productionOrderNo: "MO-1", status: "completed", executionMode: "in_house", executionLocation: { name: "一车间" }, unitId: "unit-1", unit: { name: "把" }, plannedQuantity: decimal(100), productSpecification: "8K" }],
-      findFirst: async () => ({ id: "po-1", productionOrderNo: "MO-1", unitId: "unit-1", productSpecification: "8K", unit: { name: "把" } }),
+      findFirst: async () => ("productionOrderFindFirst" in overrides ? overrides.productionOrderFindFirst : { id: "po-1", productionOrderNo: "MO-1", unitId: "unit-1", productSpecification: "8K", unit: { name: "把" } }),
     },
     finishedGoodsInbound: { aggregate: async () => ({ _sum: { quantity: overrides.inbound ?? decimal(60) } }) },
     finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: overrides.outbound ?? decimal(0) } }) },
     finishedGoodsOutboundNotice: {
       aggregate: async () => ({ _sum: { noticeQuantity: overrides.pendingNotice ?? decimal(0) } }),
-      findMany: async () => overrides.notices ?? [],
+      // 幂等重放走 startsWith 前缀查询（存储键带 :生产单ID 后缀），这里按查询形状区分。
+      findMany: async (args) => {
+        if (args?.where?.idempotencyKey) { overrides.onReplayQuery?.(args); return overrides.replayed ?? []; }
+        return overrides.notices ?? [];
+      },
       findFirst: async () => overrides.existingNotice ?? null,
       create: async ({ data }) => { overrides.created?.push(data); return { id: "notice-1", ...data }; },
       update: async ({ data }) => ({ id: "notice-1", ...data }),
+      updateMany: async ({ data }) => { overrides.noticeUpdates?.push(data); return { count: overrides.cancelUpdated ?? 1 }; },
     },
     $transaction: async (fn) => fn({
       $queryRaw: async () => undefined,
       productionOrder: { findFirst: async () => ({ id: "po-1", unitId: "unit-1", productSpecification: "8K", unit: { name: "把" } }) },
       finishedGoodsInbound: { aggregate: async () => ({ _sum: { quantity: overrides.inbound ?? decimal(60) } }) },
       finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: overrides.outbound ?? decimal(0) } }) },
-      finishedGoodsOutboundNotice: { aggregate: async () => ({ _sum: { noticeQuantity: overrides.pendingNotice ?? decimal(0) } }), create: async ({ data }) => { overrides.created?.push(data); return { id: "notice-1", ...data }; } },
+      finishedGoodsOutboundNotice: {
+        aggregate: async () => ({ _sum: { noticeQuantity: overrides.pendingNotice ?? decimal(0) } }),
+        create: async ({ data }) => { overrides.created?.push(data); return { id: "notice-1", ...data }; },
+        // 取消通知走「带状态条件的 updateMany + 回读」，替身要按 cancelUpdated 返回影响行数。
+        updateMany: async ({ data }) => { overrides.noticeUpdates?.push(data); return { count: overrides.cancelUpdated ?? 1 }; },
+        findFirst: async () => overrides.existingNotice ?? null,
+      },
     }),
   };
   return new FinishedGoodsOutboundNoticeService(prisma, { finishedGoodsBalance: async () => balance }, audit);
@@ -84,11 +95,31 @@ test("没有可出库成品时给出可执行的 422，而不是静默成功", a
   );
 });
 
-test("通知出库支持幂等键：重复提交返回同一张通知", async () => {
+test("通知出库支持幂等键：重放按「幂等键:」前缀查回原通知（不会重复建单）", async () => {
   const existing = { id: "notice-1", noticeNo: "OGN-1" };
-  const service = salesService({ existingNotice: existing });
+  let replayQuery;
+  const service = salesService({ replayed: [existing], onReplayQuery: (args) => { replayQuery = args; } });
   const notices = await service.createNotices("so-1", { idempotency_key: "web-1" }, user);
   assert.deepEqual(notices, [existing]);
+  assert.equal(replayQuery.where.idempotencyKey.startsWith, "web-1:", "存储键带生产单后缀，重放必须前缀匹配");
+});
+
+test("指定了不属于本销售单的生产单时给出明确 422", async () => {
+  const service = salesService({ productionOrderFindFirst: null });
+  await assert.rejects(
+    () => service.createNotices("so-1", { production_order_id: "po-other" }, user),
+    (error) => error.getResponse().code === "OUTBOUND_NOTICE_PRODUCTION_ORDER_MISMATCH",
+  );
+});
+
+test("取消通知带状态条件：并发生成出库单后不能再取消", async () => {
+  const noticeUpdates = [];
+  const service = salesService({ existingNotice: { id: "notice-1", salesOrderId: "so-1", status: "pending", orderNo: "SO-1", remark: null }, noticeUpdates, cancelUpdated: 0 });
+  await assert.rejects(
+    () => service.cancelNotice("so-1", "notice-1", "客户取消订单", user),
+    (error) => error.getResponse().code === "OUTBOUND_NOTICE_NOT_CANCELLABLE",
+  );
+  assert.equal(noticeUpdates[0].status, "cancelled");
 });
 
 test("仓库按通知生成出库单：数量固定取通知数量（整批），并回填出库单号", async () => {
@@ -113,6 +144,51 @@ test("通知已建单/已完成时不能重复生成出库单", async () => {
   await assert.rejects(
     () => service.createOutboundFromNotice("notice-1", user),
     (error) => error.getResponse().code === "OUTBOUND_NOTICE_NOT_PENDING",
+  );
+});
+
+test("通知链路同样强制整批：通知后又入库/退货回仓导致数量不一致时拒绝建单并说明差异", async () => {
+  const notice = { id: "notice-1", noticeNo: "OGN-1", status: "pending", orderNo: "SO-1", salesOrderId: "so-1", productionOrderId: "po-1", unitId: "unit-1", noticeQuantity: decimal(30) };
+  const service = new FinishedGoodsOutboundService(
+    { finishedGoodsOutboundNotice: { findFirst: async () => notice } },
+    audit,
+    { finishedGoodsBalance: async () => decimal(60) },
+  );
+  await assert.rejects(
+    () => service.createOutboundFromNotice("notice-1", user),
+    (error) => {
+      assert.equal(error.getResponse().code, "OUTBOUND_NOTICE_QUANTITY_STALE");
+      assert.deepEqual(error.getResponse().details, [{ notice_quantity: "30", available_quantity: "60" }]);
+      assert.match(error.getResponse().message, /取消该通知/);
+      return true;
+    },
+  );
+});
+
+test("草稿出库单可以取消：来源通知退回待处理并释放幂等键（避免通知永久卡死）", async () => {
+  const current = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", orderNo: "SO-1" };
+  const outboundUpdates = [];
+  const noticeUpdates = [];
+  const tx = {
+    $queryRaw: async () => undefined,
+    finishedGoodsOutbound: { findFirst: async () => current, update: async ({ data }) => { outboundUpdates.push(data); return { ...current, ...data }; } },
+    finishedGoodsOutboundNotice: { updateMany: async ({ data }) => { noticeUpdates.push(data); return { count: 1 }; } },
+  };
+  const prisma = { finishedGoodsOutbound: { findFirst: async () => current }, $transaction: async (fn) => fn(tx) };
+  const service = new FinishedGoodsOutboundService(prisma, audit, {});
+  await service.cancelOutbound("outbound-1", "库存不一致，需重新通知", user);
+  assert.equal(outboundUpdates[0].status, "cancelled");
+  assert.match(outboundUpdates[0].idempotencyKey, /^cancelled:/, "必须释放 notice:<id> 幂等键，允许重新建单");
+  assert.equal(noticeUpdates[0].status, "pending");
+  assert.equal(noticeUpdates[0].outboundId, null);
+});
+
+test("已过账出库单不能取消（必须先冲销）", async () => {
+  const current = { id: "outbound-1", status: "posted" };
+  const service = new FinishedGoodsOutboundService({ finishedGoodsOutbound: { findFirst: async () => current } }, audit, {});
+  await assert.rejects(
+    () => service.cancelOutbound("outbound-1", "误操作", user),
+    (error) => error.getResponse().code === "FINISHED_GOODS_OUTBOUND_NOT_CANCELLABLE",
   );
 });
 
@@ -150,6 +226,42 @@ test("出库过账后：生成应收来源草稿（按结算币价）并把通�
   assert.equal(receivableWrites[0].amount.toString(), "625");
   assert.equal(receivableWrites[0].status, "draft");
   assert.equal(noticeUpdates[0].status, "completed", "来源出库通知要置为已完成");
+});
+
+test("填写了「应收金额」时，应收按 应收金额 ÷ 订单数量 计价（整单出库总额与销售填写一致）", async () => {
+  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(100), orderNo: "SO-1", salesOrderId: "so-1", productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K", signedAt: null, riskReason: null };
+  const receivableWrites = [];
+  const tx = {
+    $queryRaw: async () => undefined,
+    inventoryFact: { findFirst: async () => null, create: async () => undefined },
+    finishedGoodsOutbound: { update: async ({ data }) => ({ ...outbound, ...data }), aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
+    salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(10), settlementUnitPrice: decimal("12.5"), receivableAmount: decimal(1300), settlementMethod: "tt", localCurrencyAmount: decimal("9360"), taxRate: null, currency: "USD", quantity: decimal(100) }) },
+    receivableSource: { create: async ({ data }) => { receivableWrites.push(data); return data; } },
+    finishedGoodsOutboundNotice: { updateMany: async () => ({ count: 0 }) },
+  };
+  const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) }, $transaction: async (fn) => fn(tx) };
+  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(100) });
+  await service.postOutbound("outbound-1", user);
+  assert.equal(receivableWrites[0].amount.toString(), "1300", "整单出库时应收总额必须等于销售填写的应收金额");
+  assert.match(receivableWrites[0].remark, /结算方式 T\/T 电汇/);
+  assert.match(receivableWrites[0].remark, /本币金额 9360/);
+});
+
+test("应收计价全为 0 时拒绝过账（不能让出库生成 0 元应收）", async () => {
+  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(50), orderNo: "SO-1", salesOrderId: "so-1", signedAt: null, riskReason: null };
+  const tx = {
+    $queryRaw: async () => undefined,
+    inventoryFact: { findFirst: async () => null },
+    finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
+    salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(0), settlementUnitPrice: decimal(0), receivableAmount: null, taxRate: null, currency: "USD", quantity: decimal(100) }) },
+    receivableSource: { create: async () => { throw new Error("不应写入应收"); } },
+  };
+  const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) }, $transaction: async (fn) => fn(tx) };
+  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(50) });
+  await assert.rejects(
+    () => service.postOutbound("outbound-1", user),
+    (error) => error.getResponse().code === "SALES_UNIT_PRICE_REQUIRED",
+  );
 });
 
 test("出库冲销后：来源通知退回待处理，仓库可以重新建单", async () => {
