@@ -119,15 +119,15 @@ export class ProductionPayrollExportService {
     }
     const shipped = await this.prisma.finishedGoodsOutbound.aggregate({ where: { orderNo, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } });
     const shippedQuantity = shipped._sum.quantity?.toString() ?? "";
-    const progressHeader: Array<string | number | null> = ["工序", "数量", "加工地点"];
-    for (const date of dates) progressHeader.push(date, "数量");
-    progressHeader.push("汇总", "出货");
+    // 每一列是一个生产日期（日期只作为列名出现一次），单元格是该工序当天的完成数量；
+    // 之前在每行里重复填一遍日期，客户反馈「日期不用填充整列」。
+    const progressHeader: Array<string | number | null> = ["工序", "数量", "加工地点", ...dates, "汇总", "出货"];
     const progressRows = productionOrders.flatMap((po) => po.operations.map((operation) => {
       const cells: Array<string | number | null> = [operation.operationNameSnapshot, operation.targetQuantity?.toString() ?? "", po.executionLocation?.name ?? ""];
       let total = new Prisma.Decimal(0);
       for (const date of dates) {
         const quantity = quantityByOperationDate.get(`${operation.id}|${date}`);
-        cells.push(date, quantity ? quantity.toString() : "");
+        cells.push(quantity ? quantity.toString() : "");
         if (quantity) total = total.plus(quantity);
       }
       cells.push(total.toString(), shippedQuantity);
@@ -144,7 +144,7 @@ export class ProductionPayrollExportService {
       ["订单号", "订单数量", "规格", "单价", "数量", "采购日期", "到货日期", "供货日期", "供应商", "备注"],
       ...materialRows,
       [],
-      ["下表：生产进度表"],
+      ["下表：生产进度表（每列为一个生产日期，单元格为当日完成数量）"],
       progressHeader,
       ...progressRows,
     ];
