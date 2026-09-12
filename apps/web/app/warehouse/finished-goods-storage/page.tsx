@@ -164,8 +164,9 @@ export default function FinishedGoodsStoragePage() {
     { id: "status", header: "状态", cell: ({ row }: { row: { original: Defective } }) => inboundStatusLabels[row.original.status] ?? row.original.status },
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: Defective } }) => row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/defectives/${row.original.id}/post`, {}, "次品已过账")}>过账</Button> : row.original.status === "posted" ? <Button size="sm" variant="ghost" onClick={() => reverseDefective(row.original)}>冲销</Button> : null },
   ];
-  // 待入库 = 还有未入库量的通知（按实际剩余工作量统计，而不是按状态），避免“已建草稿送检就被当成完成”而漏掉待办。
-  const pendingNoticeCount = notices.filter((row) => row.status !== "cancelled" && number(row.remainingForInbound) > 0).length;
+  // 待入库 = 还有「可送检额度」或「在途入库」的通知。不用 remainingForInbound：QC 不合格的部分永远不会入库，
+  // 按通知量减已入库会把这类通知永久算成待办。
+  const pendingNoticeCount = notices.filter((row) => row.status !== "cancelled" && (number(row.availableSubmissionQuantity) > 0 || number(row.inboundDraftQuantity) > 0)).length;
 
   if (loading && !finished.length && !notices.length) return <LoadingState label="正在加载成品仓储情况" />;
   if (error && !finished.length && !notices.length) return <ErrorState message={error} onRetry={() => void load()} />;

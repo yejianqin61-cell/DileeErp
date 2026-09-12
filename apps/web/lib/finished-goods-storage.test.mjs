@@ -53,7 +53,8 @@ test("次品链路在页面里有入口（否则次品存量永远为 0）", () 
 
 test("待入库通知按剩余工作量统计，而不是按状态（草稿送检不算完成）", () => {
   assert.match(storagePage, /pendingNoticeCount/, "要有独立的待入库计数");
-  assert.match(storagePage, /number\(row\.remainingForInbound\) > 0/, "按剩余待入库量判断");
+  // 用「可送检额度 > 0 或在途入库 > 0」判断：QC 不合格部分永远不会入库，按通知量减已入库会永久算成待办。
+  assert.match(storagePage, /number\(row\.availableSubmissionQuantity\) > 0 \|\| number\(row\.inboundDraftQuantity\) > 0/, "按可送检额度/在途入库判断待办");
   assert.equal(/status !== "completed" && row\.status !== "cancelled"/.test(storagePage), false, "不能再用“状态不是已完成”来统计待入库");
 });
 

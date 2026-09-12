@@ -67,7 +67,7 @@ function buildClient(state = {}) {
       findFirst: async ({ where }) => submissions.find((row) => row.id === where.id && !row.deletedAt) ?? null,
       aggregate: async ({ where }) => ({ _sum: { submittedQuantity: submissions.filter((row) => !row.deletedAt && row.sourceType === where.sourceType && row.sourceId === where.sourceId && (where.status?.notIn ? !where.status.notIn.includes(row.status) : true) && (!where.id?.not || row.id !== where.id.not)).reduce((sum, row) => sum.plus(row.submittedQuantity), new Prisma.Decimal(0)) } }),
       count: async ({ where }) => submissions.filter((row) => !row.deletedAt && row.sourceType === where.sourceType && row.sourceId === where.sourceId && (where.status?.notIn ? !where.status.notIn.includes(row.status) : true)).length,
-      create: async ({ data }) => { const row = { id: `sub-${submissions.length + 1}`, version: 1, deletedAt: null, ...data }; submissions.push(row); return row; },
+      create: async ({ data }) => { const row = { id: `sub-${submissions.length + 1}`, version: 1, status: "draft", deletedAt: null, ...data }; submissions.push(row); return row; },
     },
     finishedGoodsQcRecord: {
       findMany: async ({ where }) => qcRecords.filter((row) => !row.deletedAt && (!where.status || row.status === where.status) && (where.submissionId?.in ? where.submissionId.in.includes(row.submissionId) : true)),
