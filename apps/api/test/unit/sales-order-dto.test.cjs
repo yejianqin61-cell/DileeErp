@@ -99,4 +99,8 @@ test("结算口径字段：留空通过、合法值原样保留、结算方式�
   await assertRejected(SalesOrderDto, { ...dialogBody, settlement_method: "barter" }, "非法结算方式必须 400");
   await assertRejected(SalesOrderDto, { ...dialogBody, receivable_amount: "abc" }, "应收金额必须是合法小数");
   await assertRejected(UpdateSalesOrderDto, { local_currency_amount: "1e3" }, "科学计数法不是合法小数");
+  // 负数金额会被原样带进财务应收来源，必须拒绝（@Min 对字符串不生效，这里用正则）。
+  await assertRejected(SalesOrderDto, { ...dialogBody, receivable_amount: "-100" }, "应收金额不能为负");
+  await assertRejected(SalesOrderDto, { ...dialogBody, settlement_unit_price: "-1" }, "结算币价不能为负");
+  await assertRejected(UpdateSalesOrderDto, { local_currency_amount: "-0.01" }, "本币金额不能为负");
 });

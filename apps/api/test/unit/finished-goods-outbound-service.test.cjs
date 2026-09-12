@@ -9,13 +9,15 @@ test("finished-goods outbound posting locks its production order before checking
   const prisma = {
     finishedGoodsOutbound: { findFirst: async () => current },
     $transaction: async (fn) => fn({
-      $queryRaw: async () => { calls.push("lock"); },
+      // 过账现在按「生产单行 → 出库单行」顺序加锁（后者用于防取消/过账丢失更新）。
+      $queryRaw: async (strings) => { calls.push(String(strings[0]).includes("production_orders") ? "lock-production-order" : "lock-outbound"); },
+      finishedGoodsOutbound: { findFirst: async () => current },
       inventoryFact: { findFirst: async () => ({ id: "fact-1" }) },
     }),
   };
   const service = new FinishedGoodsOutboundService(prisma, {}, {});
   await assert.rejects(() => service.postOutbound(current.id, { id: "user-1" }), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "FINISHED_GOODS_OUTBOUND_ALREADY_POSTED");
-  assert.deepEqual(calls, ["lock"]);
+  assert.deepEqual(calls, ["lock-production-order", "lock-outbound"], "必须先锁生产单行，再锁出库单行");
 });
 
 

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { receivableAmountFor, receivableUnitPrice, settlementRemark } from "../warehouse/finished-goods-settlement";
 
 @Injectable()
 export class ReceivableService {
@@ -43,11 +44,12 @@ export class ReceivableService {
         if (!existing.deletedAt) return existing;
         return tx.receivableSource.update({ where: { id: existing.id }, data: { deletedAt: null, deletedBy: null, ...this.audit.update(user) } });
       }
-      const unitPrice = outbound.salesOrder.unitPrice;
-      const amount = input.amount ?? (unitPrice ? new Prisma.Decimal(outbound.quantity).mul(unitPrice).toFixed(4) : undefined);
+      // 与出库过账共用同一计价口径（应收金额/结算币价/销售单价），避免两条路径给出不同金额。
+      const unitPrice = receivableUnitPrice(outbound.salesOrder);
+      const amount = input.amount ?? (unitPrice ? receivableAmountFor(outbound.salesOrder, unitPrice, outbound.quantity).toFixed(4) : undefined);
       if (!amount) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REQUIRED", message: "销售单没有单价，必须填写应收金额和原因", details: [] });
       if (!input.amount_reason?.trim() && !unitPrice) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REASON_REQUIRED", message: "手工确认金额必须填写原因", details: [] });
-      return tx.receivableSource.create({ data: { sourceNo: this.number("AR"), orderNo: outbound.orderNo, salesOrderId: outbound.salesOrderId, outboundId: outbound.id, customerId: outbound.salesOrder.customerId, quantity: outbound.quantity, unit: outbound.salesOrder.unit, unitPrice, taxRate: outbound.salesOrder.taxRate, amount, currency: outbound.salesOrder.currency, amountReason: input.amount_reason, dueDate: input.due_date ? this.date(input.due_date) : undefined, signedAtSnapshot: outbound.signedAt, remark: input.remark, ...this.audit.create(user) } });
+      return tx.receivableSource.create({ data: { sourceNo: this.number("AR"), orderNo: outbound.orderNo, salesOrderId: outbound.salesOrderId, outboundId: outbound.id, customerId: outbound.salesOrder.customerId, quantity: outbound.quantity, unit: outbound.salesOrder.unit, unitPrice, taxRate: outbound.salesOrder.taxRate, amount, currency: outbound.salesOrder.currency, amountReason: input.amount_reason, dueDate: input.due_date ? this.date(input.due_date) : undefined, signedAtSnapshot: outbound.signedAt, remark: input.remark ?? (unitPrice ? settlementRemark(outbound.salesOrder, unitPrice) : undefined), ...this.audit.create(user) } });
     });
     await this.audit.record("receivable_source.create", "receivable_source", user.id, row.id, { order_no: row.orderNo, outbound_id: outboundId, amount: row.amount.toString() });
     return row;

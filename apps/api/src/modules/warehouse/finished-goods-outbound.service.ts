@@ -5,11 +5,10 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { InventoryService } from "../../platform/inventory/inventory.service";
+import { receivableAmountFor, receivableUnitPrice, settlementRemark, type SettlementSalesOrder } from "./finished-goods-settlement";
 
 type OutboundInput = { sales_order_id: string; production_order_id: string; quantity: string; idempotency_key?: string; risk_reason?: string; remark?: string; attachment?: unknown[] };
 type ReturnInput = { sales_order_id: string; production_order_id: string; quantity: string; return_date: string; destination: "finished_goods" | "defective_goods"; reason: string; idempotency_key?: string; remark?: string; attachment?: unknown[] };
-// 与销售单 DTO 的结算方式枚举同源（sales-orders.controller.ts SETTLEMENT_METHODS）。
-const SETTLEMENT_METHOD_LABELS: Record<string, string> = { tt: "T/T 电汇", letter_of_credit: "信用证 L/C", cash: "现金", monthly: "月结", other: "其他" };
 
 @Injectable()
 export class FinishedGoodsOutboundService {
@@ -56,24 +55,38 @@ export class FinishedGoodsOutboundService {
     const notice = await this.prisma.finishedGoodsOutboundNotice.findFirst({ where: { id, deletedAt: null }, include: { salesOrder: true, productionOrder: true, unit: true } });
     if (!notice) throw this.notFound("OUTBOUND_NOTICE_NOT_FOUND", "出库通知不存在");
     if (notice.status !== "pending") throw this.invalid("OUTBOUND_NOTICE_NOT_PENDING", `该出库通知不能生成出库单（当前状态：${notice.status}）`);
-    const balance = await this.inventory.finishedGoodsBalance(this.prisma, notice.productionOrderId, notice.unitId, "finished_goods");
-    // 整批出库同样适用于通知链路：通知数量必须等于当前成品可用量。
-    // 通知之后又入库了新批次（或客户退货回仓）时，通知数量已经过期 —— 让销售取消后重新通知，
-    // 而不是悄悄发出一张比实物少的出库单。
-    if (!notice.noticeQuantity.eq(balance)) throw this.noticeStale(notice.noticeQuantity, balance);
+    await this.assertNoticeReservation(notice.productionOrderId, notice.unitId, notice.id, notice.noticeQuantity);
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${notice.productionOrderId}::uuid FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM finished_goods_outbound_notices WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.finishedGoodsOutboundNotice.findFirst({ where: { id, deletedAt: null } });
       if (!locked || locked.status !== "pending") throw this.invalid("OUTBOUND_NOTICE_NOT_PENDING", "该出库通知已被其他操作处理，请刷新后重试");
-      const currentBalance = await this.inventory.finishedGoodsBalance(tx, locked.productionOrderId, locked.unitId, "finished_goods");
-      if (!locked.noticeQuantity.eq(currentBalance)) throw this.noticeStale(locked.noticeQuantity, currentBalance);
-      const created = await tx.finishedGoodsOutbound.create({ data: { outboundNo: this.number("FGO"), orderNo: locked.orderNo, salesOrderId: locked.salesOrderId, productionOrderId: locked.productionOrderId, unitId: locked.unitId, productNameSnapshot: locked.productNameSnapshot, productSpecificationSnapshot: locked.productSpecificationSnapshot, quantity: locked.noticeQuantity, idempotencyKey: `notice:${locked.id}`, remark: `出库通知 ${locked.noticeNo}`, ...this.audit.create(user) } });
+      // 事务内二次校验（已锁生产单与通知行）：通知的预留量必须仍然成立。
+      await this.assertNoticeReservation(locked.productionOrderId, locked.unitId, locked.id, locked.noticeQuantity, tx);
+      // 通知出库是销售整批发起的：若本次出库后累计超过订单计划量，自动带上可追溯的风险原因，
+      // 否则仓库会因为「必须填写风险原因」而永远过不了账（草稿也没有填原因的地方）。
+      const sales = await tx.salesOrder.findUnique({ where: { id: locked.salesOrderId }, select: { quantity: true } });
+      const posted = await tx.finishedGoodsOutbound.aggregate({ where: { productionOrderId: locked.productionOrderId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } });
+      const overPlan = Boolean(sales) && new Prisma.Decimal(posted._sum.quantity ?? 0).plus(locked.noticeQuantity).gt(sales!.quantity);
+      const created = await tx.finishedGoodsOutbound.create({ data: { outboundNo: this.number("FGO"), orderNo: locked.orderNo, salesOrderId: locked.salesOrderId, productionOrderId: locked.productionOrderId, unitId: locked.unitId, productNameSnapshot: locked.productNameSnapshot, productSpecificationSnapshot: locked.productSpecificationSnapshot, quantity: locked.noticeQuantity, riskReason: overPlan ? `按销售出库通知 ${locked.noticeNo} 整批出库：累计出库超过订单计划量（含超产或客户退货回仓）` : null, idempotencyKey: `notice:${locked.id}`, remark: `出库通知 ${locked.noticeNo}`, ...this.audit.create(user) } });
       await tx.finishedGoodsOutboundNotice.update({ where: { id: locked.id }, data: { status: "outbound_created", outboundId: created.id, version: { increment: 1 }, ...this.audit.update(user) } });
       return created;
     });
-    await this.audit.record("finished_goods_outbound.create_from_notice", "finished_goods_outbound", user.id, row.id, { order_no: row.orderNo, notice_id: notice.id, notice_no: notice.noticeNo, quantity: row.quantity.toString() });
+    await this.audit.record("finished_goods_outbound.create_from_notice", "finished_goods_outbound", user.id, row.id, { order_no: row.orderNo, notice_id: notice.id, notice_no: notice.noticeNo, quantity: row.quantity.toString(), over_plan: Boolean(row.riskReason) });
     return row;
+  }
+
+  /**
+   * 校验一张通知的「预留量」是否仍然成立（整批口径）。
+   * 预留量 = 当前成品可用量 − 该生产单下**其它**待办通知量：允许多张通知各占一部分
+   * （例如客户退货回仓后又通知了一批），但每张通知的量必须与它当时占用的份额一致，
+   * 否则说明库存已经被别的操作改变，必须让销售取消后按最新可用量重新通知。
+   */
+  private async assertNoticeReservation(productionOrderId: string, unitId: string, noticeId: string, noticeQuantity: Prisma.Decimal, client: PrismaService | Prisma.TransactionClient = this.prisma) {
+    const balance = await this.inventory.finishedGoodsBalance(client, productionOrderId, unitId, "finished_goods");
+    const others = await client.finishedGoodsOutboundNotice.aggregate({ where: { productionOrderId, deletedAt: null, id: { not: noticeId }, status: { in: ["pending", "outbound_created"] } }, _sum: { noticeQuantity: true } });
+    const reserved = new Prisma.Decimal(balance).minus(others._sum.noticeQuantity ?? 0);
+    if (!noticeQuantity.eq(reserved)) throw this.noticeStale(noticeQuantity, reserved, balance);
   }
 
   /**
@@ -92,7 +105,8 @@ export class FinishedGoodsOutboundService {
       if (!locked || locked.status !== "draft") throw this.invalid("FINISHED_GOODS_OUTBOUND_NOT_CANCELLABLE", "该出库单已被其他操作处理，请刷新后重试");
       // 释放幂等键，允许同一张通知重新生成出库单。
       const cancelled = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "cancelled", idempotencyKey: `cancelled:${id}`, remark: `${locked.remark ?? ""}\n取消：${reason.trim()}`, ...this.audit.update(user) } });
-      await tx.finishedGoodsOutboundNotice.updateMany({ where: { outboundId: id, deletedAt: null }, data: { status: "pending", outboundId: null, version: { increment: 1 }, ...this.audit.update(user) } });
+      // 只回退「由这张出库单产生的」通知，且限定状态：避免把已取消/已完成的通知改回待处理。
+      await tx.finishedGoodsOutboundNotice.updateMany({ where: { outboundId: id, deletedAt: null, status: { in: ["pending", "outbound_created"] } }, data: { status: "pending", outboundId: null, version: { increment: 1 }, ...this.audit.update(user) } });
       return cancelled;
     });
     await this.audit.record("finished_goods_outbound.cancel", "finished_goods_outbound", user.id, id, { order_no: row.orderNo, reason: reason.trim() });
@@ -100,11 +114,16 @@ export class FinishedGoodsOutboundService {
   }
 
   async postOutbound(id: string, user: CurrentUser) {
-    const current = await this.prisma.finishedGoodsOutbound.findFirst({ where: { id, deletedAt: null } });
-    if (!current) throw this.notFound("FINISHED_GOODS_OUTBOUND_NOT_FOUND", "成品出库单不存在");
-    if (current.status !== "draft") throw this.invalid("FINISHED_GOODS_OUTBOUND_NOT_POSTABLE", "只有草稿出库单可以过账");
+    const found = await this.prisma.finishedGoodsOutbound.findFirst({ where: { id, deletedAt: null } });
+    if (!found) throw this.notFound("FINISHED_GOODS_OUTBOUND_NOT_FOUND", "成品出库单不存在");
+    if (found.status !== "draft") throw this.invalid("FINISHED_GOODS_OUTBOUND_NOT_POSTABLE", "只有草稿出库单可以过账");
     const result = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${current.productionOrderId}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${found.productionOrderId}::uuid FOR UPDATE`;
+      // 锁住出库单行并重读状态：否则「取消草稿」与「过账」并发时会出现丢失更新
+      // （过账把 cancelled 覆盖成 posted，而通知已经被退回 pending，单据与通知不一致）。
+      await tx.$queryRaw`SELECT id FROM finished_goods_outbounds WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.finishedGoodsOutbound.findFirst({ where: { id, deletedAt: null } });
+      if (!current || current.status !== "draft") throw this.invalid("FINISHED_GOODS_OUTBOUND_NOT_POSTABLE", "该出库单已被其他操作处理（可能已取消或已过账），请刷新后重试");
       const existing = await tx.inventoryFact.findFirst({ where: { finishedGoodsOutboundId: id, sourceType: "finished_goods_outbound" } });
       if (existing) throw this.invalid("FINISHED_GOODS_OUTBOUND_ALREADY_POSTED", "成品出库单已过账");
       const balance = await this.inventory.finishedGoodsBalance(tx, current.productionOrderId, current.unitId, "finished_goods");
@@ -119,7 +138,7 @@ export class FinishedGoodsOutboundService {
       if (postedQuantity.plus(current.quantity).gt(sales.quantity) && !current.riskReason?.trim()) throw new UnprocessableEntityException({ code: "OUTBOUND_PLAN_EXCEEDED_REASON_REQUIRED", message: "出库累计超过订单计划量，必须填写风险原因", details: [{ planned_quantity: sales.quantity.toString(), posted_quantity: postedQuantity.toString() }] });
       const posted = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity.negated(), sourceType: "finished_goods_outbound", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
-      await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: settlementPrice, taxRate: sales.taxRate, amount: settlementPrice.mul(current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, remark: this.settlementRemark(sales, settlementPrice), ...this.audit.create(user) } });
+      await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: settlementPrice, taxRate: sales.taxRate, amount: this.receivableAmountFor(sales, settlementPrice, current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, remark: this.settlementRemark(sales, settlementPrice), ...this.audit.create(user) } });
       // 出库过账 = 通知财务收款：应收来源草稿已生成，同时把来源出库通知置为 completed。
       await tx.finishedGoodsOutboundNotice.updateMany({ where: { outboundId: id, deletedAt: null, status: { in: ["pending", "outbound_created"] } }, data: { status: "completed", version: { increment: 1 }, ...this.audit.update(user) } });
       return posted;
@@ -244,33 +263,26 @@ export class FinishedGoodsOutboundService {
     });
   }
 
-  /** 出库通知数量与当前库存不一致（通知后又入库/退货回仓）：让销售重新通知，不要悄悄少发。 */
-  private noticeStale(noticeQuantity: Prisma.Decimal, available: Prisma.Decimal) {
+  /** 出库通知的预留量与当前库存不一致（通知后又入库/退货回仓/被其它通知占用）：让销售重新通知，不要悄悄少发。 */
+  private noticeStale(noticeQuantity: Prisma.Decimal, reserved: Prisma.Decimal, balance: Prisma.Decimal) {
     return new UnprocessableEntityException({
       code: "OUTBOUND_NOTICE_QUANTITY_STALE",
-      message: `出库通知数量（${noticeQuantity.toString()}）与当前成品可用量（${available.toString()}）不一致：通知之后库存发生了变化，请让销售取消该通知并按最新可用量重新通知仓库（整批出库）`,
-      details: [{ notice_quantity: noticeQuantity.toString(), available_quantity: available.toString() }],
+      message: `出库通知数量（${noticeQuantity.toString()}）与该通知当前占用的成品可用量（${reserved.toString()}，成品可用量 ${balance.toString()} 扣除其它待办通知）不一致：库存或其它通知已经变化，请让销售取消本通知（必要时把所有待办通知一并取消）并按最新可用量重新通知仓库（整批出库）`,
+      details: [{ notice_quantity: noticeQuantity.toString(), reserved_quantity: reserved.toString(), available_quantity: balance.toString() }],
     });
   }
 
   /**
    * 应收单价：销售单填了「应收金额」时按 应收金额 ÷ 订单数量 折算（整单出库时应收总额与销售填写一致），
-   * 否则退回「结算币价」，再退回销售单价。
+   * 否则退回「结算币价」，再退回销售单价。与财务手工补建应收共用同一实现（finished-goods-settlement.ts）。
    */
-  private receivableUnitPrice(sales: { quantity: Prisma.Decimal; receivableAmount: Prisma.Decimal | null; settlementUnitPrice: Prisma.Decimal | null; unitPrice: Prisma.Decimal | null } | null) {
-    if (!sales) return null;
-    if (sales.receivableAmount && sales.receivableAmount.gt(0) && sales.quantity.gt(0)) return sales.receivableAmount.div(sales.quantity);
-    return sales.settlementUnitPrice ?? sales.unitPrice;
-  }
+  private receivableUnitPrice(sales: SettlementSalesOrder | null) { return receivableUnitPrice(sales); }
+
+  /** 应收金额：整单出库且填了应收金额时直接取应收金额，否则 单价 × 数量。 */
+  private receivableAmountFor(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal, quantity: Prisma.Decimal) { return receivableAmountFor(sales, unitPrice, quantity); }
 
   /** 把结算口径写进应收来源备注，财务不用回到销售单也能看到结算方式与本币金额。 */
-  private settlementRemark(sales: { settlementMethod: string | null; localCurrencyAmount: Prisma.Decimal | null; receivableAmount: Prisma.Decimal | null }, unitPrice: Prisma.Decimal) {
-    const parts = [`结算单价 ${unitPrice.toFixed(4)}`];
-    if (sales.settlementMethod) parts.push(`结算方式 ${SETTLEMENT_METHOD_LABELS[sales.settlementMethod] ?? sales.settlementMethod}`);
-    if (sales.localCurrencyAmount) parts.push(`本币金额 ${sales.localCurrencyAmount.toString()}`);
-    if (sales.receivableAmount) parts.push(`销售单应收 ${sales.receivableAmount.toString()}`);
-    return parts.join("；");
-  }
+  private settlementRemark(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal) { return settlementRemark(sales, unitPrice); }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }
   private invalid(code: string, message: string) { return new UnprocessableEntityException({ code, message, details: [] }); }
 }

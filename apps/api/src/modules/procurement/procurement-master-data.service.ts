@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
+import { isUniqueConstraintViolationOn } from "../../platform/database/prisma-error";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 type Tx = Prisma.TransactionClient;
@@ -98,9 +99,8 @@ export class ProcurementMasterDataService {
   private conflictMessage(kind: string, error?: unknown) {
     if (kind === "material") {
       // 组合唯一索引（名称+规格型号+颜色）与物料编码是两件不同的事，提示不能混。
-      const target = (error as { meta?: { target?: unknown } } | undefined)?.meta?.target;
-      const columns = (Array.isArray(target) ? target : typeof target === "string" ? [target] : []).map((item) => String(item).toLowerCase());
-      if (columns.some((column) => column.includes("material_code"))) return "物料编码已存在：请换一个物料编码，或改用「自动生成」编码模式";
+      // 复用平台的冲突列判断（下划线/驼峰/约束名都能识别）。
+      if (isUniqueConstraintViolationOn(error, "material_code")) return "物料编码已存在：请换一个物料编码，或改用「自动生成」编码模式";
       return "「名称 + 规格型号 + 颜色」完全相同的物料已存在：请修改规格型号或颜色（同名不同规格/颜色可以并存），或改用其它物料编码";
     }
     if (kind === "unit") return "单位名称已存在";

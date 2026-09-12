@@ -81,16 +81,20 @@ export class OrderWorkbenchService {
     const noticedPostedQuantity = sum(finishedInbounds.filter((row) => row.status === "posted" && row.submission?.sourceType === "finished_goods_inbound_notice").map((row) => row.quantity));
     const pendingInboundQuantity = Prisma.Decimal.max(notifiedQuantity.minus(noticedPostedQuantity), new Prisma.Decimal(0));
     const finishedInboundQuantity = sum(finishedInbounds.map((row) => row.quantity));
-    const outboundQuantity = sum(outbounds.map((row) => row.quantity));
+    // 已出库只算真正发出去的（posted/shipped/signed）：草稿是待出库，cancelled/reversed 都不算。
+    // 之前把全部出库单（含草稿与 60844f2 新增的 cancelled）都累加，工作台会显示虚高的「已出库」，
+    // 甚至误报 OUTBOUND_OVER_ORDER。
+    const shippedOutbounds = outbounds.filter((row) => ["posted", "shipped", "signed"].includes(row.status));
+    const outboundQuantity = sum(shippedOutbounds.map((row) => row.quantity));
     const paidReceivableAmount = sum(receivableAllocations.map((row) => row.amount));
     const paidPayableAmount = sum(supplierPaymentAllocations.map((row) => row.amount));
     const blockers: WorkbenchBlocker[] = [];
     if (!boms.length) blockers.push({ code: "BOM_MISSING", label: "BOM 尚未建立", suggestion: "请在销售确认后建立 BOM。" });
     if (qc.some((row) => row.conclusion === "rejected")) blockers.push({ code: "QC_REJECTED", label: "成品 QC 存在不合格", suggestion: "请处理不良品或重新送检。" });
     if (production.some((row) => ["draft", "paused"].includes(row.status))) blockers.push({ code: "PRODUCTION_PENDING", label: "生产单尚未完成", suggestion: "请查看生产进度和阻塞原因。" });
-    if (outbounds.length === 0 && finishedInbounds.length > 0) blockers.push({ code: "OUTBOUND_MISSING", label: "已有成品但尚未发货", suggestion: "请根据客户交付计划创建成品出库单。" });
+    if (shippedOutbounds.length === 0 && finishedInbounds.length > 0) blockers.push({ code: "OUTBOUND_MISSING", label: "已有成品但尚未发货", suggestion: "请根据客户交付计划创建成品出库单。" });
     blockers.push(...reconciliationBlockers({ bomRequired: bomRequired.toString(), ordered: orderedQuantity.toString(), received: receivedQuantity.toString(), inspected: inspectedQuantity.toString(), accepted: acceptedQuantity.toString(), conditional: conditionalQuantity.toString(), inbound: inboundQuantity.toString(), planned: plannedQuantity.toString(), completed: operationQuantity.toString(), outbound: outboundQuantity.toString(), orderQuantity: root.quantity.toString(), receivable: sum(receivables.map((row) => row.amount)).toString(), receivableAllocated: paidReceivableAmount.toString(), payable: sum(payables.map((row) => row.amount)).toString(), payableAllocated: paidPayableAmount.toString() }));
-    const statuses = [root.status, boms.length ? "completed" : "not_started", ...production.map((row) => row.status), ...outbounds.map((row) => row.status), ...receivables.map((row) => row.status), ...payables.map((row) => row.status)];
+    const statuses = [root.status, boms.length ? "completed" : "not_started", ...production.map((row) => row.status), ...shippedOutbounds.map((row) => row.status), ...receivables.map((row) => row.status), ...payables.map((row) => row.status)];
     const status = overallStatus(statuses, blockers);
     const module = (moduleStatus: string, rows: unknown[], sourceIds: string[], extra: Record<string, unknown> = {}) => ({ status: moduleStatus, label: WORKBENCH_STATUS_LABELS[moduleStatus] ?? moduleStatus, counts: { records: rows.length }, source_ids: sourceIds, missing: rows.length === 0, ...extra });
     const amount = (rows: Array<{ amount: Prisma.Decimal; currency: string }>) => ({ amount: rows.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)).toString(), currency: rows[0]?.currency ?? root.currency });

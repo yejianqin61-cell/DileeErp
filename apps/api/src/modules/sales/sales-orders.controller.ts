@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsDateString, IsDecimal, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsDateString, IsDecimal, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -9,6 +9,9 @@ import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { SalesOrdersService } from "./sales-orders.service";
 import { FinishedGoodsOutboundNoticeService } from "./finished-goods-outbound-notice.service";
+
+/** 金额类字段的非负校验：class-validator 的 @Min 对字符串不生效（会直接判不通过），这里用十进制正则。 */
+const NON_NEGATIVE_DECIMAL = /^\d+(?:\.\d+)?$/;
 
 /** 结算方式固定枚举（前端下拉同源展示中文）。 */
 export const SETTLEMENT_METHODS = ["tt", "letter_of_credit", "cash", "monthly", "other"] as const;
@@ -29,14 +32,15 @@ export class SalesOrderDto {
   @IsOptional() @IsDateString() delivery_date?: string;
   @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(10) currency!: string;
   // 单价/金额/税率留空时前端会提交 ""：先归一成 undefined，否则 @IsOptional() 不跳过空串 → 400。
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() tax_rate?: string;
+  // 金额一律不允许负数（负应收会被原样带进财务应收来源）。
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() total_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() tax_rate?: string;
   // 结算口径：结算币价 / 应收金额 / 结算方式 / 本币金额。
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() settlement_unit_price?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() receivable_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() settlement_unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() receivable_amount?: string;
   @IsOptional() @EmptyStringToUndefined() @IsIn(SETTLEMENT_METHODS) settlement_method?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() local_currency_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() local_currency_amount?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
 }
 export class UpdateSalesOrderDto {
@@ -50,13 +54,13 @@ export class UpdateSalesOrderDto {
   @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(30) unit?: string;
   @IsOptional() @IsDateString() delivery_date?: string;
   @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(10) currency?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() tax_rate?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() settlement_unit_price?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() receivable_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() total_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() tax_rate?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() settlement_unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() receivable_amount?: string;
   @IsOptional() @EmptyStringToUndefined() @IsIn(SETTLEMENT_METHODS) settlement_method?: string;
-  @IsOptional() @EmptyStringToUndefined() @IsDecimal() local_currency_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() local_currency_amount?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
   @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }

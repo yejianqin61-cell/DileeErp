@@ -491,10 +491,11 @@ model Material {
   id                        String                    @id @default(uuid()) @db.Uuid
   materialCode              String                    @unique @map("material_code") @db.VarChar(80)
   // 唯一性口径：名称 + 规格型号 + 颜色 组合唯一（同名不同规格/颜色必须能并存）。
-  // 服务端把缺省值写成空串而不是 NULL —— PostgreSQL 唯一索引里 NULL 互不相等，写 NULL 会让索引失效。
+  // 缺省值写空串而不是 NULL —— PostgreSQL 唯一索引里 NULL 互不相等，写 NULL 会让索引失效
+  // （迁移 20260912190000 已在库层 SET DEFAULT ''）。
   name                      String                    @db.VarChar(200)
-  specificationModel        String?                   @map("specification_model") @db.VarChar(200)
-  color                     String?                   @db.VarChar(100)
+  specificationModel        String?                   @default("") @map("specification_model") @db.VarChar(200)
+  color                     String?                   @default("") @db.VarChar(100)
   defaultUnitId             String                    @map("default_unit_id") @db.Uuid
   materialType              String                    @default("raw_material") @map("material_type") @db.VarChar(30)
   isActive                  Boolean                   @default(true) @map("is_active")

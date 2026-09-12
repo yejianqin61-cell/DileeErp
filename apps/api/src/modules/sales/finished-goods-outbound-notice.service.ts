@@ -72,9 +72,13 @@ export class FinishedGoodsOutboundNoticeService {
     const order = await this.requireOrder(salesOrderId);
     const idempotencyKey = input.idempotency_key?.trim();
     if (idempotencyKey) {
-      // 存储时键被加了「:生产单ID」后缀（一张通知一个生产单），所以重放查询要用前缀匹配，
-      // 否则永远查不到已建的通知，反而会在唯一索引上撞出 409。
-      const existing = await this.prisma.finishedGoodsOutboundNotice.findMany({ where: { idempotencyKey: { startsWith: `${idempotencyKey}:` }, deletedAt: null } });
+      // 存储键是「客户端键:生产单ID」（一张通知一个生产单）。重放必须**精确**匹配这些键，
+      // 并且限定在本销售单内：用 startsWith 前缀匹配会跨单串号（键本身含冒号时更会误配）。
+      const productionOrders = await this.prisma.productionOrder.findMany({ where: { salesOrderId, deletedAt: null }, select: { id: true } });
+      const candidates = productionOrders.map((production) => `${idempotencyKey}:${production.id}`);
+      const existing = candidates.length
+        ? await this.prisma.finishedGoodsOutboundNotice.findMany({ where: { salesOrderId, deletedAt: null, idempotencyKey: { in: candidates } } })
+        : [];
       if (existing.length) return existing;
     }
     if (input.production_order_id) {

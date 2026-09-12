@@ -13,5 +13,8 @@ export function isUniqueConstraintViolationOn(error: unknown, ...columns: string
   const target = (error as { meta?: { target?: unknown } }).meta?.target;
   const targets = (Array.isArray(target) ? target : typeof target === "string" ? [target] : []).map((item) => String(item).toLowerCase());
   if (!targets.length) return false;
-  return targets.some((value) => columns.some((column) => value === column.toLowerCase() || value.includes(column.toLowerCase())));
+  // 列名可能是 customer_code / customerCode / customers_customer_code_key，统一去掉下划线再比，
+  // 避免同一个约束因为命名风格不同而漏判。
+  const flatten = (value: string) => value.replace(/_/g, "");
+  return targets.some((value) => columns.some((column) => value === column.toLowerCase() || value.includes(column.toLowerCase()) || flatten(value).includes(flatten(column.toLowerCase()))));
 }
