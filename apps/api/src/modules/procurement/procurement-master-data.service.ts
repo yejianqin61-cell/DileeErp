@@ -2,6 +2,7 @@ import { ConflictException, Injectable, NotFoundException, UnprocessableEntityEx
 import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 type Tx = Prisma.TransactionClient;
@@ -97,17 +98,15 @@ export class ProcurementMasterDataService {
   private async requireActiveUnit(id: string) { const item = await this.prisma.unit.findFirst({ where: { id, deletedAt: null, isActive: true } }); if (!item) throw new NotFoundException({ code: "UNIT_NOT_FOUND", message: "单位不存在或已停用", details: [] }); return item; }
   private async requireMaterial(id: string) { const item = await this.prisma.material.findFirst({ where: { id, deletedAt: null } }); if (!item) throw new NotFoundException({ code: "MATERIAL_NOT_FOUND", message: "物料不存在", details: [] }); return item; }
   private async requireSupplier(id: string) { const item = await this.prisma.supplier.findFirst({ where: { id, deletedAt: null } }); if (!item) throw new NotFoundException({ code: "SUPPLIER_NOT_FOUND", message: "供应商不存在", details: [] }); return item; }
-  private async nextMaterialCode() { return this.nextSequenceCode("MAT", async (prefix) => (await this.prisma.material.findFirst({ where: { materialCode: { startsWith: prefix } }, orderBy: { materialCode: "desc" }, select: { materialCode: true } }))?.materialCode ?? null); }
-  private async nextSupplierCode() { return this.nextSequenceCode("SUP", async (prefix) => (await this.prisma.supplier.findFirst({ where: { supplierCode: { startsWith: prefix } }, orderBy: { supplierCode: "desc" }, select: { supplierCode: true } }))?.supplierCode ?? null); }
+  private async nextMaterialCode() { return this.nextSequenceCode("MAT", async (prefix) => (await this.prisma.material.findMany({ where: { materialCode: { startsWith: prefix } }, select: { materialCode: true } })).map((row) => row.materialCode)); }
+  private async nextSupplierCode() { return this.nextSequenceCode("SUP", async (prefix) => (await this.prisma.supplier.findMany({ where: { supplierCode: { startsWith: prefix } }, select: { supplierCode: true } })).map((row) => row.supplierCode)); }
 
   /**
-   * 自动编码：前缀 = 类别 + 当天日期，序号按当天已有编码的最大值 +1（4 位补零）。
-   * 物料/供应商/客户共用同一套规则，避免三种主数据各写一份。
+   * 自动编码：前缀 = 类别 + 当天日期，序号按当天已有编码的数字后缀最大值 +1（4 位补零）。
+   * 物料/供应商/客户共用同一套规则（见 platform/database/daily-sequence-code.ts），避免三种主数据各写一份。
    */
-  private async nextSequenceCode(category: string, latestCode: (prefix: string) => Promise<string | null>) {
-    const prefix = `${category}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-`;
-    const latest = await latestCode(prefix);
-    const sequence = latest ? Number(latest.slice(prefix.length)) + 1 : 1;
-    return `${prefix}${String(Number.isFinite(sequence) ? sequence : 1).padStart(4, "0")}`;
+  private async nextSequenceCode(category: string, readCodes: (prefix: string) => Promise<Array<string | null>>) {
+    const prefix = dailyCodePrefix(category);
+    return nextSequenceCode(prefix, await readCodes(prefix));
   }
 }

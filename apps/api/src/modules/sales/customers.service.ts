@@ -1,6 +1,8 @@
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
+import { isUniqueConstraintViolation } from "../../platform/database/prisma-error";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 // customer_code 可空：code_mode=auto 时由服务端生成（与物料/供应商一致）。
@@ -27,13 +29,23 @@ export class CustomersService {
 
   async create(input: CustomerInput & { code_mode?: string }, user: CurrentUser) {
     // 与物料/供应商一致：客户编码支持“自动生成 / 手动填写”，由调用方选择。
-    const code = input.code_mode === "auto" ? await this.nextCustomerCode() : input.customer_code?.trim();
-    if (!code) throw new UnprocessableEntityException({ code: "CUSTOMER_CODE_REQUIRED", message: "手动编码模式必须填写客户编码", details: [] });
-    try {
-      const customer = await this.prisma.customer.create({ data: { customerCode: code, name: input.name, countryRegion: input.country_region, address: input.address, paymentTerms: input.payment_terms, currency: input.currency, remark: input.remark, ...this.audit.create(user) } });
-      await this.audit.record("customer.create", "customer", user.id, customer.id, { customer_code: customer.customerCode, name: customer.name });
-      return customer;
-    } catch (error) { this.handleUnique(error); throw error; }
+    const auto = input.code_mode === "auto";
+    const manualCode = input.customer_code?.trim();
+    if (!auto && !manualCode) throw new UnprocessableEntityException({ code: "CUSTOMER_CODE_REQUIRED", message: "手动编码模式必须填写客户编码", details: [] });
+    // 自动编码是「读当天最大值 + 1 再写入」，两次并发可能算出同一个号。
+    // 撞唯一键时重算重试（仅自动模式），避免第二个用户明明没填编码却收到「编码已存在」。
+    for (let attempt = 1; ; attempt += 1) {
+      const code = auto ? await this.nextCustomerCode() : (manualCode as string);
+      try {
+        const customer = await this.prisma.customer.create({ data: { customerCode: code, name: input.name, countryRegion: input.country_region, address: input.address, paymentTerms: input.payment_terms, currency: input.currency, remark: input.remark, ...this.audit.create(user) } });
+        await this.audit.record("customer.create", "customer", user.id, customer.id, { customer_code: customer.customerCode, name: customer.name });
+        return customer;
+      } catch (error) {
+        if (auto && attempt < 3 && isUniqueConstraintViolation(error)) continue;
+        this.handleUnique(error);
+        throw error;
+      }
+    }
   }
 
   async update(id: string, input: Partial<CustomerInput>, user: CurrentUser) {
@@ -93,9 +105,9 @@ export class CustomersService {
 
   /** 自动编码：CUS-日期-序号（4 位补零），与物料/供应商同一套规则。 */
   private async nextCustomerCode() {
-    const prefix = `CUS-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-`;
-    const latest = await this.prisma.customer.findFirst({ where: { customerCode: { startsWith: prefix } }, orderBy: { customerCode: "desc" }, select: { customerCode: true } });
-    const sequence = latest ? Number(latest.customerCode.slice(prefix.length)) + 1 : 1;
-    return `${prefix}${String(Number.isFinite(sequence) ? sequence : 1).padStart(4, "0")}`;
+    const prefix = dailyCodePrefix("CUS");
+    // 取当天全部同类编码再算数字后缀最大值：单条 orderBy desc 会被手工编码（CUS-…-ABC）带偏。
+    const rows = await this.prisma.customer.findMany({ where: { customerCode: { startsWith: prefix } }, select: { customerCode: true } });
+    return nextSequenceCode(prefix, rows.map((row) => row.customerCode));
   }
 }

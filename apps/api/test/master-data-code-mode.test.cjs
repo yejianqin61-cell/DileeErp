@@ -13,7 +13,7 @@ const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
 function supplierService(created, latest) {
   const prisma = {
     supplier: {
-      findFirst: async (args) => (args && args.where && args.where.supplierCode ? latest : null),
+      findMany: async (args) => (args && args.where && args.where.supplierCode && latest ? [latest] : []),
       create: async ({ data }) => { created.push(data); return { id: "supplier-1", ...data }; }
     }
   };
@@ -23,7 +23,7 @@ function supplierService(created, latest) {
 function customerService(created, latest) {
   const prisma = {
     customer: {
-      findFirst: async (args) => (args && args.where && args.where.customerCode ? latest : null),
+      findMany: async (args) => (args && args.where && args.where.customerCode && latest ? [latest] : []),
       create: async ({ data }) => { created.push(data); return { id: "customer-1", ...data }; }
     }
   };
@@ -89,7 +89,7 @@ test("客户：手动模式必须填写编码，填写后使用用户编码", as
 test("客户：编码重复时返回可读的冲突提示", async () => {
   const prisma = {
     customer: {
-      findFirst: async () => null,
+      findMany: async () => [],
       create: async () => { const error = new Error("duplicate"); error.code = "P2002"; throw error; }
     }
   };
@@ -98,4 +98,41 @@ test("客户：编码重复时返回可读的冲突提示", async () => {
     () => service.create({ code_mode: "manual", customer_code: "CUS-DUP", name: "重复客户" }, user),
     (error) => error.getResponse().code === "CUSTOMER_CONFLICT"
   );
+});
+
+test("客户：自动编码撞号时重算重试，失败提示只在重试耗尽后出现", async () => {
+  const created = [];
+  let attempt = 0;
+  const prisma = {
+    customer: {
+      // 每次重试都返回更大的当天序号，模拟并发下别人刚写入了同一号。
+      findMany: async () => [{ customerCode: `CUS-${today}-000${attempt}` }],
+      create: async ({ data }) => {
+        attempt += 1;
+        if (attempt === 1) { const error = new Error("duplicate"); error.code = "P2002"; throw error; }
+        created.push(data);
+        return { id: "customer-1", ...data };
+      }
+    }
+  };
+  const service = new CustomersService(prisma, audit);
+  await service.create({ code_mode: "auto", name: "并发客户" }, user);
+  assert.equal(created.length, 1, "第一次撞 P2002 后必须自动重试成功");
+  assert.equal(created[0].customerCode, `CUS-${today}-0002`);
+});
+
+test("客户：手动编码撞 P2002 不重试，直接返回冲突提示", async () => {
+  let attempts = 0;
+  const prisma = {
+    customer: {
+      findMany: async () => [],
+      create: async () => { attempts += 1; const error = new Error("duplicate"); error.code = "P2002"; throw error; }
+    }
+  };
+  const service = new CustomersService(prisma, audit);
+  await assert.rejects(
+    () => service.create({ code_mode: "manual", customer_code: "CUS-DUP", name: "重复客户" }, user),
+    (error) => error.getResponse().code === "CUSTOMER_CONFLICT"
+  );
+  assert.equal(attempts, 1, "手动编码是用户自己填的，重试没有意义");
 });
