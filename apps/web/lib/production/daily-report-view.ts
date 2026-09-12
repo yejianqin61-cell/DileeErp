@@ -74,14 +74,29 @@ export function hoursToMinutes(hours: string | number | null | undefined): numbe
   return Number.isFinite(value) ? Number((value * 60).toFixed(4)) : 0;
 }
 
-/** 时长的展示文案：整数不带小数（2），小数去掉尾随零（1.5、1.25）；空值显示为空串。
- *  极小非零值提升到 8 位小数，避免 0.0001 分钟这类历史数据被显示成 0（与后端 toHoursText/导出 hours() 同口径）。 */
+/**
+ * 时长的展示文案：整数不带小数（2），小数去掉尾随零（1.5、1.25）；空值显示为空串。
+ *
+ * 关键点：必须与后端 `toHoursText`/`hours()`（decimal.js，ROUND_HALF_UP）逐字符一致，
+ * 否则后端“客户端回传的展示值是否等于当前值”的判定会在半值处失效（例如 33.333 分钟：
+ * JS 的 Number.toFixed 给 "0.5555"，decimal.js 给 "0.5556"）。
+ * 因此这里不用 toFixed，改为把分钟按 1e4 缩放成整数后做“半值进位”的整数除法。
+ * 极小非零值再提升到 8 位小数，避免 0.0001 分钟这类历史数据显示成 0。
+ */
 export function hoursText(minutes: string | number | null | undefined): string {
   if (minutes === null || minutes === undefined || minutes === "") return "";
-  const value = Number(minutes);
-  if (!Number.isFinite(value)) return "";
-  const trim = (text: string) => text.replace(/0+$/, "").replace(/\.$/, "");
-  const text = trim((value / 60).toFixed(4));
-  if (text !== "0" || value === 0) return text;
-  return trim((value / 60).toFixed(8));
+  const raw = String(minutes).trim();
+  if (!/^\d+(?:\.\d+)?$/.test(raw)) return "";
+  const [integerPart, fractionPart = ""] = raw.split(".");
+  const fraction = fractionPart.padEnd(5, "0");
+  // 分钟按 Decimal(18,4) 存 4 位小数；第 5 位做一次进位。
+  let scaled = Number(integerPart) * 10000 + Number(fraction.slice(0, 4));
+  if (Number(fraction[4]) >= 5) scaled += 1;
+  if (scaled === 0) return "0";
+  const trim = (digits: number, scale: number) => {
+    const text = `${Math.floor(digits / scale)}.${String(digits % scale).padStart(String(scale).length - 1, "0")}`;
+    return text.replace(/0+$/, "").replace(/\.$/, "");
+  };
+  const text = trim(Math.floor((scaled + 30) / 60), 10000);
+  return text === "0" ? trim(Math.floor((scaled * 10000 + 30) / 60), 100000000) : text;
 }

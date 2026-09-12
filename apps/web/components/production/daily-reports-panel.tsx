@@ -175,15 +175,22 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
     }
 
   function editReport(report: Report) {
+    // 弹窗字段的默认值就是操作员看到的原值；提交时逐字段比对，只发送真正改动过的计价字段，
+    // 这样“打开更正却什么都没改”不会让后端认为计价要素变化（历史日报的金额与时长保持原样）。
+    const original = emptyEdit(report);
     setEditDialog({ title: `更正日报：${report.employeeNameSnapshot}`, fields: [
-      { name: "quantity", label: "件数", type: "number", defaultValue: report.quantity },
-      { name: "duration_hours", label: "时长（小时）", type: "number", defaultValue: hoursText(report.durationMinutes) },
-      { name: "unit_price", label: unitPriceLabel(report.wageMode), type: "number", required: true, defaultValue: report.unitPrice },
-      { name: "remark", label: "备注", type: "text", defaultValue: report.remark ?? "" },
+      { name: "quantity", label: "件数", type: "number", defaultValue: original.quantity },
+      { name: "duration_hours", label: "时长（小时）", type: "number", defaultValue: original.duration_hours },
+      { name: "unit_price", label: unitPriceLabel(report.wageMode), type: "number", required: true, defaultValue: original.unit_price },
+      { name: "remark", label: "备注", type: "text", defaultValue: original.remark },
       { name: "reason", label: "更正原因", type: "textarea", required: true },
     ], submit: async (values) => {
       try {
-        await apiRequest(`/production/employee-reports/${report.id}`, { method: "PATCH", body: JSON.stringify({ quantity: values.quantity || undefined, duration_hours: values.duration_hours || undefined, unit_price: values.unit_price, remark: (values.remark ?? "").trim(), reason: values.reason, expected_version: report.version }) });
+        const body: Record<string, string | number | undefined> = { reason: values.reason, expected_version: report.version, remark: (values.remark ?? "").trim() };
+        if ((values.quantity ?? "") !== original.quantity) body.quantity = values.quantity;
+        if ((values.duration_hours ?? "") !== original.duration_hours) body.duration_hours = values.duration_hours;
+        if ((values.unit_price ?? "") !== original.unit_price) body.unit_price = values.unit_price;
+        await apiRequest(`/production/employee-reports/${report.id}`, { method: "PATCH", body: JSON.stringify(body) });
         notifySuccess("员工日报已更正");
         setEditDialog(null);
         await load();

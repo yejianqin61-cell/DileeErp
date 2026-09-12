@@ -63,9 +63,13 @@ test("草稿表与日报表都有备注列，且更正要能保存备注", () =>
 // 只改备注（或打开更正弹窗什么都不改）绝不能顺带把按分钟单价录入的历史计时日报重算成 ÷60。
 // 前端只提交真正改动过的计价字段，后端再按“生效值是否变化”二次把关。
 test("更正日报只提交改动过的计价字段（避免只改备注就把历史金额重算）", () => {
-  assert.match(panel, /if \(edit\.quantity !== original\.quantity\) body\.quantity = edit\.quantity;/, "件数未变则不提交");
-  assert.match(panel, /if \(edit\.duration_hours !== original\.duration_hours\) body\.duration_hours = edit\.duration_hours;/, "时长未变则不提交");
-  assert.match(panel, /if \(edit\.unit_price !== original\.unit_price\) body\.unit_price = edit\.unit_price;/, "单价未变则不提交");
+  assert.match(panel, /if \(edit\.quantity !== original\.quantity\) body\.quantity = edit\.quantity;/, "行内保存：件数未变则不提交");
+  assert.match(panel, /if \(edit\.duration_hours !== original\.duration_hours\) body\.duration_hours = edit\.duration_hours;/, "行内保存：时长未变则不提交");
+  assert.match(panel, /if \(edit\.unit_price !== original\.unit_price\) body\.unit_price = edit\.unit_price;/, "行内保存：单价未变则不提交");
+  // 更正弹窗同样不能整包回传（否则后端会认为计价要素变了）。
+  assert.match(panel, /const original = emptyEdit\(report\);\s*\n\s*setEditDialog/, "更正弹窗必须先用展示原值作为比对基准");
+  assert.match(panel, /if \(\(values\.duration_hours \?\? ""\) !== original\.duration_hours\) body\.duration_hours = values\.duration_hours;/, "更正弹窗：时长未变则不提交");
+  assert.match(panel, /if \(\(values\.unit_price \?\? ""\) !== original\.unit_price\) body\.unit_price = values\.unit_price;/, "更正弹窗：单价未变则不提交");
   assert.equal(
     /body: JSON\.stringify\(\{\s*quantity: edit\.quantity/.test(panel),
     false,

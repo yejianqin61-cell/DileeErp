@@ -138,3 +138,22 @@ test("hoursText: 极小非零时长不会被显示成 0（与后端 toHoursText/
   assert.equal(hoursText(6), "0.1");
 });
 
+// 半值处 JS 的 Number.toFixed 与 decimal.js 的 ROUND_HALF_UP 会分歧（33.333 分钟：JS "0.5555" / decimal.js "0.5556"），
+// 而后端要拿这个文案判断“客户端回传的是否还是当前值”。这里锁定与后端逐字符一致的期望值。
+test("hoursText: 半值进位必须与后端 decimal.js 完全一致（避免后端误判时长被改动）", () => {
+  const expectations = [
+    [0.009, "0.0002"],
+    [1.005, "0.0168"],
+    [2.505, "0.0418"],
+    [7.005, "0.1168"],
+    [30.003, "0.5001"],
+    [33.333, "0.5556"],
+    [100.005, "1.6668"],
+    [120.015, "2.0003"],
+    [480.015, "8.0003"],
+  ];
+  for (const [minutes, expected] of expectations) {
+    assert.equal(hoursText(minutes), expected, `${minutes} 分钟应显示为 ${expected}`);
+  }
+});
+

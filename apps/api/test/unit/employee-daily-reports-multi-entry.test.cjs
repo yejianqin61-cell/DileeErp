@@ -240,6 +240,41 @@ test("历史 100 分钟的展示往返（1.6667 小时）回传时不得把时�
   assert.equal(kept.calculatedAmount.toString(), "200", "不得因展示往返而重算金额");
 });
 
+// 半值处 JS 的 Number.toFixed 与 decimal.js 的 ROUND_HALF_UP 会分歧（33.333 分钟：前端曾显示 0.5555、后端算 0.5556），
+// 早期实现用“文案是否相等”判断时长是否被改动，这类历史值会被误判成已修改 → 改写时长并重算金额。
+test("半值历史分钟（33.333 / 100.005 / 1.005）在“更正弹窗不改任何值”的整包回传下不得改写时长或金额", async () => {
+  const cases = [
+    { minutes: "33.333", clientText: "0.5555", serverText: "0.5556", unitPrice: "40", amount: "1333.32" },
+    { minutes: "100.005", clientText: "1.6667", serverText: "1.6668", unitPrice: "40", amount: "4000.2" },
+    { minutes: "1.005", clientText: "0.0167", serverText: "0.0168", unitPrice: "40", amount: "40.2" },
+  ];
+  for (const item of cases) {
+    for (const durationText of [item.clientText, item.serverText]) {
+      const rows = [{
+        id: "report-1", version: 1, productionOrderId: "order-1", productionOrderOperationId: "operation-1", employeeId: "employee-1", orderNo: "SO-1", reportDate: new Date("2026-09-03T00:00:00.000Z"), wageMode: "time_rate", quantity: new Prisma.Decimal("0"), durationMinutes: new Prisma.Decimal(item.minutes), unitPrice: new Prisma.Decimal(item.unitPrice), calculatedAmount: new Prisma.Decimal(item.amount), remark: null,
+      }];
+      const client = buildClient(rows);
+      const service = new EmployeeDailyReportsService({ ...client, $transaction: async (fn) => fn(client) }, auditStub(), { recalculateInTransaction: async () => undefined });
+      const kept = await service.update("report-1", { quantity: "0", duration_hours: durationText, unit_price: item.unitPrice, remark: "", reason: "只改备注" }, { id: "user-1" });
+      assert.equal(kept.durationMinutes.toString(), item.minutes, `${item.minutes} 分钟回传 ${durationText} 后时长不得被改写`);
+      assert.equal(kept.calculatedAmount.toString(), item.amount, `${item.minutes} 分钟回传 ${durationText} 后金额不得被重算`);
+    }
+  }
+});
+
+test("服务端小时文案与前端 hoursText 在半值处完全一致（否则守卫依赖的文案比较会失效）", async () => {
+  const cases = [["0.009", "0.0002"], ["1.005", "0.0168"], ["30.003", "0.5001"], ["33.333", "0.5556"], ["100.005", "1.6668"], ["120.015", "2.0003"]];
+  for (const [minutes, expected] of cases) {
+    const rows = [{
+      id: "report-1", version: 1, productionOrderId: "order-1", productionOrderOperationId: "operation-1", employeeId: "employee-1", orderNo: "SO-1", reportDate: new Date("2026-09-03T00:00:00.000Z"), wageMode: "time_rate", quantity: new Prisma.Decimal("0"), durationMinutes: new Prisma.Decimal(minutes), unitPrice: new Prisma.Decimal("1"), calculatedAmount: new Prisma.Decimal("0"), remark: null,
+    }];
+    const client = buildClient(rows);
+    const service = new EmployeeDailyReportsService({ ...client, $transaction: async (fn) => fn(client) }, auditStub(), { recalculateInTransaction: async () => undefined });
+    const sources = await service.payrollSources({ from: "2026-09-01", to: "2026-09-30" });
+    assert.equal(sources[0].duration_hours, expected, `${minutes} 分钟 -> ${expected} 小时（必须与前端 hoursText 一致）`);
+  }
+});
+
 test("时长（小时）× 60 溢出 Decimal(18,4) 时必须 422，不能落到数据库 500", async () => {
   const { service } = buildService();
   await assert.rejects(
@@ -269,6 +304,46 @@ test("批量日报备注超过 1000 字必须 422（DTO 长度限制对 rows 无
   assert.equal(called, 0, "超长备注不得进入服务层");
   await controller.createBatch(body("字".repeat(1000)), { id: "user-1" });
   assert.equal(called, 1, "正好 1000 字必须放行");
+});
+
+test("批量日报字段类型不是字符串时必须 422（否则会在服务层抛 TypeError 变成 500）", async () => {
+  let called = 0;
+  const controller = new EmployeeDailyReportsController({ createBatch: async () => { called += 1; return []; } });
+  for (const row of [{ employee_id: "employee-1", wage_mode: "piece_rate", remark: 123 }, { employee_id: "employee-1", wage_mode: "piece_rate", quantity: 10 }, { employee_id: "employee-1", wage_mode: "piece_rate", unit_price: 2 }]) {
+    await assert.rejects(
+      () => controller.createBatch({ production_order_id: "order-1", production_order_operation_id: "operation-1", report_date: "2026-09-03", rows: JSON.stringify([row]) }, { id: "user-1" }),
+      (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_EMPLOYEE_DAILY_REPORT_ROW",
+      `非字符串字段必须被拒绝：${JSON.stringify(row)}`,
+    );
+  }
+  assert.equal(called, 0);
+});
+
+// 单行各自合法，但当日合计可能超出 Decimal(18,4)（整数部分 14 位）。原先会写库失败变成 500，
+// 现在必须在服务层提前 422，并让整笔事务回滚（不留下半条日报）。
+test("当日薪资合计超出 Decimal(18,4) 时必须 422 而不是数据库 500", async () => {
+  const seeded = [1, 2].map((index) => ({
+    id: `report-${index}`, version: 1, productionOrderId: "order-1", productionOrderOperationId: "operation-1", employeeId: "employee-1", orderNo: "SO-1", reportDate: new Date("2026-09-03T00:00:00.000Z"), wageMode: "piece_rate", quantity: new Prisma.Decimal("1"), durationMinutes: null, unitPrice: new Prisma.Decimal("1"), calculatedAmount: new Prisma.Decimal("99999999999999.9999"), remark: null,
+  }));
+  const client = buildClient(seeded);
+  const service = new EmployeeDailyReportsService({ ...client, $transaction: async (fn) => fn(client) }, auditStub(), { recalculateInTransaction: async () => undefined });
+  await assert.rejects(
+    () => service.create(pieceInput({ quantity: "1", unit_price: "1" }), { id: "user-1" }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PAYROLL_SOURCE_AMOUNT_OUT_OF_RANGE",
+  );
+});
+
+test("更正日报同时提交两种时长单位必须被拒绝（与新增口径一致）", async () => {
+  const rows = [{
+    id: "report-1", version: 1, productionOrderId: "order-1", productionOrderOperationId: "operation-1", employeeId: "employee-1", orderNo: "SO-1", reportDate: new Date("2026-09-03T00:00:00.000Z"), wageMode: "time_rate", quantity: new Prisma.Decimal("0"), durationMinutes: new Prisma.Decimal("90"), unitPrice: new Prisma.Decimal("40"), calculatedAmount: new Prisma.Decimal("60"), remark: null,
+  }];
+  const client = buildClient(rows);
+  const service = new EmployeeDailyReportsService({ ...client, $transaction: async (fn) => fn(client) }, auditStub(), { recalculateInTransaction: async () => undefined });
+  await assert.rejects(
+    () => service.update("report-1", { duration_hours: "2", duration_minutes: "120", reason: "改时长" }, { id: "user-1" }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_EMPLOYEE_REPORT_DURATION",
+  );
+  assert.equal(rows[0].durationMinutes.toString(), "90", "被拒绝的请求不得写入任何时长");
 });
 
 test("显式修改计时时长/单价时才按 小时 × 元/小时 重算金额", async () => {
