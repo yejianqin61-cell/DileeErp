@@ -119,7 +119,7 @@ not_started -> in_production -> production_completed
 - `in_production`：存在未完成生产单，或已有工序完成量但尚未满足生产完成条件。
 - `production_completed`：所有未取消生产单工序达到目标或被允许以超单完成，且不存在待处理的生产阻塞告警。
 - `blocked`：存在未处理的日报差异、数量/单位异常、外加工交接短收或必要来源缺失。
-- `ready_for_qc`：生产完成，存在待成品 QC 的成品回厂/厂内完工来源；不代表 QC 已通过。
+- `ready_for_qc`：外加工成品回厂交接已到厂、存在待成品 QC 的来源；不代表 QC 已通过。厂内生产单当前不进入该状态——厂内成品改为「按包装工序累计报工量分批发成品入库通知 → 按通知送检/QC」（见 `finished-goods-inbound-notice-and-packaging-operation-design-2026-09-12.md`），订单级状态仍只到 `production_completed`。
 - `ready_to_ship`：后续成品 QC/入库链路已明确可出库来源；D7 只允许读取该状态，不创建成品出库。
 
 在 E1-E5 尚未实现时，`ready_for_qc` 和 `ready_to_ship` 只返回可计算的前置条件和 `capability_not_implemented` 标记，不得误报为已完成。

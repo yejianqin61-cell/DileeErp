@@ -20,7 +20,8 @@ D5-D7 已提供厂内生产的工序产量、生产单进度和订单推进状�
 
 | 来源 | 送检前置条件 | 送检数量口径 | E1 结果 |
 | --- | --- | --- | --- |
-| 厂内完工 | 厂内生产单有效、未关闭/取消；D7 没有生产阻塞且全部有效工序达到目标或超单完成 | 操作员录入本次送检数量；累计不得超过该生产单有效完工量减去已送检/已关闭数量 | 形成厂内成品 QC 来源 |
+| 厂内成品入库通知（现行） | 厂内生产单有效、未关闭/取消；存在未取消的成品入库通知（由生产按包装工序累计报工量分批发出，包装工序 = 工序名称含「包装」的收尾工序） | 操作员录入本次送检数量；累计不得超过 通知数量 − 该通知已送检/已关闭数量 | 形成厂内成品 QC 来源（`source_type = finished_goods_inbound_notice`，来源 ID 为通知 ID） |
+| 厂内完工（历史口径，已停用新建） | 厂内生产单有效、未关闭/取消；D7 没有生产阻塞且全部有效工序达到目标或超单完成 | 操作员录入本次送检数量；累计不得超过该生产单有效完工量减去已送检/已关闭数量 | 历史送检单仍可查询与继续 QC/入库；不再接受新建送检（422 `FINISHED_GOODS_QC_SOURCE_TYPE_RETIRED`） |
 | 外加工成品回厂 | D6 `finished_goods_return` 已提交 `pending_qc`、未删除、未被后续关闭 | 回厂交接数量减去该来源已送检/已关闭数量 | 形成外加工回厂 QC 来源 |
 
 同一生产单支持多次送检和多次检验。数量全部使用 Decimal 字符串；不做跨单位换算。`order_no`、生产单号、产品描述/规格快照和单位均由来源服务端回填，前端不得拼接。
@@ -41,7 +42,7 @@ D5-D7 已提供厂内生产的工序产量、生产单进度和订单推进状�
 
 核心字段：`id`、`submission_no`、`order_no`、`production_order_id`、`production_order_no_snapshot`、`source_type`、`source_id`、`product_name_snapshot`、`product_specification_snapshot`、`unit_id`、`unit_name_snapshot`、`submitted_quantity`、`submission_date`、`status`、`remark`、`attachment` 关联、审计字段、逻辑删除字段和乐观锁 `version`。
 
-`source_type` 为 `in_house_completion` 或 `outsource_finished_goods_return`。厂内来源以生产单为来源 ID；外加工来源以 D6 成品回厂交接 ID 为来源 ID。一个来源可创建多个送检单，但有效送检累计不得超过可送检数量。
+`source_type` 为 `finished_goods_inbound_notice`（现行厂内来源，来源 ID 为成品入库通知 ID）、`outsource_finished_goods_return`（来源 ID 为 D6 成品回厂交接 ID）；历史数据中还可能存在 `in_house_completion`（来源 ID 为生产单 ID，仅可查询/继续 QC，不可新建）。一个来源可创建多个送检单，但有效送检累计不得超过可送检数量。厂内可送检数量 = 通知数量 − 该通知下未取消的送检量。
 
 ```text
 draft -> submitted -> inspecting -> qc_completed
