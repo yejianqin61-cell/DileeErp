@@ -67,11 +67,13 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     try { setPreview((await apiPost<Preview>("/production/material-movements/issue-preview", { production_order_id: productionOrderId, lines: next.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity, remark: line.remark || undefined })) })).data); }
     catch { setPreview(null); }
   }
-  /** 新增行默认选还没有用过的物料，避免「添加行」直接撞出重复物料（服务端 422）。 */
+  /** 新增行默认选还没有用过的物料；都用过了就返回空，让用户显式选择（同一物料只能一行）。 */
   function firstUnusedMaterial(current: DraftLine[]) {
     const used = new Set(current.map((line) => line.materialId));
-    return materialOptions.find((option) => !used.has(option.value))?.value ?? firstMaterialId;
+    return materialOptions.find((option) => !used.has(option.value))?.value ?? "";
   }
+  /** 当前草稿是否已经把可选物料都登记完了。 */
+  const allMaterialsUsed = Boolean(draft) && materialOptions.length > 0 && materialOptions.every((option) => draft?.lines.some((line) => line.materialId === option.value));
   function openCreate() {
     const next: Draft = { documentType: "issue", lines: [{ materialId: firstMaterialId, quantity: "1", remark: "" }] };
     setDraft(next); setError(""); void refreshPreview(next);
@@ -101,6 +103,10 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   const draftLabel = (current: Draft | null) => typeLabels[current?.documentType ?? "issue"] ?? "领料单";
   async function saveDraft(): Promise<string | null> {
     if (!draft?.lines.length) { setError(`${draftLabel(draft)}至少需要一条物料明细`); return null; }
+    // 服务端会拒绝重复物料（422），这里先拦，省得用户填完才失败。
+    const materialIds = draft.lines.map((line) => line.materialId);
+    if (new Set(materialIds).size !== materialIds.length) { setError("同一物料只能有一行：请合并数量后再保存"); return null; }
+    if (draft.lines.some((line) => !line.materialId || !line.quantity || Number(line.quantity) <= 0)) { setError("每一行都必须选择物料并填写大于 0 的数量"); return null; }
     try {
       if (draft.id) { await apiPatch(`/production/material-movements/${draft.id}`, payload(draft)); notifySuccess(`${draftLabel(draft)}草稿已保存`); return draft.id; }
       // 只有领料单在这里新建；补料单请走「新建补料单」入口（必须填补料原因）。
@@ -187,7 +193,7 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
             <td><Button size="sm" variant="ghost" onClick={() => removeLine(index)}>删除</Button></td>
           </tr>; })}</tbody></table></div>
         <div className="page-actions">
-          <Button variant="secondary" size="sm" onClick={addLine}>添加行</Button>
+          <Button variant="secondary" size="sm" disabled={allMaterialsUsed} title={allMaterialsUsed ? "该生产单的物料都已登记，同一物料只能有一行" : undefined} onClick={addLine}>添加行</Button>
           <Button variant="secondary" size="sm" disabled={busy === "save"} onClick={() => void save()}>{busy === "save" ? "保存中..." : "保存草稿"}</Button>
           <Button size="sm" disabled={busy === "post"} onClick={() => void saveAndPost()}>{busy === "post" ? "过账中..." : "保存并出库"}</Button>
           <Button variant="ghost" size="sm" onClick={() => { setDraft(null); setPreview(null); setError(""); }}>取消</Button>

@@ -15,6 +15,7 @@ const editorPage = read("app", "production", "material-issues", "new", "page.tsx
 const editor = read("components", "production", "material-slip-editor.tsx");
 const listPage = read("app", "production", "material-issues", "page.tsx");
 const slipApi = read("lib", "material-slip-api.ts");
+const panel = read("components", "production", "material-issues-panel.tsx");
 const css = read("app", "globals.css");
 
 test("物料下拉引用生产单订单的 BOM 明细（不能再列出全部物料）", () => {
@@ -57,6 +58,19 @@ test("已过账的领料/补料单支持回退草稿，且必须填原因", () =
   assert.match(warehouse, /\/production\/material-movements\/\$\{movement\.id\}\/reopen/, "必须调用回退草稿接口");
   assert.match(warehouse, /label: "回退原因（退回草稿后库存会相应回补）", type: "textarea", required: true/, "回退原因必填");
   assert.match(warehouse, /\["issue", "replenishment"\]\.includes\(row\.original\.documentType\)[\s\S]{0,200}?>回退草稿<\/Button>/, "只有领料/补料单显示回退按钮");
+});
+
+test("编辑已有草稿时锁定生产单（PATCH 不支持换单，换了会让明细与单据头不一致）", () => {
+  assert.match(editor, /disabled=\{Boolean\(editingId\)\}/, "编辑草稿时生产单下拉必须禁用");
+  assert.match(editor, /该草稿已绑定当前生产单/, "要告诉用户为什么不能换单");
+});
+
+test("同一物料只能一行：可选物料都用完时禁用「添加行」并在保存前先校验", () => {
+  assert.match(editor, /const allMaterialsUsed = bomMaterialOptions\.length > 0/);
+  assert.match(editor, /disabled=\{allMaterialsUsed\}/);
+  assert.match(panel, /disabled=\{allMaterialsUsed\}/);
+  assert.match(editor, /同一物料只能有一行/, "全屏编辑页要先拦重复物料");
+  assert.match(panel, /同一物料只能有一行/, "领料面板也要先拦重复物料");
 });
 
 test("一个生产单可以开多张领料单/补料单：三处界面都要有「再建/新建」入口", () => {

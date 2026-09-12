@@ -89,6 +89,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     void (async () => {
       setLoading(true);
       setError("");
+      setBlocked("");
       try {
         const [orderResult, balanceResult, movementResult] = await Promise.all([
           apiGet<ProductionOrder[]>("/production/orders"),
@@ -146,11 +147,13 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     applyLines([{ materialId: items[0]?.materialId ?? "", quantity: "1", remark: "" }], nextOrderId);
   }
 
-  /** 添加行：默认选还没有用过的物料，避免一按「添加行」就撞上重复物料（服务端 422）。 */
+  /** 添加行：默认选还没有用过的物料；BOM 里的物料都用过了就返回空（强迫用户显式选择，避免重复行）。 */
   function firstUnusedMaterial(current: SlipLine[]) {
     const used = new Set(current.map((line) => line.materialId));
-    return bomMaterialOptions.find((option) => !used.has(option.value))?.value ?? bomMaterialOptions[0]?.value ?? "";
+    return bomMaterialOptions.find((option) => !used.has(option.value))?.value ?? "";
   }
+  /** BOM 里的物料是否都已经有行了：都用完就不能再「添加行」（同一物料只能一行）。 */
+  const allMaterialsUsed = bomMaterialOptions.length > 0 && bomMaterialOptions.every((option) => lines.some((line) => line.materialId === option.value));
 
   function validate(): string {
     if (!productionOrderId) return "请先选择生产单";
@@ -218,17 +221,20 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
       <div className="panel-heading"><h2>单据信息</h2>{editingNo && <span className="panel-note">正在编辑草稿 {editingNo}</span>}</div>
       <div className="panel-body detail-list">
         <label>生产单
-          <Select value={productionOrderId || undefined} onValueChange={(value) => void changeOrder(value)}>
+          {/* 已经存在的单据不能在编辑页换生产单：PATCH 不接受换单（明细会变成新单的 BOM，单据仍挂在旧单），
+              所以编辑态直接锁住，需要换单请新建一张。 */}
+          <Select value={productionOrderId || undefined} onValueChange={(value) => void changeOrder(value)} disabled={Boolean(editingId)}>
             <SelectTrigger><SelectValue placeholder="请选择生产单（仅厂内生产中）" /></SelectTrigger>
             <SelectContent>{orders.map((order) => <SelectItem key={order.id} value={order.id}>{order.productionOrderNo} / {order.orderNo}</SelectItem>)}</SelectContent>
           </Select>
         </label>
+        {editingId && <p className="panel-note">该草稿已绑定当前生产单，不能在这里换单；如需给别的生产单领料，请新建一张。</p>}
         {isReplenishment && <label>补料原因<Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="例如：伞布原始坏片" /></label>}
         {!bomMaterialOptions.length && <p className="status-warning">该生产单订单的 BOM 没有明细，无法选择物料：请先在订单 BOM 里维护用料。</p>}
       </div>
     </section>
     <section className="panel material-slip-editor">
-      <div className="panel-heading"><h2>物料明细</h2><div className="page-actions"><Button variant="secondary" onClick={() => applyLines([...lines, { materialId: firstUnusedMaterial(lines), quantity: "1", remark: "" }])}>添加行</Button></div></div>
+      <div className="panel-heading"><h2>物料明细</h2><div className="page-actions"><Button variant="secondary" disabled={allMaterialsUsed} title={allMaterialsUsed ? "该订单 BOM 里的物料都已登记，同一物料只能有一行" : undefined} onClick={() => applyLines([...lines, { materialId: firstUnusedMaterial(lines), quantity: "1", remark: "" }])}>添加行</Button></div></div>
       <div className="panel-body">
         <div className="table-wrap">
           <Table className="data-table">
