@@ -6,9 +6,11 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
+import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { SalesOrdersService } from "./sales-orders.service";
 
-class SalesOrderDto {
+// 导出以便契约测试直接用真实 ValidationPipe 校验前端请求体。
+export class SalesOrderDto {
   @IsString() @MaxLength(100) order_no!: string;
   @IsString() customer_id!: string;
   @IsOptional() @IsString() contact_id?: string;
@@ -21,12 +23,13 @@ class SalesOrderDto {
   @IsString() @MaxLength(30) unit!: string;
   @IsOptional() @IsDateString() delivery_date?: string;
   @IsString() @MaxLength(10) currency!: string;
-  @IsOptional() @IsDecimal() unit_price?: string;
-  @IsOptional() @IsDecimal() total_amount?: string;
-  @IsOptional() @IsDecimal() tax_rate?: string;
+  // 单价/金额/税率留空时前端会提交 ""：先归一成 undefined，否则 @IsOptional() 不跳过空串 → 400。
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() tax_rate?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
 }
-class UpdateSalesOrderDto {
+export class UpdateSalesOrderDto {
   @IsOptional() @IsString() contact_id?: string;
   @IsOptional() @IsString() @MaxLength(100) customer_po_no?: string;
   @IsOptional() @IsString() @MaxLength(100) external_contract_no?: string;
@@ -37,9 +40,9 @@ class UpdateSalesOrderDto {
   @IsOptional() @IsString() @MaxLength(30) unit?: string;
   @IsOptional() @IsDateString() delivery_date?: string;
   @IsOptional() @IsString() @MaxLength(10) currency?: string;
-  @IsOptional() @IsDecimal() unit_price?: string;
-  @IsOptional() @IsDecimal() total_amount?: string;
-  @IsOptional() @IsDecimal() tax_rate?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() unit_price?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() total_amount?: string;
+  @IsOptional() @EmptyStringToUndefined() @IsDecimal() tax_rate?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
   @IsOptional() @IsString() @MaxLength(500) reason?: string;
 }
