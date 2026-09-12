@@ -29,6 +29,8 @@ test("finished-goods outbound reversal cancels a draft receivable source", async
       $queryRaw: async () => [],
       finishedGoodsOutbound: { update: async ({ data }) => ({ ...current, ...data }) },
       inventoryFact: { findFirst: async () => null, create: async () => { calls.push("inventory-reversal"); } },
+      // 冲销后要把来源出库通知退回待处理（新增链路），替身必须提供该方法。
+      finishedGoodsOutboundNotice: { updateMany: async () => ({ count: 0 }) },
       receivableSource: {
         findFirst: async () => ({ id: "receivable-1", status: "draft", remark: null, allocations: [] }),
         update: async ({ data }) => { cancelled = data.status === "cancelled"; },
@@ -50,6 +52,7 @@ test("finished-goods outbound reversal is blocked by a confirmed receivable sour
     $transaction: async (fn) => fn({
       $queryRaw: async () => [],
       inventoryFact: { findFirst: async () => null, create: async () => { inventoryReversal = true; } },
+      finishedGoodsOutboundNotice: { updateMany: async () => ({ count: 0 }) },
       receivableSource: { findFirst: async () => ({ id: "receivable-1", status: "confirmed", remark: null, allocations: [] }) },
     }),
   };

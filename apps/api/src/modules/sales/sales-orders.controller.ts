@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsDateString, IsDecimal, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsDateString, IsDecimal, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -8,6 +8,7 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { SalesOrdersService } from "./sales-orders.service";
+import { FinishedGoodsOutboundNoticeService } from "./finished-goods-outbound-notice.service";
 
 /** 结算方式固定枚举（前端下拉同源展示中文）。 */
 export const SETTLEMENT_METHODS = ["tt", "letter_of_credit", "cash", "monthly", "other"] as const;
@@ -63,15 +64,21 @@ class SalesOrderQueryDto extends PaginationQueryDto {
   @IsOptional() @IsString() status?: string;
 }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
+// 销售「通知仓库出库」：不传 production_order_id 时对该订单所有可出库的生产单各建一张整批通知。
+class OutboundNoticeDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; }
 
 @Controller("sales-orders")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("sales")
 export class SalesOrdersController {
-  constructor(private readonly orders: SalesOrdersService) {}
+  constructor(private readonly orders: SalesOrdersService, private readonly outboundNotices: FinishedGoodsOutboundNoticeService) {}
   @Get() async list(@Query() query: SalesOrderQueryDto) { const result = await this.orders.list(query.page, query.page_size, query.search, query.status); return { data: result.data, meta: { page: query.page, page_size: query.page_size, total: result.total } }; }
   @Post() async create(@Body() body: SalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.create(body, user), meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
+  // 成品入库/出库情况 + 出库通知（销售页「打开销售订单能看到成品入库情况」）。
+  @Get(":id/finished-goods") async finishedGoods(@Param("id") id: string) { return { data: await this.outboundNotices.summary(id), meta: {} }; }
+  @Post(":id/outbound-notices") async notifyOutbound(@Param("id") id: string, @Body() body: OutboundNoticeDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outboundNotices.createNotices(id, body, user), meta: {} }; }
+  @Post(":id/outbound-notices/:noticeId/cancel") async cancelOutboundNotice(@Param("id") id: string, @Param("noticeId") noticeId: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outboundNotices.cancelNotice(id, noticeId, body.reason, user), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.orders.get(id), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdateSalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.update(id, body, user), meta: {} }; }
   @Post(":id/confirm") async confirm(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.confirm(id, user), meta: {} }; }

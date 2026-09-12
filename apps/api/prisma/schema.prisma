@@ -322,6 +322,7 @@ model SalesOrder {
   purchaseOrders            PurchaseOrder[]
   productionOrders          ProductionOrder[]
   finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  finishedGoodsOutboundNotices FinishedGoodsOutboundNotice[]
   customerReturns           CustomerReturn[]
   receivableSources         ReceivableSource[]
   customerPayments          CustomerPayment[]
@@ -479,6 +480,7 @@ model Unit {
   finishedGoodsInbounds     FinishedGoodsInbound[]
   finishedGoodsDefectives   FinishedGoodsDefective[]
   finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  finishedGoodsOutboundNotices FinishedGoodsOutboundNotice[]
   finishedGoodsInboundNotices FinishedGoodsInboundNotice[]
   customerReturns           CustomerReturn[]
 
@@ -1303,11 +1305,55 @@ model FinishedGoodsOutbound {
   unit                         Unit              @relation(fields: [unitId], references: [id])
   inventoryFacts               InventoryFact[]
   receivableSource             ReceivableSource?
+  outboundNotice               FinishedGoodsOutboundNotice?
 
   @@index([orderNo, status])
   @@index([salesOrderId, status])
   @@index([productionOrderId, status])
   @@map("finished_goods_outbounds")
+}
+
+/// 成品出库通知：成品入库后由销售发起「通知仓库发货（寄给客户）」。
+/// 一张通知对应一个生产单的整批可出库量；仓库据此生成成品出库单（整批出库，不支持部分出库），
+/// 出库过账后自动生成应收来源草稿（通知财务收款）并把通知置为 completed。
+model FinishedGoodsOutboundNotice {
+  id                           String                   @id @default(uuid()) @db.Uuid
+  noticeNo                     String                   @unique @map("notice_no") @db.VarChar(100)
+  orderNo                      String                   @map("order_no") @db.VarChar(100)
+  salesOrderId                 String                   @map("sales_order_id") @db.Uuid
+  productionOrderId            String                   @map("production_order_id") @db.Uuid
+  customerId                   String                   @map("customer_id") @db.Uuid
+  productNameSnapshot          String?                  @map("product_name_snapshot") @db.VarChar(200)
+  productSpecificationSnapshot String?                  @map("product_specification_snapshot") @db.VarChar(1000)
+  unitId                       String                   @map("unit_id") @db.Uuid
+  unitNameSnapshot             String?                  @map("unit_name_snapshot") @db.VarChar(30)
+  /// 通知时的成品已入库量 / 已出库量快照，便于事后追溯「为什么只通知了这么多」。
+  inboundQuantity              Decimal                  @map("inbound_quantity") @db.Decimal(18, 4)
+  outboundQuantity             Decimal                  @map("outbound_quantity") @db.Decimal(18, 4)
+  noticeQuantity               Decimal                  @map("notice_quantity") @db.Decimal(18, 4)
+  /// pending（待仓库建出库单）/ outbound_created（已建单待过账）/ completed（已出库）/ cancelled
+  status                       String                   @default("pending") @db.VarChar(30)
+  outboundId                   String?                  @unique @map("outbound_id") @db.Uuid
+  notifiedAt                   DateTime                 @default(now()) @map("notified_at")
+  notifiedBy                   String                   @map("notified_by") @db.Uuid
+  remark                       String?                  @db.VarChar(1000)
+  version                      Int                      @default(1)
+  idempotencyKey               String                   @unique @map("idempotency_key") @db.VarChar(200)
+  createdAt                    DateTime                 @default(now()) @map("created_at")
+  updatedAt                    DateTime                 @updatedAt @map("updated_at")
+  createdBy                    String                   @map("created_by") @db.Uuid
+  updatedBy                    String                   @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?                @map("deleted_at")
+  deletedBy                    String?                  @map("deleted_by") @db.Uuid
+  salesOrder                   SalesOrder               @relation(fields: [salesOrderId], references: [id])
+  productionOrder              ProductionOrder          @relation(fields: [productionOrderId], references: [id])
+  unit                         Unit                     @relation(fields: [unitId], references: [id])
+  outbound                     FinishedGoodsOutbound?   @relation(fields: [outboundId], references: [id])
+
+  @@index([orderNo, status])
+  @@index([salesOrderId, status])
+  @@index([productionOrderId, status])
+  @@map("finished_goods_outbound_notices")
 }
 
 model CustomerReturn {
@@ -1583,6 +1629,7 @@ model ProductionOrder {
   finishedGoodsInbounds     FinishedGoodsInbound[]
   finishedGoodsDefectives   FinishedGoodsDefective[]
   finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  finishedGoodsOutboundNotices FinishedGoodsOutboundNotice[]
   inboundNotices            FinishedGoodsInboundNotice[]
   customerReturns           CustomerReturn[]
 

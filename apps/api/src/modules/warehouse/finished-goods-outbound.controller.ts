@@ -18,6 +18,9 @@ class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 @RequireModules("warehouse")
 export class FinishedGoodsOutboundController {
   constructor(private readonly outbound: FinishedGoodsOutboundService) {}
+  // 出库通知：销售在销售页「通知仓库出库」后，仓库在这里看到并生成整批出库单。
+  @Get("outbound-notices") async listOutboundNotices(@Query("order_no") orderNo?: string, @Query("status") status?: string) { return { data: await this.outbound.listOutboundNotices(orderNo, status), meta: {} }; }
+  @Post("outbound-notices/:id/create-outbound") async createOutboundFromNotice(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutboundFromNotice(id, user), meta: {} }; }
   @Get("outbounds") async listOutbounds(@Query("order_no") orderNo?: string) { return { data: await this.outbound.listOutbounds(orderNo), meta: {} }; }
   @Get("outbounds/:id") async getOutbound(@Param("id") id: string) { return { data: await this.outbound.getOutbound(id), meta: {} }; }
   @Post("outbounds") async createOutbound(@Body() body: OutboundDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutbound(body, user), meta: {} }; }

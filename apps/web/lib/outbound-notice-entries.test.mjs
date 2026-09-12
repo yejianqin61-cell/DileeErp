@@ -1,0 +1,52 @@
+// 成品出库通知链路的入口守卫（需求 4/6）：
+//   成品入库 → 销售页「通知仓库出库」 → 仓库页「生成出库单（整批）」 → 过账（自动生成应收，通知财务收款）
+// 前端入口必须是明显、可点的按钮，不能只有接口没有入口。
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import test from "node:test";
+import assert from "node:assert/strict";
+
+const read = (relative) => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+const salesPage = read("../app/sales/page.tsx");
+const warehousePage = read("../app/warehouse/finished-goods-storage/page.tsx");
+const financePage = read("../app/finance/page.tsx");
+
+test("销售页：打开销售单能看到成品入库/出库情况", () => {
+  assert.match(salesPage, /apiGet<FinishedGoodsSummary>\(`\/sales-orders\/\$\{id\}\/finished-goods`\)/, "必须拉取销售单成品情况接口");
+  assert.match(salesPage, /<h3>成品入库与出库<\/h3>/);
+  assert.match(salesPage, /成品已入库 \{row\.inbound_quantity\} \/ 已出库 \{row\.outbound_quantity\}/);
+  assert.match(salesPage, /可出库 \{row\.available_quantity\}/);
+});
+
+test("销售页：有「通知仓库出库」按钮（单批 + 全部可出库批次），并能取消待处理通知", () => {
+  assert.match(salesPage, /apiPost<OutboundNotice\[\]>\(`\/sales-orders\/\$\{id\}\/outbound-notices`/);
+  assert.match(salesPage, />通知仓库出库<\/Button>/);
+  assert.match(salesPage, />通知仓库出库（全部可出库批次）<\/Button>/);
+  assert.match(salesPage, /outbound-notices\/\$\{notice\.id\}\/cancel/);
+  assert.match(salesPage, /outboundNoticeStatusLabels/);
+});
+
+test("仓库页：出库通知列表 + 生成整批出库单入口", () => {
+  assert.match(warehousePage, /apiGet<OutboundNotice\[\]>\(`\/finished-goods\/outbound-notices\$\{scope\}`\)/);
+  assert.match(warehousePage, /成品出库通知（销售发起）/);
+  assert.match(warehousePage, /outbound-notices\/\$\{row\.id\}\/create-outbound/);
+  assert.match(warehousePage, />生成出库单（整批）<\/Button>/);
+  assert.match(warehousePage, /只允许整批出库/, "界面要说明整批口径");
+});
+
+test("仓库页：出库单能过账、维护发货、登记签收、冲销", () => {
+  for (const path of [
+    /finished-goods\/outbounds\/\$\{row\.original\.id\}\/post/,
+    /finished-goods\/outbounds\/\$\{row\.id\}\/shipping/,
+    /finished-goods\/outbounds\/\$\{row\.id\}\/sign/,
+    /finished-goods\/outbounds\/\$\{row\.id\}\/reverse/,
+  ]) {
+    assert.match(warehousePage, path, `缺少出库单操作入口：${path}`);
+  }
+  assert.match(warehousePage, /已生成应收来源，等待财务收款/, "过账提示要说明已通知财务收款");
+});
+
+test("财务页：显示待确认收款（出库过账自动生成应收草稿的提醒）", () => {
+  assert.match(financePage, /待确认收款 \$\{pendingReceivables\.length\} 笔/);
+  assert.match(financePage, /成品出库过账已自动生成/);
+});
