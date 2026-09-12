@@ -147,14 +147,16 @@ export default function MaterialIssuesPage() {
     { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
     { id: "total", header: "数量合计", cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
     { accessorKey: "createdAt", header: "登记时间", cell: ({ row }) => new Date(row.original.createdAt).toLocaleString("zh-CN", { hour12: false }) },
-    { id: "actions", header: "操作", cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" disabled={busyRow} onClick={() => void post(slip)}>过账出库</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}</div>; } }
+    { id: "actions", header: "操作", cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={`/production/material-issues/new?type=${slip.documentType}&movement_id=${slip.id}`}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void post(slip)}>过账出库</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}</div>; } }
   ];
 
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
 
   return <>
-    <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单）。草稿可直接「过账出库」扣减原料库存（需生产单为生产中），已过账可重新打开或冲销；各自套用对应打印模板。">
+    <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单）。点「新建领料单 / 新建补料单」进入全屏编辑页选择该生产单订单 BOM 里的物料；草稿可直接「过账出库」扣减原料库存（需生产单为生产中），已过账可重新打开或冲销；各自套用对应打印模板。">
       <Button asChild variant="secondary"><Link href="/production">返回生产单</Link></Button>
+      <Button asChild><Link href="/production/material-issues/new">新建领料单</Link></Button>
+      <Button asChild variant="secondary"><Link href="/production/material-issues/new?type=replenishment">新建补料单</Link></Button>
       <Button onClick={() => void exportAll()} disabled={busy === "all" || !visible.length}>{busy === "all" ? "导出中..." : `批量导出（${visible.length} 张）`}</Button>
     </PageHeader>
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}

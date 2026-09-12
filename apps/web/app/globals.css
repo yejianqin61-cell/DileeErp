@@ -301,8 +301,7 @@ button { cursor: pointer; }
   border-radius: 0;
 }
 
-.ui-searchable-select { position: relative; width: 100%; }
-.ui-searchable-select-searchbox { position: relative; }
+.ui-searchable-select { position: relative; width: 100%; }.ui-searchable-select-searchbox { position: relative; }
 .ui-searchable-select-searchbox .ui-input { padding-right: 32px; }
 .ui-searchable-select-search-icon { position: absolute; right: 10px; top: 12px; color: var(--text-muted); pointer-events: none; }
 .ui-searchable-select-popover { position: absolute; left: 0; right: 0; z-index: 70; max-height: 288px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: 0 12px 32px rgb(23 32 51 / 24%); padding: 4px; }
@@ -328,4 +327,21 @@ button { cursor: pointer; }
 .ui-multi-select-option-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-multi-select-hint { margin-left: auto; flex: 0 0 auto; color: var(--text-muted); font-size: 12px; }
 .ui-multi-select-count { margin: 0; color: var(--text-muted); font-size: 12px; }
+
+/* 领料单/补料单全屏编辑页：列多且物料名很长，必须给关键列固定宽度、单行省略，
+   否则在窄容器里 Select 文案会与相邻单元格互相覆盖（历史 Sheet 版本就是这样）。 */
+.material-slip-editor .table-wrap { overflow-x: auto; }
+.material-slip-editor .data-table { width: 100%; min-width: 1180px; table-layout: auto; }
+.material-slip-editor .data-table th,
+.material-slip-editor .data-table td { height: auto; max-width: 240px; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.material-slip-editor .slip-col-material { min-width: 260px; max-width: 300px; }
+.material-slip-editor .slip-col-qty { width: 120px; }
+.material-slip-editor .slip-col-qty input { width: 108px; }
+.material-slip-editor .slip-col-remark { width: 200px; }
+.material-slip-editor .slip-col-action { width: 80px; }
+/* Select 触发按钮必须能被压缩，长物料名只在自己的单元格里省略，不与邻列重叠。
+   （同 .purchase-workspace 的既有做法：Radix 的 SelectValue 渲染成无类名 span，直接约束子 span。） */
+.material-slip-editor .slip-col-material .ui-select-trigger { width: 100%; min-width: 0; }
+.material-slip-editor .slip-col-material .ui-select-trigger > span { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .ui-multi-select-empty { margin: 0; padding: 8px; color: var(--text-muted); font-size: 13px; }
