@@ -112,6 +112,73 @@ test("create maps a P2002 unique violation on the insert to the same single-stan
   assert.equal(lockQueryCount, 1);
 });
 
+// 建单时自动补包装工序：主数据查询/插入失败都只跳过补齐，不能阻断建单。
+test("create still succeeds when the packaging operation lookup fails", async () => {
+  const created = { id: "po-created", orderNo: "SO-1", productionOrderNo: "MO-0001", status: "draft", operations: [] };
+  const prisma = {
+    ...refsPrisma(),
+    productionOrder: { findFirst: async () => created },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => undefined,
+      salesOrder: { findFirst: async () => ({ id: "so-1", status: "confirmed" }) },
+      productionOrder: { findFirst: async () => null, create: async () => created },
+      operationCatalog: { findFirst: async () => { throw new Error("catalog table unavailable"); } },
+    }),
+  };
+  const service = new ProductionOrdersService(prisma, { create: () => ({}), record: async () => undefined });
+  const result = await service.create({ ...baseInput, production_order_type: "standard" }, user);
+  assert.equal(result.id, "po-created", "工序主数据不可用时仍要建单成功");
+});
+
+// P2002 只在命中「同一销售订单唯一主生产单」约束时才映射成既有 409，其它唯一冲突要原样抛出。
+test("create rethrows a P2002 that is not the standard-root unique index", async () => {
+  const violation = new Error("unique constraint");
+  violation.code = "P2002";
+  violation.meta = { target: ["production_order_id", "sequence_no"] };
+  const prisma = {
+    ...refsPrisma(),
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => undefined,
+      salesOrder: { findFirst: async () => ({ id: "so-1", status: "confirmed" }) },
+      productionOrder: { findFirst: async () => null, create: async () => { throw violation; } },
+      operationCatalog: { findFirst: async () => null },
+    }),
+  };
+  const service = new ProductionOrdersService(prisma, { create: () => ({}), record: async () => undefined });
+  await assert.rejects(
+    () => service.create({ ...baseInput, production_order_type: "standard" }, user),
+    (error) => error === violation,
+    "工序序号等其它唯一冲突不能被伪装成“该销售订单已存在主生产单”",
+  );
+});
+
+test("ensurePackagingOperation appends the catalog 包装 operation at the tail with a normalized payload", async () => {
+  const order = { id: "order-1", orderNo: "SO-1", unitId: "unit-1", status: "draft", plannedQuantity: "100", unit: { id: "unit-1", name: "个" }, operations: [{ id: "op-1", operationNameSnapshot: "裁剪", sequenceNo: 1, status: "active", targetQuantity: "100" }] };
+  const createdOperation = { id: "op-pack", operationCatalogId: "op-pack-catalog", operationNameSnapshot: "包装", unitId: "unit-1", sequenceNo: 2, targetQuantity: "100", status: "active" };
+  const prisma = {
+    ...refsPrisma(),
+    operationCatalog: { findFirst: async () => ({ id: "op-pack-catalog", operationName: "包装", defaultUnitId: null }) },
+    productionOrder: { findFirst: async () => order },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => undefined,
+      productionOrder: { findFirst: async () => order },
+      productionOrderOperation: { create: async ({ data }) => ({ ...createdOperation, ...data }) },
+    }),
+  };
+  const service = new ProductionOrdersService(prisma, { create: () => ({}), update: () => ({}), record: async () => undefined });
+  const first = await service.ensurePackagingOperation("order-1", user);
+  assert.equal(first.created, true);
+  assert.deepEqual(Object.keys(first.operation).sort(), ["id", "name", "sequence_no", "status", "target_quantity"], "返回形状必须归一化");
+  assert.equal(first.operation.name, "包装");
+  assert.equal(first.operation.sequence_no, 2, "补建到末尾");
+  // 幂等：已有包装工序时不再新建，且返回同一形状。
+  const withPackaging = { ...order, operations: [...order.operations, { id: "op-pack", operationNameSnapshot: "包装", sequenceNo: 2, status: "active", targetQuantity: "100" }] };
+  const second = await new ProductionOrdersService({ ...prisma, productionOrder: { findFirst: async () => withPackaging } }, { create: () => ({}), update: () => ({}), record: async () => undefined }).ensurePackagingOperation("order-1", user);
+  assert.equal(second.created, false);
+  assert.equal(second.operation.id, "op-pack");
+  assert.equal(second.operation.sequence_no, 2);
+});
+
 test("create rethrows non-unique insert errors instead of masking them as a conflict", async () => {
   const failure = new Error("database unavailable");
   const prisma = {
