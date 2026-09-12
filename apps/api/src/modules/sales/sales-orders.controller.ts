@@ -27,7 +27,7 @@ export class SalesOrderDto {
   @IsDateString() order_date!: string;
   @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(200) product_name!: string;
   @IsOptional() @IsString() @MaxLength(1000) product_spec?: string;
-  @IsDecimal() quantity!: string;
+  @Matches(NON_NEGATIVE_DECIMAL, { message: "数量必须是不小于 0 的十进制数" }) @IsDecimal() quantity!: string;
   @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(30) unit!: string;
   @IsOptional() @IsDateString() delivery_date?: string;
   @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(10) currency!: string;
@@ -50,7 +50,7 @@ export class UpdateSalesOrderDto {
   @IsOptional() @IsDateString() order_date?: string;
   @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(200) product_name?: string;
   @IsOptional() @IsString() @MaxLength(1000) product_spec?: string;
-  @IsOptional() @IsDecimal() quantity?: string;
+  @IsOptional() @Matches(NON_NEGATIVE_DECIMAL, { message: "数量必须是不小于 0 的十进制数" }) @IsDecimal() quantity?: string;
   @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(30) unit?: string;
   @IsOptional() @IsDateString() delivery_date?: string;
   @IsOptional() @EmptyStringToUndefined() @IsNotEmpty() @IsString() @MaxLength(10) currency?: string;

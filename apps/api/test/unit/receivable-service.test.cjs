@@ -138,3 +138,36 @@ test("receivable impact preview traces outbound qc and finished-goods inbound", 
   assert.equal(preview.source_trace.finished_goods_inbounds[0].inbound_no, "FGI-1");
 });
 
+// 与出库过账同一口径：手工补建应收也必须按「应收金额 ÷ 订单数量 → 结算币价 → 销售单价」计价，
+// 并且金额必须大于 0（0 元应收 / 负应收都不允许写库）。
+test("手工补建应收按结算口径计价（整单出库时等于销售填写的应收金额）", async () => {
+  let created;
+  const outbound = { id: "outbound-1", status: "posted", quantity: "100", orderNo: "SO-1", salesOrderId: "sales-1", signedAt: null, salesOrder: { quantity: "100", unitPrice: "10", settlementUnitPrice: "12.5", receivableAmount: "1300", settlementMethod: "tt", localCurrencyAmount: "9360", customerId: "customer-1", unit: "件", taxRate: null, currency: "USD" } };
+  const prisma = {
+    finishedGoodsOutbound: { findFirst: async () => outbound },
+    receivableSource: { findUnique: async () => null, create: async ({ data }) => { created = data; return { id: "source-1", ...data }; } },
+    $transaction: async (fn) => fn({ $queryRaw: async () => [], finishedGoodsOutbound: prisma.finishedGoodsOutbound, receivableSource: prisma.receivableSource }),
+  };
+  await new ReceivableService(prisma, { create: () => ({}), record: async () => {} }).createFromOutbound("outbound-1", {}, { id: "user-1" });
+  assert.equal(created.amount.toString(), "1300");
+  assert.match(created.remark, /结算方式 T\/T 电汇/);
+  assert.match(created.remark, /本币金额 9360/);
+});
+
+test("手工补建应收拒绝 0 元与负金额（与出库过账同一门槛）", async () => {
+  const make = (salesOrder) => {
+    const outbound = { id: "outbound-1", status: "posted", quantity: "10", orderNo: "SO-1", salesOrderId: "sales-1", signedAt: null, salesOrder };
+    const prisma = {
+      finishedGoodsOutbound: { findFirst: async () => outbound },
+      receivableSource: { findUnique: async () => null, create: async () => { throw new Error("不应写入应收"); } },
+      $transaction: async (fn) => fn({ $queryRaw: async () => [], finishedGoodsOutbound: prisma.finishedGoodsOutbound, receivableSource: prisma.receivableSource }),
+    };
+    return new ReceivableService(prisma, { create: () => ({}), record: async () => {} });
+  };
+  const zeroPriced = { quantity: "10", unitPrice: "0", settlementUnitPrice: null, receivableAmount: null, customerId: "customer-1", unit: "件", taxRate: null, currency: "USD" };
+  await assert.rejects(() => make(zeroPriced).createFromOutbound("outbound-1", {}, { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_AMOUNT_REQUIRED");
+  const negativePriced = { ...zeroPriced, unitPrice: "-5" };
+  await assert.rejects(() => make(negativePriced).createFromOutbound("outbound-1", {}, { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_AMOUNT_REQUIRED");
+  await assert.rejects(() => make(zeroPriced).createFromOutbound("outbound-1", { amount: "0" }, { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_AMOUNT_REQUIRED");
+});
+

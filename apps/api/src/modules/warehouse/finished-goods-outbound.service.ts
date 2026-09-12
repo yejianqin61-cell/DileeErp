@@ -135,8 +135,12 @@ export class FinishedGoodsOutboundService {
       if (!sales || !settlementPrice || settlementPrice.lte(0)) throw this.invalid("SALES_UNIT_PRICE_REQUIRED", "销售单缺少有效销售单价/结算币价/应收金额，不能生成应收并过账");
       const postedOutbound = await tx.finishedGoodsOutbound.aggregate({ where: { productionOrderId: current.productionOrderId, id: { not: id }, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } });
       const postedQuantity = new Prisma.Decimal(postedOutbound._sum.quantity ?? 0);
-      if (postedQuantity.plus(current.quantity).gt(sales.quantity) && !current.riskReason?.trim()) throw new UnprocessableEntityException({ code: "OUTBOUND_PLAN_EXCEEDED_REASON_REQUIRED", message: "出库累计超过订单计划量，必须填写风险原因", details: [{ planned_quantity: sales.quantity.toString(), posted_quantity: postedQuantity.toString() }] });
-      const posted = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
+      // 超计划出库必须留下可追溯的原因。原来这里直接 422，而草稿没有编辑原因的地方，
+      // 一旦「过账时才发现超计划」（例如退货回仓后再出库）单据就永远过不了账；
+      // 现在改成：已有原因就沿用，没有就自动写入系统原因，保证单据可过账且原因可追溯。
+      const overPlan = postedQuantity.plus(current.quantity).gt(sales.quantity);
+      const riskReason = current.riskReason?.trim() || (overPlan ? `过账时判定累计出库超过订单计划量：计划 ${sales.quantity.toString()}，已出库 ${postedQuantity.toString()}，本单 ${current.quantity.toString()}（系统自动记录，请复核）` : null);
+      const posted = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "posted", riskReason, idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity.negated(), sourceType: "finished_goods_outbound", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
       await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: settlementPrice, taxRate: sales.taxRate, amount: this.receivableAmountFor(sales, settlementPrice, current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, remark: this.settlementRemark(sales, settlementPrice), ...this.audit.create(user) } });
       // 出库过账 = 通知财务收款：应收来源草稿已生成，同时把来源出库通知置为 completed。
@@ -152,7 +156,11 @@ export class FinishedGoodsOutboundService {
     if (!["posted", "shipped"].includes(current.status)) throw this.invalid("INVALID_OUTBOUND_SHIPPING_STATE", "只有已过账或已发货出库单可以维护发货资料");
     const shipmentDate = input.shipment_date ? this.date(input.shipment_date, "INVALID_SHIPMENT_DATE") : current.shipmentDate;
     if (current.signedAt && shipmentDate && shipmentDate > current.signedAt) throw this.invalid("SHIPMENT_AFTER_SIGNATURE", "发货日期不能晚于签收时间");
-    const row = await this.prisma.finishedGoodsOutbound.update({ where: { id }, data: { status: "shipped", ...(input.shipment_date ? { shipmentDate } : {}), ...(input.carrier === undefined ? {} : { carrier: input.carrier }), ...(input.tracking_no === undefined ? {} : { trackingNo: input.tracking_no }), ...(input.packing_list_no === undefined ? {} : { packingListNo: input.packing_list_no }), ...(input.invoice_no === undefined ? {} : { invoiceNo: input.invoice_no }), ...(input.attachment === undefined ? {} : { attachment: input.attachment as Prisma.InputJsonValue }), ...this.audit.update(user) } });
+    const data: Prisma.FinishedGoodsOutboundUpdateManyMutationInput = { status: "shipped", ...(input.shipment_date ? { shipmentDate } : {}), ...(input.carrier === undefined ? {} : { carrier: input.carrier }), ...(input.tracking_no === undefined ? {} : { trackingNo: input.tracking_no }), ...(input.packing_list_no === undefined ? {} : { packingListNo: input.packing_list_no }), ...(input.invoice_no === undefined ? {} : { invoiceNo: input.invoice_no }), ...(input.attachment === undefined ? {} : { attachment: input.attachment as Prisma.InputJsonValue }), ...this.audit.update(user) };
+    // 带状态条件更新：否则「冲销」与「维护发货」并发时，已冲销的出库单会被改回 shipped，
+    // 出库量被重复计入、应收也会与实际不一致。
+    await this.assertStatusTransition(id, ["posted", "shipped"], data, "INVALID_OUTBOUND_SHIPPING_STATE", "出库单状态已变化（可能被冲销），请刷新后重试");
+    const row = await this.requireOutbound(id);
     await this.audit.record("finished_goods_outbound.shipping_update", "finished_goods_outbound", user.id, id, { order_no: row.orderNo });
     return row;
   }
@@ -163,9 +171,17 @@ export class FinishedGoodsOutboundService {
     const signedAt = new Date(input.signed_at);
     if (Number.isNaN(signedAt.valueOf())) throw this.invalid("INVALID_SIGNED_AT", "签收时间无效");
     if (current.shipmentDate && signedAt < current.shipmentDate) throw this.invalid("SIGNATURE_BEFORE_SHIPMENT", "签收时间不能早于发货日期");
-    const row = await this.prisma.finishedGoodsOutbound.update({ where: { id }, data: { status: "signed", signedAt, ...(input.signature_reference === undefined ? {} : { signatureReference: input.signature_reference }), ...(input.attachment === undefined ? {} : { attachment: input.attachment as Prisma.InputJsonValue }), ...this.audit.update(user) } });
+    const data: Prisma.FinishedGoodsOutboundUpdateManyMutationInput = { status: "signed", signedAt, ...(input.signature_reference === undefined ? {} : { signatureReference: input.signature_reference }), ...(input.attachment === undefined ? {} : { attachment: input.attachment as Prisma.InputJsonValue }), ...this.audit.update(user) };
+    await this.assertStatusTransition(id, ["shipped", "signed"], data, "INVALID_OUTBOUND_SIGN_STATE", "出库单状态已变化（可能被冲销），请刷新后重试");
+    const row = await this.requireOutbound(id);
     await this.audit.record("finished_goods_outbound.sign", "finished_goods_outbound", user.id, id, { order_no: row.orderNo, signed_at: signedAt.toISOString() });
     return row;
+  }
+
+  /** 带状态条件的更新（CAS）：影响行数不为 1 说明状态已被其它操作改变，直接 422。 */
+  private async assertStatusTransition(id: string, allowed: string[], data: Prisma.FinishedGoodsOutboundUpdateManyMutationInput, code: string, message: string) {
+    const marked = await this.prisma.finishedGoodsOutbound.updateMany({ where: { id, deletedAt: null, status: { in: allowed } }, data });
+    if (marked.count !== 1) throw this.invalid(code, message);
   }
 
   async reverseOutbound(id: string, reason: string, user: CurrentUser) {

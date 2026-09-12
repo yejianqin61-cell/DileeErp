@@ -20,10 +20,19 @@ export type SettlementSalesOrder = {
   localCurrencyAmount?: Prisma.Decimal | null;
 };
 
+/** 兼容 Prisma Decimal 与字符串/数字（服务层不同路径传进来的形态可能不同）。 */
+function toDecimal(value: Prisma.Decimal | string | number | null | undefined): Prisma.Decimal | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Prisma.Decimal) return value;
+  try { return new Prisma.Decimal(value); } catch { return null; }
+}
+
 export function receivableUnitPrice(sales: SettlementSalesOrder | null): Prisma.Decimal | null {
   if (!sales) return null;
-  if (sales.receivableAmount && sales.receivableAmount.gt(0) && sales.quantity.gt(0)) return sales.receivableAmount.div(sales.quantity);
-  return sales.settlementUnitPrice ?? sales.unitPrice;
+  const receivableAmount = toDecimal(sales.receivableAmount);
+  const quantity = toDecimal(sales.quantity);
+  if (receivableAmount && receivableAmount.gt(0) && quantity && quantity.gt(0)) return receivableAmount.div(quantity);
+  return toDecimal(sales.settlementUnitPrice) ?? toDecimal(sales.unitPrice);
 }
 
 /**
@@ -31,16 +40,23 @@ export function receivableUnitPrice(sales: SettlementSalesOrder | null): Prisma.
  * 否则 单价 × 出库数量。注意 unitPrice 列是 DECIMAL(18,4)，非整除折算时
  * unitPrice × quantity 可能与 amount 差最后一位，以 amount 为准。
  */
-export function receivableAmountFor(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal, quantity: Prisma.Decimal): Prisma.Decimal {
-  if (sales?.receivableAmount && sales.receivableAmount.gt(0) && quantity.eq(sales.quantity)) return sales.receivableAmount;
-  return unitPrice.mul(quantity);
+export function receivableAmountFor(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal | string, quantity: Prisma.Decimal | string): Prisma.Decimal {
+  const price = toDecimal(unitPrice) ?? new Prisma.Decimal(0);
+  const amount = toDecimal(quantity) ?? new Prisma.Decimal(0);
+  const receivableAmount = toDecimal(sales?.receivableAmount);
+  const orderQuantity = toDecimal(sales?.quantity);
+  if (receivableAmount && receivableAmount.gt(0) && orderQuantity && amount.eq(orderQuantity)) return receivableAmount;
+  return price.mul(amount);
 }
 
 /** 把结算口径写进应收来源备注，财务不必回到销售单才能看到结算方式与本币金额。 */
-export function settlementRemark(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal): string {
-  const parts = [`结算单价 ${unitPrice.toFixed(4)}`];
+export function settlementRemark(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal | string): string {
+  const price = toDecimal(unitPrice) ?? new Prisma.Decimal(0);
+  const parts = [`结算单价 ${price.toFixed(4)}`];
   if (sales?.settlementMethod) parts.push(`结算方式 ${SETTLEMENT_METHOD_LABELS[sales.settlementMethod] ?? sales.settlementMethod}`);
-  if (sales?.localCurrencyAmount) parts.push(`本币金额 ${sales.localCurrencyAmount.toString()}`);
-  if (sales?.receivableAmount) parts.push(`销售单应收 ${sales.receivableAmount.toString()}`);
+  const localAmount = toDecimal(sales?.localCurrencyAmount);
+  if (localAmount) parts.push(`本币金额 ${localAmount.toString()}`);
+  const receivableAmount = toDecimal(sales?.receivableAmount);
+  if (receivableAmount) parts.push(`销售单应收 ${receivableAmount.toString()}`);
   return parts.join("；");
 }

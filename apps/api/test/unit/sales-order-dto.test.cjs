@@ -103,4 +103,6 @@ test("结算口径字段：留空通过、合法值原样保留、结算方式�
   await assertRejected(SalesOrderDto, { ...dialogBody, receivable_amount: "-100" }, "应收金额不能为负");
   await assertRejected(SalesOrderDto, { ...dialogBody, settlement_unit_price: "-1" }, "结算币价不能为负");
   await assertRejected(UpdateSalesOrderDto, { local_currency_amount: "-0.01" }, "本币金额不能为负");
+  await assertRejected(SalesOrderDto, { ...dialogBody, quantity: "-1" }, "数量不能为负");
+  await assertRejected(UpdateSalesOrderDto, { quantity: "-0.5" }, "编辑数量也不能为负");
 });

@@ -47,9 +47,11 @@ export class ReceivableService {
       // 与出库过账共用同一计价口径（应收金额/结算币价/销售单价），避免两条路径给出不同金额。
       const unitPrice = receivableUnitPrice(outbound.salesOrder);
       const amount = input.amount ?? (unitPrice ? receivableAmountFor(outbound.salesOrder, unitPrice, outbound.quantity).toFixed(4) : undefined);
-      if (!amount) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REQUIRED", message: "销售单没有单价，必须填写应收金额和原因", details: [] });
+      // 与出库过账同一口径：金额必须大于 0（"0.0000" 是字符串/Decimal(0) 对象，都是真值，不能只看空）。
+      const positive = (() => { try { const value = amount === undefined ? null : new Prisma.Decimal(amount); return value && value.gt(0) ? value : null; } catch { return null; } })();
+      if (!positive) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REQUIRED", message: "应收金额必须大于 0：销售单没有有效单价，请填写应收金额", details: [] });
       if (!input.amount_reason?.trim() && !unitPrice) throw new UnprocessableEntityException({ code: "RECEIVABLE_AMOUNT_REASON_REQUIRED", message: "手工确认金额必须填写原因", details: [] });
-      return tx.receivableSource.create({ data: { sourceNo: this.number("AR"), orderNo: outbound.orderNo, salesOrderId: outbound.salesOrderId, outboundId: outbound.id, customerId: outbound.salesOrder.customerId, quantity: outbound.quantity, unit: outbound.salesOrder.unit, unitPrice, taxRate: outbound.salesOrder.taxRate, amount, currency: outbound.salesOrder.currency, amountReason: input.amount_reason, dueDate: input.due_date ? this.date(input.due_date) : undefined, signedAtSnapshot: outbound.signedAt, remark: input.remark ?? (unitPrice ? settlementRemark(outbound.salesOrder, unitPrice) : undefined), ...this.audit.create(user) } });
+      return tx.receivableSource.create({ data: { sourceNo: this.number("AR"), orderNo: outbound.orderNo, salesOrderId: outbound.salesOrderId, outboundId: outbound.id, customerId: outbound.salesOrder.customerId, quantity: outbound.quantity, unit: outbound.salesOrder.unit, unitPrice, taxRate: outbound.salesOrder.taxRate, amount: positive, currency: outbound.salesOrder.currency, amountReason: input.amount_reason, dueDate: input.due_date ? this.date(input.due_date) : undefined, signedAtSnapshot: outbound.signedAt, remark: input.remark ?? (unitPrice ? settlementRemark(outbound.salesOrder, unitPrice) : undefined), ...this.audit.create(user) } });
     });
     await this.audit.record("receivable_source.create", "receivable_source", user.id, row.id, { order_no: row.orderNo, outbound_id: outboundId, amount: row.amount.toString() });
     return row;

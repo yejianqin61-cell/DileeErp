@@ -315,3 +315,54 @@ test("出库冲销后：来源通知退回待处理，仓库可以重新建单",
   assert.equal(noticeUpdates[0].status, "pending");
   assert.equal(noticeUpdates[0].outboundId, null);
 });
+
+// 过账与「维护发货 / 登记签收」的并发：已冲销的单据不能被改回 shipped/signed，
+// 否则出库量会被重复计入（通知仍可重新建单），应收也会与实际不符。
+test("维护发货与登记签收都带状态条件：已冲销的出库单既被前置拦截，也无法被 CAS 覆盖", async () => {
+  const reversed = { id: "outbound-1", status: "reversed", orderNo: "SO-1", shipmentDate: null, signedAt: null };
+  const updateCalls = [];
+  const prisma = {
+    finishedGoodsOutbound: {
+      findFirst: async () => reversed,
+      updateMany: async ({ where, data }) => { updateCalls.push({ where, data }); return { count: 0 }; },
+    },
+  };
+  const service = new FinishedGoodsOutboundService(prisma, audit, {});
+  await assert.rejects(() => service.updateShipping("outbound-1", { carrier: "顺丰" }, user), (error) => error.getResponse().code === "INVALID_OUTBOUND_SHIPPING_STATE");
+  assert.equal(updateCalls.length, 0, "状态不允许时不应发起任何写入");
+
+  // 竞态窗口：前置读到 shipped（允许签收），但写入时状态已被改成 reversed → CAS 影响 0 行，必须 422。
+  const shipped = { ...reversed, status: "shipped" };
+  const racing = {
+    finishedGoodsOutbound: { findFirst: async () => shipped, updateMany: async ({ where, data }) => { updateCalls.push({ where, data }); return { count: 0 }; } },
+  };
+  const racingService = new FinishedGoodsOutboundService(racing, audit, {});
+  await assert.rejects(
+    () => racingService.signOutbound("outbound-1", { signed_at: new Date().toISOString() }, user),
+    (error) => error.getResponse().code === "INVALID_OUTBOUND_SIGN_STATE",
+  );
+  assert.deepEqual(updateCalls[0].where.status, { in: ["shipped", "signed"] }, "写入必须限定在可签收状态");
+});
+
+test("过账时才发现超计划：自动写入可追溯原因并放行（不再让单据永远过不了账）", async () => {
+  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(10), orderNo: "SO-1", salesOrderId: "so-1", signedAt: null, riskReason: null, productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K" };
+  let postedData;
+  const tx = {
+    $queryRaw: async () => undefined,
+    inventoryFact: { findFirst: async () => null, create: async () => undefined },
+    finishedGoodsOutbound: {
+      findFirst: async () => outbound,
+      aggregate: async () => ({ _sum: { quantity: decimal(5) } }),
+      update: async ({ data }) => { postedData = data; return { ...outbound, ...data }; },
+    },
+    // 计划 12，已出库 5 + 本单 10 = 15 > 12 → 必须在过账时自动记录原因
+    salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(10), settlementUnitPrice: null, receivableAmount: null, taxRate: null, currency: "CNY", quantity: decimal(12) }) },
+    receivableSource: { create: async () => undefined },
+    finishedGoodsOutboundNotice: { updateMany: async () => ({ count: 0 }) },
+  };
+  const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(5) } }) }, $transaction: async (fn) => fn(tx) };
+  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(10) });
+  await service.postOutbound("outbound-1", user);
+  assert.equal(postedData.status, "posted");
+  assert.match(postedData.riskReason, /超过订单计划量/);
+});
