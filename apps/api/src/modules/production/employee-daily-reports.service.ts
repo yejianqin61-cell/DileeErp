@@ -90,8 +90,10 @@ export class EmployeeDailyReportsService {
 
   async update(id: string, input: Partial<Omit<Input, "production_order_id" | "production_order_operation_id" | "employee_id">> & { reason: string; expected_version?: number }, user: CurrentUser) {
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "修改员工日报必须填写原因", details: [] });
+    // DTO 的 @IsOptional() 会放过 null；显式 null 必须与“未提交”同义，否则会误报版本冲突。
+    const expectedVersion = input.expected_version ?? undefined;
     const current = await this.get(id);
-    if (input.expected_version !== undefined && input.expected_version !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: current.version }] });
+    if (expectedVersion !== undefined && expectedVersion !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: current.version }] });
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
     // 备注为可清空字段：显式提交 null 或空串表示清空（存 null），未提交（undefined）则保持原值。
@@ -121,7 +123,7 @@ export class EmployeeDailyReportsService {
       await tx.$queryRaw`SELECT id FROM employee_daily_reports WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.employeeDailyReport.findFirst({ where: { id, deletedAt: null }, select: { version: true } });
       if (!locked) throw new NotFoundException({ code: "EMPLOYEE_DAILY_REPORT_NOT_FOUND", message: "员工日报不存在", details: [] });
-      if (input.expected_version !== undefined && input.expected_version !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: input.expected_version, actual_version: locked.version }] });
+      if (expectedVersion !== undefined && expectedVersion !== locked.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: locked.version }] });
       // 业务要求：同一天、同一生产单、同一工序、同一员工允许存在多条日报（可复选、可混合计薪方式），
       // 因此修改时也不再校验“目标日期+计薪方式是否已存在”或“只能一种计薪方式”。
       const row = await tx.employeeDailyReport.update({ where: { id }, data: { reportDate: refs.reportDate, wageMode: merged.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, ...(recomputeAmount ? { calculatedAmount: values.amount } : {}), remark: nextRemark, version: { increment: 1 }, ...this.audit.update(user) } });
@@ -136,8 +138,10 @@ export class EmployeeDailyReportsService {
     return updated;
   }
 
-  async remove(id: string, reason: string, user: CurrentUser, expectedVersion?: number) {
+  async remove(id: string, reason: string, user: CurrentUser, expectedVersionInput?: number) {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "删除员工日报必须填写原因", details: [] });
+    // 同 update：显式 null 与“未提交”同义。
+    const expectedVersion = expectedVersionInput ?? undefined;
     const current = await this.get(id);
     if (expectedVersion !== undefined && expectedVersion !== current.version) throw new UnprocessableEntityException({ code: "DAILY_REPORT_VERSION_CONFLICT", message: "员工日报已被其他操作更新，请刷新后重试", details: [{ expected_version: expectedVersion, actual_version: current.version }] });
     await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, current.reportDate.toISOString().slice(0, 10), true);
