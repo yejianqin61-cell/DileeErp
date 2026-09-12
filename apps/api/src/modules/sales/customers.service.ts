@@ -3,7 +3,8 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
-type CustomerInput = { customer_code: string; name: string; country_region?: string; address?: string; payment_terms?: string; currency?: string; remark?: string };
+// customer_code 可空：code_mode=auto 时由服务端生成（与物料/供应商一致）。
+type CustomerInput = { customer_code?: string; name: string; country_region?: string; address?: string; payment_terms?: string; currency?: string; remark?: string };
 type ContactInput = { name: string; position?: string; phone?: string; email?: string; is_default?: boolean; remark?: string; is_active?: boolean };
 type ContactUpdateInput = Partial<ContactInput>;
 

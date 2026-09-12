@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsBoolean, IsOptional, IsString, MaxLength } from "class-validator";
+import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -8,8 +8,12 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { CustomersService } from "./customers.service";
 
-class CustomerDto {
-  @IsString() @MaxLength(80) customer_code!: string;
+// 与物料/供应商一致：客户编码支持「自动生成 / 手动填写」，由 code_mode 决定；
+// 因此 customer_code 必须可选、code_mode 必须出现在 DTO 里——否则 ValidationPipe
+// （whitelist + forbidNonWhitelisted）会把前端「新建客户」的整个请求判为 400。
+export class CustomerDto {
+  @IsOptional() @IsString() @MaxLength(80) customer_code?: string;
+  @IsOptional() @IsIn(["auto", "manual"]) code_mode?: string;
   @IsString() @MaxLength(200) name!: string;
   @IsOptional() @IsString() @MaxLength(100) country_region?: string;
   @IsOptional() @IsString() @MaxLength(500) address?: string;
