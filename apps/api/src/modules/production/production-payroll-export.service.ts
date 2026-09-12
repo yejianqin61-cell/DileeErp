@@ -28,7 +28,7 @@ export class ProductionPayrollExportService {
       ["工序盘点表"],
       ["统计月份", filters.month],
       ["工序", operation?.operationName ?? filters.operation_id],
-      ["数据范围", "当月（按工序生产日期划分）所有订单的该工序有效员工日报明细；计时展示时长（小时），合计 = 时长（小时）× 单价"],
+      ["数据范围", "当月（按工序生产日期划分）所有订单的该工序有效员工日报明细；计时展示时长（小时），合计为日报保存时的金额快照（新单按 时长（小时）× 单价 计算）"],
       ["生成时间", new Date().toISOString()],
       ["操作人", user.username],
       [],
@@ -209,11 +209,19 @@ export class ProductionPayrollExportService {
   }
 
   /**
-   * 分钟 -> 小时展示（最多 4 位小数、去掉尾随零）。
+   * 分钟 -> 小时展示（最多 4 位小数、去掉尾随零；极小非零值提升到 8 位，避免整段被显示成 0）。
    * 落库单位始终是分钟，小时仅用于录入/展示，因此所有导出与接口的“小时”都必须走这里换算，
    * 避免出现“表头写小时、单元格还是分钟”的口径错位。
    */
-  private hours(durationMinutes: Prisma.Decimal | null) { if (durationMinutes === null || durationMinutes === undefined) return ""; return new Prisma.Decimal(durationMinutes).div(60).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); }
+  private hours(durationMinutes: Prisma.Decimal | null) {
+    if (durationMinutes === null || durationMinutes === undefined) return "";
+    const hours = new Prisma.Decimal(durationMinutes).div(60);
+    const text = this.trimZeros(hours.toFixed(4));
+    if (text !== "0" || hours.isZero()) return text;
+    return this.trimZeros(hours.toFixed(8));
+  }
+
+  private trimZeros(value: string) { return value.replace(/0+$/, "").replace(/\.$/, ""); }
 
   private monthRange(month: string) {
     const from = new Date(`${month}-01T00:00:00.000Z`);

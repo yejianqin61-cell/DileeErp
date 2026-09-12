@@ -3,6 +3,7 @@ const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { UnprocessableEntityException } = require("@nestjs/common");
 const { EmployeeDailyReportsService } = require("../../dist/modules/production/employee-daily-reports.service.js");
+const { EmployeeDailyReportsController } = require("../../dist/modules/production/employee-daily-reports.controller.js");
 
 // 本文件锁定本轮三项生产需求的后端契约：
 // 1) 同一员工在同一生产单同一工序同一天可以重复登记多条日报（不再合并、不再拦截重复目标/混合计薪方式）；
@@ -14,19 +15,22 @@ const operation = { id: "operation-1", productionOrderId: "order-1", operationNa
 const employee = { id: "employee-1", name: "张三", employeeNo: "E001", employmentStatus: "active", employeeType: "workshop", hiredOn: null, leftOn: null };
 
 function auditStub() {
-  return { create: () => ({}), update: () => ({}), softDelete: () => ({}), record: async () => undefined };
+  // softDelete 必须真的写入 deletedAt，否则替身里的“已删除”行仍会被 findMany 取到，掩盖重算逻辑。
+  return { create: () => ({}), update: () => ({}), softDelete: () => ({ deletedAt: new Date(), deletedBy: "user-1" }), record: async () => undefined };
 }
 
 /** 内存版 Prisma 替身：只实现员工日报写入路径真正会碰到的方法。 */
 function buildClient(rows) {
-  return {
+  const client = {
+    /** 每次薪资来源 upsert 的写入内容，用于验证“重复条目是否被聚合并进入工资结算”。 */
+    payrollSourceWrites: [],
     $queryRaw: async () => [],
     productionOrder: { findFirst: async () => order, findUniqueOrThrow: async () => order },
     productionOrderOperation: { findFirst: async () => operation, findUniqueOrThrow: async () => operation },
     employee: { findFirst: async () => employee },
     operationDailyReport: { aggregate: async () => ({ _sum: { completedQuantity: null } }) },
     productionDailyAlert: { findUnique: async () => null, upsert: async () => ({}), update: async () => ({}) },
-    productionPayrollSource: { findFirst: async () => null, upsert: async () => ({}), update: async () => ({}) },
+    productionPayrollSource: { findFirst: async () => null, upsert: async ({ update }) => { client.payrollSourceWrites.push(update); return {}; }, update: async () => ({}) },
     payrollLedger: { findMany: async () => [] },
     auditEvent: { create: async () => ({}) },
     employeeDailyReport: {
@@ -49,6 +53,7 @@ function buildClient(rows) {
       aggregate: async () => ({ _sum: { quantity: null, calculatedAmount: null } }),
     },
   };
+  return client;
 }
 
 function buildService() {
@@ -56,7 +61,7 @@ function buildService() {
   const client = buildClient(rows);
   const prisma = { ...client, $transaction: async (fn) => fn(client) };
   const progress = { recalculateInTransaction: async () => undefined };
-  return { rows, service: new EmployeeDailyReportsService(prisma, auditStub(), progress) };
+  return { rows, client, service: new EmployeeDailyReportsService(prisma, auditStub(), progress) };
 }
 
 const pieceInput = (overrides = {}) => ({ production_order_id: "order-1", production_order_operation_id: "operation-1", employee_id: "employee-1", report_date: "2026-09-03", wage_mode: "piece_rate", quantity: "10", unit_price: "2", ...overrides });
@@ -80,6 +85,41 @@ test("未填写备注时落库为 null（而不是空串），保持历史数据
   assert.equal(blank.remark, null);
   const omitted = await service.create(pieceInput(), { id: "user-1" });
   assert.equal(omitted.remark, null);
+});
+
+// 工资结算链路：同一员工同一天的多条日报必须被聚合进同一条薪资来源（唯一键 = 员工+生产单+日期+计薪方式），
+// 金额求和而不是覆盖，且快照里保留每一条日报，工资侧才能逐条追溯。
+test("重复登记的多条日报会被聚合进同一条薪资来源（金额求和、快照留全量明细）", async () => {
+  const { rows, client, service } = buildService();
+  const user = { id: "user-1" };
+  const first = await service.create(pieceInput({ quantity: "10", unit_price: "2" }), user);
+  const second = await service.create(pieceInput({ quantity: "15", unit_price: "2" }), user);
+  const latest = client.payrollSourceWrites[client.payrollSourceWrites.length - 1];
+  assert.equal(rows.length, 2);
+  assert.equal(latest.quantity.toString(), "25", "件数必须求和：10 + 15");
+  assert.equal(latest.amount.toString(), "50", "金额必须求和：20 + 30，不得只保留最后一条");
+  assert.deepEqual(latest.sourceSnapshot.map((item) => item.id).sort(), [first.id, second.id].sort(), "快照必须包含全部重复日报，便于追溯");
+});
+
+test("计时薪资来源同时给出分钟（落库）与小时（对外）口径", async () => {
+  const { client, service } = buildService();
+  await service.create(pieceInput({ wage_mode: "time_rate", quantity: "0", duration_hours: "1.5", unit_price: "40" }), { id: "user-1" });
+  await service.create(pieceInput({ wage_mode: "time_rate", quantity: "0", duration_hours: "0.5", unit_price: "40" }), { id: "user-1" });
+  const latest = client.payrollSourceWrites[client.payrollSourceWrites.length - 1];
+  assert.equal(latest.durationMinutes.toString(), "120", "1.5 + 0.5 小时 = 120 分钟（落库口径）");
+  assert.equal(latest.amount.toString(), "80", "2 小时 × 40 元/小时 = 80 元");
+  assert.deepEqual(latest.sourceSnapshot.map((item) => item.duration_hours), ["1.5", "0.5"], "快照按小时给出每条日报时长");
+});
+
+test("删除重复条目中的一条后，薪资来源按剩余条目重算（不会残留已删条目的金额）", async () => {
+  const { client, service } = buildService();
+  const user = { id: "user-1" };
+  await service.create(pieceInput({ quantity: "10", unit_price: "2" }), user);
+  const second = await service.create(pieceInput({ quantity: "15", unit_price: "2" }), user);
+  await service.remove(second.id, "重复登记，删除一条", user);
+  const latest = client.payrollSourceWrites[client.payrollSourceWrites.length - 1];
+  assert.equal(latest.amount.toString(), "20", "删除后只应保留第一条的 20 元");
+  assert.equal(latest.sourceSnapshot.length, 1);
 });
 
 test("同一员工同一天同一工序可以混合使用计件与计时（两条独立日报）", async () => {
@@ -174,6 +214,61 @@ test("只改备注的更正不得重算历史计时日报金额（历史快照�
   assert.equal(kept.remark, "补备注");
   assert.equal(kept.calculatedAmount.toString(), "180", "历史金额快照不得被静默重算");
   assert.equal(kept.durationMinutes.toString(), "90", "历史分钟数不得被改写");
+});
+
+test("前端“只改备注”实际发出的整包字段也不得重算历史计时日报金额（回归：只比字段是否存在会误判）", async () => {
+  // 旧口径的历史数据：90 分钟 × 2 元/分钟 = 180 元。切到小时单价后，若仅因为“请求里带了 unit_price”
+  // 就按 90/60 × 2 重算，会把 180 元静默改成 3 元并波及工资台账。
+  const rows = [{
+    id: "report-1", version: 1, productionOrderId: "order-1", productionOrderOperationId: "operation-1", employeeId: "employee-1", orderNo: "SO-1", reportDate: new Date("2026-09-03T00:00:00.000Z"), wageMode: "time_rate", quantity: new Prisma.Decimal("0"), durationMinutes: new Prisma.Decimal("90"), unitPrice: new Prisma.Decimal("2"), calculatedAmount: new Prisma.Decimal("180"), remark: null,
+  }];
+  const client = buildClient(rows);
+  const service = new EmployeeDailyReportsService({ ...client, $transaction: async (fn) => fn(client) }, auditStub(), { recalculateInTransaction: async () => undefined });
+  const kept = await service.update("report-1", { quantity: "0", duration_hours: "1.5", unit_price: "2", remark: "补备注", reason: "补备注" }, { id: "user-1" });
+  assert.equal(kept.calculatedAmount.toString(), "180", "同值字段回传不得触发重算");
+  assert.equal(kept.durationMinutes.toString(), "90", "小时文案与当前展示值一致时不得改写历史分钟数");
+});
+
+test("历史 100 分钟的展示往返（1.6667 小时）回传时不得把时长改成 100.002 分钟", async () => {
+  const rows = [{
+    id: "report-1", version: 1, productionOrderId: "order-1", productionOrderOperationId: "operation-1", employeeId: "employee-1", orderNo: "SO-1", reportDate: new Date("2026-09-03T00:00:00.000Z"), wageMode: "time_rate", quantity: new Prisma.Decimal("0"), durationMinutes: new Prisma.Decimal("100"), unitPrice: new Prisma.Decimal("2"), calculatedAmount: new Prisma.Decimal("200"), remark: null,
+  }];
+  const client = buildClient(rows);
+  const service = new EmployeeDailyReportsService({ ...client, $transaction: async (fn) => fn(client) }, auditStub(), { recalculateInTransaction: async () => undefined });
+  const kept = await service.update("report-1", { duration_hours: "1.6667", remark: "补备注", reason: "补备注" }, { id: "user-1" });
+  assert.equal(kept.durationMinutes.toString(), "100", "展示值回传必须识别为未修改");
+  assert.equal(kept.calculatedAmount.toString(), "200", "不得因展示往返而重算金额");
+});
+
+test("时长（小时）× 60 溢出 Decimal(18,4) 时必须 422，不能落到数据库 500", async () => {
+  const { service } = buildService();
+  await assert.rejects(
+    () => service.create(pieceInput({ wage_mode: "time_rate", quantity: "0", duration_hours: "99999999999999.9999", unit_price: "1" }), { id: "user-1" }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_EMPLOYEE_REPORT_DURATION",
+  );
+});
+
+test("金额溢出 Decimal(18,4) 时必须 422，不能落到数据库 500", async () => {
+  const { service } = buildService();
+  await assert.rejects(
+    () => service.create(pieceInput({ quantity: "99999999999999", unit_price: "99999999999999" }), { id: "user-1" }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_EMPLOYEE_REPORT_AMOUNT",
+  );
+});
+
+// 批量明细是原始 JSON 字符串（rows），绕过 DTO 的 @MaxLength(1000)，必须在控制器单独兜住，
+// 否则超长备注会直接撞上 varchar(1000) 变成 500。
+test("批量日报备注超过 1000 字必须 422（DTO 长度限制对 rows 无效）", async () => {
+  let called = 0;
+  const controller = new EmployeeDailyReportsController({ createBatch: async () => { called += 1; return []; } });
+  const body = (remark) => ({ production_order_id: "order-1", production_order_operation_id: "operation-1", report_date: "2026-09-03", rows: JSON.stringify([{ employee_id: "employee-1", wage_mode: "piece_rate", remark }]) });
+  await assert.rejects(
+    () => controller.createBatch(body("字".repeat(1001)), { id: "user-1" }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_EMPLOYEE_DAILY_REPORT_ROW",
+  );
+  assert.equal(called, 0, "超长备注不得进入服务层");
+  await controller.createBatch(body("字".repeat(1000)), { id: "user-1" });
+  assert.equal(called, 1, "正好 1000 字必须放行");
 });
 
 test("显式修改计时时长/单价时才按 小时 × 元/小时 重算金额", async () => {

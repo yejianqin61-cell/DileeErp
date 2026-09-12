@@ -39,7 +39,7 @@ export class EmployeeDailyReportsService {
       }
       // 业务要求：同一天、同一生产单、同一工序、同一员工可以多次登记（多条日报，各自独立计薪），
       // 因此这里不再做“同一计薪方式合并”或“只能一种计薪方式”的限制，每次提交都新增一条。
-      const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark?.trim() ? input.remark : null, ...this.audit.create(user) } });
+      const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark?.trim() ? input.remark.trim() : null, ...this.audit.create(user) } });
       await reconcileDailyDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
       await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
       await this.progress.recalculateInTransaction(tx, refs.order.id, "employee_daily_report", row.id, user);
@@ -75,7 +75,7 @@ export class EmployeeDailyReportsService {
       if (previous) return previous;
     }
     // 同一员工在同一批里出现多次是允许的（多条目），每条独立成行。
-    const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark?.trim() ? input.remark : null, ...this.audit.create(user) } });
+    const row = await tx.employeeDailyReport.create({ data: { idempotencyKey: input.idempotency_key, productionOrderId: refs.order.id, productionOrderOperationId: refs.operation.id, employeeId: refs.employee.id, orderNo: refs.order.orderNo, productionOrderNoSnapshot: refs.order.productionOrderNo, operationNameSnapshot: refs.operation.operationNameSnapshot, employeeNameSnapshot: refs.employee.name, reportDate: refs.reportDate, wageMode: input.wage_mode, quantity: values.quantity, durationMinutes: values.durationMinutes, unitPrice: values.unitPrice, calculatedAmount: values.amount, remark: input.remark?.trim() ? input.remark.trim() : null, ...this.audit.create(user) } });
     await reconcileDailyDiscrepancy(tx, refs.order.id, refs.operation.id, refs.reportDate, user);
     await this.syncPayrollSource(tx, refs.employee.id, refs.order.id, refs.order.orderNo, refs.reportDate, input.wage_mode, user);
     return row;
@@ -88,12 +88,20 @@ export class EmployeeDailyReportsService {
     const reportDateText = input.report_date ?? current.reportDate.toISOString().slice(0, 10);
     const refs = await this.refs(current.productionOrderId, current.productionOrderOperationId, current.employeeId, reportDateText, true);
     // 备注为可清空字段：显式提交空串表示清空（存入 null），未提交则保持原值。
-    const nextRemark = input.remark === undefined ? current.remark ?? null : (input.remark.trim() ? input.remark : null);
-    const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), ...(input.duration_hours !== undefined ? { duration_hours: input.duration_hours } : { duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()) }), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: nextRemark ?? undefined };
+    const nextRemark = input.remark === undefined ? current.remark ?? null : (input.remark.trim() ? input.remark.trim() : null);
+    // 兼容损失：旧数据的分钟数换算成小时展示后会丢精度（100 分钟 -> "1.6667"），
+    // 若客户端回传的小时文案与当前展示值完全一致，按“未修改”处理，避免顺带改写历史时长。
+    const durationHoursInput = input.duration_hours?.trim();
+    const durationProvided = durationHoursInput !== undefined && durationHoursInput !== this.toHoursText(current.durationMinutes);
+    const merged: Input = { production_order_id: current.productionOrderId, production_order_operation_id: current.productionOrderOperationId, employee_id: current.employeeId, report_date: reportDateText, wage_mode: input.wage_mode ?? current.wageMode, quantity: input.quantity ?? current.quantity.toString(), ...(durationProvided ? { duration_hours: input.duration_hours } : { duration_minutes: input.duration_minutes ?? (current.durationMinutes?.toString()) }), unit_price: input.unit_price ?? current.unitPrice.toString(), remark: nextRemark ?? undefined };
     const values = this.values(merged);
-    // B3/P1-14: a cosmetic PATCH (wage mode/quantity/unit price untouched) must not recompute the
-    // stored amount from "total × unit price" and silently drift payroll; keep the amount as-is.
-    const recomputeAmount = merged.wage_mode !== current.wageMode || input.quantity !== undefined || input.unit_price !== undefined || (merged.wage_mode === "time_rate" && input.duration_minutes !== undefined) || (merged.wage_mode === "time_rate" && input.duration_hours !== undefined);
+    // B3/P1-14 + 单位切换口径：只有真正进入金额公式的计价要素发生变化时才重算金额快照。
+    // 判定必须比较“生效值”而不是“请求里是否带了这个字段”——前端保存时会整体回传当前值，
+    // 只看字段存在会让“只改备注”把按分钟单价录入的历史日报静默重算（÷60）并波及工资台账。
+    // 计件看 件数×单价，计时看 时长×单价，因此与金额无关的字段变化不触发重算。
+    const recomputeAmount = merged.wage_mode !== current.wageMode
+      || !values.unitPrice.eq(current.unitPrice)
+      || (merged.wage_mode === "piece_rate" ? !values.quantity.eq(current.quantity) : !this.sameDuration(values.durationMinutes, current.durationMinutes));
     const updated = await this.prisma.$transaction(async (tx) => {
       await this.lockOrderAndAssertStatus(tx, current.productionOrderId, ["in_progress", "completed"]);
       await this.lockOperationAndAssert(tx, current.productionOrderOperationId, current.productionOrderId, true, "已取消工序的日报不允许修改（仅允许删除纠错）");
@@ -149,7 +157,27 @@ export class EmployeeDailyReportsService {
     const groups = new Map<string, { employee_id: string; employee_name: string; production_order_id: string; order_no: string; wage_mode: string; period_start: string; period_end: string; quantity: Prisma.Decimal; duration_minutes: Prisma.Decimal; amount: Prisma.Decimal; report_ids: string[] }>();
     for (const row of rows) { const key = `${row.employeeId}|${row.productionOrderId}|${row.wageMode}`; const existing = groups.get(key) ?? { employee_id: row.employeeId, employee_name: row.employeeNameSnapshot, production_order_id: row.productionOrderId, order_no: row.orderNo, wage_mode: row.wageMode, period_start: filter.from, period_end: filter.to, quantity: new Prisma.Decimal(0), duration_minutes: new Prisma.Decimal(0), amount: new Prisma.Decimal(0), report_ids: [] }; existing.quantity = existing.quantity.plus(row.quantity); existing.duration_minutes = existing.duration_minutes.plus(row.durationMinutes ?? 0); existing.amount = existing.amount.plus(row.calculatedAmount); existing.report_ids.push(row.id); groups.set(key, existing); }
     // 对外统一小时口径：duration_hours 为换算值（分钟 ÷ 60，保留 4 位小数去尾零），duration_minutes 保留原始分钟（历史兼容）。
-    return [...groups.values()].map((item) => ({ ...item, quantity: item.quantity.toString(), duration_minutes: item.duration_minutes.toString(), duration_hours: item.duration_minutes.div(60).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""), amount: item.amount.toString(), source_read_only: true }));
+    return [...groups.values()].map((item) => ({ ...item, quantity: item.quantity.toString(), duration_minutes: item.duration_minutes.toString(), duration_hours: this.toHoursText(item.duration_minutes), amount: item.amount.toString(), source_read_only: true }));
+  }
+
+  /** 分钟 -> 小时文案（最多 4 位小数、去掉尾随零），与前端 hoursText、导出 hours() 保持同一口径；极小非零值提升精度避免显示成 0。 */
+  private toHoursText(durationMinutes: Prisma.Decimal | null | undefined) {
+    if (durationMinutes === null || durationMinutes === undefined) return "";
+    const hours = new Prisma.Decimal(durationMinutes).div(60);
+    const text = this.trimZeros(hours.toFixed(4));
+    if (text !== "0" || hours.isZero()) return text;
+    return this.trimZeros(hours.toFixed(8));
+  }
+
+  private trimZeros(value: string) {
+    return value.replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  /** 时长比较：null 表示“未填写”，与任何数值都不相等；两边都是数值时按 Decimal 精确比较。 */
+  private sameDuration(left: Prisma.Decimal | null | undefined, right: Prisma.Decimal | null | undefined) {
+    if (left === null || left === undefined) return right === null || right === undefined;
+    if (right === null || right === undefined) return false;
+    return new Prisma.Decimal(left).eq(right);
   }
 
   /** B6: in correction mode (update/remove) skip employment status and hired/left window checks so departed/deactivated employees can still be corrected or removed. Date legality and order/operation state are still validated (also re-checked inside the transaction). */
@@ -184,13 +212,22 @@ export class EmployeeDailyReportsService {
       durationHours = durationMinutes.div(60);
     }
     if (input.wage_mode === "time_rate" && !durationHours) throw new UnprocessableEntityException({ code: "TIME_REPORT_DURATION_REQUIRED", message: "计时日报必须填写时长（小时）", details: [] });
+    // 小时 × 60 之后也要落在 Decimal(18,4) 内（整数部分最多 14 位），否则会以数据库错误（500）而不是 422 收场。
+    if (durationMinutes) this.assertStorable(durationMinutes, "INVALID_EMPLOYEE_REPORT_DURATION", "员工日报时长超出可存储范围");
     const unitPrice = input.unit_price?.trim();
     if (!unitPrice) throw new UnprocessableEntityException({ code: "DAILY_WAGE_PRICE_REQUIRED", message: "请填写当日人工单价", details: [] });
     const price = this.decimal(unitPrice, "INVALID_UNIT_PRICE", "单价必须是非负十进制数", true);
     // 计件：金额 = 件数 × 单价（元/件）；计时：金额 = 时长（小时）× 单价（元/小时）。
     // 计时金额严格由落库的分钟数换算（分钟 ÷ 60 × 单价），保证金额与存储时长始终自洽。
     const amount = input.wage_mode === "piece_rate" ? quantity.mul(price) : (durationMinutes as Prisma.Decimal).div(60).mul(price);
+    this.assertStorable(amount, "INVALID_EMPLOYEE_REPORT_AMOUNT", "员工日报金额超出可存储范围");
     return { quantity, durationHours, durationMinutes, unitPrice: price, amount };
+  }
+
+  /** Decimal(18,4) 的整数部分最多 14 位；超出时抛出 422，避免落到数据库层变成 500。 */
+  private assertStorable(value: Prisma.Decimal, code: string, message: string) {
+    if (new Prisma.Decimal(value).abs().gte(new Prisma.Decimal("1e14"))) throw new UnprocessableEntityException({ code, message, details: [] });
+    return value;
   }
 
   private async syncPayrollSource(client: Prisma.TransactionClient, employeeId: string, productionOrderId: string, orderNo: string, reportDate: Date, wageMode: string, user: CurrentUser) {
@@ -213,7 +250,9 @@ export class EmployeeDailyReportsService {
     const quantity = rows.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0));
     const durationMinutes = rows.reduce((sum, row) => sum.plus(row.durationMinutes ?? 0), new Prisma.Decimal(0));
     const amount = rows.reduce((sum, row) => sum.plus(row.calculatedAmount), new Prisma.Decimal(0));
-    const sourceSnapshot = rows.map((row) => ({ id: row.id, report_date: row.reportDate.toISOString().slice(0, 10), employee_name: row.employeeNameSnapshot, order_no: row.orderNo, wage_mode: row.wageMode, quantity: row.quantity.toString(), duration_minutes: row.durationMinutes?.toString() ?? "0", amount: row.calculatedAmount.toString() }));
+    // 薪资来源快照按条留存全部日报（含同一员工同日同工序的重复登记），便于工资侧逐条追溯；
+    // 时长同时给出分钟（落库口径）与小时（对外口径）。
+    const sourceSnapshot = rows.map((row) => ({ id: row.id, report_date: row.reportDate.toISOString().slice(0, 10), employee_name: row.employeeNameSnapshot, order_no: row.orderNo, wage_mode: row.wageMode, quantity: row.quantity.toString(), duration_minutes: row.durationMinutes?.toString() ?? "0", duration_hours: this.toHoursText(row.durationMinutes), amount: row.calculatedAmount.toString() }));
     const data = { employeeId, productionOrderId, orderNo, periodStart: reportDate, periodEnd: reportDate, wageMode, quantity, durationMinutes, amount, sourceSnapshot: sourceSnapshot as Prisma.InputJsonValue, remark: null };
     await client.productionPayrollSource.upsert({
       where: { employeeId_productionOrderId_periodStart_periodEnd_wageMode: { employeeId, productionOrderId, periodStart: reportDate, periodEnd: reportDate, wageMode } },
@@ -245,7 +284,7 @@ export class EmployeeDailyReportsService {
     for (const ledger of ledgers) {
       const sources = await client.productionPayrollSource.findMany({ where: { employeeId, periodStart: { gte: ledger.periodStart }, periodEnd: { lte: ledger.periodEnd }, deletedAt: null }, orderBy: [{ periodStart: "asc" }, { orderNo: "asc" }, { wageMode: "asc" }] });
       const production = sources.reduce((sum, source) => sum.plus(source.amount), new Prisma.Decimal(0));
-      const sourceSnapshot = sources.map((source) => ({ id: source.id, order_no: source.orderNo, wage_mode: source.wageMode, quantity: source.quantity.toString(), duration_minutes: source.durationMinutes.toString(), amount: source.amount.toString() })) as Prisma.InputJsonValue;
+      const sourceSnapshot = sources.map((source) => ({ id: source.id, order_no: source.orderNo, wage_mode: source.wageMode, quantity: source.quantity.toString(), duration_minutes: source.durationMinutes.toString(), duration_hours: this.toHoursText(source.durationMinutes), amount: source.amount.toString() })) as Prisma.InputJsonValue;
       await client.payrollLedger.update({ where: { id: ledger.id }, data: { productionSourceAmount: production, sourceSnapshot, ...this.audit.update(user) } });
     }
   }

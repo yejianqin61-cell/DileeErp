@@ -94,3 +94,10 @@ test("计件行时长留空（只有计时行才输出小时数）", async () =>
   assert.equal(detailRow[9], "30");
   assert.equal(detailRow[10], "", "计件行不得输出时长");
 });
+
+test("极小非零时长不会被显示成 0（历史分钟兼容数据）", async () => {
+  const service = build([reportRow({ durationMinutes: new Prisma.Decimal("0.0001"), calculatedAmount: new Prisma.Decimal("0") })]);
+  const rows = sheetRows(await service.exportOrder({ order_no: "DL260001" }, { id: "user-1", username: "admin" }));
+  const detailRow = rows.find((row) => Array.isArray(row) && row[0] === "DL260001" && row.length > 13);
+  assert.equal(detailRow[10], "0.00000167", "0.0001 分钟应提升精度展示，而不是显示 0");
+});

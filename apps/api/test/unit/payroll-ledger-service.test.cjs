@@ -107,6 +107,64 @@ test("payroll ledger generation locks employee before idempotency check", async 
   assert.equal(createCount, 0);
 });
 
+// 重复登记/补录会把已确认台账自动置为 expired，同时改大生产来源金额。
+// 此时“重新生成薪资台账”必须把金额刷新到最新并回到草稿，否则接口原样返回过期金额，操作员会以为已重新核算。
+function generationFixture(existingStatus, sources) {
+  const { Prisma } = require("@prisma/client");
+  const writes = [];
+  const existing = { id: "ledger-1", status: existingStatus, employeeId: "employee-1", periodStart: new Date("2026-01-01"), periodEnd: new Date("2026-01-31"), baseSalary: new Prisma.Decimal("100"), productionSourceAmount: new Prisma.Decimal("10"), currency: "CNY", sourceSnapshot: [] };
+  const employee = { id: "employee-1", employeeNo: "E001", name: "张三", employeeType: "workshop" };
+  const prisma = {
+    employee: { findMany: async () => [employee], findFirst: async () => ({ employeeType: "workshop" }) },
+    productionPayrollSource: { findMany: async () => sources },
+    payrollLedger: { findFirst: async () => existing, update: async ({ data }) => { writes.push(data); return { ...existing, ...data }; }, create: async ({ data }) => ({ ...existing, ...data }) },
+  };
+  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], payrollLedger: prisma.payrollLedger, employee: prisma.employee, payrollPayableEntry: { findFirst: async () => null } });
+  const audits = [];
+  const service = new PayrollLedgerService(prisma, { create: () => ({}), update: () => ({ updatedBy: "user-1" }), record: async (...args) => audits.push(args) });
+  return { service, writes, audits };
+}
+
+test("重新生成已过期台账时刷新生产来源金额并回到草稿（重复登记后的重算路径）", async () => {
+  const { Prisma } = require("@prisma/client");
+  const sources = [
+    { id: "source-1", orderNo: "SO-1", wageMode: "piece_rate", quantity: new Prisma.Decimal("20"), durationMinutes: new Prisma.Decimal("0"), amount: new Prisma.Decimal("40") },
+    { id: "source-2", orderNo: "SO-1", wageMode: "time_rate", quantity: new Prisma.Decimal("0"), durationMinutes: new Prisma.Decimal("90"), amount: new Prisma.Decimal("60") },
+  ];
+  const { service, writes, audits } = generationFixture("expired", sources);
+  const result = await service.generate({ employee_id: "employee-1", period_start: "2026-01-01", period_end: "2026-01-31", currency: "CNY" }, { id: "user-1" });
+  assert.equal(writes.length, 1, "重新生成必须刷新台账，而不是原样返回过期数据");
+  assert.equal(writes[0].productionSourceAmount.toString(), "100", "生产来源金额 = 40 + 60");
+  assert.equal(writes[0].status, "draft", "刷新后回到草稿等待重新确认");
+  assert.deepEqual(writes[0].sourceSnapshot.map((item) => item.duration_hours), ["0", "1.5"], "台账快照同样按小时给出时长");
+  assert.equal(result.status, "draft");
+  assert.equal(audits[0][0], "payroll_ledger.update");
+});
+
+test("重新生成草稿台账时同样刷新生产来源金额（补录后不重新生成就是旧值）", async () => {
+  const { Prisma } = require("@prisma/client");
+  const { service, writes } = generationFixture("draft", [{ id: "source-1", orderNo: "SO-1", wageMode: "piece_rate", quantity: new Prisma.Decimal("5"), durationMinutes: new Prisma.Decimal("0"), amount: new Prisma.Decimal("12.5") }]);
+  await service.generate({ employee_id: "employee-1", period_start: "2026-01-01", period_end: "2026-01-31", currency: "CNY" }, { id: "user-1" });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].productionSourceAmount.toString(), "12.5");
+});
+
+test("重新生成已确认台账绝不自动改写金额（已确认工资必须由人工回退或调整单处理）", async () => {
+  const { Prisma } = require("@prisma/client");
+  const { service, writes } = generationFixture("confirmed", [{ id: "source-1", orderNo: "SO-1", wageMode: "piece_rate", quantity: new Prisma.Decimal("5"), durationMinutes: new Prisma.Decimal("0"), amount: new Prisma.Decimal("999") }]);
+  const result = await service.generate({ employee_id: "employee-1", period_start: "2026-01-01", period_end: "2026-01-31", currency: "CNY" }, { id: "user-1" });
+  assert.equal(writes.length, 0, "已确认台账不得被静默改写");
+  assert.equal(result.status, "confirmed");
+  assert.equal(result.productionSourceAmount.toString(), "10");
+});
+
+test("重新生成已付款台账不做任何改写", async () => {
+  const { service, writes } = generationFixture("paid", [{ id: "source-1", orderNo: "SO-1", wageMode: "piece_rate", quantity: "5", durationMinutes: "0", amount: "999" }]);
+  const result = await service.generate({ employee_id: "employee-1", period_start: "2026-01-01", period_end: "2026-01-31", currency: "CNY" }, { id: "user-1" });
+  assert.equal(writes.length, 0);
+  assert.equal(result.status, "paid");
+});
+
 
 test("payroll ledger list applies period overlap and computes payable/paid/outstanding", async () => {
   const { Prisma } = require("@prisma/client");

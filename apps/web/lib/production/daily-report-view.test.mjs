@@ -130,3 +130,11 @@ test("分钟与小时往返不丢精度：录入 1.5 小时 -> 落库 90 分钟 
   }
 });
 
+test("hoursText: 极小非零时长不会被显示成 0（与后端 toHoursText/导出 hours() 同口径）", () => {
+  assert.equal(hoursText(0.0001), "0.00000167");
+  assert.equal(hoursText(0), "0");
+  // 常规值仍走 4 位小数口径，保持界面简洁。
+  assert.equal(hoursText(100), "1.6667");
+  assert.equal(hoursText(6), "0.1");
+});
+

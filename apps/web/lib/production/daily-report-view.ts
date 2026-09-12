@@ -74,8 +74,14 @@ export function hoursToMinutes(hours: string | number | null | undefined): numbe
   return Number.isFinite(value) ? Number((value * 60).toFixed(4)) : 0;
 }
 
-/** 时长的展示文案：整数不带小数（2），小数去掉尾随零（1.5、1.25）；空值显示为空串。 */
+/** 时长的展示文案：整数不带小数（2），小数去掉尾随零（1.5、1.25）；空值显示为空串。
+ *  极小非零值提升到 8 位小数，避免 0.0001 分钟这类历史数据被显示成 0（与后端 toHoursText/导出 hours() 同口径）。 */
 export function hoursText(minutes: string | number | null | undefined): string {
   if (minutes === null || minutes === undefined || minutes === "") return "";
-  return String(minutesToHours(minutes));
+  const value = Number(minutes);
+  if (!Number.isFinite(value)) return "";
+  const trim = (text: string) => text.replace(/0+$/, "").replace(/\.$/, "");
+  const text = trim((value / 60).toFixed(4));
+  if (text !== "0" || value === 0) return text;
+  return trim((value / 60).toFixed(8));
 }

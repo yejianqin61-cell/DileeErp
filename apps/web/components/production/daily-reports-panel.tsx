@@ -17,7 +17,10 @@ type Order = { id: string; productionOrderNo: string; orderNo: string; execution
 type Employee = { id: string; employeeNo: string; name: string; employmentStatus: string };
 type Report = { id: string; version?: number; productionOrderId: string; employeeNameSnapshot: string; employeeId: string; reportDate: string; wageMode: string; quantity: string; durationMinutes?: string; calculatedAmount: string; unitPrice: string; remark?: string | null; productionOrderOperation: { id: string; targetQuantity: string } };
 // 计时单位统一为“小时”（duration_hours，可填小数）；接口/数据库仍以分钟存储，由前端换算展示。
-type Draft = { employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_hours: string; unit_price: string; remark: string };
+// draft_id：草稿行自身稳定的幂等标识，用来生成批量保存的 idempotency_key。
+// 不能用行序号：网络超时后（服务端其实已提交）操作员删掉/调整某行再重试时，序号会整体前移，
+// 导致旧幂等键被复用到别的员工身上——那一行会被静默丢弃。draft_id 不会随位置变化。
+type Draft = { draft_id: string; employee_id: string; report_date: string; wage_mode: string; quantity: string; duration_hours: string; unit_price: string; remark: string };
 type ReportEdit = { quantity: string; duration_hours: string; unit_price: string; remark: string };
 
 const today = new Date().toISOString().slice(0, 10);
@@ -86,7 +89,7 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
   // 业务要求：同一天、同一生产单、同一工序、同一员工允许被多次选中（多条日报各自独立计薪），
   // 因此这里对已存在的员工不做去重过滤，选中的每个员工都追加一行；选完后清空勾选，避免重复点击误加。
   function applyEmployees() {
-    setDrafts((rows) => [...rows, ...selectedEmployeeIds.map((employee_id) => ({ employee_id, report_date: resolveEntryDate(selectedReportDate, today), wage_mode: "piece_rate", quantity: "0", duration_hours: "", unit_price: "", remark: "" }))]);
+    setDrafts((rows) => [...rows, ...selectedEmployeeIds.map((employee_id) => ({ draft_id: idempotencyKey(), employee_id, report_date: resolveEntryDate(selectedReportDate, today), wage_mode: "piece_rate", quantity: "0", duration_hours: "", unit_price: "", remark: "" }))]);
     setSelectedEmployeeIds([]);
     setEmployeePickerOpen(false);
   }
@@ -137,18 +140,15 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
       setError("");
       setSavingReportId(report.id);
       try {
-        await apiRequest(`/production/employee-reports/${report.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            quantity: edit.quantity || undefined,
-            duration_hours: edit.duration_hours || undefined,
-            unit_price: edit.unit_price,
-            // 空串表示清空备注（后端按 null 落库），未提交则保持原值。
-            remark: edit.remark.trim(),
-            reason: inlineReason.trim(),
-            expected_version: report.version,
-          }),
-        });
+        // 只提交真正改动过的计价字段：后端按“生效值是否变化”决定是否重算金额快照，
+        // 整体回传同值虽然也不会重算，但少传字段能让审计差异和误写风险都更小
+        // （历史按分钟单价录入的日报，时长往返换算会差 0.001 分钟）。
+        const original = emptyEdit(reports.find((item) => item.id === report.id) ?? report);
+        const body: Record<string, string | number | undefined> = { reason: inlineReason.trim(), expected_version: report.version, remark: edit.remark.trim() };
+        if (edit.quantity !== original.quantity) body.quantity = edit.quantity;
+        if (edit.duration_hours !== original.duration_hours) body.duration_hours = edit.duration_hours;
+        if (edit.unit_price !== original.unit_price) body.unit_price = edit.unit_price;
+        await apiRequest(`/production/employee-reports/${report.id}`, { method: "PATCH", body: JSON.stringify(body) });
         notifySuccess("日报已更正，当日员工薪资和总薪资已联动更新");
         setReportEdits((current) => {
           const next = { ...current };
@@ -229,8 +229,9 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
       const batchKey = saveKey ?? idempotencyKey();
       // 批量接口以 body 的 report_date 覆盖行日期；未选查看日期时回落到草稿行日期或当天，保证与行展示一致。
       const batchReportDate = resolveBatchReportDate(selectedReportDate, drafts.map((row) => row.report_date), today);
-      // 幂等键必须带上行序号：同一员工可在同一天同一工序出现多次，仅用员工+日期会互相覆盖导致丢行。
-      if (drafts.length) await apiPost("/production/employee-reports/batch", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: batchReportDate, rows: JSON.stringify(drafts.map((row, index) => ({ ...row, idempotency_key: `${batchKey}-${index}-${row.report_date}` }))) });
+      // 幂等键 = 本次会话批次 + 草稿行自身标识：同一员工多次复选也能区分，且重试时键不变（真正幂等）。
+      // draft_id 不参与请求体，避免把前端内部字段写进接口契约。
+      if (drafts.length) await apiPost("/production/employee-reports/batch", { production_order_id: selectedOrder.id, production_order_operation_id: selectedOperation.id, report_date: batchReportDate, rows: JSON.stringify(drafts.map(({ draft_id, ...row }) => ({ ...row, idempotency_key: `${batchKey}-${draft_id}` }))) });
       notifySuccess("工序员工日报已保存");
       closeDialog();
       await load();
@@ -295,7 +296,7 @@ export function DailyReportsPanel({ productionOrderId }: { productionOrderId?: s
           <div className="table-wrap"><Table><TableHeader><TableRow><TableHead>员工</TableHead><TableHead>日期</TableHead><TableHead>计薪方式</TableHead><TableHead>件数</TableHead><TableHead>时长（小时）</TableHead><TableHead>单价</TableHead><TableHead>备注</TableHead><TableHead>本行薪资</TableHead><TableHead>当日该员工总薪资</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody>{visibleReports.map((report) => <TableRow key={report.id}><TableCell>{report.employeeNameSnapshot}</TableCell><TableCell>{report.reportDate.slice(0, 10)}</TableCell><TableCell>{wageModeLabel(report.wageMode)}</TableCell><TableCell><Input type="number" min="0" step="0.0001" value={reportEdits[report.id]?.quantity ?? report.quantity} onChange={(event) => updateReportField(report, "quantity", event.target.value)} /></TableCell><TableCell><Input type="number" min="0" step="0.0001" disabled={report.wageMode === "piece_rate"} value={reportEdits[report.id]?.duration_hours ?? hoursText(report.durationMinutes)} onChange={(event) => updateReportField(report, "duration_hours", event.target.value)} /></TableCell><TableCell><Input type="number" min="0" step="0.0001" title={unitPriceLabel(report.wageMode)} value={reportEdits[report.id]?.unit_price ?? report.unitPrice} onChange={(event) => updateReportField(report, "unit_price", event.target.value)} /></TableCell><TableCell><Input value={reportEdits[report.id]?.remark ?? report.remark ?? ""} maxLength={1000} placeholder="可选" onChange={(event) => updateReportField(report, "remark", event.target.value)} /></TableCell><TableCell>{Number(report.calculatedAmount).toFixed(2)}</TableCell><TableCell>{(dailyEmployeeTotals.get(employeeDateTotalKey(report.employeeId, report.reportDate)) ?? 0).toFixed(2)}</TableCell><TableCell><div className="action-row"><Button size="sm" variant="default" disabled={!reportEditDirty(report) || savingReportId === report.id} onClick={() => void saveReportEdit(report)}>{savingReportId === report.id ? "保存中..." : reportEditDirty(report) ? "保存" : "未修改"}</Button><Button size="sm" variant="ghost" onClick={() => editReport(report)}>更正</Button><Button size="sm" variant="ghost" onClick={() => deleteReport(report)}>删除</Button></div></TableCell></TableRow>)}</TableBody></Table></div>
         </DialogContent>
       </Dialog>
-      <Dialog open={employeePickerOpen} onOpenChange={setEmployeePickerOpen}><DialogContent><DialogHeader><DialogTitle>批量选择员工</DialogTitle><DialogDescription>同一员工可在同一天同一工序重复加入多条日报（各自独立计薪）；重复点击会追加新行。</DialogDescription></DialogHeader><div className="employee-picker-list">{employees.map((employee) => { const checked = selectedEmployeeIds.includes(employee.id); return <Button key={employee.id} type="button" variant={checked ? "default" : "secondary"} aria-pressed={checked} onClick={() => setSelectedEmployeeIds((ids) => checked ? ids.filter((id) => id !== employee.id) : [...ids, employee.id])}>{checked ? "已选 " : ""}{employee.employeeNo} / {employee.name}</Button>; })}</div><Button onClick={applyEmployees}>加入日报</Button></DialogContent></Dialog>
+      <Dialog open={employeePickerOpen} onOpenChange={setEmployeePickerOpen}><DialogContent><DialogHeader><DialogTitle>批量选择员工</DialogTitle><DialogDescription>一次可勾选多名员工；同一员工需要多条日报时（例如上午、下午各一条），再次点“批量选择员工”并重新勾选即可，系统不会去重。</DialogDescription></DialogHeader><div className="employee-picker-list">{employees.map((employee) => { const checked = selectedEmployeeIds.includes(employee.id); return <Button key={employee.id} type="button" variant={checked ? "default" : "secondary"} aria-pressed={checked} onClick={() => setSelectedEmployeeIds((ids) => checked ? ids.filter((id) => id !== employee.id) : [...ids, employee.id])}>{checked ? "已选 " : ""}{employee.employeeNo} / {employee.name}</Button>; })}</div><Button onClick={applyEmployees}>加入日报</Button></DialogContent></Dialog>
     </section>
   );
 }

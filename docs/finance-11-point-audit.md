@@ -30,12 +30,13 @@
 - `syncPayrollSource()` 重新汇总当日 `EmployeeDailyReport`，更新或软删除 `ProductionPayrollSource`。
 - 随后 `refreshDraftPayrollLedgers()` 会重算所有覆盖该日期的 `draft` 台账的 `productionSourceAmount` 和 `sourceSnapshot`。
 - `reconcilePayrollLedgers()` 对 `confirmed` 台账自动置为 `expired`；对 `partially_paid`、`paid` 台账不做静默改写，只写审计事件要求财务处理。
-- 日报单元单价变更时，同一员工、同一工序、同一天、同计薪方式如果已有不同单价，会直接拒绝，要求先更正原日报。
+- 同一员工、同一生产单、同一工序、同一天允许存在多条日报（可复选、可混合计薪方式、可不同单价），不再做同键合并或单价冲突拒绝；`syncPayrollSource()` 按「员工 + 生产单 + 日期 + 计薪方式」重新汇总**全部**日报（件数、时长、金额求和，`sourceSnapshot` 保留每一条日报 ID），因此重复登记是金额累加而不是覆盖。
+- `generate()` 命中已存在的 `draft` / `expired` 台账时会**刷新** `productionSourceAmount` 与 `sourceSnapshot` 并回到草稿（重复登记/补录导致 `confirmed` 自动过期后，“重新生成”即完成重算）；已确认、部分支付、已支付、已关闭台账一律不自动改写。
 
 注意：
 
 - 如果台账不存在，源头变化不会自动创建台账。
-- 如果台账是 `confirmed`，金额不会自动重算，而是状态变为 `expired`。
+- 如果台账是 `confirmed`，金额不会自动重算，而是状态变为 `expired`，需要重新生成或回退草稿后才会刷新。
 - 如果台账已经 `partially_paid` / `paid`，必须走工资调整、补付或付款冲销。
 
 ## 3. 薪资台账能否按日期范围统计
