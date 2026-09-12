@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { InventoryService } from "../../platform/inventory/inventory.service";
+import { syncFinishedGoodsInboundNoticeStatus } from "../production/finished-goods-inbound-notice-status";
 
 type InventoryInput = { qc_record_id: string; quantity: string; idempotency_key?: string; remark?: string };
 type ReverseInput = { reason: string };
@@ -62,6 +63,8 @@ export class FinishedGoodsInventoryService {
       if (locked.quantity.gt(available)) throw this.exceeded("FINISHED_GOODS_INBOUND_QUANTITY_EXCEEDED", available);
       const posted = await tx.finishedGoodsInbound.update({ where: { id }, data: { status: "posted", idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsInboundId: id, materialId: null, unitId: locked.unitId, inventoryCategory: "finished_goods", quantityDelta: locked.quantity, sourceType: "finished_goods_inbound", sourceId: id, orderNo: locked.orderNo, productionOrderId: locked.productionOrderId, productNameSnapshot: locked.productNameSnapshot, productSpecificationSnapshot: locked.productSpecificationSnapshot, createdBy: user.id } });
+      // 入库过账后刷新来源入库通知的进度（分批入库时通知会从进行中变为已完成）。
+      await syncFinishedGoodsInboundNoticeStatus(tx, locked.qcRecord?.submission?.sourceType === "finished_goods_inbound_notice" ? locked.qcRecord.submission.sourceId : null, user);
       return posted;
     });
     await this.audit.record("finished_goods_inbound.post", "finished_goods_inbound", user.id, id, { order_no: result.orderNo, quantity: result.quantity.toString() });
@@ -91,7 +94,7 @@ export class FinishedGoodsInventoryService {
 
   async reverseInbound(id: string, input: ReverseInput, user: CurrentUser) {
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] });
-    const current = await this.prisma.finishedGoodsInbound.findFirst({ where: { id, deletedAt: null }, include: { inventoryFacts: true } });
+    const current = await this.prisma.finishedGoodsInbound.findFirst({ where: { id, deletedAt: null }, include: { inventoryFacts: true, qcRecord: { include: { submission: true } } } });
     if (!current) throw this.notFound("FINISHED_GOODS_INBOUND_NOT_FOUND", "成品入库单不存在");
     if (current.status !== "posted") throw this.invalidState("FINISHED_GOODS_INBOUND_NOT_REVERSIBLE", "只有已过账成品入库单可以冲销");
     const result = await this.prisma.$transaction(async (tx) => {
@@ -102,6 +105,7 @@ export class FinishedGoodsInventoryService {
       if (balance.minus(current.quantity).isNegative()) throw new UnprocessableEntityException({ code: "INVENTORY_INSUFFICIENT", message: "冲销会造成成品库存不足", details: [] });
       const updated = await tx.finishedGoodsInbound.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${input.reason}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsInboundId: id, materialId: null, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity.negated(), sourceType: "finished_goods_inbound_reversal", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
+      await syncFinishedGoodsInboundNoticeStatus(tx, current.qcRecord?.submission?.sourceType === "finished_goods_inbound_notice" ? current.qcRecord.submission.sourceId : null, user);
       return updated;
     });
     await this.audit.record("finished_goods_inbound.reverse", "finished_goods_inbound", user.id, id, { order_no: result.orderNo, reason: input.reason });

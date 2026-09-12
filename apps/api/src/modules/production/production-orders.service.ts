@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { findPackagingOperation, isPackagingOperationName } from "./packaging-operation";
 import { ProductionProgressService } from "./production-progress.service";
 
 type Input = { order_no: string; bom_id: string; bom_version: number; production_order_type?: string; parent_production_order_id?: string; execution_mode: string; execution_location_id: string; planned_quantity: string; unit_id: string; product_specification?: string; production_process_note?: string; planned_started_on?: string; delivery_due_on?: string; remark?: string };
@@ -31,7 +32,12 @@ export class ProductionOrdersService {
       const existing = type === "standard" && !input.parent_production_order_id ? await tx.productionOrder.findFirst({ where: { salesOrderId: locked.id, productionOrderType: "standard", parentProductionOrderId: null, deletedAt: null }, select: { id: true, productionOrderNo: true, status: true } }) : null;
       if (existing) throw new ConflictException({ code: "PRODUCTION_ORDER_ALREADY_EXISTS", message: "该销售订单已存在未删除的主生产单，一个销售订单只允许一张主生产单", details: [{ production_order_id: existing.id, production_order_no: existing.productionOrderNo, status: existing.status }] });
       try {
-        return await tx.productionOrder.create({ data: { productionOrderNo: number, orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom.id, bomVersion: refs.bom.version, bomSnapshot: this.snapshotBom(refs.bom) as Prisma.InputJsonValue, productionOrderType: type, parentProductionOrderId: input.parent_production_order_id, executionMode: input.execution_mode, executionLocationId: input.execution_location_id, plannedQuantity: input.planned_quantity, unitId: input.unit_id, productSpecification: input.product_specification, productionProcessNote: input.production_process_note, plannedStartedOn: input.planned_started_on ? new Date(input.planned_started_on) : undefined, deliveryDueOn: input.delivery_due_on ? new Date(input.delivery_due_on) : undefined, remark: input.remark, ...this.audit.create(user) } });
+        const order = await tx.productionOrder.create({ data: { productionOrderNo: number, orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom.id, bomVersion: refs.bom.version, bomSnapshot: this.snapshotBom(refs.bom) as Prisma.InputJsonValue, productionOrderType: type, parentProductionOrderId: input.parent_production_order_id, executionMode: input.execution_mode, executionLocationId: input.execution_location_id, plannedQuantity: input.planned_quantity, unitId: input.unit_id, productSpecification: input.product_specification, productionProcessNote: input.production_process_note, plannedStartedOn: input.planned_started_on ? new Date(input.planned_started_on) : undefined, deliveryDueOn: input.delivery_due_on ? new Date(input.delivery_due_on) : undefined, remark: input.remark, ...this.audit.create(user) } });
+        // 业务口径：包装工序是每个生产单的收尾工序，默认每个生产单都要有。
+        // 建单时若工序主数据里存在「包装」工序（按名称识别）就自动补为第一道，后续添加工序会排在其后；
+        // 主数据里没有包装工序时不阻断建单，由页面提示先建主数据或稍后补建。
+        await this.appendPackagingOperationIfMissing(tx, order, user);
+        return order;
       } catch (error) {
         if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "PRODUCTION_ORDER_ALREADY_EXISTS", message: "该销售订单已存在未删除的主生产单，一个销售订单只允许一张主生产单", details: [] });
         throw error;
@@ -39,6 +45,43 @@ export class ProductionOrdersService {
     });
     await this.audit.record("production_order.create", "production_order", user.id, created.id, { order_no: created.orderNo, production_order_no: number, bom_version: refs.bom.version, planned_quantity: input.planned_quantity }); return this.get(created.id);
   }
+  /**
+   * 补建/确认包装（收尾）工序：工序名称含「包装」即认定。
+   * - 已有未取消的包装工序时直接返回，幂等；
+   * - 否则从工序主数据里取一道启用的「包装」工序追加到末尾（target = 计划数量）；
+   * - 主数据里没有包装工序时抛 422，提示先在工序主数据建立（避免悄悄用错工序）。
+   */
+  async ensurePackagingOperation(id: string, user: CurrentUser) {
+    const existing = await this.get(id);
+    const current = findPackagingOperation(existing.operations);
+    if (current) return { created: false, operation: current };
+    const catalog = await this.prisma.operationCatalog.findFirst({ where: { isActive: true, deletedAt: null, operationName: { contains: "包装" } }, orderBy: { operationCode: "asc" } });
+    if (!catalog) throw new UnprocessableEntityException({ code: "PACKAGING_OPERATION_CATALOG_MISSING", message: "工序主数据里没有启用的「包装」工序，请先建立包装工序", details: [] });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${id}::uuid FOR UPDATE`;
+      const order = await tx.productionOrder.findFirst({ where: { id, deletedAt: null }, include: { operations: { where: { deletedAt: null } }, unit: true } });
+      if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
+      if (["closed", "cancelled"].includes(order.status)) throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_OPERATION_NOT_ADDABLE", message: "已关闭或已取消的生产单不能再补建工序", details: [{ production_order_status: order.status }] });
+      const found = findPackagingOperation(order.operations);
+      if (found) return { created: false, operation: found };
+      const sequenceNo = order.operations.reduce((max, item) => Math.max(max, item.sequenceNo), 0) + 1;
+      const unitId = catalog.defaultUnitId ?? order.unitId;
+      const operation = await tx.productionOrderOperation.create({ data: { productionOrderId: id, operationCatalogId: catalog.id, operationNameSnapshot: catalog.operationName, unitId, sequenceNo, targetQuantity: order.plannedQuantity, ...this.audit.create(user) } });
+      return { created: true, operation };
+    });
+    if (result.created) await this.audit.record("production_order.packaging_operation", "production_order_operation", user.id, result.operation.id, { order_no: existing.orderNo, production_order_id: id, operation_catalog_id: catalog.id, operation_name: catalog.operationName, sequence_no: result.operation.sequenceNo, target_quantity: result.operation.targetQuantity.toString() });
+    return result;
+  }
+
+  /** 建单时自动补包装工序：仅在工序主数据存在「包装」工序时追加，失败不阻断建单。 */
+  private async appendPackagingOperationIfMissing(tx: Prisma.TransactionClient, order: { id: string; unitId: string; plannedQuantity: Prisma.Decimal }, user: CurrentUser) {
+    const catalog = await tx.operationCatalog.findFirst({ where: { isActive: true, deletedAt: null, operationName: { contains: "包装" } }, orderBy: { operationCode: "asc" } });
+    if (!catalog || !isPackagingOperationName(catalog.operationName)) return null;
+    const operation = await tx.productionOrderOperation.create({ data: { productionOrderId: order.id, operationCatalogId: catalog.id, operationNameSnapshot: catalog.operationName, unitId: catalog.defaultUnitId ?? order.unitId, sequenceNo: 1, targetQuantity: order.plannedQuantity, ...this.audit.create(user) } });
+    await this.audit.record("production_order.packaging_operation", "production_order_operation", user.id, operation.id, { production_order_id: order.id, operation_catalog_id: catalog.id, operation_name: catalog.operationName, sequence_no: operation.sequenceNo, target_quantity: operation.targetQuantity.toString(), auto: true });
+    return operation;
+  }
+
   async update(id: string, input: Partial<Input>, user: CurrentUser) {
     const current = await this.get(id);
     if (current.status !== "draft") throw new UnprocessableEntityException({ code: "PRODUCTION_ORDER_NOT_EDITABLE", message: "只有草稿生产单可编辑", details: [] });

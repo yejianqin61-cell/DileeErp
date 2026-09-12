@@ -79,6 +79,8 @@ test("supplement/rework/split child orders bypass the single-standard-root confl
       $transaction: async (fn) => fn({
         $queryRaw: async () => { lockQueryCount += 1; },
         salesOrder: { findFirst: async () => ({ id: "so-1", status: "confirmed" }) },
+        // 建单会在同一事务内按名称查找「包装」工序（收尾工序默认补齐）；这里模拟主数据没有包装工序。
+        operationCatalog: { findFirst: async () => null },
         productionOrder: { findFirst: async () => { duplicateQueries += 1; return { id: "po-existing" }; }, create: async ({ data }) => { createdData = data; return created; } },
       }),
     };

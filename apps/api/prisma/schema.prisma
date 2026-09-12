@@ -472,6 +472,7 @@ model Unit {
   finishedGoodsInbounds     FinishedGoodsInbound[]
   finishedGoodsDefectives   FinishedGoodsDefective[]
   finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  finishedGoodsInboundNotices FinishedGoodsInboundNotice[]
   customerReturns           CustomerReturn[]
 
   @@map("units")
@@ -1154,6 +1155,44 @@ model FinishedGoodsQcRecord {
   @@map("finished_goods_qc_records")
 }
 
+/// 成品入库通知（分批）：包装工序（工序名称含“包装”）是每个生产单的收尾工序，
+/// 其累计报工量即可通知入库的数量；生产可分批手动发通知，仓库再按通知做送检/QC 与成品入库。
+/// 可送检量 = 通知数量 − 该通知下未取消的送检量；QC 仍是入库前置，但不再要求全部工序完工。
+model FinishedGoodsInboundNotice {
+  id                           String                  @id @default(uuid()) @db.Uuid
+  noticeNo                     String                  @unique @map("notice_no") @db.VarChar(100)
+  orderNo                      String                  @map("order_no") @db.VarChar(100)
+  productionOrderId            String                  @map("production_order_id") @db.Uuid
+  productionOrderOperationId   String                  @map("production_order_operation_id") @db.Uuid
+  productionOrderNoSnapshot    String                  @map("production_order_no_snapshot") @db.VarChar(100)
+  operationNameSnapshot        String                  @map("operation_name_snapshot") @db.VarChar(150)
+  productNameSnapshot          String?                 @map("product_name_snapshot") @db.VarChar(200)
+  productSpecificationSnapshot String?                 @map("product_specification_snapshot") @db.VarChar(1000)
+  unitId                       String                  @map("unit_id") @db.Uuid
+  unitNameSnapshot             String                  @map("unit_name_snapshot") @db.VarChar(30)
+  noticeQuantity               Decimal                 @map("notice_quantity") @db.Decimal(18, 4)
+  noticeDate                   DateTime                @map("notice_date") @db.Date
+  batchNo                      String?                 @map("batch_no") @db.VarChar(100)
+  status                       String                  @default("pending") @db.VarChar(30)
+  remark                       String?                 @db.VarChar(1000)
+  version                      Int                     @default(1)
+  idempotencyKey               String                  @unique @map("idempotency_key") @db.VarChar(200)
+  createdAt                    DateTime                @default(now()) @map("created_at")
+  updatedAt                    DateTime                @updatedAt @map("updated_at")
+  createdBy                    String                  @map("created_by") @db.Uuid
+  updatedBy                    String                  @map("updated_by") @db.Uuid
+  deletedAt                    DateTime?               @map("deleted_at")
+  deletedBy                    String?                 @map("deleted_by") @db.Uuid
+  productionOrder              ProductionOrder         @relation(fields: [productionOrderId], references: [id])
+  productionOrderOperation     ProductionOrderOperation @relation(fields: [productionOrderOperationId], references: [id])
+  unit                         Unit                    @relation(fields: [unitId], references: [id])
+
+  @@index([orderNo, status])
+  @@index([productionOrderId, status])
+  @@index([productionOrderOperationId, status])
+  @@map("finished_goods_inbound_notices")
+}
+
 model FinishedGoodsInbound {
   id                           String                            @id @default(uuid()) @db.Uuid
   inboundNo                    String                            @unique @map("inbound_no") @db.VarChar(100)
@@ -1534,6 +1573,7 @@ model ProductionOrder {
   finishedGoodsInbounds     FinishedGoodsInbound[]
   finishedGoodsDefectives   FinishedGoodsDefective[]
   finishedGoodsOutbounds    FinishedGoodsOutbound[]
+  inboundNotices            FinishedGoodsInboundNotice[]
   customerReturns           CustomerReturn[]
 
   @@index([orderNo, status])
@@ -1645,6 +1685,7 @@ model ProductionOrderOperation {
   employeeDailyReports  EmployeeDailyReport[]
   productionDailyAlerts ProductionDailyAlert[]
   rawMaterialMovements  RawMaterialMovement[]
+  inboundNotices        FinishedGoodsInboundNotice[]
 
   @@unique([productionOrderId, sequenceNo])
   @@index([productionOrderId, status])

@@ -5,8 +5,11 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { deriveFinishedGoodsQcConclusion, availableFinishedGoodsInboundQuantity } from "../warehouse/finished-goods-qc.domain";
+import { syncFinishedGoodsInboundNoticeStatus } from "./finished-goods-inbound-notice-status";
 
-type SourceType = "in_house_completion" | "outsource_finished_goods_return";
+// 厂内成品送检来源已改为「成品入库通知」（按包装工序累计报工量分批通知）；
+// in_house_completion 仅保留给历史送检单读取，不再接受新建。
+type SourceType = "finished_goods_inbound_notice" | "outsource_finished_goods_return" | "in_house_completion";
 type SubmissionInput = { production_order_id: string; source_type: SourceType; source_id: string; submitted_quantity: string; submission_date: string; remark?: string };
 type QcInput = { submission_id: string; inspection_date: string; inspected_quantity: string; qualified_quantity: string; conditional_accept_quantity: string; rejected_quantity: string; rejection_reason?: string; remark?: string };
 
@@ -18,9 +21,33 @@ export class FinishedGoodsQcService {
     const orders = await this.prisma.productionOrder.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(productionOrderId ? { id: productionOrderId } : {}), executionMode: { in: ["in_house", "outsourced"] } }, include: { unit: true, operations: { where: { deletedAt: null, status: "active" }, include: { unit: true }, orderBy: { sequenceNo: "asc" } } }, orderBy: { updatedAt: "desc" } });
     const result: Array<Record<string, unknown>> = [];
     for (const order of orders) {
-      if (!sourceType || sourceType === "in_house_completion") {
-        const available = await this.inHouseAvailable(order);
-        if (available.gt(0)) result.push({ source_type: "in_house_completion", source_id: order.id, order_no: order.orderNo, production_order_id: order.id, production_order_no: order.productionOrderNo, product_name: null, product_specification: order.productSpecification, unit_id: order.unitId, unit: order.unit.name, available_quantity: available.toString(), source_status: order.status });
+      // 厂内：来源是「成品入库通知」（包装工序累计报工量分批通知），不再按“全部工序最小完工量”自动给出可送检量。
+      if (!sourceType || sourceType === "finished_goods_inbound_notice") {
+        const notices = await this.prisma.finishedGoodsInboundNotice.findMany({ where: { productionOrderId: order.id, deletedAt: null, status: { not: "cancelled" } }, orderBy: [{ noticeDate: "asc" }, { createdAt: "asc" }] });
+        for (const notice of notices) {
+          const used = await this.noticeSubmittedQuantity(notice.id);
+          const available = new Prisma.Decimal(notice.noticeQuantity).minus(used);
+          if (available.lte(0)) continue;
+          result.push({
+            source_type: "finished_goods_inbound_notice",
+            source_id: notice.id,
+            notice_id: notice.id,
+            notice_no: notice.noticeNo,
+            batch_no: notice.batchNo,
+            notice_date: notice.noticeDate.toISOString().slice(0, 10),
+            notice_quantity: notice.noticeQuantity.toString(),
+            packaging_operation_name: notice.operationNameSnapshot,
+            order_no: order.orderNo,
+            production_order_id: order.id,
+            production_order_no: order.productionOrderNo,
+            product_name: notice.productNameSnapshot,
+            product_specification: notice.productSpecificationSnapshot ?? order.productSpecification,
+            unit_id: notice.unitId,
+            unit: notice.unitNameSnapshot,
+            available_quantity: available.toString(),
+            source_status: notice.status,
+          });
+        }
       }
       if ((!sourceType || sourceType === "outsource_finished_goods_return") && order.executionMode === "outsourced") {
         const returns = await this.prisma.outsourceReturnTransfer.findMany({ where: { productionOrderId: order.id, transferType: "finished_goods_return", status: "pending_qc", deletedAt: null }, include: { unit: true } });
@@ -56,6 +83,7 @@ export class FinishedGoodsQcService {
       const available = await this.sourceAvailable(tx, source.productionOrder.id, input.source_type, input.source_id);
       if (quantity.gt(available)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED", message: "送检数量超过来源可送检数量", details: [{ available_quantity: available.toString() }] });
       const row = await tx.finishedGoodsInspectionSubmission.create({ data: { submissionNo: `FGI-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: source.productionOrder.orderNo, productionOrderId: source.productionOrder.id, sourceType: input.source_type, sourceId: input.source_id, productionOrderNoSnapshot: source.productionOrder.productionOrderNo, productNameSnapshot: source.productName, productSpecificationSnapshot: source.productionOrder.productSpecification, unitId: source.unitId, unitNameSnapshot: source.unitName, submittedQuantity: quantity, submissionDate: date, remark: input.remark, ...this.audit.create(user) } });
+      await syncFinishedGoodsInboundNoticeStatus(tx, source.noticeId, user);
       return row;
     });
     await this.audit.record("finished_goods_inspection_submission.create", "finished_goods_inspection_submission", user.id, created.id, { order_no: created.orderNo, source_type: created.sourceType, source_id: created.sourceId, submitted_quantity: created.submittedQuantity.toString() });
@@ -84,6 +112,7 @@ export class FinishedGoodsQcService {
       if (!locked) throw new NotFoundException({ code: "FINISHED_GOODS_SUBMISSION_NOT_FOUND", message: "成品送检单不存在", details: [] });
       if (locked.status !== "draft") throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_SUBMITTABLE", message: "只有草稿送检单可以提交", details: [] });
       const updated = await tx.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "submitted", ...this.audit.update(user) } });
+      if (locked.sourceType === "finished_goods_inbound_notice") await syncFinishedGoodsInboundNoticeStatus(tx, locked.sourceId, user);
       if (locked.sourceType === "outsource_finished_goods_return") {
         await tx.$queryRaw`SELECT id FROM outsource_return_transfers WHERE id = ${locked.sourceId}::uuid FOR UPDATE`;
         const transfer = await tx.outsourceReturnTransfer.findFirst({ where: { id: locked.sourceId, deletedAt: null } });
@@ -103,6 +132,7 @@ export class FinishedGoodsQcService {
       if (!locked) throw new NotFoundException({ code: "FINISHED_GOODS_SUBMISSION_NOT_FOUND", message: "成品送检单不存在", details: [] });
       if (!["draft", "submitted"].includes(locked.status) || locked.qcRecords.length > 0) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_NOT_CANCELLABLE", message: "当前送检单不允许取消", details: [] });
       const updated = await tx.finishedGoodsInspectionSubmission.update({ where: { id }, data: { status: "cancelled", remark: `${locked.remark ?? ""}\n取消：${reason}`, ...this.audit.update(user) } });
+      if (locked.sourceType === "finished_goods_inbound_notice") await syncFinishedGoodsInboundNoticeStatus(tx, locked.sourceId, user);
       if (locked.sourceType === "outsource_finished_goods_return") {
         await tx.$queryRaw`SELECT id FROM outsource_return_transfers WHERE id = ${locked.sourceId}::uuid FOR UPDATE`;
         const transfer = await tx.outsourceReturnTransfer.findFirst({ where: { id: locked.sourceId, deletedAt: null } });
@@ -203,35 +233,49 @@ export class FinishedGoodsQcService {
   }
 
   private async requireSource(input: SubmissionInput) {
+    // 厂内成品送检已改为按「成品入库通知」发起；旧的整单完工来源不再接受新建（历史送检单仍可查询）。
+    if (input.source_type === "in_house_completion") throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_TYPE_RETIRED", message: "厂内成品送检已改为按「成品入库通知」发起：请先在生产单包装工序发成品入库通知，再对通知送检", details: [] });
     const productionOrder = await this.prisma.productionOrder.findFirst({ where: { id: input.production_order_id, deletedAt: null }, include: { unit: true, operations: { where: { deletedAt: null, status: "active" }, select: { id: true, targetQuantity: true } } } });
-    if (!productionOrder || productionOrder.executionMode !== (input.source_type === "in_house_completion" ? "in_house" : "outsourced")) throw new NotFoundException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_FOUND", message: "成品 QC 来源不存在或执行方式不匹配", details: [] });
+    if (!productionOrder || productionOrder.executionMode !== (input.source_type === "outsource_finished_goods_return" ? "outsourced" : "in_house")) throw new NotFoundException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_FOUND", message: "成品 QC 来源不存在或执行方式不匹配", details: [] });
     if (input.source_type === "outsource_finished_goods_return") {
       const source = await this.prisma.outsourceReturnTransfer.findFirst({ where: { id: input.source_id, productionOrderId: productionOrder.id, transferType: "finished_goods_return", status: "pending_qc", deletedAt: null }, include: { unit: true } });
       if (!source) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "外加工成品回厂来源尚未进入待 QC", details: [] });
-      return { productionOrder, unitId: source.unitId, unitName: source.unit.name, productName: source.productDescription };
+      return { productionOrder, unitId: source.unitId, unitName: source.unit.name, productName: source.productDescription, noticeId: null as string | null };
     }
+    const notice = await this.prisma.finishedGoodsInboundNotice.findFirst({ where: { id: input.source_id, productionOrderId: productionOrder.id, deletedAt: null }, include: { unit: true } });
+    if (!notice) throw new NotFoundException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_FOUND", message: "成品入库通知不存在或不属于该生产单", details: [] });
+    if (notice.status === "cancelled") throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "该成品入库通知已取消，不能送检", details: [] });
     if (!["in_progress", "completed"].includes(productionOrder.status)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "厂内成品送检要求生产单处于生产中或已完成，当前状态不允许送检", details: [{ production_order_status: productionOrder.status }] });
-    if (input.source_id !== productionOrder.id) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_MISMATCH", message: "厂内成品 QC 来源必须使用生产单", details: [] });
-    const available = await this.inHouseAvailable(productionOrder);
-    if (available.lte(0)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "厂内生产单尚未形成可送检完工量", details: [] });
-    return { productionOrder, unitId: productionOrder.unitId, unitName: productionOrder.unit.name, productName: null };
+    const available = await this.noticeAvailable(this.prisma, notice.id);
+    if (available.lte(0)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "该入库通知已全部送检", details: [] });
+    return { productionOrder, unitId: notice.unitId, unitName: notice.unitNameSnapshot, productName: notice.productNameSnapshot, noticeId: notice.id };
   }
 
   private async sourceAvailable(client: PrismaService | Prisma.TransactionClient, productionOrderId: string, sourceType: SourceType, sourceId: string, excludeSubmissionId?: string) {
+    if (sourceType === "finished_goods_inbound_notice") return this.noticeAvailable(client, sourceId, excludeSubmissionId);
     const order = await client.productionOrder.findFirst({ where: { id: productionOrderId, deletedAt: null }, include: { unit: true, operations: { where: { deletedAt: null, status: "active" }, include: { unit: true }, orderBy: { sequenceNo: "asc" } } } });
     if (!order) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
-    const available = sourceType === "in_house_completion" ? await this.inHouseAvailable(order, client) : await this.returnAvailable(client, sourceId);
     const used = await client.finishedGoodsInspectionSubmission.aggregate({ where: { sourceType, sourceId, deletedAt: null, status: { notIn: ["cancelled", "corrected"] }, ...(excludeSubmissionId ? { id: { not: excludeSubmissionId } } : {}) }, _sum: { submittedQuantity: true } });
-    return available.minus(used._sum.submittedQuantity ?? 0);
+    return (await this.returnAvailable(client, sourceId)).minus(used._sum.submittedQuantity ?? 0);
+  }
+
+  /** 入库通知的可送检量 = 通知数量 − 该通知下未取消的送检量。 */
+  private async noticeAvailable(client: PrismaService | Prisma.TransactionClient, noticeId: string, excludeSubmissionId?: string) {
+    const notice = await client.finishedGoodsInboundNotice.findFirst({ where: { id: noticeId, deletedAt: null }, select: { id: true, noticeQuantity: true, status: true } });
+    if (!notice) throw new NotFoundException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_FOUND", message: "成品入库通知不存在", details: [] });
+    if (notice.status === "cancelled") return new Prisma.Decimal(0);
+    const used = await client.finishedGoodsInspectionSubmission.aggregate({ where: { sourceType: "finished_goods_inbound_notice", sourceId: noticeId, deletedAt: null, status: { notIn: ["cancelled", "corrected"] }, ...(excludeSubmissionId ? { id: { not: excludeSubmissionId } } : {}) }, _sum: { submittedQuantity: true } });
+    return new Prisma.Decimal(notice.noticeQuantity).minus(used._sum.submittedQuantity ?? 0);
+  }
+
+  /** 该通知下未取消的送检量。 */
+  private async noticeSubmittedQuantity(noticeId: string) {
+    const result = await this.prisma.finishedGoodsInspectionSubmission.aggregate({ where: { sourceType: "finished_goods_inbound_notice", sourceId: noticeId, deletedAt: null, status: { notIn: ["cancelled", "corrected"] } }, _sum: { submittedQuantity: true } });
+    return new Prisma.Decimal(result._sum.submittedQuantity ?? 0);
   }
 
   private async submittedQuantity(sourceId: string, sourceType: SourceType) { const result = await this.prisma.finishedGoodsInspectionSubmission.aggregate({ where: { sourceId, sourceType, deletedAt: null, status: { notIn: ["cancelled", "corrected"] } }, _sum: { submittedQuantity: true } }); return new Prisma.Decimal(result._sum.submittedQuantity ?? 0); }
   private async returnAvailable(client: PrismaService | Prisma.TransactionClient, sourceId: string) { const source = await client.outsourceReturnTransfer.findFirst({ where: { id: sourceId, deletedAt: null, transferType: "finished_goods_return" } }); if (!source) throw new NotFoundException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_FOUND", message: "外加工成品回厂来源不存在", details: [] }); return new Prisma.Decimal(source.quantity); }
-  private async inHouseAvailable(order: { id: string; plannedQuantity: Prisma.Decimal; operations: Array<{ id: string; targetQuantity: Prisma.Decimal }> }, client: PrismaService | Prisma.TransactionClient = this.prisma) {
-    if (!order.operations.length) return new Prisma.Decimal(0);
-    const quantities = await Promise.all(order.operations.map(async (operation) => { const rows = await client.operationDailyReport.aggregate({ where: { productionOrderOperationId: operation.id, deletedAt: null }, _sum: { completedQuantity: true } }); return new Prisma.Decimal(rows._sum.completedQuantity ?? 0); }));
-    return quantities.reduce((min, current) => current.lt(min) ? current : min, new Prisma.Decimal(order.plannedQuantity));
-  }
   private decimal(value: string, code: string) {
     if (typeof value !== "string" || value.length === 0 || !/^\d+(?:\.\d+)?$/.test(value)) throw this.quantityError(code);
     const [integerPart, fractionPart = ""] = value.split(".");
