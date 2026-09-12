@@ -28,12 +28,20 @@ test("领料面板复用既有领料接口而非另起一套", () => {
   assert.match(panel, /apiPost<Preview>\("\/production\/material-movements\/issue-preview"/);
   assert.match(panel, /apiPost<\{ id: string \}>\("\/production\/material-movements"/);
   assert.match(panel, /apiPatch\(`\/production\/material-movements\/\$\{draft\.id\}`/);
-  assert.match(panel, /\/post`, \{ idempotency_key/);
+  // 面板同时列出领料单与补料单：过账必须按单据类型选 /post 或 /post-replenishment。
+  assert.match(panel, /postMovementPath\(movement\.documentType, movement\.id\)/);
+  assert.match(panel, /postMovementPath\(documentType, id\)/);
+  assert.doesNotMatch(panel, /material-movements\/\$\{(?:movement\.id|id)\}\/post`/);
   assert.match(panel, /\/reopen`, \{ reason/);
   assert.match(panel, /\/reverse`, \{ reason/);
 });
 
+test("面板提供补料单入口并把每行备注带进草稿", () => {
+  assert.match(panel, /movementEditorHref\("replenishment", \{ productionOrderId \}\)/);
+  assert.match(panel, /remark: line\.remark \?\? ""/, "编辑草稿必须带出每行备注，否则 PATCH 会清掉");
+});
+
 test("先保存草稿再出库，避免保存成功但过账失败时重复建单", () => {
   assert.match(panel, /const id = await saveDraft\(\)/);
-  assert.match(panel, /领料单已保存，但过账失败/);
+  assert.match(panel, /已保存，但过账失败/);
 });

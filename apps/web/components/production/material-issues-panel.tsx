@@ -5,6 +5,7 @@
 // 与仓库页共用同一套接口（/production/material-movements 及其 issue-preview / post / reopen / reverse）。
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -12,16 +13,18 @@ import { DataTable } from "../data/data-table";
 import { EmptyState } from "../feedback/states";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+import { isMaterialMovementDocumentType, movementEditorHref, postMovementPath } from "../../lib/material-slip-api";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
-type MovementLine = { id: string; materialId: string; quantity: string; unit?: { name: string }; material?: { materialCode?: string; name: string } };
+type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string }; material?: { materialCode?: string; name: string } };
 type Movement = { id: string; movementNo: string; documentType: string; status: string; businessDate?: string | null; createdAt: string; remark?: string | null; reason?: string | null; lines: MovementLine[] };
 type BomItem = { materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; requiredQuantity: string; unit: string; unitId?: string | null };
 type Material = { id: string; materialCode?: string; name: string; materialType?: string; isActive?: boolean };
 type PreviewLine = { material_id: string; material_name?: string; material_code?: string; model?: string | null; unit?: string | null; bom_reference_quantity: string | null; inventory_quantity?: string; available_before: string; available_after: string; cumulative_issued_after: string; production_outstanding_quantity?: string | null; risks: Array<{ type: string }> };
 type Preview = { lines: PreviewLine[] };
 type DraftLine = { materialId: string; quantity: string; remark: string };
-type Draft = { id?: string; lines: DraftLine[] };
+// documentType 决定过账走 /post 还是 /post-replenishment：这个面板同时列出领料单与补料单。
+type Draft = { id?: string; documentType: "issue" | "replenishment"; lines: DraftLine[] };
 
 const errorText = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const statusLabels: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
@@ -64,12 +67,22 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     try { setPreview((await apiPost<Preview>("/production/material-movements/issue-preview", { production_order_id: productionOrderId, lines: next.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity, remark: line.remark || undefined })) })).data); }
     catch { setPreview(null); }
   }
+  /** 新增行默认选还没有用过的物料，避免「添加行」直接撞出重复物料（服务端 422）。 */
+  function firstUnusedMaterial(current: DraftLine[]) {
+    const used = new Set(current.map((line) => line.materialId));
+    return materialOptions.find((option) => !used.has(option.value))?.value ?? firstMaterialId;
+  }
   function openCreate() {
-    const next: Draft = { lines: [{ materialId: firstMaterialId, quantity: "1", remark: "" }] };
+    const next: Draft = { documentType: "issue", lines: [{ materialId: firstMaterialId, quantity: "1", remark: "" }] };
     setDraft(next); setError(""); void refreshPreview(next);
   }
   function openEdit(movement: Movement) {
-    const next: Draft = { id: movement.id, lines: movement.lines.map((line) => ({ materialId: line.materialId, quantity: line.quantity, remark: "" })) };
+    const next: Draft = {
+      id: movement.id,
+      documentType: isMaterialMovementDocumentType(movement.documentType) ? movement.documentType : "issue",
+      // 每行备注必须带出来：PATCH 会整批替换明细，留空等于把用户之前填的备注清掉。
+      lines: movement.lines.map((line) => ({ materialId: line.materialId, quantity: line.quantity, remark: line.remark ?? "" })),
+    };
     setDraft(next); setError(""); void refreshPreview(next);
   }
   function updateLine(index: number, patch: Partial<DraftLine>) {
@@ -80,14 +93,17 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
       return next;
     });
   }
-  function addLine() { setDraft((current) => { if (!current) return current; const next = { ...current, lines: [...current.lines, { materialId: firstMaterialId, quantity: "1", remark: "" }] }; void refreshPreview(next); return next; }); }
+  function addLine() { setDraft((current) => { if (!current) return current; const next = { ...current, lines: [...current.lines, { materialId: firstUnusedMaterial(current.lines), quantity: "1", remark: "" }] }; void refreshPreview(next); return next; }); }
   function removeLine(index: number) { setDraft((current) => { if (!current) return current; const next = { ...current, lines: current.lines.filter((_, lineIndex) => lineIndex !== index) }; void refreshPreview(next); return next; }); }
 
   function payload(current: Draft) { return { production_order_id: productionOrderId, lines: current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity, remark: line.remark || undefined })) }; }
+  /** 面板同时列出领料单与补料单，提示语按当前草稿类型走，避免把补料单说成领料单。 */
+  const draftLabel = (current: Draft | null) => typeLabels[current?.documentType ?? "issue"] ?? "领料单";
   async function saveDraft(): Promise<string | null> {
-    if (!draft?.lines.length) { setError("领料单至少需要一条物料明细"); return null; }
+    if (!draft?.lines.length) { setError(`${draftLabel(draft)}至少需要一条物料明细`); return null; }
     try {
-      if (draft.id) { await apiPatch(`/production/material-movements/${draft.id}`, payload(draft)); notifySuccess("领料草稿已保存"); return draft.id; }
+      if (draft.id) { await apiPatch(`/production/material-movements/${draft.id}`, payload(draft)); notifySuccess(`${draftLabel(draft)}草稿已保存`); return draft.id; }
+      // 只有领料单在这里新建；补料单请走「新建补料单」入口（必须填补料原因）。
       const created = await apiPost<{ id: string }>("/production/material-movements", payload(draft));
       notifySuccess("领料单已生成（草稿）");
       return created.data?.id ?? null;
@@ -102,16 +118,18 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   async function saveAndPost(): Promise<void> {
     if (busy) return;
     setBusy("post");
+    const documentType = draft?.documentType ?? "issue";
     const id = await saveDraft();
     if (id) {
-      try { await apiPost(`/production/material-movements/${id}/post`, { idempotency_key: idempotencyKey() }); notifySuccess("领料单已过账出库"); setDraft(null); setPreview(null); await load(); onChanged?.(); }
-      catch (cause) { setError(errorText(cause, "领料单已保存，但过账失败（可稍后在列表中过账）")); setDraft({ ...(draft ?? { lines: [] }), id }); await load(); }
+      // 补料单必须走 post-replenishment：写死 /post 会被服务端判成「该单据不是领料单」422。
+      try { await apiPost(postMovementPath(documentType, id), { idempotency_key: idempotencyKey() }); notifySuccess(`${typeLabels[documentType] ?? "领料单"}已过账出库`); setDraft(null); setPreview(null); await load(); onChanged?.(); }
+      catch (cause) { setError(errorText(cause, "已保存，但过账失败（可稍后在列表中过账）")); setDraft({ ...(draft ?? { documentType, lines: [] }), id }); await load(); }
     }
     setBusy("");
   }
   async function post(movement: Movement) {
     setBusy(movement.id);
-    try { await apiPost(`/production/material-movements/${movement.id}/post`, { idempotency_key: idempotencyKey() }); notifySuccess("领料单已过账出库"); await load(); onChanged?.(); }
+    try { await apiPost(postMovementPath(movement.documentType, movement.id), { idempotency_key: idempotencyKey() }); notifySuccess(`${typeLabels[movement.documentType] ?? "领料单"}已过账出库`); await load(); onChanged?.(); }
     catch (cause) { notifyError(errorText(cause, "过账失败")); }
     setBusy("");
   }
@@ -148,6 +166,8 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     <div className="panel-heading"><h2>生产领料单</h2><div className="page-actions">
       <Button variant="secondary" onClick={() => void load()}>刷新</Button>
       <Button onClick={openCreate} disabled={!issuable || Boolean(draft) || !materialOptions.length}>{draft ? "正在编辑草稿" : "新建领料单"}</Button>
+      {/* 补料单必须填原因，走全屏编辑页；同一生产单可开多张。 */}
+      <Button asChild variant="secondary"><Link href={movementEditorHref("replenishment", { productionOrderId })}>新建补料单</Link></Button>
     </div></div>
     <div className="panel-body">
       {!issuable && <p className="status-error">只有「生产中」的厂内生产单可以领料；请先启动生产（外加工生产单不在本厂领料）。</p>}

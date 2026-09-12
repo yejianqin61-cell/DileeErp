@@ -14,6 +14,7 @@ const warehouse = read("app", "warehouse", "page.tsx");
 const editorPage = read("app", "production", "material-issues", "new", "page.tsx");
 const editor = read("components", "production", "material-slip-editor.tsx");
 const listPage = read("app", "production", "material-issues", "page.tsx");
+const slipApi = read("lib", "material-slip-api.ts");
 const css = read("app", "globals.css");
 
 test("物料下拉引用生产单订单的 BOM 明细（不能再列出全部物料）", () => {
@@ -34,9 +35,12 @@ test("新建/编辑领料单与补料单都在全屏独立页面（不再用窄�
   assert.match(editorPage, /<MaterialSlipEditor documentType=\{type\}/, "页面渲染编辑器组件");
   assert.match(editor, /searchParams\.get\("movement_id"\)/, "支持继续编辑指定草稿");
   assert.match(editor, /searchParams\.get\("production_order_id"\)/, "支持预选生产单");
-  // 两种单据类型在后端走不同接口
-  assert.match(editor, /"\/production\/material-movements\/replenishments"/, "补料单走补料创建接口");
-  assert.match(editor, /post-replenishment/, "补料单过账走 post-replenishment");
+  // 两种单据类型的创建/过账路径集中在 lib/material-slip-api.ts（有独立行为测试），
+  // 编辑页必须走它而不是自己写死，否则补料单会打到领料单接口上。
+  assert.match(editor, /createMovementPath\(documentType\)/, "补料单走补料创建接口");
+  assert.match(editor, /postMovementPath\(documentType, id\)/, "补料单过账走 post-replenishment");
+  assert.match(slipApi, /"\/production\/material-movements\/replenishments"/);
+  assert.match(slipApi, /post-replenishment/);
   assert.match(listPage, /新建领料单<\/Link>/, "单据列表页也要有新建入口");
   assert.match(listPage, /新建补料单<\/Link>/, "单据列表页也要有新建补料入口");
 });
@@ -59,7 +63,8 @@ test("一个生产单可以开多张领料单/补料单：三处界面都要有�
   // 单据列表：每行可以直接为该生产单续开领料单与补料单
   assert.match(listPage, /再建领料单<\/Link>/, "列表行内要有「再建领料单」");
   assert.match(listPage, /再建补料单<\/Link>/, "列表行内要有「再建补料单」");
-  assert.match(listPage, /new\?production_order_id=\$\{slip\.productionOrderId\}/, "续开时带上该行的生产单");
+  assert.match(listPage, /movementEditorHref\("issue", \{ productionOrderId: slip\.productionOrderId \}\)/, "续开领料单时带上该行的生产单");
+  assert.match(listPage, /movementEditorHref\("replenishment", \{ productionOrderId: slip\.productionOrderId \}\)/, "续开补料单时带上该行的生产单");
   assert.match(listPage, /same production order can hold multiple slips|同一生产单可开多张领料单与补料单/, "页面要说明可开多张");
   // 列表页顶部：新建入口
   assert.match(listPage, /新建领料单<\/Link>/);

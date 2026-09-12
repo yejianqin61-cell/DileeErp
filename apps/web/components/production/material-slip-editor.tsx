@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { createMovementPath, isMaterialMovementDocumentType, postMovementPath } from "../../lib/material-slip-api";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; executionMode?: string; status?: string; bom?: { id: string } | null; bomId?: string | null };
@@ -23,7 +24,7 @@ type BomItem = { materialId: string; materialName: string; model?: string | null
 type SlipLine = { materialId: string; quantity: string; remark: string };
 type PreviewLine = { material_id: string; material_code?: string; material_name?: string; model?: string | null; color?: string | null; approved_usage?: string | null; bom_reference_quantity?: string | null; inventory_quantity?: string | null; available_before?: string | null; purchase_received_quantity?: string | null; purchase_outstanding_quantity?: string | null; cumulative_issued_after?: string | null; production_outstanding_quantity?: string | null; requested_replenishment_quantity?: string | null; risks?: Array<{ type?: string; message?: string }> };
 type Preview = { lines: PreviewLine[]; warnings?: string[] };
-type Movement = { id: string; movementNo: string; documentType: string; status: string; productionOrderId: string; lines: Array<{ materialId: string; quantity: string; remark?: string | null }> };
+type Movement = { id: string; movementNo: string; documentType: string; status: string; productionOrderId: string; reason?: string | null; lines: Array<{ materialId: string; quantity: string; remark?: string | null }> };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const idempotencyKey = () => `web-slip-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -48,6 +49,9 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // 不能编辑的原因（单据已过账/类型不符/深链的生产单不可领料）：与普通错误分开，
+  // 命中时整页只显示原因，不渲染可编辑表单，避免误改已过账单据。
+  const [blocked, setBlocked] = useState("");
 
   const bomMaterialOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -96,15 +100,24 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
         setRawBalances(balanceResult.data);
         const movement = movementResult.data;
         if (movement) {
-          if (!["issue", "replenishment"].includes(movement.documentType) || movement.documentType !== documentType) throw new Error(`该单据类型与当前页面不一致（${movement.documentType}）`);
-          if (movement.status !== "draft") throw new Error("只有草稿单据可以在这里编辑；已过账请先回退草稿");
+          if (!isMaterialMovementDocumentType(movement.documentType) || movement.documentType !== documentType) { setBlocked(`该单据类型与当前页面不一致（${movement.documentType}），请从对应入口打开。`); return; }
+          if (movement.status !== "draft") { setBlocked("只有草稿单据可以在这里编辑；已过账请先在列表里「重新打开」退成草稿。"); return; }
           setEditingId(movement.id);
           setEditingNo(movement.movementNo);
           setProductionOrderId(movement.productionOrderId);
+          if (isReplenishment) setReason(movement.reason ?? "");
           const items = await loadBomFor(movement.productionOrderId, orderResult.data);
           const editLines = movement.lines.map((line) => ({ materialId: line.materialId, quantity: line.quantity, remark: line.remark ?? "" }));
           setLines(editLines.length ? editLines : [{ materialId: items[0]?.materialId ?? "", quantity: "1", remark: "" }]);
           void refreshPreview(movement.productionOrderId, editLines);
+          return;
+        }
+        if (initialOrderId && !available.some((item) => item.id === initialOrderId)) {
+          // 带 production_order_id 进来但该生产单不可领料时，绝不悄悄换成别的生产单：
+          // 那会让用户以为在给 A 单领料，实际单据挂到了 B 单。
+          setProductionOrderId("");
+          setLines([]);
+          setBlocked("该生产单不是「生产中」的厂内生产单，不能领料：请改选其它生产单，或先启动生产。");
           return;
         }
         const orderId = available.some((item) => item.id === initialOrderId) ? initialOrderId : (available[0]?.id ?? "");
@@ -121,15 +134,22 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     })();
   }, [documentType, movementId]);
 
-  function applyLines(next: SlipLine[]) {
+  /** 行变化后重算预览；orderId 必须显式传入，否则换生产单时会拿旧的单号算预览。 */
+  function applyLines(next: SlipLine[], orderId: string = productionOrderId) {
     setLines(next);
-    void refreshPreview(productionOrderId, next);
+    void refreshPreview(orderId, next);
   }
 
   async function changeOrder(nextOrderId: string) {
     setProductionOrderId(nextOrderId);
     const items = await loadBomFor(nextOrderId);
-    applyLines([{ materialId: items[0]?.materialId ?? "", quantity: "1", remark: "" }]);
+    applyLines([{ materialId: items[0]?.materialId ?? "", quantity: "1", remark: "" }], nextOrderId);
+  }
+
+  /** 添加行：默认选还没有用过的物料，避免一按「添加行」就撞上重复物料（服务端 422）。 */
+  function firstUnusedMaterial(current: SlipLine[]) {
+    const used = new Set(current.map((line) => line.materialId));
+    return bomMaterialOptions.find((option) => !used.has(option.value))?.value ?? bomMaterialOptions[0]?.value ?? "";
   }
 
   function validate(): string {
@@ -138,6 +158,8 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     if (isReplenishment && !reason.trim()) return "补料必须填写补料原因（坏片/生产失误等）";
     const invalid = lines.find((line) => !line.materialId || !line.quantity || Number(line.quantity) <= 0);
     if (invalid) return "每一行都必须选择物料并填写大于 0 的数量";
+    const materialIds = lines.map((line) => line.materialId);
+    if (new Set(materialIds).size !== materialIds.length) return "同一物料只能有一行：请合并数量后再保存";
     return "";
   }
 
@@ -158,18 +180,17 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
       const body = payload();
       const saved = editingId
         ? await apiPatch<{ id: string }>(`/production/material-movements/${editingId}`, body)
-        : isReplenishment
-          ? await apiPost<{ id: string }>("/production/material-movements/replenishments", body as Record<string, unknown>)
-          : await apiPost<{ id: string }>("/production/material-movements", body as Record<string, unknown>);
+        : await apiPost<{ id: string }>(createMovementPath(documentType), body as Record<string, unknown>);
       const id = saved.data.id;
       setEditingId(id);
       if (andPost) {
-        await apiPost(`/production/material-movements/${id}/${isReplenishment ? "post-replenishment" : "post"}`, { idempotency_key: idempotencyKey() });
+        await apiPost(postMovementPath(documentType, id), { idempotency_key: idempotencyKey() });
         notifySuccess(isReplenishment ? "补料单已保存并出库过账" : "领料单已保存并出库过账");
       } else {
         notifySuccess(editingId ? "草稿已保存" : (isReplenishment ? "补料单草稿已创建" : "领料单草稿已创建"));
       }
-      window.location.href = listHref;
+      // 回到列表并保留生产单筛选上下文，用户能立刻看到刚保存的单据。
+      window.location.href = productionOrderId ? `${listHref}?production_order_id=${encodeURIComponent(productionOrderId)}` : listHref;
     } catch (cause) {
       notifyError(messageOf(cause, "保存失败"));
     } finally {
@@ -178,6 +199,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
   }
 
   if (loading) return <><PageHeader title={title} /><LoadingState /></>;
+  if (blocked) return <><PageHeader title={title} /><ErrorState message={blocked} onRetry={() => window.location.reload()} /><section className="panel panel-body"><Link href={listHref}>返回单据列表</Link></section></>;
   if (error && !orders.length) return <><PageHeader title={title} /><ErrorState message={error} onRetry={() => window.location.reload()} /></>;
 
   const previewOf = (index: number) => preview?.lines[index];
@@ -206,7 +228,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
       </div>
     </section>
     <section className="panel material-slip-editor">
-      <div className="panel-heading"><h2>物料明细</h2><div className="page-actions"><Button variant="secondary" onClick={() => applyLines([...lines, { materialId: bomMaterialOptions[0]?.value ?? "", quantity: "1", remark: "" }])}>添加行</Button></div></div>
+      <div className="panel-heading"><h2>物料明细</h2><div className="page-actions"><Button variant="secondary" onClick={() => applyLines([...lines, { materialId: firstUnusedMaterial(lines), quantity: "1", remark: "" }])}>添加行</Button></div></div>
       <div className="panel-body">
         <div className="table-wrap">
           <Table className="data-table">
@@ -225,7 +247,12 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
             <TableBody>
               {lines.length ? lines.map((line, index) => {
                 const info = previewOf(index);
-                const short = Number(info?.available_before ?? info?.inventory_quantity ?? 0) < Number(line.quantity || 0);
+                // 补料单没有 issue-preview（预览必为 null），库存是否够只能按原料余额判断；
+                // 余额没加载出来时不标红，避免「整列红色」的误报。
+                const stock = rawBalances.filter((balance) => balance.material_id === line.materialId).reduce((sum, balance) => sum + Number(balance.quantity || 0), 0);
+                const short = isReplenishment
+                  ? rawBalances.length > 0 && stock < Number(line.quantity || 0)
+                  : Boolean(info) && Number(info?.available_before ?? info?.inventory_quantity ?? 0) < Number(line.quantity || 0);
                 const update = (patch: Partial<SlipLine>) => applyLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
                 return <TableRow key={`${line.materialId || "new"}-${index}`}>
                   <TableCell className="slip-col-material" title={materialLabel(line.materialId)}>
@@ -244,7 +271,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                   <TableCell className="slip-col-remark"><Input value={line.remark} placeholder="可选" onChange={(event) => update({ remark: event.target.value })} /></TableCell>
                   <TableCell className="slip-col-action"><Button size="sm" variant="ghost" title="删除行" aria-label="删除行" onClick={() => applyLines(lines.filter((_, itemIndex) => itemIndex !== index))}>删除</Button></TableCell>
                 </TableRow>;
-              }) : <TableRow><TableCell><EmptyState title="还没有明细" description="点右上角「添加行」开始登记物料。" /></TableCell></TableRow>}
+              }) : <TableRow><TableCell colSpan={isReplenishment ? 9 : 13}><EmptyState title="还没有明细" description="点右上角「添加行」开始登记物料。" /></TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>
