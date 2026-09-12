@@ -57,6 +57,7 @@ function postHarness({ availableBefore, quantity = "8" }) {
   };
   const tx = {
     $queryRaw: async () => [],
+    $executeRaw: async () => 1,
     rawMaterialMovement: { findFirst: async () => movement, update: async () => ({ ...movement, status: "posted" }) },
     inventoryFact: { create: async ({ data }) => { facts.push(data); return data; } },
     rawMaterialMovementRisk: { create: async ({ data }) => { risks.push(data); return data; } }

@@ -181,7 +181,9 @@ export class RawMaterialMovementsService {
         const lockedOrder = await this.requireInHouseOrder(current.productionOrderId, tx);
         // 先收集全部物料 advisory lock key 并排序后再加锁，避免并发多物料单据以相反顺序加锁造成死锁
         const materialKeys = current.lines.map((line) => `${line.materialId}|${line.unitId}`).sort();
-        for (const key of materialKeys) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+        // pg_advisory_xact_lock 返回 void：必须用 $executeRaw（不反序列化结果列）。
+        // 用 $queryRaw 会抛 "Failed to deserialize column of type 'void'"，导致过账必然 500。
+        for (const key of materialKeys) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
         const lockedPreview = await this.previewLines(lockedOrder, current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         if (lockedPreview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: `${label}会造成原料库存不足`, details: [] });
         // 风险 line_id 必须指向数据库真实明细行（preview 行 id 为 undefined），按 material_id 关联 current.lines
@@ -340,7 +342,8 @@ export class RawMaterialMovementsService {
         await this.requireInHouseOrder(current.productionOrderId, tx);
         // 同样先收集全部来源明细锁 key 排序后再加锁，避免相反顺序加锁死锁
         const derivedKeys = current.lines.map((line) => `derived:${line.sourceIssueLineId}`).sort();
-        for (const key of derivedKeys) await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+        // 同上：advisory lock 返回 void，只能用 $executeRaw。
+        for (const key of derivedKeys) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
         await this.derivedLines(current.productionOrderId, current.lines.map((line) => ({ source_issue_line_id: line.sourceIssueLineId!, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
         for (const line of current.lines) {

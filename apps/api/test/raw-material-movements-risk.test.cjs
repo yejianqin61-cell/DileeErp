@@ -14,6 +14,7 @@ test("超领/非BOM领料未填原因也能过账，风险仍留痕", async () =
   const movement = { id: "movement-1", movementNo: "MI-1", documentType: "issue", status: "draft", productionOrderId: "order-1", orderNo: "DL260001", reason: null, lines: [{ id: "line-1", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("2"), remark: null }] };
   const tx = {
     $queryRaw: async () => [],
+    $executeRaw: async () => 1,
     rawMaterialMovement: { findFirst: async () => movement, update: async () => ({ ...movement, status: "posted" }) },
     inventoryFact: { create: async ({ data }) => { facts.push(data); return data; } },
     rawMaterialMovementRisk: { create: async ({ data }) => { risks.push(data); return data; } }
@@ -40,6 +41,7 @@ test("填写了原因时风险记录保留人工原因", async () => {
   const movement = { id: "movement-2", movementNo: "MI-2", documentType: "issue", status: "draft", productionOrderId: "order-1", orderNo: "DL260001", reason: "临时替代物料", lines: [{ id: "line-2", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("1"), remark: null }] };
   const tx = {
     $queryRaw: async () => [],
+    $executeRaw: async () => 1,
     rawMaterialMovement: { findFirst: async () => movement, update: async () => ({ ...movement, status: "posted" }) },
     inventoryFact: { create: async () => ({}) },
     rawMaterialMovementRisk: { create: async ({ data }) => { risks.push(data); return data; } }

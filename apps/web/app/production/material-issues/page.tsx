@@ -17,7 +17,8 @@ import { Input } from "../../../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../components/ui/select";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
-import { ApiClientError, apiGet } from "../../../lib/api-client";
+import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
+import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { downloadFile } from "../../../lib/download";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
@@ -42,6 +43,7 @@ const statusLabels: Record<string, string> = { draft: "草稿", posted: "已过�
 // 领料单与补料单都是挂在生产单下的原料出库单据，版式不同但层级一致。
 const typeLabels: Record<string, string> = { issue: "领料单", replenishment: "补料单", return: "退料单", scrap: "报废单", reversal: "冲销单" };
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+const idempotencyKey = () => `web-movement-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 export default function MaterialIssuesPage() {
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -55,6 +57,33 @@ export default function MaterialIssuesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
+
+  // 草稿 → 出库：过账即扣减原料库存（服务端要求生产单为「生产中」的厂内单）。
+  async function post(slip: Issue) {
+    setBusy(slip.id);
+    try { await apiPost(`/production/material-movements/${slip.id}/post`, { idempotency_key: idempotencyKey() }); notifySuccess(`${typeLabels[slip.documentType] ?? "单据"} 已过账出库`); await load(); onChanged(); }
+    catch (cause) { notifyError(messageOf(cause, "过账失败")); }
+    finally { setBusy(""); }
+  }
+  async function removeDraft(slip: Issue) {
+    setBusy(slip.id);
+    try { await apiRequest(`/production/material-movements/${slip.id}`, { method: "DELETE" }); notifySuccess("草稿已删除"); await load(); onChanged(); }
+    catch (cause) { notifyError(messageOf(cause, "删除失败")); }
+    finally { setBusy(""); }
+  }
+  function reopen(slip: Issue) { setDialog({ title: `重新打开：${slip.movementNo}`, fields: [{ name: "reason", label: "重新打开原因", type: "textarea", required: true }], submit: (values) => void act(`/production/material-movements/${slip.id}/reopen`, { reason: values.reason }, "已重新打开为草稿") }); }
+  function reverse(slip: Issue) { setDialog({ title: `冲销：${slip.movementNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void act(`/production/material-movements/${slip.id}/reverse`, { reason: values.reason, idempotency_key: idempotencyKey() }, "已冲销") }); }
+  async function act(path: string, body: unknown, success: string) {
+    setBusy("action");
+    try { await apiPost(path, body); notifySuccess(success); setDialog(null); await load(); onChanged(); }
+    catch (cause) { notifyError(messageOf(cause, "操作失败")); }
+    finally { setBusy(""); }
+  }
+  function onChanged() {
+    // 领料出库会改变库存与生产进度：通知已打开该生产单的页面重新拉取。
+    if (typeof window !== "undefined") window.dispatchEvent(new Event("dilee:material-movement-changed"));
+  }
 
   async function load() {
     setLoading(true); setError("");
@@ -118,17 +147,18 @@ export default function MaterialIssuesPage() {
     { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
     { id: "total", header: "数量合计", cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
     { accessorKey: "createdAt", header: "登记时间", cell: ({ row }) => new Date(row.original.createdAt).toLocaleString("zh-CN", { hour12: false }) },
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" disabled={busy === row.original.id} onClick={() => void exportOne(row.original)}>{busy === row.original.id ? "导出中..." : "导出"}</Button> }
+    { id: "actions", header: "操作", cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" disabled={busyRow} onClick={() => void post(slip)}>过账出库</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}</div>; } }
   ];
 
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
 
   return <>
-    <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单），各自套用对应打印模板（仅管理员可导出）。">
+    <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单）。草稿可直接「过账出库」扣减原料库存（需生产单为生产中），已过账可重新打开或冲销；各自套用对应打印模板。">
       <Button asChild variant="secondary"><Link href="/production">返回生产单</Link></Button>
       <Button onClick={() => void exportAll()} disabled={busy === "all" || !visible.length}>{busy === "all" ? "导出中..." : `批量导出（${visible.length} 张）`}</Button>
     </PageHeader>
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { void dialog?.submit(values); }} />
     <section className="panel">
       <div className="panel-heading"><h2>筛选</h2></div>
       <div className="panel-body"><div className="filter-bar">
