@@ -174,7 +174,7 @@ export default function MaterialIssuesPage() {
     </section>
     <section className="panel">
       <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张</span></div>
-      <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="领料单在【仓库 → 原料出库（生产领料）】创建，补料单在【仓库 → 补料出库】创建；两者都只需要选择生产单。" />} /></div>
+      <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="点右上角「新建领料单 / 新建补料单」进入全屏编辑页创建；两者都只需要选择生产单，物料从该订单 BOM 明细中选。" />} /></div>
     </section>
   </>;
 }
