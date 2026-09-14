@@ -37,8 +37,8 @@ export default function RawMaterialStoragePage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
-  // 一个搜索框同时过滤两张表：库存汇总按物料字段匹配，原料入库单按单号/批号 + 其物料的字段匹配。
   const [query, setQuery] = useState("");
+  const [orderQuery, setOrderQuery] = useState("");
   const searchParams = useSearchParams();
   const noticeId = searchParams.get("notice_id");
   const autoOpenedNoticeRef = useRef<string | null>(null);
@@ -180,17 +180,25 @@ export default function RawMaterialStoragePage() {
 
   // 搜索只影响展示，不影响上面的计数与动作；入库单本身不带物料名，用 materials 映射补齐后再参与匹配。
   const materialMap = useMemo(() => new Map(materials.map((item) => [item.id, item])), [materials]);
-  const filteredBalances = useMemo(() => balances.filter((row) => fuzzyMatch(query, [
-    row.material?.materialCode, row.material?.name, row.material?.specificationModel, row.material?.color, row.unit_name, row.order_no,
-  ])), [balances, query]);
+  const filteredBalances = useMemo(() => balances.filter((row) => {
+    const ok = fuzzyMatch(query, [
+      row.material?.materialCode, row.material?.name, row.material?.specificationModel, row.material?.color, row.unit_name, row.order_no,
+    ]);
+    if (!ok) return false;
+    if (!orderQuery) return true;
+    return fuzzyMatch(orderQuery, [row.order_no]);
+  }), [balances, query, orderQuery]);
   const filteredInbounds = useMemo(() => inbounds.filter((row) => {
     const material = materialMap.get(row.materialId);
-    return fuzzyMatch(query, [
+    const ok = fuzzyMatch(query, [
       row.inboundNo, row.orderNo, row.purchase_order_no, row.receipt_no, row.batch_sequence,
       row.inspection_status, inboundStatusLabels[row.status], row.remark,
       material?.materialCode, material?.name, material?.specificationModel, material?.color,
     ]);
-  }), [inbounds, materialMap, query]);
+    if (!ok) return false;
+    if (!orderQuery) return true;
+    return fuzzyMatch(orderQuery, [row.orderNo, row.purchase_order_no]);
+  }), [inbounds, materialMap, query, orderQuery]);
 
   if (loading) return <><PageHeader title="原料仓储情况"><Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button></PageHeader><LoadingState /></>;
 
@@ -207,7 +215,8 @@ export default function RawMaterialStoragePage() {
       <section className="panel panel-body">
         <div className="filter-bar">
           <label>搜索<Input data-testid="raw-material-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="物料编码 / 名称 / 规格型号 / 颜色 / 单位 / 单号" /></label>
-          {query && <Button variant="secondary" onClick={() => setQuery("")}>清除搜索</Button>}
+          <label>按订单号搜索<Input data-testid="raw-material-order-search" value={orderQuery} onChange={(event) => setOrderQuery(event.target.value)} placeholder="输入订单号或采购单号" /></label>
+          {(query || orderQuery) && <Button variant="secondary" onClick={() => { setQuery(""); setOrderQuery(""); }}>清除搜索</Button>}
         </div>
         <p className="panel-note">模糊搜索：按空格分词，所有词都要命中才算匹配（大小写与空格不敏感）。同时过滤「库存汇总」与「原料入库单」两张表，匹配物料编码、名称、规格型号、颜色、单位，以及入库单号、订单号、采购单号、到货记录、备注。</p>
       </section>

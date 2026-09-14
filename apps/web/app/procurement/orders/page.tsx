@@ -52,6 +52,7 @@ export default function PurchaseOrdersPage() {
   const [stockByMaterial, setStockByMaterial] = useState<Record<string, string>>({});
   const [selectedDraftRows, setSelectedDraftRows] = useState<number[]>([]);
   const [bomWorkbench, setBomWorkbench] = useState<{ id: string; label?: string } | null>(null);
+  const [statusFilter, setStatusFilter] = useState("all");
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   const [exportBusy, setExportBusy] = useState("");
 
@@ -83,7 +84,14 @@ export default function PurchaseOrdersPage() {
   }, []);
 
   async function openPurchaseOrder(id: string) { setError(""); try { const result = await apiGet<PurchaseOrder>(`/purchase-orders/${id}`); setSelected(result.data); } catch (cause) { notifyError(messageOf(cause, "采购单详情加载失败")); } }
-  const visible = useMemo(() => orders.filter((item) => !query || `${item.purchaseOrderNo} ${item.orderNo} ${item.status}`.toLowerCase().includes(query.toLowerCase())), [orders, query]);
+  const visible = useMemo(() => orders.filter((item) => {
+    if (query && !`${item.purchaseOrderNo} ${item.orderNo} ${item.status}`.toLowerCase().includes(query.toLowerCase())) return false;
+    if (statusFilter === "all") return true;
+    const totals = item.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 });
+    if (statusFilter === "over") return totals.received > totals.planned;
+    if (statusFilter === "complete") return totals.received === totals.planned && totals.planned > 0 && item.status !== "draft";
+    return item.status === statusFilter;
+  }), [orders, query, statusFilter]);
 
   const activeMaterials = useMemo(() => materials.filter((item) => item.isActive !== false), [materials]);
   const materialOptions = activeMaterials.map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` }));
@@ -265,9 +273,10 @@ export default function PurchaseOrdersPage() {
         const canInspect = Boolean(receipt) && receipt!.status !== "cancelled" && (!inspection || inspection.status === "pending" || (inspection.status === "partially_accepted" && !receipt!.rawMaterialInbounds?.length));
         const canInbound = Boolean(inspection) && ["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(inspection!.status);
         return <tr key={batch.receiptId}>
+          <td>{materialLabel}</td>
           <td>第 {batch.batchSequence} 批</td>
           <td>{receipt?.status === "cancelled" ? <span className="status-error">已撤销</span> : <>{batch.receivedQuantity}{receipt?.receivedDate ? <span className="batch-date"> · {receipt.receivedDate.slice(0, 10)}</span> : null}</>}</td>
-          <td>{inspection ? <>{inspectionStatusLabel[inspection.status] ?? inspection.status} · 合格 {inspection.acceptedQuantity} · 条件 {inspection.conditionalQuantity} · 不合格 {inspection.rejectedQuantity}</> : <span className="batch-empty">待质检</span>}</td>
+          <td>{inspection ? <>{inspectionStatusLabel[inspection.status] ?? inspection.status}<div className="batch-badges"><span className="batch-badge-pass">{inspection.acceptedQuantity} 合格</span><span className="batch-badge-cond">{inspection.conditionalQuantity} 条件</span><span className="batch-badge-fail">{inspection.rejectedQuantity} 不合格</span></div></> : <span className="batch-empty">待质检</span>}</td>
           <td>{batch.inbounds.length ? batch.inbounds.map((row) => `${row.quantity}（${inboundStatusLabel[row.status] ?? row.status}）`).join("、") : <span className="batch-empty">待入库</span>}</td>
           <td><div className="action-row">{receipt && receipt.status !== "cancelled" && <><Button size="sm" variant="ghost" onClick={() => editReceipt(receipt)}>编辑到货</Button><Button size="sm" variant="ghost" onClick={() => cancelReceipt(receipt)}>撤销批次</Button></>}{canInspect && <Button size="sm" variant="secondary" asChild><Link href={`/qc/incoming?receipt_id=${receipt!.id}`}>登记质检</Link></Button>}{canInbound && <Button size="sm" variant="ghost" asChild><Link href="/qc/inbound">去质检处理入库</Link></Button>}</div></td>
         </tr>;
@@ -280,19 +289,20 @@ export default function PurchaseOrdersPage() {
           <span>预计到货 {item.expectedDate ? item.expectedDate.slice(0, 10) : "-"}</span>
           <Button size="sm" variant="secondary" onClick={() => receive(order, item)}>登记下一批到货</Button>
         </div>
-        <div className="table-wrap"><table className="ui-table"><thead><tr><th className="ui-table-head">批次</th><th className="ui-table-head">到货</th><th className="ui-table-head">质检</th><th className="ui-table-head">入库</th><th className="ui-table-head">操作</th></tr></thead><tbody>{batches.length ? batches : <tr><td>-</td><td><span className="batch-empty">尚未登记</span></td><td><span className="batch-empty">-</span></td><td><span className="batch-empty">-</span></td><td><Button size="sm" variant="secondary" onClick={() => receive(order, item)}>登记到货</Button></td></tr>}</tbody></table></div>
+        <div className="table-wrap"><table className="ui-table"><thead><tr><th className="ui-table-head">物料</th><th className="ui-table-head">批次</th><th className="ui-table-head">到货</th><th className="ui-table-head">质检</th><th className="ui-table-head">入库</th><th className="ui-table-head">操作</th></tr></thead><tbody>{batches.length ? batches : <tr><td>{materialLabel}</td><td>-</td><td><span className="batch-empty">尚未登记</span></td><td><span className="batch-empty">-</span></td><td><span className="batch-empty">-</span></td><td><Button size="sm" variant="secondary" onClick={() => receive(order, item)}>登记到货</Button></td></tr>}</tbody></table></div>
       </div>;
     })}</div>;
   }
+
+  const statusMap: Record<string, string> = { draft: "草稿", ordered: "已下单", partially_arrived: "部分到货", arrived_complete: "到货完成" };
 
   const orderColumns: ColumnDef<PurchaseOrder>[] = [
     { accessorKey: "purchaseOrderNo", header: "采购单号" },
     { id: "orderNo", header: "订单号", cell: ({ row }) => <Button variant="link" onClick={() => void openPurchaseOrder(row.original.id)}>{row.original.orderNo}</Button> },
     { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
-    { id: "status", header: "状态", cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : row.original.status; } },
+    { id: "status", header: "状态", cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
     { id: "amount", header: "金额", cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },
-    { id: "export", header: "导出", cell: ({ row }) => <Button size="sm" variant="secondary" disabled={exportBusy === row.original.id} onClick={() => void exportPurchaseOrder(row.original)}>{exportBusy === row.original.id ? "导出中..." : "采购订单"}</Button> },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{row.original.status === "ordered" && row.original.items.every((item) => item.receipts.length === 0) && <Button size="sm" variant="secondary" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !row.original.extensionData?.arrival_closed && <Button size="sm" variant="secondary" onClick={() => void openPurchaseOrder(row.original.id)}>登记到货</Button>}{(() => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); return complete && !row.original.extensionData?.arrival_closed ? <Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货并进入质检</Button> : null; })()}</div> },
+    { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; return <div className="action-row">{isDraft && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" onClick={() => void openPurchaseOrder(row.original.id)}>到货跟踪</Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}{closed && <span className="status-label status-success">已关闭</span>}</div>; } },
   ];
 
   if (loading) return <><PageHeader title="采购单" breadcrumb={["采购", "采购单"]} /><LoadingState /></>;
@@ -321,7 +331,11 @@ export default function PurchaseOrdersPage() {
           <div className="filter-bar">
             <label>按订单号搜索<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入订单号" /></label>
           </div>
-          <DataTable columns={orderColumns} data={visible} empty={<EmptyState title="暂无采购单" />} />
+          <div className="filter-tabs">
+            {[{ value: "all", label: "全部" }, { value: "draft", label: "草稿" }, { value: "ordered", label: "已下单" }, { value: "arrived", label: "已到货" }, { value: "over", label: "超单" }, { value: "complete", label: "已完成" }].map((tab) => <Button key={tab.value} size="sm" variant={statusFilter === tab.value ? "secondary" : "ghost"} data-active={statusFilter === tab.value} onClick={() => setStatusFilter(tab.value)}>{tab.label}</Button>)}
+            <span className="panel-note">{visible.length} / {orders.length} 张采购单</span>
+          </div>
+          <DataTable columns={orderColumns} data={visible} empty={<EmptyState title={statusFilter === "all" && !query ? "暂无采购单" : "没有匹配的采购单"} description={statusFilter !== "all" || query ? "换个筛选条件试试。" : undefined} />} />
         </div>
       </section>
 
