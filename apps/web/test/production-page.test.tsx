@@ -27,19 +27,21 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush, replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
 }));
 
-/** 页面 useEffect 里 Promise.all 的 5 个 GET（前缀是 api-client 拼的 /api/v1）。 */
+/** 页面 useEffect 里 Promise.all 的 6 个 GET（前缀是 api-client 拼的 /api/v1）。 */
 const EP = {
   sales: "/api/v1/sales-orders?status=confirmed&page=1&page_size=200",
   locations: "/api/v1/production/locations",
   operations: "/api/v1/production/operations",
   orders: "/api/v1/production/orders",
   units: "/api/v1/units",
+  // BOM 表由采购与生产共同维护：本页要能用物料池打开/新建 BOM（lib 里的候选提示也指向本页入口）。
+  materials: "/api/v1/materials",
 } as const;
 const ALL_LISTS = Object.values(EP);
 
 // ---------------------------------------------------------------- 测试数据（形状对齐后端）
 
-type SalesOrder = { orderNo: string; quantity: string; unit?: string; status: string; boms: Array<{ id: string; version: number; status?: string }> };
+type SalesOrder = { id?: string; orderNo: string; quantity: string; unit?: string; status: string; boms: Array<{ id: string; version: number; status?: string }> };
 type LocationRow = { id: string; name: string; locationType: "workshop" | "outsource_site"; isActive: boolean };
 type OperationRow = { id: string; operationName: string; defaultUnitId?: string | null; isActive: boolean };
 type UnitRow = { id: string; name: string; isActive: boolean };
@@ -55,9 +57,9 @@ type OrderRow = {
 };
 
 /** 已确认 + 已建 BOM：唯一能出现在「订单号」下拉里的形状。 */
-const candidate = (orderNo: string, quantity: string, unit?: string, boms: SalesOrder["boms"] = [{ id: `bom-${orderNo}`, version: 1 }]): SalesOrder => ({ orderNo, quantity, unit, status: "confirmed", boms });
+const candidate = (orderNo: string, quantity: string, unit?: string, boms: SalesOrder["boms"] = [{ id: `bom-${orderNo}`, version: 1 }]): SalesOrder => ({ id: `so-${orderNo}`, orderNo, quantity, unit, status: "confirmed", boms });
 /** 已确认但没建 BOM：候选里必然缺席，且必须给出原因说明。 */
-const awaitingBom = (orderNo: string, quantity = "80"): SalesOrder => ({ orderNo, quantity, status: "confirmed", boms: [] });
+const awaitingBom = (orderNo: string, quantity = "80"): SalesOrder => ({ id: `so-${orderNo}`, orderNo, quantity, status: "confirmed", boms: [] });
 
 const workshopLocation: LocationRow = { id: "loc-1", name: "一号车间", locationType: "workshop", isActive: true };
 const outsourceSiteLocation: LocationRow = { id: "loc-2", name: "协作厂", locationType: "outsource_site", isActive: true };
@@ -97,10 +99,12 @@ type Fixture = {
   operations?: OperationRow[];
   records?: OrderRow[];
   units?: UnitRow[];
+  materials?: Array<{ id: string; materialCode?: string; name: string; materialType?: string; isActive?: boolean }>;
+  boms?: Record<string, unknown>;
 };
 
 /**
- * 桩：5 个 GET 各回自己那一份数据（默认空），变更类请求默认成功（apiOk({})），
+ * 桩：6 个 GET 各回自己那一份数据（默认空），变更类请求默认成功（apiOk({})），
  * 未打桩的 GET 直接 404 —— 免得页面多打一个接口时被静默当成空数据。
  * extra 优先执行，用于注入 403 / 409 / 搜索端点等特例。
  */
@@ -113,6 +117,10 @@ function stubProduction(fixture: Fixture = {}, extra?: Handler) {
     if (url.endsWith(EP.operations)) return apiOk(fixture.operations ?? []);
     if (url.endsWith(EP.orders)) return apiOk(fixture.records ?? []);
     if (url.endsWith(EP.units)) return apiOk(fixture.units ?? []);
+    if (url.endsWith(EP.materials)) return apiOk(fixture.materials ?? []);
+    // BOM 详情：生产页的 BOM 工作区会 GET /boms/:id
+    const bom = /\/boms\/([^/]+)$/.exec(url);
+    if (bom && call.method === "GET") return apiOk(fixture.boms?.[bom[1]] ?? { id: bom[1], orderNo: "", status: "draft", version: 1, updatedAt: "2026-09-14T02:00:00.000Z", items: [] });
     if (call.method !== "GET") return apiOk({});
     return apiErr(404, "NOT_FOUND", `测试未打桩的请求：${url}`);
   });
@@ -182,7 +190,7 @@ beforeEach(() => {
 });
 
 describe("生产单列表页：加载门禁与列表接口契约", () => {
-  it("数据未返回时只有加载态：入口禁用、业务面板与表格都不存在；完成后 5 个接口各被 GET 一次（完整 URL）", async () => {
+  it("数据未返回时只有加载态：入口禁用、业务面板与表格都不存在；完成后 6 个接口各被 GET 一次（完整 URL）", async () => {
     const gate = deferred<Response>();
     const calls = stubApi((url) => (url.endsWith(EP.orders) ? gate.promise : apiOk([])));
 
@@ -352,7 +360,7 @@ describe("生产单列表页：行渲染、计数与搜索过滤", () => {
     await openCreateDialog();
 
     // Radix 模态对话框会给外部内容加 aria-hidden，此时 role 查询不可见，改按文案断言提示条内容
-    expect(screen.getByText("有 1 张已确认销售单尚未建立 BOM（SO-2026-002），请先在【采购 → BOM表】为其建立 BOM 后再建生产单。")).toBeVisible();
+    expect(screen.getByText("有 1 张已确认销售单尚未建立 BOM（SO-2026-002），请在本页【BOM表】或【采购 → BOM表】为其建立 BOM 后再建生产单。")).toBeVisible();
     // 订单号下拉的占位符也点明"暂无可建生产单的销售单"
     expect(screen.getByText("暂无可建生产单的销售单")).toBeVisible();
     await userEvent.click(screen.getByTestId("action-field-order_no").querySelector("button") as HTMLElement);
@@ -367,7 +375,7 @@ describe("生产单列表页：行渲染、计数与搜索过滤", () => {
     await openCreateDialog();
 
     // 同上：对话框打开时外部内容被 aria-hidden，按文案断言
-    expect(screen.getByText("另有 2 张已确认销售单因缺少 BOM 未出现在候选列表中（SO-2026-002、SO-2026-003）。")).toBeVisible();
+    expect(screen.getByText("另有 2 张已确认销售单因缺少 BOM 未出现在候选列表中（SO-2026-002、SO-2026-003），可在本页【BOM表】或【采购 → BOM表】建立。")).toBeVisible();
 
     const trigger = screen.getByTestId("action-field-order_no").querySelector("button") as HTMLElement;
     await userEvent.click(trigger);
@@ -586,5 +594,49 @@ describe("生产单列表页：行内跳转", () => {
 
     expect(routerPush).toHaveBeenCalledWith("/production/orders/po-2");
     expect(routerPush).not.toHaveBeenCalledWith("/production/orders/MO-2026-002");
+  });
+});
+
+// BOM 表现在由采购与生产两个模块共同维护：生产页必须有同等入口，且打开的是同一张表。
+describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工作区）", () => {
+  it("已建 BOM 的订单显示「编辑BOM表」，缺 BOM 的显示「新建BOM表」", async () => {
+    stubProduction({ salesOrders: [candidate("SO-2026-001", "120", "打"), awaitingBom("SO-2026-002")] });
+    await openProduction();
+
+    const panel = within(screen.getByTestId("production-bom-panel"));
+    expect(panel.getByTestId("production-bom-SO-2026-001")).toHaveTextContent("编辑BOM表");
+    expect(panel.getByTestId("production-bom-SO-2026-002")).toHaveTextContent("新建BOM表");
+    expect(panel.getByText(/采购与生产共同维护/)).toBeVisible();
+  });
+
+  it("点「编辑BOM表」打开共享工作区并拉取该订单的 BOM 明细", async () => {
+    const calls = stubProduction({
+      salesOrders: [candidate("SO-2026-001", "120", "打")],
+      materials: [{ id: "mat-1", materialCode: "M-001", name: "面料A", materialType: "raw_material", isActive: true }],
+      boms: { "bom-SO-2026-001": { id: "bom-SO-2026-001", orderNo: "SO-2026-001", status: "draft", version: 1, updatedAt: "2026-09-14T02:00:00.000Z", items: [{ id: "bi-1", materialId: "mat-1", materialName: "面料A", model: "", requiredQuantity: "3", unit: "米", unitId: "u-1", materialSnapshot: {} }] } },
+    });
+    await openProduction();
+
+    await userEvent.click(within(screen.getByTestId("production-bom-panel")).getByTestId("production-bom-SO-2026-001"));
+
+    expect(await screen.findByDisplayValue("3")).toBeVisible();
+    expect(callsTo(calls, "/boms/bom-SO-2026-001")).toHaveLength(1);
+    // 生产模块不提供「新建物料」（物料池归采购），只提示入口
+    expect(screen.queryByRole("button", { name: "新建物料" })).toBeNull();
+    expect(screen.getByText(/物料池由【采购 → 物料清单】维护/)).toBeVisible();
+  });
+
+  it("点「新建BOM表」用销售单内部 id 下单接口，成功后自动打开同一张 BOM", async () => {
+    const calls = stubProduction({ salesOrders: [awaitingBom("SO-2026-002", "80")] }, (url, call) =>
+      url.endsWith("/boms/from-sales-order/so-SO-2026-002") && call.method === "POST"
+        ? apiOk({ id: "bom-new", orderNo: "SO-2026-002", status: "draft", version: 1, updatedAt: "2026-09-14T02:00:00.000Z", items: [] })
+        : undefined,
+    );
+    await openProduction();
+
+    await userEvent.click(within(screen.getByTestId("production-bom-panel")).getByTestId("production-bom-SO-2026-002"));
+
+    await waitFor(() => expect(callsTo(calls, "/boms/from-sales-order/so-SO-2026-002").filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(await screen.findByText(/这张 BOM 还没有明细行/)).toBeVisible();
   });
 });

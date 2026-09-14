@@ -277,7 +277,7 @@ const ENDPOINTS = [
     allow: { sales: 200 }, deny: ["warehouse", NO_MODULE], note: "类级 sales",
   }),
   endpoint("boms.list", "modules/sales/boms.controller.ts", "GET", "/api/v1/boms", {
-    allow: { procurement: 200 }, deny: ["sales", NO_MODULE], note: "A5：BOM 在 sales 目录下但归 procurement",
+    allow: { procurement: 200, production: 200 }, deny: ["sales", NO_MODULE], note: "A5 + 生产共同维护：ANY(procurement, production)",
   }),
   endpoint("customers.list", "modules/sales/customers.controller.ts", "GET", "/api/v1/customers", {
     allow: { sales: 200 }, deny: ["procurement", NO_MODULE], note: "类级 sales",

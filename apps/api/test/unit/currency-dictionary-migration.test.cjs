@@ -40,7 +40,9 @@ test("currency migration is idempotent and skips an empty database", () => {
   assert.equal(conflicts.length, 3, "三条 INSERT 都必须 ON CONFLICT DO NOTHING（幂等）");
   assert.match(sql, /SELECT "id" INTO actor_id FROM "users" ORDER BY "created_at" LIMIT 1;/, "取首个用户作为审计操作人");
   assert.match(sql, /IF actor_id IS NULL THEN\s+RETURN;/, "空库（无用户）直接返回，交给 seed 初始化");
-  assert.match(sql, /IF type_id IS NULL THEN\s+RETURN;/, "类型未建立时不继续写字典项");
+  // 变量名不写死（曾从 type_id 改名为 currency_type_id，避免与列名 type_id 混淆），只钉住「读不到类型就退出」这个行为。
+  assert.match(sql, /SELECT "id" INTO \w+ FROM "dictionary_types" WHERE "key" = 'currency' AND "deleted_at" IS NULL;/, "读取 currency 字典类型的 id");
+  assert.match(sql, /SELECT "id" INTO \w+ FROM "dictionary_types"[\s\S]*?IF \w+ IS NULL THEN\s+RETURN;/, "类型未建立时不继续写字典项");
 });
 
 test("currency migration backfills currency codes already used by business data", () => {

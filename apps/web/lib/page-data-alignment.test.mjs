@@ -103,7 +103,8 @@ const LOAD_ORDER = {
   // 来料质检已迁到质检模块的独立面板：到货批次 → 质检记录 → 原料入库 → 入库通知，
   // 位置型解构错位在采购页不再可见，所以绑定表跟着搬到这个文件。
   "components/qc/incoming-inspections-panel.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/raw-material-inbound-notices"],
-  "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units"],
+  // 生产页新增 /materials：BOM 表现在采购与生产共用同一套编辑工作区，生产侧需要物料池做明细下拉。
+  "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units", "/materials"],
   "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices"],
   "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
   "app/sales/page.tsx": ["/customers?page_size=200", "/sales-orders?page_size=200", "/units"],

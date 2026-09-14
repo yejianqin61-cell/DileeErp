@@ -21,6 +21,9 @@ V1.0 设计原则：
 - 所有业务表统一保留 `created_at`、`updated_at`、`created_by`、`updated_by`；业务操作须保留操作人、操作时间、备注和前后值审计。禁止物理删除。
 - 采购业务遵循“提供后悔药”原则：允许在规则范围内更正，但编辑前必须展示与销售单、BOM、入库和应付相关的影响与风险；确认后联动重算可派生数据，已确认的下游事实不被静默改写。
 - BOM、物料档案和采购单的版本/来源信息必须清晰展示；BOM 变更不自动改写采购单，系统需提示影响和风险。
+- **取代记录（2026-09-14）**：BOM 表不再是采购独占——生产模块也可以操作同一张 BOM（`@RequireAnyModules("procurement", "production")`）。
+  两个模块同时编辑时采用乐观锁（保存回传 `expected_updated_at`，不一致返回 422 `BOM_UPDATE_CONFLICT` 并提示重新加载），不做「最后写入者获胜」。
+  设计与验证见 `docs/design/bom-shared-editing-and-progress-sheet-transpose-2026-09-14.md`。上文「编辑前必须展示影响与风险」的要求仍未实现，本轮只保证不静默覆盖。
 
 ## 2. 已确认业务范围
 

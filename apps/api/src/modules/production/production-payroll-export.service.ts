@@ -114,15 +114,16 @@ export class ProductionPayrollExportService {
   /** 生产进度表：工序 × 生产日期的二维矩阵（原「材料与车间生产对应表」的下表，现已拆成独立导出表）。 */
   async exportProductionProgress(filters: { order_no: string }, user: CurrentUser) {
     const { orderNo, sales, productionOrders } = await this.materialProductionContext(filters);
-    const { progressHeader, progressRows } = await this.progressSheet(orderNo, productionOrders);
+    const { progressHeader, progressRows, shippedQuantity } = await this.progressSheet(orderNo, productionOrders);
     const sheetRows: Array<Array<string | number | null>> = [
       ["生产进度表"],
       ["订单号", orderNo],
       ["产品", sales?.productName ?? ""],
       ["生成时间", new Date().toISOString()],
       ["操作人", user.username],
+      ["出货数量", shippedQuantity],
       [],
-      ["每列为一个生产日期，单元格为当日完成数量"],
+      ["每列为一个工序，行为生产日期，单元格为当日该工序的完成数量"],
       progressHeader,
       ...progressRows,
     ];
@@ -150,6 +151,22 @@ export class ProductionPayrollExportService {
     });
   }
 
+  /**
+   * 生产进度表：**列 = 工序，行 = 日期**。
+   *
+   * 表头方向是客户按 A4 打印反馈后调整的：原来「行 = 工序、列 = 日期」，
+   * 一个月就有 30+ 列，横向必然超出 A4；换成工序做列之后列数等于工序数（本厂约 14 个），
+   * 行数随日期增长（纸面纵向增长，可翻页），整张表更容易落进一张 A4（横向或纵向皆可）。
+   *
+   * 表体结构（信息不丢）：
+   *   日期 | 工序A | 工序B | … | 当日合计
+   *   目标数量 | …每个工序的计划数量… | —
+   *   加工地点 | …每个工序的执行地点… | —
+   *   2026-09-01 | …当日完成数量… | 当日合计
+   *   …
+   *   合计 | …每个工序的累计数量… | 全部合计
+   * 出货数量作为单一数值放在表头上方的元信息里（它不属于任何单个工序）。
+   */
   private async progressSheet(orderNo: string, productionOrders: Awaited<ReturnType<ProductionPayrollExportService["materialProductionContext"]>>["productionOrders"]) {
     const productionIds = productionOrders.map((po) => po.id);
     const daily = productionIds.length ? await this.prisma.employeeDailyReport.groupBy({ by: ["productionOrderOperationId", "reportDate"], where: { productionOrderId: { in: productionIds }, deletedAt: null }, _sum: { quantity: true } }) : [];
@@ -161,20 +178,38 @@ export class ProductionPayrollExportService {
     }
     const shipped = await this.prisma.finishedGoodsOutbound.aggregate({ where: { orderNo, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } });
     const shippedQuantity = shipped._sum.quantity?.toString() ?? "";
-    // 每一列是一个生产日期（日期只作为列名出现一次），单元格是该工序当天的完成数量。
-    const progressHeader: Array<string | number | null> = ["工序", "数量", "加工地点", ...dates, "汇总", "出货"];
-    const progressRows = productionOrders.flatMap((po) => po.operations.map((operation) => {
-      const cells: Array<string | number | null> = [operation.operationNameSnapshot, operation.targetQuantity?.toString() ?? "", po.executionLocation?.name ?? ""];
-      let total = new Prisma.Decimal(0);
-      for (const date of dates) {
-        const quantity = quantityByOperationDate.get(`${operation.id}|${date}`);
-        cells.push(quantity ? quantity.toString() : "");
-        if (quantity) total = total.plus(quantity);
-      }
-      cells.push(total.toString(), shippedQuantity);
-      return cells;
-    }));
-    return { progressHeader, progressRows };
+
+    // 工序列：把「生产单 × 工序」摊平成列。同一工序名出现多次时补生产单号，避免列名重复无法区分。
+    const columns = productionOrders.flatMap((po) => po.operations.map((operation) => ({
+      id: operation.id,
+      name: operation.operationNameSnapshot,
+      target: operation.targetQuantity?.toString() ?? "",
+      location: po.executionLocation?.name ?? "",
+    })));
+    const nameCounts = columns.reduce<Record<string, number>>((acc, column) => ({ ...acc, [column.name]: (acc[column.name] ?? 0) + 1 }), {});
+    const columnLabels = columns.map((column) => (nameCounts[column.name] > 1 ? `${column.name}（${column.name === "" ? "未命名" : ""}${productionOrders.find((po) => po.operations.some((operation) => operation.id === column.id))?.productionOrderNo ?? ""}）` : column.name));
+
+    const progressHeader: Array<string | number | null> = ["日期", ...columnLabels, "当日合计"];
+    const targetRow: Array<string | number | null> = ["目标数量", ...columns.map((column) => column.target), ""];
+    const locationRow: Array<string | number | null> = ["加工地点", ...columns.map((column) => column.location), ""];
+    const progressRows: Array<Array<string | number | null>> = [targetRow, locationRow];
+    const columnTotals = columns.map(() => new Prisma.Decimal(0));
+    let grandTotal = new Prisma.Decimal(0);
+    for (const date of dates) {
+      let dayTotal = new Prisma.Decimal(0);
+      const cells = columns.map((column, index) => {
+        const quantity = quantityByOperationDate.get(`${column.id}|${date}`);
+        if (!quantity) return "";
+        dayTotal = dayTotal.plus(quantity);
+        columnTotals[index] = columnTotals[index].plus(quantity);
+        return quantity.toString();
+      });
+      grandTotal = grandTotal.plus(dayTotal);
+      progressRows.push([date, ...cells, dayTotal.toString()]);
+    }
+    // 表尾合计：每个工序的累计量 + 全部合计；没有日报时也保留这一行，读者能确定「确实是 0」而不是漏了行。
+    progressRows.push(["合计", ...columnTotals.map((total) => total.toString()), grandTotal.toString()]);
+    return { progressHeader, progressRows, shippedQuantity };
   }
 
   /**
@@ -186,7 +221,7 @@ export class ProductionPayrollExportService {
     const orderQuantity = sales?.quantity?.toString() ?? "";
     const materialRows: Array<Array<string | number | null>> = purchaseOrders.flatMap((po) => this.materialRowsOf(po, orderNo, orderQuantity));
     if (!materialRows.length) materialRows.push([orderNo, orderQuantity, "（无采购记录）", "", "", "", "", "", "", ""]);
-    const { progressHeader, progressRows } = await this.progressSheet(orderNo, productionOrders);
+    const { progressHeader, progressRows, shippedQuantity } = await this.progressSheet(orderNo, productionOrders);
     const sheetRows: Array<Array<string | number | null>> = [
       ["材料与车间生产对应表"],
       ["订单号", orderNo],
@@ -198,7 +233,8 @@ export class ProductionPayrollExportService {
       ["订单号", "订单数量", "规格", "单价", "数量", "采购日期", "到货日期", "供货日期", "供应商", "备注"],
       ...materialRows,
       [],
-      ["下表：生产进度表（每列为一个生产日期，单元格为当日完成数量）"],
+      ["下表：生产进度表（每列为一个工序，行为生产日期，单元格为当日该工序的完成数量）"],
+      ["出货数量", shippedQuantity],
       progressHeader,
       ...progressRows,
     ];

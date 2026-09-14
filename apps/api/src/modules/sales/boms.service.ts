@@ -40,14 +40,43 @@ export class BomsService {
     }
   }
 
-  async update(id: string, extensionData: Record<string, unknown>, user: CurrentUser) {
+  async update(id: string, extensionData: Record<string, unknown>, user: CurrentUser, expectedUpdatedAt?: string) {
     const bom = await this.get(id);
-    const updated = await this.prisma.bom.update({ where: { id }, data: { extensionData: extensionData as Prisma.InputJsonValue, ...this.audit.update(user) } });
+    const expected = expectedUpdatedAt?.trim();
+    const updated = expected
+      ? await this.prisma.$transaction(async (tx) => {
+          await this.assertNotStale(tx, id, expected);
+          return tx.bom.update({ where: { id }, data: { extensionData: extensionData as Prisma.InputJsonValue, ...this.audit.update(user) } });
+        })
+      : await this.prisma.bom.update({ where: { id }, data: { extensionData: extensionData as Prisma.InputJsonValue, ...this.audit.update(user) } });
     await this.audit.record("bom.update", "bom", user.id, id, { order_no: bom.orderNo, version: bom.version });
     return updated;
   }
 
-  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; specification_model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; production_batch_base?: string; base_usage?: string; unit: string; unit_id?: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser) {
+  /**
+   * 乐观锁：BOM 现在被采购与生产两个模块共同编辑，必须防止「后保存的静默覆盖先保存的」。
+   *
+   * 做法：客户端回传打开时的 `updatedAt`，服务端在事务里先取行锁（FOR UPDATE）再读最新值比对。
+   * 行锁保证两个并发保存在数据库里排成先后：先到者写完后 updatedAt 变化，后到者读到的就是新值，
+   * 于是必然冲突并被拒绝 —— 而不是把对方的修改覆盖掉。
+   * 冲突使用 422 BOM_UPDATE_CONFLICT，前端提示「已被他人修改，请重新加载」。
+   * 不传令牌时跳过比对（兼容旧调用方与既有单测桩）。
+   */
+  private async assertNotStale(tx: Prisma.TransactionClient, id: string, expectedUpdatedAt: string) {
+    await tx.$queryRaw`SELECT id FROM boms WHERE id = ${id}::uuid FOR UPDATE`;
+    const fresh = await tx.bom.findFirst({ where: { id, deletedAt: null }, select: { updatedAt: true } });
+    if (!fresh) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在", details: [] });
+    const expectedTime = new Date(expectedUpdatedAt).getTime();
+    if (Number.isNaN(expectedTime) || fresh.updatedAt.getTime() !== expectedTime) {
+      throw new UnprocessableEntityException({
+        code: "BOM_UPDATE_CONFLICT",
+        message: "BOM 已被他人（采购或生产）修改，本次保存没有写入；请重新加载最新版本后再改一次",
+        details: [{ expected_updated_at: expectedUpdatedAt, actual_updated_at: fresh.updatedAt.toISOString() }],
+      });
+    }
+  }
+
+  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; specification_model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; production_batch_base?: string; base_usage?: string; unit: string; unit_id?: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser, expectedUpdatedAt?: string) {
     const bom = await this.get(id);
     // Material master data stays authoritative for raw-material checks only.
     // Quantity and unit are user-maintained BOM fields: required_quantity is
@@ -61,7 +90,10 @@ export class BomsService {
     if (!order || items.some((item) => !item.material_id || !item.unit || !(item.material_name ?? String(item.material_snapshot.name ?? "")).trim() || !this.isPositiveDecimal(item.required_quantity) || (item.production_batch_base !== undefined && !this.isPositiveDecimal(item.production_batch_base)) || (item.base_usage !== undefined && !this.isPositiveDecimal(item.base_usage)) || (item.loss_quantity !== undefined && !this.isNonNegativeDecimal(item.loss_quantity)) || (item.loss_rate !== undefined && !this.isNonNegativeDecimal(item.loss_rate)))) {
       throw new UnprocessableEntityException({ code: "INVALID_BOM_ITEM", message: "BOM 明细的物料、数量或单位不合法", details: [] });
     }
+    const expected = expectedUpdatedAt?.trim();
     await this.prisma.$transaction(async (tx) => {
+      // 先做并发比对再做任何写入：冲突时连软删旧行都不会发生。
+      if (expected) await this.assertNotStale(tx, id, expected);
       await tx.bomItem.updateMany({ where: { bomId: id, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
       if (items.length) {
         // ponytail: lightweight unit tests may provide only the BOM write seam; production Prisma always has material.findMany.

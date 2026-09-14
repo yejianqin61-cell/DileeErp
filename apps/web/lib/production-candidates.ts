@@ -61,8 +61,9 @@ export function productionCandidateHint(orders: SalesOrderRef[]): string {
   const awaiting = ordersAwaitingBom(orders);
   if (!orders.length) return "暂无销售单：请先在【销售】建立并确认销售单。";
   if (!productionCandidates(orders).length && awaiting.length) {
-    return `有 ${awaiting.length} 张已确认销售单尚未建立 BOM（${awaiting.map((order) => order.orderNo).join("、")}），请先在【采购 → BOM表】为其建立 BOM 后再建生产单。`;
+    // BOM 现在采购与生产两个模块都能建：直接给出本页入口，少一次跨模块跳转。
+    return `有 ${awaiting.length} 张已确认销售单尚未建立 BOM（${awaiting.map((order) => order.orderNo).join("、")}），请在本页【BOM表】或【采购 → BOM表】为其建立 BOM 后再建生产单。`;
   }
-  if (awaiting.length) return `另有 ${awaiting.length} 张已确认销售单因缺少 BOM 未出现在候选列表中（${awaiting.map((order) => order.orderNo).join("、")}）。`;
+  if (awaiting.length) return `另有 ${awaiting.length} 张已确认销售单因缺少 BOM 未出现在候选列表中（${awaiting.map((order) => order.orderNo).join("、")}），可在本页【BOM表】或【采购 → BOM表】建立。`;
   return "";
 }
