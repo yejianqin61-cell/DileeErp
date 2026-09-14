@@ -25,5 +25,10 @@ apps/*/pnpm-lock.yaml
 apps/*/pnpm-workspace.yaml
 vitest-out.txt
 
-# ????????(??????,???).deploy-run*/.verify-lock/.deploy-live/.deploy-now/
-# ?? DSH ?????(??/??/??),???.dsh-meow/
+# 本地部署临时脚本（每次部署生成，不入库）
+.deploy-run*/
+.verify-lock/
+.deploy-live/
+.deploy-now/
+# 本机 DSH 运行时状态（会话/记忆/日志），不入库
+.dsh-meow/
