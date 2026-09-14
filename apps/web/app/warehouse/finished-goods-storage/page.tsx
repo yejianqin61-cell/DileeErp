@@ -99,10 +99,13 @@ export default function FinishedGoodsStoragePage() {
   /** 按销售发起的出库通知生成成品出库单：默认出剩余量，也可以只出一部分（分批出库）。 */
   function createOutboundFromNotice(row: OutboundNotice) {
     const remaining = row.remaining_quantity ?? row.noticeQuantity;
+    // 幂等键在打开弹窗时生成一次：同一次提交被重试（网络抖动、重复点击）时复用同一个键，
+    // 服务端会返回同一张出库单，而不是按剩余量再建一张草稿。
+    const idempotencyKey = `web-notice-outbound-${row.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setDialog({ title: `生成成品出库单：${row.noticeNo}`, fields: [
       { name: "quantity", label: "本次出库数量", type: "number", required: true, defaultValue: remaining, placeholder: `通知 ${row.noticeQuantity}，剩余 ${remaining}（可分批出库）` },
       { name: "confirm", label: `确认出库数量不超过剩余 ${remaining}${row.unit?.name ? ` ${row.unit.name}` : ""}`, required: true, placeholder: "输入 确认 继续" },
-    ], submit: async (values) => { if (values.confirm?.trim() !== "确认") { notifyError("请输入“确认”以生成出库单"); return; } await run(`/finished-goods/outbound-notices/${row.id}/create-outbound`, { quantity: values.quantity }, `成品出库单已生成（本次 ${values.quantity}，待过账）`); } });
+    ], submit: async (values) => { if (values.confirm?.trim() !== "确认") { notifyError("请输入“确认”以生成出库单"); return; } await run(`/finished-goods/outbound-notices/${row.id}/create-outbound`, { quantity: values.quantity, idempotency_key: idempotencyKey }, `成品出库单已生成（本次 ${values.quantity}，待过账）`); } });
   }
 
   function editShipping(row: Outbound) {

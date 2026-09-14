@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { parseQuantity } from "../../platform/database/quantity";
 import { reconcileDailyDiscrepancy } from "./daily-report-alerts";
 import { ProductionProgressService } from "./production-progress.service";
 
@@ -344,13 +345,8 @@ export class EmployeeDailyReportsService {
   private date(value: string) { const date = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_REPORT_DATE", message: "日报日期必须是有效日期", details: [] }); return date; }
   private validDate(value: string) { const date = this.date(value); const today = new Date(); today.setUTCHours(0, 0, 0, 0); if (date > today) throw new UnprocessableEntityException({ code: "FUTURE_REPORT_DATE_FORBIDDEN", message: "日报日期不能晚于今天", details: [] }); return date; }
 
-  /** B13: unified decimal input guard — rejects exponent notation, more than 4 fractional digits and values outside Decimal(18,4) (integer part beyond 14 digits). */
+  /** B13：统一的十进制数量守卫（实现抽到 platform/database/quantity.ts，出库等模块共用同一套规则）。 */
   private decimal(value: string, code: string, message: string, allowZero = false) {
-    const trimmed = value.trim();
-    const match = /^(\d+)(?:\.(\d{1,4}))?$/.exec(trimmed);
-    if (!match || match[1].replace(/^0+/, "").length > 14) throw new UnprocessableEntityException({ code, message, details: [] });
-    const decimal = new Prisma.Decimal(trimmed);
-    if (allowZero ? decimal.lt(0) : !decimal.gt(0)) throw new UnprocessableEntityException({ code, message, details: [] });
-    return decimal;
+    return parseQuantity(value, code, message, { allowZero });
   }
 }

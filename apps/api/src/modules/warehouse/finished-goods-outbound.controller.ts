@@ -13,7 +13,9 @@ class SignDto { @IsDateString() signed_at!: string; @IsOptional() @IsString() @M
 class ReturnDto { @IsUUID() sales_order_id!: string; @IsUUID() production_order_id!: string; @IsString() quantity!: string; @IsDateString() return_date!: string; @IsIn(["finished_goods", "defective_goods"]) destination!: "finished_goods" | "defective_goods"; @IsString() @MaxLength(1000) reason!: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() attachment?: unknown[]; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 // 按出库通知建出库单：quantity 可选（分批出库）；不传就出完剩余量。
-class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; }
+// idempotency_key 由仓库页面随请求带来：同一次提交的网络重试必须命中同一张出库单，
+// 否则每次重试都会再建一张草稿（服务端只用随机后缀兜底，等于没有幂等）。
+class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; }
 
 @Controller("finished-goods")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
