@@ -31,7 +31,19 @@ fi
 sudo docker port "$PG_CONTAINER" 5432/tcp
 
 cd "$STAGING"
-node -e "require('dotenv').config(); const u = new URL(process.env.DATABASE_URL || ''); if (u.hostname !== '127.0.0.1' || u.port !== '15432') throw new Error('DATABASE_URL must use 127.0.0.1:15432');"
+# 校验 DATABASE_URL 必须指向 127.0.0.1:15432。
+# 注意：不要用 `node -e "require('dotenv')..."`——此刻 node_modules 还没装（npm ci 在下面），
+# require 会抛 "Cannot find module 'dotenv'" 让构建在 npm ci 之前就失败。这里自带极简 .env 解析。
+node -e '
+const fs = require("fs");
+const env = Object.fromEntries(
+  fs.readFileSync(".env", "utf8").split(/\r?\n/)
+    .filter((line) => line.includes("=") && !line.trimStart().startsWith("#"))
+    .map((line) => { const at = line.indexOf("="); return [line.slice(0, at).trim(), line.slice(at + 1).trim().replace(/^["\x27]|["\x27]$/g, "")]; })
+);
+const url = new URL(env.DATABASE_URL || "");
+if (url.hostname !== "127.0.0.1" || url.port !== "15432") throw new Error("DATABASE_URL must use 127.0.0.1:15432");
+'
 
 log "npm ci --include=dev"
 npm ci --include=dev --no-audit --no-fund >"$BUILD_LOG" 2>&1 || { tail -40 "$BUILD_LOG"; fail "npm ci 失败"; }
