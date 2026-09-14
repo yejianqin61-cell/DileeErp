@@ -1306,17 +1306,20 @@ model FinishedGoodsOutbound {
   unit                         Unit              @relation(fields: [unitId], references: [id])
   inventoryFacts               InventoryFact[]
   receivableSource             ReceivableSource?
-  outboundNotice               FinishedGoodsOutboundNotice?
+  // 一张出库通知可以分多次出库（`finished_goods_outbounds.outbound_notice_id` 挂在出库单上）。
+  outboundNoticeId             String?           @map("outbound_notice_id") @db.Uuid
+  outboundNotice               FinishedGoodsOutboundNotice? @relation(fields: [outboundNoticeId], references: [id])
 
   @@index([orderNo, status])
   @@index([salesOrderId, status])
   @@index([productionOrderId, status])
+  @@index([outboundNoticeId])
   @@map("finished_goods_outbounds")
 }
 
 /// 成品出库通知：成品入库后由销售发起「通知仓库发货（寄给客户）」。
-/// 一张通知对应一个生产单的整批可出库量；仓库据此生成成品出库单（整批出库，不支持部分出库），
-/// 出库过账后自动生成应收来源草稿（通知财务收款）并把通知置为 completed。
+/// 一张通知对应一个生产单的一批可出库量；仓库可以**分多次**生成出库单直到发完，
+/// 出库过账后自动生成应收来源草稿（通知财务收款），全部发完时通知置为 completed。
 model FinishedGoodsOutboundNotice {
   id                           String                   @id @default(uuid()) @db.Uuid
   noticeNo                     String                   @unique @map("notice_no") @db.VarChar(100)
@@ -1332,9 +1335,11 @@ model FinishedGoodsOutboundNotice {
   inboundQuantity              Decimal                  @map("inbound_quantity") @db.Decimal(18, 4)
   outboundQuantity             Decimal                  @map("outbound_quantity") @db.Decimal(18, 4)
   noticeQuantity               Decimal                  @map("notice_quantity") @db.Decimal(18, 4)
-  /// pending（待仓库建出库单）/ outbound_created（已建单待过账）/ completed（已出库）/ cancelled
+  /// 该通知已过账出库的累计数量（分批出库时逐步累加；仓库侧据此算剩余可出库量）。
+  shippedQuantity              Decimal                  @default(0) @map("shipped_quantity") @db.Decimal(18, 4)
+  /// pending（待建单）/ outbound_created（有草稿待过账）/ partially_outbound（已部分出库）/
+  /// completed（通知量已全部出库）/ cancelled
   status                       String                   @default("pending") @db.VarChar(30)
-  outboundId                   String?                  @unique @map("outbound_id") @db.Uuid
   notifiedAt                   DateTime                 @default(now()) @map("notified_at")
   notifiedBy                   String                   @map("notified_by") @db.Uuid
   remark                       String?                  @db.VarChar(1000)
@@ -1349,7 +1354,7 @@ model FinishedGoodsOutboundNotice {
   salesOrder                   SalesOrder               @relation(fields: [salesOrderId], references: [id])
   productionOrder              ProductionOrder          @relation(fields: [productionOrderId], references: [id])
   unit                         Unit                     @relation(fields: [unitId], references: [id])
-  outbound                     FinishedGoodsOutbound?   @relation(fields: [outboundId], references: [id])
+  outbounds                    FinishedGoodsOutbound[]
 
   @@index([orderNo, status])
   @@index([salesOrderId, status])

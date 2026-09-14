@@ -1,15 +1,17 @@
 // 财务页「编辑草稿」的请求方法回归检查。
 //
-// 背景：finance/page.tsx 的 action() 只发 POST，但应收来源 / 收款 / 付款 / 应付条目的
+// 背景：财务页的 action() 只发 POST，但应收来源 / 收款 / 付款 / 应付条目的
 // 草稿编辑接口在 API 里只注册了 PATCH（finance.controller.ts 的 @Patch(".../:id")），
 // 于是每次「编辑 → 保存」都是 404 Cannot POST ...，「保存失败」但看不出原因。
 // 这里固化：四个编辑入口必须显式走 PATCH。
+// 实现已移到 components/finance/finance-workspace.tsx（/finance 与 /finance/<section> 共用），
+// 运行时的行为断言见 apps/web/test/finance-page.test.tsx。
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const page = readFileSync(fileURLToPath(new URL("../app/finance/page.tsx", import.meta.url)), "utf8");
+const page = readFileSync(fileURLToPath(new URL("../components/finance/finance-workspace.tsx", import.meta.url)), "utf8");
 const lineWith = (needle) => page.split("\n").find((line) => line.includes(needle)) ?? "";
 
 test("action() 支持显式指定 PATCH", () => {

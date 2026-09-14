@@ -168,34 +168,38 @@ export class FinishedGoodsOutboundNoticeService {
   }
 
   /** 已入库 / 已出库 / 待办通知 / 可出库。
-   *  可出库取**库存事实余额**（= 入库 − 出库 + 客户退货回到成品仓的部分）再扣掉待办通知量，
-   *  不能用「入库 − 出库」硬算：客户退货、冲销都会改变真实可用量，否则通知数量会和库存对不上。 */
+   *  可出库取**库存事实余额**（= 入库 − 出库 + 客户退货回到成品仓的部分）再扣掉待办通知的
+   *  **未出库部分**（通知量 − 已出库量）；分批出库后已出库的部分不再占用额度。 */
   private async productionQuantities(productionOrderId: string, unitId: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
-    const [inbound, outbound, pendingNotice, balance] = await Promise.all([
+    const [inbound, outbound, openNotices, balance] = await Promise.all([
       client.finishedGoodsInbound.aggregate({ where: { productionOrderId, deletedAt: null, status: "posted" }, _sum: { quantity: true } }),
       client.finishedGoodsOutbound.aggregate({ where: { productionOrderId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } }),
-      client.finishedGoodsOutboundNotice.aggregate({ where: { productionOrderId, deletedAt: null, status: { in: ["pending", "outbound_created"] } }, _sum: { noticeQuantity: true } }),
+      client.finishedGoodsOutboundNotice.findMany({ where: { productionOrderId, deletedAt: null, status: { in: ["pending", "outbound_created", "partially_outbound"] } }, select: { noticeQuantity: true, shippedQuantity: true } }),
       this.inventory.finishedGoodsBalance(client, productionOrderId, unitId, "finished_goods"),
     ]);
     const inboundQuantity = new Prisma.Decimal(inbound._sum.quantity ?? 0);
     const outboundQuantity = new Prisma.Decimal(outbound._sum.quantity ?? 0);
-    const pendingNoticeQuantity = new Prisma.Decimal(pendingNotice._sum.noticeQuantity ?? 0);
+    const pendingNoticeQuantity = openNotices.reduce((total, notice) => {
+      const open = new Prisma.Decimal(notice.noticeQuantity).minus(notice.shippedQuantity);
+      return open.gt(0) ? total.plus(open) : total;
+    }, new Prisma.Decimal(0));
     const available = new Prisma.Decimal(balance).minus(pendingNoticeQuantity);
     return { inbound: inboundQuantity, outbound: outboundQuantity, pendingNotice: pendingNoticeQuantity, available: available.lt(0) ? new Prisma.Decimal(0) : available };
   }
 
   private async listNoticesForProductionOrder(productionOrderId: string) {
-    const notices = await this.prisma.finishedGoodsOutboundNotice.findMany({ where: { productionOrderId, deletedAt: null }, include: { outbound: { select: { id: true, outboundNo: true, status: true } } }, orderBy: { notifiedAt: "desc" } });
+    const notices = await this.prisma.finishedGoodsOutboundNotice.findMany({ where: { productionOrderId, deletedAt: null }, include: { outbounds: { where: { deletedAt: null }, select: { id: true, outboundNo: true, status: true, quantity: true }, orderBy: { createdAt: "asc" } } }, orderBy: { notifiedAt: "desc" } });
     return notices.map((notice) => ({
       id: notice.id,
       notice_no: notice.noticeNo,
       notice_quantity: notice.noticeQuantity.toString(),
+      shipped_quantity: notice.shippedQuantity.toString(),
+      remaining_quantity: new Prisma.Decimal(notice.noticeQuantity).minus(notice.shippedQuantity).toString(),
       status: notice.status,
       notified_at: notice.notifiedAt.toISOString(),
       remark: notice.remark,
-      outbound_id: notice.outboundId,
-      outbound_no: notice.outbound?.outboundNo ?? null,
-      outbound_status: notice.outbound?.status ?? null,
+      outbound_nos: notice.outbounds.map((outbound) => outbound.outboundNo),
+      outbound_statuses: notice.outbounds.map((outbound) => outbound.status),
     }));
   }
 

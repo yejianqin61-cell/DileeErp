@@ -23,8 +23,8 @@ export class FinishedGoodsOutboundService {
     const refs = await this.references(input.sales_order_id, input.production_order_id);
     const quantity = this.decimal(input.quantity, "INVALID_FINISHED_GOODS_OUTBOUND_QUANTITY");
     const balance = await this.inventory.finishedGoodsBalance(this.prisma, refs.production.id, refs.production.unitId, "finished_goods");
-    // 口径（客户确认）：成品出库只允许整批出库，不支持部分出库 —— 数量必须等于当前成品可用量。
-    if (!quantity.eq(balance)) throw this.fullBatchRequired(balance, quantity);
+    // 口径（客户确认）：支持分批出库 —— 单张出库单数量只要不超过当前成品可用量即可，剩余库存可再出库。
+    if (quantity.gt(balance)) throw this.exceeded("FINISHED_GOODS_OUTBOUND_INVENTORY_INSUFFICIENT", balance);
     const planned = refs.sales.quantity;
     const posted = await this.postedOutboundQuantity(refs.production.id);
     if (posted.plus(quantity).gt(planned) && !input.risk_reason?.trim()) throw new UnprocessableEntityException({ code: "OUTBOUND_PLAN_EXCEEDED_REASON_REQUIRED", message: "出库累计超过订单计划量，必须填写风险原因", details: [{ planned_quantity: planned.toString(), posted_quantity: posted.toString() }] });
@@ -33,60 +33,86 @@ export class FinishedGoodsOutboundService {
     return row;
   }
 
-  /** 出库通知列表（销售通知仓库发货）：默认按待处理在前排序。 */
+  /** 出库通知列表（销售通知仓库发货）：默认按待处理在前排序，并给出剩余可出库量。 */
   async listOutboundNotices(orderNo?: string, status?: string) {
     const rows = await this.prisma.finishedGoodsOutboundNotice.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(status ? { status } : { status: { not: "cancelled" } }) },
       include: {
         salesOrder: { select: { currency: true, unitPrice: true, settlementUnitPrice: true, receivableAmount: true, customer: { select: { name: true } } } },
         unit: { select: { name: true } },
-        outbound: { select: { id: true, outboundNo: true, status: true, quantity: true } },
+        // 一张通知可以对应多张出库单（分批出库）。
+        outbounds: { where: { deletedAt: null }, select: { id: true, outboundNo: true, status: true, quantity: true }, orderBy: { createdAt: "asc" } },
       },
       orderBy: [{ status: "asc" }, { notifiedAt: "asc" }],
     });
-    return rows;
+    return rows.map((notice) => {
+      const drafts = notice.outbounds.filter((outbound) => outbound.status === "draft");
+      const draftQuantity = drafts.reduce((total, outbound) => total.plus(outbound.quantity), new Prisma.Decimal(0));
+      const remaining = notice.noticeQuantity.minus(notice.shippedQuantity).minus(draftQuantity);
+      return {
+        ...notice,
+        remaining_quantity: (remaining.lt(0) ? new Prisma.Decimal(0) : remaining).toString(),
+        draft_quantity: draftQuantity.toString(),
+        outbound_summary: notice.outbounds.map((outbound) => `${outbound.outboundNo}（${outbound.status} ${outbound.quantity.toString()}）`).join("、"),
+      };
+    });
   }
 
   /**
-   * 按出库通知生成成品出库单（整批）：数量固定取通知数量，不允许仓库改数量。
-   * 出库单过账后会自动生成应收来源（通知财务收款）并把通知置为 completed。
+   * 按出库通知生成成品出库单：支持分批 —— 不传 quantity 时按剩余量建单，
+   * 也可以只出一部分（数量必须 ≤ 通知剩余量）。出库过账后自动生成应收来源（通知财务收款）。
    */
-  async createOutboundFromNotice(id: string, user: CurrentUser) {
+  async createOutboundFromNotice(id: string, input: { quantity?: string }, user: CurrentUser) {
     const notice = await this.prisma.finishedGoodsOutboundNotice.findFirst({ where: { id, deletedAt: null }, include: { salesOrder: true, productionOrder: true, unit: true } });
     if (!notice) throw this.notFound("OUTBOUND_NOTICE_NOT_FOUND", "出库通知不存在");
-    if (notice.status !== "pending") throw this.invalid("OUTBOUND_NOTICE_NOT_PENDING", `该出库通知不能生成出库单（当前状态：${notice.status}）`);
-    await this.assertNoticeReservation(notice.productionOrderId, notice.unitId, notice.id, notice.noticeQuantity);
+    if (["completed", "cancelled"].includes(notice.status)) throw this.invalid("OUTBOUND_NOTICE_NOT_PENDING", `该出库通知不能生成出库单（当前状态：${notice.status}）`);
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM production_orders WHERE id = ${notice.productionOrderId}::uuid FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM finished_goods_outbound_notices WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.finishedGoodsOutboundNotice.findFirst({ where: { id, deletedAt: null } });
-      if (!locked || locked.status !== "pending") throw this.invalid("OUTBOUND_NOTICE_NOT_PENDING", "该出库通知已被其他操作处理，请刷新后重试");
-      // 事务内二次校验（已锁生产单与通知行）：通知的预留量必须仍然成立。
-      await this.assertNoticeReservation(locked.productionOrderId, locked.unitId, locked.id, locked.noticeQuantity, tx);
-      // 通知出库是销售整批发起的：若本次出库后累计超过订单计划量，自动带上可追溯的风险原因，
-      // 否则仓库会因为「必须填写风险原因」而永远过不了账（草稿也没有填原因的地方）。
+      if (!locked || ["completed", "cancelled"].includes(locked.status)) throw this.invalid("OUTBOUND_NOTICE_NOT_PENDING", "该出库通知已被其他操作处理，请刷新后重试");
+      const remaining = await this.noticeRemaining(tx, locked);
+      const quantity = input.quantity?.trim() ? this.decimal(input.quantity, "INVALID_FINISHED_GOODS_OUTBOUND_QUANTITY") : remaining;
+      if (quantity.lte(0)) throw this.invalid("OUTBOUND_NOTICE_NOTHING_TO_SHIP", "该出库通知已经发完，没有剩余可出库数量");
+      if (quantity.gt(remaining)) throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_QUANTITY_EXCEEDED", message: "本次出库数量超过该通知的剩余量", details: [{ remaining_quantity: remaining.toString(), requested_quantity: quantity.toString() }] });
+      const balance = await this.inventory.finishedGoodsBalance(tx, locked.productionOrderId, locked.unitId, "finished_goods");
+      if (quantity.gt(balance)) throw this.exceeded("FINISHED_GOODS_OUTBOUND_INVENTORY_INSUFFICIENT", balance);
+      // 若本次出库后累计超过订单计划量，自动带上可追溯的风险原因（草稿没有填原因的地方，
+      // 否则仓库会因为「必须填写风险原因」而永远过不了账）。
       const sales = await tx.salesOrder.findUnique({ where: { id: locked.salesOrderId }, select: { quantity: true } });
       const posted = await tx.finishedGoodsOutbound.aggregate({ where: { productionOrderId: locked.productionOrderId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } });
-      const overPlan = Boolean(sales) && new Prisma.Decimal(posted._sum.quantity ?? 0).plus(locked.noticeQuantity).gt(sales!.quantity);
-      const created = await tx.finishedGoodsOutbound.create({ data: { outboundNo: this.number("FGO"), orderNo: locked.orderNo, salesOrderId: locked.salesOrderId, productionOrderId: locked.productionOrderId, unitId: locked.unitId, productNameSnapshot: locked.productNameSnapshot, productSpecificationSnapshot: locked.productSpecificationSnapshot, quantity: locked.noticeQuantity, riskReason: overPlan ? `按销售出库通知 ${locked.noticeNo} 整批出库：累计出库超过订单计划量（含超产或客户退货回仓）` : null, idempotencyKey: `notice:${locked.id}`, remark: `出库通知 ${locked.noticeNo}`, ...this.audit.create(user) } });
-      await tx.finishedGoodsOutboundNotice.update({ where: { id: locked.id }, data: { status: "outbound_created", outboundId: created.id, version: { increment: 1 }, ...this.audit.update(user) } });
+      const overPlan = Boolean(sales) && new Prisma.Decimal(posted._sum.quantity ?? 0).plus(quantity).gt(sales!.quantity);
+      const created = await tx.finishedGoodsOutbound.create({ data: { outboundNo: this.number("FGO"), orderNo: locked.orderNo, salesOrderId: locked.salesOrderId, productionOrderId: locked.productionOrderId, outboundNoticeId: locked.id, unitId: locked.unitId, productNameSnapshot: locked.productNameSnapshot, productSpecificationSnapshot: locked.productSpecificationSnapshot, quantity, riskReason: overPlan ? `按销售出库通知 ${locked.noticeNo} 出库：累计出库超过订单计划量（含超产或客户退货回仓）` : null, idempotencyKey: `notice:${locked.id}:${randomUUID()}`, remark: `出库通知 ${locked.noticeNo}`, ...this.audit.create(user) } });
+      await this.syncNoticeStatus(tx, locked.id, user);
       return created;
     });
     await this.audit.record("finished_goods_outbound.create_from_notice", "finished_goods_outbound", user.id, row.id, { order_no: row.orderNo, notice_id: notice.id, notice_no: notice.noticeNo, quantity: row.quantity.toString(), over_plan: Boolean(row.riskReason) });
     return row;
   }
 
+  /** 通知的剩余可出库量 = 通知数量 − 已过账出库量 − 未过账草稿量。 */
+  private async noticeRemaining(client: PrismaService | Prisma.TransactionClient, notice: { id: string; noticeQuantity: Prisma.Decimal; shippedQuantity: Prisma.Decimal }) {
+    const drafts = await client.finishedGoodsOutbound.aggregate({ where: { outboundNoticeId: notice.id, deletedAt: null, status: "draft" }, _sum: { quantity: true } });
+    const remaining = new Prisma.Decimal(notice.noticeQuantity).minus(notice.shippedQuantity).minus(drafts._sum.quantity ?? 0);
+    return remaining.lt(0) ? new Prisma.Decimal(0) : remaining;
+  }
+
   /**
-   * 校验一张通知的「预留量」是否仍然成立（整批口径）。
-   * 预留量 = 当前成品可用量 − 该生产单下**其它**待办通知量：允许多张通知各占一部分
-   * （例如客户退货回仓后又通知了一批），但每张通知的量必须与它当时占用的份额一致，
-   * 否则说明库存已经被别的操作改变，必须让销售取消后按最新可用量重新通知。
+   * 按通知下的出库单重新推导通知状态与已出库量（分批出库的核心）：
+   *   已出库 = 已过账/已发出/已签收的合计；有草稿 → outbound_created；
+   *   已出库达到通知量 → completed；部分出库 → partially_outbound；否则 pending。
    */
-  private async assertNoticeReservation(productionOrderId: string, unitId: string, noticeId: string, noticeQuantity: Prisma.Decimal, client: PrismaService | Prisma.TransactionClient = this.prisma) {
-    const balance = await this.inventory.finishedGoodsBalance(client, productionOrderId, unitId, "finished_goods");
-    const others = await client.finishedGoodsOutboundNotice.aggregate({ where: { productionOrderId, deletedAt: null, id: { not: noticeId }, status: { in: ["pending", "outbound_created"] } }, _sum: { noticeQuantity: true } });
-    const reserved = new Prisma.Decimal(balance).minus(others._sum.noticeQuantity ?? 0);
-    if (!noticeQuantity.eq(reserved)) throw this.noticeStale(noticeQuantity, reserved, balance);
+  private async syncNoticeStatus(client: PrismaService | Prisma.TransactionClient, noticeId: string, user: CurrentUser) {
+    const notice = await client.finishedGoodsOutboundNotice.findFirst({ where: { id: noticeId }, select: { id: true, noticeQuantity: true, status: true } });
+    if (!notice || notice.status === "cancelled") return;
+    const [shipped, draft] = await Promise.all([
+      client.finishedGoodsOutbound.aggregate({ where: { outboundNoticeId: noticeId, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } }),
+      client.finishedGoodsOutbound.aggregate({ where: { outboundNoticeId: noticeId, deletedAt: null, status: "draft" }, _sum: { quantity: true } }),
+    ]);
+    const shippedQuantity = new Prisma.Decimal(shipped._sum.quantity ?? 0);
+    const draftQuantity = new Prisma.Decimal(draft._sum.quantity ?? 0);
+    const status = shippedQuantity.gte(notice.noticeQuantity) ? "completed" : draftQuantity.gt(0) ? "outbound_created" : shippedQuantity.gt(0) ? "partially_outbound" : "pending";
+    await client.finishedGoodsOutboundNotice.update({ where: { id: noticeId }, data: { status, shippedQuantity, version: { increment: 1 }, ...this.audit.update(user) } });
   }
 
   /**
@@ -105,8 +131,8 @@ export class FinishedGoodsOutboundService {
       if (!locked || locked.status !== "draft") throw this.invalid("FINISHED_GOODS_OUTBOUND_NOT_CANCELLABLE", "该出库单已被其他操作处理，请刷新后重试");
       // 释放幂等键，允许同一张通知重新生成出库单。
       const cancelled = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "cancelled", idempotencyKey: `cancelled:${id}`, remark: `${locked.remark ?? ""}\n取消：${reason.trim()}`, ...this.audit.update(user) } });
-      // 只回退「由这张出库单产生的」通知，且限定状态：避免把已取消/已完成的通知改回待处理。
-      await tx.finishedGoodsOutboundNotice.updateMany({ where: { outboundId: id, deletedAt: null, status: { in: ["pending", "outbound_created"] } }, data: { status: "pending", outboundId: null, version: { increment: 1 }, ...this.audit.update(user) } });
+      // 按剩余出库单重新推导来源通知状态（草稿取消后剩余量会回来；分批出库时通知可能已部分出库）。
+      if (locked.outboundNoticeId) await this.syncNoticeStatus(tx, locked.outboundNoticeId, user);
       return cancelled;
     });
     await this.audit.record("finished_goods_outbound.cancel", "finished_goods_outbound", user.id, id, { order_no: row.orderNo, reason: reason.trim() });
@@ -143,8 +169,9 @@ export class FinishedGoodsOutboundService {
       const posted = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "posted", riskReason, idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity.negated(), sourceType: "finished_goods_outbound", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
       await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: settlementPrice, taxRate: sales.taxRate, amount: this.receivableAmountFor(sales, settlementPrice, current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, remark: this.settlementRemark(sales, settlementPrice), ...this.audit.create(user) } });
-      // 出库过账 = 通知财务收款：应收来源草稿已生成，同时把来源出库通知置为 completed。
-      await tx.finishedGoodsOutboundNotice.updateMany({ where: { outboundId: id, deletedAt: null, status: { in: ["pending", "outbound_created"] } }, data: { status: "completed", version: { increment: 1 }, ...this.audit.update(user) } });
+      // 出库过账 = 通知财务收款：应收来源草稿已生成；来源通知按累计出库量重新推导状态
+      //（分批出库时可能只是 partially_outbound，发完才 completed）。
+      if (current.outboundNoticeId) await this.syncNoticeStatus(tx, current.outboundNoticeId, user);
       return posted;
     });
     await this.audit.record("finished_goods_outbound.post", "finished_goods_outbound", user.id, id, { order_no: result.orderNo, quantity: result.quantity.toString() });
@@ -203,8 +230,8 @@ export class FinishedGoodsOutboundService {
         await tx.receivableSource.update({ where: { id: receivable.id }, data: { status: "cancelled", remark: `${receivable.remark ?? ""}\n出库冲销自动取消：${reason.trim()}`, ...this.audit.update(user) } });
       }
       const updated = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } });
-      // 冲销后货回到成品库存：把来源出库通知退回待处理，仓库可以重新生成出库单。
-      await tx.finishedGoodsOutboundNotice.updateMany({ where: { outboundId: id, deletedAt: null }, data: { status: "pending", outboundId: null, version: { increment: 1 }, ...this.audit.update(user) } });
+      // 冲销后货回到成品库存：来源通知按累计出库量重新推导（已出库量下降、剩余量回来，可再出库）。
+      if (current.outboundNoticeId) await this.syncNoticeStatus(tx, current.outboundNoticeId, user);
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity, sourceType: "finished_goods_outbound_reversal", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
       return updated;
     });
@@ -270,20 +297,12 @@ export class FinishedGoodsOutboundService {
   private date(value: string, code: string) { const result = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(result.valueOf())) throw new UnprocessableEntityException({ code, message: "日期无效", details: [] }); return result; }
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
   private exceeded(code: string, available: Prisma.Decimal) { return new UnprocessableEntityException({ code, message: "成品库存不足", details: [{ available_quantity: available.toString() }] }); }
-  /** 整批出库：出库数量必须等于当前成品可用量（不支持部分出库）。 */
-  private fullBatchRequired(available: Prisma.Decimal, requested: Prisma.Decimal) {
-    return new UnprocessableEntityException({
-      code: "FINISHED_GOODS_OUTBOUND_MUST_BE_FULL_BATCH",
-      message: "成品出库必须整批出库：出库数量必须等于当前成品可用量，不支持部分出库",
-      details: [{ available_quantity: available.toString(), requested_quantity: requested.toString() }],
-    });
-  }
 
-  /** 出库通知的预留量与当前库存不一致（通知后又入库/退货回仓/被其它通知占用）：让销售重新通知，不要悄悄少发。 */
+  /** 出库通知的剩余量已被其它操作改变（例如库存变化/并行建单）：让仓库按最新剩余量重试。 */
   private noticeStale(noticeQuantity: Prisma.Decimal, reserved: Prisma.Decimal, balance: Prisma.Decimal) {
     return new UnprocessableEntityException({
       code: "OUTBOUND_NOTICE_QUANTITY_STALE",
-      message: `出库通知数量（${noticeQuantity.toString()}）与该通知当前占用的成品可用量（${reserved.toString()}，成品可用量 ${balance.toString()} 扣除其它待办通知）不一致：库存或其它通知已经变化，请让销售取消本通知（必要时把所有待办通知一并取消）并按最新可用量重新通知仓库（整批出库）`,
+      message: `出库通知数量（${noticeQuantity.toString()}）已与库存不一致（按其它待办通知扣减后可用 ${reserved.toString()}，成品可用量 ${balance.toString()}）：请让销售取消本通知（必要时一并取消其它待办通知）后按最新可用量重新通知`,
       details: [{ notice_quantity: noticeQuantity.toString(), reserved_quantity: reserved.toString(), available_quantity: balance.toString() }],
     });
   }

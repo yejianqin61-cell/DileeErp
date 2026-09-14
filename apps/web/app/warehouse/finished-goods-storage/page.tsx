@@ -20,15 +20,15 @@ type QcAvailable = { qc_id: string; qc_no: string; order_no: string; submission_
 type Inbound = { id: string; inboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; qcRecord?: { qcNo?: string } | null; createdAt?: string };
 type Defective = { id: string; defectiveNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null };
 type Outbound = { id: string; outboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; shipmentDate?: string | null; carrier?: string | null; trackingNo?: string | null; packingListNo?: string | null; invoiceNo?: string | null; signedAt?: string | null; riskReason?: string | null; remark?: string | null; unit?: { name?: string } | null; salesOrder?: { currency?: string; unitPrice?: string | null; settlementUnitPrice?: string | null; customer?: { name?: string } | null } | null; outboundNotice?: { id: string; noticeNo: string; status: string } | null };
-// 销售发起的成品出库通知：仓库据此生成整批出库单。
-type OutboundNotice = { id: string; noticeNo: string; orderNo: string; productionOrderId: string; productNameSnapshot?: string | null; productSpecificationSnapshot?: string | null; noticeQuantity: string; status: string; notifiedAt: string; remark?: string | null; unit?: { name?: string } | null; salesOrder?: { customer?: { name?: string } | null } | null; outbound?: { id: string; outboundNo: string; status: string; quantity: string } | null };
+// 销售发起的成品出库通知：仓库据此分批生成出库单（可只出一部分，剩余量继续出）。
+type OutboundNotice = { id: string; noticeNo: string; orderNo: string; productionOrderId: string; productNameSnapshot?: string | null; productSpecificationSnapshot?: string | null; noticeQuantity: string; shippedQuantity?: string; remaining_quantity?: string; draft_quantity?: string; status: string; notifiedAt: string; remark?: string | null; outbound_summary?: string; unit?: { name?: string } | null; salesOrder?: { customer?: { name?: string } | null } | null };
 
 const noticeStatusLabels: Record<string, string> = { pending: "待送检", partially_inbound: "入库中", completed: "已完成", cancelled: "已取消" };
 const inboundStatusLabels: Record<string, string> = { draft: "待入库登记", posted: "入库成功", reversed: "已冲销" };
 const outboundStatusLabels: Record<string, string> = { draft: "待出库", posted: "已出库", shipped: "已发出", signed: "已签收", reversed: "已冲销", cancelled: "已取消" };
 const categoryLabels: Record<string, string> = { finished_goods: "成品", defective_goods: "次品" };
-// 出库通知状态：pending 待仓库建出库单 → outbound_created 已建单待过账 → completed 已出库（已通知财务收款）。
-const outboundNoticeStatusLabels: Record<string, string> = { pending: "待建出库单", outbound_created: "已建单待过账", completed: "已出库（已通知财务收款）", cancelled: "已取消" };
+// 出库通知状态：pending 待仓库建出库单 → outbound_created 已建单待过账 → partially_outbound 已部分出库 → completed 已出库（已通知财务收款）。
+const outboundNoticeStatusLabels: Record<string, string> = { pending: "待建出库单", outbound_created: "已建单待过账", partially_outbound: "已部分出库", completed: "已出库（已通知财务收款）", cancelled: "已取消" };
 const number = (value: string | undefined) => Number(value ?? 0);
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
@@ -122,11 +122,13 @@ export default function FinishedGoodsStoragePage() {
     setDialog({ title: `冲销次品记录：${row.defectiveNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void run(`/finished-goods/defectives/${row.id}/reverse`, { reason: values.reason }, "次品记录已冲销") });
   }
 
-  /** 按销售发起的出库通知生成成品出库单：数量固定为通知数量（整批），仓库不能改。 */
+  /** 按销售发起的出库通知生成成品出库单：默认出剩余量，也可以只出一部分（分批出库）。 */
   function createOutboundFromNotice(row: OutboundNotice) {
-    setDialog({ title: `生成成品出库单（整批）：${row.noticeNo}`, fields: [
-      { name: "confirm", label: `确认按通知数量 ${row.noticeQuantity}${row.unit?.name ? ` ${row.unit.name}` : ""} 整批出库？`, required: true, placeholder: "输入 确认 继续" },
-    ], submit: async (values) => { if (values.confirm?.trim() !== "确认") { notifyError("请输入“确认”以生成出库单"); return; } await run(`/finished-goods/outbound-notices/${row.id}/create-outbound`, {}, "成品出库单已生成（整批，待过账）"); } });
+    const remaining = row.remaining_quantity ?? row.noticeQuantity;
+    setDialog({ title: `生成成品出库单：${row.noticeNo}`, fields: [
+      { name: "quantity", label: "本次出库数量", type: "number", required: true, defaultValue: remaining, placeholder: `通知 ${row.noticeQuantity}，剩余 ${remaining}（可分批出库）` },
+      { name: "confirm", label: `确认出库数量不超过剩余 ${remaining}${row.unit?.name ? ` ${row.unit.name}` : ""}`, required: true, placeholder: "输入 确认 继续" },
+    ], submit: async (values) => { if (values.confirm?.trim() !== "确认") { notifyError("请输入“确认”以生成出库单"); return; } await run(`/finished-goods/outbound-notices/${row.id}/create-outbound`, { quantity: values.quantity }, `成品出库单已生成（本次 ${values.quantity}，待过账）`); } });
   }
 
   function editShipping(row: Outbound) {
@@ -209,10 +211,11 @@ export default function FinishedGoodsStoragePage() {
     { accessorKey: "orderNo", header: "订单号" },
     { id: "customer", header: "客户", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.salesOrder?.customer?.name ?? "-" },
     { id: "product", header: "成品", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.productNameSnapshot ?? "-"}${row.original.productSpecificationSnapshot ? ` / ${row.original.productSpecificationSnapshot}` : ""}` },
-    { id: "quantity", header: "通知数量（整批）", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.noticeQuantity}${row.original.unit?.name ? ` ${row.original.unit.name}` : ""}` },
+    { id: "quantity", header: "通知数量", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.noticeQuantity}${row.original.unit?.name ? ` ${row.original.unit.name}` : ""}` },
+    { id: "shipped", header: "已出库 / 剩余", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.shippedQuantity ?? "0"} / ${row.original.remaining_quantity ?? "-"}` },
     { id: "status", header: "状态", cell: ({ row }: { row: { original: OutboundNotice } }) => outboundNoticeStatusLabels[row.original.status] ?? row.original.status },
-    { id: "outbound", header: "出库单", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.outbound ? `${row.original.outbound.outboundNo}（${outboundStatusLabels[row.original.outbound.status] ?? row.original.outbound.status}）` : "-" },
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.status === "pending" ? <Button size="sm" onClick={() => createOutboundFromNotice(row.original)}>生成出库单（整批）</Button> : row.original.status === "cancelled" ? <span>已取消</span> : <span>已建单</span> },
+    { id: "outbound", header: "出库单", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.outbound_summary || "-" },
+    { id: "actions", header: "操作", cell: ({ row }: { row: { original: OutboundNotice } }) => ["pending", "outbound_created", "partially_outbound"].includes(row.original.status) && Number(row.original.remaining_quantity ?? row.original.noticeQuantity) > 0 ? <Button size="sm" onClick={() => createOutboundFromNotice(row.original)}>生成出库单</Button> : row.original.status === "cancelled" ? <span>已取消</span> : <span>已发完</span> },
   ];
   const defectiveColumns = [
     { accessorKey: "defectiveNo", header: "次品单" },
@@ -316,11 +319,11 @@ export default function FinishedGoodsStoragePage() {
       <div className="panel-body"><DataTable columns={defectiveColumns} data={defectives} empty={<EmptyState title="暂无次品记录" description="质检不合格数量可在上方「登记次品」后过账。" />} /></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>成品出库通知（销售发起）</h2><span className="panel-note">销售在销售订单页「通知仓库出库」后出现在这里；点「生成出库单（整批）」即可建单，过账后自动生成应收来源并通知财务收款</span></div>
+      <div className="panel-heading"><h2>成品出库通知（销售发起）</h2><span className="panel-note">销售在销售订单页「通知仓库出库」后出现在这里；点「生成出库单」可按剩余量分批出库，每次过账后自动生成应收来源并通知财务收款</span></div>
       <div className="panel-body"><DataTable columns={outboundNoticeColumns} data={outboundNotices} empty={<EmptyState title="暂无出库通知" description="成品入库后由销售在【销售 → 打开销售单 → 成品入库与出库】通知仓库出库。" />} /></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>成品出库单</h2><span className="panel-note">只允许整批出库（数量=当前成品可用量）；过账后自动生成应收来源草稿，财务在「应收来源」确认并核销收款</span></div>
+      <div className="panel-heading"><h2>成品出库单</h2><span className="panel-note">支持分批出库（单张数量 ≤ 当前成品可用量）；每次过账自动生成应收来源草稿，财务在「应收来源」确认并核销收款</span></div>
       <div className="panel-body"><DataTable columns={outboundColumns} data={outbounds} empty={<EmptyState title="暂无成品出库单" description="生成出库单后在这里过账、维护发货与签收。" />} /></div>
     </section>
   </div>;

@@ -12,15 +12,17 @@ class ShippingDto { @IsOptional() @IsDateString() shipment_date?: string; @IsOpt
 class SignDto { @IsDateString() signed_at!: string; @IsOptional() @IsString() @MaxLength(500) signature_reference?: string; @IsOptional() attachment?: unknown[]; }
 class ReturnDto { @IsUUID() sales_order_id!: string; @IsUUID() production_order_id!: string; @IsString() quantity!: string; @IsDateString() return_date!: string; @IsIn(["finished_goods", "defective_goods"]) destination!: "finished_goods" | "defective_goods"; @IsString() @MaxLength(1000) reason!: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() attachment?: unknown[]; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
+// 按出库通知建出库单：quantity 可选（分批出库）；不传就出完剩余量。
+class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; }
 
 @Controller("finished-goods")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("warehouse")
 export class FinishedGoodsOutboundController {
   constructor(private readonly outbound: FinishedGoodsOutboundService) {}
-  // 出库通知：销售在销售页「通知仓库出库」后，仓库在这里看到并生成整批出库单。
+  // 出库通知：销售在销售页「通知仓库出库」后，仓库在这里看到，并可按剩余量分批生成出库单。
   @Get("outbound-notices") async listOutboundNotices(@Query("order_no") orderNo?: string, @Query("status") status?: string) { return { data: await this.outbound.listOutboundNotices(orderNo, status), meta: {} }; }
-  @Post("outbound-notices/:id/create-outbound") async createOutboundFromNotice(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutboundFromNotice(id, user), meta: {} }; }
+  @Post("outbound-notices/:id/create-outbound") async createOutboundFromNotice(@Param("id") id: string, @Body() body: NoticeOutboundDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutboundFromNotice(id, body, user), meta: {} }; }
   @Get("outbounds") async listOutbounds(@Query("order_no") orderNo?: string) { return { data: await this.outbound.listOutbounds(orderNo), meta: {} }; }
   @Get("outbounds/:id") async getOutbound(@Param("id") id: string) { return { data: await this.outbound.getOutbound(id), meta: {} }; }
   @Post("outbounds") async createOutbound(@Body() body: OutboundDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutbound(body, user), meta: {} }; }

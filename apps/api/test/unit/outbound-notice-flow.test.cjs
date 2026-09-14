@@ -5,20 +5,22 @@ const { Prisma } = require("@prisma/client");
 const { FinishedGoodsOutboundNoticeService } = require("../../dist/modules/sales/finished-goods-outbound-notice.service.js");
 const { FinishedGoodsOutboundService } = require("../../dist/modules/warehouse/finished-goods-outbound.service.js");
 
-// 成品出库通知链路（需求 4/6）：
-//   成品入库 → 销售「通知仓库出库」（整批） → 仓库按通知生成出库单（整批） → 过账生成应收（通知财务收款）
-// 口径：可出库 = 已过账入库 − 已过账/已发出/已签收出库 − 待办通知量；通知与出库都必须是整批。
+// 成品出库通知链路（需求 4/6，第三批需求 1 改为支持分批出库）：
+//   成品入库 → 销售「通知仓库出库」 → 仓库按通知**分批**生成出库单 → 每张过账生成各自应收（通知财务收款）
+// 口径：
+//   - 可出库 = 库存余额（入库 − 出库 + 退货回仓） − 待办通知的「通知量 − 已出库量」之和；
+//   - 仓库可按剩余量分批建单（也可只出一部分），数量必须 ≤ 剩余量且 ≤ 库存余额；
+//   - 通知状态按累计出库推导：pending → outbound_created（有草稿）→ partially_outbound（部分出库）→ completed（发完）。
 const user = { id: "00000000-0000-0000-0000-000000000001", username: "tester" };
 const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: async () => undefined };
 
 function decimal(value) { return new Prisma.Decimal(value); }
 
+// ---------- 销售侧：可出库量与通知 ----------
 function salesService(overrides = {}) {
-  const balance = overrides.balance ?? decimal(50); // 库存事实余额（= 入库 − 出库 + 退货回仓）
+  const balance = overrides.balance ?? decimal(50);
   const prisma = {
-    salesOrder: {
-      findFirst: async () => ({ id: "so-1", orderNo: "SO-1", customerId: "customer-1", productName: "折叠伞", productSpec: "8K", quantity: decimal(100), unit: "把", settlementUnitPrice: decimal("12.5"), customer: { id: "customer-1", name: "海外客户" } }),
-    },
+    salesOrder: { findFirst: async () => ({ id: "so-1", orderNo: "SO-1", customerId: "customer-1", productName: "折叠伞", productSpec: "8K", quantity: decimal(100), unit: "把", settlementUnitPrice: decimal("12.5"), customer: { id: "customer-1", name: "海外客户" } }) },
     productionOrder: {
       findMany: async () => [{ id: "po-1", productionOrderNo: "MO-1", status: "completed", executionMode: "in_house", executionLocation: { name: "一车间" }, unitId: "unit-1", unit: { name: "把" }, plannedQuantity: decimal(100), productSpecification: "8K" }],
       findFirst: async () => ("productionOrderFindFirst" in overrides ? overrides.productionOrderFindFirst : { id: "po-1", productionOrderNo: "MO-1", unitId: "unit-1", productSpecification: "8K", unit: { name: "把" } }),
@@ -26,10 +28,9 @@ function salesService(overrides = {}) {
     finishedGoodsInbound: { aggregate: async () => ({ _sum: { quantity: overrides.inbound ?? decimal(60) } }) },
     finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: overrides.outbound ?? decimal(0) } }) },
     finishedGoodsOutboundNotice: {
-      aggregate: async () => ({ _sum: { noticeQuantity: overrides.pendingNotice ?? decimal(0) } }),
-      // 幂等重放走 startsWith 前缀查询（存储键带 :生产单ID 后缀），这里按查询形状区分。
       findMany: async (args) => {
         if (args?.where?.idempotencyKey) { overrides.onReplayQuery?.(args); return overrides.replayed ?? []; }
+        if (args?.select?.noticeQuantity) return overrides.openNotices ?? [];
         return overrides.notices ?? [];
       },
       findFirst: async () => overrides.existingNotice ?? null,
@@ -43,9 +44,8 @@ function salesService(overrides = {}) {
       finishedGoodsInbound: { aggregate: async () => ({ _sum: { quantity: overrides.inbound ?? decimal(60) } }) },
       finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: overrides.outbound ?? decimal(0) } }) },
       finishedGoodsOutboundNotice: {
-        aggregate: async () => ({ _sum: { noticeQuantity: overrides.pendingNotice ?? decimal(0) } }),
+        findMany: async (args) => (args?.select?.noticeQuantity ? (overrides.openNotices ?? []) : (overrides.notices ?? [])),
         create: async ({ data }) => { overrides.created?.push(data); return { id: "notice-1", ...data }; },
-        // 取消通知走「带状态条件的 updateMany + 回读」，替身要按 cancelUpdated 返回影响行数。
         updateMany: async ({ data }) => { overrides.noticeUpdates?.push(data); return { count: overrides.cancelUpdated ?? 1 }; },
         findFirst: async () => overrides.existingNotice ?? null,
       },
@@ -54,36 +54,37 @@ function salesService(overrides = {}) {
   return new FinishedGoodsOutboundNoticeService(prisma, { finishedGoodsBalance: async () => balance }, audit);
 }
 
-test("销售订单成品情况：可出库 = 库存余额 − 待办通知量（退货回仓也会算进来）", async () => {
-  const service = salesService({ inbound: decimal(60), outbound: decimal(10), pendingNotice: decimal(20), balance: decimal(50) });
+test("销售订单成品情况：可出库 = 库存余额 − 待办通知的未出库部分", async () => {
+  // 余额 50；一张通知 60 已出库 20 → 仍占用 40 → 可出库 10
+  const service = salesService({ inbound: decimal(60), outbound: decimal(10), balance: decimal(50), openNotices: [{ noticeQuantity: decimal(60), shippedQuantity: decimal(20) }] });
   const summary = await service.summary("so-1");
   const row = summary.production_orders[0];
   assert.equal(row.inbound_quantity, "60");
   assert.equal(row.outbound_quantity, "10");
-  assert.equal(row.pending_notice_quantity, "20");
-  assert.equal(row.available_quantity, "30");
+  assert.equal(row.pending_notice_quantity, "40", "待办占用 = 通知量 − 已出库量");
+  assert.equal(row.available_quantity, "10");
   assert.equal(summary.settlement_unit_price, "12.5");
 });
 
-test("客户退货回到成品仓后，可出库量随之增加（按库存余额而不是硬算入库−出库）", async () => {
-  // 入库 60、出库 10，但有一笔退货 5 回到成品仓 → 余额 55，扣掉待办通知 20 = 可出库 35
-  const service = salesService({ inbound: decimal(60), outbound: decimal(10), pendingNotice: decimal(20), balance: decimal(55) });
-  const summary = await service.summary("so-1");
-  assert.equal(summary.production_orders[0].available_quantity, "35");
+test("通知全部出库后不再占用额度；退货回仓后可出库量随之增加", async () => {
+  const shipped = salesService({ balance: decimal(50), openNotices: [{ noticeQuantity: decimal(50), shippedQuantity: decimal(50) }] });
+  assert.equal((await shipped.summary("so-1")).production_orders[0].available_quantity, "50", "发完的通知不再占用额度");
+
+  const returned = salesService({ balance: decimal(55), openNotices: [{ noticeQuantity: decimal(20), shippedQuantity: decimal(5) }] });
+  assert.equal((await returned.summary("so-1")).production_orders[0].available_quantity, "40", "余额 55 − 占用 15 = 40");
 });
 
-test("通知出库按可出库量建整批通知", async () => {
+test("通知出库按可出库量建通知", async () => {
   const created = [];
-  const service = salesService({ inbound: decimal(60), outbound: decimal(10), created });
-  const notices = await service.createNotices("so-1", { remark: "整批发货" }, user);
+  const service = salesService({ inbound: decimal(60), outbound: decimal(10), balance: decimal(50), created });
+  const notices = await service.createNotices("so-1", { remark: "分批发货" }, user);
   assert.equal(notices.length, 1);
-  assert.equal(created[0].noticeQuantity.toString(), "50", "通知数量必须等于当时可出库量（整批）");
+  assert.equal(created[0].noticeQuantity.toString(), "50");
   assert.equal(created[0].status, "pending");
-  assert.equal(created[0].outboundQuantity.toString(), "10");
 });
 
 test("没有可出库成品时给出可执行的 422，而不是静默成功", async () => {
-  const service = salesService({ inbound: decimal(60), outbound: decimal(0), pendingNotice: decimal(60) });
+  const service = salesService({ balance: decimal(50), openNotices: [{ noticeQuantity: decimal(50), shippedQuantity: decimal(0) }] });
   await assert.rejects(
     () => service.createNotices("so-1", {}, user),
     (error) => {
@@ -102,7 +103,7 @@ test("通知出库支持幂等键：重放精确查回原通知（不会重复�
   const notices = await service.createNotices("so-1", { idempotency_key: "web-1" }, user);
   assert.deepEqual(notices, [existing]);
   assert.deepEqual(replayQuery.where.idempotencyKey.in, ["web-1:po-1"], "存储键是「客户端键:生产单ID」，重放要精确匹配候选键");
-  assert.equal(replayQuery.where.salesOrderId, "so-1", "重放必须限定在本销售单内，避免返回别的订单的通知");
+  assert.equal(replayQuery.where.salesOrderId, "so-1", "重放必须限定在本销售单内");
 });
 
 test("指定了不属于本销售单的生产单时给出明确 422", async () => {
@@ -123,161 +124,200 @@ test("取消通知带状态条件：并发生成出库单后不能再取消", as
   assert.equal(noticeUpdates[0].status, "cancelled");
 });
 
-test("仓库按通知生成出库单：数量固定取通知数量（整批），并回填出库单号", async () => {
-  const notice = { id: "notice-1", noticeNo: "OGN-1", status: "pending", orderNo: "SO-1", salesOrderId: "so-1", productionOrderId: "po-1", unitId: "unit-1", noticeQuantity: decimal(50), productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K" };
-  const updates = [];
-  const noticeAggregate = async () => ({ _sum: { noticeQuantity: null } });
+// ---------- 仓库侧：分批出库 ----------
+function warehouseService(overrides = {}) {
+  const notice = {
+    id: "notice-1", noticeNo: "OGN-1", status: overrides.noticeStatus ?? "pending", orderNo: "SO-1", salesOrderId: "so-1", productionOrderId: "po-1",
+    unitId: "unit-1", noticeQuantity: overrides.noticeQuantity ?? decimal(50), shippedQuantity: overrides.shippedQuantity ?? decimal(0),
+    productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K",
+  };
+  const balance = overrides.balance ?? decimal(50);
+  const outboundCreates = [];
+  const noticeUpdates = [];
+  const aggregateFor = (args) => (args?.where?.status === "draft" ? { _sum: { quantity: overrides.draftQuantity ?? decimal(0) } } : { _sum: { quantity: overrides.postedQuantity ?? decimal(0) } });
   const tx = {
     $queryRaw: async () => undefined,
-    finishedGoodsOutboundNotice: { findFirst: async () => notice, aggregate: noticeAggregate, update: async ({ data }) => { updates.push(data); return { ...notice, ...data }; } },
-    finishedGoodsOutbound: { create: async ({ data }) => ({ id: "outbound-1", ...data }), aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
-    salesOrder: { findUnique: async () => ({ quantity: decimal(100) }) },
+    finishedGoodsOutboundNotice: {
+      findFirst: async () => (overrides.noticeMissing ? null : notice),
+      update: async ({ data }) => { noticeUpdates.push(data); return { ...notice, ...data }; },
+    },
+    finishedGoodsOutbound: { create: async ({ data }) => { outboundCreates.push(data); return { id: "outbound-1", ...data }; }, aggregate: async (args) => aggregateFor(args) },
+    salesOrder: { findUnique: async () => ({ quantity: overrides.plannedQuantity ?? decimal(100) }) },
+    receivableSource: { create: async () => undefined },
+    inventoryFact: { findFirst: async () => null, create: async () => undefined },
   };
-  const prisma = { finishedGoodsOutboundNotice: { findFirst: async () => notice, aggregate: noticeAggregate }, finishedGoodsOutbound: { create: async () => ({ id: "outbound-1" }) }, $transaction: async (fn) => fn(tx) };
-  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(50) });
-  const outbound = await service.createOutboundFromNotice("notice-1", user);
-  assert.equal(outbound.quantity.toString(), "50");
-  assert.equal(updates[0].status, "outbound_created");
-  assert.equal(updates[0].outboundId, "outbound-1");
+  const prisma = {
+    finishedGoodsOutboundNotice: { findFirst: async () => (overrides.noticeMissing ? null : notice) },
+    finishedGoodsOutbound: { findFirst: async () => overrides.currentOutbound ?? null, aggregate: async (args) => aggregateFor(args) },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => balance });
+  return { service, outboundCreates, noticeUpdates, notice };
+}
+
+test("按通知建出库单：不传数量就按剩余量建单，并挂到通知上", async () => {
+  const { service, outboundCreates, noticeUpdates } = warehouseService({ noticeQuantity: decimal(50), shippedQuantity: decimal(20) });
+  const outbound = await service.createOutboundFromNotice("notice-1", {}, user);
+  assert.equal(outbound.quantity.toString(), "30", "剩余量 = 通知量 50 − 已出库 20");
+  assert.equal(outboundCreates[0].outboundNoticeId, "notice-1");
+  assert.match(outboundCreates[0].idempotencyKey, /^notice:notice-1:/, "每张分批出库单的幂等键都必须唯一");
 });
 
-test("通知已建单/已完成时不能重复生成出库单", async () => {
-  const notice = { id: "notice-1", status: "outbound_created", productionOrderId: "po-1", unitId: "unit-1", noticeQuantity: decimal(50) };
-  const service = new FinishedGoodsOutboundService({ finishedGoodsOutboundNotice: { findFirst: async () => notice } }, audit, { finishedGoodsBalance: async () => decimal(50) });
-  await assert.rejects(
-    () => service.createOutboundFromNotice("notice-1", user),
-    (error) => error.getResponse().code === "OUTBOUND_NOTICE_NOT_PENDING",
-  );
-});
+test("按通知分批出库：只出一部分时数量按传入值，且不能超过剩余量", async () => {
+  const { service, outboundCreates } = warehouseService({ noticeQuantity: decimal(50) });
+  const outbound = await service.createOutboundFromNotice("notice-1", { quantity: "20" }, user);
+  assert.equal(outbound.quantity.toString(), "20");
+  assert.equal(outboundCreates[0].outboundNoticeId, "notice-1");
 
-test("通知链路同样强制整批：通知后又入库/退货回仓导致数量不一致时拒绝建单并说明差异", async () => {
-  const notice = { id: "notice-1", noticeNo: "OGN-1", status: "pending", orderNo: "SO-1", salesOrderId: "so-1", productionOrderId: "po-1", unitId: "unit-1", noticeQuantity: decimal(30) };
-  const service = new FinishedGoodsOutboundService(
-    { finishedGoodsOutboundNotice: { findFirst: async () => notice, aggregate: async () => ({ _sum: { noticeQuantity: null } }) } },
-    audit,
-    { finishedGoodsBalance: async () => decimal(60) },
-  );
+  const { service: second } = warehouseService({ noticeQuantity: decimal(50) });
   await assert.rejects(
-    () => service.createOutboundFromNotice("notice-1", user),
+    () => second.createOutboundFromNotice("notice-1", { quantity: "60" }, user),
     (error) => {
-      assert.equal(error.getResponse().code, "OUTBOUND_NOTICE_QUANTITY_STALE");
-      assert.deepEqual(error.getResponse().details, [{ notice_quantity: "30", reserved_quantity: "60", available_quantity: "60" }]);
-      assert.match(error.getResponse().message, /取消本通知/);
+      assert.equal(error.getResponse().code, "OUTBOUND_NOTICE_QUANTITY_EXCEEDED");
+      assert.deepEqual(error.getResponse().details, [{ remaining_quantity: "50", requested_quantity: "60" }]);
       return true;
     },
   );
 });
 
-test("多张通知各占一部分时都能建单（库存变大不会把两张通知一起作废）", async () => {
-  // 通知 A 50 + 通知 B 20，成品可用 70：A 的预留 = 70 − 20 = 50 ✓
-  const notice = { id: "notice-A", noticeNo: "OGN-A", status: "pending", orderNo: "SO-1", salesOrderId: "so-1", productionOrderId: "po-1", unitId: "unit-1", noticeQuantity: decimal(50), productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K" };
-  const noticeAggregate = async () => ({ _sum: { noticeQuantity: decimal(20) } });
-  const tx = {
-    $queryRaw: async () => undefined,
-    finishedGoodsOutboundNotice: { findFirst: async () => notice, aggregate: noticeAggregate, update: async ({ data }) => ({ ...notice, ...data }) },
-    finishedGoodsOutbound: { create: async ({ data }) => ({ id: "outbound-1", ...data }), aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
-    salesOrder: { findUnique: async () => ({ quantity: decimal(100) }) },
-  };
-  const prisma = { finishedGoodsOutboundNotice: { findFirst: async () => notice, aggregate: noticeAggregate }, $transaction: async (fn) => fn(tx) };
-  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(70) });
-  const outbound = await service.createOutboundFromNotice("notice-A", user);
-  assert.equal(outbound.quantity.toString(), "50");
-  assert.equal(outbound.riskReason, null, "未超计划时不应凭空写风险原因");
+test("通知已发完或已取消时不能再建出库单", async () => {
+  for (const status of ["completed", "cancelled"]) {
+    const { service } = warehouseService({ noticeStatus: status });
+    await assert.rejects(
+      () => service.createOutboundFromNotice("notice-1", {}, user),
+      (error) => error.getResponse().code === "OUTBOUND_NOTICE_NOT_PENDING",
+    );
+  }
 });
 
-test("按通知建单时会自动带上超计划风险原因（否则仓库永远过不了账）", async () => {
-  const notice = { id: "notice-A", noticeNo: "OGN-A", status: "pending", orderNo: "SO-1", salesOrderId: "so-1", productionOrderId: "po-1", unitId: "unit-1", noticeQuantity: decimal(50), productNameSnapshot: "折叠伞" };
-  const tx = {
-    $queryRaw: async () => undefined,
-    finishedGoodsOutboundNotice: { findFirst: async () => notice, aggregate: async () => ({ _sum: { noticeQuantity: null } }), update: async ({ data }) => ({ ...notice, ...data }) },
-    finishedGoodsOutbound: { create: async ({ data }) => ({ id: "outbound-1", ...data }), aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
-    salesOrder: { findUnique: async () => ({ quantity: decimal(40) }) },
-  };
-  const prisma = { finishedGoodsOutboundNotice: { findFirst: async () => notice, aggregate: async () => ({ _sum: { noticeQuantity: null } }) }, $transaction: async (fn) => fn(tx) };
-  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(50) });
-  const outbound = await service.createOutboundFromNotice("notice-A", user);
-  assert.match(outbound.riskReason, /超过订单计划量/);
-  assert.match(outbound.riskReason, /OGN-A/);
+test("出库数量不能超过当前成品可用量（分批也要看库存）", async () => {
+  const { service } = warehouseService({ noticeQuantity: decimal(50), balance: decimal(10) });
+  await assert.rejects(
+    () => service.createOutboundFromNotice("notice-1", { quantity: "30" }, user),
+    (error) => error.getResponse().code === "FINISHED_GOODS_OUTBOUND_INVENTORY_INSUFFICIENT",
+  );
 });
 
-test("草稿出库单可以取消：来源通知退回待处理并释放幂等键（避免通知永久卡死）", async () => {
-  const current = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", orderNo: "SO-1" };
+test("手动建出库单支持分批：数量不超过可用量即可", async () => {
+  const refs = { sales: { id: "so-1", orderNo: "SO-1", quantity: decimal(100), unit: "把", productName: "折叠伞", productSpec: "8K" }, production: { id: "po-1", unitId: "unit-1", salesOrderId: "so-1", orderNo: "SO-1" } };
+  const created = [];
+  const prisma = {
+    salesOrder: { findFirst: async () => refs.sales },
+    productionOrder: { findFirst: async () => refs.production },
+    finishedGoodsOutbound: { create: async ({ data }) => { created.push(data); return { id: "outbound-1", ...data }; }, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
+  };
+  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(60) });
+  await service.createOutbound({ sales_order_id: "so-1", production_order_id: "po-1", quantity: "30" }, user);
+  assert.equal(created[0].quantity.toString(), "30", "分批出库允许小于可用量");
+  await assert.rejects(
+    () => service.createOutbound({ sales_order_id: "so-1", production_order_id: "po-1", quantity: "61" }, user),
+    (error) => error.getResponse().code === "FINISHED_GOODS_OUTBOUND_INVENTORY_INSUFFICIENT",
+  );
+});
+
+test("过账按累计出库推进通知状态：部分出库 → partially_outbound，发完 → completed", async () => {
+  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(20), orderNo: "SO-1", salesOrderId: "so-1", outboundNoticeId: "notice-1", signedAt: null, riskReason: null, productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K" };
+  const noticeNotices = { findFirst: async () => ({ id: "notice-1", noticeQuantity: decimal(50), status: "outbound_created" }) };
+  const buildPost = (postedQuantity, collected) => {
+    const tx = {
+      $queryRaw: async () => undefined,
+      inventoryFact: { findFirst: async () => null, create: async () => undefined },
+      finishedGoodsOutbound: { findFirst: async () => outbound, update: async ({ data }) => ({ ...outbound, ...data }), aggregate: async (args) => (args?.where?.status === "draft" ? { _sum: { quantity: decimal(0) } } : { _sum: { quantity: postedQuantity } }) },
+      salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(10), settlementUnitPrice: decimal("12.5"), taxRate: null, currency: "CNY", quantity: decimal(100) }) },
+      receivableSource: { create: async () => undefined },
+      finishedGoodsOutboundNotice: { ...noticeNotices, update: async ({ data }) => { collected.push(data); return data; } },
+    };
+    return new FinishedGoodsOutboundService({ finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) }, $transaction: async (fn) => fn(tx) }, audit, { finishedGoodsBalance: async () => decimal(50) });
+  };
+  const complete = [];
+  await buildPost(decimal(50), complete).postOutbound("outbound-1", user);
+  assert.equal(complete[0].shippedQuantity.toString(), "50");
+  assert.equal(complete[0].status, "completed");
+
+  const partial = [];
+  await buildPost(decimal(20), partial).postOutbound("outbound-1", user);
+  assert.equal(partial[0].shippedQuantity.toString(), "20");
+  assert.equal(partial[0].status, "partially_outbound");
+});
+
+test("草稿出库单可以取消：释放幂等键并按剩余量重新推导通知状态", async () => {
+  const current = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", orderNo: "SO-1", outboundNoticeId: "notice-1" };
   const outboundUpdates = [];
   const noticeUpdates = [];
   const tx = {
     $queryRaw: async () => undefined,
-    finishedGoodsOutbound: { findFirst: async () => current, update: async ({ data }) => { outboundUpdates.push(data); return { ...current, ...data }; } },
-    finishedGoodsOutboundNotice: { updateMany: async ({ data }) => { noticeUpdates.push(data); return { count: 1 }; } },
+    finishedGoodsOutbound: { findFirst: async () => current, update: async ({ data }) => { outboundUpdates.push(data); return { ...current, ...data }; }, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
+    finishedGoodsOutboundNotice: { findFirst: async () => ({ id: "notice-1", noticeQuantity: decimal(50), status: "outbound_created" }), update: async ({ data }) => { noticeUpdates.push(data); return data; } },
   };
-  const prisma = { finishedGoodsOutbound: { findFirst: async () => current }, $transaction: async (fn) => fn(tx) };
+  const prisma = { finishedGoodsOutbound: { findFirst: async () => current, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) }, $transaction: async (fn) => fn(tx) };
   const service = new FinishedGoodsOutboundService(prisma, audit, {});
-  await service.cancelOutbound("outbound-1", "库存不一致，需重新通知", user);
+  await service.cancelOutbound("outbound-1", "库存不一致", user);
   assert.equal(outboundUpdates[0].status, "cancelled");
   assert.match(outboundUpdates[0].idempotencyKey, /^cancelled:/, "必须释放 notice:<id> 幂等键，允许重新建单");
-  assert.equal(noticeUpdates[0].status, "pending");
-  assert.equal(noticeUpdates[0].outboundId, null);
+  assert.equal(noticeUpdates[0].status, "pending", "没有已出库量时回到 pending");
+  assert.equal(noticeUpdates[0].shippedQuantity.toString(), "0");
 });
 
 test("已过账出库单不能取消（必须先冲销）", async () => {
-  const current = { id: "outbound-1", status: "posted" };
-  const service = new FinishedGoodsOutboundService({ finishedGoodsOutbound: { findFirst: async () => current } }, audit, {});
+  const service = new FinishedGoodsOutboundService({ finishedGoodsOutbound: { findFirst: async () => ({ id: "outbound-1", status: "posted" }) } }, audit, {});
   await assert.rejects(
     () => service.cancelOutbound("outbound-1", "误操作", user),
     (error) => error.getResponse().code === "FINISHED_GOODS_OUTBOUND_NOT_CANCELLABLE",
   );
 });
 
-test("手动建出库单也必须整批：数量不等于当前可用量直接 422", async () => {
-  const refs = { sales: { id: "so-1", orderNo: "SO-1", quantity: decimal(100), unit: "把", productName: "折叠伞", productSpec: "8K" }, production: { id: "po-1", unitId: "unit-1", salesOrderId: "so-1", orderNo: "SO-1" } };
-  const prisma = { salesOrder: { findFirst: async () => refs.sales }, productionOrder: { findFirst: async () => refs.production }, finishedGoodsOutbound: { create: async () => ({ id: "outbound-1" }) } };
-  const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(60) });
-  await assert.rejects(
-    () => service.createOutbound({ sales_order_id: "so-1", production_order_id: "po-1", quantity: "30" }, user),
-    (error) => {
-      assert.equal(error.getResponse().code, "FINISHED_GOODS_OUTBOUND_MUST_BE_FULL_BATCH");
-      assert.deepEqual(error.getResponse().details, [{ available_quantity: "60", requested_quantity: "30" }]);
-      return true;
-    },
-  );
+test("冲销一张分批出库单：已出库量下降，通知回到可继续出库的状态", async () => {
+  const outbound = { id: "outbound-1", status: "posted", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(20), orderNo: "SO-1", salesOrderId: "so-1", outboundNoticeId: "notice-1", remark: null };
+  const noticeUpdates = [];
+  const tx = {
+    $queryRaw: async () => undefined,
+    inventoryFact: { findFirst: async () => null, create: async () => undefined },
+    finishedGoodsOutbound: { update: async ({ data }) => ({ ...outbound, ...data }), aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
+    receivableSource: { findFirst: async () => null },
+    finishedGoodsOutboundNotice: { findFirst: async () => ({ id: "notice-1", noticeQuantity: decimal(50), status: "partially_outbound" }), update: async ({ data }) => { noticeUpdates.push(data); return data; } },
+  };
+  const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) }, $transaction: async (fn) => fn(tx) };
+  const service = new FinishedGoodsOutboundService(prisma, audit, {});
+  await service.reverseOutbound("outbound-1", "发错货", user);
+  assert.equal(noticeUpdates[0].shippedQuantity.toString(), "0");
+  assert.equal(noticeUpdates[0].status, "pending", "冲销后剩余量回来，仓库可以重新建单");
 });
 
-test("出库过账后：生成应收来源草稿（按结算币价）并把通知置为 completed", async () => {
-  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(50), orderNo: "SO-1", salesOrderId: "so-1", productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K", signedAt: null, riskReason: null };
+test("过账生成应收（按结算币价）并把通知推进为 completed", async () => {
+  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(50), orderNo: "SO-1", salesOrderId: "so-1", outboundNoticeId: "notice-1", signedAt: null, riskReason: null, productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K" };
   const receivableWrites = [];
   const noticeUpdates = [];
   const tx = {
     $queryRaw: async () => undefined,
     inventoryFact: { findFirst: async () => null, create: async () => undefined },
-    finishedGoodsOutbound: { update: async ({ data }) => ({ ...outbound, ...data }), findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
-    salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(10), settlementUnitPrice: decimal("12.5"), taxRate: null, currency: "USD", quantity: decimal(100) }) },
+    finishedGoodsOutbound: { findFirst: async () => outbound, update: async ({ data }) => ({ ...outbound, ...data }), aggregate: async (args) => (args?.where?.status === "draft" ? { _sum: { quantity: decimal(0) } } : { _sum: { quantity: decimal(50) } }) },
+    salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(10), settlementUnitPrice: decimal("12.5"), taxRate: null, currency: "CNY", quantity: decimal(100) }) },
     receivableSource: { create: async ({ data }) => { receivableWrites.push(data); return data; } },
-    finishedGoodsOutboundNotice: { updateMany: async ({ data }) => { noticeUpdates.push(data); return { count: 1 }; } },
+    finishedGoodsOutboundNotice: { findFirst: async () => ({ id: "notice-1", noticeQuantity: decimal(50), status: "outbound_created" }), update: async ({ data }) => { noticeUpdates.push(data); return data; } },
   };
   const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) }, $transaction: async (fn) => fn(tx) };
   const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(50) });
   await service.postOutbound("outbound-1", user);
-  assert.equal(receivableWrites.length, 1, "出库过账必须生成应收来源草稿（通知财务收款）");
-  assert.equal(receivableWrites[0].unitPrice.toString(), "12.5", "应收按销售单的结算币价计价");
+  assert.equal(receivableWrites.length, 1, "每张分批出库单各自生成应收（通知财务收款）");
+  assert.equal(receivableWrites[0].unitPrice.toString(), "12.5");
   assert.equal(receivableWrites[0].amount.toString(), "625");
-  assert.equal(receivableWrites[0].status, "draft");
-  assert.equal(noticeUpdates[0].status, "completed", "来源出库通知要置为已完成");
+  assert.equal(noticeUpdates[0].status, "completed");
 });
 
 test("填写了「应收金额」时，应收按 应收金额 ÷ 订单数量 计价（整单出库总额与销售填写一致）", async () => {
-  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(100), orderNo: "SO-1", salesOrderId: "so-1", productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K", signedAt: null, riskReason: null };
+  const outbound = { id: "outbound-1", status: "draft", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(100), orderNo: "SO-1", salesOrderId: "so-1", signedAt: null, riskReason: null, productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K" };
   const receivableWrites = [];
   const tx = {
     $queryRaw: async () => undefined,
     inventoryFact: { findFirst: async () => null, create: async () => undefined },
-    finishedGoodsOutbound: { update: async ({ data }) => ({ ...outbound, ...data }), findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
+    finishedGoodsOutbound: { findFirst: async () => outbound, update: async ({ data }) => ({ ...outbound, ...data }), aggregate: async () => ({ _sum: { quantity: decimal(0) } }) },
     salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(10), settlementUnitPrice: decimal("12.5"), receivableAmount: decimal(1300), settlementMethod: "tt", localCurrencyAmount: decimal("9360"), taxRate: null, currency: "USD", quantity: decimal(100) }) },
     receivableSource: { create: async ({ data }) => { receivableWrites.push(data); return data; } },
-    finishedGoodsOutboundNotice: { updateMany: async () => ({ count: 0 }) },
   };
   const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(0) } }) }, $transaction: async (fn) => fn(tx) };
   const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(100) });
   await service.postOutbound("outbound-1", user);
-  assert.equal(receivableWrites[0].amount.toString(), "1300", "整单出库时应收总额必须等于销售填写的应收金额");
+  assert.equal(receivableWrites[0].amount.toString(), "1300");
   assert.match(receivableWrites[0].remark, /结算方式 T\/T 电汇/);
   assert.match(receivableWrites[0].remark, /本币金额 9360/);
 });
@@ -299,25 +339,6 @@ test("应收计价全为 0 时拒绝过账（不能让出库生成 0 元应收�
   );
 });
 
-test("出库冲销后：来源通知退回待处理，仓库可以重新建单", async () => {
-  const outbound = { id: "outbound-1", status: "posted", productionOrderId: "po-1", unitId: "unit-1", quantity: decimal(50), orderNo: "SO-1", salesOrderId: "so-1", productNameSnapshot: "折叠伞", productSpecificationSnapshot: "8K", remark: null };
-  const noticeUpdates = [];
-  const tx = {
-    $queryRaw: async () => undefined,
-    inventoryFact: { findFirst: async () => null, create: async () => undefined },
-    finishedGoodsOutbound: { update: async ({ data }) => ({ ...outbound, ...data }) },
-    receivableSource: { findFirst: async () => null },
-    finishedGoodsOutboundNotice: { updateMany: async ({ data }) => { noticeUpdates.push(data); return { count: 1 }; } },
-  };
-  const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound }, $transaction: async (fn) => fn(tx) };
-  const service = new FinishedGoodsOutboundService(prisma, audit, {});
-  await service.reverseOutbound("outbound-1", "发错货", user);
-  assert.equal(noticeUpdates[0].status, "pending");
-  assert.equal(noticeUpdates[0].outboundId, null);
-});
-
-// 过账与「维护发货 / 登记签收」的并发：已冲销的单据不能被改回 shipped/signed，
-// 否则出库量会被重复计入（通知仍可重新建单），应收也会与实际不符。
 test("维护发货与登记签收都带状态条件：已冲销的出库单既被前置拦截，也无法被 CAS 覆盖", async () => {
   const reversed = { id: "outbound-1", status: "reversed", orderNo: "SO-1", shipmentDate: null, signedAt: null };
   const updateCalls = [];
@@ -331,7 +352,6 @@ test("维护发货与登记签收都带状态条件：已冲销的出库单既�
   await assert.rejects(() => service.updateShipping("outbound-1", { carrier: "顺丰" }, user), (error) => error.getResponse().code === "INVALID_OUTBOUND_SHIPPING_STATE");
   assert.equal(updateCalls.length, 0, "状态不允许时不应发起任何写入");
 
-  // 竞态窗口：前置读到 shipped（允许签收），但写入时状态已被改成 reversed → CAS 影响 0 行，必须 422。
   const shipped = { ...reversed, status: "shipped" };
   const racing = {
     finishedGoodsOutbound: { findFirst: async () => shipped, updateMany: async ({ where, data }) => { updateCalls.push({ where, data }); return { count: 0 }; } },
@@ -355,10 +375,8 @@ test("过账时才发现超计划：自动写入可追溯原因并放行（不�
       aggregate: async () => ({ _sum: { quantity: decimal(5) } }),
       update: async ({ data }) => { postedData = data; return { ...outbound, ...data }; },
     },
-    // 计划 12，已出库 5 + 本单 10 = 15 > 12 → 必须在过账时自动记录原因
     salesOrder: { findUnique: async () => ({ id: "so-1", customerId: "customer-1", unit: "把", unitPrice: decimal(10), settlementUnitPrice: null, receivableAmount: null, taxRate: null, currency: "CNY", quantity: decimal(12) }) },
     receivableSource: { create: async () => undefined },
-    finishedGoodsOutboundNotice: { updateMany: async () => ({ count: 0 }) },
   };
   const prisma = { finishedGoodsOutbound: { findFirst: async () => outbound, aggregate: async () => ({ _sum: { quantity: decimal(5) } }) }, $transaction: async (fn) => fn(tx) };
   const service = new FinishedGoodsOutboundService(prisma, audit, { finishedGoodsBalance: async () => decimal(10) });
