@@ -50,7 +50,7 @@ export function receivableAmountFor(sales: SettlementSalesOrder | null, unitPric
 }
 
 /** 把结算口径写进应收来源备注，财务不必回到销售单才能看到结算方式与本币金额。 */
-export function settlementRemark(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal | string): string {
+export function settlementRemark(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal | string, quantity?: Prisma.Decimal | string): string {
   const price = toDecimal(unitPrice) ?? new Prisma.Decimal(0);
   const parts = [`结算单价 ${price.toFixed(4)}`];
   if (sales?.settlementMethod) parts.push(`结算方式 ${SETTLEMENT_METHOD_LABELS[sales.settlementMethod] ?? sales.settlementMethod}`);
@@ -58,5 +58,12 @@ export function settlementRemark(sales: SettlementSalesOrder | null, unitPrice: 
   if (localAmount) parts.push(`本币金额 ${localAmount.toString()}`);
   const receivableAmount = toDecimal(sales?.receivableAmount);
   if (receivableAmount) parts.push(`销售单应收 ${receivableAmount.toString()}`);
+  // 分批出库时应收按 应收金额 ÷ 订单数量 折算到 4 位小数，逐单相乘会有尾差（拆得越多越明显），
+  // 这里写明口径，财务对账时才不会把它当成错账。
+  const orderQuantity = toDecimal(sales?.quantity);
+  const shipped = toDecimal(quantity);
+  if (receivableAmount && receivableAmount.gt(0) && orderQuantity && orderQuantity.gt(0) && shipped && !shipped.eq(orderQuantity)) {
+    parts.push("分批出库：应收按 销售单应收 ÷ 订单数量 折算，逐单尾差 ≤ 0.0001，合计以销售单应收为准");
+  }
   return parts.join("；");
 }

@@ -179,7 +179,7 @@ export class FinishedGoodsOutboundService {
       const riskReason = current.riskReason?.trim() || (overPlan ? `过账时判定累计出库超过订单计划量：计划 ${sales.quantity.toString()}，已出库 ${postedQuantity.toString()}，本单 ${current.quantity.toString()}（系统自动记录，请复核）` : null);
       const posted = await tx.finishedGoodsOutbound.update({ where: { id }, data: { status: "posted", riskReason, idempotencyKey: `post:${id}`, ...this.audit.update(user) } });
       await tx.inventoryFact.create({ data: { finishedGoodsOutboundId: id, unitId: current.unitId, inventoryCategory: "finished_goods", quantityDelta: current.quantity.negated(), sourceType: "finished_goods_outbound", sourceId: id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, productNameSnapshot: current.productNameSnapshot, productSpecificationSnapshot: current.productSpecificationSnapshot, createdBy: user.id } });
-      await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: settlementPrice, taxRate: sales.taxRate, amount: this.receivableAmountFor(sales, settlementPrice, current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, remark: this.settlementRemark(sales, settlementPrice), ...this.audit.create(user) } });
+      await tx.receivableSource.create({ data: { sourceNo: `AR-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: current.orderNo, salesOrderId: current.salesOrderId, outboundId: id, customerId: sales.customerId, quantity: current.quantity, unit: sales.unit, unitPrice: settlementPrice, taxRate: sales.taxRate, amount: this.receivableAmountFor(sales, settlementPrice, current.quantity), currency: sales.currency, status: "draft", signedAtSnapshot: current.signedAt, remark: this.settlementRemark(sales, settlementPrice, current.quantity), ...this.audit.create(user) } });
       // 出库过账 = 通知财务收款：应收来源草稿已生成；来源通知按累计出库量重新推导状态
       //（分批出库时可能只是 partially_outbound，发完才 completed）。
       if (current.outboundNoticeId) await this.syncNoticeStatus(tx, current.outboundNoticeId, user);
@@ -355,7 +355,7 @@ export class FinishedGoodsOutboundService {
   private receivableAmountFor(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal, quantity: Prisma.Decimal) { return receivableAmountFor(sales, unitPrice, quantity); }
 
   /** 把结算口径写进应收来源备注，财务不用回到销售单也能看到结算方式与本币金额。 */
-  private settlementRemark(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal) { return settlementRemark(sales, unitPrice); }
+  private settlementRemark(sales: SettlementSalesOrder | null, unitPrice: Prisma.Decimal, quantity?: Prisma.Decimal) { return settlementRemark(sales, unitPrice, quantity); }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }
   private invalid(code: string, message: string) { return new UnprocessableEntityException({ code, message, details: [] }); }
 }

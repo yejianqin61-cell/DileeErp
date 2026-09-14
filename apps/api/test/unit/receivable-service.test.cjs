@@ -2,6 +2,18 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { ReceivableService } = require("../../dist/modules/finance/receivable.service.js");
+const { settlementRemark } = require("../../dist/modules/warehouse/finished-goods-settlement.js");
+
+test("分批出库的应收备注写明折算口径（逐单尾差 ≤ 0.0001），整单出库不加这句", () => {
+  const sales = { quantity: new Prisma.Decimal(3), unitPrice: new Prisma.Decimal(10), settlementUnitPrice: new Prisma.Decimal("33.3333"), receivableAmount: new Prisma.Decimal(100), settlementMethod: "tt", localCurrencyAmount: new Prisma.Decimal(720) };
+
+  const partial = settlementRemark(sales, new Prisma.Decimal("33.3333"), new Prisma.Decimal(1));
+  assert.match(partial, /销售单应收 100/, "财务要能看到销售单权威金额");
+  assert.match(partial, /分批出库：应收按 销售单应收 ÷ 订单数量 折算/, "分批出库必须写明尾差口径");
+
+  const full = settlementRemark(sales, new Prisma.Decimal("33.3333"), new Prisma.Decimal(3));
+  assert.doesNotMatch(full, /分批出库/, "整单出库金额直接取应收金额，不存在尾差");
+});
 
 test("receivable confirmation locks and rechecks the current source", async () => {
   let lockCount = 0;

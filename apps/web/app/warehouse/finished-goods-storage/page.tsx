@@ -234,9 +234,15 @@ export default function FinishedGoodsStoragePage() {
       </div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>成品存量</h2><span className="panel-note">按订单/生产单/成品规格聚合库存事实</span></div>
+      <div className="panel-heading"><h2>成品存量</h2><span className="panel-note">按订单号收束（展开到生产单/成品规格），存量口径见下表说明</span></div>
       <div className="panel-body">
         <h3>成品（按订单号收束，点击条目展开明细）</h3>
+        <p className="panel-note">
+          三个数不是同一个口径，不满足「现存 = 已入库 − 已出库」属正常：
+          现存数量取库存事实余额（入库过账 − 出库过账 + 客户退货回仓 − 转次品/冲销）；
+          已入库 / 已出库是单据口径（只统计已过账的入库单与已过账/已发出/已签收的出库单，
+          不含退货回仓与转次品）。要对账请以「现存数量」为准。
+        </p>
         <div className="table-wrap"><table className="ui-table">
           <thead><tr><th className="ui-table-head">订单号</th><th className="ui-table-head">成品现存数量</th><th className="ui-table-head">已入库数量</th><th className="ui-table-head">已出库数量</th><th className="ui-table-head">明细</th></tr></thead>
           <tbody>
