@@ -12,7 +12,7 @@ import { emitQcDataChanged, subscribeQcDataChanged } from "./qc-refresh";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Source = { source_id: string; source_type: string; order_no: string; production_order_no: string; production_order_id: string; unit: string; available_quantity: string; source_status: string; product_name?: string; product_specification?: string; notice_id?: string; notice_no?: string; batch_no?: string | null; packaging_operation_name?: string };
-type QcRecord = { qc_id: string; qc_no: string; order_no: string; submission_id: string; status?: string; source_type: string; source_id: string; unit?: string; qualified_quantity: string; conditional_accept_quantity: string; available_for_inbound_quantity: string; conditionally_accepted: boolean };
+type QcRecord = { qc_id: string; qc_no: string; order_no: string; submission_id: string; status?: string; source_type: string; source_id: string; unit?: string; qualified_quantity: string; conditional_accept_quantity: string; rejected_quantity?: string; available_for_inbound_quantity: string; conditionally_accepted: boolean; inspected_quantity?: string; inspection_date?: string; rejection_reason?: string | null; available_for_correction?: boolean };
 type SubmissionQcRecord = { id: string; conclusion: string; inspectedQuantity: string };
 type Submission = { id: string; submissionNo: string; orderNo: string; productionOrderId?: string; productionOrderNoSnapshot?: string; sourceType: string; sourceId: string; submittedQuantity: string; submissionDate?: string; remark?: string | null; version?: number; status: string; unitNameSnapshot: string; productNameSnapshot?: string; productSpecificationSnapshot?: string | null; qcRecords: SubmissionQcRecord[] };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
@@ -134,9 +134,33 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
       { name: "rejected_quantity", label: "不合格数量", type: "number", required: true, defaultValue: values.rejected_quantity ?? "0" },
       { name: "rejection_reason", label: "不合格原因", type: "textarea", defaultValue: values.rejection_reason, placeholder: "不合格数量大于 0 时必填" },
     ], submit: (v) => {
+      // 与「更正」一致：抛错把原因留在弹窗里，不关窗、不丢已填值。
       const invalid = qcBalanceError(v);
-      if (invalid) { setError(invalid); notifyError(invalid); return; }
+      if (invalid) throw new Error(invalid);
       void run(() => apiPost("/finished-goods/qc-records", v), "成品质检已保存");
+    } });
+  }
+  /**
+   * 更正质检记录（POST /finished-goods/qc-records/:id/correct）。
+   * 后端只允许「还没有成品入库/次品事实」的记录更正，并强制 合格+条件接收+不合格 = 检验数量 且必须填更正原因；
+   * 界面按同一条件给按钮与预填值（见 available_for_correction），避免给出必然被拒的入口。
+   */
+  function correctQc(row: QcRecord) {
+    const inspected = row.inspected_quantity ?? String(Number(row.qualified_quantity) + Number(row.conditional_accept_quantity) + Number(row.rejected_quantity ?? 0));
+    setDialog({ title: `更正成品质检：${row.qc_no}`, fields: [
+      { name: "inspection_date", label: "检验日期", type: "date", required: true, defaultValue: (row.inspection_date ?? new Date().toISOString()).slice(0, 10) },
+      { name: "inspected_quantity", label: "本次检验数量", type: "number", required: true, defaultValue: inspected, placeholder: "必须等于合格+条件接收+不合格" },
+      { name: "qualified_quantity", label: "合格数量", type: "number", required: true, defaultValue: row.qualified_quantity },
+      { name: "conditional_accept_quantity", label: "条件接收数量", type: "number", required: true, defaultValue: row.conditional_accept_quantity },
+      { name: "rejected_quantity", label: "不合格数量", type: "number", required: true, defaultValue: row.rejected_quantity ?? "0" },
+      { name: "rejection_reason", label: "不合格原因", type: "textarea", defaultValue: row.rejection_reason ?? undefined, placeholder: "不合格数量大于 0 时必填" },
+      { name: "reason", label: "更正原因", type: "textarea", required: true },
+    ], submit: (v) => {
+      // 抛错而不是 setError：ActionDialog 会把原因显示在弹窗内并保留用户填好的数量，
+      // 用 setError 只能显示在弹窗背后的页面上（弹窗已经被这次提交关掉了）。
+      const invalid = qcBalanceError(v);
+      if (invalid) throw new Error(invalid);
+      void run(() => apiPost(`/finished-goods/qc-records/${row.qc_id}/correct`, v), "成品质检已更正");
     } });
   }
   function openSubmission(values: Record<string, string>) {
@@ -159,10 +183,10 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
   const visibleOrders = useMemo(() => orderNumbers.filter((orderNo) => !query.trim() || orderNo.toLowerCase().includes(query.trim().toLowerCase())), [orderNumbers, query]);
   const sourceColumns: ColumnDef<Source>[] = [{ accessorKey: "production_order_no", header: "生产单" }, { id: "source", header: "来源", cell: ({ row }) => sourceLabel(row.original.source_type) }, { id: "notice", header: "入库通知/批次", cell: ({ row }) => row.original.notice_no ? `${row.original.notice_no}${row.original.batch_no ? ` / ${row.original.batch_no}` : ""}` : "-" }, { id: "packaging", header: "包装工序", cell: ({ row }) => row.original.packaging_operation_name ?? "-" }, { accessorKey: "available_quantity", header: "可送检数量" }, { accessorKey: "unit", header: "单位" }, { accessorKey: "source_status", header: "状态" }, { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" onClick={() => void createSubmission(row.original)}>创建送检</Button> }];
   const submissionColumns: ColumnDef<Submission>[] = [{ accessorKey: "submissionNo", header: "送检单" }, { id: "source", header: "来源", cell: ({ row }) => `${sourceLabel(row.original.sourceType)} / ${row.original.sourceId}` }, { id: "product", header: "成品", cell: ({ row }) => `${row.original.productNameSnapshot ?? "-"} / ${row.original.productSpecificationSnapshot ?? "-"}` }, { id: "quantity", header: "送检数量", cell: ({ row }) => `${row.original.submittedQuantity} ${row.original.unitNameSnapshot}` }, { accessorKey: "status", header: "状态" }, { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => editSubmission(row.original)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => submit(row.original.id)}>提交送检</Button></>}{["draft", "submitted"].includes(row.original.status) && !row.original.qcRecords.length ? <Button size="sm" variant="ghost" onClick={() => cancelSubmission(row.original)}>取消送检</Button> : null}</div> }];
-  const qcColumns: ColumnDef<QcRecord>[] = [{ accessorKey: "qc_no", header: "质检单" }, { accessorKey: "order_no", header: "订单号" }, { accessorKey: "submission_id", header: "送检记录" }, { accessorKey: "source_type", header: "来源类型", cell: ({ row }) => sourceLabel(row.original.source_type) }, { accessorKey: "qualified_quantity", header: "合格数量" }, { accessorKey: "conditional_accept_quantity", header: "条件接收" }, { accessorKey: "available_for_inbound_quantity", header: "可入库数量（净值）" }, { id: "unit", header: "单位", cell: ({ row }) => row.original.unit ?? "-" }];
+  const qcColumns: ColumnDef<QcRecord>[] = [{ accessorKey: "qc_no", header: "质检单" }, { accessorKey: "order_no", header: "订单号" }, { accessorKey: "submission_id", header: "送检记录" }, { accessorKey: "source_type", header: "来源类型", cell: ({ row }) => sourceLabel(row.original.source_type) }, { id: "date", header: "检验日期", cell: ({ row }) => (row.original.inspection_date ?? "").slice(0, 10) || "-" }, { accessorKey: "qualified_quantity", header: "合格数量" }, { accessorKey: "conditional_accept_quantity", header: "条件接收" }, { id: "rejected", header: "不合格", cell: ({ row }) => row.original.rejected_quantity ?? "-" }, { accessorKey: "available_for_inbound_quantity", header: "可入库数量（净值）" }, { id: "unit", header: "单位", cell: ({ row }) => row.original.unit ?? "-" }, { id: "actions", header: "操作", cell: ({ row }) => row.original.available_for_correction === false ? <span className="panel-note">已有入库/次品事实，不可更正</span> : <Button size="sm" variant="ghost" onClick={() => correctQc(row.original)}>更正</Button> }];
 
   return <section className="panel" style={{ gridColumn: "1 / -1" }}>
-    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field, values) => field.name === "submission_id" ? openSubmission(values) : setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => { const current = dialog; setDialog(null); void current?.submit(values); }} />
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field, values) => field.name === "submission_id" ? openSubmission(values) : setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => dialog?.submit(values)} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) setCategoryDialog(null); }} title={categoryDialog?.title ?? "新建类目"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => { const current = categoryDialog; void current?.submit(values); }} />
     <div className="panel-heading"><h2>成品质检</h2><div className="page-actions"><Button variant="secondary" onClick={chooseQcOrder}>录入质检</Button><Button variant="ghost" onClick={() => void load()}>刷新</Button></div></div>
     {message && <p className="status-success panel-body" role="status">{message}</p>}{error && <p className="status-error panel-body" role="alert">{error}</p>}

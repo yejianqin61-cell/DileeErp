@@ -256,7 +256,7 @@ test("旧的 in_house_completion 来源不再接受新建送检单", async () =>
 });
 
 test("质检合格待入库的“可入库数量”必须是净值（扣掉草稿+已过账入库）", async () => {
-  const qcRecords = [{ id: "qc-1", submissionId: "sub-1", qualifiedQuantity: new Prisma.Decimal("30"), conditionalAcceptQuantity: new Prisma.Decimal("0"), rejectedQuantity: new Prisma.Decimal("4"), status: "active", deletedAt: null, submission: { unitId: "unit-1", unitNameSnapshot: "个", unit: { name: "个" } } }];
+  const qcRecords = [{ id: "qc-1", submissionId: "sub-1", qualifiedQuantity: new Prisma.Decimal("30"), conditionalAcceptQuantity: new Prisma.Decimal("0"), rejectedQuantity: new Prisma.Decimal("4"), inspectedQuantity: new Prisma.Decimal("34"), inspectionDate: new Date("2026-01-02T00:00:00.000Z"), rejectionReason: null, status: "active", deletedAt: null, submission: { unitId: "unit-1", unitNameSnapshot: "个", unit: { name: "个" } } }];
   const inbounds = [
     { id: "in-1", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("20"), status: "posted", deletedAt: null },
     { id: "in-2", submissionId: "sub-1", qcRecordId: "qc-1", quantity: new Prisma.Decimal("5"), status: "draft", deletedAt: null },

@@ -122,6 +122,12 @@ test("质检来源改为成品入库通知（含批次/包装工序列）", () =
   assert.match(qcPanel, /header: "包装工序"/, "送检来源要显示包装工序");
 });
 
+test("质检记录更正：后端早有 correct 接口，前端必须有入口（且按后端同一条件门控）", () => {
+  assert.match(qcPanel, /\/finished-goods\/qc-records\/\$\{row\.qc_id\}\/correct/, "质检记录要能更正");
+  assert.match(qcPanel, /available_for_correction === false/, "已有入库/次品事实的记录不给更正按钮（后端也会拒）");
+  assert.match(qcPanel, /更正原因/, "更正必须填写原因（后端 CorrectQcDto.reason 必填）");
+});
+
 test("工作台成品库存卡片展示成品存量与待入库", () => {
   assert.match(workbench, /成品存量 \{summary\.stock_quantity\}/);
   assert.match(workbench, /待入库 \{summary\.pending_inbound_quantity\}/);
