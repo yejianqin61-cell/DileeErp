@@ -37,20 +37,30 @@ function Ok([string]$text) { Write-Host "  OK  $text" -ForegroundColor Green }
 function Warn([string]$text) { Write-Host "  !!  $text" -ForegroundColor Yellow }
 function Die([string]$text) { Write-Host "  FAIL $text" -ForegroundColor Red; exit 1 }
 
+# 原生命令（npm/node/git/ssh/scp/tar）会往 stderr 写正常信息（例如 Prisma 的
+# "Environment variables loaded from .env"、npm 警告）。在 $ErrorActionPreference='Stop' 下
+# PowerShell 会把 stderr 当成终止性错误直接中断脚本，所以调用期间临时降级为 'Continue'，
+# 只用 $LASTEXITCODE 判定成败。
+function Invoke-Native([scriptblock]$action) {
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try { return (& $action 2>&1) } finally { $ErrorActionPreference = $previous }
+}
+
 function Invoke-Local([string]$description, [scriptblock]$action) {
   Write-Host "  -> $description"
-  & $action
+  Invoke-Native $action | Out-Null
   if ($LASTEXITCODE -ne 0) { Die "$description（退出码 $LASTEXITCODE）" }
   Ok $description
 }
 
 function Invoke-Remote([string]$description, [string]$command, [switch]$Capture) {
   Write-Host "  -> $description"
-  $output = & ssh @sshBase $DeployHost $command 2>&1
+  $output = Invoke-Native { ssh @sshBase $DeployHost $command }
   $code = $LASTEXITCODE
   $output | ForEach-Object { Write-Host "     $_" }
   if ($code -ne 0) { Die "$description（远端退出码 $code）" }
-  if ($Capture) { return ($output -join "`n") }
+  if ($Capture) { return (($output | Out-String).Trim()) }
 }
 
 # ---------------------------------------------------------------- 1. 基线与范围
