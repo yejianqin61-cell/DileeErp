@@ -39,8 +39,8 @@ const autoOpenCases = [
   // 自动打开原料入库单：依赖里出现 dialog 就会「关掉又被打开」。
   { file: "app/warehouse/raw-material-storage/page.tsx", marker: "shouldAutoOpenDraft(", forbidden: ["dialog"] },
   // 质检模块的深链自动开单（采购页「登记质检」按到货批次跳过来）：同理只允许依赖到货批次。
-  // 用一次性 ref（deepLinkDone）挡住重复打开，用户手动关掉后不会在下次刷新时再弹一次。
-  { file: "components/qc/incoming-inspections-panel.tsx", marker: "deepLinkDone.current", forbidden: ["dialog"] }
+  // 用「已处理过的 receipt_id」挡住重复打开，用户手动关掉后不会在下次刷新时再弹一次。
+  { file: "components/qc/incoming-inspections-panel.tsx", marker: "receiptOptions.find((item) => item.id === receiptId)", forbidden: ["dialog"] }
   // 领料/补料的深链已改为直接落到全屏编辑页（/production/material-issues/new?movement_id=…），
   // 仓库页不再有自动弹出的草稿侧栏，因此这里不再需要对应的依赖守卫。
 ];

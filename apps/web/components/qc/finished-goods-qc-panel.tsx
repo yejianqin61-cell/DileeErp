@@ -8,6 +8,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { DataTable } from "../data/data-table";
 import { EmptyState } from "../feedback/states";
+import { emitQcDataChanged, subscribeQcDataChanged } from "./qc-refresh";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Source = { source_id: string; source_type: string; order_no: string; production_order_no: string; production_order_id: string; unit: string; available_quantity: string; source_status: string; product_name?: string; product_specification?: string; notice_id?: string; notice_no?: string; batch_no?: string | null; packaging_operation_name?: string };
@@ -48,6 +49,8 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
   useEffect(() => { void load(); }, []);
   // 从别的模块带订单号跳进来（/qc?order_no=…）时直接展开该订单的质检详情。
   useEffect(() => { if (initialOrderNo) void loadOrder(initialOrderNo); }, [initialOrderNo]);
+  // 同页其它面板（来料质检 / 质检合格待入库）写入后，订单详情里的净值与可入库量也要刷新。
+  useEffect(() => subscribeQcDataChanged("finished-goods-qc", () => { void load(); if (selectedOrderNo) void loadOrder(selectedOrderNo); }), [selectedOrderNo]);
 
   async function loadOrder(orderNo: string) {
     const normalized = orderNo.trim();
@@ -69,13 +72,13 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
   }
   async function run(action: () => Promise<unknown>, success: string) {
     setError("");
-    try { await action(); notifySuccess(success); await load(); if (selectedOrderNo) await loadOrder(selectedOrderNo); }
+    try { await action(); notifySuccess(success); await load(); if (selectedOrderNo) await loadOrder(selectedOrderNo); emitQcDataChanged("finished-goods-qc"); }
     catch (cause) { notifyError(messageOf(cause, "操作失败")); }
   }
   async function createSubmission(source: Source) {
     try {
       await apiPost<Submission>("/finished-goods/inspection-submissions", { production_order_id: source.production_order_id, source_type: source.source_type, source_id: source.source_id, submitted_quantity: source.available_quantity, submission_date: new Date().toISOString().slice(0, 10) });
-      setMessage("成品送检单已创建"); await load(); await loadOrder(source.order_no);
+      setMessage("成品送检单已创建"); await load(); await loadOrder(source.order_no); emitQcDataChanged("finished-goods-qc");
     } catch (cause) { setError(messageOf(cause, "成品送检单创建失败")); }
   }
   function submit(id: string) { void run(() => apiPost(`/finished-goods/inspection-submissions/${id}/submit`), "送检单已提交"); }
