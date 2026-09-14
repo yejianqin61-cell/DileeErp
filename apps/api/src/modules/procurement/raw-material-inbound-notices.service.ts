@@ -38,7 +38,9 @@ export class RawMaterialInboundNoticesService {
         include: {
           purchaseReceipt: { include: { purchaseOrder: true, purchaseOrderItem: { include: { material: true } } } },
           rawMaterialInbounds: { where: { deletedAt: null }, select: { quantity: true, status: true } },
-          inboundNotices: { where: { deletedAt: null }, orderBy: { createdAt: "desc" }, take: 1 }
+          // 已取消的通知不算「已通知」：否则取消之后再点「通知入库」只会把那张废单原样返回，
+          // 界面看起来成功了，仓库那边却永远收不到新通知。
+          inboundNotices: { where: { deletedAt: null, status: { not: "cancelled" } }, orderBy: { createdAt: "desc" }, take: 1 }
         }
       });
       if (!inspection) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
