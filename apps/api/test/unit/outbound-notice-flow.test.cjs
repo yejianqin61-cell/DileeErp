@@ -1,9 +1,10 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { UnprocessableEntityException } = require("@nestjs/common");
+const { UnprocessableEntityException, ValidationPipe } = require("@nestjs/common");
 const { Prisma } = require("@prisma/client");
 const { FinishedGoodsOutboundNoticeService } = require("../../dist/modules/sales/finished-goods-outbound-notice.service.js");
 const { FinishedGoodsOutboundService } = require("../../dist/modules/warehouse/finished-goods-outbound.service.js");
+const { NoticeOutboundDto } = require("../../dist/modules/warehouse/finished-goods-outbound.controller.js");
 
 // 成品出库通知链路（需求 4/6，第三批需求 1 改为支持分批出库）：
 //   成品入库 → 销售「通知仓库出库」 → 仓库按通知**分批**生成出库单 → 每张过账生成各自应收（通知财务收款）
@@ -142,6 +143,26 @@ test("已部分出库但还有在途草稿时不能取消：先取消草稿，�
     (error) => error.getResponse().code === "OUTBOUND_NOTICE_NOT_CANCELLABLE" && error.getResponse().details[0].draft_count === 1,
   );
   assert.equal(noticeUpdates.length, 0, "有草稿时不得改状态");
+});
+
+test("草稿检查对 pending 同样生效（数据不一致时也不能把通知作废成悬空草稿）", async () => {
+  const noticeUpdates = [];
+  const service = salesService({ existingNotice: { id: "notice-1", salesOrderId: "so-1", status: "pending", orderNo: "SO-1", remark: null }, noticeUpdates, draftCount: 1 });
+  await assert.rejects(
+    () => service.cancelNotice("so-1", "notice-1", "客户取消订单", user),
+    (error) => error.getResponse().code === "OUTBOUND_NOTICE_NOT_CANCELLABLE" && error.getResponse().details[0].draft_count === 1,
+  );
+  assert.equal(noticeUpdates.length, 0);
+});
+
+test("按通知建单 DTO：幂等键必须短到能和 notice:<uuid>: 前缀一起落进 VarChar(200)", async () => {
+  const pipe = new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true });
+  const validate = (body) => pipe.transform(body, { type: "body", metatype: NoticeOutboundDto });
+  // 前缀 "notice:" + 36 位 uuid + ":" = 44；150 + 44 = 194 ≤ 200
+  assert.equal((await validate({ quantity: "20", idempotency_key: "k".repeat(150) })).idempotency_key.length, 150);
+  await assert.rejects(() => validate({ quantity: "20", idempotency_key: "k".repeat(151) }), "超过 150 的幂等键会拼出 195+ 的落库键，必须在校验层拒绝");
+  // 不带键仍然合法（服务端退化为随机后缀）
+  assert.equal((await validate({ quantity: "20" })).idempotency_key, undefined);
 });
 
 // ---------- 仓库侧：分批出库 ----------

@@ -17,7 +17,7 @@ class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 // 否则每次重试都会再建一张草稿（服务端只用随机后缀兜底，等于没有幂等）。
 // 上限 150：落库键是 `notice:<36 位通知 id>:<key>`（最长 44 + 150 = 194 ≤ VarChar(200)），
 // 不加限会在超长时落到 P2000 → 500。
-class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; @IsOptional() @IsString() @MaxLength(150) idempotency_key?: string; }
+export class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; @IsOptional() @IsString() @MaxLength(150) idempotency_key?: string; }
 
 @Controller("finished-goods")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
