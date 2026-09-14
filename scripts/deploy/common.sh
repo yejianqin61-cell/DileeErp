@@ -21,17 +21,20 @@ require_file() { [ -f "$1" ] || fail "缺少文件：$1"; }
 require_dir()  { [ -d "$1" ] || fail "缺少目录：$1"; }
 
 # 标准要求：包内直接出现这些条目，出现 .android/.claude/AppData/Users 等立即停止。
+# 注意：**不要**写成 `tar -tzf ... | head -N`——在 `set -o pipefail` 下 head 提前关闭管道，
+# tar 会因 SIGPIPE 退出 141，整个脚本误判失败（本会话真实踩过）。改为先落盘再过滤。
 check_archive_layout() {
   local archive="$1"
   require_file "$archive"
-  local entries
-  entries="$(tar -tzf "$archive" | head -400)"
+  local listing=/tmp/dilee-archive-entries.txt
+  tar -tzf "$archive" > "$listing" || fail "无法列出发布包内容：$archive"
   for expected in ./package.json ./package-lock.json ./apps/ ./ecosystem.config.cjs ./scripts/; do
-    printf '%s\n' "$entries" | grep -qx -- "$expected" || fail "发布包缺少顶层条目：$expected"
+    grep -qx -- "$expected" "$listing" || fail "发布包缺少顶层条目：$expected"
   done
-  if printf '%s\n' "$entries" | grep -Eq '^\./(\.android|\.claude|AppData|Users|\.pnpm-store|\.dsh-meow)/'; then
+  if grep -Eq '^\./(\.android|\.claude|AppData|Users|\.pnpm-store|\.dsh-meow)/' "$listing"; then
     fail "发布包出现禁止目录（.android/.claude/AppData/Users/.pnpm-store/.dsh-meow）"
   fi
+  log "发布包条目数：$(wc -l < "$listing")"
 }
 
 applied_migrations() {

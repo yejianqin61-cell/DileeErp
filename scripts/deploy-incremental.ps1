@@ -104,7 +104,9 @@ try { $errlogBaseline = [int]((Invoke-Remote "记录错误日志基线行数" "w
 # ---------------------------------------------------------------- 3. 打包与上传
 Step "3/6 打包与上传"
 Invoke-Local "生成发布包（拒绝脏工作区）" { & (Join-Path $PSScriptRoot "create-release-archive.ps1") -Output $archive | Out-Null }
-$entries = & tar -tzf $archive | Select-Object -First 5
+# 先取全量再截前几行：`tar | Select-Object -First n` 会提前中断原生进程
+$allEntries = & tar -tzf $archive
+Write-Host "  包顶层：$((($allEntries | Select-Object -First 5) -join ' | '))  共 $($allEntries.Count) 项"
 Write-Host "  包顶层：$($entries -join ' | ')"
 Invoke-Remote "准备远端目录" "rm -rf $remoteDir && mkdir -p $remoteDir"
 Write-Host "  -> 上传发布包与部署脚本"
