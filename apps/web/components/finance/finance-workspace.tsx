@@ -12,19 +12,13 @@ import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { useCollapsiblePanel } from "../../lib/collapsible-panel";
+// 清单定义在无 "use client" 的 lib/finance-sections.ts：Server Component（/finance/<section>）不能
+// 从本文件导入普通常量，否则跨 RSC 边界拿到的是代理对象、next build 直接失败。
+import { FINANCE_SECTIONS, type FinanceSectionKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
-/** 财务板块清单：key 同时是子页面路由（/finance/<key>）。 */
-export const FINANCE_SECTIONS = [
-  { key: "receivable-sources", title: "应收来源", description: "客户应收（成品出库过账自动生成草稿）" },
-  { key: "customer-payments", title: "收款", description: "客户收款登记与核销" },
-  { key: "payable-sources", title: "原料入库 / 外加工应付来源", description: "待财务接收的应付来源（含原料名称）" },
-  { key: "payable-entries", title: "应付条目", description: "供应商应付台账（含原料名称）" },
-  { key: "supplier-payments", title: "付款", description: "供应商付款登记与核销" },
-  { key: "reconciliations", title: "普通对账", description: "按订单号对账" },
-  { key: "supplier-reconciliations", title: "供应商应付对账", description: "供应商应付差异处理" },
-] as const;
-export type FinanceSectionKey = (typeof FINANCE_SECTIONS)[number]["key"];
+export { FINANCE_SECTIONS };
+export type { FinanceSectionKey };
 
 /** 可收纳板块：标题行给出进入独立页面的链接，内容可折叠（选择记在本机）。 */
 function CollapsibleSection({ sectionKey, title, extra, children }: { sectionKey: FinanceSectionKey; title: string; extra?: string; children: React.ReactNode }) {
