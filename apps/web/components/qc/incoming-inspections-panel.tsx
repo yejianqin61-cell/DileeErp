@@ -61,14 +61,17 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   }
   useEffect(() => { void load(); }, []);
 
-  const receiptOptions = useMemo<ReceiptOption[]>(() => orders.flatMap((order) => order.items.flatMap((item) => item.receipts.map((receipt, index) => ({
-    ...receipt,
-    orderNo: order.orderNo,
-    purchaseOrderNo: order.purchaseOrderNo,
-    materialName: item.material?.name ?? "物料",
-    unitName: item.unit?.name ?? "",
-    batchSequence: receipt.batchSequence ?? index + 1,
-  })))), [orders]);
+  const receiptOptions = useMemo<ReceiptOption[]>(() => orders.flatMap((order) => order.items.flatMap((item) => item.receipts
+    // 已撤销的批次不能送检（后端也只接受有效到货记录），不要出现在下拉里让用户白填一次。
+    .filter((receipt) => receipt.status !== "cancelled")
+    .map((receipt, index) => ({
+      ...receipt,
+      orderNo: order.orderNo,
+      purchaseOrderNo: order.purchaseOrderNo,
+      materialName: item.material?.name ?? "物料",
+      unitName: item.unit?.name ?? "",
+      batchSequence: receipt.batchSequence ?? index + 1,
+    })))), [orders]);
 
   function run(action: () => Promise<unknown>, success: string) {
     setError("");
@@ -83,14 +86,32 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   const inspectionInboundCapable = (item: Inspection) => ["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(item.status);
   const noticeFor = (inspectionId: string) => notices.find((row) => row.incomingInspectionId === inspectionId);
 
-  /** 送检登记：拒收时后端要求「合格/不合格」与送检量配平，这里按 QC 结果直接改写拆分。 */
-  const inspectionBody = (v: Record<string, string>) => ({
-    inspected_quantity: v.quantity,
-    qc_result: v.qc_result,
-    accepted_quantity: v.qc_result === "rejected" ? v.quantity : v.accepted_quantity,
-    conditional_quantity: v.qc_result === "rejected" ? "0" : v.conditional_quantity,
-    rejected_quantity: v.qc_result === "rejected" ? v.quantity : v.rejected_quantity,
-  });
+  /**
+   * 送检登记的请求体。
+   * 后端要求「合格 + 条件接收 + 不合格 = 送检数量」，并且 qc_result 必须与这份拆分推导出的状态一致
+   * （incoming-inspections.service.ts:36 与 :50）。拒收的正确拆分是 合格 0 / 条件 0 / 不合格 = 送检量；
+   * 若把送检量同时写进合格与不合格，拆分合计变成 2 倍送检量，后端直接 422 INSPECTION_QUANTITY_MISMATCH。
+   */
+  const inspectionBody = (v: Record<string, string>) => v.qc_result === "rejected"
+    ? { inspected_quantity: v.quantity, qc_result: "rejected", accepted_quantity: "0", conditional_quantity: "0", rejected_quantity: v.quantity }
+    : { inspected_quantity: v.quantity, qc_result: v.qc_result, accepted_quantity: v.accepted_quantity, conditional_quantity: v.conditional_quantity, rejected_quantity: v.rejected_quantity };
+
+  /**
+   * 与后端同一套配平校验，提前在弹窗里拦下。
+   * 抛错而不是 setError：ActionDialog 会把异常显示在弹窗内并**保留用户已填的值**，
+   * 而 setError 只能显示在弹窗背后的页面上、且弹窗已经被关闭。
+   */
+  const assertBalanced = (v: Record<string, string>) => {
+    if (v.qc_result === "rejected") return;
+    const round = (value: number) => Math.round(value * 10000) / 10000;
+    const count = (value: string | undefined) => value?.trim() ? Number(value) : 0;
+    const inspected = Number(v.quantity);
+    const accepted = count(v.accepted_quantity); const conditional = count(v.conditional_quantity); const rejected = count(v.rejected_quantity);
+    if (!Number.isFinite(inspected) || inspected <= 0) throw new Error("「送检数量」必须是大于 0 的数字");
+    if ([accepted, conditional, rejected].some((value) => !Number.isFinite(value) || value < 0)) throw new Error("合格 / 条件接收 / 不合格数量必须是不小于 0 的数字");
+    const split = round(accepted + conditional + rejected);
+    if (round(inspected) !== split) throw new Error(`数量不配平：送检 ${round(inspected)} ≠ 合格 ${round(accepted)} + 条件接收 ${round(conditional)} + 不合格 ${round(rejected)}（合计 ${split}）`);
+  };
 
   function inspectReceipt(receipt: ReceiptOption) {
     const inspection = receipt.inspections?.[0];
@@ -101,7 +122,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
       { name: "accepted_quantity", label: "本次合格数量", type: "number", required: true, defaultValue: remaining > 0 ? String(remaining) : "0" },
       { name: "conditional_quantity", label: "本次条件接收", type: "number", required: true, defaultValue: "0" },
       { name: "rejected_quantity", label: "本次不合格数量", type: "number", required: true, defaultValue: "0" },
-    ], submit: (v) => void run(() => apiPost("/incoming-inspections", { purchase_receipt_id: receipt.id, ...inspectionBody(v) }), `第 ${receipt.batchSequence} 批质检已记录`) });
+    ], submit: (v) => { assertBalanced(v); void run(() => apiPost("/incoming-inspections", { purchase_receipt_id: receipt.id, ...inspectionBody(v) }), `第 ${receipt.batchSequence} 批质检已记录`); } });
   }
 
   function inspect() {
@@ -113,7 +134,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
       { name: "accepted_quantity", label: "合格数量", type: "number", required: true, defaultValue: "1" },
       { name: "conditional_quantity", label: "条件接收", type: "number", required: true, defaultValue: "0" },
       { name: "rejected_quantity", label: "不合格数量", type: "number", required: true, defaultValue: "0" },
-    ], submit: (v) => void run(() => apiPost("/incoming-inspections", { purchase_receipt_id: v.receipt_id, ...inspectionBody(v) }), "来料质检已记录") });
+    ], submit: (v) => { assertBalanced(v); void run(() => apiPost("/incoming-inspections", { purchase_receipt_id: v.receipt_id, ...inspectionBody(v) }), "来料质检已记录"); } });
   }
 
   // 深链：采购页「登记质检」按到货批次跳到这里时，直接打开该批次的送检登记。
