@@ -7,7 +7,7 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { FinishedGoodsInboundNoticesService } from "./finished-goods-inbound-notices.service";
 
-class CreateInboundNoticeDto { @IsUUID() production_order_id!: string; @IsString() notice_quantity!: string; @IsDateString() notice_date!: string; @IsOptional() @IsString() @MaxLength(100) batch_no?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsString() idempotency_key?: string; }
+class CreateInboundNoticeDto { @IsUUID() production_order_id!: string; @IsString() notice_quantity!: string; @IsDateString() notice_date!: string; @IsOptional() @IsString() @MaxLength(100) batch_no?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; }
 class CancelInboundNoticeDto { @IsString() @MaxLength(1000) reason!: string; }
 
 /**

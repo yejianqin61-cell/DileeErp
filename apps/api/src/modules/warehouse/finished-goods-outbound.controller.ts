@@ -7,10 +7,10 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { FinishedGoodsOutboundService } from "./finished-goods-outbound.service";
 
-class OutboundDto { @IsUUID() sales_order_id!: string; @IsUUID() production_order_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) risk_reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() attachment?: unknown[]; }
+class OutboundDto { @IsUUID() sales_order_id!: string; @IsUUID() production_order_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) risk_reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() attachment?: unknown[]; }
 class ShippingDto { @IsOptional() @IsDateString() shipment_date?: string; @IsOptional() @IsString() carrier?: string; @IsOptional() @IsString() tracking_no?: string; @IsOptional() @IsString() packing_list_no?: string; @IsOptional() @IsString() invoice_no?: string; @IsOptional() attachment?: unknown[]; }
 class SignDto { @IsDateString() signed_at!: string; @IsOptional() @IsString() @MaxLength(500) signature_reference?: string; @IsOptional() attachment?: unknown[]; }
-class ReturnDto { @IsUUID() sales_order_id!: string; @IsUUID() production_order_id!: string; @IsString() quantity!: string; @IsDateString() return_date!: string; @IsIn(["finished_goods", "defective_goods"]) destination!: "finished_goods" | "defective_goods"; @IsString() @MaxLength(1000) reason!: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() attachment?: unknown[]; }
+class ReturnDto { @IsUUID() sales_order_id!: string; @IsUUID() production_order_id!: string; @IsString() quantity!: string; @IsDateString() return_date!: string; @IsIn(["finished_goods", "defective_goods"]) destination!: "finished_goods" | "defective_goods"; @IsString() @MaxLength(1000) reason!: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() attachment?: unknown[]; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 // 按出库通知建出库单：quantity 可选（分批出库）；不传就出完剩余量。
 // idempotency_key 由仓库页面随请求带来：同一次提交的网络重试必须命中同一张出库单，

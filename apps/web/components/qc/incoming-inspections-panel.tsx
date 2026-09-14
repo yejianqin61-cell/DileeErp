@@ -47,6 +47,9 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   const [notices, setNotices] = useState<InboundNotice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  // 提示与错误分开：提示（深链批次不存在/已撤销/已送检完毕）不该被静默刷新或一次操作清掉，
+  // 错误则要能被重试/刷新复位。
+  const [hint, setHint] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   // 深链（/qc?receipt_id=…）每个到货批次只自动打开一次：用户关掉后不再被刷新重弹，
@@ -116,12 +119,12 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   const draftInboundFor = (inspectionId: string) => inbounds.find((row) => row.incomingInspectionId === inspectionId && row.status === "draft");
   const inspectionInboundCapable = (item: Inspection) => ["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(item.status);
   const noticeFor = (inspectionId: string) => notices.find((row) => row.incomingInspectionId === inspectionId);
-  /** 有效通知：已取消的通知不算「已通知」，界面要允许重新通知。 */
-  const activeNoticeFor = (inspectionId: string) => { const notice = noticeFor(inspectionId); return notice && notice.status !== "cancelled" ? notice : undefined; };
   const canRollback = (item: Inspection) => ROLLBACKABLE_STATUSES.includes(item.status) && !item.downstream_exists;
   /** 能否自己建入库草稿：后端要求该质检单的入库通知已被仓库接收（否则 422 INBOUND_NOTICE_NOT_ACKNOWLEDGED），
-   *  而仓库接收时会自动建出全额草稿 —— 所以真正可建的情形只有「已接收且草稿被删/用尽」。 */
-  const inboundReady = (item: Inspection) => { const notice = activeNoticeFor(item.id); return Boolean(notice) && INBOUND_READY_NOTICE_STATUSES.includes(notice!.status) && inboundRemainingFor(item) > 0; };
+   *  而仓库接收时会自动建出全额草稿 —— 所以真正可建的情形只有「已接收且草稿被删/用尽」。
+   *  通知不区分状态（保留已取消的）：当前系统没有取消原料入库通知的路径，
+   *  而且一张质检单在库里最多只能有一张未删除的通知单，界面按同一口径判断避免出现「看起来能重发、实际 409」。 */
+  const inboundReady = (item: Inspection) => { const notice = noticeFor(item.id); return Boolean(notice) && INBOUND_READY_NOTICE_STATUSES.includes(notice!.status) && inboundRemainingFor(item) > 0; };
 
   /**
    * 送检登记的请求体。
@@ -162,7 +165,14 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   }
 
   function inspect() {
-    if (!receiptOptions.length) { setError("暂无可送检的到货批次：请先在采购模块登记到货"); return; }
+    if (!receiptOptions.length) {
+      // 区分「还没登记到货」与「都已送检完」：后者给去采购登记到货的提示会让人白跑一趟。
+      setHint(allReceiptOptions.some((item) => item.status !== "cancelled" && item.inspectedQuantity >= Number(item.quantity))
+        ? "所有到货批次都已送检完毕：如需更正请在下方质检记录里用「编辑」或「回退重判」"
+        : "暂无可送检的到货批次：请先在采购模块登记到货");
+      return;
+    }
+    setHint("");
     setDialog({ title: "登记来料质检", fields: [
       { name: "receipt_id", label: "到货记录", type: "select", required: true, options: receiptOptions.map((item) => ({ value: item.id, label: `${item.purchaseOrderNo} / 订单号 ${item.orderNo} / 第 ${item.batchSequence} 批 / 到货 ${item.quantity}${item.unitName ? ` ${item.unitName}` : ""}（已送检 ${item.inspectedQuantity}）` })) },
       { name: "quantity", label: "送检数量", type: "number", required: true, defaultValue: "1" },
@@ -180,10 +190,14 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     if (!receiptId || !allReceiptOptions.length || deepLinkHandled.current === receiptId) return;
     const receipt = allReceiptOptions.find((item) => item.id === receiptId);
     deepLinkHandled.current = receiptId;
-    if (!receipt) { setError("未找到该到货批次（可能已被撤销）：请在下方列表里重新选择要送检的批次"); return; }
-    if (receipt.status === "cancelled") { setError("该到货批次已撤销，不能送检"); return; }
+    if (!receipt) { setHint("未找到该到货批次（可能已被撤销）：请在下方列表里重新选择要送检的批次"); return; }
+    if (receipt.status === "cancelled") { setHint("该到货批次已撤销，不能送检"); return; }
     if (receipt.inspectedQuantity >= Number(receipt.quantity)) {
-      setError(`该到货批次已送检完毕（到货 ${receipt.quantity} / 已送检 ${receipt.inspectedQuantity}）：如需更正请在下方质检记录里用「编辑」或「回退重判」`);
+      // 整批退货会把质检记录置为 cancelled，那条记录既不能编辑也不能回退，文案不能说「去编辑/回退」。
+      const returned = inspections.some((row) => row.purchaseReceipt?.id === receipt.id && row.status === "cancelled");
+      setHint(returned
+        ? `该到货批次已整批退货（到货 ${receipt.quantity} / 已送检 ${receipt.inspectedQuantity}）：如需重新进货请在采购模块登记新的到货批次`
+        : `该到货批次已送检完毕（到货 ${receipt.quantity} / 已送检 ${receipt.inspectedQuantity}）：如需更正请在下方质检记录里用「编辑」或「回退重判」`);
       return;
     }
     inspectReceipt(receipt);
@@ -287,6 +301,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
       </div>
     </div>
     {message && <p className="status-success panel-body" role="status">{message}</p>}
+    {hint && <p className="panel-note panel-body" role="status" data-testid="qc-hint">{hint}</p>}
     {error && <div className="panel-body" role="alert"><ErrorState message={error} onRetry={() => void load()} /></div>}
     <div className="panel-body">{loading ? <LoadingState /> : <DataTable columns={columns} data={inspections} empty={<EmptyState title="暂无来料质检记录" description="采购登记到货后，在这里点「登记来料质检」送检。" />} />}</div>
   </section>;

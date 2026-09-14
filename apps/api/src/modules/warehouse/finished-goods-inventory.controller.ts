@@ -7,7 +7,7 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { FinishedGoodsInventoryService } from "./finished-goods-inventory.service";
 
-class InventoryDto { @IsUUID() qc_record_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+class InventoryDto { @IsUUID() qc_record_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 
 @Controller("finished-goods")

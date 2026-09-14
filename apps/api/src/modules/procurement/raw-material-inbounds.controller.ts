@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsOptional, IsString, IsUUID } from "class-validator";
+import { IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -7,7 +7,7 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { RawMaterialInboundsService } from "./raw-material-inbounds.service";
-class InboundDto { @IsUUID() incoming_inspection_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() settlement_unit_price?: string; @IsOptional() @IsString() settlement_total_amount?: string; @IsOptional() @IsString() settlement_amount_reason?: string; @IsOptional() @IsString() inventory_category?: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
+class InboundDto { @IsUUID() incoming_inspection_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() settlement_unit_price?: string; @IsOptional() @IsString() settlement_total_amount?: string; @IsOptional() @IsString() settlement_amount_reason?: string; @IsOptional() @IsString() inventory_category?: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
 class ReverseDto { @IsString() reason!: string; }
 class UpdateInboundDto { @IsString() quantity!: string; @IsOptional() @IsString() settlement_unit_price?: string; @IsOptional() @IsString() settlement_total_amount?: string; @IsOptional() @IsString() settlement_amount_reason?: string; @IsOptional() @IsString() remark?: string; }
 @Controller() @UseGuards(AuthenticationGuard, ModulePermissionGuard)
