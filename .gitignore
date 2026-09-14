@@ -24,3 +24,5 @@ dilee-images.tar
 apps/*/pnpm-lock.yaml
 apps/*/pnpm-workspace.yaml
 vitest-out.txt
+
+# ????????(??????,???).deploy-run*/.verify-lock/.deploy-live/.deploy-now/
