@@ -50,6 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   </div>;
 }
 
-export function PageHeader({ title, description, children }: { title: string; description?: string; children?: ReactNode }) {
-  return <div className="page-header"><div><div className="breadcrumb">迪礼管理系统 <span>/</span> {title}</div><h1>{title}</h1>{description && <p>{description}</p>}</div>{children && <div className="page-actions">{children}</div>}</div>;
+export function PageHeader({ title, description, children, breadcrumb }: { title: string; description?: string; children?: ReactNode; breadcrumb?: string[] }) {
+  const parts = breadcrumb ? breadcrumb : [title];
+  return <div className="page-header"><div><div className="breadcrumb">迪礼管理系统 {parts.map((seg, i) => <span key={i}><span>/</span> {seg}</span>)}</div><h1>{title}</h1>{description && <p>{description}</p>}</div>{children && <div className="page-actions">{children}</div>}</div>;
 }

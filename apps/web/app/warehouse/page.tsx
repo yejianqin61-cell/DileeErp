@@ -1,75 +1,152 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../components/layout/app-shell";
-import { ActionDialog, type ActionField } from "../../components/ui/action-dialog";
 import { Button } from "../../components/ui/button";
-import { Input } from "../../components/ui/input";
-import { FileInput } from "../../components/ui/file-input";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../../components/ui/sheet";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../../components/ui/dialog";
 import { DataTable } from "../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
-import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
-import { movementEditorHref } from "../../lib/material-slip-api";
+import { ApiClientError, apiGet, apiRequest } from "../../lib/api-client";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
-type MovementLine = { id: string; materialId: string; quantity: string; unit?: { name: string }; material?: { materialCode?: string; name: string } };
-type Movement = { id: string; movementNo: string; documentType: string; status: string; orderNo: string; productionOrderId: string; productionOrderOperationId?: string | null; productionOrderOperation?: { id: string; operationNameSnapshot: string } | null; lines: MovementLine[] };
-type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; executionMode: string; status: string; operations?: Array<{ id: string; operationNameSnapshot: string; status: string }>; bom?: { id: string; version: number } | null };
-// 领料/补料的物料下拉直接引用该生产单订单的 BOM 明细。
-type Material = { id: string; materialCode: string; name: string; isActive: boolean; defaultUnit?: { name: string } };
-type PreviewLine = { material_id: string; material_name?: string; material_code?: string; model?: string | null; color?: string | null; unit?: string | null; available_before: string; available_after: string; inventory_quantity?: string; approved_usage?: string | null; purchase_received_quantity?: string; purchase_outstanding_quantity?: string; cumulative_issued_before: string; cumulative_issued_after: string; production_outstanding_quantity?: string | null; requested_replenishment_quantity?: string; bom_reference_quantity: string | null; risks: Array<{ type: string }> };
-type Preview = { lines: PreviewLine[] };
-type AuditEvent = { action: string; actorId?: string; createdAt: string };
-type SourceLine = MovementLine & { movementNo: string; orderNo: string; productionOrderId: string };
-type RawBalance = { material_id: string; material_code: string; material_name: string; unit_id: string; unit_name: string; order_no: string | null; quantity: string };
 type InboundNotice = { id: string; noticeNo: string; orderNo: string; status: string; notifiedQuantity: string; notifiedAt?: string | null; inbounds?: Array<{ id: string; status: string; quantity: string }>; purchaseOrder?: { purchaseOrderNo?: string }; purchaseReceipt?: { receiptNo?: string; quantity?: string }; purchaseOrderItem?: { material?: { name?: string; materialCode?: string }; unit?: { name?: string } } };
 
-const labels: Record<string, string> = { issue: "领料", return: "退料", scrap: "报废", reversal: "冲销", replenishment: "补料" };
-const statuses: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
-const idempotencyKey = () => `web-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 export default function WarehousePage() {
-  const [orders, setOrders] = useState<ProductionOrder[]>([]); const [materials, setMaterials] = useState<Material[]>([]); const [movements, setMovements] = useState<Movement[]>([]); const [rawBalances, setRawBalances] = useState<RawBalance[]>([]); const [inboundNotices, setInboundNotices] = useState<InboundNotice[]>([]);
-  const [query, setQuery] = useState(""); const [selected, setSelected] = useState<Movement | null>(null); const [impactMovement, setImpactMovement] = useState<Movement | null>(null); const [preview, setPreview] = useState<Preview | null>(null); const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  // 已接收但没生成入库草稿的通知：这是“接收之后仓储情况没有更新”的历史源头，界面上要能看见并补建。
+  const [inboundNotices, setInboundNotices] = useState<InboundNotice[]>([]);
   const [stuckNotices, setStuckNotices] = useState<InboundNotice[]>([]);
-  const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (v: Record<string, string>) => void } | null>(null); const [loading, setLoading] = useState(true); const [error, setError] = useState(""); const [message, setMessage] = useState("");
-  async function load() { setLoading(true); setError(""); try { const [o, m, moves, balances, notices] = await Promise.all([apiGet<ProductionOrder[]>("/production/orders"), apiGet<Material[]>("/materials"), apiGet<Movement[]>("/production/material-movements"), apiGet<RawBalance[]>("/inventory/raw-material-balances"), apiGet<InboundNotice[]>("/raw-material-inbound-notices")]); setOrders(o.data.filter((item) => item.executionMode === "in_house" && item.status === "in_progress")); setMaterials(m.data.filter((item) => item.isActive)); setMovements(moves.data); setRawBalances(balances.data); setInboundNotices(notices.data.filter((item) => item.status === "pending")); setStuckNotices(notices.data.filter((item) => ["acknowledged", "processing"].includes(item.status) && !(item.inbounds ?? []).length)); } catch (cause) { setError(messageOf(cause, "仓库数据加载失败")); } finally { setLoading(false); } }
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const notices = await apiGet<InboundNotice[]>("/raw-material-inbound-notices");
+      setInboundNotices(notices.data.filter((item) => item.status === "pending"));
+      setStuckNotices(notices.data.filter((item) => ["acknowledged", "processing"].includes(item.status) && !(item.inbounds ?? []).length));
+    } catch (cause) {
+      setError(messageOf(cause, "仓库数据加载失败"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => { void load(); }, []);
-  async function run(action: () => Promise<unknown>, success: string) { setError(""); try { await action(); notifySuccess(success); await load(); return true; } catch (cause) { notifyError(messageOf(cause, "操作失败")); return false; } }
-  const orderOptions = orders.map((item) => ({ value: item.id, label: `${item.productionOrderNo} / ${item.orderNo}` }));
-  const visible = useMemo(() => movements.filter((item) => !query || `${item.movementNo} ${item.orderNo} ${item.documentType} ${item.status}`.toLowerCase().includes(query.toLowerCase())), [movements, query]);
-  const sourceLines = useMemo<SourceLine[]>(() => movements.filter((item) => item.documentType === "issue" && item.status === "posted").flatMap((movement) => movement.lines.map((line) => ({ ...line, movementNo: movement.movementNo, orderNo: movement.orderNo, productionOrderId: movement.productionOrderId }))), [movements]);
-  function openDerived(type: "return" | "scrap") { setDialog({ title: type === "return" ? "退料并过账" : "报废并过账", fields: [{ name: "production_order_id", label: "生产单", type: "select", required: true, options: orderOptions }, { name: "source_issue_line_id", label: "来源领料明细", type: "select", required: true, options: sourceLines.map((line) => ({ value: line.id, label: `${line.movementNo} / ${line.material?.name ?? line.materialId} / 已领 ${line.quantity}` })) }, { name: "quantity", label: "数量", type: "number", required: true }, { name: "reason", label: "原因", type: "textarea", required: true }, { name: "remark", label: "备注", type: "textarea" }], submit: (v) => void run(async () => { const created = await apiPost<{ id: string }>(type === "return" ? "/production/material-movements/returns" : "/production/material-movements/scraps", { production_order_id: v.production_order_id, reason: v.reason, remark: v.remark || undefined, lines: [{ source_issue_line_id: v.source_issue_line_id, quantity: v.quantity, remark: v.remark || undefined }] }); await apiPost(`/production/material-movements/${created.data.id}/${type === "return" ? "post-return" : "post-scrap"}`, { idempotency_key: idempotencyKey() }); }, type === "return" ? "退料已过账" : "报废已过账") }); }
-  function post(movement: Movement) { void run(() => apiPost(`/production/material-movements/${movement.id}/${movement.documentType === "replenishment" ? "post-replenishment" : "post"}`, { idempotency_key: idempotencyKey() }), movement.documentType === "replenishment" ? "补料已过账" : "领料已过账"); }
-  function reverse(movement: Movement) { setDialog({ title: "冲销库存单", fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => void run(() => apiPost(`/production/material-movements/${movement.id}/reverse`, { reason: v.reason, idempotency_key: idempotencyKey() }), "冲销已完成") }); }
-  /** 回退草稿：已过账的领料/补料单退回草稿继续编辑（后端会写等额冲抵事实，库存随之回补）。 */
-  function reopenMovement(movement: Movement) { setDialog({ title: `回退草稿：${movement.movementNo}`, fields: [{ name: "reason", label: "回退原因（退回草稿后库存会相应回补）", type: "textarea", required: true }], submit: (v) => void run(() => apiPost(`/production/material-movements/${movement.id}/reopen`, { reason: v.reason }), "已退回草稿，可继续编辑") }); }
-  function removeDraft(movement: Movement) { void run(() => apiRequest(`/production/material-movements/${movement.id}`, { method: "DELETE" }), "草稿已删除"); }
-  async function showImpact(movement: Movement) { try { setImpactMovement(movement); setPreview((await apiGet<Preview>(`/production/material-movements/${movement.id}/impact-preview`)).data); } catch (cause) { setImpactMovement(null); setError(messageOf(cause, "影响预览失败")); } }
-  async function showAudit(movement: Movement) { try { setSelected(movement); setAuditEvents((await apiGet<AuditEvent[]>(`/production/material-movements/${movement.id}/audit-events`)).data); } catch (cause) { notifyError(messageOf(cause, "审计记录加载失败")); } }
-  async function uploadAttachment(file: File | undefined) { if (!file || !selected) return; try { const body = new FormData(); body.append("file", file); const response = await fetch("/api/v1/attachments", { method: "POST", body, credentials: "include" }); const uploaded = await response.json() as { data?: { id: string }; error?: { message?: string } }; if (!response.ok || !uploaded.data) throw new Error(uploaded.error?.message ?? "附件上传失败"); await apiPost(`/attachments/${uploaded.data.id}/links`, { entity_type: "raw_material_movement", entity_id: selected.id, remark: "原料流转附件" }); setMessage("附件已关联"); } catch (cause) { notifyError(messageOf(cause, "附件上传失败")); } }
-  async function acknowledgeNotice(notice: InboundNotice) { setError(""); try { await apiRequest(`/raw-material-inbound-notices/${notice.id}/acknowledge`, { method: "PATCH" }); window.location.href = `/warehouse/raw-material-storage?notice_id=${encodeURIComponent(notice.id)}`; } catch (cause) { notifyError(messageOf(cause, "接收入库通知失败")); } }
-  // 对“已接收但缺草稿”的通知重新接收：后端现在是自愈的（补建并关联草稿），
-  // 若确实无法入库（例如质检还没完成）会返回明确原因。
+
+  async function acknowledgeNotice(notice: InboundNotice) {
+    setError("");
+    try {
+      await apiRequest(`/raw-material-inbound-notices/${notice.id}/acknowledge`, { method: "PATCH" });
+      window.location.href = `/warehouse/raw-material-storage?notice_id=${encodeURIComponent(notice.id)}`;
+    } catch (cause) {
+      notifyError(messageOf(cause, "接收入库通知失败"));
+    }
+  }
+
   async function repairNotice(notice: InboundNotice) {
     setError("");
     try {
       await apiRequest(`/raw-material-inbound-notices/${notice.id}/acknowledge`, { method: "PATCH" });
       notifySuccess(`${notice.noticeNo} 已补建入库草稿`);
       await load();
-    } catch (cause) { notifyError(messageOf(cause, "补建入库草稿失败")); }
+    } catch (cause) {
+      notifyError(messageOf(cause, "补建入库草稿失败"));
+    }
   }
+
   const noticeStatusLabels: Record<string, string> = { pending: "待接收", acknowledged: "已接收", processing: "入库中", completed: "已完成", cancelled: "已取消" };
-  const stuckColumns: ColumnDef<InboundNotice>[] = [{ accessorKey: "noticeNo", header: "通知单号" }, { id: "purchase", header: "采购/到货", cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` }, { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` }, { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` }, { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status }, { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void repairNotice(row.original)}>补建入库草稿</Button> }];
-  const noticeColumns: ColumnDef<InboundNotice>[] = [{ accessorKey: "noticeNo", header: "通知单号" }, { id: "notifiedAt", header: "通知时间", cell: ({ row }) => row.original.notifiedAt ? new Date(row.original.notifiedAt).toLocaleString("zh-CN") : "-" }, { id: "purchase", header: "采购/到货", cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` }, { accessorKey: "orderNo", header: "订单号" }, { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` }, { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` }, { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status }, { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void acknowledgeNotice(row.original)}>接收入库通知</Button> }];
-  const columns: ColumnDef<Movement>[] = [{ accessorKey: "movementNo", header: "单号", cell: ({ row }) => <Button variant="link" onClick={() => { setSelected(row.original); setPreview(null); setAuditEvents([]); }}>{row.original.movementNo}</Button> }, { accessorKey: "orderNo", header: "订单号" }, { id: "type", header: "类型", cell: ({ row }) => labels[row.original.documentType] ?? row.original.documentType }, { id: "status", header: "状态", cell: ({ row }) => statuses[row.original.status] ?? row.original.status }, { id: "lines", header: "明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity} ${line.unit?.name ?? ""}`).join("、") }, { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && ["issue", "replenishment"].includes(row.original.documentType) && <><Button size="sm" variant="secondary" asChild><Link href={movementEditorHref(row.original.documentType, { movementId: row.original.id })}>编辑</Link></Button><Button size="sm" variant="secondary" onClick={() => post(row.original)}>过账</Button><Button size="sm" variant="ghost" onClick={() => removeDraft(row.original)}>删除</Button></>}{row.original.status === "posted" && <><Button size="sm" variant="secondary" onClick={() => void showImpact(row.original)}>影响</Button>{["issue", "replenishment"].includes(row.original.documentType) && <Button size="sm" variant="secondary" onClick={() => reopenMovement(row.original)}>回退草稿</Button>}<Button size="sm" variant="destructive" onClick={() => reverse(row.original)}>冲销</Button></> }<Button size="sm" variant="ghost" onClick={() => void showAudit(row.original)}>审计</Button></div> }];
+
+  const stuckColumns: ColumnDef<InboundNotice>[] = [
+    { accessorKey: "noticeNo", header: "通知单号" },
+    { id: "purchase", header: "采购/到货", cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` },
+    { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
+    { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
+    { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void repairNotice(row.original)}>补建入库草稿</Button> },
+  ];
+
+  const noticeColumns: ColumnDef<InboundNotice>[] = [
+    { accessorKey: "noticeNo", header: "通知单号" },
+    { id: "notifiedAt", header: "通知时间", cell: ({ row }) => row.original.notifiedAt ? new Date(row.original.notifiedAt).toLocaleString("zh-CN") : "-" },
+    { id: "purchase", header: "采购/到货", cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` },
+    { accessorKey: "orderNo", header: "订单号" },
+    { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
+    { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
+    { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void acknowledgeNotice(row.original)}>接收入库通知</Button> },
+  ];
+
   if (loading) return <><PageHeader title="仓库" /><LoadingState /></>;
-  const balanceColumns: ColumnDef<RawBalance>[] = [{ id: "material", header: "物料", cell: ({ row }) => `${row.original.material_code} / ${row.original.material_name}` }, { accessorKey: "unit_name", header: "单位" }, { accessorKey: "order_no", header: "订单号" }, { accessorKey: "quantity", header: "库存数量" }];
-  return <div className="page-root" data-testid="page-warehouse"><PageHeader title="仓库"><div className="page-actions"><Button asChild variant="secondary"><Link href="/warehouse/raw-material-storage">原料仓储情况</Link></Button><Button asChild variant="secondary"><Link href="/warehouse/finished-goods-storage">成品仓储情况</Link></Button><Button asChild><Link href="/production/material-issues/new">新建领料单</Link></Button><Button asChild variant="secondary"><Link href="/production/material-issues/new?type=replenishment">新建补料单</Link></Button><Button variant="secondary" onClick={() => openDerived("return")}>退料</Button><Button variant="secondary" onClick={() => openDerived("scrap")}>报废</Button></div></PageHeader><section className="panel"><div className="panel-heading"><h2>待入库通知 <span className="status-warning">{inboundNotices.length}</span></h2></div><div className="panel-body"><DataTable columns={noticeColumns} data={inboundNotices} empty={<EmptyState title="暂无待入库通知" description="触发条件：采购在【采购 → 登记到货】后，由【质检 → 来料质检】对已完成且未拒收的批次点击「通知入库」。这里只显示状态为待接收（pending）的通知；已接收的通知请到「原料仓储情况」继续登记入库。" />} /></div></section>{stuckNotices.length > 0 && <section className="panel"><div className="panel-heading"><h2>已接收但缺入库草稿 <span className="status-error">{stuckNotices.length}</span></h2></div><div className="panel-body"><p className="panel-note">这些通知已经接收，但当时没有生成入库草稿（例如质检未完成或历史数据），因此「原料仓储情况」看不到待入库记录。点「补建入库草稿」即可修复；若质检确实还没完成，后端会给出明确提示。</p><DataTable columns={stuckColumns} data={stuckNotices} empty={<EmptyState title="无" />} /></div></section>}<ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field) => setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />{message && <section className="panel panel-body status-success" role="status">{message}</section>}{error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}<section className="panel"><div className="panel-heading"><h2>原料仓储情况</h2></div><div className="panel-body"><DataTable columns={balanceColumns} data={rawBalances} empty={<EmptyState title="暂无原料库存" />} /></div></section><section className="panel"><div className="panel-heading"><h2>原料流转</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索单号、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无原料流转单" />} /></div></section><Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) { setSelected(null); setAuditEvents([]); } }}><SheetContent><SheetHeader><SheetTitle>{selected?.movementNo}</SheetTitle><SheetDescription>库存单详情与审计上下文</SheetDescription></SheetHeader>{selected && <div className="detail-list"><p>订单号：{selected.orderNo}</p><p>类型：{labels[selected.documentType] ?? selected.documentType}</p><p>状态：{statuses[selected.status] ?? selected.status}</p><p>明细：{selected.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity} ${line.unit?.name ?? ""}`).join("、")}</p><label>上传凭证<FileInput accept="application/pdf,image/jpeg,image/png,.xls,.xlsx" onChange={(event) => void uploadAttachment(event.target.files?.[0])} /></label>{auditEvents.length > 0 && <DataTable columns={[{ accessorKey: "action", header: "操作" }, { accessorKey: "actorId", header: "操作人" }, { accessorKey: "createdAt", header: "时间" }]} data={auditEvents} />}</div>}</SheetContent></Sheet><Dialog open={Boolean(impactMovement)} onOpenChange={(open) => { if (!open) { setImpactMovement(null); setPreview(null); } }}><DialogContent className="inventory-impact-dialog"><DialogHeader><DialogTitle>库存影响</DialogTitle><DialogDescription>{impactMovement ? `${impactMovement.movementNo} / ${impactMovement.orderNo}` : ""}</DialogDescription></DialogHeader>{preview ? <div className="inventory-impact-list">{preview.lines.map((line) => { const material = materials.find((item) => item.id === line.material_id); return <section className="inventory-impact-item" key={line.material_id}><div className="inventory-impact-title"><strong>{material ? `${material.materialCode} / ${material.name}` : line.material_id}</strong>{line.risks.length > 0 ? <span className="inventory-impact-risk">{line.risks.map((risk) => risk.type).join("、")}</span> : <span className="inventory-impact-safe">无风险</span>}</div><div className="inventory-impact-metrics"><div><span>当前库存</span><strong>{line.available_before}</strong></div><span className="inventory-impact-arrow">→</span><div><span>过账后库存</span><strong>{line.available_after}</strong></div><div><span>物料清单参考</span><strong>{line.bom_reference_quantity ?? "未设置"}</strong></div></div></section>; })}</div> : <LoadingState />}</DialogContent></Dialog><section className="panel"><div className="panel-heading"><h2>质检</h2><div className="page-actions"><Button variant="secondary" asChild><Link href="/qc">进入质检模块</Link></Button></div></div><div className="panel-body"><p className="panel-note">成品送检与质检、来料质检、质检合格待入库与次品登记已统一迁到【质检】模块；本页只保留原料流转与出入库单据。</p></div></section></div>;
+
+  return (
+    <div className="page-root" data-testid="page-warehouse">
+      <PageHeader title="仓库">
+        <div className="page-actions">
+          <Button asChild variant="secondary">
+            <Link href="/warehouse/raw-material-storage">原料仓储情况</Link>
+          </Button>
+          <Button asChild variant="secondary">
+            <Link href="/warehouse/finished-goods-storage">成品仓储情况</Link>
+          </Button>
+          <Button asChild variant="secondary">
+            <Link href="/production/material-issues">原料流转</Link>
+          </Button>
+          <Button asChild>
+            <Link href="/production/material-issues/new">新建领料单</Link>
+          </Button>
+          <Button asChild variant="secondary">
+            <Link href="/production/material-issues/new?type=replenishment">新建补料单</Link>
+          </Button>
+        </div>
+      </PageHeader>
+
+      {error && (
+        <section className="panel">
+          <ErrorState message={error} onRetry={() => void load()} />
+        </section>
+      )}
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>待入库通知 <span className="status-warning">{inboundNotices.length}</span></h2>
+        </div>
+        <div className="panel-body">
+          <DataTable
+            columns={noticeColumns}
+            data={inboundNotices}
+            empty={<EmptyState title="暂无待入库通知" description="触发条件：采购在【采购 → 登记到货】后，由【质检 → 来料质检】对已完成且未拒收的批次点击「通知入库」。这里只显示状态为待接收（pending）的通知；已接收的通知请到「原料仓储情况」继续登记入库。" />}
+          />
+        </div>
+      </section>
+
+      {stuckNotices.length > 0 && (
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>已接收但缺入库草稿 <span className="status-error">{stuckNotices.length}</span></h2>
+          </div>
+          <div className="panel-body">
+            <p className="panel-note">这些通知已经接收，但当时没有生成入库草稿（例如质检未完成或历史数据），因此「原料仓储情况」看不到待入库记录。点「补建入库草稿」即可修复；若质检确实还没完成，后端会给出明确提示。</p>
+            <DataTable columns={stuckColumns} data={stuckNotices} empty={<EmptyState title="无" />} />
+          </div>
+        </section>
+      )}
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h2>质检</h2>
+          <div className="page-actions">
+            <Button variant="secondary" asChild>
+              <Link href="/qc">进入质检模块</Link>
+            </Button>
+          </div>
+        </div>
+        <div className="panel-body">
+          <p className="panel-note">成品送检与质检、来料质检、质检合格待入库与次品登记已统一迁到【质检】模块。</p>
+        </div>
+      </section>
+    </div>
+  );
 }
