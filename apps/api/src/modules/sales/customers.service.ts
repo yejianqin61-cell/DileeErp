@@ -1,8 +1,9 @@
-import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { isUniqueConstraintViolationOn } from "../../platform/database/prisma-error";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 // customer_code 可空：code_mode=auto 时由服务端生成（与物料/供应商一致）。
@@ -12,7 +13,7 @@ type ContactUpdateInput = Partial<ContactInput>;
 
 @Injectable()
 export class CustomersService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(page: number, pageSize: number, search?: string) {
     const where = { deletedAt: null, ...(search ? { OR: [{ name: { contains: search, mode: "insensitive" as const } }, { customerCode: { contains: search, mode: "insensitive" as const } }] } : {}) };
@@ -28,6 +29,7 @@ export class CustomersService {
   }
 
   async create(input: CustomerInput & { code_mode?: string }, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "客户币种");
     // 与物料/供应商一致：客户编码支持“自动生成 / 手动填写”，由调用方选择。
     const auto = input.code_mode === "auto";
     const manualCode = input.customer_code?.trim();
@@ -49,6 +51,7 @@ export class CustomersService {
   }
 
   async update(id: string, input: Partial<CustomerInput>, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "客户币种");
     await this.get(id);
     try {
       const customer = await this.prisma.customer.update({ where: { id }, data: { ...(input.customer_code === undefined ? {} : { customerCode: input.customer_code }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.country_region === undefined ? {} : { countryRegion: input.country_region }), ...(input.address === undefined ? {} : { address: input.address }), ...(input.payment_terms === undefined ? {} : { paymentTerms: input.payment_terms }), ...(input.currency === undefined ? {} : { currency: input.currency }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } });

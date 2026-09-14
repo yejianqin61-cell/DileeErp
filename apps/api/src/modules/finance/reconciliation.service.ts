@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
 
@@ -10,7 +11,7 @@ export type ReconciliationInput = { order_no: string; period_start: string; peri
 
 @Injectable()
 export class ReconciliationService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly adjustments: ReceivableAdjustmentService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly adjustments: ReceivableAdjustmentService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(orderNo?: string, customerId?: string, status?: string) {
     return this.prisma.receivableReconciliation.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) }, orderBy: { createdAt: "desc" } });
@@ -23,6 +24,7 @@ export class ReconciliationService {
   }
 
   async create(input: ReconciliationInput, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "对账币种");
     const order = await this.prisma.salesOrder.findFirst({ where: { orderNo: input.order_no, deletedAt: null } });
     if (!order) throw this.notFound("SALES_ORDER_NOT_FOUND", "订单不存在");
     const periodStart = this.date(input.period_start, "INVALID_RECONCILIATION_PERIOD");

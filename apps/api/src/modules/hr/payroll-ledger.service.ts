@@ -1,17 +1,19 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { canReopenPayroll } from "./hr-payroll.domain";
 
 @Injectable()
 export class PayrollLedgerService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
   async list(employeeId?: string, periodStart?: string, periodEnd?: string, status?: string, from?: string, to?: string) { return this.prisma.payrollLedger.findMany({ where: { deletedAt: null, ...(employeeId ? { employeeId } : {}), ...(periodStart ? { periodStart: this.date(periodStart) } : {}), ...(periodEnd ? { periodEnd: this.date(periodEnd) } : {}), ...(status ? { status } : {}), ...(from || to ? { AND: [{ ...(to ? { periodStart: { lte: this.date(to) } } : {}) }, { ...(from ? { periodEnd: { gte: this.date(from) } } : {}) }] } : {}) }, include: { employee: true, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null }, include: { payment: true } } }, orderBy: { periodStart: "desc" } }).then((rows) => rows.map((row) => { const adjustments = row.adjustments.filter((item) => item.status === "posted").reduce((sum, item) => sum.plus(item.effect === "increase" ? item.amount : item.amount.negated()), new Prisma.Decimal(0)); const payable = row.baseSalary.plus(row.productionSourceAmount).plus(row.overtimeAmount).minus(row.attendanceDeduction).plus(row.performanceAmount).plus(row.allowanceAmount).minus(row.socialInsurance).minus(row.individualTax).plus(row.otherAdjustment).plus(adjustments); const paid = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)); return { ...row, payableAmount: payable.toFixed(4), paidAmount: paid.toFixed(4), outstandingAmount: payable.minus(paid).toFixed(4) }; })); }
   async get(id: string) { const row = await this.prisma.payrollLedger.findFirst({ where: { id, deletedAt: null }, include: { employee: true, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null } } } }); if (!row) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在"); return row; }
   async generate(input: { employee_id?: string; employee_name?: string; period_start: string; period_end: string; currency: string; base_salary?: string; overtime_amount?: string; attendance_deduction?: string; performance_amount?: string; allowance_amount?: string; social_insurance?: string; individual_tax?: string; other_adjustment?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "工资台账币种");
     const start = this.date(input.period_start); const end = this.date(input.period_end); if (end < start) throw this.invalid("INVALID_PAYROLL_PERIOD", "薪资期间无效");
     if (!input.employee_id && !input.employee_name?.trim()) throw this.invalid("EMPLOYEE_REQUIRED", "请选择员工姓名");
     const employees = await this.prisma.employee.findMany({ where: input.employee_id ? { id: input.employee_id, deletedAt: null } : { name: input.employee_name!.trim(), deletedAt: null }, orderBy: { employeeNo: "asc" } });
@@ -42,6 +44,7 @@ export class PayrollLedgerService {
     return result.row;
   }
   async update(id: string, input: Partial<{ employee_id: string; period_start: string; period_end: string; currency: string; base_salary: string; overtime_amount: string; attendance_deduction: string; performance_amount: string; allowance_amount: string; social_insurance: string; individual_tax: string; other_adjustment: string; attachment?: unknown[]; remark?: string; reason?: string }>, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "工资台账币种");
     let beforeStatus = "";
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${id}::uuid FOR UPDATE`;

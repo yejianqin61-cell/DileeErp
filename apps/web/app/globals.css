@@ -138,6 +138,10 @@ button { cursor: pointer; }
 .panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .content-area > .panel { margin-bottom: 20px; }
 .content-area > .panel:last-of-type { margin-bottom: 0; }
+/* S6：页面根节点为了挂 data-testid="page-*" 多了一层 .page-root 包装（页面最外层原本是 Fragment），
+   这里补齐与 .content-area > .panel 相同的间距，保证视觉零变化。 */
+.page-root > .panel { margin-bottom: 20px; }
+.page-root > .panel:last-of-type { margin-bottom: 0; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 14px 16px; }
 .panel-heading h2 { margin: 0; font-size: 15px; }
 .panel-body { padding: 16px; }
@@ -345,3 +349,9 @@ button { cursor: pointer; }
 .material-slip-editor .slip-col-material .ui-select-trigger > span { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ui-multi-select-empty { margin: 0; padding: 8px; color: var(--text-muted); font-size: 13px; }
+
+/* 采购单草稿的行选择：复选框列固定在行首，窄列不抢物料列的宽度。 */
+.draft-select-cell { width: 40px; text-align: center; }
+.draft-select-cell input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+/* 按供应商拆分的分组预览。 */
+.draft-split-list { margin: 6px 0; padding-left: 18px; color: var(--text-muted); font-size: 13px; }

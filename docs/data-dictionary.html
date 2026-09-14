@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dilee ERP · 数据字段字典</title>
+<style>
+:root{--bg:#0f172a;--panel:#1e293b;--panel2:#111827;--line:#334155;--text:#e2e8f0;--muted:#94a3b8;--blue:#38bdf8;--green:#34d399;--yellow:#fbbf24;--purple:#a78bfa;--pink:#f472b6}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;line-height:1.55}main{max-width:1400px;margin:auto;padding:28px 20px 70px}h1{margin:0;font-size:30px}h2{border-left:4px solid var(--blue);padding-left:10px;margin:38px 0 14px;font-size:22px}h3{margin:0 0 8px}.hero,.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;box-shadow:0 5px 18px #0004}.subtitle,.muted{color:var(--muted)}.subtitle{margin:4px 0 15px}.badges{display:flex;gap:8px;flex-wrap:wrap}.badge{font-size:12px;border:1px solid var(--line);border-radius:99px;padding:4px 11px;color:#cbd5e1;background:#0b1526}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:16px}.stat{background:#111c34;border:1px solid var(--line);padding:14px;border-radius:10px}.stat strong{display:block;font-size:25px;color:var(--blue)}.stat span{font-size:12px;color:var(--muted)}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:15px 0}.toolbar label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}input,select{background:#0b1526;border:1px solid var(--line);border-radius:7px;padding:9px 11px;color:var(--text);min-width:210px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{border:1px solid #2d3d55;padding:9px 10px;text-align:left;vertical-align:top}th{background:#172238;color:#bae6fd;position:sticky;top:0;z-index:1}tr:nth-child(even) td{background:#1b2740}.scroll{overflow:auto;max-height:600px;border-radius:8px}.code{font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:#93c5fd;background:#0b1526;border-radius:4px;padding:1px 5px;white-space:nowrap}.status{display:inline-block;border-radius:5px;padding:2px 7px;font-size:12px;white-space:nowrap}.done{color:var(--green);border:1px solid #34d39966;background:#064e3b22}.partial{color:var(--yellow);border:1px solid #fbbf2466;background:#713f1218}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}.module{border-left:3px solid var(--blue);padding:12px 14px;background:#111c34;border-radius:8px}.module h3{color:#bae6fd}.module p{font-size:13px;margin:3px 0}.module .range{font:13px ui-monospace,Consolas,monospace;color:#f0abfc}.notice{border:1px solid #fbbf2466;background:#713f1218;border-radius:9px;padding:12px 14px;color:#fde68a;font-size:13px}.flow-img{width:100%;background:#0b1526;border:1px solid var(--line);border-radius:10px}.links{display:flex;gap:12px;flex-wrap:wrap;margin-top:10px}.links a{color:#7dd3fc}.hide{display:none}footer{margin-top:55px;text-align:center;color:#64748b;font-size:12px;border-top:1px solid var(--line);padding-top:15px}
+</style>
+</head>
+<body>
+<main>
+<section class="hero">
+<h1>Dilee ERP · 全站数据字段字典</h1>
+<p class="subtitle">字段编号、表单绑定、上下游指针、联动类型与实现状态索引</p>
+<div class="badges"><span class="badge">统一业务身份：order_no</span><span class="badge">UUID：内部关联</span><span class="badge">库存事实驱动余额</span><span class="badge">批次级追溯</span><span class="badge">草稿 / 确认 / 过账 / 冲销</span></div>
+<div class="stats"><div class="stat"><strong>213</strong><span>统一字段编号（F-0001 ~ F-0213）</span></div><div class="stat"><strong>20+</strong><span>业务表单/工作区</span></div><div class="stat"><strong>23</strong><span>关键关系指针（R-0001 起）</span></div><div class="stat"><strong>13</strong><span>业务模块/支撑域</span></div></div>
+<div class="links"><a href="data-dictionary.md">打开完整 Markdown 字典</a><a href="data-flow.svg">打开数据流 SVG</a><a href="business-pipeline-overview.html">打开业务管线总览</a></div>
+</section>
+
+<h2>一、字段编号与联动口径</h2>
+<section class="card">
+<p><span class="code">F-xxxx</span> 是统一字段语义编号，同一语义字段在不同表单中复用同一编号；具体表单位置通过表单绑定表表达。</p>
+<p><span class="code">R-xxxx</span> 是上下游关系编号，用于描述字段或业务事实之间的引用、外键、快照、派生、汇总、状态门禁、库存事实、告警和回退/冲销关系。</p>
+<div class="notice">HTML 是可浏览的索引版；所有字段逐条定义、类型、上下游和状态的完整清单保存在同目录 <a href="data-dictionary.md">data-dictionary.md</a>。</div>
+</section>
+
+<h2>二、按模块字段范围</h2>
+<section class="grid">
+<div class="module"><h3>平台基础与公共字段</h3><p>身份、状态、审计、幂等、附件、扩展字段</p><p class="range">F-0001 ~ F-0014</p></div>
+<div class="module"><h3>客户池与销售</h3><p>客户、联系人、销售单、订单号、客户/销售快照</p><p class="range">F-0015 ~ F-0037</p></div>
+<div class="module"><h3>BOM</h3><p>BOM版本、明细、原料、型号、颜色、用量与单位</p><p class="range">F-0038 ~ F-0054</p></div>
+<div class="module"><h3>采购与来料质检</h3><p>采购单、采购明细、到货批次、QC、超收与入库门禁</p><p class="range">F-0055 ~ F-0079</p></div>
+<div class="module"><h3>原料仓库与生产领料</h3><p>原料入库、库存事实、领料、退料、报废、冲销、预览</p><p class="range">F-0080 ~ F-0096</p></div>
+<div class="module"><h3>生产主数据 / 生产单</h3><p>员工、部门、岗位、工序、地点、生产单、生产工序、进度</p><p class="range">F-0097 ~ F-0117</p></div>
+<div class="module"><h3>生产日报与工资来源</h3><p>工序日报、员工日报、计件/计时、人工单价、差异告警</p><p class="range">F-0118 ~ F-0130</p></div>
+<div class="module"><h3>外加工</h3><p>外加工批次、直发、签收、余料回厂、成品回厂、直装柜</p><p class="range">F-0131 ~ F-0138</p></div>
+<div class="module"><h3>成品质检与成品仓库</h3><p>成品QC、合格/不合格、入库、不良品、出库、退货</p><p class="range">F-0139 ~ F-0158</p></div>
+<div class="module"><h3>应收与客户对账</h3><p>应收来源、收款、核销、退款/红字、调整、对账、关闭预览</p><p class="range">F-0159 ~ F-0175</p></div>
+<div class="module"><h3>应付与供应商对账</h3><p>应付来源、付款、核销、余额、供应商对账</p><p class="range">F-0176 ~ F-0186</p></div>
+<div class="module"><h3>人事与工资支付</h3><p>员工、考勤、绩效、工资台账、调整、工资支付</p><p class="range">F-0187 ~ F-0203</p></div>
+<div class="module"><h3>工作台、报表与告警</h3><p>订单搜索、阻塞原因、审计时间线、报表筛选、告警处理</p><p class="range">F-0204 ~ F-0213</p></div>
+</section>
+
+<h2>三、表单与字段绑定</h2>
+<section class="card">
+<div class="toolbar"><label>搜索表单或模块<input id="formSearch" placeholder="例如：采购、日报、应收"></label></div>
+<div class="scroll"><table id="formTable"><thead><tr><th>模块</th><th>表单 / 工作区</th><th>字段编号</th><th>上游</th><th>下游</th></tr></thead><tbody>
+<tr><td>客户</td><td>客户新建/编辑</td><td>F-0015~F-0020</td><td>人工录入</td><td>销售、财务</td></tr>
+<tr><td>客户</td><td>联系人新建/编辑</td><td>F-0021~F-0023</td><td>客户</td><td>销售单</td></tr>
+<tr><td>销售</td><td>销售单新建/编辑/确认</td><td>F-0002、F-0024~F-0037</td><td>客户、人工</td><td>BOM、采购、生产、应收</td></tr>
+<tr><td>BOM</td><td>BOM新建/编辑/发布</td><td>F-0038~F-0054</td><td>已确认销售单、原料池</td><td>采购、生产</td></tr>
+<tr><td>采购</td><td>采购单新建/编辑/下单</td><td>F-0002、F-0038、F-0055~F-0066</td><td>BOM、供应商</td><td>到货、应付</td></tr>
+<tr><td>采购</td><td>到货批次</td><td>F-0002、F-0061~F-0073</td><td>采购明细</td><td>QC、入库、应付</td></tr>
+<tr><td>来料QC</td><td>来料检验</td><td>F-0067~F-0079</td><td>到货批次</td><td>原料入库、不良品</td></tr>
+<tr><td>仓库</td><td>原料入库</td><td>F-0080~F-0083</td><td>来料QC</td><td>原料库存、应付</td></tr>
+<tr><td>仓库</td><td>领料/退料/报废/冲销</td><td>F-0005、F-0084~F-0096</td><td>生产单、库存</td><td>生产、库存、审计</td></tr>
+<tr><td>生产</td><td>生产主数据</td><td>F-0097~F-0106</td><td>人事/单位池</td><td>生产单、日报</td></tr>
+<tr><td>生产</td><td>生产单/工序</td><td>F-0002、F-0107~F-0117</td><td>销售单、BOM</td><td>领料、日报、QC</td></tr>
+<tr><td>生产</td><td>工序日报/员工日报</td><td>F-0118~F-0130</td><td>生产单、员工、工序</td><td>进度、告警、工资</td></tr>
+<tr><td>外加工</td><td>直发/签收/回厂/直装柜</td><td>F-0131~F-0138</td><td>采购、生产</td><td>QC、库存、应付、应收</td></tr>
+<tr><td>成品</td><td>成品QC/入库/不良品</td><td>F-0139~F-0147</td><td>生产完成/外加工</td><td>出库、库存</td></tr>
+<tr><td>成品</td><td>出库/发货/客户退货</td><td>F-0148~F-0158</td><td>成品库存、销售单</td><td>应收、库存调整</td></tr>
+<tr><td>财务</td><td>应收/收款/核销/对账</td><td>F-0159~F-0175</td><td>出库、客户</td><td>订单关闭</td></tr>
+<tr><td>财务</td><td>应付/付款/核销/对账</td><td>F-0176~F-0186</td><td>到货、入库、外加工</td><td>供应商结算</td></tr>
+<tr><td>人事</td><td>员工/考勤/绩效</td><td>F-0097~F-0101、F-0187~F-0194</td><td>人工录入</td><td>日报、工资</td></tr>
+<tr><td>人事/财务</td><td>工资台账/工资支付</td><td>F-0118~F-0130、F-0195~F-0203</td><td>员工日报、HR数据</td><td>财务、报表</td></tr>
+<tr><td>工作台</td><td>订单全链路</td><td>F-0002、F-0204~F-0206</td><td>全模块</td><td>关闭检查</td></tr>
+<tr><td>报表/告警</td><td>查询/导出/告警</td><td>F-0207~F-0213</td><td>全模块事实</td><td>管理决策</td></tr>
+</tbody></table></div>
+</section>
+
+<h2>四、关键字段示例</h2>
+<section class="card">
+<div class="toolbar"><label>搜索字段<input id="fieldSearch" placeholder="例如：order_no、库存、应收"></label><label>联动类型<select id="typeFilter"><option value="">全部联动</option><option>引用</option><option>外键</option><option>派生</option><option>汇总</option><option>状态门禁</option><option>库存事实</option><option>告警</option></select></label></div>
+<div class="scroll"><table id="fieldTable"><thead><tr><th>编号</th><th>技术字段</th><th>中文含义</th><th>上游</th><th>下游</th><th>联动</th><th>状态</th></tr></thead><tbody>
+<tr><td>F-0002</td><td><span class="code">order_no</span></td><td>订单号</td><td>销售单人工录入</td><td>BOM、采购、生产、仓库、财务、工作台</td><td>引用/聚合</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0029</td><td><span class="code">order_quantity</span></td><td>订单数量</td><td>销售单</td><td>生产计划、BOM、出库上限</td><td>引用/数量门禁</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0043</td><td><span class="code">material_id</span></td><td>物料主数据 ID</td><td>物料池</td><td>BOM、采购、库存、领料</td><td>外键/边界校验</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0067</td><td><span class="code">receipt_id</span></td><td>到货批次 ID</td><td>采购明细</td><td>来料QC、原料入库、应付</td><td>外键/批次追溯</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0071</td><td><span class="code">received_quantity</span></td><td>到货数量</td><td>到货表单</td><td>QC上限、应付来源</td><td>数量门禁/派生</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0075</td><td><span class="code">accepted_quantity</span></td><td>来料合格数量</td><td>来料QC</td><td>原料入库</td><td>数量门禁</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0083</td><td><span class="code">inventory_quantity</span></td><td>库存事实数量</td><td>入库/领料/退料/报废</td><td>库存余额、报表</td><td>库存事实</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0109</td><td><span class="code">planned_quantity</span></td><td>生产计划数量</td><td>销售单</td><td>工序目标、完工、出库</td><td>引用/门禁</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0119</td><td><span class="code">operation_report_quantity</span></td><td>工序日报完成量</td><td>工序日报</td><td>生产进度、超单告警</td><td>汇总/告警</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0124</td><td><span class="code">manual_unit_price</span></td><td>人工填写单价</td><td>员工日报</td><td>工资金额</td><td>派生</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0125</td><td><span class="code">daily_salary_amount</span></td><td>当日工资金额</td><td>件数/时长×单价</td><td>工资来源、工资台账</td><td>派生/汇总</td><td><span class="status partial">已实现；待完整验收</span></td></tr>
+<tr><td>F-0141</td><td><span class="code">finished_qc_accepted_quantity</span></td><td>成品QC合格数量</td><td>成品QC</td><td>成品入库</td><td>数量门禁</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0149</td><td><span class="code">finished_outbound_quantity</span></td><td>成品出库数量</td><td>出库表单</td><td>库存、应收</td><td>库存事实/派生</td><td><span class="status partial">已实现；并发验收待完成</span></td></tr>
+<tr><td>F-0159</td><td><span class="code">receivable_source_id</span></td><td>应收来源 ID</td><td>成品出库</td><td>应收、收款核销</td><td>外键</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0169</td><td><span class="code">receivable_balance</span></td><td>应收余额</td><td>应收-核销-调整</td><td>账龄、订单关闭</td><td>派生</td><td><span class="status partial">已实现；待完整验收</span></td></tr>
+<tr><td>F-0176</td><td><span class="code">payable_source_id</span></td><td>应付来源 ID</td><td>到货/入库/外加工签收</td><td>应付、付款核销</td><td>外键</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0197</td><td><span class="code">payroll_total_amount</span></td><td>工资台账总额</td><td>工资来源汇总/人工维护</td><td>工资支付、报表</td><td>汇总</td><td><span class="status partial">已实现；T07治理中</span></td></tr>
+<tr><td>F-0211</td><td><span class="code">alert_type</span></td><td>告警类型</td><td>业务规则</td><td>告警中心、工作台</td><td>告警</td><td><span class="status done">已实现</span></td></tr>
+</tbody></table></div>
+<p class="muted">完整字段逐条明细请查看 <a href="data-dictionary.md">data-dictionary.md</a>，本页展示跨模块主字段和关系指针。</p>
+</section>
+
+<h2>五、关键上下游关系指针</h2>
+<section class="card"><div class="scroll"><table id="relationTable"><thead><tr><th>关系编号</th><th>上游</th><th>下游</th><th>类型</th><th>业务规则</th></tr></thead><tbody>
+<tr><td>R-0001</td><td>客户 <span class="code">id</span></td><td>销售单 <span class="code">customer_id</span></td><td>外键</td><td>销售单必须关联有效客户</td></tr>
+<tr><td>R-0002</td><td>销售单 <span class="code">order_no</span></td><td>BOM/采购/生产/仓库/财务 <span class="code">order_no</span></td><td>引用</td><td>全链路业务身份证</td></tr>
+<tr><td>R-0003</td><td>销售单确认状态</td><td>BOM创建</td><td>状态门禁</td><td>未确认销售单不可创建正式BOM</td></tr>
+<tr><td>R-0004</td><td>BOM <span class="code">material_id</span></td><td>采购明细 <span class="code">material_id</span></td><td>引用</td><td>只能使用启用原料</td></tr>
+<tr><td>R-0005</td><td>采购明细</td><td>到货批次</td><td>外键/数量门禁</td><td>累计到货计算剩余量与超单</td></tr>
+<tr><td>R-0006</td><td>到货批次</td><td>来料QC</td><td>外键/一对一</td><td>一批到货只生成一条有效QC记录</td></tr>
+<tr><td>R-0007</td><td>来料QC合格/条件接收量</td><td>原料入库</td><td>数量门禁</td><td>入库量不得超过可入库量</td></tr>
+<tr><td>R-0008</td><td>原料入库过账</td><td>原料库存余额</td><td>库存事实</td><td>仅过账事实改变库存</td></tr>
+<tr><td>R-0009</td><td>生产单</td><td>领料单</td><td>外键/状态门禁</td><td>进行中生产单才能领料</td></tr>
+<tr><td>R-0010</td><td>领料事实</td><td>退料/报废</td><td>来源约束</td><td>退料/报废只能引用已过账领料</td></tr>
+<tr><td>R-0011</td><td>生产单工序</td><td>工序日报/员工日报</td><td>外键/唯一性</td><td>按生产单、工序、员工、日期隔离</td></tr>
+<tr><td>R-0012</td><td>员工日报</td><td>工资来源</td><td>汇总/派生</td><td>件数或时长×人工单价</td></tr>
+<tr><td>R-0013</td><td>生产完成/外加工回厂</td><td>成品QC</td><td>来源约束</td><td>外加工发出量不等于完成量</td></tr>
+<tr><td>R-0014</td><td>成品QC合格/条件接收量</td><td>成品入库</td><td>数量门禁</td><td>未检验/不合格不可入可用库存</td></tr>
+<tr><td>R-0015</td><td>成品入库过账</td><td>成品库存余额</td><td>库存事实</td><td>过账才增加可用成品库存</td></tr>
+<tr><td>R-0016</td><td>成品出库过账</td><td>应收来源</td><td>派生/一对一</td><td>出库数量×销售单价</td></tr>
+<tr><td>R-0017</td><td>应收来源</td><td>收款核销</td><td>外键/金额门禁</td><td>收款必须核销有效应收</td></tr>
+<tr><td>R-0018</td><td>到货/入库/外加工签收</td><td>应付来源</td><td>派生</td><td>默认数量×采购单价</td></tr>
+<tr><td>R-0019</td><td>应付来源</td><td>付款核销</td><td>外键/金额门禁</td><td>付款不得无来源或超额核销</td></tr>
+<tr><td>R-0020</td><td>全模块事实</td><td>订单工作台</td><td>工作台聚合</td><td>按 order_no 形成状态快照</td></tr>
+<tr><td>R-0021</td><td>业务规则</td><td>告警中心</td><td>告警</td><td>超单、差异、库存不足、链路阻塞</td></tr>
+<tr><td>R-0022</td><td>日报来源变化</td><td>工资台账</td><td>状态联动</td><td>草稿刷新；已确认/已支付转过期</td></tr>
+<tr><td>R-0023</td><td>退货/退款/红字/冲销</td><td>原事实</td><td>回退/冲销</td><td>不删除原事实，生成反向或调整事实</td></tr>
+</tbody></table></div></section>
+
+<h2>六、数据流动图</h2>
+<section class="card"><img class="flow-img" src="data-flow.svg" alt="Dilee ERP 全站业务数据流动图"></section>
+
+<footer>数据来源：Dilee ERP 当前代码、Prisma Schema、API DTO、前端表单与 docs/ 设计文档。字段状态“已实现”不等同于真实数据库/浏览器链路已验收。</footer>
+</main>
+<script>
+function filterTable(inputId,tableId){const input=document.getElementById(inputId),table=document.getElementById(tableId);input.addEventListener('input',()=>{const q=input.value.trim().toLowerCase();table.querySelectorAll('tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')})}
+filterTable('formSearch','formTable');filterTable('fieldSearch','fieldTable');
+document.getElementById('typeFilter').addEventListener('change',e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('#fieldTable tbody tr').forEach(r=>r.style.display=!q||r.innerText.toLowerCase().includes(q)?'':'none')});
+</script>
+</body>
+</html>

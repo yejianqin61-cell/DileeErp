@@ -1,6 +1,7 @@
 import * as argon2 from "argon2";
 import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import { CURRENCY_DICTIONARY_KEY, DEFAULT_CURRENCIES } from "../src/platform/currency/currency-catalog";
 
 const prisma = new PrismaClient();
 
@@ -39,11 +40,13 @@ async function main() {
       { key: "performance_category", name: "绩效类目", items: [{ key: "monthly", label: "月度绩效" }, { key: "quarterly", label: "季度绩效" }] },
       { key: "quality_inspection_item", name: "质检项目", items: [{ key: "appearance", label: "外观" }, { key: "specification", label: "规格" }, { key: "quantity", label: "数量" }] },
       { key: "submission_item", name: "送检项目", items: [{ key: "incoming_material", label: "来料检验" }, { key: "finished_goods", label: "成品检验" }] },
+      // 币种是可配置字典，不是前后端写死的枚举（PRD/SRS）。
+      { key: CURRENCY_DICTIONARY_KEY, name: "币种", items: DEFAULT_CURRENCIES.map((currency) => ({ key: currency.key, label: currency.label, sortOrder: currency.sortOrder })) },
     ];
     for (const dictionary of standardDictionaries) {
       const type = await tx.dictionaryType.upsert({ where: { key: dictionary.key }, update: { name: dictionary.name, updatedBy: id }, create: { id: randomUUID(), key: dictionary.key, name: dictionary.name, createdBy: id, updatedBy: id } });
       for (const item of dictionary.items) {
-        await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: type.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: type.id, key: item.key, label: item.label, createdBy: id, updatedBy: id } });
+        await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: type.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: type.id, key: item.key, label: item.label, ...("sortOrder" in item ? { sortOrder: item.sortOrder as number } : {}), createdBy: id, updatedBy: id } });
       }
     }
   });

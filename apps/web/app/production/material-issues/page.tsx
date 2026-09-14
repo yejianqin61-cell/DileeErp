@@ -159,7 +159,7 @@ export default function MaterialIssuesPage() {
 
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
 
-  return <>
+  return <div className="page-root" data-testid="page-production-material-issues">
     <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单）。点「新建领料单 / 新建补料单」进入全屏编辑页选择该生产单订单 BOM 里的物料；草稿可直接「过账出库」扣减原料库存（需生产单为生产中），已过账可重新打开或冲销；各自套用对应打印模板。">
       <Button asChild variant="secondary"><Link href="/production">返回生产单</Link></Button>
       <Button asChild><Link href={movementEditorHref("issue")}>新建领料单</Link></Button>
@@ -183,5 +183,5 @@ export default function MaterialIssuesPage() {
       <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张（同一生产单可开多张领料单与补料单，行内「再建领料单/再建补料单」可直接续开）</span></div>
       <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="点右上角「新建领料单 / 新建补料单」进入全屏编辑页创建；两者都只需要选择生产单，物料从该订单 BOM 明细中选。" />} /></div>
     </section>
-  </>;
+  </div>;
 }

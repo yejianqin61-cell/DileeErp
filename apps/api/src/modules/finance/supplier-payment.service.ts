@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 
@@ -11,7 +12,7 @@ type AllocationInput = { payable_entry_id: string; amount: string; remark?: stri
 
 @Injectable()
 export class SupplierPaymentService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payable: SupplierPayableService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payable: SupplierPayableService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
     return this.prisma.supplierPayment.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null }, include: { payableEntry: true } } }, orderBy: { createdAt: "desc" } });
@@ -24,6 +25,7 @@ export class SupplierPaymentService {
   }
 
   async create(input: PaymentInput, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "付款币种");
     const amount = this.decimal(input.amount, "INVALID_SUPPLIER_PAYMENT_AMOUNT");
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null, isActive: true } });
     if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在或已停用");

@@ -26,5 +26,8 @@ jobs:
       - run: npm ci
       - run: npx prisma generate --schema apps/api/prisma/schema.prisma
       - run: npm run typecheck
+      # 部署镜像前必须跑单元测试：此前该 job 只做 typecheck + build，测试代码在 CI 中从未执行。
+      # 链路门禁（集成 / HTTP 契约 / E2E）见 .github/workflows/test.yml。
+      - run: npm run test:unit
       - run: npm run build --workspace=@dilee/api
       - run: npm run build --workspace=@dilee/web

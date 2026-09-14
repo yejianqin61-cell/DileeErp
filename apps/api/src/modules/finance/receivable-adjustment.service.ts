@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 const TYPES = new Set(["refund", "red_credit", "discount", "bad_debt", "correction"]);
@@ -24,7 +25,7 @@ export type ReceivableAdjustmentInput = {
 
 @Injectable()
 export class ReceivableAdjustmentService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(orderNo?: string, customerId?: string, status?: string) {
     return this.prisma.receivableAdjustment.findMany({
@@ -41,6 +42,7 @@ export class ReceivableAdjustmentService {
   }
 
   async create(input: ReceivableAdjustmentInput, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "调整币种");
     const amount = this.decimal(input.amount, "INVALID_ADJUSTMENT_AMOUNT");
     if (!TYPES.has(input.adjustment_type)) throw this.invalid("INVALID_ADJUSTMENT_TYPE", "调整类型无效");
     if (!EFFECTS.has(input.effect)) throw this.invalid("INVALID_ADJUSTMENT_EFFECT", "调整方向无效");

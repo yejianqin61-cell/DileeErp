@@ -7,9 +7,10 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
-import { DataTable } from "../../../components/data/data-table";
+import { DataTable, statusCell } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
+import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type Employee = { id: string; employeeNo: string; name: string; employeeType: string };
@@ -53,8 +54,13 @@ export default function SalaryPage() {
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [employeeQuery, setEmployeeQuery] = useState("");
+  // 币种来自可配置字典（失败回落内置清单）：工资台账与工资付款都要能选币种。
+  const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
+  const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
+  // 币种是静态配置：独立 effect，期间筛选触发的重新加载不会重复拉取字典。
+  useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
   const employeeOptions = employees.map((item) => ({ value: item.id, label: item.employeeNo + " / " + item.name + " / " + (item.employeeType === "workshop" ? "车间" : "非车间") }));
 
   async function load() {
@@ -97,6 +103,7 @@ export default function SalaryPage() {
         { name: "employee_name", label: "员工姓名", type: "select", required: true, options: employees.map((item) => ({ value: item.name, label: item.employeeNo + " / " + item.name + " / " + (item.employeeType === "workshop" ? "车间" : "非车间") })) },
         { name: "period_start", label: "周期开始", type: "date", required: true },
         { name: "period_end", label: "周期结束", type: "date", required: true },
+        { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
         { name: "base_salary", label: "基本工资", type: "number", defaultValue: "0" },
         { name: "overtime_amount", label: "加班工资", type: "number", defaultValue: "0" },
         { name: "attendance_deduction", label: "考勤扣款", type: "number", defaultValue: "0" },
@@ -107,7 +114,7 @@ export default function SalaryPage() {
         { name: "other_adjustment", label: "其他调整", type: "number", defaultValue: "0" },
         { name: "remark", label: "备注", type: "textarea" }
       ],
-      submit: (values) => void run(apiPost("/hr/payroll-ledgers/generate", { ...values, currency: "CNY" }), "工资台账已创建")
+      submit: (values) => void run(apiPost("/hr/payroll-ledgers/generate", { ...values, currency: values.currency }), "工资台账已创建")
     });
   }
 
@@ -118,6 +125,7 @@ export default function SalaryPage() {
         { name: "employee_id", label: "员工", type: "select", required: true, defaultValue: ledger.employeeId, options: employeeOptions },
         { name: "period_start", label: "周期开始", type: "date", required: true, defaultValue: ledger.periodStart.slice(0, 10) },
         { name: "period_end", label: "周期结束", type: "date", required: true, defaultValue: ledger.periodEnd.slice(0, 10) },
+        { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, ledger.currency), defaultValue: ledger.currency },
         { name: "base_salary", label: "基本工资", type: "number", defaultValue: ledger.baseSalary },
         { name: "overtime_amount", label: "加班工资", type: "number", defaultValue: ledger.overtimeAmount },
         { name: "attendance_deduction", label: "考勤扣款", type: "number", defaultValue: ledger.attendanceDeduction },
@@ -129,7 +137,7 @@ export default function SalaryPage() {
         { name: "remark", label: "备注", type: "textarea" },
         ...(ledger.status === "confirmed" ? [{ name: "reason", label: "修改原因", type: "textarea", required: true } as ActionField] : [])
       ],
-      submit: (values) => void run(apiPatch("/hr/payroll-ledgers/" + ledger.id, { ...values, currency: "CNY" }), "工资台账已更新")
+      submit: (values) => void run(apiPatch("/hr/payroll-ledgers/" + ledger.id, { ...values, currency: values.currency }), "工资台账已更新")
     });
   }
 
@@ -137,7 +145,7 @@ export default function SalaryPage() {
     setDialog({ title: "工资台账回退草稿", fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (values) => void run(apiPost("/hr/payroll-ledgers/" + ledger.id + "/reopen", values), "工资台账已回到草稿") });
   }
   function createSalaryPayment() {
-    setDialog({ title: "新建工资付款", fields: [{ name: "amount", label: "付款金额", type: "number", required: true }, { name: "payment_date", label: "付款日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) }, { name: "payment_method", label: "付款方式", required: true, defaultValue: "银行转账" }], submit: (values) => void run(apiPost("/hr/salary-payments", { amount: values.amount, payment_date: values.payment_date, currency: "CNY", payment_method: values.payment_method }), "工资付款草稿已创建") });
+    setDialog({ title: "新建工资付款", fields: [{ name: "amount", label: "付款金额", type: "number", required: true }, { name: "payment_date", label: "付款日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) }, { name: "payment_method", label: "付款方式", required: true, defaultValue: "银行转账" }, { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") }], submit: (values) => void run(apiPost("/hr/salary-payments", { amount: values.amount, payment_date: values.payment_date, currency: values.currency, payment_method: values.payment_method }), "工资付款草稿已创建") });
   }
   function postSalaryPayment(payment: SalaryPayment) {
     const options = ledgers.filter((ledger) => ["confirmed", "partially_paid"].includes(ledger.status) && Number(ledger.outstandingAmount) > 0).map((ledger) => ({ value: ledger.id, label: `${ledger.employee.employeeNo} / ${ledger.employee.name} / 未付 ${ledger.outstandingAmount} ${ledger.currency}` }));
@@ -172,7 +180,7 @@ export default function SalaryPage() {
     { accessorKey: "paymentNo", header: "支付单号" },
     { id: "date", header: "日期", cell: ({ row }) => row.original.paymentDate.slice(0, 10) },
     { id: "amount", header: "金额", cell: ({ row }) => row.original.amount + " " + row.original.currency },
-    { accessorKey: "status", header: "状态" },
+    { accessorKey: "status", header: "状态", cell: statusCell<SalaryPayment>() },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => postSalaryPayment(row.original)}>核销过账</Button>}{row.original.status === "posted" && <Button size="sm" variant="destructive" onClick={() => reverseSalaryPayment(row.original)}>冲销</Button>}</div> }
   ];
 
@@ -190,7 +198,7 @@ export default function SalaryPage() {
   if (loading) return <><PageHeader title="工资总览" description="按车间和非车间拆分展示。"><Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button></PageHeader><LoadingState /></>;
 
   return (
-    <>
+    <div className="page-root" data-testid="page-finance-salary">
       <PageHeader title="工资总览" description="仅车间生产日报自动带入生产来源，其他收入和扣款人工填写。">
         <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
         <Button onClick={openCreate}>新建工资台账</Button><Button variant="secondary" onClick={createSalaryPayment}>新建工资付款</Button>
@@ -199,7 +207,8 @@ export default function SalaryPage() {
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel panel-body"><div className="filter-bar"><label>员工姓名/工号<Input value={employeeQuery} onChange={(event) => setEmployeeQuery(event.target.value)} placeholder="搜索员工" /></label><label>期间开始<Input type="date" value={periodStart} onChange={(event) => setPeriodStart(event.target.value)} /></label><label>期间结束<Input type="date" value={periodEnd} onChange={(event) => setPeriodEnd(event.target.value)} /></label></div><p className="panel-note">已付和未付按有效已过账工资付款实时计算；未付为 0 时不应再次发放，已过期台账需重新结算或使用工资调整单。</p></section>
-      <section className="panel">
+      {/* 拉取失败时不能把「没拿到数据」渲染成「正常空表」：加载失败只留错误态 + 重试入口。 */}
+      {!error && <><section className="panel">
         <div className="panel-heading"><h2>车间</h2></div>
         <div className="panel-body"><DataTable columns={columns} data={workshop} empty={<EmptyState title="暂无车间工资台账" />} /></div>
       </section>
@@ -210,8 +219,8 @@ export default function SalaryPage() {
       <section className="panel">
         <div className="panel-heading"><h2>工资付款</h2></div>
         <div className="panel-body"><DataTable columns={paymentColumns} data={payments} empty={<EmptyState title="暂无工资付款" />} /></div>
-      </section>
+      </section></>}
 
-    </>
+    </div>
   );
 }

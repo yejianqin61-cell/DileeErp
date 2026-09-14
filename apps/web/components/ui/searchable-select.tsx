@@ -32,6 +32,37 @@ function matchesQuery(option: SearchableSelectOption, query: string) {
   return option.label.toLocaleLowerCase().includes(query) || option.value.toLocaleLowerCase().includes(query);
 }
 
+/** 弹层首选高度，与 globals.css 的 `.ui-searchable-select-popover { max-height: 288px }` 保持一致。 */
+export const SEARCHABLE_POPOVER_MAX_HEIGHT = 288;
+/** 触发点与弹层之间的间距，对应 CSS 的 `calc(100% + 4px)`。 */
+const POPOVER_GAP = 4;
+
+/**
+ * 决定弹层朝上还是朝下，并给出该侧可用高度（用于内联 max-height）。
+ *
+ * 原实现只判断"下方空间是否 ≥288"，不够就朝上，**而没有检查上方是否够**。
+ * 弹层绝对定位在触发点所在的裁切盒（宿主对话框 `.ui-dialog-content` 有 overflow:auto）内，
+ * 因此触发点靠近对话框顶部时，朝上的弹层会伸出上边缘被裁掉 —— 顶部若干选项鼠标点不到
+ * （键盘仍可达，所以测试与真实用户表现不一致）。
+ *
+ * 现在：能整高容纳的一侧优先；都容纳不下就选空间更大的一侧；并把高度限制在该侧可用高度内，
+ * 保证弹层整体落在裁切盒内、每个选项都可点击。
+ */
+export function choosePopoverPlacement({
+  spaceAbove,
+  spaceBelow,
+  preferred = SEARCHABLE_POPOVER_MAX_HEIGHT,
+}: {
+  spaceAbove: number;
+  spaceBelow: number;
+  preferred?: number;
+}): { placement: "up" | "down"; maxHeight: number } {
+  const placement = spaceBelow >= preferred ? "down" : spaceAbove >= preferred ? "up" : spaceBelow >= spaceAbove ? "down" : "up";
+  const available = placement === "down" ? spaceBelow : spaceAbove;
+  // 下限 24px 只为避免退化成 0 高；容器正常时 available 远大于此，弹层不会被裁切。
+  return { maxHeight: Math.max(24, Math.min(preferred, Math.floor(available))), placement };
+}
+
 export function SearchableSelect({
   id,
   value,
@@ -55,6 +86,8 @@ export function SearchableSelect({
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const [placement, setPlacement] = useState<"down" | "up">("down");
+  // 打开时按裁切盒内该侧的可用高度收敛，保证弹层不被裁掉（见 choosePopoverPlacement）。
+  const [popoverMaxHeight, setPopoverMaxHeight] = useState(SEARCHABLE_POPOVER_MAX_HEIGHT);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = useMemo(
@@ -114,7 +147,13 @@ export function SearchableSelect({
         }
       }
       const bottomLimit = scrollParent ? scrollParent.getBoundingClientRect().bottom : window.innerHeight;
-      setPlacement(bottomLimit - rect.bottom >= 288 ? "down" : "up");
+      const topLimit = scrollParent ? scrollParent.getBoundingClientRect().top : 0;
+      const chosen = choosePopoverPlacement({
+        spaceAbove: rect.top - topLimit - POPOVER_GAP,
+        spaceBelow: bottomLimit - rect.bottom - POPOVER_GAP,
+      });
+      setPlacement(chosen.placement);
+      setPopoverMaxHeight(chosen.maxHeight);
     }
     // Run only when the panel opens; values above are read from that render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -189,7 +228,7 @@ export function SearchableSelect({
   }
 
   return (
-    <div ref={rootRef} className={cn("ui-searchable-select", className)}>
+    <div ref={rootRef} className={cn("ui-searchable-select", className)} data-testid="searchable-select">
       {open ? (
         <>
           <div className="ui-searchable-select-searchbox">
@@ -198,6 +237,7 @@ export function SearchableSelect({
               id={id}
               type="text"
               className="ui-input"
+              data-testid="searchable-select-search"
               role="combobox"
               aria-autocomplete="list"
               aria-expanded="true"
@@ -231,6 +271,7 @@ export function SearchableSelect({
                 "ui-searchable-select-popover",
                 placement === "up" ? "ui-searchable-select-popover-up" : "ui-searchable-select-popover-down"
               )}
+              style={{ maxHeight: popoverMaxHeight }}
             >
               <div
                 ref={listRef}
@@ -250,6 +291,7 @@ export function SearchableSelect({
                       aria-selected={selected}
                       data-option-index={index}
                       data-active={active ? "true" : undefined}
+                      data-testid="searchable-select-option"
                       className={cn("ui-select-item", "ui-searchable-select-option")}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => selectOption(option.value)}

@@ -212,8 +212,8 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     <PageHeader title={editingNo ? `${title}（继续编辑 ${editingNo}）` : title} description={isReplenishment ? "坏片、生产失误等造成的补充领料；只绑定生产单，过账后计入原料出库并生成补料单（MC-）。" : "领料单只绑定生产单，一个生产单可以开多张；物料只能从该订单 BOM 明细中选择，保存草稿后可随时回来继续编辑。"}>
       <Button asChild variant="secondary"><Link href={listHref}>返回单据列表</Link></Button>
       <Button asChild variant="ghost"><Link href="/warehouse">返回仓库</Link></Button>
-      <Button variant="secondary" onClick={() => void save(false)} disabled={busy}>{busy ? "保存中..." : "保存草稿"}</Button>
-      <Button onClick={() => void save(true)} disabled={busy}>{busy ? "提交中..." : "保存并出库（过账）"}</Button>
+      <Button variant="secondary" data-testid="material-slip-save-draft" onClick={() => void save(false)} disabled={busy}>{busy ? "保存中..." : "保存草稿"}</Button>
+      <Button data-testid="material-slip-post" onClick={() => void save(true)} disabled={busy}>{busy ? "提交中..." : "保存并出库（过账）"}</Button>
     </PageHeader>
     {error && <section className="panel panel-body status-error" role="alert">{error}</section>}
     {warnings.length > 0 && <section className="panel panel-body status-warning">{warnings.map((warning) => <p key={warning}>{warning}</p>)}</section>}
@@ -224,7 +224,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
           {/* 已经存在的单据不能在编辑页换生产单：PATCH 不接受换单（明细会变成新单的 BOM，单据仍挂在旧单），
               所以编辑态直接锁住，需要换单请新建一张。 */}
           <Select value={productionOrderId || undefined} onValueChange={(value) => void changeOrder(value)} disabled={Boolean(editingId)}>
-            <SelectTrigger><SelectValue placeholder="请选择生产单（仅厂内生产中）" /></SelectTrigger>
+            <SelectTrigger data-testid="material-slip-order-select"><SelectValue placeholder="请选择生产单（仅厂内生产中）" /></SelectTrigger>
             <SelectContent>{orders.map((order) => <SelectItem key={order.id} value={order.id}>{order.productionOrderNo} / {order.orderNo}</SelectItem>)}</SelectContent>
           </Select>
         </label>
@@ -233,8 +233,8 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
         {!bomMaterialOptions.length && <p className="status-warning">该生产单订单的 BOM 没有明细，无法选择物料：请先在订单 BOM 里维护用料。</p>}
       </div>
     </section>
-    <section className="panel material-slip-editor">
-      <div className="panel-heading"><h2>物料明细</h2><div className="page-actions"><Button variant="secondary" disabled={allMaterialsUsed} title={allMaterialsUsed ? "该订单 BOM 里的物料都已登记，同一物料只能有一行" : undefined} onClick={() => applyLines([...lines, { materialId: firstUnusedMaterial(lines), quantity: "1", remark: "" }])}>添加行</Button></div></div>
+    <section className="panel material-slip-editor" data-testid="material-slip-lines">
+      <div className="panel-heading"><h2>物料明细</h2><div className="page-actions"><Button variant="secondary" data-testid="material-slip-add-line" disabled={allMaterialsUsed} title={allMaterialsUsed ? "该订单 BOM 里的物料都已登记，同一物料只能有一行" : undefined} onClick={() => applyLines([...lines, { materialId: firstUnusedMaterial(lines), quantity: "1", remark: "" }])}>添加行</Button></div></div>
       <div className="panel-body">
         <div className="table-wrap">
           <Table className="data-table">
@@ -263,7 +263,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                 return <TableRow key={`${line.materialId || "new"}-${index}`}>
                   <TableCell className="slip-col-material" title={materialLabel(line.materialId)}>
                     <Select value={line.materialId || undefined} onValueChange={(value) => update({ materialId: value })}>
-                      <SelectTrigger><SelectValue placeholder="选择原料" /></SelectTrigger>
+                      <SelectTrigger data-testid={`material-slip-line-material-${index}`}><SelectValue placeholder="选择原料" /></SelectTrigger>
                       <SelectContent>{bomMaterialOptions.length ? bomMaterialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>) : <SelectItem value="__none__" disabled>该生产单订单的 BOM 表没有明细</SelectItem>}</SelectContent>
                     </Select>
                   </TableCell>
@@ -273,7 +273,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                   <TableCell>{info?.approved_usage ?? info?.bom_reference_quantity ?? "-"}</TableCell>
                   <TableCell className={short ? "status-danger" : "status-success"} title={isReplenishment ? balanceOf(line.materialId) : info?.inventory_quantity ?? info?.available_before ?? "-"}>{isReplenishment ? balanceOf(line.materialId) : info?.inventory_quantity ?? info?.available_before ?? "-"}</TableCell>
                   {!isReplenishment && <><TableCell>{info?.purchase_received_quantity ?? "-"}</TableCell><TableCell>{info?.purchase_outstanding_quantity ?? "-"}</TableCell><TableCell>{info?.cumulative_issued_after ?? "-"}</TableCell><TableCell>{info?.production_outstanding_quantity ?? "-"}</TableCell></>}
-                  <TableCell className="slip-col-qty"><Input type="number" min="0" step="0.0001" value={line.quantity} onChange={(event) => update({ quantity: event.target.value })} /></TableCell>
+                  <TableCell className="slip-col-qty"><Input type="number" min="0" step="0.0001" data-testid={`material-slip-line-quantity-${index}`} value={line.quantity} onChange={(event) => update({ quantity: event.target.value })} /></TableCell>
                   <TableCell className="slip-col-remark"><Input value={line.remark} placeholder="可选" onChange={(event) => update({ remark: event.target.value })} /></TableCell>
                   <TableCell className="slip-col-action"><Button size="sm" variant="ghost" title="删除行" aria-label="删除行" onClick={() => applyLines(lines.filter((_, itemIndex) => itemIndex !== index))}>删除</Button></TableCell>
                 </TableRow>;

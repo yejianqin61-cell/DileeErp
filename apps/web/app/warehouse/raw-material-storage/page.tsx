@@ -173,7 +173,7 @@ export default function RawMaterialStoragePage() {
   if (loading) return <><PageHeader title="原料仓储情况"><Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button></PageHeader><LoadingState /></>;
 
   return (
-    <>
+    <div className="page-root" data-testid="page-warehouse-raw-material-storage">
       <PageHeader title="原料仓储情况">
         <Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button>
         <Button variant="secondary" onClick={() => void load()}>刷新</Button>
@@ -212,6 +212,6 @@ export default function RawMaterialStoragePage() {
           <p className="panel-note">单位映射：{unitMap.size}</p>
         </div>
       </section>
-    </>
+    </div>
   );
 }

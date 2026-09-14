@@ -8,7 +8,7 @@ import { ActionDialog, type ActionField } from "../../components/ui/action-dialo
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
-import { DataTable } from "../../components/data/data-table";
+import { DataTable, statusCell } from "../../components/data/data-table";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { latestBom, productionCandidateHint, productionCandidates, resolveProductionUnit } from "../../lib/production-candidates";
@@ -114,19 +114,22 @@ export default function ProductionPage() {
     { id: "location", header: "地点", cell: ({ row }) => row.original.executionLocation?.name ?? "-" },
     { accessorKey: "plannedQuantity", header: "计划数" },
     { id: "operations", header: "工序", cell: ({ row }) => row.original.operations.map((item) => item.operationNameSnapshot).join("、") || "未配置" },
-    { accessorKey: "status", header: "状态" },
+    { accessorKey: "status", header: "状态", cell: statusCell<ProductionOrder>() },
     { id: "actions", header: "操作", cell: ({ row }) => row.original.status === "draft" ? <Button size="sm" variant="secondary" onClick={() => void run(`/production/orders/${row.original.id}/transition`, { target: "in_progress", reason: "开始生产" }, "生产单已启动")}>启动</Button> : null },
   ];
 
-  return <>
-    <PageHeader title="生产"><Button onClick={() => void openProductionOrder()}>新建生产单</Button></PageHeader>
+  // 基础资料加载完成前禁止打开建单对话框：openProductionOrder() 用当时的 activeLocations 构造选项，
+  // 数据到达后 dialog.fields 不会重建，会留下**永久为空**的「执行地点」下拉
+  // （见 docs/test/results/2026-09-13-e2e-rewrite-and-platform-unit-expansion.md §7.3）。
+  return <div className="page-root" data-testid="page-production">
+    <PageHeader title="生产"><Button onClick={() => void openProductionOrder()} disabled={loading} data-testid="production-create-order">新建生产单</Button></PageHeader>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
     {message && <section className="panel panel-body status-success">{message}</section>}
     {!loading && candidateHint && <section className="panel panel-body panel-note" role="status">{candidateHint}</section>}
     {error ? <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section> : loading ? <LoadingState /> : <>
-      <section className="panel"><div className="panel-heading"><h2>生产单查找</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索生产单、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label></div><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无生产单" />} /></div></section>
-      <section className="panel"><div className="panel-heading"><h2>生产基础资料</h2></div><div className="panel-body"><div className="page-actions"><Button asChild variant="secondary"><Link href="/production/operations">工序池（{operations.filter((item) => item.isActive).length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/locations">加工地点池（{activeLocations.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/units">单位池（{units.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/material-issues">领料/补料单（按工序）</Link></Button></div></div></section>
+      <section className="panel"><div className="panel-heading"><h2>生产单查找</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索生产单、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label></div><div data-testid="production-order-table"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无生产单" />} /></div></div></section>
+      <section className="panel"><div className="panel-heading"><h2>生产基础资料</h2></div><div className="panel-body"><div className="page-actions"><Button asChild variant="secondary"><Link href="/production/operations" data-testid="production-add-operation">工序池（{operations.filter((item) => item.isActive).length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/locations" data-testid="production-add-location">加工地点池（{activeLocations.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/units">单位池（{units.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/material-issues">领料/补料单（按工序）</Link></Button></div></div></section>
       <PayrollExportPanel orders={records} operations={operations} />
     </>}
-  </>;
+  </div>;
 }

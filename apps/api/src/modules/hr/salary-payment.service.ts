@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { PayrollLedgerService } from "./payroll-ledger.service";
 import { PayrollPayableService } from "./payroll-payable.service";
@@ -12,10 +13,10 @@ type Allocation = { ledger_id: string; amount: string; remark?: string };
 
 @Injectable()
 export class SalaryPaymentService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payroll: PayrollLedgerService, private readonly payables: PayrollPayableService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payroll: PayrollLedgerService, private readonly payables: PayrollPayableService, @Optional() private readonly currencies?: CurrencyService) {}
   async list(status?: string) { return this.prisma.salaryPayment.findMany({ where: { deletedAt: null, ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null }, include: { ledger: { include: { employee: true } } } } }, orderBy: { createdAt: "desc" } }); }
   async get(id: string) { const row = await this.prisma.salaryPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null }, include: { ledger: true } } } }); if (!row) throw this.notFound("SALARY_PAYMENT_NOT_FOUND", "工资付款不存在"); return row; }
-  async create(input: Input, user: CurrentUser) { const amount = this.positive(input.amount); const row = await this.prisma.salaryPayment.create({ data: { paymentNo: this.number("SALARY"), paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("salary_payment.create", "salary_payment", user.id, row.id, { amount: row.amount.toString() }); return row; }
+  async create(input: Input, user: CurrentUser) { await this.currencies?.assertSupported(input.currency, "工资付款币种"); const amount = this.positive(input.amount); const row = await this.prisma.salaryPayment.create({ data: { paymentNo: this.number("SALARY"), paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("salary_payment.create", "salary_payment", user.id, row.id, { amount: row.amount.toString() }); return row; }
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; bank_reference?: string; remark?: string }, user: CurrentUser) {
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM salary_payments WHERE id = ${id}::uuid FOR UPDATE`;

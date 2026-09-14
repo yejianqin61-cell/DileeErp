@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dilee ERP · 业务管线总览</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #111c34;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --good: #34d399;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --purple: #a78bfa;
+    --pink: #f472b6;
+    --orange: #fb923c;
+    --box-radius: 10px;
+    --shadow: 0 4px 16px rgba(0,0,0,.35);
+    --font: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #1d4ed833 0, transparent 55%),
+      radial-gradient(900px 500px at 10% 0%, #0e749055 0, transparent 45%),
+      var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+  }
+  main { max-width: 1280px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 22px; margin: 44px 0 14px; padding-left: 12px; border-left: 4px solid var(--accent); }
+  h3 { font-size: 17px; margin: 8px 0 6px; color: #f1f5f9; }
+  p { margin: 6px 0; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; }
+  .hero {
+    background: linear-gradient(135deg, #0ea5e922, #1e293b);
+    border: 1px solid #334155;
+    border-radius: 16px;
+    padding: 22px 26px;
+    box-shadow: var(--shadow);
+  }
+  .hero strong { color: var(--accent); }
+  .badge-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .badge {
+    background: #0f172a;
+    border: 1px solid var(--border);
+    color: #cbd5e1;
+    border-radius: 99px;
+    padding: 4px 12px;
+    font-size: 12px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--box-radius);
+    padding: 18px 20px;
+    margin: 14px 0;
+    box-shadow: var(--shadow);
+  }
+  .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .flow-wrap {
+    background: #0b1526;
+    border: 1px solid #2c3e58;
+    border-radius: 14px;
+    padding: 22px 18px;
+    overflow-x: auto;
+    margin: 18px 0;
+  }
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    width: max-content;
+    min-width: 100%;
+    flex-wrap: nowrap;
+  }
+  .node {
+    background: #1d2d49;
+    border: 1px solid #3b82f670;
+    border-radius: 8px;
+    padding: 8px 12px;
+    text-align: center;
+    min-width: 110px;
+    font-size: 13px;
+    box-shadow: 0 2px 6px #0003;
+    white-space: nowrap;
+  }
+  .node.small { min-width: 80px; font-size: 12px; }
+  .node.highlight { background: #0c4a6e; border-color: var(--accent); }
+  .node.green { border-color: #34d39980; }
+  .node.orange { border-color: #fb923c80; }
+  .node.purple { border-color: #a78bfa80; }
+  .node.pink { border-color: #f472b680; }
+  .node.bad { border-color: #f8717180; background: #450a0a55; }
+  .node .tag { display:block; font-size: 10px; color: var(--muted); margin-top: 2px; font-weight: 400; }
+  .arrow {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 16px;
+    margin: 0 6px;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .arrow.small { font-size: 13px; margin: 0 3px; }
+  .pipeline-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  .pipeline-table th, .pipeline-table td {
+    border: 1px solid #293a52;
+    padding: 10px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .pipeline-table th { background: #172238; color: #dbeafe; font-weight: 600; }
+  .pipeline-table tr:nth-child(even) td { background: #1b2740; }
+  .pipeline-table td .code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: #93c5fd; background: #0b1526; border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+  .status { display: inline-block; border-radius: 6px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+  .status.done { background: #064e3b22; color: var(--good); border: 1px solid #34d39966; }
+  .status.partial { background: #713f120f; color: var(--warn); border: 1px solid #fbbf2466; }
+  .status.blocked { background: #7f1d1d1a; color: var(--bad); border: 1px solid #f8717166; }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; color:var(--muted); font-size:13px; margin:12px 0; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:10px; height:10px; border-radius:3px; display:inline-block; }
+  .col-title { color:#7dd3fc; font-size:13px; margin-top:14px; }
+  .code-path { background:#0b1526; border:1px solid #1e293b; border-radius:8px; padding:4px 10px; font-family: ui-monospace, Consolas, monospace; font-size:12px; color:#cbd5e1; display:inline-block; }
+  .code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; color: #93c5fd; background: #0b1526; border-radius: 4px; padding: 1px 5px; }
+  .entity-list { list-style:none; margin:8px 0 0; padding:0; }
+  .entity-list li { border-bottom:1px dashed #26364f; padding:8px 2px; display:flex; gap:10px; align-items:baseline; }
+  .entity-list li:last-child { border-bottom:0; }
+  .entity-key { min-width: 170px; color:#93c5fd; font-family: ui-monospace, Consolas, monospace; font-size:12px; }
+  .entity-desc { color:#cbd5e1; font-size:13px; }
+  .section-title { display:flex; align-items:center; gap:10px; }
+  .section-title .idx { background: #0ea5e9; color:#082f49; width:28px; height:28px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; font-weight:800; }
+  .note { font-size:13px; color:var(--muted); }
+  footer { color:#64748b; font-size:12px; text-align:center; margin-top:60px; border-top:1px solid #1e293b; padding-top:18px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="hero">
+    <h1>Dilee ERP · 业务管线总览</h1>
+    <p class="subtitle">以 <strong>order_no</strong> 为主线，梳理从销售、采购、生产、库存、财务到人事薪资的完整数据流动</p>
+    <div class="badge-row">
+      <span class="badge">NestJS API</span>
+      <span class="badge">Prisma + PostgreSQL</span>
+      <span class="badge">Next.js Web</span>
+      <span class="badge">草稿 / 确认 / 过账 / 冲销</span>
+      <span class="badge">审计可追溯</span>
+      <span class="badge">库存事实驱动余额</span>
+      <span class="badge">批次级可追溯</span>
+    </div>
+  </div>
+
+  <h2>总览：主订单数据流</h2>
+  <div class="flow-wrap">
+    <div class="flow">
+      <div class="node highlight">客户池<tag class="tag">customer</tag></div><div class="arrow">→</div>
+      <div class="node highlight">销售单<tag class="tag">sales_order / order_no</tag></div><div class="arrow">→</div>
+      <div class="node green">BOM 表<tag class="tag">bom + raw_material</tag></div><div class="arrow">→</div>
+      <div class="node green">采购单<tag class="tag">purchase_order</tag></div><div class="arrow">→</div>
+      <div class="node green">分批到货<tag class="tag">receipt</tag></div><div class="arrow">→</div>
+      <div class="node green">来料 QC<tag class="tag">incoming_inspection</tag></div><div class="arrow">→</div>
+      <div class="node green">原料入库<tag class="tag">raw_material_inbound</tag></div><div class="arrow">→</div>
+      <div class="node purple">应付 / 付款<tag class="tag">payable + payment</tag></div>
+    </div>
+  </div>
+  <div class="flow-wrap">
+    <div class="flow">
+      <div class="node highlight">销售单 / BOM<tag class="tag">source</tag></div><div class="arrow">→</div>
+      <div class="node orange">生产单<tag class="tag">production_order</tag></div><div class="arrow">→</div>
+      <div class="node orange">原料领料<tag class="tag">material_issue</tag></div><div class="arrow">→</div>
+      <div class="node orange">工序日报<tag class="tag">operation_daily</tag></div><div class="arrow">→</div>
+      <div class="node pink">员工日报 / 工资<tag class="tag">payroll_source</tag></div><div class="arrow">→</div>
+      <div class="node pink">工资台账<tag class="tag">payroll_ledger</tag></div>
+    </div>
+  </div>
+  <div class="flow-wrap">
+    <div class="flow">
+      <div class="node orange">生产完成<tag class="tag">completed</tag></div><div class="arrow small">→</div>
+      <div class="node orange">外加工回厂<tag class="tag">outsource</tag></div><div class="arrow">→</div>
+      <div class="node green">成品 QC<tag class="tag">finished_goods_qc</tag></div><div class="arrow">→</div>
+      <div class="node green">成品入库<tag class="tag">finished_goods_inbound</tag></div><div class="arrow">→</div>
+      <div class="node green">成品出库/发货<tag class="tag">outbound</tag></div><div class="arrow">→</div>
+      <div class="node purple">应收 / 收款<tag class="tag">receivable + receipt</tag></div><div class="arrow">→</div>
+      <div class="node purple">对账 / 关闭<tag class="tag">reconciliation</tag></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="legend">
+      <span><i class="dot" style="background:#38bdf8"></i>销售/订单</span>
+      <span><i class="dot" style="background:#34d399"></i>采购/QC/仓库</span>
+      <span><i class="dot" style="background:#fb923c"></i>生产执行</span>
+      <span><i class="dot" style="background:#a78bfa"></i>财务结算</span>
+      <span><i class="dot" style="background:#f472b6"></i>人事薪资</span>
+    </div>
+    <p class="note">所有业务单据通过 <code>order_no</code> 串联；UUID 仅作为内部外键。单据状态遵循：草稿 → 确认/过账 → 完成；错误通过受控回退、冲销或调整处理，不静默改写历史。</p>
+  </div>
+
+  <h2>模块 / 管线索引</h2>
+  <div class="grid-2">
+    <div class="card">
+      <h3>📦 销售域</h3>
+      <p class="note">客户池 → 销售单 → BOM</p>
+      <p><span class="code-path">apps/api/src/modules/sales</span></p>
+    </div>
+    <div class="card">
+      <h3>🛒 采购域</h3>
+      <p class="note">采购单 → 到货 → 来料QC → 原料入库</p>
+      <p><span class="code-path">apps/api/src/modules/procurement</span></p>
+    </div>
+    <div class="card">
+      <h3>🏭 生产域</h3>
+      <p class="note">生产单 → 工序日报 → 员工日报 → 外加工</p>
+      <p><span class="code-path">apps/api/src/modules/production</span></p>
+    </div>
+    <div class="card">
+      <h3>📦 仓库域</h3>
+      <p class="note">成品QC/成品库存/出库/退货/原料仓储</p>
+      <p><span class="code-path">apps/api/src/modules/warehouse</span></p>
+    </div>
+    <div class="card">
+      <h3>💳 财务域</h3>
+      <p class="note">应收/应付/收付款/对账</p>
+      <p><span class="code-path">apps/api/src/modules/finance</span></p>
+    </div>
+    <div class="card">
+      <h3>🧑‍💼 人事域</h3>
+      <p class="note">员工/考勤/绩效/工资台账</p>
+      <p><span class="code-path">apps/api/src/modules/hr</span></p>
+    </div>
+    <div class="card">
+      <h3>📈 报表 / 告警</h3>
+      <p class="note">订单汇总、库存、财务、生产、薪资报表与告警中心</p>
+      <p><span class="code-path">apps/api/src/modules/reports · alerts</span></p>
+    </div>
+    <div class="card">
+      <h3>🧭 订单工作台</h3>
+      <p class="note">以 order_no 聚合全链路状态、阻塞与关闭检查</p>
+      <p><span class="code-path">apps/api/src/modules/order-workbench</span></p>
+    </div>
+  </div>
+
+  <h2>逐条业务管线</h2>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">1</span><h3 style="margin:0">销售 / BOM 管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">客户池</div><div class="arrow small">→</div>
+        <div class="node small">销售单</div><div class="arrow small">→</div>
+        <div class="node small">确认</div><div class="arrow small">→</div>
+        <div class="node small">BOM</div><div class="arrow small">→</div>
+        <div class="node small">采购/生产来源</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>客户维护</td><td><span class="code">Customer</span>、<span class="code">Contact</span></td><td>销售单客户快照、财务客户关联</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>销售单</td><td><span class="code">SalesOrder</span>：唯一 order_no、产品、数量、交期、价格</td><td>BOM、采购、生产、应收的来源</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>BOM</td><td><span class="code">Bom</span> / <span class="code">BomItem</span>：原料物料、型号、颜色、数量、单位</td><td>采购单、生产单、领料参考</td><td><span class="status partial">已接入；发布后变更/模板导出待完整验收</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">2</span><h3 style="margin:0">采购到货 / 来料 QC / 原料入库 / 应付管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">采购单</div><div class="arrow small">→</div>
+        <div class="node small">到货批次</div><div class="arrow small">→</div>
+        <div class="node small">来料QC</div><div class="arrow small">→</div>
+        <div class="node small">合格/条件接收</div><div class="arrow small">→</div>
+        <div class="node small">原料入库</div><div class="arrow small">→</div>
+        <div class="node small">应付来源</div><div class="arrow small">→</div>
+        <div class="node small">付款核销</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>采购单</td><td><span class="code">PurchaseOrder</span>、<span class="code">PurchaseOrderItem</span>、BOM引用</td><td>分批到货、采购进度、超单告警</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>分批到货</td><td><span class="code">Receipt</span> / 批次号、累计到货、超收原因</td><td>来料QC、待确认应付来源</td><td><span class="status partial">核心已实现；关闭/撤销/并发门禁持续补强</span></td></tr>
+        <tr><td>来料 QC</td><td><span class="code">IncomingInspection</span>：合格/条件接收/不合格</td><td>原料可入库量；不合格进不良品/退供应商</td><td><span class="status partial">核心已实现；真实数据库验收待执行</span></td></tr>
+        <tr><td>原料入库</td><td><span class="code">RawMaterialInbound</span> → 库存事实</td><td>原料库存余额、应付来源</td><td><span class="status partial">已实现；过账/冲销并发已补强</span></td></tr>
+        <tr><td>应付</td><td><span class="code">PayableSource</span> / <span class="code">PayableEntry</span>、<span class="code">Payment</span></td><td>供应商应付、付款、对账</td><td><span class="status partial">已接入；分批核销浏览器验收待完成</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">3</span><h3 style="margin:0">原料库存 / 领料 / 退料 / 报废管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">原料库存</div><div class="arrow small">→</div>
+        <div class="node small">生产领料</div><div class="arrow small">→</div>
+        <div class="node small">车间消耗</div><div class="arrow small">→</div>
+        <div class="node small">退料回库</div><div class="arrow small">↔</div>
+        <div class="node small">报废</div><div class="arrow small">↔</div>
+        <div class="node small">冲销</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>库存余额</td><td>按 <span class="code">Material + Unit</span> 聚合，由库存事实派生</td><td>仓库总览、领料预览、采购比较</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>领料</td><td><span class="code">RawMaterialMovement</span> (issue)</td><td>生产单累计领用、库存减少</td><td><span class="status partial">已实现；负库存/并发门禁补强中</span></td></tr>
+        <tr><td>退料 / 报废</td><td>引用已过账领料明细；<span class="code">return/scrap</span></td><td>库存反向事实、差异告警</td><td><span class="status partial">已实现；浏览器回归待完整环境</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">4</span><h3 style="margin:0">生产单 / 工序 / 进度 / 完工管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">订单/BOM</div><div class="arrow small">→</div>
+        <div class="node small">生产单</div><div class="arrow small">→</div>
+        <div class="node small">工序任务</div><div class="arrow small">→</div>
+        <div class="node small">工序日报</div><div class="arrow small">→</div>
+        <div class="node small">完成校验</div><div class="arrow small">→</div>
+        <div class="node small">成品QC来源</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>生产单</td><td><span class="code">ProductionOrder</span>：厂内/外加工、执行地点、计划数量</td><td>领料、日报、QC、出库的来源</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>工序</td><td><span class="code">OperationCatalog</span>、<span class="code">ProductionOrderOperation</span></td><td>工序进度、日报隔离维度</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>进度/完工</td><td>工序日报累计量、超单告警、未处理告警门禁</td><td>厂内完工 / 外加工回厂完工</td><td><span class="status partial">已实现；完工强校验需真实数据验收</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">5</span><h3 style="margin:0">外加工物料直发 / 签收 / 回厂 / 直装柜管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">外加工生产单</div><div class="arrow small">→</div>
+        <div class="node small">原料直发</div><div class="arrow small">→</div>
+        <div class="node small">外加工签收</div><div class="arrow small">→</div>
+        <div class="node small">余料回厂</div><div class="arrow small">→</div>
+        <div class="node small">原料QC/入库</div>
+      </div>
+    </div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">外加工签收</div><div class="arrow small">→</div>
+        <div class="node small">成品回厂</div><div class="arrow small">→</div>
+        <div class="node small">成品QC</div><div class="arrow small">→</div>
+        <div class="node small">成品入库</div>
+        <div class="node small">直装柜</div><div class="arrow small">→</div>
+        <div class="node small">成品出库/发货</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>直发/签收</td><td><span class="code">OutsourceLogistics</span>、外加工点签收批次</td><td>应付来源（外加工）、余料/成品事实来源</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>回厂 / 直装柜</td><td>余料回厂、成品回厂、直装柜来源事实</td><td>原料 QC/入库、成品 QC/出库</td><td><span class="status partial">已实现；需完整链路验收</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">6</span><h3 style="margin:0">生产日报 / 员工日报 / 工资来源管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">生产单/工序</div><div class="arrow small">→</div>
+        <div class="node small">工序日报</div><div class="arrow small">→</div>
+        <div class="node small">进度+差异告警</div>
+        <div class="node small">员工日报</div><div class="arrow small">→</div>
+        <div class="node small">计件/计时</div><div class="arrow small">→</div>
+        <div class="node small">工资来源</div><div class="arrow small">→</div>
+        <div class="node small">工资台账</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>工序日报</td><td><span class="code">OperationDailyReport</span>：生产单+工序+日期唯一</td><td>生产进度、超单告警</td><td><span class="status partial">已实现；唯一性/并发补强中</span></td></tr>
+        <tr><td>员工日报</td><td><span class="code">EmployeeDailyReport</span>：计件/计时、人工单价</td><td>工资来源、差异告警</td><td><span class="status partial">已实现；浏览器验收待完整环境</span></td></tr>
+        <tr><td>工资来源</td><td><span class="code">PayrollSource</span>，随日报变更同步刷新/过期</td><td>工资台账草稿自动刷新</td><td><span class="status partial">已实现；T07 正在收口</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">7</span><h3 style="margin:0">成品 QC / 成品入库 / 不良品管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">生产完成</div><div class="arrow small">→</div>
+        <div class="node small">成品送检</div><div class="arrow small">→</div>
+        <div class="node small">成品QC</div><div class="arrow small">→</div>
+        <div class="node small green">合格/条件接收</div><div class="arrow small">→</div>
+        <div class="node small green">成品入库</div>
+        <div class="node small bad">不合格</div><div class="arrow small">→</div>
+        <div class="node small bad">不良品</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>成品 QC</td><td><span class="code">FinishedGoodsQc</span>：合格/条件接收/不合格</td><td>成品/不良品可入库量</td><td><span class="status partial">已实现；更正与下游保护补强中</span></td></tr>
+        <tr><td>成品入库</td><td><span class="code">FinishedGoodsInventory</span> → 库存事实</td><td>成品库存、可出库量</td><td><span class="status partial">已实现；并发过账/冲销补强中</span></td></tr>
+        <tr><td>不良品</td><td>独立不良品库存 / 处置事实</td><td>返工/报废/客户退货去向</td><td><span class="status partial">已实现</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">8</span><h3 style="margin:0">成品出库 / 发货 / 客户退货 / 应收来源管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">成品库存</div><div class="arrow small">→</div>
+        <div class="node small">出库草稿</div><div class="arrow small">→</div>
+        <div class="node small">过账/发货</div><div class="arrow small">→</div>
+        <div class="node small">物流/签收</div><div class="arrow small">→</div>
+        <div class="node small">应收来源</div>
+        <div class="node small">客户退货</div><div class="arrow small">→</div>
+        <div class="node small">成品/不良品回库</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>出库</td><td><span class="code">FinishedGoodsOutbound</span>：库存、销售单价、超计划风险</td><td>库存事实、应收来源草稿</td><td><span class="status partial">已实现；并发锁与验收补强中</span></td></tr>
+        <tr><td>发货/签收</td><td>物流、签收、附件资料</td><td>应收确认、客户对账依据</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>客户退货</td><td><span class="code">CustomerReturn</span>：成品/不良品回库</td><td>库存反向事实、财务调整提示</td><td><span class="status partial">已实现；验收待完整环境</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">9</span><h3 style="margin:0">应收 / 收款 / 核销 / 对账 / 订单关闭管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">应收来源</div><div class="arrow small">→</div>
+        <div class="node small">应收确认</div><div class="arrow small">→</div>
+        <div class="node small">收款</div><div class="arrow small">→</div>
+        <div class="node small">分批核销</div><div class="arrow small">→</div>
+        <div class="node small">调整/红字</div><div class="arrow small">→</div>
+        <div class="node small">应收对账</div><div class="arrow small">→</div>
+        <div class="node small">订单关闭检查</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>应收来源</td><td><span class="code">ReceivableSource</span>：从成品出库生成</td><td>应收单、订单财务摘要</td><td><span class="status partial">已实现；来源确认待完整验收</span></td></tr>
+        <tr><td>收款核销</td><td><span class="code">CustomerPayment</span> + Allocation</td><td>应收余额、账龄、核销记录</td><td><span class="status partial">已实现；分批核销/冲销待完整验收</span></td></tr>
+        <tr><td>调整/对账</td><td>退款、红字、折扣、坏账、<span class="code">Reconciliation</span></td><td>订单关闭预览、审计</td><td><span class="status partial">已接入；真实数据验收待完成</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">10</span><h3 style="margin:0">应付 / 付款 / 核销 / 供应商对账管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">原料入库/到货/外加工签收</div><div class="arrow small">→</div>
+        <div class="node small">应付来源</div><div class="arrow small">→</div>
+        <div class="node small">应付确认</div><div class="arrow small">→</div>
+        <div class="node small">付款</div><div class="arrow small">→</div>
+        <div class="node small">分批核销</div><div class="arrow small">→</div>
+        <div class="node small">供应商对账</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>应付来源</td><td><span class="code">PayableSource</span>：每批到货/签收自动生成</td><td>应付单、批次追溯、金额覆盖原因</td><td><span class="status partial">已实现；批次应付补强中</span></td></tr>
+        <tr><td>付款核销</td><td><span class="code">SupplierPayment</span> + Allocation</td><td>应付余额、核销记录、订单财务摘要</td><td><span class="status partial">已实现；浏览器验收待完整环境</span></td></tr>
+        <tr><td>对账</td><td><span class="code">SupplierPayableReconciliation</span></td><td>外部余额差异、付款建议</td><td><span class="status partial">已接入</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">11</span><h3 style="margin:0">人事 / 考勤 / 绩效 / 工资支付管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">员工主数据</div><div class="arrow small">→</div>
+        <div class="node small">考勤/绩效</div><div class="arrow small">→</div>
+        <div class="node small">工资台账</div><div class="arrow small">→</div>
+        <div class="node small">车间来源：日报</div><div class="arrow small">→</div>
+        <div class="node small">非车间：人工</div><div class="arrow small">→</div>
+        <div class="node small">工资付款</div><div class="arrow small">→</div>
+        <div class="node small">支付/关闭</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>员工/部门/岗位</td><td><span class="code">Employee</span>、<span class="code">Department</span>、<span class="code">Position</span></td><td>生产日报、考勤、工资归属</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>考勤/绩效</td><td><span class="code">AttendanceRecord</span>、<span class="code">PerformanceRecord</span></td><td>工资参考、HR 报表</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>工资台账</td><td><span class="code">PayrollLedger</span>、<span class="code">PayrollSource</span></td><td>工资付款、工资报表、审计</td><td><span class="status partial">已实现；T07 治理中</span></td></tr>
+        <tr><td>工资支付</td><td><span class="code">SalaryPayment</span> + Allocation</td><td>已支付/关闭状态、财务工资汇总</td><td><span class="status partial">已实现；真实浏览器验收待完成</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="section-title"><span class="idx">12</span><h3 style="margin:0">订单工作台 / 报表 / 告警中心管线</h3></div>
+    <div class="col-title">数据流</div>
+    <div class="flow-wrap">
+      <div class="flow">
+        <div class="node small">全模块事实</div><div class="arrow small">→</div>
+        <div class="node small highlight">order_no 汇聚</div><div class="arrow small">→</div>
+        <div class="node small">工作台聚合</div><div class="arrow small">→</div>
+        <div class="node small">报表/导出</div>
+        <div class="node small">告警</div><div class="arrow small">→</div>
+        <div class="node small">处理/关闭</div>
+      </div>
+    </div>
+    <table class="pipeline-table">
+      <thead><tr><th style="width:120px">环节</th><th>关键对象 / 事实</th><th>输出下游</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>订单工作台</td><td>以 <span class="code">order_no</span> 聚合销售/BOM/采购/生产/仓库/财务</td><td>全链路状态、阻塞原因、订单关闭建议</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>报表</td><td>订单、采购/应付、库存、生产/QC、薪资、财务报表</td><td>CSV 导出、业务决策</td><td><span class="status done">已接入</span></td></tr>
+        <tr><td>告警中心</td><td>超单、日报差异、库存不足、超发、链路阻塞</td><td>处理、备注、关闭</td><td><span class="status done">已接入</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>跨模块“数据事实”规则</h2>
+  <div class="card">
+    <ul class="entity-list">
+      <li><span class="entity-key">order_no</span><span class="entity-desc">唯一业务身份证，所有跨模块单据/事实都保留订单号用于追溯。</span></li>
+      <li><span class="entity-key">草稿 / 事实</span><span class="entity-desc">草稿可编辑删除；确认/过账/完成事实只能受控回退或冲销，禁止静默覆盖。</span></li>
+      <li><span class="entity-key">库存事实</span><span class="entity-desc">只有原料入库、领料、退料、报废、成品入库/出库/退货及其反向事实改变库存；到货、QC、草稿不改变库存。</span></li>
+      <li><span class="entity-key">批次追溯</span><span class="entity-desc">采购到货批次 → 来料QC批次 → 原料入库批次 → 应付来源/付款，形成批次级连续追溯。</span></li>
+      <li><span class="entity-key">财务来源</span><span class="entity-desc">成品出库生成应收来源；原料入库/到货/外加工签收生成应付来源；付款/收款必须核销有效应收/应付。</span></li>
+      <li><span class="entity-key">工资来源</span><span class="entity-desc">生产日报保存后实时写入工资来源；已确认/已支付工资台账不静默改写，来源变化转 expired，差额走调整单。</span></li>
+      <li><span class="entity-key">审计/幂等</span><span class="entity-desc">所有回退、冲销、金额覆盖、删除、核心字段更正填写原因；跨模块写入使用幂等键/唯一约束防止重复事实。</span></li>
+    </ul>
+  </div>
+
+  <h2>当前验收状态摘要</h2>
+  <div class="card">
+    <table class="pipeline-table">
+      <thead><tr><th>质量门禁</th><th>结果</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>TypeScript / 单元测试 / API+Web 构建 / release 归档</td><td><span class="status done">通过</span></td><td>最近快速质量门禁记录通过</td></tr>
+        <tr><td>真实 PostgreSQL 集成 / HTTP API</td><td><span class="status blocked">环境阻塞</span></td><td>需要 <span class="code">TEST_DATABASE_URL</span>、<span class="code">API_BASE_URL</span></td></tr>
+        <tr><td>Playwright 浏览器链路</td><td><span class="status blocked">环境阻塞</span></td><td>需要 <span class="code">PLAYWRIGHT_BASE_URL</span>，完成关键页面验收</td></tr>
+        <tr><td>业务负责人 / 厂内部署 / 真实数据量验收</td><td><span class="status partial">进行中</span></td><td>Docker 部署、备份恢复、厂内运行仍待正式验收</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <footer>Dilee ERP Business Pipeline Overview · 数据来源于项目代码与 docs/ 设计文档 · 仅用于内部架构沟通</footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1320" viewBox="0 0 1800 1320">
+  <defs>
+    <style>
+      .bg{fill:#0f172a}.title{font:700 30px Arial,'Microsoft YaHei',sans-serif;fill:#e2e8f0}.subtitle{font:16px Arial,'Microsoft YaHei',sans-serif;fill:#94a3b8}.section{font:700 20px Arial,'Microsoft YaHei',sans-serif;fill:#bae6fd}.label{font:700 15px Arial,'Microsoft YaHei',sans-serif;fill:#f8fafc}.small{font:12px Arial,'Microsoft YaHei',sans-serif;fill:#cbd5e1}.tiny{font:11px Arial,'Microsoft YaHei',sans-serif;fill:#94a3b8}.box{fill:#1e293b;stroke:#475569;stroke-width:1.5;rx:10}.sales{fill:#0c4a6e;stroke:#38bdf8}.proc{fill:#064e3b;stroke:#34d399}.prod{fill:#7c2d12;stroke:#fb923c}.fin{fill:#4c1d95;stroke:#a78bfa}.hr{fill:#831843;stroke:#f472b6}.support{fill:#1e293b;stroke:#64748b}.arrow{stroke:#7dd3fc;stroke-width:2.2;fill:none;marker-end:url(#arrow)}.dashed{stroke-dasharray:7 5}.legend{font:12px Arial,'Microsoft YaHei',sans-serif;fill:#cbd5e1}
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#7dd3fc"/></marker>
+  </defs>
+  <rect class="bg" width="1800" height="1320"/>
+  <text x="70" y="65" class="title">Dilee ERP · 全站业务数据流动图</text>
+  <text x="70" y="95" class="subtitle">核心业务身份证：order_no；箭头表示引用、派生、汇总或状态门禁关系</text>
+
+  <text x="70" y="150" class="section">一、订单主链</text>
+  <rect x="70" y="175" width="160" height="72" class="box sales"/><text x="150" y="207" text-anchor="middle" class="label">客户池</text><text x="150" y="229" text-anchor="middle" class="small">Customer / Contact</text>
+  <rect x="300" y="175" width="180" height="72" class="box sales"/><text x="390" y="207" text-anchor="middle" class="label">销售单</text><text x="390" y="229" text-anchor="middle" class="small">SalesOrder / order_no</text>
+  <rect x="550" y="175" width="160" height="72" class="box sales"/><text x="630" y="207" text-anchor="middle" class="label">BOM表</text><text x="630" y="229" text-anchor="middle" class="small">Bom / BomItem</text>
+  <rect x="780" y="175" width="180" height="72" class="box proc"/><text x="870" y="207" text-anchor="middle" class="label">采购单</text><text x="870" y="229" text-anchor="middle" class="small">PurchaseOrder</text>
+  <rect x="1030" y="175" width="180" height="72" class="box proc"/><text x="1120" y="207" text-anchor="middle" class="label">到货批次</text><text x="1120" y="229" text-anchor="middle" class="small">Receipt</text>
+  <rect x="1280" y="175" width="180" height="72" class="box proc"/><text x="1370" y="207" text-anchor="middle" class="label">来料QC</text><text x="1370" y="229" text-anchor="middle" class="small">IncomingInspection</text>
+  <rect x="1530" y="175" width="180" height="72" class="box proc"/><text x="1620" y="207" text-anchor="middle" class="label">原料入库</text><text x="1620" y="229" text-anchor="middle" class="small">RawMaterialInbound</text>
+  <path d="M230 211H300 M480 211H550 M710 211H780 M960 211H1030 M1210 211H1280 M1460 211H1530" class="arrow"/>
+
+  <text x="70" y="315" class="section">二、生产与人事薪资支线</text>
+  <rect x="70" y="345" width="190" height="72" class="box prod"/><text x="165" y="377" text-anchor="middle" class="label">生产单</text><text x="165" y="399" text-anchor="middle" class="small">ProductionOrder</text>
+  <rect x="330" y="345" width="190" height="72" class="box prod"/><text x="425" y="377" text-anchor="middle" class="label">原料领料</text><text x="425" y="399" text-anchor="middle" class="small">MaterialMovement</text>
+  <rect x="590" y="345" width="190" height="72" class="box prod"/><text x="685" y="377" text-anchor="middle" class="label">工序日报</text><text x="685" y="399" text-anchor="middle" class="small">OperationDailyReport</text>
+  <rect x="850" y="345" width="190" height="72" class="box hr"/><text x="945" y="377" text-anchor="middle" class="label">员工日报</text><text x="945" y="399" text-anchor="middle" class="small">EmployeeDailyReport</text>
+  <rect x="1110" y="345" width="190" height="72" class="box hr"/><text x="1205" y="377" text-anchor="middle" class="label">工资来源</text><text x="1205" y="399" text-anchor="middle" class="small">PayrollSource</text>
+  <rect x="1370" y="345" width="190" height="72" class="box hr"/><text x="1465" y="377" text-anchor="middle" class="label">工资台账</text><text x="1465" y="399" text-anchor="middle" class="small">PayrollLedger</text>
+  <rect x="1630" y="345" width="120" height="72" class="box fin"/><text x="1690" y="377" text-anchor="middle" class="label">工资支付</text><text x="1690" y="399" text-anchor="middle" class="small">Payment</text>
+  <path d="M260 381H330 M520 381H590 M780 381H850 M1040 381H1110 M1300 381H1370 M1560 381H1630" class="arrow"/>
+  <path d="M390 247 C390 285 165 285 165 345" class="arrow dashed"/>
+  <text x="255" y="282" class="tiny">销售单/BOM创建生产单</text>
+
+  <text x="70" y="485" class="section">三、外加工支线</text>
+  <rect x="70" y="515" width="210" height="72" class="box prod"/><text x="175" y="547" text-anchor="middle" class="label">外加工生产单</text><text x="175" y="569" text-anchor="middle" class="small">execution_mode=outsourced</text>
+  <rect x="350" y="515" width="180" height="72" class="box prod"/><text x="440" y="547" text-anchor="middle" class="label">原料直发</text><text x="440" y="569" text-anchor="middle" class="small">DispatchBatch</text>
+  <rect x="600" y="515" width="180" height="72" class="box prod"/><text x="690" y="547" text-anchor="middle" class="label">外加工签收</text><text x="690" y="569" text-anchor="middle" class="small">SiteReceipt</text>
+  <rect x="850" y="515" width="180" height="72" class="box proc"/><text x="940" y="547" text-anchor="middle" class="label">余料回厂</text><text x="940" y="569" text-anchor="middle" class="small">QC / 原料入库</text>
+  <rect x="1100" y="515" width="180" height="72" class="box sales"/><text x="1190" y="547" text-anchor="middle" class="label">成品回厂</text><text x="1190" y="569" text-anchor="middle" class="small">QC来源</text>
+  <rect x="1350" y="515" width="180" height="72" class="box sales"/><text x="1440" y="547" text-anchor="middle" class="label">直接装柜</text><text x="1440" y="569" text-anchor="middle" class="small">出库来源</text>
+  <path d="M280 551H350 M530 551H600 M780 551H850 M1030 551H1100 M1280 551H1350" class="arrow"/>
+
+  <text x="70" y="655" class="section">四、成品交付与应收支线</text>
+  <rect x="70" y="685" width="180" height="72" class="box sales"/><text x="160" y="717" text-anchor="middle" class="label">成品QC</text><text x="160" y="739" text-anchor="middle" class="small">FinishedGoodsQc</text>
+  <rect x="320" y="685" width="180" height="72" class="box proc"/><text x="410" y="717" text-anchor="middle" class="label">成品入库</text><text x="410" y="739" text-anchor="middle" class="small">FinishedInventory</text>
+  <rect x="570" y="685" width="180" height="72" class="box proc"/><text x="660" y="717" text-anchor="middle" class="label">成品出库</text><text x="660" y="739" text-anchor="middle" class="small">Outbound</text>
+  <rect x="820" y="685" width="180" height="72" class="box sales"/><text x="910" y="717" text-anchor="middle" class="label">发货/签收</text><text x="910" y="739" text-anchor="middle" class="small">Shipping / Sign</text>
+  <rect x="1070" y="685" width="190" height="72" class="box fin"/><text x="1165" y="717" text-anchor="middle" class="label">应收来源</text><text x="1165" y="739" text-anchor="middle" class="small">ReceivableSource</text>
+  <rect x="1330" y="685" width="180" height="72" class="box fin"/><text x="1420" y="717" text-anchor="middle" class="label">收款核销</text><text x="1420" y="739" text-anchor="middle" class="small">CustomerPayment</text>
+  <rect x="1580" y="685" width="170" height="72" class="box fin"/><text x="1665" y="717" text-anchor="middle" class="label">对账/关闭</text><text x="1665" y="739" text-anchor="middle" class="small">Reconciliation</text>
+  <path d="M250 721H320 M500 721H570 M750 721H820 M1000 721H1070 M1260 721H1330 M1510 721H1580" class="arrow"/>
+  <path d="M175 587 C175 635 160 635 160 685" class="arrow dashed"/>
+  <path d="M1190 587 C1190 635 160 635 160 685" class="arrow dashed"/>
+  <text x="265" y="635" class="tiny">生产完成 / 外加工成品回厂进入成品QC</text>
+
+  <text x="70" y="825" class="section">五、应付结算支线</text>
+  <rect x="70" y="855" width="220" height="72" class="box proc"/><text x="180" y="887" text-anchor="middle" class="label">原料入库/外加工签收</text><text x="180" y="909" text-anchor="middle" class="small">来源事实</text>
+  <rect x="370" y="855" width="190" height="72" class="box fin"/><text x="465" y="887" text-anchor="middle" class="label">应付来源</text><text x="465" y="909" text-anchor="middle" class="small">PayableSource</text>
+  <rect x="640" y="855" width="190" height="72" class="box fin"/><text x="735" y="887" text-anchor="middle" class="label">应付确认</text><text x="735" y="909" text-anchor="middle" class="small">PayableEntry</text>
+  <rect x="910" y="855" width="190" height="72" class="box fin"/><text x="1005" y="887" text-anchor="middle" class="label">供应商付款</text><text x="1005" y="909" text-anchor="middle" class="small">SupplierPayment</text>
+  <rect x="1180" y="855" width="190" height="72" class="box fin"/><text x="1275" y="887" text-anchor="middle" class="label">分批核销</text><text x="1275" y="909" text-anchor="middle" class="small">Allocation</text>
+  <rect x="1450" y="855" width="220" height="72" class="box fin"/><text x="1560" y="887" text-anchor="middle" class="label">供应商对账</text><text x="1560" y="909" text-anchor="middle" class="small">External balance</text>
+  <path d="M290 891H370 M560 891H640 M830 891H910 M1100 891H1180 M1370 891H1450" class="arrow"/>
+  <path d="M1620 247 C1620 800 180 800 180 855" class="arrow dashed"/>
+  <text x="950" y="800" class="tiny">原料入库过账 / 外加工签收生成应付来源</text>
+
+  <text x="70" y="1000" class="section">六、横向汇聚与治理</text>
+  <rect x="70" y="1030" width="230" height="82" class="box support"/><text x="185" y="1064" text-anchor="middle" class="label">全模块业务事实</text><text x="185" y="1088" text-anchor="middle" class="small">订单、库存、财务、工资</text>
+  <rect x="390" y="1030" width="230" height="82" class="box support"/><text x="505" y="1064" text-anchor="middle" class="label">订单工作台</text><text x="505" y="1088" text-anchor="middle" class="small">按 order_no 聚合</text>
+  <rect x="710" y="1030" width="230" height="82" class="box support"/><text x="825" y="1064" text-anchor="middle" class="label">报表 / CSV</text><text x="825" y="1088" text-anchor="middle" class="small">查询、统计、导出</text>
+  <rect x="1030" y="1030" width="230" height="82" class="box support"/><text x="1145" y="1064" text-anchor="middle" class="label">告警中心</text><text x="1145" y="1088" text-anchor="middle" class="small">超单、差异、库存、阻塞</text>
+  <rect x="1350" y="1030" width="230" height="82" class="box support"/><text x="1465" y="1064" text-anchor="middle" class="label">审计 / 附件 / 状态机</text><text x="1465" y="1088" text-anchor="middle" class="small">回退、冲销、权限</text>
+  <path d="M300 1071H390 M620 1071H710 M940 1071H1030 M1260 1071H1350" class="arrow"/>
+  <path d="M180 927 C180 970 185 970 185 1030 M465 927 C465 970 185 970 185 1030 M735 927 C735 970 185 970 185 1030 M1005 927 C1005 970 185 970 185 1030 M1275 927 C1275 970 185 970 185 1030 M1560 927 C1560 970 185 970 185 1030" class="arrow dashed"/>
+
+  <text x="70" y="1190" class="section">关键约束</text>
+  <text x="70" y="1220" class="legend">① 库存余额只能由有效库存事实改变；② 付款/收款必须核销有效应付/应收；③ QC合格/条件接收量限制入库；</text>
+  <text x="70" y="1246" class="legend">④ 草稿可编辑，确认/过账事实通过回退、冲销、调整纠错；⑤ 所有跨模块写入要求幂等、事务和审计原因。</text>
+</svg>

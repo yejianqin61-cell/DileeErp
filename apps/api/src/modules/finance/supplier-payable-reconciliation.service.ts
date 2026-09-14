@@ -1,13 +1,14 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 @Injectable()
 export class SupplierPayableReconciliationService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
   async list(supplierId?: string, orderNo?: string, status?: string) { return this.prisma.supplierPayableReconciliation.findMany({ where: { deletedAt: null, ...(supplierId ? { supplierId } : {}), ...(orderNo ? { orderNo } : {}), ...(status ? { status } : {}) }, include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } } }, orderBy: { createdAt: "desc" } }); }
   async get(id: string) {
     const row = await this.prisma.supplierPayableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } } } });
@@ -20,6 +21,7 @@ export class SupplierPayableReconciliationService {
     return { ...row, details: { payable_entries: entries, pending_sources: [...payableSources.map((source) => ({ ...source, source_type: "purchase_or_inbound", source_no: source.rawMaterialInbound?.inboundNo ?? source.purchaseReceipt?.receiptNo ?? source.id })), ...outsourceSources.map((source) => ({ ...source, source_type: "outsource_receipt", source_no: source.outsourceReceipt?.id ?? source.id }))] } };
   }
   async create(input: { supplier_id: string; order_no?: string; purchase_order_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "应付对账币种");
     const start = this.date(input.period_start); const end = this.date(input.period_end); if (start > end) throw this.invalid("INVALID_RECONCILIATION_PERIOD", "对账开始日期不能晚于结束日期");
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null } }); if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
     const where = { supplierId: supplier.id, currency: input.currency, deletedAt: null, status: { in: ["confirmed", "partially_paid", "paid"] }, confirmationDate: { gte: start, lte: end }, ...(input.order_no ? { orderNo: input.order_no } : {}), ...(input.purchase_order_id ? { purchaseOrderId: input.purchase_order_id } : {}) };

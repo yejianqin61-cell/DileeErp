@@ -1,0 +1,127 @@
+name: Tests
+
+# 为什么需要这个 workflow：
+#   在此之前 .github/workflows/deploy.yml 是仓库里唯一的 workflow，而它只做
+#   typecheck + 两个 build，**没有任何测试步骤**，且只在 push main 触发。
+#   结果是全部 3,000+ 行的测试代码在 CI 中从未执行过。
+#
+# 三级门禁（详见 docs/test/01-test-master-plan.md §7.1）：
+#   fast  = 快速门禁，不依赖数据库，每次 push/PR 必跑
+#   chain = 链路门禁，带 PostgreSQL service，跑集成 / HTTP 契约 / E2E
+#
+# 环境阻断（脚本 exit 3）不会被吞掉：run-tests.mjs 在缺少变量时退出 3，
+# 步骤因此失败，符合 docs/design/testing-system-and-tooling-plan.md:242 的既有决策。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    name: Fast gate (typecheck + unit, no database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate --schema apps/api/prisma/schema.prisma
+      - run: npm run typecheck
+      # 后端 415 例 + 前端 lib 108 例 + 前端组件测试，一条命令全跑
+      - run: npm run test:unit
+      - run: npm run build --workspace=@dilee/api
+      - run: npm run build --workspace=@dilee/web
+
+  chain:
+    name: Chain gate (PostgreSQL + API + Web)
+    runs-on: ubuntu-latest
+    needs: fast
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: dilee_test
+          POSTGRES_USER: dilee
+          POSTGRES_PASSWORD: dilee-test-db-2026
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dilee -d dilee_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgresql://dilee:dilee-test-db-2026@127.0.0.1:5432/dilee_test?schema=public
+      DATABASE_URL: postgresql://dilee:dilee-test-db-2026@127.0.0.1:5432/dilee_test?schema=public
+      API_BASE_URL: http://127.0.0.1:3001
+      API_INTERNAL_URL: http://127.0.0.1:3001
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+      INITIAL_ADMIN_USERNAME: admin
+      INITIAL_ADMIN_PASSWORD: DileeAdmin2026Test
+      INITIAL_ADMIN_DISPLAY_NAME: Dilee Admin
+      COOKIE_SECURE: "false"
+      PORT: "3001"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate --schema apps/api/prisma/schema.prisma
+      - run: npm run build --workspace=@dilee/api
+      - run: npm run build --workspace=@dilee/web
+      - run: npx playwright install --with-deps chromium
+
+      # 测试库迁移（库名含 test，脚本会强制校验）
+      - run: npm run db:test:prepare
+      - run: npx tsx apps/api/prisma/seed.ts
+
+      - name: Start API
+        run: |
+          node apps/api/dist/main.js > api.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3001/api/v1/health > /dev/null; then echo "API healthy"; exit 0; fi
+            sleep 2
+          done
+          echo "API did not become healthy"; cat api.log; exit 1
+
+      - name: Start Web
+        run: |
+          mkdir -p apps/web/.next/standalone/apps/web/.next
+          cp -r apps/web/.next/static apps/web/.next/standalone/apps/web/.next/
+          PORT=3000 node apps/web/.next/standalone/apps/web/server.js > web.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/login > /dev/null; then echo "Web healthy"; exit 0; fi
+            sleep 2
+          done
+          echo "Web did not become healthy"; cat web.log; exit 1
+
+      - name: Integration tests (real PostgreSQL)
+        run: npm run test:integration
+
+      - name: HTTP contract tests
+        run: npm run test:api
+
+      - name: Browser E2E tests
+        run: npm run test:e2e
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts
+          path: |
+            test-results/
+            docs/test/results/playwright-result.json
+            api.log
+            web.log
+          if-no-files-found: ignore
+          retention-days: 7

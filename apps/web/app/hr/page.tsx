@@ -32,6 +32,7 @@ import {
   apiPost,
 } from "../../lib/api-client";
 import { displayStatus } from "../../lib/display-text";
+import { currencyOptions, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
 type Employee = {
@@ -131,6 +132,11 @@ export default function HrPage() {
   const [employeePosition, setEmployeePosition] = useState("");
   const [employeeType, setEmployeeType] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
+  // 字典里没有首选币种时退回第一个可选值，保证 defaultValue 一定落在 options 里。
+  const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
+  // 币种是静态配置，不是在业务数据：挂在独立 effect 上，页面重新加载不会重复拉取。
+  useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
   const [importResult, setImportResult] = useState<{ imported: number; successCount: number; errorCount: number; errors: { row: number; field?: string; reason: string }[] } | null>(null);
   async function load() {
     setLoading(true);
@@ -145,6 +151,7 @@ export default function HrPage() {
         apiGet<Ledger[]>("/hr/payroll-ledgers"),
         apiGet<Payment[]>("/hr/salary-payments"),
       ]);
+      // 币种来自可配置字典（失败回落内置清单）：薪资台账和工资支付都要能选币种。
       setEmployees(e.data);
       setDepartments(d.data);
       setPositions(po.data);
@@ -644,6 +651,7 @@ export default function HrPage() {
           required: true,
         },
         { name: "period_end", label: "周期结束", type: "date", required: true },
+        { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
         {
           name: "base_salary",
           label: "基本工资",
@@ -659,7 +667,7 @@ export default function HrPage() {
             employee_name: v.employee_name,
             period_start: v.period_start,
             period_end: v.period_end,
-            currency: "CNY",
+            currency: v.currency,
             base_salary: v.base_salary,
           },
           "薪资台账已生成",
@@ -684,6 +692,7 @@ export default function HrPage() {
           required: true,
           defaultValue: "银行转账",
         },
+        { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
       ],
       submit: (v) =>
         void action(
@@ -691,7 +700,7 @@ export default function HrPage() {
           {
             payment_date: v.payment_date,
             amount: v.amount,
-            currency: "CNY",
+            currency: v.currency,
             payment_method: v.payment_method,
           },
           "工资支付草稿已创建",
@@ -893,7 +902,7 @@ export default function HrPage() {
       </>
     );
   return (
-    <>
+    <div className="page-root" data-testid="page-hr">
       <PageHeader title="人事">
         <div className="page-actions">
           <Button onClick={() => createEmployee()}>新建员工</Button>
@@ -1062,6 +1071,6 @@ export default function HrPage() {
           />
         </div>
       </section>
-    </>
+    </div>
   );
 }

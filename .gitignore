@@ -10,4 +10,17 @@ apps/api/var/
 .playwright-cli/
 test-results/
 docs/test/results/playwright-result.json
+# 覆盖率产物：每次运行都会变化，属派生物不入库（json-summary 若需留档请显式提交）
+docs/test/results/web-coverage/
 *.log
+.vercel
+tmp/
+# 本地发布包 / 镜像导出 / 包管理器缓存与临时产物：体积大且可重新生成，不入库
+DileeErp*.tar.gz
+dilee-images.tar
+.logs/
+.pnpm-store/
+.tmp-*.txt
+apps/*/pnpm-lock.yaml
+apps/*/pnpm-workspace.yaml
+vitest-out.txt

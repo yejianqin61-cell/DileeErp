@@ -62,7 +62,7 @@ export function MultiCheckboxSelect({
   }
 
   return (
-    <div className={cn("ui-multi-select", className)}>
+    <div className={cn("ui-multi-select", className)} data-testid="multi-checkbox-select">
       <div className="ui-multi-select-searchbox">
         <input
           id={id}
@@ -85,7 +85,7 @@ export function MultiCheckboxSelect({
             const optionDisabled = disabled || disabledSet.has(option.value);
             const checked = selectedSet.has(option.value);
             return (
-              <label key={option.value} className="ui-multi-select-option" data-disabled={optionDisabled ? "true" : undefined}>
+              <label key={option.value} className="ui-multi-select-option" data-testid={`multi-checkbox-option-${option.value}`} data-disabled={optionDisabled ? "true" : undefined}>
                 <input
                   type="checkbox"
                   className="ui-multi-select-checkbox"

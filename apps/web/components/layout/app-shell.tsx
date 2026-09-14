@@ -41,11 +41,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">迪</span><div><strong>迪礼管理系统</strong><small>厂内业务系统</small></div></div>
-      <nav aria-label="主导航">{navigation.map(([label, href, Icon]) => <Link key={href} href={href} className={cn("nav-item", pathname === href && "nav-item-active")}><Icon size={17} strokeWidth={1.8} /><span>{label}</span></Link>)}</nav>
+      <nav aria-label="主导航" data-testid="app-nav">{navigation.map(([label, href, Icon]) => <Link key={href} href={href} data-testid={`nav-link-${href === "/" ? "dashboard" : href.slice(1).replace(/\//g, "-")}`} className={cn("nav-item", pathname === href && "nav-item-active")}><Icon size={17} strokeWidth={1.8} /><span>{label}</span></Link>)}</nav>
     </aside>
     <div className="shell-main">
       <header className="topbar"><span className="environment-label">厂内系统</span><div className="user-menu"><span className="user-dot">{user?.display_name.slice(0, 1) ?? "-"}</span><span>{user?.display_name ?? "当前操作员"}</span><Button variant="ghost" size="icon" title="退出登录" aria-label="退出登录" onClick={() => void logout()}><LogOut size={16} /></Button></div></header>
-      <main className="content-area">{children}</main>
+      <main className="content-area" data-testid="app-main">{children}</main>
     </div>
   </div>;
 }

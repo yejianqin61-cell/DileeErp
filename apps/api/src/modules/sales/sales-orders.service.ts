@@ -1,7 +1,8 @@
-import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 type SalesOrderInput = { order_no: string; customer_id: string; contact_id?: string; customer_po_no?: string; external_contract_no?: string; order_date: string; product_name: string; product_spec?: string; quantity: string; unit: string; delivery_date?: string; currency: string; unit_price?: string; total_amount?: string; tax_rate?: string; settlement_unit_price?: string; receivable_amount?: string; settlement_method?: string; local_currency_amount?: string; extension_data?: Record<string, unknown> };
@@ -9,7 +10,7 @@ type SalesOrderUpdate = Partial<Omit<SalesOrderInput, "order_no" | "customer_id"
 
 @Injectable()
 export class SalesOrdersService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(page = 1, pageSize = 20, search?: string, status?: string) {
     const where = { deletedAt: null, ...(status ? { status } : {}), ...(search ? { OR: [{ orderNo: { contains: search, mode: "insensitive" as const } }, { productName: { contains: search, mode: "insensitive" as const } }] } : {}) };
@@ -24,6 +25,7 @@ export class SalesOrdersService {
   }
 
   async create(input: SalesOrderInput, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "销售单币种");
     const refs = await this.resolveReferences(input, user);
     const snapshot = this.snapshot(input, refs.customer, refs.contact);
     try {
@@ -38,6 +40,7 @@ export class SalesOrdersService {
   }
 
   async update(id: string, input: SalesOrderUpdate, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "销售单币种");
     const current = await this.get(id);
     if (current.status === "closed") throw new UnprocessableEntityException({ code: "SALES_ORDER_CLOSED", message: "已关闭销售单不可编辑", details: [] });
     if (current.status === "confirmed" && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已确认销售单修改必须填写原因", details: [] });

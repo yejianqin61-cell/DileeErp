@@ -6,5 +6,5 @@ import { ProductionOrderDetailPage } from "../../../../components/production/pro
 
 export default function ProductionOrderDetailRoute() {
   const { id } = useParams<{ id?: string }>();
-  return id ? <ProductionOrderDetailPage orderId={id} /> : <ErrorState message="缺少生产单 ID" />;
+  return id ? <div className="page-root" data-testid="page-production-orders-id"><ProductionOrderDetailPage orderId={id} /></div> : <div className="page-root" data-testid="page-production-orders-id"><ErrorState message="缺少生产单 ID" /></div>;
 }

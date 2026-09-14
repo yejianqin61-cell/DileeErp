@@ -7,6 +7,7 @@ import { AuthModule } from "./platform/auth/auth.module";
 import { AuthorizationModule } from "./platform/authorization/authorization.module";
 import { AuditModule } from "./platform/audit/audit.module";
 import { DictionariesModule } from "./platform/dictionaries/dictionaries.module";
+import { CurrencyModule } from "./platform/currency/currency.module";
 import { StateMachineModule } from "./platform/state-machine/state-machine.module";
 import { AttachmentsModule } from "./platform/attachments/attachments.module";
 import { validateEnvironment } from "./platform/config/validate-environment";
@@ -21,7 +22,7 @@ import { ReportsModule } from "./modules/reports/reports.module";
 import { AlertsModule } from "./modules/alerts/alerts.module";
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, InventoryModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule, FinanceModule, HrModule, OrderWorkbenchModule, ReportsModule, AlertsModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, InventoryModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, CurrencyModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule, FinanceModule, HrModule, OrderWorkbenchModule, ReportsModule, AlertsModule],
   controllers: [HealthController],
 })
 export class AppModule {}

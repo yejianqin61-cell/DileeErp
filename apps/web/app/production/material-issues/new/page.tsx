@@ -14,5 +14,5 @@ function EditorWithParams() {
 }
 
 export default function NewMaterialSlipPage() {
-  return <Suspense fallback={<LoadingState label="正在加载单据编辑页" />}><EditorWithParams /></Suspense>;
+  return <div className="page-root" data-testid="page-production-material-issues-new"><Suspense fallback={<LoadingState label="正在加载单据编辑页" />}><EditorWithParams /></Suspense></div>;
 }

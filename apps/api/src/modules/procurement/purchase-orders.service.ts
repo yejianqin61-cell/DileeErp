@@ -1,35 +1,133 @@
-import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { ConflictException, Injectable, NotFoundException, Optional, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
 type Item = { material_id: string; unit_id: string; bom_item_id?: string; supplier_id: string; expected_date?: string; model?: string; quantity: string; unit_price: string; tax_rate?: string; extra_fee?: string; extension_data?: Record<string, unknown> };
 type Input = { order_no: string; bom_id?: string; bom_version?: number; supplier_id?: string; purchase_date?: string; expected_date?: string; currency?: string; remark?: string; extension_data?: Record<string, unknown>; items?: Item[] };
+/** 按供应商拆分下单：一组 = 一张采购单。 */
+type SplitGroup = { supplier_id: string; currency?: string; expected_date?: string; remark?: string; items?: Item[] };
+type SplitInput = { order_no: string; bom_id?: string; purchase_date?: string; currency?: string; remark?: string; place_order?: boolean; extension_data?: Record<string, unknown>; groups?: SplitGroup[] };
+type OrderableItem = { materialId: string; unitId: string; supplierId: string; quantity: string; unitPrice: string };
+/** `refs()` 的返回结构（只保留下单/建单真正用到的字段，避免耦合 Prisma 生成类型）。 */
+type Refs = {
+  order: { id: string; orderNo: string };
+  bom: { id: string; version: number } | null;
+  supplier: { id: string; name: string } | undefined;
+  supplierMap: Map<string, { id: string; name: string }>;
+  materials: Map<string, { id: string; materialCode: string; name: string }>;
+  units: Map<string, { id: string; name: string }>;
+  items: Item[];
+};
+type Prepared = { refs: Refs; items: Item[]; total: string };
 
 @Injectable()
 export class PurchaseOrdersService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  // currencies 用 @Optional()：单元测试直接 new 服务时只传 prisma/audit，
+  // 此时跳过字典校验而在真实运行时（CurrencyModule 全局提供）始终校验。
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
   async list(orderNo?: string) {
     const rows = await this.prisma.purchaseOrder.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null } }, material: true, unit: true, supplier: true } }, supplier: true }, orderBy: { updatedAt: "desc" } });
     return rows.map((row) => row.status === "arrived_complete" && !this.arrivalClosed(row.extensionData) ? { ...row, status: "partially_arrived" } : row);
   }
   async get(id: string) { const po = await this.prisma.purchaseOrder.findFirst({ where: { id, deletedAt: null }, include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null }, orderBy: { receivedDate: "asc" }, include: { inspections: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } }, rawMaterialInbounds: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } }, payableSources: { where: { status: { not: "voided" } }, orderBy: { createdAt: "asc" }, include: { supplierPayableEntry: { include: { allocations: true } } } } } }, material: true, unit: true, supplier: true } }, supplier: true, bom: true } }); if (!po) throw new NotFoundException({ code: "PURCHASE_ORDER_NOT_FOUND", message: "采购单不存在", details: [] }); return { ...po, items: po.items.map((item) => ({ ...item, receipts: item.receipts.map((receipt, index) => ({ ...receipt, batchSequence: this.batchSequence(receipt.extensionData, index + 1) })), batchWorkflows: item.receipts.map((receipt, index) => ({ receiptId: receipt.id, receiptNo: receipt.receiptNo, batchSequence: this.batchSequence(receipt.extensionData, index + 1), receivedQuantity: receipt.quantity, inspections: receipt.inspections, inbounds: receipt.rawMaterialInbounds.map((inbound) => ({ ...inbound, settlementUnitPrice: inbound.settlementUnitPrice, settlementTotalAmount: inbound.settlementTotalAmount })), payableSources: receipt.payableSources })) })) }; }
-  async create(input: Input, user: CurrentUser) { const refs = await this.refs(input); const number = `PO-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; const items = refs.items; const total = items.reduce((sum, item) => sum.plus(this.amount(item)), new Prisma.Decimal(0)).toFixed(4); const created = await this.prisma.$transaction(async (tx) => tx.purchaseOrder.create({ data: { purchaseOrderNo: number, orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom?.id ?? null, bomVersion: refs.bom?.version ?? null, bomSnapshot: (refs.bom ?? undefined) as unknown as Prisma.InputJsonValue | undefined, supplierId: refs.supplier?.id ?? null, supplierSnapshot: (refs.supplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, purchaseDate: input.purchase_date ? new Date(input.purchase_date) : new Date(), expectedDate: this.orderExpectedDate(input), currency: input.currency ?? "CNY", totalAmount: total, remark: input.remark, extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user), items: { create: items.map((item) => { const material = refs.materials.get(item.material_id)!; const unit = refs.units.get(item.unit_id)!; const itemSupplier = refs.supplierMap.get(item.supplier_id)!; return { supplierId: itemSupplier.id, supplierSnapshot: itemSupplier as unknown as Prisma.InputJsonValue, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) } } })); await this.audit.record("purchase_order.create", "purchase_order", user.id, created.id, { order_no: created.orderNo, purchase_order_no: number, draft: !refs.bom || !items.length }); return this.get(created.id); }
-  async update(id: string, input: Input, user: CurrentUser) { const current = await this.get(id); if (current.status !== "draft" || current.items.some((item) => item.receipts.length)) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_EDITABLE", message: "已有下游事实或非草稿采购单不可编辑", details: [] }); const refs = await this.refs(input); const items = refs.items; const total = items.reduce((sum, item) => sum.plus(this.amount(item)), new Prisma.Decimal(0)).toFixed(4); await this.prisma.$transaction(async (tx) => { await tx.purchaseOrderItem.updateMany({ where: { purchaseOrderId: id, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } }); await tx.purchaseOrder.update({ where: { id }, data: { orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom?.id ?? null, bomVersion: refs.bom?.version ?? null, bomSnapshot: (refs.bom ?? undefined) as unknown as Prisma.InputJsonValue | undefined, supplierId: refs.supplier?.id ?? null, supplierSnapshot: (refs.supplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, expectedDate: this.orderExpectedDate(input) ?? null, currency: input.currency ?? "CNY", totalAmount: total, remark: input.remark, extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.update(user) } }); await tx.purchaseOrderItem.createMany({ data: items.map((item) => { const material = refs.materials.get(item.material_id)!; const unit = refs.units.get(item.unit_id)!; const itemSupplier = refs.supplierMap.get(item.supplier_id)!; return { purchaseOrderId: id, supplierId: itemSupplier.id, supplierSnapshot: itemSupplier as unknown as Prisma.InputJsonValue, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) }); }); await this.audit.record("purchase_order.update", "purchase_order", user.id, id, { order_no: refs.order.orderNo, item_count: items.length }); return this.get(id); }
+  async create(input: Input, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "采购单币种");
+    const prepared = await this.prepare(input);
+    const created = await this.prisma.$transaction(async (tx) => tx.purchaseOrder.create({ data: this.orderData(prepared, input, user, "draft") }));
+    await this.audit.record("purchase_order.create", "purchase_order", user.id, created.id, { order_no: created.orderNo, purchase_order_no: created.purchaseOrderNo, draft: !prepared.refs.bom || !prepared.items.length });
+    return this.get(created.id);
+  }
+  /**
+   * 一张销售订单 → 多张采购单（按供应商拆分）。
+   *
+   * 业务动因：同供应商的物料应放在同一张采购单上，不同供应商必须拆单；
+   * 否则采购单头部的供应商、币种、金额以及后续到货、应付、对账都失去单一含义。
+   * 所有分组在同一个事务里写入：要么全部生成，要么一张都不生成。
+   */
+  async createSplit(input: SplitInput, user: CurrentUser) {
+    const groups = input.groups ?? [];
+    if (!groups.length) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_GROUPS_REQUIRED", message: "按供应商拆分至少需要一个供应商分组", details: [] });
+    const missingSupplier = groups.findIndex((group) => !group.supplier_id);
+    if (missingSupplier >= 0) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_SUPPLIER_REQUIRED", message: `第 ${missingSupplier + 1} 组缺少供应商`, details: [] });
+    const emptyGroup = groups.findIndex((group) => !(group.items ?? []).length);
+    if (emptyGroup >= 0) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_ITEMS_REQUIRED", message: `第 ${emptyGroup + 1} 组没有采购明细`, details: [] });
+    const placeOrder = input.place_order === true;
+    const merged: Array<{ input: Input; prepared: Prepared }> = [];
+    for (const [index, group] of groups.entries()) {
+      const currency = group.currency ?? input.currency ?? "CNY";
+      await this.currencies?.assertSupported(currency, "采购单币种");
+      // 组内明细的供应商一律取组供应商：拆分的语义就是「一组一个供应商」。
+      const groupInput: Input = { order_no: input.order_no, bom_id: input.bom_id, supplier_id: group.supplier_id, purchase_date: input.purchase_date, expected_date: group.expected_date, currency, remark: group.remark ?? input.remark, extension_data: { ...(input.extension_data ?? {}), purchase_split: { by: "supplier", supplier_id: group.supplier_id, group_index: index, group_count: groups.length } }, items: (group.items ?? []).map((item) => ({ ...item, supplier_id: group.supplier_id })) };
+      const prepared = await this.prepare(groupInput);
+      if (placeOrder) this.assertOrderableItems(groupInput.bom_id, prepared.items.map((item) => ({ materialId: item.material_id, unitId: item.unit_id, supplierId: item.supplier_id, quantity: item.quantity, unitPrice: item.unit_price })));
+      merged.push({ input: groupInput, prepared });
+    }
+    const created = await this.prisma.$transaction(async (tx) => {
+      const rows = [];
+      for (const entry of merged) rows.push(await tx.purchaseOrder.create({ data: this.orderData(entry.prepared, entry.input, user, placeOrder ? "ordered" : "draft") }));
+      return rows;
+    });
+    for (const row of created) {
+      await this.audit.record("purchase_order.create", "purchase_order", user.id, row.id, { order_no: row.orderNo, purchase_order_no: row.purchaseOrderNo, split_by_supplier: true, group_count: created.length });
+      if (placeOrder) await this.audit.record("purchase_order.order", "purchase_order", user.id, row.id, { order_no: row.orderNo, split_by_supplier: true });
+    }
+    return Promise.all(created.map((row) => this.get(row.id)));
+  }
+  private async prepare(input: Input): Promise<Prepared> {
+    const refs = await this.refs(input);
+    const items = refs.items;
+    const total = items.reduce((sum, item) => sum.plus(this.amount(item)), new Prisma.Decimal(0)).toFixed(4);
+    return { refs, items, total };
+  }
+  private orderData(prepared: Prepared, input: Input, user: CurrentUser, status: "draft" | "ordered") {
+    const { refs, items, total } = prepared;
+    return {
+      purchaseOrderNo: `PO-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`,
+      orderNo: refs.order.orderNo,
+      salesOrderId: refs.order.id,
+      bomId: refs.bom?.id ?? null,
+      bomVersion: refs.bom?.version ?? null,
+      bomSnapshot: (refs.bom ?? undefined) as unknown as Prisma.InputJsonValue | undefined,
+      supplierId: refs.supplier?.id ?? null,
+      supplierSnapshot: (refs.supplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined,
+      purchaseDate: input.purchase_date ? new Date(input.purchase_date) : new Date(),
+      expectedDate: this.orderExpectedDate(input),
+      currency: input.currency ?? "CNY",
+      status,
+      totalAmount: total,
+      remark: input.remark,
+      extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue,
+      ...this.audit.create(user),
+      items: { create: items.map((item) => this.itemData(item, refs, user)) },
+    };
+  }
+  private itemData(item: Item, refs: Refs, user: CurrentUser) {
+    const material = refs.materials.get(item.material_id)!;
+    const unit = refs.units.get(item.unit_id)!;
+    const itemSupplier = refs.supplierMap.get(item.supplier_id)!;
+    return { supplierId: itemSupplier.id, supplierSnapshot: itemSupplier as unknown as Prisma.InputJsonValue, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) };
+  }
+  async update(id: string, input: Input, user: CurrentUser) { await this.currencies?.assertSupported(input.currency, "采购单币种"); const current = await this.get(id); if (current.status !== "draft" || current.items.some((item) => item.receipts.length)) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_EDITABLE", message: "已有下游事实或非草稿采购单不可编辑", details: [] }); const refs = await this.refs(input); const items = refs.items; const total = items.reduce((sum, item) => sum.plus(this.amount(item)), new Prisma.Decimal(0)).toFixed(4); await this.prisma.$transaction(async (tx) => { await tx.purchaseOrderItem.updateMany({ where: { purchaseOrderId: id, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } }); await tx.purchaseOrder.update({ where: { id }, data: { orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom?.id ?? null, bomVersion: refs.bom?.version ?? null, bomSnapshot: (refs.bom ?? undefined) as unknown as Prisma.InputJsonValue | undefined, supplierId: refs.supplier?.id ?? null, supplierSnapshot: (refs.supplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, expectedDate: this.orderExpectedDate(input) ?? null, currency: input.currency ?? "CNY", totalAmount: total, remark: input.remark, extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.update(user) } }); await tx.purchaseOrderItem.createMany({ data: items.map((item) => { const material = refs.materials.get(item.material_id)!; const unit = refs.units.get(item.unit_id)!; const itemSupplier = refs.supplierMap.get(item.supplier_id)!; return { purchaseOrderId: id, supplierId: itemSupplier.id, supplierSnapshot: itemSupplier as unknown as Prisma.InputJsonValue, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) }); }); await this.audit.record("purchase_order.update", "purchase_order", user.id, id, { order_no: refs.order.orderNo, item_count: items.length }); return this.get(id); }
   /** 草稿可以不完整，但下单必须齐全：BOM、至少一行明细，且每行物料/单位/供应商/数量/单价完整。 */
   private assertOrderable(po: Awaited<ReturnType<PurchaseOrdersService["get"]>>) {
+    this.assertOrderableItems(po.bomId, po.items.map((item) => ({ materialId: item.materialId, unitId: item.unitId, supplierId: item.supplierId, quantity: item.quantity?.toString() ?? "", unitPrice: item.unitPrice?.toString() ?? "" })));
+  }
+  /** 建单前的同一套下单前校验：拆分下单时明细还只是请求体，没有采购单号可查。 */
+  private assertOrderableItems(bomId: string | null | undefined, items: OrderableItem[]) {
     const missing: Array<{ code: string; message: string }> = [];
-    if (!po.bomId) missing.push({ code: "BOM_REQUIRED", message: "请先选择 BOM 表" });
-    if (!po.items.length) missing.push({ code: "ITEMS_REQUIRED", message: "请至少添加一行采购明细" });
-    po.items.forEach((item, index) => {
+    if (!bomId) missing.push({ code: "BOM_REQUIRED", message: "请先选择 BOM 表" });
+    if (!items.length) missing.push({ code: "ITEMS_REQUIRED", message: "请至少添加一行采购明细" });
+    items.forEach((item, index) => {
       const reasons: string[] = [];
       if (!item.materialId) reasons.push("物料");
       if (!item.unitId) reasons.push("单位");
       if (!item.supplierId) reasons.push("供应商");
-      if (!this.isPositive(item.quantity?.toString() ?? "")) reasons.push("数量");
-      if (!this.isNonNegative(item.unitPrice?.toString() ?? "")) reasons.push("单价");
+      if (!this.isPositive(item.quantity)) reasons.push("数量");
+      if (!this.isNonNegative(item.unitPrice)) reasons.push("单价");
       if (reasons.length) missing.push({ code: "ITEM_INCOMPLETE", message: `第 ${index + 1} 行明细缺少：${reasons.join("、")}` });
     });
     if (missing.length) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_INCOMPLETE", message: "草稿尚未填写完整，不能下单", details: missing });
@@ -128,7 +226,7 @@ export class PurchaseOrdersService {
   }
 
   async impactPreview(id: string) { const po = await this.get(id); const planned = po.items.reduce((sum, item) => sum.plus(item.quantity), new Prisma.Decimal(0)); const received = po.items.reduce((sum, item) => sum.plus(item.receipts.reduce((subtotal, row) => subtotal.plus(row.quantity), new Prisma.Decimal(0))), new Prisma.Decimal(0)); return { order_no: po.orderNo, bom_version: po.bomVersion, status: po.status, purchase_order_no: po.purchaseOrderNo, planned_quantity: planned.toFixed(4), received_quantity: received.toFixed(4), over_order: received.gte(planned), items: po.items.map((item) => ({ id: item.id, quantity: item.quantity, received_quantity: item.receipts.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)).toFixed(4) })), warning: po.items.some((item) => item.receipts.length) ? "已存在到货事实，变更需要后续回退流程" : null }; }
-  private async refs(input: Input) {
+  private async refs(input: Input): Promise<Refs> {
     const items = input.items ?? [];
     if (items.some((item) => !this.isPositive(item.quantity) || !this.isNonNegative(item.unit_price) || (item.extra_fee !== undefined && !this.isNonNegative(item.extra_fee)))) throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_ITEM", message: "采购明细数量/单价/费用必须有效", details: [] });
     if (items.some((item) => !item.supplier_id)) throw new UnprocessableEntityException({ code: "PURCHASE_ITEM_SUPPLIER_REQUIRED", message: "每个采购明细必须指定供应商", details: [] });
