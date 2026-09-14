@@ -10,7 +10,7 @@
 DO $$
 DECLARE
   actor_id uuid;
-  type_id uuid;
+  currency_type_id uuid;
   target_table text;
 BEGIN
   SELECT "id" INTO actor_id FROM "users" ORDER BY "created_at" LIMIT 1;
@@ -22,13 +22,13 @@ BEGIN
   VALUES (gen_random_uuid(), 'currency', '币种', CURRENT_TIMESTAMP, actor_id, actor_id)
   ON CONFLICT ("key") DO NOTHING;
 
-  SELECT "id" INTO type_id FROM "dictionary_types" WHERE "key" = 'currency' AND "deleted_at" IS NULL;
-  IF type_id IS NULL THEN
+  SELECT "id" INTO currency_type_id FROM "dictionary_types" WHERE "key" = 'currency' AND "deleted_at" IS NULL;
+  IF currency_type_id IS NULL THEN
     RETURN;
   END IF;
 
   INSERT INTO "dictionary_items" ("id", "type_id", "key", "label", "sort_order", "is_active", "updated_at", "created_by", "updated_by")
-  SELECT gen_random_uuid(), type_id, item.key, item.label, item.sort_order, true, CURRENT_TIMESTAMP, actor_id, actor_id
+  SELECT gen_random_uuid(), currency_type_id, item.key, item.label, item.sort_order, true, CURRENT_TIMESTAMP, actor_id, actor_id
   FROM (VALUES
     ('CNY', '人民币', 10),
     ('USD', '美元', 20),
@@ -65,7 +65,7 @@ BEGIN
        SELECT gen_random_uuid(), %L, source.code, source.code || ''（历史值）'', 900, true, CURRENT_TIMESTAMP, %L, %L
        FROM (SELECT DISTINCT btrim("currency") AS code FROM %I WHERE "currency" IS NOT NULL AND btrim("currency") <> '''') AS source
        ON CONFLICT ("type_id", "key") DO NOTHING',
-      type_id, actor_id, actor_id, target_table
+      currency_type_id, actor_id, actor_id, target_table
     );
   END LOOP;
 END $$;
