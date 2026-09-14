@@ -15,7 +15,9 @@ class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 // 按出库通知建出库单：quantity 可选（分批出库）；不传就出完剩余量。
 // idempotency_key 由仓库页面随请求带来：同一次提交的网络重试必须命中同一张出库单，
 // 否则每次重试都会再建一张草稿（服务端只用随机后缀兜底，等于没有幂等）。
-class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; }
+// 上限 150：落库键是 `notice:<36 位通知 id>:<key>`（最长 44 + 150 = 194 ≤ VarChar(200)），
+// 不加限会在超长时落到 P2000 → 500。
+class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; @IsOptional() @IsString() @MaxLength(150) idempotency_key?: string; }
 
 @Controller("finished-goods")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)

@@ -149,10 +149,9 @@ export class FinishedGoodsOutboundNoticeService {
     if (!notice) throw new NotFoundException({ code: "OUTBOUND_NOTICE_NOT_FOUND", message: "出库通知不存在", details: [] });
     if (notice.status === "cancelled") return notice;
     if (notice.status === "outbound_created" || notice.status === "completed") throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_NOT_CANCELLABLE", message: "仓库已按该通知建出库单：请先在仓库取消（未过账）或冲销（已过账）出库单，再取消通知", details: [{ status: notice.status }] });
-    if (notice.status === "partially_outbound") {
-      const drafts = await this.prisma.finishedGoodsOutbound.count({ where: { outboundNoticeId: notice.id, deletedAt: null, status: "draft" } });
-      if (drafts > 0) throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_NOT_CANCELLABLE", message: "该通知还有未过账的出库单草稿：请先在仓库取消草稿，再取消剩余通知量", details: [{ status: notice.status, draft_count: drafts }] });
-    }
+    // 只要还有在途草稿就先不收：作废通知会让草稿变成「来源已取消但仍可过账」的悬空单。
+    const drafts = await this.prisma.finishedGoodsOutbound.count({ where: { outboundNoticeId: notice.id, deletedAt: null, status: "draft" } });
+    if (drafts > 0) throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_NOT_CANCELLABLE", message: "该通知还有未过账的出库单草稿：请先在仓库取消草稿，再取消通知", details: [{ status: notice.status, draft_count: drafts }] });
     // 带状态条件的更新：与「按通知建出库单」并发时不能把 outbound_created 覆盖成 cancelled。
     const updated = await this.prisma.$transaction(async (tx) => {
       const marked = await tx.finishedGoodsOutboundNotice.updateMany({ where: { id: notice.id, status: { in: ["pending", "partially_outbound"] }, deletedAt: null }, data: { status: "cancelled", remark: `${notice.remark ?? ""}\n取消：${reason.trim()}`, version: { increment: 1 }, ...this.audit.update(user) } });

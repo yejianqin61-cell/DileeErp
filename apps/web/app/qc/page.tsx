@@ -15,8 +15,9 @@ import { QcInboundPanel } from "../../components/qc/qc-inbound-panel";
 
 function QcPageContent() {
   const searchParams = useSearchParams();
-  const receiptId = searchParams.get("receipt_id") ?? undefined;
-  const orderNo = searchParams.get("order_no") ?? undefined;
+  // 空串（/qc?receipt_id=）等同于没有传，否则面板会把它当成一个「不存在的批次」去报错。
+  const receiptId = searchParams.get("receipt_id")?.trim() || undefined;
+  const orderNo = searchParams.get("order_no")?.trim() || undefined;
   return <div className="page-root" data-testid="page-qc">
     <PageHeader title="质检" description="来料质检、成品质检、质检合格待入库与次品登记集中在这里；原料/成品的实际出入库与财务收付款仍回到对应模块。" />
     <IncomingInspectionsPanel receiptId={receiptId} />

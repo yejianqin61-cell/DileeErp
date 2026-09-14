@@ -12,9 +12,9 @@ import Link from "next/link";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { DataTable } from "../data/data-table";
-import { EmptyState, LoadingState } from "../feedback/states";
+import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
-import { ErrorState } from "../feedback/states";
+import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
 import { emitQcDataChanged, subscribeQcDataChanged } from "./qc-refresh";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
@@ -71,6 +71,13 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   useEffect(() => { void load(); }, []);
   // 同页其它面板（成品质检 / 质检合格待入库）写入后，这里的判定与入库状态也要跟着刷新。
   useEffect(() => subscribeQcDataChanged("incoming-inspections", () => void load({ silent: true })), []);
+  // 仓库在**另一个页面**接收入库通知，本面板不刷新就看不到「已接收」，也就不会出现建草稿入口。
+  useEffect(() => {
+    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load({ silent: true }); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, []);
 
   /** 某个到货批次已累计送检的数量。
    *  注意：`GET /purchase-orders`（列表）的 receipts **不含** inspections，只有详情才带；
@@ -83,18 +90,19 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     return fromDetail;
   }, [inspections]);
 
-  const receiptOptions = useMemo<ReceiptOption[]>(() => orders.flatMap((order) => order.items.flatMap((item) => item.receipts
-    // 已撤销的批次不能送检（后端也只接受有效到货记录），不要出现在下拉里让用户白填一次。
-    .filter((receipt) => receipt.status !== "cancelled")
-    .map((receipt, index) => ({
-      ...receipt,
-      orderNo: order.orderNo,
-      purchaseOrderNo: order.purchaseOrderNo,
-      materialName: item.material?.name ?? "物料",
-      unitName: item.unit?.name ?? "",
-      batchSequence: receipt.batchSequence ?? index + 1,
-      inspectedQuantity: inspectedQuantityOf(receipt),
-    })))), [orders, inspectedQuantityOf]);
+  /** 全部到货批次（含已撤销、已送检完毕）：深链要靠它区分「批次不存在」「已撤销」「已送检完毕」。 */
+  const allReceiptOptions = useMemo<ReceiptOption[]>(() => orders.flatMap((order) => order.items.flatMap((item) => item.receipts.map((receipt, index) => ({
+    ...receipt,
+    orderNo: order.orderNo,
+    purchaseOrderNo: order.purchaseOrderNo,
+    materialName: item.material?.name ?? "物料",
+    unitName: item.unit?.name ?? "",
+    batchSequence: receipt.batchSequence ?? index + 1,
+    inspectedQuantity: inspectedQuantityOf(receipt),
+  })))), [orders, inspectedQuantityOf]);
+  // 送检下拉只列还能送的：已撤销的批次后端不接受；已送检完毕的批次点进去只会拿到
+  // 「累计检验数量不能超过到货数量」的 422，不该让用户白填一次。
+  const receiptOptions = useMemo(() => allReceiptOptions.filter((receipt) => receipt.status !== "cancelled" && receipt.inspectedQuantity < Number(receipt.quantity)), [allReceiptOptions]);
 
   function run(action: () => Promise<unknown>, success: string) {
     setError("");
@@ -108,10 +116,12 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   const draftInboundFor = (inspectionId: string) => inbounds.find((row) => row.incomingInspectionId === inspectionId && row.status === "draft");
   const inspectionInboundCapable = (item: Inspection) => ["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(item.status);
   const noticeFor = (inspectionId: string) => notices.find((row) => row.incomingInspectionId === inspectionId);
+  /** 有效通知：已取消的通知不算「已通知」，界面要允许重新通知。 */
+  const activeNoticeFor = (inspectionId: string) => { const notice = noticeFor(inspectionId); return notice && notice.status !== "cancelled" ? notice : undefined; };
   const canRollback = (item: Inspection) => ROLLBACKABLE_STATUSES.includes(item.status) && !item.downstream_exists;
   /** 能否自己建入库草稿：后端要求该质检单的入库通知已被仓库接收（否则 422 INBOUND_NOTICE_NOT_ACKNOWLEDGED），
    *  而仓库接收时会自动建出全额草稿 —— 所以真正可建的情形只有「已接收且草稿被删/用尽」。 */
-  const inboundReady = (item: Inspection) => { const notice = noticeFor(item.id); return Boolean(notice) && INBOUND_READY_NOTICE_STATUSES.includes(notice!.status) && inboundRemainingFor(item) > 0; };
+  const inboundReady = (item: Inspection) => { const notice = activeNoticeFor(item.id); return Boolean(notice) && INBOUND_READY_NOTICE_STATUSES.includes(notice!.status) && inboundRemainingFor(item) > 0; };
 
   /**
    * 送检登记的请求体。
@@ -164,16 +174,22 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   }
 
   // 深链：采购页「登记质检」按到货批次跳到这里时，直接打开该批次的送检登记。
-  // 每个 receipt_id 只开一次（用户关掉后不重弹）；换了批次则再开一次；批次不存在时明确告知。
+  // 用「最近处理过的 receipt_id」挡住重复弹出（手动关掉后不再重弹）；切换到另一个批次会为新批次再开一次；
+  // 批次不存在 / 已撤销 / 已送检完毕都给出明确文案，不再静默什么都不做。
   useEffect(() => {
-    if (!receiptId || !receiptOptions.length || deepLinkHandled.current === receiptId) return;
-    const receipt = receiptOptions.find((item) => item.id === receiptId);
+    if (!receiptId || !allReceiptOptions.length || deepLinkHandled.current === receiptId) return;
+    const receipt = allReceiptOptions.find((item) => item.id === receiptId);
     deepLinkHandled.current = receiptId;
     if (!receipt) { setError("未找到该到货批次（可能已被撤销）：请在下方列表里重新选择要送检的批次"); return; }
+    if (receipt.status === "cancelled") { setError("该到货批次已撤销，不能送检"); return; }
+    if (receipt.inspectedQuantity >= Number(receipt.quantity)) {
+      setError(`该到货批次已送检完毕（到货 ${receipt.quantity} / 已送检 ${receipt.inspectedQuantity}）：如需更正请在下方质检记录里用「编辑」或「回退重判」`);
+      return;
+    }
     inspectReceipt(receipt);
     // inspectReceipt 是每次渲染重建的普通函数，这里只依赖到货批次与深链参数。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [receiptId, receiptOptions]);
+  }, [receiptId, allReceiptOptions]);
 
   function editInspection(item: Inspection) {
     setDialog({ title: `编辑来料质检：${item.purchase_order_no ?? item.orderNo}`, fields: [
@@ -271,7 +287,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
       </div>
     </div>
     {message && <p className="status-success panel-body" role="status">{message}</p>}
-    {error && <div className="panel-body"><ErrorState message={error} onRetry={() => void load()} /></div>}
+    {error && <div className="panel-body" role="alert"><ErrorState message={error} onRetry={() => void load()} /></div>}
     <div className="panel-body">{loading ? <LoadingState /> : <DataTable columns={columns} data={inspections} empty={<EmptyState title="暂无来料质检记录" description="采购登记到货后，在这里点「登记来料质检」送检。" />} />}</div>
   </section>;
 }

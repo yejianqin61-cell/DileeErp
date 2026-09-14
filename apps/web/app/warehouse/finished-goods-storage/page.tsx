@@ -105,7 +105,12 @@ export default function FinishedGoodsStoragePage() {
     setDialog({ title: `生成成品出库单：${row.noticeNo}`, fields: [
       { name: "quantity", label: "本次出库数量", type: "number", required: true, defaultValue: remaining, placeholder: `通知 ${row.noticeQuantity}，剩余 ${remaining}（可分批出库）` },
       { name: "confirm", label: `确认出库数量不超过剩余 ${remaining}${row.unit?.name ? ` ${row.unit.name}` : ""}`, required: true, placeholder: "输入 确认 继续" },
-    ], submit: async (values) => { if (values.confirm?.trim() !== "确认") { notifyError("请输入“确认”以生成出库单"); return; } await run(`/finished-goods/outbound-notices/${row.id}/create-outbound`, { quantity: values.quantity, idempotency_key: idempotencyKey }, `成品出库单已生成（本次 ${values.quantity}，待过账）`); } });
+    ], submit: async (values) => {
+      // 校验失败抛错（而不是 notifyError + return）：ActionDialog 会把异常显示在弹窗内并保留用户已填的值，
+      // 用 notifyError 的话弹窗会被立刻关掉，用户手里的数量也跟着丢。
+      if (values.confirm?.trim() !== "确认") throw new Error("请输入“确认”以生成出库单");
+      await run(`/finished-goods/outbound-notices/${row.id}/create-outbound`, { quantity: values.quantity, idempotency_key: idempotencyKey }, `成品出库单已生成（本次 ${values.quantity}，待过账）`);
+    } });
   }
 
   function editShipping(row: Outbound) {
@@ -221,7 +226,7 @@ export default function FinishedGoodsStoragePage() {
   if (error && !finished.length && !notices.length) return <ErrorState message={error} onRetry={() => void load()} />;
 
   return <div className="page-root" data-testid="page-warehouse-finished-goods-storage">
-    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); }} />
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
     <PageHeader title="成品仓储情况">
       <Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button>
       <Button variant="ghost" onClick={() => void load()}>刷新</Button>

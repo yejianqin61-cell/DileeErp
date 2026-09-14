@@ -153,7 +153,15 @@ export class FinishedGoodsInventoryService {
   private async rejectedUsed(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma, excludeId?: string) { const result = await client.finishedGoodsDefective.aggregate({ where: { qcRecordId, deletedAt: null, status: { in: ["draft", "posted"] }, ...(excludeId ? { id: { not: excludeId } } : {}) }, _sum: { quantity: true } }); return new Prisma.Decimal(result._sum.quantity ?? 0); }
   private async acceptedAvailable(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma, excludeId?: string) { const qc = await client.finishedGoodsQcRecord.findFirst({ where: { id: qcRecordId, deletedAt: null, status: "active" } }); if (!qc) throw this.notFound("FINISHED_GOODS_QC_NOT_AVAILABLE", "成品 QC 不存在或已更正"); return qc.qualifiedQuantity.plus(qc.conditionalAcceptQuantity).minus(await this.acceptedUsed(qcRecordId, client, excludeId)); }
   private async rejectedAvailable(qcRecordId: string, client: PrismaService | Prisma.TransactionClient = this.prisma, excludeId?: string) { const qc = await client.finishedGoodsQcRecord.findFirst({ where: { id: qcRecordId, deletedAt: null, status: "active" } }); if (!qc) throw this.notFound("FINISHED_GOODS_QC_NOT_AVAILABLE", "成品 QC 不存在或已更正"); return qc.rejectedQuantity.minus(await this.rejectedUsed(qcRecordId, client, excludeId)); }
-  private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.lte(0)) throw new Error(); return result; } catch { throw new UnprocessableEntityException({ code, message: "数量必须是大于零的十进制数", details: [] }); } }
+  /**
+   * 数量守卫。这里**刻意**只挡 NaN，不套用 B13 的「最多 4 位小数」正则：
+   * 本服务按设计允许亚标度数量原样通过（DB 列是 numeric(18,4)，但可用量比较要保留未舍入的精度，
+   * 见 finished-goods-inventory-service.test.cjs 的 sub-scale 用例），而 Infinity 会自然落到
+   * 「超过 QC 可用数量」的比较里。
+   * 必须挡 NaN：`new Prisma.Decimal("NaN")` 不抛异常，且 NaN.lte(0) 为 false 会把 NaN 当成合法数量
+   * 写进库存事实，之后该生产单的成品余额恒为 NaN，出库侧「不能超过可用量」等比较全部失效。
+   */
+  private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.isNaN() || result.lte(0)) throw new Error(); return result; } catch { throw new UnprocessableEntityException({ code, message: "数量必须是大于零的数字", details: [] }); } }
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
   private exceeded(code: string, available: Prisma.Decimal) { return new UnprocessableEntityException({ code, message: "数量超过 QC 可用数量", details: [{ available_quantity: available.toString() }] }); }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }

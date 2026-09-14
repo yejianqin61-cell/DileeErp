@@ -116,7 +116,7 @@ export function QcInboundPanel() {
       </div>
     </div>
     {message && <p className="status-success panel-body" role="status">{message}</p>}
-    {error && <div className="panel-body"><ErrorState message={error} onRetry={() => void load()} /></div>}
+    {error && <div className="panel-body" role="alert"><ErrorState message={error} onRetry={() => void load()} /></div>}
     <div className="panel-body">
       {loading ? <LoadingState /> : <>
         <h3>质检合格待入库</h3>
