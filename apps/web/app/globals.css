@@ -296,6 +296,14 @@ button { cursor: pointer; }
 .filter-tabs > .panel-note { margin-left: auto; color: #8a97a3; font-size: 12px; }
 .status-label { font-size: 12px; color: #5a6b7a; }
 .status-label.status-success { color: #166534; font-weight: 600; }
+
+.batch-table tbody tr:nth-child(even) td { background: #f8fafb; }
+.batch-table tbody tr:nth-child(odd) td { background: #fff; }
+.cell-material { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-chip { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 6px; font-size: 12px; font-weight: 500; background: #eef2f7; color: #33424f; white-space: nowrap; }
+.header-chip-material { background: #e0e7ff; color: #3730a3; font-weight: 600; }
+.order-info-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+
 .material-issue-sheet .detail-list { display: block; }
 .material-issue-sheet .detail-list > label { display: grid; }
 

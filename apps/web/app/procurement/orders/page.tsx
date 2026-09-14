@@ -43,7 +43,6 @@ export default function PurchaseOrdersPage() {
   const [boms, setBoms] = useState<Reference[]>([]);
   const [salesOrders, setSalesOrders] = useState<Reference[]>([]);
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<PurchaseOrder | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -83,7 +82,6 @@ export default function PurchaseOrdersPage() {
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, []);
 
-  async function openPurchaseOrder(id: string) { setError(""); try { const result = await apiGet<PurchaseOrder>(`/purchase-orders/${id}`); setSelected(result.data); } catch (cause) { notifyError(messageOf(cause, "采购单详情加载失败")); } }
   const visible = useMemo(() => orders.filter((item) => {
     if (query && !`${item.purchaseOrderNo} ${item.orderNo} ${item.status}`.toLowerCase().includes(query.toLowerCase())) return false;
     if (statusFilter === "all") return true;
@@ -105,7 +103,6 @@ export default function PurchaseOrdersPage() {
       else await apiPost(path, body);
       notifySuccess(success);
       await load();
-      if (selected) { const detail = await apiGet<PurchaseOrder>(`/purchase-orders/${selected.id}`); setSelected(detail.data); }
     } catch (cause) { notifyError(messageOf(cause, "操作失败")); }
   }
 
@@ -246,63 +243,21 @@ export default function PurchaseOrdersPage() {
     } catch (cause) { setError(messageOf(cause, mode === "order" ? "采购单下单失败" : purchaseDraft.id ? "采购草稿更新失败" : "采购草稿创建失败")); }
   }
 
-  function receive(order: PurchaseOrder, selectedItem?: PurchaseItem) {
-    const item = selectedItem ?? order.items.find((c) => Number(c.quantity) > c.receipts.reduce((sum, r) => sum + Number(r.quantity), 0)) ?? order.items[0];
-    if (!item) return;
-    const nextBatch = item.receipts.length + 1;
-    setDialog({ title: `登记到货：${order.purchaseOrderNo} / ${item.material?.name ?? "物料"}（第 ${nextBatch} 批）`, fields: [{ name: "quantity", label: "本批到货数量", type: "number", required: true, defaultValue: "1" }, { name: "reference_no", label: "到货参考号" }, { name: "over_receipt_reason", label: "超收原因（超出采购量时必填）" }, { name: "remark", label: "备注", type: "textarea" }], submit: (v) => void action(`/purchase-orders/${order.id}/items/${item.id}/receipts`, { quantity: v.quantity, received_date: new Date().toISOString(), reference_no: v.reference_no || undefined, over_receipt_reason: v.over_receipt_reason || undefined, idempotency_key: `web-receipt-${Date.now()}-${Math.random().toString(36).slice(2)}`, remark: v.remark || undefined }, "到货记录已登记") });
-  }
-
-  function editReceipt(receipt: Receipt) { setDialog({ title: `编辑到货批次：${receipt.receiptNo}`, fields: [{ name: "quantity", label: "到货数量", type: "number", required: true, defaultValue: receipt.quantity }, { name: "reference_no", label: "到货参考号" }, { name: "remark", label: "备注", type: "textarea", defaultValue: receipt.remark ?? undefined }, { name: "reason", label: "修改原因", type: "textarea", required: true }], submit: (v) => void action(`/purchase-orders/receipts/${receipt.id}`, { quantity: v.quantity, reference_no: v.reference_no || undefined, remark: v.remark || undefined, reason: v.reason }, "到货批次已更新", "PATCH") }); }
-  function cancelReceipt(receipt: Receipt) { setDialog({ title: `撤销到货批次：${receipt.receiptNo}`, fields: [{ name: "reason", label: "撤销原因", type: "textarea", required: true }], submit: (v) => void action(`/purchase-orders/receipts/${receipt.id}/cancel`, { reason: v.reason }, "到货批次已撤销") }); }
-  function revertPurchaseOrder(order: PurchaseOrder) { setDialog({ title: `采购单回退草稿：${order.purchaseOrderNo}`, fields: [{ name: "reason", label: "回退原因", required: true, type: "textarea" }], submit: (v) => void action(`/purchase-orders/${order.id}/revert-draft`, { reason: v.reason }, "采购单已回到草稿") }); }
-
-  function batchWorkflowRows(item: PurchaseItem) { return item.batchWorkflows ?? item.receipts.map((receipt, index) => ({ receiptId: receipt.id, receiptNo: receipt.receiptNo, batchSequence: receipt.batchSequence ?? index + 1, receivedQuantity: receipt.quantity, inspections: receipt.inspections ?? [], inbounds: receipt.rawMaterialInbounds ?? [] })); }
-
   async function refreshMaterialStock(ids: string[]) { if (!ids.length) return; try { const result = await apiGet<Array<{ material_id: string; unit_id: string; quantity: string }>>(`/inventory/raw-material-balances?material_ids=${ids.join(",")}`); const stock = result.data.reduce<Record<string, string>>((acc, item) => { const key = `${item.material_id}|${item.unit_id}`; acc[key] = item.quantity; acc[item.material_id] = (Number(acc[item.material_id] ?? 0) + Number(item.quantity)).toString(); return acc; }, {}); setStockByMaterial(stock); } catch { /* inventory access is optional */ } }
 
-  function openBom(id: string, label?: string) { setError(""); setBomWorkbench({ id, label }); }
+  function revertPurchaseOrder(order: PurchaseOrder) { setDialog({ title: `采购单回退草稿：${order.purchaseOrderNo}`, fields: [{ name: "reason", label: "回退原因", required: true, type: "textarea" }], submit: (v) => void action(`/purchase-orders/${order.id}/revert-draft`, { reason: v.reason }, "采购单已回到草稿") }); }
 
-  function renderOrderBatchWorkflow(order: PurchaseOrder) {
-    return <div className="purchase-item-blocks">{order.items.map((item) => {
-      const rows = batchWorkflowRows(item);
-      const materialLabel = `${item.material?.materialCode ?? ""} / ${item.material?.name ?? "物料"}${item.model ? ` / ${item.model}` : ""}`;
-      const batches = rows.map((batch) => {
-        const receipt = item.receipts.find((c) => c.id === batch.receiptId);
-        const inspection = receipt?.inspections?.[0];
-        const canInspect = Boolean(receipt) && receipt!.status !== "cancelled" && (!inspection || inspection.status === "pending" || (inspection.status === "partially_accepted" && !receipt!.rawMaterialInbounds?.length));
-        const canInbound = Boolean(inspection) && ["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(inspection!.status);
-        return <tr key={batch.receiptId}>
-          <td>{materialLabel}</td>
-          <td>第 {batch.batchSequence} 批</td>
-          <td>{receipt?.status === "cancelled" ? <span className="status-error">已撤销</span> : <>{batch.receivedQuantity}{receipt?.receivedDate ? <span className="batch-date"> · {receipt.receivedDate.slice(0, 10)}</span> : null}</>}</td>
-          <td>{inspection ? <>{inspectionStatusLabel[inspection.status] ?? inspection.status}<div className="batch-badges"><span className="batch-badge-pass">{inspection.acceptedQuantity} 合格</span><span className="batch-badge-cond">{inspection.conditionalQuantity} 条件</span><span className="batch-badge-fail">{inspection.rejectedQuantity} 不合格</span></div></> : <span className="batch-empty">待质检</span>}</td>
-          <td>{batch.inbounds.length ? batch.inbounds.map((row) => `${row.quantity}（${inboundStatusLabel[row.status] ?? row.status}）`).join("、") : <span className="batch-empty">待入库</span>}</td>
-          <td><div className="action-row">{receipt && receipt.status !== "cancelled" && <><Button size="sm" variant="ghost" onClick={() => editReceipt(receipt)}>编辑到货</Button><Button size="sm" variant="ghost" onClick={() => cancelReceipt(receipt)}>撤销批次</Button></>}{canInspect && <Button size="sm" variant="secondary" asChild><Link href={`/qc/incoming?receipt_id=${receipt!.id}`}>登记质检</Link></Button>}{canInbound && <Button size="sm" variant="ghost" asChild><Link href="/qc/inbound">去质检处理入库</Link></Button>}</div></td>
-        </tr>;
-      });
-      return <div key={item.id} className="purchase-item-block">
-        <div className="purchase-item-block-header">
-          <span className="material-name-cell" title={materialLabel}>{materialLabel}</span>
-          <span>采购数量 {item.quantity}{item.unit?.name ? ` ${item.unit.name}` : ""}</span>
-          <span>供应商 {item.supplier?.name ?? "-"}</span>
-          <span>预计到货 {item.expectedDate ? item.expectedDate.slice(0, 10) : "-"}</span>
-          <Button size="sm" variant="secondary" onClick={() => receive(order, item)}>登记下一批到货</Button>
-        </div>
-        <div className="table-wrap"><table className="ui-table"><thead><tr><th className="ui-table-head">物料</th><th className="ui-table-head">批次</th><th className="ui-table-head">到货</th><th className="ui-table-head">质检</th><th className="ui-table-head">入库</th><th className="ui-table-head">操作</th></tr></thead><tbody>{batches.length ? batches : <tr><td>{materialLabel}</td><td>-</td><td><span className="batch-empty">尚未登记</span></td><td><span className="batch-empty">-</span></td><td><span className="batch-empty">-</span></td><td><Button size="sm" variant="secondary" onClick={() => receive(order, item)}>登记到货</Button></td></tr>}</tbody></table></div>
-      </div>;
-    })}</div>;
-  }
+  function openBom(id: string, label?: string) { setError(""); setBomWorkbench({ id, label }); }
 
   const statusMap: Record<string, string> = { draft: "草稿", ordered: "已下单", partially_arrived: "部分到货", arrived_complete: "到货完成" };
 
   const orderColumns: ColumnDef<PurchaseOrder>[] = [
     { accessorKey: "purchaseOrderNo", header: "采购单号" },
-    { id: "orderNo", header: "订单号", cell: ({ row }) => <Button variant="link" onClick={() => void openPurchaseOrder(row.original.id)}>{row.original.orderNo}</Button> },
+    { id: "orderNo", header: "订单号", cell: ({ row }) => <Button variant="link" asChild><Link href={`/procurement/orders/${row.original.id}`}>{row.original.orderNo}</Link></Button> },
     { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
     { id: "status", header: "状态", cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
     { id: "amount", header: "金额", cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },
-    { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; return <div className="action-row">{isDraft && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" onClick={() => void openPurchaseOrder(row.original.id)}>到货跟踪</Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}{closed && <span className="status-label status-success">已关闭</span>}</div>; } },
+    { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; return <div className="action-row">{isDraft && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" asChild><Link href={`/procurement/orders/${row.original.id}`}>到货跟踪</Link></Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}{closed && <span className="status-label status-success">已关闭</span>}</div>; } },
   ];
 
   if (loading) return <><PageHeader title="采购单" breadcrumb={["采购", "采购单"]} /><LoadingState /></>;
@@ -338,19 +293,6 @@ export default function PurchaseOrdersPage() {
           <DataTable columns={orderColumns} data={visible} empty={<EmptyState title={statusFilter === "all" && !query ? "暂无采购单" : "没有匹配的采购单"} description={statusFilter !== "all" || query ? "换个筛选条件试试。" : undefined} />} />
         </div>
       </section>
-
-      {selected && (
-        <section className="panel">
-          <div className="panel-heading">
-            <h2>订单详情：{selected.orderNo}</h2>
-            <Button variant="ghost" onClick={() => setSelected(null)}>返回订单列表</Button>
-          </div>
-          <div className="panel-body">
-            <p>采购单：{selected.purchaseOrderNo}　供应商：{selected.supplier?.name ?? "-"}　状态：{selected.status}</p>
-            {renderOrderBatchWorkflow(selected)}
-          </div>
-        </section>
-      )}
 
       <Sheet open={Boolean(purchaseDraft)} onOpenChange={(open) => { if (!open) setPurchaseDraft(null); }}>
         <SheetContent className="material-issue-sheet purchase-workspace">

@@ -27,6 +27,7 @@ const EXPECTED: Record<string, string> = {
   "procurement/suppliers/page.tsx": "page-procurement-suppliers",
   "procurement/boms/page.tsx": "page-procurement-boms",
   "procurement/orders/page.tsx": "page-procurement-orders",
+  "procurement/orders/[id]/page.tsx": "page-procurement-orders-detail",
   "procurement/incoming-qc/page.tsx": "page-procurement-incoming-qc",
   "procurement/inbounds/page.tsx": "page-procurement-inbounds",
   "production/page.tsx": "page-production",
