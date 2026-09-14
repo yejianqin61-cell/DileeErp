@@ -1,7 +1,7 @@
-﻿// 财务页面：完整实现放在 components/finance/finance-workspace.tsx，这里只做路由装配。
-// 页面根 testid 由工作台在数据加载完成后渲染（加载中不渲染根节点，避免加载态被当成页面根）。
-import FinanceWorkspace from "../../components/finance/finance-workspace";
+// 财务一级页：4 个板块入口（应收管理 / 应付管理 / 薪资台账 / 凭证管理）。
+// 实现放在 components/finance/finance-board-index.tsx，这里只做路由装配。
+import FinanceBoardIndex from "../../components/finance/finance-board-index";
 
 export default function FinancePage() {
-  return <FinanceWorkspace testId="page-finance" />;
+  return <FinanceBoardIndex testId="page-finance" />;
 }

@@ -14,8 +14,24 @@ type Allocation = { receivable_source_id: string; amount: string };
 export class CustomerPaymentService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly receivable: ReceivableService, @Optional() private readonly currencies?: CurrencyService) {}
 
-  async list(orderNo?: string, customerId?: string) { return this.prisma.customerPayment.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}) }, include: { allocations: { where: { deletedAt: null } } }, orderBy: { createdAt: "desc" } }); }
-  async get(id: string) { const row = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null } } } }); if (!row) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在"); return row; }
+  /** 收款列表：带上客户名称与被核销的应收来源编号，否则财务只看得到一串 UUID。 */
+  async list(orderNo?: string, customerId?: string) {
+    const rows = await this.prisma.customerPayment.findMany({
+      where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}) },
+      include: {
+        customer: { select: { id: true, name: true, customerCode: true } },
+        allocations: { where: { deletedAt: null }, include: { receivableSource: { select: { id: true, sourceNo: true, orderNo: true, amount: true, currency: true, status: true } } } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return rows.map((row) => ({
+      ...row,
+      customer_name: row.customer?.name ?? null,
+      customer_code: row.customer?.customerCode ?? null,
+      allocated_amount: row.allocations.filter((item) => item.status === "active").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)).toFixed(4),
+    }));
+  }
+  async get(id: string) { const row = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } }, allocations: { where: { deletedAt: null }, include: { receivableSource: { select: { id: true, sourceNo: true, orderNo: true, amount: true, currency: true, status: true } } } } } }); if (!row) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在"); return row; }
   async create(input: PaymentInput, user: CurrentUser) { await this.currencies?.assertSupported(input.currency, "收款币种"); const amount = this.decimal(input.amount, "INVALID_PAYMENT_AMOUNT"); const customer = await this.prisma.customer.findFirst({ where: { id: input.customer_id, deletedAt: null } }); if (!customer) throw this.notFound("CUSTOMER_NOT_FOUND", "客户不存在"); const row = await this.prisma.customerPayment.create({ data: { paymentNo: this.number("PAY"), customerId: customer.id, orderNo: input.order_no, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payerName: input.payer_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("customer_payment.create", "customer_payment", user.id, row.id, { order_no: row.orderNo, amount: row.amount.toString() }); return row; }
 
   async post(id: string, allocations: Allocation[], user: CurrentUser) {

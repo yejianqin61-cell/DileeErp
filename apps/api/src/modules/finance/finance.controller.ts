@@ -32,8 +32,15 @@ class AdjustmentDto {
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }
+/**
+ * 应收对账：主键是「客户 + 期间」。
+ *
+ * `customer_id` 与 `order_no` 至少给一个：给 order_no 时客户由销售单反查（兼容按订单建对账的旧调用方）；
+ * 两个都给时必须指向同一客户，否则 RECONCILIATION_CUSTOMER_MISMATCH。
+ */
 class ReconciliationDto {
-  @IsString() order_no!: string;
+  @IsOptional() @IsString() order_no?: string;
+  @IsOptional() @IsUUID() customer_id?: string;
   @IsDateString() period_start!: string;
   @IsDateString() period_end!: string;
   @IsString() external_balance!: string;
@@ -89,6 +96,8 @@ export class FinanceController {
   @Get("reconciliations/:id") async getReconciliation(@Param("id") id: string) { return { data: await this.reconciliations.get(id), meta: {} }; }
   @Post("reconciliations") async createReconciliation(@Body() body: ReconciliationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reconciliations.create(body, user), meta: {} }; }
   @Post("reconciliations/:id/resolve") async resolveReconciliation(@Param("id") id: string, @Body() body: ResolutionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.reconciliations.resolve(id, body.resolution_remark, user), meta: {} }; }
+  // 「先对账、再确认应收」：对账对平（或差异已处理）后，一次性确认该对账范围内的草稿应收。
+  @Post("reconciliations/:id/confirm-receivables") async confirmReconciliationReceivables(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.reconciliations.confirmReceivables(id, user), meta: {} }; }
   @Get("order-close-preview") async orderClosePreview(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.reconciliations.orderClosePreview(orderNo) : [], meta: {} }; }
   // 采购通知财务付款需要的两个接口（GET payable-entries / POST payable-entries/from-source）
   // 已移到 PayableNotificationController：类级 @RequireModules("finance") 会先于方法级 ANY 校验，
@@ -109,4 +118,6 @@ export class FinanceController {
   @Get("supplier-payable-reconciliations/:id") async getSupplierReconciliation(@Param("id") id: string) { return { data: await this.supplierReconciliations.get(id), meta: {} }; }
   @Post("supplier-payable-reconciliations") async createSupplierReconciliation(@Body() body: SupplierReconciliationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.create(body, user), meta: {} }; }
   @Post("supplier-payable-reconciliations/:id/resolve") async resolveSupplierReconciliation(@Param("id") id: string, @Body() body: ResolutionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.resolve(id, body.resolution_remark, user), meta: {} }; }
+  // 「先对账、再确认应付」：对账对平（或差异已处理）后，一次性确认该对账范围内的草稿应付。
+  @Post("supplier-payable-reconciliations/:id/confirm-payables") async confirmReconciliationPayables(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.confirmPayables(id, user), meta: {} }; }
 }

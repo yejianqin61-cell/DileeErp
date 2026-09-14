@@ -14,13 +14,16 @@ export class SupplierPayableService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
-    const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
+    const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payment: { select: { status: true } } } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
     return rows.map((row) => {
       const receiptData = row.payableSource?.purchaseReceipt?.extensionData as { batch_sequence?: number } | null | undefined;
       const item = row.payableSource?.purchaseOrderItem;
       // 应付条目要能看出是哪个原料（客户反馈：只看到金额不知道对应什么物料）。
       const material = item?.material ?? row.outsourcePayableSource?.logisticsBatch?.material ?? null;
       const snapshot = (item?.materialSnapshot as { name?: string } | null | undefined)?.name ?? null;
+      // 已付/未付：只统计已过账付款的有效核销（冲销后的核销不算），与详情、对账口径一致。
+      const paid = row.allocations.filter((allocation) => allocation.status === "active" && allocation.payment?.status === "posted").reduce((sum, allocation) => sum.plus(allocation.amount), new Prisma.Decimal(0));
+      const outstanding = row.amount.minus(paid);
       return {
         ...row,
         source_no: row.payableSource?.rawMaterialInbound?.inboundNo ?? row.payableSource?.purchaseReceipt?.receiptNo ?? row.outsourcePayableSource?.outsourceReceipt?.id ?? row.sourceNoSnapshot,
@@ -31,6 +34,10 @@ export class SupplierPayableService {
         material_specification: material?.specificationModel ?? null,
         material_color: material?.color ?? null,
         unit_name: item?.unit?.name ?? row.outsourcePayableSource?.logisticsBatch?.unit?.name ?? null,
+        supplier_name: row.supplier?.name ?? null,
+        supplier_code: row.supplier?.supplierCode ?? null,
+        paid_amount: paid.toFixed(4),
+        outstanding_amount: outstanding.toFixed(4),
       };
     });
   }
@@ -61,6 +68,9 @@ export class SupplierPayableService {
         payableNo: this.number("AP"), orderNo: refs.orderNo, supplierId: refs.supplierId, sourceType: input.source_type,
         payableSourceId: ["raw_material_inbound", "purchase_receipt"].includes(input.source_type) ? input.source_id : undefined,
         outsourcePayableSourceId: input.source_type === "outsource_receipt" ? input.source_id : undefined,
+        // 采购单/采购明细/外加工批次的关联必须落库：应付对账按 purchase_order_id 过滤明细，
+        // 这三个字段为空会让"按采购单对账"的系统余额恒为 0（历史缺陷，见 docs/log）。
+        purchaseOrderId: refs.purchaseOrderId, purchaseOrderItemId: refs.purchaseOrderItemId, outsourceLogisticsBatchId: refs.outsourceLogisticsBatchId,
         sourceNoSnapshot: refs.sourceNo, quantity: refs.quantity, unitPrice: refs.unitPrice, taxRate: refs.taxRate,
         amount, currency: refs.currency, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
         attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
@@ -151,11 +161,11 @@ export class SupplierPayableService {
       const row = await client.payableSource.findFirst({ where: { id, status: { not: "voided" }, OR: [{ rawMaterialInbound: { deletedAt: null } }, { purchaseReceipt: { deletedAt: null } }] }, include: { rawMaterialInbound: true, purchaseReceipt: true } });
       if (!row) throw this.notFound("PAYABLE_SOURCE_NOT_FOUND", "原料入库应付来源不存在或已作废");
       const extensionData = (row.purchaseReceipt?.extensionData ?? {}) as { batch_sequence?: number };
-      return { orderNo: row.orderNo, supplierId: row.supplierId, sourceNo: row.rawMaterialInbound?.inboundNo ?? row.purchaseReceipt?.receiptNo ?? row.id, batchSequence: extensionData.batch_sequence ?? null, quantity: row.quantity, unitPrice: row.unitPrice, taxRate: row.taxRate, amount: row.amount, currency: row.currency };
+      return { orderNo: row.orderNo, supplierId: row.supplierId, sourceNo: row.rawMaterialInbound?.inboundNo ?? row.purchaseReceipt?.receiptNo ?? row.id, batchSequence: extensionData.batch_sequence ?? null, quantity: row.quantity, unitPrice: row.unitPrice, taxRate: row.taxRate, amount: row.amount, currency: row.currency, purchaseOrderId: row.purchaseOrderId, purchaseOrderItemId: row.purchaseOrderItemId, outsourceLogisticsBatchId: null };
     }
     const row = await client.outsourcePayableSource.findFirst({ where: { id, status: { not: "voided" } }, include: { logisticsBatch: true, outsourceReceipt: true } });
     if (!row) throw this.notFound("PAYABLE_SOURCE_NOT_FOUND", "外加工应付来源不存在或已作废");
-    return { orderNo: row.orderNo, supplierId: row.supplierId, sourceNo: `${row.logisticsBatch.batchNo}/${row.outsourceReceipt.id.slice(0, 8)}`, quantity: row.quantity, unitPrice: row.unitPrice, taxRate: row.taxRate, amount: row.amount, currency: row.currency };
+    return { orderNo: row.orderNo, supplierId: row.supplierId, sourceNo: `${row.logisticsBatch.batchNo}/${row.outsourceReceipt.id.slice(0, 8)}`, quantity: row.quantity, unitPrice: row.unitPrice, taxRate: row.taxRate, amount: row.amount, currency: row.currency, purchaseOrderId: row.purchaseOrderId, purchaseOrderItemId: row.purchaseOrderItemId, outsourceLogisticsBatchId: row.logisticsBatchId };
   }
 
   private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.lte(0)) throw new Error(); return result; } catch { throw this.invalid(code, "金额必须是大于零的十进制数"); } }

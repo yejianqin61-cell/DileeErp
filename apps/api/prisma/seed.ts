@@ -2,6 +2,7 @@ import * as argon2 from "argon2";
 import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { CURRENCY_DICTIONARY_KEY, DEFAULT_CURRENCIES } from "../src/platform/currency/currency-catalog";
+import { CASH_FLOW_ITEM_DICTIONARY_KEY, DEFAULT_CASH_FLOW_ITEMS, DEFAULT_SETTLEMENT_ACCOUNTS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "../src/modules/finance/cash-flow-catalog";
 
 const prisma = new PrismaClient();
 
@@ -42,6 +43,10 @@ async function main() {
       { key: "submission_item", name: "送检项目", items: [{ key: "incoming_material", label: "来料检验" }, { key: "finished_goods", label: "成品检验" }] },
       // 币种是可配置字典，不是前后端写死的枚举（PRD/SRS）。
       { key: CURRENCY_DICTIONARY_KEY, name: "币种", items: DEFAULT_CURRENCIES.map((currency) => ({ key: currency.key, label: currency.label, sortOrder: currency.sortOrder })) },
+      // 收支项目 / 结算账户：老表（example/财务/收支汇总表.xls 与 收支明细表.xls）里的类目，
+      // 与迁移 20260914190000_cash_flow_entries 用同一份清单（cash-flow-catalog.ts）。
+      { key: CASH_FLOW_ITEM_DICTIONARY_KEY, name: "收支项目", items: DEFAULT_CASH_FLOW_ITEMS.map((item) => ({ key: item.key, label: item.label, sortOrder: item.sortOrder })) },
+      { key: SETTLEMENT_ACCOUNT_DICTIONARY_KEY, name: "结算账户", items: DEFAULT_SETTLEMENT_ACCOUNTS.map((item) => ({ key: item.key, label: item.label, sortOrder: item.sortOrder })) },
     ];
     for (const dictionary of standardDictionaries) {
       const type = await tx.dictionaryType.upsert({ where: { key: dictionary.key }, update: { name: dictionary.name, updatedBy: id }, create: { id: randomUUID(), key: dictionary.key, name: dictionary.name, createdBy: id, updatedBy: id } });

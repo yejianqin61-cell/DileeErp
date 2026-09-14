@@ -10,12 +10,42 @@ import { receivableAmountFor, receivableUnitPrice, settlementRemark } from "../w
 export class ReceivableService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
-  async list(orderNo?: string, customerId?: string, status?: string) { return this.prisma.receivableSource.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null } } }, orderBy: { createdAt: "desc" } }); }
+  /**
+   * 应收来源列表。
+   *
+   * 财务页面按「成品出库条目」展示，必须能一眼看到客户名称、出库单号和未收余额：
+   * 只给 UUID 的列表对账时根本没法核对（宪法/规格：列表以订单号、来源编号、客户名称展示，UUID 仅作内部关联键）。
+   */
+  async list(orderNo?: string, customerId?: string, status?: string) {
+    const rows = await this.prisma.receivableSource.findMany({
+      where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) },
+      include: {
+        customer: { select: { id: true, name: true, customerCode: true } },
+        outbound: { select: { outboundNo: true, status: true, productNameSnapshot: true, productSpecificationSnapshot: true, signedAt: true, shipmentDate: true } },
+        allocations: { where: { deletedAt: null }, include: { payment: { select: { id: true, paymentNo: true, status: true, paymentDate: true } } } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return rows.map((row) => {
+      const allocated = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
+      return {
+        ...row,
+        customer_name: row.customer?.name ?? null,
+        customer_code: row.customer?.customerCode ?? null,
+        outbound_no: row.outbound?.outboundNo ?? null,
+        product_name: row.outbound?.productNameSnapshot ?? null,
+        product_specification: row.outbound?.productSpecificationSnapshot ?? null,
+        allocated_amount: allocated.toFixed(4),
+        outstanding_amount: row.amount.minus(allocated).toFixed(4),
+      };
+    });
+  }
   async get(id: string) {
     const row = await this.prisma.receivableSource.findFirst({
       where: { id, deletedAt: null },
       include: {
-        allocations: { where: { deletedAt: null } },
+        customer: { select: { id: true, name: true, customerCode: true } },
+        allocations: { where: { deletedAt: null }, include: { payment: { select: { id: true, paymentNo: true, status: true, paymentDate: true, amount: true, currency: true } } } },
         outbound: {
           include: {
             productionOrder: {
@@ -31,7 +61,8 @@ export class ReceivableService {
       },
     });
     if (!row) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
-    return row;
+    const allocated = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
+    return { ...row, allocated_amount: allocated.toFixed(4), outstanding_amount: row.amount.minus(allocated).toFixed(4) };
   }
 
   async createFromOutbound(outboundId: string, input: { amount?: string; amount_reason?: string; due_date?: string; remark?: string }, user: CurrentUser) {

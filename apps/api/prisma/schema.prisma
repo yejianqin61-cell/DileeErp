@@ -108,6 +108,8 @@ model DictionaryItem {
   deletedAt DateTime?      @map("deleted_at")
   deletedBy String?        @map("deleted_by") @db.Uuid
   type      DictionaryType @relation(fields: [typeId], references: [id])
+  cashFlowItems    CashFlowEntry[] @relation("CashFlowItem")
+  cashFlowAccounts CashFlowEntry[] @relation("CashFlowAccount")
 
   @@unique([typeId, key])
   @@map("dictionary_items")
@@ -1521,7 +1523,8 @@ model ReceivableAdjustment {
 model ReceivableReconciliation {
   id                       String      @id @default(uuid()) @db.Uuid
   reconciliationNo         String      @unique @map("reconciliation_no") @db.VarChar(100)
-  orderNo                  String      @map("order_no") @db.VarChar(100)
+  // 可空：应收对账按「客户 + 期间」创建，不再强制挂在单个订单号上（见 20260914180000 迁移）。
+  orderNo                  String?     @map("order_no") @db.VarChar(100)
   salesOrderId             String?     @map("sales_order_id") @db.Uuid
   customerId               String      @map("customer_id") @db.Uuid
   periodStart              DateTime    @map("period_start") @db.Date
@@ -1584,6 +1587,46 @@ model SupplierPayableReconciliation {
   @@index([orderNo, status])
   @@index([periodStart, periodEnd])
   @@map("supplier_payable_reconciliations")
+}
+
+/// 收支流水：老表 `收支明细表.xls` 的数据源，「收支管理」板块的手工录入对象。
+///
+/// 与收付款单**不做自动联动**（用户 R6 选定「手工录入」）：`sourceType` / `sourceId` 本期恒空，
+/// 是为将来联动预留的列。已确认的已知代价：收付款单过账后不会自动出现在这里，财务需要手工补录。
+model CashFlowEntry {
+  id                  String          @id @default(uuid()) @db.Uuid
+  entryNo             String          @unique @map("entry_no") @db.VarChar(100)
+  entryDate           DateTime        @map("entry_date") @db.Date
+  /// 「对方名称」：老表要求一个统一字段；收付款单那边是 payerName / payeeName 分开且可为空
+  counterpartyName    String          @map("counterparty_name") @db.VarChar(200)
+  /// income / expense。金额恒为正数，方向由本字段决定（不存负数：否则「支出填成负数」无法校验）
+  direction           String          @db.VarChar(10)
+  amount              Decimal         @db.Decimal(18, 4)
+  currency            String          @db.VarChar(10)
+  exchangeRate        Decimal?        @map("exchange_rate") @db.Decimal(18, 6)
+  localAmount         Decimal?        @map("local_amount") @db.Decimal(18, 4)
+  itemId              String          @map("item_id") @db.Uuid
+  settlementMethod    String?         @map("settlement_method") @db.VarChar(50)
+  settlementAccountId String?         @map("settlement_account_id") @db.Uuid
+  /// 本期恒空，为将来与收付款单联动预留
+  sourceType          String?         @map("source_type") @db.VarChar(40)
+  sourceId            String?         @map("source_id") @db.Uuid
+  /// posted（生效）/ reversed（已冲销，保留行但报表不计入）
+  status              String          @default("posted") @db.VarChar(30)
+  remark              String?         @db.VarChar(1000)
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+  createdBy           String          @map("created_by") @db.Uuid
+  updatedBy           String          @map("updated_by") @db.Uuid
+  deletedAt           DateTime?       @map("deleted_at")
+  deletedBy           String?         @map("deleted_by") @db.Uuid
+  item                DictionaryItem  @relation("CashFlowItem", fields: [itemId], references: [id])
+  settlementAccount   DictionaryItem? @relation("CashFlowAccount", fields: [settlementAccountId], references: [id])
+
+  @@index([entryDate, currency])
+  @@index([itemId, direction])
+  @@index([currency, status])
+  @@map("cash_flow_entries")
 }
 
 model ProductionOrder {

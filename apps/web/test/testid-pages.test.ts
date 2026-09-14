@@ -31,13 +31,25 @@ const EXPECTED: Record<string, string> = {
   "warehouse/raw-material-storage/page.tsx": "page-warehouse-raw-material-storage",
   "warehouse/finished-goods-storage/page.tsx": "page-warehouse-finished-goods-storage",
   "finance/page.tsx": "page-finance",
-  "finance/[section]/page.tsx": "page-finance-section",
+  "finance/receivable/page.tsx": "page-finance-receivable",
+  "finance/payable/page.tsx": "page-finance-payable",
+  "finance/voucher/page.tsx": "page-finance-voucher",
   "finance/salary/page.tsx": "page-finance-salary",
+  "finance/cash-flow/page.tsx": "page-finance-cash-flow",
+  "finance/reports/page.tsx": "page-finance-reports",
   "hr/page.tsx": "page-hr",
   "hr/departments/page.tsx": "page-hr-departments",
   "hr/positions/page.tsx": "page-hr-positions",
   "reports/page.tsx": "page-reports",
 };
+
+/**
+ * 纯重定向页面：不渲染任何页面根节点，因此没有 page-<route> testid。
+ * 这类页面必须显式调用 redirect()，否则用户会看到一个空白页（见下面的用例）。
+ * 它们仍然要登记在 EXPECTED 里，才能被「没有未登记的页面」用例覆盖。
+ */
+const REDIRECT_ONLY = new Set(["finance/[section]/page.tsx"]);
+Object.assign(EXPECTED, Object.fromEntries([...REDIRECT_ONLY].map((file) => [file, ""])));
 
 const appDir = join(process.cwd(), "app");
 
@@ -57,6 +69,7 @@ function listPageFiles(dir: string): string[] {
 describe("data-testid 约定（源码文本检查，非行为测试）", () => {
   it("每个已知路由页面都在源码里声明了 page-<route> 钩子", () => {
     const missing = Object.entries(EXPECTED).filter(([file, testid]) => {
+      if (REDIRECT_ONLY.has(file)) return false;
       const source = stripComments(readFileSync(join(appDir, file), "utf8"));
       // 页面可以直接写 data-testid="page-x"，也可以把 testId="page-x" 传给共享工作台组件
       // （组件在数据加载完成后再渲染根节点，因此 testid 不在页面文件里硬编码）。
@@ -66,8 +79,15 @@ describe("data-testid 约定（源码文本检查，非行为测试）", () => {
     expect(missing).toEqual([]);
   });
 
+  it("纯重定向页面必须真的 redirect()，而不是渲染一个空页面", () => {
+    for (const file of REDIRECT_ONLY) {
+      const source = stripComments(readFileSync(join(appDir, file), "utf8"));
+      expect(source, file).toMatch(/\bredirect\(/);
+    }
+  });
+
   it("页面根 testid 的命名是 kebab-case 的 page-<route>", () => {
-    const bad = Object.entries(EXPECTED).filter(([, testid]) => !/^page-[a-z0-9]+(-[a-z0-9]+)*$/.test(testid));
+    const bad = Object.entries(EXPECTED).filter(([file, testid]) => !REDIRECT_ONLY.has(file) && !/^page-[a-z0-9]+(-[a-z0-9]+)*$/.test(testid));
 
     expect(bad).toEqual([]);
   });

@@ -10,8 +10,32 @@ import { canReopenPayroll } from "./hr-payroll.domain";
 @Injectable()
 export class PayrollLedgerService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
-  async list(employeeId?: string, periodStart?: string, periodEnd?: string, status?: string, from?: string, to?: string) { return this.prisma.payrollLedger.findMany({ where: { deletedAt: null, ...(employeeId ? { employeeId } : {}), ...(periodStart ? { periodStart: this.date(periodStart) } : {}), ...(periodEnd ? { periodEnd: this.date(periodEnd) } : {}), ...(status ? { status } : {}), ...(from || to ? { AND: [{ ...(to ? { periodStart: { lte: this.date(to) } } : {}) }, { ...(from ? { periodEnd: { gte: this.date(from) } } : {}) }] } : {}) }, include: { employee: true, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null }, include: { payment: true } } }, orderBy: { periodStart: "desc" } }).then((rows) => rows.map((row) => { const adjustments = row.adjustments.filter((item) => item.status === "posted").reduce((sum, item) => sum.plus(item.effect === "increase" ? item.amount : item.amount.negated()), new Prisma.Decimal(0)); const payable = row.baseSalary.plus(row.productionSourceAmount).plus(row.overtimeAmount).minus(row.attendanceDeduction).plus(row.performanceAmount).plus(row.allowanceAmount).minus(row.socialInsurance).minus(row.individualTax).plus(row.otherAdjustment).plus(adjustments); const paid = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)); return { ...row, payableAmount: payable.toFixed(4), paidAmount: paid.toFixed(4), outstandingAmount: payable.minus(paid).toFixed(4) }; })); }
-  async get(id: string) { const row = await this.prisma.payrollLedger.findFirst({ where: { id, deletedAt: null }, include: { employee: true, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null } } } }); if (!row) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在"); return row; }
+  /**
+   * 工资台账列表。
+   *
+   * 工资管理页要按「月 + 部门 + 岗位」筛选（客户要求），因此除既有的员工/期间/状态外，
+   * 追加 month（按自然月，与 from/to 同为"期间有交集"语义）、department_id、position_id、employee_type。
+   * 返回值同时带上部门与岗位（原先只有 departmentId/positionId，前端拿不到名字也就筛不了）。
+   */
+  async list(employeeId?: string, periodStart?: string, periodEnd?: string, status?: string, from?: string, to?: string, month?: string, departmentId?: string, positionId?: string, employeeType?: string) {
+    const where: Prisma.PayrollLedgerWhereInput = { deletedAt: null };
+    if (employeeId) where.employeeId = employeeId;
+    if (periodStart) where.periodStart = this.date(periodStart);
+    if (periodEnd) where.periodEnd = this.date(periodEnd);
+    if (status) where.status = status;
+    // 期间筛选与 from/to 同口径：只要台账期间与所选区间有交集就算命中，不是"完全落在区间内"。
+    const range = month ? this.monthRange(month) : (from || to ? { from: from ? this.date(from) : undefined, to: to ? this.date(to) : undefined } : undefined);
+    if (range) where.AND = [...(range.to ? [{ periodStart: { lte: range.to } }] : []), ...(range.from ? [{ periodEnd: { gte: range.from } }] : [])];
+    const employeeWhere: Prisma.EmployeeWhereInput = { ...(departmentId ? { departmentId } : {}), ...(positionId ? { positionId } : {}), ...(employeeType ? { employeeType } : {}) };
+    if (Object.keys(employeeWhere).length) where.employee = employeeWhere;
+    const rows = await this.prisma.payrollLedger.findMany({
+      where,
+      include: { employee: { include: { department: true, position: true } }, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null }, include: { payment: true } } },
+      orderBy: { periodStart: "desc" },
+    });
+    return rows.map((row) => ({ ...row, ...this.balances(row) }));
+  }
+  async get(id: string) { const row = await this.prisma.payrollLedger.findFirst({ where: { id, deletedAt: null }, include: { employee: { include: { department: true, position: true } }, adjustments: { where: { deletedAt: null } }, allocations: { where: { deletedAt: null }, include: { payment: true } } } }); if (!row) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在"); return { ...row, ...this.balances(row) }; }
   async generate(input: { employee_id?: string; employee_name?: string; period_start: string; period_end: string; currency: string; base_salary?: string; overtime_amount?: string; attendance_deduction?: string; performance_amount?: string; allowance_amount?: string; social_insurance?: string; individual_tax?: string; other_adjustment?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     await this.currencies?.assertSupported(input.currency, "工资台账币种");
     const start = this.date(input.period_start); const end = this.date(input.period_end); if (end < start) throw this.invalid("INVALID_PAYROLL_PERIOD", "薪资期间无效");
@@ -104,6 +128,28 @@ export class PayrollLedgerService {
   async summary(id: string) { const ledger = await this.get(id); const adjustments = ledger.adjustments.filter((row) => row.status === "posted").reduce((sum, row) => sum.plus(row.effect === "increase" ? row.amount : row.amount.negated()), new Prisma.Decimal(0)); const base = ledger.baseSalary.plus(ledger.productionSourceAmount).plus(ledger.overtimeAmount).minus(ledger.attendanceDeduction).plus(ledger.performanceAmount).plus(ledger.allowanceAmount).minus(ledger.socialInsurance).minus(ledger.individualTax).plus(ledger.otherAdjustment); const net = base.plus(adjustments); const paid = ledger.allocations.filter((row) => row.status === "active").reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)); return { ledger_id: id, employee_id: ledger.employeeId, period_start: ledger.periodStart, period_end: ledger.periodEnd, base_amount: base.toString(), adjustment_amount: adjustments.toString(), payable_amount: net.toString(), paid_amount: paid.toString(), outstanding_amount: net.minus(paid).toString() }; }
   async refreshStatus(client: Prisma.TransactionClient, id: string, user: CurrentUser) { const ledger = await client.payrollLedger.findFirst({ where: { id, deletedAt: null } }); if (!ledger) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在"); const adjustments = await client.payrollAdjustment.findMany({ where: { ledgerId: id, deletedAt: null, status: "posted" } }); const base = ledger.baseSalary.plus(ledger.productionSourceAmount).plus(ledger.overtimeAmount).minus(ledger.attendanceDeduction).plus(ledger.performanceAmount).plus(ledger.allowanceAmount).minus(ledger.socialInsurance).minus(ledger.individualTax).plus(ledger.otherAdjustment); const net = base.plus(adjustments.reduce((sum, row) => sum.plus(row.effect === "increase" ? row.amount : row.amount.negated()), new Prisma.Decimal(0))); const paid = await client.salaryPaymentAllocation.aggregate({ where: { ledgerId: id, deletedAt: null, status: "active", payment: { status: "posted" } }, _sum: { amount: true } }); const amount = new Prisma.Decimal(paid._sum.amount ?? 0); const status = amount.eq(0) ? "confirmed" : amount.gte(net) ? "paid" : "partially_paid"; return client.payrollLedger.update({ where: { id }, data: { status, ...this.audit.update(user) } }); }
   private async collectProductionSources(employeeId: string, start: Date, end: Date) { const employee = await this.prisma.employee.findFirst({ where: { id: employeeId, deletedAt: null }, select: { employeeType: true } }); if (employee?.employeeType !== "workshop") return { production: new Prisma.Decimal(0), snapshot: [] as unknown as Prisma.InputJsonValue }; const sources = await this.prisma.productionPayrollSource.findMany({ where: { employeeId, deletedAt: null, periodStart: { gte: start }, periodEnd: { lte: end } } }); const production = sources.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)); /* 聚合值也要落在 Decimal(18,4) 内（整数部分最多 14 位），超限提前 422 而不是让数据库报 500。 */ if (production.abs().gte(new Prisma.Decimal("1e14"))) throw this.invalid("PAYROLL_LEDGER_AMOUNT_OUT_OF_RANGE", "生产来源合计超出可存储范围"); const snapshot = sources.map((source) => ({ id: source.id, order_no: source.orderNo, wage_mode: source.wageMode, quantity: source.quantity.toString(), duration_minutes: source.durationMinutes.toString(), duration_hours: this.hoursText(source.durationMinutes), amount: source.amount.toString() })) as Prisma.InputJsonValue; return { production, snapshot }; }
+  /**
+   * 应发 / 已付 / 未付。
+   *
+   * 列表与详情必须同口径：已付只统计「有效核销 + 已过账工资付款」，否则列表与详情会给出不同余额。
+   */
+  private balances(fields: {
+    baseSalary: Prisma.Decimal; productionSourceAmount: Prisma.Decimal; overtimeAmount: Prisma.Decimal; attendanceDeduction: Prisma.Decimal;
+    performanceAmount: Prisma.Decimal; allowanceAmount: Prisma.Decimal; socialInsurance: Prisma.Decimal; individualTax: Prisma.Decimal; otherAdjustment: Prisma.Decimal;
+    adjustments: Array<{ status: string; effect: string; amount: Prisma.Decimal }>;
+    allocations: Array<{ status: string; amount: Prisma.Decimal; payment?: { status: string } | null }>;
+  }) {
+    const adjustments = fields.adjustments.filter((item) => item.status === "posted").reduce((sum, item) => sum.plus(item.effect === "increase" ? item.amount : item.amount.negated()), new Prisma.Decimal(0));
+    const payable = fields.baseSalary.plus(fields.productionSourceAmount).plus(fields.overtimeAmount).minus(fields.attendanceDeduction).plus(fields.performanceAmount).plus(fields.allowanceAmount).minus(fields.socialInsurance).minus(fields.individualTax).plus(fields.otherAdjustment).plus(adjustments);
+    const paid = fields.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
+    return { payableAmount: payable.toFixed(4), paidAmount: paid.toFixed(4), outstandingAmount: payable.minus(paid).toFixed(4) };
+  }
+  /** 自然月区间（含首尾日）。 */
+  private monthRange(value: string) {
+    if (!/^\d{4}-\d{2}$/.test(value)) throw this.invalid("INVALID_MONTH", "月份格式为 YYYY-MM");
+    const [year, monthIndex] = value.split("-").map(Number);
+    return { from: new Date(Date.UTC(year, monthIndex - 1, 1)), to: new Date(Date.UTC(year, monthIndex, 0)) };
+  }
   /** 分钟 -> 小时文案（最多 4 位小数、去掉尾随零；极小非零值提升精度），与生产侧 toHoursText/导出 hours() 同口径。 */
   private hoursText(durationMinutes: Prisma.Decimal | null | undefined) { if (durationMinutes === null || durationMinutes === undefined) return ""; const hours = new Prisma.Decimal(durationMinutes).div(60); const trim = (value: string) => value.replace(/0+$/, "").replace(/\.$/, ""); const text = trim(hours.toFixed(4)); return text !== "0" || hours.isZero() ? text : trim(hours.toFixed(8)); }
   private dec(value?: string) { return value ? this.nonNegative(value) : new Prisma.Decimal(0); }

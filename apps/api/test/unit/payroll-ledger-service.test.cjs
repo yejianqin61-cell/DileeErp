@@ -1,10 +1,18 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { Prisma } = require("@prisma/client");
 const { PayrollLedgerService } = require("../../dist/modules/hr/payroll-ledger.service.js");
 
 function serviceWithStatus(status) {
   const audits = [];
-  const row = { id: "ledger-1", status, employeeId: "employee-1" };
+  // get() 现在统一附带 adjustments / allocations 计算应发与已付，替身也必须给出这两个关系
+  // 以及计算所需的金额字段（真实查询永远 include 它们并返回 Decimal）。
+  const zero = () => new Prisma.Decimal(0);
+  const row = {
+    id: "ledger-1", status, employeeId: "employee-1", adjustments: [], allocations: [],
+    baseSalary: zero(), productionSourceAmount: zero(), overtimeAmount: zero(), attendanceDeduction: zero(),
+    performanceAmount: zero(), allowanceAmount: zero(), socialInsurance: zero(), individualTax: zero(), otherAdjustment: zero(),
+  };
   const prisma = {
     payrollLedger: {
       findFirst: async () => row,
@@ -201,7 +209,12 @@ test("payroll ledger list applies period overlap and computes payable/paid/outst
 
 test("payroll ledger with a confirmed payroll payable cannot reopen", async () => {
   let updateCount = 0;
-  const row = { id: "ledger-1", status: "confirmed", employeeId: "employee-1" };
+  const zero = () => new Prisma.Decimal(0);
+  const row = {
+    id: "ledger-1", status: "confirmed", employeeId: "employee-1", adjustments: [], allocations: [],
+    baseSalary: zero(), productionSourceAmount: zero(), overtimeAmount: zero(), attendanceDeduction: zero(),
+    performanceAmount: zero(), allowanceAmount: zero(), socialInsurance: zero(), individualTax: zero(), otherAdjustment: zero(),
+  };
   const prisma = {
     payrollLedger: { findFirst: async () => row, update: async () => { updateCount += 1; return row; } },
     $transaction: async (fn) => fn({
@@ -236,4 +249,64 @@ test("payroll ledger update is blocked when a payroll payable exists", async () 
     (error) => error.getResponse().code === "PAYROLL_LEDGER_HAS_PAYABLE",
   );
   assert.equal(updateCount, 0);
+});
+
+// ------------------------------------------------------------------ 工资管理页筛选（月 / 部门 / 岗位）
+
+test("工资台账按月筛选：与所选自然月有交集的台账都要查出来", async () => {
+  let captured;
+  const prisma = { payrollLedger: { findMany: async (args) => { captured = args; return []; } } };
+  const service = new PayrollLedgerService(prisma, {});
+  await service.list(undefined, undefined, undefined, undefined, undefined, undefined, "2026-09");
+  const [overlap] = captured.where.AND;
+  assert.equal(overlap.periodStart.lte.toISOString(), "2026-09-30T00:00:00.000Z", "跨月台账只要与 9 月有交集就要出现");
+  assert.equal(captured.where.AND[1].periodEnd.gte.toISOString(), "2026-09-01T00:00:00.000Z");
+});
+
+test("工资台账按部门/岗位/员工类型筛选员工，并在返回里带上部门与岗位名称", async () => {
+  let captured;
+  const row = {
+    id: "ledger-1", baseSalary: new Prisma.Decimal("0"), productionSourceAmount: new Prisma.Decimal("0"), overtimeAmount: new Prisma.Decimal("0"),
+    attendanceDeduction: new Prisma.Decimal("0"), performanceAmount: new Prisma.Decimal("0"), allowanceAmount: new Prisma.Decimal("0"),
+    socialInsurance: new Prisma.Decimal("0"), individualTax: new Prisma.Decimal("0"), otherAdjustment: new Prisma.Decimal("0"),
+    adjustments: [], allocations: [], employee: { id: "employee-1", department: { id: "dep-1", name: "生产部" }, position: { id: "pos-1", name: "缝制工" } },
+  };
+  const prisma = { payrollLedger: { findMany: async (args) => { captured = args; return [row]; } } };
+  const service = new PayrollLedgerService(prisma, {});
+  const result = await service.list(undefined, undefined, undefined, undefined, undefined, undefined, undefined, "dep-1", "pos-1", "workshop");
+  assert.deepEqual(captured.where.employee, { departmentId: "dep-1", positionId: "pos-1", employeeType: "workshop" });
+  assert.equal(captured.include.employee.include.department, true);
+  assert.equal(captured.include.employee.include.position, true);
+  assert.equal(result[0].employee.department.name, "生产部", "前端筛选下拉与表格都需要部门/岗位名称");
+  assert.equal(result[0].employee.position.name, "缝制工");
+});
+
+test("没有筛选条件时不会给 employee 加上空 where（避免过滤掉任何台账）", async () => {
+  let captured;
+  const prisma = { payrollLedger: { findMany: async (args) => { captured = args; return []; } } };
+  const service = new PayrollLedgerService(prisma, {});
+  await service.list();
+  assert.equal(captured.where.employee, undefined);
+  assert.equal(captured.where.AND, undefined);
+});
+
+test("非法月份格式返回 422 而不是静默忽略", async () => {
+  const service = new PayrollLedgerService({ payrollLedger: { findMany: async () => [] } }, {});
+  await assert.rejects(() => service.list(undefined, undefined, undefined, undefined, undefined, undefined, "2026/09"), (error) => error.getResponse().code === "INVALID_MONTH");
+});
+
+test("详情接口与列表同口径：也返回应发/已付/未付", async () => {
+  const row = {
+    id: "ledger-1", status: "partially_paid", adjustments: [{ status: "posted", effect: "decrease", amount: new Prisma.Decimal("5") }],
+    allocations: [{ status: "active", amount: new Prisma.Decimal("20"), payment: { status: "posted" } }],
+    baseSalary: new Prisma.Decimal("100"), productionSourceAmount: new Prisma.Decimal("0"), overtimeAmount: new Prisma.Decimal("0"),
+    attendanceDeduction: new Prisma.Decimal("0"), performanceAmount: new Prisma.Decimal("0"), allowanceAmount: new Prisma.Decimal("0"),
+    socialInsurance: new Prisma.Decimal("0"), individualTax: new Prisma.Decimal("0"), otherAdjustment: new Prisma.Decimal("0"),
+  };
+  const prisma = { payrollLedger: { findFirst: async () => row } };
+  const service = new PayrollLedgerService(prisma, {});
+  const result = await service.get("ledger-1");
+  assert.equal(result.payableAmount, "95.0000");
+  assert.equal(result.paidAmount, "20.0000");
+  assert.equal(result.outstandingAmount, "75.0000");
 });

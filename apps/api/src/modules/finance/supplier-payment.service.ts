@@ -15,11 +15,21 @@ export class SupplierPaymentService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payable: SupplierPayableService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
-    return this.prisma.supplierPayment.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null }, include: { payableEntry: true } } }, orderBy: { createdAt: "desc" } });
+    const rows = await this.prisma.supplierPayment.findMany({
+      where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) },
+      include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payableEntry: true } } },
+      orderBy: { createdAt: "desc" },
+    });
+    return rows.map((row) => ({
+      ...row,
+      supplier_name: row.supplier?.name ?? null,
+      supplier_code: row.supplier?.supplierCode ?? null,
+      allocated_amount: row.allocations.filter((item) => item.status === "active").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)).toFixed(4),
+    }));
   }
 
   async get(id: string) {
-    const row = await this.prisma.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null }, include: { payableEntry: true } } } });
+    const row = await this.prisma.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payableEntry: true } } } });
     if (!row) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
     return row;
   }

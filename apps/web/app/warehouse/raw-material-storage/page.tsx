@@ -8,13 +8,17 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
+import { Input } from "../../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
 import { mergeMaterialBalances } from "../../../lib/wms-balances";
 import { shouldAutoOpenDraft } from "../../../lib/auto-open";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
+import { fuzzyMatch } from "../../../lib/material-search";
 
-type Material = { id: string; materialCode: string; name: string; defaultUnitId: string };
+// specificationModel / color 由 GET /materials 返回（listMaterials 返回物料全字段），
+// 库存汇总的「规格型号」列与搜索都依赖它们。
+type Material = { id: string; materialCode: string; name: string; defaultUnitId: string; specificationModel?: string | null; color?: string | null };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
 type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; materialId: string; unitId: string; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
@@ -33,6 +37,8 @@ export default function RawMaterialStoragePage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  // 一个搜索框同时过滤两张表：库存汇总按物料字段匹配，原料入库单按单号/批号 + 其物料的字段匹配。
+  const [query, setQuery] = useState("");
   const searchParams = useSearchParams();
   const noticeId = searchParams.get("notice_id");
   const autoOpenedNoticeRef = useRef<string | null>(null);
@@ -125,6 +131,8 @@ export default function RawMaterialStoragePage() {
 
   const balanceColumns: ColumnDef<Balance>[] = [
     { id: "material", header: "物料", cell: ({ row }) => row.original.material?.materialCode + " / " + row.original.material?.name },
+    // 规格型号是原料的关键区分项（同名不同规格是常态），只给物料名无法确认是哪一种。
+    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material?.specificationModel || "-" },
     { accessorKey: "unit_name", header: "单位" },
     // 接收通知后生成的是草稿，库存要过账才会变动；这里把「待入库」单独列出，
     // 否则接收完这个页面看起来“什么都没更新”。
@@ -170,6 +178,20 @@ export default function RawMaterialStoragePage() {
     return map;
   }, [inbounds]);
 
+  // 搜索只影响展示，不影响上面的计数与动作；入库单本身不带物料名，用 materials 映射补齐后再参与匹配。
+  const materialMap = useMemo(() => new Map(materials.map((item) => [item.id, item])), [materials]);
+  const filteredBalances = useMemo(() => balances.filter((row) => fuzzyMatch(query, [
+    row.material?.materialCode, row.material?.name, row.material?.specificationModel, row.material?.color, row.unit_name, row.order_no,
+  ])), [balances, query]);
+  const filteredInbounds = useMemo(() => inbounds.filter((row) => {
+    const material = materialMap.get(row.materialId);
+    return fuzzyMatch(query, [
+      row.inboundNo, row.orderNo, row.purchase_order_no, row.receipt_no, row.batch_sequence,
+      row.inspection_status, inboundStatusLabels[row.status], row.remark,
+      material?.materialCode, material?.name, material?.specificationModel, material?.color,
+    ]);
+  }), [inbounds, materialMap, query]);
+
   if (loading) return <><PageHeader title="原料仓储情况"><Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button></PageHeader><LoadingState /></>;
 
   return (
@@ -182,20 +204,29 @@ export default function RawMaterialStoragePage() {
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
+      <section className="panel panel-body">
+        <div className="filter-bar">
+          <label>搜索<Input data-testid="raw-material-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="物料编码 / 名称 / 规格型号 / 颜色 / 单位 / 单号" /></label>
+          {query && <Button variant="secondary" onClick={() => setQuery("")}>清除搜索</Button>}
+        </div>
+        <p className="panel-note">模糊搜索：按空格分词，所有词都要命中才算匹配（大小写与空格不敏感）。同时过滤「库存汇总」与「原料入库单」两张表，匹配物料编码、名称、规格型号、颜色、单位，以及入库单号、订单号、采购单号、到货记录、备注。</p>
+      </section>
       <section className="panel">
-        <div className="panel-heading"><h2>库存汇总</h2></div>
+        <div className="panel-heading"><h2>库存汇总</h2>{query ? <span className="panel-note">筛选后 {filteredBalances.length} / {balances.length} 条</span> : null}</div>
         <div className="panel-body">
           <p className="panel-note">「待入库（未过账）」是已接收通知生成的草稿数量，登记实际数量并过账后才会计入「已过账库存」。</p>
-          <DataTable columns={balanceColumns} data={balances} empty={<EmptyState title="暂无原料库存" />} />
+          <DataTable columns={balanceColumns} data={filteredBalances} empty={<EmptyState title={query ? "没有匹配的原料库存" : "暂无原料库存"} description={query ? "换个关键词，或点「清除搜索」看全部。" : undefined} />} />
         </div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><h2>原料入库单</h2></div>
+        <div className="panel-heading"><h2>原料入库单</h2>{query ? <span className="panel-note">筛选后 {filteredInbounds.length} / {inbounds.length} 条</span> : null}</div>
         <div className="panel-body">
           <DataTable
             columns={inboundColumns}
-            data={inbounds}
-            empty={<EmptyState title="暂无原料入库单" description="在【仓库 → 待入库通知】接收入库通知后，这里会出现对应的草稿入库单；登记实际数量并过账后计入库存。" />}
+            data={filteredInbounds}
+            empty={query
+              ? <EmptyState title="没有匹配的原料入库单" description="换个关键词，或点「清除搜索」看全部。" />
+              : <EmptyState title="暂无原料入库单" description="在【仓库 → 待入库通知】接收入库通知后，这里会出现对应的草稿入库单；登记实际数量并过账后计入库存。" />}
           />
           <p className="panel-note">单位：{units.length ? units.map((unit) => unit.name).join("、") : "暂无"}</p>
           <p className="panel-note">质检记录：{inspections.length}</p>
@@ -205,7 +236,7 @@ export default function RawMaterialStoragePage() {
         <div className="panel-heading"><h2>入库单与库存关系</h2></div>
         <div className="panel-body">
           <p className="panel-note">库存以物料为唯一口径，入库单过账后会同步到汇总库存。</p>
-          <p className="panel-note">当前原料汇总条目：{balances.length}</p>
+          <p className="panel-note">当前原料汇总条目：{balances.length}{query ? `（筛选后 ${filteredBalances.length}）` : ""}</p>
           <p className="panel-note">当前可用入库单：{inbounds.filter((item) => item.status === "draft").length}</p>
           <p className="panel-note">当前已过账入库单：{inbounds.filter((item) => item.status === "posted").length}</p>
           <p className="panel-note">当前已冲销入库单：{inbounds.filter((item) => item.status === "reversed").length}</p>

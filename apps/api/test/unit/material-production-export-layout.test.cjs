@@ -3,7 +3,10 @@
 // 版式决策（客户按 A4 打印反馈后调整）：**列 = 工序，行 = 日期**。
 // 原版是「行 = 工序、列 = 日期」：一个月 30+ 列，横向必然超出 A4；
 // 换成工序做列后列数 = 工序数（本厂约 14 个），行数随日期纵向增长，整张表更容易落进一页 A4。
-// 目标数量与加工地点保留为表头下两行标注，表尾一行合计，出货数量作为单一数值放在表头上方。
+// 目标数量与加工地点保留为表头下两行标注，表尾一行按工序合计，出货数量作为单一数值放在表头上方。
+//
+// 2026-09-14 起「当日合计」列被业务方去掉：横排各工序相加没有业务含义（同一产品的不同工序会重复计数），
+// 而且它会让 A4 版面多占一列。表尾仍按工序给出累计量。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const XLSX = require("xlsx");
@@ -49,9 +52,20 @@ function sheetRows(buffer) {
   return XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: true, defval: "" });
 }
 
-/** 定位进度表表头（首列是「日期」且含「当日合计」）。 */
+/** 原始单元格表：用来断言单元格类型（t === "n" 才是数值型，t === "s" 是文本型）。 */
+function sheetCells(buffer) {
+  const book = XLSX.read(buffer, { type: "buffer" });
+  return book.Sheets[book.SheetNames[0]];
+}
+
+function cellType(sheet, rowIndex, columnIndex) {
+  const cell = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
+  return cell ? cell.t : undefined;
+}
+
+/** 定位进度表表头（首列是「日期」）。 */
 function headerIndex(rows) {
-  return rows.findIndex((row) => String(row[0]) === "日期" && row.map((cell) => String(cell)).includes("当日合计"));
+  return rows.findIndex((row) => String(row[0]) === "日期");
 }
 
 // ------------------------------------------------------------------ 独立的生产进度表
@@ -62,7 +76,8 @@ test("生产进度表：列头是工序、行头是日期（横纵表头互换�
   assert.ok(index > 0, "必须能找到进度表表头");
 
   const header = rows[index].map((cell) => String(cell));
-  assert.deepEqual(header, ["日期", "裁剪", "包装", "当日合计"], "第一列是日期，其余列是工序，最后一列是当日合计");
+  assert.deepEqual(header, ["日期", "裁剪", "包装"], "第一列是日期，其余列是工序，最后一列不再是当日合计");
+  assert.equal(header.includes("当日合计"), false, "业务方已要求去掉「当日合计」列");
   assert.equal(header.filter((cell) => /^\d{4}-\d{2}-\d{2}$/.test(cell)).length, 0, "日期不允许出现在列头里");
 
   // 日期成为行头，且只作为行头出现一次
@@ -76,18 +91,18 @@ test("生产进度表：列头是工序、行头是日期（横纵表头互换�
 test("生产进度表：目标数量与加工地点保留为表头下两行标注", async () => {
   const rows = sheetRows(await service().exportProductionProgress({ order_no: "SO-1" }, user));
   const index = headerIndex(rows);
-  assert.deepEqual(rows[index + 1].map((cell) => String(cell)), ["目标数量", "100", "100", ""], "每个工序列填自己的计划数量");
-  assert.deepEqual(rows[index + 2].map((cell) => String(cell)), ["加工地点", "一车间", "一车间", ""], "每个工序列填自己的执行地点");
+  assert.deepEqual(rows[index + 1].map((cell) => String(cell)), ["目标数量", "100", "100"], "每个工序列填自己的计划数量");
+  assert.deepEqual(rows[index + 2].map((cell) => String(cell)), ["加工地点", "一车间", "一车间"], "每个工序列填自己的执行地点");
 });
 
-test("生产进度表：单元格是当日该工序的完成数量，当日合计与表尾合计都对", async () => {
+test("生产进度表：单元格是当日该工序的完成数量，表尾按工序合计", async () => {
   const rows = sheetRows(await service().exportProductionProgress({ order_no: "SO-1" }, user));
   const index = headerIndex(rows);
   const [, , firstDateRow, secondDateRow, totalRow] = rows.slice(index + 1);
 
-  assert.deepEqual(firstDateRow.map((cell) => String(cell)), ["2026-09-01", "30", "", "30"], "9-01 只有裁剪报工");
-  assert.deepEqual(secondDateRow.map((cell) => String(cell)), ["2026-09-02", "20", "50", "70"], "9-02 裁剪 20 + 包装 50");
-  assert.deepEqual(totalRow.map((cell) => String(cell)), ["合计", "50", "50", "100"], "表尾按工序累计，并给出全部合计");
+  assert.deepEqual(firstDateRow.map((cell) => String(cell)), ["2026-09-01", "30", ""], "9-01 只有裁剪报工");
+  assert.deepEqual(secondDateRow.map((cell) => String(cell)), ["2026-09-02", "20", "50"], "9-02 裁剪 20 + 包装 50");
+  assert.deepEqual(totalRow.map((cell) => String(cell)), ["合计", "50", "50"], "表尾按工序累计，不再有全部合计列");
 });
 
 test("生产进度表：出货数量作为单一数值出现在表头上方，不再逐工序重复", async () => {
@@ -97,6 +112,32 @@ test("生产进度表：出货数量作为单一数值出现在表头上方，�
   assert.ok(rows.some((row) => String(row[0]) === "出货数量" && String(row[1]) === "12"), "出货数量放在元信息里");
   const index = headerIndex(rows);
   assert.equal(rows[index].map((cell) => String(cell)).includes("出货"), false, "表头里不再有逐工序重复的「出货」列");
+});
+
+test("生产进度表：数字单元格必须是数值类型（Excel 里可求和/筛选/排序）", async () => {
+  const buffer = await service().exportProductionProgress({ order_no: "SO-1" }, user);
+  const rows = sheetRows(buffer);
+  const index = headerIndex(rows);
+  const sheet = sheetCells(buffer);
+  for (const column of [1, 2]) {
+    assert.equal(cellType(sheet, index + 1, column), "n", `目标数量第 ${column} 列必须是数值单元格`);
+    assert.equal(cellType(sheet, index + 4, column), "n", `2026-09-02 行第 ${column} 列必须是数值单元格`);
+    assert.equal(cellType(sheet, index + 5, column), "n", `合计行第 ${column} 列必须是数值单元格`);
+  }
+  // 9-01 只有裁剪报工：有值的那个单元格必须是数值，没报工的工序留空（空单元格而不是 "" 文本）
+  assert.equal(cellType(sheet, index + 3, 1), "n", "2026-09-01 裁剪列必须是数值单元格");
+  assert.equal(cellType(sheet, index + 3, 2), undefined, "未报工的工序应留空，而不是写一个空字符串");
+  // 出货数量在元信息里，也必须是数值
+  const shippedRow = rows.findIndex((row) => String(row[0]) === "出货数量");
+  assert.ok(shippedRow > 0, "出货数量行必须存在");
+  assert.equal(cellType(sheet, shippedRow, 1), "n", "出货数量必须是数值单元格");
+  // 整表不允许出现「看起来是数字、类型却是文本」的单元格
+  const offenders = [];
+  for (const [address, cell] of Object.entries(sheet)) {
+    if (address.startsWith("!")) continue;
+    if (cell.t === "s" && typeof cell.v === "string" && /^-?\d+(\.\d+)?$/.test(cell.v.trim())) offenders.push(`${address}=${cell.v}`);
+  }
+  assert.deepEqual(offenders, [], "不允许把数字写成文本单元格");
 });
 
 test("生产进度表：表头说明改成「每列为一个工序」", async () => {
@@ -111,7 +152,7 @@ test("生产进度表：没有日报时仍输出表头、两行标注与合计�
   const rows = sheetRows(await base.exportProductionProgress({ order_no: "SO-1" }, user));
   const index = headerIndex(rows);
   assert.deepEqual(rows.slice(index + 1).map((row) => String(row[0])), ["目标数量", "加工地点", "合计"]);
-  assert.deepEqual(rows[index + 3].map((cell) => String(cell)), ["合计", "0", "0", "0"]);
+  assert.deepEqual(rows[index + 3].map((cell) => String(cell)), ["合计", "0", "0"]);
 });
 
 test("生产进度表：同一工序名出现多次时补生产单号，列名不重复", async () => {
@@ -125,7 +166,7 @@ test("生产进度表：同一工序名出现多次时补生产单号，列名�
   base.prisma.employeeDailyReport = { groupBy: async () => [] };
   const rows = sheetRows(await base.exportProductionProgress({ order_no: "SO-1" }, user));
   const header = rows[headerIndex(rows)].map((cell) => String(cell));
-  assert.deepEqual(header, ["日期", "裁剪（MO-1）", "裁剪（MO-2）", "当日合计"], "重名工序必须能区分");
+  assert.deepEqual(header, ["日期", "裁剪（MO-1）", "裁剪（MO-2）"], "重名工序必须能区分");
   assert.equal(new Set(header).size, header.length, "列名不允许重复");
 });
 
@@ -137,9 +178,9 @@ test("合并工作表的下表沿用新版式：日期做行头，工序做列�
   assert.ok(flat.some((cell) => cell.includes("下表：生产进度表") && cell.includes("每列为一个工序")), "下表标题要说明新的列含义");
   const index = headerIndex(rows);
   assert.ok(index > 0, "必须能找到下表表头");
-  // 上表有 10 列，xlsx 会把表头行右侧补齐成空串，因此只比对新版式的前 4 列
-  assert.deepEqual(rows[index].slice(0, 4).map((cell) => String(cell)), ["日期", "裁剪", "包装", "当日合计"]);
-  assert.equal(rows[index].slice(4).every((cell) => String(cell) === ""), true, "表头右侧不应再有历史列名（数量/加工地点/汇总/出货）");
+  // 上表有 10 列，xlsx 会把表头行右侧补齐成空串，因此只比对新版式的前 3 列
+  assert.deepEqual(rows[index].slice(0, 3).map((cell) => String(cell)), ["日期", "裁剪", "包装"]);
+  assert.equal(rows[index].slice(3).every((cell) => String(cell) === ""), true, "表头右侧不应再有历史列名（当日合计/数量/加工地点/汇总/出货）");
   assert.equal(flat.filter((cell) => cell === "2026-09-01").length, 1, "日期 2026-09-01 只作为行头出现一次");
   assert.equal(flat.filter((cell) => cell === "2026-09-02").length, 1, "日期 2026-09-02 只作为行头出现一次");
 });

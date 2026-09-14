@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 const read = (relative) => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
 const salesPage = read("../app/sales/page.tsx");
 const warehousePage = read("../app/warehouse/finished-goods-storage/page.tsx");
-const financePage = read("../components/finance/finance-workspace.tsx");
+// 财务页在 2026-09-14 拆成「一级 4 板块 + 二级子栏目」，应收侧的实现落在 receivable-workspace.tsx。
+const receivableWorkspace = read("../components/finance/receivable-workspace.tsx");
 
 test("销售页：打开销售单能看到成品入库/出库情况", () => {
   assert.match(salesPage, /apiGet<FinishedGoodsSummary>\(`\/sales-orders\/\$\{id\}\/finished-goods`\)/, "必须拉取销售单成品情况接口");
@@ -54,17 +55,20 @@ test("仓库页：出库单能过账、取消草稿、维护发货、登记签�
   assert.match(warehousePage, /已生成应收来源，等待财务收款/, "过账提示要说明已通知财务收款");
 });
 
-test("财务页：显示待确认收款（出库过账自动生成应收草稿的提醒）", () => {
-  assert.match(financePage, /待确认收款 \$\{pendingReceivables\.length\} 笔/);
-  assert.match(financePage, /成品出库过账自动生成/);
+test("应收管理：显示待确认应收（出库过账自动生成应收草稿的提醒）", () => {
+  assert.match(receivableWorkspace, /待确认应收 \{pendingSources\.length\} 笔/, "财务要能看到待确认的应收笔数");
+  assert.match(receivableWorkspace, /成品出库过账自动生成/, "提示要说明来源是成品出库过账");
+  assert.match(receivableWorkspace, /成品出库条目/, "子栏目名称必须是「成品出库条目」");
 });
 
-test("财务页：每个板块可收纳折叠，并且都能进入独立子页面", () => {
-  const workspace = read("../components/finance/finance-workspace.tsx");
-  assert.match(workspace, /useCollapsiblePanel\(`finance-\$\{sectionKey\}`\)/);
-  assert.match(workspace, /进入独立页面/, "每个板块都要有进入独立页面的入口");
-  assert.match(workspace, /href=\{`\/finance\/\$\{sectionKey\}`\}/);
+test("财务模块：一级页 4 个板块入口，二级页按板块清单校验参数，旧地址重定向", () => {
+  const boardIndex = read("../components/finance/finance-board-index.tsx");
+  assert.match(boardIndex, /FINANCE_BOARDS\.map/, "一级页必须遍历板块清单渲染入口");
+  assert.match(boardIndex, /href=\{`\/finance\/\$\{board\.key\}`\}/, "每个板块入口都要能进入二级页面");
   const sectionPage = read("../app/finance/[section]/page.tsx");
-  assert.match(sectionPage, /FINANCE_SECTIONS/, "子页面要按板块清单校验参数");
-  assert.match(sectionPage, /<FinanceWorkspace only=/, "子页面只渲染一个板块");
+  assert.match(sectionPage, /FINANCE_LEGACY_REDIRECTS/, "旧板块地址要按清单做参数白名单");
+  assert.match(sectionPage, /redirect\(target\)/, "已知旧地址必须重定向而不是 404");
+  assert.match(sectionPage, /notFound\(\)/, "白名单之外的 section 必须 404");
+  assert.match(read("../app/finance/receivable/page.tsx"), /RECEIVABLE_TABS/, "应收二级页要按子栏目清单校验 tab");
+  assert.match(read("../app/finance/payable/page.tsx"), /PAYABLE_TABS/, "应付二级页要按子栏目清单校验 tab");
 });

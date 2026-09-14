@@ -23,7 +23,7 @@ export class ProductionPayrollExportService {
     const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注"];
     const summaryHeader = ["当月各订单该工序汇总（按生产日期划分）", "订单号", "生产单号", "件数合计", "其中计件", "其中计时", "时长（小时）合计", "合计"];
     const summary = this.summarizeByOrder(rows);
-    const summaryRows = summary.map((row) => [null, row.orderNo, row.productionOrderNo, row.quantity.toString(), row.pieceQuantity.toString(), row.timeQuantity.toString(), this.hours(row.duration), row.amount.toString()]);
+    const summaryRows = summary.map((row) => [null, row.orderNo, row.productionOrderNo, this.num(row.quantity), this.num(row.pieceQuantity), this.num(row.timeQuantity), this.hours(row.duration), this.num(row.amount)]);
     const sheetRows: Array<Array<string | number | null>> = [
       ["工序盘点表"],
       ["统计月份", filters.month],
@@ -49,7 +49,7 @@ export class ProductionPayrollExportService {
     const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注"];
     const summaryHeader = ["当月各工序汇总（按生产日期划分）", "工序", "件数合计", "其中计件", "其中计时", "时长（小时）合计", "合计"];
     const summary = this.summarizeByOperation(rows);
-    const summaryRows = summary.map((row) => [null, row.operationName, row.quantity.toString(), row.pieceQuantity.toString(), row.timeQuantity.toString(), this.hours(row.duration), row.amount.toString()]);
+    const summaryRows = summary.map((row) => [null, row.operationName, this.num(row.quantity), this.num(row.pieceQuantity), this.num(row.timeQuantity), this.hours(row.duration), this.num(row.amount)]);
     const sheetRows: Array<Array<string | number | null>> = [
       ["当月工序明细总表"],
       ["统计月份", filters.month],
@@ -97,7 +97,7 @@ export class ProductionPayrollExportService {
     const { orderNo, sales, purchaseOrders } = await this.materialProductionContext(filters);
     const orderQuantity = sales?.quantity?.toString() ?? "";
     const materialRows: Array<Array<string | number | null>> = purchaseOrders.flatMap((po) => this.materialRowsOf(po, orderNo, orderQuantity));
-    if (!materialRows.length) materialRows.push([orderNo, orderQuantity, "（无采购记录）", "", "", "", "", "", "", ""]);
+    if (!materialRows.length) materialRows.push([orderNo, this.num(orderQuantity), "（无采购记录）", null, null, "", "", "", "", ""]);
     const sheetRows: Array<Array<string | number | null>> = [
       ["原料对应表"],
       ["订单号", orderNo],
@@ -147,7 +147,7 @@ export class ProductionPayrollExportService {
       const arrival = (item.receipts ?? []).map((receipt) => receipt.receivedDate.toISOString().slice(0, 10)).join("、");
       const supply = item.expectedDate ? item.expectedDate.toISOString().slice(0, 10) : po.expectedDate ? po.expectedDate.toISOString().slice(0, 10) : "";
       const supplierName = (item.supplierSnapshot as { name?: string } | null)?.name ?? po.supplier?.name ?? "";
-      return [orderNo, orderQuantity, item.material?.name ?? "", item.unitPrice?.toString() ?? "", item.quantity.toString(), po.purchaseDate ? po.purchaseDate.toISOString().slice(0, 10) : "", arrival, supply, supplierName, po.remark ?? ""];
+      return [orderNo, this.num(orderQuantity), item.material?.name ?? "", this.num(item.unitPrice), this.num(item.quantity), po.purchaseDate ? po.purchaseDate.toISOString().slice(0, 10) : "", arrival, supply, supplierName, po.remark ?? ""];
     });
   }
 
@@ -159,13 +159,16 @@ export class ProductionPayrollExportService {
    * 行数随日期增长（纸面纵向增长，可翻页），整张表更容易落进一张 A4（横向或纵向皆可）。
    *
    * 表体结构（信息不丢）：
-   *   日期 | 工序A | 工序B | … | 当日合计
-   *   目标数量 | …每个工序的计划数量… | —
-   *   加工地点 | …每个工序的执行地点… | —
-   *   2026-09-01 | …当日完成数量… | 当日合计
+   *   日期 | 工序A | 工序B | …
+   *   目标数量 | …每个工序的计划数量…
+   *   加工地点 | …每个工序的执行地点…
+   *   2026-09-01 | …当日完成数量…
    *   …
-   *   合计 | …每个工序的累计数量… | 全部合计
+   *   合计 | …每个工序的累计数量…
    * 出货数量作为单一数值放在表头上方的元信息里（它不属于任何单个工序）。
+   *
+   * 「当日合计」列已按业务要求去掉：横排各工序相加没有业务含义（同一产品的不同工序会重复计数），
+   * 而且它会让 A4 版面多占一列；表尾仍按工序给出累计量，读者需要横向汇总时可用 Excel 自行求和。
    */
   private async progressSheet(orderNo: string, productionOrders: Awaited<ReturnType<ProductionPayrollExportService["materialProductionContext"]>>["productionOrders"]) {
     const productionIds = productionOrders.map((po) => po.id);
@@ -177,38 +180,34 @@ export class ProductionPayrollExportService {
       quantityByOperationDate.set(key, (quantityByOperationDate.get(key) ?? new Prisma.Decimal(0)).plus(row._sum.quantity ?? 0));
     }
     const shipped = await this.prisma.finishedGoodsOutbound.aggregate({ where: { orderNo, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, _sum: { quantity: true } });
-    const shippedQuantity = shipped._sum.quantity?.toString() ?? "";
+    const shippedQuantity = this.num(shipped._sum.quantity);
 
     // 工序列：把「生产单 × 工序」摊平成列。同一工序名出现多次时补生产单号，避免列名重复无法区分。
     const columns = productionOrders.flatMap((po) => po.operations.map((operation) => ({
       id: operation.id,
       name: operation.operationNameSnapshot,
-      target: operation.targetQuantity?.toString() ?? "",
+      target: this.num(operation.targetQuantity),
       location: po.executionLocation?.name ?? "",
     })));
     const nameCounts = columns.reduce<Record<string, number>>((acc, column) => ({ ...acc, [column.name]: (acc[column.name] ?? 0) + 1 }), {});
     const columnLabels = columns.map((column) => (nameCounts[column.name] > 1 ? `${column.name}（${column.name === "" ? "未命名" : ""}${productionOrders.find((po) => po.operations.some((operation) => operation.id === column.id))?.productionOrderNo ?? ""}）` : column.name));
 
-    const progressHeader: Array<string | number | null> = ["日期", ...columnLabels, "当日合计"];
-    const targetRow: Array<string | number | null> = ["目标数量", ...columns.map((column) => column.target), ""];
-    const locationRow: Array<string | number | null> = ["加工地点", ...columns.map((column) => column.location), ""];
+    const progressHeader: Array<string | number | null> = ["日期", ...columnLabels];
+    const targetRow: Array<string | number | null> = ["目标数量", ...columns.map((column) => column.target)];
+    const locationRow: Array<string | number | null> = ["加工地点", ...columns.map((column) => column.location)];
     const progressRows: Array<Array<string | number | null>> = [targetRow, locationRow];
     const columnTotals = columns.map(() => new Prisma.Decimal(0));
-    let grandTotal = new Prisma.Decimal(0);
     for (const date of dates) {
-      let dayTotal = new Prisma.Decimal(0);
       const cells = columns.map((column, index) => {
         const quantity = quantityByOperationDate.get(`${column.id}|${date}`);
-        if (!quantity) return "";
-        dayTotal = dayTotal.plus(quantity);
+        if (!quantity) return null;
         columnTotals[index] = columnTotals[index].plus(quantity);
-        return quantity.toString();
+        return this.num(quantity);
       });
-      grandTotal = grandTotal.plus(dayTotal);
-      progressRows.push([date, ...cells, dayTotal.toString()]);
+      progressRows.push([date, ...cells]);
     }
-    // 表尾合计：每个工序的累计量 + 全部合计；没有日报时也保留这一行，读者能确定「确实是 0」而不是漏了行。
-    progressRows.push(["合计", ...columnTotals.map((total) => total.toString()), grandTotal.toString()]);
+    // 表尾合计：每个工序的累计量；没有日报时也保留这一行，读者能确定「确实是 0」而不是漏了行。
+    progressRows.push(["合计", ...columnTotals.map((total) => this.num(total))]);
     return { progressHeader, progressRows, shippedQuantity };
   }
 
@@ -220,7 +219,7 @@ export class ProductionPayrollExportService {
     const { orderNo, sales, purchaseOrders, productionOrders } = await this.materialProductionContext(filters);
     const orderQuantity = sales?.quantity?.toString() ?? "";
     const materialRows: Array<Array<string | number | null>> = purchaseOrders.flatMap((po) => this.materialRowsOf(po, orderNo, orderQuantity));
-    if (!materialRows.length) materialRows.push([orderNo, orderQuantity, "（无采购记录）", "", "", "", "", "", "", ""]);
+    if (!materialRows.length) materialRows.push([orderNo, this.num(orderQuantity), "（无采购记录）", null, null, "", "", "", "", ""]);
     const { progressHeader, progressRows, shippedQuantity } = await this.progressSheet(orderNo, productionOrders);
     const sheetRows: Array<Array<string | number | null>> = [
       ["材料与车间生产对应表"],
@@ -258,8 +257,8 @@ export class ProductionPayrollExportService {
    * 计时工人同样会填报完成件数，只把它藏起来会让盘点表对不上工序产量。
    */
   private detailRow(row: ReportRow) {
-    const duration = row.wageMode === "time_rate" ? this.hours(row.durationMinutes) : "";
-    return [row.orderNo, row.productionOrderNoSnapshot, row.operationNameSnapshot, row.reportDate.toISOString().slice(0, 10), row.employee.employeeNo, row.employeeNameSnapshot, row.employee.department.name, row.employee.employeeType === "workshop" ? "车间" : "非车间", row.wageMode === "piece_rate" ? "计件" : "计时", row.quantity.toString(), duration, row.unitPrice.toString(), row.calculatedAmount.toString(), row.remark ?? ""];
+    const duration = row.wageMode === "time_rate" ? this.hours(row.durationMinutes) : null;
+    return [row.orderNo, row.productionOrderNoSnapshot, row.operationNameSnapshot, row.reportDate.toISOString().slice(0, 10), row.employee.employeeNo, row.employeeNameSnapshot, row.employee.department.name, row.employee.employeeType === "workshop" ? "车间" : "非车间", row.wageMode === "piece_rate" ? "计件" : "计时", this.num(row.quantity), duration, this.num(row.unitPrice), this.num(row.calculatedAmount), row.remark ?? ""];
   }
 
   /** 订单号盘点表表头：每道工序的生产日期数组、计划数量、汇总数量。 */
@@ -273,7 +272,7 @@ export class ProductionPayrollExportService {
     }
     const header: Array<Array<string | number | null>> = [["各工序生产概况"]];
     for (const group of byOperation.values()) {
-      header.push(["工序", group.name, "生产日期", [...group.dates].sort().join("、"), "计划数量", group.target?.toString() ?? "", "汇总数量", group.quantity.toString()]);
+      header.push(["工序", group.name, "生产日期", [...group.dates].sort().join("、"), "计划数量", this.num(group.target), "汇总数量", this.num(group.quantity)]);
     }
     return header;
   }
@@ -306,16 +305,28 @@ export class ProductionPayrollExportService {
   }
 
   /**
-   * 分钟 -> 小时展示（最多 4 位小数、去掉尾随零；极小非零值提升到 8 位，避免整段被显示成 0）。
+   * 分钟 -> 小时展示（最多 8 位小数、去掉尾随零）。
    * 落库单位始终是分钟，小时仅用于录入/展示，因此所有导出与接口的“小时”都必须走这里换算，
    * 避免出现“表头写小时、单元格还是分钟”的口径错位。
    */
   private hours(durationMinutes: Prisma.Decimal | null) {
-    if (durationMinutes === null || durationMinutes === undefined) return "";
-    const hours = new Prisma.Decimal(durationMinutes).div(60);
-    const text = this.trimZeros(hours.toFixed(4));
-    if (text !== "0" || hours.isZero()) return text;
-    return this.trimZeros(hours.toFixed(8));
+    if (durationMinutes === null || durationMinutes === undefined) return null;
+    return Number(this.trimZeros(new Prisma.Decimal(durationMinutes).div(60).toFixed(8)));
+  }
+
+  /**
+   * 数值单元格：必须落成 Excel 的**数字类型**，不能写成字符串。
+   *
+   * 文本型数字在 Excel 里会被当成文字：求和得 0、筛选分不出区间、排序按字典序（"100" < "20"）。
+   * 因此所有数量、单价、金额、时长都必须经过这里转成 number；空值返回 null（空单元格），
+   * 而不是 ""（那同样是一格文本）。
+   */
+  private num(value: Prisma.Decimal | string | number | null | undefined): number | null {
+    if (value === null || value === undefined) return null;
+    const text = String(value).trim();
+    if (!text) return null;
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
   private trimZeros(value: string) { return value.replace(/0+$/, "").replace(/\.$/, ""); }

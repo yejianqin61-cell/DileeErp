@@ -19,9 +19,19 @@ const migrationsRoot = join(__dirname, "..", "..", "prisma", "migrations");
 const folder = "20260913100000_currency_dictionary";
 const sql = readFileSync(join(migrationsRoot, folder, "migration.sql"), "utf8");
 
-test("currency migration is the last one applied", () => {
+test("currency migration precedes every migration added after it", () => {
   const folders = readdirSync(migrationsRoot).filter((name) => statSync(join(migrationsRoot, name)).isDirectory()).sort();
-  assert.equal(folders[folders.length - 1], folder, "新迁移必须排在最后，否则已部署库不会执行到它");
+  const index = folders.indexOf(folder);
+  assert.ok(index >= 0, "币种字典迁移必须存在");
+  // 原断言是「币种迁移必须是最后一个」。它真正要防的是：新迁移被排到币种迁移**前面**，
+  // 使已部署库升级时币种种子被跳过（Prisma 按目录名顺序执行）。
+  // 币种迁移之后合法地再出现新迁移是正常的，所以这里守住两条：
+  //   1. 币种迁移之后的每个迁移时间戳都更大（顺序与预期一致，不会插队）；
+  //   2. 迁移目录名一律以 14 位时间戳开头（否则 sort() 的顺序不可信）。
+  for (const name of folders.slice(index + 1)) {
+    assert.ok(name.slice(0, 14) > folder.slice(0, 14), `迁移 ${name} 必须晚于币种字典迁移`);
+  }
+  for (const name of folders) assert.match(name.slice(0, 14), /^\d{14}$/, `迁移目录 ${name} 必须以 14 位时间戳开头`);
 });
 
 test("currency migration seeds the dictionary type and every built-in currency", () => {

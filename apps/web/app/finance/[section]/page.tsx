@@ -1,18 +1,17 @@
-// 财务次级页面：/finance/<section> 只渲染一个板块（订单多时比总览页清爽，地址可收藏）。
-// 与总览页共用 components/finance/finance-workspace.tsx（同一份实现、同一套加载逻辑）。
-import { notFound } from "next/navigation";
-import FinanceWorkspace from "../../../components/finance/finance-workspace";
-// 必须从无 "use client" 的纯数据模块导入：从客户端组件导入普通常量会让 generateStaticParams
-// 拿到 client reference 代理，next build 报 `FINANCE_SECTIONS.map is not a function`。
-import { FINANCE_SECTIONS, type FinanceSectionKey } from "../../../lib/finance-sections";
+// 旧财务板块地址（重构前的 7 个平铺 section）重定向到新的二级页。
+//
+// 为什么保留：这些地址曾经是「进入独立页面」按钮的目标，已经有人收藏；直接 404 会让人以为功能被删。
+// 白名单之外的 section 一律 notFound()，不做模糊跳转（否则打错的地址会静默落到某个页面）。
+import { notFound, redirect } from "next/navigation";
+import { FINANCE_LEGACY_REDIRECTS, financeLegacyTarget } from "../../../lib/finance-sections";
 
 export function generateStaticParams() {
-  return FINANCE_SECTIONS.map((section) => ({ section: section.key }));
+  return FINANCE_LEGACY_REDIRECTS.map((section) => ({ section: section.key }));
 }
 
-export default async function FinanceSectionPage({ params }: { params: Promise<{ section: string }> }) {
+export default async function FinanceLegacySectionPage({ params }: { params: Promise<{ section: string }> }) {
   const { section } = await params;
-  if (!FINANCE_SECTIONS.some((item) => item.key === section)) notFound();
-  // 页面根 testid 由工作台在加载完成后渲染，加载中不渲染。
-  return <FinanceWorkspace only={section as FinanceSectionKey} testId="page-finance-section" />;
+  const target = financeLegacyTarget(section);
+  if (!target) notFound();
+  redirect(target);
 }
