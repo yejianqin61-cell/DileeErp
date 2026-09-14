@@ -28,32 +28,28 @@
 
 代码事实以 git 历史为准；每次都**固定一个 SHA** 再打包，避免与并发写者抢跑。
 
+> **权威标准**：`.agent/deployment/server-incremental-deployment-standard.md`（`docs/deployment/server-incremental-deployment-standard.md` 只是指向它的指针）。
+> **推荐入口**：`npm run deploy`（= `scripts/deploy-incremental.ps1`），把下列步骤固化，并加了三道闸门：
+> ① 工作区必须干净 ② 服务器构建必须 `BUILD_OK` 才迁移/切换 ③ 迁移数 ≥ 仓库迁移目录数且失败残留为 0。
+> 服务器端脚本：`scripts/deploy/{common,remote-build,remote-migrate,remote-switch,remote-rollback,remote-verify}.sh`；守卫测试 `scripts/deploy-scripts.test.mjs`（已接入 `npm run test:unit`）。
+
 1. **对齐基线与范围**
    ```powershell
-   ssh ubuntu@... "cat /opt/dilee/app/RELEASE_VERSION"        # 线上版本
-   git log --oneline <线上版本>..HEAD                          # 待上线提交
+   ssh ubuntu@159.75.219.30 "cat /opt/dilee/app/RELEASE_VERSION"   # 线上版本
+   git log --oneline <线上版本>..HEAD                               # 待上线提交
    git diff --name-only <线上版本>..HEAD -- apps/api/prisma/migrations   # 待执行迁移
-   git status --short                                          # 工作区是否有他人在途改动
+   git status --short                                               # 是否有人在途改动
    ```
-2. **本地校验**（注意：测试与 `dist` 相关，见 §5）
-   ```powershell
-   npm run typecheck --workspace=@dilee/api ; npm run typecheck --workspace=@dilee/web
-   npm run build --workspace=@dilee/api          # 必须先 build：api 测试 require 的是 dist
-   node --test apps/api/test/unit/*.test.cjs ; node --test apps/api/test/*.test.cjs
-   node --test apps/web/lib/*.test.mjs ; npm run test:components --workspace=@dilee/web
-   ```
-3. **打包**（必须用 Windows 原生 tar，见 §5）
-   ```powershell
-   git archive --format=tar --output=$src $pinnedSha      # 只含已提交内容
-   & "$env:SystemRoot\System32\tar.exe" -xf $src -C $tmp
-   # 写入 RELEASE_VERSION（内容 = $pinnedSha，UTF-8 无 BOM），再 tar -czf 成 DileeErp-latest.tar.gz
-   ```
-4. **远端构建（真正的发布门禁）**：上传包 + `build.sh` → `npm ci --include=dev` → `prisma generate` → `build api` → `build web` → 拷贝 `.next/static`、`public` 到 standalone → 输出 `BUILD_OK RELEASE=<sha>`。
-   门禁未过 → **不切换**，线上继续跑旧版本。
-5. **迁移（仅在有待执行迁移时）**：见 §3；`migrate deploy` 必须在**切换之前**执行。
-6. **切换 + 核验 + 清理**：`pm2 stop` → 备份改名 → `app.next` 提为 `app` → 清理超量备份 → `pm2 delete/start` → `pm2 save` → health + 关键页面 HTTP 码 → 删除 `/tmp` 上的脚本与包。
+2. **本地校验**：`typecheck`(api/web) → `build api`（api 测试 require `dist`）→ api 单测/根测试 → web lib + 组件测试 → `npm run test:deploy`。
+3. **打包**：`npm run release:pack`（= `scripts/create-release-archive.ps1`）。
+   已加固：显式用 `%SystemRoot%\System32\tar.exe`、`RELEASE_VERSION` 写 **UTF-8 无 BOM**、包结构自检（缺顶层条目或含 `AppData/Users/.claude` 等直接失败）、拒绝脏工作区。
+4. **远端构建（真正的发布门禁）**：`scripts/deploy/remote-build.sh` → 解到 `app.release-<ts>` → 结构/`.env`/`DATABASE_URL` 校验 → `npm ci --include=dev` → `prisma generate` → 构建 API+Web → 输出 `BUILD_OK RELEASE=<sha>`。
+   门禁未过 → **不迁移、不切换**，线上继续跑旧版本。
+5. **迁移（有待执行迁移时）**：`scripts/deploy/remote-migrate.sh`；规范与失败恢复见 §3。
+6. **切换 + 核验 + 清理**：`scripts/deploy/remote-switch.sh`（`pm2 delete` → 备份改名 → 提升候选目录 → 启动 → health `build` 必须等于 `RELEASE_VERSION`，manifest 与 `/login` 必须 200 → 比对错误日志增量）→ `remote-verify.sh` → 清理 `/tmp`。
+   回滚：`scripts/deploy/remote-rollback.sh [备份目录]`（失败目录留 `app.failed-*`）。
 
-完整脚本形态可参考本会话生成的 `.deploy-run*/{build,launch,poll,migrate,switch,verify}.sh`（**已 gitignore**，不入库；如需长期复用，建议固化到 `scripts/` 并提交）。
+与标准的两处**有意差异**：迁移改到“构建成功之后、切换之前”（编译不过不先动生产库）；备份保留由 `-KeepBackups` 控制（默认 3，`0` = 全保留即严格遵循标准），`app.failed-*` 永不自动清理。
 
 ---
 
