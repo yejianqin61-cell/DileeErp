@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Bell, ClipboardList, Coins, Factory, LayoutDashboard, LogOut, Package, Users, WalletCards } from "lucide-react";
+import { Bell, ClipboardList, Coins, Factory, LayoutDashboard, LogOut, Package, ShieldCheck, Users, WalletCards } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
@@ -13,6 +13,7 @@ const navigation = [
   ["工作台", "/", LayoutDashboard],
   ["生产", "/production", Factory],
   ["采购", "/procurement", ClipboardList],
+  ["质检", "/qc", ShieldCheck],
   ["财务", "/finance", Coins],
   ["仓库", "/warehouse", Package],
   ["人事", "/hr", Users],

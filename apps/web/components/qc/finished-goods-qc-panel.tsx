@@ -19,7 +19,7 @@ const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClie
 // 厂内成品送检来源已改为「成品入库通知」（按包装工序累计报工量分批通知）；历史 in_house_completion 单据仍按厂内完工显示。
 const sourceLabel = (value: string) => value === "finished_goods_inbound_notice" ? "成品入库通知" : value === "in_house_completion" ? "厂内完工（历史）" : "外加工回厂";
 
-export function FinishedGoodsQcPanel() {
+export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: string } = {}) {
   const [sources, setSources] = useState<Source[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [query, setQuery] = useState("");
@@ -46,6 +46,8 @@ export function FinishedGoodsQcPanel() {
     } catch (cause) { setError(messageOf(cause, "成品质检数据加载失败")); }
   }
   useEffect(() => { void load(); }, []);
+  // 从别的模块带订单号跳进来（/qc?order_no=…）时直接展开该订单的质检详情。
+  useEffect(() => { if (initialOrderNo) void loadOrder(initialOrderNo); }, [initialOrderNo]);
 
   async function loadOrder(orderNo: string) {
     const normalized = orderNo.trim();
@@ -86,7 +88,13 @@ export function FinishedGoodsQcPanel() {
     ], submit: (v) => void run(() => apiPatch(`/finished-goods/inspection-submissions/${item.id}`, { submitted_quantity: v.submitted_quantity, submission_date: v.submission_date, remark: v.remark || undefined, reason: v.reason, expected_version: item.version }), "送检单已更新") });
   }
   function chooseQcOrder() {
-    setDialog({ title: "选择订单号", fields: [{ name: "order_no", label: "订单号", type: "searchable-select", required: true, options: orderNumbers.map((item) => ({ value: item, label: item })), placeholder: "搜索并选择订单号" }], submit: (v) => openQc(v.order_no) });
+    setDialog({ title: "选择订单号", fields: [{ name: "order_no", label: "订单号", type: "searchable-select", required: true, options: orderNumbers.map((item) => ({ value: item, label: item })), placeholder: "搜索并选择订单号" }], submit: (v) => {
+      // ActionDialog 在 onSubmit 返回后会自己 onOpenChange(false)，父组件把它读成 setDialog(null)：
+      // 在这里同步 openQc() 打开第二个弹窗，会被紧接着的这次关闭一起清掉（历史缺陷：选完订单号什么都没有）。
+      // 因此先让选择器按正常流程关闭，等这一次交互结束再打开质检表单。
+      const orderNo = v.order_no;
+      setTimeout(() => openQc(orderNo), 0);
+    } });
   }
   /**
    * 录入质检前先在前端校验数量配平。
@@ -147,7 +155,7 @@ export function FinishedGoodsQcPanel() {
   return <section className="panel" style={{ gridColumn: "1 / -1" }}>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field, values) => field.name === "submission_id" ? openSubmission(values) : setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => { const current = dialog; setDialog(null); void current?.submit(values); }} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) setCategoryDialog(null); }} title={categoryDialog?.title ?? "新建类目"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => { const current = categoryDialog; void current?.submit(values); }} />
-    <div className="panel-heading"><h2>成品送检与质检</h2><div className="page-actions"><Button variant="secondary" onClick={chooseQcOrder}>录入质检</Button><Button variant="ghost" onClick={() => void load()}>刷新</Button></div></div>
+    <div className="panel-heading"><h2>成品质检</h2><div className="page-actions"><Button variant="secondary" onClick={chooseQcOrder}>录入质检</Button><Button variant="ghost" onClick={() => void load()}>刷新</Button></div></div>
     {message && <p className="status-success panel-body" role="status">{message}</p>}{error && <p className="status-error panel-body" role="alert">{error}</p>}
     <div className="panel-body"><h3>按订单号查询</h3><div className="page-actions"><Input value={query} placeholder="输入订单号搜索" onChange={(event) => setQuery(event.target.value)} /><Button onClick={() => visibleOrders[0] && void loadOrder(visibleOrders[0])}>查询</Button></div><div className="action-row" style={{ marginTop: 12 }}>{visibleOrders.map((orderNo) => <Button key={orderNo} variant={selectedOrderNo === orderNo ? "default" : "secondary"} onClick={() => void loadOrder(orderNo)}>{orderNo}</Button>)}</div></div>
     {selectedOrderNo && <div className="panel-body"><div className="panel-heading"><h3>订单详情：{selectedOrderNo}</h3><Button variant="secondary" onClick={() => openQc(selectedOrderNo)}>为此订单录入质检</Button></div>{detailLoading ? <p>正在加载订单质检详情…</p> : <><h4>成品来源</h4><DataTable columns={sourceColumns} data={detailSources} empty={<EmptyState title="暂无成品来源" />} /><h4>送检记录</h4><DataTable columns={submissionColumns} data={detailSubmissions} empty={<EmptyState title="暂无送检记录" />} /><h4>质检记录</h4><DataTable columns={qcColumns} data={detailQc} empty={<EmptyState title="暂无质检记录" />} /></>}</div>}

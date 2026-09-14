@@ -99,7 +99,10 @@ test("每个 Promise.all 数据加载的绑定名与请求数一致", () => {
 // 注意（本检查的边界）：顺序表只能发现“请求序列变了”，无法发现“请求序列没变但 setter 写串了”；
 // 后者由下面针对采购页的 setter↔接口语义测试覆盖。
 const LOAD_ORDER = {
-  "app/procurement/page.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/payable-sources", "/raw-material-inbound-notices", "/finance/payable-entries", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
+  "app/procurement/page.tsx": ["/purchase-orders", "/raw-material-inbounds", "/payable-sources", "/finance/payable-entries", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
+  // 来料质检已迁到质检模块的独立面板：到货批次 → 质检记录 → 原料入库 → 入库通知，
+  // 位置型解构错位在采购页不再可见，所以绑定表跟着搬到这个文件。
+  "components/qc/incoming-inspections-panel.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/raw-material-inbound-notices"],
   "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units"],
   "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices"],
   "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
@@ -125,10 +128,8 @@ test("主要数据加载页的接口顺序与绑定表一致（防止插入/换�
 // 位置型解构一旦错位（即使请求数不变），这里立刻变红。
 const PROCUREMENT_BINDINGS = {
   setOrders: "/purchase-orders",
-  setInspections: "/incoming-inspections",
   setInbounds: "/raw-material-inbounds",
   setPayables: "/payable-sources",
-  setInboundNotices: "/raw-material-inbound-notices",
   setPayableEntries: "/finance/payable-entries",
   setMaterials: "/materials",
   setUnits: "/units",

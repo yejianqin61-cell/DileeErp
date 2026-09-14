@@ -1,7 +1,9 @@
 // 成品入库与成品存量的接线守卫（用户明确要求，且都是“看不见就会退化”的实现细节）：
 // 1) 包装工序是每个生产单的收尾工序：生产单详情要能补建，并按包装累计报工量发分批入库通知；
-// 2) 仓库要有成品存量管理页面（成品/次品存量、待入库通知、QC 合格待入库、入库单/出库单）；
-// 3) 下游展示：生产单成品存量、工作台成品存量都要有数。
+// 2) 仓库要有成品存量管理页面（成品/次品存量、待入库通知、入库单/出库单）；
+// 3) 质检（送检与质检、质检合格待入库、次品登记）已统一收在【质检】模块（/qc），
+//    业务页面只保留入口链接，因此这些接线守卫改为对着 QC 模块断言；
+// 4) 下游展示：生产单成品存量、工作台成品存量都要有数。
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,7 +15,10 @@ const read = (...parts) => readFileSync(join(webRoot, ...parts), "utf8");
 const storagePage = read("app", "warehouse", "finished-goods-storage", "page.tsx");
 const productionPanel = read("components", "production", "finished-goods-panel.tsx");
 const detailPage = read("components", "production", "production-order-detail-page.tsx");
-const qcPanel = read("components", "warehouse", "finished-goods-qc-panel.tsx");
+const qcPanel = read("components", "qc", "finished-goods-qc-panel.tsx");
+const qcInboundPanel = read("components", "qc", "qc-inbound-panel.tsx");
+const incomingInspectionsPanel = read("components", "qc", "incoming-inspections-panel.tsx");
+const qcPage = read("app", "qc", "page.tsx");
 const workbench = read("app", "workbench.tsx");
 const warehousePage = read("app", "warehouse", "page.tsx");
 
@@ -22,10 +27,47 @@ test("仓库新增成品仓储情况页面，并从仓库首页可进入", () =>
   assert.match(storagePage, /\/inventory\/balances\?category=finished_goods/, "存量要对成品库存事实聚合");
   assert.match(storagePage, /\/inventory\/balances\?category=defective_goods/, "次品存量同样要展示");
   assert.match(storagePage, /\/finished-goods\/inbound-notices/, "要展示待入库通知（分批）");
-  assert.match(storagePage, /\/finished-goods\/qc-records\/available-inbound-sources/, "要展示质检合格待入库（用净值化接口）");
   assert.match(storagePage, /\/finished-goods\/inbounds/, "要展示成品入库单");
   assert.match(storagePage, /\/finished-goods\/outbounds/, "要展示成品出库单");
   assert.match(storagePage, /\/finished-goods\/inbounds\/\$\{row\.original\.id\}\/post/, "成品入库要能过账");
+});
+
+test("质检模块（/qc）承接来料质检、成品质检与质检合格待入库，业务页面只留入口", () => {
+  // 页面与导航：质检必须是全站可达的独立入口。
+  assert.match(qcPage, /data-testid="page-qc"/, "质检页要有页面根钩子");
+  assert.match(qcPage, /IncomingInspectionsPanel/, "质检页要挂载来料质检");
+  assert.match(qcPage, /FinishedGoodsQcPanel/, "质检页要挂载成品质检");
+  assert.match(qcPage, /QcInboundPanel/, "质检页要挂载质检合格待入库/次品登记");
+  const appShell = read("components", "layout", "app-shell.tsx");
+  assert.match(appShell, /\["质检", "\/qc"/, "主导航要有质检 tab");
+  // 原页面不得再各自实现一套质检，只能给跳转入口。
+  assert.match(storagePage, /href="\/qc"/, "成品仓储页要给出质检模块入口");
+  assert.match(warehousePage, /href="\/qc"/, "仓库页要给出质检模块入口");
+  const procurementPage = read("app", "procurement", "page.tsx");
+  assert.match(procurementPage, /href="\/qc"/, "采购页要给出质检模块入口");
+  assert.match(procurementPage, /\/qc\?receipt_id=\$\{receipt!\.id\}/, "采购批次要能带批次深链到质检");
+  assert.equal(/incoming-inspections", ?\{ purchase_receipt_id/.test(procurementPage), false, "采购页不得再自己登记质检");
+});
+
+test("质检合格待入库与次品登记用净值化接口，并保留次品过账/冲销入口", () => {
+  assert.match(qcInboundPanel, /\/finished-goods\/qc-records\/available-inbound-sources/, "要展示质检合格待入库（用净值化接口）");
+  assert.match(qcInboundPanel, /\/finished-goods\/defectives"/, "要拉取次品记录列表");
+  assert.match(qcInboundPanel, /label: "本次登记次品数量"/, "要有登记次品入口");
+  assert.match(qcInboundPanel, /available_for_defective_quantity/, "默认值取净值可登记次品量");
+  assert.match(qcInboundPanel, /\/finished-goods\/defectives\/\$\{row\.original\.id\}\/post/, "次品要能过账");
+  assert.match(qcInboundPanel, /\/finished-goods\/defectives\/\$\{row\.id\}\/reverse/, "次品要能冲销");
+  assert.match(qcInboundPanel, /\/finished-goods\/inbounds/, "要能按 QC 合格量登记成品入库");
+});
+
+test("来料质检模块保留送检、判定、通知入库与退货的完整入口", () => {
+  for (const [pattern, label] of [
+    [/apiPost\("\/incoming-inspections"/, "送检登记"],
+    [/\/incoming-inspections\/\$\{item\.id\}`/, "质检编辑"],
+    [/\/incoming-inspections\/\$\{item\.id\}\/status/, "判定流转"],
+    [/\/incoming-inspections\/\$\{item\.id\}\/return/, "整批退货"],
+    [/\/raw-material-inbound-notices", \{ inspection_id/, "通知入库"],
+    [/\/raw-material-inbounds"/, "按质检结果建原料入库草稿"],
+  ]) assert.match(incomingInspectionsPanel, pattern, `来料质检缺少「${label}」`);
 });
 
 test("成品仓储页面注册焦点/可见性刷新并提供刷新按钮", () => {
@@ -43,12 +85,9 @@ test("成品仓储页面状态显示中文，不暴露英文原值", () => {
   assert.match(storagePage, /partially_inbound: "入库中"/);
 });
 
-test("次品链路在页面里有入口（否则次品存量永远为 0）", () => {
-  assert.match(storagePage, /\/finished-goods\/defectives\$\{scope\}/, "要拉取次品记录列表");
-  assert.match(storagePage, /label: "本次登记次品数量"/, "要有登记次品入口");
-  assert.match(storagePage, /available_for_defective_quantity/, "默认值取净值可登记次品量");
-  assert.match(storagePage, /\/finished-goods\/defectives\/\$\{row\.original\.id\}\/post/, "次品要能过账");
-  assert.match(storagePage, /\/finished-goods\/defectives\/\$\{row\.id\}\/reverse/, "次品要能冲销");
+test("次品存量在仓储页展示，次品单据链路由质检模块负责", () => {
+  assert.match(storagePage, /category=defective_goods/, "次品存量仍要在仓储页可见");
+  assert.match(qcInboundPanel, /\/finished-goods\/defectives"/, "次品记录在质检模块拉取");
 });
 
 test("待入库通知按剩余工作量统计，而不是按状态（草稿送检不算完成）", () => {

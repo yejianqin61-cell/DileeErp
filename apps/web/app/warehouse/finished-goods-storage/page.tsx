@@ -1,6 +1,7 @@
 "use client";
 
-// 仓库成品存量管理：成品/次品存量、待入库通知（分批）、QC 合格待入库、成品入库单与成品出库单。
+// 仓库成品存量管理：成品/次品存量、待入库通知（分批）、成品入库单与成品出库单。
+// 质检（送检、判定、次品登记）已迁到【质检】模块，本页只读质检结论带来的库存结果。
 // 数据口径：库存储量取自库存事实聚合（/inventory/balances），入库/出库单据来自成品链路表。
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -38,9 +39,7 @@ export default function FinishedGoodsStoragePage() {
   const [finished, setFinished] = useState<Balance[]>([]);
   const [defective, setDefective] = useState<Balance[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
-  const [qcAvailable, setQcAvailable] = useState<QcAvailable[]>([]);
   const [inbounds, setInbounds] = useState<Inbound[]>([]);
-  const [defectives, setDefectives] = useState<Defective[]>([]);
   const [outbounds, setOutbounds] = useState<Outbound[]>([]);
   const [outboundNotices, setOutboundNotices] = useState<OutboundNotice[]>([]);
   // 「成品存量」按订单号收束：展开状态记在这里（点击条目展开明细）。
@@ -55,23 +54,18 @@ export default function FinishedGoodsStoragePage() {
     setError("");
     const scope = targetOrderNo ? `?order_no=${encodeURIComponent(targetOrderNo)}` : "";
     try {
-      const [finishedResult, defectiveResult, noticeResult, qcResult, inboundResult, defectiveDocResult, outboundResult, outboundNoticeResult] = await Promise.all([
+      const [finishedResult, defectiveResult, noticeResult, inboundResult, outboundResult, outboundNoticeResult] = await Promise.all([
         apiGet<Balance[]>(`/inventory/balances?category=finished_goods${targetOrderNo ? `&order_no=${encodeURIComponent(targetOrderNo)}` : ""}`),
         apiGet<Balance[]>(`/inventory/balances?category=defective_goods${targetOrderNo ? `&order_no=${encodeURIComponent(targetOrderNo)}` : ""}`),
         apiGet<Notice[]>(`/finished-goods/inbound-notices${scope}`),
-        apiGet<QcAvailable[]>(`/finished-goods/qc-records/available-inbound-sources${scope}`),
         apiGet<Inbound[]>(`/finished-goods/inbounds${scope}`),
-        apiGet<Defective[]>(`/finished-goods/defectives${scope}`),
         apiGet<Outbound[]>(`/finished-goods/outbounds${scope}`),
         apiGet<OutboundNotice[]>(`/finished-goods/outbound-notices${scope}`),
       ]);
       setFinished(finishedResult.data);
       setDefective(defectiveResult.data);
       setNotices(noticeResult.data);
-      // 只展示还有可入库/可登记次品额度的质检单（额度由后端按净值给出：扣掉草稿+已过账）。
-      setQcAvailable(qcResult.data.filter((row) => number(row.available_for_inbound_quantity) > 0 || number(row.available_for_defective_quantity) > 0));
       setInbounds(inboundResult.data);
-      setDefectives(defectiveDocResult.data);
       setOutbounds(outboundResult.data);
       setOutboundNotices(outboundNoticeResult.data);
     } catch (cause) {
@@ -100,26 +94,8 @@ export default function FinishedGoodsStoragePage() {
     }
   }
 
-  function registerInbound(row: QcAvailable) {
-    setDialog({ title: `成品入库登记：${row.qc_no}`, fields: [
-      { name: "quantity", label: "本次入库数量", type: "number", required: true, defaultValue: row.available_for_inbound_quantity, placeholder: `QC 可入库 ${row.available_for_inbound_quantity}` },
-      { name: "remark", label: "备注", type: "textarea", placeholder: "可选" },
-    ], submit: (values) => void run("/finished-goods/inbounds", { qc_record_id: row.qc_id, quantity: values.quantity, remark: values.remark || undefined }, "成品入库单已登记（待过账）") });
-  }
-
-  function registerDefective(row: QcAvailable) {
-    setDialog({ title: `次品登记：${row.qc_no}`, fields: [
-      { name: "quantity", label: "本次登记次品数量", type: "number", required: true, defaultValue: row.available_for_defective_quantity, placeholder: `QC 不合格可登记 ${row.available_for_defective_quantity}` },
-      { name: "remark", label: "备注", type: "textarea", placeholder: "可选" },
-    ], submit: (values) => void run("/finished-goods/defectives", { qc_record_id: row.qc_id, quantity: values.quantity, remark: values.remark || undefined }, "次品记录已登记（待过账）") });
-  }
-
   function reverseInbound(row: Inbound) {
     setDialog({ title: `冲销成品入库：${row.inboundNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void run(`/finished-goods/inbounds/${row.id}/reverse`, { reason: values.reason }, "成品入库已冲销") });
-  }
-
-  function reverseDefective(row: Defective) {
-    setDialog({ title: `冲销次品记录：${row.defectiveNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void run(`/finished-goods/defectives/${row.id}/reverse`, { reason: values.reason }, "次品记录已冲销") });
   }
 
   /** 按销售发起的出库通知生成成品出库单：默认出剩余量，也可以只出一部分（分批出库）。 */
@@ -177,15 +153,6 @@ export default function FinishedGoodsStoragePage() {
     { accessorKey: "inboundPostedQuantity", header: "已入库" },
     { accessorKey: "status", header: "状态", cell: ({ row }: { row: { original: Notice } }) => noticeStatusLabels[row.original.status] ?? row.original.status },
   ];
-  const qcColumns = [
-    { accessorKey: "qc_no", header: "质检单" },
-    { accessorKey: "order_no", header: "订单号" },
-    { id: "qualified", header: "合格/条件合格", cell: ({ row }: { row: { original: QcAvailable } }) => `${row.original.qualified_quantity} / ${row.original.conditional_accept_quantity}` },
-    { id: "rejected", header: "不合格", cell: ({ row }: { row: { original: QcAvailable } }) => row.original.rejected_quantity ?? "-" },
-    { accessorKey: "available_for_inbound_quantity", header: "可入库（净值）" },
-    { accessorKey: "available_for_defective_quantity", header: "可登记次品" },
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: QcAvailable } }) => <div className="action-row">{number(row.original.available_for_inbound_quantity) > 0 ? <Button size="sm" variant="secondary" onClick={() => registerInbound(row.original)}>登记入库</Button> : null}{number(row.original.available_for_defective_quantity) > 0 ? <Button size="sm" variant="ghost" onClick={() => registerDefective(row.original)}>登记次品</Button> : null}</div> },
-  ];
   const inboundColumns = [
     { accessorKey: "inboundNo", header: "入库单" },
     { accessorKey: "orderNo", header: "订单号" },
@@ -216,14 +183,6 @@ export default function FinishedGoodsStoragePage() {
     { id: "status", header: "状态", cell: ({ row }: { row: { original: OutboundNotice } }) => outboundNoticeStatusLabels[row.original.status] ?? row.original.status },
     { id: "outbound", header: "出库单", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.outbound_summary || "-" },
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: OutboundNotice } }) => ["pending", "outbound_created", "partially_outbound"].includes(row.original.status) && Number(row.original.remaining_quantity ?? row.original.noticeQuantity) > 0 ? <Button size="sm" onClick={() => createOutboundFromNotice(row.original)}>生成出库单</Button> : row.original.status === "cancelled" ? <span>已取消</span> : <span>已发完</span> },
-  ];
-  const defectiveColumns = [
-    { accessorKey: "defectiveNo", header: "次品单" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "product", header: "成品", cell: ({ row }: { row: { original: Defective } }) => row.original.productNameSnapshot ?? "-" },
-    { accessorKey: "quantity", header: "数量" },
-    { id: "status", header: "状态", cell: ({ row }: { row: { original: Defective } }) => inboundStatusLabels[row.original.status] ?? row.original.status },
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: Defective } }) => row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/defectives/${row.original.id}/post`, {}, "次品已过账")}>过账</Button> : row.original.status === "posted" ? <Button size="sm" variant="ghost" onClick={() => reverseDefective(row.original)}>冲销</Button> : null },
   ];
   // 待入库 = 还有「可送检额度」或「在途入库」的通知。不用 remainingForInbound：QC 不合格的部分永远不会入库，
   // 按通知量减已入库会把这类通知永久算成待办。
@@ -307,16 +266,12 @@ export default function FinishedGoodsStoragePage() {
       <div className="panel-body"><DataTable columns={noticeColumns} data={notices} empty={<EmptyState title="暂无入库通知" description="生产在【生产单详情 → 成品存量与入库通知】按包装工序累计量发通知。" />} /></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>质检合格待入库</h2><span className="panel-note">按 QC 合格量分批登记入库、按不合格量登记次品；过账后才计入对应存量</span></div>
-      <div className="panel-body"><DataTable columns={qcColumns} data={qcAvailable} empty={<EmptyState title="暂无可入库/可登记次品的质检单" />} /></div>
+      <div className="panel-heading"><h2>质检合格待入库 / 次品登记</h2><div className="page-actions"><Button size="sm" variant="secondary" asChild><Link href="/qc">进入质检模块</Link></Button></div></div>
+      <div className="panel-body"><p className="panel-note">按 QC 合格量登记成品入库、按不合格量登记次品，以及次品记录的过账/冲销，已整体迁到【质检】模块；本页保留成品入库单的过账与冲销。</p></div>
     </section>
     <section className="panel">
       <div className="panel-heading"><h2>成品入库单</h2></div>
       <div className="panel-body"><DataTable columns={inboundColumns} data={inbounds} empty={<EmptyState title="暂无成品入库单" />} /></div>
-    </section>
-    <section className="panel">
-      <div className="panel-heading"><h2>次品记录</h2></div>
-      <div className="panel-body"><DataTable columns={defectiveColumns} data={defectives} empty={<EmptyState title="暂无次品记录" description="质检不合格数量可在上方「登记次品」后过账。" />} /></div>
     </section>
     <section className="panel">
       <div className="panel-heading"><h2>成品出库通知（销售发起）</h2><span className="panel-note">销售在销售订单页「通知仓库出库」后出现在这里；点「生成出库单」可按剩余量分批出库，每次过账后自动生成应收来源并通知财务收款</span></div>

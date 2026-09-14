@@ -44,7 +44,7 @@ export default function WorkbenchPage() {
   const visibleOrders = useMemo(() => orders.filter((order) => `${order.order_no} ${order.overall_status_label} ${order.blockers.map((item) => item.label).join(" ")}`.toLowerCase().includes(filter.toLowerCase())), [filter, orders]);
   const selected = selectedOrder;
   const selectedMeasurements = measurements.filter((item) => item.order_no === selectedOrderNo);
-  const moduleCards: Array<[string, string, ModuleSummary]> = selected ? [["采购 / 应付", "/procurement", selected.procurement_summary], ["原料库存", "/warehouse", selected.raw_material_inventory_summary], ["生产", "/production", selected.production_summary], ["成品质检", "/warehouse", selected.finished_goods_qc_summary], ["成品库存", "/warehouse", selected.finished_goods_inventory_summary], ["发货", "/warehouse", selected.shipping_summary], ["应收", "/finance", selected.receivable_summary], ["应付", "/finance", selected.payable_summary]] : [];
+  const moduleCards: Array<[string, string, ModuleSummary]> = selected ? [["采购 / 应付", "/procurement", selected.procurement_summary], ["原料库存", "/warehouse", selected.raw_material_inventory_summary], ["生产", "/production", selected.production_summary], ["成品质检", "/qc", selected.finished_goods_qc_summary], ["成品库存", "/warehouse", selected.finished_goods_inventory_summary], ["发货", "/warehouse", selected.shipping_summary], ["应收", "/finance", selected.receivable_summary], ["应付", "/finance", selected.payable_summary]] : [];
   return <>
     <PageHeader title="工作台" description="按订单号查看采购、库存、生产、质检、发货和财务推进状态"><Button variant="secondary" onClick={() => { void load(); }} title="刷新工作台"><RefreshCw size={15} />刷新</Button></PageHeader>
     {error && <section className="panel panel-body status-danger" role="alert">{error}</section>}

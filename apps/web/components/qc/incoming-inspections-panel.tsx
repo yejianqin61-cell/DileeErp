@@ -1,0 +1,224 @@
+"use client";
+
+// 来料质检（QC 模块）：到货批次的送检登记、判定流转、入库通知与退货。
+//
+// 这里原来是「采购 → 来料质检」区块。拆成独立模块后：
+//   * 采购页只负责到货登记与原料入库，质检入口改为跳转到 /qc?receipt_id=<到货批次>；
+//   * 全部质检动作（登记/编辑/开始/完成/回退/通知入库/入库/退货）都收在本面板里，
+//     避免同一业务在两个页面各写一套、状态口径不一致。
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ColumnDef } from "@tanstack/react-table";
+import Link from "next/link";
+import { ActionDialog, type ActionField } from "../ui/action-dialog";
+import { Button } from "../ui/button";
+import { DataTable } from "../data/data-table";
+import { EmptyState, LoadingState } from "../feedback/states";
+import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
+import { notifyError, notifySuccess } from "../ui/toaster";
+
+type InspectionBatch = { id: string; status: string; qcResult?: "all_inbound" | "rejected" | "partial_inbound" | null; inspectedQuantity: string; acceptedQuantity: string; conditionalQuantity: string; rejectedQuantity: string };
+type InboundBatch = { id: string; inboundNo: string; quantity: string; status: string };
+type Receipt = { id: string; receiptNo: string; quantity: string; status?: string; batchSequence?: number; inspections?: InspectionBatch[] };
+type PurchaseItem = { id: string; quantity: string; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; receipts: Receipt[] };
+type PurchaseOrder = { id: string; purchaseOrderNo: string; orderNo: string; status: string; items: PurchaseItem[] };
+type InboundNotice = { id: string; noticeNo: string; incomingInspectionId: string; status: string; notifiedQuantity: string };
+type Inspection = { id: string; orderNo: string; purchase_order_no?: string; material_name?: string | null; status: string; qcResult?: "all_inbound" | "rejected" | "partial_inbound" | null; batchSequence?: number; inspectedQuantity: string; acceptedQuantity: string; conditionalQuantity: string; rejectedQuantity: string; downstream_exists?: boolean; purchaseReceipt?: Receipt };
+type Inbound = { id: string; inboundNo: string; quantity: string; status: string; incomingInspectionId?: string | null };
+type ReceiptOption = Receipt & { orderNo: string; purchaseOrderNo: string; materialName: string; unitName: string; batchSequence: number };
+type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
+
+const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+const QC_RESULT_OPTIONS = [{ value: "all_inbound", label: "全部入库" }, { value: "rejected", label: "拒收" }, { value: "partial_inbound", label: "部分入库" }];
+const qcResultLabel = (value: Inspection["qcResult"]) => value === "rejected" ? "拒收" : value === "partial_inbound" ? "部分入库" : value === "all_inbound" ? "全部入库" : "待判定";
+const inspectionStatusLabel: Record<string, string> = { pending: "待质检", inspecting: "质检中", completed: "已登记", accepted: "全部入库", conditionally_accepted: "全部入库", partially_accepted: "部分入库", rejected: "拒收", cancelled: "已取消" };
+const inboundStatusLabel: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
+
+export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) {
+  const [orders, setOrders] = useState<PurchaseOrder[]>([]);
+  const [inspections, setInspections] = useState<Inspection[]>([]);
+  const [inbounds, setInbounds] = useState<Inbound[]>([]);
+  const [notices, setNotices] = useState<InboundNotice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+  // 深链（/qc?receipt_id=…）只自动开一次：用户手动关掉后不要被刷新再次弹出来。
+  const deepLinkDone = useRef(false);
+
+  async function load(options: { silent?: boolean } = {}) {
+    if (!options.silent) setLoading(true);
+    setError("");
+    try {
+      const [po, qc, ib, notices] = await Promise.all([
+        apiGet<PurchaseOrder[]>("/purchase-orders"),
+        apiGet<Inspection[]>("/incoming-inspections"),
+        apiGet<Inbound[]>("/raw-material-inbounds"),
+        apiGet<InboundNotice[]>("/raw-material-inbound-notices"),
+      ]);
+      setOrders(po.data); setInspections(qc.data); setInbounds(ib.data); setNotices(notices.data);
+    } catch (cause) { setError(messageOf(cause, "来料质检数据加载失败")); }
+    finally { if (!options.silent) setLoading(false); }
+  }
+  useEffect(() => { void load(); }, []);
+
+  const receiptOptions = useMemo<ReceiptOption[]>(() => orders.flatMap((order) => order.items.flatMap((item) => item.receipts.map((receipt, index) => ({
+    ...receipt,
+    orderNo: order.orderNo,
+    purchaseOrderNo: order.purchaseOrderNo,
+    materialName: item.material?.name ?? "物料",
+    unitName: item.unit?.name ?? "",
+    batchSequence: receipt.batchSequence ?? index + 1,
+  })))), [orders]);
+
+  function run(action: () => Promise<unknown>, success: string) {
+    setError("");
+    return action()
+      .then(async () => { notifySuccess(success); setMessage(success); setDialog(null); await load({ silent: true }); })
+      .catch((cause) => { const text = messageOf(cause, "操作失败"); setError(text); notifyError(text); });
+  }
+
+  const inboundUsedByInspection = useCallback((inspectionId: string) => inbounds.filter((row) => row.incomingInspectionId === inspectionId && ["draft", "posted"].includes(row.status)).reduce((sum, row) => sum + Number(row.quantity), 0), [inbounds]);
+  const inboundRemainingFor = (item: Inspection) => Math.max(0, Number(item.acceptedQuantity) + Number(item.conditionalQuantity) - inboundUsedByInspection(item.id));
+  const draftInboundFor = (inspectionId: string) => inbounds.find((row) => row.incomingInspectionId === inspectionId && row.status === "draft");
+  const inspectionInboundCapable = (item: Inspection) => ["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(item.status);
+  const noticeFor = (inspectionId: string) => notices.find((row) => row.incomingInspectionId === inspectionId);
+
+  /** 送检登记：拒收时后端要求「合格/不合格」与送检量配平，这里按 QC 结果直接改写拆分。 */
+  const inspectionBody = (v: Record<string, string>) => ({
+    inspected_quantity: v.quantity,
+    qc_result: v.qc_result,
+    accepted_quantity: v.qc_result === "rejected" ? v.quantity : v.accepted_quantity,
+    conditional_quantity: v.qc_result === "rejected" ? "0" : v.conditional_quantity,
+    rejected_quantity: v.qc_result === "rejected" ? v.quantity : v.rejected_quantity,
+  });
+
+  function inspectReceipt(receipt: ReceiptOption) {
+    const inspection = receipt.inspections?.[0];
+    const remaining = Math.max(0, Number(receipt.quantity) - Number(inspection?.inspectedQuantity ?? 0));
+    setDialog({ title: `登记来料质检：${receipt.purchaseOrderNo} / 第 ${receipt.batchSequence} 批`, fields: [
+      { name: "quantity", label: "本次送检数量", type: "number", required: true, defaultValue: remaining > 0 ? String(remaining) : "1" },
+      { name: "qc_result", label: "最终 QC 结果", type: "select", required: true, defaultValue: "all_inbound", options: QC_RESULT_OPTIONS },
+      { name: "accepted_quantity", label: "本次合格数量", type: "number", required: true, defaultValue: remaining > 0 ? String(remaining) : "0" },
+      { name: "conditional_quantity", label: "本次条件接收", type: "number", required: true, defaultValue: "0" },
+      { name: "rejected_quantity", label: "本次不合格数量", type: "number", required: true, defaultValue: "0" },
+    ], submit: (v) => void run(() => apiPost("/incoming-inspections", { purchase_receipt_id: receipt.id, ...inspectionBody(v) }), `第 ${receipt.batchSequence} 批质检已记录`) });
+  }
+
+  function inspect() {
+    if (!receiptOptions.length) { setError("暂无可送检的到货批次：请先在采购模块登记到货"); return; }
+    setDialog({ title: "登记来料质检", fields: [
+      { name: "receipt_id", label: "到货记录", type: "select", required: true, options: receiptOptions.map((item) => ({ value: item.id, label: `${item.purchaseOrderNo} / 订单号 ${item.orderNo} / 第 ${item.batchSequence} 批 / ${item.quantity}${item.unitName ? ` ${item.unitName}` : ""}` })) },
+      { name: "quantity", label: "送检数量", type: "number", required: true, defaultValue: "1" },
+      { name: "qc_result", label: "最终 QC 结果", type: "select", required: true, defaultValue: "all_inbound", options: QC_RESULT_OPTIONS },
+      { name: "accepted_quantity", label: "合格数量", type: "number", required: true, defaultValue: "1" },
+      { name: "conditional_quantity", label: "条件接收", type: "number", required: true, defaultValue: "0" },
+      { name: "rejected_quantity", label: "不合格数量", type: "number", required: true, defaultValue: "0" },
+    ], submit: (v) => void run(() => apiPost("/incoming-inspections", { purchase_receipt_id: v.receipt_id, ...inspectionBody(v) }), "来料质检已记录") });
+  }
+
+  // 深链：采购页「登记质检」按到货批次跳到这里时，直接打开该批次的送检登记。
+  useEffect(() => {
+    if (deepLinkDone.current || !receiptId || !receiptOptions.length) return;
+    const receipt = receiptOptions.find((item) => item.id === receiptId);
+    if (!receipt) return;
+    deepLinkDone.current = true;
+    inspectReceipt(receipt);
+    // inspectReceipt 是每次渲染重建的普通函数，这里只依赖到货批次与深链参数。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receiptId, receiptOptions]);
+
+  function editInspection(item: Inspection) {
+    setDialog({ title: `编辑来料质检：${item.purchase_order_no ?? item.orderNo}`, fields: [
+      { name: "inspected_quantity", label: "送检数量", type: "number", required: true, defaultValue: item.inspectedQuantity },
+      { name: "accepted_quantity", label: "合格数量", type: "number", required: true, defaultValue: item.acceptedQuantity },
+      { name: "conditional_quantity", label: "条件接收", type: "number", required: true, defaultValue: item.conditionalQuantity },
+      { name: "rejected_quantity", label: "不合格数量", type: "number", required: true, defaultValue: item.rejectedQuantity },
+      { name: "remark", label: "备注", type: "textarea" },
+      { name: "reason", label: "更正原因", type: "textarea", required: true },
+    ], submit: (v) => void run(() => apiRequest(`/incoming-inspections/${item.id}`, { method: "PATCH", body: JSON.stringify({ inspected_quantity: v.inspected_quantity, accepted_quantity: v.accepted_quantity, conditional_quantity: v.conditional_quantity, rejected_quantity: v.rejected_quantity, remark: v.remark || undefined, reason: v.reason }) }), "来料质检已更新") });
+  }
+
+  function transitionInspection(item: Inspection, target: string) {
+    if (target === "pending" || target === "cancelled") {
+      setDialog({ title: "回退来料质检", fields: [{ name: "reason", label: "回退原因", required: true, type: "textarea" }], submit: (v) => void run(() => apiRequest(`/incoming-inspections/${item.id}/status`, { method: "PATCH", body: JSON.stringify({ target, reason: v.reason }) }), "来料质检状态已更新") });
+      return;
+    }
+    void run(() => apiRequest(`/incoming-inspections/${item.id}/status`, { method: "PATCH", body: JSON.stringify({ target }) }), "来料质检状态已更新");
+  }
+
+  function notifyInbound(item: Inspection) { void run(() => apiPost("/raw-material-inbound-notices", { inspection_id: item.id }), "入库通知已发送"); }
+
+  function inboundAll(item: Inspection) {
+    const remaining = inboundRemainingFor(item);
+    if (remaining <= 0) { setError("该质检批次没有可入库的剩余数量（合格 + 条件接收 − 已建入库单）"); return; }
+    void run(() => apiPost("/raw-material-inbounds", { incoming_inspection_id: item.id, quantity: String(remaining), inventory_category: "raw_material" }), `已按剩余量 ${remaining} 创建原料入库草稿`);
+  }
+
+  function inboundPartial(item: Inspection) {
+    const remaining = inboundRemainingFor(item);
+    setDialog({ title: `部分入库：${item.purchase_order_no ?? item.orderNo} / 第 ${item.batchSequence ?? "-"} 批`, fields: [
+      { name: "quantity", label: `本次入库数量（剩余可入 ${remaining}）`, type: "number", required: true, defaultValue: remaining > 0 ? String(remaining) : "1" },
+      { name: "settlement_unit_price", label: "结算单价", type: "number", required: true },
+      { name: "settlement_total_amount", label: "结算总价", type: "number", required: true },
+      { name: "settlement_amount_reason", label: "金额差异原因", type: "textarea", required: true },
+      { name: "remark", label: "备注", type: "textarea" },
+    ], submit: (v) => {
+      const quantity = Number(v.quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0) { setError("入库数量必须是大于零的数字"); return; }
+      if (quantity > remaining) { setError(`入库数量不能超过剩余可入数量 ${remaining}`); return; }
+      void run(() => apiPost("/raw-material-inbounds", { incoming_inspection_id: item.id, quantity: v.quantity, settlement_unit_price: v.settlement_unit_price, settlement_total_amount: v.settlement_total_amount, settlement_amount_reason: v.settlement_amount_reason, inventory_category: "raw_material", remark: v.remark || undefined }), "原料入库草稿已创建");
+    } });
+  }
+
+  function returnInspection(item: Inspection) {
+    setDialog({ title: `整批退货：${item.purchase_order_no ?? item.orderNo} / 第 ${item.batchSequence ?? "-"} 批`, fields: [{ name: "reason", label: "退货原因", required: true, type: "textarea" }], submit: (v) => void run(() => apiPost(`/incoming-inspections/${item.id}/return`, { reason: v.reason }), "质检批次已退货") });
+  }
+
+  const columns: ColumnDef<Inspection>[] = [
+    { accessorKey: "orderNo", header: "订单号" },
+    { accessorKey: "purchase_order_no", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" },
+    { accessorKey: "material_name", header: "物料", cell: ({ row }) => row.original.material_name ?? "-" },
+    { id: "batch", header: "质检批次", cell: ({ row }) => `第 ${row.original.batchSequence ?? row.original.purchaseReceipt?.batchSequence ?? "-"} 批` },
+    { id: "qcResult", header: "最终结果", cell: ({ row }) => qcResultLabel(row.original.qcResult) },
+    { id: "status", header: "状态", cell: ({ row }) => inspectionStatusLabel[row.original.status] ?? row.original.status },
+    { accessorKey: "inspectedQuantity", header: "送检" },
+    { accessorKey: "acceptedQuantity", header: "合格" },
+    { accessorKey: "conditionalQuantity", header: "条件接收" },
+    { accessorKey: "rejectedQuantity", header: "不合格" },
+    { id: "inbound", header: "入库情况", cell: ({ row }) => { const used = inboundUsedByInspection(row.original.id); const remaining = inboundRemainingFor(row.original); const draft = draftInboundFor(row.original.id); return <span>{`已建单 ${used} · 剩余可入 ${remaining}`}{draft ? <span className="status-warning"> · 有草稿待过账</span> : null}</span>; } },
+    { id: "notice", header: "入库通知", cell: ({ row }) => { const notice = noticeFor(row.original.id); return notice ? <span className="status-success">{notice.noticeNo}（{notice.status}）</span> : <span className="batch-empty">未通知</span>; } },
+    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
+      {!row.original.downstream_exists && row.original.status !== "cancelled" && <Button size="sm" variant="secondary" onClick={() => editInspection(row.original)}>编辑</Button>}
+      {row.original.status === "pending" && <Button size="sm" variant="secondary" onClick={() => transitionInspection(row.original, "inspecting")}>开始质检</Button>}
+      {row.original.status === "inspecting" && <Button size="sm" variant="secondary" onClick={() => transitionInspection(row.original, "completed")}>完成质检</Button>}
+      {row.original.status === "completed" && <Button size="sm" variant="ghost" onClick={() => transitionInspection(row.original, "pending")}>回退</Button>}
+      {inspectionInboundCapable(row.original) && <>
+        {noticeFor(row.original.id) ? <span className="status-success">已通知入库</span> : <Button size="sm" variant="secondary" onClick={() => notifyInbound(row.original)}>通知入库</Button>}
+        {!row.original.downstream_exists && <Button size="sm" variant="ghost" onClick={() => inboundPartial(row.original)}>部分入库</Button>}
+        <Button size="sm" variant="ghost" onClick={() => inboundAll(row.original)}>按剩余量入库</Button>
+        {!row.original.downstream_exists && <Button size="sm" variant="ghost" onClick={() => returnInspection(row.original)}>退货</Button>}
+      </>}
+    </div> },
+  ];
+
+  return <section className="panel" style={{ gridColumn: "1 / -1" }}>
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { const current = dialog; void current?.submit(values); }} />
+    <div className="panel-heading">
+      <h2>来料质检</h2>
+      <div className="page-actions">
+        <Button variant="secondary" onClick={inspect}>登记来料质检</Button>
+        <Button variant="ghost" onClick={() => void load()}>刷新</Button>
+      </div>
+    </div>
+    <div className="panel-body">
+      <p className="panel-note">到货批次在这里送检 → 判定（全部入库 / 部分入库 / 拒收）→ 通知仓库入库。原料入库草稿的过账与冲销在【仓库 → 原料仓储情况】完成。</p>
+      <div className="action-row">
+        <Button size="sm" variant="secondary" asChild><Link href="/procurement">去采购登记到货</Link></Button>
+        <Button size="sm" variant="secondary" asChild><Link href="/warehouse/raw-material-storage">去原料仓储情况过账入库</Link></Button>
+      </div>
+    </div>
+    {message && <p className="status-success panel-body" role="status">{message}</p>}
+    {error && <p className="status-error panel-body" role="alert">{error}</p>}
+    <div className="panel-body">{loading ? <LoadingState /> : <DataTable columns={columns} data={inspections} empty={<EmptyState title="暂无来料质检记录" description="采购登记到货后，在这里点「登记来料质检」送检。" />} />}</div>
+  </section>;
+}
