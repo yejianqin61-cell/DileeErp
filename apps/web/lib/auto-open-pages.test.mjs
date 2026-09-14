@@ -33,8 +33,9 @@ function effectBlocks(source) {
   return blocks;
 }
 
-// 2026-09-14 拆分后，采购页的 useEffect 随功能分散到 orders / inbounds 两个子页，守卫跟着覆盖它们。
-const pages = ["app/warehouse/page.tsx", "app/warehouse/raw-material-storage/page.tsx", "app/procurement/page.tsx", "app/procurement/orders/page.tsx", "app/procurement/inbounds/page.tsx", "app/production/page.tsx", "components/qc/incoming-inspections-panel.tsx", "components/qc/qc-inbound-panel.tsx"];
+// 2026-09-14 拆分后，采购页的 useEffect 随功能分散到 orders / inbounds 两个子页，守卫跟着覆盖它们；
+// e5be1b5 又把订单详情抽成 procurement/orders/[id] 二级页，新页同样纳入依赖数组检查。
+const pages = ["app/warehouse/page.tsx", "app/warehouse/raw-material-storage/page.tsx", "app/procurement/page.tsx", "app/procurement/orders/page.tsx", "app/procurement/orders/[id]/page.tsx", "app/procurement/inbounds/page.tsx", "app/production/page.tsx", "components/qc/incoming-inspections-panel.tsx", "components/qc/qc-inbound-panel.tsx"];
 
 const autoOpenCases = [
   // 自动打开原料入库单：依赖里出现 dialog 就会「关掉又被打开」。
