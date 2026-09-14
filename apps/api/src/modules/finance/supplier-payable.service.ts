@@ -14,10 +14,24 @@ export class SupplierPayableService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
-    const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } } } } }, orderBy: { createdAt: "desc" } });
+    const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { allocations: { where: { deletedAt: null } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
     return rows.map((row) => {
       const receiptData = row.payableSource?.purchaseReceipt?.extensionData as { batch_sequence?: number } | null | undefined;
-      return { ...row, source_no: row.payableSource?.rawMaterialInbound?.inboundNo ?? row.payableSource?.purchaseReceipt?.receiptNo ?? row.outsourcePayableSource?.outsourceReceipt?.id ?? row.sourceNoSnapshot, purchase_order_no: row.payableSource?.purchaseOrder?.purchaseOrderNo ?? row.outsourcePayableSource?.purchaseOrder?.purchaseOrderNo ?? null, batch_sequence: receiptData?.batch_sequence ?? null };
+      const item = row.payableSource?.purchaseOrderItem;
+      // 应付条目要能看出是哪个原料（客户反馈：只看到金额不知道对应什么物料）。
+      const material = item?.material ?? row.outsourcePayableSource?.logisticsBatch?.material ?? null;
+      const snapshot = (item?.materialSnapshot as { name?: string } | null | undefined)?.name ?? null;
+      return {
+        ...row,
+        source_no: row.payableSource?.rawMaterialInbound?.inboundNo ?? row.payableSource?.purchaseReceipt?.receiptNo ?? row.outsourcePayableSource?.outsourceReceipt?.id ?? row.sourceNoSnapshot,
+        purchase_order_no: row.payableSource?.purchaseOrder?.purchaseOrderNo ?? row.outsourcePayableSource?.purchaseOrder?.purchaseOrderNo ?? null,
+        batch_sequence: receiptData?.batch_sequence ?? null,
+        material_name: material?.name ?? snapshot,
+        material_code: material?.materialCode ?? null,
+        material_specification: material?.specificationModel ?? null,
+        material_color: material?.color ?? null,
+        unit_name: item?.unit?.name ?? row.outsourcePayableSource?.logisticsBatch?.unit?.name ?? null,
+      };
     });
   }
 

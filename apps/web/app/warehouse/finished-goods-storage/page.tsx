@@ -3,7 +3,7 @@
 // 仓库成品存量管理：成品/次品存量、待入库通知（分批）、QC 合格待入库、成品入库单与成品出库单。
 // 数据口径：库存储量取自库存事实聚合（/inventory/balances），入库/出库单据来自成品链路表。
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
@@ -43,6 +43,8 @@ export default function FinishedGoodsStoragePage() {
   const [defectives, setDefectives] = useState<Defective[]>([]);
   const [outbounds, setOutbounds] = useState<Outbound[]>([]);
   const [outboundNotices, setOutboundNotices] = useState<OutboundNotice[]>([]);
+  // 「成品存量」按订单号收束：展开状态记在这里（点击条目展开明细）。
+  const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
@@ -223,11 +225,39 @@ export default function FinishedGoodsStoragePage() {
   // 待入库 = 还有「可送检额度」或「在途入库」的通知。不用 remainingForInbound：QC 不合格的部分永远不会入库，
   // 按通知量减已入库会把这类通知永久算成待办。
   const pendingNoticeCount = notices.filter((row) => row.status !== "cancelled" && (number(row.availableSubmissionQuantity) > 0 || number(row.inboundDraftQuantity) > 0)).length;
+  // 成品存量按订单号收束成一条（客户反馈：订单一多整张表很冗长），点开才看该订单下的明细。
+  // 现存 = 库存事实余额；已入库/已出库只算已过账（草稿/已冲销/已取消不算）。
+  const finishedGroups = useMemo(() => {
+    const groups = new Map<string, { orderNo: string; stock: number; inbound: number; outbound: number; rows: Balance[] }>();
+    for (const row of finished) {
+      const orderNo = row.order_no ?? "（无订单号）";
+      const group = groups.get(orderNo) ?? { orderNo, stock: 0, inbound: 0, outbound: 0, rows: [] };
+      group.stock += number(row.quantity);
+      group.rows.push(row);
+      groups.set(orderNo, group);
+    }
+    for (const row of inbounds) {
+      if (row.status !== "posted") continue;
+      const orderNo = row.orderNo ?? "（无订单号）";
+      const group = groups.get(orderNo) ?? { orderNo, stock: 0, inbound: 0, outbound: 0, rows: [] };
+      group.inbound += number(row.quantity);
+      groups.set(orderNo, group);
+    }
+    for (const row of outbounds) {
+      if (!["posted", "shipped", "signed"].includes(row.status)) continue;
+      const orderNo = row.orderNo ?? "（无订单号）";
+      const group = groups.get(orderNo) ?? { orderNo, stock: 0, inbound: 0, outbound: 0, rows: [] };
+      group.outbound += number(row.quantity);
+      groups.set(orderNo, group);
+    }
+    return [...groups.values()].sort((left, right) => left.orderNo.localeCompare(right.orderNo));
+  }, [finished, inbounds, outbounds]);
+  const toggleGroup = (orderNo: string) => setExpandedOrders((current) => ({ ...current, [orderNo]: !current[orderNo] }));
 
   if (loading && !finished.length && !notices.length) return <LoadingState label="正在加载成品仓储情况" />;
   if (error && !finished.length && !notices.length) return <ErrorState message={error} onRetry={() => void load()} />;
 
-  return <>
+  return <div className="page-root" data-testid="page-warehouse-finished-goods-storage">
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); }} />
     <PageHeader title="成品仓储情况">
       <Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button>
@@ -243,8 +273,28 @@ export default function FinishedGoodsStoragePage() {
     <section className="panel">
       <div className="panel-heading"><h2>成品存量</h2><span className="panel-note">按订单/生产单/成品规格聚合库存事实</span></div>
       <div className="panel-body">
-        <h3>成品</h3>
-        <DataTable columns={balanceColumns} data={finished} empty={<EmptyState title="暂无成品存量" description="成品入库过账后这里会出现存量。" />} />
+        <h3>成品（按订单号收束，点击条目展开明细）</h3>
+        <div className="table-wrap"><table className="ui-table">
+          <thead><tr><th className="ui-table-head">订单号</th><th className="ui-table-head">成品现存数量</th><th className="ui-table-head">已入库数量</th><th className="ui-table-head">已出库数量</th><th className="ui-table-head">明细</th></tr></thead>
+          <tbody>
+            {finishedGroups.length ? finishedGroups.map((group) => <Fragment key={group.orderNo}>
+              <tr className="ui-table-row">
+                <td className="ui-table-cell"><Button size="sm" variant="link" aria-expanded={Boolean(expandedOrders[group.orderNo])} onClick={() => toggleGroup(group.orderNo)}>{group.orderNo}</Button></td>
+                <td className="ui-table-cell">{group.stock}</td>
+                <td className="ui-table-cell">{group.inbound}</td>
+                <td className="ui-table-cell">{group.outbound}</td>
+                <td className="ui-table-cell">{group.rows.length} 个成品批次 <Button size="sm" variant="ghost" onClick={() => toggleGroup(group.orderNo)}>{expandedOrders[group.orderNo] ? "收起" : "展开"}</Button></td>
+              </tr>
+              {expandedOrders[group.orderNo] ? group.rows.map((row, index) => <tr className="ui-table-row" key={`${group.orderNo}-${row.production_order_id ?? "none"}-${index}`}>
+                <td className="ui-table-cell">└ 生产单 {row.production_order_id ? row.production_order_id.slice(0, 8) : "-"} / {row.product_name ?? "-"}{row.product_specification ? ` / ${row.product_specification}` : ""}</td>
+                <td className="ui-table-cell">{row.quantity}</td>
+                <td className="ui-table-cell">-</td>
+                <td className="ui-table-cell">-</td>
+                <td className="ui-table-cell">单位 {row.category === "finished_goods" ? "成品" : row.category}</td>
+              </tr>) : null}
+            </Fragment>) : <tr><td className="ui-table-cell" colSpan={5}><EmptyState title="暂无成品存量" description="成品入库过账后这里会出现存量。" /></td></tr>}
+          </tbody>
+        </table></div>
         <h3>次品</h3>
         <DataTable columns={balanceColumns} data={defective} empty={<EmptyState title="暂无次品存量" />} />
       </div>
@@ -273,5 +323,5 @@ export default function FinishedGoodsStoragePage() {
       <div className="panel-heading"><h2>成品出库单</h2><span className="panel-note">只允许整批出库（数量=当前成品可用量）；过账后自动生成应收来源草稿，财务在「应收来源」确认并核销收款</span></div>
       <div className="panel-body"><DataTable columns={outboundColumns} data={outbounds} empty={<EmptyState title="暂无成品出库单" description="生成出库单后在这里过账、维护发货与签收。" />} /></div>
     </section>
-  </>;
+  </div>;
 }

@@ -59,12 +59,31 @@ test("工序盘点表：明细与汇总都按小时展示（90 分钟 => 1.5 小
   assert.equal(rows.some((row) => Array.isArray(row) && row.includes("时长（分钟）")), false, "不得再出现分钟口径表头");
   const detailRows = rows.filter((row) => Array.isArray(row) && row[0] === "DL260001");
   assert.equal(detailRows.length, 2);
+  // 明细列：0 订单号、9 计件数量、10 时长（小时）、11 单价
   assert.equal(detailRows[0][10], "1.5", "90 分钟应展示为 1.5 小时");
   assert.equal(detailRows[1][10], "2", "120 分钟应展示为 2 小时");
   assert.ok(rowContaining(rows, "时长（小时）合计"), "汇总表头必须是时长（小时）合计");
   const summary = summaryRow(rows, "DL260001");
   assert.ok(summary, "汇总行必须存在");
-  assert.equal(summary[4], "3.5", "汇总时长必须是小时（1.5 + 2），不能是分钟合计 210");
+  // 汇总列：0 空、1 订单号、2 生产单号、3 件数合计、4 其中计件、5 其中计时、6 时长（小时）合计
+  assert.equal(summary[6], "3.5", "汇总时长必须是小时（1.5 + 2），不能是分钟合计 210");
+  assert.equal(summary[3], "0", "计时行的件数为 0（本用例计时工人未填报件数）");
+  assert.equal(summary[4], "0", "其中计件 = 0");
+  assert.equal(summary[5], "0", "其中计时 = 0");
+});
+
+test("汇总的件数合计包含计时工人的计件数量，并给出计件/计时拆分（客户要求）", async () => {
+  const piece = reportRow({ id: "report-piece", wageMode: "piece_rate", quantity: new Prisma.Decimal("30"), durationMinutes: null, calculatedAmount: new Prisma.Decimal("90"), unitPrice: new Prisma.Decimal("3") });
+  const timedWithQuantity = reportRow({ id: "report-time", wageMode: "time_rate", quantity: new Prisma.Decimal("12"), durationMinutes: new Prisma.Decimal("90") });
+  const service = build([piece, timedWithQuantity]);
+  const rows = sheetRows(await service.exportOperation({ operation_id: "operation-1", month: "2026-09" }, { id: "user-1", username: "admin" }));
+  const summary = summaryRow(rows, "DL260001");
+  assert.equal(summary[3], "42", "件数合计 = 计件 30 + 计时工人填报的 12");
+  assert.equal(summary[4], "30", "其中计件 = 30");
+  assert.equal(summary[5], "12", "其中计时 = 12");
+  const timedDetail = rows.find((row) => Array.isArray(row) && row[0] === "DL260001" && row[8] === "计时");
+  assert.equal(timedDetail[9], "12", "计时行的计件数量也要输出（以前是空）");
+  assert.equal(timedDetail[10], "1.5", "计时行同时给出时长（小时）");
 });
 
 test("当月工序明细总表：汇总时长与明细同口径（回归：曾出现表头小时、汇总分钟）", async () => {
@@ -73,7 +92,8 @@ test("当月工序明细总表：汇总时长与明细同口径（回归：曾�
   assert.ok(rowContaining(rows, "时长（小时）合计"), "汇总表头必须是时长（小时）合计");
   const summary = summaryRow(rows, "缝制");
   assert.ok(summary, "工序汇总行必须存在");
-  assert.equal(summary[3], "1.5", "汇总时长必须是 1.5 小时而不是 90 分钟");
+  // 汇总列：0 空、1 工序、2 件数合计、3 其中计件、4 其中计时、5 时长（小时）合计
+  assert.equal(summary[5], "1.5", "汇总时长必须是 1.5 小时而不是 90 分钟");
 });
 
 test("订单号盘点表：计时行展示小时，备注列原样输出", async () => {
