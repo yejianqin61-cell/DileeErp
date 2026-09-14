@@ -16,9 +16,10 @@ import { QcInboundPanel } from "../components/qc/qc-inbound-panel";
 import { Toaster } from "../components/ui/toaster";
 import { apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
 
-// next/navigation 桩：深链参数由每个用例设置。
+// next/navigation 桩：深链参数由每个用例设置；router.replace 用于断言枢纽页的深链转发。
 const params = vi.hoisted(() => ({ current: new URLSearchParams() }));
-vi.mock("next/navigation", () => ({ useSearchParams: () => params.current }));
+const replaceSpy = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({ useSearchParams: () => params.current, useRouter: () => ({ replace: replaceSpy }) }));
 
 const postCalls = (calls: StubbedCall[], suffix: string) => calls.filter((call) => call.method === "POST" && call.url.endsWith(suffix));
 const bodyOf = (call: StubbedCall | undefined) => JSON.parse(String(call?.body ?? "{}"));
@@ -83,19 +84,31 @@ const acknowledgedNotice = { id: "n-1", noticeNo: "RMIN-1", incomingInspectionId
 const pendingNotice = { id: "n-2", noticeNo: "RMIN-2", incomingInspectionId: "insp-1", status: "pending", notifiedQuantity: "100" };
 
 describe("质检模块页（/qc）", () => {
-  it("一个页面同时挂载来料质检、成品质检、质检合格待入库/次品登记三块", async () => {
+  // 2026-09-14 拆分：/qc 不再同页挂载三块面板，改为分别指向三个子页的枢纽页。
+  it("枢纽页给出三块质检能力各自的入口", async () => {
     params.current = new URLSearchParams();
     stubQcModule();
 
     render(<><QcPage /><Toaster /></>);
 
     expect(await screen.findByTestId("page-qc")).toBeVisible();
-    expect(await screen.findByRole("heading", { name: "来料质检" })).toBeVisible();
-    expect(await screen.findByRole("heading", { name: "成品质检" })).toBeVisible();
-    expect(await screen.findByRole("heading", { name: "质检合格待入库 / 次品登记" })).toBeVisible();
-    // 二级去向都在页面上给出来（原料/成品的实际出入库回到仓库模块）
-    expect(screen.getByRole("link", { name: "去原料仓储情况过账入库" })).toHaveAttribute("href", "/warehouse/raw-material-storage");
-    expect(screen.getByRole("link", { name: "去成品仓储情况过账入库" })).toHaveAttribute("href", "/warehouse/finished-goods-storage");
+    expect(screen.getByRole("link", { name: "来料质检" })).toHaveAttribute("href", "/qc/incoming");
+    expect(screen.getByRole("link", { name: "成品质检" })).toHaveAttribute("href", "/qc/finished-goods");
+    expect(screen.getByRole("link", { name: "质检合格待入库 / 次品登记" })).toHaveAttribute("href", "/qc/inbound");
+  });
+
+  it("深链 receipt_id / order_no 转发到对应子页（旧深链书签不能失效）", async () => {
+    replaceSpy.mockClear();
+    params.current = new URLSearchParams("receipt_id=r-1");
+    stubQcModule();
+    const first = render(<><QcPage /><Toaster /></>);
+    await waitFor(() => expect(replaceSpy).toHaveBeenCalledWith("/qc/incoming?receipt_id=r-1"));
+    first.unmount();
+
+    replaceSpy.mockClear();
+    params.current = new URLSearchParams("order_no=SO-9");
+    render(<><QcPage /><Toaster /></>);
+    await waitFor(() => expect(replaceSpy).toHaveBeenCalledWith("/qc/finished-goods?order_no=SO-9"));
   });
 });
 
@@ -381,22 +394,29 @@ describe("成品质检面板的订单号深链", () => {
   });
 });
 
-describe("同页跨面板刷新（否则刚写进去的数字一直是旧的）", () => {
-  it("登记成品入库后，来料质检与成品质检两块会重新拉取自己的数据", async () => {
+// 2026-09-14 拆分：三块面板不再同页共存，「同页跨面板刷新」不再适用；
+// 取而代之、也是用户实际依赖的保证是：进入任一子页都会重新拉取自己的数据（不会看到旧数字）。
+describe("拆成独立子页后的取数（进入页面即拉到最新，不依赖同页回调）", () => {
+  it("来料质检、成品质检、待入库/次品三块各自挂载时都会重新拉取自己的数据", async () => {
     const calls = stubQcModule();
     params.current = new URLSearchParams();
 
-    render(<><QcPage /><Toaster /></>);
-    await screen.findByRole("heading", { name: "质检合格待入库 / 次品登记" });
-    const beforeInbounds = calls.filter((call) => call.url.endsWith("/incoming-inspections")).length;
+    // 来料质检：挂载即拉送检列表
+    const beforeIncoming = calls.filter((call) => call.url.endsWith("/incoming-inspections")).length;
+    const incoming = render(<><IncomingInspectionsPanel /><Toaster /></>);
+    await waitFor(() => expect(calls.filter((call) => call.url.endsWith("/incoming-inspections")).length).toBeGreaterThan(beforeIncoming));
+    incoming.unmount();
+
+    // 成品质检：挂载即拉自己的来源
     const beforeSources = calls.filter((call) => call.url.includes("/finished-goods/qc/sources")).length;
-
-    await userEvent.click(await screen.findByRole("button", { name: "登记入库" }));
-    await userEvent.click(screen.getByTestId("action-dialog-submit"));
-    await waitFor(() => expect(postCalls(calls, "/finished-goods/inbounds")).toHaveLength(1));
-
-    // 入库草稿会影响原料侧可入库量与成品质检的净值展示，两块必须重新拉取
-    await waitFor(() => expect(calls.filter((call) => call.url.endsWith("/incoming-inspections")).length).toBeGreaterThan(beforeInbounds));
+    const finished = render(<><FinishedGoodsQcPanel /><Toaster /></>);
     await waitFor(() => expect(calls.filter((call) => call.url.includes("/finished-goods/qc/sources")).length).toBeGreaterThan(beforeSources));
+    finished.unmount();
+
+    // 待入库 / 次品：挂载即拉可入库质检记录
+    const sources = "/finished-goods/qc-records/available-inbound-sources";
+    const beforeInbound = calls.filter((call) => call.url.includes(sources)).length;
+    render(<><QcInboundPanel /><Toaster /></>);
+    await waitFor(() => expect(calls.filter((call) => call.url.includes(sources)).length).toBeGreaterThan(beforeInbound));
   });
 });

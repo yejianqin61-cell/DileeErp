@@ -19,6 +19,10 @@ const qcPanel = read("components", "qc", "finished-goods-qc-panel.tsx");
 const qcInboundPanel = read("components", "qc", "qc-inbound-panel.tsx");
 const incomingInspectionsPanel = read("components", "qc", "incoming-inspections-panel.tsx");
 const qcPage = read("app", "qc", "page.tsx");
+// 2026-09-14 拆分后：/qc 变成枢纽页，三块面板各自挂在独立子页上。
+const qcIncomingPage = read("app", "qc", "incoming", "page.tsx");
+const qcFinishedGoodsPage = read("app", "qc", "finished-goods", "page.tsx");
+const qcInboundPage = read("app", "qc", "inbound", "page.tsx");
 const workbench = read("app", "workbench.tsx");
 const warehousePage = read("app", "warehouse", "page.tsx");
 
@@ -35,18 +39,23 @@ test("仓库新增成品仓储情况页面，并从仓库首页可进入", () =>
 test("质检模块（/qc）承接来料质检、成品质检与质检合格待入库，业务页面只留入口", () => {
   // 页面与导航：质检必须是全站可达的独立入口。
   assert.match(qcPage, /data-testid="page-qc"/, "质检页要有页面根钩子");
-  assert.match(qcPage, /IncomingInspectionsPanel/, "质检页要挂载来料质检");
-  assert.match(qcPage, /FinishedGoodsQcPanel/, "质检页要挂载成品质检");
-  assert.match(qcPage, /QcInboundPanel/, "质检页要挂载质检合格待入库/次品登记");
+  // 2026-09-14 拆分：枢纽页只给三个子页的入口，三块面板分别由子页挂载。
+  assert.match(qcPage, /href="\/qc\/incoming"/, "枢纽页要到来料质检的入口");
+  assert.match(qcPage, /href="\/qc\/finished-goods"/, "枢纽页要到成品质检的入口");
+  assert.match(qcPage, /href="\/qc\/inbound"/, "枢纽页要到质检合格待入库/次品登记的入口");
+  assert.match(qcIncomingPage, /IncomingInspectionsPanel/, "来料质检子页要挂载来料质检");
+  assert.match(qcFinishedGoodsPage, /FinishedGoodsQcPanel/, "成品质检子页要挂载成品质检");
+  assert.match(qcInboundPage, /QcInboundPanel/, "待入库子页要挂载质检合格待入库/次品登记");
   const appShell = read("components", "layout", "app-shell.tsx");
   assert.match(appShell, /\["质检", "\/qc"/, "主导航要有质检 tab");
   // 原页面不得再各自实现一套质检，只能给跳转入口。
   assert.match(storagePage, /href="\/qc"/, "成品仓储页要给出质检模块入口");
   assert.match(warehousePage, /href="\/qc"/, "仓库页要给出质检模块入口");
-  const procurementPage = read("app", "procurement", "page.tsx");
-  assert.match(procurementPage, /href="\/qc"/, "采购页要给出质检模块入口");
-  assert.match(procurementPage, /\/qc\?receipt_id=\$\{receipt!\.id\}/, "采购批次要能带批次深链到质检");
-  assert.equal(/incoming-inspections", ?\{ purchase_receipt_id/.test(procurementPage), false, "采购页不得再自己登记质检");
+  // 采购侧的质检入口与批次深链随草稿工作区一起搬到了 orders 子页。
+  const procurementOrdersPage = read("app", "procurement", "orders", "page.tsx");
+  assert.match(procurementOrdersPage, /href="\/qc/, "采购页要给出质检模块入口");
+  assert.match(procurementOrdersPage, /\/qc\/incoming\?receipt_id=\$\{receipt!\.id\}/, "采购批次要能带批次深链到质检");
+  assert.equal(/incoming-inspections", ?\{ purchase_receipt_id/.test(procurementOrdersPage), false, "采购页不得再自己登记质检");
 });
 
 test("质检合格待入库与次品登记用净值化接口，并保留次品过账/冲销入口", () => {

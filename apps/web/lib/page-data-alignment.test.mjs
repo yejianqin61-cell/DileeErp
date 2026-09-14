@@ -99,13 +99,17 @@ test("每个 Promise.all 数据加载的绑定名与请求数一致", () => {
 // 注意（本检查的边界）：顺序表只能发现“请求序列变了”，无法发现“请求序列没变但 setter 写串了”；
 // 后者由下面针对采购页的 setter↔接口语义测试覆盖。
 const LOAD_ORDER = {
-  "app/procurement/page.tsx": ["/purchase-orders", "/raw-material-inbounds", "/payable-sources", "/finance/payable-entries", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
+  // 2026-09-14 拆分后，原采购页一次性加载的 9 个接口拆成两个子页各自的位置型解构：
+  // orders = 采购单与主数据；inbounds = 原料入库、应付来源与应付台账。
+  "app/procurement/orders/page.tsx": ["/purchase-orders", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
+  "app/procurement/inbounds/page.tsx": ["/raw-material-inbounds", "/payable-sources", "/finance/payable-entries"],
   // 来料质检已迁到质检模块的独立面板：到货批次 → 质检记录 → 原料入库 → 入库通知，
   // 位置型解构错位在采购页不再可见，所以绑定表跟着搬到这个文件。
   "components/qc/incoming-inspections-panel.tsx": ["/purchase-orders", "/incoming-inspections", "/raw-material-inbounds", "/raw-material-inbound-notices"],
   // 生产页新增 /materials：BOM 表现在采购与生产共用同一套编辑工作区，生产侧需要物料池做明细下拉。
   "app/production/page.tsx": ["/sales-orders?status=confirmed", "/production/locations", "/production/operations", "/production/orders", "/units", "/materials"],
-  "app/warehouse/page.tsx": ["/production/orders", "/materials", "/production/material-movements", "/inventory/raw-material-balances", "/raw-material-inbound-notices"],
+  // 仓库枢纽页已改为纯导航页（只单发一次 /raw-material-inbound-notices，没有位置型解构），
+  // 原来的多接口加载分别落在 production/material-issues 与 warehouse/raw-material-storage 上，见上下两行。
   "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
   "app/sales/page.tsx": ["/customers?page_size=200", "/sales-orders?page_size=200", "/units"],
   "app/production/material-issues/page.tsx": ["/production/material-movements", "/production/orders"]
@@ -125,43 +129,50 @@ test("主要数据加载页的接口顺序与绑定表一致（防止插入/换�
   assert.deepEqual(failures, [], `数据加载顺序漂移：\n${failures.join("\n")}`);
 });
 
-// 采购页字段语义表：每个 setter 必须绑定到它真正对应的接口。
+// 采购字段语义表：每个 setter 必须绑定到它真正对应的接口。
 // 位置型解构一旦错位（即使请求数不变），这里立刻变红。
+// 2026-09-14 拆分后按子页分表：orders 管采购单与主数据，inbounds 管入库与应付。
 const PROCUREMENT_BINDINGS = {
-  setOrders: "/purchase-orders",
-  setInbounds: "/raw-material-inbounds",
-  setPayables: "/payable-sources",
-  setPayableEntries: "/finance/payable-entries",
-  setMaterials: "/materials",
-  setUnits: "/units",
-  setSuppliers: "/suppliers",
-  setBoms: "/boms",
-  setSalesOrders: "/sales-orders"
+  "app/procurement/orders/page.tsx": {
+    setOrders: "/purchase-orders",
+    setMaterials: "/materials",
+    setUnits: "/units",
+    setSuppliers: "/suppliers",
+    setBoms: "/boms",
+    setSalesOrders: "/sales-orders"
+  },
+  "app/procurement/inbounds/page.tsx": {
+    setInbounds: "/raw-material-inbounds",
+    setPayables: "/payable-sources",
+    setPayableEntries: "/finance/payable-entries"
+  }
 };
 
-test("采购页每个状态 setter 绑定到对应接口（单位取 /units、销售单取 /sales-orders）", () => {
-  const source = readFileSync(join(webRoot, "app", "procurement", "page.tsx"), "utf8");
-  const call = extractCalls(source).find((candidate) => candidate.elements.includes("/materials"));
-  assert.ok(call, "采购页未找到加载 /materials 的 Promise.all 数据加载");
-  assert.equal(call.names.length, call.elements.length, "采购页绑定名与请求数不一致");
+test("采购子页每个状态 setter 绑定到对应接口（单位取 /units、销售单取 /sales-orders）", () => {
+  for (const [relativePath, bindings] of Object.entries(PROCUREMENT_BINDINGS)) {
+    const source = readFileSync(join(webRoot, relativePath), "utf8");
+    const call = extractCalls(source).sort((left, right) => right.elements.length - left.elements.length)[0];
+    assert.ok(call && call.names.length, `${relativePath} 未找到带绑定的 Promise.all 数据加载`);
+    assert.equal(call.names.length, call.elements.length, `${relativePath} 绑定名与请求数不一致`);
 
-  const masked = maskStrings(source);
-  const resolved = call.names.map((name, index) => {
-    const setter = new RegExp(`(set[A-Za-z0-9_]+)\\(\\s*${name}\\.data`).exec(masked);
-    return { name, setter: setter ? setter[1] : null, endpoint: call.elements[index] };
-  });
+    const masked = maskStrings(source);
+    const resolved = call.names.map((name, index) => {
+      const setter = new RegExp(`(set[A-Za-z0-9_]+)\\(\\s*${name}\\.data`).exec(masked);
+      return { name, setter: setter ? setter[1] : null, endpoint: call.elements[index] };
+    });
 
-  const missing = resolved.filter((row) => !row.setter);
-  assert.deepEqual(missing.map((row) => row.name), [], `以下响应没有写入任何状态，页面拿不到数据：${missing.map((row) => row.name).join(", ")}`);
+    const missing = resolved.filter((row) => !row.setter);
+    assert.deepEqual(missing.map((row) => row.name), [], `${relativePath}: 以下响应没有写入任何状态，页面拿不到数据：${missing.map((row) => row.name).join(", ")}`);
 
-  const mismatched = resolved.filter((row) => PROCUREMENT_BINDINGS[row.setter] !== row.endpoint);
-  assert.deepEqual(
-    mismatched.map((row) => `${row.name} → ${row.setter} 却绑定 ${row.endpoint}（应为 ${PROCUREMENT_BINDINGS[row.setter] ?? "未知 setter"}）`),
-    [],
-    "采购页状态与接口错位"
-  );
+    const mismatched = resolved.filter((row) => bindings[row.setter] !== row.endpoint);
+    assert.deepEqual(
+      mismatched.map((row) => `${row.name} → ${row.setter} 却绑定 ${row.endpoint}（应为 ${bindings[row.setter] ?? "未知 setter"}）`),
+      [],
+      `${relativePath} 状态与接口错位`
+    );
 
-  const covered = new Set(resolved.map((row) => row.setter));
-  const uncovered = Object.keys(PROCUREMENT_BINDINGS).filter((setter) => !covered.has(setter));
-  assert.deepEqual(uncovered, [], `采购页缺少必须加载的数据：${uncovered.join(", ")}`);
+    const covered = new Set(resolved.map((row) => row.setter));
+    const uncovered = Object.keys(bindings).filter((setter) => !covered.has(setter));
+    assert.deepEqual(uncovered, [], `${relativePath} 缺少必须加载的数据：${uncovered.join(", ")}`);
+  }
 });

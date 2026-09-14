@@ -33,7 +33,8 @@ function effectBlocks(source) {
   return blocks;
 }
 
-const pages = ["app/warehouse/page.tsx", "app/warehouse/raw-material-storage/page.tsx", "app/procurement/page.tsx", "app/production/page.tsx", "components/qc/incoming-inspections-panel.tsx", "components/qc/qc-inbound-panel.tsx"];
+// 2026-09-14 拆分后，采购页的 useEffect 随功能分散到 orders / inbounds 两个子页，守卫跟着覆盖它们。
+const pages = ["app/warehouse/page.tsx", "app/warehouse/raw-material-storage/page.tsx", "app/procurement/page.tsx", "app/procurement/orders/page.tsx", "app/procurement/inbounds/page.tsx", "app/production/page.tsx", "components/qc/incoming-inspections-panel.tsx", "components/qc/qc-inbound-panel.tsx"];
 
 const autoOpenCases = [
   // 自动打开原料入库单：依赖里出现 dialog 就会「关掉又被打开」。
@@ -73,7 +74,8 @@ test("每个 useEffect 都写明了依赖数组", () => {
   }
 });
 
-test("采购页对财务应付台账的读取必须容错，单个接口失败不得让整页空白", () => {
-  const source = readFileSync(join(webRoot, "app/procurement/page.tsx"), "utf8");
+test("采购入库页对财务应付台账的读取必须容错，单个接口失败不得让整页空白", () => {
+  // 2026-09-14 拆分后：读取应付台账的位置随「原料入库」功能搬到 inbounds 子页。
+  const source = readFileSync(join(webRoot, "app", "procurement", "inbounds", "page.tsx"), "utf8");
   assert.match(source, /apiGet<PayableEntry\[\]>\("\/finance\/payable-entries"\)\.catch\(/, "应付台账是辅助数据，必须 catch 后给空数组，避免权限差异导致采购页整页加载失败");
 });

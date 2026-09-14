@@ -1,4 +1,7 @@
-// app/procurement/page.tsx 采购草稿工作区的**行为**测试。
+// app/procurement/orders/page.tsx 采购草稿工作区的**行为**测试。
+//
+// 2026-09-14 拆分：原 app/procurement/page.tsx 已改为纯导航枢纽页，草稿工作区整体搬到 orders 子页，
+// 因此渲染目标与页面 testid 跟着搬到 /procurement/orders（断言内容不变）。
 //
 // 只覆盖本轮整改新加的两条链路，避免重复已有模块测试：
 //   1. 带入 BOM 明细后逐行复选框 → 批量移除：只改本地草稿，**不写 BOM**（BOM 是工程主数据）；
@@ -8,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import ProcurementPage from "../app/procurement/page";
+import PurchaseOrdersPage from "../app/procurement/orders/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
 
@@ -65,8 +68,8 @@ function stubProcurement() {
 /** 打开采购草稿并带入 BOM 明细（销售单 SO-1 → BOM-1 → 3 行明细）。 */
 async function openDraftWithBomItems() {
   const calls = stubProcurement();
-  render(<><ProcurementPage /><Toaster /></>);
-  await screen.findByTestId("page-procurement");
+  render(<><PurchaseOrdersPage /><Toaster /></>);
+  await screen.findByTestId("page-procurement-orders");
 
   await userEvent.click(screen.getByRole("button", { name: "新建采购单" }));
   // 草稿编辑器里的前三个下拉依次是：销售单 / BOM表 / 币种

@@ -19,7 +19,13 @@ test("只在页面可见时刷新，后台标签页不刷新", () => {
 });
 
 test("展示入库状态的页面必须注册焦点/可见性刷新并提供刷新按钮", () => {
-  const pages = ["app/warehouse/raw-material-storage/page.tsx", "app/procurement/page.tsx"];
+  // 2026-09-14 拆分后：app/procurement/page.tsx 已改为纯导航枢纽页，不再承载入库状态列；
+  // 现在展示该状态的是采购单（orders）与原料入库（inbounds）两个子页，守卫跟着落到它们身上。
+  const pages = [
+    "app/warehouse/raw-material-storage/page.tsx",
+    "app/procurement/orders/page.tsx",
+    "app/procurement/inbounds/page.tsx",
+  ];
   for (const file of pages) {
     const source = readFileSync(join(webRoot, file), "utf8");
     assert.match(source, /shouldRefreshOnVisibility/, `${file} 未使用统一的刷新判定`);
@@ -42,7 +48,8 @@ test("仓储页的入库状态要显示中文，不能直接暴露英文原值",
 // 把正在编辑的弹窗（ActionDialog 的输入是组件内部 state）连同 DOM 一起卸载。
 test("后台刷新必须静默：不能切整页 loading（会卸载正在编辑的弹窗、清空用户输入）", () => {
   const pages = [
-    "app/procurement/page.tsx",
+    "app/procurement/orders/page.tsx",
+    "app/procurement/inbounds/page.tsx",
     "app/warehouse/raw-material-storage/page.tsx",
     "app/warehouse/finished-goods-storage/page.tsx",
     "components/production/production-order-detail-page.tsx",

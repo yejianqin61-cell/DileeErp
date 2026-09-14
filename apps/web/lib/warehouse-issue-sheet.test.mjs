@@ -54,10 +54,13 @@ test("全屏编辑页给关键列固定宽度并单行省略，避免物料名�
   assert.match(editor, /className="panel material-slip-editor"/, "编辑页表格要挂上专属样式类");
 });
 
-test("已过账的领料/补料单支持回退草稿，且必须填原因", () => {
-  assert.match(warehouse, /\/production\/material-movements\/\$\{movement\.id\}\/reopen/, "必须调用回退草稿接口");
-  assert.match(warehouse, /label: "回退原因（退回草稿后库存会相应回补）", type: "textarea", required: true/, "回退原因必填");
-  assert.match(warehouse, /\["issue", "replenishment"\]\.includes\(row\.original\.documentType\)[\s\S]{0,200}?>回退草稿<\/Button>/, "只有领料/补料单显示回退按钮");
+// 2026-09-14 拆分后：领料/补料单从仓库页搬到独立列表页（listPage），
+// 界面文案也从「回退草稿」改为「重新打开」；守卫落到真正承载该动作的页面上。
+test("已过账的领料/补料单支持重新打开回草稿，且必须填原因", () => {
+  assert.match(listPage, /\/production\/material-movements\/\$\{slip\.id\}\/reopen/, "必须调用重新打开接口");
+  assert.match(listPage, /label: "重新打开原因", type: "textarea", required: true/, "重新打开原因必填");
+  assert.match(listPage, /\["issue", "replenishment"\]\.includes\(item\.documentType\)/, "列表只收录领料/补料单（两者都能重新打开）");
+  assert.match(listPage, /slip\.status === "posted"[\s\S]{0,300}?>重新打开<\/Button>/, "只有已过账单据才显示重新打开");
 });
 
 test("编辑已有草稿时锁定生产单（PATCH 不支持换单，换了会让明细与单据头不一致）", () => {
