@@ -2,9 +2,9 @@
 
 // 收支管理：/finance/cash-flow
 //
-// 老系统两张表（收支明细表 / 收支汇总表）的**录入侧**：手工录入资金流水，按可配置的收支项目归类。
-// 用户 R6 选定「手工录入 + 可配置项目字典」，与收付款单**不做自动联动** ——
-// 已知代价是收付款单过账后不会自动出现在这里，财务要手工补一条（页面上写明了这一点）。
+// 用户 R6 选定「手工录入 + 可配置项目字典」。
+// 收付款单过账与工资支付过账时，自动写入收支流水（sourceType/sourceId 标记来源）。
+// 手工录入的条目与自动条目可混合查看。
 //
 // 收支项目 / 结算账户直接复用既有的字典接口（`/dictionaries/<key>/items`），
 // 不另造一套平行接口；写操作仅管理员，非管理员会收到后端 403 提示。
@@ -36,6 +36,8 @@ type CashFlowEntry = {
   settlementMethod: string | null;
   settlementAccount: { id: string; label: string } | null;
   status: string;
+  sourceType: string | null;
+  sourceId: string | null;
   remark: string | null;
 };
 
@@ -51,6 +53,12 @@ const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiCli
 
 /** 金额显示成「收 1,000.00 / 支 2,900.00」这种一眼能认的形式（库里的金额恒为正，方向在另一列）。 */
 const amountText = (entry: CashFlowEntry) => `${entry.direction === "income" ? "收" : "支"} ${entry.amount}`;
+
+const SOURCE_LABELS: Record<string, string> = {
+  customer_payment: "客户收款",
+  supplier_payment: "供应商付款",
+  salary_payment: "工资付款",
+};
 
 export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }: { testId?: string }) {
   const [from, setFrom] = useState(firstDayOfMonth);
@@ -84,7 +92,6 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       if (includeReversed) params.set("include_reversed", "true");
       const [entryResult, itemResult, accountResult] = await Promise.all([
         apiGet<CashFlowEntry[]>(`/finance/cash-flow-entries?${params.toString()}`),
-        // 维护面板要把**停用**的项目也列出来（否则停用后就在界面上消失了，无法再启用）。
         apiGet<DictionaryItem[]>(`/dictionaries/${CASH_FLOW_ITEM_DICTIONARY_KEY}/items?include_inactive=true`),
         apiGet<DictionaryItem[]>(`/dictionaries/${SETTLEMENT_ACCOUNT_DICTIONARY_KEY}/items`),
       ]);
@@ -107,7 +114,6 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
 
   const activeItems = useMemo(() => items.filter((item) => item.isActive), [items]);
 
-  /** 新增/更正共用的字段定义（更正时带 defaultValue）。 */
   function entryFields(entry?: CashFlowEntry): ActionField[] {
     return [
       { name: "entry_date", label: "日期", type: "date", required: true, defaultValue: entry ? entry.entryDate.slice(0, 10) : today() },
@@ -122,18 +128,12 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
     ];
   }
 
-  /** 空字符串一律当「没填」：ActionDialog 的下拉清空后给的是 ""，直接发给后端会被 UUID 校验拒掉。 */
   const bodyOf = (values: Record<string, string>) => {
     const body: Record<string, string> = {};
     for (const [key, value] of Object.entries(values)) if (value !== "" && value !== undefined) body[key] = value;
     return body;
   };
 
-  /**
-   * 弹窗内的提交**不吞异常**：ActionDialog 的契约是
-   * 「onSubmit 正常返回 → 关闭弹窗；抛异常 → 在弹窗内显示 action-dialog-error 并保持打开」。
-   * 自己 catch 再 notify 会让它以为提交成功而关掉弹窗，用户看不到原因。
-   */
   function openCreate() {
     setDialog({
       title: "新增收支流水",
@@ -193,7 +193,6 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
     }
     setBusy(true);
     try {
-      // key 用中文标签本身，与迁移/seed 的种子方式一致（这些是给财务看的业务类目，不需要英文编码）。
       await apiPost(`/dictionaries/${CASH_FLOW_ITEM_DICTIONARY_KEY}/items`, { key: label, label, sort_order: (items.length + 1) * 10 });
       notifySuccess(`已新增收支项目「${label}」`);
       setNewItemLabel("");
@@ -226,6 +225,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
     { accessorKey: "currency", header: "币种" },
     { id: "item", header: "收支项目", cell: ({ row }) => row.original.item?.label ?? "-" },
     { id: "settlement", header: "结算方式", cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
+    { id: "source", header: "来源", cell: ({ row }) => row.original.sourceType ? <span className="badge">{SOURCE_LABELS[row.original.sourceType] ?? row.original.sourceType}</span> : <span className="panel-note">手工录入</span> },
     { id: "status", header: "状态", cell: ({ row }) => (row.original.status === "posted" ? "生效" : "已冲销") },
     {
       id: "actions",
@@ -251,7 +251,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
   const totalExpense = useMemo(() => entries.filter((entry) => entry.direction === "expense").length, [entries]);
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="收支管理" description="手工录入资金收支流水；收支项目与结算账户是可配置字典。收付款单不会自动进这里，需要时请手工补录。">
+    <PageHeader title="收支管理" description="手工录入资金收支流水；收支项目与结算账户是可配置字典。收付款与工资过账后自动生成流水。">
       <Button variant="secondary" asChild><a href="/finance">返回财务</a></Button>
       <Button variant="secondary" data-testid="cash-flow-open-dictionary" onClick={() => setDictionaryOpen(true)}>收支项目维护</Button>
       <Button data-testid="cash-flow-create" onClick={openCreate}>新增流水</Button>
@@ -262,8 +262,6 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       onOpenChange={(open) => { if (!open && !busy) setDialog(null); }}
       title={dialog?.title ?? "操作"}
       fields={dialog?.fields ?? []}
-      // 必须把 submit 的 Promise 交回给 ActionDialog：用 `void` 丢掉它，
-      // 失败就会变成「弹窗照关、原因丢失」的未处理拒绝（ActionDialog 靠 await 判断成败）。
       onSubmit={(values) => (dialog ? dialog.submit(values) : undefined)}
     />
 
@@ -337,10 +335,10 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       {!error && loading && <LoadingState />}
       {!error && !loading && <>
         <p className="panel-note panel-body">
-          金额一律填正数，收/支由「收支方向」决定；导出的收支明细表会把收入与支出拆成两列（没有的那一边写 0）。
+          金额一律填正数，收/支由「收支方向」决定；来源列「手工录入」为手动新增，「客户收款 / 供应商付款 / 工资付款」为过账自动生成。
         </p>
         <div className="panel-body">
-          <DataTable columns={columns} data={entries} empty={<EmptyState title="本期没有收支流水" description="点右上角「新增流水」录入；也可以直接导出（导出的是空表，只有表头）。" />} />
+          <DataTable columns={columns} data={entries} empty={<EmptyState title="本期没有收支流水" description="点右上角「新增流水」手工录入；收付款过账后自动生成。" />} />
         </div>
       </>}
     </section>

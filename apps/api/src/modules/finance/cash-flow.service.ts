@@ -195,6 +195,59 @@ export class CashFlowService {
     };
   }
 
+  /**
+   * 自动从付款单据创建收支流水（「收付款过账后自动写入收支流水」）。
+   *
+   * 幂等：同 source_type + source_id + status=posted 已存在则不重复创建。
+   * 返回值可能为 null（已存在 → 跳过；收支项目字典缺失 → 跳过但不阻断付款过账）。
+   */
+  async autoCreateFromPayment(
+    input: {
+      paymentNo: string;
+      paymentDate: Date;
+      amount: Prisma.Decimal;
+      currency: string;
+      counterpartyName: string;
+      direction: "income" | "expense";
+      settlementMethod?: string | null;
+      settlementAccountId?: string | null;
+      sourceType: string;
+      sourceId: string;
+      itemKey: string;
+      remark?: string;
+    },
+    user: CurrentUser,
+  ) {
+    const existing = await this.prisma.cashFlowEntry.findFirst({
+      where: { sourceType: input.sourceType, sourceId: input.sourceId, status: "posted", deletedAt: null },
+      select: { id: true },
+    });
+    if (existing) return null;
+    const item = await this.prisma.dictionaryItem.findFirst({
+      where: { key: input.itemKey, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
+      select: { id: true },
+    });
+    if (!item) return null;
+    const row = await this.prisma.cashFlowEntry.create({
+      data: {
+        entryNo: this.number(),
+        entryDate: input.paymentDate,
+        counterpartyName: input.counterpartyName,
+        direction: input.direction,
+        amount: input.amount,
+        currency: input.currency,
+        itemId: item.id,
+        settlementMethod: input.settlementMethod ?? undefined,
+        settlementAccountId: input.settlementAccountId ?? undefined,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        remark: `自动生成：${input.sourceType} / ${input.paymentNo}${input.remark ? ` - ${input.remark}` : ""}`,
+        ...this.audit.create(user),
+      },
+    });
+    return row;
+  }
+
   private dateText(value: Date): string {
     return new Date(value).toISOString().slice(0, 10);
   }

@@ -173,6 +173,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `应收回退草稿：${item.sourceNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/receivable-sources/${item.id}/reopen`, { reason: v.reason }, "应收已回退草稿") });
   }
   function confirmSource(item: ReceivableSource) { void action(`/finance/receivable-sources/${item.id}/confirm`, undefined, `应收 ${item.sourceNo} 已确认`); }
+  function batchConfirmByOrder(orderNo: string, count: number) {
+    setDialog({ title: `批量确认应收：${orderNo}`, fields: [{ name: "confirm", label: `确认将订单 ${orderNo} 的全部 ${count} 条草稿应收一次性确认为已确认。不可逆。`, type: "info" as const }], submit: () => void action("/finance/receivable-sources/batch-confirm-by-order", { order_no: orderNo }, `订单 ${orderNo} 已批量确认 ${count} 条应收`) });
+  }
 
   function createPayment(source?: ReceivableSource) {
     setDialog({ title: source ? `登记收款（对应 ${source.sourceNo}）` : "登记收款", fields: [
@@ -488,8 +491,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       </section>
     </>}
     {!error && activeTab.key === "confirmed" && <>
+      <BulkConfirmSection sources={ledgerSources} onBatchConfirm={batchConfirmByOrder} />
       <section className="panel">
-        <div className="panel-heading"><h2>确认应收</h2><span className="panel-note">应收台账：草稿在此逐条确认；已确认的在此登记收款、核销与回退。也可以在对账页一键批量确认</span></div>
+        <div className="panel-heading"><h2>确认应收</h2><span className="panel-note">应收台账：草稿在此逐条确认；已确认的在此登记收款、核销与回退。同一订单有多条草稿时可批量确认</span></div>
         <div className="panel-body"><DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="暂无应收台账" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" /></div>
       </section>
       <section className="panel">
@@ -501,4 +505,37 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       </section>
     </>}
   </div>;
+}
+
+function BulkConfirmSection({ sources, onBatchConfirm }: { sources: ReceivableSource[]; onBatchConfirm: (orderNo: string, count: number) => void }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, { orderNo: string; customerName: string; customerId: string; draftCount: number; draftAmount: number }>();
+    for (const source of sources) {
+      if (source.status !== "draft") continue;
+      const key = source.orderNo;
+      const group = map.get(key) ?? { orderNo: source.orderNo, customerName: source.customer_name ?? source.customerId, customerId: source.customerId, draftCount: 0, draftAmount: 0 };
+      group.draftCount += 1;
+      group.draftAmount += Number(source.amount);
+      map.set(key, group);
+    }
+    return [...map.values()].filter((group) => group.draftCount > 0).sort((a, b) => b.draftAmount - a.draftAmount);
+  }, [sources]);
+
+  if (!groups.length) return null;
+  return <section className="panel">
+    <div className="panel-heading"><h2>按订单批量确认</h2><span className="panel-note">相同订单有多条出库 → 一键批量确认全部草稿应收，无需逐条操作。只确认草稿条目，已确认的自动跳过。</span></div>
+    <div className="panel-body">
+      <DataTable
+        columns={[
+          { accessorKey: "orderNo", header: "订单号" },
+          { accessorKey: "customerName", header: "客户" },
+          { id: "draftCount", header: "草稿条数", cell: ({ row }) => `${row.original.draftCount} 条` },
+          { id: "draftAmount", header: "草稿合计", cell: ({ row }) => row.original.draftAmount.toFixed(2) },
+          { id: "action", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => onBatchConfirm(row.original.orderNo, row.original.draftCount)}>批量确认 ({row.original.draftCount} 条)</Button> },
+        ] as ColumnDef<{ orderNo: string; customerName: string; customerId: string; draftCount: number; draftAmount: number }>[]}
+        data={groups}
+        empty={<EmptyState title="所有订单均无草稿应收" />}
+      />
+    </div>
+  </section>;
 }

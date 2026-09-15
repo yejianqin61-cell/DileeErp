@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { CashFlowService } from "./cash-flow.service";
 import { ReceivableService } from "./receivable.service";
 
 type PaymentInput = { customer_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payer_name?: string; attachment?: unknown[]; remark?: string };
@@ -12,7 +13,7 @@ type Allocation = { receivable_source_id: string; amount: string };
 
 @Injectable()
 export class CustomerPaymentService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly receivable: ReceivableService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly receivable: ReceivableService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
 
   /** 收款列表：带上客户名称与被核销的应收来源编号，否则财务只看得到一串 UUID。 */
   async list(orderNo?: string, customerId?: string) {
@@ -61,7 +62,9 @@ export class CustomerPaymentService {
       for (const allocation of allocations ?? []) await this.receivable.refreshStatus(tx, allocation.receivable_source_id, user);
       return payment;
     });
-    await this.audit.record("customer_payment.post", "customer_payment", user.id, id, { order_no: result.orderNo, allocation_count: allocations?.length ?? 0 }); return result;
+    await this.audit.record("customer_payment.post", "customer_payment", user.id, id, { order_no: result.orderNo, allocation_count: allocations?.length ?? 0 });
+    await this.cashFlow.autoCreateFromPayment({ paymentNo: result.paymentNo, paymentDate: result.paymentDate, amount: result.amount, currency: result.currency, counterpartyName: result.payerName ?? result.customerId, direction: "income", settlementMethod: result.paymentMethod, settlementAccountId: null, sourceType: "customer_payment", sourceId: result.id, itemKey: "货款", remark: result.remark ?? undefined }, user);
+    return result;
   }
 
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; remark?: string }, user: CurrentUser) {

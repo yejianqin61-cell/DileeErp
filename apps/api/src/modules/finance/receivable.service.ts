@@ -99,6 +99,31 @@ export class ReceivableService {
     await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo });
     return row;
   }
+
+  /**
+   * 按订单号批量确认该订单下所有草稿应收（解决「同一订单多次出库 → 逐条确认」的重复操作）。
+   * 幂等：只确认状态为 draft 的条目，已确认/已取消的自动跳过。
+   */
+  async batchConfirmByOrder(orderNo: string, user: CurrentUser) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_sources WHERE order_no = ${orderNo} AND deleted_at IS NULL AND status = 'draft' FOR UPDATE`;
+      const drafts = await tx.receivableSource.findMany({
+        where: { orderNo, deletedAt: null, status: "draft" },
+        select: { id: true, sourceNo: true },
+      });
+      if (!drafts.length) throw this.notFound("NO_DRAFT_RECEIVABLES", `订单 ${orderNo} 没有草稿应收条目`);
+      const ids = drafts.map((item) => item.id);
+      await tx.receivableSource.updateMany({
+        where: { id: { in: ids }, deletedAt: null, status: "draft" },
+        data: { status: "confirmed", ...this.audit.update(user) },
+      });
+      return { orderNo, count: drafts.length, ids };
+    });
+    for (const id of result.ids) {
+      await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: result.orderNo, batch: true });
+    }
+    return result;
+  }
   async updateDraft(id: string, input: { amount?: string; due_date?: string; amount_reason?: string; remark?: string }, user: CurrentUser) {
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;

@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { CashFlowService } from "./cash-flow.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 
 type PaymentInput = { supplier_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payee_name?: string; attachment?: unknown[]; remark?: string };
@@ -12,7 +13,7 @@ type AllocationInput = { payable_entry_id: string; amount: string; remark?: stri
 
 @Injectable()
 export class SupplierPaymentService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payable: SupplierPayableService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payable: SupplierPayableService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
     const rows = await this.prisma.supplierPayment.findMany({
@@ -69,6 +70,7 @@ export class SupplierPaymentService {
       return payment;
     });
     await this.audit.record("supplier_payment.post", "supplier_payment", user.id, id, { order_no: result.orderNo, allocation_count: items.length });
+    await this.cashFlow.autoCreateFromPayment({ paymentNo: result.paymentNo, paymentDate: result.paymentDate, amount: result.amount, currency: result.currency, counterpartyName: result.payeeName ?? result.supplierId, direction: "expense", settlementMethod: result.paymentMethod, settlementAccountId: null, sourceType: "supplier_payment", sourceId: result.id, itemKey: "外加工费", remark: result.remark ?? undefined }, user);
     return result;
   }
 
