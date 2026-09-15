@@ -76,7 +76,7 @@ export class SupplierPayableService {
         attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
       } });
     });
-    await this.audit.recordWithOrderNo("supplier_payable.create", "supplier_payable_entry", row.orderNo, user.id, row.id, { payable_no: row.payableNo, source_type: row.sourceType, source_id: input.source_id, amount: row.amount.toString() });
+    await this.audit.recordWithOrderNo("supplier_payable.create", "supplier_payable_entry", row.orderNo ?? "", user.id, row.id, { payable_no: row.payableNo, source_type: row.sourceType, source_id: input.source_id, amount: row.amount.toString() });
     return row;
   }
 
@@ -89,7 +89,7 @@ export class SupplierPayableService {
       if (current.payableSource?.status === "voided" || current.outsourcePayableSource?.status === "voided") throw this.invalid("PAYABLE_SOURCE_VOIDED", "应付来源已作废，不能确认");
       return tx.supplierPayableEntry.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
     });
-    await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo, user.id, id, { payable_no: row.payableNo });
+    await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { payable_no: row.payableNo });
     return row;
   }
 
@@ -102,7 +102,7 @@ export class SupplierPayableService {
       const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
       return tx.supplierPayableEntry.update({ where: { id }, data: { amount, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : current.confirmationDate, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
-    await this.audit.recordWithOrderNo("supplier_payable.update", "supplier_payable_entry", row.orderNo, user.id, id, { amount: row.amount.toString() });
+    await this.audit.recordWithOrderNo("supplier_payable.update", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { amount: row.amount.toString() });
     return row;
   }
 
@@ -116,7 +116,7 @@ export class SupplierPayableService {
       if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "应付存在有效付款核销，必须先冲销付款");
       return tx.supplierPayableEntry.update({ where: { id }, data: { status: "draft", remark: `${current.remark ?? ""}\n回退草稿：${reason.trim()}`, ...this.audit.update(user) } });
     });
-    await this.audit.recordWithOrderNo("supplier_payable.reopen", "supplier_payable_entry", row.orderNo, user.id, id, { reason: reason.trim(), from: "confirmed", to: "draft" });
+    await this.audit.recordWithOrderNo("supplier_payable.reopen", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { reason: reason.trim(), from: "confirmed", to: "draft" });
     return row;
   }
 
@@ -130,7 +130,7 @@ export class SupplierPayableService {
       if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "应付存在有效付款核销，必须先冲销付款");
       return tx.supplierPayableEntry.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
     });
-    await this.audit.recordWithOrderNo("supplier_payable.reverse", "supplier_payable_entry", row.orderNo, user.id, id, { reason: reason.trim() });
+    await this.audit.recordWithOrderNo("supplier_payable.reverse", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { reason: reason.trim() });
     return row;
   }
 
@@ -154,6 +154,24 @@ export class SupplierPayableService {
     const amount = entries.filter((entry) => entry.status !== "reversed").reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
     const allocated = entries.reduce((sum, entry) => sum.plus(entry.allocations.filter((allocation) => allocation.payment.status === "posted").reduce((inner, allocation) => inner.plus(allocation.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0));
     return { order_no: orderNo, payable_entry_count: entries.length, payable_amount: amount.toString(), allocated_amount: allocated.toString(), outstanding_amount: amount.minus(allocated).toString(), status: amount.eq(0) || allocated.eq(0) ? "unpaid" : allocated.gte(amount) ? "paid" : "partially_paid" };
+  }
+
+  async createOther(input: { supplier_id: string; amount: string; currency: string; description: string; confirmation_date?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+    const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null }, select: { id: true, name: true } });
+    if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
+    const amount = this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
+    const row = await this.prisma.supplierPayableEntry.create({ data: {
+      payableNo: this.number("APO"), orderNo: null, supplierId: supplier.id,
+      sourceType: "other", payableSourceId: null, outsourcePayableSourceId: null,
+      purchaseOrderId: null, purchaseOrderItemId: null, outsourceLogisticsBatchId: null,
+      sourceNoSnapshot: `其他应付-${input.description.slice(0, 30)}`, quantity: new Prisma.Decimal(1),
+      unitPrice: amount, taxRate: new Prisma.Decimal(0), amount, currency: input.currency,
+      confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
+      attachment: (input.attachment ?? []) as Prisma.InputJsonValue,
+      remark: input.remark, ...this.audit.create(user),
+    } });
+    await this.audit.record("supplier_payable.create_other", "supplier_payable_entry", user.id, row.id, { payable_no: row.payableNo, description: input.description, amount: row.amount.toString(), supplier_name: supplier.name });
+    return row;
   }
 
   private async source(type: SourceType, id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {

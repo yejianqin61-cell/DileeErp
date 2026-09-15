@@ -32,6 +32,7 @@ const EP = {
   payables: "/api/v1/finance/payable-entries",
   supplierPayments: "/api/v1/finance/supplier-payments",
   supplierReconciliations: "/api/v1/finance/supplier-payable-reconciliations",
+  banks: "/api/v1/finance/banks",
   customers: "/api/v1/customers",
   suppliers: "/api/v1/suppliers",
   salesOrders: "/api/v1/sales-orders",
@@ -391,27 +392,26 @@ describe("应付管理 · 来源条目", () => {
 });
 
 describe("应付管理 · 应付对账与确认应付", () => {
-  it("应付对账单支持处理差异与一键确认应付", async () => {
+  it("应付对账单支持处理差异并提示确认应付", async () => {
     const calls = stubFinance({
       payables: [payableEntry()],
-      supplierReconciliations: [supplierReconciliation(), supplierReconciliation({ id: "srecon-2", reconciliationNo: "APREC-002", status: "difference", difference: "5.0000" })],
+      supplierReconciliations: [supplierReconciliation({ details: { draft_count: 1, draft_amount: "50", entry_count: 1, payable_entries: [], draft_entries: [], pending_sources: [], can_confirm_payables: true } }), supplierReconciliation({ id: "srecon-2", reconciliationNo: "APREC-002", status: "difference", difference: "5.0000" })],
     });
     await open(<PayableWorkspace tab="reconciliations" testId="page-finance-payable" />, "page-finance-payable");
-    const table = panel("应付对账单");
+    const table = panel("已创建对账单");
     expect(table.getByText("APREC-002")).toBeInTheDocument();
     fireEvent.click(table.getByRole("button", { name: "处理差异" }));
     setValue("action-field-remark", "供应商确认差异为运费");
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/srecon-2/resolve")).toHaveLength(1));
 
-    fireEvent.click(panel("应付对账单").getByRole("button", { name: "一键确认应付" }));
-    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/srecon-1/confirm-payables")).toHaveLength(1));
+    expect(panel("已创建对账单").getByText(/到「确认应付」确认/)).toBeInTheDocument();
   });
 
   it("待创建对账按供应商+月份分组并可一键带入表单", async () => {
     const calls = stubFinance({ payables: [payableEntry()], suppliers: [{ id: "supplier-1", name: "绍兴纺织", supplierCode: "S001" }] });
     await open(<PayableWorkspace tab="reconciliations" testId="page-finance-payable" />, "page-finance-payable");
-    const groups = panel("待创建对账的条目");
+    const groups = panel("待创建对账");
     expect(groups.getByText("绍兴纺织")).toBeInTheDocument();
     expect(groups.getByText("2026-09")).toBeInTheDocument();
     fireEvent.click(groups.getByRole("button", { name: "创建对账" }));
@@ -433,7 +433,7 @@ describe("应付管理 · 应付对账与确认应付", () => {
     expect(table.getByText("AP-002")).toBeInTheDocument();
     expect(table.getByRole("button", { name: "确认应付" })).toBeInTheDocument();
 
-    fireEvent.click(table.getByRole("button", { name: "回退草稿" }));
+    fireEvent.click(table.getByRole("button", { name: "回退" }));
     setValue("action-field-reason", "金额有误");
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/pe-2/reopen")).toHaveLength(1));

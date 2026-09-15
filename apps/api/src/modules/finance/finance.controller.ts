@@ -58,6 +58,7 @@ class SupplierPaymentDto {
   @IsString() payment_method!: string;
   @IsOptional() @IsString() bank_reference?: string;
   @IsOptional() @IsString() payee_name?: string;
+  @IsOptional() @IsUUID() bank_id?: string;
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string;
   @IsOptional() @IsString() remark?: string;
@@ -65,7 +66,17 @@ class SupplierPaymentDto {
 class SupplierAllocationDto { @IsUUID() payable_entry_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }
 class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; }
 class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
+class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
+
+class SupplierOtherPayableDto {
+  @IsUUID() supplier_id!: string;
+  @IsString() amount!: string;
+  @IsString() currency!: string;
+  @IsString() @MaxLength(200) description!: string;
+  @IsOptional() @IsDateString() confirmation_date?: string;
+  @IsOptional() @IsArray() attachment?: unknown[];
+  @IsOptional() @IsString() @MaxLength(1000) remark?: string;
+}
 
 @Controller("finance")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -105,6 +116,7 @@ export class FinanceController {
   // 已移到 PayableNotificationController：类级 @RequireModules("finance") 会先于方法级 ANY 校验，
   // 挂在这里的方法级放宽无效。其余财务接口仍然只对 finance 模块开放。
   @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
+  @Post("payable-entries/other") async createOtherPayableEntry(@Body() body: SupplierOtherPayableDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createOther(body, user), meta: {} }; }
   @Post("payable-entries/:id/confirm") async confirmPayableEntry(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.confirm(id, user), meta: {} }; }
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }
   @Post("payable-entries/:id/reopen") async reopenPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reopen(id, body.reason, user), meta: {} }; }

@@ -29,8 +29,8 @@ export const RECEIVABLE_TABS = [
 export const PAYABLE_TABS = [
   { key: "raw-inbound-entries", title: "原料入库条目", description: "原料入库过账生成的待接收应付来源；接收后成为应付草稿" },
   { key: "outsource-entries", title: "外加工签收", description: "外加工实际签收生成的待接收应付来源（直发数量不形成应付）" },
-  { key: "reconciliations", title: "应付对账", description: "按供应商 + 期间创建对账单；对平后可一键确认应付" },
-  { key: "confirmed", title: "确认应付", description: "应付台账：草稿条目在此逐条确认，已确认的在此登记付款、核销与冲销" },
+  { key: "reconciliations", title: "应付对账", description: "按供应商 + 期间创建对账单；对平后到确认应付去确认" },
+  { key: "confirmed", title: "确认应付", description: "应付台账：草稿逐条确认；已确认的登记付款、核销与冲销" },
 ] as const;
 
 export type ReceivableTabKey = (typeof RECEIVABLE_TABS)[number]["key"];

@@ -950,7 +950,7 @@ model OutsourcePayableSource {
 model SupplierPayableEntry {
   id                        String                      @id @default(uuid()) @db.Uuid
   payableNo                 String                      @unique @map("payable_no") @db.VarChar(100)
-  orderNo                   String                      @map("order_no") @db.VarChar(100)
+  orderNo                   String?                     @map("order_no") @db.VarChar(100)
   supplierId                String                      @map("supplier_id") @db.Uuid
   sourceType                String                      @map("source_type") @db.VarChar(40)
   payableSourceId           String?                     @unique @map("payable_source_id") @db.Uuid
@@ -1000,6 +1000,7 @@ model SupplierPayment {
   paymentMethod String                      @map("payment_method") @db.VarChar(50)
   bankReference String?                     @map("bank_reference") @db.VarChar(200)
   payeeName     String?                     @map("payee_name") @db.VarChar(200)
+  bankId        String?                     @map("bank_id") @db.Uuid
   status        String                      @default("draft") @db.VarChar(30)
   attachment    Json                        @default("[]")
   remark        String?                     @db.VarChar(1000)
@@ -1010,6 +1011,7 @@ model SupplierPayment {
   deletedAt     DateTime?                   @map("deleted_at")
   deletedBy     String?                     @map("deleted_by") @db.Uuid
   supplier      Supplier                    @relation(fields: [supplierId], references: [id])
+  bank          Bank?                       @relation(fields: [bankId], references: [id])
   allocations   SupplierPaymentAllocation[]
 
   @@index([supplierId, status])
@@ -1563,6 +1565,7 @@ model SupplierPayableReconciliation {
   orderNo                  String?  @map("order_no") @db.VarChar(100)
   purchaseOrderId          String?  @map("purchase_order_id") @db.Uuid
   supplierId               String   @map("supplier_id") @db.Uuid
+  bankId                   String?  @map("bank_id") @db.Uuid
   periodStart              DateTime @map("period_start") @db.Date
   periodEnd                DateTime @map("period_end") @db.Date
   payableAmountSnapshot    Decimal  @map("payable_amount_snapshot") @db.Decimal(18, 4)
@@ -1583,6 +1586,7 @@ model SupplierPayableReconciliation {
   deletedAt                DateTime? @map("deleted_at")
   deletedBy                String?  @map("deleted_by") @db.Uuid
   supplier                 Supplier @relation(fields: [supplierId], references: [id])
+  bank                     Bank?    @relation(fields: [bankId], references: [id])
   purchaseOrder            PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
 
   @@index([supplierId, status])
@@ -2276,4 +2280,26 @@ model AlertHandling {
   @@unique([sourceType, sourceId, alertType])
   @@index([status, updatedAt])
   @@map("alert_handlings")
+}
+
+model Bank {
+  id            String              @id @default(uuid()) @db.Uuid
+  bankCode      String              @unique @map("bank_code") @db.VarChar(80)
+  bankName      String              @map("bank_name") @db.VarChar(200)
+  accountName   String              @map("account_name") @db.VarChar(200)
+  accountNumber String              @map("account_number") @db.VarChar(100)
+  currency      String              @db.VarChar(10)
+  isActive      Boolean             @default(true) @map("is_active")
+  swiftCode     String?             @map("swift_code") @db.VarChar(50)
+  remark        String?             @db.VarChar(1000)
+  createdAt     DateTime            @default(now()) @map("created_at")
+  updatedAt     DateTime            @updatedAt @map("updated_at")
+  createdBy     String              @map("created_by") @db.Uuid
+  updatedBy     String              @map("updated_by") @db.Uuid
+  deletedAt     DateTime?           @map("deleted_at")
+  deletedBy     String?             @map("deleted_by") @db.Uuid
+  payableReconciliations SupplierPayableReconciliation[]
+  supplierPayments       SupplierPayment[]
+
+  @@map("banks")
 }

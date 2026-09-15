@@ -31,17 +31,12 @@ function QcHubContent() {
           <Button asChild size="lg" className="w-full">
             <Link href="/qc/incoming">来料质检</Link>
           </Button>
-          <p className="panel-note">到货批次送检 → 判定（全部入库 / 部分入库 / 拒收）→ 通知仓库入库。支持深链跳转：<code>/qc/incoming?receipt_id=到货批次ID</code></p>
-
           <Button asChild variant="secondary" size="lg" className="w-full">
             <Link href="/qc/finished-goods">成品质检</Link>
           </Button>
-          <p className="panel-note">成品送检、质检记录与订单号下的质检详情。支持深链跳转：<code>/qc/finished-goods?order_no=订单号</code></p>
-
           <Button asChild variant="secondary" size="lg" className="w-full">
             <Link href="/qc/inbound">质检合格待入库 / 次品登记</Link>
           </Button>
-          <p className="panel-note">按 QC 合格量分批登记成品入库、按不合格量登记次品；过账计入库存。</p>
         </div>
       </section>
     </div>

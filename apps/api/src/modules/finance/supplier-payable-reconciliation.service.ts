@@ -15,14 +15,14 @@ export class SupplierPayableReconciliationService {
   async list(supplierId?: string, orderNo?: string, status?: string) {
     return this.prisma.supplierPayableReconciliation.findMany({
       where: { deletedAt: null, ...(supplierId ? { supplierId } : {}), ...(orderNo ? { orderNo } : {}), ...(status ? { status } : {}) },
-      include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } } },
+      include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } },,
       orderBy: { createdAt: "desc" },
     });
   }
 
   /** 对账详情：快照字段 + 该供应商/期间内的应付条目（含待确认草稿）与仍待接收的来源。 */
   async get(id: string) {
-    const row = await this.prisma.supplierPayableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } } } });
+    const row = await this.prisma.supplierPayableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } }, });
     if (!row) throw this.notFound("RECONCILIATION_NOT_FOUND", "应付对账不存在");
     const [entries, payableSources, outsourceSources] = await Promise.all([
       this.prisma.supplierPayableEntry.findMany({
@@ -50,10 +50,11 @@ export class SupplierPayableReconciliationService {
     };
   }
 
-  async create(input: { supplier_id: string; order_no?: string; purchase_order_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+  async create(input: { supplier_id: string; order_no?: string; purchase_order_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; bank_id?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     await this.currencies?.assertSupported(input.currency, "应付对账币种");
     const start = this.date(input.period_start); const end = this.date(input.period_end); if (start > end) throw this.invalid("INVALID_RECONCILIATION_PERIOD", "对账开始日期不能晚于结束日期");
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null }, select: { id: true } }); if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
+    if (input.bank_id) { const bank = await this.prisma.bank.findFirst({ where: { id: input.bank_id, deletedAt: null, isActive: true } }); if (!bank) throw this.notFound("BANK_NOT_FOUND", "支付银行不存在或已停用"); }
     const scope = { supplierId: supplier.id, currency: input.currency, orderNo: input.order_no?.trim() || undefined, purchaseOrderId: input.purchase_order_id?.trim() || undefined };
     const entries = await this.prisma.supplierPayableEntry.findMany({ where: { ...this.entryScope({ ...scope, periodStart: start, periodEnd: end }), status: { in: ["confirmed", "partially_paid", "paid"] } } });
     const entryIds = entries.map((entry) => entry.id);
@@ -62,7 +63,7 @@ export class SupplierPayableReconciliationService {
     // Reconcile allocated amounts only; an unallocated payment must not reduce a supplier/order balance.
     const paid = payments.reduce((sum, payment) => sum.plus(payment.allocations.reduce((inner, allocation) => inner.plus(allocation.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0));
     const external = this.decimal(input.external_balance); const difference = payable.minus(paid).minus(external);
-    const row = await this.prisma.supplierPayableReconciliation.create({ data: { reconciliationNo: this.number(), orderNo: scope.orderNo, purchaseOrderId: scope.purchaseOrderId, supplierId: supplier.id, periodStart: start, periodEnd: end, payableAmountSnapshot: payable, paymentAmountSnapshot: paid, adjustmentAmountSnapshot: 0, systemBalance: payable.minus(paid), externalBalance: external, difference, currency: input.currency, status: difference.eq(0) ? "matched" : "difference", attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.supplierPayableReconciliation.create({ data: { reconciliationNo: this.number(), orderNo: scope.orderNo, purchaseOrderId: scope.purchaseOrderId, supplierId: supplier.id, bankId: input.bank_id || undefined, periodStart: start, periodEnd: end, payableAmountSnapshot: payable, paymentAmountSnapshot: paid, adjustmentAmountSnapshot: 0, systemBalance: payable.minus(paid), externalBalance: external, difference, currency: input.currency, status: difference.eq(0) ? "matched" : "difference", attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
     if (row.orderNo) await this.audit.recordWithOrderNo("supplier_payable_reconciliation.create", "supplier_payable_reconciliation", row.orderNo, user.id, row.id, { difference: difference.toString() });
     else await this.audit.record("supplier_payable_reconciliation.create", "supplier_payable_reconciliation", user.id, row.id, { difference: difference.toString() });
     return row;

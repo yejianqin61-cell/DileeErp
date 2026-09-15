@@ -2,12 +2,12 @@
 
 // 应付管理二级页（/finance/payable?tab=...）。
 //
-// 子栏目对应「先有入库/签收、再对账、最后确认应付与付款」：
+// 规范化流程：「先有入库/签收、再对账、最后确认应付与付款」：
 //   1. 原料入库条目：原料入库过账生成的待接收应付来源，财务在这里人工接收成应付草稿；
 //   2. 外加工签收：外加工实际签收生成的待接收应付来源（直发数量不形成应付）；
-//   3. 应付对账：按供应商 + 期间创建对账单；对平后可一键批量确认应付；
-//   4. 确认应付：已确认的应付台账 + 供应商付款登记/核销/冲销。
-// 双击任意行都会弹出居中详情页（展示全部字段与可用操作）。
+//   3. 应付对账：对账创建 + 对账单列表合并在同一视图；创建后去「确认应付」确认；
+//   4. 确认应付：应付台账 + 付款合并在同一视图；动作集中在表格行内操作按钮。
+// 双击任意行弹出详情页。
 //
 // 「采购到货」不单独成栏：后端明确禁用到货单作为可接收应付来源
 // （supplier-payable.service.ts 的 PURCHASE_RECEIPT_PAYABLE_DISABLED），应付来源只由原料入库过账产生。
@@ -33,6 +33,7 @@ const paymentIdempotencyKey = () => `web-payment-${Date.now()}-${Math.random().t
 
 type Reference = { id: string; name: string; supplierCode?: string; orderNo?: string };
 type SupplierRef = { id: string; name: string; supplierCode: string | null };
+type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean; swiftCode: string | null; remark: string | null };
 type PayableSource = {
   id: string; orderNo: string; quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; status: string;
   qcResult: string | null; actualInboundQuantity: string | null; acceptedQuantity: string | null; conditionalQuantity: string | null; rejectedQuantity: string | null;
@@ -54,7 +55,7 @@ type OutsourcePayableSource = {
   supplier?: SupplierRef | null;
 };
 type PayableEntry = {
-  id: string; payableNo: string; orderNo: string; supplierId: string; sourceType: string; sourceNoSnapshot: string;
+  id: string; payableNo: string; orderNo: string | null; supplierId: string; sourceType: string; sourceNoSnapshot: string;
   quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; confirmationDate: string; status: string; remark: string | null; createdAt: string;
   source_no?: string | null; purchase_order_no?: string | null; batch_sequence?: number | null;
   material_name?: string | null; material_code?: string | null; material_specification?: string | null; material_color?: string | null; unit_name?: string | null;
@@ -68,6 +69,7 @@ type SupplierPayment = {
   paymentMethod: string; bankReference: string | null; payeeName: string | null; status: string; remark: string | null;
   supplier_name: string | null; supplier_code: string | null; allocated_amount: string;
   supplier?: SupplierRef | null;
+  bank?: BankRef | null;
   allocations: Array<{ id: string; amount: string; status: string; payableEntry?: { id: string; payableNo: string; orderNo: string; amount: string; currency: string; status: string } | null }>;
 };
 type SupplierReconciliation = {
@@ -75,6 +77,7 @@ type SupplierReconciliation = {
   payableAmountSnapshot: string; paymentAmountSnapshot: string; adjustmentAmountSnapshot: string; systemBalance: string;
   externalBalance: string; difference: string; currency: string; status: string; resolutionRemark: string | null; remark: string | null; createdAt: string;
   supplier?: SupplierRef | null; purchaseOrder?: { purchaseOrderNo: string } | null;
+  bank?: BankRef | null;
   details?: {
     payable_entries: Array<{ id: string; payableNo: string; sourceType: string; sourceNoSnapshot: string; orderNo: string; quantity: string; amount: string; currency: string; status: string; confirmationDate: string }>;
     draft_entries: Array<{ id: string; payableNo: string; amount: string; currency: string; status: string }>;
@@ -95,7 +98,7 @@ const materialText = (item: { material_name?: string | null; material_code?: str
   const spec = [item.material_specification, item.material_color].filter(Boolean).join(" / ");
   return spec ? `${name}（${spec}）` : name;
 };
-const SOURCE_TYPE_LABELS: Record<string, string> = { raw_material_inbound: "原料入库", purchase_receipt: "采购到货", outsource_receipt: "外加工签收" };
+const SOURCE_TYPE_LABELS: Record<string, string> = { raw_material_inbound: "原料入库", purchase_receipt: "采购到货", outsource_receipt: "外加工签收", other: "其他应付" };
 
 export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; testId: string }) {
   const [inboundSources, setInboundSources] = useState<PayableSource[]>([]);
@@ -105,6 +108,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const [reconciliations, setReconciliations] = useState<SupplierReconciliation[]>([]);
   const [suppliers, setSuppliers] = useState<Reference[]>([]);
   const [orders, setOrders] = useState<Reference[]>([]);
+  const [banks, setBanks] = useState<BankRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -122,7 +126,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     setLoading(true);
     setError("");
     try {
-      const [inbound, outsource, e, p, r, s, o] = await Promise.all([
+      const [inbound, outsource, e, p, r, s, o, b] = await Promise.all([
         apiGet<PayableSource[]>("/payable-sources"),
         apiGet<OutsourcePayableSource[]>("/production/outsource-logistics-batches/payable-sources"),
         apiGet<PayableEntry[]>("/finance/payable-entries"),
@@ -130,9 +134,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         apiGet<SupplierReconciliation[]>("/finance/supplier-payable-reconciliations"),
         apiGet<Reference[]>("/suppliers").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<Reference[]>("/sales-orders").catch(() => ({ data: [] as Reference[], meta: {} })),
+        apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
       ]);
       setInboundSources(inbound.data); setOutsourceSources(outsource.data); setEntries(e.data);
-      setPayments(p.data); setReconciliations(r.data); setSuppliers(s.data); setOrders(o.data);
+      setPayments(p.data); setReconciliations(r.data); setSuppliers(s.data); setOrders(o.data); setBanks(b.data);
     } catch (cause) {
       setError(messageOf(cause, "应付数据加载失败"));
     } finally {
@@ -160,7 +165,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const detailRow = detail?.row;
   useEffect(() => {
     if (!detailKind) { setDetailData(null); return; }
-    // 应付来源没有 :id 详情接口，但列表接口已经把供应商/物料/质检等全部字段带回来了，直接用行数据。
     if (detailKind === "source") { setDetailData(detailRow ?? null); setDetailLoading(false); setDetailError(""); return; }
     if (!detailId) { setDetailData(null); return; }
     let cancelled = false;
@@ -172,7 +176,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     return () => { cancelled = true; };
   }, [detailKind, detailId, detailRow, detailNonce]);
 
-  // 「新增供应商」走二级弹窗（与应收侧的「新增客户」同一交互）。
   function createSupplier(values: Record<string, string>) {
     void apiPost<Reference>("/suppliers", {
       supplier_code: values.supplier_code, name: values.name, contact_name: values.contact_name || undefined,
@@ -190,11 +193,12 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
 
   const supplierOptions = suppliers.map((item) => ({ value: item.id, label: `${item.supplierCode ?? ""} / ${item.name}` }));
   const orderOptions = orders.map((item) => ({ value: item.orderNo ?? item.id, label: item.orderNo ?? item.name }));
+  const bankOptions = useMemo(() => banks.filter((b) => b.isActive).map((b) => ({ value: b.id, label: `${b.bankName} / ${b.accountNumber}（${b.accountName}）` })), [banks]);
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
   const allocatableEntries = entries.filter((entry) => ["confirmed", "partially_paid"].includes(entry.status) && Number(entry.outstanding_amount ?? entry.amount) > 0);
   const outstandingText = entries.reduce((sum, entry) => sum + Number(entry.outstanding_amount ?? 0), 0);
 
-  // ---------------------------------------------------------------- 操作
+  // ---------------------------------------------------------------- 操作（全部在表格行内触发，不在页头放按钮）
 
   function receiveSource(kind: "raw_material_inbound" | "outsource_receipt", source: { id: string; amount: string; currency: string }) {
     setDialog({ title: "接收应付", fields: [
@@ -219,19 +223,17 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   }
   function confirmEntry(item: PayableEntry) { void action(`/finance/payable-entries/${item.id}/confirm`, undefined, `应付 ${item.payableNo} 已确认`); }
 
-  function createPayment(entry?: PayableEntry) {
-    // 幂等键在打开弹窗时固定：同一次弹窗里重复提交只建一张草稿；
-    // 换一次弹窗是新键，此时由后端的「重复草稿守卫」兜底。
+  function createPaymentForEntry(entry: PayableEntry) {
     const idempotency_key = paymentIdempotencyKey();
-    setDialog({ title: entry ? `登记付款（对应 ${entry.payableNo}）` : "登记付款", fields: [
-      { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions, defaultValue: entry?.supplierId },
-      { name: "order_no", label: "订单号", type: "select", options: orderOptions, defaultValue: entry?.orderNo },
-      { name: "amount", label: "付款金额", type: "number", required: true, defaultValue: entry?.outstanding_amount ?? entry?.amount },
+    setDialog({ title: `登记付款（对应 ${entry.payableNo}）`, fields: [
+      { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions, defaultValue: entry.supplierId },
+      { name: "amount", label: "付款金额", type: "number", required: true, defaultValue: entry.outstanding_amount ?? entry.amount },
       { name: "payment_date", label: "付款日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "payment_method", label: "付款方式", required: true, defaultValue: "银行转账" },
-      { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, entry?.currency ?? "CNY"), defaultValue: entry?.currency ?? currencyDefault("CNY") },
+      { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, entry.currency ?? "CNY"), defaultValue: entry.currency ?? currencyDefault("CNY") },
+      { name: "bank_id", label: "支付银行（可选）", type: "select", options: bankOptions },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/supplier-payments", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
+    ], submit: (v) => void action("/finance/supplier-payments", { supplier_id: v.supplier_id, amount: v.amount, payment_date: v.payment_date, currency: v.currency, payment_method: v.payment_method, bank_id: v.bank_id || undefined, idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
   }
   function editPayment(item: SupplierPayment) {
     setDialog({ title: `编辑付款草稿：${item.paymentNo}`, fields: [
@@ -252,6 +254,17 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     setDialog({ title: `冲销付款：${item.paymentNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/supplier-payments/${item.id}/reverse`, { reason: v.reason }, "付款已冲销") });
   }
 
+  function createOtherPayable() {
+    setDialog({ title: "新建其他应付（非订单支出）", fields: [
+      { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions },
+      { name: "amount", label: "应付金额", type: "number", required: true },
+      { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
+      { name: "description", label: "支出说明（如差旅费、办公费等）", required: true },
+      { name: "confirmation_date", label: "确认日期", type: "date", defaultValue: new Date().toISOString().slice(0, 10) },
+      { name: "remark", label: "备注", type: "textarea" },
+    ], submit: (v) => void action("/finance/payable-entries/other", { supplier_id: v.supplier_id, amount: v.amount, currency: v.currency, description: v.description, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "其他应付已创建") });
+  }
+
   function createReconciliation(preset?: { supplierId: string; month: string }) {
     const range = preset ? monthRange(preset.month) : undefined;
     setDialog({ title: "创建应付对账", fields: [
@@ -261,14 +274,12 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "period_end", label: "期间结束", type: "date", required: true, defaultValue: range?.end },
       { name: "external_balance", label: "外部应付余额（供应商对账单金额）", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
+      { name: "bank_id", label: "支付银行（可选）", type: "select", options: bankOptions },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, remark: v.remark || undefined }, "应付对账单已创建") });
+    ], submit: (v) => void action("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: v.bank_id || undefined, remark: v.remark || undefined }, "应付对账单已创建") });
   }
   function resolveReconciliation(item: SupplierReconciliation) {
     setDialog({ title: `处理应付对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => void action(`/finance/supplier-payable-reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "应付对账差异已处理") });
-  }
-  function confirmReconciliation(item: SupplierReconciliation) {
-    void action(`/finance/supplier-payable-reconciliations/${item.id}/confirm-payables`, undefined, `已批量确认 ${item.reconciliationNo} 的待确认应付`);
   }
 
   // ---------------------------------------------------------------- 列表
@@ -281,8 +292,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   }, [filter]);
   const filteredInbound = useMemo(() => inboundList.filter((item) => match([item.rawMaterialInbound?.inboundNo, item.orderNo, item.purchase_order_no, item.supplier?.name, item.material_name])), [inboundList, match]);
   const filteredOutsource = useMemo(() => outsourceSources.filter((item) => match([item.logisticsBatch?.batchNo, item.orderNo, item.supplier?.name, item.material_name])), [outsourceSources, match]);
-  // 应付台账 = 全部应付条目（含草稿）：接收来源产生的草稿必须有地方可以确认，
-  // 否则「先对账再确认应付」会变成唯一入口，单条确认无从操作。
   const filteredEntries = useMemo(() => entries.filter((item) => match([item.payableNo, item.orderNo, item.supplier_name, item.material_name, item.purchase_order_no])), [entries, match]);
   const filteredPayments = useMemo(() => payments.filter((item) => match([item.paymentNo, item.orderNo, item.supplier_name])), [payments, match]);
 
@@ -311,7 +320,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.settlementUnitPrice ?? row.original.unitPrice },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "pending_finance" ? <Button size="sm" variant="secondary" onClick={() => receiveSource("raw_material_inbound", row.original)}>接收应付</Button> : <span>已接收</span>}</div> },
+    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "pending_finance" ? <Button size="sm" variant="secondary" onClick={() => receiveSource("raw_material_inbound", row.original)}>接收应付</Button> : <span className="panel-note">已接收</span>}</div> },
   ];
   const outsourceColumns: ColumnDef<OutsourcePayableSource>[] = [
     { id: "batch", header: "外加工批次", cell: ({ row }) => row.original.logisticsBatch?.batchNo ?? "-" },
@@ -324,23 +333,23 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.unitPrice },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "pending_finance" ? <Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button> : <span>已接收</span>}</div> },
+    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "pending_finance" ? <Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button> : <span className="panel-note">已接收</span>}</div> },
   ];
   const entryColumns: ColumnDef<PayableEntry>[] = [
     { accessorKey: "payableNo", header: "应付单号" },
     { id: "sourceNo", header: "来源批次", cell: ({ row }) => row.original.source_no ?? row.original.sourceNoSnapshot },
     { id: "sourceType", header: "来源", cell: ({ row }) => SOURCE_TYPE_LABELS[row.original.sourceType] ?? row.original.sourceType },
-    { accessorKey: "orderNo", header: "订单号" },
+    { id: "orderNo", header: "订单号", cell: ({ row }) => row.original.orderNo ?? (row.original.sourceType === "other" ? "无" : "-") },
     { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier_name ?? row.original.supplier?.name ?? "-" },
-    { id: "material", header: "原料", cell: ({ row }) => materialText(row.original) },
+    { id: "material", header: "原料 / 说明", cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : materialText(row.original) },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "paid", header: "已付", cell: ({ row }) => money(row.original.paid_amount, row.original.currency) },
     { id: "outstanding", header: "未付", cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmEntry(row.original)}>确认应付</Button><Button size="sm" variant="ghost" onClick={() => editEntry(row.original)}>编辑</Button></>}
-      {row.original.status === "confirmed" && <><Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退草稿</Button><Button size="sm" variant="ghost" onClick={() => createPayment(row.original)}>登记付款</Button></>}
-      {["partially_paid"].includes(row.original.status) && <Button size="sm" variant="ghost" onClick={() => createPayment(row.original)}>登记付款</Button>}
+      {row.original.status === "confirmed" && <><Button size="sm" variant="secondary" onClick={() => createPaymentForEntry(row.original)}>登记付款</Button><Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退</Button></>}
+      {["partially_paid"].includes(row.original.status) && <Button size="sm" variant="secondary" onClick={() => createPaymentForEntry(row.original)}>登记付款</Button>}
     </div> },
   ];
   const paymentColumns: ColumnDef<SupplierPayment>[] = [
@@ -351,6 +360,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "allocated", header: "已核销", cell: ({ row }) => money(row.original.allocated_amount, row.original.currency) },
     { accessorKey: "paymentMethod", header: "方式" },
+    { id: "bank", header: "支付银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => postPayment(row.original)}>过账/核销</Button><Button size="sm" variant="ghost" onClick={() => editPayment(row.original)}>编辑</Button></>}
@@ -367,10 +377,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "system", header: "系统余额", cell: ({ row }) => money(row.original.systemBalance, row.original.currency) },
     { id: "external", header: "外部余额", cell: ({ row }) => money(row.original.externalBalance, row.original.currency) },
     { id: "difference", header: "差异", cell: ({ row }) => money(row.original.difference, row.original.currency) },
+    { id: "bank", header: "支付银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
-      {["matched", "resolved"].includes(row.original.status) && <Button size="sm" variant="secondary" onClick={() => confirmReconciliation(row.original)}>一键确认应付</Button>}
+      {["matched", "resolved"].includes(row.original.status) && row.original.details?.draft_count ? <span className="panel-note">到「确认应付」确认 {row.original.details.draft_count} 条</span> : null}
     </div> },
   ];
   const pendingGroupColumns: ColumnDef<{ supplierId: string; supplierName: string; month: string; count: number; amount: number }>[] = [
@@ -446,6 +457,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         { label: "付款日期", value: day(item.paymentDate) }, { label: "付款金额", value: money(item.amount, item.currency) },
         { label: "已核销金额", value: money(item.allocated_amount, item.currency) }, { label: "付款方式", value: item.paymentMethod },
         { label: "银行流水号", value: item.bankReference }, { label: "收款人", value: item.payeeName },
+        { label: "支付银行", value: item.bank ? `${item.bank.bankName} / ${item.bank.accountNumber}（${item.bank.accountName}）` : "-" },
         { label: "备注", value: item.remark, wide: true },
       ];
     }
@@ -461,6 +473,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         { label: "系统余额", value: money(item.systemBalance, item.currency) },
         { label: "外部余额", value: money(item.externalBalance, item.currency) },
         { label: "差异", value: money(item.difference, item.currency) },
+        { label: "支付银行", value: item.bank ? `${item.bank.bankName} / ${item.bank.accountNumber}（${item.bank.accountName}）` : "-" },
         { label: "纳入条目数", value: item.details ? `${item.details.entry_count} 条（待确认 ${item.details.draft_count} 条 / ${item.details.draft_amount}）` : "-" },
         { label: "差异处理说明", value: item.resolutionRemark, wide: true },
         { label: "创建时间", value: day(item.createdAt) }, { label: "备注", value: item.remark, wide: true },
@@ -484,11 +497,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     }
     if (detail?.kind === "reconciliation" && detailData) {
       const item = detailData as SupplierReconciliation;
-      const entries = item.details?.payable_entries ?? [];
+      const ents = item.details?.payable_entries ?? [];
       const pending = item.details?.pending_sources ?? [];
       return [
-        { title: `纳入对账的应付条目（${entries.length} 条）`, note: "对平（或差异已处理）后可一键批量确认其中的草稿应付。", content: entries.length
-          ? <DataTable pageSize={10} columns={[{ accessorKey: "payableNo", header: "应付单号" }, { accessorKey: "sourceNoSnapshot", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["payable_entries"][number]>[]} data={entries} /> : <p className="panel-note">该期间没有纳入对账的应付条目</p> },
+        { title: `纳入对账的应付条目（${ents.length} 条）`, note: "对平（或差异已处理）后，到「确认应付」逐条或批量确认其中的草稿应付。", content: ents.length
+          ? <DataTable pageSize={10} columns={[{ accessorKey: "payableNo", header: "应付单号" }, { accessorKey: "sourceNoSnapshot", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["payable_entries"][number]>[]} data={ents} /> : <p className="panel-note">该期间没有纳入对账的应付条目</p> },
         { title: `仍待接收的来源（${pending.length} 条）`, note: "这些业务事实还没有被财务接收为应付，不计入系统余额。", content: pending.length
           ? <DataTable pageSize={10} columns={[{ accessorKey: "source_no", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { accessorKey: "quantity", header: "数量" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["pending_sources"][number]>[]} data={pending} /> : <p className="panel-note">该期间没有待接收来源</p> },
       ];
@@ -508,8 +521,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       const item = detailData as PayableEntry;
       return <>
         {item.status === "draft" && <><Button onClick={() => confirmEntry(item)}>确认应付</Button><Button variant="secondary" onClick={() => editEntry(item)}>编辑草稿</Button></>}
-        {item.status === "confirmed" && <><Button onClick={() => createPayment(item)}>登记付款</Button><Button variant="secondary" onClick={() => reopenEntry(item)}>回退草稿</Button></>}
-        {item.status === "partially_paid" && <Button onClick={() => createPayment(item)}>登记付款</Button>}
+        {item.status === "confirmed" && <><Button onClick={() => createPaymentForEntry(item)}>登记付款</Button><Button variant="secondary" onClick={() => reopenEntry(item)}>回退草稿</Button></>}
+        {item.status === "partially_paid" && <Button onClick={() => createPaymentForEntry(item)}>登记付款</Button>}
         {["confirmed", "partially_paid", "paid"].includes(item.status) && <Button variant="destructive" onClick={() => reverseEntry(item)}>冲销应付</Button>}
       </>;
     }
@@ -524,7 +537,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       const item = detailData as SupplierReconciliation;
       return <>
         {item.status === "difference" && <Button onClick={() => resolveReconciliation(item)}>处理差异</Button>}
-        {["matched", "resolved"].includes(item.status) && <Button onClick={() => confirmReconciliation(item)}>一键确认应付（{item.details?.draft_count ?? 0} 条）</Button>}
       </>;
     }
     return null;
@@ -538,8 +550,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   return <div className="page-root" data-testid={testId}>
     <PageHeader title="应付管理" description={activeTab.description}>
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
-      <Button onClick={() => createPayment()}>登记付款</Button>
-      <Button variant="secondary" onClick={() => createReconciliation()}>创建对账</Button>
     </PageHeader>
     <FinanceTabs basePath="/finance/payable" tabs={PAYABLE_TABS} active={activeTab.key} />
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []}
@@ -574,25 +584,26 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       <div className="panel-heading"><h2>外加工签收</h2><span className="panel-note">按实际签收数量形成应付来源；直发数量本身不形成应付</span></div>
       <div className="panel-body"><DataTable columns={outsourceColumns} data={filteredOutsource} empty={<EmptyState title="暂无外加工签收形成的应付来源" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id, row })} rowTitle="双击查看详情" /></div>
     </section>}
-    {!error && activeTab.key === "reconciliations" && <>
-      <section className="panel">
-        <div className="panel-heading"><h2>待创建对账的条目</h2><span className="panel-note">按供应商 + 月份汇总尚未确认的应付草稿；点「创建对账」会把供应商与期间自动带入表单</span></div>
-        <div className="panel-body"><DataTable columns={pendingGroupColumns} data={pendingGroups} empty={<EmptyState title="没有待创建对账的条目" />} /></div>
-      </section>
-      <section className="panel">
-        <div className="panel-heading"><h2>应付对账单</h2><span className="panel-note">对平（或差异已处理）后可一键批量确认该对账范围内的草稿应付</span></div>
-        <div className="panel-body"><DataTable columns={reconciliationColumns} data={reconciliations} empty={<EmptyState title="暂无应付对账单" />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" /></div>
-      </section>
-    </>}
-    {!error && activeTab.key === "confirmed" && <>
-      <section className="panel">
-        <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">应付台账：草稿在此逐条确认；已确认的在此登记付款、核销、回退与冲销。也可以在对账页一键批量确认</span></div>
-        <div className="panel-body"><DataTable columns={entryColumns} data={filteredEntries} empty={<EmptyState title="暂无应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" /></div>
-      </section>
-      <section className="panel">
-        <div className="panel-heading"><h2>付款</h2><span className="panel-note">草稿付款先过账核销，核销后可冲销并恢复应付余额</span></div>
-        <div className="panel-body"><DataTable columns={paymentColumns} data={filteredPayments} empty={<EmptyState title="暂无付款记录" />} onRowDoubleClick={(row) => setDetail({ kind: "payment", id: row.id })} rowTitle="双击查看详情" /></div>
-      </section>
-    </>}
+    {!error && activeTab.key === "reconciliations" && <section className="panel">
+      <div className="panel-heading"><h2>应付对账</h2><span className="panel-note">按供应商 + 月份汇总待确认的应付草稿创建对账；对平后到「确认应付」去确认</span></div>
+      <div className="panel-body">
+        <h3>待创建对账</h3>
+        <DataTable columns={pendingGroupColumns} data={pendingGroups} empty={<EmptyState title="没有待创建对账的条目" description="接收应付来源后，草稿条目汇总在这里。按供应商 + 月份创建对账。" />} />
+        <h3>已创建对账单</h3>
+        <DataTable columns={reconciliationColumns} data={reconciliations} empty={<EmptyState title="暂无应付对账单" />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" />
+      </div>
+    </section>}
+    {!error && activeTab.key === "confirmed" && <section className="panel">
+      <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">应付台账 + 付款在同一视图；草稿逐条确认，确认后登记付款、核销与冲销。所有操作在行内完成。</span></div>
+      <div className="panel-body">
+        <div style={{ marginBottom: "0.5rem", display: "flex", gap: "0.5rem" }}>
+          <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
+        </div>
+        <h3>应付台账</h3>
+        <DataTable columns={entryColumns} data={filteredEntries} empty={<EmptyState title="暂无应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
+        <h3>付款</h3>
+        <DataTable columns={paymentColumns} data={filteredPayments} empty={<EmptyState title="暂无付款记录" />} onRowDoubleClick={(row) => setDetail({ kind: "payment", id: row.id })} rowTitle="双击查看详情" />
+      </div>
+    </section>}
   </div>;
 }

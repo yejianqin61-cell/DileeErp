@@ -1,5 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AuditModule } from "../../platform/audit/audit.module";
+import { BankController } from "./bank.controller";
+import { BankService } from "./bank.service";
 import { CashFlowController } from "./cash-flow.controller";
 import { CashFlowService } from "./cash-flow.service";
 import { FinanceController } from "./finance.controller";
@@ -15,5 +17,5 @@ import { SupplierPayableService } from "./supplier-payable.service";
 import { SupplierPaymentService } from "./supplier-payment.service";
 import { SupplierPayableReconciliationService } from "./supplier-payable-reconciliation.service";
 
-@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceReportController, CashFlowController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService] })
+@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceReportController, CashFlowController, BankController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService] })
 export class FinanceModule {}

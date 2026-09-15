@@ -8,7 +8,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { CashFlowService } from "./cash-flow.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 
-type PaymentInput = { supplier_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payee_name?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
+type PaymentInput = { supplier_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payee_name?: string; bank_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
 type AllocationInput = { payable_entry_id: string; amount: string; remark?: string };
 
 @Injectable()
@@ -18,7 +18,7 @@ export class SupplierPaymentService {
   async list(orderNo?: string, supplierId?: string, status?: string) {
     const rows = await this.prisma.supplierPayment.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) },
-      include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payableEntry: true } } },
+      include: { supplier: { select: { id: true, name: true, supplierCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } }, allocations: { where: { deletedAt: null }, include: { payableEntry: true } } },
       orderBy: { createdAt: "desc" },
     });
     return rows.map((row) => ({
@@ -51,7 +51,7 @@ export class SupplierPaymentService {
       where: { supplierId: supplier.id, orderNo: input.order_no ?? null, amount, currency: input.currency, status: "draft", deletedAt: null },
     });
     if (duplicateDraft) throw new UnprocessableEntityException({ code: "SUPPLIER_PAYMENT_DRAFT_EXISTS", message: `已存在相同供应商/订单/金额的草稿付款单 ${duplicateDraft.paymentNo}，请直接编辑或过账它，避免重复登记`, details: [{ payment_id: duplicateDraft.id, payment_no: duplicateDraft.paymentNo }] });
-    const row = await this.prisma.supplierPayment.create({ data: { paymentNo: this.number("SPAY"), idempotencyKey: replayKey, supplierId: supplier.id, orderNo: input.order_no, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payeeName: input.payee_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.supplierPayment.create({ data: { paymentNo: this.number("SPAY"), idempotencyKey: replayKey, supplierId: supplier.id, orderNo: input.order_no, bankId: input.bank_id, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payeeName: input.payee_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
     await this.audit.record("supplier_payment.create", "supplier_payment", user.id, row.id, { order_no: row.orderNo, amount: row.amount.toString() });
     return row;
   }
