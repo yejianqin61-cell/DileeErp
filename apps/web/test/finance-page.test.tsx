@@ -639,6 +639,14 @@ const voucher = (over: Record<string, unknown> = {}) => ({
 /** 详情接口（凭证纸要用带分录的详情，列表里的行本身没有 lines）。 */
 const voucherDetail: Handler = (url, call) => (call.method === "GET" && url.endsWith("/api/v1/finance/vouchers/voucher-1") ? apiOk(voucher()) : undefined);
 
+/**
+ * 「一键导出 PNG」走的是「SVG 组版 + 浏览器栅格化」，jsdom 里没有 canvas，
+ * 所以这里把 lib 打桩，只断言**接线**：按钮把当前凭证（含分录与来源）交给导出函数，
+ * 成功与失败都要有反馈。SVG 组版本身由 lib/voucher-image.test.mjs 覆盖。
+ */
+const pngMock = vi.hoisted(() => ({ exportVoucherPng: vi.fn(async (_input?: unknown) => "记账凭证-记-2026-09-0001.png") }));
+vi.mock("../lib/voucher-image", () => ({ exportVoucherPng: pngMock.exportVoucherPng }));
+
 describe("凭证管理：从收支流水生成凭证", () => {
   it("列出收支流水：未生成的显示「未生成」，已生成的显示凭证号与「查看凭证」", async () => {
     stubFinance(
@@ -728,8 +736,37 @@ describe("凭证管理：从收支流水生成凭证", () => {
     expect(posted.getAllByRole("button", { name: "红冲" })).toHaveLength(1);
   });
 
-  it("红冲必须填原因：不填本地就拦住（不发请求），填了才提交", async () => {
-    const calls = stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher({ status: "posted" })] }, voucherDetail);
+  it("一键导出 PNG：把当前凭证（含分录与来源）交给导出函数，成功后提示文件名", async () => {
+    pngMock.exportVoucherPng.mockClear();
+    stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher()] }, voucherDetail);
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("记账凭证").getByRole("button", { name: "凭证纸" }));
+    await waitFor(() => expect(screen.getByTestId("voucher-sheet")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("voucher-png-button"));
+    await waitFor(() => expect(pngMock.exportVoucherPng).toHaveBeenCalledTimes(1));
+    const input = pngMock.exportVoucherPng.mock.calls[0][0] as Record<string, unknown>;
+    expect(input).toMatchObject({ voucherNo: "记-2026-09-0001", currency: "USD", debitTotal: "14310.0000", creditTotal: "14310.0000", sourceLabel: "收支流水 CF-20260915-0001" });
+    expect((input.lines as unknown[])).toHaveLength(2);
+    expect((input.lines as Array<Record<string, unknown>>)[1]).toMatchObject({ direction: "credit", subjectLabel: "货款", amount: "14310.0000" });
+    await waitFor(() => expect(screen.getByTestId("toast-item")).toHaveTextContent("已导出 记账凭证-记-2026-09-0001.png"));
+  });
+
+  it("导出 PNG 失败时把可执行的原因 toast 出来（不静默）", async () => {
+    pngMock.exportVoucherPng.mockClear();
+    pngMock.exportVoucherPng.mockRejectedValueOnce(new Error("当前环境不支持导出图片（canvas 不可用），请改用「打印 / 另存 PDF」"));
+    stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher()] }, voucherDetail);
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("记账凭证").getByRole("button", { name: "凭证纸" }));
+    await waitFor(() => expect(screen.getByTestId("voucher-sheet")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("voucher-png-button"));
+    await waitFor(() => expect(screen.getByTestId("toast-item")).toHaveTextContent("改用「打印 / 另存 PDF」"));
+    // 失败后按钮回到可用状态（不能让用户以为卡住了）
+    await waitFor(() => expect(screen.getByTestId("voucher-png-button")).toHaveTextContent("导出 PNG"));
+    expect(screen.getByTestId("voucher-sheet")).toBeInTheDocument();
+  });
+
+  it("红冲必须填原因：不填本地就拦住（不发请求），填了才提交", async () => {    const calls = stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher({ status: "posted" })] }, voucherDetail);
     await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
     fireEvent.click(panel("记账凭证").getByRole("button", { name: "红冲" }));
     submitDialog();

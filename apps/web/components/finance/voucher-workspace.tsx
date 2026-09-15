@@ -24,6 +24,7 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiRequest, apiPost } from "../../lib/api-client";
+import { exportVoucherPng } from "../../lib/voucher-image";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { money } from "./record-detail-dialog";
 
@@ -58,6 +59,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [sheet, setSheet] = useState<Voucher | null>(null);
   const [sheetLoading, setSheetLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [filter, setFilter] = useState("");
   const [generated, setGenerated] = useState<"all" | "pending" | "done">("all");
   const [busy, setBusy] = useState("");
@@ -149,6 +151,39 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       setSheet(null);
     } finally {
       setSheetLoading(false);
+    }
+  }
+
+  /**
+   * 一键导出 PNG：把当前凭证纸重新组版成 SVG 再交给浏览器栅格化（见 lib/voucher-image.ts）。
+   *
+   * 环境不支持（canvas 不可用）时不静默失败：直接把可执行的原因 toast 出来，提示改用「打印 / 另存 PDF」。
+   */
+  async function exportPng(voucher: Voucher) {
+    setExporting(true);
+    try {
+      const fileName = await exportVoucherPng({
+        voucherNo: voucher.voucherNo,
+        voucherDate: voucher.voucherDate,
+        period: voucher.period,
+        currency: voucher.currency,
+        status: voucher.status,
+        statusLabel: voucher.status_label,
+        summary: voucher.summary,
+        debitTotal: voucher.debitTotal,
+        creditTotal: voucher.creditTotal,
+        remark: voucher.remark,
+        createdBy: voucher.createdBy ?? null,
+        sourceLabel: voucher.source_entry
+          ? `收支流水 ${voucher.source_entry.entryNo}`
+          : voucher.counterpart_voucher ? `红冲 ${voucher.counterpart_voucher.voucherNo}` : null,
+        lines: voucher.lines.map((line) => ({ lineNo: line.lineNo, direction: line.direction, subjectLabel: line.subjectLabel, summary: line.summary, amount: line.amount })),
+      });
+      notifySuccess(`已导出 ${fileName}`);
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : "导出 PNG 失败");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -256,7 +291,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       <section className="panel panel-body">
         <p className="panel-note" role="status" data-testid="voucher-policy-note">
           凭证是结构化分录，而不是一张图片：图片不可搜索、不可复制，改一个字就得重新生成。
-          这里保存借贷分录，「凭证纸」按记账凭证版式排版，用「打印 / 另存 PDF」出纸质件或 PDF 存档。
+          这里保存借贷分录，「凭证纸」按记账凭证版式排版，可「打印 / 另存 PDF」，也可「导出 PNG」直接存档或贴到聊天里。
           科目当前取自「收支项目」字典（资金科目按结算方式里的「现金」自动区分银行存款/库存现金），
           草稿阶段可在「编辑」里手工改成自己账套的科目名。
         </p>
@@ -298,6 +333,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
         <DialogBody>{sheetLoading || !sheet?.lines ? <LoadingState /> : <VoucherSheet voucher={sheet} />}</DialogBody>
         <DialogFooter>
           <Button variant="secondary" data-testid="voucher-print-close" onClick={() => setSheet(null)}>关闭</Button>
+          <Button variant="secondary" data-testid="voucher-png-button" disabled={!sheet?.lines?.length || exporting} onClick={() => { if (sheet?.lines?.length) void exportPng(sheet); }}>{exporting ? "导出中…" : "导出 PNG"}</Button>
           <Button data-testid="voucher-print-button" disabled={!sheet?.lines} onClick={() => window.print()}>打印 / 另存 PDF</Button>
         </DialogFooter>
       </DialogContent>
