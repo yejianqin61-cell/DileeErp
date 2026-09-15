@@ -16,9 +16,10 @@
 //   POST   /hr/payroll-ledgers/:id/pay                    行内付款：一次完成生成应付 + 建付款 + 核销过账
 //   POST   /hr/payroll-ledgers/:id/unpay                  行内冲销：把该台账下已过账的付款整体回退
 //
-// 2026-09-15 两轮变化：① 台账从只读表变成可编辑表格（逐格 PATCH）；② 工资管理页只留两个入口，
-// 台账与付款各自成为二级页，付款表直接搬当月台账、只保留「总工资」，操作都在行内完成。
-import { describe, expect, it, vi } from "vitest";
+// 2026-09-15 三轮变化：① 台账从只读表变成可编辑表格（逐格 PATCH）；② 工资管理页只留两个入口，
+// 台账与付款各自成为二级页，付款表直接搬当月台账、只保留「总工资」，操作都在行内完成；
+// ③ 版面从「满屏」改成「悬浮居中窗口」（用户：算了，不追求全屏了，做成悬浮居中窗口，版面大一点）。
+import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SalaryWorkspace from "../components/finance/salary-workspace";
@@ -225,50 +226,39 @@ describe("工资管理：每月自动导入全部员工", () => {
   });
 });
 
-// 用户两次强调「全屏！」：两个二级页都是「一条细工具条 + 表格铺满可视区」，工具条上还有浏览器全屏开关。
-describe("工资管理：满屏表格与浏览器全屏", () => {
-  it("页面根与表格容器都带满屏类，工具条取代了原来的页头", async () => {
+// 用户先要求「全屏！」，随后改口：「算了，做成悬浮居中窗口页面吧，版面大一点。不追求全屏了」。
+// 于是这里是**反向**断言：不再有满屏类、不再有浏览器全屏按钮，而是内容区里居中的一张大卡片。
+describe("工资管理：悬浮居中窗口（不再全屏）", () => {
+  it("页面根与表格容器都带悬浮窗口类，窗口里有工具条、筛选条与表格", async () => {
     stubSalary({ ledgers: [workshopLedger] });
     await openSalary("ledger");
-    expect(screen.getByTestId("page-finance-salary-ledger").className).toContain("page-fullscreen");
-    expect(screen.getByTestId("salary-ledger-panel").className).toContain("page-fullscreen-table");
+    expect(screen.getByTestId("page-finance-salary-ledger").className).toContain("page-floating");
+    expect(screen.getByTestId("page-finance-salary-ledger").className).not.toContain("page-fullscreen");
+    const window = screen.getByTestId("salary-floating-window");
+    expect(window.className).toContain("floating-window");
+    expect(screen.getByTestId("salary-ledger-panel").className).toContain("floating-window-table");
     expect(screen.getByTestId("salary-ledger-panel").querySelector(".panel-body")).not.toBeNull();
-    expect(screen.getByTestId("salary-import-summary")).toBeVisible();
+    // 工具条（标题 + 导入摘要）与筛选条都在窗口内部，窗口是唯一的页面容器
+    // 注意用 level:1 区分：面板自己的 <h2>工资台账</h2> 也叫这个名字。
+    expect(within(window).getByRole("heading", { level: 1, name: "工资台账" })).toBeVisible();
+    expect(within(window).getByTestId("salary-import-summary")).toBeVisible();
+    expect(within(window).getByTestId("salary-month-filter")).toBeVisible();
   });
 
-  it("点「全屏」调用浏览器全屏，退出后按钮回到「全屏」", async () => {
-    const requestFullscreen = vi.fn(async () => {
-      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: document.documentElement });
-      document.dispatchEvent(new Event("fullscreenchange"));
-    });
-    const exitFullscreen = vi.fn(async () => {
-      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
-      document.dispatchEvent(new Event("fullscreenchange"));
-    });
-    Object.defineProperty(document.documentElement, "requestFullscreen", { configurable: true, value: requestFullscreen });
-    Object.defineProperty(document, "exitFullscreen", { configurable: true, value: exitFullscreen });
-    try {
-      stubSalary({ ledgers: [workshopLedger] });
-      await openSalary("ledger");
-      await userEvent.click(screen.getByTestId("salary-fullscreen-button"));
-      await waitFor(() => expect(requestFullscreen).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(screen.getByTestId("salary-fullscreen-button")).toHaveTextContent("退出全屏"));
-      await userEvent.click(screen.getByTestId("salary-fullscreen-button"));
-      await waitFor(() => expect(exitFullscreen).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(screen.getByTestId("salary-fullscreen-button")).toHaveTextContent("全屏"));
-    } finally {
-      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
-      Reflect.deleteProperty(document.documentElement, "requestFullscreen");
-      Reflect.deleteProperty(document, "exitFullscreen");
-    }
-  });
-
-  it("浏览器不支持全屏时给出提示，而不是点了没反应", async () => {
-    Reflect.deleteProperty(document.documentElement, "requestFullscreen");
+  it("没有浏览器全屏按钮（不追求全屏了），窗口自身提供大版面", async () => {
     stubSalary({ ledgers: [workshopLedger] });
     await openSalary("payments");
-    await userEvent.click(screen.getByTestId("salary-fullscreen-button"));
-    await expectToast("当前浏览器不支持全屏");
+    expect(screen.queryByTestId("salary-fullscreen-button")).toBeNull();
+    expect(screen.getByTestId("salary-floating-window").className).toContain("floating-window");
+  });
+
+  it("加载中也在窗口里渲染标题（不再是页头 + 空白）", async () => {
+    stubSalary({ ledgers: [workshopLedger] });
+    render(<><SalaryWorkspace mode="ledger" testId="page-finance-salary-ledger" /><Toaster /></>);
+    // 首次渲染即 loading：此时还没有列表数据，但窗口骨架与标题已经在位
+    const window = await screen.findByTestId("salary-floating-window");
+    expect(within(window).getByRole("heading", { level: 1, name: "工资台账" })).toBeVisible();
+    await screen.findByTestId("salary-ledger-panel");
   });
 });
 // ------------------------------------------------------------------ 筛选（两个二级页共用）
