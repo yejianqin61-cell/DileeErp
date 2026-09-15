@@ -97,6 +97,7 @@ test("供应商付款过账后自动写收支流水：项目按应付来源选�
   assert.equal(input.direction, "expense");
   assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
   assert.equal(input.settlementMethod, "转账--农业银行5706", "结算方式按老表格式带出银行账户");
+  assert.deepEqual(input.settlementAccountHint, { bankName: "农业银行", accountNumber: "5706" }, "银行信息一并带给收支流水，用于匹配结算账户字典");
   assert.equal(input.sourceType, "supplier_payment");
   assert.equal(input.sourceId, "payment-1");
 });

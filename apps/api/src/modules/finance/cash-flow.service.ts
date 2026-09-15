@@ -216,6 +216,8 @@ export class CashFlowService {
       direction: "income" | "expense";
       settlementMethod?: string | null;
       settlementAccountId?: string | null;
+      /** 收付款单据上的银行信息：用于**保守匹配**结算账户字典（匹配不上就留空，不造关联）。 */
+      settlementAccountHint?: { bankName?: string | null; accountNumber?: string | null } | null;
       sourceType: string;
       sourceId: string;
       itemKeys: readonly string[];
@@ -234,6 +236,7 @@ export class CashFlowService {
     });
     const item = input.itemKeys.map((key) => candidates.find((candidate) => candidate.key === key)).find((found) => Boolean(found));
     if (!item) throw this.invalid("CASH_FLOW_ITEM_NOT_FOUND", `自动写入收支流水需要收支项目「${input.itemKeys.join("」或「")}」，请在「收支管理 → 收支项目」里补上后重新过账`);
+    const settlementAccountId = input.settlementAccountId ?? await this.matchSettlementAccount(input.settlementAccountHint);
     const row = await this.prisma.cashFlowEntry.create({
       data: {
         entryNo: this.number(),
@@ -244,7 +247,7 @@ export class CashFlowService {
         currency: input.currency,
         itemId: item.id,
         settlementMethod: input.settlementMethod ?? undefined,
-        settlementAccountId: input.settlementAccountId ?? undefined,
+        settlementAccountId,
         sourceType: input.sourceType,
         sourceId: input.sourceId,
         remark: `自动生成：${input.sourceType} / ${input.paymentNo}${input.remark ? ` - ${input.remark}` : ""}`,
@@ -252,6 +255,35 @@ export class CashFlowService {
       },
     });
     return row;
+  }
+
+  /**
+   * 把收付款单据上的银行匹配到「结算账户」字典项。
+   *
+   * 为什么需要匹配而不是直接存银行 id：`cash_flow_entries.settlement_account_id` 是
+   * **结算账户字典**（老表「结算方式」里的 `农业银行5706`）的外键，而银行来自 `banks` 表，
+   * 两者没有外键关系。硬塞银行 id 会造假关联，所以按「账号数字完全一致 + 银行名互相包含」保守匹配：
+   * 匹配上就带上字典项（收支明细表里能看到具体账户），匹配不上就留空。
+   */
+  private async matchSettlementAccount(hint: { bankName?: string | null; accountNumber?: string | null } | null | undefined) {
+    const accountNumber = hint?.accountNumber?.trim();
+    if (!accountNumber) return undefined;
+    const digits = (value: string) => (value.match(/\d+/g) ?? []).join("");
+    const cjk = (value: string) => (value.match(/^[\u4e00-\u9fa5]+/) ?? [""])[0];
+    const wanted = digits(accountNumber);
+    if (!wanted) return undefined;
+    const bankName = hint?.bankName?.trim() ?? "";
+    const accounts = await this.prisma.dictionaryItem.findMany({
+      where: { deletedAt: null, isActive: true, type: { key: SETTLEMENT_ACCOUNT_DICTIONARY_KEY, deletedAt: null } },
+      select: { id: true, label: true },
+    });
+    const match = accounts.find((account) => {
+      if (digits(account.label) !== wanted) return false;
+      if (!bankName) return true;
+      const labelName = cjk(account.label);
+      return labelName.length > 0 && (labelName.includes(bankName) || bankName.includes(labelName));
+    });
+    return match?.id;
   }
 
   /**

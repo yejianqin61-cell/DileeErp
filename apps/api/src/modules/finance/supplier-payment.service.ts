@@ -85,7 +85,7 @@ export class SupplierPaymentService {
       if (total.gt(lockedPayment.amount)) throw new UnprocessableEntityException({ code: "PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过付款金额", details: [{ available_amount: lockedPayment.amount.minus(total).toString() }] });
       const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const item of items) await this.payable.refreshStatus(tx, item.payable_entry_id, user);
-      return { payment, sourceAmounts, supplierName: lockedPayment.supplier?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null };
+      return { payment, sourceAmounts, supplierName: lockedPayment.supplier?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
     });
     await this.audit.record("supplier_payment.post", "supplier_payment", user.id, id, { order_no: result.payment.orderNo, allocation_count: items.length });
     // 过账即写收支流水：项目按本次付款金额最大的应付来源选定（采购 / 外加工 / 其他），
@@ -96,7 +96,8 @@ export class SupplierPaymentService {
       counterpartyName: result.payment.payeeName ?? result.supplierName ?? result.payment.supplierId,
       direction: "expense",
       settlementMethod: result.bankLabel ? `${result.payment.paymentMethod}--${result.bankLabel}` : result.payment.paymentMethod,
-      settlementAccountId: null,
+      // 银行信息一并带上：收支流水按账号匹配「结算账户」字典，收支明细表才看得到具体账户。
+      settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "supplier_payment", sourceId: result.payment.id,
       itemKeys: paymentItemKeys(dominant),
       remark: result.payment.remark ?? undefined,

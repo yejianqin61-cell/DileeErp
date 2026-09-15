@@ -75,6 +75,38 @@ test("冲销收付款时回冲对应流水；没有对应流水时返回 null �
   assert.equal(await service.autoReverseFromPayment("supplier_payment", "payment-other", "x", { id: "user-1" }), null);
 });
 
+test("结算账户按账号匹配到字典项；匹配不上就留空（不造假的关联）", async () => {
+  const accounts = [
+    { id: "acc-1", label: "农业银行5706" },
+    { id: "acc-2", label: "中国银行（美元）7624" },
+  ];
+  const harness = (hint) => {
+    const created = [];
+    const prisma = {
+      cashFlowEntry: { findFirst: async () => null, create: async ({ data }) => { created.push(data); return { id: "cf-1", ...data }; } },
+      dictionaryItem: { findMany: async ({ where }) => (where.key ? [{ id: "item-1", key: "原材料 成本" }] : accounts) },
+    };
+    const service = new CashFlowService(prisma, { create: () => ({}), record: async () => {} });
+    return { service, created, hint };
+  };
+  // 银行名与账号都能对上 → 带上字典项
+  const matched = harness({ bankName: "农业银行", accountNumber: "5706" });
+  await matched.service.autoCreateFromPayment({ ...payment, settlementAccountHint: matched.hint }, { id: "user-1" });
+  assert.equal(matched.created[0].settlementAccountId, "acc-1");
+  // 字典里带币种后缀（中国银行（美元）7624）时按账号数字 + 银行名匹配
+  const usd = harness({ bankName: "中国银行", accountNumber: "7624" });
+  await usd.service.autoCreateFromPayment({ ...payment, settlementAccountHint: usd.hint }, { id: "user-1" });
+  assert.equal(usd.created[0].settlementAccountId, "acc-2");
+  // 账号对不上 → 留空，而不是随便挂一个账户
+  const unmatched = harness({ bankName: "工商银行", accountNumber: "9999" });
+  await unmatched.service.autoCreateFromPayment({ ...payment, settlementAccountHint: unmatched.hint }, { id: "user-1" });
+  assert.equal(unmatched.created[0].settlementAccountId, undefined);
+  // 没有银行信息（如客户收款只有流水号）→ 同样留空
+  const none = harness(null);
+  await none.service.autoCreateFromPayment({ ...payment, settlementAccountHint: none.hint }, { id: "user-1" });
+  assert.equal(none.created[0].settlementAccountId, undefined);
+});
+
 test("收支项目映射覆盖每一种资金动账来源，且候选 key 都真的在老表 37 项字典里", () => {
   const dictionaryKeys = new Set(DEFAULT_CASH_FLOW_ITEMS.map((item) => item.key));
   for (const [source, keys] of Object.entries(PAYMENT_ITEM_KEYS)) {
