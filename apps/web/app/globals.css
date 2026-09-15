@@ -418,6 +418,23 @@ button { cursor: pointer; }
 .progress-column-name { flex: 1; min-width: 0; font-size: 13px; }
 .progress-column-actions { display: flex; gap: 2px; }
 
+/* 满屏表格页（工资台账 / 工资付款）：表格铺满整个可视区，而不是浮在内容区里的一张卡片。
+   .content-area 有 `max-width:1440px` 与 `28px 32px 48px` 的内边距，这里用负边距抵消掉，
+   高度按「视口 − 顶栏」算，于是页面里只剩一条细工具条 + 表格本身。 */
+.page-fullscreen { display: flex; flex-direction: column; gap: 8px; max-width: none; height: calc(100dvh - var(--topbar-height)); margin: -28px -32px -48px; padding: 10px 16px 12px; }
+.page-fullscreen-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.page-fullscreen-title { margin: 0; font-size: 16px; letter-spacing: 0; }
+.page-fullscreen-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-fullscreen-toolbar .page-actions { margin-left: auto; }
+.page-fullscreen-filters { margin-bottom: 0; padding: 8px 10px; }
+.page-fullscreen > .panel { margin-bottom: 0; }
+.page-fullscreen-table { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.page-fullscreen-table .panel-heading { padding: 6px 12px; }
+.page-fullscreen-table .panel-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; }
+.page-fullscreen-table .payroll-sheet { flex: 1; min-height: 0; }
+.page-fullscreen-table .payroll-sheet-scroll { flex: 1; min-height: 0; max-height: none; }
+@media (max-width: 720px) { .page-fullscreen { margin: -20px -16px -36px; padding: 8px 10px 10px; } }
+
 /* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
    满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，
    表头吸顶（几百行时滑到底不能忘了列名），合计行加粗。 */

@@ -93,7 +93,7 @@ type SupplierReconciliation = {
     pending_sources: Array<{ id: string; orderNo: string; quantity: string; amount: string; currency: string; source_type: string; source_no: string }>;
   };
 };
-type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
+type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 type DetailKind = "source" | "entry" | "payment" | "reconciliation";
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -168,6 +168,26 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     }
   }
 
+  /**
+   * 弹窗里的动作：失败必须把错误**抛回去**，ActionDialog 才会留在弹窗里把原因显示出来。
+   *
+   * 原来一律写 `void action(...)`：action 自己 catch 并 toast，返回的 Promise 正常 resolve，
+   * ActionDialog 便认为保存成功而关闭弹窗 —— 用户只看到「点了没反应」（与工资页修过的是同一类缺陷）。
+   */
+  async function submitAction(path: string, body: unknown, success: string, method: "post" | "patch" = "post") {
+    try {
+      await (method === "patch" ? apiPatch(path, body ?? {}) : apiPost(path, body));
+      notifySuccess(success);
+      setDialog(null);
+      setDetail(null);
+      await load();
+    } catch (cause) {
+      const message = messageOf(cause, "操作失败");
+      notifyError(message);
+      throw new Error(message);
+    }
+  }
+
   const detailKind = detail?.kind;
   const detailId = detail?.id;
   const detailRow = detail?.row;
@@ -184,9 +204,20 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     return () => { cancelled = true; };
   }, [detailKind, detailId, detailRow, detailNonce]);
 
+  /**
+   * 财务在应付页顺手新建供应商（供应商下拉旁的「新增类目」）。
+   *
+   * 编码支持「自动生成 / 手动填写」，与采购的供应商页同一套后端约定（`code_mode`）：
+   * 自动时留空、由服务端按 SUP 前缀顺延；手动时必须自己填（空值由前端先拦一次，服务端也会 422）。
+   */
   function createSupplier(values: Record<string, string>) {
-    void apiPost<Reference>("/suppliers", {
-      supplier_code: values.supplier_code, name: values.name, contact_name: values.contact_name || undefined,
+    const mode = values.code_mode || "auto";
+    // 校验失败要**抛回** ActionDialog（它靠 onSubmit 是否 reject 决定关不关弹窗），返回空会静默关闭。
+    if (mode === "manual" && !values.supplier_code?.trim()) { const message = "手动编码模式必须填写供应商编码"; notifyError(message); return Promise.reject(new Error(message)); }
+    return apiPost<Reference>("/suppliers", {
+      code_mode: mode,
+      supplier_code: values.supplier_code?.trim() || undefined,
+      name: values.name, contact_name: values.contact_name || undefined,
       phone: values.phone || undefined, remark: values.remark || undefined,
     }).then((result) => {
       const created = result.data;
@@ -195,8 +226,13 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       setPendingDialog(null);
       setCategoryDialog(null);
       if (pending) setDialog({ ...pending, fields: pending.fields.map((field) => field.name === "supplier_id" ? { ...field, defaultValue: created.id, options: [...(field.options ?? []), { value: created.id, label: `${created.supplierCode ?? ""} / ${created.name}` }] } : field) });
-      notifySuccess("供应商已创建");
-    }).catch((cause) => notifyError(messageOf(cause, "供应商创建失败")));
+      notifySuccess(mode === "manual" ? "供应商已创建" : `供应商已创建（编码 ${created.supplierCode ?? "自动生成"}）`);
+    }).catch((cause) => {
+      // 抛回 ActionDialog：失败时留在弹窗里显示原因，而不是静默关闭（同 submitAction 的理由）。
+      const message = messageOf(cause, "供应商创建失败");
+      notifyError(message);
+      throw new Error(message);
+    });
   }
 
   const supplierOptions = suppliers.map((item) => ({ value: item.id, label: `${item.supplierCode ?? ""} / ${item.name}` }));
@@ -214,20 +250,20 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "amount_reason", label: "金额差异原因（金额与来源不一致时必填）", type: "textarea" },
       { name: "confirmation_date", label: "确认日期", type: "date", defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/payable-entries/from-source", { source_type: kind, source_id: source.id, amount: v.amount, amount_reason: v.amount_reason || undefined, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "已接收为应付草稿；下一步：到「应付对账」按供应商 + 月份创建对账") });
+    ], submit: (v) => submitAction("/finance/payable-entries/from-source", { source_type: kind, source_id: source.id, amount: v.amount, amount_reason: v.amount_reason || undefined, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "已接收为应付草稿；下一步：到「应付对账」按供应商 + 月份创建对账") });
   }
   function editEntry(item: PayableEntry) {
     setDialog({ title: `编辑应付草稿：${item.payableNo}`, fields: [
       { name: "amount", label: "应付金额", type: "number", required: true, defaultValue: item.amount },
       { name: "confirmation_date", label: "确认日期", type: "date", required: true, defaultValue: item.confirmationDate.slice(0, 10) },
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => void action(`/finance/payable-entries/${item.id}`, { amount: v.amount, confirmation_date: v.confirmation_date, remark: v.remark || undefined }, "应付草稿已更新", "patch") });
+    ], submit: (v) => submitAction(`/finance/payable-entries/${item.id}`, { amount: v.amount, confirmation_date: v.confirmation_date, remark: v.remark || undefined }, "应付草稿已更新", "patch") });
   }
   function reopenEntry(item: PayableEntry) {
-    setDialog({ title: `应付回退草稿：${item.payableNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/payable-entries/${item.id}/reopen`, { reason: v.reason }, "应付已回退草稿") });
+    setDialog({ title: `应付回退草稿：${item.payableNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/payable-entries/${item.id}/reopen`, { reason: v.reason }, "应付已回退草稿") });
   }
   function reverseEntry(item: PayableEntry) {
-    setDialog({ title: `冲销应付：${item.payableNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/payable-entries/${item.id}/reverse`, { reason: v.reason }, "应付已冲销") });
+    setDialog({ title: `冲销应付：${item.payableNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/payable-entries/${item.id}/reverse`, { reason: v.reason }, "应付已冲销") });
   }
   function confirmEntry(item: PayableEntry) { void action(`/finance/payable-entries/${item.id}/confirm`, undefined, `应付 ${item.payableNo} 已确认`); }
 
@@ -241,7 +277,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, entry.currency ?? "CNY"), defaultValue: entry.currency ?? currencyDefault("CNY") },
       { name: "bank_id", label: "支付银行（可选；账户在「财务 → 银行账户」里维护）", type: "select", options: bankOptions },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/supplier-payments", { supplier_id: v.supplier_id, amount: v.amount, payment_date: v.payment_date, currency: v.currency, payment_method: v.payment_method, bank_id: v.bank_id || undefined, idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
+    ], submit: (v) => submitAction("/finance/supplier-payments", { supplier_id: v.supplier_id, amount: v.amount, payment_date: v.payment_date, currency: v.currency, payment_method: v.payment_method, bank_id: v.bank_id || undefined, idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
   }
   function editPayment(item: SupplierPayment) {
     setDialog({ title: `编辑付款草稿：${item.paymentNo}`, fields: [
@@ -249,7 +285,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "payment_date", label: "日期", type: "date", required: true, defaultValue: item.paymentDate.slice(0, 10) },
       { name: "payment_method", label: "方式", required: true, defaultValue: item.paymentMethod },
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => void action(`/finance/supplier-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, remark: v.remark || undefined }, "付款草稿已更新", "patch") });
+    ], submit: (v) => submitAction(`/finance/supplier-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, remark: v.remark || undefined }, "付款草稿已更新", "patch") });
   }
   function postPayment(item: SupplierPayment, preset?: PayableEntry) {
     const options = allocatableEntries.map((entry) => ({ value: entry.id, label: `${entry.payableNo} / ${entry.orderNo} / ${entry.supplier_name ?? entry.supplierId} / 未付 ${entry.outstanding_amount ?? entry.amount} ${entry.currency}` }));
@@ -259,7 +295,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     ], submit: (v) => v.entry_id ? void action(`/finance/supplier-payments/${item.id}/post`, { allocations: [{ payable_entry_id: v.entry_id, amount: v.amount }] }, "付款已过账并核销") : undefined });
   }
   function reversePayment(item: SupplierPayment) {
-    setDialog({ title: `冲销付款：${item.paymentNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/supplier-payments/${item.id}/reverse`, { reason: v.reason }, "付款已冲销") });
+    setDialog({ title: `冲销付款：${item.paymentNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/supplier-payments/${item.id}/reverse`, { reason: v.reason }, "付款已冲销") });
   }
 
   function createOtherPayable() {
@@ -270,7 +306,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "description", label: "支出说明（如差旅费、办公费等）", required: true },
       { name: "confirmation_date", label: "确认日期", type: "date", defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/payable-entries/other", { supplier_id: v.supplier_id, amount: v.amount, currency: v.currency, description: v.description, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "其他应付已创建") });
+    ], submit: (v) => submitAction("/finance/payable-entries/other", { supplier_id: v.supplier_id, amount: v.amount, currency: v.currency, description: v.description, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "其他应付已创建") });
   }
 
   function createReconciliation(preset?: { supplierId: string; month: string }) {
@@ -284,10 +320,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
       { name: "bank_id", label: "支付银行（可选；账户在「财务 → 银行账户」里维护）", type: "select", options: bankOptions },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: v.bank_id || undefined, remark: v.remark || undefined }, "应付对账单已创建") });
+    ], submit: (v) => submitAction("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: v.bank_id || undefined, remark: v.remark || undefined }, "应付对账单已创建") });
   }
   function resolveReconciliation(item: SupplierReconciliation) {
-    setDialog({ title: `处理应付对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => void action(`/finance/supplier-payable-reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "应付对账差异已处理") });
+    setDialog({ title: `处理应付对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => submitAction(`/finance/supplier-payable-reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "应付对账差异已处理") });
   }
 
   /**
@@ -599,11 +635,12 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     <FinanceTabs basePath="/finance/payable" tabs={PAYABLE_TABS} active={activeTab.key} />
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []}
       onAddCategory={(field) => { if (field.name !== "supplier_id") return; setPendingDialog(dialog); setDialog(null); setCategoryDialog({ title: "新建供应商", fields: [
-        { name: "supplier_code", label: "供应商编码", required: true }, { name: "name", label: "供应商名称", required: true },
+        { name: "code_mode", label: "编码方式", type: "select", required: true, defaultValue: "auto", options: [{ value: "auto", label: "自动生成" }, { value: "manual", label: "手动填写" }] },
+        { name: "supplier_code", label: "供应商编码", placeholder: "自动生成时留空" }, { name: "name", label: "供应商名称", required: true },
         { name: "contact_name", label: "联系人" }, { name: "phone", label: "联系电话" }, { name: "remark", label: "备注", type: "textarea" },
       ], submit: createSupplier }); }}
-      onSubmit={(values) => { dialog?.submit(values); }} />
-    <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) { setCategoryDialog(null); setPendingDialog(null); } }} title={categoryDialog?.title ?? "新建供应商"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => { categoryDialog?.submit(values); }} />
+      onSubmit={(values) => dialog?.submit(values)} />
+    <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) { setCategoryDialog(null); setPendingDialog(null); } }} title={categoryDialog?.title ?? "新建供应商"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => categoryDialog?.submit(values)} />
     <RecordDetailDialog
       open={Boolean(detail)}
       onOpenChange={(open) => { if (!open) setDetail(null); }}
@@ -664,14 +701,16 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       </div>
     </section>}
     {!error && activeTab.key === "confirmed" && <section className="panel">
-      <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">应付台账 + 付款在同一视图；草稿逐条确认，确认后登记付款、核销与冲销。所有操作在行内完成。</span></div>
+      <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">上半张「应付台账」= 欠供应商多少（负债事实），下半张「付款」= 已付出去多少（资金事实）。草稿确认后才成为生效负债；付款只有过账时才核销到应付台账。</span></div>
       <div className="panel-body">
         <div style={{ marginBottom: "0.5rem", display: "flex", gap: "0.5rem" }}>
           <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
         </div>
         <h3>应付台账</h3>
+        <p className="panel-note">负债事实：一笔应付 = 一个来源批次（原料入库 / 外加工签收 / 其他应付）。状态：草稿 → 确认 → 部分支付 → 已付清；只有确认后才是生效负债，也才能付款。</p>
         <DataTable columns={entryColumns} data={filteredEntries} empty={<EmptyState title="暂无应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
         <h3>付款</h3>
+        <p className="panel-note">资金事实：一张付款单 = 一次付款行为（日期 / 金额 / 方式 / 银行）。过账时才核销到上面的应付台账（核销明细记「付的是哪几笔应付」）；冲销会回退核销并回冲收支流水。</p>
         <DataTable columns={paymentColumns} data={filteredPayments} empty={<EmptyState title="暂无付款记录" />} onRowDoubleClick={(row) => setDetail({ kind: "payment", id: row.id })} rowTitle="双击查看详情" />
       </div>
     </section>}

@@ -135,6 +135,61 @@ describe("采购草稿：带入 BOM 后逐行勾选批量移除", () => {
   });
 });
 
+// 用户 2026-09-15 问「判断库存数是仅查询名称，还是有加上规格型号、颜色的粒度」。
+// 查证结果：按 material_id 取数，而物料主数据是「名称 + 规格型号 + 颜色」唯一的组合，粒度是对的；
+// 但「当前库存量」这一格当年读的是**跨单位汇总**（同一物料的米 + 卷相加），这属于真缺陷。
+describe("采购草稿：当前库存量按「物料 + 单位」显示，不跨单位相加", () => {
+  function stubWithTwoUnits() {
+    return stubApi((url) => {
+      if (url === EP.materials) return apiOk(materials);
+      if (url === EP.units) return apiOk([{ id: "u-1", name: "米", isActive: true }, { id: "u-2", name: "卷", isActive: true }]);
+      if (url === EP.suppliers) return apiOk(suppliers);
+      if (url === EP.salesOrders) return apiOk(salesOrders);
+      if (url === EP.currencies) return apiOk([{ key: "CNY", label: "人民币", sortOrder: 10 }]);
+      // 同一物料两种单位都有余额：米 5、卷 2（相加得 7，但米与卷不可相加）
+      if (url.startsWith(EP.balances)) return apiOk([
+        { material_id: "m-1", unit_id: "u-1", quantity: "5.0000" },
+        { material_id: "m-1", unit_id: "u-2", quantity: "2.0000" },
+      ]);
+      if (url === `${EP.boms}/bom-1`) return apiOk({ id: "bom-1", orderNo: "SO-1", salesOrderId: "so-1", status: "confirmed", version: 1, items: bomItems });
+      if (url === EP.boms) return apiOk(boms);
+      return apiOk([]);
+    });
+  }
+
+  it("本行只显示本行单位的库存，另一单位作为提示；够不够也按本行单位比较", async () => {
+    stubWithTwoUnits();
+    render(<><PurchaseOrdersPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-orders");
+    await userEvent.click(screen.getByRole("button", { name: "新建采购单" }));
+    await pickSelect(0, "SO-1");
+    await pickSelect(1, "SO-1");
+    await waitFor(() => expect(rows()).toHaveLength(3));
+
+    // 第 1 行是面料A（BOM 需求 5 米），第 5 列是「当前库存量」
+    const stockCell = rows()[0].children[4] as HTMLTableCellElement;
+    expect(stockCell.textContent).toContain("5.0000"); // 本行单位（米）的余额，不是 5 + 2 = 7
+    expect(stockCell.textContent).not.toContain("7");
+    expect(stockCell.textContent).toContain("另有 2.0000 卷");
+    expect(stockCell.getAttribute("title")).toContain("单位不同，未相加");
+    expect(stockCell.className).toContain("stock-ok");
+  });
+
+  it("本行单位没有余额时不显示其它单位的数量（库存 0 就是 0）", async () => {
+    stubWithTwoUnits();
+    render(<><PurchaseOrdersPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-orders");
+    await userEvent.click(screen.getByRole("button", { name: "新建采购单" }));
+    await pickSelect(0, "SO-1");
+    await pickSelect(1, "SO-1");
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    // 第 2 行是面料B（m-2 没有任何余额）
+    const emptyCell = rows()[1].children[4] as HTMLTableCellElement;
+    expect(emptyCell.textContent).toBe("0");
+    expect(emptyCell.className).toContain("stock-low");
+  });
+});
+
 describe("采购草稿：一张订单按供应商拆分成多张采购单", () => {
   it("按供应商分组后一次提交 /purchase-orders/split，组内明细的供应商取组供应商", async () => {
     const calls = await openDraftWithBomItems();

@@ -143,7 +143,28 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [detail, setDetail] = useState<Ledger | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Ledger | null>(null);
+  // 浏览器全屏：工具条上的「全屏」把侧边栏与顶栏也收掉，表格真的铺满整个屏幕。
+  const [fullscreen, setFullscreen] = useState(false);
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
+
+  useEffect(() => {
+    const onChange = () => setFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  /** 浏览器全屏开关：不支持时明确提示（不要静默什么都不发生）。 */
+  async function toggleFullscreen() {
+    const root = document.documentElement;
+    try {
+      if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+      if (typeof root.requestFullscreen !== "function") { notifyError("当前浏览器不支持全屏，可用 F11"); return; }
+      await root.requestFullscreen();
+    } catch {
+      notifyError("浏览器拒绝了全屏请求（可能需要用户手势或站点权限）");
+    }
+  }
 
   useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
   // 部门/岗位是静态主数据，只在挂载时拉一次；岗位按所选部门收窄。
@@ -470,18 +491,25 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
 
   if (loading) return <div className="page-root" data-testid={importing ? "salary-importing" : undefined}><PageHeader title={mode === "ledger" ? "工资台账" : "工资付款"} /><LoadingState /></div>;
 
-  return <div className="page-root" data-testid={testId}>
-    <PageHeader
-      title={mode === "ledger" ? "工资台账" : "工资付款"}
-      description={mode === "ledger"
-        ? "满页可编辑表格：按月自动导入全部员工，车间工人的计件/计时工资由生产日报自动汇总进「基本工资」，其余类目逐格可改。"
-        : "把当月工资台账搬过来付款：只保留「总工资」，付款与冲销都在表格行内完成。"}
-    >
-      <Button asChild variant="secondary"><Link href="/finance/salary">返回工资管理</Link></Button>
-      <Button variant="secondary" data-testid="salary-import-button" onClick={() => void runImport(true)}>重新导入本月员工</Button>
-      <Button variant="secondary" data-testid="salary-refresh-button" onClick={() => void load()}>刷新</Button>
-      {mode === "ledger" ? <Button data-testid="salary-create-ledger" onClick={openCreate}>新建工资台账</Button> : null}
-    </PageHeader>
+  // 满屏表格：工资台账与工资付款都是「一条细工具条 + 表格铺满整个可视区」，不再是内容区里的一张卡片
+  // （用户两次强调「全屏！」）。工具条上的「全屏」按钮再调用浏览器全屏，把侧边栏与顶栏也一起收掉。
+  return <div className="page-root page-fullscreen" data-testid={testId}>
+    <header className="page-fullscreen-toolbar">
+      <h1 className="page-fullscreen-title">{mode === "ledger" ? "工资台账" : "工资付款"}</h1>
+      <span className="panel-note page-fullscreen-meta">{month} · 共 {visibleLedgers.length} 条{mode === "ledger" ? "（逐格可改，车间「基本工资」只读）" : "（本表＝当月台账只留总工资）"}</span>
+      <span className="panel-note page-fullscreen-meta" data-testid="salary-import-summary">
+        {importing ? "正在导入本月员工…" : importError ? `本月导入失败：${importError}` : importResult
+          ? `本月在册 ${importResult.candidates} 人：新建 ${importResult.created} 条、已有 ${importResult.existing} 条、不在职 ${importResult.not_employed} 人、涉及生产日报 ${importResult.report_count} 条。`
+          : "本月尚未导入。"}
+      </span>
+      <div className="page-actions">
+        <Button asChild variant="ghost" size="sm"><Link href="/finance/salary">← 工资管理</Link></Button>
+        <Button variant="secondary" size="sm" data-testid="salary-import-button" onClick={() => void runImport(true)}>重新导入本月员工</Button>
+        <Button variant="secondary" size="sm" data-testid="salary-refresh-button" onClick={() => void load()}>刷新</Button>
+        {mode === "ledger" ? <Button size="sm" data-testid="salary-create-ledger" onClick={openCreate}>新建工资台账</Button> : null}
+        <Button variant="secondary" size="sm" data-testid="salary-fullscreen-button" onClick={() => void toggleFullscreen()}>{fullscreen ? "退出全屏" : "全屏"}</Button>
+      </div>
+    </header>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
     <RecordDetailDialog
       open={Boolean(detail)}
@@ -506,45 +534,33 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     />
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
     {!error && <>
-      <section className="panel panel-body">
-        <div className="filter-bar">
-          <label>月份<Input data-testid="salary-month-filter" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
-          <label>部门
-            <Select value={departmentId || "__all"} onValueChange={(value) => { setDepartmentId(value === "__all" ? "" : value); setPositionId(""); }}>
-              <SelectTrigger data-testid="salary-department-filter"><SelectValue placeholder="全部部门" /></SelectTrigger>
-              <SelectContent><SelectItem value="__all">全部部门</SelectItem>{departments.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-            </Select>
-          </label>
-          <label>岗位
-            <Select value={positionId || "__all"} onValueChange={(value) => setPositionId(value === "__all" ? "" : value)}>
-              <SelectTrigger data-testid="salary-position-filter"><SelectValue placeholder="全部岗位" /></SelectTrigger>
-              <SelectContent><SelectItem value="__all">全部岗位</SelectItem>{positions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-            </Select>
-          </label>
-          <label>员工姓名/工号<Input data-testid="salary-employee-filter" value={employeeQuery} onChange={(event) => setEmployeeQuery(event.target.value)} placeholder="本地过滤" /></label>
-          {/* 付款日期与付款方式对整页生效（行内只填金额），省掉每行一个弹窗 */}
-          {mode === "payments" ? <>
-            <label>付款日期<Input data-testid="salary-payment-date" type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} /></label>
-            <label>付款方式<Input data-testid="salary-payment-method" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} placeholder="银行转账" /></label>
-          </> : null}
-        </div>
-        <p className="panel-note">
-          月份、部门、岗位由服务端筛选（切部门会自动清空岗位）；员工姓名/工号是本地过滤。
-          {mode === "ledger"
-            ? "已付和未付按有效已过账工资付款实时计算；未付为 0 时不应再次发放，已过期台账需重新结算或使用工资调整单。"
-            : "付款金额默认为该行未付；只有已确认 / 部分支付的台账可以付款，其余行会给出原因。"}
-        </p>
-        <p className="panel-note" data-testid="salary-import-summary">
-          {importing ? "正在导入本月员工…" : importError ? `本月导入失败：${importError}` : importResult
-            ? `本月在册 ${importResult.candidates} 人：本次新建 ${importResult.created} 条、已有 ${importResult.existing} 条、该月不在职 ${importResult.not_employed} 人；本次导入涉及生产日报 ${importResult.report_count} 条。`
-            : "本月尚未导入。"}
-        </p>
-      </section>
-      {mode === "ledger" ? <section className="panel" data-testid="salary-ledger-panel">
+      {/* 筛选条留在表格上方一行；原来的两段说明挪到 title（满屏页不能靠文字占掉半屏）。 */}
+      <div className="filter-bar page-fullscreen-filters" title="月份、部门、岗位由服务端筛选（切部门会自动清空岗位）；员工姓名/工号是本地过滤。已付/未付按有效已过账的工资付款实时计算。">
+        <label>月份<Input data-testid="salary-month-filter" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
+        <label>部门
+          <Select value={departmentId || "__all"} onValueChange={(value) => { setDepartmentId(value === "__all" ? "" : value); setPositionId(""); }}>
+            <SelectTrigger data-testid="salary-department-filter"><SelectValue placeholder="全部部门" /></SelectTrigger>
+            <SelectContent><SelectItem value="__all">全部部门</SelectItem>{departments.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+          </Select>
+        </label>
+        <label>岗位
+          <Select value={positionId || "__all"} onValueChange={(value) => setPositionId(value === "__all" ? "" : value)}>
+            <SelectTrigger data-testid="salary-position-filter"><SelectValue placeholder="全部岗位" /></SelectTrigger>
+            <SelectContent><SelectItem value="__all">全部岗位</SelectItem>{positions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
+          </Select>
+        </label>
+        <label>员工姓名/工号<Input data-testid="salary-employee-filter" value={employeeQuery} onChange={(event) => setEmployeeQuery(event.target.value)} placeholder="本地过滤" /></label>
+        {/* 付款日期与付款方式对整页生效（行内只填金额），省掉每行一个弹窗 */}
+        {mode === "payments" ? <>
+          <label>付款日期<Input data-testid="salary-payment-date" type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} /></label>
+          <label>付款方式<Input data-testid="salary-payment-method" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} placeholder="银行转账" /></label>
+        </> : null}
+      </div>
+      {mode === "ledger" ? <section className="panel page-fullscreen-table" data-testid="salary-ledger-panel">
         <div className="panel-heading"><h2>工资台账</h2><span className="panel-note">共 {visibleLedgers.length} 条；逐格可改，「基本工资」对车间工人只读</span></div>
         <div className="panel-body"><PayrollSheet columns={sheetColumns} rows={visibleLedgers} onCommit={commitCell} rowTestId={(row) => `payroll-row-${row.id}`} /></div>
       </section> : null}
-      {mode === "payments" ? <section className="panel" data-testid="salary-payment-panel">
+      {mode === "payments" ? <section className="panel page-fullscreen-table" data-testid="salary-payment-panel">
         <div className="panel-heading"><h2>工资付款</h2><span className="panel-note">共 {visibleLedgers.length} 条；本表＝当月工资台账只留「总工资」</span></div>
         <div className="panel-body">
           <PayrollSheet

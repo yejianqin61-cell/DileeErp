@@ -64,6 +64,16 @@ const bodyOf = (call: StubbedCall) => JSON.parse(String(call.body)) as Record<st
 const postsTo = (calls: StubbedCall[], suffix: string) => callsTo(calls, suffix).filter((call) => call.method === "POST");
 const setValue = (testId: string, value: string) => fireEvent.change(screen.getByTestId(testId), { target: { value } });
 
+/** 断言某条 toast 出现过（自动导入也会产生 toast，不能用 getByTestId 单数）。 */
+async function expectToast(text: string) {
+  await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes(text))).toBe(true));
+}
+/** 打开 Radix Select 并选中某一项（选项文案即可读值）。 */
+async function pickOption(testId: string, optionName: string | RegExp) {
+  await userEvent.click(screen.getByTestId(testId));
+  await userEvent.click(await screen.findByRole("option", { name: optionName }));
+}
+
 // ------------------------------------------------------------------ 夹具
 
 const inboundSource = {
@@ -187,6 +197,46 @@ describe("应付管理：接收应付来源", () => {
     await openPayable("raw-inbound-entries");
     expect(screen.queryByRole("button", { name: "接收应付" })).toBeNull();
     expect(screen.getByText("已接收")).toBeVisible();
+  });
+});
+
+// ------------------------------------------------------------------ 顺手新建供应商（编码自动/手动）
+
+describe("应付管理：新建供应商支持自动生成与手动填写编码", () => {
+  /** 行内「登记付款」→ 弹窗里供应商字段旁的「新增类目」→ 新建供应商弹窗。 */
+  async function openSupplierDialog() {
+    await userEvent.click(screen.getByRole("button", { name: "登记付款" }));
+    await userEvent.click(await screen.findByRole("button", { name: "新增类目" }));
+  }
+
+  it("编码方式默认自动生成：提交带 code_mode=auto 且不带 supplier_code，并回报生成的编码", async () => {
+    const calls = stubPayable({ entries: [confirmedEntry], suppliers: [] }, (url, call) => (call.method === "POST" && url.startsWith(EP.suppliers) ? apiOk({ id: "supplier-9", name: "新供应商", supplierCode: "SUP-0007" }) : undefined));
+    await openPayable("confirmed");
+    await openSupplierDialog();
+    expect(screen.getByTestId("action-field-code_mode")).toHaveTextContent("自动生成");
+    setValue("action-field-name", "新供应商");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, EP.suppliers)).toHaveLength(1));
+    const body = bodyOf(postsTo(calls, EP.suppliers)[0]);
+    expect(body).toMatchObject({ code_mode: "auto", name: "新供应商" });
+    expect(body.supplier_code).toBeUndefined();
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("SUP-0007"))).toBe(true));
+  });
+
+  it("手动填写模式必须填编码：留空时本地拦下，不发请求；填了才提交", async () => {
+    const calls = stubPayable({ entries: [confirmedEntry], suppliers: [] });
+    await openPayable("confirmed");
+    await openSupplierDialog();
+    await pickOption("action-field-code_mode", "手动填写");
+    setValue("action-field-name", "新供应商");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await expectToast("手动编码模式必须填写供应商编码");
+    expect(postsTo(calls, EP.suppliers)).toHaveLength(0);
+
+    setValue("action-field-supplier_code", "SUP-0099");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, EP.suppliers)).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, EP.suppliers)[0])).toMatchObject({ code_mode: "manual", supplier_code: "SUP-0099" });
   });
 });
 

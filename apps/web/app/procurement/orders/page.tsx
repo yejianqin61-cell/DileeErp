@@ -132,6 +132,20 @@ export default function PurchaseOrdersPage() {
   }
 
   function stockFor(materialId: string, unitId: string) { return stockByMaterial[`${materialId}|${unitId}`] ?? "0"; }
+  /**
+   * 同一物料在**其它单位**上的余额（同一物料既有「米」又有「卷」是常态）。
+   *
+   * 为什么单独列出来而不相加：单位不同，数量不可相加。「当前库存量」只能按本行单位显示；
+   * 其它单位的余额作为提示文字给出，读者知道「不是没有货，是单位不同」。
+   */
+  function otherUnitStock(materialId: string, unitId: string) {
+    const prefix = `${materialId}|`;
+    return Object.entries(stockByMaterial)
+      .filter(([key, quantity]) => key.startsWith(prefix) && key !== `${materialId}|${unitId}` && Number(quantity) !== 0)
+      .map(([key, quantity]) => `${quantity} ${unitName(key.slice(prefix.length))}`)
+      .join("、");
+  }
+  function unitName(unitId: string) { return units.find((item) => item.id === unitId)?.name ?? "其它单位"; }
   function addPurchaseItem() { const material = materials.find((item) => item.isActive !== false); const unitId = material?.defaultUnitId ?? ""; setPurchaseDraft((draft) => draft ? { ...draft, items: [...draft.items, { materialId: material?.id ?? "", model: "", quantity: "1", unitId, unitPrice: "0", supplierId: "", expectedDate: "", currentStock: stockFor(material?.id ?? "", unitId) }] } : draft); }
   function updatePurchaseItem(index: number, patch: Partial<PurchaseDraftItem>) { setPurchaseDraft((draft) => draft ? { ...draft, items: draft.items.map((item, i) => i === index ? { ...item, ...patch } : item) } : draft); }
   function toggleDraftRow(index: number) { setSelectedDraftRows((rows) => rows.includes(index) ? rows.filter((r) => r !== index) : [...rows, index]); }
@@ -243,7 +257,16 @@ export default function PurchaseOrdersPage() {
     } catch (cause) { setError(messageOf(cause, mode === "order" ? "采购单下单失败" : purchaseDraft.id ? "采购草稿更新失败" : "采购草稿创建失败")); }
   }
 
-  async function refreshMaterialStock(ids: string[]) { if (!ids.length) return; try { const result = await apiGet<Array<{ material_id: string; unit_id: string; quantity: string }>>(`/inventory/raw-material-balances?material_ids=${ids.join(",")}`); const stock = result.data.reduce<Record<string, string>>((acc, item) => { const key = `${item.material_id}|${item.unit_id}`; acc[key] = item.quantity; acc[item.material_id] = (Number(acc[item.material_id] ?? 0) + Number(item.quantity)).toString(); return acc; }, {}); setStockByMaterial(stock); } catch { /* inventory access is optional */ } }
+  async function refreshMaterialStock(ids: string[]) {
+    if (!ids.length) return;
+    try {
+      const result = await apiGet<Array<{ material_id: string; unit_id: string; quantity: string }>>(`/inventory/raw-material-balances?material_ids=${ids.join(",")}`);
+      // 只按「物料 + 单位」存：同一物料的米与卷不可相加，因此不再额外写一个物料级汇总键
+      // （历史上「当前库存量」列读的就是那个跨单位汇总，等于把米和卷加在一起比）。
+      const stock = result.data.reduce<Record<string, string>>((acc, item) => { acc[`${item.material_id}|${item.unit_id}`] = item.quantity; return acc; }, {});
+      setStockByMaterial(stock);
+    } catch { /* inventory access is optional */ }
+  }
 
   function revertPurchaseOrder(order: PurchaseOrder) { setDialog({ title: `采购单回退草稿：${order.purchaseOrderNo}`, fields: [{ name: "reason", label: "回退原因", required: true, type: "textarea" }], submit: (v) => void action(`/purchase-orders/${order.id}/revert-draft`, { reason: v.reason }, "采购单已回到草稿") }); }
 
@@ -322,7 +345,7 @@ export default function PurchaseOrdersPage() {
                   </div>
                 </div>
               )}
-              <div className="table-wrap"><table className="data-table"><thead><tr><th className="draft-select-cell"><input type="checkbox" aria-label="全选采购明细" checked={purchaseDraft.items.length > 0 && selectedDraftRows.length === purchaseDraft.items.length} onChange={(event) => toggleAllDraftRows(event.target.checked)} /></th><th>名称</th><th>型号</th><th>需求量</th><th>当前库存量</th><th>单位</th><th>单价</th><th>供应商</th><th>预计到货</th><th className="sr-only">操作</th></tr></thead><tbody>{purchaseDraft.items.map((item, index) => <tr key={`${item.materialId}-${index}`}><td className="draft-select-cell"><input type="checkbox" aria-label={`选择第 ${index + 1} 行采购明细`} checked={selectedDraftRows.includes(index)} onChange={() => toggleDraftRow(index)} /></td><td><Select value={item.materialId || undefined} onValueChange={(value) => changePurchaseMaterial(index, value)}><SelectTrigger><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input value={item.model} onChange={(event) => updatePurchaseItem(index, { model: event.target.value })} /></td><td><Input type="number" min="0" step="0.0001" value={item.quantity} onChange={(event) => updatePurchaseItem(index, { quantity: event.target.value })} /></td><td className={Number(stockByMaterial[item.materialId] ?? 0) >= Number(item.quantity) ? "stock-ok" : "stock-low"}>{stockByMaterial[item.materialId] ?? "0"}</td><td><Select value={item.unitId || undefined} onValueChange={(value) => updatePurchaseItem(index, { unitId: value })}><SelectTrigger><SelectValue placeholder="请选择单位" /></SelectTrigger><SelectContent>{unitOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input type="number" min="0" step="0.0001" value={item.unitPrice} onChange={(event) => updatePurchaseItem(index, { unitPrice: event.target.value })} /></td><td><Select value={item.supplierId || undefined} onValueChange={(value) => updatePurchaseItem(index, { supplierId: value })}><SelectTrigger><SelectValue placeholder="请选择供应商" /></SelectTrigger><SelectContent>{supplierOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input type="date" value={item.expectedDate} onChange={(event) => updatePurchaseItem(index, { expectedDate: event.target.value })} aria-label="预计到货日期" /></td><td><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setPurchaseDraft({ ...purchaseDraft, items: purchaseDraft.items.filter((_, i) => i !== index) })}><Trash2 size={16} /></Button></td></tr>)}</tbody></table></div>
+              <div className="table-wrap"><table className="data-table"><thead><tr><th className="draft-select-cell"><input type="checkbox" aria-label="全选采购明细" checked={purchaseDraft.items.length > 0 && selectedDraftRows.length === purchaseDraft.items.length} onChange={(event) => toggleAllDraftRows(event.target.checked)} /></th><th>名称</th><th>型号</th><th>需求量</th><th>当前库存量</th><th>单位</th><th>单价</th><th>供应商</th><th>预计到货</th><th className="sr-only">操作</th></tr></thead><tbody>{purchaseDraft.items.map((item, index) => <tr key={`${item.materialId}-${index}`}><td className="draft-select-cell"><input type="checkbox" aria-label={`选择第 ${index + 1} 行采购明细`} checked={selectedDraftRows.includes(index)} onChange={() => toggleDraftRow(index)} /></td><td><Select value={item.materialId || undefined} onValueChange={(value) => changePurchaseMaterial(index, value)}><SelectTrigger><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input value={item.model} onChange={(event) => updatePurchaseItem(index, { model: event.target.value })} /></td><td><Input type="number" min="0" step="0.0001" value={item.quantity} onChange={(event) => updatePurchaseItem(index, { quantity: event.target.value })} /></td><td className={Number(stockFor(item.materialId, item.unitId)) >= Number(item.quantity) ? "stock-ok" : "stock-low"} title={otherUnitStock(item.materialId, item.unitId) ? `本行单位库存 ${stockFor(item.materialId, item.unitId)}；另有 ${otherUnitStock(item.materialId, item.unitId)}（单位不同，未相加）` : undefined}>{stockFor(item.materialId, item.unitId)}{otherUnitStock(item.materialId, item.unitId) ? <span className="panel-note">（另有 {otherUnitStock(item.materialId, item.unitId)}）</span> : null}</td><td><Select value={item.unitId || undefined} onValueChange={(value) => updatePurchaseItem(index, { unitId: value })}><SelectTrigger><SelectValue placeholder="请选择单位" /></SelectTrigger><SelectContent>{unitOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input type="number" min="0" step="0.0001" value={item.unitPrice} onChange={(event) => updatePurchaseItem(index, { unitPrice: event.target.value })} /></td><td><Select value={item.supplierId || undefined} onValueChange={(value) => updatePurchaseItem(index, { supplierId: value })}><SelectTrigger><SelectValue placeholder="请选择供应商" /></SelectTrigger><SelectContent>{supplierOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input type="date" value={item.expectedDate} onChange={(event) => updatePurchaseItem(index, { expectedDate: event.target.value })} aria-label="预计到货日期" /></td><td><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setPurchaseDraft({ ...purchaseDraft, items: purchaseDraft.items.filter((_, i) => i !== index) })}><Trash2 size={16} /></Button></td></tr>)}</tbody></table></div>
             </div>
           )}
         </SheetContent>

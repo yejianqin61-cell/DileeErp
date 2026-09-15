@@ -18,7 +18,7 @@
 //
 // 2026-09-15 两轮变化：① 台账从只读表变成可编辑表格（逐格 PATCH）；② 工资管理页只留两个入口，
 // 台账与付款各自成为二级页，付款表直接搬当月台账、只保留「总工资」，操作都在行内完成。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SalaryWorkspace from "../components/finance/salary-workspace";
@@ -183,7 +183,7 @@ describe("工资管理：每月自动导入全部员工", () => {
     const importIndex = calls.indexOf(imports[0]);
     const ledgerIndex = calls.findIndex((call) => call.method === "GET" && call.url.startsWith(EP.ledgers));
     expect(importIndex).toBeLessThan(ledgerIndex);
-    expect(screen.getByTestId("salary-import-summary")).toHaveTextContent("本月在册 2 人：本次新建 2 条、已有 0 条、该月不在职 0 人；本次导入涉及生产日报 7 条。");
+    expect(screen.getByTestId("salary-import-summary")).toHaveTextContent("本月在册 2 人：新建 2 条、已有 0 条、不在职 0 人、涉及生产日报 7 条。");
   });
 
   it("新建了台账时给出成功提示；没有任何新建时不打扰用户", async () => {
@@ -198,7 +198,7 @@ describe("工资管理：每月自动导入全部员工", () => {
     await waitFor(() => expect(postsTo(second, EP.importMonth)).toHaveLength(1));
     expect(screen.queryByText(/已自动导入/)).toBeNull();
     // 还要等列表加载完成：加载态下筛选条与导入摘要都还没渲染
-    expect(await screen.findByTestId("salary-import-summary")).toHaveTextContent("本次新建 0 条、已有 2 条");
+    expect(await screen.findByTestId("salary-import-summary")).toHaveTextContent("新建 0 条、已有 2 条");
   });
 
   it("切换月份会重新导入该月并带 new month 重新拉取台账", async () => {
@@ -225,6 +225,52 @@ describe("工资管理：每月自动导入全部员工", () => {
   });
 });
 
+// 用户两次强调「全屏！」：两个二级页都是「一条细工具条 + 表格铺满可视区」，工具条上还有浏览器全屏开关。
+describe("工资管理：满屏表格与浏览器全屏", () => {
+  it("页面根与表格容器都带满屏类，工具条取代了原来的页头", async () => {
+    stubSalary({ ledgers: [workshopLedger] });
+    await openSalary("ledger");
+    expect(screen.getByTestId("page-finance-salary-ledger").className).toContain("page-fullscreen");
+    expect(screen.getByTestId("salary-ledger-panel").className).toContain("page-fullscreen-table");
+    expect(screen.getByTestId("salary-ledger-panel").querySelector(".panel-body")).not.toBeNull();
+    expect(screen.getByTestId("salary-import-summary")).toBeVisible();
+  });
+
+  it("点「全屏」调用浏览器全屏，退出后按钮回到「全屏」", async () => {
+    const requestFullscreen = vi.fn(async () => {
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: document.documentElement });
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    const exitFullscreen = vi.fn(async () => {
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(document.documentElement, "requestFullscreen", { configurable: true, value: requestFullscreen });
+    Object.defineProperty(document, "exitFullscreen", { configurable: true, value: exitFullscreen });
+    try {
+      stubSalary({ ledgers: [workshopLedger] });
+      await openSalary("ledger");
+      await userEvent.click(screen.getByTestId("salary-fullscreen-button"));
+      await waitFor(() => expect(requestFullscreen).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.getByTestId("salary-fullscreen-button")).toHaveTextContent("退出全屏"));
+      await userEvent.click(screen.getByTestId("salary-fullscreen-button"));
+      await waitFor(() => expect(exitFullscreen).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.getByTestId("salary-fullscreen-button")).toHaveTextContent("全屏"));
+    } finally {
+      Object.defineProperty(document, "fullscreenElement", { configurable: true, value: null });
+      Reflect.deleteProperty(document.documentElement, "requestFullscreen");
+      Reflect.deleteProperty(document, "exitFullscreen");
+    }
+  });
+
+  it("浏览器不支持全屏时给出提示，而不是点了没反应", async () => {
+    Reflect.deleteProperty(document.documentElement, "requestFullscreen");
+    stubSalary({ ledgers: [workshopLedger] });
+    await openSalary("payments");
+    await userEvent.click(screen.getByTestId("salary-fullscreen-button"));
+    await expectToast("当前浏览器不支持全屏");
+  });
+});
 // ------------------------------------------------------------------ 筛选（两个二级页共用）
 
 describe("工资管理：月份/部门/岗位/员工筛选", () => {
@@ -285,7 +331,7 @@ describe("工资管理：月份/部门/岗位/员工筛选", () => {
     for (const mode of ["ledger", "payments"] as const) {
       const view = render(<><SalaryWorkspace mode={mode} initialMonth="2026-03" /><Toaster /></>);
       await screen.findByTestId(mode === "payments" ? "page-finance-salary-payments" : "page-finance-salary-ledger");
-      expect(screen.getByRole("link", { name: "返回工资管理" })).toHaveAttribute("href", "/finance/salary");
+      expect(screen.getByRole("link", { name: /工资管理/ })).toHaveAttribute("href", "/finance/salary");
       view.unmount();
     }
   });
