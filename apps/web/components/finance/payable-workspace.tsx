@@ -239,7 +239,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "payment_date", label: "付款日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "payment_method", label: "付款方式", required: true, defaultValue: "银行转账" },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, entry.currency ?? "CNY"), defaultValue: entry.currency ?? currencyDefault("CNY") },
-      { name: "bank_id", label: "支付银行（可选）", type: "select", options: bankOptions },
+      { name: "bank_id", label: "支付银行（可选；账户在「财务 → 银行账户」里维护）", type: "select", options: bankOptions },
       { name: "remark", label: "备注", type: "textarea" },
     ], submit: (v) => void action("/finance/supplier-payments", { supplier_id: v.supplier_id, amount: v.amount, payment_date: v.payment_date, currency: v.currency, payment_method: v.payment_method, bank_id: v.bank_id || undefined, idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
   }
@@ -282,7 +282,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "period_end", label: "期间结束", type: "date", required: true, defaultValue: range?.end },
       { name: "external_balance", label: "外部应付余额（供应商对账单金额）", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
-      { name: "bank_id", label: "支付银行（可选）", type: "select", options: bankOptions },
+      { name: "bank_id", label: "支付银行（可选；账户在「财务 → 银行账户」里维护）", type: "select", options: bankOptions },
       { name: "remark", label: "备注", type: "textarea" },
     ], submit: (v) => void action("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: v.bank_id || undefined, remark: v.remark || undefined }, "应付对账单已创建") });
   }

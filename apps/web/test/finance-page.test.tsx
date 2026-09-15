@@ -162,16 +162,16 @@ const supplierReconciliation = (over: Record<string, unknown> = {}) => ({
 // ------------------------------------------------------------------ 一级页
 
 describe("财务一级页：板块入口", () => {
-  it("展示 6 个入口，并分别指向二级页地址", async () => {
+  it("展示 7 个入口，并分别指向二级页地址", async () => {
     stubFinance();
     render(<FinanceBoardIndex />);
     expect(screen.getByTestId("page-finance")).toBeInTheDocument();
-    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "工资管理"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
+    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "工资管理"], ["banks", "银行账户"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
       const card = screen.getByTestId(`finance-board-${key}`);
       expect(card).toHaveAttribute("href", `/finance/${key}`);
       expect(within(card).getByRole("heading", { name: title })).toBeInTheDocument();
     }
-    expect(screen.getByTestId("finance-board-grid").querySelectorAll("a")).toHaveLength(6);
+    expect(screen.getByTestId("finance-board-grid").querySelectorAll("a")).toHaveLength(7);
   });
 });
 
