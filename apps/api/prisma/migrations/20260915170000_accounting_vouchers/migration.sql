@@ -21,7 +21,7 @@ CREATE TABLE "vouchers" (
     "debit_total" DECIMAL(18,4) NOT NULL,
     "credit_total" DECIMAL(18,4) NOT NULL,
     "status" VARCHAR(30) NOT NULL DEFAULT 'draft',
-    "attachment" JSON NOT NULL DEFAULT '[]',
+    "attachment" JSONB NOT NULL DEFAULT '[]',
     "remark" VARCHAR(1000),
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,

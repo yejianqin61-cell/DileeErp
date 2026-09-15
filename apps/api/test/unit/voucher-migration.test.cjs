@@ -44,8 +44,22 @@ test("外键语义：分录随凭证级联删除，来源流水删除只置空�
   assert.match(sql, /FOREIGN KEY \("cash_flow_entry_id"\) REFERENCES "cash_flow_entries"\("id"\) ON DELETE SET NULL/, "流水被删时凭证仍要留得住");
 });
 
-test("schema.prisma 的 Voucher / VoucherLine 与迁移一致", () => {
-  const voucher = modelBlock("Voucher");
+/**
+ * Json 列必须写成 JSONB。
+ *
+ * 为什么单独立一条：Prisma 在 PostgreSQL 上把 schema 的 `Json` 映射成 **jsonb**，
+ * 而手写迁移很容易写成 `JSON` —— 二者在 `prisma migrate diff` 里是**真实差异**，
+ * 一应用就留下永久漂移（本迁移第一版就是这么写的），而且与仓库里其它 15 处
+ * attachment 列口径不一致。断言全部 Json 列都是 JSONB，并禁止出现裸 `JSON`。
+ */
+test("迁移里的 Json 列必须写成 JSONB（与 Prisma 对 Json 的映射及其它 15 处 attachment 一致）", () => {
+  assert.match(sql, /"attachment" JSONB NOT NULL DEFAULT '\[\]'/, "vouchers.attachment 必须是 JSONB（写成 JSON 会留下永久漂移）");
+  const bareJson = sql.split("\n").filter((line) => /^\s*"[a-z_]+"\s+JSON[\s,]/.test(line));
+  assert.deepEqual(bareJson, [], "迁移里不允许出现裸 JSON 列，Json 一律用 JSONB");
+  assert.match(modelBlock("Voucher"), /attachment\s+Json\s+@default\("\[\]"\)/, "schema 侧声明 Json（映射到 jsonb）");
+});
+
+test("schema.prisma 的 Voucher / VoucherLine 与迁移一致", () => {  const voucher = modelBlock("Voucher");
   assert.match(voucher, /voucherNo\s+String\s+@unique\s+@map\("voucher_no"\)/, "凭证号唯一");
   assert.match(voucher, /@@unique\(\[sourceType, sourceId\]\)/, "幂等根同样声明在 schema 上（否则 migrate diff 会报漂移）");
   assert.match(voucher, /debitTotal\s+Decimal\s+@map\("debit_total"\)\s+@db\.Decimal\(18, 4\)/);
