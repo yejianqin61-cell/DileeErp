@@ -22,7 +22,7 @@ import { Input } from "../ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
-import { PAYABLE_TABS, type PayableTabKey } from "../../lib/finance-sections";
+import { PAYABLE_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type PayableTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
@@ -74,6 +74,8 @@ type SupplierPayment = {
   bank?: BankRef | null;
   allocations: Array<{ id: string; amount: string; status: string; payableEntry?: { id: string; payableNo: string; orderNo: string; amount: string; currency: string; status: string } | null }>;
 };
+/** 收支项目字典项（财务 → 收支管理 → 收支项目）。 */
+type DictionaryItem = { id: string; key: string; label: string; isActive: boolean };
 type SupplierReconciliation = {
   id: string; reconciliationNo: string; orderNo: string | null; supplierId: string; periodStart: string; periodEnd: string;
   payableAmountSnapshot: string; paymentAmountSnapshot: string; adjustmentAmountSnapshot: string; systemBalance: string;
@@ -119,6 +121,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const [suppliers, setSuppliers] = useState<Reference[]>([]);
   const [orders, setOrders] = useState<Reference[]>([]);
   const [banks, setBanks] = useState<BankRef[]>([]);
+  const [cashFlowItems, setCashFlowItems] = useState<DictionaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -136,7 +139,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     setLoading(true);
     setError("");
     try {
-      const [inbound, outsource, e, p, r, s, o, b] = await Promise.all([
+      const [inbound, outsource, e, p, r, s, o, b, i] = await Promise.all([
         apiGet<PayableSource[]>("/payable-sources"),
         apiGet<OutsourcePayableSource[]>("/production/outsource-logistics-batches/payable-sources"),
         apiGet<PayableEntry[]>("/finance/payable-entries"),
@@ -145,9 +148,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         apiGet<Reference[]>("/suppliers").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<Reference[]>("/sales-orders").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
+        // 收支项目：过账时给财务一个「人工选项目」的出口（采购/外加工/差旅费…），拉到就用，拉不到退回后端自动归类。
+        apiGet<DictionaryItem[]>(`/dictionaries/${CASH_FLOW_ITEM_DICTIONARY_KEY}/items`).catch(() => ({ data: [] as DictionaryItem[], meta: {} })),
       ]);
       setInboundSources(inbound.data); setOutsourceSources(outsource.data); setEntries(e.data);
-      setPayments(p.data); setReconciliations(r.data); setSuppliers(s.data); setOrders(o.data); setBanks(b.data);
+      setPayments(p.data); setReconciliations(r.data); setSuppliers(s.data); setOrders(o.data); setBanks(b.data); setCashFlowItems(i.data);
     } catch (cause) {
       setError(messageOf(cause, "应付数据加载失败"));
     } finally {
@@ -249,7 +254,25 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   });
   const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
-  const allocatableEntries = entries.filter((entry) => ["confirmed", "partially_paid"].includes(entry.status) && Number(entry.outstanding_amount ?? entry.amount) > 0);
+  /** 可人工指定的收支项目：只给启用项，留空则由后端按「金额最大的应付来源」自动归类。 */
+  const cashFlowItemOptions = cashFlowItems.filter((item) => item.isActive).map((item) => ({ value: item.id, label: item.label }));
+
+  /**
+   * 某张付款单**可以**核销的应付条目。
+   *
+   * 必须与付款单**同供应商 + 同币种**，且付款单填了订单号时还要**同订单** ——
+   * 服务端 `SupplierPaymentService.post` 就是这么校验的（不一致 422 `ALLOCATION_REFERENCE_MISMATCH`）。
+   *
+   * 历史缺陷：这里给的是**全库**还能付的应付，于是某家供应商的付款单下拉里会列出别家供应商、
+   * 别的币种的应付，选中必然 422 —— 界面摆了一个永远选不动的选项。
+   */
+  function allocatableEntriesFor(payment: SupplierPayment) {
+    return entries.filter((entry) => ["confirmed", "partially_paid"].includes(entry.status)
+      && Number(entry.outstanding_amount ?? entry.amount) > 0
+      && entry.supplierId === payment.supplierId
+      && entry.currency === payment.currency
+      && (!payment.orderNo || entry.orderNo === payment.orderNo));
+  }
   const outstandingText = entries.reduce((sum, entry) => sum + Number(entry.outstanding_amount ?? 0), 0);
 
   // ---------------------------------------------------------------- 操作（全部在表格行内触发，不在页头放按钮）
@@ -301,11 +324,13 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     ], submit: (v) => submitAction(`/finance/supplier-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "付款草稿已更新", "patch") });
   }
   function postPayment(item: SupplierPayment, preset?: PayableEntry) {
-    const options = allocatableEntries.map((entry) => ({ value: entry.id, label: `${entry.payableNo} / ${entry.orderNo} / ${entry.supplier_name ?? entry.supplierId} / 未付 ${entry.outstanding_amount ?? entry.amount} ${entry.currency}` }));
+    // 选项按本单的供应商+币种(+订单)收窄，与服务端校验口径一致（不再列出必然 422 的应付）。
+    const options = allocatableEntriesFor(item).map((entry) => ({ value: entry.id, label: `${entry.payableNo} / ${entry.orderNo} / ${entry.supplier_name ?? entry.supplierId} / 未付 ${entry.outstanding_amount ?? entry.amount} ${entry.currency}` }));
     setDialog({ title: `付款核销：${item.paymentNo}`, fields: [
       { name: "entry_id", label: "应付条目", type: "select", required: true, options, defaultValue: preset?.id },
       { name: "amount", label: "本次核销金额", type: "number", required: true, defaultValue: preset?.outstanding_amount ?? item.amount },
-    ], submit: (v) => v.entry_id ? void action(`/finance/supplier-payments/${item.id}/post`, { allocations: [{ payable_entry_id: v.entry_id, amount: v.amount }] }, "付款已过账并核销") : undefined });
+      { name: "cash_flow_item_id", label: "收支项目（留空按来源自动归类）", type: "select", options: cashFlowItemOptions },
+    ], submit: (v) => v.entry_id ? void action(`/finance/supplier-payments/${item.id}/post`, { allocations: [{ payable_entry_id: v.entry_id, amount: v.amount }], cash_flow_item_id: v.cash_flow_item_id || undefined }, "付款已过账并核销") : undefined });
   }
   function reversePayment(item: SupplierPayment) {
     setDialog({ title: `冲销付款：${item.paymentNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/supplier-payments/${item.id}/reverse`, { reason: v.reason }, "付款已冲销") });

@@ -18,7 +18,7 @@ import { Input } from "../ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
-import { RECEIVABLE_TABS, type ReceivableTabKey } from "../../lib/finance-sections";
+import { RECEIVABLE_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type ReceivableTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
@@ -39,6 +39,8 @@ type CustomerRef = { id: string; name: string; customerCode: string | null };
 /** 银行账户池条目（财务 → 银行账户）。收款的「到账银行」只能从这里选，不在这里手输账户。 */
 type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean };
 type BankLink = { id: string; bankName: string; accountNumber: string } | null;
+/** 收支项目字典项（财务 → 收支管理 → 收支项目）。 */
+type DictionaryItem = { id: string; key: string; label: string; isActive: boolean };
 type SourceAllocation = { id: string; amount: string; status: string; payment?: { id: string; paymentNo: string; status: string; paymentDate: string; amount?: string; currency?: string } | null };
 type ReceivableSource = {
   id: string; sourceNo: string; orderNo: string; customerId: string; outboundId: string;
@@ -86,6 +88,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [customers, setCustomers] = useState<Reference[]>([]);
   const [orders, setOrders] = useState<Reference[]>([]);
   const [banks, setBanks] = useState<BankRef[]>([]);
+  const [cashFlowItems, setCashFlowItems] = useState<DictionaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -106,15 +109,17 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     try {
       // 客户/销售单走 sales 权限：只有财务权限的账号拉不到它们，但不应因此整页报错（选项留空即可）。
       // 银行账户池同理（走 finance 权限，正常能拿到）。
-      const [s, p, r, c, o, b] = await Promise.all([
+      // 收支项目同样走字典接口；过账时要给财务一个「人工选项目」的出口，拉不到就退回后端自动归类。
+      const [s, p, r, c, o, b, i] = await Promise.all([
         apiGet<ReceivableSource[]>("/finance/receivable-sources"),
         apiGet<CustomerPayment[]>("/finance/customer-payments"),
         apiGet<Reconciliation[]>("/finance/reconciliations"),
         apiGet<Reference[]>("/customers").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<Reference[]>("/sales-orders").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
+        apiGet<DictionaryItem[]>(`/dictionaries/${CASH_FLOW_ITEM_DICTIONARY_KEY}/items`).catch(() => ({ data: [] as DictionaryItem[], meta: {} })),
       ]);
-      setSources(s.data); setPayments(p.data); setReconciliations(r.data); setCustomers(c.data); setOrders(o.data); setBanks(b.data);
+      setSources(s.data); setPayments(p.data); setReconciliations(r.data); setCustomers(c.data); setOrders(o.data); setBanks(b.data); setCashFlowItems(i.data);
     } catch (cause) {
       setError(messageOf(cause, "应收数据加载失败"));
     } finally {
@@ -181,7 +186,30 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   });
   /** 哨兵值 → 提交值：清空要显式送 null，未改动则送 undefined（后端不更新该字段）。 */
   const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
-  const allocatableSources = sources.filter((item) => ["confirmed", "partially_paid"].includes(item.status) && Number(item.outstanding_amount) > 0);
+  /** 可人工指定的收支项目：只给启用项，留空则由后端按来源自动归类。 */
+  const cashFlowItemOptions = cashFlowItems.filter((item) => item.isActive).map((item) => ({ value: item.id, label: item.label }));
+
+  /**
+   * 某张收款单**可以**核销的应收来源。
+   *
+   * 必须与收款单**同客户 + 同币种** —— 服务端 `CustomerPaymentService.post`
+   * 就是这么校验的（不一致直接 422 `ALLOCATION_REFERENCE_MISMATCH`）。
+   *
+   * 历史缺陷：这里给的是**全库**还能收的来源，于是「DL260122 的收款单」下拉里会列出
+   * 其它订单、甚至其它币种的应收来源（例如 DL260123ZG-916064 的 14310 USD），
+   * 用户选中必然 422 —— 界面摆了一个永远选不动的选项。
+   *
+   * 订单号**不做硬过滤**（服务端也不拦）：同一客户一笔款覆盖多张订单是正常业务。
+   * 但本单自己订单号的来源排在前面，避免看错行选错单。
+   */
+  function allocatableSourcesFor(payment: CustomerPayment) {
+    return sources
+      .filter((source) => ["confirmed", "partially_paid"].includes(source.status)
+        && Number(source.outstanding_amount) > 0
+        && source.customerId === payment.customerId
+        && source.currency === payment.currency)
+      .sort((left, right) => Number(right.orderNo === payment.orderNo) - Number(left.orderNo === payment.orderNo));
+  }
 
   // ---------------------------------------------------------------- 操作
 
@@ -231,11 +259,13 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     ], submit: (v) => void action(`/finance/customer-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "收款草稿已更新", "patch") });
   }
   function postPayment(item: CustomerPayment, preset?: ReceivableSource) {
-    const options = allocatableSources.map((source) => ({ value: source.id, label: `${source.sourceNo} / ${source.orderNo} / ${source.customer_name ?? source.customerId} / 未收 ${source.outstanding_amount} ${source.currency}` }));
+    // 选项按本单的客户+币种收窄，与服务端校验口径一致（不再列出必然 422 的来源）。
+    const options = allocatableSourcesFor(item).map((source) => ({ value: source.id, label: `${source.sourceNo} / ${source.orderNo} / ${source.customer_name ?? source.customerId} / 未收 ${source.outstanding_amount} ${source.currency}` }));
     setDialog({ title: `收款核销：${item.paymentNo}`, fields: [
       { name: "source_id", label: "应收来源", type: "select", required: true, options, defaultValue: preset?.id },
       { name: "amount", label: "本次核销金额", type: "number", required: true, defaultValue: preset?.outstanding_amount ?? item.amount },
-    ], submit: (v) => v.source_id ? void action(`/finance/customer-payments/${item.id}/post`, { allocations: [{ receivable_source_id: v.source_id, amount: v.amount }] }, "收款已过账并核销") : undefined });
+      { name: "cash_flow_item_id", label: "收支项目（留空按来源自动归类）", type: "select", options: cashFlowItemOptions },
+    ], submit: (v) => v.source_id ? void action(`/finance/customer-payments/${item.id}/post`, { allocations: [{ receivable_source_id: v.source_id, amount: v.amount }], cash_flow_item_id: v.cash_flow_item_id || undefined }, "收款已过账并核销") : undefined });
   }
   function reversePayment(item: CustomerPayment) {
     setDialog({ title: `冲销收款：${item.paymentNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/customer-payments/${item.id}/reverse`, { reason: v.reason }, "收款已冲销") });

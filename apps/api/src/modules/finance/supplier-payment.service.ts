@@ -60,7 +60,13 @@ export class SupplierPaymentService {
     return row;
   }
 
-  async post(id: string, allocations: AllocationInput[], user: CurrentUser) {
+  /**
+   * 过账并核销。
+   *
+   * `cashFlowItemId`：过账时人工选定的收支项目（可选）。默认按本次付款**金额最大**的应付来源
+   * 自动归类（采购 / 外加工 / 其他应付）；财务明确选了就以选择为准，选了不存在的项目会 422。
+   */
+  async post(id: string, allocations: AllocationInput[], user: CurrentUser, cashFlowItemId?: string | null) {
     const items = allocations ?? [];
     if (items.length === 0) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "付款过账至少需要核销一条有效应付");
     if (new Set(items.map((item) => item.payable_entry_id)).size !== items.length) throw this.invalid("DUPLICATE_PAYMENT_ALLOCATION", "同一付款不得重复核销同一应付");
@@ -103,6 +109,7 @@ export class SupplierPaymentService {
       settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "supplier_payment", sourceId: result.payment.id,
       itemKeys: paymentItemKeys(dominant),
+      itemId: cashFlowItemId ?? null,
       remark: result.payment.remark ?? undefined,
     }, user);
     return result.payment;

@@ -60,7 +60,13 @@ export class CustomerPaymentService {
     return row;
   }
 
-  async post(id: string, allocations: Allocation[], user: CurrentUser) {
+  /**
+   * 过账并核销。
+   *
+   * `cashFlowItemId`：过账时人工选定的收支项目（可选）。默认按来源自动归类为「货款」；
+   * 财务明确选了就以选择为准，选了不存在的项目会 422，不会静默改成别的项目。
+   */
+  async post(id: string, allocations: Allocation[], user: CurrentUser, cashFlowItemId?: string | null) {
     const current = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null } });
     if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在");
     if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
@@ -100,6 +106,7 @@ export class CustomerPaymentService {
       settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "customer_payment", sourceId: result.payment.id,
       itemKeys: paymentItemKeys("customer_payment"),
+      itemId: cashFlowItemId ?? null,
       remark: result.payment.remark ?? undefined,
     }, user);
     return result.payment;

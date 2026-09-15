@@ -12,8 +12,8 @@ const { PAYMENT_ITEM_KEYS, DEFAULT_PAYMENT_ITEM_KEYS, DEFAULT_CASH_FLOW_ITEMS, p
 
 const payment = { paymentNo: "SPAY-1", paymentDate: new Date("2026-09-15T00:00:00.000Z"), amount: new Prisma.Decimal("300"), currency: "CNY", counterpartyName: "晋江大田", direction: "expense", settlementMethod: "转账--农业银行5706", sourceType: "supplier_payment", sourceId: "payment-1", itemKeys: ["原材料 成本", "货款"] };
 
-/** 字典替身：只有 keys 里的项目存在。 */
-function cashFlowHarness(existingKeys) {
+/** 字典替身：只有 keys 里的项目存在；`itemsById` 模拟「人工选定的项目 id → 是否存在且启用」。 */
+function cashFlowHarness(existingKeys, itemsById = {}) {
   const created = [];
   const prisma = {
     cashFlowEntry: {
@@ -21,7 +21,11 @@ function cashFlowHarness(existingKeys) {
       create: async ({ data }) => { created.push(data); return { id: "cf-1", ...data }; },
       update: async ({ data }) => ({ id: "cf-1", ...data }),
     },
-    dictionaryItem: { findMany: async ({ where }) => where.key.in.filter((key) => existingKeys.includes(key)).map((key) => ({ id: `item-${key}`, key })) },
+    dictionaryItem: {
+      findMany: async ({ where }) => where.key.in.filter((key) => existingKeys.includes(key)).map((key) => ({ id: `item-${key}`, key })),
+      // 按 id 查的那条路要求「存在 + 启用 + 属于 cash_flow_item 字典」，替身用一张表模拟。
+      findFirst: async ({ where }) => itemsById[where.id] ?? null,
+    },
   };
   const service = new CashFlowService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
   return { service, created };
@@ -46,8 +50,31 @@ test("候选链全都不存在时显式报错，绝不静默跳过（这正是�
   assert.deepEqual(created, []);
 });
 
-test("同来源已写过流水时不重复创建（幂等）", async () => {
-  const created = [];
+test("过账时人工选定的收支项目优先于候选链（财务选「差旅费」就必须记成差旅费）", async () => {
+  // 候选链本来会命中「原材料 成本」，但人工选了「差旅费」，结果必须是差旅费。
+  const { service, created } = cashFlowHarness(["原材料 成本", "货款"], { "item-差旅费": { id: "item-差旅费", key: "差旅费" } });
+  await service.autoCreateFromPayment({ ...payment, itemId: "item-差旅费" }, { id: "user-1" });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].itemId, "item-差旅费", "人工选择必须压过候选链，否则「选了差旅费却记成管理费用」在账面上看不出来");
+});
+
+test("人工选定的收支项目不存在或已停用时 422，不会悄悄换成候选链里的其它项目", async () => {
+  // itemsById 为空 = 该 id 查不到（不存在 / 已停用 / 不属于收支项目字典，三种都走这里）
+  const { service, created } = cashFlowHarness(["原材料 成本"], {});
+  await assert.rejects(
+    () => service.autoCreateFromPayment({ ...payment, itemId: "item-已停用" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "CASH_FLOW_ITEM_NOT_FOUND" && /选择的收支项目/.test(error.getResponse().message),
+  );
+  assert.deepEqual(created, [], "选了不存在的项目时不能退回候选链偷偷写一条");
+});
+
+test("不传人工选择时仍按来源候选链归类（回归保护：默认路径没被改坏）", async () => {
+  const { service, created } = cashFlowHarness(["货款"], { "item-差旅费": { id: "item-差旅费", key: "差旅费" } });
+  await service.autoCreateFromPayment({ ...payment, itemId: null }, { id: "user-1" });
+  assert.equal(created[0].itemId, "item-货款");
+});
+
+test("同来源已写过流水时不重复创建（幂等）", async () => {  const created = [];
   const prisma = {
     cashFlowEntry: { findFirst: async () => ({ id: "cf-existing" }), create: async ({ data }) => { created.push(data); return data; } },
     dictionaryItem: { findMany: async () => [{ id: "item-1", key: "原材料 成本" }] },

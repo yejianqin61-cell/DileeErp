@@ -33,10 +33,11 @@ const EP = {
   orders: "/api/v1/sales-orders",
   banks: "/api/v1/finance/banks",
   currencies: "/api/v1/dictionaries/currency/items",
+  cashFlowItems: "/api/v1/dictionaries/cash_flow_item/items",
 } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined | Promise<Response | undefined>;
-type Data = Partial<Record<"sources" | "outsource" | "entries" | "payments" | "reconciliations" | "suppliers" | "orders" | "banks", unknown[]>>;
+type Data = Partial<Record<"sources" | "outsource" | "entries" | "payments" | "reconciliations" | "suppliers" | "orders" | "banks" | "cashFlowItems", unknown[]>>;
 
 function stubPayable(data: Data = {}, extra?: Handler) {
   return stubApi(async (url, call) => {
@@ -51,6 +52,8 @@ function stubPayable(data: Data = {}, extra?: Handler) {
     if (url.startsWith(EP.orders)) return apiOk(data.orders ?? []);
     if (url.startsWith(EP.banks)) return apiOk(data.banks ?? []);
     if (url.startsWith(EP.currencies)) return apiOk([]);
+    // 收支项目字典也要回**数组**：付款页加载时就会拉它，回对象会让 cashFlowItems.filter 直接抛错。
+    if (url.startsWith(EP.cashFlowItems)) return apiOk(data.cashFlowItems ?? []);
     return apiOk({});
   });
 }

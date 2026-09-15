@@ -221,6 +221,14 @@ export class CashFlowService {
       sourceType: string;
       sourceId: string;
       itemKeys: readonly string[];
+      /**
+       * 过账时人工选定的收支项目 id（可选）。
+       *
+       * 给了就以它为准，且**校验不过直接报错**——人工选择绝不能被静默忽略或悄悄替换成候选链里的其它项目，
+       * 否则财务选了「差旅费」却记成了「管理费用」，账面上看不出来。
+       * 没给则退回 `itemKeys` 候选链（按来源自动归类）。
+       */
+      itemId?: string | null;
       remark?: string;
     },
     user: CurrentUser,
@@ -230,12 +238,20 @@ export class CashFlowService {
       select: { id: true },
     });
     if (existing) return null;
-    const candidates = await this.prisma.dictionaryItem.findMany({
-      where: { key: { in: [...input.itemKeys] }, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-      select: { id: true, key: true },
-    });
-    const item = input.itemKeys.map((key) => candidates.find((candidate) => candidate.key === key)).find((found) => Boolean(found));
-    if (!item) throw this.invalid("CASH_FLOW_ITEM_NOT_FOUND", `自动写入收支流水需要收支项目「${input.itemKeys.join("」或「")}」，请在「收支管理 → 收支项目」里补上后重新过账`);
+    const item = input.itemId
+      ? await this.prisma.dictionaryItem.findFirst({
+          where: { id: input.itemId, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
+          select: { id: true, key: true },
+        })
+      : await this.firstCandidateItem(input.itemKeys);
+    if (!item) {
+      throw this.invalid(
+        "CASH_FLOW_ITEM_NOT_FOUND",
+        input.itemId
+          ? "选择的收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认后重新过账"
+          : `自动写入收支流水需要收支项目「${input.itemKeys.join("」或「")}」，请在「收支管理 → 收支项目」里补上后重新过账`,
+      );
+    }
     const settlementAccountId = input.settlementAccountId ?? await this.matchSettlementAccount(input.settlementAccountHint);
     const row = await this.prisma.cashFlowEntry.create({
       data: {
@@ -255,6 +271,20 @@ export class CashFlowService {
       },
     });
     return row;
+  }
+
+  /**
+   * 按候选链取第一个**真实存在且启用**的收支项目。
+   *
+   * 一次查库再按顺序挑，避免为每个候选各查一次；顺序即优先级，不能被数据库返回顺序打乱。
+   */
+  private async firstCandidateItem(itemKeys: readonly string[]) {
+    if (itemKeys.length === 0) return null;
+    const candidates = await this.prisma.dictionaryItem.findMany({
+      where: { key: { in: [...itemKeys] }, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
+      select: { id: true, key: true },
+    });
+    return itemKeys.map((key) => candidates.find((candidate) => candidate.key === key)).find((found) => Boolean(found)) ?? null;
   }
 
   /**

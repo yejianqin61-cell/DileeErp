@@ -17,7 +17,13 @@ class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsSt
 class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
 class AllocationDto { @IsUUID() receivable_source_id!: string; @IsString() amount!: string; }
-class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; }
+/**
+ * 过账请求。
+ *
+ * `cash_flow_item_id`：**人工选定**的收支项目（可选，留空则按来源自动归类）。
+ * 之所以放在过账而不是建单：收支流水只在过账那一刻产生，草稿阶段选项目没有落点。
+ */
+class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; @IsOptional() @IsUUID() cash_flow_item_id?: string; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 class AdjustmentDto {
   @IsOptional() @IsString() order_no?: string;
@@ -65,7 +71,7 @@ class SupplierPaymentDto {
   @IsOptional() @IsString() remark?: string;
 }
 class SupplierAllocationDto { @IsUUID() payable_entry_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }
-class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; }
+class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; @IsOptional() @IsUUID() cash_flow_item_id?: string; }
 /**
  * 草稿类单据（收款 / 付款 / 应付）的编辑入参。
  *
@@ -103,7 +109,7 @@ export class FinanceController {
   @Get("customer-payments/:id") async getPayment(@Param("id") id: string) { return { data: await this.payments.get(id), meta: {} }; }
   @Post("customer-payments") async createPayment(@Body() body: PaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.create(body, user), meta: {} }; }
   @Patch("customer-payments/:id") async updateCustomerPayment(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.updateDraft(id, body, user), meta: {} }; }
-  @Post("customer-payments/:id/post") async postPayment(@Param("id") id: string, @Body() body: PostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.post(id, body.allocations, user), meta: {} }; }
+  @Post("customer-payments/:id/post") async postPayment(@Param("id") id: string, @Body() body: PostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.post(id, body.allocations, user, body.cash_flow_item_id), meta: {} }; }
   @Post("customer-payments/:id/reverse") async reversePayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.reverse(id, body.reason, user), meta: {} }; }
   @Get("order-summary") async orderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.payments.orderSummary(orderNo) : [], meta: {} }; }
   @Get("receivable-order-summary") async receivableOrderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.receivable.orderSummary(orderNo) : [], meta: {} }; }
@@ -132,7 +138,7 @@ export class FinanceController {
   @Get("supplier-payments/:id") async getSupplierPayment(@Param("id") id: string) { return { data: await this.supplierPayments.get(id), meta: {} }; }
   @Post("supplier-payments") async createSupplierPayment(@Body() body: SupplierPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.create(body, user), meta: {} }; }
   @Patch("supplier-payments/:id") async updateSupplierPayment(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.updateDraft(id, body, user), meta: {} }; }
-  @Post("supplier-payments/:id/post") async postSupplierPayment(@Param("id") id: string, @Body() body: SupplierPostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.post(id, body.allocations, user), meta: {} }; }
+  @Post("supplier-payments/:id/post") async postSupplierPayment(@Param("id") id: string, @Body() body: SupplierPostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.post(id, body.allocations, user, body.cash_flow_item_id), meta: {} }; }
   @Post("supplier-payments/:id/reverse") async reverseSupplierPayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.reverse(id, body.reason, user), meta: {} }; }
   @Get("payable-order-summary") async payableOrderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.supplierPayments.orderSummary(orderNo) : [], meta: {} }; }
   @Get("supplier-payable-reconciliations") async listSupplierReconciliations(@Query("supplier_id") supplierId?: string, @Query("order_no") orderNo?: string, @Query("status") status?: string) { return { data: await this.supplierReconciliations.list(supplierId, orderNo, status), meta: {} }; }

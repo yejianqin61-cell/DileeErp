@@ -39,6 +39,7 @@ const EP = {
   suppliers: "/api/v1/suppliers",
   salesOrders: "/api/v1/sales-orders",
   currencies: "/api/v1/dictionaries/currency/items",
+  cashFlowItems: "/api/v1/dictionaries/cash_flow_item/items",
 } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined;
@@ -341,6 +342,47 @@ describe("应收管理 · 确认应收与收款", () => {
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/customer-payments/cp-2/reverse")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/customer-payments/cp-2/reverse")[0]).reason).toBe("银行退回");
   });
+
+  it("收款核销的「应收来源」只列同客户 + 同币种（不再摆出必然 422 的选项）", async () => {
+    // 历史缺陷：下拉给的是**全库**还能收的来源，于是 DL260122 / CNY 的收款单里会列出
+    // DL260123 / USD 的应收来源，选中必然被服务端 422（客户或币种不一致）。
+    stubFinance({
+      receivables: [
+        confirmedSource,                                                                                  // 同客户 + 同币种 → 保留
+        source({ id: "rec-3", sourceNo: "AR-003", orderNo: "SO-3", customerId: "customer-9", status: "confirmed", outstanding_amount: "500.0000" }), // 别的客户
+        source({ id: "rec-4", sourceNo: "AR-004", orderNo: "SO-4", status: "confirmed", currency: "CNY", outstanding_amount: "700.0000" }),         // 别的币种
+        source({ id: "rec-5", sourceNo: "AR-005", orderNo: "SO-5", status: "confirmed", outstanding_amount: "0.0000" }),                            // 已收完
+      ],
+      customerPayments: [payment()],
+      customers: [{ id: "customer-1", name: "香港迪礼", customerCode: "C001" }],
+    });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    fireEvent.click(panel("收款").getByRole("button", { name: "过账/核销" }));
+    await userEvent.click(screen.getByTestId("action-field-source_id"));
+    const labels = (await screen.findAllByRole("option")).map((option) => option.textContent ?? "");
+    expect(labels.some((text) => text.includes("AR-002"))).toBe(true);
+    expect(labels.some((text) => text.includes("AR-003"))).toBe(false); // 别的客户：服务端必拒
+    expect(labels.some((text) => text.includes("AR-004"))).toBe(false); // 别的币种：服务端必拒
+    expect(labels.some((text) => text.includes("AR-005"))).toBe(false); // 已收完，没有可核销余额
+  });
+
+  it("收款过账可以人工指定收支项目（「差旅费」这类归不进默认候选的项目）", async () => {
+    const calls = stubFinance({
+      receivables: [confirmedSource],
+      customerPayments: [payment()],
+      customers: [{ id: "customer-1", name: "香港迪礼", customerCode: "C001" }],
+      cashFlowItems: [{ id: "item-travel", key: "差旅费", label: "差旅费", isActive: true }],
+    });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    fireEvent.click(panel("收款").getByRole("button", { name: "过账/核销" }));
+    await pickOption("action-field-source_id", /AR-002/);
+    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/customer-payments/cp-1/post")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/customer-payments/cp-1/post")[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
+  });
 });
 
 // ------------------------------------------------------------------ 应付管理
@@ -467,6 +509,45 @@ describe("应付管理 · 应付对账与确认应付", () => {
     setValue("action-field-reason", "重复付款");
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payments/sp-2/reverse")).toHaveLength(1));
+  });
+
+  it("付款核销的「应付条目」只列同供应商 + 同币种（+ 同订单），不再摆出必然 422 的选项", async () => {
+    stubFinance({
+      payables: [
+        payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed", outstanding_amount: "50.0000" }),                                        // 同供应商/同币种/同订单 → 保留
+        payableEntry({ id: "pe-3", payableNo: "AP-003", supplierId: "supplier-9", status: "confirmed", outstanding_amount: "60.0000" }),               // 别家供应商
+        payableEntry({ id: "pe-4", payableNo: "AP-004", status: "confirmed", currency: "USD", outstanding_amount: "70.0000" }),                        // 别的币种
+        payableEntry({ id: "pe-5", payableNo: "AP-005", orderNo: "SO-9", status: "confirmed", outstanding_amount: "80.0000" }),                        // 别的订单（付款单填了订单号）
+        payableEntry({ id: "pe-6", payableNo: "AP-006", status: "confirmed", outstanding_amount: "0.0000" }),                                          // 已付完
+      ],
+      supplierPayments: [supplierPayment()],
+    });
+    await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
+
+    fireEvent.click(panel("付款").getByRole("button", { name: "过账/核销" }));
+    await userEvent.click(screen.getByTestId("action-field-entry_id"));
+    const labels = (await screen.findAllByRole("option")).map((option) => option.textContent ?? "");
+    expect(labels.some((text) => text.includes("AP-002"))).toBe(true);
+    expect(labels.some((text) => text.includes("AP-003"))).toBe(false); // 别家供应商：服务端必拒
+    expect(labels.some((text) => text.includes("AP-004"))).toBe(false); // 别的币种：服务端必拒
+    expect(labels.some((text) => text.includes("AP-005"))).toBe(false); // 别的订单：付款单带订单号时服务端必拒
+    expect(labels.some((text) => text.includes("AP-006"))).toBe(false); // 已付完
+  });
+
+  it("付款过账可以人工指定收支项目（差旅费这类归不进默认候选的项目）", async () => {
+    const calls = stubFinance({
+      payables: [payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed", outstanding_amount: "50.0000" })],
+      supplierPayments: [supplierPayment()],
+      cashFlowItems: [{ id: "item-travel", key: "差旅费", label: "差旅费", isActive: true }],
+    });
+    await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
+
+    fireEvent.click(panel("付款").getByRole("button", { name: "过账/核销" }));
+    await pickOption("action-field-entry_id", /AP-002/);
+    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payments/sp-1/post")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/supplier-payments/sp-1/post")[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
   });
 
   it("应付草稿编辑走 PATCH（用 POST 会 404），逐条确认走 POST", async () => {
