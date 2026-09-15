@@ -15,7 +15,7 @@ export class SupplierPayableReconciliationService {
   async list(supplierId?: string, orderNo?: string, status?: string) {
     return this.prisma.supplierPayableReconciliation.findMany({
       where: { deletedAt: null, ...(supplierId ? { supplierId } : {}), ...(orderNo ? { orderNo } : {}), ...(status ? { status } : {}) },
-      include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } },,
+      include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } },
       orderBy: { createdAt: "desc" },
     });
   }

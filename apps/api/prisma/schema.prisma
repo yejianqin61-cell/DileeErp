@@ -1023,7 +1023,7 @@ model SupplierPaymentAllocation {
   id             String               @id @default(uuid()) @db.Uuid
   paymentId      String               @map("payment_id") @db.Uuid
   payableEntryId String               @map("payable_entry_id") @db.Uuid
-  orderNo        String               @map("order_no") @db.VarChar(100)
+  orderNo        String?              @map("order_no") @db.VarChar(100)
   amount         Decimal              @db.Decimal(18, 4)
   currency       String               @db.VarChar(10)
   status         String               @default("active") @db.VarChar(30)
