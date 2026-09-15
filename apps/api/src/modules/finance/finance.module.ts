@@ -16,6 +16,8 @@ import { ReconciliationService } from "./reconciliation.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 import { SupplierPaymentService } from "./supplier-payment.service";
 import { SupplierPayableReconciliationService } from "./supplier-payable-reconciliation.service";
+import { VoucherController } from "./voucher.controller";
+import { VoucherService } from "./voucher.service";
 
-@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceReportController, CashFlowController, BankController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService] })
+@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceReportController, CashFlowController, BankController, VoucherController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService, VoucherService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService, VoucherService] })
 export class FinanceModule {}

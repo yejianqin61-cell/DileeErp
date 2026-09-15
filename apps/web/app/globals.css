@@ -440,6 +440,29 @@ button { cursor: pointer; }
 /* 窄屏：窗口不再强行撑满视口高度，改为随内容长（否则一屏放不下工具条 + 表格） */
 @media (max-width: 900px) { .floating-window { height: auto; min-height: 0; } .floating-window-table .payroll-sheet-scroll { max-height: 60vh; } }
 
+/* 记账凭证纸（凭证管理页的打印视图，components/finance/voucher-workspace.tsx）。
+   屏幕上是一张仿凭证纸；打印时页面上只留它自己 —— 用户问「凭证做一个图片返回来？」，
+   结论是不做图片：凭证是结构化分录，图片不可搜索/不可复制/改字要重生成。
+   浏览器「打印 / 另存为 PDF」就是它的出纸方式（需要 PNG 时也是在这张纸上截图）。 */
+.voucher-sheet { display: grid; gap: 10px; padding: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.voucher-sheet-head { display: flex; align-items: baseline; justify-content: center; gap: 14px; }
+.voucher-sheet-head h2 { margin: 0; font-size: 20px; letter-spacing: 6px; }
+.voucher-sheet-meta { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 12px; color: var(--text-muted); }
+.voucher-sheet-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.voucher-sheet-table th, .voucher-sheet-table td { border: 1px solid var(--border); padding: 6px 8px; vertical-align: top; }
+.voucher-sheet-table th { background: var(--surface-muted); font-weight: 600; }
+.voucher-sheet-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.voucher-sheet-total td { font-weight: 600; }
+.voucher-sheet-sign { display: flex; flex-wrap: wrap; gap: 6px 28px; font-size: 12px; }
+@media print {
+  /* visibility（而不是 display）才能让祖先隐藏、后代重新可见；对话框在打印时改为普通文档流，避免被裁切 */
+  body * { visibility: hidden !important; }
+  .voucher-sheet, .voucher-sheet * { visibility: visible !important; }
+  .voucher-sheet { position: absolute; left: 0; top: 0; width: 100%; border: 0; padding: 0; gap: 8px; }
+  .voucher-print-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+  .ui-dialog-header, .ui-dialog-footer, .ui-dialog-close, .ui-dialog-overlay { display: none !important; }
+}
+
 /* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
    满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，
    表头吸顶（几百行时滑到底不能忘了列名），合计行加粗。 */

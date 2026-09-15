@@ -14,7 +14,7 @@ export const FINANCE_BOARDS = [
   { key: "banks", title: "银行账户", description: "银行账户池：付款/对账里「支付银行」下拉的来源，支持新建、编辑、停用与删除" },
   { key: "cash-flow", title: "收支管理", description: "手工录入资金收支流水（含统一「对方名称」与银行账户），按可配置的收支项目归类" },
   { key: "reports", title: "财务报表", description: "按老系统版式导出财务对账表：销售/采购对账、销售利润、收支明细与汇总；数字落数值型，可直接在 Excel 里求和" },
-  { key: "voucher", title: "凭证管理", description: "针对已确认的应收/应付条目生成单据（本期占位）" },
+  { key: "voucher", title: "凭证管理", description: "从收支流水生成记账凭证：每条流水一张（幂等），草稿可编辑/过账，已过账只能红冲，凭证纸可打印或另存 PDF" },
 ] as const;
 
 export type FinanceBoardKey = (typeof FINANCE_BOARDS)[number]["key"];

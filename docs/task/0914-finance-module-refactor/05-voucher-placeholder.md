@@ -1,7 +1,12 @@
 # Task 05：凭证管理占位
 
+> **2026-09-15 已被需求推翻**：用户当天要求「凭证管理，从收支流水中 fetch，每条收支条目都可以生成对应的
+> 条目」，占位页已替换为真实的凭证模块（收支流水 → 生成凭证 → 凭证纸打印/另存 PDF）。
+> 新设计见 `docs/design/accounting-vouchers-2026-09-15.md`，实现见 `voucher.service.ts` /
+> `voucher.domain.ts` / `components/finance/voucher-workspace.tsx`。本文保留为占位期的决策记录。
+
 ## 状态
-已完成
+已完成（已过时，见上方说明）
 
 ## 认领
 负责人：全栈 Agent

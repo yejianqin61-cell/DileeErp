@@ -12,7 +12,7 @@
 // 用户看到的"操作失败"会在测试里重现（成功提示不会出现）。
 //
 // 说明：动作结果是通过 toast 呈现的（notifySuccess / notifyError），因此渲染时一并挂 <Toaster />。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import FinanceBoardIndex from "../components/finance/finance-board-index";
@@ -33,6 +33,8 @@ const EP = {
   supplierPayments: "/api/v1/finance/supplier-payments",
   supplierReconciliations: "/api/v1/finance/supplier-payable-reconciliations",
   banks: "/api/v1/finance/banks",
+  cashFlowEntries: "/api/v1/finance/cash-flow-entries",
+  vouchers: "/api/v1/finance/vouchers",
   customers: "/api/v1/customers",
   suppliers: "/api/v1/suppliers",
   salesOrders: "/api/v1/sales-orders",
@@ -485,22 +487,6 @@ describe("应付管理 · 应付对账与确认应付", () => {
   });
 });
 
-// ------------------------------------------------------------------ 凭证管理（占位）
-
-describe("凭证管理：占位与待生成凭证预览", () => {
-  it("只统计已确认（含部分收付/已收付清）的应收与应付条目", async () => {
-    stubFinance({
-      receivables: [source(), confirmedSource, source({ id: "rec-3", sourceNo: "AR-003", status: "cancelled" })],
-      payables: [payableEntry(), payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed" })],
-    });
-    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
-    expect(screen.getByText("建设中：凭证单据编号规则、会计科目与期间结账尚未定义，因此这里只做预览，不提供任何写操作。")).toBeInTheDocument();
-    expect(screen.getByTestId("voucher-receivable-preview")).toHaveTextContent("已确认应收 1 条，合计 120.00");
-    expect(screen.getByTestId("voucher-payable-preview")).toHaveTextContent("已确认应付 1 条，合计 50.00");
-    expect(screen.getByRole("button", { name: "生成单据（建设中）" })).toBeDisabled();
-  });
-});
-
 // ------------------------------------------------------------------ 币种与银行（银行账户池）
 
 /**
@@ -622,6 +608,154 @@ describe("应付管理 · 币种与银行", () => {
     submitDialog();
     await waitFor(() => expect(callsTo(calls, `${EP.payables}/pe-1`)).toHaveLength(1));
     expect(bodyOf(callsTo(calls, `${EP.payables}/pe-1`)[0])).toMatchObject({ currency: "USD" });
+  });
+});
+
+// ------------------------------------------------------------------ 凭证管理（从收支流水生成）
+
+/**
+ * 2026-09-15 用户口径：「凭证管理，从收支流水中 fetch，每条收支条目都可以生成对应的条目」。
+ *
+ * 关于「凭证做一个图片返回来？」——这里断言的是**不做图片**的那条路：
+ * 凭证是结构化分录（借/贷），页面按记账凭证纸排版，出纸方式是浏览器打印 / 另存 PDF。
+ */
+const flowEntry = (over: Record<string, unknown> = {}) => ({
+  id: "cf-1", entryNo: "CF-20260915-0001", entryDate: "2026-09-15T00:00:00.000Z", counterpartyName: "香港迪礼",
+  direction: "income", amount: "14310.0000", currency: "USD", status: "posted", settlementMethod: "转账--农业银行5706",
+  remark: null, item: { id: "item-1", key: "货款", label: "货款" }, settlementAccount: { id: "acc-1", key: "农业银行5706", label: "农业银行5706" },
+  ...over,
+});
+const voucher = (over: Record<string, unknown> = {}) => ({
+  id: "voucher-1", voucherNo: "记-2026-09-0001", voucherDate: "2026-09-15T00:00:00.000Z", period: "2026-09",
+  sourceType: "cash_flow_entry", sourceId: "cf-1", summary: "香港迪礼 · 货款", currency: "USD",
+  debitTotal: "14310.0000", creditTotal: "14310.0000", status: "draft", remark: null, createdBy: "user-1",
+  source_entry: { id: "cf-1", entryNo: "CF-20260915-0001", status: "posted" },
+  lines: [
+    { id: "line-1", lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "香港迪礼 · 货款", amount: "14310.0000", currency: "USD" },
+    { id: "line-2", lineNo: 2, direction: "credit", subjectKey: "货款", subjectLabel: "货款", summary: "香港迪礼 · 货款", amount: "14310.0000", currency: "USD" },
+  ],
+  ...over,
+});
+/** 详情接口（凭证纸要用带分录的详情，列表里的行本身没有 lines）。 */
+const voucherDetail: Handler = (url, call) => (call.method === "GET" && url.endsWith("/api/v1/finance/vouchers/voucher-1") ? apiOk(voucher()) : undefined);
+
+describe("凭证管理：从收支流水生成凭证", () => {
+  it("列出收支流水：未生成的显示「未生成」，已生成的显示凭证号与「查看凭证」", async () => {
+    stubFinance(
+      { cashFlowEntries: [flowEntry(), flowEntry({ id: "cf-2", entryNo: "CF-20260915-0002", direction: "expense", amount: "5200.0000", item: { id: "item-2", key: "原材料 成本", label: "原材料 成本" } })], vouchers: [voucher()] },
+      voucherDetail,
+    );
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    const flow = panel("收支流水");
+    expect(flow.getByText("CF-20260915-0001")).toBeInTheDocument();
+    expect(flow.getByText("货款")).toBeInTheDocument();
+    expect(flow.getByText("记-2026-09-0001")).toBeInTheDocument();
+    expect(flow.getByText("未生成")).toBeInTheDocument();
+    expect(flow.getByRole("button", { name: "查看凭证" })).toBeInTheDocument();
+    expect(flow.getByRole("button", { name: "生成凭证" })).toBeInTheDocument();
+    // 明确写出「不做图片」的产品口径，避免下一个人又去接无头浏览器
+    expect(screen.getByTestId("voucher-policy-note")).toHaveTextContent("凭证是结构化分录，而不是一张图片");
+  });
+
+  it("点「生成凭证」走 POST /finance/vouchers/from-cash-flow/:id，并随即打开凭证纸", async () => {
+    const calls = stubFinance(
+      { cashFlowEntries: [flowEntry()], vouchers: [] },
+      (url, call) => (url.endsWith("/finance/vouchers/from-cash-flow/cf-1") ? apiOk(voucher()) : voucherDetail(url, call)),
+    );
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("收支流水").getByRole("button", { name: "生成凭证" }));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/from-cash-flow/cf-1")).toHaveLength(1));
+    expect(callsTo(calls, "/api/v1/finance/vouchers/from-cash-flow/cf-1")[0].method).toBe("POST");
+    await waitFor(() => expect(screen.getByTestId("voucher-sheet")).toBeInTheDocument());
+  });
+
+  it("凭证纸展示借贷分录与合计，可打印（window.print）/ 另存 PDF", async () => {
+    stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher()] }, voucherDetail);
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("记账凭证").getByRole("button", { name: "凭证纸" }));
+    await waitFor(() => expect(screen.getByTestId("voucher-sheet")).toBeInTheDocument());
+    const sheet = within(screen.getByTestId("voucher-sheet"));
+    expect(sheet.getByText("记账凭证")).toBeInTheDocument();
+    expect(sheet.getByTestId("voucher-line-1")).toHaveTextContent("银行存款");
+    expect(sheet.getByTestId("voucher-line-1")).toHaveTextContent("14310");
+    expect(sheet.getByTestId("voucher-line-2")).toHaveTextContent("货款");
+    expect(sheet.getByText("合计")).toBeInTheDocument();
+
+    const print = vi.fn();
+    Object.defineProperty(window, "print", { configurable: true, value: print });
+    try {
+      fireEvent.click(screen.getByTestId("voucher-print-button"));
+      expect(print).toHaveBeenCalledTimes(1);
+    } finally {
+      Reflect.deleteProperty(window, "print");
+    }
+  });
+
+  it("草稿可编辑（PATCH 整组分录）、过账与删除；已过账只给红冲", async () => {
+    const calls = stubFinance(
+      { cashFlowEntries: [flowEntry()], vouchers: [voucher(), voucher({ id: "voucher-2", voucherNo: "记-2026-09-0002", sourceId: "cf-2", status: "posted" })] },
+      voucherDetail,
+    );
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    const table = panel("记账凭证");
+
+    fireEvent.click(table.getAllByRole("button", { name: "编辑" })[0]);
+    setValue("action-field-line_2_subject", "商品销售收入");
+    setValue("action-field-line_2_amount", "14310");
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1")).toHaveLength(1));
+    const patch = callsTo(calls, "/api/v1/finance/vouchers/voucher-1")[0];
+    expect(patch.method).toBe("PATCH");
+    expect(bodyOf(patch)).toMatchObject({
+      summary: "香港迪礼 · 货款",
+      lines: [
+        { direction: "debit", subject_label: "银行存款", amount: "14310.0000" },
+        { direction: "credit", subject_label: "商品销售收入", amount: "14310" },
+      ],
+    });
+
+    fireEvent.click(panel("记账凭证").getAllByRole("button", { name: "过账" })[0]);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1/post")).toHaveLength(1));
+
+    fireEvent.click(panel("记账凭证").getAllByRole("button", { name: "删除" })[0]);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1")).toHaveLength(2));
+    expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1")[1].method).toBe("DELETE");
+
+    // 已过账的那张：只有红冲，没有编辑/过账/删除
+    const posted = panel("记账凭证");
+    expect(posted.getAllByRole("button", { name: "红冲" })).toHaveLength(1);
+  });
+
+  it("红冲必须填原因：不填本地就拦住（不发请求），填了才提交", async () => {
+    const calls = stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher({ status: "posted" })] }, voucherDetail);
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("记账凭证").getByRole("button", { name: "红冲" }));
+    submitDialog();
+    await waitFor(() => expect(screen.getByTestId("action-dialog-error")).toHaveTextContent("请填写红冲原因"));
+    expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1/reverse")).toHaveLength(0);
+
+    setValue("action-field-reason", "科目挂错");
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1/reverse")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/vouchers/voucher-1/reverse")[0]).reason).toBe("科目挂错");
+  });
+
+  it("后端拒绝时弹窗不关，并把后端原因显示在弹窗里（不静默失败）", async () => {
+    const calls = stubFinance(
+      { cashFlowEntries: [flowEntry()], vouchers: [voucher({ status: "posted" })] },
+      (url, call) => (url.endsWith("/finance/vouchers/voucher-1/reverse")
+        ? apiErr(422, "VOUCHER_NOT_REVERSIBLE", "只有已过账的凭证可以红冲")
+        : voucherDetail(url, call)),
+    );
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("记账凭证").getByRole("button", { name: "红冲" }));
+    setValue("action-field-reason", "科目挂错");
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1/reverse")).toHaveLength(1));
+    expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("只有已过账的凭证可以红冲");
+    expect(screen.getByTestId("action-dialog")).toBeInTheDocument();
   });
 });
 

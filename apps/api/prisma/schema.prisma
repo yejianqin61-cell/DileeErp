@@ -1635,11 +1635,78 @@ model CashFlowEntry {
   deletedBy           String?         @map("deleted_by") @db.Uuid
   item                DictionaryItem  @relation("CashFlowItem", fields: [itemId], references: [id])
   settlementAccount   DictionaryItem? @relation("CashFlowAccount", fields: [settlementAccountId], references: [id])
+  voucherLines        VoucherLine[]
 
   @@index([entryDate, currency])
   @@index([itemId, direction])
   @@index([currency, status])
   @@map("cash_flow_entries")
+}
+
+/// 记账凭证。
+///
+/// 为什么是**结构化记录**而不是一张图片：凭证是账务事实，必须可查、可核、可追溯、可重打；
+/// 图片不可搜索/不可复制/不可校对，且改一个字就要重新生成。图片（或 PDF）只是它的**渲染视图**：
+/// 前端按「记账凭证纸」排版，浏览器打印 / 另存为 PDF 即可。
+///
+/// 当前来源只有 `cash_flow_entry`（每条收支流水一张凭证）与 `voucher`（红冲产生的红字凭证）。
+model Voucher {
+  id          String        @id @default(uuid()) @db.Uuid
+  voucherNo   String        @unique @map("voucher_no") @db.VarChar(100)
+  voucherDate DateTime      @map("voucher_date") @db.Date
+  /// 会计期间 YYYY-MM（取自凭证日期），便于按期间出凭证清单
+  period      String        @db.VarChar(7)
+  /// 来源单据类型：cash_flow_entry / voucher（红冲）
+  sourceType  String        @map("source_type") @db.VarChar(40)
+  sourceId    String        @map("source_id") @db.Uuid
+  summary     String        @db.VarChar(500)
+  currency    String        @db.VarChar(10)
+  /// 借贷合计（生成/编辑时校验相等；两边恒为正数，方向由分录的 direction 决定）
+  debitTotal  Decimal       @map("debit_total") @db.Decimal(18, 4)
+  creditTotal Decimal       @map("credit_total") @db.Decimal(18, 4)
+  /// draft（可改可删）/ posted（已过账，不可改，只能红冲）/ reversed（已红冲）
+  status      String        @default("draft") @db.VarChar(30)
+  attachment  Json          @default("[]")
+  remark      String?       @db.VarChar(1000)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  createdBy   String        @map("created_by") @db.Uuid
+  updatedBy   String        @map("updated_by") @db.Uuid
+  deletedAt   DateTime?     @map("deleted_at")
+  deletedBy   String?       @map("deleted_by") @db.Uuid
+  lines       VoucherLine[]
+
+  /// 一条来源只能生成一张凭证 —— 生成接口因此天然幂等（重复点就是返回原凭证）
+  @@unique([sourceType, sourceId])
+  @@index([period, status])
+  @@index([voucherDate])
+  @@map("vouchers")
+}
+
+/// 凭证分录：借/贷各一行或多行。金额恒为正数，方向由 direction 决定（与收支流水同一约定）。
+model VoucherLine {
+  id               String        @id @default(uuid()) @db.Uuid
+  voucherId        String        @map("voucher_id") @db.Uuid
+  lineNo           Int           @map("line_no")
+  /// debit / credit
+  direction        String        @db.VarChar(10)
+  /// 科目编码：当前取自「收支项目」字典的 key；将来接正式科目表时只改这一处取值来源
+  subjectKey       String        @map("subject_key") @db.VarChar(200)
+  /// 科目名快照：字典改名/停用后，历史凭证仍显示记账当时的科目名
+  subjectLabel     String        @map("subject_label") @db.VarChar(200)
+  summary          String        @db.VarChar(500)
+  amount           Decimal       @db.Decimal(18, 4)
+  currency         String        @db.VarChar(10)
+  cashFlowEntryId  String?       @map("cash_flow_entry_id") @db.Uuid
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+  createdBy        String        @map("created_by") @db.Uuid
+  updatedBy        String        @map("updated_by") @db.Uuid
+  voucher          Voucher       @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  cashFlowEntry    CashFlowEntry? @relation(fields: [cashFlowEntryId], references: [id])
+
+  @@unique([voucherId, lineNo])
+  @@map("voucher_lines")
 }
 
 model ProductionOrder {
