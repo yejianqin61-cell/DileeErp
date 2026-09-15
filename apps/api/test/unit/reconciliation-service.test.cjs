@@ -129,3 +129,52 @@ test("批量确认只取范围内 status=draft 的应收，且期间按整天闭
   assert.equal(where.createdAt.gte.toISOString(), "2026-09-01T00:00:00.000Z");
   assert.equal(where.createdAt.lt.toISOString(), "2026-10-01T00:00:00.000Z", "结束日当天必须包含在内");
 });
+
+// 2026-09-15：「所有应收管理都要选择银行」。应收对账的回款银行同样只能取自银行账户池，且必须启用。
+test("应收对账可选回款银行：校验通过后把 bankId 落库", async () => {
+  const lookups = [];
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1" }) },
+    bank: { findFirst: async ({ where }) => { lookups.push(where); return { id: "bank-1", bankName: "农业银行", accountNumber: "5706" }; } },
+    receivableSource: { findMany: async () => [] },
+    customerPayment: { findMany: async () => [] },
+    receivableAdjustment: { findMany: async () => [] },
+    receivableReconciliation: { create: async ({ data }) => ({ id: "recon-new", ...data }) },
+  };
+  const audit = { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({}), record: async () => {}, recordWithOrderNo: async () => {} };
+  const service = new ReconciliationService(prisma, audit, {});
+  const row = await service.create({ customer_id: "customer-1", period_start: "2026-09-01", period_end: "2026-09-30", external_balance: "0", currency: "CNY", bank_id: "bank-1" }, { id: "user-1" });
+  assert.deepEqual(lookups, [{ id: "bank-1", deletedAt: null, isActive: true }]);
+  assert.equal(row.bankId, "bank-1");
+});
+
+test("应收对账：回款银行不在池子里（或已停用）→ BANK_NOT_FOUND，不建对账单", async () => {
+  let createCount = 0;
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1" }) },
+    bank: { findFirst: async () => null },
+    receivableReconciliation: { create: async () => { createCount += 1; return {}; } },
+  };
+  const audit = { create: () => ({}), update: () => ({}), record: async () => {}, recordWithOrderNo: async () => {} };
+  const service = new ReconciliationService(prisma, audit, {});
+  await assert.rejects(
+    () => service.create({ customer_id: "customer-1", period_start: "2026-09-01", period_end: "2026-09-30", external_balance: "0", currency: "CNY", bank_id: "bank-dead" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "BANK_NOT_FOUND",
+  );
+  assert.equal(createCount, 0);
+});
+
+test("应收对账不选银行时不做任何银行查询（银行是可选字段）", async () => {
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1" }) },
+    bank: { findFirst: async () => { throw new Error("未选择银行时不应查询银行账户"); } },
+    receivableSource: { findMany: async () => [] },
+    customerPayment: { findMany: async () => [] },
+    receivableAdjustment: { findMany: async () => [] },
+    receivableReconciliation: { create: async ({ data }) => ({ id: "recon-new", ...data }) },
+  };
+  const audit = { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({}), record: async () => {}, recordWithOrderNo: async () => {} };
+  const service = new ReconciliationService(prisma, audit, {});
+  const row = await service.create({ customer_id: "customer-1", period_start: "2026-09-01", period_end: "2026-09-30", external_balance: "0", currency: "CNY" }, { id: "user-1" });
+  assert.equal(row.bankId ?? null, null);
+});

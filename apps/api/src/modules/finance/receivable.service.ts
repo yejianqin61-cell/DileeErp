@@ -1,14 +1,15 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { receivableAmountFor, receivableUnitPrice, settlementRemark } from "../warehouse/finished-goods-settlement";
 
 @Injectable()
 export class ReceivableService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
   /**
    * 应收来源列表。
@@ -124,7 +125,14 @@ export class ReceivableService {
     }
     return result;
   }
-  async updateDraft(id: string, input: { amount?: string; due_date?: string; amount_reason?: string; remark?: string }, user: CurrentUser) {
+  /**
+   * 编辑草稿应收来源：金额、到期日、金额原因、**币种**、备注。
+   *
+   * 币种默认由销售订单带出（createFromOutbound），草稿期间允许改成实际结算币种；
+   * 一旦确认/收款核销，收款币种必须与来源币种一致（CustomerPaymentService.post 会逐条校验），因此改完要同步收款单。
+   */
+  async updateDraft(id: string, input: { amount?: string; due_date?: string; amount_reason?: string; currency?: string; remark?: string }, user: CurrentUser) {
+    if (input.currency !== undefined) await this.currencies?.assertSupported(input.currency, "应收币种");
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null } });
@@ -134,7 +142,7 @@ export class ReceivableService {
       if (input.amount !== undefined) {
         try { amount = new Prisma.Decimal(input.amount); if (amount.lte(0)) throw new Error(); } catch { throw this.invalid("INVALID_RECEIVABLE_AMOUNT", "应收金额必须是大于零的十进制数"); }
       }
-      return tx.receivableSource.update({ where: { id }, data: { amount, dueDate: input.due_date ? this.date(input.due_date) : current.dueDate, amountReason: input.amount_reason ?? current.amountReason, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      return tx.receivableSource.update({ where: { id }, data: { amount, dueDate: input.due_date ? this.date(input.due_date) : current.dueDate, amountReason: input.amount_reason ?? current.amountReason, currency: input.currency ?? current.currency, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
     await this.audit.record("receivable_source.update", "receivable_source", user.id, id, { order_no: row.orderNo, amount: row.amount.toString() });
     return row;

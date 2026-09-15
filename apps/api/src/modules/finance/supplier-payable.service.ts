@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { sourceType } from "./supplier-payable.domain";
 
@@ -11,7 +12,7 @@ export type PayableEntryInput = { source_type: SourceType; source_id: string; am
 
 @Injectable()
 export class SupplierPayableService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
     const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payment: { select: { status: true } } } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
@@ -93,14 +94,21 @@ export class SupplierPayableService {
     return row;
   }
 
-  async updateDraft(id: string, input: { amount?: string; confirmation_date?: string; remark?: string }, user: CurrentUser) {
+  /**
+   * 编辑草稿应付：金额、确认日期、**币种**、备注。
+   *
+   * 与应收侧同样的道理：草稿还没核销任何付款，此时改币种是安全的；
+   * 过账时 SupplierPaymentService.post 仍会校验 `entry.currency === payment.currency`。
+   */
+  async updateDraft(id: string, input: { amount?: string; confirmation_date?: string; currency?: string; remark?: string }, user: CurrentUser) {
+    if (input.currency !== undefined) await this.currencies?.assertSupported(input.currency, "应付币种");
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null } });
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
       if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_EDITABLE", "只有草稿应付可以编辑");
       const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
-      return tx.supplierPayableEntry.update({ where: { id }, data: { amount, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : current.confirmationDate, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      return tx.supplierPayableEntry.update({ where: { id }, data: { amount, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : current.confirmationDate, currency: input.currency ?? current.currency, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
     await this.audit.recordWithOrderNo("supplier_payable.update", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { amount: row.amount.toString() });
     return row;

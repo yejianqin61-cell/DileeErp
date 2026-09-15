@@ -501,6 +501,130 @@ describe("凭证管理：占位与待生成凭证预览", () => {
   });
 });
 
+// ------------------------------------------------------------------ 币种与银行（银行账户池）
+
+/**
+ * 2026-09-15 用户要求：
+ *   1) 「所有应收管理，都要选择银行，从银行池里选择」；
+ *   2) 「排查所有的应收管理、应付管理，都要支持选择币种，编辑币种」。
+ * 这里断言的是**前端真的把选择发出去**：银行下拉的选项只来自 `GET /finance/banks`（停用的不出现），
+ * 且编辑草稿时币种/银行都随 PATCH 一起提交。
+ */
+const bank = (over: Record<string, unknown> = {}) => ({
+  id: "bank-1", bankCode: "B001", bankName: "农业银行", accountName: "迪礼公司", accountNumber: "5706",
+  currency: "CNY", isActive: true, swiftCode: null, remark: null,
+  ...over,
+});
+const bankLink = { id: "bank-1", bankName: "农业银行", accountNumber: "5706" };
+
+describe("应收管理 · 银行账户池与币种", () => {
+  it("收款表格展示到账银行，登记收款只能从银行池（启用）里选", async () => {
+    const calls = stubFinance({
+      receivables: [confirmedSource],
+      customerPayments: [payment({ bank: bankLink })],
+      customers: [{ id: "customer-1", name: "香港迪礼", customerCode: "C001" }],
+      banks: [bank(), bank({ id: "bank-dead", bankCode: "B002", bankName: "中国银行", accountNumber: "7624", isActive: false })],
+    });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+    expect(panel("收款").getByText("农业银行（5706）")).toBeInTheDocument();
+
+    fireEvent.click(panel("确认应收").getByRole("button", { name: "登记收款" }));
+    await userEvent.click(screen.getByTestId("action-field-bank_id"));
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent).join("|")).toContain("农业银行");
+    expect(options.map((option) => option.textContent).join("|")).not.toContain("中国银行");
+    await userEvent.click(options.find((option) => option.textContent?.includes("农业银行"))!);
+    setValue("action-field-amount", "100");
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, EP.customerPayments).filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, EP.customerPayments).filter((call) => call.method === "POST")[0])).toMatchObject({ bank_id: "bank-1" });
+  });
+
+  it("编辑收款草稿可改币种与银行，也能把银行清空（送 null）", async () => {
+    const calls = stubFinance({
+      customerPayments: [payment({ bank: bankLink })],
+      banks: [bank()],
+    });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    fireEvent.click(panel("收款").getByRole("button", { name: "编辑" }));
+    await pickOption("action-field-currency", /USD/);
+    await pickOption("action-field-bank_id", /农业银行/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, `${EP.customerPayments}/cp-1`)).toHaveLength(1));
+    const patch = callsTo(calls, `${EP.customerPayments}/cp-1`)[0];
+    expect(patch.method).toBe("PATCH");
+    expect(bodyOf(patch)).toMatchObject({ currency: "USD", bank_id: "bank-1" });
+
+    // 选错了要能去掉：清空走哨兵值 → 提交 null（后端按「清空」处理）。
+    fireEvent.click(panel("收款").getByRole("button", { name: "编辑" }));
+    await pickOption("action-field-bank_id", /不指定银行/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, `${EP.customerPayments}/cp-1`)).toHaveLength(2));
+    expect(bodyOf(callsTo(calls, `${EP.customerPayments}/cp-1`)[1]).bank_id).toBeNull();
+  });
+
+  it("应收对账展示回款银行，创建对账时可从银行池选银行", async () => {
+    const calls = stubFinance({
+      receivables: [source()],
+      reconciliations: [receivableReconciliation({ bank: bankLink })],
+      customers: [{ id: "customer-1", name: "香港迪礼", customerCode: "C001" }],
+      banks: [bank()],
+    });
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    expect(panel("应收对账单").getByText("农业银行（5706）")).toBeInTheDocument();
+
+    fireEvent.click(panel("待创建对账的条目").getByRole("button", { name: "创建对账" }));
+    setValue("action-field-external_balance", "100");
+    await pickOption("action-field-bank_id", /农业银行/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, EP.reconciliations).filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, EP.reconciliations).filter((call) => call.method === "POST")[0])).toMatchObject({ bank_id: "bank-1" });
+  });
+
+  it("应收来源草稿可编辑币种（随 PATCH 提交）", async () => {
+    const calls = stubFinance({ receivables: [source()] });
+    await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(panel("成品出库条目").getByRole("button", { name: "编辑" }));
+    await pickOption("action-field-currency", /USD/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, `${EP.receivables}/rec-1`)).toHaveLength(1));
+    const patch = callsTo(calls, `${EP.receivables}/rec-1`)[0];
+    expect(patch.method).toBe("PATCH");
+    expect(bodyOf(patch)).toMatchObject({ currency: "USD" });
+  });
+});
+
+describe("应付管理 · 币种与银行", () => {
+  it("编辑付款草稿可改币种与支付银行", async () => {
+    const calls = stubFinance({
+      supplierPayments: [supplierPayment({ bank: { id: "bank-1", bankCode: "B001", bankName: "农业银行", accountName: "迪礼公司", accountNumber: "5706", currency: "CNY", isActive: true, swiftCode: null, remark: null } })],
+      banks: [bank()],
+    });
+    await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
+    expect(panel("付款").getByText("农业银行（5706）")).toBeInTheDocument();
+
+    fireEvent.click(panel("付款").getByRole("button", { name: "编辑" }));
+    await pickOption("action-field-currency", /USD/);
+    await pickOption("action-field-bank_id", /农业银行/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, `${EP.supplierPayments}/sp-1`)).toHaveLength(1));
+    const patch = callsTo(calls, `${EP.supplierPayments}/sp-1`)[0];
+    expect(patch.method).toBe("PATCH");
+    expect(bodyOf(patch)).toMatchObject({ currency: "USD", bank_id: "bank-1" });
+  });
+
+  it("编辑应付草稿可改币种", async () => {
+    const calls = stubFinance({ payables: [payableEntry()] });
+    await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
+    fireEvent.click(panel("确认应付").getByRole("button", { name: "编辑" }));
+    await pickOption("action-field-currency", /USD/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, `${EP.payables}/pe-1`)).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, `${EP.payables}/pe-1`)[0])).toMatchObject({ currency: "USD" });
+  });
+});
+
 // ------------------------------------------------------------------ 失败态
 
 describe("财务模块：失败态与权限降级", () => {

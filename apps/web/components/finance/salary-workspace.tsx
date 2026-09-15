@@ -393,6 +393,9 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     { key: "position", header: "岗位", text: (row) => row.employee.position?.name ?? "-" },
     { key: "employeeType", header: "类型", text: (row) => (row.employee.employeeType === "workshop" ? "车间" : "非车间") },
     { key: "period", header: "周期", text: (row) => `${day(row.periodStart)} 至 ${day(row.periodEnd)}` },
+    // 工资一律人民币核算（币种在生成/编辑台账时选定，默认 CNY）；这里只是把它展示出来，
+    // 免得跟其它财务单据（可多币种）混在一起时看不出金额单位。
+    { key: "currency", header: "币种", text: (row) => row.currency || "CNY", readOnlyHint: () => "工资统一以人民币（CNY）核算；生成或编辑台账时的币种字段与此一致" },
     {
       key: "baseSalary", header: "基本工资", numeric: true, total: true,
       text: (row) => dec(row.basicSalaryAmount),
@@ -496,7 +499,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   return <div className="page-root page-fullscreen" data-testid={testId}>
     <header className="page-fullscreen-toolbar">
       <h1 className="page-fullscreen-title">{mode === "ledger" ? "工资台账" : "工资付款"}</h1>
-      <span className="panel-note page-fullscreen-meta">{month} · 共 {visibleLedgers.length} 条{mode === "ledger" ? "（逐格可改，车间「基本工资」只读）" : "（本表＝当月台账只留总工资）"}</span>
+      <span className="panel-note page-fullscreen-meta">{month} · 币种 人民币（CNY） · 共 {visibleLedgers.length} 条{mode === "ledger" ? "（逐格可改，车间「基本工资」只读）" : "（本表＝当月台账只留总工资）"}</span>
       <span className="panel-note page-fullscreen-meta" data-testid="salary-import-summary">
         {importing ? "正在导入本月员工…" : importError ? `本月导入失败：${importError}` : importResult
           ? `本月在册 ${importResult.candidates} 人：新建 ${importResult.created} 条、已有 ${importResult.existing} 条、不在职 ${importResult.not_employed} 人、涉及生产日报 ${importResult.report_count} 条。`

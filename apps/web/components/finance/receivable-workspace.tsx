@@ -26,9 +26,19 @@ import { financeStatus } from "./finance-status";
 
 /** 收款建单的幂等键：打开弹窗时生成并固定，同一次弹窗内的重试/双击只会落一张草稿。 */
 const paymentIdempotencyKey = () => `web-receipt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+/**
+ * 银行下拉的「清空」哨兵值。
+ *
+ * 银行是可选字段，选错了必须能去掉；而 Radix Select 不接受空串 value，所以用一个显式哨兵值表示「不指定银行」，
+ * 提交时再翻译成 null（后端 DTO 的 @IsOptional 会放过 null 并按「清空」处理）。
+ */
+const BANK_CLEAR = "__no_bank__";
 
 type Reference = { id: string; name: string; customerCode?: string; orderNo?: string };
 type CustomerRef = { id: string; name: string; customerCode: string | null };
+/** 银行账户池条目（财务 → 银行账户）。收款的「到账银行」只能从这里选，不在这里手输账户。 */
+type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean };
+type BankLink = { id: string; bankName: string; accountNumber: string } | null;
 type SourceAllocation = { id: string; amount: string; status: string; payment?: { id: string; paymentNo: string; status: string; paymentDate: string; amount?: string; currency?: string } | null };
 type ReceivableSource = {
   id: string; sourceNo: string; orderNo: string; customerId: string; outboundId: string;
@@ -45,6 +55,7 @@ type ReceivableSource = {
 type CustomerPayment = {
   id: string; paymentNo: string; customerId: string; orderNo: string | null; paymentDate: string; amount: string;
   currency: string; paymentMethod: string; bankReference: string | null; payerName: string | null; status: string; remark: string | null;
+  bankId?: string | null; bank?: BankLink;
   customer_name: string | null; customer_code: string | null; allocated_amount: string;
   customer?: CustomerRef | null;
   allocations: Array<{ id: string; amount: string; status: string; receivableSource?: { id: string; sourceNo: string; orderNo: string; amount: string; currency: string; status: string } | null }>;
@@ -55,6 +66,7 @@ type Reconciliation = {
   periodStart: string; periodEnd: string; receivableAmountSnapshot: string; paymentAmountSnapshot: string;
   adjustmentAmountSnapshot: string; systemBalance: string; externalBalance: string; difference: string;
   currency: string; status: string; resolutionRemark: string | null; remark: string | null; createdAt: string;
+  bankId?: string | null; bank?: BankLink;
   customer?: CustomerRef | null;
   status_label?: string;
   details?: { entries: ReconciliationEntry[]; draft_entries: ReconciliationEntry[]; entry_count: number; draft_count: number; draft_amount: string; can_confirm_receivables: boolean };
@@ -73,6 +85,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [reconciliations, setReconciliations] = useState<Reconciliation[]>([]);
   const [customers, setCustomers] = useState<Reference[]>([]);
   const [orders, setOrders] = useState<Reference[]>([]);
+  const [banks, setBanks] = useState<BankRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -92,14 +105,16 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setError("");
     try {
       // 客户/销售单走 sales 权限：只有财务权限的账号拉不到它们，但不应因此整页报错（选项留空即可）。
-      const [s, p, r, c, o] = await Promise.all([
+      // 银行账户池同理（走 finance 权限，正常能拿到）。
+      const [s, p, r, c, o, b] = await Promise.all([
         apiGet<ReceivableSource[]>("/finance/receivable-sources"),
         apiGet<CustomerPayment[]>("/finance/customer-payments"),
         apiGet<Reconciliation[]>("/finance/reconciliations"),
         apiGet<Reference[]>("/customers").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<Reference[]>("/sales-orders").catch(() => ({ data: [] as Reference[], meta: {} })),
+        apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
       ]);
-      setSources(s.data); setPayments(p.data); setReconciliations(r.data); setCustomers(c.data); setOrders(o.data);
+      setSources(s.data); setPayments(p.data); setReconciliations(r.data); setCustomers(c.data); setOrders(o.data); setBanks(b.data);
     } catch (cause) {
       setError(messageOf(cause, "应收数据加载失败"));
     } finally {
@@ -157,6 +172,15 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const customerOptions = customers.map((item) => ({ value: item.id, label: `${item.customerCode ?? ""} / ${item.name}` }));
   const orderOptions = orders.map((item) => ({ value: item.orderNo ?? item.id, label: item.orderNo ?? item.name }));
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
+  // 到账/回款银行只能从银行账户池里选（停用的不出现）；账户在「财务 → 银行账户」维护。
+  const bankOptions = useMemo(() => banks.filter((bank) => bank.isActive).map((bank) => ({ value: bank.id, label: `${bank.bankName} / ${bank.accountNumber}（${bank.accountName}）` })), [banks]);
+  const bankField = (label: string, current?: string | null): ActionField => ({
+    name: "bank_id", label: `${label}（可选；账户在「财务 → 银行账户」里维护）`, type: "select",
+    options: [{ value: BANK_CLEAR, label: "（不指定银行）" }, ...bankOptions],
+    defaultValue: current || BANK_CLEAR,
+  });
+  /** 哨兵值 → 提交值：清空要显式送 null，未改动则送 undefined（后端不更新该字段）。 */
+  const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
   const allocatableSources = sources.filter((item) => ["confirmed", "partially_paid"].includes(item.status) && Number(item.outstanding_amount) > 0);
 
   // ---------------------------------------------------------------- 操作
@@ -164,10 +188,11 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   function editSource(item: ReceivableSource) {
     setDialog({ title: `编辑应收草稿：${item.sourceNo}`, fields: [
       { name: "amount", label: "应收金额", type: "number", required: true, defaultValue: item.amount },
+      { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, item.currency), defaultValue: item.currency },
       { name: "due_date", label: "到期日期", type: "date", defaultValue: item.dueDate ? item.dueDate.slice(0, 10) : "" },
       { name: "amount_reason", label: "金额原因", type: "textarea", defaultValue: item.amountReason ?? "" },
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => void action(`/finance/receivable-sources/${item.id}`, { amount: v.amount, due_date: v.due_date || undefined, amount_reason: v.amount_reason || undefined, remark: v.remark || undefined }, "应收草稿已更新", "patch") });
+    ], submit: (v) => void action(`/finance/receivable-sources/${item.id}`, { amount: v.amount, currency: v.currency, due_date: v.due_date || undefined, amount_reason: v.amount_reason || undefined, remark: v.remark || undefined }, "应收草稿已更新", "patch") });
   }
   function cancelSource(item: ReceivableSource) {
     setDialog({ title: `取消应收：${item.sourceNo}`, fields: [{ name: "reason", label: "取消原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/receivable-sources/${item.id}/cancel`, { reason: v.reason }, "应收已取消") });
@@ -191,16 +216,19 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       { name: "payment_date", label: "收款日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "payment_method", label: "收款方式", required: true, defaultValue: "银行转账" },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, source?.currency ?? "CNY"), defaultValue: source?.currency ?? currencyDefault("CNY") },
+      bankField("到账银行"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/customer-payments", { customer_id: v.customer_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, idempotency_key, remark: v.remark || undefined }, "收款草稿已创建") });
+    ], submit: (v) => void action("/finance/customer-payments", { customer_id: v.customer_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, bank_id: bankValue(v.bank_id), idempotency_key, remark: v.remark || undefined }, "收款草稿已创建") });
   }
   function editPayment(item: CustomerPayment) {
     setDialog({ title: `编辑收款草稿：${item.paymentNo}`, fields: [
       { name: "amount", label: "金额", type: "number", required: true, defaultValue: item.amount },
       { name: "payment_date", label: "日期", type: "date", required: true, defaultValue: item.paymentDate.slice(0, 10) },
       { name: "payment_method", label: "方式", required: true, defaultValue: item.paymentMethod },
+      { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, item.currency), defaultValue: item.currency },
+      bankField("到账银行", item.bankId),
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => void action(`/finance/customer-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, remark: v.remark || undefined }, "收款草稿已更新", "patch") });
+    ], submit: (v) => void action(`/finance/customer-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "收款草稿已更新", "patch") });
   }
   function postPayment(item: CustomerPayment, preset?: ReceivableSource) {
     const options = allocatableSources.map((source) => ({ value: source.id, label: `${source.sourceNo} / ${source.orderNo} / ${source.customer_name ?? source.customerId} / 未收 ${source.outstanding_amount} ${source.currency}` }));
@@ -222,8 +250,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       { name: "period_end", label: "期间结束", type: "date", required: true, defaultValue: range?.end },
       { name: "external_balance", label: "外部余额（客户对账单金额）", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
+      bankField("回款银行"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/reconciliations", { customer_id: v.customer_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, remark: v.remark || undefined }, "对账单已创建") });
+    ], submit: (v) => void action("/finance/reconciliations", { customer_id: v.customer_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "对账单已创建") });
   }
   function resolveReconciliation(item: Reconciliation) {
     setDialog({ title: `处理对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => void action(`/finance/reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "对账差异已处理") });
@@ -309,6 +338,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "allocated", header: "已核销", cell: ({ row }) => money(row.original.allocated_amount, row.original.currency) },
     { accessorKey: "paymentMethod", header: "方式" },
+    { id: "bank", header: "到账银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "receivable") },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => postPayment(row.original)}>过账/核销</Button><Button size="sm" variant="ghost" onClick={() => editPayment(row.original)}>编辑</Button></>}
@@ -325,6 +355,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "system", header: "系统余额", cell: ({ row }) => money(row.original.systemBalance, row.original.currency) },
     { id: "external", header: "外部余额", cell: ({ row }) => money(row.original.externalBalance, row.original.currency) },
     { id: "difference", header: "差异", cell: ({ row }) => money(row.original.difference, row.original.currency) },
+    { id: "bank", header: "回款银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
@@ -368,6 +399,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { label: "客户", value: item.customer?.name ?? item.customer_name ?? item.customerId }, { label: "订单号", value: item.orderNo },
         { label: "收款日期", value: day(item.paymentDate) }, { label: "收款金额", value: money(item.amount, item.currency) },
         { label: "已核销金额", value: money(item.allocated_amount, item.currency) }, { label: "收款方式", value: item.paymentMethod },
+        { label: "到账银行", value: item.bank ? `${item.bank.bankName} / ${item.bank.accountNumber}` : "-" },
         { label: "银行流水号", value: item.bankReference }, { label: "付款人", value: item.payerName },
         { label: "备注", value: item.remark, wide: true },
       ];
@@ -384,6 +416,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { label: "系统余额", value: money(item.systemBalance, item.currency) },
         { label: "外部余额", value: money(item.externalBalance, item.currency) },
         { label: "差异", value: money(item.difference, item.currency) },
+        { label: "回款银行", value: item.bank ? `${item.bank.bankName} / ${item.bank.accountNumber}` : "-" },
         { label: "纳入条目数", value: item.details ? `${item.details.entry_count} 条（待确认 ${item.details.draft_count} 条 / ${item.details.draft_amount}）` : "-" },
         { label: "差异处理说明", value: item.resolutionRemark, wide: true },
         { label: "创建时间", value: day(item.createdAt) }, { label: "备注", value: item.remark, wide: true },
@@ -492,7 +525,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         <div className="panel-body"><DataTable columns={pendingGroupColumns} data={pendingGroups} empty={<EmptyState title="没有待创建对账的条目" />} /></div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><h2>应收对账单</h2><span className="panel-note">对平（或差异已处理）后可一键批量确认该对账范围内的草稿应收</span></div>
+        <div className="panel-heading"><h2>应收对账单</h2><span className="panel-note">对平（或差异已处理）后可一键批量确认该对账范围内的草稿应收；对账单上的回款银行同样来自银行账户池</span></div>
         <div className="panel-body"><DataTable columns={reconciliationColumns} data={reconciliations} empty={<EmptyState title="暂无应收对账单" />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" /></div>
       </section>
     </>}
@@ -503,7 +536,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         <div className="panel-body"><DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="暂无应收台账" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" /></div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><h2>收款</h2><span className="panel-note">草稿收款先过账核销，核销后可冲销并恢复应收余额</span></div>
+        <div className="panel-heading"><h2>收款</h2><span className="panel-note">草稿收款先过账核销，核销后可冲销并恢复应收余额；到账银行从「财务 → 银行账户」的银行池里选（编辑草稿时可改币种与银行）</span></div>
         <div className="panel-body">
           <div className="filter-bar"><label>搜索<Input value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)} placeholder="收款单号 / 订单号 / 客户" /></label></div>
           <DataTable columns={paymentColumns} data={filteredPayments} empty={<EmptyState title="暂无收款记录" />} onRowDoubleClick={(row) => setDetail({ kind: "payment", id: row.id })} rowTitle="双击查看详情" />

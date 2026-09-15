@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { Prisma } = require("@prisma/client");
 const { CustomerPaymentService } = require("../../dist/modules/finance/customer-payment.service.js");
 
 test("customer payment draft update locks and rechecks current status", async () => {
@@ -81,4 +82,90 @@ test("收款建单：没有重复时正常建单，并把幂等键写入记录",
   assert.equal(created.customerId, "customer-1");
   assert.equal(created.status ?? "draft", "draft");
   assert.equal(String(row.paymentNo).startsWith("PAY-"), true);
+});
+
+// 2026-09-15：「所有应收管理都要选择银行，从银行池里选择」。
+// 银行是主数据（财务 → 银行账户），收款只能引用池子里的**启用**账户；停用的账户外键拦不住，必须显式校验。
+const bank = { id: "bank-1", bankName: "农业银行", accountNumber: "5706" };
+const createWithBank = (prisma) => new CustomerPaymentService(prisma, { create: () => ({}), record: async () => {} }, {}, {});
+
+test("收款建单：选了银行 → 先校验账户再落库（bankId 写入收款单）", async () => {
+  let created = null;
+  const lookups = [];
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1" }) },
+    bank: { findFirst: async ({ where }) => { lookups.push(where); return bank; } },
+    customerPayment: { findFirst: async () => null, create: async ({ data }) => { created = data; return { id: "payment-3", ...data }; } },
+  };
+  await createWithBank(prisma).create(paymentInput({ bank_id: "bank-1" }), { id: "user-1" });
+  assert.deepEqual(lookups, [{ id: "bank-1", deletedAt: null, isActive: true }], "只认「未删除 + 启用」的银行账户");
+  assert.equal(created.bankId, "bank-1");
+});
+
+test("收款建单：银行不存在或已停用 → BANK_NOT_FOUND，不落库", async () => {
+  let createCount = 0;
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1" }) },
+    bank: { findFirst: async () => null },
+    customerPayment: { findFirst: async () => null, create: async () => { createCount += 1; return {}; } },
+  };
+  await assert.rejects(() => createWithBank(prisma).create(paymentInput({ bank_id: "bank-dead" }), { id: "user-1" }), (error) => error.getResponse().code === "BANK_NOT_FOUND");
+  assert.equal(createCount, 0);
+});
+
+test("编辑草稿收款：币种与到账银行都可改，且币种走字典校验", async () => {
+  let updated = null;
+  const supported = [];
+  const current = { id: "payment-1", status: "draft", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: "bank-1", paymentDate: new Date("2026-09-15"), paymentMethod: "转账", remark: null };
+  const prisma = {
+    bank: { findFirst: async () => bank },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      customerPayment: { findFirst: async () => current, update: async ({ data }) => { updated = data; return { ...current, ...data }; } },
+    }),
+  };
+  const service = new CustomerPaymentService(prisma, { update: () => ({}) }, {}, {}, { assertSupported: async (code) => { supported.push(code); } });
+  await service.updateDraft("payment-1", { currency: "USD", bank_id: "bank-1" }, { id: "user-1" });
+  assert.deepEqual(supported, ["USD"], "改币种必须过币种字典");
+  assert.equal(updated.currency, "USD");
+  assert.equal(updated.bankId, "bank-1");
+});
+
+test("编辑草稿收款：bank_id 传 null 表示清空到账银行（选错了要能去掉）", async () => {
+  let updated = null;
+  const current = { id: "payment-1", status: "draft", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: "bank-1", paymentDate: new Date("2026-09-15"), paymentMethod: "转账", remark: null };
+  const prisma = {
+    bank: { findFirst: async () => { throw new Error("清空银行不应查询银行账户"); } },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      customerPayment: { findFirst: async () => current, update: async ({ data }) => { updated = data; return { ...current, ...data }; } },
+    }),
+  };
+  const service = new CustomerPaymentService(prisma, { update: () => ({}) }, {}, {});
+  await service.updateDraft("payment-1", { bank_id: null }, { id: "user-1" });
+  assert.equal(updated.bankId, null);
+});
+
+// 收款过账要把到账银行一并带给收支流水（匹配「结算账户」字典），否则收支明细看不到钱进了哪个账户。
+test("收款过账：到账银行带给收支流水，且结算方式按老表格式带出", async () => {
+  const cashFlowCalls = [];
+  const payment = { id: "payment-1", paymentNo: "PAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("100"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payerName: null, customerId: "customer-1", remark: null };
+  const prisma = {
+    customerPayment: { findFirst: async () => ({ ...payment, status: "draft" }) },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      customerPayment: { findFirst: async () => ({ ...payment, status: "draft", customer: { name: "晋江大田" }, bank }), update: async () => payment },
+      receivableAllocation: { count: async () => 0, create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+    }),
+  };
+  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } };
+  const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlow);
+  await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" });
+  assert.equal(cashFlowCalls.length, 1);
+  const input = cashFlowCalls[0];
+  assert.equal(input.direction, "income");
+  assert.equal(input.counterpartyName, "晋江大田", "对方名称取客户名，不能退化成 UUID");
+  assert.equal(input.settlementMethod, "转账--农业银行5706");
+  assert.deepEqual(input.settlementAccountHint, { bankName: "农业银行", accountNumber: "5706" });
 });

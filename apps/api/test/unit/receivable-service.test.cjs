@@ -51,6 +51,23 @@ test("receivable draft update locks and rechecks current status", async () => {
   assert.equal(updateCount, 0);
 });
 
+// 2026-09-15：「应收管理都要支持选择币种、编辑币种」。
+// 草稿期间币种可以改（此时还没有任何收款核销，不会与已核销记录冲突）；改币种必须过币种字典。
+test("应收草稿可编辑币种：只接受字典里的币种，并写回来源", async () => {
+  let updated;
+  const checked = [];
+  const row = { id: "source-1", status: "draft", amount: "10", currency: "CNY", dueDate: null, amountReason: null, remark: null };
+  const prisma = {
+    receivableSource: { findFirst: async () => row, update: async ({ data }) => { updated = data; return { ...row, ...data }; } },
+    $transaction: async (fn) => fn({ $queryRaw: async () => [], receivableSource: prisma.receivableSource }),
+  };
+  const audit = { update: () => ({}), record: async () => {} };
+  const service = new ReceivableService(prisma, audit, { assertSupported: async (code) => { checked.push(code); } });
+  await service.updateDraft("source-1", { currency: "USD" }, { id: "user-1" });
+  assert.deepEqual(checked, ["USD"]);
+  assert.equal(updated.currency, "USD");
+});
+
 test("confirmed receivable can be reopened to draft with a reason", async () => {
   let updated;
   const row = { id: "source-1", status: "confirmed", orderNo: "SO-1", remark: null, allocations: [] };

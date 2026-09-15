@@ -5,11 +5,12 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { requireActiveBank } from "./bank-selection";
 import { paymentItemKeys } from "./cash-flow-catalog";
 import { CashFlowService } from "./cash-flow.service";
 import { ReceivableService } from "./receivable.service";
 
-type PaymentInput = { customer_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payer_name?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
+type PaymentInput = { customer_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payer_name?: string; bank_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
 type Allocation = { receivable_source_id: string; amount: string };
 
 @Injectable()
@@ -22,6 +23,7 @@ export class CustomerPaymentService {
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}) },
       include: {
         customer: { select: { id: true, name: true, customerCode: true } },
+        bank: { select: { id: true, bankName: true, accountNumber: true } },
         allocations: { where: { deletedAt: null }, include: { receivableSource: { select: { id: true, sourceNo: true, orderNo: true, amount: true, currency: true, status: true } } } },
       },
       orderBy: { createdAt: "desc" },
@@ -33,12 +35,14 @@ export class CustomerPaymentService {
       allocated_amount: row.allocations.filter((item) => item.status === "active").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0)).toFixed(4),
     }));
   }
-  async get(id: string) { const row = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } }, allocations: { where: { deletedAt: null }, include: { receivableSource: { select: { id: true, sourceNo: true, orderNo: true, amount: true, currency: true, status: true } } } } } }); if (!row) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在"); return row; }
+  async get(id: string) { const row = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } }, allocations: { where: { deletedAt: null }, include: { receivableSource: { select: { id: true, sourceNo: true, orderNo: true, amount: true, currency: true, status: true } } } } } }); if (!row) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在"); return row; }
   async create(input: PaymentInput, user: CurrentUser) {
     await this.currencies?.assertSupported(input.currency, "收款币种");
     const amount = this.decimal(input.amount, "INVALID_PAYMENT_AMOUNT");
     const customer = await this.prisma.customer.findFirst({ where: { id: input.customer_id, deletedAt: null } });
     if (!customer) throw this.notFound("CUSTOMER_NOT_FOUND", "客户不存在");
+    // 到账银行来自银行账户池：停用/已删除的账户不能收款，必须在这里挡住（外键拦不住「停用」）。
+    await requireActiveBank(this.prisma, input.bank_id, "到账银行不存在或已停用");
     const replayKey = input.idempotency_key?.trim() || null;
     // 幂等重放：同一次提交（网络重试、双击、浏览器重发）必须命中同一张草稿，而不是再建一张。
     if (replayKey) {
@@ -51,7 +55,7 @@ export class CustomerPaymentService {
       where: { customerId: customer.id, orderNo: input.order_no ?? null, amount, currency: input.currency, status: "draft", deletedAt: null },
     });
     if (duplicateDraft) throw new UnprocessableEntityException({ code: "CUSTOMER_PAYMENT_DRAFT_EXISTS", message: `已存在相同客户/订单/金额的草稿收款单 ${duplicateDraft.paymentNo}，请直接编辑或过账它，避免重复登记`, details: [{ payment_id: duplicateDraft.id, payment_no: duplicateDraft.paymentNo }] });
-    const row = await this.prisma.customerPayment.create({ data: { paymentNo: this.number("PAY"), idempotencyKey: replayKey, customerId: customer.id, orderNo: input.order_no, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payerName: input.payer_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.customerPayment.create({ data: { paymentNo: this.number("PAY"), idempotencyKey: replayKey, customerId: customer.id, orderNo: input.order_no, bankId: input.bank_id, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payerName: input.payer_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
     await this.audit.record("customer_payment.create", "customer_payment", user.id, row.id, { order_no: row.orderNo, amount: row.amount.toString() });
     return row;
   }
@@ -63,7 +67,7 @@ export class CustomerPaymentService {
     if (!allocations?.length) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "收款过账至少需要核销一条有效应收");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`;
-      const lockedPayment = await tx.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { name: true } } } });
+      const lockedPayment = await tx.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { name: true } }, bank: { select: { bankName: true, accountNumber: true } } } });
       if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
       const existing = await tx.receivableAllocation.count({ where: { paymentId: id, deletedAt: null } });
       if (existing) throw this.invalid("CUSTOMER_PAYMENT_ALREADY_POSTED", "收款已存在核销分配");
@@ -81,7 +85,7 @@ export class CustomerPaymentService {
       if (total.gt(lockedPayment.amount)) throw this.exceeded("PAYMENT_ALLOCATION_EXCEEDED", lockedPayment.amount);
       const payment = await tx.customerPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const allocation of allocations ?? []) await this.receivable.refreshStatus(tx, allocation.receivable_source_id, user);
-      return { payment, customerName: lockedPayment.customer?.name ?? null };
+      return { payment, customerName: lockedPayment.customer?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
     });
     await this.audit.record("customer_payment.post", "customer_payment", user.id, id, { order_no: result.payment.orderNo, allocation_count: allocations?.length ?? 0 });
     // 过账即写收支流水：对方名称优先取付款人，其次客户名称，最后才退化成 id（不能一上来就是 UUID）。
@@ -89,8 +93,11 @@ export class CustomerPaymentService {
       paymentNo: result.payment.paymentNo, paymentDate: result.payment.paymentDate, amount: result.payment.amount, currency: result.payment.currency,
       counterpartyName: result.payment.payerName ?? result.customerName ?? result.payment.customerId,
       direction: "income",
-      settlementMethod: result.payment.paymentMethod,
+      // 结算方式按老表格式带出「转账--农业银行5706」，与供应商付款侧写法一致。
+      settlementMethod: result.bankLabel ? `${result.payment.paymentMethod}--${result.bankLabel}` : result.payment.paymentMethod,
       settlementAccountId: null,
+      // 到账银行一并带给收支流水：按账号匹配「结算账户」字典，收支明细才看得到钱进了哪个账户（匹配不上就不硬编，留给人工）。
+      settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "customer_payment", sourceId: result.payment.id,
       itemKeys: paymentItemKeys("customer_payment"),
       remark: result.payment.remark ?? undefined,
@@ -98,14 +105,24 @@ export class CustomerPaymentService {
     return result.payment;
   }
 
-  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; remark?: string }, user: CurrentUser) {
+  /**
+   * 编辑草稿收款：金额、日期、方式、**币种**、**到账银行**、备注。
+   *
+   * 币种可以改：草稿还没核销任何应收（核销是过账时才写的），所以此刻改币种不会有「已核销的应收币种对不上」的问题；
+   * 过账时仍会逐条校验 `source.currency === payment.currency`（ALLOCATION_REFERENCE_MISMATCH），双重保险。
+   */
+  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; currency?: string; bank_id?: string | null; remark?: string }, user: CurrentUser) {
+    if (input.currency !== undefined) await this.currencies?.assertSupported(input.currency, "收款币种");
+    if (input.bank_id) await requireActiveBank(this.prisma, input.bank_id, "到账银行不存在或已停用");
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.customerPayment.findFirst({ where: { id, deletedAt: null } });
       if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在");
       if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_EDITABLE", "只有草稿收款可以编辑");
       const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYMENT_AMOUNT");
-      return tx.customerPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      // bank_id 传 null / 空串表示「清空到账银行」，传 undefined 表示「不改」——否则一旦选过银行就再也去不掉。
+      const bankId = input.bank_id === undefined ? current.bankId : (input.bank_id || null);
+      return tx.customerPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, currency: input.currency ?? current.currency, bankId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
   }
 

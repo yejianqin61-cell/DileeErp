@@ -108,6 +108,23 @@ test("supplier payable draft update locks and rechecks the current status", asyn
   assert.equal(updateCount, 0);
 });
 
+// 2026-09-15：「应付管理都要支持选择币种、编辑币种」。
+test("应付草稿可编辑币种：走币种字典校验并写回应付条目", async () => {
+  let updated;
+  const checked = [];
+  const row = { id: "payable-1", status: "draft", amount: "10", currency: "CNY", confirmationDate: new Date("2026-09-15"), remark: null };
+  const prisma = {
+    supplierPayableEntry: { findFirst: async () => row, update: async ({ data }) => { updated = data; return { ...row, ...data }; } },
+    $transaction: async (fn) => fn({ $queryRaw: async () => [], supplierPayableEntry: prisma.supplierPayableEntry }),
+  };
+  const audit = { recordWithOrderNo: async () => {}, update: () => ({}) };
+  const service = new SupplierPayableService(prisma, audit, { assertSupported: async (code) => { checked.push(code); } });
+  await service.updateDraft("payable-1", { currency: "USD", amount: "12" }, { id: "user-1" });
+  assert.deepEqual(checked, ["USD"]);
+  assert.equal(updated.currency, "USD");
+  assert.equal(updated.amount.toString(), "12");
+});
+
 test("confirmed supplier payable can be reopened to draft with a reason", async () => {
   let updated;
   const row = { id: "payable-1", status: "confirmed", orderNo: "SO-1", remark: null, allocations: [] };

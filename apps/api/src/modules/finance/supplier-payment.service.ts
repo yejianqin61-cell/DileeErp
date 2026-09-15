@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { requireActiveBank } from "./bank-selection";
 import { paymentItemKeys } from "./cash-flow-catalog";
 import { CashFlowService } from "./cash-flow.service";
 import { SupplierPayableService } from "./supplier-payable.service";
@@ -31,7 +32,7 @@ export class SupplierPaymentService {
   }
 
   async get(id: string) {
-    const row = await this.prisma.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payableEntry: true } } } });
+    const row = await this.prisma.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } }, allocations: { where: { deletedAt: null }, include: { payableEntry: true } } } });
     if (!row) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
     return row;
   }
@@ -41,6 +42,8 @@ export class SupplierPaymentService {
     const amount = this.decimal(input.amount, "INVALID_SUPPLIER_PAYMENT_AMOUNT");
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null, isActive: true } });
     if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在或已停用");
+    // 支付银行来自银行账户池：停用/已删除的账户不能被选中（外键拦不住「停用」）。
+    await requireActiveBank(this.prisma, input.bank_id, "支付银行不存在或已停用");
     const replayKey = input.idempotency_key?.trim() || null;
     // 与收款侧同一约定：同一次提交（网络重试、双击）必须命中同一张草稿付款单。
     if (replayKey) {
@@ -105,14 +108,24 @@ export class SupplierPaymentService {
     return result.payment;
   }
 
-  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; remark?: string }, user: CurrentUser) {
+  /**
+   * 编辑草稿付款：金额、日期、方式、**币种**、**支付银行**、备注。
+   *
+   * 草稿还没核销任何应付（核销是过账时才写的），所以改币种不会与已核销记录冲突；
+   * 过账时仍逐条校验供应商/币种/订单一致（ALLOCATION_REFERENCE_MISMATCH）。
+   */
+  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; currency?: string; bank_id?: string | null; remark?: string }, user: CurrentUser) {
+    if (input.currency !== undefined) await this.currencies?.assertSupported(input.currency, "付款币种");
+    if (input.bank_id) await requireActiveBank(this.prisma, input.bank_id, "支付银行不存在或已停用");
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payments WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.supplierPayment.findFirst({ where: { id, deletedAt: null } });
       if (!current) throw this.notFound("SUPPLIER_PAYMENT_NOT_FOUND", "供应商付款不存在");
       if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYMENT_NOT_EDITABLE", "只有草稿付款可以编辑");
       const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_SUPPLIER_PAYMENT_AMOUNT");
-      return tx.supplierPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      // bank_id 传 null / 空串 = 清空支付银行；undefined = 不改。
+      const bankId = input.bank_id === undefined ? current.bankId : (input.bank_id || null);
+      return tx.supplierPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, currency: input.currency ?? current.currency, bankId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
   }
 

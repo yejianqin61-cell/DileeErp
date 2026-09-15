@@ -1451,6 +1451,9 @@ model CustomerPayment {
   paymentMethod String                 @map("payment_method") @db.VarChar(50)
   bankReference String?                @map("bank_reference") @db.VarChar(200)
   payerName     String?                @map("payer_name") @db.VarChar(200)
+  // 收款到账银行：指向银行账户池（banks）。可空（历史数据与「还没确定打哪张卡」的草稿），
+  // 与供应商付款侧 SupplierPayment.bankId 语义一致。
+  bankId        String?                @map("bank_id") @db.Uuid
   status        String                 @default("draft") @db.VarChar(30)
   attachment    Json                   @default("[]")
   remark        String?                @db.VarChar(1000)
@@ -1461,6 +1464,7 @@ model CustomerPayment {
   deletedAt     DateTime?              @map("deleted_at")
   deletedBy     String?                @map("deleted_by") @db.Uuid
   customer      Customer               @relation(fields: [customerId], references: [id])
+  bank          Bank?                  @relation(fields: [bankId], references: [id])
   allocations   ReceivableAllocation[]
   salesOrder    SalesOrder?            @relation(fields: [salesOrderId], references: [id])
   salesOrderId  String?                @map("sales_order_id") @db.Uuid
@@ -1540,6 +1544,8 @@ model ReceivableReconciliation {
   externalBalance          Decimal     @map("external_balance") @db.Decimal(18, 4)
   difference               Decimal     @db.Decimal(18, 4)
   currency                 String      @db.VarChar(10)
+  // 客户回款银行：应收对账要指明「钱回到哪个账户」，取值同样来自银行账户池（banks）。
+  bankId                   String?     @map("bank_id") @db.Uuid
   status                   String      @default("pending") @db.VarChar(30)
   resolutionRemark         String?     @map("resolution_remark") @db.VarChar(1000)
   attachment               Json        @default("[]")
@@ -1552,6 +1558,7 @@ model ReceivableReconciliation {
   deletedBy                String?     @map("deleted_by") @db.Uuid
   salesOrder               SalesOrder? @relation(fields: [salesOrderId], references: [id])
   customer                 Customer    @relation(fields: [customerId], references: [id])
+  bank                     Bank?       @relation(fields: [bankId], references: [id])
 
   @@index([orderNo, status])
   @@index([customerId, status])
@@ -2306,6 +2313,8 @@ model Bank {
   deletedBy     String?             @map("deleted_by") @db.Uuid
   payableReconciliations SupplierPayableReconciliation[]
   supplierPayments       SupplierPayment[]
+  customerPayments       CustomerPayment[]
+  receivableReconciliations ReceivableReconciliation[]
 
   @@map("banks")
 }

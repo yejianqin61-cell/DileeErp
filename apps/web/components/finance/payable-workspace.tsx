@@ -30,6 +30,8 @@ import { financeStatus } from "./finance-status";
 
 /** 付款建单的幂等键：打开弹窗时生成并固定，同一次弹窗内的重试/双击只会落一张草稿。 */
 const paymentIdempotencyKey = () => `web-payment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+/** 银行下拉的「清空」哨兵值（见 bankField / bankValue）：Radix Select 不接受空串 value。 */
+const BANK_CLEAR = "__no_bank__";
 
 type Reference = { id: string; name: string; supplierCode?: string; orderNo?: string };
 type SupplierRef = { id: string; name: string; supplierCode: string | null };
@@ -238,6 +240,14 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const supplierOptions = suppliers.map((item) => ({ value: item.id, label: `${item.supplierCode ?? ""} / ${item.name}` }));
   const orderOptions = orders.map((item) => ({ value: item.orderNo ?? item.id, label: item.orderNo ?? item.name }));
   const bankOptions = useMemo(() => banks.filter((b) => b.isActive).map((b) => ({ value: b.id, label: `${b.bankName} / ${b.accountNumber}（${b.accountName}）` })), [banks]);
+  // 银行是可选字段且选错要能去掉；Radix Select 不接受空串 value，所以用哨兵值表示「不指定银行」，
+  // 提交时翻译成 null（后端 DTO 的 @IsOptional 放过 null，Service 按「清空」处理）。
+  const bankField = (label: string, current?: string | null): ActionField => ({
+    name: "bank_id", label: `${label}（可选；账户在「财务 → 银行账户」里维护）`, type: "select",
+    options: [{ value: BANK_CLEAR, label: "（不指定银行）" }, ...bankOptions],
+    defaultValue: current || BANK_CLEAR,
+  });
+  const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
   const allocatableEntries = entries.filter((entry) => ["confirmed", "partially_paid"].includes(entry.status) && Number(entry.outstanding_amount ?? entry.amount) > 0);
   const outstandingText = entries.reduce((sum, entry) => sum + Number(entry.outstanding_amount ?? 0), 0);
@@ -255,9 +265,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   function editEntry(item: PayableEntry) {
     setDialog({ title: `编辑应付草稿：${item.payableNo}`, fields: [
       { name: "amount", label: "应付金额", type: "number", required: true, defaultValue: item.amount },
+      { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, item.currency), defaultValue: item.currency },
       { name: "confirmation_date", label: "确认日期", type: "date", required: true, defaultValue: item.confirmationDate.slice(0, 10) },
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => submitAction(`/finance/payable-entries/${item.id}`, { amount: v.amount, confirmation_date: v.confirmation_date, remark: v.remark || undefined }, "应付草稿已更新", "patch") });
+    ], submit: (v) => submitAction(`/finance/payable-entries/${item.id}`, { amount: v.amount, currency: v.currency, confirmation_date: v.confirmation_date, remark: v.remark || undefined }, "应付草稿已更新", "patch") });
   }
   function reopenEntry(item: PayableEntry) {
     setDialog({ title: `应付回退草稿：${item.payableNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/payable-entries/${item.id}/reopen`, { reason: v.reason }, "应付已回退草稿") });
@@ -275,17 +286,19 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "payment_date", label: "付款日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "payment_method", label: "付款方式", required: true, defaultValue: "银行转账" },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, entry.currency ?? "CNY"), defaultValue: entry.currency ?? currencyDefault("CNY") },
-      { name: "bank_id", label: "支付银行（可选；账户在「财务 → 银行账户」里维护）", type: "select", options: bankOptions },
+      bankField("支付银行"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => submitAction("/finance/supplier-payments", { supplier_id: v.supplier_id, amount: v.amount, payment_date: v.payment_date, currency: v.currency, payment_method: v.payment_method, bank_id: v.bank_id || undefined, idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
+    ], submit: (v) => submitAction("/finance/supplier-payments", { supplier_id: v.supplier_id, amount: v.amount, payment_date: v.payment_date, currency: v.currency, payment_method: v.payment_method, bank_id: bankValue(v.bank_id), idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
   }
   function editPayment(item: SupplierPayment) {
     setDialog({ title: `编辑付款草稿：${item.paymentNo}`, fields: [
       { name: "amount", label: "金额", type: "number", required: true, defaultValue: item.amount },
       { name: "payment_date", label: "日期", type: "date", required: true, defaultValue: item.paymentDate.slice(0, 10) },
       { name: "payment_method", label: "方式", required: true, defaultValue: item.paymentMethod },
+      { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, item.currency), defaultValue: item.currency },
+      bankField("支付银行", item.bank?.id),
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => submitAction(`/finance/supplier-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, remark: v.remark || undefined }, "付款草稿已更新", "patch") });
+    ], submit: (v) => submitAction(`/finance/supplier-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "付款草稿已更新", "patch") });
   }
   function postPayment(item: SupplierPayment, preset?: PayableEntry) {
     const options = allocatableEntries.map((entry) => ({ value: entry.id, label: `${entry.payableNo} / ${entry.orderNo} / ${entry.supplier_name ?? entry.supplierId} / 未付 ${entry.outstanding_amount ?? entry.amount} ${entry.currency}` }));
@@ -318,9 +331,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "period_end", label: "期间结束", type: "date", required: true, defaultValue: range?.end },
       { name: "external_balance", label: "外部应付余额（供应商对账单金额）", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
-      { name: "bank_id", label: "支付银行（可选；账户在「财务 → 银行账户」里维护）", type: "select", options: bankOptions },
+      bankField("支付银行"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => submitAction("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: v.bank_id || undefined, remark: v.remark || undefined }, "应付对账单已创建") });
+    ], submit: (v) => submitAction("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "应付对账单已创建") });
   }
   function resolveReconciliation(item: SupplierReconciliation) {
     setDialog({ title: `处理应付对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => submitAction(`/finance/supplier-payable-reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "应付对账差异已处理") });

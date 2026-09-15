@@ -473,7 +473,7 @@ describe("工资管理：工资台账可编辑表格", () => {
     stubSalary({ ledgers: [workshopLedger, officeLedger] });
     await openSalary();
     const table = panel("工资台账");
-    for (const [key, header] of [["baseSalary", "基本工资"], ["performance", "绩效"], ["housing", "房补"], ["late", "迟到扣款"], ["absence", "旷工扣款"], ["earlyLeave", "早退扣款"], ["other", "其他增减"], ["payable", "应发"], ["paid", "已付"], ["outstanding", "未付"]]) {
+    for (const [key, header] of [["baseSalary", "基本工资"], ["performance", "绩效"], ["housing", "房补"], ["late", "迟到扣款"], ["absence", "旷工扣款"], ["earlyLeave", "早退扣款"], ["other", "其他增减"], ["payable", "应发"], ["paid", "已付"], ["outstanding", "未付"], ["currency", "币种"]]) {
       expect(table.getByTestId(`payroll-sheet-head-${key}`)).toHaveTextContent(header);
     }
     expect(table.getByTestId("payroll-cell-pl-1-baseSalary")).toHaveTextContent("1234.5");
@@ -488,6 +488,16 @@ describe("工资管理：工资台账可编辑表格", () => {
     await openSalary();
     expect(screen.getByText("本月暂无工资台账")).toBeVisible();
     expect(screen.queryByTestId("payroll-sheet")).toBeNull();
+  });
+
+  // 2026-09-15 用户要求：「所有工资相关的，也要展示币种，都是人民币」。
+  it("工资台账展示币种（工资统一人民币，工具条上也能一眼看到）", async () => {
+    stubSalary({ ledgers: [workshopLedger] });
+    await openSalary("ledger");
+    const table = panel("工资台账");
+    expect(table.getByTestId("payroll-sheet-head-currency")).toHaveTextContent("币种");
+    expect(table.getByTestId("payroll-cell-pl-1-currency")).toHaveTextContent("CNY");
+    expect(screen.getByText(/币种 人民币（CNY）/)).toBeVisible();
   });
 
   it("操作列保留全部台账动作（草稿：确认/编辑/删除；已确认：回到草稿/生成应付）", async () => {

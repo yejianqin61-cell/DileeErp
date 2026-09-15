@@ -14,8 +14,8 @@ import { SupplierPaymentService } from "./supplier-payment.service";
 import { SupplierPayableReconciliationService } from "./supplier-payable-reconciliation.service";
 
 class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() remark?: string; }
-class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
+class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
 class AllocationDto { @IsUUID() receivable_source_id!: string; @IsString() amount!: string; }
 class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
@@ -45,6 +45,7 @@ class ReconciliationDto {
   @IsDateString() period_end!: string;
   @IsString() external_balance!: string;
   @IsString() currency!: string;
+  @IsOptional() @IsUUID() bank_id?: string;
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }
@@ -65,7 +66,13 @@ class SupplierPaymentDto {
 }
 class SupplierAllocationDto { @IsUUID() payable_entry_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }
 class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; }
-class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+/**
+ * 草稿类单据（收款 / 付款 / 应付）的编辑入参。
+ *
+ * `currency` 允许改：草稿还没发生核销，改币种是安全的业务动作（「都要支持选择币种、编辑币种」）。
+ * `bank_id` 允许传 null / 空串表示**清空**银行，传 undefined 表示不改（银行是可选字段，选错了要能去掉）。
+ */
+class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
 
 class SupplierOtherPayableDto {

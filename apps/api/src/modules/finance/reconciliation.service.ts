@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { requireActiveBank } from "./bank-selection";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
 
 /**
@@ -13,7 +14,7 @@ import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
  * 对账主键是「客户 + 期间」：`customer_id` 必填、`order_no` 可选（填了就把对账范围收窄到该订单）；
  * 只给 `order_no` 时客户由销售单反查，兼容 2026-09-14 之前按订单建对账的老调用方。
  */
-export type ReconciliationInput = { order_no?: string; customer_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; attachment?: unknown[]; remark?: string };
+export type ReconciliationInput = { order_no?: string; customer_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; bank_id?: string; attachment?: unknown[]; remark?: string };
 
 const STATUS_LABELS: Record<string, string> = { pending: "待处理", matched: "已对平", difference: "有差异", resolved: "差异已处理" };
 
@@ -24,14 +25,14 @@ export class ReconciliationService {
   async list(orderNo?: string, customerId?: string, status?: string) {
     return this.prisma.receivableReconciliation.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) },
-      include: { customer: { select: { id: true, name: true, customerCode: true } } },
+      include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } },
       orderBy: { createdAt: "desc" },
     });
   }
 
   /** 对账详情：对账快照字段 + 该客户/期间内纳入对账的应收条目（含待确认与已确认）。 */
   async get(id: string) {
-    const row = await this.prisma.receivableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } } } });
+    const row = await this.prisma.receivableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } } });
     if (!row) throw this.notFound("RECONCILIATION_NOT_FOUND", "应收对账不存在");
     const entries = await this.entries(row);
     const draft = entries.filter((entry) => entry.status === "draft");
@@ -51,6 +52,8 @@ export class ReconciliationService {
 
   async create(input: ReconciliationInput, user: CurrentUser) {
     await this.currencies?.assertSupported(input.currency, "对账币种");
+    // 回款银行来自银行账户池（财务 → 银行账户）：与应付对账同一套校验，停用/已删除的账户不能被选中。
+    await requireActiveBank(this.prisma, input.bank_id, "回款银行不存在或已停用");
     const orderNo = input.order_no?.trim() || undefined;
     const order = orderNo ? await this.prisma.salesOrder.findFirst({ where: { orderNo, deletedAt: null } }) : null;
     if (orderNo && !order) throw this.notFound("SALES_ORDER_NOT_FOUND", "订单不存在");
@@ -71,7 +74,7 @@ export class ReconciliationService {
       reconciliationNo: this.number("REC"), orderNo: orderNo ?? null, salesOrderId: order?.id ?? null, customerId,
       periodStart, periodEnd, receivableAmountSnapshot: snapshot.receivable, paymentAmountSnapshot: snapshot.paid,
       adjustmentAmountSnapshot: snapshot.adjustmentNet, systemBalance: snapshot.systemBalance, externalBalance: external,
-      difference, currency: input.currency, status, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
+      difference, currency: input.currency, bankId: input.bank_id || undefined, status, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
     } });
     if (row.orderNo) await this.audit.recordWithOrderNo("receivable_reconciliation.create", "receivable_reconciliation", row.orderNo, user.id, row.id, { reconciliation_no: row.reconciliationNo, status, difference: difference.toString() });
     else await this.audit.record("receivable_reconciliation.create", "receivable_reconciliation", user.id, row.id, { reconciliation_no: row.reconciliationNo, customer_id: customerId, status, difference: difference.toString() });
