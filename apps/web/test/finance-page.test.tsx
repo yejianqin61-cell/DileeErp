@@ -166,7 +166,7 @@ describe("财务一级页：板块入口", () => {
     stubFinance();
     render(<FinanceBoardIndex />);
     expect(screen.getByTestId("page-finance")).toBeInTheDocument();
-    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "薪资台账"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
+    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "工资管理"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
       const card = screen.getByTestId(`finance-board-${key}`);
       expect(card).toHaveAttribute("href", `/finance/${key}`);
       expect(within(card).getByRole("heading", { name: title })).toBeInTheDocument();

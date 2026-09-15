@@ -31,6 +31,64 @@ export class SalaryPaymentService {
     return this.prisma.salaryPayment.findMany({ where, include: { allocations: { where: { deletedAt: null }, include: { ledger: { include: { employee: { include: { department: true, position: true } } } } } } }, orderBy: { createdAt: "desc" } });
   }
   async get(id: string) { const row = await this.prisma.salaryPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null }, include: { ledger: true } } } }); if (!row) throw this.notFound("SALARY_PAYMENT_NOT_FOUND", "工资付款不存在"); return row; }
+
+  /**
+   * 工资付款表格里的「付款」：把四步链路收成一次行内操作。
+   *
+   * 原本要「生成工资应付 → 确认应付 → 新建付款草稿 → 核销过账」四步，表格化以后操作员只想在行上
+   * 填个金额点一次。这里把四步串起来，但每一步仍然复用既有服务（不另写一套金额与状态判断）：
+   *   - 先按台账实发与已付余额校验，超付直接 422，**不会留下任何单据**；
+   *   - 后续任何一步失败，本次新建的付款草稿会被软删除并审计，不把失败尝试留成孤儿单据
+   *     （付款单没有删除接口，只有 posting 才可冲销，孤儿草稿会一直挂在列表里）。
+   */
+  async payLedger(ledgerId: string, input: { amount: string; payment_date: string; payment_method: string; currency?: string; remark?: string }, user: CurrentUser) {
+    const amount = this.positive(input.amount);
+    const ledger = await this.prisma.payrollLedger.findFirst({ where: { id: ledgerId, deletedAt: null } });
+    if (!ledger) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在");
+    if (!["confirmed", "partially_paid"].includes(ledger.status)) throw this.invalid("PAYROLL_NOT_ALLOCATABLE", "台账尚未确认或已结清，不能付款：请先在工资台账里确认该月台账");
+    if (input.currency && input.currency !== ledger.currency) throw this.invalid("PAYROLL_CURRENCY_MISMATCH", "付款币种必须与工资台账一致");
+    // 余额口径与列表/详情同源：直接取台账详情的未付金额，避免这里再算一遍应发。
+    const detail = await this.payroll.get(ledgerId);
+    const available = new Prisma.Decimal(detail.outstandingAmount);
+    if (amount.gt(available)) throw new UnprocessableEntityException({ code: "SALARY_ALLOCATION_EXCEEDED", message: "付款金额超过该台账未付余额", details: [{ available_amount: available.toString() }] });
+
+    const payables = this.payables;
+    if (!payables) throw this.invalid("PAYROLL_PAYABLE_UNAVAILABLE", "工资应付服务不可用，无法完成付款");
+    // 没有工资应付就生成、草稿就确认（核销过账只接受已确认/部分支付的应付）。
+    const payable = await payables.createFromLedger(ledgerId, {}, user);
+    if (["reversed", "voided"].includes(payable.status)) throw this.invalid("PAYROLL_PAYABLE_NOT_PAYABLE", "该台账的工资应付已冲销，不能再次付款；请先在工资应付里处理");
+    if (payable.status === "draft") await payables.confirm(payable.id, user);
+
+    const payment = await this.create({ payment_date: input.payment_date, amount: input.amount, currency: ledger.currency, payment_method: input.payment_method, remark: input.remark }, user);
+    try {
+      return await this.post(payment.id, [{ ledger_id: ledgerId, amount: input.amount }], user);
+    } catch (error) {
+      await this.prisma.salaryPayment.update({ where: { id: payment.id }, data: { ...this.audit.softDelete(user) } });
+      await this.audit.record("salary_payment.rollback_draft", "salary_payment", user.id, payment.id, { ledger_id: ledgerId, reason: error instanceof Error ? error.message : null });
+      throw error;
+    }
+  }
+
+  /**
+   * 工资付款表格里的「冲销」：把该台账下所有已过账的工资付款整体冲销。
+   *
+   * 逐张复用 reverse()（每张付款单一个事务，自己刷新台账 / 工资应付状态并回冲现金流），
+   * 因此不会出现「同一张台账两边状态不一致」。
+   */
+  async reverseLedgerPayments(ledgerId: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
+    const ledger = await this.prisma.payrollLedger.findFirst({ where: { id: ledgerId, deletedAt: null } });
+    if (!ledger) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在");
+    const allocations = await this.prisma.salaryPaymentAllocation.findMany({ where: { ledgerId, deletedAt: null, status: "active" }, include: { payment: true } });
+    const paymentIds = [...new Set(allocations.filter((item) => item.payment?.status === "posted").map((item) => item.paymentId))].sort();
+    if (!paymentIds.length) throw this.invalid("SALARY_PAYMENT_NOT_REVERSIBLE", "该台账没有已过账的工资付款，无需冲销");
+    const reversed: Array<{ payment_no: string; amount: string }> = [];
+    for (const paymentId of paymentIds) {
+      const row = await this.reverse(paymentId, reason.trim(), user);
+      reversed.push({ payment_no: row.paymentNo, amount: row.amount.toString() });
+    }
+    return { ledger_id: ledgerId, ledger_no: ledger.ledgerNo, reversed };
+  }
   async create(input: Input, user: CurrentUser) { await this.currencies?.assertSupported(input.currency, "工资付款币种"); const amount = this.positive(input.amount); const row = await this.prisma.salaryPayment.create({ data: { paymentNo: this.number("SALARY"), paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("salary_payment.create", "salary_payment", user.id, row.id, { amount: row.amount.toString() }); return row; }
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; bank_reference?: string; remark?: string }, user: CurrentUser) {
     const row = await this.prisma.$transaction(async (tx) => {

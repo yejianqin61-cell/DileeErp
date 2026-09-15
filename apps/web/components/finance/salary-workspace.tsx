@@ -1,16 +1,21 @@
 "use client";
 
-// 工资管理（/finance/salary?tab=ledger|payments）：两个满页表格 + 一条共用筛选条。
+// 工资管理的两个二级页共用这一个工作区组件（由路由决定 mode，不再用查询参数切 tab）：
+//   - /finance/salary/ledger   工资台账：可编辑满页表格（mode="ledger"）
+//   - /finance/salary/payments 工资付款：当月台账只留「总工资」，付款/冲销在表格行内完成（mode="payments"）
 //
 // 用户需求（第 3、4 条）在这里落地：
-//   - 工资台账是**可编辑**满页表格：进页面/切月份先自动导入本月全部员工，车间工人的计件/计时工资
-//     由生产日报自动汇总进「基本工资」且不可手改，绩效/房补/迟到/旷工/早退逐格可改；
-//   - 工资付款也是满页表格，同样支持「月份 / 部门 / 岗位 / 员工姓名或工号」筛选。
+//   - 工资台账：进页面/切月份先自动导入本月全部员工，车间工人的计件/计时工资由生产日报自动汇总进
+//     「基本工资」且不可手改，绩效/房补/迟到/旷工/早退逐格可改；
+//   - 工资付款：把当月工资台账直接搬过来（类目列全部收掉），一行的付款是一次调用完成的
+//     「生成应付 → 建付款草稿 → 核销过账」，冲销把该台账下已过账的付款整体回退；
+//   - 两个表格共用「月份 / 部门 / 岗位 / 员工姓名或工号」筛选。
 //
 // 口径与治理：
 //   - 自动导入是幂等的（后端只补建缺失的草稿台账），因此「浏览一下」不会重复写库；
 //   - 表格里只有 draft / expired 台账可逐格改：已确认台账要先「回到草稿」（需原因），
 //     部分支付/已支付/已关闭只能走工资调整单或付款冲销 —— 这是既有的状态机，不因为「表格能编辑」而放开；
+//   - 工资付款只对已确认/部分支付且未付 > 0 的台账开放，其余行只显示不可付款的原因；
 //   - 员工姓名/工号是本地过滤（与任务 04 的既有约定一致：输入即响应，不打接口）。
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,22 +25,21 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { DataTable, statusCell } from "../data/data-table";
+import { DataTable } from "../data/data-table";
 import { ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
-import { FinanceTabs } from "./finance-tabs";
 import { PayrollSheet, type PayrollSheetColumn } from "./payroll-sheet";
-import { SALARY_TABS, type SalaryTabKey } from "../../lib/finance-sections";
+
+/** 工作区模式：工资台账 / 工资付款。两个二级页各用一个。 */
+export type SalaryMode = "ledger" | "payments";
 
 type Employee = { id: string; employeeNo: string; name: string; employeeType: string; department?: { id: string; name: string } | null; position?: { id: string; name: string } | null };
 type Department = { id: string; name: string; code: string };
 type Position = { id: string; name: string; code: string; departmentId: string };
 type PayrollPayable = { id: string; ledgerId: string; payableNo: string; amount: string; currency: string; status: string };
-type Allocation = { id: string; amount: string; status: string; ledger?: { ledgerNo: string; periodStart: string; periodEnd: string; employee?: Employee | null } | null };
-type Payment = { id: string; paymentNo: string; paymentDate: string; amount: string; currency: string; status: string; paymentMethod?: string; allocations?: Allocation[] };
 type SnapshotLine = { report_date?: string; order_no?: string; operation_name?: string; wage_mode?: string; report_count?: number; quantity?: string; duration_hours?: string; amount?: string };
 type Ledger = {
   id: string;
@@ -93,6 +97,8 @@ type DialogState = { title: string; fields: ActionField[]; submit: (values: Reco
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const day = (value: string | null | undefined) => (value ? value.slice(0, 10) : "-");
 const currentMonth = () => new Date().toISOString().slice(0, 7);
+/** 金额格式：非负、最多 4 位小数（与后端 Decimal(18,4) 同量纲）。付款金额在本地先校验一次。 */
+const MONEY = /^\d+(?:\.\d{1,4})?$/;
 /** 金额显示：最多 4 位小数、去掉尾随零（后端返回 Decimal(18,4) 的字符串）。 */
 const dec = (value: string | number | undefined) => {
   const number = Number(value ?? 0);
@@ -105,8 +111,9 @@ const dec = (value: string | number | undefined) => {
 const CATEGORY_FIELDS: Record<string, string> = { baseSalary: "base_salary", performance: "performance_amount", housing: "housing_allowance", late: "late_deduction", absence: "absence_deduction", earlyLeave: "early_leave_deduction" };
 const CATEGORY_LABELS: Record<string, string> = { baseSalary: "基本工资", performance: "绩效", housing: "房补", late: "迟到扣款", absence: "旷工扣款", earlyLeave: "早退扣款" };
 
-export default function SalaryWorkspace({ tab, testId = "page-finance-salary", initialMonth = "", initialDepartmentId = "", initialPositionId = "" }: {
-  tab: SalaryTabKey;
+export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "page-finance-salary-payments" : "page-finance-salary-ledger", initialMonth = "", initialDepartmentId = "", initialPositionId = "" }: {
+  /** ledger = 工资台账（可编辑满页表格）；payments = 工资付款（当月台账只留「总工资」+ 行内付款/冲销）。 */
+  mode: SalaryMode;
   testId?: string;
   initialMonth?: string;
   initialDepartmentId?: string;
@@ -121,8 +128,12 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [payables, setPayables] = useState<PayrollPayable[]>([]);
-  const [payments, setPayments] = useState<Payment[]>([]);
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
+  // 工资付款表格：每行一个金额输入（默认等于该行未付），付款日期与付款方式在表格上方统一给。
+  const [amounts, setAmounts] = useState<Record<string, string>>({});
+  const [paying, setPaying] = useState("");
+  const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [paymentMethod, setPaymentMethod] = useState("银行转账");
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importError, setImportError] = useState("");
   const [importing, setImporting] = useState(false);
@@ -178,16 +189,14 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
       if (departmentId) params.set("department_id", departmentId);
       if (positionId) params.set("position_id", positionId);
       const suffix = params.toString() ? `?${params.toString()}` : "";
-      // 四张清单一次拉齐：付款 tab 的「核销过账」要用台账选项，台账 tab 的操作列要用工资应付，
-      // 分 tab 按需拉取会让另一张表在切回来之前一直缺数据。
-      const [ledgerResult, paymentResult, payableResult, employeeResult] = await Promise.all([
+      // 工资付款页只用台账列表（当月台账搬过去当付款行，核销明细已经 include 在里面）；
+      // 工资应付与员工清单只有工资台账页用得上，不为另一页白拉。
+      const [ledgerResult, payableResult, employeeResult] = await Promise.all([
         apiGet<Ledger[]>(`/hr/payroll-ledgers${suffix}`),
-        apiGet<Payment[]>(`/hr/salary-payments${suffix}`),
-        apiGet<PayrollPayable[]>("/hr/payroll-payables"),
-        apiGet<Employee[]>("/production/employees"),
+        mode === "ledger" ? apiGet<PayrollPayable[]>("/hr/payroll-payables") : Promise.resolve({ data: [] as PayrollPayable[] }),
+        mode === "ledger" ? apiGet<Employee[]>("/production/employees") : Promise.resolve({ data: [] as Employee[] }),
       ]);
       setLedgers(ledgerResult.data);
-      setPayments(paymentResult.data);
       setPayables(payableResult.data);
       setEmployees(employeeResult.data);
     } catch (cause) {
@@ -195,7 +204,7 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
     } finally {
       setLoading(false);
     }
-  }, [departmentId, month, positionId, ready, tab]);
+  }, [departmentId, mode, month, positionId, ready]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -297,15 +306,41 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
   function reopenLedger(ledger: Ledger) {
     setDialog({ title: `工资台账回退草稿：${ledger.ledgerNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (values) => submitDialog(apiPost(`/hr/payroll-ledgers/${ledger.id}/reopen`, values), "工资台账已回到草稿") });
   }
-  function createSalaryPayment() {
-    setDialog({ title: "新建工资付款", fields: [{ name: "amount", label: "付款金额", type: "number", required: true }, { name: "payment_date", label: "付款日期", type: "date", required: true, defaultValue: new Date().toISOString().slice(0, 10) }, { name: "payment_method", label: "付款方式", required: true, defaultValue: "银行转账" }, { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") }], submit: (values) => submitDialog(apiPost("/hr/salary-payments", { amount: values.amount, payment_date: values.payment_date, currency: values.currency, payment_method: values.payment_method }), "工资付款草稿已创建") });
+
+  /**
+   * 工资付款表格的行内付款：一次调用完成「生成应付 → 建付款 → 核销过账」。
+   *
+   * 金额先在前端做同口径校验（与后端一致的未付上限），把最常见的输错挡在本地，
+   * 后端仍会再校验一次（前端校验不是门禁）。
+   */
+  async function payLedgerRow(ledger: Ledger) {
+    const raw = (amounts[ledger.id] ?? dec(ledger.outstandingAmount)).trim();
+    const value = raw === "" ? "0" : raw;
+    const available = Number(ledger.outstandingAmount);
+    if (!MONEY.test(value) || Number(value) <= 0) { notifyError("付款金额必须是不小于 0 的数字，最多 4 位小数"); return; }
+    if (Number(value) > available) { notifyError(`付款金额不能超过未付 ${dec(ledger.outstandingAmount)}`); return; }
+    if (paying) return;
+    setPaying(ledger.id);
+    try {
+      await apiPost(`/hr/payroll-ledgers/${ledger.id}/pay`, { amount: value, payment_date: paymentDate, payment_method: paymentMethod });
+      notifySuccess(`${ledger.employee.name} 已付款 ${value}`);
+      setAmounts((current) => { const next = { ...current }; delete next[ledger.id]; return next; });
+      await load();
+    } catch (cause) {
+      notifyError(messageOf(cause, "付款失败"));
+    } finally {
+      setPaying("");
+    }
   }
-  function postSalaryPayment(payment: Payment) {
-    const options = ledgers.filter((ledger) => ["confirmed", "partially_paid"].includes(ledger.status) && Number(ledger.outstandingAmount) > 0).map((ledger) => ({ value: ledger.id, label: `${ledger.employee.employeeNo} / ${ledger.employee.name} / 未付 ${ledger.outstandingAmount} ${ledger.currency}` }));
-    setDialog({ title: `工资付款核销：${payment.paymentNo}`, fields: [{ name: "ledger_id", label: "工资台账", type: "select", required: true, options }, { name: "amount", label: "本次核销金额", type: "number", required: true, defaultValue: payment.amount }], submit: (values) => values.ledger_id ? submitDialog(apiPost(`/hr/salary-payments/${payment.id}/post`, { allocations: [{ ledger_id: values.ledger_id, amount: values.amount }] }), "工资付款已过账") : undefined });
-  }
-  function reverseSalaryPayment(payment: Payment) {
-    setDialog({ title: `冲销工资付款：${payment.paymentNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => submitDialog(apiPost(`/hr/salary-payments/${payment.id}/reverse`, values), "工资付款已冲销") });
+
+  /** 行内冲销：把该台账下所有已过账的工资付款整体冲销（原因必填，服务端强制）。 */
+  function openUnpay(ledger: Ledger, posted: Array<{ amount: string; payment?: { paymentNo: string } | null }>) {
+    const total = posted.reduce((sum, item) => sum + Number(item.amount), 0).toFixed(4);
+    setDialog({
+      title: `冲销工资付款：${ledger.employee.employeeNo} / ${ledger.employee.name}`,
+      fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }],
+      submit: (values) => submitDialog(apiPost(`/hr/payroll-ledgers/${ledger.id}/unpay`, values), `${ledger.employee.name} 的 ${posted.length} 张工资付款已冲销（合计 ${total}）`),
+    });
   }
 
   const payableByLedger = useMemo(() => new Map(payables.map((item) => [item.ledgerId, item])), [payables]);
@@ -356,27 +391,52 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
     { key: "actions", header: "操作", render: (row) => actionColumns(row) },
   ];
 
-  const paymentColumns: ColumnDef<Payment>[] = [
-    { accessorKey: "paymentNo", header: "支付单号" },
-    { id: "date", header: "付款日期", cell: ({ row }) => day(row.original.paymentDate) },
-    { id: "employees", header: "核销员工", cell: ({ row }) => employeesOf(row.original) || "未核销" },
-    { id: "departments", header: "部门", cell: ({ row }) => departmentsOf(row.original) || "-" },
-    { id: "positions", header: "岗位", cell: ({ row }) => positionsOf(row.original) || "-" },
-    { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { accessorKey: "status", header: "状态", cell: statusCell<Payment>() },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => postSalaryPayment(row.original)}>核销过账</Button>}{row.original.status === "posted" && <Button size="sm" variant="destructive" onClick={() => reverseSalaryPayment(row.original)}>冲销</Button>}</div> },
+  /**
+   * 工资付款列：就是把当月工资台账搬过来，但**类目明细全部收掉、只留「总工资」**，
+   * 再加上付款需要的已付/未付与行内操作（用户需求：工资付款操作都在表格中完成）。
+   */
+  const paymentColumns: PayrollSheetColumn<Ledger>[] = [
+    { key: "employeeNo", header: "工号", text: (row) => row.employee.employeeNo },
+    { key: "name", header: "姓名", text: (row) => row.employee.name },
+    { key: "department", header: "部门", text: (row) => row.employee.department?.name ?? "-" },
+    { key: "position", header: "岗位", text: (row) => row.employee.position?.name ?? "-" },
+    { key: "total", header: "总工资", numeric: true, total: true, text: (row) => dec(row.payableAmount), readOnlyHint: () => "本月工资台账的应发合计（基本工资/绩效/房补/扣款等明细见「工资台账」页）" },
+    { key: "paid", header: "已付", numeric: true, total: true, text: (row) => dec(row.paidAmount), readOnlyHint: () => "有效核销且工资付款已过账的金额合计" },
+    { key: "outstanding", header: "未付", numeric: true, total: true, text: (row) => dec(row.outstandingAmount), readOnlyHint: () => "总工资 − 已付" },
+    { key: "status", header: "状态", text: (row) => statusLabels[row.status] ?? row.status },
+    { key: "currency", header: "币种", text: (row) => row.currency },
+    { key: "actions", header: "付款操作", render: (row) => payActions(row) },
   ];
 
-  const allocationEmployees = (payment: Payment) => (payment.allocations ?? []).map((item) => item.ledger?.employee).filter((item): item is Employee => Boolean(item));
-  const employeesOf = (payment: Payment) => [...new Set(allocationEmployees(payment).map((employee) => `${employee.employeeNo} / ${employee.name}`))].join("、");
-  const departmentsOf = (payment: Payment) => [...new Set(allocationEmployees(payment).map((employee) => employee.department?.name ?? "-"))].join("、");
-  const positionsOf = (payment: Payment) => [...new Set(allocationEmployees(payment).map((employee) => employee.position?.name ?? "-"))].join("、");
-  /** 付款单可以跨员工核销，筛选按「核销到的员工」命中（与后端 where 语义一致）。 */
-  const visiblePayments = useMemo(() => {
-    const text = employeeQuery.trim().toLowerCase();
-    if (!text) return payments;
-    return payments.filter((payment) => allocationEmployees(payment).some((employee) => `${employee.name} ${employee.employeeNo}`.toLowerCase().includes(text)));
-  }, [employeeQuery, payments]);
+  /** 该台账下已过账的付款核销（决定「已付」与能不能冲销）。 */
+  const postedAllocations = (ledger: Ledger) => (ledger.allocations ?? []).filter((item) => item.status === "active" && item.payment?.status === "posted");
+  /** 不可付款时的原因说明：这些行仍然显示（当月台账全都在），但只给说明不给输入框。 */
+  const payableHint = (ledger: Ledger) => {
+    if (ledger.status === "draft") return "待确认：请先到「工资台账」确认本月台账";
+    if (ledger.status === "expired") return "台账已过期：请先重新结算并确认";
+    if (Number(ledger.outstandingAmount) <= 0) return "已付清";
+    if (ledger.status === "paid" || ledger.status === "closed") return "已结清";
+    return "不可付款";
+  };
+
+  const payActions = (ledger: Ledger) => {
+    const posted = postedAllocations(ledger);
+    const canPay = ["confirmed", "partially_paid"].includes(ledger.status) && Number(ledger.outstandingAmount) > 0;
+    return <div className="action-row" data-testid={`salary-pay-actions-${ledger.id}`} onClick={(event) => event.stopPropagation()}>
+      {canPay ? <>
+        <input
+          className="payroll-sheet-input salary-pay-input"
+          data-testid={`salary-pay-amount-${ledger.id}`}
+          aria-label={`付款金额（${ledger.employee.name}）`}
+          inputMode="decimal"
+          value={amounts[ledger.id] ?? dec(ledger.outstandingAmount)}
+          onChange={(event) => setAmounts((current) => ({ ...current, [ledger.id]: event.target.value }))}
+        />
+        <Button size="sm" data-testid={`salary-pay-button-${ledger.id}`} disabled={paying === ledger.id} onClick={() => void payLedgerRow(ledger)}>{paying === ledger.id ? "付款中…" : "付款"}</Button>
+      </> : <span className="panel-note" data-testid={`salary-pay-hint-${ledger.id}`}>{payableHint(ledger)}</span>}
+      {posted.length ? <Button size="sm" variant="destructive" data-testid={`salary-unpay-button-${ledger.id}`} onClick={() => openUnpay(ledger, posted)}>冲销</Button> : null}
+    </div>;
+  };
 
   const visibleLedgers = useMemo(() => {
     const text = employeeQuery.trim().toLowerCase();
@@ -408,22 +468,20 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
   const snapshotOperations = new Set(snapshot.map((line) => `${line.order_no ?? ""}|${line.operation_name ?? ""}`)).size;
   const snapshotReports = snapshot.reduce((sum, line) => sum + (line.report_count ?? 1), 0);
 
-  if (loading) return <div className="page-root" data-testid={importing ? "salary-importing" : undefined}><PageHeader title="工资管理" /><LoadingState /></div>;
-
-  const tabQuery: Record<string, string> = {};
-  if (month) tabQuery.month = month;
-  if (departmentId) tabQuery.department_id = departmentId;
-  if (positionId) tabQuery.position_id = positionId;
+  if (loading) return <div className="page-root" data-testid={importing ? "salary-importing" : undefined}><PageHeader title={mode === "ledger" ? "工资台账" : "工资付款"} /><LoadingState /></div>;
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="工资管理" description="满页表格：按月自动导入全部员工，车间工人的计件/计时工资由生产日报自动汇总进「基本工资」，其余类目逐格可改。">
-      <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
+    <PageHeader
+      title={mode === "ledger" ? "工资台账" : "工资付款"}
+      description={mode === "ledger"
+        ? "满页可编辑表格：按月自动导入全部员工，车间工人的计件/计时工资由生产日报自动汇总进「基本工资」，其余类目逐格可改。"
+        : "把当月工资台账搬过来付款：只保留「总工资」，付款与冲销都在表格行内完成。"}
+    >
+      <Button asChild variant="secondary"><Link href="/finance/salary">返回工资管理</Link></Button>
       <Button variant="secondary" data-testid="salary-import-button" onClick={() => void runImport(true)}>重新导入本月员工</Button>
       <Button variant="secondary" data-testid="salary-refresh-button" onClick={() => void load()}>刷新</Button>
-      {tab === "ledger" ? <Button data-testid="salary-create-ledger" onClick={openCreate}>新建工资台账</Button> : null}
-      {tab === "payments" ? <Button data-testid="salary-create-payment" onClick={createSalaryPayment}>新建工资付款</Button> : null}
+      {mode === "ledger" ? <Button data-testid="salary-create-ledger" onClick={openCreate}>新建工资台账</Button> : null}
     </PageHeader>
-    <FinanceTabs basePath="/finance/salary" tabs={SALARY_TABS} active={tab} query={tabQuery} />
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
     <RecordDetailDialog
       open={Boolean(detail)}
@@ -464,10 +522,17 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
             </Select>
           </label>
           <label>员工姓名/工号<Input data-testid="salary-employee-filter" value={employeeQuery} onChange={(event) => setEmployeeQuery(event.target.value)} placeholder="本地过滤" /></label>
+          {/* 付款日期与付款方式对整页生效（行内只填金额），省掉每行一个弹窗 */}
+          {mode === "payments" ? <>
+            <label>付款日期<Input data-testid="salary-payment-date" type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} /></label>
+            <label>付款方式<Input data-testid="salary-payment-method" value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} placeholder="银行转账" /></label>
+          </> : null}
         </div>
         <p className="panel-note">
           月份、部门、岗位由服务端筛选（切部门会自动清空岗位）；员工姓名/工号是本地过滤。
-          已付和未付按有效已过账工资付款实时计算；未付为 0 时不应再次发放，已过期台账需重新结算或使用工资调整单。
+          {mode === "ledger"
+            ? "已付和未付按有效已过账工资付款实时计算；未付为 0 时不应再次发放，已过期台账需重新结算或使用工资调整单。"
+            : "付款金额默认为该行未付；只有已确认 / 部分支付的台账可以付款，其余行会给出原因。"}
         </p>
         <p className="panel-note" data-testid="salary-import-summary">
           {importing ? "正在导入本月员工…" : importError ? `本月导入失败：${importError}` : importResult
@@ -475,13 +540,21 @@ export default function SalaryWorkspace({ tab, testId = "page-finance-salary", i
             : "本月尚未导入。"}
         </p>
       </section>
-      {tab === "ledger" ? <section className="panel" data-testid="salary-ledger-panel">
+      {mode === "ledger" ? <section className="panel" data-testid="salary-ledger-panel">
         <div className="panel-heading"><h2>工资台账</h2><span className="panel-note">共 {visibleLedgers.length} 条；逐格可改，「基本工资」对车间工人只读</span></div>
         <div className="panel-body"><PayrollSheet columns={sheetColumns} rows={visibleLedgers} onCommit={commitCell} rowTestId={(row) => `payroll-row-${row.id}`} /></div>
       </section> : null}
-      {tab === "payments" ? <section className="panel" data-testid="salary-payment-panel">
-        <div className="panel-heading"><h2>工资付款</h2><span className="panel-note">共 {visiblePayments.length} 条；按付款月份与核销员工的部门/岗位筛选</span></div>
-        <div className="panel-body"><DataTable columns={paymentColumns} data={visiblePayments} pageSize={50} empty={<p className="panel-note" data-testid="salary-payment-empty">本期没有工资付款</p>} /></div>
+      {mode === "payments" ? <section className="panel" data-testid="salary-payment-panel">
+        <div className="panel-heading"><h2>工资付款</h2><span className="panel-note">共 {visibleLedgers.length} 条；本表＝当月工资台账只留「总工资」</span></div>
+        <div className="panel-body">
+          <PayrollSheet
+            columns={paymentColumns}
+            rows={visibleLedgers}
+            rowTestId={(row) => `payroll-pay-row-${row.id}`}
+            hint={<span>付款金额默认等于该行未付，改完点「付款」即可（一次完成：生成工资应付 → 建付款单 → 核销过账）。已付过的行可「冲销」把该台账下的付款整体回退（需填原因）。付款日期与方式在上方统一设置。</span>}
+            empty={<p className="panel-note" data-testid="salary-payment-empty">本月没有工资台账，无法付款：请先到「工资台账」页导入并确认本月台账。</p>}
+          />
+        </div>
       </section> : null}
     </>}
   </div>;

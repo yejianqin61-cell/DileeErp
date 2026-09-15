@@ -1,13 +1,13 @@
 // 迪礼 ERP —— HR 模块 HTTP 契约测试。
 //
-// 被测生产文件：apps/api/src/modules/hr/hr.controller.ts（9 GET + 17 POST + 4 PATCH + 3 DELETE = 33 路由）
+// 被测生产文件：apps/api/src/modules/hr/hr.controller.ts（9 GET + 19 POST + 4 PATCH + 3 DELETE = 35 路由）
 // 关注点：员工考勤/绩效、工资台账、工资应付、工资支付四组路由的信封、状态码、鉴权、DTO 校验、
 //         查询参数处理、资源不存在时的模块级精确错误码。
 //
 // 权限模型（实测 + 代码依据）：
-//   本控制器只有**类级** `@RequireModules("hr")`（hr.controller.ts:30），33 个路由上**没有任何**
+//   本控制器只有**类级** `@RequireModules("hr")`（hr.controller.ts:30），35 个路由上**没有任何**
 //   方法级 `@RequireModules` / `@RequireAnyModules`。因此 ModulePermissionGuard 的
-//   "类级 AND 方法级" 组合路径（module-permission.guard.ts:26-27）在 HR 上不可达 —— 全部 33 路由
+//   "类级 AND 方法级" 组合路径（module-permission.guard.ts:26-27）在 HR 上不可达 —— 全部 35 路由
 //   只要求 hr 模块；administrator 角色在守卫第 5 步短路（module-permission.guard.ts:22-23），
 //   所以管理员对所有 HR 路由恒通。AND 语义由 apps/api/test/unit/module-permission-guard.test.cjs 覆盖。
 //
@@ -51,7 +51,7 @@ const PLACEHOLDER_ID = "0f8f7f9a-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
  */
 const missingId = () => randomUUID();
 
-/** hr.controller.ts 的 33 个路由（方法, 路径, 请求体）。顺序与控制器声明一致。 */
+/** hr.controller.ts 的 35 个路由（方法, 路径, 请求体）。顺序与控制器声明一致。 */
 const ROUTES = [
   ["GET", `${HR}/attendance-records`],
   ["POST", `${HR}/attendance-records`, {}],
@@ -75,6 +75,9 @@ const ROUTES = [
   ["GET", `${HR}/payroll-payables`],
   ["GET", `${HR}/payroll-payables/${PLACEHOLDER_ID}`],
   ["POST", `${HR}/payroll-ledgers/${PLACEHOLDER_ID}/payable`, {}],
+  // 工资付款表格里的行内付款／冲销（2026-09-15）：一次调用完成「应付 → 付款 → 核销」。
+  ["POST", `${HR}/payroll-ledgers/${PLACEHOLDER_ID}/pay`, { amount: "1", payment_date: "2026-09-05", payment_method: "银行转账" }],
+  ["POST", `${HR}/payroll-ledgers/${PLACEHOLDER_ID}/unpay`, {}],
   ["POST", `${HR}/payroll-payables/${PLACEHOLDER_ID}/confirm`],
   ["POST", `${HR}/payroll-payables/${PLACEHOLDER_ID}/reopen`, {}],
   ["POST", `${HR}/payroll-payables/${PLACEHOLDER_ID}/reverse`, {}],
@@ -155,11 +158,11 @@ function expectDetail(body, field, rule, context) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 鉴权：33 个路由全部拒绝匿名请求（不需要登录，因此不受单会话竞争影响）
+// 1. 鉴权：35 个路由全部拒绝匿名请求（不需要登录，因此不受单会话竞争影响）
 // ---------------------------------------------------------------------------
 
-test("hr.anonymous_requests_to_all_33_routes_are_rejected_with_401_unauthenticated", async () => {
-  assert.equal(ROUTES.length, 33, "路由表必须与 hr.controller.ts 的 33 个路由一一对应（9 GET + 17 POST + 4 PATCH + 3 DELETE）");
+test("hr.anonymous_requests_to_all_35_routes_are_rejected_with_401_unauthenticated", async () => {
+  assert.equal(ROUTES.length, 35, "路由表必须与 hr.controller.ts 的 35 个路由一一对应（9 GET + 19 POST + 4 PATCH + 3 DELETE）");
   const anonymous = apiClient(baseUrl);
 
   for (const [method, path, body] of ROUTES) {
@@ -321,6 +324,15 @@ test("hr.payroll_ledger_write_bodies_are_rejected_before_the_service_layer", asy
   expectDetail(expectDtoValidation(await client.post(`${HR}/payroll-ledgers/${id}/reopen`, {}), "POST reopen {}"), "reason", "isString", "POST reopen {}");
   const tooLong = expectDtoValidation(await client.post(`${HR}/payroll-ledgers/${id}/reopen`, { reason: "x".repeat(1001) }), "POST reopen 1001 chars");
   expectDetail(tooLong, "reason", "maxLength", "POST reopen 1001 chars");
+
+  // POST /payroll-ledgers/:id/pay：金额/付款日期/付款方式必填（2026-09-15 的行内付款）
+  const pay = expectDtoValidation(await client.post(`${HR}/payroll-ledgers/${id}/pay`, {}), "POST payroll-ledgers/:id/pay {}");
+  expectDetail(pay, "amount", "isString", "POST payroll-ledgers/:id/pay {}");
+  expectDetail(pay, "payment_date", "isDateString", "POST payroll-ledgers/:id/pay {}");
+  expectDetail(pay, "payment_method", "isString", "POST payroll-ledgers/:id/pay {}");
+  expectDetail(expectDtoValidation(await client.post(`${HR}/payroll-ledgers/${id}/pay`, { amount: "1", payment_date: "today", payment_method: "银行转账" }), "POST pay bad date"), "payment_date", "isDateString", "POST pay bad date");
+  // POST /payroll-ledgers/:id/unpay：冲销必须填原因
+  expectDetail(expectDtoValidation(await client.post(`${HR}/payroll-ledgers/${id}/unpay`, {}), "POST payroll-ledgers/:id/unpay {}"), "reason", "isString", "POST payroll-ledgers/:id/unpay {}");
 
   // POST /payroll-ledgers/:id/adjustments：adjustment_type/effect/amount/reason 必填，effect 限枚举
   const adjustment = expectDtoValidation(await client.post(`${HR}/payroll-ledgers/${id}/adjustments`, {}), "POST adjustments {}");

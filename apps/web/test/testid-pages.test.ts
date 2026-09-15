@@ -45,6 +45,8 @@ const EXPECTED: Record<string, string> = {
   "finance/payable/page.tsx": "page-finance-payable",
   "finance/voucher/page.tsx": "page-finance-voucher",
   "finance/salary/page.tsx": "page-finance-salary",
+  "finance/salary/ledger/page.tsx": "page-finance-salary-ledger",
+  "finance/salary/payments/page.tsx": "page-finance-salary-payments",
   "finance/cash-flow/page.tsx": "page-finance-cash-flow",
   "finance/reports/page.tsx": "page-finance-reports",
   "hr/page.tsx": "page-hr",

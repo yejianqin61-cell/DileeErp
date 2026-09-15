@@ -1,23 +1,28 @@
-// components/finance/salary-workspace.tsx 的**行为**测试：真实渲染 + 真实点击/输入 + 断言真实请求。
+// 工资管理三个页面的**行为**测试：真实渲染 + 真实点击/输入 + 断言真实请求。
+//
+//   /finance/salary          只提供两个入口（工资台账 / 工资付款）—— 页面本身不拉任何数据
+//   /finance/salary/ledger   工资台账：可编辑满页表格（mode="ledger"）
+//   /finance/salary/payments 工资付款：当月台账只留「总工资」，付款/冲销在行内完成（mode="payments"）
 //
 // 被测面的数据契约（全部来自组件源码，不是想象）：
 //   POST   /hr/payroll-ledgers/import-month               进入页面/切月份自动导入本月全部员工（幂等）
-//   GET    /hr/payroll-ledgers[?month=&department_id=&position_id=]   工资台账（满页可编辑表格）
-//   GET    /hr/payroll-payables                           工资应付（决定「未生成 / 应付草稿 / 应付已确认」与按钮）
-//   GET    /hr/salary-payments[?month=&department_id=&position_id=]   工资付款（满页表格）
+//   GET    /hr/payroll-ledgers[?month=&department_id=&position_id=]   当月台账（两个二级页共用的行来源）
+//   GET    /hr/payroll-payables                           工资应付（只有工资台账页要：生成/确认应付按钮）
 //   GET    /production/employees                          新建台账弹窗的姓名下拉
 //   GET    /production/departments | /production/positions  部门/岗位筛选下拉
 //   PATCH  /hr/payroll-ledgers/:id                        单元格保存（一个类目一个字段）
 //   POST   /hr/payroll-ledgers/:id/confirm|reopen|payable|close、DELETE /hr/payroll-ledgers/:id
 //   POST   /hr/payroll-payables/:id/confirm
-//   POST   /hr/salary-payments、/:id/post、/:id/reverse
+//   POST   /hr/payroll-ledgers/:id/pay                    行内付款：一次完成生成应付 + 建付款 + 核销过账
+//   POST   /hr/payroll-ledgers/:id/unpay                  行内冲销：把该台账下已过账的付款整体回退
 //
-// 2026-09-15 变化：台账从只读表变成**可编辑表格**（逐格 PATCH），付款拆到独立 tab，
-// 两个 tab 共用「月份/部门/岗位/员工姓名或工号」筛选。
+// 2026-09-15 两轮变化：① 台账从只读表变成可编辑表格（逐格 PATCH）；② 工资管理页只留两个入口，
+// 台账与付款各自成为二级页，付款表直接搬当月台账、只保留「总工资」，操作都在行内完成。
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SalaryWorkspace from "../components/finance/salary-workspace";
+import FinanceSalaryPage from "../app/finance/salary/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
 
@@ -33,7 +38,7 @@ const EP = {
 } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined | Promise<Response | undefined>;
-type SalaryData = Partial<Record<"employees" | "departments" | "positions" | "ledgers" | "payables" | "payments" | "currencies", unknown[]>> & { imported?: Record<string, unknown> };
+type SalaryData = Partial<Record<"employees" | "departments" | "positions" | "ledgers" | "payables" | "currencies", unknown[]>> & { imported?: Record<string, unknown> };
 
 /** 按月导入的默认响应：一次导入 2 人、新建 2 条。 */
 const importResult = (overrides: Record<string, unknown> = {}) => ({
@@ -55,22 +60,32 @@ function stubSalary(data: SalaryData = {}, extra?: Handler) {
     if (url.startsWith(EP.departments)) return apiOk(data.departments ?? []);
     if (url.startsWith(EP.positions)) return apiOk(data.positions ?? []);
     if (url.startsWith(EP.payables)) return apiOk(data.payables ?? []);
-    if (url.startsWith(EP.payments)) return apiOk(data.payments ?? []);
     if (url.startsWith(EP.currencies)) return apiOk(data.currencies ?? []);
     if (url.startsWith(EP.ledgers)) return call.method === "GET" ? apiOk(data.ledgers ?? []) : apiOk({});
     return apiOk({});
   });
 }
 
-/** 渲染某个 tab 并等到数据加载完成（页面根出现）。 */
-async function openSalary(tab: "ledger" | "payments" = "ledger", props: Partial<{ initialMonth: string; initialDepartmentId: string; initialPositionId: string }> = {}) {
-  render(<><SalaryWorkspace tab={tab} initialMonth="2026-03" {...props} /><Toaster /></>);
-  return screen.findByTestId("page-finance-salary");
+/**
+ * 渲染某个二级页并等到数据加载完成（页面根出现）。
+ *
+ * 工资台账与工资付款现在是两个真实路由（/finance/salary/ledger、/finance/salary/payments），
+ * 由路由决定 mode —— 不再是同一页里的查询参数 tab。
+ */
+async function openSalary(mode: "ledger" | "payments" = "ledger", props: Partial<{ initialMonth: string; initialDepartmentId: string; initialPositionId: string }> = {}) {
+  render(<><SalaryWorkspace mode={mode} initialMonth="2026-03" {...props} /><Toaster /></>);
+  return screen.findByTestId(mode === "payments" ? "page-finance-salary-payments" : "page-finance-salary-ledger");
 }
 
-/** 取某个面板（section）的作用域，避免与筛选条/子栏目链接的同名文本混淆。 */
+/**
+ * 取某个面板（section）的作用域。
+ *
+ * 必须挑「在 section 里的那个标题」：二级页的 PageHeader 也是 h1「工资台账」/「工资付款」，
+ * 直接 getByRole("heading", { name }) 会同时命中页头与面板标题。
+ */
 function panel(title: string) {
-  const section = screen.getByRole("heading", { name: title }).closest("section");
+  const heading = screen.getAllByRole("heading", { name: title }).find((item) => item.closest("section"));
+  const section = heading?.closest("section");
   if (!section) throw new Error(`找不到面板：${title}`);
   return within(section as HTMLElement);
 }
@@ -131,8 +146,29 @@ const workshopLedger = {
 const officeLedger = { ...workshopLedger, id: "pl-3", ledgerNo: "PAYROLL-003", employeeId: "emp-2", basicSalaryAmount: "5000.0000", baseSalary: "5000.0000", productionSourceAmount: "0.0000", employee: officeEmployee };
 const confirmedLedger = { ...workshopLedger, id: "pl-2", status: "confirmed" };
 const expiredLedger = { ...workshopLedger, id: "pl-4", status: "expired" };
-const allocation = (employee: typeof workshopEmployee, amount = "1234.5000") => ({ id: `alloc-${employee.id}`, amount, status: "active", ledger: { ledgerNo: "PAYROLL-001", periodStart: "2026-03-01T00:00:00.000Z", periodEnd: "2026-03-31T00:00:00.000Z", employee } });
-const payment = { id: "sp-1", paymentNo: "SALARY-001", paymentDate: "2026-03-05T08:00:00.000Z", amount: "3000.0000", currency: "CNY", status: "draft", paymentMethod: "银行转账", allocations: [allocation(workshopEmployee, "3000.0000")] };
+/** 已付过一笔的台账：付款页的「已付/未付/冲销」都由它的核销明细驱动。 */
+const paidLedger = {
+  ...workshopLedger, id: "pl-9", ledgerNo: "PAYROLL-009", status: "partially_paid",
+  paidAmount: "500.0000", outstandingAmount: "734.5000",
+  allocations: [{ id: "alloc-1", amount: "500.0000", status: "active", payment: { paymentNo: "SALARY-001", status: "posted", paymentDate: "2026-03-05T00:00:00.000Z" } }],
+};
+
+// ------------------------------------------------------------------ 工资管理入口页
+
+describe("工资管理：入口页只提供两个功能入口", () => {
+  it("工资管理页只有两个板块卡片，指向台账与付款两个二级页，且自身不拉任何数据", () => {
+    const calls = stubSalary({ ledgers: [workshopLedger] });
+    render(<FinanceSalaryPage />);
+    expect(screen.getByTestId("page-finance-salary")).toBeInTheDocument();
+    const grid = within(screen.getByTestId("salary-section-grid"));
+    expect(grid.getAllByRole("link")).toHaveLength(2);
+    expect(screen.getByTestId("salary-section-ledger")).toHaveAttribute("href", "/finance/salary/ledger");
+    expect(screen.getByTestId("salary-section-payments")).toHaveAttribute("href", "/finance/salary/payments");
+    expect(screen.getByRole("heading", { name: "工资台账" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "工资付款" })).toBeVisible();
+    expect(calls, "入口页不拉数据：进错页不该触发按月导入写库").toHaveLength(0);
+  });
+});
 
 // ------------------------------------------------------------------ 自动导入本月员工
 
@@ -152,13 +188,13 @@ describe("工资管理：每月自动导入全部员工", () => {
 
   it("新建了台账时给出成功提示；没有任何新建时不打扰用户", async () => {
     const first = stubSalary({ imported: importResult({ created: 3, candidates: 3 }) });
-    const view = render(<><SalaryWorkspace tab="ledger" initialMonth="2026-03" /><Toaster /></>);
+    const view = render(<><SalaryWorkspace mode="ledger" initialMonth="2026-03" /><Toaster /></>);
     await expectToast("已自动导入本月 3 名员工的工资台账");
     expect(postsTo(first, EP.importMonth)).toHaveLength(1);
     view.unmount();
 
     const second = stubSalary({ imported: importResult({ created: 0, existing: 2 }) });
-    render(<><SalaryWorkspace tab="ledger" initialMonth="2026-04" /><Toaster /></>);
+    render(<><SalaryWorkspace mode="ledger" initialMonth="2026-04" /><Toaster /></>);
     await waitFor(() => expect(postsTo(second, EP.importMonth)).toHaveLength(1));
     expect(screen.queryByText(/已自动导入/)).toBeNull();
     // 还要等列表加载完成：加载态下筛选条与导入摘要都还没渲染
@@ -189,23 +225,33 @@ describe("工资管理：每月自动导入全部员工", () => {
   });
 });
 
-// ------------------------------------------------------------------ 筛选（两个 tab 共用）
+// ------------------------------------------------------------------ 筛选（两个二级页共用）
 
 describe("工资管理：月份/部门/岗位/员工筛选", () => {
-  it("初始月份作为服务端参数带给台账与付款两个列表", async () => {
-    const calls = stubSalary({ ledgers: [workshopLedger], payments: [payment] });
+  it("初始月份作为服务端参数带给台账列表，且两个页面都不再拉工资付款列表", async () => {
+    const calls = stubSalary({ ledgers: [workshopLedger] });
     await openSalary();
     await waitFor(() => expect(ledgerGets(calls).some((call) => call.url === `${EP.ledgers}?month=2026-03`)).toBe(true));
-    expect(paymentGets(calls).some((call) => call.url === `${EP.payments}?month=2026-03`)).toBe(true);
+    expect(paymentGets(calls), "付款行直接来自当月台账，不再单独拉 /hr/salary-payments").toHaveLength(0);
   });
 
-  it("按部门筛选：带 department_id 重新拉取台账与付款，岗位下拉同时按该部门收窄", async () => {
-    const calls = stubSalary({ ledgers: [workshopLedger], payments: [payment], departments: [department, otherDepartment], positions: [position, otherPosition] });
-    await openSalary();
+  it("工资付款页的筛选与台账页同一套：月份/部门/岗位都进台账查询，岗位下拉按部门收窄", async () => {
+    const calls = stubSalary({ ledgers: [workshopLedger], departments: [department, otherDepartment], positions: [position, otherPosition] });
+    await openSalary("payments");
+    await waitFor(() => expect(ledgerGets(calls).some((call) => call.url === `${EP.ledgers}?month=2026-03`)).toBe(true));
     await pickOption("salary-department-filter", "生产部");
     await waitFor(() => expect(ledgerGets(calls).some((call) => call.url === `${EP.ledgers}?month=2026-03&department_id=dep-1`)).toBe(true));
-    expect(paymentGets(calls).some((call) => call.url.includes("department_id=dep-1"))).toBe(true);
     expect(calls.some((call) => call.url === `${EP.positions}?department_id=dep-1`)).toBe(true);
+    await pickOption("salary-position-filter", "缝制工");
+    await waitFor(() => expect(ledgerGets(calls).some((call) => call.url.includes("position_id=pos-1"))).toBe(true));
+  });
+
+  it("工资付款页不会拉工资应付与员工清单（那两样只有台账页要）", async () => {
+    const calls = stubSalary({ ledgers: [workshopLedger] });
+    await openSalary("payments");
+    expect(calls.some((call) => call.url.startsWith(EP.payables))).toBe(false);
+    expect(calls.some((call) => call.url.startsWith(EP.employees))).toBe(false);
+    expect(calls.some((call) => call.url.startsWith(EP.importMonth))).toBe(true);
   });
 
   it("按岗位筛选：带 position_id 重新拉取台账", async () => {
@@ -235,12 +281,13 @@ describe("工资管理：月份/部门/岗位/员工筛选", () => {
     expect(ledgerGets(calls)).toHaveLength(before);
   });
 
-  it("子栏目链接带上当前筛选（切 tab 不用重选月份/部门/岗位）", async () => {
-    await openSalary("ledger", { initialDepartmentId: "dep-1" });
-    const href = screen.getByTestId("finance-tab-payments").getAttribute("href") ?? "";
-    expect(href).toContain("tab=payments");
-    expect(href).toContain("month=2026-03");
-    expect(href).toContain("department_id=dep-1");
+  it("两个二级页各有一个「返回工资管理」入口，指回入口页", async () => {
+    for (const mode of ["ledger", "payments"] as const) {
+      const view = render(<><SalaryWorkspace mode={mode} initialMonth="2026-03" /><Toaster /></>);
+      await screen.findByTestId(mode === "payments" ? "page-finance-salary-payments" : "page-finance-salary-ledger");
+      expect(screen.getByRole("link", { name: "返回工资管理" })).toHaveAttribute("href", "/finance/salary");
+      view.unmount();
+    }
   });
 });
 
@@ -274,8 +321,8 @@ describe("工资管理：工资台账可编辑表格", () => {
     const cases: Array<[string, string, string]> = [["performance", "performance_amount", "300"], ["housing", "housing_allowance", "400"], ["late", "late_deduction", "10"], ["absence", "absence_deduction", "20"], ["earlyLeave", "early_leave_deduction", "5"]];
     for (const [key, field, value] of cases) {
       const calls = stubSalary({ ledgers: [workshopLedger] });
-      const view = render(<><SalaryWorkspace tab="ledger" initialMonth="2026-03" /><Toaster /></>);
-      await screen.findByTestId("page-finance-salary");
+      const view = render(<><SalaryWorkspace mode="ledger" initialMonth="2026-03" /><Toaster /></>);
+      await screen.findByTestId("page-finance-salary-ledger");
       editCell("pl-1", key, value);
       await waitFor(() => expect(patches(calls)).toHaveLength(1));
       expect(bodyOf(patches(calls)[0])).toEqual({ [field]: value });
@@ -526,86 +573,125 @@ describe("工资管理：台账动作的 method + URL + 请求体", () => {
   });
 });
 
-// ------------------------------------------------------------------ 工资付款 tab
+// ------------------------------------------------------------------ 工资付款二级页
 
-describe("工资管理：工资付款满页表格", () => {
-  it("付款表展示单号/日期/核销员工/部门/岗位/金额/状态，未核销时提示", async () => {
-    const unreconciled = { ...payment, id: "sp-9", paymentNo: "SALARY-009", paymentDate: "2026-03-06T08:00:00.000Z", amount: "7000.0000", allocations: [] };
-    const calls = stubSalary({ ledgers: [workshopLedger], payments: [payment, unreconciled] });
+describe("工资管理：工资付款（当月台账只留总工资，操作在行内）", () => {
+  it("把当月工资台账搬过来：一行一个员工，类目列全部收掉，只留总工资/已付/未付", async () => {
+    // 非车间台账：这一页只关心应发合计，所以直接给它自己的应发金额
+    stubSalary({ ledgers: [confirmedLedger, { ...officeLedger, payableAmount: "5000.0000", outstandingAmount: "5000.0000" }] });
     await openSalary("payments");
     const table = panel("工资付款");
-    expect(table.getByText("SALARY-001")).toBeVisible();
-    expect(table.getByText("2026-03-05")).toBeVisible();
-    expect(table.getByText("E-001 / 张三")).toBeVisible();
-    expect(table.getByText("生产部")).toBeVisible();
-    expect(table.getByText("缝制工")).toBeVisible();
-    expect(table.getByText("3000.0000 CNY")).toBeVisible();
-    expect(table.getByText("7000.0000 CNY")).toBeVisible();
-    expect(table.getByText("未核销")).toBeVisible();
-    expect(paymentGets(calls)).toHaveLength(1);
+    expect(table.getByTestId("payroll-pay-row-pl-2")).toBeInTheDocument();
+    expect(table.getByTestId("payroll-pay-row-pl-3")).toBeInTheDocument();
+    // 只有总工资（+ 付款状态），没有基本工资/绩效/房补/扣款这些类目列
+    for (const key of ["total", "paid", "outstanding", "status", "currency"]) {
+      expect(table.getByTestId(`payroll-sheet-head-${key}`)).toBeInTheDocument();
+    }
+    for (const key of ["baseSalary", "performance", "housing", "late", "absence", "earlyLeave", "other"]) {
+      expect(table.queryByTestId(`payroll-sheet-head-${key}`)).toBeNull();
+      expect(table.queryByTestId(`payroll-cell-pl-2-${key}`)).toBeNull();
+    }
+    expect(table.getByTestId("payroll-cell-pl-2-total")).toHaveTextContent("1234.5");
+    expect(table.getByTestId("payroll-cell-pl-3-total")).toHaveTextContent("5000");
+    // 合计行：把筛选结果的总工资加起来，方便一眼看出本月要发多少
+    expect(screen.getByTestId("payroll-sheet-total-total")).toHaveTextContent("6234.5000");
+    expect(screen.getByTestId("payroll-sheet-count")).toHaveTextContent("共 2 条");
   });
 
-  it("付款按月份/部门/岗位走服务端参数，员工关键字是本地过滤（核销员工命中）", async () => {
-    const calls = stubSalary({ ledgers: [workshopLedger, officeLedger], payments: [payment, { ...payment, id: "sp-2", paymentNo: "SALARY-002", allocations: [allocation(officeEmployee)] }] });
-    await openSalary("payments", { initialDepartmentId: "dep-1", initialPositionId: "pos-1" });
-    await waitFor(() => expect(paymentGets(calls).some((call) => call.url === `${EP.payments}?month=2026-03&department_id=dep-1&position_id=pos-1`)).toBe(true));
-    setValue("salary-employee-filter", "李四");
-    expect(panel("工资付款").queryByText("SALARY-001")).toBeNull();
-    expect(panel("工资付款").getByText("SALARY-002")).toBeVisible();
-  });
-
-  it("本期没有付款时给出空态", async () => {
-    stubSalary({ payments: [] });
+  it("行内付款：金额默认等于未付，点「付款」发出一次 POST /:id/pay（含付款日期与方式）", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger] });
     await openSalary("payments");
-    expect(screen.getByTestId("salary-payment-empty")).toBeVisible();
+    expect((screen.getByTestId("salary-pay-amount-pl-2") as HTMLInputElement).value).toBe("1234.5");
+    setValue("salary-payment-date", "2026-03-25");
+    setValue("salary-payment-method", "现金");
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
+    const call = postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0];
+    expect(bodyOf(call)).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "现金" });
+    await expectToast("张三 已付款 1234.5");
   });
 
-  it("「新建工资付款」：金额必填，提交 POST /hr/salary-payments 且付款日期默认今天", async () => {
-    const calls = stubSalary({ payments: [] });
+  it("行内付款：可以只付一部分，也可以改金额后再提交", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger] });
     await openSalary("payments");
-    const today = new Date().toISOString().slice(0, 10);
-    await userEvent.click(screen.getByTestId("salary-create-payment"));
-    expect((screen.getByTestId("action-field-payment_date") as HTMLInputElement).value).toBe(today);
+    setValue("salary-pay-amount-pl-2", "500");
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0]).amount).toBe("500");
+  });
+
+  it("行内付款：超过未付、金额非法、金额为 0 都不发请求（本地先拦一次）", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger] });
+    await openSalary("payments");
+    setValue("salary-pay-amount-pl-2", "9999");
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await expectToast("付款金额不能超过未付 1234.5");
+    setValue("salary-pay-amount-pl-2", "1.23456");
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await expectToast("付款金额必须是不小于 0 的数字，最多 4 位小数");
+    setValue("salary-pay-amount-pl-2", "0");
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(0);
+  });
+
+  it("行内付款：后端拒绝时 toast 显示原因，不发成功提示", async () => {
+    stubSalary({ ledgers: [confirmedLedger] }, (url, call) => (url.endsWith("/pay") && call.method === "POST" ? apiErr(422, "PAYROLL_PAYABLE_NOT_PAYABLE", "该台账的工资应付已冲销，不能再次付款") : undefined));
+    await openSalary("payments");
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await expectToast("该台账的工资应付已冲销，不能再次付款");
+    expect(screen.queryByText(/已付款/)).toBeNull();
+  });
+
+  it("只有已确认/部分支付且未付 > 0 的台账给付款入口，其余行只给原因", async () => {
+    stubSalary({ ledgers: [confirmedLedger, { ...workshopLedger, id: "pl-1" }, { ...confirmedLedger, id: "pl-5", status: "paid", paidAmount: "1234.5000", outstandingAmount: "0.0000" }, expiredLedger] });
+    await openSalary("payments");
+    expect(screen.getByTestId("salary-pay-button-pl-2")).toBeVisible();
+    expect(screen.getByTestId("salary-pay-hint-pl-1")).toHaveTextContent("待确认");
+    expect(screen.getByTestId("salary-pay-hint-pl-5")).toHaveTextContent("已付清");
+    expect(screen.getByTestId("salary-pay-hint-pl-4")).toHaveTextContent("已过期");
+    expect(screen.queryByTestId("salary-pay-amount-pl-1")).toBeNull();
+    expect(screen.queryByTestId("salary-pay-button-pl-4")).toBeNull();
+  });
+
+  it("行内冲销：已付过的行出现「冲销」，原因必填，提交 POST /:id/unpay", async () => {
+    const calls = stubSalary({ ledgers: [paidLedger] });
+    await openSalary("payments");
+    expect(screen.getByTestId("payroll-cell-pl-9-paid")).toHaveTextContent("500");
+    expect(screen.getByTestId("payroll-cell-pl-9-outstanding")).toHaveTextContent("734.5");
+    expect(screen.queryByTestId("salary-unpay-button-pl-2")).toBeNull();
+    await userEvent.click(screen.getByTestId("salary-unpay-button-pl-9"));
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
-    expect(screen.getByTestId("action-dialog-error")).toHaveTextContent("请填写付款金额");
-    setValue("action-field-amount", "3000");
-    fireEvent.click(screen.getByTestId("action-dialog-submit"));
-    await waitFor(() => expect(postsTo(calls, "/hr/salary-payments")).toHaveLength(1));
-    expect(bodyOf(postsTo(calls, "/hr/salary-payments")[0])).toMatchObject({ amount: "3000", payment_date: today, payment_method: "银行转账", currency: "CNY" });
-  });
-
-  it("草稿付款「核销过账」：只列可核销台账（已确认且有未付），提交带 allocations", async () => {
-    const calls = stubSalary({
-      ledgers: [{ ...workshopLedger, status: "confirmed", outstandingAmount: "1234.5000" }, { ...officeLedger, status: "draft", outstandingAmount: "5000.0000" }],
-      payments: [payment],
-    });
-    await openSalary("payments");
-    await userEvent.click(within(screen.getByTestId("salary-payment-panel")).getByRole("button", { name: "核销过账" }));
-    await pickOption("action-field-ledger_id", /E-001 \/ 张三/);
-    setValue("action-field-amount", "3000");
-    fireEvent.click(screen.getByTestId("action-dialog-submit"));
-    await waitFor(() => expect(postsTo(calls, "/hr/salary-payments/sp-1/post")).toHaveLength(1));
-    const post = postsTo(calls, "/hr/salary-payments/sp-1/post")[0];
-    expect({ url: post.url, method: post.method, body: post.body }).toEqual({ url: "/api/v1/hr/salary-payments/sp-1/post", method: "POST", body: JSON.stringify({ allocations: [{ ledger_id: "pl-1", amount: "3000" }] }) });
-  });
-
-  it("已过账付款「冲销」：原因必填，填了 POST /:id/reverse 只带 reason", async () => {
-    const calls = stubSalary({ payments: [{ ...payment, status: "posted" }] });
-    await openSalary("payments");
-    await userEvent.click(within(screen.getByTestId("salary-payment-panel")).getByRole("button", { name: "冲销" }));
+    expect(screen.getByTestId("action-dialog-error")).toHaveTextContent("请填写冲销原因");
+    expect(postsTo(calls, "/hr/payroll-ledgers/pl-9/unpay")).toHaveLength(0);
     setValue("action-field-reason", "银行退回");
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
-    await waitFor(() => expect(postsTo(calls, "/hr/salary-payments/sp-1/reverse")).toHaveLength(1));
-    const reverse = postsTo(calls, "/hr/salary-payments/sp-1/reverse")[0];
-    expect({ url: reverse.url, method: reverse.method, body: reverse.body }).toEqual({ url: "/api/v1/hr/salary-payments/sp-1/reverse", method: "POST", body: JSON.stringify({ reason: "银行退回" }) });
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-9/unpay")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-9/unpay")[0])).toEqual({ reason: "银行退回" });
   });
 
-  it("草稿付款行不出现「冲销」，已过账行不出现「核销过账」（状态决定入口）", async () => {
-    stubSalary({ payments: [payment, { ...payment, id: "sp-2", paymentNo: "SALARY-002", status: "posted" }] });
+  it("没有已过账付款的行不出现「冲销」，草稿台账也不出现", async () => {
+    stubSalary({ ledgers: [confirmedLedger, { ...workshopLedger, id: "pl-1" }] });
     await openSalary("payments");
-    const table = panel("工资付款");
-    expect(table.getAllByRole("button", { name: "核销过账" })).toHaveLength(1);
-    expect(table.getAllByRole("button", { name: "冲销" })).toHaveLength(1);
+    expect(screen.queryByTestId("salary-unpay-button-pl-2")).toBeNull();
+    expect(screen.queryByTestId("salary-unpay-button-pl-1")).toBeNull();
+  });
+
+  it("本月没有台账时给出空态并指路到工资台账页", async () => {
+    stubSalary({ ledgers: [] });
+    await openSalary("payments");
+    expect(screen.getByTestId("salary-payment-empty")).toHaveTextContent("请先到「工资台账」页导入并确认本月台账");
+    expect(screen.queryByTestId("payroll-sheet")).toBeNull();
+  });
+
+  it("员工姓名/工号筛选与台账页同口径，且行内操作只作用于该行", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger, { ...officeLedger, status: "confirmed" }] });
+    await openSalary("payments");
+    setValue("salary-employee-filter", "李四");
+    expect(screen.getByTestId("payroll-pay-row-pl-3")).toBeInTheDocument();
+    expect(screen.queryByTestId("payroll-pay-row-pl-2")).toBeNull();
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-3"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-3/pay")).toHaveLength(1));
+    expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(0);
   });
 });
 
@@ -645,10 +731,10 @@ describe("工资管理：失败态与权限", () => {
     const calls = stubSalary({ ledgers: [workshopLedger] }, (url, call) => (fail && call.method === "GET" && url.startsWith(EP.ledgers) ? apiErr(403, "FORBIDDEN", "无权访问工资台账") : undefined));
     await openSalary();
     expect(screen.getByTestId("error-state")).toHaveTextContent("无权访问工资台账");
-    expect(screen.queryByRole("heading", { name: "工资台账" })).toBeNull();
+    expect(screen.queryByTestId("salary-ledger-panel")).toBeNull();
     fail = false;
     fireEvent.click(screen.getByTestId("error-state-retry"));
-    await waitFor(() => expect(screen.getByRole("heading", { name: "工资台账" })).toBeVisible());
+    await waitFor(() => expect(screen.getByTestId("salary-ledger-panel")).toBeVisible());
     expect(ledgerGets(calls).length).toBeGreaterThan(1);
   });
 

@@ -14,7 +14,9 @@
 - 工资台账做成**可编辑**满页表格：每月自动导入全部员工；车间工人的计件/计时工资由生产日报
   自动汇总进「基本工资」且不可手改；非车间员工先为零；其余类目逐格可改；
 - 类目为 基本工资 / 绩效 / 房补 / 迟到扣款 / 旷工扣款 / 早退扣款；
-- 工资台账与工资付款都支持「月份 + 部门 + 岗位 + 员工姓名/工号」筛选。
+- 工资台账与工资付款都支持「月份 + 部门 + 岗位 + 员工姓名/工号」筛选；
+- （第二轮）工资管理页只做两个功能入口，功能全部在二级页；工资付款直接把当月工资台账搬过来、
+  只保留「总工资」，付款与冲销都在表格行内完成。
 
 来源设计：[工资管理：月度工资台账满页表格与工资付款筛选](../../design/payroll-ledger-monthly-sheet-2026-09-15.md)
 
@@ -70,6 +72,8 @@
 
 ## 完成记录
 
+### 第一轮（工资台账可编辑 + 付款筛选）
+
 - 后端：`hr-payroll.domain.ts`（统一公式 + 月份区间 + 基本工资/其他增减两格口径）、
   `production-payroll.domain.ts`（日报汇总）、`payroll-ledger.service.ts`（import-month、日报取数、
   车间基本工资守卫、balances 增收两个只读格）、`payroll-payable.service.ts` / `salary-payment.service.ts`
@@ -83,10 +87,30 @@
 - 验证结果：api 1085/1085、web 580 + lib 128 全绿；api/web typecheck 通过；web build 通过
   （`/finance/salary` 9.6 kB，45/45 静态页）。
 
+### 第二轮（入口页 + 两个二级页 + 行内付款）
+
+用户追加两条要求：① 工资管理页只提供「工资台账 / 工资付款」两个功能入口，其余全部收到二级页；
+② 工资付款直接把当月工资台账搬过来，只保留「总工资」，付款操作都在表格中完成。
+
+- 后端：`salary-payment.service.ts` 新增 `payLedger()`（行内付款：余额校验 → 生成/确认工资应付 →
+  建付款草稿 → 核销过账，失败软删草稿）与 `reverseLedgerPayments()`（按台账聚合冲销）；
+  `hr.controller.ts` 新增 `POST /hr/payroll-ledgers/:id/pay`（`PayLedgerDto`）与
+  `POST /hr/payroll-ledgers/:id/unpay`（复用 `ReasonDto`）；`hr-contract.test.cjs` 路由表 33 → 35；
+- 前端：`app/finance/salary/page.tsx` 改为纯入口页（两个板块卡片，不发任何请求）、
+  新增 `app/finance/salary/ledger/page.tsx` 与 `app/finance/salary/payments/page.tsx`；
+  `salary-workspace.tsx` 由 `tab` 改为 `mode`（ledger / payments），付款表改成「当月台账只留总工资 +
+  行内付款/冲销」；`payroll-sheet.tsx` 支持全只读用法（`onCommit`/`hint`/`empty` 可选）；
+  `finance-sections.ts` 的 `SALARY_TABS` → `SALARY_SECTIONS`（带 href），板块名改为「工资管理」；
+- 单测：`salary-payment-service.test.cjs` 新增 8 条（行内付款编排/守卫/失败回滚、行内冲销）；
+  组件测试 `test/salary-page.test.tsx` 扩到 53 条（含入口页、付款表格列、行内付款/冲销、
+  不可付款原因、403/422 失败态）；
+- 验证结果：api 1093/1093、web 586 + lib 128 全绿；api/web typecheck 通过；web build 通过
+  （新增 `/finance/salary/ledger` 与 `/finance/salary/payments` 两个路由）。
+
 ## 未验证
 
 - 迁移未在真实 PostgreSQL 上执行（本机无可用库）：`ALTER TABLE ... DEFAULT 0` 的行为与
   `prisma migrate status` 无漂移待真实库确认；
-- 付款按部门/岗位筛选的关联查询（`salary_payment_allocations → payroll_ledgers → employees`）
-  未在真实数据量上验证执行计划；
+- 付款按部门/岗位筛选与新增的行内付款（`/pay`、`/unpay`）未在真实库上跑过：行内付款由三次调用组成、
+  靠软删回滚草稿，并发下同一台账两人同时付款的真实行为待验证；
 - 表格未在浏览器里做过大规模数据（数百员工 × 十几列）的性能验证。

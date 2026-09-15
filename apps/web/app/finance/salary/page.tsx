@@ -1,13 +1,20 @@
-// 工资管理二级页：/finance/salary?tab=ledger|payments。
+// 工资管理（/finance/salary）：只提供「工资台账」与「工资付款」两个功能入口。
 //
-// tab 走查询参数而不是路径段，与服务端 tab 约定一致（同应收/应付/报表二级页）：
-// 只在服务端读 searchParams，客户端不需要 useSearchParams（避免静态构建时的 Suspense 边界问题）。
-// 月份/部门/岗位也一起读进来，这样「切 tab」的链接能带上当前筛选，收藏地址也能直接落到筛好的视图。
-import SalaryWorkspace from "../../../components/finance/salary-workspace";
-import { SALARY_TABS, type SalaryTabKey } from "../../../lib/finance-sections";
+// 功能全部在二级页面里（/finance/salary/ledger、/finance/salary/payments）：
+// 工资管理页自己不再拉任何数据，因此打开即秒开，也不会因为「进错页」而触发按月导入写库。
+import Link from "next/link";
+import { PageHeader } from "../../../components/layout/app-shell";
+import { SALARY_SECTIONS } from "../../../lib/finance-sections";
 
-export default async function FinanceSalaryPage({ searchParams }: { searchParams: Promise<{ tab?: string; month?: string; department_id?: string; position_id?: string }> }) {
-  const { tab, month, department_id, position_id } = await searchParams;
-  const active = SALARY_TABS.find((item) => item.key === tab)?.key ?? SALARY_TABS[0].key;
-  return <SalaryWorkspace tab={active as SalaryTabKey} initialMonth={month ?? ""} initialDepartmentId={department_id ?? ""} initialPositionId={position_id ?? ""} testId="page-finance-salary" />;
+export default function FinanceSalaryPage() {
+  return <div className="page-root" data-testid="page-finance-salary">
+    <PageHeader title="工资管理" description="工资台账与工资付款两个入口；表格、筛选与操作都在对应的二级页面里。" />
+    <div className="board-grid" data-testid="salary-section-grid">
+      {SALARY_SECTIONS.map((section) => <Link key={section.key} href={section.href} className="board-card" data-testid={`salary-section-${section.key}`}>
+        <h2>{section.title}</h2>
+        <p>{section.description}</p>
+        <span className="board-enter">进入 →</span>
+      </Link>)}
+    </div>
+  </div>;
 }
