@@ -118,8 +118,8 @@ test("创建应付对账时把待确认的草稿也算进系统余额（先对�
 test("列表返回流转摘要：覆盖多少条应付、多少条待确认、哪些订单与物料", async () => {
   const row = { id: "recon-1", status: "matched", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
   const entries = [
-    { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", purchaseOrderId: null, confirmationDate: new Date("2026-09-10T00:00:00.000Z"), amount: new Prisma.Decimal("500"), status: "draft", payableSource: { purchaseOrder: { purchaseOrderNo: "PO-1" }, purchaseOrderItem: { materialSnapshot: null, material: { name: "涤纶布" } } }, outsourcePayableSource: null },
-    { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-2", purchaseOrderId: null, confirmationDate: new Date("2026-09-11T00:00:00.000Z"), amount: new Prisma.Decimal("300"), status: "confirmed", payableSource: { purchaseOrder: { purchaseOrderNo: "PO-2" }, purchaseOrderItem: { materialSnapshot: { name: "拉链" }, material: null } }, outsourcePayableSource: null },
+    { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", purchaseOrderId: null, confirmationDate: new Date("2026-09-10T00:00:00.000Z"), amount: new Prisma.Decimal("500"), status: "draft", payableSource: { purchaseOrder: { purchaseOrderNo: "PO-1" }, purchaseOrderItem: { materialSnapshot: null, material: { name: "涤纶布", specificationModel: "150D" } } }, outsourcePayableSource: null },
+    { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-2", purchaseOrderId: null, confirmationDate: new Date("2026-09-11T00:00:00.000Z"), amount: new Prisma.Decimal("300"), status: "confirmed", payableSource: { purchaseOrder: { purchaseOrderNo: "PO-2" }, purchaseOrderItem: { materialSnapshot: { name: "拉链", specificationModel: "5#" }, material: null } }, outsourcePayableSource: null },
     // 不在期间内：不能混进这条对账的摘要
     { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-9", purchaseOrderId: null, confirmationDate: new Date("2026-08-01T00:00:00.000Z"), amount: new Prisma.Decimal("999"), status: "draft", payableSource: null, outsourcePayableSource: null },
   ];
@@ -133,6 +133,7 @@ test("列表返回流转摘要：覆盖多少条应付、多少条待确认、�
   assert.deepEqual(result.flow.order_nos, ["SO-1", "SO-2"], "新列：该批原料对应订单号");
   assert.deepEqual(result.flow.purchase_order_nos, ["PO-1", "PO-2"]);
   assert.deepEqual(result.flow.material_names, ["涤纶布", "拉链"], "新列：采购的物料名称（含快照兜底）");
+  assert.deepEqual(result.flow.material_specifications, ["150D", "5#"], "新列：规格型号（主数据优先，物料被删后回落来源快照）");
 });
 
 test("没有覆盖条目的对账也返回完整摘要结构（前端不必做空值判断）", async () => {
@@ -140,5 +141,29 @@ test("没有覆盖条目的对账也返回完整摘要结构（前端不必做�
   const prisma = { supplierPayableReconciliation: { findMany: async () => [row] }, supplierPayableEntry: { findMany: async () => [] } };
   const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} });
   const flow = (await service.list())[0].flow;
-  assert.deepEqual(flow, { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_payables: false, order_nos: [], purchase_order_nos: [], material_names: [] });
+  assert.deepEqual(flow, { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_payables: false, order_nos: [], purchase_order_nos: [], material_names: [], material_specifications: [] });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户反馈）：
+//   「已创建对账单，双击某个条目，弹出的表单还应当显示这个订单的物料名称和规格型号」
+// 详情必须和列表用同一份摘要口径（flow）+ 逐条的物料名称/规格型号。
+// ---------------------------------------------------------------------------
+test("对账详情返回 flow 摘要，且逐条明细带物料名称与规格型号", async () => {
+  const row = { id: "recon-1", reconciliationNo: "APREC-1", status: "matched", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const entry = { id: "entry-1", payableNo: "AP-1", sourceType: "raw_material_inbound", sourceNoSnapshot: "IN-1", orderNo: "SO-1", quantity: new Prisma.Decimal("10"), amount: new Prisma.Decimal("500"), currency: "CNY", status: "draft", confirmationDate: new Date("2026-09-10T00:00:00.000Z"), purchaseOrderId: null, supplierId: "supplier-1", payableSource: { purchaseOrder: { purchaseOrderNo: "PO-1" }, purchaseOrderItem: { materialSnapshot: null, unit: { name: "米" }, material: { name: "涤纶布", specificationModel: "150D" } } }, outsourcePayableSource: null };
+  const prisma = {
+    supplierPayableReconciliation: { findFirst: async () => row },
+    supplierPayableEntry: { findMany: async () => [entry] },
+    payableSource: { findMany: async () => [] },
+    outsourcePayableSource: { findMany: async () => [] },
+  };
+  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} });
+  const detail = await service.get("recon-1");
+  assert.deepEqual(detail.flow.material_names, ["涤纶布"]);
+  assert.deepEqual(detail.flow.material_specifications, ["150D"]);
+  assert.equal(detail.details.payable_entries[0].material_name, "涤纶布");
+  assert.equal(detail.details.payable_entries[0].material_specification, "150D");
+  assert.equal(detail.details.payable_entries[0].unit_name, "米");
+  assert.equal(detail.details.payable_entries[0].purchase_order_no, "PO-1");
 });

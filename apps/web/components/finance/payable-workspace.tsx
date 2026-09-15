@@ -22,6 +22,7 @@ import { Input } from "../ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
+import { useCollapsiblePanel } from "../../lib/collapsible-panel";
 import { PAYABLE_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type PayableTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
@@ -36,6 +37,8 @@ const BANK_CLEAR = "__no_bank__";
 type Reference = { id: string; name: string; supplierCode?: string; orderNo?: string };
 type SupplierRef = { id: string; name: string; supplierCode: string | null };
 type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean; swiftCode: string | null; remark: string | null };
+/** 来源已经接收成的那张应付单（列表接口的 payable_entry）：有它就说明这条来源不需要再接收。 */
+type SourcePayableLink = { id: string; payableNo: string; status: string };
 type PayableSource = {
   id: string; orderNo: string; quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; status: string;
   qcResult: string | null; actualInboundQuantity: string | null; acceptedQuantity: string | null; conditionalQuantity: string | null; rejectedQuantity: string | null;
@@ -43,6 +46,7 @@ type PayableSource = {
   createdAt: string;
   purchase_order_no?: string | null; batch_sequence?: number | null;
   material_name?: string | null; material_code?: string | null; material_specification?: string | null; material_color?: string | null; unit_name?: string | null;
+  payable_entry?: SourcePayableLink | null;
   rawMaterialInbound?: { inboundNo: string; status?: string } | null;
   purchaseReceipt?: { receiptNo: string } | null;
   purchaseOrder?: { purchaseOrderNo: string } | null;
@@ -51,11 +55,14 @@ type PayableSource = {
 type OutsourcePayableSource = {
   id: string; orderNo: string; quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; status: string; createdAt: string;
   material_name?: string | null; material_code?: string | null; material_specification?: string | null; material_color?: string | null; unit_name?: string | null;
+  payable_entry?: SourcePayableLink | null;
   purchaseOrder?: { purchaseOrderNo: string } | null;
   logisticsBatch?: { batchNo: string } | null;
   outsourceReceipt?: { id: string; quantity?: string; receivedAt?: string } | null;
   supplier?: SupplierRef | null;
 };
+/** 覆盖这条应付的对账单（列表接口算好给前端：对账范围含 purchaseOrderId，前端推不出来）。 */
+type ReconciliationRef = { id: string; reconciliation_no: string; status: string; period_start: string; period_end: string };
 type PayableEntry = {
   id: string; payableNo: string; orderNo: string | null; supplierId: string; sourceType: string; sourceNoSnapshot: string;
   quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; confirmationDate: string; status: string; remark: string | null; createdAt: string;
@@ -63,6 +70,7 @@ type PayableEntry = {
   material_name?: string | null; material_code?: string | null; material_specification?: string | null; material_color?: string | null; unit_name?: string | null;
   supplier_name?: string | null; supplier_code?: string | null;
   paid_amount?: string; outstanding_amount?: string;
+  reconciliation?: ReconciliationRef | null;
   supplier?: SupplierRef | null;
   allocations?: Array<{ id: string; amount: string; status: string; payment?: { id: string; paymentNo: string; status: string; paymentDate: string; currency?: string } | null }>;
 };
@@ -88,10 +96,10 @@ type SupplierReconciliation = {
    */
   flow?: {
     entry_count: number; draft_count: number; draft_amount: string; can_confirm_payables: boolean;
-    order_nos: string[]; purchase_order_nos: string[]; material_names: string[];
+    order_nos: string[]; purchase_order_nos: string[]; material_names: string[]; material_specifications: string[];
   };
   details?: {
-    payable_entries: Array<{ id: string; payableNo: string; sourceType: string; sourceNoSnapshot: string; orderNo: string; quantity: string; amount: string; currency: string; status: string; confirmationDate: string; material_name?: string | null; unit_name?: string | null; purchase_order_no?: string | null }>;
+    payable_entries: Array<{ id: string; payableNo: string; sourceType: string; sourceNoSnapshot: string; orderNo: string; quantity: string; amount: string; currency: string; status: string; confirmationDate: string; material_name?: string | null; material_specification?: string | null; unit_name?: string | null; purchase_order_no?: string | null }>;
     draft_entries: Array<{ id: string; payableNo: string; amount: string; currency: string; status: string }>;
     entry_count: number; draft_count: number; draft_amount: string; can_confirm_payables: boolean;
     pending_sources: Array<{ id: string; orderNo: string; quantity: string; amount: string; currency: string; source_type: string; source_no: string }>;
@@ -134,6 +142,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const [pendingDialog, setPendingDialog] = useState<DialogState | null>(null);
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   const [filter, setFilter] = useState("");
+  // 「确认应付」下半张「付款」可收纳：付款单多的时候很占屏幕，收起后看上半张台账更方便；
+  // 用户的选择记在本机（与生产单详情「工序与进度」同一个 hook）。
+  const paymentsPanel = useCollapsiblePanel("payable-payments");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -180,14 +191,18 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
    *
    * 原来一律写 `void action(...)`：action 自己 catch 并 toast，返回的 Promise 正常 resolve，
    * ActionDialog 便认为保存成功而关闭弹窗 —— 用户只看到「点了没反应」（与工资页修过的是同一类缺陷）。
+   *
+   * `success` 支持传函数：接收应付这类「幂等」动作必须按返回的条目说清楚**到底发生了什么**
+   * （新建了草稿 / 该来源早已接收），否则「点了没反应」的观感会一直存在。
    */
-  async function submitAction(path: string, body: unknown, success: string, method: "post" | "patch" = "post") {
+  async function submitAction<T = unknown>(path: string, body: unknown, success: string | ((data: T) => string), method: "post" | "patch" = "post"): Promise<T> {
     try {
-      await (method === "patch" ? apiPatch(path, body ?? {}) : apiPost(path, body));
-      notifySuccess(success);
+      const result = await (method === "patch" ? apiPatch<T>(path, body ?? {}) : apiPost<T>(path, body));
+      notifySuccess(typeof success === "function" ? success(result.data) : success);
       setDialog(null);
       setDetail(null);
       await load();
+      return result.data;
     } catch (cause) {
       const message = messageOf(cause, "操作失败");
       notifyError(message);
@@ -277,13 +292,29 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
 
   // ---------------------------------------------------------------- 操作（全部在表格行内触发，不在页头放按钮）
 
+  /**
+   * 接收应付之后该说什么。
+   *
+   * 接收是幂等的（一条来源只对应一张应付单）。若台账里已经有返回的这个 id，说明这条来源此前
+   * 就接收过，必须如实说明「没有新建」并给出它现在在哪一步 —— 否则用户会以为「点了没反应、
+   * 也没流转过去」（历史反馈）。新建时才提示下一步去对账。
+   */
+  function receiveMessage(created: PayableEntry) {
+    const existing = entries.find((entry) => entry.id === created.id);
+    if (!existing) return `已接收为应付草稿 ${created.payableNo}；下一步：到「应付对账」按供应商 + 月份创建对账`;
+    const where = existing.reconciliation ? `已纳入对账单 ${existing.reconciliation.reconciliation_no}` : "尚未纳入对账单，在「应付对账 → 待创建对账」里";
+    return `该来源此前已接收（${existing.payableNo} / ${financeStatus(existing.status, "payable")}），未重复创建；${where}`;
+  }
+
   function receiveSource(kind: "raw_material_inbound" | "outsource_receipt", source: { id: string; amount: string; currency: string }) {
     setDialog({ title: "接收应付", fields: [
       { name: "amount", label: "应付金额", type: "number", required: true, defaultValue: source.amount },
       { name: "amount_reason", label: "金额差异原因（金额与来源不一致时必填）", type: "textarea" },
       { name: "confirmation_date", label: "确认日期", type: "date", defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => submitAction("/finance/payable-entries/from-source", { source_type: kind, source_id: source.id, amount: v.amount, amount_reason: v.amount_reason || undefined, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "已接收为应付草稿；下一步：到「应付对账」按供应商 + 月份创建对账") });
+      // `.then(() => undefined)`：ActionDialog 只接受 void | Promise<void>，但失败仍必须**以 reject
+      // 的形式**传回弹窗（否则它会当作保存成功直接关闭，用户只看到「点了没反应」）。
+    ], submit: (v) => submitAction<PayableEntry>("/finance/payable-entries/from-source", { source_type: kind, source_id: source.id, amount: v.amount, amount_reason: v.amount_reason || undefined, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, receiveMessage).then(() => undefined) });
   }
   function editEntry(item: PayableEntry) {
     setDialog({ title: `编辑应付草稿：${item.payableNo}`, fields: [
@@ -396,28 +427,16 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const filteredPayments = useMemo(() => payments.filter((item) => match([item.paymentNo, item.orderNo, item.supplier_name])), [payments, match]);
 
   // 流转看板的四个数字（用户反馈「流转的步骤是最重要的」）：每一步都能点进去处理。
-  const pendingSourceCount = inboundList.filter((item) => item.status === "pending_finance").length + outsourceSources.filter((item) => item.status === "pending_finance").length;
+  // 已有应付单的来源不再算「待接收」：后端接收后会把来源置为 received，这里再用应付单关联兜一层，
+  // 保证历史数据（状态还停在 pending_finance）也不会被重复提示接收。
+  const pendingSourceCount = inboundList.filter((item) => !item.payable_entry && item.status === "pending_finance").length + outsourceSources.filter((item) => !item.payable_entry && item.status === "pending_finance").length;
   const draftEntries = entries.filter((entry) => entry.status === "draft");
   const draftTotal = draftEntries.reduce((sum, entry) => sum + Number(entry.amount), 0);
   const readyToConfirm = reconciliations.reduce((sum, item) => sum + (item.flow?.can_confirm_payables ? item.flow.draft_count : 0), 0);
 
-  const pendingGroups = useMemo(() => {
-    const map = new Map<string, { supplierId: string; supplierName: string; month: string; count: number; amount: number; orderNos: string[]; materials: string[] }>();
-    for (const entry of entries) {
-      if (entry.status !== "draft") continue;
-      const month = monthOf(entry.confirmationDate ?? entry.createdAt);
-      const key = `${entry.supplierId}|${month}`;
-      const group = map.get(key) ?? { supplierId: entry.supplierId, supplierName: entry.supplier_name ?? entry.supplierId, month, count: 0, amount: 0, orderNos: [], materials: [] };
-      group.count += 1;
-      group.amount += Number(entry.amount);
-      // 用户要求：对账前就要看到「这批原料对应哪个订单、买的什么物料」。
-      if (entry.orderNo) group.orderNos = [...new Set([...group.orderNos, entry.orderNo])];
-      const material = entry.material_name ?? entry.material_code;
-      if (material) group.materials = [...new Set([...group.materials, material])];
-      map.set(key, group);
-    }
-    return [...map.values()].sort((a, b) => (a.month === b.month ? a.supplierName.localeCompare(b.supplierName) : b.month.localeCompare(a.month)));
-  }, [entries]);
+  const pendingEntries = useMemo(() => entries.filter((entry) => entry.status === "draft" && !entry.reconciliation), [entries]);
+  const coveredDrafts = useMemo(() => entries.filter((entry) => entry.status === "draft" && entry.reconciliation), [entries]);
+  const pendingTotal = pendingEntries.reduce((sum, entry) => sum + Number(entry.amount), 0);
 
   const inboundColumns: ColumnDef<PayableSource>[] = [
     { id: "source", header: "入库单号", cell: ({ row }) => row.original.rawMaterialInbound?.inboundNo ?? row.original.id.slice(0, 8) },
@@ -429,8 +448,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "quantity", header: "入库数量", cell: ({ row }) => `${row.original.quantity}${row.original.unit_name ? ` ${row.original.unit_name}` : ""}` },
     { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.settlementUnitPrice ?? row.original.unitPrice },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "pending_finance" ? <Button size="sm" variant="secondary" onClick={() => receiveSource("raw_material_inbound", row.original)}>接收应付</Button> : <span className="panel-note">已接收</span>}</div> },
+    { id: "status", header: "来源状态", cell: ({ row }) => row.original.payable_entry ? "已接收" : financeStatus(row.original.status, "source") },
+    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.payable_entry ? <span className="panel-note">应付单 {row.original.payable_entry.payableNo}（{financeStatus(row.original.payable_entry.status, "payable")}）</span> : <Button size="sm" variant="secondary" onClick={() => receiveSource("raw_material_inbound", row.original)}>接收应付</Button>}</div> },
   ];
   const outsourceColumns: ColumnDef<OutsourcePayableSource>[] = [
     { id: "batch", header: "外加工批次", cell: ({ row }) => row.original.logisticsBatch?.batchNo ?? "-" },
@@ -442,8 +461,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "quantity", header: "签收数量", cell: ({ row }) => `${row.original.quantity}${row.original.unit_name ? ` ${row.original.unit_name}` : ""}` },
     { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.unitPrice },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "pending_finance" ? <Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button> : <span className="panel-note">已接收</span>}</div> },
+    { id: "status", header: "来源状态", cell: ({ row }) => row.original.payable_entry ? "已接收" : financeStatus(row.original.status, "source") },
+    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.payable_entry ? <span className="panel-note">应付单 {row.original.payable_entry.payableNo}（{financeStatus(row.original.payable_entry.status, "payable")}）</span> : <Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button>}</div> },
   ];
   const entryColumns: ColumnDef<PayableEntry>[] = [
     { accessorKey: "payableNo", header: "应付单号" },
@@ -485,6 +504,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "order", header: "订单号", cell: ({ row }) => row.original.orderNo ?? (row.original.flow?.order_nos.length ? row.original.flow.order_nos.join("、") : "全部订单") },
     { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.flow?.purchase_order_nos.join("、") || row.original.purchaseOrder?.purchaseOrderNo || "-" },
     { id: "material", header: "采购物料", cell: ({ row }) => row.original.flow?.material_names.join("、") || "-" },
+    // 用户要求：对账（含双击后的详情）要能看出「买的是什么料、什么规格型号」。
+    // 用 ?. 兜一层：这是新加字段，旧响应（或第三方调用方构造的 flow）里可能没有。
+    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.flow?.material_specifications?.join("、") || "-" },
     { id: "period", header: "期间", cell: ({ row }) => `${day(row.original.periodStart)} 至 ${day(row.original.periodEnd)}` },
     { id: "entries", header: "待确认应付", cell: ({ row }) => row.original.flow && row.original.flow.draft_count > 0 ? `${row.original.flow.draft_count} 条 / ${row.original.flow.draft_amount}` : "-" },
     { id: "payable", header: "应付快照", cell: ({ row }) => money(row.original.payableAmountSnapshot, row.original.currency) },
@@ -501,14 +523,27 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       {["matched", "resolved"].includes(row.original.status) && row.original.flow && row.original.flow.draft_count === 0 ? <span className="panel-note">范围内没有待确认应付</span> : null}
     </div> },
   ];
-  const pendingGroupColumns: ColumnDef<{ supplierId: string; supplierName: string; month: string; count: number; amount: number; orderNos: string[]; materials: string[] }>[] = [
-    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplierName },
-    { id: "month", header: "待对账月份", cell: ({ row }) => row.original.month },
-    { id: "orders", header: "订单号", cell: ({ row }) => row.original.orderNos.join("、") || "-" },
-    { id: "materials", header: "采购物料", cell: ({ row }) => row.original.materials.join("、") || "-" },
-    { id: "count", header: "待确认应付条目", cell: ({ row }) => `${row.original.count} 条` },
-    { id: "amount", header: "待确认金额", cell: ({ row }) => row.original.amount.toFixed(2) },
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => createReconciliation({ supplierId: row.original.supplierId, month: row.original.month })}>创建对账</Button> },
+  /**
+   * 「待创建对账」= **逐条**列出还没有被任何对账单覆盖的草稿应付。
+   *
+   * 为什么不再按供应商 + 月份汇总：用户反馈「接收应付后为什么在待创建对账里看不见**这条条目**」——
+   * 汇总行只显示「N 条」，新接收的那一条被折叠进计数里，看不出它到底在不在。
+   * 逐条列出后，每条都能看到应付单号 / 来源批次 / 订单号 / 采购单号 / 物料 + 规格型号 / 金额；
+   * 已经纳入过对账单的草稿由列表接口标记（`reconciliation`）从本表移出，并在下面的说明里点名，
+   * 免得不声不响地消失（同一批用户反馈的另一半）。
+   */
+  const pendingEntryColumns: ColumnDef<PayableEntry>[] = [
+    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier_name ?? row.original.supplier?.name ?? row.original.supplierId },
+    { accessorKey: "payableNo", header: "应付单号" },
+    { id: "month", header: "待对账月份", cell: ({ row }) => monthOf(row.original.confirmationDate ?? row.original.createdAt) },
+    { id: "sourceNo", header: "来源批次", cell: ({ row }) => row.original.source_no ?? row.original.sourceNoSnapshot },
+    { id: "orderNo", header: "订单号", cell: ({ row }) => row.original.orderNo ?? (row.original.sourceType === "other" ? "无" : "-") },
+    { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" },
+    { id: "material", header: "采购物料", cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : (row.original.material_name ?? row.original.material_code ?? "-") },
+    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material_specification || "-" },
+    { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "confirmationDate", header: "确认日期", cell: ({ row }) => day(row.original.confirmationDate) },
+    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" title="按这条的供应商 + 月份创建：一张对账单覆盖该供应商该月全部待确认应付" onClick={() => createReconciliation({ supplierId: row.original.supplierId, month: monthOf(row.original.confirmationDate ?? row.original.createdAt) })}>创建对账</Button> },
   ];
 
   // ---------------------------------------------------------------- 详情
@@ -525,6 +560,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { label: "单价", value: ("settlementUnitPrice" in item ? item.settlementUnitPrice : null) ?? item.unitPrice },
       { label: "税率", value: item.taxRate },
       { label: "应付金额", value: money(item.amount, item.currency) },
+      // 来源与已生成的应付单的对应关系：双击来源时直接看到「已经接收成哪张单、什么状态」。
+      { label: "已生成的应付单", value: (item as PayableSource).payable_entry ? `${(item as PayableSource).payable_entry?.payableNo}（${financeStatus((item as PayableSource).payable_entry?.status, "payable")}）` : "尚未接收" },
       { label: "创建时间", value: day(item.createdAt) },
     ];
     if (kind === "inbound") {
@@ -585,7 +622,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       return [
         { label: "对账单号", value: item.reconciliationNo }, { label: "状态", value: financeStatus(item.status, "reconciliation") },
         { label: "供应商", value: item.supplier?.name ?? item.supplierId }, { label: "订单号", value: item.orderNo ?? "全部订单" },
-        { label: "采购单号", value: item.purchaseOrder?.purchaseOrderNo },
+        { label: "采购单号", value: item.purchaseOrder?.purchaseOrderNo ?? (item.flow?.purchase_order_nos?.join("、") || null) },
+        // 用户要求：双击已创建对账单，弹窗里要能直接看到这个订单的物料名称与规格型号。
+        { label: "采购物料", value: item.flow?.material_names?.join("、"), wide: true },
+        { label: "规格型号", value: item.flow?.material_specifications?.join("、"), wide: true },
         { label: "期间", value: `${day(item.periodStart)} 至 ${day(item.periodEnd)}` },
         { label: "应付快照", value: money(item.payableAmountSnapshot, item.currency) },
         { label: "已付快照", value: money(item.paymentAmountSnapshot, item.currency) },
@@ -620,7 +660,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       const pending = item.details?.pending_sources ?? [];
       return [
         { title: `纳入对账的应付条目（${ents.length} 条）`, note: "对平（或差异已处理）后，到「确认应付」逐条或批量确认其中的草稿应付。", content: ents.length
-          ? <DataTable pageSize={10} columns={[{ accessorKey: "payableNo", header: "应付单号" }, { id: "material", header: "采购物料", cell: ({ row }) => row.original.material_name ?? "-" }, { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" }, { accessorKey: "sourceNoSnapshot", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["payable_entries"][number]>[]} data={ents} /> : <p className="panel-note">该期间没有纳入对账的应付条目</p> },
+          ? <DataTable pageSize={10} columns={[{ accessorKey: "payableNo", header: "应付单号" }, { id: "material", header: "采购物料", cell: ({ row }) => row.original.material_name ?? "-" }, { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material_specification || "-" }, { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" }, { accessorKey: "sourceNoSnapshot", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["payable_entries"][number]>[]} data={ents} /> : <p className="panel-note">该期间没有纳入对账的应付条目</p> },
         { title: `仍待接收的来源（${pending.length} 条）`, note: "这些业务事实还没有被财务接收为应付，不计入系统余额。", content: pending.length
           ? <DataTable pageSize={10} columns={[{ accessorKey: "source_no", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { accessorKey: "quantity", header: "数量" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["pending_sources"][number]>[]} data={pending} /> : <p className="panel-note">该期间没有待接收来源</p> },
       ];
@@ -730,10 +770,21 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       <div className="panel-body"><DataTable columns={outsourceColumns} data={filteredOutsource} empty={<EmptyState title="暂无外加工签收形成的应付来源" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id, row })} rowTitle="双击查看详情" /></div>
     </section>}
     {!error && activeTab.key === "reconciliations" && <section className="panel">
-      <div className="panel-heading"><h2>应付对账</h2><span className="panel-note">按供应商 + 月份汇总待确认的应付草稿创建对账；对平后到「确认应付」去确认</span></div>
+      <div className="panel-heading"><h2>应付对账</h2><span className="panel-note">逐条列出还没纳入对账单的应付草稿；行内「创建对账」按该条的供应商 + 月份建单，对平后到「确认应付」去确认</span></div>
       <div className="panel-body">
-        <h3>待创建对账</h3>
-        <DataTable columns={pendingGroupColumns} data={pendingGroups} empty={<EmptyState title="没有待创建对账的条目" description="接收应付来源后，草稿条目汇总在这里。按供应商 + 月份创建对账。" />} />
+        {/* 条数放在 h3 外面：标题保持「待创建对账」，按标题定位这个面板的脚本/测试才不会被条数干扰。 */}
+        <div className="subsection-heading">
+          <h3>待创建对账</h3>
+          <span className="panel-note" data-testid="payable-pending-summary">{pendingEntries.length} 条 / 合计 {pendingTotal.toFixed(2)}</span>
+        </div>
+        <p className="panel-note">逐条列出还没有纳入任何对账单的草稿应付（接收应付来源后出现在这里）。行内「创建对账」按该条的供应商 + 月份建单：一张对账单覆盖该供应商该月全部待确认应付，创建后这些条目会移到下面的「已创建对账单」。</p>
+        <div data-testid="payable-pending-entries">
+          <DataTable columns={pendingEntryColumns} data={pendingEntries} empty={<EmptyState title="没有待创建对账的条目" description="接收应付来源后，尚未纳入对账单的草稿条目会逐条列在这里。" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
+        </div>
+        {/* 已被对账单覆盖的草稿必须点名，否则用户会以为「这条应付没流转过去」（用户反馈）。 */}
+        {coveredDrafts.length ? <p className="panel-note" data-testid="payable-covered-drafts">
+          另有 {coveredDrafts.length} 条草稿已纳入对账单、不在此重复对账：{coveredDrafts.map((entry) => `${entry.payableNo}（${entry.reconciliation?.reconciliation_no}${["matched", "resolved"].includes(entry.reconciliation?.status ?? "") ? "，可在对账单行内一键确认" : "，需先处理差异"}）`).join("、")}
+        </p> : null}
         <h3>已创建对账单</h3>
         <DataTable columns={reconciliationColumns} data={reconciliations} empty={<EmptyState title="暂无应付对账单" />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" />
       </div>
@@ -745,11 +796,20 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
           <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
         </div>
         <h3>应付台账</h3>
-        <p className="panel-note">负债事实：一笔应付 = 一个来源批次（原料入库 / 外加工签收 / 其他应付）。状态：草稿 → 确认 → 部分支付 → 已付清；只有确认后才是生效负债，也才能付款。</p>
+        <p className="panel-note">负债事实：一笔应付 = 一个来源批次（原料入库 / 外加工签收 / 其他应付）。状态：草稿 → 确认 → 部分支付 → 已付清；只有确认后才是生效负债，也才能付款。未被对账单覆盖的草稿会出现在「应付对账 → 待创建对账」里。</p>
         <DataTable columns={entryColumns} data={filteredEntries} empty={<EmptyState title="暂无应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
-        <h3>付款</h3>
-        <p className="panel-note">资金事实：一张付款单 = 一次付款行为（日期 / 金额 / 方式 / 银行）。过账时才核销到上面的应付台账（核销明细记「付的是哪几笔应付」）；冲销会回退核销并回冲收支流水。</p>
-        <DataTable columns={paymentColumns} data={filteredPayments} empty={<EmptyState title="暂无付款记录" />} onRowDoubleClick={(row) => setDetail({ kind: "payment", id: row.id })} rowTitle="双击查看详情" />
+        {/* 付款部分可折叠收纳：付款单多时很占屏，收起后专心看上半张台账；选择记在本机。 */}
+        <div className="subsection-heading" data-testid="payable-payments-panel">
+          <h3>付款</h3>
+          <div className="page-actions">
+            <span className="panel-note">{filteredPayments.length} 张</span>
+            <Button size="sm" variant="secondary" aria-expanded={paymentsPanel.open} data-testid="payable-payments-toggle" title={paymentsPanel.open ? "收起付款" : "展开付款"} onClick={paymentsPanel.toggle}>{paymentsPanel.open ? "收起" : "展开"}</Button>
+          </div>
+        </div>
+        {paymentsPanel.open && <>
+          <p className="panel-note">资金事实：一张付款单 = 一次付款行为（日期 / 金额 / 方式 / 银行）。过账时才核销到上面的应付台账（核销明细记「付的是哪几笔应付」）；冲销会回退核销并回冲收支流水。</p>
+          <DataTable columns={paymentColumns} data={filteredPayments} empty={<EmptyState title="暂无付款记录" />} onRowDoubleClick={(row) => setDetail({ kind: "payment", id: row.id })} rowTitle="双击查看详情" />
+        </>}
       </div>
     </section>}
   </div>;

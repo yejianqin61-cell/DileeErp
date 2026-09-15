@@ -245,7 +245,11 @@ export class RawMaterialInboundsService {
         // 财务列表要能看出这是哪个原料：只给 materialId 用户根本不知道是什么东西。
         // materialSnapshot 用于物料主数据被软删除后的兜底显示。
         purchaseOrderItem: { select: { materialId: true, unitId: true, materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } },
-        supplier: { select: { id: true, name: true, supplierCode: true } }
+        supplier: { select: { id: true, name: true, supplierCode: true } },
+        // 财务「接收应付」后来源状态会变成 received，但真正让列表自证的是这条关联：
+        // 有了它，界面能直接显示「已接收 → 应付单 AP-xxx（草稿/已确认）」，而不是永远摆一个
+        // 「接收应付」按钮（历史缺陷：点完看不出任何变化，用户以为没反应）。
+        supplierPayableEntry: { select: { id: true, payableNo: true, status: true } },
       },
       orderBy: { createdAt: "desc" }
     });
@@ -258,6 +262,7 @@ export class RawMaterialInboundsService {
       material_specification: row.purchaseOrderItem?.material?.specificationModel ?? null,
       material_color: row.purchaseOrderItem?.material?.color ?? null,
       unit_name: row.purchaseOrderItem?.unit?.name ?? null,
+      payable_entry: row.supplierPayableEntry ?? null,
     }));
   }
 

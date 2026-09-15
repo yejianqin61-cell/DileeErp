@@ -37,7 +37,7 @@ const EP = {
 } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined | Promise<Response | undefined>;
-type Data = Partial<Record<"sources" | "outsource" | "entries" | "payments" | "reconciliations" | "suppliers" | "orders" | "banks" | "cashFlowItems", unknown[]>>;
+type Data = Partial<Record<"sources" | "outsource" | "entries" | "payments" | "reconciliations" | "suppliers" | "orders" | "banks" | "cashFlowItems" | "createdEntry", unknown>>;
 
 function stubPayable(data: Data = {}, extra?: Handler) {
   return stubApi(async (url, call) => {
@@ -45,6 +45,8 @@ function stubPayable(data: Data = {}, extra?: Handler) {
     if (injected) return injected;
     if (url.startsWith(EP.outsource)) return apiOk(data.outsource ?? []);
     if (url.startsWith(EP.sources)) return apiOk(data.sources ?? []);
+    // 接收应付：真实后端返回**新建或复用的那张应付条目**（响应体决定提示文案），这里照实回一条。
+    if (call.method === "POST" && url.startsWith(`${EP.entries}/from-source`)) return apiOk(data.createdEntry ?? { ...draftEntry, id: "entry-new", payableNo: "AP-NEW" });
     if (url.startsWith(EP.entries)) return apiOk(data.entries ?? []);
     if (url.startsWith(EP.payments)) return apiOk(data.payments ?? []);
     if (url.startsWith(EP.reconciliations)) return call.method === "GET" ? apiOk(data.reconciliations ?? []) : apiOk({ confirmed_count: 2, confirmed_amount: "800.0000", skipped_count: 0 });
@@ -84,12 +86,14 @@ const inboundSource = {
   status: "pending_finance", createdAt: "2026-09-10T00:00:00.000Z",
   supplier: { id: "supplier-1", name: "晋江大田" }, material_name: "涤纶布", material_code: "M-001",
   rawMaterialInbound: { inboundNo: "IN-001", status: "posted" }, purchase_order_no: "PO-1",
+  payable_entry: null,
 };
 const draftEntry = {
   id: "entry-1", payableNo: "AP-001", orderNo: "SO-1", supplierId: "supplier-1", sourceType: "raw_material_inbound", sourceNoSnapshot: "IN-001",
   quantity: "100", unitPrice: "5", taxRate: null, amount: "500.0000", currency: "CNY", confirmationDate: "2026-09-10T00:00:00.000Z",
   status: "draft", remark: null, createdAt: "2026-09-10T00:00:00.000Z",
-  material_name: "涤纶布", supplier_name: "晋江大田", paid_amount: "0", outstanding_amount: "500.0000",
+  source_no: "IN-001", purchase_order_no: "PO-1", material_name: "涤纶布", material_specification: "150D / 本白",
+  supplier_name: "晋江大田", paid_amount: "0", outstanding_amount: "500.0000", reconciliation: null,
 };
 const confirmedEntry = { ...draftEntry, id: "entry-2", payableNo: "AP-002", status: "confirmed", paid_amount: "500.0000", outstanding_amount: "0.0000" };
 /** 已对平、范围内还有 2 条待确认草稿的对账单（flow 来自列表接口）。 */
@@ -99,9 +103,14 @@ const matchedReconciliation = {
   payableAmountSnapshot: "800.0000", paymentAmountSnapshot: "0.0000", adjustmentAmountSnapshot: "0.0000", systemBalance: "800.0000",
   externalBalance: "800.0000", difference: "0.0000", currency: "CNY", status: "matched", resolutionRemark: null, remark: null, createdAt: "2026-09-30T00:00:00.000Z",
   supplier: { id: "supplier-1", name: "晋江大田" },
-  flow: { entry_count: 2, draft_count: 2, draft_amount: "800.0000", can_confirm_payables: true, order_nos: ["SO-1", "SO-2"], purchase_order_nos: ["PO-1"], material_names: ["涤纶布", "拉链"] },
+  flow: { entry_count: 2, draft_count: 2, draft_amount: "800.0000", can_confirm_payables: true, order_nos: ["SO-1", "SO-2"], purchase_order_nos: ["PO-1"], material_names: ["涤纶布", "拉链"], material_specifications: ["150D", "5#"] },
 };
 const differenceReconciliation = { ...matchedReconciliation, id: "recon-2", reconciliationNo: "APREC-002", status: "difference", difference: "-200.0000", flow: { ...matchedReconciliation.flow, can_confirm_payables: false } };
+const supplierPayment = {
+  id: "sp-1", paymentNo: "PY-001", supplierId: "supplier-1", orderNo: "SO-1", paymentDate: "2026-09-06T00:00:00.000Z",
+  amount: "500.0000", currency: "CNY", paymentMethod: "银行转账", bankReference: null, payeeName: null,
+  status: "draft", remark: null, supplier_name: "晋江大田", allocated_amount: "0.0000", allocations: [], bank: null,
+};
 
 // ------------------------------------------------------------------ 流转看板
 
@@ -124,25 +133,69 @@ describe("应付管理：流转看板", () => {
 // ------------------------------------------------------------------ 应付对账
 
 describe("应付管理：应付对账", () => {
-  it("待创建对账按供应商 + 月份分组，并显示该批原料的订单号与采购物料", async () => {
-    stubPayable({ entries: [draftEntry, { ...draftEntry, id: "entry-3", orderNo: "SO-2", material_name: "拉链", material_code: "M-002" }] });
+  // 2026-09-16（用户反馈）：
+  //   「某条条目我点击接受应付，为什么没有在待创建对账中看见这条条目」→ 待创建对账改为**逐条**列出；
+  //   「对某条条目创建对账单之后，待创建对账就不该继续展示这条条目了」→ 已被覆盖的草稿不再出现，
+  //    而是点名说明它进了哪张对账单（不能让它不声不响地消失）。
+  it("待创建对账逐条列出未被对账覆盖的草稿，并显示订单号 / 采购单号 / 物料 / 规格型号", async () => {
+    stubPayable({ entries: [draftEntry, { ...draftEntry, id: "entry-3", payableNo: "AP-003", orderNo: "SO-2", material_name: "拉链", material_specification: "5#", purchase_order_no: "PO-2" }] });
     await openPayable("reconciliations");
-    const row = screen.getByText("晋江大田").closest("tr") as HTMLElement;
-    expect(within(row).getByText("2026-09")).toBeVisible();
-    expect(within(row).getByText("SO-1、SO-2")).toBeVisible();
-    expect(within(row).getByText("涤纶布、拉链")).toBeVisible();
-    expect(within(row).getByText("2 条")).toBeVisible();
+    const table = within(screen.getByTestId("payable-pending-entries"));
+    // 两条草稿各占一行：能逐条看到「这条条目」到底在不在
+    expect(table.getAllByTestId("data-table-row")).toHaveLength(2);
+    expect(table.getByText("AP-001")).toBeVisible();
+    expect(table.getByText("AP-003")).toBeVisible();
+    expect(table.getAllByText("2026-09")).toHaveLength(2);
+    expect(table.getByText("PO-1")).toBeVisible();
+    expect(table.getByText("涤纶布")).toBeVisible();
+    expect(table.getByText("150D / 本白")).toBeVisible();
+    expect(table.getByText("拉链")).toBeVisible();
+    expect(table.getByText("5#")).toBeVisible();
+    expect(table.getAllByRole("button", { name: "创建对账" })).toHaveLength(2);
+    expect(screen.getByTestId("payable-pending-summary")).toHaveTextContent("2 条 / 合计 1000.00");
   });
 
-  it("已创建对账单用列表的 flow 摘要显示订单号/采购单号/物料/待确认条数", async () => {
+  it("已被对账单覆盖的草稿不再出现在待创建对账，并点名说明它在哪张对账单里", async () => {
+    stubPayable({
+      entries: [
+        draftEntry,
+        { ...draftEntry, id: "entry-9", payableNo: "AP-009", reconciliation: { id: "recon-1", reconciliation_no: "APREC-001", status: "matched", period_start: "2026-09-01T00:00:00.000Z", period_end: "2026-09-30T00:00:00.000Z" } },
+      ],
+      reconciliations: [matchedReconciliation],
+    });
+    await openPayable("reconciliations");
+    // 待创建对账里只剩没被覆盖的那条
+    const pending = within(screen.getByTestId("payable-pending-entries"));
+    expect(pending.getByText("AP-001")).toBeVisible();
+    expect(pending.queryByText("AP-009")).toBeNull();
+    // 被覆盖的那条必须能查到去向（否则用户会以为「点了接收应付没流转过去」）
+    expect(screen.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001，可在对账单行内一键确认）");
+  });
+
+  it("已创建对账单用列表的 flow 摘要显示订单号/采购单号/物料/规格型号/待确认条数", async () => {
     stubPayable({ reconciliations: [matchedReconciliation] });
     await openPayable("reconciliations");
     const row = within(screen.getByTestId("reconciliation-actions-recon-1")).getByText("确认 2 条应付").closest("tr") as HTMLElement;
     expect(within(row).getByText("SO-1、SO-2")).toBeVisible();
     expect(within(row).getByText("PO-1")).toBeVisible();
     expect(within(row).getByText("涤纶布、拉链")).toBeVisible();
+    expect(within(row).getByText("150D、5#")).toBeVisible();
     expect(within(row).getByText("2 条 / 800.0000")).toBeVisible();
     expect(within(row).getByText("已对平")).toBeVisible();
+  });
+
+  it("双击已创建对账单，弹窗里展示该订单的物料名称与规格型号", async () => {
+    const detail = { ...matchedReconciliation, details: { payable_entries: [{ id: "entry-1", payableNo: "AP-001", sourceType: "raw_material_inbound", sourceNoSnapshot: "IN-001", orderNo: "SO-1", quantity: "100", amount: "500.0000", currency: "CNY", status: "draft", confirmationDate: "2026-09-10T00:00:00.000Z", material_name: "涤纶布", material_specification: "150D", unit_name: "米", purchase_order_no: "PO-1" }], draft_entries: [], entry_count: 1, draft_count: 1, draft_amount: "500.0000", can_confirm_payables: true, pending_sources: [] } };
+    const calls = stubPayable({ reconciliations: [matchedReconciliation] }, (url) => (url.endsWith("/api/v1/finance/supplier-payable-reconciliations/recon-1") ? apiOk(detail) : undefined));
+    await openPayable("reconciliations");
+    fireEvent.doubleClick(screen.getAllByTestId("data-table-row")[0]);
+    const dialog = await screen.findByTestId("finance-record-detail");
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/recon-1")).toHaveLength(1));
+    // 字段区与「纳入对账的应付条目」明细表都有这两列/字段，所以按「至少出现一次」断言。
+    expect((await within(dialog).findAllByText("采购物料")).length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("涤纶布").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("规格型号").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("150D").length).toBeGreaterThan(0);
   });
 
   it("对平且有草稿时行内「确认 N 条应付」→ POST confirm-payables 并提示实际条数", async () => {
@@ -192,14 +245,39 @@ describe("应付管理：接收应付来源", () => {
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/from-source")).toHaveLength(1));
     expect(bodyOf(postsTo(calls, "/finance/payable-entries/from-source")[0])).toMatchObject({ source_type: "raw_material_inbound", source_id: "source-1", amount: "500" });
-    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("下一步：到「应付对账」"))).toBe(true));
+    // 新建成功后提示带应付单号，并指明下一步去对账
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已接收为应付草稿 AP-NEW；下一步：到「应付对账」"))).toBe(true));
   });
 
-  it("已接收的来源不再显示接收按钮", async () => {
-    stubPayable({ sources: [{ ...inboundSource, status: "converted" }] });
+  it("重复接收（该来源此前已接收过）如实说明未新建，并指出它现在在哪张对账单里", async () => {
+    const calls = stubPayable({
+      // 来源列表还没带出应付单关联（例如另一个窗口刚接收过），所以按钮仍在
+      sources: [inboundSource],
+      // 后端是幂等的：返回的正是台账里已有的那条应付单，而台账里它已被对账单覆盖
+      createdEntry: draftEntry,
+      entries: [{ ...draftEntry, reconciliation: { id: "recon-1", reconciliation_no: "APREC-001", status: "matched", period_start: "2026-09-01T00:00:00.000Z", period_end: "2026-09-30T00:00:00.000Z" } }],
+    });
+    await openPayable("raw-inbound-entries");
+    fireEvent.click(screen.getByRole("button", { name: "接收应付" }));
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/from-source")).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("该来源此前已接收（AP-001 / 应付草稿），未重复创建；已纳入对账单 APREC-001"))).toBe(true));
+  });
+
+  it("来源已生成应付单时不再显示接收按钮，而是显示那张应付单与状态", async () => {
+    stubPayable({ sources: [{ ...inboundSource, status: "received", payable_entry: { id: "entry-1", payableNo: "AP-001", status: "confirmed" } }] });
     await openPayable("raw-inbound-entries");
     expect(screen.queryByRole("button", { name: "接收应付" })).toBeNull();
-    expect(screen.getByText("已接收")).toBeVisible();
+    expect(screen.getByText("应付单 AP-001（应付已确认）")).toBeVisible();
+    // 已有应付单的来源不计入「待接收来源」
+    expect(within(screen.getByTestId("payable-flow")).getByTestId("payable-flow-receive")).toHaveTextContent("待接收来源 0 条");
+  });
+
+  it("历史数据（来源状态仍是 pending_finance 但已有应付单）也不重复提示接收", async () => {
+    stubPayable({ sources: [{ ...inboundSource, payable_entry: { id: "entry-1", payableNo: "AP-001", status: "draft" } }] });
+    await openPayable("raw-inbound-entries");
+    expect(screen.queryByRole("button", { name: "接收应付" })).toBeNull();
+    expect(within(screen.getByTestId("payable-flow")).getByTestId("payable-flow-receive")).toHaveTextContent("待接收来源 0 条");
   });
 });
 
@@ -240,6 +318,35 @@ describe("应付管理：新建供应商支持自动生成与手动填写编码"
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, EP.suppliers)).toHaveLength(1));
     expect(bodyOf(postsTo(calls, EP.suppliers)[0])).toMatchObject({ code_mode: "manual", supplier_code: "SUP-0099" });
+  });
+});
+
+// ------------------------------------------------------------------ 付款折叠收纳
+
+describe("应付管理：确认应付的「付款」可折叠收纳", () => {
+  it("默认展开；点「收起」隐藏付款表，点「展开」恢复，并把选择记在本机", async () => {
+    window.localStorage.removeItem("dilee:panel:payable-payments");
+    stubPayable({ entries: [confirmedEntry], payments: [supplierPayment] });
+    await openPayable("confirmed");
+
+    const toggle = screen.getByTestId("payable-payments-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveTextContent("收起");
+    // 付款表与台账都在（付款单号 PY-001 只在付款表里出现）
+    expect(screen.getByText("PY-001")).toBeVisible();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent("展开");
+    // 收起时连内容一起隐藏（不是只换个箭头），但应付台账仍在
+    expect(screen.queryByText("PY-001")).toBeNull();
+    expect(screen.getByText("AP-002")).toBeVisible();
+    expect(window.localStorage.getItem("dilee:panel:payable-payments")).toBe("collapsed");
+
+    // 展开回去，避免影响同文件里的其他用例（localStorage 在同一个 jsdom 里是共享的）
+    await userEvent.click(screen.getByTestId("payable-payments-toggle"));
+    expect(screen.getByText("PY-001")).toBeVisible();
+    expect(window.localStorage.getItem("dilee:panel:payable-payments")).toBe("expanded");
   });
 });
 

@@ -5,7 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { sourceType } from "./supplier-payable.domain";
+import { sourceType, coveringPayableReconciliation } from "./supplier-payable.domain";
 
 type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
 export type PayableEntryInput = { source_type: SourceType; source_id: string; amount?: string; amount_reason?: string; confirmation_date?: string; attachment?: unknown[]; remark?: string };
@@ -16,6 +16,25 @@ export class SupplierPayableService {
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
     const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payment: { select: { status: true } } } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
+    /**
+     * 「这条应付是否已经被某张对账单覆盖」。
+     *
+     * 为什么由服务端算：对账范围是**供应商 + 币种 + 期间（可再收窄到订单/采购单）**，
+     * 前端只有供应商与日期、拿不到 purchaseOrderId，自己推一遍必然与服务端不一致。
+     * 口径与 SupplierPayableReconciliationService 的 entryScope 共用同一个纯函数
+     * （`payableInReconciliationScope`），否则「前端说没对过账、后端说已覆盖」会各说各话。
+     *
+     * 用途：财务页面「待创建对账」只列**没被覆盖**的草稿；已被覆盖的要显式说明在哪张对账单里，
+     * 否则用户会以为这条应付「没流转过去」（历史反馈）。
+     */
+    const supplierIds = [...new Set(rows.map((row) => row.supplierId))];
+    const scopes = supplierIds.length
+      ? await this.prisma.supplierPayableReconciliation.findMany({
+        where: { deletedAt: null, supplierId: { in: supplierIds } },
+        select: { id: true, reconciliationNo: true, status: true, supplierId: true, currency: true, orderNo: true, purchaseOrderId: true, periodStart: true, periodEnd: true },
+        orderBy: { createdAt: "desc" },
+      })
+      : [];
     return rows.map((row) => {
       const receiptData = row.payableSource?.purchaseReceipt?.extensionData as { batch_sequence?: number } | null | undefined;
       const item = row.payableSource?.purchaseOrderItem;
@@ -25,6 +44,7 @@ export class SupplierPayableService {
       // 已付/未付：只统计已过账付款的有效核销（冲销后的核销不算），与详情、对账口径一致。
       const paid = row.allocations.filter((allocation) => allocation.status === "active" && allocation.payment?.status === "posted").reduce((sum, allocation) => sum.plus(allocation.amount), new Prisma.Decimal(0));
       const outstanding = row.amount.minus(paid);
+      const covering = coveringPayableReconciliation(row, scopes);
       return {
         ...row,
         source_no: row.payableSource?.rawMaterialInbound?.inboundNo ?? row.payableSource?.purchaseReceipt?.receiptNo ?? row.outsourcePayableSource?.outsourceReceipt?.id ?? row.sourceNoSnapshot,
@@ -39,6 +59,7 @@ export class SupplierPayableService {
         supplier_code: row.supplier?.supplierCode ?? null,
         paid_amount: paid.toFixed(4),
         outstanding_amount: outstanding.toFixed(4),
+        reconciliation: covering ? { id: covering.id, reconciliation_no: covering.reconciliationNo, status: covering.status, period_start: covering.periodStart, period_end: covering.periodEnd } : null,
       };
     });
   }
@@ -59,26 +80,48 @@ export class SupplierPayableService {
       const existing = input.source_type === "outsource_receipt"
         ? await tx.supplierPayableEntry.findUnique({ where: { outsourcePayableSourceId: input.source_id } })
         : await tx.supplierPayableEntry.findUnique({ where: { payableSourceId: input.source_id } });
-      if (existing) {
-        if (!existing.deletedAt) return existing;
-        return tx.supplierPayableEntry.update({ where: { id: existing.id }, data: { deletedAt: null, deletedBy: null, ...this.audit.update(user) } });
-      }
-      const amount = input.amount ? this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT") : refs.amount;
-      if (!amount.eq(refs.amount) && !input.amount_reason?.trim()) throw this.invalid("PAYABLE_AMOUNT_REASON_REQUIRED", "覆盖应付金额必须填写原因");
-      return tx.supplierPayableEntry.create({ data: {
-        payableNo: this.number("AP"), orderNo: refs.orderNo, supplierId: refs.supplierId, sourceType: input.source_type,
-        payableSourceId: ["raw_material_inbound", "purchase_receipt"].includes(input.source_type) ? input.source_id : undefined,
-        outsourcePayableSourceId: input.source_type === "outsource_receipt" ? input.source_id : undefined,
-        // 采购单/采购明细/外加工批次的关联必须落库：应付对账按 purchase_order_id 过滤明细，
-        // 这三个字段为空会让"按采购单对账"的系统余额恒为 0（历史缺陷，见 docs/log）。
-        purchaseOrderId: refs.purchaseOrderId, purchaseOrderItemId: refs.purchaseOrderItemId, outsourceLogisticsBatchId: refs.outsourceLogisticsBatchId,
-        sourceNoSnapshot: refs.sourceNo, quantity: refs.quantity, unitPrice: refs.unitPrice, taxRate: refs.taxRate,
-        amount, currency: refs.currency, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
-        attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
-      } });
+      // 已有条目直接复用（含被软删除后恢复），不重复建单：来源 → 应付是一对一。
+      const entry = existing
+        ? (existing.deletedAt ? await tx.supplierPayableEntry.update({ where: { id: existing.id }, data: { deletedAt: null, deletedBy: null, ...this.audit.update(user) } }) : existing)
+        : await this.createEntry(tx, input, refs, user);
+      // 接收动作必须把来源推进到「已接收」，否则来源会永远停在待接收（见 markSourceReceived 注释）。
+      await this.markSourceReceived(tx, input.source_type, input.source_id, user);
+      return entry;
     });
     await this.audit.recordWithOrderNo("supplier_payable.create", "supplier_payable_entry", row.orderNo ?? "", user.id, row.id, { payable_no: row.payableNo, source_type: row.sourceType, source_id: input.source_id, amount: row.amount.toString() });
     return row;
+  }
+
+  private createEntry(tx: Prisma.TransactionClient, input: PayableEntryInput, refs: Awaited<ReturnType<SupplierPayableService["source"]>>, user: CurrentUser) {
+    const amount = input.amount ? this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT") : refs.amount;
+    if (!amount.eq(refs.amount) && !input.amount_reason?.trim()) throw this.invalid("PAYABLE_AMOUNT_REASON_REQUIRED", "覆盖应付金额必须填写原因");
+    return tx.supplierPayableEntry.create({ data: {
+      payableNo: this.number("AP"), orderNo: refs.orderNo, supplierId: refs.supplierId, sourceType: input.source_type,
+      payableSourceId: ["raw_material_inbound", "purchase_receipt"].includes(input.source_type) ? input.source_id : undefined,
+      outsourcePayableSourceId: input.source_type === "outsource_receipt" ? input.source_id : undefined,
+      // 采购单/采购明细/外加工批次的关联必须落库：应付对账按 purchase_order_id 过滤明细，
+      // 这三个字段为空会让"按采购单对账"的系统余额恒为 0（历史缺陷，见 docs/log）。
+      purchaseOrderId: refs.purchaseOrderId, purchaseOrderItemId: refs.purchaseOrderItemId, outsourceLogisticsBatchId: refs.outsourceLogisticsBatchId,
+      sourceNoSnapshot: refs.sourceNo, quantity: refs.quantity, unitPrice: refs.unitPrice, taxRate: refs.taxRate,
+      amount, currency: refs.currency, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
+      attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
+    } });
+  }
+
+  /**
+   * 把来源推进到「已接收」：这是「接收应付」这一步**唯一**会改来源状态的地方。
+   *
+   * 历史缺陷：接收应付只建了应付条目，来源状态一直停在 `pending_finance`，于是
+   *   ①「原料入库条目」永远显示「接收应付」按钮、来源状态永远「待财务接收」；
+   *   ② 再点一次只是幂等返回旧条目，用户看到成功提示却看不到任何变化（「点了没反应」）；
+   *   ③ 对账详情里「仍待接收的来源」把已经接收过的来源又列一遍；
+   *   ④ 流转看板的「待接收来源 N 条」永远不下降。
+   * 只改非作废的来源（作废是终态），重复调用是幂等的。
+   */
+  private async markSourceReceived(tx: Prisma.TransactionClient, type: SourceType, sourceId: string, user: CurrentUser) {
+    const data = { status: "received", ...this.audit.update(user) };
+    if (type === "outsource_receipt") await tx.outsourcePayableSource.updateMany({ where: { id: sourceId, status: { not: "voided" } }, data });
+    else await tx.payableSource.updateMany({ where: { id: sourceId, status: { not: "voided" } }, data });
   }
 
   async confirm(id: string, user: CurrentUser) {

@@ -18,7 +18,9 @@ type PayableEntry = { id: string; payableNo: string; payableSourceId?: string | 
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const inboundStatusLabels: Record<string, string> = { draft: "待入库登记", posted: "入库成功", reversed: "已冲销" };
-const payableStatusLabels: Record<string, string> = { pending_finance: "待通知财务", draft: "待财务确认", confirmed: "财务已确认", partially_paid: "部分付款", paid: "已付款", reversed: "已冲回", voided: "已作废" };
+// 来源状态：财务「接收应付」后后端会把 payable_sources.status 置为 received（历史数据可能缺失），
+// 因此这里既给 received 的中文，也在下面用应付条目关联兜底显示「已通知」。
+const payableStatusLabels: Record<string, string> = { pending_finance: "待通知财务", received: "财务已接收", draft: "待财务确认", confirmed: "财务已确认", partially_paid: "部分付款", paid: "已付款", reversed: "已冲回", voided: "已作废" };
 
 export default function InboundsPage() {
   const [inbounds, setInbounds] = useState<Inbound[]>([]);

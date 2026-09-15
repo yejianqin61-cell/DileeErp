@@ -460,18 +460,35 @@ describe("应付管理 · 应付对账与确认应付", () => {
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/srecon-1/confirm-payables")).toHaveLength(1));
   });
 
-  it("待创建对账按供应商+月份分组并可一键带入表单", async () => {
+  it("待创建对账逐条列出未覆盖的草稿，并可按该条的供应商+月份一键带入表单", async () => {
     const calls = stubFinance({ payables: [payableEntry()], suppliers: [{ id: "supplier-1", name: "绍兴纺织", supplierCode: "S001" }] });
     await open(<PayableWorkspace tab="reconciliations" testId="page-finance-payable" />, "page-finance-payable");
-    const groups = panel("待创建对账");
-    expect(groups.getByText("绍兴纺织")).toBeInTheDocument();
-    expect(groups.getByText("2026-09")).toBeInTheDocument();
-    fireEvent.click(groups.getByRole("button", { name: "创建对账" }));
+    const pending = panel("待创建对账");
+    // 逐条：应付单号 / 供应商 / 月份 / 订单号 / 采购单号 / 物料 / 规格型号
+    expect(pending.getByText("AP-001")).toBeInTheDocument();
+    expect(pending.getByText("绍兴纺织")).toBeInTheDocument();
+    expect(pending.getByText("2026-09")).toBeInTheDocument();
+    expect(pending.getByText("PO-1")).toBeInTheDocument();
+    expect(pending.getByText("涤纶布")).toBeInTheDocument();
+    expect(pending.getByText("150D")).toBeInTheDocument();
+    expect(screen.getByTestId("payable-pending-summary")).toHaveTextContent("1 条 / 合计 50.00");
+
+    fireEvent.click(pending.getByRole("button", { name: "创建对账" }));
     expect((screen.getByTestId("action-field-period_start") as HTMLInputElement).value).toBe("2026-09-01");
     setValue("action-field-external_balance", "50");
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations").filter((call) => call.method === "POST")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations").filter((call) => call.method === "POST")[0])).toMatchObject({ supplier_id: "supplier-1", period_start: "2026-09-01", external_balance: "50" });
+  });
+
+  it("已纳入对账单的草稿从待创建对账移出，并在说明里点名去向（不能无声消失）", async () => {
+    const covered = payableEntry({ id: "pe-9", payableNo: "AP-009", reconciliation: { id: "srecon-1", reconciliation_no: "APREC-001", status: "matched", period_start: "2026-09-01T00:00:00.000Z", period_end: "2026-09-30T00:00:00.000Z" } });
+    stubFinance({ payables: [payableEntry(), covered], supplierReconciliations: [supplierReconciliation()] });
+    await open(<PayableWorkspace tab="reconciliations" testId="page-finance-payable" />, "page-finance-payable");
+    const pending = panel("待创建对账");
+    expect(pending.getByText("AP-001")).toBeInTheDocument();
+    expect(pending.queryByText("AP-009")).toBeNull();
+    expect(pending.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001，可在对账单行内一键确认）");
   });
 
   it("确认应付是台账视图：草稿可确认/编辑，已确认可付款/回退，付款核销带 allocations", async () => {

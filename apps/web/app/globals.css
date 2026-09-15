@@ -217,6 +217,10 @@ button { cursor: pointer; }
 .detail-list p { margin: 0; padding: 7px 0; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 13px; line-height: 1.45; }
 .detail-list p:last-child { border-bottom: 0; }
 .panel h3 { margin: 0; padding: 12px 0 8px; font-size: 13px; }
+/* 子栏目标题 + 收纳开关（确认应付的「付款」）。按钮放在 h3 **外面**：塞进标题里会让
+   <h3> 的可访问名变成「付款 收起」，按标题定位面板的测试与脚本都会失准。 */
+.subsection-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0 8px; }
+.subsection-heading h3 { padding: 0; }
 .production-subflows { display: grid; gap: 24px; margin-top: 24px; }
 .daily-report-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 16px; }
 .daily-report-summary > span { display: grid; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-muted); }

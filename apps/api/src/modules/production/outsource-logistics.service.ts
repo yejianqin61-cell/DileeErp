@@ -127,7 +127,7 @@ export class OutsourceLogisticsService {
 
   async payableSources(orderNo?: string) {
     // 财务列表要能看出这是哪个原料：外加工应付同样带上批次对应的物料名称/规格/颜色与单位。
-    const rows = await this.prisma.outsourcePayableSource.findMany({ where: orderNo ? { orderNo, deletedAt: null, status: { not: "voided" } } : { deletedAt: null, status: { not: "voided" } }, include: { outsourceReceipt: true, logisticsBatch: { select: { batchNo: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } }, purchaseOrder: { select: { purchaseOrderNo: true } }, supplier: { select: { id: true, name: true, supplierCode: true } } }, orderBy: { createdAt: "desc" } });
+    const rows = await this.prisma.outsourcePayableSource.findMany({ where: orderNo ? { orderNo, deletedAt: null, status: { not: "voided" } } : { deletedAt: null, status: { not: "voided" } }, include: { outsourceReceipt: true, logisticsBatch: { select: { batchNo: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } }, purchaseOrder: { select: { purchaseOrderNo: true } }, supplier: { select: { id: true, name: true, supplierCode: true } }, supplierPayableEntry: { select: { id: true, payableNo: true, status: true } } }, orderBy: { createdAt: "desc" } });
     return rows.map((row) => ({
       ...row,
       material_name: row.logisticsBatch?.material?.name ?? null,
@@ -135,6 +135,8 @@ export class OutsourceLogisticsService {
       material_specification: row.logisticsBatch?.material?.specificationModel ?? null,
       material_color: row.logisticsBatch?.material?.color ?? null,
       unit_name: row.logisticsBatch?.unit?.name ?? null,
+      // 与原料入库来源同一口径：列表自证「这条签收已经接收成哪张应付单」。
+      payable_entry: row.supplierPayableEntry ?? null,
     }));
   }
 
