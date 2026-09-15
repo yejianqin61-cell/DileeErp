@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { paymentItemKeys } from "./cash-flow-catalog";
 import { CashFlowService } from "./cash-flow.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 
@@ -62,9 +63,14 @@ export class SupplierPaymentService {
     if (new Set(items.map((item) => item.payable_entry_id)).size !== items.length) throw this.invalid("DUPLICATE_PAYMENT_ALLOCATION", "同一付款不得重复核销同一应付");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payments WHERE id = ${id}::uuid FOR UPDATE`;
-      const lockedPayment = await tx.supplierPayment.findFirst({ where: { id, deletedAt: null } });
+      // 供应商名称与银行要一起取出来：写收支流水时对方名称不能退化成 UUID，
+      // 结算方式要按老表格式带出「转账--农业银行5706」。
+      const lockedPayment = await tx.supplierPayment.findFirst({ where: { id, deletedAt: null }, include: { supplier: { select: { name: true } }, bank: { select: { bankName: true, accountNumber: true } } } });
       if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("SUPPLIER_PAYMENT_NOT_POSTABLE", "只有草稿付款可以过账");
       let total = new Prisma.Decimal(0);
+      // 按来源类型累计本次付款的金额：一笔付款可能同时核销采购、外加工与其他应付，
+      // 收支项目按**金额最大**的那类来源选定（其余来源在备注里体现）。
+      const sourceAmounts = new Map<string, Prisma.Decimal>();
       for (const item of items) {
         const amount = this.decimal(item.amount, "INVALID_ALLOCATION_AMOUNT");
         await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${item.payable_entry_id}::uuid FOR UPDATE`;
@@ -73,16 +79,29 @@ export class SupplierPaymentService {
         if (!["confirmed", "partially_paid"].includes(balance.entry.status)) throw this.invalid("SUPPLIER_PAYABLE_NOT_ALLOCATABLE", "应付尚未确认或已关闭");
         if (amount.gt(balance.available)) throw new UnprocessableEntityException({ code: "PAYABLE_ALLOCATION_EXCEEDED", message: "核销金额超过应付未核销余额", details: [{ available_amount: balance.available.toString() }] });
         total = total.plus(amount);
+        sourceAmounts.set(balance.entry.sourceType, (sourceAmounts.get(balance.entry.sourceType) ?? new Prisma.Decimal(0)).plus(amount));
         await tx.supplierPaymentAllocation.create({ data: { paymentId: id, payableEntryId: balance.entry.id, orderNo: balance.entry.orderNo, amount, currency: lockedPayment.currency, remark: item.remark, ...this.audit.create(user) } });
       }
       if (total.gt(lockedPayment.amount)) throw new UnprocessableEntityException({ code: "PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过付款金额", details: [{ available_amount: lockedPayment.amount.minus(total).toString() }] });
       const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const item of items) await this.payable.refreshStatus(tx, item.payable_entry_id, user);
-      return payment;
+      return { payment, sourceAmounts, supplierName: lockedPayment.supplier?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null };
     });
-    await this.audit.record("supplier_payment.post", "supplier_payment", user.id, id, { order_no: result.orderNo, allocation_count: items.length });
-    await this.cashFlow.autoCreateFromPayment({ paymentNo: result.paymentNo, paymentDate: result.paymentDate, amount: result.amount, currency: result.currency, counterpartyName: result.payeeName ?? result.supplierId, direction: "expense", settlementMethod: result.paymentMethod, settlementAccountId: null, sourceType: "supplier_payment", sourceId: result.id, itemKey: "外加工费", remark: result.remark ?? undefined }, user);
-    return result;
+    await this.audit.record("supplier_payment.post", "supplier_payment", user.id, id, { order_no: result.payment.orderNo, allocation_count: items.length });
+    // 过账即写收支流水：项目按本次付款金额最大的应付来源选定（采购 / 外加工 / 其他），
+    // 字典里候选一个都不存在时由 CashFlowService 显式报错，不会静默丢掉这笔支出。
+    const dominant = [...result.sourceAmounts.entries()].sort((left, right) => right[1].minus(left[1]).toNumber())[0]?.[0] ?? "other";
+    await this.cashFlow.autoCreateFromPayment({
+      paymentNo: result.payment.paymentNo, paymentDate: result.payment.paymentDate, amount: result.payment.amount, currency: result.payment.currency,
+      counterpartyName: result.payment.payeeName ?? result.supplierName ?? result.payment.supplierId,
+      direction: "expense",
+      settlementMethod: result.bankLabel ? `${result.payment.paymentMethod}--${result.bankLabel}` : result.payment.paymentMethod,
+      settlementAccountId: null,
+      sourceType: "supplier_payment", sourceId: result.payment.id,
+      itemKeys: paymentItemKeys(dominant),
+      remark: result.payment.remark ?? undefined,
+    }, user);
+    return result.payment;
   }
 
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; remark?: string }, user: CurrentUser) {
@@ -109,6 +128,8 @@ export class SupplierPaymentService {
       return payment;
     });
     await this.audit.record("supplier_payment.reverse", "supplier_payment", user.id, id, { order_no: result.orderNo, reason: reason.trim() });
+    // 冲销要回冲收支流水：钱并没有真的付出去，流水里不能一直留着这笔支出（原实现只写过账不处理冲销）。
+    await this.cashFlow.autoReverseFromPayment("supplier_payment", id, `供应商付款冲销：${reason.trim()}`, user);
     return result;
   }
 

@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
+const { Prisma } = require("@prisma/client");
 const { SupplierPaymentService } = require("../../dist/modules/finance/supplier-payment.service.js");
 
 test("supplier payment draft update locks and rechecks current status", async () => {
@@ -66,6 +67,63 @@ test("supplier payment posting locks the payment before allocation checks", asyn
 // （这一族建单接口此前是全局唯一没有幂等保护的，见 20260915120000 迁移）。
 const paymentInput = (extra = {}) => ({ supplier_id: "supplier-1", order_no: "SO-1", payment_date: "2026-09-15", amount: "300", currency: "USD", payment_method: "bank_transfer", ...extra });
 const createDeps = (prisma) => new SupplierPaymentService(prisma, { create: () => ({}), record: async () => {} }, {});
+
+// 2026-09-15：过账后必须真的把支出写进收支流水。
+// 历史缺陷：写死的收支项目 key「外加工费」在字典里不存在（字典里是「外加工费 晋江大田工资」），
+// CashFlowService 当时遇到缺项直接 return null，于是**每一笔供应商付款都被静默丢掉**。
+function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" } } = {}) {
+  const cashFlowCalls = [];
+  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", remark: null };
+  const prisma = {
+    supplierPayment: { findFirst: async () => ({ ...payment, status: "draft" }) },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      supplierPayment: { findFirst: async () => ({ ...payment, status: "draft", supplier: { name: supplierName }, bank }), update: async () => payment },
+      supplierPaymentAllocation: { create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+    }),
+  };
+  const payable = { allocationBalance: async () => ({ entry: { id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; }, autoReverseFromPayment: async () => null };
+  const service = new SupplierPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, payable, cashFlow);
+  return { service, cashFlowCalls };
+}
+
+test("供应商付款过账后自动写收支流水：项目按应付来源选定，且不再用字典里不存在的 key", async () => {
+  const { service, cashFlowCalls } = postFixture();
+  await service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.equal(cashFlowCalls.length, 1);
+  const input = cashFlowCalls[0];
+  assert.deepEqual(input.itemKeys, ["原材料 成本", "货款"], "原料入库来源 → 原材料成本（候选链，第一个存在的生效）");
+  assert.equal(input.direction, "expense");
+  assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
+  assert.equal(input.settlementMethod, "转账--农业银行5706", "结算方式按老表格式带出银行账户");
+  assert.equal(input.sourceType, "supplier_payment");
+  assert.equal(input.sourceId, "payment-1");
+});
+
+test("供应商付款过账：外加工与其他应付各自映射到对应收支项目", async () => {
+  const outsource = postFixture({ sourceType: "outsource_receipt" });
+  await outsource.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.deepEqual(outsource.cashFlowCalls[0].itemKeys, ["成品外加工费", "加工费"]);
+  const other = postFixture({ sourceType: "other" });
+  await other.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.deepEqual(other.cashFlowCalls[0].itemKeys, ["管理费用", "杂费车间装修费"]);
+});
+
+test("供应商付款冲销时回冲收支流水（钱没付出去，流水里不能留着）", async () => {
+  const reversed = [];
+  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", remark: null, amount: new Prisma.Decimal("300"), allocations: [] };
+  const prisma = {
+    supplierPayment: { findFirst: async () => payment, update: async () => payment },
+    supplierPaymentAllocation: { updateMany: async () => {} },
+    $transaction: async (fn) => fn({ $queryRaw: async () => [], supplierPayment: prisma.supplierPayment, supplierPaymentAllocation: prisma.supplierPaymentAllocation }),
+  };
+  const service = new SupplierPaymentService(prisma, { update: () => ({}), record: async () => {} }, { refreshStatus: async () => {} }, { autoReverseFromPayment: async (...args) => { reversed.push(args); return null; } });
+  await service.reverse("payment-1", "银行退回", { id: "user-1" });
+  assert.equal(reversed.length, 1);
+  assert.deepEqual(reversed[0].slice(0, 2), ["supplier_payment", "payment-1"]);
+  assert.match(reversed[0][2], /银行退回/);
+});
 
 test("付款建单：同一幂等键重放返回原单，不再新建", async () => {
   let createCount = 0;

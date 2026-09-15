@@ -23,7 +23,8 @@ test("customer payment reversal locks each receivable source before reversing al
       receivableAllocation: { updateMany: async () => {} },
     }),
   };
-  const service = new CustomerPaymentService(prisma, { update: () => ({}), record: async () => {} }, { refreshStatus: async () => {} });
+  // 第 4 个参数是 CashFlowService：冲销时要回冲收支流水（这里只断言锁顺序，所以给个空替身）。
+  const service = new CustomerPaymentService(prisma, { update: () => ({}), record: async () => {} }, { refreshStatus: async () => {} }, { autoReverseFromPayment: async () => null });
   await service.reverse("payment-1", "撤销原因", { id: "user-1" });
   assert.deepEqual(locks, ["payment-1", "source-a", "source-b"]);
 });

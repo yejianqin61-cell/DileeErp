@@ -199,7 +199,12 @@ export class CashFlowService {
    * 自动从付款单据创建收支流水（「收付款过账后自动写入收支流水」）。
    *
    * 幂等：同 source_type + source_id + status=posted 已存在则不重复创建。
-   * 返回值可能为 null（已存在 → 跳过；收支项目字典缺失 → 跳过但不阻断付款过账）。
+   *
+   * `itemKeys` 是**按优先级排列**的收支项目候选：业务口径会随来源变化
+   * （原料采购 vs 外加工 vs 其他应付），字典又是管理员可改的，所以给一条链而不是单个 key。
+   * 候选一个都不存在时**显式 422**，绝不静默跳过 —— 静默跳过会让整笔资金动账从收支流水里消失：
+   * 历史缺陷就是供应商付款写死 `外加工费`，而字典里只有「外加工费 晋江大田工资」，于是**每一笔
+   * 供应商付款都被悄悄丢掉**（收支流水只剩收到客户货款与工资付款）。
    */
   async autoCreateFromPayment(
     input: {
@@ -213,7 +218,7 @@ export class CashFlowService {
       settlementAccountId?: string | null;
       sourceType: string;
       sourceId: string;
-      itemKey: string;
+      itemKeys: readonly string[];
       remark?: string;
     },
     user: CurrentUser,
@@ -223,11 +228,12 @@ export class CashFlowService {
       select: { id: true },
     });
     if (existing) return null;
-    const item = await this.prisma.dictionaryItem.findFirst({
-      where: { key: input.itemKey, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-      select: { id: true },
+    const candidates = await this.prisma.dictionaryItem.findMany({
+      where: { key: { in: [...input.itemKeys] }, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
+      select: { id: true, key: true },
     });
-    if (!item) return null;
+    const item = input.itemKeys.map((key) => candidates.find((candidate) => candidate.key === key)).find((found) => Boolean(found));
+    if (!item) throw this.invalid("CASH_FLOW_ITEM_NOT_FOUND", `自动写入收支流水需要收支项目「${input.itemKeys.join("」或「")}」，请在「收支管理 → 收支项目」里补上后重新过账`);
     const row = await this.prisma.cashFlowEntry.create({
       data: {
         entryNo: this.number(),
@@ -246,6 +252,19 @@ export class CashFlowService {
       },
     });
     return row;
+  }
+
+  /**
+   * 冲销收付款时回冲它的收支流水。
+   *
+   * 为什么必须有：付款冲销后钱并没有真的出去，流水里却一直留着那笔支出/收入，
+   * 收支汇总表就会比银行账多出一笔。原实现只在过账时写流水、从不处理冲销。
+   * 找不到对应流水（例如当年因字典缺项被跳过）时返回 null，不阻断冲销本身。
+   */
+  async autoReverseFromPayment(sourceType: string, sourceId: string, reason: string, user: CurrentUser) {
+    const entry = await this.prisma.cashFlowEntry.findFirst({ where: { sourceType, sourceId, status: "posted", deletedAt: null }, select: { id: true } });
+    if (!entry) return null;
+    return this.reverse(entry.id, reason, user);
   }
 
   private dateText(value: Date): string {

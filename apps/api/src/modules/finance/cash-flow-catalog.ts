@@ -74,3 +74,36 @@ const toSeed = (labels: readonly string[]): DictionarySeed[] =>
 
 export const DEFAULT_CASH_FLOW_ITEMS: readonly DictionarySeed[] = toSeed(CASH_FLOW_ITEM_LABELS);
 export const DEFAULT_SETTLEMENT_ACCOUNTS: readonly DictionarySeed[] = toSeed(SETTLEMENT_ACCOUNT_LABELS);
+
+/**
+ * 自动写入收支流水时，按业务来源选定收支项目（**按优先级**）。
+ *
+ * 为什么是一串候选而不是单个 key：一笔资金动账必须落进一个收支项目，而项目是管理员可改的字典。
+ * 给候选链，第一个存在的生效；一个都不存在时由 `CashFlowService.autoCreateFromPayment` 显式 422
+ * —— 绝不静默跳过：历史缺陷正是供应商付款写死 `外加工费`，而字典里只有「外加工费 晋江大田工资」，
+ * 结果每一笔供应商付款都被悄悄丢掉，收支流水里只剩客户货款与工资付款。
+ *
+ * key 就是字典里的中文标签（见 toSeed：key = label）。
+ */
+export const PAYMENT_ITEM_KEYS = {
+  /** 收到客户货款（收）。 */
+  customer_payment: ["货款"],
+  /** 工资付款（支）。 */
+  salary_payment: ["人 工费"],
+  /** 原料入库形成的应付付款（支）。 */
+  raw_material_inbound: ["原材料 成本", "货款"],
+  /** 到货单来源（已禁用，仅兼容历史数据）。 */
+  purchase_receipt: ["原材料 成本", "货款"],
+  /** 外加工签收形成的应付付款（支）。 */
+  outsource_receipt: ["成品外加工费", "加工费"],
+  /** 其他应付（支）。 */
+  other: ["管理费用", "杂费车间装修费"],
+} as const;
+
+/** 一次付款核销了多种来源时的兜底候选（最常见的是采购付款）。 */
+export const DEFAULT_PAYMENT_ITEM_KEYS: readonly string[] = ["原材料 成本", "货款"];
+
+/** 来源类型 → 收支项目候选；未知来源用兜底链。 */
+export function paymentItemKeys(sourceType: string): readonly string[] {
+  return (PAYMENT_ITEM_KEYS as Record<string, readonly string[]>)[sourceType] ?? DEFAULT_PAYMENT_ITEM_KEYS;
+}

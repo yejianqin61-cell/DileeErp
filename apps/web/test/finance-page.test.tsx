@@ -392,20 +392,28 @@ describe("应付管理 · 来源条目", () => {
 });
 
 describe("应付管理 · 应付对账与确认应付", () => {
-  it("应付对账单支持处理差异并提示确认应付", async () => {
+  it("应付对账单支持处理差异，并对平后给出「确认 N 条应付」入口", async () => {
     const calls = stubFinance({
       payables: [payableEntry()],
-      supplierReconciliations: [supplierReconciliation({ details: { draft_count: 1, draft_amount: "50", entry_count: 1, payable_entries: [], draft_entries: [], pending_sources: [], can_confirm_payables: true } }), supplierReconciliation({ id: "srecon-2", reconciliationNo: "APREC-002", status: "difference", difference: "5.0000" })],
+      // flow 是**列表**接口给的流转摘要（2026-09-15 起）：列表行上要能直接确认，不能只靠详情里的 details。
+      supplierReconciliations: [supplierReconciliation({ flow: { entry_count: 1, draft_count: 1, draft_amount: "50", can_confirm_payables: true, order_nos: ["SO-1"], purchase_order_nos: ["PO-1"], material_names: ["涤纶布"] } }), supplierReconciliation({ id: "srecon-2", reconciliationNo: "APREC-002", status: "difference", difference: "5.0000" })],
     });
     await open(<PayableWorkspace tab="reconciliations" testId="page-finance-payable" />, "page-finance-payable");
     const table = panel("已创建对账单");
     expect(table.getByText("APREC-002")).toBeInTheDocument();
+    // 对账行上的新列（订单号 / 采购物料 / 待确认条数）都来自列表接口的 flow 摘要。
+    // 用行作用域断言：同一个 section 里还有「待创建对账」表，未收窄会命中重复文本。
+    const matchedRow = within(screen.getByTestId("reconciliation-confirm-srecon-1").closest("tr") as HTMLElement);
+    expect(matchedRow.getByText("SO-1")).toBeInTheDocument();
+    expect(matchedRow.getByText("涤纶布")).toBeInTheDocument();
+    expect(matchedRow.getByText("1 条 / 50")).toBeInTheDocument();
     fireEvent.click(table.getByRole("button", { name: "处理差异" }));
     setValue("action-field-remark", "供应商确认差异为运费");
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/srecon-2/resolve")).toHaveLength(1));
 
-    expect(panel("已创建对账单").getByText(/到「确认应付」确认/)).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("reconciliation-confirm-srecon-1"));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/srecon-1/confirm-payables")).toHaveLength(1));
   });
 
   it("待创建对账按供应商+月份分组并可一键带入表单", async () => {

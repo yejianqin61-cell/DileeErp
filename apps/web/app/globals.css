@@ -400,6 +400,14 @@ button { cursor: pointer; }
 .detail-section { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
 .detail-section h3 { margin: 0; font-size: 14px; }
 
+/* 应付流转看板（payable-workspace）：四步链路的当前数量 + 入口，卡住的那一步高亮。 */
+.flow-steps { display: grid; gap: 8px; margin: 0; padding-left: 0; list-style: none; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.flow-steps li { display: grid; gap: 4px; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface); }
+.flow-steps li strong { font-size: 14px; }
+.flow-steps li span { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.flow-steps li a { color: var(--primary); font-size: 12px; font-weight: 600; text-decoration: none; }
+.flow-step-active { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+
 /* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
    满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，
    表头吸顶（几百行时滑到底不能忘了列名），合计行加粗。 */

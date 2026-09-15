@@ -81,3 +81,64 @@ test("批量确认只取对账范围内的草稿应付，可选收窄到订单�
   assert.equal(where.orderNo, "SO-7");
   assert.equal(where.purchaseOrderId, "po-9");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-15：应付流转与对账口径
+//   用户反馈「接收应付后没有流转到应付对账」「对账创建完也没有流转到确认付款」。
+//   根因之一：对账快照只统计**已确认**应付，而它对账之后要确认的正是那些草稿 ——
+//   财务刚接收完去做对账时系统余额恒为 0、差异恒等于 −外部余额，两边口径不一致，流转就断了。
+// ---------------------------------------------------------------------------
+
+/** create 的替身：记录查询条件与写入数据。 */
+function createHarness(entries) {
+  const captured = { where: null, data: null };
+  let created = 0;
+  const prisma = {
+    supplier: { findFirst: async () => ({ id: "supplier-1" }) },
+    supplierPayableEntry: { findMany: async (args) => { captured.where = args.where; return entries; } },
+    supplierPayment: { findMany: async () => [] },
+    supplierPayableReconciliation: { create: async ({ data }) => { captured.data = data; created += 1; return { id: `recon-${created}`, ...data }; } },
+  };
+  const audit = { create: () => ({}), record: async () => {}, recordWithOrderNo: async () => {} };
+  return { service: new SupplierPayableReconciliationService(prisma, audit), captured };
+}
+
+const scopedEntry = (overrides = {}) => ({ id: "entry-1", amount: new Prisma.Decimal("500"), status: "draft", currency: "CNY", supplierId: "supplier-1", orderNo: "SO-1", confirmationDate: new Date("2026-09-10T00:00:00.000Z"), ...overrides });
+
+test("创建应付对账时把待确认的草稿也算进系统余额（先对账、再确认应付）", async () => {
+  const { service, captured } = createHarness([scopedEntry()]);
+  const row = await service.create({ supplier_id: "supplier-1", period_start: "2026-09-01", period_end: "2026-09-30", external_balance: "500", currency: "CNY" }, { id: "user-1" });
+  assert.deepEqual(captured.where.status, { in: ["draft", "confirmed", "partially_paid", "paid"] }, "草稿必须纳入对账快照，否则刚接收完应付去做对账时系统余额恒为 0");
+  assert.equal(row.payableAmountSnapshot.toString(), "500", "应付快照 = 对账范围内全部应付（含草稿）");
+  assert.equal(row.systemBalance.toString(), "500");
+  assert.equal(row.difference.toString(), "0");
+  assert.equal(row.status, "matched", "外部余额与草稿合计一致时必须直接对平，否则用户会被卡在「有差异」过不去");
+});
+
+test("列表返回流转摘要：覆盖多少条应付、多少条待确认、哪些订单与物料", async () => {
+  const row = { id: "recon-1", status: "matched", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const entries = [
+    { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", purchaseOrderId: null, confirmationDate: new Date("2026-09-10T00:00:00.000Z"), amount: new Prisma.Decimal("500"), status: "draft", payableSource: { purchaseOrder: { purchaseOrderNo: "PO-1" }, purchaseOrderItem: { materialSnapshot: null, material: { name: "涤纶布" } } }, outsourcePayableSource: null },
+    { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-2", purchaseOrderId: null, confirmationDate: new Date("2026-09-11T00:00:00.000Z"), amount: new Prisma.Decimal("300"), status: "confirmed", payableSource: { purchaseOrder: { purchaseOrderNo: "PO-2" }, purchaseOrderItem: { materialSnapshot: { name: "拉链" }, material: null } }, outsourcePayableSource: null },
+    // 不在期间内：不能混进这条对账的摘要
+    { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-9", purchaseOrderId: null, confirmationDate: new Date("2026-08-01T00:00:00.000Z"), amount: new Prisma.Decimal("999"), status: "draft", payableSource: null, outsourcePayableSource: null },
+  ];
+  const prisma = { supplierPayableReconciliation: { findMany: async () => [row] }, supplierPayableEntry: { findMany: async () => entries } };
+  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} });
+  const result = (await service.list())[0];
+  assert.equal(result.flow.entry_count, 2);
+  assert.equal(result.flow.draft_count, 1);
+  assert.equal(result.flow.draft_amount, "500.0000");
+  assert.equal(result.flow.can_confirm_payables, true, "已对平且有草稿 → 前端要能直接批量确认");
+  assert.deepEqual(result.flow.order_nos, ["SO-1", "SO-2"], "新列：该批原料对应订单号");
+  assert.deepEqual(result.flow.purchase_order_nos, ["PO-1", "PO-2"]);
+  assert.deepEqual(result.flow.material_names, ["涤纶布", "拉链"], "新列：采购的物料名称（含快照兜底）");
+});
+
+test("没有覆盖条目的对账也返回完整摘要结构（前端不必做空值判断）", async () => {
+  const row = { id: "recon-1", status: "difference", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const prisma = { supplierPayableReconciliation: { findMany: async () => [row] }, supplierPayableEntry: { findMany: async () => [] } };
+  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} });
+  const flow = (await service.list())[0].flow;
+  assert.deepEqual(flow, { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_payables: false, order_nos: [], purchase_order_nos: [], material_names: [] });
+});

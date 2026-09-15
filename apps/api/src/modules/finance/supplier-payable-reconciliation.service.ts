@@ -8,16 +8,47 @@ import { PrismaService } from "../../platform/database/prisma.service";
 
 const STATUS_LABELS: Record<string, string> = { pending: "待处理", matched: "已对平", difference: "有差异", resolved: "差异已处理" };
 
+/**
+ * 纳入对账的应付状态：**含待确认的草稿**。
+ *
+ * 为什么必须含草稿：业务顺序是「先对账、再确认应付」（`confirmPayables` 与应收侧同规则）。
+ * 若对账快照只算已确认的条目，财务刚接收完应付去做对账时系统余额恒为 0、差异恒等于 −外部余额，
+ * 而它对账之后要确认的偏偏就是那些草稿 —— 两边口径不一致，流转就断了。
+ * get() / confirmPayables / 前端「待创建对账」分组用的都是这一组状态，create 必须一致。
+ */
+const ENTRY_STATUSES = ["draft", "confirmed", "partially_paid", "paid"] as const;
+
+/** 一行对账能覆盖多个订单与多种物料，因此列表给的是去重后的清单。 */
+type ReconciliationFlow = {
+  entry_count: number;
+  draft_count: number;
+  draft_amount: string;
+  can_confirm_payables: boolean;
+  order_nos: string[];
+  purchase_order_nos: string[];
+  material_names: string[];
+};
+
 @Injectable()
 export class SupplierPayableReconciliationService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
+  /**
+   * 对账列表。
+   *
+   * 2026-09-15：每行带上 `flow`（覆盖多少条应付、其中多少条待确认、覆盖哪些订单与物料）。
+   * 为什么列表也要算：前端要在对账单行上显示「到确认应付确认 N 条」并给出**批量确认**入口；
+   * 只给 get() 算会让列表永远显示 0 条，用户看不到「对账 → 确认应付」这一步（历史缺陷）。
+   * 覆盖的订单号与物料名称同时是对账列表的新列（用户要求：该批原料对应订单号 + 采购物料名称）。
+   */
   async list(supplierId?: string, orderNo?: string, status?: string) {
-    return this.prisma.supplierPayableReconciliation.findMany({
+    const rows = await this.prisma.supplierPayableReconciliation.findMany({
       where: { deletedAt: null, ...(supplierId ? { supplierId } : {}), ...(orderNo ? { orderNo } : {}), ...(status ? { status } : {}) },
       include: { supplier: true, purchaseOrder: { select: { purchaseOrderNo: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } },
       orderBy: { createdAt: "desc" },
     });
+    const flows = await this.flows(rows);
+    return rows.map((row) => ({ ...row, flow: flows.get(row.id) ?? this.emptyFlow(row.status) }));
   }
 
   /** 对账详情：快照字段 + 该供应商/期间内的应付条目（含待确认草稿）与仍待接收的来源。 */
@@ -26,8 +57,13 @@ export class SupplierPayableReconciliationService {
     if (!row) throw this.notFound("RECONCILIATION_NOT_FOUND", "应付对账不存在");
     const [entries, payableSources, outsourceSources] = await Promise.all([
       this.prisma.supplierPayableEntry.findMany({
-        where: { ...this.entryScope(row), status: { in: ["draft", "confirmed", "partially_paid", "paid"] } },
-        select: { id: true, payableNo: true, sourceType: true, sourceNoSnapshot: true, orderNo: true, quantity: true, amount: true, currency: true, status: true, confirmationDate: true, purchaseOrderId: true },
+        where: { ...this.entryScope(row), status: { in: [...ENTRY_STATUSES] } },
+        select: {
+          id: true, payableNo: true, sourceType: true, sourceNoSnapshot: true, orderNo: true, quantity: true, amount: true, currency: true, status: true, confirmationDate: true, purchaseOrderId: true,
+          // 财务核对时要看到「这批原料是哪张订单的、买的什么料」（用户要求的新列）。
+          payableSource: { select: { purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, unit: { select: { name: true } }, material: { select: { name: true } } } } } },
+          outsourcePayableSource: { select: { purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { name: true } } } } } },
+        },
         orderBy: { createdAt: "asc" },
       }),
       this.prisma.payableSource.findMany({ where: { supplierId: row.supplierId, currency: row.currency, status: "pending_finance", createdAt: { gte: row.periodStart, lte: new Date(row.periodEnd.getTime() + 86400000) }, ...(row.orderNo ? { orderNo: row.orderNo } : {}), ...(row.purchaseOrderId ? { purchaseOrderId: row.purchaseOrderId } : {}) }, select: { id: true, orderNo: true, quantity: true, amount: true, currency: true, purchaseReceipt: { select: { receiptNo: true } }, rawMaterialInbound: { select: { inboundNo: true } } } }),
@@ -35,13 +71,19 @@ export class SupplierPayableReconciliationService {
     ]);
     const draft = entries.filter((entry) => entry.status === "draft");
     const draftAmount = draft.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
+    const shaped = entries.map((entry) => ({
+      ...entry,
+      material_name: this.materialName(entry),
+      unit_name: entry.payableSource?.purchaseOrderItem?.unit?.name ?? null,
+      purchase_order_no: entry.payableSource?.purchaseOrder?.purchaseOrderNo ?? entry.outsourcePayableSource?.purchaseOrder?.purchaseOrderNo ?? null,
+    }));
     return {
       ...row,
       status_label: STATUS_LABELS[row.status] ?? row.status,
       details: {
-        payable_entries: entries,
-        draft_entries: draft,
-        entry_count: entries.length,
+        payable_entries: shaped,
+        draft_entries: shaped.filter((entry) => entry.status === "draft"),
+        entry_count: shaped.length,
         draft_count: draft.length,
         draft_amount: draftAmount.toFixed(4),
         can_confirm_payables: this.canConfirmPayables(row.status) && draft.length > 0,
@@ -56,7 +98,7 @@ export class SupplierPayableReconciliationService {
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null }, select: { id: true } }); if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
     if (input.bank_id) { const bank = await this.prisma.bank.findFirst({ where: { id: input.bank_id, deletedAt: null, isActive: true } }); if (!bank) throw this.notFound("BANK_NOT_FOUND", "支付银行不存在或已停用"); }
     const scope = { supplierId: supplier.id, currency: input.currency, orderNo: input.order_no?.trim() || undefined, purchaseOrderId: input.purchase_order_id?.trim() || undefined };
-    const entries = await this.prisma.supplierPayableEntry.findMany({ where: { ...this.entryScope({ ...scope, periodStart: start, periodEnd: end }), status: { in: ["confirmed", "partially_paid", "paid"] } } });
+    const entries = await this.prisma.supplierPayableEntry.findMany({ where: { ...this.entryScope({ ...scope, periodStart: start, periodEnd: end }), status: { in: [...ENTRY_STATUSES] } } });
     const entryIds = entries.map((entry) => entry.id);
     const payments = entryIds.length ? await this.prisma.supplierPayment.findMany({ where: { supplierId: supplier.id, currency: input.currency, deletedAt: null, paymentDate: { gte: start, lte: end }, status: "posted" }, include: { allocations: { where: { payableEntryId: { in: entryIds }, deletedAt: null, status: "active" } } } }) : [];
     const payable = entries.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0));
@@ -132,7 +174,7 @@ export class SupplierPayableReconciliationService {
     };
   }
 
-  /** 对账范围：供应商 + 币种 + 期间，可选收窄到订单/采购单。create / get / confirmPayables 必须完全一致。 */
+  /** 对账范围：供应商 + 币种 + 期间，可选收窄到订单/采购单。create / get / confirmPayables / flows 必须完全一致。 */
   private entryScope(row: { supplierId: string; currency: string; orderNo: string | null | undefined; purchaseOrderId: string | null | undefined; periodStart: Date; periodEnd: Date }) {
     return {
       supplierId: row.supplierId,
@@ -142,6 +184,58 @@ export class SupplierPayableReconciliationService {
       ...(row.orderNo ? { orderNo: row.orderNo } : {}),
       ...(row.purchaseOrderId ? { purchaseOrderId: row.purchaseOrderId } : {}),
     };
+  }
+
+  /** 一条对账覆盖的应付条目（含草稿）→ 流转摘要。供列表与详情共用同一口径。 */
+  private async flows(rows: Array<{ id: string; status: string; supplierId: string; currency: string; orderNo: string | null; purchaseOrderId: string | null; periodStart: Date; periodEnd: Date }>) {
+    const map = new Map<string, ReconciliationFlow>();
+    if (!rows.length) return map;
+    const scopes = rows.map((row) => this.entryScope(row));
+    const entries = await this.prisma.supplierPayableEntry.findMany({
+      // 一次查询取回全部对账范围内的条目（OR 精确复刻 entryScope），避免每行一次 N+1。
+      where: { OR: scopes, status: { in: [...ENTRY_STATUSES] } },
+      select: {
+        supplierId: true, currency: true, orderNo: true, purchaseOrderId: true, confirmationDate: true, amount: true, status: true,
+        payableSource: { select: { purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { name: true } } } } } },
+        outsourcePayableSource: { select: { purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { name: true } } } } } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    for (const row of rows) {
+      const scope = this.entryScope(row);
+      const scoped = entries.filter((entry) => this.inScope(entry, scope));
+      const drafts = scoped.filter((entry) => entry.status === "draft");
+      const draftAmount = drafts.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
+      map.set(row.id, {
+        entry_count: scoped.length,
+        draft_count: drafts.length,
+        draft_amount: draftAmount.toFixed(4),
+        can_confirm_payables: this.canConfirmPayables(row.status) && drafts.length > 0,
+        // 订单号既有应付条目上的销售订单号，也有采购单号：财务核对时要能同时看到两者。
+        order_nos: [...new Set(scoped.map((entry) => entry.orderNo).filter((value): value is string => Boolean(value)))],
+        purchase_order_nos: [...new Set(scoped.map((entry) => entry.payableSource?.purchaseOrder?.purchaseOrderNo ?? entry.outsourcePayableSource?.purchaseOrder?.purchaseOrderNo).filter((value): value is string => Boolean(value)))],
+        material_names: [...new Set(scoped.map((entry) => this.materialName(entry)).filter((value): value is string => Boolean(value)))],
+      });
+    }
+    return map;
+  }
+
+  private inScope(entry: { supplierId: string; currency: string; orderNo: string | null; purchaseOrderId: string | null; confirmationDate: Date }, scope: { supplierId: string; currency: string; orderNo?: string; purchaseOrderId?: string; confirmationDate: { gte: Date; lte: Date } }) {
+    return entry.supplierId === scope.supplierId
+      && entry.currency === scope.currency
+      && (!scope.orderNo || entry.orderNo === scope.orderNo)
+      && (!scope.purchaseOrderId || entry.purchaseOrderId === scope.purchaseOrderId)
+      && entry.confirmationDate >= scope.confirmationDate.gte
+      && entry.confirmationDate <= scope.confirmationDate.lte;
+  }
+
+  private materialName(entry: { payableSource?: { purchaseOrderItem?: { material?: { name: string } | null; materialSnapshot?: unknown } | null } | null; outsourcePayableSource?: { logisticsBatch?: { material?: { name: string } | null } | null } | null }) {
+    const snapshot = (entry.payableSource?.purchaseOrderItem?.materialSnapshot as { name?: string } | null | undefined)?.name ?? null;
+    return entry.payableSource?.purchaseOrderItem?.material?.name ?? snapshot ?? entry.outsourcePayableSource?.logisticsBatch?.material?.name ?? null;
+  }
+
+  private emptyFlow(status: string): ReconciliationFlow {
+    return { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_payables: false, order_nos: [], purchase_order_nos: [], material_names: [] };
   }
 
   private canConfirmPayables(status: string) { return status === "matched" || status === "resolved"; }

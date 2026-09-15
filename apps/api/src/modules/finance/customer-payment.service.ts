@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { paymentItemKeys } from "./cash-flow-catalog";
 import { CashFlowService } from "./cash-flow.service";
 import { ReceivableService } from "./receivable.service";
 
@@ -62,7 +63,7 @@ export class CustomerPaymentService {
     if (!allocations?.length) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "收款过账至少需要核销一条有效应收");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`;
-      const lockedPayment = await tx.customerPayment.findFirst({ where: { id, deletedAt: null } });
+      const lockedPayment = await tx.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { name: true } } } });
       if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
       const existing = await tx.receivableAllocation.count({ where: { paymentId: id, deletedAt: null } });
       if (existing) throw this.invalid("CUSTOMER_PAYMENT_ALREADY_POSTED", "收款已存在核销分配");
@@ -80,11 +81,21 @@ export class CustomerPaymentService {
       if (total.gt(lockedPayment.amount)) throw this.exceeded("PAYMENT_ALLOCATION_EXCEEDED", lockedPayment.amount);
       const payment = await tx.customerPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const allocation of allocations ?? []) await this.receivable.refreshStatus(tx, allocation.receivable_source_id, user);
-      return payment;
+      return { payment, customerName: lockedPayment.customer?.name ?? null };
     });
-    await this.audit.record("customer_payment.post", "customer_payment", user.id, id, { order_no: result.orderNo, allocation_count: allocations?.length ?? 0 });
-    await this.cashFlow.autoCreateFromPayment({ paymentNo: result.paymentNo, paymentDate: result.paymentDate, amount: result.amount, currency: result.currency, counterpartyName: result.payerName ?? result.customerId, direction: "income", settlementMethod: result.paymentMethod, settlementAccountId: null, sourceType: "customer_payment", sourceId: result.id, itemKey: "货款", remark: result.remark ?? undefined }, user);
-    return result;
+    await this.audit.record("customer_payment.post", "customer_payment", user.id, id, { order_no: result.payment.orderNo, allocation_count: allocations?.length ?? 0 });
+    // 过账即写收支流水：对方名称优先取付款人，其次客户名称，最后才退化成 id（不能一上来就是 UUID）。
+    await this.cashFlow.autoCreateFromPayment({
+      paymentNo: result.payment.paymentNo, paymentDate: result.payment.paymentDate, amount: result.payment.amount, currency: result.payment.currency,
+      counterpartyName: result.payment.payerName ?? result.customerName ?? result.payment.customerId,
+      direction: "income",
+      settlementMethod: result.payment.paymentMethod,
+      settlementAccountId: null,
+      sourceType: "customer_payment", sourceId: result.payment.id,
+      itemKeys: paymentItemKeys("customer_payment"),
+      remark: result.payment.remark ?? undefined,
+    }, user);
+    return result.payment;
   }
 
   async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; remark?: string }, user: CurrentUser) {
@@ -98,7 +109,7 @@ export class CustomerPaymentService {
     });
   }
 
-  async reverse(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] }); const current = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } }); if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在"); if (current.status === "reversed" || current.status === "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_REVERSIBLE", "当前收款不可冲销"); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`; const locked = await tx.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } }); if (!locked || locked.status === "reversed" || locked.status === "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_REVERSIBLE", "收款已被其他操作处理"); for (const sourceId of [...new Set(locked.allocations.map((allocation) => allocation.receivableSourceId))].sort()) await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${sourceId}::uuid FOR UPDATE`; await tx.receivableAllocation.updateMany({ where: { paymentId: id, status: "active", deletedAt: null }, data: { status: "reversed", ...this.audit.update(user) } }); const payment = await tx.customerPayment.update({ where: { id }, data: { status: "reversed", remark: `${locked.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } }); for (const allocation of locked.allocations) await this.receivable.refreshStatus(tx, allocation.receivableSourceId, user); return payment; }); await this.audit.record("customer_payment.reverse", "customer_payment", user.id, id, { order_no: result.orderNo, reason }); return result; }
+  async reverse(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] }); const current = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } }); if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在"); if (current.status === "reversed" || current.status === "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_REVERSIBLE", "当前收款不可冲销"); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`; const locked = await tx.customerPayment.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" } } } }); if (!locked || locked.status === "reversed" || locked.status === "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_REVERSIBLE", "收款已被其他操作处理"); for (const sourceId of [...new Set(locked.allocations.map((allocation) => allocation.receivableSourceId))].sort()) await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${sourceId}::uuid FOR UPDATE`; await tx.receivableAllocation.updateMany({ where: { paymentId: id, status: "active", deletedAt: null }, data: { status: "reversed", ...this.audit.update(user) } }); const payment = await tx.customerPayment.update({ where: { id }, data: { status: "reversed", remark: `${locked.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } }); for (const allocation of locked.allocations) await this.receivable.refreshStatus(tx, allocation.receivableSourceId, user); return payment; }); await this.audit.record("customer_payment.reverse", "customer_payment", user.id, id, { order_no: result.orderNo, reason }); await this.cashFlow.autoReverseFromPayment("customer_payment", id, `收款冲销：${reason}`, user); return result; }
   async orderSummary(orderNo: string) { const sources = await this.prisma.receivableSource.findMany({ where: { orderNo, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } }); const amount = sources.reduce((sum, source) => sum.plus(source.amount), new Prisma.Decimal(0)); const allocated = sources.reduce((sum, source) => sum.plus(source.allocations.filter((item) => item.payment.status === "posted").reduce((inner, item) => inner.plus(item.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0)); return { order_no: orderNo, source_count: sources.length, receivable_amount: amount.toString(), allocated_amount: allocated.toString(), outstanding_amount: amount.minus(allocated).toString(), status: amount.gt(0) && allocated.gte(amount) ? "paid" : allocated.gt(0) ? "partially_paid" : "unpaid" }; }
   private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.lte(0)) throw new Error(); return result; } catch { throw new UnprocessableEntityException({ code, message: "金额必须是大于零的十进制数", details: [] }); } }
   private date(value: string) { const result = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(result.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_PAYMENT_DATE", message: "收款日期无效", details: [] }); return result; }
