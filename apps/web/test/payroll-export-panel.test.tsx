@@ -92,6 +92,9 @@ function captureDownloads() {
 afterEach(() => {
   Reflect.deleteProperty(URL, "createObjectURL");
   Reflect.deleteProperty(URL, "revokeObjectURL");
+  // 生产进度表的工序列顺序按订单号记在 localStorage：用例之间必须清掉，
+  // 否则前一个用例存下的顺序会变成后一个用例的初始顺序（本文件实测踩到过）。
+  window.localStorage.clear();
 });
 
 function renderPanel(props: { orders?: ExportOrder[]; operations?: ExportOperation[] } = {}) {
@@ -410,6 +413,96 @@ describe("生产工序导出面板 · 原料对应表 / 生产进度表（拆表
     await waitFor(() => expect(anchorClicks).toHaveLength(1));
     expect(calls[0].url).toBe("/api/v1/production/reports/production-progress.xlsx?order_no=SO-2026-009");
     expect(anchorClicks[0].download).toBe("迪礼ERP-生产进度表.xlsx");
+  });
+});
+
+// 用户 2026-09-15 要求：导出生产进度表时允许拖拽调整工序排序，导出的工序 column 按这个顺序来。
+// 顺序只影响列序（导出请求的 operation_order），不写回生产工序的 sequence_no。
+describe("生产工序导出面板 · 生产进度表的工序列排序", () => {
+  const sourceOrder = ["opr-1", "opr-2"]; // 夹具里 SO-2026-009 的工序：裁剪 → 缝制
+
+  it("弹窗里列出该订单的工序，默认顺序时导出不带 operation_order", async () => {
+    const calls = stubApi(() => xlsxResponse());
+    renderPanel();
+    await openDialog("生产进度表");
+    await pickOption(0, ORDER_A);
+
+    const editor = inDialog().getByTestId("progress-column-order-editor");
+    expect(within(editor).getByTestId("progress-column-opr-1")).toHaveTextContent("裁剪");
+    expect(within(editor).getByTestId("progress-column-opr-2")).toHaveTextContent("缝制");
+    expect(within(editor).getByTestId("progress-column-order-state")).toHaveTextContent("当前是默认列序");
+
+    await clickExport();
+    await waitFor(() => expect(anchorClicks).toHaveLength(1));
+    expect(calls[0].url).toBe("/api/v1/production/reports/production-progress.xlsx?order_no=SO-2026-009");
+  });
+
+  it("下移调整顺序后导出，operation_order 按新顺序带上", async () => {
+    const calls = stubApi(() => xlsxResponse());
+    renderPanel();
+    await openDialog("生产进度表");
+    await pickOption(0, ORDER_A);
+
+    await userEvent.click(inDialog().getByTestId("progress-column-down-opr-1"));
+    expect(inDialog().getByTestId("progress-column-order-state")).toHaveTextContent("已自定义列序");
+    // 列表里的先后也随之变化（1 号位变成缝制）
+    const list = inDialog().getByTestId("progress-column-order-editor").querySelectorAll("li");
+    expect(list[0]).toHaveTextContent("缝制");
+    expect(list[1]).toHaveTextContent("裁剪");
+
+    await clickExport();
+    await waitFor(() => expect(anchorClicks).toHaveLength(1));
+    expect(calls[0].url).toBe(`/api/v1/production/reports/production-progress.xlsx?order_no=SO-2026-009&operation_order=${sourceOrder[1]}%2C${sourceOrder[0]}`);
+  });
+
+  it("拖拽也能改顺序（原生 HTML5 拖拽路径）", async () => {
+    const calls = stubApi(() => xlsxResponse());
+    renderPanel();
+    await openDialog("生产进度表");
+    await pickOption(0, ORDER_A);
+
+    const editor = inDialog().getByTestId("progress-column-order-editor");
+    const source = within(editor).getByTestId("progress-column-opr-1");
+    const target = within(editor).getByTestId("progress-column-opr-2");
+    // jsdom 没有真正的 drag 会话：显式带上 dataTransfer，才能走到 React 的 onDragStart/onDrop
+    const dataTransfer = { setData: () => undefined, getData: () => null, effectAllowed: "move", dropEffect: "move" };
+    fireEvent.dragStart(source, { dataTransfer });
+    expect(source.className, "dragstart 必须被组件接收到（行进入拖拽态）").toContain("dragging");
+    fireEvent.dragOver(target, { dataTransfer });
+    fireEvent.drop(target, { dataTransfer });
+
+    await clickExport();
+    await waitFor(() => expect(anchorClicks).toHaveLength(1));
+    expect(calls[0].url).toContain(`operation_order=${sourceOrder[1]}%2C${sourceOrder[0]}`);
+  });
+
+  it("恢复默认顺序后参数消失；顺序按订单号记在本机（重新打开弹窗仍在）", async () => {
+    const calls = stubApi(() => xlsxResponse());
+    renderPanel();
+    await openDialog("生产进度表");
+    await pickOption(0, ORDER_A);
+    await userEvent.click(inDialog().getByTestId("progress-column-down-opr-1"));
+    expect(window.localStorage.getItem("dilee:progress-columns:SO-2026-009")).toBe('["opr-2","opr-1"]');
+
+    // 关掉再打开：顺序从本机读回来
+    await userEvent.keyboard("{Escape}");
+    await openDialog("生产进度表");
+    expect(inDialog().getByTestId("progress-column-order-state")).toHaveTextContent("已自定义列序");
+
+    await userEvent.click(inDialog().getByTestId("progress-column-reset"));
+    expect(inDialog().getByTestId("progress-column-order-state")).toHaveTextContent("当前是默认列序");
+    expect(window.localStorage.getItem("dilee:progress-columns:SO-2026-009")).toBeNull();
+
+    await clickExport();
+    await waitFor(() => expect(anchorClicks).toHaveLength(1));
+    expect(calls[0].url).toBe("/api/v1/production/reports/production-progress.xlsx?order_no=SO-2026-009");
+  });
+
+  it("没有工序的订单：给出提示而不是空列表", async () => {
+    renderPanel();
+    await openDialog("生产进度表");
+    await pickOption(0, ORDER_B);
+    expect(inDialog().getByTestId("progress-column-order-editor")).toHaveTextContent("该订单还没有工序");
   });
 });
 

@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { orderProgressColumns, parseOperationOrder } from "./production-progress-columns.domain";
 
 type Filters = { operation_id?: string; month?: string; order_no?: string };
 const LIMIT = 10000;
@@ -112,9 +113,11 @@ export class ProductionPayrollExportService {
   }
 
   /** 生产进度表：工序 × 生产日期的二维矩阵（原「材料与车间生产对应表」的下表，现已拆成独立导出表）。 */
-  async exportProductionProgress(filters: { order_no: string }, user: CurrentUser) {
+  async exportProductionProgress(filters: { order_no: string; operation_order?: string }, user: CurrentUser) {
     const { orderNo, sales, productionOrders } = await this.materialProductionContext(filters);
-    const { progressHeader, progressRows, shippedQuantity } = await this.progressSheet(orderNo, productionOrders);
+    // 用户在导出面板里拖拽过的工序列顺序（逗号分隔 id）：只排列表头，不改任何数量口径。
+    const operationOrder = parseOperationOrder(filters.operation_order);
+    const { progressHeader, progressRows, shippedQuantity } = await this.progressSheet(orderNo, productionOrders, operationOrder);
     const sheetRows: Array<Array<string | number | null>> = [
       ["生产进度表"],
       ["订单号", orderNo],
@@ -127,7 +130,8 @@ export class ProductionPayrollExportService {
       progressHeader,
       ...progressRows,
     ];
-    return this.buildSheet(sheetRows, "生产进度表", { report_type: "生产进度表", filters, progress_rows: progressRows.length }, user);
+    // 把用到的顺序写进导出元信息：拿到文件的人能看出列序是人工调整过的。
+    return this.buildSheet(sheetRows, "生产进度表", { report_type: "生产进度表", filters, progress_rows: progressRows.length, ...(operationOrder.length ? { operation_order: operationOrder } : {}) }, user);
   }
 
   /** 两张导出表共用的取数（销售单 + 采购明细 + 生产单工序）。 */
@@ -169,8 +173,11 @@ export class ProductionPayrollExportService {
    *
    * 「当日合计」列已按业务要求去掉：横排各工序相加没有业务含义（同一产品的不同工序会重复计数），
    * 而且它会让 A4 版面多占一列；表尾仍按工序给出累计量，读者需要横向汇总时可用 Excel 自行求和。
+   *
+   * `operationOrder`（用户 2026-09-15 要求）：导出面板里拖拽调整过的工序顺序，按它排列表头。
+   * 只影响列的先后，不改任何数量口径；没提到的工序按原相对顺序排在后面（新增工序不会丢列）。
    */
-  private async progressSheet(orderNo: string, productionOrders: Awaited<ReturnType<ProductionPayrollExportService["materialProductionContext"]>>["productionOrders"]) {
+  private async progressSheet(orderNo: string, productionOrders: Awaited<ReturnType<ProductionPayrollExportService["materialProductionContext"]>>["productionOrders"], operationOrder: string[] = []) {
     const productionIds = productionOrders.map((po) => po.id);
     const daily = productionIds.length ? await this.prisma.employeeDailyReport.groupBy({ by: ["productionOrderOperationId", "reportDate"], where: { productionOrderId: { in: productionIds }, deletedAt: null }, _sum: { quantity: true } }) : [];
     const dates = [...new Set(daily.map((row) => row.reportDate.toISOString().slice(0, 10)))].sort();
@@ -183,12 +190,13 @@ export class ProductionPayrollExportService {
     const shippedQuantity = this.num(shipped._sum.quantity);
 
     // 工序列：把「生产单 × 工序」摊平成列。同一工序名出现多次时补生产单号，避免列名重复无法区分。
-    const columns = productionOrders.flatMap((po) => po.operations.map((operation) => ({
+    // 最后按用户拖拽的顺序重排（`operation_order`）：它是导出显示偏好，不是生产顺序。
+    const columns = orderProgressColumns(productionOrders.flatMap((po) => po.operations.map((operation) => ({
       id: operation.id,
       name: operation.operationNameSnapshot,
       target: this.num(operation.targetQuantity),
       location: po.executionLocation?.name ?? "",
-    })));
+    }))), operationOrder);
     const nameCounts = columns.reduce<Record<string, number>>((acc, column) => ({ ...acc, [column.name]: (acc[column.name] ?? 0) + 1 }), {});
     const columnLabels = columns.map((column) => (nameCounts[column.name] > 1 ? `${column.name}（${column.name === "" ? "未命名" : ""}${productionOrders.find((po) => po.operations.some((operation) => operation.id === column.id))?.productionOrderNo ?? ""}）` : column.name));
 

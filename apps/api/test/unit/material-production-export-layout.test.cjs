@@ -68,6 +68,42 @@ function headerIndex(rows) {
   return rows.findIndex((row) => String(row[0]) === "日期");
 }
 
+// ------------------------------------------------------------------ 工序列顺序（用户拖拽）
+
+// 用户 2026-09-15 要求：导出生产进度表时允许拖拽调整工序排序，导出的工序 column 按这个顺序来。
+// 顺序是**导出显示偏好**，不是 production_order_operations.sequence_no（那是车间实际生产顺序）。
+test("生产进度表：按 operation_order 排列工序列，数量仍落在各自的工序列上", async () => {
+  const buffer = await service().exportProductionProgress({ order_no: "SO-1", operation_order: "op-2,op-1" }, user);
+  const rows = sheetRows(buffer);
+  const index = headerIndex(rows);
+  assert.deepEqual(rows[index].map((cell) => String(cell)), ["日期", "包装", "裁剪"], "列头按用户顺序：包装在前、裁剪在后");
+  assert.deepEqual(rows[index + 1].map((cell) => String(cell)), ["目标数量", "100", "100"], "目标数量行跟着列一起换位");
+  assert.deepEqual(rows[index + 2].map((cell) => String(cell)), ["加工地点", "一车间", "一车间"]);
+  // 09-01 只有裁剪（op-1）报了 30：换位后 30 必须落在「裁剪」那一列，而不是错列到包装
+  assert.deepEqual(rows[index + 3].map((cell) => String(cell)), ["2026-09-01", "", "30"]);
+  // 09-02：裁剪 20、包装 50
+  assert.deepEqual(rows[index + 4].map((cell) => String(cell)), ["2026-09-02", "50", "20"]);
+  assert.deepEqual(rows[index + 5].map((cell) => String(cell)), ["合计", "50", "50"], "表尾合计仍按工序各自累计");
+  // 换位只改列的先后，不能把数值格变成文本格（Excel 里要能直接求和）
+  const sheet = sheetCells(buffer);
+  assert.equal(cellType(sheet, index + 4, 1), "n", "包装列的数量仍是数值型");
+  assert.equal(cellType(sheet, index + 4, 2), "n", "裁剪列的数量仍是数值型");
+});
+
+test("生产进度表：只给了部分工序时，没提到的按原相对顺序接在后面（不会丢列）", async () => {
+  const rows = sheetRows(await service().exportProductionProgress({ order_no: "SO-1", operation_order: "op-2" }, user));
+  const index = headerIndex(rows);
+  assert.deepEqual(rows[index].map((cell) => String(cell)), ["日期", "包装", "裁剪"], "只提到包装：包装提前，裁剪跟在后面");
+});
+
+test("生产进度表：非法/未知的操作顺序不影响导出（未知 id 与空参数都退回默认顺序）", async () => {
+  for (const operation_order of ["op-ghost", "", " , ,"]) {
+    const rows = sheetRows(await service().exportProductionProgress({ order_no: "SO-1", operation_order }, user));
+    const index = headerIndex(rows);
+    assert.deepEqual(rows[index].map((cell) => String(cell)), ["日期", "裁剪", "包装"], `operation_order=${JSON.stringify(operation_order)} 时保持默认顺序`);
+  }
+});
+
 // ------------------------------------------------------------------ 独立的生产进度表
 
 test("生产进度表：列头是工序、行头是日期（横纵表头互换）", async () => {
