@@ -116,6 +116,8 @@ const receivableReconciliation = (over: Record<string, unknown> = {}) => ({
   systemBalance: "120.0000", externalBalance: "100.0000", difference: "20.0000", currency: "USD",
   status: "difference", resolutionRemark: null, remark: null, createdAt: "2026-09-30T00:00:00.000Z",
   customer: { id: "customer-1", name: "香港迪礼", customerCode: "C001" },
+  // 流转摘要由列表接口给出（2026-09-16 起）：差异中的对账默认没有可确认的草稿
+  flow: { entry_count: 1, draft_count: 1, draft_amount: "120.0000", can_confirm_receivables: false, order_nos: ["SO-1"], product_names: ["折叠伞"], product_specifications: ["黑胶"] },
   ...over,
 });
 const inboundSource = (over: Record<string, unknown> = {}) => ({
@@ -256,13 +258,23 @@ describe("应收管理 · 应收对账", () => {
   it("列出手动对账单（含客户与差异），并支持处理差异 / 一键确认应收", async () => {
     const calls = stubFinance({
       receivables: [source()],
-      reconciliations: [receivableReconciliation(), receivableReconciliation({ id: "recon-2", reconciliationNo: "REC-002", status: "matched", difference: "0.0000" })],
+      reconciliations: [
+        receivableReconciliation(),
+        // flow 是**列表**接口给的流转摘要：只有范围内确实还有草稿时才给「一键确认应收」
+        receivableReconciliation({ id: "recon-2", reconciliationNo: "REC-002", status: "matched", difference: "0.0000", flow: { entry_count: 2, draft_count: 2, draft_amount: "240.0000", can_confirm_receivables: true, order_nos: ["SO-1", "SO-2"], product_names: ["折叠伞"], product_specifications: ["黑胶"] } }),
+      ],
     });
     await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
     const table = panel("应收对账单");
     expect(table.getByText("REC-001")).toBeInTheDocument();
     expect(table.getByText("有差异")).toBeInTheDocument();
     expect(table.getByText("已对平")).toBeInTheDocument();
+    // 新列来自 flow 摘要：订单号 / 产品 / 规格型号 / 待确认条数
+    const matchedRow = within(screen.getByTestId("reconciliation-confirm-recon-2").closest("tr") as HTMLElement);
+    expect(matchedRow.getByText("SO-1、SO-2")).toBeInTheDocument();
+    expect(matchedRow.getByText("折叠伞")).toBeInTheDocument();
+    expect(matchedRow.getByText("黑胶")).toBeInTheDocument();
+    expect(matchedRow.getByText("2 条 / 240.0000")).toBeInTheDocument();
 
     fireEvent.click(table.getByRole("button", { name: "处理差异" }));
     setValue("action-field-remark", "客户确认差异为折让");
@@ -270,21 +282,34 @@ describe("应收管理 · 应收对账", () => {
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/reconciliations/recon-1/resolve")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/reconciliations/recon-1/resolve")[0]).resolution_remark).toBe("客户确认差异为折让");
 
-    fireEvent.click(panel("应收对账单").getByRole("button", { name: "一键确认应收" }));
+    fireEvent.click(screen.getByTestId("reconciliation-confirm-recon-2"));
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/reconciliations/recon-2/confirm-receivables")).toHaveLength(1));
     expect(callsTo(calls, "/api/v1/finance/reconciliations/recon-2/confirm-receivables")[0].method).toBe("POST");
   });
 
-  it("待创建对账按客户+月份分组，创建对账时把客户与期间自动带入表单", async () => {
+  it("对平但范围内没有草稿时不给「一键确认应收」，改为说明文字（按钮点了只会空转 0 条）", async () => {
+    stubFinance({ reconciliations: [receivableReconciliation({ status: "matched", difference: "0.0000", flow: { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_receivables: false, order_nos: [], product_names: [], product_specifications: [] } })] });
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    const actions = within(screen.getByTestId("reconciliation-actions-recon-1"));
+    expect(actions.queryByRole("button", { name: /一键确认应收/ })).toBeNull();
+    expect(actions.getByText("范围内没有待确认应收")).toBeVisible();
+  });
+
+  it("待创建对账逐条列出未覆盖的草稿（含产品与规格型号），并按该条的客户+月份带入表单", async () => {
     const calls = stubFinance({ receivables: [source()], customers: [{ id: "customer-1", name: "香港迪礼", customerCode: "C001" }] });
     await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
-    const groups = panel("待创建对账的条目");
-    expect(groups.getByText("香港迪礼")).toBeInTheDocument();
-    expect(groups.getByText("2026-09")).toBeInTheDocument();
-    expect(groups.getByText("1 条")).toBeInTheDocument();
+    const pending = within(screen.getByTestId("receivable-pending-entries"));
+    // 逐条：一眼看到「这条条目」在不在
+    expect(pending.getByText("AR-001")).toBeInTheDocument();
+    expect(pending.getByText("香港迪礼")).toBeInTheDocument();
+    expect(pending.getByText("2026-09")).toBeInTheDocument();
+    expect(pending.getByText("OUT-001")).toBeInTheDocument();
+    expect(pending.getByText("折叠伞")).toBeInTheDocument();
+    expect(pending.getByText("黑胶")).toBeInTheDocument();
+    expect(screen.getByTestId("receivable-pending-summary")).toHaveTextContent("1 条 / 合计 120.00");
 
-    fireEvent.click(groups.getByRole("button", { name: "创建对账" }));
-    // 客户与期间由分组自动带入，只需要填外部余额
+    fireEvent.click(pending.getByRole("button", { name: "创建对账" }));
+    // 客户与期间由该条自动带入，只需要填外部余额
     expect((screen.getByTestId("action-field-period_start") as HTMLInputElement).value).toBe("2026-09-01");
     expect((screen.getByTestId("action-field-period_end") as HTMLInputElement).value).toBe("2026-09-30");
     setValue("action-field-external_balance", "100");
@@ -292,6 +317,33 @@ describe("应收管理 · 应收对账", () => {
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/reconciliations").filter((call) => call.method === "POST")).toHaveLength(1));
     const body = bodyOf(callsTo(calls, "/api/v1/finance/reconciliations").filter((call) => call.method === "POST")[0]);
     expect(body).toMatchObject({ customer_id: "customer-1", period_start: "2026-09-01", period_end: "2026-09-30", external_balance: "100" });
+  });
+
+  it("已纳入对账单的草稿从待创建对账移出，并在说明里点名去向", async () => {
+    const covered = source({ id: "rec-9", sourceNo: "AR-009", reconciliation: { id: "recon-1", reconciliation_no: "REC-001", status: "matched", period_start: "2026-09-01T00:00:00.000Z", period_end: "2026-09-30T00:00:00.000Z" } });
+    stubFinance({ receivables: [source(), covered] });
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    const pending = within(screen.getByTestId("receivable-pending-entries"));
+    expect(pending.getByText("AR-001")).toBeInTheDocument();
+    expect(pending.queryByText("AR-009")).toBeNull();
+    expect(screen.getByTestId("receivable-covered-drafts")).toHaveTextContent("另有 1 条出库条目已纳入对账单、不在此重复对账：AR-009（REC-001，可在对账单行内一键确认）");
+  });
+
+  it("双击已创建对账单，弹窗里展示这批货的产品与规格型号", async () => {
+    const detail = receivableReconciliation({
+      flow: { entry_count: 1, draft_count: 1, draft_amount: "120.0000", can_confirm_receivables: true, order_nos: ["SO-1"], product_names: ["折叠伞"], product_specifications: ["黑胶"] },
+      details: { entries: [source()], draft_entries: [source()], entry_count: 1, draft_count: 1, draft_amount: "120.0000", can_confirm_receivables: true },
+    });
+    const calls = stubFinance({ reconciliations: [receivableReconciliation()] }, (url) => (url.endsWith("/api/v1/finance/reconciliations/recon-1") ? apiOk(detail) : undefined));
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.doubleClick(screen.getAllByTestId("data-table-row")[0]);
+    const dialog = await screen.findByTestId("finance-record-detail");
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/reconciliations/recon-1")).toHaveLength(1));
+    // 字段区与「纳入对账的应收条目」明细表都有这两列/字段，按「至少出现一次」断言
+    expect(within(dialog).getAllByText("产品").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("折叠伞").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("规格型号").length).toBeGreaterThan(0);
+    expect(within(dialog).getAllByText("黑胶").length).toBeGreaterThan(0);
   });
 });
 
@@ -382,6 +434,31 @@ describe("应收管理 · 确认应收与收款", () => {
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/customer-payments/cp-1/post")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/customer-payments/cp-1/post")[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
+  });
+
+  // 2026-09-16（用户要求「应收侧对应的问题也都改」）：确认应收的收款部分同样要能折叠收纳。
+  it("收款面板可折叠收纳：收起后连表格一起隐藏，展开恢复，并把选择记在本机", async () => {
+    window.localStorage.removeItem("dilee:panel:receivable-payments");
+    stubFinance({ receivables: [confirmedSource], customerPayments: [payment()] });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    const toggle = screen.getByTestId("receivable-payments-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveTextContent("收起");
+    expect(panel("收款").getByText("RC-001")).toBeVisible();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent("展开");
+    expect(panel("收款").queryByText("RC-001")).toBeNull();
+    // 收起只影响收款面板，应收台账还在
+    expect(panel("确认应收").getByText("AR-002")).toBeVisible();
+    expect(window.localStorage.getItem("dilee:panel:receivable-payments")).toBe("collapsed");
+
+    // 展开回去，避免影响同文件里的其他用例（jsdom 的 localStorage 是共享的）
+    await userEvent.click(screen.getByTestId("receivable-payments-toggle"));
+    expect(panel("收款").getByText("RC-001")).toBeVisible();
+    expect(window.localStorage.getItem("dilee:panel:receivable-payments")).toBe("expanded");
   });
 });
 

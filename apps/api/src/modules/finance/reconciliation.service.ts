@@ -7,6 +7,7 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
+import { receivableInReconciliationScope } from "./receivable.domain";
 
 /**
  * 应收对账输入。
@@ -18,16 +19,41 @@ export type ReconciliationInput = { order_no?: string; customer_id?: string; per
 
 const STATUS_LABELS: Record<string, string> = { pending: "待处理", matched: "已对平", difference: "有差异", resolved: "差异已处理" };
 
+/**
+ * 一行对账的流转摘要（2026-09-16 起，与应付侧 `flow` 对称）。
+ *
+ * 为什么列表也要算：对账单行上要能直接看到「覆盖多少条应收、其中多少条待确认」以及
+ * 「这批货对应哪些订单、什么产品/规格」，并且只在该确认的时候才给「一键确认应收」按钮
+ * （范围内没有草稿时那个按钮点了也只是空转）。
+ */
+type ReconciliationFlow = {
+  entry_count: number;
+  draft_count: number;
+  draft_amount: string;
+  can_confirm_receivables: boolean;
+  order_nos: string[];
+  product_names: string[];
+  product_specifications: string[];
+};
+
 @Injectable()
 export class ReconciliationService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly adjustments: ReceivableAdjustmentService, @Optional() private readonly currencies?: CurrencyService) {}
 
+  /**
+   * 对账列表。
+   *
+   * 2026-09-16：每行带上 `flow`（覆盖多少条应收、其中多少条待确认、覆盖哪些订单与产品），
+   * 与应付对账列表同一套写法 —— 列表行上就能看到「这批货对的是什么、下一步能不能一键确认」。
+   */
   async list(orderNo?: string, customerId?: string, status?: string) {
-    return this.prisma.receivableReconciliation.findMany({
+    const rows = await this.prisma.receivableReconciliation.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) },
       include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } },
       orderBy: { createdAt: "desc" },
     });
+    const flows = await this.flows(rows);
+    return rows.map((row) => ({ ...row, flow: flows.get(row.id) ?? this.emptyFlow() }));
   }
 
   /** 对账详情：对账快照字段 + 该客户/期间内纳入对账的应收条目（含待确认与已确认）。 */
@@ -39,6 +65,9 @@ export class ReconciliationService {
     return {
       ...row,
       status_label: STATUS_LABELS[row.status] ?? row.status,
+      // 详情也带 flow：列表与详情用同一份摘要（订单号 / 产品名称 / 规格型号），
+      // 前端不必为「详情里显示什么」再维护一套口径。
+      flow: this.summarize(entries, row.status),
       details: {
         entries,
         draft_entries: draft,
@@ -109,7 +138,7 @@ export class ReconciliationService {
       if (!current) throw this.notFound("RECONCILIATION_NOT_FOUND", "应收对账不存在");
       if (!this.canConfirmReceivables(current.status)) throw this.invalid("RECONCILIATION_NOT_COMPLETED", `对账尚未完成（当前：${STATUS_LABELS[current.status] ?? current.status}），请先处理差异`);
       const scope = this.scopeWhere(current);
-      const endExclusive = new Date(current.periodEnd.getTime() + 24 * 60 * 60 * 1000);
+      const endExclusive = this.endExclusive(current.periodEnd);
       const drafts = await tx.receivableSource.findMany({
         where: { ...scope, deletedAt: null, status: "draft", createdAt: { gte: current.periodStart, lt: endExclusive } },
         select: { id: true, sourceNo: true, orderNo: true, amount: true, currency: true },
@@ -167,11 +196,52 @@ export class ReconciliationService {
 
   private canConfirmReceivables(status: string) { return status === "matched" || status === "resolved"; }
 
+  /**
+   * 一次取回多张对账范围内的应收条目 → 逐行摘要。
+   *
+   * 与应付侧同一套写法：一次 `findMany`（OR 精确复刻各行范围）后在内存里用
+   * `receivableInReconciliationScope` 过滤，避免每行一次 N+1，也保证与快照/批量确认同口径。
+   */
+  private async flows(rows: Array<{ id: string; status: string; customerId: string; orderNo: string | null; currency: string; periodStart: Date; periodEnd: Date }>) {
+    const map = new Map<string, ReconciliationFlow>();
+    if (!rows.length) return map;
+    const entries = (await this.prisma.receivableSource.findMany({
+      where: { OR: rows.map((row) => ({ ...this.scopeWhere(row), currency: row.currency, deletedAt: null, status: { not: "cancelled" }, createdAt: { gte: row.periodStart, lt: this.endExclusive(row.periodEnd) } })) },
+      include: { outbound: { select: { productNameSnapshot: true, productSpecificationSnapshot: true } } },
+      orderBy: { createdAt: "asc" },
+    })) as Array<{ id: string; orderNo: string; customerId: string; currency: string; createdAt: Date; amount: Prisma.Decimal; status: string; outbound?: { productNameSnapshot: string | null; productSpecificationSnapshot: string | null } | null }>;
+    for (const row of rows) {
+      map.set(row.id, this.summarize(entries.filter((entry) => receivableInReconciliationScope(entry, row)), row.status));
+    }
+    return map;
+  }
+
+  /** 一组应收条目 → 流转摘要（覆盖条数、待确认、订单号、产品名称与规格型号）。 */
+  private summarize(entries: Array<{ orderNo: string | null; amount: Prisma.Decimal; status: string; outbound?: { productNameSnapshot: string | null; productSpecificationSnapshot: string | null } | null }>, status: string): ReconciliationFlow {
+    const drafts = entries.filter((entry) => entry.status === "draft");
+    const draftAmount = drafts.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
+    return {
+      entry_count: entries.length,
+      draft_count: drafts.length,
+      draft_amount: draftAmount.toFixed(4),
+      can_confirm_receivables: this.canConfirmReceivables(status) && drafts.length > 0,
+      order_nos: [...new Set(entries.map((entry) => entry.orderNo).filter((value): value is string => Boolean(value)))],
+      product_names: [...new Set(entries.map((entry) => entry.outbound?.productNameSnapshot).filter((value): value is string => Boolean(value)))],
+      product_specifications: [...new Set(entries.map((entry) => entry.outbound?.productSpecificationSnapshot).filter((value): value is string => Boolean(value)))],
+    };
+  }
+
+  private emptyFlow(): ReconciliationFlow {
+    return { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_receivables: false, order_nos: [], product_names: [], product_specifications: [] };
+  }
+
+  /** 期间右端：含结束日整天（对账期间是日期，业务事实的时间戳带时分秒）。 */
+  private endExclusive(periodEnd: Date) { return new Date(periodEnd.getTime() + 24 * 60 * 60 * 1000); }
+
   /** 纳入对账的应收条目：期间内、非取消，附带已核销/未收余额（列表与详情共用一个口径）。 */
   private async entries(row: { orderNo: string | null; customerId: string; periodStart: Date; periodEnd: Date; currency: string }) {
-    const endExclusive = new Date(row.periodEnd.getTime() + 24 * 60 * 60 * 1000);
     const rows = await this.prisma.receivableSource.findMany({
-      where: { ...this.scopeWhere(row), currency: row.currency, deletedAt: null, status: { not: "cancelled" }, createdAt: { gte: row.periodStart, lt: endExclusive } },
+      where: { ...this.scopeWhere(row), currency: row.currency, deletedAt: null, status: { not: "cancelled" }, createdAt: { gte: row.periodStart, lt: this.endExclusive(row.periodEnd) } },
       include: {
         customer: { select: { id: true, name: true, customerCode: true } },
         outbound: { select: { outboundNo: true, status: true, productNameSnapshot: true, productSpecificationSnapshot: true, signedAt: true, shipmentDate: true } },
@@ -181,12 +251,13 @@ export class ReconciliationService {
     });
     return rows.map((source) => {
       const allocated = source.allocations.filter((item) => item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
-      return { ...source, allocated_amount: allocated.toFixed(4), outstanding_amount: source.amount.minus(allocated).toFixed(4) };
+      // 产品名称/规格型号与「成品出库条目」列表同一口径（出库快照），对账详情据此展示「这批货是什么」。
+      return { ...source, product_name: source.outbound?.productNameSnapshot ?? null, product_specification: source.outbound?.productSpecificationSnapshot ?? null, allocated_amount: allocated.toFixed(4), outstanding_amount: source.amount.minus(allocated).toFixed(4) };
     });
   }
 
   private async snapshot(scope: { orderNo?: string; customerId: string }, from: Date, to: Date, currency: string) {
-    const endExclusive = new Date(to.getTime() + 24 * 60 * 60 * 1000);
+    const endExclusive = this.endExclusive(to);
     const where = { ...this.scopeWhere({ orderNo: scope.orderNo ?? null, customerId: scope.customerId }), currency, deletedAt: null };
     const [sources, payments, adjustments] = await Promise.all([
       this.prisma.receivableSource.findMany({ where: { ...where, createdAt: { gte: from, lt: endExclusive }, status: { not: "cancelled" } } }),

@@ -6,6 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { receivableAmountFor, receivableUnitPrice, settlementRemark } from "../warehouse/finished-goods-settlement";
+import { coveringReceivableReconciliation } from "./receivable.domain";
 
 @Injectable()
 export class ReceivableService {
@@ -16,6 +17,11 @@ export class ReceivableService {
    *
    * 财务页面按「成品出库条目」展示，必须能一眼看到客户名称、出库单号和未收余额：
    * 只给 UUID 的列表对账时根本没法核对（宪法/规格：列表以订单号、来源编号、客户名称展示，UUID 仅作内部关联键）。
+   *
+   * 2026-09-16：每条再带上**覆盖它的对账单**（`reconciliation`）。为什么由服务端算：对账范围是
+   * 「订单号（填了才收窄）或客户 + 币种 + 期间」，前端自己推一遍必然与服务端漂移
+   * （与应付侧 `coveringPayableReconciliation` 同一处理）。用途是「待创建对账」只列**没被覆盖**的草稿，
+   * 已被覆盖的要显式说明它进了哪张对账单 —— 否则用户会以为这条应收「没流转过去」。
    */
   async list(orderNo?: string, customerId?: string, status?: string) {
     const rows = await this.prisma.receivableSource.findMany({
@@ -27,8 +33,21 @@ export class ReceivableService {
       },
       orderBy: { createdAt: "desc" },
     });
+    const customerIds = [...new Set(rows.map((row) => row.customerId))];
+    // 两种对账都要找出来：按客户建的（customerId 命中）与按订单建的（orderNo 命中）。
+    // 只按 customerId 查会漏掉「对账的客户 ≠ 条目上带的客户」这种数据不一致的历史行，
+    // 而按订单匹配本来就不看客户；OR 查询一并覆盖，代价只是多带一个索引条件。
+    const orderNos = [...new Set(rows.map((row) => row.orderNo).filter((value): value is string => Boolean(value)))];
+    const scopes = customerIds.length
+      ? await this.prisma.receivableReconciliation.findMany({
+        where: { deletedAt: null, OR: [{ customerId: { in: customerIds } }, ...(orderNos.length ? [{ orderNo: { in: orderNos } }] : [])] },
+        select: { id: true, reconciliationNo: true, status: true, customerId: true, orderNo: true, currency: true, periodStart: true, periodEnd: true },
+        orderBy: { createdAt: "desc" },
+      })
+      : [];
     return rows.map((row) => {
       const allocated = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
+      const covering = coveringReceivableReconciliation(row, scopes);
       return {
         ...row,
         customer_name: row.customer?.name ?? null,
@@ -38,6 +57,7 @@ export class ReceivableService {
         product_specification: row.outbound?.productSpecificationSnapshot ?? null,
         allocated_amount: allocated.toFixed(4),
         outstanding_amount: row.amount.minus(allocated).toFixed(4),
+        reconciliation: covering ? { id: covering.id, reconciliation_no: covering.reconciliationNo, status: covering.status, period_start: covering.periodStart, period_end: covering.periodEnd } : null,
       };
     });
   }

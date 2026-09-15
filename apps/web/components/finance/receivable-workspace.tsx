@@ -18,6 +18,7 @@ import { Input } from "../ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
+import { useCollapsiblePanel } from "../../lib/collapsible-panel";
 import { RECEIVABLE_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type ReceivableTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
@@ -42,6 +43,8 @@ type BankLink = { id: string; bankName: string; accountNumber: string } | null;
 /** 收支项目字典项（财务 → 收支管理 → 收支项目）。 */
 type DictionaryItem = { id: string; key: string; label: string; isActive: boolean };
 type SourceAllocation = { id: string; amount: string; status: string; payment?: { id: string; paymentNo: string; status: string; paymentDate: string; amount?: string; currency?: string } | null };
+/** 覆盖这条应收的对账单（列表接口算好给前端：对账范围是「订单号或客户 + 币种 + 期间」，前端推不出来）。 */
+type ReconciliationRef = { id: string; reconciliation_no: string; status: string; period_start: string; period_end: string };
 type ReceivableSource = {
   id: string; sourceNo: string; orderNo: string; customerId: string; outboundId: string;
   quantity: string; unit: string; unitPrice: string | null; taxRate: string | null; amount: string; currency: string;
@@ -50,6 +53,7 @@ type ReceivableSource = {
   customer_name: string | null; customer_code: string | null; outbound_no: string | null;
   product_name: string | null; product_specification: string | null;
   allocated_amount: string; outstanding_amount: string;
+  reconciliation?: ReconciliationRef | null;
   customer?: CustomerRef | null;
   outbound?: { outboundNo: string; status: string; productNameSnapshot: string | null; productSpecificationSnapshot: string | null; signedAt: string | null; shipmentDate: string | null } | null;
   allocations?: SourceAllocation[];
@@ -71,6 +75,11 @@ type Reconciliation = {
   bankId?: string | null; bank?: BankLink;
   customer?: CustomerRef | null;
   status_label?: string;
+  /** 流转摘要（列表接口就给，与应付对账的 flow 对称）：覆盖多少条、多少条待确认、哪些订单与产品。 */
+  flow?: {
+    entry_count: number; draft_count: number; draft_amount: string; can_confirm_receivables: boolean;
+    order_nos: string[]; product_names: string[]; product_specifications: string[];
+  };
   details?: { entries: ReconciliationEntry[]; draft_entries: ReconciliationEntry[]; entry_count: number; draft_count: number; draft_amount: string; can_confirm_receivables: boolean };
 };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
@@ -102,6 +111,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   const [sourceFilter, setSourceFilter] = useState("");
   const [paymentFilter, setPaymentFilter] = useState("");
+  // 「确认应收」的「收款」面板可折叠收纳：收款单多的时候很占屏幕，收起后专心看上半张应收台账；
+  // 用户的选择记在本机（与应付的「付款」、生产单详情的「工序与进度」同一个 hook）。
+  const paymentsPanel = useCollapsiblePanel("receivable-payments");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -291,21 +303,18 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     void action(`/finance/reconciliations/${item.id}/confirm-receivables`, undefined, `已批量确认 ${item.reconciliationNo} 的待确认应收`);
   }
 
-  // ---------------------------------------------------------------- 待创建对账分组
+  // ---------------------------------------------------------------- 待创建对账
 
-  const pendingGroups = useMemo(() => {
-    const map = new Map<string, { customerId: string; customerName: string; month: string; count: number; amount: number }>();
-    for (const source of sources) {
-      if (source.status !== "draft") continue;
-      const month = monthOf(source.createdAt);
-      const key = `${source.customerId}|${month}`;
-      const group = map.get(key) ?? { customerId: source.customerId, customerName: source.customer_name ?? source.customerId, month, count: 0, amount: 0 };
-      group.count += 1;
-      group.amount += Number(source.amount);
-      map.set(key, group);
-    }
-    return [...map.values()].sort((a, b) => (a.month === b.month ? a.customerName.localeCompare(b.customerName) : b.month.localeCompare(a.month)));
-  }, [sources]);
+  /**
+   * 「待创建对账的条目」= **逐条**列出还没有被任何对账单覆盖的草稿应收（与应付侧同一套写法）。
+   *
+   * 为什么不再按客户 + 月份汇总：汇总行只显示「N 条」，新生成的出库条目被折叠进计数里，
+   * 用户看不出「这条到底在不在表里」；已经纳入过对账单的草稿由列表接口标记（`reconciliation`）
+   * 从本表移出，并在下面点名说明它进了哪张对账单（不能让它不声不响地消失）。
+   */
+  const pendingReconcile = useMemo(() => sources.filter((source) => source.status === "draft" && !source.reconciliation), [sources]);
+  const coveredDrafts = useMemo(() => sources.filter((source) => source.status === "draft" && source.reconciliation), [sources]);
+  const pendingReconcileTotal = pendingReconcile.reduce((sum, source) => sum + Number(source.amount), 0);
 
   // ---------------------------------------------------------------- 列表
 
@@ -378,8 +387,12 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const reconciliationColumns: ColumnDef<Reconciliation>[] = [
     { accessorKey: "reconciliationNo", header: "对账单号" },
     { id: "customer", header: "客户", cell: ({ row }) => row.original.customer?.name ?? "-" },
-    { id: "order", header: "订单号", cell: ({ row }) => row.original.orderNo ?? "全部订单" },
+    { id: "order", header: "订单号", cell: ({ row }) => row.original.orderNo ?? (row.original.flow?.order_nos.length ? row.original.flow.order_nos.join("、") : "全部订单") },
+    // 用户要求（应付侧同款）：对账要能看出「这批货是什么、什么规格」。
+    { id: "product", header: "产品", cell: ({ row }) => row.original.flow?.product_names?.join("、") || "-" },
+    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.flow?.product_specifications?.join("、") || "-" },
     { id: "period", header: "期间", cell: ({ row }) => `${day(row.original.periodStart)} 至 ${day(row.original.periodEnd)}` },
+    { id: "entries", header: "待确认应收", cell: ({ row }) => row.original.flow && row.original.flow.draft_count > 0 ? `${row.original.flow.draft_count} 条 / ${row.original.flow.draft_amount}` : "-" },
     { id: "receivable", header: "应收快照", cell: ({ row }) => money(row.original.receivableAmountSnapshot, row.original.currency) },
     { id: "paid", header: "已收快照", cell: ({ row }) => money(row.original.paymentAmountSnapshot, row.original.currency) },
     { id: "system", header: "系统余额", cell: ({ row }) => money(row.original.systemBalance, row.original.currency) },
@@ -387,17 +400,28 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "difference", header: "差异", cell: ({ row }) => money(row.original.difference, row.original.currency) },
     { id: "bank", header: "回款银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
+    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row" data-testid={`reconciliation-actions-${row.original.id}`}>
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
-      {["matched", "resolved"].includes(row.original.status) && <Button size="sm" variant="secondary" onClick={() => confirmReconciliation(row.original)}>一键确认应收</Button>}
+      {/* 范围里确实还有草稿才给「一键确认」：点一个只会空转 0 条的按钮比没有按钮更误导 */}
+      {row.original.flow?.can_confirm_receivables ? <Button size="sm" data-testid={`reconciliation-confirm-${row.original.id}`} onClick={() => confirmReconciliation(row.original)}>一键确认应收（{row.original.flow.draft_count} 条）</Button> : null}
+      {["matched", "resolved"].includes(row.original.status) && row.original.flow && row.original.flow.draft_count === 0 ? <span className="panel-note">范围内没有待确认应收</span> : null}
     </div> },
   ];
-  const pendingGroupColumns: ColumnDef<{ customerId: string; customerName: string; month: string; count: number; amount: number }>[] = [
-    { id: "customer", header: "客户", cell: ({ row }) => row.original.customerName },
-    { id: "month", header: "待对账月份", cell: ({ row }) => row.original.month },
-    { id: "count", header: "待确认出库条目", cell: ({ row }) => `${row.original.count} 条` },
-    { id: "amount", header: "待确认金额", cell: ({ row }) => row.original.amount.toFixed(2) },
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => createReconciliation({ customerId: row.original.customerId, month: row.original.month })}>创建对账</Button> },
+  /**
+   * 「待创建对账的条目」逐条列：一行一条草稿应收，能看到客户 / 来源编号 / 出库单 / 订单号 /
+   * 产品与规格型号 / 金额。行内「创建对账」按该条的客户 + 月份建单（一张对账单覆盖该客户该月全部待确认应收）。
+   */
+  const pendingSourceColumns: ColumnDef<ReceivableSource>[] = [
+    { id: "customer", header: "客户", cell: ({ row }) => row.original.customer_name ?? row.original.customer_code ?? row.original.customerId },
+    { accessorKey: "sourceNo", header: "应收来源" },
+    { id: "month", header: "待对账月份", cell: ({ row }) => monthOf(row.original.createdAt) },
+    { accessorKey: "orderNo", header: "订单号" },
+    { id: "outbound", header: "出库单", cell: ({ row }) => row.original.outbound_no ?? "-" },
+    { id: "product", header: "产品", cell: ({ row }) => row.original.product_name ?? "-" },
+    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.product_specification ?? "-" },
+    { id: "amount", header: "应收金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "created", header: "出库日期", cell: ({ row }) => day(row.original.createdAt) },
+    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" title="按这条的客户 + 月份创建：一张对账单覆盖该客户该月全部待确认应收" onClick={() => createReconciliation({ customerId: row.original.customerId, month: monthOf(row.original.createdAt) })}>创建对账</Button> },
   ];
 
   // ---------------------------------------------------------------- 详情弹窗内容
@@ -439,6 +463,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       return [
         { label: "对账单号", value: item.reconciliationNo }, { label: "状态", value: financeStatus(item.status, "reconciliation") },
         { label: "客户", value: item.customer?.name ?? item.customerId }, { label: "订单号", value: item.orderNo ?? "全部订单" },
+        // 用户要求（应付侧同款）：双击已创建对账单，弹窗里要能直接看到这批货的名称与规格型号。
+        { label: "产品", value: item.flow?.product_names?.join("、"), wide: true },
+        { label: "规格型号", value: item.flow?.product_specifications?.join("、"), wide: true },
         { label: "期间", value: `${day(item.periodStart)} 至 ${day(item.periodEnd)}` },
         { label: "应收快照", value: money(item.receivableAmountSnapshot, item.currency) },
         { label: "已收快照", value: money(item.paymentAmountSnapshot, item.currency) },
@@ -472,7 +499,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const item = detailData as Reconciliation;
       const entries = item.details?.entries ?? [];
       return [{ title: `纳入对账的应收条目（${entries.length} 条）`, note: "对平（或差异已处理）后可一键批量确认其中的草稿应收。", content: entries.length
-        ? <DataTable pageSize={10} columns={[{ accessorKey: "sourceNo", header: "应收来源" }, { accessorKey: "orderNo", header: "订单号" }, { id: "customer", header: "客户", cell: ({ row }) => row.original.customer_name ?? "-" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "outstanding", header: "未收", cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) }, { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "receivable") }] as ColumnDef<ReconciliationEntry>[]} data={entries} /> : <p className="panel-note">该期间没有纳入对账的应收条目</p> }];
+        ? <DataTable pageSize={10} columns={[{ accessorKey: "sourceNo", header: "应收来源" }, { accessorKey: "orderNo", header: "订单号" }, { id: "customer", header: "客户", cell: ({ row }) => row.original.customer_name ?? "-" }, { id: "product", header: "产品", cell: ({ row }) => row.original.product_name ?? "-" }, { id: "specification", header: "规格型号", cell: ({ row }) => row.original.product_specification ?? "-" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "outstanding", header: "未收", cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) }, { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "receivable") }] as ColumnDef<ReconciliationEntry>[]} data={entries} /> : <p className="panel-note">该期间没有纳入对账的应收条目</p> }];
     }
     return [];
   }
@@ -498,7 +525,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const item = detailData as Reconciliation;
       return <>
         {item.status === "difference" && <Button onClick={() => resolveReconciliation(item)}>处理差异</Button>}
-        {["matched", "resolved"].includes(item.status) && <Button onClick={() => confirmReconciliation(item)}>一键确认应收（{item.details?.draft_count ?? 0} 条）</Button>}
+        {/* 与列表同一口径：范围内确实还有草稿才给一键确认（弹窗里的「纳入条目数」已说明待确认条数） */}
+        {item.details?.can_confirm_receivables ? <Button onClick={() => confirmReconciliation(item)}>一键确认应收（{item.details.draft_count} 条）</Button> : null}
       </>;
     }
     return null;
@@ -551,8 +579,21 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     </>}
     {!error && activeTab.key === "reconciliations" && <>
       <section className="panel">
-        <div className="panel-heading"><h2>待创建对账的条目</h2><span className="panel-note">按客户 + 月份汇总尚未确认的成品出库条目；点「创建对账」会把客户与期间自动带入表单</span></div>
-        <div className="panel-body"><DataTable columns={pendingGroupColumns} data={pendingGroups} empty={<EmptyState title="没有待创建对账的条目" />} /></div>
+        <div className="panel-heading">
+          <h2>待创建对账的条目</h2>
+          {/* 条数放在 h2 外面：标题保持原样，按标题定位这个面板的脚本/测试才不会被条数干扰。 */}
+          <span className="panel-note" data-testid="receivable-pending-summary">{pendingReconcile.length} 条 / 合计 {pendingReconcileTotal.toFixed(2)}</span>
+        </div>
+        <div className="panel-body">
+          <p className="panel-note">逐条列出还没有纳入任何对账单的草稿应收（成品出库过账后出现在这里）。行内「创建对账」按该条的客户 + 月份建单：一张对账单覆盖该客户该月全部待确认应收，创建后这些条目会移到下面的「应收对账单」。</p>
+          <div data-testid="receivable-pending-entries">
+            <DataTable columns={pendingSourceColumns} data={pendingReconcile} empty={<EmptyState title="没有待创建对账的条目" description="成品出库过账生成应收来源后，尚未纳入对账单的草稿条目会逐条列在这里。" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" />
+          </div>
+          {/* 已被对账单覆盖的草稿必须点名，否则用户会以为「这条应收没流转过去」。 */}
+          {coveredDrafts.length ? <p className="panel-note" data-testid="receivable-covered-drafts">
+            另有 {coveredDrafts.length} 条出库条目已纳入对账单、不在此重复对账：{coveredDrafts.map((source) => `${source.sourceNo}（${source.reconciliation?.reconciliation_no}${["matched", "resolved"].includes(source.reconciliation?.status ?? "") ? "，可在对账单行内一键确认" : "，需先处理差异"}）`).join("、")}
+          </p> : null}
+        </div>
       </section>
       <section className="panel">
         <div className="panel-heading"><h2>应收对账单</h2><span className="panel-note">对平（或差异已处理）后可一键批量确认该对账范围内的草稿应收；对账单上的回款银行同样来自银行账户池</span></div>
@@ -566,11 +607,19 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         <div className="panel-body"><DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="暂无应收台账" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" /></div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><h2>收款</h2><span className="panel-note">草稿收款先过账核销，核销后可冲销并恢复应收余额；到账银行从「财务 → 银行账户」的银行池里选（编辑草稿时可改币种与银行）</span></div>
-        <div className="panel-body">
+        <div className="panel-heading">
+          <h2>收款</h2>
+          <div className="page-actions">
+            <span className="panel-note">{filteredPayments.length} 张</span>
+            {/* 收纳开关放在 h2 **外面**：塞进标题会让可访问名变成「收款 收起」，按标题定位面板会失准。 */}
+            <Button size="sm" variant="secondary" aria-expanded={paymentsPanel.open} data-testid="receivable-payments-toggle" title={paymentsPanel.open ? "收起收款" : "展开收款"} onClick={paymentsPanel.toggle}>{paymentsPanel.open ? "收起" : "展开"}</Button>
+          </div>
+        </div>
+        {paymentsPanel.open && <div className="panel-body">
+          <p className="panel-note">草稿收款先过账核销，核销后可冲销并恢复应收余额；到账银行从「财务 → 银行账户」的银行池里选（编辑草稿时可改币种与银行）</p>
           <div className="filter-bar"><label>搜索<Input value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)} placeholder="收款单号 / 订单号 / 客户" /></label></div>
           <DataTable columns={paymentColumns} data={filteredPayments} empty={<EmptyState title="暂无收款记录" />} onRowDoubleClick={(row) => setDetail({ kind: "payment", id: row.id })} rowTitle="双击查看详情" />
-        </div>
+        </div>}
       </section>
     </>}
   </div>;

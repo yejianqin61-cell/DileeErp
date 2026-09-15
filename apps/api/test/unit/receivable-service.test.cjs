@@ -200,3 +200,46 @@ test("手工补建应收拒绝 0 元与负金额（与出库过账同一门槛�
   await assert.rejects(() => make(zeroPriced).createFromOutbound("outbound-1", { amount: "0" }, { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_AMOUNT_REQUIRED");
 });
 
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求「应收侧对应的问题也都改」）：
+//   待创建对账不该继续展示已经被某张对账单覆盖的出库条目；
+//   被覆盖的条目要能查到去向（进了哪张对账单）。
+// ---------------------------------------------------------------------------
+
+test("应收列表标出每条应收被哪张对账单覆盖（订单号（填了才收窄）或客户 + 币种 + 期间）", async () => {
+  const base = {
+    amount: new Prisma.Decimal("100"), status: "draft", allocations: [], createdAt: new Date("2026-09-10T00:00:00.000Z"),
+    customer: { id: "customer-1", name: "香港迪礼", customerCode: "C001" }, outbound: null,
+  };
+  const rows = [
+    { ...base, id: "by-order", customerId: "customer-1", orderNo: "SO-7", currency: "USD" },
+    { ...base, id: "order-mismatch", customerId: "customer-1", orderNo: "SO-8", currency: "USD" },
+    { ...base, id: "other-customer", customerId: "customer-2", orderNo: "SO-99", currency: "USD" },
+    { ...base, id: "other-month", customerId: "customer-1", orderNo: "SO-7", currency: "USD", createdAt: new Date("2026-08-10T00:00:00.000Z") },
+    { ...base, id: "other-currency", customerId: "customer-1", orderNo: "SO-7", currency: "CNY" },
+  ];
+  const prisma = {
+    receivableSource: { findMany: async () => rows },
+    receivableReconciliation: {
+      findMany: async (args) => {
+        // 按订单建的对账不会被 customerId 过滤漏掉：OR 里同时查 orderNo
+        assert.deepEqual(args.where.OR, [{ customerId: { in: ["customer-1", "customer-2"] } }, { orderNo: { in: ["SO-7", "SO-8", "SO-99"] } }], "客户与订单两种对账都要取回来");
+        return [
+          { id: "recon-1", reconciliationNo: "REC-001", status: "matched", customerId: "customer-1", orderNo: "SO-7", currency: "USD", periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") },
+          { id: "recon-2", reconciliationNo: "REC-002", status: "difference", customerId: "customer-2", orderNo: null, currency: "USD", periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") },
+        ];
+      },
+    },
+  };
+  const result = await new ReceivableService(prisma, {}).list();
+  const byId = Object.fromEntries(result.map((row) => [row.id, row]));
+  assert.deepEqual(byId["by-order"].reconciliation, { id: "recon-1", reconciliation_no: "REC-001", status: "matched", period_start: new Date("2026-09-01T00:00:00.000Z"), period_end: new Date("2026-09-30T00:00:00.000Z") });
+  assert.equal(byId["order-mismatch"].reconciliation, null, "按订单建的对账只覆盖该订单，也不被别家客户的客户级对账覆盖");
+  assert.equal(byId["other-customer"].reconciliation.id, "recon-2", "按客户的（orderNo 为空）对账覆盖该客户所有订单");
+  assert.equal(byId["other-month"].reconciliation, null, "8 月的出库条目不在 9 月对账范围内");
+  assert.equal(byId["other-currency"].reconciliation, null, "币种不一致不算覆盖");
+  // 列表本身的既有字段不能被覆盖标记挤掉
+  assert.equal(byId["by-order"].customer_name, "香港迪礼");
+  assert.equal(byId["by-order"].outstanding_amount, "100.0000");
+});
+

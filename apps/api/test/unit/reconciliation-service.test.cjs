@@ -178,3 +178,47 @@ test("应收对账不选银行时不做任何银行查询（银行是可选字�
   const row = await service.create({ customer_id: "customer-1", period_start: "2026-09-01", period_end: "2026-09-30", external_balance: "0", currency: "CNY" }, { id: "user-1" });
   assert.equal(row.bankId ?? null, null);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求「应收侧对应的问题也都改」）：
+//   对账列表/详情要给出流转摘要（覆盖多少条应收、多少条待确认、哪些订单与产品+规格），
+//   并且只有范围内确实还有草稿时才给「一键确认应收」。
+// ---------------------------------------------------------------------------
+
+test("应收对账列表返回流转摘要：覆盖条数、待确认、订单号、产品名称与规格型号", async () => {
+  const row = { id: "recon-1", status: "matched", reconciliationNo: "REC-001", customerId: "customer-1", orderNo: null, currency: "USD", periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const sources = [
+    { id: "s1", customerId: "customer-1", orderNo: "SO-1", currency: "USD", createdAt: new Date("2026-09-10T00:00:00.000Z"), amount: new Prisma.Decimal("120"), status: "draft", outbound: { productNameSnapshot: "折叠伞", productSpecificationSnapshot: "黑胶" } },
+    { id: "s2", customerId: "customer-1", orderNo: "SO-2", currency: "USD", createdAt: new Date("2026-09-11T00:00:00.000Z"), amount: new Prisma.Decimal("30"), status: "confirmed", outbound: { productNameSnapshot: "折叠伞", productSpecificationSnapshot: null } },
+    // 期间外 / 已取消：都不能混进这条对账的摘要
+    { id: "s3", customerId: "customer-1", orderNo: "SO-9", currency: "USD", createdAt: new Date("2026-08-01T00:00:00.000Z"), amount: new Prisma.Decimal("999"), status: "draft", outbound: null },
+  ];
+  const prisma = { receivableReconciliation: { findMany: async () => [row] }, receivableSource: { findMany: async () => sources } };
+  const result = (await new ReconciliationService(prisma, { record: async () => {} }, {}).list())[0];
+  assert.equal(result.flow.entry_count, 2);
+  assert.equal(result.flow.draft_count, 1);
+  assert.equal(result.flow.draft_amount, "120.0000");
+  assert.equal(result.flow.can_confirm_receivables, true, "已对平且有草稿 → 列表行上要能直接一键确认");
+  assert.deepEqual(result.flow.order_nos, ["SO-1", "SO-2"], "该行覆盖哪些订单");
+  assert.deepEqual(result.flow.product_names, ["折叠伞"], "产品名称去重");
+  assert.deepEqual(result.flow.product_specifications, ["黑胶"], "规格型号去重（缺失的不占位）");
+});
+
+test("范围内没有草稿时 can_confirm_receivables 为 false（不再给出会空转的一键确认）", async () => {
+  const row = { id: "recon-1", status: "difference", reconciliationNo: "REC-001", customerId: "customer-1", orderNo: null, currency: "USD", periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const prisma = { receivableReconciliation: { findMany: async () => [row] }, receivableSource: { findMany: async () => [] } };
+  const flow = (await new ReconciliationService(prisma, { record: async () => {} }, {}).list())[0].flow;
+  assert.deepEqual(flow, { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_receivables: false, order_nos: [], product_names: [], product_specifications: [] });
+});
+
+test("应收对账详情返回 flow，且逐条明细带产品名称与规格型号", async () => {
+  const row = { id: "recon-1", status: "matched", reconciliationNo: "REC-001", customerId: "customer-1", orderNo: null, currency: "USD", periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const source = { id: "s1", sourceNo: "AR-1", customerId: "customer-1", orderNo: "SO-1", currency: "USD", createdAt: new Date("2026-09-10T00:00:00.000Z"), amount: new Prisma.Decimal("120"), status: "draft", allocations: [], customer: { id: "customer-1", name: "香港迪礼" }, outbound: { outboundNo: "OUT-1", status: "signed", productNameSnapshot: "折叠伞", productSpecificationSnapshot: "黑胶", signedAt: null, shipmentDate: null } };
+  const prisma = { receivableReconciliation: { findFirst: async () => row }, receivableSource: { findMany: async () => [source] } };
+  const detail = await new ReconciliationService(prisma, { record: async () => {} }, {}).get("recon-1");
+  assert.deepEqual(detail.flow.product_names, ["折叠伞"]);
+  assert.deepEqual(detail.flow.product_specifications, ["黑胶"]);
+  assert.equal(detail.details.entries[0].product_name, "折叠伞");
+  assert.equal(detail.details.entries[0].product_specification, "黑胶");
+  assert.equal(detail.details.can_confirm_receivables, true);
+});
