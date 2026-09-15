@@ -111,7 +111,8 @@ test("production.workbench_creates_location_operation_and_starts_an_in_house_ord
 
   const orderRow = page.getByTestId("production-order-table").getByTestId("data-table-row").filter({ hasText: orderNo });
   await expect(orderRow).toBeVisible({ timeout: 15_000 });
-  await expect(orderRow).toContainText("draft");
+  // 列表状态列走 displayText（lib/display-text.ts），渲染的是中文标签而不是原始的 draft/in_progress
+  await expect(orderRow).toContainText("草稿");
   await expect(orderRow).toContainText(locationName);
   // 生产单创建时会自动补一道「包装」工序（工序池里存在启用的包装工序），所以草稿单一建好就有工序。
   await expect(orderRow).toContainText("包装");
@@ -149,6 +150,6 @@ test("production.workbench_creates_location_operation_and_starts_an_in_house_ord
   await page.goto("/production");
   const startedRow = page.getByTestId("production-order-table").getByTestId("data-table-row").filter({ hasText: orderNo });
   await expect(startedRow).toBeVisible({ timeout: 15_000 });
-  await expect(startedRow).toContainText("in_progress");
+  await expect(startedRow).toContainText("进行中");
   await expect(startedRow.getByRole("button", { name: "启动" })).toHaveCount(0);
 });
