@@ -28,6 +28,9 @@ import { FinanceTabs } from "./finance-tabs";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
 import { financeStatus } from "./finance-status";
 
+/** 付款建单的幂等键：打开弹窗时生成并固定，同一次弹窗内的重试/双击只会落一张草稿。 */
+const paymentIdempotencyKey = () => `web-payment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
 type Reference = { id: string; name: string; supplierCode?: string; orderNo?: string };
 type SupplierRef = { id: string; name: string; supplierCode: string | null };
 type PayableSource = {
@@ -217,6 +220,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   function confirmEntry(item: PayableEntry) { void action(`/finance/payable-entries/${item.id}/confirm`, undefined, `应付 ${item.payableNo} 已确认`); }
 
   function createPayment(entry?: PayableEntry) {
+    // 幂等键在打开弹窗时固定：同一次弹窗里重复提交只建一张草稿；
+    // 换一次弹窗是新键，此时由后端的「重复草稿守卫」兜底。
+    const idempotency_key = paymentIdempotencyKey();
     setDialog({ title: entry ? `登记付款（对应 ${entry.payableNo}）` : "登记付款", fields: [
       { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions, defaultValue: entry?.supplierId },
       { name: "order_no", label: "订单号", type: "select", options: orderOptions, defaultValue: entry?.orderNo },
@@ -225,7 +231,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { name: "payment_method", label: "付款方式", required: true, defaultValue: "银行转账" },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, entry?.currency ?? "CNY"), defaultValue: entry?.currency ?? currencyDefault("CNY") },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/supplier-payments", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, remark: v.remark || undefined }, "付款草稿已创建") });
+    ], submit: (v) => void action("/finance/supplier-payments", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, idempotency_key, remark: v.remark || undefined }, "付款草稿已创建") });
   }
   function editPayment(item: SupplierPayment) {
     setDialog({ title: `编辑付款草稿：${item.paymentNo}`, fields: [

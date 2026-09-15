@@ -15,7 +15,7 @@ import { SupplierPayableReconciliationService } from "./supplier-payable-reconci
 
 class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() remark?: string; }
 class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
+class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
 class AllocationDto { @IsUUID() receivable_source_id!: string; @IsString() amount!: string; }
 class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
@@ -59,6 +59,7 @@ class SupplierPaymentDto {
   @IsOptional() @IsString() bank_reference?: string;
   @IsOptional() @IsString() payee_name?: string;
   @IsOptional() @IsArray() attachment?: unknown[];
+  @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string;
   @IsOptional() @IsString() remark?: string;
 }
 class SupplierAllocationDto { @IsUUID() payable_entry_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }

@@ -24,6 +24,9 @@ import { FinanceTabs } from "./finance-tabs";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
 import { financeStatus } from "./finance-status";
 
+/** 收款建单的幂等键：打开弹窗时生成并固定，同一次弹窗内的重试/双击只会落一张草稿。 */
+const paymentIdempotencyKey = () => `web-receipt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
 type Reference = { id: string; name: string; customerCode?: string; orderNo?: string };
 type CustomerRef = { id: string; name: string; customerCode: string | null };
 type SourceAllocation = { id: string; amount: string; status: string; payment?: { id: string; paymentNo: string; status: string; paymentDate: string; amount?: string; currency?: string } | null };
@@ -178,6 +181,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   }
 
   function createPayment(source?: ReceivableSource) {
+    // 幂等键在打开弹窗时固定：同一次弹窗里重复提交只建一张草稿；
+    // 换一次弹窗是新键，此时由后端的「重复草稿守卫」兜底。
+    const idempotency_key = paymentIdempotencyKey();
     setDialog({ title: source ? `登记收款（对应 ${source.sourceNo}）` : "登记收款", fields: [
       { name: "customer_id", label: "客户", type: "select", required: true, canAddCategory: true, options: customerOptions, defaultValue: source?.customerId },
       { name: "order_no", label: "订单号", type: "select", options: orderOptions, defaultValue: source?.orderNo },
@@ -186,7 +192,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       { name: "payment_method", label: "收款方式", required: true, defaultValue: "银行转账" },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, source?.currency ?? "CNY"), defaultValue: source?.currency ?? currencyDefault("CNY") },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/customer-payments", { customer_id: v.customer_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, remark: v.remark || undefined }, "收款草稿已创建") });
+    ], submit: (v) => void action("/finance/customer-payments", { customer_id: v.customer_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, idempotency_key, remark: v.remark || undefined }, "收款草稿已创建") });
   }
   function editPayment(item: CustomerPayment) {
     setDialog({ title: `编辑收款草稿：${item.paymentNo}`, fields: [

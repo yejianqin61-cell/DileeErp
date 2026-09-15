@@ -25,10 +25,19 @@ const folder = "20260914190000_cash_flow_entries";
 const sql = readFileSync(join(migrationsRoot, folder, "migration.sql"), "utf8");
 const seed = readFileSync(join(migrationsRoot, "..", "seed.ts"), "utf8");
 
-test("cash flow migration is the last one and uses a 14-digit timestamp", () => {
+test("cash flow migration precedes every migration added after it", () => {
   const folders = readdirSync(migrationsRoot).filter((name) => statSync(join(migrationsRoot, name)).isDirectory()).sort();
+  const index = folders.indexOf(folder);
+  assert.ok(index >= 0, "收支流水迁移必须存在");
+  // 原断言是「收支迁移必须是最后一个」。它真正要防的是：新迁移被排到收支迁移**前面**，
+  // 使字典种子顺序被插队（Prisma 按目录名顺序执行）。收支迁移之后合法地出现新迁移是正常的
+  // （例如 20260915120000_payment_idempotency_key），所以这里守住两条：
+  //   1. 收支迁移之后的每个迁移时间戳都更大（顺序与预期一致，不会插队）；
+  //   2. 迁移目录名一律以 14 位时间戳开头（否则 sort() 的顺序不可信）。
+  for (const name of folders.slice(index + 1)) {
+    assert.ok(name.slice(0, 14) > folder.slice(0, 14), `迁移 ${name} 必须晚于收支流水迁移`);
+  }
   for (const name of folders) assert.match(name.slice(0, 14), /^\d{14}$/, `迁移目录 ${name} 必须以 14 位时间戳开头`);
-  assert.equal(folders.at(-1), folder, "收支迁移必须是最后一个（否则币种/其它迁移的种子顺序会被插队）");
 });
 
 test("cash flow migration seeds both dictionaries with every default entry", () => {

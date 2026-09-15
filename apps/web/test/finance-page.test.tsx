@@ -313,6 +313,9 @@ describe("应收管理 · 确认应收与收款", () => {
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/customer-payments").filter((call) => call.method === "POST")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/customer-payments").filter((call) => call.method === "POST")[0])).toMatchObject({ customer_id: "customer-1", order_no: "SO-2", amount: "100" });
+    // 建单必须带幂等键：否则网络重试/双击会重复落草稿收款单（2026-09-15 一个订单出现过 4 张相同的草稿）。
+    const createBody = bodyOf(callsTo(calls, "/api/v1/finance/customer-payments").filter((call) => call.method === "POST")[0]) as Record<string, unknown>;
+    expect(String(createBody.idempotency_key)).toMatch(/^web-receipt-\d+-[a-z0-9]+$/);
 
     // 草稿收款：编辑走 PATCH，过账核销走 POST 且带 allocations
     const payments = panel("收款");
@@ -439,6 +442,9 @@ describe("应付管理 · 应付对账与确认应付", () => {
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payments").filter((call) => call.method === "POST")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/supplier-payments").filter((call) => call.method === "POST")[0])).toMatchObject({ supplier_id: "supplier-1", amount: "50.0000" });
+    // 付款建单同样必须带幂等键（与收款侧对称）。
+    const payableCreateBody = bodyOf(callsTo(calls, "/api/v1/finance/supplier-payments").filter((call) => call.method === "POST")[0]) as Record<string, unknown>;
+    expect(String(payableCreateBody.idempotency_key)).toMatch(/^web-payment-\d+-[a-z0-9]+$/);
 
     fireEvent.click(panel("付款").getByRole("button", { name: "过账/核销" }));
     await pickOption("action-field-entry_id", /AP-002/);

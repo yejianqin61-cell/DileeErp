@@ -991,6 +991,7 @@ model SupplierPayableEntry {
 model SupplierPayment {
   id            String                      @id @default(uuid()) @db.Uuid
   paymentNo     String                      @unique @map("payment_no") @db.VarChar(100)
+  idempotencyKey String?                    @unique @map("idempotency_key") @db.VarChar(200)
   supplierId    String                      @map("supplier_id") @db.Uuid
   orderNo       String?                     @map("order_no") @db.VarChar(100)
   paymentDate   DateTime                    @map("payment_date") @db.Date
@@ -1439,6 +1440,7 @@ model ReceivableSource {
 model CustomerPayment {
   id            String                 @id @default(uuid()) @db.Uuid
   paymentNo     String                 @unique @map("payment_no") @db.VarChar(100)
+  idempotencyKey String?               @unique @map("idempotency_key") @db.VarChar(200)
   customerId    String                 @map("customer_id") @db.Uuid
   orderNo       String?                @map("order_no") @db.VarChar(100)
   paymentDate   DateTime               @map("payment_date") @db.Date
