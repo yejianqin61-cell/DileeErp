@@ -1,13 +1,13 @@
 // 迪礼 ERP —— HR 模块 HTTP 契约测试。
 //
-// 被测生产文件：apps/api/src/modules/hr/hr.controller.ts（9 GET + 16 POST + 4 PATCH + 3 DELETE = 32 路由）
+// 被测生产文件：apps/api/src/modules/hr/hr.controller.ts（9 GET + 17 POST + 4 PATCH + 3 DELETE = 33 路由）
 // 关注点：员工考勤/绩效、工资台账、工资应付、工资支付四组路由的信封、状态码、鉴权、DTO 校验、
 //         查询参数处理、资源不存在时的模块级精确错误码。
 //
 // 权限模型（实测 + 代码依据）：
-//   本控制器只有**类级** `@RequireModules("hr")`（hr.controller.ts:30），32 个路由上**没有任何**
+//   本控制器只有**类级** `@RequireModules("hr")`（hr.controller.ts:30），33 个路由上**没有任何**
 //   方法级 `@RequireModules` / `@RequireAnyModules`。因此 ModulePermissionGuard 的
-//   "类级 AND 方法级" 组合路径（module-permission.guard.ts:26-27）在 HR 上不可达 —— 全部 32 路由
+//   "类级 AND 方法级" 组合路径（module-permission.guard.ts:26-27）在 HR 上不可达 —— 全部 33 路由
 //   只要求 hr 模块；administrator 角色在守卫第 5 步短路（module-permission.guard.ts:22-23），
 //   所以管理员对所有 HR 路由恒通。AND 语义由 apps/api/test/unit/module-permission-guard.test.cjs 覆盖。
 //
@@ -51,7 +51,7 @@ const PLACEHOLDER_ID = "0f8f7f9a-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
  */
 const missingId = () => randomUUID();
 
-/** hr.controller.ts 的 32 个路由（方法, 路径, 请求体）。顺序与控制器声明一致。 */
+/** hr.controller.ts 的 33 个路由（方法, 路径, 请求体）。顺序与控制器声明一致。 */
 const ROUTES = [
   ["GET", `${HR}/attendance-records`],
   ["POST", `${HR}/attendance-records`, {}],
@@ -64,6 +64,8 @@ const ROUTES = [
   ["GET", `${HR}/payroll-ledgers`],
   ["GET", `${HR}/payroll-ledgers/${PLACEHOLDER_ID}`],
   ["POST", `${HR}/payroll-ledgers/generate`, {}],
+  // 按月导入全部员工（2026-09-15）：幂等批量创建草稿台账，车间员工同时汇总生产日报金额。
+  ["POST", `${HR}/payroll-ledgers/import-month`, { month: "2026-09" }],
   ["PATCH", `${HR}/payroll-ledgers/${PLACEHOLDER_ID}`, {}],
   ["DELETE", `${HR}/payroll-ledgers/${PLACEHOLDER_ID}`, {}],
   ["POST", `${HR}/payroll-ledgers/${PLACEHOLDER_ID}/reopen`, {}],
@@ -153,11 +155,11 @@ function expectDetail(body, field, rule, context) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. 鉴权：32 个路由全部拒绝匿名请求（不需要登录，因此不受单会话竞争影响）
+// 1. 鉴权：33 个路由全部拒绝匿名请求（不需要登录，因此不受单会话竞争影响）
 // ---------------------------------------------------------------------------
 
-test("hr.anonymous_requests_to_all_32_routes_are_rejected_with_401_unauthenticated", async () => {
-  assert.equal(ROUTES.length, 32, "路由表必须与 hr.controller.ts 的 32 个路由一一对应（9 GET + 16 POST + 4 PATCH + 3 DELETE）");
+test("hr.anonymous_requests_to_all_33_routes_are_rejected_with_401_unauthenticated", async () => {
+  assert.equal(ROUTES.length, 33, "路由表必须与 hr.controller.ts 的 33 个路由一一对应（9 GET + 17 POST + 4 PATCH + 3 DELETE）");
   const anonymous = apiClient(baseUrl);
 
   for (const [method, path, body] of ROUTES) {
@@ -258,6 +260,20 @@ test("KNOWN_DEFECT hr.invalid_query_values_yield_422_invalid_date_instead_of_400
   expectSuccessEnvelope(await client.get(`${HR}/payroll-ledgers?from=2026-01-01&to=2026-12-31`), { context: "payroll-ledgers?from&to", status: 200 });
 });
 
+test("hr.payroll_month_query_filter_rejects_a_malformed_month_with_422", async () => {
+  // 2026-09-15 新增 month 过滤（工资台账与工资付款都用它）。它与 from/to 一样是**查询参数**，
+  // 没有 DTO：service 的 monthRange（hr-payroll.domain.ts）抛 422 INVALID_MONTH。
+  // 与上一个用例记录的是同一处系统性偏差（查询参数的格式校验不在 DTO 层）。
+  const client = await adminClient();
+  for (const path of [`${HR}/payroll-ledgers?month=2026/09`, `${HR}/payroll-ledgers?month=2026-13`, `${HR}/salary-payments?month=2026/09`]) {
+    const body = expectErrorEnvelope(await client.get(path), { context: path, status: 422 });
+    assert.equal(body.error.code, "INVALID_MONTH", `${path} 当前使用 service 级业务码（应为 400 VALIDATION_ERROR —— 见文件头 KNOWN_DEFECT 说明）`);
+  }
+  // 合法的 YYYY-MM 正常返回
+  expectSuccessEnvelope(await client.get(`${HR}/payroll-ledgers?month=2026-09`), { context: "payroll-ledgers?month=2026-09", status: 200 });
+  expectSuccessEnvelope(await client.get(`${HR}/salary-payments?month=2026-09`), { context: "salary-payments?month=2026-09", status: 200 });
+});
+
 // ---------------------------------------------------------------------------
 // 6-8. 写端点的 DTO 校验层：只断言 400，不提交任何合法业务数据
 // ---------------------------------------------------------------------------
@@ -289,6 +305,14 @@ test("hr.payroll_ledger_write_bodies_are_rejected_before_the_service_layer", asy
   expectDetail(generate, "period_start", "isDateString", "POST payroll-ledgers/generate {}");
   expectDetail(generate, "currency", "isString", "POST payroll-ledgers/generate {}");
   expectDetail(expectDtoValidation(await client.post(`${HR}/payroll-ledgers/generate`, { bogus: 1 }), "POST payroll-ledgers/generate bogus"), "bogus", "whitelistValidation", "POST payroll-ledgers/generate bogus");
+
+  // POST /payroll-ledgers/import-month：month 必填且形如 YYYY-MM（2026-09-15 新增的批量导入）
+  const importMonth = expectDtoValidation(await client.post(`${HR}/payroll-ledgers/import-month`, {}), "POST import-month {}");
+  expectDetail(importMonth, "month", "matches", "POST import-month {}");
+  expectDetail(expectDtoValidation(await client.post(`${HR}/payroll-ledgers/import-month`, { month: "2026/09" }), "POST import-month bad month"), "month", "matches", "POST import-month bad month");
+  // 未知字段仍被 whitelist 拒绝；部门/岗位必须是 UUID
+  expectDetail(expectDtoValidation(await client.post(`${HR}/payroll-ledgers/import-month`, { month: "2026-09", bogus: 1 }), "POST import-month bogus"), "bogus", "whitelistValidation", "POST import-month bogus");
+  expectDetail(expectDtoValidation(await client.post(`${HR}/payroll-ledgers/import-month`, { month: "2026-09", department_id: "dep-1" }), "POST import-month bad department"), "department_id", "isUuid", "POST import-month bad department");
 
   // PATCH /payroll-ledgers/:id：字段全可选，但类型仍受约束
   expectDetail(expectDtoValidation(await client.patch(`${HR}/payroll-ledgers/${id}`, { employee_id: "not-a-uuid" }), "PATCH payroll-ledgers employee_id"), "employee_id", "isUuid", "PATCH payroll-ledgers employee_id");

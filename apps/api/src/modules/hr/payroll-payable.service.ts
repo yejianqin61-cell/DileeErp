@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { payrollBaseAmount } from "./hr-payroll.domain";
 
 type CreateInput = { order_no?: string; attachment?: unknown[]; remark?: string };
 
@@ -123,8 +124,22 @@ export class PayrollPayableService {
     return tx.payrollPayableEntry.update({ where: { id: payable.id }, data: { status, ...this.audit.update(user) } });
   }
 
-  private netAmount(ledger: { baseSalary: Prisma.Decimal; productionSourceAmount: Prisma.Decimal; overtimeAmount: Prisma.Decimal; attendanceDeduction: Prisma.Decimal; performanceAmount: Prisma.Decimal; allowanceAmount: Prisma.Decimal; socialInsurance: Prisma.Decimal; individualTax: Prisma.Decimal; otherAdjustment: Prisma.Decimal; adjustments: Array<{ effect: string; amount: Prisma.Decimal }> }) {
-    const base = ledger.baseSalary.plus(ledger.productionSourceAmount).plus(ledger.overtimeAmount).minus(ledger.attendanceDeduction).plus(ledger.performanceAmount).plus(ledger.allowanceAmount).minus(ledger.socialInsurance).minus(ledger.individualTax).plus(ledger.otherAdjustment);
+  private netAmount(ledger: { baseSalary: Prisma.Decimal; productionSourceAmount: Prisma.Decimal; overtimeAmount: Prisma.Decimal; attendanceDeduction: Prisma.Decimal; lateDeduction: Prisma.Decimal; absenceDeduction: Prisma.Decimal; earlyLeaveDeduction: Prisma.Decimal; performanceAmount: Prisma.Decimal; allowanceAmount: Prisma.Decimal; housingAllowance: Prisma.Decimal; socialInsurance: Prisma.Decimal; individualTax: Prisma.Decimal; otherAdjustment: Prisma.Decimal; adjustments: Array<{ effect: string; amount: Prisma.Decimal }> }) {
+    const base = payrollBaseAmount({
+      base_salary: ledger.baseSalary,
+      production_source_amount: ledger.productionSourceAmount,
+      overtime_amount: ledger.overtimeAmount,
+      attendance_deduction: ledger.attendanceDeduction,
+      late_deduction: ledger.lateDeduction,
+      absence_deduction: ledger.absenceDeduction,
+      early_leave_deduction: ledger.earlyLeaveDeduction,
+      performance_amount: ledger.performanceAmount,
+      allowance_amount: ledger.allowanceAmount,
+      housing_allowance: ledger.housingAllowance,
+      social_insurance: ledger.socialInsurance,
+      individual_tax: ledger.individualTax,
+      other_adjustment: ledger.otherAdjustment,
+    });
     const adjustments = ledger.adjustments.reduce((sum, item) => sum.plus(item.effect === "increase" ? item.amount : item.amount.negated()), new Prisma.Decimal(0));
     return base.plus(adjustments);
   }

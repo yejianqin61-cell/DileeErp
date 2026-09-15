@@ -10,7 +10,7 @@
 export const FINANCE_BOARDS = [
   { key: "receivable", title: "应收管理", description: "成品出库过账自动形成应收来源：成品出库条目 → 应收对账 → 确认应收 → 收款核销" },
   { key: "payable", title: "应付管理", description: "原料入库过账 / 外加工签收形成应付来源：入库条目与签收 → 应付对账 → 确认应付 → 付款核销" },
-  { key: "salary", title: "薪资台账", description: "按月、部门、岗位查看工资台账、工资应付与工资付款" },
+  { key: "salary", title: "薪资台账", description: "满页可编辑表格：按月自动导入全部员工，车间工人的计件/计时工资由生产日报自动汇总，其余类目逐格修改；工资付款同页筛选" },
   { key: "cash-flow", title: "收支管理", description: "手工录入资金收支流水（含统一「对方名称」与银行账户），按可配置的收支项目归类" },
   { key: "reports", title: "财务报表", description: "按老系统版式导出财务对账表：销售/采购对账、销售利润、收支明细与汇总；数字落数值型，可直接在 Excel 里求和" },
   { key: "voucher", title: "凭证管理", description: "针对已确认的应收/应付条目生成单据（本期占位）" },
@@ -65,14 +65,29 @@ export const CASH_FLOW_ITEM_DICTIONARY_KEY = "cash_flow_item";
 /** 结算账户字典的 key。 */
 export const SETTLEMENT_ACCOUNT_DICTIONARY_KEY = "settlement_account";
 
-/** 每个板块的子栏目。薪资台账与凭证管理没有子栏目（薪资是单页满页表格，凭证是占位页）。 */
+/** 凭证管理子栏目（占位）。 */
+export const VOUCHER_TABS = [] as const;
+
+/**
+ * 工资管理子栏目：台账与付款各占一个满页表格，共用「月份 + 部门 + 岗位 + 员工姓名/工号」筛选。
+ *
+ * 两张表都不是只读看板：台账逐格可改（车间工人的生产工资除外），付款保留新建/核销过账/冲销动作。
+ */
+export const SALARY_TABS = [
+  { key: "ledger", title: "工资台账", description: "按月自动导入全部员工；车间的计件/计时工资自动汇总进「基本工资」，绩效/房补/迟到/旷工/早退逐格可改" },
+  { key: "payments", title: "工资付款", description: "工资付款单：新建草稿、核销过账、冲销；按付款月份与核销员工的部门/岗位筛选" },
+] as const;
+
+export type SalaryTabKey = (typeof SALARY_TABS)[number]["key"];
+
+/** 每个板块的子栏目。凭证管理没有子栏目。 */
 export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: string; title: string; description: string }>> = {
   receivable: RECEIVABLE_TABS,
   payable: PAYABLE_TABS,
-  salary: [],
+  salary: SALARY_TABS,
   "cash-flow": [],
   reports: FINANCE_REPORT_TABS,
-  voucher: [],
+  voucher: VOUCHER_TABS,
 };
 
 /**

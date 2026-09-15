@@ -399,3 +399,22 @@ button { cursor: pointer; }
 .detail-item-wide { grid-column: 1 / -1; }
 .detail-section { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
 .detail-section h3 { margin: 0; font-size: 14px; }
+
+/* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
+   满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，
+   表头吸顶（几百行时滑到底不能忘了列名），合计行加粗。 */
+.payroll-sheet { display: grid; gap: 8px; }
+.payroll-sheet-note { margin: 0; }
+.payroll-sheet-error { margin: 0; color: var(--danger); }
+.payroll-sheet-scroll { max-height: 70vh; outline: none; }
+.payroll-sheet-scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--focus-ring); }
+.payroll-sheet-table { min-width: 100%; }
+.payroll-sheet-table .ui-table-head { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.payroll-sheet-numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.payroll-sheet-editable { cursor: cell; }
+.payroll-sheet-editable:hover { background: var(--surface-muted); }
+.payroll-sheet-active { box-shadow: inset 0 0 0 2px var(--primary); }
+.payroll-sheet-failed { background: #fff0ef; box-shadow: inset 0 0 0 2px var(--danger); }
+.payroll-sheet-saving { color: var(--text-muted); }
+.payroll-sheet-input { width: 100%; min-width: 72px; border: 0; background: transparent; color: inherit; font: inherit; text-align: right; outline: none; }
+.payroll-sheet-table tfoot .ui-table-cell { border-top: 1px solid var(--border); background: var(--surface-muted); font-weight: 700; }

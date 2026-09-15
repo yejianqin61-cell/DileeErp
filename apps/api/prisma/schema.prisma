@@ -2141,8 +2141,14 @@ model PayrollLedger {
   productionSourceAmount Decimal                   @default(0) @map("production_source_amount") @db.Decimal(18, 4)
   overtimeAmount         Decimal                   @default(0) @map("overtime_amount") @db.Decimal(18, 4)
   attendanceDeduction    Decimal                   @default(0) @map("attendance_deduction") @db.Decimal(18, 4)
+  // 2026-09-15 工资类目：考勤扣款按需求细分为迟到/旷工/早退三种扣款，另加房补。
+  // 老列（考勤扣款、补贴）保留原语义不动，避免历史金额被重新解释；新需求只挂新列。
+  lateDeduction          Decimal                   @default(0) @map("late_deduction") @db.Decimal(18, 4)
+  absenceDeduction       Decimal                   @default(0) @map("absence_deduction") @db.Decimal(18, 4)
+  earlyLeaveDeduction    Decimal                   @default(0) @map("early_leave_deduction") @db.Decimal(18, 4)
   performanceAmount      Decimal                   @default(0) @map("performance_amount") @db.Decimal(18, 4)
   allowanceAmount        Decimal                   @default(0) @map("allowance_amount") @db.Decimal(18, 4)
+  housingAllowance       Decimal                   @default(0) @map("housing_allowance") @db.Decimal(18, 4)
   socialInsurance        Decimal                   @default(0) @map("social_insurance") @db.Decimal(18, 4)
   individualTax          Decimal                   @default(0) @map("individual_tax") @db.Decimal(18, 4)
   otherAdjustment        Decimal                   @default(0) @map("other_adjustment") @db.Decimal(18, 4)

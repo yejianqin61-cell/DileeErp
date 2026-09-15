@@ -15,6 +15,7 @@
 | 06 | [财务列表字段富化与应付款项关联修复](06-finance-api-enrichment.md) | 已完成 | — |
 | 07 | [生产进度表去列 + 导出数值单元格](../../design/export-numeric-cells-and-progress-sheet-2026-09-14.md) | 已完成 | — |
 | 08 | [原料仓储情况模糊搜索与规格型号列](../../design/raw-material-storage-search-2026-09-14.md) | 已完成 | — |
+| 09 | [工资台账满页可编辑表格与工资付款筛选](09-salary-ledger-sheet.md) | 已完成 | 04、06 |
 
 ## 共同完成标准
 
