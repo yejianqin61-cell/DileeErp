@@ -16,6 +16,7 @@ const { join } = require("node:path");
 const XLSX = require("xlsx");
 const { UnprocessableEntityException } = require("@nestjs/common");
 const roster = require("../../dist/modules/production/employee-roster.js");
+const regions = require("../../dist/modules/production/china-region.js");
 const { ProductionMasterDataService } = require("../../dist/modules/production/production-master-data.service.js");
 
 const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "hr" };
@@ -199,6 +200,53 @@ test("花名册：身份证号能反推出生日期与性别，且校验位不�
   assert.equal(roster.parseIdCard("12345").ok, false);
 });
 
+test("花名册：身份证前 6 位解析出省市县，已撤销的老代码按当时的名称", () => {
+  // 花名册里的真实号码
+  const xiamen = roster.parseIdCard("350430198405204527");
+  assert.equal(xiamen.ok, true);
+  assert.deepEqual(xiamen.value.region, { province: "福建省", city: "三明市", county: "建宁县", label: "福建省三明市建宁县" });
+  // 老代码：413028 原信阳地区罗山县（现 411521）、522228 原铜仁地区沿河县（现 520627）
+  const henan = roster.parseIdCard("413028196510110959");
+  assert.equal(henan.value.region.label, "河南省信阳地区罗山县");
+  const guizhou = roster.parseIdCard("522228197804083626");
+  assert.equal(guizhou.value.region.label, "贵州省铜仁地区沿河土家族自治县");
+  // 河南/贵州这两个老前缀如果只查现行区划表，就只能给出省级
+  assert.equal(regions.lookupRegion("413028").county, "罗山县");
+  assert.equal(regions.lookupRegion("522228").county, "沿河土家族自治县");
+});
+
+test("行政区划取名：伪市级要跳过，逐级降级，查不到就是空串", () => {
+  // 直辖市的「市辖区」、重庆的「县」、海南/新疆的「省（自治区）直辖县级行政区划」都是伪市级
+  assert.equal(regions.lookupRegion("110101").label, "北京市东城区");
+  assert.equal(regions.lookupRegion("500229").label, "重庆市城口县");
+  assert.equal(regions.lookupRegion("469001").label, "海南省五指山市");
+  assert.equal(regions.lookupRegion("659001").label, "新疆维吾尔自治区石河子市");
+  // 东莞 / 中山不设区
+  assert.equal(regions.lookupRegion("441900").label, "广东省东莞市");
+  assert.equal(regions.lookupRegion("442000").label, "广东省中山市");
+  // 逐级降级
+  assert.equal(regions.lookupRegion("3504").label, "福建省三明市");
+  assert.equal(regions.lookupRegion("35").label, "福建省");
+  assert.equal(regions.lookupRegion("999999").label, "");
+  assert.equal(regions.lookupRegion(null).label, "");
+});
+
+test("地区代码查不到不影响出生日期与性别，也不判定身份证非法", () => {
+  // 999999198405204525：校验位自洽，但 999999 不是任何区划代码
+  const result = roster.parseIdCard("999999198405204525");
+  assert.equal(result.ok, true, "前 6 位只用于取名，不能因此判身份证无效");
+  assert.equal(result.value.birthDate.toISOString().slice(0, 10), "1984-05-20");
+  assert.deepEqual(result.value.region, { province: "", city: "", county: "", label: "" });
+});
+
+test("区域表：API 与 Web 两份副本必须逐字节相同（改数据请重跑生成脚本）", () => {
+  const apiCopy = readFileSync(join(__dirname, "..", "..", "src", "modules", "production", "china-region.ts"), "utf8");
+  const webCopy = readFileSync(join(__dirname, "..", "..", "..", "web", "lib", "china-region.ts"), "utf8");
+  assert.equal(apiCopy, webCopy, "apps/api 与 apps/web 的区域表必须完全一致，否则「导入解析」和「页面解析」会给出不同结果");
+  assert.ok(apiCopy.includes("scripts/generate-china-regions.mjs"), "生成物必须标明来源脚本");
+  assert.ok(regions.CHINA_REGION_COUNT > 6000, `区域表条数过少（${regions.CHINA_REGION_COUNT}），可能被换成了小样本`);
+});
+
 test("花名册：手填的出生日期/性别必须和身份证自洽", () => {
   const rows = [
     ["姓名", "部门", "职务", "员工类型", "身份证号码", "出生日期"],
@@ -256,6 +304,42 @@ test("花名册：合同区间倒挂、离职早于入职、在职却填离职�
   }
 });
 
+test("导入：家庭住址留空时用身份证解析出的省市县补前缀，文件里写了地址就一个字都不改", () => {
+  const rows = [
+    ["姓名", "部门", "职务", "员工类型", "身份证号码", "家庭住址"],
+    // 没有家庭住址 → 补省市县前缀（镇/村/门牌留给人工补录）
+    ["张三", "生产部", "合片工", "车间", "350430198405204527", ""],
+    // 老区划代码同样补（按当时的名称）
+    ["李四", "生产部", "合片工", "车间", "413028196510110959", ""],
+    // 文件里写了地址 → 原样保留，绝不用解析结果改写操作员填的内容
+    ["王五", "生产部", "合片工", "车间", "350430198405204527", "同安区新民镇柑岭村"],
+    // 没填身份证 → 没有前缀可补，地址就还是空
+    ["赵六", "生产部", "合片工", "车间", "", ""],
+  ];
+  const result = roster.parseEmployeeRosterRows(rows);
+  assert.equal(result.errors.length, 0, JSON.stringify(result.errors));
+  assert.equal(result.rows.length, 4);
+  assert.deepEqual(result.rows.map((row) => row.homeAddress), [
+    "福建省三明市建宁县",
+    "河南省信阳地区罗山县",
+    "同安区新民镇柑岭村",
+    undefined,
+  ]);
+  assert.equal(result.addressedFromIdCard, 2, "如实回报补了几行");
+});
+
+test("导入：家庭住址为空且身份证解析不出地区时，不编造地址", () => {
+  const rows = [
+    ["姓名", "部门", "职务", "员工类型", "身份证号码", "家庭住址"],
+    // 999999198405204525 校验位自洽但区划代码查不到 → 地址仍是空，不硬凑
+    ["张三", "生产部", "合片工", "车间", "999999198405204525", ""],
+  ];
+  const result = roster.parseEmployeeRosterRows(rows);
+  assert.equal(result.errors.length, 0, JSON.stringify(result.errors));
+  assert.equal(result.rows[0].homeAddress, undefined);
+  assert.equal(result.addressedFromIdCard, 0);
+});
+
 test("花名册：必填与长度/枚举不合法都会逐行指到具体字段", () => {
   const rows = [
     ["姓名", "部门", "职务", "员工类型", "工号", "出生日期"],
@@ -309,12 +393,32 @@ test("派生列：当月生日员工只在生日所在月为 1", () => {
   assert.equal(roster.deriveBirthdayThisMonth(null, today), "");
 });
 
-test("派生列：合同到期提醒按「过期 / 一个月内即将到期 / 正常 / 未填」四态", () => {
-  assert.equal(roster.deriveContractExpiry(new Date(Date.UTC(2026, 8, 15)), today), "合同已过期");
-  assert.equal(roster.deriveContractExpiry(new Date(Date.UTC(2026, 9, 1)), today), "合同即将到期");
-  assert.equal(roster.deriveContractExpiry(new Date(Date.UTC(2027, 2, 19)), today), "正常");
-  assert.equal(roster.deriveContractExpiry(null, today), "");
-  assert.equal(roster.deriveContractExpiry(undefined, today), "");
+test("派生列：合同档位按「正常 / 即将过期（1 个月内）/ 已过期 / 未填」四态", () => {
+  assert.equal(roster.deriveContractStatus(new Date(Date.UTC(2026, 8, 15)), today), "已过期");
+  // 1 个月内的边界：明天到期算即将过期，31 天算即将过期，32 天算正常
+  assert.equal(roster.deriveContractStatus(new Date(Date.UTC(2026, 8, 17)), today), "即将过期");
+  assert.equal(roster.deriveContractStatus(new Date(Date.UTC(2026, 9, 1)), today), "即将过期");
+  assert.equal(roster.deriveContractStatus(new Date(Date.UTC(2026, 9, 17)), today), "即将过期", "今天 + 31 天仍在 1 个月内");
+  assert.equal(roster.deriveContractStatus(new Date(Date.UTC(2026, 9, 18)), today), "正常", "今天 + 32 天已经出了 1 个月");
+  assert.equal(roster.deriveContractStatus(new Date(Date.UTC(2027, 2, 19)), today), "正常");
+  // 到期当天不算过期
+  assert.equal(roster.deriveContractStatus(new Date(Date.UTC(2026, 8, 16)), today), "即将过期");
+  assert.equal(roster.deriveContractStatus(null, today), "");
+  assert.equal(roster.deriveContractStatus(undefined, today), "");
+});
+
+test("派生列：合同情况 = 劳动合同与劳务合同里最紧急的一档", () => {
+  const over = new Date(Date.UTC(2026, 0, 1));      // 已过期
+  const soon = new Date(Date.UTC(2026, 9, 1));      // 即将过期
+  const fine = new Date(Date.UTC(2028, 0, 1));      // 正常
+  assert.equal(roster.deriveContractSituation(over, soon, today), "已过期", "取最紧急的");
+  assert.equal(roster.deriveContractSituation(fine, soon, today), "即将过期");
+  assert.equal(roster.deriveContractSituation(soon, over, today), "已过期", "与参数顺序无关");
+  assert.equal(roster.deriveContractSituation(fine, fine, today), "正常");
+  assert.equal(roster.deriveContractSituation(null, fine, today), "正常", "只有劳务合同时按它算");
+  assert.equal(roster.deriveContractSituation(soon, null, today), "即将过期");
+  assert.equal(roster.deriveContractSituation(null, null, today), "", "两份都没填结束时间才算「没有合同信息」");
+  assert.equal(roster.deriveContractSituation(undefined, undefined, today), "");
 });
 
 // ---------------------------------------------------------------------------
@@ -353,8 +457,8 @@ test("导出：花名册 28 列全部落地（含 5 个派生列），并且能�
   assert.equal(exported["合同起止时间-开始时间"], "2020-05-21");
   assert.equal(exported["合同起止时间-结束时间"], "2023-05-21");
   assert.equal(exported["劳务合同-结束时间"], "2026-10-04");
-  assert.equal(exported["劳务合同即将到期人员"], "合同即将到期");
-  assert.equal(exported["合同即将到期人员"], "合同已过期");
+  assert.equal(exported["劳务合同即将到期人员"], "即将过期");
+  assert.equal(exported["合同即将到期人员"], "已过期");
   assert.equal(exported["当月生日员工"], "0", "9 月不是 5 月");
   assert.equal(exported["绑定系统用户名"], "hruser");
   assert.equal(exported["员工类型"], "车间");
@@ -636,13 +740,114 @@ test("列表：员工目录读模型带上年龄/工龄/合同到期等派生列
   assert.equal(rows[0].employeeNo, "E001", "原始字段原样保留");
   assert.equal(typeof rows[0].age, "number");
   assert.equal(typeof rows[0].tenureYears, "number");
-  assert.equal(rows[0].contractStatus === "合同即将到期" || rows[0].contractStatus === "正常" || rows[0].contractStatus === "合同已过期", true);
+  // 单份合同的档位与合并后的「合同情况」都给（导出用前者，页面用后者）
+  assert.equal(["正常", "即将过期", "已过期"].includes(rows[0].contractStatus), true, rows[0].contractStatus);
   assert.equal(rows[0].laborContractStatus, "");
+  assert.equal(rows[0].contractSituation, rows[0].contractStatus, "只有劳动合同有结束时间时，合同情况 = 它的档位");
   assert.equal(rows[0].birthdayThisMonth, new Date().getUTCMonth() === 4);
 });
 
 // ---------------------------------------------------------------------------
-// 7. 真实文件打穿：用仓库里那份《在职员工花名册》跑完整导入链
+// 7. 逻辑删除 / 恢复
+// ---------------------------------------------------------------------------
+
+/** 带事务与锁的替身：deleteEmployee/restoreEmployee 走 $transaction + SELECT ... FOR UPDATE。 */
+function deletionHarness(employee) {
+  const auditEvents = [];
+  const store = { ...employee };
+  const prisma = {
+    employee: {
+      // 返回快照而不是 store 本身：真实 Prisma 读出来的是新对象，
+      // 所以「先读到 deletedAt、再清空、然后写审计」不会因为别名而读到 null。
+      findFirst: async ({ where }) => {
+        if (where.deletedAt === null && store.deletedAt) return null;
+        if (where.deletedAt && !store.deletedAt) return null;
+        return store.id === where.id ? { ...store } : null;
+      },
+      update: async ({ data }) => { Object.assign(store, data); return { ...store }; },
+    },
+    $transaction: async (fn) => fn({ ...prisma, $queryRaw: async () => [] }),
+  };
+  const recordingAudit = { ...audit, record: async (...args) => { auditEvents.push(args); } };
+  return { prisma, store, auditEvents, service: new ProductionMasterDataService(prisma, recordingAudit) };
+}
+
+test("删除员工：逻辑删除写 deletedAt/deletedBy，物理行与历史引用都保留", async () => {
+  const { service, store, auditEvents } = deletionHarness({ id: "emp-1", employeeNo: "E001", name: "张三", departmentId: "dept-1", employmentStatus: "active", deletedAt: null, deletedBy: null });
+  const deleted = await service.deleteEmployee("emp-1", user);
+  assert.equal(deleted.deletedAt instanceof Date, true, "写的是逻辑删除时间而不是真删");
+  assert.equal(deleted.deletedBy, user.id);
+  assert.equal(deleted.employeeNo, "E001", "行还在，工号/姓名等业务字段不动");
+  assert.equal(deleted.employmentStatus, "active", "删除不动在职状态：这是两个独立维度，恢复后状态不变");
+  const event = auditEvents.find(([action]) => action === "employee.delete");
+  assert.ok(event, "删除必须留审计事件");
+  assert.deepEqual(event[4], { employee_no: "E001", name: "张三", department_id: "dept-1", employment_status: "active" });
+});
+
+test("删除员工：重复删除返回 404 EMPLOYEE_NOT_FOUND（不静默成功）", async () => {
+  const { service } = deletionHarness({ id: "emp-1", employeeNo: "E001", name: "张三", deletedAt: null });
+  await service.deleteEmployee("emp-1", user);
+  await assert.rejects(
+    () => service.deleteEmployee("emp-1", user),
+    (error) => error.getResponse().code === "EMPLOYEE_NOT_FOUND",
+  );
+});
+
+test("恢复员工：清掉 deletedAt，并在审计里保留原来是谁删的、什么时候删的", async () => {
+  const { service, store, auditEvents } = deletionHarness({ id: "emp-1", employeeNo: "E001", name: "张三", deletedAt: null, deletedBy: null });
+  await service.deleteEmployee("emp-1", user);
+  const removedAt = store.deletedAt;
+  const restored = await service.restoreEmployee("emp-1", user);
+  assert.equal(restored.deletedAt, null);
+  const event = auditEvents.find(([action]) => action === "employee.restore");
+  assert.equal(event[4].deleted_by, user.id, "原始删除人留在审计里");
+  assert.equal(event[4].deleted_at, removedAt);
+  assert.equal(event[4].restored_by, user.id);
+});
+
+test("恢复员工：没被删过的员工返回 404 EMPLOYEE_NOT_DELETED", async () => {
+  const { service } = deletionHarness({ id: "emp-1", employeeNo: "E001", name: "张三", deletedAt: null, deletedBy: null });
+  await assert.rejects(
+    () => service.restoreEmployee("emp-1", user),
+    (error) => error.getResponse().code === "EMPLOYEE_NOT_DELETED",
+  );
+});
+
+test("员工目录：默认不带已删除员工，include_deleted=true 才带出来（默认从列表消失）", async () => {
+  const rows = [
+    { id: "emp-1", employeeNo: "E001", name: "张三", departmentId: "dept-1", positionId: "pos-1", employeeType: "workshop", employmentStatus: "active", deletedAt: null },
+    { id: "emp-2", employeeNo: "E002", name: "李四", departmentId: "dept-1", positionId: "pos-1", employeeType: "workshop", employmentStatus: "left", deletedAt: new Date(Date.UTC(2026, 8, 16)) },
+  ];
+  const seen = [];
+  const { prisma } = fakePrisma();
+  prisma.employee.findMany = async ({ where }) => {
+    seen.push(where);
+    const includeDeleted = where.deletedAt === undefined;
+    return rows
+      .filter((row) => (includeDeleted ? true : row.deletedAt === null))
+      .map((row) => ({ ...row, createdAt: new Date(), updatedAt: new Date(), department: { code: "D001", name: "生产部" }, position: { code: "P001", name: "合片工" } }));
+  };
+  const service = new ProductionMasterDataService(prisma, audit);
+  const live = await service.listEmployees();
+  assert.deepEqual(live.map((row) => row.employeeNo), ["E001"], "默认把已删除的员工挡在列表外");
+  const all = await service.listEmployees({ include_deleted: "true" });
+  assert.deepEqual(all.map((row) => row.employeeNo), ["E001", "E002"], "带开关时才返回已删除员工，供恢复使用");
+  // include_deleted 是字符串开关：其它取值一律当 false（与部门池/岗位池/地点/工序同一套约定）
+  await service.listEmployees({ include_deleted: "maybe" });
+  assert.deepEqual(seen.at(-1).deletedAt, null);
+});
+
+test("员工目录：include_deleted 不放进导出（导出的永远是在册员工名单）", async () => {
+  const { prisma } = fakePrisma();
+  let lastWhere = null;
+  prisma.employee.findMany = async ({ where }) => { lastWhere = where; return []; };
+  const service = new ProductionMasterDataService(prisma, audit);
+  await service.exportEmployees({});
+  assert.deepEqual(lastWhere.deletedAt, null, "导出按钮不传 include_deleted，导出的只有在册员工");
+});
+
+// ---------------------------------------------------------------------------
+// 8. 真实文件打穿：用仓库里那份《在职员工花名册》跑完整导入链
 // ---------------------------------------------------------------------------
 
 /**

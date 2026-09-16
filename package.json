@@ -12,6 +12,7 @@
     "test": "npm run typecheck && npm run test:unit",
     "test:unit": "npm run test:deploy && npm run test:unit:api && npm run test:unit:web",
     "test:deploy": "node --test scripts/deploy-scripts.test.mjs",
+    "regions:generate": "node scripts/generate-china-regions.mjs",
     "deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-incremental.ps1",
     "test:unit:api": "npm run build --workspace=@dilee/api && node --test apps/api/test/*.test.cjs apps/api/test/unit/**/*.test.cjs",
     "test:unit:web": "npm run test:unit --workspace=@dilee/web",

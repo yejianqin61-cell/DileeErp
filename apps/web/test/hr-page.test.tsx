@@ -27,7 +27,8 @@ import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api
 
 /** 页面 useEffect 里 Promise.all 的 7 个 GET + 首屏一次性的主数据 2 个 GET（前缀 /api/v1 由 api-client 拼）。 */
 const EP = {
-  employees: "/api/v1/production/employees",
+  // 员工目录带 include_deleted=true：已删除的员工要能被「已删除」筛选看到并恢复
+  employees: "/api/v1/production/employees?include_deleted=true",
   departments: "/api/v1/production/departments",
   positions: "/api/v1/production/positions",
   attendance: "/api/v1/hr/attendance-records",
@@ -136,6 +137,8 @@ type Employee = {
   employmentStatus: string;
   hiredOn?: string;
   leftOn?: string;
+  /** 有值 = 已逻辑删除（从列表消失，可在「已删除」筛选里恢复） */
+  deletedAt?: string | null;
   department?: { id: string; name: string };
   position?: { id: string; name: string };
   gender?: string;
@@ -144,18 +147,23 @@ type Employee = {
   education?: string;
   tenureYears?: number | null;
   phone?: string;
-  contractStatus?: string;
-  laborContractStatus?: string;
+  /** 劳动合同 + 劳务合同合并后的档位：正常 / 即将过期 / 已过期 */
+  contractSituation?: string;
+  /** 生日所在自然月 == 当月（后端派生） */
+  birthdayThisMonth?: boolean | null;
 };
 
 const employees: Employee[] = [
   // 在职 + 部门/职务齐全 + 花名册字段与派生列都有值
-  { id: "emp-1", employeeNo: "E01", name: "张三", employeeType: "workshop", employmentStatus: "active", hiredOn: "2026-01-05T00:00:00.000Z", department: { id: "dept-1", name: "生产部" }, position: { id: "pos-1", name: "缝纫工" }, gender: "男", birthDate: "1990-05-20T00:00:00.000Z", age: 36, education: "初中", tenureYears: 0, phone: "138 0000 0000", contractStatus: "正常", laborContractStatus: "" },
+  { id: "emp-1", employeeNo: "E01", name: "张三", employeeType: "workshop", employmentStatus: "active", hiredOn: "2026-01-05T00:00:00.000Z", department: { id: "dept-1", name: "生产部" }, position: { id: "pos-1", name: "缝纫工" }, gender: "男", birthDate: "1990-05-20T00:00:00.000Z", age: 36, education: "初中", tenureYears: 0, phone: "138 0000 0000", contractSituation: "正常", birthdayThisMonth: false },
   // 已离职 + 关联字段整体缺失 + 只有离职日期；派生列后端没给（null）→ 列表回落 "-"
   { id: "emp-2", employeeNo: "E02", name: "李四", employeeType: "non_workshop", employmentStatus: "left", leftOn: "2026-03-01T00:00:00.000Z", age: null, tenureYears: null },
-  // 停用 + 有部门无职务 + 合同已过期
-  { id: "emp-3", employeeNo: "E03", name: "王五", employeeType: "workshop", employmentStatus: "inactive", department: { id: "dept-1", name: "生产部" }, gender: "女", age: 38, education: "大专", phone: "139 0000 0000", contractStatus: "合同已过期", laborContractStatus: "合同即将到期" },
+  // 停用 + 有部门无职务 + 合同已过期 + 本月生日
+  { id: "emp-3", employeeNo: "E03", name: "王五", employeeType: "workshop", employmentStatus: "inactive", department: { id: "dept-1", name: "生产部" }, gender: "女", age: 38, education: "大专", phone: "139 0000 0000", contractSituation: "已过期", birthdayThisMonth: true },
 ];
+
+/** 被逻辑删除的员工：接口返回它，但默认列表必须把它挡在外面。 */
+const deletedEmployee: Employee = { id: "emp-9", employeeNo: "E09", name: "赵六", employeeType: "non_workshop", employmentStatus: "left", deletedAt: "2026-09-16T02:00:00.000Z", department: { id: "dept-1", name: "生产部" }, position: { id: "pos-1", name: "缝纫工" }, age: null, tenureYears: null };
 
 const departments = [
   { id: "dept-1", code: "D01", name: "生产部", isActive: true },
@@ -237,15 +245,18 @@ describe("人事页 · 加载门禁与首屏请求契约", () => {
 });
 
 describe("人事页 · 员工目录列表渲染", () => {
-  it("按花名册口径渲染：工号/姓名/部门职务拼接/性别/出生日期/年龄/学历/入职日期/工龄/联系方式/合同到期/类型/状态/离职日期，缺数据回落 -", async () => {
+  it("按花名册口径渲染：工号/姓名/部门职务拼接/性别/出生日期/年龄/学历/入职日期/工龄/联系方式/合同情况/类型/状态/离职日期，缺数据回落 -", async () => {
     await openHr({ employees });
 
     const directory = panel("员工目录");
     expect(directory.getAllByTestId("data-table-row")).toHaveLength(3);
-    // 表头文案（列结构与业务含义的一部分）：列顺序 = 花名册口径
-    for (const header of ["工号", "姓名", "部门/职务", "性别", "出生日期", "年龄", "学历", "入职日期", "工龄", "联系方式", "合同到期", "劳务合同到期", "类型", "状态", "离职日期", "操作"]) {
+    // 表头文案（列结构与业务含义的一部分）：劳动合同与劳务合同已合并成一列「合同情况」
+    for (const header of ["工号", "姓名", "部门/职务", "性别", "出生日期", "年龄", "学历", "入职日期", "工龄", "联系方式", "合同情况", "类型", "状态", "离职日期", "操作"]) {
       expect(directory.getByRole("columnheader", { name: header })).toBeVisible();
     }
+    // 合并之后不该再出现原来那两列
+    expect(directory.queryByRole("columnheader", { name: "合同到期" })).toBeNull();
+    expect(directory.queryByRole("columnheader", { name: "劳务合同到期" })).toBeNull();
 
     const zhang = rowFor("员工目录", "E01");
     expect(cellText(zhang, 0)).toBe("E01");
@@ -262,45 +273,45 @@ describe("人事页 · 员工目录列表渲染", () => {
     expect(cellText(zhang, 8)).toBe("0");
     expect(cellText(zhang, 9)).toBe("138 0000 0000");
     expect(cellText(zhang, 10)).toBe("正常");
-    // 没填劳务合同结束时间 → 后端给空串 → 列表回落 "-"，不假装「正常」
-    expect(cellText(zhang, 11)).toBe("-");
-    expect(cellText(zhang, 12)).toBe("workshop");
+    expect(cellText(zhang, 11)).toBe("workshop");
     // 自定义 cell 走 displayStatus：active → 在职
-    expect(cellText(zhang, 13)).toBe("在职");
+    expect(cellText(zhang, 12)).toBe("在职");
     // 未离职 → 离职日期回落 "-"
-    expect(cellText(zhang, 14)).toBe("-");
+    expect(cellText(zhang, 13)).toBe("-");
 
     const li = rowFor("员工目录", "E02");
     // department / position 关联整体缺失 → "- / -"
     expect(cellText(li, 2)).toBe("- / -");
     // 花名册字段与派生列都缺 → "-"（不能渲染成 null / undefined / NaN）
-    for (const index of [3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+    for (const index of [3, 4, 5, 6, 7, 8, 9, 10]) {
       expect(cellText(li, index)).toBe("-");
     }
-    expect(cellText(li, 13)).toBe("已离职");
-    expect(cellText(li, 14)).toBe("2026-03-01");
+    expect(cellText(li, 12)).toBe("已离职");
+    expect(cellText(li, 13)).toBe("2026-03-01");
 
     const wang = rowFor("员工目录", "E03");
     // 只有部门、没有职务 → 后半段回落 "-"
     expect(cellText(wang, 2)).toBe("生产部 / -");
-    expect(cellText(wang, 10)).toBe("合同已过期");
-    expect(cellText(wang, 11)).toBe("合同即将到期");
-    expect(cellText(wang, 13)).toBe("停用");
+    // 合并后的档位：劳务合同即将过期、劳动合同已过期 → 取最紧急的「已过期」
+    expect(cellText(wang, 10)).toBe("已过期");
+    expect(cellText(wang, 12)).toBe("停用");
     // 没有入职日期 → 工龄 "-"，而年龄仍按出生日期算出来
     expect(cellText(wang, 8)).toBe("-");
     expect(cellText(wang, 5)).toBe("38");
   });
 
-  it("行内操作按在职状态出现：在职行有「编辑 + 离职」，已离职/停用行只有「编辑」", async () => {
+  it("行内操作按状态出现：在册行有「编辑 + 离职 + 删除」，已离职/停用行只有「编辑 + 删除」，已删除行只有「恢复」", async () => {
     await openHr({ employees });
 
     const active = rowFor("员工目录", "E01");
     expect(within(active).getByRole("button", { name: "编辑" })).toBeVisible();
     expect(within(active).getByRole("button", { name: "离职" })).toBeVisible();
+    expect(within(active).getByRole("button", { name: "删除" })).toBeVisible();
 
     const left = rowFor("员工目录", "E02");
     expect(within(left).getByRole("button", { name: "编辑" })).toBeVisible();
     expect(within(left).queryByRole("button", { name: "离职" })).toBeNull();
+    expect(within(left).getByRole("button", { name: "删除" })).toBeVisible();
 
     const inactive = rowFor("员工目录", "E03");
     expect(within(inactive).getByRole("button", { name: "编辑" })).toBeVisible();
@@ -379,11 +390,11 @@ describe("人事页 · 搜索与筛选", () => {
     expect(panel("员工目录").getByTestId("empty-state")).toHaveTextContent("暂无匹配员工");
   });
 
-  it("四个筛选下拉的选项池：部门/岗位只列启用项，员工类型固定为车间/非车间", async () => {
+  it("五个筛选下拉的选项池：部门/岗位只列启用项，员工类型固定为车间/非车间，生日含本月生日", async () => {
     await openHr({ employees, departments, positions });
 
-    // 状态 / 部门 / 岗位 / 员工类型
-    expect(screen.getAllByRole("combobox")).toHaveLength(4);
+    // 状态 / 部门 / 岗位 / 员工类型 / 生日
+    expect(screen.getAllByRole("combobox")).toHaveLength(5);
 
     // 部门：来自 /production/departments，且 isActive=false 的部门不进筛选池
     await userEvent.click(filterAt(1));
@@ -411,9 +422,40 @@ describe("人事页 · 搜索与筛选", () => {
 
     // 状态
     await userEvent.click(filterAt(0));
-    for (const name of ["全部状态", "在职", "离职", "停用"]) {
+    for (const name of ["全部状态", "在职", "离职", "停用", "已删除"]) {
       expect(await screen.findByRole("option", { name })).toBeVisible();
     }
+    await userEvent.click(screen.getByRole("option", { name: "全部状态" }));
+
+    // 生日：只有全部生日 / 本月生日（不看后端，靠派生列 birthdayThisMonth 判断）
+    await userEvent.click(filterAt(4));
+    expect(await screen.findByRole("option", { name: "全部生日" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "本月生日" })).toBeVisible();
+  });
+
+  it("本月生日筛选只留下生日在当前月的员工，清空后恢复全部", async () => {
+    await openHr({ employees });
+
+    const directory = panel("员工目录");
+    expect(directory.getAllByTestId("data-table-row")).toHaveLength(3);
+
+    await pickOption(filterAt(4), "本月生日");
+    await waitFor(() => expect(directory.getAllByTestId("data-table-row")).toHaveLength(1));
+    // 只有王五的 birthdayThisMonth 为 true
+    expect(rowFor("员工目录", "E03")).toBeVisible();
+    expect(screen.queryByText("张三")).toBeNull();
+    expect(screen.queryByText("李四")).toBeNull();
+
+    await pickOption(filterAt(4), "全部生日");
+    await waitFor(() => expect(directory.getAllByTestId("data-table-row")).toHaveLength(3));
+  });
+
+  it("本月生日不看有没有出生日期可比：后端没给 birthdayThisMonth 的行不会被误纳进来", async () => {
+    // 李四没有 birthDate（后端派生为 null）——null 不等于 true，所以不该被纳入本月生日
+    await openHr({ employees: [employees[1] as Employee] });
+    await pickOption(filterAt(4), "本月生日");
+    await waitFor(() => expect(rowsIn("员工目录")).toHaveLength(0));
+    expect(panel("员工目录").getByTestId("empty-state")).toHaveTextContent("暂无匹配员工");
   });
 
   it("筛选按后端原始字段精确收敛行数与「共 N 条」总计（状态/部门/员工类型各自生效）", async () => {
@@ -452,6 +494,150 @@ describe("人事页 · 搜索与筛选", () => {
     await pickOption(filterAt(3), "非车间");
     await waitFor(() => expect(directory.getAllByTestId("data-table-row")).toHaveLength(1));
     expect(rowFor("员工目录", "E25")).toBeVisible();
+  });
+});
+
+describe("人事页 · 删除与恢复员工（逻辑删除）", () => {
+  it("已删除的员工默认不出现在列表里，只有筛「已删除」才看得到，且状态列显示「已删除」", async () => {
+    await openHr({ employees: [...employees, deletedEmployee] });
+
+    const directory = panel("员工目录");
+    // 默认（全部状态）把已删除的员工挡在外面：接口给了 4 行，列表只有 3 行
+    expect(directory.getAllByTestId("data-table-row")).toHaveLength(3);
+    expect(screen.queryByText("赵六")).toBeNull();
+
+    await pickOption(filterAt(0), "已删除");
+    await waitFor(() => expect(directory.getAllByTestId("data-table-row")).toHaveLength(1));
+    const deletedRow = rowFor("员工目录", "E09");
+    expect(cellText(deletedRow, 1)).toBe("赵六");
+    // 状态列是「已删除」而不是它的在职状态（离职）
+    expect(cellText(deletedRow, 12)).toBe("已删除");
+    // 已删除行只留「恢复」，没有编辑/离职/删除
+    expect(within(deletedRow).getByRole("button", { name: "恢复" })).toBeVisible();
+    expect(within(deletedRow).queryByRole("button", { name: "编辑" })).toBeNull();
+    expect(within(deletedRow).queryByRole("button", { name: "删除" })).toBeNull();
+  });
+
+  it("删除要先确认：确认后 DELETE 到员工自己的地址并重新拉取列表", async () => {
+    // stubHr 对未打桩的 URL 一律 404，所以写端点要显式放行（否则删除失败、列表不会刷新）
+    const calls = await openHr({ employees }, (url, call) =>
+      url === "/api/v1/production/employees/emp-1" && call.method === "DELETE" ? apiOk({}) : undefined
+    );
+
+    await userEvent.click(within(rowFor("员工目录", "E01")).getByRole("button", { name: "删除" }));
+
+    // 确认弹窗：说明这是逻辑删除且可恢复，而不是直接发请求
+    expect(await screen.findByText("删除员工")).toBeVisible();
+    expect(screen.getByText(/逻辑删除/)).toBeVisible();
+    expect(callsTo(calls, "/api/v1/production/employees/emp-1")).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(callsTo(calls, "/api/v1/production/employees/emp-1")).toHaveLength(1));
+    const deleted = callsTo(calls, "/api/v1/production/employees/emp-1")[0];
+    expect(deleted.method).toBe("DELETE");
+    // DELETE 不带请求体（桩把「没传 body」记成 null）
+    expect(deleted.body ?? null).toBeNull();
+    // 删除后整页重新拉取员工目录（include_deleted=true）
+    await waitFor(() => expect(callsTo(calls, EP.employees).length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("取消确认不会发任何写请求", async () => {
+    const calls = await openHr({ employees });
+
+    await userEvent.click(within(rowFor("员工目录", "E02")).getByRole("button", { name: "删除" }));
+    expect(await screen.findByText("删除员工")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "取消" }));
+
+    await waitFor(() => expect(screen.queryByText("删除员工")).toBeNull());
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("恢复：已删除行点「恢复」→ POST /restore 并重新拉取列表", async () => {
+    const calls = await openHr({ employees: [...employees, deletedEmployee] }, (url, call) =>
+      url === "/api/v1/production/employees/emp-9/restore" && call.method === "POST" ? apiOk({}) : undefined
+    );
+    await pickOption(filterAt(0), "已删除");
+    await waitFor(() => expect(panel("员工目录").getAllByTestId("data-table-row")).toHaveLength(1));
+
+    await userEvent.click(within(rowFor("员工目录", "E09")).getByRole("button", { name: "恢复" }));
+
+    await waitFor(() => expect(callsTo(calls, "/api/v1/production/employees/emp-9/restore")).toHaveLength(1));
+    expect(callsTo(calls, "/api/v1/production/employees/emp-9/restore")[0].method).toBe("POST");
+    // 恢复后整页重新拉取（员工目录第 2 次 GET）
+    await waitFor(() => expect(callsTo(calls, EP.employees).length).toBeGreaterThanOrEqual(2));
+    // 恢复不需要确认弹窗，也不会误发 DELETE
+    expect(screen.queryByText("删除员工")).toBeNull();
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("删除失败时把后端文案通过 toast 暴露出来，列表不变", async () => {
+    const calls = await openHr({ employees }, (url, call) =>
+      url === "/api/v1/production/employees/emp-1" && call.method === "DELETE"
+        ? apiErr(409, "EMPLOYEE_IN_USE", "该员工仍被在途业务引用")
+        : undefined
+    );
+
+    await userEvent.click(within(rowFor("员工目录", "E01")).getByRole("button", { name: "删除" }));
+    await userEvent.click(await screen.findByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => expect(callsTo(calls, "/api/v1/production/employees/emp-1")).toHaveLength(1));
+    // 失败不刷新列表，行还在（toast 由 Toaster 呈现）
+    expect(rowFor("员工目录", "E01")).toBeVisible();
+  });
+});
+
+describe("人事页 · 新建员工时身份证号自动解析", () => {
+  /** 打开「新建员工」对话框。 */
+  async function openCreateEmployee(data: Parameters<typeof openHr>[0] = { employees, departments, positions }) {
+    await openHr(data);
+    await userEvent.click(screen.getByRole("button", { name: "新建员工" }));
+    await screen.findByTestId("action-dialog");
+  }
+  const fieldValue = (name: string) => (screen.getByTestId(`action-field-${name}`) as HTMLInputElement).value;
+
+  it("身份证号填完 → 出生日期、性别、家庭住址的省市县前缀自动带出（详细住址仍留给人填）", async () => {
+    await openCreateEmployee();
+
+    await userEvent.type(screen.getByTestId("action-field-id_card_no"), "350430198405204527");
+
+    expect(fieldValue("birth_date")).toBe("1984-05-20");
+    // 家庭住址只补到区县 + 一个空格，镇/村/门牌由操作员接着输
+    expect(fieldValue("home_address")).toBe("福建省三明市建宁县 ");
+    // 性别是下拉：自动选中「女」
+    expect(screen.getByTestId("action-field-gender")).toHaveTextContent("女");
+  });
+
+  it("老区划代码（413028 = 原信阳地区罗山县）同样解析出当时的省市县", async () => {
+    await openCreateEmployee();
+    await userEvent.type(screen.getByTestId("action-field-id_card_no"), "413028196510110959");
+    expect(fieldValue("home_address")).toBe("河南省信阳地区罗山县 ");
+    expect(fieldValue("birth_date")).toBe("1965-10-11");
+  });
+
+  it("操作员已经手填过的字段不会被覆盖", async () => {
+    await openCreateEmployee();
+
+    // 先手填出生日期与住址，再填身份证
+    await userEvent.type(screen.getByTestId("action-field-birth_date"), "1965-01-02");
+    await userEvent.type(screen.getByTestId("action-field-home_address"), "同安区新民镇柑岭村");
+    await userEvent.type(screen.getByTestId("action-field-id_card_no"), "350430198405204527");
+
+    // 手填过的两个字段都不能被覆盖
+    expect(fieldValue("birth_date")).toBe("1965-01-02");
+    expect(fieldValue("home_address")).toBe("同安区新民镇柑岭村");
+    // 没手填过的性别照旧自动带出
+    expect(screen.getByTestId("action-field-gender")).toHaveTextContent("女");
+  });
+
+  it("身份证没填完或校验位不对时一个字段都不动", async () => {
+    await openCreateEmployee();
+
+    await userEvent.type(screen.getByTestId("action-field-id_card_no"), "350430198405204521");
+    expect(fieldValue("birth_date")).toBe("");
+    expect(fieldValue("home_address")).toBe("");
+    expect(screen.getByTestId("action-field-gender")).not.toHaveTextContent("女");
+    expect(screen.getByTestId("action-field-gender")).not.toHaveTextContent("男");
   });
 });
 

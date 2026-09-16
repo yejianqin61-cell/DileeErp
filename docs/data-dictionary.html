@@ -15,7 +15,7 @@
 <h1>Dilee ERP · 全站数据字段字典</h1>
 <p class="subtitle">字段编号、表单绑定、上下游指针、联动类型与实现状态索引</p>
 <div class="badges"><span class="badge">统一业务身份：order_no</span><span class="badge">UUID：内部关联</span><span class="badge">库存事实驱动余额</span><span class="badge">批次级追溯</span><span class="badge">草稿 / 确认 / 过账 / 冲销</span></div>
-<div class="stats"><div class="stat"><strong>213</strong><span>统一字段编号（F-0001 ~ F-0213）</span></div><div class="stat"><strong>20+</strong><span>业务表单/工作区</span></div><div class="stat"><strong>23</strong><span>关键关系指针（R-0001 起）</span></div><div class="stat"><strong>13</strong><span>业务模块/支撑域</span></div></div>
+<div class="stats"><div class="stat"><strong>228</strong><span>统一字段编号（F-0001 ~ F-0228）</span></div><div class="stat"><strong>20+</strong><span>业务表单/工作区</span></div><div class="stat"><strong>26</strong><span>关键关系指针（R-0001 起）</span></div><div class="stat"><strong>13</strong><span>业务模块/支撑域</span></div></div>
 <div class="links"><a href="data-dictionary.md">打开完整 Markdown 字典</a><a href="data-flow.svg">打开数据流 SVG</a><a href="business-pipeline-overview.html">打开业务管线总览</a></div>
 </section>
 
@@ -39,7 +39,7 @@
 <div class="module"><h3>成品质检与成品仓库</h3><p>成品QC、合格/不合格、入库、不良品、出库、退货</p><p class="range">F-0139 ~ F-0158</p></div>
 <div class="module"><h3>应收与客户对账</h3><p>应收来源、收款、核销、退款/红字、调整、对账、关闭预览</p><p class="range">F-0159 ~ F-0175</p></div>
 <div class="module"><h3>应付与供应商对账</h3><p>应付来源、付款、核销、余额、供应商对账</p><p class="range">F-0176 ~ F-0186</p></div>
-<div class="module"><h3>人事与工资支付</h3><p>员工、考勤、绩效、工资台账、调整、工资支付</p><p class="range">F-0187 ~ F-0203</p></div>
+<div class="module"><h3>人事与工资支付</h3><p>员工、员工花名册口径、考勤、绩效、工资台账、调整、工资支付</p><p class="range">F-0187 ~ F-0203、F-0214 ~ F-0228</p></div>
 <div class="module"><h3>工作台、报表与告警</h3><p>订单搜索、阻塞原因、审计时间线、报表筛选、告警处理</p><p class="range">F-0204 ~ F-0213</p></div>
 </section>
 
@@ -64,7 +64,8 @@
 <tr><td>成品</td><td>出库/发货/客户退货</td><td>F-0148~F-0158</td><td>成品库存、销售单</td><td>应收、库存调整</td></tr>
 <tr><td>财务</td><td>应收/收款/核销/对账</td><td>F-0159~F-0175</td><td>出库、客户</td><td>订单关闭</td></tr>
 <tr><td>财务</td><td>应付/付款/核销/对账</td><td>F-0176~F-0186</td><td>到货、入库、外加工</td><td>供应商结算</td></tr>
-<tr><td>人事</td><td>员工/考勤/绩效</td><td>F-0097~F-0101、F-0187~F-0194</td><td>人工录入</td><td>日报、工资</td></tr>
+<tr><td>人事</td><td>员工/考勤/绩效</td><td>F-0097~F-0101、F-0187~F-0194、F-0214~F-0225</td><td>人工录入 / 花名册导入</td><td>日报、工资</td></tr>
+<tr><td>人事</td><td>员工花名册导入/导出</td><td>F-0214~F-0227</td><td>Excel《在职员工花名册》/ 员工档案</td><td>员工目录、员工名单</td></tr>
 <tr><td>人事/财务</td><td>工资台账/工资支付</td><td>F-0118~F-0130、F-0195~F-0203</td><td>员工日报、HR数据</td><td>财务、报表</td></tr>
 <tr><td>工作台</td><td>订单全链路</td><td>F-0002、F-0204~F-0206</td><td>全模块</td><td>关闭检查</td></tr>
 <tr><td>报表/告警</td><td>查询/导出/告警</td><td>F-0207~F-0213</td><td>全模块事实</td><td>管理决策</td></tr>
@@ -122,6 +123,9 @@
 <tr><td>R-0021</td><td>业务规则</td><td>告警中心</td><td>告警</td><td>超单、差异、库存不足、链路阻塞</td></tr>
 <tr><td>R-0022</td><td>日报来源变化</td><td>工资台账</td><td>状态联动</td><td>草稿刷新；已确认/已支付转过期</td></tr>
 <tr><td>R-0023</td><td>退货/退款/红字/冲销</td><td>原事实</td><td>回退/冲销</td><td>不删除原事实，生成反向或调整事实</td></tr>
+<tr><td>R-0024</td><td>员工 <span class="code">id_card_no</span></td><td>出生日期 / 性别</td><td>派生</td><td>校验位通过时反推；与手填值不一致则拒绝整行</td></tr>
+<tr><td>R-0025</td><td>员工 <span class="code">department_id</span></td><td>员工类型推断</td><td>默认值</td><td>花名册无员工类型列时，仅当部门已有类型完全一致才照此推断并报告</td></tr>
+<tr><td>R-0026</td><td>员工 <span class="code">deleted_at</span></td><td>员工目录 / 选择器 / 工资月台账</td><td>逻辑删除</td><td>删除只写 <span class="code">deleted_at</span>，历史日报/考勤/绩效/台账全部保留；默认列表与导出不含已删除，可 <span class="code">restore</span></td></tr>
 </tbody></table></div></section>
 
 <h2>六、数据流动图</h2>

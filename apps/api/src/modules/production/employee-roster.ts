@@ -18,6 +18,8 @@
  *   - 花名册原表（标题在首行、合同起止是两行合并表头、末尾有批注块）也能直接导入，见 locateHeaderRow。
  */
 
+import { lookupRegion, type ChinaRegion } from "./china-region";
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
@@ -440,15 +442,21 @@ export const employmentStatusLabel = (value: string) =>
 const ID_CARD_WEIGHTS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
 const ID_CARD_CHECK_CODES = "10X98765432";
 
-export type IdCardIdentity = { birthDate: Date; gender: "男" | "女" };
+export type IdCardIdentity = {
+  birthDate: Date;
+  gender: "男" | "女";
+  /** 前 6 位行政区划代码解析出的省 / 市 / 区县；老代码按当时的名称，查不到的那一级为空串。 */
+  region: ChinaRegion;
+};
 export type IdCardResult = { ok: true; value: IdCardIdentity } | { ok: false; reason: string };
 
 /**
- * 身份证号 → 出生日期 + 性别（花名册绿色批注要求的「自动跳出」）。
+ * 身份证号 → 出生日期 + 性别 + 省 / 市 / 区县（花名册绿色批注要求的「自动跳出」）。
  *
  * 支持 18 位（含校验位校验，能挡住手抄错号）和 15 位老号。
- * 省市县地址解析需要 GB/T 2260 行政区划表，本仓库没有该字典，因此**不派生地址**，
- * 「家庭住址」仍按人工填写的值入库。
+ * 地区解析用 `china-region.ts` 的表（现行 + 历史区划合并）：老号码里大量是已撤销代码，
+ * 只查现行表会只剩省级；合并后能还原成当时的省市县（如 413028 → 河南省信阳地区罗山县）。
+ * 区划代码查不到**不影响**出生日期/性别的解析，也不判定身份证非法——前 6 位只用于取名。
  */
 export function parseIdCard(value: unknown): IdCardResult {
   const text = String(value ?? "").replace(/\s+/g, "").toUpperCase();
@@ -458,12 +466,12 @@ export function parseIdCard(value: unknown): IdCardResult {
     if (expected !== text[17]) return { ok: false, reason: "校验位不匹配，请核对号码" };
     const birthDate = parseRosterDate(`${text.slice(6, 10)}-${text.slice(10, 12)}-${text.slice(12, 14)}`);
     if (!birthDate) return { ok: false, reason: "出生日期段无法解析" };
-    return { ok: true, value: { birthDate, gender: Number(text[16]) % 2 === 1 ? "男" : "女" } };
+    return { ok: true, value: { birthDate, gender: Number(text[16]) % 2 === 1 ? "男" : "女", region: lookupRegion(text.slice(0, 6)) } };
   }
   if (/^\d{15}$/.test(text)) {
     const birthDate = parseRosterDate(`19${text.slice(6, 8)}-${text.slice(8, 10)}-${text.slice(10, 12)}`);
     if (!birthDate) return { ok: false, reason: "出生日期段无法解析" };
-    return { ok: true, value: { birthDate, gender: Number(text[14]) % 2 === 1 ? "男" : "女" } };
+    return { ok: true, value: { birthDate, gender: Number(text[14]) % 2 === 1 ? "男" : "女", region: lookupRegion(text.slice(0, 6)) } };
   }
   return { ok: false, reason: "必须为 18 位（或 15 位）身份证号" };
 }
@@ -486,19 +494,35 @@ export const deriveTenure = (hiredOn: Date | null | undefined, today: Date = new
 export const deriveBirthdayThisMonth = (birthDate: Date | null | undefined, today: Date = new Date()) =>
   (birthDate ? (birthDate.getUTCMonth() === today.getUTCMonth() ? "1" : "0") : "");
 
-export type ContractExpiryStatus = "" | "正常" | "合同即将到期" | "合同已过期";
+/**
+ * 合同档位（统一口径）：`正常` / `即将过期`（1 个月内到期）/ `已过期`；
+ * `""` 表示这份合同没填结束时间（不是「正常」，也不假装正常）。
+ */
+export type ContractStatus = "" | "正常" | "即将过期" | "已过期";
+
+/** 档位严重度，用于把劳动合同与劳务合同合并成「合同情况」时取最紧急的一档。 */
+const CONTRACT_SEVERITY: Record<ContractStatus, number> = { "": 0, "正常": 1, "即将过期": 2, "已过期": 3 };
 
 /**
- * 合同到期提醒（花名册黄色批注）：到期前一个月提示「合同即将到期」，已过期提示「合同已过期」，
- * 其余「正常」，没填结束时间则留空。
+ * 单份合同的档位（花名册黄色批注）：结束时间已过 → `已过期`；1 个月内到期 → `即将过期`；
+ * 更远 → `正常`；没填结束时间 → `""`。
  */
-export function deriveContractExpiry(end: Date | null | undefined, today: Date = new Date()): ContractExpiryStatus {
+export function deriveContractStatus(end: Date | null | undefined, today: Date = new Date()): ContractStatus {
   if (!end) return "";
   const endDay = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
   const todayDay = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
-  if (endDay < todayDay) return "合同已过期";
-  if (endDay - todayDay <= CONTRACT_EXPIRY_WINDOW_DAYS * MS_PER_DAY) return "合同即将到期";
+  if (endDay < todayDay) return "已过期";
+  if (endDay - todayDay <= CONTRACT_EXPIRY_WINDOW_DAYS * MS_PER_DAY) return "即将过期";
   return "正常";
+}
+
+/**
+ * 劳动合同 + 劳务合同 → 一个「合同情况」档位：取两者中最紧急的一档
+ * （已过期 > 即将过期 > 正常）；两份都没填结束时间才返回 `""`。
+ */
+export function deriveContractSituation(contractEnd: Date | null | undefined, laborContractEnd: Date | null | undefined, today: Date = new Date()): ContractStatus {
+  return [deriveContractStatus(contractEnd, today), deriveContractStatus(laborContractEnd, today)]
+    .reduce<ContractStatus>((worst, current) => (CONTRACT_SEVERITY[current] > CONTRACT_SEVERITY[worst] ? current : worst), "");
 }
 
 /** 导出用的日期文本（UTC 零点 → YYYY-MM-DD）。 */
@@ -562,6 +586,8 @@ export type EmployeeRosterParseResult = {
   ignoredTrailingRows: number;
   /** 实际参与校验的数据行数。 */
   dataRowCount: number;
+  /** 家庭住址留空、用身份证前 6 位解析出的省市县补了前缀的行数（如实回报给操作员）。 */
+  addressedFromIdCard: number;
   errors: EmployeeImportError[];
   rows: EmployeeImportRow[];
 };
@@ -641,6 +667,7 @@ export function parseEmployeeRosterRows(rows: readonly unknown[][]): EmployeeRos
     ignoredColumns: header.headerRow < 0 ? [] : [...new Set(header.labels.map(cellText).filter((label) => label && !RECOGNIZED_HEADERS.has(label) && !(EMPLOYEE_IGNORED_HEADERS as readonly string[]).includes(label)))],
     ignoredTrailingRows: 0,
     dataRowCount: 0,
+    addressedFromIdCard: 0,
     errors: [],
     rows: [],
   };
@@ -677,6 +704,7 @@ export function parseEmployeeRosterRows(rows: readonly unknown[][]): EmployeeRos
   const raw = (row: readonly unknown[], field: EmployeeRosterField) => { const column = indexes.get(field); return column === undefined ? undefined : row[column]; };
   const text = (row: readonly unknown[], field: EmployeeRosterField) => textCell(row, indexes.get(field));
   const seenNos = new Set<string>();
+  let addressedFromIdCard = 0;
 
   for (const { line, row } of data) {
     const errors: EmployeeImportError[] = [];
@@ -748,16 +776,18 @@ export function parseEmployeeRosterRows(rows: readonly unknown[][]): EmployeeRos
     if (laborContractStart && laborContractEnd && laborContractEnd < laborContractStart) fail("labor_contract_end", "不能早于劳务合同开始时间");
     if (employmentStatus === "active" && leftOn) fail("left_on", "状态为在职时不能填离职日期");
 
-    // —— 身份证号：校验 + 自动补齐出生日期/性别（花名册绿色批注的要求）——
+    // —— 身份证号：校验 + 自动补齐出生日期/性别 + 取省市县（花名册绿色批注的要求）——
     const idCardText = texts.id_card_no ?? "";
     let gender = parseRosterGender(texts.gender);
     if (texts.gender && gender === null) fail("gender", "仅允许男/女");
     let idCardNo: string | undefined;
+    let regionLabel = "";
     if (idCardText) {
       const parsed = parseIdCard(idCardText);
       if (!parsed.ok) fail("id_card_no", parsed.reason);
       else {
         idCardNo = idCardText.toUpperCase();
+        regionLabel = parsed.value.region.label;
         if (birthDate && birthDate.getTime() !== parsed.value.birthDate.getTime()) fail("birth_date", "与身份证号推算的出生日期不一致");
         else if (!birthDate) birthDate = parsed.value.birthDate;
         if (gender && gender !== parsed.value.gender) fail("gender", "与身份证号推算的性别不一致");
@@ -765,6 +795,10 @@ export function parseEmployeeRosterRows(rows: readonly unknown[][]): EmployeeRos
       }
     }
     if (birthDate && birthDate.getTime() > Date.now()) fail("birth_date", "不能晚于今天");
+    // 家庭住址留空时，用身份证前 6 位解析出的省市县补个前缀（镇/村/门牌仍由人工在员工编辑里补全）。
+    // 只在**真的空着**时才补：文件里写了地址就用文件里的，绝不用解析结果改写操作员填的内容。
+    const homeAddress = texts.home_address || regionLabel;
+    if (!texts.home_address && regionLabel) addressedFromIdCard += 1;
 
     if (errors.length) { result.errors.push(...errors); continue; }
     result.rows.push({
@@ -787,7 +821,7 @@ export function parseEmployeeRosterRows(rows: readonly unknown[][]): EmployeeRos
       contractEnd: contractEnd ?? undefined,
       laborContractStart: laborContractStart ?? undefined,
       laborContractEnd: laborContractEnd ?? undefined,
-      homeAddress: texts.home_address || undefined,
+      homeAddress: homeAddress || undefined,
       currentAddress: texts.current_address || undefined,
       phone: texts.phone || undefined,
       emergencyContact: texts.emergency_contact || undefined,
@@ -797,10 +831,11 @@ export function parseEmployeeRosterRows(rows: readonly unknown[][]): EmployeeRos
       remark: texts.remark || undefined,
     });
   }
+  result.addressedFromIdCard = addressedFromIdCard;
   return result;
 }
 
-/** 导出 / 列表读模型里的派生列（年龄、工龄、当月生日、合同到期提醒）。 */
+/** 导出 / 列表读模型里的派生列（年龄、工龄、当月生日、合同情况）。 */
 export function rosterDerived(
   row: { birthDate?: Date | null; hiredOn?: Date | null; contractEnd?: Date | null; laborContractEnd?: Date | null },
   today: Date = new Date(),
@@ -809,8 +844,11 @@ export function rosterDerived(
     age: row.birthDate ? Number(deriveAge(row.birthDate, today)) : null,
     tenureYears: row.hiredOn ? Number(deriveTenure(row.hiredOn, today)) : null,
     birthdayThisMonth: row.birthDate ? deriveBirthdayThisMonth(row.birthDate, today) === "1" : null,
-    contractStatus: deriveContractExpiry(row.contractEnd, today),
-    laborContractStatus: deriveContractExpiry(row.laborContractEnd, today),
+    // 合同档位：contractStatus / laborContractStatus 是花名册里分开的两列（导出保持原样），
+    // contractSituation 是把两者合并后的「合同情况」，给员工目录和页面用。
+    contractStatus: deriveContractStatus(row.contractEnd, today),
+    laborContractStatus: deriveContractStatus(row.laborContractEnd, today),
+    contractSituation: deriveContractSituation(row.contractEnd, row.laborContractEnd, today),
   };
 }
 

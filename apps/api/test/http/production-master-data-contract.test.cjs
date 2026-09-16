@@ -1,5 +1,5 @@
-// 生产模块「主数据」HTTP 契约测试：35 条路由
-// （部门 6 / 岗位 6 / 员工 8（含导入导出）/ 地点 6 / 工序 6 / 工序单价 3）。
+// 生产模块「主数据」HTTP 契约测试：37 条路由
+// （部门 6 / 岗位 6 / 员工 10（含导入导出与逻辑删除、恢复）/ 地点 6 / 工序 6 / 工序单价 3）。
 //
 // 被测源文件：apps/api/src/modules/production/production-master-data.controller.ts
 // 参考契约：docs/design/global-api-contract.md（成功 {data,meta} / 失败 {error,meta.path} / POST=201 / 无 405）
@@ -116,7 +116,7 @@ function expectBusinessNotFound(response, code, context) {
 }
 
 /**
- * 控制器上全部 35 条路由（方法 + 路径 + 是否存在请求体）。
+ * 控制器上全部 37 条路由（方法 + 路径 + 是否存在请求体）。
  * 写路由的 body 只用非法/空体：鉴权用例里根本不会到达校验层（guard 先执行）。
  */
 const ROUTES = [
@@ -140,6 +140,8 @@ const ROUTES = [
   ["PATCH", `${P}/employees/${UNKNOWN_ID}`, true],
   ["PATCH", `${P}/employees/${UNKNOWN_ID}/active`, true],
   ["PATCH", `${P}/employees/${UNKNOWN_ID}/leave`, true],
+  ["DELETE", `${P}/employees/${UNKNOWN_ID}`, false],
+  ["POST", `${P}/employees/${UNKNOWN_ID}/restore`, false],
   ["GET", `${P}/locations`, false],
   ["POST", `${P}/locations`, true],
   ["PATCH", `${P}/locations/${UNKNOWN_ID}`, true],
@@ -157,10 +159,10 @@ const ROUTES = [
   ["PATCH", `${P}/operation-rates/${UNKNOWN_ID}`, true],
 ];
 
-test("production-master-data.anonymous_requests_are_rejected_on_all_35_routes", async () => {
+test("production-master-data.anonymous_requests_are_rejected_on_all_37_routes", async () => {
   // 控制器级 @UseGuards(AuthenticationGuard, ModulePermissionGuard) + @RequireModules("production")
   // 对所有路由生效；AuthenticationGuard 的 currentUser() 在无 Cookie 时抛 401（auth.service.ts:37）。
-  assert.equal(ROUTES.length, 35, "本用例应覆盖控制器上全部 35 条路由");
+  assert.equal(ROUTES.length, 37, "本用例应覆盖控制器上全部 37 条路由");
   const anonymous = apiClient(baseUrl);
   for (const [method, path, hasBody] of ROUTES) {
     const response = await anonymous.raw(path, jsonInit(method, hasBody ? {} : undefined));
@@ -226,7 +228,7 @@ test("production-master-data.employee_query_dto_validates_field_types_and_reject
   expectValidationError(paginated, { code: "VALIDATION_ERROR", context: "page_size" });
   assert.equal(paginated.body.error.details[0].field, "page_size");
   // 合法过滤条件（含宽松的 has_user 字符串）：全部 200
-  for (const query of ["query=abc", "employment_status=active", "employee_type=workshop", `department_id=${UNKNOWN_ID}`, `position_id=${UNKNOWN_ID}`, "has_user=true", "has_user=false", "has_user=maybe", "hired_from=2026-01-01&hired_to=2026-12-31", "left_from=2026-01-01&left_to=2026-12-31"]) {
+  for (const query of ["query=abc", "employment_status=active", "employee_type=workshop", `department_id=${UNKNOWN_ID}`, `position_id=${UNKNOWN_ID}`, "has_user=true", "has_user=false", "has_user=maybe", "include_deleted=true", "include_deleted=maybe", "hired_from=2026-01-01&hired_to=2026-12-31", "left_from=2026-01-01&left_to=2026-12-31"]) {
     expectSuccessEnvelope(await api.get(`${P}/employees?${query}`), { context: query });
   }
 });
@@ -336,6 +338,9 @@ test("production-master-data.mutations_on_unknown_ids_return_404_before_writing"
     ["PATCH", `${P}/employees/${UNKNOWN_ID}`, {}, "EMPLOYEE_NOT_FOUND"],
     ["PATCH", `${P}/employees/${UNKNOWN_ID}/active`, { is_active: true }, "EMPLOYEE_NOT_FOUND"],
     ["PATCH", `${P}/employees/${UNKNOWN_ID}/leave`, { left_on: "2026-01-01" }, "EMPLOYEE_NOT_FOUND"],
+    // 逻辑删除：员工不存在（或已删除）→ 404；恢复：员工存在但没被删 → 404 EMPLOYEE_NOT_DELETED
+    ["DELETE", `${P}/employees/${UNKNOWN_ID}`, undefined, "EMPLOYEE_NOT_FOUND"],
+    ["POST", `${P}/employees/${UNKNOWN_ID}/restore`, undefined, "EMPLOYEE_NOT_DELETED"],
     ["PATCH", `${P}/locations/${UNKNOWN_ID}`, {}, "PRODUCTION_LOCATION_NOT_FOUND"],
     ["PATCH", `${P}/locations/${UNKNOWN_ID}/active`, { is_active: false }, "PRODUCTION_LOCATION_NOT_FOUND"],
     ["DELETE", `${P}/locations/${UNKNOWN_ID}`, undefined, "PRODUCTION_LOCATION_NOT_FOUND"],
@@ -431,7 +436,8 @@ test("production-master-data.method_mismatches_and_unknown_routes_return_404_nev
   // 后端没有 405：方法不匹配同样由 not-found handler 兜底，message 为英文 Cannot XXX
   const cases = [
     ["PUT", `${P}/departments/${UNKNOWN_ID}`, {}],
-    ["DELETE", `${P}/employees/${UNKNOWN_ID}`, undefined],
+    // employees 现在有 DELETE 路由了，方法不匹配要换成真正没有的 PUT（DELETE 走的是业务 404）
+    ["PUT", `${P}/employees/${UNKNOWN_ID}`, {}],
     ["POST", `${P}/employees/export.xlsx`, {}],
     ["GET", `${P}/employees/import-template.xlsx/extra`, undefined],
     ["GET", `${P}/roles`, undefined],

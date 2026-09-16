@@ -176,7 +176,10 @@ export class ProductionMasterDataService {
 
   // 员工目录读模型：除员工表本身的字段外，还直接带上花名册的派生列
   // （年龄/工龄/当月生日/合同到期提醒）。这些列由出生日期、入职日期和合同结束时间实时算出，不落库。
-  async listEmployees(filters: { query?: string; employment_status?: string; department_id?: string; position_id?: string; employee_type?: string; hired_from?: string; hired_to?: string; left_from?: string; left_to?: string; has_user?: string } = {}) { const query = filters.query?.trim(); const rows = await this.prisma.employee.findMany({ where: { deletedAt: null, ...(query ? { OR: [{ employeeNo: { contains: query, mode: "insensitive" } }, { name: { contains: query, mode: "insensitive" } }] } : {}), ...(filters.employment_status ? { employmentStatus: filters.employment_status } : {}), ...(filters.department_id ? { departmentId: filters.department_id } : {}), ...(filters.position_id ? { positionId: filters.position_id } : {}), ...(filters.employee_type ? { employeeType: filters.employee_type } : {}), ...(filters.has_user === "true" ? { userId: { not: null } } : filters.has_user === "false" ? { userId: null } : {}), ...(filters.hired_from || filters.hired_to ? { hiredOn: { ...(filters.hired_from ? { gte: new Date(filters.hired_from) } : {}), ...(filters.hired_to ? { lte: new Date(filters.hired_to) } : {}) } } : {}), ...(filters.left_from || filters.left_to ? { leftOn: { ...(filters.left_from ? { gte: new Date(filters.left_from) } : {}), ...(filters.left_to ? { lte: new Date(filters.left_to) } : {}) } } : {}) }, include: { department: true, position: true }, orderBy: [{ employeeNo: "asc" }, { name: "asc" }] }); const today = new Date(); return rows.map((row) => ({ ...row, ...rosterDerived(row, today) })); }
+  //
+  // include_deleted=true 时把已逻辑删除的员工一起返回（部门池/岗位池同款开关）：员工列表要靠它
+  // 才能看到「已删除」并恢复；默认只返回在册员工，删除就从列表里消失。
+  async listEmployees(filters: { query?: string; employment_status?: string; department_id?: string; position_id?: string; employee_type?: string; hired_from?: string; hired_to?: string; left_from?: string; left_to?: string; has_user?: string; include_deleted?: string } = {}) { const query = filters.query?.trim(); const rows = await this.prisma.employee.findMany({ where: { ...(filters.include_deleted === "true" ? {} : { deletedAt: null }), ...(query ? { OR: [{ employeeNo: { contains: query, mode: "insensitive" } }, { name: { contains: query, mode: "insensitive" } }] } : {}), ...(filters.employment_status ? { employmentStatus: filters.employment_status } : {}), ...(filters.department_id ? { departmentId: filters.department_id } : {}), ...(filters.position_id ? { positionId: filters.position_id } : {}), ...(filters.employee_type ? { employeeType: filters.employee_type } : {}), ...(filters.has_user === "true" ? { userId: { not: null } } : filters.has_user === "false" ? { userId: null } : {}), ...(filters.hired_from || filters.hired_to ? { hiredOn: { ...(filters.hired_from ? { gte: new Date(filters.hired_from) } : {}), ...(filters.hired_to ? { lte: new Date(filters.hired_to) } : {}) } } : {}), ...(filters.left_from || filters.left_to ? { leftOn: { ...(filters.left_from ? { gte: new Date(filters.left_from) } : {}), ...(filters.left_to ? { lte: new Date(filters.left_to) } : {}) } } : {}) }, include: { department: true, position: true }, orderBy: [{ employeeNo: "asc" }, { name: "asc" }] }); const today = new Date(); return rows.map((row) => ({ ...row, ...rosterDerived(row, today) })); }
   // 导出＝花名册口径（EMPLOYEE_EXPORT_HEADERS）：原始列顺序 + 系统列，派生列当天实时算。
   // 导出的文件可以直接回灌「批量导入员工」——解析按表头名匹配，派生列会被忽略。
   async exportEmployees(filters: Parameters<ProductionMasterDataService["listEmployees"]>[0]) { const rows = await this.listEmployees(filters); const userIds = rows.flatMap((row) => row.userId ? [row.userId] : []); const users = userIds.length ? await this.prisma.user.findMany({ where: { id: { in: userIds }, deletedAt: null }, select: { id: true, username: true } }) : []; const usernames = new Map(users.map((user) => [user.id, user.username])); const today = new Date(); const data = rows.map((row, index) => employeeExportRow(row, index, row.userId ? usernames.get(row.userId) ?? "" : "", today)); const sheet = XLSX.utils.json_to_sheet(data, { header: [...EMPLOYEE_EXPORT_HEADERS] }); sheet["!cols"] = EMPLOYEE_EXPORT_HEADERS.map((header) => ({ wch: header.length > 6 ? 22 : 12 })); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, sheet, "员工名单"); return XLSX.write(book, { type: "buffer", bookType: "xlsx" }); }
@@ -303,8 +306,11 @@ export class ProductionMasterDataService {
     if (parsed.documentLayout) {
       hints.push(`识别为手工花名册版式：表头在第 ${parsed.headerRow} 行${parsed.ignoredTrailingRows ? `，末尾 ${parsed.ignoredTrailingRows} 行说明批注已跳过` : ""}${parsed.ignoredColumns.length ? `，忽略的列：${parsed.ignoredColumns.join("、")}` : ""}。`);
     }
+    if (parsed.addressedFromIdCard) {
+      hints.push(`${parsed.addressedFromIdCard} 行的家庭住址留空，已用身份证前 6 位解析出的省市县补了前缀（镇/村/门牌请在员工编辑里补全）。`);
+    }
 
-    await this.audit.record("employee.import", "employee", user.id, undefined, { count: imported, total: parsed.dataRowCount, error_count: errors.length, auto_numbered: autoNumbered, inferred_employee_types: inferredEmployeeTypes, document_layout: parsed.documentLayout });
+    await this.audit.record("employee.import", "employee", user.id, undefined, { count: imported, total: parsed.dataRowCount, error_count: errors.length, auto_numbered: autoNumbered, inferred_employee_types: inferredEmployeeTypes, addressed_from_id_card: parsed.addressedFromIdCard, document_layout: parsed.documentLayout });
     return {
       status: errors.length ? "partial" : "success",
       imported,
@@ -313,6 +319,7 @@ export class ProductionMasterDataService {
       errorCount: errors.length,
       autoNumbered,
       inferredEmployeeTypes,
+      addressedFromIdCard: parsed.addressedFromIdCard,
       ignoredColumns: parsed.ignoredColumns,
       ignoredTrailingRows: parsed.ignoredTrailingRows,
       headerRow: parsed.headerRow,
@@ -585,6 +592,33 @@ export class ProductionMasterDataService {
     const item = await this.prisma.employee.update({ where: { id }, data: { employmentStatus: "left", leftOn: new Date(leftOn), ...this.audit.update(user) } });
     await this.audit.record("employee.leave", "employee", user.id, id, { left_on: leftOn });
     return item;
+  }
+
+  // 删除员工 = 逻辑删除（从员工列表/所有选择器里消失），物理行保留，历史日报、考勤、绩效和工资台账
+  // 都还引用它，名称快照也照旧能查到。
+  //
+  // 刻意**不做**引用检查：员工被日报/工资引用是常态，像部门/岗位那样「被引用就不许删」会让删除
+  // 几乎永远失败。真正需要停掉的业务由 state 控制（离职/停用），删除是更高一层的「这条不该在册」。
+  //
+  // 与部门/岗位同一套写法：事务内 FOR UPDATE 锁行 + 只删未删除的行（重复删除 → 404）+ 审计留痕。
+  async deleteEmployee(id: string, user: User) {
+    const item = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM employees WHERE id = ${id}::uuid FOR UPDATE`;
+      const row = await tx.employee.findFirst({ where: { id, deletedAt: null } });
+      if (!row) throw new NotFoundException({ code: "EMPLOYEE_NOT_FOUND", message: "员工不存在", details: [] });
+      return tx.employee.update({ where: { id }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
+    });
+    await this.audit.record("employee.delete", "employee", user.id, id, { employee_no: item.employeeNo, name: item.name, department_id: item.departmentId, employment_status: item.employmentStatus });
+    return item;
+  }
+  // 恢复：只清掉行上的 deletedAt，保留 deletedBy/deletedAt 的原始痕迹到审计事件里。
+  // 删错了的员工（以及被别人登录账号绑定过的员工）可以一键回到在册状态。
+  async restoreEmployee(id: string, user: User) {
+    const item = await this.prisma.employee.findFirst({ where: { id, deletedAt: { not: null } } });
+    if (!item) throw new NotFoundException({ code: "EMPLOYEE_NOT_DELETED", message: "员工不存在或未删除", details: [] });
+    const restored = await this.prisma.employee.update({ where: { id }, data: { deletedAt: null, updatedBy: user.id } });
+    await this.audit.record("employee.restore", "employee", user.id, id, { employee_no: item.employeeNo, name: item.name, deleted_by: item.deletedBy, deleted_at: item.deletedAt, restored_by: user.id });
+    return restored;
   }
 
   listLocations(includeDeleted = false) { return this.prisma.productionLocation.findMany({ where: includeDeleted ? {} : { deletedAt: null }, orderBy: [{ locationType: "asc" }, { name: "asc" }] }); }

@@ -1,2 +1,6 @@
 apps/api/src/build-info.ts export-subst
 *.sh text eol=lf
+# 行政区划表是生成物（scripts/generate-china-regions.mjs 写 LF），固定按 LF 存盘：
+# 既避免在 Windows 上重新生成出一整文件的换行差异，也保证两份副本逐字节相同。
+apps/api/src/modules/production/china-region.ts text eol=lf
+apps/web/lib/china-region.ts text eol=lf

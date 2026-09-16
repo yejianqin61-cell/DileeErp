@@ -10,7 +10,7 @@ import {
 } from "../../components/ui/action-dialog";
 import { Button } from "../../components/ui/button";
 import { FileInput } from "../../components/ui/file-input";
-import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "../../components/ui/dialog";
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../components/ui/dialog";
 import { Input } from "../../components/ui/input";
 import {
   Select,
@@ -30,8 +30,10 @@ import {
   apiGet,
   apiPatch,
   apiPost,
+  apiRequest,
 } from "../../lib/api-client";
 import { displayStatus } from "../../lib/display-text";
+import { deriveEmployeeFieldsFromIdCard } from "../../lib/id-card";
 import { currencyOptions, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
@@ -49,6 +51,8 @@ type Employee = {
   hiredOn?: string;
   leftOn?: string;
   remark?: string;
+  /** 逻辑删除时间：有值 = 已从员工列表移除，可在「已删除」筛选里看到并恢复。 */
+  deletedAt?: string | null;
   department?: { id: string; name: string };
   position?: { id: string; name: string };
   birthDate?: string;
@@ -68,11 +72,12 @@ type Employee = {
   phone?: string;
   emergencyContact?: string;
   emergencyPhone?: string;
+  // 后端实时计算的派生列（不落库）
   age?: number | null;
   tenureYears?: number | null;
   birthdayThisMonth?: boolean | null;
-  contractStatus?: string;
-  laborContractStatus?: string;
+  /** 劳动合同 + 劳务合同合并后的档位：正常 / 即将过期（1 个月内）/ 已过期；"" = 两份都没填结束时间 */
+  contractSituation?: string;
 };
 type RecordItem = {
   id: string;
@@ -228,7 +233,7 @@ function employeePayload(values: Record<string, string>, mode: "create" | "edit"
   };
 }
 
-/** 合同到期提醒的展示文案：没填结束时间时留空，不假装「正常」。 */
+/** 合同情况：三档 正常 / 即将过期 / 已过期；两份合同都没填结束时间时留空，列表回落 "-"。 */
 const contractCell = (status?: string) => status || "-";
 
 export default function HrPage() {
@@ -265,7 +270,10 @@ export default function HrPage() {
   const [employeeDepartment, setEmployeeDepartment] = useState("");
   const [employeePosition, setEmployeePosition] = useState("");
   const [employeeType, setEmployeeType] = useState("");
+  // 本月生日：不放进导入模板（它是按出生日期实时派生的），只作为员工列表的一个小筛选。
+  const [employeeBirthday, setEmployeeBirthday] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   // 字典里没有首选币种时退回第一个可选值，保证 defaultValue 一定落在 options 里。
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
@@ -284,7 +292,9 @@ export default function HrPage() {
     setError("");
     try {
       const [e, d, po, a, p, l, s] = await Promise.all([
-        apiGet<Employee[]>("/production/employees"),
+        // include_deleted=true：已逻辑删除的员工要能被「已删除」筛选看到并恢复；
+        // 默认的全部状态仍然不显示它们（下面 filteredEmployees 里排除）。
+        apiGet<Employee[]>("/production/employees?include_deleted=true"),
         apiGet<OrganizationItem[]>("/production/departments"),
         apiGet<OrganizationItem[]>("/production/positions"),
         apiGet<RecordItem[]>("/hr/attendance-records"),
@@ -327,6 +337,27 @@ export default function HrPage() {
       await load();
     } catch (cause) {
       notifyError(messageOf(cause, "操作失败"));
+    }
+  }
+  // 删除员工 = 逻辑删除（DELETE 无请求体）；恢复 = POST /restore。两者都只需管理员权限。
+  async function removeEmployee(employee: Employee) {
+    setError("");
+    try {
+      await apiRequest(`/production/employees/${employee.id}`, { method: "DELETE" });
+      notifySuccess(`已移除员工「${employee.name}」，可在「已删除」里恢复`);
+      await load();
+    } catch (cause) {
+      notifyError(messageOf(cause, "删除员工失败"));
+    }
+  }
+  async function restoreEmployee(employee: Employee) {
+    setError("");
+    try {
+      await apiPost(`/production/employees/${employee.id}/restore`);
+      notifySuccess(`员工「${employee.name}」已恢复`);
+      await load();
+    } catch (cause) {
+      notifyError(messageOf(cause, "恢复员工失败"));
     }
   }
   async function exportEmployees() {
@@ -732,21 +763,28 @@ export default function HrPage() {
   }
   const employeeName = (id: string) =>
     employees.find((item) => item.id === id)?.name ?? id;
+  // 员工的「状态」= 已删除 优先于在职/离职/停用：删除是比在离职更高一层的事实。
+  // 「全部状态」刻意**不含**已删除（删除就该从列表里消失），要看得专门筛「已删除」。
+  const employeeState = (item: Employee) =>
+    item.deletedAt ? "deleted" : item.employmentStatus;
   const filteredEmployees = useMemo(
     () =>
       employees.filter((item) => {
         const query = employeeQuery.trim().toLowerCase();
+        const state = employeeState(item);
         return (
           (!query ||
             `${item.employeeNo} ${item.name}`.toLowerCase().includes(query)) &&
-          (!employeeStatus || item.employmentStatus === employeeStatus) &&
+          (employeeStatus ? state === employeeStatus : state !== "deleted") &&
           (!employeeDepartment || item.department?.id === employeeDepartment) &&
           (!employeePosition || item.position?.id === employeePosition) &&
-          (!employeeType || item.employeeType === employeeType)
+          (!employeeType || item.employeeType === employeeType) &&
+          (employeeBirthday !== "this_month" || item.birthdayThisMonth === true)
         );
       }),
     [
       employees,
+      employeeBirthday,
       employeeDepartment,
       employeePosition,
       employeeQuery,
@@ -788,20 +826,19 @@ export default function HrPage() {
     },
     { id: "phone", header: "联系方式", cell: ({ row }) => row.original.phone ?? "-" },
     {
+      // 劳动合同与劳务合同合成一列：取两者中最紧急的档位（已过期 > 即将过期 > 正常）。
       id: "contract",
-      header: "合同到期",
-      cell: ({ row }) => contractCell(row.original.contractStatus),
-    },
-    {
-      id: "laborContract",
-      header: "劳务合同到期",
-      cell: ({ row }) => contractCell(row.original.laborContractStatus),
+      header: "合同情况",
+      cell: ({ row }) => contractCell(row.original.contractSituation),
     },
     { accessorKey: "employeeType", header: "类型" },
     {
       id: "status",
       header: "状态",
-      cell: ({ row }) => displayStatus(row.original.employmentStatus),
+      cell: ({ row }) =>
+        row.original.deletedAt
+          ? "已删除"
+          : displayStatus(row.original.employmentStatus),
     },
     {
       id: "leftOn",
@@ -813,21 +850,43 @@ export default function HrPage() {
       header: "操作",
       cell: ({ row }) => (
         <div className="action-row">
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => editEmployee(row.original)}
-          >
-            编辑
-          </Button>
-          {row.original.employmentStatus === "active" && (
+          {row.original.deletedAt ? (
+            // 已删除的行只留一个「恢复」：删除是可逆的，不需要为它保留编辑入口。
             <Button
               size="sm"
-              variant="destructive"
-              onClick={() => leaveEmployee(row.original)}
+              variant="secondary"
+              onClick={() => void restoreEmployee(row.original)}
             >
-              离职
+              恢复
             </Button>
+          ) : (
+            <>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => editEmployee(row.original)}
+              >
+                编辑
+              </Button>
+              {row.original.employmentStatus === "active" && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => leaveEmployee(row.original)}
+                >
+                  离职
+                </Button>
+              )}
+              {/* 删除是逻辑删除，会从所有选择器里消失，所以先弹出确认。
+                  按钮配色跟随部门池/岗位池的约定：状态变更用 ghost，删除用 destructive。 */}
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setDeleteTarget(row.original)}
+              >
+                删除
+              </Button>
+            </>
           )}
         </div>
       ),
@@ -978,6 +1037,42 @@ export default function HrPage() {
         </div>
       </PageHeader>
       <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="hr-import-dialog"><DialogHeader><DialogTitle>批量导入员工</DialogTitle></DialogHeader><DialogBody><p>请使用模板填写员工信息。系统按表头名识别列（列顺序可以调整），先逐行校验格式，通过校验的行会直接导入，出错的行在下方逐条列出，不会因为个别错误整批丢弃。工号留空时按 EMP-当天日期-序号 自动生成。手动维护的花名册（首行是标题、末尾有说明批注）也能直接上传。</p><FileInput accept=".xlsx" onChange={(event) => { void importEmployees(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importResult && <div className="panel-body"><p>共 {importResult.total} 行：成功 {importResult.successCount} 行 / 错误 {importResult.errorCount} 行</p>{Boolean(importResult.autoNumbered) && <p>其中 {importResult.autoNumbered} 行工号由系统自动生成</p>}{Boolean(importResult.inferredEmployeeTypes) && <p>其中 {importResult.inferredEmployeeTypes} 行的员工类型按所属部门已有员工推断，请复核</p>}{(importResult.hints ?? []).map((hint) => <p key={hint} className="panel-note">{hint}</p>)}{Boolean(importResult.ignoredColumns?.length) && <p>以下列不属于员工口径，已忽略：{importResult.ignoredColumns?.join("、")}</p>}{importResult.errors.length > 0 && <DataTable columns={[{ accessorKey: "row", header: "行号" }, { accessorKey: "field", header: "字段" }, { accessorKey: "reason", header: "原因" }]} data={importResult.errors} empty={null} />}</div>}</DialogBody></DialogContent></Dialog>
+      {/* 删除确认：用项目里到处在用的 Dialog，而不是 components/ui/alert-dialog.tsx ——
+          后者的 Content 包装在当前 Radix 版本下渲染即崩（"Primitive.div failed to slot onto its
+          children"），而且全仓库没有任何调用方，属于未验证过的死代码。 */}
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <DialogContent className="hr-delete-dialog">
+          <DialogHeader>
+            <DialogTitle>删除员工</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <DialogDescription>
+              确认把「{deleteTarget?.employeeNo} {deleteTarget?.name}
+              」从员工列表移除？这是逻辑删除：他会从员工列表和所有选择器里消失，但历史生产日报、考勤、绩效和工资台账全部保留；在「已删除」筛选里点「恢复」即可还原。
+            </DialogDescription>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const target = deleteTarget;
+                setDeleteTarget(null);
+                if (target) void removeEmployee(target);
+              }}
+            >
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ActionDialog
         open={Boolean(dialog)}
         onOpenChange={(open) => {
@@ -985,6 +1080,13 @@ export default function HrPage() {
         }}
         title={dialog?.title ?? "操作"}
         fields={dialog?.fields ?? []}
+        // 身份证号填完就自动带出出生日期/性别，以及家庭住址的省市县前缀（详细住址仍手填）。
+        // 只在 id_card_no 变化时触发；只补空字段，操作员手填过的值不会被覆盖。
+        deriveValues={(changedField, values) =>
+          changedField === "id_card_no"
+            ? deriveEmployeeFieldsFromIdCard(values.id_card_no, values)
+            : {}
+        }
         onAddCategory={(field, values) => {
           if (field.name === "department_id") openDepartment(values);
           else if (field.name === "position_id") openPosition(values);
@@ -1043,6 +1145,7 @@ export default function HrPage() {
                 <SelectItem value="active">在职</SelectItem>
                 <SelectItem value="left">离职</SelectItem>
                 <SelectItem value="inactive">停用</SelectItem>
+                <SelectItem value="deleted">已删除</SelectItem>
               </SelectContent>
             </Select>
             <Select
@@ -1101,6 +1204,21 @@ export default function HrPage() {
                     {item.label}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            {/* 本月生日：按出生日期实时判断（生日所在自然月 == 当月），不需要在模板里填。 */}
+            <Select
+              value={employeeBirthday || "all"}
+              onValueChange={(value) =>
+                setEmployeeBirthday(value === "all" ? "" : value)
+              }
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="生日" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部生日</SelectItem>
+                <SelectItem value="this_month">本月生日</SelectItem>
               </SelectContent>
             </Select>
           </div>
