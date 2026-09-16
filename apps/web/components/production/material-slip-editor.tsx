@@ -3,7 +3,8 @@
 // 领料单 / 补料单的全屏编辑页（不再用窄侧栏 Sheet：列多时物料名与规格会挤在一起互相覆盖）。
 //
 // 口径：领料单与补料单都只绑定生产单（一个生产单可多张领料单）；物料只能从该生产单订单的 BOM 明细里选；
-// 保存草稿后可随时回来继续编辑，过账后计入原料出库（补料单走 post-replenishment，单号 MC-）。
+// 保存草稿后可随时回来继续编辑；保存并提交只是把单据交给仓库（draft → pending_outbound），
+// 本页**不扣减**原料库存 —— 真正的出库由仓库在「待出库通知」里确认出库（补料单走 post-replenishment，单号 MC-）。
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -14,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
-import { createMovementPath, isMaterialMovementDocumentType, postMovementPath } from "../../lib/material-slip-api";
+import { createMovementPath, isMaterialMovementDocumentType } from "../../lib/material-slip-api";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; executionMode?: string; status?: string; bom?: { id: string } | null; bomId?: string | null };
@@ -27,7 +28,6 @@ type Preview = { lines: PreviewLine[]; warnings?: string[] };
 type Movement = { id: string; movementNo: string; documentType: string; status: string; productionOrderId: string; reason?: string | null; lines: Array<{ materialId: string; quantity: string; remark?: string | null }> };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
-const idempotencyKey = () => `web-slip-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "replenishment" }) {
   const searchParams = useSearchParams();
@@ -174,7 +174,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     };
   }
 
-  async function save(andPost: boolean) {
+  async function save(andSubmit: boolean) {
     const invalid = validate();
     if (invalid) { setError(invalid); return; }
     setError("");
@@ -186,9 +186,11 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
         : await apiPost<{ id: string }>(createMovementPath(documentType), body as Record<string, unknown>);
       const id = saved.data.id;
       setEditingId(id);
-      if (andPost) {
-        await apiPost(postMovementPath(documentType, id), { idempotency_key: idempotencyKey() });
-        notifySuccess(isReplenishment ? "补料单已保存并出库过账" : "领料单已保存并出库过账");
+      if (andSubmit) {
+        // 提交给仓库（draft → pending_outbound）：这一步不写库存事实，所以不需要幂等键；
+        // 重复提交会被服务端按「不是草稿」拒绝，不会造成重复出库。
+        await apiPost(`/production/material-movements/${id}/submit`, {});
+        notifySuccess(isReplenishment ? "补料单已保存并提交仓库" : "领料单已保存并提交仓库");
       } else {
         notifySuccess(editingId ? "草稿已保存" : (isReplenishment ? "补料单草稿已创建" : "领料单草稿已创建"));
       }
@@ -209,11 +211,11 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
   const warnings = preview?.warnings ?? [];
 
   return <>
-    <PageHeader title={editingNo ? `${title}（继续编辑 ${editingNo}）` : title} description={isReplenishment ? "坏片、生产失误等造成的补充领料；只绑定生产单，过账后计入原料出库并生成补料单（MC-）。" : "领料单只绑定生产单，一个生产单可以开多张；物料只能从该订单 BOM 明细中选择，保存草稿后可随时回来继续编辑。"}>
+    <PageHeader title={editingNo ? `${title}（继续编辑 ${editingNo}）` : title} description={isReplenishment ? "坏片、生产失误等造成的补充领料；只绑定生产单，保存并提交仓库后进入「待仓库出库」，仓库确认出库后才计入原料出库并生成补料单（MC-）。" : "领料单只绑定生产单，一个生产单可以开多张；物料只能从该订单 BOM 明细中选择；保存草稿后可随时回来继续编辑，保存并提交仓库后进入「待仓库出库」，等仓库确认出库才扣减原料库存。"}>
       <Button asChild variant="secondary"><Link href={listHref}>返回单据列表</Link></Button>
       <Button asChild variant="ghost"><Link href="/warehouse">返回仓库</Link></Button>
       <Button variant="secondary" data-testid="material-slip-save-draft" onClick={() => void save(false)} disabled={busy}>{busy ? "保存中..." : "保存草稿"}</Button>
-      <Button data-testid="material-slip-post" onClick={() => void save(true)} disabled={busy}>{busy ? "提交中..." : "保存并出库（过账）"}</Button>
+      <Button data-testid="material-slip-submit" onClick={() => void save(true)} disabled={busy}>{busy ? "提交中..." : "保存并提交仓库"}</Button>
     </PageHeader>
     {error && <section className="panel panel-body status-error" role="alert">{error}</section>}
     {warnings.length > 0 && <section className="panel panel-body status-warning">{warnings.map((warning) => <p key={warning}>{warning}</p>)}</section>}

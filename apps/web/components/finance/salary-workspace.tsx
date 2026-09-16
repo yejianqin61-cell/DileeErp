@@ -17,6 +17,11 @@
 //     部分支付/已支付/已关闭只能走工资调整单或付款冲销 —— 这是既有的状态机，不因为「表格能编辑」而放开；
 //   - 工资付款只对已确认/部分支付且未付 > 0 的台账开放，其余行只显示不可付款的原因；
 //   - 员工姓名/工号是本地过滤（与任务 04 的既有约定一致：输入即响应，不打接口）。
+//
+// 2026-09-16 用户：「工资支付那边也是全部要加上银行账户，因为发工资都是要用银行账户发放的工资」。
+// 于是工资付款的**每一条入口**都先问清「发放银行」：付款过账写的那条收支流水必须带 `bank_id`，
+// 否则这笔工资支出不落在任何账户上，银行余额会永远少一笔工资（历史缺陷）。银行账户池来自
+// 「财务 → 银行账户」（`GET /finance/banks`），与收付款/对账页同一个来源。
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -36,6 +41,15 @@ import { PayrollSheet, type PayrollSheetColumn } from "./payroll-sheet";
 export type SalaryMode = "ledger" | "payments";
 
 type Employee = { id: string; employeeNo: string; name: string; employeeType: string; department?: { id: string; name: string } | null; position?: { id: string; name: string } | null };
+/**
+ * 银行账户池条目（财务 → 银行账户）。工资付款的「发放银行」只能从这里选，不在这里手输账户。
+ *
+ * 形状与收付款/对账页本地定义的一致（各页各定义一份，不从别的页面 import：那几页仍在频繁改，
+ * 互相 import 会把工资页的编译与它们的改动绑在一起）。
+ */
+type BankRef = { id: string; bankCode: string; bankName: string; accountName?: string; accountNumber: string; currency: string; isActive: boolean };
+/** 单据上带回的银行（后端 include 的 Bank）：下拉与表格只用到名称与账号。 */
+type BankLink = { id: string; bankCode?: string; bankName: string; accountNumber: string };
 type Department = { id: string; name: string; code: string };
 type Position = { id: string; name: string; code: string; departmentId: string };
 type PayrollPayable = { id: string; ledgerId: string; payableNo: string; amount: string; currency: string; status: string };
@@ -69,7 +83,7 @@ type Ledger = {
   remark: string | null;
   sourceSnapshot?: SnapshotLine[];
   adjustments?: Array<{ id: string; adjustmentNo: string; adjustmentType: string; effect: string; amount: string; reason: string; status: string }>;
-  allocations?: Array<{ id: string; amount: string; status: string; payment?: { paymentNo: string; status: string; paymentDate: string } | null }>;
+  allocations?: Array<{ id: string; amount: string; status: string; payment?: { paymentNo: string; status: string; paymentDate: string; bankId?: string | null; bank?: BankLink | null } | null }>;
   employee: Employee;
 };
 /** 后端按月导入全部员工的返回：既有覆盖度计数，也有逐人明细，用于「不能漏单」的核对。 */
@@ -105,6 +119,8 @@ const dec = (value: string | number | undefined) => {
   const text = number.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
   return text === "-0" || text === "" ? "0" : text;
 };
+/** 发放银行显示口径：与收付款/对账页一致（`名称（账号）`）；没有银行就显示 `-`，不编账户名。 */
+const bankLabel = (bank: BankLink | null) => (bank ? `${bank.bankName}（${bank.accountNumber}）` : "-");
 
 /** 表格里可编辑的类目 → 后端字段名（键必须与 PayrollSheet 的列 key 一致）。 */
 const CATEGORY_FIELDS: Record<string, string> = { baseSalary: "base_salary", performance: "performance_amount", housing: "housing_allowance", late: "late_deduction", absence: "absence_deduction", earlyLeave: "early_leave_deduction" };
@@ -128,6 +144,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   const [ledgers, setLedgers] = useState<Ledger[]>([]);
   const [payables, setPayables] = useState<PayrollPayable[]>([]);
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
+  // 银行账户池（财务 → 银行账户）：工资付款的「发放银行」只从这里选。
+  const [banks, setBanks] = useState<BankRef[]>([]);
   // 工资付款表格：每行一个金额输入（默认等于该行未付），付款日期与付款方式在表格上方统一给。
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [paying, setPaying] = useState("");
@@ -144,6 +162,16 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   const [detail, setDetail] = useState<Ledger | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Ledger | null>(null);
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
+  // 发放银行只能从银行账户池里选（**停用的不出现**：后端 requireActiveBank 会按 BANK_NOT_FOUND 拒收）。
+  const bankOptions = useMemo(() => banks.filter((bank) => bank.isActive).map((bank) => ({ value: bank.id, label: `${bank.bankName} / ${bank.accountNumber}（${bank.currency}）` })), [banks]);
+  /**
+   * 发放银行下拉。
+   *
+   * 与收付款/对账页的银行字段同一套写法，但**没有**「（不指定银行）」哨兵：那里银行是可选字段
+   * （要有清空出口），而这里发工资必须从银行账户发放（用户 2026-09-16），留空只会撞后端 422
+   * `SALARY_PAYMENT_BANK_REQUIRED`。银行池为空时不是摆一个空选项糊过去，而是把入口禁用（见 payActions）。
+   */
+  const bankField = (label: string): ActionField => ({ name: "bank_id", label: `${label}（账户在「财务 → 银行账户」里维护）`, type: "select", required: true, options: bankOptions, placeholder: "请选择发放银行" });
 
   useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
   // 部门/岗位是静态主数据，只在挂载时拉一次；岗位按所选部门收窄。
@@ -191,14 +219,17 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
       const suffix = params.toString() ? `?${params.toString()}` : "";
       // 工资付款页只用台账列表（当月台账搬过去当付款行，核销明细已经 include 在里面）；
       // 工资应付与员工清单只有工资台账页用得上，不为另一页白拉。
-      const [ledgerResult, payableResult, employeeResult] = await Promise.all([
+      // 银行账户池走 finance 权限：只有 HR 权限的账号可能拉不到，但不应因此整页报错（选项留空 → 付款入口禁用）。
+      const [ledgerResult, payableResult, employeeResult, bankResult] = await Promise.all([
         apiGet<Ledger[]>(`/hr/payroll-ledgers${suffix}`),
         mode === "ledger" ? apiGet<PayrollPayable[]>("/hr/payroll-payables") : Promise.resolve({ data: [] as PayrollPayable[] }),
         mode === "ledger" ? apiGet<Employee[]>("/production/employees") : Promise.resolve({ data: [] as Employee[] }),
+        apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
       ]);
       setLedgers(ledgerResult.data);
       setPayables(payableResult.data);
       setEmployees(employeeResult.data);
+      setBanks(bankResult.data);
     } catch (cause) {
       setError(messageOf(cause, "工资数据加载失败"));
     } finally {
@@ -308,26 +339,52 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   }
 
   /**
-   * 工资付款表格的行内付款：一次调用完成「生成应付 → 建付款 → 核销过账」。
+   * 行内付款弹窗：点「付款」先把**发放银行**问清楚，再发请求。
    *
-   * 金额先在前端做同口径校验（与后端一致的未付上限），把最常见的输错挡在本地，
-   * 后端仍会再校验一次（前端校验不是门禁）。
+   * 用户 2026-09-16：「工资支付那边也是全部要加上银行账户，因为发工资都是要用银行账户发放的工资」。
+   * 付款过账会写一条带 `bank_id` 的收支流水；不指定银行时这笔工资支出不落在任何账户上，
+   * 银行余额就永远比实际少一笔工资 —— 所以这里不是「可选字段」，而是发放前必须回答的问题。
+   *
+   * 金额仍沿用行内输入（默认等于该行未付），日期/方式沿用筛选条上的统一设置；金额还是先在本地
+   * 按与后端一致的口径校验一次（未付上限），把最常见的输错挡在打开弹窗之前。
    */
-  async function payLedgerRow(ledger: Ledger) {
+  function openPay(ledger: Ledger) {
     const raw = (amounts[ledger.id] ?? dec(ledger.outstandingAmount)).trim();
     const value = raw === "" ? "0" : raw;
-    const available = Number(ledger.outstandingAmount);
     if (!MONEY.test(value) || Number(value) <= 0) { notifyError("付款金额必须是不小于 0 的数字，最多 4 位小数"); return; }
-    if (Number(value) > available) { notifyError(`付款金额不能超过未付 ${dec(ledger.outstandingAmount)}`); return; }
+    if (Number(value) > Number(ledger.outstandingAmount)) { notifyError(`付款金额不能超过未付 ${dec(ledger.outstandingAmount)}`); return; }
+    // 银行池为空时按钮本身已是禁用态（见 payActions）；这里再兜一次，避免从别的入口打开一个选不出银行的弹窗。
+    if (!bankOptions.length) { notifyError("请先在【财务 → 银行账户】建一个账户：发工资必须指定发放银行"); return; }
+    setDialog({
+      title: `工资付款：${ledger.employee.employeeNo} / ${ledger.employee.name}`,
+      fields: [
+        { name: "pay_summary", label: `将向 ${ledger.employee.name} 发放 ${value}（${paymentDate} · ${paymentMethod}），一次完成：生成工资应付 → 建付款单 → 核销过账，并从下面选定的银行账户支出。`, type: "info" },
+        bankField("发放银行"),
+      ],
+      submit: (values) => payLedgerRow(ledger, value, values.bank_id),
+    });
+  }
+
+  /**
+   * 工资付款表格的行内付款：一次调用完成「生成应付 → 建付款 → 核销过账」。
+   *
+   * 金额已由 openPay 同口径校验过；银行必填由 ActionDialog 的 required 先拦一次，这里再兜一次
+   * （后端对缺 bank_id 的工资付款会 422，前端不该把必然失败的请求发出去）。
+   * 失败必须把错误**抛回**弹窗，否则弹窗会静默关闭、用户只看到「什么都没发生」。
+   */
+  async function payLedgerRow(ledger: Ledger, amount: string, bankId: string) {
     if (paying) return;
+    if (!bankId) { const message = "请选择发放银行：发工资必须指定从哪个银行账户支出"; notifyError(message); throw new Error(message); }
     setPaying(ledger.id);
     try {
-      await apiPost(`/hr/payroll-ledgers/${ledger.id}/pay`, { amount: value, payment_date: paymentDate, payment_method: paymentMethod });
-      notifySuccess(`${ledger.employee.name} 已付款 ${value}`);
+      await apiPost(`/hr/payroll-ledgers/${ledger.id}/pay`, { amount, payment_date: paymentDate, payment_method: paymentMethod, bank_id: bankId });
+      notifySuccess(`${ledger.employee.name} 已付款 ${amount}，从所选银行账户支出`);
       setAmounts((current) => { const next = { ...current }; delete next[ledger.id]; return next; });
       await load();
     } catch (cause) {
-      notifyError(messageOf(cause, "付款失败"));
+      const message = messageOf(cause, "付款失败");
+      notifyError(message);
+      throw new Error(message);
     } finally {
       setPaying("");
     }
@@ -406,6 +463,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     { key: "total", header: "总工资", numeric: true, total: true, text: (row) => dec(row.payableAmount), readOnlyHint: () => "本月工资台账的应发合计（基本工资/绩效/房补/扣款等明细见「工资台账」页）" },
     { key: "paid", header: "已付", numeric: true, total: true, text: (row) => dec(row.paidAmount), readOnlyHint: () => "有效核销且工资付款已过账的金额合计" },
     { key: "outstanding", header: "未付", numeric: true, total: true, text: (row) => dec(row.outstandingAmount), readOnlyHint: () => "总工资 − 已付" },
+    // 发放银行：工资是从哪个账户发出去的。台账行本身不带银行，所以取该行**已过账**付款的发放银行。
+    { key: "bank", header: "发放银行", text: (row) => bankLabel(postedBank(row)), readOnlyHint: (row) => (postedBank(row) ? "该台账已过账工资付款所用的发放银行" : "尚无已过账的工资付款，或该笔付款没有指定发放银行") },
     { key: "status", header: "状态", text: (row) => statusLabels[row.status] ?? row.status },
     { key: "currency", header: "币种", text: (row) => row.currency },
     { key: "actions", header: "付款操作", render: (row) => payActions(row) },
@@ -413,6 +472,26 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
 
   /** 该台账下已过账的付款核销（决定「已付」与能不能冲销）。 */
   const postedAllocations = (ledger: Ledger) => (ledger.allocations ?? []).filter((item) => item.status === "active" && item.payment?.status === "posted");
+  /**
+   * 一条核销明细的发放银行。
+   *
+   * 付款表取的是**已过账**的核销：后端 `include: { payment: true }` 会带回 `payment.bankId`
+   * （付款单上的发放银行），本页再用已加载的银行账户池把它还原成「名称（账号）」；
+   * 接口若顺手把 `bank` 关联也带回来，直接用那个，省一次池内查找。
+   * 查不到（账户被删/停用、或银行池没拉到）就返回 null —— 宁可不显示，也不编一个账户出来。
+   */
+  function allocationBank(allocation: NonNullable<Ledger["allocations"]>[number]): BankLink | null {
+    if (allocation.payment?.bank) return allocation.payment.bank;
+    const id = allocation.payment?.bankId;
+    if (!id) return null;
+    const bank = banks.find((item) => item.id === id);
+    return bank ? { id: bank.id, bankName: bank.bankName, accountNumber: bank.accountNumber } : null;
+  }
+  /** 该台账已过账付款的发放银行（同一台账多次付款换了账户时显示最后一次）。 */
+  function postedBank(ledger: Ledger): BankLink | null {
+    const used = postedAllocations(ledger).map(allocationBank).filter((bank): bank is BankLink => Boolean(bank));
+    return used.length ? used[used.length - 1] : null;
+  }
   /** 不可付款时的原因说明：这些行仍然显示（当月台账全都在），但只给说明不给输入框。 */
   const payableHint = (ledger: Ledger) => {
     if (ledger.status === "draft") return "待确认：请先到「工资台账」确认本月台账";
@@ -425,6 +504,9 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   const payActions = (ledger: Ledger) => {
     const posted = postedAllocations(ledger);
     const canPay = ["confirmed", "partially_paid"].includes(ledger.status) && Number(ledger.outstandingAmount) > 0;
+    // 银行账户池为空时**入口本身就不可用**：发工资没有「不指定银行」这个选项，与其让用户点开弹窗
+    // 发现选不出银行、再拿一个空 bank_id 去撞后端的 422，不如把按钮禁用并把原因写清楚。
+    const noBank = bankOptions.length === 0;
     return <div className="action-row" data-testid={`salary-pay-actions-${ledger.id}`} onClick={(event) => event.stopPropagation()}>
       {canPay ? <>
         <input
@@ -435,7 +517,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
           value={amounts[ledger.id] ?? dec(ledger.outstandingAmount)}
           onChange={(event) => setAmounts((current) => ({ ...current, [ledger.id]: event.target.value }))}
         />
-        <Button size="sm" data-testid={`salary-pay-button-${ledger.id}`} disabled={paying === ledger.id} onClick={() => void payLedgerRow(ledger)}>{paying === ledger.id ? "付款中…" : "付款"}</Button>
+        <Button size="sm" data-testid={`salary-pay-button-${ledger.id}`} disabled={paying === ledger.id || noBank} onClick={() => openPay(ledger)}>{paying === ledger.id ? "付款中…" : "付款"}</Button>
+        {noBank ? <span className="panel-note" data-testid={`salary-pay-bank-hint-${ledger.id}`}>请先在【财务 → 银行账户】建一个账户：发工资必须指定发放银行。</span> : null}
       </> : <span className="panel-note" data-testid={`salary-pay-hint-${ledger.id}`}>{payableHint(ledger)}</span>}
       {posted.length ? <Button size="sm" variant="destructive" data-testid={`salary-unpay-button-${ledger.id}`} onClick={() => openUnpay(ledger, posted)}>冲销</Button> : null}
     </div>;
@@ -463,6 +546,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     { label: "个税", value: dec(detail.individualTax) }, { label: "其他调整", value: dec(detail.otherAdjustment) },
     { label: "应发", value: money(detail.payableAmount, detail.currency) }, { label: "已付", value: money(detail.paidAmount, detail.currency) },
     { label: "未付", value: money(detail.outstandingAmount, detail.currency) },
+    // 发放银行：工资从哪个账户发出去的（付款表同口径；没有已过账付款时显示 -）。
+    { label: "发放银行", value: bankLabel(postedBank(detail)) },
     { label: "备注", value: detail.remark, wide: true },
   ] : [];
   const snapshot = detail?.sourceSnapshot ?? [];
@@ -516,7 +601,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         { title: `工资调整（${detail.adjustments?.length ?? 0} 条）`, note: "只有已过账的调整参与应发计算。", content: detail.adjustments?.length
           ? <DataTable pageSize={10} columns={[{ accessorKey: "adjustmentNo", header: "调整单号" }, { accessorKey: "adjustmentType", header: "类型" }, { id: "effect", header: "方向", cell: ({ row }) => row.original.effect === "increase" ? "增加" : "减少" }, { accessorKey: "amount", header: "金额" }, { accessorKey: "reason", header: "原因" }, { accessorKey: "status", header: "状态" }] as ColumnDef<NonNullable<Ledger["adjustments"]>[number]>[]} data={detail.adjustments} /> : <p className="panel-note">暂无调整记录</p> },
         { title: `工资付款核销（${detail.allocations?.length ?? 0} 条）`, content: detail.allocations?.length
-          ? <DataTable pageSize={10} columns={[{ id: "payment", header: "付款单号", cell: ({ row }) => row.original.payment?.paymentNo ?? "-" }, { id: "date", header: "付款日期", cell: ({ row }) => day(row.original.payment?.paymentDate) }, { id: "status", header: "状态", cell: ({ row }) => row.original.payment?.status ?? "-" }, { accessorKey: "amount", header: "核销金额" }] as ColumnDef<NonNullable<Ledger["allocations"]>[number]>[]} data={detail.allocations} /> : <p className="panel-note">暂无工资付款核销</p> },
+          ? <DataTable pageSize={10} columns={[{ id: "payment", header: "付款单号", cell: ({ row }) => row.original.payment?.paymentNo ?? "-" }, { id: "date", header: "付款日期", cell: ({ row }) => day(row.original.payment?.paymentDate) }, { id: "status", header: "状态", cell: ({ row }) => row.original.payment?.status ?? "-" }, { id: "bank", header: "发放银行", cell: ({ row }) => bankLabel(allocationBank(row.original)) }, { accessorKey: "amount", header: "核销金额" }] as ColumnDef<NonNullable<Ledger["allocations"]>[number]>[]} data={detail.allocations} /> : <p className="panel-note">暂无工资付款核销</p> },
       ] : []}
       actions={detail ? actionColumns(detail) : null}
     />
@@ -555,7 +640,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
             columns={paymentColumns}
             rows={visibleLedgers}
             rowTestId={(row) => `payroll-pay-row-${row.id}`}
-            hint={<span>付款金额默认等于该行未付，改完点「付款」即可（一次完成：生成工资应付 → 建付款单 → 核销过账）。已付过的行可「冲销」把该台账下的付款整体回退（需填原因）。付款日期与方式在上方统一设置。</span>}
+            hint={<span>付款金额默认等于该行未付，改完点「付款」即可（一次完成：生成工资应付 → 建付款单 → 核销过账）。「付款」弹窗里必须选定「发放银行」（发工资都从银行账户发放，账户在【财务 → 银行账户】维护）；已付过的行可「冲销」把该台账下的付款整体回退（需填原因）。付款日期与方式在上方统一设置。</span>}
             empty={<p className="panel-note" data-testid="salary-payment-empty">本月没有工资台账，无法付款：请先到「工资台账」页导入并确认本月台账。</p>}
           />
         </div>

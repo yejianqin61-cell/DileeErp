@@ -10,11 +10,12 @@
 // 继承的断言意图（逐条落地为行为）：
 //   1) 面板只按 production_order_id 拉单据、按 bomId 拉 BOM 明细（不是全量物料）；
 //   2) 补料单必须有独立入口（全屏编辑页并带上本生产单）；
-//   3) 过账必须按单据类型走 /post 与 /post-replenishment（补料单打错接口会被服务端 422）；
-//   4) 重新打开 / 冲销必须带必填原因；
+//   3) 出库已改为两步：草稿只能「确认提交」给仓库（/submit），不再由生产端直接过账扣库存；
+//   4) 撤回提交 / 重新打开 / 冲销必须带必填原因；
 //   5) 编辑草稿要把每行备注带进 PATCH（PATCH 整批替换明细，漏了备注等于清空用户输入）；
 //   6) 同一物料只能一行，保存前先拦；
-//   7) 先保存草稿再出库（保存成功但过账失败时不得重复建单）。
+//   7) 先保存草稿再提交（保存成功但提交失败时不得重复建单）；
+//   8) 双击单据行要能看到**全部**领用物料，而不是列表里的「N 项」合计。
 import { describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -63,12 +64,14 @@ const movement = (over: Movement): Movement => ({
 
 type ApiRoutes = {
   movements?: (call: StubbedCall) => Response | Promise<Response>;
+  /** 双击行弹出的详情：GET /production/material-movements/:id。 */
+  detail?: (call: StubbedCall) => Response | Promise<Response>;
   bom?: (call: StubbedCall) => Response | Promise<Response>;
   materials?: (call: StubbedCall) => Response | Promise<Response>;
   preview?: (call: StubbedCall) => Response | Promise<Response>;
   create?: (call: StubbedCall) => Response | Promise<Response>;
   patch?: (call: StubbedCall) => Response | Promise<Response>;
-  /** 兜底钩子：按 URL 拦截任意请求（过账 / reopen / reverse / 删除），返回 undefined 表示不拦截。 */
+  /** 兜底钩子：按 URL 拦截任意请求（提交 / reopen / reverse / 删除），返回 undefined 表示不拦截。 */
   actions?: (url: string, call: StubbedCall) => Response | Promise<Response> | undefined;
 };
 
@@ -99,6 +102,8 @@ function stubPanelApi(routes: ApiRoutes = {}) {
     if (url.includes("/boms/")) return routes.bom?.(call) ?? apiOk({ items: bomItems });
     if (url.endsWith("/materials")) return routes.materials?.(call) ?? apiOk(materials);
     if (url.includes("/production/material-movements")) {
+      // 详情 GET 与列表 GET 必须分开：列表桩返回的是数组，直接当成详情会把弹窗撑坏。
+      if (call.method === "GET" && /\/production\/material-movements\/[^/?]+$/.test(url)) return routes.detail?.(call) ?? apiErr(404, "NOT_FOUND", `未打桩的详情请求：${url}`);
       if (call.method === "GET") return routes.movements?.(call) ?? apiOk([]);
       if (call.method === "POST" && url.endsWith("/production/material-movements")) return routes.create?.(call) ?? apiOk({ id: "mv-created" });
       if (call.method === "PATCH") return routes.patch?.(call) ?? apiOk({ id: "mv-1" });
@@ -407,41 +412,40 @@ describe("MaterialIssuesPanel：保存与出库（含防重复提交）", () => 
     expect(draftRows()).toHaveLength(1);
   });
 
-  it("保存并出库：先建单再按类型过账（带幂等键），成功后回调 onChanged", async () => {
+  it("保存并提交：先建单再提交给仓库（提交只改状态、不带幂等键），成功后回调 onChanged", async () => {
     const calls = stubPanelApi({
       movements: () => apiOk([]),
       create: () => apiOk({ id: "mv-created" }),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-created/post") ? apiOk({}) : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-created/submit") ? apiOk({}) : undefined),
     });
     const { onChanged } = renderPanel();
     await screen.findByTestId("empty-state");
     await openCreate();
     await waitFor(() => expect(callsTo(calls, "/issue-preview")).toHaveLength(1));
 
-    await userEvent.click(screen.getByRole("button", { name: "保存并出库" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存并提交" }));
 
-    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-created/post")).toHaveLength(1));
-    const postCall = lastTo(calls, "/production/material-movements/mv-created/post");
-    expect(postCall.method).toBe("POST");
-    const postBody = bodyOf(postCall);
-    expect(typeof postBody.idempotency_key).toBe("string");
-    expect(postBody.idempotency_key).toMatch(/^web-issue-/);
-    // 必须先建单后过账：建单请求早于过账请求
-    expect(calls.indexOf(lastTo(calls, "/production/material-movements"))).toBeLessThan(calls.indexOf(postCall));
-    expect(await screen.findByText("领料单已过账出库")).toBeVisible();
+    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-created/submit")).toHaveLength(1));
+    const submitCall = lastTo(calls, "/production/material-movements/mv-created/submit");
+    expect(submitCall.method).toBe("POST");
+    // 提交不写库存事实，所以没有幂等键（幂等键属于仓库的「确认出库」）
+    expect(bodyOf(submitCall)).toEqual({});
+    // 必须先建单后提交：建单请求早于提交请求
+    expect(calls.indexOf(lastTo(calls, "/production/material-movements"))).toBeLessThan(calls.indexOf(submitCall));
+    expect(await screen.findByText("已提交仓库，等待确认出库")).toBeVisible();
     expect(onChanged).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole("button", { name: "保存草稿" })).toBeNull());
   });
 
-  it("保存成功但过账失败：草稿保留并记住 id，重试走 PATCH 而不是再次建单", async () => {
-    let postAttempts = 0;
+  it("保存成功但提交失败：草稿保留并记住 id，重试走 PATCH 而不是再次建单", async () => {
+    let submitAttempts = 0;
     const calls = stubPanelApi({
       movements: () => apiOk([]),
       create: () => apiOk({ id: "mv-created" }),
       actions: (url) => {
-        if (!url.endsWith("/production/material-movements/mv-created/post")) return undefined;
-        postAttempts += 1;
-        return postAttempts === 1 ? apiErr(422, "VALIDATION_ERROR", "该单据不是领料单") : apiOk({});
+        if (!url.endsWith("/production/material-movements/mv-created/submit")) return undefined;
+        submitAttempts += 1;
+        return submitAttempts === 1 ? apiErr(422, "INSUFFICIENT_INVENTORY", "原料库存不足，无法提交") : apiOk({});
       },
     });
     renderPanel();
@@ -449,53 +453,53 @@ describe("MaterialIssuesPanel：保存与出库（含防重复提交）", () => 
     await openCreate();
     await waitFor(() => expect(callsTo(calls, "/issue-preview")).toHaveLength(1));
 
-    await userEvent.click(screen.getByRole("button", { name: "保存并出库" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存并提交" }));
 
     // 草稿必须保留（否则用户填的内容全丢），且已经记住 id
-    await waitFor(() => expect(screen.getByRole("button", { name: "保存并出库" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存并提交" })).toBeEnabled());
     expect(draftRows()).toHaveLength(1);
 
-    await userEvent.click(screen.getByRole("button", { name: "保存并出库" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存并提交" }));
 
     await waitFor(() => expect(calls.filter((call) => call.method === "PATCH")).toHaveLength(1));
     expect(lastTo(calls, "/production/material-movements/mv-created").method).toBe("PATCH");
     // 只有第一次那一次建单，重试没有再 POST 建单
     expect(callsTo(calls, "/production/material-movements")).toHaveLength(1);
-    expect(await screen.findByText("领料单已过账出库")).toBeVisible();
+    expect(await screen.findByText("已提交仓库，等待确认出库")).toBeVisible();
   });
 
-  // KNOWN_DEFECT：过账失败的用户提示永远看不到。
-  //   期望：过账失败后用户能看到「已保存，但过账失败（可稍后在列表中过账）」，从而知道单已建、只差出库。
-  //   实际：saveAndPost 的 catch 里 setError(该文案) 之后紧接着 await load()，
-  //         而 load() 第一行是 setError("")（material-issues-panel.tsx:52），
+  // KNOWN_DEFECT：提交失败的用户提示永远看不到。
+  //   期望：提交失败后用户能看到「已保存，但提交失败（可稍后在列表中提交）」，从而知道单已建、只差提交。
+  //   实际：saveAndSubmit 的 catch 里 setError(该文案) 之后紧接着 await load()，
+  //         而 load() 第一行是 setError("")（material-issues-panel.tsx load 开头），
   //         两次 setState 在同一个同步块内被批处理合并，最终 error 恒为空串，界面上不出现任何提示、也没有 toast。
-  //         责任位置：apps/web/components/production/material-issues-panel.tsx:132（catch 内 setError 后立刻 load）与 :52（load 开头 setError("")）。
+  //         责任位置：apps/web/components/production/material-issues-panel.tsx（catch 内 setError 后立刻 load + load 开头 setError("")）。
   //   若后续修复（例如 load 不再清空错误，或改为 notifyError），本用例应当改成断言提示可见。
-  it("【KNOWN_DEFECT】保存成功但过账失败时，界面上看不到任何失败提示", async () => {
+  it("【KNOWN_DEFECT】保存成功但提交失败时，界面上看不到任何失败提示", async () => {
     const calls = stubPanelApi({
       movements: () => apiOk([]),
       create: () => apiOk({ id: "mv-created" }),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-created/post") ? apiErr(422, "VALIDATION_ERROR", "该单据不是领料单") : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-created/submit") ? apiErr(422, "INSUFFICIENT_INVENTORY", "原料库存不足，无法提交") : undefined),
     });
     renderPanel();
     await screen.findByTestId("empty-state");
     await openCreate();
     await waitFor(() => expect(callsTo(calls, "/issue-preview")).toHaveLength(1));
 
-    await userEvent.click(screen.getByRole("button", { name: "保存并出库" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存并提交" }));
     // 失败后组件会重新拉列表：等它稳定下来再看用户到底能看到什么
     await waitFor(() => expect(listCalls(calls)).toHaveLength(2));
 
-    expect(screen.queryByText(/已保存，但过账失败/)).toBeNull();
-    expect(screen.queryByText("该单据不是领料单")).toBeNull();
-    // 唯一的 toast 来自「建单成功」那一步；用户点的是「保存并出库」，却只看到「领料单已生成（草稿）」
+    expect(screen.queryByText(/已保存，但提交失败/)).toBeNull();
+    expect(screen.queryByText("原料库存不足，无法提交")).toBeNull();
+    // 唯一的 toast 来自「建单成功」那一步；用户点的是「保存并提交」，却只看到「领料单已生成（草稿）」
     for (const toast of screen.queryAllByTestId("toast-item")) expect(toast).not.toHaveTextContent("失败");
     expect(screen.getAllByTestId("toast-item")).toHaveLength(1);
     // 唯一可见的结果：草稿被保留、按钮回到可点（用户只能自己猜发生了什么）
-    expect(screen.getByRole("button", { name: "保存并出库" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "保存并提交" })).toBeEnabled();
   });
 
-  it("保存中：按钮改文案并禁用，连点不会重复建单；此时点「保存并出库」被 busy 门禁挡住", async () => {
+  it("保存中：按钮改文案并禁用，连点不会重复建单；此时点「保存并提交」被 busy 门禁挡住", async () => {
     const gate = deferred<Response>();
     const calls = stubPanelApi({ movements: () => apiOk([]), create: () => gate.promise });
     renderPanel();
@@ -508,37 +512,37 @@ describe("MaterialIssuesPanel：保存与出库（含防重复提交）", () => 
     expect(pending).toBeDisabled();
     await userEvent.click(pending);
 
-    // 保存中再点「保存并出库」：saveAndPost 开头的 if (busy) return 挡住，不会多建单
-    await userEvent.click(screen.getByRole("button", { name: "保存并出库" }));
+    // 保存中再点「保存并提交」：saveAndSubmit 开头的 if (busy) return 挡住，不会多建单
+    await userEvent.click(screen.getByRole("button", { name: "保存并提交" }));
     expect(callsTo(calls, "/production/material-movements")).toHaveLength(1);
-    expect(calls.filter((call) => call.url.endsWith("/post"))).toHaveLength(0);
+    expect(calls.filter((call) => call.url.endsWith("/submit"))).toHaveLength(0);
 
     await act(async () => {
       gate.resolve(apiOk({ id: "mv-created" }));
     });
   });
 
-  // KNOWN_DEFECT：过账进行中「保存草稿」没有被禁用，会重复建单。
-  //   期望：busy === "post" 期间「保存草稿」也应禁用（与「保存并出库」对称），否则一个生产单会被建出两张领料单。
-  //   实际：「保存草稿」只判断 busy === "save"（material-issues-panel.tsx:197），
-  //         而 save() 不含 if (busy) return 守卫（:118-123），此时草稿 state 尚未带上 id（id 只在过账成功/失败后才写回），
+  // KNOWN_DEFECT：提交进行中「保存草稿」没有被禁用，会重复建单。
+  //   期望：busy === "submit" 期间「保存草稿」也应禁用（与「保存并提交」对称），否则一个生产单会被建出两张领料单。
+  //   实际：「保存草稿」只判断 busy === "save"，而 save() 不含 if (busy) return 守卫，
+  //         此时草稿 state 尚未带上 id（id 只在提交成功/失败后才写回），
   //         于是 saveDraft() 又发一次 POST /production/material-movements，产生重复单据。
-  //   责任位置：apps/web/components/production/material-issues-panel.tsx:197（disabled 条件）与 :118（save 缺 busy 守卫）。
+  //   责任位置：apps/web/components/production/material-issues-panel.tsx（保存草稿按钮 disabled 条件）与 save() 缺 busy 守卫。
   //   若后续修复（禁用按钮或给 save 加守卫），本用例应改成断言只发出一次建单请求。
-  it("【KNOWN_DEFECT】出库过账进行中仍能点「保存草稿」，导致重复建单", async () => {
-    const postGate = deferred<Response>();
+  it("【KNOWN_DEFECT】提交进行中仍能点「保存草稿」，导致重复建单", async () => {
+    const submitGate = deferred<Response>();
     const calls = stubPanelApi({
       movements: () => apiOk([]),
       create: () => apiOk({ id: "mv-created" }),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-created/post") ? postGate.promise : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-created/submit") ? submitGate.promise : undefined),
     });
     renderPanel();
     await screen.findByTestId("empty-state");
     await openCreate();
     await waitFor(() => expect(callsTo(calls, "/issue-preview")).toHaveLength(1));
 
-    await userEvent.click(screen.getByRole("button", { name: "保存并出库" }));
-    await screen.findByRole("button", { name: "过账中..." });
+    await userEvent.click(screen.getByRole("button", { name: "保存并提交" }));
+    await screen.findByRole("button", { name: "提交中..." });
     expect(callsTo(calls, "/production/material-movements")).toHaveLength(1);
 
     const saveDraft = screen.getByRole("button", { name: "保存草稿" });
@@ -549,29 +553,29 @@ describe("MaterialIssuesPanel：保存与出库（含防重复提交）", () => 
     await waitFor(() => expect(callsTo(calls, "/production/material-movements")).toHaveLength(2));
 
     await act(async () => {
-      postGate.resolve(apiOk({}));
+      submitGate.resolve(apiOk({}));
     });
   });
 
-  it("过账中：按钮改文案并禁用，连点只发一次过账", async () => {
+  it("提交中：按钮改文案并禁用，连点只发一次提交", async () => {
     const gate = deferred<Response>();
     const calls = stubPanelApi({
       movements: () => apiOk([]),
       create: () => apiOk({ id: "mv-created" }),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-created/post") ? gate.promise : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-created/submit") ? gate.promise : undefined),
     });
     renderPanel();
     await screen.findByTestId("empty-state");
     await openCreate();
     await waitFor(() => expect(callsTo(calls, "/issue-preview")).toHaveLength(1));
 
-    await userEvent.click(screen.getByRole("button", { name: "保存并出库" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存并提交" }));
 
-    const pending = await screen.findByRole("button", { name: "过账中..." });
+    const pending = await screen.findByRole("button", { name: "提交中..." });
     expect(pending).toBeDisabled();
     await userEvent.click(pending);
 
-    expect(callsTo(calls, "/production/material-movements/mv-created/post")).toHaveLength(1);
+    expect(callsTo(calls, "/production/material-movements/mv-created/submit")).toHaveLength(1);
 
     await act(async () => {
       gate.resolve(apiOk({}));
@@ -580,54 +584,79 @@ describe("MaterialIssuesPanel：保存与出库（含防重复提交）", () => 
 });
 
 describe("MaterialIssuesPanel：列表行操作", () => {
-  it("草稿行「过账出库」打到 /post（领料单），成功后回调 onChanged 并刷新列表", async () => {
+  it("草稿行「确认提交」打到 /submit（不带幂等键），成功后回调 onChanged 并刷新列表", async () => {
     const calls = stubPanelApi({
       movements: () => apiOk([movement({ id: "mv-1", movementNo: "MI-001" })]),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-1/post") ? apiOk({}) : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-1/submit") ? apiOk({}) : undefined),
     });
     const { onChanged } = renderPanel();
     await screen.findByText("MI-001");
 
-    await userEvent.click(within(movementRows()[0]).getByRole("button", { name: "过账出库" }));
+    await userEvent.click(within(movementRows()[0]).getByRole("button", { name: "确认提交" }));
 
-    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-1/post")).toHaveLength(1));
-    const postCall = lastTo(calls, "/production/material-movements/mv-1/post");
-    expect(postCall.method).toBe("POST");
-    expect(bodyOf(postCall).idempotency_key).toMatch(/^web-issue-/);
-    expect(callsTo(calls, "/post-replenishment")).toHaveLength(0);
-    expect(await screen.findByText("领料单已过账出库")).toBeVisible();
+    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-1/submit")).toHaveLength(1));
+    const submitCall = lastTo(calls, "/production/material-movements/mv-1/submit");
+    expect(submitCall.method).toBe("POST");
+    // 生产端只提交、不写库存：请求体为空（幂等键属于仓库的「确认出库」）
+    expect(bodyOf(submitCall)).toEqual({});
+    // 绝不能再打旧的直接过账接口
+    expect(callsTo(calls, "/production/material-movements/mv-1/post")).toHaveLength(0);
+    expect(await screen.findByText("已提交仓库，等待确认出库")).toBeVisible();
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(listCalls(calls)).toHaveLength(2));
   });
 
-  it("补料单草稿行走 /post-replenishment（打 /post 会被服务端判成「不是领料单」）", async () => {
+  it("补料单草稿行「确认提交」同样走 /submit：提交给仓库与单据类型无关", async () => {
     const calls = stubPanelApi({
       movements: () => apiOk([movement({ id: "mv-2", movementNo: "MC-001", documentType: "replenishment" })]),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-2/post-replenishment") ? apiOk({}) : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-2/submit") ? apiOk({}) : undefined),
     });
     renderPanel();
     await screen.findByText("MC-001");
     expect(movementRows()[0]).toHaveTextContent("补料单");
 
-    await userEvent.click(within(movementRows()[0]).getByRole("button", { name: "过账出库" }));
+    await userEvent.click(within(movementRows()[0]).getByRole("button", { name: "确认提交" }));
 
-    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-2/post-replenishment")).toHaveLength(1));
-    expect(callsTo(calls, "/production/material-movements/mv-2/post")).toHaveLength(0);
-    expect(await screen.findByText("补料单已过账出库")).toBeVisible();
+    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-2/submit")).toHaveLength(1));
+    expect(bodyOf(lastTo(calls, "/production/material-movements/mv-2/submit"))).toEqual({});
+    expect(callsTo(calls, "/production/material-movements/mv-2/post-replenishment")).toHaveLength(0);
+    expect(await screen.findByText("已提交仓库，等待确认出库")).toBeVisible();
+  });
+
+  it("待仓库出库行：显示状态与等待提示，并可「撤回提交」（reopen 带原因）", async () => {
+    const calls = stubPanelApi({ movements: () => apiOk([movement({ id: "mv-5", movementNo: "MI-005", status: "pending_outbound", submittedAt: "2026-01-03T02:00:00.000Z" })]) });
+    renderPanel();
+    await screen.findByText("MI-005");
+    const row = movementRows()[0];
+
+    expect(row).toHaveTextContent("待仓库出库");
+    expect(row).toHaveTextContent("等待仓库出库");
+    // 待出库阶段生产端不能再改内容，也不该有「确认出库」（那一步属于仓库）
+    expect(within(row).queryByRole("button", { name: "编辑" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: "确认出库" })).toBeNull();
+
+    await userEvent.click(within(row).getByRole("button", { name: "撤回提交" }));
+    expect(await screen.findByRole("heading", { name: "撤回提交：MI-005" })).toBeVisible();
+    await userEvent.type(screen.getByTestId("action-field-reason"), "车间填错了数量");
+    await userEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-5/reopen")).toHaveLength(1));
+    expect(bodyOf(lastTo(calls, "/reopen"))).toEqual({ reason: "车间填错了数量" });
+    expect(await screen.findByText("已撤回提交，单据回到草稿")).toBeVisible();
   });
 
   it("过账失败时弹出错误提示，且不误报成功", async () => {
     stubPanelApi({
       movements: () => apiOk([movement({ id: "mv-1", movementNo: "MI-001" })]),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-1/post") ? apiErr(422, "VALIDATION_ERROR", "库存不足，无法出库") : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-1/submit") ? apiErr(422, "INSUFFICIENT_INVENTORY", "库存不足，无法提交") : undefined),
     });
     renderPanel();
     await screen.findByText("MI-001");
 
-    await userEvent.click(within(movementRows()[0]).getByRole("button", { name: "过账出库" }));
+    await userEvent.click(within(movementRows()[0]).getByRole("button", { name: "确认提交" }));
 
-    expect(await screen.findByText("库存不足，无法出库")).toBeVisible();
-    expect(screen.queryByText("领料单已过账出库")).toBeNull();
+    expect(await screen.findByText("库存不足，无法提交")).toBeVisible();
+    expect(screen.queryByText("已提交仓库，等待确认出库")).toBeNull();
   });
 
   it("草稿行「删除」发 DELETE 并回调 onChanged", async () => {
@@ -643,30 +672,89 @@ describe("MaterialIssuesPanel：列表行操作", () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
   });
 
-  it("行操作进行中：该行的编辑/过账/删除同时禁用，连点只发一次", async () => {
+  it("行操作进行中：该行的编辑/提交/删除同时禁用，连点只发一次", async () => {
     const gate = deferred<Response>();
     const calls = stubPanelApi({
       movements: () => apiOk([movement({ id: "mv-1", movementNo: "MI-001" })]),
-      actions: (url) => (url.endsWith("/production/material-movements/mv-1/post") ? gate.promise : undefined),
+      actions: (url) => (url.endsWith("/production/material-movements/mv-1/submit") ? gate.promise : undefined),
     });
     renderPanel();
     await screen.findByText("MI-001");
     const row = movementRows()[0];
 
-    await userEvent.click(within(row).getByRole("button", { name: "过账出库" }));
+    await userEvent.click(within(row).getByRole("button", { name: "确认提交" }));
 
-    await waitFor(() => expect(within(row).getByRole("button", { name: "过账出库" })).toBeDisabled());
+    await waitFor(() => expect(within(row).getByRole("button", { name: "确认提交" })).toBeDisabled());
     expect(within(row).getByRole("button", { name: "编辑" })).toBeDisabled();
     expect(within(row).getByRole("button", { name: "删除" })).toBeDisabled();
-    await userEvent.click(within(row).getByRole("button", { name: "过账出库" }));
+    await userEvent.click(within(row).getByRole("button", { name: "确认提交" }));
     await userEvent.click(within(row).getByRole("button", { name: "删除" }));
 
-    expect(callsTo(calls, "/production/material-movements/mv-1/post")).toHaveLength(1);
+    expect(callsTo(calls, "/production/material-movements/mv-1/submit")).toHaveLength(1);
     expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(0);
 
     await act(async () => {
       gate.resolve(apiOk({}));
     });
+  });
+
+  it("双击单据行：弹出详情窗口，逐行列出该单**全部**领用物料（名称与数量都要出现）", async () => {
+    const slip = movement({
+      id: "mv-9",
+      movementNo: "MI-009",
+      orderNo: "SO-009",
+      submittedAt: "2026-01-03T02:00:00.000Z",
+      productionOrder: { productionOrderNo: "MO-009", orderNo: "SO-009" },
+      lines: [
+        { id: "l-1", materialId: "m-1", quantity: "3", remark: null, unit: { name: "米" }, material: { materialCode: "RM-1", name: "面料A", specificationModel: "150D" } },
+        { id: "l-2", materialId: "m-2", quantity: "8", remark: "备损", unit: { name: "条" }, material: { materialCode: "RM-2", name: "拉链B", specificationModel: "3号" } },
+      ],
+    });
+    const calls = stubPanelApi({
+      // 列表行只有 materialId；物料编码/名称/规格必须由详情接口补上
+      movements: () => apiOk([movement({ id: "mv-9", movementNo: "MI-009", lines: [{ id: "l-1", materialId: "m-1", quantity: "3" }] })]),
+      detail: () => apiOk(slip),
+    });
+    renderPanel();
+    await screen.findByText("MI-009");
+
+    await userEvent.dblClick(movementRows()[0]);
+
+    const dialog = await screen.findByTestId("material-slip-detail");
+    expect(dialog).toBeVisible();
+    expect(callsTo(calls, "/production/material-movements/mv-9")).toHaveLength(1);
+    // 全部领用物料都要出现（而不是只给「2 项」的合计）
+    expect(within(dialog).getByText("领用物料（2 项）")).toBeVisible();
+    expect(within(dialog).getByText("面料A")).toBeVisible();
+    expect(within(dialog).getByText("拉链B")).toBeVisible();
+    expect(within(dialog).getByText("RM-2")).toBeVisible();
+    expect(within(dialog).getByText("3号")).toBeVisible();
+    const detailRows = within(dialog).getAllByTestId("data-table-row");
+    expect(detailRows).toHaveLength(2);
+    expect(detailRows[0]).toHaveTextContent("面料A");
+    expect(detailRows[0]).toHaveTextContent("3");
+    expect(detailRows[1]).toHaveTextContent("拉链B");
+    expect(detailRows[1]).toHaveTextContent("8");
+    // 头部字段也要给全（生产单号 / 订单号 / 提交时间）
+    expect(within(dialog).getByText("MO-009")).toBeVisible();
+    expect(within(dialog).getByText("SO-009")).toBeVisible();
+  });
+
+  it("双击行后详情加载失败：弹窗里给出错误与重试入口", async () => {
+    const calls = stubPanelApi({
+      movements: () => apiOk([movement({ id: "mv-9", movementNo: "MI-009" })]),
+      detail: () => apiErr(500, "INTERNAL", "单据详情暂不可用"),
+    });
+    renderPanel();
+    await screen.findByText("MI-009");
+
+    await userEvent.dblClick(movementRows()[0]);
+
+    const dialog = await screen.findByTestId("material-slip-detail");
+    expect(within(dialog).getByTestId("error-state")).toHaveTextContent("单据详情暂不可用");
+
+    await userEvent.click(within(dialog).getByTestId("error-state-retry"));
+    await waitFor(() => expect(callsTo(calls, "/production/material-movements/mv-9")).toHaveLength(2));
   });
 
   it("编辑草稿：数量改动走 PATCH，并原样带回每行备注（PATCH 整批替换明细）", async () => {

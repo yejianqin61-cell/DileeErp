@@ -11,7 +11,7 @@ const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), upda
 test("超领/非BOM领料未填原因也能过账，风险仍留痕", async () => {
   const risks = [];
   const facts = [];
-  const movement = { id: "movement-1", movementNo: "MI-1", documentType: "issue", status: "draft", productionOrderId: "order-1", orderNo: "DL260001", reason: null, lines: [{ id: "line-1", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("2"), remark: null }] };
+  const movement = { id: "movement-1", movementNo: "MI-1", documentType: "issue", status: "pending_outbound", productionOrderId: "order-1", orderNo: "DL260001", reason: null, lines: [{ id: "line-1", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("2"), remark: null }] };
   const tx = {
     $queryRaw: async () => [],
     $executeRaw: async () => 1,
@@ -38,7 +38,7 @@ test("超领/非BOM领料未填原因也能过账，风险仍留痕", async () =
 
 test("填写了原因时风险记录保留人工原因", async () => {
   const risks = [];
-  const movement = { id: "movement-2", movementNo: "MI-2", documentType: "issue", status: "draft", productionOrderId: "order-1", orderNo: "DL260001", reason: "临时替代物料", lines: [{ id: "line-2", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("1"), remark: null }] };
+  const movement = { id: "movement-2", movementNo: "MI-2", documentType: "issue", status: "pending_outbound", productionOrderId: "order-1", orderNo: "DL260001", reason: "临时替代物料", lines: [{ id: "line-2", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("1"), remark: null }] };
   const tx = {
     $queryRaw: async () => [],
     $executeRaw: async () => 1,
@@ -56,7 +56,7 @@ test("填写了原因时风险记录保留人工原因", async () => {
 });
 
 test("库存不足仍然必须拦截（该门禁保留）", async () => {
-  const movement = { id: "movement-3", movementNo: "MI-3", documentType: "issue", status: "draft", productionOrderId: "order-1", orderNo: "DL260001", reason: null, lines: [{ id: "line-3", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("99"), remark: null }] };
+  const movement = { id: "movement-3", movementNo: "MI-3", documentType: "issue", status: "pending_outbound", productionOrderId: "order-1", orderNo: "DL260001", reason: null, lines: [{ id: "line-3", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("99"), remark: null }] };
   const service = new RawMaterialMovementsService({ $transaction: async () => { throw new Error("must not post"); } }, audit, {});
   service.get = async () => movement;
   service.requireInHouseOrder = async () => ({ id: "order-1", orderNo: "DL260001" });

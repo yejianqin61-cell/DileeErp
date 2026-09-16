@@ -28,10 +28,9 @@ test("领料面板复用既有领料接口而非另起一套", () => {
   assert.match(panel, /apiPost<Preview>\("\/production\/material-movements\/issue-preview"/);
   assert.match(panel, /apiPost<\{ id: string \}>\("\/production\/material-movements"/);
   assert.match(panel, /apiPatch\(`\/production\/material-movements\/\$\{draft\.id\}`/);
-  // 面板同时列出领料单与补料单：过账必须按单据类型选 /post 或 /post-replenishment。
-  assert.match(panel, /postMovementPath\(movement\.documentType, movement\.id\)/);
-  assert.match(panel, /postMovementPath\(documentType, id\)/);
-  assert.doesNotMatch(panel, /material-movements\/\$\{(?:movement\.id|id)\}\/post`/);
+  // 出库已改为两步：面板只能「确认提交」给仓库（/submit），不得由生产端直接写库存（/post）。
+  assert.match(panel, /material-movements\/\$\{movement\.id\}\/submit/, "草稿行提交走 /submit");
+  assert.doesNotMatch(panel, /material-movements\/\$\{(?:movement\.id|id)\}\/post`/, "生产面板不得直接过账扣料");
   assert.match(panel, /\/reopen`, \{ reason/);
   assert.match(panel, /\/reverse`, \{ reason/);
 });
@@ -41,7 +40,7 @@ test("面板提供补料单入口并把每行备注带进草稿", () => {
   assert.match(panel, /remark: line\.remark \?\? ""/, "编辑草稿必须带出每行备注，否则 PATCH 会清掉");
 });
 
-test("先保存草稿再出库，避免保存成功但过账失败时重复建单", () => {
+test("先保存草稿再提交给仓库，避免保存成功但提交失败时重复建单", () => {
   assert.match(panel, /const id = await saveDraft\(\)/);
-  assert.match(panel, /已保存，但过账失败/);
+  assert.match(panel, /已保存，但提交失败/);
 });

@@ -39,7 +39,8 @@ test("新建/编辑领料单与补料单都在全屏独立页面（不再用窄�
   // 两种单据类型的创建/过账路径集中在 lib/material-slip-api.ts（有独立行为测试），
   // 编辑页必须走它而不是自己写死，否则补料单会打到领料单接口上。
   assert.match(editor, /createMovementPath\(documentType\)/, "补料单走补料创建接口");
-  assert.match(editor, /postMovementPath\(documentType, id\)/, "补料单过账走 post-replenishment");
+  // 编辑页只负责「保存并提交仓库」（/submit）；真正的出库（/post、补料单 /post-replenishment）由仓库确认。
+  assert.match(editor, /material-movements\/\$\{id\}\/submit/, "保存并提交走 /submit");
   assert.match(slipApi, /"\/production\/material-movements\/replenishments"/);
   assert.match(slipApi, /post-replenishment/);
   assert.match(listPage, /新建领料单<\/Link>/, "单据列表页也要有新建入口");

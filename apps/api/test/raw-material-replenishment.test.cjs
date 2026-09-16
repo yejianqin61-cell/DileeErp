@@ -51,7 +51,7 @@ function postHarness({ availableBefore, quantity = "8" }) {
   const facts = [];
   const risks = [];
   const movement = {
-    id: "replenishment-1", movementNo: "MC-20260910-AAAABBBB", documentType: "replenishment", status: "draft",
+    id: "replenishment-1", movementNo: "MC-20260910-AAAABBBB", documentType: "replenishment", status: "pending_outbound",
     productionOrderId: "order-1", orderNo: "DL260001", reason: "伞布坏片",
     lines: [{ id: "line-1", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal(quantity), remark: null }]
   };
@@ -94,7 +94,7 @@ test("补料过账不接受领料单（类型必须匹配）", async () => {
 
 test("幂等：同一幂等键重复过账返回同一单据且只写一次库存事实", async () => {
   const { service, facts } = postHarness({ availableBefore: "20" });
-  let current = { id: "replenishment-1", movementNo: "MC-1", documentType: "replenishment", status: "draft", productionOrderId: "order-1", orderNo: "DL260001", reason: "坏片", idempotencyKey: "draft:x", lines: [{ id: "line-1", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("8"), remark: null }] };
+  let current = { id: "replenishment-1", movementNo: "MC-1", documentType: "replenishment", status: "pending_outbound", productionOrderId: "order-1", orderNo: "DL260001", reason: "坏片", idempotencyKey: "draft:x", lines: [{ id: "line-1", materialId: "material-1", unitId: "unit-1", quantity: new Prisma.Decimal("8"), remark: null }] };
   service.get = async () => current;
   await service.postReplenishment("replenishment-1", "replenish-key-4", user);
   current = { ...current, status: "posted", idempotencyKey: "replenish-key-4" };

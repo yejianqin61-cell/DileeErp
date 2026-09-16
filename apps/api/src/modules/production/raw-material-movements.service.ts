@@ -154,12 +154,59 @@ export class RawMaterialMovementsService {
     return { movement_no: movement.movementNo, order_no: movement.orderNo, production_order_no: movement.productionOrder.productionOrderNo, status: movement.status, ...preview };
   }
 
+  /**
+   * 仓库的「待出库通知」清单：已被生产确认提交、还没实际出库的单据。
+   *
+   * 为什么不另建一张「出库通知」表：这张单本身就是通知 —— 单据号、生产单、订单号、物料明细、
+   * 数量全都在里面。另建影子表只会让两张表的状态互相漂移（通知说待出库、单据说已出库）。
+   *
+   * 排序按提交时间**正序**：仓库按先来后到处理，而不是每次都先看到最新那张。
+   */
+  async pendingOutbound() {
+    return this.prisma.rawMaterialMovement.findMany({
+      where: { deletedAt: null, status: "pending_outbound", documentType: { in: ["issue", "replenishment"] } },
+      include: {
+        productionOrder: { select: { productionOrderNo: true, orderNo: true } },
+        lines: { where: { deletedAt: null }, include: { material: { select: { materialCode: true, name: true, specificationModel: true } }, unit: { select: { name: true } } } },
+      },
+      orderBy: [{ submittedAt: "asc" }, { createdAt: "asc" }],
+    });
+  }
+
+  /**
+   * 生产「确认提交」：草稿 → 待仓库出库。**不写任何库存事实**。
+   *
+   * 为什么提交时就要校验库存：让生产当场知道这批料领不出来（而不是等仓库点确认时才失败）。
+   * 真正扣减库存仍然只看仓库那一步 —— 提交与出库之间库存可能被别的单据改变，
+   * `postOutbound` 会在事务里用同一套 preview 再校验一次。
+   */
+  async submitOutbound(id: string, user: CurrentUser) {
+    const movement = await this.get(id);
+    if (!["issue", "replenishment"].includes(movement.documentType)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: "只有领料单或补料单需要仓库确认出库", details: [] });
+    if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: `只有草稿单据可以提交仓库（当前：${movement.status}）`, details: [] });
+    const order = await this.requireInHouseOrder(movement.productionOrderId);
+    const preview = await this.previewLines(order, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })));
+    if (preview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "提交后原料库存不足，请先补货或减少领用数量", details: preview.lines.filter((line) => line.available_after.isNegative()).map((line) => ({ material_id: line.material_id, available_quantity: line.available_before.toString() })) });
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM raw_material_movements WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!current || current.status !== "draft") throw new ConflictException({ code: "MATERIAL_MOVEMENT_NOT_SUBMITTABLE", message: "单据已被其他操作处理，请刷新后重试", details: [] });
+      return tx.rawMaterialMovement.update({ where: { id }, data: { status: "pending_outbound", submittedAt: new Date(), ...this.audit.update(user) } });
+    });
+    await this.audit.record("raw_material_movement.submit", "raw_material_movement", user.id, id, { order_no: movement.orderNo, production_order_id: movement.productionOrderId, movement_no: movement.movementNo });
+    return result;
+  }
+
   async postIssue(id: string, idempotencyKey: string, user: CurrentUser) { return this.postOutbound("issue", id, idempotencyKey, user); }
   async postReplenishment(id: string, idempotencyKey: string, user: CurrentUser) { return this.postOutbound("replenishment", id, idempotencyKey, user); }
 
   /**
-   * 原料出库过账：领料单与补料单共用同一条实现（库存不足拦截、风险留痕、库存事实、幂等）。
-   * 二者只有单据类型与文案不同，库存事实的 sourceType 用于区分来源。
+   * 原料出库过账（**仓库确认出库**这一步）：领料单与补料单共用同一条实现
+   * （库存不足拦截、风险留痕、库存事实、幂等）。二者只有单据类型与文案不同，
+   * 库存事实的 sourceType 用于区分来源。
+   *
+   * 2026-09-16 起：只有**已由生产确认提交**（`pending_outbound`）的单据可以出库 ——
+   * 草稿直接过账会让生产单方面扣掉仓库的库存，仓库连一张单都没看到。
    */
   private async postOutbound(kind: "issue" | "replenishment", id: string, idempotencyKey: string, user: CurrentUser) {
     const label = kind === "issue" ? "领料" : "补料";
@@ -168,7 +215,7 @@ export class RawMaterialMovementsService {
     const movement = await this.get(id);
     if (movement.documentType !== kind) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: kind === "issue" ? "该单据不是领料单" : "该单据不是补料单", details: [] });
     if (movement.status === "posted" && movement.idempotencyKey === idempotencyKey) return movement;
-    if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: `只有草稿${label}单可以过账`, details: [] });
+    if (movement.status !== "pending_outbound") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: `只有已确认待出库的${label}单可以出库；草稿请先由生产「确认提交」，当前状态：${movement.status}`, details: [] });
     const order = await this.requireInHouseOrder(movement.productionOrderId);
     const preview = await this.previewLines(order, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })));
     // 超领/非 BOM 物料不再阻塞过账（业务确认该门禁没有必要）；风险仍在事务内照常记录，仅作审计留痕。
@@ -177,7 +224,7 @@ export class RawMaterialMovementsService {
     try {
       const posted = await this.prisma.$transaction(async (tx) => {
         const current = await tx.rawMaterialMovement.findFirst({ where: { id, deletedAt: null }, include: { lines: { where: { deletedAt: null } } } });
-        if (!current || current.status !== "draft") throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: `${label}单已被其他操作处理`, details: [] });
+        if (!current || current.status !== "pending_outbound") throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: `${label}单已被其他操作处理`, details: [] });
         const lockedOrder = await this.requireInHouseOrder(current.productionOrderId, tx);
         // 先收集全部物料 advisory lock key 并排序后再加锁，避免并发多物料单据以相反顺序加锁造成死锁
         const materialKeys = current.lines.map((line) => `${line.materialId}|${line.unitId}`).sort();
@@ -222,18 +269,28 @@ export class RawMaterialMovementsService {
   }
 
   /**
-   * 回退草稿（过账撤销）：把已过账的领料单/补料单退回草稿以便继续编辑。
-   *
-   * 库存侧的处理：InventoryFact 没有软删除列，库存余额是按事实聚合出来的，
-   * 所以不能删除已写的事实，而是写入等额冲抵事实（sourceType=material_movement_reopen）。
-   * 之后重新过账会再写一张出库事实；再冲销时按净额取反，因此“过账→回退→再过账→冲销”最终净额为 0。
-   * 已存在下游退料/报废的单据不允许回退（否则下游引用会失真）。
+   * 回退草稿：把单据退回草稿以便继续编辑。两种来源：
+   *   - `posted`（过账撤销）：库存侧的处理见下 —— InventoryFact 没有软删除列，库存余额是按事实
+   *     聚合出来的，所以不能删除已写的事实，而是写入等额冲抵事实（sourceType=material_movement_reopen）。
+   *     之后重新过账会再写一张出库事实；再冲销时按净额取反，因此“过账→回退→再过账→冲销”最终净额为 0。
+   *     已存在下游退料/报废的单据不允许回退（否则下游引用会失真）。
+   *   - `pending_outbound`（撤回提交）：还没有任何库存事实，改状态即可，不需要写冲抵事实。
+   *     没有这一步的话，生产填错数量提交之后就再也改不了，只能等仓库照错单出库。
    */
   async reopen(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REOPEN_REASON_REQUIRED", message: "回退草稿必须填写原因", details: [] });
     const movement = await this.get(id);
     if (!["issue", "replenishment"].includes(movement.documentType)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: "只有领料单或补料单可以回退草稿", details: [] });
-    if (movement.status !== "posted") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有已过账单据可以回退草稿", details: [] });
+    if (movement.status === "pending_outbound") {
+      const withdrawn = await this.prisma.$transaction(async (tx) => {
+        const current = await tx.rawMaterialMovement.findFirst({ where: { id, status: "pending_outbound", deletedAt: null } });
+        if (!current) throw new ConflictException({ code: "MATERIAL_MOVEMENT_NOT_PENDING", message: "单据已被其他操作处理（可能已被仓库出库），请刷新后重试", details: [] });
+        return tx.rawMaterialMovement.update({ where: { id }, data: { status: "draft", submittedAt: null, remark: `${current.remark ?? ""}\n撤回提交：${reason.trim()}`, ...this.audit.update(user) } });
+      });
+      await this.audit.record("raw_material_movement.withdraw", "raw_material_movement", user.id, id, { order_no: movement.orderNo, production_order_id: movement.productionOrderId, reason: reason.trim(), from_movement_no: movement.movementNo });
+      return withdrawn;
+    }
+    if (movement.status !== "posted") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: "只有已过账或已提交待出库的单据可以回退草稿", details: [] });
     const preview = await this.reversalPreview(id);
     if (!preview.can_reverse) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "存在后续退料或报废记录，不能回退草稿", details: [{ count: preview.dependent_record_count }] });
     const result = await this.prisma.$transaction(async (tx) => {

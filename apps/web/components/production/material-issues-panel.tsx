@@ -1,8 +1,10 @@
 "use client";
 
-// 生产单详情页里的领料面板：新建/编辑领料草稿、出库过账、重新打开、冲销，并列出该生产单的单据。
+// 生产单详情页里的领料面板：新建/编辑领料草稿、提交给仓库、撤回提交、重新打开、冲销，并列出该生产单的单据。
 // 领料单只绑定生产单（一个生产单可开多张），所以入口放在具体生产单页面最自然。
-// 与仓库页共用同一套接口（/production/material-movements 及其 issue-preview / post / reopen / reverse）。
+// 出库改成两步：生产只负责「确认提交」（draft → pending_outbound，不写库存），
+// 原料真正出库由仓库「确认出库」（pending_outbound → posted，写库存事实）完成。
+// 与仓库页共用同一套接口（/production/material-movements 及其 issue-preview / submit / reopen / reverse）。
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -12,12 +14,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { DataTable } from "../data/data-table";
 import { EmptyState } from "../feedback/states";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
+import { RecordDetailDialog, type DetailField } from "../finance/record-detail-dialog";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
-import { isMaterialMovementDocumentType, movementEditorHref, postMovementPath } from "../../lib/material-slip-api";
+import { isMaterialMovementDocumentType, movementEditorHref } from "../../lib/material-slip-api";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
-type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string }; material?: { materialCode?: string; name: string } };
-type Movement = { id: string; movementNo: string; documentType: string; status: string; businessDate?: string | null; createdAt: string; remark?: string | null; reason?: string | null; lines: MovementLine[] };
+type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string } | null; material?: { materialCode?: string; name: string; specificationModel?: string | null } | null };
+type Movement = { id: string; movementNo: string; documentType: string; status: string; orderNo?: string | null; productionOrderId?: string | null; businessDate?: string | null; submittedAt?: string | null; createdAt: string; remark?: string | null; reason?: string | null; productionOrder?: { productionOrderNo: string; orderNo: string } | null; lines: MovementLine[] };
 type BomItem = { materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; requiredQuantity: string; unit: string; unitId?: string | null };
 type Material = { id: string; materialCode?: string; name: string; materialType?: string; isActive?: boolean };
 type PreviewLine = { material_id: string; material_name?: string; material_code?: string; model?: string | null; unit?: string | null; bom_reference_quantity: string | null; inventory_quantity?: string; available_before: string; available_after: string; cumulative_issued_after: string; production_outstanding_quantity?: string | null; risks: Array<{ type: string }> };
@@ -27,7 +30,7 @@ type DraftLine = { materialId: string; quantity: string; remark: string };
 type Draft = { id?: string; documentType: "issue" | "replenishment"; lines: DraftLine[] };
 
 const errorText = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
-const statusLabels: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
+const statusLabels: Record<string, string> = { draft: "草稿", pending_outbound: "待仓库出库", posted: "已过账", reversed: "已冲销" };
 const typeLabels: Record<string, string> = { issue: "领料单", replenishment: "补料单", return: "退料单", scrap: "报废单", reversal: "冲销单" };
 const riskLabels: Record<string, string> = { MATERIAL_NOT_IN_BOM_WARNING: "不在 BOM 中", OVER_ISSUE_WARNING: "超出 BOM 用量", INSUFFICIENT_STOCK_WARNING: "库存不足" };
 const idempotencyKey = () => `web-issue-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -41,6 +44,12 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
+  // 双击条目弹出的详情：列表行给不出全部字段（物料主数据只有明细接口才有），打开时按 id 单独拉一次。
+  const [detailId, setDetailId] = useState("");
+  const [detail, setDetail] = useState<Movement | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const [detailNonce, setDetailNonce] = useState(0);
 
   const materialOptions = useMemo(() => {
     if (bomItems.length) return bomItems.map((item) => ({ value: item.materialId, label: `${item.materialName}${item.specificationModel || item.model ? ` / ${item.specificationModel ?? item.model}` : ""}（BOM ${item.requiredQuantity} ${item.unit}）` }));
@@ -61,6 +70,16 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     } catch (cause) { setError(errorText(cause, "领料单加载失败")); }
   }
   useEffect(() => { void load(); }, [productionOrderId, bomId]);
+  useEffect(() => {
+    if (!detailId) { setDetail(null); return; }
+    let cancelled = false;
+    setDetailLoading(true); setDetailError("");
+    apiGet<Movement>(`/production/material-movements/${detailId}`)
+      .then((result) => { if (!cancelled) setDetail(result.data); })
+      .catch((cause) => { if (!cancelled) setDetailError(errorText(cause, "领料单详情加载失败")); })
+      .finally(() => { if (!cancelled) setDetailLoading(false); });
+    return () => { cancelled = true; };
+  }, [detailId, detailNonce]);
 
   async function refreshPreview(next: Draft) {
     if (!next.lines.length) { setPreview(null); return; }
@@ -121,22 +140,27 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     setBusy("");
     if (id) { setDraft(null); setPreview(null); await load(); onChanged?.(); }
   }
-  async function saveAndPost(): Promise<void> {
+  async function saveAndSubmit(): Promise<void> {
     if (busy) return;
-    setBusy("post");
+    setBusy("submit");
     const documentType = draft?.documentType ?? "issue";
     const id = await saveDraft();
     if (id) {
-      // 补料单必须走 post-replenishment：写死 /post 会被服务端判成「该单据不是领料单」422。
-      try { await apiPost(postMovementPath(documentType, id), { idempotency_key: idempotencyKey() }); notifySuccess(`${typeLabels[documentType] ?? "领料单"}已过账出库`); setDraft(null); setPreview(null); await load(); onChanged?.(); }
-      catch (cause) { setError(errorText(cause, "已保存，但过账失败（可稍后在列表中过账）")); setDraft({ ...(draft ?? { documentType, lines: [] }), id }); await load(); }
+      // 保存后只提交给仓库（draft → pending_outbound），不写库存事实：真正的原料出库由仓库「确认出库」完成。
+      try { await apiPost(`/production/material-movements/${id}/submit`, {}); notifySuccess("已提交仓库，等待确认出库"); setDraft(null); setPreview(null); await load(); onChanged?.(); }
+      catch (cause) { setError(errorText(cause, "已保存，但提交失败（可稍后在列表中提交）")); setDraft({ ...(draft ?? { documentType, lines: [] }), id }); await load(); }
     }
     setBusy("");
   }
-  async function post(movement: Movement) {
+  /**
+   * 确认提交：draft → pending_outbound。只改状态、不动库存，因此没有幂等键 ——
+   * 有没有键都不影响结果（重复提交会被服务端按「不是草稿」拒绝），
+   * 库存事实由仓库的「确认出库」写，那一端才需要幂等键防重复扣减。
+   */
+  async function submit(movement: Movement) {
     setBusy(movement.id);
-    try { await apiPost(postMovementPath(movement.documentType, movement.id), { idempotency_key: idempotencyKey() }); notifySuccess(`${typeLabels[movement.documentType] ?? "领料单"}已过账出库`); await load(); onChanged?.(); }
-    catch (cause) { notifyError(errorText(cause, "过账失败")); }
+    try { await apiPost(`/production/material-movements/${movement.id}/submit`, {}); notifySuccess("已提交仓库，等待确认出库"); await load(); onChanged?.(); }
+    catch (cause) { notifyError(errorText(cause, "提交失败")); }
     setBusy("");
   }
   async function remove(movement: Movement) {
@@ -146,6 +170,8 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     setBusy("");
   }
   function reopen(movement: Movement) { setDialog({ title: `重新打开领料单：${movement.movementNo}`, fields: [{ name: "reason", label: "重新打开原因", type: "textarea", required: true }], submit: (values) => void action(`/production/material-movements/${movement.id}/reopen`, { reason: values.reason }, "领料单已重新打开为草稿") }); }
+  /** 撤回提交：单据还停在 pending_outbound（尚无库存事实），reopen 只是把状态退回草稿，不产生冲销。 */
+  function withdraw(movement: Movement) { setDialog({ title: `撤回提交：${movement.movementNo}`, fields: [{ name: "reason", label: "撤回原因", type: "textarea", required: true }], submit: (values) => void action(`/production/material-movements/${movement.id}/reopen`, { reason: values.reason }, "已撤回提交，单据回到草稿") }); }
   function reverse(movement: Movement) { setDialog({ title: `冲销领料单：${movement.movementNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void action(`/production/material-movements/${movement.id}/reverse`, { reason: values.reason, idempotency_key: idempotencyKey() }, "领料单已冲销") }); }
   async function action(path: string, body: unknown, success: string) {
     setBusy("action");
@@ -162,11 +188,35 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     { id: "status", header: "状态", cell: ({ row }: { row: { original: Movement } }) => statusLabels[row.original.status] ?? row.original.status },
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: Movement } }) => {
       const movement = row.original;
-      if (movement.status === "draft") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busy === movement.id} onClick={() => openEdit(movement)}>编辑</Button><Button size="sm" disabled={busy === movement.id} onClick={() => void post(movement)}>过账出库</Button><Button size="sm" variant="ghost" disabled={busy === movement.id} onClick={() => void remove(movement)}>删除</Button></div>;
+      if (movement.status === "draft") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busy === movement.id} onClick={() => openEdit(movement)}>编辑</Button><Button size="sm" disabled={busy === movement.id} onClick={() => void submit(movement)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busy === movement.id} onClick={() => void remove(movement)}>删除</Button></div>;
+      // 待出库阶段不做任何库存动作：这里只提示「已交给仓库」并允许生产自己撤回。
+      if (movement.status === "pending_outbound") return <div className="page-actions"><span className="status-warning">等待仓库出库</span><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(movement)}>撤回提交</Button></div>;
       if (movement.status === "posted") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(movement)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(movement)}>冲销</Button></div>;
       return null;
     } },
   ];
+
+  // 详情里的领用物料表：列表行只有 materialId，物料编码/名称/规格型号必须来自详情接口。
+  const detailLineColumns = [
+    { id: "materialCode", header: "物料编码", cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.materialCode ?? "-" },
+    { id: "materialName", header: "物料名称", cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.name ?? row.original.materialId },
+    { id: "specification", header: "规格型号", cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.specificationModel ?? "-" },
+    { id: "unit", header: "单位", cell: ({ row }: { row: { original: MovementLine } }) => row.original.unit?.name ?? "-" },
+    { accessorKey: "quantity", header: "数量" },
+    { id: "remark", header: "备注", cell: ({ row }: { row: { original: MovementLine } }) => row.original.remark ?? "-" },
+  ];
+
+  const detailFields: DetailField[] = detail ? [
+    { label: "单据号", value: detail.movementNo },
+    { label: "类型", value: typeLabels[detail.documentType] ?? detail.documentType },
+    { label: "状态", value: statusLabels[detail.status] ?? detail.status },
+    { label: "业务日期", value: (detail.businessDate ?? detail.createdAt ?? "").slice(0, 10) },
+    { label: "生产单号", value: detail.productionOrder?.productionOrderNo ?? "-" },
+    { label: "订单号", value: detail.orderNo ?? detail.productionOrder?.orderNo ?? "-" },
+    { label: "提交时间", value: detail.submittedAt ? new Date(detail.submittedAt).toLocaleString("zh-CN", { hour12: false }) : "-" },
+    { label: "备注", value: detail.remark, wide: true },
+    { label: "补料原因", value: detail.reason, wide: true },
+  ] : [];
 
   return <section className="panel">
     <div className="panel-heading"><h2>生产领料单</h2><div className="page-actions">
@@ -195,11 +245,24 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
         <div className="page-actions">
           <Button variant="secondary" size="sm" disabled={allMaterialsUsed} title={allMaterialsUsed ? "该生产单的物料都已登记，同一物料只能有一行" : undefined} onClick={addLine}>添加行</Button>
           <Button variant="secondary" size="sm" disabled={busy === "save"} onClick={() => void save()}>{busy === "save" ? "保存中..." : "保存草稿"}</Button>
-          <Button size="sm" disabled={busy === "post"} onClick={() => void saveAndPost()}>{busy === "post" ? "过账中..." : "保存并出库"}</Button>
+          <Button size="sm" disabled={busy === "submit"} onClick={() => void saveAndSubmit()}>{busy === "submit" ? "提交中..." : "保存并提交"}</Button>
           <Button variant="ghost" size="sm" onClick={() => { setDraft(null); setPreview(null); setError(""); }}>取消</Button>
         </div>
       </div>}
-      <DataTable columns={columns} data={movements} empty={<EmptyState title="该生产单暂无领料单" description="点击右上角「新建领料单」按 BOM 领料。" />} />
+      <DataTable columns={columns} data={movements} empty={<EmptyState title="该生产单暂无领料单" description="点击右上角「新建领料单」按 BOM 领料。" />} onRowDoubleClick={(movement) => setDetailId(movement.id)} rowTitle="双击查看领用物料" />
+      {/* 双击弹出的详情：把这一条领料单的**全部**领用物料列出来，避免用户只能看到列表里的「N 项」。 */}
+      <RecordDetailDialog
+        open={Boolean(detailId)}
+        onOpenChange={(open) => { if (!open) setDetailId(""); }}
+        title={`${typeLabels[detail?.documentType ?? "issue"] ?? "领料单"}详情：${detail?.movementNo ?? ""}`}
+        description="双击单据行打开的详情：展示本条单据的全部领用物料与提交信息。"
+        fields={detailFields}
+        sections={detail ? [{ title: `领用物料（${detail.lines.length} 项）`, content: <DataTable pageSize={50} columns={detailLineColumns} data={detail.lines} empty={<EmptyState title="该单据没有物料明细" />} /> }] : []}
+        loading={detailLoading}
+        error={detailError}
+        onRetry={() => setDetailNonce((value) => value + 1)}
+        testId="material-slip-detail"
+      />
     </div>
   </section>;
 }

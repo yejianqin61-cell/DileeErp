@@ -15,6 +15,11 @@
 //   POST   /hr/payroll-payables/:id/confirm
 //   POST   /hr/payroll-ledgers/:id/pay                    行内付款：一次完成生成应付 + 建付款 + 核销过账
 //   POST   /hr/payroll-ledgers/:id/unpay                  行内冲销：把该台账下已过账的付款整体回退
+//   GET    /finance/banks                                 发放银行下拉的账户池（财务 → 银行账户；停用的不可选）
+//
+// 2026-09-16 用户：「工资支付那边也是全部要加上银行账户，因为发工资都是要用银行账户发放的工资」。
+// 因此行内付款不再是「点一下直接发请求」，而是先弹窗问清发放银行（必填），请求体固定带 `bank_id`；
+// 银行池为空时付款入口本身禁用（不能拿一个空 bank_id 去撞后端的 422）。
 //
 // 2026-09-15 三轮变化：① 台账从只读表变成可编辑表格（逐格 PATCH）；② 工资管理页只留两个入口，
 // 台账与付款各自成为二级页，付款表直接搬当月台账、只保留「总工资」，操作都在行内完成；
@@ -35,11 +40,12 @@ const EP = {
   importMonth: "/api/v1/hr/payroll-ledgers/import-month",
   payables: "/api/v1/hr/payroll-payables",
   payments: "/api/v1/hr/salary-payments",
+  banks: "/api/v1/finance/banks",
   currencies: "/api/v1/dictionaries/currency/items",
 } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined | Promise<Response | undefined>;
-type SalaryData = Partial<Record<"employees" | "departments" | "positions" | "ledgers" | "payables" | "currencies", unknown[]>> & { imported?: Record<string, unknown> };
+type SalaryData = Partial<Record<"employees" | "departments" | "positions" | "ledgers" | "payables" | "banks" | "currencies", unknown[]>> & { imported?: Record<string, unknown> };
 
 /** 按月导入的默认响应：一次导入 2 人、新建 2 条。 */
 const importResult = (overrides: Record<string, unknown> = {}) => ({
@@ -61,6 +67,7 @@ function stubSalary(data: SalaryData = {}, extra?: Handler) {
     if (url.startsWith(EP.departments)) return apiOk(data.departments ?? []);
     if (url.startsWith(EP.positions)) return apiOk(data.positions ?? []);
     if (url.startsWith(EP.payables)) return apiOk(data.payables ?? []);
+    if (url.startsWith(EP.banks)) return apiOk(data.banks ?? []);
     if (url.startsWith(EP.currencies)) return apiOk(data.currencies ?? []);
     if (url.startsWith(EP.ledgers)) return call.method === "GET" ? apiOk(data.ledgers ?? []) : apiOk({});
     return apiOk({});
@@ -113,6 +120,18 @@ async function pickOption(testId: string, optionName: string | RegExp) {
 }
 
 /**
+ * 行内付款的完整交互：点行上的「付款」→ 在弹窗里选定发放银行 → 提交。
+ *
+ * 发工资必须指定发放银行（用户 2026-09-16），所以付款不再是「点一下就打接口」，
+ * 这个 helper 把「点付款 + 选银行 + 提交」三步固定下来，避免每个用例各写一遍。
+ */
+async function payRow(ledgerId: string, bankName: string | RegExp = /农业银行/) {
+  await userEvent.click(screen.getByTestId(`salary-pay-button-${ledgerId}`));
+  await pickOption("action-field-bank_id", bankName);
+  fireEvent.click(screen.getByTestId("action-dialog-submit"));
+}
+
+/**
  * 断言某条 toast 出现过。
  *
  * 不能用 getByTestId("toast-item")：自动导入也会产生一条 toast，只要两条同时在场就会「found multiple
@@ -151,8 +170,22 @@ const expiredLedger = { ...workshopLedger, id: "pl-4", status: "expired" };
 const paidLedger = {
   ...workshopLedger, id: "pl-9", ledgerNo: "PAYROLL-009", status: "partially_paid",
   paidAmount: "500.0000", outstandingAmount: "734.5000",
-  allocations: [{ id: "alloc-1", amount: "500.0000", status: "active", payment: { paymentNo: "SALARY-001", status: "posted", paymentDate: "2026-03-05T00:00:00.000Z" } }],
+  // 已过账的工资付款会带发放银行：付款表用它显示「发放银行」，核销弹窗里也能看到是哪张卡发的。
+  allocations: [{ id: "alloc-1", amount: "500.0000", status: "active", payment: { paymentNo: "SALARY-001", status: "posted", paymentDate: "2026-03-05T00:00:00.000Z", bankId: "bank-1" } }],
 };
+
+/**
+ * `GET /finance/banks` 的一行（银行账户池，财务 → 银行账户）。
+ * 发工资必须从启用中的账户发放，所以下拉与付款表的名称都取自这里。
+ */
+const bank = (over: Record<string, unknown> = {}) => ({
+  id: "bank-1", bankCode: "B001", bankName: "农业银行", accountName: "迪礼公司", accountNumber: "5706",
+  currency: "CNY", isActive: true, ...over,
+});
+/** 工资付款测试的默认账户池：一个启用中的账户，行内付款选它。 */
+const activeBanks = [bank()];
+/** 停用的账户：后端按 BANK_NOT_FOUND 拒收，前端下拉里也不该出现。 */
+const deadBank = bank({ id: "bank-dead", bankCode: "B002", bankName: "中国银行", accountNumber: "7624", isActive: false });
 
 // ------------------------------------------------------------------ 工资管理入口页
 
@@ -644,30 +677,30 @@ describe("工资管理：工资付款（当月台账只留总工资，操作在�
     expect(screen.getByTestId("payroll-sheet-count")).toHaveTextContent("共 2 条");
   });
 
-  it("行内付款：金额默认等于未付，点「付款」发出一次 POST /:id/pay（含付款日期与方式）", async () => {
-    const calls = stubSalary({ ledgers: [confirmedLedger] });
+  it("行内付款：金额默认等于未付，弹窗选定发放银行后发出一次 POST /:id/pay（含付款日期、方式与 bank_id）", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: activeBanks });
     await openSalary("payments");
     expect((screen.getByTestId("salary-pay-amount-pl-2") as HTMLInputElement).value).toBe("1234.5");
     setValue("salary-payment-date", "2026-03-25");
     setValue("salary-payment-method", "现金");
-    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await payRow("pl-2");
     await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
     const call = postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0];
-    expect(bodyOf(call)).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "现金" });
+    expect(bodyOf(call)).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "现金", bank_id: "bank-1" });
     await expectToast("张三 已付款 1234.5");
   });
 
   it("行内付款：可以只付一部分，也可以改金额后再提交", async () => {
-    const calls = stubSalary({ ledgers: [confirmedLedger] });
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: activeBanks });
     await openSalary("payments");
     setValue("salary-pay-amount-pl-2", "500");
-    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await payRow("pl-2");
     await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
     expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0]).amount).toBe("500");
   });
 
-  it("行内付款：超过未付、金额非法、金额为 0 都不发请求（本地先拦一次）", async () => {
-    const calls = stubSalary({ ledgers: [confirmedLedger] });
+  it("行内付款：超过未付、金额非法、金额为 0 都不发请求（本地先拦一次，连弹窗都不打开）", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: activeBanks });
     await openSalary("payments");
     setValue("salary-pay-amount-pl-2", "9999");
     await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
@@ -681,15 +714,15 @@ describe("工资管理：工资付款（当月台账只留总工资，操作在�
   });
 
   it("行内付款：后端拒绝时 toast 显示原因，不发成功提示", async () => {
-    stubSalary({ ledgers: [confirmedLedger] }, (url, call) => (url.endsWith("/pay") && call.method === "POST" ? apiErr(422, "PAYROLL_PAYABLE_NOT_PAYABLE", "该台账的工资应付已冲销，不能再次付款") : undefined));
+    stubSalary({ ledgers: [confirmedLedger], banks: activeBanks }, (url, call) => (url.endsWith("/pay") && call.method === "POST" ? apiErr(422, "PAYROLL_PAYABLE_NOT_PAYABLE", "该台账的工资应付已冲销，不能再次付款") : undefined));
     await openSalary("payments");
-    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await payRow("pl-2");
     await expectToast("该台账的工资应付已冲销，不能再次付款");
     expect(screen.queryByText(/已付款/)).toBeNull();
   });
 
   it("只有已确认/部分支付且未付 > 0 的台账给付款入口，其余行只给原因", async () => {
-    stubSalary({ ledgers: [confirmedLedger, { ...workshopLedger, id: "pl-1" }, { ...confirmedLedger, id: "pl-5", status: "paid", paidAmount: "1234.5000", outstandingAmount: "0.0000" }, expiredLedger] });
+    stubSalary({ ledgers: [confirmedLedger, { ...workshopLedger, id: "pl-1" }, { ...confirmedLedger, id: "pl-5", status: "paid", paidAmount: "1234.5000", outstandingAmount: "0.0000" }, expiredLedger], banks: activeBanks });
     await openSalary("payments");
     expect(screen.getByTestId("salary-pay-button-pl-2")).toBeVisible();
     expect(screen.getByTestId("salary-pay-hint-pl-1")).toHaveTextContent("待确认");
@@ -730,13 +763,81 @@ describe("工资管理：工资付款（当月台账只留总工资，操作在�
   });
 
   it("员工姓名/工号筛选与台账页同口径，且行内操作只作用于该行", async () => {
-    const calls = stubSalary({ ledgers: [confirmedLedger, { ...officeLedger, status: "confirmed" }] });
+    const calls = stubSalary({ ledgers: [confirmedLedger, { ...officeLedger, status: "confirmed" }], banks: activeBanks });
     await openSalary("payments");
     setValue("salary-employee-filter", "李四");
     expect(screen.getByTestId("payroll-pay-row-pl-3")).toBeInTheDocument();
     expect(screen.queryByTestId("payroll-pay-row-pl-2")).toBeNull();
-    await userEvent.click(screen.getByTestId("salary-pay-button-pl-3"));
+    await payRow("pl-3");
     await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-3/pay")).toHaveLength(1));
+    expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(0);
+  });
+});
+
+// ------------------------------------------------------------------ 发放银行（工资付款）
+
+/**
+ * 2026-09-16 用户：「工资支付那边也是全部要加上银行账户，因为发工资都是要用银行账户发放的工资」。
+ *
+ * 这一组钉住四件事：
+ *   1) 行内「付款」弹窗里发放银行**必填**：不选就提交会给出可见校验错误，且一个请求都不发；
+ *   2) 选定后 POST /:id/pay 的请求体精确带上 `bank_id`（后端据此把支出落到账户上）；
+ *   3) 付款表展示发放银行（`名称（账号）`，没有就 `-`）；
+ *   4) 下拉只列**启用中**的账户；一个账户都没有时入口禁用并指路「财务 → 银行账户」。
+ */
+describe("工资管理：工资付款的发放银行", () => {
+  it("行内付款必须选发放银行：不选时给出可见校验错误且不发请求，选了则请求体精确带 bank_id", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: activeBanks });
+    await openSalary("payments");
+    setValue("salary-payment-date", "2026-03-25");
+
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    // 弹窗里唯一需要填的就是发放银行：直接提交必须被 required 拦住
+    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    expect(screen.getByTestId("action-dialog-error")).toHaveTextContent("请填写发放银行");
+    expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(0);
+
+    await pickOption("action-field-bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0])).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "银行转账", bank_id: "bank-1" });
+  });
+
+  it("付款表展示发放银行：已过账付款显示「名称（账号）」，没有银行的显示 -", async () => {
+    stubSalary({ ledgers: [paidLedger, confirmedLedger], banks: activeBanks });
+    await openSalary("payments");
+    // 付款列的表头与新列都在
+    expect(panel("工资付款").getByTestId("payroll-sheet-head-bank")).toHaveTextContent("发放银行");
+    expect(screen.getByTestId("payroll-cell-pl-9-bank")).toHaveTextContent("农业银行（5706）");
+    // 没有已过账付款（也就没有发放银行）的行显示 -，而不是编一个账户出来
+    expect(screen.getByTestId("payroll-cell-pl-2-bank")).toHaveTextContent("-");
+  });
+
+  it("发放银行下拉只列启用中的账户（停用的选不到：后端会按 BANK_NOT_FOUND 拒收）", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: [bank(), deadBank] });
+    await openSalary("payments");
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await userEvent.click(screen.getByTestId("action-field-bank_id"));
+    const options = await screen.findAllByRole("option");
+    const texts = options.map((option) => option.textContent).join("|");
+    expect(texts).toContain("农业银行");
+    expect(texts).not.toContain("中国银行");
+
+    await userEvent.click(options.find((option) => option.textContent?.includes("农业银行"))!);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0]).bank_id).toBe("bank-1");
+  });
+
+  it("一个银行账户都没有：付款入口禁用并指路【财务 → 银行账户】，绝不发空 bank_id 的请求", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: [] });
+    await openSalary("payments");
+    expect(screen.getByTestId("salary-pay-button-pl-2")).toBeDisabled();
+    expect(screen.getByTestId("salary-pay-bank-hint-pl-2")).toHaveTextContent("请先在【财务 → 银行账户】建一个账户");
+    // 禁用是硬拦截：点也点不开弹窗，更不会有「没有 bank_id」的付款请求
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    expect(screen.queryByTestId("action-dialog")).toBeNull();
     expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(0);
   });
 });

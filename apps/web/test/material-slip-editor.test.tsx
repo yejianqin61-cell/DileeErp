@@ -5,7 +5,7 @@
 //   - apps/web/lib/warehouse-issue-sheet.test.mjs
 //     继承的断言意图：① 物料下拉必须来自**该生产单订单**的 BOM 明细而不是全部物料；
 //                     ② 同一物料只能一行（都用完时禁用「添加行」、保存前先拦重复）；
-//                     ③ 编辑已有草稿时锁定生产单；④ 补料单走 replenishments / post-replenishment。
+//                     ③ 编辑已有草稿时锁定生产单；④ 补料单创建走 replenishments，提交给仓库统一走 /submit。
 //   - apps/web/lib/auto-open-pages.test.mjs
 //     继承的断言意图：⑤ 深链 ?movement_id= 时编辑页**直接**按 id 拉取草稿并回填（不依赖自动弹窗）；
 //                     ⑥ 深链 ?production_order_id= 预选生产单。
@@ -104,7 +104,7 @@ function stub(options: StubOptions = {}) {
       return apiOk({ items: (options.bom ?? bomItemsByBomId)[bomId] ?? [] });
     }
     if (url.endsWith("/issue-preview")) return options.preview ? options.preview(call) : apiOk(previewData);
-    if (url.endsWith("/post") || url.endsWith("/post-replenishment")) return apiOk({});
+    if (url.endsWith("/post") || url.endsWith("/post-replenishment") || url.endsWith("/submit")) return apiOk({});
     if (call.method === "POST" && (url.endsWith("/production/material-movements") || url.endsWith("/production/material-movements/replenishments"))) {
       return options.create ? options.create(call) : apiOk({ id: "mv-new" });
     }
@@ -121,13 +121,13 @@ const bodiesTo = (calls: StubbedCall[], suffix: string): PreviewBody[] =>
 
 const lastBody = (calls: StubbedCall[], suffix: string): PreviewBody | undefined => bodiesTo(calls, suffix).at(-1);
 
-/** 创建单据的请求（领料或补料）——过账请求不在此列。 */
+/** 创建单据的请求（领料或补料）——提交请求不在此列。 */
 const creates = (calls: StubbedCall[]) =>
   calls.filter((call) => call.method === "POST" && (call.url.endsWith("/production/material-movements") || call.url.endsWith("/production/material-movements/replenishments")));
 
-/** 过账请求（post / post-replenishment）。 */
+/** 过账/提交请求（post / post-replenishment / submit）。 */
 const posts = (calls: StubbedCall[]) =>
-  calls.filter((call) => call.method === "POST" && (call.url.endsWith("/post") || call.url.endsWith("/post-replenishment")));
+  calls.filter((call) => call.method === "POST" && (call.url.endsWith("/post") || call.url.endsWith("/post-replenishment") || call.url.endsWith("/submit")));
 
 /** 把组件渲染到「已加载完成」；加载失败/被拦截的用例直接 render，不走这里。 */
 async function renderSlip(documentType: "issue" | "replenishment" = "issue") {
@@ -392,8 +392,8 @@ describe("MaterialSlipEditor 领料单：行增删与数量输入", () => {
   });
 });
 
-describe("MaterialSlipEditor 领料单：保存草稿与保存并出库", () => {
-  it("保存草稿：POST 创建领料单草稿，不触发过账", async () => {
+describe("MaterialSlipEditor 领料单：保存草稿与保存并提交仓库", () => {
+  it("保存草稿：POST 创建领料单草稿，不触发提交", async () => {
     const calls = stub();
     await renderSlip();
 
@@ -410,19 +410,20 @@ describe("MaterialSlipEditor 领料单：保存草稿与保存并出库", () => 
     expect(await screen.findByTestId("toast-item")).toHaveTextContent("领料单草稿已创建");
   });
 
-  it("保存并出库：先创建、再过账，过账请求带幂等键", async () => {
+  it("保存并提交仓库：先创建、再提交给仓库；提交不带幂等键（库存由仓库确认出库时才扣）", async () => {
     const calls = stub();
     await renderSlip();
 
-    await userEvent.click(screen.getByTestId("material-slip-post"));
+    await userEvent.click(screen.getByTestId("material-slip-submit"));
 
     await waitFor(() => expect(posts(calls)).toHaveLength(1));
     expect(creates(calls)).toHaveLength(1);
-    // 顺序：创建必须先于过账（过账用的是创建返回的 id）
+    // 顺序：创建必须先于提交（提交用的是创建返回的 id）
     expect(calls.indexOf(creates(calls)[0])).toBeLessThan(calls.indexOf(posts(calls)[0]));
-    expect(posts(calls)[0].url).toBe("/api/v1/production/material-movements/mv-new/post");
-    expect(JSON.parse(String(posts(calls)[0].body))).toMatchObject({ idempotency_key: expect.stringContaining("web-slip-") });
-    expect(await screen.findByTestId("toast-item")).toHaveTextContent("领料单已保存并出库过账");
+    expect(posts(calls)[0].url).toBe("/api/v1/production/material-movements/mv-new/submit");
+    // 提交只改状态、不写库存事实，所以没有幂等键
+    expect(JSON.parse(String(posts(calls)[0].body))).toEqual({});
+    expect(await screen.findByTestId("toast-item")).toHaveTextContent("领料单已保存并提交仓库");
   });
 
   it("保存中：两个按钮都禁用并改文案，连点不会发出第二次创建请求", async () => {
@@ -435,11 +436,11 @@ describe("MaterialSlipEditor 领料单：保存草稿与保存并出库", () => 
     const busyDraft = await screen.findByTestId("material-slip-save-draft");
     expect(busyDraft).toBeDisabled();
     expect(busyDraft).toHaveTextContent("保存中...");
-    expect(screen.getByTestId("material-slip-post")).toBeDisabled();
+    expect(screen.getByTestId("material-slip-submit")).toBeDisabled();
 
     // 连点：禁用态下不得再触发 save()
     await userEvent.click(busyDraft);
-    await userEvent.click(screen.getByTestId("material-slip-post"));
+    await userEvent.click(screen.getByTestId("material-slip-submit"));
     expect(creates(calls)).toHaveLength(1);
 
     gate.resolve(apiOk({ id: "mv-new" }));
@@ -543,7 +544,7 @@ describe("MaterialSlipEditor 领料单：深链与草稿编辑", () => {
 
     expect(await screen.findByTestId("error-state")).toHaveTextContent("只有草稿单据可以在这里编辑");
     expect(screen.queryByTestId("material-slip-lines")).toBeNull();
-    expect(screen.queryByTestId("material-slip-post")).toBeNull();
+    expect(screen.queryByTestId("material-slip-submit")).toBeNull();
   });
 
   it("把补料单草稿从领料编辑页打开：提示类型不一致，不渲染表单", async () => {
@@ -592,17 +593,18 @@ describe("MaterialSlipEditor 补料单", () => {
     });
   });
 
-  it("补料单保存并出库走 post-replenishment（走错接口服务端会 422）", async () => {
+  it("补料单保存并提交：创建走 replenishments，提交同样走 /submit（与领料单同一条提交接口）", async () => {
     const calls = stub();
     await renderSlip("replenishment");
 
     await userEvent.type(screen.getByPlaceholderText("例如：伞布原始坏片"), "坏片补料");
-    await userEvent.click(screen.getByTestId("material-slip-post"));
+    await userEvent.click(screen.getByTestId("material-slip-submit"));
 
     await waitFor(() => expect(posts(calls)).toHaveLength(1));
     expect(creates(calls)[0].url).toBe("/api/v1/production/material-movements/replenishments");
-    expect(posts(calls)[0].url).toBe("/api/v1/production/material-movements/mv-new/post-replenishment");
-    expect(await screen.findByTestId("toast-item")).toHaveTextContent("补料单已保存并出库过账");
+    expect(posts(calls)[0].url).toBe("/api/v1/production/material-movements/mv-new/submit");
+    expect(JSON.parse(String(posts(calls)[0].body))).toEqual({});
+    expect(await screen.findByTestId("toast-item")).toHaveTextContent("补料单已保存并提交仓库");
   });
 });
 

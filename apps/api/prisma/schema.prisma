@@ -1802,6 +1802,10 @@ model RawMaterialMovement {
   businessDate      DateTime                  @map("business_date") @db.Date
   reason            String?                   @db.VarChar(1000)
   remark            String?                   @db.VarChar(1000)
+  /// 生产「确认提交」到仓库的时刻（draft → pending_outbound）。
+  /// 为什么单独一列而不是复用 updatedAt：updatedAt 会被任何一次写入改动，
+  /// 而仓库的「待出库通知」要显示的是「这张单是什么时候交过来的」，两次提交之间不能漂移。
+  submittedAt       DateTime?                 @map("submitted_at")
   idempotencyKey    String                    @unique @map("idempotency_key") @db.VarChar(200)
   createdAt         DateTime                  @default(now()) @map("created_at")
   updatedAt         DateTime                  @updatedAt @map("updated_at")
@@ -2348,6 +2352,10 @@ model SalaryPayment {
   currency      String                    @db.VarChar(10)
   paymentMethod String                    @map("payment_method") @db.VarChar(50)
   bankReference String?                   @map("bank_reference") @db.VarChar(200)
+  /// 发放工资的银行账户（银行账户池 banks）。**必填**（服务层强制）：发工资都是走银行发放的，
+  /// 缺了它这笔支出不会落到任何账户上，银行余额会与真实银行账永久对不上。
+  /// 列本身可空只为兼容升级前的历史单据。
+  bankId        String?                   @map("bank_id") @db.Uuid
   status        String                    @default("draft") @db.VarChar(30)
   attachment    Json                      @default("[]")
   remark        String?                   @db.VarChar(1000)
@@ -2357,6 +2365,7 @@ model SalaryPayment {
   updatedBy     String                    @map("updated_by") @db.Uuid
   deletedAt     DateTime?                 @map("deleted_at")
   deletedBy     String?                   @map("deleted_by") @db.Uuid
+  bank          Bank?                     @relation(fields: [bankId], references: [id])
   allocations   SalaryPaymentAllocation[]
 
   @@map("salary_payments")
@@ -2427,6 +2436,7 @@ model Bank {
   payableReconciliations SupplierPayableReconciliation[]
   supplierPayments       SupplierPayment[]
   customerPayments       CustomerPayment[]
+  salaryPayments         SalaryPayment[]
   receivableReconciliations ReceivableReconciliation[]
   cashFlowEntries        CashFlowEntry[]
   transfersOut           BankTransfer[] @relation("BankTransferFrom")

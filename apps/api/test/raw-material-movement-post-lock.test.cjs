@@ -16,7 +16,9 @@ const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "operator" 
 const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), softDelete: () => ({ deletedAt: new Date(), deletedBy: user.id }), record: async () => {} };
 const VOID_ERROR = "Failed to deserialize column of type 'void'. If you're using $queryRaw and this column is explicitly marked as `Unsupported`";
 
-function harness({ status = "draft", documentType = "issue" } = {}) {
+// 2026-09-16 起：出库（过账）只能对「已由生产确认提交」的单据做，
+// 所以这里的状态是 pending_outbound，而不是草稿（草稿现在只能 submit）。
+function harness({ status = "pending_outbound", documentType = "issue" } = {}) {
   const executeRawCalls = [];
   const createdFacts = [];
   const movement = {
