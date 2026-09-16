@@ -61,18 +61,65 @@ function formatDate(year: string, month: string, day: string): string {
 }
 
 /**
- * 表单自动填充：身份证号的出生日期/性别/地址前缀。
- * 只在目标字段**还是空的**时候填 —— 操作员手填过的值不能被悄悄覆盖。
+ * 表单自动填充：身份证号变化时重新解析出生日期、性别与住址的省市县前缀。
+ *
+ * 规则（身份证是这三项的权威来源，改了号码就跟着改）：
+ * - 出生日期、性别：只要身份证能解析出来就覆盖（操作员手填过的也一样覆盖 —— 号码变了，手填值
+ *   就不再对应当前号码了）；
+ * - 家庭住址：只换掉**省市县前缀**，手填的镇/村/门牌原样保留；地址是空的就填前缀。
+ *   开头认不出省市县（例如只写了「新民镇柑岭村」）时一个字都不动 —— 宁可少补一个前缀，
+ *   也不能把操作员写的详细地址冲掉。
+ * - 身份证清空或还没填完 → 什么都不动（不猜、不清空已有信息）。
+ *
+ * 刻意**不依赖「上一个身份证号」**：操作员可能先清空再输入，中间态里旧号码已经丢了；
+ * 直接从地址开头认省市县，跟怎么改的无关。
  */
-export function deriveEmployeeFieldsFromIdCard(idCard: string, current: { birth_date?: string; gender?: string; home_address?: string }): Record<string, string> {
+export function deriveEmployeeFieldsFromIdCard(
+  idCard: string | null | undefined,
+  current: { birth_date?: string; gender?: string; home_address?: string },
+): Record<string, string> {
   const parsed = parseIdCard(idCard);
   if (!parsed.ok) return {};
-  const patch: Record<string, string> = {};
-  if (!current.birth_date?.trim()) patch.birth_date = parsed.value.birthDate;
-  if (!current.gender?.trim()) patch.gender = parsed.value.gender;
-  // 家庭住址只补省市县前缀，镇/村/门牌由操作员接着手填（后面留一个空格方便继续输入）。
-  if (!current.home_address?.trim() && parsed.value.addressPrefix) patch.home_address = `${parsed.value.addressPrefix} `;
+  const patch: Record<string, string> = {
+    birth_date: parsed.value.birthDate,
+    gender: parsed.value.gender,
+  };
+  const nextAddress = swapRegionPrefix(current.home_address ?? "", parsed.value.addressPrefix);
+  if (nextAddress !== (current.home_address ?? "")) patch.home_address = nextAddress;
   return patch;
+}
+
+/** 行政区划名称的尾巴。**故意不含「镇/乡/村/街道」** —— 那些属于手填的详细地址，不能被换掉。 */
+const REGION_SUFFIX = /(省|市|区|县|旗|盟|地区|自治州|自治县|自治区|林区|特区|群岛)$/;
+
+/**
+ * 从地址开头认出「省市县」那一截：取**最长**的、看起来像行政区划名的纯中文前缀。
+ * 只连续取中文（遇到数字/字母/空白就停），因此「同安区新民镇5号」只认到「同安区」，
+ * 「福建省三明市建宁县新民镇柑岭村」认到「福建省三明市建宁县」。
+ */
+function findRegionHead(address: string): string {
+  const chinese = /^[\u4e00-\u9fa5]+/.exec(address)?.[0] ?? "";
+  for (let end = chinese.length; end >= 2; end -= 1) {
+    const candidate = chinese.slice(0, end);
+    if (REGION_SUFFIX.test(candidate)) return candidate;
+  }
+  return "";
+}
+
+/**
+ * 把地址开头的旧省市县换成新的，保留后面手填的详细地址。
+ * 空地址 → 只给前缀（末尾留一个空格方便继续输入）；已经是新前缀 → 原样返回；
+ * 开头认不出省市县 → 原样返回。
+ */
+function swapRegionPrefix(address: string, nextPrefix: string): string {
+  if (!nextPrefix) return address;
+  const trimmed = address.trim();
+  if (!trimmed) return `${nextPrefix} `;
+  if (trimmed.startsWith(nextPrefix)) return address;
+  const head = findRegionHead(trimmed);
+  if (!head) return address;
+  const rest = trimmed.slice(head.length).replace(/^\s+/, "");
+  return rest ? `${nextPrefix} ${rest}` : `${nextPrefix} `;
 }
 
 export { lookupRegion, type ChinaRegion };

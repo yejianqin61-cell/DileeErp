@@ -93,7 +93,7 @@ describe("行政区划取名", () => {
   });
 });
 
-describe("表单联动：身份证填完自动补字段", () => {
+describe("表单联动：身份证变化时重新解析", () => {
   it("三个字段都空 → 全补上（地址只给省市县前缀，详细住址留给人填）", () => {
     expect(deriveEmployeeFieldsFromIdCard("350430198405204527", {})).toEqual({
       birth_date: "1984-05-20",
@@ -102,22 +102,58 @@ describe("表单联动：身份证填完自动补字段", () => {
     });
   });
 
-  it("操作员手填过的值不能被覆盖", () => {
-    expect(
-      deriveEmployeeFieldsFromIdCard("350430198405204527", { birth_date: "1984-05-21", gender: "男", home_address: "同安区新民镇" }),
-    ).toEqual({});
+  it("身份证号改变 → 出生日期、性别、省市县全部按新号码重新解析；且与编辑顺序无关", () => {
+    const previous = { birth_date: "1984-05-20", gender: "女", home_address: "福建省三明市建宁县 新民镇柑岭村" };
+    const expected = {
+      birth_date: "1978-04-08",
+      gender: "女",
+      // 省市县换成新号码的，手填的详细住址「新民镇柑岭村」保留
+      home_address: "贵州省铜仁地区沿河土家族自治县 新民镇柑岭村",
+    };
+    expect(deriveEmployeeFieldsFromIdCard("522228197804083626", previous)).toEqual(expected);
+    // 先清空再输入（中间态里旧号码已经丢了）也要得到同样结果 —— 旧省市县是从地址里认出来的
+    expect(deriveEmployeeFieldsFromIdCard("522228197804083626", { birth_date: "1984-05-20", gender: "女", home_address: "福建省三明市建宁县 新民镇柑岭村" })).toEqual(expected);
   });
 
-  it("只填了一部分 → 只补没填的那些", () => {
-    expect(deriveEmployeeFieldsFromIdCard("350430198405204527", { gender: "男" })).toEqual({
-      birth_date: "1984-05-20",
-      home_address: "福建省三明市建宁县 ",
-    });
+  it("手填过的出生日期/性别在身份证改变时会被覆盖（号码才是权威）", () => {
+    const patch = deriveEmployeeFieldsFromIdCard("522228197804083626", { birth_date: "1980-01-01", gender: "男" });
+    expect(patch.birth_date).toBe("1978-04-08");
+    expect(patch.gender).toBe("女");
   });
 
-  it("身份证还没填完 / 填错 → 一个字段都不动", () => {
-    expect(deriveEmployeeFieldsFromIdCard("3504301984", {})).toEqual({});
-    expect(deriveEmployeeFieldsFromIdCard("350430198405204521", {})).toEqual({});
+  it("只补到区县、没有详细住址时，换完前缀仍留一个空格好继续输入", () => {
+    const patch = deriveEmployeeFieldsFromIdCard("522228197804083626", { home_address: "福建省三明市建宁县 " });
+    expect(patch.home_address).toBe("贵州省铜仁地区沿河土家族自治县 ");
+  });
+
+  it("导入文件里写的整段地址（没有空格分隔）也能认出开头的省市县并换掉，详细地址保留", () => {
+    // 花名册里刘春娇的地址就长这样（「建宁休县」还是原表里的笔误）
+    const patch = deriveEmployeeFieldsFromIdCard("522228197804083626", { home_address: "福建省建宁休县黄埠乡黄埠村下街20号" });
+    expect(patch.home_address).toBe("贵州省铜仁地区沿河土家族自治县 黄埠乡黄埠村下街20号");
+  });
+
+  it("「镇/乡/村/街道」不算省市县：只换区划名那一截，详细地址一个都不动", () => {
+    // 只有「同安区」是行政区划名，后面的镇/村属于手填详细地址
+    expect(deriveEmployeeFieldsFromIdCard("522228197804083626", { home_address: "同安区新民镇柑岭村" }).home_address)
+      .toBe("贵州省铜仁地区沿河土家族自治县 新民镇柑岭村");
+  });
+
+  it("地址开头认不出省市县时一个字都不动（不猜、不拼凑），但出生日期/性别照旧重算", () => {
+    const patch = deriveEmployeeFieldsFromIdCard("522228197804083626", { home_address: "新民镇柑岭村5号" });
+    expect(patch.home_address).toBeUndefined();
+    expect(patch.birth_date).toBe("1978-04-08");
+  });
+
+  it("地址已经是新前缀 → 不产生多余的地址补丁", () => {
+    const patch = deriveEmployeeFieldsFromIdCard("350430198405204527", { home_address: "福建省三明市建宁县 新民镇" });
+    expect(patch.home_address).toBeUndefined();
+  });
+
+  it("身份证没填完 / 填错 / 被清空 → 什么都不动（不清空已有信息）", () => {
+    const current = { birth_date: "1984-05-20", gender: "女", home_address: "福建省三明市建宁县 新民镇" };
+    expect(deriveEmployeeFieldsFromIdCard("3504301984", current)).toEqual({});
+    expect(deriveEmployeeFieldsFromIdCard("350430198405204521", current)).toEqual({});
+    expect(deriveEmployeeFieldsFromIdCard("", current)).toEqual({});
   });
 });
 

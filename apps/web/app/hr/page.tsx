@@ -1080,8 +1080,8 @@ export default function HrPage() {
         }}
         title={dialog?.title ?? "操作"}
         fields={dialog?.fields ?? []}
-        // 身份证号填完就自动带出出生日期/性别，以及家庭住址的省市县前缀（详细住址仍手填）。
-        // 只在 id_card_no 变化时触发；只补空字段，操作员手填过的值不会被覆盖。
+        // 身份证号一变就重新解析出生日期、性别和住址的省市县（手填的镇/村/门牌保留）。
+        // 只在 id_card_no 变化时触发；旧省市县由 lib/id-card.ts 从地址开头自己认，不依赖编辑顺序。
         deriveValues={(changedField, values) =>
           changedField === "id_card_no"
             ? deriveEmployeeFieldsFromIdCard(values.id_card_no, values)

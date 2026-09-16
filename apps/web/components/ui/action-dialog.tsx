@@ -15,7 +15,7 @@ const categoryFields = new Set(["customer_id", "contact_id", "supplier_id", "mat
 export function ActionDialog({ open, title, fields, submitLabel = "保存", onOpenChange, onSubmit, onAddCategory, deriveValues }: { open: boolean; title: string; fields: ActionField[]; submitLabel?: string; onOpenChange: (open: boolean) => void; onSubmit: (values: Record<string, string>) => void | Promise<void>; onAddCategory?: (field: ActionField, values: Record<string, string>) => void | Promise<void>; /**
    * 字段联动（表单内自动填充）：每次字段变更后调用，收到的补丁合并进表单。
    * changedField 是刚刚被编辑的字段名 —— 调用方据此判断「该不该触发联动」，
-   * 例如只在 id_card_no 变化时解析出生日期/性别，避免用户清空某个字段又被立刻填回去。
+   * 例如只在 id_card_no 变化时重新解析出生日期/性别/住址。
    * 必须是纯函数（React 可能重复调用它）。
    */ deriveValues?: (changedField: string, values: Record<string, string>) => Record<string, string> }) {
   const [values, setValues] = useState<Record<string, string>>({});

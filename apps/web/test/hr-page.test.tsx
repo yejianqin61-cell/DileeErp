@@ -142,7 +142,10 @@ type Employee = {
   department?: { id: string; name: string };
   position?: { id: string; name: string };
   gender?: string;
+  /** 有值的花名册字段（编辑对话框会预填这些）。 */
   birthDate?: string;
+  idCardNo?: string;
+  homeAddress?: string;
   age?: number | null;
   education?: string;
   tenureYears?: number | null;
@@ -154,8 +157,8 @@ type Employee = {
 };
 
 const employees: Employee[] = [
-  // 在职 + 部门/职务齐全 + 花名册字段与派生列都有值
-  { id: "emp-1", employeeNo: "E01", name: "张三", employeeType: "workshop", employmentStatus: "active", hiredOn: "2026-01-05T00:00:00.000Z", department: { id: "dept-1", name: "生产部" }, position: { id: "pos-1", name: "缝纫工" }, gender: "男", birthDate: "1990-05-20T00:00:00.000Z", age: 36, education: "初中", tenureYears: 0, phone: "138 0000 0000", contractSituation: "正常", birthdayThisMonth: false },
+  // 在职 + 部门/职务齐全 + 花名册字段与派生列都有值（身份证/住址供「编辑员工时改身份证」用例使用）
+  { id: "emp-1", employeeNo: "E01", name: "张三", employeeType: "workshop", employmentStatus: "active", hiredOn: "2026-01-05T00:00:00.000Z", department: { id: "dept-1", name: "生产部" }, position: { id: "pos-1", name: "缝纫工" }, gender: "男", birthDate: "1990-05-20T00:00:00.000Z", idCardNo: "350430198405204527", homeAddress: "福建省三明市建宁县 新民镇柑岭村", age: 36, education: "初中", tenureYears: 0, phone: "138 0000 0000", contractSituation: "正常", birthdayThisMonth: false },
   // 已离职 + 关联字段整体缺失 + 只有离职日期；派生列后端没给（null）→ 列表回落 "-"
   { id: "emp-2", employeeNo: "E02", name: "李四", employeeType: "non_workshop", employmentStatus: "left", leftOn: "2026-03-01T00:00:00.000Z", age: null, tenureYears: null },
   // 停用 + 有部门无职务 + 合同已过期 + 本月生日
@@ -615,19 +618,40 @@ describe("人事页 · 新建员工时身份证号自动解析", () => {
     expect(fieldValue("birth_date")).toBe("1965-10-11");
   });
 
-  it("操作员已经手填过的字段不会被覆盖", async () => {
+  it("身份证号改变 → 出生日期、性别、省市县前缀全部重新解析，手填的详细住址保留", async () => {
     await openCreateEmployee();
 
-    // 先手填出生日期与住址，再填身份证
-    await userEvent.type(screen.getByTestId("action-field-birth_date"), "1965-01-02");
-    await userEvent.type(screen.getByTestId("action-field-home_address"), "同安区新民镇柑岭村");
+    // 先手填一整套（模拟员工档案里已有的值），再改成另一个省的身份证
+    await userEvent.type(screen.getByTestId("action-field-birth_date"), "1990-05-20");
+    await userEvent.type(screen.getByTestId("action-field-home_address"), "福建省三明市建宁县 新民镇柑岭村");
     await userEvent.type(screen.getByTestId("action-field-id_card_no"), "350430198405204527");
+    expect(fieldValue("birth_date")).toBe("1984-05-20");
 
-    // 手填过的两个字段都不能被覆盖
-    expect(fieldValue("birth_date")).toBe("1965-01-02");
-    expect(fieldValue("home_address")).toBe("同安区新民镇柑岭村");
-    // 没手填过的性别照旧自动带出
+    // 换成贵州的号码：三项都要跟着变
+    await userEvent.clear(screen.getByTestId("action-field-id_card_no"));
+    await userEvent.type(screen.getByTestId("action-field-id_card_no"), "522228197804083626");
+
+    expect(fieldValue("birth_date")).toBe("1978-04-08");
     expect(screen.getByTestId("action-field-gender")).toHaveTextContent("女");
+    // 省市县换成新号码的，手填的「新民镇柑岭村」保留
+    expect(fieldValue("home_address")).toBe("贵州省铜仁地区沿河土家族自治县 新民镇柑岭村");
+  });
+
+  it("编辑已有员工时改身份证：预填的出生日期/性别/住址前缀同样重新解析", async () => {
+    await openHr({ employees, departments, positions });
+    await userEvent.click(within(rowFor("员工目录", "E01")).getByRole("button", { name: "编辑" }));
+    await screen.findByTestId("action-dialog");
+
+    // 对话框按档案预填（与身份证号不一致也不动，只有改号码才触发解析）
+    expect(fieldValue("birth_date")).toBe("1990-05-20");
+    expect(fieldValue("home_address")).toBe("福建省三明市建宁县 新民镇柑岭村");
+
+    await userEvent.clear(screen.getByTestId("action-field-id_card_no"));
+    await userEvent.type(screen.getByTestId("action-field-id_card_no"), "522228197804083626");
+
+    expect(fieldValue("birth_date")).toBe("1978-04-08");
+    expect(screen.getByTestId("action-field-gender")).toHaveTextContent("女");
+    expect(fieldValue("home_address")).toBe("贵州省铜仁地区沿河土家族自治县 新民镇柑岭村");
   });
 
   it("身份证没填完或校验位不对时一个字段都不动", async () => {
