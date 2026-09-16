@@ -1720,14 +1720,20 @@ model VoucherLine {
   amount           Decimal       @db.Decimal(18, 4)
   currency         String        @db.VarChar(10)
   cashFlowEntryId  String?       @map("cash_flow_entry_id") @db.Uuid
+  /// 资金类分录引用**具体的银行账户**（用户要求「会计科目的银行存款要引用具体的银行账户」）：
+  /// 有它才能按账户出「银行存款明细账」、才能与银行对账单逐笔核对。科目名仍是「银行存款」，
+  /// 这一列是明细/辅助核算引用；库存现金分录与手工改成非资金类科目的分录为 null。
+  bankId           String?       @map("bank_id") @db.Uuid
   createdAt        DateTime      @default(now()) @map("created_at")
   updatedAt        DateTime      @updatedAt @map("updated_at")
   createdBy        String        @map("created_by") @db.Uuid
   updatedBy        String        @map("updated_by") @db.Uuid
   voucher          Voucher       @relation(fields: [voucherId], references: [id], onDelete: Cascade)
   cashFlowEntry    CashFlowEntry? @relation(fields: [cashFlowEntryId], references: [id])
+  bank             Bank?         @relation(fields: [bankId], references: [id], onDelete: SetNull)
 
   @@unique([voucherId, lineNo])
+  @@index([bankId])
   @@map("voucher_lines")
 }
 
@@ -2445,6 +2451,7 @@ model Bank {
   cashFlowEntries        CashFlowEntry[]
   transfersOut           BankTransfer[] @relation("BankTransferFrom")
   transfersIn            BankTransfer[] @relation("BankTransferTo")
+  voucherLines           VoucherLine[]
 
   @@map("banks")
 }

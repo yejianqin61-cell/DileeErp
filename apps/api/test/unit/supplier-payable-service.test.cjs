@@ -270,6 +270,46 @@ test("勾选批量确认：状态被别的入口改动时整批拒绝，不出�
   assert.deepEqual(harness.cashFlowCalls, [], "没写成状态就绝不能记账");
 });
 
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求）：「确认应付里如果是已付款的条目就不要出现了」+
+//   「支持按已付未付、按时间范围筛选」。过滤在映射之后做（关键字要匹配物料名/供应商名/来源批次号，
+//   这些都是映射阶段才从关联里摊平出来的），所以这里断言的是最终列表。
+// ---------------------------------------------------------------------------
+
+test("应付台账按付款情况筛选：未付只留草稿，已付含已确认及以后", async () => {
+  const base = { amount: new Prisma.Decimal("100"), allocations: [], payableSource: null, outsourcePayableSource: null, supplier: null, orderNo: "SO-1", currency: "CNY", purchaseOrderId: null };
+  const rows = [
+    { ...base, id: "p-draft", payableNo: "AP-001", status: "draft", supplierId: "s-1", confirmationDate: new Date("2026-09-10T00:00:00.000Z") },
+    { ...base, id: "p-confirmed", payableNo: "AP-002", status: "confirmed", supplierId: "s-1", confirmationDate: new Date("2026-09-11T00:00:00.000Z") },
+    { ...base, id: "p-reversed", payableNo: "AP-003", status: "reversed", supplierId: "s-1", confirmationDate: new Date("2026-09-12T00:00:00.000Z") },
+  ];
+  const prisma = { supplierPayableEntry: { findMany: async () => rows }, supplierPayableReconciliation: { findMany: async () => [] } };
+  const service = new SupplierPayableService(prisma, {}, cashFlowStub());
+  const ids = (filter) => service.list(undefined, undefined, undefined, filter).then((result) => result.map((row) => row.id));
+
+  assert.deepEqual(await ids({ payment: "unpaid" }), ["p-draft"]);
+  assert.deepEqual(await ids({ payment: "paid" }), ["p-confirmed"]);
+  assert.deepEqual(await ids({ payment: "all" }), ["p-draft", "p-confirmed", "p-reversed"], "全部包含已冲销的");
+  assert.deepEqual(await ids({}), ["p-draft", "p-confirmed", "p-reversed"], "不传筛选时保持原行为（不静默丢行）");
+});
+
+test("应付台账按确认日期区间与关键字筛选（区间含两端，无日期的行不算命中）", async () => {
+  const base = { amount: new Prisma.Decimal("100"), allocations: [], payableSource: null, outsourcePayableSource: null, supplier: null, status: "draft", currency: "CNY", purchaseOrderId: null };
+  const rows = [
+    { ...base, id: "p-1", payableNo: "AP-001", supplierId: "s-1", orderNo: "SO-1", confirmationDate: new Date("2026-09-01T00:00:00.000Z") },
+    { ...base, id: "p-2", payableNo: "AP-002", supplierId: "s-1", orderNo: "SO-2", confirmationDate: new Date("2026-09-30T00:00:00.000Z") },
+    { ...base, id: "p-3", payableNo: "AP-003", supplierId: "s-1", orderNo: "SO-3", confirmationDate: new Date("2026-10-01T00:00:00.000Z") },
+  ];
+  const prisma = { supplierPayableEntry: { findMany: async () => rows }, supplierPayableReconciliation: { findMany: async () => [] } };
+  const service = new SupplierPayableService(prisma, {}, cashFlowStub());
+  const ids = (filter) => service.list(undefined, undefined, undefined, filter).then((result) => result.map((row) => row.id));
+
+  assert.deepEqual(await ids({ from: "2026-09-01", to: "2026-09-30" }), ["p-1", "p-2"], "两端当天都算命中");
+  assert.deepEqual(await ids({ from: "2026-09-02" }), ["p-2", "p-3"]);
+  assert.deepEqual(await ids({ q: "SO-2" }), ["p-2"], "关键字走与列表页搜索同一批字段");
+  assert.deepEqual(await ids({ q: "ap-003" }), ["p-3"], "单号大小写不敏感");
+});
+
 test("supplier payable reversal locks and rechecks active allocations", async () => {
   let lockCount = 0;
   let updateCount = 0;

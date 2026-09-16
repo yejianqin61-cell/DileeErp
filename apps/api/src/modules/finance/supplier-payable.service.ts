@@ -6,6 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { sourceType, coveringPayableReconciliation } from "./supplier-payable.domain";
+import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
 import { paymentItemKeys, PAYABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
@@ -17,7 +18,16 @@ export type PayableEntryInput = { source_type: SourceType; source_id: string; am
 export class SupplierPayableService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
 
-  async list(orderNo?: string, supplierId?: string, status?: string) {
+  /**
+   * 应付台账列表。
+   *
+   * `filter`（可选）是「确认应付」页的筛选：付款情况 + 时间范围 + 关键字。
+   * 为什么过滤放在 **map 之后**而不是 Prisma where 里：关键字要匹配物料名 / 供应商名 / 来源批次号，
+   * 这些都是 map 阶段才从关联里摊平出来的（`material_name` / `supplier_name` / `source_no`）。
+   * 台账是财务按月核对的量级（几百到几千行），在内存里做一遍与界面搜索框完全同口径的过滤，
+   * 比在 SQL 里重写一套近似规则更不容易漂移。
+   */
+  async list(orderNo?: string, supplierId?: string, status?: string, filter: LedgerFilter = {}) {
     const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payment: { select: { status: true } } } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
     /**
      * 「这条应付是否已经被某张对账单覆盖」。
@@ -38,7 +48,7 @@ export class SupplierPayableService {
         orderBy: { createdAt: "desc" },
       })
       : [];
-    return rows.map((row) => {
+    const mapped = rows.map((row) => {
       const receiptData = row.payableSource?.purchaseReceipt?.extensionData as { batch_sequence?: number } | null | undefined;
       const item = row.payableSource?.purchaseOrderItem;
       // 应付条目要能看出是哪个原料（客户反馈：只看到金额不知道对应什么物料）。
@@ -65,6 +75,12 @@ export class SupplierPayableService {
         reconciliation: covering ? { id: covering.id, reconciliation_no: covering.reconciliationNo, status: covering.status, period_start: covering.periodStart, period_end: covering.periodEnd } : null,
       };
     });
+    return mapped.filter((row) => matchesLedgerFilter({
+      status: row.status,
+      // 时间范围用**确认日期**：应付台账的月份归属就是它（与「待对账月份」同一口径）。
+      date: row.confirmationDate,
+      search: [row.payableNo, row.orderNo, row.supplier_name, row.material_name, row.material_code, row.purchase_order_no, row.source_no],
+    }, filter));
   }
 
   async get(id: string) {

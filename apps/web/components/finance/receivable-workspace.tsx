@@ -19,8 +19,11 @@ import { DataTable } from "../data/data-table";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { downloadFile } from "../../lib/download";
+import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { RECEIVABLE_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type ReceivableTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
@@ -124,6 +127,16 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [sourceFilter, setSourceFilter] = useState("");
   /** 勾选出来待确认的应收条目 id（「确认应收」页的批量确认用）。 */
   const [selected, setSelected] = useState<string[]>([]);
+  /**
+   * 「确认应收」页的筛选：收款情况 + 出库日期区间（与应付侧同一口径，见 lib/finance-ledger-filter.ts）。
+   * **默认只显示未收**（草稿）—— 这一页是待办清单，已经确认过（钱已经进账）的条目默认不在这里。
+   * 时间用创建日期（= 成品出库过账生成这条来源的日期）：应收来源没有确认日期列，
+   * 列表页的「待对账月份 / 出库日期」用的也是它。
+   */
+  const [payment, setPayment] = useState<LedgerPaymentFilter>("unpaid");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -322,8 +335,26 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     }, "批量确认应收失败") });
   }
 
-  function createReconciliation(preset?: { customerId: string; month: string }) {
-    const range = preset ? monthRange(preset.month) : undefined;
+  /**
+   * 导出当前筛选出的应收台账（用户要求「确认应收要支持导出 excel」）。
+   *
+   * 查询串与界面筛选一一对应（`ledgerExportQuery`），所以**导出的就是所见**；
+   * 文件名带行数由后端按既有约定给出。
+   */
+  async function exportLedger() {
+    setExporting(true);
+    try {
+      const query = ledgerExportQuery({ payment, from: dateFrom || undefined, to: dateTo || undefined, q: sourceFilter });
+      await downloadFile(`/api/v1/finance/receivable-sources.xlsx?${query}`, "迪礼ERP-应收台账.xlsx");
+      notifySuccess(`已导出 ${ledgerSources.length} 条应收`);
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : "导出失败");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function createReconciliation(preset?: { customerId: string; month: string }) {    const range = preset ? monthRange(preset.month) : undefined;
     setDialog({ title: "创建应收对账", fields: [
       { name: "customer_id", label: "客户", type: "select", required: true, canAddCategory: true, options: customerOptions, defaultValue: preset?.customerId },
       { name: "order_no", label: "订单号（可选）", type: "select", options: orderOptions },
@@ -393,13 +424,23 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   // 待确认收款提醒：成品出库过账会自动生成应收来源草稿（通知财务收款），这里把待确认的笔数与金额显示出来。
   const pendingSources = useMemo(() => sources.filter((item) => item.status === "draft"), [sources]);
   const pendingAmount = pendingSources.reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
-  // 应收台账 = 全部应收来源（含草稿）。草稿在「确认应收」里逐条确认，已确认的在这里登记收款与核销；
-  // 只列已确认会让「接收后可确认」这条路径没有任何可达入口。
-  const ledgerSources = useMemo(() => {
+  // 应收台账 = 全部应收来源（含草稿），再按「确认应收」页的筛选收窄：
+  // 关键字 → 出库日期区间 → 收款情况（默认只留未收，即草稿）。
+  const matchedSources = useMemo(() => {
     const text = sourceFilter.trim().toLowerCase();
     if (!text) return sources;
     return sources.filter((item) => [item.sourceNo, item.orderNo, item.customer_name].some((value) => (value ?? "").toLowerCase().includes(text)));
   }, [sourceFilter, sources]);
+  // 计数用「日期与关键字已筛、收款情况还没筛」的那一批：筛选器上的「未收（3）/ 已收（5）」才是当前条件下的真实条数。
+  const scopedSources = useMemo(
+    () => matchedSources.filter((item) => withinDateRange(item.createdAt, dateFrom, dateTo)),
+    [matchedSources, dateFrom, dateTo],
+  );
+  const paymentTally = useMemo(() => paymentCounts(scopedSources), [scopedSources]);
+  const ledgerSources = useMemo(
+    () => payment === "all" ? scopedSources : scopedSources.filter((item) => paymentBucket(item.status) === payment),
+    [scopedSources, payment],
+  );
   // 应收来源行的操作：成品出库条目与确认应收两张表共用同一套动作，避免两边行为漂移。
   // 没有「登记收款」：确认应收已经把钱记进账户，再登记一次收款就是把同一笔款进两次。
   const sourceActions = (item: ReceivableSource) => <div className="action-row">
@@ -409,7 +450,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
 
   // 勾选只对草稿开放：已确认/取消的条目没有「再确认一次」这回事。
   const selectableIds = useMemo(() => ledgerSources.filter((item) => item.status === "draft").map((item) => item.id), [ledgerSources]);
-  const selectedDrafts = useMemo(() => sources.filter((item) => item.status === "draft" && selected.includes(item.id)), [sources, selected]);
+  const selectedDrafts = useMemo(() => ledgerSources.filter((item) => item.status === "draft" && selected.includes(item.id)), [ledgerSources, selected]);
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.includes(id));
   const toggleOne = (id: string) => setSelected((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
   const toggleAll = () => setSelected((ids) => allSelected ? ids.filter((id) => !selectableIds.includes(id)) : [...new Set([...ids, ...selectableIds])]);
@@ -640,13 +681,29 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       </section>
     </>}
     {!error && activeTab.key === "confirmed" && <section className="panel">
-      <div className="panel-heading"><h2>确认应收</h2><span className="panel-note">共 {ledgerSources.length} 条 · 草稿 {pendingSources.length} 条</span></div>
+      <div className="panel-heading"><h2>确认应收</h2><span className="panel-note">共 {ledgerSources.length} 条（未收 {paymentTally.unpaid} / 已收 {paymentTally.paid}）</span></div>
       <div className="panel-body">
+        {/* 收款情况默认「未收」：已经确认过（钱已经进账）的条目不再占着待办清单；需要时切到「已收 / 全部」。 */}
+        <div className="filter-bar">
+          <label>收款情况
+            <Select value={payment} onValueChange={(value) => setPayment(value as LedgerPaymentFilter)}>
+              <SelectTrigger data-testid="receivable-payment-filter"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unpaid">未收（{paymentTally.unpaid}）</SelectItem>
+                <SelectItem value="paid">已收（{paymentTally.paid}）</SelectItem>
+                <SelectItem value="all">全部（{paymentTally.all}）</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+          <label>出库日期从<Input type="date" data-testid="receivable-date-from" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
+          <label>到<Input type="date" data-testid="receivable-date-to" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
+          <Button variant="secondary" data-testid="receivable-export" disabled={exporting} onClick={() => void exportLedger()}>{exporting ? "导出中…" : "导出 Excel"}</Button>
+        </div>
         <div style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }} data-testid="receivable-batch-bar">
           <span className="panel-note" data-testid="receivable-selected-count">已选 {selectedDrafts.length} 条</span>
           <Button size="sm" data-testid="receivable-batch-confirm" disabled={!selectedDrafts.length} onClick={batchConfirm}>批量确认（{selectedDrafts.length} 条）</Button>
         </div>
-        <DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="暂无应收台账" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" />
+        <DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="没有符合条件的应收条目" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" />
       </div>
     </section>}
   </div>;

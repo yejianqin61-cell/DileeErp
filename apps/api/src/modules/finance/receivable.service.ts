@@ -7,6 +7,7 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { receivableAmountFor, receivableUnitPrice, settlementRemark } from "../warehouse/finished-goods-settlement";
 import { coveringReceivableReconciliation } from "./receivable.domain";
+import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
 import { RECEIVABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
@@ -26,7 +27,14 @@ export class ReceivableService {
    * （与应付侧 `coveringPayableReconciliation` 同一处理）。用途是「待创建对账」只列**没被覆盖**的草稿，
    * 已被覆盖的要显式说明它进了哪张对账单 —— 否则用户会以为这条应收「没流转过去」。
    */
-  async list(orderNo?: string, customerId?: string, status?: string) {
+  /**
+   * 应收台账列表。
+   *
+   * `filter`（可选）是「确认应收」页的筛选：收款情况 + 时间范围 + 关键字，见 `ledger-filter.ts`。
+   * 时间范围用**创建日期**（= 成品出库过账生成这条来源的日期）：应收来源没有确认日期列
+   * （确认与生成一般在同一天），而列表页的「待对账月份 / 出库日期」都是它 —— 口径保持一致。
+   */
+  async list(orderNo?: string, customerId?: string, status?: string, filter: LedgerFilter = {}) {
     const rows = await this.prisma.receivableSource.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) },
       include: {
@@ -62,7 +70,11 @@ export class ReceivableService {
         outstanding_amount: row.amount.minus(allocated).toFixed(4),
         reconciliation: covering ? { id: covering.id, reconciliation_no: covering.reconciliationNo, status: covering.status, period_start: covering.periodStart, period_end: covering.periodEnd } : null,
       };
-    });
+    }).filter((row) => matchesLedgerFilter({
+      status: row.status,
+      date: row.createdAt,
+      search: [row.sourceNo, row.orderNo, row.customer_name, row.outbound_no, row.product_name, row.product_specification],
+    }, filter));
   }
   async get(id: string) {
     const row = await this.prisma.receivableSource.findFirst({

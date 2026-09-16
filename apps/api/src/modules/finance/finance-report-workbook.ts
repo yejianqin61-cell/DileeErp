@@ -161,3 +161,26 @@ export async function renderReportWorkbook(tables: ReportTable[]): Promise<Buffe
   const data = await workbook.xlsx.writeBuffer();
   return Buffer.from(data);
 }
+
+/** 能收下工作簿的最小响应形状（避免把 express 的类型引进这个纯渲染模块）。 */
+type WorkbookResponse = {
+  setHeader(name: string, value: string): unknown;
+  send(body: Buffer): unknown;
+};
+
+/**
+ * 一次性把一张表渲染成 xlsx 并作为附件下发。
+ *
+ * 报表导出与「确认应收/应付台账」导出共用这一处：文件名编码（`filename*=UTF-8''`）、
+ * Content-Type、`no-store` 三件事必须一致，否则中文文件名在不同浏览器上会乱码、
+ * 或者下载被浏览器缓存住。文件名带上行数，财务拿到文件就知道导的是哪一批。
+ */
+export async function sendWorkbook(response: WorkbookResponse, table: ReportTable, label: string) {
+  const body = await renderReportWorkbook([table]);
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const fileName = `迪礼ERP-${label}-${stamp}-${table.rows.length}行.xlsx`;
+  response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+  response.setHeader("Cache-Control", "no-store");
+  return response.send(body);
+}

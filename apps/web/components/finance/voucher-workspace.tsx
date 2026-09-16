@@ -34,7 +34,11 @@ type CashFlowEntry = {
   item?: { id: string; key: string; label: string } | null;
   settlementAccount?: { id: string; key: string; label: string } | null;
 };
-type VoucherLine = { id: string; lineNo: number; direction: string; subjectKey: string; subjectLabel: string; summary: string; amount: string; currency: string };
+type VoucherLine = {
+  id: string; lineNo: number; direction: string; subjectKey: string; subjectLabel: string; summary: string; amount: string; currency: string;
+  /** 资金类分录引用的具体银行账户（用户要求「银行存款要引用具体的银行账户」）。 */
+  bank?: { id: string; bankName: string; accountNumber: string } | null;
+};
 type Voucher = {
   id: string; voucherNo: string; voucherDate: string; period: string; sourceType: string; sourceId: string;
   summary: string; currency: string; debitTotal: string; creditTotal: string; status: string; status_label?: string;
@@ -222,6 +226,20 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
     });
   }
 
+  /**
+   * 按来源流水**重新生成**草稿凭证（摘要 / 科目 / 银行账户 / 金额 / 期间全部重算）。
+   *
+   * 为什么需要：生成是幂等的，之后流水还可能被改（补银行账户、改收支项目、改金额）；
+   * 不重新生成，凭证会一直停在旧口径上。**会覆盖手工改过的分录**，所以弹窗里先把这件事说清楚。
+   */
+  function regenerateVoucher(voucher: Voucher) {
+    setDialog({
+      title: `重新生成凭证：${voucher.voucherNo}`,
+      fields: [{ name: "confirm", label: `按收支流水 ${voucher.source_entry?.entryNo ?? ""} 现在的收支项目、银行账户与金额重算整张凭证（手工改过的分录会被覆盖）`, type: "info" as const }],
+      submit: () => submitDialog(`/finance/vouchers/${voucher.id}/regenerate`, undefined, `凭证 ${voucher.voucherNo} 已按收支流水重新生成`),
+    });
+  }
+
   function reverseVoucher(voucher: Voucher) {
     setDialog({
       title: `红冲凭证：${voucher.voucherNo}`,
@@ -252,7 +270,11 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       if (row.original.status !== "posted") return <span className="panel-note">已冲销流水不可生成凭证</span>;
       return <div className="action-row">
         {voucher
-          ? <Button size="sm" variant="ghost" onClick={() => void openSheet(voucher.id)}>查看凭证</Button>
+          ? <>
+            <Button size="sm" variant="ghost" onClick={() => void openSheet(voucher.id)}>查看凭证</Button>
+            {/* 流水改了之后要能把凭证拉回同步；已过账的凭证只能红冲，所以只对草稿给这个按钮。 */}
+            {voucher.status === "draft" && <Button size="sm" variant="secondary" data-testid={`voucher-regenerate-from-entry-${voucher.id}`} onClick={() => regenerateVoucher(voucher)}>重新生成</Button>}
+          </>
           : <Button size="sm" variant="secondary" disabled={busy === row.original.id} onClick={() => void generate(row.original)}>生成凭证</Button>}
       </div>;
     } },
@@ -273,6 +295,10 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       <Button size="sm" variant="ghost" onClick={() => void openSheet(row.original.id)}>凭证纸</Button>
       {row.original.status === "draft" && <>
         <Button size="sm" variant="ghost" onClick={() => editVoucher(row.original)}>编辑</Button>
+        {/* 只有「来源是收支流水」的草稿才能重新生成：红冲凭证的内容由被红冲的凭证决定。 */}
+        {row.original.sourceType === "cash_flow_entry"
+          ? <Button size="sm" variant="ghost" data-testid={`voucher-regenerate-${row.original.id}`} onClick={() => regenerateVoucher(row.original)}>重新生成</Button>
+          : null}
         <Button size="sm" variant="secondary" onClick={() => postVoucher(row.original)}>过账</Button>
         <Button size="sm" variant="destructive" onClick={() => deleteVoucher(row.original)}>删除</Button>
       </>}

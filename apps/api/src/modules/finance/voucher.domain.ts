@@ -32,6 +32,8 @@ export type VoucherLineDraft = {
   /** 恒为正数的金额字符串（与收支流水同一约定：方向由 direction 决定）。 */
   amount: string;
   currency: string;
+  /** 资金类分录引用的具体银行账户（库存现金与非资金类分录为 null）。 */
+  bank_id?: string | null;
 };
 
 /** 生成凭证时的来源流水（只取用得到的字段，避免与 Prisma 类型耦合）。 */
@@ -48,11 +50,37 @@ export type CashFlowEntryForVoucher = {
   settlementMethod?: string | null;
   settlementAccountLabel?: string | null;
   remark?: string | null;
+  /**
+   * 这笔钱落在哪个银行账户（`cash_flow_entries.bank_id`）。
+   *
+   * 有了它，资金类科目就不再只是一句「银行存款」：科目名仍是银行存款，但分录**引用**这个账户，
+   * 科目名快照写成「银行存款—农业银行5706」，打印出来的凭证自己就说明是哪本账。
+   */
+  bankId?: string | null;
+  bankLabel?: string | null;
 };
 
 /** 资金科目：结算方式或结算账户名里含「现金」→ 库存现金，否则银行存款。 */
 export function fundSubjectFor(hint?: string | null): string {
   return hint && hint.includes("现金") ? FUND_SUBJECT_CASH : FUND_SUBJECT_BANK;
+}
+
+/**
+ * 资金类分录：科目名 + **具体银行账户**。
+ *
+ * 判定顺序（显式引用优先于文本猜测）：
+ *   1. 流水上挂了 `bank_id`（财务在收付款/确认时从银行池里选的账户）→ 银行存款 + 该账户；
+ *   2. 否则按结算方式/结算账户名里有没有「现金」猜 库存现金 / 银行存款（历史数据只有文本）。
+ *
+ * 科目名（`subject_key`）保持「银行存款」不变 —— 它才是会计科目；账户是明细/辅助核算引用
+ * （`bank_id` + 科目名快照），这样「银行存款」仍然能汇总，同时能按账户出明细账。
+ */
+export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "bankId" | "bankLabel" | "settlementMethod" | "settlementAccountLabel">): { subject_key: string; subject_label: string; bank_id: string | null } {
+  const subject = entry.bankId ? FUND_SUBJECT_BANK : fundSubjectFor(entry.settlementAccountLabel ?? entry.settlementMethod);
+  if (subject !== FUND_SUBJECT_BANK) return { subject_key: subject, subject_label: subject, bank_id: null };
+  // 没有账户名快照时退回科目名本身：宁可不写账户，也不要写一个空的「银行存款—」。
+  const account = entry.bankLabel?.trim();
+  return { subject_key: subject, subject_label: account ? `${subject}—${account}` : subject, bank_id: entry.bankId ?? null };
 }
 
 /** 摘要：对方 + 收支项目（+ 备注），并裁剪到 500 字以内（列宽 VARCHAR(500)）。 */
@@ -73,10 +101,9 @@ export function voucherSummaryFor(parts: { counterpartyName: string; itemLabel: 
 export function voucherLinesFor(entry: CashFlowEntryForVoucher): VoucherLineDraft[] {
   const amount = typeof entry.amount === "string" ? entry.amount : entry.amount.toString();
   const income = entry.direction === "income";
-  const fundSubject = fundSubjectFor(entry.settlementAccountLabel ?? entry.settlementMethod);
   const summary = voucherSummaryFor(entry);
   const businessLine = { subject_key: entry.itemKey, subject_label: entry.itemLabel };
-  const fundLine = { subject_key: fundSubject, subject_label: fundSubject };
+  const fundLine = fundLineFor(entry);
   const debit = income ? fundLine : businessLine;
   const credit = income ? businessLine : fundLine;
   return [
@@ -94,7 +121,7 @@ export function voucherPeriodFor(date: Date | string): string {
  * 红字凭证的分录：把原凭证的借/贷**对调**（金额不变）。
  * 红冲是「另开一张反向凭证」而不是删原凭证 —— 已过账的凭证不能消失（保留历史事实）。
  */
-export function reverseLines(source: Array<{ direction: string; subject_key: string; subject_label: string; summary: string; amount: { toString(): string } | string; currency: string }>): VoucherLineDraft[] {
+export function reverseLines(source: Array<{ direction: string; subject_key: string; subject_label: string; summary: string; amount: { toString(): string } | string; currency: string; bank_id?: string | null }>): VoucherLineDraft[] {
   return source.map((line, index) => ({
     line_no: index + 1,
     direction: line.direction === "debit" ? "credit" : "debit",
@@ -103,6 +130,8 @@ export function reverseLines(source: Array<{ direction: string; subject_key: str
     summary: `红冲：${line.summary}`.slice(0, 500),
     amount: typeof line.amount === "string" ? line.amount : line.amount.toString(),
     currency: line.currency,
+    // 银行账户引用照旧带过去：红字凭证同样要指向那张卡，否则银行存款明细账上会凭空少一笔对不上。
+    bank_id: line.bank_id ?? null,
   }));
 }
 

@@ -5,7 +5,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
+import { fundLineFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
 
 /** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」。 */
 const SOURCE_CASH_FLOW = "cash_flow_entry";
@@ -14,7 +14,15 @@ const SOURCE_VOUCHER = "voucher";
 const ENTRY_INCLUDE = {
   item: { select: { id: true, key: true, label: true } },
   settlementAccount: { select: { id: true, key: true, label: true } },
+  // 银行账户：资金类分录要引用具体账户（见 voucher.domain.ts 的 fundLineFor）。
+  bank: { select: { id: true, bankName: true, accountNumber: true, accountName: true } },
 } as const;
+
+/** 银行账户的显示名：与全站一致（银行名 + 账号），凭证纸上要能据此对上银行对账单。 */
+export function bankAccountLabel(bank: { bankName: string; accountNumber: string } | null | undefined): string | null {
+  if (!bank) return null;
+  return `${bank.bankName}${bank.accountNumber}`;
+}
 
 const STATUS_LABELS: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已红冲" };
 
@@ -30,11 +38,11 @@ export type VoucherLineInput = { direction: string; subject_key?: string; subjec
 export class VoucherService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
-  /** 凭证列表（默认全部；可按期间/状态过滤），带分录与来源流水号。 */
+  /** 凭证列表（默认全部；可按期间/状态过滤），带分录（含资金分录引用的银行账户）与来源流水号。 */
   async list(filter: { period?: string; status?: string } = {}) {
     const rows = await this.prisma.voucher.findMany({
       where: { deletedAt: null, ...(filter.period ? { period: filter.period } : {}), ...(filter.status ? { status: filter.status } : {}) },
-      include: { lines: { orderBy: { lineNo: "asc" } } },
+      include: { lines: { orderBy: { lineNo: "asc" }, include: { bank: { select: { id: true, bankName: true, accountNumber: true } } } } },
       orderBy: [{ voucherDate: "desc" }, { voucherNo: "desc" }],
     });
     const entryIds = rows.filter((row) => row.sourceType === SOURCE_CASH_FLOW).map((row) => row.sourceId);
@@ -50,9 +58,9 @@ export class VoucherService {
     }));
   }
 
-  /** 凭证详情：含分录、来源流水、（红冲产生的）被红冲凭证。 */
+  /** 凭证详情：含分录（含银行账户）、来源流水、（红冲产生的）被红冲凭证。 */
   async get(id: string) {
-    const row = await this.prisma.voucher.findFirst({ where: { id, deletedAt: null }, include: { lines: { orderBy: { lineNo: "asc" } } } });
+    const row = await this.prisma.voucher.findFirst({ where: { id, deletedAt: null }, include: { lines: { orderBy: { lineNo: "asc" }, include: { bank: { select: { id: true, bankName: true, accountNumber: true, accountName: true } } } } } });
     if (!row) throw this.notFound("VOUCHER_NOT_FOUND", "凭证不存在");
     const sourceEntry = row.sourceType === SOURCE_CASH_FLOW
       ? await this.prisma.cashFlowEntry.findFirst({ where: { id: row.sourceId }, include: ENTRY_INCLUDE })
@@ -70,6 +78,7 @@ export class VoucherService {
    * 由一条收支流水生成凭证（**幂等**：该流水已有凭证就返回原凭证）。
    *
    * 已冲销的流水不生成凭证 —— 钱没真的动过，生成凭证会污染账目。
+   * 需要「按现在的流水重算」时用 `regenerate`（草稿才允许）。
    */
   async createFromCashFlowEntry(entryId: string, user: CurrentUser) {
     const entry = await this.prisma.cashFlowEntry.findFirst({ where: { id: entryId, deletedAt: null }, include: ENTRY_INCLUDE });
@@ -78,19 +87,7 @@ export class VoucherService {
     const existing = await this.prisma.voucher.findFirst({ where: { sourceType: SOURCE_CASH_FLOW, sourceId: entry.id, deletedAt: null } });
     if (existing) return { ...(await this.get(existing.id)), replayed: true };
 
-    const lines = voucherLinesFor({
-      entryNo: entry.entryNo,
-      entryDate: entry.entryDate,
-      counterpartyName: entry.counterpartyName,
-      direction: entry.direction,
-      amount: entry.amount,
-      currency: entry.currency,
-      itemKey: entry.item?.key ?? "未分类",
-      itemLabel: entry.item?.label ?? "未分类",
-      settlementMethod: entry.settlementMethod,
-      settlementAccountLabel: entry.settlementAccount?.label ?? null,
-      remark: entry.remark,
-    });
+    const draft = this.draftForEntry(entry);
     const amount = new Prisma.Decimal(entry.amount);
     const period = voucherPeriodFor(entry.entryDate);
     const row = await this.prisma.$transaction(async (tx) => {
@@ -105,11 +102,79 @@ export class VoucherService {
           ...this.audit.create(user),
         },
       });
-      await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(created.id, line, entry.id, user)) });
+      await tx.voucherLine.createMany({ data: draft.lines.map((line) => this.lineData(created.id, line, entry.id, user)) });
       return created;
     });
-    await this.audit.record("voucher.create", "voucher", user.id, row.id, { voucher_no: row.voucherNo, source_type: SOURCE_CASH_FLOW, source_id: entry.id, amount: amount.toString() });
+    await this.audit.record("voucher.create", "voucher", user.id, row.id, { voucher_no: row.voucherNo, source_type: SOURCE_CASH_FLOW, source_id: entry.id, amount: amount.toString(), bank_id: draft.bankId });
     return this.get(row.id);
+  }
+
+  /**
+   * **重新生成**草稿凭证：按来源流水**现在的**内容重算整张凭证（摘要/分录/银行账户/金额/期间）。
+   *
+   * 为什么需要：生成之后流水还可能被改（补银行账户、改收支项目、改金额、改备注），
+   * 而生成是幂等的 —— 不重新生成，凭证会一直停在旧口径上（尤其本次新增的「银行存款要带具体账户」，
+   * 老凭证必须重算一次才带得上账户）。
+   *
+   * 边界（都是有意的）：
+   *   - **只对草稿开放**：已过账的凭证是账务事实，只能红冲（`VOUCHER_NOT_REGENERABLE`）。
+   *   - **只对「来源是收支流水」的凭证开放**：红冲凭证的内容由被红冲的凭证决定，重算没有意义。
+   *   - **流水已冲销时拒绝**：钱没真的动过，不能生成/重算凭证（与 `createFromCashFlowEntry` 同一口径）。
+   *   - **覆盖手工改动**：重新生成就是「按流水重来」，所以界面上必须先说清楚（见凭证页的确认弹窗）。
+   */
+  async regenerate(id: string, user: CurrentUser) {
+    const current = await this.prisma.voucher.findFirst({ where: { id, deletedAt: null }, include: { lines: { orderBy: { lineNo: "asc" } } } });
+    if (!current) throw this.notFound("VOUCHER_NOT_FOUND", "凭证不存在");
+    if (current.status !== "draft") throw this.invalid("VOUCHER_NOT_REGENERABLE", "只有草稿凭证可以重新生成；已过账的凭证请先红冲");
+    if (current.sourceType !== SOURCE_CASH_FLOW) throw this.invalid("VOUCHER_NOT_REGENERABLE", "红冲凭证不能重新生成（它的内容由被红冲的凭证决定）");
+    const entry = await this.prisma.cashFlowEntry.findFirst({ where: { id: current.sourceId, deletedAt: null }, include: ENTRY_INCLUDE });
+    if (!entry) throw this.invalid("VOUCHER_SOURCE_MISSING", "来源收支流水已不存在，无法重新生成");
+    if (entry.status !== "posted") throw this.invalid("CASH_FLOW_ENTRY_NOT_VOUCHERABLE", "来源收支流水已冲销，不能重新生成凭证");
+
+    const draft = this.draftForEntry(entry);
+    const amount = new Prisma.Decimal(entry.amount);
+    const period = voucherPeriodFor(entry.entryDate);
+    const summary = voucherSummaryFor({ counterpartyName: entry.counterpartyName, itemLabel: entry.item?.label ?? "未分类", remark: entry.remark });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM vouchers WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.voucher.findFirst({ where: { id, deletedAt: null } });
+      if (!locked || locked.status !== "draft") throw this.invalid("VOUCHER_NOT_REGENERABLE", "凭证已被其他操作处理");
+      await tx.voucherLine.deleteMany({ where: { voucherId: id } });
+      await tx.voucherLine.createMany({ data: draft.lines.map((line) => this.lineData(id, line, entry.id, user)) });
+      return tx.voucher.update({
+        where: { id },
+        data: { voucherDate: entry.entryDate, period, summary, currency: entry.currency, debitTotal: amount, creditTotal: amount, ...this.audit.update(user) },
+      });
+    });
+    await this.audit.record("voucher.regenerate", "voucher", user.id, id, {
+      voucher_no: row.voucherNo,
+      source_id: entry.id,
+      before: { summary: current.summary, debit_total: current.debitTotal.toString(), subjects: current.lines.map((line) => line.subjectLabel) },
+      after: { summary: row.summary, debit_total: row.debitTotal.toString(), subjects: draft.lines.map((line) => line.subject_label) },
+    });
+    return { ...(await this.get(id)), regenerated: true };
+  }
+
+  /** 由一条收支流水算出「草稿内容」（新建与重新生成两处共用，避免两条路径算出不同口径）。 */
+  private draftForEntry(entry: { entryNo: string; entryDate: Date; counterpartyName: string; direction: string; amount: Prisma.Decimal; currency: string; settlementMethod: string | null; remark: string | null; item: { key: string; label: string } | null; settlementAccount: { label: string } | null; bank: { id: string; bankName: string; accountNumber: string } | null }) {
+    const bankLabel = bankAccountLabel(entry.bank);
+    const lines = voucherLinesFor({
+      entryNo: entry.entryNo,
+      entryDate: entry.entryDate,
+      counterpartyName: entry.counterpartyName,
+      direction: entry.direction,
+      amount: entry.amount,
+      currency: entry.currency,
+      itemKey: entry.item?.key ?? "未分类",
+      itemLabel: entry.item?.label ?? "未分类",
+      settlementMethod: entry.settlementMethod,
+      settlementAccountLabel: entry.settlementAccount?.label ?? null,
+      remark: entry.remark,
+      bankId: entry.bank?.id ?? null,
+      bankLabel,
+    });
+    const fund = fundLineFor({ bankId: entry.bank?.id ?? null, bankLabel, settlementMethod: entry.settlementMethod, settlementAccountLabel: entry.settlementAccount?.label ?? null });
+    return { lines, bankId: fund.bank_id };
   }
 
   /**
@@ -134,8 +199,11 @@ export class VoucherService {
       const locked = await tx.voucher.findFirst({ where: { id, deletedAt: null } });
       if (!locked || locked.status !== "draft") throw this.invalid("VOUCHER_NOT_EDITABLE", "凭证已被其他操作处理");
       if (lines) {
+        // 银行账户引用按行号沿用原分录：手工编辑只改科目/金额，不该把「这笔钱在哪张卡上」丢掉
+        // （丢了之后银行存款明细账就对不上银行对账单了）。
+        const bankByLineNo = new Map(current.lines.map((line) => [line.lineNo, line.bankId]));
         await tx.voucherLine.deleteMany({ where: { voucherId: id } });
-        await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(id, line, line.cash_flow_entry_id ?? null, user)) });
+        await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(id, { ...line, bank_id: line.bank_id ?? bankByLineNo.get(line.line_no) ?? null }, line.cash_flow_entry_id ?? null, user)) });
       }
       return tx.voucher.update({
         where: { id },
@@ -193,7 +261,7 @@ export class VoucherService {
       if (!locked || locked.status !== "posted") throw this.invalid("VOUCHER_NOT_REVERSIBLE", "凭证已被其他操作处理");
       const period = locked.period;
       const siblings = await tx.voucher.findMany({ where: { voucherNo: { startsWith: `记-${period}-` } }, select: { voucherNo: true } });
-      const lines = reverseLines(locked.lines.map((line) => ({ direction: line.direction, subject_key: line.subjectKey, subject_label: line.subjectLabel, summary: line.summary, amount: line.amount, currency: line.currency })));
+      const lines = reverseLines(locked.lines.map((line) => ({ direction: line.direction, subject_key: line.subjectKey, subject_label: line.subjectLabel, summary: line.summary, amount: line.amount, currency: line.currency, bank_id: line.bankId })));
       const created = await tx.voucher.create({
         data: {
           voucherNo: nextSequenceCode(`记-${period}-`, siblings.map((item) => item.voucherNo)),
@@ -212,13 +280,14 @@ export class VoucherService {
     return this.get(red.id);
   }
 
-  /** 分录落库形状（新建、编辑、红冲三处共用，避免字段漂移）。 */
+  /** 分录落库形状（新建、编辑、重新生成、红冲四处共用，避免字段漂移）。 */
   private lineData(voucherId: string, line: VoucherLineDraft & { cash_flow_entry_id?: string | null }, entryId: string | null, user: CurrentUser) {
     return {
       voucherId, lineNo: line.line_no, direction: line.direction,
       subjectKey: line.subject_key, subjectLabel: line.subject_label, summary: line.summary,
       amount: new Prisma.Decimal(line.amount), currency: line.currency,
       cashFlowEntryId: line.cash_flow_entry_id ?? entryId,
+      bankId: line.bank_id ?? null,
       ...this.audit.create(user),
     };
   }

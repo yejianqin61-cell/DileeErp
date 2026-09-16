@@ -25,8 +25,11 @@ import { DataTable } from "../data/data-table";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { downloadFile } from "../../lib/download";
+import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { PAYABLE_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type PayableTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
@@ -155,6 +158,15 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const [filter, setFilter] = useState("");
   /** 勾选出来待确认的应付条目 id（「确认应付」页的批量确认用）。 */
   const [selected, setSelected] = useState<string[]>([]);
+  /**
+   * 「确认应付」页的筛选：付款情况 + 确认日期区间（用户要求「已付的条目不要出现在那里」+
+   * 「按已付未付、按时间范围筛选」）。**默认只显示未付**（草稿）—— 这一页是待办清单，
+   * 已经确认过（钱已经出去）的条目默认不在这里，需要时用筛选器切到「已付」或「全部」。
+   */
+  const [payment, setPayment] = useState<LedgerPaymentFilter>("unpaid");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -401,8 +413,27 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     }, "批量确认应付失败") });
   }
 
-  function createOtherPayable() {
-    setDialog({ title: "新建其他应付（非订单支出）", fields: [
+  /**
+   * 导出当前筛选出的应付台账（用户要求「确认应付要支持导出 excel」）。
+   *
+   * 查询串由 `ledgerExportQuery` 统一拼（与后端 `ledger-filter.ts` 同一口径），
+   * 所以**导出的就是所见**：界面上筛出几条，文件里就是几条 —— 不会出现「搜了再导出、导出的是全部」。
+   * 文件名带行数由后端按既有约定给出（`迪礼ERP-应付台账-<时间戳>-<N>行.xlsx`）。
+   */
+  async function exportLedger() {
+    setExporting(true);
+    try {
+      const query = ledgerExportQuery({ payment, from: dateFrom || undefined, to: dateTo || undefined, q: filter });
+      await downloadFile(`/api/v1/finance/payable-entries.xlsx?${query}`, "迪礼ERP-应付台账.xlsx");
+      notifySuccess(`已导出 ${ledgerEntries.length} 条应付`);
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : "导出失败");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function createOtherPayable() {    setDialog({ title: "新建其他应付（非订单支出）", fields: [
       { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions },
       { name: "amount", label: "应付金额", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
@@ -474,6 +505,18 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const filteredInbound = useMemo(() => pendingInbound.filter((item) => match([item.rawMaterialInbound?.inboundNo, item.orderNo, item.purchase_order_no, item.supplier?.name, item.material_name])), [pendingInbound, match]);
   const filteredOutsource = useMemo(() => pendingOutsource.filter((item) => match([item.logisticsBatch?.batchNo, item.orderNo, item.supplier?.name, item.material_name])), [pendingOutsource, match]);
   const filteredEntries = useMemo(() => entries.filter((item) => match([item.payableNo, item.orderNo, item.supplier_name, item.material_name, item.purchase_order_no])), [entries, match]);
+  // 「确认应付」页的取数：关键字 + 确认日期区间 → 付款分档计数 → 当前付款情况。
+  // 计数用「日期与关键字已经筛过、但付款情况还没筛」的那一批：筛选器上的
+  // 「未付（3）/ 已付（5）」才是当前条件下的真实条数（否则切到「已付」会看到另一个口径）。
+  const scopedEntries = useMemo(
+    () => filteredEntries.filter((item) => withinDateRange(item.confirmationDate, dateFrom, dateTo)),
+    [filteredEntries, dateFrom, dateTo],
+  );
+  const paymentTally = useMemo(() => paymentCounts(scopedEntries), [scopedEntries]);
+  const ledgerEntries = useMemo(
+    () => payment === "all" ? scopedEntries : scopedEntries.filter((entry) => paymentBucket(entry.status) === payment),
+    [scopedEntries, payment],
+  );
 
   const pendingSourceCount = pendingInbound.length + pendingOutsource.length;
   const draftEntries = entries.filter(isDraft);
@@ -486,8 +529,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const pendingTotal = pendingEntries.reduce((sum, entry) => sum + Number(entry.amount), 0);
 
   // 勾选只对草稿开放：已确认/冲销的条目没有「再确认一次」这回事。
-  const selectableIds = useMemo(() => filteredEntries.filter(isDraft).map((entry) => entry.id), [filteredEntries]);
-  const selectedDrafts = useMemo(() => entries.filter((entry) => isDraft(entry) && selected.includes(entry.id)), [entries, selected]);
+  // 勾选范围跟着**当前筛选结果**走：被筛选器藏起来的条目不参与全选，也不计入「已选 N 条」。
+  const selectableIds = useMemo(() => ledgerEntries.filter(isDraft).map((entry) => entry.id), [ledgerEntries]);
+  const selectedDrafts = useMemo(() => ledgerEntries.filter((entry) => isDraft(entry) && selected.includes(entry.id)), [ledgerEntries, selected]);
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.includes(id));
   const toggleOne = (id: string) => setSelected((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
   const toggleAll = () => setSelected((ids) => allSelected ? ids.filter((id) => !selectableIds.includes(id)) : [...new Set([...ids, ...selectableIds])]);
@@ -793,14 +837,30 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       </div>
     </section>}
     {!error && activeTab.key === "confirmed" && <section className="panel">
-      <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">共 {filteredEntries.length} 条 · 草稿 {draftEntries.length} 条</span></div>
+      <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">共 {ledgerEntries.length} 条（未付 {paymentTally.unpaid} / 已付 {paymentTally.paid}）</span></div>
       <div className="panel-body">
+        {/* 付款情况默认「未付」：已经确认过（钱已经出去）的条目不再占着待办清单；需要时切到「已付 / 全部」。 */}
+        <div className="filter-bar">
+          <label>付款情况
+            <Select value={payment} onValueChange={(value) => setPayment(value as LedgerPaymentFilter)}>
+              <SelectTrigger data-testid="payable-payment-filter"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unpaid">未付（{paymentTally.unpaid}）</SelectItem>
+                <SelectItem value="paid">已付（{paymentTally.paid}）</SelectItem>
+                <SelectItem value="all">全部（{paymentTally.all}）</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+          <label>确认日期从<Input type="date" data-testid="payable-date-from" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
+          <label>到<Input type="date" data-testid="payable-date-to" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
+          <Button variant="secondary" data-testid="payable-export" disabled={exporting} onClick={() => void exportLedger()}>{exporting ? "导出中…" : "导出 Excel"}</Button>
+        </div>
         <div style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }} data-testid="payable-batch-bar">
           <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
           <span className="panel-note" data-testid="payable-selected-count">已选 {selectedDrafts.length} 条</span>
           <Button size="sm" data-testid="payable-batch-confirm" disabled={!selectedDrafts.length} onClick={batchConfirm}>批量确认（{selectedDrafts.length} 条）</Button>
         </div>
-        <DataTable columns={entryColumns} data={filteredEntries} empty={<EmptyState title="暂无应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
+        <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
       </div>
     </section>}
   </div>;

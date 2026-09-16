@@ -16,7 +16,7 @@ import {
   reportTotalRow,
 } from "./finance-report.tables";
 import type { FinanceReportFilter, ReportTable } from "./finance-report.types";
-import { renderReportWorkbook } from "./finance-report-workbook";
+import { sendWorkbook } from "./finance-report-workbook";
 
 /**
  * 财务对账报表：页面预览（JSON）+ 导出（XLSX）。
@@ -200,13 +200,7 @@ export class FinanceReportController {
     };
   }
 
-  private async send(response: Response, table: ReportTable, label: string) {
-    const body = await renderReportWorkbook([table]);
-    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-    const fileName = `迪礼ERP-${label}-${stamp}-${table.rows.length}行.xlsx`;
-    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
-    response.setHeader("Cache-Control", "no-store");
-    return response.send(body);
+  private send(response: Response, table: ReportTable, label: string) {
+    return sendWorkbook(response, table, label);
   }
 }

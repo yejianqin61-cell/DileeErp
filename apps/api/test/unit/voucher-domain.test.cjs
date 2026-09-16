@@ -5,7 +5,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
-  FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, fundSubjectFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor,
+  FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, fundLineFor, fundSubjectFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor,
 } = require("../../dist/modules/finance/voucher.domain.js");
 
 const entry = (extra = {}) => ({
@@ -87,4 +87,46 @@ test("借贷平衡判定按「分位对齐」做精确比较（不吃浮点误�
   // 生成出来的分录天然平衡
   assert.equal(voucherBalance(voucherLinesFor(entry())).balanced, true);
   assert.throws(() => voucherBalance([{ direction: "debit", amount: "abc" }]), /INVALID_AMOUNT/);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求）：「凭证中的那个会计科目的银行存款，要引用的是具体的银行账户」。
+// 科目名仍是「银行存款」（会计科目要能汇总），账户是明细引用（bank_id）+ 科目名快照（打印出来
+// 的纸质凭证要能自己说明是哪本账）。判定顺序：显式引用（bankId）优先于文本猜测（含「现金」）。
+// ---------------------------------------------------------------------------
+
+test("资金类分录引用具体银行账户：科目名照旧，科目名快照带上账户，分录带 bank_id", () => {
+  const lines = voucherLinesFor(entry({ bankId: "bank-1", bankLabel: "农业银行5706" }));
+  assert.equal(lines[0].subject_key, FUND_SUBJECT_BANK, "会计科目仍是「银行存款」，这样银行存款才能汇总");
+  assert.equal(lines[0].subject_label, "银行存款—农业银行5706", "科目名快照要能自己说明是哪本账");
+  assert.equal(lines[0].bank_id, "bank-1");
+  assert.equal(lines[1].bank_id, undefined, "业务科目（收支项目）不挂银行账户");
+});
+
+test("历史数据（没有银行账户、只有结算方式文本）按「现金」判断，且不写 bank_id", () => {
+  const [bank] = voucherLinesFor(entry({ settlementAccountLabel: "农业银行5706" }));
+  assert.equal(bank.subject_label, FUND_SUBJECT_BANK);
+  assert.equal(bank.bank_id, null, "没有账户引用就是 null，不能编一个");
+  const [cash] = voucherLinesFor(entry({ settlementAccountLabel: "现金日记账" }));
+  assert.equal(cash.subject_label, FUND_SUBJECT_CASH);
+  assert.equal(cash.bank_id, null, "库存现金不是银行账户");
+});
+
+test("挂了银行账户就优先判成银行存款（显式引用优先于文本猜测），即使结算方式里写着「现金」", () => {
+  const line = fundLineFor({ bankId: "bank-1", bankLabel: "农业银行5706", settlementMethod: "现金", settlementAccountLabel: "现金" });
+  assert.equal(line.subject_key, FUND_SUBJECT_BANK);
+  assert.equal(line.bank_id, "bank-1");
+});
+
+test("有账户但拿不到账户名时不写半截科目名（退回「银行存款」而不是「银行存款—」）", () => {
+  const line = fundLineFor({ bankId: "bank-1", bankLabel: "  " });
+  assert.equal(line.subject_label, FUND_SUBJECT_BANK);
+  assert.equal(line.bank_id, "bank-1", "账户引用仍然要保留");
+});
+
+test("红字凭证的分录照旧带银行账户引用（否则银行存款明细账会对不上银行对账单）", () => {
+  const lines = reverseLines([{ direction: "debit", subject_key: FUND_SUBJECT_BANK, subject_label: "银行存款—农业银行5706", summary: "香港迪礼 · 货款", amount: "100.0000", currency: "CNY", bank_id: "bank-1" }]);
+  assert.equal(lines[0].direction, "credit");
+  assert.equal(lines[0].bank_id, "bank-1");
+  assert.equal(lines[0].subject_label, "银行存款—农业银行5706");
 });

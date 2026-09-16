@@ -59,6 +59,12 @@ export class VoucherController {
     return { data: await this.vouchers.update(id, body, user), meta: {} };
   }
 
+  /** 重新生成草稿凭证：按来源流水**现在的**内容重算（摘要/分录/银行账户/金额/期间），会覆盖手工改动。 */
+  @Post(":id/regenerate")
+  async regenerate(@Param("id") id: string, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.vouchers.regenerate(id, user), meta: {} };
+  }
+
   @Post(":id/post")
   async post(@Param("id") id: string, @CurrentUser() user: CurrentUserType) {
     return { data: await this.vouchers.post(id, user), meta: {} };

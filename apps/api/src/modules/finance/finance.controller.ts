@@ -1,5 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
 import { ArrayNotEmpty, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import type { Response } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -12,6 +13,8 @@ import { ReceivableService } from "./receivable.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 import { SupplierPaymentService } from "./supplier-payment.service";
 import { SupplierPayableReconciliationService } from "./supplier-payable-reconciliation.service";
+import { buildPayableLedgerTable, buildReceivableLedgerTable } from "./ledger-workbook";
+import { sendWorkbook } from "./finance-report-workbook";
 
 class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() remark?: string; }
 class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
@@ -120,6 +123,22 @@ class BatchConfirmDto {
   @IsOptional() @IsUUID() cash_flow_item_id?: string | null;
 }
 
+/**
+ * 台账导出的筛选条件（确认应收 / 确认应付共用）。
+ *
+ * `payment` 是「付款情况 / 收款情况」：unpaid=未付未收（草稿）、paid=已付已收（已确认及以后）、
+ * all=全部。口径见 `ledger-filter.ts` —— 界面上没有第二步付款，所以「已付」= 已确认（钱已进出账户）。
+ */
+class LedgerExportDto {
+  @IsOptional() @IsString() order_no?: string;
+  @IsOptional() @IsUUID() supplier_id?: string;
+  @IsOptional() @IsUUID() customer_id?: string;
+  @IsOptional() @IsIn(["unpaid", "paid", "all"]) payment?: "unpaid" | "paid" | "all";
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+}
+
 class SupplierOtherPayableDto {
   @IsUUID() supplier_id!: string;
   @IsString() amount!: string;
@@ -174,6 +193,26 @@ export class FinanceController {
   @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
   @Post("payable-entries/other") async createOtherPayableEntry(@Body() body: SupplierOtherPayableDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createOther(body, user), meta: {} }; }
   @Post("payable-entries/batch-confirm") async batchConfirmPayableEntries(@Body() body: BatchConfirmDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.batchConfirm(body.ids, user, body), meta: {} }; }
+
+  /**
+   * 应付台账导出 xlsx（「确认应付」页的导出）。
+   *
+   * 与预览接口同一套筛选（付款情况 + 时间范围 + 关键字），所以**导出就是所见**：
+   * 界面上筛出什么，文件里就是什么，不会出现「搜了再导出、导出的是全部」。
+   * 路径用 `<资源>.xlsx` 的后缀（与财务报表导出一致）；它不是 `:id` 路由的子路径，不会互相吃掉。
+   */
+  @Get("payable-entries.xlsx")
+  async exportPayableEntries(@Query() query: LedgerExportDto, @Res() response: Response) {
+    const rows = await this.payable.list(query.order_no, query.supplier_id, undefined, { payment: query.payment ?? "all", from: query.from, to: query.to, q: query.q });
+    return sendWorkbook(response, buildPayableLedgerTable(rows), "应付台账");
+  }
+
+  /** 应收台账导出 xlsx（「确认应收」页的导出），口径与上面完全对称。 */
+  @Get("receivable-sources.xlsx")
+  async exportReceivableSources(@Query() query: LedgerExportDto, @Res() response: Response) {
+    const rows = await this.receivable.list(query.order_no, query.customer_id, undefined, { payment: query.payment ?? "all", from: query.from, to: query.to, q: query.q });
+    return sendWorkbook(response, buildReceivableLedgerTable(rows), "应收台账");
+  }
   @Post("payable-entries/:id/confirm") async confirmPayableEntry(@Param("id") id: string, @Body() body: ConfirmSourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.confirm(id, user, body ?? {}), meta: {} }; }
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }
   @Post("payable-entries/:id/reopen") async reopenPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reopen(id, body.reason, user), meta: {} }; }

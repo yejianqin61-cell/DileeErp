@@ -363,6 +363,10 @@ describe("应收管理 · 确认应收", () => {
     const confirmed = panel("确认应收");
     expect(confirmed.getByText("AR-001")).toBeInTheDocument();
     expect(confirmed.getByRole("button", { name: "确认应收" })).toBeInTheDocument();
+    // 已收（已确认，钱已经进账）的条目**默认不出现**在这张待办清单里（用户要求），
+    // 需要时用「收款情况」筛选器切到「已收 / 全部」。
+    expect(confirmed.queryByText("AR-002")).toBeNull();
+    await pickOption("receivable-payment-filter", /已收（1）/);
     expect(confirmed.getByText("AR-002")).toBeInTheDocument();
     expect(confirmed.getByText("已确认")).toBeInTheDocument();
     // 确认即记账：台账行内不再有「登记收款」这第二步（再登记一次收款就是把同一笔款进两次账户）
@@ -513,15 +517,18 @@ describe("应付管理 · 应付对账与确认应付", () => {
     expect(pending.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001）");
   });
 
-  it("确认应付是台账视图：草稿可确认/编辑，已确认可回退", async () => {
+  it("确认应付是台账视图：默认只列未付（草稿），已付要用筛选器切出来", async () => {
     const calls = stubFinance({
       payables: [payableEntry(), payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed", outstanding_amount: "50.0000" })],
     });
     await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
     const table = panel("确认应付");
     expect(table.getByText("AP-001")).toBeInTheDocument();
-    expect(table.getByText("AP-002")).toBeInTheDocument();
     expect(table.getByRole("button", { name: "确认应付" })).toBeInTheDocument();
+    // 已付（已确认，钱已经从账户出去）的条目默认不出现；筛选器上按当前条件给出条数。
+    expect(table.queryByText("AP-002")).toBeNull();
+    await pickOption("payable-payment-filter", /已付（1）/);
+    expect(table.getByText("AP-002")).toBeInTheDocument();
 
     fireEvent.click(table.getByRole("button", { name: "回退" }));
     setValue("action-field-reason", "金额有误");
@@ -877,9 +884,39 @@ describe("凭证管理：从收支流水生成凭证", () => {
     expect(flow.getByText("未生成")).toBeInTheDocument();
     expect(flow.getByRole("button", { name: "查看凭证" })).toBeInTheDocument();
     expect(flow.getByRole("button", { name: "生成凭证" })).toBeInTheDocument();
+    expect(flow.getByTestId("voucher-regenerate-from-entry-voucher-1")).toBeInTheDocument();
     // 界面上不再有「凭证是结构化分录，而不是一张图片」这类说明段（2026-09-16 用户要求删掉全部说明性文字），
     // 产品口径改由 docs/design/accounting-vouchers-2026-09-15.md 承载。
     expect(screen.queryByTestId("voucher-policy-note")).toBeNull();
+  });
+
+  /**
+   * 2026-09-16（用户要求「现在要支持凭证重新生成」）：生成是幂等的，流水后来补了银行账户 / 改了项目
+   * 就得能把凭证按现在的流水重算一遍。只对**草稿**开放（已过账的凭证是账务事实，只能红冲），
+   * 并且弹窗里要先说清「手工改过的分录会被覆盖」。
+   */
+  it("草稿凭证可以按收支流水重新生成：POST /:id/regenerate，弹窗先说明会覆盖手工改动", async () => {
+    const calls = stubFinance(
+      { cashFlowEntries: [flowEntry()], vouchers: [voucher()] },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/vouchers/voucher-1/regenerate")
+        ? apiOk({ ...voucher(), regenerated: true })
+        : voucherDetail(url, call)),
+    );
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(screen.getByTestId("voucher-regenerate-voucher-1"));
+
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText(/手工改过的分录会被覆盖/)).toBeInTheDocument();
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/finance/vouchers/voucher-1/regenerate")).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已按收支流水重新生成"))).toBe(true));
+  });
+
+  it("已过账的凭证不给「重新生成」（只能红冲）", async () => {
+    stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher({ status: "posted" })] }, voucherDetail);
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    expect(screen.queryByTestId("voucher-regenerate-voucher-1")).toBeNull();
+    expect(panel("记账凭证").getByRole("button", { name: "红冲" })).toBeInTheDocument();
   });
 
   it("点「生成凭证」走 POST /finance/vouchers/from-cash-flow/:id，并随即打开凭证纸", async () => {

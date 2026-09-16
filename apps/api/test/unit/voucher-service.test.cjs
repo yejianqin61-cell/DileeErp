@@ -116,6 +116,8 @@ function voucherHarness({ voucher, redLines } = {}) {
 
 const draftVoucher = (extra = {}) => ({
   id: "voucher-1", voucherNo: "记-202609-0001", period: "2026-09", status: "draft", currency: "USD",
+  // 真实凭证总有来源：`cash_flow_entry`（从流水生成）或 `voucher`（红冲）。重新生成只对前者开放。
+  sourceType: "cash_flow_entry", sourceId: "cf-1",
   debitTotal: new Prisma.Decimal("100"), creditTotal: new Prisma.Decimal("100"), summary: "香港迪礼 · 货款", remark: null,
   lines: [
     { lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "s", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1" },
@@ -209,4 +211,104 @@ test("红冲：已红冲的不能再红冲；不填原因不发请求", async ()
   const posted = voucherHarness({ voucher: draftVoucher({ status: "posted" }) });
   await assert.rejects(() => posted.service.reverse("voucher-1", "   ", { id: "user-1" }), (error) => error.getResponse().code === "REVERSAL_REASON_REQUIRED");
   assert.equal(posted.createdVouchers.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求）：
+//   ①「现在要支持凭证重新生成」；
+//   ②「凭证中的会计科目银行存款，要引用具体的银行账户」。
+//   两条是连着的：生成是幂等的，流水后来补了银行账户/改了项目，就得能把凭证按现在的流水重算一遍
+//   —— 老凭证不重算就永远带不上账户。
+// ---------------------------------------------------------------------------
+
+const bankedEntry = (extra = {}) => cashFlowEntry({
+  bank: { id: "bank-1", bankName: "农业银行", accountNumber: "5706" },
+  ...extra,
+});
+
+/** 重新生成的替身：记录分录的删除/重建与凭证头的更新。 */
+function regenerateHarness({ voucher = draftVoucher(), entry = bankedEntry() } = {}) {
+  const deleted = [];
+  const createdLines = [];
+  const updates = [];
+  const tx = {
+    $queryRaw: async () => [],
+    voucher: {
+      findFirst: async () => voucher,
+      update: async ({ data }) => { updates.push(data); return { id: voucher.id, ...data }; },
+    },
+    voucherLine: {
+      deleteMany: async (args) => { deleted.push(args); return { count: voucher.lines.length }; },
+      createMany: async ({ data }) => { createdLines.push(...(Array.isArray(data) ? data : [data])); return { count: 1 }; },
+    },
+  };
+  const prisma = {
+    voucher: { findFirst: async () => voucher },
+    cashFlowEntry: { findFirst: async () => entry },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new VoucherService(prisma, audit());
+  service.get = async (id) => ({ id, ...voucher, lines: createdLines.length ? createdLines.map((line, index) => ({ lineNo: index + 1, ...line })) : voucher.lines });
+  return { service, deleted, createdLines, updates };
+}
+
+test("重新生成草稿凭证：按来源流水现在的科目与银行账户重算分录，并覆盖手工改动", async () => {
+  // 旧凭证是「还没带账户」的那一版（本次改动之前生成的），分录也被人手工改过科目。
+  const stale = draftVoucher({ lines: [
+    { lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "手工改的摘要", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1", bankId: null },
+    { lineNo: 2, direction: "credit", subjectKey: "其他", subjectLabel: "其他", summary: "手工改的摘要", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1", bankId: null },
+  ] });
+  const harness = regenerateHarness({ voucher: stale });
+  const result = await harness.service.regenerate("voucher-1", { id: "user-1" });
+
+  assert.equal(harness.deleted.length, 1, "整组分录重建（重新生成就是按流水重来）");
+  assert.equal(harness.createdLines.length, 2);
+  assert.equal(harness.createdLines[0].subjectLabel, "银行存款—农业银行5706", "银行存款要带上具体账户");
+  assert.equal(harness.createdLines[0].bankId, "bank-1");
+  assert.equal(harness.createdLines[1].subjectLabel, "货款", "手工改过的业务科目被流水上的收支项目覆盖");
+  assert.equal(harness.createdLines[1].bankId, null);
+  // 凭证头也按流水重算（摘要/币种/金额/期间），凭证号不变
+  assert.equal(harness.updates.length, 1);
+  assert.equal(harness.updates[0].summary, "香港迪礼 · 货款");
+  assert.equal(harness.updates[0].debitTotal.toString(), "14310");
+  assert.equal(harness.updates[0].period, "2026-09");
+  assert.equal(result.regenerated, true);
+});
+
+test("重新生成：只对草稿开放 —— 已过账的凭证只能红冲", async () => {
+  const posted = regenerateHarness({ voucher: draftVoucher({ status: "posted" }) });
+  await assert.rejects(
+    () => posted.service.regenerate("voucher-1", { id: "user-1" }),
+    (error) => error.getResponse().code === "VOUCHER_NOT_REGENERABLE",
+  );
+  assert.equal(posted.deleted.length, 0, "被拦下时不能动任何分录");
+});
+
+test("重新生成：红冲凭证不能重新生成（它的内容由被红冲的凭证决定）", async () => {
+  const red = regenerateHarness({ voucher: draftVoucher({ sourceType: "voucher" }) });
+  await assert.rejects(
+    () => red.service.regenerate("voucher-1", { id: "user-1" }),
+    (error) => error.getResponse().code === "VOUCHER_NOT_REGENERABLE",
+  );
+});
+
+test("重新生成：来源流水不存在 / 已冲销时拒绝（钱没真的动过就不能有凭证）", async () => {
+  const missing = regenerateHarness({ entry: null });
+  await assert.rejects(
+    () => missing.service.regenerate("voucher-1", { id: "user-1" }),
+    (error) => error.getResponse().code === "VOUCHER_SOURCE_MISSING",
+  );
+  const reversedFlow = regenerateHarness({ entry: bankedEntry({ status: "reversed" }) });
+  await assert.rejects(
+    () => reversedFlow.service.regenerate("voucher-1", { id: "user-1" }),
+    (error) => error.getResponse().code === "CASH_FLOW_ENTRY_NOT_VOUCHERABLE",
+  );
+});
+
+test("由收支流水生成凭证时就把银行账户写进资金分录", async () => {
+  const { service, lines } = createHarness({ entry: bankedEntry() });
+  await service.createFromCashFlowEntry("cf-1", { id: "user-1" });
+  assert.equal(lines[0].subjectLabel, "银行存款—农业银行5706");
+  assert.equal(lines[0].bankId, "bank-1");
+  assert.equal(lines[1].bankId, null, "业务科目不挂银行账户");
 });

@@ -19,13 +19,31 @@
 //
 // 2026-09-16（用户要求）：确认应付这边不再有「登记付款 → 过账核销」这第二遍流程
 // （确认应付本身就把钱从账户支出去了），改成**勾选 + 批量确认**；两个「待接收」列表里
-// 不再出现已接收的来源。
-import { describe, expect, it } from "vitest";
+// 不再出现已接收的来源。后续又加了两件事：已付的条目默认不出现在确认页（可用「付款情况」切出来），
+// 以及按确认日期区间筛选 + 导出 Excel。
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PayableWorkspace from "../components/finance/payable-workspace";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
+
+/** 下载三件套（与 finance-report-page.test.tsx 同一套）：只关心 URL 与文件名。 */
+let anchorClicks: Array<{ download: string; href: string }> = [];
+function captureDownloads() {
+  anchorClicks = [];
+  Object.assign(URL, {
+    createObjectURL: vi.fn(() => `blob:http://localhost/${anchorClicks.length + 1}`),
+    revokeObjectURL: vi.fn(),
+  });
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+    anchorClicks.push({ download: this.getAttribute("download") ?? "", href: this.getAttribute("href") ?? "" });
+  });
+}
+afterEach(() => {
+  Reflect.deleteProperty(URL, "createObjectURL");
+  Reflect.deleteProperty(URL, "revokeObjectURL");
+});
 
 const EP = {
   sources: "/api/v1/payable-sources",
@@ -502,6 +520,75 @@ describe("应付管理：新建供应商支持自动生成与手动填写编码"
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, EP.suppliers)).toHaveLength(1));
     expect(bodyOf(postsTo(calls, EP.suppliers)[0])).toMatchObject({ code_mode: "manual", supplier_code: "SUP-0099" });
+  });
+});
+
+// ------------------------------------------------------------------ 确认应付的筛选与导出
+
+/**
+ * 用户三条要求：①「如果是已付款的条目就不要出现在确认应付里」；
+ * ②「支持按已付未付筛选」；③「支持按时间范围筛选」；外加「要支持导出 excel」。
+ *
+ * 默认「未付」：这一页是待办清单，已经确认过（钱已经从账户出去）的条目不占位置；
+ * 筛选器上按**当前条件**给出各档条数，切档即可看到被隐藏的行。
+ */
+describe("应付管理：确认应付的付款情况 / 日期筛选与导出", () => {
+  /** 取某个面板（section）的作用域，避免同名文本/按钮跨表歧义。 */
+  const panelOf = (title: string) => {
+    const section = screen.getByRole("heading", { name: title }).closest("section");
+    if (!section) throw new Error(`找不到面板：${title}`);
+    return within(section as HTMLElement);
+  };
+  const confirmedEntry = { ...draftEntry, id: "entry-2", payableNo: "AP-002", status: "confirmed", confirmationDate: "2026-09-20T00:00:00.000Z" };
+
+  it("默认只列未付；筛选器按当前条件给条数，切到「已付 / 全部」才显示已确认的条目", async () => {
+    stubPayable({ entries: [draftEntry, confirmedEntry] });
+    await openPayable("confirmed");
+    const table = panelOf("确认应付");
+    expect(table.getByText("AP-001")).toBeVisible();
+    expect(table.queryByText("AP-002")).toBeNull();
+    expect(screen.getByText("共 1 条（未付 1 / 已付 1）")).toBeVisible();
+
+    await pickOption("payable-payment-filter", /已付（1）/);
+    expect(table.getByText("AP-002")).toBeVisible();
+    expect(table.queryByText("AP-001")).toBeNull();
+
+    await pickOption("payable-payment-filter", /全部（2）/);
+    expect(table.getByText("AP-001")).toBeVisible();
+    expect(table.getByText("AP-002")).toBeVisible();
+  });
+
+  it("按确认日期区间筛选：区间外的条目不出现，且切档计数跟着区间走", async () => {
+    stubPayable({ entries: [draftEntry, { ...draftEntry, id: "entry-3", payableNo: "AP-003", confirmationDate: "2026-10-05T00:00:00.000Z" }] });
+    await openPayable("confirmed");
+    const table = panelOf("确认应付");
+    expect(table.getByText("AP-001")).toBeVisible();
+    expect(table.getByText("AP-003")).toBeVisible();
+
+    setValue("payable-date-from", "2026-09-01");
+    setValue("payable-date-to", "2026-09-30");
+    expect(table.getByText("AP-001")).toBeVisible();
+    expect(table.queryByText("AP-003")).toBeNull();
+    expect(screen.getByText("共 1 条（未付 1 / 已付 0）")).toBeVisible();
+  });
+
+  it("导出 Excel：把当前筛选（付款情况 + 日期区间 + 关键字）原样拼进 xlsx 端点并触发下载", async () => {
+    captureDownloads();
+    const calls = stubPayable({ entries: [draftEntry] });
+    await openPayable("confirmed");
+    setValue("payable-date-from", "2026-09-01");
+    await pickOption("payable-payment-filter", /未付（1）/);
+
+    fireEvent.click(screen.getByTestId("payable-export"));
+    await waitFor(() => expect(calls.filter((call) => call.url.includes("payable-entries.xlsx"))).toHaveLength(1));
+    const url = calls.find((call) => call.url.includes("payable-entries.xlsx"))!.url;
+    expect(url).toContain("/api/v1/finance/payable-entries.xlsx?");
+    expect(url).toContain("payment=unpaid");
+    expect(url).toContain("from=2026-09-01");
+    expect(anchorClicks).toHaveLength(1);
+    // 后端给了 Content-Disposition 之外的兜底名：桩里没有响应头，所以用兜底名
+    expect(anchorClicks[0].download).toBe("迪礼ERP-应付台账.xlsx");
+    await expectToast("已导出 1 条应付");
   });
 });
 
