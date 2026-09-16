@@ -160,6 +160,116 @@ test("逐条确认应付：银行非法时先拒绝，不确认任何应付", as
   assert.deepEqual(cashFlowCalls, []);
 });
 
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求「不要又是登记付款又是确认应付，直接就是支持勾选，批量确认」）：
+//   界面勾选多条草稿应付 → 一次确认。整批共用「支付银行 + 收支项目」，但**每条应付各写一条流水**
+//   （每条都有自己的单号，合并成一条就追不回是哪批料的钱）；已确认/来源作废的条目跳过而非整批失败。
+// ---------------------------------------------------------------------------
+
+const batchDraft = (id, extra = {}) => ({
+  id, payableNo: `AP-${id}`, orderNo: "SO-1", supplierId: "supplier-1",
+  amount: new Prisma.Decimal("100"), currency: "CNY", sourceType: "raw_material_inbound",
+  status: "draft", supplier: { name: "晋江大田" }, payableSource: { status: "received" }, outsourcePayableSource: null, ...extra,
+});
+
+function batchHarness(rows, options = {}) {
+  const cashFlowCalls = [];
+  const writes = [];
+  let locks = 0;
+  const entryTable = {
+    // 替身照做服务端的过滤条件（id 列表 + status = draft），才能断言「已确认的会被跳过」。
+    findMany: async (args) => rows.filter((row) => args.where.id.in.includes(row.id) && row.status === "draft"),
+    updateMany: async ({ where, data }) => {
+      const targets = rows.filter((row) => where.id.in.includes(row.id) && row.status === "draft");
+      writes.push({ ids: where.id.in, data });
+      for (const row of targets) row.status = "confirmed";
+      return { count: options.updateCount ?? targets.length };
+    },
+  };
+  const prisma = {
+    bank: { findFirst: async ({ where }) => (where.id === "bank-dead" ? null : { id: where.id, bankName: "农业银行", accountNumber: "5706" }) },
+    supplierPayableEntry: entryTable,
+  };
+  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => { locks += 1; return []; }, supplierPayableEntry: entryTable });
+  const audit = { update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} };
+  const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: `cf-${cashFlowCalls.length}` }; } });
+  return { service: new SupplierPayableService(prisma, audit, cashFlow), cashFlowCalls, writes, locks: () => locks };
+}
+
+test("勾选批量确认：每条应付各写一条支出流水，并按币种给合计", async () => {
+  const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { amount: new Prisma.Decimal("250") }), batchDraft("p3", { status: "confirmed" })]);
+  const result = await harness.service.batchConfirm(["p1", "p2", "p3"], { id: "user-1" }, { bank_id: "bank-1", cash_flow_item_id: "item-1" });
+  assert.equal(result.confirmed_count, 2);
+  assert.equal(result.skipped_count, 1, "已经被确认过的条目要跳过，不能重复记账（同一笔钱扣两次）");
+  assert.equal(harness.cashFlowCalls.length, 2, "逐条写流水，才追得回是哪批料的钱");
+  assert.deepEqual(harness.cashFlowCalls.map((call) => call.sourceId), ["p1", "p2"]);
+  assert.deepEqual(harness.cashFlowCalls.map((call) => call.amount.toString()), ["100", "250"]);
+  assert.equal(harness.cashFlowCalls.every((call) => call.direction === "expense" && call.bankId === "bank-1" && call.itemId === "item-1"), true);
+  assert.deepEqual(result.amounts, [{ currency: "CNY", amount: "350.0000" }]);
+  assert.equal(result.bank_missing, false);
+  assert.deepEqual(result.cash_flow_entry_ids, ["cf-1", "cf-2"]);
+});
+
+test("勾选批量确认：来源已作废的条目不确认，但也不让整批失败", async () => {
+  const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { payableSource: { status: "voided" } })]);
+  const result = await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
+  assert.equal(result.confirmed_count, 1);
+  assert.equal(result.skipped_count, 1);
+  assert.deepEqual(harness.cashFlowCalls.map((call) => call.sourceId), ["p1"]);
+  assert.deepEqual(harness.writes[0].ids, ["p1"], "作废来源那条不能被写成已确认");
+});
+
+test("勾选批量确认：勾的全是不可确认的条目时拒绝，一条流水都不写", async () => {
+  const harness = batchHarness([batchDraft("p1", { status: "confirmed" })]);
+  await assert.rejects(
+    () => harness.service.batchConfirm(["p1"], { id: "user-1" }),
+    (error) => error.getResponse().code === "NO_DRAFT_PAYABLES",
+  );
+  assert.deepEqual(harness.cashFlowCalls, []);
+  assert.deepEqual(harness.writes, []);
+});
+
+test("勾选批量确认：没有勾选任何条目时直接拒绝", async () => {
+  const harness = batchHarness([]);
+  await assert.rejects(
+    () => harness.service.batchConfirm([], { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYABLE_IDS_REQUIRED",
+  );
+  assert.equal(harness.locks(), 0, "连事务都不该进");
+});
+
+test("勾选批量确认：银行非法时先拒绝，一条都不确认", async () => {
+  const harness = batchHarness([batchDraft("p1")]);
+  await assert.rejects(
+    () => harness.service.batchConfirm(["p1"], { id: "user-1" }, { bank_id: "bank-dead" }),
+    (error) => error.getResponse().code === "BANK_NOT_FOUND",
+  );
+  assert.deepEqual(harness.cashFlowCalls, []);
+  assert.deepEqual(harness.writes, []);
+});
+
+test("勾选批量确认：合计按币种分组，不跨币种相加", async () => {
+  const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { currency: "USD", amount: new Prisma.Decimal("20") })]);
+  const result = await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
+  assert.deepEqual(result.amounts, [{ currency: "CNY", amount: "100.0000" }, { currency: "USD", amount: "20.0000" }]);
+  assert.equal(result.bank_missing, true, "没指定银行时界面必须给出警告，而不是一句成功");
+});
+
+test("勾选批量确认：收支项目候选链按每条自己的来源类型选定", async () => {
+  const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { sourceType: "outsource_receipt", payableSource: null, outsourcePayableSource: { status: "received" } })]);
+  await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
+  assert.deepEqual(harness.cashFlowCalls.map((call) => call.itemKeys), [["原材料 成本", "货款"], ["成品外加工费", "加工费"]]);
+});
+
+test("勾选批量确认：状态被别的入口改动时整批拒绝，不出现「界面说确认了、库里没确认」", async () => {
+  const harness = batchHarness([batchDraft("p1")], { updateCount: 0 });
+  await assert.rejects(
+    () => harness.service.batchConfirm(["p1"], { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYABLE_CONFIRM_CONFLICT",
+  );
+  assert.deepEqual(harness.cashFlowCalls, [], "没写成状态就绝不能记账");
+});
+
 test("supplier payable reversal locks and rechecks active allocations", async () => {
   let lockCount = 0;
   let updateCount = 0;

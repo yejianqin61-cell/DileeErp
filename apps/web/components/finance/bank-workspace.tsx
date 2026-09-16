@@ -21,7 +21,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../layout/app-shell";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
-import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
 import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
@@ -113,7 +113,7 @@ export default function BankWorkspace({ testId = "page-finance-banks" }: { testI
         { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
         // 期初余额 = 移交/建账那一刻这个账户里已有的钱（不是流水算出来的）：老系统的余额要靠它接上，
         // 之后发生的收支与互转才在它之上加减。空值按 0 处理，负数后端会拒（透支户先按 0 建账）。
-        { name: "opening_balance", label: "期初余额", type: "number", defaultValue: "0", placeholder: "建账时账户里已有的钱，默认 0" },
+        { name: "opening_balance", label: "期初余额", type: "number", defaultValue: "0" },
         { name: "swift_code", label: "SWIFT 代码（外币账户用）" },
         { name: "remark", label: "备注", type: "textarea" },
       ],
@@ -130,7 +130,7 @@ export default function BankWorkspace({ testId = "page-finance-banks" }: { testI
         { name: "account_name", label: "账户名称", required: true, defaultValue: bank.accountName },
         { name: "account_number", label: "银行账号", required: true, defaultValue: bank.accountNumber },
         { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, bank.currency), defaultValue: bank.currency },
-        { name: "opening_balance", label: "期初余额", type: "number", defaultValue: bank.openingBalance ?? "0", placeholder: "建账时账户里已有的钱" },
+        { name: "opening_balance", label: "期初余额", type: "number", defaultValue: bank.openingBalance ?? "0" },
         { name: "swift_code", label: "SWIFT 代码（外币账户用）", defaultValue: bank.swiftCode ?? "" },
         { name: "remark", label: "备注", type: "textarea", defaultValue: bank.remark ?? "" },
       ],
@@ -205,18 +205,16 @@ export default function BankWorkspace({ testId = "page-finance-banks" }: { testI
   if (loading) return <div className="page-root" data-testid={testId}><PageHeader title="银行账户" /><LoadingState /></div>;
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="银行账户" description="付款、对账与收款里「支付银行」下拉的来源；停用后不再出现在下拉里。余额 = 期初 + 收入 − 支出 + 转入 − 转出（互转在「银行余额互转」里记）。">
+    <PageHeader title="银行账户">
       <Button variant="secondary" data-testid="bank-refresh" onClick={() => void load()}>刷新</Button>
       <Button data-testid="bank-create" onClick={openCreate}>新建银行账户</Button>
     </PageHeader>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
     <Dialog open={Boolean(pendingDelete)} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
-      <DialogContent data-testid="bank-delete-confirm">
+      <DialogContent data-testid="bank-delete-confirm" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>删除银行账户：{pendingDelete?.bankName} {pendingDelete?.accountNumber}</DialogTitle>
-          <DialogDescription>删除后它不再出现在付款/对账的「支付银行」下拉里；已引用它的付款单与对账单仍会显示这个账户名称。</DialogDescription>
         </DialogHeader>
-        <DialogBody><p className="panel-note">只是暂时不用的话，建议改用「停用」：同样是移出下拉，但保留账户档案、随时可再启用。</p></DialogBody>
         <DialogFooter>
           <Button variant="secondary" onClick={() => setPendingDelete(null)}>取消</Button>
           <Button variant="destructive" data-testid="bank-delete-confirm-submit" onClick={() => pendingDelete && void remove(pendingDelete)}>确认删除</Button>
@@ -227,17 +225,11 @@ export default function BankWorkspace({ testId = "page-finance-banks" }: { testI
     {!error && <>
       <section className="panel panel-body">
         <div className="filter-bar"><label>搜索<Input data-testid="bank-filter" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="银行编码 / 名称 / 账号 / 币种" /></label></div>
-        <p className="panel-note">
-          共 {banks.length} 个账户（启用 {banks.filter((bank) => bank.isActive).length} 个）。
-          「期初余额」是建账/移交时账户里已有的钱，「当前余额」= 期初 + 收入 − 支出 + 转入 − 转出
-          （收入/支出是收支流水里指定了银行账户的条目，转入/转出是「银行余额互转」）。
-          这里维护的是**银行账户主数据**；收支管理里的「结算账户」是老表结算方式的字典项，两者不是同一份数据，
-          自动写入收支流水时按账号做保守匹配。
-        </p>
+        <p className="panel-note">共 {banks.length} 个账户（启用 {banks.filter((bank) => bank.isActive).length} 个）。</p>
       </section>
       <section className="panel">
         <div className="panel-heading"><h2>银行账户池</h2><span className="panel-note">共 {visible.length} 条</span></div>
-        <div className="panel-body"><DataTable columns={columns} data={visible} pageSize={50} empty={<EmptyState title="还没有银行账户" description="新建账户后，它才会出现在应付付款、应付对账的「支付银行」下拉里。" />} /></div>
+        <div className="panel-body"><DataTable columns={columns} data={visible} pageSize={50} empty={<EmptyState title="还没有银行账户" />} /></div>
       </section>
     </>}
   </div>;

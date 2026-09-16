@@ -16,7 +16,7 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
-import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
@@ -141,7 +141,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       { name: "entry_date", label: "日期", type: "date", required: true, defaultValue: entry ? entry.entryDate.slice(0, 10) : today() },
       { name: "counterparty_name", label: "对方名称", type: "text", required: true, defaultValue: entry?.counterpartyName },
       { name: "direction", label: "收支方向", type: "select", required: true, defaultValue: entry?.direction ?? "expense", options: DIRECTIONS.map((item) => ({ value: item.value, label: item.label })) },
-      { name: "amount", label: "金额", type: "number", required: true, defaultValue: entry?.amount, placeholder: "正数；方向由上一条决定" },
+      { name: "amount", label: "金额", type: "number", required: true, defaultValue: entry?.amount, placeholder: "正数" },
       { name: "currency", label: "币种", type: "select", required: true, defaultValue: entry?.currency ?? currencies[0]?.value, options: currencies.map((item) => ({ value: item.value, label: item.label })) },
       { name: "item_id", label: "收支项目", type: "select", required: true, defaultValue: entry?.item?.id, options: activeItems.map((item) => ({ value: item.id, label: item.label })) },
       { name: "settlement_method", label: "结算方式", type: "text", defaultValue: entry?.settlementMethod ?? undefined, placeholder: "如：转账 / 现金" },
@@ -149,7 +149,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       //   结算账户 = 老表「结算方式」字典项（给人看的文本，如「农业银行5706」），不参与任何计算；
       //   银行账户 = 银行账户池（算余额的账），指定后这笔收支才会加减该账户的余额。
       { name: "settlement_account_id", label: "结算账户", type: "select", defaultValue: entry?.settlementAccount?.id, options: accounts.map((item) => ({ value: item.id, label: item.label })) },
-      { name: "bank_id", label: "银行账户（算余额的那一个；不指定则只记账不进账户）", type: "select", options: [{ value: BANK_CLEAR, label: "（不指定银行）" }, ...bankOptions], defaultValue: entry?.bank?.id ?? BANK_CLEAR },
+      { name: "bank_id", label: "银行账户", type: "select", options: [{ value: BANK_CLEAR, label: "（不指定银行）" }, ...bankOptions], defaultValue: entry?.bank?.id ?? BANK_CLEAR },
       { name: "remark", label: "备注", type: "textarea", defaultValue: entry?.remark ?? undefined },
     ];
   }
@@ -278,7 +278,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
   const totalExpense = useMemo(() => entries.filter((entry) => entry.direction === "expense").length, [entries]);
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="收支管理" description="手工录入资金收支流水；收支项目与结算账户是可配置字典，银行账户决定这笔钱落在哪个账户上（影响账户余额）。收付款与工资过账后自动生成流水。">
+    <PageHeader title="收支管理">
       <Button variant="secondary" asChild><a href="/finance">返回财务</a></Button>
       <Button variant="secondary" data-testid="cash-flow-open-dictionary" onClick={() => setDictionaryOpen(true)}>收支项目维护</Button>
       <Button data-testid="cash-flow-create" onClick={openCreate}>新增流水</Button>
@@ -293,17 +293,16 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
     />
 
     <Dialog open={dictionaryOpen} onOpenChange={setDictionaryOpen}>
-      <DialogContent>
+      <DialogContent aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle>收支项目维护</DialogTitle>
-          <DialogDescription>项目清单就是老表的 37 个类目；改名或停用后，收支汇总表会跟着变。写操作仅管理员可用。</DialogDescription>
         </DialogHeader>
         <DialogBody>
           <div className="filter-bar">
             <label>新增项目<Input data-testid="cash-flow-item-new" value={newItemLabel} onChange={(event) => setNewItemLabel(event.target.value)} placeholder="例如：展会物料费" /></label>
             <Button data-testid="cash-flow-item-add" disabled={busy} onClick={() => void addItem()}>新增</Button>
           </div>
-          <DataTable columns={itemColumns} data={items} empty={<EmptyState title="暂无收支项目" description="迁移或 seed 会写入老表的 37 个项目。" />} />
+          <DataTable columns={itemColumns} data={items} empty={<EmptyState title="暂无收支项目" />} />
         </DialogBody>
         <DialogFooter><Button variant="secondary" onClick={() => setDictionaryOpen(false)}>关闭</Button></DialogFooter>
       </DialogContent>
@@ -361,12 +360,8 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       {error && <div className="panel-body"><ErrorState message={error} onRetry={() => void load()} /></div>}
       {!error && loading && <LoadingState />}
       {!error && !loading && <>
-        <p className="panel-note panel-body">
-          金额一律填正数，收/支由「收支方向」决定；来源列「手工录入」为手动新增，「客户收款 / 供应商付款 / 工资付款」为过账自动生成。
-          「结算方式」这一列是老表结算方式的字典文本，「银行账户」才是算余额的账户（收入 +、支出 −）。
-        </p>
         <div className="panel-body">
-          <DataTable columns={columns} data={entries} empty={<EmptyState title="本期没有收支流水" description="点右上角「新增流水」手工录入；收付款过账后自动生成。" />} />
+          <DataTable columns={columns} data={entries} empty={<EmptyState title="本期没有收支流水" />} />
         </div>
       </>}
     </section>

@@ -7,15 +7,19 @@
 //   3. 接收应付与创建对账各自的请求契约与下一步提示。
 //
 // 数据契约（全部来自组件源码）：
-//   GET  /api/v1/payable-sources                                          原料入库应付来源
-//   GET  /api/v1/production/outsource-logistics-batches/payable-sources    外加工签收应付来源
+//   GET  /api/v1/payable-sources                                          原料入库应付来源（只展示待接收的）
+//   GET  /api/v1/production/outsource-logistics-batches/payable-sources    外加工签收应付来源（只展示待接收的）
 //   GET  /api/v1/finance/payable-entries                                  应付条目（草稿/已确认）
-//   GET  /api/v1/finance/supplier-payments                                供应商付款
 //   GET  /api/v1/finance/supplier-payable-reconciliations                 应付对账单（含 flow 摘要）
 //   GET  /api/v1/suppliers | /api/v1/sales-orders | /api/v1/finance/banks  下拉主数据
 //   POST /api/v1/finance/payable-entries/from-source                     接收应付来源 → 应付草稿
+//   POST /api/v1/finance/payable-entries/batch-confirm                   勾选多条草稿一次确认（确认即记账）
 //   POST /api/v1/finance/supplier-payable-reconciliations                 创建应付对账
 //   POST /api/v1/finance/supplier-payable-reconciliations/:id/confirm-payables  对账后批量确认应付
+//
+// 2026-09-16（用户要求）：确认应付这边不再有「登记付款 → 过账核销」这第二遍流程
+// （确认应付本身就把钱从账户支出去了），改成**勾选 + 批量确认**；两个「待接收」列表里
+// 不再出现已接收的来源。
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -27,7 +31,7 @@ const EP = {
   sources: "/api/v1/payable-sources",
   outsource: "/api/v1/production/outsource-logistics-batches/payable-sources",
   entries: "/api/v1/finance/payable-entries",
-  payments: "/api/v1/finance/supplier-payments",
+  batchConfirm: "/api/v1/finance/payable-entries/batch-confirm",
   reconciliations: "/api/v1/finance/supplier-payable-reconciliations",
   suppliers: "/api/v1/suppliers",
   orders: "/api/v1/sales-orders",
@@ -37,7 +41,7 @@ const EP = {
 } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined | Promise<Response | undefined>;
-type Data = Partial<Record<"sources" | "outsource" | "entries" | "payments" | "reconciliations" | "suppliers" | "orders" | "banks" | "cashFlowItems" | "createdEntry", unknown>>;
+type Data = Partial<Record<"sources" | "outsource" | "entries" | "reconciliations" | "suppliers" | "orders" | "banks" | "cashFlowItems" | "createdEntry", unknown>>;
 
 function stubPayable(data: Data = {}, extra?: Handler) {
   return stubApi(async (url, call) => {
@@ -47,14 +51,14 @@ function stubPayable(data: Data = {}, extra?: Handler) {
     if (url.startsWith(EP.sources)) return apiOk(data.sources ?? []);
     // 接收应付：真实后端返回**新建或复用的那张应付条目**（响应体决定提示文案），这里照实回一条。
     if (call.method === "POST" && url.startsWith(`${EP.entries}/from-source`)) return apiOk(data.createdEntry ?? { ...draftEntry, id: "entry-new", payableNo: "AP-NEW" });
+    if (call.method === "POST" && url.startsWith(EP.batchConfirm)) return apiOk({ confirmed_count: 1, skipped_count: 0, amounts: [{ currency: "CNY", amount: "500.0000" }], bank_missing: false });
     if (url.startsWith(EP.entries)) return apiOk(data.entries ?? []);
-    if (url.startsWith(EP.payments)) return apiOk(data.payments ?? []);
     if (url.startsWith(EP.reconciliations)) return call.method === "GET" ? apiOk(data.reconciliations ?? []) : apiOk({ confirmed_count: 2, confirmed_amount: "800.0000", skipped_count: 0 });
     if (url.startsWith(EP.suppliers)) return apiOk(data.suppliers ?? []);
     if (url.startsWith(EP.orders)) return apiOk(data.orders ?? []);
     if (url.startsWith(EP.banks)) return apiOk(data.banks ?? []);
     if (url.startsWith(EP.currencies)) return apiOk([]);
-    // 收支项目字典也要回**数组**：付款页加载时就会拉它，回对象会让 cashFlowItems.filter 直接抛错。
+    // 收支项目字典也要回**数组**：确认页加载时就会拉它，回对象会让 cashFlowItems.filter 直接抛错。
     if (url.startsWith(EP.cashFlowItems)) return apiOk(data.cashFlowItems ?? []);
     return apiOk({});
   });
@@ -106,11 +110,6 @@ const matchedReconciliation = {
   flow: { entry_count: 2, draft_count: 2, draft_amount: "800.0000", can_confirm_payables: true, order_nos: ["SO-1", "SO-2"], purchase_order_nos: ["PO-1"], material_names: ["涤纶布", "拉链"], material_specifications: ["150D", "5#"] },
 };
 const differenceReconciliation = { ...matchedReconciliation, id: "recon-2", reconciliationNo: "APREC-002", status: "difference", difference: "-200.0000", flow: { ...matchedReconciliation.flow, can_confirm_payables: false } };
-const supplierPayment = {
-  id: "sp-1", paymentNo: "PY-001", supplierId: "supplier-1", orderNo: "SO-1", paymentDate: "2026-09-06T00:00:00.000Z",
-  amount: "500.0000", currency: "CNY", paymentMethod: "银行转账", bankReference: null, payeeName: null,
-  status: "draft", remark: null, supplier_name: "晋江大田", allocated_amount: "0.0000", allocations: [], bank: null,
-};
 
 // ------------------------------------------------------------------ 流转看板
 
@@ -122,7 +121,7 @@ describe("应付管理：流转看板", () => {
     expect(flow.getByTestId("payable-flow-receive")).toHaveTextContent("待接收来源 1 条");
     expect(flow.getByTestId("payable-flow-reconcile")).toHaveTextContent("待确认应付草稿 1 条（500.00）");
     expect(flow.getByTestId("payable-flow-confirm")).toHaveTextContent("已对平待确认 2 条");
-    expect(flow.getByTestId("payable-flow-pay")).toHaveTextContent("已确认未付 500.00");
+    expect(flow.getByTestId("payable-flow-pay")).toHaveTextContent("已确认 1 条");
     // 「去对账」「去确认」都指到应付对账子栏目
     expect(within(flow.getByTestId("payable-flow-reconcile")).getByRole("link")).toHaveAttribute("href", "/finance/payable?tab=reconciliations");
     expect(within(flow.getByTestId("payable-flow-pay")).getByRole("link")).toHaveAttribute("href", "/finance/payable?tab=confirmed");
@@ -169,7 +168,7 @@ describe("应付管理：应付对账", () => {
     expect(pending.getByText("AP-001")).toBeVisible();
     expect(pending.queryByText("AP-009")).toBeNull();
     // 被覆盖的那条必须能查到去向（否则用户会以为「点了接收应付没流转过去」）
-    expect(screen.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001，可在对账单行内一键确认）");
+    expect(screen.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001）");
   });
 
   it("已创建对账单用列表的 flow 摘要显示订单号/采购单号/物料/规格型号/待确认条数", async () => {
@@ -264,39 +263,69 @@ describe("应付管理：收支项目与确认应付入账", () => {
     expect(bodyOf(postsTo(calls, EP.reconciliations)[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
   });
 
-  it("登记付款把选中的收支项目随建单 POST 发出去", async () => {
-    const calls = stubPayable({ entries: [confirmedEntry], cashFlowItems: [travelItem] });
+  // 2026-09-16（用户要求「不要又是登记付款又是确认应付，直接就是支持勾选，批量确认」）：
+  //   确认应付这边只保留一条路 —— 勾选若干草稿 → 一次确认。整批共用一个账户与一个项目，
+  //   请求体里带 ids 列表（后端仍逐条写流水）。
+  it("勾选两条草稿 → 批量确认把 ids + 银行 + 收支项目一次发出去，并在确认前显示条数与合计", async () => {
+    const second = { ...draftEntry, id: "entry-2", payableNo: "AP-002", amount: "300.0000" };
+    const calls = stubPayable(
+      { entries: [draftEntry, second], banks: [bank], cashFlowItems: [travelItem] },
+      (url, call) => (call.method === "POST" && url.startsWith(EP.batchConfirm)
+        ? apiOk({ confirmed_count: 2, skipped_count: 0, amounts: [{ currency: "CNY", amount: "800.0000" }], bank_missing: false })
+        : undefined),
+    );
     await openPayable("confirmed");
-    await userEvent.click(screen.getByRole("button", { name: "登记付款" }));
+    // 表头全选把可确认的草稿一次勾上
+    await userEvent.click(screen.getByTestId("payable-select-all"));
+    expect(screen.getByTestId("payable-selected-count")).toHaveTextContent("已选 2 条");
+    await userEvent.click(screen.getByTestId("payable-batch-confirm"));
+
+    const dialog = await screen.findByTestId("action-dialog");
+    // 确认前先看得见「几条、合计多少」（是数据，不是说明文）
+    expect(within(dialog).getByText("确认 2 条草稿应付（合计 800.0000 CNY）")).toBeVisible();
+    await pickOption("action-field-bank_id", /农业银行/);
     await pickOption("action-field-cash_flow_item_id", /差旅费/);
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
-    await waitFor(() => expect(postsTo(calls, EP.payments)).toHaveLength(1));
-    expect(bodyOf(postsTo(calls, EP.payments)[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
+    await waitFor(() => expect(postsTo(calls, EP.batchConfirm)).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toEqual({ ids: ["entry-1", "entry-2"], bank_id: "bank-1", cash_flow_item_id: "item-travel" });
+    await expectToast("已确认 2 条应付（800.0000 CNY）");
   });
 
-  it("编辑付款草稿：默认带出单据上的收支项目（不会清掉），选「不指定收支项目」才送 null", async () => {
-    const calls = stubPayable({ payments: [{ ...supplierPayment, cashFlowItemId: "item-travel" }], cashFlowItems: [travelItem] });
+  it("勾选只对草稿开放：已确认的条目没有勾选框，没勾选时批量确认按钮不可点", async () => {
+    stubPayable({ entries: [draftEntry, confirmedEntry] });
     await openPayable("confirmed");
+    expect(screen.getByTestId("payable-select-entry-1")).toBeInTheDocument();
+    expect(screen.queryByTestId("payable-select-entry-2")).toBeNull();
+    expect(screen.getByTestId("payable-batch-confirm")).toBeDisabled();
 
-    // 只改金额、不动收支项目：PATCH 里仍是单据上原来的项目，没有被抹成 null。
-    await userEvent.click(screen.getByRole("button", { name: "编辑" }));
-    setValue("action-field-amount", "480");
-    fireEvent.click(screen.getByTestId("action-dialog-submit"));
-    await waitFor(() => expect(callsTo(calls, `${EP.payments}/sp-1`)).toHaveLength(1));
-    const first = callsTo(calls, `${EP.payments}/sp-1`)[0];
-    expect(first.method).toBe("PATCH");
-    expect(bodyOf(first).cash_flow_item_id).toBe("item-travel");
+    await userEvent.click(screen.getByTestId("payable-select-all"));
+    expect(screen.getByTestId("payable-selected-count")).toHaveTextContent("已选 1 条");
+    expect(screen.getByTestId("payable-batch-confirm")).toBeEnabled();
+  });
 
-    // 明确清空：哨兵值翻译成 null，后端才按「清空」处理。
-    await userEvent.click(screen.getByRole("button", { name: "编辑" }));
-    await pickOption("action-field-cash_flow_item_id", /不指定收支项目/);
+  it("批量确认：没指定银行时给警告并点名跳过的条数，而不是一句成功", async () => {
+    const calls = stubPayable(
+      { entries: [draftEntry] },
+      (url, call) => (call.method === "POST" && url.startsWith(EP.batchConfirm)
+        ? apiOk({ confirmed_count: 1, skipped_count: 2, amounts: [{ currency: "CNY", amount: "500.0000" }], bank_missing: true })
+        : undefined),
+    );
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByTestId("payable-select-entry-1"));
+    await userEvent.click(screen.getByTestId("payable-batch-confirm"));
+    await screen.findByTestId("action-dialog");
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
-    await waitFor(() => expect(callsTo(calls, `${EP.payments}/sp-1`)).toHaveLength(2));
-    expect(bodyOf(callsTo(calls, `${EP.payments}/sp-1`)[1]).cash_flow_item_id).toBeNull();
+    await waitFor(() => expect(postsTo(calls, EP.batchConfirm)).toHaveLength(1));
+    // 未指定银行时显式送 null（后端按「不指定」处理），而不是不带这个字段
+    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toEqual({ ids: ["entry-1"], bank_id: null });
+
+    await expectToast("未指定支付银行");
+    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("未指定支付银行")) as HTMLElement;
+    expect(warning).toHaveClass("ui-toast-error");
   });
 
   /**
-   * 逐条确认应付（行内按钮）：与「确认 N 条应付」（对账级）同一件事的另一条入口，
+   * 逐条确认应付（行内按钮）：与「勾选批量确认」「确认 N 条应付」（对账级）是同一件事的三条入口，
    * 用户要求「一旦确认应付，金额就要转出对应的账户」——所以同样要收集支付银行 + 收支项目，
    * 并在 `bank_missing` 时给出警告。
    */
@@ -309,7 +338,7 @@ describe("应付管理：收支项目与确认应付入账", () => {
     await userEvent.click(screen.getByRole("button", { name: "确认应付" }));
     const dialog = await screen.findByTestId("action-dialog");
     expect(within(dialog).getByText("确认应付：AP-001")).toBeVisible();
-    expect(within(dialog).getByText(/把该金额记入下面选定的银行账户/)).toBeVisible();
+    expect(within(dialog).getByText("确认应付 AP-001：500.0000 CNY")).toBeVisible();
     await pickOption("action-field-bank_id", /农业银行/);
     await pickOption("action-field-cash_flow_item_id", /差旅费/);
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
@@ -417,19 +446,21 @@ describe("应付管理：接收应付来源", () => {
     await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("该来源此前已接收（AP-001 / 应付草稿），未重复创建；已纳入对账单 APREC-001"))).toBe(true));
   });
 
-  it("来源已生成应付单时不再显示接收按钮，而是显示那张应付单与状态", async () => {
+  it("来源已生成应付单时不再出现在待接收列表里（它已经是应付草稿了）", async () => {
     stubPayable({ sources: [{ ...inboundSource, status: "received", payable_entry: { id: "entry-1", payableNo: "AP-001", status: "confirmed" } }] });
     await openPayable("raw-inbound-entries");
     expect(screen.queryByRole("button", { name: "接收应付" })).toBeNull();
-    expect(screen.getByText("应付单 AP-001（应付已确认）")).toBeVisible();
-    // 已有应付单的来源不计入「待接收来源」
+    expect(screen.queryAllByTestId("data-table-row")).toHaveLength(0);
+    // 计数里点名「已接收 N 条」，不让它不声不响地消失
+    expect(screen.getByText("待接收 0 条 · 已接收 1 条")).toBeVisible();
     expect(within(screen.getByTestId("payable-flow")).getByTestId("payable-flow-receive")).toHaveTextContent("待接收来源 0 条");
   });
 
-  it("历史数据（来源状态仍是 pending_finance 但已有应付单）也不重复提示接收", async () => {
+  it("历史数据（来源状态仍是 pending_finance 但已有应付单）同样不再出现在待接收列表", async () => {
     stubPayable({ sources: [{ ...inboundSource, payable_entry: { id: "entry-1", payableNo: "AP-001", status: "draft" } }] });
     await openPayable("raw-inbound-entries");
     expect(screen.queryByRole("button", { name: "接收应付" })).toBeNull();
+    expect(screen.queryAllByTestId("data-table-row")).toHaveLength(0);
     expect(within(screen.getByTestId("payable-flow")).getByTestId("payable-flow-receive")).toHaveTextContent("待接收来源 0 条");
   });
 });
@@ -437,15 +468,15 @@ describe("应付管理：接收应付来源", () => {
 // ------------------------------------------------------------------ 顺手新建供应商（编码自动/手动）
 
 describe("应付管理：新建供应商支持自动生成与手动填写编码", () => {
-  /** 行内「登记付款」→ 弹窗里供应商字段旁的「新增类目」→ 新建供应商弹窗。 */
+  /** 「创建对账」弹窗里供应商字段旁的「新增类目」→ 新建供应商弹窗。 */
   async function openSupplierDialog() {
-    await userEvent.click(screen.getByRole("button", { name: "登记付款" }));
+    await userEvent.click(screen.getByRole("button", { name: "创建对账" }));
     await userEvent.click(await screen.findByRole("button", { name: "新增类目" }));
   }
 
   it("编码方式默认自动生成：提交带 code_mode=auto 且不带 supplier_code，并回报生成的编码", async () => {
-    const calls = stubPayable({ entries: [confirmedEntry], suppliers: [] }, (url, call) => (call.method === "POST" && url.startsWith(EP.suppliers) ? apiOk({ id: "supplier-9", name: "新供应商", supplierCode: "SUP-0007" }) : undefined));
-    await openPayable("confirmed");
+    const calls = stubPayable({ entries: [draftEntry], suppliers: [] }, (url, call) => (call.method === "POST" && url.startsWith(EP.suppliers) ? apiOk({ id: "supplier-9", name: "新供应商", supplierCode: "SUP-0007" }) : undefined));
+    await openPayable("reconciliations");
     await openSupplierDialog();
     expect(screen.getByTestId("action-field-code_mode")).toHaveTextContent("自动生成");
     setValue("action-field-name", "新供应商");
@@ -458,8 +489,8 @@ describe("应付管理：新建供应商支持自动生成与手动填写编码"
   });
 
   it("手动填写模式必须填编码：留空时本地拦下，不发请求；填了才提交", async () => {
-    const calls = stubPayable({ entries: [confirmedEntry], suppliers: [] });
-    await openPayable("confirmed");
+    const calls = stubPayable({ entries: [draftEntry], suppliers: [] });
+    await openPayable("reconciliations");
     await openSupplierDialog();
     await pickOption("action-field-code_mode", "手动填写");
     setValue("action-field-name", "新供应商");
@@ -471,35 +502,6 @@ describe("应付管理：新建供应商支持自动生成与手动填写编码"
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, EP.suppliers)).toHaveLength(1));
     expect(bodyOf(postsTo(calls, EP.suppliers)[0])).toMatchObject({ code_mode: "manual", supplier_code: "SUP-0099" });
-  });
-});
-
-// ------------------------------------------------------------------ 付款折叠收纳
-
-describe("应付管理：确认应付的「付款」可折叠收纳", () => {
-  it("默认展开；点「收起」隐藏付款表，点「展开」恢复，并把选择记在本机", async () => {
-    window.localStorage.removeItem("dilee:panel:payable-payments");
-    stubPayable({ entries: [confirmedEntry], payments: [supplierPayment] });
-    await openPayable("confirmed");
-
-    const toggle = screen.getByTestId("payable-payments-toggle");
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(toggle).toHaveTextContent("收起");
-    // 付款表与台账都在（付款单号 PY-001 只在付款表里出现）
-    expect(screen.getByText("PY-001")).toBeVisible();
-
-    await userEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(toggle).toHaveTextContent("展开");
-    // 收起时连内容一起隐藏（不是只换个箭头），但应付台账仍在
-    expect(screen.queryByText("PY-001")).toBeNull();
-    expect(screen.getByText("AP-002")).toBeVisible();
-    expect(window.localStorage.getItem("dilee:panel:payable-payments")).toBe("collapsed");
-
-    // 展开回去，避免影响同文件里的其他用例（localStorage 在同一个 jsdom 里是共享的）
-    await userEvent.click(screen.getByTestId("payable-payments-toggle"));
-    expect(screen.getByText("PY-001")).toBeVisible();
-    expect(window.localStorage.getItem("dilee:panel:payable-payments")).toBe("expanded");
   });
 });
 

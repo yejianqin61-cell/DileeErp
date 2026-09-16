@@ -339,7 +339,7 @@ describe("应收管理 · 应收对账", () => {
     const pending = within(screen.getByTestId("receivable-pending-entries"));
     expect(pending.getByText("AR-001")).toBeInTheDocument();
     expect(pending.queryByText("AR-009")).toBeNull();
-    expect(screen.getByTestId("receivable-covered-drafts")).toHaveTextContent("另有 1 条出库条目已纳入对账单、不在此重复对账：AR-009（REC-001，可在对账单行内一键确认）");
+    expect(screen.getByTestId("receivable-covered-drafts")).toHaveTextContent("另有 1 条出库条目已纳入对账单、不在此重复对账：AR-009（REC-001）");
   });
 
   it("双击已创建对账单，弹窗里展示这批货的产品与规格型号", async () => {
@@ -584,13 +584,12 @@ describe("应付管理 · 应付对账与确认应付", () => {
     const pending = panel("待创建对账");
     expect(pending.getByText("AP-001")).toBeInTheDocument();
     expect(pending.queryByText("AP-009")).toBeNull();
-    expect(pending.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001，可在对账单行内一键确认）");
+    expect(pending.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001）");
   });
 
-  it("确认应付是台账视图：草稿可确认/编辑，已确认可付款/回退，付款核销带 allocations", async () => {
+  it("确认应付是台账视图：草稿可确认/编辑，已确认可回退", async () => {
     const calls = stubFinance({
       payables: [payableEntry(), payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed", outstanding_amount: "50.0000" })],
-      supplierPayments: [supplierPayment(), supplierPayment({ id: "sp-2", paymentNo: "PY-002", status: "posted" })],
     });
     await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
     const table = panel("确认应付");
@@ -603,64 +602,27 @@ describe("应付管理 · 应付对账与确认应付", () => {
     submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/pe-2/reopen")).toHaveLength(1));
 
-    fireEvent.click(panel("确认应付").getByRole("button", { name: "登记付款" }));
-    submitDialog();
-    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payments").filter((call) => call.method === "POST")).toHaveLength(1));
-    expect(bodyOf(callsTo(calls, "/api/v1/finance/supplier-payments").filter((call) => call.method === "POST")[0])).toMatchObject({ supplier_id: "supplier-1", amount: "50.0000" });
-    // 付款建单同样必须带幂等键（与收款侧对称）。
-    const payableCreateBody = bodyOf(callsTo(calls, "/api/v1/finance/supplier-payments").filter((call) => call.method === "POST")[0]) as Record<string, unknown>;
-    expect(String(payableCreateBody.idempotency_key)).toMatch(/^web-payment-\d+-[a-z0-9]+$/);
-
-    fireEvent.click(panel("付款").getByRole("button", { name: "过账/核销" }));
-    await pickOption("action-field-entry_id", /AP-002/);
-    submitDialog();
-    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payments/sp-1/post")).toHaveLength(1));
-    const post = bodyOf(callsTo(calls, "/api/v1/finance/supplier-payments/sp-1/post")[0]) as { allocations: Array<{ payable_entry_id: string }> };
-    expect(post.allocations[0].payable_entry_id).toBe("pe-2");
-
-    fireEvent.click(panel("付款").getByRole("button", { name: "冲销" }));
-    setValue("action-field-reason", "重复付款");
-    submitDialog();
-    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payments/sp-2/reverse")).toHaveLength(1));
+    // 确认即记账：台账行内不再有「登记付款」这第二步（再登记一次就是把同一笔钱扣两次）
+    expect(panel("确认应付").queryByRole("button", { name: "登记付款" })).toBeNull();
   });
 
-  it("付款核销的「应付条目」只列同供应商 + 同币种（+ 同订单），不再摆出必然 422 的选项", async () => {
-    stubFinance({
-      payables: [
-        payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed", outstanding_amount: "50.0000" }),                                        // 同供应商/同币种/同订单 → 保留
-        payableEntry({ id: "pe-3", payableNo: "AP-003", supplierId: "supplier-9", status: "confirmed", outstanding_amount: "60.0000" }),               // 别家供应商
-        payableEntry({ id: "pe-4", payableNo: "AP-004", status: "confirmed", currency: "USD", outstanding_amount: "70.0000" }),                        // 别的币种
-        payableEntry({ id: "pe-5", payableNo: "AP-005", orderNo: "SO-9", status: "confirmed", outstanding_amount: "80.0000" }),                        // 别的订单（付款单填了订单号）
-        payableEntry({ id: "pe-6", payableNo: "AP-006", status: "confirmed", outstanding_amount: "0.0000" }),                                          // 已付完
-      ],
-      supplierPayments: [supplierPayment()],
-    });
+  it("勾选批量确认：勾选多条草稿 → 一次 POST batch-confirm（不再需要登记付款）", async () => {
+    const calls = stubFinance(
+      { payables: [payableEntry(), payableEntry({ id: "pe-2", payableNo: "AP-002", amount: "80.0000" })] },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/batch-confirm")
+        ? apiOk({ confirmed_count: 2, skipped_count: 0, amounts: [{ currency: "CNY", amount: "130.0000" }], bank_missing: false })
+        : undefined),
+    );
     await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
-
-    fireEvent.click(panel("付款").getByRole("button", { name: "过账/核销" }));
-    await userEvent.click(screen.getByTestId("action-field-entry_id"));
-    const labels = (await screen.findAllByRole("option")).map((option) => option.textContent ?? "");
-    expect(labels.some((text) => text.includes("AP-002"))).toBe(true);
-    expect(labels.some((text) => text.includes("AP-003"))).toBe(false); // 别家供应商：服务端必拒
-    expect(labels.some((text) => text.includes("AP-004"))).toBe(false); // 别的币种：服务端必拒
-    expect(labels.some((text) => text.includes("AP-005"))).toBe(false); // 别的订单：付款单带订单号时服务端必拒
-    expect(labels.some((text) => text.includes("AP-006"))).toBe(false); // 已付完
-  });
-
-  it("付款过账可以人工指定收支项目（差旅费这类归不进默认候选的项目）", async () => {
-    const calls = stubFinance({
-      payables: [payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed", outstanding_amount: "50.0000" })],
-      supplierPayments: [supplierPayment()],
-      cashFlowItems: [{ id: "item-travel", key: "差旅费", label: "差旅费", isActive: true }],
-    });
-    await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
-
-    fireEvent.click(panel("付款").getByRole("button", { name: "过账/核销" }));
-    await pickOption("action-field-entry_id", /AP-002/);
-    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    fireEvent.click(screen.getByTestId("payable-select-all"));
+    expect(screen.getByTestId("payable-selected-count")).toHaveTextContent("已选 2 条");
+    fireEvent.click(screen.getByTestId("payable-batch-confirm"));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText("确认 2 条草稿应付（合计 130.0000 CNY）")).toBeInTheDocument();
     submitDialog();
-    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payments/sp-1/post")).toHaveLength(1));
-    expect(bodyOf(callsTo(calls, "/api/v1/finance/supplier-payments/sp-1/post")[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/batch-confirm")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/payable-entries/batch-confirm")[0])).toEqual({ ids: ["pe-1", "pe-2"], bank_id: null });
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已确认 2 条应付（130.0000 CNY）"))).toBe(true));
   });
 
   it("应付草稿编辑走 PATCH（用 POST 会 404），逐条确认走 POST", async () => {
@@ -858,7 +820,7 @@ describe("应收管理 · 收支项目与确认应收入账", () => {
     await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
     fireEvent.click(panel("成品出库条目").getByRole("button", { name: "确认应收" }));
     const dialog = await screen.findByTestId("action-dialog");
-    expect(within(dialog).getByText(/把该金额记入下面选定的银行账户/)).toBeInTheDocument();
+    expect(within(dialog).getByText("确认应收 AR-001：120.0000 USD")).toBeInTheDocument();
     await pickOption("action-field-bank_id", /农业银行/);
     await pickOption("action-field-cash_flow_item_id", /差旅费/);
     submitDialog();
@@ -976,22 +938,18 @@ describe("应收管理 · 收支项目与确认应收入账", () => {
 });
 
 describe("应付管理 · 币种与银行", () => {
-  it("编辑付款草稿可改币种与支付银行", async () => {
+  it("确认应付弹窗里的支付银行来自银行池，并把银行随请求发出去", async () => {
     const calls = stubFinance({
-      supplierPayments: [supplierPayment({ bank: { id: "bank-1", bankCode: "B001", bankName: "农业银行", accountName: "迪礼公司", accountNumber: "5706", currency: "CNY", isActive: true, swiftCode: null, remark: null } })],
+      payables: [payableEntry()],
       banks: [bank()],
     });
     await open(<PayableWorkspace tab="confirmed" testId="page-finance-payable" />, "page-finance-payable");
-    expect(panel("付款").getByText("农业银行（5706）")).toBeInTheDocument();
-
-    fireEvent.click(panel("付款").getByRole("button", { name: "编辑" }));
-    await pickOption("action-field-currency", /USD/);
+    fireEvent.click(panel("确认应付").getByRole("button", { name: "确认应付" }));
     await pickOption("action-field-bank_id", /农业银行/);
     submitDialog();
-    await waitFor(() => expect(callsTo(calls, `${EP.supplierPayments}/sp-1`)).toHaveLength(1));
-    const patch = callsTo(calls, `${EP.supplierPayments}/sp-1`)[0];
-    expect(patch.method).toBe("PATCH");
-    expect(bodyOf(patch)).toMatchObject({ currency: "USD", bank_id: "bank-1" });
+    await waitFor(() => expect(callsTo(calls, `${EP.payables}/pe-1/confirm`)).toHaveLength(1));
+    expect(callsTo(calls, `${EP.payables}/pe-1/confirm`)[0].method).toBe("POST");
+    expect(bodyOf(callsTo(calls, `${EP.payables}/pe-1/confirm`)[0])).toMatchObject({ bank_id: "bank-1" });
   });
 
   it("编辑应付草稿可改币种", async () => {
@@ -1055,8 +1013,9 @@ describe("凭证管理：从收支流水生成凭证", () => {
     expect(flow.getByText("未生成")).toBeInTheDocument();
     expect(flow.getByRole("button", { name: "查看凭证" })).toBeInTheDocument();
     expect(flow.getByRole("button", { name: "生成凭证" })).toBeInTheDocument();
-    // 明确写出「不做图片」的产品口径，避免下一个人又去接无头浏览器
-    expect(screen.getByTestId("voucher-policy-note")).toHaveTextContent("凭证是结构化分录，而不是一张图片");
+    // 界面上不再有「凭证是结构化分录，而不是一张图片」这类说明段（2026-09-16 用户要求删掉全部说明性文字），
+    // 产品口径改由 docs/design/accounting-vouchers-2026-09-15.md 承载。
+    expect(screen.queryByTestId("voucher-policy-note")).toBeNull();
   });
 
   it("点「生成凭证」走 POST /finance/vouchers/from-cash-flow/:id，并随即打开凭证纸", async () => {

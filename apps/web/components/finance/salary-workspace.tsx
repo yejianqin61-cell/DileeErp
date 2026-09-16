@@ -171,7 +171,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
    * （要有清空出口），而这里发工资必须从银行账户发放（用户 2026-09-16），留空只会撞后端 422
    * `SALARY_PAYMENT_BANK_REQUIRED`。银行池为空时不是摆一个空选项糊过去，而是把入口禁用（见 payActions）。
    */
-  const bankField = (label: string): ActionField => ({ name: "bank_id", label: `${label}（账户在「财务 → 银行账户」里维护）`, type: "select", required: true, options: bankOptions, placeholder: "请选择发放银行" });
+  const bankField = (label: string): ActionField => ({ name: "bank_id", label, type: "select", required: true, options: bankOptions, placeholder: "请选择发放银行" });
 
   useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
   // 部门/岗位是静态主数据，只在挂载时拉一次；岗位按所选部门收窄。
@@ -289,7 +289,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         { name: "period_start", label: "周期开始", type: "date", required: true, defaultValue: month ? `${month}-01` : "" },
         { name: "period_end", label: "周期结束", type: "date", required: true, defaultValue: month ? new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10) : "" },
         { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
-        { name: "base_salary", label: "基本工资（车间工人由生产日报自动汇总，不要在此填写）", type: "number", defaultValue: "0" },
+        { name: "base_salary", label: "基本工资", type: "number", defaultValue: "0" },
         { name: "performance_amount", label: "绩效", type: "number", defaultValue: "0" },
         { name: "housing_allowance", label: "房补", type: "number", defaultValue: "0" },
         { name: "late_deduction", label: "迟到扣款", type: "number", defaultValue: "0" },
@@ -315,7 +315,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         { name: "period_start", label: "周期开始", type: "date", required: true, defaultValue: ledger.periodStart.slice(0, 10) },
         { name: "period_end", label: "周期结束", type: "date", required: true, defaultValue: ledger.periodEnd.slice(0, 10) },
         { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, ledger.currency), defaultValue: ledger.currency },
-        { name: "base_salary", label: "基本工资（车间工人由生产日报自动汇总）", type: "number", defaultValue: ledger.baseSalary },
+        { name: "base_salary", label: "基本工资", type: "number", defaultValue: ledger.baseSalary },
         { name: "performance_amount", label: "绩效", type: "number", defaultValue: ledger.performanceAmount },
         { name: "housing_allowance", label: "房补", type: "number", defaultValue: ledger.housingAllowance },
         { name: "late_deduction", label: "迟到扣款", type: "number", defaultValue: ledger.lateDeduction },
@@ -358,7 +358,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     setDialog({
       title: `工资付款：${ledger.employee.employeeNo} / ${ledger.employee.name}`,
       fields: [
-        { name: "pay_summary", label: `将向 ${ledger.employee.name} 发放 ${value}（${paymentDate} · ${paymentMethod}），一次完成：生成工资应付 → 建付款单 → 核销过账，并从下面选定的银行账户支出。`, type: "info" },
+        { name: "pay_summary", label: `将向 ${ledger.employee.name} 发放 ${value}（${paymentDate} · ${paymentMethod}）`, type: "info" },
         bankField("发放银行"),
       ],
       submit: (values) => payLedgerRow(ledger, value, values.bank_id),
@@ -551,9 +551,6 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     { label: "备注", value: detail.remark, wide: true },
   ] : [];
   const snapshot = detail?.sourceSnapshot ?? [];
-  const snapshotDays = new Set(snapshot.map((line) => line.report_date ?? "")).size;
-  const snapshotOrders = new Set(snapshot.map((line) => line.order_no ?? "")).size;
-  const snapshotOperations = new Set(snapshot.map((line) => `${line.order_no ?? ""}|${line.operation_name ?? ""}`)).size;
   const snapshotReports = snapshot.reduce((sum, line) => sum + (line.report_count ?? 1), 0);
 
   if (loading) return <div className="page-root page-floating" data-testid={importing ? "salary-importing" : undefined}>
@@ -570,7 +567,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     <div className="floating-window" data-testid="salary-floating-window">
     <header className="floating-window-toolbar">
       <h1 className="floating-window-title">{mode === "ledger" ? "工资台账" : "工资付款"}</h1>
-      <span className="panel-note floating-window-meta">{month} · 币种 人民币（CNY） · 共 {visibleLedgers.length} 条{mode === "ledger" ? "（逐格可改，车间「基本工资」只读）" : "（本表＝当月台账只留总工资）"}</span>
+      <span className="panel-note floating-window-meta">{month} · 币种 人民币（CNY） · 共 {visibleLedgers.length} 条</span>
       <span className="panel-note floating-window-meta" data-testid="salary-import-summary">
         {importing ? "正在导入本月员工…" : importError ? `本月导入失败：${importError}` : importResult
           ? `本月在册 ${importResult.candidates} 人：新建 ${importResult.created} 条、已有 ${importResult.existing} 条、不在职 ${importResult.not_employed} 人、涉及生产日报 ${importResult.report_count} 条。`
@@ -588,17 +585,15 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
       open={Boolean(detail)}
       onOpenChange={(open) => { if (!open) setDetail(null); }}
       title={`工资台账 ${detail?.ledgerNo ?? ""}`}
-      description="双击台账行打开的详情：展示全部类目金额与来源/核销明细。"
       fields={detailFields}
       sections={detail ? [
         {
           title: `生产日报来源（${snapshot.length} 行 / ${snapshotReports} 条日报）`,
-          note: `逐「日期 × 生产单 × 工序 × 计薪方式」列出，覆盖 ${snapshotDays} 天 / ${snapshotOrders} 张生产单 / ${snapshotOperations} 道工序；仅车间员工的日报自动汇总到这里，其他类目为人工填写。`,
           content: snapshot.length
             ? <DataTable pageSize={10} columns={[{ accessorKey: "report_date", header: "日期" }, { accessorKey: "order_no", header: "订单号" }, { accessorKey: "operation_name", header: "工序" }, { accessorKey: "wage_mode", header: "计薪方式" }, { id: "report_count", header: "日报条数", cell: ({ row }) => String(row.original.report_count ?? 1) }, { accessorKey: "quantity", header: "件数" }, { accessorKey: "duration_hours", header: "时长（小时）" }, { accessorKey: "amount", header: "金额" }] as ColumnDef<SnapshotLine>[]} data={snapshot} />
-            : <p className="panel-note">没有自动生产来源（非车间员工或该期间无日报）</p>,
+            : <p className="panel-note">没有自动生产来源</p>,
         },
-        { title: `工资调整（${detail.adjustments?.length ?? 0} 条）`, note: "只有已过账的调整参与应发计算。", content: detail.adjustments?.length
+        { title: `工资调整（${detail.adjustments?.length ?? 0} 条）`, content: detail.adjustments?.length
           ? <DataTable pageSize={10} columns={[{ accessorKey: "adjustmentNo", header: "调整单号" }, { accessorKey: "adjustmentType", header: "类型" }, { id: "effect", header: "方向", cell: ({ row }) => row.original.effect === "increase" ? "增加" : "减少" }, { accessorKey: "amount", header: "金额" }, { accessorKey: "reason", header: "原因" }, { accessorKey: "status", header: "状态" }] as ColumnDef<NonNullable<Ledger["adjustments"]>[number]>[]} data={detail.adjustments} /> : <p className="panel-note">暂无调整记录</p> },
         { title: `工资付款核销（${detail.allocations?.length ?? 0} 条）`, content: detail.allocations?.length
           ? <DataTable pageSize={10} columns={[{ id: "payment", header: "付款单号", cell: ({ row }) => row.original.payment?.paymentNo ?? "-" }, { id: "date", header: "付款日期", cell: ({ row }) => day(row.original.payment?.paymentDate) }, { id: "status", header: "状态", cell: ({ row }) => row.original.payment?.status ?? "-" }, { id: "bank", header: "发放银行", cell: ({ row }) => bankLabel(allocationBank(row.original)) }, { accessorKey: "amount", header: "核销金额" }] as ColumnDef<NonNullable<Ledger["allocations"]>[number]>[]} data={detail.allocations} /> : <p className="panel-note">暂无工资付款核销</p> },
@@ -607,8 +602,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     />
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
     {!error && <>
-      {/* 筛选条留在表格上方一行；原来的两段说明挪到 title（满屏页不能靠文字占掉半屏）。 */}
-      <div className="filter-bar floating-window-filters" title="月份、部门、岗位由服务端筛选（切部门会自动清空岗位）；员工姓名/工号是本地过滤。已付/未付按有效已过账的工资付款实时计算。">
+      <div className="filter-bar floating-window-filters">
         <label>月份<Input data-testid="salary-month-filter" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
         <label>部门
           <Select value={departmentId || "__all"} onValueChange={(value) => { setDepartmentId(value === "__all" ? "" : value); setPositionId(""); }}>
@@ -630,18 +624,16 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         </> : null}
       </div>
       {mode === "ledger" ? <section className="panel floating-window-table" data-testid="salary-ledger-panel">
-        <div className="panel-heading"><h2>工资台账</h2><span className="panel-note">共 {visibleLedgers.length} 条；逐格可改，「基本工资」对车间工人只读</span></div>
+        <div className="panel-heading"><h2>工资台账</h2><span className="panel-note">共 {visibleLedgers.length} 条</span></div>
         <div className="panel-body"><PayrollSheet columns={sheetColumns} rows={visibleLedgers} onCommit={commitCell} rowTestId={(row) => `payroll-row-${row.id}`} /></div>
       </section> : null}
       {mode === "payments" ? <section className="panel floating-window-table" data-testid="salary-payment-panel">
-        <div className="panel-heading"><h2>工资付款</h2><span className="panel-note">共 {visibleLedgers.length} 条；本表＝当月工资台账只留「总工资」</span></div>
+        <div className="panel-heading"><h2>工资付款</h2><span className="panel-note">共 {visibleLedgers.length} 条</span></div>
         <div className="panel-body">
           <PayrollSheet
             columns={paymentColumns}
             rows={visibleLedgers}
             rowTestId={(row) => `payroll-pay-row-${row.id}`}
-            hint={<span>付款金额默认等于该行未付，改完点「付款」即可（一次完成：生成工资应付 → 建付款单 → 核销过账）。「付款」弹窗里必须选定「发放银行」（发工资都从银行账户发放，账户在【财务 → 银行账户】维护）；已付过的行可「冲销」把该台账下的付款整体回退（需填原因）。付款日期与方式在上方统一设置。</span>}
-            empty={<p className="panel-note" data-testid="salary-payment-empty">本月没有工资台账，无法付款：请先到「工资台账」页导入并确认本月台账。</p>}
           />
         </div>
       </section> : null}

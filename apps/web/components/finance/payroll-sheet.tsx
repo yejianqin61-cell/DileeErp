@@ -49,15 +49,13 @@ function sumDecimal(values: string[]): string {
   return (scaled / 10000).toFixed(4);
 }
 
-export function PayrollSheet<T extends { id: string }>({ columns, rows, onCommit, rowTestId, totalLabel = "合计（当前筛选结果）", hint, empty }: {
+export function PayrollSheet<T extends { id: string }>({ columns, rows, onCommit, rowTestId, totalLabel = "合计（当前筛选结果）", empty }: {
   columns: PayrollSheetColumn<T>[];
   rows: T[];
   /** 有可编辑列时必须提供；全只读表格（如工资付款）不需要。 */
   onCommit?: (row: T, key: string, value: string) => Promise<void>;
   rowTestId?: (row: T) => string;
   totalLabel?: string;
-  /** 表头上方的说明文案；不给时按「有没有可编辑列」给默认文案。 */
-  hint?: ReactNode;
   /** 空态；不给时用工资台账的默认空态。 */
   empty?: ReactNode;
 }) {
@@ -79,9 +77,8 @@ export function PayrollSheet<T extends { id: string }>({ columns, rows, onCommit
 
   const navigable = useMemo(() => columns.filter((column) => !column.render), [columns]);
   const totalColumns = useMemo(() => columns.filter((column) => column.total && !column.render), [columns]);
-  const editableColumns = useMemo(() => columns.some((column) => column.edit), [columns]);
 
-  if (!rows.length) return <>{empty ?? <EmptyState title="本月暂无工资台账" description="选择月份后会自动导入全部员工；如果刚导入还没有数据，点「刷新」重试。" />}</>;
+  if (!rows.length) return <>{empty ?? <EmptyState title="本月暂无工资台账" />}</>;
 
   function selectCell(next: { rowId: string; key: string }) {
     activeRef.current = next;
@@ -170,11 +167,6 @@ export function PayrollSheet<T extends { id: string }>({ columns, rows, onCommit
   }
 
   return <div className="payroll-sheet">
-    <p className="panel-note payroll-sheet-note" data-testid="payroll-sheet-hint">
-      {hint ?? (editableColumns
-        ? "单击单元格即可修改（Enter 保存、Esc 取消、Tab 右移、方向键换格）；清空金额 = 0。车间工人的「基本工资」由生产日报自动汇总，是唯一不可改的金额格；已确认/已付款台账请先用「回到草稿」或用工资调整单。"
-        : "本表只读；操作请在每行的操作列里完成。")}
-    </p>
     {failure ? <p className="panel-note payroll-sheet-error" role="alert" data-testid="payroll-sheet-error">保存失败：{failure.message}</p> : null}
     <div className="table-wrap payroll-sheet-scroll" tabIndex={0} role="grid" aria-label="工资台账表格" data-testid="payroll-sheet">
       <table className="ui-table payroll-sheet-table">
@@ -230,6 +222,6 @@ export function PayrollSheet<T extends { id: string }>({ columns, rows, onCommit
         </tfoot> : null}
       </table>
     </div>
-    <p className="panel-note" data-testid="payroll-sheet-count">共 {rows.length} 条；合计行是当前筛选结果的显示值，权威金额以「应发/已付/未付」为准。</p>
+    <p className="panel-note" data-testid="payroll-sheet-count">共 {rows.length} 条</p>
   </div>;
 }

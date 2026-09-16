@@ -13,11 +13,10 @@ import { FINANCE_BOARDS } from "../../lib/finance-sections";
 
 export default function FinanceBoardIndex({ testId = "page-finance" }: { testId?: string }) {
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="财务" description="应收管理、应付管理、薪资台账、财务报表、凭证管理。点击板块进入二级页面。" />
+    <PageHeader title="财务" />
     <div className="board-grid" data-testid="finance-board-grid">
       {FINANCE_BOARDS.map((board) => <Link key={board.key} href={`/finance/${board.key}`} className="board-card" data-testid={`finance-board-${board.key}`}>
         <h2>{board.title}</h2>
-        <p>{board.description}</p>
         <span className="board-enter">进入 →</span>
       </Link>)}
     </div>

@@ -171,7 +171,7 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
         { name: "to_bank_id", label: "对方账户", type: "select", required: true, options: bankOptions, placeholder: "选择转入账户" },
         { name: "to_currency", label: "对方币种", type: "select", required: true, options: currencySelectOptions, defaultValue: activeBanks[1]?.currency ?? activeBanks[0]?.currency },
         { name: "from_amount", label: "本方金额", type: "number", required: true, placeholder: "正数" },
-        { name: "to_amount", label: "对方金额（两种币种不同时必填；相同时留空，按本方金额入账）", type: "number" },
+        { name: "to_amount", label: "对方金额（两种币种不同时必填）", type: "number" },
         { name: "transfer_date", label: "互转日期", type: "date", required: true, defaultValue: today() },
         { name: "remark", label: "备注", type: "textarea", placeholder: "例如：月末资金归集" },
       ],
@@ -246,7 +246,7 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
   if (loading) return <div className="page-root" data-testid={testId}><PageHeader title="银行余额互转" /><LoadingState /></div>;
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="银行余额互转" description="同一银行池里两个账户之间的划转（本方账户/币种 → 对方账户/币种）。互转不计入收支流水，只影响账户余额：转出方 −、转入方 +。">
+    <PageHeader title="银行余额互转">
       <Button variant="secondary" data-testid="bank-transfer-refresh" onClick={() => void load()}>刷新</Button>
       <Button data-testid="bank-transfer-create" onClick={openCreate}>新建互转</Button>
     </PageHeader>
@@ -278,20 +278,16 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
       </section>
 
       <section className="panel" data-testid="bank-transfer-balances">
-        <div className="panel-heading"><h2>本方账户余额</h2><span className="panel-note">余额 = 期初 + 收入 − 支出 + 转入 − 转出{inactiveCount > 0 ? `；另有 ${inactiveCount} 个已停用账户不参与互转（余额见「财务 → 银行账户」）` : ""}</span></div>
+        <div className="panel-heading"><h2>本方账户余额</h2>{inactiveCount > 0 ? <span className="panel-note">另有 {inactiveCount} 个已停用账户不参与互转</span> : null}</div>
         <div className="panel-body">
-          <DataTable columns={balanceColumns} data={activeBanks} pageSize={50} empty={<EmptyState title="没有可用的银行账户" description="先在「财务 → 银行账户」里新建并启用账户，才能互转。" />} />
+          <DataTable columns={balanceColumns} data={activeBanks} pageSize={50} empty={<EmptyState title="没有可用的银行账户" />} />
         </div>
       </section>
 
       <section className="panel" data-testid="bank-transfer-list">
         <div className="panel-heading"><h2>互转记录</h2><span className="panel-note" data-testid="bank-transfer-count">共 {transfers.length} 条</span></div>
-        <p className="panel-note panel-body">
-          同币种互转两边金额相等（对方金额可留空，按本方金额入账）；跨币种必须填「对方金额」＝实际到账数，汇率由系统按两边金额算出。
-          冲销保留整行、只是不再计入余额，原因必须填。
-        </p>
         <div className="panel-body">
-          <DataTable columns={columns} data={transfers} pageSize={50} empty={<EmptyState title="还没有互转记录" description="点右上角「新建互转」在银行池的两个账户之间划转资金。" />} />
+          <DataTable columns={columns} data={transfers} pageSize={50} empty={<EmptyState title="还没有互转记录" />} />
         </div>
       </section>
     </>}

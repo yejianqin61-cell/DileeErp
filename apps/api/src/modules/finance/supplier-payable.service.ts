@@ -171,6 +171,73 @@ export class SupplierPayableService {
   }
 
   /**
+   * 批量确认应付 —— 界面「确认应付」页勾选多条 → 一次确认（用户要求「直接就是支持勾选，批量确认」）。
+   *
+   * 为什么需要：一笔应付 = **一个来源批次**，一批料分几次入库就是几条应付；逐条确认意味着
+   * 同一批料要开 N 次弹窗、把银行账户填 N 遍。批量确认把「钱从哪个账户出、归哪个项目」
+   * **只问一次**，记账仍然**每条应付写一条流水**（与 `ReceivableService.batchConfirmByOrder` 同一口径）
+   * —— 每条应付都有自己的单号，合并成一条流水就再也追不回是哪批料的钱。
+   *
+   * 幂等：只确认 `status = draft` 的条目。被另一个入口先确认掉的、来源已作废的计入 `skipped_count`，
+   * 既不报错也不重复记账（重复记账＝同一个账户被扣两次）。
+   */
+  async batchConfirm(ids: string[], user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+    if (!ids.length) throw this.invalid("PAYABLE_IDS_REQUIRED", "请先勾选要确认的应付条目");
+    // 银行与项目整批只有一个，先校验一次即可（逐条确认里那句「先校验后进事务」在这里同样成立）。
+    if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "支付银行不存在或已停用");
+    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 逐条加锁：批量确认不需要「一次锁住全部」的强一致，但每条都要保证「读到草稿 → 改成已确认」
+      // 之间不被另一个入口插进来（单条确认、对账确认用的是同一把行锁，因此互相串行）。
+      for (const id of ids) await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
+      const drafts = await tx.supplierPayableEntry.findMany({
+        where: { id: { in: ids }, deletedAt: null, status: "draft" },
+        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, supplierId: true, supplier: { select: { name: true } }, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
+      });
+      // 来源已作废的不能确认（与逐条确认同一条校验）；但它不该让整批失败 —— 跳过并如实回报条数。
+      const confirmable = drafts.filter((draft) => draft.payableSource?.status !== "voided" && draft.outsourcePayableSource?.status !== "voided");
+      if (!confirmable.length) throw this.invalid("NO_DRAFT_PAYABLES", "勾选的条目里没有可确认的草稿应付");
+      const updated = await tx.supplierPayableEntry.updateMany({
+        where: { id: { in: confirmable.map((draft) => draft.id) }, deletedAt: null, status: "draft" },
+        data: { status: "confirmed", ...this.audit.update(user) },
+      });
+      // 行锁之下不可能少改：真少了说明有人绕过锁改了状态，宁可整批回滚也不要「界面说确认了、库里没确认」。
+      if (updated.count !== confirmable.length) throw this.invalid("PAYABLE_CONFIRM_CONFLICT", "勾选的应付已被其他操作改动，请刷新后重试");
+      return { confirmable, skipped: ids.length - confirmable.length };
+    });
+    const cashFlowEntryIds: string[] = [];
+    const totals = new Map<string, Prisma.Decimal>();
+    for (const draft of result.confirmable) {
+      await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", draft.orderNo ?? "", user.id, draft.id, { payable_no: draft.payableNo, batch: true });
+      const entry = await this.cashFlow.recordConfirmation({
+        sourceType: "supplier_payable_entry",
+        sourceId: draft.id,
+        documentNo: draft.payableNo,
+        entryDate: this.today(),
+        amount: draft.amount,
+        currency: draft.currency,
+        counterpartyName: draft.supplier?.name ?? draft.supplierId,
+        direction: "expense",
+        itemKeys: draft.sourceType ? paymentItemKeys(draft.sourceType) : PAYABLE_CONFIRM_ITEM_KEYS,
+        itemId: options.cash_flow_item_id,
+        bankId: options.bank_id ?? null,
+        remark: `确认应付 ${draft.payableNo}（勾选批量确认）`,
+      }, user);
+      if (entry) cashFlowEntryIds.push(entry.id);
+      totals.set(draft.currency, (totals.get(draft.currency) ?? new Prisma.Decimal(0)).plus(draft.amount));
+    }
+    return {
+      ids: result.confirmable.map((draft) => draft.id),
+      confirmed_count: result.confirmable.length,
+      skipped_count: result.skipped,
+      // 合计**按币种分组**：跨币种相加得到的是一个没有意义的数（与财务报表「不跨币种相加」同一口径）。
+      amounts: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: amount.toFixed(4) })),
+      cash_flow_entry_ids: cashFlowEntryIds,
+      bank_missing: !options.bank_id,
+    };
+  }
+
+  /**
    * 编辑草稿应付：金额、确认日期、**币种**、备注。
    *
    * 与应收侧同样的道理：草稿还没核销任何付款，此时改币种是安全的；

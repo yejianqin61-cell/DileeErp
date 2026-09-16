@@ -8,31 +8,31 @@
 
 /** 财务一级板块。/finance 只展示这些入口，点进去才是二级页面。 */
 export const FINANCE_BOARDS = [
-  { key: "receivable", title: "应收管理", description: "成品出库过账自动形成应收来源：成品出库条目 → 应收对账 → 确认应收 → 收款核销" },
-  { key: "payable", title: "应付管理", description: "原料入库过账 / 外加工签收形成应付来源：入库条目与签收 → 应付对账 → 确认应付 → 付款核销" },
-  { key: "salary", title: "工资管理", description: "两个功能入口：工资台账（可编辑满页表格，车间生产工资自动汇总）与工资付款（当月台账只留总工资，行内付款/冲销）" },
-  { key: "banks", title: "银行账户", description: "银行账户池：付款/对账里「支付银行」下拉的来源，含期初余额与当前余额（余额 = 期初 + 收入 − 支出 + 转入 − 转出），支持新建、编辑、停用与删除" },
-  { key: "bank-transfers", title: "银行余额互转", description: "同一银行池里两个账户之间的划转：本方账户/币种 → 对方账户/币种，跨币种按实际到账数记账；互转不计入收支流水，只影响账户余额" },
-  { key: "cash-flow", title: "收支管理", description: "手工录入资金收支流水（含统一「对方名称」与银行账户），按可配置的收支项目归类" },
-  { key: "reports", title: "财务报表", description: "按老系统版式导出财务对账表：销售/采购对账、销售利润、收支明细与汇总；数字落数值型，可直接在 Excel 里求和" },
-  { key: "voucher", title: "凭证管理", description: "从收支流水生成记账凭证：每条流水一张（幂等），草稿可编辑/过账，已过账只能红冲，凭证纸可打印或另存 PDF" },
+  { key: "receivable", title: "应收管理" },
+  { key: "payable", title: "应付管理" },
+  { key: "salary", title: "工资管理" },
+  { key: "banks", title: "银行账户" },
+  { key: "bank-transfers", title: "银行余额互转" },
+  { key: "cash-flow", title: "收支管理" },
+  { key: "reports", title: "财务报表" },
+  { key: "voucher", title: "凭证管理" },
 ] as const;
 
 export type FinanceBoardKey = (typeof FINANCE_BOARDS)[number]["key"];
 
 /** 应收管理子栏目。tab 同时是查询参数（/finance/receivable?tab=<key>）。 */
 export const RECEIVABLE_TABS = [
-  { key: "outbound-entries", title: "成品出库条目", description: "每次成品出库过账生成一条应收来源；一个订单分批出库就是多条，双击查看全部字段" },
-  { key: "reconciliations", title: "应收对账", description: "按客户 + 期间创建对账单，系统自动汇总期间的出库条目为明细；对平后可一键确认应收" },
-  { key: "confirmed", title: "确认应收", description: "应收台账：草稿条目在此逐条确认，已确认的在此登记收款、核销与冲销" },
+  { key: "outbound-entries", title: "成品出库条目" },
+  { key: "reconciliations", title: "应收对账" },
+  { key: "confirmed", title: "确认应收" },
 ] as const;
 
 /** 应付管理子栏目。 */
 export const PAYABLE_TABS = [
-  { key: "raw-inbound-entries", title: "原料入库条目", description: "原料入库过账生成的待接收应付来源；接收后成为应付草稿" },
-  { key: "outsource-entries", title: "外加工签收", description: "外加工实际签收生成的待接收应付来源（直发数量不形成应付）" },
-  { key: "reconciliations", title: "应付对账", description: "按供应商 + 期间创建对账单；对平后到确认应付去确认" },
-  { key: "confirmed", title: "确认应付", description: "应付台账：草稿逐条确认；已确认的登记付款、核销与冲销" },
+  { key: "raw-inbound-entries", title: "原料入库条目" },
+  { key: "outsource-entries", title: "外加工签收" },
+  { key: "reconciliations", title: "应付对账" },
+  { key: "confirmed", title: "确认应付" },
 ] as const;
 
 export type ReceivableTabKey = (typeof RECEIVABLE_TABS)[number]["key"];
@@ -52,12 +52,12 @@ export type PayableTabKey = (typeof PAYABLE_TABS)[number]["key"];
  * 老系统那 6 份表到这里全部落地（收支明细/汇总属三期，需要新的「收支管理」模型与字典）。
  */
 export const FINANCE_REPORT_TABS = [
-  { key: "sales-reconciliation-detail", title: "销售对账明细表", description: "按销售单列示应收明细，23 列与老表一一对应", scope: "customer" },
-  { key: "sales-reconciliation-summary", title: "销售对账汇总表", description: "按销售单汇总销售金额/调整/已收与欠款，10 列与老表一一对应", scope: "customer" },
-  { key: "purchase-reconciliation-detail", title: "采购对账明细表", description: "按采购单列示应付明细，16 列与老表一一对应", scope: "supplier" },
-  { key: "sales-gross-profit", title: "销售利润报表(毛利)", description: "按销售单给出销售金额、BOM 原料成本与销售利润（含本币列），10 列与老表一一对应", scope: "customer" },
-  { key: "cash-flow-detail", title: "收支明细表", description: "资金收支流水（日期/对方名称/币种/收入/支出/结算方式），6 列与老表一一对应", scope: "cash" },
-  { key: "cash-flow-summary", title: "收支汇总表", description: "按「项目 × 币种」汇总，每个币种段末给该币种合计（不跨币种相加）", scope: "cash" },
+  { key: "sales-reconciliation-detail", title: "销售对账明细表", scope: "customer" },
+  { key: "sales-reconciliation-summary", title: "销售对账汇总表", scope: "customer" },
+  { key: "purchase-reconciliation-detail", title: "采购对账明细表", scope: "supplier" },
+  { key: "sales-gross-profit", title: "销售利润报表(毛利)", scope: "customer" },
+  { key: "cash-flow-detail", title: "收支明细表", scope: "cash" },
+  { key: "cash-flow-summary", title: "收支汇总表", scope: "cash" },
 ] as const;
 
 export type FinanceReportTabKey = (typeof FINANCE_REPORT_TABS)[number]["key"];
@@ -76,14 +76,14 @@ export const VOUCHER_TABS = [] as const;
  * 这里给的是真实路由（不是查询参数）：两个表格都要占满整屏，各自一个地址、可收藏。
  */
 export const SALARY_SECTIONS = [
-  { key: "ledger", title: "工资台账", description: "按月自动导入全部员工的可编辑满页表格：车间工人的计件/计时工资由生产日报自动汇总进「基本工资」，绩效/房补/迟到/旷工/早退逐格可改", href: "/finance/salary/ledger" },
-  { key: "payments", title: "工资付款", description: "把当月工资台账搬过来付款：只保留「总工资」，付款与冲销都在表格行内完成", href: "/finance/salary/payments" },
+  { key: "ledger", title: "工资台账", href: "/finance/salary/ledger" },
+  { key: "payments", title: "工资付款", href: "/finance/salary/payments" },
 ] as const;
 
 export type SalarySectionKey = (typeof SALARY_SECTIONS)[number]["key"];
 
 /** 每个板块的子栏目。凭证管理、银行账户与银行余额互转没有子栏目（都是单页满页表格）。 */
-export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: string; title: string; description: string }>> = {
+export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: string; title: string }>> = {
   receivable: RECEIVABLE_TABS,
   payable: PAYABLE_TABS,
   salary: SALARY_SECTIONS,

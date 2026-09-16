@@ -80,10 +80,9 @@ describe("银行账户池：列表与筛选", () => {
     expect(callsTo(calls, EP.banks).filter((call) => call.method === "GET")).toHaveLength(before);
   });
 
-  it("没有账户时给出空态并说明它会被用在哪里", async () => {
+  it("没有账户时给出空态", async () => {
     await openBanks([]);
     expect(screen.getByText("还没有银行账户")).toBeVisible();
-    expect(screen.getByText(/付款、应付对账的「支付银行」下拉/)).toBeVisible();
   });
 });
 
@@ -169,7 +168,7 @@ describe("银行账户池：停用与删除", () => {
     await userEvent.click(screen.getByTestId("bank-delete-bank-1"));
     const confirm = await screen.findByTestId("bank-delete-confirm");
     expect(within(confirm).getByText(/农业银行 5706/)).toBeVisible();
-    expect(within(confirm).getByText(/已引用它的付款单与对账单仍会显示这个账户名称/)).toBeVisible();
+    expect(within(confirm).getByRole("button", { name: "确认删除" })).toBeVisible();
 
     await userEvent.click(within(confirm).getByRole("button", { name: "取消" }));
     expect(callsTo(calls, `${EP.banks}/bank-1`).filter((call) => call.method === "DELETE")).toHaveLength(0);

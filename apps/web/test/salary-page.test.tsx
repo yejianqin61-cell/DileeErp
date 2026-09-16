@@ -552,7 +552,6 @@ describe("工资管理：台账详情", () => {
       expect(within(dialog).getByText(label)).toBeInTheDocument();
     }
     expect(within(dialog).getByText(/生产日报来源（2 行 \/ 3 条日报）/)).toBeInTheDocument();
-    expect(within(dialog).getByText(/覆盖 2 天 \/ 2 张生产单 \/ 2 道工序/)).toBeInTheDocument();
     expect(within(dialog).getByText("工资调整（0 条）")).toBeInTheDocument();
     expect(within(dialog).getByText("工资付款核销（0 条）")).toBeInTheDocument();
   });
@@ -755,10 +754,10 @@ describe("工资管理：工资付款（当月台账只留总工资，操作在�
     expect(screen.queryByTestId("salary-unpay-button-pl-1")).toBeNull();
   });
 
-  it("本月没有台账时给出空态并指路到工资台账页", async () => {
+  it("本月没有台账时给出空态，不渲染空表格", async () => {
     stubSalary({ ledgers: [] });
     await openSalary("payments");
-    expect(screen.getByTestId("salary-payment-empty")).toHaveTextContent("请先到「工资台账」页导入并确认本月台账");
+    expect(screen.getByText("本月暂无工资台账")).toBeVisible();
     expect(screen.queryByTestId("payroll-sheet")).toBeNull();
   });
 

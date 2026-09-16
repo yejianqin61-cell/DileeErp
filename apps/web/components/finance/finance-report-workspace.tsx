@@ -159,7 +159,7 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
   }
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="财务报表" description="按老系统版式导出财务对账表；导出的数字是 Excel 数值类型，可直接求和、筛选、排序。">
+    <PageHeader title="财务报表">
       <Button variant="secondary" asChild><a href="/finance">返回财务</a></Button>
     </PageHeader>
 
@@ -248,11 +248,8 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
       {error && <div className="panel-body"><ErrorState message={error} onRetry={() => void load()} /></div>}
       {!error && loading && <LoadingState />}
       {!error && !loading && table && <>
-        <p className="panel-note panel-body">
-          列名与列序与老表一致；系统未维护的字段导出为空单元格（不是 0）。草稿默认不纳入对账金额。
-        </p>
         <div className="panel-body">
-          <DataTable columns={columns} data={data} empty={<EmptyState title="当前筛选没有数据" description="换个期间或放宽筛选条件再试；也可以直接导出（导出的是空表，只有表头）。" />} />
+          <DataTable columns={columns} data={data} empty={<EmptyState title="当前筛选没有数据" />} />
         </div>
         {table.totals && <p className="panel-note panel-body" data-testid="finance-report-totals">
           合计（与导出一致）：{table.total_columns.map((index) => `${table.columns[index].header} ${textOf(table.totals?.[index] ?? null)}`).join("　")}

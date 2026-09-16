@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { ArrayNotEmpty, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -108,6 +108,18 @@ class ConfirmSourceDto {
   @IsOptional() @IsUUID() cash_flow_item_id?: string | null;
 }
 
+/**
+ * 批量确认应付的入参：勾选出来的应付 id + 整批共用的支付银行与收支项目。
+ *
+ * `ids` 必填且非空：批量确认的口径是「界面勾了什么就确认什么」，空数组走到服务端说明界面出了问题，
+ * 静默返回「确认 0 条」会让用户以为点过了。
+ */
+class BatchConfirmPayablesDto {
+  @IsArray() @ArrayNotEmpty() @IsUUID(undefined, { each: true }) ids!: string[];
+  @IsOptional() @IsUUID() bank_id?: string | null;
+  @IsOptional() @IsUUID() cash_flow_item_id?: string | null;
+}
+
 class SupplierOtherPayableDto {
   @IsUUID() supplier_id!: string;
   @IsString() amount!: string;
@@ -157,6 +169,7 @@ export class FinanceController {
   // 挂在这里的方法级放宽无效。其余财务接口仍然只对 finance 模块开放。
   @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
   @Post("payable-entries/other") async createOtherPayableEntry(@Body() body: SupplierOtherPayableDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createOther(body, user), meta: {} }; }
+  @Post("payable-entries/batch-confirm") async batchConfirmPayableEntries(@Body() body: BatchConfirmPayablesDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.batchConfirm(body.ids, user, body), meta: {} }; }
   @Post("payable-entries/:id/confirm") async confirmPayableEntry(@Param("id") id: string, @Body() body: ConfirmSourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.confirm(id, user, body ?? {}), meta: {} }; }
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }
   @Post("payable-entries/:id/reopen") async reopenPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reopen(id, body.reason, user), meta: {} }; }

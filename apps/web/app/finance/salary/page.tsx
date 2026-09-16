@@ -8,11 +8,10 @@ import { SALARY_SECTIONS } from "../../../lib/finance-sections";
 
 export default function FinanceSalaryPage() {
   return <div className="page-root" data-testid="page-finance-salary">
-    <PageHeader title="工资管理" description="工资台账与工资付款两个入口；表格、筛选与操作都在对应的二级页面里。" />
+    <PageHeader title="工资管理" />
     <div className="board-grid" data-testid="salary-section-grid">
       {SALARY_SECTIONS.map((section) => <Link key={section.key} href={section.href} className="board-card" data-testid={`salary-section-${section.key}`}>
         <h2>{section.title}</h2>
-        <p>{section.description}</p>
         <span className="board-enter">进入 →</span>
       </Link>)}
     </div>

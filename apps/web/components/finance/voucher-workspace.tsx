@@ -217,7 +217,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   function postVoucher(voucher: Voucher) {
     setDialog({
       title: `过账凭证：${voucher.voucherNo}`,
-      fields: [{ name: "confirm", label: `过账后凭证不可再修改（只能红冲）。借方 ${voucher.debitTotal} / 贷方 ${voucher.creditTotal} ${voucher.currency}，确认过账？`, type: "info" as const }],
+      fields: [{ name: "confirm", label: `借方 ${voucher.debitTotal} / 贷方 ${voucher.creditTotal} ${voucher.currency}`, type: "info" as const }],
       submit: () => submitDialog(`/finance/vouchers/${voucher.id}/post`, undefined, `凭证 ${voucher.voucherNo} 已过账`),
     });
   }
@@ -233,7 +233,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   function deleteVoucher(voucher: Voucher) {
     setDialog({
       title: `删除草稿凭证：${voucher.voucherNo}`,
-      fields: [{ name: "confirm", label: "只有草稿可以删除；删除后该流水可重新生成凭证。确认删除？", type: "info" as const }],
+      fields: [],
       submit: () => submitDialog(`/finance/vouchers/${voucher.id}`, undefined, "草稿凭证已删除", "delete"),
     });
   }
@@ -283,23 +283,15 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   if (loading) return <><PageHeader title="凭证管理" /><LoadingState /></>;
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="凭证管理" description="从收支流水生成记账凭证：每条流水一张凭证（幂等），草稿可编辑、过账后只能红冲，凭证纸可直接打印或另存为 PDF。">
+    <PageHeader title="凭证管理">
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
     </PageHeader>
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
     {!error && <>
-      <section className="panel panel-body">
-        <p className="panel-note" role="status" data-testid="voucher-policy-note">
-          凭证是结构化分录，而不是一张图片：图片不可搜索、不可复制，改一个字就得重新生成。
-          这里保存借贷分录，「凭证纸」按记账凭证版式排版，可「打印 / 另存 PDF」，也可「导出 PNG」直接存档或贴到聊天里。
-          科目当前取自「收支项目」字典（资金科目按结算方式里的「现金」自动区分银行存款/库存现金），
-          草稿阶段可在「编辑」里手工改成自己账套的科目名。
-        </p>
-      </section>
       <section className="panel">
         <div className="panel-heading">
           <h2>收支流水</h2>
-          <span className="panel-note">共 {entries.length} 条 / 已生成凭证 {generatedCount} 条（生成是幂等的，重复点不会重复建单）</span>
+          <span className="panel-note">共 {entries.length} 条 / 已生成凭证 {generatedCount} 条</span>
         </div>
         <div className="panel-body">
           <div className="filter-bar">
@@ -321,7 +313,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       <section className="panel">
         <div className="panel-heading">
           <h2>记账凭证</h2>
-          <span className="panel-note">共 {vouchers.length} 张（草稿 {draftCount} 张）{periods.length ? `；期间 ${periods.join(" / ")}` : ""}；草稿可编辑/删除，已过账只能红冲</span>
+          <span className="panel-note">共 {vouchers.length} 张（草稿 {draftCount} 张）{periods.length ? `；期间 ${periods.join(" / ")}` : ""}</span>
         </div>
         <div className="panel-body"><DataTable columns={voucherColumns} data={vouchers} empty={<EmptyState title="还没有凭证：在上面的收支流水行点「生成凭证」" />} /></div>
       </section>
