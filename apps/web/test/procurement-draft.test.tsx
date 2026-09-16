@@ -190,6 +190,40 @@ describe("采购草稿：当前库存量按「物料 + 单位」显示，不跨�
   });
 });
 
+describe("采购草稿：BOM 表编辑入口", () => {
+  // 2026-09-14 拆成枢纽页时，本页的 openBom() 失去了调用方：BOM 工作区（连同里面的
+  // 「新建物料」）在采购单页**完全不可达**，用户只能退回【采购 → BOM表】。
+  it("草稿里选中 BOM 后可以直接「编辑BOM表」，工作区里的「新建物料」也在", async () => {
+    await openDraftWithBomItems();
+
+    // 刚打开草稿、还没选 BOM 时入口是禁用的（没有 BOM 可编辑）
+    const entry = screen.getByTestId("purchase-edit-bom");
+    expect(entry).toBeEnabled();
+
+    await userEvent.click(entry);
+
+    // 工作区打开的是草稿里选中的那张 BOM（3 行明细）
+    expect(await screen.findByDisplayValue("5")).toBeVisible();
+    expect(screen.getByRole("button", { name: "新建物料" })).toBeVisible();
+    expect(screen.queryByText(/物料池由【采购 → 物料清单】维护/)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "新建物料" }));
+    expect(await screen.findByTestId("action-dialog")).toBeVisible();
+    expect(screen.getByLabelText(/物料名称/)).toBeVisible();
+  });
+
+  it("没选 BOM 时不能编辑（按钮禁用，不打开工作区）", async () => {
+    stubProcurement();
+    render(<><PurchaseOrdersPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-orders");
+
+    await userEvent.click(screen.getByRole("button", { name: "新建采购单" }));
+    await pickSelect(0, "SO-1"); // 只选销售单，BOM 表仍是空的
+
+    expect(screen.getByTestId("purchase-edit-bom")).toBeDisabled();
+  });
+});
+
 describe("采购草稿：一张订单按供应商拆分成多张采购单", () => {
   it("按供应商分组后一次提交 /purchase-orders/split，组内明细的供应商取组供应商", async () => {
     const calls = await openDraftWithBomItems();

@@ -14,7 +14,7 @@ import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../
 import { mergeMaterialBalances } from "../../../lib/wms-balances";
 import { shouldAutoOpenDraft } from "../../../lib/auto-open";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
-import { fuzzyMatch } from "../../../lib/material-search";
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
 
 // specificationModel / color 由 GET /materials 返回（listMaterials 返回物料全字段），
 // 库存汇总的「规格型号」列与搜索都依赖它们。

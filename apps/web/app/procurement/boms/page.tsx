@@ -7,11 +7,13 @@ import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
-import { BomWorkbench } from "../../../components/bom/bom-workbench";
+import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-workbench";
+import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type Reference = { id: string; orderNo?: string; status?: string; salesOrderId?: string; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
-type Material = { id: string; materialCode?: string; name?: string; isActive?: boolean };
+// 物料池：规格型号与颜色要一起带上 —— BOM 行选择/新建物料时会引用它们做初始值。
+type Material = { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; materialType?: string; defaultUnitId?: string; isActive?: boolean };
 type Unit = { id: string; name?: string; isActive?: boolean };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -24,6 +26,9 @@ export default function BomsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [bomWorkbench, setBomWorkbench] = useState<{ id: string; label?: string } | null>(null);
+  // BOM 工作区请求开的「新建物料」弹窗：存下它给的回填函数，物料建好就填回当前行。
+  // （2026-09-16 之前这里是空函数：按钮在，点了没反应 —— 用户反馈「新建物料按钮怎么不见了」。）
+  const [materialApply, setMaterialApply] = useState<((material: BomMaterialRef) => void) | null>(null);
 
   async function load() {
     setLoading(true);
@@ -98,9 +103,22 @@ export default function BomsPage() {
           title={bomWorkbench.label}
           materials={materials}
           units={units}
-          onCreateMaterial={() => {}}
+          onCreateMaterial={(apply) => setMaterialApply(() => apply)}
           onClose={() => setBomWorkbench(null)}
           onSaved={() => void load()}
+        />
+        <MaterialCreateDialog
+          open={Boolean(materialApply)}
+          units={units}
+          onOpenChange={(open) => { if (!open) setMaterialApply(null); }}
+          onUnitCreated={(unit) => setUnits((items) => [...items, unit])}
+          onCreated={(material) => {
+            // 新物料必须先进物料池：BOM 行里的物料下拉是靠 options 渲染出名字的，
+            // 只把 id 填进行里会让那一格变成空白。
+            setMaterials((items) => [...items.filter((item) => item.id !== material.id), material]);
+            materialApply?.(material);
+            setMaterialApply(null);
+          }}
         />
       </div>
     );

@@ -5,9 +5,12 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
+import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type Reference = { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; isActive?: boolean; defaultUnitId?: string; materialType?: string; remark?: string | null };
@@ -21,8 +24,21 @@ export default function MaterialsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  // 物料池的关键字搜索（用户 2026-09-16：「所有池子，都要支持搜索」）：
+  // 与供应商池等共用 lib/fuzzy-search 的匹配语义（多词 AND、忽略大小写与空白）。
+  const [query, setQuery] = useState("");
+  // 「新建物料」弹窗（共享组件）：打开时是新建，关闭即销毁，草稿不跨次保留。
+  const [creating, setCreating] = useState(false);
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
   const [categoryDialog, setCategoryDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
+
+  // 默认单位在物料表里存的是 id，人搜的是单位名（「米」），所以这里先把名字解析出来再参与匹配。
+  const unitNameOf = (unitId?: string | null) => units.find((unit) => unit.id === unitId)?.name ?? "";
+  const visible = useMemo(
+    () => materials.filter((item) => fuzzyMatch(query, [item.materialCode, item.code, item.name, item.specificationModel, item.color, unitNameOf(item.defaultUnitId), item.materialType === "finished_product" ? "成品" : "原料", item.remark])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- unitNameOf 只读 units，下面已把 units 列为依赖
+    [materials, units, query],
+  );
 
   async function load() {
     setLoading(true);
@@ -54,50 +70,9 @@ export default function MaterialsPage() {
 
   const unitOptions = units.filter((u) => u.isActive !== false).map((u) => ({ value: u.id, label: u.name ?? u.id }));
 
-  function openUnit(parentDraft?: Record<string, string>) {
-    setCategoryDialog({
-      title: "新建单位",
-      fields: [{ name: "name", label: "单位名称", required: true }, { name: "remark", label: "备注", type: "textarea" }],
-      submit: async (v) => {
-        try {
-          const result = await apiPost<Unit>("/units", { name: v.name, remark: v.remark || undefined });
-          setUnits((items) => [...items, result.data as unknown as Unit]);
-          setCategoryDialog(null);
-          notifySuccess("单位已创建");
-          openMaterial({ ...parentDraft, default_unit_id: result.data.id });
-        } catch (cause) {
-          notifyError(messageOf(cause, "单位创建失败"));
-        }
-      },
-    });
-  }
-
-  function openMaterial(input?: Record<string, string>) {
-    const draft = input ?? {};
-    setCategoryDialog({
-      title: "新建物料",
-      fields: [
-        { name: "code_mode", label: "编码方式", type: "select", required: true, defaultValue: draft.code_mode || "auto", options: [{ value: "auto", label: "自动生成" }, { value: "manual", label: "手动填写" }] },
-        { name: "material_code", label: "物料编码", defaultValue: draft.material_code, placeholder: "自动生成时留空" },
-        { name: "name", label: "物料名称", required: true, defaultValue: draft.name },
-        { name: "specification_model", label: "规格型号", defaultValue: draft.specification_model },
-        { name: "color", label: "颜色", defaultValue: draft.color },
-        { name: "default_unit_id", label: "默认单位", type: "select", required: true, defaultValue: draft.default_unit_id, options: unitOptions },
-        { name: "material_type", label: "物料类型", type: "select", required: true, defaultValue: draft.material_type || "raw_material", options: [{ value: "raw_material", label: "原料" }, { value: "finished_product", label: "成品" }] },
-        { name: "remark", label: "备注", type: "textarea", defaultValue: draft.remark },
-      ],
-      submit: async (v) => {
-        try {
-          const result = await apiPost<Reference>("/materials", { ...v, material_code: v.material_code || undefined, specification_model: v.specification_model || undefined, color: v.color || undefined, material_type: v.material_type || "raw_material", remark: v.remark || undefined });
-          setMaterials((items) => [...items, result.data]);
-          setCategoryDialog(null);
-          notifySuccess("物料已创建");
-        } catch (cause) {
-          notifyError(messageOf(cause, "物料创建失败"));
-        }
-      },
-    });
-  }
+  // 「新建物料」不再是本页自己的一份表单：用共享的 MaterialCreateDialog（BOM 表三处入口也用它），
+  // 全站只有一份字段与校验，避免「物料清单里能建、BOM 表里建不出来」这种漂移。
+  // 「新建单位」的联动（默认单位 + 新增类目）由该组件内部完成。
 
   function editMaterial(item: Reference) {
     setCategoryDialog({
@@ -158,16 +133,36 @@ export default function MaterialsPage() {
     <div className="page-root" data-testid="page-procurement-materials">
       <PageHeader title="物料清单" breadcrumb={["采购", "物料清单"]}>
         <div className="page-actions">
-          <Button onClick={() => openMaterial()}>新建物料</Button>
+          <Button onClick={() => setCreating(true)}>新建物料</Button>
           <Button variant="secondary" onClick={() => void load()}>刷新</Button>
         </div>
       </PageHeader>
+      <MaterialCreateDialog
+        open={creating}
+        units={units}
+        onOpenChange={setCreating}
+        onUnitCreated={(unit) => setUnits((items) => [...items, unit])}
+        onCreated={(material) => { setMaterials((items) => [...items.filter((item) => item.id !== material.id), material]); setCreating(false); }}
+      />
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel">
+        <div className="panel-heading">
+          <h2>物料清单</h2>
+          <span className="panel-note" data-testid="material-count">共 {materials.length} 个物料（启用 {materials.filter((item) => item.isActive !== false).length} 个），当前列出 {visible.length} 条</span>
+        </div>
         <div className="panel-body">
-          <DataTable columns={columns} data={materials} empty={<EmptyState title="暂无物料" />} />
+          <div className="filter-bar">
+            <label>搜索物料编码、名称、规格型号或颜色<Input data-testid="material-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" /></label>
+          </div>
+          <DataTable
+            columns={columns}
+            data={visible}
+            empty={query.trim()
+              ? <EmptyState title={`没有匹配\u201c${query.trim()}\u201d的物料`} description={`共 ${materials.length} 个物料，换个关键词或清空搜索框。`} />
+              : <EmptyState title="暂无物料" />}
+          />
         </div>
       </section>
     </div>

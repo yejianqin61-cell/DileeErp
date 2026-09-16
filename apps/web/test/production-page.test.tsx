@@ -613,6 +613,7 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
     const calls = stubProduction({
       salesOrders: [candidate("SO-2026-001", "120", "打")],
       materials: [{ id: "mat-1", materialCode: "M-001", name: "面料A", materialType: "raw_material", isActive: true }],
+      units: [{ id: "u-1", name: "米", isActive: true }],
       boms: { "bom-SO-2026-001": { id: "bom-SO-2026-001", orderNo: "SO-2026-001", status: "draft", version: 1, updatedAt: "2026-09-14T02:00:00.000Z", items: [{ id: "bi-1", materialId: "mat-1", materialName: "面料A", model: "", requiredQuantity: "3", unit: "米", unitId: "u-1", materialSnapshot: {} }] } },
     });
     await openProduction();
@@ -621,9 +622,42 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
 
     expect(await screen.findByDisplayValue("3")).toBeVisible();
     expect(callsTo(calls, "/boms/bom-SO-2026-001")).toHaveLength(1);
-    // 生产模块不提供「新建物料」（物料池归采购），只提示入口
-    expect(screen.queryByRole("button", { name: "新建物料" })).toBeNull();
-    expect(screen.getByText(/物料池由【采购 → 物料清单】维护/)).toBeVisible();
+  });
+
+  // 用户 2026-09-16 问「BOM表的新建物料按钮怎么不见了」：以前生产侧不传 onCreateMaterial，
+  // 按钮干脆不渲染，只留一句「物料池归采购」。现场改 BOM 时还得跳到采购去建，现在就地能建。
+  it("生产页的 BOM 工作区也能「新建物料」：建完回填当前行并随保存发出 material_id", async () => {
+    const calls = stubProduction({
+      salesOrders: [candidate("SO-2026-001", "120", "打")],
+      materials: [{ id: "mat-1", materialCode: "M-001", name: "面料A", materialType: "raw_material", isActive: true }],
+      units: [{ id: "u-1", name: "米", isActive: true }],
+      boms: { "bom-SO-2026-001": { id: "bom-SO-2026-001", orderNo: "SO-2026-001", status: "draft", version: 1, updatedAt: "2026-09-14T02:00:00.000Z", items: [{ id: "bi-1", materialId: "mat-1", materialName: "面料A", model: "", requiredQuantity: "3", unit: "米", unitId: "u-1", materialSnapshot: {} }] } },
+    }, (url, call) => (url.endsWith("/materials") && call.method === "POST"
+      ? apiOk({ id: "mat-9", materialCode: "M-009", name: "伞骨", specificationModel: "60cm", color: "银色", defaultUnitId: "u-1", materialType: "raw_material", isActive: true })
+      : undefined));
+    await openProduction();
+
+    await userEvent.click(within(screen.getByTestId("production-bom-panel")).getByTestId("production-bom-SO-2026-001"));
+    await screen.findByDisplayValue("3");
+
+    await userEvent.click(screen.getByRole("button", { name: "新建物料" }));
+    const dialog = within(await screen.findByTestId("action-dialog"));
+    await userEvent.type(screen.getByLabelText(/物料名称/), "伞骨");
+    await userEvent.click(dialog.getByTestId("action-field-default_unit_id"));
+    await userEvent.click(await screen.findByRole("option", { name: "米" }));
+    await userEvent.click(dialog.getByTestId("action-dialog-submit"));
+
+    const posted = callsTo(calls, "/materials").filter((call) => call.method === "POST");
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(JSON.parse(String(posted[0].body))).toMatchObject({ name: "伞骨", default_unit_id: "u-1" });
+    // 新物料进了物料池并回填到当前行（下拉显示的是名字，不是空）
+    expect(await screen.findByText("M-009 / 伞骨")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "保存BOM表" }));
+    const put = callsTo(calls, "/boms/bom-SO-2026-001/items").filter((call) => call.method === "PUT");
+    await waitFor(() => expect(put).toHaveLength(1));
+    const items = JSON.parse(String(put[0].body)).items as Array<Record<string, unknown>>;
+    expect(items[0]).toMatchObject({ material_id: "mat-9", material_name: "伞骨", specification_model: "60cm", color: "银色" });
   });
 
   it("点「新建BOM表」用销售单内部 id 下单接口，成功后自动打开同一张 BOM", async () => {

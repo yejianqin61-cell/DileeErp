@@ -3,6 +3,7 @@
 - 日期：2026-09-14（第三轮）
 - 状态：已实施
 - 范围：`apps/web/app/warehouse/raw-material-storage/page.tsx`、新增纯函数 `apps/web/lib/material-search.ts`
+  （2026-09-16 改名为 `apps/web/lib/fuzzy-search.ts`：同一套匹配规则被全部主数据池复用，名字不该再只提物料）
 - 需求来源：用户 2026-09-14 直接指令（第 5、6 条）
 
 ## 1. 需求

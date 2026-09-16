@@ -13,6 +13,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { latestBom, productionCandidateHint, productionCandidates, resolveProductionUnit } from "../../lib/production-candidates";
 import { BomWorkbench, type BomMaterialRef } from "../../components/bom/bom-workbench";
+import { MaterialCreateDialog } from "../../components/bom/material-create-dialog";
 import { PayrollExportPanel } from "../../components/production/payroll-export-panel";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
@@ -33,6 +34,9 @@ export default function ProductionPage() {
   // 因此本页加载物料池，并记下当前正在编辑的 BOM。
   const [materials, setMaterials] = useState<BomMaterialRef[]>([]);
   const [bomWorkbench, setBomWorkbench] = useState<{ id: string; label?: string } | null>(null);
+  // BOM 工作区里点「新建物料」时存下它的回填函数。生产现场改 BOM 时经常发现少一个物料，
+  // 以前这里不传 onCreateMaterial（按钮不渲染、只能跳到采购去建），2026-09-16 起就地能建。
+  const [materialApply, setMaterialApply] = useState<((material: BomMaterialRef) => void) | null>(null);
   const [records, setRecords] = useState<ProductionOrder[]>([]);
   const [query, setQuery] = useState(searchParams.get("order_no") ?? "");
   const [loading, setLoading] = useState(true);
@@ -149,7 +153,19 @@ export default function ProductionPage() {
     <PageHeader title="生产"><Button onClick={() => void openProductionOrder()} disabled={loading} data-testid="production-create-order">新建生产单</Button></PageHeader>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
     {/* BOM 工作区放在加载分支之外：保存后刷新列表时它不会被卸载，用户的编辑不会被吞掉。 */}
-    {bomWorkbench && <BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} />}
+    {bomWorkbench && <BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} onCreateMaterial={(apply) => setMaterialApply(() => apply)} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} />}
+    <MaterialCreateDialog
+      open={Boolean(materialApply)}
+      units={units}
+      onOpenChange={(open) => { if (!open) setMaterialApply(null); }}
+      onUnitCreated={(unit) => setUnits((items) => [...items, { id: unit.id, name: unit.name ?? unit.id, isActive: unit.isActive !== false }])}
+      onCreated={(material) => {
+        // 新物料先进物料池：BOM 行的物料下拉靠 options 渲染名字，只填 id 会让那一格变空白。
+        setMaterials((items) => [...items.filter((item) => item.id !== material.id), material]);
+        materialApply?.(material);
+        setMaterialApply(null);
+      }}
+    />
     {message && <section className="panel panel-body status-success">{message}</section>}
     {!loading && candidateHint && <section className="panel panel-body panel-note" role="status">{candidateHint}</section>}
     {error ? <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section> : loading ? <LoadingState /> : <>

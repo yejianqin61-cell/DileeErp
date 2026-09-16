@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type Reference = { id: string; supplierCode?: string; code?: string; name?: string; contactName?: string | null; phone?: string | null; remark?: string | null; isActive?: boolean };
@@ -19,8 +21,17 @@ export default function SuppliersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  // 供应商池的关键字搜索（用户 2026-09-16：「供应商池，要支持搜索」）：
+  // 与其它池子共用 lib/fuzzy-search 的匹配语义（多词 AND、忽略大小写与空白）。
+  const [query, setQuery] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
   const [categoryDialog, setCategoryDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
+
+  // 可搜索的字段：编码（两种字段名）、名称、联系人、电话、备注。
+  const visible = useMemo(
+    () => suppliers.filter((item) => fuzzyMatch(query, [item.supplierCode, item.code, item.name, item.contactName, item.phone, item.remark])),
+    [suppliers, query],
+  );
 
   async function load() {
     setLoading(true);
@@ -137,8 +148,21 @@ export default function SuppliersPage() {
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel">
+        <div className="panel-heading">
+          <h2>供应商池</h2>
+          <span className="panel-note" data-testid="supplier-count">共 {suppliers.length} 个供应商（启用 {suppliers.filter((item) => item.isActive !== false).length} 个 / 停用 {suppliers.filter((item) => item.isActive === false).length} 个），当前列出 {visible.length} 条</span>
+        </div>
         <div className="panel-body">
-          <DataTable columns={columns} data={suppliers} empty={<EmptyState title="暂无供应商，点击\u201c新建供应商\u201d建立" />} />
+          <div className="filter-bar">
+            <label>搜索供应商编码、名称、联系人或电话<Input data-testid="supplier-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" /></label>
+          </div>
+          <DataTable
+            columns={columns}
+            data={visible}
+            empty={query.trim()
+              ? <EmptyState title={`没有匹配\u201c${query.trim()}\u201d的供应商`} description={`共 ${suppliers.length} 个供应商，换个关键词或清空搜索框。`} />
+              : <EmptyState title="暂无供应商，点击\u201c新建供应商\u201d建立" />}
+          />
         </div>
       </section>
     </div>

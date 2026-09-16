@@ -9,6 +9,7 @@ import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Unit = { id: string; name: string; isActive: boolean };
@@ -41,10 +42,7 @@ export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" 
   }
   useEffect(() => { void load(); }, [isOperations]);
   async function run(action: () => Promise<unknown>, success: string) { setError(""); try { await action(); notifySuccess(success); setDialog(null); await load(); } catch (cause) { notifyError(cause instanceof ApiClientError ? cause.message : "操作失败"); } }
-  const visible = useMemo(() => rows.filter((row) => {
-    const label = "operationName" in row ? `${row.operationName} ${row.operationCode ?? ""}` : `${row.name} ${row.locationType}`;
-    return !query || label.toLowerCase().includes(query.toLowerCase());
-  }), [rows, query]);
+  const visible = useMemo(() => rows.filter((row) => fuzzyMatch(query, "operationName" in row ? [row.operationName, row.operationCode] : [row.name, row.locationType])), [rows, query]);
   function openCreate() {
     setDialog({ title: isOperations ? "新建工序" : "新建加工地点", fields: isOperations ? [{ name: "operation_name", label: "工序名称", required: true }, { name: "operation_code", label: "工序编码" }, { name: "default_unit_id", label: "默认单位", type: "select", options: units.map((unit) => ({ value: unit.id, label: unit.name })) }] : [{ name: "name", label: "地点名称", required: true }, { name: "location_type", label: "地点类型", type: "select", required: true, defaultValue: "workshop", options: [{ value: "workshop", label: "厂内车间" }, { value: "outsource_site", label: "外加工点" }] }], submit: (values) => void run(() => apiPost(isOperations ? "/production/operations" : "/production/locations", isOperations ? operationPayload(values) : locationPayload(values)), isOperations ? "工序已创建" : "加工地点已创建") });
   }
@@ -60,5 +58,5 @@ export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" 
   // 基础资料仍在加载时禁止打开对话框：openCreate() 会把当时的 units 快照进 dialog.fields，
   // 数据到达后不会重建，用户会得到一个**永久为空**的「默认单位」下拉且无法恢复
   // （见 docs/test/results/2026-09-13-e2e-rewrite-and-platform-unit-expansion.md §7.3）。
-  return <><PageHeader title={isOperations ? "工序池" : "加工地点池"}><Button onClick={openCreate} disabled={loading} data-testid={isOperations ? "master-data-create-operation" : "master-data-create-location"}>新建{isOperations ? "工序" : "加工地点"}</Button></PageHeader><ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />{error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}{loading ? <LoadingState /> : <section className="panel"><div className="panel-body"><label>搜索<Input value={query} onChange={(event) => setQuery(event.target.value)} /></label></div><DataTable columns={columns} data={visible} empty={<EmptyState title={isOperations ? "暂无工序" : "暂无加工地点"} />} /></section>}</>;
+  return <><PageHeader title={isOperations ? "工序池" : "加工地点池"}><Button onClick={openCreate} disabled={loading} data-testid={isOperations ? "master-data-create-operation" : "master-data-create-location"}>新建{isOperations ? "工序" : "加工地点"}</Button></PageHeader><ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />{error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}{loading ? <LoadingState /> : <section className="panel"><div className="panel-body"><div className="filter-bar"><label>搜索{isOperations ? "工序名称或编码" : "加工地点名称或类型"}<Input data-testid={isOperations ? "operation-search" : "location-search"} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" /></label></div><p className="panel-note" data-testid={isOperations ? "operation-count" : "location-count"}>共 {rows.length} 条，当前列出 {visible.length} 条</p></div><DataTable columns={columns} data={visible} empty={query.trim() ? <EmptyState title={`没有匹配\u201c${query.trim()}\u201d的{isOperations ? "工序" : "加工地点"}`} description={`共 ${rows.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title={isOperations ? "暂无工序" : "暂无加工地点"} />} /></section>}</>;
 }

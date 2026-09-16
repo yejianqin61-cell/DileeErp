@@ -1,7 +1,7 @@
-// 原料仓储情况模糊搜索的单元测试（纯函数，无需渲染）。
+// 全站共用的模糊搜索匹配规则（纯函数，无需渲染）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { fuzzyMatch } from "./material-search.ts";
+import { fuzzyMatch } from "./fuzzy-search.ts";
 
 const material = ["M-001", "涤纶布", "150D", "本白", "米"];
 

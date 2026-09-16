@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../layout/app-shell";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
@@ -159,11 +160,10 @@ export default function BankWorkspace({ testId = "page-finance-banks" }: { testI
     }
   }
 
-  const visible = useMemo(() => {
-    const text = filter.trim().toLowerCase();
-    if (!text) return banks;
-    return banks.filter((bank) => `${bank.bankCode} ${bank.bankName} ${bank.accountName} ${bank.accountNumber} ${bank.currency}`.toLowerCase().includes(text));
-  }, [banks, filter]);
+  const visible = useMemo(
+    () => banks.filter((bank) => fuzzyMatch(filter, [bank.bankCode, bank.bankName, bank.accountName, bank.accountNumber, bank.currency])),
+    [banks, filter],
+  );
 
   const balanceOf = (bank: Bank) => balances[bank.id];
   /**

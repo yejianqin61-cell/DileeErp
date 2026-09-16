@@ -20,6 +20,7 @@ import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { unitMutationPayload } from "../../lib/unit-options";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Unit = { id: string; name: string; remark?: string | null; isActive: boolean; createdAt?: string; updatedAt?: string };
@@ -46,7 +47,7 @@ export function UnitPoolPage() {
   }
 
   const activeCount = rows.filter((row) => row.isActive).length;
-  const visible = useMemo(() => rows.filter((row) => !query || `${row.name} ${row.remark ?? ""}`.toLowerCase().includes(query.toLowerCase())), [rows, query]);
+  const visible = useMemo(() => rows.filter((row) => fuzzyMatch(query, [row.name, row.remark])), [rows, query]);
 
   function openCreate() {
     setDialog({ title: "新建单位", fields: [{ name: "name", label: "单位名称", required: true, placeholder: "例如：打、个、码" }, { name: "remark", label: "备注", type: "textarea" }], submit: (values) => void run(() => apiPost("/units", unitMutationPayload(values)), "单位已创建") });

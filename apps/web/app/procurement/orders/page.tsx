@@ -13,7 +13,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
-import { BomWorkbench } from "../../../components/bom/bom-workbench";
+import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-workbench";
+import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../../lib/currency-catalogue";
 import { downloadFile } from "../../../lib/download";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
@@ -51,6 +52,8 @@ export default function PurchaseOrdersPage() {
   const [stockByMaterial, setStockByMaterial] = useState<Record<string, string>>({});
   const [selectedDraftRows, setSelectedDraftRows] = useState<number[]>([]);
   const [bomWorkbench, setBomWorkbench] = useState<{ id: string; label?: string } | null>(null);
+  // BOM 工作区里点「新建物料」时，把它的回填函数存下来（2026-09-16 之前这里是空函数，按钮点了没反应）。
+  const [materialApply, setMaterialApply] = useState<((material: BomMaterialRef) => void) | null>(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   const [exportBusy, setExportBusy] = useState("");
@@ -284,7 +287,22 @@ export default function PurchaseOrdersPage() {
   ];
 
   if (loading) return <><PageHeader title="采购单" breadcrumb={["采购", "采购单"]} /><LoadingState /></>;
-  if (bomWorkbench) return <><PageHeader title="采购单" breadcrumb={["采购", "采购单"]} /><BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} onCreateMaterial={() => {}} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} /></>;
+  if (bomWorkbench) return <>
+    <PageHeader title="采购单" breadcrumb={["采购", "采购单"]} />
+    <BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} onCreateMaterial={(apply) => setMaterialApply(() => apply)} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} />
+    <MaterialCreateDialog
+      open={Boolean(materialApply)}
+      units={units}
+      onOpenChange={(open) => { if (!open) setMaterialApply(null); }}
+      onUnitCreated={(unit) => setUnits((items) => [...items, unit])}
+      onCreated={(material) => {
+        // 新物料先进物料池：BOM 行的物料下拉靠 options 渲染名字，只填 id 会让那一格变空白。
+        setMaterials((items) => [...items.filter((item) => item.id !== material.id), material]);
+        materialApply?.(material);
+        setMaterialApply(null);
+      }}
+    />
+  </>;
 
   return (
     <div className="page-root" data-testid="page-procurement-orders">
@@ -327,6 +345,10 @@ export default function PurchaseOrdersPage() {
             <div className="detail-list">
               <label>销售单<Select value={purchaseDraft.orderNo || undefined} onValueChange={(value) => setPurchaseDraft({ ...purchaseDraft, orderNo: value, bomId: "", items: [] })}><SelectTrigger><SelectValue placeholder="请选择销售单" /></SelectTrigger><SelectContent>{salesOrders.filter((item) => item.status === "confirmed").map((item) => <SelectItem key={item.id} value={item.orderNo ?? item.id}>{item.orderNo ?? item.id}</SelectItem>)}</SelectContent></Select></label>
               <label>BOM表<Select value={purchaseDraft.bomId || undefined} disabled={!purchaseDraft.orderNo} onValueChange={(value) => void selectPurchaseBom(value)}><SelectTrigger><SelectValue placeholder="请选择BOM表" /></SelectTrigger><SelectContent>{boms.filter((item) => item.orderNo === purchaseDraft.orderNo).map((item) => <SelectItem key={item.id} value={item.id}>{item.orderNo}</SelectItem>)}</SelectContent></Select></label>
+              {/* 就地下单时常常要顺手改 BOM（用量、单位、少一个物料）：这里给出编辑入口。
+                  2026-09-14 拆分成枢纽页时这个入口丢了 —— openBom() 还在，但没有任何按钮调用它，
+                  于是 BOM 工作区（连同里面的「新建物料」）在采购单页彻底不可达。 */}
+              <label><Button type="button" size="sm" variant="secondary" data-testid="purchase-edit-bom" disabled={!purchaseDraft.bomId} onClick={() => openBom(purchaseDraft.bomId, purchaseDraft.orderNo)}>编辑BOM表</Button></label>
               <label>币种<Select value={purchaseDraft.currency || undefined} onValueChange={(value) => setPurchaseDraft({ ...purchaseDraft, currency: value })}><SelectTrigger><SelectValue placeholder="请选择币种" /></SelectTrigger><SelectContent>{currencyOptionsWithCurrent(currencyCatalogue, purchaseDraft.currency).map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></label>
               <label><Button type="button" aria-label="带入 BOM表明细" variant={purchaseDraft.importBomItems ? "secondary" : "ghost"} aria-pressed={purchaseDraft.importBomItems} onClick={() => void toggleBomImport(!purchaseDraft.importBomItems)}>带入 BOM表明细：{purchaseDraft.importBomItems ? "是" : "否"}</Button></label>
               <div className="page-actions">
