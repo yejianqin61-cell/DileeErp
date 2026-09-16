@@ -24,6 +24,10 @@ import { CASH_FLOW_ITEM_DICTIONARY_KEY, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type DictionaryItem = { id: string; key: string; label: string; isActive: boolean };
+/** 银行账户池条目（财务 → 银行账户）。流水的「银行账户」只能从这里选。 */
+type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean };
+/** 流水上关联的银行账户摘要（列表接口给的就是这几个字段）。 */
+type BankLink = { id: string; bankCode: string; bankName: string; accountNumber: string; currency: string };
 type CashFlowEntry = {
   id: string;
   entryNo: string;
@@ -35,6 +39,8 @@ type CashFlowEntry = {
   item: { id: string; label: string } | null;
   settlementMethod: string | null;
   settlementAccount: { id: string; label: string } | null;
+  /** 这笔钱实际落在哪个银行账户上（算余额的那一个）；未指定时为 null。 */
+  bank: BankLink | null;
   status: string;
   sourceType: string | null;
   sourceId: string | null;
@@ -42,6 +48,13 @@ type CashFlowEntry = {
 };
 
 const ALL = "__all";
+/**
+ * 银行下拉的「清空」哨兵值（与应收/应付同一个做法）。
+ *
+ * 银行是可选字段，选错了必须能去掉；而 Radix Select 不接受空串 value，
+ * 所以用显式哨兵值表示「不指定银行」，提交时再翻译成 null（后端按「清空」处理）。
+ */
+const BANK_CLEAR = "__no_bank__";
 const DIRECTIONS = [
   { value: "income", label: "收入" },
   { value: "expense", label: "支出" },
@@ -71,6 +84,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
   const [entries, setEntries] = useState<CashFlowEntry[]>([]);
   const [items, setItems] = useState<DictionaryItem[]>([]);
   const [accounts, setAccounts] = useState<DictionaryItem[]>([]);
+  const [banks, setBanks] = useState<BankRef[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -90,14 +104,18 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       if (currencyFilter) params.set("currency", currencyFilter);
       if (directionFilter) params.set("direction", directionFilter);
       if (includeReversed) params.set("include_reversed", "true");
-      const [entryResult, itemResult, accountResult] = await Promise.all([
+      const [entryResult, itemResult, accountResult, bankResult] = await Promise.all([
         apiGet<CashFlowEntry[]>(`/finance/cash-flow-entries?${params.toString()}`),
         apiGet<DictionaryItem[]>(`/dictionaries/${CASH_FLOW_ITEM_DICTIONARY_KEY}/items?include_inactive=true`),
         apiGet<DictionaryItem[]>(`/dictionaries/${SETTLEMENT_ACCOUNT_DICTIONARY_KEY}/items`),
+        // 银行账户池只是「银行账户」下拉的数据源：拉不到（权限差异/未建账户）就留空，
+        // 不能因此让整页流水打不开（与应收侧拉银行的 catch 口径一致）。
+        apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
       ]);
       setEntries(entryResult.data);
       setItems(itemResult.data);
       setAccounts(accountResult.data);
+      setBanks(bankResult.data);
     } catch (cause) {
       setError(messageOf(cause, "收支流水加载失败"));
     } finally {
@@ -113,6 +131,10 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
   }, []);
 
   const activeItems = useMemo(() => items.filter((item) => item.isActive), [items]);
+  // 银行账户只能从银行池里选（停用的不出现）；账户在「财务 → 银行账户」维护。
+  const bankOptions = useMemo(() => banks.filter((bank) => bank.isActive).map((bank) => ({ value: bank.id, label: `${bank.bankName} / ${bank.accountNumber}（${bank.currency}）` })), [banks]);
+  /** 哨兵值 → 提交值：清空要显式送 null（后端按「清空」处理），未改动则送 undefined。 */
+  const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : value || undefined);
 
   function entryFields(entry?: CashFlowEntry): ActionField[] {
     return [
@@ -123,13 +145,17 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       { name: "currency", label: "币种", type: "select", required: true, defaultValue: entry?.currency ?? currencies[0]?.value, options: currencies.map((item) => ({ value: item.value, label: item.label })) },
       { name: "item_id", label: "收支项目", type: "select", required: true, defaultValue: entry?.item?.id, options: activeItems.map((item) => ({ value: item.id, label: item.label })) },
       { name: "settlement_method", label: "结算方式", type: "text", defaultValue: entry?.settlementMethod ?? undefined, placeholder: "如：转账 / 现金" },
+      // 两个「账户」不是一回事，别合并：
+      //   结算账户 = 老表「结算方式」字典项（给人看的文本，如「农业银行5706」），不参与任何计算；
+      //   银行账户 = 银行账户池（算余额的账），指定后这笔收支才会加减该账户的余额。
       { name: "settlement_account_id", label: "结算账户", type: "select", defaultValue: entry?.settlementAccount?.id, options: accounts.map((item) => ({ value: item.id, label: item.label })) },
+      { name: "bank_id", label: "银行账户（算余额的那一个；不指定则只记账不进账户）", type: "select", options: [{ value: BANK_CLEAR, label: "（不指定银行）" }, ...bankOptions], defaultValue: entry?.bank?.id ?? BANK_CLEAR },
       { name: "remark", label: "备注", type: "textarea", defaultValue: entry?.remark ?? undefined },
     ];
   }
 
   const bodyOf = (values: Record<string, string>) => {
-    const body: Record<string, string> = {};
+    const body: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(values)) if (value !== "" && value !== undefined) body[key] = value;
     return body;
   };
@@ -141,7 +167,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       submit: async (values) => {
         setBusy(true);
         try {
-          await apiPost("/finance/cash-flow-entries", bodyOf(values));
+          await apiPost("/finance/cash-flow-entries", { ...bodyOf(values), bank_id: bankValue(values.bank_id) });
           notifySuccess("已新增收支流水");
           await load();
         } finally {
@@ -158,7 +184,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       submit: async (values) => {
         setBusy(true);
         try {
-          await apiPatch(`/finance/cash-flow-entries/${entry.id}`, bodyOf(values));
+          await apiPatch(`/finance/cash-flow-entries/${entry.id}`, { ...bodyOf(values), bank_id: bankValue(values.bank_id) });
           notifySuccess("已更正收支流水");
           await load();
         } finally {
@@ -225,6 +251,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
     { accessorKey: "currency", header: "币种" },
     { id: "item", header: "收支项目", cell: ({ row }) => row.original.item?.label ?? "-" },
     { id: "settlement", header: "结算方式", cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
+    { id: "bank", header: "银行账户", cell: ({ row }) => (row.original.bank ? `${row.original.bank.bankName} / ${row.original.bank.accountNumber}` : "-") },
     { id: "source", header: "来源", cell: ({ row }) => row.original.sourceType ? <span className="badge">{SOURCE_LABELS[row.original.sourceType] ?? row.original.sourceType}</span> : <span className="panel-note">手工录入</span> },
     { id: "status", header: "状态", cell: ({ row }) => (row.original.status === "posted" ? "生效" : "已冲销") },
     {
@@ -251,7 +278,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
   const totalExpense = useMemo(() => entries.filter((entry) => entry.direction === "expense").length, [entries]);
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="收支管理" description="手工录入资金收支流水；收支项目与结算账户是可配置字典。收付款与工资过账后自动生成流水。">
+    <PageHeader title="收支管理" description="手工录入资金收支流水；收支项目与结算账户是可配置字典，银行账户决定这笔钱落在哪个账户上（影响账户余额）。收付款与工资过账后自动生成流水。">
       <Button variant="secondary" asChild><a href="/finance">返回财务</a></Button>
       <Button variant="secondary" data-testid="cash-flow-open-dictionary" onClick={() => setDictionaryOpen(true)}>收支项目维护</Button>
       <Button data-testid="cash-flow-create" onClick={openCreate}>新增流水</Button>
@@ -336,6 +363,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
       {!error && !loading && <>
         <p className="panel-note panel-body">
           金额一律填正数，收/支由「收支方向」决定；来源列「手工录入」为手动新增，「客户收款 / 供应商付款 / 工资付款」为过账自动生成。
+          「结算方式」这一列是老表结算方式的字典文本，「银行账户」才是算余额的账户（收入 +、支出 −）。
         </p>
         <div className="panel-body">
           <DataTable columns={columns} data={entries} empty={<EmptyState title="本期没有收支流水" description="点右上角「新增流水」手工录入；收付款过账后自动生成。" />} />

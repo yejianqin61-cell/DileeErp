@@ -5,6 +5,7 @@
 //   2. 更正只对生效中的流水开放；冲销必须填原因，且冲销后报表不再计入；
 //   3. 收支项目是可配置字典 —— 能新增、能停用，且停用后仍列在维护面板里（否则无法再启用）。
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import CashFlowWorkspace from "../components/finance/cash-flow-workspace";
 import { Toaster } from "../components/ui/toaster";
@@ -16,7 +17,14 @@ const EP = {
   accounts: "/api/v1/dictionaries/settlement_account/items",
   dictionaryItem: "/api/v1/dictionaries/items/",
   currencies: "/api/v1/dictionaries/currency/items",
+  banks: "/api/v1/finance/banks",
 };
+
+/** 银行账户池（财务 → 银行账户）：流水的「银行账户」下拉只能从这里选。 */
+const BANKS = [
+  { id: "bank-1", bankCode: "ABC-5706", bankName: "农业银行", accountName: "迪礼贸易有限公司", accountNumber: "5706", currency: "CNY", isActive: true },
+  { id: "bank-dead", bankCode: "OLD-0001", bankName: "已停用银行", accountName: "迪礼贸易有限公司", accountNumber: "0001", currency: "CNY", isActive: false },
+];
 
 const ENTRIES = [
   {
@@ -30,6 +38,7 @@ const ENTRIES = [
     item: { id: "item-2", label: "货款" },
     settlementMethod: "转账",
     settlementAccount: { id: "acct-1", label: "农业银行5706" },
+    bank: { id: "bank-1", bankCode: "ABC-5706", bankName: "农业银行", accountNumber: "5706", currency: "CNY" },
     status: "posted",
     remark: null,
   },
@@ -44,6 +53,7 @@ const ENTRIES = [
     item: { id: "item-2", label: "货款" },
     settlementMethod: "转账",
     settlementAccount: { id: "acct-2", label: "中国银行（美元）7624" },
+    bank: null,
     status: "reversed",
     remark: null,
   },
@@ -67,6 +77,7 @@ function stubCashFlow(extra?: Handler) {
     if (url.includes(EP.entries)) return apiOk(ENTRIES);
     if (url.includes(EP.items)) return apiOk(ITEMS);
     if (url.includes(EP.accounts)) return apiOk(ACCOUNTS);
+    if (url.includes(EP.banks)) return apiOk(BANKS);
     return apiOk([]);
   });
   return { calls, listCalls: () => calls.filter((call) => call.url.includes(EP.entries)) };
@@ -79,7 +90,7 @@ async function open() {
 }
 
 /** ActionDialog 里的下拉：点开 trigger 再点选项。 */
-async function pickOption(name: string, optionName: string) {
+async function pickOption(name: string, optionName: string | RegExp) {
   fireEvent.click(screen.getByTestId(`action-field-${name}`));
   fireEvent.click(await screen.findByRole("option", { name: optionName }));
 }
@@ -106,6 +117,9 @@ describe("收支管理 · 列表与筛选", () => {
     expect(within(row).getByText("2900.0000")).toBeInTheDocument();
     expect(within(row).getByText("货款")).toBeInTheDocument();
     expect(within(row).getByText("转账--农业银行5706")).toBeInTheDocument();
+    // 「银行账户」是算余额的那一个（老表「结算账户」只是字典文本）；没指定的行回落 "-"
+    expect(within(row).getByText("农业银行 / 5706")).toBeInTheDocument();
+    expect(within(within(table).getAllByTestId("data-table-row")[1]).getByText("-")).toBeInTheDocument();
     expect(screen.getByTestId("cash-flow-count")).toHaveTextContent("共 2 条（收入 1 / 支出 1）");
     expect(calls.length).toBeGreaterThan(0);
   });
@@ -153,6 +167,50 @@ describe("收支管理 · 新增与更正", () => {
     expect(body.direction).toBe("expense");
     expect(body.currency).toBe("CNY");
     expect(body.entry_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("新增流水：指定银行账户后随 POST 提交", async () => {
+    const { calls } = stubCashFlow();
+    await open();
+    fireEvent.click(screen.getByTestId("cash-flow-create"));
+    await screen.findByTestId("action-dialog");
+
+    fireEvent.change(screen.getByTestId("action-field-counterparty_name"), { target: { value: "碧江" } });
+    fireEvent.change(screen.getByTestId("action-field-amount"), { target: { value: "4158" } });
+    await pickOption("item_id", "货款");
+    await pickOption("bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST" && call.url.includes(EP.entries)).length).toBe(1));
+    const posted = calls.find((call) => call.method === "POST" && call.url.includes(EP.entries))!;
+    expect(JSON.parse(String(posted.body)).bank_id).toBe("bank-1");
+  });
+
+  it("银行账户下拉只列启用账户（停用的账户后端不认，指定了也不加减余额）", async () => {
+    stubCashFlow();
+    await open();
+    fireEvent.click(screen.getByTestId("cash-flow-create"));
+    await screen.findByTestId("action-dialog");
+    await userEvent.click(screen.getByTestId("action-field-bank_id"));
+    const options = await screen.findAllByRole("option");
+    expect(options.map((option) => option.textContent).join("|")).toContain("农业银行");
+    expect(options.map((option) => option.textContent).join("|")).not.toContain("已停用银行");
+  });
+
+  it("更正流水：银行账户预填当前值，选「不指定银行」按清空提交（送 null）", async () => {
+    const { calls } = stubCashFlow();
+    await open();
+    fireEvent.click(screen.getByTestId("cash-flow-edit-cf-1"));
+    await screen.findByTestId("action-dialog");
+    expect(screen.getByTestId("action-field-bank_id")).toHaveTextContent("农业银行");
+
+    await pickOption("bank_id", /不指定银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(calls.filter((call) => call.method === "PATCH").length).toBe(1));
+    const patched = calls.find((call) => call.method === "PATCH")!;
+    // 清空要显式送 null（undefined 会被后端当成「不更新该字段」，银行就永远去不掉了）
+    expect(JSON.parse(String(patched.body)).bank_id).toBeNull();
   });
 
   it("新增失败时把后端原因显示在弹窗内（不是关掉弹窗只弹一条通知）", async () => {

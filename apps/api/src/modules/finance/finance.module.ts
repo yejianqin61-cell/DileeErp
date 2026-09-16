@@ -2,6 +2,8 @@ import { Module } from "@nestjs/common";
 import { AuditModule } from "../../platform/audit/audit.module";
 import { BankController } from "./bank.controller";
 import { BankService } from "./bank.service";
+import { BankTransferController } from "./bank-transfer.controller";
+import { BankTransferService } from "./bank-transfer.service";
 import { CashFlowController } from "./cash-flow.controller";
 import { CashFlowService } from "./cash-flow.service";
 import { FinanceController } from "./finance.controller";
@@ -19,5 +21,5 @@ import { SupplierPayableReconciliationService } from "./supplier-payable-reconci
 import { VoucherController } from "./voucher.controller";
 import { VoucherService } from "./voucher.service";
 
-@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceReportController, CashFlowController, BankController, VoucherController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService, VoucherService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService, VoucherService] })
+@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceReportController, CashFlowController, BankController, BankTransferController, VoucherController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService, BankTransferService, VoucherService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, BankService, BankTransferService, VoucherService] })
 export class FinanceModule {}

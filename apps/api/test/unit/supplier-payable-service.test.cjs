@@ -3,6 +3,12 @@ const test = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { SupplierPayableService } = require("../../dist/modules/finance/supplier-payable.service.js");
 
+/**
+ * CashFlowService 替身：确认应付（逐条 / 按对账单批量）都要记账 ——
+ * `requireItem` 校验收支项目，`recordConfirmation` 写支出流水（= 钱从银行账户转出）。
+ */
+const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, recordConfirmation: async () => null, ...extra });
+
 test("payable list exposes purchase batch traceability, supplier name and payable balance", async () => {
   const prisma = {
     supplierPayableEntry: { findMany: async () => [{
@@ -19,7 +25,7 @@ test("payable list exposes purchase batch traceability, supplier name and payabl
     }] },
     supplierPayableReconciliation: { findMany: async () => [] },
   };
-  const service = new SupplierPayableService(prisma, {});
+  const service = new SupplierPayableService(prisma, {}, cashFlowStub());
   const [row] = await service.list();
   assert.equal(row.source_no, "GR-1");
   assert.equal(row.purchase_order_no, "PO-1");
@@ -56,7 +62,7 @@ test("应付列表标出每条应付被哪张对账单覆盖（供应商+币种+
       },
     },
   };
-  const service = new SupplierPayableService(prisma, {});
+  const service = new SupplierPayableService(prisma, {}, cashFlowStub());
   const result = await service.list();
   const byId = Object.fromEntries(result.map((row) => [row.id, row]));
   assert.deepEqual(byId["covered-by-order"].reconciliation, { id: "recon-2", reconciliation_no: "APREC-2", status: "difference", period_start: new Date("2026-09-01T00:00:00.000Z"), period_end: new Date("2026-09-30T00:00:00.000Z") });
@@ -81,7 +87,7 @@ test("supplier payable confirmation locks and rechecks the current draft", async
     }),
   };
   const audit = { recordWithOrderNo: async () => {} };
-  const service = new SupplierPayableService(prisma, audit);
+  const service = new SupplierPayableService(prisma, audit, cashFlowStub());
   await assert.rejects(
     () => service.confirm("payable-1", { id: "user-1" }),
     (error) => error.getResponse().code === "SUPPLIER_PAYABLE_NOT_CONFIRMABLE",
@@ -93,8 +99,65 @@ test("supplier payable confirmation locks and rechecks the current draft", async
 test("supplier payable confirmation rejects a voided source", async () => {
   const row = { id: "payable-1", status: "draft", payableSource: { status: "voided" }, outsourcePayableSource: null };
   const prisma = { supplierPayableEntry: { findFirst: async () => row, update: async () => { throw new Error("must not write"); } }, $transaction: async (fn) => fn({ $queryRaw: async () => [], supplierPayableEntry: prisma.supplierPayableEntry }) };
-  const service = new SupplierPayableService(prisma, { recordWithOrderNo: async () => {} });
+  const service = new SupplierPayableService(prisma, { recordWithOrderNo: async () => {} }, cashFlowStub());
   await assert.rejects(() => service.confirm("payable-1", { id: "user-1" }), (error) => error.getResponse().code === "PAYABLE_SOURCE_VOIDED");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求「一旦确认应付，金额就要转出对应的账户」）：
+//   逐条确认应付也要记账。用户点的是「确认应付」列表行上的那条路，不记账的话
+//   用户实际看到的仍然是「确认了但银行余额没动」。
+// ---------------------------------------------------------------------------
+
+function payableConfirmHarness(entry) {
+  const cashFlowCalls = [];
+  const prisma = {
+    bank: { findFirst: async ({ where }) => (where.id === "bank-dead" ? null : { id: where.id, bankName: "农业银行", accountNumber: "5706" }) },
+    supplierPayableEntry: { findFirst: async () => entry, update: async ({ data }) => ({ ...entry, ...data }) },
+  };
+  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], supplierPayableEntry: prisma.supplierPayableEntry });
+  const audit = { update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} };
+  const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
+  return { service: new SupplierPayableService(prisma, audit, cashFlow), cashFlowCalls };
+}
+
+const draftPayable = (extra = {}) => ({
+  id: "payable-1", payableNo: "AP-1", status: "draft", orderNo: "SO-1", supplierId: "supplier-1",
+  amount: new Prisma.Decimal("500"), currency: "CNY", sourceType: "raw_material_inbound",
+  supplier: { name: "晋江大田" }, payableSource: { status: "received" }, outsourcePayableSource: null, ...extra,
+});
+
+test("逐条确认应付：写一条支出流水并从指定的支付银行转出", async () => {
+  const { service, cashFlowCalls } = payableConfirmHarness(draftPayable());
+  const result = await service.confirm("payable-1", { id: "user-1" }, { bank_id: "bank-1" });
+  assert.equal(cashFlowCalls.length, 1);
+  const input = cashFlowCalls[0];
+  assert.equal(input.direction, "expense", "确认应付 = 钱出去");
+  assert.equal(input.sourceType, "supplier_payable_entry");
+  assert.equal(input.sourceId, "payable-1");
+  assert.equal(input.amount.toString(), "500");
+  assert.equal(input.bankId, "bank-1");
+  assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
+  assert.deepEqual(input.itemKeys, ["原材料 成本", "货款"], "项目候选链按来源类型选定");
+  assert.equal(result.cash_flow_entry_id, "cf-1");
+  assert.equal(result.bank_missing, false);
+});
+
+test("逐条确认应付：外加工来源归到成品外加工费；没选银行时回报 bank_missing", async () => {
+  const outsource = payableConfirmHarness(draftPayable({ sourceType: "outsource_receipt", outsourcePayableSource: { status: "received" }, payableSource: null }));
+  const result = await outsource.service.confirm("payable-1", { id: "user-1" });
+  assert.deepEqual(outsource.cashFlowCalls[0].itemKeys, ["成品外加工费", "加工费"]);
+  assert.equal(outsource.cashFlowCalls[0].bankId, null);
+  assert.equal(result.bank_missing, true);
+});
+
+test("逐条确认应付：银行非法时先拒绝，不确认任何应付", async () => {
+  const { service, cashFlowCalls } = payableConfirmHarness(draftPayable());
+  await assert.rejects(
+    () => service.confirm("payable-1", { id: "user-1" }, { bank_id: "bank-dead" }),
+    (error) => error.getResponse().code === "BANK_NOT_FOUND",
+  );
+  assert.deepEqual(cashFlowCalls, []);
 });
 
 test("supplier payable reversal locks and rechecks active allocations", async () => {
@@ -115,7 +178,7 @@ test("supplier payable reversal locks and rechecks active allocations", async ()
     }),
   };
   const audit = { recordWithOrderNo: async () => {} };
-  const service = new SupplierPayableService(prisma, audit);
+  const service = new SupplierPayableService(prisma, audit, cashFlowStub());
   await assert.rejects(
     () => service.reverse("payable-1", "撤销原因", { id: "user-1" }),
     (error) => error.getResponse().code === "SUPPLIER_PAYABLE_HAS_ALLOCATIONS",
@@ -139,7 +202,7 @@ test("supplier payable draft update locks and rechecks the current status", asyn
     }),
   };
   const audit = { recordWithOrderNo: async () => {}, update: () => ({}) };
-  const service = new SupplierPayableService(prisma, audit);
+  const service = new SupplierPayableService(prisma, audit, cashFlowStub());
   await assert.rejects(
     () => service.updateDraft("payable-1", { amount: "12" }, { id: "user-1" }),
     (error) => error.getResponse().code === "SUPPLIER_PAYABLE_NOT_EDITABLE",
@@ -158,7 +221,7 @@ test("应付草稿可编辑币种：走币种字典校验并写回应付条目",
     $transaction: async (fn) => fn({ $queryRaw: async () => [], supplierPayableEntry: prisma.supplierPayableEntry }),
   };
   const audit = { recordWithOrderNo: async () => {}, update: () => ({}) };
-  const service = new SupplierPayableService(prisma, audit, { assertSupported: async (code) => { checked.push(code); } });
+  const service = new SupplierPayableService(prisma, audit, cashFlowStub(), { assertSupported: async (code) => { checked.push(code); } });
   await service.updateDraft("payable-1", { currency: "USD", amount: "12" }, { id: "user-1" });
   assert.deepEqual(checked, ["USD"]);
   assert.equal(updated.currency, "USD");
@@ -178,7 +241,7 @@ test("confirmed supplier payable can be reopened to draft with a reason", async 
       supplierPayableEntry: prisma.supplierPayableEntry,
     }),
   };
-  const service = new SupplierPayableService(prisma, { update: () => ({}), recordWithOrderNo: async () => {} });
+  const service = new SupplierPayableService(prisma, { update: () => ({}), recordWithOrderNo: async () => {} }, cashFlowStub());
   const result = await service.reopen("payable-1", "修正供应商金额", { id: "user-1" });
   assert.equal(result.status, "draft");
   assert.equal(updated.status, "draft");
@@ -193,7 +256,7 @@ test("payable source creation restores a soft-deleted unique entry", async () =>
     supplierPayableEntry: { findUnique: async () => deleted, update: async () => { restored += 1; return { ...deleted, deletedAt: null, orderNo: "PO-1", amount: { toString: () => "2" } }; } },
     $transaction: async (fn) => fn({ $queryRaw: async () => [], payableSource: prisma.payableSource, supplierPayableEntry: prisma.supplierPayableEntry }),
   };
-  const service = new SupplierPayableService(prisma, { update: () => ({}), recordWithOrderNo: async () => {} });
+  const service = new SupplierPayableService(prisma, { update: () => ({}), recordWithOrderNo: async () => {} }, cashFlowStub());
   const result = await service.createFromSource({ source_type: "raw_material_inbound", source_id: "source-1" }, { id: "user-1" });
   assert.equal(result.deletedAt, null);
   assert.equal(restored, 1);
@@ -212,7 +275,7 @@ test("外加工签收来源接收后同样标记为已接收（来源模型不�
       supplierPayableEntry: { findUnique: async () => null, create: async ({ data }) => ({ id: "entry-2", orderNo: data.orderNo, payableNo: data.payableNo, sourceType: data.sourceType, amount: data.amount, deletedAt: null }) },
     }),
   };
-  const service = new SupplierPayableService(prisma, { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} });
+  const service = new SupplierPayableService(prisma, { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} }, cashFlowStub());
   await service.createFromSource({ source_type: "outsource_receipt", source_id: "osource-1" }, { id: "user-1" });
   assert.equal(received.length, 1);
   assert.deepEqual(received[0].where, { id: "osource-1", status: { not: "voided" } });
@@ -232,7 +295,7 @@ test("创建应付时把采购单/采购明细关联落库（否则按采购单�
       },
     }),
   };
-  const service = new SupplierPayableService(prisma, { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} });
+  const service = new SupplierPayableService(prisma, { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} }, cashFlowStub());
   await service.createFromSource({ source_type: "raw_material_inbound", source_id: "source-1" }, { id: "user-1" });
   assert.equal(captured.purchaseOrderId, "po-1");
   assert.equal(captured.purchaseOrderItemId, "poi-1");
@@ -252,7 +315,7 @@ test("外加工签收来源创建应付时带上批次关联", async () => {
       },
     }),
   };
-  const service = new SupplierPayableService(prisma, { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} });
+  const service = new SupplierPayableService(prisma, { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} }, cashFlowStub());
   await service.createFromSource({ source_type: "outsource_receipt", source_id: "osource-1" }, { id: "user-1" });
   assert.equal(captured.outsourceLogisticsBatchId, "batch-2");
   assert.equal(captured.purchaseOrderId, "po-2");

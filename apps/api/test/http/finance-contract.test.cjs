@@ -17,7 +17,7 @@
 //
 // 只读纪律：只发 GET（列表 / 详情 / 影响预览）、匿名请求（断言 401）、随机 UUID 的详情与动作请求
 // （断言 404）、以及**非法请求体**的 POST/PATCH（断言 400 —— ValidationPipe 在抵达 service 之前拒绝）。
-// 不创建 / 修改 / 删除任何业务数据。三个"无 body DTO"的动作端点（confirm / post）会真正进入 service，
+// 不创建 / 修改 / 删除任何业务数据。三个动作端点（confirm / post）在**不带 body** 时会真正进入 service，
 // 已逐一核对代码：它们都在任何 update 之前抛 notFound（见 BODYLESS_ACTIONS 注释），因此同样是只读的。
 //
 // 断言依据：2026 年对运行中 API（http://127.0.0.1:3001）的实测，以及各 service 的 notFound/invalid 抛点。
@@ -165,10 +165,14 @@ const VALIDATION_PROBES = [
 ];
 
 /**
- * 3 个**没有 body DTO** 的动作端点，校验层不存在，请求会真正抵达 service 并以 404 结束。
- * 逐一核对过代码，确认它们在 update 之前抛 notFound，因此对随机 UUID 的探测是只读的：
- *   receivable.service.ts:62-64（confirm）、receivable-adjustment.service.ts:78-80（post）、
- *   supplier-payable.service.ts:61-63（confirm）。
+ * 3 个动作端点，请求**不带 body** 时会真正抵达 service 并以 404 结束。
+ * 2026-09-16 起 `receivable-sources/:id/confirm` 与 `payable-entries/:id/confirm` 有了 `@Body()`
+ * （确认即记账要能带上入账银行与收支项目），但 `ConfirmSourceDto` 的字段**全部可选** ——
+ * 空 body 依旧通过校验直达 service，所以这里的「不带 body 探测」结论不变。
+ * 逐一核对过代码，确认它们在 update 之前抛 notFound（银行/项目校验也在事务之前，
+ * 因此在 404 之前不会有任何写入），因此对随机 UUID 的探测是只读的：
+ *   receivable.service.ts（confirm）、receivable-adjustment.service.ts（post）、
+ *   supplier-payable.service.ts（confirm）。
  */
 const BODYLESS_ACTIONS = [
   { code: "RECEIVABLE_SOURCE_NOT_FOUND", path: `${FINANCE}/receivable-sources/${UNKNOWN_ID}/confirm` },
@@ -332,12 +336,12 @@ test("KNOWN_CONTRACT_DEFECT finance.nested_allocation_constraints_are_not_enforc
   expectErrorEnvelope(response, { code: "CUSTOMER_PAYMENT_NOT_FOUND", context: "nested allocation probe", status: 404 });
 });
 
-test("finance.bodyless_action_endpoints_have_no_validation_layer_and_fail_lookup_before_mutating", async () => {
+test("finance.action_endpoints_accept_an_empty_body_and_fail_lookup_before_mutating", async () => {
   const agent = adminAgent();
 
   for (const { code, path } of BODYLESS_ACTIONS) {
-    // 这三个路由没有 @Body 参数（finance.controller.ts:70、86、97），任何请求体都被忽略，
-    // 请求直达 service；随机 UUID 命中 notFound，update 永不执行（抛点见 BODYLESS_ACTIONS 注释）。
+    // 这三个路由的 body 要么不存在、要么字段全部可选（见 BODYLESS_ACTIONS 注释），
+    // 空 body 通过校验直达 service；随机 UUID 命中 notFound，update 永不执行。
     const body = expectErrorEnvelope(await agent.request(path, { method: "POST" }), { context: `POST ${path}`, code, status: 404 });
     assert.deepEqual(body.error.details, []);
   }

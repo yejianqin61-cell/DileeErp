@@ -6,13 +6,16 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { sourceType, coveringPayableReconciliation } from "./supplier-payable.domain";
+import { requireActiveBank } from "./bank-selection";
+import { CashFlowService } from "./cash-flow.service";
+import { paymentItemKeys, PAYABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
 
 type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
 export type PayableEntryInput = { source_type: SourceType; source_id: string; amount?: string; amount_reason?: string; confirmation_date?: string; attachment?: unknown[]; remark?: string };
 
 @Injectable()
 export class SupplierPayableService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
     const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payment: { select: { status: true } } } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
@@ -124,17 +127,47 @@ export class SupplierPayableService {
     else await tx.payableSource.updateMany({ where: { id: sourceId, status: { not: "voided" } }, data });
   }
 
-  async confirm(id: string, user: CurrentUser) {
-    const row = await this.prisma.$transaction(async (tx) => {
+  /**
+   * 逐条确认应付 —— 确认即记账（用户要求：「一旦确认应付，金额就要转出对应的账户」）。
+   *
+   * 与「一键确认应付」（按对账单）的关系：同一件事的两条入口。按对账单确认写一条按对账单汇总的流水；
+   * 逐条确认写一条只属于这条应付的流水。一条应付一旦被确认就不再是草稿，另一个入口的
+   * `status = draft` 条件不会再捞到它，因此不会重复记账。
+   *
+   * 收支项目候选链按**来源类型**选定（原料入库 → 原材料 成本；外加工签收 → 成品外加工费），
+   * 与供应商付款过账同一套归类口径；人工选了就以人工为准。
+   */
+  async confirm(id: string, user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+    // 先进校验、后进事务：等事务提交完才发现银行非法，应付已经确认、流水却没写。
+    if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "支付银行不存在或已停用");
+    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
-      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } } });
+      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } }, supplier: { select: { name: true } } } });
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
       if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_CONFIRMABLE", "只有草稿应付可以确认");
       if (current.payableSource?.status === "voided" || current.outsourcePayableSource?.status === "voided") throw this.invalid("PAYABLE_SOURCE_VOIDED", "应付来源已作废，不能确认");
-      return tx.supplierPayableEntry.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+      const updated = await tx.supplierPayableEntry.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+      // 供应商名要从 current 拿：update 的返回值只有标量列，没有关联，用 row 会退化成供应商 UUID。
+      return { updated, supplierName: current.supplier?.name ?? current.supplierId };
     });
+    const row = result.updated;
     await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { payable_no: row.payableNo });
-    return row;
+    const cashFlow = await this.cashFlow.recordConfirmation({
+      sourceType: "supplier_payable_entry",
+      sourceId: id,
+      documentNo: row.payableNo,
+      entryDate: this.today(),
+      amount: row.amount,
+      currency: row.currency,
+      counterpartyName: result.supplierName,
+      direction: "expense",
+      itemKeys: row.sourceType ? paymentItemKeys(row.sourceType) : PAYABLE_CONFIRM_ITEM_KEYS,
+      itemId: options.cash_flow_item_id,
+      bankId: options.bank_id ?? null,
+      remark: `确认应付 ${row.payableNo}`,
+    }, user);
+    return { ...row, cash_flow_entry_id: cashFlow?.id ?? null, bank_missing: !options.bank_id };
   }
 
   /**
@@ -240,6 +273,8 @@ export class SupplierPayableService {
   private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.lte(0)) throw new Error(); return result; } catch { throw this.invalid(code, "金额必须是大于零的十进制数"); } }
   private date(value: string) { const result = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(result.valueOf())) throw this.invalid("INVALID_CONFIRMATION_DATE", "确认日期无效"); return result; }
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
+  /** 确认发生的日期（记账日）：取当天的 UTC 零点，让流水日期与「今天」在库里可比较、可复现。 */
+  private today() { return new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`); }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }
   private invalid(code: string, message: string) { return new UnprocessableEntityException({ code, message, details: [] }); }
 }

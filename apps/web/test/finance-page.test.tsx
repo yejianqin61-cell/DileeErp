@@ -167,16 +167,16 @@ const supplierReconciliation = (over: Record<string, unknown> = {}) => ({
 // ------------------------------------------------------------------ 一级页
 
 describe("财务一级页：板块入口", () => {
-  it("展示 7 个入口，并分别指向二级页地址", async () => {
+  it("展示 8 个入口，并分别指向二级页地址", async () => {
     stubFinance();
     render(<FinanceBoardIndex />);
     expect(screen.getByTestId("page-finance")).toBeInTheDocument();
-    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "工资管理"], ["banks", "银行账户"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
+    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "工资管理"], ["banks", "银行账户"], ["bank-transfers", "银行余额互转"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
       const card = screen.getByTestId(`finance-board-${key}`);
       expect(card).toHaveAttribute("href", `/finance/${key}`);
       expect(within(card).getByRole("heading", { name: title })).toBeInTheDocument();
     }
-    expect(screen.getByTestId("finance-board-grid").querySelectorAll("a")).toHaveLength(7);
+    expect(screen.getByTestId("finance-board-grid").querySelectorAll("a")).toHaveLength(8);
   });
 });
 
@@ -219,14 +219,20 @@ describe("应收管理 · 成品出库条目", () => {
     expect(within(dialog).getByRole("button", { name: "确认应收" })).toBeInTheDocument();
   });
 
-  it("确认应收走 POST /:id/confirm（不带 body）", async () => {
+  it("逐条确认应收改走弹窗（确认即记账，先问清入账银行/收支项目），提交后 POST /:id/confirm", async () => {
     const calls = stubFinance({ receivables: [source()] });
     await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
     fireEvent.click(panel("成品出库条目").getByRole("button", { name: "确认应收" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText("确认应收：AR-001")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-cash_flow_item_id")).toBeInTheDocument();
+    submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receivable-sources/rec-1/confirm")).toHaveLength(1));
     const call = callsTo(calls, "/api/v1/finance/receivable-sources/rec-1/confirm")[0];
     expect(call.method).toBe("POST");
-    expect(call.body).toBeNull();
+    // 银行留空 → 显式送 null：后端按「未指定账户」记账并回 bank_missing（上面会警告）
+    expect(bodyOf(call)).toEqual({ bank_id: null });
   });
 
   it("编辑应收草稿走 PATCH /:id 并带上用户改后的金额", async () => {
@@ -282,7 +288,14 @@ describe("应收管理 · 应收对账", () => {
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/reconciliations/recon-1/resolve")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/reconciliations/recon-1/resolve")[0]).resolution_remark).toBe("客户确认差异为折让");
 
+    // 一键确认应收现在先弹「确认应收：<对账单号>」：确认会**同时把钱记进账**，
+    // 必须先问清入账银行与收支项目（不再是点一下就直接 POST）。
     fireEvent.click(screen.getByTestId("reconciliation-confirm-recon-2"));
+    const confirmDialog = await screen.findByTestId("action-dialog");
+    expect(within(confirmDialog).getByText("确认应收：REC-002")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-cash_flow_item_id")).toBeInTheDocument();
+    submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/reconciliations/recon-2/confirm-receivables")).toHaveLength(1));
     expect(callsTo(calls, "/api/v1/finance/reconciliations/recon-2/confirm-receivables")[0].method).toBe("POST");
   });
@@ -534,6 +547,12 @@ describe("应付管理 · 应付对账与确认应付", () => {
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/srecon-2/resolve")).toHaveLength(1));
 
     await userEvent.click(screen.getByTestId("reconciliation-confirm-srecon-1"));
+    // 确认应付现在也走「确认应付：<对账单号>」弹窗（确认会同时写一笔支出流水），提交后才发请求。
+    const confirmDialog = await screen.findByTestId("action-dialog");
+    expect(within(confirmDialog).getByText("确认应付：APREC-001")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-cash_flow_item_id")).toBeInTheDocument();
+    submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/srecon-1/confirm-payables")).toHaveLength(1));
   });
 
@@ -657,6 +676,12 @@ describe("应付管理 · 应付对账与确认应付", () => {
     expect(bodyOf(patch).amount).toBe("48");
 
     fireEvent.click(panel("确认应付").getByRole("button", { name: "确认应付" }));
+    // 逐条确认应付同样改成弹窗（确认即记账，要先问清支付银行与收支项目）
+    const confirmDialog = await screen.findByTestId("action-dialog");
+    expect(within(confirmDialog).getByText("确认应付：AP-001")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-cash_flow_item_id")).toBeInTheDocument();
+    submitDialog();
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/pe-1/confirm")).toHaveLength(1));
     expect(callsTo(calls, "/api/v1/finance/payable-entries/pe-1/confirm")[0].method).toBe("POST");
   });
@@ -753,6 +778,200 @@ describe("应收管理 · 银行账户池与币种", () => {
     const patch = callsTo(calls, `${EP.receivables}/rec-1`)[0];
     expect(patch.method).toBe("PATCH");
     expect(bodyOf(patch)).toMatchObject({ currency: "USD" });
+  });
+});
+
+/**
+ * 2026-09（应收侧新增能力）：收支项目建单即持久化 + 确认应收要真的记账。
+ *
+ * 两件事都有「看着成功、其实钱没归位」的风险，所以这里钉住**请求体**：
+ *   1) 建单（对账 / 收款）时选的收支项目必须随 POST 发出去，否则单据上永远只有后端猜的那个；
+ *   2) 确认应收不再是无 body 直接打：必须先问清入账银行与收支项目，且后端回 `bank_missing`
+ *      时要给「钱记进流水了、但没进任何账户」的警告，而不是一句成功。
+ */
+describe("应收管理 · 收支项目与确认应收入账", () => {
+  const travelItem = { id: "item-travel", key: "差旅费", label: "差旅费", isActive: true };
+  const matchedRecon = () => receivableReconciliation({
+    id: "recon-2", reconciliationNo: "REC-002", status: "matched", difference: "0.0000",
+    flow: { entry_count: 2, draft_count: 2, draft_amount: "240.0000", can_confirm_receivables: true, order_nos: ["SO-1"], product_names: ["折叠伞"], product_specifications: ["黑胶"] },
+  });
+  const confirmPath = "/api/v1/finance/reconciliations/recon-2/confirm-receivables";
+
+  it("创建对账把选中的收支项目随 POST 发出去", async () => {
+    const calls = stubFinance({
+      receivables: [source()],
+      customers: [{ id: "customer-1", name: "香港迪礼", customerCode: "C001" }],
+      cashFlowItems: [travelItem],
+    });
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(panel("待创建对账的条目").getByRole("button", { name: "创建对账" }));
+    setValue("action-field-external_balance", "100");
+    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, EP.reconciliations).filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, EP.reconciliations).filter((call) => call.method === "POST")[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
+  });
+
+  it("登记收款把选中的收支项目随建单 POST 发出去", async () => {
+    const calls = stubFinance({
+      receivables: [confirmedSource],
+      customers: [{ id: "customer-1", name: "香港迪礼", customerCode: "C001" }],
+      cashFlowItems: [travelItem],
+    });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(panel("确认应收").getByRole("button", { name: "登记收款" }));
+    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, EP.customerPayments).filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, EP.customerPayments).filter((call) => call.method === "POST")[0])).toMatchObject({ cash_flow_item_id: "item-travel" });
+  });
+
+  it("编辑收款草稿：默认带出单据上的收支项目（不会清掉），选「不指定收支项目」才送 null", async () => {
+    const calls = stubFinance({ customerPayments: [payment({ cashFlowItemId: "item-travel" })], cashFlowItems: [travelItem] });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    // 只改金额、不动收支项目：PATCH 里仍是单据上原来的项目，既不是 null 也没被抹掉。
+    fireEvent.click(panel("收款").getByRole("button", { name: "编辑" }));
+    setValue("action-field-amount", "55");
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, `${EP.customerPayments}/cp-1`)).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, `${EP.customerPayments}/cp-1`)[0]).cash_flow_item_id).toBe("item-travel");
+
+    // 明确清空：哨兵值翻译成 null，后端才按「清空」处理。
+    fireEvent.click(panel("收款").getByRole("button", { name: "编辑" }));
+    await pickOption("action-field-cash_flow_item_id", /不指定收支项目/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, `${EP.customerPayments}/cp-1`)).toHaveLength(2));
+    expect(bodyOf(callsTo(calls, `${EP.customerPayments}/cp-1`)[1]).cash_flow_item_id).toBeNull();
+  });
+
+  /**
+   * 逐条确认应收 / 按订单批量确认应收：与「一键确认应收」同一件事的两条**行级**入口，
+   * 用户要求「一旦确认应收，金额就要进入对应的账户」——所以都要收集入账银行 + 收支项目，
+   * 并且都要在 `bank_missing` 时给出警告。
+   */
+  it("逐条确认应收：行内按钮打开弹窗，提交 { bank_id, cash_flow_item_id }", async () => {
+    const calls = stubFinance(
+      { receivables: [source()], banks: [bank()], cashFlowItems: [travelItem] },
+      (url) => (url.endsWith("/api/v1/finance/receivable-sources/rec-1/confirm") ? apiOk({ ...source(), amount: "120.0000", currency: "USD", cash_flow_entry_id: "cf-1", bank_missing: false }) : undefined),
+    );
+    await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(panel("成品出库条目").getByRole("button", { name: "确认应收" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText(/把该金额记入下面选定的银行账户/)).toBeInTheDocument();
+    await pickOption("action-field-bank_id", /农业银行/);
+    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receivable-sources/rec-1/confirm")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/receivable-sources/rec-1/confirm")[0])).toEqual({ bank_id: "bank-1", cash_flow_item_id: "item-travel" });
+  });
+
+  it("逐条确认应收没指定银行时同样给出警告，而不是一句成功", async () => {
+    const calls = stubFinance(
+      { receivables: [source()] },
+      (url) => (url.endsWith("/api/v1/finance/receivable-sources/rec-1/confirm") ? apiOk({ ...source(), amount: "120.0000", currency: "USD", cash_flow_entry_id: "cf-1", bank_missing: true }) : undefined),
+    );
+    await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(panel("成品出库条目").getByRole("button", { name: "确认应收" }));
+    await screen.findByTestId("action-dialog");
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receivable-sources/rec-1/confirm")).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("未指定入账银行"))).toBe(true));
+    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("未指定入账银行")) as HTMLElement;
+    expect(warning).toHaveClass("ui-toast-error");
+    expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("金额已记入所选银行账户"))).toBe(false);
+  });
+
+  it("按订单批量确认应收同样问清入账银行与收支项目（服务端每条应收各写一条流水）", async () => {
+    const calls = stubFinance(
+      { receivables: [source()], banks: [bank()], cashFlowItems: [travelItem] },
+      (url) => (url.endsWith("/api/v1/finance/receivable-sources/batch-confirm-by-order") ? apiOk({ orderNo: "SO-1", count: 1, ids: ["rec-1"], cash_flow_entry_ids: ["cf-1"], bank_missing: false }) : undefined),
+    );
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(panel("按订单批量确认").getByRole("button", { name: /批量确认/ }));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText("批量确认应收：SO-1")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    await pickOption("action-field-bank_id", /农业银行/);
+    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receivable-sources/batch-confirm-by-order")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/receivable-sources/batch-confirm-by-order")[0])).toEqual({ order_no: "SO-1", bank_id: "bank-1", cash_flow_item_id: "item-travel" });
+  });
+
+  it("确认应收先弹窗问清入账银行与收支项目，提交后按选定值记账", async () => {
+    const calls = stubFinance(
+      { reconciliations: [matchedRecon()], banks: [bank()], cashFlowItems: [travelItem] },
+      (url) => (url.endsWith(confirmPath) ? apiOk({ reconciliation_id: "recon-2", status: "matched", confirmed_count: 2, confirmed_amount: "240.0000", currency: "USD", bank_id: "bank-1", cash_flow_item_id: "item-travel", cash_flow_entry_id: "cf-9", bank_missing: false }) : undefined),
+    );
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(screen.getByTestId("reconciliation-confirm-recon-2"));
+
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText("确认应收：REC-002")).toBeInTheDocument();
+    // 将要确认的条数与金额写在 info 行里（金额要进账，点之前必须看得见）
+    expect(within(dialog).getByText(/2 条草稿应收（合计 240\.0000 USD）/)).toBeInTheDocument();
+
+    await pickOption("action-field-bank_id", /农业银行/);
+    await pickOption("action-field-cash_flow_item_id", /差旅费/);
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, confirmPath)).toHaveLength(1));
+    const call = callsTo(calls, confirmPath)[0];
+    expect(call.method).toBe("POST");
+    // 请求体就是入账银行 + 收支项目这两项（确认金额由后端按范围内的草稿算）
+    expect(bodyOf(call)).toEqual({ bank_id: "bank-1", cash_flow_item_id: "item-travel" });
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("REC-002 已确认 2 条应收"))).toBe(true));
+  });
+
+  it("确认应收没指定银行时给出「钱记了但没进任何账户」的警告，而不是一句成功", async () => {
+    const calls = stubFinance(
+      { reconciliations: [matchedRecon()] },
+      (url) => (url.endsWith(confirmPath) ? apiOk({ reconciliation_id: "recon-2", status: "matched", confirmed_count: 2, confirmed_amount: "240.0000", currency: "USD", bank_id: null, cash_flow_item_id: null, cash_flow_entry_id: "cf-9", bank_missing: true }) : undefined),
+    );
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.click(screen.getByTestId("reconciliation-confirm-recon-2"));
+    await screen.findByTestId("action-dialog");
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, confirmPath)).toHaveLength(1));
+
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("未指定入账银行"))).toBe(true));
+    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("未指定入账银行")) as HTMLElement;
+    expect(warning).toHaveTextContent("已记入收支流水，但不会体现在任何银行账户余额里");
+    // 警告必须与「成功」区分得开（错误态样式），并且**不能**同时出现「金额已入账」的成功文案
+    expect(warning).toHaveClass("ui-toast-error");
+    expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("金额已记入所选银行账户"))).toBe(false);
+  });
+
+  it("对账单详情里的「一键确认应收」打开同一个确认弹窗", async () => {
+    const detail = receivableReconciliation({ details: { entries: [source()], draft_entries: [source()], entry_count: 1, draft_count: 1, draft_amount: "120.0000", can_confirm_receivables: true } });
+    stubFinance({ reconciliations: [receivableReconciliation()] }, (url) => (url.endsWith("/api/v1/finance/reconciliations/recon-1") ? apiOk(detail) : undefined));
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    fireEvent.doubleClick(screen.getAllByTestId("data-table-row")[0]);
+    const detailDialog = await screen.findByTestId("finance-record-detail");
+    fireEvent.click(within(detailDialog).getByRole("button", { name: /一键确认应收/ }));
+
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText("确认应收：REC-001")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    expect(screen.getByTestId("action-field-cash_flow_item_id")).toBeInTheDocument();
+  });
+
+  it("对账单列表与详情都用字典还原收支项目名（字典查不到的显示 -）", async () => {
+    const detail = receivableReconciliation({ cashFlowItemId: "item-gone", details: { entries: [], draft_entries: [], entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_receivables: false } });
+    stubFinance(
+      { reconciliations: [receivableReconciliation({ cashFlowItemId: "item-travel" })], cashFlowItems: [travelItem] },
+      (url) => (url.endsWith("/api/v1/finance/reconciliations/recon-1") ? apiOk(detail) : undefined),
+    );
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+    const table = panel("应收对账单");
+    expect(table.getByText("收支项目")).toBeInTheDocument();
+    expect(table.getByText("差旅费")).toBeInTheDocument();
+
+    // 项目被删/停用（或字典没拉到时）：详情里显示 -，不能让整页崩在查标签上
+    fireEvent.doubleClick(screen.getAllByTestId("data-table-row")[0]);
+    const dialog = await screen.findByTestId("finance-record-detail");
+    await waitFor(() => expect(within(dialog).getByText("收支项目")).toBeInTheDocument());
+    expect(within(dialog).getAllByText("-").length).toBeGreaterThan(0);
   });
 });
 
@@ -995,10 +1214,14 @@ describe("财务模块：失败态与权限降级", () => {
     expect(screen.queryByTestId("error-state")).not.toBeInTheDocument();
   });
 
-  it("动作失败经 toast 暴露后端消息", async () => {
+  it("动作失败经 toast 暴露后端消息，且弹窗留在原地显示原因（不静默关闭）", async () => {
     stubFinance({ receivables: [source()] }, (url) => (url.endsWith("/confirm") ? apiErr(409, "RECEIVABLE_SOURCE_NOT_CONFIRMABLE", "只有草稿应收来源可以确认") : undefined));
     await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
     fireEvent.click(panel("成品出库条目").getByRole("button", { name: "确认应收" }));
+    await screen.findByTestId("action-dialog");
+    submitDialog();
     await waitFor(() => expect(screen.getByTestId("toast-item")).toHaveTextContent("只有草稿应收来源可以确认"));
+    // 确认失败时留在弹窗里（金额要进账，不能只弹一句 toast 就把弹窗关掉）
+    expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("只有草稿应收来源可以确认");
   });
 });

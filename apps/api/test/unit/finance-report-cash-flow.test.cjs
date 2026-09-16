@@ -56,6 +56,8 @@ function detailRows() {
       currency: "CNY",
       direction: "expense",
       amount: dec("2900"),
+      itemLabel: "原材料 成本",
+      bankLabel: "农业银行5706",
       settlementMethod: "转账",
       settlementAccountLabel: "农业银行5706",
     },
@@ -65,34 +67,46 @@ function detailRows() {
       currency: "USD",
       direction: "income",
       amount: dec("1000"),
+      itemLabel: "货款",
+      bankLabel: "中国银行7624",
       settlementMethod: "转账",
       settlementAccountLabel: "中国银行（美元）7624",
     },
   ];
 }
 
-test("finance-report.cash-flow：收支明细表的表头与列序逐列照抄老表（6 列）", async () => {
+// 2026-09-16（用户要求）：明细表要能按收支项目分类统计，也要看得出走的哪个银行账户。
+// 所以列从老表的 6 列扩到 8 列（新增「收支项目」「银行账户」）——这是**有意偏离**老表版式，
+// 不是抄错：只按老表 6 列，汇总表里「货款 5000」在明细里根本对不上号。
+test("finance-report.cash-flow：收支明细表 8 列（老表 6 列 + 收支项目 + 银行账户）", async () => {
   const table = buildCashFlowDetailTable(detailRows(), { currencyLabels: LABELS });
   const { name, rows } = readSheet(await renderReportWorkbook([table]));
   assert.equal(name, "收支明细");
-  assert.deepEqual(rows[0], ["日期", "对方名称", "币种", "收入", "支出", "结算方式"]);
-  assert.equal(CASH_FLOW_DETAIL_COLUMNS.length, 6);
+  assert.deepEqual(rows[0], ["日期", "对方名称", "币种", "收支项目", "收入", "支出", "银行账户", "结算方式"]);
+  assert.equal(CASH_FLOW_DETAIL_COLUMNS.length, 8);
 });
 
-test("finance-report.cash-flow：收入/支出分列，没有的那一边写 0（照抄老表样本）", async () => {
+test("finance-report.cash-flow：收入/支出分列，没有的那一边写 0；项目与银行账户逐行带出", async () => {
   const table = buildCashFlowDetailTable(detailRows(), { currencyLabels: LABELS });
   const { rows } = readSheet(await renderReportWorkbook([table]));
-  assert.deepEqual(rows[1], ["2026-09-14", "兴田", "人民币", 0, 2900, "转账--农业银行5706"], "支出行：收入写 0");
-  assert.deepEqual(rows[2], ["2026-09-14", "中谷ZG", "美元", 1000, 0, "转账--中国银行（美元）7624"], "收入行：支出写 0");
+  assert.deepEqual(rows[1], ["2026-09-14", "兴田", "人民币", "原材料 成本", 0, 2900, "农业银行5706", "转账--农业银行5706"], "支出行：收入写 0");
+  assert.deepEqual(rows[2], ["2026-09-14", "中谷ZG", "美元", "货款", 1000, 0, "中国银行7624", "转账--中国银行（美元）7624"], "收入行：支出写 0");
+});
+
+test("finance-report.cash-flow：没归类的历史流水项目列留空（不写横杠，否则会混进数值列）", async () => {
+  const table = buildCashFlowDetailTable([{ date: new Date("2026-09-14T00:00:00.000Z"), counterpartyName: "兴田", currency: "CNY", direction: "expense", amount: dec("100"), itemLabel: null, bankLabel: null, settlementMethod: null, settlementAccountLabel: null }], { currencyLabels: LABELS });
+  const { rows } = readSheet(await renderReportWorkbook([table]));
+  assert.ok(!rows[1][3], "缺失的项目是空单元格（不是横杠，横杠会被当成文本混进数值列）");
+  assert.ok(!rows[1][6], "缺失的银行账户是空单元格");
 });
 
 test("finance-report.cash-flow：收入/支出是数值类型，且全表没有文本型数字", async () => {
   const table = buildCashFlowDetailTable(detailRows(), { currencyLabels: LABELS });
   const { sheet } = readSheet(await renderReportWorkbook([table]));
   assertNoTextNumbers(sheet, "收支明细");
-  assert.equal(sheet.D2.t, "n");
   assert.equal(sheet.E2.t, "n");
-  assert.equal(sheet.D2.v, 0, "0 要落成数值 0，而不是空单元格（这里 0 是「确实为零」的事实）");
+  assert.equal(sheet.F2.t, "n");
+  assert.equal(sheet.E2.v, 0, "0 要落成数值 0，而不是空单元格（这里 0 是「确实为零」的事实）");
 });
 
 test("finance-report.cash-flow：收支明细表不给合计行（一行一个币种，跨币种相加没有意义）", async () => {

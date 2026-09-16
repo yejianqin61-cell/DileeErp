@@ -6,8 +6,10 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
+import { CashFlowService } from "./cash-flow.service";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
 import { receivableInReconciliationScope } from "./receivable.domain";
+import { RECEIVABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
 
 /**
  * 应收对账输入。
@@ -15,7 +17,7 @@ import { receivableInReconciliationScope } from "./receivable.domain";
  * 对账主键是「客户 + 期间」：`customer_id` 必填、`order_no` 可选（填了就把对账范围收窄到该订单）；
  * 只给 `order_no` 时客户由销售单反查，兼容 2026-09-14 之前按订单建对账的老调用方。
  */
-export type ReconciliationInput = { order_no?: string; customer_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; bank_id?: string; attachment?: unknown[]; remark?: string };
+export type ReconciliationInput = { order_no?: string; customer_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; bank_id?: string; cash_flow_item_id?: string; attachment?: unknown[]; remark?: string };
 
 const STATUS_LABELS: Record<string, string> = { pending: "待处理", matched: "已对平", difference: "有差异", resolved: "差异已处理" };
 
@@ -38,7 +40,7 @@ type ReconciliationFlow = {
 
 @Injectable()
 export class ReconciliationService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly adjustments: ReceivableAdjustmentService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly adjustments: ReceivableAdjustmentService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
 
   /**
    * 对账列表。
@@ -83,6 +85,8 @@ export class ReconciliationService {
     await this.currencies?.assertSupported(input.currency, "对账币种");
     // 回款银行来自银行账户池（财务 → 银行账户）：与应付对账同一套校验，停用/已删除的账户不能被选中。
     await requireActiveBank(this.prisma, input.bank_id, "回款银行不存在或已停用");
+    // 收支项目建单时就校验并落库：确认应收要按它把货款归到某个项目上，报表才能按项目统计。
+    const cashFlowItem = await this.cashFlow.requireItem(input.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
     const orderNo = input.order_no?.trim() || undefined;
     const order = orderNo ? await this.prisma.salesOrder.findFirst({ where: { orderNo, deletedAt: null } }) : null;
     if (orderNo && !order) throw this.notFound("SALES_ORDER_NOT_FOUND", "订单不存在");
@@ -103,7 +107,7 @@ export class ReconciliationService {
       reconciliationNo: this.number("REC"), orderNo: orderNo ?? null, salesOrderId: order?.id ?? null, customerId,
       periodStart, periodEnd, receivableAmountSnapshot: snapshot.receivable, paymentAmountSnapshot: snapshot.paid,
       adjustmentAmountSnapshot: snapshot.adjustmentNet, systemBalance: snapshot.systemBalance, externalBalance: external,
-      difference, currency: input.currency, bankId: input.bank_id || undefined, status, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
+      difference, currency: input.currency, bankId: input.bank_id || undefined, cashFlowItemId: cashFlowItem?.id, status, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
     } });
     if (row.orderNo) await this.audit.recordWithOrderNo("receivable_reconciliation.create", "receivable_reconciliation", row.orderNo, user.id, row.id, { reconciliation_no: row.reconciliationNo, status, difference: difference.toString() });
     else await this.audit.record("receivable_reconciliation.create", "receivable_reconciliation", user.id, row.id, { reconciliation_no: row.reconciliationNo, customer_id: customerId, status, difference: difference.toString() });
@@ -126,12 +130,22 @@ export class ReconciliationService {
 
   /**
    * 对账完成后批量确认该对账范围内的草稿应收：一次事务、逐条行锁。
+   * 确认即记账：把本次确认的金额作为**收入流水**写进收支流水，落到对账单的银行账户上
+   * （用户要求：「一旦确认应收，金额就要进入对应的账户」）。
    *
    * 为什么必须等对账完成：业务顺序是「先对账、再确认应收」。有未处理差异时批量确认会把
    * 还没核对清楚的金额直接记成生效应收，因此 `difference` 状态一律拒绝。
    * 逐条行锁与单条确认（ReceivableService.confirm）保持一致，避免与收款核销并发时状态错乱。
+   *
+   * `override`：确认时补/改银行账户与收支项目（历史对账单可能没填）。给了就**回写**到对账单上，
+   * 让「单子上写的」与「实际记账用的」永远一致 —— 否则账记在 A 银行、单子上写着 B 银行，
+   * 对账时根本查不出这笔钱去哪了。
    */
-  async confirmReceivables(id: string, user: CurrentUser) {
+  async confirmReceivables(id: string, user: CurrentUser, override: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+    // **先进校验、后进事务**：如果等事务提交完才发现银行非法，应收已经被确认、流水却没写，
+    // 账面上凭空少一笔钱，比直接拒绝糟得多（确认与记账必须同生共死）。
+    if (override.bank_id) await requireActiveBank(this.prisma, override.bank_id, "回款银行不存在或已停用");
+    if (override.cash_flow_item_id) await this.cashFlow.requireItem(override.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_reconciliations WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.receivableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } } } });
@@ -148,14 +162,38 @@ export class ReconciliationService {
         await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${draft.id}::uuid FOR UPDATE`;
         await tx.receivableSource.update({ where: { id: draft.id }, data: { status: "confirmed", ...this.audit.update(user) } });
       }
-      return { current, drafts };
+      // 银行/项目在事务外校验会拿到未加锁的状态；这里的取值规则与「不传则用单子上的」一致。
+      const bankId = override.bank_id === undefined ? current.bankId : (override.bank_id || null);
+      const cashFlowItemId = override.cash_flow_item_id === undefined ? current.cashFlowItemId : (override.cash_flow_item_id || null);
+      if (bankId !== current.bankId || cashFlowItemId !== current.cashFlowItemId) {
+        await tx.receivableReconciliation.update({ where: { id }, data: { bankId, cashFlowItemId, ...this.audit.update(user) } });
+      }
+      return { current, drafts, bankId, cashFlowItemId };
     });
     const confirmedAmount = result.drafts.reduce((sum, draft) => sum.plus(draft.amount), new Prisma.Decimal(0));
+    // 确认即记账：金额进对账单指定的银行账户。没有银行账户时流水照样写（收支事实不能丢），
+    // 但它不属于任何账户，因此不进任何账户余额 —— 用 bank_missing 明确告诉界面提示财务。
+    const cashFlow = await this.cashFlow.recordConfirmation({
+      sourceType: "receivable_reconciliation",
+      sourceId: id,
+      documentNo: result.current.reconciliationNo,
+      entryDate: this.today(),
+      amount: confirmedAmount,
+      currency: result.current.currency,
+      counterpartyName: result.current.customer?.name ?? result.current.customerId,
+      direction: "income",
+      itemKeys: RECEIVABLE_CONFIRM_ITEM_KEYS,
+      itemId: result.cashFlowItemId,
+      bankId: result.bankId,
+      remark: `应收对账确认（${result.drafts.length} 条）`,
+    }, user);
     await this.audit.record("receivable_reconciliation.confirm_receivables", "receivable_reconciliation", user.id, id, {
       reconciliation_no: result.current.reconciliationNo,
       customer_id: result.current.customerId,
       confirmed_count: result.drafts.length,
       confirmed_amount: confirmedAmount.toFixed(4),
+      bank_id: result.bankId,
+      cash_flow_entry_id: cashFlow?.id ?? null,
       source_nos: result.drafts.map((draft) => draft.sourceNo),
     });
     return {
@@ -163,6 +201,12 @@ export class ReconciliationService {
       status: result.current.status,
       confirmed_count: result.drafts.length,
       confirmed_amount: confirmedAmount.toFixed(4),
+      currency: result.current.currency,
+      bank_id: result.bankId,
+      cash_flow_item_id: result.cashFlowItemId,
+      cash_flow_entry_id: cashFlow?.id ?? null,
+      /** 没指定银行账户：钱记进了收支流水，但不会体现在任何银行余额里，界面必须提示。 */
+      bank_missing: !result.bankId,
       entries: result.drafts.map((draft) => ({ id: draft.id, source_no: draft.sourceNo, order_no: draft.orderNo, amount: draft.amount.toFixed(4), currency: draft.currency, status: "confirmed" })),
     };
   }
@@ -271,6 +315,8 @@ export class ReconciliationService {
   }
 
   private decimal(value: string, code: string) { try { const result = new Prisma.Decimal(value); if (result.lt(0)) throw new Error(); return result; } catch { throw this.invalid(code, "金额必须是有效的非负十进制数"); } }
+  /** 确认发生的日期（记账日）：取当天的 UTC 零点，让流水日期与「今天」在库里可比较、可复现。 */
+  private today() { return new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`); }
   private date(value: string, code: string) { const result = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(result.valueOf())) throw this.invalid(code, "日期无效"); return result; }
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }

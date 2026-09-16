@@ -34,6 +34,14 @@ const paymentIdempotencyKey = () => `web-receipt-${Date.now()}-${Math.random().t
  * 提交时再翻译成 null（后端 DTO 的 @IsOptional 会放过 null 并按「清空」处理）。
  */
 const BANK_CLEAR = "__no_bank__";
+/**
+ * 收支项目下拉的「清空」哨兵值。
+ *
+ * 收支项目也是可选的，而已有单据上的项目要能去掉（后端 PATCH 收 null 表示清空）；
+ * 但**未改动**时必须送 undefined，否则每次「只改金额」都会把单据上已有的项目一并抹掉。
+ * Radix Select 不接受空串 value，所以空值代表「不改动」、哨兵值代表「明确清空」。
+ */
+const CASH_FLOW_ITEM_CLEAR = "__no_cash_flow_item__";
 
 type Reference = { id: string; name: string; customerCode?: string; orderNo?: string };
 type CustomerRef = { id: string; name: string; customerCode: string | null };
@@ -62,6 +70,8 @@ type CustomerPayment = {
   id: string; paymentNo: string; customerId: string; orderNo: string | null; paymentDate: string; amount: string;
   currency: string; paymentMethod: string; bankReference: string | null; payerName: string | null; status: string; remark: string | null;
   bankId?: string | null; bank?: BankLink;
+  /** 建单/编辑时人工选定的收支项目（收款过账时用它，除非过账接口再覆盖）。 */
+  cashFlowItemId?: string | null;
   customer_name: string | null; customer_code: string | null; allocated_amount: string;
   customer?: CustomerRef | null;
   allocations: Array<{ id: string; amount: string; status: string; receivableSource?: { id: string; sourceNo: string; orderNo: string; amount: string; currency: string; status: string } | null }>;
@@ -73,6 +83,8 @@ type Reconciliation = {
   adjustmentAmountSnapshot: string; systemBalance: string; externalBalance: string; difference: string;
   currency: string; status: string; resolutionRemark: string | null; remark: string | null; createdAt: string;
   bankId?: string | null; bank?: BankLink;
+  /** 建单/确认时人工选定的收支项目（确认应收时用它，除非确认接口再覆盖）。 */
+  cashFlowItemId?: string | null;
   customer?: CustomerRef | null;
   status_label?: string;
   /** 流转摘要（列表接口就给，与应付对账的 flow 对称）：覆盖多少条、多少条待确认、哪些订单与产品。 */
@@ -82,7 +94,12 @@ type Reconciliation = {
   };
   details?: { entries: ReconciliationEntry[]; draft_entries: ReconciliationEntry[]; entry_count: number; draft_count: number; draft_amount: string; can_confirm_receivables: boolean };
 };
-type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
+type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
+/**
+ * 「确认应收」三个入口（逐条 / 按订单批量 / 按对账单）共用的响应字段（见 submitConfirm）。
+ * 逐条与按对账单回金额，批量回条数；`bank_missing` 表示钱记了但没落到任何银行账户。
+ */
+type ConfirmResult = { bank_missing?: boolean; amount?: string; currency?: string; count?: number; confirmed_amount?: string; confirmed_count?: number };
 type DetailKind = "source" | "payment" | "reconciliation";
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -154,6 +171,32 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     }
   }
 
+  /**
+   * 「确认应收」三个入口（逐条 / 按订单批量 / 按对账单）共用的提交与提示。
+   *
+   * 这三条路径现在都是**确认即记账**（用户要求「一旦确认应收，金额就要进入对应的账户」），
+   * 所以不能再用 action() 一句「已确认」了事：响应里的 `bank_missing` 表示钱已经记进收支流水、
+   * 但不属于任何银行账户 —— 这时报成功会让财务以为银行里已经多了这笔钱，必须改成警告。
+   *
+   * 失败时把错误**抛回** ActionDialog（它靠 onSubmit 是否 reject 决定关不关弹窗），
+   * 与应付页 submitAction 同一理由：失败不能静默关闭。
+   */
+  async function submitConfirm(path: string, body: Record<string, unknown>, describe: (data: ConfirmResult) => { success: string; warning: string }, failure: string) {
+    try {
+      const result = await apiPost<ConfirmResult>(path, body);
+      const text = describe(result.data);
+      if (result.data.bank_missing) notifyError(text.warning, "确认完成，但未入账银行");
+      else notifySuccess(text.success);
+      setDialog(null);
+      setDetail(null);
+      await load();
+    } catch (cause) {
+      const message = messageOf(cause, failure);
+      notifyError(message);
+      throw new Error(message);
+    }
+  }
+
   // 详情弹窗打开时按 :id 拉详情：列表接口给不出全部字段（来源追踪、核销明细、对账纳入条目等）。
   const detailKind = detail?.kind;
   const detailId = detail?.id;
@@ -200,6 +243,35 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
   /** 可人工指定的收支项目：只给启用项，留空则由后端按来源自动归类。 */
   const cashFlowItemOptions = cashFlowItems.filter((item) => item.isActive).map((item) => ({ value: item.id, label: item.label }));
+  /**
+   * 收支项目 id → 显示名。
+   *
+   * 列表/详情接口只给 `cashFlowItemId`（Prisma 不外带字典对象），标签得在前端拿字典项还原；
+   * 字典里查不到（项目被删/停用，或权限不够没拉到字典）就显示 `-`，不能让整页崩在这里。
+   */
+  const cashFlowItemLabel = (id: string | null | undefined) => cashFlowItems.find((item) => item.id === id)?.label ?? "-";
+  /**
+   * 建单弹窗的收支项目：可选，默认留空 —— 空值即「交给后端按来源自动归类」（应收默认「货款」），
+   * 所以这里不摆「清空」哨兵：新建单据上本来就没有项目可清，哨兵只会多出一个必然选不中的选项。
+   */
+  const cashFlowItemCreateField = (label: string, placeholder: string): ActionField => ({ name: "cash_flow_item_id", label: `${label}（可选）`, type: "select", options: cashFlowItemOptions, placeholder });
+  /**
+   * 已有单据上的收支项目：默认带出当前值；选「（不指定收支项目…）」送 null。
+   *
+   * 默认值用 `current ?? ""`（而不是银行那种「当前值否则哨兵」）是刻意的：未改动时必须送 undefined，
+   * 后端 PATCH 才完全不动这个字段；若默认成哨兵，以后端「将来给这类单据补默认值」为例，
+   * 用户只改金额就会把默认值一起抹成 null。
+   *
+   * 确认弹窗（来源/批量/对账单）也复用这个字段：确认这一步的收支项目是**本次覆盖值**，
+   * 留空即由后端按来源自动归类，显式选哨兵则送 null（后端同样回退到自动归类）。
+   */
+  const cashFlowItemEditField = (label: string, current?: string | null): ActionField => ({
+    name: "cash_flow_item_id", label, type: "select",
+    options: [{ value: CASH_FLOW_ITEM_CLEAR, label: "（不指定收支项目，按来源自动归类）" }, ...cashFlowItemOptions],
+    defaultValue: current ?? "",
+  });
+  /** 哨兵/空值 → 提交值：明确清空送 null，未改动送 undefined（后端不更新该字段）。 */
+  const cashFlowItemValue = (value: string | undefined) => (value === CASH_FLOW_ITEM_CLEAR ? null : (value || undefined));
 
   /**
    * 某张收款单**可以**核销的应收来源。
@@ -240,9 +312,35 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   function reopenSource(item: ReceivableSource) {
     setDialog({ title: `应收回退草稿：${item.sourceNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/receivable-sources/${item.id}/reopen`, { reason: v.reason }, "应收已回退草稿") });
   }
-  function confirmSource(item: ReceivableSource) { void action(`/finance/receivable-sources/${item.id}/confirm`, undefined, `应收 ${item.sourceNo} 已确认`); }
+  /**
+   * 逐条确认应收 —— 与「一键确认应收」（按对账单）是同一件事的两条入口，都**确认即记账**。
+   *
+   * 应收来源本身不挂银行账户（它来自出库单），所以这里必须问清「钱进哪个账户」：
+   * 不指定就只能在收支流水里留一笔无归属的钱（后端回 bank_missing，上面会警告）。
+   */
+  function confirmSource(item: ReceivableSource) {
+    setDialog({ title: `确认应收：${item.sourceNo}`, fields: [
+      { name: "confirm", label: `将确认应收 ${item.sourceNo}（${item.amount} ${item.currency}），并把该金额记入下面选定的银行账户。确认不可逆。`, type: "info" as const },
+      bankField("入账银行"),
+      cashFlowItemEditField("收支项目（记入收支流水时的归类；留空按来源自动归类为「货款」）"),
+    ], submit: (v) => submitConfirm(`/finance/receivable-sources/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), cash_flow_item_id: cashFlowItemValue(v.cash_flow_item_id) }, (data) => ({
+      success: `应收 ${item.sourceNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}），金额已记入所选银行账户`,
+      warning: `未指定入账银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
+    }), "确认应收失败") });
+  }
+  /**
+   * 按订单批量确认应收：用户要求「一旦确认应收，金额就要进入对应的账户」，批量确认同样要记账
+   * （服务端**每条应收写一条流水**，这样每条都追得回来源编号）。所以这里也要问清入账银行与收支项目。
+   */
   function batchConfirmByOrder(orderNo: string, count: number) {
-    setDialog({ title: `批量确认应收：${orderNo}`, fields: [{ name: "confirm", label: `确认将订单 ${orderNo} 的全部 ${count} 条草稿应收一次性确认为已确认。不可逆。`, type: "info" as const }], submit: () => void action("/finance/receivable-sources/batch-confirm-by-order", { order_no: orderNo }, `订单 ${orderNo} 已批量确认 ${count} 条应收`) });
+    setDialog({ title: `批量确认应收：${orderNo}`, fields: [
+      { name: "confirm", label: `确认将订单 ${orderNo} 的全部 ${count} 条草稿应收一次性确认为已确认，并把每一条的金额分别记入下面选定的银行账户。不可逆。`, type: "info" as const },
+      bankField("入账银行"),
+      cashFlowItemEditField("收支项目（记入收支流水时的归类；留空按来源自动归类为「货款」）"),
+    ], submit: (v) => submitConfirm("/finance/receivable-sources/batch-confirm-by-order", { order_no: orderNo, bank_id: bankValue(v.bank_id), cash_flow_item_id: cashFlowItemValue(v.cash_flow_item_id) }, (data) => ({
+      success: `订单 ${orderNo} 已批量确认 ${data.count ?? count} 条应收，金额已逐条记入所选银行账户`,
+      warning: `未指定入账银行：订单 ${orderNo} 的 ${data.count ?? count} 条应收已逐条记入收支流水，但不会体现在任何银行账户余额里`,
+    }), "批量确认应收失败") });
   }
 
   function createPayment(source?: ReceivableSource) {
@@ -257,8 +355,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       { name: "payment_method", label: "收款方式", required: true, defaultValue: "银行转账" },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, source?.currency ?? "CNY"), defaultValue: source?.currency ?? currencyDefault("CNY") },
       bankField("到账银行"),
+      cashFlowItemCreateField("收支项目", "留空由后端按来源自动归类（默认「货款」）"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/customer-payments", { customer_id: v.customer_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, bank_id: bankValue(v.bank_id), idempotency_key, remark: v.remark || undefined }, "收款草稿已创建") });
+    ], submit: (v) => void action("/finance/customer-payments", { customer_id: v.customer_id, order_no: v.order_no || undefined, payment_date: v.payment_date, amount: v.amount, currency: v.currency, payment_method: v.payment_method, bank_id: bankValue(v.bank_id), cash_flow_item_id: v.cash_flow_item_id || undefined, idempotency_key, remark: v.remark || undefined }, "收款草稿已创建") });
   }
   function editPayment(item: CustomerPayment) {
     setDialog({ title: `编辑收款草稿：${item.paymentNo}`, fields: [
@@ -267,8 +366,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       { name: "payment_method", label: "方式", required: true, defaultValue: item.paymentMethod },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, item.currency), defaultValue: item.currency },
       bankField("到账银行", item.bankId),
+      cashFlowItemEditField("收支项目（过账时用；留空则按来源自动归类）", item.cashFlowItemId),
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => void action(`/finance/customer-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "收款草稿已更新", "patch") });
+    ], submit: (v) => void action(`/finance/customer-payments/${item.id}`, { amount: v.amount, payment_date: v.payment_date, payment_method: v.payment_method, currency: v.currency, bank_id: bankValue(v.bank_id), cash_flow_item_id: cashFlowItemValue(v.cash_flow_item_id), remark: v.remark || undefined }, "收款草稿已更新", "patch") });
   }
   function postPayment(item: CustomerPayment, preset?: ReceivableSource) {
     // 选项按本单的客户+币种收窄，与服务端校验口径一致（不再列出必然 422 的来源）。
@@ -276,7 +376,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `收款核销：${item.paymentNo}`, fields: [
       { name: "source_id", label: "应收来源", type: "select", required: true, options, defaultValue: preset?.id },
       { name: "amount", label: "本次核销金额", type: "number", required: true, defaultValue: preset?.outstanding_amount ?? item.amount },
-      { name: "cash_flow_item_id", label: "收支项目（留空按来源自动归类）", type: "select", options: cashFlowItemOptions },
+      // 这一项是**覆盖**：过账接口上的 cash_flow_item_id 优先于收款单上建单/编辑时存的那个，
+      // 所以文案必须与「编辑收款草稿」里的区分开，否则财务以为改的是同一个值。
+      { name: "cash_flow_item_id", label: "收支项目（本次过账覆盖收款单上已存的项目；留空则沿用单据上的，没有才按来源自动归类为「货款」）", type: "select", options: cashFlowItemOptions },
     ], submit: (v) => v.source_id ? void action(`/finance/customer-payments/${item.id}/post`, { allocations: [{ receivable_source_id: v.source_id, amount: v.amount }], cash_flow_item_id: v.cash_flow_item_id || undefined }, "收款已过账并核销") : undefined });
   }
   function reversePayment(item: CustomerPayment) {
@@ -293,14 +395,42 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       { name: "external_balance", label: "外部余额（客户对账单金额）", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
       bankField("回款银行"),
+      cashFlowItemCreateField("收支项目", "留空由后端按来源自动归类（对账确认应收时默认「货款」）"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/reconciliations", { customer_id: v.customer_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: bankValue(v.bank_id), remark: v.remark || undefined }, "对账单已创建") });
+    ], submit: (v) => void action("/finance/reconciliations", { customer_id: v.customer_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: bankValue(v.bank_id), cash_flow_item_id: v.cash_flow_item_id || undefined, remark: v.remark || undefined }, "对账单已创建") });
   }
   function resolveReconciliation(item: Reconciliation) {
     setDialog({ title: `处理对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => void action(`/finance/reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "对账差异已处理") });
   }
+  /**
+   * 确认应收 —— 从「无 body 直接打」改成**先问清入账信息**。
+   *
+   * 这个接口现在不只是改状态：确认的金额会作为一笔收入写进收支流水，并落到对账单的银行账户上。
+   * 历史对账单（尤其是这次改动之前建的）常常既没有银行也没有收支项目，直接打过去就是「钱记了、
+   * 但哪个账户都没有」，事后对账根本查不出这笔钱去哪了；所以把「记到哪个银行、归哪个项目」摆到台面上。
+   */
   function confirmReconciliation(item: Reconciliation) {
-    void action(`/finance/reconciliations/${item.id}/confirm-receivables`, undefined, `已批量确认 ${item.reconciliationNo} 的待确认应收`);
+    const count = item.details?.draft_count ?? item.flow?.draft_count ?? 0;
+    const amount = item.details?.draft_amount ?? item.flow?.draft_amount;
+    setDialog({ title: `确认应收：${item.reconciliationNo}`, fields: [
+      { name: "confirm", label: `将确认该对账单范围内的 ${count} 条草稿应收${amount ? `（合计 ${amount} ${item.currency}）` : ""}，并把确认金额记入下面选定的银行账户。确认不可逆。`, type: "info" as const },
+      bankField("入账银行", item.bankId),
+      cashFlowItemEditField("收支项目（记入收支流水时的归类；留空按来源自动归类为「货款」）", item.cashFlowItemId),
+    ], submit: (v) => submitConfirmReconciliation(item, v) });
+  }
+  /**
+   * 确认应收的提交：与逐条 / 批量确认共用 submitConfirm（三条路径都会记账，都要处理 bank_missing）。
+   */
+  async function submitConfirmReconciliation(item: Reconciliation, v: Record<string, string>) {
+    return submitConfirm(`/finance/reconciliations/${item.id}/confirm-receivables`, { bank_id: bankValue(v.bank_id), cash_flow_item_id: cashFlowItemValue(v.cash_flow_item_id) }, (data) => {
+      const count = data.confirmed_count ?? data.count ?? 0;
+      const amount = data.confirmed_amount ?? data.amount ?? "-";
+      const currency = data.currency ?? item.currency;
+      return {
+        success: `${item.reconciliationNo} 已确认 ${count} 条应收（${amount} ${currency}），金额已记入所选银行账户`,
+        warning: `未指定入账银行：${amount} ${currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
+      };
+    }, "批量确认应收失败");
   }
 
   // ---------------------------------------------------------------- 待创建对账
@@ -399,6 +529,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "external", header: "外部余额", cell: ({ row }) => money(row.original.externalBalance, row.original.currency) },
     { id: "difference", header: "差异", cell: ({ row }) => money(row.original.difference, row.original.currency) },
     { id: "bank", header: "回款银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
+    // 建单时人工选的收支项目（确认应收记流水时用它）；只拿到 id，标签在前端用字典还原。
+    { id: "cashFlowItem", header: "收支项目", cell: ({ row }) => cashFlowItemLabel(row.original.cashFlowItemId) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row" data-testid={`reconciliation-actions-${row.original.id}`}>
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
@@ -454,6 +586,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { label: "收款日期", value: day(item.paymentDate) }, { label: "收款金额", value: money(item.amount, item.currency) },
         { label: "已核销金额", value: money(item.allocated_amount, item.currency) }, { label: "收款方式", value: item.paymentMethod },
         { label: "到账银行", value: item.bank ? `${item.bank.bankName} / ${item.bank.accountNumber}` : "-" },
+        { label: "收支项目", value: cashFlowItemLabel(item.cashFlowItemId) },
         { label: "银行流水号", value: item.bankReference }, { label: "付款人", value: item.payerName },
         { label: "备注", value: item.remark, wide: true },
       ];
@@ -474,6 +607,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { label: "外部余额", value: money(item.externalBalance, item.currency) },
         { label: "差异", value: money(item.difference, item.currency) },
         { label: "回款银行", value: item.bank ? `${item.bank.bankName} / ${item.bank.accountNumber}` : "-" },
+        { label: "收支项目", value: cashFlowItemLabel(item.cashFlowItemId) },
         { label: "纳入条目数", value: item.details ? `${item.details.entry_count} 条（待确认 ${item.details.draft_count} 条 / ${item.details.draft_amount}）` : "-" },
         { label: "差异处理说明", value: item.resolutionRemark, wide: true },
         { label: "创建时间", value: day(item.createdAt) }, { label: "备注", value: item.remark, wide: true },
@@ -525,7 +659,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const item = detailData as Reconciliation;
       return <>
         {item.status === "difference" && <Button onClick={() => resolveReconciliation(item)}>处理差异</Button>}
-        {/* 与列表同一口径：范围内确实还有草稿才给一键确认（弹窗里的「纳入条目数」已说明待确认条数） */}
+        {/* 与列表同一口径：范围内确实还有草稿才给一键确认；点开的是「确认应收」弹窗（问清入账银行与收支项目） */}
         {item.details?.can_confirm_receivables ? <Button onClick={() => confirmReconciliation(item)}>一键确认应收（{item.details.draft_count} 条）</Button> : null}
       </>;
     }
@@ -552,7 +686,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { name: "currency", label: "币种", type: "select", options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
         { name: "remark", label: "备注", type: "textarea" },
       ], submit: createCustomer }); }}
-      onSubmit={(values) => { dialog?.submit(values); }} />
+      // 把 submit 的返回值交给 ActionDialog（而不是丢掉）：确认应收这类请求失败时要**留在弹窗里**
+      // 显示原因，ActionDialog 靠 onSubmit 是否 reject 决定关不关（与应付页同一理由）。
+      onSubmit={(values) => dialog?.submit(values)} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) { setCategoryDialog(null); setPendingDialog(null); } }} title={categoryDialog?.title ?? "新建客户"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => { categoryDialog?.submit(values); }} />
     <RecordDetailDialog
       open={Boolean(detail)}

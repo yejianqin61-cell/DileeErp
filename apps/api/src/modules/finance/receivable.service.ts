@@ -7,10 +7,13 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { receivableAmountFor, receivableUnitPrice, settlementRemark } from "../warehouse/finished-goods-settlement";
 import { coveringReceivableReconciliation } from "./receivable.domain";
+import { requireActiveBank } from "./bank-selection";
+import { CashFlowService } from "./cash-flow.service";
+import { RECEIVABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
 
 @Injectable()
 export class ReceivableService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
 
   /**
    * 应收来源列表。
@@ -109,28 +112,65 @@ export class ReceivableService {
     return row;
   }
 
-  async confirm(id: string, user: CurrentUser) {
-    const row = await this.prisma.$transaction(async (tx) => {
+  /**
+   * 逐条确认应收 —— 确认即记账（用户要求：「一旦确认应收，金额就要进入对应的账户」）。
+   *
+   * 与「一键确认应收」（按对账单）的关系：**同一件事的两条入口**。
+   * 按对账单确认写一条按对账单汇总的流水（对账单本身就是一张凭证）；
+   * 逐条确认写一条只属于这条应收的流水。两条路径都靠 `recordConfirmation` 的
+   * 「同来源只应有一条流水」保证不会重复记账 —— 一条应收一旦被确认就不再是草稿，
+   * 另一个入口的查询条件（`status = draft`）自然不会再捞到它。
+   *
+   * `options.bank_id` / `options.cash_flow_item_id` 允许空：没有银行账户时流水照写
+   * （收支事实不能丢），响应里带 `bank_missing` 让界面明确提示。
+   */
+  async confirm(id: string, user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+    // 先进校验、后进事务：等事务提交完才发现银行非法，应收已经确认、流水却没写。
+    if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");
+    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
-      const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null } });
+      const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { name: true } } } });
       if (!current) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
       if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_CONFIRMABLE", "只有草稿应收来源可以确认");
-      return tx.receivableSource.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+      const updated = await tx.receivableSource.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+      // 客户名要从 current 拿：update 的返回值只有标量列，没有关联，用 row 会退化成客户 UUID。
+      return { updated, customerName: current.customer?.name ?? current.customerId };
     });
+    const row = result.updated;
     await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo });
-    return row;
+    const cashFlow = await this.cashFlow.recordConfirmation({
+      sourceType: "receivable_source",
+      sourceId: id,
+      documentNo: row.sourceNo,
+      entryDate: this.today(),
+      amount: row.amount,
+      currency: row.currency,
+      counterpartyName: result.customerName,
+      direction: "income",
+      itemKeys: RECEIVABLE_CONFIRM_ITEM_KEYS,
+      itemId: options.cash_flow_item_id,
+      bankId: options.bank_id ?? null,
+      remark: `确认应收 ${row.sourceNo}`,
+    }, user);
+    return { ...row, cash_flow_entry_id: cashFlow?.id ?? null, bank_missing: !options.bank_id };
   }
 
   /**
    * 按订单号批量确认该订单下所有草稿应收（解决「同一订单多次出库 → 逐条确认」的重复操作）。
    * 幂等：只确认状态为 draft 的条目，已确认/已取消的自动跳过。
+   *
+   * 批量确认同样要记账：**每条应收写一条流水**（而不是合计一条）——
+   * 批量确认没有「一张单据」可以挂，而每条应收都有来源编号，逐条记账才追得回去。
    */
-  async batchConfirmByOrder(orderNo: string, user: CurrentUser) {
+  async batchConfirmByOrder(orderNo: string, user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+    if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");
+    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_sources WHERE order_no = ${orderNo} AND deleted_at IS NULL AND status = 'draft' FOR UPDATE`;
       const drafts = await tx.receivableSource.findMany({
         where: { orderNo, deletedAt: null, status: "draft" },
-        select: { id: true, sourceNo: true },
+        select: { id: true, sourceNo: true, amount: true, currency: true, customerId: true, customer: { select: { name: true } } },
       });
       if (!drafts.length) throw this.notFound("NO_DRAFT_RECEIVABLES", `订单 ${orderNo} 没有草稿应收条目`);
       const ids = drafts.map((item) => item.id);
@@ -138,12 +178,30 @@ export class ReceivableService {
         where: { id: { in: ids }, deletedAt: null, status: "draft" },
         data: { status: "confirmed", ...this.audit.update(user) },
       });
-      return { orderNo, count: drafts.length, ids };
+      return { orderNo, count: drafts.length, ids, drafts };
     });
     for (const id of result.ids) {
       await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: result.orderNo, batch: true });
     }
-    return result;
+    const cashFlowEntryIds: string[] = [];
+    for (const draft of result.drafts) {
+      const entry = await this.cashFlow.recordConfirmation({
+        sourceType: "receivable_source",
+        sourceId: draft.id,
+        documentNo: draft.sourceNo,
+        entryDate: this.today(),
+        amount: draft.amount,
+        currency: draft.currency,
+        counterpartyName: draft.customer?.name ?? draft.customerId,
+        direction: "income",
+        itemKeys: RECEIVABLE_CONFIRM_ITEM_KEYS,
+        itemId: options.cash_flow_item_id,
+        bankId: options.bank_id ?? null,
+        remark: `确认应收 ${draft.sourceNo}（订单 ${result.orderNo} 批量确认）`,
+      }, user);
+      if (entry) cashFlowEntryIds.push(entry.id);
+    }
+    return { orderNo: result.orderNo, count: result.count, ids: result.ids, cash_flow_entry_ids: cashFlowEntryIds, bank_missing: !options.bank_id };
   }
   /**
    * 编辑草稿应收来源：金额、到期日、金额原因、**币种**、备注。
@@ -218,6 +276,8 @@ export class ReceivableService {
   async refreshStatus(client: Prisma.TransactionClient, id: string, user: CurrentUser) { const { source, available } = await this.allocationBalance(id, client); const next = available.eq(0) ? "paid" : available.lt(source.amount) ? "partially_paid" : "confirmed"; return client.receivableSource.update({ where: { id }, data: { status: next, ...this.audit.update(user) } }); }
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
   private date(value: string) { const date = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_DUE_DATE", message: "到期日无效", details: [] }); return date; }
+  /** 确认发生的日期（记账日）：取当天的 UTC 零点，让流水日期与「今天」在库里可比较、可复现。 */
+  private today() { return new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`); }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }
   private invalid(code: string, message: string) { return new UnprocessableEntityException({ code, message, details: [] }); }
 }

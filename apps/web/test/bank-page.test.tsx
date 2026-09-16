@@ -6,10 +6,11 @@
 //
 // 数据契约（全部来自组件源码）：
 //   GET    /api/v1/finance/banks              账户池
-//   POST   /api/v1/finance/banks              新建
+//   POST   /api/v1/finance/banks              新建（含期初余额 opening_balance）
 //   PATCH  /api/v1/finance/banks/:id          编辑
 //   PATCH  /api/v1/finance/banks/:id/toggle   启用/停用（body: {is_active}）
 //   DELETE /api/v1/finance/banks/:id          删除（软删除，必须二次确认）
+//   GET    /api/v1/finance/banks/balances     期初/收支/互转/当前余额（余额 = 期初 + 收入 − 支出 + 转入 − 转出）
 //   GET    /api/v1/dictionaries/currency/items 币种下拉
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -18,22 +19,24 @@ import BankWorkspace from "../components/finance/bank-workspace";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
 
-const EP = { banks: "/api/v1/finance/banks", currencies: "/api/v1/dictionaries/currency/items" } as const;
+const EP = { banks: "/api/v1/finance/banks", balances: "/api/v1/finance/banks/balances", currencies: "/api/v1/dictionaries/currency/items" } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined | Promise<Response | undefined>;
 
-function stubBanks(banks: unknown[] = [], extra?: Handler) {
+function stubBanks(banks: unknown[] = [], extra?: Handler, balances: unknown[] = []) {
   return stubApi(async (url, call) => {
     const injected = await extra?.(url, call);
     if (injected) return injected;
     if (url.startsWith(EP.currencies)) return apiOk([]);
+    // 余额路由必须排在账户路由之前：/finance/banks/balances 也 startsWith("/finance/banks")。
+    if (url.startsWith(EP.balances)) return apiOk(balances);
     if (url.startsWith(EP.banks)) return call.method === "GET" ? apiOk(banks) : apiOk({});
     return apiOk({});
   });
 }
 
-async function openBanks(banks: unknown[] = [], extra?: Handler) {
-  const calls = stubBanks(banks, extra);
+async function openBanks(banks: unknown[] = [], extra?: Handler, balances: unknown[] = []) {
+  const calls = stubBanks(banks, extra, balances);
   render(<><BankWorkspace /><Toaster /></>);
   await screen.findByTestId("page-finance-banks");
   return calls;
@@ -44,7 +47,14 @@ const setValue = (testId: string, value: string) => fireEvent.change(screen.getB
 
 const bank = (overrides: Record<string, unknown> = {}) => ({
   id: "bank-1", bankCode: "ABC-5706", bankName: "农业银行", accountName: "迪礼贸易有限公司", accountNumber: "5706",
-  currency: "CNY", swiftCode: null, isActive: true, remark: null, ...overrides,
+  currency: "CNY", swiftCode: null, isActive: true, remark: null, openingBalance: "0.0000", ...overrides,
+});
+
+/** `GET /finance/banks/balances` 的一行（金额都是 4 位小数字符串）。 */
+const balanceRow = (overrides: Record<string, unknown> = {}) => ({
+  id: "bank-1", bank_code: "ABC-5706", bank_name: "农业银行", account_name: "迪礼贸易有限公司", account_number: "5706",
+  currency: "CNY", is_active: true, opening_balance: "0.0000", cash_in: "3000.0000", cash_out: "500.0000",
+  transfer_in: "0.0000", transfer_out: "0.0000", balance: "2500.0000", cash_flow_count: 2, ...overrides,
 });
 
 describe("银行账户池：列表与筛选", () => {
@@ -92,8 +102,31 @@ describe("银行账户池：新建 / 编辑", () => {
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(callsTo(calls, EP.banks).filter((call) => call.method === "POST")).toHaveLength(1));
     const post = callsTo(calls, EP.banks).filter((call) => call.method === "POST")[0];
-    expect(bodyOf(post)).toMatchObject({ bank_code: "ABC-5706", bank_name: "农业银行", account_name: "迪礼贸易有限公司", account_number: "5706", currency: "CNY" });
+    expect(bodyOf(post)).toMatchObject({ bank_code: "ABC-5706", bank_name: "农业银行", account_name: "迪礼贸易有限公司", account_number: "5706", currency: "CNY", opening_balance: "0" });
     await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("银行账户已创建"))).toBe(true));
+  });
+
+  it("新建：期初余额（建账时账户里已有的钱）按填写的值提交", async () => {
+    const calls = await openBanks([]);
+    await userEvent.click(screen.getByTestId("bank-create"));
+    setValue("action-field-bank_code", "ABC-5706");
+    setValue("action-field-bank_name", "农业银行");
+    setValue("action-field-account_name", "迪礼贸易有限公司");
+    setValue("action-field-account_number", "5706");
+    setValue("action-field-opening_balance", "1234.5");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, EP.banks).filter((call) => call.method === "POST")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, EP.banks).filter((call) => call.method === "POST")[0]).opening_balance).toBe("1234.5");
+  });
+
+  it("编辑：期初余额预填当前值，改动后随 PATCH 提交", async () => {
+    const calls = await openBanks([bank({ openingBalance: "500.0000" })]);
+    await userEvent.click(within(screen.getByTestId("bank-actions-bank-1")).getByRole("button", { name: "编辑" }));
+    expect((screen.getByTestId("action-field-opening_balance") as HTMLInputElement).value).toBe("500.0000");
+    setValue("action-field-opening_balance", "800");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, `${EP.banks}/bank-1`)).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, `${EP.banks}/bank-1`)[0]).opening_balance).toBe("800");
   });
 
   it("编辑：弹窗预填当前值，保存发出 PATCH /finance/banks/:id", async () => {
@@ -151,6 +184,27 @@ describe("银行账户池：停用与删除", () => {
     await userEvent.click(screen.getByTestId("bank-delete-bank-1"));
     await userEvent.click(await screen.findByTestId("bank-delete-confirm-submit"));
     await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("银行账户不存在"))).toBe(true));
+  });
+});
+
+describe("银行账户池：期初余额与当前余额", () => {
+  it("期初余额与当前余额取自 /finance/banks/balances，并在行里给出余额构成", async () => {
+    const calls = await openBanks([bank()], undefined, [balanceRow()]);
+    expect(callsTo(calls, EP.balances)).toHaveLength(1);
+    // 当前余额用稳定的 testid 暴露（余额是最容易算错、也最需要被钉住的一格）
+    const cell = screen.getByTestId("bank-balance-bank-1");
+    expect(cell).toHaveTextContent("2500.0000");
+    const row = screen.getByText("ABC-5706").closest("tr") as HTMLElement;
+    expect(within(row).getByText("0.0000")).toBeVisible();
+    // 构成写全：期初 / 收 / 付 / 转入 / 转出 → 余额（用户要能自己对一遍账）
+    expect(within(row).getByText("期初 0.0000 + 收 3000.0000 − 付 500.0000 + 转入 0.0000 − 转出 0.0000 = 2500.0000")).toBeVisible();
+  });
+
+  it("余额接口失败不影响账户列表：账户照常渲染，只是余额退回档案上的期初值", async () => {
+    await openBanks([bank({ openingBalance: "700.0000" })], (url, call) => (call.method === "GET" && url.startsWith(EP.balances) ? apiErr(500, "BANK_BALANCE_FAILED", "余额计算失败") : undefined));
+    expect(screen.getByText("农业银行")).toBeVisible();
+    expect(screen.getByTestId("bank-balance-bank-1")).toHaveTextContent("700.0000");
+    expect(screen.queryByTestId("error-state")).toBeNull();
   });
 });
 

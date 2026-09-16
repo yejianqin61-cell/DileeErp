@@ -3,6 +3,9 @@ const test = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { SupplierPayableReconciliationService } = require("../../dist/modules/finance/supplier-payable-reconciliation.service.js");
 
+/** CashFlowService 替身：`requireItem` 校验收支项目，`recordConfirmation` 把确认金额写成收支流水。 */
+const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, recordConfirmation: async () => null, ...extra });
+
 test("supplier payable reconciliation resolution locks and rechecks status", async () => {
   let lockCount = 0;
   let updateCount = 0;
@@ -14,7 +17,7 @@ test("supplier payable reconciliation resolution locks and rechecks status", asy
       supplierPayableReconciliation: prisma.supplierPayableReconciliation,
     }),
   };
-  const service = new SupplierPayableReconciliationService(prisma, { update: () => ({}), record: async () => {} });
+  const service = new SupplierPayableReconciliationService(prisma, { update: () => ({}), record: async () => {} }, cashFlowStub());
   await assert.rejects(() => service.resolve("recon-1", "已核实", { id: "user-1" }), (error) => error.getResponse().code === "RECONCILIATION_NOT_RESOLVABLE");
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
@@ -26,13 +29,19 @@ function confirmHarness(reconciliation, drafts) {
   const locks = [];
   const updates = [];
   const audits = [];
+  const cashFlowCalls = [];
+  const reconciliationUpdates = [];
   let lastQuery;
   const prisma = {
-    supplierPayableReconciliation: { findFirst: async () => reconciliation },
+    supplierPayableReconciliation: {
+      findFirst: async () => reconciliation,
+      update: async ({ where, data }) => { reconciliationUpdates.push({ id: where.id, ...data }); return { ...reconciliation, ...data }; },
+    },
     supplierPayableEntry: {
       findMany: async (args) => { lastQuery = args; return drafts; },
       update: async ({ where, data }) => { updates.push({ id: where.id, status: data.status }); return { ...where, status: data.status }; },
     },
+    bank: { findFirst: async ({ where }) => (where.id === "bank-dead" ? null : { id: where.id, bankName: "农业银行", accountNumber: "5706" }) },
   };
   prisma.$transaction = async (fn) => fn({
     $queryRaw: async (strings) => { locks.push(Array.isArray(strings) ? strings.join("") : String(strings)); return []; },
@@ -40,12 +49,13 @@ function confirmHarness(reconciliation, drafts) {
     supplierPayableEntry: prisma.supplierPayableEntry,
   });
   const audit = { create: () => ({}), update: () => ({ updatedBy: "user-1" }), record: async (...args) => audits.push(args), recordWithOrderNo: async (...args) => audits.push(args) };
-  return { service: new SupplierPayableReconciliationService(prisma, audit, {}), locks, updates, audits, query: () => lastQuery };
+  const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
+  return { service: new SupplierPayableReconciliationService(prisma, audit, cashFlow), locks, updates, audits, cashFlowCalls, reconciliationUpdates, query: () => lastQuery };
 }
 
-const draftEntry = (id, amount, sourceStatus) => ({ id, payableNo: `AP-${id}`, orderNo: "SO-1", amount: new Prisma.Decimal(amount), currency: "CNY", payableSource: { status: sourceStatus ?? "pending_finance" }, outsourcePayableSource: null });
+const draftEntry = (id, amount, sourceStatus, sourceType = "raw_material_inbound") => ({ id, payableNo: `AP-${id}`, orderNo: "SO-1", amount: new Prisma.Decimal(amount), currency: "CNY", sourceType, payableSource: { status: sourceStatus ?? "pending_finance" }, outsourcePayableSource: null });
 
-const scopeRow = (status) => ({ id: "recon-1", status, reconciliationNo: "APREC-1", supplierId: "supplier-1", orderNo: null, purchaseOrderId: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30") });
+const scopeRow = (status, extra = {}) => ({ id: "recon-1", status, reconciliationNo: "APREC-1", supplierId: "supplier-1", supplier: { id: "supplier-1", name: "晋江大田" }, orderNo: null, purchaseOrderId: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30"), bankId: "bank-1", cashFlowItemId: null, ...extra });
 
 test("应付对账还有未处理差异时不允许批量确认应付", async () => {
   const { service, updates } = confirmHarness(scopeRow("difference"), [draftEntry("e1", "10")]);
@@ -83,6 +93,55 @@ test("批量确认只取对账范围内的草稿应付，可选收窄到订单�
 });
 
 // ---------------------------------------------------------------------------
+// 2026-09-16（用户要求「一旦确认应付，金额就要转出对应的账户」）：
+//   确认应付 = 记账。金额必须写成一条**支出流水**并从对账单的银行账户转出。
+// ---------------------------------------------------------------------------
+
+test("确认应付把金额写成支出流水，并从对账单的支付银行转出", async () => {
+  const { service, cashFlowCalls } = confirmHarness(scopeRow("matched"), [draftEntry("e1", "10"), draftEntry("e2", "32.5")]);
+  const result = await service.confirmPayables("recon-1", { id: "user-1" });
+  assert.equal(cashFlowCalls.length, 1, "确认要记账：写一条收支流水");
+  const input = cashFlowCalls[0];
+  assert.equal(input.direction, "expense", "确认应付 = 钱出去");
+  assert.equal(input.amount.toString(), "42.5");
+  assert.equal(input.bankId, "bank-1", "金额必须从对账单指定的银行账户转出，否则银行余额不会变");
+  assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
+  assert.equal(input.sourceType, "supplier_payable_reconciliation");
+  assert.deepEqual(input.itemKeys, ["原材料 成本", "货款"], "原料入库来源 → 原材料成本（与付款过账同一套归类口径）");
+  assert.equal(result.bank_missing, false);
+  assert.equal(result.cash_flow_entry_id, "cf-1");
+});
+
+test("确认应付：外加工来源归到成品外加工费，且确认时补的银行/项目回写对账单", async () => {
+  const { service, cashFlowCalls, reconciliationUpdates } = confirmHarness(
+    scopeRow("matched", { bankId: null }),
+    [draftEntry("e1", "10", undefined, "outsource_receipt")],
+  );
+  const result = await service.confirmPayables("recon-1", { id: "user-1" }, { bank_id: "bank-1", cash_flow_item_id: "item-9" });
+  assert.deepEqual(cashFlowCalls[0].itemKeys, ["成品外加工费", "加工费"], "来源类型决定项目候选链");
+  assert.equal(cashFlowCalls[0].itemId, "item-9", "人工选的项目优先于候选链");
+  assert.equal(reconciliationUpdates[0].bankId, "bank-1");
+  assert.equal(result.bank_missing, false);
+});
+
+test("应付对账单没有银行账户时：流水照写，但回报 bank_missing 让界面提示", async () => {
+  const { service, cashFlowCalls } = confirmHarness(scopeRow("matched", { bankId: null }), [draftEntry("e1", "10")]);
+  const result = await service.confirmPayables("recon-1", { id: "user-1" });
+  assert.equal(cashFlowCalls[0].bankId, null);
+  assert.equal(result.bank_missing, true);
+});
+
+test("确认应付时不能用一个不在池子里的银行账户（先校验，再动事务）", async () => {
+  const { service, updates, cashFlowCalls } = confirmHarness(scopeRow("matched", { bankId: null }), [draftEntry("e1", "10")]);
+  await assert.rejects(
+    () => service.confirmPayables("recon-1", { id: "user-1" }, { bank_id: "bank-dead" }),
+    (error) => error.getResponse().code === "BANK_NOT_FOUND",
+  );
+  assert.deepEqual(updates, [], "银行非法时不得确认任何应付（不能出现「确认了但没记账」）");
+  assert.deepEqual(cashFlowCalls, []);
+});
+
+// ---------------------------------------------------------------------------
 // 2026-09-15：应付流转与对账口径
 //   用户反馈「接收应付后没有流转到应付对账」「对账创建完也没有流转到确认付款」。
 //   根因之一：对账快照只统计**已确认**应付，而它对账之后要确认的正是那些草稿 ——
@@ -100,7 +159,7 @@ function createHarness(entries) {
     supplierPayableReconciliation: { create: async ({ data }) => { captured.data = data; created += 1; return { id: `recon-${created}`, ...data }; } },
   };
   const audit = { create: () => ({}), record: async () => {}, recordWithOrderNo: async () => {} };
-  return { service: new SupplierPayableReconciliationService(prisma, audit), captured };
+  return { service: new SupplierPayableReconciliationService(prisma, audit, cashFlowStub()), captured };
 }
 
 const scopedEntry = (overrides = {}) => ({ id: "entry-1", amount: new Prisma.Decimal("500"), status: "draft", currency: "CNY", supplierId: "supplier-1", orderNo: "SO-1", confirmationDate: new Date("2026-09-10T00:00:00.000Z"), ...overrides });
@@ -124,7 +183,7 @@ test("列表返回流转摘要：覆盖多少条应付、多少条待确认、�
     { supplierId: "supplier-1", currency: "CNY", orderNo: "SO-9", purchaseOrderId: null, confirmationDate: new Date("2026-08-01T00:00:00.000Z"), amount: new Prisma.Decimal("999"), status: "draft", payableSource: null, outsourcePayableSource: null },
   ];
   const prisma = { supplierPayableReconciliation: { findMany: async () => [row] }, supplierPayableEntry: { findMany: async () => entries } };
-  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} });
+  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} }, cashFlowStub());
   const result = (await service.list())[0];
   assert.equal(result.flow.entry_count, 2);
   assert.equal(result.flow.draft_count, 1);
@@ -139,7 +198,7 @@ test("列表返回流转摘要：覆盖多少条应付、多少条待确认、�
 test("没有覆盖条目的对账也返回完整摘要结构（前端不必做空值判断）", async () => {
   const row = { id: "recon-1", status: "difference", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
   const prisma = { supplierPayableReconciliation: { findMany: async () => [row] }, supplierPayableEntry: { findMany: async () => [] } };
-  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} });
+  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} }, cashFlowStub());
   const flow = (await service.list())[0].flow;
   assert.deepEqual(flow, { entry_count: 0, draft_count: 0, draft_amount: "0.0000", can_confirm_payables: false, order_nos: [], purchase_order_nos: [], material_names: [], material_specifications: [] });
 });
@@ -158,7 +217,7 @@ test("对账详情返回 flow 摘要，且逐条明细带物料名称与规格�
     payableSource: { findMany: async () => [] },
     outsourcePayableSource: { findMany: async () => [] },
   };
-  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} });
+  const service = new SupplierPayableReconciliationService(prisma, { record: async () => {} }, cashFlowStub());
   const detail = await service.get("recon-1");
   assert.deepEqual(detail.flow.material_names, ["涤纶布"]);
   assert.deepEqual(detail.flow.material_specifications, ["150D"]);

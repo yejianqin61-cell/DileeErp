@@ -66,14 +66,16 @@ test("supplier payment posting locks the payment before allocation checks", asyn
 // 2026-09-15：付款建单补齐与收款侧同样的幂等键 + 重复草稿守卫
 // （这一族建单接口此前是全局唯一没有幂等保护的，见 20260915120000 迁移）。
 const paymentInput = (extra = {}) => ({ supplier_id: "supplier-1", order_no: "SO-1", payment_date: "2026-09-15", amount: "300", currency: "USD", payment_method: "bank_transfer", ...extra });
-const createDeps = (prisma) => new SupplierPaymentService(prisma, { create: () => ({}), record: async () => {} }, {});
+/** CashFlowService 替身：建单只用到 `requireItem`（校验收支项目）。返回 null = 不指定项目。 */
+const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, ...extra });
+const createDeps = (prisma) => new SupplierPaymentService(prisma, { create: () => ({}), record: async () => {} }, {}, cashFlowStub());
 
 // 2026-09-15：过账后必须真的把支出写进收支流水。
 // 历史缺陷：写死的收支项目 key「外加工费」在字典里不存在（字典里是「外加工费 晋江大田工资」），
 // CashFlowService 当时遇到缺项直接 return null，于是**每一笔供应商付款都被静默丢掉**。
-function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" } } = {}) {
+function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", cashFlowItemId = null } = {}) {
   const cashFlowCalls = [];
-  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", remark: null };
+  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId, cashFlowItemId, remark: null };
   const prisma = {
     supplierPayment: { findFirst: async () => ({ ...payment, status: "draft" }) },
     $transaction: async (fn) => fn({
@@ -98,8 +100,19 @@ test("供应商付款过账后自动写收支流水：项目按应付来源选�
   assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
   assert.equal(input.settlementMethod, "转账--农业银行5706", "结算方式按老表格式带出银行账户");
   assert.deepEqual(input.settlementAccountHint, { bankName: "农业银行", accountNumber: "5706" }, "银行信息一并带给收支流水，用于匹配结算账户字典");
+  // 2026-09-16：bankId 是银行余额的唯一依据 —— 单据上选了银行就必须落到流水上。
+  assert.equal(input.bankId, "bank-1", "支付银行要写进流水的 bankId，否则这笔钱不动任何银行账户余额");
   assert.equal(input.sourceType, "supplier_payment");
   assert.equal(input.sourceId, "payment-1");
+});
+
+test("供应商付款过账：过账时选的项目优先，其次用建单时存在付款单上的项目", async () => {
+  const fromDraft = postFixture({ cashFlowItemId: "item-from-draft" });
+  await fromDraft.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.equal(fromDraft.cashFlowCalls[0].itemId, "item-from-draft", "建单时填在付款单上的项目不能丢");
+  const atPost = postFixture({ cashFlowItemId: "item-from-draft" });
+  await atPost.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" }, "item-at-post");
+  assert.equal(atPost.cashFlowCalls[0].itemId, "item-at-post", "过账时临时选的项目优先");
 });
 
 test("供应商付款过账：外加工与其他应付各自映射到对应收支项目", async () => {

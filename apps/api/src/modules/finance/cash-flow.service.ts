@@ -6,6 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { CASH_FLOW_ITEM_DICTIONARY_KEY, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "./cash-flow-catalog";
+import { requireActiveBank } from "./bank-selection";
 import { cashFlowDirection } from "./cash-flow.domain";
 import { financeDayRange } from "./finance-period";
 
@@ -29,6 +30,8 @@ export type CashFlowEntryInput = {
   item_id: string;
   settlement_method?: string;
   settlement_account_id?: string;
+  /** 资金实际所在的银行账户（银行账户池 banks）；填了才算进该账户的余额。 */
+  bank_id?: string;
   remark?: string;
 };
 
@@ -38,6 +41,7 @@ export type CashFlowListFilter = {
   itemId?: string;
   currency?: string;
   direction?: string;
+  bankId?: string;
   /** 是否包含已冲销的流水（默认只给生效的） */
   includeReversed?: boolean;
 };
@@ -45,6 +49,7 @@ export type CashFlowListFilter = {
 const ENTRY_INCLUDE = {
   item: { select: { id: true, key: true, label: true } },
   settlementAccount: { select: { id: true, key: true, label: true } },
+  bank: { select: { id: true, bankCode: true, bankName: true, accountNumber: true, currency: true } },
 } as const;
 
 @Injectable()
@@ -65,6 +70,7 @@ export class CashFlowService {
         ...(filter.itemId ? { itemId: filter.itemId } : {}),
         ...(filter.currency ? { currency: filter.currency } : {}),
         ...(filter.direction ? { direction: filter.direction } : {}),
+        ...(filter.bankId ? { bankId: filter.bankId } : {}),
         ...(period ? { entryDate: period } : {}),
       },
       include: ENTRY_INCLUDE,
@@ -104,11 +110,18 @@ export class CashFlowService {
       currency: input.currency ?? current.currency,
       item_id: input.item_id ?? current.itemId,
       settlement_method: input.settlement_method ?? current.settlementMethod ?? undefined,
-      settlement_account_id: input.settlement_account_id ?? current.settlementAccountId ?? undefined,
+      settlement_account_id: input.settlement_account_id === undefined ? (current.settlementAccountId ?? undefined) : (input.settlement_account_id || undefined),
+      bank_id: input.bank_id === undefined ? (current.bankId ?? undefined) : (input.bank_id || undefined),
       remark: input.remark ?? current.remark ?? undefined,
     };
     const data = await this.prepare(merged);
-    const row = await this.prisma.cashFlowEntry.update({ where: { id }, data: { ...data, ...this.audit.update(user) } });
+    // 清空语义：`bank_id` / `settlement_account_id` 传 null 或空串表示**去掉**（选错了要能改掉），
+    // 传 undefined 表示不改 —— 与收付款草稿的编辑同一约定。
+    // `prepare()` 返回的是「选中的账户」，表达不了「清空」，所以这里显式补上。
+    const patch = { ...data } as Record<string, unknown>;
+    if (input.bank_id !== undefined && !input.bank_id) patch.bankId = null;
+    if (input.settlement_account_id !== undefined && !input.settlement_account_id) patch.settlementAccountId = null;
+    const row = await this.prisma.cashFlowEntry.update({ where: { id }, data: { ...(patch as typeof data), ...this.audit.update(user) } });
     await this.audit.record("cash_flow_entry.update", "cash_flow_entry", user.id, id, {
       entry_no: row.entryNo,
       amount: row.amount.toString(),
@@ -144,6 +157,24 @@ export class CashFlowService {
       orderBy: [{ sortOrder: "asc" }, { key: "asc" }],
       select: { id: true, key: true, label: true, sortOrder: true },
     });
+  }
+
+  /**
+   * 校验一个「收支项目」字典项（存在 + 启用）。
+   *
+   * 建单时人工选了项目就要**当场**校验：等到过账才报「项目已停用」，财务已经填完一整张单，
+   * 而错误信息在另一个页面的另一个时刻才出现 —— 那不是校验，那是事后通知。
+   * 传空（undefined / null / 空串）表示「不指定」，由来源自动归类，返回 null。
+   */
+  async requireItem(itemId: string | null | undefined, message = "收支项目不存在或已停用") {
+    const id = itemId?.trim();
+    if (!id) return null;
+    const item = await this.prisma.dictionaryItem.findFirst({
+      where: { id, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
+      select: { id: true, key: true, label: true },
+    });
+    if (!item) throw this.invalid("CASH_FLOW_ITEM_NOT_FOUND", message);
+    return item;
   }
 
   /** 校验并归一化一条流水（新建与更正共用，避免两条路径校验不一致）。 */
@@ -182,6 +213,9 @@ export class CashFlowService {
       if (!account) throw this.invalid("SETTLEMENT_ACCOUNT_NOT_FOUND", "结算账户不存在或已停用");
       settlementAccountId = account.id;
     }
+    // 银行账户来自银行池（财务 → 银行账户）：停用/已删除的账户不能被选中，
+    // 与收付款、对账选银行同一套 requireActiveBank 口径。填了才算进该账户余额。
+    const bank = await requireActiveBank(this.prisma, input.bank_id, "银行账户不存在或已停用");
     return {
       entryDate: this.date(input.entry_date),
       counterpartyName,
@@ -191,6 +225,7 @@ export class CashFlowService {
       itemId: item.id,
       settlementMethod: input.settlement_method?.trim() || undefined,
       settlementAccountId,
+      bankId: bank?.id,
       remark: input.remark,
     };
   }
@@ -216,6 +251,15 @@ export class CashFlowService {
       direction: "income" | "expense";
       settlementMethod?: string | null;
       settlementAccountId?: string | null;
+      /**
+       * 单据上真正选定的银行账户（`banks.id`）。
+       *
+       * 与 `settlementAccountHint` 的区别：那个是「按账号去猜老表结算账户字典」的兜底（可能匹配不上，
+       * 匹配不上就留空）；这个才是钱到底在哪张卡上，直接落 `cash_flow_entries.bank_id`，
+       * 是银行余额的唯一依据。单据上没选银行时为 null —— 流水照样写（收支事实不能丢），
+       * 但它不属于任何账户，因此不进任何账户余额。
+       */
+      bankId?: string | null;
       /** 收付款单据上的银行信息：用于**保守匹配**结算账户字典（匹配不上就留空，不造关联）。 */
       settlementAccountHint?: { bankName?: string | null; accountNumber?: string | null } | null;
       sourceType: string;
@@ -264,6 +308,7 @@ export class CashFlowService {
         itemId: item.id,
         settlementMethod: input.settlementMethod ?? undefined,
         settlementAccountId,
+        bankId: input.bankId ?? undefined,
         sourceType: input.sourceType,
         sourceId: input.sourceId,
         remark: `自动生成：${input.sourceType} / ${input.paymentNo}${input.remark ? ` - ${input.remark}` : ""}`,
@@ -271,6 +316,88 @@ export class CashFlowService {
       },
     });
     return row;
+  }
+
+  /**
+   * 把「本次确认的金额」记进收支流水（确认应收 / 确认应付专用）：**同来源只有一条流水，金额是累计确认额**。
+   *
+   * 为什么不能用 `autoCreateFromPayment` 的「已存在就跳过」：对账单的范围是**活范围**
+   * （同一客户/供应商 + 币种 + 期间），确认一次之后同期间又新进来的草稿可以再确认一次。
+   * 跳过就等于「银行账永远停在第一次确认的数字上」，钱对不上还查不出原因。
+   *
+   * 为什么是**累加**而不是覆盖：同一条应收既可能被「一键确认应收」（对账单维度）记进对账单那条流水，
+   * 也可能被行内「确认应收」（逐条维度）单独记一条。若覆盖，先按对账确认 100、再逐条确认新来的 50，
+   * 回头再点一次对账确认时对账那条流水会被改写成 50，总额凭空少 100。累加则只会单调增长，
+   * 永远不会因为「又点了一次」而丢掉已经记过的钱。
+   *
+   * 金额为 0（这次没有可确认的条目）时不动流水：返回 null，不建一条 0 元流水出来。
+   *
+   * 更新时**保留首次确认的日期**（一条累计流水只有一个日期，取最早的才不会被后来的确认把账推到别的期间），
+   * 但银行账户与收支项目取最新一次（财务最近一次确认时选的那个才是「钱实际走的地方」）。
+   */
+  async recordConfirmation(
+    input: {
+      sourceType: string;
+      sourceId: string;
+      documentNo: string;
+      entryDate: Date;
+      amount: Prisma.Decimal;
+      currency: string;
+      counterpartyName: string;
+      direction: "income" | "expense";
+      itemKeys: readonly string[];
+      /** 人工选定的收支项目（对账单上填过就传）；给了但不存在会显式 422，不静默换一个。 */
+      itemId?: string | null;
+      bankId?: string | null;
+      remark?: string;
+    },
+    user: CurrentUser,
+  ) {
+    if (input.amount.lte(0)) return null;
+    const item = input.itemId
+      ? await this.prisma.dictionaryItem.findFirst({
+          where: { id: input.itemId, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
+          select: { id: true, key: true },
+        })
+      : await this.firstCandidateItem(input.itemKeys);
+    if (!item) {
+      throw this.invalid(
+        "CASH_FLOW_ITEM_NOT_FOUND",
+        input.itemId
+          ? "选择的收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认后重新确认"
+          : `自动写入收支流水需要收支项目「${input.itemKeys.join("」或「")}」，请在「收支管理 → 收支项目」里补上后重新确认`,
+      );
+    }
+    const remark = `自动生成：${input.sourceType} / ${input.documentNo}${input.remark ? ` - ${input.remark}` : ""}`;
+    const existing = await this.prisma.cashFlowEntry.findFirst({
+      where: { sourceType: input.sourceType, sourceId: input.sourceId, status: "posted", deletedAt: null },
+      select: { id: true, amount: true },
+    });
+    if (existing) {
+      const total = existing.amount.plus(input.amount);
+      await this.prisma.cashFlowEntry.update({
+        where: { id: existing.id },
+        data: { amount: total, counterpartyName: input.counterpartyName, currency: input.currency, itemId: item.id, bankId: input.bankId ?? null, remark, ...this.audit.update(user) },
+      });
+      return { id: existing.id, created: false, amount: total, added: input.amount };
+    }
+    const row = await this.prisma.cashFlowEntry.create({
+      data: {
+        entryNo: this.number(),
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        entryDate: input.entryDate,
+        counterpartyName: input.counterpartyName,
+        direction: input.direction,
+        amount: input.amount,
+        currency: input.currency,
+        itemId: item.id,
+        bankId: input.bankId ?? null,
+        remark,
+        ...this.audit.create(user),
+      },
+    });
+    return { id: row.id, created: true, amount: input.amount, added: input.amount };
   }
 
   /**

@@ -334,13 +334,22 @@ export function buildSalesGrossProfitTable(
 
 /* ------------------------------------------------------------------ 收支明细表 */
 
-/** 收支明细表的列定义：6 列，列名与列序照抄 `收支明细表.xls`。 */
+/**
+ * 收支明细表的列定义。
+ *
+ * 老表是 6 列（日期 / 对方名称 / 币种 / 收入 / 支出 / 结算方式）。这里**加了「收支项目」与
+ * 「银行账户」两列**，是用户明确要求的口径：明细表要能看出「这笔钱算什么项目、走的哪个账户」，
+ * 否则收支汇总表按项目分类的数字在明细里根本对不上号（汇总说「货款 5000」，明细里全是 5000，
+ * 看不出哪一笔是货款）。列序把项目放在金额前面、银行账户跟在结算方式前，保持从左到右「是什么 → 多少钱 → 怎么走的」。
+ */
 export const CASH_FLOW_DETAIL_COLUMNS: ReportColumn[] = [
   { header: "日期", width: 12 },
   { header: "对方名称", width: 26 },
   { header: "币种", width: 10 },
+  { header: "收支项目", width: 22 },
   numeric("收入", 14),
   numeric("支出", 14),
+  { header: "银行账户", width: 26 },
   { header: "结算方式", width: 26 },
 ];
 
@@ -350,6 +359,10 @@ export type CashFlowDetailSource = {
   currency: string | null;
   direction: string;
   amount: Prisma.Decimal | null;
+  /** 收支项目名（老表没有这一列，见上方列定义注释）。 */
+  itemLabel?: string | null;
+  /** 银行账户（`banks` 池）的「银行名 + 账号」。 */
+  bankLabel?: string | null;
   settlementMethod: string | null;
   settlementAccountLabel: string | null;
 };
@@ -365,14 +378,23 @@ export function buildCashFlowDetailTable(
       toDateText(row.date), // 日期
       row.counterpartyName, // 对方名称（老表是一个统一字段）
       currencyLabel(row.currency, options.currencyLabels), // 币种
+      // 项目缺失（历史手工流水没归类）时给空单元格而不是「-」：导出到 Excel 后空单元格可以被筛选、可以求和，
+      // 一个横杠会被当成文本混进数值列里。
+      row.itemLabel ?? "", // 收支项目
       // 老表把「没有的那一边」写成 0（样本：收入 0 / 支出 2900），这里照抄。
       // 0 在这里是「确实为零」的事实，不是「没有数据」（缺字段才是空单元格）。
       row.direction === "income" ? toExportNumber(row.amount) ?? 0 : 0, // 收入
       row.direction === "expense" ? toExportNumber(row.amount) ?? 0 : 0, // 支出
+      row.bankLabel ?? "", // 银行账户
       settlementText(row.settlementMethod, row.settlementAccountLabel), // 结算方式（方式--账户）
     ]),
     // **不设 totalColumns**：本表一行一个币种，跨币种相加没有意义（R7）。
     // 需要合计时看收支汇总表 —— 那边按币种分段给合计。
+    footnotes: [
+      "「收支项目」与「银行账户」是本期为可核对性新增的两列（老表 6 列）：项目来自「收支管理 → 收支项目」字典，",
+      "确认应收/应付、收付款过账自动写入的流水也按各自单据上的项目归类。",
+      "银行账户为空表示这笔流水没指定具体账户（历史流水或建单时未选），它不进任何账户的余额。",
+    ],
   };
 }
 

@@ -24,6 +24,8 @@ class CashFlowEntryDto {
   @IsUUID() item_id!: string;
   @IsOptional() @IsString() @MaxLength(50) settlement_method?: string;
   @IsOptional() @IsUUID() settlement_account_id?: string;
+  /** 资金实际所在的银行账户（财务 → 银行账户）；填了才算进该账户余额。 */
+  @IsOptional() @IsUUID() bank_id?: string;
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }
 
@@ -36,6 +38,7 @@ class CashFlowEntryUpdateDto {
   @IsOptional() @IsUUID() item_id?: string;
   @IsOptional() @IsString() @MaxLength(50) settlement_method?: string;
   @IsOptional() @IsUUID() settlement_account_id?: string;
+  @IsOptional() @IsUUID() bank_id?: string;
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }
 
@@ -45,6 +48,7 @@ class CashFlowListDto {
   @IsOptional() @IsUUID() item_id?: string;
   @IsOptional() @IsString() @MaxLength(10) currency?: string;
   @IsOptional() @IsIn(["income", "expense"]) direction?: string;
+  @IsOptional() @IsUUID() bank_id?: string;
   /** 是否包含已冲销的流水（默认只给生效的）。 */
   @IsOptional() @IsIn(["true", "false"]) include_reversed?: string;
 }
@@ -67,6 +71,7 @@ export class CashFlowController {
         itemId: query.item_id,
         currency: query.currency,
         direction: query.direction,
+        bankId: query.bank_id,
         includeReversed: query.include_reversed === "true",
       }),
       meta: {},

@@ -312,6 +312,10 @@ export class FinanceReportQueryService {
       currency: row.currency,
       direction: row.direction,
       amount: row.amount,
+      // 收支项目：老表没这一列，但没有它就「看不出这笔钱算什么」——用户要求明细能按项目分类统计。
+      itemLabel: row.item?.label ?? null,
+      // 银行账户（银行账户池）优先；历史流水没落 bank_id 时回落到老表结算账户字典的标签。
+      bankLabel: row.bank ? `${row.bank.bankName}${row.bank.accountNumber}` : null,
       settlementMethod: row.settlementMethod,
       settlementAccountLabel: row.settlementAccount?.label ?? null,
     }));
@@ -373,9 +377,9 @@ export class FinanceReportQueryService {
         ...(filter.direction ? { direction: filter.direction } : {}),
         ...(period ? { entryDate: period } : {}),
       },
-      // 结算账户标签一次带上：汇总表不读它，但只为一个 select 分两条查询路径不值得
+      // 结算账户标签与收支项目名一次带上：汇总表只读项目，但只为一个 select 分两条查询路径不值得
       // （两条路径的筛选条件一旦分叉，就是「明细与汇总对不上」的来源）。
-      include: { settlementAccount: { select: { label: true } } },
+      include: { settlementAccount: { select: { label: true } }, item: { select: { label: true } }, bank: { select: { bankName: true, accountNumber: true } } },
       orderBy: [{ entryDate: "asc" }, { createdAt: "asc" }],
     });
   }

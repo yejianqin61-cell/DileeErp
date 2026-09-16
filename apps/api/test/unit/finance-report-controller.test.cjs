@@ -92,6 +92,8 @@ function stubReports(overrides = {}) {
           currency: "CNY",
           direction: "expense",
           amount: dec("2900"),
+          itemLabel: "原材料 成本",
+          bankLabel: "农业银行5706",
           settlementMethod: "转账",
           settlementAccountLabel: "农业银行5706",
         },
@@ -278,13 +280,13 @@ test("finance-report.api：利润表的筛选条件与其它报表一致地映�
 
 /* ------------------------------------------------------------ 三期：收支两张表 */
 
-test("finance-report.api：收支明细表预览与导出（6 列、工作表名、文件名）", async () => {
+test("finance-report.api：收支明细表预览与导出（8 列：老表 6 列 + 收支项目 + 银行账户）", async () => {
   const { service } = stubReports();
   const controller = new FinanceReportController(service);
   const preview = await controller.cashFlowDetail({});
   assert.equal(preview.data.sheet_name, "收支明细");
-  assert.equal(preview.data.columns.length, 6);
-  assert.deepEqual(preview.data.rows[0], ["2026-09-14", "兴田", "人民币", 0, 2900, "转账--农业银行5706"]);
+  assert.equal(preview.data.columns.length, 8);
+  assert.deepEqual(preview.data.rows[0], ["2026-09-14", "兴田", "人民币", "原材料 成本", 0, 2900, "农业银行5706", "转账--农业银行5706"]);
   assert.equal(preview.data.totals, null, "收支明细表不给合计（一行一个币种）");
 
   const response = stubResponse();

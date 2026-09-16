@@ -110,6 +110,10 @@ model DictionaryItem {
   type      DictionaryType @relation(fields: [typeId], references: [id])
   cashFlowItems    CashFlowEntry[] @relation("CashFlowItem")
   cashFlowAccounts CashFlowEntry[] @relation("CashFlowAccount")
+  customerPaymentItems       CustomerPayment[] @relation("CustomerPaymentCashFlowItem")
+  supplierPaymentItems       SupplierPayment[] @relation("SupplierPaymentCashFlowItem")
+  receivableReconciliationItems ReceivableReconciliation[] @relation("ReceivableReconciliationCashFlowItem")
+  payableReconciliationItems    SupplierPayableReconciliation[] @relation("SupplierPayableReconciliationCashFlowItem")
 
   @@unique([typeId, key])
   @@map("dictionary_items")
@@ -1001,6 +1005,8 @@ model SupplierPayment {
   bankReference String?                     @map("bank_reference") @db.VarChar(200)
   payeeName     String?                     @map("payee_name") @db.VarChar(200)
   bankId        String?                     @map("bank_id") @db.Uuid
+  /// 收支项目：与收款侧同义（建单时存下，过账写流水时用，可在过账时临时改）。
+  cashFlowItemId String?                    @map("cash_flow_item_id") @db.Uuid
   status        String                      @default("draft") @db.VarChar(30)
   attachment    Json                        @default("[]")
   remark        String?                     @db.VarChar(1000)
@@ -1012,6 +1018,7 @@ model SupplierPayment {
   deletedBy     String?                     @map("deleted_by") @db.Uuid
   supplier      Supplier                    @relation(fields: [supplierId], references: [id])
   bank          Bank?                       @relation(fields: [bankId], references: [id])
+  cashFlowItem  DictionaryItem?             @relation("SupplierPaymentCashFlowItem", fields: [cashFlowItemId], references: [id])
   allocations   SupplierPaymentAllocation[]
 
   @@index([supplierId, status])
@@ -1454,6 +1461,9 @@ model CustomerPayment {
   // 收款到账银行：指向银行账户池（banks）。可空（历史数据与「还没确定打哪张卡」的草稿），
   // 与供应商付款侧 SupplierPayment.bankId 语义一致。
   bankId        String?                @map("bank_id") @db.Uuid
+  /// 收支项目（收支管理 → 收支项目字典）：本单过账时写入收支流水用的类目。
+  /// 建单时就存下来而不是等到过账才选：财务在表单里填过的东西不能丢，过账时仍可临时改（以过账参数为准）。
+  cashFlowItemId String?               @map("cash_flow_item_id") @db.Uuid
   status        String                 @default("draft") @db.VarChar(30)
   attachment    Json                   @default("[]")
   remark        String?                @db.VarChar(1000)
@@ -1465,6 +1475,7 @@ model CustomerPayment {
   deletedBy     String?                @map("deleted_by") @db.Uuid
   customer      Customer               @relation(fields: [customerId], references: [id])
   bank          Bank?                  @relation(fields: [bankId], references: [id])
+  cashFlowItem  DictionaryItem?        @relation("CustomerPaymentCashFlowItem", fields: [cashFlowItemId], references: [id])
   allocations   ReceivableAllocation[]
   salesOrder    SalesOrder?            @relation(fields: [salesOrderId], references: [id])
   salesOrderId  String?                @map("sales_order_id") @db.Uuid
@@ -1546,6 +1557,8 @@ model ReceivableReconciliation {
   currency                 String      @db.VarChar(10)
   // 客户回款银行：应收对账要指明「钱回到哪个账户」，取值同样来自银行账户池（banks）。
   bankId                   String?     @map("bank_id") @db.Uuid
+  /// 收支项目：确认应收时自动写入收支流水（收到客户货款）用的类目。
+  cashFlowItemId           String?     @map("cash_flow_item_id") @db.Uuid
   status                   String      @default("pending") @db.VarChar(30)
   resolutionRemark         String?     @map("resolution_remark") @db.VarChar(1000)
   attachment               Json        @default("[]")
@@ -1559,6 +1572,7 @@ model ReceivableReconciliation {
   salesOrder               SalesOrder? @relation(fields: [salesOrderId], references: [id])
   customer                 Customer    @relation(fields: [customerId], references: [id])
   bank                     Bank?       @relation(fields: [bankId], references: [id])
+  cashFlowItem             DictionaryItem? @relation("ReceivableReconciliationCashFlowItem", fields: [cashFlowItemId], references: [id])
 
   @@index([orderNo, status])
   @@index([customerId, status])
@@ -1573,6 +1587,8 @@ model SupplierPayableReconciliation {
   purchaseOrderId          String?  @map("purchase_order_id") @db.Uuid
   supplierId               String   @map("supplier_id") @db.Uuid
   bankId                   String?  @map("bank_id") @db.Uuid
+  /// 收支项目：确认应付时自动写入收支流水（付给供应商）用的类目。
+  cashFlowItemId           String?  @map("cash_flow_item_id") @db.Uuid
   periodStart              DateTime @map("period_start") @db.Date
   periodEnd                DateTime @map("period_end") @db.Date
   payableAmountSnapshot    Decimal  @map("payable_amount_snapshot") @db.Decimal(18, 4)
@@ -1594,6 +1610,7 @@ model SupplierPayableReconciliation {
   deletedBy                String?  @map("deleted_by") @db.Uuid
   supplier                 Supplier @relation(fields: [supplierId], references: [id])
   bank                     Bank?    @relation(fields: [bankId], references: [id])
+  cashFlowItem             DictionaryItem? @relation("SupplierPayableReconciliationCashFlowItem", fields: [cashFlowItemId], references: [id])
   purchaseOrder            PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
 
   @@index([supplierId, status])
@@ -1621,6 +1638,9 @@ model CashFlowEntry {
   itemId              String          @map("item_id") @db.Uuid
   settlementMethod    String?         @map("settlement_method") @db.VarChar(50)
   settlementAccountId String?         @map("settlement_account_id") @db.Uuid
+  /// 资金实际所在的**银行账户**（银行账户池 banks）。与 settlementAccountId（老表结算方式字典）是两回事：
+  /// 字典是给人看的「转账--农业银行5706」，这里才是算银行余额的账。可空：历史流水与「不确定走哪张卡」的流水。
+  bankId              String?         @map("bank_id") @db.Uuid
   /// 本期恒空，为将来与收付款单联动预留
   sourceType          String?         @map("source_type") @db.VarChar(40)
   sourceId            String?         @map("source_id") @db.Uuid
@@ -1635,11 +1655,13 @@ model CashFlowEntry {
   deletedBy           String?         @map("deleted_by") @db.Uuid
   item                DictionaryItem  @relation("CashFlowItem", fields: [itemId], references: [id])
   settlementAccount   DictionaryItem? @relation("CashFlowAccount", fields: [settlementAccountId], references: [id])
+  bank                Bank?           @relation(fields: [bankId], references: [id])
   voucherLines        VoucherLine[]
 
   @@index([entryDate, currency])
   @@index([itemId, direction])
   @@index([currency, status])
+  @@index([bankId, status])
   @@map("cash_flow_entries")
 }
 
@@ -1929,6 +1951,26 @@ model Employee {
   hiredOn            DateTime?                 @map("hired_on") @db.Date
   leftOn             DateTime?                 @map("left_on") @db.Date
   remark             String?                   @db.VarChar(500)
+  // 员工花名册口径（人事导入模板新增）：身份信息、学历血型、社保商业险、合同起止与紧急联络。
+  // 全部可空：历史员工没有这些信息，新建/导入时也允许先留空后补录。
+  // 年龄、工龄、当月生日、合同到期提醒是由这些字段实时派生的展示列，不落库。
+  birthDate          DateTime?                 @map("birth_date") @db.Date
+  gender             String?                   @db.VarChar(10)
+  ethnicity          String?                   @db.VarChar(50)
+  idCardNo           String?                   @map("id_card_no") @db.VarChar(30)
+  education          String?                   @db.VarChar(50)
+  bloodType          String?                   @map("blood_type") @db.VarChar(10)
+  socialInsurance    Boolean?                  @map("social_insurance")
+  commercialInsurance Boolean?                 @map("commercial_insurance")
+  contractStart      DateTime?                 @map("contract_start") @db.Date
+  contractEnd        DateTime?                 @map("contract_end") @db.Date
+  laborContractStart DateTime?                 @map("labor_contract_start") @db.Date
+  laborContractEnd   DateTime?                 @map("labor_contract_end") @db.Date
+  homeAddress        String?                   @map("home_address") @db.VarChar(500)
+  currentAddress     String?                   @map("current_address") @db.VarChar(500)
+  phone              String?                   @db.VarChar(50)
+  emergencyContact   String?                   @map("emergency_contact") @db.VarChar(100)
+  emergencyPhone     String?                   @map("emergency_phone") @db.VarChar(50)
   createdAt          DateTime                  @default(now()) @map("created_at")
   updatedAt          DateTime                  @updatedAt @map("updated_at")
   createdBy          String                    @map("created_by") @db.Uuid
@@ -1947,6 +1989,7 @@ model Employee {
 
   @@index([departmentId, employmentStatus])
   @@index([positionId, employmentStatus])
+  @@index([idCardNo])
   @@map("employees")
 }
 
@@ -2369,6 +2412,9 @@ model Bank {
   accountName   String              @map("account_name") @db.VarChar(200)
   accountNumber String              @map("account_number") @db.VarChar(100)
   currency      String              @db.VarChar(10)
+  /// 建账期初余额：系统余额 = 期初余额 + 生效收支流水 + 互转净额（见 docs/design/bank-balance-and-transfer-2026-09-16.md）。
+  /// 单独一列而不是从流水倒推：财务接手的账户本来就有余额，没有期初就永远对不上银行对账单。
+  openingBalance Decimal            @default(0) @map("opening_balance") @db.Decimal(18, 4)
   isActive      Boolean             @default(true) @map("is_active")
   swiftCode     String?             @map("swift_code") @db.VarChar(50)
   remark        String?             @db.VarChar(1000)
@@ -2382,6 +2428,48 @@ model Bank {
   supplierPayments       SupplierPayment[]
   customerPayments       CustomerPayment[]
   receivableReconciliations ReceivableReconciliation[]
+  cashFlowEntries        CashFlowEntry[]
+  transfersOut           BankTransfer[] @relation("BankTransferFrom")
+  transfersIn            BankTransfer[] @relation("BankTransferTo")
 
   @@map("banks")
+}
+
+/// 银行余额互转：同一个银行池内两个账户之间的资金划转（含跨币种）。
+///
+/// 为什么不写成两条 CashFlowEntry：互转既不是收入也不是支出，记成「A 支出 + B 收入」会让
+/// 收支汇总表凭空多出一笔收入与一笔支出（收支口径被污染）。资金确实动了，但它动在银行账户之间，
+/// 因此单独一张表，只在计算**银行余额**时参与：转出方 −fromAmount、转入方 +toAmount。
+/// 收支明细表因此不出现互转行 —— 这是有意的口径，不是遗漏。
+model BankTransfer {
+  id             String   @id @default(uuid()) @db.Uuid
+  transferNo     String   @unique @map("transfer_no") @db.VarChar(100)
+  transferDate   DateTime @map("transfer_date") @db.Date
+  fromBankId     String   @map("from_bank_id") @db.Uuid
+  /// 本方币种：默认取账户币种，但允许与账户币种不同（多币种户要能指定实际扣的币种）。
+  fromCurrency   String   @map("from_currency") @db.VarChar(10)
+  toBankId       String   @map("to_bank_id") @db.Uuid
+  toCurrency     String   @map("to_currency") @db.VarChar(10)
+  fromAmount     Decimal  @map("from_amount") @db.Decimal(18, 4)
+  /// 对方金额：跨币种时由财务填实际到账数；同币种时必须与 fromAmount 相等（否则是凭空多钱或少钱）。
+  toAmount       Decimal  @map("to_amount") @db.Decimal(18, 4)
+  /// 汇率快照（toAmount / fromAmount）：同币种为 1。存下来是为了事后能解释「当时按什么价换的」。
+  exchangeRate   Decimal? @map("exchange_rate") @db.Decimal(18, 6)
+  /// posted（生效）/ reversed（已冲销，保留行但不再计入余额）
+  status         String   @default("posted") @db.VarChar(30)
+  reversalReason String?  @map("reversal_reason") @db.VarChar(500)
+  remark         String?  @map("remark") @db.VarChar(1000)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  createdBy      String   @map("created_by") @db.Uuid
+  updatedBy      String   @map("updated_by") @db.Uuid
+  deletedAt      DateTime? @map("deleted_at")
+  deletedBy      String?  @map("deleted_by") @db.Uuid
+  fromBank       Bank     @relation("BankTransferFrom", fields: [fromBankId], references: [id])
+  toBank         Bank     @relation("BankTransferTo", fields: [toBankId], references: [id])
+
+  @@index([transferDate, status])
+  @@index([fromBankId, status])
+  @@index([toBankId, status])
+  @@map("bank_transfers")
 }

@@ -11,7 +11,8 @@ export const FINANCE_BOARDS = [
   { key: "receivable", title: "应收管理", description: "成品出库过账自动形成应收来源：成品出库条目 → 应收对账 → 确认应收 → 收款核销" },
   { key: "payable", title: "应付管理", description: "原料入库过账 / 外加工签收形成应付来源：入库条目与签收 → 应付对账 → 确认应付 → 付款核销" },
   { key: "salary", title: "工资管理", description: "两个功能入口：工资台账（可编辑满页表格，车间生产工资自动汇总）与工资付款（当月台账只留总工资，行内付款/冲销）" },
-  { key: "banks", title: "银行账户", description: "银行账户池：付款/对账里「支付银行」下拉的来源，支持新建、编辑、停用与删除" },
+  { key: "banks", title: "银行账户", description: "银行账户池：付款/对账里「支付银行」下拉的来源，含期初余额与当前余额（余额 = 期初 + 收入 − 支出 + 转入 − 转出），支持新建、编辑、停用与删除" },
+  { key: "bank-transfers", title: "银行余额互转", description: "同一银行池里两个账户之间的划转：本方账户/币种 → 对方账户/币种，跨币种按实际到账数记账；互转不计入收支流水，只影响账户余额" },
   { key: "cash-flow", title: "收支管理", description: "手工录入资金收支流水（含统一「对方名称」与银行账户），按可配置的收支项目归类" },
   { key: "reports", title: "财务报表", description: "按老系统版式导出财务对账表：销售/采购对账、销售利润、收支明细与汇总；数字落数值型，可直接在 Excel 里求和" },
   { key: "voucher", title: "凭证管理", description: "从收支流水生成记账凭证：每条流水一张（幂等），草稿可编辑/过账，已过账只能红冲，凭证纸可打印或另存 PDF" },
@@ -81,12 +82,13 @@ export const SALARY_SECTIONS = [
 
 export type SalarySectionKey = (typeof SALARY_SECTIONS)[number]["key"];
 
-/** 每个板块的子栏目。凭证管理与银行账户没有子栏目（都是单页满页表格）。 */
+/** 每个板块的子栏目。凭证管理、银行账户与银行余额互转没有子栏目（都是单页满页表格）。 */
 export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: string; title: string; description: string }>> = {
   receivable: RECEIVABLE_TABS,
   payable: PAYABLE_TABS,
   salary: SALARY_SECTIONS,
   banks: [],
+  "bank-transfers": [],
   "cash-flow": [],
   reports: FINANCE_REPORT_TABS,
   voucher: VOUCHER_TABS,

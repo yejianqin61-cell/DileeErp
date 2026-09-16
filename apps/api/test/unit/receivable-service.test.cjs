@@ -4,6 +4,12 @@ const { Prisma } = require("@prisma/client");
 const { ReceivableService } = require("../../dist/modules/finance/receivable.service.js");
 const { settlementRemark } = require("../../dist/modules/warehouse/finished-goods-settlement.js");
 
+/**
+ * CashFlowService 替身：确认应收（逐条 / 按订单批量）都要记账 ——
+ * `requireItem` 校验收支项目，`recordConfirmation` 写收入流水（= 钱进银行账户）。
+ */
+const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, recordConfirmation: async () => null, ...extra });
+
 test("分批出库的应收备注写明折算口径（逐单尾差 ≤ 0.0001），整单出库不加这句", () => {
   const sales = { quantity: new Prisma.Decimal(3), unitPrice: new Prisma.Decimal(10), settlementUnitPrice: new Prisma.Decimal("33.3333"), receivableAmount: new Prisma.Decimal(100), settlementMethod: "tt", localCurrencyAmount: new Prisma.Decimal(720) };
 
@@ -27,10 +33,85 @@ test("receivable confirmation locks and rechecks the current source", async () =
     }),
   };
   const audit = { update: () => ({}), record: async () => {} };
-  const service = new ReceivableService(prisma, audit);
+  const service = new ReceivableService(prisma, audit, cashFlowStub());
   await assert.rejects(() => service.confirm("source-1", { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_SOURCE_NOT_CONFIRMABLE");
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-16（用户要求「一旦确认应收，金额就要进入对应的账户」）：
+//   逐条确认应收也要记账。用户点的是列表行上的「确认应收」，这条路不记账的话，
+//   用户实际看到的仍然是「确认了但银行余额没动」。
+// ---------------------------------------------------------------------------
+
+function confirmHarness({ row, drafts = [] } = {}) {
+  const cashFlowCalls = [];
+  const prisma = {
+    bank: { findFirst: async ({ where }) => (where.id === "bank-dead" ? null : { id: where.id, bankName: "农业银行", accountNumber: "5706" }) },
+    receivableSource: {
+      findFirst: async () => row,
+      findMany: async () => drafts,
+      update: async ({ where, data }) => ({ ...row, id: where.id, ...data }),
+      updateMany: async () => ({ count: drafts.length }),
+    },
+  };
+  prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], receivableSource: prisma.receivableSource });
+  const audit = { update: () => ({ updatedBy: "user-1" }), record: async () => {} };
+  const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
+  return { service: new ReceivableService(prisma, audit, cashFlow), cashFlowCalls };
+}
+
+const draftRow = (extra = {}) => ({
+  id: "source-1", sourceNo: "AR-1", status: "draft", orderNo: "SO-1", customerId: "customer-1",
+  amount: new Prisma.Decimal("120.5"), currency: "USD", customer: { name: "香港迪礼" }, ...extra,
+});
+
+test("逐条确认应收：写一条收入流水并落到指定的入账银行", async () => {
+  const { service, cashFlowCalls } = confirmHarness({ row: draftRow() });
+  const result = await service.confirm("source-1", { id: "user-1" }, { bank_id: "bank-1" });
+  assert.equal(cashFlowCalls.length, 1);
+  const input = cashFlowCalls[0];
+  assert.equal(input.direction, "income", "确认应收 = 钱进来");
+  assert.equal(input.sourceType, "receivable_source");
+  assert.equal(input.sourceId, "source-1");
+  assert.equal(input.amount.toString(), "120.5");
+  assert.equal(input.currency, "USD");
+  assert.equal(input.bankId, "bank-1");
+  assert.equal(input.counterpartyName, "香港迪礼", "对方名称取客户名，不能退化成 UUID");
+  assert.deepEqual(input.itemKeys, ["货款", "国家退税"]);
+  assert.equal(result.cash_flow_entry_id, "cf-1");
+  assert.equal(result.bank_missing, false);
+});
+
+test("逐条确认应收：没选银行时流水照写，但明确回报 bank_missing", async () => {
+  const { service, cashFlowCalls } = confirmHarness({ row: draftRow() });
+  const result = await service.confirm("source-1", { id: "user-1" });
+  assert.equal(cashFlowCalls[0].bankId, null);
+  assert.equal(result.bank_missing, true, "界面必须提示「这笔已记入流水，但不进任何银行余额」");
+});
+
+test("逐条确认应收：银行非法时先拒绝，不确认任何应收（不能「确认了但没记账」）", async () => {
+  const { service, cashFlowCalls } = confirmHarness({ row: draftRow() });
+  await assert.rejects(
+    () => service.confirm("source-1", { id: "user-1" }, { bank_id: "bank-dead" }),
+    (error) => error.getResponse().code === "BANK_NOT_FOUND",
+  );
+  assert.deepEqual(cashFlowCalls, []);
+});
+
+test("按订单批量确认应收：每条应收各记一条流水（批量没有单张单据可挂）", async () => {
+  const { service, cashFlowCalls } = confirmHarness({ row: draftRow(), drafts: [
+    { id: "s1", sourceNo: "AR-1", amount: new Prisma.Decimal("10"), currency: "USD", customerId: "customer-1", customer: { name: "香港迪礼" } },
+    { id: "s2", sourceNo: "AR-2", amount: new Prisma.Decimal("32.5"), currency: "USD", customerId: "customer-1", customer: { name: "香港迪礼" } },
+  ] });
+  const result = await service.batchConfirmByOrder("SO-1", { id: "user-1" }, { bank_id: "bank-1" });
+  assert.equal(result.count, 2);
+  assert.equal(cashFlowCalls.length, 2, "每条应收一条流水，否则追不回是哪批货收的钱");
+  assert.deepEqual(cashFlowCalls.map((item) => item.sourceId), ["s1", "s2"]);
+  assert.deepEqual(cashFlowCalls.map((item) => item.amount.toString()), ["10", "32.5"]);
+  assert.equal(result.bank_missing, false);
+  assert.deepEqual(result.cash_flow_entry_ids, ["cf-1", "cf-1"]);
 });
 
 test("receivable draft update locks and rechecks current status", async () => {
@@ -45,7 +126,7 @@ test("receivable draft update locks and rechecks current status", async () => {
     }),
   };
   const audit = { update: () => ({}), record: async () => {} };
-  const service = new ReceivableService(prisma, audit);
+  const service = new ReceivableService(prisma, audit, cashFlowStub());
   await assert.rejects(() => service.updateDraft("source-1", { amount: "12" }, { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_SOURCE_NOT_EDITABLE");
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
@@ -62,7 +143,7 @@ test("应收草稿可编辑币种：只接受字典里的币种，并写回来�
     $transaction: async (fn) => fn({ $queryRaw: async () => [], receivableSource: prisma.receivableSource }),
   };
   const audit = { update: () => ({}), record: async () => {} };
-  const service = new ReceivableService(prisma, audit, { assertSupported: async (code) => { checked.push(code); } });
+  const service = new ReceivableService(prisma, audit, cashFlowStub(), { assertSupported: async (code) => { checked.push(code); } });
   await service.updateDraft("source-1", { currency: "USD" }, { id: "user-1" });
   assert.deepEqual(checked, ["USD"]);
   assert.equal(updated.currency, "USD");
@@ -81,7 +162,7 @@ test("confirmed receivable can be reopened to draft with a reason", async () => 
       receivableSource: prisma.receivableSource,
     }),
   };
-  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} });
+  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} }, cashFlowStub());
   const result = await service.reopen("source-1", "修正应收金额", { id: "user-1" });
   assert.equal(result.status, "draft");
   assert.equal(updated.status, "draft");
@@ -99,7 +180,7 @@ test("receivable cancellation locks and blocks active posted allocations", async
     }),
   };
   const audit = { update: () => ({}), record: async () => {} };
-  const service = new ReceivableService(prisma, audit);
+  const service = new ReceivableService(prisma, audit, cashFlowStub());
   await assert.rejects(() => service.cancel("source-1", "取消原因", { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_SOURCE_HAS_ALLOCATIONS");
   assert.equal(lockCount, 1);
   assert.equal(updateCount, 0);
@@ -117,7 +198,7 @@ test("receivable creation locks the outbound before idempotency check", async ()
       receivableSource: prisma.receivableSource,
     }),
   };
-  const service = new ReceivableService(prisma, { record: async () => {} });
+  const service = new ReceivableService(prisma, { record: async () => {} }, cashFlowStub());
   const result = await service.createFromOutbound("outbound-1", {}, { id: "user-1" });
   assert.equal(result.id, "source-1");
   assert.equal(lockCount, 1);
@@ -132,7 +213,7 @@ test("receivable creation restores a soft-deleted outbound source", async () => 
     receivableSource: { findUnique: async () => deleted, update: async () => { restoreCount += 1; return { ...deleted, deletedAt: null, orderNo: "SO-1", amount: { toString: () => "10" } }; } },
     $transaction: async (fn) => fn({ $queryRaw: async () => [], finishedGoodsOutbound: prisma.finishedGoodsOutbound, receivableSource: prisma.receivableSource }),
   };
-  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} });
+  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} }, cashFlowStub());
   const result = await service.createFromOutbound("outbound-1", {}, { id: "user-1" });
   assert.equal(result.deletedAt, null);
   assert.equal(restoreCount, 1);
@@ -160,7 +241,7 @@ test("receivable impact preview traces outbound qc and finished-goods inbound", 
     },
   };
   const prisma = { receivableSource: { findFirst: async () => row } };
-  const service = new ReceivableService(prisma, {});
+  const service = new ReceivableService(prisma, {}, cashFlowStub());
   const preview = await service.impactPreview("source-1");
   assert.equal(preview.source_trace.outbound.outbound_no, "FGO-1");
   assert.equal(preview.source_trace.qc_records[0].qc_no, "QC-1");
@@ -177,7 +258,7 @@ test("手工补建应收按结算口径计价（整单出库时等于销售填�
     receivableSource: { findUnique: async () => null, create: async ({ data }) => { created = data; return { id: "source-1", ...data }; } },
     $transaction: async (fn) => fn({ $queryRaw: async () => [], finishedGoodsOutbound: prisma.finishedGoodsOutbound, receivableSource: prisma.receivableSource }),
   };
-  await new ReceivableService(prisma, { create: () => ({}), record: async () => {} }).createFromOutbound("outbound-1", {}, { id: "user-1" });
+  await new ReceivableService(prisma, { create: () => ({}), record: async () => {} }, cashFlowStub()).createFromOutbound("outbound-1", {}, { id: "user-1" });
   assert.equal(created.amount.toString(), "1300");
   assert.match(created.remark, /结算方式 T\/T 电汇/);
   assert.match(created.remark, /本币金额 9360/);
@@ -191,7 +272,7 @@ test("手工补建应收拒绝 0 元与负金额（与出库过账同一门槛�
       receivableSource: { findUnique: async () => null, create: async () => { throw new Error("不应写入应收"); } },
       $transaction: async (fn) => fn({ $queryRaw: async () => [], finishedGoodsOutbound: prisma.finishedGoodsOutbound, receivableSource: prisma.receivableSource }),
     };
-    return new ReceivableService(prisma, { create: () => ({}), record: async () => {} });
+    return new ReceivableService(prisma, { create: () => ({}), record: async () => {} }, cashFlowStub());
   };
   const zeroPriced = { quantity: "10", unitPrice: "0", settlementUnitPrice: null, receivableAmount: null, customerId: "customer-1", unit: "件", taxRate: null, currency: "USD" };
   await assert.rejects(() => make(zeroPriced).createFromOutbound("outbound-1", {}, { id: "user-1" }), (error) => error.getResponse().code === "RECEIVABLE_AMOUNT_REQUIRED");
@@ -231,7 +312,7 @@ test("应收列表标出每条应收被哪张对账单覆盖（订单号（填�
       },
     },
   };
-  const result = await new ReceivableService(prisma, {}).list();
+  const result = await new ReceivableService(prisma, {}, cashFlowStub()).list();
   const byId = Object.fromEntries(result.map((row) => [row.id, row]));
   assert.deepEqual(byId["by-order"].reconciliation, { id: "recon-1", reconciliation_no: "REC-001", status: "matched", period_start: new Date("2026-09-01T00:00:00.000Z"), period_end: new Date("2026-09-30T00:00:00.000Z") });
   assert.equal(byId["order-mismatch"].reconciliation, null, "按订单建的对账只覆盖该订单，也不被别家客户的客户级对账覆盖");

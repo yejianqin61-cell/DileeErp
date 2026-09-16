@@ -16,6 +16,7 @@
 | 07 | [生产进度表去列 + 导出数值单元格](../../design/export-numeric-cells-and-progress-sheet-2026-09-14.md) | 已完成 | — |
 | 08 | [原料仓储情况模糊搜索与规格型号列](../../design/raw-material-storage-search-2026-09-14.md) | 已完成 | — |
 | 09 | [工资台账与工资付款二级页（可编辑台账 + 行内付款）](09-salary-ledger-sheet.md) | 已完成 | 04、06 |
+| 10 | [银行余额管理与「确认即记账」](10-bank-balance-and-transfer.md) | 已完成 | 06 |
 
 ## 共同完成标准
 

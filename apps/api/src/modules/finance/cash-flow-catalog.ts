@@ -103,6 +103,17 @@ export const PAYMENT_ITEM_KEYS = {
 /** 一次付款核销了多种来源时的兜底候选（最常见的是采购付款）。 */
 export const DEFAULT_PAYMENT_ITEM_KEYS: readonly string[] = ["原材料 成本", "货款"];
 
+/**
+ * 「确认应收」自动写入收支流水时的收支项目候选（收）。
+ *
+ * 为什么不是让财务每次都选：出库形成的应收绝大多数就是货款，默认归到「货款」是对的；
+ * 对账单上仍可显式指定别的项目（例如国家退税），指定了就绝不静默替换。
+ */
+export const RECEIVABLE_CONFIRM_ITEM_KEYS: readonly string[] = ["货款", "国家退税"];
+
+/** 「确认应付」在来源类型都识别不出时的兜底候选（支）。 */
+export const PAYABLE_CONFIRM_ITEM_KEYS: readonly string[] = ["原材料 成本", "货款"];
+
 /** 来源类型 → 收支项目候选；未知来源用兜底链。 */
 export function paymentItemKeys(sourceType: string): readonly string[] {
   return (PAYMENT_ITEM_KEYS as Record<string, readonly string[]>)[sourceType] ?? DEFAULT_PAYMENT_ITEM_KEYS;
