@@ -4,22 +4,116 @@ import type { Express } from "express";
 import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
+import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
+import {
+  EMPLOYEE_DERIVED_HEADERS,
+  EMPLOYEE_EXPORT_HEADERS,
+  EMPLOYEE_IMPORT_HEADERS,
+  EMPLOYEE_IMPORT_SAMPLE_ROW,
+  employeeExportRow,
+  parseEmployeeRosterRows,
+  parseIdCard,
+  parseRosterDate,
+  parseRosterGender,
+  rosterDerived,
+  type EmployeeImportRow,
+} from "./employee-roster";
 
 type User = CurrentUser;
 type Tx = Prisma.TransactionClient;
-const EMPLOYEE_IMPORT_HEADERS = ["工号", "姓名", "部门编码", "岗位编码", "员工类型", "入职日期", "离职日期", "备注"] as const;
 const EMPLOYEE_IMPORT_MAX_ROWS = 50000;
 const EMPLOYEE_IMPORT_CHUNK_SIZE = 200;
-// D12: import label tolerance. Seed/dictionary UI labels only expose 车间/非车间,
-// but operators historically type 车间员工/非车间员工 (and plain 车间/非车间).
-// We normalize all four spellings here; converging the seed/dictionary labels
-// themselves is a product-domain decision and is deliberately left untouched.
-const EMPLOYEE_TYPE_LABELS: Record<string, "workshop" | "non_workshop"> = { "车间": "workshop", "车间员工": "workshop", "非车间": "non_workshop", "非车间员工": "non_workshop" };
-// Excel serial-date conversion window (1 = 1900-01-01 … 60000 ≈ 2064) used only
-// when a cell holds a raw number instead of a typed date.
-const EXCEL_SERIAL_MAX = 60000;
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
+// 员工工号留空时自动生成，与物料（MAT-）/供应商（SUP-）/客户（CUS-）共用同一套
+// 「类别-当天日期-序号」规则：EMP-20260916-0001。
+const EMPLOYEE_CODE_CATEGORY = "EMP";
+
+/**
+ * 花名册字段在表单/接口层的入参形状（snake_case，与 DTO 一致）。
+ * 键「不出现」＝不改（PATCH 语义）；显式传 null/""＝清空。
+ */
+type EmployeeRosterInput = {
+  birth_date?: string | null;
+  gender?: string | null;
+  ethnicity?: string | null;
+  id_card_no?: string | null;
+  education?: string | null;
+  blood_type?: string | null;
+  social_insurance?: boolean | null;
+  commercial_insurance?: boolean | null;
+  contract_start?: string | null;
+  contract_end?: string | null;
+  labor_contract_start?: string | null;
+  labor_contract_end?: string | null;
+  home_address?: string | null;
+  current_address?: string | null;
+  phone?: string | null;
+  emergency_contact?: string | null;
+  emergency_phone?: string | null;
+};
+
+/** rosterWriteData 的输出：只含 employees 表的可写列。 */
+type EmployeeRosterWrite = {
+  birthDate?: Date | null;
+  gender?: string | null;
+  ethnicity?: string | null;
+  idCardNo?: string | null;
+  education?: string | null;
+  bloodType?: string | null;
+  socialInsurance?: boolean | null;
+  commercialInsurance?: boolean | null;
+  contractStart?: Date | null;
+  contractEnd?: Date | null;
+  laborContractStart?: Date | null;
+  laborContractEnd?: Date | null;
+  homeAddress?: string | null;
+  currentAddress?: string | null;
+  phone?: string | null;
+  emergencyContact?: string | null;
+  emergencyPhone?: string | null;
+};
+
+type EmployeeCreateInput = EmployeeRosterInput & {
+  employee_no?: string;
+  name: string;
+  department_id: string;
+  position_id: string;
+  employee_type: string;
+  user_id?: string;
+  hired_on?: string;
+  left_on?: string;
+  remark?: string;
+};
+
+type EmployeeUpdateInput = EmployeeRosterInput & {
+  employee_no?: string;
+  name?: string;
+  department_id?: string;
+  position_id?: string;
+  employee_type?: string;
+  user_id?: string | null;
+  hired_on?: string | null;
+  left_on?: string | null;
+  remark?: string | null;
+};
+
+/** rosterWriteData 需要的「当前员工档案」切片：用来合并校验合同区间、决定要不要用身份证补默认值。 */
+type EmployeeRosterCurrent = {
+  birthDate: Date | null;
+  gender: string | null;
+  contractStart: Date | null;
+  contractEnd: Date | null;
+  laborContractStart: Date | null;
+  laborContractEnd: Date | null;
+};
+
+/** 导入流水线上「已通过全部校验、可以直接落库」的一行。 */
+type EmployeeImportCandidate = Omit<EmployeeImportRow, "employeeType"> & {
+  employeeType: "workshop" | "non_workshop";
+  departmentId: string;
+  positionId: string;
+  autoNumbered: boolean;
+};
 
 @Injectable()
 export class ProductionMasterDataService {
@@ -80,22 +174,48 @@ export class ProductionMasterDataService {
     return restored;
   }
 
-  listEmployees(filters: { query?: string; employment_status?: string; department_id?: string; position_id?: string; employee_type?: string; hired_from?: string; hired_to?: string; left_from?: string; left_to?: string; has_user?: string } = {}) { const query = filters.query?.trim(); return this.prisma.employee.findMany({ where: { deletedAt: null, ...(query ? { OR: [{ employeeNo: { contains: query, mode: "insensitive" } }, { name: { contains: query, mode: "insensitive" } }] } : {}), ...(filters.employment_status ? { employmentStatus: filters.employment_status } : {}), ...(filters.department_id ? { departmentId: filters.department_id } : {}), ...(filters.position_id ? { positionId: filters.position_id } : {}), ...(filters.employee_type ? { employeeType: filters.employee_type } : {}), ...(filters.has_user === "true" ? { userId: { not: null } } : filters.has_user === "false" ? { userId: null } : {}), ...(filters.hired_from || filters.hired_to ? { hiredOn: { ...(filters.hired_from ? { gte: new Date(filters.hired_from) } : {}), ...(filters.hired_to ? { lte: new Date(filters.hired_to) } : {}) } } : {}), ...(filters.left_from || filters.left_to ? { leftOn: { ...(filters.left_from ? { gte: new Date(filters.left_from) } : {}), ...(filters.left_to ? { lte: new Date(filters.left_to) } : {}) } } : {}) }, include: { department: true, position: true }, orderBy: [{ employeeNo: "asc" }, { name: "asc" }] }); }
-  async exportEmployees(filters: Parameters<ProductionMasterDataService["listEmployees"]>[0]) { const rows = await this.listEmployees(filters); const userIds = rows.flatMap((row) => row.userId ? [row.userId] : []); const users = userIds.length ? await this.prisma.user.findMany({ where: { id: { in: userIds }, deletedAt: null }, select: { id: true, username: true } }) : []; const usernames = new Map(users.map((user) => [user.id, user.username])); const data = rows.map((row) => ({ "工号": row.employeeNo, "姓名": row.name, "员工类型": row.employeeType === "workshop" ? "车间" : row.employeeType === "non_workshop" ? "非车间" : row.employeeType, "员工状态": row.employmentStatus === "active" ? "在职" : row.employmentStatus === "left" ? "离职" : row.employmentStatus === "inactive" ? "停用" : row.employmentStatus, "入职日期": row.hiredOn ? row.hiredOn.toISOString().slice(0, 10) : "", "离职日期": row.leftOn ? row.leftOn.toISOString().slice(0, 10) : "", "部门编码": row.department.code, "部门名称": row.department.name, "岗位编码": row.position.code, "岗位名称": row.position.name, "绑定系统用户名": row.userId ? usernames.get(row.userId) ?? "" : "", "员工备注": row.remark ?? "", "创建时间": row.createdAt.toISOString().replace("T", " ").slice(0, 19), "更新时间": row.updatedAt.toISOString().replace("T", " ").slice(0, 19) })); const sheet = XLSX.utils.json_to_sheet(data); sheet["!cols"] = Object.keys(data[0] ?? { "工号": "" }).map(() => ({ wch: 18 })); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, sheet, "员工名单"); return XLSX.write(book, { type: "buffer", bookType: "xlsx" }); }
-  employeeImportTemplate() { const sheet = XLSX.utils.aoa_to_sheet([[...EMPLOYEE_IMPORT_HEADERS], ["E0001", "张三", "D001", "P001", "车间", "2026-01-01", "", ""]]); sheet["!cols"] = EMPLOYEE_IMPORT_HEADERS.map(() => ({ wch: 18 })); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, sheet, "员工导入"); return XLSX.write(book, { type: "buffer", bookType: "xlsx" }); }
+  // 员工目录读模型：除员工表本身的字段外，还直接带上花名册的派生列
+  // （年龄/工龄/当月生日/合同到期提醒）。这些列由出生日期、入职日期和合同结束时间实时算出，不落库。
+  async listEmployees(filters: { query?: string; employment_status?: string; department_id?: string; position_id?: string; employee_type?: string; hired_from?: string; hired_to?: string; left_from?: string; left_to?: string; has_user?: string } = {}) { const query = filters.query?.trim(); const rows = await this.prisma.employee.findMany({ where: { deletedAt: null, ...(query ? { OR: [{ employeeNo: { contains: query, mode: "insensitive" } }, { name: { contains: query, mode: "insensitive" } }] } : {}), ...(filters.employment_status ? { employmentStatus: filters.employment_status } : {}), ...(filters.department_id ? { departmentId: filters.department_id } : {}), ...(filters.position_id ? { positionId: filters.position_id } : {}), ...(filters.employee_type ? { employeeType: filters.employee_type } : {}), ...(filters.has_user === "true" ? { userId: { not: null } } : filters.has_user === "false" ? { userId: null } : {}), ...(filters.hired_from || filters.hired_to ? { hiredOn: { ...(filters.hired_from ? { gte: new Date(filters.hired_from) } : {}), ...(filters.hired_to ? { lte: new Date(filters.hired_to) } : {}) } } : {}), ...(filters.left_from || filters.left_to ? { leftOn: { ...(filters.left_from ? { gte: new Date(filters.left_from) } : {}), ...(filters.left_to ? { lte: new Date(filters.left_to) } : {}) } } : {}) }, include: { department: true, position: true }, orderBy: [{ employeeNo: "asc" }, { name: "asc" }] }); const today = new Date(); return rows.map((row) => ({ ...row, ...rosterDerived(row, today) })); }
+  // 导出＝花名册口径（EMPLOYEE_EXPORT_HEADERS）：原始列顺序 + 系统列，派生列当天实时算。
+  // 导出的文件可以直接回灌「批量导入员工」——解析按表头名匹配，派生列会被忽略。
+  async exportEmployees(filters: Parameters<ProductionMasterDataService["listEmployees"]>[0]) { const rows = await this.listEmployees(filters); const userIds = rows.flatMap((row) => row.userId ? [row.userId] : []); const users = userIds.length ? await this.prisma.user.findMany({ where: { id: { in: userIds }, deletedAt: null }, select: { id: true, username: true } }) : []; const usernames = new Map(users.map((user) => [user.id, user.username])); const today = new Date(); const data = rows.map((row, index) => employeeExportRow(row, index, row.userId ? usernames.get(row.userId) ?? "" : "", today)); const sheet = XLSX.utils.json_to_sheet(data, { header: [...EMPLOYEE_EXPORT_HEADERS] }); sheet["!cols"] = EMPLOYEE_EXPORT_HEADERS.map((header) => ({ wch: header.length > 6 ? 22 : 12 })); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, sheet, "员工名单"); return XLSX.write(book, { type: "buffer", bookType: "xlsx" }); }
+  // 导入模板＝花名册的全部非派生字段 + 系统三列（工号/离职日期/员工类型），另附「填写说明」页。
+  // 序号/年龄/工龄/当月生日/合同到期提醒是派生列，不进模板（导出时才会带上）。
+  employeeImportTemplate() {
+    const sheet = XLSX.utils.aoa_to_sheet([[...EMPLOYEE_IMPORT_HEADERS], [...EMPLOYEE_IMPORT_SAMPLE_ROW]]);
+    sheet["!cols"] = EMPLOYEE_IMPORT_HEADERS.map((header) => ({ wch: Math.max(12, header.length * 2 + 4) }));
+    const notes = XLSX.utils.aoa_to_sheet([
+      ["填写说明"],
+      ["1. 工号留空时由系统自动生成（EMP-当天日期-序号，例如 EMP-20260916-0001）；填写时不能与已有工号重复。"],
+      ["2. 部门与职务可以填名称，也可以填部门编码/岗位编码；两者都必须先在部门池/岗位池里存在且处于启用状态。"],
+      ["3. 员工类型只允许「车间」或「非车间」，它决定计件/计时工资规则。整列留空时，若该部门已有员工的类型完全一致，系统会照该类型推断并在导入结果里如实报告；不一致或该部门还没有员工时必须手工填写。"],
+      ["4. 身份证号码填对时，出生日期和性别可以留空，系统会按身份证自动推算（同时校验校验位）；两者都填时必须一致。"],
+      ["5. 日期格式 YYYY-MM-DD（也接受 2026/1/5、Excel 日期单元格）；「是否」类字段填 是 / 否。"],
+      [`6. ${EMPLOYEE_DERIVED_HEADERS.join("、")} 是派生列，不需要填写，导出员工名单时会自动带上。`],
+      ["7. 状态填「在职/离职/停用」，留空则按离职日期推断。"],
+    ]);
+    notes["!cols"] = [{ wch: 110 }];
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, "员工导入");
+    XLSX.utils.book_append_sheet(book, notes, "填写说明");
+    return XLSX.write(book, { type: "buffer", bookType: "xlsx" });
+  }
 
-  // D10-D12: robust row-by-row employee import.
-  //  - structural problems are collected per row (same {row, field?, reason} shape);
-  //  - valid rows are imported in chunked transactions; a DB failure inside one
-  //    chunk rolls back only that chunk and is retried row-by-row so a single bad
-  //    row (e.g. a race on employee_no) never fails the whole batch;
-  //  - the summary is unambiguous: status "partial" whenever errors exist, and
-  //    successCount/imported reflect rows actually inserted.
+  // 员工导入：按花名册口径解析（表头名匹配 + 行内校验在 employee-roster.ts 里完成）。
+  //  - 表头缺列 / 文件不是员工表：只回一条整体错误，一行都不写；
+  //  - 逐行结构性问题（必填、日期、身份证、长度、区间）在纯函数里收集，统一的 {row, field?, reason} 形状；
+  //  - 通过校验的行按 200 行一批写库，一批失败退化成逐行独立事务，
+  //    一行撞唯一约束（并发下工号重复）不会拖垮整批；自动生成的工号撞号时换号重试一次；
+  //  - 工号留空按 EMP-当天日期-序号 自动生成；
+  //  - 汇总口径明确：只要还有错误就是 partial，imported/successCount 是真正落库的行数。
   async importEmployees(file: Express.Multer.File | undefined, user: User) {
     if (!file?.buffer?.length) throw new UnprocessableEntityException({ code: "EMPLOYEE_IMPORT_FILE_REQUIRED", message: "请上传Excel文件（仅支持 .xlsx/.xls）", details: [] });
     let rows: unknown[][];
     try {
-      const book = XLSX.read(file.buffer, { type: "buffer", cellDates: true });
+      // 必须 cellDates: false：SheetJS 的 cellDates 会把 Excel 序列号转成「本地零点附近」的
+      // Date（实测差 25 秒 → 整日错位一天）。保留数字则走 parseRosterDate 里的精确序列号换算。
+      const book = XLSX.read(file.buffer, { type: "buffer", cellDates: false });
       const sheet = book.Sheets[book.SheetNames[0]];
       if (!sheet) throw new Error("sheet-missing");
       const ref = sheet["!ref"];
@@ -109,120 +229,291 @@ export class ProductionMasterDataService {
       if (error instanceof UnprocessableEntityException) throw error;
       throw new UnprocessableEntityException({ code: "EMPLOYEE_IMPORT_INVALID_FILE", message: "Excel文件无法解析，请使用导出的员工导入模板", details: [] });
     }
-    const errors: { row: number; field?: string; reason: string }[] = [];
-    let headerOk = true;
-    if (!rows.length) { headerOk = false; errors.push({ row: 1, reason: `首行必须严格为：${EMPLOYEE_IMPORT_HEADERS.join("、")}` }); }
-    else if (rows[0].slice(0, EMPLOYEE_IMPORT_HEADERS.length).map((cell) => String(cell ?? "").trim()).join("\u0001") !== EMPLOYEE_IMPORT_HEADERS.join("\u0001")) { headerOk = false; errors.push({ row: 1, reason: `首行必须严格为：${EMPLOYEE_IMPORT_HEADERS.join("、")}` }); }
-    const dataRows = rows.slice(1).filter((row) => row.some((cell) => String(cell ?? "").trim()));
-    if (headerOk && !dataRows.length) errors.push({ row: 0, reason: "未检测到数据行" });
+
+    const parsed = parseEmployeeRosterRows(rows);
+    const errors: { row: number; field?: string; reason: string }[] = [...parsed.errors];
     let imported = 0;
-    if (headerOk) {
-      // column alignment is unknown when the header is wrong — refuse to import anything
-      const departments = await this.prisma.department.findMany({ where: { deletedAt: null, isActive: true }, select: { id: true, code: true } });
-      const positions = await this.prisma.position.findMany({ where: { deletedAt: null, isActive: true }, select: { id: true, code: true, departmentId: true } });
-      const departmentMap = new Map(departments.map((item) => [item.code.trim(), item]));
-      const positionMap = new Map(positions.map((item) => [item.code.trim(), item]));
-      const employeeNos = dataRows.map((row) => String(row[0] ?? "").trim()).filter(Boolean);
-      const existing = new Set((await this.prisma.employee.findMany({ where: { employeeNo: { in: employeeNos } }, select: { employeeNo: true } })).map((item) => item.employeeNo));
-      const seen = new Set<string>();
-      const valid: { line: number; employeeNo: string; name: string; departmentId: string; positionId: string; employeeType: "workshop" | "non_workshop"; hiredOn?: Date; leftOn?: Date; remark?: string }[] = [];
-      const rowHasErrors = (line: number) => errors.some((error) => error.row === line);
-      dataRows.forEach((row, index) => {
-        const line = index + 2;
-        const cell = (column: number) => String(row[column] ?? "").trim();
-        const employeeNo = cell(0);
-        const name = cell(1);
-        const departmentCode = cell(2);
-        const positionCode = cell(3);
-        const employeeType = cell(4);
-        const hired = row[5];
-        const left = row[6];
-        const remark = cell(7);
-        const extraColumns = row.slice(EMPLOYEE_IMPORT_HEADERS.length);
-        if (extraColumns.some((value) => String(value ?? "").trim())) errors.push({ row: line, field: "列数", reason: `列数超过模板（应为${EMPLOYEE_IMPORT_HEADERS.length}列）` });
-        if (!employeeNo) errors.push({ row: line, field: "工号", reason: "不能为空" });
-        else if (employeeNo.length > 80) errors.push({ row: line, field: "工号", reason: "长度不能超过80个字符" });
-        else if (existing.has(employeeNo)) errors.push({ row: line, field: "工号", reason: "工号已存在，不覆盖" });
-        else if (seen.has(employeeNo)) errors.push({ row: line, field: "工号", reason: "文件内工号重复" });
-        else seen.add(employeeNo);
-        if (!name) errors.push({ row: line, field: "姓名", reason: "不能为空" });
-        else if (name.length > 100) errors.push({ row: line, field: "姓名", reason: "长度不能超过100个字符" });
-        if (remark.length > 500) errors.push({ row: line, field: "备注", reason: "长度不能超过500个字符" });
-        const department = departmentMap.get(departmentCode);
-        if (!department) errors.push({ row: line, field: "部门编码", reason: "部门不存在或已停用" });
-        const position = positionMap.get(positionCode);
-        if (!position) errors.push({ row: line, field: "岗位编码", reason: "岗位不存在或已停用" });
-        else if (department && position.departmentId !== department.id) errors.push({ row: line, field: "岗位编码", reason: "岗位不属于该部门" });
-        const type = EMPLOYEE_TYPE_LABELS[employeeType];
-        if (!type) errors.push({ row: line, field: "员工类型", reason: "仅允许车间/车间员工/非车间/非车间员工" });
-        const hiredOn = this.parseImportDate(hired);
-        const leftOn = this.parseImportDate(left);
-        if (hired !== undefined && hired !== null && String(hired).trim() && !hiredOn) errors.push({ row: line, field: "入职日期", reason: "日期格式必须为YYYY-MM-DD" });
-        if (left !== undefined && left !== null && String(left).trim() && !leftOn) errors.push({ row: line, field: "离职日期", reason: "日期格式必须为YYYY-MM-DD" });
-        if (hiredOn && leftOn && leftOn < hiredOn) errors.push({ row: line, field: "离职日期", reason: "不能早于入职日期" });
-        if (!rowHasErrors(line)) valid.push({ line, employeeNo, name, departmentId: department!.id, positionId: position!.id, employeeType: type!, hiredOn: hiredOn ?? undefined, leftOn: leftOn ?? undefined, remark: remark || undefined });
-      });
-      const dbFailures: { row: number; reason: string }[] = [];
-      for (let start = 0; start < valid.length; start += EMPLOYEE_IMPORT_CHUNK_SIZE) {
-        const chunk = valid.slice(start, start + EMPLOYEE_IMPORT_CHUNK_SIZE);
-        try {
-          await this.prisma.$transaction(chunk.map((item) => this.prisma.employee.create({ data: this.employeeImportCreate(item, user) })));
-          imported += chunk.length;
-        } catch {
-          // Whole chunk failed (constraint race or transient error): retry each row
-          // in its own small transaction so unrelated rows are still imported.
-          for (const item of chunk) {
-            try { await this.prisma.employee.create({ data: this.employeeImportCreate(item, user) }); imported += 1; }
-            catch (error) { dbFailures.push({ row: item.line, reason: this.employeeCreateFailureReason(error) }); }
-          }
+    let autoNumbered = 0;
+    let inferredEmployeeTypes = 0;
+
+    // 只有「整批不可导入」（找不到表头 / 缺必需列 / 没有数据行）才跳过写库；
+    // 纯行级错误不该拖着合法行一起不导 —— 通过校验的行照导，出错的行单独列出（status=partial）。
+    if (!parsed.blocked) {
+      // 部门/职务「先按编码、再按名称」解析：花名册里写的是名称，旧模板写的是编码，两种都能对上。
+      const [departments, positions, assignments] = await Promise.all([
+        this.prisma.department.findMany({ where: { deletedAt: null, isActive: true }, select: { id: true, code: true, name: true } }),
+        this.prisma.position.findMany({ where: { deletedAt: null, isActive: true }, select: { id: true, code: true, name: true, departmentId: true } }),
+        this.prisma.employee.findMany({ where: { deletedAt: null }, select: { departmentId: true, employeeType: true } }),
+      ]);
+      // 手工花名册没有「员工类型」列。该列留空时，只有当这个部门里已有员工的类型完全一致
+      // 才照着推断（生产部→车间、办公室→非车间）；一旦不唯一就报错让操作员自己填，
+      // 绝不在影响计件/计时工资的字段上猜。
+      const departmentTypes = new Map<string, Set<string>>();
+      for (const item of assignments) {
+        const types = departmentTypes.get(item.departmentId) ?? new Set<string>();
+        types.add(item.employeeType);
+        departmentTypes.set(item.departmentId, types);
+      }
+      const declaredNos = parsed.rows.map((row) => row.employeeNo).filter(Boolean);
+      const existing = new Set((await this.prisma.employee.findMany({ where: { employeeNo: { in: declaredNos } }, select: { employeeNo: true } })).map((item) => item.employeeNo));
+      const valid: EmployeeImportCandidate[] = [];
+      for (const row of parsed.rows) {
+        const before = errors.length;
+        if (row.employeeNo && existing.has(row.employeeNo)) errors.push({ row: row.line, field: "工号", reason: "工号已存在，不覆盖" });
+        const department = this.matchByNameOrCode(departments, row.departmentText);
+        if (!department) errors.push({ row: row.line, field: "部门", reason: `部门「${row.departmentText}」不存在或已停用` });
+        const position = this.matchByNameOrCode(positions, row.positionText, department?.id) ?? this.matchByNameOrCode(positions, row.positionText);
+        if (!position) errors.push({ row: row.line, field: "职务", reason: `职务/岗位「${row.positionText}」不存在或已停用` });
+        else if (department && position.departmentId !== department.id) errors.push({ row: row.line, field: "职务", reason: `岗位「${position.name}」不属于部门「${department.name}」` });
+        let employeeType = row.employeeType;
+        if (!employeeType && department) {
+          const types = departmentTypes.get(department.id);
+          if (types?.size === 1) { employeeType = [...types][0] as "workshop" | "non_workshop"; inferredEmployeeTypes += 1; }
+          else errors.push({ row: row.line, field: "员工类型", reason: `不能为空：部门「${department.name}」${types?.size ? "已有多种员工类型" : "还没有员工"}，请在模板里填写车间/非车间` });
+        }
+        if (errors.length > before) continue;
+        valid.push({ ...row, employeeType: employeeType!, departmentId: department!.id, positionId: position!.id, autoNumbered: !row.employeeNo });
+      }
+      const pending = valid.filter((item) => item.autoNumbered);
+      autoNumbered = pending.length;
+      if (pending.length) {
+        // 序号必须从「当天已有的最大工号」之后接着排，否则同一批次之外的历史工号会被撞上。
+        const prefix = dailyCodePrefix(EMPLOYEE_CODE_CATEGORY);
+        const existingToday = await this.prisma.employee.findMany({ where: { employeeNo: { startsWith: prefix } }, select: { employeeNo: true } });
+        const taken = new Set([...existing, ...existingToday.map((item) => item.employeeNo), ...valid.map((item) => item.employeeNo).filter(Boolean)]);
+        for (const item of pending) {
+          item.employeeNo = nextSequenceCode(prefix, [...taken]);
+          taken.add(item.employeeNo);
         }
       }
-      if (dbFailures.length) errors.push(...dbFailures);
+      imported = await this.insertImportedEmployees(valid, errors, user);
     }
-    const errorCount = errors.length;
-    await this.audit.record("employee.import", "employee", user.id, undefined, { count: imported, total: dataRows.length, error_count: errorCount });
-    return { status: errorCount ? "partial" : "success", imported, total: dataRows.length, successCount: imported, errorCount, errors };
+
+    // 「做完了什么」以外还要说清「你该做什么」：手工花名册缺员工类型列时，操作员看到 10 条
+    // 「员工类型不能为空」是不够的，得直接告诉他去补哪一列；而如果推断成功了，就别再让他返工。
+    const hints: string[] = [];
+    if (parsed.headerRow > 0 && !parsed.presentFields.includes("employee_type")) {
+      const untyped = errors.filter((error) => error.field === "员工类型").length;
+      const detail = [
+        inferredEmployeeTypes ? `已按各部门已有员工的一致类型推断 ${inferredEmployeeTypes} 行，请复核` : "",
+        untyped ? `${untyped} 行无法推断：车间/非车间决定计件/计时工资规则，请下载最新导入模板补上该列后再上传` : "",
+      ].filter(Boolean).join("；");
+      hints.push(`文件里没有「员工类型」列：${detail || "建议下次上传时在模板里补上该列"}。`);
+    }
+    if (parsed.documentLayout) {
+      hints.push(`识别为手工花名册版式：表头在第 ${parsed.headerRow} 行${parsed.ignoredTrailingRows ? `，末尾 ${parsed.ignoredTrailingRows} 行说明批注已跳过` : ""}${parsed.ignoredColumns.length ? `，忽略的列：${parsed.ignoredColumns.join("、")}` : ""}。`);
+    }
+
+    await this.audit.record("employee.import", "employee", user.id, undefined, { count: imported, total: parsed.dataRowCount, error_count: errors.length, auto_numbered: autoNumbered, inferred_employee_types: inferredEmployeeTypes, document_layout: parsed.documentLayout });
+    return {
+      status: errors.length ? "partial" : "success",
+      imported,
+      total: parsed.dataRowCount,
+      successCount: imported,
+      errorCount: errors.length,
+      autoNumbered,
+      inferredEmployeeTypes,
+      ignoredColumns: parsed.ignoredColumns,
+      ignoredTrailingRows: parsed.ignoredTrailingRows,
+      headerRow: parsed.headerRow,
+      missingColumns: parsed.missingRequired,
+      documentLayout: parsed.documentLayout,
+      presentFields: parsed.presentFields,
+      hints,
+      errors,
+    };
   }
 
-  private employeeImportCreate(item: { employeeNo: string; name: string; departmentId: string; positionId: string; employeeType: string; hiredOn?: Date; leftOn?: Date; remark?: string }, user: User) {
-    return { employeeNo: item.employeeNo, name: item.name, departmentId: item.departmentId, positionId: item.positionId, employeeType: item.employeeType, employmentStatus: item.leftOn ? "left" : "active", hiredOn: item.hiredOn, leftOn: item.leftOn, remark: item.remark, ...this.audit.create(user) };
+  /** 分批写库；一批失败就退化成逐行独立事务，自动生成的工号撞号时换号重试一次。 */
+  private async insertImportedEmployees(rows: EmployeeImportCandidate[], errors: { row: number; field?: string; reason: string }[], user: User) {
+    let imported = 0;
+    for (let start = 0; start < rows.length; start += EMPLOYEE_IMPORT_CHUNK_SIZE) {
+      const chunk = rows.slice(start, start + EMPLOYEE_IMPORT_CHUNK_SIZE);
+      try {
+        await this.prisma.$transaction(chunk.map((item) => this.prisma.employee.create({ data: this.employeeImportCreate(item, user) })));
+        imported += chunk.length;
+        continue;
+      } catch {
+        // 整批失败（唯一约束竞争或瞬时错误）：逐行重试，别让一行坏数据拖垮整批。
+      }
+      for (const item of chunk) {
+        try { await this.prisma.employee.create({ data: this.employeeImportCreate(item, user) }); imported += 1; continue; }
+        catch (error) {
+          if (item.autoNumbered && this.isUniqueViolation(error)) {
+            try {
+              item.employeeNo = await this.nextEmployeeNo();
+              await this.prisma.employee.create({ data: this.employeeImportCreate(item, user) });
+              imported += 1;
+              continue;
+            } catch (retryError) { errors.push({ row: item.line, reason: this.employeeCreateFailureReason(retryError) }); continue; }
+          }
+          errors.push({ row: item.line, reason: this.employeeCreateFailureReason(error) });
+        }
+      }
+    }
+    return imported;
+  }
+
+  /** 下一个自动工号：EMP-当天日期-序号（与物料/供应商/客户共用同一套规则）。 */
+  private async nextEmployeeNo() {
+    const prefix = dailyCodePrefix(EMPLOYEE_CODE_CATEGORY);
+    const codes = await this.prisma.employee.findMany({ where: { employeeNo: { startsWith: prefix } }, select: { employeeNo: true } });
+    return nextSequenceCode(prefix, codes.map((item) => item.employeeNo));
+  }
+
+  private isUniqueViolation(error: unknown) { return Boolean(error && typeof error === "object" && "code" in error && error.code === "P2002"); }
+
+  /** 部门/职务解析：先按编码精确匹配，再按名称精确匹配；给了 departmentId 时优先在该部门内找职务。 */
+  private matchByNameOrCode<T extends { id: string; code: string; name: string; departmentId?: string }>(rows: T[], text: string, departmentId?: string): T | null {
+    const key = text.trim();
+    if (!key) return null;
+    const inScope = (item: T) => !departmentId || item.departmentId === departmentId;
+    return rows.find((item) => item.code.trim() === key && inScope(item))
+      ?? rows.find((item) => item.name.trim() === key && inScope(item))
+      ?? null;
+  }
+
+  private employeeImportCreate(item: EmployeeImportCandidate, user: User) {
+    return {
+      employeeNo: item.employeeNo,
+      name: item.name,
+      departmentId: item.departmentId,
+      positionId: item.positionId,
+      employeeType: item.employeeType,
+      // 状态列优先；没有状态列时按离职日期推断（与编辑表单的既有口径一致）。
+      employmentStatus: item.employmentStatus ?? (item.leftOn ? "left" : "active"),
+      hiredOn: item.hiredOn,
+      leftOn: item.leftOn,
+      remark: item.remark,
+      birthDate: item.birthDate,
+      gender: item.gender,
+      ethnicity: item.ethnicity,
+      idCardNo: item.idCardNo,
+      education: item.education,
+      bloodType: item.bloodType,
+      socialInsurance: item.socialInsurance,
+      commercialInsurance: item.commercialInsurance,
+      contractStart: item.contractStart,
+      contractEnd: item.contractEnd,
+      laborContractStart: item.laborContractStart,
+      laborContractEnd: item.laborContractEnd,
+      homeAddress: item.homeAddress,
+      currentAddress: item.currentAddress,
+      phone: item.phone,
+      emergencyContact: item.emergencyContact,
+      emergencyPhone: item.emergencyPhone,
+      ...this.audit.create(user),
+    };
   }
   private employeeCreateFailureReason(error: unknown) {
-    if (error && typeof error === "object" && "code" in error && error.code === "P2002") return "工号已存在（并发重复），未导入";
-    if (error && typeof error === "object" && "code" in error && error.code === "P2003") return "部门或岗位不存在，未导入";
+    if (this.isUniqueViolation(error)) return "工号已存在（并发重复），未导入";
+    if (error && typeof error === "object" && "code" in error && error.code === "P2003") return "部门或职务不存在，未导入";
     return "数据库写入失败，未导入";
   }
 
-  // D12: tolerate Date objects, common separators, Excel serial numbers and
-  // date-time text (only the date part is kept), then normalize to a plain
-  // YYYY-MM-DD Date (UTC) used for @db.Date columns.
-  private parseImportDate(value: unknown): Date | null {
-    if (value === undefined || value === null || (typeof value === "string" && !value.trim())) return null;
-    let year = 0; let month = 0; let day = 0;
-    if (value instanceof Date) {
-      if (Number.isNaN(value.getTime())) return null;
-      year = value.getFullYear(); month = value.getMonth() + 1; day = value.getDate();
-    } else if (typeof value === "number") {
-      if (!Number.isFinite(value) || value < 1 || value > EXCEL_SERIAL_MAX) return null;
-      const serial = Math.floor(value);
-      const epoch = new Date(Date.UTC(1899, 11, 30));
-      const date = new Date(epoch.getTime() + serial * MS_PER_DAY);
-      year = date.getUTCFullYear(); month = date.getUTCMonth() + 1; day = date.getUTCDate();
-    } else {
-      // strip a trailing time part ("2026-01-05T00:00:00Z", "2026/1/5 8:30", …)
-      const datePart = String(value).trim().split(/[ T]/)[0];
-      const match = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(datePart) ?? /^(\d{4})(\d{2})(\d{2})$/.exec(datePart);
-      if (!match) return null;
-      year = Number(match[1]); month = Number(match[2]); day = Number(match[3]);
+  /**
+   * 花名册字段的表单入口。与 Excel 导入共用同一套规范化规则，保证「页面新建/编辑」和
+   * 「批量导入」写进去的口径一致：身份证号反向推导出生日期与性别、日期只取日期部分、
+   * 性别只允许男/女、空字符串按“清空”处理（不往库里写空串）。
+   *
+   * 只处理请求里**出现过**的键（PATCH 语义）；current 用于判断「该不该用身份证补默认值」——
+   * 已有值的字段不会被推导结果覆盖。
+   */
+  private rosterWriteData(input: EmployeeRosterInput, current?: EmployeeRosterCurrent): EmployeeRosterWrite {
+    const data: EmployeeRosterWrite = {};
+    const bucket = data as Record<string, unknown>;
+    const assignDate = (value: string | null | undefined, column: keyof EmployeeRosterWrite, label: string) => {
+      if (value === undefined) return;
+      if (!value) { bucket[column] = null; return; }
+      const parsed = parseRosterDate(value);
+      if (!parsed) throw new UnprocessableEntityException({ code: "INVALID_ROSTER_DATE", message: `${label}格式必须为 YYYY-MM-DD`, details: [] });
+      bucket[column] = parsed;
+    };
+    const assignText = (value: string | null | undefined, column: keyof EmployeeRosterWrite) => {
+      if (value === undefined) return;
+      bucket[column] = value && value.trim() ? value.trim() : null;
+    };
+
+    assignDate(input.birth_date, "birthDate", "出生日期");
+    assignDate(input.contract_start, "contractStart", "合同开始时间");
+    assignDate(input.contract_end, "contractEnd", "合同结束时间");
+    assignDate(input.labor_contract_start, "laborContractStart", "劳务合同开始时间");
+    assignDate(input.labor_contract_end, "laborContractEnd", "劳务合同结束时间");
+    assignText(input.ethnicity, "ethnicity");
+    assignText(input.education, "education");
+    assignText(input.blood_type, "bloodType");
+    assignText(input.home_address, "homeAddress");
+    assignText(input.current_address, "currentAddress");
+    assignText(input.phone, "phone");
+    assignText(input.emergency_contact, "emergencyContact");
+    assignText(input.emergency_phone, "emergencyPhone");
+    if (input.social_insurance !== undefined) data.socialInsurance = input.social_insurance;
+    if (input.commercial_insurance !== undefined) data.commercialInsurance = input.commercial_insurance;
+
+    if (input.gender !== undefined) {
+      const gender = parseRosterGender(input.gender);
+      if (gender === null) throw new UnprocessableEntityException({ code: "INVALID_ROSTER_GENDER", message: "性别仅允许男或女", details: [] });
+      data.gender = gender ?? null;
     }
-    if (year < 1900 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) return null;
-    const date = new Date(Date.UTC(year, month - 1, day));
-    // reject rollover inputs such as 2026-02-31 instead of silently shifting them
-    if (Number.isNaN(date.getTime()) || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
-    return date;
+
+    if (input.id_card_no !== undefined) {
+      const raw = (input.id_card_no ?? "").trim();
+      if (!raw) data.idCardNo = null;
+      else {
+        const parsed = parseIdCard(raw);
+        if (!parsed.ok) throw new UnprocessableEntityException({ code: "INVALID_ID_CARD", message: `身份证号码${parsed.reason}`, details: [] });
+        data.idCardNo = raw.replace(/\s+/g, "").toUpperCase();
+        // 出生日期/性别留空时按身份证补上；已经填了就必须和身份证自洽。
+        const explicitBirth = input.birth_date ? parseRosterDate(input.birth_date) : null;
+        const storedBirth = current?.birthDate ?? null;
+        if (explicitBirth && explicitBirth.getTime() !== parsed.value.birthDate.getTime()) throw new UnprocessableEntityException({ code: "ID_CARD_MISMATCH", message: "出生日期与身份证号推算的不一致", details: [] });
+        if (!explicitBirth && !storedBirth) data.birthDate = parsed.value.birthDate;
+        const explicitGender = input.gender ? parseRosterGender(input.gender) : null;
+        const storedGender = current?.gender ?? null;
+        if (explicitGender && explicitGender !== parsed.value.gender) throw new UnprocessableEntityException({ code: "ID_CARD_MISMATCH", message: "性别与身份证号推算的不一致", details: [] });
+        if (!explicitGender && !storedGender) data.gender = parsed.value.gender;
+      }
+    }
+
+    this.assertRosterContractRanges(data, current);
+    return data;
   }
 
-  async createEmployee(input: { employee_no: string; name: string; department_id: string; position_id: string; employee_type: string; user_id?: string; hired_on?: string; left_on?: string; remark?: string }, user: User) { await this.requireOrganization(input.department_id, input.position_id); this.assertEmployeeType(input.employee_type); this.assertEmploymentDates(input.hired_on ? new Date(input.hired_on) : undefined, input.left_on ? new Date(input.left_on) : undefined); if (input.user_id) await this.assertUserBindable(input.user_id); return this.write("employee", () => this.prisma.employee.create({ data: { employeeNo: input.employee_no, name: input.name, departmentId: input.department_id, positionId: input.position_id, employeeType: input.employee_type, userId: input.user_id, employmentStatus: input.left_on ? "left" : "active", hiredOn: input.hired_on ? new Date(input.hired_on) : undefined, leftOn: input.left_on ? new Date(input.left_on) : undefined, remark: input.remark, ...this.audit.create(user) } }), user); }
+  /** 合同区间必须单调（数据库也有 CHECK；这里提前给出可读的 422）。 */
+  private assertRosterContractRanges(data: EmployeeRosterWrite, current?: EmployeeRosterCurrent) {
+    const resolve = (key: keyof EmployeeRosterWrite, currentValue: Date | null | undefined) => (key in data ? (data[key] as Date | null) : currentValue ?? null);
+    const contractStart = resolve("contractStart", current?.contractStart);
+    const contractEnd = resolve("contractEnd", current?.contractEnd);
+    if (contractStart && contractEnd && contractEnd < contractStart) throw new UnprocessableEntityException({ code: "INVALID_CONTRACT_RANGE", message: "合同结束时间不能早于合同开始时间", details: [] });
+    const laborStart = resolve("laborContractStart", current?.laborContractStart);
+    const laborEnd = resolve("laborContractEnd", current?.laborContractEnd);
+    if (laborStart && laborEnd && laborEnd < laborStart) throw new UnprocessableEntityException({ code: "INVALID_CONTRACT_RANGE", message: "劳务合同结束时间不能早于劳务合同开始时间", details: [] });
+  }
+
+  // 新建员工：工号留空时按 EMP-当天日期-序号 自动生成（与导入同一条规则），
+  // 花名册字段走 rosterWriteData（身份证可反推出生日期/性别）。
+  async createEmployee(input: EmployeeCreateInput, user: User) {
+    await this.requireOrganization(input.department_id, input.position_id);
+    this.assertEmployeeType(input.employee_type);
+    this.assertEmploymentDates(input.hired_on ? new Date(input.hired_on) : undefined, input.left_on ? new Date(input.left_on) : undefined);
+    if (input.user_id) await this.assertUserBindable(input.user_id);
+    const employeeNo = input.employee_no?.trim() || (await this.nextEmployeeNo());
+    const roster = this.rosterWriteData(input);
+    return this.write("employee", () => this.prisma.employee.create({ data: {
+      employeeNo,
+      name: input.name,
+      departmentId: input.department_id,
+      positionId: input.position_id,
+      employeeType: input.employee_type,
+      userId: input.user_id,
+      employmentStatus: input.left_on ? "left" : "active",
+      hiredOn: input.hired_on ? new Date(input.hired_on) : undefined,
+      leftOn: input.left_on ? new Date(input.left_on) : undefined,
+      remark: input.remark,
+      ...roster,
+      ...this.audit.create(user),
+    } }), user);
+  }
 
   // D6: employment-state guard on PATCH.
   // Minimal self-consistent rules:
@@ -233,7 +524,7 @@ export class ProductionMasterDataService {
   //    rejected 409 EMPLOYEE_NOT_ACTIVE — status changes (rehire/reactivate or a
   //    leave date correction) must go through /active (reactivate) or /leave.
   //  - hired_on/user_id/employee_no/name/... keep their existing business linkage.
-  async updateEmployee(id: string, input: Partial<{ employee_no: string; name: string; department_id: string; position_id: string; employee_type: string; user_id: string | null; hired_on: string | null; left_on: string | null; remark: string | null }>, user: User) {
+  async updateEmployee(id: string, input: EmployeeUpdateInput, user: User) {
     const employee = await this.requireEmployee(id);
     if (input.department_id || input.position_id) await this.requireOrganization(input.department_id ?? employee.departmentId, input.position_id ?? employee.positionId);
     if (input.employee_type) this.assertEmployeeType(input.employee_type);
@@ -256,6 +547,9 @@ export class ProductionMasterDataService {
     }
     this.assertEmploymentDates(nextHired, nextLeft);
     if (input.user_id) await this.assertUserBindable(input.user_id, id);
+    // 花名册字段与入职/离职一样走合并校验：合同区间要跟库里的另一半放在一起判断，
+    // 身份证推导默认值时也不能覆盖员工档案里已有的出生日期/性别。
+    const roster = this.rosterWriteData(input, employee);
     return this.write("employee", () => this.prisma.employee.update({ where: { id }, data: {
       ...(input.employee_no === undefined || input.employee_no === null ? {} : { employeeNo: input.employee_no }),
       ...(input.name === undefined || input.name === null ? {} : { name: input.name }),
@@ -267,6 +561,7 @@ export class ProductionMasterDataService {
       ...(touchesLeft ? { leftOn: nextLeft } : {}),
       ...(nextStatus ? { employmentStatus: nextStatus } : {}),
       ...(input.remark === undefined ? {} : { remark: input.remark }),
+      ...roster,
       ...this.audit.update(user),
     } }), user, id);
   }

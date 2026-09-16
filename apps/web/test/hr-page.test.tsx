@@ -25,7 +25,7 @@ import HrPage from "../app/hr/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
 
-/** 页面 useEffect 里 Promise.all 的 7 个 GET + 币种字典 1 个 GET（前缀 /api/v1 由 api-client 拼）。 */
+/** 页面 useEffect 里 Promise.all 的 7 个 GET + 首屏一次性的主数据 2 个 GET（前缀 /api/v1 由 api-client 拼）。 */
 const EP = {
   employees: "/api/v1/production/employees",
   departments: "/api/v1/production/departments",
@@ -36,8 +36,14 @@ const EP = {
   salaryPayments: "/api/v1/hr/salary-payments",
   // 薪资台账/工资支付的币种下拉来自可配置字典（lib/currency-options.ts），随首屏一起拉取。
   currencies: "/api/v1/dictionaries/currency/items",
+  // 工资支付的「发放银行」来自银行账户池（财务 → 银行账户），同样随首屏拉一次。
+  banks: "/api/v1/finance/banks",
 } as const;
-const ALL_LISTS = Object.values(EP);
+/** Promise.all 里的一批业务列表：重试会整批重拉。 */
+const BUSINESS_LISTS = [EP.employees, EP.departments, EP.positions, EP.attendance, EP.performance, EP.ledgers, EP.salaryPayments];
+/** 首屏只拉一次的静态主数据（重试不重拉）：币种字典、银行账户池。 */
+const STATIC_MASTER_DATA = [EP.currencies, EP.banks];
+const ALL_LISTS = [...BUSINESS_LISTS, ...STATIC_MASTER_DATA];
 
 type Handler = (url: string, call: StubbedCall) => Response | Promise<Response> | undefined;
 
@@ -120,6 +126,7 @@ function deferred<T>() {
 }
 
 // —— 假数据：形状对齐后端 DTO（listEmployees / listDepartments / listPositions / 考勤 / 绩效）——
+// 员工口径 = 《在职员工花名册》；age/tenureYears/contractStatus 等派生列由后端算好后随行返回。
 
 type Employee = {
   id: string;
@@ -131,15 +138,23 @@ type Employee = {
   leftOn?: string;
   department?: { id: string; name: string };
   position?: { id: string; name: string };
+  gender?: string;
+  birthDate?: string;
+  age?: number | null;
+  education?: string;
+  tenureYears?: number | null;
+  phone?: string;
+  contractStatus?: string;
+  laborContractStatus?: string;
 };
 
 const employees: Employee[] = [
-  // 在职 + 部门/岗位齐全 + 有入职日期
-  { id: "emp-1", employeeNo: "E01", name: "张三", employeeType: "workshop", employmentStatus: "active", hiredOn: "2026-01-05T00:00:00.000Z", department: { id: "dept-1", name: "生产部" }, position: { id: "pos-1", name: "缝纫工" } },
-  // 已离职 + 关联字段整体缺失 + 只有离职日期
-  { id: "emp-2", employeeNo: "E02", name: "李四", employeeType: "non_workshop", employmentStatus: "left", leftOn: "2026-03-01T00:00:00.000Z" },
-  // 停用 + 有部门无岗位
-  { id: "emp-3", employeeNo: "E03", name: "王五", employeeType: "workshop", employmentStatus: "inactive", department: { id: "dept-1", name: "生产部" } },
+  // 在职 + 部门/职务齐全 + 花名册字段与派生列都有值
+  { id: "emp-1", employeeNo: "E01", name: "张三", employeeType: "workshop", employmentStatus: "active", hiredOn: "2026-01-05T00:00:00.000Z", department: { id: "dept-1", name: "生产部" }, position: { id: "pos-1", name: "缝纫工" }, gender: "男", birthDate: "1990-05-20T00:00:00.000Z", age: 36, education: "初中", tenureYears: 0, phone: "138 0000 0000", contractStatus: "正常", laborContractStatus: "" },
+  // 已离职 + 关联字段整体缺失 + 只有离职日期；派生列后端没给（null）→ 列表回落 "-"
+  { id: "emp-2", employeeNo: "E02", name: "李四", employeeType: "non_workshop", employmentStatus: "left", leftOn: "2026-03-01T00:00:00.000Z", age: null, tenureYears: null },
+  // 停用 + 有部门无职务 + 合同已过期
+  { id: "emp-3", employeeNo: "E03", name: "王五", employeeType: "workshop", employmentStatus: "inactive", department: { id: "dept-1", name: "生产部" }, gender: "女", age: 38, education: "大专", phone: "139 0000 0000", contractStatus: "合同已过期", laborContractStatus: "合同即将到期" },
 ];
 
 const departments = [
@@ -222,39 +237,58 @@ describe("人事页 · 加载门禁与首屏请求契约", () => {
 });
 
 describe("人事页 · 员工目录列表渲染", () => {
-  it("按列渲染工号/姓名/部门岗位拼接/类型/入职离职日期截断/状态中文化，关联缺失回落 -", async () => {
+  it("按花名册口径渲染：工号/姓名/部门职务拼接/性别/出生日期/年龄/学历/入职日期/工龄/联系方式/合同到期/类型/状态/离职日期，缺数据回落 -", async () => {
     await openHr({ employees });
 
     const directory = panel("员工目录");
     expect(directory.getAllByTestId("data-table-row")).toHaveLength(3);
-    // 表头文案（列结构与业务含义的一部分）
-    for (const header of ["工号", "姓名", "部门/岗位", "类型", "入职日期", "离职日期", "状态", "操作"]) {
+    // 表头文案（列结构与业务含义的一部分）：列顺序 = 花名册口径
+    for (const header of ["工号", "姓名", "部门/职务", "性别", "出生日期", "年龄", "学历", "入职日期", "工龄", "联系方式", "合同到期", "劳务合同到期", "类型", "状态", "离职日期", "操作"]) {
       expect(directory.getByRole("columnheader", { name: header })).toBeVisible();
     }
 
     const zhang = rowFor("员工目录", "E01");
     expect(cellText(zhang, 0)).toBe("E01");
     expect(cellText(zhang, 1)).toBe("张三");
-    // 自定义 cell：部门名与岗位名用 " / " 拼接
+    // 自定义 cell：部门名与职务名用 " / " 拼接
     expect(cellText(zhang, 2)).toBe("生产部 / 缝纫工");
-    // 自定义 cell：完整 ISO 时间被 slice(0, 10) 截断
-    expect(cellText(zhang, 4)).toBe("2026-01-05");
-    // 未离职 → 离职日期回落 "-"
-    expect(cellText(zhang, 5)).toBe("-");
+    expect(cellText(zhang, 3)).toBe("男");
+    // 自定义 cell：完整 ISO 时间被截断成日期
+    expect(cellText(zhang, 4)).toBe("1990-05-20");
+    // 后端算好的派生列原样展示
+    expect(cellText(zhang, 5)).toBe("36");
+    expect(cellText(zhang, 6)).toBe("初中");
+    expect(cellText(zhang, 7)).toBe("2026-01-05");
+    expect(cellText(zhang, 8)).toBe("0");
+    expect(cellText(zhang, 9)).toBe("138 0000 0000");
+    expect(cellText(zhang, 10)).toBe("正常");
+    // 没填劳务合同结束时间 → 后端给空串 → 列表回落 "-"，不假装「正常」
+    expect(cellText(zhang, 11)).toBe("-");
+    expect(cellText(zhang, 12)).toBe("workshop");
     // 自定义 cell 走 displayStatus：active → 在职
-    expect(cellText(zhang, 6)).toBe("在职");
+    expect(cellText(zhang, 13)).toBe("在职");
+    // 未离职 → 离职日期回落 "-"
+    expect(cellText(zhang, 14)).toBe("-");
 
     const li = rowFor("员工目录", "E02");
     // department / position 关联整体缺失 → "- / -"
     expect(cellText(li, 2)).toBe("- / -");
-    expect(cellText(li, 4)).toBe("-");
-    expect(cellText(li, 5)).toBe("2026-03-01");
-    expect(cellText(li, 6)).toBe("已离职");
+    // 花名册字段与派生列都缺 → "-"（不能渲染成 null / undefined / NaN）
+    for (const index of [3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+      expect(cellText(li, index)).toBe("-");
+    }
+    expect(cellText(li, 13)).toBe("已离职");
+    expect(cellText(li, 14)).toBe("2026-03-01");
 
     const wang = rowFor("员工目录", "E03");
-    // 只有部门、没有岗位 → 后半段回落 "-"
+    // 只有部门、没有职务 → 后半段回落 "-"
     expect(cellText(wang, 2)).toBe("生产部 / -");
-    expect(cellText(wang, 6)).toBe("停用");
+    expect(cellText(wang, 10)).toBe("合同已过期");
+    expect(cellText(wang, 11)).toBe("合同即将到期");
+    expect(cellText(wang, 13)).toBe("停用");
+    // 没有入职日期 → 工龄 "-"，而年龄仍按出生日期算出来
+    expect(cellText(wang, 8)).toBe("-");
+    expect(cellText(wang, 5)).toBe("38");
   });
 
   it("行内操作按在职状态出现：在职行有「编辑 + 离职」，已离职/停用行只有「编辑」", async () => {
@@ -450,10 +484,11 @@ describe("人事页 · 失败态与权限", () => {
     await waitFor(() => expect(screen.queryByTestId("error-state")).toBeNull());
     expect(rowsIn("员工目录")).toHaveLength(3);
     expect(panel("考勤与绩效").getByText("2026-02-10 09:00-18:00")).toBeVisible();
-    // 重试是整页重新拉取：7 个业务接口各被再请求一次；币种字典是静态配置，只拉一次
+    // 重试是整页重新拉取：7 个业务接口各被再请求一次；币种字典与银行账户池是静态主数据，只拉一次
     expect(callsTo(calls, EP.employees)).toHaveLength(2);
-    expect(calls.filter((call) => call.method === "GET")).toHaveLength(ALL_LISTS.length * 2 - 1);
+    expect(calls.filter((call) => call.method === "GET")).toHaveLength(BUSINESS_LISTS.length * 2 + STATIC_MASTER_DATA.length);
     expect(callsTo(calls, EP.currencies)).toHaveLength(1);
+    expect(callsTo(calls, EP.banks)).toHaveLength(1);
   });
 
   it("KNOWN_DEFECT：部门/岗位接口 403（人事账号无 production 模块权限）时整页报错，hr 模块数据一并不可见", async () => {

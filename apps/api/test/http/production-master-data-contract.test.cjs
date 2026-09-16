@@ -236,7 +236,9 @@ test("production-master-data.create_routes_whitelist_and_validate_bodies_with_40
   const required = [
     [`${P}/departments`, {}, ["code", "name"]],
     [`${P}/positions`, {}, ["department_id", "code", "name"]],
-    [`${P}/employees`, {}, ["employee_no", "name", "department_id", "position_id", "employee_type"]],
+    // employee_no 自花名册口径起改为可选：留空由服务端按 EMP-当天日期-序号 自动生成，
+    // 因此它不在必填字段清单里（其余四项是员工表 NOT NULL 的业务字段）。
+    [`${P}/employees`, {}, ["name", "department_id", "position_id", "employee_type"]],
     [`${P}/locations`, {}, ["name", "location_type"]],
     [`${P}/operations`, {}, ["operation_name"]],
     [`${P}/operation-rates`, {}, ["employee_id", "operation_id", "wage_mode", "unit_price", "effective_from"]],
@@ -370,6 +372,29 @@ test("production-master-data.export_routes_bypass_the_json_envelope", async () =
   assert.ok(decodeURIComponent(disposition).includes("员工导入模板.xlsx"), `模板文件名应可解码为中文：${disposition}`);
   assert.equal(template.headers.get("cache-control"), "no-store");
   assert.ok(template.body.length > 0);
+  // 模板内容 = 花名册口径：首行必须是《在职员工花名册》的非派生字段 + 系统三列。
+  // 这里直接解析返回的 xlsx（harness 以 latin1 文本回退二进制，需还原成 Buffer）。
+  const { parseEmployeeRosterRows, EMPLOYEE_IMPORT_HEADERS } = require("../../dist/modules/production/employee-roster.js");
+  const XLSX = require("xlsx");
+  const templateBook = XLSX.read(Buffer.from(template.body, "latin1"), { type: "buffer" });
+  assert.deepEqual(templateBook.SheetNames, ["员工导入", "填写说明"]);
+  const templateRows = XLSX.utils.sheet_to_json(templateBook.Sheets["员工导入"], { header: 1, raw: true, defval: "" });
+  assert.deepEqual(templateRows[0].slice(0, EMPLOYEE_IMPORT_HEADERS.length), [...EMPLOYEE_IMPORT_HEADERS], "模板首行必须是花名册口径的表头");
+  for (const header of ["姓名", "部门", "职务", "出生日期", "身份证号码", "是否缴纳社保", "劳务合同结束时间", "紧急联络人联系电话"]) {
+    assert.ok(templateRows[0].includes(header), `模板表头缺少花名册列：${header}`);
+  }
+  // 模板必须能被自己的解析器读回：示例行合法、派生列不进模板
+  const parsedTemplate = parseEmployeeRosterRows(templateRows);
+  assert.equal(parsedTemplate.headerRow, 1);
+  assert.deepEqual(parsedTemplate.errors, [], `模板自身的示例行必须合法：${JSON.stringify(parsedTemplate.errors)}`);
+
+  // 导出的员工名单同样是花名册口径，且能被导入解析器回读（列名匹配，派生列自动忽略）。
+  const exportedBook = XLSX.read(Buffer.from(exported.body, "latin1"), { type: "buffer" });
+  const exportedRows = XLSX.utils.sheet_to_json(exportedBook.Sheets["员工名单"], { header: 1, raw: true, defval: "" });
+  for (const header of ["序号", "工号", "姓名", "部门", "职务", "出生日期", "年龄", "学历", "入职日期", "工龄", "是否缴纳社保", "合同起止时间-开始时间", "劳务合同-结束时间", "身份证号码", "紧急联络人联系电话", "当月生日员工", "合同即将到期人员"]) {
+    assert.ok(exportedRows[0].includes(header), `导出缺少花名册列：${header}`);
+  }
+  assert.equal(parseEmployeeRosterRows(exportedRows).headerRow, 1, "导出文件必须能被导入解析器识别");
 
   // 旁路信封的端点仍然受全局 ValidationPipe 与全局异常过滤器约束 → 校验失败仍是标准失败信封
   expectValidationError(await api.get(`${P}/employees/export.xlsx?bogus=1`), { code: "VALIDATION_ERROR", context: "export?bogus=1" });

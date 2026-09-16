@@ -35,6 +35,11 @@ import { displayStatus } from "../../lib/display-text";
 import { currencyOptions, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
+// 员工口径 = 《在职员工花名册》：工号、姓名、部门、职务、状态、出生日期、学历、血型、
+// 入职/离职日期、员工类型、社保/商业险、劳动合同与劳务合同起止、性别、民族、身份证号码、
+// 家庭住址、现住地址、联系方式、紧急联络人与紧急联络人联系电话、备注。
+// age/tenureYears/birthdayThisMonth/contractStatus/laborContractStatus 是后端按当天日期实时
+// 算出来的派生列（年龄/工龄/当月生日/合同到期提醒），不在表单里填。
 type Employee = {
   id: string;
   employeeNo: string;
@@ -46,6 +51,28 @@ type Employee = {
   remark?: string;
   department?: { id: string; name: string };
   position?: { id: string; name: string };
+  birthDate?: string;
+  gender?: string;
+  ethnicity?: string;
+  idCardNo?: string;
+  education?: string;
+  bloodType?: string;
+  socialInsurance?: boolean;
+  commercialInsurance?: boolean;
+  contractStart?: string;
+  contractEnd?: string;
+  laborContractStart?: string;
+  laborContractEnd?: string;
+  homeAddress?: string;
+  currentAddress?: string;
+  phone?: string;
+  emergencyContact?: string;
+  emergencyPhone?: string;
+  age?: number | null;
+  tenureYears?: number | null;
+  birthdayThisMonth?: boolean | null;
+  contractStatus?: string;
+  laborContractStatus?: string;
 };
 type RecordItem = {
   id: string;
@@ -76,6 +103,8 @@ type Payment = {
   currency: string;
   status: string;
 };
+// 发放银行（财务 → 银行账户）：2026-09-16 起工资支付必须指定，否则这笔支出不进任何银行账户余额。
+type BankRef = { id: string; bankName: string; accountNumber: string; isActive: boolean };
 type OrganizationItem = {
   id: string;
   code: string;
@@ -96,6 +125,111 @@ type DialogState = {
 };
 const messageOf = (cause: unknown, fallback: string) =>
   cause instanceof ApiClientError ? cause.message : fallback;
+
+/** 「是否」类字段用下拉而不是开关：留空 = 未登记，必须和「否」区分开。 */
+const YES_NO_OPTIONS = [
+  { value: "true", label: "是" },
+  { value: "false", label: "否" },
+];
+const GENDER_OPTIONS = [
+  { value: "男", label: "男" },
+  { value: "女", label: "女" },
+];
+const isoDate = (value?: string) => value?.slice(0, 10) ?? "";
+
+/**
+ * 编辑表单里「是否」字段的初值：undefined/null 都回到空选项（未登记），
+ * 不能把没登记过的员工显示成「否」。
+ */
+const flagDefault = (value?: boolean) => (value === true ? "true" : value === false ? "false" : "");
+
+/**
+ * 花名册字段定义（新建与编辑共用）：顺序按花名册原表走，方便操作员对照。
+ * 工号留空时由后端自动生成（EMP-当天日期-序号）。
+ */
+function employeeRosterFields(employee: Employee | undefined, departments: OrganizationItem[], positions: OrganizationItem[], employeeTypes: EmployeeTypeItem[]): ActionField[] {
+  return [
+    { name: "employee_no", label: "工号", placeholder: "留空自动生成", defaultValue: employee?.employeeNo ?? "" },
+    { name: "name", label: "姓名", required: true, defaultValue: employee?.name ?? "" },
+    {
+      name: "department_id", label: "部门", type: "select", required: true, canAddCategory: true,
+      defaultValue: employee?.department?.id,
+      options: departments.filter((item) => item.isActive).map((item) => ({ value: item.id, label: `${item.code} / ${item.name}` })),
+    },
+    {
+      name: "position_id", label: "职务", type: "select", required: true, canAddCategory: true,
+      defaultValue: employee?.position?.id,
+      options: positions.filter((item) => item.isActive).map((item) => ({ value: item.id, label: `${item.code} / ${item.name}` })),
+    },
+    {
+      name: "employee_type", label: "员工类型", type: "select", required: true,
+      defaultValue: employee?.employeeType ?? "workshop",
+      options: employeeTypes.map((item) => ({ value: item.key, label: item.label })),
+    },
+    { name: "hired_on", label: "入职日期", type: "date", defaultValue: isoDate(employee?.hiredOn) },
+    { name: "left_on", label: "离职日期", type: "date", defaultValue: isoDate(employee?.leftOn) },
+    { name: "birth_date", label: "出生日期", type: "date", defaultValue: isoDate(employee?.birthDate), placeholder: "留空则按身份证推算" },
+    { name: "gender", label: "性别", type: "select", defaultValue: employee?.gender, options: GENDER_OPTIONS },
+    { name: "ethnicity", label: "民族", defaultValue: employee?.ethnicity ?? "" },
+    { name: "id_card_no", label: "身份证号码", defaultValue: employee?.idCardNo ?? "", placeholder: "填对可自动推算出生日期与性别" },
+    { name: "education", label: "学历", defaultValue: employee?.education ?? "" },
+    { name: "blood_type", label: "血型", defaultValue: employee?.bloodType ?? "" },
+    { name: "social_insurance", label: "是否缴纳社保", type: "select", defaultValue: flagDefault(employee?.socialInsurance), options: YES_NO_OPTIONS },
+    { name: "commercial_insurance", label: "是否缴纳商业险", type: "select", defaultValue: flagDefault(employee?.commercialInsurance), options: YES_NO_OPTIONS },
+    { name: "contract_start", label: "合同开始时间", type: "date", defaultValue: isoDate(employee?.contractStart) },
+    { name: "contract_end", label: "合同结束时间", type: "date", defaultValue: isoDate(employee?.contractEnd) },
+    { name: "labor_contract_start", label: "劳务合同开始时间", type: "date", defaultValue: isoDate(employee?.laborContractStart) },
+    { name: "labor_contract_end", label: "劳务合同结束时间", type: "date", defaultValue: isoDate(employee?.laborContractEnd) },
+    { name: "phone", label: "联系方式", defaultValue: employee?.phone ?? "" },
+    { name: "home_address", label: "家庭住址", defaultValue: employee?.homeAddress ?? "" },
+    { name: "current_address", label: "现住地址", defaultValue: employee?.currentAddress ?? "" },
+    { name: "emergency_contact", label: "紧急联络人", defaultValue: employee?.emergencyContact ?? "" },
+    { name: "emergency_phone", label: "紧急联络人联系电话", defaultValue: employee?.emergencyPhone ?? "" },
+    // 年龄/工龄/当月生日/合同到期提醒是派生列，不给输入框，只在列表里展示。
+    { name: "remark", label: "备注", type: "textarea", defaultValue: employee?.remark ?? "" },
+  ];
+}
+
+/**
+ * 表单值 → 接口请求体。新建时留空的字段直接不发（用默认值），
+ * 编辑时留空表示「清空」（发 null）—— 与 PATCH 的语义一致。
+ * 入职/离职日期沿用旧行为（留空即不改），因为离职状态另有 /leave 与 /active 两个受控入口。
+ */
+function employeePayload(values: Record<string, string>, mode: "create" | "edit") {
+  const blank = mode === "edit" ? null : undefined;
+  const text = (key: string) => (values[key]?.trim() ? values[key].trim() : blank);
+  const flag = (key: string) => (values[key] === "true" ? true : values[key] === "false" ? false : blank);
+  return {
+    employee_no: values.employee_no?.trim() || undefined,
+    name: values.name?.trim(),
+    department_id: values.department_id,
+    position_id: values.position_id,
+    employee_type: values.employee_type,
+    hired_on: values.hired_on || undefined,
+    left_on: values.left_on || undefined,
+    remark: text("remark"),
+    birth_date: values.birth_date || blank,
+    gender: text("gender"),
+    ethnicity: text("ethnicity"),
+    id_card_no: text("id_card_no"),
+    education: text("education"),
+    blood_type: text("blood_type"),
+    social_insurance: flag("social_insurance"),
+    commercial_insurance: flag("commercial_insurance"),
+    contract_start: values.contract_start || blank,
+    contract_end: values.contract_end || blank,
+    labor_contract_start: values.labor_contract_start || blank,
+    labor_contract_end: values.labor_contract_end || blank,
+    home_address: text("home_address"),
+    current_address: text("current_address"),
+    phone: text("phone"),
+    emergency_contact: text("emergency_contact"),
+    emergency_phone: text("emergency_phone"),
+  };
+}
+
+/** 合同到期提醒的展示文案：没填结束时间时留空，不假装「正常」。 */
+const contractCell = (status?: string) => status || "-";
 
 export default function HrPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -137,7 +271,14 @@ export default function HrPage() {
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
   // 币种是静态配置，不是在业务数据：挂在独立 effect 上，页面重新加载不会重复拉取。
   useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
-  const [importResult, setImportResult] = useState<{ imported: number; successCount: number; errorCount: number; errors: { row: number; field?: string; reason: string }[] } | null>(null);
+  // 发放银行同为主数据，也挂独立 effect：拉不到就留空，弹窗里会明确提示去【财务 → 银行账户】建账户
+  // （后端对没有银行的工资支付直接 422，不能靠前端悄悄放过去）。
+  const [banks, setBanks] = useState<BankRef[]>([]);
+  useEffect(() => { let cancelled = false; void apiGet<BankRef[]>("/finance/banks").then((result) => { if (!cancelled) setBanks(result.data); }).catch(() => { if (!cancelled) setBanks([]); }); return () => { cancelled = true; }; }, []);
+  const bankOptions = useMemo(() => banks.filter((bank) => bank.isActive).map((bank) => ({ value: bank.id, label: `${bank.bankName} / ${bank.accountNumber}` })), [banks]);
+  // 导入结果：除了成功/错误计数，还把「自动生成的工号」「按部门推断的员工类型」
+  // 「忽略的列」「末尾被批注挡掉的行」如实回显 —— 手动花名册直接上传时会命中后两项。
+  const [importResult, setImportResult] = useState<{ imported: number; total: number; successCount: number; errorCount: number; autoNumbered?: number; inferredEmployeeTypes?: number; ignoredColumns?: string[]; ignoredTrailingRows?: number; headerRow?: number; missingColumns?: string[]; hints?: string[]; errors: { row: number; field?: string; reason: string }[] } | null>(null);
   async function load() {
     setLoading(true);
     setError("");
@@ -215,7 +356,7 @@ export default function HrPage() {
     }
   }
   async function downloadImportTemplate() { const response = await fetch("/api/v1/production/employees/import-template.xlsx", { credentials: "include", cache: "no-store" }); if (!response.ok) { setError("模板下载失败"); return; } const url = URL.createObjectURL(await response.blob()); const anchor = document.createElement("a"); anchor.href = url; anchor.download = "迪礼ERP-员工导入模板.xlsx"; anchor.click(); URL.revokeObjectURL(url); }
-  async function importEmployees(file: File | undefined) { if (!file) return; setError(""); setImportResult(null); const form = new FormData(); form.append("file", file); try { const response = await fetch("/api/v1/production/employees/import", { method: "POST", credentials: "include", body: form }); const body = await response.json(); if (!response.ok || body.error) throw new ApiClientError(body.error?.code ?? "IMPORT_FAILED", body.error?.message ?? "导入失败", body.error?.details ?? []); setImportResult(body.data); if (body.data.errorCount === 0) { setMessage(`成功导入${body.data.imported}行`); await load(); } } catch (cause) { notifyError(messageOf(cause, "员工导入失败")); } }
+  async function importEmployees(file: File | undefined) { if (!file) return; setError(""); setImportResult(null); const form = new FormData(); form.append("file", file); try { const response = await fetch("/api/v1/production/employees/import", { method: "POST", credentials: "include", body: form }); const body = await response.json(); if (!response.ok || body.error) throw new ApiClientError(body.error?.code ?? "IMPORT_FAILED", body.error?.message ?? "导入失败", body.error?.details ?? []); setImportResult(body.data); if (body.data.imported > 0) { setMessage(`成功导入 ${body.data.imported} 行${body.data.errorCount ? `，${body.data.errorCount} 行未导入` : ""}`); await load(); } } catch (cause) { notifyError(messageOf(cause, "员工导入失败")); } }
   const employeeOptions = employees.map((item) => ({
     value: item.id,
     label: `${item.employeeNo} / ${item.name}`,
@@ -353,58 +494,10 @@ export default function HrPage() {
   }) {
     setDialog({
       title: "新建员工",
-      fields: [
-        { name: "employee_no", label: "工号", required: true },
-        { name: "name", label: "姓名", required: true },
-        {
-          name: "department_id",
-          label: "部门",
-          type: "select",
-          required: true,
-          canAddCategory: true,
-          options: departments
-            .filter((item) => item.isActive)
-            .map((item) => ({
-              value: item.id,
-              label: `${item.code} / ${item.name}`,
-            })),
-        },
-        {
-          name: "position_id",
-          label: "岗位",
-          type: "select",
-          required: true,
-          canAddCategory: true,
-          options: positions
-            .filter((item) => item.isActive)
-            .map((item) => ({
-              value: item.id,
-              label: `${item.code} / ${item.name}`,
-            })),
-        },
-        {
-          name: "employee_type",
-          label: "员工类型",
-          type: "select",
-          required: true,
-          defaultValue: "workshop",
-          options: employeeTypes.map((item) => ({
-            value: item.key,
-            label: item.label,
-          })),
-        },
-        { name: "hired_on", label: "入职日期", type: "date" },
-        { name: "left_on", label: "离职日期", type: "date" },
-        { name: "remark", label: "备注", type: "textarea" },
-      ],
+      fields: employeeRosterFields(undefined, departments, positions, employeeTypes),
       submit: async (v) => {
         try {
-          const result = await apiPost<Employee>("/production/employees", {
-            ...v,
-            hired_on: v.hired_on || undefined,
-            left_on: v.left_on || undefined,
-            remark: v.remark || undefined,
-          });
+          const result = await apiPost<Employee>("/production/employees", employeePayload(v, "create"));
           setEmployees((items) => [
             ...items.filter((item) => item.id !== result.data.id),
             result.data,
@@ -441,84 +534,11 @@ export default function HrPage() {
   function editEmployee(employee: Employee) {
     setDialog({
       title: "编辑员工",
-      fields: [
-        {
-          name: "employee_no",
-          label: "工号",
-          required: true,
-          defaultValue: employee.employeeNo,
-        },
-        {
-          name: "name",
-          label: "姓名",
-          required: true,
-          defaultValue: employee.name,
-        },
-        {
-          name: "department_id",
-          label: "部门",
-          type: "select",
-          required: true,
-          defaultValue: employee.department?.id,
-          options: departments
-            .filter((item) => item.isActive)
-            .map((item) => ({
-              value: item.id,
-              label: `${item.code} / ${item.name}`,
-            })),
-        },
-        {
-          name: "position_id",
-          label: "岗位",
-          type: "select",
-          required: true,
-          defaultValue: employee.position?.id,
-          options: positions
-            .filter((item) => item.isActive)
-            .map((item) => ({
-              value: item.id,
-              label: `${item.code} / ${item.name}`,
-            })),
-        },
-        {
-          name: "employee_type",
-          label: "员工类型",
-          type: "select",
-          required: true,
-          defaultValue: employee.employeeType,
-          options: employeeTypes.map((item) => ({
-            value: item.key,
-            label: item.label,
-          })),
-        },
-        {
-          name: "hired_on",
-          label: "入职日期",
-          type: "date",
-          defaultValue: employee.hiredOn?.slice(0, 10),
-        },
-        {
-          name: "left_on",
-          label: "离职日期",
-          type: "date",
-          defaultValue: employee.leftOn?.slice(0, 10),
-        },
-        {
-          name: "remark",
-          label: "备注",
-          type: "textarea",
-          defaultValue: employee.remark ?? "",
-        },
-      ],
+      fields: employeeRosterFields(employee, departments, positions, employeeTypes),
       submit: (v) =>
         void runPatch(
           `/production/employees/${employee.id}`,
-          {
-            ...v,
-            hired_on: v.hired_on || undefined,
-            left_on: v.left_on || undefined,
-            remark: v.remark || undefined,
-          },
+          employeePayload(v, "edit"),
           "员工信息已更新",
         ),
     });
@@ -693,6 +713,8 @@ export default function HrPage() {
           defaultValue: "银行转账",
         },
         { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
+        // 发放银行必填：发工资都是通过银行账户发放的，缺了它这笔支出不会落到任何账户上。
+        { name: "bank_id", label: bankOptions.length ? "发放银行（发工资必须走银行账户）" : "发放银行（请先在【财务 → 银行账户】建一个账户）", type: "select", required: true, options: bankOptions, defaultValue: bankOptions[0]?.value },
       ],
       submit: (v) =>
         void action(
@@ -702,6 +724,7 @@ export default function HrPage() {
             amount: v.amount,
             currency: v.currency,
             payment_method: v.payment_method,
+            bank_id: v.bank_id,
           },
           "工资支付草稿已创建",
         ),
@@ -731,30 +754,59 @@ export default function HrPage() {
       employeeType,
     ],
   );
+  // 列表列 = 花名册口径（含后端实时算出的年龄/工龄/合同到期提醒）。
   const employeeColumns: ColumnDef<Employee>[] = [
     { accessorKey: "employeeNo", header: "工号" },
     { accessorKey: "name", header: "姓名" },
     {
       id: "org",
-      header: "部门/岗位",
+      header: "部门/职务",
       cell: ({ row }) =>
         `${row.original.department?.name ?? "-"} / ${row.original.position?.name ?? "-"}`,
     },
-    { accessorKey: "employeeType", header: "类型" },
+    { id: "gender", header: "性别", cell: ({ row }) => row.original.gender ?? "-" },
+    {
+      id: "birthDate",
+      header: "出生日期",
+      cell: ({ row }) => isoDate(row.original.birthDate) || "-",
+    },
+    {
+      id: "age",
+      header: "年龄",
+      cell: ({ row }) => (row.original.age === null || row.original.age === undefined ? "-" : String(row.original.age)),
+    },
+    { id: "education", header: "学历", cell: ({ row }) => row.original.education ?? "-" },
     {
       id: "hiredOn",
       header: "入职日期",
-      cell: ({ row }) => row.original.hiredOn?.slice(0, 10) ?? "-",
+      cell: ({ row }) => isoDate(row.original.hiredOn) || "-",
     },
     {
-      id: "leftOn",
-      header: "离职日期",
-      cell: ({ row }) => row.original.leftOn?.slice(0, 10) ?? "-",
+      id: "tenure",
+      header: "工龄",
+      cell: ({ row }) => (row.original.tenureYears === null || row.original.tenureYears === undefined ? "-" : String(row.original.tenureYears)),
     },
+    { id: "phone", header: "联系方式", cell: ({ row }) => row.original.phone ?? "-" },
+    {
+      id: "contract",
+      header: "合同到期",
+      cell: ({ row }) => contractCell(row.original.contractStatus),
+    },
+    {
+      id: "laborContract",
+      header: "劳务合同到期",
+      cell: ({ row }) => contractCell(row.original.laborContractStatus),
+    },
+    { accessorKey: "employeeType", header: "类型" },
     {
       id: "status",
       header: "状态",
       cell: ({ row }) => displayStatus(row.original.employmentStatus),
+    },
+    {
+      id: "leftOn",
+      header: "离职日期",
+      cell: ({ row }) => isoDate(row.original.leftOn) || "-",
     },
     {
       id: "actions",
@@ -925,7 +977,7 @@ export default function HrPage() {
           </Link>
         </div>
       </PageHeader>
-      <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="hr-import-dialog"><DialogHeader><DialogTitle>批量导入员工</DialogTitle></DialogHeader><DialogBody><p>请使用模板填写员工信息，上传后将先完成全表校验；有任何错误时整批不导入。</p><FileInput accept=".xlsx" onChange={(event) => { void importEmployees(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importResult && <div className="panel-body"><p>成功 {importResult.successCount} 行 / 错误 {importResult.errorCount} 行</p>{importResult.errors.length > 0 && <DataTable columns={[{ accessorKey: "row", header: "行号" }, { accessorKey: "field", header: "字段" }, { accessorKey: "reason", header: "原因" }]} data={importResult.errors} empty={null} />}</div>}</DialogBody></DialogContent></Dialog>
+      <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="hr-import-dialog"><DialogHeader><DialogTitle>批量导入员工</DialogTitle></DialogHeader><DialogBody><p>请使用模板填写员工信息。系统按表头名识别列（列顺序可以调整），先逐行校验格式，通过校验的行会直接导入，出错的行在下方逐条列出，不会因为个别错误整批丢弃。工号留空时按 EMP-当天日期-序号 自动生成。手动维护的花名册（首行是标题、末尾有说明批注）也能直接上传。</p><FileInput accept=".xlsx" onChange={(event) => { void importEmployees(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importResult && <div className="panel-body"><p>共 {importResult.total} 行：成功 {importResult.successCount} 行 / 错误 {importResult.errorCount} 行</p>{Boolean(importResult.autoNumbered) && <p>其中 {importResult.autoNumbered} 行工号由系统自动生成</p>}{Boolean(importResult.inferredEmployeeTypes) && <p>其中 {importResult.inferredEmployeeTypes} 行的员工类型按所属部门已有员工推断，请复核</p>}{(importResult.hints ?? []).map((hint) => <p key={hint} className="panel-note">{hint}</p>)}{Boolean(importResult.ignoredColumns?.length) && <p>以下列不属于员工口径，已忽略：{importResult.ignoredColumns?.join("、")}</p>}{importResult.errors.length > 0 && <DataTable columns={[{ accessorKey: "row", header: "行号" }, { accessorKey: "field", header: "字段" }, { accessorKey: "reason", header: "原因" }]} data={importResult.errors} empty={null} />}</div>}</DialogBody></DialogContent></Dialog>
       <ActionDialog
         open={Boolean(dialog)}
         onOpenChange={(open) => {
