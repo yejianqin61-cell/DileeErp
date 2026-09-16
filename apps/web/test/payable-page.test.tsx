@@ -592,6 +592,109 @@ describe("应付管理：确认应付的付款情况 / 日期筛选与导出", (
   });
 });
 
+// ------------------------------------------------------------------ 其他应付批量导入
+
+// 用户 2026-09-16：「有一些非原料类的支出，也就是其他应付，现在要支持批量导入这类应付对账条目。
+// 我们提供模板，用户填写上传，直接进入应付对账，然后再流转到确认应付。」
+describe("应付管理：其他应付批量导入", () => {
+  /** 打开导入弹窗（入口在「确认应付」的工具条上，紧挨着「新建其他应付」）。 */
+  async function openImport() {
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByTestId("payable-other-import"));
+    return screen.findByTestId("payable-import-dialog");
+  }
+
+  it("入口在确认应付页（紧挨「新建其他应付」），弹窗里有模板下载与文件上传", async () => {
+    stubPayable({ entries: [draftEntry] });
+    const dialog = await openImport();
+
+    expect(within(dialog).getByRole("button", { name: "下载模板" })).toBeVisible();
+    expect(within(dialog).getByTestId("payable-import-file")).toBeVisible();
+  });
+
+  it("下载模板：拉 import-template.xlsx 并触发下载", async () => {
+    captureDownloads();
+    const calls = stubPayable({ entries: [draftEntry] }, (url) => (
+      url.includes("payable-entries/import-template.xlsx")
+        ? new Response(new Uint8Array([0x50, 0x4b]), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } })
+        : undefined
+    ));
+    await openImport();
+
+    await userEvent.click(screen.getByTestId("payable-import-template"));
+
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/finance/payable-entries/import-template.xlsx"))).toBe(true));
+    expect(anchorClicks).toHaveLength(1);
+    expect(anchorClicks[0].download).toBe("迪礼ERP-其他应付导入模板.xlsx");
+  });
+
+  it("上传文件：multipart 打到 import 端点，结果逐行回显（含自动建档的供应商与去处）", async () => {
+    const partial = {
+      status: "partial", total: 3, imported: 1, successCount: 1, errorCount: 2, headerRow: 1,
+      errors: [
+        { row: 3, field: "应付金额", reason: "应付金额必须大于 0" },
+        { row: 4, reason: "与本文件第 2 行重复（同一供应商、金额、币种、日期与说明）" },
+      ],
+      missingColumns: [], ignoredColumns: ["摊销月份"], ignoredTrailingRows: 0,
+      createdSuppliers: [{ name: "上海房东", supplierCode: "SUP-20260916-0002", rows: 1 }],
+      hints: ["导入的是应付草稿：可在【应付对账 → 待创建对账】继续对账，也可直接在【确认应付】勾选批量确认"],
+    };
+    const calls = stubPayable({ entries: [draftEntry] }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/payable-entries/import") ? apiOk(partial) : undefined
+    ));
+    const dialog = await openImport();
+    const before = callsTo(calls, EP.entries).filter((call) => call.method === "GET").length;
+
+    const file = new File(["xlsx-bytes"], "其他应付导入.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    await userEvent.upload(within(dialog).getByTestId("payable-import-file"), file);
+
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST" && call.url.endsWith("/finance/payable-entries/import"))).toHaveLength(1));
+    const posted = calls.find((call) => call.method === "POST" && call.url.endsWith("/finance/payable-entries/import"))!;
+    // 上传必须走 multipart：body 是 FormData，且 file 字段就是选中的那个文件
+    expect(posted.body).toBeInstanceOf(FormData);
+    expect((posted.body as FormData).get("file")).toBe(file);
+
+    const result = await screen.findByTestId("payable-import-result");
+    expect(result).toHaveTextContent("共 3 行：成功 1 行 / 错误 2 行");
+    expect(within(result).getByText("应付金额必须大于 0")).toBeVisible();
+    expect(within(result).getByText(/与本文件第 2 行重复/)).toBeVisible();
+    expect(within(result).getByText(/摊销月份/)).toBeVisible();
+    expect(screen.getByTestId("payable-import-suppliers")).toHaveTextContent("上海房东（SUP-20260916-0002，1 条）");
+    expect(within(result).getByRole("link", { name: "去应付对账 →" })).toHaveAttribute("href", "/finance/payable?tab=reconciliations");
+    // 导入成功后列表要刷新（新草稿立刻出现在确认应付的未付清单里）
+    await waitFor(() => expect(callsTo(calls, EP.entries).filter((call) => call.method === "GET").length).toBeGreaterThan(before));
+  });
+
+  it("整批失败（表头不对）时如实显示缺少的列，且不刷新列表", async () => {
+    const calls = stubPayable({ entries: [draftEntry] }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/payable-entries/import")
+        ? apiOk({ status: "failed", total: 0, imported: 0, successCount: 0, errorCount: 1, headerRow: -1, errors: [{ row: 0, reason: "缺少必需列：应付金额、费用说明" }], missingColumns: ["应付金额", "费用说明"], ignoredColumns: [], ignoredTrailingRows: 0, createdSuppliers: [], hints: [] })
+        : undefined
+    ));
+    const dialog = await openImport();
+    const before = callsTo(calls, EP.entries).filter((call) => call.method === "GET").length;
+
+    await userEvent.upload(within(dialog).getByTestId("payable-import-file"), new File(["x"], "坏文件.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+
+    const result = await screen.findByTestId("payable-import-result");
+    expect(result).toHaveTextContent("缺少必需列：应付金额、费用说明");
+    expect(within(result).queryByRole("link", { name: "去应付对账 →" })).toBeNull();
+    expect(callsTo(calls, EP.entries).filter((call) => call.method === "GET").length).toBe(before);
+  });
+
+  it("服务端拒绝导入时弹出错误，不留半份结果", async () => {
+    stubPayable({ entries: [draftEntry] }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/payable-entries/import") ? apiErr(422, "PAYABLE_IMPORT_INVALID_FILE", "只支持 .xlsx / .xls 文件") : undefined
+    ));
+    const dialog = await openImport();
+
+    await userEvent.upload(within(dialog).getByTestId("payable-import-file"), new File(["x"], "其他应付.xlsx", { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+
+    await expectToast("只支持 .xlsx / .xls 文件");
+    expect(screen.queryByTestId("payable-import-result")).toBeNull();
+  });
+});
+
 // ------------------------------------------------------------------ 失败态
 
 describe("应付管理：失败态", () => {

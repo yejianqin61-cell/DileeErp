@@ -1,18 +1,41 @@
 import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import * as XLSX from "xlsx";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { sourceType, coveringPayableReconciliation } from "./supplier-payable.domain";
 import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
 import { paymentItemKeys, PAYABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
+import { OTHER_PAYABLE_MAX_ROWS, otherPayableTemplateWorkbook, parseOtherPayableRows, type OtherPayableImportError } from "./other-payable-import";
 
 type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
 export type PayableEntryInput = { source_type: SourceType; source_id: string; amount?: string; amount_reason?: string; confirmation_date?: string; attachment?: unknown[]; remark?: string };
+/** 上传的文件（只用到这两个字段，避免为了一个导入去依赖 multer 的类型声明）。 */
+type UploadedWorkbook = { buffer?: Buffer; originalname?: string };
+
+export type OtherPayableImportResult = {
+  status: "ok" | "partial" | "failed";
+  total: number;
+  /** 真正落库的行数（校验失败的行不计）。 */
+  imported: number;
+  successCount: number;
+  errorCount: number;
+  headerRow: number;
+  errors: OtherPayableImportError[];
+  missingColumns: string[];
+  ignoredColumns: string[];
+  ignoredTrailingRows: number;
+  /** 这次导入顺手建进供应商池的供应商（请导入后去补联系方式）。 */
+  createdSuppliers: Array<{ name: string; supplierCode: string; rows: number }>;
+  hints: string[];
+};
+
 
 @Injectable()
 export class SupplierPayableService {
@@ -327,18 +350,151 @@ export class SupplierPayableService {
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null }, select: { id: true, name: true } });
     if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
     const amount = this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
-    const row = await this.prisma.supplierPayableEntry.create({ data: {
-      payableNo: this.number("APO"), orderNo: null, supplierId: supplier.id,
+    const row = await this.prisma.supplierPayableEntry.create({ data: this.otherEntryData({
+      supplierId: supplier.id, amount, currency: input.currency, description: input.description,
+      confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
+      attachment: input.attachment, remark: input.remark,
+    }, user) });
+    await this.audit.record("supplier_payable.create_other", "supplier_payable_entry", user.id, row.id, { payable_no: row.payableNo, description: input.description, amount: row.amount.toString(), supplier_name: supplier.name });
+    return row;
+  }
+
+  /**
+   * 其他应付条目的**唯一**建单口径：单条新建（`createOther`）与批量导入都走这里，
+   * 否则「页面上新建的」与「导入进来的」会在来源快照、数量/单价、税率这些字段上慢慢分叉。
+   */
+  private otherEntryData(input: { supplierId: string; amount: Prisma.Decimal; currency: string; description: string; confirmationDate: Date; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+    return {
+      payableNo: this.number("APO"), orderNo: null, supplierId: input.supplierId,
       sourceType: "other", payableSourceId: null, outsourcePayableSourceId: null,
       purchaseOrderId: null, purchaseOrderItemId: null, outsourceLogisticsBatchId: null,
       sourceNoSnapshot: `其他应付-${input.description.slice(0, 30)}`, quantity: new Prisma.Decimal(1),
-      unitPrice: amount, taxRate: new Prisma.Decimal(0), amount, currency: input.currency,
-      confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
+      unitPrice: input.amount, taxRate: new Prisma.Decimal(0), amount: input.amount, currency: input.currency,
+      confirmationDate: input.confirmationDate,
       attachment: (input.attachment ?? []) as Prisma.InputJsonValue,
       remark: input.remark, ...this.audit.create(user),
-    } });
-    await this.audit.record("supplier_payable.create_other", "supplier_payable_entry", user.id, row.id, { payable_no: row.payableNo, description: input.description, amount: row.amount.toString(), supplier_name: supplier.name });
-    return row;
+    };
+  }
+
+  /** 其他应付导入模板（一页数据表 + 一页填写说明）。 */
+  otherImportTemplate() { return otherPayableTemplateWorkbook(); }
+
+  /**
+   * 其他应付批量导入（用户 2026-09-16：「有一些非原料类的支出…要支持批量导入这类应付对账条目」）。
+   *
+   * 三段式，与员工花名册导入同一套纪律：
+   *   1. **解析**（纯函数 `parseOtherPayableRows`）：表头按名字认列、逐行校验；
+   *      找不到表头 / 缺必需列 / 没有数据行 → 一行都不写，只回一条整体错误；
+   *   2. **写库**：通过校验的行在**一个事务**里建供应商（认不到时）与应付草稿 ——
+   *      要么全进、要么全不进。金额行最怕「半个文件进去了」，重传又变成重复记账；
+   *   3. 逐行错误如实回报（`errors`），行级错误不连坐。
+   *
+   * 供应商匹配：编码 → 名称（都忽略大小写与空格），两边都没命中时按名称自动建档
+   * （编码用平台统一的 SUP-当天日期-序号，同一批内不重复），并在结果里列出来请财务复核。
+   */
+  async importOther(file: UploadedWorkbook | undefined, user: CurrentUser): Promise<OtherPayableImportResult> {
+    if (!file?.buffer?.length) throw this.invalid("PAYABLE_IMPORT_FILE_REQUIRED", "请上传Excel文件（仅支持 .xlsx/.xls）");
+    // 控制器层的 Multer 白名单已经挡过一道；这里再按扩展名挡一次 —— 「上传了一个 CSV/PDF」
+    // 应当回一句「只支持 .xlsx/.xls」，而不是让解析器把它读成空表再报「找不到表头」。
+    if (file.originalname && !/\.(xlsx|xls)$/i.test(file.originalname)) throw this.invalid("PAYABLE_IMPORT_INVALID_FILE", "只支持 .xlsx / .xls 文件，请使用「下载模板」得到的模板填写");
+    const sheetRows = this.readImportSheet(file);
+    const parsed = parseOtherPayableRows(sheetRows);
+    const empty = { imported: 0, successCount: 0, createdSuppliers: [] as OtherPayableImportResult["createdSuppliers"] };
+    if (parsed.status === "failed" && !parsed.rows.length) {
+      return { ...empty, status: "failed", total: parsed.total, errorCount: parsed.errors.length, headerRow: parsed.headerRow, errors: parsed.errors, missingColumns: parsed.missingColumns, ignoredColumns: parsed.ignoredColumns, ignoredTrailingRows: parsed.ignoredTrailingRows, hints: parsed.hints };
+    }
+
+    // 供应商池一次性读完做匹配表：一个厂的供应商是几百条量级，比逐行查库更省也更一致。
+    const suppliers = await this.prisma.supplier.findMany({ where: { deletedAt: null }, select: { id: true, supplierCode: true, name: true } });
+    const key = (value: string) => value.replace(/\s+/g, "").toLowerCase();
+    const byCode = new Map(suppliers.map((row) => [key(row.supplierCode), row]));
+    const byName = new Map(suppliers.map((row) => [key(row.name), row]));
+    const existingCodes = await this.prisma.supplier.findMany({ where: { supplierCode: { startsWith: dailyCodePrefix("SUP") } }, select: { supplierCode: true } });
+    const usedCodes = existingCodes.map((row) => row.supplierCode);
+
+    const created: string[] = [];
+    const createdSuppliers = new Map<string, { name: string; supplierCode: string; rows: number }>();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const row of parsed.rows) {
+        const codeKey = row.supplierCode ? key(row.supplierCode) : "";
+        const nameKey = row.supplierName ? key(row.supplierName) : "";
+        let supplier = (codeKey ? byCode.get(codeKey) : undefined) ?? (nameKey ? byName.get(nameKey) : undefined);
+        if (!supplier) {
+          // 认不到就自动建档：非原料支出（运费/房租/水电）的对方常常不在供应商池里，
+          // 强制先建档会让「导入」这件事退回成手工活。名称优先，其次用文件里的编码当名称。
+          const name = row.supplierName || row.supplierCode;
+          const supplierCode = nextSequenceCode(dailyCodePrefix("SUP"), usedCodes);
+          usedCodes.push(supplierCode);
+          const row2 = await tx.supplier.create({ data: { supplierCode, name, ...this.audit.create(user) } });
+          supplier = { id: row2.id, supplierCode: row2.supplierCode, name: row2.name };
+          byCode.set(key(supplierCode), supplier);
+          byName.set(key(name), supplier);
+          createdSuppliers.set(key(name), { name, supplierCode, rows: 0 });
+        }
+        // 计数放在解析之后：同一个新建供应商被后面几行复用时，条数要跟着涨
+        // （财务要看的是「这个名字一共带进来几条应付」）。
+        const tracked = createdSuppliers.get(key(supplier.name));
+        if (tracked) tracked.rows += 1;
+        const entry = await tx.supplierPayableEntry.create({ data: this.otherEntryData({
+          supplierId: supplier.id,
+          amount: new Prisma.Decimal(row.amount),
+          currency: row.currency,
+          description: row.description,
+          // 日期留空 = 按导入当天记账（与手工新建其他应付的默认值一致）。
+          confirmationDate: row.confirmationDate ? this.date(row.confirmationDate) : new Date(),
+          remark: row.remark || undefined,
+        }, user) });
+        created.push(entry.payableNo);
+      }
+    });
+
+    for (const createdSupplier of createdSuppliers.values()) {
+      await this.audit.record("supplier.create_from_payable_import", "supplier", user.id, undefined, {
+        supplier_code: createdSupplier.supplierCode, name: createdSupplier.name, rows: createdSupplier.rows,
+      });
+    }
+    await this.audit.record("supplier_payable.import_other", "supplier_payable_entry", user.id, undefined, {
+      imported: created.length, total: parsed.total, error_count: parsed.errors.length,
+      created_suppliers: [...createdSuppliers.values()],
+    });
+
+    const hints = [...parsed.hints];
+    if (createdSuppliers.size) hints.push(`新增了 ${createdSuppliers.size} 个供应商（${[...createdSuppliers.values()].map((item) => item.name).join("、")}）：请到【采购 → 供应商池】补联系方式`);
+    hints.push("导入的是应付草稿：可在【应付对账 → 待创建对账】继续对账，也可直接在【确认应付】勾选批量确认");
+
+    return {
+      status: parsed.errors.length ? "partial" : "ok",
+      total: parsed.total,
+      imported: created.length,
+      successCount: created.length,
+      errorCount: parsed.errors.length,
+      headerRow: parsed.headerRow,
+      errors: parsed.errors,
+      missingColumns: parsed.missingColumns,
+      ignoredColumns: parsed.ignoredColumns,
+      ignoredTrailingRows: parsed.ignoredTrailingRows,
+      createdSuppliers: [...createdSuppliers.values()],
+      hints,
+    };
+  }
+
+  /** 读工作簿第一张表：固定 `cellDates: false`（见 parseRosterDate 的注释），并挡住超大文件。 */
+  private readImportSheet(file: UploadedWorkbook): unknown[][] {
+    try {
+      const book = XLSX.read(file.buffer, { type: "buffer", cellDates: false });
+      const sheet = book.Sheets[book.SheetNames[0]];
+      if (!sheet) throw new Error("sheet-missing");
+      const range = sheet["!ref"] ? XLSX.utils.decode_range(sheet["!ref"]!) : null;
+      if (range) {
+        const rowCount = range.e.r - range.s.r + 1;
+        if (rowCount > OTHER_PAYABLE_MAX_ROWS + 20) throw this.invalid("PAYABLE_IMPORT_ROWS_EXCEEDED", `单次最多导入${OTHER_PAYABLE_MAX_ROWS}行`);
+      }
+      return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" }) as unknown[][];
+    } catch (error) {
+      if (error instanceof UnprocessableEntityException) throw error;
+      throw this.invalid("PAYABLE_IMPORT_INVALID_FILE", "Excel文件无法解析，请使用「下载模板」得到的模板填写");
+    }
   }
 
   private async source(type: SourceType, id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {

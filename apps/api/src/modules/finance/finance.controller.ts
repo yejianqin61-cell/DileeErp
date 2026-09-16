@@ -1,6 +1,9 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
 import { ArrayNotEmpty, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import type { Response } from "express";
+import type { Express } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -16,8 +19,7 @@ import { SupplierPayableReconciliationService } from "./supplier-payable-reconci
 import { buildPayableLedgerTable, buildReceivableLedgerTable } from "./ledger-workbook";
 import { sendWorkbook } from "./finance-report-workbook";
 
-class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() remark?: string; }
-class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() remark?: string; }class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsUUID() cash_flow_item_id?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
 class AllocationDto { @IsUUID() receivable_source_id!: string; @IsString() amount!: string; }
 /**
@@ -28,6 +30,19 @@ class AllocationDto { @IsUUID() receivable_source_id!: string; @IsString() amoun
  */
 class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; @IsOptional() @IsUUID() cash_flow_item_id?: string; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
+
+/**
+ * 其他应付导入的文件白名单（与花名册导入同一套）：扩展名或声明的 MIME 必须是 Excel。
+ * 不合规的文件在 Multer 落盘前就被挡掉（cb(null, false)），表现为服务层「没收到文件」的 422。
+ * `application/octet-stream` 是浏览器给未知类型时的通用值，仅在文件名也声明了 Excel 扩展名时才放行。
+ */
+const PAYABLE_IMPORT_ALLOWED_MIME = new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"]);
+function payableImportFileFilter(_req: Express.Request, file: Express.Multer.File, callback: (error: Error | null, acceptFile: boolean) => void) {
+  const name = (file.originalname ?? "").toLowerCase();
+  const extensionOk = name.endsWith(".xlsx") || name.endsWith(".xls");
+  callback(null, extensionOk || (PAYABLE_IMPORT_ALLOWED_MIME.has(file.mimetype) && file.mimetype !== "application/octet-stream"));
+}
+
 class AdjustmentDto {
   @IsOptional() @IsString() order_no?: string;
   @IsOptional() @IsUUID() customer_id?: string;
@@ -190,6 +205,30 @@ export class FinanceController {
   // 采购通知财务付款需要的两个接口（GET payable-entries / POST payable-entries/from-source）
   // 已移到 PayableNotificationController：类级 @RequireModules("finance") 会先于方法级 ANY 校验，
   // 挂在这里的方法级放宽无效。其余财务接口仍然只对 finance 模块开放。
+  //
+  // ⚠️ 下面两条「其他应付导入」路由**必须排在 `payable-entries/:id` 之前**：
+  // `import-template.xlsx` 会被 `:id` 当成一个 id 匹配掉（`payable-entries.xlsx` 之所以没事，
+  // 是因为它的段名与 `payable-entries/:id` 不同）。Nest 按声明顺序匹配，顺序即优先级。
+  @Get("payable-entries/import-template.xlsx")
+  otherPayableImportTemplate(@Res() response: Response) {
+    const body = this.payable.otherImportTemplate();
+    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent("迪礼ERP-其他应付导入模板.xlsx")}`);
+    response.setHeader("Cache-Control", "no-store");
+    return response.send(body);
+  }
+
+  /**
+   * 批量导入其他应付（非原料类支出）：只用 finance 模块权限，不额外要求管理员 ——
+   * 与页面上的「新建其他应付」同权限（批量只是同一件事的批量入口，不该变成另一档权限）。
+   * 文件类型白名单与花名册导入一致：只放行 .xlsx/.xls。
+   */
+  @Post("payable-entries/import")
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: payableImportFileFilter }))
+  async importOtherPayables(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.payable.importOther(file, user), meta: {} };
+  }
+
   @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
   @Post("payable-entries/other") async createOtherPayableEntry(@Body() body: SupplierOtherPayableDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createOther(body, user), meta: {} }; }
   @Post("payable-entries/batch-confirm") async batchConfirmPayableEntries(@Body() body: BatchConfirmDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.batchConfirm(body.ids, user, body), meta: {} }; }

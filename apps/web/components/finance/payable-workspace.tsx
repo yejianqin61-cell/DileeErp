@@ -24,6 +24,8 @@ import { PageHeader } from "../layout/app-shell";
 import { DataTable } from "../data/data-table";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
+import { Dialog, DialogBody, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { FileInput } from "../ui/file-input";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
@@ -135,6 +137,22 @@ const SOURCE_TYPE_LABELS: Record<string, string> = { raw_material_inbound: "原�
 const awaitingReceipt = (item: { payable_entry?: SourcePayableLink | null; status: string }) => !item.payable_entry && item.status === "pending_finance";
 const isDraft = (entry: PayableEntry) => entry.status === "draft";
 
+/** 其他应付批量导入的结果（后端 `POST /finance/payable-entries/import` 的 data）。 */
+type OtherPayableImportResult = {
+  status: "ok" | "partial" | "failed";
+  total: number;
+  imported: number;
+  successCount: number;
+  errorCount: number;
+  headerRow: number;
+  errors: Array<{ row: number; field?: string; reason: string }>;
+  missingColumns: string[];
+  ignoredColumns: string[];
+  ignoredTrailingRows: number;
+  createdSuppliers: Array<{ name: string; supplierCode: string; rows: number }>;
+  hints: string[];
+};
+
 export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; testId: string }) {
   const [inboundSources, setInboundSources] = useState<PayableSource[]>([]);
   const [outsourceSources, setOutsourceSources] = useState<OutsourcePayableSource[]>([]);
@@ -154,6 +172,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const [detailNonce, setDetailNonce] = useState(0);
   const [categoryDialog, setCategoryDialog] = useState<DialogState | null>(null);
   const [pendingDialog, setPendingDialog] = useState<DialogState | null>(null);
+  // 其他应付批量导入（用户 2026-09-16）：模板下载 + 上传 + 逐行结果。
+  const [importOpen, setImportOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<OtherPayableImportResult | null>(null);
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   const [filter, setFilter] = useState("");
   /** 勾选出来待确认的应付条目 id（「确认应付」页的批量确认用）。 */
@@ -433,8 +455,58 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     }
   }
 
-  function createOtherPayable() {    setDialog({ title: "新建其他应付（非订单支出）", fields: [
-      { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions },
+  /**
+   * 下载「其他应付」导入模板。
+   *
+   * 走裸 fetch 而不是 apiGet：响应是二进制 xlsx，apiGet 会把它当 JSON 解析。
+   * 与人事花名册导入的模板下载同一做法（凭据要带上，接口在 finance 模块权限后面）。
+   */
+  async function downloadOtherImportTemplate() {
+    try {
+      const response = await fetch("/api/v1/finance/payable-entries/import-template.xlsx", { credentials: "include", cache: "no-store" });
+      if (!response.ok) throw new Error("模板下载失败");
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "迪礼ERP-其他应付导入模板.xlsx";
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : "模板下载失败");
+    }
+  }
+
+  /**
+   * 上传并导入其他应付。
+   *
+   * 上传的是 multipart（FormData），不能走 apiPost —— 那会把 body JSON 化。
+   * 导入结果整份留在弹窗里（逐行错误 + 自动建档的供应商 + 提示），不做成一条 toast：
+   * 「第 7 行金额不合法」这类信息必须能被逐条看清，否则操作员只能瞎猜。
+   */
+  async function importOtherPayables(file: File | undefined) {
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetch("/api/v1/finance/payable-entries/import", { method: "POST", credentials: "include", body: form });
+      const body = await response.json();
+      if (!response.ok || body.error) throw new ApiClientError(body.error?.code ?? "IMPORT_FAILED", body.error?.message ?? "导入失败", body.error?.details ?? []);
+      const result = body.data as OtherPayableImportResult;
+      setImportResult(result);
+      if (result.imported > 0) {
+        notifySuccess(`已导入 ${result.imported} 条其他应付草稿${result.errorCount ? `，${result.errorCount} 行未导入` : ""}`);
+        await load();
+      }
+    } catch (cause) {
+      notifyError(messageOf(cause, "其他应付导入失败"));
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function createOtherPayable() {    setDialog({ title: "新建其他应付（非订单支出）", fields: [      { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions },
       { name: "amount", label: "应付金额", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
       { name: "description", label: "支出说明", required: true },
@@ -857,11 +929,42 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         </div>
         <div style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }} data-testid="payable-batch-bar">
           <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
+          <Button size="sm" variant="secondary" data-testid="payable-other-import" onClick={() => { setImportResult(null); setImportOpen(true); }}>批量导入其他应付</Button>
           <span className="panel-note" data-testid="payable-selected-count">已选 {selectedDrafts.length} 条</span>
           <Button size="sm" data-testid="payable-batch-confirm" disabled={!selectedDrafts.length} onClick={batchConfirm}>批量确认（{selectedDrafts.length} 条）</Button>
         </div>
         <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
       </div>
     </section>}
+    {/* 批量导入其他应付：模板 + 上传 + 逐行结果。文案只留数据与去处，不写说明性句子（用户 2026-09-16 第①条）。 */}
+    <Dialog open={importOpen} onOpenChange={(open) => { if (!open) setImportOpen(false); }}>
+      <DialogContent data-testid="payable-import-dialog">
+        <DialogHeader><DialogTitle>批量导入其他应付</DialogTitle></DialogHeader>
+        <DialogBody>
+          <div className="action-row">
+            <Button size="sm" variant="secondary" data-testid="payable-import-template" onClick={() => void downloadOtherImportTemplate()}>下载模板</Button>
+            <FileInput accept=".xlsx,.xls" data-testid="payable-import-file" disabled={importing} onChange={(event) => { void importOtherPayables(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+          </div>
+          {importing && <LoadingState label="正在导入" />}
+          {importResult && <div className="panel-body" data-testid="payable-import-result">
+            <p>共 {importResult.total} 行：成功 {importResult.successCount} 行 / 错误 {importResult.errorCount} 行</p>
+            {importResult.missingColumns.length > 0 && <p className="status-error">缺少必需列：{importResult.missingColumns.join("、")}</p>}
+            {importResult.ignoredColumns.length > 0 && <p>以下列不属于其他应付口径，已忽略：{importResult.ignoredColumns.join("、")}</p>}
+            {importResult.ignoredTrailingRows > 0 && <p>表尾 {importResult.ignoredTrailingRows} 行未识别为数据，已跳过</p>}
+            {importResult.createdSuppliers.length > 0 && <p data-testid="payable-import-suppliers">新增供应商：{importResult.createdSuppliers.map((item) => `${item.name}（${item.supplierCode}，${item.rows} 条）`).join("、")}</p>}
+            {importResult.hints.map((hint) => <p key={hint} className="panel-note">{hint}</p>)}
+            {importResult.errors.length > 0 && <DataTable columns={[
+              { accessorKey: "row", header: "行号" },
+              { accessorKey: "field", header: "字段", cell: ({ row }) => row.original.field ?? "-" },
+              { accessorKey: "reason", header: "原因" },
+            ]} data={importResult.errors} empty={null} />}
+            {importResult.imported > 0 && <div className="action-row">
+              <Button size="sm" variant="secondary" asChild><Link href="/finance/payable?tab=reconciliations">去应付对账 →</Link></Button>
+              <Button size="sm" onClick={() => setImportOpen(false)}>完成</Button>
+            </div>}
+          </div>}
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
   </div>;
 }
