@@ -1,4 +1,4 @@
-// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（11 个路由）。
+// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（12 个路由）。
 //
 // 覆盖维度：成功/失败信封、状态码（200/201/204 不可写路径 → 401/400/404/422/500）、
 //   鉴权（匿名 401）、DTO 校验（body 与 query）、404（不存在的 id / 路由方法不匹配无 405）、
@@ -40,10 +40,11 @@ const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 /** 非 UUID 的 id 段：验证 id 参数是否被 UUID 校验拦下（见文件末尾 KNOWN_CONTRACT_DEFECT 用例）。 */
 const NON_UUID_ID = "not-a-uuid";
 
-/** sales-orders.controller.ts:79-90 的全部 11 个路由。 */
+/** sales-orders.controller.ts 的全部 12 个路由。 */
 const ROUTES = [
   { label: "GET /", method: "get", path: "/api/v1/sales-orders" },
   { label: "POST /", method: "post", path: "/api/v1/sales-orders", payload: {} },
+  { label: "GET /finished-goods-summary", method: "get", path: "/api/v1/sales-orders/finished-goods-summary" },
   { label: "GET /:id/impact-preview", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/impact-preview` },
   { label: "GET /:id/finished-goods", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/finished-goods` },
   { label: "POST /:id/outbound-notices", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, payload: {} },
@@ -121,9 +122,9 @@ function expectNotFoundWithCode(response, code, context) {
 }
 
 // ---------------------------------------------------------------------------
-// 鉴权：匿名访问 11 个路由必须全部 401 UNAUTHENTICATED
+// 鉴权：匿名访问 12 个路由必须全部 401 UNAUTHENTICATED
 // ---------------------------------------------------------------------------
-test("sales_orders.anonymous_access_is_rejected_on_all_eleven_routes", async () => {
+test("sales_orders.anonymous_access_is_rejected_on_all_twelve_routes", async () => {
   const anonymous = apiClient(baseUrl); // 无 Cookie
   for (const route of ROUTES) {
     const response = route.method === "get" ? await anonymous.get(route.path) : await anonymous[route.method](route.path, route.payload);
@@ -225,6 +226,28 @@ test("sales_orders.detail_routes_return_success_envelopes_for_an_existing_order"
 });
 
 // ---------------------------------------------------------------------------
+// 成品出库总览：路由顺序护栏 —— 单段静态路径必须命中自己的处理器，不能被 @Get(":id") 吃掉
+// ---------------------------------------------------------------------------
+test("sales_orders.finished_goods_summary_hits_its_own_handler_not_the_id_route", async () => {
+  const client = sessionClient();
+  const response = await client.get("/api/v1/sales-orders/finished-goods-summary");
+  // 若被 :id 吃掉，这里会是 404 SALES_ORDER_NOT_FOUND（"finished-goods-summary" 不是 UUID）
+  const body = expectSuccessEnvelope(response, { context: "GET /finished-goods-summary" });
+  assert.ok(Array.isArray(body.data.groups), "总览必须返回按「产品+单位」分行的 groups 数组");
+  assert.equal(typeof body.data.production_order_count, "number");
+  for (const group of body.data.groups) {
+    for (const key of ["product_name", "unit", "inbound_quantity", "outbound_quantity", "unshipped_quantity", "production_order_count"]) {
+      assert.ok(key in group, `groups[] 缺少 ${key}`);
+    }
+    // 三个数字都是 Decimal 序列化后的字符串（前端不做浮点累加）
+    for (const key of ["inbound_quantity", "outbound_quantity", "unshipped_quantity"]) {
+      assert.equal(typeof group[key], "string", `${key} 必须是字符串`);
+    }
+    assert.equal(Number(group.unshipped_quantity) >= 0, true, "未出库数不应为负数");
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 创建（POST /）请求体校验：只提交必然校验失败的载荷，因此不会落库
 // ---------------------------------------------------------------------------
 test("sales_orders.create_body_validation_rejects_invalid_payloads", async () => {
@@ -306,6 +329,10 @@ test("sales_orders.state_and_notice_routes_validate_before_touching_data", async
   // 出库通知 body 校验：production_order_id 必须是 UUID、remark 上限 1000
   expectFieldValidation(await client.post(`/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, { production_order_id: NON_UUID_ID }), "production_order_id", "outbound-notices 非 UUID 生产单");
   expectFieldValidation(await client.post(`/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, { remark: "x".repeat(1001) }), "remark", "outbound-notices 超长备注");
+  // 分批通知的数量：DTO 层拦下非十进制（业务层再拦 NaN/0/指数/超 4 位小数）
+  expectFieldValidation(await client.post(`/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, { notice_quantity: "abc" }), "notice_quantity", "outbound-notices 非数字通知数量");
+  expectFieldValidation(await client.post(`/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, { notice_quantity: "-1" }), "notice_quantity", "outbound-notices 负数通知数量");
+  expectFieldValidation(await client.post(`/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, { notice_quantity: "1e3" }), "notice_quantity", "outbound-notices 指数写法通知数量");
 });
 
 // ---------------------------------------------------------------------------

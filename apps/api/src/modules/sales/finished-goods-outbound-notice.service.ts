@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { parseQuantity } from "../../platform/database/quantity";
 import { InventoryService } from "../../platform/inventory/inventory.service";
 
 /**
@@ -11,12 +12,14 @@ import { InventoryService } from "../../platform/inventory/inventory.service";
  *
  * 业务口径（与仓库确认）：
  * - 成品入库后由销售「通知仓库出库」，把成品寄给客户；打开销售订单能看到成品入库/出库情况。
- * - 出库通知按**生产单**发起（出库单也是按生产单建的），一张通知对应一批（整批）可出库量。
+ * - 出库通知按**生产单**发起（出库单也是按生产单建的）。
  * - 可出库量 = 已过账成品入库 − 已过账/已发出/已签收出库 − 待出库的未完成通知量；
- *   通知数量固定等于当时可出库量（整批），仓库据此建出库单，不支持部分出库。
+ * - 销售可以**分批通知**（2026-09-16 需求）：不传 notice_quantity 时通知数量取当时全部可出库量
+ *   （整批，保持原行为），传了就只通知这一部分，余量以后可以再通知一次；仓库侧再按通知分批实际出库。
+ *   数量只对单个生产单有意义，所以传数量时必须同时指定 production_order_id。
  * - 重复点击「通知出库」不会重复建单：可出库量已被待办通知占用后会返回明确的 422。
  */
-type NoticeInput = { production_order_id?: string; remark?: string; idempotency_key?: string };
+type NoticeInput = { production_order_id?: string; notice_quantity?: string; remark?: string; idempotency_key?: string };
 
 @Injectable()
 export class FinishedGoodsOutboundNoticeService {
@@ -63,13 +66,58 @@ export class FinishedGoodsOutboundNoticeService {
       receivable_amount: order.receivableAmount?.toString() ?? null,
       settlement_method: order.settlementMethod ?? null,
       local_currency_amount: order.localCurrencyAmount?.toString() ?? null,
+      // 本单合计（按产品+单位分行）：销售页在明细行上方直接显示「全部成品 / 已出库 / 未出库」。
+      totals: this.totalsOf(rows.map((row) => ({ product_name: row.product_name, unit: row.unit ?? "", inbound_quantity: row.inbound_quantity, outbound_quantity: row.outbound_quantity }))),
       production_orders: rows,
     };
+  }
+
+  /**
+   * 销售模块的成品出库总览：按「产品 + 单位」分行给出 全部成品数 / 已出库数 / 未出库数。
+   *
+   * 为什么不给一个跨产品的总计：系统里不同销售单的单位并不统一（把 / kg / 套），
+   * 把它们相加得到的是一个没有业务含义的数，还会让「未出库」看起来像能一起发货。
+   * 所有非取消销售单下的非取消生产单都算在内（含尚未入库/尚未出库的）。
+   */
+  async overview() {
+    const productionOrders = await this.prisma.productionOrder.findMany({
+      where: { deletedAt: null, NOT: { status: "cancelled" }, salesOrder: { deletedAt: null, NOT: { status: "cancelled" } } },
+      select: { id: true, unit: { select: { name: true } }, salesOrder: { select: { productName: true, unit: true } } },
+      orderBy: { createdAt: "asc" },
+    });
+    if (!productionOrders.length) return { production_order_count: 0, groups: [] };
+    const ids = productionOrders.map((production) => production.id);
+    // 两条 groupBy 拿到全部生产单的入库/出库合计，避免按生产单逐条聚合（生产单一多就是 N+1）。
+    const [inbound, outbound] = await Promise.all([
+      this.prisma.finishedGoodsInbound.groupBy({ by: ["productionOrderId"], where: { deletedAt: null, status: "posted", productionOrderId: { in: ids } }, _sum: { quantity: true } }),
+      this.prisma.finishedGoodsOutbound.groupBy({ by: ["productionOrderId"], where: { deletedAt: null, status: { in: ["posted", "shipped", "signed"] }, productionOrderId: { in: ids } }, _sum: { quantity: true } }),
+    ]);
+    const inboundBy = new Map(inbound.map((row) => [row.productionOrderId, new Prisma.Decimal(row._sum.quantity ?? 0)]));
+    const outboundBy = new Map(outbound.map((row) => [row.productionOrderId, new Prisma.Decimal(row._sum.quantity ?? 0)]));
+    const groups = new Map<string, { product_name: string; unit: string; inbound: Prisma.Decimal; outbound: Prisma.Decimal; productionOrders: number }>();
+    for (const production of productionOrders) {
+      const productName = production.salesOrder?.productName ?? "";
+      const unit = production.unit?.name ?? production.salesOrder?.unit ?? "";
+      // 分组键用 NUL 连接：产品名里出现空格/斜杠时不会和单位名串到一起。
+      const key = `${productName}\u0000${unit}`;
+      const group = groups.get(key) ?? { product_name: productName, unit, inbound: new Prisma.Decimal(0), outbound: new Prisma.Decimal(0), productionOrders: 0 };
+      group.inbound = group.inbound.plus(inboundBy.get(production.id) ?? 0);
+      group.outbound = group.outbound.plus(outboundBy.get(production.id) ?? 0);
+      group.productionOrders += 1;
+      groups.set(key, group);
+    }
+    return { production_order_count: productionOrders.length, groups: [...groups.values()].map((group) => this.totalsRow(group.product_name, group.unit, group.inbound, group.outbound, group.productionOrders)) };
   }
 
   /** 通知仓库出库：不传 production_order_id 时对「所有可出库的生产单」各建一张整批通知。 */
   async createNotices(salesOrderId: string, input: NoticeInput, user: CurrentUser) {
     const order = await this.requireOrder(salesOrderId);
+    // 分批通知：数量只对「一个生产单」有意义（不指定生产单时一次会建多张通知，
+    // 把同一个数量套到每个批次上用户无法预期），所以按数量通知必须先指定生产单。
+    const requested = input.notice_quantity?.trim()
+      ? parseQuantity(input.notice_quantity, "INVALID_OUTBOUND_NOTICE_QUANTITY", "通知数量必须是大于 0 的十进制数（最多 4 位小数）")
+      : null;
+    if (requested && !input.production_order_id) throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_QUANTITY_REQUIRES_PRODUCTION_ORDER", message: "按数量通知出库必须指定生产单：不指定时会对该销售单每个可出库批次各建一张通知", details: [] });
     const idempotencyKey = input.idempotency_key?.trim();
     if (idempotencyKey) {
       // 存储键是「客户端键:生产单ID」（一张通知一个生产单）。重放必须**精确**匹配这些键，
@@ -97,6 +145,12 @@ export class FinishedGoodsOutboundNoticeService {
           if (!locked) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] });
           const quantities = await this.productionQuantities(target.productionOrderId, locked.unitId, tx);
           if (quantities.available.lte(0)) throw this.nothingToNotify(target.productionOrderId);
+          // 分批通知：没传数量就整批（保持原行为）；传了就必须 ≤ 当前可出库量，
+          // 超过时明确报 422 而不是静默截断（截断会让销售以为整批都通知了，余量悄悄留在手里）。
+          const noticeQuantity = requested ?? quantities.available;
+          if (noticeQuantity.gt(quantities.available)) {
+            throw new UnprocessableEntityException({ code: "OUTBOUND_NOTICE_QUANTITY_EXCEEDED", message: "本次通知数量超过当前可出库量", details: [{ available_quantity: quantities.available.toString(), requested_quantity: noticeQuantity.toString() }] });
+          }
           const row = await tx.finishedGoodsOutboundNotice.create({
             data: {
               noticeNo: this.number("OGN"),
@@ -110,7 +164,7 @@ export class FinishedGoodsOutboundNoticeService {
               unitNameSnapshot: locked.unit?.name ?? order.unit,
               inboundQuantity: quantities.inbound,
               outboundQuantity: quantities.outbound,
-              noticeQuantity: quantities.available,
+              noticeQuantity,
               status: "pending",
               notifiedAt: new Date(),
               notifiedBy: user.id,
@@ -160,6 +214,45 @@ export class FinishedGoodsOutboundNoticeService {
     });
     await this.audit.record("finished_goods_outbound_notice.cancel", "finished_goods_outbound_notice", user.id, notice.id, { order_no: notice.orderNo, reason: reason.trim(), previous_status: notice.status });
     return updated;
+  }
+
+  /**
+   * 「全部成品数 / 已出库数 / 未出库数」三个数字的唯一算法（销售单合计与模块总览共用）。
+   *
+   * 口径（与用户确认）：全部 = 累计已过账成品入库；已出库 = 累计已过账/已发出/已签收出库；
+   * 未出库 = 全部 − 已出库，也就是「还在成品仓里的」。
+   * 客户退货回仓会让实际库存高于「入库 − 出库」，但退货不是「未出库的成品」，
+   * 所以这里严格按差额算，只对负值做下限保护（出库不会超过当时库存，出现负数说明数据异常，
+   * 显示负数会比显示 0 更容易被当成系统错误）。
+   */
+  private unshippedQuantity(inbound: Prisma.Decimal, outbound: Prisma.Decimal) {
+    const value = new Prisma.Decimal(inbound).minus(outbound);
+    return value.lt(0) ? new Prisma.Decimal(0) : value;
+  }
+
+  private totalsRow(productName: string, unit: string, inbound: Prisma.Decimal, outbound: Prisma.Decimal, productionOrders: number) {
+    return {
+      product_name: productName,
+      unit,
+      inbound_quantity: inbound.toString(),
+      outbound_quantity: outbound.toString(),
+      unshipped_quantity: this.unshippedQuantity(inbound, outbound).toString(),
+      production_order_count: productionOrders,
+    };
+  }
+
+  /** 把明细行（按生产单拆）折成「产品+单位」的合计行（生产单数=该组下的明细行数）。 */
+  private totalsOf(rows: Array<{ product_name: string; unit: string; inbound_quantity: string; outbound_quantity: string }>) {
+    const groups = new Map<string, { product_name: string; unit: string; inbound: Prisma.Decimal; outbound: Prisma.Decimal; productionOrders: number }>();
+    for (const row of rows) {
+      const key = `${row.product_name}\u0000${row.unit}`;
+      const group = groups.get(key) ?? { product_name: row.product_name, unit: row.unit, inbound: new Prisma.Decimal(0), outbound: new Prisma.Decimal(0), productionOrders: 0 };
+      group.inbound = group.inbound.plus(row.inbound_quantity);
+      group.outbound = group.outbound.plus(row.outbound_quantity);
+      group.productionOrders += 1;
+      groups.set(key, group);
+    }
+    return [...groups.values()].map((group) => this.totalsRow(group.product_name, group.unit, group.inbound, group.outbound, group.productionOrders));
   }
 
   private async requireOrder(salesOrderId: string) {

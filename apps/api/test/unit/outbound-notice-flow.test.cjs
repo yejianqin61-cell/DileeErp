@@ -5,6 +5,7 @@ const { Prisma } = require("@prisma/client");
 const { FinishedGoodsOutboundNoticeService } = require("../../dist/modules/sales/finished-goods-outbound-notice.service.js");
 const { FinishedGoodsOutboundService } = require("../../dist/modules/warehouse/finished-goods-outbound.service.js");
 const { NoticeOutboundDto } = require("../../dist/modules/warehouse/finished-goods-outbound.controller.js");
+const { OutboundNoticeDto } = require("../../dist/modules/sales/sales-orders.controller.js");
 
 // 成品出库通知链路（需求 4/6，第三批需求 1 改为支持分批出库）：
 //   成品入库 → 销售「通知仓库出库」 → 仓库按通知**分批**生成出库单 → 每张过账生成各自应收（通知财务收款）
@@ -20,14 +21,16 @@ function decimal(value) { return new Prisma.Decimal(value); }
 // ---------- 销售侧：可出库量与通知 ----------
 function salesService(overrides = {}) {
   const balance = overrides.balance ?? decimal(50);
+  // 生产单行同时被 summary / notifiableProductionOrders / overview 用到，所以带上 salesOrder（总览按产品+单位分组）。
+  const productionOrders = overrides.productionOrders ?? [{ id: "po-1", productionOrderNo: "MO-1", status: "completed", executionMode: "in_house", executionLocation: { name: "一车间" }, unitId: "unit-1", unit: { name: "把" }, plannedQuantity: decimal(100), productSpecification: "8K", salesOrder: { productName: "折叠伞", unit: "把" } }];
   const prisma = {
     salesOrder: { findFirst: async () => ({ id: "so-1", orderNo: "SO-1", customerId: "customer-1", productName: "折叠伞", productSpec: "8K", quantity: decimal(100), unit: "把", settlementUnitPrice: decimal("12.5"), customer: { id: "customer-1", name: "海外客户" } }) },
     productionOrder: {
-      findMany: async () => [{ id: "po-1", productionOrderNo: "MO-1", status: "completed", executionMode: "in_house", executionLocation: { name: "一车间" }, unitId: "unit-1", unit: { name: "把" }, plannedQuantity: decimal(100), productSpecification: "8K" }],
+      findMany: async () => productionOrders,
       findFirst: async () => ("productionOrderFindFirst" in overrides ? overrides.productionOrderFindFirst : { id: "po-1", productionOrderNo: "MO-1", unitId: "unit-1", productSpecification: "8K", unit: { name: "把" } }),
     },
-    finishedGoodsInbound: { aggregate: async () => ({ _sum: { quantity: overrides.inbound ?? decimal(60) } }) },
-    finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: overrides.outbound ?? decimal(0) } }), count: async () => overrides.draftCount ?? 0 },
+    finishedGoodsInbound: { aggregate: async () => ({ _sum: { quantity: overrides.inbound ?? decimal(60) } }), groupBy: async () => overrides.inboundGroups ?? [] },
+    finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: overrides.outbound ?? decimal(0) } }), count: async () => overrides.draftCount ?? 0, groupBy: async () => overrides.outboundGroups ?? [] },
     finishedGoodsOutboundNotice: {
       findMany: async (args) => {
         if (args?.where?.idempotencyKey) { overrides.onReplayQuery?.(args); return overrides.replayed ?? []; }
@@ -75,6 +78,58 @@ test("通知全部出库后不再占用额度；退货回仓后可出库量随�
   assert.equal((await returned.summary("so-1")).production_orders[0].available_quantity, "40", "余额 55 − 占用 15 = 40");
 });
 
+// ---------- 销售模块的成品总览（全部成品数 / 已出库数 / 未出库数） ----------
+test("成品总览：按「产品+单位」分行给出三个数字，不做跨单位合计", async () => {
+  const service = salesService({
+    productionOrders: [
+      { id: "po-1", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } },
+      { id: "po-2", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } },
+      { id: "po-3", unitId: "u-2", unit: { name: "kg" }, salesOrder: { productName: "面料", unit: "kg" } },
+    ],
+    inboundGroups: [
+      { productionOrderId: "po-1", _sum: { quantity: decimal(70) } },
+      { productionOrderId: "po-2", _sum: { quantity: decimal(20) } },
+      { productionOrderId: "po-3", _sum: { quantity: decimal("12.5") } },
+    ],
+    outboundGroups: [
+      { productionOrderId: "po-1", _sum: { quantity: decimal(30) } },
+      { productionOrderId: "po-2", _sum: { quantity: decimal(0) } },
+    ],
+  });
+  const overview = await service.overview();
+  assert.equal(overview.production_order_count, 3);
+  // 同一产品的两张生产单折成一行；不同单位分开列（把 件 与 kg 相加是没有意义的）
+  assert.deepEqual(overview.groups, [
+    { product_name: "连衣裙", unit: "件", inbound_quantity: "90", outbound_quantity: "30", unshipped_quantity: "60", production_order_count: 2 },
+    { product_name: "面料", unit: "kg", inbound_quantity: "12.5", outbound_quantity: "0", unshipped_quantity: "12.5", production_order_count: 1 },
+  ]);
+});
+
+test("成品总览：没有生产单时返回空分组（而不是抛错）", async () => {
+  const overview = await salesService({ productionOrders: [] }).overview();
+  assert.deepEqual(overview, { production_order_count: 0, groups: [] });
+});
+
+test("成品总览：未出库数做下限保护（退货回仓导致出库超过入库时显示 0，不显示负数）", async () => {
+  const service = salesService({
+    productionOrders: [{ id: "po-1", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } }],
+    inboundGroups: [{ productionOrderId: "po-1", _sum: { quantity: decimal(10) } }],
+    outboundGroups: [{ productionOrderId: "po-1", _sum: { quantity: decimal(15) } }],
+  });
+  const [group] = (await service.overview()).groups;
+  assert.equal(group.inbound_quantity, "10");
+  assert.equal(group.outbound_quantity, "15");
+  assert.equal(group.unshipped_quantity, "0");
+});
+
+test("销售单合计：明细行折成「产品+单位」合计，未出库 = 全部成品 − 已出库", async () => {
+  const service = salesService({ inbound: decimal(60), outbound: decimal(10), balance: decimal(50) });
+  const summary = await service.summary("so-1");
+  assert.deepEqual(summary.totals, [
+    { product_name: "折叠伞", unit: "把", inbound_quantity: "60", outbound_quantity: "10", unshipped_quantity: "50", production_order_count: 1 },
+  ]);
+});
+
 test("通知出库按可出库量建通知", async () => {
   const created = [];
   const service = salesService({ inbound: decimal(60), outbound: decimal(10), balance: decimal(50), created });
@@ -82,6 +137,54 @@ test("通知出库按可出库量建通知", async () => {
   assert.equal(notices.length, 1);
   assert.equal(created[0].noticeQuantity.toString(), "50");
   assert.equal(created[0].status, "pending");
+});
+
+// ---------- 分批通知（2026-09-16 需求：销售可以只通知一部分） ----------
+test("分批通知：指定数量时只通知这一部分，余量可以再通知一次（而不是被永久占用）", async () => {
+  const first = [];
+  await salesService({ balance: decimal(50), created: first }).createNotices("so-1", { production_order_id: "po-1", notice_quantity: "20" }, user);
+  assert.equal(first[0].noticeQuantity.toString(), "20", "只通知 20，不是整批 50");
+
+  // 第二张通知：可出库量已被第一张占走 20（余额 50 − 占用 20 = 30）
+  const second = [];
+  const service = salesService({ balance: decimal(50), openNotices: [{ noticeQuantity: decimal(20), shippedQuantity: decimal(0) }], created: second });
+  assert.equal((await service.summary("so-1")).production_orders[0].available_quantity, "30");
+  await service.createNotices("so-1", { production_order_id: "po-1", notice_quantity: "30" }, user);
+  assert.equal(second[0].noticeQuantity.toString(), "30", "余量 30 还能再通知一次");
+});
+
+test("分批通知：数量超过当前可出库量时给出 422，且不建出任何通知（不静默截断）", async () => {
+  const created = [];
+  const service = salesService({ balance: decimal(50), created });
+  await assert.rejects(
+    () => service.createNotices("so-1", { production_order_id: "po-1", notice_quantity: "60" }, user),
+    (error) => {
+      assert.ok(error instanceof UnprocessableEntityException);
+      assert.equal(error.getResponse().code, "OUTBOUND_NOTICE_QUANTITY_EXCEEDED");
+      assert.deepEqual(error.getResponse().details, [{ available_quantity: "50", requested_quantity: "60" }]);
+      return true;
+    },
+  );
+  assert.equal(created.length, 0, "超量时不能建出任何通知");
+});
+
+test("分批通知：不指定生产单就不能按数量通知（否则同一个数量会被套到每个批次上）", async () => {
+  const service = salesService({});
+  await assert.rejects(
+    () => service.createNotices("so-1", { notice_quantity: "20" }, user),
+    (error) => error.getResponse().code === "OUTBOUND_NOTICE_QUANTITY_REQUIRES_PRODUCTION_ORDER",
+  );
+});
+
+test("分批通知：数量入口拒绝 NaN / 0 / 负数 / 指数写法 / 超过 4 位小数", async () => {
+  for (const value of ["NaN", "0", "-5", "1e3", "0.00004"]) {
+    const service = salesService({});
+    await assert.rejects(
+      () => service.createNotices("so-1", { production_order_id: "po-1", notice_quantity: value }, user),
+      (error) => error.getResponse().code === "INVALID_OUTBOUND_NOTICE_QUANTITY",
+      `notice_quantity=${value} 必须被数量入口守卫拦下`,
+    );
+  }
 });
 
 test("没有可出库成品时给出可执行的 422，而不是静默成功", async () => {
@@ -163,6 +266,18 @@ test("按通知建单 DTO：幂等键必须短到能和 notice:<uuid>: 前缀一
   await assert.rejects(() => validate({ quantity: "20", idempotency_key: "k".repeat(151) }), "超过 150 的幂等键会拼出 195+ 的落库键，必须在校验层拒绝");
   // 不带键仍然合法（服务端退化为随机后缀）
   assert.equal((await validate({ quantity: "20" })).idempotency_key, undefined);
+});
+
+test("分批通知 DTO：通知数量必须是十进制字符串，空串按未填写处理", async () => {
+  const pipe = new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true });
+  const validate = (body) => pipe.transform(body, { type: "body", metatype: OutboundNoticeDto });
+  assert.equal((await validate({ production_order_id: "11111111-1111-4111-8111-111111111111", notice_quantity: "20.5" })).notice_quantity, "20.5");
+  // 表单留空会提交 ""：必须归一成 undefined（否则整批通知会被 400 拦下）
+  assert.equal((await validate({ production_order_id: "11111111-1111-4111-8111-111111111111", notice_quantity: "" })).notice_quantity, undefined);
+  assert.equal((await validate({ production_order_id: "11111111-1111-4111-8111-111111111111" })).notice_quantity, undefined);
+  for (const notice_quantity of ["abc", "-1", "1e3", " 20 "]) {
+    await assert.rejects(() => validate({ production_order_id: "11111111-1111-4111-8111-111111111111", notice_quantity }), `notice_quantity=${notice_quantity} 应在 DTO 层被拒绝`);
+  }
 });
 
 // ---------- 仓库侧：分批出库 ----------

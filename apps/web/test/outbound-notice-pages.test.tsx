@@ -68,6 +68,8 @@ const summary: Summary = {
   customer: "客户A",
   product_name: "连衣裙",
   unit: "件",
+  // 本单合计（后端按「产品+单位」折出来的三个数字）：全部 70+20=90，已出库 10，未出库 80
+  totals: [{ product_name: "连衣裙", unit: "件", inbound_quantity: "90", outbound_quantity: "10", unshipped_quantity: "80", production_order_count: 2 }],
   production_orders: [
     {
       production_order_id: "po-1",
@@ -96,22 +98,34 @@ const summary: Summary = {
   ],
 };
 
-const newNotice = { id: "n-new", notice_no: "OGN-NEW", notice_quantity: "60", shipped_quantity: "0", remaining_quantity: "60", status: "pending", notified_at: "2026-01-03T00:00:00.000Z" };
-/** 通知成功后服务端会把可出库量占满：po-1 行变成 0 可出库并多出一条待处理通知。 */
-const summaryAfterNotify: Summary = {
+/** 分批通知：只通知 20 件时服务端返回的通知（提示语用服务端返回的通知号与数量）。 */
+const partialNotice = { id: "n-part", notice_no: "OGN-PART", notice_quantity: "20", shipped_quantity: "0", remaining_quantity: "20", status: "pending", notified_at: "2026-01-03T00:00:00.000Z" };
+/** 只通知 20 件后：待仓库建单 20、仍可出库 40（余量没有被吃掉，可以再通知一次）。 */
+const summaryAfterPartialNotify: Summary = {
   ...summary,
   production_orders: [
-    { ...(summary.production_orders as Summary[])[0], pending_notice_quantity: "60", available_quantity: "0", notices: [newNotice, ...((summary.production_orders as Summary[])[0].notices as unknown[])] },
+    { ...(summary.production_orders as Summary[])[0], pending_notice_quantity: "20", available_quantity: "40", notices: [partialNotice, ...((summary.production_orders as Summary[])[0].notices as unknown[])] },
     (summary.production_orders as Summary[])[1],
   ],
 };
 
-function salesApi(routes: { summary?: (callIndex: number) => Response; notify?: () => Response | Promise<Response> } = {}) {
+/** 销售页顶部的成品出库总览（模块级：全部销售单按产品+单位汇总）。 */
+const finishedGoodsOverview = {
+  production_order_count: 2,
+  groups: [{ product_name: "连衣裙", unit: "件", inbound_quantity: "90", outbound_quantity: "10", unshipped_quantity: "80", production_order_count: 2 }],
+};
+
+function salesApi(routes: { summary?: (callIndex: number) => Response; notify?: () => Response | Promise<Response>; overview?: (callIndex: number) => Response } = {}) {
   let summaryCalls = 0;
+  let overviewCalls = 0;
   const calls = stubApi((url) => {
     if (url.includes(`/sales-orders/${ORDER_ID}/finished-goods`)) {
       summaryCalls += 1;
       return routes.summary?.(summaryCalls) ?? apiOk(summary);
+    }
+    if (url.endsWith("/sales-orders/finished-goods-summary")) {
+      overviewCalls += 1;
+      return routes.overview?.(overviewCalls) ?? apiOk(finishedGoodsOverview);
     }
     if (url.includes("/outbound-notices")) return routes.notify?.() ?? apiOk([]);
     if (url.endsWith("/customers?page_size=200")) return apiOk([customer]);
@@ -119,7 +133,7 @@ function salesApi(routes: { summary?: (callIndex: number) => Response; notify?: 
     if (url.endsWith("/units")) return apiOk(units);
     return apiErr(404, "NOT_FOUND", `未打桩的请求：${url}`);
   });
-  return { calls, summaryCalls: () => summaryCalls };
+  return { calls, summaryCalls: () => summaryCalls, overviewCalls: () => overviewCalls };
 }
 
 function renderSales() {
@@ -141,6 +155,44 @@ const notifyButtons = () => screen.getAllByRole("button", { name: "通知仓库�
 const batchNotifyButton = () => screen.getByRole("button", { name: "通知仓库出库（全部可出库批次）" });
 
 describe("销售页：出库通知明细（成品入库与出库）", () => {
+  it("销售页顶部：成品出库总览给出全部成品数 / 已出库数 / 未出库数（按产品与单位分行）", async () => {
+    const { calls, overviewCalls } = salesApi();
+    renderSales();
+
+    const panel = within(await screen.findByTestId("finished-goods-overview"));
+    expect(callsTo(calls, "/api/v1/sales-orders/finished-goods-summary")).toHaveLength(1);
+    expect(overviewCalls()).toBe(1);
+    // 三个数字的表头必须与用户口径同名，且说清「按产品与单位分行、不做跨单位合计」
+    expect(panel.getByText("全部成品数")).toBeVisible();
+    expect(panel.getByText("已出库数")).toBeVisible();
+    expect(panel.getByText("未出库数")).toBeVisible();
+    expect(panel.getByText(/不同单位的数量不做合计/)).toBeVisible();
+
+    const row = panel.getByText("连衣裙").closest('[data-testid="data-table-row"]') as HTMLElement;
+    expect(within(row).getByText("件")).toBeVisible();
+    expect(within(row).getByText("90")).toBeVisible();
+    expect(within(row).getByText("10")).toBeVisible();
+    expect(within(row).getByText("80")).toBeVisible();
+  });
+
+  it("成品总览加载失败：就地给出错误态与重试，客户池/销售单两张表照常渲染", async () => {
+    let failing = true;
+    const { calls } = salesApi({ overview: () => (failing ? apiErr(500, "INTERNAL", "成品总览服务暂不可用") : apiOk(finishedGoodsOverview)) });
+    renderSales();
+
+    const panel = within(await screen.findByTestId("finished-goods-overview"));
+    expect(await panel.findByText("成品总览服务暂不可用")).toBeVisible();
+    expect(panel.queryByText("正在加载成品总览…")).toBeNull();
+    expect(screen.getByRole("heading", { name: "客户池" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "销售单" })).toBeVisible();
+
+    failing = false;
+    await userEvent.click(panel.getByTestId("error-state-retry"));
+
+    expect(await panel.findByText("全部成品数")).toBeVisible();
+    expect(callsTo(calls, "/api/v1/sales-orders/finished-goods-summary")).toHaveLength(2);
+  });
+
   it("打开销售单：拉取成品情况，按生产单展示入库/出库/可出库量，并只对待处理通知给出取消入口", async () => {
     const gate = deferred<Response>();
     const { calls, summaryCalls } = salesApi({ summary: () => gate.promise as unknown as Response });
@@ -159,6 +211,8 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
     // 每一行明细：生产单号 + 状态 + 四个数量口径（可出库量决定能否通知）
     expect(await screen.findByText("MO-1 · 已完工")).toBeVisible();
     expect(screen.getByText("MO-2 · 生产中")).toBeVisible();
+    // 本单合计（后端按产品+单位折出来的三个数字）显示在明细行上方
+    expect(screen.getByTestId("order-finished-goods-totals")).toHaveTextContent("连衣裙 件 · 全部成品 90 · 已出库 10 · 未出库 80");
     expect(screen.getByText(/成品已入库 70 \/ 已出库 10 \/ 待仓库建单 0 \/ 可出库 60 件/)).toBeVisible();
     expect(screen.getByText(/成品已入库 20 \/ 已出库 0 \/ 待仓库建单 20 \/ 可出库 0 件/)).toBeVisible();
 
@@ -176,26 +230,59 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
     expect(within(pendingNotice).getByRole("button", { name: "取消通知" })).toBeEnabled();
   });
 
-  it("单批「通知仓库出库」：请求体只带 production_order_id 与幂等键，成功后刷新成品情况", async () => {
-    const { calls } = salesApi({ summary: (index) => apiOk(index === 1 ? summary : summaryAfterNotify), notify: () => apiOk([newNotice]) });
+  it("单批「通知仓库出库」：弹窗默认整批可出库量，填成一部分后只通知该数量（分批通知）", async () => {
+    const { calls } = salesApi({ summary: (index) => apiOk(index === 1 ? summary : summaryAfterPartialNotify), notify: () => apiOk([partialNotice]) });
     renderSales();
     await openOrderSheet();
     await screen.findByText("MO-1 · 已完工");
 
     await userEvent.click(notifyButtons()[0]);
 
+    // 弹窗把「本次通知数量」（默认=全部可出库量）与「可只通知一部分」讲清楚
+    expect(await screen.findByRole("heading", { name: "通知仓库出库：MO-1" })).toBeVisible();
+    const quantity = screen.getByTestId<HTMLInputElement>("action-field-notice_quantity");
+    expect(quantity).toHaveValue(60);
+    expect(quantity).toHaveAttribute("placeholder", "可出库 60 件（可只通知一部分，余量以后再通知）");
+
+    await userEvent.clear(quantity);
+    await userEvent.type(quantity, "20");
+    await userEvent.type(screen.getByTestId("action-field-remark"), "客户先要第一批");
+    await userEvent.click(screen.getByTestId("action-dialog-submit"));
+
     await waitFor(() => expect(callsTo(calls, `/api/v1/sales-orders/${ORDER_ID}/outbound-notices`)).toHaveLength(1));
     const notify = lastTo(calls, `/api/v1/sales-orders/${ORDER_ID}/outbound-notices`);
     expect(notify.method).toBe("POST");
-    // 请求体形状：指定生产单 + 幂等键（服务端按幂等键去重，重复点击不会重复建单）
-    expect(bodyOf(notify)).toMatchObject({ production_order_id: "po-1" });
+    // 请求体形状：指定生产单 + 本次通知数量 + 备注 + 幂等键（服务端按幂等键去重）
+    expect(bodyOf(notify)).toMatchObject({ production_order_id: "po-1", notice_quantity: "20", remark: "客户先要第一批" });
     expect(bodyOf(notify).idempotency_key).toMatch(/^web-outbound-\d+-[a-z0-9]+$/);
 
-    // 数据流：提交成功后必须重新拉成品情况，新的待处理通知出现在明细里、该行转为不可通知
-    expect(await screen.findByText("已通知仓库出库（1 批，整批出库）")).toBeVisible();
+    // 数据流：提交成功后必须重新拉成品情况；提示语用服务端返回的通知号与数量
+    expect(await screen.findByText("已通知仓库出库：OGN-PART 本次 20 件")).toBeVisible();
     await waitFor(() => expect(callsTo(calls, FG_URL)).toHaveLength(2));
-    expect(await screen.findByText(/OGN-NEW · 通知 60 · 已出库 0 · 剩余 60 · 待仓库建出库单/)).toBeVisible();
-    expect(notifyButtons()[0]).toBeDisabled();
+    expect(await screen.findByText(/OGN-PART · 通知 20 · 已出库 0 · 剩余 20 · 待仓库建出库单/)).toBeVisible();
+    // 余量 40 没有被吃掉：该行仍可继续通知（下一批）
+    expect(screen.getByText(/成品已入库 70 \/ 已出库 10 \/ 待仓库建单 20 \/ 可出库 40 件/)).toBeVisible();
+    expect(notifyButtons()[0]).toBeEnabled();
+  });
+
+  it("分批通知超量：服务端 422 就地显示在弹窗里，不关闭弹窗、不刷新成品情况（不静默截断）", async () => {
+    const { calls } = salesApi({ notify: () => apiErr(422, "OUTBOUND_NOTICE_QUANTITY_EXCEEDED", "本次通知数量超过当前可出库量") });
+    renderSales();
+    await openOrderSheet();
+    await screen.findByText("MO-1 · 已完工");
+
+    await userEvent.click(notifyButtons()[0]);
+    const quantity = await screen.findByTestId<HTMLInputElement>("action-field-notice_quantity");
+    await userEvent.clear(quantity);
+    await userEvent.type(quantity, "80");
+    await userEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("本次通知数量超过当前可出库量");
+    // 弹窗保留、用户填的数量还在（改小即可重试）
+    expect(screen.getByTestId("action-dialog")).toBeVisible();
+    expect(screen.getByTestId<HTMLInputElement>("action-field-notice_quantity")).toHaveValue(80);
+    expect(callsTo(calls, FG_URL)).toHaveLength(1);
+    expect(screen.queryByText(/已通知仓库出库/)).toBeNull();
   });
 
   it("整批「通知仓库出库（全部可出库批次）」：请求体不带 production_order_id（由服务端决定批次）", async () => {
@@ -237,15 +324,18 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
     });
   });
 
-  it("通知失败：把服务端可读原因展示给用户，不冒充成功也不刷新（没有新通知）", async () => {
+  it("通知失败：把服务端可读原因展示在弹窗里，不冒充成功也不刷新（没有新通知）", async () => {
     const { calls } = salesApi({ notify: () => apiErr(422, "OUTBOUND_NOTICE_NOTHING_TO_NOTIFY", "该生产单没有可通知出库的成品：需要先完成成品入库") });
     renderSales();
     await openOrderSheet();
     await screen.findByText("MO-1 · 已完工");
 
     await userEvent.click(notifyButtons()[0]);
+    await screen.findByRole("heading", { name: "通知仓库出库：MO-1" });
+    // 默认数量=可出库量，直接提交；失败原因必须按服务端原文展示，且弹窗不关
+    await userEvent.click(screen.getByTestId("action-dialog-submit"));
 
-    expect(await screen.findByText("该生产单没有可通知出库的成品：需要先完成成品入库")).toBeVisible();
+    expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("该生产单没有可通知出库的成品：需要先完成成品入库");
     expect(screen.queryByText(/已通知仓库出库/)).toBeNull();
     await waitFor(() => expect(callsTo(calls, `/api/v1/sales-orders/${ORDER_ID}/outbound-notices`)).toHaveLength(1));
     // 失败路径不得重新拉取成品情况（页面不会出现幻影通知）

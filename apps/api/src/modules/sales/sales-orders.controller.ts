@@ -68,8 +68,15 @@ class SalesOrderQueryDto extends PaginationQueryDto {
   @IsOptional() @IsString() status?: string;
 }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
-// 销售「通知仓库出库」：不传 production_order_id 时对该订单所有可出库的生产单各建一张整批通知。
-class OutboundNoticeDto { @IsOptional() @IsUUID() production_order_id?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsString() @MaxLength(160) idempotency_key?: string; }
+// 销售「通知仓库出库」：不传 production_order_id 时对该订单所有可出库的生产单各建一张整批通知；
+// 传 notice_quantity 时只通知这一部分（分批通知），此时必须同时指定 production_order_id。
+// 导出以便单元测试直接用真实 ValidationPipe 校验（分级通知数量是本轮新增的入口）。
+export class OutboundNoticeDto {
+  @IsOptional() @IsUUID() production_order_id?: string;
+  @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "通知数量必须是不小于 0 的十进制数" }) @IsDecimal() notice_quantity?: string;
+  @IsOptional() @IsString() @MaxLength(1000) remark?: string;
+  @IsOptional() @IsString() @MaxLength(160) idempotency_key?: string;
+}
 
 @Controller("sales-orders")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -78,6 +85,10 @@ export class SalesOrdersController {
   constructor(private readonly orders: SalesOrdersService, private readonly outboundNotices: FinishedGoodsOutboundNoticeService) {}
   @Get() async list(@Query() query: SalesOrderQueryDto) { const result = await this.orders.list(query.page, query.page_size, query.search, query.status); return { data: result.data, meta: { page: query.page, page_size: query.page_size, total: result.total } }; }
   @Post() async create(@Body() body: SalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.create(body, user), meta: {} }; }
+  // 销售模块的成品出库总览（全部成品数 / 已出库数 / 未出库数，按产品+单位分行）。
+  // 必须声明在 @Get(":id") 之前：Nest 按声明顺序匹配，否则 "finished-goods-summary"
+  // 会被当成销售单 ID 去查库（与「其他应付导入模板」被 :id 吃掉是同一类问题）。
+  @Get("finished-goods-summary") async finishedGoodsSummary() { return { data: await this.outboundNotices.overview(), meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
   // 成品入库/出库情况 + 出库通知（销售页「打开销售订单能看到成品入库情况」）。
   @Get(":id/finished-goods") async finishedGoods(@Param("id") id: string) { return { data: await this.outboundNotices.summary(id), meta: {} }; }
