@@ -157,11 +157,79 @@ export class ReceivableService {
   }
 
   /**
+   * 勾选批量确认应收 —— 界面「确认应收」页勾选多条 → 一次确认（与应付侧 `SupplierPayableService.batchConfirm`
+   * 同一口径；用户要求「不要又是登记收款又是确认应收」）。
+   *
+   * 为什么需要：一个订单分批出库就是多条应收，逐条确认意味着同一笔货款要开 N 次弹窗、把入账银行填 N 遍。
+   * 批量确认把「钱进哪个账户、归哪个项目」**只问一次**，记账仍然**每条应收写一条流水**
+   * （每条都有自己的来源编号，合并成一条就再也追不回是哪张出库单的钱）。
+   *
+   * 幂等：只确认 `status = draft` 的条目。被另一个入口先确认掉的、已取消的计入 `skipped_count`，
+   * 既不报错也不重复记账（重复记账＝同一个账户被进两次钱）。
+   */
+  async batchConfirm(ids: string[], user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+    if (!ids.length) throw this.invalid("RECEIVABLE_IDS_REQUIRED", "请先勾选要确认的应收条目");
+    // 银行与项目整批只有一个，先校验一次即可（「先校验后进事务」在这里同样成立）。
+    if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");
+    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    const result = await this.prisma.$transaction(async (tx) => {
+      // 逐条加锁：每条都要保证「读到草稿 → 改成已确认」之间不被另一个入口插进来
+      // （单条确认、对账确认用的是同一把行锁，因此互相串行）。
+      for (const id of ids) await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
+      const drafts = await tx.receivableSource.findMany({
+        where: { id: { in: ids }, deletedAt: null, status: "draft" },
+        select: { id: true, sourceNo: true, orderNo: true, amount: true, currency: true, customerId: true, customer: { select: { name: true } } },
+      });
+      if (!drafts.length) throw this.invalid("NO_DRAFT_RECEIVABLES", "勾选的条目里没有可确认的草稿应收");
+      const updated = await tx.receivableSource.updateMany({
+        where: { id: { in: drafts.map((draft) => draft.id) }, deletedAt: null, status: "draft" },
+        data: { status: "confirmed", ...this.audit.update(user) },
+      });
+      // 行锁之下不可能少改：真少了说明有人绕过锁改了状态，宁可整批回滚也不要「界面说确认了、库里没确认」。
+      if (updated.count !== drafts.length) throw this.invalid("RECEIVABLE_CONFIRM_CONFLICT", "勾选的应收已被其他操作改动，请刷新后重试");
+      return { drafts, skipped: ids.length - drafts.length };
+    });
+    const cashFlowEntryIds: string[] = [];
+    const totals = new Map<string, Prisma.Decimal>();
+    for (const draft of result.drafts) {
+      await this.audit.record("receivable_source.confirm", "receivable_source", user.id, draft.id, { order_no: draft.orderNo, batch: true });
+      const entry = await this.cashFlow.recordConfirmation({
+        sourceType: "receivable_source",
+        sourceId: draft.id,
+        documentNo: draft.sourceNo,
+        entryDate: this.today(),
+        amount: draft.amount,
+        currency: draft.currency,
+        counterpartyName: draft.customer?.name ?? draft.customerId,
+        direction: "income",
+        itemKeys: RECEIVABLE_CONFIRM_ITEM_KEYS,
+        itemId: options.cash_flow_item_id,
+        bankId: options.bank_id ?? null,
+        remark: `确认应收 ${draft.sourceNo}（勾选批量确认）`,
+      }, user);
+      if (entry) cashFlowEntryIds.push(entry.id);
+      totals.set(draft.currency, (totals.get(draft.currency) ?? new Prisma.Decimal(0)).plus(draft.amount));
+    }
+    return {
+      ids: result.drafts.map((draft) => draft.id),
+      confirmed_count: result.drafts.length,
+      skipped_count: result.skipped,
+      // 合计**按币种分组**：跨币种相加得到一个没有意义的数（与财务报表「不跨币种相加」同一口径）。
+      amounts: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: amount.toFixed(4) })),
+      cash_flow_entry_ids: cashFlowEntryIds,
+      bank_missing: !options.bank_id,
+    };
+  }
+
+  /**
    * 按订单号批量确认该订单下所有草稿应收（解决「同一订单多次出库 → 逐条确认」的重复操作）。
    * 幂等：只确认状态为 draft 的条目，已确认/已取消的自动跳过。
    *
    * 批量确认同样要记账：**每条应收写一条流水**（而不是合计一条）——
    * 批量确认没有「一张单据」可以挂，而每条应收都有来源编号，逐条记账才追得回去。
+   *
+   * 2026-09-16：界面上的按订单批量确认表已下线（改为勾选批量确认，勾选能在筛选后精确到某张订单），
+   * 这个接口保留给外部调用方与历史脚本，记账口径与 `batchConfirm` 完全一致。
    */
   async batchConfirmByOrder(orderNo: string, user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");

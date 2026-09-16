@@ -109,12 +109,12 @@ class ConfirmSourceDto {
 }
 
 /**
- * 批量确认应付的入参：勾选出来的应付 id + 整批共用的支付银行与收支项目。
+ * 「勾选批量确认」的入参（应收 / 应付共用）：勾选出来的条目 id + 整批共用的银行与收支项目。
  *
  * `ids` 必填且非空：批量确认的口径是「界面勾了什么就确认什么」，空数组走到服务端说明界面出了问题，
  * 静默返回「确认 0 条」会让用户以为点过了。
  */
-class BatchConfirmPayablesDto {
+class BatchConfirmDto {
   @IsArray() @ArrayNotEmpty() @IsUUID(undefined, { each: true }) ids!: string[];
   @IsOptional() @IsUUID() bank_id?: string | null;
   @IsOptional() @IsUUID() cash_flow_item_id?: string | null;
@@ -140,6 +140,10 @@ export class FinanceController {
   @Post("receivable-sources/from-outbound/:outboundId") async createSource(@Param("outboundId") outboundId: string, @Body() body: SourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.createFromOutbound(outboundId, body, user), meta: {} }; }
   @Post("receivable-sources/:id/confirm") async confirmSource(@Param("id") id: string, @Body() body: ConfirmSourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.confirm(id, user, body ?? {}), meta: {} }; }
   @Post("receivable-sources/batch-confirm-by-order") async batchConfirmByOrder(@Body() body: ConfirmSourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.batchConfirmByOrder(body.order_no ?? "", user, body), meta: {} }; }
+  // 静态路径的批量确认与 `batch-confirm-by-order` 放在一起（都在 `:id/...` 之前）：
+  // 现在没有 `POST receivable-sources/:id`，但把静态段写在动态段前面是本仓库的既定顺序，
+  // 将来加 `:id` 路由时不会把 "batch-confirm" 吃掉。
+  @Post("receivable-sources/batch-confirm") async batchConfirmReceivableSources(@Body() body: BatchConfirmDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.batchConfirm(body.ids, user, body), meta: {} }; }
   @Patch("receivable-sources/:id") async updateReceivableSource(@Param("id") id: string, @Body() body: ReceivableDraftUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.updateDraft(id, body, user), meta: {} }; }
   @Post("receivable-sources/:id/reopen") async reopenReceivableSource(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.reopen(id, body.reason, user), meta: {} }; }
   @Post("receivable-sources/:id/cancel") async cancelSource(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.cancel(id, body.reason, user), meta: {} }; }
@@ -169,7 +173,7 @@ export class FinanceController {
   // 挂在这里的方法级放宽无效。其余财务接口仍然只对 finance 模块开放。
   @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
   @Post("payable-entries/other") async createOtherPayableEntry(@Body() body: SupplierOtherPayableDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createOther(body, user), meta: {} }; }
-  @Post("payable-entries/batch-confirm") async batchConfirmPayableEntries(@Body() body: BatchConfirmPayablesDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.batchConfirm(body.ids, user, body), meta: {} }; }
+  @Post("payable-entries/batch-confirm") async batchConfirmPayableEntries(@Body() body: BatchConfirmDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.batchConfirm(body.ids, user, body), meta: {} }; }
   @Post("payable-entries/:id/confirm") async confirmPayableEntry(@Param("id") id: string, @Body() body: ConfirmSourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.confirm(id, user, body ?? {}), meta: {} }; }
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }
   @Post("payable-entries/:id/reopen") async reopenPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reopen(id, body.reason, user), meta: {} }; }

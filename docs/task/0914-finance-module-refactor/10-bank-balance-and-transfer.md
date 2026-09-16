@@ -36,8 +36,10 @@
 | POST | `/finance/reconciliations/:id/confirm-receivables` | body `{ bank_id?, cash_flow_item_id? }`；同时记账 |
 | POST | `/finance/supplier-payable-reconciliations/:id/confirm-payables` | 同上（支出方向） |
 | POST | `/finance/receivable-sources/:id/confirm` | 逐条确认应收 + 记账（body `{ bank_id?, cash_flow_item_id? }`） |
-| POST | `/finance/receivable-sources/batch-confirm-by-order` | 按订单批量确认 + 记账（每条应收一条流水） |
+| POST | `/finance/receivable-sources/batch-confirm-by-order` | 按订单批量确认 + 记账（每条应收一条流水）；**界面入口已于 2026-09-16 下线，接口保留** |
 | POST | `/finance/payable-entries/:id/confirm` | 逐条确认应付 + 记账 |
+| POST | `/finance/receivable-sources/batch-confirm` | 勾选批量确认应收 + 记账（body `{ ids[], bank_id?, cash_flow_item_id? }`，每条一条流水） |
+| POST | `/finance/payable-entries/batch-confirm` | 勾选批量确认应付 + 记账（同一契约，支出方向） |
 
 既有接口新增可选字段：`POST /finance/banks`（`opening_balance`）、`PATCH /finance/banks/:id`、
 `POST/PATCH /finance/customer-payments`、`POST/PATCH /finance/supplier-payments`、
