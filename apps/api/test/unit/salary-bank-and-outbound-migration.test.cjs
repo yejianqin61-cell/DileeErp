@@ -46,6 +46,26 @@ test("原料流转加提交时间列 + (status, submitted_at) 索引（待出库
   assert.match(schema, /submittedAt\s+DateTime\?\s+@map\("submitted_at"\)/);
 });
 
+/**
+ * 迁移里手写的索引必须在 schema 里声明。
+ *
+ * 为什么单独立一条：`prisma migrate diff`（库 → schema）的方向上，**库里存在而 schema 没声明的索引
+ * 会被判定为漂移并要求 DROP 掉**。第一条版本正是漏了这条，部署后在真库上跑漂移检查才暴露出来：
+ * `DROP INDEX "raw_material_movements_status_submitted_at_idx";`。
+ * 本机跑不了真实迁移，所以只能静态挡住 —— 凡是本迁移 CREATE INDEX 的索引，
+ * 都要能在 schema 的对应模型里找到同列同序的 @@index。
+ */
+test("迁移创建的索引必须在 schema 里声明（否则 migrate diff 会一直想 DROP 它）", () => {
+  assert.match(
+    schema,
+    /model RawMaterialMovement \{[\s\S]*?@@index\(\[status, submittedAt\]\)/,
+    "raw_material_movements_status_submitted_at_idx 必须在 schema 里声明为 @@index([status, submittedAt])，列顺序也要一致",
+  );
+  // 兜底：本迁移只建这一条索引，出现第二条就必须同时补 schema 声明与这里的断言。
+  const created = [...sql.matchAll(/CREATE (?:UNIQUE )?INDEX "([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(created, ["raw_material_movements_status_submitted_at_idx"], "新增索引必须同步在这里登记并声明到 schema");
+});
+
 test("pending_outbound 状态不需要改库结构：status 是 VARCHAR 且没有 CHECK 约束", () => {
   // 只有在这两个条件同时成立时，新增状态才是「纯应用层」改动。
   assert.match(movementSql, /"status"\s+VARCHAR\(30\)\s+NOT NULL DEFAULT 'draft'/);

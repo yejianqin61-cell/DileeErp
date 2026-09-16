@@ -1821,6 +1821,10 @@ model RawMaterialMovement {
   @@index([productionOrderId, status])
   @@index([productionOrderOperationId])
   @@index([orderNo, businessDate])
+  /// 仓库「待出库通知」按 (status, submitted_at) 查最新待出库单据（索引由 20260916130000 迁移创建）。
+  /// 必须在这里声明：手写迁移建了索引而 schema 不声明，`prisma migrate diff` 会一直想把它 DROP 掉，
+  /// 形成永久漂移（同一个坑在仓库里已有 9 处历史遗留）。
+  @@index([status, submittedAt])
   @@map("raw_material_movements")
 }
 
