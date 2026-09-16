@@ -113,6 +113,45 @@ describe("质检模块页（/qc）", () => {
 });
 
 describe("来料质检面板", () => {
+  // 用户 2026-09-16：「来料质检，每个条目都要带上该批物料的总数量」。
+  // 一列「已送检」看不出整批有多少（到货 100 只送了 40 时无从判断还剩多少），所以要带上批次总量。
+  it("每个条目都显示该批物料的总数量（到货 100 / 已送检 40 → 本批总数量 100 米）", async () => {
+    stubQcModule({ inspections: [{ ...inspection, inspectedQuantity: "40", acceptedQuantity: "40", purchaseReceipt: { id: "r-1", receiptNo: "RC-1", quantity: "100" } }] });
+
+    render(<><IncomingInspectionsPanel /><Toaster /></>);
+
+    const row = await screen.findByTestId("data-table-row");
+    const headers = screen.getAllByRole("columnheader").map((cell) => cell.textContent ?? "");
+    const totalColumn = headers.findIndex((header) => header.includes("本批总数量"));
+    expect(totalColumn).toBeGreaterThan(-1);
+    // 数量与单位都来自那个到货批次
+    expect(within(row).getAllByRole("cell")[totalColumn]).toHaveTextContent("100 米");
+    // 送检列仍是已送检量，两列不是同一个数
+    const inspectedColumn = headers.findIndex((header) => header === "送检");
+    expect(within(row).getAllByRole("cell")[inspectedColumn]).toHaveTextContent("40");
+  });
+
+  it("质检记录里没有到货数量时退回批次接口的 quantity；两处都没有才显示「-」", async () => {
+    stubQcModule({ inspections: [{ ...inspection, purchaseReceipt: { id: "r-unknown", quantity: "250" } }] });
+
+    render(<><IncomingInspectionsPanel /><Toaster /></>);
+
+    const row = await screen.findByTestId("data-table-row");
+    const headers = screen.getAllByRole("columnheader").map((cell) => cell.textContent ?? "");
+    const totalColumn = headers.findIndex((header) => header.includes("本批总数量"));
+    expect(within(row).getAllByRole("cell")[totalColumn]).toHaveTextContent("250");
+  });
+
+  it("编辑质检弹窗里也写明本批到货总量（改数量时要知道上限）", async () => {
+    stubQcModule({ inspections: [{ ...inspection, inspectedQuantity: "40", acceptedQuantity: "40", purchaseReceipt: { id: "r-1", quantity: "100" } }] });
+
+    render(<><IncomingInspectionsPanel /><Toaster /></>);
+    // 没有入库事实的质检记录才给「编辑」
+    await userEvent.click(await screen.findByRole("button", { name: "编辑" }));
+
+    expect(await screen.findByText("本批到货总量：100 米")).toBeVisible();
+  });
+
   it("深链 receipt_id：直接打开该到货批次的送检登记，数量默认剩余可送检量，提交 body 带该批次", async () => {
     const calls = stubQcModule();
 

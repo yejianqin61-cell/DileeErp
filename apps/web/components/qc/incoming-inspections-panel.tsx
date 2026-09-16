@@ -107,6 +107,21 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   // 「累计检验数量不能超过到货数量」的 422，不该让用户白填一次。
   const receiptOptions = useMemo(() => allReceiptOptions.filter((receipt) => receipt.status !== "cancelled" && receipt.inspectedQuantity < Number(receipt.quantity)), [allReceiptOptions]);
 
+  /** 该质检条目对应的**到货批次总数量**（用户 2026-09-16：「每个条目都要带上该批物料的总数量」）。
+   *
+   *  为什么不是直接取 `inspection.inspectedQuantity`：那一列是「已送检」，一个到货 100 的批次
+   *  只送了 40 时，列表上看不出整批到底有多少，也就判断不出还剩多少没送检。
+   *  数量与单位优先从 `/purchase-orders` 里那个批次取（它带单位名），
+   *  拿不到（批次没进采购单列表、或列表还没回来）就退回质检记录里的 `purchaseReceipt.quantity`。 */
+  const batchTotalOf = (item: Inspection) => {
+    const receiptId = item.purchaseReceipt?.id;
+    const fromOrders = receiptId ? allReceiptOptions.find((option) => option.id === receiptId) : undefined;
+    const quantity = fromOrders?.quantity ?? item.purchaseReceipt?.quantity;
+    if (quantity === undefined || quantity === null || quantity === "") return "-";
+    const unit = fromOrders?.unitName;
+    return unit ? `${quantity} ${unit}` : String(quantity);
+  };
+
   function run(action: () => Promise<unknown>, success: string) {
     setError("");
     return action()
@@ -114,8 +129,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
       .catch((cause) => { const text = messageOf(cause, "操作失败"); setError(text); notifyError(text); });
   }
 
-  const inboundUsedByInspection = useCallback((inspectionId: string) => inbounds.filter((row) => row.incomingInspectionId === inspectionId && ["draft", "posted"].includes(row.status)).reduce((sum, row) => sum + Number(row.quantity), 0), [inbounds]);
-  const inboundRemainingFor = (item: Inspection) => Math.max(0, Number(item.acceptedQuantity) + Number(item.conditionalQuantity) - inboundUsedByInspection(item.id));
+  const inboundUsedByInspection = useCallback((inspectionId: string) => inbounds.filter((row) => row.incomingInspectionId === inspectionId && ["draft", "posted"].includes(row.status)).reduce((sum, row) => sum + Number(row.quantity), 0), [inbounds]);  const inboundRemainingFor = (item: Inspection) => Math.max(0, Number(item.acceptedQuantity) + Number(item.conditionalQuantity) - inboundUsedByInspection(item.id));
   const draftInboundFor = (inspectionId: string) => inbounds.find((row) => row.incomingInspectionId === inspectionId && row.status === "draft");
   const inspectionInboundCapable = (item: Inspection) => ["accepted", "conditionally_accepted", "partially_accepted", "completed"].includes(item.status);
   const noticeFor = (inspectionId: string) => notices.find((row) => row.incomingInspectionId === inspectionId);
@@ -207,6 +221,8 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
 
   function editInspection(item: Inspection) {
     setDialog({ title: `编辑来料质检：${item.purchase_order_no ?? item.orderNo}`, fields: [
+      // 改数量时要能看到整批总量，否则没法判断「送检数量」上限该是多少。
+      { name: "batch_total", label: `本批到货总量：${batchTotalOf(item)}`, type: "info" },
       { name: "inspected_quantity", label: "送检数量", type: "number", required: true, defaultValue: item.inspectedQuantity },
       { name: "accepted_quantity", label: "合格数量", type: "number", required: true, defaultValue: item.acceptedQuantity },
       { name: "conditional_quantity", label: "条件接收", type: "number", required: true, defaultValue: item.conditionalQuantity },
@@ -257,6 +273,8 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     { accessorKey: "purchase_order_no", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" },
     { accessorKey: "material_name", header: "物料", cell: ({ row }) => row.original.material_name ?? "-" },
     { id: "batch", header: "质检批次", cell: ({ row }) => `第 ${row.original.batchSequence ?? row.original.purchaseReceipt?.batchSequence ?? "-"} 批` },
+    // 本批总数量放在「送检」前面：先看到整批多少，再看送检/合格/不合格各多少。
+    { id: "batchTotal", header: "本批总数量", cell: ({ row }) => batchTotalOf(row.original) },
     { id: "qcResult", header: "最终结果", cell: ({ row }) => qcResultLabel(row.original.qcResult) },
     { id: "status", header: "状态", cell: ({ row }) => inspectionStatusLabel[row.original.status] ?? row.original.status },
     { accessorKey: "inspectedQuantity", header: "送检" },
