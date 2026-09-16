@@ -277,7 +277,7 @@ export default function CashFlowWorkspace({ testId = "page-finance-cash-flow" }:
   const totalIncome = useMemo(() => entries.filter((entry) => entry.direction === "income").length, [entries]);
   const totalExpense = useMemo(() => entries.filter((entry) => entry.direction === "expense").length, [entries]);
 
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="收支管理">
       <Button variant="secondary" asChild><a href="/finance">返回财务</a></Button>
       <Button variant="secondary" data-testid="cash-flow-open-dictionary" onClick={() => setDictionaryOpen(true)}>收支项目维护</Button>

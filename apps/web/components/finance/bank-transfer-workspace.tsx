@@ -243,9 +243,9 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
     },
   ];
 
-  if (loading) return <div className="page-root" data-testid={testId}><PageHeader title="银行余额互转" /><LoadingState /></div>;
+  if (loading) return <div className="page-root finance-page" data-testid={testId}><PageHeader title="银行余额互转" /><LoadingState /></div>;
 
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="银行余额互转">
       <Button variant="secondary" data-testid="bank-transfer-refresh" onClick={() => void load()}>刷新</Button>
       <Button data-testid="bank-transfer-create" onClick={openCreate}>新建互转</Button>

@@ -553,7 +553,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   const snapshot = detail?.sourceSnapshot ?? [];
   const snapshotReports = snapshot.reduce((sum, line) => sum + (line.report_count ?? 1), 0);
 
-  if (loading) return <div className="page-root page-floating" data-testid={importing ? "salary-importing" : undefined}>
+  if (loading) return <div className="page-root page-floating finance-page" data-testid={importing ? "salary-importing" : undefined}>
     <div className="floating-window">
       <header className="floating-window-toolbar"><h1 className="floating-window-title">{mode === "ledger" ? "工资台账" : "工资付款"}</h1></header>
       <LoadingState />
@@ -563,7 +563,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   // 悬浮居中窗口：工资台账与工资付款都是内容区里居中一张**大卡片**（宽度上限 1600px，
   // 高度按「视口 − 顶栏 − 留白」），卡片里只有一条工具条 + 筛选条 + 表格，纵向滚动交给表格。
   // 用户先要求全屏，随后改口「算了……做成悬浮居中窗口页面吧，版面大一点。不追求全屏了」。
-  return <div className="page-root page-floating" data-testid={testId}>
+  return <div className="page-root page-floating finance-page" data-testid={testId}>
     <div className="floating-window" data-testid="salary-floating-window">
     <header className="floating-window-toolbar">
       <h1 className="floating-window-title">{mode === "ledger" ? "工资台账" : "工资付款"}</h1>

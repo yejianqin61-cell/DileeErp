@@ -202,9 +202,9 @@ export default function BankWorkspace({ testId = "page-finance-banks" }: { testI
     },
   ];
 
-  if (loading) return <div className="page-root" data-testid={testId}><PageHeader title="银行账户" /><LoadingState /></div>;
+  if (loading) return <div className="page-root finance-page" data-testid={testId}><PageHeader title="银行账户" /><LoadingState /></div>;
 
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="银行账户">
       <Button variant="secondary" data-testid="bank-refresh" onClick={() => void load()}>刷新</Button>
       <Button data-testid="bank-create" onClick={openCreate}>新建银行账户</Button>

@@ -158,7 +158,7 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
     }
   }
 
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="财务报表">
       <Button variant="secondary" asChild><a href="/finance">返回财务</a></Button>
     </PageHeader>

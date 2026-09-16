@@ -7,7 +7,7 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { SALARY_SECTIONS } from "../../../lib/finance-sections";
 
 export default function FinanceSalaryPage() {
-  return <div className="page-root" data-testid="page-finance-salary">
+  return <div className="page-root finance-page" data-testid="page-finance-salary">
     <PageHeader title="工资管理" />
     <div className="board-grid" data-testid="salary-section-grid">
       {SALARY_SECTIONS.map((section) => <Link key={section.key} href={section.href} className="board-card" data-testid={`salary-section-${section.key}`}>

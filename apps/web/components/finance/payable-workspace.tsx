@@ -716,7 +716,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
 
   if (loading) return <><PageHeader title="应付管理" /><LoadingState /></>;
 
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="应付管理">
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
     </PageHeader>

@@ -577,7 +577,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
 
   if (loading) return <><PageHeader title="应收管理" /><LoadingState /></>;
 
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="应收管理">
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
       <Button variant="secondary" onClick={() => createReconciliation()}>创建对账</Button>

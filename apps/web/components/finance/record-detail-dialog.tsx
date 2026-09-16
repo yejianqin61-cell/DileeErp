@@ -56,8 +56,14 @@ export function RecordDetailDialog({ open, onOpenChange, title, description, fie
   </Dialog>;
 }
 
-/** 金额 + 币种，null/空值统一显示 "-"，避免出现 "null USD"。 */
+/**
+ * 金额 + 币种，null/空值统一显示 "-"，避免出现 "null USD"。
+ *
+ * 金额与币种之间用**不换行空格**（U+00A0）：财务表格为了让长文本换行而放开了单元格换行
+ * （见 globals.css 的 `.finance-page .data-table td`），普通空格会让「500.0000」与「USD」
+ * 被拆到两行；不换行空格让金额整体换行，数字永远不会被折断。
+ */
 export function money(amount: string | number | null | undefined, currency?: string | null) {
   if (amount === null || amount === undefined || amount === "") return "-";
-  return currency ? `${amount} ${currency}` : String(amount);
+  return currency ? `${amount}\u00a0${currency}` : String(amount);
 }

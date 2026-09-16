@@ -282,7 +282,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
 
   if (loading) return <><PageHeader title="凭证管理" /><LoadingState /></>;
 
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="凭证管理">
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
     </PageHeader>

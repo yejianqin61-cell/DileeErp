@@ -12,7 +12,7 @@ import { PageHeader } from "../layout/app-shell";
 import { FINANCE_BOARDS } from "../../lib/finance-sections";
 
 export default function FinanceBoardIndex({ testId = "page-finance" }: { testId?: string }) {
-  return <div className="page-root" data-testid={testId}>
+  return <div className="page-root finance-page" data-testid={testId}>
     <PageHeader title="财务" />
     <div className="board-grid" data-testid="finance-board-grid">
       {FINANCE_BOARDS.map((board) => <Link key={board.key} href={`/finance/${board.key}`} className="board-card" data-testid={`finance-board-${board.key}`}>
