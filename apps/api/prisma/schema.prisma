@@ -310,6 +310,50 @@ model SalesOrder {
   status                    String                     @default("draft") @db.VarChar(30)
   currentVersion            Int                        @default(1) @map("current_version")
   extensionData             Json                       @default("{}") @map("extension_data")
+  // ---- 下单口径细化（2026-09-16，按 example/销售单 的工艺单模板）----
+  // 模板里「材料明细 / 工艺要求 / 布量 / 正唛侧唛 / 注意事项」是**固定栏位**（用户拍板：
+  // 按两张样本的并集做成固定字段），所以直接落列而不是塞 extension_data(JSON)：
+  // 这些字要在页面上逐格编辑、要按模板逐格打印、还要能被审计，JSON 三样都做不到。
+  factory                   String?                    @map("factory") @db.VarChar(100)
+  completionRemark          String?                    @map("completion_remark") @db.VarChar(100)
+  attentionNote             String?                    @map("attention_note") @db.VarChar(2000)
+  shippingMarkFront         String?                    @map("shipping_mark_front") @db.VarChar(2000)
+  shippingMarkSide          String?                    @map("shipping_mark_side") @db.VarChar(2000)
+  // 布量（模板「伞面/伞带/木耳/天布/布套（Y/DZ)」五个数值格）
+  fabricUsageCanopy         Decimal?                   @map("fabric_usage_canopy") @db.Decimal(18, 4)
+  fabricUsageStrap          Decimal?                   @map("fabric_usage_strap") @db.Decimal(18, 4)
+  fabricUsageWoodEar        Decimal?                   @map("fabric_usage_wood_ear") @db.Decimal(18, 4)
+  fabricUsageTop            Decimal?                   @map("fabric_usage_top") @db.Decimal(18, 4)
+  fabricUsageBag            Decimal?                   @map("fabric_usage_bag") @db.Decimal(18, 4)
+  // 材料明细（两样本并集 18 项；样本1 有伞头带/伞带粘扣/织标，样本2 有天布/木耳/钥匙扣/印刷）
+  ribSpec                   String?                    @map("rib_spec") @db.VarChar(1000)
+  canopySpec                String?                    @map("canopy_spec") @db.VarChar(1000)
+  handleSpec                String?                    @map("handle_spec") @db.VarChar(1000)
+  handleStrapSpec           String?                    @map("handle_strap_spec") @db.VarChar(1000)
+  tailSpec                  String?                    @map("tail_spec") @db.VarChar(1000)
+  runnerSpec                String?                    @map("runner_spec") @db.VarChar(1000)
+  strapSpec                 String?                    @map("strap_spec") @db.VarChar(1000)
+  strapFastenerSpec         String?                    @map("strap_fastener_spec") @db.VarChar(1000)
+  innerLabelSpec            String?                    @map("inner_label_spec") @db.VarChar(1000)
+  wovenLabelSpec            String?                    @map("woven_label_spec") @db.VarChar(1000)
+  hangTagSpec               String?                    @map("hang_tag_spec") @db.VarChar(1000)
+  oppSpec                   String?                    @map("opp_spec") @db.VarChar(1000)
+  bagSpec                   String?                    @map("bag_spec") @db.VarChar(1000)
+  packagingSpec             String?                    @map("packaging_spec") @db.VarChar(1000)
+  topFabricSpec             String?                    @map("top_fabric_spec") @db.VarChar(1000)
+  woodEarSpec               String?                    @map("wood_ear_spec") @db.VarChar(1000)
+  keychainSpec              String?                    @map("keychain_spec") @db.VarChar(1000)
+  printingSpec              String?                    @map("printing_spec") @db.VarChar(1000)
+  // 工艺要求（两样本并集 9 项；导出时按有值的条目重新编号）
+  sampleRequirement         String?                    @map("sample_requirement") @db.VarChar(1000)
+  cuttingRequirement        String?                    @map("cutting_requirement") @db.VarChar(1000)
+  edgeRequirement           String?                    @map("edge_requirement") @db.VarChar(1000)
+  joiningRequirement        String?                    @map("joining_requirement") @db.VarChar(1000)
+  topStitchRequirement      String?                    @map("top_stitch_requirement") @db.VarChar(1000)
+  sewingRequirement         String?                    @map("sewing_requirement") @db.VarChar(1000)
+  strapRequirement          String?                    @map("strap_requirement") @db.VarChar(1000)
+  hangTagNote               String?                    @map("hang_tag_note") @db.VarChar(1000)
+  qcRequirement             String?                    @map("qc_requirement") @db.VarChar(1000)
   createdAt                 DateTime                   @default(now()) @map("created_at")
   updatedAt                 DateTime                   @updatedAt @map("updated_at")
   createdBy                 String                     @map("created_by") @db.Uuid
@@ -329,10 +373,46 @@ model SalesOrder {
   customerPayments          CustomerPayment[]
   receivableAdjustments     ReceivableAdjustment[]
   receivableReconciliations ReceivableReconciliation[]
+  specDetails               SalesOrderSpecDetail[]
 
   @@index([customerId, status])
   @@index([orderDate])
   @@map("sales_orders")
+}
+
+/**
+ * 销售单「细分明细」行（2026-09-16 下单口径细化）。
+ *
+ * 一张通用表用 `groupName` 区分用途：样本1 的「伞布明细」（品番/品名 + 颜色 + 数量）、
+ * 样本2 的「伞头配色」（伞头名 + 配色 + 条码 + 数量/打）与「外层花色搭配」都是同一种形状。
+ * 用户拍板「一张通用表 + 分组名」，所以不为每种明细表各建一张（否则出现第三种又要加表）。
+ *
+ * **不存图片**：模板里的花色「图片」列与【相关图片】大格按用户要求只留空格、不导出。
+ */
+model SalesOrderSpecDetail {
+  id           String     @id @default(uuid()) @db.Uuid
+  salesOrderId String     @map("sales_order_id") @db.Uuid
+  /** 分组名：伞布明细 / 伞头配色 / 外层花色搭配 …（导出时同组的行落在同一块） */
+  groupName    String     @map("group_name") @db.VarChar(100)
+  /** 品番/品名（「27621 流水花扇PKGY」）或伞头英文名（「Hawái」） */
+  name         String     @db.VarChar(200)
+  /** 颜色 / 配色（样本1「PKGY」；样本2「配色按图片」） */
+  color        String?    @db.VarChar(100)
+  /** 条码（样本2「内标、吊牌、纸箱：条形码」列） */
+  barcode      String?    @db.VarChar(100)
+  quantity     Decimal?   @db.Decimal(18, 4)
+  unit         String?    @db.VarChar(30)
+  sortOrder    Int        @default(0) @map("sort_order")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  createdBy    String     @map("created_by") @db.Uuid
+  updatedBy    String     @map("updated_by") @db.Uuid
+  deletedAt    DateTime?  @map("deleted_at")
+  deletedBy    String?    @map("deleted_by") @db.Uuid
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
+
+  @@index([salesOrderId, sortOrder])
+  @@map("sales_order_spec_details")
 }
 
 model SalesOrderVersion {

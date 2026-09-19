@@ -8,7 +8,7 @@ const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "sales", di
 const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: async () => {} };
 
 test("sales.order.confirm_preserves_order_identity_and_audit_fields", async () => {
-  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "draft", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "draft", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] };
   let updateData;
   const prisma = { salesOrder: { findFirst: async () => order, update: async ({ data }) => { updateData = data; return { ...order, ...data }; } } };
   const service = new SalesOrdersService(prisma, audit);
@@ -18,13 +18,13 @@ test("sales.order.confirm_preserves_order_identity_and_audit_fields", async () =
 });
 
 test("sales.order.rejects_confirming_a_non_draft_order", async () => {
-  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] };
   const service = new SalesOrdersService({ salesOrder: { findFirst: async () => order } }, audit);
   await assert.rejects(() => service.confirm(order.id, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INVALID_STATE_TRANSITION");
 });
 
 test("sales.order.revert_rechecks_downstream_facts inside the locked transaction", async () => {
-  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] };
   let updateData;
   const tx = { $queryRaw: async () => undefined, salesOrder: { findFirst: async () => ({ status: "confirmed" }), update: async ({ data }) => { updateData = data; return { ...order, ...data }; } }, bom: { count: async () => 1 }, purchaseOrder: { count: async () => 0 }, productionOrder: { count: async () => 0 } };
   const prisma = { salesOrder: { findFirst: async () => order }, $transaction: async (fn) => fn(tx) };
@@ -60,7 +60,7 @@ test("sales.bom.created_from_confirmed_order_keeps_order_no_and_source_version",
 });
 
 test("sales.bom_cannot_be_created_from_an_unconfirmed_order", async () => {
-  const service = new BomsService({ salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "TEST-SO-001", status: "draft", versions: [], boms: [] }) } }, audit);
+  const service = new BomsService({ salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "TEST-SO-001", status: "draft", versions: [], boms: [], specDetails: [] }) } }, audit);
   await assert.rejects(() => service.createFromSalesOrder("order-1", {}, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_NOT_CONFIRMED");
 });
 
@@ -78,7 +78,7 @@ test("sales.order.create persists settlement fields and keeps them in the versio
   const prisma = {
     customer: { findFirst: async () => customer },
     customerContact: { findFirst: async () => null },
-    salesOrder: { findFirst: async () => ({ ...created, customer, contact: null, versions: [], boms: [] }) },
+    salesOrder: { findFirst: async () => ({ ...created, customer, contact: null, versions: [], boms: [], specDetails: [] }) },
     $transaction: async (fn) => fn(tx),
   };
   const service = new SalesOrdersService(prisma, audit);
@@ -105,7 +105,7 @@ test("sales.order.create persists settlement fields and keeps them in the versio
 });
 
 test("sales.order.update writes settlement fields only when provided", async () => {
-  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "draft", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "draft", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] };
   const customer = { id: "customer-1", name: "海外客户", isActive: true };
   let updateData;
   const tx = {
@@ -125,7 +125,7 @@ test("sales.order.update writes settlement fields only when provided", async () 
 });
 
 test("销售单有下游事实时，改结算金额（核心字段）必须先回退下游", async () => {
-  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [] };
+  const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] };
   const prisma = {
     salesOrder: { findFirst: async () => order },
     purchaseOrder: { count: async () => 1 },

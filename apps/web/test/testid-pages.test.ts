@@ -18,6 +18,9 @@ const EXPECTED: Record<string, string> = {
   "login/page.tsx": "page-login",
   "customers/page.tsx": "page-customers",
   "sales/page.tsx": "page-sales",
+  // 下单口径细化后的整页编辑器（2026-09-16）：字段太多，弹窗放不下，所以新建/编辑各一个路由。
+  "sales/orders/new/page.tsx": "page-sales-orders-new",
+  "sales/orders/[id]/edit/page.tsx": "page-sales-orders-edit",
   "procurement/page.tsx": "page-procurement",
   "qc/page.tsx": "page-qc",
   "qc/incoming/page.tsx": "page-qc-incoming",
