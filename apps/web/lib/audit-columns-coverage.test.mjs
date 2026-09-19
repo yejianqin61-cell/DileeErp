@@ -23,11 +23,15 @@ const webRoot = fileURLToPath(new URL("..", import.meta.url));
  * 规矩：理由必须说明**这一类界面为什么不该有操作人列**，不是「先跳过」。
  */
 const EXEMPT = new Map(Object.entries({
-  // 报表页的列由**接口返回的键**动态生成（Object.keys(rows[0])），不是列定义数组，
-  // 所以用不上列工厂。它的「创建人 / 最后修改人」由后端以 created_by_name / updated_by_name
-  // 直接下发（reports.service 自己换姓名，不能下发 id —— 否则动态列会长出一列 UUID），
-  // 表头中文来自 lib/display-text.ts 的标签。
-  "app/reports/page.tsx": "报表列由接口键动态生成：姓名由后端以 created_by_name 下发，表头中文走 display-text 标签",
+  // 两处都不加，但理由不同：
+  //   ①「报表」页签的列由**接口返回的键**动态生成（Object.keys(rows[0])），不是列定义数组，
+  //      用不上列工厂；它的「创建人 / 最后修改人」由后端以 created_by_name / updated_by_name
+  //      直接下发（reports.service 自己换姓名，不能下发 id——否则动态列会长出一列 UUID），
+  //      表头中文来自 lib/display-text.ts 的标签；
+  //   ②「告警中心」页签是**跨来源的待处理清单**（生产日报告警、成品 QC 不合格、库存净变动为负
+  //      混在一张表里），行身份是「告警」而不是某张业务单据，三种来源各有各的操作人，
+  //      硬塞一列会让人以为是「这条告警是谁建的」；底层记录在自己的模块里已有这两列。
+  "app/reports/page.tsx": "报表页签的列由接口键动态生成（姓名由后端以 created_by_name 下发）；告警中心是跨来源待处理清单，行身份是告警不是单据",
 
   // 订单全链路是跨模块汇总视图：一行是一个订单在各模块的状态汇总，行身份不是某张业务单据，
   // 各模块的明细在自己页面里已有这两列。
@@ -35,10 +39,6 @@ const EXEMPT = new Map(Object.entries({
 
   // 财务报表沿用老系统版式，列与合计由后端 ReportTable 下发，且都是「期间聚合」口径。
   "components/finance/finance-report-workspace.tsx": "报表列与合计由后端 ReportTable 下发，属期间聚合口径，无单一操作人",
-
-  // 工资台账 / 工资付款两张主表用的是 PayrollSheet（可按员工汇总的表格组件），不是 DataTable；
-  // 本文件里的 <DataTable> 全部出现在详情弹窗内，是明细子表。
-  "components/finance/salary-workspace.tsx": "主表是 PayrollSheet 的按员工汇总行；文件内的 DataTable 全是详情内的明细子表",
 }));
 
 function walk(dir) {

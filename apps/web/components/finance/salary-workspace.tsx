@@ -34,6 +34,7 @@ import { ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { downloadFile } from "../../lib/download";
+import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
 import { PayrollSheet, type PayrollSheetColumn } from "./payroll-sheet";
@@ -55,7 +56,7 @@ type Department = { id: string; name: string; code: string };
 type Position = { id: string; name: string; code: string; departmentId: string };
 type PayrollPayable = { id: string; ledgerId: string; payableNo: string; amount: string; currency: string; status: string };
 type SnapshotLine = { report_date?: string; order_no?: string; operation_name?: string; wage_mode?: string; report_count?: number; quantity?: string; duration_hours?: string; amount?: string };
-type Ledger = {
+type Ledger = AuditRow & {
   id: string;
   ledgerNo: string;
   employeeId: string;
@@ -730,6 +731,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     // 发放银行：工资从哪个账户发出去的（付款表同口径；没有已过账付款时显示 -）。
     { label: "发放银行", value: bankLabel(postedBank(detail)) },
     { label: "备注", value: detail.remark, wide: true },
+    // 审计四行（2026-09-16 全站治理）：工资台账是业务记录，详情区按口径给具名四行。
+    ...auditDetailFields(detail),
   ] : [];
   const snapshot = detail?.sourceSnapshot ?? [];
   const snapshotReports = snapshot.reduce((sum, line) => sum + (line.report_count ?? 1), 0);
