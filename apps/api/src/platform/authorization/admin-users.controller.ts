@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
 import { IsArray, IsBoolean, IsString, MaxLength, MinLength } from "class-validator";
 import { AuthService } from "../auth/auth.service";
 import { AuthenticatedRequest, AuthenticationGuard } from "./authentication.guard";
@@ -20,6 +20,14 @@ class SetRolesDto { @IsArray() @IsString({ each: true }) role_keys!: string[]; }
 @RequireAdministrator()
 export class AdminUsersController {
   constructor(private readonly auth: AuthService) {}
+
+  /**
+   * 账号列表（账号管理中心用）。`@RequireAdministrator()` 的判定见 ModulePermissionGuard：
+   * administrator 与"已授予全部模块"的角色同等。四个表面角色都拿到了全部模块，
+   * 所以"实际权限等同管理员"这条在这里也成立。
+   */
+  @Get()
+  list() { return this.auth.listUsers(); }
 
   @Post()
   create(@Body() body: CreateUserDto, @Req() request: AuthenticatedRequest) { return this.auth.createUser({ username: body.username, password: body.password, displayName: body.display_name, roleKeys: body.role_keys }, request.currentUser!.id); }

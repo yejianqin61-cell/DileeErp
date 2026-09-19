@@ -11,7 +11,7 @@
 // 第二条是常见误解，代码注释在 master-data-read.controller.ts:12-18 也专门记录了它。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { ModulePermissionGuard } = require("../../dist/platform/authorization/module-permission.guard.js");
+const { ModulePermissionGuard, isAdministratorEquivalent } = require("../../dist/platform/authorization/module-permission.guard.js");
 const { REQUIRED_MODULES } = require("../../dist/platform/authorization/require-modules.decorator.js");
 const { REQUIRED_ANY_MODULES } = require("../../dist/platform/authorization/require-any-modules.decorator.js");
 const { REQUIRE_ADMINISTRATOR } = require("../../dist/platform/authorization/require-administrator.decorator.js");
@@ -143,4 +143,43 @@ test("module permission guard: soft-deleted roles do not grant permissions", asy
 test("module permission guard: permissions are the union across all of the user's roles", async () => {
   const { guard } = guardFor({ [REQUIRED_MODULES]: ["finance", "hr"] }, [role("finance_operator", ["finance"]), role("hr_operator", ["hr"])]);
   assert.equal(await guard.canActivate(fakeContext({ id: "u-1" })), true);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-19 权限规范：「所有角色都有等同于管理员的实际权限」
+//
+// 落地方式是给四个表面角色（老板/财务/人事/其他，见 surface-scope.ts）**各授予全部 6 个模块**，
+// 守卫逻辑不动。但 @RequireAdministrator() 原本硬编码 `role.key === "administrator"`，
+// 数据放行碰不到它——若不补这一条，财务导出等接口会**静默地**只对新角色 403。
+// 下面两组用例就是这条不变量的警报器。
+// ---------------------------------------------------------------------------
+
+const ALL_MODULES = ["sales", "procurement", "production", "warehouse", "finance", "hr"];
+
+test("module permission guard: a role granted every module counts as administrator-equivalent", () => {
+  assert.equal(isAdministratorEquivalent({ key: "administrator", permissions: [] }), true, "administrator 仍然直通，即使没有显式授权行");
+  assert.equal(isAdministratorEquivalent({ key: "laoban", permissions: ALL_MODULES.map((moduleKey) => ({ moduleKey })) }), true);
+  // 缺一个就不算：这正是"将来要收紧只需删一行授权"的那个开关本身，必须准确。
+  assert.equal(isAdministratorEquivalent({ key: "qita", permissions: ALL_MODULES.slice(1).map((moduleKey) => ({ moduleKey })) }), false);
+  assert.equal(isAdministratorEquivalent({ key: "qita", permissions: [] }), false);
+});
+
+test("module permission guard: RequireAdministrator admits the four surface roles (actual permissions equal administrator)", async () => {
+  for (const key of ["laoban", "caiwu", "renshi", "qita"]) {
+    const { guard } = guardFor({ [REQUIRE_ADMINISTRATOR]: true }, [role(key, ALL_MODULES)]);
+    assert.equal(await guard.canActivate(fakeContext({ id: "u-1" })), true, `${key} 必须通过管理员级校验，否则财务导出这类接口会把新角色挡在门外`);
+  }
+});
+
+test("module permission guard: a partially-granted role is still blocked by RequireAdministrator", async () => {
+  const { guard } = guardFor({ [REQUIRE_ADMINISTRATOR]: true }, [role("qita", ["sales", "hr"])]);
+  await assert.rejects(() => guard.canActivate(fakeContext({ id: "u-1" })), (error) => error.getResponse().message === "需要管理员权限");
+});
+
+test("module permission guard: the four surface roles also pass class-level module requirements", async () => {
+  // 每个表面角色都被授予全部模块，所以 finance/hr 这些类级要求对它们都成立——同一份数据的另一面。
+  for (const key of ["laoban", "caiwu", "renshi", "qita"]) {
+    const { guard } = guardFor({ [REQUIRED_MODULES]: ["finance", "hr"] }, [role(key, ALL_MODULES)]);
+    assert.equal(await guard.canActivate(fakeContext({ id: "u-1" })), true);
+  }
 });

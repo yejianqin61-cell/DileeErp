@@ -19,7 +19,7 @@ import { AppShell } from "../components/layout/app-shell";
 const route = vi.hoisted(() => ({ pathname: "/" }));
 vi.mock("next/navigation", () => ({ usePathname: () => route.pathname }));
 
-/** 与 app-shell.tsx:12-21 的导航表一致（文案 / href / 生成的 testid）。 */
+/** 与 app-shell.tsx 的导航表一致（文案 / href / 生成的 testid）。账号中心固定排在最后。 */
 const NAV_ITEMS = [
   { label: "工作台", href: "/", testId: "nav-link-dashboard" },
   { label: "生产", href: "/production", testId: "nav-link-production" },
@@ -30,7 +30,13 @@ const NAV_ITEMS = [
   { label: "人事", href: "/hr", testId: "nav-link-hr" },
   { label: "客户与销售", href: "/sales", testId: "nav-link-sales" },
   { label: "报表与告警", href: "/reports", testId: "nav-link-reports" },
+  { label: "账号中心", href: "/account", testId: "nav-link-account" },
 ] as const;
+
+/** 老板/财务的可见栏目（= 全部）与人事的可见栏目（= 人事 + 账号中心）。 */
+const FULL_SECTIONS = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reports", "finance", "hr", "account"];
+const HR_SECTIONS = ["hr", "account"];
+const ALL_MODULES = ["sales", "procurement", "production", "warehouse", "finance", "hr"];
 
 /** 视为"会话已失效"的 code 白名单（app-shell.tsx:32）。 */
 const SESSION_LOST_CODES = ["UNAUTHORIZED", "UNAUTHENTICATED", "AUTH_REQUIRED", "SESSION_EXPIRED"] as const;
@@ -40,8 +46,27 @@ const SESSION_LOST_CODES = ["UNAUTHORIZED", "UNAUTHENTICATED", "AUTH_REQUIRED", 
  * `Response` 的 body 是一次性的，同一个实例第二次 `response.json()` 会 reject，
  * api-client 会把它降级成 `请求失败（HTTP 200）`（lib/api-client.ts:19），
  * 于是除第一个用例外的所有用例都拿到错误态 —— 与组件行为无关的纯测试装配缺陷。
+ *
+ * 2026-09-19 权限规范起，`/auth/me` 还会带**表面权限**（栏目集合 / 范围 / 角色）与**实际权限**
+ * （模块）。默认给"老板"，于是"全部导航 + 内容直出"这一组既有断言仍然成立；
+ * 要测门禁就传 overrides 换成人事或其他角色。
  */
-const me = () => apiOk({ display_name: "张三", username: "zhangsan" });
+const me = (overrides: Record<string, unknown> = {}) => apiOk({
+  display_name: "张三",
+  username: "zhangsan",
+  role_keys: ["laoban"],
+  surface_roles: ["laoban"],
+  surface_scope: "full",
+  surface_sections: FULL_SECTIONS,
+  module_keys: ALL_MODULES,
+  ...overrides,
+});
+
+/** 人事账号：按规则只能进人事页面（以及所有人都能进的账号中心）。 */
+const apiAsHr = () => apiOk({ display_name: "人事小王", username: "renshi", role_keys: ["renshi"], surface_roles: ["renshi"], surface_scope: "hr", surface_sections: HR_SECTIONS, module_keys: ALL_MODULES });
+
+/** 其他角色：除财务、人事之外的页面。 */
+const apiAsGeneral = () => apiOk({ display_name: "员工小赵", username: "yuangong1", role_keys: ["qita"], surface_roles: ["qita"], surface_scope: "general", surface_sections: ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reports", "account"], module_keys: ALL_MODULES });
 
 type LocationStub = { href: string; reload: ReturnType<typeof vi.fn>; assign: ReturnType<typeof vi.fn>; replace: ReturnType<typeof vi.fn> };
 
@@ -261,8 +286,7 @@ describe("AppShell · 鉴权通过后的导航与主区渲染", () => {
   });
 });
 
-describe("AppShell · 登录页旁路", () => {
-  it("pathname 为 /login 时不发任何鉴权请求，直接渲染登录页", async () => {
+describe("AppShell · 登录页旁路", () => {  it("pathname 为 /login 时不发任何鉴权请求，直接渲染登录页", async () => {
     route.pathname = "/login";
     // 任何请求都会让本用例以"不该发生的调用"失败
     const calls = stubApi(() => apiErr(500, "SHOULD_NOT_BE_CALLED", "pathname=/login 不应发起请求"));
@@ -388,5 +412,94 @@ describe("AppShell · 退出登录", () => {
     await waitFor(() => expect(location.href).toBe("/login"));
 
     expect(calls.map((call) => call.url)).toEqual(["/api/v1/auth/me", "/api/v1/auth/logout"]);
+  });
+});
+
+/**
+ * 表面权限（2026-09-19 权限规范）：菜单只留进得去的、越权直达就地拦。
+ *
+ * 为什么这几条必须测：门禁与菜单都由 `/auth/me` 的 `surface_sections` 驱动，
+ * 而它算错时**不会有任何报错**——菜单少一项、或页面进不去，只有人试用才会发现。
+ * 规则本身（谁能看哪些栏目）在后端 surface-scope.test.cjs 与前端 lib/surface-permission.test.mjs
+ * 各有一份矩阵；这里测的是**组件确实按它执行**：藏菜单、就地拦、不改地址栏。
+ */
+describe("AppShell · 表面权限门禁", () => {
+  it("人事：菜单只剩人事与账号中心，直达 /finance 被就地拦截且不渲染页面内容", async () => {
+    route.pathname = "/finance";
+    stubApi(apiAsHr);
+
+    renderShell(<div data-testid="page-content">财务看板</div>);
+
+    const navEl = await screen.findByTestId("app-nav");
+    expect(within(navEl).getAllByRole("link").map((link) => link.textContent)).toEqual(["人事", "账号中心"]);
+    // 门禁页取代 children：财务内容一个字都不许出现
+    expect(screen.getByTestId("page-access-denied")).toBeVisible();
+    expect(screen.queryByTestId("page-content")).toBeNull();
+    // 就地渲染：地址栏不变（没有跳转），导航还在，用户能点回自己的页面
+    expect(screen.getByTestId("access-denied-message")).toHaveTextContent("人事");
+    expect(screen.getByTestId("access-denied-message")).toHaveTextContent("财务");
+    expect(within(screen.getByTestId("access-denied-links")).getByRole("link", { name: "去人事" })).toHaveAttribute("href", "/hr");
+  });
+
+  it("人事：自己权限内的页面正常渲染（门禁不会误伤）", async () => {
+    route.pathname = "/hr";
+    stubApi(apiAsHr);
+
+    renderShell(<div data-testid="page-content">员工名单</div>);
+
+    await screen.findByTestId("app-nav");
+    expect(screen.getByTestId("page-content")).toHaveTextContent("员工名单");
+    expect(screen.queryByTestId("page-access-denied")).toBeNull();
+  });
+
+  it("其他角色：菜单隐藏财务与人事，直达 /hr 被拦", async () => {
+    route.pathname = "/hr";
+    stubApi(apiAsGeneral);
+
+    renderShell(<div data-testid="page-content">员工名单</div>);
+
+    const navEl = await screen.findByTestId("app-nav");
+    const labels = within(navEl).getAllByRole("link").map((link) => link.textContent);
+    expect(labels).not.toContain("财务");
+    expect(labels).not.toContain("人事");
+    expect(labels).toContain("工作台");
+    expect(labels).toContain("报表与告警");
+    expect(screen.getByTestId("page-access-denied")).toBeVisible();
+  });
+
+  it("其他角色：财务页同样被拦（用户拍板的两个禁区之一）", async () => {
+    route.pathname = "/finance/payable";
+    stubApi(apiAsGeneral);
+
+    renderShell(<div data-testid="page-content">应付管理</div>);
+
+    await screen.findByTestId("app-nav");
+    expect(screen.getByTestId("page-access-denied")).toBeVisible();
+    expect(screen.getByTestId("access-denied-message")).toHaveTextContent("财务");
+    expect(screen.queryByTestId("page-content")).toBeNull();
+  });
+
+  it("老板：全部导航可见、财务页直出（最高表面权限）", async () => {
+    route.pathname = "/finance";
+    stubApi(() => me());
+
+    renderShell(<div data-testid="page-content">财务看板</div>);
+
+    const navEl = await screen.findByTestId("app-nav");
+    expect(within(navEl).getAllByRole("link")).toHaveLength(NAV_ITEMS.length);
+    expect(screen.getByTestId("page-content")).toHaveTextContent("财务看板");
+    expect(screen.queryByTestId("page-access-denied")).toBeNull();
+  });
+
+  it("顶栏显示当前角色，并且总是留一个进账号中心的入口", async () => {
+    route.pathname = "/";
+    stubApi(apiAsHr);
+
+    renderShell();
+
+    await screen.findByTestId("app-nav");
+    expect(screen.getByTestId("user-menu-role")).toHaveTextContent("人事");
+    expect(screen.getByTestId("user-menu-account")).toHaveAttribute("href", "/account");
+    expect(screen.getByTestId("nav-link-account")).toHaveAttribute("href", "/account");
   });
 });

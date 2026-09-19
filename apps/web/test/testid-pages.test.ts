@@ -59,6 +59,8 @@ const EXPECTED: Record<string, string> = {
   "hr/departments/page.tsx": "page-hr-departments",
   "hr/positions/page.tsx": "page-hr-positions",
   "reports/page.tsx": "page-reports",
+  // 账号管理中心（2026-09-19 权限规范）：所有角色都能进——自助改姓名/改密码/看权限范围。
+  "account/page.tsx": "page-account",
 };
 
 /**
