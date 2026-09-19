@@ -33,7 +33,14 @@ export type VoucherImageInput = {
   remark?: string | null;
   /** 来源（收支流水号 / 被红冲的凭证号），没有就画 "-"。 */
   sourceLabel?: string | null;
-  createdBy?: string | null;
+  /**
+   * 制单人**姓名**（不是 id）。
+   *
+   * 字段名从 `createdBy` 改成 `makerName` 是刻意的：2026-09-16 之前这里收的是
+   * `voucher.createdBy`（一个 UUID），于是导出的凭证图片上印着「制单：6f3a1c8e-…」。
+   * 名字里带 Name，传错时一眼能看出来；取值见 `Voucher.created_by_name`（后端在响应出口注入）。
+   */
+  makerName?: string | null;
   lines: VoucherImageLine[];
 };
 
@@ -160,7 +167,7 @@ export function voucherSvg(input: VoucherImageInput): string {
 
   // 签字栏与备注
   y += 30;
-  parts.push(text(MARGIN, y, `制单：${input.createdBy ?? ""}`, { size: 13, fill: MUTED }));
+  parts.push(text(MARGIN, y, `制单：${input.makerName ?? ""}`, { size: 13, fill: MUTED }));
   parts.push(text(MARGIN + 180, y, "审核：", { size: 13, fill: MUTED }));
   parts.push(text(MARGIN + 360, y, "记账：", { size: 13, fill: MUTED }));
   parts.push(text(MARGIN + 540, y, "单位负责人：", { size: 13, fill: MUTED }));

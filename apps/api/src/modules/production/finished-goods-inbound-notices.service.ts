@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import type { FinishedGoodsInboundNotice } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
+import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { syncFinishedGoodsInboundNoticeStatus } from "./finished-goods-inbound-notice-status";
@@ -19,7 +20,7 @@ type NoticeRow = FinishedGoodsInboundNotice;
  */
 @Injectable()
 export class FinishedGoodsInboundNoticesService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly actors: AuditActorService) {}
 
   async list(filter: { order_no?: string; production_order_id?: string; status?: string }) {
     const rows = await this.prisma.finishedGoodsInboundNotice.findMany({
@@ -77,7 +78,10 @@ export class FinishedGoodsInboundNoticesService {
       outbound_quantity: moved("finished_goods_outbound").toString(),
       customer_return_quantity: moved("finished_goods_customer_return").toString(),
       notice_count: notices.length,
-      notices: notices.map((row) => this.decorate(row, progress.get(row.id))),
+      // 这个响应是**手工拼的对象**、通知行在嵌套数组里，而响应出口的 AuditActorInterceptor
+      // 只处理顶层行（刻意如此：递归整个响应体会悄悄改动大量接口的载荷）。
+      // 所以嵌套的行数组要在这里自己补姓名，否则界面上的「创建人 / 最后修改人」恒为「—」。
+      notices: await this.actors.attachAll(notices.map((row) => this.decorate(row, progress.get(row.id)))),
     };
   }
 

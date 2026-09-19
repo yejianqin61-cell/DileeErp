@@ -46,6 +46,8 @@ export class FinishedGoodsQcService {
             unit: notice.unitNameSnapshot,
             available_quantity: available.toString(),
             source_status: notice.status,
+            // 同上：手工投影必须显式带出审计身份字段，否则界面两列恒为「—」。
+            createdBy: notice.createdBy, updatedBy: notice.updatedBy, createdAt: notice.createdAt, updatedAt: notice.updatedAt,
           });
         }
       }
@@ -54,7 +56,7 @@ export class FinishedGoodsQcService {
         for (const source of returns) {
           const used = await this.submittedQuantity(source.id, "outsource_finished_goods_return");
           const available = new Prisma.Decimal(source.quantity).minus(used);
-          if (available.gt(0)) result.push({ source_type: "outsource_finished_goods_return", source_id: source.id, order_no: order.orderNo, production_order_id: order.id, production_order_no: order.productionOrderNo, product_name: source.productDescription, product_specification: order.productSpecification, unit_id: source.unitId, unit: source.unit.name, available_quantity: available.toString(), source_status: source.status });
+          if (available.gt(0)) result.push({ source_type: "outsource_finished_goods_return", source_id: source.id, order_no: order.orderNo, production_order_id: order.id, production_order_no: order.productionOrderNo, product_name: source.productDescription, product_specification: order.productSpecification, unit_id: source.unitId, unit: source.unit.name, available_quantity: available.toString(), source_status: source.status, createdBy: source.createdBy, updatedBy: source.updatedBy, createdAt: source.createdAt, updatedAt: source.updatedAt });
         }
       }
     }
@@ -190,6 +192,10 @@ export class FinishedGoodsQcService {
       // 质检更正入口需要的原始口径：更正对话框要预填原值，并按服务端同一条件（还没有入库/次品事实）
       // 决定是否允许更正 —— 否则界面会给出一个必然被 correctQc 拒绝的按钮。
       inspected_quantity: row.inspectedQuantity.toString(), inspection_date: row.inspectionDate, rejection_reason: row.rejectionReason ?? null,
+      // 审计身份字段：这几行是**手工挑字段**拼出来的 DTO，不带上就会被响应出口的
+      // AuditActorInterceptor 漏掉（它只认 createdBy/updatedBy 键），界面上的
+      // 「创建人 / 最后修改人」会恒显示「—」。2026-09-16 全站治理。
+      createdBy: row.createdBy, updatedBy: row.updatedBy, createdAt: row.createdAt, updatedAt: row.updatedAt,
       available_for_correction: (used.get(row.id) ?? new Prisma.Decimal(0)).plus(usedDefective.get(row.id) ?? new Prisma.Decimal(0)).eq(0) }));
   }
 

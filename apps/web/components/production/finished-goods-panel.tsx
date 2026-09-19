@@ -7,16 +7,18 @@
 // - 包装累计报工量就是「可通知入库」的数量，可以边生产边分批通知，不必等包装全部完成；
 // - 仓库按通知送检/QC，QC 合格量再入库；本面板只负责生产侧的报工量→通知→进度展示。
 import { useEffect, useRef, useState } from "react";
+import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "../ui/button";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { DataTable } from "../data/data-table";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type PackagingOperation = { id: string; name: string; sequence_no: number; target_quantity: string; status: string };
-type Notice = {
+type Notice = AuditRow & {
   id: string; noticeNo: string; noticeDate: string; batchNo?: string | null; status: string;
   noticeQuantity: string; submittedQuantity: string; qcQualifiedQuantity: string; qcRejectedQuantity: string;
   inboundDraftQuantity: string; inboundPostedQuantity: string; availableSubmissionQuantity: string; remainingForInbound: string;
@@ -111,7 +113,7 @@ export function FinishedGoodsPanel({ productionOrderId, executionMode, orderStat
     }
   }
 
-  const noticeColumns = [
+  const noticeColumns: ColumnDef<Notice>[] = [
     { accessorKey: "noticeNo", header: "通知单" },
     { id: "batch", header: "批次", cell: ({ row }: { row: { original: Notice } }) => row.original.batchNo ?? "-" },
     { id: "date", header: "通知日期", cell: ({ row }: { row: { original: Notice } }) => row.original.noticeDate.slice(0, 10) },
@@ -122,6 +124,9 @@ export function FinishedGoodsPanel({ productionOrderId, executionMode, orderStat
     { accessorKey: "inboundDraftQuantity", header: "在途入库" },
     { accessorKey: "inboundPostedQuantity", header: "已入库" },
     { accessorKey: "status", header: "状态", cell: ({ row }: { row: { original: Notice } }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    // 通知行是嵌套在成品入库汇总里的数组，姓名由 finished-goods-inbound-notices.service 显式补好
+    // （响应出口的拦截器只处理顶层行）。
+    ...auditColumns<Notice>(),
     // 已有送检记录的通知后端不允许取消（会 422），这里直接不给按钮，避免必然失败的操作。
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: Notice } }) => row.original.status === "cancelled" || Number(row.original.submittedQuantity ?? 0) > 0 ? null : <Button size="sm" variant="ghost" onClick={() => cancelNotice(row.original)}>取消</Button> },
   ];

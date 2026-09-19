@@ -12,14 +12,15 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { DataTable } from "../data/data-table";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { displayStatus } from "../../lib/display-text";
 import { emitQcDataChanged, subscribeQcDataChanged } from "./qc-refresh";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
-type QcAvailable = { qc_id: string; qc_no: string; order_no: string; submission_id: string; source_type: string; qualified_quantity: string; conditional_accept_quantity: string; rejected_quantity: string; available_for_inbound_quantity: string; available_for_defective_quantity: string; unit?: string; conditionally_accepted?: boolean };
-type Defective = { id: string; defectiveNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null };
+type QcAvailable = AuditRow & { qc_id: string; qc_no: string; order_no: string; submission_id: string; source_type: string; qualified_quantity: string; conditional_accept_quantity: string; rejected_quantity: string; available_for_inbound_quantity: string; available_for_defective_quantity: string; unit?: string; conditionally_accepted?: boolean };
+type Defective = AuditRow & { id: string; defectiveNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 
 const number = (value: string | undefined) => Number(value ?? 0);
@@ -89,6 +90,7 @@ export function QcInboundPanel() {
     { id: "unit", header: "单位", cell: ({ row }) => row.original.unit ?? "-" },
     { accessorKey: "available_for_inbound_quantity", header: "可入库（净值）" },
     { accessorKey: "available_for_defective_quantity", header: "可登记次品" },
+    ...auditColumns<QcAvailable>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{number(row.original.available_for_inbound_quantity) > 0 ? <Button size="sm" variant="secondary" onClick={() => registerInbound(row.original)}>登记入库</Button> : null}{number(row.original.available_for_defective_quantity) > 0 ? <Button size="sm" variant="ghost" onClick={() => registerDefective(row.original)}>登记次品</Button> : null}</div> },
   ];
   const defectiveColumns: ColumnDef<Defective>[] = [
@@ -97,6 +99,7 @@ export function QcInboundPanel() {
     { id: "product", header: "成品", cell: ({ row }) => row.original.productNameSnapshot ?? "-" },
     { accessorKey: "quantity", header: "数量" },
     { id: "status", header: "状态", cell: ({ row }) => displayStatus(row.original.status) },
+    ...auditColumns<Defective>(),
     { id: "actions", header: "操作", cell: ({ row }) => row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/defectives/${row.original.id}/post`, {}, "次品已过账")}>过账</Button> : row.original.status === "posted" ? <Button size="sm" variant="ghost" onClick={() => reverseDefective(row.original)}>冲销</Button> : null },
   ];
 

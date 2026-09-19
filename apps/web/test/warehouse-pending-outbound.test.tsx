@@ -86,7 +86,10 @@ describe("仓库首页：待出库通知面板", () => {
     // 多条明细用「、」连接，仓库一眼看到要出哪些料、各多少
     expect(row.getByText("面料A × 3米、拉链B × 8条")).toBeVisible();
     expect(row.getByText("2")).toBeVisible();
-    expect(row.getByText(new Date("2026-01-03T02:00:00.000Z").toLocaleString("zh-CN", { hour12: false }))).toBeVisible();
+    // 固定北京时间到分（2026-01-03T02:00Z = 北京 10:00）。
+    // 这里原先写 `new Date(...).toLocaleString("zh-CN")` —— 期望值跟着**跑测试那台机器**的时区走，
+    // 在 UTC 的 CI 上必然红。时间口径统一走 lib/audit-time 后，断言是机器无关的。
+    expect(row.getByText("01-03 10:00")).toBeVisible();
     expect(pendingCalls(calls)).toHaveLength(1);
     // 原有的待入库通知面板不受影响
     expect(screen.getByRole("heading", { name: /待入库通知/ })).toBeVisible();

@@ -12,15 +12,18 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { DataTable } from "../data/data-table";
+import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { EmptyState } from "../feedback/states";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { RecordDetailDialog, type DetailField } from "../finance/record-detail-dialog";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+// 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按运行宿主时区走。
+import { formatBeijingShort } from "../../lib/audit-time";
 import { isMaterialMovementDocumentType, movementEditorHref } from "../../lib/material-slip-api";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string } | null; material?: { materialCode?: string; name: string; specificationModel?: string | null } | null };
-type Movement = { id: string; movementNo: string; documentType: string; status: string; orderNo?: string | null; productionOrderId?: string | null; businessDate?: string | null; submittedAt?: string | null; createdAt: string; remark?: string | null; reason?: string | null; productionOrder?: { productionOrderNo: string; orderNo: string } | null; lines: MovementLine[] };
+type Movement = AuditRow & { id: string; movementNo: string; documentType: string; status: string; orderNo?: string | null; productionOrderId?: string | null; businessDate?: string | null; submittedAt?: string | null; createdAt: string; remark?: string | null; reason?: string | null; productionOrder?: { productionOrderNo: string; orderNo: string } | null; lines: MovementLine[] };
 type BomItem = { materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; requiredQuantity: string; unit: string; unitId?: string | null };
 type Material = { id: string; materialCode?: string; name: string; materialType?: string; isActive?: boolean };
 type PreviewLine = { material_id: string; material_name?: string; material_code?: string; model?: string | null; unit?: string | null; bom_reference_quantity: string | null; inventory_quantity?: string; available_before: string; available_after: string; cumulative_issued_after: string; production_outstanding_quantity?: string | null; risks: Array<{ type: string }> };
@@ -186,6 +189,7 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     { id: "businessDate", header: "业务日期", cell: ({ row }: { row: { original: Movement } }) => (row.original.businessDate ?? row.original.createdAt ?? "").slice(0, 10) },
     { id: "lines", header: "明细", cell: ({ row }: { row: { original: Movement } }) => `${row.original.lines.length} 项 / 合计 ${row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0)}` },
     { id: "status", header: "状态", cell: ({ row }: { row: { original: Movement } }) => statusLabels[row.original.status] ?? row.original.status },
+    ...auditColumns<Movement>(),
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: Movement } }) => {
       const movement = row.original;
       if (movement.status === "draft") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busy === movement.id} onClick={() => openEdit(movement)}>编辑</Button><Button size="sm" disabled={busy === movement.id} onClick={() => void submit(movement)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busy === movement.id} onClick={() => void remove(movement)}>删除</Button></div>;
@@ -213,9 +217,10 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     { label: "业务日期", value: (detail.businessDate ?? detail.createdAt ?? "").slice(0, 10) },
     { label: "生产单号", value: detail.productionOrder?.productionOrderNo ?? "-" },
     { label: "订单号", value: detail.orderNo ?? detail.productionOrder?.orderNo ?? "-" },
-    { label: "提交时间", value: detail.submittedAt ? new Date(detail.submittedAt).toLocaleString("zh-CN", { hour12: false }) : "-" },
+    { label: "提交时间", value: formatBeijingShort(detail.submittedAt) || "-" },
     { label: "备注", value: detail.remark, wide: true },
     { label: "补料原因", value: detail.reason, wide: true },
+    ...auditDetailFields(detail),
   ] : [];
 
   return <section className="panel">

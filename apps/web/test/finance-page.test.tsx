@@ -889,7 +889,7 @@ const flowEntry = (over: Record<string, unknown> = {}) => ({
 const voucher = (over: Record<string, unknown> = {}) => ({
   id: "voucher-1", voucherNo: "记-2026-09-0001", voucherDate: "2026-09-15T00:00:00.000Z", period: "2026-09",
   sourceType: "cash_flow_entry", sourceId: "cf-1", summary: "香港迪礼 · 货款", currency: "USD",
-  debitTotal: "14310.0000", creditTotal: "14310.0000", status: "draft", remark: null, createdBy: "user-1",
+  debitTotal: "14310.0000", creditTotal: "14310.0000", status: "draft", remark: null, createdBy: "user-1", created_by_name: "张三",
   source_entry: { id: "cf-1", entryNo: "CF-20260915-0001", status: "posted" },
   lines: [
     { id: "line-1", lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "香港迪礼 · 货款", amount: "14310.0000", currency: "USD" },
@@ -980,6 +980,10 @@ describe("凭证管理：从收支流水生成凭证", () => {
     expect(sheet.getByTestId("voucher-line-1")).toHaveTextContent("14310");
     expect(sheet.getByTestId("voucher-line-2")).toHaveTextContent("货款");
     expect(sheet.getByText("合计")).toBeInTheDocument();
+    // 制单处必须是**姓名**，不能是 createdBy 那个 UUID：
+    // 2026-09-16 之前这里渲染 `voucher.createdBy`，凭证纸与打印件上印的是「制单：user-1」。
+    expect(sheet.getByText("制单：张三")).toBeInTheDocument();
+    expect(sheet.queryByText(/制单：user-1/)).toBeNull();
 
     const print = vi.fn();
     Object.defineProperty(window, "print", { configurable: true, value: print });

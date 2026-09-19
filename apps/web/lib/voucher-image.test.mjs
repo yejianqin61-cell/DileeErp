@@ -19,7 +19,9 @@ const voucher = (over = {}) => ({
   debitTotal: "14310.0000",
   creditTotal: "14310.0000",
   sourceLabel: "收支流水 CF-20260915-0001",
-  createdBy: "user-1",
+  // 制单人必须是**姓名**：字段名从 createdBy 改成 makerName 就是为了让「传了 UUID」一眼可见
+  // （2026-09-16 之前这里传 voucher.createdBy，凭证图片上印的是「制单：6f3a1c8e-…」）。
+  makerName: "张三",
   lines: [
     { lineNo: 1, direction: "debit", subjectLabel: "银行存款", summary: "香港迪礼 · 货款", amount: "14310.0000" },
     { lineNo: 2, direction: "credit", subjectLabel: "货款", summary: "香港迪礼 · 货款", amount: "14310.0000" },

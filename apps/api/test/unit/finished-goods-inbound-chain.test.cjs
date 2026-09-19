@@ -119,8 +119,15 @@ function services(state) {
   const prisma = { ...client, $transaction: async (fn) => fn(client) };
   const audit = auditStub();
   const inventory = { finishedGoodsBalance: async () => new Prisma.Decimal(0) };
+  // 通知汇总的 notices[] 是嵌套数组，姓名由服务自己补（响应出口的拦截器只处理顶层行）。
+  const { withActorNames } = require("../../dist/platform/audit/audit-actor.service.js");
+  const names = (ids) => new Map([...new Set(ids.filter(Boolean))].map((id) => [id, "张三"]));
+  const actors = {
+    namesOf: async (ids) => names(ids),
+    attachAll: async (rows) => rows.map((row) => withActorNames(row, names([row.createdBy, row.updatedBy])))
+  };
   return {
-    notices: new FinishedGoodsInboundNoticesService(prisma, audit),
+    notices: new FinishedGoodsInboundNoticesService(prisma, audit, actors),
     qc: new FinishedGoodsQcService(prisma, audit, {}),
     stock: new FinishedGoodsInventoryService(prisma, audit, inventory),
   };

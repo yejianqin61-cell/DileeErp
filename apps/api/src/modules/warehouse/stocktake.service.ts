@@ -448,7 +448,7 @@ export class StocktakeService {
     return status === CONFIRMED ? "已确认" : status === REVERSED ? "已冲销" : "草稿";
   }
 
-  private headerOut(row: { id: string; stocktakeNo: string; periodMonth: string; status: string; sourceFileName: string | null; importedAt: Date | null; confirmedAt: Date | null; reversedAt: Date | null; reversalReason: string | null; remark: string | null; createdAt: Date }, lineCount: number, differingCount: number) {
+  private headerOut(row: { id: string; stocktakeNo: string; periodMonth: string; status: string; sourceFileName: string | null; importedAt: Date | null; confirmedAt: Date | null; reversedAt: Date | null; reversalReason: string | null; remark: string | null; createdAt: Date; updatedAt: Date; createdBy: string; updatedBy: string }, lineCount: number, differingCount: number) {
     return {
       id: row.id,
       stocktake_no: row.stocktakeNo,
@@ -462,6 +462,15 @@ export class StocktakeService {
       reversal_reason: row.reversalReason,
       remark: row.remark,
       created_at: row.createdAt,
+      // 审计身份字段必须在**手工投影**里显式带出去：查询本身是整行透传（findMany 无 select），
+      // 但这里重投影后 createdBy/updatedBy/updatedAt 会被丢掉，响应出口的
+      // AuditActorInterceptor 就补不出「创建人 / 最后修改人」姓名（界面只能显示「—」）。
+      // 2026-09-16 全站治理：凡是手工投影的列表/详情都要带上这三个键。
+      // 只给驼峰：拦截器认的是 createdBy/updatedBy；多带一份蛇形键会让「按响应键生成列」
+      // 的页面（报表页那种）把 UUID 渲染成一列。
+      createdBy: row.createdBy,
+      updatedBy: row.updatedBy,
+      updated_at: row.updatedAt,
       line_count: lineCount,
       differing_line_count: differingCount,
     };

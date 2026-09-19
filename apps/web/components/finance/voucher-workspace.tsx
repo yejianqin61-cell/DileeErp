@@ -27,8 +27,9 @@ import { ApiClientError, apiGet, apiRequest, apiPost } from "../../lib/api-clien
 import { exportVoucherPng } from "../../lib/voucher-image";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { money } from "./record-detail-dialog";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 
-type CashFlowEntry = {
+type CashFlowEntry = AuditRow & {
   id: string; entryNo: string; entryDate: string; counterpartyName: string; direction: string;
   amount: string; currency: string; status: string; settlementMethod: string | null; remark: string | null;
   /** 会计科目（分类 = 科目类别，项目 = 科目名称）：凭证的业务分录科目取自它。 */
@@ -40,7 +41,7 @@ type VoucherLine = {
   /** 资金类分录引用的具体银行账户（用户要求「银行存款要引用具体的银行账户」）。 */
   bank?: { id: string; bankName: string; accountNumber: string } | null;
 };
-type Voucher = {
+type Voucher = AuditRow & {
   id: string; voucherNo: string; voucherDate: string; period: string; sourceType: string; sourceId: string;
   summary: string; currency: string; debitTotal: string; creditTotal: string; status: string; status_label?: string;
   remark: string | null; createdBy?: string; lines: VoucherLine[];
@@ -178,7 +179,8 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
         debitTotal: voucher.debitTotal,
         creditTotal: voucher.creditTotal,
         remark: voucher.remark,
-        createdBy: voucher.createdBy ?? null,
+        // 制单人取**姓名**（后端响应出口注入的 created_by_name），不是 createdBy 那个 UUID。
+        makerName: voucher.created_by_name ?? null,
         sourceLabel: voucher.source_entry
           ? `收支流水 ${voucher.source_entry.entryNo}`
           : voucher.counterpart_voucher ? `红冲 ${voucher.counterpart_voucher.voucherNo}` : null,
@@ -266,6 +268,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
     { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "settlement", header: "结算方式", cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
     { id: "voucher", header: "凭证", cell: ({ row }) => voucherByEntry.get(row.original.id)?.voucherNo ?? "未生成" },
+    ...auditColumns<CashFlowEntry>(),
     { id: "actions", header: "操作", cell: ({ row }) => {
       const voucher = voucherByEntry.get(row.original.id);
       if (row.original.status !== "posted") return <span className="panel-note">已冲销流水不可生成凭证</span>;
@@ -292,6 +295,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
     { id: "source", header: "来源", cell: ({ row }) => row.original.source_entry
       ? `收支流水 ${row.original.source_entry.entryNo}`
       : row.original.counterpart_voucher ? `红冲 ${row.original.counterpart_voucher.voucherNo}` : "-" },
+    ...auditColumns<Voucher>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       <Button size="sm" variant="ghost" onClick={() => void openSheet(row.original.id)}>凭证纸</Button>
       {row.original.status === "draft" && <>
@@ -383,7 +387,7 @@ function VoucherSheet({ voucher }: { voucher: Voucher }) {
         <tr className="voucher-sheet-total"><td colSpan={2}>合计</td><td className="num">{money(voucher.debitTotal, voucher.currency)}</td><td className="num">{money(voucher.creditTotal, voucher.currency)}</td></tr>
       </tbody>
     </table>
-    <div className="voucher-sheet-sign"><span>制单：{voucher.createdBy ?? "—"}</span><span>审核：</span><span>记账：</span><span>单位负责人：</span></div>
+    <div className="voucher-sheet-sign"><span>制单：{voucher.created_by_name ?? "—"}</span><span>审核：</span><span>记账：</span><span>单位负责人：</span></div>
     {voucher.remark ? <p className="panel-note">备注：{voucher.remark}</p> : null}
     {voucher.reversal_voucher ? <p className="panel-note">红冲凭证：{voucher.reversal_voucher.voucherNo}（{STATUS_LABELS[voucher.reversal_voucher.status] ?? voucher.reversal_voucher.status}）</p> : null}
   </div>;

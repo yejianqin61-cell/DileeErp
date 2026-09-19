@@ -89,10 +89,26 @@ function buildClient(state = {}) {
   return client;
 }
 
+/**
+ * 操作人姓名的假解析器（2026-09-16 全站治理）。
+ *
+ * 这个服务的汇总响应里通知行在**嵌套数组**里，响应出口的 AuditActorInterceptor 只处理顶层行，
+ * 所以服务自己要给 notices[] 补姓名（一行 attachAll）。这里给同样的桩，任何 id 都解成「张三」。
+ */
+function actorsStub() {
+  const { withActorNames } = require("../../dist/platform/audit/audit-actor.service.js");
+  const names = (ids) => new Map([...new Set(ids.filter(Boolean))].map((id) => [id, "张三"]));
+  return {
+    namesOf: async (ids) => names(ids),
+    attach: async (row) => withActorNames(row, names([row.createdBy, row.updatedBy])),
+    attachAll: async (rows) => rows.map((row) => withActorNames(row, names([row.createdBy, row.updatedBy])))
+  };
+}
+
 function buildService(state = {}) {
   const client = buildClient(state);
   const prisma = { ...client, $transaction: async (fn) => fn(client) };
-  return { client, service: new FinishedGoodsInboundNoticesService(prisma, auditStub()) };
+  return { client, service: new FinishedGoodsInboundNoticesService(prisma, auditStub(), actorsStub()) };
 }
 
 const noticeInput = (overrides = {}) => ({ production_order_id: "order-1", notice_quantity: "20", notice_date: "2026-09-10", batch_no: "B1", ...overrides });
