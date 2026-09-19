@@ -44,7 +44,8 @@ export class ProductionDailyAlertsService {
       const current = await tx.dailyReportMergeAnomaly.findUnique({ where: { id } });
       if (!current) throw new NotFoundException({ code: "DAILY_REPORT_MERGE_ANOMALY_NOT_FOUND", message: "日报异常不存在", details: [] });
       if (current.status === "resolved") return current;
-      const row = await tx.dailyReportMergeAnomaly.update({ where: { id }, data: { status: "resolved", resolvedAt: new Date() } });
+      // updatedBy 让行上自带「谁解决的」（2026-09-16 全站治理）；updatedAt 由 Prisma 的 @updatedAt 自动写。
+      const row = await tx.dailyReportMergeAnomaly.update({ where: { id }, data: { status: "resolved", resolvedAt: new Date(), updatedBy: user.id } });
       await tx.auditEvent.create({ data: { action: "daily_report_merge_anomaly.resolve", entityType: "daily_report_merge_anomaly", actorId: user.id, entityId: id, details: { report_kind: current.reportKind, remark: remark.trim() } } });
       return row;
     });

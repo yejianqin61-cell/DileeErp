@@ -434,6 +434,8 @@ test("production-daily-alerts.resolveMergeAnomaly_marks_resolved_and_audits_the_
   assert.equal(calls.anomalyUpdate[0].where.id, "anomaly-1");
   assert.equal(calls.anomalyUpdate[0].data.status, "resolved");
   assert.ok(calls.anomalyUpdate[0].data.resolvedAt instanceof Date);
+  // 2026-09-16 全站治理：行上要自带「谁解决的」，界面才能显示「最后修改人」而不是去翻审计表。
+  assert.equal(calls.anomalyUpdate[0].data.updatedBy, USER.id);
   assert.equal(calls.auditCreate[0].data.action, "daily_report_merge_anomaly.resolve");
   assert.equal(calls.auditCreate[0].data.entityType, "daily_report_merge_anomaly");
   assert.equal(calls.auditCreate[0].data.actorId, USER.id);

@@ -22,10 +22,29 @@ test("audit helper always takes the server-side current user", () => {
 });
 
 test("health reports database dependency status", async () => {
-  const healthy = new HealthController({ $queryRaw: async () => [{ result: 1 }] });
+  // 第二个 $queryRaw 是 2026-09-16 加的会话时区自检；用 SQL 文本区分两次查询。
+  const prismaWith = (timezone) => ({
+    $queryRaw: async (strings) => (String(strings.join(" ")).includes("current_setting") ? [{ timezone }] : [{ result: 1 }])
+  });
+  const healthy = new HealthController(prismaWith("UTC"));
   const health = await healthy.check({});
-  assert.deepEqual(health.data, { status: "ok", database: "ok", build: process.env.APP_VERSION || "development" });
+  assert.equal(health.data.status, "ok");
+  assert.equal(health.data.database, "ok");
+  assert.equal(health.data.build, process.env.APP_VERSION || "development");
   assert.deepEqual(health.meta, {});
+  // 时间列是 TIMESTAMP(3)（无时区）：created_at 按会话时区落盘、updated_at 按 UTC 落盘，
+  // 会话时区不是 UTC 时同一行的「创建时间」与「最后修改时间」会差一个时区偏移，
+  // 所以 /health 必须能回答「这个库到底是不是 UTC」。
+  assert.equal(health.data.timezone, "UTC");
+  assert.equal(health.data.timezone_utc, true);
+  assert.equal(health.data.display_timezone, "Asia/Shanghai");
+  assert.match(health.data.beijing_now, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/, "北京时间到秒");
+
+  const skewed = new HealthController(prismaWith("Asia/Shanghai"));
+  const skewedHealth = await skewed.check({});
+  assert.equal(skewedHealth.data.timezone, "Asia/Shanghai");
+  assert.equal(skewedHealth.data.timezone_utc, false, "非 UTC 必须如实报 false，不能因为「能起来」就报 ok");
+
   const unavailable = new HealthController({ $queryRaw: async () => { throw new Error("offline"); } });
   await assert.rejects(() => unavailable.check({}), ServiceUnavailableException);
 });

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import * as ExcelJS from "exceljs";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { beijingDateTime } from "../../platform/time/beijing-time";
 
 /** 采购订单（打印表）明细行。 */
 export type PurchaseOrderDocumentLine = {
@@ -112,7 +113,8 @@ const toNumber = (value: Prisma.Decimal | string | number | null | undefined): n
   return Number.isFinite(parsed) ? parsed : 0;
 };
 const toDateText = (value: Date | null | undefined): string => (value ? new Date(value).toISOString().slice(0, 10) : "");
-const toTimeText = (value: Date | null | undefined): string => (value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "");
+// 时间口径固定北京时间（不再用 toLocaleString：它按运行宿主时区走，导出在容器里跑、界面在浏览器里跑，两边会不一致）。
+const toTimeText = (value: Date | null | undefined): string => beijingDateTime(value);
 
 type ExportItem = {
   materialSnapshot: unknown;

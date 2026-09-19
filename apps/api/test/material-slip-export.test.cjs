@@ -49,9 +49,20 @@ function issueFixture(overrides = {}) {
   return { movement, prisma };
 }
 
+/**
+ * 操作人姓名的假解析器。
+ *
+ * 2026-09-16 起「操作人」改走全站统一的 AuditActorService（一次 IN 查询、批量解析），
+ * 不再由本服务自己 prisma.user.findFirst —— 所以这里替换掉原来的 user.findFirst 桩。
+ * 旧桩对任何 id 都返回「张三」，这个桩保持同样行为，原有断言不变。
+ */
+function fakeActors() {
+  return { namesOf: async (ids) => new Map(ids.filter(Boolean).map((id) => [id, "张三"])) };
+}
+
 function harness(overrides = {}) {
   const { prisma } = issueFixture(overrides);
-  return new MaterialSlipExportService(prisma);
+  return new MaterialSlipExportService(prisma, fakeActors());
 }
 
 async function open(buffer) {
@@ -165,14 +176,13 @@ function replenishmentFixture(overrides = {}) {
   };
   const prisma = {
     rawMaterialMovement: { findFirst: async () => movement, findMany: async () => [movement] },
-    user: { findFirst: async () => ({ displayName: "张三" }) },
     inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal("-12") } }) }
   };
   return { movement, prisma };
 }
 
 function replenishmentHarness(overrides = {}) {
-  return new MaterialSlipExportService(replenishmentFixture(overrides).prisma);
+  return new MaterialSlipExportService(replenishmentFixture(overrides).prisma, fakeActors());
 }
 
 test("补料单导出：标题、表头字段顺序、补料原因与 8 列明细（含预留图片列）", async () => {
@@ -228,9 +238,8 @@ test("补料单草稿在标题标注草稿；批量导出按类型套用各自�
   const replenishment = replenishmentFixture();
   const mixed = new MaterialSlipExportService({
     rawMaterialMovement: { findFirst: async () => null, findMany: async () => [issue.movement, replenishment.movement] },
-    user: { findFirst: async () => ({ displayName: "张三" }) },
     inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal(0) } }) }
-  });
+  }, fakeActors());
   const result = await mixed.exportSlips({});
   assert.equal(result.count, 2);
   const workbook = await open(result.buffer);
@@ -248,7 +257,6 @@ function multiHarness(movements) {
   const byId = new Map(movements.map((item) => [item.id, item]));
   const prisma = {
     rawMaterialMovement: { findFirst: async ({ where }) => byId.get(where.id) ?? null, findMany: async () => movements },
-    user: { findFirst: async () => ({ displayName: "张三" }) },
     // 库存事实按"已过账单据的明细"派生：这样改动单据数量时，事实与单据保持一致，
     // 才能真实验证「已领数量 = 净领料 − 本单自身」。
     inventoryFact: {
@@ -257,7 +265,7 @@ function multiHarness(movements) {
       })
     }
   };
-  return new MaterialSlipExportService(prisma);
+  return new MaterialSlipExportService(prisma, fakeActors());
 }
 
 function makeMovement(id, movementNo, materialName, materialCode, quantity) {

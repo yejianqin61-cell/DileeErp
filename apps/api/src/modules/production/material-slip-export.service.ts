@@ -2,6 +2,8 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import * as ExcelJS from "exceljs";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { AuditActorService } from "../../platform/audit/audit-actor.service";
+import { beijingDateTime } from "../../platform/time/beijing-time";
 
 /** 领料单（打印表）明细行。 */
 export type MaterialIssueDocumentLine = {
@@ -130,20 +132,20 @@ type ExportMovement = {
 
 @Injectable()
 export class MaterialSlipExportService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly actors: AuditActorService) {}
 
   /** 组装单张领料单的打印数据（导出与页面共用同一口径）。 */
   async buildDocument(movementId: string): Promise<MaterialIssueDocument> {
     const movement = await this.prisma.rawMaterialMovement.findFirst({ where: { id: movementId, deletedAt: null, documentType: "issue" }, include: this.include() });
     if (!movement) throw new NotFoundException({ code: "MATERIAL_ISSUE_NOT_FOUND", message: "领料单不存在", details: [] });
-    return this.assemble(movement as unknown as ExportMovement);
+    return this.assemble(movement as unknown as ExportMovement, await this.actors.namesOf([movement.createdBy]));
   }
 
   /** 组装单张补料单的打印数据。 */
   async buildReplenishmentDocument(movementId: string): Promise<MaterialReplenishmentDocument> {
     const movement = await this.prisma.rawMaterialMovement.findFirst({ where: { id: movementId, deletedAt: null, documentType: "replenishment" }, include: this.include() });
     if (!movement) throw new NotFoundException({ code: "MATERIAL_REPLENISHMENT_NOT_FOUND", message: "补料单不存在", details: [] });
-    return this.assembleReplenishment(movement as unknown as ExportMovement);
+    return this.assembleReplenishment(movement as unknown as ExportMovement, await this.actors.namesOf([movement.createdBy]));
   }
 
   /** 按筛选条件批量组装物料单据（领料单/补料单，各自的版式）。 */
@@ -162,10 +164,12 @@ export class MaterialSlipExportService {
       orderBy: [{ orderNo: "asc" }, { productionOrderId: "asc" }, { createdAt: "asc" }]
     });
     const slips: Array<{ documentType: "issue"; document: MaterialIssueDocument } | { documentType: "replenishment"; document: MaterialReplenishmentDocument }> = [];
+    // 姓名**一次取完**：下面每张单据都要「操作人」，逐张查用户表会在导出上百张时打出上百次查询。
+    const names = await this.actors.namesOf(movements.map((movement) => movement.createdBy));
     for (const movement of movements) {
       const typed = movement as unknown as ExportMovement;
-      if (movement.documentType === "replenishment") slips.push({ documentType: "replenishment", document: await this.assembleReplenishment(typed) });
-      else slips.push({ documentType: "issue", document: await this.assemble(typed) });
+      if (movement.documentType === "replenishment") slips.push({ documentType: "replenishment", document: await this.assembleReplenishment(typed, names) });
+      else slips.push({ documentType: "issue", document: await this.assemble(typed, names) });
     }
     return slips;
   }
@@ -199,9 +203,8 @@ export class MaterialSlipExportService {
     } as const;
   }
 
-  private async assemble(movement: ExportMovement): Promise<MaterialIssueDocument> {
+  private async assemble(movement: ExportMovement, names: Map<string, string>): Promise<MaterialIssueDocument> {
     const order = movement.productionOrder;
-    const operator = movement.createdBy ? await this.prisma.user.findFirst({ where: { id: movement.createdBy }, select: { displayName: true } }) : null;
     const bomItems = new Map((order.bom?.items ?? []).map((item) => [item.materialId, item]));
     const lines: MaterialIssueDocumentLine[] = [];
     for (const [index, line] of movement.lines.entries()) {
@@ -238,16 +241,15 @@ export class MaterialSlipExportService {
       issueUnit: order.executionLocation?.name ?? "",
       plannedQuantity: toNumber(order.plannedQuantity) ?? 0,
       unitName: order.unit?.name ?? "",
-      operatorName: operator?.displayName ?? "",
-      operatedAt: movement.createdAt ? new Date(movement.createdAt).toLocaleString("zh-CN", { hour12: false }) : "",
+      operatorName: movement.createdBy ? names.get(movement.createdBy) ?? "" : "",
+      operatedAt: beijingDateTime(movement.createdAt),
       remark: movement.remark ?? "",
       lines
     };
   }
 
-  private async assembleReplenishment(movement: ExportMovement): Promise<MaterialReplenishmentDocument> {
+  private async assembleReplenishment(movement: ExportMovement, names: Map<string, string>): Promise<MaterialReplenishmentDocument> {
     const order = movement.productionOrder;
-    const operator = movement.createdBy ? await this.prisma.user.findFirst({ where: { id: movement.createdBy }, select: { displayName: true } }) : null;
     const bomItems = new Map((order.bom?.items ?? []).map((item) => [item.materialId, item]));
     const lines: MaterialReplenishmentDocumentLine[] = movement.lines.map((line, index) => {
       const bomItem = bomItems.get(line.materialId);
@@ -272,8 +274,8 @@ export class MaterialSlipExportService {
       productSpecification: order.productSpecification ?? order.salesOrder?.productSpec ?? "",
       operationName: movement.productionOrderOperation?.operationNameSnapshot ?? "",
       issueUnit: order.executionLocation?.name ?? "",
-      operatorName: operator?.displayName ?? "",
-      operatedAt: movement.createdAt ? new Date(movement.createdAt).toLocaleString("zh-CN", { hour12: false }) : "",
+      operatorName: movement.createdBy ? names.get(movement.createdBy) ?? "" : "",
+      operatedAt: beijingDateTime(movement.createdAt),
       reason: movement.reason ?? "",
       remark: movement.remark ?? "",
       lines

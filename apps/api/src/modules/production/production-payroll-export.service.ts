@@ -4,6 +4,7 @@ import * as XLSX from "xlsx";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { beijingDateTime } from "../../platform/time/beijing-time";
 import { orderProgressColumns, parseOperationOrder } from "./production-progress-columns.domain";
 
 type Filters = { operation_id?: string; month?: string; order_no?: string };
@@ -30,8 +31,10 @@ export class ProductionPayrollExportService {
       ["统计月份", filters.month],
       ["工序", operation?.operationName ?? filters.operation_id],
       ["数据范围", "当月（按工序生产日期划分）所有订单的该工序有效员工日报明细；件数合计包含计时工人的计件数量，另给计件/计时拆分与时长（小时）；合计为日报保存时的金额快照（新单按 时长（小时）× 单价 计算）"],
-      ["生成时间", new Date().toISOString()],
-      ["操作人", user.username],
+      ["生成时间", beijingDateTime(new Date(), { seconds: true })],
+      // 这里原先写「操作人」，但它取的是 user.username —— **点导出的人**，不是这条记录的操作人。
+      // 两者混用会让审计误判（见 docs/design/operator-and-timestamp-governance-2026-09-16.md 验收标准 4）。
+      ["导出人", user.username],
       [],
       detailHeader,
       ...rows.map((row) => this.detailRow(row)),
@@ -55,8 +58,10 @@ export class ProductionPayrollExportService {
       ["当月工序明细总表"],
       ["统计月份", filters.month],
       ["数据范围", "当月（按工序生产日期划分）所有订单、所有工序的有效员工日报明细；件数合计包含计时工人的计件数量，另给计件/计时拆分与时长（小时）"],
-      ["生成时间", new Date().toISOString()],
-      ["操作人", user.username],
+      ["生成时间", beijingDateTime(new Date(), { seconds: true })],
+      // 这里原先写「操作人」，但它取的是 user.username —— **点导出的人**，不是这条记录的操作人。
+      // 两者混用会让审计误判（见 docs/design/operator-and-timestamp-governance-2026-09-16.md 验收标准 4）。
+      ["导出人", user.username],
       [],
       detailHeader,
       ...rows.map((row) => this.detailRow(row)),
@@ -82,8 +87,10 @@ export class ProductionPayrollExportService {
       ...(monthValid ? [["统计月份（按生产日期过滤）", filters.month!]] : []),
       ["工序", operation?.operationName ?? "全部工序"],
       ["数据范围", "该订单号下全部有效工序员工日报；计件数量对计时/计件工人都展示（计时工人同样填报完成件数），计时另给时长（小时）"],
-      ["生成时间", new Date().toISOString()],
-      ["操作人", user.username],
+      ["生成时间", beijingDateTime(new Date(), { seconds: true })],
+      // 这里原先写「操作人」，但它取的是 user.username —— **点导出的人**，不是这条记录的操作人。
+      // 两者混用会让审计误判（见 docs/design/operator-and-timestamp-governance-2026-09-16.md 验收标准 4）。
+      ["导出人", user.username],
       [],
       ...operationHeader,
       [],
@@ -103,8 +110,10 @@ export class ProductionPayrollExportService {
       ["原料对应表"],
       ["订单号", orderNo],
       ["产品", sales?.productName ?? ""],
-      ["生成时间", new Date().toISOString()],
-      ["操作人", user.username],
+      ["生成时间", beijingDateTime(new Date(), { seconds: true })],
+      // 这里原先写「操作人」，但它取的是 user.username —— **点导出的人**，不是这条记录的操作人。
+      // 两者混用会让审计误判（见 docs/design/operator-and-timestamp-governance-2026-09-16.md 验收标准 4）。
+      ["导出人", user.username],
       [],
       ["订单号", "订单数量", "规格", "单价", "数量", "采购日期", "到货日期", "供货日期", "供应商", "备注"],
       ...materialRows,
@@ -122,8 +131,10 @@ export class ProductionPayrollExportService {
       ["生产进度表"],
       ["订单号", orderNo],
       ["产品", sales?.productName ?? ""],
-      ["生成时间", new Date().toISOString()],
-      ["操作人", user.username],
+      ["生成时间", beijingDateTime(new Date(), { seconds: true })],
+      // 这里原先写「操作人」，但它取的是 user.username —— **点导出的人**，不是这条记录的操作人。
+      // 两者混用会让审计误判（见 docs/design/operator-and-timestamp-governance-2026-09-16.md 验收标准 4）。
+      ["导出人", user.username],
       ["出货数量", shippedQuantity],
       [],
       ["每列为一个工序，行为生产日期，单元格为当日该工序的完成数量"],
@@ -233,8 +244,10 @@ export class ProductionPayrollExportService {
       ["材料与车间生产对应表"],
       ["订单号", orderNo],
       ["产品", sales?.productName ?? ""],
-      ["生成时间", new Date().toISOString()],
-      ["操作人", user.username],
+      ["生成时间", beijingDateTime(new Date(), { seconds: true })],
+      // 这里原先写「操作人」，但它取的是 user.username —— **点导出的人**，不是这条记录的操作人。
+      // 两者混用会让审计误判（见 docs/design/operator-and-timestamp-governance-2026-09-16.md 验收标准 4）。
+      ["导出人", user.username],
       [],
       ["上表：原料对应表"],
       ["订单号", "订单数量", "规格", "单价", "数量", "采购日期", "到货日期", "供货日期", "供应商", "备注"],

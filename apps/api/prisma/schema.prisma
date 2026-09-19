@@ -2227,6 +2227,8 @@ model DailyReportMergeAnomaly {
   reportIds                    Json      @map("report_ids")
   status                       String    @default("pending") @db.VarChar(20)
   createdAt                    DateTime  @default(now()) @map("created_at")
+  updatedAt                    DateTime  @updatedAt @map("updated_at")
+  updatedBy                    String?   @map("updated_by") @db.Uuid
   resolvedAt                   DateTime? @map("resolved_at")
 
   @@index([status, reportDate])
