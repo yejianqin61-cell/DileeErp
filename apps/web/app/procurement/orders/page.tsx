@@ -17,6 +17,7 @@ import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-w
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../../lib/currency-catalogue";
 import { downloadFile } from "../../../lib/download";
+import { paymentTermOptions, printFieldsDefaults, printFieldsPayload } from "../../../lib/purchase-order-print";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
@@ -24,15 +25,28 @@ type InspectionBatch = { id: string; status: string; qcResult?: string | null; i
 type InboundBatch = { id: string; inboundNo: string; quantity: string; status: string };
 type Receipt = { id: string; receiptNo: string; quantity: string; status?: string; remark?: string | null; receivedDate?: string; batchSequence?: number; inspections?: InspectionBatch[]; rawMaterialInbounds?: InboundBatch[] };
 type PurchaseItem = { id: string; materialId: string; unitId: string; bomItemId?: string | null; supplierId?: string | null; expectedDate?: string | null; model?: string | null; quantity: string; unitPrice?: string; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; supplier?: { name?: string | null } | null; receipts: Receipt[]; batchWorkflows?: Array<{ receiptId: string; receiptNo: string; batchSequence: number; receivedQuantity: string; inspections: InspectionBatch[]; inbounds: InboundBatch[] }> };
-type PurchaseOrder = { id: string; purchaseOrderNo: string; orderNo: string; bomId: string | null; supplierId: string | null; purchaseDate?: string | null; expectedDate?: string | null; status: string; currency: string | null; totalAmount: string; extensionData?: { arrival_closed?: boolean; over_order?: boolean }; supplier?: { name: string } | null; items: PurchaseItem[] };
+type PurchaseOrder = {
+  id: string; purchaseOrderNo: string; orderNo: string; bomId: string | null; supplierId: string | null;
+  purchaseDate?: string | null; expectedDate?: string | null; status: string; currency: string | null; totalAmount: string;
+  extensionData?: { arrival_closed?: boolean; over_order?: boolean };
+  /** 打印信息（2026-09-16）：付款方式 / 交期条款 / 交货地址 / 厂家回签意见 / 厂家回签 / 主管签字 */
+  paymentTerms?: string | null; deliveryTerms?: string | null; deliveryAddress?: string | null;
+  supplierReply?: string | null; supplierSigned?: string | null; supervisorSignature?: string | null; remark?: string | null;
+  supplier?: { name: string } | null; items: PurchaseItem[];
+};
 type Reference = { id: string; name?: string; orderNo?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string; salesOrderId?: string; status?: string; specificationModel?: string | null; color?: string | null };
 type BomItem = { id?: string; materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; color?: string | null; requiredQuantity: string; unit: string; unitId?: string | null; materialSnapshot: Record<string, unknown> };
 type Bom = { id: string; orderNo: string; salesOrderId: string; status: string; version: number; items: BomItem[] };
 type PurchaseDraftItem = { materialId: string; model: string; quantity: string; unitId: string; unitPrice: string; supplierId: string; expectedDate: string; bomItemId?: string; currentStock?: string };
 type PurchaseDraft = { id?: string; orderNo: string; bomId: string; currency: string; importBomItems: boolean; items: PurchaseDraftItem[] };
-type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
+type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+/**
+ * 下载类失败（lib/download 抛普通 Error，消息已经是可读原因：超时 / HTTP 码 / 服务端 message）。
+ * 不能套 `messageOf` 的兜底 —— 那会把「导出失败：服务端异常」压成光秃秃的「导出失败」，用户无从下手。
+ */
+const downloadErrorOf = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 const inspectionStatusLabel: Record<string, string> = { pending: "待质检", inspecting: "质检中", completed: "已登记", accepted: "全部入库", conditionally_accepted: "全部入库", partially_accepted: "部分入库", rejected: "拒收", cancelled: "已取消" };
 const inboundStatusLabel: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
 
@@ -112,7 +126,7 @@ export default function PurchaseOrdersPage() {
   async function exportPurchaseOrder(order: PurchaseOrder) {
     setExportBusy(order.id);
     try { await downloadFile(`/api/v1/procurement/reports/purchase-order.xlsx?purchase_order_id=${encodeURIComponent(order.id)}`, `采购订单-${order.purchaseOrderNo}.xlsx`); notifySuccess(`已导出 ${order.purchaseOrderNo}`); }
-    catch (cause) { notifyError(messageOf(cause, "导出失败")); }
+    catch (cause) { notifyError(downloadErrorOf(cause, "导出失败")); }
     finally { setExportBusy(""); }
   }
 
@@ -124,8 +138,49 @@ export default function PurchaseOrdersPage() {
       if (query) params.set("order_no", query);
       await downloadFile(`/api/v1/procurement/reports/purchase-orders.xlsx${params.toString() ? `?${params.toString()}` : ""}`, "采购订单汇总.xlsx");
       notifySuccess(`已导出 ${visible.length} 张采购订单`);
-    } catch (cause) { notifyError(messageOf(cause, "批量导出失败")); }
+    } catch (cause) { notifyError(downloadErrorOf(cause, "批量导出失败")); }
     finally { setExportBusy(""); }
+  }
+
+  /**
+   * 采购单「打印信息」（用户 2026-09-16：付款方式 / 交期条款 / 交货地址 / 交货日期 /
+   * 厂家回签意见 / 厂家回签 / 主管签字 / 备注 —— 「系统中采购单也要支持对这些字段进行填写和设置」）。
+   *
+   * 为什么它单独一个入口、不在草稿编辑工作区里：厂家回签本来就是**下单之后**才发生的事，
+   * 而草稿工作区只在草稿上可用。这一组字段与明细/金额无关，所以任何状态（草稿/已下单/到货中/
+   * 到货完成）都能填 —— 后端也是这么放行的（PATCH /purchase-orders/:id/print-fields）。
+   * 初值直接取列表行（列表返回整行），不再多打一次详情接口。
+   */
+  function openPrintInfo(order: PurchaseOrder) {
+    setDialog({
+      title: `打印信息：${order.purchaseOrderNo}`,
+      fields: [
+        { name: "payment_terms", label: "付款方式", type: "select", options: paymentTermOptions(order.paymentTerms), defaultValue: printFieldsDefaults(order).payment_terms },
+        { name: "expected_date", label: "交货日期（打印在表头；留空则按明细行日期）", type: "date", defaultValue: printFieldsDefaults(order).expected_date },
+        { name: "delivery_terms", label: "交期条款", type: "textarea", defaultValue: printFieldsDefaults(order).delivery_terms },
+        { name: "delivery_address", label: "交货地址", defaultValue: printFieldsDefaults(order).delivery_address },
+        { name: "supplier_reply", label: "厂家回签意见（存系统；导出仍留空供手写）", type: "textarea", defaultValue: printFieldsDefaults(order).supplier_reply },
+        { name: "supplier_signed", label: "厂家回签（经办人 / 日期）", defaultValue: printFieldsDefaults(order).supplier_signed },
+        { name: "supervisor_signature", label: "主管签字", defaultValue: printFieldsDefaults(order).supervisor_signature },
+        { name: "remark", label: "备注", type: "textarea", defaultValue: printFieldsDefaults(order).remark },
+      ],
+      // 必须把 Promise 交回 ActionDialog（不要写成 `void savePrintInfo(...)`）：
+      // 它靠 onSubmit 抛错来决定「保持弹窗打开 + 显示原因」，被 void 吞掉就会关窗、用户填的几行字全丢。
+      submit: (values) => savePrintInfo(order, values),
+    });
+  }
+
+  async function savePrintInfo(order: PurchaseOrder, values: Record<string, string>) {
+    setError("");
+    try {
+      await apiRequest(`/purchase-orders/${order.id}/print-fields`, { method: "PATCH", body: JSON.stringify(printFieldsPayload(values)) });
+      notifySuccess(`${order.purchaseOrderNo} 打印信息已保存`);
+      await load({ silent: true });
+    } catch (cause) {
+      // 抛出去：ActionDialog 会保持弹窗打开并显示原因，用户填的几行字不会丢
+      notifyError(messageOf(cause, "打印信息保存失败"));
+      throw cause;
+    }
   }
 
   function createPurchaseOrder() {
@@ -283,7 +338,12 @@ export default function PurchaseOrdersPage() {
     { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
     { id: "status", header: "状态", cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
     { id: "amount", header: "金额", cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },
-    { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; return <div className="action-row">{isDraft && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" asChild><Link href={`/procurement/orders/${row.original.id}`}>到货跟踪</Link></Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}{closed && <span className="status-label status-success">已关闭</span>}</div>; } },
+    { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; return <div className="action-row">{isDraft && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" asChild><Link href={`/procurement/orders/${row.original.id}`}>到货跟踪</Link></Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}
+        {/* 打印信息（付款方式/交期条款/交货地址/交货日期/回签三格）：任何状态都能填，含已下单 */}
+        <Button size="sm" variant="secondary" data-testid={`order-print-info-${row.original.purchaseOrderNo}`} onClick={() => openPrintInfo(row.original)}>打印信息</Button>
+        {/* 导出这一张采购订单的 Excel（2026-09-16 之前这个函数定义了却没有入口，页面上找不到） */}
+        <Button size="sm" variant="secondary" data-testid={`order-export-${row.original.purchaseOrderNo}`} disabled={exportBusy === row.original.id} onClick={() => void exportPurchaseOrder(row.original)}>{exportBusy === row.original.id ? "导出中..." : "导出"}</Button>
+        {closed && <span className="status-label status-success">已关闭</span>}</div>; } },
   ];
 
   if (loading) return <><PageHeader title="采购单" breadcrumb={["采购", "采购单"]} /><LoadingState /></>;

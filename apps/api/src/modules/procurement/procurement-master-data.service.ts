@@ -9,7 +9,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 type Tx = Prisma.TransactionClient;
 type UnitInput = { name: string; remark?: string | null };
 type MaterialInput = { material_code?: string; name: string; specification_model?: string | null; color?: string | null; default_unit_id: string; material_type?: string; remark?: string | null };
-type SupplierInput = { supplier_code?: string; name: string; contact_name?: string | null; phone?: string | null; settlement_info?: Record<string, unknown>; remark?: string | null };
+type SupplierInput = { supplier_code?: string; name: string; contact_name?: string | null; phone?: string | null; address?: string | null; settlement_info?: Record<string, unknown>; remark?: string | null };
 
 @Injectable()
 export class ProcurementMasterDataService {
@@ -49,9 +49,9 @@ export class ProcurementMasterDataService {
     // 与物料一致：供应商编码支持“自动生成 / 手动填写”，由调用方选择。
     const code = input.code_mode === "auto" ? await this.nextSupplierCode() : input.supplier_code?.trim();
     if (!code) throw new UnprocessableEntityException({ code: "SUPPLIER_CODE_REQUIRED", message: "手动编码模式必须填写供应商编码", details: [] });
-    return this.write("supplier", () => this.prisma.supplier.create({ data: { supplierCode: code, name: input.name, contactName: input.contact_name, phone: input.phone, settlementInfo: (input.settlement_info ?? {}) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }), user);
+    return this.write("supplier", () => this.prisma.supplier.create({ data: { supplierCode: code, name: input.name, contactName: input.contact_name, phone: input.phone, address: input.address, settlementInfo: (input.settlement_info ?? {}) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }), user);
   }
-  async updateSupplier(id: string, input: Partial<SupplierInput>, user: CurrentUser) { await this.requireSupplier(id); return this.write("supplier", () => this.prisma.supplier.update({ where: { id }, data: { ...(input.supplier_code === undefined || input.supplier_code === null ? {} : { supplierCode: input.supplier_code }), ...(input.name === undefined || input.name === null ? {} : { name: input.name }), ...(input.contact_name === undefined ? {} : { contactName: input.contact_name }), ...(input.phone === undefined ? {} : { phone: input.phone }), ...(input.settlement_info === undefined ? {} : { settlementInfo: input.settlement_info as Prisma.InputJsonValue }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } }), user, id); }
+  async updateSupplier(id: string, input: Partial<SupplierInput>, user: CurrentUser) { await this.requireSupplier(id); return this.write("supplier", () => this.prisma.supplier.update({ where: { id }, data: { ...(input.supplier_code === undefined || input.supplier_code === null ? {} : { supplierCode: input.supplier_code }), ...(input.name === undefined || input.name === null ? {} : { name: input.name }), ...(input.contact_name === undefined ? {} : { contactName: input.contact_name }), ...(input.phone === undefined ? {} : { phone: input.phone }), ...(input.address === undefined ? {} : { address: input.address }), ...(input.settlement_info === undefined ? {} : { settlementInfo: input.settlement_info as Prisma.InputJsonValue }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } }), user, id); }
   async setSupplierActive(id: string, isActive: boolean, user: CurrentUser) { await this.requireSupplier(id); return this.prisma.supplier.update({ where: { id }, data: { isActive, ...this.audit.update(user) } }); }
   async deleteSupplier(id: string, user: CurrentUser) { await this.requireSupplier(id); return this.ensureUnusedAndDelete("supplier", id, user); }
 

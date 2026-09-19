@@ -1,20 +1,21 @@
 // 采购模块（purchase-orders）HTTP 契约测试 —— 针对**运行中的真实 API**。
 //
-// 覆盖 14 个路由（apps/api/src/modules/procurement/purchase-orders.controller.ts:22-35）：
+// 覆盖 15 个路由（apps/api/src/modules/procurement/purchase-orders.controller.ts:22-36）：
 //   1. GET    /api/v1/purchase-orders                       列表（order_no 过滤，无分页）
 //   2. POST   /api/v1/purchase-orders                       新建（201）
 //   3. POST   /api/v1/purchase-orders/split                 按供应商拆分成多张采购单
-//   4. PATCH  /api/v1/purchase-orders/:id                   修改
-//   5. GET    /api/v1/purchase-orders/:id                   详情
-//   6. GET    /api/v1/purchase-orders/:id/impact-preview    变更影响预览
-//   7. POST   /api/v1/purchase-orders/:id/order             下单
-//   8. POST   /api/v1/purchase-orders/:id/revert-draft      退回草稿（需 reason）
-//   9. POST   /api/v1/purchase-orders/:id/cancel            取消
-//  10. POST   /api/v1/purchase-orders/:id/revert-arrivals   到货回退（需 reason）
-//  11. POST   /api/v1/purchase-orders/:id/close-arrivals    关闭到货
-//  12. POST   /api/v1/purchase-orders/:id/items/:itemId/receipts   登记分批到货
-//  13. PATCH  /api/v1/purchase-orders/receipts/:receiptId          修改到货批次（子资源在顶层，不在 :id 下）
-//  14. POST   /api/v1/purchase-orders/receipts/:receiptId/cancel   撤销到货批次
+//   4. PATCH  /api/v1/purchase-orders/:id                   修改（只允许草稿）
+//   5. PATCH  /api/v1/purchase-orders/:id/print-fields      打印信息（付款方式/交期条款/交货地址/交货日期/备注/回签三格）
+//   6. GET    /api/v1/purchase-orders/:id                   详情
+//   7. GET    /api/v1/purchase-orders/:id/impact-preview    变更影响预览
+//   8. POST   /api/v1/purchase-orders/:id/order             下单
+//   9. POST   /api/v1/purchase-orders/:id/revert-draft      退回草稿（需 reason）
+//  10. POST   /api/v1/purchase-orders/:id/cancel            取消
+//  11. POST   /api/v1/purchase-orders/:id/revert-arrivals   到货回退（需 reason）
+//  12. POST   /api/v1/purchase-orders/:id/close-arrivals    关闭到货
+//  13. POST   /api/v1/purchase-orders/:id/items/:itemId/receipts   登记分批到货
+//  14. PATCH  /api/v1/purchase-orders/receipts/:receiptId          修改到货批次（子资源在顶层，不在 :id 下）
+//  15. POST   /api/v1/purchase-orders/receipts/:receiptId/cancel   撤销到货批次
 //
 // 环境约束（违反会得到随机失败，见 tests/helpers/api-client.cjs:73-82）：
 //   - 本 API 是**单会话**的：AuthService.login() 先删该用户全部 session 再建新的
@@ -104,12 +105,13 @@ function detailFor(body, field) {
   return detail;
 }
 
-/** 14 个路由的清单，用于逐条打鉴权（route.name 与控制器方法名一一对应）。 */
+/** 15 个路由的清单，用于逐条打鉴权（route.name 与控制器方法名一一对应）。 */
 const ROUTES = [
   { body: undefined, method: "GET", name: "list", path: "/api/v1/purchase-orders" },
   { body: {}, method: "POST", name: "create", path: "/api/v1/purchase-orders" },
   { body: {}, method: "POST", name: "split", path: "/api/v1/purchase-orders/split" },
   { body: {}, method: "PATCH", name: "update", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}` },
+  { body: { payment_terms: "月结30天" }, method: "PATCH", name: "updatePrintFields", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/print-fields` },
   { body: undefined, method: "GET", name: "get", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}` },
   { body: undefined, method: "GET", name: "impact", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/impact-preview` },
   { body: undefined, method: "POST", name: "order", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/order` },
@@ -223,8 +225,8 @@ test("purchase_orders.anonymous_requests_are_401_on_every_route", async () => {
   // 守卫链是 AuthenticationGuard → ModulePermissionGuard（控制器 :18）。
   // 无 cookie 时 AuthenticationGuard 先抛 UnauthorizedException（auth.service.ts:37），
   // 所以匿名访问**所有**受保护路由都是 401，而不是 ModulePermissionGuard 的 403。
-  assert.equal(ROUTES.length, 14, "本文件必须覆盖控制器的全部 14 个路由");
-  assert.equal(new Set(ROUTES.map((route) => route.name)).size, 14, "路由名不可重复");
+  assert.equal(ROUTES.length, 15, "本文件必须覆盖控制器的全部 15 个路由");
+  assert.equal(new Set(ROUTES.map((route) => route.name)).size, 15, "路由名不可重复");
 
   const anonymous = apiClient(baseUrl);
   for (const route of ROUTES) {
@@ -239,7 +241,7 @@ test("purchase_orders.invalid_session_cookie_is_401_not_403", async () => {
   // 这里顺带锁住一个易错点：伪造 cookie 不能被降级成 403（ModulePermissionGuard:20 的 403 分支不可达，
   // 因为 AuthenticationGuard 先抛 401）。
   const forged = apiClient(baseUrl, { cookie: "dilee_session=forged-but-well-formed-token" });
-  for (const route of [ROUTES[0], ROUTES[3], ROUTES[4], ROUTES[12]]) {
+  for (const route of [ROUTES[0], ROUTES[3], ROUTES[4], ROUTES[13]]) {
     const response = await send(forged, route);
     expectUnauthenticated(response, `${route.method} ${route.path}（伪造 cookie）`);
   }
@@ -291,6 +293,32 @@ test("purchase_orders.update_validates_body_before_looking_up_the_order", async 
   // 非 UUID 的 :id 也要先走校验层（@Param("id") 是 string，无 ParseUUIDPipe）
   const nonUuid = await client.patch("/api/v1/purchase-orders/not-a-uuid", {});
   expectErrorEnvelope(nonUuid, { code: "VALIDATION_ERROR", context: "PATCH /purchase-orders/not-a-uuid", status: 400 });
+});
+
+test("purchase_orders.print_fields_validates_lengths_and_404s_on_unknown_order", async () => {
+  // 新增路由（2026-09-16：采购单的付款方式/交期条款/交货地址/交货日期/备注 + 回签三格）。
+  // 只读纪律：未知 :id 在写库之前就 404；校验失败在 handler 之前就 400，两条都不落库。
+  const client = await adminClient();
+  const path = `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/print-fields`;
+
+  // 全部字段可选 → 空体是合法请求，随后因单子不存在而 404（不是 400）
+  const empty = await client.patch(path, {});
+  expectErrorEnvelope(empty, { code: "PURCHASE_ORDER_NOT_FOUND", context: "PATCH print-fields {} 未知单号", status: 404 });
+
+  // 未知字段被 whitelist 拒绝
+  const unknownField = await client.patch(path, { bogus_field: 1 });
+  expectErrorEnvelope(unknownField, { code: "VALIDATION_ERROR", context: "PATCH print-fields（未知字段）", status: 400 });
+  assert.equal(detailFor(unknownField.body, "bogus_field").rule, "whitelistValidation");
+
+  // 长度上限：付款方式 50（业务给的是「月结30天 / 月结60天 / 当月付款」三项，存文本不做枚举校验）
+  const tooLongPayment = await client.patch(path, { payment_terms: "月".repeat(51) });
+  expectErrorEnvelope(tooLongPayment, { code: "VALIDATION_ERROR", context: "PATCH print-fields payment_terms 超长", status: 400 });
+  assert.equal(detailFor(tooLongPayment.body, "payment_terms").rule, "maxLength");
+
+  // 交货日期是日期类型：非法日期在校验层被拒
+  const badDate = await client.patch(path, { expected_date: "not-a-date" });
+  expectErrorEnvelope(badDate, { code: "VALIDATION_ERROR", context: "PATCH print-fields expected_date 非法", status: 400 });
+  assert.equal(detailFor(badDate.body, "expected_date").rule, "isDateString");
 });
 
 test("KNOWN_CONTRACT_DEFECT purchase_orders.malformed_uuid_path_param_returns_500_instead_of_400", async () => {

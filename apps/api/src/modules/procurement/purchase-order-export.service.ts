@@ -25,13 +25,22 @@ export type PurchaseOrderDocument = {
   /** 模板的「订单单号」显示销售订单号；采购单号另占一格。 */
   salesOrderNo: string;
   supplierName: string;
+  /** 供应商联系人（用户 2026-09-16 的表头清单用语，此前印成「联系人」）。 */
   contactName: string;
   phone: string;
   buyerName: string;
   enteredAt: string;
   operatorName: string;
   operatedAt: string;
-  /** 交货地址系统无字段，按业务确认留空手填。 */
+  /** 整单含税总价（= 明细金额之和，与列表页「金额」同口径）。 */
+  totalAmount: number;
+  /** 整单交货日期（= 单头预计到货日，可空；明细行另有逐行交货日期）。 */
+  deliveryDate: string;
+  /** 付款方式：月结30天 / 月结60天 / 当月付款（文本，可空）。 */
+  paymentTerms: string;
+  /** 交期条款：本次采购约定的交货安排（可空）。 */
+  deliveryTerms: string;
+  /** 交货地址（2026-09-16 起系统里有字段；此前这一格只能留空手填）。 */
   deliveryAddress: string;
   remark: string;
   status: string;
@@ -54,8 +63,18 @@ export const PURCHASE_TRADE_TERMS = [
   "4：要有千分之二的备品和维修配件。"
 ] as const;
 
-/** 签署栏三格（留空供手写）。 */
-const SIGNATURE_LABELS = ["厂商回复意见", "厂商回签", "主管"] as const;
+/**
+ * 签署栏三格（留空供手写）。
+ *
+ * 用户 2026-09-16 选择的口径是「系统里存文本、**导出仍留空手写**」：
+ * 回签内容存在 `purchase_orders.supplier_reply / supplier_signed / supervisor_signature`
+ * （采购单页面的「打印信息」里可填，用于我们自己的记录与追溯），但纸面这三格保持空白，
+ * 现场手写用。所以这里刻意**不读**那三列 —— 不是漏了，是口径如此。若要改成回填打印，
+ * 把对应 document 字段接上、填进这三个格子即可（一行的事）。
+ */
+const SIGNATURE_LABELS = ["厂家回签意见", "厂家回签", "主管签字"] as const;
+/** 表尾三个大格子的高度（行数）：用户点名要「大格子」，两行太窄写不下意见。 */
+const SIGNATURE_ROWS = 4;
 
 // 列序：模板 7 列的相对顺序不变，仅在「规格型号」后插入「单位」、「含税单价」前插入「供应商」。
 const COLUMNS: Array<{ header: string; width: number }> = [
@@ -70,6 +89,18 @@ const COLUMNS: Array<{ header: string; width: number }> = [
   { header: "交货日期", width: 14 }
 ];
 const LAST_COLUMN = "I";
+
+/**
+ * 版式行号。表头字段的多少会改变明细表的位置，所以全部由常量推出来，
+ * 不再到处写字面行号 —— 上一版把「明细表头在第 6 行」写死在测试里，加两行表头就全线错位。
+ */
+const ADDRESS_ROW = 2;
+/** 表头字段网格首行（4 行 × 3 组 = 12 格，正好放下用户点名的 12 项里的 10 项 + 电话 + 采购单号）。 */
+const HEADER_GRID_START = 3;
+/** 交期条款整行（跨 A:I）：条款是长句，塞进两列宽的格子会被挤成一条线。 */
+const TERMS_ROW = HEADER_GRID_START + 4;
+const SPACER_ROW = TERMS_ROW + 1;
+const TABLE_HEADER_ROW = SPACER_ROW + 1;
 
 const BODY_FONT = { name: "宋体", size: 11 } as const;
 const HEADER_FONT = { name: "宋体", size: 11, bold: true } as const;
@@ -105,6 +136,10 @@ type ExportOrder = {
   updatedBy: string;
   remark: string | null;
   expectedDate: Date | null;
+  totalAmount: Prisma.Decimal;
+  paymentTerms: string | null;
+  deliveryTerms: string | null;
+  deliveryAddress: string | null;
   supplier: { name: string; contactName: string | null; phone: string | null };
   items: ExportItem[];
 };
@@ -189,7 +224,11 @@ export class PurchaseOrderExportService {
       enteredAt: toTimeText(order.createdAt),
       operatorName: nameOf(order.updatedBy),
       operatedAt: toTimeText(order.updatedAt),
-      deliveryAddress: "",
+      totalAmount: toNumber(order.totalAmount),
+      deliveryDate: toDateText(order.expectedDate),
+      paymentTerms: order.paymentTerms ?? "",
+      deliveryTerms: order.deliveryTerms ?? "",
+      deliveryAddress: order.deliveryAddress ?? "",
       remark: order.remark ?? "",
       status: order.status,
       lines
@@ -215,28 +254,32 @@ export class PurchaseOrderExportService {
     titleCell.alignment = { horizontal: "center", vertical: "middle" };
     sheet.getRow(1).height = 30;
 
-    // 交货地址：系统无字段，留空手填
-    const addressLabel = sheet.getCell("A2");
+    // 交货地址：2026-09-16 起系统里有字段（采购单 →「打印信息」里填），不再只能手写
+    const addressLabel = sheet.getCell(`A${ADDRESS_ROW}`);
     addressLabel.value = "交货地址：";
     addressLabel.font = BODY_FONT;
     addressLabel.alignment = { horizontal: "right", vertical: "middle" };
-    sheet.mergeCells(`B2:${LAST_COLUMN}2`);
-    const addressCell = sheet.getCell("B2");
+    sheet.mergeCells(`B${ADDRESS_ROW}:${LAST_COLUMN}${ADDRESS_ROW}`);
+    const addressCell = sheet.getCell(`B${ADDRESS_ROW}`);
     addressCell.value = document.deliveryAddress;
     addressCell.font = BODY_FONT;
-    addressCell.alignment = { horizontal: "left", vertical: "middle" };
+    addressCell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
     addressCell.border = { bottom: { style: "thin" } };
-    sheet.getRow(2).height = 20;
+    sheet.getRow(ADDRESS_ROW).height = 20;
 
-    // 表头字段：每行 3 组「标签 + 跨两列的值」，共 3 行。
-    const headerRows: Array<Array<[string, string]>> = [
-      [["订单单号：", document.salesOrderNo], ["供应商名称：", document.supplierName], ["联系人：", document.contactName]],
-      [["电话：", document.phone], ["采购人：", document.buyerName], ["采购单号：", document.purchaseOrderNo]],
-      [["录入时间：", document.enteredAt], ["操作人：", document.operatorName], ["操作时间：", document.operatedAt]]
+    // 表头字段：每行 3 组「标签 + 跨两列的值」，共 4 行 12 格。
+    // 列序照用户 2026-09-16 给的表头清单：订单号 / 供应商名称 / 供应商联系人 / 采购人 / 操作人 /
+    // 下单录入时间 / 操作时间 / 总价 / 交货日期 / 付款方式，最后一行补上原模板就有的 电话 / 采购单号
+    // （采购单号是厂商对账的唯一抓手，不能因为清单里没写就不印）。
+    const headerRows: Array<Array<[string, string | number]>> = [
+      [["订单号：", document.salesOrderNo], ["供应商名称：", document.supplierName], ["供应商联系人：", document.contactName]],
+      [["采购人：", document.buyerName], ["操作人：", document.operatorName], ["下单录入时间：", document.enteredAt]],
+      [["操作时间：", document.operatedAt], ["总价：", document.totalAmount], ["交货日期：", document.deliveryDate]],
+      [["付款方式：", document.paymentTerms], ["电话：", document.phone], ["采购单号：", document.purchaseOrderNo]]
     ];
     const labelColumns = ["A", "D", "G"] as const;
     headerRows.forEach((fields, rowIndex) => {
-      const rowNumber = 3 + rowIndex;
+      const rowNumber = HEADER_GRID_START + rowIndex;
       const row = sheet.getRow(rowNumber);
       fields.forEach((field, fieldIndex) => {
         const labelCell = row.getCell(labelColumns[fieldIndex]);
@@ -251,12 +294,28 @@ export class PurchaseOrderExportService {
         valueCell.font = BODY_FONT;
         valueCell.alignment = { horizontal: "left", vertical: "middle" };
         valueCell.border = { bottom: { style: "thin" } };
+        // 总价是真正的数字格（能直接参与计算），其余是文字
+        if (typeof field[1] === "number") valueCell.numFmt = "0.00##";
       });
       row.height = 20;
     });
 
-    // 明细表：表头在第 6 行，数据自第 7 行起
-    const tableHeaderRow = 6;
+    // 交期条款整行（跨 A:I）：条款是长句，塞进两列宽的格子会被挤成一条线
+    const termsLabel = sheet.getCell(`A${TERMS_ROW}`);
+    termsLabel.value = "交期条款：";
+    termsLabel.font = BODY_FONT;
+    termsLabel.alignment = { horizontal: "right", vertical: "middle" };
+    sheet.mergeCells(`B${TERMS_ROW}:${LAST_COLUMN}${TERMS_ROW}`);
+    const termsCell = sheet.getCell(`B${TERMS_ROW}`);
+    termsCell.value = document.deliveryTerms;
+    termsCell.font = BODY_FONT;
+    termsCell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+    termsCell.border = { bottom: { style: "thin" } };
+    sheet.getRow(TERMS_ROW).height = 20;
+    sheet.getRow(SPACER_ROW).height = 6;
+
+    // 明细表
+    const tableHeaderRow = TABLE_HEADER_ROW;
     const headerRow = sheet.getRow(tableHeaderRow);
     COLUMNS.forEach((column, index) => {
       const cell = headerRow.getCell(index + 1);
@@ -335,13 +394,13 @@ export class PurchaseOrderExportService {
     }
     cursor += 1;
 
-    // 签署栏：三格留空供手写
+    // 签署栏：三格留空供手写（回签内容存在系统里，但按用户口径不回填打印，见 SIGNATURE_LABELS 注释）
     const signatureRow = cursor;
-    for (let offset = 0; offset < 2; offset += 1) sheet.getRow(signatureRow + offset).height = 24;
+    for (let offset = 0; offset < SIGNATURE_ROWS; offset += 1) sheet.getRow(signatureRow + offset).height = 24;
     const signatureSpans: Array<[string, string]> = [["A", "C"], ["D", "F"], ["G", LAST_COLUMN]];
     SIGNATURE_LABELS.forEach((label, index) => {
       const [start, end] = signatureSpans[index];
-      sheet.mergeCells(`${start}${signatureRow}:${end}${signatureRow + 1}`);
+      sheet.mergeCells(`${start}${signatureRow}:${end}${signatureRow + SIGNATURE_ROWS - 1}`);
       const cell = sheet.getCell(`${start}${signatureRow}`);
       cell.value = label;
       cell.font = HEADER_FONT;

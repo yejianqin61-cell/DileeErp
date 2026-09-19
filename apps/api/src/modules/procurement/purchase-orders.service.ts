@@ -12,6 +12,20 @@ type Input = { order_no: string; bom_id?: string; bom_version?: number; supplier
 type SplitGroup = { supplier_id: string; currency?: string; expected_date?: string; remark?: string; items?: Item[] };
 type SplitInput = { order_no: string; bom_id?: string; purchase_date?: string; currency?: string; remark?: string; place_order?: boolean; extension_data?: Record<string, unknown>; groups?: SplitGroup[] };
 type OrderableItem = { materialId: string; unitId: string; supplierId: string; quantity: string; unitPrice: string };
+/**
+ * 采购单「打印信息」的入参：只含采购订单打印表上那些与明细/金额无关的字。
+ * `expected_date`（交货日期）与 `remark`（备注）用 `null` 表示「清掉这一格」。
+ */
+type PrintFieldsInput = {
+  payment_terms?: string | null;
+  delivery_terms?: string | null;
+  delivery_address?: string | null;
+  expected_date?: string | null;
+  remark?: string | null;
+  supplier_reply?: string | null;
+  supplier_signed?: string | null;
+  supervisor_signature?: string | null;
+};
 /** `refs()` 的返回结构（只保留下单/建单真正用到的字段，避免耦合 Prisma 生成类型）。 */
 type Refs = {
   order: { id: string; orderNo: string };
@@ -132,6 +146,44 @@ export class PurchaseOrdersService {
     });
     if (missing.length) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_INCOMPLETE", message: "草稿尚未填写完整，不能下单", details: missing });
   }
+  /**
+   * 采购单「打印信息」：付款方式 / 交期条款 / 交货地址 / 交货日期 / 备注 / 厂家回签意见 / 厂家回签 / 主管签字。
+   *
+   * 用户 2026-09-16：「对应的，系统中采购单，也要支持对这些字段进行填写和设置」。
+   *
+   * 为什么单独一个端点、而不并进 `PATCH :id`：后者按「已有下游事实或非草稿不可编辑」锁死整张单，
+   * 而**厂家回签本来就是下单之后才发生的事**（先把单发给厂商、厂商签回来、我们再登记）。
+   * 这里只碰这些与明细、金额、供应商都无关的字，不动 items / totalAmount / status，
+   * 因此草稿、已下单、部分到货、到货完成的单子都可以填；已取消的拒绝（它不再对外）。
+   * 空串按「清除」处理：把一格删空的意思就是这一格不印字。
+   */
+  async updatePrintFields(id: string, input: PrintFieldsInput, user: CurrentUser) {
+    const po = await this.prisma.purchaseOrder.findFirst({ where: { id, deletedAt: null }, select: { id: true, purchaseOrderNo: true, status: true } });
+    if (!po) throw new NotFoundException({ code: "PURCHASE_ORDER_NOT_FOUND", message: "采购单不存在", details: [] });
+    if (po.status === "cancelled") throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_EDITABLE", message: "已取消的采购单不能修改打印信息", details: [] });
+
+    const data: Prisma.PurchaseOrderUpdateInput = {};
+    if (input.payment_terms !== undefined) data.paymentTerms = this.optionalText(input.payment_terms);
+    if (input.delivery_terms !== undefined) data.deliveryTerms = this.optionalText(input.delivery_terms);
+    if (input.delivery_address !== undefined) data.deliveryAddress = this.optionalText(input.delivery_address);
+    if (input.remark !== undefined) data.remark = this.optionalText(input.remark);
+    if (input.supplier_reply !== undefined) data.supplierReply = this.optionalText(input.supplier_reply);
+    if (input.supplier_signed !== undefined) data.supplierSigned = this.optionalText(input.supplier_signed);
+    if (input.supervisor_signature !== undefined) data.supervisorSignature = this.optionalText(input.supervisor_signature);
+    // 交货日期是真正的日期列：显式传 null 表示清空（由明细行的到货日期兜底打印）
+    if (input.expected_date !== undefined) data.expectedDate = input.expected_date ? new Date(input.expected_date) : null;
+
+    const updated = await this.prisma.purchaseOrder.update({ where: { id }, data: { ...data, ...this.audit.update(user) } });
+    await this.audit.record("purchase_order.print_fields", "purchase_order", user.id, id, { purchase_order_no: po.purchaseOrderNo, status: po.status, fields: Object.keys(data) });
+    return updated;
+  }
+
+  /** 空串 → null（表单里删空一格 = 这一格不印字），并去掉首尾空白。 */
+  private optionalText(value: string | null | undefined): string | null {
+    const trimmed = String(value ?? "").trim();
+    return trimmed ? trimmed : null;
+  }
+
   async order(id: string, user: CurrentUser) { const po = await this.get(id); if (po.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_STATE", message: "只有草稿采购单可以下单", details: [] }); this.assertOrderable(po); const headSupplierId = po.supplierId ?? po.items[0]?.supplierId ?? null; const result = await this.prisma.purchaseOrder.update({ where: { id }, data: { status: "ordered", supplierId: headSupplierId, purchaseDate: po.purchaseDate ?? new Date(), currency: po.currency ?? "CNY", ...this.audit.update(user) } }); await this.audit.record("purchase_order.order", "purchase_order", user.id, id, { order_no: po.orderNo }); return result; }
   async revertToDraft(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "采购单回退草稿必须填写原因", details: [] }); const po = await this.get(id); if (po.status !== "ordered" || po.items.some((item) => item.receipts.length)) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_REVERTIBLE", message: "仅无到货事实的已下单采购单可以退回草稿", details: [] }); const result = await this.prisma.purchaseOrder.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } }); await this.audit.record("purchase_order.revert_to_draft", "purchase_order", user.id, id, { order_no: po.orderNo, reason: reason.trim() }); return result; }
   async cancel(id: string, user: CurrentUser) { const po = await this.get(id); if (po.status !== "draft" || po.items.some((item) => item.receipts.length)) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "已有下游事实的采购单不能直接取消", details: [] }); return this.prisma.purchaseOrder.update({ where: { id }, data: { status: "cancelled", ...this.audit.update(user) } }); }

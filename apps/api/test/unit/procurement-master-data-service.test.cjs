@@ -566,12 +566,14 @@ test("supplier.create_manual-mode-requires-non-blank-code_422-and-no-write", asy
 
 test("supplier.create_trims-code-keeps-name_defaults-settlement-info", async () => {
   const h = makeHarness();
-  await h.service.createSupplier({ code_mode: "manual", supplier_code: " SUP-9 ", name: " 布料厂 ", contact_name: "李", phone: "138", remark: "r" }, USER);
+  // 地址是 2026-09-16 新增的字段（用户：「供应商，需要多一个字段，地址」），一起验证能落库
+  await h.service.createSupplier({ code_mode: "manual", supplier_code: " SUP-9 ", name: " 布料厂 ", contact_name: "李", phone: "138", address: "绍兴市柯桥区", remark: "r" }, USER);
   assert.deepEqual(h.calls.supplier.create[0].data, {
     supplierCode: "SUP-9",
     name: " 布料厂 ",
     contactName: "李",
     phone: "138",
+    address: "绍兴市柯桥区",
     settlementInfo: {},
     remark: "r",
     createdBy: USER.id,
@@ -612,12 +614,13 @@ test("supplier.update_writes-only-provided-fields-and-clears-nullable-ones", asy
     name: null,
     contact_name: null,
     phone: undefined,
+    address: null,
     settlement_info: undefined,
     remark: "新",
   }, USER);
   assert.deepEqual(h.calls.supplier.update[0], {
     where: { id: SUPPLIER_ID },
-    data: { contactName: null, remark: "新", updatedBy: USER.id },
+    data: { contactName: null, address: null, remark: "新", updatedBy: USER.id },
   });
   assert.deepEqual(h.calls.supplier.findFirst[0].where, { id: SUPPLIER_ID, deletedAt: null });
   assert.deepEqual(auditActions(h.calls), ["supplier.update"]);

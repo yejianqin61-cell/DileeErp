@@ -535,6 +535,8 @@ model Supplier {
   name                    String                   @unique @db.VarChar(200)
   contactName             String?                  @map("contact_name") @db.VarChar(100)
   phone                   String?                  @db.VarChar(50)
+  /// 地址（用户 2026-09-16：「供应商，需要多一个字段，地址」）。可空：历史供应商没有这一项。
+  address                 String?                  @map("address") @db.VarChar(300)
   settlementInfo          Json                     @default("{}") @map("settlement_info")
   isActive                Boolean                  @default(true) @map("is_active")
   remark                  String?                  @db.VarChar(1000)
@@ -573,6 +575,21 @@ model PurchaseOrder {
   totalAmount               Decimal                   @default(0) @map("total_amount") @db.Decimal(18, 4)
   extensionData             Json                      @default("{}") @map("extension_data")
   remark                    String?                   @db.VarChar(1000)
+  /// 以下六列是「采购订单打印表」上要出现、系统里原本没有落点的字段（用户 2026-09-16：
+  /// 「采购单里面要有…付款方式、交期条款、交货地址、厂家回签意见、厂家回签、主管签字」
+  /// 「对应的，系统中采购单也要支持对这些字段进行填写和设置」）。
+  ///
+  /// 与明细/金额无关，因此允许在**已下单之后**继续填写（厂家回签本来就是下单之后才发生的）：
+  /// 走单独的 `PATCH /purchase-orders/:id/print-fields`，不放开「草稿才可整体编辑」那道门。
+  /// 付款方式按业务给的三项存文本（月结30天 / 月结60天 / 当月付款）：不做枚举校验，
+  /// 以后加「月结90天」不用改后端。回签三格存文本（导出仍留空供手写，这里是我们自己的记录）。
+  paymentTerms              String?                   @map("payment_terms") @db.VarChar(50)
+  deliveryTerms             String?                   @map("delivery_terms") @db.VarChar(1000)
+  deliveryAddress           String?                   @map("delivery_address") @db.VarChar(300)
+  supplierReply             String?                   @map("supplier_reply") @db.VarChar(1000)
+  /// 厂家回签：文本（经办人 / 日期），不是布尔。
+  supplierSigned            String?                   @map("supplier_signed") @db.VarChar(200)
+  supervisorSignature       String?                   @map("supervisor_signature") @db.VarChar(200)
   createdAt                 DateTime                  @default(now()) @map("created_at")
   updatedAt                 DateTime                  @updatedAt @map("updated_at")
   createdBy                 String                    @map("created_by") @db.Uuid

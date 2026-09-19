@@ -17,6 +17,24 @@ class PurchaseOrderSplitDto { @IsString() order_no!: string; @IsOptional() @IsUU
 class ReceiptUpdateDto { @IsString() quantity!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() over_receipt_reason?: string; @IsString() reason!: string; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 
+/**
+ * 采购单打印表上的字段（用户 2026-09-16：「系统中采购单也要支持对这些字段进行填写和设置」）。
+ *
+ * 全是可选的：只传要改的那几格。`expected_date` / `remark` 传 `null` 表示清空这一格；
+ * 其余文本传空串同样按清除处理（服务层 optionalText）。付款方式**不做枚举校验**：
+ * 业务给的是「月结30天 / 月结60天 / 当月付款」三项，存文本则以后加「月结90天」不用改后端。
+ */
+class PrintFieldsDto {
+  @IsOptional() @IsString() @MaxLength(50) payment_terms?: string | null;
+  @IsOptional() @IsString() @MaxLength(1000) delivery_terms?: string | null;
+  @IsOptional() @IsString() @MaxLength(300) delivery_address?: string | null;
+  @IsOptional() @IsDateString() expected_date?: string | null;
+  @IsOptional() @IsString() @MaxLength(1000) remark?: string | null;
+  @IsOptional() @IsString() @MaxLength(1000) supplier_reply?: string | null;
+  @IsOptional() @IsString() @MaxLength(200) supplier_signed?: string | null;
+  @IsOptional() @IsString() @MaxLength(200) supervisor_signature?: string | null;
+}
+
 @Controller("purchase-orders")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("procurement")
@@ -27,6 +45,9 @@ export class PurchaseOrdersController {
   // 必须声明在 @Post(":id/...") 之前语义上更清晰；本例路径为单段 "split"，与 ":id" 的 POST 不冲突。
   @Post("split") async split(@Body() body: PurchaseOrderSplitDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.createSplit(body, user), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: PurchaseOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.update(id, body, user), meta: {} }; }
+  // 打印信息（付款方式/交期条款/交货地址/交货日期/备注/回签三格）：**任何未取消的状态**都能改，
+  // 因为厂家回签本来就是下单之后才发生的；它不碰明细与金额，所以不走「草稿才可整体编辑」那道门。
+  @Patch(":id/print-fields") async updatePrintFields(@Param("id") id: string, @Body() body: PrintFieldsDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.updatePrintFields(id, body, user), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.orders.get(id), meta: {} }; }
   @Get(":id/impact-preview") async impact(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
   @Post(":id/order") async order(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.order(id, user), meta: {} }; }
