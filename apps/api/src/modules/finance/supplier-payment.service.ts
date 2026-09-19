@@ -6,11 +6,11 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
-import { paymentItemKeys } from "./cash-flow-catalog";
+import { paymentSubjectNames } from "./accounting-subject-catalog";
 import { CashFlowService } from "./cash-flow.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 
-type PaymentInput = { supplier_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payee_name?: string; bank_id?: string; cash_flow_item_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
+type PaymentInput = { supplier_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payee_name?: string; bank_id?: string; subject_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
 type AllocationInput = { payable_entry_id: string; amount: string; remark?: string };
 
 @Injectable()
@@ -44,8 +44,8 @@ export class SupplierPaymentService {
     if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在或已停用");
     // 支付银行来自银行账户池：停用/已删除的账户不能被选中（外键拦不住「停用」）。
     await requireActiveBank(this.prisma, input.bank_id, "支付银行不存在或已停用");
-    // 收支项目建单时就校验并落库：表单里填过的东西不能在过账前丢掉（过账时仍可临时覆盖）。
-    const cashFlowItem = await this.cashFlow.requireItem(input.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    // 会计科目建单时就校验并落库：表单里填过的东西不能在过账前丢掉（过账时仍可临时覆盖）。
+    const subject = await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const replayKey = input.idempotency_key?.trim() || null;
     // 与收款侧同一约定：同一次提交（网络重试、双击）必须命中同一张草稿付款单。
     if (replayKey) {
@@ -57,7 +57,7 @@ export class SupplierPaymentService {
       where: { supplierId: supplier.id, orderNo: input.order_no ?? null, amount, currency: input.currency, status: "draft", deletedAt: null },
     });
     if (duplicateDraft) throw new UnprocessableEntityException({ code: "SUPPLIER_PAYMENT_DRAFT_EXISTS", message: `已存在相同供应商/订单/金额的草稿付款单 ${duplicateDraft.paymentNo}，请直接编辑或过账它，避免重复登记`, details: [{ payment_id: duplicateDraft.id, payment_no: duplicateDraft.paymentNo }] });
-    const row = await this.prisma.supplierPayment.create({ data: { paymentNo: this.number("SPAY"), idempotencyKey: replayKey, supplierId: supplier.id, orderNo: input.order_no, bankId: input.bank_id, cashFlowItemId: cashFlowItem?.id, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payeeName: input.payee_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.supplierPayment.create({ data: { paymentNo: this.number("SPAY"), idempotencyKey: replayKey, supplierId: supplier.id, orderNo: input.order_no, bankId: input.bank_id, subjectId: subject?.id, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payeeName: input.payee_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
     await this.audit.record("supplier_payment.create", "supplier_payment", user.id, row.id, { order_no: row.orderNo, amount: row.amount.toString() });
     return row;
   }
@@ -65,10 +65,10 @@ export class SupplierPaymentService {
   /**
    * 过账并核销。
    *
-   * `cashFlowItemId`：过账时人工选定的收支项目（可选）。默认按本次付款**金额最大**的应付来源
+   * `subjectId`：过账时人工选定的会计科目（可选）。默认按本次付款**金额最大**的应付来源
    * 自动归类（采购 / 外加工 / 其他应付）；财务明确选了就以选择为准，选了不存在的项目会 422。
    */
-  async post(id: string, allocations: AllocationInput[], user: CurrentUser, cashFlowItemId?: string | null) {
+  async post(id: string, allocations: AllocationInput[], user: CurrentUser, subjectId?: string | null) {
     const items = allocations ?? [];
     if (items.length === 0) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "付款过账至少需要核销一条有效应付");
     if (new Set(items.map((item) => item.payable_entry_id)).size !== items.length) throw this.invalid("DUPLICATE_PAYMENT_ALLOCATION", "同一付款不得重复核销同一应付");
@@ -80,7 +80,7 @@ export class SupplierPaymentService {
       if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("SUPPLIER_PAYMENT_NOT_POSTABLE", "只有草稿付款可以过账");
       let total = new Prisma.Decimal(0);
       // 按来源类型累计本次付款的金额：一笔付款可能同时核销采购、外加工与其他应付，
-      // 收支项目按**金额最大**的那类来源选定（其余来源在备注里体现）。
+      // 会计科目按**金额最大**的那类来源选定（其余来源在备注里体现）。
       const sourceAmounts = new Map<string, Prisma.Decimal>();
       for (const item of items) {
         const amount = this.decimal(item.amount, "INVALID_ALLOCATION_AMOUNT");
@@ -112,9 +112,9 @@ export class SupplierPaymentService {
       bankId: result.payment.bankId ?? null,
       settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "supplier_payment", sourceId: result.payment.id,
-      itemKeys: paymentItemKeys(dominant),
+      subjectNames: paymentSubjectNames(dominant),
       // 过账时临时选的项目优先；没选就用建单时填在付款单上的项目；都没有则按来源自动归类。
-      itemId: cashFlowItemId ?? result.payment.cashFlowItemId ?? null,
+      subjectId: subjectId ?? result.payment.subjectId ?? null,
       remark: result.payment.remark ?? undefined,
     }, user);
     return result.payment;
@@ -126,10 +126,10 @@ export class SupplierPaymentService {
    * 草稿还没核销任何应付（核销是过账时才写的），所以改币种不会与已核销记录冲突；
    * 过账时仍逐条校验供应商/币种/订单一致（ALLOCATION_REFERENCE_MISMATCH）。
    */
-  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; currency?: string; bank_id?: string | null; cash_flow_item_id?: string | null; remark?: string }, user: CurrentUser) {
+  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; currency?: string; bank_id?: string | null; subject_id?: string | null; remark?: string }, user: CurrentUser) {
     if (input.currency !== undefined) await this.currencies?.assertSupported(input.currency, "付款币种");
     if (input.bank_id) await requireActiveBank(this.prisma, input.bank_id, "支付银行不存在或已停用");
-    const cashFlowItem = input.cash_flow_item_id === undefined ? undefined : await this.cashFlow.requireItem(input.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    const subject = input.subject_id === undefined ? undefined : await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payments WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.supplierPayment.findFirst({ where: { id, deletedAt: null } });
@@ -138,8 +138,8 @@ export class SupplierPaymentService {
       const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_SUPPLIER_PAYMENT_AMOUNT");
       // bank_id 传 null / 空串 = 清空支付银行；undefined = 不改。
       const bankId = input.bank_id === undefined ? current.bankId : (input.bank_id || null);
-      const cashFlowItemId = input.cash_flow_item_id === undefined ? current.cashFlowItemId : (cashFlowItem?.id ?? null);
-      return tx.supplierPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, currency: input.currency ?? current.currency, bankId, cashFlowItemId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      const subjectId = input.subject_id === undefined ? current.subjectId : (subject?.id ?? null);
+      return tx.supplierPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, currency: input.currency ?? current.currency, bankId, subjectId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
   }
 

@@ -8,7 +8,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { payableInReconciliationScope } from "./supplier-payable.domain";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
-import { PAYABLE_CONFIRM_ITEM_KEYS, paymentItemKeys } from "./cash-flow-catalog";
+import { PAYABLE_CONFIRM_SUBJECT_NAMES, paymentSubjectNames } from "./accounting-subject-catalog";
 
 const STATUS_LABELS: Record<string, string> = { pending: "待处理", matched: "已对平", difference: "有差异", resolved: "差异已处理" };
 
@@ -115,14 +115,14 @@ export class SupplierPayableReconciliationService {
     };
   }
 
-  async create(input: { supplier_id: string; order_no?: string; purchase_order_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; bank_id?: string; cash_flow_item_id?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+  async create(input: { supplier_id: string; order_no?: string; purchase_order_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; bank_id?: string; subject_id?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     await this.currencies?.assertSupported(input.currency, "应付对账币种");
     const start = this.date(input.period_start); const end = this.date(input.period_end); if (start > end) throw this.invalid("INVALID_RECONCILIATION_PERIOD", "对账开始日期不能晚于结束日期");
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null }, select: { id: true } }); if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
-    // 支付银行与收支项目都来自主数据：银行必须在池子里且启用（外键拦不住「停用」）；
+    // 支付银行与会计科目都来自主数据：银行必须在池子里且启用（外键拦不住「停用」）；
     // 项目建单时就校验并落库，确认应付要按它把付款归到某个项目上，报表才能按项目统计。
     await requireActiveBank(this.prisma, input.bank_id, "支付银行不存在或已停用");
-    const cashFlowItem = await this.cashFlow.requireItem(input.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    const subject = await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const scope = { supplierId: supplier.id, currency: input.currency, orderNo: input.order_no?.trim() || undefined, purchaseOrderId: input.purchase_order_id?.trim() || undefined };
     const entries = await this.prisma.supplierPayableEntry.findMany({ where: { ...this.entryScope({ ...scope, periodStart: start, periodEnd: end }), status: { in: [...ENTRY_STATUSES] } } });
     const entryIds = entries.map((entry) => entry.id);
@@ -131,7 +131,7 @@ export class SupplierPayableReconciliationService {
     // Reconcile allocated amounts only; an unallocated payment must not reduce a supplier/order balance.
     const paid = payments.reduce((sum, payment) => sum.plus(payment.allocations.reduce((inner, allocation) => inner.plus(allocation.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0));
     const external = this.decimal(input.external_balance); const difference = payable.minus(paid).minus(external);
-    const row = await this.prisma.supplierPayableReconciliation.create({ data: { reconciliationNo: this.number(), orderNo: scope.orderNo, purchaseOrderId: scope.purchaseOrderId, supplierId: supplier.id, bankId: input.bank_id || undefined, cashFlowItemId: cashFlowItem?.id, periodStart: start, periodEnd: end, payableAmountSnapshot: payable, paymentAmountSnapshot: paid, adjustmentAmountSnapshot: 0, systemBalance: payable.minus(paid), externalBalance: external, difference, currency: input.currency, status: difference.eq(0) ? "matched" : "difference", attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.supplierPayableReconciliation.create({ data: { reconciliationNo: this.number(), orderNo: scope.orderNo, purchaseOrderId: scope.purchaseOrderId, supplierId: supplier.id, bankId: input.bank_id || undefined, subjectId: subject?.id, periodStart: start, periodEnd: end, payableAmountSnapshot: payable, paymentAmountSnapshot: paid, adjustmentAmountSnapshot: 0, systemBalance: payable.minus(paid), externalBalance: external, difference, currency: input.currency, status: difference.eq(0) ? "matched" : "difference", attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
     if (row.orderNo) await this.audit.recordWithOrderNo("supplier_payable_reconciliation.create", "supplier_payable_reconciliation", row.orderNo, user.id, row.id, { difference: difference.toString() });
     else await this.audit.record("supplier_payable_reconciliation.create", "supplier_payable_reconciliation", user.id, row.id, { difference: difference.toString() });
     return row;
@@ -159,13 +159,13 @@ export class SupplierPayableReconciliationService {
    * 否则会把没核对清楚的金额直接记成生效负债。来源已作废（voided）的草稿会被跳过并回报，
    * 因为「上游冲销后不得确认」是既定规则（SupplierPayableService.confirm 同口径）。
    *
-   * `override`：确认时补/改银行账户与收支项目（历史对账单可能没填），给了就回写到对账单上。
+   * `override`：确认时补/改银行账户与会计科目（历史对账单可能没填），给了就回写到对账单上。
    */
-  async confirmPayables(id: string, user: CurrentUser, override: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+  async confirmPayables(id: string, user: CurrentUser, override: { bank_id?: string | null; subject_id?: string | null } = {}) {
     // **先进校验、后进事务**：等事务提交完才发现银行非法，应付已被确认、流水却没写，
     // 账面上凭空少一笔支出（确认与记账必须同生共死）。
     if (override.bank_id) await requireActiveBank(this.prisma, override.bank_id, "支付银行不存在或已停用");
-    if (override.cash_flow_item_id) await this.cashFlow.requireItem(override.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    if (override.subject_id) await this.cashFlow.requireSubject(override.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_reconciliations WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.supplierPayableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { supplier: { select: { id: true, name: true } } } });
@@ -188,11 +188,11 @@ export class SupplierPayableReconciliationService {
         confirmed.push(draft);
       }
       const bankId = override.bank_id === undefined ? current.bankId : (override.bank_id || null);
-      const cashFlowItemId = override.cash_flow_item_id === undefined ? current.cashFlowItemId : (override.cash_flow_item_id || null);
-      if (bankId !== current.bankId || cashFlowItemId !== current.cashFlowItemId) {
-        await tx.supplierPayableReconciliation.update({ where: { id }, data: { bankId, cashFlowItemId, ...this.audit.update(user) } });
+      const subjectId = override.subject_id === undefined ? current.subjectId : (override.subject_id || null);
+      if (bankId !== current.bankId || subjectId !== current.subjectId) {
+        await tx.supplierPayableReconciliation.update({ where: { id }, data: { bankId, subjectId, ...this.audit.update(user) } });
       }
-      return { current, confirmed, skipped, bankId, cashFlowItemId };
+      return { current, confirmed, skipped, bankId, subjectId };
     });
     const confirmedAmount = result.confirmed.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
     // 项目归类与供应商付款过账同一套口径：按本次确认金额最大的来源类型选候选链，
@@ -209,8 +209,8 @@ export class SupplierPayableReconciliationService {
       currency: result.current.currency,
       counterpartyName: result.current.supplier?.name ?? result.current.supplierId,
       direction: "expense",
-      itemKeys: dominant ? paymentItemKeys(dominant) : PAYABLE_CONFIRM_ITEM_KEYS,
-      itemId: result.cashFlowItemId,
+      subjectNames: dominant ? paymentSubjectNames(dominant) : PAYABLE_CONFIRM_SUBJECT_NAMES,
+      subjectId: result.subjectId,
       bankId: result.bankId,
       remark: `应付对账确认（${result.confirmed.length} 条）`,
     }, user);
@@ -230,7 +230,7 @@ export class SupplierPayableReconciliationService {
       confirmed_amount: confirmedAmount.toFixed(4),
       currency: result.current.currency,
       bank_id: result.bankId,
-      cash_flow_item_id: result.cashFlowItemId,
+      subject_id: result.subjectId,
       cash_flow_entry_id: cashFlow?.id ?? null,
       /** 没指定银行账户：钱记进了收支流水，但不会体现在任何银行余额里，界面必须提示。 */
       bank_missing: !result.bankId,

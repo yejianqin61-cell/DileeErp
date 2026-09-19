@@ -5,10 +5,11 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { CASH_FLOW_ITEM_DICTIONARY_KEY, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "./cash-flow-catalog";
+import { SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "./cash-flow-catalog";
 import { requireActiveBank } from "./bank-selection";
 import { cashFlowDirection } from "./cash-flow.domain";
 import { financeDayRange } from "./finance-period";
+import { isPaymentNature } from "./payment-nature";
 
 /**
  * 收支流水（「收支管理」板块的录入对象）。
@@ -16,6 +17,11 @@ import { financeDayRange } from "./finance-period";
  * 用户 R6 选定：**手工录入资金流水 + 可配置项目字典**，与收付款单**不做自动联动**。
  * 已知代价：收付款单过账后不会自动出现在这里，财务需要手工补录
  * （`sourceType` / `sourceId` 两列先留着，将来要联动不必再迁移）。
+ *
+ * 2026-09-17 口径变更（用户交付 `example/财务/科目表(2).xls`）：流水上的分类从
+ * 「收支项目字典项」换成**会计科目**（`accounting_subjects`）—— 分类 = 科目类别，
+ * 项目 = 科目名称。列名也从 `item_id` 改成 `subject_id`，因为合并之后已经没有
+ * 「收支项目」这个独立概念了。
  *
  * 金额恒为正数，收/支由 `direction` 决定：老表的「收入 / 支出」两列是**报表版式**，
  * 不是存储形态；存成有符号金额则「支出被填成负数」这类错误在库层无法拦住。
@@ -27,18 +33,36 @@ export type CashFlowEntryInput = {
   direction: string;
   amount: string;
   currency: string;
-  item_id: string;
+  /** 会计科目（分类 = 科目类别，项目 = 科目名称）。 */
+  subject_id: string;
   settlement_method?: string;
   settlement_account_id?: string;
   /** 资金实际所在的银行账户（银行账户池 banks）；填了才算进该账户的余额。 */
   bank_id?: string;
+  /**
+   * 款项性质（定金 / 货款 / 尾款 / 其他）。
+   *
+   * 用户 2026-09-17 要求把老表「外汇一览表」搬进系统，那张表按「定金 / 货款」分列，
+   * 于是钱落账的这条记录必须自己说清是什么性质。空 = 没标注（报表算进「其他到账」）。
+   */
+  payment_nature?: string;
+  /**
+   * 订单号：把收入流水挂到具体订单。
+   *
+   * 定金在出货之前就收到了，而应收来源是成品出库过账时才生成的 —— 那一刻没有来源可挂，
+   * 只能靠财务手填的订单号。填了必须真实存在（否则外汇一览表会把这笔钱归进「无法归属」，
+   * 与其让报表事后吞掉一笔钱，不如建单时就报错）。
+   */
+  order_no?: string;
   remark?: string;
 };
 
 export type CashFlowListFilter = {
   from?: string;
   to?: string;
-  itemId?: string;
+  subjectId?: string;
+  /** 分类（科目类别）筛选：报表与列表共用同一口径，避免两处各筛一套。 */
+  category?: string;
   currency?: string;
   direction?: string;
   bankId?: string;
@@ -47,7 +71,7 @@ export type CashFlowListFilter = {
 };
 
 const ENTRY_INCLUDE = {
-  item: { select: { id: true, key: true, label: true } },
+  subject: { select: { id: true, category: true, name: true, balanceDirection: true } },
   settlementAccount: { select: { id: true, key: true, label: true } },
   bank: { select: { id: true, bankCode: true, bankName: true, accountNumber: true, currency: true } },
 } as const;
@@ -67,7 +91,8 @@ export class CashFlowService {
       where: {
         deletedAt: null,
         ...(filter.includeReversed ? {} : { status: "posted" }),
-        ...(filter.itemId ? { itemId: filter.itemId } : {}),
+        ...(filter.subjectId ? { subjectId: filter.subjectId } : {}),
+        ...(filter.category ? { subject: { category: filter.category } } : {}),
         ...(filter.currency ? { currency: filter.currency } : {}),
         ...(filter.direction ? { direction: filter.direction } : {}),
         ...(filter.bankId ? { bankId: filter.bankId } : {}),
@@ -108,19 +133,23 @@ export class CashFlowService {
       direction: input.direction ?? current.direction,
       amount: input.amount ?? current.amount.toString(),
       currency: input.currency ?? current.currency,
-      item_id: input.item_id ?? current.itemId,
+      subject_id: input.subject_id ?? current.subjectId,
       settlement_method: input.settlement_method ?? current.settlementMethod ?? undefined,
       settlement_account_id: input.settlement_account_id === undefined ? (current.settlementAccountId ?? undefined) : (input.settlement_account_id || undefined),
       bank_id: input.bank_id === undefined ? (current.bankId ?? undefined) : (input.bank_id || undefined),
+      payment_nature: input.payment_nature === undefined ? (current.paymentNature ?? undefined) : (input.payment_nature || undefined),
+      order_no: input.order_no === undefined ? (current.orderNo ?? undefined) : (input.order_no || undefined),
       remark: input.remark ?? current.remark ?? undefined,
     };
     const data = await this.prepare(merged);
-    // 清空语义：`bank_id` / `settlement_account_id` 传 null 或空串表示**去掉**（选错了要能改掉），
-    // 传 undefined 表示不改 —— 与收付款草稿的编辑同一约定。
-    // `prepare()` 返回的是「选中的账户」，表达不了「清空」，所以这里显式补上。
+    // 清空语义：`bank_id` / `settlement_account_id` / `payment_nature` / `order_no` 传 null 或空串
+    // 表示**去掉**（填错了要能改掉），传 undefined 表示不改 —— 与收付款草稿的编辑同一约定。
+    // `prepare()` 返回的是「选中的东西」，表达不了「清空」，所以这里显式补上。
     const patch = { ...data } as Record<string, unknown>;
     if (input.bank_id !== undefined && !input.bank_id) patch.bankId = null;
     if (input.settlement_account_id !== undefined && !input.settlement_account_id) patch.settlementAccountId = null;
+    if (input.payment_nature !== undefined && !input.payment_nature) patch.paymentNature = null;
+    if (input.order_no !== undefined && !input.order_no) patch.orderNo = null;
     const row = await this.prisma.cashFlowEntry.update({ where: { id }, data: { ...(patch as typeof data), ...this.audit.update(user) } });
     await this.audit.record("cash_flow_entry.update", "cash_flow_entry", user.id, id, {
       entry_no: row.entryNo,
@@ -150,34 +179,45 @@ export class CashFlowService {
     return row;
   }
 
-  /** 启用的收支项目（报表需要「37 个项目全部列出」，因此由服务端统一提供）。 */
-  async listItems() {
-    return this.prisma.dictionaryItem.findMany({
-      where: { deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-      orderBy: [{ sortOrder: "asc" }, { key: "asc" }],
-      select: { id: true, key: true, label: true, sortOrder: true },
+  /**
+   * 校验一个**会计科目**（存在 + 启用）。
+   *
+   * 建单时人工选了科目就要**当场**校验：等到过账才报「科目已停用」，财务已经填完一整张单，
+   * 而错误信息在另一个页面的另一个时刻才出现 —— 那不是校验，那是事后通知。
+   * 传空（undefined / null / 空串）表示「不指定」，由来源自动归类，返回 null。
+   *
+   * 这里是全站「科目 id 是否可用」的**唯一实现**：收付款、确认应收/应付、工资付款过账
+   * 都通过它校验，不各自写一份查询（写两份的结果一定是一处宽松一处严格）。
+   */
+  async requireSubject(subjectId: string | null | undefined, message = "会计科目不存在或已停用") {
+    const id = subjectId?.trim();
+    if (!id) return null;
+    const subject = await this.prisma.accountingSubject.findFirst({
+      where: { id, deletedAt: null, isActive: true },
+      select: { id: true, category: true, name: true },
     });
+    if (!subject) throw this.invalid("ACCOUNTING_SUBJECT_NOT_FOUND", message);
+    return subject;
   }
 
   /**
-   * 校验一个「收支项目」字典项（存在 + 启用）。
+   * 校验一个**款项性质**（定金 / 货款 / 尾款 / 其他）。
    *
-   * 建单时人工选了项目就要**当场**校验：等到过账才报「项目已停用」，财务已经填完一整张单，
-   * 而错误信息在另一个页面的另一个时刻才出现 —— 那不是校验，那是事后通知。
-   * 传空（undefined / null / 空串）表示「不指定」，由来源自动归类，返回 null。
+   * 与 `requireSubject` 同一个理由单独放在这里：确认应收有「逐条 / 勾选批量 / 按对账单一键」
+   * 三条入口，流水本身又有新建与更正两条 —— 五处各写一份白名单，迟早有一处松一处严。
+   * 传空（undefined / null / 空串）表示「不标注」，返回 null；非法值显式 422，
+   * **绝不静默丢弃**：财务选了「定金」却被当成没填，报表上那笔钱就跑到「其他到账」里去了。
    */
-  async requireItem(itemId: string | null | undefined, message = "收支项目不存在或已停用") {
-    const id = itemId?.trim();
-    if (!id) return null;
-    const item = await this.prisma.dictionaryItem.findFirst({
-      where: { id, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-      select: { id: true, key: true, label: true },
-    });
-    if (!item) throw this.invalid("CASH_FLOW_ITEM_NOT_FOUND", message);
-    return item;
+  requirePaymentNature(value: string | null | undefined) {
+    const trimmed = value?.trim();
+    if (!trimmed) return null;
+    if (!isPaymentNature(trimmed)) throw this.invalid("PAYMENT_NATURE_INVALID", "款项性质只能是定金、货款、尾款或其他");
+    return trimmed;
   }
 
-  /** 校验并归一化一条流水（新建与更正共用，避免两条路径校验不一致）。 */
+  /**
+   * 校验并归一化一条流水（新建与更正共用，避免两条路径校验不一致）。
+   */
   private async prepare(input: CashFlowEntryInput) {
     await this.currencies?.assertSupported(input.currency, "收支币种");
     const direction = (() => {
@@ -199,11 +239,8 @@ export class CashFlowService {
       }
     })();
     // 金额恒为正：方向由 direction 决定，负数金额在库层会被 CHECK 约束拦住。
-    const item = await this.prisma.dictionaryItem.findFirst({
-      where: { id: input.item_id, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-      select: { id: true },
-    });
-    if (!item) throw this.invalid("CASH_FLOW_ITEM_NOT_FOUND", "收支项目不存在或已停用");
+    const subject = await this.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
+    if (!subject) throw this.invalid("ACCOUNTING_SUBJECT_REQUIRED", "每条收支流水都必须归到一个会计科目");
     let settlementAccountId: string | undefined;
     if (input.settlement_account_id) {
       const account = await this.prisma.dictionaryItem.findFirst({
@@ -216,16 +253,28 @@ export class CashFlowService {
     // 银行账户来自银行池（财务 → 银行账户）：停用/已删除的账户不能被选中，
     // 与收付款、对账选银行同一套 requireActiveBank 口径。填了才算进该账户余额。
     const bank = await requireActiveBank(this.prisma, input.bank_id, "银行账户不存在或已停用");
+    // 款项性质：白名单校验。**不做「收入才允许」的方向限制** —— 财务先在支出上标注、
+    // 事后发现方向填反了改回收入时，性质不该被连带清掉；报表只按收入方向取用这一列。
+    const paymentNature = this.requirePaymentNature(input.payment_nature);
+    // 订单号：填了必须真实存在。外汇一览表按订单号把收款归到订单，写错一个字符这笔钱就会
+    // 掉进报表的「无法归属」清单 —— 与其让报表事后吞掉一笔钱，不如建单时就报错。
+    const orderNo = input.order_no?.trim() || undefined;
+    if (orderNo) {
+      const order = await this.prisma.salesOrder.findFirst({ where: { orderNo, deletedAt: null }, select: { id: true } });
+      if (!order) throw this.invalid("SALES_ORDER_NOT_FOUND", `订单号「${orderNo}」不存在，请核对后再填`);
+    }
     return {
       entryDate: this.date(input.entry_date),
       counterpartyName,
       direction,
       amount,
       currency: input.currency,
-      itemId: item.id,
+      subjectId: subject.id,
       settlementMethod: input.settlement_method?.trim() || undefined,
       settlementAccountId,
       bankId: bank?.id,
+      paymentNature,
+      orderNo,
       remark: input.remark,
     };
   }
@@ -235,11 +284,11 @@ export class CashFlowService {
    *
    * 幂等：同 source_type + source_id + status=posted 已存在则不重复创建。
    *
-   * `itemKeys` 是**按优先级排列**的收支项目候选：业务口径会随来源变化
-   * （原料采购 vs 外加工 vs 其他应付），字典又是管理员可改的，所以给一条链而不是单个 key。
+   * `subjectNames` 是**按优先级排列**的会计科目名称候选：业务口径会随来源变化
+   * （原料采购 vs 外加工 vs 其他应付），科目又是管理员可改的，所以给一条链而不是单个名字。
    * 候选一个都不存在时**显式 422**，绝不静默跳过 —— 静默跳过会让整笔资金动账从收支流水里消失：
-   * 历史缺陷就是供应商付款写死 `外加工费`，而字典里只有「外加工费 晋江大田工资」，于是**每一笔
-   * 供应商付款都被悄悄丢掉**（收支流水只剩收到客户货款与工资付款）。
+   * 历史缺陷就是供应商付款写死了一个字典里不存在的 key，于是**每一笔供应商付款都被悄悄丢掉**
+   * （收支流水只剩收到客户货款与工资付款）。
    */
   async autoCreateFromPayment(
     input: {
@@ -264,15 +313,19 @@ export class CashFlowService {
       settlementAccountHint?: { bankName?: string | null; accountNumber?: string | null } | null;
       sourceType: string;
       sourceId: string;
-      itemKeys: readonly string[];
+      subjectNames: readonly string[];
       /**
-       * 过账时人工选定的收支项目 id（可选）。
+       * 过账时人工选定的会计科目 id（可选）。
        *
-       * 给了就以它为准，且**校验不过直接报错**——人工选择绝不能被静默忽略或悄悄替换成候选链里的其它项目，
+       * 给了就以它为准，且**校验不过直接报错**——人工选择绝不能被静默忽略或悄悄替换成候选链里的其它科目，
        * 否则财务选了「差旅费」却记成了「管理费用」，账面上看不出来。
-       * 没给则退回 `itemKeys` 候选链（按来源自动归类）。
+       * 没给则退回 `subjectNames` 候选链（按来源自动归类）。
        */
-      itemId?: string | null;
+      subjectId?: string | null;
+      /** 款项性质（定金/货款/尾款/其他）。收付款单据上通常没有这个信息，留给调用方按需传。 */
+      paymentNature?: string | null;
+      /** 订单号：让这笔流水能按订单归集（外汇一览表用）。 */
+      orderNo?: string | null;
       remark?: string;
     },
     user: CurrentUser,
@@ -282,18 +335,19 @@ export class CashFlowService {
       select: { id: true },
     });
     if (existing) return null;
-    const item = input.itemId
-      ? await this.prisma.dictionaryItem.findFirst({
-          where: { id: input.itemId, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-          select: { id: true, key: true },
+    const paymentNature = this.requirePaymentNature(input.paymentNature);
+    const subject = input.subjectId
+      ? await this.prisma.accountingSubject.findFirst({
+          where: { id: input.subjectId, deletedAt: null, isActive: true },
+          select: { id: true, name: true },
         })
-      : await this.firstCandidateItem(input.itemKeys);
-    if (!item) {
+      : await this.firstCandidateSubject(input.subjectNames);
+    if (!subject) {
       throw this.invalid(
-        "CASH_FLOW_ITEM_NOT_FOUND",
-        input.itemId
-          ? "选择的收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认后重新过账"
-          : `自动写入收支流水需要收支项目「${input.itemKeys.join("」或「")}」，请在「收支管理 → 收支项目」里补上后重新过账`,
+        "ACCOUNTING_SUBJECT_NOT_FOUND",
+        input.subjectId
+          ? "选择的会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认后重新过账"
+          : `自动写入收支流水需要会计科目「${input.subjectNames.join("」或「")}」，请在「收支管理 → 会计科目」里补上后重新过账`,
       );
     }
     const settlementAccountId = input.settlementAccountId ?? await this.matchSettlementAccount(input.settlementAccountHint);
@@ -305,12 +359,14 @@ export class CashFlowService {
         direction: input.direction,
         amount: input.amount,
         currency: input.currency,
-        itemId: item.id,
+        subjectId: subject.id,
         settlementMethod: input.settlementMethod ?? undefined,
         settlementAccountId,
         bankId: input.bankId ?? undefined,
         sourceType: input.sourceType,
         sourceId: input.sourceId,
+        paymentNature: paymentNature ?? undefined,
+        orderNo: input.orderNo ?? undefined,
         remark: `自动生成：${input.sourceType} / ${input.paymentNo}${input.remark ? ` - ${input.remark}` : ""}`,
         ...this.audit.create(user),
       },
@@ -333,7 +389,11 @@ export class CashFlowService {
    * 金额为 0（这次没有可确认的条目）时不动流水：返回 null，不建一条 0 元流水出来。
    *
    * 更新时**保留首次确认的日期**（一条累计流水只有一个日期，取最早的才不会被后来的确认把账推到别的期间），
-   * 但银行账户与收支项目取最新一次（财务最近一次确认时选的那个才是「钱实际走的地方」）。
+   * 但银行账户与会计科目取最新一次（财务最近一次确认时选的那个才是「钱实际走的地方」）。
+   *
+   * 款项性质与订单号：**只在调用方显式传了非 `undefined` 的值时才覆盖**。
+   * 这两列是人填的口径，不是每次确认都会被重新回答的问题 —— 不传就清掉，等于财务多点一次确认
+   * 就把上次标的「定金」抹掉了。要清空请显式传 `null`。
    */
   async recordConfirmation(
     input: {
@@ -345,27 +405,43 @@ export class CashFlowService {
       currency: string;
       counterpartyName: string;
       direction: "income" | "expense";
-      itemKeys: readonly string[];
-      /** 人工选定的收支项目（对账单上填过就传）；给了但不存在会显式 422，不静默换一个。 */
-      itemId?: string | null;
+      subjectNames: readonly string[];
+      /** 人工选定的会计科目（对账单上填过就传）；给了但不存在会显式 422，不静默换一个。 */
+      subjectId?: string | null;
       bankId?: string | null;
+      /**
+       * 款项性质（定金 / 货款 / 尾款 / 其他）。
+       *
+       * 确认应收时财务在弹窗里选（已确认的应收、对账单上也存了这个值）；
+       * 用户 2026-09-17 的原始需求就是「老表要按定金/货款分列」，这一列是那张表的数据来源。
+       */
+      paymentNature?: string | null;
+      /**
+       * 订单号：确认应收/应付时由调用方从来源单据上带过来（应收来源、对账单都知道自己的订单号），
+       * 这样外汇一览表不必再去反查一遍来源表就能按订单归集。
+       */
+      orderNo?: string | null;
       remark?: string;
     },
     user: CurrentUser,
   ) {
     if (input.amount.lte(0)) return null;
-    const item = input.itemId
-      ? await this.prisma.dictionaryItem.findFirst({
-          where: { id: input.itemId, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-          select: { id: true, key: true },
+    // 款项性质在这一处统一校验：确认应收有三条入口、确认应付两条，它们最终都走这里，
+    // 把白名单校验放在这个汇聚点上就不存在「某条入口忘了校验」的可能。
+    // `undefined` 保持原值（见方法注释），所以要区分开再交给校验器。
+    const paymentNature = input.paymentNature === undefined ? undefined : this.requirePaymentNature(input.paymentNature);
+    const subject = input.subjectId
+      ? await this.prisma.accountingSubject.findFirst({
+          where: { id: input.subjectId, deletedAt: null, isActive: true },
+          select: { id: true, name: true },
         })
-      : await this.firstCandidateItem(input.itemKeys);
-    if (!item) {
+      : await this.firstCandidateSubject(input.subjectNames);
+    if (!subject) {
       throw this.invalid(
-        "CASH_FLOW_ITEM_NOT_FOUND",
-        input.itemId
-          ? "选择的收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认后重新确认"
-          : `自动写入收支流水需要收支项目「${input.itemKeys.join("」或「")}」，请在「收支管理 → 收支项目」里补上后重新确认`,
+        "ACCOUNTING_SUBJECT_NOT_FOUND",
+        input.subjectId
+          ? "选择的会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认后重新确认"
+          : `自动写入收支流水需要会计科目「${input.subjectNames.join("」或「")}」，请在「收支管理 → 会计科目」里补上后重新确认`,
       );
     }
     const remark = `自动生成：${input.sourceType} / ${input.documentNo}${input.remark ? ` - ${input.remark}` : ""}`;
@@ -377,7 +453,18 @@ export class CashFlowService {
       const total = existing.amount.plus(input.amount);
       await this.prisma.cashFlowEntry.update({
         where: { id: existing.id },
-        data: { amount: total, counterpartyName: input.counterpartyName, currency: input.currency, itemId: item.id, bankId: input.bankId ?? null, remark, ...this.audit.update(user) },
+        data: {
+          amount: total,
+          counterpartyName: input.counterpartyName,
+          currency: input.currency,
+          subjectId: subject.id,
+          bankId: input.bankId ?? null,
+          // `undefined` 保持原值（见方法注释），只有显式给了值/`null` 才动这两列。
+          ...(paymentNature === undefined ? {} : { paymentNature }),
+          ...(input.orderNo === undefined ? {} : { orderNo: input.orderNo }),
+          remark,
+          ...this.audit.update(user),
+        },
       });
       return { id: existing.id, created: false, amount: total, added: input.amount };
     }
@@ -391,8 +478,10 @@ export class CashFlowService {
         direction: input.direction,
         amount: input.amount,
         currency: input.currency,
-        itemId: item.id,
+        subjectId: subject.id,
         bankId: input.bankId ?? null,
+        paymentNature: paymentNature ?? undefined,
+        orderNo: input.orderNo ?? undefined,
         remark,
         ...this.audit.create(user),
       },
@@ -401,17 +490,20 @@ export class CashFlowService {
   }
 
   /**
-   * 按候选链取第一个**真实存在且启用**的收支项目。
+   * 按候选链取第一个**真实存在且启用**的会计科目。
    *
    * 一次查库再按顺序挑，避免为每个候选各查一次；顺序即优先级，不能被数据库返回顺序打乱。
+   * 种入的科目表里名称是唯一的，万一将来出现重名（不同分类下的同名科目），
+   * `sortOrder` 靠前的那条胜出 —— 结果仍然确定，不会随查询计划漂移。
    */
-  private async firstCandidateItem(itemKeys: readonly string[]) {
-    if (itemKeys.length === 0) return null;
-    const candidates = await this.prisma.dictionaryItem.findMany({
-      where: { key: { in: [...itemKeys] }, deletedAt: null, isActive: true, type: { key: CASH_FLOW_ITEM_DICTIONARY_KEY, deletedAt: null } },
-      select: { id: true, key: true },
+  private async firstCandidateSubject(subjectNames: readonly string[]) {
+    if (subjectNames.length === 0) return null;
+    const candidates = await this.prisma.accountingSubject.findMany({
+      where: { name: { in: [...subjectNames] }, deletedAt: null, isActive: true },
+      orderBy: [{ sortOrder: "asc" }],
+      select: { id: true, name: true },
     });
-    return itemKeys.map((key) => candidates.find((candidate) => candidate.key === key)).find((found) => Boolean(found)) ?? null;
+    return subjectNames.map((name) => candidates.find((candidate) => candidate.name === name)).find((found) => Boolean(found)) ?? null;
   }
 
   /**

@@ -3,17 +3,18 @@
  *
  * 与 Nest/Prisma 完全解耦，便于用 node:test 直接跑（apps/api/test/unit/voucher-domain.test.cjs）。
  *
- * ## 科目从哪来（当前口径，可替换）
+ * ## 科目从哪来（2026-09-17 起：正式科目表）
  *
- * 库里**还没有正式会计科目表**（凭证管理页此前一直是占位，产品文档也把「会计科目」列在 V1 之外）。
- * 因此本期采用**业务科目口径**：
- *   - 损益/成本类科目 = 收支项目字典的 label（货款 / 原材料 成本 / 管理费用 / 人 工费 …）——
- *     财务本来就是按这张表分类的，等于把「收支项目」直接当科目用；
+ * 用户 2026-09-17 交付了 `example/财务/科目表(2).xls`，收支流水的分类从此是**会计科目**
+ * （`accounting_subjects`：分类 = 科目类别，项目 = 科目名称）。凭证的业务科目直接取它：
+ *   - 损益/成本类科目 = 会计科目名称（主营业务收入 / 主营业务成本 / 管理费用 …）——
+ *     财务本来就是按这张表分类的；
  *   - 资金类科目 = 银行存款 / 库存现金（按结算方式或结算账户名里是否含「现金」二选一）。
  * 分录永远是「一借一贷、金额相等」，因此凭证在形式上就是标准复式凭证。
  *
- * 将来接入正式科目表时，**只需要改本文件里 subjectKey/subjectLabel 的取值来源**
- * （例如查一张「收支项目 → 科目」映射），凭证与分录模型、页面、打印视图都不用动。
+ * 本文件顶部原来写着「将来接入正式科目表时只需要改 subjectKey/subjectLabel 的取值来源」——
+ * 那次改动就发生在 `voucher.service.ts` 的 `draftForEntry`（科目名 + `分类/项目` 作为科目编码），
+ * 凭证与分录模型、页面、打印视图都一行没动，验证了当时的判断。
  */
 
 /** 资金类科目：默认银行存款。 */
@@ -45,8 +46,10 @@ export type CashFlowEntryForVoucher = {
   /** Decimal 或字符串都能接受：domain 不参与金额运算，只做字符串透传。 */
   amount: { toString(): string } | string;
   currency: string;
-  itemKey: string;
-  itemLabel: string;
+  /** 会计科目编码快照：`分类/项目`（科目表没有唯一编码，两段拼起来才唯一）。 */
+  subjectKey: string;
+  /** 会计科目名称快照。 */
+  subjectLabel: string;
   settlementMethod?: string | null;
   settlementAccountLabel?: string | null;
   remark?: string | null;
@@ -83,9 +86,9 @@ export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "bankId" | "ban
   return { subject_key: subject, subject_label: account ? `${subject}—${account}` : subject, bank_id: entry.bankId ?? null };
 }
 
-/** 摘要：对方 + 收支项目（+ 备注），并裁剪到 500 字以内（列宽 VARCHAR(500)）。 */
-export function voucherSummaryFor(parts: { counterpartyName: string; itemLabel: string; remark?: string | null }): string {
-  const head = [parts.counterpartyName, parts.itemLabel].filter((text) => Boolean(text && text.trim()));
+/** 摘要：对方 + 会计科目（+ 备注），并裁剪到 500 字以内（列宽 VARCHAR(500)）。 */
+export function voucherSummaryFor(parts: { counterpartyName: string; subjectLabel: string; remark?: string | null }): string {
+  const head = [parts.counterpartyName, parts.subjectLabel].filter((text) => Boolean(text && text.trim()));
   const base = head.join(" · ");
   const remark = parts.remark?.trim();
   const text = remark ? `${base}（${remark}）` : base;
@@ -95,14 +98,14 @@ export function voucherSummaryFor(parts: { counterpartyName: string; itemLabel: 
 /**
  * 收支流水 → 一借一贷分录。
  *
- * - 收入：借 银行存款/库存现金，贷 收支项目（钱进来了，科目是收入侧）
- * - 支出：借 收支项目，贷 银行存款/库存现金（钱出去了）
+ * - 收入：借 银行存款/库存现金，贷 会计科目（钱进来了，科目是收入侧）
+ * - 支出：借 会计科目，贷 银行存款/库存现金（钱出去了）
  */
 export function voucherLinesFor(entry: CashFlowEntryForVoucher): VoucherLineDraft[] {
   const amount = typeof entry.amount === "string" ? entry.amount : entry.amount.toString();
   const income = entry.direction === "income";
   const summary = voucherSummaryFor(entry);
-  const businessLine = { subject_key: entry.itemKey, subject_label: entry.itemLabel };
+  const businessLine = { subject_key: entry.subjectKey, subject_label: entry.subjectLabel };
   const fundLine = fundLineFor(entry);
   const debit = income ? fundLine : businessLine;
   const credit = income ? businessLine : fundLine;

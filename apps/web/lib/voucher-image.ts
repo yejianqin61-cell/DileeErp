@@ -169,7 +169,7 @@ export function voucherSvg(input: VoucherImageInput): string {
     parts.push(text(MARGIN, y, `备注：${fitText(input.remark, right - MARGIN - 40, 13)}`, { size: 13, fill: MUTED }));
   }
   y += 24;
-  parts.push(text(MARGIN, y, "本凭证由迪礼 ERP 生成：科目取自「收支项目」字典，草稿可在凭证管理里改为自己账套的科目名。", { size: 11, fill: MUTED }));
+  parts.push(text(MARGIN, y, "本凭证由迪礼 ERP 生成：科目取自「收支管理 → 会计科目」（财务的科目表），草稿可在凭证管理里改为自己账套的科目名。", { size: 11, fill: MUTED }));
   const height = Math.round(y + 24);
 
   return [

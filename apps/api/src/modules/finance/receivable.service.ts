@@ -10,7 +10,17 @@ import { coveringReceivableReconciliation } from "./receivable.domain";
 import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
-import { RECEIVABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
+import { RECEIVABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
+
+/**
+ * 确认应收的三个入口（逐条 / 勾选批量 / 按对账单一键）共用同一组参数。
+ *
+ * `payment_nature` 是 2026-09-17 为老表「外汇一览表」加的口径（定金 / 货款 / 尾款 / 其他）：
+ * 确认就是记账，钱的性质必须在这唯一一次录入口里问清楚，事后补标只能靠逐条改流水。
+ * 传 `undefined` 表示「不动已有标注」（反复点确认不该把上次标的性质抹掉），
+ * 传 `null` / 空串表示「清空」。
+ */
+type ConfirmReceivableOptions = { bank_id?: string | null; subject_id?: string | null; payment_nature?: string | null };
 
 @Injectable()
 export class ReceivableService {
@@ -133,13 +143,13 @@ export class ReceivableService {
    * 「同来源只应有一条流水」保证不会重复记账 —— 一条应收一旦被确认就不再是草稿，
    * 另一个入口的查询条件（`status = draft`）自然不会再捞到它。
    *
-   * `options.bank_id` / `options.cash_flow_item_id` 允许空：没有银行账户时流水照写
+   * `options.bank_id` / `options.subject_id` 允许空：没有银行账户时流水照写
    * （收支事实不能丢），响应里带 `bank_missing` 让界面明确提示。
    */
-  async confirm(id: string, user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+  async confirm(id: string, user: CurrentUser, options: ConfirmReceivableOptions = {}) {
     // 先进校验、后进事务：等事务提交完才发现银行非法，应收已经确认、流水却没写。
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");
-    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    if (options.subject_id) await this.cashFlow.requireSubject(options.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { name: true } } } });
@@ -160,9 +170,13 @@ export class ReceivableService {
       currency: row.currency,
       counterpartyName: result.customerName,
       direction: "income",
-      itemKeys: RECEIVABLE_CONFIRM_ITEM_KEYS,
-      itemId: options.cash_flow_item_id,
+      subjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
+      subjectId: options.subject_id,
       bankId: options.bank_id ?? null,
+      // 订单号随单据一起落到流水上：外汇一览表要按订单把收款归集起来（定金在出货前就收到了，
+      // 那条流水没有来源可挂，只能靠这个字段）。这里来源单据自己就知道订单号，不必财务手填。
+      orderNo: row.orderNo,
+      paymentNature: options.payment_nature,
       remark: `确认应收 ${row.sourceNo}`,
     }, user);
     return { ...row, cash_flow_entry_id: cashFlow?.id ?? null, bank_missing: !options.bank_id };
@@ -179,11 +193,11 @@ export class ReceivableService {
    * 幂等：只确认 `status = draft` 的条目。被另一个入口先确认掉的、已取消的计入 `skipped_count`，
    * 既不报错也不重复记账（重复记账＝同一个账户被进两次钱）。
    */
-  async batchConfirm(ids: string[], user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+  async batchConfirm(ids: string[], user: CurrentUser, options: ConfirmReceivableOptions = {}) {
     if (!ids.length) throw this.invalid("RECEIVABLE_IDS_REQUIRED", "请先勾选要确认的应收条目");
     // 银行与项目整批只有一个，先校验一次即可（「先校验后进事务」在这里同样成立）。
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");
-    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    if (options.subject_id) await this.cashFlow.requireSubject(options.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       // 逐条加锁：每条都要保证「读到草稿 → 改成已确认」之间不被另一个入口插进来
       // （单条确认、对账确认用的是同一把行锁，因此互相串行）。
@@ -214,9 +228,12 @@ export class ReceivableService {
         currency: draft.currency,
         counterpartyName: draft.customer?.name ?? draft.customerId,
         direction: "income",
-        itemKeys: RECEIVABLE_CONFIRM_ITEM_KEYS,
-        itemId: options.cash_flow_item_id,
+        subjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
+        subjectId: options.subject_id,
         bankId: options.bank_id ?? null,
+        // 逐条记账时订单号从这一条应收自己带过来（见 confirm 的同名注释）。
+        orderNo: draft.orderNo,
+        paymentNature: options.payment_nature,
         remark: `确认应收 ${draft.sourceNo}（勾选批量确认）`,
       }, user);
       if (entry) cashFlowEntryIds.push(entry.id);
@@ -243,9 +260,9 @@ export class ReceivableService {
    * 2026-09-16：界面上的按订单批量确认表已下线（改为勾选批量确认，勾选能在筛选后精确到某张订单），
    * 这个接口保留给外部调用方与历史脚本，记账口径与 `batchConfirm` 完全一致。
    */
-  async batchConfirmByOrder(orderNo: string, user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+  async batchConfirmByOrder(orderNo: string, user: CurrentUser, options: ConfirmReceivableOptions = {}) {
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");
-    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    if (options.subject_id) await this.cashFlow.requireSubject(options.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_sources WHERE order_no = ${orderNo} AND deleted_at IS NULL AND status = 'draft' FOR UPDATE`;
       const drafts = await tx.receivableSource.findMany({
@@ -274,9 +291,11 @@ export class ReceivableService {
         currency: draft.currency,
         counterpartyName: draft.customer?.name ?? draft.customerId,
         direction: "income",
-        itemKeys: RECEIVABLE_CONFIRM_ITEM_KEYS,
-        itemId: options.cash_flow_item_id,
+        subjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
+        subjectId: options.subject_id,
         bankId: options.bank_id ?? null,
+        orderNo: result.orderNo,
+        paymentNature: options.payment_nature,
         remark: `确认应收 ${draft.sourceNo}（订单 ${result.orderNo} 批量确认）`,
       }, user);
       if (entry) cashFlowEntryIds.push(entry.id);

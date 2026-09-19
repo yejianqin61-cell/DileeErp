@@ -18,17 +18,21 @@ import { SupplierPaymentService } from "./supplier-payment.service";
 import { SupplierPayableReconciliationService } from "./supplier-payable-reconciliation.service";
 import { buildPayableLedgerTable, buildReceivableLedgerTable } from "./ledger-workbook";
 import { sendWorkbook } from "./finance-report-workbook";
+import { PAYMENT_NATURE_FORM_KEYS } from "./payment-nature";
 
 class SourceDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() remark?: string; }class ReceivableDraftUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() due_date?: string; @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsUUID() cash_flow_item_id?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
+class PaymentDto { @IsUUID() customer_id!: string; @IsOptional() @IsString() order_no?: string; @IsDateString() payment_date!: string; @IsString() amount!: string; @IsString() currency!: string; @IsString() payment_method!: string; @IsOptional() @IsString() bank_reference?: string; @IsOptional() @IsString() payer_name?: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsUUID() subject_id?: string; @IsOptional() attachment?: unknown[]; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() remark?: string; }
 class AllocationDto { @IsUUID() receivable_source_id!: string; @IsString() amount!: string; }
 /**
  * 过账请求。
  *
- * `cash_flow_item_id`：**人工选定**的收支项目（可选，留空则按来源自动归类）。
+ * `subject_id`：**人工选定**的会计科目（可选，留空则按来源自动归类）。
  * 之所以放在过账而不是建单：收支流水只在过账那一刻产生，草稿阶段选项目没有落点。
+ *
+ * `payment_nature` 同理放在过账：款项性质（定金/货款/尾款/其他）描述的是**这笔钱**，
+ * 而钱是在过账那一刻才进收支流水的。
  */
-class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; @IsOptional() @IsUUID() cash_flow_item_id?: string; }
+class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; @IsOptional() @IsUUID() subject_id?: string; @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 
 /**
@@ -70,8 +74,8 @@ class ReconciliationDto {
   @IsString() external_balance!: string;
   @IsString() currency!: string;
   @IsOptional() @IsUUID() bank_id?: string;
-  /** 收支项目（收支管理 → 收支项目）：确认应收时按它写入收支流水。 */
-  @IsOptional() @IsUUID() cash_flow_item_id?: string;
+  /** 会计科目（收支管理 → 会计科目）：确认应收时按它写入收支流水。 */
+  @IsOptional() @IsUUID() subject_id?: string;
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }
@@ -86,36 +90,36 @@ class SupplierPaymentDto {
   @IsOptional() @IsString() bank_reference?: string;
   @IsOptional() @IsString() payee_name?: string;
   @IsOptional() @IsUUID() bank_id?: string;
-  @IsOptional() @IsUUID() cash_flow_item_id?: string;
+  @IsOptional() @IsUUID() subject_id?: string;
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string;
   @IsOptional() @IsString() remark?: string;
 }
 class SupplierAllocationDto { @IsUUID() payable_entry_id!: string; @IsString() amount!: string; @IsOptional() @IsString() remark?: string; }
-class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; @IsOptional() @IsUUID() cash_flow_item_id?: string; }
+class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[]; @IsOptional() @IsUUID() subject_id?: string; }
 /**
  * 草稿类单据（收款 / 付款 / 应付）的编辑入参。
  *
  * `currency` 允许改：草稿还没发生核销，改币种是安全的业务动作（「都要支持选择币种、编辑币种」）。
  * `bank_id` 允许传 null / 空串表示**清空**银行，传 undefined 表示不改（银行是可选字段，选错了要能去掉）。
  */
-class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() cash_flow_item_id?: string | null; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
-class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsUUID() cash_flow_item_id?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
+class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() subject_id?: string | null; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsUUID() subject_id?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
 
 /**
  * 「一键确认应收 / 应付」的入参。
  *
- * 允许在确认时**补/改**银行账户与收支项目：确认这一步才是钱真正进出的时刻，而历史对账单
+ * 允许在确认时**补/改**银行账户与会计科目：确认这一步才是钱真正进出的时刻，而历史对账单
  * （或建单时没填的单子）可能没有银行/项目。给了就覆盖并**回写到对账单上**（后续查看与实际一致），
  * 没给就用单子上已有的。两者都缺时仍然确认成功，只是这笔流水不进任何账户余额 —— 不静默，
  * 响应里带 `bank_missing` 让界面明确提示。
  */
-class ConfirmReconciliationDto { @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() cash_flow_item_id?: string | null; }
+class ConfirmReconciliationDto { @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() subject_id?: string | null; @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string | null; }
 
 /**
  * 逐条确认应收 / 应付的入参。
  *
- * 与对账确认同一套字段：确认这一步才是钱真正进出的时刻，所以要能指定**入账/支付银行**与**收支项目**。
+ * 与对账确认同一套字段：确认这一步才是钱真正进出的时刻，所以要能指定**入账/支付银行**与**会计科目**。
  * 两者都可空（历史数据、以及「先把应收确认了、银行回头再定」），此时响应带 `bank_missing`，
  * 界面必须明确提示「这笔已记入收支流水，但不体现在任何银行余额里」。
  */
@@ -123,11 +127,13 @@ class ConfirmSourceDto {
   /** 确认应收（逐条）：批量按订单确认时 `order_no` 必填。 */
   @IsOptional() @IsString() order_no?: string;
   @IsOptional() @IsUUID() bank_id?: string | null;
-  @IsOptional() @IsUUID() cash_flow_item_id?: string | null;
+  @IsOptional() @IsUUID() subject_id?: string | null;
+  /** 款项性质（定金/货款/尾款/其他）。确认即记账，钱的性质要在这唯一一次录入口里问清。 */
+  @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string | null;
 }
 
 /**
- * 「勾选批量确认」的入参（应收 / 应付共用）：勾选出来的条目 id + 整批共用的银行与收支项目。
+ * 「勾选批量确认」的入参（应收 / 应付共用）：勾选出来的条目 id + 整批共用的银行与会计科目。
  *
  * `ids` 必填且非空：批量确认的口径是「界面勾了什么就确认什么」，空数组走到服务端说明界面出了问题，
  * 静默返回「确认 0 条」会让用户以为点过了。
@@ -135,7 +141,9 @@ class ConfirmSourceDto {
 class BatchConfirmDto {
   @IsArray() @ArrayNotEmpty() @IsUUID(undefined, { each: true }) ids!: string[];
   @IsOptional() @IsUUID() bank_id?: string | null;
-  @IsOptional() @IsUUID() cash_flow_item_id?: string | null;
+  @IsOptional() @IsUUID() subject_id?: string | null;
+  /** 款项性质（定金/货款/尾款/其他）：整批共用一个，与银行、科目同一口径。 */
+  @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string | null;
 }
 
 /**
@@ -186,7 +194,7 @@ export class FinanceController {
   @Get("customer-payments/:id") async getPayment(@Param("id") id: string) { return { data: await this.payments.get(id), meta: {} }; }
   @Post("customer-payments") async createPayment(@Body() body: PaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.create(body, user), meta: {} }; }
   @Patch("customer-payments/:id") async updateCustomerPayment(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.updateDraft(id, body, user), meta: {} }; }
-  @Post("customer-payments/:id/post") async postPayment(@Param("id") id: string, @Body() body: PostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.post(id, body.allocations, user, body.cash_flow_item_id), meta: {} }; }
+  @Post("customer-payments/:id/post") async postPayment(@Param("id") id: string, @Body() body: PostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.post(id, body.allocations, user, body.subject_id, body.payment_nature), meta: {} }; }
   @Post("customer-payments/:id/reverse") async reversePayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payments.reverse(id, body.reason, user), meta: {} }; }
   @Get("order-summary") async orderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.payments.orderSummary(orderNo) : [], meta: {} }; }
   @Get("receivable-order-summary") async receivableOrderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.receivable.orderSummary(orderNo) : [], meta: {} }; }
@@ -260,7 +268,7 @@ export class FinanceController {
   @Get("supplier-payments/:id") async getSupplierPayment(@Param("id") id: string) { return { data: await this.supplierPayments.get(id), meta: {} }; }
   @Post("supplier-payments") async createSupplierPayment(@Body() body: SupplierPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.create(body, user), meta: {} }; }
   @Patch("supplier-payments/:id") async updateSupplierPayment(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.updateDraft(id, body, user), meta: {} }; }
-  @Post("supplier-payments/:id/post") async postSupplierPayment(@Param("id") id: string, @Body() body: SupplierPostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.post(id, body.allocations, user, body.cash_flow_item_id), meta: {} }; }
+  @Post("supplier-payments/:id/post") async postSupplierPayment(@Param("id") id: string, @Body() body: SupplierPostPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.post(id, body.allocations, user, body.subject_id), meta: {} }; }
   @Post("supplier-payments/:id/reverse") async reverseSupplierPayment(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.reverse(id, body.reason, user), meta: {} }; }
   @Get("payable-order-summary") async payableOrderSummary(@Query("order_no") orderNo?: string) { return { data: orderNo ? await this.supplierPayments.orderSummary(orderNo) : [], meta: {} }; }
   @Get("supplier-payable-reconciliations") async listSupplierReconciliations(@Query("supplier_id") supplierId?: string, @Query("order_no") orderNo?: string, @Query("status") status?: string) { return { data: await this.supplierReconciliations.list(supplierId, orderNo, status), meta: {} }; }

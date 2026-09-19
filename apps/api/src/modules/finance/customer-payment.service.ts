@@ -6,11 +6,11 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
-import { paymentItemKeys } from "./cash-flow-catalog";
+import { paymentSubjectNames } from "./accounting-subject-catalog";
 import { CashFlowService } from "./cash-flow.service";
 import { ReceivableService } from "./receivable.service";
 
-type PaymentInput = { customer_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payer_name?: string; bank_id?: string; cash_flow_item_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
+type PaymentInput = { customer_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payer_name?: string; bank_id?: string; subject_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
 type Allocation = { receivable_source_id: string; amount: string };
 
 @Injectable()
@@ -43,8 +43,8 @@ export class CustomerPaymentService {
     if (!customer) throw this.notFound("CUSTOMER_NOT_FOUND", "客户不存在");
     // 到账银行来自银行账户池：停用/已删除的账户不能收款，必须在这里挡住（外键拦不住「停用」）。
     await requireActiveBank(this.prisma, input.bank_id, "到账银行不存在或已停用");
-    // 收支项目在**建单时**就校验并落库：表单里填过的东西不能在过账前丢掉（过账时仍可临时覆盖）。
-    const cashFlowItem = await this.cashFlow.requireItem(input.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    // 会计科目在**建单时**就校验并落库：表单里填过的东西不能在过账前丢掉（过账时仍可临时覆盖）。
+    const subject = await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const replayKey = input.idempotency_key?.trim() || null;
     // 幂等重放：同一次提交（网络重试、双击、浏览器重发）必须命中同一张草稿，而不是再建一张。
     if (replayKey) {
@@ -57,7 +57,7 @@ export class CustomerPaymentService {
       where: { customerId: customer.id, orderNo: input.order_no ?? null, amount, currency: input.currency, status: "draft", deletedAt: null },
     });
     if (duplicateDraft) throw new UnprocessableEntityException({ code: "CUSTOMER_PAYMENT_DRAFT_EXISTS", message: `已存在相同客户/订单/金额的草稿收款单 ${duplicateDraft.paymentNo}，请直接编辑或过账它，避免重复登记`, details: [{ payment_id: duplicateDraft.id, payment_no: duplicateDraft.paymentNo }] });
-    const row = await this.prisma.customerPayment.create({ data: { paymentNo: this.number("PAY"), idempotencyKey: replayKey, customerId: customer.id, orderNo: input.order_no, bankId: input.bank_id, cashFlowItemId: cashFlowItem?.id, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payerName: input.payer_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    const row = await this.prisma.customerPayment.create({ data: { paymentNo: this.number("PAY"), idempotencyKey: replayKey, customerId: customer.id, orderNo: input.order_no, bankId: input.bank_id, subjectId: subject?.id, paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, payerName: input.payer_name, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
     await this.audit.record("customer_payment.create", "customer_payment", user.id, row.id, { order_no: row.orderNo, amount: row.amount.toString() });
     return row;
   }
@@ -65,10 +65,10 @@ export class CustomerPaymentService {
   /**
    * 过账并核销。
    *
-   * `cashFlowItemId`：过账时人工选定的收支项目（可选）。默认按来源自动归类为「货款」；
+   * `subjectId`：过账时人工选定的会计科目（可选）。默认按来源自动归类为「货款」；
    * 财务明确选了就以选择为准，选了不存在的项目会 422，不会静默改成别的项目。
    */
-  async post(id: string, allocations: Allocation[], user: CurrentUser, cashFlowItemId?: string | null) {
+  async post(id: string, allocations: Allocation[], user: CurrentUser, subjectId?: string | null, paymentNature?: string | null) {
     const current = await this.prisma.customerPayment.findFirst({ where: { id, deletedAt: null } });
     if (!current) throw this.notFound("CUSTOMER_PAYMENT_NOT_FOUND", "收款不存在");
     if (current.status !== "draft") throw this.invalid("CUSTOMER_PAYMENT_NOT_POSTABLE", "只有草稿收款可以过账");
@@ -109,9 +109,14 @@ export class CustomerPaymentService {
       bankId: result.payment.bankId ?? null,
       settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "customer_payment", sourceId: result.payment.id,
-      itemKeys: paymentItemKeys("customer_payment"),
+      subjectNames: paymentSubjectNames("customer_payment"),
       // 过账时临时选的项目优先；没选就用建单时填在收款单上的项目；都没有则按来源自动归类。
-      itemId: cashFlowItemId ?? result.payment.cashFlowItemId ?? null,
+      subjectId: subjectId ?? result.payment.subjectId ?? null,
+      // 订单号带给流水：外汇一览表按订单归集收款。收款单上的 orderNo 本来就填了，
+      // 不带上等于让同一张单上的信息在流水里凭空消失。
+      orderNo: result.payment.orderNo,
+      // 款项性质同理：过账时选的优先（可以在这一栏纠正建单时没说清的性质）。
+      paymentNature: paymentNature ?? null,
       remark: result.payment.remark ?? undefined,
     }, user);
     return result.payment;
@@ -123,10 +128,10 @@ export class CustomerPaymentService {
    * 币种可以改：草稿还没核销任何应收（核销是过账时才写的），所以此刻改币种不会有「已核销的应收币种对不上」的问题；
    * 过账时仍会逐条校验 `source.currency === payment.currency`（ALLOCATION_REFERENCE_MISMATCH），双重保险。
    */
-  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; currency?: string; bank_id?: string | null; cash_flow_item_id?: string | null; remark?: string }, user: CurrentUser) {
+  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; currency?: string; bank_id?: string | null; subject_id?: string | null; remark?: string }, user: CurrentUser) {
     if (input.currency !== undefined) await this.currencies?.assertSupported(input.currency, "收款币种");
     if (input.bank_id) await requireActiveBank(this.prisma, input.bank_id, "到账银行不存在或已停用");
-    const cashFlowItem = input.cash_flow_item_id === undefined ? undefined : await this.cashFlow.requireItem(input.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    const subject = input.subject_id === undefined ? undefined : await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM customer_payments WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.customerPayment.findFirst({ where: { id, deletedAt: null } });
@@ -135,8 +140,8 @@ export class CustomerPaymentService {
       const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYMENT_AMOUNT");
       // bank_id 传 null / 空串表示「清空到账银行」，传 undefined 表示「不改」——否则一旦选过银行就再也去不掉。
       const bankId = input.bank_id === undefined ? current.bankId : (input.bank_id || null);
-      const cashFlowItemId = input.cash_flow_item_id === undefined ? current.cashFlowItemId : (cashFlowItem?.id ?? null);
-      return tx.customerPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, currency: input.currency ?? current.currency, bankId, cashFlowItemId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      const subjectId = input.subject_id === undefined ? current.subjectId : (subject?.id ?? null);
+      return tx.customerPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, currency: input.currency ?? current.currency, bankId, subjectId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
   }
 

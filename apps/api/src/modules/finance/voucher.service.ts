@@ -5,6 +5,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { accountingSubjectKey } from "./accounting-subject-catalog";
 import { fundLineFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
 
 /** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」。 */
@@ -12,7 +13,9 @@ const SOURCE_CASH_FLOW = "cash_flow_entry";
 const SOURCE_VOUCHER = "voucher";
 
 const ENTRY_INCLUDE = {
-  item: { select: { id: true, key: true, label: true } },
+  // 会计科目：凭证的业务分录科目直接取它（分类 = 科目类别，项目 = 科目名称），
+  // 这就是 voucher.domain.ts 顶部预留的「接入正式科目表」——2026-09-17 已接入。
+  subject: { select: { id: true, category: true, name: true } },
   settlementAccount: { select: { id: true, key: true, label: true } },
   // 银行账户：资金类分录要引用具体账户（见 voucher.domain.ts 的 fundLineFor）。
   bank: { select: { id: true, bankName: true, accountNumber: true, accountName: true } },
@@ -97,7 +100,7 @@ export class VoucherService {
       const created = await tx.voucher.create({
         data: {
           voucherNo, voucherDate: entry.entryDate, period, sourceType: SOURCE_CASH_FLOW, sourceId: entry.id,
-          summary: voucherSummaryFor({ counterpartyName: entry.counterpartyName, itemLabel: entry.item?.label ?? "未分类", remark: entry.remark }),
+          summary: voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark }),
           currency: entry.currency, debitTotal: amount, creditTotal: amount, status: "draft",
           ...this.audit.create(user),
         },
@@ -134,7 +137,7 @@ export class VoucherService {
     const draft = this.draftForEntry(entry);
     const amount = new Prisma.Decimal(entry.amount);
     const period = voucherPeriodFor(entry.entryDate);
-    const summary = voucherSummaryFor({ counterpartyName: entry.counterpartyName, itemLabel: entry.item?.label ?? "未分类", remark: entry.remark });
+    const summary = voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark });
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM vouchers WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.voucher.findFirst({ where: { id, deletedAt: null } });
@@ -156,7 +159,7 @@ export class VoucherService {
   }
 
   /** 由一条收支流水算出「草稿内容」（新建与重新生成两处共用，避免两条路径算出不同口径）。 */
-  private draftForEntry(entry: { entryNo: string; entryDate: Date; counterpartyName: string; direction: string; amount: Prisma.Decimal; currency: string; settlementMethod: string | null; remark: string | null; item: { key: string; label: string } | null; settlementAccount: { label: string } | null; bank: { id: string; bankName: string; accountNumber: string } | null }) {
+  private draftForEntry(entry: { entryNo: string; entryDate: Date; counterpartyName: string; direction: string; amount: Prisma.Decimal; currency: string; settlementMethod: string | null; remark: string | null; subject: { category: string; name: string } | null; settlementAccount: { label: string } | null; bank: { id: string; bankName: string; accountNumber: string } | null }) {
     const bankLabel = bankAccountLabel(entry.bank);
     const lines = voucherLinesFor({
       entryNo: entry.entryNo,
@@ -165,8 +168,10 @@ export class VoucherService {
       direction: entry.direction,
       amount: entry.amount,
       currency: entry.currency,
-      itemKey: entry.item?.key ?? "未分类",
-      itemLabel: entry.item?.label ?? "未分类",
+      // 科目编码用「分类/项目」（科目表没有唯一编码，两段拼起来才唯一）；
+      // 科目名快照用科目名称本身，打印出来的凭证与财务那张科目表逐字对得上。
+      subjectKey: entry.subject ? accountingSubjectKey(entry.subject.category, entry.subject.name) : "未分类",
+      subjectLabel: entry.subject?.name ?? "未分类",
       settlementMethod: entry.settlementMethod,
       settlementAccountLabel: entry.settlementAccount?.label ?? null,
       remark: entry.remark,

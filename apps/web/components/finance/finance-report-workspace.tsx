@@ -18,9 +18,10 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet } from "../../lib/api-client";
+import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, type AccountingSubject } from "../../lib/accounting-subjects";
 import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { downloadFile } from "../../lib/download";
-import { FINANCE_REPORT_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type FinanceReportTabKey } from "../../lib/finance-sections";
+import { FINANCE_REPORT_TABS, type FinanceReportTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
 
@@ -34,11 +35,14 @@ type ReportTable = {
   total_columns: number[];
   totals: ReportCell[] | null;
   footnotes: string[];
+  /** 导出文件里除本页预览这张以外的其它工作表（只给名字与行数）。 */
+  extra_sheets?: Array<{ sheet_name: string; row_count: number }>;
 };
 type ReportRow = { id: number; cells: ReportCell[] };
 type Reference = { id: string; name: string };
-type DictionaryItemOption = { id: string; key: string; label: string };
-type Filters = { from: string; to: string; orderNo: string; currency: string; customerId: string; supplierId: string; includeDraft: boolean; itemId: string; direction: string };
+/** 会计科目（分类 = 科目类别，项目 = 科目名称）。`isActive` 用来在选项上标出已停用科目。 */
+type SubjectOption = Pick<AccountingSubject, "id" | "category" | "name" | "isActive">;
+type Filters = { from: string; to: string; orderNo: string; currency: string; customerId: string; supplierId: string; includeDraft: boolean; subjectId: string; category: string; direction: string };
 
 const ALL = "__all";
 const DIRECTIONS: Array<{ value: string; label: string }> = [
@@ -63,7 +67,8 @@ function queryOf(filters: Filters, scope: string): string {
   if (filters.currency) params.set("currency", filters.currency);
   if (scope === "cash") {
     // 收支流水没有订单号，也没有草稿态：带上这两个参数只会让人以为筛选生效了。
-    if (filters.itemId) params.set("item_id", filters.itemId);
+    if (filters.category) params.set("category", filters.category);
+    if (filters.subjectId) params.set("subject_id", filters.subjectId);
     if (filters.direction) params.set("direction", filters.direction);
   } else {
     if (filters.orderNo.trim()) params.set("order_no", filters.orderNo.trim());
@@ -74,7 +79,7 @@ function queryOf(filters: Filters, scope: string): string {
   return params.toString();
 }
 
-const emptyFilters = (): Filters => ({ from: firstDayOfMonth(), to: today(), orderNo: "", currency: "", customerId: "", supplierId: "", includeDraft: false, itemId: "", direction: "" });
+const emptyFilters = (): Filters => ({ from: firstDayOfMonth(), to: today(), orderNo: "", currency: "", customerId: "", supplierId: "", includeDraft: false, subjectId: "", category: "", direction: "" });
 
 export default function FinanceReportWorkspace({ tab, testId = "page-finance-reports" }: { tab: FinanceReportTabKey; testId?: string }) {
   // 输入中的筛选条件（表单态）与已生效的筛选条件（查询态）分开：
@@ -86,7 +91,7 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
   const [customers, setCustomers] = useState<Reference[]>([]);
   const [suppliers, setSuppliers] = useState<Reference[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
-  const [items, setItems] = useState<DictionaryItemOption[]>([]);
+  const [subjects, setSubjects] = useState<SubjectOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
@@ -120,13 +125,15 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
     void Promise.all([
       apiGet<Reference[]>("/customers").catch(() => ({ data: [] as Reference[], meta: {} })),
       apiGet<Reference[]>("/suppliers").catch(() => ({ data: [] as Reference[], meta: {} })),
-      apiGet<DictionaryItemOption[]>(`/dictionaries/${CASH_FLOW_ITEM_DICTIONARY_KEY}/items`).catch(() => ({ data: [] as DictionaryItemOption[], meta: {} })),
+      // 科目下拉**要停用的**：报表本身会把停用科目的行列出来（标注「（已停用）」），
+      // 下拉里选不到它们的话，财务就没法把那些行单独筛出来核对。
+      apiGet<SubjectOption[]>(`${ACCOUNTING_SUBJECTS_PATH}?include_inactive=true`).catch(() => ({ data: [] as SubjectOption[], meta: {} })),
       fetchCurrencyOptions(),
-    ]).then(([customerResult, supplierResult, itemResult, currencyOptions]) => {
+    ]).then(([customerResult, supplierResult, subjectResult, currencyOptions]) => {
       if (cancelled) return;
       setCustomers(customerResult.data);
       setSuppliers(supplierResult.data);
-      setItems(itemResult.data);
+      setSubjects(subjectResult.data);
       setCurrencies(currencyOptions);
     });
     return () => { cancelled = true; };
@@ -179,12 +186,21 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
           </Select>
         </label>
         {scope === "cash" && <>
-          <label>收支项目
-            <Select value={draft.itemId || ALL} onValueChange={(value) => setDraft({ ...draft, itemId: value === ALL ? "" : value })}>
-              <SelectTrigger data-testid="finance-report-item"><SelectValue placeholder="全部项目" /></SelectTrigger>
+          <label>分类
+            <Select value={draft.category || ALL} onValueChange={(value) => setDraft({ ...draft, category: value === ALL ? "" : value })}>
+              <SelectTrigger data-testid="finance-report-category"><SelectValue placeholder="全部分类" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>全部项目</SelectItem>
-                {items.map((item) => <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>)}
+                <SelectItem value={ALL}>全部分类</SelectItem>
+                {[...new Set(subjects.map((subject) => subject.category))].map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </label>
+          <label>会计科目
+            <Select value={draft.subjectId || ALL} onValueChange={(value) => setDraft({ ...draft, subjectId: value === ALL ? "" : value })}>
+              <SelectTrigger data-testid="finance-report-subject"><SelectValue placeholder="全部科目" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>全部科目</SelectItem>
+                {subjects.map((subject) => <SelectItem key={subject.id} value={subject.id}>{subjectOptionLabel(subject)}{subject.isActive === false ? "（已停用）" : ""}</SelectItem>)}
               </SelectContent>
             </Select>
           </label>
@@ -251,6 +267,11 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
         <div className="panel-body">
           <DataTable columns={columns} data={data} empty={<EmptyState title="当前筛选没有数据" />} />
         </div>
+        {/* 导出文件里还有别的表时必须说清楚：外汇一览表的「客户汇总」不在页面上渲染，
+            不提示的话财务会把导出的文件当成只有明细一张表。 */}
+        {table.extra_sheets?.length ? <p className="panel-note panel-body" data-testid="finance-report-extra-sheets">
+          导出文件还包含：{table.extra_sheets.map((sheet) => `「${sheet.sheet_name}」（${sheet.row_count} 行）`).join("、")}
+        </p> : null}
         {table.totals && <p className="panel-note panel-body" data-testid="finance-report-totals">
           合计（与导出一致）：{table.total_columns.map((index) => `${table.columns[index].header} ${textOf(table.totals?.[index] ?? null)}`).join("　")}
         </p>}

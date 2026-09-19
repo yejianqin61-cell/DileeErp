@@ -66,16 +66,17 @@ test("supplier payment posting locks the payment before allocation checks", asyn
 // 2026-09-15：付款建单补齐与收款侧同样的幂等键 + 重复草稿守卫
 // （这一族建单接口此前是全局唯一没有幂等保护的，见 20260915120000 迁移）。
 const paymentInput = (extra = {}) => ({ supplier_id: "supplier-1", order_no: "SO-1", payment_date: "2026-09-15", amount: "300", currency: "USD", payment_method: "bank_transfer", ...extra });
-/** CashFlowService 替身：建单只用到 `requireItem`（校验收支项目）。返回 null = 不指定项目。 */
-const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, ...extra });
+/** CashFlowService 替身：建单只用到 `requireSubject`（校验会计科目）。返回 null = 不指定科目。 */
+const cashFlowStub = (extra = {}) => ({ requireSubject: async () => null, ...extra });
 const createDeps = (prisma) => new SupplierPaymentService(prisma, { create: () => ({}), record: async () => {} }, {}, cashFlowStub());
 
 // 2026-09-15：过账后必须真的把支出写进收支流水。
 // 历史缺陷：写死的收支项目 key「外加工费」在字典里不存在（字典里是「外加工费 晋江大田工资」），
 // CashFlowService 当时遇到缺项直接 return null，于是**每一笔供应商付款都被静默丢掉**。
-function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", cashFlowItemId = null } = {}) {
+// 2026-09-17 起候选链给的是会计科目**名称**，缺项仍然显式 422（见 cash-flow-autocreate 测试）。
+function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", subjectId = null } = {}) {
   const cashFlowCalls = [];
-  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId, cashFlowItemId, remark: null };
+  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId, subjectId, remark: null };
   const prisma = {
     supplierPayment: { findFirst: async () => ({ ...payment, status: "draft" }) },
     $transaction: async (fn) => fn({
@@ -90,12 +91,12 @@ function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋�
   return { service, cashFlowCalls };
 }
 
-test("供应商付款过账后自动写收支流水：项目按应付来源选定，且不再用字典里不存在的 key", async () => {
+test("供应商付款过账后自动写收支流水：科目按应付来源选定，且不再用科目表里不存在的名称", async () => {
   const { service, cashFlowCalls } = postFixture();
   await service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
   assert.equal(cashFlowCalls.length, 1);
   const input = cashFlowCalls[0];
-  assert.deepEqual(input.itemKeys, ["原材料 成本", "货款"], "原料入库来源 → 原材料成本（候选链，第一个存在的生效）");
+  assert.deepEqual(input.subjectNames, ["主营业务成本", "原材料"], "原料入库来源 → 主营业务成本（科目名称候选链，第一个存在的生效）");
   assert.equal(input.direction, "expense");
   assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
   assert.equal(input.settlementMethod, "转账--农业银行5706", "结算方式按老表格式带出银行账户");
@@ -106,22 +107,22 @@ test("供应商付款过账后自动写收支流水：项目按应付来源选�
   assert.equal(input.sourceId, "payment-1");
 });
 
-test("供应商付款过账：过账时选的项目优先，其次用建单时存在付款单上的项目", async () => {
-  const fromDraft = postFixture({ cashFlowItemId: "item-from-draft" });
+test("供应商付款过账：过账时选的科目优先，其次用建单时存在付款单上的科目", async () => {
+  const fromDraft = postFixture({ subjectId: "subject-from-draft" });
   await fromDraft.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
-  assert.equal(fromDraft.cashFlowCalls[0].itemId, "item-from-draft", "建单时填在付款单上的项目不能丢");
-  const atPost = postFixture({ cashFlowItemId: "item-from-draft" });
-  await atPost.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" }, "item-at-post");
-  assert.equal(atPost.cashFlowCalls[0].itemId, "item-at-post", "过账时临时选的项目优先");
+  assert.equal(fromDraft.cashFlowCalls[0].subjectId, "subject-from-draft", "建单时填在付款单上的科目不能丢");
+  const atPost = postFixture({ subjectId: "subject-from-draft" });
+  await atPost.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" }, "subject-at-post");
+  assert.equal(atPost.cashFlowCalls[0].subjectId, "subject-at-post", "过账时临时选的科目优先");
 });
 
-test("供应商付款过账：外加工与其他应付各自映射到对应收支项目", async () => {
+test("供应商付款过账：外加工与其他应付各自映射到对应会计科目", async () => {
   const outsource = postFixture({ sourceType: "outsource_receipt" });
   await outsource.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
-  assert.deepEqual(outsource.cashFlowCalls[0].itemKeys, ["成品外加工费", "加工费"]);
+  assert.deepEqual(outsource.cashFlowCalls[0].subjectNames, ["加工费"]);
   const other = postFixture({ sourceType: "other" });
   await other.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
-  assert.deepEqual(other.cashFlowCalls[0].itemKeys, ["管理费用", "杂费车间装修费"]);
+  assert.deepEqual(other.cashFlowCalls[0].subjectNames, ["管理费用", "其他管理费用"]);
 });
 
 test("供应商付款冲销时回冲收支流水（钱没付出去，流水里不能留着）", async () => {

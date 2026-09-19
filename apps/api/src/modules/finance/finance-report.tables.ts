@@ -131,12 +131,20 @@ export function buildSalesReconciliationDetailTable(
 
 /* ------------------------------------------------------------------ 采购对账明细表 */
 
-/** 采购对账明细表的列定义：16 列，列名与列序照抄 `采购对账明细表.xls`。 */
+/**
+ * 采购对账明细表的列定义：16 列。
+ *
+ * 列名与列序**基本**照抄 `采购对账明细表.xls`，只有一处按用户要求调整：
+ * 2026-09-17 用户要求「产品名称放在采购单号前面」—— 因为这张表是**按物料**核对的
+ * （财务拿它跟供应商逐项对料号与数量），先看到「是什么」再看到「哪张单」才顺；
+ * 照抄老表反而要每次从左往右数过单号才能定位到物料。
+ * 其余 15 列与老表逐列一致，「金额 / 含税金额」仍在最后两列，因此合计列下标不变。
+ */
 export const PURCHASE_RECONCILIATION_DETAIL_COLUMNS: ReportColumn[] = [
   { header: "日期", width: 12 },
+  { header: "产品名称", width: 30 },
   { header: "采购单号", width: 20 },
   { header: "供应商名称", width: 22 },
-  { header: "产品名称", width: 30 },
   { header: "产品代码", width: 18 },
   { header: "规格型号", width: 24 },
   { header: "单位", width: 8 },
@@ -179,9 +187,10 @@ export function buildPurchaseReconciliationDetailTable(
     columns: PURCHASE_RECONCILIATION_DETAIL_COLUMNS,
     rows: rows.map((row): ReportCell[] => [
       toDateText(row.date), // 日期
+      // 产品名称在采购单号前面（用户 2026-09-17 要求，见列定义注释）。
+      row.productName, // 产品名称
       row.purchaseOrderNo, // 采购单号
       row.supplierName, // 供应商名称
-      row.productName, // 产品名称
       row.materialCode, // 产品代码（= 物料编码）
       row.specification, // 规格型号
       row.unit, // 单位
@@ -337,16 +346,20 @@ export function buildSalesGrossProfitTable(
 /**
  * 收支明细表的列定义。
  *
- * 老表是 6 列（日期 / 对方名称 / 币种 / 收入 / 支出 / 结算方式）。这里**加了「收支项目」与
- * 「银行账户」两列**，是用户明确要求的口径：明细表要能看出「这笔钱算什么项目、走的哪个账户」，
- * 否则收支汇总表按项目分类的数字在明细里根本对不上号（汇总说「货款 5000」，明细里全是 5000，
- * 看不出哪一笔是货款）。列序把项目放在金额前面、银行账户跟在结算方式前，保持从左到右「是什么 → 多少钱 → 怎么走的」。
+ * 老表是 6 列（日期 / 对方名称 / 币种 / 收入 / 支出 / 结算方式）。这里**加了「分类 / 项目」
+ * 与「银行账户」三列**：
+ *   - 「分类 / 项目」是用户 2026-09-17 的口径 —— 分类 = 科目类别，项目 = 科目名称，
+ *     取自 `example/财务/科目表(2).xls`。明细表要能看出「这笔钱算什么科目、走的哪个账户」，
+ *     否则汇总表按科目统计的数字在明细里根本对不上号；
+ *   - 「银行账户」是钱实际落在哪张卡上（算余额的那一个）。
+ * 列序保持从左到右「是什么 → 多少钱 → 怎么走的」。
  */
 export const CASH_FLOW_DETAIL_COLUMNS: ReportColumn[] = [
   { header: "日期", width: 12 },
   { header: "对方名称", width: 26 },
   { header: "币种", width: 10 },
-  { header: "收支项目", width: 22 },
+  { header: "分类", width: 14 },
+  { header: "项目", width: 22 },
   numeric("收入", 14),
   numeric("支出", 14),
   { header: "银行账户", width: 26 },
@@ -359,8 +372,10 @@ export type CashFlowDetailSource = {
   currency: string | null;
   direction: string;
   amount: Prisma.Decimal | null;
-  /** 收支项目名（老表没有这一列，见上方列定义注释）。 */
-  itemLabel?: string | null;
+  /** 分类（科目类别）。老表没有这一列，见上方列定义注释。 */
+  category?: string | null;
+  /** 项目（科目名称）。 */
+  subjectName?: string | null;
   /** 银行账户（`banks` 池）的「银行名 + 账号」。 */
   bankLabel?: string | null;
   settlementMethod: string | null;
@@ -378,9 +393,10 @@ export function buildCashFlowDetailTable(
       toDateText(row.date), // 日期
       row.counterpartyName, // 对方名称（老表是一个统一字段）
       currencyLabel(row.currency, options.currencyLabels), // 币种
-      // 项目缺失（历史手工流水没归类）时给空单元格而不是「-」：导出到 Excel 后空单元格可以被筛选、可以求和，
-      // 一个横杠会被当成文本混进数值列里。
-      row.itemLabel ?? "", // 收支项目
+      // 分类/项目缺失（理论上不可能 —— 科目是必填外键）时给空单元格而不是「-」：
+      // 导出到 Excel 后空单元格可以被筛选、可以求和，一个横杠会被当成文本混进数值列里。
+      row.category ?? "", // 分类（科目类别）
+      row.subjectName ?? "", // 项目（科目名称）
       // 老表把「没有的那一边」写成 0（样本：收入 0 / 支出 2900），这里照抄。
       // 0 在这里是「确实为零」的事实，不是「没有数据」（缺字段才是空单元格）。
       row.direction === "income" ? toExportNumber(row.amount) ?? 0 : 0, // 收入
@@ -391,8 +407,9 @@ export function buildCashFlowDetailTable(
     // **不设 totalColumns**：本表一行一个币种，跨币种相加没有意义（R7）。
     // 需要合计时看收支汇总表 —— 那边按币种分段给合计。
     footnotes: [
-      "「收支项目」与「银行账户」是本期为可核对性新增的两列（老表 6 列）：项目来自「收支管理 → 收支项目」字典，",
-      "确认应收/应付、收付款过账自动写入的流水也按各自单据上的项目归类。",
+      "「分类 / 项目 / 银行账户」是本期为可核对性新增的三列（老表 6 列）：",
+      "分类 = 科目类别，项目 = 科目名称，均取自「收支管理 → 会计科目」（来源：财务的科目表）。",
+      "确认应收/应付、收付款过账自动写入的流水也按各自单据上的科目归类。",
       "银行账户为空表示这笔流水没指定具体账户（历史流水或建单时未选），它不进任何账户的余额。",
     ],
   };
@@ -406,8 +423,13 @@ export function buildCashFlowDetailTable(
  * 老表是 3 列（项目 / 收入 / 支出），但样本里把**美元 5428 与人民币 2900 加在了同一列**
  * （「货款」行）。按 R7 的确认，这里**加一列「币种」并把项目按币种分行**，
  * 每个币种一段、段末给该币种的合计，绝不跨币种相加。
+ *
+ * 2026-09-17 再加一列**「分类」**（= 科目类别）：用户要求「很多报表都要根据这个来统计」，
+ * 只有「项目」一列就得靠人肉认科目属于哪一类。分类列 + 分类小计让这张表本身就能回答
+ * 「这个月销售费用一共花了多少」。
  */
 export const CASH_FLOW_SUMMARY_COLUMNS: ReportColumn[] = [
+  { header: "分类", width: 14 },
   { header: "项目", width: 28 },
   { header: "币种", width: 10 },
   numeric("收入", 14),
@@ -415,7 +437,7 @@ export const CASH_FLOW_SUMMARY_COLUMNS: ReportColumn[] = [
 ];
 
 export type CashFlowSummaryAmount = {
-  itemId: string;
+  subjectId: string;
   currency: string;
   income: Prisma.Decimal;
   expense: Prisma.Decimal;
@@ -424,32 +446,51 @@ export type CashFlowSummaryAmount = {
 /**
  * 收支汇总表。
  *
- * 行 = 「币种段 × 项目」，每个币种段末追加一行「合计」。
- * 项目清单由调用方给全（含本期没有发生的项目，写 0）—— 老表就是 37 个项目全列出来的形态。
+ * 行 = 「币种段 × 分类 × 科目」，分类段末追加「<分类> 小计」，币种段末追加「合计」。
+ * 科目清单由调用方给全（含本期没有发生的科目，写 0）—— 老表就是「科目全列出来」的形态。
+ *
+ * **按分类分组，而不是靠「同一分类的科目恰好连续」**：后者要求调用方的排序永远正确，
+ * 而「财务在早段分类下新增一个科目」这类操作随时会打破它 —— 那时同一币种段里会出现两个
+ * 「资产类 小计」，算术没错但看着像重复计算。这里按**首次出现的顺序**分组，输入顺序再乱，
+ * 每个分类也只会有一段、一个小计。
  */
 export function buildCashFlowSummaryTable(
-  items: ReadonlyArray<{ id: string; label: string }>,
+  items: ReadonlyArray<{ id: string; category: string; name: string }>,
   amounts: readonly CashFlowSummaryAmount[],
   currencies: readonly string[],
   options: { currencyLabels: ReadonlyMap<string, string> },
 ): ReportTable {
   const zero = new Prisma.Decimal(0);
-  const index = new Map(amounts.map((row) => [`${row.itemId}|${row.currency}`, row]));
+  const index = new Map(amounts.map((row) => [`${row.subjectId}|${row.currency}`, row]));
+  // 分类 → 该分类下的科目（保持输入顺序：调用方已经按科目表口径排过序）。
+  const grouped = new Map<string, Array<{ id: string; category: string; name: string }>>();
+  for (const item of items) {
+    const list = grouped.get(item.category) ?? [];
+    list.push(item);
+    grouped.set(item.category, list);
+  }
   const rows: ReportCell[][] = [];
   for (const currency of currencies) {
     const label = currencyLabel(currency, options.currencyLabels);
     let income = zero;
     let expense = zero;
-    for (const item of items) {
-      const row = index.get(`${item.id}|${currency}`);
-      const itemIncome = row?.income ?? zero;
-      const itemExpense = row?.expense ?? zero;
-      income = income.plus(itemIncome);
-      expense = expense.plus(itemExpense);
-      rows.push([item.label, label, toExportNumber(itemIncome) ?? 0, toExportNumber(itemExpense) ?? 0]);
+    for (const [category, members] of grouped) {
+      let categoryIncome = zero;
+      let categoryExpense = zero;
+      for (const item of members) {
+        const row = index.get(`${item.id}|${currency}`);
+        const itemIncome = row?.income ?? zero;
+        const itemExpense = row?.expense ?? zero;
+        income = income.plus(itemIncome);
+        expense = expense.plus(itemExpense);
+        categoryIncome = categoryIncome.plus(itemIncome);
+        categoryExpense = categoryExpense.plus(itemExpense);
+        rows.push([item.category, item.name, label, toExportNumber(itemIncome) ?? 0, toExportNumber(itemExpense) ?? 0]);
+      }
+      rows.push([category, "小计", label, toExportNumber(categoryIncome) ?? 0, toExportNumber(categoryExpense) ?? 0]);
     }
     // 段末合计：只在本币种内相加。跨币种相加会得到一个没有会计意义的数（R7）。
-    rows.push(["合计", label, toExportNumber(income) ?? 0, toExportNumber(expense) ?? 0]);
+    rows.push(["合计", "合计", label, toExportNumber(income) ?? 0, toExportNumber(expense) ?? 0]);
   }
   return {
     sheetName: "收支汇总",
@@ -458,7 +499,8 @@ export function buildCashFlowSummaryTable(
     // 也不设 totalColumns：合计已经在每个币种段末按币种分别给出了。
     footnotes: [
       "本表按币种分行、不跨币种相加：每个币种一段，段末的「合计」只统计该币种。",
-      "老表的 37 个收支项目全部列出，本期没有发生的项目为 0；项目清单可在「收支管理」里维护。",
+      "「分类」= 科目类别，「项目」= 科目名称，取自「收支管理 → 会计科目」（来源：财务的科目表）。",
+      "每个分类段末给出该分类在本币种内的小计；科目全部列出，本期没有发生的科目为 0。",
     ],
   };
 }

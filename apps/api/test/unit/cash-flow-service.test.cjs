@@ -1,8 +1,8 @@
-// 收支流水服务测试（R6：手工录入资金流水 + 可配置项目字典）。
+// 收支流水服务测试（R6：手工录入资金流水 + 可配置会计科目）。
 //
 // 这一层的核心不是"能存进去"，而是**不合法的东西不能存进去**：
 // 金额必须为正（方向由 direction 决定，负数金额在库层会被 CHECK 拦住）、
-// 项目与结算账户必须是启用中的字典项、币种要走币种字典。
+// 会计科目必须是启用中的科目、结算账户必须是启用中的字典项、币种要走币种字典。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
@@ -20,7 +20,8 @@ function entryRow(overrides = {}) {
     direction: "expense",
     amount: new Prisma.Decimal("2900"),
     currency: "CNY",
-    itemId: "item-1",
+    subjectId: "subject-1",
+    subject: { id: "subject-1", category: "损益类", name: "主营业务成本" },
     settlementMethod: "转账",
     settlementAccountId: "acct-1",
     status: "posted",
@@ -29,18 +30,18 @@ function entryRow(overrides = {}) {
   };
 }
 
-/** 内存桩：够用的字典查项 + 流水读写。 */
-function stubPrisma({ item = { id: "item-1" }, account = { id: "acct-1" }, stored = null } = {}) {
+/** 内存桩：够用的会计科目 / 结算账户查询 + 流水读写。 */
+function stubPrisma({ subject = { id: "subject-1", category: "损益类", name: "主营业务成本" }, account = { id: "acct-1" }, stored = null } = {}) {
   const calls = { create: [], update: [], findMany: [] };
   const state = { stored };
   const prisma = {
+    accountingSubject: {
+      // `requireSubject` 按 id 查（存在 + 启用），`firstCandidateSubject` 按 name 批量查。
+      findFirst: async () => subject,
+      findMany: async () => (subject ? [subject] : []),
+    },
     dictionaryItem: {
-      findFirst: async (args) => {
-        const key = args?.where?.type?.key;
-        if (key === "cash_flow_item") return item;
-        if (key === "settlement_account") return account;
-        return null;
-      },
+      findFirst: async (args) => (args?.where?.type?.key === "settlement_account" ? account : null),
     },
     cashFlowEntry: {
       create: async (args) => {
@@ -69,7 +70,7 @@ const input = (overrides = {}) => ({
   direction: "expense",
   amount: "2900",
   currency: "CNY",
-  item_id: "item-1",
+  subject_id: "subject-1",
   settlement_method: "转账",
   settlement_account_id: "acct-1",
   ...overrides,
@@ -89,7 +90,7 @@ test("finance-report.cash-flow：录入一条支出流水，字段与单号正�
   assert.equal(data.direction, "expense");
   assert.equal(data.amount.toString(), "2900", "金额按正数存，方向由 direction 决定");
   assert.equal(data.currency, "CNY");
-  assert.equal(data.itemId, "item-1");
+  assert.equal(data.subjectId, "subject-1", "科目是必填外键，校验通过后只落 id");
   assert.equal(data.settlementAccountId, "acct-1");
   assert.match(row.entryNo, /^CF-\d{8}-[0-9A-F]{8}$/, "单号形如 CF-YYYYMMDD-XXXXXXXX");
 });
@@ -126,9 +127,19 @@ test("finance-report.cash-flow：日期格式非法时报错而不是把坏日�
   await assert.rejects(() => cashFlow.create(input({ entry_date: "2026/09/14" }), USER), (error) => error.getResponse().code === "INVALID_CASH_FLOW_DATE");
 });
 
-test("finance-report.cash-flow：收支项目必须是启用中的字典项", async () => {
-  const { service: cashFlow } = service({ item: null });
-  await assert.rejects(() => cashFlow.create(input(), USER), (error) => error.getResponse().code === "CASH_FLOW_ITEM_NOT_FOUND");
+test("finance-report.cash-flow：会计科目必须是启用中的科目", async () => {
+  const { service: cashFlow } = service({ subject: null });
+  await assert.rejects(() => cashFlow.create(input(), USER), (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND");
+});
+
+test("finance-report.cash-flow：不选会计科目时拒绝（每条流水都必须归到一个科目）", async () => {
+  const { service: cashFlow, calls } = service();
+  await assert.rejects(
+    () => cashFlow.create(input({ subject_id: undefined }), USER),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_REQUIRED",
+    "科目是 NOT NULL 外键：留空不能静默落库，否则库层报的是外键约束错，财务看不懂",
+  );
+  assert.equal(calls.create.length, 0);
 });
 
 test("finance-report.cash-flow：结算账户必须是启用中的字典项", async () => {
@@ -150,7 +161,7 @@ test("finance-report.cash-flow：更正时未给的字段保持原值（不会�
   assert.equal(data.amount.toString(), "3000");
   assert.equal(data.counterpartyName, "兴田");
   assert.equal(data.direction, "expense");
-  assert.equal(data.itemId, "item-1");
+  assert.equal(data.subjectId, "subject-1", "人工选定的会计科目要落到 subjectId 上");
   assert.equal(data.entryDate.toISOString(), "2026-09-14T00:00:00.000Z");
 });
 
@@ -178,16 +189,17 @@ test("finance-report.cash-flow：不存在的流水报 CASH_FLOW_ENTRY_NOT_FOUND
   await assert.rejects(() => cashFlow.get("cf-missing"), (error) => error.getResponse().code === "CASH_FLOW_ENTRY_NOT_FOUND");
 });
 
-test("finance-report.cash-flow：列表默认只给生效流水，并支持期间/项目/币种/方向筛选", async () => {
+test("finance-report.cash-flow：列表默认只给生效流水，并支持期间/科目/分类/币种/方向筛选", async () => {
   const { service: cashFlow, calls } = service({ stored: entryRow() });
   await cashFlow.list({});
   assert.equal(calls.findMany[0].where.status, "posted");
   assert.equal(calls.findMany[0].where.deletedAt, null);
 
-  await cashFlow.list({ from: "2026-09-01", to: "2026-09-30", itemId: "item-1", currency: "USD", direction: "income", includeReversed: true });
+  await cashFlow.list({ from: "2026-09-01", to: "2026-09-30", subjectId: "subject-1", category: "损益类", currency: "USD", direction: "income", includeReversed: true });
   const where = calls.findMany[1].where;
   assert.equal(where.status, undefined, "include_reversed=true 时不再限制状态");
-  assert.equal(where.itemId, "item-1");
+  assert.equal(where.subjectId, "subject-1");
+  assert.deepEqual(where.subject, { category: "损益类" }, "分类筛选走科目表的科目类别，与报表同一口径");
   assert.equal(where.currency, "USD");
   assert.equal(where.direction, "income");
   assert.equal(where.entryDate.gte.toISOString(), "2026-09-01T00:00:00.000Z");
@@ -265,7 +277,8 @@ test("finance-report.cash-flow：更正时不传 bank_id 就不动已有的银�
 function syncHarness({ existing = null, stored = true } = {}) {
   const calls = { create: [], update: [], findFirst: [] };
   const prisma = {
-    dictionaryItem: { findFirst: async (args) => (args?.where?.id ? { id: args.where.id, key: "货款" } : { id: "item-1", key: "货款" }), findMany: async () => [{ id: "item-1", key: "货款" }] },
+    // 候选链按**科目名称**取第一个存在的：替身返回 { id, name } 两列，顺序即优先级。
+    accountingSubject: { findFirst: async (args) => (args?.where?.id ? { id: args.where.id, category: "损益类", name: "主营业务收入" } : { id: "subject-1", category: "损益类", name: "主营业务收入" }), findMany: async () => [{ id: "subject-1", category: "损益类", name: "主营业务收入" }] },
     cashFlowEntry: {
       findFirst: async (args) => { calls.findFirst.push(args); return existing; },
       create: async (args) => { calls.create.push(args); return stored ? { id: "cf-new", ...args.data } : null; },
@@ -284,7 +297,7 @@ const confirmation = (overrides = {}) => ({
   currency: "CNY",
   counterpartyName: "香港迪礼",
   direction: "income",
-  itemKeys: ["货款"],
+  subjectNames: ["主营业务收入"],
   bankId: "bank-1",
   ...overrides,
 });
@@ -299,7 +312,7 @@ test("recordConfirmation：没有既有流水时新建一条，并带上银行�
   assert.equal(data.direction, "income");
   assert.equal(data.amount.toString(), "1500.5");
   assert.equal(data.bankId, "bank-1", "没有 bankId 这笔钱不进任何账户余额 —— 用户要求确认应收就要进账户");
-  assert.equal(data.itemId, "item-1");
+  assert.equal(data.subjectId, "subject-1", "候选链命中的科目 id 落库");
   assert.match(data.remark, /自动生成：receivable_reconciliation \/ REC-1/);
   assert.match(data.entryNo, /^CF-\d{8}-[0-9A-F]{8}$/);
 });
@@ -332,28 +345,28 @@ test("recordConfirmation：没指定银行账户时 bankId 写 null（流水照�
   assert.equal(calls.create[0].data.bankId, null);
 });
 
-test("recordConfirmation：人工选的项目不存在时显式 422，绝不静默换成候选项目", async () => {
+test("recordConfirmation：人工选的科目不存在时显式 422，绝不静默换成候选科目", async () => {
   const { service: cashFlow } = syncHarness();
-  const prisma = { dictionaryItem: { findFirst: async () => null, findMany: async () => [] }, cashFlowEntry: { findFirst: async () => null, create: async () => ({}) } };
+  const prisma = { accountingSubject: { findFirst: async () => null, findMany: async () => [] }, cashFlowEntry: { findFirst: async () => null, create: async () => ({}) } };
   const failing = new CashFlowService(prisma, audit);
   await assert.rejects(
-    () => failing.recordConfirmation(confirmation({ itemId: "item-dead" }), USER),
-    (error) => error.getResponse().code === "CASH_FLOW_ITEM_NOT_FOUND",
+    () => failing.recordConfirmation(confirmation({ subjectId: "subject-dead" }), USER),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND",
   );
   // 候选链一个都不存在时同样显式报错（历史缺陷：静默跳过会让整笔资金动账从流水里消失）。
   await assert.rejects(
-    () => failing.recordConfirmation(confirmation({ itemKeys: ["不存在的项目"] }), USER),
-    (error) => error.getResponse().code === "CASH_FLOW_ITEM_NOT_FOUND" && /不存在的项目/.test(error.getResponse().message),
+    () => failing.recordConfirmation(confirmation({ subjectNames: ["不存在的科目"] }), USER),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND" && /不存在的科目/.test(error.getResponse().message),
   );
 });
 
-test("requireItem：空值视为「不指定」，非法值 422", async () => {
+test("requireSubject：空值视为「不指定」，非法值 422", async () => {
   const { service: cashFlow } = syncHarness();
-  assert.equal(await cashFlow.requireItem(undefined), null);
-  assert.equal(await cashFlow.requireItem("  "), null);
-  const prisma = { dictionaryItem: { findFirst: async () => null, findMany: async () => [] } };
+  assert.equal(await cashFlow.requireSubject(undefined), null);
+  assert.equal(await cashFlow.requireSubject("  "), null);
+  const prisma = { accountingSubject: { findFirst: async () => null, findMany: async () => [] } };
   await assert.rejects(
-    () => new CashFlowService(prisma, audit).requireItem("item-dead", "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认"),
-    (error) => error.getResponse().code === "CASH_FLOW_ITEM_NOT_FOUND" && error.getResponse().message.includes("收支管理"),
+    () => new CashFlowService(prisma, audit).requireSubject("subject-dead", "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认"),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND" && error.getResponse().message.includes("收支管理"),
   );
 });

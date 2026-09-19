@@ -47,9 +47,14 @@ export type PayableTabKey = (typeof PAYABLE_TABS)[number]["key"];
  * `scope` 决定筛选条上出现哪些条件 —— 它是数据而不是 if 分支，加新表时不用再改组件：
  *   - `customer`：客户下拉 + 订单号 + 含草稿
  *   - `supplier`：供应商下拉 + 订单号 + 含草稿
- *   - `cash`：收支项目下拉 + 收支方向（收支流水没有订单号，也没有草稿态）
+ *   - `cash`：会计科目下拉 + 分类下拉 + 收支方向（收支流水没有订单号，也没有草稿态）
  *
- * 老系统那 6 份表到这里全部落地（收支明细/汇总属三期，需要新的「收支管理」模型与字典）。
+ * 老系统那 6 份表到这里全部落地（收支两张表的口径来自「收支管理 → 会计科目」的科目表）；
+ * 2026-09-17 用户又交付了 `example/财务/外汇一览表.xlsx`，于是加上第 7 张。
+ *
+ * 外汇一览表的期间是**收款（到账）日期**（用户 2026-09-17 选定）——老表标题就是
+ * 「外汇入款一览表」，看的是钱什么时候进来；它的导出文件里还有第二张工作表「客户汇总」，
+ * 页面只预览明细（见 finance-report-workspace 的 extra_sheets 提示）。
  */
 export const FINANCE_REPORT_TABS = [
   { key: "sales-reconciliation-detail", title: "销售对账明细表", scope: "customer" },
@@ -58,13 +63,26 @@ export const FINANCE_REPORT_TABS = [
   { key: "sales-gross-profit", title: "销售利润报表(毛利)", scope: "customer" },
   { key: "cash-flow-detail", title: "收支明细表", scope: "cash" },
   { key: "cash-flow-summary", title: "收支汇总表", scope: "cash" },
+  { key: "forex-receipts", title: "外汇一览表", scope: "customer" },
 ] as const;
 
 export type FinanceReportTabKey = (typeof FINANCE_REPORT_TABS)[number]["key"];
 
-/** 收支项目字典的 key（与后端 `cash-flow-catalog.ts` 一致）。 */
-export const CASH_FLOW_ITEM_DICTIONARY_KEY = "cash_flow_item";
-/** 结算账户字典的 key。 */
+/**
+ * 收支管理子栏目。
+ *
+ * 用户 2026-09-17：「收支项目维护和会计科目要合并成会计科目！合并成一个」——
+ * 所以这里**没有**单独的「收支项目维护」子栏目：收支项目已经并入会计科目（`?tab=subjects`），
+ * 全站财务口径只有一张科目表（分类 = 科目类别，项目 = 科目名称）。
+ */
+export const CASH_FLOW_TABS = [
+  { key: "entries", title: "收支流水" },
+  { key: "subjects", title: "会计科目" },
+] as const;
+
+export type CashFlowTabKey = (typeof CASH_FLOW_TABS)[number]["key"];
+
+/** 结算账户字典的 key（与后端 `cash-flow-catalog.ts` 一致）。 */
 export const SETTLEMENT_ACCOUNT_DICTIONARY_KEY = "settlement_account";
 
 /** 凭证管理子栏目（占位）。 */
@@ -89,7 +107,7 @@ export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: st
   salary: SALARY_SECTIONS,
   banks: [],
   "bank-transfers": [],
-  "cash-flow": [],
+  "cash-flow": CASH_FLOW_TABS,
   reports: FINANCE_REPORT_TABS,
   voucher: VOUCHER_TABS,
 };

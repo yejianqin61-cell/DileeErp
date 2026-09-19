@@ -25,7 +25,9 @@ import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client"
 import { downloadFile } from "../../lib/download";
 import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
-import { RECEIVABLE_TABS, CASH_FLOW_ITEM_DICTIONARY_KEY, type ReceivableTabKey } from "../../lib/finance-sections";
+import { RECEIVABLE_TABS, type ReceivableTabKey } from "../../lib/finance-sections";
+import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, toSubjectOptions, type AccountingSubject } from "../../lib/accounting-subjects";
+import { paymentNatureOptions } from "../../lib/payment-natures";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
@@ -39,21 +41,21 @@ import { financeStatus } from "./finance-status";
  */
 const BANK_CLEAR = "__no_bank__";
 /**
- * 收支项目下拉的「清空」哨兵值。
+ * 会计科目下拉的「清空」哨兵值。
  *
- * 收支项目也是可选的，而已有单据上的项目要能去掉（后端 PATCH 收 null 表示清空）；
- * 但**未改动**时必须送 undefined，否则每次「只改金额」都会把单据上已有的项目一并抹掉。
+ * 会计科目也是可选的，而已有单据上的科目要能去掉（后端 PATCH 收 null 表示清空）；
+ * 但**未改动**时必须送 undefined，否则每次「只改金额」都会把单据上已有的科目一并抹掉。
  * Radix Select 不接受空串 value，所以空值代表「不改动」、哨兵值代表「明确清空」。
  */
-const CASH_FLOW_ITEM_CLEAR = "__no_cash_flow_item__";
+const SUBJECT_CLEAR = "__no_subject__";
 
 type Reference = { id: string; name: string; customerCode?: string; orderNo?: string };
 type CustomerRef = { id: string; name: string; customerCode: string | null };
 /** 银行账户池条目（财务 → 银行账户）。收款的「到账银行」只能从这里选，不在这里手输账户。 */
 type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean };
 type BankLink = { id: string; bankName: string; accountNumber: string } | null;
-/** 收支项目字典项（财务 → 收支管理 → 收支项目）。 */
-type DictionaryItem = { id: string; key: string; label: string; isActive: boolean };
+/** 列表/详情接口内嵌的会计科目（财务 → 收支管理 → 会计科目）。 */
+type SubjectLink = { id: string; category: string; name: string };
 type SourceAllocation = { id: string; amount: string; status: string; payment?: { id: string; paymentNo: string; status: string; paymentDate: string; amount?: string; currency?: string } | null };
 /** 覆盖这条应收的对账单（列表接口算好给前端：对账范围是「订单号或客户 + 币种 + 期间」，前端推不出来）。 */
 type ReconciliationRef = { id: string; reconciliation_no: string; status: string; period_start: string; period_end: string };
@@ -77,8 +79,10 @@ type Reconciliation = {
   adjustmentAmountSnapshot: string; systemBalance: string; externalBalance: string; difference: string;
   currency: string; status: string; resolutionRemark: string | null; remark: string | null; createdAt: string;
   bankId?: string | null; bank?: BankLink;
-  /** 建单/确认时人工选定的收支项目（确认应收时用它，除非确认接口再覆盖）。 */
-  cashFlowItemId?: string | null;
+  /** 建单/确认时人工选定的会计科目（确认应收时用它，除非确认接口再覆盖）。 */
+  subjectId?: string | null;
+  /** 列表/详情接口内嵌的会计科目对象（`{ id, category, name }`）。 */
+  subject?: SubjectLink | null;
   customer?: CustomerRef | null;
   status_label?: string;
   /** 流转摘要（列表接口就给，与应付对账的 flow 对称）：覆盖多少条、多少条待确认、哪些订单与产品。 */
@@ -112,7 +116,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [customers, setCustomers] = useState<Reference[]>([]);
   const [orders, setOrders] = useState<Reference[]>([]);
   const [banks, setBanks] = useState<BankRef[]>([]);
-  const [cashFlowItems, setCashFlowItems] = useState<DictionaryItem[]>([]);
+  const [subjects, setSubjects] = useState<AccountingSubject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
@@ -144,16 +148,18 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     try {
       // 客户/销售单走 sales 权限：只有财务权限的账号拉不到它们，但不应因此整页报错（选项留空即可）。
       // 银行账户池同理（走 finance 权限，正常能拿到）。
-      // 收支项目同样走字典接口；过账时要给财务一个「人工选项目」的出口，拉不到就退回后端自动归类。
+      // 会计科目走财务科目表接口，**要停用的**：下拉只列启用科目（见 subjectOptions 的 filter），
+      // 但历史对账单上挂着已停用科目时必须还能显示它的名字 —— 只说「启用」会让那些行显示成 "-"，
+      // 而「停用后历史科目名消失」正是后端刻意避免的情况（会计科目服务与报表都为此保留了停用科目）。
       const [s, r, c, o, b, i] = await Promise.all([
         apiGet<ReceivableSource[]>("/finance/receivable-sources"),
         apiGet<Reconciliation[]>("/finance/reconciliations"),
         apiGet<Reference[]>("/customers").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<Reference[]>("/sales-orders").catch(() => ({ data: [] as Reference[], meta: {} })),
         apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
-        apiGet<DictionaryItem[]>(`/dictionaries/${CASH_FLOW_ITEM_DICTIONARY_KEY}/items`).catch(() => ({ data: [] as DictionaryItem[], meta: {} })),
+        apiGet<AccountingSubject[]>(`${ACCOUNTING_SUBJECTS_PATH}?include_inactive=true`).catch(() => ({ data: [] as AccountingSubject[], meta: {} })),
       ]);
-      setSources(s.data); setReconciliations(r.data); setCustomers(c.data); setOrders(o.data); setBanks(b.data); setCashFlowItems(i.data);
+      setSources(s.data); setReconciliations(r.data); setCustomers(c.data); setOrders(o.data); setBanks(b.data); setSubjects(i.data);
       // 勾选状态跟着数据走：已被确认/取消的条目自动退出勾选（界面上再也点不到它们，
       // 留着 id 会让「批量确认 N 条」里的 N 与实际能确认的条数对不上）。
       setSelected((ids) => ids.filter((id) => s.data.some((source) => source.id === id && source.status === "draft")));
@@ -249,34 +255,56 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   });
   /** 哨兵值 → 提交值：清空要显式送 null，未改动则送 undefined（后端不更新该字段）。 */
   const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
-  /** 可人工指定的收支项目：只给启用项，留空则由后端按来源自动归类。 */
-  const cashFlowItemOptions = cashFlowItems.filter((item) => item.isActive).map((item) => ({ value: item.id, label: item.label }));
+  /** 可人工指定的会计科目：只给启用项，留空则由后端按来源自动归类。 */
+  const subjectOptions = toSubjectOptions(subjects.filter((item) => item.isActive)).map((option) => ({ value: option.id, label: option.label }));
   /**
-   * 收支项目 id → 显示名。
+   * 会计科目 id → 显示名。
    *
-   * 列表/详情接口只给 `cashFlowItemId`（Prisma 不外带字典对象），标签得在前端拿字典项还原；
-   * 字典里查不到（项目被删/停用，或权限不够没拉到字典）就显示 `-`，不能让整页崩在这里。
+   * 列表/详情接口通常只给 `subjectId`（Prisma 不外带科目对象），标签得在前端拿科目表还原；
+   * 科目表里查不到（科目被删/停用，或权限不够没拉到）就显示 `-`，不能让整页崩在这里。
+   * 接口若内嵌了 `subject`，优先用它 —— 显示口径与下拉一致（`分类 / 科目名称`）。
    */
-  const cashFlowItemLabel = (id: string | null | undefined) => cashFlowItems.find((item) => item.id === id)?.label ?? "-";
+  const subjectLabel = (subject: SubjectLink | null | undefined, id?: string | null) => {
+    if (subject) return subjectOptionLabel(subject);
+    const found = subjects.find((item) => item.id === id);
+    return found ? subjectOptionLabel(found) : "-";
+  };
   /**
-   * 建单弹窗的收支项目：可选，留空即交给后端按来源自动归类（应收默认「货款」）；
-   * 新建单据上本来就没有项目可清，所以不摆「清空」哨兵（避免多出一个必然选不中的选项）。
+   * 建单弹窗的会计科目：可选，留空即交给后端按来源自动归类（应收默认「货款」）；
+   * 新建单据上本来就没有科目可清，所以不摆「清空」哨兵（避免多出一个必然选不中的选项）。
    */
-  const cashFlowItemCreateField = (label: string): ActionField => ({ name: "cash_flow_item_id", label, type: "select", options: cashFlowItemOptions });
+  const subjectCreateField = (label: string): ActionField => ({ name: "subject_id", label, type: "select", options: subjectOptions });
   /**
-   * 已有单据上的收支项目：默认带出当前值；选「（不指定收支项目）」送 null。
+   * 已有单据上的会计科目：默认带出当前值；选「（不指定会计科目）」送 null。
    *
    * 默认值用 `current ?? ""`（而不是银行那种「当前值否则哨兵」）是刻意的：未改动时必须送 undefined，
    * 后端 PATCH 才完全不动这个字段；若默认成哨兵，以后端「将来给这类单据补默认值」为例，
    * 用户只改金额就会把默认值一起抹成 null。
    */
-  const cashFlowItemEditField = (label: string, current?: string | null): ActionField => ({
-    name: "cash_flow_item_id", label, type: "select",
-    options: [{ value: CASH_FLOW_ITEM_CLEAR, label: "（不指定收支项目）" }, ...cashFlowItemOptions],
+  const subjectEditField = (label: string, current?: string | null): ActionField => ({
+    name: "subject_id", label, type: "select",
+    options: [{ value: SUBJECT_CLEAR, label: "（不指定会计科目）" }, ...subjectOptions],
     defaultValue: current ?? "",
   });
   /** 哨兵/空值 → 提交值：明确清空送 null，未改动送 undefined（后端不更新该字段）。 */
-  const cashFlowItemValue = (value: string | undefined) => (value === CASH_FLOW_ITEM_CLEAR ? null : (value || undefined));
+  const subjectValue = (value: string | undefined) => (value === SUBJECT_CLEAR ? null : (value || undefined));
+
+  /**
+   * 确认应收时的「款项性质」（定金 / 货款 / 尾款 / 其他）。
+   *
+   * 为什么放在**确认**这一步而不是建应收的时候：确认就是记账，钱的性质要在这唯一一次录入口里
+   * 问清楚 —— 建单时钱还没进来，性质随时会变。老表「外汇一览表」正是按这一列把收款拆成
+   * 「定金 / 货款」两组，所以它必须落库，不能只在界面上显示一下。
+   *
+   * 默认「货款」：绝大多数确认都是出货后收的货款；定金要手工选（而且定金通常走
+   * 【收支流水】手工录入，因为出货前系统里还没有应收来源可挂）。
+   */
+  const paymentNatureField = (): ActionField => ({
+    name: "payment_nature", label: "款项性质（收入用）", type: "select",
+    options: paymentNatureOptions(), defaultValue: "balance",
+  });
+  /** 空值 → 提交值：没选（理论上不会，下拉有默认值）时送 null = 不标注，不编一个性质出来。 */
+  const paymentNatureValue = (value: string | undefined) => value || null;
 
   // ---------------------------------------------------------------- 操作
 
@@ -305,8 +333,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `确认应收：${item.sourceNo}`, fields: [
       { name: "confirm", label: `确认应收 ${item.sourceNo}：${item.amount} ${item.currency}`, type: "info" as const },
       bankField("入账银行"),
-      cashFlowItemEditField("收支项目"),
-    ], submit: (v) => submitConfirm(`/finance/receivable-sources/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), cash_flow_item_id: cashFlowItemValue(v.cash_flow_item_id) }, (data) => ({
+      subjectEditField("会计科目"),
+      paymentNatureField(),
+    ], submit: (v) => submitConfirm(`/finance/receivable-sources/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => ({
       success: `应收 ${item.sourceNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}），金额已记入所选银行账户`,
       warning: `未指定入账银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
     }), "确认应收失败") });
@@ -314,7 +343,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   /**
    * 勾选批量确认 —— 用户要求「应收侧也改成勾选 + 批量确认」（与应付侧完全对称）。
    *
-   * 整批共用一个入账银行与一个收支项目（后端仍是**每条应收写一条流水**，所以每条都追得回来源编号）；
+   * 整批共用一个入账银行与一个会计科目（后端仍是**每条应收写一条流水**，所以每条都追得回来源编号）；
    * 合计**按币种分组**显示，跨币种不相加。勾选里混进已被别人确认掉的条目时，后端会跳过并回报条数。
    */
   function batchConfirm() {
@@ -324,8 +353,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `批量确认应收（${drafts.length} 条）`, fields: [
       { name: "confirm", label: `确认 ${drafts.length} 条草稿应收（合计 ${[...totals.entries()].map(([currency, amount]) => `${amount.toFixed(4)} ${currency}`).join("、")}）`, type: "info" as const },
       bankField("入账银行"),
-      cashFlowItemEditField("收支项目"),
-    ], submit: (v) => submitConfirm("/finance/receivable-sources/batch-confirm", { ids: drafts.map((draft) => draft.id), bank_id: bankValue(v.bank_id), cash_flow_item_id: cashFlowItemValue(v.cash_flow_item_id) }, (data) => {
+      subjectEditField("会计科目"),
+      paymentNatureField(),
+    ], submit: (v) => submitConfirm("/finance/receivable-sources/batch-confirm", { ids: drafts.map((draft) => draft.id), bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => {
       const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
       return {
@@ -363,9 +393,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       { name: "external_balance", label: "外部余额", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
       bankField("回款银行"),
-      cashFlowItemCreateField("收支项目"),
+      subjectCreateField("会计科目"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => void action("/finance/reconciliations", { customer_id: v.customer_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: bankValue(v.bank_id), cash_flow_item_id: v.cash_flow_item_id || undefined, remark: v.remark || undefined }, "对账单已创建") });
+    ], submit: (v) => void action("/finance/reconciliations", { customer_id: v.customer_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: bankValue(v.bank_id), subject_id: v.subject_id || undefined, remark: v.remark || undefined }, "对账单已创建") });
   }
   function resolveReconciliation(item: Reconciliation) {
     setDialog({ title: `处理对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => void action(`/finance/reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "对账差异已处理") });
@@ -374,8 +404,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
    * 确认应收 —— 先问清入账信息。
    *
    * 这个接口不只是改状态：确认的金额会作为一笔收入写进收支流水，并落到对账单的银行账户上。
-   * 历史对账单（尤其是这次改动之前建的）常常既没有银行也没有收支项目，直接打过去就是「钱记了、
-   * 但哪个账户都没有」，事后对账根本查不出这笔钱去哪了；所以把「记到哪个银行、归哪个项目」摆到台面上。
+   * 历史对账单（尤其是这次改动之前建的）常常既没有银行也没有会计科目，直接打过去就是「钱记了、
+   * 但哪个账户都没有」，事后对账根本查不出这笔钱去哪了；所以把「记到哪个银行、归哪个会计科目」摆到台面上。
    */
   function confirmReconciliation(item: Reconciliation) {
     const count = item.details?.draft_count ?? item.flow?.draft_count ?? 0;
@@ -383,14 +413,15 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `确认应收：${item.reconciliationNo}`, fields: [
       { name: "confirm", label: `确认 ${count} 条草稿应收${amount ? `（合计 ${amount} ${item.currency}）` : ""}`, type: "info" as const },
       bankField("入账银行", item.bankId),
-      cashFlowItemEditField("收支项目", item.cashFlowItemId),
+      subjectEditField("会计科目", item.subjectId),
+      paymentNatureField(),
     ], submit: (v) => submitConfirmReconciliation(item, v) });
   }
   /**
    * 确认应收的提交：与逐条 / 批量确认共用 submitConfirm（三条路径都会记账，都要处理 bank_missing）。
    */
   async function submitConfirmReconciliation(item: Reconciliation, v: Record<string, string>) {
-    return submitConfirm(`/finance/reconciliations/${item.id}/confirm-receivables`, { bank_id: bankValue(v.bank_id), cash_flow_item_id: cashFlowItemValue(v.cash_flow_item_id) }, (data) => {
+    return submitConfirm(`/finance/reconciliations/${item.id}/confirm-receivables`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => {
       const count = data.confirmed_count ?? data.count ?? 0;
       const amount = data.confirmed_amount ?? data.amount ?? "-";
       const currency = data.currency ?? item.currency;
@@ -503,8 +534,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "external", header: "外部余额", cell: ({ row }) => money(row.original.externalBalance, row.original.currency) },
     { id: "difference", header: "差异", cell: ({ row }) => money(row.original.difference, row.original.currency) },
     { id: "bank", header: "回款银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
-    // 建单时人工选的收支项目（确认应收记流水时用它）；只拿到 id，标签在前端用字典还原。
-    { id: "cashFlowItem", header: "收支项目", cell: ({ row }) => cashFlowItemLabel(row.original.cashFlowItemId) },
+    // 建单时人工选的会计科目（确认应收记流水时用它）；接口没内嵌 `subject` 时只拿到 id，标签在前端用科目表还原。
+    { id: "subject", header: "会计科目", cell: ({ row }) => subjectLabel(row.original.subject, row.original.subjectId) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row" data-testid={`reconciliation-actions-${row.original.id}`}>
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
@@ -568,7 +599,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { label: "外部余额", value: money(item.externalBalance, item.currency) },
         { label: "差异", value: money(item.difference, item.currency) },
         { label: "回款银行", value: item.bank ? `${item.bank.bankName} / ${item.bank.accountNumber}` : "-" },
-        { label: "收支项目", value: cashFlowItemLabel(item.cashFlowItemId) },
+        { label: "会计科目", value: subjectLabel(item.subject, item.subjectId) },
         { label: "纳入条目数", value: item.details ? `${item.details.entry_count} 条（待确认 ${item.details.draft_count} 条 / ${item.details.draft_amount}）` : "-" },
         { label: "差异处理说明", value: item.resolutionRemark, wide: true },
         { label: "创建时间", value: day(item.createdAt) }, { label: "备注", value: item.remark, wide: true },
@@ -606,7 +637,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const item = detailData as Reconciliation;
       return <>
         {item.status === "difference" && <Button onClick={() => resolveReconciliation(item)}>处理差异</Button>}
-        {/* 与列表同一口径：范围内确实还有草稿才给一键确认；点开的是「确认应收」弹窗（问清入账银行与收支项目） */}
+        {/* 与列表同一口径：范围内确实还有草稿才给一键确认；点开的是「确认应收」弹窗（问清入账银行与会计科目） */}
         {item.details?.can_confirm_receivables ? <Button onClick={() => confirmReconciliation(item)}>一键确认应收（{item.details.draft_count} 条）</Button> : null}
       </>;
     }

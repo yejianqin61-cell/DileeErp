@@ -169,16 +169,22 @@ type WorkbookResponse = {
 };
 
 /**
- * 一次性把一张表渲染成 xlsx 并作为附件下发。
+ * 一次性把**一张或多张**表渲染成一个 xlsx 并作为附件下发。
  *
  * 报表导出与「确认应收/应付台账」导出共用这一处：文件名编码（`filename*=UTF-8''`）、
  * Content-Type、`no-store` 三件事必须一致，否则中文文件名在不同浏览器上会乱码、
  * 或者下载被浏览器缓存住。文件名带上行数，财务拿到文件就知道导的是哪一批。
+ *
+ * 为什么收数组：外汇一览表是**两张表**（明细 + 客户汇总），它们必须落在同一个文件里 ——
+ * 分成两个下载文件，财务很容易只发出去一张，而「汇总和明细分开传」正是对账对不上的经典原因。
+ * 单张表的调用方照旧传一个 `ReportTable` 就行，不用为了这个能力改成 `[table]`。
+ * 文件名里的行数取**第一张（主页）**表的行数：明细是主表，汇总的行数随客户数变化、看着会莫名其妙。
  */
-export async function sendWorkbook(response: WorkbookResponse, table: ReportTable, label: string) {
-  const body = await renderReportWorkbook([table]);
+export async function sendWorkbook(response: WorkbookResponse, table: ReportTable | ReportTable[], label: string) {
+  const tables = Array.isArray(table) ? table : [table];
+  const body = await renderReportWorkbook(tables);
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-  const fileName = `迪礼ERP-${label}-${stamp}-${table.rows.length}行.xlsx`;
+  const fileName = `迪礼ERP-${label}-${stamp}-${tables[0]?.rows.length ?? 0}行.xlsx`;
   response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
   response.setHeader("Cache-Control", "no-store");

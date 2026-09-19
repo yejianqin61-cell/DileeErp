@@ -382,14 +382,15 @@ test("finance-report.query：利润表超过行数上限同样报错", async () 
 /* ------------------------------------------------------------ 三期：收支明细 / 收支汇总 */
 
 function stubPhase3({ entries = [], items = [], retired = [] } = {}) {
-  const calls = { cashFlowEntry: [], dictionaryItem: [] };
+  const calls = { cashFlowEntry: [], accountingSubject: [] };
   const prisma = {
     cashFlowEntry: { findMany: async (args) => { calls.cashFlowEntry.push(args); return entries; } },
-    dictionaryItem: {
+    accountingSubject: {
       findMany: async (args) => {
-        calls.dictionaryItem.push(args);
-        // 两次查询：带 type 过滤的是「启用的项目」，按 id 查的是「本期出现过的停用项目」。
-        return args?.where?.type ? items : retired;
+        calls.accountingSubject.push(args);
+        // 两次查询：带 isActive 过滤的是「启用科目」，按 id 查的是「本期出现过的停用科目」。
+        // 两边的行都必须带 sortOrder —— 合并后的顺序由它决定。
+        return args?.where?.isActive ? items : retired;
       },
     },
   };
@@ -403,38 +404,42 @@ function cashRow(overrides = {}) {
     currency: "CNY",
     direction: "expense",
     amount: dec("2900"),
-    itemId: "item-2",
+    subjectId: "subject-2",
+    subject: { category: "损益类", name: "主营业务成本" },
     settlementMethod: "转账",
     settlementAccount: { label: "农业银行5706" },
     ...overrides,
   };
 }
 
-test("finance-report.query：收支明细只取生效流水，并按期间/项目/币种/方向筛选", async () => {
+test("finance-report.query：收支明细只取生效流水，并按期间/科目/分类/币种/方向筛选", async () => {
   const { service, calls } = stubPhase3({ entries: [] });
-  await service.cashFlowDetail({ from: "2026-09-01", to: "2026-09-30", itemId: "item-2", currency: "CNY", direction: "expense" });
+  await service.cashFlowDetail({ from: "2026-09-01", to: "2026-09-30", subjectId: "subject-2", category: "损益类", currency: "CNY", direction: "expense" });
   const where = calls.cashFlowEntry[0].where;
   assert.equal(where.status, "posted", "已冲销的流水不进报表");
   assert.equal(where.deletedAt, null);
-  assert.equal(where.itemId, "item-2");
+  assert.equal(where.subjectId, "subject-2");
+  assert.deepEqual(where.subject, { category: "损益类" }, "分类筛选走科目表的科目类别");
   assert.equal(where.currency, "CNY");
   assert.equal(where.direction, "expense");
   assert.equal(where.entryDate.lte.toISOString(), "2026-09-30T23:59:59.999Z");
 });
 
-test("finance-report.query：收支明细行映射（含结算账户标签）", async () => {
+test("finance-report.query：收支明细行映射（分类 + 科目名称 + 结算账户标签）", async () => {
   const { service } = stubPhase3({ entries: [cashRow()] });
   const rows = await service.cashFlowDetail({});
   assert.equal(rows[0].counterpartyName, "兴田");
   assert.equal(rows[0].direction, "expense");
   assert.equal(rows[0].amount.toString(), "2900");
+  assert.equal(rows[0].category, "损益类", "分类 = 科目类别");
+  assert.equal(rows[0].subjectName, "主营业务成本", "项目 = 科目名称");
   assert.equal(rows[0].settlementMethod, "转账");
   assert.equal(rows[0].settlementAccountLabel, "农业银行5706");
 });
 
-test("finance-report.query：收支汇总按「项目 × 币种」聚合，收入与支出分别累计", async () => {
+test("finance-report.query：收支汇总按「科目 × 币种」聚合，收入与支出分别累计", async () => {
   const { service } = stubPhase3({
-    items: [{ id: "item-2", label: "货款" }],
+    items: [{ id: "subject-2", category: "损益类", name: "主营业务收入", sortOrder: 770 }],
     entries: [
       cashRow({ currency: "USD", direction: "income", amount: dec("1000") }),
       cashRow({ currency: "USD", direction: "income", amount: dec("4428") }),
@@ -445,34 +450,74 @@ test("finance-report.query：收支汇总按「项目 × 币种」聚合，收�
   assert.deepEqual(currencies, ["CNY", "USD"]);
   const usd = amounts.find((row) => row.currency === "USD");
   const cny = amounts.find((row) => row.currency === "CNY");
-  assert.equal(usd.income.toString(), "5428", "同项目同币种的收入要累加");
+  assert.equal(usd.subjectId, "subject-2", "聚合键是科目 id（不是旧的收支项目 id）");
+  assert.equal(usd.income.toString(), "5428", "同科目同币种的收入要累加");
   assert.equal(usd.expense.toString(), "0");
   assert.equal(cny.expense.toString(), "2900");
 });
 
-test("finance-report.query：收支汇总的项目清单 = 启用项目 ∪ 本期出现过的停用项目", async () => {
-  const { service } = stubPhase3({
-    items: [{ id: "item-2", label: "货款" }],
-    retired: [{ id: "item-retired", label: "旧项目" }],
-    entries: [cashRow({ itemId: "item-retired" })],
+test("finance-report.query：收支汇总的科目清单 = 启用科目 ∪ 本期出现过的停用科目，并按「分类 → sortOrder → 名称」合并排序", async () => {
+  const { service, calls } = stubPhase3({
+    items: [
+      { id: "subject-1", category: "资产类", name: "库存现金（备用金）", sortOrder: 10 },
+      { id: "subject-3", category: "成本类", name: "房租费", sortOrder: 640 },
+    ],
+    // 停用科目落在**资产类**（而不是末尾的「未分类」）：这正是要防的回归 ——
+    // 统一挂到最后会让「资产类」被拆成两段，汇总表的「资产类小计」就会出现两行。
+    retired: [{ id: "subject-retired", category: "资产类", name: "银行存款 刘总转入", sortOrder: 70 }],
+    entries: [cashRow({ subjectId: "subject-retired" })],
   });
   const { items } = await service.cashFlowSummary({});
-  // 停用项目的旧流水不能丢：明细表里有、汇总表里没有就是对不上账。
+  // 停用科目的旧流水不能丢：明细表里有、汇总表里没有就是对不上账。
+  // 且它必须**回到自己分类的那一段里**，这样每个分类只会有一段、一个小计。
   assert.deepEqual(items, [
-    { id: "item-2", label: "货款" },
-    { id: "item-retired", label: "旧项目（已停用）" },
-  ]);
+    { id: "subject-1", category: "资产类", name: "库存现金（备用金）" },
+    { id: "subject-retired", category: "资产类", name: "银行存款 刘总转入（已停用）" },
+    { id: "subject-3", category: "成本类", name: "房租费" },
+  ], "停用科目按分类 + sortOrder 插回自己那一段，并标注「（已停用）」");
+  // 启用科目按 sortOrder 取数（合并排序在服务层做，库层不再 orderBy）
+  assert.deepEqual(calls.accountingSubject[0].select, { id: true, category: true, name: true, sortOrder: true });
+  assert.deepEqual(calls.accountingSubject[1].where, { id: { in: ["subject-retired"] } });
 });
 
-test("finance-report.query：本期全部是启用项目时不再多查一次停用清单", async () => {
-  const { service, calls } = stubPhase3({ items: [{ id: "item-2", label: "货款" }], entries: [cashRow({ itemId: "item-2" })] });
+test("finance-report.query：不在科目表 5 类之内的分类排在最后（自己成段，不拆散前面的分类）", async () => {
+  const { service } = stubPhase3({
+    items: [
+      { id: "subject-1", category: "损益类", name: "主营业务收入", sortOrder: 770 },
+      { id: "subject-2", category: "未分类", name: "迁移带出来的旧项目", sortOrder: 9010 },
+    ],
+    entries: [],
+  });
+  const { items } = await service.cashFlowSummary({});
+  assert.deepEqual(items.map((item) => item.category), ["损益类", "未分类"], "5 类按科目表顺序在前，其它分类一律在后");
+});
+
+test("finance-report.query：合并排序并列时按名称升序、停用的排在后面（结果确定，不随查询计划漂移）", async () => {
+  const { service } = stubPhase3({
+    items: [
+      { id: "subject-b", category: "损益类", name: "B科目", sortOrder: 500 },
+      { id: "subject-a", category: "损益类", name: "A科目", sortOrder: 500 },
+    ],
+    retired: [{ id: "subject-same", category: "损益类", name: "A科目", sortOrder: 500 }],
+    entries: [cashRow({ subjectId: "subject-same" })],
+  });
+  const { items } = await service.cashFlowSummary({});
+  assert.deepEqual(items, [
+    { id: "subject-a", category: "损益类", name: "A科目" },
+    { id: "subject-same", category: "损益类", name: "A科目（已停用）" },
+    { id: "subject-b", category: "损益类", name: "B科目" },
+  ], "同 sortOrder 先按名称升序，名称也相同时停用的排在后面");
+});
+
+test("finance-report.query：本期全部是启用科目时不再多查一次停用清单", async () => {
+  const { service, calls } = stubPhase3({ items: [{ id: "subject-2", category: "损益类", name: "主营业务收入", sortOrder: 770 }], entries: [cashRow({ subjectId: "subject-2" })] });
   const { items } = await service.cashFlowSummary({});
   assert.equal(items.length, 1);
-  assert.equal(calls.dictionaryItem.length, 1, "没有停用项目时不该发第二次字典查询");
+  assert.equal(calls.accountingSubject.length, 1, "没有停用科目时不该发第二次科目查询");
 });
 
-test("finance-report.query：本期没有流水时按本位币给一段（37 个项目全列、全为 0）", async () => {
-  const { service } = stubPhase3({ items: [{ id: "item-2", label: "货款" }], entries: [] });
+test("finance-report.query：本期没有流水时按本位币给一段（科目全列、全为 0）", async () => {
+  const { service } = stubPhase3({ items: [{ id: "subject-2", category: "损益类", name: "主营业务收入", sortOrder: 770 }], entries: [] });
   const result = await service.cashFlowSummary({});
   assert.deepEqual(result.currencies, ["CNY"], "没有数据也给出本位币这一段，让人能确定是「确实是 0」而不是没跑出来");
   assert.deepEqual(result.amounts, []);

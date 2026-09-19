@@ -108,12 +108,7 @@ model DictionaryItem {
   deletedAt DateTime?      @map("deleted_at")
   deletedBy String?        @map("deleted_by") @db.Uuid
   type      DictionaryType @relation(fields: [typeId], references: [id])
-  cashFlowItems    CashFlowEntry[] @relation("CashFlowItem")
   cashFlowAccounts CashFlowEntry[] @relation("CashFlowAccount")
-  customerPaymentItems       CustomerPayment[] @relation("CustomerPaymentCashFlowItem")
-  supplierPaymentItems       SupplierPayment[] @relation("SupplierPaymentCashFlowItem")
-  receivableReconciliationItems ReceivableReconciliation[] @relation("ReceivableReconciliationCashFlowItem")
-  payableReconciliationItems    SupplierPayableReconciliation[] @relation("SupplierPayableReconciliationCashFlowItem")
 
   @@unique([typeId, key])
   @@map("dictionary_items")
@@ -1028,8 +1023,8 @@ model SupplierPayment {
   bankReference String?                     @map("bank_reference") @db.VarChar(200)
   payeeName     String?                     @map("payee_name") @db.VarChar(200)
   bankId        String?                     @map("bank_id") @db.Uuid
-  /// 收支项目：与收款侧同义（建单时存下，过账写流水时用，可在过账时临时改）。
-  cashFlowItemId String?                    @map("cash_flow_item_id") @db.Uuid
+  /// 会计科目：与收款侧同义（建单时存下，过账写流水时用，可在过账时临时改）。
+  subjectId     String?                     @map("subject_id") @db.Uuid
   status        String                      @default("draft") @db.VarChar(30)
   attachment    Json                        @default("[]")
   remark        String?                     @db.VarChar(1000)
@@ -1041,7 +1036,7 @@ model SupplierPayment {
   deletedBy     String?                     @map("deleted_by") @db.Uuid
   supplier      Supplier                    @relation(fields: [supplierId], references: [id])
   bank          Bank?                       @relation(fields: [bankId], references: [id])
-  cashFlowItem  DictionaryItem?             @relation("SupplierPaymentCashFlowItem", fields: [cashFlowItemId], references: [id])
+  subject       AccountingSubject?          @relation(fields: [subjectId], references: [id])
   allocations   SupplierPaymentAllocation[]
 
   @@index([supplierId, status])
@@ -1484,9 +1479,9 @@ model CustomerPayment {
   // 收款到账银行：指向银行账户池（banks）。可空（历史数据与「还没确定打哪张卡」的草稿），
   // 与供应商付款侧 SupplierPayment.bankId 语义一致。
   bankId        String?                @map("bank_id") @db.Uuid
-  /// 收支项目（收支管理 → 收支项目字典）：本单过账时写入收支流水用的类目。
+  /// 会计科目（收支管理 → 会计科目）：本单过账时写入收支流水用的口径。
   /// 建单时就存下来而不是等到过账才选：财务在表单里填过的东西不能丢，过账时仍可临时改（以过账参数为准）。
-  cashFlowItemId String?               @map("cash_flow_item_id") @db.Uuid
+  subjectId     String?                 @map("subject_id") @db.Uuid
   status        String                 @default("draft") @db.VarChar(30)
   attachment    Json                   @default("[]")
   remark        String?                @db.VarChar(1000)
@@ -1498,7 +1493,7 @@ model CustomerPayment {
   deletedBy     String?                @map("deleted_by") @db.Uuid
   customer      Customer               @relation(fields: [customerId], references: [id])
   bank          Bank?                  @relation(fields: [bankId], references: [id])
-  cashFlowItem  DictionaryItem?        @relation("CustomerPaymentCashFlowItem", fields: [cashFlowItemId], references: [id])
+  subject       AccountingSubject?        @relation(fields: [subjectId], references: [id])
   allocations   ReceivableAllocation[]
   salesOrder    SalesOrder?            @relation(fields: [salesOrderId], references: [id])
   salesOrderId  String?                @map("sales_order_id") @db.Uuid
@@ -1580,8 +1575,8 @@ model ReceivableReconciliation {
   currency                 String      @db.VarChar(10)
   // 客户回款银行：应收对账要指明「钱回到哪个账户」，取值同样来自银行账户池（banks）。
   bankId                   String?     @map("bank_id") @db.Uuid
-  /// 收支项目：确认应收时自动写入收支流水（收到客户货款）用的类目。
-  cashFlowItemId           String?     @map("cash_flow_item_id") @db.Uuid
+  /// 会计科目：确认应收时自动写入收支流水（收到客户货款）用的口径。
+  subjectId                String?     @map("subject_id") @db.Uuid
   status                   String      @default("pending") @db.VarChar(30)
   resolutionRemark         String?     @map("resolution_remark") @db.VarChar(1000)
   attachment               Json        @default("[]")
@@ -1595,7 +1590,7 @@ model ReceivableReconciliation {
   salesOrder               SalesOrder? @relation(fields: [salesOrderId], references: [id])
   customer                 Customer    @relation(fields: [customerId], references: [id])
   bank                     Bank?       @relation(fields: [bankId], references: [id])
-  cashFlowItem             DictionaryItem? @relation("ReceivableReconciliationCashFlowItem", fields: [cashFlowItemId], references: [id])
+  subject                  AccountingSubject? @relation(fields: [subjectId], references: [id])
 
   @@index([orderNo, status])
   @@index([customerId, status])
@@ -1610,8 +1605,8 @@ model SupplierPayableReconciliation {
   purchaseOrderId          String?  @map("purchase_order_id") @db.Uuid
   supplierId               String   @map("supplier_id") @db.Uuid
   bankId                   String?  @map("bank_id") @db.Uuid
-  /// 收支项目：确认应付时自动写入收支流水（付给供应商）用的类目。
-  cashFlowItemId           String?  @map("cash_flow_item_id") @db.Uuid
+  /// 会计科目：确认应付时自动写入收支流水（付给供应商）用的口径。
+  subjectId                String?  @map("subject_id") @db.Uuid
   periodStart              DateTime @map("period_start") @db.Date
   periodEnd                DateTime @map("period_end") @db.Date
   payableAmountSnapshot    Decimal  @map("payable_amount_snapshot") @db.Decimal(18, 4)
@@ -1633,7 +1628,7 @@ model SupplierPayableReconciliation {
   deletedBy                String?  @map("deleted_by") @db.Uuid
   supplier                 Supplier @relation(fields: [supplierId], references: [id])
   bank                     Bank?    @relation(fields: [bankId], references: [id])
-  cashFlowItem             DictionaryItem? @relation("SupplierPayableReconciliationCashFlowItem", fields: [cashFlowItemId], references: [id])
+  subject                  AccountingSubject? @relation(fields: [subjectId], references: [id])
   purchaseOrder            PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
 
   @@index([supplierId, status])
@@ -1658,7 +1653,8 @@ model CashFlowEntry {
   currency            String          @db.VarChar(10)
   exchangeRate        Decimal?        @map("exchange_rate") @db.Decimal(18, 6)
   localAmount         Decimal?        @map("local_amount") @db.Decimal(18, 4)
-  itemId              String          @map("item_id") @db.Uuid
+  /// 会计科目（分类 + 项目）。2026-09-17 之前这里是「收支项目」字典项，用户要求两者合并成一个。
+  subjectId           String          @map("subject_id") @db.Uuid
   settlementMethod    String?         @map("settlement_method") @db.VarChar(50)
   settlementAccountId String?         @map("settlement_account_id") @db.Uuid
   /// 资金实际所在的**银行账户**（银行账户池 banks）。与 settlementAccountId（老表结算方式字典）是两回事：
@@ -1667,6 +1663,22 @@ model CashFlowEntry {
   /// 本期恒空，为将来与收付款单联动预留
   sourceType          String?         @map("source_type") @db.VarChar(40)
   sourceId            String?         @map("source_id") @db.Uuid
+  /// 款项性质：定金 / 货款 / 尾款 / 其他（`PAYMENT_NATURES` 的 key）。
+  ///
+  /// 为什么需要它：老表 `example/财务/外汇一览表.xlsx` 把每个订单的到账拆成
+  /// 「定金（日期+金额）/ 货款（日期+金额）」两组，用户 2026-09-17 要求把这套口径搬进系统。
+  /// 系统里「钱进来」只有两条路 ——【确认应收】自动写一条流水、【收支流水】手工录一笔 ——
+  /// 两条都落在本表上，所以标记只能加在这条**真正记了钱**的记录上（而不是某个单据上）。
+  ///
+  /// 可空：历史流水与「确实无所谓性质」的流水（房租、水电）不该被迫选一个。
+  /// 报表把未标注的算进「其他到账」并留一行说明，不替财务猜。
+  paymentNature       String?         @map("payment_nature") @db.VarChar(20)
+  /// 订单号：把收入流水挂到具体订单。
+  ///
+  /// 为什么必须有：定金在**出货之前**就收到了，那时系统里还没有应收来源（应收来自成品出库），
+  /// 因此手工录的定金流水没有任何自动来源可挂；外汇一览表要按订单归集定金，只能靠这个字段。
+  /// 可空：非订单类收支（房租、水电、退税…）本来就没有订单号。
+  orderNo             String?         @map("order_no") @db.VarChar(100)
   /// posted（生效）/ reversed（已冲销，保留行但报表不计入）
   status              String          @default("posted") @db.VarChar(30)
   remark              String?         @db.VarChar(1000)
@@ -1676,16 +1688,61 @@ model CashFlowEntry {
   updatedBy           String          @map("updated_by") @db.Uuid
   deletedAt           DateTime?       @map("deleted_at")
   deletedBy           String?         @map("deleted_by") @db.Uuid
-  item                DictionaryItem  @relation("CashFlowItem", fields: [itemId], references: [id])
+  subject             AccountingSubject @relation(fields: [subjectId], references: [id])
   settlementAccount   DictionaryItem? @relation("CashFlowAccount", fields: [settlementAccountId], references: [id])
   bank                Bank?           @relation(fields: [bankId], references: [id])
   voucherLines        VoucherLine[]
 
   @@index([entryDate, currency])
-  @@index([itemId, direction])
+  @@index([subjectId, direction])
   @@index([currency, status])
   @@index([bankId, status])
+  /// 外汇一览表按订单号归集收款（定金流水没有来源可挂，只能按订单号找）。
+  @@index([orderNo])
   @@map("cash_flow_entries")
+}
+
+/// 会计科目（全站财务口径的唯一来源）。
+///
+/// 来源与口径：用户 2026-09-17 交付 `example/财务/科目表(2).xls`，口径原文
+/// 「那个编码的可以不管，分类就对应的是科目类别，项目就对应的是科目名称」。
+/// 因此**只有两级**：`category`（分类）+ `name`（项目）；老表的科目代码整列不采纳。
+///
+/// 为什么不是 `dictionary_items` 的一种字典类型：科目表有「分类」这个维度，
+/// 而 `dictionary_items` 是平表；硬塞一列 `category` 会让所有字典都背上一个只有本科目表
+/// 才有意义的字段。用户也明确要求「收支项目维护和会计科目合并成一个会计科目」——
+/// 合并后的东西是科目，不是字典。
+///
+/// 为什么 `balanceDirection` 留着：本期不参与计算，但凭证/账簿要靠它判断科目的自然余额方向；
+/// 现在丢掉，以后要再问一次财务。
+model AccountingSubject {
+  id               String    @id @default(uuid()) @db.Uuid
+  /// 分类 = 科目类别（资产类 / 负债类 / 成本类 / 所有者权益类 / 损益类）。
+  category         String    @db.VarChar(30)
+  /// 项目 = 科目名称（老表 B 列原文，含「销售- 办产地证」这类原表手误空格，照抄不改）。
+  name             String    @db.VarChar(100)
+  /// 余额方向：借 / 贷（老表 D 列原文）。本期只作口径参考，不参与任何计算。
+  balanceDirection String?   @map("balance_direction") @db.VarChar(4)
+  sortOrder        Int       @default(0) @map("sort_order")
+  /// 停用而非删除：已被流水/单据引用的科目必须留成历史快照（宪法《Configurable Business Categories》）。
+  isActive         Boolean   @default(true) @map("is_active")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  createdBy        String    @map("created_by") @db.Uuid
+  updatedBy        String    @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at")
+  deletedBy        String?   @map("deleted_by") @db.Uuid
+  cashFlowEntries               CashFlowEntry[]
+  customerPayments              CustomerPayment[]
+  supplierPayments              SupplierPayment[]
+  receivableReconciliations     ReceivableReconciliation[]
+  payableReconciliations        SupplierPayableReconciliation[]
+
+  /// 同类别内科目名唯一：迁移与 seed 靠它做幂等种入。
+  /// 不设全局唯一是有意的 —— 将来财务要在两个类别下各建一个同名明细科目时不必再迁移一次。
+  @@unique([category, name])
+  @@index([category, sortOrder])
+  @@map("accounting_subjects")
 }
 
 /// 记账凭证。

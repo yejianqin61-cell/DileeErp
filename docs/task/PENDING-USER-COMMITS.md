@@ -204,3 +204,70 @@ git commit -m "fix: select newly created category in parent form"
 git add apps/api/src/platform/http/api-exception.filter.ts apps/api/test/http/api-exception-filter.test.cjs docs/task/PENDING-USER-COMMITS.md
 git commit -m "fix: clarify daily report uniqueness conflict"
 ```
+
+## 收支项目并入会计科目（财务口径归一）
+
+用户的科目表成为全站财务收支口径的唯一来源：新建 `accounting_subjects`（分类 = 科目类别，项目 = 科目名称，121 条，不含科目代码），
+旧 37 个收支项目并入这 121 条并改指历史流水与已确认单据，列名 `item_id` / `cash_flow_item_id` → `subject_id`，
+「收支项目维护」与「会计科目」合并成一个栏目（`/finance/cash-flow?tab=subjects`），收支明细/汇总报表按 分类 + 项目 统计（汇总表带分类小计）。
+
+**部署顺序是硬约束**：先 `npm run db:generate --workspace=@dilee/api`，再 `prisma migrate deploy`，
+最后切代码 —— 不跑迁移直接上新代码会让全站收支相关功能立刻不可用。
+
+37 条并入对照表见 `docs/memo/0917-收支项目并入会计科目对照表.md`（请财务过目），
+设计与未验证事项见 `docs/design/accounting-subject-chart-2026-09-17.md` 与 `docs/log/2026-09-17.md`。
+
+```powershell
+git add apps/api/prisma/schema.prisma apps/api/prisma/seed.ts apps/api/prisma/migrations/20260917120000_accounting_subjects apps/api/src/modules/finance apps/api/src/modules/hr/salary-payment.service.ts apps/api/test/unit apps/web/lib apps/web/app/finance/cash-flow/page.tsx apps/web/components/finance apps/web/test scripts/import-accounting-subject-chart.cjs scripts/generate-accounting-subject-migration.cjs scripts/generate-accounting-subject-memo.cjs scripts/dump-legacy-xls.cjs docs/design/accounting-subject-chart-2026-09-17.md docs/task/0917-accounting-subject.md docs/memo/0917-收支项目并入会计科目对照表.md docs/log/2026-09-17.md docs/product/术语词典.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md "example/财务/科目表(2).xls"
+git commit -m "feat: make the finance chart of accounts the single classification source"
+```
+
+## 财务第二轮：采购列序、工资批量付款与按月导出、外汇一览表
+
+四件事，建议**拆成三个提交**（外汇一览表与它依赖的收支流水新列必须同一个提交，否则 deploy 时点不一致）：
+
+### 1. 采购对账明细表：产品名称提到采购单号之前
+
+用户要求的唯一一处与老表不同的列序（老表是 `日期/采购单号/供应商名称/产品名称`）。
+金额与含税金额仍在最后两列，合计列下标不变。
+
+```powershell
+git add apps/api/src/modules/finance/finance-report.tables.ts apps/api/test/unit/finance-report-workbook.test.cjs docs/task/0917-finance-round2.md
+git commit -m "feat: put product name before purchase order no in purchase reconciliation detail"
+```
+
+### 2. 工资付款：多选批量付款 + 按月导出（含「是否付款」列）
+
+- `POST /hr/payroll-ledgers/pay-batch`：**每人一张付款单**（用户选定），串行执行、逐条失败隔离，
+  发放银行在动手之前校验一次。
+- `GET /hr/payroll-ledgers/payment-sheet.xlsx`：18 列，含「是否付款」（无需付款/已付清/部分付款/未付款）；
+  金额列为 Excel 数值类型；**单币种才给合计**，混币种不给并在表尾说明。
+- 两条静态路由都排在 `payroll-ledgers/:id` 之前（Nest 按声明顺序匹配）。
+
+```powershell
+git add apps/api/src/modules/hr/salary-payment.service.ts apps/api/src/modules/hr/hr.controller.ts apps/api/src/modules/hr/payroll-payment-sheet.ts apps/api/test/unit/salary-payment-batch.test.cjs apps/api/test/unit/payroll-payment-sheet.test.cjs apps/web/components/finance/salary-workspace.tsx apps/web/test/salary-page.test.tsx docs/task/0917-finance-round2.md
+git commit -m "feat: batch salary payment and monthly salary payment export"
+```
+
+### 3. 外汇一览表（含收支流水的款项性质与订单号）
+
+- `cash_flow_entries` 新增 `payment_nature`（定金/货款/尾款/其他）与 `order_no`（可空），
+  迁移 `20260917140000_cash_flow_payment_nature`（只加列 + 建索引，不改写历史数据）。
+- 确认应收的三条入口（逐条 / 勾选批量 / 按对账单一键）都在弹窗里问款项性质，默认货款；
+  收支流水表单新增「款项性质（收入用）」与「订单号（收入用）」两个字段。
+- 新增报表 `forex-receipts`：一个工作簿两张工作表（外汇一览 + 客户汇总），
+  期间按**收款到账日期**，一行 = 一次成品出库。
+- `tableFor()` 返回 `ReportTable[]`、`sendWorkbook()` 接受数组（多工作表成为普通能力）。
+
+**部署顺序是硬约束**：先 `npm run db:generate --workspace=@dilee/api`，再 `prisma migrate deploy`，
+最后切代码 —— 不先跑迁移的话 `cash_flow_entries.payment_nature / order_no` 不存在，确认应收会整批失败。
+
+设计与刻意偏离见 `docs/design/foreign-exchange-register-2026-09-17.md`，
+**请财务过目的字段映射与三件待确认事项**见 `docs/memo/0917-外汇一览表字段映射.md`。
+
+```powershell
+git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260917140000_cash_flow_payment_nature apps/api/src/modules/finance apps/api/src/modules/hr/salary-payment.service.ts apps/api/test/unit apps/web/lib/finance-sections.ts apps/web/lib/payment-natures.ts apps/web/components/finance apps/web/test/finance-report-page.test.tsx apps/web/test/finance-page.test.tsx apps/web/test/cash-flow-page.test.tsx docs/design/foreign-exchange-register-2026-09-17.md docs/memo/0917-外汇一览表字段映射.md docs/task/0917-finance-round2.md docs/log/2026-09-17.md docs/product/术语词典.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md "example/财务/外汇一览表.xlsx"
+git commit -m "feat: add the foreign exchange receipt register with payment nature"
+```
+
+> `example/财务/外汇一览表.xlsx` 是本轮口径的依据（列映射逐列来自它），建议一并纳入版本库。

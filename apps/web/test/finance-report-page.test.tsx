@@ -19,7 +19,8 @@ const EP = {
   profit: "/api/v1/finance/reports/sales-gross-profit",
   cashDetail: "/api/v1/finance/reports/cash-flow-detail",
   cashSummary: "/api/v1/finance/reports/cash-flow-summary",
-  items: "/api/v1/dictionaries/cash_flow_item/items",
+  forex: "/api/v1/finance/reports/forex-receipts",
+  subjects: "/api/v1/finance/accounting-subjects",
   customers: "/api/v1/customers",
   suppliers: "/api/v1/suppliers",
   currencies: "/api/v1/dictionaries/currency/items",
@@ -155,6 +156,37 @@ function cashSummaryTable() {
   };
 }
 
+/**
+ * 四期：外汇一览表（老表 `example/财务/外汇一览表.xlsx`）。
+ *
+ * 导出文件里有两张工作表，页面只预览明细那张 —— 所以响应里带 `extra_sheets`，
+ * 页面必须把它显示出来（不提示的话财务会以为导出的文件只有明细一张表）。
+ */
+function forexTable() {
+  return {
+    sheet_name: "外汇一览",
+    columns: [
+      { header: "客户", num_fmt: null, align: null },
+      { header: "币种", num_fmt: null, align: null },
+      { header: "订单号", num_fmt: null, align: null },
+      { header: "跟单", num_fmt: null, align: null },
+      { header: "货款金额", num_fmt: "0.####", align: null },
+      { header: "定金金额", num_fmt: "0.####", align: null },
+      { header: "汇入总金额", num_fmt: "0.####", align: null },
+      { header: "欠尾款", num_fmt: "0.####", align: null },
+      { header: "是否完结", num_fmt: null, align: null },
+    ],
+    rows: [
+      ["中谷", "美元", "DL260002", null, 3100, 620, 620, 2480, "未结清"],
+      ["家百纳", "美元", "DL260022", null, 45063.55, null, 45063.55, 0, "结清"],
+    ],
+    total_columns: [],
+    totals: null,
+    footnotes: ["本表按币种分行、不跨币种相加（同一客户既有美元又有人民币时会出现多行）。"],
+    extra_sheets: [{ sheet_name: "客户汇总", row_count: 3 }],
+  };
+}
+
 function xlsxResponse(bytes: number[] = [0x50, 0x4b, 0x03, 0x04]) {
   return new Response(new Uint8Array(bytes), {
     status: 200,
@@ -193,7 +225,7 @@ afterEach(() => {
 
 type Handler = (url: string) => Response | undefined;
 
-function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: unknown; profit?: unknown; cashDetail?: unknown; cashSummary?: unknown; extra?: Handler } = {}) {
+function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: unknown; profit?: unknown; cashDetail?: unknown; cashSummary?: unknown; forex?: unknown; extra?: Handler } = {}) {
   return stubApi((url) => {
     const injected = options.extra?.(url);
     if (injected) return injected;
@@ -204,7 +236,12 @@ function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: u
     if (url.includes(EP.profit)) return apiOk(options.profit ?? profitTable());
     if (url.includes(EP.cashDetail)) return apiOk(options.cashDetail ?? cashDetailTable());
     if (url.includes(EP.cashSummary)) return apiOk(options.cashSummary ?? cashSummaryTable());
-    if (url.includes(EP.items)) return apiOk([{ id: "item-1", key: "备用金", label: "备用金" }, { id: "item-2", key: "货款", label: "货款" }]);
+    if (url.includes(EP.forex)) return apiOk(options.forex ?? forexTable());
+    // 会计科目表（分类 = 科目类别，项目 = 科目名称）：报表筛选的「分类 / 会计科目」两个下拉都取自它。
+    if (url.includes(EP.subjects)) return apiOk([
+      { id: "subject-1", category: "损益类", name: "主营业务收入", balanceDirection: "贷", sortOrder: 1, isActive: true },
+      { id: "subject-2", category: "资产类", name: "备用金", balanceDirection: "借", sortOrder: 2, isActive: true },
+    ]);
     if (url.includes(EP.customers)) return apiOk([{ id: "c-1", name: "Matthew Jackson" }]);
     if (url.includes(EP.suppliers)) return apiOk([{ id: "s-1", name: "碧江" }]);
     if (url.includes(EP.currencies)) return apiOk([{ key: "USD", label: "美元" }, { key: "CNY", label: "人民币" }]);
@@ -258,11 +295,11 @@ describe("财务报表 · 加载与预览", () => {
     expect(totals).not.toHaveTextContent("销售单号");
   });
 
-  it("展示六个报表子栏目（老表 6 份全部落地），地址可收藏", async () => {
+  it("展示七个报表子栏目（老表 6 份 + 外汇一览表），地址可收藏", async () => {
     captureDownloads();
     stubReports();
     await open(<FinanceReportWorkspace tab="sales-reconciliation-detail" />, "page-finance-reports");
-    for (const key of ["sales-reconciliation-detail", "sales-reconciliation-summary", "purchase-reconciliation-detail", "sales-gross-profit", "cash-flow-detail", "cash-flow-summary"]) {
+    for (const key of ["sales-reconciliation-detail", "sales-reconciliation-summary", "purchase-reconciliation-detail", "sales-gross-profit", "cash-flow-detail", "cash-flow-summary", "forex-receipts"]) {
       expect(screen.getByTestId(`finance-tab-${key}`)).toHaveAttribute("href", `/finance/reports?tab=${key}`);
     }
   });
@@ -291,6 +328,67 @@ describe("财务报表 · 加载与预览", () => {
     stubReports();
     await open(<FinanceReportWorkspace tab="sales-reconciliation-detail" />, "page-finance-reports");
     expect(screen.getByRole("heading", { name: "销售对账明细表" })).toBeInTheDocument();
+  });
+});
+
+describe("财务报表 · 四期：外汇一览表", () => {
+  it("外汇一览表：用客户筛选打到外汇端点，展示跟单留空的「-」与是否完结", async () => {
+    captureDownloads();
+    const calls = stubReports();
+    await open(<FinanceReportWorkspace tab="forex-receipts" />, "page-finance-reports");
+    await waitFor(() => expect(previews(calls, EP.forex).length).toBe(1));
+
+    // 期间按收款日期、客户是收束维度，所以用客户筛选（不是供应商、也没有收支方向的分类下拉）。
+    expect(screen.getByTestId("finance-report-customer")).toBeInTheDocument();
+    expect(screen.queryByTestId("finance-report-supplier")).toBeNull();
+    expect(screen.queryByTestId("finance-report-category")).toBeNull();
+
+    const table = await screen.findByTestId("data-table");
+    expect(within(table).getByText("DL260002")).toBeInTheDocument();
+    expect(within(table).getByText("未结清")).toBeInTheDocument();
+    expect(within(table).getByText("结清")).toBeInTheDocument();
+    // 「跟单」系统没有字段 → 第一行那一格是空的，页面显示「-」而不是看起来坏了。
+    const firstRow = within(table).getAllByTestId("data-table-row")[0];
+    expect(within(firstRow).getByText("-")).toBeInTheDocument();
+    expect(screen.getByTestId("finance-report-row-count")).toHaveTextContent("共 2 行");
+    // 没有合计列（一行一个币种，跨币种相加没有意义），所以不显示合计条。
+    expect(screen.queryByTestId("finance-report-totals")).toBeNull();
+  });
+
+  it("导出文件里还有一张工作表时页面上要说清楚（否则以为导出只有明细）", async () => {
+    captureDownloads();
+    stubReports();
+    await open(<FinanceReportWorkspace tab="forex-receipts" />, "page-finance-reports");
+    const note = await screen.findByTestId("finance-report-extra-sheets");
+    expect(note).toHaveTextContent("客户汇总");
+    expect(note).toHaveTextContent("3 行");
+  });
+
+  it("导出外汇一览表：URL 带已生效的筛选，文件名是「迪礼ERP-外汇一览表.xlsx」", async () => {
+    captureDownloads();
+    const calls = stubReports();
+    await open(<FinanceReportWorkspace tab="forex-receipts" />, "page-finance-reports");
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(xlsxCalls(calls).length).toBe(1));
+    expect(xlsxCalls(calls)[0].url).toContain(`${EP.forex}.xlsx`);
+    await waitFor(() => expect(anchorClicks.length).toBe(1));
+    expect(anchorClicks[0].download).toBe("迪礼ERP-外汇一览表.xlsx");
+  });
+
+  it("外汇一览表的表尾说明在页面上也看得到（不跨币种相加、跟单/手续费恒空）", async () => {
+    captureDownloads();
+    stubReports();
+    await open(<FinanceReportWorkspace tab="forex-receipts" />, "page-finance-reports");
+    const footnotes = await screen.findByTestId("finance-report-footnotes");
+    expect(footnotes).toHaveTextContent("不跨币种相加");
+  });
+
+  it("没有其它工作表时不显示多 sheet 提示（普通报表不该多出一行）", async () => {
+    captureDownloads();
+    stubReports();
+    await open(<FinanceReportWorkspace tab="sales-reconciliation-detail" />, "page-finance-reports");
+    await screen.findByTestId("data-table");
+    expect(screen.queryByTestId("finance-report-extra-sheets")).toBeNull();
   });
 });
 
@@ -352,17 +450,38 @@ describe("财务报表 · 二期：销售对账汇总表与销售利润报表", 
 });
 
 describe("财务报表 · 三期：收支明细表与收支汇总表", () => {
-  it("收支 tab 换成项目/方向筛选：不带订单号与草稿（收支流水没有这两样）", async () => {
+  it("收支 tab 换成分类/会计科目/方向筛选：不带订单号与草稿（收支流水没有这两样）", async () => {
     captureDownloads();
     const calls = stubReports();
     await open(<FinanceReportWorkspace tab="cash-flow-detail" />, "page-finance-reports");
     await waitFor(() => expect(previews(calls, EP.cashDetail).length).toBe(1));
-    expect(screen.getByTestId("finance-report-item")).toBeInTheDocument();
+    expect(screen.getByTestId("finance-report-subject")).toBeInTheDocument();
+    expect(screen.getByTestId("finance-report-category")).toBeInTheDocument();
     expect(screen.getByTestId("finance-report-direction")).toBeInTheDocument();
     expect(screen.queryByTestId("finance-report-order-no")).toBeNull();
     expect(screen.queryByTestId("finance-report-include-draft")).toBeNull();
     expect(screen.queryByTestId("finance-report-customer")).toBeNull();
     expect(previews(calls, EP.cashDetail)[0].url).not.toContain("include_draft");
+  });
+
+  it("收支明细表：分类/会计科目按 category 与 subject_id 打到服务端（不再有 item_id）", async () => {
+    captureDownloads();
+    const calls = stubReports();
+    await open(<FinanceReportWorkspace tab="cash-flow-detail" />, "page-finance-reports");
+    await waitFor(() => expect(previews(calls, EP.cashDetail).length).toBe(1));
+
+    // 分类来自会计科目表的 category，会计科目的选项文案是「分类 / 科目名称」。
+    fireEvent.click(screen.getByTestId("finance-report-category"));
+    fireEvent.click(await screen.findByRole("option", { name: "损益类" }));
+    fireEvent.click(screen.getByTestId("finance-report-subject"));
+    fireEvent.click(await screen.findByRole("option", { name: "损益类 / 主营业务收入" }));
+    fireEvent.click(searchButton());
+
+    await waitFor(() => expect(previews(calls, EP.cashDetail).length).toBe(2));
+    const query = previews(calls, EP.cashDetail)[1].url;
+    expect(decodeURIComponent(query)).toContain("category=损益类");
+    expect(query).toContain("subject_id=subject-1");
+    expect(query).not.toContain("item_id");
   });
 
   it("收支明细表：收入/支出两列都在，没有的那一边显示 0（不是「-」）", async () => {

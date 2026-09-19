@@ -18,7 +18,7 @@ const cashFlowEntry = (extra = {}) => ({
   id: "cf-1", entryNo: "CF-20260915-0001", entryDate: new Date("2026-09-15T00:00:00.000Z"),
   counterpartyName: "香港迪礼", direction: "income", amount: new Prisma.Decimal("14310.0000"), currency: "USD",
   settlementMethod: "转账--农业银行5706", settlementAccountId: null, status: "posted", remark: null,
-  item: { id: "item-1", key: "货款", label: "货款" }, settlementAccount: { id: "acc-1", key: "农业银行5706", label: "农业银行5706" },
+  subject: { id: "subject-1", category: "损益类", name: "主营业务收入" }, settlementAccount: { id: "acc-1", key: "农业银行5706", label: "农业银行5706" },
   ...extra,
 });
 
@@ -61,8 +61,9 @@ test("由收支流水生成凭证：凭证号按期间顺延，两条分录金�
   assert.equal(lines.length, 2);
   assert.deepEqual(lines.map((line) => [line.lineNo, line.direction, line.subjectLabel]), [
     [1, "debit", "银行存款"],
-    [2, "credit", "货款"],
+    [2, "credit", "主营业务收入"],
   ]);
+  assert.equal(lines[1].subjectKey, "损益类/主营业务收入", "业务科目的科目编码 = 分类/项目");
   assert.equal(lines[0].cashFlowEntryId, "cf-1", "分录回指来源流水");
 });
 
@@ -118,10 +119,10 @@ const draftVoucher = (extra = {}) => ({
   id: "voucher-1", voucherNo: "记-202609-0001", period: "2026-09", status: "draft", currency: "USD",
   // 真实凭证总有来源：`cash_flow_entry`（从流水生成）或 `voucher`（红冲）。重新生成只对前者开放。
   sourceType: "cash_flow_entry", sourceId: "cf-1",
-  debitTotal: new Prisma.Decimal("100"), creditTotal: new Prisma.Decimal("100"), summary: "香港迪礼 · 货款", remark: null,
+  debitTotal: new Prisma.Decimal("100"), creditTotal: new Prisma.Decimal("100"), summary: "香港迪礼 · 主营业务收入", remark: null,
   lines: [
     { lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "s", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1" },
-    { lineNo: 2, direction: "credit", subjectKey: "货款", subjectLabel: "货款", summary: "s", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1" },
+    { lineNo: 2, direction: "credit", subjectKey: "损益类/主营业务收入", subjectLabel: "主营业务收入", summary: "s", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1" },
   ],
   ...extra,
 });
@@ -138,7 +139,7 @@ test("过账：草稿 → 已过账并留审计；已过账的再点一次被拦
 test("过账前复核借贷平衡：不平的凭证拒绝过账", async () => {
   const unbalanced = draftVoucher({ lines: [
     { lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "s", amount: new Prisma.Decimal("100"), currency: "USD" },
-    { lineNo: 2, direction: "credit", subjectKey: "货款", subjectLabel: "货款", summary: "s", amount: new Prisma.Decimal("99.9999"), currency: "USD" },
+    { lineNo: 2, direction: "credit", subjectKey: "损益类/主营业务收入", subjectLabel: "主营业务收入", summary: "s", amount: new Prisma.Decimal("99.9999"), currency: "USD" },
   ] });
   const { service } = voucherHarness({ voucher: unbalanced });
   await assert.rejects(() => service.post("voucher-1", { id: "user-1" }), (error) => error.getResponse().code === "VOUCHER_NOT_BALANCED");
@@ -149,7 +150,7 @@ test("编辑草稿分录：整组替换并重算借贷合计（允许人工改�
   await service.update("voucher-1", { lines: [
     { direction: "debit", subject_label: "库存现金", amount: "60" },
     { direction: "credit", subject_label: "主营业务收入", amount: "40" },
-    { direction: "credit", subject_label: "货款", amount: "20" },
+    { direction: "credit", subject_label: "其他业务收入", amount: "20" },
   ] }, { id: "user-1" });
   assert.equal(createdLines.length, 3, "原先的 2 行被整组替换成 3 行");
   assert.deepEqual(createdLines.map((line) => line.lineNo), [1, 2, 3], "line_no 按提交顺序重排");
@@ -160,7 +161,7 @@ test("编辑草稿分录：整组替换并重算借贷合计（允许人工改�
 test("编辑分录时借贷不平时 422，且不改动原凭证", async () => {
   const { service, createdLines, updated } = voucherHarness({ voucher: draftVoucher() });
   await assert.rejects(
-    () => service.update("voucher-1", { lines: [{ direction: "debit", subject_label: "银行存款", amount: "10" }, { direction: "credit", subject_label: "货款", amount: "9" }] }, { id: "user-1" }),
+    () => service.update("voucher-1", { lines: [{ direction: "debit", subject_label: "银行存款", amount: "10" }, { direction: "credit", subject_label: "主营业务收入", amount: "9" }] }, { id: "user-1" }),
     (error) => error.getResponse().code === "VOUCHER_NOT_BALANCED",
   );
   assert.equal(createdLines.length, 0);
@@ -256,7 +257,7 @@ test("重新生成草稿凭证：按来源流水现在的科目与银行账户�
   // 旧凭证是「还没带账户」的那一版（本次改动之前生成的），分录也被人手工改过科目。
   const stale = draftVoucher({ lines: [
     { lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "手工改的摘要", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1", bankId: null },
-    { lineNo: 2, direction: "credit", subjectKey: "其他", subjectLabel: "其他", summary: "手工改的摘要", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1", bankId: null },
+    { lineNo: 2, direction: "credit", subjectKey: "损益类/管理费用", subjectLabel: "管理费用", summary: "手工改的摘要", amount: new Prisma.Decimal("100"), currency: "USD", cashFlowEntryId: "cf-1", bankId: null },
   ] });
   const harness = regenerateHarness({ voucher: stale });
   const result = await harness.service.regenerate("voucher-1", { id: "user-1" });
@@ -265,11 +266,11 @@ test("重新生成草稿凭证：按来源流水现在的科目与银行账户�
   assert.equal(harness.createdLines.length, 2);
   assert.equal(harness.createdLines[0].subjectLabel, "银行存款—农业银行5706", "银行存款要带上具体账户");
   assert.equal(harness.createdLines[0].bankId, "bank-1");
-  assert.equal(harness.createdLines[1].subjectLabel, "货款", "手工改过的业务科目被流水上的收支项目覆盖");
+  assert.equal(harness.createdLines[1].subjectLabel, "主营业务收入", "手工改过的业务科目被流水上的会计科目覆盖");
   assert.equal(harness.createdLines[1].bankId, null);
   // 凭证头也按流水重算（摘要/币种/金额/期间），凭证号不变
   assert.equal(harness.updates.length, 1);
-  assert.equal(harness.updates[0].summary, "香港迪礼 · 货款");
+  assert.equal(harness.updates[0].summary, "香港迪礼 · 主营业务收入");
   assert.equal(harness.updates[0].debitTotal.toString(), "14310");
   assert.equal(harness.updates[0].period, "2026-09");
   assert.equal(result.regenerated, true);

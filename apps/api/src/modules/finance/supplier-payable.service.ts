@@ -11,7 +11,7 @@ import { sourceType, coveringPayableReconciliation } from "./supplier-payable.do
 import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
-import { paymentItemKeys, PAYABLE_CONFIRM_ITEM_KEYS } from "./cash-flow-catalog";
+import { paymentSubjectNames, PAYABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
 import { OTHER_PAYABLE_MAX_ROWS, otherPayableTemplateWorkbook, parseOtherPayableRows, type OtherPayableImportError } from "./other-payable-import";
 
 type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
@@ -173,13 +173,13 @@ export class SupplierPayableService {
    * 逐条确认写一条只属于这条应付的流水。一条应付一旦被确认就不再是草稿，另一个入口的
    * `status = draft` 条件不会再捞到它，因此不会重复记账。
    *
-   * 收支项目候选链按**来源类型**选定（原料入库 → 原材料 成本；外加工签收 → 成品外加工费），
+   * 会计科目候选链按**来源类型**选定（原料入库 → 原材料 成本；外加工签收 → 成品外加工费），
    * 与供应商付款过账同一套归类口径；人工选了就以人工为准。
    */
-  async confirm(id: string, user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+  async confirm(id: string, user: CurrentUser, options: { bank_id?: string | null; subject_id?: string | null } = {}) {
     // 先进校验、后进事务：等事务提交完才发现银行非法，应付已经确认、流水却没写。
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "支付银行不存在或已停用");
-    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    if (options.subject_id) await this.cashFlow.requireSubject(options.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } }, supplier: { select: { name: true } } } });
@@ -201,8 +201,8 @@ export class SupplierPayableService {
       currency: row.currency,
       counterpartyName: result.supplierName,
       direction: "expense",
-      itemKeys: row.sourceType ? paymentItemKeys(row.sourceType) : PAYABLE_CONFIRM_ITEM_KEYS,
-      itemId: options.cash_flow_item_id,
+      subjectNames: row.sourceType ? paymentSubjectNames(row.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
+      subjectId: options.subject_id,
       bankId: options.bank_id ?? null,
       remark: `确认应付 ${row.payableNo}`,
     }, user);
@@ -220,11 +220,11 @@ export class SupplierPayableService {
    * 幂等：只确认 `status = draft` 的条目。被另一个入口先确认掉的、来源已作废的计入 `skipped_count`，
    * 既不报错也不重复记账（重复记账＝同一个账户被扣两次）。
    */
-  async batchConfirm(ids: string[], user: CurrentUser, options: { bank_id?: string | null; cash_flow_item_id?: string | null } = {}) {
+  async batchConfirm(ids: string[], user: CurrentUser, options: { bank_id?: string | null; subject_id?: string | null } = {}) {
     if (!ids.length) throw this.invalid("PAYABLE_IDS_REQUIRED", "请先勾选要确认的应付条目");
     // 银行与项目整批只有一个，先校验一次即可（逐条确认里那句「先校验后进事务」在这里同样成立）。
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "支付银行不存在或已停用");
-    if (options.cash_flow_item_id) await this.cashFlow.requireItem(options.cash_flow_item_id, "收支项目不存在或已停用，请在「收支管理 → 收支项目」里确认");
+    if (options.subject_id) await this.cashFlow.requireSubject(options.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const result = await this.prisma.$transaction(async (tx) => {
       // 逐条加锁：批量确认不需要「一次锁住全部」的强一致，但每条都要保证「读到草稿 → 改成已确认」
       // 之间不被另一个入口插进来（单条确认、对账确认用的是同一把行锁，因此互相串行）。
@@ -257,8 +257,8 @@ export class SupplierPayableService {
         currency: draft.currency,
         counterpartyName: draft.supplier?.name ?? draft.supplierId,
         direction: "expense",
-        itemKeys: draft.sourceType ? paymentItemKeys(draft.sourceType) : PAYABLE_CONFIRM_ITEM_KEYS,
-        itemId: options.cash_flow_item_id,
+        subjectNames: draft.sourceType ? paymentSubjectNames(draft.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
+        subjectId: options.subject_id,
         bankId: options.bank_id ?? null,
         remark: `确认应付 ${draft.payableNo}（勾选批量确认）`,
       }, user);

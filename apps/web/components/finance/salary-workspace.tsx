@@ -33,6 +33,7 @@ import { DataTable } from "../data/data-table";
 import { ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
+import { downloadFile } from "../../lib/download";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
 import { PayrollSheet, type PayrollSheetColumn } from "./payroll-sheet";
@@ -101,6 +102,19 @@ type ImportResult = {
   skipped: Array<{ employee_no: string; employee_name: string; ledger_no: string; status: string; period_start: string; period_end: string }>;
 };
 const statusLabels: Record<string, string> = { draft: "草稿", confirmed: "已确认", expired: "已过期", partially_paid: "部分支付", paid: "已支付", closed: "已关闭" };
+/**
+ * 批量付款的后端返回（`POST /hr/payroll-ledgers/pay-batch`）：一人一张付款单，
+ * 因此结果按人拆开给成功/失败两份，失败的人留在勾选里可以直接重试。
+ */
+type BatchPayResult = {
+  requested_count: number;
+  succeeded_count: number;
+  failed_count: number;
+  total_amount: string;
+  bank: { id: string; bank_name: string; account_number: string };
+  succeeded: Array<{ ledger_id: string; employee_no: string; employee_name: string; amount: string }>;
+  failed: Array<{ ledger_id: string; employee_no: string; employee_name: string; amount: string; code: string; message: string }>;
+};
 const payableStatusLabels: Record<string, string> = { draft: "应付草稿", confirmed: "应付已确认", partially_paid: "应付部分支付", paid: "应付已支付", reversed: "应付已冲销", voided: "应付已作废" };
 const editableStatuses = ["draft", "expired"];
 const LOCKED_HINT = "已确认/已付款台账不能直接改：请先「回到草稿」（需填原因），或用工资调整单";
@@ -149,6 +163,11 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   // 工资付款表格：每行一个金额输入（默认等于该行未付），付款日期与付款方式在表格上方统一给。
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [paying, setPaying] = useState("");
+  // 批量付款：勾选的台账 id 集合。存 id 而不是行对象 —— 付款后 `load()` 会换掉整批行对象，
+  // 存 id 才能让「失败的人留在勾选里重试」在刷新之后依然成立。
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [paymentMethod, setPaymentMethod] = useState("银行转账");
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -339,6 +358,33 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   }
 
   /**
+   * 「能不能付款」的唯一判据：台账已确认/部分支付，且未付 > 0。
+   *
+   * 行内付款按钮、批量勾选框、批量按钮都走这一条 —— 多写一套规则就会出现「勾得上但付不了」
+   * 或「能付却勾不上」的错位（用户会先怪金额，实际上两边判据不一样）。
+   */
+  const canPay = (ledger: Ledger) => ["confirmed", "partially_paid"].includes(ledger.status) && Number(ledger.outstandingAmount) > 0;
+  /**
+   * 能不能被勾选（= 能真的付出钱）：还要有可用银行账户。
+   * 银行池为空时发工资这件事本身做不了（后端 `SALARY_PAYMENT_BANK_REQUIRED`），
+   * 所以不给出勾选框，而不是让人勾完再被禁用按钮挡回来。
+   */
+  const selectable = (ledger: Ledger) => canPay(ledger) && bankOptions.length > 0;
+
+  /**
+   * 付款金额的本地校验（行内付款与批量付款**共用**一处口径）。
+   *
+   * 规则与后端一致：非负、最多 4 位小数（`MONEY`），且不超过该台账未付余额。
+   * 返回校验后的金额字符串；不合法就地提示并返回 null（调用方据此中止，请求一个都不发）。
+   */
+  function checkedAmount(ledger: Ledger, raw: string): string | null {
+    const value = raw.trim() === "" ? "0" : raw.trim();
+    if (!MONEY.test(value) || Number(value) <= 0) { notifyError("付款金额必须是不小于 0 的数字，最多 4 位小数"); return null; }
+    if (Number(value) > Number(ledger.outstandingAmount)) { notifyError(`付款金额不能超过未付 ${dec(ledger.outstandingAmount)}`); return null; }
+    return value;
+  }
+
+  /**
    * 行内付款弹窗：点「付款」先把**发放银行**问清楚，再发请求。
    *
    * 用户 2026-09-16：「工资支付那边也是全部要加上银行账户，因为发工资都是要用银行账户发放的工资」。
@@ -349,10 +395,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
    * 按与后端一致的口径校验一次（未付上限），把最常见的输错挡在打开弹窗之前。
    */
   function openPay(ledger: Ledger) {
-    const raw = (amounts[ledger.id] ?? dec(ledger.outstandingAmount)).trim();
-    const value = raw === "" ? "0" : raw;
-    if (!MONEY.test(value) || Number(value) <= 0) { notifyError("付款金额必须是不小于 0 的数字，最多 4 位小数"); return; }
-    if (Number(value) > Number(ledger.outstandingAmount)) { notifyError(`付款金额不能超过未付 ${dec(ledger.outstandingAmount)}`); return; }
+    const value = checkedAmount(ledger, amounts[ledger.id] ?? dec(ledger.outstandingAmount));
+    if (!value) return;
     // 银行池为空时按钮本身已是禁用态（见 payActions）；这里再兜一次，避免从别的入口打开一个选不出银行的弹窗。
     if (!bankOptions.length) { notifyError("请先在【财务 → 银行账户】建一个账户：发工资必须指定发放银行"); return; }
     setDialog({
@@ -456,6 +500,22 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
    * 再加上付款需要的已付/未付与行内操作（用户需求：工资付款操作都在表格中完成）。
    */
   const paymentColumns: PayrollSheetColumn<Ledger>[] = [
+    // 勾选列放在**第一列**，用列的 `render` 实现 —— 不改 `PayrollSheet` 的通用契约（它同时服务可编辑的
+    // 工资台账表格，给表格加「选中」概念会把编辑/键盘导航那一套也拖进来）。
+    // 只有真能付款的行才有勾选框：不可付款的行连勾都不给（勾了也只会被批量按钮挡回来）。
+    {
+      key: "select", header: "选择",
+      render: (row) => selectable(row)
+        ? <input
+          type="checkbox"
+          className="salary-pay-select"
+          data-testid={`salary-pay-select-${row.id}`}
+          aria-label={`选择 ${row.employee.name}`}
+          checked={selected.has(row.id)}
+          onChange={(event) => toggleOne(row.id, event.target.checked)}
+        />
+        : null,
+    },
     { key: "employeeNo", header: "工号", text: (row) => row.employee.employeeNo },
     { key: "name", header: "姓名", text: (row) => row.employee.name },
     { key: "department", header: "部门", text: (row) => row.employee.department?.name ?? "-" },
@@ -503,12 +563,11 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
 
   const payActions = (ledger: Ledger) => {
     const posted = postedAllocations(ledger);
-    const canPay = ["confirmed", "partially_paid"].includes(ledger.status) && Number(ledger.outstandingAmount) > 0;
     // 银行账户池为空时**入口本身就不可用**：发工资没有「不指定银行」这个选项，与其让用户点开弹窗
     // 发现选不出银行、再拿一个空 bank_id 去撞后端的 422，不如把按钮禁用并把原因写清楚。
     const noBank = bankOptions.length === 0;
     return <div className="action-row" data-testid={`salary-pay-actions-${ledger.id}`} onClick={(event) => event.stopPropagation()}>
-      {canPay ? <>
+      {canPay(ledger) ? <>
         <input
           className="payroll-sheet-input salary-pay-input"
           data-testid={`salary-pay-amount-${ledger.id}`}
@@ -529,6 +588,128 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     if (!text) return ledgers;
     return ledgers.filter((item) => `${item.employee.name} ${item.employee.employeeNo}`.toLowerCase().includes(text));
   }, [employeeQuery, ledgers]);
+
+  /* ------------------------------------------------------------------ 批量付款（勾选 + 一次提交） */
+
+  /** 当前可见行里可勾选的那些（付款页的批量入口只能碰这些行）。 */
+  const payableLedgers = visibleLedgers.filter(selectable);
+  /**
+   * 真正被选中的行：**每次都跟当前可付款行求交集**。
+   *
+   * 不这么做的话，付款成功后那些行变成「已付清」却还留着勾 —— 下次点批量付款会拿一张已结清的台账
+   * 去撞后端 422。求交集后成功的人自然退出勾选，而失败的人仍是「可付款」状态，会留在勾选里等重试。
+   */
+  const selectedLedgers = payableLedgers.filter((ledger) => selected.has(ledger.id));
+  /** 选中行的应发金额（取行内输入值，没改过就是该行未付）。 */
+  const selectedAmounts = selectedLedgers.map((ledger) => ({ ledger, amount: amounts[ledger.id] ?? dec(ledger.outstandingAmount) }));
+  /**
+   * 勾选合计（**显示用**）：金额按 1e4 缩放成整数再相加，避免 0.1+0.2 这类浮点尾差，
+   * 与 `PayrollSheet` 的合计行同一做法；权威金额始终由后端算。
+   */
+  const selectedTotal = dec((selectedAmounts.reduce((sum, item) => sum + Math.round(Number(item.amount) * 10000), 0) / 10000).toFixed(4));
+  const allSelected = payableLedgers.length > 0 && selectedLedgers.length === payableLedgers.length;
+
+  function toggleOne(ledgerId: string, checked: boolean) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(ledgerId); else next.delete(ledgerId);
+      return next;
+    });
+  }
+
+  function toggleAll(checked: boolean) {
+    setSelected(checked ? new Set(payableLedgers.map((ledger) => ledger.id)) : new Set());
+  }
+
+  /**
+   * 批量付款弹窗：把每位选中员工的金额列清楚（`info` 字段，和行内付款一样先给一张「将要发生什么」的清单），
+   * 再问一次发放银行。付款日期与付款方式沿用页面顶部筛选条 —— 那一处是整批的唯一来源，
+   * 不在这里各人各给一份（否则同一次批量里会出现不同日期/方式的付款单）。
+   *
+   * 金额先用与行内付款**同一个** `checkedAmount` 校验：任何一个人不合法就整体不发请求，
+   * 让人先把金额改对，而不是发起一个注定失败一半的批次。
+   */
+  function openBatch() {
+    if (!selectedLedgers.length) { notifyError("请先勾选要付款的员工"); return; }
+    const items: Array<{ ledger: Ledger; amount: string }> = [];
+    for (const ledger of selectedLedgers) {
+      const value = checkedAmount(ledger, amounts[ledger.id] ?? dec(ledger.outstandingAmount));
+      if (!value) return;
+      items.push({ ledger, amount: value });
+    }
+    if (!bankOptions.length) { notifyError("请先在【财务 → 银行账户】建一个账户：发工资必须指定发放银行"); return; }
+    setDialog({
+      title: `批量付款：${items.length} 人`,
+      fields: [
+        { name: "batch_summary", label: `本次共 ${items.length} 人，合计 ${selectedTotal}（付款日期 ${paymentDate} · ${paymentMethod}）`, type: "info" },
+        ...items.map((item, index) => ({ name: `batch_item_${index}`, label: `${item.ledger.employee.employeeNo} / ${item.ledger.employee.name}：${item.amount}`, type: "info" as const })),
+        bankField("发放银行"),
+      ],
+      submit: (values) => payBatchRows(items, values.bank_id),
+    });
+  }
+
+  /**
+   * 提交批量付款：`POST /hr/payroll-ledgers/pay-batch`，一人一张付款单（后端逐条串行调用行内付款）。
+   *
+   * 全部成功 → 清空勾选并给一条汇总提示；有失败 → 提示里点名是谁、为什么，并**只保留失败的人**在勾选里，
+   * 操作员改完原因（比如去工资台账确认那一行）可以直接重试，不用重新勾一遍。
+   * 无论成败都 `await load()`：成功的行已变成「已付」，金额与状态都要立刻刷新。
+   */
+  async function payBatchRows(items: Array<{ ledger: Ledger; amount: string }>, bankId: string) {
+    if (batchBusy) return;
+    if (!bankId) { const message = "请选择发放银行：发工资必须从银行账户支出"; notifyError(message); throw new Error(message); }
+    setBatchBusy(true);
+    try {
+      const result = await apiPost<BatchPayResult>("/hr/payroll-ledgers/pay-batch", {
+        items: items.map((item) => ({ ledger_id: item.ledger.id, amount: item.amount })),
+        payment_date: paymentDate,
+        payment_method: paymentMethod,
+        bank_id: bankId,
+      });
+      const data = result.data;
+      if (!data.failed_count) {
+        notifySuccess(`${data.succeeded_count} 人已付款，合计 ${dec(data.total_amount)}`);
+        setSelected(new Set());
+      } else {
+        const reasons = data.failed.map((item) => `${item.employee_name}（${item.message}）`).join("；");
+        notifyError(`批量付款：成功 ${data.succeeded_count} 人、失败 ${data.failed_count} 人 —— ${reasons}`);
+        setSelected(new Set(data.failed.map((item) => item.ledger_id)));
+      }
+      await load();
+    } catch (cause) {
+      // 抛回弹窗：ActionDialog 会留在原地把原因显示出来（吞掉异常会静默关窗，用户只看到「什么都没发生」）。
+      const message = messageOf(cause, "批量付款失败");
+      notifyError(message);
+      throw new Error(message);
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  /**
+   * 工资付款按月导出 XLSX（含「是否付款」列）。
+   *
+   * 过滤条件用**当前已生效**的月份/部门/岗位，导出的就是表里这一批行；文件名带月份，
+   * 财务拿到手能直接对上「这是哪个月的工资付款表」。与财务报表页的导出同一套写法
+   * （`downloadFile` 负责鉴权、超时与后端 UTF-8 文件名）。
+   */
+  async function exportPaymentSheet() {
+    setExporting(true);
+    try {
+      const params = new URLSearchParams();
+      if (month) params.set("month", month);
+      if (departmentId) params.set("department_id", departmentId);
+      if (positionId) params.set("position_id", positionId);
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      await downloadFile(`/api/v1/hr/payroll-ledgers/payment-sheet.xlsx${suffix}`, `迪礼ERP-工资付款-${month}.xlsx`);
+      notifySuccess(`已导出 ${month} 工资付款表`);
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : "导出失败");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const detailFields: DetailField[] = detail ? [
     { label: "台账编号", value: detail.ledgerNo }, { label: "状态", value: statusLabels[detail.status] ?? detail.status },
@@ -577,6 +758,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         <Button asChild variant="ghost" size="sm"><Link href="/finance/salary">← 工资管理</Link></Button>
         <Button variant="secondary" size="sm" data-testid="salary-import-button" onClick={() => void runImport(true)}>重新导入本月员工</Button>
         <Button variant="secondary" size="sm" data-testid="salary-refresh-button" onClick={() => void load()}>刷新</Button>
+        {/* 工资付款按月导出（含「是否付款」列）：过滤条件直接带当前月份/部门/岗位，导出中禁用防连点 */}
+        {mode === "payments" ? <Button variant="secondary" size="sm" data-testid="salary-payment-export" disabled={exporting || loading} onClick={() => void exportPaymentSheet()}>{exporting ? "导出中…" : "导出 XLSX"}</Button> : null}
         {mode === "ledger" ? <Button size="sm" data-testid="salary-create-ledger" onClick={openCreate}>新建工资台账</Button> : null}
       </div>
     </header>
@@ -628,7 +811,20 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         <div className="panel-body"><PayrollSheet columns={sheetColumns} rows={visibleLedgers} onCommit={commitCell} rowTestId={(row) => `payroll-row-${row.id}`} /></div>
       </section> : null}
       {mode === "payments" ? <section className="panel floating-window-table" data-testid="salary-payment-panel">
-        <div className="panel-heading"><h2>工资付款</h2><span className="panel-note">共 {visibleLedgers.length} 条</span></div>
+        {/* 批量付款工具条：全选 / 清除 / 批量付款（带人数与合计）。人数与合计只算**真正被选中**的行，
+            与表格里的勾选状态同源，避免「按钮上说 3 人、表里勾着 5 行」这种对不上的情况。 */}
+        <div className="panel-heading">
+          <h2>工资付款</h2>
+          <label className="panel-note salary-pay-select-all">
+            <input type="checkbox" data-testid="salary-pay-select-all" checked={allSelected} disabled={!payableLedgers.length} onChange={(event) => toggleAll(event.target.checked)} /> 全选
+          </label>
+          <Button size="sm" variant="secondary" data-testid="salary-pay-batch-clear" disabled={!selectedLedgers.length} onClick={() => setSelected(new Set())}>清除选择</Button>
+          <Button size="sm" data-testid="salary-pay-batch-button" disabled={!selectedLedgers.length || batchBusy || !bankOptions.length} onClick={openBatch}>
+            批量付款（{selectedLedgers.length} 人 / 合计 {selectedTotal}）
+          </Button>
+          <span className="panel-note" data-testid="salary-pay-batch-summary">已选 {selectedLedgers.length} 人 / 合计 {selectedTotal}</span>
+          <span className="panel-note">共 {visibleLedgers.length} 条</span>
+        </div>
         <div className="panel-body">
           <PayrollSheet
             columns={paymentColumns}

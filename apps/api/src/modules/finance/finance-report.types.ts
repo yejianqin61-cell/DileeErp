@@ -54,8 +54,10 @@ export type FinanceReportFilter = {
   currency?: string;
   /** 是否包含草稿。默认 false —— 草稿还没确认，算进对账金额会让欠款虚高。 */
   includeDraft?: boolean;
-  /** 收支报表专用：按收支项目过滤 */
-  itemId?: string;
+  /** 收支报表专用：按会计科目（项目 = 科目名称）过滤 */
+  subjectId?: string;
+  /** 收支报表专用：按分类（科目类别）过滤 —— 用户要求「很多报表都要根据这个来统计」 */
+  category?: string;
   /** 收支报表专用：income / expense */
   direction?: string;
 };

@@ -2,7 +2,8 @@
 //
 // 为什么需要它：本机没有可用 PostgreSQL，迁移无法在真实库上跑。因此逐条断言的都是
 // **可静态验证的性质**，其中两条是这类改动最容易踩的坑：
-//   1. 可空关联（bank_id / cash_flow_item_id）必须 ON DELETE SET NULL —— 写成 RESTRICT/referential
+//   1. 可空关联（bank_id / cash_flow_item_id，后者 2026-09-17 起改名为 subject_id）必须 ON DELETE SET NULL
+//      —— 写成 RESTRICT/referential
 //      会让 `migrate status` 认为库与 schema 有漂移（Prisma 对可选关联生成的就是 SET NULL）；
 //   2. `banks.opening_balance` 必须 NOT NULL DEFAULT 0 —— 允许 NULL 的话，
 //      「期初为零」与「没录期初」在库里无法区分，余额算出来是 NULL 还是 0 取决于实现。
@@ -28,7 +29,10 @@ test("期初余额是非空默认 0 的列（不是 NULL：0 与「没录」必�
   assert.match(sql, /ALTER TABLE "banks" ADD COLUMN "opening_balance" DECIMAL\(18,4\) NOT NULL DEFAULT 0/);
 });
 
-test("流水与单据的 bank_id / cash_flow_item_id 是可空列（历史数据与「还没确定」的草稿）", () => {
+test("流水与单据的 bank_id / cash_flow_item_id 是可空列（历史迁移原文；该列后来被改名为 subject_id）", () => {
+  // 注意：本用例断言的是**冻结的历史迁移** 20260915180000 的原文，那一版确实叫 cash_flow_item_id。
+  // 2026-09-17 的 20260917120000_accounting_subjects 已把它 RENAME 成 subject_id 并改指会计科目表；
+  // 迁移文件是历史事实，不随 schema 改动重写，所以这里保留旧列名。
   assert.match(sql, /ALTER TABLE "cash_flow_entries" ADD COLUMN "bank_id" UUID;/);
   for (const table of ["customer_payments", "supplier_payments", "receivable_reconciliations", "supplier_payable_reconciliations"]) {
     assert.match(sql, new RegExp(`ALTER TABLE "${table}" ADD COLUMN "cash_flow_item_id" UUID;`), `${table} 要加 cash_flow_item_id`);
@@ -36,6 +40,8 @@ test("流水与单据的 bank_id / cash_flow_item_id 是可空列（历史数据
 });
 
 test("可空关联一律 ON DELETE SET NULL（写成 RESTRICT 会造成库与 schema 漂移）", () => {
+  // 同上的历史口径：这里的 cash_flow_item_id → dictionary_items 是 20260915180000 当时的关联；
+  // 会计科目迁移把它改名成 subject_id → accounting_subjects 并保持 SET NULL。
   const optional = [
     ["cash_flow_entries", "bank_id", "banks"],
     ["customer_payments", "cash_flow_item_id", "dictionary_items"],
@@ -75,8 +81,11 @@ test("迁移只做加法、不删任何既有事实", () => {
 });
 
 test("schema 与迁移一一对应（改了 schema 就必须有对应的列/表）", () => {
-  for (const column of ["openingBalance", "cashFlowItemId"]) assert.ok(schema.includes(column), `schema 必须有 ${column}`);
+  // 活库的列名是 subjectId（@map("subject_id")）—— 收支项目并入会计科目后旧名 cashFlowItemId 已不存在。
+  for (const column of ["openingBalance", "subjectId"]) assert.ok(schema.includes(column), `schema 必须有 ${column}`);
+  assert.equal(schema.includes("cashFlowItemId"), false, "cashFlowItemId 已被 subjectId 取代，schema 里不该再留着旧名");
   assert.match(schema, /model BankTransfer \{/);
   assert.match(schema, /openingBalance Decimal\s+@default\(0\) @map\("opening_balance"\) @db\.Decimal\(18, 4\)/);
   assert.match(schema, /bankId\s+String\?\s+@map\("bank_id"\) @db\.Uuid/, "收支流水要能挂到具体银行账户上");
+  assert.match(schema, /subjectId\s+String\?\s+@map\("subject_id"\) @db\.Uuid/, "单据上的收支项目列已改名为 subject_id（可空）");
 });

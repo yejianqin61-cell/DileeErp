@@ -12,7 +12,7 @@ const dec = (value) => new Prisma.Decimal(value);
 
 /** 取数服务桩：记录收到的筛选条件，返回固定的报表源行。 */
 function stubReports(overrides = {}) {
-  const filters = { sales: [], purchase: [], summary: [], profit: [], cashDetail: [], cashSummary: [] };
+  const filters = { sales: [], purchase: [], summary: [], profit: [], cashDetail: [], cashSummary: [], forex: [] };
   const service = {
     currencyLabels: async () => new Map([["USD", "美元"], ["CNY", "人民币"]]),
     salesReconciliationDetail: async (filter) => {
@@ -92,7 +92,8 @@ function stubReports(overrides = {}) {
           currency: "CNY",
           direction: "expense",
           amount: dec("2900"),
-          itemLabel: "原材料 成本",
+          category: "损益类",
+          subjectName: "主营业务成本",
           bankLabel: "农业银行5706",
           settlementMethod: "转账",
           settlementAccountLabel: "农业银行5706",
@@ -103,14 +104,43 @@ function stubReports(overrides = {}) {
       filters.cashSummary.push(filter);
       return overrides.cashSummary ?? {
         items: [
-          { id: "item-1", label: "备用金" },
-          { id: "item-2", label: "货款" },
+          { id: "subject-1", category: "资产类", name: "备用金" },
+          { id: "subject-2", category: "损益类", name: "主营业务收入" },
         ],
         amounts: [
-          { itemId: "item-2", currency: "CNY", income: dec("0"), expense: dec("2900") },
-          { itemId: "item-2", currency: "USD", income: dec("5428"), expense: dec("0") },
+          { subjectId: "subject-2", currency: "CNY", income: dec("0"), expense: dec("2900") },
+          { subjectId: "subject-2", currency: "USD", income: dec("5428"), expense: dec("0") },
         ],
         currencies: ["CNY", "USD"],
+      };
+    },
+    forexReceipts: async (filter) => {
+      filters.forex.push(filter);
+      return overrides.forex ?? {
+        rows: [
+          {
+            customerName: "中谷",
+            currency: "USD",
+            orderNo: "DL260002",
+            orderQuantity: dec("300"),
+            shipmentDate: new Date("2026-05-11T00:00:00.000Z"),
+            outboundNo: "OUT-1",
+            quantity: dec("100"),
+            unit: "打",
+            unitPrice: dec("31"),
+            amount: dec("3100"),
+            depositDate: new Date("2026-05-16T00:00:00.000Z"),
+            depositAmount: dec("620"),
+            balanceDate: new Date("2026-05-20T00:00:00.000Z"),
+            balanceAmount: dec("2480"),
+            otherAmount: dec("0"),
+            receivedAmount: dec("3100"),
+            receivedToDate: dec("3100"),
+            outstanding: dec("0"),
+            remark: null,
+          },
+        ],
+        footnotes: overrides.forexFootnotes ?? ["另有 1 笔到账（合计 500.00 USD）来自「按对账单一键确认应收」…"],
       };
     },
   };
@@ -191,8 +221,57 @@ test("finance-report.api：采购对账明细表的导出文件名与工作表�
   assert.deepEqual(workbook.SheetNames, ["采购对账明细"]);
 });
 
-test("finance-report.api：查询参数映射到取数条件（下划线转驼峰、include_draft 只认 true）", async () => {
+test("finance-report.api：外汇一览表预览只回明细那张，但把「客户汇总」作为 extra_sheets 报出来", async () => {
+  const { service } = stubReports();
+  const response = await new FinanceReportController(service).forexReceipts({});
+  assert.equal(response.data.sheet_name, "外汇一览");
+  assert.equal(response.data.columns.length, 21, "明细 21 列（老表 19 列 + 币种 + 其他到账）");
+  assert.equal(response.meta.row_count, 1);
+  // 页面只有一个表格位，所以只预览主表；但必须让人知道导出文件里还有一张表。
+  // 汇总行数 = 1 个客户 + 该币种段末的 1 行合计，所以是 2 —— 不是明细的 1。
+  assert.deepEqual(response.data.extra_sheets, [{ sheet_name: "客户汇总", row_count: 2 }]);
+  assert.equal(response.data.total_columns.length, 0, "一整行一个币种，不给合计列");
+  assert.equal(response.data.totals, null);
+  assert.ok(response.data.footnotes.some((note) => note.includes("按对账单一键确认应收")), "取数层给的漏项说明要透出来");
+});
+
+test("finance-report.api：外汇一览表导出是**一个工作簿两张表**，文件名行数取主表", async () => {
+  const { service } = stubReports();
+  const response = stubResponse();
+  await new FinanceReportController(service).exportForexReceipts({}, response);
+  const workbook = XLSX.read(response.body, { type: "buffer" });
+  assert.deepEqual(workbook.SheetNames, ["外汇一览", "客户汇总"], "明细与汇总必须在同一个文件里 —— 分开传正是对账对不上的经典原因");
+  const fileName = decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(response.headers["Content-Disposition"])[1]);
+  // 行数取**明细**的行数（1），不是汇总的（客户汇总这里只有 1 个客户 + 1 行合计）。
+  assert.match(fileName, /^迪礼ERP-外汇一览-.*-1行\.xlsx$/);
+});
+
+test("finance-report.api：外汇一览表把筛选条件原样传给取数层（期间/客户/订单号/币种）", async () => {
   const { service, filters } = stubReports();
+  await new FinanceReportController(service).forexReceipts({ from: "2026-05-01", to: "2026-05-31", customer_id: "c-1", order_no: "DL260002", currency: "USD" });
+  assert.deepEqual(filters.forex[0], {
+    from: "2026-05-01",
+    to: "2026-05-31",
+    customerId: "c-1",
+    supplierId: undefined,
+    orderNo: "DL260002",
+    currency: "USD",
+    includeDraft: false,
+    subjectId: undefined,
+    category: undefined,
+    direction: undefined,
+  });
+});
+
+test("finance-report.api：单张表的报表仍然只写一个工作表（多表能力不是给每张表都加一张）", async () => {
+  const { service } = stubReports();
+  const response = stubResponse();
+  await new FinanceReportController(service).exportCashFlowSummary({}, response);
+  const workbook = XLSX.read(response.body, { type: "buffer" });
+  assert.deepEqual(workbook.SheetNames, ["收支汇总"]);
+});
+
+test("finance-report.api：查询参数映射到取数条件（下划线转驼峰、include_draft 只认 true）", async () => {  const { service, filters } = stubReports();
   const controller = new FinanceReportController(service);
   await controller.salesReconciliationDetail({
     from: "2026-09-01",
@@ -211,7 +290,8 @@ test("finance-report.api：查询参数映射到取数条件（下划线转驼�
     orderNo: "SO-1",
     currency: "USD",
     includeDraft: true,
-    itemId: undefined,
+    subjectId: undefined,
+    category: undefined,
     direction: undefined,
   });
 });
@@ -280,13 +360,14 @@ test("finance-report.api：利润表的筛选条件与其它报表一致地映�
 
 /* ------------------------------------------------------------ 三期：收支两张表 */
 
-test("finance-report.api：收支明细表预览与导出（8 列：老表 6 列 + 收支项目 + 银行账户）", async () => {
+test("finance-report.api：收支明细表预览与导出（9 列：老表 6 列 + 分类 + 项目 + 银行账户）", async () => {
   const { service } = stubReports();
   const controller = new FinanceReportController(service);
   const preview = await controller.cashFlowDetail({});
   assert.equal(preview.data.sheet_name, "收支明细");
-  assert.equal(preview.data.columns.length, 8);
-  assert.deepEqual(preview.data.rows[0], ["2026-09-14", "兴田", "人民币", "原材料 成本", 0, 2900, "农业银行5706", "转账--农业银行5706"]);
+  assert.equal(preview.data.columns.length, 9);
+  assert.deepEqual(preview.data.columns.map((column) => column.header), ["日期", "对方名称", "币种", "分类", "项目", "收入", "支出", "银行账户", "结算方式"]);
+  assert.deepEqual(preview.data.rows[0], ["2026-09-14", "兴田", "人民币", "损益类", "主营业务成本", 0, 2900, "农业银行5706", "转账--农业银行5706"]);
   assert.equal(preview.data.totals, null, "收支明细表不给合计（一行一个币种）");
 
   const response = stubResponse();
@@ -295,19 +376,30 @@ test("finance-report.api：收支明细表预览与导出（8 列：老表 6 列
   assert.match(fileName, /^迪礼ERP-收支明细-\d{14}-1行\.xlsx$/);
   const workbook = XLSX.read(response.body, { type: "buffer" });
   assert.deepEqual(workbook.SheetNames, ["收支明细"]);
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const header = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null })[0];
+  assert.deepEqual(header, ["日期", "对方名称", "币种", "分类", "项目", "收入", "支出", "银行账户", "结算方式"], "导出的表头与预览同源");
 });
 
-test("finance-report.api：收支汇总表预览与导出（按币种分行，段末合计）", async () => {
+test("finance-report.api：收支汇总表预览与导出（分类 × 项目 × 币种，分类段末小计 + 币种段末合计）", async () => {
   const { service } = stubReports();
   const controller = new FinanceReportController(service);
   const preview = await controller.cashFlowSummary({});
   assert.equal(preview.data.sheet_name, "收支汇总");
-  assert.deepEqual(preview.data.columns.map((column) => column.header), ["项目", "币种", "收入", "支出"]);
-  // 2 个项目 × 2 个币种 + 每段 1 行合计 = 6 行
-  assert.equal(preview.data.rows.length, 6);
-  assert.deepEqual(preview.data.rows[2], ["合计", "人民币", 0, 2900]);
-  assert.deepEqual(preview.data.rows[5], ["合计", "美元", 5428, 0]);
-  assert.equal(preview.data.footnotes.length, 2, "「不跨币种相加」的说明要一起回给页面");
+  assert.deepEqual(preview.data.columns.map((column) => column.header), ["分类", "项目", "币种", "收入", "支出"]);
+  // 2 个科目（各属一个分类）× 2 个币种 + 每币种 2 行分类小计 + 每币种 1 行合计 = 10 行
+  assert.equal(preview.data.rows.length, 10);
+  assert.deepEqual(preview.data.rows[0], ["资产类", "备用金", "人民币", 0, 0]);
+  assert.deepEqual(preview.data.rows[1], ["资产类", "小计", "人民币", 0, 0], "分类段末必须给出该分类的小计");
+  assert.deepEqual(preview.data.rows[2], ["损益类", "主营业务收入", "人民币", 0, 2900]);
+  assert.deepEqual(preview.data.rows[3], ["损益类", "小计", "人民币", 0, 2900]);
+  assert.deepEqual(preview.data.rows[4], ["合计", "合计", "人民币", 0, 2900], "币种段末的合计只统计该币种");
+  assert.deepEqual(preview.data.rows[5], ["资产类", "备用金", "美元", 0, 0]);
+  assert.deepEqual(preview.data.rows[6], ["资产类", "小计", "美元", 0, 0]);
+  assert.deepEqual(preview.data.rows[7], ["损益类", "主营业务收入", "美元", 5428, 0]);
+  assert.deepEqual(preview.data.rows[8], ["损益类", "小计", "美元", 5428, 0]);
+  assert.deepEqual(preview.data.rows[9], ["合计", "合计", "美元", 5428, 0]);
+  assert.equal(preview.data.footnotes.length, 3, "「不跨币种相加」与「分类小计」的说明要一起回给页面");
 
   const response = stubResponse();
   await controller.exportCashFlowSummary({}, response);
@@ -315,11 +407,12 @@ test("finance-report.api：收支汇总表预览与导出（按币种分行，�
   assert.match(fileName, /^迪礼ERP-收支汇总-/);
 });
 
-test("finance-report.api：收支报表的 item_id / direction 参数照实映射", async () => {
+test("finance-report.api：收支报表的 subject_id / category / direction 参数照实映射", async () => {
   const { service, filters } = stubReports();
   const controller = new FinanceReportController(service);
-  await controller.cashFlowDetail({ item_id: "item-2", direction: "expense", currency: "CNY" });
-  assert.equal(filters.cashDetail[0].itemId, "item-2");
+  await controller.cashFlowDetail({ subject_id: "subject-2", category: "损益类", direction: "expense", currency: "CNY" });
+  assert.equal(filters.cashDetail[0].subjectId, "subject-2");
+  assert.equal(filters.cashDetail[0].category, "损益类");
   assert.equal(filters.cashDetail[0].direction, "expense");
   assert.equal(filters.cashDetail[0].currency, "CNY");
 });

@@ -31,7 +31,8 @@ import { money } from "./record-detail-dialog";
 type CashFlowEntry = {
   id: string; entryNo: string; entryDate: string; counterpartyName: string; direction: string;
   amount: string; currency: string; status: string; settlementMethod: string | null; remark: string | null;
-  item?: { id: string; key: string; label: string } | null;
+  /** 会计科目（分类 = 科目类别，项目 = 科目名称）：凭证的业务分录科目取自它。 */
+  subject?: { id: string; category: string; name: string } | null;
   settlementAccount?: { id: string; key: string; label: string } | null;
 };
 type VoucherLine = {
@@ -119,7 +120,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       if (generated === "pending" && has) return false;
       if (generated === "done" && !has) return false;
       if (!text) return true;
-      return [entry.entryNo, entry.counterpartyName, entry.item?.label, entry.settlementMethod, entry.settlementAccount?.label]
+      return [entry.entryNo, entry.counterpartyName, entry.subject?.name, entry.settlementMethod, entry.settlementAccount?.label]
         .some((value) => (value ?? "").toLowerCase().includes(text));
     });
   }, [entries, filter, generated, voucherByEntry]);
@@ -229,13 +230,13 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   /**
    * 按来源流水**重新生成**草稿凭证（摘要 / 科目 / 银行账户 / 金额 / 期间全部重算）。
    *
-   * 为什么需要：生成是幂等的，之后流水还可能被改（补银行账户、改收支项目、改金额）；
+   * 为什么需要：生成是幂等的，之后流水还可能被改（补银行账户、改会计科目、改金额）；
    * 不重新生成，凭证会一直停在旧口径上。**会覆盖手工改过的分录**，所以弹窗里先把这件事说清楚。
    */
   function regenerateVoucher(voucher: Voucher) {
     setDialog({
       title: `重新生成凭证：${voucher.voucherNo}`,
-      fields: [{ name: "confirm", label: `按收支流水 ${voucher.source_entry?.entryNo ?? ""} 现在的收支项目、银行账户与金额重算整张凭证（手工改过的分录会被覆盖）`, type: "info" as const }],
+      fields: [{ name: "confirm", label: `按收支流水 ${voucher.source_entry?.entryNo ?? ""} 现在的会计科目、银行账户与金额重算整张凭证（手工改过的分录会被覆盖）`, type: "info" as const }],
       submit: () => submitDialog(`/finance/vouchers/${voucher.id}/regenerate`, undefined, `凭证 ${voucher.voucherNo} 已按收支流水重新生成`),
     });
   }
@@ -259,7 +260,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   const entryColumns: ColumnDef<CashFlowEntry>[] = [
     { id: "date", header: "日期", cell: ({ row }) => day(row.original.entryDate) },
     { accessorKey: "entryNo", header: "流水号" },
-    { id: "item", header: "收支项目", cell: ({ row }) => row.original.item?.label ?? "-" },
+    { id: "subject", header: "会计科目", cell: ({ row }) => (row.original.subject ? `${row.original.subject.category} / ${row.original.subject.name}` : "-") },
     { accessorKey: "counterpartyName", header: "对方名称" },
     { id: "direction", header: "收支", cell: ({ row }) => directionText(row.original.direction) },
     { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
@@ -321,7 +322,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
         </div>
         <div className="panel-body">
           <div className="filter-bar">
-            <label>搜索<Input data-testid="voucher-entry-filter" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="流水号 / 对方名称 / 收支项目" /></label>
+            <label>搜索<Input data-testid="voucher-entry-filter" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="流水号 / 对方名称 / 会计科目" /></label>
             <label>凭证状态
               <Select value={generated} onValueChange={(value) => setGenerated(value as typeof generated)}>
                 <SelectTrigger data-testid="voucher-generated-filter"><SelectValue /></SelectTrigger>

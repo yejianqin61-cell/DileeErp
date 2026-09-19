@@ -6,9 +6,9 @@ const { settlementRemark } = require("../../dist/modules/warehouse/finished-good
 
 /**
  * CashFlowService 替身：确认应收（逐条 / 按订单批量）都要记账 ——
- * `requireItem` 校验收支项目，`recordConfirmation` 写收入流水（= 钱进银行账户）。
+ * `requireSubject` 校验会计科目，`recordConfirmation` 写收入流水（= 钱进银行账户）。
  */
-const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, recordConfirmation: async () => null, ...extra });
+const cashFlowStub = (extra = {}) => ({ requireSubject: async () => null, recordConfirmation: async () => null, ...extra });
 
 test("分批出库的应收备注写明折算口径（逐单尾差 ≤ 0.0001），整单出库不加这句", () => {
   const sales = { quantity: new Prisma.Decimal(3), unitPrice: new Prisma.Decimal(10), settlementUnitPrice: new Prisma.Decimal("33.3333"), receivableAmount: new Prisma.Decimal(100), settlementMethod: "tt", localCurrencyAmount: new Prisma.Decimal(720) };
@@ -79,7 +79,7 @@ test("逐条确认应收：写一条收入流水并落到指定的入账银行",
   assert.equal(input.currency, "USD");
   assert.equal(input.bankId, "bank-1");
   assert.equal(input.counterpartyName, "香港迪礼", "对方名称取客户名，不能退化成 UUID");
-  assert.deepEqual(input.itemKeys, ["货款", "国家退税"]);
+  assert.deepEqual(input.subjectNames, ["主营业务收入", "营业外收入"]);
   assert.equal(result.cash_flow_entry_id, "cf-1");
   assert.equal(result.bank_missing, false);
 });
@@ -116,7 +116,7 @@ test("按订单批量确认应收：每条应收各记一条流水（批量没�
 
 // ---------------------------------------------------------------------------
 // 2026-09-16（用户要求「应收侧也改成勾选 + 批量确认」）：
-//   界面勾选多条草稿应收 → 一次确认。整批共用「入账银行 + 收支项目」，但**每条应收各写一条流水**
+//   界面勾选多条草稿应收 → 一次确认。整批共用「入账银行 + 会计科目」，但**每条应收各写一条流水**
 //   （每条都有自己的来源编号，合并成一条就追不回是哪张出库单的钱）；已确认/已取消的条目跳过而非整批失败。
 //   与应付侧 SupplierPayableService.batchConfirm 同一口径。
 // ---------------------------------------------------------------------------
@@ -152,13 +152,13 @@ function batchHarness(rows, options = {}) {
 
 test("勾选批量确认应收：每条各写一条收入流水，并按币种给合计", async () => {
   const harness = batchHarness([batchDraft("r1"), batchDraft("r2", { amount: new Prisma.Decimal("250") }), batchDraft("r3", { status: "confirmed" }), batchDraft("r4", { status: "cancelled" })]);
-  const result = await harness.service.batchConfirm(["r1", "r2", "r3", "r4"], { id: "user-1" }, { bank_id: "bank-1", cash_flow_item_id: "item-1" });
+  const result = await harness.service.batchConfirm(["r1", "r2", "r3", "r4"], { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-1" });
   assert.equal(result.confirmed_count, 2);
   assert.equal(result.skipped_count, 2, "已确认/已取消的条目要跳过，不能重复记账（同一笔款进两次账户）");
   assert.equal(harness.cashFlowCalls.length, 2, "逐条写流水，才追得回是哪张出库单的钱");
   assert.deepEqual(harness.cashFlowCalls.map((call) => call.sourceId), ["r1", "r2"]);
-  assert.equal(harness.cashFlowCalls.every((call) => call.direction === "income" && call.bankId === "bank-1" && call.itemId === "item-1"), true);
-  assert.deepEqual(harness.cashFlowCalls[0].itemKeys, ["货款", "国家退税"]);
+  assert.equal(harness.cashFlowCalls.every((call) => call.direction === "income" && call.bankId === "bank-1" && call.subjectId === "subject-1"), true);
+  assert.deepEqual(harness.cashFlowCalls[0].subjectNames, ["主营业务收入", "营业外收入"]);
   assert.equal(harness.cashFlowCalls[0].counterpartyName, "香港迪礼", "对方名称取客户名，不能退化成 UUID");
   assert.deepEqual(result.amounts, [{ currency: "CNY", amount: "350.0000" }]);
   assert.equal(result.bank_missing, false);

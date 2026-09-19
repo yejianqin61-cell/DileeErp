@@ -229,7 +229,7 @@ test("文档形态（表头不在第一行）：到第一个空行为止，表�
 // ---------------------------------------------------------------------------
 
 const auditStub = () => ({ record: async () => {}, create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }) });
-const cashFlowStub = () => ({ requireItem: async () => null, recordConfirmation: async () => null });
+const cashFlowStub = () => ({ requireSubject: async () => null, recordConfirmation: async () => null });
 const USER = { id: "user-1" };
 /** 自动编码的前缀带当天日期（平台统一规则）：断言里必须用当天，否则只有写测试那天才会绿。 */
 const TODAY = new Date().toISOString().slice(0, 10).replaceAll("-", "");

@@ -9,16 +9,18 @@
 //      这一条是实际踩到的坑：Prisma 对可选关联生成 SET NULL，写成 RESTRICT 会让
 //      `migrate status` 认为库与 schema 有漂移（用 `prisma migrate diff` 逐列比对过）；
 //   5. seed.ts 里也种同样两本字典（新库初始化与老库升级必须得到同一份清单）。
+//
+// 2026-09-17 变更：**本迁移已冻结为历史**（迁移文件不可改）。它当年种的 37 个「收支项目」
+// 在 `20260917120000_accounting_subjects` 里被整体软删并并入会计科目。所以这里的
+// 「收支项目清单」不再来自 `cash-flow-catalog.ts`（那里已经删掉了），而是取**并入映射的旧 key**
+// —— 它逐字等于当年那 37 个字典项的 key，是这份历史事实在本仓库里的唯一留存处。
+// 新库不再种收支项目字典，改种会计科目，见 `accounting-subject-migration.test.cjs`。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { readdirSync, readFileSync, statSync } = require("node:fs");
 const { join } = require("node:path");
-const {
-  CASH_FLOW_ITEM_DICTIONARY_KEY,
-  SETTLEMENT_ACCOUNT_DICTIONARY_KEY,
-  DEFAULT_CASH_FLOW_ITEMS,
-  DEFAULT_SETTLEMENT_ACCOUNTS,
-} = require("../../dist/modules/finance/cash-flow-catalog.js");
+const { SETTLEMENT_ACCOUNT_DICTIONARY_KEY, DEFAULT_SETTLEMENT_ACCOUNTS } = require("../../dist/modules/finance/cash-flow-catalog.js");
+const { LEGACY_CASH_FLOW_ITEM_DICTIONARY_KEY, LEGACY_CASH_FLOW_ITEM_SUBJECTS } = require("../../dist/modules/finance/accounting-subject-catalog.js");
 
 const migrationsRoot = join(__dirname, "..", "..", "prisma", "migrations");
 const folder = "20260914190000_cash_flow_entries";
@@ -42,11 +44,14 @@ test("cash flow migration precedes every migration added after it", () => {
 
 test("cash flow migration seeds both dictionaries with every default entry", () => {
   assert.match(sql, /INSERT INTO "dictionary_types"/, "必须建立字典类型");
-  assert.ok(sql.includes(`'${CASH_FLOW_ITEM_DICTIONARY_KEY}'`), "收支项目的字典 key 必须写进迁移");
+  assert.ok(sql.includes(`'${LEGACY_CASH_FLOW_ITEM_DICTIONARY_KEY}'`), "收支项目的字典 key 必须写进迁移");
   assert.ok(sql.includes(`'${SETTLEMENT_ACCOUNT_DICTIONARY_KEY}'`), "结算账户的字典 key 必须写进迁移");
-  assert.equal(DEFAULT_CASH_FLOW_ITEMS.length, 37, "老表「项目」列有 37 行");
+  assert.equal(LEGACY_CASH_FLOW_ITEM_SUBJECTS.length, 37, "老表「项目」列有 37 行");
   assert.equal(DEFAULT_SETTLEMENT_ACCOUNTS.length, 2, "老表「结算方式」里出现过 2 个银行账户");
-  for (const item of [...DEFAULT_CASH_FLOW_ITEMS, ...DEFAULT_SETTLEMENT_ACCOUNTS]) {
+  for (const legacy of LEGACY_CASH_FLOW_ITEM_SUBJECTS) {
+    assert.ok(sql.includes(`('${legacy.legacyKey}'`), `字典项「${legacy.legacyKey}」必须写进迁移，否则老库升级后这一项缺失`);
+  }
+  for (const item of DEFAULT_SETTLEMENT_ACCOUNTS) {
     assert.ok(sql.includes(`('${item.key}'`), `字典项「${item.label}」必须写进迁移，否则老库升级后这一项缺失`);
   }
 });
@@ -85,13 +90,19 @@ test("cash flow migration keeps the item FK restrictive and the optional account
   );
 });
 
-test("seed.ts seeds the same two dictionaries (fresh database parity)", () => {
-  // 空库（无用户）时迁移不种字典，必须由 seed 补齐，否则新库的收支项目下拉是空的。
+test("seed.ts seeds the settlement account dictionary from the shared catalogue", () => {
+  // 空库（无用户）时迁移不种字典，必须由 seed 补齐。
   // 断言的是**常量名**而不是字面量 key：seed 复用 cash-flow-catalog.ts 的导出，
   // 不另抄一份字符串（抄一份就会出现「迁移与 seed 清单不一致」）。
-  assert.ok(seed.includes("CASH_FLOW_ITEM_DICTIONARY_KEY"), "seed 必须种收支项目字典");
   assert.ok(seed.includes("SETTLEMENT_ACCOUNT_DICTIONARY_KEY"), "seed 必须种结算账户字典");
-  assert.ok(seed.includes("DEFAULT_CASH_FLOW_ITEMS"), "seed 必须复用同一份清单，而不是另抄一遍");
   assert.ok(seed.includes("DEFAULT_SETTLEMENT_ACCOUNTS"), "seed 必须复用同一份清单");
   assert.ok(seed.includes("cash-flow-catalog"), "seed 从 cash-flow-catalog 导入，与迁移共用一份清单");
+});
+
+test("seed.ts no longer seeds the retired cash flow item dictionary", () => {
+  // 2026-09-17：收支项目并入会计科目，新库只种会计科目。若这里还种着旧字典，
+  // 新库会同时存在「收支项目」与「会计科目」两套口径，而迁移在老库上刚刚把它软删掉 ——
+  // 新老库结构就不一致了。
+  assert.equal(seed.includes("CASH_FLOW_ITEM_DICTIONARY_KEY"), false, "seed 不能再种收支项目字典");
+  assert.equal(seed.includes("DEFAULT_CASH_FLOW_ITEMS"), false, "收支项目清单已从 cash-flow-catalog.ts 移除");
 });

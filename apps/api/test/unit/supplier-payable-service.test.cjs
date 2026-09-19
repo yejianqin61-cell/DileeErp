@@ -5,9 +5,9 @@ const { SupplierPayableService } = require("../../dist/modules/finance/supplier-
 
 /**
  * CashFlowService 替身：确认应付（逐条 / 按对账单批量）都要记账 ——
- * `requireItem` 校验收支项目，`recordConfirmation` 写支出流水（= 钱从银行账户转出）。
+ * `requireSubject` 校验会计科目，`recordConfirmation` 写支出流水（= 钱从银行账户转出）。
  */
-const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, recordConfirmation: async () => null, ...extra });
+const cashFlowStub = (extra = {}) => ({ requireSubject: async () => null, recordConfirmation: async () => null, ...extra });
 
 test("payable list exposes purchase batch traceability, supplier name and payable balance", async () => {
   const prisma = {
@@ -138,15 +138,15 @@ test("逐条确认应付：写一条支出流水并从指定的支付银行转�
   assert.equal(input.amount.toString(), "500");
   assert.equal(input.bankId, "bank-1");
   assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
-  assert.deepEqual(input.itemKeys, ["原材料 成本", "货款"], "项目候选链按来源类型选定");
+  assert.deepEqual(input.subjectNames, ["主营业务成本", "原材料"], "会计科目候选链按来源类型选定");
   assert.equal(result.cash_flow_entry_id, "cf-1");
   assert.equal(result.bank_missing, false);
 });
 
-test("逐条确认应付：外加工来源归到成品外加工费；没选银行时回报 bank_missing", async () => {
+test("逐条确认应付：外加工来源归到「加工费」；没选银行时回报 bank_missing", async () => {
   const outsource = payableConfirmHarness(draftPayable({ sourceType: "outsource_receipt", outsourcePayableSource: { status: "received" }, payableSource: null }));
   const result = await outsource.service.confirm("payable-1", { id: "user-1" });
-  assert.deepEqual(outsource.cashFlowCalls[0].itemKeys, ["成品外加工费", "加工费"]);
+  assert.deepEqual(outsource.cashFlowCalls[0].subjectNames, ["加工费"]);
   assert.equal(outsource.cashFlowCalls[0].bankId, null);
   assert.equal(result.bank_missing, true);
 });
@@ -162,7 +162,7 @@ test("逐条确认应付：银行非法时先拒绝，不确认任何应付", as
 
 // ---------------------------------------------------------------------------
 // 2026-09-16（用户要求「不要又是登记付款又是确认应付，直接就是支持勾选，批量确认」）：
-//   界面勾选多条草稿应付 → 一次确认。整批共用「支付银行 + 收支项目」，但**每条应付各写一条流水**
+//   界面勾选多条草稿应付 → 一次确认。整批共用「支付银行 + 会计科目」，但**每条应付各写一条流水**
 //   （每条都有自己的单号，合并成一条就追不回是哪批料的钱）；已确认/来源作废的条目跳过而非整批失败。
 // ---------------------------------------------------------------------------
 
@@ -198,13 +198,13 @@ function batchHarness(rows, options = {}) {
 
 test("勾选批量确认：每条应付各写一条支出流水，并按币种给合计", async () => {
   const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { amount: new Prisma.Decimal("250") }), batchDraft("p3", { status: "confirmed" })]);
-  const result = await harness.service.batchConfirm(["p1", "p2", "p3"], { id: "user-1" }, { bank_id: "bank-1", cash_flow_item_id: "item-1" });
+  const result = await harness.service.batchConfirm(["p1", "p2", "p3"], { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-1" });
   assert.equal(result.confirmed_count, 2);
   assert.equal(result.skipped_count, 1, "已经被确认过的条目要跳过，不能重复记账（同一笔钱扣两次）");
   assert.equal(harness.cashFlowCalls.length, 2, "逐条写流水，才追得回是哪批料的钱");
   assert.deepEqual(harness.cashFlowCalls.map((call) => call.sourceId), ["p1", "p2"]);
   assert.deepEqual(harness.cashFlowCalls.map((call) => call.amount.toString()), ["100", "250"]);
-  assert.equal(harness.cashFlowCalls.every((call) => call.direction === "expense" && call.bankId === "bank-1" && call.itemId === "item-1"), true);
+  assert.equal(harness.cashFlowCalls.every((call) => call.direction === "expense" && call.bankId === "bank-1" && call.subjectId === "subject-1"), true);
   assert.deepEqual(result.amounts, [{ currency: "CNY", amount: "350.0000" }]);
   assert.equal(result.bank_missing, false);
   assert.deepEqual(result.cash_flow_entry_ids, ["cf-1", "cf-2"]);
@@ -255,10 +255,10 @@ test("勾选批量确认：合计按币种分组，不跨币种相加", async ()
   assert.equal(result.bank_missing, true, "没指定银行时界面必须给出警告，而不是一句成功");
 });
 
-test("勾选批量确认：收支项目候选链按每条自己的来源类型选定", async () => {
+test("勾选批量确认：会计科目候选链按每条自己的来源类型选定", async () => {
   const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { sourceType: "outsource_receipt", payableSource: null, outsourcePayableSource: { status: "received" } })]);
   await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
-  assert.deepEqual(harness.cashFlowCalls.map((call) => call.itemKeys), [["原材料 成本", "货款"], ["成品外加工费", "加工费"]]);
+  assert.deepEqual(harness.cashFlowCalls.map((call) => call.subjectNames), [["主营业务成本", "原材料"], ["加工费"]]);
 });
 
 test("勾选批量确认：状态被别的入口改动时整批拒绝，不出现「界面说确认了、库里没确认」", async () => {

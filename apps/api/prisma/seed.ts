@@ -2,7 +2,8 @@ import * as argon2 from "argon2";
 import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { CURRENCY_DICTIONARY_KEY, DEFAULT_CURRENCIES } from "../src/platform/currency/currency-catalog";
-import { CASH_FLOW_ITEM_DICTIONARY_KEY, DEFAULT_CASH_FLOW_ITEMS, DEFAULT_SETTLEMENT_ACCOUNTS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "../src/modules/finance/cash-flow-catalog";
+import { DEFAULT_SETTLEMENT_ACCOUNTS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "../src/modules/finance/cash-flow-catalog";
+import { ACCOUNTING_SUBJECTS } from "../src/modules/finance/accounting-subject-catalog";
 
 const prisma = new PrismaClient();
 
@@ -43,9 +44,8 @@ async function main() {
       { key: "submission_item", name: "送检项目", items: [{ key: "incoming_material", label: "来料检验" }, { key: "finished_goods", label: "成品检验" }] },
       // 币种是可配置字典，不是前后端写死的枚举（PRD/SRS）。
       { key: CURRENCY_DICTIONARY_KEY, name: "币种", items: DEFAULT_CURRENCIES.map((currency) => ({ key: currency.key, label: currency.label, sortOrder: currency.sortOrder })) },
-      // 收支项目 / 结算账户：老表（example/财务/收支汇总表.xls 与 收支明细表.xls）里的类目，
+      // 结算账户：老表（example/财务/收支明细表.xls）「结算方式」列里的账户文本，
       // 与迁移 20260914190000_cash_flow_entries 用同一份清单（cash-flow-catalog.ts）。
-      { key: CASH_FLOW_ITEM_DICTIONARY_KEY, name: "收支项目", items: DEFAULT_CASH_FLOW_ITEMS.map((item) => ({ key: item.key, label: item.label, sortOrder: item.sortOrder })) },
       { key: SETTLEMENT_ACCOUNT_DICTIONARY_KEY, name: "结算账户", items: DEFAULT_SETTLEMENT_ACCOUNTS.map((item) => ({ key: item.key, label: item.label, sortOrder: item.sortOrder })) },
     ];
     for (const dictionary of standardDictionaries) {
@@ -53,6 +53,16 @@ async function main() {
       for (const item of dictionary.items) {
         await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: type.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: type.id, key: item.key, label: item.label, ...("sortOrder" in item ? { sortOrder: item.sortOrder as number } : {}), createdBy: id, updatedBy: id } });
       }
+    }
+    // 会计科目：用户 2026-09-17 交付的科目表（分类 = 科目类别，项目 = 科目名称）。
+    // 与迁移 20260917120000_accounting_subjects 用同一份清单（accounting-subject-catalog.ts）。
+    // 注意这里**不再种「收支项目」字典** —— 它已并入会计科目，迁移会把老库上那张表软删掉。
+    for (const subject of ACCOUNTING_SUBJECTS) {
+      await tx.accountingSubject.upsert({
+        where: { category_name: { category: subject.category, name: subject.name } },
+        update: { balanceDirection: subject.balanceDirection, sortOrder: subject.sortOrder, isActive: true, updatedBy: id },
+        create: { id: randomUUID(), category: subject.category, name: subject.name, balanceDirection: subject.balanceDirection, sortOrder: subject.sortOrder, createdBy: id, updatedBy: id },
+      });
     }
   });
 }

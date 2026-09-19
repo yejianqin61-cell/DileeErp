@@ -3,8 +3,8 @@ const test = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { SupplierPayableReconciliationService } = require("../../dist/modules/finance/supplier-payable-reconciliation.service.js");
 
-/** CashFlowService 替身：`requireItem` 校验收支项目，`recordConfirmation` 把确认金额写成收支流水。 */
-const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, recordConfirmation: async () => null, ...extra });
+/** CashFlowService 替身：`requireSubject` 校验会计科目，`recordConfirmation` 把确认金额写成收支流水。 */
+const cashFlowStub = (extra = {}) => ({ requireSubject: async () => null, recordConfirmation: async () => null, ...extra });
 
 test("supplier payable reconciliation resolution locks and rechecks status", async () => {
   let lockCount = 0;
@@ -55,7 +55,7 @@ function confirmHarness(reconciliation, drafts) {
 
 const draftEntry = (id, amount, sourceStatus, sourceType = "raw_material_inbound") => ({ id, payableNo: `AP-${id}`, orderNo: "SO-1", amount: new Prisma.Decimal(amount), currency: "CNY", sourceType, payableSource: { status: sourceStatus ?? "pending_finance" }, outsourcePayableSource: null });
 
-const scopeRow = (status, extra = {}) => ({ id: "recon-1", status, reconciliationNo: "APREC-1", supplierId: "supplier-1", supplier: { id: "supplier-1", name: "晋江大田" }, orderNo: null, purchaseOrderId: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30"), bankId: "bank-1", cashFlowItemId: null, ...extra });
+const scopeRow = (status, extra = {}) => ({ id: "recon-1", status, reconciliationNo: "APREC-1", supplierId: "supplier-1", supplier: { id: "supplier-1", name: "晋江大田" }, orderNo: null, purchaseOrderId: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30"), bankId: "bank-1", subjectId: null, ...extra });
 
 test("应付对账还有未处理差异时不允许批量确认应付", async () => {
   const { service, updates } = confirmHarness(scopeRow("difference"), [draftEntry("e1", "10")]);
@@ -107,20 +107,21 @@ test("确认应付把金额写成支出流水，并从对账单的支付银行�
   assert.equal(input.bankId, "bank-1", "金额必须从对账单指定的银行账户转出，否则银行余额不会变");
   assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
   assert.equal(input.sourceType, "supplier_payable_reconciliation");
-  assert.deepEqual(input.itemKeys, ["原材料 成本", "货款"], "原料入库来源 → 原材料成本（与付款过账同一套归类口径）");
+  assert.deepEqual(input.subjectNames, ["主营业务成本", "原材料"], "原料入库来源 → 主营业务成本（与付款过账同一套归类口径）");
   assert.equal(result.bank_missing, false);
   assert.equal(result.cash_flow_entry_id, "cf-1");
 });
 
-test("确认应付：外加工来源归到成品外加工费，且确认时补的银行/项目回写对账单", async () => {
+test("确认应付：外加工来源归到「加工费」，且确认时补的银行/科目回写对账单", async () => {
   const { service, cashFlowCalls, reconciliationUpdates } = confirmHarness(
     scopeRow("matched", { bankId: null }),
     [draftEntry("e1", "10", undefined, "outsource_receipt")],
   );
-  const result = await service.confirmPayables("recon-1", { id: "user-1" }, { bank_id: "bank-1", cash_flow_item_id: "item-9" });
-  assert.deepEqual(cashFlowCalls[0].itemKeys, ["成品外加工费", "加工费"], "来源类型决定项目候选链");
-  assert.equal(cashFlowCalls[0].itemId, "item-9", "人工选的项目优先于候选链");
+  const result = await service.confirmPayables("recon-1", { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-9" });
+  assert.deepEqual(cashFlowCalls[0].subjectNames, ["加工费"], "来源类型决定科目候选链");
+  assert.equal(cashFlowCalls[0].subjectId, "subject-9", "人工选的科目优先于候选链");
   assert.equal(reconciliationUpdates[0].bankId, "bank-1");
+  assert.equal(reconciliationUpdates[0].subjectId, "subject-9");
   assert.equal(result.bank_missing, false);
 });
 

@@ -14,7 +14,9 @@
 //   POST   /hr/payroll-ledgers/:id/confirm|reopen|payable|close、DELETE /hr/payroll-ledgers/:id
 //   POST   /hr/payroll-payables/:id/confirm
 //   POST   /hr/payroll-ledgers/:id/pay                    行内付款：一次完成生成应付 + 建付款 + 核销过账
+//   POST   /hr/payroll-ledgers/pay-batch                  批量付款：勾选多人，一人一张付款单（逐条调用行内付款）
 //   POST   /hr/payroll-ledgers/:id/unpay                  行内冲销：把该台账下已过账的付款整体回退
+//   GET    /hr/payroll-ledgers/payment-sheet.xlsx         按月导出工资付款表（含「是否付款」列）
 //   GET    /finance/banks                                 发放银行下拉的账户池（财务 → 银行账户；停用的不可选）
 //
 // 2026-09-16 用户：「工资支付那边也是全部要加上银行账户，因为发工资都是要用银行账户发放的工资」。
@@ -24,7 +26,7 @@
 // 2026-09-15 三轮变化：① 台账从只读表变成可编辑表格（逐格 PATCH）；② 工资管理页只留两个入口，
 // 台账与付款各自成为二级页，付款表直接搬当月台账、只保留「总工资」，操作都在行内完成；
 // ③ 版面从「满屏」改成「悬浮居中窗口」（用户：算了，不追求全屏了，做成悬浮居中窗口，版面大一点）。
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SalaryWorkspace from "../components/finance/salary-workspace";
@@ -38,6 +40,8 @@ const EP = {
   positions: "/api/v1/production/positions",
   ledgers: "/api/v1/hr/payroll-ledgers",
   importMonth: "/api/v1/hr/payroll-ledgers/import-month",
+  payBatch: "/api/v1/hr/payroll-ledgers/pay-batch",
+  paymentSheet: "/api/v1/hr/payroll-ledgers/payment-sheet.xlsx",
   payables: "/api/v1/hr/payroll-payables",
   payments: "/api/v1/hr/salary-payments",
   banks: "/api/v1/finance/banks",
@@ -924,5 +928,199 @@ describe("工资管理：已知缺陷", () => {
     fireEvent.click(button);
     fireEvent.click(button);
     await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-1/confirm")).toHaveLength(2));
+  });
+});
+
+// ------------------------------------------------------------------ 批量付款（多选 + 一人一张付款单）
+
+/**
+ * 2026-09-16 用户：「批量 = N 张各自独立的付款单，一人一张」。
+ *
+ * 这一组钉住付款页的批量入口：
+ *   1) 勾选框只出现在**真能付款**的行上（已确认/部分支付 + 未付 > 0 + 有可用银行账户）；
+ *   2) 全选/清除/按钮文案（人数 + 合计）与勾选状态同源；
+ *   3) 一次提交打一次 `POST /hr/payroll-ledgers/pay-batch`，逐人带上「行内输入或未付」的金额，
+ *      日期/方式取页面顶部的统一设置；
+ *   4) 部分失败时点名是谁、为什么，并把这些行**留在勾选里**方便重试。
+ */
+describe("工资管理：工资付款的批量付款", () => {
+  /** 两行可付款台账：pl-2（1234.5）+ pl-3（5000）。 */
+  const payableRows = [confirmedLedger, { ...officeLedger, status: "confirmed", payableAmount: "5000.0000", outstandingAmount: "5000.0000" }];
+  /** 批量付款的默认成功响应（一人一张付款单）。 */
+  const batchResult = (overrides: Record<string, unknown> = {}) => ({
+    requested_count: 2, succeeded_count: 2, failed_count: 0, total_amount: "6234.5000",
+    bank: { id: "bank-1", bank_name: "农业银行", account_number: "5706" },
+    succeeded: [
+      { ledger_id: "pl-2", employee_no: "E-001", employee_name: "张三", amount: "1234.5" },
+      { ledger_id: "pl-3", employee_no: "E-101", employee_name: "李四", amount: "5000" },
+    ],
+    failed: [],
+    ...overrides,
+  });
+  /** 只接管 pay-batch 的响应，其余仍走默认桩。 */
+  const stubBatch = (response: Record<string, unknown>) => (url: string, call: StubbedCall) => (url.endsWith("/pay-batch") && call.method === "POST" ? apiOk(response) : undefined);
+
+  const checkbox = (ledgerId: string) => screen.getByTestId(`salary-pay-select-${ledgerId}`) as HTMLInputElement;
+  const batchButton = () => screen.getByTestId("salary-pay-batch-button");
+  const batchBody = (calls: StubbedCall[]) => bodyOf(postsTo(calls, "/hr/payroll-ledgers/pay-batch")[0]);
+
+  it("勾选框只出现在真能付款的行上：草稿/已过期/已付清的行没有勾选框", async () => {
+    stubSalary({ ledgers: [...payableRows, { ...workshopLedger, id: "pl-1" }, expiredLedger, { ...confirmedLedger, id: "pl-5", status: "paid", paidAmount: "1234.5000", outstandingAmount: "0.0000" }], banks: activeBanks });
+    await openSalary("payments");
+    expect(checkbox("pl-2")).toBeInTheDocument();
+    expect(checkbox("pl-3")).toBeInTheDocument();
+    expect(screen.queryByTestId("salary-pay-select-pl-1"), "草稿不可付款").toBeNull();
+    expect(screen.queryByTestId("salary-pay-select-pl-4"), "已过期不可付款").toBeNull();
+    expect(screen.queryByTestId("salary-pay-select-pl-5"), "已付清不可付款").toBeNull();
+  });
+
+  it("一个银行账户都没有时不给勾选框，全选也是禁用的（发工资必须指定发放银行）", async () => {
+    stubSalary({ ledgers: payableRows, banks: [] });
+    await openSalary("payments");
+    expect(screen.queryByTestId("salary-pay-select-pl-2")).toBeNull();
+    expect(screen.getByTestId("salary-pay-select-all")).toBeDisabled();
+    expect(batchButton()).toBeDisabled();
+  });
+
+  it("全选勾上所有可付款的人，按钮与摘要给出人数与合计；清除选择后按钮回到禁用", async () => {
+    stubSalary({ ledgers: payableRows, banks: activeBanks });
+    await openSalary("payments");
+    expect(batchButton()).toBeDisabled();
+    expect(screen.getByTestId("salary-pay-batch-summary")).toHaveTextContent("已选 0 人 / 合计 0");
+    await userEvent.click(screen.getByTestId("salary-pay-select-all"));
+    expect(checkbox("pl-2").checked).toBe(true);
+    expect(checkbox("pl-3").checked).toBe(true);
+    await waitFor(() => expect(batchButton()).toHaveTextContent("批量付款（2 人 / 合计 6234.5）"));
+    expect(screen.getByTestId("salary-pay-batch-summary")).toHaveTextContent("已选 2 人 / 合计 6234.5");
+    await userEvent.click(screen.getByTestId("salary-pay-batch-clear"));
+    expect(checkbox("pl-2").checked).toBe(false);
+    expect(checkbox("pl-3").checked).toBe(false);
+    expect(batchButton()).toBeDisabled();
+  });
+
+  it("提交批量付款：POST /hr/payroll-ledgers/pay-batch，逐人金额 + 统一的日期/方式/银行", async () => {
+    const calls = stubSalary({ ledgers: payableRows, banks: activeBanks }, stubBatch(batchResult()));
+    await openSalary("payments");
+    setValue("salary-payment-date", "2026-03-25");
+    setValue("salary-payment-method", "现金");
+    // 行内改过的金额在批量里也要生效（默认值是该行未付）
+    setValue("salary-pay-amount-pl-3", "1200");
+    await userEvent.click(screen.getByTestId("salary-pay-select-all"));
+    await userEvent.click(batchButton());
+    // 弹窗先逐人列出将要发放的金额，再问发放银行
+    expect(screen.getByTestId("action-dialog")).toHaveTextContent("E-001 / 张三：1234.5");
+    expect(screen.getByTestId("action-dialog")).toHaveTextContent("E-101 / 李四：1200");
+    await pickOption("action-field-bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pay-batch")).toHaveLength(1));
+    expect(batchBody(calls)).toEqual({
+      items: [{ ledger_id: "pl-2", amount: "1234.5" }, { ledger_id: "pl-3", amount: "1200" }],
+      payment_date: "2026-03-25",
+      payment_method: "现金",
+      bank_id: "bank-1",
+    });
+    await expectToast("2 人已付款，合计 6234.5");
+    await waitFor(() => expect(checkbox("pl-2").checked).toBe(false));
+  });
+
+  it("批量付款：某一行金额超过未付时整体不发请求（与行内付款同一套校验）", async () => {
+    const calls = stubSalary({ ledgers: payableRows, banks: activeBanks }, stubBatch(batchResult()));
+    await openSalary("payments");
+    setValue("salary-pay-amount-pl-3", "999999");
+    await userEvent.click(screen.getByTestId("salary-pay-select-all"));
+    await userEvent.click(batchButton());
+    await expectToast("付款金额不能超过未付 5000");
+    expect(screen.queryByTestId("action-dialog")).toBeNull();
+    expect(postsTo(calls, "/hr/payroll-ledgers/pay-batch")).toHaveLength(0);
+  });
+
+  it("部分失败：提示点名失败的人与原因，失败的行留在勾选里、成功的行退出勾选，且一定重新拉取", async () => {
+    const calls = stubSalary({ ledgers: payableRows, banks: activeBanks }, stubBatch(batchResult({
+      succeeded_count: 1, failed_count: 1, total_amount: "1234.5000",
+      succeeded: [{ ledger_id: "pl-2", employee_no: "E-001", employee_name: "张三", amount: "1234.5" }],
+      failed: [{ ledger_id: "pl-3", employee_no: "E-101", employee_name: "李四", amount: "5000", code: "PAYROLL_NOT_ALLOCATABLE", message: "台账尚未确认或已结清，不能付款" }],
+    })));
+    await openSalary("payments");
+    const before = ledgerGets(calls).length;
+    await userEvent.click(screen.getByTestId("salary-pay-select-all"));
+    await userEvent.click(batchButton());
+    await pickOption("action-field-bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await expectToast("失败 1 人");
+    await expectToast("李四（台账尚未确认或已结清，不能付款）");
+    await waitFor(() => expect(ledgerGets(calls).length).toBeGreaterThan(before));
+    await waitFor(() => expect(checkbox("pl-3").checked).toBe(true));
+    expect(checkbox("pl-2").checked).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------ 按月导出工资付款表
+
+/**
+ * 工资付款按月导出（`GET /hr/payroll-ledgers/payment-sheet.xlsx`）。
+ *
+ * jsdom 缺两个浏览器能力，测试侧补齐（与 payroll-export-panel.test.tsx 同一做法）：
+ * `URL.createObjectURL` 未实现，`<a download>.click()` 会真的触发导航。
+ */
+describe("工资管理：工资付款按月导出", () => {
+  let anchorClicks: Array<{ download: string; href: string }> = [];
+
+  function captureDownloads() {
+    anchorClicks = [];
+    Object.assign(URL, { createObjectURL: vi.fn(() => "blob:http://localhost/export"), revokeObjectURL: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      anchorClicks.push({ download: this.getAttribute("download") ?? "", href: this.getAttribute("href") ?? "" });
+    });
+  }
+
+  /** 导出端点的真实响应形态：XLSX 二进制（PK\x03\x04 是 zip/xlsx 的魔数）。 */
+  const xlsxResponse = () => new Response(new Uint8Array([0x50, 0x4b, 0x03, 0x04]), {
+    status: 200,
+    headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(URL, "createObjectURL");
+    Reflect.deleteProperty(URL, "revokeObjectURL");
+  });
+
+  it("导出按钮带当前月份/部门/岗位打 payment-sheet.xlsx，文件名带月份", async () => {
+    captureDownloads();
+    const calls = stubSalary(
+      { ledgers: [confirmedLedger], banks: activeBanks, departments: [department, otherDepartment], positions: [position] },
+      (url) => (url.includes("payment-sheet.xlsx") ? xlsxResponse() : undefined),
+    );
+    await openSalary("payments");
+    await pickOption("salary-department-filter", "生产部");
+    await waitFor(() => expect(ledgerGets(calls).some((call) => call.url.includes("department_id=dep-1"))).toBe(true));
+    await userEvent.click(screen.getByTestId("salary-payment-export"));
+    await waitFor(() => expect(calls.some((call) => call.url.startsWith(EP.paymentSheet))).toBe(true));
+    expect(calls.find((call) => call.url.startsWith(EP.paymentSheet))!.url).toBe(`${EP.paymentSheet}?month=2026-03&department_id=dep-1`);
+    await waitFor(() => expect(anchorClicks).toHaveLength(1));
+    expect(anchorClicks[0].download).toBe("迪礼ERP-工资付款-2026-03.xlsx");
+    await expectToast("已导出 2026-03 工资付款表");
+  });
+
+  it("导出中禁用导出按钮（防连点产生多份并发的导出）", async () => {
+    captureDownloads();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    stubSalary({ ledgers: [confirmedLedger], banks: activeBanks }, async (url) => (url.includes("payment-sheet.xlsx") ? (await gate, xlsxResponse()) : undefined));
+    await openSalary("payments");
+    await userEvent.click(screen.getByTestId("salary-payment-export"));
+    await waitFor(() => expect(screen.getByTestId("salary-payment-export")).toBeDisabled());
+    release();
+    await waitFor(() => expect(screen.getByTestId("salary-payment-export")).not.toBeDisabled());
+  });
+
+  it("导出失败时 toast 显示原因，不出现成功提示", async () => {
+    captureDownloads();
+    stubSalary({ ledgers: [confirmedLedger], banks: activeBanks }, (url) => (url.includes("payment-sheet.xlsx") ? apiErr(403, "FORBIDDEN", "无权导出工资付款表") : undefined));
+    await openSalary("payments");
+    await userEvent.click(screen.getByTestId("salary-payment-export"));
+    await expectToast("无权导出工资付款表");
+    expect(screen.queryByText(/已导出/)).toBeNull();
+    expect(anchorClicks).toHaveLength(0);
   });
 });

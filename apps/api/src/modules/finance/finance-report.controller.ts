@@ -15,6 +15,7 @@ import {
   buildSalesReconciliationSummaryTable,
   reportTotalRow,
 } from "./finance-report.tables";
+import { buildForexCustomerSummaryTable, buildForexDetailTable } from "./finance-report-forex.tables";
 import type { FinanceReportFilter, ReportTable } from "./finance-report.types";
 import { sendWorkbook } from "./finance-report-workbook";
 
@@ -40,8 +41,10 @@ class FinanceReportFilterDto {
   @IsOptional() @IsString() @MaxLength(10) currency?: string;
   /** 是否含草稿；只有字符串 "true" 才算（默认不含）。 */
   @IsOptional() @IsIn(["true", "false"]) include_draft?: string;
-  /** 收支报表：按收支项目过滤。 */
-  @IsOptional() @IsUUID() item_id?: string;
+  /** 收支报表：按会计科目（项目 = 科目名称）过滤。 */
+  @IsOptional() @IsUUID() subject_id?: string;
+  /** 收支报表：按分类（科目类别）过滤。 */
+  @IsOptional() @IsString() @MaxLength(30) category?: string;
   /** 收支报表：income / expense。 */
   @IsOptional() @IsIn(["income", "expense"]) direction?: string;
 }
@@ -53,7 +56,8 @@ type FinanceReportKey =
   | "sales-reconciliation-summary"
   | "sales-gross-profit"
   | "cash-flow-detail"
-  | "cash-flow-summary";
+  | "cash-flow-summary"
+  | "forex-receipts";
 
 @Controller("finance/reports")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -139,25 +143,51 @@ export class FinanceReportController {
     return this.send(response, await this.tableFor("cash-flow-summary", this.filter(query)), "收支汇总");
   }
 
-  /** 六张表共用一套筛选条件；每张表的取数分支集中在这里，便于对照。 */
-  private async tableFor(report: FinanceReportKey, filter: FinanceReportFilter): Promise<ReportTable> {
+  /** 外汇一览表：页面预览（明细；导出文件里另含「客户汇总」工作表）。 */
+  @Get("forex-receipts")
+  async forexReceipts(@Query() query: FinanceReportFilterDto) {
+    return this.preview(await this.tableFor("forex-receipts", this.filter(query)));
+  }
+
+  /** 外汇一览表：导出 XLSX（明细 + 客户汇总两个工作表）。 */
+  @Get("forex-receipts.xlsx")
+  @RequireAdministrator()
+  async exportForexReceipts(@Query() query: FinanceReportFilterDto, @Res() response: Response) {
+    return this.send(response, await this.tableFor("forex-receipts", this.filter(query)), "外汇一览");
+  }
+
+  /**
+   * 每张表的取数分支集中在这里，便于对照。
+   *
+   * 返回**数组**而不是单张表：外汇一览表是一张明细 + 一张客户汇总（同一个工作簿里的两个工作表）。
+   * 单张表的报表就是长度 1 的数组 —— 让「多工作表」成为一种普通能力，而不是给某张表开的后门。
+   * 约定：**第一个是主表**（页面预览、文件名里的行数都用它）。
+   */
+  private async tableFor(report: FinanceReportKey, filter: FinanceReportFilter): Promise<ReportTable[]> {
     const currencyLabels = await this.reports.currencyLabels();
     switch (report) {
       case "sales-reconciliation-detail":
-        return buildSalesReconciliationDetailTable(await this.reports.salesReconciliationDetail(filter), { currencyLabels });
+        return [buildSalesReconciliationDetailTable(await this.reports.salesReconciliationDetail(filter), { currencyLabels })];
       case "purchase-reconciliation-detail":
-        return buildPurchaseReconciliationDetailTable(await this.reports.purchaseReconciliationDetail(filter), { currencyLabels });
+        return [buildPurchaseReconciliationDetailTable(await this.reports.purchaseReconciliationDetail(filter), { currencyLabels })];
       case "sales-reconciliation-summary":
-        return buildSalesReconciliationSummaryTable(await this.reports.salesReconciliationSummary(filter), { currencyLabels });
+        return [buildSalesReconciliationSummaryTable(await this.reports.salesReconciliationSummary(filter), { currencyLabels })];
       case "sales-gross-profit": {
         const { rows, footnotes } = await this.reports.salesGrossProfit(filter);
-        return buildSalesGrossProfitTable(rows, { currencyLabels, footnotes });
+        return [buildSalesGrossProfitTable(rows, { currencyLabels, footnotes })];
       }
       case "cash-flow-detail":
-        return buildCashFlowDetailTable(await this.reports.cashFlowDetail(filter), { currencyLabels });
+        return [buildCashFlowDetailTable(await this.reports.cashFlowDetail(filter), { currencyLabels })];
       case "cash-flow-summary": {
         const { items, amounts, currencies } = await this.reports.cashFlowSummary(filter);
-        return buildCashFlowSummaryTable(items, amounts, currencies, { currencyLabels });
+        return [buildCashFlowSummaryTable(items, amounts, currencies, { currencyLabels })];
+      }
+      case "forex-receipts": {
+        const { rows, footnotes } = await this.reports.forexReceipts(filter);
+        return [
+          buildForexDetailTable(rows, { currencyLabels, footnotes }),
+          buildForexCustomerSummaryTable(rows, { currencyLabels }),
+        ];
       }
     }
   }
@@ -171,7 +201,8 @@ export class FinanceReportController {
       orderNo: query.order_no,
       currency: query.currency,
       includeDraft: query.include_draft === "true",
-      itemId: query.item_id,
+      subjectId: query.subject_id,
+      category: query.category,
       direction: query.direction,
     };
   }
@@ -181,8 +212,13 @@ export class FinanceReportController {
    *
    * 键名转成 snake_case 与全站 API 约定一致；列只暴露前端渲染需要的三项
    * （表头 / 数值格式 / 对齐），列宽是导出专用。
+   *
+   * `extra_sheets`：导出文件里除主页以外的其它工作表（只给名字与行数）。
+   * 为什么只给摘要而不是把整张表也回传：页面只有一个表格位，第二张表渲染到哪里都是临时方案；
+   * 但**页面必须让人知道导出文件里还有一张表**，否则财务会把「明细 + 汇总」的导出当成只有明细。
    */
-  private preview(table: ReportTable) {
+  private preview(tables: ReportTable[]) {
+    const table = tables[0];
     return {
       data: {
         sheet_name: table.sheetName,
@@ -195,12 +231,13 @@ export class FinanceReportController {
         total_columns: table.totalColumns ?? [],
         totals: reportTotalRow(table),
         footnotes: table.footnotes ?? [],
+        extra_sheets: tables.slice(1).map((sheet) => ({ sheet_name: sheet.sheetName, row_count: sheet.rows.length })),
       },
       meta: { row_count: table.rows.length },
     };
   }
 
-  private send(response: Response, table: ReportTable, label: string) {
-    return sendWorkbook(response, table, label);
+  private send(response: Response, tables: ReportTable[], label: string) {
+    return sendWorkbook(response, tables, label);
   }
 }

@@ -5,10 +5,10 @@ const { ReconciliationService } = require("../../dist/modules/finance/reconcilia
 
 /**
  * CashFlowService 替身：对账只用它做两件事 ——
- *   1. `requireItem`：建单/确认时校验收支项目（返回 null = 不指定）；
+ *   1. `requireSubject`：建单/确认时校验会计科目（返回 null = 不指定）；
  *   2. `recordConfirmation`：确认时把金额写成收支流水（= 钱真正进入/离开银行账户）。
  */
-const cashFlowStub = (extra = {}) => ({ requireItem: async () => null, recordConfirmation: async () => null, ...extra });
+const cashFlowStub = (extra = {}) => ({ requireSubject: async () => null, recordConfirmation: async () => null, ...extra });
 
 test("receivable reconciliation resolution locks and rechecks status", async () => {
   let lockCount = 0;
@@ -199,7 +199,7 @@ test("应收对账不选银行时不做任何银行查询（银行是可选字�
 //   否则银行余额永远不变、收支明细表也看不到这笔钱。
 // ---------------------------------------------------------------------------
 
-const reconcilableRow = (extra = {}) => ({ id: "recon-1", status: "matched", reconciliationNo: "REC-1", customerId: "customer-1", customer: { id: "customer-1", name: "香港迪礼" }, orderNo: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30"), bankId: "bank-1", cashFlowItemId: null, ...extra });
+const reconcilableRow = (extra = {}) => ({ id: "recon-1", status: "matched", reconciliationNo: "REC-1", customerId: "customer-1", customer: { id: "customer-1", name: "香港迪礼" }, orderNo: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30"), bankId: "bank-1", subjectId: null, ...extra });
 
 test("确认应收把金额写成收入流水，并落到对账单的回款银行上", async () => {
   const { service, cashFlowCalls } = confirmHarness(reconcilableRow(), [draftSource("s1", "10"), draftSource("s2", "32.5")]);
@@ -213,20 +213,21 @@ test("确认应收把金额写成收入流水，并落到对账单的回款银�
   assert.equal(input.counterpartyName, "香港迪礼", "对方名称取客户名，不能退化成 UUID");
   assert.equal(input.sourceType, "receivable_reconciliation");
   assert.equal(input.sourceId, "recon-1");
-  assert.deepEqual(input.itemKeys, ["货款", "国家退税"], "默认归到「货款」（候选链，第一个存在的生效）");
+  assert.deepEqual(input.subjectNames, ["主营业务收入", "营业外收入"], "默认归到「主营业务收入」（科目名称候选链，第一个存在的生效）");
   assert.equal(result.bank_id, "bank-1");
   assert.equal(result.bank_missing, false);
   assert.equal(result.cash_flow_entry_id, "cf-1");
 });
 
-test("确认应收时补的银行与收支项目会回写到对账单上（单子上写的与实际记账一致）", async () => {
-  const { service, cashFlowCalls, reconciliationUpdates } = confirmHarness(reconcilableRow({ bankId: null, cashFlowItemId: null }), [draftSource("s1", "10")]);
-  const result = await service.confirmReceivables("recon-1", { id: "user-1" }, { bank_id: "bank-1", cash_flow_item_id: "item-9" });
+test("确认应收时补的银行与会计科目会回写到对账单上（单子上写的与实际记账一致）", async () => {
+  const { service, cashFlowCalls, reconciliationUpdates } = confirmHarness(reconcilableRow({ bankId: null, subjectId: null }), [draftSource("s1", "10")]);
+  const result = await service.confirmReceivables("recon-1", { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-9" });
   assert.equal(cashFlowCalls[0].bankId, "bank-1");
-  assert.equal(cashFlowCalls[0].itemId, "item-9");
-  assert.equal(reconciliationUpdates.length, 1, "补的银行/项目要回写，否则单子上还写着「没选」");
+  assert.equal(cashFlowCalls[0].subjectId, "subject-9");
+  assert.equal(reconciliationUpdates.length, 1, "补的银行/科目要回写，否则单子上还写着「没选」");
   assert.equal(reconciliationUpdates[0].bankId, "bank-1");
-  assert.equal(reconciliationUpdates[0].cashFlowItemId, "item-9");
+  assert.equal(reconciliationUpdates[0].subjectId, "subject-9");
+  assert.equal(result.subject_id, "subject-9");
   assert.equal(result.bank_missing, false);
 });
 
