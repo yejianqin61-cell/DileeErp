@@ -4,12 +4,31 @@ const { Prisma } = require("@prisma/client");
 const { ReportsService } = require("../../dist/modules/reports/reports.service.js");
 
 const MODELS = [
-  ["salesOrder", "salesOrderRows", { orderNo: true, productName: true, quantity: true, unit: true, status: true, deliveryDate: true, updatedAt: true }],
-  ["purchaseOrder", "purchaseOrderRows", { purchaseOrderNo: true, orderNo: true, supplierSnapshot: true, status: true, totalAmount: true, currency: true, updatedAt: true }],
-  ["inventoryFact", "inventoryFactRows", { id: true, orderNo: true, inventoryCategory: true, quantityDelta: true, sourceType: true, sourceId: true, createdAt: true }],
-  ["finishedGoodsQcRecord", "finishedGoodsQcRecordRows", { qcNo: true, orderNo: true, conclusion: true, status: true, inspectedQuantity: true, qualifiedQuantity: true, rejectedQuantity: true, inspectionDate: true }],
-  ["payrollLedger", "payrollLedgerRows", { ledgerNo: true, employeeId: true, periodStart: true, periodEnd: true, status: true, baseSalary: true, productionSourceAmount: true }],
+  ["salesOrder", "salesOrderRows", { orderNo: true, productName: true, quantity: true, unit: true, status: true, deliveryDate: true, createdAt: true, updatedAt: true, createdBy: true, updatedBy: true }],
+  ["purchaseOrder", "purchaseOrderRows", { purchaseOrderNo: true, orderNo: true, supplierSnapshot: true, status: true, totalAmount: true, currency: true, createdAt: true, updatedAt: true, createdBy: true, updatedBy: true }],
+  // inventoryFact 是追加型账本：只有 createdBy，没有 updatedBy/updatedAt（不是漏了）
+  ["inventoryFact", "inventoryFactRows", { id: true, orderNo: true, inventoryCategory: true, quantityDelta: true, sourceType: true, sourceId: true, createdAt: true, createdBy: true }],
+  ["finishedGoodsQcRecord", "finishedGoodsQcRecordRows", { qcNo: true, orderNo: true, conclusion: true, status: true, inspectedQuantity: true, qualifiedQuantity: true, rejectedQuantity: true, inspectionDate: true, createdAt: true, updatedAt: true, createdBy: true, updatedBy: true }],
+  ["payrollLedger", "payrollLedgerRows", { ledgerNo: true, employeeId: true, periodStart: true, periodEnd: true, status: true, baseSalary: true, productionSourceAmount: true, createdAt: true, updatedAt: true, createdBy: true, updatedBy: true }],
 ];
+
+/**
+ * 报表行的操作人姓名假解析器（2026-09-16 全站治理）。
+ *
+ * 报表不能像其它模块那样依赖响应出口的拦截器：报表页按响应键**动态生成列**，
+ * 一旦把 createdBy 原样带出去就会长出一列显示 UUID 的表头。所以 ReportsService
+ * 自己把 id 换成姓名，只输出 created_by_name / updated_by_name。
+ */
+function fakeActors() {
+  const names = { "u-1": "张三", "u-2": "李四" };
+  return { namesOf: async (ids) => new Map([...new Set(ids.filter(Boolean))].map((id) => [id, names[id] ?? "某人"])) };
+}
+
+/** 每张报表都要带上的两组审计字段（姓名由上面的假解析器给出）。 */
+const AUDIT_FIXTURE = { createdAt: new Date("2026-01-01T00:00:00.000Z"), createdBy: "u-1", updatedBy: "u-2" };
+const AUDIT_ROW = { created_at: AUDIT_FIXTURE.createdAt, created_by_name: "张三", updated_by_name: "李四" };
+/** 每张报表输出末尾的四个审计键（顺序必须与 ReportsService 的输出对象一致，CSV 表头按此顺序生成）。 */
+const AUDIT_HEADER = ["created_at", "updated_at", "created_by_name", "updated_by_name"];
 
 /** 手写假 Prisma：只读模型记录调用形状，任何写操作都会记录并抛错（报表模块不应写库）。 */
 function fakePrisma(overrides = {}) {
@@ -46,7 +65,7 @@ function fakePrisma(overrides = {}) {
 
 function service(overrides = {}) {
   const prisma = fakePrisma(overrides);
-  return { prisma, reports: new ReportsService(prisma) };
+  return { prisma, reports: new ReportsService(prisma, fakeActors()) };
 }
 
 const readCall = (prisma, model, op = "findMany") => prisma.calls.find((call) => call.model === model && call.op === op);
@@ -61,6 +80,7 @@ test("reports.orders_returns_snake_case_rows_and_uses_count_for_total", async ()
   prisma.data.salesOrderRows = [{
     orderNo: "SO-1", productName: "外壳", quantity: new Prisma.Decimal("12.50"), unit: "件",
     status: "confirmed", deliveryDate: new Date("2026-03-01T00:00:00.000Z"), updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+    ...AUDIT_FIXTURE,
   }];
   prisma.data.salesOrderCount = 7;
 
@@ -69,6 +89,7 @@ test("reports.orders_returns_snake_case_rows_and_uses_count_for_total", async ()
   assert.deepEqual(result.data, [{
     order_no: "SO-1", product_name: "外壳", quantity: "12.5", unit: "件",
     status: "confirmed", delivery_date: new Date("2026-03-01T00:00:00.000Z"), updated_at: new Date("2026-02-01T00:00:00.000Z"),
+    ...AUDIT_ROW,
   }]);
   assert.equal(result.total, 7, "orders 的 total 必须来自 count(where)，而不是本页行数");
   noWrites(prisma);
@@ -180,7 +201,7 @@ test("reports.orders_keeps_full_decimal_precision_in_quantity_string", async () 
 
 test("reports.procurement_filters_order_supplier_and_status", async () => {
   const { prisma, reports } = service();
-  prisma.data.purchaseOrderRows = [{ purchaseOrderNo: "PO-1", orderNo: "SO-1", supplierSnapshot: { name: "ACME" }, status: "confirmed", totalAmount: new Prisma.Decimal("100.5"), currency: "CNY", updatedAt: new Date("2026-02-01T00:00:00.000Z") }];
+  prisma.data.purchaseOrderRows = [{ purchaseOrderNo: "PO-1", orderNo: "SO-1", supplierSnapshot: { name: "ACME" }, status: "confirmed", totalAmount: new Prisma.Decimal("100.5"), currency: "CNY", updatedAt: new Date("2026-02-01T00:00:00.000Z"), ...AUDIT_FIXTURE }];
 
   const result = await reports.procurement({ order_no: "SO-1", supplier_id: "sup-1", status: "confirmed", page: 2, page_size: 10 });
 
@@ -190,7 +211,7 @@ test("reports.procurement_filters_order_supplier_and_status", async () => {
   assert.equal(args.skip, 10);
   assert.equal(args.take, 10);
   assert.deepEqual(Object.keys(args.select).sort(), Object.keys(MODELS[1][2]).sort());
-  assert.deepEqual(result.data, [{ purchase_order_no: "PO-1", order_no: "SO-1", supplier: { name: "ACME" }, status: "confirmed", amount: "100.5", currency: "CNY", updated_at: new Date("2026-02-01T00:00:00.000Z") }]);
+  assert.deepEqual(result.data, [{ purchase_order_no: "PO-1", order_no: "SO-1", supplier: { name: "ACME" }, status: "confirmed", amount: "100.5", currency: "CNY", updated_at: new Date("2026-02-01T00:00:00.000Z"), ...AUDIT_ROW }]);
   noWrites(prisma);
 });
 
@@ -215,14 +236,14 @@ test("KNOWN_DEFECT D7: reports.procurement_total_reports_page_length", async () 
 
 test("reports.inventory_filters_created_at_range_and_maps_delta", async () => {
   const { prisma, reports } = service();
-  prisma.data.inventoryFactRows = [{ id: "fact-1", orderNo: "SO-1", inventoryCategory: "raw_material", quantityDelta: new Prisma.Decimal("-2.25"), sourceType: "outbound", sourceId: "OB-1", createdAt: new Date("2026-01-15T00:00:00.000Z") }];
+  prisma.data.inventoryFactRows = [{ id: "fact-1", orderNo: "SO-1", inventoryCategory: "raw_material", quantityDelta: new Prisma.Decimal("-2.25"), sourceType: "outbound", sourceId: "OB-1", createdAt: new Date("2026-01-15T00:00:00.000Z"), createdBy: "u-1" }];
 
   const result = await reports.inventory({ order_no: "SO-1", from: "2026-01-01", to: "2026-01-31" });
 
   const args = readCall(prisma, "inventoryFact").args;
   assert.deepEqual(args.where, { orderNo: "SO-1", createdAt: { gte: new Date("2026-01-01"), lte: new Date("2026-01-31") } });
   assert.deepEqual(args.orderBy, { createdAt: "desc" });
-  assert.deepEqual(result.data, [{ id: "fact-1", order_no: "SO-1", inventory_category: "raw_material", quantity_delta: "-2.25", source_type: "outbound", source_id: "OB-1", created_at: new Date("2026-01-15T00:00:00.000Z") }]);
+  assert.deepEqual(result.data, [{ id: "fact-1", order_no: "SO-1", inventory_category: "raw_material", quantity_delta: "-2.25", source_type: "outbound", source_id: "OB-1", created_at: new Date("2026-01-15T00:00:00.000Z"), created_by_name: "张三", updated_by_name: null }]);
   assert.equal(result.total, 1);
   noWrites(prisma);
 });
@@ -254,14 +275,14 @@ test("reports.inventory_without_date_range_omits_created_at_filter", async () =>
 
 test("reports.production_qc_filters_order_and_status_and_maps_quantities", async () => {
   const { prisma, reports } = service();
-  prisma.data.finishedGoodsQcRecordRows = [{ qcNo: "QC-1", orderNo: "SO-1", conclusion: "qualified", status: "confirmed", inspectedQuantity: new Prisma.Decimal("10"), qualifiedQuantity: new Prisma.Decimal("9"), rejectedQuantity: new Prisma.Decimal("1"), inspectionDate: new Date("2026-02-10T00:00:00.000Z") }];
+  prisma.data.finishedGoodsQcRecordRows = [{ qcNo: "QC-1", orderNo: "SO-1", conclusion: "qualified", status: "confirmed", inspectedQuantity: new Prisma.Decimal("10"), qualifiedQuantity: new Prisma.Decimal("9"), rejectedQuantity: new Prisma.Decimal("1"), inspectionDate: new Date("2026-02-10T00:00:00.000Z"), updatedAt: new Date("2026-02-11T00:00:00.000Z"), ...AUDIT_FIXTURE }];
 
   const result = await reports.productionQc({ order_no: "SO-1", status: "confirmed" });
 
   const args = readCall(prisma, "finishedGoodsQcRecord").args;
   assert.deepEqual(args.where, { deletedAt: null, orderNo: "SO-1", status: "confirmed" });
   assert.deepEqual(args.orderBy, { updatedAt: "desc" });
-  assert.deepEqual(result.data, [{ qc_no: "QC-1", order_no: "SO-1", conclusion: "qualified", status: "confirmed", inspected_quantity: "10", qualified_quantity: "9", rejected_quantity: "1", inspection_date: new Date("2026-02-10T00:00:00.000Z") }]);
+  assert.deepEqual(result.data, [{ qc_no: "QC-1", order_no: "SO-1", conclusion: "qualified", status: "confirmed", inspected_quantity: "10", qualified_quantity: "9", rejected_quantity: "1", inspection_date: new Date("2026-02-10T00:00:00.000Z"), created_at: AUDIT_FIXTURE.createdAt, updated_at: new Date("2026-02-11T00:00:00.000Z"), created_by_name: "张三", updated_by_name: "李四" }]);
   noWrites(prisma);
 });
 
@@ -282,14 +303,14 @@ test("KNOWN_DEFECT D7: reports.production_qc_total_reports_page_length", async (
 
 test("reports.payroll_filters_employee_and_status_and_orders_by_period_start", async () => {
   const { prisma, reports } = service();
-  prisma.data.payrollLedgerRows = [{ ledgerNo: "PL-1", employeeId: "emp-1", periodStart: new Date("2026-01-01T00:00:00.000Z"), periodEnd: new Date("2026-01-31T00:00:00.000Z"), status: "confirmed", baseSalary: new Prisma.Decimal("5000"), productionSourceAmount: new Prisma.Decimal("120.75") }];
+  prisma.data.payrollLedgerRows = [{ ledgerNo: "PL-1", employeeId: "emp-1", periodStart: new Date("2026-01-01T00:00:00.000Z"), periodEnd: new Date("2026-01-31T00:00:00.000Z"), status: "confirmed", baseSalary: new Prisma.Decimal("5000"), productionSourceAmount: new Prisma.Decimal("120.75"), updatedAt: new Date("2026-02-05T00:00:00.000Z"), ...AUDIT_FIXTURE }];
 
   const result = await reports.payroll({ employee_id: "emp-1", status: "confirmed" });
 
   const args = readCall(prisma, "payrollLedger").args;
   assert.deepEqual(args.where, { deletedAt: null, employeeId: "emp-1", status: "confirmed" });
   assert.deepEqual(args.orderBy, { periodStart: "desc" });
-  assert.deepEqual(result.data, [{ ledger_no: "PL-1", employee_id: "emp-1", period_start: new Date("2026-01-01T00:00:00.000Z"), period_end: new Date("2026-01-31T00:00:00.000Z"), status: "confirmed", base_salary: "5000", production_source_amount: "120.75" }]);
+  assert.deepEqual(result.data, [{ ledger_no: "PL-1", employee_id: "emp-1", period_start: new Date("2026-01-01T00:00:00.000Z"), period_end: new Date("2026-01-31T00:00:00.000Z"), status: "confirmed", base_salary: "5000", production_source_amount: "120.75", created_at: AUDIT_FIXTURE.createdAt, updated_at: new Date("2026-02-05T00:00:00.000Z"), created_by_name: "张三", updated_by_name: "李四" }]);
   noWrites(prisma);
 });
 
@@ -410,15 +431,15 @@ test("reports.export_empty_result_returns_bom_only", async () => {
 test("reports.export_csv_escapes_commas_quotes_and_newlines_with_crlf_rows", async () => {
   const { prisma, reports } = service();
   prisma.data.payrollLedgerRows = [
-    { ledgerNo: "L1", employeeId: "E1", periodStart: "2026-01-01", periodEnd: "2026-01-31", status: "draft", baseSalary: "1000", productionSourceAmount: "0" },
-    { ledgerNo: "L,2", employeeId: 'E"2', periodStart: "", periodEnd: "", status: "draft\nx", baseSalary: "1", productionSourceAmount: "2" },
+    { ledgerNo: "L1", employeeId: "E1", periodStart: "2026-01-01", periodEnd: "2026-01-31", status: "draft", baseSalary: "1000", productionSourceAmount: "0", updatedAt: new Date("2026-02-01T00:00:00.000Z"), ...AUDIT_FIXTURE },
+    { ledgerNo: "L,2", employeeId: 'E"2', periodStart: "", periodEnd: "", status: "draft\nx", baseSalary: "1", productionSourceAmount: "2", updatedAt: new Date("2026-02-02T00:00:00.000Z"), ...AUDIT_FIXTURE },
   ];
 
   const body = await reports.export("payroll", {});
 
-  const header = ["ledger_no", "employee_id", "period_start", "period_end", "status", "base_salary", "production_source_amount"].join(",");
-  const line1 = ["L1", "E1", "2026-01-01", "2026-01-31", "draft", "1000", "0"].join(",");
-  const line2 = ['"L,2"', '"E""2"', "", "", '"draft\nx"', "1", "2"].join(",");
+  const header = ["ledger_no", "employee_id", "period_start", "period_end", "status", "base_salary", "production_source_amount", ...AUDIT_HEADER].join(",");
+  const line1 = ["L1", "E1", "2026-01-01", "2026-01-31", "draft", "1000", "0", '"""2026-01-01T00:00:00.000Z"""', '"""2026-02-01T00:00:00.000Z"""', "张三", "李四"].join(",");
+  const line2 = ['"L,2"', '"E""2"', "", "", '"draft\nx"', "1", "2", '"""2026-01-01T00:00:00.000Z"""', '"""2026-02-02T00:00:00.000Z"""', "张三", "李四"].join(",");
   assert.equal(body, `\uFEFF${header}\r\n${line1}\r\n${line2}\r\n`);
   noWrites(prisma);
 });
@@ -428,14 +449,15 @@ test("reports.export_csv_json_stringifies_objects_decimals_and_dates", async () 
   prisma.data.purchaseOrderRows = [{
     purchaseOrderNo: "PO-1", orderNo: "SO-1", supplierSnapshot: { name: "ACME", code: "S,1" }, status: "confirmed",
     totalAmount: new Prisma.Decimal("12345.6789"), currency: "CNY", updatedAt: new Date("2026-02-03T04:05:06.000Z"),
+    ...AUDIT_FIXTURE,
   }];
 
   const body = await reports.export("procurement-payables", {});
 
-  const header = ["purchase_order_no", "order_no", "supplier", "status", "amount", "currency", "updated_at"].join(",");
+  const header = ["purchase_order_no", "order_no", "supplier", "status", "amount", "currency", ...AUDIT_HEADER].join(",");
   const supplierCell = '"{""name"":""ACME"",""code"":""S,1""}"';
   const updatedCell = '"""2026-02-03T04:05:06.000Z"""';
-  const line = ["PO-1", "SO-1", supplierCell, "confirmed", "12345.6789", "CNY", updatedCell].join(",");
+  const line = ["PO-1", "SO-1", supplierCell, "confirmed", "12345.6789", "CNY", '"""2026-01-01T00:00:00.000Z"""', updatedCell, "张三", "李四"].join(",");
   assert.equal(body, `\uFEFF${header}\r\n${line}\r\n`);
   noWrites(prisma);
 });
@@ -446,7 +468,7 @@ test("reports.export_csv_renders_null_and_missing_values_as_empty_cells", async 
 
   const body = await reports.export("orders", {});
 
-  const header = ["order_no", "product_name", "quantity", "unit", "status", "delivery_date", "updated_at"].join(",");
-  assert.equal(body, `\uFEFF${header}\r\nSO-1,P,1,,draft,,\r\n`);
+  const header = ["order_no", "product_name", "quantity", "unit", "status", "delivery_date", ...AUDIT_HEADER].join(",");
+  assert.equal(body, `\uFEFF${header}\r\nSO-1,P,1,,draft,,,,,\r\n`);
   noWrites(prisma);
 });
