@@ -12,6 +12,7 @@ import Link from "next/link";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { DataTable } from "../data/data-table";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
@@ -24,7 +25,7 @@ type Receipt = { id: string; receiptNo: string; quantity: string; status?: strin
 type PurchaseItem = { id: string; quantity: string; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; receipts: Receipt[] };
 type PurchaseOrder = { id: string; purchaseOrderNo: string; orderNo: string; status: string; items: PurchaseItem[] };
 type InboundNotice = { id: string; noticeNo: string; incomingInspectionId: string; status: string; notifiedQuantity: string };
-type Inspection = { id: string; orderNo: string; purchase_order_no?: string; material_name?: string | null; status: string; qcResult?: "all_inbound" | "rejected" | "partial_inbound" | null; batchSequence?: number; inspectedQuantity: string; acceptedQuantity: string; conditionalQuantity: string; rejectedQuantity: string; downstream_exists?: boolean; purchaseReceipt?: Receipt };
+type Inspection = AuditRow & { id: string; orderNo: string; purchase_order_no?: string; material_name?: string | null; status: string; qcResult?: "all_inbound" | "rejected" | "partial_inbound" | null; batchSequence?: number; inspectedQuantity: string; acceptedQuantity: string; conditionalQuantity: string; rejectedQuantity: string; downstream_exists?: boolean; purchaseReceipt?: Receipt };
 type Inbound = { id: string; inboundNo: string; quantity: string; status: string; incomingInspectionId?: string | null };
 type ReceiptOption = Receipt & { orderNo: string; purchaseOrderNo: string; materialName: string; unitName: string; batchSequence: number; inspectedQuantity: number };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
@@ -283,6 +284,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     { accessorKey: "rejectedQuantity", header: "不合格" },
     { id: "inbound", header: "入库情况", cell: ({ row }) => { const used = inboundUsedByInspection(row.original.id); const remaining = inboundRemainingFor(row.original); const draft = draftInboundFor(row.original.id); const notice = noticeFor(row.original.id); return <span>{`已建单 ${used} · 剩余可入 ${remaining}`}{draft ? <span className="status-warning"> · 有草稿待过账</span> : null}{notice?.status === "pending" ? <span className="panel-note"> · 待仓库接收通知（接收时自动生成入库草稿）</span> : null}</span>; } },
     { id: "notice", header: "入库通知", cell: ({ row }) => { const notice = noticeFor(row.original.id); return notice ? <span className="status-success">{notice.noticeNo}（{noticeStatusLabel[notice.status] ?? notice.status}）</span> : <span className="batch-empty">未通知</span>; } },
+    ...auditColumns<Inspection>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {!row.original.downstream_exists && row.original.status !== "cancelled" && <Button size="sm" variant="secondary" onClick={() => editInspection(row.original)}>编辑</Button>}
       {row.original.status === "pending" && <Button size="sm" variant="secondary" onClick={() => transitionInspection(row.original, "inspecting")}>开始质检</Button>}

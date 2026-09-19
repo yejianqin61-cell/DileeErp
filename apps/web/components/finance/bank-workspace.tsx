@@ -29,8 +29,9 @@ import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../ui/toaster";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 
-type Bank = {
+type Bank = AuditRow & {
   id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string;
   swiftCode: string | null; isActive: boolean; remark: string | null;
   /** 期初余额（DECIMAL(18,4) 的字符串）。老账户/接口未返回时按 "0" 处理。 */
@@ -193,6 +194,7 @@ export default function BankWorkspace({ testId = "page-finance-banks" }: { testI
     { id: "swift", header: "SWIFT", cell: ({ row }) => row.original.swiftCode || "-" },
     { id: "status", header: "状态", cell: ({ row }) => row.original.isActive ? "启用" : "已停用" },
     { id: "remark", header: "备注", cell: ({ row }) => row.original.remark || "-" },
+    ...auditColumns<Bank>(),
     {
       id: "actions", header: "操作", cell: ({ row }) => <div className="action-row" data-testid={`bank-actions-${row.original.id}`}>
         <Button size="sm" variant="secondary" onClick={() => openEdit(row.original)}>编辑</Button>

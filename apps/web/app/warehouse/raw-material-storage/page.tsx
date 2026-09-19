@@ -15,13 +15,14 @@ import { mergeMaterialBalances } from "../../../lib/wms-balances";
 import { shouldAutoOpenDraft } from "../../../lib/auto-open";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { fuzzyMatch } from "../../../lib/fuzzy-search";
+import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 
 // specificationModel / color 由 GET /materials 返回（listMaterials 返回物料全字段），
 // 库存汇总的「规格型号」列与搜索都依赖它们。
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string; specificationModel?: string | null; color?: string | null };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
-type Inbound = { id: string; inboundNo: string; inboundNoticeId?: string | null; materialId: string; unitId: string; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
+type Inbound = AuditRow & { id: string; inboundNo: string; inboundNoticeId?: string | null; materialId: string; unitId: string; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
 type Balance = { material_id: string; unit_id: string | null; unit_name: string; order_no: string | null; quantity: string; material?: Material };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
@@ -151,6 +152,7 @@ export default function RawMaterialStoragePage() {
     { accessorKey: "inspection_status", header: "质检状态" },
     { accessorKey: "status", header: "入库状态", cell: ({ row }) => <span className={row.original.status === "posted" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{inboundStatusLabels[row.original.status] ?? row.original.status}</span> },
     { accessorKey: "remark", header: "备注" },
+    ...auditColumns<Inbound>(),
     {
       id: "actions",
       header: "操作",

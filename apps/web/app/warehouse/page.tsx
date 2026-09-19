@@ -8,12 +8,16 @@ import { Button } from "../../components/ui/button";
 import { DataTable } from "../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
+// 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按**运行宿主**时区走，
+// 导出在容器里跑、界面在浏览器里跑，两边会不一致。
+import { formatBeijingShort } from "../../lib/audit-time";
 import { postMovementPath } from "../../lib/material-slip-api";
+import { auditColumns, type AuditRow } from "../../components/data/audit-columns";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
 
-type InboundNotice = { id: string; noticeNo: string; orderNo: string; status: string; notifiedQuantity: string; notifiedAt?: string | null; inbounds?: Array<{ id: string; status: string; quantity: string }>; purchaseOrder?: { purchaseOrderNo?: string }; purchaseReceipt?: { receiptNo?: string; quantity?: string }; purchaseOrderItem?: { material?: { name?: string; materialCode?: string }; unit?: { name?: string } } };
+type InboundNotice = AuditRow & { id: string; noticeNo: string; orderNo: string; status: string; notifiedQuantity: string; notifiedAt?: string | null; inbounds?: Array<{ id: string; status: string; quantity: string }>; purchaseOrder?: { purchaseOrderNo?: string }; purchaseReceipt?: { receiptNo?: string; quantity?: string }; purchaseOrderItem?: { material?: { name?: string; materialCode?: string }; unit?: { name?: string } } };
 // 生产「确认提交」后送来的待出库单据（领料单 / 补料单）：仓库在这里确认出库才真正扣减原料库存。
-type PendingOutbound = {
+type PendingOutbound = AuditRow & {
   id: string;
   movementNo: string;
   documentType: string;
@@ -109,17 +113,19 @@ export default function WarehousePage() {
     { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
     { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
     { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    ...auditColumns<InboundNotice>(),
     { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void repairNotice(row.original)}>补建入库草稿</Button> },
   ];
 
   const noticeColumns: ColumnDef<InboundNotice>[] = [
     { accessorKey: "noticeNo", header: "通知单号" },
-    { id: "notifiedAt", header: "通知时间", cell: ({ row }) => row.original.notifiedAt ? new Date(row.original.notifiedAt).toLocaleString("zh-CN") : "-" },
+    { id: "notifiedAt", header: "通知时间", cell: ({ row }) => formatBeijingShort(row.original.notifiedAt) || "-" },
     { id: "purchase", header: "采购/到货", cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` },
     { accessorKey: "orderNo", header: "订单号" },
     { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
     { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
     { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    ...auditColumns<InboundNotice>(),
     { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void acknowledgeNotice(row.original)}>接收入库通知</Button> },
   ];
 
@@ -132,7 +138,8 @@ export default function WarehousePage() {
     // 仓库最关心「出哪些料、各多少」：把整单明细摊平成一格，多条用「、」连接。
     { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
     { id: "lineCount", header: "明细数", cell: ({ row }) => row.original.lines.length },
-    { id: "submittedAt", header: "提交时间", cell: ({ row }) => row.original.submittedAt ? new Date(row.original.submittedAt).toLocaleString("zh-CN", { hour12: false }) : "-" },
+    { id: "submittedAt", header: "提交时间", cell: ({ row }) => formatBeijingShort(row.original.submittedAt) || "-" },
+    ...auditColumns<PendingOutbound>(),
     { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" disabled={busy === row.original.id} onClick={() => void confirmOutbound(row.original)}>{busy === row.original.id ? "出库中..." : "确认出库"}</Button> },
   ];
 

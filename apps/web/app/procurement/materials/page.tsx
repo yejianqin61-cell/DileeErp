@@ -7,13 +7,14 @@ import { ActionDialog, type ActionField } from "../../../components/ui/action-di
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
+import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
 import { fuzzyMatch } from "../../../lib/fuzzy-search";
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Reference = { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; isActive?: boolean; defaultUnitId?: string; materialType?: string; remark?: string | null };
+type Reference = AuditRow & { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; isActive?: boolean; defaultUnitId?: string; materialType?: string; remark?: string | null };
 type Unit = { id: string; name?: string; isActive?: boolean };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -114,6 +115,7 @@ export default function MaterialsPage() {
     { accessorKey: "color", header: "颜色", cell: ({ row }) => row.original.color ?? "-" },
     { id: "unit", header: "默认单位", cell: ({ row }) => units.find((u) => u.id === row.original.defaultUnitId)?.name ?? "-" },
     { id: "status", header: "状态", cell: ({ row }) => row.original.isActive === false ? "停用" : "启用" },
+    ...auditColumns<Reference>(),
     {
       id: "actions", header: "操作",
       cell: ({ row }) => (

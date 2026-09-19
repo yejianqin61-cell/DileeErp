@@ -24,6 +24,7 @@ import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { currencyOptions, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../ui/toaster";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 
 /** 银行账户池条目（财务 → 银行账户）。互转的两端都只能从这里选，不在这里手输账户。 */
 type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean; openingBalance: string };
@@ -35,7 +36,7 @@ type BankBalance = {
 };
 /** 互转单上的账户摘要（后端 include 给的就是这几个字段）。 */
 type BankLink = { id: string; bankCode: string; bankName: string; accountNumber: string; currency: string };
-type BankTransfer = {
+type BankTransfer = AuditRow & {
   id: string; transferNo: string; transferDate: string; fromBankId: string; fromCurrency: string;
   toBankId: string; toCurrency: string; fromAmount: string; toAmount: string; exchangeRate: string;
   status: "posted" | "reversed"; reversalReason: string | null; remark: string | null; createdAt: string;
@@ -234,6 +235,7 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
     // 冲销原因不能只留在库里：已冲销的行必须能看出「为什么冲的」，否则只能去翻审计。
     { id: "status", header: "状态", cell: ({ row }) => (row.original.status === "posted" ? "生效" : `已冲销${row.original.reversalReason ? `（${row.original.reversalReason}）` : ""}`) },
     { id: "remark", header: "备注", cell: ({ row }) => row.original.remark || "-" },
+    ...auditColumns<BankTransfer>(),
     {
       id: "actions",
       header: "操作",

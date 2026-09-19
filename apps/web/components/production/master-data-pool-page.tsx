@@ -6,6 +6,7 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { DataTable } from "../data/data-table";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
@@ -13,8 +14,8 @@ import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Unit = { id: string; name: string; isActive: boolean };
-type Operation = { id: string; operationName: string; operationCode?: string | null; defaultUnitId?: string | null; defaultUnit?: { name: string } | null; isActive: boolean; deletedAt?: string | null };
-type Location = { id: string; name: string; locationType: "workshop" | "outsource_site"; isActive: boolean; deletedAt?: string | null };
+type Operation = AuditRow & { id: string; operationName: string; operationCode?: string | null; defaultUnitId?: string | null; defaultUnit?: { name: string } | null; isActive: boolean; deletedAt?: string | null };
+type Location = AuditRow & { id: string; name: string; locationType: "workshop" | "outsource_site"; isActive: boolean; deletedAt?: string | null };
 
 // 主数据 DTO 的可选键不允许空串（default_unit_id 为 UUID、其余会被后端当脏值拒收/重复 409），
 // 提交前把空串归一为 undefined，JSON 序列化时会直接省略该键。
@@ -54,7 +55,7 @@ export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" 
   function remove(row: Operation | Location) { void run(() => apiRequest(isOperations ? `/production/operations/${row.id}` : `/production/locations/${row.id}`, { method: "DELETE" }), isOperations ? "工序已删除" : "加工地点已删除"); }
   function restore(row: Operation | Location) { void run(() => apiRequest(isOperations ? `/production/operations/${row.id}/restore` : `/production/locations/${row.id}/restore`, { method: "POST" }), isOperations ? "工序已恢复" : "加工地点已恢复"); }
   const actionCell = (row: Operation | Location) => row.deletedAt ? <Button size="sm" variant="secondary" onClick={() => restore(row)}>恢复</Button> : <><Button size="sm" variant="secondary" onClick={() => openEdit(row)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => toggle(row)}>{row.isActive ? "停用" : "启用"}</Button><Button size="sm" variant="destructive" onClick={() => remove(row)}>删除</Button></>;
-  const columns: ColumnDef<Operation | Location>[] = isOperations ? [{ id: "name", header: "工序名称", cell: ({ row }) => (row.original as Operation).operationName }, { id: "code", header: "编码", cell: ({ row }) => (row.original as Operation).operationCode || "-" }, { id: "unit", header: "默认单位", cell: ({ row }) => (row.original as Operation).defaultUnit?.name || "-" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }] : [{ id: "name", header: "地点名称", cell: ({ row }) => (row.original as Location).name }, { id: "type", header: "类型", cell: ({ row }) => (row.original as Location).locationType === "workshop" ? "厂内车间" : "外加工点" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }];
+  const columns: ColumnDef<Operation | Location>[] = isOperations ? [{ id: "name", header: "工序名称", cell: ({ row }) => (row.original as Operation).operationName }, { id: "code", header: "编码", cell: ({ row }) => (row.original as Operation).operationCode || "-" }, { id: "unit", header: "默认单位", cell: ({ row }) => (row.original as Operation).defaultUnit?.name || "-" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, ...auditColumns<Operation | Location>(), { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }] : [{ id: "name", header: "地点名称", cell: ({ row }) => (row.original as Location).name }, { id: "type", header: "类型", cell: ({ row }) => (row.original as Location).locationType === "workshop" ? "厂内车间" : "外加工点" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, ...auditColumns<Operation | Location>(), { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }];
   // 基础资料仍在加载时禁止打开对话框：openCreate() 会把当时的 units 快照进 dialog.fields，
   // 数据到达后不会重建，用户会得到一个**永久为空**的「默认单位」下拉且无法恢复
   // （见 docs/test/results/2026-09-13-e2e-rewrite-and-platform-unit-expansion.md §7.3）。

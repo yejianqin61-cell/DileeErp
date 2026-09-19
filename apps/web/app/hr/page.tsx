@@ -33,6 +33,7 @@ import {
   apiRequest,
 } from "../../lib/api-client";
 import { displayStatus } from "../../lib/display-text";
+import { auditColumns, type AuditRow } from "../../components/data/audit-columns";
 import { deriveEmployeeFieldsFromIdCard } from "../../lib/id-card";
 import { currencyOptions, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
@@ -42,7 +43,7 @@ import { notifyError, notifySuccess } from "../../components/ui/toaster";
 // 家庭住址、现住地址、联系方式、紧急联络人与紧急联络人联系电话、备注。
 // age/tenureYears/birthdayThisMonth/contractStatus/laborContractStatus 是后端按当天日期实时
 // 算出来的派生列（年龄/工龄/当月生日/合同到期提醒），不在表单里填。
-type Employee = {
+type Employee = AuditRow & {
   id: string;
   employeeNo: string;
   name: string;
@@ -79,7 +80,7 @@ type Employee = {
   /** 劳动合同 + 劳务合同合并后的档位：正常 / 即将过期（1 个月内）/ 已过期；"" = 两份都没填结束时间 */
   contractSituation?: string;
 };
-type RecordItem = {
+type RecordItem = AuditRow & {
   id: string;
   employeeId: string;
   attendanceDate?: string;
@@ -845,6 +846,7 @@ export default function HrPage() {
       header: "离职日期",
       cell: ({ row }) => isoDate(row.original.leftOn) || "-",
     },
+    ...auditColumns<Employee>(),
     {
       id: "actions",
       header: "操作",
@@ -918,6 +920,7 @@ export default function HrPage() {
         row.original.attendanceType ??
         `${row.original.grade ?? "-"} ${row.original.score ?? ""}`,
     },
+    ...auditColumns<RecordItem>(),
   ];
   const ledgerColumns: ColumnDef<Ledger>[] = [
     {

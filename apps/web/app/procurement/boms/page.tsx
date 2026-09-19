@@ -5,13 +5,14 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
+import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
 import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-workbench";
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Reference = { id: string; orderNo?: string; status?: string; salesOrderId?: string; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
+type Reference = AuditRow & { id: string; orderNo?: string; status?: string; salesOrderId?: string; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
 // 物料池：规格型号与颜色要一起带上 —— BOM 行选择/新建物料时会引用它们做初始值。
 type Material = { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; materialType?: string; defaultUnitId?: string; isActive?: boolean };
 type Unit = { id: string; name?: string; isActive?: boolean };
@@ -84,6 +85,7 @@ export default function BomsPage() {
   const columns: ColumnDef<Reference>[] = [
     { accessorKey: "orderNo", header: "订单号" },
     { accessorKey: "status", header: "BOM状态" },
+    ...auditColumns<Reference>(),
     {
       id: "bom", header: "BOM表",
       cell: ({ row }) => {

@@ -21,16 +21,19 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
+import { auditColumns, auditDetailFields, type AuditRow } from "../../../components/data/audit-columns";
 import { FileInput } from "../../../components/ui/file-input";
 import { Input } from "../../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
 import { downloadFile } from "../../../lib/download";
+// 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按运行宿主时区走。
+import { formatBeijingShort } from "../../../lib/audit-time";
 import { fuzzyMatch } from "../../../lib/fuzzy-search";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Stocktake = {
+type Stocktake = AuditRow & {
   id: string;
   stocktake_no: string;
   period_month: string;
@@ -109,7 +112,7 @@ type DialogState = { title: string; fields: ActionField[]; submit: (values: Reco
 
 const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
 const currentMonth = () => new Date().toISOString().slice(0, 7);
-const dateTime = (value: string | null) => (value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "-");
+const dateTime = (value: string | null) => formatBeijingShort(value) || "-";
 /** 差异着色：盘盈绿、盘亏橙（0 不着色）。带符号展示，避免「5」看不出方向。 */
 const signed = (value: string) => (value.startsWith("-") ? value : `+${value}`);
 
@@ -335,6 +338,7 @@ export default function StocktakesPage() {
     { id: "source", header: "来源文件", cell: ({ row }) => row.original.source_file_name ?? "-" },
     { id: "imported", header: "导入时间", cell: ({ row }) => dateTime(row.original.imported_at) },
     { id: "confirmed", header: "确认时间", cell: ({ row }) => dateTime(row.original.confirmed_at) },
+    ...auditColumns<Stocktake>(),
     {
       id: "actions",
       header: "操作",
@@ -453,6 +457,7 @@ export default function StocktakesPage() {
           </div>
           <div className="panel-body">
             <p data-testid="stocktake-detail-meta">来源文件 {open.source_file_name ?? "-"}；导入 {dateTime(open.imported_at)}；确认 {dateTime(open.confirmed_at)}{open.reversal_reason ? `；冲销原因 ${open.reversal_reason}` : ""}</p>
+            <p className="panel-note" data-testid="stocktake-detail-audit">{auditDetailFields(open).map((field) => `${field.label} ${field.value}`).join("；")}</p>
             <p data-testid="stocktake-summary">明细 {open.summary.line_count} 行：差异 {open.summary.differing_line_count} 行（盘盈 {open.summary.increased_line_count} / 盘亏 {open.summary.decreased_line_count}），已应用调整 {open.summary.applied_line_count} 行，导入后账面有变动 {open.summary.changed_after_import_count} 行，差异无原因 {open.summary.differing_without_reason_count} 行</p>
             {open.summary.units.length > 0 && <p className="panel-note" data-testid="stocktake-unit-summary">按单位调增/调减（不做跨单位合计）：{open.summary.units.map((unit) => `${unit.unit_name} +${unit.increase_quantity} / -${unit.decrease_quantity}`).join("；")}</p>}
             {confirming && isDraft && <div className="action-row" data-testid="stocktake-confirm-bar">

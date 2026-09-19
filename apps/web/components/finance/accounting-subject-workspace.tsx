@@ -23,9 +23,10 @@ import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { ACCOUNTING_SUBJECTS_PATH, type AccountingSubject } from "../../lib/accounting-subjects";
 import { notifyError, notifySuccess } from "../ui/toaster";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 
 /** 会计科目（后端 `accounting_subjects`）。类型与显示口径在 lib/accounting-subjects.ts 里统一。 */
-export type AccountingSubjectRow = AccountingSubject;
+export type AccountingSubjectRow = AuditRow & AccountingSubject;
 
 const ALL = "__all";
 const EMPTY_DIRECTION = "__none";
@@ -170,6 +171,7 @@ export default function AccountingSubjectWorkspace({ testId = "page-finance-acco
     { accessorKey: "name", header: "项目" },
     { id: "direction", header: "余额方向", cell: ({ row }) => row.original.balanceDirection ?? "-" },
     { id: "state", header: "状态", cell: ({ row }) => (row.original.isActive ? "启用" : "已停用") },
+    ...auditColumns<AccountingSubjectRow>(),
     {
       id: "actions",
       header: "操作",

@@ -13,14 +13,15 @@ import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
+import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type Balance = { category: string; unit_id: string; production_order_id: string | null; order_no: string | null; product_name: string | null; product_specification: string | null; quantity: string };
-type Notice = { id: string; noticeNo: string; orderNo: string; batchNo?: string | null; noticeDate: string; status: string; noticeQuantity: string; submittedQuantity: string; qcQualifiedQuantity: string; inboundDraftQuantity: string; inboundPostedQuantity: string; availableSubmissionQuantity: string; remainingForInbound: string; operationNameSnapshot: string; unitNameSnapshot: string; productNameSnapshot?: string | null };
-type Inbound = { id: string; inboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; qcRecord?: { qcNo?: string } | null; createdAt?: string };
-type Outbound = { id: string; outboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; shipmentDate?: string | null; carrier?: string | null; trackingNo?: string | null; packingListNo?: string | null; invoiceNo?: string | null; signedAt?: string | null; riskReason?: string | null; remark?: string | null; unit?: { name?: string } | null; salesOrder?: { currency?: string; unitPrice?: string | null; settlementUnitPrice?: string | null; customer?: { name?: string } | null } | null; outboundNotice?: { id: string; noticeNo: string; status: string } | null };
+type Notice = AuditRow & { id: string; noticeNo: string; orderNo: string; batchNo?: string | null; noticeDate: string; status: string; noticeQuantity: string; submittedQuantity: string; qcQualifiedQuantity: string; inboundDraftQuantity: string; inboundPostedQuantity: string; availableSubmissionQuantity: string; remainingForInbound: string; operationNameSnapshot: string; unitNameSnapshot: string; productNameSnapshot?: string | null };
+type Inbound = AuditRow & { id: string; inboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; qcRecord?: { qcNo?: string } | null; createdAt?: string };
+type Outbound = AuditRow & { id: string; outboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; shipmentDate?: string | null; carrier?: string | null; trackingNo?: string | null; packingListNo?: string | null; invoiceNo?: string | null; signedAt?: string | null; riskReason?: string | null; remark?: string | null; unit?: { name?: string } | null; salesOrder?: { currency?: string; unitPrice?: string | null; settlementUnitPrice?: string | null; customer?: { name?: string } | null } | null; outboundNotice?: { id: string; noticeNo: string; status: string } | null };
 // 销售发起的成品出库通知：仓库据此分批生成出库单（可只出一部分，剩余量继续出）。
-type OutboundNotice = { id: string; noticeNo: string; orderNo: string; productionOrderId: string; productNameSnapshot?: string | null; productSpecificationSnapshot?: string | null; noticeQuantity: string; shippedQuantity?: string; remaining_quantity?: string; draft_quantity?: string; status: string; notifiedAt: string; remark?: string | null; outbound_summary?: string; unit?: { name?: string } | null; salesOrder?: { customer?: { name?: string } | null } | null };
+type OutboundNotice = AuditRow & { id: string; noticeNo: string; orderNo: string; productionOrderId: string; productNameSnapshot?: string | null; productSpecificationSnapshot?: string | null; noticeQuantity: string; shippedQuantity?: string; remaining_quantity?: string; draft_quantity?: string; status: string; notifiedAt: string; remark?: string | null; outbound_summary?: string; unit?: { name?: string } | null; salesOrder?: { customer?: { name?: string } | null } | null };
 
 const noticeStatusLabels: Record<string, string> = { pending: "待送检", partially_inbound: "入库中", completed: "已完成", cancelled: "已取消" };
 const inboundStatusLabels: Record<string, string> = { draft: "待入库登记", posted: "入库成功", reversed: "已冲销" };
@@ -158,6 +159,7 @@ export default function FinishedGoodsStoragePage() {
     { accessorKey: "qcQualifiedQuantity", header: "QC 合格" },
     { accessorKey: "inboundPostedQuantity", header: "已入库" },
     { accessorKey: "status", header: "状态", cell: ({ row }: { row: { original: Notice } }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    ...auditColumns<Notice>(),
   ];
   const inboundColumns = [
     { accessorKey: "inboundNo", header: "入库单" },
@@ -165,6 +167,7 @@ export default function FinishedGoodsStoragePage() {
     { id: "product", header: "成品", cell: ({ row }: { row: { original: Inbound } }) => row.original.productNameSnapshot ?? "-" },
     { accessorKey: "quantity", header: "数量" },
     { id: "status", header: "状态", cell: ({ row }: { row: { original: Inbound } }) => inboundStatusLabels[row.original.status] ?? row.original.status },
+    ...auditColumns<Inbound>(),
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: Inbound } }) => row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/inbounds/${row.original.id}/post`, {}, "成品入库已过账")}>过账</Button> : row.original.status === "posted" ? <Button size="sm" variant="ghost" onClick={() => reverseInbound(row.original)}>冲销</Button> : null },
   ];
   const outboundColumns = [
@@ -177,6 +180,7 @@ export default function FinishedGoodsStoragePage() {
     { id: "shipping", header: "发货", cell: ({ row }: { row: { original: Outbound } }) => row.original.shipmentDate ? `${row.original.shipmentDate.slice(0, 10)}${row.original.carrier ? ` / ${row.original.carrier}` : ""}${row.original.trackingNo ? ` / ${row.original.trackingNo}` : ""}` : "-" },
     { id: "notice", header: "来源通知", cell: ({ row }: { row: { original: Outbound } }) => row.original.outboundNotice?.noticeNo ?? "-" },
     { id: "status", header: "状态", cell: ({ row }: { row: { original: Outbound } }) => outboundStatusLabels[row.original.status] ?? row.original.status },
+    ...auditColumns<Outbound>(),
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: Outbound } }) => <div className="action-row">{row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/outbounds/${row.original.id}/post`, {}, "成品出库已过账（已生成应收来源，等待财务收款）")}>过账出库</Button> : null}{row.original.status === "draft" ? <Button size="sm" variant="ghost" onClick={() => cancelOutbound(row.original)}>取消出库单</Button> : null}{["posted", "shipped"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => editShipping(row.original)}>维护发货</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => signOutbound(row.original)}>登记签收</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="ghost" onClick={() => reverseOutbound(row.original)}>冲销</Button> : null}</div> },
   ];
   const outboundNoticeColumns = [
@@ -188,6 +192,7 @@ export default function FinishedGoodsStoragePage() {
     { id: "shipped", header: "已出库 / 剩余", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.shippedQuantity ?? "0"} / ${row.original.remaining_quantity ?? "-"}` },
     { id: "status", header: "状态", cell: ({ row }: { row: { original: OutboundNotice } }) => outboundNoticeStatusLabels[row.original.status] ?? row.original.status },
     { id: "outbound", header: "出库单", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.outbound_summary || "-" },
+    ...auditColumns<OutboundNotice>(),
     { id: "actions", header: "操作", cell: ({ row }: { row: { original: OutboundNotice } }) => ["pending", "outbound_created", "partially_outbound"].includes(row.original.status) && Number(row.original.remaining_quantity ?? row.original.noticeQuantity) > 0 ? <Button size="sm" onClick={() => createOutboundFromNotice(row.original)}>生成出库单</Button> : row.original.status === "cancelled" ? <span>已取消</span> : <span>已发完</span> },
   ];
   // 待入库 = 还有「可送检额度」或「在途入库」的通知。不用 remainingForInbound：QC 不合格的部分永远不会入库，

@@ -31,6 +31,7 @@ import { paymentNatureOptions } from "../../lib/payment-natures";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
+import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { financeStatus } from "./finance-status";
 
 /**
@@ -59,7 +60,7 @@ type SubjectLink = { id: string; category: string; name: string };
 type SourceAllocation = { id: string; amount: string; status: string; payment?: { id: string; paymentNo: string; status: string; paymentDate: string; amount?: string; currency?: string } | null };
 /** 覆盖这条应收的对账单（列表接口算好给前端：对账范围是「订单号或客户 + 币种 + 期间」，前端推不出来）。 */
 type ReconciliationRef = { id: string; reconciliation_no: string; status: string; period_start: string; period_end: string };
-type ReceivableSource = {
+type ReceivableSource = AuditRow & {
   id: string; sourceNo: string; orderNo: string; customerId: string; outboundId: string;
   quantity: string; unit: string; unitPrice: string | null; taxRate: string | null; amount: string; currency: string;
   amountReason: string | null; status: string; dueDate: string | null; invoiceNo: string | null; invoiceDate: string | null;
@@ -73,7 +74,7 @@ type ReceivableSource = {
   allocations?: SourceAllocation[];
 };
 type ReconciliationEntry = ReceivableSource;
-type Reconciliation = {
+type Reconciliation = AuditRow & {
   id: string; reconciliationNo: string; orderNo: string | null; customerId: string;
   periodStart: string; periodEnd: string; receivableAmountSnapshot: string; paymentAmountSnapshot: string;
   adjustmentAmountSnapshot: string; systemBalance: string; externalBalance: string; difference: string;
@@ -503,6 +504,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "amount", header: "应收金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "outstanding", header: "未收", cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "receivable") },
+    ...auditColumns<ReceivableSource>(),
     { id: "actions", header: "操作", cell: ({ row }) => sourceActions(row.original) },
   ];
   // 「确认应收」用台账视角的列：带勾选框、到期日与状态。
@@ -517,6 +519,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "amount", header: "应收金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "due", header: "到期日", cell: ({ row }) => day(row.original.dueDate) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "receivable") },
+    ...auditColumns<ReceivableSource>(),
     { id: "actions", header: "操作", cell: ({ row }) => sourceActions(row.original) },
   ];
   const reconciliationColumns: ColumnDef<Reconciliation>[] = [
@@ -537,6 +540,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     // 建单时人工选的会计科目（确认应收记流水时用它）；接口没内嵌 `subject` 时只拿到 id，标签在前端用科目表还原。
     { id: "subject", header: "会计科目", cell: ({ row }) => subjectLabel(row.original.subject, row.original.subjectId) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
+    ...auditColumns<Reconciliation>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row" data-testid={`reconciliation-actions-${row.original.id}`}>
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
       {/* 范围里确实还有草稿才给「一键确认」：点一个只会空转 0 条的按钮比没有按钮更误导 */}
@@ -558,6 +562,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "specification", header: "规格型号", cell: ({ row }) => row.original.product_specification ?? "-" },
     { id: "amount", header: "应收金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "created", header: "出库日期", cell: ({ row }) => day(row.original.createdAt) },
+    // 「待创建对账」是**逐条**列（不是按客户+月份的汇总行），所以按业务列表给两列。
+    ...auditColumns<ReceivableSource>(),
     { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" title="按这条的客户 + 月份创建：一张对账单覆盖该客户该月全部待确认应收" onClick={() => createReconciliation({ customerId: row.original.customerId, month: monthOf(row.original.createdAt) })}>创建对账</Button> },
   ];
 
@@ -580,7 +586,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { label: "金额原因", value: item.amountReason, wide: true },
         { label: "到期日期", value: day(item.dueDate) }, { label: "签收时间快照", value: day(item.signedAtSnapshot) },
         { label: "发票号", value: item.invoiceNo }, { label: "开票日期", value: day(item.invoiceDate) },
-        { label: "创建时间", value: day(item.createdAt) }, { label: "备注", value: item.remark, wide: true },
+        { label: "备注", value: item.remark, wide: true },
+        ...auditDetailFields(item),
       ];
     }
     if (detail?.kind === "reconciliation" && detailData) {
@@ -602,7 +609,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         { label: "会计科目", value: subjectLabel(item.subject, item.subjectId) },
         { label: "纳入条目数", value: item.details ? `${item.details.entry_count} 条（待确认 ${item.details.draft_count} 条 / ${item.details.draft_amount}）` : "-" },
         { label: "差异处理说明", value: item.resolutionRemark, wide: true },
-        { label: "创建时间", value: day(item.createdAt) }, { label: "备注", value: item.remark, wide: true },
+        { label: "备注", value: item.remark, wide: true },
+        ...auditDetailFields(item),
       ];
     }
     return [];

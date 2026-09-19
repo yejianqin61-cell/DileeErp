@@ -38,6 +38,7 @@ import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, toSubjectOptions, type Ac
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
+import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { financeStatus } from "./finance-status";
 
 /** 银行下拉的「清空」哨兵值（见 bankField / bankValue）：Radix Select 不接受空串 value。 */
@@ -53,7 +54,7 @@ type SupplierRef = { id: string; name: string; supplierCode: string | null };
 type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean; swiftCode: string | null; remark: string | null };
 /** 来源已经接收成的那张应付单（列表接口的 payable_entry）：有它就说明这条来源不需要再接收。 */
 type SourcePayableLink = { id: string; payableNo: string; status: string };
-type PayableSource = {
+type PayableSource = AuditRow & {
   id: string; orderNo: string; quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; status: string;
   qcResult: string | null; actualInboundQuantity: string | null; acceptedQuantity: string | null; conditionalQuantity: string | null; rejectedQuantity: string | null;
   settlementUnitPrice: string | null; settlementTotalAmount: string | null; settlementAmountReason: string | null;
@@ -66,7 +67,7 @@ type PayableSource = {
   purchaseOrder?: { purchaseOrderNo: string } | null;
   supplier?: SupplierRef | null;
 };
-type OutsourcePayableSource = {
+type OutsourcePayableSource = AuditRow & {
   id: string; orderNo: string; quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; status: string; createdAt: string;
   material_name?: string | null; material_code?: string | null; material_specification?: string | null; material_color?: string | null; unit_name?: string | null;
   payable_entry?: SourcePayableLink | null;
@@ -77,7 +78,7 @@ type OutsourcePayableSource = {
 };
 /** 覆盖这条应付的对账单（列表接口算好给前端：对账范围含 purchaseOrderId，前端推不出来）。 */
 type ReconciliationRef = { id: string; reconciliation_no: string; status: string; period_start: string; period_end: string };
-type PayableEntry = {
+type PayableEntry = AuditRow & {
   id: string; payableNo: string; orderNo: string | null; supplierId: string; sourceType: string; sourceNoSnapshot: string;
   quantity: string; unitPrice: string; taxRate: string | null; amount: string; currency: string; confirmationDate: string; status: string; remark: string | null; createdAt: string;
   source_no?: string | null; purchase_order_no?: string | null; batch_sequence?: number | null;
@@ -90,7 +91,7 @@ type PayableEntry = {
 };
 /** 列表/详情接口内嵌的会计科目（财务 → 收支管理 → 会计科目）。 */
 type SubjectLink = { id: string; category: string; name: string };
-type SupplierReconciliation = {
+type SupplierReconciliation = AuditRow & {
   id: string; reconciliationNo: string; orderNo: string | null; supplierId: string; periodStart: string; periodEnd: string;
   payableAmountSnapshot: string; paymentAmountSnapshot: string; adjustmentAmountSnapshot: string; systemBalance: string;
   externalBalance: string; difference: string; currency: string; status: string; resolutionRemark: string | null; remark: string | null; createdAt: string;
@@ -638,6 +639,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.settlementUnitPrice ?? row.original.unitPrice },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
+    ...auditColumns<PayableSource>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => receiveSource("raw_material_inbound", row.original)}>接收应付</Button></div> },
   ];
   const outsourceColumns: ColumnDef<OutsourcePayableSource>[] = [
@@ -651,6 +653,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.unitPrice },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
+    ...auditColumns<OutsourcePayableSource>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button></div> },
   ];
   // 台账不再列「已付 / 未付」：这两列来自**付款单核销**，而本轮已经把「登记付款 → 过账核销」从确认流程里去掉了
@@ -667,6 +670,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "confirmationDate", header: "确认日期", cell: ({ row }) => day(row.original.confirmationDate) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") },
+    ...auditColumns<PayableEntry>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmEntry(row.original)}>确认应付</Button><Button size="sm" variant="ghost" onClick={() => editEntry(row.original)}>编辑</Button></>}
       {row.original.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退</Button>}
@@ -689,6 +693,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "bank", header: "支付银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
     { id: "subject", header: "会计科目", cell: ({ row }) => subjectLabel(row.original.subject, row.original.subjectId) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
+    ...auditColumns<SupplierReconciliation>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row" data-testid={`reconciliation-actions-${row.original.id}`}>
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
       {row.original.flow?.can_confirm_payables ? <Button size="sm" data-testid={`reconciliation-confirm-${row.original.id}`} onClick={() => confirmReconciliationPayables(row.original)}>确认 {row.original.flow.draft_count} 条应付</Button> : null}
@@ -707,6 +712,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material_specification || "-" },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "confirmationDate", header: "确认日期", cell: ({ row }) => day(row.original.confirmationDate) },
+    // 「待创建对账」是**逐条**列（注释里写明「汇总行看不出这条在不在」），所以按业务列表给两列。
+    ...auditColumns<PayableEntry>(),
     { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" title="按这条的供应商 + 月份创建：一张对账单覆盖该供应商该月全部待确认应付" onClick={() => createReconciliation({ supplierId: row.original.supplierId, month: monthOf(row.original.confirmationDate ?? row.original.createdAt) })}>创建对账</Button> },
   ];
 
@@ -725,7 +732,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { label: "税率", value: item.taxRate },
       { label: "应付金额", value: money(item.amount, item.currency) },
       { label: "已生成的应付单", value: (item as PayableSource).payable_entry ? `${(item as PayableSource).payable_entry?.payableNo}（${financeStatus((item as PayableSource).payable_entry?.status, "payable")}）` : "尚未接收" },
-      { label: "创建时间", value: day(item.createdAt) },
     ];
     if (kind === "inbound") {
       const inbound = item as PayableSource;
@@ -741,6 +747,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         { label: "结算单价", value: inbound.settlementUnitPrice },
         { label: "结算总价", value: inbound.settlementTotalAmount },
         { label: "结算金额原因", value: inbound.settlementAmountReason, wide: true },
+        ...auditDetailFields(item),
       ];
     }
     const outsource = item as OutsourcePayableSource;
@@ -748,6 +755,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       { label: "外加工批次", value: outsource.logisticsBatch?.batchNo },
       { label: "签收单号", value: outsource.outsourceReceipt?.id },
       { label: "签收时间", value: day(outsource.outsourceReceipt?.receivedAt) },
+      ...auditDetailFields(item),
     ];
   }
 
@@ -764,8 +772,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         { label: "单价", value: item.unitPrice }, { label: "税率", value: item.taxRate },
         { label: "应付金额", value: money(item.amount, item.currency) },
         { label: "已付金额", value: money(item.paid_amount, item.currency) }, { label: "未付金额", value: money(item.outstanding_amount, item.currency) },
-        { label: "确认日期", value: day(item.confirmationDate) }, { label: "创建时间", value: day(item.createdAt) },
+        { label: "确认日期", value: day(item.confirmationDate) },
         { label: "备注", value: item.remark, wide: true },
+        ...auditDetailFields(item),
       ];
     }
     if (detail?.kind === "reconciliation" && detailData) {
@@ -786,7 +795,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         { label: "会计科目", value: subjectLabel(item.subject, item.subjectId) },
         { label: "纳入条目数", value: item.details ? `${item.details.entry_count} 条（待确认 ${item.details.draft_count} 条 / ${item.details.draft_amount}）` : "-" },
         { label: "差异处理说明", value: item.resolutionRemark, wide: true },
-        { label: "创建时间", value: day(item.createdAt) }, { label: "备注", value: item.remark, wide: true },
+        { label: "备注", value: item.remark, wide: true },
+        ...auditDetailFields(item),
       ];
     }
     return [];

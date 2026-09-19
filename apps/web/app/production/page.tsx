@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { DataTable, statusCell } from "../../components/data/data-table";
+import { auditColumns, type AuditRow } from "../../components/data/audit-columns";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { latestBom, productionCandidateHint, productionCandidates, resolveProductionUnit } from "../../lib/production-candidates";
@@ -21,7 +22,7 @@ type Unit = { id: string; name: string; isActive: boolean };
 type Location = { id: string; name: string; locationType: "workshop" | "outsource_site"; isActive: boolean };
 type Operation = { id: string; operationName: string; defaultUnitId?: string | null; isActive: boolean };
 type Order = { id?: string; orderNo: string; quantity: string; unit?: string; status: string; boms: Array<{ id: string; version: number; status: string }> };
-type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; executionMode: "in_house" | "outsourced"; status: string; plannedQuantity: string; executionLocation: Location; operations: Array<{ id: string; operationCatalogId?: string; sequenceNo?: number; operationNameSnapshot: string; targetQuantity: string; status: string }> };
+type ProductionOrder = AuditRow & { id: string; productionOrderNo: string; orderNo: string; executionMode: "in_house" | "outsourced"; status: string; plannedQuantity: string; executionLocation: Location; operations: Array<{ id: string; operationCatalogId?: string; sequenceNo?: number; operationNameSnapshot: string; targetQuantity: string; status: string }> };
 
 export default function ProductionPage() {
   const router = useRouter();
@@ -143,6 +144,7 @@ export default function ProductionPage() {
     { accessorKey: "plannedQuantity", header: "计划数" },
     { id: "operations", header: "工序", cell: ({ row }) => row.original.operations.map((item) => item.operationNameSnapshot).join("、") || "未配置" },
     { accessorKey: "status", header: "状态", cell: statusCell<ProductionOrder>() },
+    ...auditColumns<ProductionOrder>(),
     { id: "actions", header: "操作", cell: ({ row }) => row.original.status === "draft" ? <Button size="sm" variant="secondary" onClick={() => void run(`/production/orders/${row.original.id}/transition`, { target: "in_progress", reason: "开始生产" }, "生产单已启动")}>启动</Button> : null },
   ];
 

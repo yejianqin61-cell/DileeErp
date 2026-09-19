@@ -7,12 +7,13 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
+import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiRequest } from "../../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Inbound = { id: string; inboundNo: string; orderNo: string; quantity: string; settlementUnitPrice?: string | null; settlementTotalAmount?: string | null; settlementAmountReason?: string | null; status: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
+type Inbound = AuditRow & { id: string; inboundNo: string; orderNo: string; quantity: string; settlementUnitPrice?: string | null; settlementTotalAmount?: string | null; settlementAmountReason?: string | null; status: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
 type PayableSource = { id: string; orderNo: string; amount: string; status: string; rawMaterialInboundId?: string | null; rawMaterialInbound?: { inboundNo?: string } };
 type PayableEntry = { id: string; payableNo: string; payableSourceId?: string | null; status: string; amount: string; currency?: string };
 
@@ -123,6 +124,7 @@ export default function InboundsPage() {
         return <Button size="sm" variant="secondary" onClick={() => notifyFinance(row.original, source)}>通知财务付款</Button>;
       },
     },
+    ...auditColumns<Inbound>(),
     {
       id: "actions", header: "操作",
       cell: ({ row }) => (

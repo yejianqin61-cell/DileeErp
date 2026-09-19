@@ -27,6 +27,7 @@ import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-ca
 import { CASH_FLOW_TABS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY, type CashFlowTabKey } from "../../lib/finance-sections";
 import { PAYMENT_NATURE_EMPTY, paymentNatureLabel, paymentNatureOptions } from "../../lib/payment-natures";
 import { notifySuccess } from "../ui/toaster";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 import AccountingSubjectWorkspace from "./accounting-subject-workspace";
 import { FinanceTabs } from "./finance-tabs";
 
@@ -37,7 +38,7 @@ type BankRef = { id: string; bankCode: string; bankName: string; accountName: st
 type BankLink = { id: string; bankCode: string; bankName: string; accountNumber: string; currency: string };
 /** 流水上的会计科目摘要（列表接口给的就是这几个字段）。 */
 type SubjectLink = { id: string; category: string; name: string; balanceDirection: string | null };
-type CashFlowEntry = {
+type CashFlowEntry = AuditRow & {
   id: string;
   entryNo: string;
   entryDate: string;
@@ -280,6 +281,7 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
     { id: "orderNo", header: "订单号", cell: ({ row }) => row.original.orderNo ?? "-" },
     { id: "source", header: "来源", cell: ({ row }) => row.original.sourceType ? <span className="badge">{SOURCE_LABELS[row.original.sourceType] ?? row.original.sourceType}</span> : <span className="panel-note">手工录入</span> },
     { id: "status", header: "状态", cell: ({ row }) => (row.original.status === "posted" ? "生效" : "已冲销") },
+    ...auditColumns<CashFlowEntry>(),
     {
       id: "actions",
       header: "操作",

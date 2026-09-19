@@ -20,16 +20,19 @@ import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../components/ui/select";
 import { DataTable } from "../../../components/data/data-table";
+import { auditColumns, auditDetailFields, type AuditRow } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { RecordDetailDialog, type DetailField } from "../../../components/finance/record-detail-dialog";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { downloadFile } from "../../../lib/download";
+// 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按运行宿主时区走。
+import { formatBeijingShort } from "../../../lib/audit-time";
 import { movementEditorHref, postMovementPath } from "../../../lib/material-slip-api";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string } | null; material?: { materialCode?: string; name: string; specificationModel?: string | null } | null };
-type Issue = {
+type Issue = AuditRow & {
   id: string;
   movementNo: string;
   documentType: string;
@@ -189,7 +192,8 @@ export default function MaterialIssuesPage() {
     { id: "status", header: "状态", cell: ({ row }) => statusLabels[row.original.status] ?? row.original.status },
     { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
     { id: "total", header: "数量合计", cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
-    { accessorKey: "createdAt", header: "登记时间", cell: ({ row }) => new Date(row.original.createdAt).toLocaleString("zh-CN", { hour12: false }) },
+    { accessorKey: "createdAt", header: "登记时间", cell: ({ row }) => formatBeijingShort(row.original.createdAt) || "-" },
+    ...auditColumns<Issue>(),
     { id: "actions", header: "操作", cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={movementEditorHref(slip.documentType, { movementId: slip.id })}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void submit(slip)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "pending_outbound" && <><Button size="sm" disabled={busyRow} onClick={() => void confirmOutbound(slip)}>确认出库</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(slip)}>撤回提交</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}<Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("issue", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("replenishment", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
   ];
 
@@ -210,9 +214,10 @@ export default function MaterialIssuesPage() {
     { label: "业务日期", value: (detail.businessDate ?? detail.createdAt ?? "").slice(0, 10) },
     { label: "生产单号", value: detail.productionOrder?.productionOrderNo ?? "-" },
     { label: "订单号", value: detail.orderNo ?? detail.productionOrder?.orderNo ?? "-" },
-    { label: "提交时间", value: detail.submittedAt ? new Date(detail.submittedAt).toLocaleString("zh-CN", { hour12: false }) : "-" },
+    { label: "提交时间", value: formatBeijingShort(detail.submittedAt) || "-" },
     { label: "备注", value: detail.remark, wide: true },
     { label: "补料原因", value: detail.reason, wide: true },
+    ...auditDetailFields(detail),
   ] : [];
 
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;

@@ -16,6 +16,7 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { DataTable } from "../data/data-table";
+import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
@@ -23,7 +24,7 @@ import { unitMutationPayload } from "../../lib/unit-options";
 import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
-type Unit = { id: string; name: string; remark?: string | null; isActive: boolean; createdAt?: string; updatedAt?: string };
+type Unit = AuditRow & { id: string; name: string; remark?: string | null; isActive: boolean; createdAt?: string; updatedAt?: string };
 
 export function UnitPoolPage() {
   const [rows, setRows] = useState<Unit[]>([]);
@@ -62,6 +63,7 @@ export function UnitPoolPage() {
     { accessorKey: "name", header: "单位名称" },
     { accessorKey: "remark", header: "备注", cell: ({ row }) => row.original.remark || "-" },
     { id: "status", header: "状态", cell: ({ row }) => <span className={row.original.isActive ? "status-success" : "status-warning"}>{row.original.isActive ? "启用" : "停用"}</span> },
+    ...auditColumns<Unit>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions"><Button size="sm" variant="secondary" onClick={() => openEdit(row.original)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => toggle(row.original)}>{row.original.isActive ? "停用" : "启用"}</Button><Button size="sm" variant="destructive" onClick={() => remove(row.original)}>删除</Button></div> }
   ];
 
