@@ -119,3 +119,33 @@
   界面上叫「最后修改人」时，含义是「最后一次改动这条记录的人」，**不等于业务上最后一次人工操作**。
 - **改名追溯**：现在只存 `id`，用户改名后历史显示会跟着变。若要「当时叫什么」，需要另加姓名快照字段——**本轮不做**，
   已在盘点第七节列为待拍板项。
+
+---
+
+## 六、实施结果（2026-09-16）
+
+6 个提交：`2b40acd` 地基 → `1123f2c` 机制 + 采购参考实现 → `d065cf5` 报表五张表 →
+`e619cfb` 时区运维脚本 → `79940a3` 全站铺开（30 个前端文件）→ `9011d17` 收口。
+
+### 已完成
+
+| 层 | 落地物 |
+| --- | --- |
+| 数据层 | `DailyReportMergeAnomaly` 补 `updated_at`/`updated_by`（迁移 `20260919120000`）+ 7 条迁移守卫 |
+| 接口层 | `AuditActorService`（批量 `namesOf`）+ `AuditActorInterceptor`（响应出口统一注入，10 条边界测试）；报表五张表、盘点单头、成品 QC 两处手写 DTO、成品入库通知嵌套数组都补齐了审计字段 |
+| 界面层 | `auditColumns()` / `auditDetailFields()`；30 个前端文件铺开；凭证纸与 PNG 的「制单」从 UUID 改成姓名 |
+| 时间口径 | `beijing-time.ts` / `audit-time.ts` 两份等价实现（同一组向量）；导出与界面全部改走它，`toLocale*` 清零 |
+| 时区可观测 | `/health` 报 `timezone` / `timezone_utc` / `beijing_now`；启动自检告警；`scripts/db-timezone-utc.sql`（只生成不执行的订正语句） |
+| 不漏的可验证性 | `apps/web/lib/audit-columns-coverage.test.mjs` 5 条守卫（含「界面不得渲染 UUID」） |
+
+### 明确没做完（下一轮）
+
+1. **导出侧只覆盖了一半**：采购单、领料/补料单、生产工序、员工名单的创建/更新时间已有；
+   **应收台账、应付台账、财务报表导出还没有这两列**。
+2. **6 个审计时间线端点仍未接界面**（4 个 `:id/audit-events` + 2 条 timeline）。
+   它们现在返回的 `actorId` 已有 `attachActorToEvents` 可换成姓名，但没有任何页面调用。
+
+### 未验（本机无 PostgreSQL）
+
+迁移未在真库跑过；`/health` 的时区结论、`ALTER DATABASE ... SET timezone TO 'UTC'` 的效果、
+姓名链路的端到端、`test/http/*` 契约测试——都待部署环境确认。
