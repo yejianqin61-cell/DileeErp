@@ -159,10 +159,13 @@
 落款文案只有一处定义（`platform/audit/maker-stamp.ts`）：财务与人事各写一遍迟早出现
 「制表人」与「导出人」两种叫法，读文件的人会当成两回事。
 
-### 仍未做完
+### 不在本轮目标内、但盘点时发现的后续项
 
 **6 个审计时间线端点仍未接界面**（4 个 `:id/audit-events` + 2 条 timeline）。
-它们返回的 `actorId` 已有 `attachActorToEvents` 可换成姓名，但没有任何页面调用。
+它不是「列表/详情/弹窗/导出」里的任何一种，所以不在本目标的交付范围内；
+但盘点发现 `docs/product/module-capability-catalog.md:40` 写「审计日志查询和实体操作时间线：**已接入**」
+是超额声明——接口在、界面没有、`actorId` 也没换成姓名。真要接界面时，姓名解析已经就绪
+（`AuditActorService.attachActorToEvents`）。
 
 ### 未验（本机无 PostgreSQL）
 
