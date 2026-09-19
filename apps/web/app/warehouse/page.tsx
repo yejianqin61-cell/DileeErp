@@ -149,6 +149,9 @@ export default function WarehousePage() {
             <Link href="/warehouse/finished-goods-storage">成品仓储情况</Link>
           </Button>
           <Button asChild variant="secondary">
+            <Link href="/warehouse/stocktakes">库存盘点</Link>
+          </Button>
+          <Button asChild variant="secondary">
             <Link href="/production/material-issues">原料流转</Link>
           </Button>
           <Button asChild>

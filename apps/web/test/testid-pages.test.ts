@@ -40,6 +40,7 @@ const EXPECTED: Record<string, string> = {
   "warehouse/page.tsx": "page-warehouse",
   "warehouse/raw-material-storage/page.tsx": "page-warehouse-raw-material-storage",
   "warehouse/finished-goods-storage/page.tsx": "page-warehouse-finished-goods-storage",
+  "warehouse/stocktakes/page.tsx": "page-warehouse-stocktakes",
   "finance/page.tsx": "page-finance",
   "finance/receivable/page.tsx": "page-finance-receivable",
   "finance/payable/page.tsx": "page-finance-payable",

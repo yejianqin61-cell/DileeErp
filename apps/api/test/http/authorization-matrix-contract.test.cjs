@@ -76,7 +76,7 @@ const NO_MODULE = "noModule";
 const MODULE_ROLES = ["sales", "procurement", "warehouse", "finance", "production", "hr"];
 const ALL_ROLES = [...MODULE_ROLES, NO_MODULE, ADMIN];
 
-/** 37 个控制器文件（recon §5.4 的同一份清单）；矩阵必须逐一覆盖。 */
+/** 38 个控制器文件（recon §5.4 的同一份清单）；矩阵必须逐一覆盖。 */
 const CONTROLLER_FILES = [
   "health.controller.ts",
   "modules/alerts/alerts.controller.ts",
@@ -109,6 +109,7 @@ const CONTROLLER_FILES = [
   "modules/sales/sales-orders.controller.ts",
   "modules/warehouse/finished-goods-inventory.controller.ts",
   "modules/warehouse/finished-goods-outbound.controller.ts",
+  "modules/warehouse/stocktake.controller.ts",
   "platform/attachments/attachments.controller.ts",
   "platform/auth/auth.controller.ts",
   "platform/authorization/admin-users.controller.ts",
@@ -287,6 +288,9 @@ const ENDPOINTS = [
   }),
   endpoint("fg-outbound.outbounds", "modules/warehouse/finished-goods-outbound.controller.ts", "GET", "/api/v1/finished-goods/outbounds", {
     allow: { warehouse: 200 }, deny: ["production", NO_MODULE], note: "类级 warehouse",
+  }),
+  endpoint("stocktake.list", "modules/warehouse/stocktake.controller.ts", "GET", "/api/v1/stocktakes", {
+    allow: { warehouse: 200 }, deny: ["procurement", NO_MODULE], note: "类级 warehouse（9 路由：盘点单导入/确认/冲销全部同权限）",
   }),
 ];
 
@@ -552,9 +556,9 @@ test("authz.require_administrator_separates_read_routes_from_write_routes_on_mas
   assert.notEqual(adminExport.status, 401, "会话必须有效");
 });
 
-test("authz.matrix_covers_all_37_controllers_and_their_route_shapes", () => {
+test("authz.matrix_covers_all_38_controllers_and_their_route_shapes", () => {
   const covered = new Set(ENDPOINTS.map((entry) => entry.file));
-  assert.equal(covered.size, 37, `矩阵应覆盖 37 个控制器文件，实际 ${covered.size}`);
+  assert.equal(covered.size, 38, `矩阵应覆盖 38 个控制器文件，实际 ${covered.size}`);
   for (const file of CONTROLLER_FILES) assert.ok(covered.has(file), `矩阵缺少控制器：${file}`);
 
   const ids = ENDPOINTS.map((entry) => entry.id);

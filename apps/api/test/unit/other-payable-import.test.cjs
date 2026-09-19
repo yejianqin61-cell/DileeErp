@@ -231,6 +231,8 @@ test("文档形态（表头不在第一行）：到第一个空行为止，表�
 const auditStub = () => ({ record: async () => {}, create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }) });
 const cashFlowStub = () => ({ requireItem: async () => null, recordConfirmation: async () => null });
 const USER = { id: "user-1" };
+/** 自动编码的前缀带当天日期（平台统一规则）：断言里必须用当天，否则只有写测试那天才会绿。 */
+const TODAY = new Date().toISOString().slice(0, 10).replaceAll("-", "");
 
 function prismaStub(options = {}) {
   const createdEntries = [];
@@ -241,7 +243,7 @@ function prismaStub(options = {}) {
     { id: "sup-2", supplierCode: "SUP-0002", name: "顺丰速运" },
   ];
   const supplier = {
-    findMany: async (args) => (args?.where?.supplierCode?.startsWith ? [{ supplierCode: "SUP-20260916-0001" }] : suppliers),
+    findMany: async (args) => (args?.where?.supplierCode?.startsWith ? [{ supplierCode: `SUP-${TODAY}-0001` }] : suppliers),
     create: async ({ data }) => {
       if (options.failSupplierCreate) throw new Error("supplier-create-failed");
       createdSuppliers.push(data);
@@ -313,8 +315,8 @@ test("供应商池里没有的对方按名称自动建档，编码走 SUP-当天
   assert.equal(result.imported, 2);
   assert.equal(stub.createdSuppliers.length, 1, "同名（忽略空格）只该建一个供应商");
   assert.equal(stub.createdSuppliers[0].name, "新房东");
-  assert.equal(stub.createdSuppliers[0].supplierCode, "SUP-20260916-0002", "已有 0001，新号从 0002 起");
-  assert.deepEqual(result.createdSuppliers, [{ name: "新房东", supplierCode: "SUP-20260916-0002", rows: 2 }]);
+  assert.equal(stub.createdSuppliers[0].supplierCode, `SUP-${TODAY}-0002`, "已有 0001，新号从 0002 起");
+  assert.deepEqual(result.createdSuppliers, [{ name: "新房东", supplierCode: `SUP-${TODAY}-0002`, rows: 2 }]);
   // 两行都挂到新建的那个供应商上
   assert.deepEqual(stub.createdEntries.map((row) => row.supplierId), ["sup-new-1", "sup-new-1"]);
   assert.match(result.hints.join(" "), /新增了 1 个供应商/);

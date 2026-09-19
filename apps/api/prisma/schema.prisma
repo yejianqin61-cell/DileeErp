@@ -489,6 +489,7 @@ model Unit {
   finishedGoodsOutboundNotices FinishedGoodsOutboundNotice[]
   finishedGoodsInboundNotices FinishedGoodsInboundNotice[]
   customerReturns           CustomerReturn[]
+  stocktakeLines            StocktakeLine[]
 
   @@map("units")
 }
@@ -521,6 +522,7 @@ model Material {
   rawMaterialMovementLines  RawMaterialMovementLine[]
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
   outsourceReturnTransfers  OutsourceReturnTransfer[]
+  stocktakeLines            StocktakeLine[]
 
   @@unique([name, specificationModel, color])
   @@index([defaultUnitId])
@@ -783,6 +785,8 @@ model InventoryFact {
   orderNo                      String?                  @map("order_no") @db.VarChar(100)
   productionOrderId            String?                  @map("production_order_id") @db.Uuid
   rawMaterialMovementLineId    String?                  @map("raw_material_movement_line_id") @db.Uuid
+  /// 盘点调整来源行：盘点确认（盘盈/盘亏）与盘点冲销写进来的数量事实都指向它。
+  stocktakeLineId              String?                  @map("stocktake_line_id") @db.Uuid
   finishedGoodsInboundId       String?                  @map("finished_goods_inbound_id") @db.Uuid
   finishedGoodsDefectiveId     String?                  @map("finished_goods_defective_id") @db.Uuid
   finishedGoodsOutboundId      String?                  @map("finished_goods_outbound_id") @db.Uuid
@@ -795,6 +799,7 @@ model InventoryFact {
   material                     Material?                @relation(fields: [materialId], references: [id])
   productionOrder              ProductionOrder?         @relation(fields: [productionOrderId], references: [id])
   rawMaterialMovementLine      RawMaterialMovementLine? @relation(fields: [rawMaterialMovementLineId], references: [id])
+  stocktakeLine                StocktakeLine?           @relation(fields: [stocktakeLineId], references: [id])
   finishedGoodsInbound         FinishedGoodsInbound?    @relation(fields: [finishedGoodsInboundId], references: [id])
   finishedGoodsDefective       FinishedGoodsDefective?  @relation(fields: [finishedGoodsDefectiveId], references: [id])
   finishedGoodsOutbound        FinishedGoodsOutbound?   @relation(fields: [finishedGoodsOutboundId], references: [id])
@@ -810,6 +815,7 @@ model InventoryFact {
   @@index([finishedGoodsDefectiveId])
   @@index([finishedGoodsOutboundId])
   @@index([customerReturnId])
+  @@index([stocktakeLineId])
   @@map("inventory_facts")
 }
 
@@ -2493,4 +2499,87 @@ model BankTransfer {
   @@index([fromBankId, status])
   @@index([toBankId, status])
   @@map("bank_transfers")
+}
+
+/// 库存盘点单（仓库，用户 2026-09-16：「仓库模块增加一个盘点管理，可以将每月一次的盘点数据
+/// 导入系统，调整库存物料数量。物料的产品代码作为唯一性」）。
+///
+/// 与已确认的盘点口径一致（docs/design/warehouse-module-design.md §6，集中待确认事项 28）：
+/// **盘点不直接改库存余额**，确认时按行生成独立的库存调整事实（inventory_facts），并留下审计。
+/// 于是「导入」只建一张草稿单：确认前随时可改可删（草稿不是业务事实），确认后只能冲销。
+model Stocktake {
+  id             String    @id @default(uuid()) @db.Uuid
+  stocktakeNo    String    @unique @map("stocktake_no") @db.VarChar(100)
+  /// 盘点月份 YYYY-MM。用户口径是「每月一次」，按月份归档才能和纸质盘点表对上。
+  periodMonth    String    @map("period_month") @db.VarChar(7)
+  /// draft（草稿：可改可删）| confirmed（已确认：已写库存调整）| reversed（已冲销）
+  status         String    @default("draft") @db.VarChar(30)
+  /// 导入来源文件名。盘点表是外部 Excel，事后必须能说清这张单子从哪个文件来。
+  sourceFileName String?   @map("source_file_name") @db.VarChar(300)
+  importedAt     DateTime? @map("imported_at")
+  confirmedAt    DateTime? @map("confirmed_at")
+  confirmedBy    String?   @map("confirmed_by") @db.Uuid
+  reversedAt     DateTime? @map("reversed_at")
+  reversedBy     String?   @map("reversed_by") @db.Uuid
+  reversalReason String?   @map("reversal_reason") @db.VarChar(1000)
+  remark         String?   @db.VarChar(1000)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  createdBy      String    @map("created_by") @db.Uuid
+  updatedBy      String    @map("updated_by") @db.Uuid
+  deletedAt      DateTime? @map("deleted_at")
+  deletedBy      String?   @map("deleted_by") @db.Uuid
+  lines          StocktakeLine[]
+
+  @@index([periodMonth, status])
+  @@map("stocktakes")
+}
+
+/// 盘点明细行。一行 = 盘点表里的一行（产品代码 + 仓位 + 货位 + 实盘数）。
+///
+/// 三个数量快照必须分开存，否则事后解释不清「为什么差异和我导进来时看到的不一样」：
+///   - `bookQuantitySnapshot`：**导入时**的账面数，操作员当时看到的数，只作展示；
+///   - `bookQuantityAtConfirm`：**确认时**的账面数，真正参与计算的那个数；
+///   - `appliedQuantity`：确认时实际写进库存事实的差额（= 实盘数 − 确认时账面数）。
+/// 导入与确认之间仓库可能又发生了领料/入库；按确认时账面重算，才不会把那些真实收发悄悄冲掉
+/// （用户 2026-09-16 已确认这一条）。
+///
+/// `warehouseZone` / `binLocation` 是**文本记录**，不是库位维度：V1 已确认不建库位主数据
+/// （集中待确认事项 1），这里原样收下是为了能和纸质盘点表逐行对照、找货。
+/// 同一产品代码出现在多个仓位时按物料合并后再与账面比（见 stocktake-import.ts 的口径）。
+model StocktakeLine {
+  id                    String   @id @default(uuid()) @db.Uuid
+  stocktakeId           String   @map("stocktake_id") @db.Uuid
+  /// 盘点表内的行号（1 起，按文件顺序）：报错与对表都用它。
+  lineNo                Int      @map("line_no")
+  materialId            String   @map("material_id") @db.Uuid
+  /// 产品代码 = 物料编码（用户 2026-09-16 确认两者是同一个字段）。存快照是为了物料改名/改码后
+  /// 还能还原「当时盘的是哪一行」。
+  productCodeSnapshot   String   @map("product_code_snapshot") @db.VarChar(80)
+  productNameSnapshot   String   @map("product_name_snapshot") @db.VarChar(200)
+  specificationSnapshot String?  @map("specification_snapshot") @db.VarChar(200)
+  warehouseZone         String?  @map("warehouse_zone") @db.VarChar(100)
+  binLocation           String?  @map("bin_location") @db.VarChar(100)
+  /// 盘点单位固定取物料的默认单位：跨单位相加没有意义，V1 也不做单位换算（集中待确认事项 4）。
+  unitId                String   @map("unit_id") @db.Uuid
+  /// 实盘数：允许 0（整箱盘没了就是 0，这正是盘亏要记的事），不允许负数。
+  actualQuantity        Decimal  @map("actual_quantity") @db.Decimal(18, 4)
+  bookQuantitySnapshot  Decimal  @map("book_quantity_snapshot") @db.Decimal(18, 4)
+  differenceSnapshot    Decimal  @map("difference_snapshot") @db.Decimal(18, 4)
+  bookQuantityAtConfirm Decimal? @map("book_quantity_at_confirm") @db.Decimal(18, 4)
+  appliedQuantity       Decimal? @map("applied_quantity") @db.Decimal(18, 4)
+  differenceReason      String?  @map("difference_reason") @db.VarChar(1000)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  createdBy             String   @map("created_by") @db.Uuid
+  updatedBy             String   @map("updated_by") @db.Uuid
+  stocktake             Stocktake @relation(fields: [stocktakeId], references: [id])
+  material              Material  @relation(fields: [materialId], references: [id])
+  unit                  Unit      @relation(fields: [unitId], references: [id])
+  inventoryFacts        InventoryFact[]
+
+  @@unique([stocktakeId, lineNo])
+  @@index([materialId])
+  @@index([stocktakeId])
+  @@map("stocktake_lines")
 }
