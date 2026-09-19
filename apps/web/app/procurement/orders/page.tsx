@@ -17,6 +17,7 @@ import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-w
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../../lib/currency-catalogue";
 import { downloadFile } from "../../../lib/download";
+import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { paymentTermOptions, printFieldsDefaults, printFieldsPayload } from "../../../lib/purchase-order-print";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
@@ -25,7 +26,7 @@ type InspectionBatch = { id: string; status: string; qcResult?: string | null; i
 type InboundBatch = { id: string; inboundNo: string; quantity: string; status: string };
 type Receipt = { id: string; receiptNo: string; quantity: string; status?: string; remark?: string | null; receivedDate?: string; batchSequence?: number; inspections?: InspectionBatch[]; rawMaterialInbounds?: InboundBatch[] };
 type PurchaseItem = { id: string; materialId: string; unitId: string; bomItemId?: string | null; supplierId?: string | null; expectedDate?: string | null; model?: string | null; quantity: string; unitPrice?: string; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; supplier?: { name?: string | null } | null; receipts: Receipt[]; batchWorkflows?: Array<{ receiptId: string; receiptNo: string; batchSequence: number; receivedQuantity: string; inspections: InspectionBatch[]; inbounds: InboundBatch[] }> };
-type PurchaseOrder = {
+type PurchaseOrder = AuditRow & {
   id: string; purchaseOrderNo: string; orderNo: string; bomId: string | null; supplierId: string | null;
   purchaseDate?: string | null; expectedDate?: string | null; status: string; currency: string | null; totalAmount: string;
   extensionData?: { arrival_closed?: boolean; over_order?: boolean };
@@ -338,6 +339,7 @@ export default function PurchaseOrdersPage() {
     { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
     { id: "status", header: "状态", cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
     { id: "amount", header: "金额", cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },
+    ...auditColumns<PurchaseOrder>(),
     { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; return <div className="action-row">{isDraft && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" asChild><Link href={`/procurement/orders/${row.original.id}`}>到货跟踪</Link></Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}
         {/* 打印信息（付款方式/交期条款/交货地址/交货日期/回签三格）：任何状态都能填，含已下单 */}
         <Button size="sm" variant="secondary" data-testid={`order-print-info-${row.original.purchaseOrderNo}`} onClick={() => openPrintInfo(row.original)}>打印信息</Button>

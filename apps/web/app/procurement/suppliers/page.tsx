@@ -8,11 +8,12 @@ import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
+import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
 import { fuzzyMatch } from "../../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Reference = { id: string; supplierCode?: string; code?: string; name?: string; contactName?: string | null; phone?: string | null; address?: string | null; remark?: string | null; isActive?: boolean };
+type Reference = AuditRow & { id: string; supplierCode?: string; code?: string; name?: string; contactName?: string | null; phone?: string | null; address?: string | null; remark?: string | null; isActive?: boolean };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
@@ -125,6 +126,7 @@ export default function SuppliersPage() {
     { accessorKey: "address", header: "地址", cell: ({ row }) => row.original.address || "-" },
     { accessorKey: "remark", header: "备注", cell: ({ row }) => row.original.remark ?? "-" },
     { id: "status", header: "状态", cell: ({ row }) => row.original.isActive === false ? "停用" : "启用" },
+    ...auditColumns<Reference>(),
     {
       id: "actions", header: "操作",
       cell: ({ row }) => (

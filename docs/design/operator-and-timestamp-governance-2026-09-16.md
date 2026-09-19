@@ -72,13 +72,18 @@
 
 现在**没有任何 id→姓名通道**，前端只能从 `/auth/me` 拿到自己。因此：
 
-- 新增 `AuditActorService`（`platform/audit/audit-actor.service.ts`）：
-  - `namesOf(ids: string[]): Promise<Map<string, string>>` —— **一次 `findMany({ where: { id: { in: ids } } })` 取全部**，
-    按 `id` 去重、剔除空值；**禁止在循环里逐行查**（现存 `material-slip-export.service.ts:250` 的批量导出就是逐行查的 N+1，本轮一并改掉）。
-  - `attach<T>(row)` / `attachAll<T>(rows)` —— 给行补 `created_by_name` / `updated_by_name`，
-    并**保留**原始 `created_at` / `updated_at`（ISO，UTC）。
+- `AuditActorService`（`platform/audit/audit-actor.service.ts`）：
+  - `namesOf(ids)` —— **一次 `findMany({ where: { id: { in: ids } } })` 取全部**，去重、剔除空值；
+  - `attach` / `attachAll` / `attachActorToEvents`，并导出纯函数 `withActorNames`（**查无此人补 `null`，绝不回落到 id**）。
+- **姓名的注入点是「响应出口」，不是逐个 service**：`AuditActorInterceptor`（`platform/audit/audit-actor.interceptor.ts`，
+  在 `main.ts` 全局注册）扫描响应里的业务行，按页一次性补 `created_by_name` / `updated_by_name`。
+  为什么不在 service 里加——实测只改采购两个 service 就打断 **20 个**既有单元测试的构造桩，
+  而全站有 47 个 service、上百个列表/详情端点，逐个改必然漏；姓名是**展示层**的事，
+  业务 service 不该知道「界面要显示谁」。拦截器同时认「裸返回值」与「已包信封」，
+  与 `ResponseEnvelopeInterceptor` 的注册顺序无关，且**任何异常都不影响业务响应**。
 - **字段命名**：`created_by_name` / `updated_by_name`（snake_case，与既有计算字段 `status_label` / `line_count` 一致）。
-- 形态 B 的接口（用 `select` 裁掉审计字段的：报表、告警、质检）**要补上** `createdAt/updatedAt` + 走 `attachAll`。
+- 形态 B 的接口（用 `select` 裁掉审计字段的：报表、告警、质检）拦截器帮不上忙——
+  它们的响应里根本没有 `createdBy`，**必须逐端点把审计字段加回 `select`**，这部分在模块铺开时做。
 
 ### 3.3 界面层：公共列工厂（避免 50+ 处各写各的）
 
