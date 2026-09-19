@@ -1,4 +1,6 @@
 import * as ExcelJS from "exceljs";
+// 文件名里的时间戳也走北京时间：它和文件内容里的「制表时间」会被用户对照。
+import { beijingStamp } from "../../platform/time/beijing-time";
 import { reportTotalRow } from "./finance-report.tables";
 import type { ReportCell, ReportColumn, ReportTable } from "./finance-report.types";
 
@@ -183,7 +185,7 @@ type WorkbookResponse = {
 export async function sendWorkbook(response: WorkbookResponse, table: ReportTable | ReportTable[], label: string) {
   const tables = Array.isArray(table) ? table : [table];
   const body = await renderReportWorkbook(tables);
-  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  const stamp = beijingStamp();
   const fileName = `迪礼ERP-${label}-${stamp}-${tables[0]?.rows.length ?? 0}行.xlsx`;
   response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);

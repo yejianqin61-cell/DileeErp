@@ -4,6 +4,8 @@ import type { Response } from "express";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
+// 文件名里的时间戳也走北京时间（与文件内容里的操作时间同口径）。
+import { beijingStamp } from "../../platform/time/beijing-time";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { PurchaseOrderExportService } from "./purchase-order-export.service";
 
@@ -38,7 +40,7 @@ export class PurchaseOrderExportController {
   @RequireAdministrator()
   async batch(@Query() query: BatchOrderExportDto, @Res() response: Response) {
     const result = await this.exports.exportOrders(query);
-    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+    const stamp = beijingStamp();
     return this.send(response, result.buffer, `迪礼ERP-采购订单汇总-${stamp}-${result.count}张.xlsx`);
   }
 

@@ -19,6 +19,9 @@
  */
 
 import { lookupRegion, type ChinaRegion } from "./china-region";
+// 时间口径固定北京时间：原先这里用 toISOString() 写「创建时间/更新时间」，
+// 那是 UTC，比北京时间早 8 小时（2026-09-16 全站治理统一）。
+import { beijingDateTime } from "../../platform/time/beijing-time";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -217,6 +220,10 @@ export const EMPLOYEE_EXPORT_HEADERS = [
   "员工备注",
   "创建时间",
   "更新时间",
+  // 2026-09-16 全站治理：花名册导出也要能看到「谁建的、谁最后改的」。
+  // 放在最后是为了不动已有列的下标（这个表头同时是导入模板，列序变了会让老模板的对照变难）。
+  "创建人",
+  "最后修改人",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -871,6 +878,8 @@ export function employeeExportRow(
     homeAddress?: string | null; currentAddress?: string | null; phone?: string | null;
     emergencyContact?: string | null; emergencyPhone?: string | null; remark?: string | null;
     userId?: string | null; createdAt: Date; updatedAt: Date;
+    /** 审计姓名（2026-09-16 全站治理）：调用方在导出前用批量查询解析好，取不到就留空、绝不回落成 UUID。 */
+    created_by_name?: string | null; updated_by_name?: string | null;
   },
   index: number,
   username: string,
@@ -913,7 +922,9 @@ export function employeeExportRow(
     "绑定系统用户名": row.userId ? username : "",
     "离职日期": formatRosterDate(row.leftOn),
     "员工备注": row.remark ?? "",
-    "创建时间": row.createdAt.toISOString().replace("T", " ").slice(0, 19),
-    "更新时间": row.updatedAt.toISOString().replace("T", " ").slice(0, 19),
+    "创建时间": beijingDateTime(row.createdAt, { seconds: true }),
+    "更新时间": beijingDateTime(row.updatedAt, { seconds: true }),
+    "创建人": row.created_by_name ?? "",
+    "最后修改人": row.updated_by_name ?? "",
   };
 }

@@ -36,7 +36,10 @@ function build(rows) {
     operationCatalog: { findFirst: async () => ({ operationName: "缝制" }) },
   };
   const audit = { record: async () => undefined };
-  return new ProductionPayrollExportService(prisma, audit);
+  // 明细三张表末尾有审计四列（2026-09-16 全站治理）：姓名由 AuditActorService 批量解析。
+  // 按 id 给出不同姓名，才能验证「创建人」与「最后修改人」没有互相串位。
+  const actors = { namesOf: async (ids) => new Map([...new Set(ids.filter(Boolean))].map((id) => [id, id === "user-2" ? "李四" : "张三"])) };
+  return new ProductionPayrollExportService(prisma, audit, actors);
 }
 
 function sheetRows(buffer) {
@@ -178,4 +181,33 @@ test("当月工序明细总表 / 订单号盘点表：汇总与明细的数字�
     assert.equal(cellType(sheet, headerIndex + 1, column), "n", `订单号盘点表明细第 ${column} 列必须是数值单元格`);
   }
   assertNoTextNumbers(order, "订单号盘点表");
+});
+
+test("三张明细表末尾带审计四列：创建人/创建时间/最后修改人/最后修改时间（北京时间，无 UUID）", async () => {
+  const row = reportRow({
+    createdBy: "user-1", updatedBy: "user-2",
+    createdAt: new Date("2026-09-03T01:30:00.000Z"), updatedAt: new Date("2026-09-04T02:00:00.000Z"),
+  });
+  const service = build([row]);
+  const user = { id: "user-1", username: "admin" };
+
+  for (const [label, buffer] of [
+    ["工序盘点表", await service.exportOperation({ operation_id: "operation-1", month: "2026-09" }, user)],
+    ["当月工序明细总表", await service.exportMonthlyOperations({ month: "2026-09" }, user)],
+    ["订单号盘点表", await service.exportOrder({ order_no: "DL260001" }, user)],
+  ]) {
+    const rows = sheetRows(buffer);
+    const header = rowContaining(rows, "时长（小时）");
+    assert.deepEqual(header.slice(-4), ["创建人", "创建时间", "最后修改人", "最后修改时间"], `${label} 明细表头缺审计四列`);
+
+    // 工号（第 5 列）为 E001 的那一行就是明细行
+    const detail = rows.find((item) => Array.isArray(item) && item[4] === "E001");
+    assert.ok(detail, `${label} 找不到明细行`);
+    assert.deepEqual(detail.slice(-4), ["张三", "2026-09-03 09:30", "李四", "2026-09-04 10:00"], `${label} 的审计四列取值不对`);
+
+    // 整行不得出现 UUID 形态的字符串（验收标准 ①在导出侧的落地）
+    for (const cell of detail) {
+      assert.equal(typeof cell === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(cell), false, `${label} 单元格里出现了 UUID：${String(cell)}`);
+    }
+  }
 });

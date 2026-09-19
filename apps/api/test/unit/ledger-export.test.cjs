@@ -73,19 +73,35 @@ test("筛选器上的计数：all 含冲销/作废，所以不等于 unpaid + pa
 // 二、导出内容与数值类型
 // --------------------------------------------------------------------------
 
+// 审计四列的夹具（2026-09-16 全站治理）：姓名由 controller 在导出前用
+// AuditActorService.attachAll 解析好；时间固定按北京时间写到分。
+const AUDIT_NAMES = { created_by_name: "张三", updated_by_name: "李四" };
+const AUDIT_UPDATED_AT = new Date("2026-09-02T06:05:00.000Z");
+// 应付台账原有 17 列（下标 0..16），审计四列接在末尾 17..20
+const PAYABLE_AUDIT_START = 17;
+// 应收台账原有 16 列（下标 0..15），审计四列接在末尾 16..19
+const RECEIVABLE_AUDIT_START = 16;
+
 const payableRow = (extra = {}) => ({
   payableNo: "AP-001", confirmationDate: new Date("2026-09-10T00:00:00.000Z"), supplier_name: "晋江大田", supplierId: "supplier-1",
   sourceType: "raw_material_inbound", source_no: "IN-001", sourceNoSnapshot: "IN-001", orderNo: "SO-1", purchase_order_no: "PO-1",
   material_name: "涤纶布", material_specification: "150D", quantity: "100.0000", unit_name: "米",
-  unitPrice: "5.0000", amount: "500.0000", currency: "CNY", status: "draft", remark: null, ...extra,
+  unitPrice: "5.0000", amount: "500.0000", currency: "CNY", status: "draft", remark: null,
+  createdAt: new Date("2026-09-01T02:30:00.000Z"), updatedAt: AUDIT_UPDATED_AT, ...AUDIT_NAMES, ...extra,
 });
 
+// 应收的 createdAt 同时是「出库日期」列与「创建时间」列的取值（应收来源的创建时间＝出库过账日期），
+// 所以这里不能像应付那样随手改它：2026-09-07T00:00Z 在北京时间仍是 09-07 08:00。
 const receivableRow = (extra = {}) => ({
   sourceNo: "AR-001", createdAt: new Date("2026-09-07T00:00:00.000Z"), customer_name: "香港迪礼", customerId: "customer-1",
   orderNo: "SO-1", outbound_no: "OUT-001", product_name: "折叠伞", product_specification: "黑胶",
   quantity: "120.0000", unit: "打", unitPrice: "120.0000", amount: "14310.0000", currency: "USD",
-  dueDate: null, status: "draft", remark: null, ...extra,
+  dueDate: null, status: "draft", remark: null, updatedAt: AUDIT_UPDATED_AT, ...AUDIT_NAMES, ...extra,
 });
+
+/** 一行里出现的审计四格：创建人 / 创建时间 / 最后修改人 / 最后修改时间。 */
+const auditCells = (row, start) => row.slice(start, start + 4);
+
 
 test("应付台账导出：付款情况/状态按中文口径，来源类型也是中文", () => {
   const table = buildPayableLedgerTable([payableRow(), payableRow({ payableNo: "AP-002", status: "confirmed" })]);
@@ -114,6 +130,30 @@ test("应收台账导出：收款情况/状态按中文口径", () => {
   assert.equal(receivablePaymentText("partially_paid"), "部分收款");
 });
 
+test("两张台账导出都带「创建人 / 创建时间 / 最后修改人 / 最后修改时间」四列，时间是北京时间到分", () => {
+  const payable = buildPayableLedgerTable([payableRow()]);
+  const receivable = buildReceivableLedgerTable([receivableRow()]);
+
+  // 姓名取的是解析出来的姓名，不是 createdBy 那个 UUID
+  assert.deepEqual(auditCells(payable.rows[0], PAYABLE_AUDIT_START), ["张三", "2026-09-01 10:30", "李四", "2026-09-02 14:05"]);
+  assert.deepEqual(auditCells(receivable.rows[0], RECEIVABLE_AUDIT_START), ["张三", "2026-09-07 08:00", "李四", "2026-09-02 14:05"]);
+
+  const headers = (columns) => columns.map((column) => column.header);
+  assert.deepEqual(headers(payable.columns).slice(-4), ["创建人", "创建时间", "最后修改人", "最后修改时间"]);
+  assert.deepEqual(headers(receivable.columns).slice(-4), ["创建人", "创建时间", "最后修改人", "最后修改时间"]);
+});
+
+test("审计列取不到姓名时留空格子，绝不回落成 UUID", () => {
+  const payable = buildPayableLedgerTable([payableRow({ created_by_name: null, updated_by_name: null })]);
+  assert.deepEqual(auditCells(payable.rows[0], PAYABLE_AUDIT_START), ["", "2026-09-01 10:30", "", "2026-09-02 14:05"]);
+  // 整行都不该出现 UUID 形态的字符串（这是验收标准 ①「无 UUID」在导出侧的落地）
+  for (const cell of payable.rows[0]) {
+    assert.equal(typeof cell === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(cell), false, `单元格里出现了 UUID：${String(cell)}`);
+  }
+  // 连 createdBy 的原始 UUID 都不许进单元格（夹具里 supplierId 就是 UUID 形态，但它不在输出里）
+  assert.equal(payable.rows[0].includes("supplier-1"), false, "供应商 id 只在没有名称时才回落，这里有名称");
+});
+
 test("导出落到 Excel 里必须是数值类型（文本型数字在 Excel 里 SUM 得 0）", async () => {
   const buffer = await renderReportWorkbook([buildPayableLedgerTable([payableRow()]), buildReceivableLedgerTable([receivableRow()])]);
   const workbook = XLSX.read(buffer, { type: "buffer" });
@@ -127,6 +167,10 @@ test("导出落到 Excel 里必须是数值类型（文本型数字在 Excel 里
   assert.equal(rows[1][14], "未付");
   // 文本列不能被误判成数字
   assert.equal(typeof rows[1][1], "string");
+  // 审计四列在 Excel 里也是独立列（财务要按「创建时间」排序/筛选，挤在一格就做不到）
+  assert.deepEqual(rows[0].slice(PAYABLE_AUDIT_START, PAYABLE_AUDIT_START + 4), ["创建人", "创建时间", "最后修改人", "最后修改时间"]);
+  assert.equal(rows[1][PAYABLE_AUDIT_START], "张三");
+  assert.equal(rows[1][PAYABLE_AUDIT_START + 1], "2026-09-01 10:30");
 });
 
 test("含多种币种时表尾写明不做合计（跨币种相加没有意义）", () => {

@@ -5,6 +5,7 @@ import { ArrayNotEmpty, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUI
 import type { Response } from "express";
 import type { Express } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
+import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
@@ -176,7 +177,7 @@ class SupplierOtherPayableDto {
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("finance")
 export class FinanceController {
-  constructor(private readonly receivable: ReceivableService, private readonly payments: CustomerPaymentService, private readonly adjustments: ReceivableAdjustmentService, private readonly reconciliations: ReconciliationService, private readonly payable: SupplierPayableService, private readonly supplierPayments: SupplierPaymentService, private readonly supplierReconciliations: SupplierPayableReconciliationService) {}
+  constructor(private readonly receivable: ReceivableService, private readonly payments: CustomerPaymentService, private readonly adjustments: ReceivableAdjustmentService, private readonly reconciliations: ReconciliationService, private readonly payable: SupplierPayableService, private readonly supplierPayments: SupplierPaymentService, private readonly supplierReconciliations: SupplierPayableReconciliationService, private readonly actors: AuditActorService) {}
   @Get("receivable-sources") async listSources(@Query("order_no") orderNo?: string, @Query("customer_id") customerId?: string, @Query("status") status?: string) { return { data: await this.receivable.list(orderNo, customerId, status), meta: {} }; }
   @Get("receivable-sources/:id") async getSource(@Param("id") id: string) { return { data: await this.receivable.get(id), meta: {} }; }
   @Post("receivable-sources/from-outbound/:outboundId") async createSource(@Param("outboundId") outboundId: string, @Body() body: SourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.createFromOutbound(outboundId, body, user), meta: {} }; }
@@ -251,14 +252,16 @@ export class FinanceController {
   @Get("payable-entries.xlsx")
   async exportPayableEntries(@Query() query: LedgerExportDto, @Res() response: Response) {
     const rows = await this.payable.list(query.order_no, query.supplier_id, undefined, { payment: query.payment ?? "all", from: query.from, to: query.to, q: query.q });
-    return sendWorkbook(response, buildPayableLedgerTable(rows), "应付台账");
+    // 导出的单元格里绝不能出现 UUID：这里先把 createdBy/updatedBy 解析成姓名（一次 IN 查询），
+    // 台账工作簿再把它写成「创建人 / 创建时间 / 最后修改人 / 最后修改时间」四列。
+    return sendWorkbook(response, buildPayableLedgerTable(await this.actors.attachAll(rows)), "应付台账");
   }
 
   /** 应收台账导出 xlsx（「确认应收」页的导出），口径与上面完全对称。 */
   @Get("receivable-sources.xlsx")
   async exportReceivableSources(@Query() query: LedgerExportDto, @Res() response: Response) {
     const rows = await this.receivable.list(query.order_no, query.customer_id, undefined, { payment: query.payment ?? "all", from: query.from, to: query.to, q: query.q });
-    return sendWorkbook(response, buildReceivableLedgerTable(rows), "应收台账");
+    return sendWorkbook(response, buildReceivableLedgerTable(await this.actors.attachAll(rows)), "应收台账");
   }
   @Post("payable-entries/:id/confirm") async confirmPayableEntry(@Param("id") id: string, @Body() body: ConfirmSourceDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.confirm(id, user, body ?? {}), meta: {} }; }
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }

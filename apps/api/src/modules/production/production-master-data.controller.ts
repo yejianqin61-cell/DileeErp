@@ -3,6 +3,8 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { IsBoolean, IsDateString, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
+// 文件名里的时间戳也走北京时间（与文件内容里的操作时间同口径）。
+import { beijingStamp } from "../../platform/time/beijing-time";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
@@ -68,7 +70,7 @@ export class ProductionMasterDataController {
   @Patch("production/positions/:id/active") @RequireAdministrator() activePosition(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.setPositionActive(id, body.is_active, user)); }
   @Delete("production/positions/:id") @RequireAdministrator() deletePosition(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.deletePosition(id, user)); }
   @Post("production/positions/:id/restore") @RequireAdministrator() restorePosition(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restorePosition(id, user)); }
-  @Get("production/employees/export.xlsx") @RequireAdministrator() async exportEmployees(@Query() query: EmployeeQueryDto, @Res() response: Response) { const body = await this.service.exportEmployees(query); const fileName = `DileeERP-employees-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}.xlsx`; response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
+  @Get("production/employees/export.xlsx") @RequireAdministrator() async exportEmployees(@Query() query: EmployeeQueryDto, @Res() response: Response) { const body = await this.service.exportEmployees(query); const fileName = `DileeERP-employees-${beijingStamp()}.xlsx`; response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
   @Get("production/employees/import-template.xlsx") @RequireAdministrator() async employeeImportTemplate(@Res() response: Response) { const body = this.service.employeeImportTemplate(); response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent("迪礼ERP-员工导入模板.xlsx")}`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
   @Post("production/employees/import") @RequireAdministrator() @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: employeeImportFileFilter })) async importEmployees(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) { return this.ok(await this.service.importEmployees(file, user)); }
   @Get("production/employees") employees(@Query() query: EmployeeQueryDto) { return this.ok(this.service.listEmployees(query)); }

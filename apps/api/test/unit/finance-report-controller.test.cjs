@@ -147,11 +147,17 @@ function stubReports(overrides = {}) {
   return { service, filters };
 }
 
-/** 最小 Response 桩：只记录被设置的响应头与 body。 */
-function stubResponse() {
+/**
+ * 最小 Response 桩：只记录被设置的响应头与 body。
+ *
+ * `req.currentUser` 是必须的：导出的表尾要写「制表人」（2026-09-16 全站治理），
+ * 而 controller 从 `response.req.currentUser` 取当前用户（AuthenticationGuard 挂在 request 上）。
+ */
+function stubResponse(currentUser = { id: "user-1", username: "caiwu", display_name: "财务小李" }) {
   return {
     headers: {},
     body: null,
+    req: { currentUser },
     setHeader(name, value) {
       this.headers[name] = value;
       return this;
@@ -310,7 +316,12 @@ test("finance-report.api：空结果照样导出表头（能确定「确实是 0
   const workbook = XLSX.read(response.body, { type: "buffer" });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
-  assert.equal(rows.length, 1, "只有表头");
+  assert.ok(rows[0].includes("日期"), "第一行仍是表头：0 行也要能看出是「确实没有数据」");
+  // 表头之后没有**数据行**；最后一行是表尾（含 2026-09-16 起加的「制表人 / 制表时间」）。
+  const stampIndex = rows.findIndex((row) => Array.isArray(row) && typeof row[0] === "string" && row[0].includes("制表人："));
+  assert.ok(stampIndex > 0, "空结果也要写制表人：0 行同样要能看出这份文件是谁、什么时候生成的");
+  const dataRows = rows.slice(1, stampIndex).filter((row) => row.some((cell) => cell !== null && cell !== ""));
+  assert.deepEqual(dataRows, [], "表头与表尾之间不该有任何数据行");
   const fileName = decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(response.headers["Content-Disposition"])[1]);
   assert.match(fileName, /-0行\.xlsx$/);
 });

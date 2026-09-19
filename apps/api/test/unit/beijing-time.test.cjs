@@ -8,7 +8,7 @@
 // 本机宿主恰好是 +08，不换时区的话「按宿主时区走的错误实现」也会通过。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { BEIJING_TIME_ZONE, beijingDate, beijingDateTime, beijingDateTimeShort, toInstant } = require("../../dist/platform/time/beijing-time.js");
+const { BEIJING_TIME_ZONE, beijingDate, beijingDateTime, beijingDateTimeShort, beijingStamp, toInstant } = require("../../dist/platform/time/beijing-time.js");
 
 test("beijingDateTime：固定北京时间，到分为默认精度", () => {
   assert.equal(beijingDateTime("2026-09-16T00:30:00Z"), "2026-09-16 08:30");
@@ -41,6 +41,14 @@ test("beijingDateTimeShort：同年省略年份，跨年带年份，年份按北
 test("beijingDate：只给日期", () => {
   assert.equal(beijingDate("2026-09-15T16:00:00Z"), "2026-09-16");
   assert.equal(beijingDate(null), "");
+});
+
+test("beijingStamp：导出文件名里的紧凑时间戳，同样按北京时间", () => {
+  // 用 toISOString() 的 UTC 会让文件名（06:30）和文件里的「制表时间」（14:30）对不上。
+  assert.equal(beijingStamp("2026-09-15T16:00:00Z"), "20260916000000");
+  assert.equal(beijingStamp("2026-09-16T06:30:05Z"), "20260916143005");
+  assert.equal(beijingStamp(null), "");
+  assert.equal(beijingStamp().length, 14, "默认取当前时间，定长 14 位");
 });
 
 test("toInstant：Date / ISO / 毫秒数都认，空与非法给 null", () => {

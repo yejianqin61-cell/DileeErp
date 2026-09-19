@@ -74,6 +74,10 @@ function fakePrisma(options = {}) {
       findFirst: async ({ where }) => employees.find((item) => item.id === where.id) ?? null,
       update: async ({ data }) => data,
     },
+    // 员工导出会顺带解析「绑定系统用户名」与审计姓名（创建人/最后修改人）——同一张查询。
+    user: {
+      findMany: async ({ where }) => (options.users ?? []).filter((item) => (where?.id?.in ?? []).includes(item.id)),
+    },
     $transaction: async (operations) => Promise.all(operations),
   };
   return { prisma, created, employees };
@@ -437,6 +441,7 @@ test("导出：花名册 28 列全部落地（含 5 个派生列），并且能�
     homeAddress: "福建省建宁县", currentAddress: "同安区", phone: "159 8078 5005",
     emergencyContact: "石向阳", emergencyPhone: "13159262575", remark: "备注",
     userId: "user-1", createdAt: new Date(Date.UTC(2026, 0, 1, 2, 3, 4)), updatedAt: new Date(Date.UTC(2026, 0, 2, 3, 4, 5)),
+    created_by_name: "张三", updated_by_name: "李四",
   };
   const exported = roster.employeeExportRow(row, 0, "hruser", today);
   for (const header of roster.EMPLOYEE_EXPORT_HEADERS) {
@@ -463,7 +468,13 @@ test("导出：花名册 28 列全部落地（含 5 个派生列），并且能�
   assert.equal(exported["绑定系统用户名"], "hruser");
   assert.equal(exported["员工类型"], "车间");
   assert.equal(exported["部门编码"], "D001");
-  assert.equal(exported["创建时间"], "2026-01-01 02:03:04");
+  // 时间固定北京时间（2026-09-16 统一口径）：夹具是 2026-01-01T02:03:04Z，所以北京时间是 10:03:04。
+  // 原先这里写 "2026-01-01 02:03:04"（UTC），比北京时间早 8 小时。
+  assert.equal(exported["创建时间"], "2026-01-01 10:03:04");
+  assert.equal(exported["更新时间"], "2026-01-02 11:04:05");
+  // 操作人姓名（不是 UUID）
+  assert.equal(exported["创建人"], "张三");
+  assert.equal(exported["最后修改人"], "李四");
 
   // 导出 → 导入闭环：派生列与「序号/员工状态」这类展示列会被解析器忽略，不报错。
   const result = roster.parseEmployeeRosterRows([[...roster.EMPLOYEE_EXPORT_HEADERS], roster.EMPLOYEE_EXPORT_HEADERS.map((header) => exported[header])]);
@@ -928,5 +939,35 @@ test("真实花名册：整份文件 10 行全部导入，字段逐格对上原�
   const round = await new ProductionMasterDataService(fresh.prisma, audit).importEmployees({ buffer: exportBuffer }, user);
   assert.equal(round.errorCount, 0, JSON.stringify(round.errors));
   assert.equal(round.imported, exportedRows.length - 1);
-  assert.deepEqual(round.ignoredColumns, ["绑定系统用户名", "创建时间", "更新时间"]);
+  assert.deepEqual(round.ignoredColumns, ["绑定系统用户名", "创建时间", "更新时间", "创建人", "最后修改人"]);
+});
+
+test("员工名单导出：创建人/最后修改人取姓名（不是 UUID），时间按北京时间", async () => {
+  const departments = [{ id: "dept-1", code: "D001", name: "生产部" }];
+  const positions = [{ id: "pos-1", code: "P001", name: "合片工", departmentId: "dept-1" }];
+  const users = [{ id: "user-1", username: "zhangsan", displayName: "张三" }, { id: "user-2", username: "lisi", displayName: "李四" }];
+  const { prisma } = fakePrisma({
+    departments, positions, users,
+    employees: [{
+      id: "emp-1", employeeNo: "E001", name: "曾某", employeeType: "workshop", employmentStatus: "active",
+      departmentId: "dept-1", positionId: "pos-1", userId: "user-1", createdBy: "user-1", updatedBy: "user-2",
+    }],
+  });
+  const service = new ProductionMasterDataService(prisma, audit);
+
+  const buffer = await service.exportEmployees({});
+  const rows = XLSX.utils.sheet_to_json(XLSX.read(buffer, { type: "buffer" }).Sheets["员工名单"], { header: 1, raw: true, defval: "" });
+  const [header, row] = rows;
+  const at = (name) => row[header.indexOf(name)];
+
+  assert.equal(at("创建人"), "张三");
+  assert.equal(at("最后修改人"), "李四");
+  assert.equal(at("绑定系统用户名"), "zhangsan");
+  // 夹具里两列时间都是 2026-09-16T01:02:03Z → 北京时间 09:02:03（原先导出的是 UTC 01:02:03）
+  assert.equal(at("创建时间"), "2026-09-16 09:02:03");
+  assert.equal(at("更新时间"), "2026-09-16 09:02:03");
+  // 整行不得出现 UUID 形态的字符串（验收标准 ①在导出侧的落地）
+  for (const cell of row) {
+    assert.equal(typeof cell === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(cell), false, `单元格里出现了 UUID：${String(cell)}`);
+  }
 });

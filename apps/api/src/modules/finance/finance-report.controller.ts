@@ -1,7 +1,8 @@
 import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
 import { IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import type { Response } from "express";
-import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
+import { AuthenticationGuard, type AuthenticatedRequest } from "../../platform/authorization/authentication.guard";
+import { makerStamp } from "../../platform/audit/maker-stamp";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
@@ -237,7 +238,19 @@ export class FinanceReportController {
     };
   }
 
+  /**
+   * 导出 XLSX。8 张报表共用这一个出口，所以「生成人 / 生成时间」加在这里一处即可。
+   *
+   * 报表是**期间聚合**口径（一行往往跨多条业务记录），按治理口径不给每行加「创建人 / 最后修改人」
+   * （加了也说不清这一行的操作人是谁），改为在表尾写清**这份文件是谁、什么时候生成的**——
+   * 审计要回答的是「文件从哪来」，这一点表尾说得清。
+   *
+   * 当前用户从 `response.req.currentUser` 取（AuthenticationGuard 在 request 上挂了它）；
+   * 这里不额外加参数是为了不动 8 个端点的方法签名。
+   */
   private send(response: Response, tables: ReportTable[], label: string) {
-    return sendWorkbook(response, tables, label);
+    const actor = (response.req as AuthenticatedRequest).currentUser;
+    const stamp = makerStamp(actor);
+    return sendWorkbook(response, tables.map((table) => ({ ...table, footnotes: [...(table.footnotes ?? []), stamp] })), label);
   }
 }

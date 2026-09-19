@@ -1,5 +1,6 @@
 import type { ReportCell, ReportColumn, ReportTable } from "./finance-report.types";
 import { NUMBER_FORMAT } from "./finance-report.domain";
+import { beijingDateTime } from "../../platform/time/beijing-time";
 
 /**
  * 「确认应收 / 确认应付」两处台账的导出工作簿（用户要求：「两处表单要支持导出 excel，
@@ -29,6 +30,28 @@ const amountOrNull = (value: unknown): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+/**
+ * 台账导出末尾的四个审计列（2026-09-16「操作人与操作时间」全站治理）。
+ *
+ * 导出用**四个独立列**而不是像界面那样把姓名与时间挤在一格：Excel 里挤在一格就没法按时间排序、
+ * 也没法筛选，而这正是财务拿到文件后最常做的事。姓名由调用方在导出前用
+ * `AuditActorService.attachAll` 换好（服务层返回的是 Prisma 整行，只有 createdBy 的 UUID）——
+ * 导出**绝不允许把 UUID 写进单元格**。
+ */
+const AUDIT_LEDGER_COLUMNS: ReportColumn[] = [
+  { header: "创建人", width: 12 },
+  { header: "创建时间", width: 18 },
+  { header: "最后修改人", width: 12 },
+  { header: "最后修改时间", width: 18 },
+];
+
+const auditLedgerCells = (row: { created_by_name?: string | null; updated_by_name?: string | null; createdAt?: Date | string | null; updatedAt?: Date | string | null }): ReportCell[] => [
+  row.created_by_name ?? "",
+  beijingDateTime(row.createdAt),
+  row.updated_by_name ?? "",
+  beijingDateTime(row.updatedAt),
+];
+
 /** 应付台账导出的取数形状（`SupplierPayableService.list()` 的返回值子集）。 */
 export type PayableLedgerExportRow = {
   payableNo: string;
@@ -50,6 +73,11 @@ export type PayableLedgerExportRow = {
   currency: string;
   status: string;
   remark?: string | null;
+  /** 审计（2026-09-16 全站治理）：姓名由调用方在导出前解析好，见 AUDIT_LEDGER_COLUMNS。 */
+  created_by_name?: string | null;
+  updated_by_name?: string | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
 };
 
 /** 应收台账导出的取数形状（`ReceivableService.list()` 的返回值子集）。 */
@@ -70,6 +98,11 @@ export type ReceivableLedgerExportRow = {
   dueDate: Date | string | null;
   status: string;
   remark?: string | null;
+  /** 审计（2026-09-16 全站治理）：姓名由调用方在导出前解析好，见 AUDIT_LEDGER_COLUMNS。
+   *  `createdAt` 上面已经有了（它同时是「出库日期」列与创建时间列的取值）。 */
+  created_by_name?: string | null;
+  updated_by_name?: string | null;
+  updatedAt?: Date | string | null;
 };
 
 const SOURCE_LABELS: Record<string, string> = { raw_material_inbound: "原料入库", purchase_receipt: "采购到货", outsource_receipt: "外加工签收", other: "其他应付" };
@@ -123,6 +156,7 @@ export const PAYABLE_LEDGER_COLUMNS: ReportColumn[] = [
   { header: "付款情况", width: 12 },
   { header: "状态", width: 14 },
   { header: "备注", width: 30 },
+  ...AUDIT_LEDGER_COLUMNS,
 ];
 
 export function buildPayableLedgerTable(rows: PayableLedgerExportRow[]): ReportTable {
@@ -147,6 +181,7 @@ export function buildPayableLedgerTable(rows: PayableLedgerExportRow[]): ReportT
       payablePaymentText(row.status),
       payableStatusText(row.status),
       row.remark ?? "",
+      ...auditLedgerCells(row),
     ]),
     footnotes: ledgerFootnotes(rows.map((row) => row.currency), "付款情况按状态口径：草稿 = 未付；已确认 = 已付（确认应付即记账，金额已从所选银行账户支出）；部分付款 / 已付清来自收付款核销。"),
   };
@@ -169,6 +204,7 @@ export const RECEIVABLE_LEDGER_COLUMNS: ReportColumn[] = [
   { header: "收款情况", width: 12 },
   { header: "状态", width: 14 },
   { header: "备注", width: 30 },
+  ...AUDIT_LEDGER_COLUMNS,
 ];
 
 export function buildReceivableLedgerTable(rows: ReceivableLedgerExportRow[]): ReportTable {
@@ -193,6 +229,7 @@ export function buildReceivableLedgerTable(rows: ReceivableLedgerExportRow[]): R
       receivablePaymentText(row.status),
       receivableStatusText(row.status),
       row.remark ?? "",
+      ...auditLedgerCells(row),
     ]),
     footnotes: ledgerFootnotes(rows.map((row) => row.currency), "收款情况按状态口径：草稿 = 未收；已确认 = 已收（确认应收即记账，金额已记入所选银行账户）；部分收款 / 已收清来自收付款核销。"),
   };

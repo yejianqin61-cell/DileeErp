@@ -94,3 +94,16 @@ export function beijingDate(value: Date | string | number | null | undefined): s
   for (const part of DATE_PARTS.formatToParts(date)) values[part.type] = part.value;
   return `${values.year}-${values.month}-${values.day}`;
 }
+
+/**
+ * `20260916143000`（导出文件名里的紧凑时间戳）。
+ *
+ * 用**北京时间**而不是 `toISOString()` 的 UTC：文件名里带着时间，用户会拿它跟文件内容里的
+ * 「制表时间 / 操作时间」对照，两者差 8 小时会被当成导错了批次。
+ */
+export function beijingStamp(value: Date | string | number | null | undefined = new Date()): string {
+  const date = toInstant(value);
+  if (!date) return "";
+  const parts = partsOf(date);
+  return `${parts.year}${parts.month}${parts.day}${parts.hour}${parts.minute}${parts.second}`;
+}

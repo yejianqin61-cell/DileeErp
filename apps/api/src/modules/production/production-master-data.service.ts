@@ -182,7 +182,29 @@ export class ProductionMasterDataService {
   async listEmployees(filters: { query?: string; employment_status?: string; department_id?: string; position_id?: string; employee_type?: string; hired_from?: string; hired_to?: string; left_from?: string; left_to?: string; has_user?: string; include_deleted?: string } = {}) { const query = filters.query?.trim(); const rows = await this.prisma.employee.findMany({ where: { ...(filters.include_deleted === "true" ? {} : { deletedAt: null }), ...(query ? { OR: [{ employeeNo: { contains: query, mode: "insensitive" } }, { name: { contains: query, mode: "insensitive" } }] } : {}), ...(filters.employment_status ? { employmentStatus: filters.employment_status } : {}), ...(filters.department_id ? { departmentId: filters.department_id } : {}), ...(filters.position_id ? { positionId: filters.position_id } : {}), ...(filters.employee_type ? { employeeType: filters.employee_type } : {}), ...(filters.has_user === "true" ? { userId: { not: null } } : filters.has_user === "false" ? { userId: null } : {}), ...(filters.hired_from || filters.hired_to ? { hiredOn: { ...(filters.hired_from ? { gte: new Date(filters.hired_from) } : {}), ...(filters.hired_to ? { lte: new Date(filters.hired_to) } : {}) } } : {}), ...(filters.left_from || filters.left_to ? { leftOn: { ...(filters.left_from ? { gte: new Date(filters.left_from) } : {}), ...(filters.left_to ? { lte: new Date(filters.left_to) } : {}) } } : {}) }, include: { department: true, position: true }, orderBy: [{ employeeNo: "asc" }, { name: "asc" }] }); const today = new Date(); return rows.map((row) => ({ ...row, ...rosterDerived(row, today) })); }
   // 导出＝花名册口径（EMPLOYEE_EXPORT_HEADERS）：原始列顺序 + 系统列，派生列当天实时算。
   // 导出的文件可以直接回灌「批量导入员工」——解析按表头名匹配，派生列会被忽略。
-  async exportEmployees(filters: Parameters<ProductionMasterDataService["listEmployees"]>[0]) { const rows = await this.listEmployees(filters); const userIds = rows.flatMap((row) => row.userId ? [row.userId] : []); const users = userIds.length ? await this.prisma.user.findMany({ where: { id: { in: userIds }, deletedAt: null }, select: { id: true, username: true } }) : []; const usernames = new Map(users.map((user) => [user.id, user.username])); const today = new Date(); const data = rows.map((row, index) => employeeExportRow(row, index, row.userId ? usernames.get(row.userId) ?? "" : "", today)); const sheet = XLSX.utils.json_to_sheet(data, { header: [...EMPLOYEE_EXPORT_HEADERS] }); sheet["!cols"] = EMPLOYEE_EXPORT_HEADERS.map((header) => ({ wch: header.length > 6 ? 22 : 12 })); const book = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(book, sheet, "员工名单"); return XLSX.write(book, { type: "buffer", bookType: "xlsx" }); }
+  async exportEmployees(filters: Parameters<ProductionMasterDataService["listEmployees"]>[0]) {
+    const rows = await this.listEmployees(filters);
+    // 「绑定系统用户名」和审计姓名（创建人 / 最后修改人）**并进同一张查询**：
+    // 为姓名多发一次查询不划算，导出仍然是单次用户表查询（2026-09-16 全站治理）。
+    const userIds = rows.flatMap((row) => [row.userId, row.createdBy, row.updatedBy]).filter((id): id is string => Boolean(id));
+    const users = userIds.length
+      ? await this.prisma.user.findMany({ where: { id: { in: [...new Set(userIds)] }, deletedAt: null }, select: { id: true, username: true, displayName: true } })
+      : [];
+    const usernames = new Map(users.map((user) => [user.id, user.username]));
+    const displayNames = new Map(users.map((user) => [user.id, user.displayName]));
+    const today = new Date();
+    const data = rows.map((row, index) => employeeExportRow({
+      ...row,
+      // 取不到姓名就留空，绝不把 UUID 写进单元格。
+      created_by_name: row.createdBy ? displayNames.get(row.createdBy) ?? null : null,
+      updated_by_name: row.updatedBy ? displayNames.get(row.updatedBy) ?? null : null,
+    }, index, row.userId ? usernames.get(row.userId) ?? "" : "", today));
+    const sheet = XLSX.utils.json_to_sheet(data, { header: [...EMPLOYEE_EXPORT_HEADERS] });
+    sheet["!cols"] = EMPLOYEE_EXPORT_HEADERS.map((header) => ({ wch: header.length > 6 ? 22 : 12 }));
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, "员工名单");
+    return XLSX.write(book, { type: "buffer", bookType: "xlsx" });
+  }
   // 导入模板＝花名册的全部非派生字段 + 系统三列（工号/离职日期/员工类型），另附「填写说明」页。
   // 序号/年龄/工龄/当月生日/合同到期提醒是派生列，不进模板（导出时才会带上）。
   employeeImportTemplate() {

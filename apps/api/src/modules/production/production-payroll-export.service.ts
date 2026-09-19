@@ -2,10 +2,14 @@ import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import * as XLSX from "xlsx";
 import { AuditService } from "../../platform/audit/audit.service";
+import { AuditActorService, withActorNames, type AuditActorNames } from "../../platform/audit/audit-actor.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { beijingDateTime } from "../../platform/time/beijing-time";
 import { orderProgressColumns, parseOperationOrder } from "./production-progress-columns.domain";
+
+/** 明细三张表（工序盘点 / 订单号盘点 / 当月工序明细）末尾的审计四列（2026-09-16 全站治理）。 */
+const DETAIL_AUDIT_HEADER = ["创建人", "创建时间", "最后修改人", "最后修改时间"] as const;
 
 type Filters = { operation_id?: string; month?: string; order_no?: string };
 const LIMIT = 10000;
@@ -14,7 +18,7 @@ type ReportRow = Prisma.EmployeeDailyReportGetPayload<{ include: { employee: { i
 
 @Injectable()
 export class ProductionPayrollExportService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly actors: AuditActorService) {}
 
   /** 工序盘点表：按月份（生产日期）统计该工序在当月所有订单下的明细，并附各订单汇总。 */
   async exportOperation(filters: { operation_id: string; month: string }, user: CurrentUser) {
@@ -22,7 +26,7 @@ export class ProductionPayrollExportService {
     const { from, to } = this.monthRange(filters.month);
     const rows = await this.fetchRows({ operation_id: filters.operation_id, from, to });
     const operation = await this.prisma.operationCatalog.findFirst({ where: { id: filters.operation_id }, select: { operationName: true } });
-    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注"];
+    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注", ...DETAIL_AUDIT_HEADER];
     const summaryHeader = ["当月各订单该工序汇总（按生产日期划分）", "订单号", "生产单号", "件数合计", "其中计件", "其中计时", "时长（小时）合计", "合计"];
     const summary = this.summarizeByOrder(rows);
     const summaryRows = summary.map((row) => [null, row.orderNo, row.productionOrderNo, this.num(row.quantity), this.num(row.pieceQuantity), this.num(row.timeQuantity), this.hours(row.duration), this.num(row.amount)]);
@@ -50,7 +54,7 @@ export class ProductionPayrollExportService {
     if (!/^\d{4}-\d{2}$/.test(filters.month)) throw this.invalid("月份格式为YYYY-MM");
     const { from, to } = this.monthRange(filters.month);
     const rows = await this.fetchRows({ from, to });
-    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注"];
+    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注", ...DETAIL_AUDIT_HEADER];
     const summaryHeader = ["当月各工序汇总（按生产日期划分）", "工序", "件数合计", "其中计件", "其中计时", "时长（小时）合计", "合计"];
     const summary = this.summarizeByOperation(rows);
     const summaryRows = summary.map((row) => [null, row.operationName, this.num(row.quantity), this.num(row.pieceQuantity), this.num(row.timeQuantity), this.hours(row.duration), this.num(row.amount)]);
@@ -79,7 +83,7 @@ export class ProductionPayrollExportService {
     const range = monthValid ? this.monthRange(filters.month!) : undefined;
     const rows = await this.fetchRows({ order_no: filters.order_no.trim(), operation_id: filters.operation_id, ...(range ?? {}) });
     const operation = filters.operation_id ? await this.prisma.operationCatalog.findFirst({ where: { id: filters.operation_id }, select: { operationName: true } }) : null;
-    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注"];
+    const detailHeader = ["订单号", "生产单号", "工序", "工序日期", "工号", "员工姓名", "部门", "员工类型", "计薪方式", "计件数量", "时长（小时）", "单价", "合计", "备注", ...DETAIL_AUDIT_HEADER];
     const operationHeader = rows.length ? this.operationHeaderRows(rows) : [];
     const sheetRows: Array<Array<string | number | null>> = [
       ["订单号盘点表"],
@@ -269,7 +273,10 @@ export class ProductionPayrollExportService {
       take: LIMIT + 1,
     });
     if (rows.length > LIMIT) throw new UnprocessableEntityException({ code: "EXPORT_LIMIT_EXCEEDED", message: "导出结果过多，请缩小筛选范围", details: [{ limit: LIMIT }] });
-    return rows;
+    // 姓名在这里**一次**解析好贴到行上（2026-09-16 全站治理）：三张明细表共用 detailRow，
+    // 逐个调用方各自解析会变成三份重复代码，逐行解析又是 N+1。
+    const names = await this.actors.namesOf(rows.flatMap((row) => [row.createdBy, row.updatedBy]));
+    return rows.map((row) => withActorNames(row, names));
   }
 
   /**
@@ -277,9 +284,11 @@ export class ProductionPayrollExportService {
    * 计件数量对**所有计薪方式**都要展示：客户反馈「计时工人的计件数量也要在里面」——
    * 计时工人同样会填报完成件数，只把它藏起来会让盘点表对不上工序产量。
    */
-  private detailRow(row: ReportRow) {
+  private detailRow(row: ReportRow & Partial<AuditActorNames>) {
     const duration = row.wageMode === "time_rate" ? this.hours(row.durationMinutes) : null;
-    return [row.orderNo, row.productionOrderNoSnapshot, row.operationNameSnapshot, row.reportDate.toISOString().slice(0, 10), row.employee.employeeNo, row.employeeNameSnapshot, row.employee.department.name, row.employee.employeeType === "workshop" ? "车间" : "非车间", row.wageMode === "piece_rate" ? "计件" : "计时", this.num(row.quantity), duration, this.num(row.unitPrice), this.num(row.calculatedAmount), row.remark ?? ""];
+    return [row.orderNo, row.productionOrderNoSnapshot, row.operationNameSnapshot, row.reportDate.toISOString().slice(0, 10), row.employee.employeeNo, row.employeeNameSnapshot, row.employee.department.name, row.employee.employeeType === "workshop" ? "车间" : "非车间", row.wageMode === "piece_rate" ? "计件" : "计时", this.num(row.quantity), duration, this.num(row.unitPrice), this.num(row.calculatedAmount), row.remark ?? "",
+      // 审计四列（表头见 DETAIL_AUDIT_HEADER）：姓名取不到就留空，绝不写 UUID。
+      row.created_by_name ?? "", beijingDateTime(row.createdAt), row.updated_by_name ?? "", beijingDateTime(row.updatedAt)];
   }
 
   /** 订单号盘点表表头：每道工序的生产日期数组、计划数量、汇总数量。 */

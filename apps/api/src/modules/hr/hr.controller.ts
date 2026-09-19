@@ -4,6 +4,7 @@ import { Type } from "class-transformer";
 import type { Response } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
+import { makerStamp } from "../../platform/audit/maker-stamp";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
@@ -57,8 +58,10 @@ export class HrController {
   // 这个顺序陷阱在本文件里已经踩过一次，同一段代码再犯一次会非常难查（路由存在、路径也对，就是永远 404）。
   @Get("payroll-ledgers/payment-sheet.xlsx")
   @RequireAdministrator()
-  async paymentSheet(@Query() query: PayrollPaymentSheetQueryDto, @Res() response: Response) {
-    const table = buildPayrollPaymentSheetTable(await this.payments.paymentSheetRows(query.month, query.department_id, query.position_id));
+  async paymentSheet(@Query() query: PayrollPaymentSheetQueryDto, @Res() response: Response, @CurrentUser() user: CurrentUserType) {
+    // 列的列名与列序是用户明确要求固定的，所以不往表里插列；「这份文件是谁生成的」写在表尾落款
+    // （与财务报表导出同一处文案：makerStamp）。
+    const table = buildPayrollPaymentSheetTable(await this.payments.paymentSheetRows(query.month, query.department_id, query.position_id), { footnotes: [makerStamp(user)] });
     return sendWorkbook(response, table, "工资付款");
   }
   @Get("payroll-ledgers/:id") getLedger(@Param("id") id: string) { return this.wrap(this.payroll.get(id)); }

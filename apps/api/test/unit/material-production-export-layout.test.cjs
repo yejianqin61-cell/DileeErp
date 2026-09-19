@@ -43,7 +43,9 @@ function service() {
     },
     finishedGoodsOutbound: { aggregate: async () => ({ _sum: { quantity: new Prisma.Decimal(12) } }) },
   };
-  return new ProductionPayrollExportService(prisma, audit);
+  // 明细三张表末尾有审计四列（2026-09-16 全站治理）：姓名由 AuditActorService 批量解析。
+  const actors = { namesOf: async (ids) => new Map([...new Set(ids.filter(Boolean))].map((id) => [id, "张三"])) };
+  return new ProductionPayrollExportService(prisma, audit, actors);
 }
 
 function sheetRows(buffer) {
