@@ -59,6 +59,8 @@ function purchaseRows() {
   return [
     {
       date: new Date("2026-09-08T00:00:00.000Z"),
+      // 订单号 = 销售单号（`supplier_payable_entries.order_no`），与采购单号是两个不同的单。
+      orderNo: "XSDD2026090700001",
       purchaseOrderNo: "CGDH1319",
       supplierName: "碧江",
       productName: "23寸*10K 三折自开收",
@@ -194,30 +196,38 @@ test("finance-report.workbook：空数据时不写合计行（不能凭空给一
   assert.equal(reportTotalRow(table), null);
 });
 
-test("finance-report.workbook：采购对账明细表 16 列，产品名称在采购单号之前，含税列等于不含税列", async () => {
+test("finance-report.workbook：采购对账明细表 17 列，产品名称在采购单号之前、订单号紧跟其后，含税列等于不含税列", async () => {
   const table = buildPurchaseReconciliationDetailTable(purchaseRows(), { currencyLabels: LABELS });
   const { name, rows } = readSheet(await renderReportWorkbook([table]));
   assert.equal(name, "采购对账明细");
-  // 唯一与老表不同的一处：产品名称提到采购单号前面（用户 2026-09-17 要求，理由见列定义注释）。
+  // 与老表不同的两处：产品名称提到采购单号前面（用户 2026-09-17 要求），
+  // 以及新增「订单号」（用户 2026-09-20 要求）。理由都见列定义注释。
   assert.deepEqual(rows[0], [
-    "日期", "产品名称", "采购单号", "供应商名称", "产品代码", "规格型号", "单位", "币种",
+    "日期", "产品名称", "订单号", "采购单号", "供应商名称", "产品代码", "规格型号", "单位", "币种",
     "单价", "含税单价", "数量", "折扣", "税额", "调整金额", "金额", "含税金额",
   ]);
+  assert.equal(rows[0].indexOf("订单号") + 1, rows[0].indexOf("采购单号"), "订单号必须紧挨在采购单号**前面**");
+  assert.equal(PURCHASE_RECONCILIATION_DETAIL_COLUMNS.length, 17, "列数从 16 加到 17，合计下标必须跟着后移");
   const row = rows[1];
   assert.equal(row[0], "2026-09-08");
   assert.equal(row[1], "23寸*10K 三折自开收", "第 2 列是产品名称");
-  assert.equal(row[2], "CGDH1319", "第 3 列才是采购单号");
-  assert.equal(row[3], "碧江");
-  assert.equal(row[4], "WPTM2026090700003", "产品代码取物料编码");
-  assert.equal(row[8], 99);
-  assert.equal(row[9], 99, "R3：系统采购单价即含税价，含税单价 = 单价");
-  assert.equal(row[10], 42);
-  assert.equal(row[14], 4158);
-  assert.equal(row[15], 4158, "R3：含税金额 = 金额");
-  for (const index of [11, 12, 13]) assert.equal(row[index], null, "折扣/税额/调整金额系统没有字段，留空");
-  // 合计列下标与列序调整无关（金额/含税金额仍在最后两列），但也一起钉住，
-  // 免得以后有人再把产品名称往后挪时忘了跟着改下标，合计就悄悄落到别的列上。
-  assert.deepEqual(table.totalColumns, [14, 15], "合计列仍是金额与含税金额");
+  assert.equal(row[2], "XSDD2026090700001", "第 3 列是订单号（销售单号）");
+  assert.equal(row[3], "CGDH1319", "第 4 列才是采购单号");
+  assert.equal(row[4], "碧江");
+  assert.equal(row[5], "WPTM2026090700003", "产品代码取物料编码");
+  assert.equal(row[9], 99);
+  assert.equal(row[10], 99, "R3：系统采购单价即含税价，含税单价 = 单价");
+  assert.equal(row[11], 42);
+  assert.equal(row[15], 4158);
+  assert.equal(row[16], 4158, "R3：含税金额 = 金额");
+  for (const index of [12, 13, 14]) assert.equal(row[index], null, "折扣/税额/调整金额系统没有字段，留空");
+  // 合计列下标跟着列序走，所以必须**数一遍**再断言：沿用旧下标会让合计悄悄落到
+  // 「调整金额(14) / 金额(15)」上 —— 都是金额列、都右对齐，报表上根本看不出来。
+  assert.deepEqual(table.totalColumns, [15, 16], "合计列仍是金额与含税金额");
+  const totals = reportTotalRow(table);
+  assert.equal(totals[15], 4158, "金额列求和");
+  assert.equal(totals[16], 4158, "含税金额列求和");
+  assert.equal(totals[14], null, "调整金额（恒空）不是合计列，不能跟着一起求和");
 });
 
 test("finance-report.workbook：数值列被写入字符串时直接抛错（防止文本型数字回归）", async () => {

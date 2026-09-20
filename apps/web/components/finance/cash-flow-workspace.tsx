@@ -20,6 +20,7 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, type AccountingSubject } from "../../lib/accounting-subjects";
@@ -178,8 +179,10 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
       { name: "direction", label: "收支方向", type: "select", required: true, defaultValue: entry?.direction ?? "expense", options: DIRECTIONS.map((item) => ({ value: item.value, label: item.label })) },
       { name: "amount", label: "金额", type: "number", required: true, defaultValue: entry?.amount, placeholder: "正数" },
       { name: "currency", label: "币种", type: "select", required: true, defaultValue: entry?.currency ?? currencies[0]?.value, options: currencies.map((item) => ({ value: item.value, label: item.label })) },
-      // 会计科目：下拉里带上分类前缀（`损益类 / 主营业务收入`），否则同名科目分不清。
-      { name: "subject_id", label: "会计科目", type: "select", required: true, defaultValue: entry?.subject?.id, options: subjectOptions },
+      // 会计科目：下拉里带上分类前缀（`损益类 / 主营业务收入`），否则同名科目分不清；
+      // 并且用带搜索框的 `searchable-select`（用户 2026-09-20 第 1 条）——
+      // 科目表 120+ 条，普通下拉只能靠滚动找。
+      { name: "subject_id", label: "会计科目", type: "searchable-select", required: true, defaultValue: entry?.subject?.id, options: subjectOptions },
       { name: "settlement_method", label: "结算方式", type: "text", defaultValue: entry?.settlementMethod ?? undefined, placeholder: "如：转账 / 现金" },
       // 两个「账户」不是一回事，别合并：
       //   结算账户 = 老表「结算方式」字典项（给人看的文本，如「农业银行5706」），不参与任何计算；
@@ -328,13 +331,16 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
               </Select>
             </label>
             <label>会计科目
-              <Select value={subjectFilter || ALL} onValueChange={(value) => setSubjectFilter(value === ALL ? "" : value)}>
-                <SelectTrigger data-testid="cash-flow-subject-filter"><SelectValue placeholder="全部科目" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL}>全部科目</SelectItem>
-                  {activeSubjects.map((subject) => <SelectItem key={subject.id} value={subject.id}>{subjectOptionLabel(subject)}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {/* 筛选器也用带搜索框的下拉：财务要按科目筛流水时，记住的是科目名而不是它排在第几行。 */}
+              <SearchableSelect
+                id="cash-flow-subject-filter"
+                testId="cash-flow-subject-filter"
+                value={subjectFilter || ALL}
+                options={[{ value: ALL, label: "全部科目" }, ...activeSubjects.map((subject) => ({ value: subject.id, label: subjectOptionLabel(subject) }))]}
+                placeholder="全部科目"
+                label="会计科目"
+                onChange={(value) => setSubjectFilter(value === ALL ? "" : value)}
+              />
             </label>
             <label>币种
               <Select value={currencyFilter || ALL} onValueChange={(value) => setCurrencyFilter(value === ALL ? "" : value)}>

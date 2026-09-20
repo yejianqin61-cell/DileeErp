@@ -313,3 +313,191 @@ test("由收支流水生成凭证时就把银行账户写进资金分录", async
   assert.equal(lines[0].bankId, "bank-1");
   assert.equal(lines[1].bankId, null, "业务科目不挂银行账户");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-20（财务要求）：
+//   「我完整的一个工资是这样的：借 应付职工薪酬——工资（应发）；贷 其他应付款——社保（个人部分）、
+//     应交税费——应交个人所得税、银行存款（实发）。但是现在都不能改」
+//   「原材料的也是要加上应交税费：借 原材料 18000 / 应交税费——应交增值税（进项税额）；贷 应付账款」
+//   「现在自动生成的不能改、。这是什么意思？」
+//
+// 两件事：① 分录要能真的改（增删行、改方向 —— 服务层的 `update` 本来支持整组替换，
+// 缺的是页面；这里的用例把「四行一借三贷」「三行两借一贷」钉住，防止以后有人按「一借一贷」的
+// 老假设给 update 加限制）；② 模板要让财务一键得到这两套结构，且**金额留空**（不按税率自动拆，
+// 普票不抵扣 / 优惠税率会自动填错）。
+// ---------------------------------------------------------------------------
+
+/** 模板解析的替身：只用到 voucher.findFirst 与 accountingSubject.findMany。 */
+function templateHarness({ voucher = draftVoucher(), subjects = [] } = {}) {
+  const prisma = {
+    voucher: { findFirst: async () => voucher },
+    accountingSubject: { findMany: async () => subjects },
+  };
+  return new VoucherService(prisma, audit());
+}
+
+const subjectRows = [
+  { id: "sub-salary", category: "负债类", name: "应付职工薪酬", isActive: true },
+  { id: "sub-other", category: "负债类", name: "其他应付款", isActive: true },
+  { id: "sub-tax", category: "负债类", name: "应交税费", isActive: true },
+  { id: "sub-input", category: "负债类", name: "应交税费-进项税", isActive: true },
+  { id: "sub-material", category: "资产类", name: "原材料", isActive: true },
+  { id: "sub-payable", category: "负债类", name: "应付账款", isActive: true },
+  { id: "sub-bank", category: "资产类", name: "银行存款", isActive: true },
+  { id: "sub-retired", category: "损益类", name: "销售费 运费", isActive: false },
+];
+
+test("凭证模板：工资计提是「一借三贷」，科目按候选名解析到科目表，金额一律留空", async () => {
+  const service = templateHarness({ subjects: subjectRows });
+  const templates = await service.templates("voucher-1");
+  const salary = templates.find((template) => template.key === "salary-accrual");
+  assert.ok(salary, "必须提供「工资计提」模板");
+  assert.deepEqual(salary.lines.map((line) => [line.direction, line.subject_label]), [
+    ["debit", "应付职工薪酬"],
+    ["credit", "其他应付款"],
+    // 科目表里没有「应交个人所得税」，候选退到「应交税费」——让整行仍有科目可选，
+    // 否则财务填金额时会被「每条分录都必须填科目」挡住，还得先去建科目才能保存。
+    ["credit", "应交税费"],
+    ["credit", "银行存款"],
+  ]);
+  assert.equal(salary.lines[0].subject_id, "sub-salary");
+  assert.equal(salary.lines[0].subject_key, "负债类/应付职工薪酬", "科目编码快照 = 分类/名称");
+  assert.equal(salary.lines.some((line) => line.amount !== undefined), false, "模板不带金额");
+  assert.deepEqual(salary.lines.map((line) => line.role), ["business", "business", "business", "fund"]);
+});
+
+test("凭证模板：原材料采购是「两借一贷」，进项税落到「应交税费-进项税」", async () => {
+  const service = templateHarness({ subjects: subjectRows });
+  const templates = await service.templates("voucher-1");
+  const material = templates.find((template) => template.key === "raw-material-purchase");
+  assert.deepEqual(material.lines.map((line) => [line.direction, line.subject_label]), [
+    ["debit", "原材料"],
+    ["debit", "应交税费-进项税"],
+    ["credit", "应付账款"],
+  ]);
+});
+
+test("凭证模板：候选一个都不命中时 subject_id 为 null 并给出建议名（不编一个科目 id）", async () => {
+  const service = templateHarness({ subjects: [] });
+  const templates = await service.templates("voucher-1");
+  const salary = templates.find((template) => template.key === "salary-accrual");
+  assert.equal(salary.lines[0].subject_id, null);
+  assert.equal(salary.lines[0].subject_label, "应付职工薪酬——工资", "落空时给财务看的建议名");
+  assert.equal(salary.lines[0].subject_key, salary.lines[0].subject_label);
+});
+
+test("凭证模板：资金行沿用本凭证的科目与银行账户（钱在哪张卡上是已确认的事实）", async () => {
+  const voucher = draftVoucher({ lines: [
+    { lineNo: 1, direction: "credit", subjectKey: "资产类/银行存款", subjectLabel: "银行存款—农业银行5706", summary: "s", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: "bank-1", bank: { id: "bank-1", bankName: "农业银行", accountNumber: "5706" } },
+    { lineNo: 2, direction: "debit", subjectKey: "损益类/管理费用", subjectLabel: "管理费用", summary: "s", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: null },
+  ] });
+  const subjects = [...subjectRows, { id: "sub-bank", category: "资产类", name: "银行存款", isActive: true }];
+  const service = templateHarness({ voucher, subjects });
+  const templates = await service.templates("voucher-1");
+  const fund = templates.find((template) => template.key === "salary-accrual").lines.find((line) => line.role === "fund");
+  assert.equal(fund.subject_label, "银行存款—农业银行5706", "沿用原资金行的科目快照（含具体账户）");
+  assert.equal(fund.bank_id, "bank-1");
+  assert.equal(fund.bank_label, "农业银行5706");
+  // 非资金行不带账户
+  assert.equal(templates.find((template) => template.key === "salary-accrual").lines[0].bank_id, null);
+});
+
+test("编辑分录：一借三贷的工资凭证能整组保存（系统原来的一借一贷做不出这个形状）", async () => {
+  const { service, createdLines, updated } = voucherHarness({ voucher: draftVoucher({ currency: "CNY" }) });
+  await service.update("voucher-1", { lines: [
+    { direction: "debit", subject_label: "应付职工薪酬", amount: "12000", summary: "计提工资（应发）" },
+    { direction: "credit", subject_label: "其他应付款", amount: "1800", summary: "代扣社保（个人部分）" },
+    { direction: "credit", subject_label: "应交税费", amount: "200", summary: "代扣个人所得税" },
+    { direction: "credit", subject_label: "银行存款", amount: "10000", summary: "实发工资" },
+  ] }, { id: "user-1" });
+  assert.equal(createdLines.length, 4);
+  assert.equal(updated[0].debitTotal.toString(), "12000");
+  assert.equal(updated[0].creditTotal.toString(), "12000", "1800 + 200 + 10000 = 12000");
+  assert.deepEqual(createdLines.map((line) => line.direction), ["debit", "credit", "credit", "credit"]);
+});
+
+test("编辑分录：两借一贷的原材料采购能保存，进项税与原材料合计等于应付账款", async () => {
+  const { service, updated } = voucherHarness({ voucher: draftVoucher({ currency: "CNY" }) });
+  await service.update("voucher-1", { lines: [
+    { direction: "debit", subject_label: "原材料", amount: "15929.2035" },
+    { direction: "debit", subject_label: "应交税费-进项税", amount: "2070.7965" },
+    { direction: "credit", subject_label: "应付账款", amount: "18000" },
+  ] }, { id: "user-1" });
+  assert.equal(updated[0].debitTotal.toString(), "18000");
+  assert.equal(updated[0].creditTotal.toString(), "18000");
+});
+
+test("编辑分录：显式带的 bank_id 优先，显式 null 表示这行不挂账户（不再按行号沿用）", async () => {
+  const voucher = draftVoucher({ lines: [
+    { lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "s", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: "bank-1" },
+    { lineNo: 2, direction: "credit", subjectKey: "损益类/主营业务收入", subjectLabel: "主营业务收入", summary: "s", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: null },
+  ] });
+  const createdLines = [];
+  const tx = {
+    $queryRaw: async () => [],
+    voucher: { findFirst: async () => voucher, update: async ({ data }) => ({ id: voucher.id, ...data }) },
+    voucherLine: {
+      deleteMany: async () => ({ count: 2 }),
+      createMany: async ({ data }) => { createdLines.push(...(Array.isArray(data) ? data : [data])); return { count: data.length }; },
+    },
+  };
+  const prisma = {
+    voucher: { findFirst: async () => voucher },
+    bank: { findMany: async () => [{ id: "bank-2" }] },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new VoucherService(prisma, audit());
+  service.get = async (id) => ({ id, ...voucher, lines: createdLines });
+  await service.update("voucher-1", { lines: [
+    // 原来是「借 银行存款」在第 1 行；现在第 1 行变成业务行，**显式 null** 才不会被行号沿用误伤
+    // （否则那张卡会挂到这一行上，银行存款明细账从此对不上）。
+    { direction: "debit", subject_label: "原材料", amount: "100", bank_id: null },
+    { direction: "credit", subject_label: "银行存款", amount: "100", bank_id: "bank-2" },
+  ] }, { id: "user-1" });
+  assert.equal(createdLines[0].bankId, null, "业务行不能被行号沿用挂上原资金行的账户");
+  assert.equal(createdLines[1].bankId, "bank-2", "显式带的账户以它为准");
+});
+
+test("编辑分录：完全没传 bank_id 时仍按行号沿用原分录的账户（兼容旧调用方）", async () => {
+  const voucher = draftVoucher({ lines: [
+    { lineNo: 1, direction: "debit", subjectKey: "银行存款", subjectLabel: "银行存款", summary: "s", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: "bank-1" },
+    { lineNo: 2, direction: "credit", subjectKey: "损益类/主营业务收入", subjectLabel: "主营业务收入", summary: "s", amount: new Prisma.Decimal("100"), currency: "CNY", bankId: null },
+  ] });
+  const createdLines = [];
+  const tx = {
+    $queryRaw: async () => [],
+    voucher: { findFirst: async () => voucher, update: async ({ data }) => ({ id: voucher.id, ...data }) },
+    voucherLine: { deleteMany: async () => ({ count: 2 }), createMany: async ({ data }) => { createdLines.push(...data); return { count: data.length }; } },
+  };
+  const prisma = { voucher: { findFirst: async () => voucher }, $transaction: async (fn) => fn(tx) };
+  const service = new VoucherService(prisma, audit());
+  service.get = async (id) => ({ id, ...voucher, lines: createdLines });
+  await service.update("voucher-1", { lines: [
+    { direction: "debit", subject_label: "银行存款", amount: "120" },
+    { direction: "credit", subject_label: "主营业务收入", amount: "120" },
+  ] }, { id: "user-1" });
+  assert.equal(createdLines[0].bankId, "bank-1", "旧调用方只改金额时，「钱在哪张卡上」不该被丢掉");
+});
+
+test("编辑分录：引用不存在的银行账户时 422（而不是让外键在提交时抛数据库错误）", async () => {
+  const createdLines = [];
+  const tx = {
+    $queryRaw: async () => [],
+    voucher: { findFirst: async () => draftVoucher(), update: async ({ data }) => ({ id: "voucher-1", ...data }) },
+    voucherLine: { deleteMany: async () => ({ count: 0 }), createMany: async ({ data }) => { createdLines.push(...data); return { count: data.length }; } },
+  };
+  const prisma = {
+    voucher: { findFirst: async () => draftVoucher() },
+    bank: { findMany: async () => [{ id: "bank-1" }] },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new VoucherService(prisma, audit());
+  await assert.rejects(
+    () => service.update("voucher-1", { lines: [
+      { direction: "debit", subject_label: "原材料", amount: "100" },
+      { direction: "credit", subject_label: "银行存款", amount: "100", bank_id: "bank-gone" },
+    ] }, { id: "user-1" }),
+    (error) => error.getResponse().code === "VOUCHER_BANK_NOT_FOUND",
+  );
+  assert.equal(createdLines.length, 0);
+});

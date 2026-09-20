@@ -17,6 +17,7 @@ const EP = {
   purchase: "/api/v1/finance/reports/purchase-reconciliation-detail",
   summary: "/api/v1/finance/reports/sales-reconciliation-summary",
   profit: "/api/v1/finance/reports/sales-gross-profit",
+  costAccounting: "/api/v1/finance/reports/cost-accounting",
   cashDetail: "/api/v1/finance/reports/cash-flow-detail",
   cashSummary: "/api/v1/finance/reports/cash-flow-summary",
   forex: "/api/v1/finance/reports/forex-receipts",
@@ -25,6 +26,9 @@ const EP = {
   suppliers: "/api/v1/suppliers",
   currencies: "/api/v1/dictionaries/currency/items",
 };
+
+const bodyOf = (call: StubbedCall) => JSON.parse(String(call.body)) as Record<string, unknown>;
+const setValue = (testId: string, value: string) => fireEvent.change(screen.getByTestId(testId), { target: { value } });
 
 /**
  * 报表端点一律带查询串，所以不能用 helpers 里的 `callsTo`（它按 `endsWith` 匹配）。
@@ -223,17 +227,39 @@ afterEach(() => {
   Reflect.deleteProperty(URL, "revokeObjectURL");
 });
 
-type Handler = (url: string) => Response | undefined;
+/**
+ * 额外响应的钩子。带 `call` 是必须的：核算表那一页对 `/finance/overhead-allocations` 同时有
+ * GET（读本月口径）与 POST（登记管理费），只能按 method 区分。
+ */
+type Handler = (url: string, call: StubbedCall) => Response | undefined;
 
-function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: unknown; profit?: unknown; cashDetail?: unknown; cashSummary?: unknown; forex?: unknown; extra?: Handler } = {}) {
-  return stubApi((url) => {
-    const injected = options.extra?.(url);
+/**
+ * 核算表（20 列，与本轮后端 finance-report.tables.ts 的列序一致）——只造两列够断言用的。
+ * 管理费列（13 分摊单位 / 14 管理费用 / 15 金额）在「单位一致」时才该有值。
+ */
+function costTable(overrides: Record<string, unknown> = {}) {
+  return {
+    sheet_name: "核算表",
+    columns: [{ header: "日期", num_fmt: null, align: null }, { header: "订单号", num_fmt: null, align: null }, { header: "管理费用", num_fmt: "0.####", align: null }],
+    rows: [["2026-09-08", "SO-1", 55]],
+    total_columns: [],
+    totals: null,
+    footnotes: [],
+    ...overrides,
+  };
+}
+
+function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: unknown; profit?: unknown; costAccounting?: unknown; cashDetail?: unknown; cashSummary?: unknown; forex?: unknown; extra?: Handler } = {}) {
+  return stubApi((url, call) => {
+    // 把 call 透传给 extra：核算表的用例要按 **method** 区分「读分摊口径」与「登记管理费」两个端点。
+    const injected = options.extra?.(url, call);
     if (injected) return injected;
     if (url.includes("/finance/reports/") && url.includes(".xlsx")) return xlsxResponse();
     if (url.includes(EP.sales)) return apiOk(options.sales ?? salesTable());
     if (url.includes(EP.purchase)) return apiOk(options.purchase ?? purchaseTable());
     if (url.includes(EP.summary)) return apiOk(options.summary ?? summaryTable());
     if (url.includes(EP.profit)) return apiOk(options.profit ?? profitTable());
+    if (url.includes(EP.costAccounting)) return apiOk(options.costAccounting ?? costTable());
     if (url.includes(EP.cashDetail)) return apiOk(options.cashDetail ?? cashDetailTable());
     if (url.includes(EP.cashSummary)) return apiOk(options.cashSummary ?? cashSummaryTable());
     if (url.includes(EP.forex)) return apiOk(options.forex ?? forexTable());
@@ -295,13 +321,60 @@ describe("财务报表 · 加载与预览", () => {
     expect(totals).not.toHaveTextContent("销售单号");
   });
 
-  it("展示七个报表子栏目（老表 6 份 + 外汇一览表），地址可收藏", async () => {
+  it("展示八个报表子栏目（老表 6 份 + 外汇一览表 + 核算表），地址可收藏", async () => {
     captureDownloads();
     stubReports();
     await open(<FinanceReportWorkspace tab="sales-reconciliation-detail" />, "page-finance-reports");
-    for (const key of ["sales-reconciliation-detail", "sales-reconciliation-summary", "purchase-reconciliation-detail", "sales-gross-profit", "cash-flow-detail", "cash-flow-summary", "forex-receipts"]) {
+    for (const key of ["sales-reconciliation-detail", "sales-reconciliation-summary", "purchase-reconciliation-detail", "sales-gross-profit", "cost-accounting", "cash-flow-detail", "cash-flow-summary", "forex-receipts"]) {
       expect(screen.getByTestId(`finance-tab-${key}`)).toHaveAttribute("href", `/finance/reports?tab=${key}`);
     }
+  });
+
+  /**
+   * 核算表（用户 2026-09-20 第 4 条）：财务说「我这边录管理费，就可以出这个表」
+   * —— 录管理费与看核算表是同一件事的两半，所以面板必须和表同屏，而且保存后表要跟着重取。
+   */
+  it("核算表：同屏给出「本月管理费」登记面板，保存后重取报表（费率变了表必须变）", async () => {
+    captureDownloads();
+    const calls = stubReports({ extra: (url, call) => {
+      if (url.includes("/finance/overhead-allocations/resolved")) return apiOk({ period: "2026-09", record: { id: "oa-1", period: "2026-09", amount: "220000", unit: "打", quantity_override: null, remark: null }, unit: "打", auto_quantity: "4000", quantity: "4000", rate: "55" });
+      if (call.method === "POST" && url.includes("/finance/overhead-allocations")) return apiOk({ period: "2026-09", record: null, unit: "打", auto_quantity: "4000", quantity: "4000", rate: "55" });
+      return undefined;
+    } });
+    await open(<FinanceReportWorkspace tab="cost-accounting" />, "page-finance-reports");
+
+    // 面板与报表同屏：一个是输入、一个是输出。
+    expect(await screen.findByTestId("overhead-panel")).toBeInTheDocument();
+    await waitFor(() => expect(previews(calls, EP.costAccounting).length).toBe(1));
+    // 已有登记时回填金额与单位，并把算出来的费率显示出来（22 万 ÷ 4000 打 = 55）。
+    // 面板自己拉一次「本期分摊口径」（与报表那次取数并行），所以要等它到齐。
+    await waitFor(() => expect(screen.getByTestId("overhead-amount")).toHaveValue("220000"));
+    expect(screen.getByTestId("overhead-unit")).toHaveValue("打");
+    expect(screen.getByTestId("overhead-resolved")).toHaveTextContent("55");
+    expect(screen.getByTestId("overhead-auto-quantity")).toHaveTextContent("4000");
+
+    setValue("overhead-amount", "180000");
+    fireEvent.click(screen.getByTestId("overhead-save"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST" && call.url.includes("/finance/overhead-allocations")).length).toBe(1));
+    expect(bodyOf(calls.find((call) => call.method === "POST" && call.url.includes("/finance/overhead-allocations"))!)).toMatchObject({ period: "2026-09", amount: "180000", unit: "打" });
+    // 保存成功后重取报表：费率变了，表上的管理费列必须跟着变
+    await waitFor(() => expect(previews(calls, EP.costAccounting).length).toBe(2));
+  });
+
+  it("核算表：没登记管理费时如实说「费率未登记」，而不显示 0", async () => {
+    captureDownloads();
+    stubReports({ extra: (url) => (url.includes("/finance/overhead-allocations/resolved")
+      ? apiOk({ period: "2026-09", record: null, unit: null, auto_quantity: null, quantity: null, rate: null })
+      : undefined) });
+    await open(<FinanceReportWorkspace tab="cost-accounting" />, "page-finance-reports");
+    expect(await screen.findByTestId("overhead-resolved")).toHaveTextContent("尚未登记费率");
+  });
+
+  it("其它报表页签不出现管理费面板（它与那些报表无关）", async () => {
+    captureDownloads();
+    stubReports();
+    await open(<FinanceReportWorkspace tab="sales-gross-profit" />, "page-finance-reports");
+    expect(screen.queryByTestId("overhead-panel")).toBeNull();
   });
 
   it("没有数据时给出空态与「导出只有表头」的说明", async () => {
@@ -473,7 +546,11 @@ describe("财务报表 · 三期：收支明细表与收支汇总表", () => {
     // 分类来自会计科目表的 category，会计科目的选项文案是「分类 / 科目名称」。
     fireEvent.click(screen.getByTestId("finance-report-category"));
     fireEvent.click(await screen.findByRole("option", { name: "损益类" }));
-    fireEvent.click(screen.getByTestId("finance-report-subject"));
+    // 会计科目是 SearchableSelect（带搜索框，用户 2026-09-20 第 1 条）：testid 在根 div 上。
+    // 先等一拍让 Radix Select 关闭时的「焦点归还」结算完 —— 否则它会把搜索框的焦点抢走、
+    // 让刚打开的弹层自己关掉（真实用户两次点击之间隔几百毫秒，碰不到这件事，见 cash-flow-page 的同名注释）。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    fireEvent.click(screen.getByTestId("finance-report-subject").querySelector("button") as HTMLElement);
     fireEvent.click(await screen.findByRole("option", { name: "损益类 / 主营业务收入" }));
     fireEvent.click(searchButton());
 

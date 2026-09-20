@@ -16,14 +16,16 @@ import { DataTable } from "../data/data-table";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet } from "../../lib/api-client";
 import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, type AccountingSubject } from "../../lib/accounting-subjects";
 import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { downloadFile } from "../../lib/download";
-import { FINANCE_REPORT_TABS, type FinanceReportTabKey } from "../../lib/finance-sections";
+import { FINANCE_REPORT_TABS, OVERHEAD_REPORT_TAB_KEY, type FinanceReportTabKey } from "../../lib/finance-sections";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
+import OverheadAllocationPanel from "./overhead-allocation-panel";
 
 /** 后端预览返回的列定义（与导出共用）。`num_fmt` 有值即为数值列。 */
 type ReportColumn = { header: string; num_fmt: string | null; align: "left" | "center" | "right" | null };
@@ -53,6 +55,13 @@ const DIRECTIONS: Array<{ value: string; label: string }> = [
 const today = () => new Date().toISOString().slice(0, 10);
 const firstDayOfMonth = () => `${new Date().toISOString().slice(0, 7)}-01`;
 const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
+
+/** 一个月份（`YYYY-MM`）覆盖的日期区间。核算表的管理费是按月登记的，所以它的期间控件是月份。 */
+function monthRange(month: string): { from: string; to: string } {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  return { from: `${month}-01`, to: `${month}-${String(lastDay).padStart(2, "0")}` };
+}
 
 /** 空值在页面上显示为「-」：留空是「系统没有这个数据」，页面必须让人看得出这一点而不是格子坏掉。 */
 function textOf(value: ReportCell): string {
@@ -172,6 +181,15 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
 
     <FinanceTabs basePath="/finance/reports" tabs={FINANCE_REPORT_TABS} active={tab} />
 
+    {/* 核算表要在同屏先录「本月管理费」再出表（用户 2026-09-20 第 4 条）。
+        它只在核算表这个 tab 上出现：其余报表与月度管理费无关，多一块面板只会让人以为填了会影响它们。
+        期间与筛选条同源（起始日期所在的月份），所以面板里改月份会把筛选条一起切过去。 */}
+    {tab === OVERHEAD_REPORT_TAB_KEY && /^\d{4}-\d{2}$/.test((applied.from || applied.to).slice(0, 7)) && <OverheadAllocationPanel
+      period={(applied.from || applied.to).slice(0, 7)}
+      onMonthChange={(month) => { const range = monthRange(month); const next = { ...draft, ...range }; setDraft(next); setApplied(next); }}
+      onSaved={() => void load()}
+    />}
+
     <section className="panel">
       <div className="panel-body filter-bar">
         <label>起始日期<Input data-testid="finance-report-from" type="date" value={draft.from} onChange={(event) => setDraft({ ...draft, from: event.target.value })} /></label>
@@ -196,13 +214,17 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
             </Select>
           </label>
           <label>会计科目
-            <Select value={draft.subjectId || ALL} onValueChange={(value) => setDraft({ ...draft, subjectId: value === ALL ? "" : value })}>
-              <SelectTrigger data-testid="finance-report-subject"><SelectValue placeholder="全部科目" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>全部科目</SelectItem>
-                {subjects.map((subject) => <SelectItem key={subject.id} value={subject.id}>{subjectOptionLabel(subject)}{subject.isActive === false ? "（已停用）" : ""}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            {/* 带搜索框的下拉（用户 2026-09-20 第 1 条）：这张筛选器列的是**全量**科目
+                （含已停用，标注「（已停用）」），121 条里滚动找一条几乎不可用。 */}
+            <SearchableSelect
+              id="finance-report-subject"
+              testId="finance-report-subject"
+              value={draft.subjectId || ALL}
+              options={[{ value: ALL, label: "全部科目" }, ...subjects.map((subject) => ({ value: subject.id, label: `${subjectOptionLabel(subject)}${subject.isActive === false ? "（已停用）" : ""}` }))]}
+              placeholder="全部科目"
+              label="会计科目"
+              onChange={(value) => setDraft({ ...draft, subjectId: value === ALL ? "" : value })}
+            />
           </label>
           <label>收支方向
             <Select value={draft.direction || ALL} onValueChange={(value) => setDraft({ ...draft, direction: value === ALL ? "" : value })}>

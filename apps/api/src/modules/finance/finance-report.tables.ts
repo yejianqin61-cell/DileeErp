@@ -4,6 +4,7 @@ import {
   currencyLabel,
   localAmountFor,
   localUnitPriceFor,
+  localRevenueOf,
   profitAmount,
   salesExchangeRate,
   toDateText,
@@ -11,6 +12,12 @@ import {
   toExportNumber,
 } from "./finance-report.domain";
 import { settlementText } from "./cash-flow.domain";
+import {
+  allocationAmountFor,
+  allocationUnitMatches,
+  shareOf,
+  unitAmountOf,
+} from "./overhead-allocation.domain";
 import type { ReportCell, ReportColumn, ReportTable } from "./finance-report.types";
 
 /**
@@ -27,6 +34,15 @@ import type { ReportCell, ReportColumn, ReportTable } from "./finance-report.typ
 
 /** 数值列的格式统一为 `0.####`，逐格还原老表的显示（见 `NUMBER_FORMAT` 的说明）。 */
 const numeric = (header: string, width: number): ReportColumn => ({ header, width, numFmt: NUMBER_FORMAT });
+
+/**
+ * 百分比列。
+ *
+ * 单元格里写的是**小数**（0.55 显示成 55%），由 Excel 自己渲染百分号 —— 在字符串里拼一个「%」
+ * 会把它变成文本单元格，那一列就再也参与不了求和/排序（正是老表的毛病，见 `NUMBER_FORMAT`）。
+ * 所以占比列仍然是数值列，只是格式不同；它不进 `totalColumns`，因为占比跨行相加没有意义。
+ */
+const percent = (header: string, width: number): ReportColumn => ({ header, width, numFmt: "0.00%" });
 
 /* ------------------------------------------------------------------ 销售对账明细表 */
 
@@ -132,17 +148,21 @@ export function buildSalesReconciliationDetailTable(
 /* ------------------------------------------------------------------ 采购对账明细表 */
 
 /**
- * 采购对账明细表的列定义：16 列。
+ * 采购对账明细表的列定义：17 列。
  *
- * 列名与列序**基本**照抄 `采购对账明细表.xls`，只有一处按用户要求调整：
+ * 列名与列序**基本**照抄 `采购对账明细表.xls`，有两处按用户要求调整：
  * 2026-09-17 用户要求「产品名称放在采购单号前面」—— 因为这张表是**按物料**核对的
  * （财务拿它跟供应商逐项对料号与数量），先看到「是什么」再看到「哪张单」才顺；
  * 照抄老表反而要每次从左往右数过单号才能定位到物料。
- * 其余 15 列与老表逐列一致，「金额 / 含税金额」仍在最后两列，因此合计列下标不变。
+ * 2026-09-20 用户要求加「订单号」（销售单号）列：采购单号只说得清「向谁买的」，
+ * 说不清「为哪张销售订单买的」—— 缺了它，一张采购单的成本摊到哪个订单上只能靠人猜。
+ * 该列紧挨在「采购单号」前面，与「应付管理」列表里两列的顺序一致（同一组字段在站内到哪都是一个先后）。
+ * 其余 15 列与老表逐列一致，「金额 / 含税金额」仍在最后两列。
  */
 export const PURCHASE_RECONCILIATION_DETAIL_COLUMNS: ReportColumn[] = [
   { header: "日期", width: 12 },
   { header: "产品名称", width: 30 },
+  { header: "订单号", width: 20 },
   { header: "采购单号", width: 20 },
   { header: "供应商名称", width: 22 },
   { header: "产品代码", width: 18 },
@@ -159,13 +179,20 @@ export const PURCHASE_RECONCILIATION_DETAIL_COLUMNS: ReportColumn[] = [
   numeric("含税金额", 14),
 ];
 
-/** 合计列：金额(14) 与 含税金额(15)。 */
-const PURCHASE_TOTAL_COLUMNS = [14, 15];
+/**
+ * 合计列：金额(15) 与 含税金额(16)。
+ *
+ * 插入「订单号」后所有下标后移一位，所以这两个数**必须逐列数出来**而不是沿用旧值：
+ * 沿用旧值会让合计悄悄落到「调整金额」与「金额」上，报表上完全看不出来（两者都是金额列、都右对齐）。
+ */
+const PURCHASE_TOTAL_COLUMNS = [15, 16];
 
 /** 一行采购对账明细的取数结果。 */
 export type PurchaseReconciliationDetailSource = {
   /** 采购日期；为空时回落应付条目的创建时间 */
   date: Date | null;
+  /** 销售单号（`supplier_payable_entries.order_no`），不是采购单号 */
+  orderNo: string | null;
   purchaseOrderNo: string | null;
   supplierName: string | null;
   productName: string | null;
@@ -189,6 +216,8 @@ export function buildPurchaseReconciliationDetailTable(
       toDateText(row.date), // 日期
       // 产品名称在采购单号前面（用户 2026-09-17 要求，见列定义注释）。
       row.productName, // 产品名称
+      // 订单号（销售单号）紧挨在采购单号前（用户 2026-09-20 要求，见列定义注释）。
+      row.orderNo, // 订单号
       row.purchaseOrderNo, // 采购单号
       row.supplierName, // 供应商名称
       row.materialCode, // 产品代码（= 物料编码）
@@ -337,6 +366,158 @@ export function buildSalesGrossProfitTable(
       ];
     }),
     totalColumns: SALES_GROSS_PROFIT_TOTAL_COLUMNS,
+    footnotes: options.footnotes,
+  };
+}
+
+/* ------------------------------------------------------------------ 核算表 */
+
+/**
+ * 核算表的列定义：20 列。
+ *
+ * 需求来源：财务 2026-09-20 交付的 `example/财务/核算表.xlsx`（老表 `Sheet1` A1:S101，
+ * 两行合并表头）。老表的表头是**两层**的（收入 / 原材料 / 计件人工 / 管理费用 四个大类各带
+ * 单价 / 数量 / 金额 / 占比 子列），这里按全站报表的做法**摊平成单行表头**：
+ * 两行表头在 Excel 里的筛选、排序、透视都要先做一次手工整理，而导出的每一张表都应该是能直接用的。
+ *
+ * 口径（财务原话「管理费是一个月的所以费用的总合平摊在本月生产的总数量中」）：
+ *   收入金额 = 销售单的本币金额；成本三块 = 原材料（BOM 原料成本）+ 计件人工（日报）+ 管理费分摊；
+ *   费用合计 = 后三块之和；利润 = 收入金额 − 费用合计。
+ *
+ * 三处与老表**故意不同**的地方：
+ *   1. 加了「分摊单位」列。老表没有这一列，于是「55 元/打」和「55 元/支」在表上看不出区别，
+ *      而两者差 12 倍 —— 单位是分摊的一部分，不是备注。
+ *   2. 占比列是真数值（0.55 + `0.00%` 格式），老表那里的 `#DIV/0!` 一律留空；
+ *      而且占比与金额**同进同出**（金额算不出来的列，占比也留空，见 `shareText`）。
+ *   3. 金额列全是人民币本位币口径（老表没有币种列，见下方「备注」列的说明）。
+ */
+export const COST_ACCOUNTING_COLUMNS: ReportColumn[] = [
+  { header: "日期", width: 12 },
+  { header: "订单号", width: 20 },
+  { header: "客户", width: 22 },
+  { header: "规格", width: 24 },
+  numeric("收入单价", 12),
+  numeric("收入数量", 10),
+  numeric("收入金额", 14),
+  numeric("原材料单价", 12),
+  numeric("原材料总价", 14),
+  percent("原材料占比", 12),
+  numeric("计件人工单价", 14),
+  numeric("计件人工总价", 14),
+  percent("计件人工占比", 12),
+  { header: "分摊单位", width: 10 },
+  numeric("管理费用", 12),
+  numeric("管理费用金额", 14),
+  percent("管理费用占比", 12),
+  numeric("费用合计", 14),
+  numeric("利润", 14),
+  { header: "备注", width: 24 },
+];
+
+/**
+ * 合计列：收入金额(6) / 原材料总价(8) / 计件人工总价(11) / 管理费用金额(15) / 费用合计(17) / 利润(18)。
+ *
+ * 数量(5) 不合计：一行一个单位，跨单位相加没有意义（全站纪律）。
+ * 单价(4/7/10) 与费率(14) 不合计：均价与均费率要合计后另行计算，逐行相加得到的是一个没有会计意义的数。
+ * 占比(9/12/16) 不合计：百分比相加恒不成立。
+ */
+const COST_ACCOUNTING_TOTAL_COLUMNS = [6, 8, 11, 15, 17, 18];
+
+/** 一行核算表的取数结果（直取字段 + 三块费用的原始事实）。 */
+export type CostAccountingSource = {
+  date: Date | null;
+  orderNo: string;
+  customerName: string | null;
+  productSpecification: string | null;
+  /** 订单数量（老表「收入-数量」列） */
+  quantity: Prisma.Decimal | null;
+  /** 订单单位。与分摊单位归一后不一致的行不套管理费（见 `allocationUnitMatches`）。 */
+  unit: string | null;
+  /** BOM 原料成本（**原币**）；本币值由销售单汇率折算，汇率缺失时整块留空 */
+  materialAmount: Prisma.Decimal | null;
+  /** 计件人工合计（**已经是人民币**：计件工资按人民币计价，不参与汇率折算） */
+  laborAmount: Prisma.Decimal | null;
+  /**
+   * 本期的分摊单位与月度费率 —— **期间级**事实，却放在行上而不是 `options` 里：
+   * 它与每一行自己的单位一起决定这一行能不能套费率，两样东西挨着看最不容易接错
+   * （分开传过一次的话，就很容易在某个调用点只更新其中一个）。
+   */
+  overheadUnit: string | null;
+  overheadRate: Prisma.Decimal | null;
+  /** 销售单上的换算依据（本币收入直接取销售单的权威本币金额，见 `localRevenueOf`） */
+  order: {
+    currency: string | null;
+    totalAmount: Prisma.Decimal | null;
+    receivableAmount: Prisma.Decimal | null;
+    localCurrencyAmount: Prisma.Decimal | null;
+  } | null;
+};
+
+export function buildCostAccountingTable(
+  rows: CostAccountingSource[],
+  options: { footnotes?: string[] },
+): ReportTable {
+  return {
+    sheetName: "核算表",
+    columns: COST_ACCOUNTING_COLUMNS,
+    rows: rows.map((row): ReportCell[] => {
+      const order = row.order ?? { currency: null, totalAmount: null, receivableAmount: null, localCurrencyAmount: null };
+      const rate = salesExchangeRate(order);
+      const quantity = toDecimal(row.quantity);
+      // 收入取**整张销售单**的权威本币金额（不是按比例分摊 —— 一行就是整单）。
+      const revenue = localRevenueOf(order);
+      const materialAmount = toDecimal(row.materialAmount);
+      // 原材料没有权威本币值，只能按汇率折算；汇率缺失（外币且没有本币金额）时留空，
+      // 不假装算得出来 —— 这一条的清单在表尾点名。
+      const materialLocal = rate && materialAmount ? materialAmount.mul(rate) : null;
+      const laborLocal = toDecimal(row.laborAmount);
+      // 单位不一致时**只留空管理费三列**，仍然把「分摊单位」列填上：读者要能看出这个月按什么单位分摊的，
+      // 以及这一行为什么没套上费率。系统刻意没有「打 ↔ 支」的换算，所以这里也不替用户换算。
+      const matched = allocationUnitMatches(row.unit, row.overheadUnit);
+      const overheadAmount = matched ? allocationAmountFor(row.overheadRate, quantity) : null;
+      // 费用合计：缺的那一块按 0 计入（否则「没有 BOM」会让整行费用消失），
+      // 但三块全缺时整格留空 —— 那是「这个月什么费用都没有数据」，不是「费用为 0」。
+      const parts = [materialLocal, laborLocal, overheadAmount];
+      const expenseTotal = parts.every((part) => part === null)
+        ? null
+        : parts.reduce<Prisma.Decimal>((total, part) => total.plus(part ?? 0), new Prisma.Decimal(0));
+      // 占比与金额**同进同出**，三列走同一条规则：这一块费用算不出来时金额留空，占比也必须留空。
+      // 为什么不能只依赖 `shareOf`：`shareOf(null, 合计)` 返回的是 **0**（它把缺失的分子当 0 计入），
+      // 于是空白金额旁边会出现一个 0.00% —— 那是在说「这块费用是 0 元」，而真相是「这块没算出来 /
+      // 这一行没参与分摊」。三列里只给一列加这道闸才是真正的坑：读者会以为另外两列的口径不一样。
+      const shareText = (part: Prisma.Decimal | null): number | null =>
+        part === null ? null : toExportNumber(shareOf(part, expenseTotal));
+      return [
+        toDateText(row.date), // 日期
+        row.orderNo, // 订单号
+        row.customerName, // 客户
+        row.productSpecification, // 规格
+        toExportNumber(unitAmountOf(revenue, quantity)), // 收入单价（金额 ÷ 数量反推，保证单价 × 数量 = 金额）
+        toExportNumber(quantity), // 收入数量
+        toExportNumber(revenue), // 收入金额（本币）
+        toExportNumber(unitAmountOf(materialLocal, quantity)), // 原材料单价
+        toExportNumber(materialLocal), // 原材料总价（本币）
+        // 占比的分母是**费用合计**（三块成本之和），不是收入：财务看这一列是要知道
+        // 「这一单的费用里，原材料占多少」。合计为 0 时返回 null（老表这里是 #DIV/0!，不写那个）。
+        shareText(materialLocal), // 原材料占比
+        toExportNumber(unitAmountOf(laborLocal, quantity)), // 计件人工单价
+        toExportNumber(laborLocal), // 计件人工总价
+        shareText(laborLocal), // 计件人工占比
+        row.overheadUnit, // 分摊单位（该期间登记的单位，同一列所有行相同）
+        // 单位不一致的行费率也留空：只填单位而把费率填上，会让人以为这一行的金额只是「漏了」。
+        toExportNumber(matched ? row.overheadRate : null), // 管理费用（月度费率）
+        toExportNumber(overheadAmount), // 管理费用金额 = 数量 × 费率
+        shareText(overheadAmount), // 管理费用占比
+        toExportNumber(expenseTotal), // 费用合计
+        // 沿用 `profitAmount` 的取舍：成本缺失按 0 计入，收入缺失则返回 null（留空）。
+        toExportNumber(profitAmount(revenue, expenseTotal)), // 利润
+        // 备注：`sales_orders` 上没有「备注」列，不编一个字段出来（硬凑 `completion_remark`
+        // 那种工艺字段会把车间的话当成财务备注）。另外**老表没有币种列**，本表金额一律人民币本位币，
+        // 币种口径写在表尾说明里，也不塞进这一列。
+        null, // 备注
+      ];
+    }),
+    totalColumns: COST_ACCOUNTING_TOTAL_COLUMNS,
     footnotes: options.footnotes,
   };
 }

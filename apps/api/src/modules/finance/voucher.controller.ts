@@ -14,6 +14,11 @@ class VoucherLineDto {
   @IsOptional() @IsString() @MaxLength(200) subject_label?: string;
   @IsOptional() @IsString() @MaxLength(500) summary?: string;
   @IsString() amount!: string;
+  /**
+   * 资金行引用的银行账户（银行账户池 `banks`）。**可选**：不带时后端按行号沿用原分录的账户，
+   * 所以只有「资金行换了位置」或「新加了一条资金行」时才需要显式传。
+   */
+  @IsOptional() @IsString() @MaxLength(64) bank_id?: string | null;
 }
 
 class VoucherUpdateDto {
@@ -41,6 +46,20 @@ export class VoucherController {
   @Get()
   async list(@Query() query: VoucherListDto) {
     return { data: await this.vouchers.list(query), meta: {} };
+  }
+
+  /**
+   * 记账凭证模板（工资计提 / 原材料采购）。财务 2026-09-20：「我完整的一个工资是这样的，
+   * 但是现在都不能改」「原材料的也是要加上应交税费」。
+   *
+   * ⚠️ 必须声明在 `@Get(":id")` **之前**：`templates` 是单段路径，Nest 按声明顺序匹配，
+   * 排在后面会被 `:id` 当成一个凭证 id 吃掉（同 finance.controller.ts 里 import-template 的那条注释）。
+   * 这里用的是两段路径 `:id/templates`，本身不会与 `:id` 冲突，但把它放在最前面仍然更安全 ——
+   * 将来加一个不依赖凭证的全局模板接口时，顺序已经是对的。
+   */
+  @Get(":id/templates")
+  async templates(@Param("id") id: string) {
+    return { data: await this.vouchers.templates(id), meta: {} };
   }
 
   @Get(":id")

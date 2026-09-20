@@ -240,3 +240,25 @@ export function salesAmountOf(order: {
 }): Prisma.Decimal | null {
   return toDecimal(order.totalAmount) ?? toDecimal(order.receivableAmount);
 }
+
+/* ------------------------------------------------------------------ 核算表口径 */
+
+/**
+ * 销售单的**本币收入**（人民币），核算表「收入金额」列的口径。
+ *
+ * 为什么不直接用 `localAmountFor`：那个函数是给**一行 = 一次出库 / 一条明细**的对账表用的，
+ * 它按「本行金额 ÷ 订单金额」把销售单的本币金额分摊到多行上。核算表一行就是整张销售单，
+ * 分摊比例恒为 1，却会在「销售单填了本币金额、两个原币金额都空」时算出 null ——
+ * 那种单子明明有权威的本币金额，报表却留空。
+ *
+ * 外币而本币金额为空时返回 **null**（留空），绝不回落到「原币金额 × 汇率」或原币金额本身：
+ * 那等于把美元数当人民币记账（与 `salesExchangeRate` 第 3 条同一条纪律）。
+ * 人民币订单没有本币金额时可以用订单金额，因为它本来就是人民币。
+ */
+export function localRevenueOf(order: SalesOrderCurrencyFacts | null | undefined): Prisma.Decimal | null {
+  const facts = order ?? {};
+  const local = toDecimal(facts.localCurrencyAmount);
+  if (local) return local;
+  if (facts.currency !== LOCAL_CURRENCY) return null;
+  return salesAmountOf(facts);
+}

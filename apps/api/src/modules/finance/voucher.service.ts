@@ -7,6 +7,7 @@ import { nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { accountingSubjectKey } from "./accounting-subject-catalog";
 import { fundLineFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
+import { VOUCHER_TEMPLATES, resolveVoucherTemplate, type ResolvedTemplateLine } from "./voucher-template";
 
 /** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」。 */
 const SOURCE_CASH_FLOW = "cash_flow_entry";
@@ -29,7 +30,16 @@ export function bankAccountLabel(bank: { bankName: string; accountNumber: string
 
 const STATUS_LABELS: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已红冲" };
 
-export type VoucherLineInput = { direction: string; subject_key?: string; subject_label?: string; summary?: string; amount: string };
+export type VoucherLineInput = { direction: string; subject_key?: string; subject_label?: string; summary?: string; amount: string; bank_id?: string | null };
+
+/**
+ * 模板行 + **这张凭证自己的资金行信息**。
+ *
+ * 为什么资金行要在服务端拼：钱落在哪张卡上是这张凭证已有的事实（它由某条收支流水的 `bank_id` 生成），
+ * 前端不该、也没法知道。套模板时把原资金行的科目与账户搬到新分录上，才不会出现
+ * 「改了一次科目，银行存款明细账上的账户引用就没了」。
+ */
+export type VoucherTemplateLineResponse = ResolvedTemplateLine & { bank_id: string | null; bank_label: string | null };
 
 /**
  * 记账凭证服务。
@@ -158,7 +168,49 @@ export class VoucherService {
     return { ...(await this.get(id)), regenerated: true };
   }
 
-  /** 由一条收支流水算出「草稿内容」（新建与重新生成两处共用，避免两条路径算出不同口径）。 */
+  /**
+   * 记账凭证模板（财务 2026-09-20：「工资是这样的，但是现在都不能改」「原材料的也是要加上应交税费」）。
+   *
+   * 返回的是**已经落到本凭证上**的模板：科目从科目表解析（候选全落空时给建议名 + `subject_id: null`，
+   * 见 `voucher-template.ts`），资金行带上本凭证现有的科目与银行账户。
+   *
+   * 为什么挂在凭证上而不是做一个全局清单接口：资金行要认这张凭证的账户；而且模板只有
+   * 「编辑这张草稿」这一个使用场景，脱离凭证的清单没有意义。
+   */
+  async templates(id: string): Promise<Array<{ key: string; name: string; description: string; lines: VoucherTemplateLineResponse[] }>> {
+    const current = await this.prisma.voucher.findFirst({
+      where: { id, deletedAt: null },
+      include: { lines: { orderBy: { lineNo: "asc" }, include: { bank: { select: { id: true, bankName: true, accountNumber: true } } } } },
+    });
+    if (!current) throw this.notFound("VOUCHER_NOT_FOUND", "凭证不存在");
+    // 含已停用科目：停用科目仍「存在」，历史凭证上就是它；解析候选时优先启用中的（见 resolveTemplateSubject）。
+    const subjects = await this.prisma.accountingSubject.findMany({ where: { deletedAt: null }, select: { id: true, category: true, name: true, isActive: true } });
+    // 本凭证的资金行 = 引用了银行账户的那条；老凭证可能没有账户（历史数据），退化成「科目名是银行存款/库存现金」的那条。
+    const fund = current.lines.find((line) => line.bankId !== null)
+      ?? current.lines.find((line) => line.subjectLabel.startsWith("银行存款") || line.subjectLabel.startsWith("库存现金"))
+      ?? null;
+    const fundSubject = fund ? subjects.find((subject) => accountingSubjectKey(subject.category, subject.name) === fund.subjectKey) ?? null : null;
+    return VOUCHER_TEMPLATES.map((template) => ({
+      key: template.key,
+      name: template.name,
+      description: template.description,
+      lines: resolveVoucherTemplate(template, subjects).map((line) => line.role === "fund" && fund
+        ? {
+            ...line,
+            // 原资金行的科目优先于模板候选：它就是这张凭证现在用的科目（可能是「银行存款—农业银行5706」这种带账户的快照）。
+            subject_id: fundSubject?.id ?? null,
+            subject_key: fund.subjectKey,
+            subject_label: fund.subjectLabel,
+            bank_id: fund.bankId,
+            bank_label: bankAccountLabel(fund.bank),
+          }
+        : { ...line, bank_id: null, bank_label: null }),
+    }));
+  }
+
+  /**
+   * 由一条收支流水算出「草稿内容」（新建与重新生成两处共用，避免两条路径算出不同口径）。
+   */
   private draftForEntry(entry: { entryNo: string; entryDate: Date; counterpartyName: string; direction: string; amount: Prisma.Decimal; currency: string; settlementMethod: string | null; remark: string | null; subject: { category: string; name: string } | null; settlementAccount: { label: string } | null; bank: { id: string; bankName: string; accountNumber: string } | null }) {
     const bankLabel = bankAccountLabel(entry.bank);
     const lines = voucherLinesFor({
@@ -185,14 +237,20 @@ export class VoucherService {
   /**
    * 编辑草稿凭证：摘要、备注，或整组分录。
    *
-   * 允许改分录是刻意的：科目当前取自收支项目字典（不是正式科目表），财务需要能手工把科目改成
-   * 自己账套里的名字。改完必须重新平衡（借=贷），否则 422。
+   * 允许改分录是刻意的：科目取自正式科目表，但**一张凭证的分录结构**（一借一贷 / 一借多贷 /
+   * 多借多贷）由业务决定 —— 工资计提是「借应付职工薪酬，贷其他应付款 + 应交税费 + 银行存款」，
+   * 原材料采购是「借原材料 + 应交税费，贷应付账款」，都不是两行能表达的（财务 2026-09-20 要求）。
+   * 改完必须重新平衡（借=贷），否则 422。
+   *
+   * 分录可以逐行引用银行账户（`bank_id`）：手工改分录时行号会变，靠「按行号沿用原账户」
+   * 会让账户引用落到别的行上；显式带上才是可靠的（省略时仍然按行号沿用，兼容旧调用方）。
    */
   async update(id: string, input: { summary?: string; remark?: string; lines?: VoucherLineInput[] }, user: CurrentUser) {
     const current = await this.prisma.voucher.findFirst({ where: { id, deletedAt: null }, include: { lines: { orderBy: { lineNo: "asc" } } } });
     if (!current) throw this.notFound("VOUCHER_NOT_FOUND", "凭证不存在");
     if (current.status !== "draft") throw this.invalid("VOUCHER_NOT_EDITABLE", "只有草稿凭证可以编辑；已过账的凭证请用红冲");
     const lines = input.lines ? this.normalizeLines(input.lines, current.currency) : null;
+    if (lines) await this.assertBanks(lines.map((line) => line.bank_id));
     const totals = lines
       ? { debit: this.sumBy(lines, "debit"), credit: this.sumBy(lines, "credit") }
       : { debit: new Prisma.Decimal(current.debitTotal), credit: new Prisma.Decimal(current.creditTotal) };
@@ -204,11 +262,14 @@ export class VoucherService {
       const locked = await tx.voucher.findFirst({ where: { id, deletedAt: null } });
       if (!locked || locked.status !== "draft") throw this.invalid("VOUCHER_NOT_EDITABLE", "凭证已被其他操作处理");
       if (lines) {
-        // 银行账户引用按行号沿用原分录：手工编辑只改科目/金额，不该把「这笔钱在哪张卡上」丢掉
-        // （丢了之后银行存款明细账就对不上银行对账单了）。
+        // 银行账户引用：**显式给了就照它**（`null` 也算给了 —— 表示这一行不该挂账户），
+        // 只在**完全没传** `bank_id` 时才按行号沿用原分录。这个区分是必须的：
+        // 分录编辑器会在每行都带上 `bank_id`（业务行是 null），如果 null 也触发「按行号沿用」，
+        // 那么在资金行前面插入一行之后，那张卡就会被挂到新插入的业务行上 ——
+        // 银行存款明细账从此对不上银行对账单，而凭证上完全看不出来。
         const bankByLineNo = new Map(current.lines.map((line) => [line.lineNo, line.bankId]));
         await tx.voucherLine.deleteMany({ where: { voucherId: id } });
-        await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(id, { ...line, bank_id: line.bank_id ?? bankByLineNo.get(line.line_no) ?? null }, line.cash_flow_entry_id ?? null, user)) });
+        await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(id, { ...line, bank_id: line.bank_id !== undefined ? line.bank_id : bankByLineNo.get(line.line_no) ?? null }, line.cash_flow_entry_id ?? null, user)) });
       }
       return tx.voucher.update({
         where: { id },
@@ -319,9 +380,27 @@ export class VoucherService {
         summary: (line.summary ?? "").slice(0, 500),
         amount: amount.toFixed(4),
         currency,
+        // **保留 undefined**（不折叠成 null）：`update` 靠「undefined = 没传」来决定要不要按行号沿用
+        // 原分录的银行账户。折叠成 null 会让这个区分消失（见 update 里的说明）。
+        bank_id: line.bank_id,
         cash_flow_entry_id: null,
       };
     });
+  }
+
+  /**
+   * 校验分录引用的银行账户。
+   *
+   * 为什么要单独查一遍：`voucher_lines.bank_id` 是指向 `banks` 的外键，前端传来一个不存在（或已删除）
+   * 的 id 会让事务在提交时抛一个外键冲突 —— 用户看到的是一句数据库错误，而不是「这个账户不存在」。
+   */
+  private async assertBanks(bankIds: Array<string | null | undefined>): Promise<void> {
+    const ids = [...new Set(bankIds.filter((id): id is string => Boolean(id)))];
+    if (!ids.length) return;
+    const found = await this.prisma.bank.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+    const known = new Set(found.map((row) => row.id));
+    const missing = ids.filter((id) => !known.has(id));
+    if (missing.length) throw this.invalid("VOUCHER_BANK_NOT_FOUND", `分录引用的银行账户不存在或已删除：${missing.join("、")}`);
   }
 
   private sumBy(lines: Array<{ direction: string; amount: string }>, direction: string) {

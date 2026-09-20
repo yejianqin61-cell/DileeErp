@@ -40,3 +40,10 @@ export async function apiRequest<T>(path: string, options: RequestInit = {}): Pr
 }
 export const apiPost = <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
 export const apiPatch = <T>(path: string, body: unknown) => apiRequest<T>(path, { method: "PATCH", body: JSON.stringify(body) });
+/**
+ * DELETE 也能带 body（Express 的 body-parser 对所有方法都解析，后端就是 `@Body() { reason }`）。
+ *
+ * 为什么不用查询串传删除原因：原因会出现在访问日志、浏览器历史与 Referer 里，
+ * 而它恰恰是「谁把哪条数删了、为什么」这类只该留在审计与单据备注里的信息。
+ */
+export const apiDelete = <T>(path: string, body?: unknown) => apiRequest<T>(path, { method: "DELETE", body: body === undefined ? undefined : JSON.stringify(body) });

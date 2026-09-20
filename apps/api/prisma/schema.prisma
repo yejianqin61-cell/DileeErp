@@ -2739,3 +2739,44 @@ model StocktakeLine {
   @@index([stocktakeId])
   @@map("stocktake_lines")
 }
+
+/// 月度管理费分摊登记（财务，用户 2026-09-20 交付 `example/财务/核算表.xlsx`）。
+///
+/// 财务原话：「只有采购输入原材料，物控有录人工费。我这边录管理费，就可以出这个表。我这里的管理费
+/// 是一个月的所以费用的总合平摊在本月生产的总数量中。比如这个月管理费是22万，生产了4000打货，
+/// 管理费就是55元」。
+///
+/// 为什么必须单独一张表，而不是直接汇总「本月管理费用类科目的收支流水」：
+/// 财务的口径是**先有总额、再有费率**（费率 = 总额 ÷ 本月生产数量），而且这个总额是「财务确认过的
+/// 这个月的管理费」，不是「这个月已经记进流水的管理费用」—— 流水常常滞后于出表时间（月底的费用
+/// 下个月才报销），直接汇总流水会让本月费率凭空偏低，而报表上看不出这一点。
+///
+/// 为什么 `period` 是唯一键、且软删除后仍占着这个期间：一个期间只该有一条管理费口径，
+/// 两条并存就会有「用哪条算费率」的歧义。财务录错时改这一条或删掉再录，服务层按期间 upsert
+/// （**包括把已软删的那条恢复回来**），所以唯一索引在软删后仍然成立。
+///
+/// 金额没有 `currency` 列：管理费是内账的人民币口径（核算表本身就是人民币口径的本币报表，
+/// 见 finance-report.tables.ts 里核算表的口径说明）。
+model OverheadAllocation {
+  id               String   @id @default(uuid()) @db.Uuid
+  /// 期间 YYYY-MM（与凭证 / 盘点月份同一写法）。
+  period           String   @unique @db.VarChar(7)
+  /// 本月管理费总额（人民币）。
+  amount           Decimal  @db.Decimal(18, 4)
+  /// 分摊单位（打 / 支…）。单位是**登记的一部分**：老核算表没有单位列，而「55 元/打」与
+  /// 「55 元/支」差 12 倍；全站的纪律是「不跨单位相加」，所以核算表只对单位一致的订单套费率，
+  /// 不一致的留空并在表尾点名。
+  unit             String   @db.VarChar(30)
+  /// 分摊数量的人工覆盖值。留空 = 由「本月计件日报（employee_daily_reports）的数量」自动汇总。
+  /// 自动值只是参考（计件日报按人按工序逐条填报，跨工序合计会重复计一件货），财务可以覆盖。
+  quantityOverride Decimal? @map("quantity_override") @db.Decimal(18, 4)
+  remark           String?  @db.VarChar(1000)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  createdBy        String   @map("created_by") @db.Uuid
+  updatedBy        String   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at")
+  deletedBy        String?   @map("deleted_by") @db.Uuid
+
+  @@map("overhead_allocations")
+}

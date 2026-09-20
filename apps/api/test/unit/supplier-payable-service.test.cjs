@@ -470,3 +470,103 @@ test("外加工签收来源创建应付时带上批次关联", async () => {
   assert.equal(captured.outsourceLogisticsBatchId, "batch-2");
   assert.equal(captured.purchaseOrderId, "po-2");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-20（用户要求）：「应付管理中，其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」。
+//
+// 四条边界都要钉住：① 只有其他应付能删（原料/外加工是到货事实的账，录错了要走冲销）；
+// ② 只有草稿能删（已确认的已经记账）；③ 已被对账单覆盖时拒绝（快照是发给供应商的事实）；
+// ④ 原因必填、走软删除、写进备注并单独记一条审计。
+// ---------------------------------------------------------------------------
+
+/** 逻辑删除的替身：记录被写入的 data 与审计事件。 */
+function removeOtherHarness({ entry, scopes = [] } = {}) {
+  const updates = [];
+  const events = [];
+  const tx = {
+    $queryRaw: async () => [],
+    supplierPayableEntry: {
+      findFirst: async () => entry,
+      update: async ({ data }) => { updates.push(data); return { ...entry, ...data }; },
+    },
+    supplierPayableReconciliation: { findMany: async () => scopes },
+  };
+  const prisma = { supplierPayableEntry: { findFirst: async () => entry }, $transaction: async (fn) => fn(tx) };
+  const audit = {
+    softDelete: () => ({ deletedAt: new Date("2026-09-20T00:00:00.000Z"), deletedBy: "user-1", updatedBy: "user-1" }),
+    record: async (action, entityType, actorId, entityId, details) => { events.push({ action, entityType, actorId, entityId, details }); },
+  };
+  return { service: new SupplierPayableService(prisma, audit, cashFlowStub()), updates, events };
+}
+
+const otherDraft = (extra = {}) => ({
+  id: "entry-other", payableNo: "APO-1", sourceType: "other", status: "draft", supplierId: "supplier-1",
+  currency: "CNY", orderNo: null, purchaseOrderId: null, confirmationDate: new Date("2026-09-10T00:00:00.000Z"),
+  amount: new Prisma.Decimal("500"), remark: null, ...extra,
+});
+
+test("其他应付草稿可以逻辑删除：写删除原因、软删除并记一条审计", async () => {
+  const { service, updates, events } = removeOtherHarness({ entry: otherDraft() });
+  const row = await service.removeOther("entry-other", "金额录错，应是 50 不是 500", { id: "user-1" });
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].deletedBy, "user-1");
+  assert.ok(updates[0].deletedAt instanceof Date);
+  assert.equal(updates[0].remark, "删除原因：金额录错，应是 50 不是 500");
+  assert.equal(row.deletedBy, "user-1");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, "supplier_payable.delete_other");
+  assert.equal(events[0].details.reason, "金额录错，应是 50 不是 500");
+  assert.equal(events[0].details.amount, "500");
+});
+
+test("其他应付删除：原有备注被保留（删除原因追加在后面，不覆盖）", async () => {
+  const { service, updates } = removeOtherHarness({ entry: otherDraft({ remark: "8 月水电" }) });
+  await service.removeOther("entry-other", "重复录入", { id: "user-1" });
+  assert.equal(updates[0].remark, "8 月水电\n删除原因：重复录入");
+});
+
+test("其他应付删除：原因必填，空原因不发请求", async () => {
+  const { service, updates } = removeOtherHarness({ entry: otherDraft() });
+  await assert.rejects(() => service.removeOther("entry-other", "   ", { id: "user-1" }), (error) => error.getResponse().code === "DELETION_REASON_REQUIRED");
+  assert.equal(updates.length, 0);
+});
+
+test("其他应付删除：原料入库 / 外加工签收形成的应付不能删（那是到货事实的账）", async () => {
+  for (const sourceType of ["raw_material_inbound", "outsource_receipt", "purchase_receipt"]) {
+    const { service, updates } = removeOtherHarness({ entry: otherDraft({ sourceType }) });
+    await assert.rejects(
+      () => service.removeOther("entry-other", "录错了", { id: "user-1" }),
+      (error) => error.getResponse().code === "SUPPLIER_PAYABLE_NOT_OTHER",
+      sourceType,
+    );
+    assert.equal(updates.length, 0);
+  }
+});
+
+test("其他应付删除：已确认的不能删（钱已经从账户支出去了，要撤销请回退或冲销）", async () => {
+  const { service, updates } = removeOtherHarness({ entry: otherDraft({ status: "confirmed" }) });
+  await assert.rejects(
+    () => service.removeOther("entry-other", "录错了", { id: "user-1" }),
+    (error) => error.getResponse().code === "SUPPLIER_PAYABLE_NOT_DELETABLE",
+  );
+  assert.equal(updates.length, 0);
+});
+
+test("其他应付删除：已被对账单覆盖时拒绝，并在错误里点名是哪张对账单", async () => {
+  const scope = { id: "recon-1", reconciliationNo: "APREC-9", status: "matched", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const { service, updates } = removeOtherHarness({ entry: otherDraft(), scopes: [scope] });
+  await assert.rejects(
+    () => service.removeOther("entry-other", "录错了", { id: "user-1" }),
+    (error) => error.getResponse().code === "SUPPLIER_PAYABLE_IN_RECONCILIATION" && error.getResponse().message.includes("APREC-9"),
+  );
+  assert.equal(updates.length, 0, "被拦下时不写任何字段");
+});
+
+test("其他应付删除：供应商不存在这条时 404；别家的对账单不覆盖这条", async () => {
+  const missing = removeOtherHarness({ entry: null });
+  await assert.rejects(() => missing.service.removeOther("entry-x", "录错了", { id: "user-1" }), (error) => error.getResponse().code === "SUPPLIER_PAYABLE_NOT_FOUND");
+  const otherSupplierScope = { id: "recon-2", reconciliationNo: "APREC-10", status: "matched", supplierId: "supplier-2", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const { service, updates } = removeOtherHarness({ entry: otherDraft(), scopes: [otherSupplierScope] });
+  await service.removeOther("entry-other", "录错了", { id: "user-1" });
+  assert.equal(updates.length, 1, "别家供应商的对账单不该挡住这条的删除");
+});

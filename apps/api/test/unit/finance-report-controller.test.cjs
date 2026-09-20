@@ -12,7 +12,7 @@ const dec = (value) => new Prisma.Decimal(value);
 
 /** 取数服务桩：记录收到的筛选条件，返回固定的报表源行。 */
 function stubReports(overrides = {}) {
-  const filters = { sales: [], purchase: [], summary: [], profit: [], cashDetail: [], cashSummary: [], forex: [] };
+  const filters = { sales: [], purchase: [], summary: [], profit: [], cost: [], cashDetail: [], cashSummary: [], forex: [] };
   const service = {
     currencyLabels: async () => new Map([["USD", "美元"], ["CNY", "人民币"]]),
     salesReconciliationDetail: async (filter) => {
@@ -38,6 +38,7 @@ function stubReports(overrides = {}) {
       return overrides.purchaseRows ?? [
         {
           date: new Date("2026-09-08T00:00:00.000Z"),
+          orderNo: "XSDD2026090700001",
           purchaseOrderNo: "CGDH1319",
           supplierName: "碧江",
           productName: "23寸*10K 三折自开收",
@@ -81,6 +82,27 @@ function stubReports(overrides = {}) {
           },
         ],
         footnotes: overrides.footnotes ?? [],
+      };
+    },
+    costAccounting: async (filter) => {
+      filters.cost.push(filter);
+      return overrides.cost ?? {
+        rows: [
+          {
+            date: new Date("2026-09-08T00:00:00.000Z"),
+            orderNo: "XSDD2026090800001",
+            customerName: "26805电商",
+            productSpecification: "23寸*10K",
+            quantity: dec("4000"),
+            unit: "打",
+            materialAmount: dec("500000"),
+            laborAmount: dec("120000"),
+            overheadUnit: "打",
+            overheadRate: dec("55"),
+            order: { currency: "CNY", totalAmount: dec("1000000"), receivableAmount: null, localCurrencyAmount: null },
+          },
+        ],
+        footnotes: overrides.costFootnotes ?? [],
       };
     },
     cashFlowDetail: async (filter) => {
@@ -426,4 +448,55 @@ test("finance-report.api：收支报表的 subject_id / category / direction 参
   assert.equal(filters.cashDetail[0].category, "损益类");
   assert.equal(filters.cashDetail[0].direction, "expense");
   assert.equal(filters.cashDetail[0].currency, "CNY");
+});
+
+/* ------------------------------------------------------------ 采购对账明细：订单号列 */
+
+test("finance-report.api：采购对账明细导出把「订单号」写在「采购单号」前面", async () => {
+  const { service } = stubReports();
+  const response = stubResponse();
+  await new FinanceReportController(service).exportPurchaseReconciliationDetail({}, response);
+  const workbook = XLSX.read(response.body, { type: "buffer" });
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets["采购对账明细"], { header: 1, raw: true, defval: null });
+  const header = rows[0];
+  assert.equal(header.length, 17, "16 列 + 订单号 = 17 列");
+  assert.equal(header[header.indexOf("订单号") + 1], "采购单号", "订单号紧挨在采购单号前面");
+  assert.equal(rows[1][2], "XSDD2026090700001", "数据行的第 3 格是订单号（销售单号）");
+  assert.equal(rows[1][3], "CGDH1319", "第 4 格才是采购单号");
+});
+
+/* ------------------------------------------------------------ 五期：核算表 */
+
+test("finance-report.api：核算表预览与导出（20 列、工作表名、文件名、表尾说明）", async () => {
+  const footnotes = ["本表金额列一律为人民币本位币口径（老表没有币种列）：…"];
+  const { service } = stubReports({ costFootnotes: footnotes });
+  const controller = new FinanceReportController(service);
+  const preview = await controller.costAccounting({ from: "2026-09-01", to: "2026-09-30" });
+
+  assert.equal(preview.data.sheet_name, "核算表");
+  assert.equal(preview.data.columns.length, 20);
+  assert.equal(preview.data.columns[13].header, "分摊单位");
+  assert.equal(preview.data.columns[9].num_fmt, "0.00%", "占比列必须是数值列 + 百分比格式，不能拼字符串「%」");
+  assert.equal(preview.data.rows[0][14], 55, "管理费用 = 月度费率");
+  assert.equal(preview.data.rows[0][15], 220000, "管理费用金额 = 数量(4000) × 费率(55)");
+  assert.deepEqual(preview.data.total_columns, [6, 8, 11, 15, 17, 18]);
+  assert.deepEqual(preview.data.footnotes, footnotes, "取数层的表尾说明要一起回给页面，页面与导出同源");
+
+  const response = stubResponse();
+  await controller.exportCostAccounting({ from: "2026-09-01", to: "2026-09-30" }, response);
+  const fileName = decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(response.headers["Content-Disposition"])[1]);
+  assert.match(fileName, /^迪礼ERP-核算表-\d{14}-1行\.xlsx$/);
+  const workbook = XLSX.read(response.body, { type: "buffer" });
+  assert.deepEqual(workbook.SheetNames, ["核算表"]);
+});
+
+test("finance-report.api：核算表的筛选条件与其它报表一致地映射", async () => {
+  const { service, filters } = stubReports();
+  await new FinanceReportController(service).costAccounting({ from: "2026-09-01", to: "2026-09-30", customer_id: "c-1", order_no: "SO-1", currency: "CNY" });
+  assert.equal(filters.cost[0].from, "2026-09-01");
+  assert.equal(filters.cost[0].to, "2026-09-30");
+  assert.equal(filters.cost[0].customerId, "c-1");
+  assert.equal(filters.cost[0].orderNo, "SO-1");
+  assert.equal(filters.cost[0].currency, "CNY");
+  assert.equal(filters.cost[0].includeDraft, false);
 });

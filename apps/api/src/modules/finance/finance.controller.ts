@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { ArrayNotEmpty, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
@@ -267,6 +267,15 @@ export class FinanceController {
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }
   @Post("payable-entries/:id/reopen") async reopenPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reopen(id, body.reason, user), meta: {} }; }
   @Post("payable-entries/:id/reverse") async reversePayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reverse(id, body.reason, user), meta: {} }; }
+
+  /**
+   * 逻辑删除「其他应付」条目（用户 2026-09-20）。
+   *
+   * 路径就是这一条资源的 DELETE，没有再加 `/delete` 之类的动词段：这是真正的删除语义，
+   * 而「只有其他应付、只有草稿、未被对账覆盖」三条边界由服务层把关并给出可执行的错误说明
+   * （见 `SupplierPayableService.removeOther`）。原因走 body —— 与 `/reopen`、`/reverse` 同一套写法。
+   */
+  @Delete("payable-entries/:id") async deleteOtherPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.removeOther(id, body.reason, user), meta: {} }; }
   @Get("supplier-payments") async listSupplierPayments(@Query("order_no") orderNo?: string, @Query("supplier_id") supplierId?: string, @Query("status") status?: string) { return { data: await this.supplierPayments.list(orderNo, supplierId, status), meta: {} }; }
   @Get("supplier-payments/:id") async getSupplierPayment(@Param("id") id: string) { return { data: await this.supplierPayments.get(id), meta: {} }; }
   @Post("supplier-payments") async createSupplierPayment(@Body() body: SupplierPaymentDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierPayments.create(body, user), meta: {} }; }

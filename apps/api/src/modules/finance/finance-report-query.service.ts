@@ -3,8 +3,10 @@ import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { compareAccountingSubjects } from "./accounting-subject-catalog";
 import { BomMaterialCostService } from "./finance-report-cost.service";
-import { LOCAL_CURRENCY, receivableOutstanding, salesAmountOf } from "./finance-report.domain";
+import { LOCAL_CURRENCY, localRevenueOf, receivableOutstanding, salesAmountOf, toDecimal } from "./finance-report.domain";
 import { financeDayRange } from "./finance-period";
+import { allocationPeriodOf, allocationSpansMonths, allocationUnitMatches } from "./overhead-allocation.domain";
+import { OverheadAllocationService } from "./overhead-allocation.service";
 import { adjustmentNet } from "./receivable-adjustment.domain";
 import { footnoteLines } from "./finance-report.tables";
 import {
@@ -18,6 +20,7 @@ import type { FinanceReportFilter } from "./finance-report.types";
 import type {
   CashFlowDetailSource,
   CashFlowSummaryAmount,
+  CostAccountingSource,
   PurchaseReconciliationDetailSource,
   SalesGrossProfitSource,
   SalesReconciliationDetailSource,
@@ -83,7 +86,15 @@ function withinPeriod(date: Date, period: { gte?: Date; lte?: Date } | null): bo
 
 @Injectable()
 export class FinanceReportQueryService {
-  constructor(private readonly prisma: PrismaService, private readonly cost: BomMaterialCostService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cost: BomMaterialCostService,
+    /**
+     * 月度管理费分摊登记。放在**最后**一个参数：它是核算表专用的输入，
+     * 前面两个是全站财务报表共用的取数依赖（顺序不影响 Nest 注入，但读的人一眼能看出主次）。
+     */
+    private readonly overhead: OverheadAllocationService,
+  ) {}
 
   /**
    * 币种代码 → 中文标签。
@@ -206,6 +217,7 @@ export class FinanceReportQueryService {
       const snapshot = (item?.materialSnapshot ?? null) as { name?: string; specificationModel?: string | null } | null;
       return {
         date: order?.purchaseDate ?? row.createdAt,
+        orderNo: row.orderNo,
         purchaseOrderNo: order?.purchaseOrderNo ?? null,
         supplierName: row.supplier?.name ?? null,
         productName: material?.name ?? snapshot?.name ?? null,
@@ -342,6 +354,159 @@ export class FinanceReportQueryService {
       ...footnoteLines("没有 BOM 或 BOM 无明细的销售单（成本按 0 计入，毛利偏高）", orders.filter((order) => !costs.get(order.id)?.hasBom).map((order) => order.orderNo)),
     ];
     return { rows, footnotes };
+  }
+
+  /* ------------------------------------------------------------ 五期：核算表 */
+
+  /**
+   * 核算表取数：一个销售单一行，费用 = 原材料（BOM）+ 计件人工（日报）+ 月度管理费分摊。
+   *
+   * 需求来源：财务 2026-09-20 交付 `example/财务/核算表.xlsx`，原话「只有采购输入原材料，
+   * 物控有录人工费。我这边录管理费，就可以出这个表」。所以这张表是**三处录入的汇合点**，
+   * 任何一块缺了都必须在表尾点名，否则「费用合计少了」在表上完全看不出来。
+   *
+   * 与销售利润报表(毛利)的关系：行集与筛选条件**故意完全一致**（已确认/已关闭销售单、按销售单日期），
+   * 这样两张表能逐行对上；差别只在费用多了计件人工与管理费分摊，且金额一律人民币本位币。
+   *
+   * 管理费是**期间级**输入：费率 = 某月管理费总额 ÷ 该月分摊数量，本表只按数量乘回去
+   * （口径全在 `overhead-allocation.domain.ts`）。单位不一致的订单不套费率 ——
+   * 「55 元/打」与「55 元/支」差 12 倍，系统刻意不提供打↔支换算。
+   */
+  async costAccounting(filter: FinanceReportFilter): Promise<{ rows: CostAccountingSource[]; footnotes: string[] }> {
+    const period = financeDayRange(filter.from, filter.to);
+    const orders = await this.prisma.salesOrder.findMany({
+      where: {
+        deletedAt: null,
+        status: { in: this.statuses(SALES_ORDER_STATUSES, filter.includeDraft) },
+        ...(filter.customerId ? { customerId: filter.customerId } : {}),
+        ...(filter.orderNo ? { orderNo: filter.orderNo } : {}),
+        ...(filter.currency ? { currency: filter.currency } : {}),
+        ...(period ? { orderDate: period } : {}),
+      },
+      select: {
+        id: true,
+        orderNo: true,
+        orderDate: true,
+        currency: true,
+        quantity: true,
+        unit: true,
+        productSpec: true,
+        totalAmount: true,
+        receivableAmount: true,
+        localCurrencyAmount: true,
+        customer: { select: { name: true } },
+      },
+      orderBy: [{ orderDate: "asc" }, { orderNo: "asc" }],
+    });
+    this.assertWithinLimit(orders.length);
+
+    const costs = await this.cost.materialCosts(orders.map((order) => ({ salesOrderId: order.id, quantity: order.quantity })));
+    const labor = await this.laborByOrder(orders.map((order) => order.orderNo), period);
+
+    // 管理费按月登记：有起始日就用起始月，否则用结束日所在月（见 `allocationPeriodOf`）。
+    // 一个期间都取不到（压根没给区间）时不查登记表，管理费四列留空并在表尾说清 ——
+    // 这里**不报错**：报表本身仍然成立，只是管理费那一块没有输入。
+    const allocationPeriod = allocationPeriodOf(filter.from, filter.to);
+    const allocation = allocationPeriod ? await this.overhead.resolved(allocationPeriod) : null;
+    const overheadUnit = allocation?.unit ?? null;
+    const overheadRate = toDecimal(allocation?.rate);
+
+    const rows: CostAccountingSource[] = orders.map((order) => ({
+      date: order.orderDate,
+      orderNo: order.orderNo,
+      customerName: order.customer?.name ?? null,
+      productSpecification: order.productSpec,
+      quantity: order.quantity,
+      unit: order.unit,
+      // 成本服务对「没有 BOM / BOM 无明细」返回 0，与销售利润表同一口径；
+      // 这是「成本确实是 0」而不是「缺数据」，缺数据的部分（缺采购价、缺 BOM）在表尾点名。
+      materialAmount: costs.get(order.id)?.cost ?? new Prisma.Decimal(0),
+      // 没有计件日报 = 「这个订单这个月没有录计件人工」这个事实本身，Σ 空集就是 0 ——
+      // 老表这一格写的也是 0.00。**这不是「缺数据必须留空」的反例**：真正缺数据的是本币收入
+      // （外币订单没填本币金额，`localRevenueOf` 返回 null，金额列留空而不是写 0——
+      // 0 会被读成「这单收入是 0」，那是另一个意思）。两处的取舍故意不同，别照着一边改另一边。
+      laborAmount: labor.get(order.orderNo) ?? new Prisma.Decimal(0),
+      overheadUnit,
+      overheadRate,
+      order: {
+        currency: order.currency,
+        totalAmount: order.totalAmount,
+        receivableAmount: order.receivableAmount,
+        localCurrencyAmount: order.localCurrencyAmount,
+      },
+    }));
+
+    // 本币收入缺失 = 外币订单没填本币金额。这类行收入与利润都会留空，
+    // 光看表会以为「这单没收入」，所以必须点名（美元单填了 0 与留空是两件事）。
+    const missingRevenue = orders
+      .filter((order) => !localRevenueOf({ currency: order.currency, totalAmount: order.totalAmount, receivableAmount: order.receivableAmount, localCurrencyAmount: order.localCurrencyAmount }))
+      .map((order) => order.orderNo);
+    const missing = new Map<string, string>();
+    for (const order of orders) {
+      for (const item of costs.get(order.id)?.missingPrice ?? []) {
+        missing.set(`${item.materialCode}|${item.materialName}`, item.materialCode ? `${item.materialCode} ${item.materialName}` : item.materialName);
+      }
+    }
+    // 单位对不上时 `overheadUnit` 才有值（没登记就没有单位，那时「对不上」是必然的、没有信息量）。
+    const mismatched = overheadUnit ? orders.filter((order) => !allocationUnitMatches(order.unit, overheadUnit)).map((order) => order.orderNo) : [];
+
+    const overheadNotes: string[] = [];
+    if (!allocationPeriod) {
+      overheadNotes.push("未指定期间，无法取月度管理费率（管理费按月登记）：分摊单位与管理费三列在本表里全部留空。");
+    } else {
+      if (allocationSpansMonths(filter.from, filter.to)) {
+        overheadNotes.push(`筛选区间跨月，管理费费率取起始月 ${allocationPeriod} 的登记值（管理费按月登记，一个区间只能用一个月费率）。`);
+      }
+      if (!allocation?.record) {
+        overheadNotes.push(`${allocationPeriod} 没有登记管理费：分摊单位与管理费三列留空，可在「财务报表 → 核算表」页面登记后重出本表。`);
+      } else if (!overheadRate) {
+        overheadNotes.push(`${allocationPeriod} 的管理费率算不出来（分摊数量为 0）：该月的自动汇总分摊数量是 ${allocation.auto_quantity ?? "0"}，可在页面上人工覆盖分摊数量（例如填本月实际生产数量）后重出本表。`);
+      }
+    }
+
+    const footnotes = [
+      "本表金额列一律为人民币本位币口径（老表没有币种列）：收入金额取销售单上的本币金额，外币订单没有本币金额时该行收入与利润留空。",
+      ...footnoteLines("本币收入缺失的订单（收入金额与利润留空）", missingRevenue),
+      // 与销售利润报表(毛利)用同一句话：缺价/缺 BOM 会让成本偏小、利润偏大，两张表要能对着读。
+      ...footnoteLines("缺采购价物料（成本按 0 计入，毛利偏高）", [...missing.values()]),
+      ...footnoteLines("没有 BOM 或 BOM 无明细的销售单（成本按 0 计入，毛利偏高）", orders.filter((order) => !costs.get(order.id)?.hasBom).map((order) => order.orderNo)),
+      ...overheadNotes,
+      ...footnoteLines("订单单位与分摊单位不一致的订单（管理费三列留空）", mismatched),
+    ];
+    return { rows, footnotes };
+  }
+
+  /**
+   * 每个销售单的计件人工合计（人民币）。
+   *
+   * `employee_daily_reports.order_no` 存的是**销售单号**（不是生产单号）：日报落库时写的是
+   * `refs.order.orderNo`，而那个 order 来自生产订单 —— `production-orders.service.ts` 建生产单时
+   * `orderNo: refs.order.orderNo` 且 `salesOrderId: refs.order.id`，即生产单的 `order_no`
+   * 直接复制自销售单。所以这里按它分组等价于按销售单分组，不必再绕一次生产订单表。
+   *
+   * 一次 `groupBy` 取回全部订单的人工，避免「一张表几百单就打几百次查询」的 N+1。
+   * 期间过滤与「日期」列同源（都是 `financeDayRange`），否则页面按 A 期间筛、人工却按 B 期间算。
+   */
+  private async laborByOrder(
+    orderNos: readonly string[],
+    period: { gte?: Date; lte?: Date } | null,
+  ): Promise<Map<string, Prisma.Decimal>> {
+    const totals = new Map<string, Prisma.Decimal>();
+    if (!orderNos.length) return totals;
+    const grouped = await this.prisma.employeeDailyReport.groupBy({
+      by: ["orderNo"],
+      where: {
+        deletedAt: null,
+        orderNo: { in: [...orderNos] },
+        ...(period ? { reportDate: period } : {}),
+      },
+      _sum: { calculatedAmount: true },
+    });
+    for (const row of grouped) {
+      // 已删除的日报不计入（`deletedAt: null`）；合计为 null 只可能是这一组一条都没有，按 0 收口。
+      totals.set(row.orderNo, row._sum.calculatedAmount ?? new Prisma.Decimal(0));
+    }
+    return totals;
   }
 
   /* ------------------------------------------------------------ 四期：外汇一览表 */

@@ -25,7 +25,16 @@ type SearchableSelectProps = {
   searchPlaceholder?: string;
   noResultsText?: string;
   className?: string;
-};
+  /**
+   * 根元素上的 `data-testid`。默认 `"searchable-select"`。
+   *
+   * 为什么要可覆盖：把某个 Radix `Select` 换成它时，原来长在 trigger 上的 testid（如
+   * `cash-flow-subject-filter`）必须还能按同一个名字找到控件，否则每一个用到那个筛选器的用例
+   * 都会因为「DOM 结构变了」而重写一遍。注意 testid 落在**根 div** 上：它是 Radix 那种
+   * 「testid 就在按钮上」的替身，点击根 div 不会展开 —— 用例要点它里面的 `button`。
+   */
+  testId?: string;
+}
 
 /** Case-insensitive substring filter over option label or value. */
 function matchesQuery(option: SearchableSelectOption, query: string) {
@@ -75,6 +84,7 @@ export function SearchableSelect({
   searchPlaceholder,
   noResultsText = "无匹配项",
   className,
+  testId = "searchable-select",
 }: SearchableSelectProps) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -228,7 +238,7 @@ export function SearchableSelect({
   }
 
   return (
-    <div ref={rootRef} className={cn("ui-searchable-select", className)} data-testid="searchable-select">
+    <div ref={rootRef} className={cn("ui-searchable-select", className)} data-testid={testId}>
       {open ? (
         <>
           <div className="ui-searchable-select-searchbox">

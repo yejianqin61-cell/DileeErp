@@ -24,10 +24,12 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiRequest, apiPost } from "../../lib/api-client";
+import { ACCOUNTING_SUBJECTS_PATH, type AccountingSubject } from "../../lib/accounting-subjects";
 import { exportVoucherPng } from "../../lib/voucher-image";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { money } from "./record-detail-dialog";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
+import VoucherLineEditor from "./voucher-line-editor";
 
 type CashFlowEntry = AuditRow & {
   id: string; entryNo: string; entryDate: string; counterpartyName: string; direction: string;
@@ -51,10 +53,20 @@ type Voucher = AuditRow & {
 };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 
+/**
+ * 列表的固定列宽（用户 2026-09-20 第 6 条：「记账凭证这个表单，可以固定column宽度，超过的就省略显示，
+ * 鼠标hover的时候再展示。保证一次性展示全部column」）。
+ *
+ * 两份宽度表**只给自己的列**，创建人 / 最后修改人两列（来自 `auditColumns`）刻意不写死：
+ * DataTable 在固定布局下会把剩下的百分比均分给没有宽度的列（各约 8%），
+ * 于是以后调整 `auditColumns` 也不会连带把这一页的版式撑破。每份都**恰好留 16%** 给那两列。
+ */
+const VOUCHER_COLUMN_WIDTHS = { no: "9%", date: "6%", period: "5%", summary: "19%", debit: "9%", credit: "9%", status: "5%", source: "12%", actions: "10%" } as const;
+const ENTRY_COLUMN_WIDTHS = { date: "6%", no: "9%", subject: "15%", counterparty: "12%", direction: "4%", amount: "9%", settlement: "12%", voucher: "9%", actions: "8%" } as const;
+
 const STATUS_LABELS: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已红冲" };
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const day = (value: string | null | undefined) => (value ? String(value).slice(0, 10) : "-");
-const directionLabel = (direction: string) => (direction === "debit" ? "借方" : "贷方");
 const directionText = (direction: string) => (direction === "income" ? "收入" : "支出");
 
 export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { testId?: string }) {
@@ -69,16 +81,27 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   const [filter, setFilter] = useState("");
   const [generated, setGenerated] = useState<"all" | "pending" | "done">("all");
   const [busy, setBusy] = useState("");
+  /** 分录编辑器里的那张凭证（草稿）。非 null 即打开编辑器。 */
+  const [editing, setEditing] = useState<Voucher | null>(null);
+  /**
+   * 会计科目表（分录编辑器的科目下拉）。
+   *
+   * 编辑器要能像全站别处一样「从科目表里选科目」（原来是一个手打文本框），所以这一页必须拉科目表。
+   * 只取启用的：停用科目不该再被选进新分录；历史凭证上已有的停用科目仍会原样显示在编辑器里
+   * （`linesFromVoucher` 对不上表就保留文本）。
+   */
+  const [subjects, setSubjects] = useState<AccountingSubject[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [flow, voucherRows] = await Promise.all([
+      const [flow, voucherRows, subjectRows] = await Promise.all([
         apiGet<CashFlowEntry[]>("/finance/cash-flow-entries"),
         apiGet<Voucher[]>("/finance/vouchers"),
+        apiGet<AccountingSubject[]>(ACCOUNTING_SUBJECTS_PATH).catch(() => ({ data: [] as AccountingSubject[], meta: {} })),
       ]);
-      setEntries(flow.data); setVouchers(voucherRows.data);
+      setEntries(flow.data); setVouchers(voucherRows.data); setSubjects(subjectRows.data);
     } catch (cause) {
       setError(messageOf(cause, "凭证数据加载失败"));
     } finally {
@@ -194,31 +217,23 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
     }
   }
 
+  /**
+   * 打开分录编辑器（草稿专用）。
+   *
+   * 原来是「ActionDialog + 每行一个文本框科目」：不能增删行、不能改方向、科目只能手打。
+   * 财务要的工资计提（一借三贷）与原材料采购（两借一贷）都表达不出来，这就是
+   * 「现在自动生成的不能改」的实际含义。现在换成专用的 `VoucherLineEditor`。
+   *
+   * 编辑器需要完整的分录（含每行引用的银行账户）与科目的「分类/名称」，而列表接口给的
+   * `voucherColumns` 行里没有这些 —— 所以先按 id 取一次详情再打开，
+   * 这也顺带保证了编辑期间摊销的是**最新**的分录（列表可能是几分钟前拉的）。
+   */
   function editVoucher(voucher: Voucher) {
-    const lineFields: ActionField[] = voucher.lines.flatMap((line) => [
-      { name: `line_${line.lineNo}_subject`, label: `${directionLabel(line.direction)} · 第 ${line.lineNo} 行科目`, required: true, defaultValue: line.subjectLabel },
-      { name: `line_${line.lineNo}_amount`, label: `${directionLabel(line.direction)} · 第 ${line.lineNo} 行金额`, type: "number", required: true, defaultValue: line.amount },
-    ]);
-    setDialog({
-      title: `编辑凭证 ${voucher.voucherNo}`,
-      fields: [
-        { name: "summary", label: "摘要", required: true, defaultValue: voucher.summary },
-        ...lineFields,
-        { name: "remark", label: "备注", type: "textarea", defaultValue: voucher.remark ?? "" },
-      ],
-      submit: (values) => submitDialog(`/finance/vouchers/${voucher.id}`, {
-        summary: values.summary,
-        remark: values.remark || undefined,
-        // 分录整组提交（方向保持不变，只改科目与金额）：后端要求借=贷，否则 422
-        lines: voucher.lines.map((line) => ({
-          direction: line.direction,
-          subject_key: values[`line_${line.lineNo}_subject`],
-          subject_label: values[`line_${line.lineNo}_subject`],
-          summary: values.summary,
-          amount: values[`line_${line.lineNo}_amount`],
-        })),
-      }, "凭证已更新", "patch"),
-    });
+    setBusy(voucher.id);
+    apiGet<Voucher>(`/finance/vouchers/${voucher.id}`)
+      .then((result) => setEditing(result.data))
+      .catch((cause) => notifyError(messageOf(cause, "凭证详情加载失败")))
+      .finally(() => setBusy(""));
   }
 
   function postVoucher(voucher: Voucher) {
@@ -260,16 +275,16 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   }
 
   const entryColumns: ColumnDef<CashFlowEntry>[] = [
-    { id: "date", header: "日期", cell: ({ row }) => day(row.original.entryDate) },
-    { accessorKey: "entryNo", header: "流水号" },
-    { id: "subject", header: "会计科目", cell: ({ row }) => (row.original.subject ? `${row.original.subject.category} / ${row.original.subject.name}` : "-") },
-    { accessorKey: "counterpartyName", header: "对方名称" },
-    { id: "direction", header: "收支", cell: ({ row }) => directionText(row.original.direction) },
-    { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { id: "settlement", header: "结算方式", cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
-    { id: "voucher", header: "凭证", cell: ({ row }) => voucherByEntry.get(row.original.id)?.voucherNo ?? "未生成" },
+    { id: "date", header: "日期", meta: { width: ENTRY_COLUMN_WIDTHS.date }, cell: ({ row }) => day(row.original.entryDate) },
+    { accessorKey: "entryNo", header: "流水号", meta: { width: ENTRY_COLUMN_WIDTHS.no } },
+    { id: "subject", header: "会计科目", meta: { width: ENTRY_COLUMN_WIDTHS.subject, ellipsis: true }, cell: ({ row }) => (row.original.subject ? `${row.original.subject.category} / ${row.original.subject.name}` : "-") },
+    { accessorKey: "counterpartyName", header: "对方名称", meta: { width: ENTRY_COLUMN_WIDTHS.counterparty, ellipsis: true } },
+    { id: "direction", header: "收支", meta: { width: ENTRY_COLUMN_WIDTHS.direction }, cell: ({ row }) => directionText(row.original.direction) },
+    { id: "amount", header: "金额", meta: { width: ENTRY_COLUMN_WIDTHS.amount }, cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "settlement", header: "结算方式", meta: { width: ENTRY_COLUMN_WIDTHS.settlement, ellipsis: true }, cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
+    { id: "voucher", header: "凭证", meta: { width: ENTRY_COLUMN_WIDTHS.voucher }, cell: ({ row }) => voucherByEntry.get(row.original.id)?.voucherNo ?? "未生成" },
     ...auditColumns<CashFlowEntry>(),
-    { id: "actions", header: "操作", cell: ({ row }) => {
+    { id: "actions", header: "操作", meta: { width: ENTRY_COLUMN_WIDTHS.actions }, cell: ({ row }) => {
       const voucher = voucherByEntry.get(row.original.id);
       if (row.original.status !== "posted") return <span className="panel-note">已冲销流水不可生成凭证</span>;
       return <div className="action-row">
@@ -285,21 +300,21 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   ];
 
   const voucherColumns: ColumnDef<Voucher>[] = [
-    { accessorKey: "voucherNo", header: "凭证号" },
-    { id: "date", header: "日期", cell: ({ row }) => day(row.original.voucherDate) },
-    { accessorKey: "period", header: "期间" },
-    { id: "summary", header: "摘要", cell: ({ row }) => row.original.summary },
-    { id: "debit", header: "借方合计", cell: ({ row }) => money(row.original.debitTotal, row.original.currency) },
-    { id: "credit", header: "贷方合计", cell: ({ row }) => money(row.original.creditTotal, row.original.currency) },
-    { id: "status", header: "状态", cell: ({ row }) => STATUS_LABELS[row.original.status] ?? row.original.status },
-    { id: "source", header: "来源", cell: ({ row }) => row.original.source_entry
+    { accessorKey: "voucherNo", header: "凭证号", meta: { width: VOUCHER_COLUMN_WIDTHS.no } },
+    { id: "date", header: "日期", meta: { width: VOUCHER_COLUMN_WIDTHS.date }, cell: ({ row }) => day(row.original.voucherDate) },
+    { accessorKey: "period", header: "期间", meta: { width: VOUCHER_COLUMN_WIDTHS.period } },
+    { id: "summary", header: "摘要", meta: { width: VOUCHER_COLUMN_WIDTHS.summary, ellipsis: true }, cell: ({ row }) => row.original.summary },
+    { id: "debit", header: "借方合计", meta: { width: VOUCHER_COLUMN_WIDTHS.debit }, cell: ({ row }) => money(row.original.debitTotal, row.original.currency) },
+    { id: "credit", header: "贷方合计", meta: { width: VOUCHER_COLUMN_WIDTHS.credit }, cell: ({ row }) => money(row.original.creditTotal, row.original.currency) },
+    { id: "status", header: "状态", meta: { width: VOUCHER_COLUMN_WIDTHS.status }, cell: ({ row }) => STATUS_LABELS[row.original.status] ?? row.original.status },
+    { id: "source", header: "来源", meta: { width: VOUCHER_COLUMN_WIDTHS.source, ellipsis: true }, cell: ({ row }) => row.original.source_entry
       ? `收支流水 ${row.original.source_entry.entryNo}`
       : row.original.counterpart_voucher ? `红冲 ${row.original.counterpart_voucher.voucherNo}` : "-" },
     ...auditColumns<Voucher>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
+    { id: "actions", header: "操作", meta: { width: VOUCHER_COLUMN_WIDTHS.actions }, cell: ({ row }) => <div className="action-row">
       <Button size="sm" variant="ghost" onClick={() => void openSheet(row.original.id)}>凭证纸</Button>
       {row.original.status === "draft" && <>
-        <Button size="sm" variant="ghost" onClick={() => editVoucher(row.original)}>编辑</Button>
+        <Button size="sm" variant="ghost" data-testid={`voucher-edit-${row.original.id}`} disabled={busy === row.original.id} onClick={() => editVoucher(row.original)}>编辑分录</Button>
         {/* 只有「来源是收支流水」的草稿才能重新生成：红冲凭证的内容由被红冲的凭证决定。 */}
         {row.original.sourceType === "cash_flow_entry"
           ? <Button size="sm" variant="ghost" data-testid={`voucher-regenerate-${row.original.id}`} onClick={() => regenerateVoucher(row.original)}>重新生成</Button>
@@ -313,7 +328,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
 
   if (loading) return <><PageHeader title="凭证管理" /><LoadingState /></>;
 
-  return <div className="page-root finance-page" data-testid={testId}>
+  return <div className="page-root finance-page voucher-page" data-testid={testId}>
     <PageHeader title="凭证管理">
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
     </PageHeader>
@@ -350,6 +365,14 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       </section>
     </>}
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
+    {/* 分录编辑器：草稿专用，独立于通用表单弹窗（详见 voucher-line-editor.tsx 顶部）。 */}
+    <VoucherLineEditor
+      open={Boolean(editing)}
+      onOpenChange={(open) => { if (!open) setEditing(null); }}
+      voucher={editing}
+      subjects={subjects}
+      onSaved={() => void load()}
+    />
     <Dialog open={Boolean(sheet)} onOpenChange={(open) => { if (!open) setSheet(null); }}>
       <DialogContent className="voucher-print-dialog" data-testid="voucher-print-dialog">
         <DialogHeader><DialogTitle>记账凭证 {sheet?.voucherNo ?? ""}</DialogTitle></DialogHeader>

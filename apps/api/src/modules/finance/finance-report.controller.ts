@@ -10,6 +10,7 @@ import { FinanceReportQueryService } from "./finance-report-query.service";
 import {
   buildCashFlowDetailTable,
   buildCashFlowSummaryTable,
+  buildCostAccountingTable,
   buildPurchaseReconciliationDetailTable,
   buildSalesGrossProfitTable,
   buildSalesReconciliationDetailTable,
@@ -56,6 +57,7 @@ type FinanceReportKey =
   | "purchase-reconciliation-detail"
   | "sales-reconciliation-summary"
   | "sales-gross-profit"
+  | "cost-accounting"
   | "cash-flow-detail"
   | "cash-flow-summary"
   | "forex-receipts";
@@ -118,6 +120,19 @@ export class FinanceReportController {
     return this.send(response, await this.tableFor("sales-gross-profit", this.filter(query)), "销售利润(毛利)");
   }
 
+  /** 核算表：页面预览（20 列，一行一个销售单；费用 = 原材料 + 计件人工 + 管理费分摊）。 */
+  @Get("cost-accounting")
+  async costAccounting(@Query() query: FinanceReportFilterDto) {
+    return this.preview(await this.tableFor("cost-accounting", this.filter(query)));
+  }
+
+  /** 核算表：导出 XLSX（老表是两行合并表头，这里摊平成单行表头）。 */
+  @Get("cost-accounting.xlsx")
+  @RequireAdministrator()
+  async exportCostAccounting(@Query() query: FinanceReportFilterDto, @Res() response: Response) {
+    return this.send(response, await this.tableFor("cost-accounting", this.filter(query)), "核算表");
+  }
+
   /** 收支明细表：页面预览（6 列，一行一条流水）。 */
   @Get("cash-flow-detail")
   async cashFlowDetail(@Query() query: FinanceReportFilterDto) {
@@ -176,6 +191,11 @@ export class FinanceReportController {
       case "sales-gross-profit": {
         const { rows, footnotes } = await this.reports.salesGrossProfit(filter);
         return [buildSalesGrossProfitTable(rows, { currencyLabels, footnotes })];
+      }
+      case "cost-accounting": {
+        const { rows, footnotes } = await this.reports.costAccounting(filter);
+        // 不传 currencyLabels：这张表没有币种列（金额一律人民币本位币，口径写在表尾）。
+        return [buildCostAccountingTable(rows, { footnotes })];
       }
       case "cash-flow-detail":
         return [buildCashFlowDetailTable(await this.reports.cashFlowDetail(filter), { currencyLabels })];
@@ -239,14 +259,15 @@ export class FinanceReportController {
   }
 
   /**
-   * 导出 XLSX。8 张报表共用这一个出口，所以「生成人 / 生成时间」加在这里一处即可。
+   * 导出 XLSX。**8 张报表 / 16 个端点**（8 个预览 + 8 个导出）共用这一个出口，
+   * 所以「生成人 / 生成时间」加在这里一处即可。
    *
    * 报表是**期间聚合**口径（一行往往跨多条业务记录），按治理口径不给每行加「创建人 / 最后修改人」
    * （加了也说不清这一行的操作人是谁），改为在表尾写清**这份文件是谁、什么时候生成的**——
    * 审计要回答的是「文件从哪来」，这一点表尾说得清。
    *
    * 当前用户从 `response.req.currentUser` 取（AuthenticationGuard 在 request 上挂了它）；
-   * 这里不额外加参数是为了不动 8 个端点的方法签名。
+   * 这里不额外加参数是为了不动 16 个端点的方法签名。
    */
   private send(response: Response, tables: ReportTable[], label: string) {
     const actor = (response.req as AuthenticatedRequest).currentUser;

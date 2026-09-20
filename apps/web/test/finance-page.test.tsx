@@ -88,11 +88,19 @@ function panel(title: string) {
 }
 
 const bodyOf = (call: StubbedCall) => JSON.parse(String(call.body)) as Record<string, unknown>;
+/** 只数 PATCH 的调用：分录编辑器打开时会先按 id GET 一次详情，同一个地址两类请求会混在一起。 */
+const patchesTo = (calls: StubbedCall[], suffix: string) => calls.filter((call) => call.method === "PATCH" && call.url.includes(suffix));
 const setValue = (testId: string, value: string) => fireEvent.change(screen.getByTestId(testId), { target: { value } });
 const submitDialog = () => fireEvent.click(screen.getByTestId("action-dialog-submit"));
-/** Radix Select 必须真实点开再点选项，否则必填校验会拦住提交。 */
+/**
+ * 下拉必须真实点开再点选项，否则必填校验会拦住提交。
+ *
+ * 两种实现都要能点开：Radix `Select`（testid 就在 trigger 按钮上）与 `SearchableSelect`
+ * （2026-09-20 起会计科目用它，testid 落在根 div 上，里面的 button 才是 trigger）。
+ */
 async function pickOption(testId: string, optionName: RegExp) {
-  await userEvent.click(screen.getByTestId(testId));
+  const root = screen.getByTestId(testId);
+  await userEvent.click((root.querySelector("button") ?? root) as HTMLElement);
   await userEvent.click(await screen.findByRole("option", { name: optionName }));
 }
 
@@ -897,8 +905,34 @@ const voucher = (over: Record<string, unknown> = {}) => ({
   ],
   ...over,
 });
-/** 详情接口（凭证纸要用带分录的详情，列表里的行本身没有 lines）。 */
-const voucherDetail: Handler = (url, call) => (call.method === "GET" && url.endsWith("/api/v1/finance/vouchers/voucher-1") ? apiOk(voucher()) : undefined);
+/**
+ * 记账凭证模板（`GET /finance/vouchers/:id/templates`，财务 2026-09-20）。
+ *
+ * 两套结构照抄财务给的分录：工资计提「借 应付职工薪酬 / 贷 其他应付款 + 应交税费 + 银行存款」，
+ * 原材料采购「借 原材料 + 应交税费-进项税 / 贷 应付账款」。金额一律留空（模板不带金额）。
+ */
+const voucherTemplates = () => [
+  { key: "salary-accrual", name: "工资计提", description: "工资计提（金额由财务填写）", lines: [
+    { direction: "debit", role: "business", summary: "计提工资（应发）", subject_id: "sub-salary", subject_label: "应付职工薪酬", subject_key: "负债类/应付职工薪酬", bank_id: null, bank_label: null },
+    { direction: "credit", role: "business", summary: "代扣社保（个人部分）", subject_id: "sub-other", subject_label: "其他应付款", subject_key: "负债类/其他应付款", bank_id: null, bank_label: null },
+    // 科目表里没有「应交个人所得税」，候选落空时给建议名（subject_id 为 null）。
+    { direction: "credit", role: "business", summary: "代扣个人所得税", subject_id: null, subject_label: "应交税费——应交个人所得税", subject_key: "应交税费——应交个人所得税", bank_id: null, bank_label: null },
+    { direction: "credit", role: "fund", summary: "实发工资", subject_id: null, subject_label: "银行存款", subject_key: "银行存款", bank_id: "bank-1", bank_label: "农业银行5706" },
+  ] },
+  { key: "raw-material-purchase", name: "原材料采购", description: "原材料采购（金额由财务填写）", lines: [
+    { direction: "debit", role: "business", summary: "采购原材料", subject_id: "sub-material", subject_label: "原材料", subject_key: "资产类/原材料", bank_id: null, bank_label: null },
+    { direction: "debit", role: "business", summary: "进项税额（取得专票时）", subject_id: "sub-input", subject_label: "应交税费-进项税", subject_key: "负债类/应交税费-进项税", bank_id: null, bank_label: null },
+    { direction: "credit", role: "business", summary: "应付供应商货款", subject_id: "sub-payable", subject_label: "应付账款", subject_key: "负债类/应付账款", bank_id: null, bank_label: null },
+  ] },
+];
+/** 详情接口（凭证纸与分录编辑器都要带分录的详情，列表里的行本身没有 lines）。 */
+const voucherDetail: Handler = (url, call) => {
+  if (call.method !== "GET") return undefined;
+  // 模板路径要**先判**：它不以 `/voucher-1` 结尾，但用 `endsWith` 时不会互相吃掉 —— 顺序只是保险。
+  if (url.endsWith("/api/v1/finance/vouchers/voucher-1/templates")) return apiOk(voucherTemplates());
+  if (url.endsWith("/api/v1/finance/vouchers/voucher-1")) return apiOk(voucher());
+  return undefined;
+};
 
 /**
  * 「一键导出 PNG」走的是「SVG 组版 + 浏览器栅格化」，jsdom 里没有 canvas，
@@ -995,7 +1029,7 @@ describe("凭证管理：从收支流水生成凭证", () => {
     }
   });
 
-  it("草稿可编辑（PATCH 整组分录）、过账与删除；已过账只给红冲", async () => {
+  it("草稿可编辑分录（PATCH 整组）、过账与删除；已过账只给红冲", async () => {
     const calls = stubFinance(
       { cashFlowEntries: [flowEntry()], vouchers: [voucher(), voucher({ id: "voucher-2", voucherNo: "记-2026-09-0002", sourceId: "cf-2", status: "posted" })] },
       voucherDetail,
@@ -1003,18 +1037,27 @@ describe("凭证管理：从收支流水生成凭证", () => {
     await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
     const table = panel("记账凭证");
 
-    fireEvent.click(table.getAllByRole("button", { name: "编辑" })[0]);
-    setValue("action-field-line_2_subject", "商品销售收入");
-    setValue("action-field-line_2_amount", "14310");
-    submitDialog();
-    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1")).toHaveLength(1));
-    const patch = callsTo(calls, "/api/v1/finance/vouchers/voucher-1")[0];
+    // 「编辑分录」先按 id 取一次详情再打开编辑器（列表行里没有分录）。
+    fireEvent.click(table.getAllByRole("button", { name: "编辑分录" })[0]);
+    await screen.findByTestId("voucher-line-editor");
+    expect(screen.getByTestId("voucher-editor-row-0")).toBeInTheDocument();
+    expect(screen.getByTestId("voucher-editor-row-1")).toBeInTheDocument();
+    // 原样带出已有的两行（科目、摘要、金额）
+    expect(screen.getByTestId("voucher-editor-amount-0")).toHaveValue("14310.0000");
+    expect(screen.getByTestId("voucher-editor-amount-1")).toHaveValue("14310.0000");
+
+    setValue("voucher-editor-amount-0", "14000");
+    setValue("voucher-editor-amount-1", "14000");
+    fireEvent.click(screen.getByTestId("voucher-editor-save"));
+    // 编辑器打开时会先按 id 取一次详情（GET 同一个地址），所以这里只数 PATCH。
+    await waitFor(() => expect(patchesTo(calls, "/api/v1/finance/vouchers/voucher-1")).toHaveLength(1));
+    const patch = patchesTo(calls, "/api/v1/finance/vouchers/voucher-1")[0];
     expect(patch.method).toBe("PATCH");
     expect(bodyOf(patch)).toMatchObject({
       summary: "香港迪礼 · 货款",
       lines: [
-        { direction: "debit", subject_label: "银行存款", amount: "14310.0000" },
-        { direction: "credit", subject_label: "商品销售收入", amount: "14310" },
+        { direction: "debit", subject_label: "银行存款", amount: "14000" },
+        { direction: "credit", subject_label: "货款", amount: "14000" },
       ],
     });
 
@@ -1024,12 +1067,84 @@ describe("凭证管理：从收支流水生成凭证", () => {
 
     fireEvent.click(panel("记账凭证").getAllByRole("button", { name: "删除" })[0]);
     submitDialog();
-    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1")).toHaveLength(2));
-    expect(callsTo(calls, "/api/v1/finance/vouchers/voucher-1")[1].method).toBe("DELETE");
+    await waitFor(() => expect(calls.filter((call) => call.method === "DELETE" && call.url.includes("/api/v1/finance/vouchers/voucher-1"))).toHaveLength(1));
 
     // 已过账的那张：只有红冲，没有编辑/过账/删除
     const posted = panel("记账凭证");
     expect(posted.getAllByRole("button", { name: "红冲" })).toHaveLength(1);
+  });
+
+  /**
+   * 财务 2026-09-20：「我完整的一个工资是这样的：借 应付职工薪酬——工资（应发）；
+   * 贷 其他应付款——社保（个人部分）、应交税费——应交个人所得税、银行存款（实发）。但是现在都不能改」
+   * 「原材料的也是要加上应交税费」「现在自动生成的不能改、。这是什么意思？」
+   *
+   * 这条用例走完整条新路径：套模板 → 四行一借三贷 → 金额没填平之前保存按钮是禁用的 →
+   * 填平之后 PATCH 整组发出去。原来是「一借一贷两行、不能增删行」，这三步一步也走不通。
+   */
+  it("套用「工资计提」模板得到四行一借三贷，金额不平不让保存，填平后 PATCH 整组发出去", async () => {
+    // 科目下拉要有选项，编辑器才能把科目 id 显示成「分类 / 名称」（否则触发器会显示裸 id）。
+    const calls = stubFinance(
+      { cashFlowEntries: [flowEntry()], vouchers: [voucher()], subjects: [
+        { id: "sub-salary", category: "负债类", name: "应付职工薪酬", balanceDirection: "贷", sortOrder: 1, isActive: true },
+        { id: "sub-other", category: "负债类", name: "其他应付款", balanceDirection: "贷", sortOrder: 2, isActive: true },
+      ] },
+      voucherDetail,
+    );
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("记账凭证").getAllByRole("button", { name: "编辑分录" })[0]);
+    await screen.findByTestId("voucher-line-editor");
+
+    fireEvent.click(await screen.findByTestId("voucher-template-salary-accrual"));
+    // 模板**替换**全部分录：四行，方向是 借 / 贷 / 贷 / 贷
+    expect(screen.getByTestId("voucher-editor-row-3")).toBeInTheDocument();
+    expect(screen.queryByTestId("voucher-editor-row-4")).toBeNull();
+    expect(screen.getByTestId("voucher-editor-row-0")).toHaveTextContent("应付职工薪酬");
+    expect(screen.getByTestId("voucher-editor-row-2")).toHaveTextContent("应交税费——应交个人所得税");
+    // 金额留空（不按税率自动拆进项税/个税），此时借=贷=0，不允许保存
+    expect(screen.getByTestId("voucher-editor-amount-0")).toHaveValue("");
+    expect(screen.getByTestId("voucher-editor-save")).toBeDisabled();
+
+    setValue("voucher-editor-amount-0", "12000");
+    setValue("voucher-editor-amount-1", "1800");
+    setValue("voucher-editor-amount-2", "200");
+    setValue("voucher-editor-amount-3", "10000");
+    // 一借三贷：12000 = 1800 + 200 + 10000
+    expect(screen.getByTestId("voucher-editor-totals")).toHaveTextContent("借方合计 12000");
+    expect(screen.getByTestId("voucher-editor-totals")).toHaveTextContent("贷方合计 12000");
+    expect(screen.getByTestId("voucher-editor-save")).not.toBeDisabled();
+
+    fireEvent.click(screen.getByTestId("voucher-editor-save"));
+    await waitFor(() => expect(patchesTo(calls, "/api/v1/finance/vouchers/voucher-1")).toHaveLength(1));
+    expect(bodyOf(patchesTo(calls, "/api/v1/finance/vouchers/voucher-1")[0])).toMatchObject({
+      lines: [
+        { direction: "debit", subject_label: "应付职工薪酬", amount: "12000", bank_id: null },
+        { direction: "credit", subject_label: "其他应付款", amount: "1800", bank_id: null },
+        // 科目候选落空，保存的是模板给的**建议名**（财务可以在下拉里改选成科目表里的科目）
+        { direction: "credit", subject_label: "应交税费——应交个人所得税", amount: "200", bank_id: null },
+        // 资金行带上了后端给的那张卡：钱在哪张卡上是已确认的事实
+        { direction: "credit", subject_label: "银行存款", amount: "10000", bank_id: "bank-1" },
+      ],
+    });
+  });
+
+  it("分录编辑器：借贷不平时给出差额并禁用保存（不让人走到「点了才被告知不平」）", async () => {
+    stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher()] }, voucherDetail);
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+    fireEvent.click(panel("记账凭证").getAllByRole("button", { name: "编辑分录" })[0]);
+    await screen.findByTestId("voucher-line-editor");
+
+    setValue("voucher-editor-amount-0", "100");
+    setValue("voucher-editor-amount-1", "99.5");
+    expect(screen.getByTestId("voucher-editor-totals")).toHaveTextContent("差额 0.5");
+    expect(screen.getByTestId("voucher-editor-save")).toBeDisabled();
+    // 金额非法（第 5 位小数）与「还没填完」也是不许保存的原因，且各自说明
+    setValue("voucher-editor-amount-1", "abc");
+    expect(screen.getByTestId("voucher-editor-save")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("voucher-editor-add"));
+    expect(screen.getByTestId("voucher-editor-row-2")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("voucher-editor-remove-2"));
+    expect(screen.queryByTestId("voucher-editor-row-2")).toBeNull();
   });
 
   it("一键导出 PNG：把当前凭证（含分录与来源）交给导出函数，成功后提示文件名", async () => {
@@ -1125,5 +1240,65 @@ describe("财务模块：失败态与权限降级", () => {
     await waitFor(() => expect(screen.getByTestId("toast-item")).toHaveTextContent("只有草稿应收来源可以确认"));
     // 确认失败时留在弹窗里（金额要进账，不能只弹一句 toast 就把弹窗关掉）
     expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("只有草稿应收来源可以确认");
+  });
+});
+
+// ------------------------------------------------------------------ 应收：一个搜索框管本页所有表（2026-09-20）
+
+/**
+ * 用户 2026-09-20 第 7 条：「应收管理，应付管理全部表单可以加个查询，现在单少还可以查，多的时候就不好找了」。
+ *
+ * 应收侧的缺口比应付侧大：搜索框原来只画在「成品出库条目」那一段里，而它一直是「确认应收」页的
+ * **实际**筛选器（`matchedSources` 就吃它）—— 用户切到确认页只能看到一个来路不明的关键字在生效，
+ * 却找不到输入框；「应收对账」页则连一个筛选器都没有。
+ */
+describe("应收管理：一个搜索框管本页所有表", () => {
+  it("应收对账页有搜索框，且同时过滤「待创建对账」与「应收对账单」两张表", async () => {
+    stubFinance({
+      receivables: [source(), source({ id: "rec-9", sourceNo: "AR-009", orderNo: "SO-9", customer_name: "联晟", product_name: "直骨伞" })],
+      reconciliations: [
+        receivableReconciliation(),
+        receivableReconciliation({
+          id: "recon-9", reconciliationNo: "REC-009", customer: { id: "customer-9", name: "联晟", customerCode: "C009" },
+          flow: { entry_count: 1, draft_count: 1, draft_amount: "50.0000", can_confirm_receivables: false, order_nos: ["SO-9"], product_names: ["直骨伞"], product_specifications: ["银胶"] },
+        }),
+      ],
+    });
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    // 这个页签原来**根本没有**筛选条（标题下方直接就是两张表）
+    expect(screen.getByTestId("receivable-search")).toBeInTheDocument();
+    // 待创建对账 2 行 + 应收对账单 2 行
+    expect(screen.getAllByTestId("data-table-row")).toHaveLength(4);
+
+    setValue("receivable-search", "REC-009");
+
+    // 待创建对账那两行看的是单据号/客户/产品，对账单号不在其中 → 全部被筛掉；对账单只剩 REC-009
+    expect(screen.getAllByTestId("data-table-row")).toHaveLength(1);
+    expect(screen.getByText("REC-009")).toBeVisible();
+    expect(screen.queryByText("REC-001")).toBeNull();
+    // 面板上的条数也要跟着搜索走，否则「共 2 张」与表里 1 行对不上
+    expect(screen.getByText(/共 1 张/)).toBeVisible();
+  });
+
+  it("「确认应收」页也能直接搜（原来那个关键字只能在成品出库条目页输入）", async () => {
+    stubFinance({ receivables: [source(), source({ id: "rec-9", sourceNo: "AR-009", orderNo: "SO-9", customer_name: "联晟" })] });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    expect(screen.getByTestId("receivable-search")).toBeInTheDocument();
+    expect(screen.getAllByTestId("data-table-row")).toHaveLength(2);
+    setValue("receivable-search", "AR-009");
+    expect(screen.getAllByTestId("data-table-row")).toHaveLength(1);
+    expect(screen.getByText("AR-009")).toBeVisible();
+    setValue("receivable-search", "根本不存在的单号");
+    expect(screen.queryAllByTestId("data-table-row")).toHaveLength(0);
+  });
+
+  it("关键字也覆盖产品与规格（成品出库条目页原来只搜到产品名）", async () => {
+    stubFinance({ receivables: [source(), source({ id: "rec-9", sourceNo: "AR-009", product_name: "直骨伞", product_specification: "银胶" })] });
+    await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
+    setValue("receivable-search", "银胶");
+    expect(screen.getAllByTestId("data-table-row")).toHaveLength(1);
+    expect(screen.getByText("AR-009")).toBeVisible();
   });
 });

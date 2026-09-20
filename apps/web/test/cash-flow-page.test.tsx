@@ -123,11 +123,30 @@ async function open() {
   await screen.findByText("兴田");
 }
 
-/** ActionDialog 里的下拉：点开 trigger 再点选项。 */
+/**
+ * 弹窗里的下拉：点开 trigger 再点选项。
+ *
+ * 两种下拉都要能点开：Radix `Select`（testid 在 trigger 按钮上）与 `SearchableSelect`
+ * （会计科目在 2026-09-20 换成了带搜索框的它，testid 落在根 div 上，里面的 button 才是 trigger）。
+ */
 async function pickOption(name: string, optionName: string | RegExp) {
-  fireEvent.click(screen.getByTestId(`action-field-${name}`));
+  const root = screen.getByTestId(`action-field-${name}`);
+  fireEvent.click((root.querySelector("button") ?? root) as HTMLElement);
   fireEvent.click(await screen.findByRole("option", { name: optionName }));
 }
+
+/**
+ * 等一个宏任务，让 Radix 的「关闭后把焦点还给自己的 trigger」先结算完。
+ *
+ * Radix Select 关闭时会**延迟**（onCloseAutoFocus）把焦点还给它的 trigger。测试里两次操作之间
+ * 没有真实用户的间隔，于是那个延迟回调会落在「刚打开下一个控件」之后 ——
+ * 它把 `SearchableSelect` 搜索框的焦点抢走，触发搜索框的 blur 关闭，弹层刚开就自己关了。
+ * 真实用户点两次之间隔几百毫秒，不会碰到这件事。
+ *
+ * 2026-09-20 起会计科目从 Radix Select 换成了带搜索框的 `SearchableSelect`（用户第 1 条），
+ * 它不参与 Radix 的焦点管理，所以「先选一个 Radix 下拉、紧接着打开它」这个顺序在测试里要显式等一拍。
+ */
+const settleFocus = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 afterEach(() => {
   // setup.ts 会自动清理 render 与 fetch 桩；这里只兜底清掉可能的 mock。
@@ -193,7 +212,8 @@ describe("收支管理 · 列表与筛选", () => {
   it("按会计科目筛选：把 subject_id 参数发给服务端", async () => {
     const { listCalls } = stubCashFlow();
     await open();
-    fireEvent.click(screen.getByTestId("cash-flow-subject-filter"));
+    // 这个筛选器是 SearchableSelect：testid 在根 div 上，trigger 是它里面的 button。
+    fireEvent.click(screen.getByTestId("cash-flow-subject-filter").querySelector("button") as HTMLElement);
     fireEvent.click(await screen.findByRole("option", { name: "损益类 / 主营业务收入" }));
     await waitFor(() => expect(listCalls().length).toBe(2));
     expect(listCalls()[1].url).toContain("subject_id=sub-2");
@@ -213,7 +233,8 @@ describe("收支管理 · 列表与筛选", () => {
     await open();
     fireEvent.click(screen.getByTestId("cash-flow-create"));
     await screen.findByTestId("action-dialog");
-    await userEvent.click(screen.getByTestId("action-field-subject_id"));
+    // SearchableSelect：testid 在根 div 上，trigger 是里面的 button。
+    await userEvent.click(screen.getByTestId("action-field-subject_id").querySelector("button") as HTMLElement);
     const options = await screen.findAllByRole("option");
     const text = options.map((option) => option.textContent).join("|");
     expect(text).toContain("损益类 / 主营业务收入");
@@ -301,6 +322,7 @@ describe("收支管理 · 新增与更正", () => {
     fireEvent.change(screen.getByTestId("action-field-counterparty_name"), { target: { value: "中谷" } });
     fireEvent.change(screen.getByTestId("action-field-amount"), { target: { value: "620" } });
     await pickOption("direction", "收入");
+    await settleFocus();
     await pickOption("subject_id", "损益类 / 主营业务收入");
     await pickOption("payment_nature", "定金");
     fireEvent.change(screen.getByTestId("action-field-order_no"), { target: { value: "DL260002" } });

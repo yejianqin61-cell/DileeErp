@@ -51,6 +51,10 @@ export type PayableTabKey = (typeof PAYABLE_TABS)[number]["key"];
  *
  * 老系统那 6 份表到这里全部落地（收支两张表的口径来自「收支管理 → 会计科目」的科目表）；
  * 2026-09-17 用户又交付了 `example/财务/外汇一览表.xlsx`，于是加上第 7 张。
+ * 2026-09-20 财务交付 `example/财务/核算表.xlsx` 并说「这个也要」，于是加上第 8 张「核算表」：
+ * 一个销售订单一行，按本币算收入 / 原材料 / 计件人工 / 管理费 / 利润，管理费来自
+ * 「本月管理费登记」（`/finance/overhead-allocations`）—— 所以这一页除了报表还有一块录入面板
+ * （见 `finance-report-workspace.tsx` 的 overhead 面板）。
  *
  * 外汇一览表的期间是**收款（到账）日期**（用户 2026-09-17 选定）——老表标题就是
  * 「外汇入款一览表」，看的是钱什么时候进来；它的导出文件里还有第二张工作表「客户汇总」，
@@ -61,12 +65,20 @@ export const FINANCE_REPORT_TABS = [
   { key: "sales-reconciliation-summary", title: "销售对账汇总表", scope: "customer" },
   { key: "purchase-reconciliation-detail", title: "采购对账明细表", scope: "supplier" },
   { key: "sales-gross-profit", title: "销售利润报表(毛利)", scope: "customer" },
+  { key: "cost-accounting", title: "核算表", scope: "customer" },
   { key: "cash-flow-detail", title: "收支明细表", scope: "cash" },
   { key: "cash-flow-summary", title: "收支汇总表", scope: "cash" },
   { key: "forex-receipts", title: "外汇一览表", scope: "customer" },
 ] as const;
 
 export type FinanceReportTabKey = (typeof FINANCE_REPORT_TABS)[number]["key"];
+
+/**
+ * 「核算表」在筛选条上要多一个**月份**控件：它的管理费是按月登记的（`overhead_allocations.period`），
+ * 而其余报表看的是任意日期区间。单独列成常量是为了让「哪张表有额外控件」在数据里一眼可见，
+ * 而不是散在组件里做字符串判断。
+ */
+export const OVERHEAD_REPORT_TAB_KEY: string = "cost-accounting";
 
 /**
  * 收支管理子栏目。

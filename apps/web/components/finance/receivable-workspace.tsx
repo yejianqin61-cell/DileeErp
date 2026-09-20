@@ -256,9 +256,14 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   });
   /** 哨兵值 → 提交值：清空要显式送 null，未改动则送 undefined（后端不更新该字段）。 */
   const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
-  /** 可人工指定的会计科目：只给启用项，留空则由后端按来源自动归类。 */
-  const subjectOptions = toSubjectOptions(subjects.filter((item) => item.isActive)).map((option) => ({ value: option.id, label: option.label }));
   /**
+   * 可人工指定的会计科目：只给启用项，留空则由后端按来源自动归类。
+   *
+   * 下拉一律用 `searchable-select`（用户 2026-09-20 第 1 条：「所有涉及会计科目的下拉列表，
+   * 都要新增一个搜索框支持搜索」）：科目表一百二十多条、标签是「分类 / 名称」，普通下拉只能滚动找，
+   * 而财务心里想的是科目名。与应付侧同一处理。
+   */
+  const subjectOptions = toSubjectOptions(subjects.filter((item) => item.isActive)).map((option) => ({ value: option.id, label: option.label }));  /**
    * 会计科目 id → 显示名。
    *
    * 列表/详情接口通常只给 `subjectId`（Prisma 不外带科目对象），标签得在前端拿科目表还原；
@@ -274,7 +279,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
    * 建单弹窗的会计科目：可选，留空即交给后端按来源自动归类（应收默认「货款」）；
    * 新建单据上本来就没有科目可清，所以不摆「清空」哨兵（避免多出一个必然选不中的选项）。
    */
-  const subjectCreateField = (label: string): ActionField => ({ name: "subject_id", label, type: "select", options: subjectOptions });
+  const subjectCreateField = (label: string): ActionField => ({ name: "subject_id", label, type: "searchable-select", options: subjectOptions });
   /**
    * 已有单据上的会计科目：默认带出当前值；选「（不指定会计科目）」送 null。
    *
@@ -283,7 +288,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
    * 用户只改金额就会把默认值一起抹成 null。
    */
   const subjectEditField = (label: string, current?: string | null): ActionField => ({
-    name: "subject_id", label, type: "select",
+    name: "subject_id", label, type: "searchable-select",
     options: [{ value: SUBJECT_CLEAR, label: "（不指定会计科目）" }, ...subjectOptions],
     defaultValue: current ?? "",
   });
@@ -435,34 +440,37 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
 
   // ---------------------------------------------------------------- 待创建对账
 
-  /**
-   * 「待创建对账的条目」= **逐条**列出还没有被任何对账单覆盖的草稿应收（与应付侧同一套写法）。
-   *
-   * 为什么不再按客户 + 月份汇总：汇总行只显示「N 条」，新生成的出库条目被折叠进计数里，
-   * 用户看不出「这条到底在不在表里」；已经纳入过对账单的草稿由列表接口标记（`reconciliation`）
-   * 从本表移出，并在下面点名说明它进了哪张对账单（不能让它不声不响地消失）。
-   */
-  const pendingReconcile = useMemo(() => sources.filter((source) => source.status === "draft" && !source.reconciliation), [sources]);
-  const coveredDrafts = useMemo(() => sources.filter((source) => source.status === "draft" && source.reconciliation), [sources]);
-  const pendingReconcileTotal = pendingReconcile.reduce((sum, source) => sum + Number(source.amount), 0);
-
   // ---------------------------------------------------------------- 列表
 
-  const outboundSources = useMemo(() => {
-    const text = sourceFilter.trim().toLowerCase();
-    if (!text) return sources;
-    return sources.filter((item) => [item.sourceNo, item.orderNo, item.customer_name, item.outbound_no, item.product_name].some((value) => (value ?? "").toLowerCase().includes(text)));
-  }, [sourceFilter, sources]);
   // 待确认收款提醒：成品出库过账会自动生成应收来源草稿（通知财务收款），这里把待确认的笔数与金额显示出来。
   const pendingSources = useMemo(() => sources.filter((item) => item.status === "draft"), [sources]);
   const pendingAmount = pendingSources.reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
   // 应收台账 = 全部应收来源（含草稿），再按「确认应收」页的筛选收窄：
   // 关键字 → 出库日期区间 → 收款情况（默认只留未收，即草稿）。
+  // 成品出库条目那张表也用这一份（原来是另一套只差一个字段的匹配规则，两处迟早会漂移）。
   const matchedSources = useMemo(() => {
     const text = sourceFilter.trim().toLowerCase();
     if (!text) return sources;
-    return sources.filter((item) => [item.sourceNo, item.orderNo, item.customer_name].some((value) => (value ?? "").toLowerCase().includes(text)));
+    return sources.filter((item) => [item.sourceNo, item.orderNo, item.customer_name, item.outbound_no, item.product_name, item.product_specification].some((value) => (value ?? "").toLowerCase().includes(text)));
   }, [sourceFilter, sources]);
+  // 「待创建对账」「应收对账单」两张表也吃同一个关键字（见 pendingReconcile 的注释）。
+  const pendingReconcile = useMemo(() => matchedSources.filter((source) => source.status === "draft" && !source.reconciliation), [matchedSources]);
+  const pendingReconcileTotal = pendingReconcile.reduce((sum, source) => sum + Number(source.amount), 0);
+  const coveredDrafts = useMemo(() => sources.filter((source) => source.status === "draft" && source.reconciliation), [sources]);
+  /**
+   * 应收对账单的搜索：字段与列表列一一对应（对账单号 / 客户 / 订单号 / 产品 / 规格型号）。
+   *
+   * 与应付侧同一个理由：这个页签原来**根本没有搜索框**，而对账单是财务翻得最多的表 ——
+   * 「单少还可以查，多了就不好找」说的正是它。
+   */
+  const filteredReconciliations = useMemo(() => {
+    const text = sourceFilter.trim().toLowerCase();
+    if (!text) return reconciliations;
+    return reconciliations.filter((item) => [
+      item.reconciliationNo, item.customer?.name, item.orderNo,
+      item.flow?.order_nos.join("、"), item.flow?.product_names?.join("、"), item.flow?.product_specifications?.join("、"),
+    ].some((value) => (value ?? "").toLowerCase().includes(text)));
+  }, [reconciliations, sourceFilter]);
   // 计数用「日期与关键字已筛、收款情况还没筛」的那一批：筛选器上的「未收（3）/ 已收（5）」才是当前条件下的真实条数。
   const scopedSources = useMemo(
     () => matchedSources.filter((item) => withinDateRange(item.createdAt, dateFrom, dateTo)),
@@ -687,14 +695,19 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       onRetry={() => setDetailNonce((value) => value + 1)}
     />
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
+    {!error && <section className="panel panel-body">
+      {/* 搜索框提到页签**外面**（原来只画在「成品出库条目」那一段里）：它一直是「确认应收」页的实际筛选器
+          （`matchedSources` 就吃它），但那一页上根本没有输入框 —— 用户切过去只能看到一个来路不明的关键字
+          在悄悄生效。放到外面以后四个页签都有，并且每张表都接上了它（用户 2026-09-20 第 7 条）。 */}
+      <div className="filter-bar"><label>搜索<Input data-testid="receivable-search" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} placeholder="来源编号 / 订单号 / 客户 / 出库单 / 产品 / 规格" /></label></div>
+    </section>}
     {!error && activeTab.key === "outbound-entries" && <>
       <section className="panel panel-body">
-        <div className="filter-bar"><label>搜索<Input value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)} placeholder="来源编号 / 订单号 / 客户 / 出库单 / 产品" /></label></div>
         <p className="panel-note">待确认应收 {pendingSources.length} 笔 / 合计 {pendingAmount.toFixed(2)}</p>
       </section>
       <section className="panel">
-        <div className="panel-heading"><h2>成品出库条目</h2><span className="panel-note">共 {outboundSources.length} 条</span></div>
-        <div className="panel-body"><DataTable columns={sourceColumns} data={outboundSources} empty={<EmptyState title="暂无成品出库形成的应收来源" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" /></div>
+        <div className="panel-heading"><h2>成品出库条目</h2><span className="panel-note">共 {matchedSources.length} 条</span></div>
+        <div className="panel-body"><DataTable columns={sourceColumns} data={matchedSources} empty={<EmptyState title="暂无成品出库形成的应收来源" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" /></div>
       </section>
     </>}
     {!error && activeTab.key === "reconciliations" && <>
@@ -715,8 +728,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         </div>
       </section>
       <section className="panel">
-        <div className="panel-heading"><h2>应收对账单</h2><span className="panel-note">共 {reconciliations.length} 张</span></div>
-        <div className="panel-body"><DataTable columns={reconciliationColumns} data={reconciliations} empty={<EmptyState title="暂无应收对账单" />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" /></div>
+        <div className="panel-heading"><h2>应收对账单</h2><span className="panel-note">共 {filteredReconciliations.length} 张</span></div>
+        <div className="panel-body"><DataTable columns={reconciliationColumns} data={filteredReconciliations} empty={<EmptyState title={sourceFilter.trim() ? "没有符合搜索条件的应收对账单" : "暂无应收对账单"} />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" /></div>
       </section>
     </>}
     {!error && activeTab.key === "confirmed" && <section className="panel">

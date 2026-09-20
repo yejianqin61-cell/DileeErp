@@ -95,9 +95,17 @@ const setValue = (testId: string, value: string) => fireEvent.change(screen.getB
 async function expectToast(text: string) {
   await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes(text))).toBe(true));
 }
-/** 打开 Radix Select 并选中某一项（选项文案即可读值）。 */
+/**
+ * 打开下拉并选中某一项（选项文案即可读值）。
+ *
+ * 两种下拉都要能点开：Radix `Select`（testid 就在 trigger 按钮上，没有嵌套 button）
+ * 与 `SearchableSelect`（用户 2026-09-20 第 1 条把会计科目换成了它 —— testid 落在**根 div** 上，
+ * 它里面的 `button` 才是 trigger）。所以先找嵌套的 button，找不到就用它自己。
+ * 少了这一步，每次切换下拉实现都要把用到它的用例重写一遍。
+ */
 async function pickOption(testId: string, optionName: string | RegExp) {
-  await userEvent.click(screen.getByTestId(testId));
+  const root = screen.getByTestId(testId);
+  await userEvent.click((root.querySelector("button") ?? root) as HTMLElement);
   await userEvent.click(await screen.findByRole("option", { name: optionName }));
 }
 
@@ -703,5 +711,90 @@ describe("应付管理：失败态", () => {
     await openPayable();
     expect(screen.getByTestId("error-state")).toHaveTextContent("无权访问应付条目");
     expect(screen.queryByTestId("payable-flow")).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------ 其他应付的逻辑删除与全表搜索（2026-09-20）
+
+const otherDraft = { ...draftEntry, id: "entry-other", payableNo: "APO-001", sourceType: "other", sourceNoSnapshot: "其他应付-快递费", orderNo: null };
+
+describe("应付管理：其他应付的逻辑删除", () => {
+  /**
+   * 用户 2026-09-20 第 2 条：「应付管理中，其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」。
+   *
+   * 按钮只出现在「其他应付 且 草稿」的行上 —— 与后端的三条边界一致（原料/外加工是到货事实的账、
+   * 已确认的已经记账、被对账单覆盖的要先处理对账单）。界面上摆一个点了必然报错的按钮比不摆更糟。
+   */
+  it("只有「其他应付」的草稿给删除按钮；原料入库草稿与已确认条目都不给", async () => {
+    stubPayable({ entries: [otherDraft, draftEntry, confirmedEntry] });
+    await openPayable("confirmed");
+
+    expect(screen.getByTestId("payable-delete-entry-other")).toBeInTheDocument();
+    expect(screen.queryByTestId("payable-delete-entry-1")).toBeNull();
+    expect(screen.queryByTestId("payable-delete-entry-2")).toBeNull();
+  });
+
+  it("删除必须先填原因：DELETE /finance/payable-entries/:id 带 { reason }，并提示已删除", async () => {
+    const calls = stubPayable({ entries: [otherDraft] });
+    await openPayable("confirmed");
+
+    fireEvent.click(screen.getByTestId("payable-delete-entry-other"));
+    await screen.findByTestId("action-dialog");
+    // 原因必填：不填就提交，弹窗留在原地并报「请填写」
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("请填写删除原因");
+    expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-other")).toHaveLength(0);
+
+    setValue("action-field-reason", "金额录错，应是 50 不是 500");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-other")).toHaveLength(1));
+    const call = callsTo(calls, "/api/v1/finance/payable-entries/entry-other")[0];
+    // 删除原因走 body（不进查询串）：它只该留在单据备注与审计里。
+    expect(call.method).toBe("DELETE");
+    expect(bodyOf(call)).toMatchObject({ reason: "金额录错，应是 50 不是 500" });
+    await expectToast("其他应付 APO-001 已删除");
+  });
+});
+
+describe("应付管理：一个搜索框管本页所有表", () => {
+  /**
+   * 用户 2026-09-20 第 7 条：「应收管理，应付管理全部表单可以加个查询，现在单少还可以查，多的时候就不好找了」。
+   *
+   * 之前的关键字只作用在「应付条目」上：应付对账页的「已创建对账单」渲染的是原始数组 ——
+   * 搜索框看着在，打了字却没有任何反应，而对账单正是财务翻得最多的表。
+   */
+  it("关键字同时过滤「待创建对账」与「已创建对账单」两张表", async () => {
+    stubPayable({
+      entries: [draftEntry, { ...draftEntry, id: "entry-3", payableNo: "AP-003", orderNo: "SO-2", material_name: "拉链" }],
+      reconciliations: [matchedReconciliation, { ...differenceReconciliation, supplier: { id: "supplier-2", name: "联晟" } }],
+    });
+    await openPayable("reconciliations");
+
+    // 收窄前：两条待创建 + 两张对账单
+    expect(within(screen.getByTestId("payable-pending-entries")).getAllByTestId("data-table-row")).toHaveLength(2);
+    expect(screen.getAllByTestId("data-table-row")).toHaveLength(4);
+
+    setValue("payable-search", "APREC-002");
+
+    // 待创建对账里没有对账单号这一列，所以被清空；对账单只剩 APREC-002 那张
+    expect(within(screen.getByTestId("payable-pending-entries")).queryAllByTestId("data-table-row")).toHaveLength(0);
+    expect(screen.getAllByTestId("data-table-row")).toHaveLength(1);
+    expect(screen.getByText("APREC-002")).toBeVisible();
+    expect(screen.queryByText("APREC-001")).toBeNull();
+    // 面板上的条数跟着搜索走，否则「2 张」与表里 1 行对不上
+    expect(screen.getByText(/待创建 0 条 · 对账单 1 张/)).toBeVisible();
+  });
+
+  it("关键字按物料名过滤（对账单上看的是「这批货是什么」）", async () => {
+    stubPayable({
+      entries: [draftEntry],
+      reconciliations: [matchedReconciliation, { ...differenceReconciliation, supplier: { id: "supplier-2", name: "联晟" } }],
+    });
+    await openPayable("reconciliations");
+    setValue("payable-search", "拉链");
+    // 两张对账单的 flow.material_names 都含「拉链」（夹具如此），所以这里只断言搜索确实接上了对账单表
+    expect(screen.getAllByTestId("data-table-row").length).toBeGreaterThan(0);
+    setValue("payable-search", "根本不存在的物料");
+    expect(screen.queryAllByTestId("data-table-row")).toHaveLength(0);
   });
 });

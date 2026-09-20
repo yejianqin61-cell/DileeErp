@@ -29,7 +29,7 @@ import { FileInput } from "../ui/file-input";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
-import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { ApiClientError, apiDelete, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { downloadFile } from "../../lib/download";
 import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
@@ -246,9 +246,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
    * `success` 支持传函数：接收应付这类「幂等」动作必须按返回的条目说清楚**到底发生了什么**
    * （新建了草稿 / 该来源早已接收），否则「点了没反应」的观感会一直存在。
    */
-  async function submitAction<T = unknown>(path: string, body: unknown, success: string | ((data: T) => string), method: "post" | "patch" = "post"): Promise<T> {
+  async function submitAction<T = unknown>(path: string, body: unknown, success: string | ((data: T) => string), method: "post" | "patch" | "delete" = "post"): Promise<T> {
     try {
-      const result = await (method === "patch" ? apiPatch<T>(path, body ?? {}) : apiPost<T>(path, body));
+      const result = await (method === "patch" ? apiPatch<T>(path, body ?? {}) : method === "delete" ? apiDelete<T>(path, body) : apiPost<T>(path, body));
       notifySuccess(typeof success === "function" ? success(result.data) : success);
       setDialog(null);
       setDetail(null);
@@ -343,9 +343,14 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   });
   const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
-  /** 可人工指定的会计科目：只给启用项，不传 include_inactive（停用科目不许再被选中）。 */
-  const subjectOptions = toSubjectOptions(subjects.filter((item) => item.isActive)).map((option) => ({ value: option.id, label: option.label }));
   /**
+   * 可人工指定的会计科目：只给启用项，不传 include_inactive（停用科目不许再被选中）。
+   *
+   * 下拉一律用 `searchable-select`（用户 2026-09-20 第 1 条：「所有涉及会计科目的下拉列表，
+   * 都要新增一个搜索框支持搜索」）：科目表有一百二十多条，按「分类 / 名称」拼出来的标签更长，
+   * 普通 Radix 下拉只能靠滚动找 —— 财务知道科目名却要滚半天。带搜索框以后直接打两个字即可。
+   */
+  const subjectOptions = toSubjectOptions(subjects.filter((item) => item.isActive)).map((option) => ({ value: option.id, label: option.label }));  /**
    * 会计科目 id → 显示名：列表/详情通常只给 `subjectId`，标签用科目表还原；查不到显示 -，不让整页崩。
    * 接口若内嵌了 `subject`，优先用它 —— 显示口径与下拉一致（`分类 / 科目名称`）。
    */
@@ -355,13 +360,13 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     return found ? subjectOptionLabel(found) : "-";
   };
   /** 建单弹窗的会计科目：可选，留空表示不管这个字段（新建单据上没有科目可清，所以不摆「清空」哨兵）。 */
-  const subjectCreateField = (label: string): ActionField => ({ name: "subject_id", label, type: "select", options: subjectOptions });
+  const subjectCreateField = (label: string): ActionField => ({ name: "subject_id", label, type: "searchable-select", options: subjectOptions });
   /**
    * 已有单据上的会计科目：默认带出当前值；选「（不指定会计科目）」送 null。
    * 默认值用 `current ?? ""` 而非哨兵：未改动必须送 undefined，后端 PATCH 才完全不动这个字段。
    */
   const subjectEditField = (label: string, current?: string | null): ActionField => ({
-    name: "subject_id", label, type: "select",
+    name: "subject_id", label, type: "searchable-select",
     options: [{ value: SUBJECT_CLEAR, label: "（不指定会计科目）" }, ...subjectOptions],
     defaultValue: current ?? "",
   });
@@ -407,6 +412,21 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   }
   function reverseEntry(item: PayableEntry) {
     setDialog({ title: `冲销应付：${item.payableNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/payable-entries/${item.id}/reverse`, { reason: v.reason }, "应付已冲销") });
+  }
+  /**
+   * 逻辑删除「其他应付」（用户 2026-09-20：「其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」）。
+   *
+   * 为什么原因必填：删除是唯一一个「记录会从台账上消失」的动作，事后要能说清是谁、什么时候、
+   * 为什么删的。前端必填 + 后端必填（`DELETION_REASON_REQUIRED`）两道，原因同时写进备注与审计。
+   *
+   * 按钮只在「其他应付 且 草稿」的行上出现，与后端的三条边界一致 —— 界面上摆一个点了必然报错的按钮
+   * 比不摆更糟。已被对账单覆盖时后端会回一句可执行的说明（先去处理那张对账单）。
+   */
+  function deleteOtherPayable(item: PayableEntry) {
+    setDialog({ title: `删除其他应付：${item.payableNo}`, fields: [
+      { name: "info", label: `将从台账删除「${item.sourceNoSnapshot}」${money(item.amount, item.currency)}；记录与删除原因保留在审计里，不会真的从数据库消失`, type: "info" as const },
+      { name: "reason", label: "删除原因（录错了请写清错在哪）", type: "textarea", required: true },
+    ], submit: (v) => submitAction(`/finance/payable-entries/${item.id}`, { reason: v.reason }, `其他应付 ${item.payableNo} 已删除`, "delete") });
   }
   /**
    * 逐条确认应付 —— 与「勾选批量确认」「按对账单确认」是同一件事的三条入口，都**确认即记账**。
@@ -589,7 +609,20 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   }, [filter]);
   const filteredInbound = useMemo(() => pendingInbound.filter((item) => match([item.rawMaterialInbound?.inboundNo, item.orderNo, item.purchase_order_no, item.supplier?.name, item.material_name])), [pendingInbound, match]);
   const filteredOutsource = useMemo(() => pendingOutsource.filter((item) => match([item.logisticsBatch?.batchNo, item.orderNo, item.supplier?.name, item.material_name])), [pendingOutsource, match]);
-  const filteredEntries = useMemo(() => entries.filter((item) => match([item.payableNo, item.orderNo, item.supplier_name, item.material_name, item.purchase_order_no])), [entries, match]);
+  const filteredEntries = useMemo(() => entries.filter((item) => match([item.payableNo, item.orderNo, item.supplier_name, item.material_name, item.purchase_order_no, item.source_no, item.sourceNoSnapshot])), [entries, match]);
+  /**
+   * 对账单也要能被搜到（用户 2026-09-20 第 7 条：「应收管理，应付管理全部表单可以加个查询，
+   * 现在单少还可以查，多的时候就不好找了」）。
+   *
+   * 上一版的关键字只作用在「应付条目」上，而「应付对账」页的**已创建对账单**那张表渲染的是
+   * 原始数组 —— 也就是说这个页签上搜索框看着在，打了字却没有任何反应。对账单是财务翻得最多的表，
+   * 恰恰最需要能搜。搜的字段与列表列一一对应（对账单号 / 供应商 / 订单号 / 采购单号 / 物料）。
+   */
+  const filteredReconciliations = useMemo(() => reconciliations.filter((item) => match([
+    item.reconciliationNo, item.supplier?.name, item.orderNo,
+    item.flow?.order_nos.join("、"), item.flow?.purchase_order_nos.join("、"),
+    item.purchaseOrder?.purchaseOrderNo, item.flow?.material_names.join("、"),
+  ])), [reconciliations, match]);
   // 「确认应付」页的取数：关键字 + 确认日期区间 → 付款分档计数 → 当前付款情况。
   // 计数用「日期与关键字已经筛过、但付款情况还没筛」的那一批：筛选器上的
   // 「未付（3）/ 已付（5）」才是当前条件下的真实条数（否则切到「已付」会看到另一个口径）。
@@ -609,7 +642,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const confirmedCount = entries.filter((entry) => ["confirmed", "partially_paid", "paid"].includes(entry.status)).length;
   const readyToConfirm = reconciliations.reduce((sum, item) => sum + (item.flow?.can_confirm_payables ? item.flow.draft_count : 0), 0);
 
-  const pendingEntries = useMemo(() => entries.filter((entry) => entry.status === "draft" && !entry.reconciliation), [entries]);
+  // 「待创建对账」跟着**关键字**一起收窄（原来只看 entries，搜索在这张表上等于没接上）；
+  // 「已创建对账单」同理 —— 见 filteredReconciliations 的注释。
+  const pendingEntries = useMemo(() => filteredEntries.filter((entry) => entry.status === "draft" && !entry.reconciliation), [filteredEntries]);
   const coveredDrafts = useMemo(() => entries.filter((entry) => entry.status === "draft" && entry.reconciliation), [entries]);
   const pendingTotal = pendingEntries.reduce((sum, entry) => sum + Number(entry.amount), 0);
 
@@ -674,6 +709,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmEntry(row.original)}>确认应付</Button><Button size="sm" variant="ghost" onClick={() => editEntry(row.original)}>编辑</Button></>}
       {row.original.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退</Button>}
+      {/* 只有「其他应付」的草稿给删除：原料/外加工形成的应付是到货事实的账，录错了要走冲销。 */}
+      {row.original.status === "draft" && row.original.sourceType === "other" && <Button size="sm" variant="destructive" data-testid={`payable-delete-${row.original.id}`} onClick={() => deleteOtherPayable(row.original)}>删除</Button>}
     </div> },
   ];
   const reconciliationColumns: ColumnDef<SupplierReconciliation>[] = [
@@ -835,6 +872,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       const item = detailData as PayableEntry;
       return <>
         {item.status === "draft" && <><Button onClick={() => confirmEntry(item)}>确认应付</Button><Button variant="secondary" onClick={() => editEntry(item)}>编辑草稿</Button></>}
+        {item.status === "draft" && item.sourceType === "other" && <Button variant="destructive" onClick={() => deleteOtherPayable(item)}>删除（录错了）</Button>}
         {item.status === "confirmed" && <Button variant="secondary" onClick={() => reopenEntry(item)}>回退草稿</Button>}
         {["confirmed", "partially_paid", "paid"].includes(item.status) && <Button variant="destructive" onClick={() => reverseEntry(item)}>冲销应付</Button>}
       </>;
@@ -901,7 +939,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       </ol>
     </section>}
     {!error && <section className="panel panel-body">
-      <div className="filter-bar"><label>搜索<Input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="单号 / 订单号 / 供应商 / 原料" /></label></div>
+      {/* 一个搜索框管本页四个页签的全部表格（原料入库 / 外加工签收 / 应付对账的两张表 / 确认应付）。
+          data-testid 补上：这是财务最常用的控件，而它是本页唯一没有 testid 的筛选器，
+          测试只能靠 placeholder 定位 —— 改一次文案就会把用例打散。 */}
+      <div className="filter-bar"><label>搜索<Input data-testid="payable-search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="单号 / 订单号 / 采购单号 / 供应商 / 原料" /></label></div>
     </section>}
     {!error && activeTab.key === "raw-inbound-entries" && <section className="panel">
       <div className="panel-heading"><h2>原料入库条目</h2><span className="panel-note">待接收 {pendingInbound.length} 条 · 已接收 {receivedInboundCount} 条</span></div>
@@ -912,7 +953,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       <div className="panel-body"><DataTable columns={outsourceColumns} data={filteredOutsource} empty={<EmptyState title="暂无待接收的外加工签收来源" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id, row })} rowTitle="双击查看详情" /></div>
     </section>}
     {!error && activeTab.key === "reconciliations" && <section className="panel">
-      <div className="panel-heading"><h2>应付对账</h2><span className="panel-note">待创建 {pendingEntries.length} 条 · 对账单 {reconciliations.length} 张</span></div>
+      <div className="panel-heading"><h2>应付对账</h2><span className="panel-note">待创建 {pendingEntries.length} 条 · 对账单 {filteredReconciliations.length} 张</span></div>
       <div className="panel-body">
         {/* 条数放在 h3 外面：标题保持「待创建对账」，按标题定位这个面板的脚本/测试才不会被条数干扰。 */}
         <div className="subsection-heading">
@@ -927,7 +968,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
           另有 {coveredDrafts.length} 条草稿已纳入对账单、不在此重复对账：{coveredDrafts.map((entry) => `${entry.payableNo}（${entry.reconciliation?.reconciliation_no}）`).join("、")}
         </p> : null}
         <h3>已创建对账单</h3>
-        <DataTable columns={reconciliationColumns} data={reconciliations} empty={<EmptyState title="暂无应付对账单" />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" />
+        <DataTable columns={reconciliationColumns} data={filteredReconciliations} empty={<EmptyState title={filter.trim() ? "没有符合搜索条件的应付对账单" : "暂无应付对账单"} />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" />
       </div>
     </section>}
     {!error && activeTab.key === "confirmed" && <section className="panel">

@@ -189,10 +189,30 @@ button { cursor: pointer; }
      销售对账明细表（23 列）1366:624→0 / 1440:550→0 / 1600:390→0 / 1920:318→0；
      工资台账（19 列）1366:455→0 / 1440:381→0 / 1600:221→0 / 1920:149→0。
    代价：列被压窄时文本会折行（行变高），这是「不横向滚动」的必然取舍；表格能放下时不折行。 */
-.finance-page .data-table { font-size: 12px; font-variant-numeric: tabular-nums; }
-.finance-page .data-table th { font-size: 12px; white-space: normal; line-height: 1.2; padding: 4px 8px; }
-.finance-page .data-table th, .finance-page .data-table td { height: 38px; padding: 0 8px; }
-.finance-page .data-table td { white-space: normal; }
+.finance-page .data-table, .finance-page .ui-table { font-size: 12px; font-variant-numeric: tabular-nums; }
+.finance-page .data-table th, .finance-page .ui-table-head { font-size: 12px; white-space: normal; line-height: 1.2; padding: 4px 8px; }
+.finance-page .data-table th, .finance-page .data-table td,
+.finance-page .ui-table-head, .finance-page .ui-table-cell { height: 38px; padding: 6px 8px; }
+.finance-page .data-table td, .finance-page .ui-table-cell { white-space: normal; overflow-wrap: anywhere; }
+/* 上面四条原来只写 `.finance-page .data-table`，而 DataTable 渲染出来的 `<table>` 带的是 `ui-table`
+   （`components/ui/table.tsx`）—— 也就是说这四条对财务的每一张 DataTable **一条都没生效**：
+   单元格仍是 `.ui-table-cell` 的 `padding: 12px` + `white-space: nowrap`，最小宽度等于整段文本宽度，
+   于是每张列多的表都溢出容器、底下出现横向滚动条。用户 2026-09-20 第 3 条
+   「确认应付的表单，还需要左右滑动。争取直接完整展示，不再需要左右滑动」说的就是它。
+   `.ui-table` 一并写上即恢复上面注释里实测过的行为（不改任何页面）。
+   刻意**不**把 `.ui-table-wrap` 的 `overflow` 改成 hidden：换行之后表本来就放得下、滚动条不会出现，
+   而万一某张表真的放不下（以后加了列），`hidden` 会让右侧的列彻底够不着 —— 那是把一个问题换成更糟的一个。 */
+/* 记账凭证页反过来：显式固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 条
+   「可以固定column宽度，超过的就省略显示，鼠标hover的时候再展示。保证一次性展示全部column」）。
+   固定布局下内容无法再把列撑宽 —— 这正是「一次性展示全部column」的实现方式；
+   与上面「放开换行」是两种取舍，各自用在自己合适的表上。 */
+.finance-page .ui-table.data-table-fixed { table-layout: fixed; }
+.data-table-fixed .ui-table-head, .data-table-fixed .ui-table-cell { overflow: hidden; }
+/* 权重必须压过 `.finance-page .ui-table-cell { white-space: normal }`（(0,2,1)）：
+   写成 `.cell-ellipsis`（(0,1,0)）会**静默失效** —— 省略号永远不出现，而页面看起来只是「没省略」。
+   这个叠到 (0,4,1) 的选择器就是为了不依赖样式表先后顺序。 */
+.finance-page .ui-table.data-table-fixed .ui-table-cell.cell-ellipsis,
+.finance-page .ui-table.data-table-fixed .ui-table-head.cell-ellipsis { white-space: nowrap; text-overflow: ellipsis; }
 /* 工资台账用的是 .ui-table（不是 .data-table），同样收内边距并放开换行。 */
 .finance-page .payroll-sheet-table { font-size: 12px; font-variant-numeric: tabular-nums; }
 .finance-page .payroll-sheet-table .ui-table-head { padding: 4px 8px; white-space: normal; line-height: 1.2; }
@@ -401,10 +421,40 @@ button { cursor: pointer; }
 
 .ui-multi-select-empty { margin: 0; padding: 8px; color: var(--text-muted); font-size: 13px; }
 
-/* 采购单草稿的行选择：复选框列固定在行首，窄列不抢物料列的宽度。 */
-.draft-select-cell { width: 40px; text-align: center; }
-.draft-select-cell input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
-/* 按供应商拆分的分组预览。 */
+/* ---------------------------------------------- 采购单草稿工作区（2026-09-17 列宽重排）
+   这一页的 Sheet 复用了 `.material-issue-sheet`（借用它的全屏版式），于是也继承了原本写给
+   「领料单」的列宽规则：`.material-issue-sheet .data-table td:nth-child(1) { width: 24% }`、
+   `nth-child(2) { width: 8% }`。在 `table-layout: fixed` 下那两条是硬约束 ——
+   行首复选框列被撑到 24%（1920px 屏上约 460px，「勾选框太宽」的真正原因），
+   名称列反被压到 8%（约 154px），型号与预计到货各分到 8.5%。
+
+   所以列宽必须逐列显式覆盖。选择器故意叠到 (0,4,0) 的权重
+   （`.purchase-workspace.material-issue-sheet .data-table .draft-col-*`），
+   压过 `.material-issue-sheet .data-table td:nth-child(1)` 的 (0,3,1)：
+   同分的话谁生效取决于样式表里的先后顺序，以后挪一下就会静默退回 24%。 */
+.purchase-workspace.material-issue-sheet .data-table .draft-col-select { width: 36px; text-align: center; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-material { width: 19%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-model { width: 12%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-order { width: 11%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-qty { width: 7%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-stock { width: 9%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-unit { width: 6%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-price { width: 7%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-supplier { width: 13%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-expected { width: 10%; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-action { width: 60px; text-align: center; }
+.purchase-workspace.material-issue-sheet .data-table .draft-col-select input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+/* 操作列只有一个图标按钮：默认内边距会把 60px 挤爆，压掉它。 */
+.purchase-workspace.material-issue-sheet .data-table .draft-col-action .ui-button { padding: 0; }
+
+/* 「下单状态」列的配色：未下单走 .panel-note，已下单走 .status-success。 */
+.bom-order-draft { color: #5a6b7a; }
+.bom-order-partial { color: #854d0e; font-weight: 600; }
+
+/* BOM 外新增原因 / 修改原因：满宽输入框，跟着按钮排在按钮行里要给它一个下限宽度。 */
+.purchase-workspace .purchase-edit-reason { display: grid; min-width: 320px; }
+
+/* 按供应商收束的分组预览。 */
 .draft-split-list { margin: 6px 0; padding-left: 18px; color: var(--text-muted); font-size: 13px; }
 
 /* ------------------------------------------------------------------ 财务模块重构（2026-09-14）
@@ -497,6 +547,14 @@ button { cursor: pointer; }
   .voucher-print-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
   .ui-dialog-header, .ui-dialog-footer, .ui-dialog-close, .ui-dialog-overlay { display: none !important; }
 }
+
+/* 记账凭证的**分录编辑器**（components/finance/voucher-line-editor.tsx）。
+   一行的五列固定宽度：方向 / 科目 / 摘要 / 金额 / 删除。用 grid 而不是 table，
+   因为每行的科目是带搜索框的弹层控件（一个 div），塞进 <td> 里弹层会被表格的裁切盒影响。 */
+.voucher-editor-dialog { width: min(96vw, 1100px); }
+.voucher-editor-row { display: grid; grid-template-columns: 72px minmax(220px, 1.4fr) minmax(160px, 1fr) 140px 72px; align-items: center; gap: 8px; margin-bottom: 8px; }
+.voucher-editor-row-head { color: var(--text-muted); font-size: 12px; font-weight: 700; }
+.voucher-template-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
    满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，
