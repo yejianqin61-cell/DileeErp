@@ -697,8 +697,13 @@ model PurchaseOrderItem {
   unitId                    String                    @map("unit_id") @db.Uuid
   unitSnapshot              Json                      @map("unit_snapshot")
   bomItemId                 String?                   @map("bom_item_id") @db.Uuid
-  supplierId                String                    @map("supplier_id") @db.Uuid
-  supplierSnapshot          Json                      @map("supplier_snapshot")
+  /// 明细行的供应商**可空**：刚导入 BOM 明细时用户还没选供应商，草稿也要能存下来
+  /// （用户 2026-09-17：「导入 BOM 明细，也视为对采购单的编辑，允许保存」）。
+  /// 「一个采购单只有一个供应商」的不变式没丢，只是从数据库挪到了**下单门禁**：
+  /// `assertOrderableItems` 要求每行都有供应商，而已下单才能登记到货，
+  /// 所以任何有到货/质检/入库/应付事实的明细行必然有供应商。
+  supplierId                String?                   @map("supplier_id") @db.Uuid
+  supplierSnapshot          Json?                     @map("supplier_snapshot")
   model                     String?                   @db.VarChar(200)
   quantity                  Decimal                   @db.Decimal(18, 4)
   unitPrice                 Decimal                   @map("unit_price") @db.Decimal(18, 4)
@@ -716,7 +721,7 @@ model PurchaseOrderItem {
   purchaseOrder             PurchaseOrder             @relation(fields: [purchaseOrderId], references: [id])
   material                  Material                  @relation(fields: [materialId], references: [id])
   unit                      Unit                      @relation(fields: [unitId], references: [id])
-  supplier                  Supplier                  @relation(fields: [supplierId], references: [id])
+  supplier                  Supplier?                 @relation(fields: [supplierId], references: [id])
   bomItem                   BomItem?                  @relation(fields: [bomItemId], references: [id])
   receipts                  PurchaseReceipt[]
   rawMaterialInbounds       RawMaterialInbound[]
@@ -728,6 +733,8 @@ model PurchaseOrderItem {
 
   @@index([purchaseOrderId])
   @@index([supplierId])
+  /// 新建采购单时要按 BOM 明细行归集「这一行已经下过多少」（bomItemOrderStatus）。
+  @@index([bomItemId])
   @@map("purchase_order_items")
 }
 

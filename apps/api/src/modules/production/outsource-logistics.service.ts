@@ -112,7 +112,12 @@ export class OutsourceLogisticsService {
         if (batchUpdated.count !== 1) throw new ConflictException({ code: "VERSION_CONFLICT", message: "外加工批次已被其他操作处理，请刷新后重试", details: [] });
         const item = current.purchaseOrderItem;
         const amount = quantity.mul(item.unitPrice).toDecimalPlaces(4);
-        await tx.outsourcePayableSource.create({ data: { outsourceReceiptId: row.id, logisticsBatchId: id, orderNo: current.orderNo, purchaseOrderId: current.purchaseOrderId, purchaseOrderItemId: current.purchaseOrderItemId, supplierId: current.purchaseOrder.supplierId ?? item.supplierId, quantity, unitPrice: item.unitPrice, currency: current.purchaseOrder.currency ?? "CNY", taxRate: item.taxRate, amount, ...this.audit.create(user) } });
+        // 采购明细的供应商现在可空（草稿允许「还没定供应商」，见 schema），但应付来源必须有一个。
+        // 走到这里的批次都挂在一张**已下单**的采购单上，所以正常路径不会落空；
+        // 这一道是让历史脏数据给出可读的 422，而不是数据库 NOT NULL 违约变成 500。
+        const payableSupplierId = current.purchaseOrder.supplierId ?? item.supplierId;
+        if (!payableSupplierId) throw new UnprocessableEntityException({ code: "PURCHASE_ITEM_SUPPLIER_MISSING", message: "采购明细没有供应商，不能生成应付", details: [] });
+        await tx.outsourcePayableSource.create({ data: { outsourceReceiptId: row.id, logisticsBatchId: id, orderNo: current.orderNo, purchaseOrderId: current.purchaseOrderId, purchaseOrderItemId: current.purchaseOrderItemId, supplierId: payableSupplierId, quantity, unitPrice: item.unitPrice, currency: current.purchaseOrder.currency ?? "CNY", taxRate: item.taxRate, amount, ...this.audit.create(user) } });
         return row;
       });
       if (!receipt) return this.get(id);

@@ -6,12 +6,18 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
-type Item = { material_id: string; unit_id: string; bom_item_id?: string; supplier_id: string; expected_date?: string; model?: string; quantity: string; unit_price: string; tax_rate?: string; extra_fee?: string; extension_data?: Record<string, unknown> };
-type Input = { order_no: string; bom_id?: string; bom_version?: number; supplier_id?: string; purchase_date?: string; expected_date?: string; currency?: string; remark?: string; extension_data?: Record<string, unknown>; items?: Item[] };
-/** 按供应商拆分下单：一组 = 一张采购单。 */
-type SplitGroup = { supplier_id: string; currency?: string; expected_date?: string; remark?: string; items?: Item[] };
-type SplitInput = { order_no: string; bom_id?: string; purchase_date?: string; currency?: string; remark?: string; place_order?: boolean; extension_data?: Record<string, unknown>; groups?: SplitGroup[] };
+type Item = { material_id: string; unit_id: string; bom_item_id?: string; supplier_id?: string; expected_date?: string; model?: string; quantity: string; unit_price: string; tax_rate?: string; extra_fee?: string; extension_data?: Record<string, unknown> };
+type Input = { order_no: string; bom_id?: string; bom_version?: number; supplier_id?: string; purchase_date?: string; expected_date?: string; currency?: string; remark?: string; reason?: string; extension_data?: Record<string, unknown>; items?: Item[] };
+/** 按供应商收束：一组 = 一张采购单。`supplier_id` 可空 = 这一组是「还没选供应商」的行。 */
+type SplitGroup = { supplier_id?: string; currency?: string; expected_date?: string; remark?: string; items?: Item[] };
+type SplitInput = { order_no: string; bom_id?: string; purchase_date?: string; currency?: string; remark?: string; reason?: string; place_order?: boolean; extension_data?: Record<string, unknown>; groups?: SplitGroup[] };
 type OrderableItem = { materialId: string; unitId: string; supplierId: string; quantity: string; unitPrice: string };
+/** BOM 明细行上的下单情况（新建采购单时给采购员看的「这一行是不是已经买过了」）。 */
+type BomItemOrderState = "none" | "draft" | "partial" | "ordered";
+/** 已下单的采购单状态（草稿不算，已取消已被查询排除）。 */
+const ORDERED_PURCHASE_STATUSES = ["ordered", "partially_arrived", "arrived_complete"];
+/** 可整体编辑的采购单状态：草稿自由改；已下单未到货的也能改，但要留下原因与前后值。 */
+const EDITABLE_PURCHASE_STATUSES = ["draft", "ordered"];
 /**
  * 采购单「打印信息」的入参：只含采购订单打印表上那些与明细/金额无关的字。
  * `expected_date`（交货日期）与 `remark`（备注）用 `null` 表示「清掉这一格」。
@@ -63,26 +69,12 @@ export class PurchaseOrdersService {
    * 所有分组在同一个事务里写入：要么全部生成，要么一张都不生成。
    */
   async createSplit(input: SplitInput, user: CurrentUser) {
-    const groups = input.groups ?? [];
-    if (!groups.length) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_GROUPS_REQUIRED", message: "按供应商拆分至少需要一个供应商分组", details: [] });
-    const missingSupplier = groups.findIndex((group) => !group.supplier_id);
-    if (missingSupplier >= 0) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_SUPPLIER_REQUIRED", message: `第 ${missingSupplier + 1} 组缺少供应商`, details: [] });
-    const emptyGroup = groups.findIndex((group) => !(group.items ?? []).length);
-    if (emptyGroup >= 0) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_ITEMS_REQUIRED", message: `第 ${emptyGroup + 1} 组没有采购明细`, details: [] });
     const placeOrder = input.place_order === true;
-    const merged: Array<{ input: Input; prepared: Prepared }> = [];
-    for (const [index, group] of groups.entries()) {
-      const currency = group.currency ?? input.currency ?? "CNY";
-      await this.currencies?.assertSupported(currency, "采购单币种");
-      // 组内明细的供应商一律取组供应商：拆分的语义就是「一组一个供应商」。
-      const groupInput: Input = { order_no: input.order_no, bom_id: input.bom_id, supplier_id: group.supplier_id, purchase_date: input.purchase_date, expected_date: group.expected_date, currency, remark: group.remark ?? input.remark, extension_data: { ...(input.extension_data ?? {}), purchase_split: { by: "supplier", supplier_id: group.supplier_id, group_index: index, group_count: groups.length } }, items: (group.items ?? []).map((item) => ({ ...item, supplier_id: group.supplier_id })) };
-      const prepared = await this.prepare(groupInput);
-      if (placeOrder) this.assertOrderableItems(groupInput.bom_id, prepared.items.map((item) => ({ materialId: item.material_id, unitId: item.unit_id, supplierId: item.supplier_id, quantity: item.quantity, unitPrice: item.unit_price })));
-      merged.push({ input: groupInput, prepared });
-    }
+    const merged = await this.collectGroups(input, placeOrder);
+    const targetStatus = placeOrder ? "ordered" : "draft";
     const created = await this.prisma.$transaction(async (tx) => {
       const rows = [];
-      for (const entry of merged) rows.push(await tx.purchaseOrder.create({ data: this.orderData(entry.prepared, entry.input, user, placeOrder ? "ordered" : "draft") }));
+      for (const entry of merged) rows.push(await tx.purchaseOrder.create({ data: this.orderData(entry.prepared, entry.input, user, targetStatus) }));
       return rows;
     });
     for (const row of created) {
@@ -90,6 +82,147 @@ export class PurchaseOrdersService {
       if (placeOrder) await this.audit.record("purchase_order.order", "purchase_order", user.id, row.id, { order_no: row.orderNo, split_by_supplier: true });
     }
     return Promise.all(created.map((row) => this.get(row.id)));
+  }
+  /**
+   * 按供应商收束一张**已经存在**的采购单（草稿，或已下单但没有任何到货）。
+   *
+   * 与 createSplit 的差别只有落点：第一组沿用这张单（采购单号不变），其余组新建。
+   * 为什么不「新建 N 张再把原单取消」：草稿从来没有发给供应商，把它的内容重新组织一次
+   * 不是一次「取消」业务；把原单标成已取消会让列表里凭空多一条作废记录，还白烧一个采购单号。
+   *
+   * 已下过的单收束后仍是已下单 —— 不能靠「保存草稿」把一张已经发给供应商的单悄悄退回草稿。
+   */
+  async splitExisting(id: string, input: SplitInput, user: CurrentUser) {
+    const current = await this.get(id);
+    this.assertEditable(current, "按供应商收束");
+    const wasOrdered = current.status === "ordered";
+    const reason = input.reason?.trim();
+    if (wasOrdered && !reason) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "收束已下单采购单必须填写原因", details: [] });
+    const targetOrdered = wasOrdered || input.place_order === true;
+    const merged = await this.collectGroups(input, targetOrdered);
+    const targetStatus = targetOrdered ? "ordered" : "draft";
+    // 第一组沿用原单：扩展数据里同样记下这次收束的来源，与新建的其余组保持一样的可追溯性。
+    const firstSplit = (merged[0].input.extension_data?.purchase_split ?? {}) as Record<string, unknown>;
+    merged[0].input.extension_data = { ...(merged[0].input.extension_data ?? {}), purchase_split: { ...firstSplit, reused_purchase_order_no: current.purchaseOrderNo, resplit_from: current.purchaseOrderNo } };
+    const created = await this.prisma.$transaction(async (tx) => {
+      // 草稿 → 已下单时补上采购日期；已经是已下单的单保持原采购日期不动。
+      const extra: Prisma.PurchaseOrderUncheckedUpdateInput = { status: targetStatus, ...(targetOrdered && !wasOrdered ? { purchaseDate: input.purchase_date ? new Date(input.purchase_date) : new Date() } : {}) };
+      await this.replaceOrder(tx, id, merged[0].prepared, merged[0].input, user, extra);
+      const rows = [];
+      for (const entry of merged.slice(1)) rows.push(await tx.purchaseOrder.create({ data: this.orderData(entry.prepared, entry.input, user, targetStatus) }));
+      return rows;
+    });
+    await this.audit.record("purchase_order.split", "purchase_order", user.id, id, {
+      order_no: current.orderNo, purchase_order_no: current.purchaseOrderNo, group_count: merged.length,
+      reused_purchase_order_no: current.purchaseOrderNo, created_purchase_order_nos: created.map((row) => row.purchaseOrderNo),
+      status_before: current.status, status_after: targetStatus, reason: reason || undefined,
+      before: wasOrdered ? this.orderSnapshot(current) : undefined,
+      after: wasOrdered ? this.orderSnapshot(this.snapshotSource(merged[0].prepared, merged[0].input)) : undefined,
+    });
+    for (const row of created) await this.audit.record("purchase_order.create", "purchase_order", user.id, row.id, { order_no: row.orderNo, purchase_order_no: row.purchaseOrderNo, split_by_supplier: true, group_count: merged.length, split_from: current.purchaseOrderNo });
+    return Promise.all([id, ...created.map((row) => row.id)].map((rowId) => this.get(rowId)));
+  }
+  /**
+   * 收束请求的结构校验 + 参照物解析 + 下单前校验。
+   *
+   * 抽出来给 createSplit 与 splitExisting 共用：两条路径的校验必须**完全一致**，
+   * 否则会出现「新建时不允许的写法，编辑时却放过去了」。
+   *
+   * 供应商只在**下单**时才是必需的：草稿要能存下刚导入、还没定供应商的 BOM 明细
+   * （用户 2026-09-17：「导入 BOM 明细，也视为对采购单的编辑，允许保存」）。
+   * 未选供应商的组最多一个 —— 它们同属一张「还没定供应商」的草稿。
+   */
+  private async collectGroups(input: SplitInput, placeOrder: boolean) {
+    const groups = input.groups ?? [];
+    if (!groups.length) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_GROUPS_REQUIRED", message: "按供应商收束至少需要一个供应商分组", details: [] });
+    if (placeOrder) {
+      const missingSupplier = groups.findIndex((group) => !group.supplier_id);
+      if (missingSupplier >= 0) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_SUPPLIER_REQUIRED", message: `第 ${missingSupplier + 1} 组缺少供应商，不能下单`, details: [] });
+    }
+    const unassignedGroups = groups.filter((group) => !group.supplier_id).length;
+    if (unassignedGroups > 1) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_UNASSIGNED_DUPLICATE", message: "未选供应商的明细只能合成一组（它们同属一张还没有供应商的草稿）", details: [] });
+    const emptyGroup = groups.findIndex((group) => !(group.items ?? []).length);
+    if (emptyGroup >= 0) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_ITEMS_REQUIRED", message: `第 ${emptyGroup + 1} 组没有采购明细`, details: [] });
+    const merged: Array<{ input: Input; prepared: Prepared }> = [];
+    for (const [index, group] of groups.entries()) {
+      const currency = group.currency ?? input.currency ?? "CNY";
+      await this.currencies?.assertSupported(currency, "采购单币种");
+      // 组内明细的供应商一律取组供应商（未选供应商的组就是「都没有」）：收束的语义就是「一组一个供应商」。
+      const groupInput: Input = { order_no: input.order_no, bom_id: input.bom_id, supplier_id: group.supplier_id, purchase_date: input.purchase_date, expected_date: group.expected_date, currency, remark: group.remark ?? input.remark, extension_data: { ...(input.extension_data ?? {}), purchase_split: { by: "supplier", supplier_id: group.supplier_id, group_index: index, group_count: groups.length } }, items: (group.items ?? []).map((item) => ({ ...item, supplier_id: group.supplier_id })) };
+      const prepared = await this.prepare(groupInput);
+      if (placeOrder) this.assertOrderableItems(groupInput.bom_id, prepared.items.map((item) => ({ materialId: item.material_id, unitId: item.unit_id, supplierId: item.supplier_id ?? "", quantity: item.quantity, unitPrice: item.unit_price })));
+      merged.push({ input: groupInput, prepared });
+    }
+    return merged;
+  }
+  /** 可编辑判定：草稿随便改；已下单未到货的也允许，但要留原因（到货事实之后一律只能改打印信息）。 */
+  private assertEditable(current: Awaited<ReturnType<PurchaseOrdersService["get"]>>, action: string) {
+    const receipted = current.items.some((item) => item.receipts.length);
+    if (receipted || !EDITABLE_PURCHASE_STATUSES.includes(current.status)) {
+      throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_EDITABLE", message: `已有到货事实或该状态的采购单不可${action}`, details: [] });
+    }
+  }
+  /** 把 prepared 折成 orderSnapshot 需要的形状（新增的组与已有的行字段名不同，这里统一）。 */
+  private snapshotSource(prepared: Prepared, input: Input) {
+    return { supplierId: prepared.refs.supplier?.id ?? null, currency: input.currency ?? "CNY", totalAmount: prepared.total, items: prepared.items.map((item) => ({ materialId: item.material_id, supplierId: item.supplier_id, quantity: item.quantity, unitPrice: item.unit_price, expectedDate: item.expected_date })) };
+  }
+  /**
+   * 采购单内容的紧凑快照，用于「已下单后改动」的前后值留痕。
+   * 只记业务看得懂的字段：供应商、币种、金额、以及每行的物料/供应商/数量/单价/到货日期。
+   */
+  private orderSnapshot(values: { supplierId?: string | null; currency?: string | null; totalAmount?: unknown; items: Array<{ materialId: string; supplierId?: string | null; quantity: unknown; unitPrice: unknown; expectedDate?: Date | string | null }> }) {
+    return {
+      supplier_id: values.supplierId ?? null,
+      currency: values.currency ?? null,
+      total_amount: String(values.totalAmount ?? "0"),
+      items: values.items.map((item) => ({
+        material_id: item.materialId,
+        supplier_id: item.supplierId,
+        quantity: String(item.quantity),
+        unit_price: String(item.unitPrice),
+        expected_date: item.expectedDate ? new Date(item.expectedDate).toISOString().slice(0, 10) : null,
+      })),
+    };
+  }
+  /**
+   * 某张 BOM 上每一行的下单情况 —— 新建采购单时用来避免同一行被重复采购。
+   *
+   * 归集口径：`purchase_order_items.bom_item_id`，只算未删除的明细行，排除已取消的采购单；
+   * 草稿与已下单**分开累计**：草稿不算「已下单」，但要单独标出来（已经有草稿覆盖的行同样不该再开一张）。
+   * 四态：已下单足量（ordered）/ 部分下单（partial）/ 草稿中（draft）/ 未下单（none）。
+   */
+  async bomItemOrderStatus(bomId: string) {
+    const bom = await this.prisma.bom.findFirst({ where: { id: bomId, deletedAt: null }, select: { id: true } });
+    if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在", details: [] });
+    const items = await this.prisma.bomItem.findMany({ where: { bomId, deletedAt: null }, select: { id: true, requiredQuantity: true } });
+    if (!items.length) return [] as Array<{ bom_item_id: string; required_quantity: string; ordered_quantity: string; draft_quantity: string; state: BomItemOrderState; ordered_purchase_order_nos: string[]; draft_purchase_order_nos: string[] }>;
+    const rows = await this.prisma.purchaseOrderItem.findMany({
+      where: { bomItemId: { in: items.map((item) => item.id) }, deletedAt: null, purchaseOrder: { deletedAt: null, status: { not: "cancelled" } } },
+      select: { bomItemId: true, quantity: true, purchaseOrder: { select: { purchaseOrderNo: true, status: true } } },
+    });
+    const accumulator = new Map<string, { ordered: Prisma.Decimal; draft: Prisma.Decimal; orderedNos: Set<string>; draftNos: Set<string> }>();
+    for (const row of rows) {
+      if (!row.bomItemId) continue;
+      const entry = accumulator.get(row.bomItemId) ?? { ordered: new Prisma.Decimal(0), draft: new Prisma.Decimal(0), orderedNos: new Set<string>(), draftNos: new Set<string>() };
+      const quantity = new Prisma.Decimal(row.quantity ?? 0);
+      if (ORDERED_PURCHASE_STATUSES.includes(row.purchaseOrder?.status ?? "")) {
+        entry.ordered = entry.ordered.plus(quantity);
+        if (row.purchaseOrder?.purchaseOrderNo) entry.orderedNos.add(row.purchaseOrder.purchaseOrderNo);
+      } else if (row.purchaseOrder?.status === "draft") {
+        entry.draft = entry.draft.plus(quantity);
+        if (row.purchaseOrder?.purchaseOrderNo) entry.draftNos.add(row.purchaseOrder.purchaseOrderNo);
+      }
+      accumulator.set(row.bomItemId, entry);
+    }
+    return items.map((item) => {
+      const entry = accumulator.get(item.id);
+      const required = new Prisma.Decimal(item.requiredQuantity ?? 0);
+      const ordered = entry?.ordered ?? new Prisma.Decimal(0);
+      const draft = entry?.draft ?? new Prisma.Decimal(0);
+      // 「已下单足量」按需求量比；需求量为 0 的行不因为「0 已下单」而被判成足量。
+      const state: BomItemOrderState = required.gt(0) && ordered.gte(required) ? "ordered" : ordered.gt(0) ? "partial" : draft.gt(0) ? "draft" : "none";
+      return { bom_item_id: item.id, required_quantity: required.toFixed(4), ordered_quantity: ordered.toFixed(4), draft_quantity: draft.toFixed(4), state, ordered_purchase_order_nos: [...(entry?.orderedNos ?? [])], draft_purchase_order_nos: [...(entry?.draftNos ?? [])] };
+    });
   }
   private async prepare(input: Input): Promise<Prepared> {
     const refs = await this.refs(input);
@@ -122,13 +255,55 @@ export class PurchaseOrdersService {
   private itemData(item: Item, refs: Refs, user: CurrentUser) {
     const material = refs.materials.get(item.material_id)!;
     const unit = refs.units.get(item.unit_id)!;
-    const itemSupplier = refs.supplierMap.get(item.supplier_id)!;
-    return { supplierId: itemSupplier.id, supplierSnapshot: itemSupplier as unknown as Prisma.InputJsonValue, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) };
+    // 供应商可空：草稿允许「还没定供应商」的行（见 schema 里 PurchaseOrderItem.supplierId 的注释）。
+    const itemSupplier = item.supplier_id ? refs.supplierMap.get(item.supplier_id) : undefined;
+    return { supplierId: itemSupplier?.id ?? null, supplierSnapshot: (itemSupplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) };
   }
-  async update(id: string, input: Input, user: CurrentUser) { await this.currencies?.assertSupported(input.currency, "采购单币种"); const current = await this.get(id); if (current.status !== "draft" || current.items.some((item) => item.receipts.length)) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_EDITABLE", message: "已有下游事实或非草稿采购单不可编辑", details: [] }); const refs = await this.refs(input); const items = refs.items; const total = items.reduce((sum, item) => sum.plus(this.amount(item)), new Prisma.Decimal(0)).toFixed(4); await this.prisma.$transaction(async (tx) => { await tx.purchaseOrderItem.updateMany({ where: { purchaseOrderId: id, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } }); await tx.purchaseOrder.update({ where: { id }, data: { orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom?.id ?? null, bomVersion: refs.bom?.version ?? null, bomSnapshot: (refs.bom ?? undefined) as unknown as Prisma.InputJsonValue | undefined, supplierId: refs.supplier?.id ?? null, supplierSnapshot: (refs.supplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, expectedDate: this.orderExpectedDate(input) ?? null, currency: input.currency ?? "CNY", totalAmount: total, remark: input.remark, extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.update(user) } }); await tx.purchaseOrderItem.createMany({ data: items.map((item) => { const material = refs.materials.get(item.material_id)!; const unit = refs.units.get(item.unit_id)!; const itemSupplier = refs.supplierMap.get(item.supplier_id)!; return { purchaseOrderId: id, supplierId: itemSupplier.id, supplierSnapshot: itemSupplier as unknown as Prisma.InputJsonValue, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) }); }); await this.audit.record("purchase_order.update", "purchase_order", user.id, id, { order_no: refs.order.orderNo, item_count: items.length }); return this.get(id); }
+  /**
+   * 整体替换一张采购单的内容（头部 + 明细）。
+   *
+   * 可编辑范围（用户 2026-09-17：「采购板块要支持对已经建好的采购单进行编辑」）：
+   *   草稿 → 自由编辑；
+   *   已下单但**没有任何有效到货** → 也能直接编辑，但必须填原因，审计留下改动前后值。
+   * 曾经的规则是「非草稿一律不可编辑，要先点『回到草稿』」：那张单已经发给供应商了，
+   * 在系统里把它退回草稿等于假装没下过单，而供应商手里那份单还在。
+   * 已经有到货的单不可编辑 —— 质检/入库/应付来源都挂在到货上，改数量或单价会与已发生的事实打架。
+   */
+  async update(id: string, input: Input, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "采购单币种");
+    const current = await this.get(id);
+    this.assertEditable(current, "编辑");
+    const wasOrdered = current.status === "ordered";
+    const reason = input.reason?.trim();
+    if (wasOrdered && !reason) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "修改已下单采购单必须填写原因", details: [] });
+    const prepared = await this.prepare(input);
+    await this.prisma.$transaction((tx) => this.replaceOrder(tx, id, prepared, input, user));
+    await this.audit.record("purchase_order.update", "purchase_order", user.id, id, {
+      order_no: prepared.refs.order.orderNo,
+      item_count: prepared.items.length,
+      status: current.status,
+      reason: reason || undefined,
+      // 已下单的单改动必须留下前后值（宪法《Reversible Business Changes》）
+      before: wasOrdered ? this.orderSnapshot(current) : undefined,
+      after: wasOrdered ? this.orderSnapshot(this.snapshotSource(prepared, input)) : undefined,
+    });
+    return this.get(id);
+  }
+  /**
+   * 把一张采购单的内容整体换成 prepared：老明细软删 + 新明细批量建 + 头部字段更新。
+   *
+   * 抽出来是为了让「整体编辑」与「按供应商收束（第一组沿用原单）」走**同一段写入逻辑** ——
+   * 两份拷贝迟早会漂移，而漂移的后果是头部供应商/金额与明细对不上。
+   */
+  private async replaceOrder(tx: Prisma.TransactionClient, id: string, prepared: Prepared, input: Input, user: CurrentUser, extra: Prisma.PurchaseOrderUncheckedUpdateInput = {}) {
+    const { refs, items, total } = prepared;
+    await tx.purchaseOrderItem.updateMany({ where: { purchaseOrderId: id, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
+    await tx.purchaseOrder.update({ where: { id }, data: { orderNo: refs.order.orderNo, salesOrderId: refs.order.id, bomId: refs.bom?.id ?? null, bomVersion: refs.bom?.version ?? null, bomSnapshot: (refs.bom ?? undefined) as unknown as Prisma.InputJsonValue | undefined, supplierId: refs.supplier?.id ?? null, supplierSnapshot: (refs.supplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, expectedDate: this.orderExpectedDate(input) ?? null, currency: input.currency ?? "CNY", totalAmount: total, remark: input.remark, extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue, ...extra, ...this.audit.update(user) } });
+    await tx.purchaseOrderItem.createMany({ data: items.map((item) => { const material = refs.materials.get(item.material_id)!; const unit = refs.units.get(item.unit_id)!; const itemSupplier = item.supplier_id ? refs.supplierMap.get(item.supplier_id) : undefined; return { purchaseOrderId: id, supplierId: itemSupplier?.id ?? null, supplierSnapshot: (itemSupplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) });
+  }
   /** 草稿可以不完整，但下单必须齐全：BOM、至少一行明细，且每行物料/单位/供应商/数量/单价完整。 */
   private assertOrderable(po: Awaited<ReturnType<PurchaseOrdersService["get"]>>) {
-    this.assertOrderableItems(po.bomId, po.items.map((item) => ({ materialId: item.materialId, unitId: item.unitId, supplierId: item.supplierId, quantity: item.quantity?.toString() ?? "", unitPrice: item.unitPrice?.toString() ?? "" })));
+    this.assertOrderableItems(po.bomId, po.items.map((item) => ({ materialId: item.materialId, unitId: item.unitId, supplierId: item.supplierId ?? "", quantity: item.quantity?.toString() ?? "", unitPrice: item.unitPrice?.toString() ?? "" })));
   }
   /** 建单前的同一套下单前校验：拆分下单时明细还只是请求体，没有采购单号可查。 */
   private assertOrderableItems(bomId: string | null | undefined, items: OrderableItem[]) {
@@ -281,10 +456,13 @@ export class PurchaseOrdersService {
   private async refs(input: Input): Promise<Refs> {
     const items = input.items ?? [];
     if (items.some((item) => !this.isPositive(item.quantity) || !this.isNonNegative(item.unit_price) || (item.extra_fee !== undefined && !this.isNonNegative(item.extra_fee)))) throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_ITEM", message: "采购明细数量/单价/费用必须有效", details: [] });
-    if (items.some((item) => !item.supplier_id)) throw new UnprocessableEntityException({ code: "PURCHASE_ITEM_SUPPLIER_REQUIRED", message: "每个采购明细必须指定供应商", details: [] });
     const order = await this.prisma.salesOrder.findFirst({ where: { orderNo: input.order_no, status: "confirmed", deletedAt: null } });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_CONFIRMED", message: "销售单不存在或未确认", details: [] });
+    // 明细行的供应商允许为空（草稿还没定供应商，见 schema 注释），但**一张单上不能有两个不同供应商**：
+    // 头部供应商/币种/金额会失去单一含义，而到货、应付、对账都挂在采购单上。
+    // 用户 2026-09-17：「一个采购单内，一个供应商下一个单」——按供应商收束（/split）天然满足这条。
     const supplierIds = [...new Set([input.supplier_id, ...items.map((item) => item.supplier_id)].filter((id): id is string => Boolean(id)))];
+    if (supplierIds.length > 1) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_MULTIPLE_SUPPLIERS", message: "一张采购单只能有一个供应商，请按供应商收束后再保存", details: [] });
     const [bom, suppliers, materials, units] = await Promise.all([
       input.bom_id ? this.prisma.bom.findFirst({ where: { id: input.bom_id, salesOrderId: order.id, orderNo: input.order_no, deletedAt: null } }) : Promise.resolve(null),
       supplierIds.length ? this.prisma.supplier.findMany({ where: { id: { in: supplierIds }, isActive: true, deletedAt: null } }) : Promise.resolve([]),

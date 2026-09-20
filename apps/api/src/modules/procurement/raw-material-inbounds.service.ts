@@ -61,7 +61,7 @@ export class RawMaterialInboundsService {
         purchaseReceiptId: inspection.purchaseReceiptId,
         incomingInspectionId: inspection.id,
         materialId: item.materialId,
-        supplierId: inspection.purchaseReceipt.purchaseOrderItem.supplierId,
+        supplierId: this.requireItemSupplier(item),
         unitId: item.unitId,
         quantity,
         inventoryCategory: "raw_material",
@@ -109,7 +109,7 @@ export class RawMaterialInboundsService {
           purchaseReceiptId: inspection.purchaseReceiptId,
           incomingInspectionId: inspection.id,
           materialId: item.materialId,
-          supplierId: inspection.purchaseReceipt.purchaseOrderItem.supplierId,
+          supplierId: this.requireItemSupplier(item),
           unitId: item.unitId,
           quantity: input.quantity,
           settlementUnitPrice: input.settlement_unit_price,
@@ -319,6 +319,18 @@ export class RawMaterialInboundsService {
     return { inbound_id: id, order_no: inbound.orderNo, status: inbound.status, quantity: inbound.quantity.toString(), current_inventory: balance.toString(), after_reversal_inventory: balance.minus(inbound.quantity).toString(), payable_sources: inbound.payableSources.map((source) => ({ id: source.id, status: source.status, amount: source.amount.toString(), payable_entry_status: source.supplierPayableEntry?.status ?? null, payment_posted: source.supplierPayableEntry?.allocations.some((allocation) => allocation.payment.status === "posted") ?? false })), warning: "未确认应付将随入库冲销作废；已确认、部分支付或已有付款核销的应付必须先处理付款和应付，再冲销入库。" };
   }
 
+  /**
+   * 采购明细的供应商现在是**可空**的（草稿允许「刚导入 BOM、还没定供应商」的行，
+   * 见 schema 里 PurchaseOrderItem.supplierId 的注释），但入库单与应付来源都必须有供应商。
+   *
+   * 能走到这里的明细都来自**已下单**的采购单（到货只能登记在已下单的单上，而 `assertOrderableItems`
+   * 要求每行都有供应商），所以正常路径下不可能落空。留这一道是为了让历史脏数据给出可读的 422，
+   * 而不是让数据库抛 NOT NULL 违约变成 500。
+   */
+  private requireItemSupplier(item: { supplierId: string | null }): string {
+    if (!item.supplierId) throw new UnprocessableEntityException({ code: "PURCHASE_ITEM_SUPPLIER_MISSING", message: "采购明细没有供应商，不能生成入库/应付", details: [] });
+    return item.supplierId;
+  }
   private async requireInspection(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {
     const inspection = await client.incomingInspection.findFirst({
       where: { id, deletedAt: null, status: { in: ["accepted", "conditionally_accepted", "partially_accepted", "completed"] } },

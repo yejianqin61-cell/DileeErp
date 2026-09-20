@@ -115,16 +115,12 @@ test("split requires a bom when placing orders", async () => {
   assert.deepEqual(captured, []);
 });
 
-test("split rejects groups without a supplier or without items before reading references", async () => {
+test("split rejects empty or missing groups before reading references", async () => {
   const { service, prisma, captured } = makeService();
   let referenceReads = 0;
   const original = prisma.salesOrder.findFirst;
   prisma.salesOrder.findFirst = async (...args) => { referenceReads += 1; return original(...args); };
 
-  await assert.rejects(
-    () => service.createSplit(input([{ supplier_id: "", items: [item("material-1", "supplier-2")] }]), { id: "user-1" }),
-    (error) => error.getResponse().code === "PURCHASE_SPLIT_SUPPLIER_REQUIRED",
-  );
   await assert.rejects(
     () => service.createSplit(input([{ supplier_id: "supplier-2", items: [] }]), { id: "user-1" }),
     (error) => error.getResponse().code === "PURCHASE_SPLIT_ITEMS_REQUIRED",
@@ -135,6 +131,37 @@ test("split rejects groups without a supplier or without items before reading re
   );
   assert.equal(referenceReads, 0, "结构性校验在 refs 之前完成，不产生任何业务查询");
   assert.deepEqual(captured, []);
+});
+
+// 用户 2026-09-17：「导入 BOM 明细，也视为对采购单的编辑，允许保存」。
+// 刚带入 BOM 时每一行都还没选供应商，这一组必须能存成一张「还没有供应商」的草稿；
+// 但下单时它必须补齐 —— 一个供应商一张单，没收束的行没有落脚处。
+test("a supplier-less group saves as a draft but cannot be ordered", async () => {
+  const draft = makeService();
+  await draft.service.createSplit(input([{ supplier_id: "", items: [item("material-1", "supplier-2")] }]), { id: "user-1" });
+  assert.equal(draft.captured.length, 1);
+  assert.equal(draft.captured[0].status, "draft");
+  assert.equal(draft.captured[0].supplierId, null, "这一组是「还没定供应商」");
+  assert.equal(draft.captured[0].items.create[0].supplierId, null, "组内明细也没有供应商");
+
+  const ordered = makeService();
+  await assert.rejects(
+    () => ordered.service.createSplit(input([{ supplier_id: "", items: [item("material-1", "supplier-2")] }], { place_order: true }), { id: "user-1" }),
+    (error) => error.getResponse().code === "PURCHASE_SPLIT_SUPPLIER_REQUIRED",
+  );
+  assert.deepEqual(ordered.captured, [], "下单被拒时一张都不写");
+});
+
+test("only one group may be missing a supplier", async () => {
+  const { service, captured } = makeService();
+  await assert.rejects(
+    () => service.createSplit(input([
+      { supplier_id: "", items: [item("material-1", "supplier-2")] },
+      { supplier_id: "", items: [item("material-2", "supplier-3", { bom_item_id: undefined, extension_data: { outside_bom_reason: "临时新增" } })] },
+    ]), { id: "user-1" }),
+    (error) => error.getResponse().code === "PURCHASE_SPLIT_UNASSIGNED_DUPLICATE",
+  );
+  assert.deepEqual(captured, [], "未选供应商的明细只能合成一组");
 });
 
 test("split validates the currency of every group against the currency dictionary", async () => {

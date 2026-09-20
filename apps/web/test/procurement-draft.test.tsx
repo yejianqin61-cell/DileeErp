@@ -50,6 +50,8 @@ const bomItems = [
 function stubProcurement() {
   return stubApi((url) => {
     if (url === EP.purchaseOrders) return apiOk([]);
+    // BOM 行的累计下单情况（草稿表「下单状态」列的数据来源）：本文件不关心，返回空即全部显示「未下单」。
+    if (url.startsWith(`${EP.purchaseOrders}/bom-item-status`)) return apiOk([]);
     if (url === EP.inbounds) return apiOk([]);
     if (url === EP.payableSources) return apiOk([]);
     if (url === EP.payableEntries) return apiOk([]);
@@ -166,8 +168,8 @@ describe("采购草稿：当前库存量按「物料 + 单位」显示，不跨�
     await pickSelect(1, "SO-1");
     await waitFor(() => expect(rows()).toHaveLength(3));
 
-    // 第 1 行是面料A（BOM 需求 5 米），第 5 列是「当前库存量」
-    const stockCell = rows()[0].children[4] as HTMLTableCellElement;
+    // 第 1 行是面料A（BOM 需求 5 米），第 6 列是「当前库存量」（第 4 列是 2026-09-17 新增的「下单状态」）
+    const stockCell = rows()[0].children[5] as HTMLTableCellElement;
     expect(stockCell.textContent).toContain("5.0000"); // 本行单位（米）的余额，不是 5 + 2 = 7
     expect(stockCell.textContent).not.toContain("7");
     expect(stockCell.textContent).toContain("另有 2.0000 卷");
@@ -184,7 +186,7 @@ describe("采购草稿：当前库存量按「物料 + 单位」显示，不跨�
     await pickSelect(1, "SO-1");
     await waitFor(() => expect(rows()).toHaveLength(3));
     // 第 2 行是面料B（m-2 没有任何余额）
-    const emptyCell = rows()[1].children[4] as HTMLTableCellElement;
+    const emptyCell = rows()[1].children[5] as HTMLTableCellElement;
     expect(emptyCell.textContent).toBe("0");
     expect(emptyCell.className).toContain("stock-low");
   });
@@ -244,7 +246,8 @@ describe("采购草稿：一张订单按供应商拆分成多张采购单", () =
     expect(within(preview).getByText(/甲供应商 · 2 行/)).toBeVisible();
     expect(within(preview).getByText(/乙供应商 · 1 行/)).toBeVisible();
 
-    await userEvent.click(screen.getByRole("button", { name: "按供应商拆分下单（2 张）" }));
+    // 「收束下单」是唯一的正式下单动作：几个供应商就落几张单，按钮上写明张数
+    await userEvent.click(screen.getByRole("button", { name: "收束下单（2 张）" }));
 
     await waitFor(() => expect(callsTo(calls, "/purchase-orders/split")).toHaveLength(1));
     const body = bodyOf(callsTo(calls, "/purchase-orders/split")[0]);

@@ -25,7 +25,7 @@ import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 type InspectionBatch = { id: string; status: string; qcResult?: string | null; inspectedQuantity: string; acceptedQuantity: string; conditionalQuantity: string; rejectedQuantity: string };
 type InboundBatch = { id: string; inboundNo: string; quantity: string; status: string };
 type Receipt = { id: string; receiptNo: string; quantity: string; status?: string; remark?: string | null; receivedDate?: string; batchSequence?: number; inspections?: InspectionBatch[]; rawMaterialInbounds?: InboundBatch[] };
-type PurchaseItem = { id: string; materialId: string; unitId: string; bomItemId?: string | null; supplierId?: string | null; expectedDate?: string | null; model?: string | null; quantity: string; unitPrice?: string; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; supplier?: { name?: string | null } | null; receipts: Receipt[]; batchWorkflows?: Array<{ receiptId: string; receiptNo: string; batchSequence: number; receivedQuantity: string; inspections: InspectionBatch[]; inbounds: InboundBatch[] }> };
+type PurchaseItem = { id: string; materialId: string; unitId: string; bomItemId?: string | null; supplierId?: string | null; expectedDate?: string | null; model?: string | null; quantity: string; unitPrice?: string; extensionData?: { outside_bom_reason?: string } | null; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; supplier?: { name?: string | null } | null; receipts: Receipt[]; batchWorkflows?: Array<{ receiptId: string; receiptNo: string; batchSequence: number; receivedQuantity: string; inspections: InspectionBatch[]; inbounds: InboundBatch[] }> };
 type PurchaseOrder = AuditRow & {
   id: string; purchaseOrderNo: string; orderNo: string; bomId: string | null; supplierId: string | null;
   purchaseDate?: string | null; expectedDate?: string | null; status: string; currency: string | null; totalAmount: string;
@@ -38,8 +38,22 @@ type PurchaseOrder = AuditRow & {
 type Reference = { id: string; name?: string; orderNo?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string; salesOrderId?: string; status?: string; specificationModel?: string | null; color?: string | null };
 type BomItem = { id?: string; materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; color?: string | null; requiredQuantity: string; unit: string; unitId?: string | null; materialSnapshot: Record<string, unknown> };
 type Bom = { id: string; orderNo: string; salesOrderId: string; status: string; version: number; items: BomItem[] };
-type PurchaseDraftItem = { materialId: string; model: string; quantity: string; unitId: string; unitPrice: string; supplierId: string; expectedDate: string; bomItemId?: string; currentStock?: string };
-type PurchaseDraft = { id?: string; orderNo: string; bomId: string; currency: string; importBomItems: boolean; items: PurchaseDraftItem[] };
+/**
+ * 一行 BOM 明细的累计下单情况（`GET /purchase-orders/bom-item-status`）。
+ *
+ * 四态来自后端：`ordered` 已下单足量 / `partial` 部分下单 / `draft` 草稿中 / `none` 未下单。
+ * 草稿**不算**已下单，但要单独标出来 —— 已经有草稿覆盖的行同样不该再开一张。
+ */
+type BomItemOrderStatus = { bom_item_id: string; required_quantity: string; ordered_quantity: string; draft_quantity: string; state: "none" | "draft" | "partial" | "ordered"; ordered_purchase_order_nos: string[]; draft_purchase_order_nos: string[] };
+/**
+ * 草稿工作区的一行。
+ *
+ * `bomMaterialId` 是这一行在 BOM 表上对应的物料：采购员如果把物料改成别的东西，
+ * 这一行就不再是 BOM 上那一行，`bomItemId` 必须一起清掉 —— 否则后端会以
+ * `PURCHASE_BOM_ITEM_MISMATCH` 拒绝整张单（「采购明细必须引用当前 BOM 表中的对应物料」）。
+ */
+type PurchaseDraftItem = { materialId: string; model: string; quantity: string; unitId: string; unitPrice: string; supplierId: string; expectedDate: string; bomItemId?: string; bomMaterialId?: string; currentStock?: string };
+type PurchaseDraft = { id?: string; purchaseOrderNo?: string; orderNo: string; bomId: string; currency: string; importBomItems: boolean; items: PurchaseDraftItem[] };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -48,6 +62,8 @@ const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClie
  * 不能套 `messageOf` 的兜底 —— 那会把「导出失败：服务端异常」压成光秃秃的「导出失败」，用户无从下手。
  */
 const downloadErrorOf = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
+/** 后端把数量统一成四位小数（Decimal 口径），界面上不必显示 `5.0000`。 */
+const trimQuantity = (value: string) => { const trimmed = String(value ?? "").replace(/0+$/, "").replace(/\.$/, ""); return trimmed === "" ? "0" : trimmed; };
 const inspectionStatusLabel: Record<string, string> = { pending: "待质检", inspecting: "质检中", completed: "已登记", accepted: "全部入库", conditionally_accepted: "全部入库", partially_accepted: "部分入库", rejected: "拒收", cancelled: "已取消" };
 const inboundStatusLabel: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
 
@@ -66,6 +82,14 @@ export default function PurchaseOrdersPage() {
   const [purchaseDraft, setPurchaseDraft] = useState<PurchaseDraft | null>(null);
   const [stockByMaterial, setStockByMaterial] = useState<Record<string, string>>({});
   const [selectedDraftRows, setSelectedDraftRows] = useState<number[]>([]);
+  /** 当前 BOM 每一行的累计下单情况（按 bom_item_id 索引），用于草稿表里的「下单状态」列。 */
+  const [bomOrderStatus, setBomOrderStatus] = useState<Record<string, BomItemOrderStatus>>({});
+  /** BOM 外新增行（补料/替代料）必须填的原因：后端要求每行都给 `outside_bom_reason`。 */
+  const [outsideBomReason, setOutsideBomReason] = useState("");
+  /** 编辑**已下单**采购单时必须填的改动原因（宪法：已下单后变更要留前后值与原因）。 */
+  const [editReason, setEditReason] = useState("");
+  /** 正在编辑的这张采购单原本的状态：`ordered` 时保存要填原因、且保存后不能退回草稿。 */
+  const [editingStatus, setEditingStatus] = useState("");
   const [bomWorkbench, setBomWorkbench] = useState<{ id: string; label?: string } | null>(null);
   // BOM 工作区里点「新建物料」时，把它的回填函数存下来（2026-09-16 之前这里是空函数，按钮点了没反应）。
   const [materialApply, setMaterialApply] = useState<((material: BomMaterialRef) => void) | null>(null);
@@ -186,6 +210,10 @@ export default function PurchaseOrdersPage() {
 
   function createPurchaseOrder() {
     setSelectedDraftRows([]);
+    setBomOrderStatus({});
+    setOutsideBomReason("");
+    setEditReason("");
+    setEditingStatus("");
     setPurchaseDraft({ orderNo: "", bomId: "", currency: currencyCatalogue.some((o) => o.value === "CNY") ? "CNY" : (currencyCatalogue[0]?.value ?? "CNY"), importBomItems: true, items: [] });
     void refreshMaterialStock(materials.map((item) => item.id));
   }
@@ -205,6 +233,21 @@ export default function PurchaseOrdersPage() {
       .join("、");
   }
   function unitName(unitId: string) { return units.find((item) => item.id === unitId)?.name ?? "其它单位"; }
+  /**
+   * 草稿表里「下单状态」这一格。
+   *
+   * 用户 2026-09-17：「已经选中并下单的 BOM 物料，再新建采购单中要显示已下单。因此要多一个 column」。
+   * 四态由后端按 `bom_item_id` 归集累计下单量给出：已下单足量 / 部分下单 / 草稿中 / 未下单。
+   * 草稿**不算**已下单，但一样要看得见 —— 已经有草稿盖住的行同样不该再开一张。
+   */
+  function bomOrderCell(item: PurchaseDraftItem) {
+    if (!item.bomItemId) return <span className="panel-note">BOM 外新增</span>;
+    const status = bomOrderStatus[item.bomItemId];
+    if (!status || status.state === "none") return <span className="panel-note">未下单</span>;
+    if (status.state === "draft") return <span className="bom-order-draft" title={status.draft_purchase_order_nos.join("、")}>草稿中 {trimQuantity(status.draft_quantity)}{status.draft_purchase_order_nos.length ? `（${status.draft_purchase_order_nos.join("、")}）` : ""}</span>;
+    if (status.state === "partial") return <span className="bom-order-partial" title={status.ordered_purchase_order_nos.join("、")}>部分下单 {trimQuantity(status.ordered_quantity)} / 需求 {trimQuantity(status.required_quantity)}</span>;
+    return <span className="status-success" title={status.ordered_purchase_order_nos.join("、")}>已下单 {trimQuantity(status.ordered_quantity)}{status.ordered_purchase_order_nos.length ? `（${status.ordered_purchase_order_nos.join("、")}）` : ""}</span>;
+  }
   function addPurchaseItem() { const material = materials.find((item) => item.isActive !== false); const unitId = material?.defaultUnitId ?? ""; setPurchaseDraft((draft) => draft ? { ...draft, items: [...draft.items, { materialId: material?.id ?? "", model: "", quantity: "1", unitId, unitPrice: "0", supplierId: "", expectedDate: "", currentStock: stockFor(material?.id ?? "", unitId) }] } : draft); }
   function updatePurchaseItem(index: number, patch: Partial<PurchaseDraftItem>) { setPurchaseDraft((draft) => draft ? { ...draft, items: draft.items.map((item, i) => i === index ? { ...item, ...patch } : item) } : draft); }
   function toggleDraftRow(index: number) { setSelectedDraftRows((rows) => rows.includes(index) ? rows.filter((r) => r !== index) : [...rows, index]); }
@@ -228,44 +271,112 @@ export default function PurchaseOrdersPage() {
     }
     return [...map.values()];
   }, [purchaseDraft, suppliers]);
+  /** 收束后会真正落成采购单的分组；「未选择供应商」那一组只在**保存草稿**时落单，下单前必须补齐。 */
+  const assignedGroups = useMemo(() => draftGroups.filter((group) => group.supplierId), [draftGroups]);
+  /** 还没选供应商的那一组（导入 BOM 之后就是这个状态）。 */
+  const unassignedGroup = useMemo(() => draftGroups.find((group) => !group.supplierId), [draftGroups]);
+  /** 不在 BOM 表上的行（补料/替代料）：必须填新增原因，否则保存会被后端拒绝。 */
+  const outsideBomRows = useMemo(() => (purchaseDraft?.items ?? []).filter((item) => !item.bomItemId), [purchaseDraft]);
+  /** 正在编辑一张**已下单**的单：此时保存要填原因，而且保存后不能退回草稿。 */
+  const editingOrdered = editingStatus === "ordered";
+  const needsOutsideBomReason = Boolean(purchaseDraft?.bomId) && outsideBomRows.length > 0;
 
-  function splitPayload(placeOrder: boolean) {
+  /**
+   * 收束请求体：把当前草稿按供应商分组，交给 `POST /purchase-orders/split`
+   * （新建）或 `POST /purchase-orders/:id/split`（收束一张已经存在的采购单）。
+   *
+   * 两条路径只差一个端点，请求体完全一样。`reason` 只在收束**已存在**的单时才带 ——
+   * 新建接口的 DTO 里没有这个字段，而 ValidationPipe 开了 forbidNonWhitelisted，
+   * 多带一个键会直接 400。
+   *
+   * 还没选供应商的行合成一组、`supplier_id` 留空：草稿要能把「刚导入 BOM」这个中间状态存下来
+   * （用户 2026-09-17）。`""` 必须转成 `undefined` —— DTO 上是 `@IsOptional() @IsUUID()`，
+   * 空串过不了 UUID 校验，而 `undefined` 会被 JSON.stringify 丢掉。
+   */
+  function collapsePayload(placeOrder: boolean) {
     if (!purchaseDraft) return null;
-    const groups = draftGroups.filter((g) => g.supplierId);
-    return { order_no: purchaseDraft.orderNo, bom_id: purchaseDraft.bomId || undefined, purchase_date: new Date().toISOString(), currency: purchaseDraft.currency, place_order: placeOrder, extension_data: { split_by_supplier: true }, groups: groups.map((g) => ({ supplier_id: g.supplierId, currency: purchaseDraft.currency, expected_date: g.items.find((item) => item.expectedDate)?.expectedDate ? new Date(g.items.find((item) => item.expectedDate)!.expectedDate).toISOString() : undefined, items: g.items.map((item) => ({ material_id: item.materialId, model: item.model || undefined, unit_id: item.unitId, bom_item_id: item.bomItemId, supplier_id: g.supplierId, expected_date: item.expectedDate ? new Date(item.expectedDate).toISOString() : undefined, quantity: item.quantity, unit_price: item.unitPrice })) })) };
+    const groups = draftGroups;
+    const payload: Record<string, unknown> = {
+      order_no: purchaseDraft.orderNo,
+      bom_id: purchaseDraft.bomId || undefined,
+      purchase_date: new Date().toISOString(),
+      currency: purchaseDraft.currency,
+      place_order: placeOrder,
+      extension_data: { collapsed_by_supplier: true },
+      groups: groups.map((group) => ({
+        supplier_id: group.supplierId || undefined,
+        currency: purchaseDraft.currency,
+        expected_date: group.items.find((item) => item.expectedDate)?.expectedDate ? new Date(group.items.find((item) => item.expectedDate)!.expectedDate).toISOString() : undefined,
+        items: group.items.map((item) => ({
+          material_id: item.materialId,
+          model: item.model || undefined,
+          unit_id: item.unitId,
+          bom_item_id: item.bomItemId,
+          supplier_id: group.supplierId || undefined,
+          expected_date: item.expectedDate ? new Date(item.expectedDate).toISOString() : undefined,
+          quantity: item.quantity,
+          unit_price: item.unitPrice,
+          // 不在 BOM 表上的行（补料/替代料）必须带新增原因，否则后端以 PURCHASE_OUTSIDE_BOM_REASON_REQUIRED 拒绝整张单。
+          extension_data: item.bomItemId ? undefined : { outside_bom_reason: outsideBomReason.trim() },
+        })),
+      })),
+    };
+    if (purchaseDraft.id) payload.reason = editReason.trim() || undefined;
+    return payload;
   }
 
-  function validateDraftForOrder() {
+  /**
+   * 保存 / 收束前的必填校验。
+   *
+   * 草稿与正式单的差别只有**完整性**：
+   *   草稿允许没选供应商 —— 刚导入 BOM 明细时每一行都没供应商，这个中间状态必须存得下来
+   *   （用户 2026-09-17：「导入 BOM 明细，也视为对采购单的编辑，允许保存」）；
+   *   收束下单要求每行都有供应商 —— 一个供应商一张单，没收束的行没有落脚处。
+   * `placeOrder` 不只是 `mode`：编辑一张**已下单**的单时保存的语义也是「下单态」，同样必须完整。
+   */
+  function validateDraft(mode: "draft" | "order") {
     if (!purchaseDraft) return false;
+    const placeOrder = mode === "order" || editingOrdered;
     if (!purchaseDraft.orderNo) { setError("请先选择销售单"); return false; }
-    const incomplete = purchaseDraft.items.findIndex((item) => !item.materialId || !item.unitId || !item.quantity || item.unitPrice === "" || !item.supplierId);
-    if (incomplete >= 0) { setError(`第 ${incomplete + 1} 行明细请补齐物料/单位/数量/单价/供应商`); return false; }
-    if (!purchaseDraft.items.length) { setError("下单前请至少添加一行明细"); return false; }
-    const missingDate = purchaseDraft.items.findIndex((item) => !item.expectedDate);
-    if (missingDate >= 0) { setError(`第 ${missingDate + 1} 行明细请填写预计到货日期`); return false; }
+    if (placeOrder && !purchaseDraft.items.length) { setError("下单前请至少添加一行明细"); return false; }
+    if (placeOrder) {
+      const missingSupplier = purchaseDraft.items.findIndex((item) => !item.supplierId);
+      if (missingSupplier >= 0) { setError(`第 ${missingSupplier + 1} 行明细还没选供应商，不能下单（一个供应商一张采购单）`); return false; }
+    }
+    const incomplete = purchaseDraft.items.findIndex((item) => !item.materialId || !item.unitId || !item.quantity || item.unitPrice === "");
+    if (incomplete >= 0) { setError(`第 ${incomplete + 1} 行明细请补齐物料/单位/数量/单价`); return false; }
+    if (purchaseDraft.bomId && outsideBomRows.length && !outsideBomReason.trim()) { setError(`有 ${outsideBomRows.length} 行不在 BOM 表中（补料/替代料），请填写「BOM 外新增原因」`); return false; }
+    if (purchaseDraft.id && editingOrdered && !editReason.trim()) { setError("修改已下单的采购单必须填写原因"); return false; }
+    if (placeOrder) {
+      if (!purchaseDraft.bomId) { setError("下单前请选择 BOM 表"); return false; }
+      const missingDate = purchaseDraft.items.findIndex((item) => !item.expectedDate);
+      if (missingDate >= 0) { setError(`第 ${missingDate + 1} 行明细请填写预计到货日期`); return false; }
+    }
     return true;
   }
 
-  async function splitPurchaseOrder(placeOrder: boolean) {
-    if (!purchaseDraft) return;
-    if (purchaseDraft.id) { setError("已保存的采购单不能再拆分；请新建采购单后按供应商拆分下单"); return; }
-    if (!validateDraftForOrder()) return;
-    if (!purchaseDraft.bomId) { setError("下单前请选择 BOM 表"); return; }
-    const groups = draftGroups.filter((g) => g.supplierId);
-    const unassigned = purchaseDraft.items.length - groups.reduce((sum, g) => sum + g.items.length, 0);
-    if (unassigned > 0 || !groups.length) { setError("拆分下单要求每一行明细都已选择供应商"); return; }
-    const payload = splitPayload(placeOrder);
-    if (!payload) return;
-    setError("");
-    try {
-      const result = await apiPost<PurchaseOrder[]>("/purchase-orders/split", payload);
-      const created = result.data ?? [];
-      notifySuccess(`${placeOrder ? "已按供应商拆分下单" : "已按供应商拆分保存草稿"}：${created.length} 张采购单（${created.map((o) => o?.purchaseOrderNo).filter(Boolean).join("、")}）`);
-      setPurchaseDraft(null); setSelectedDraftRows([]); await load();
-    } catch (cause) { setError(messageOf(cause, placeOrder ? "按供应商拆分下单失败" : "按供应商拆分保存草稿失败")); }
+  /**
+   * 换物料。
+   *
+   * 如果这一行本来来自 BOM 表，换掉物料之后它就不再是 BOM 上那一行：必须把 `bom_item_id` 一起清掉。
+   * 留着它后端会以 `PURCHASE_BOM_ITEM_MISMATCH` 拒绝**整张单**（「采购明细必须引用当前 BOM 表中的对应物料」），
+   * 而界面上的报错完全看不出是哪一行——这是「保存草稿总失败」最难查的一种。
+   */
+  function changePurchaseMaterial(index: number, materialId: string) {
+    const material = materials.find((item) => item.id === materialId);
+    const row = purchaseDraft?.items[index];
+    const patch: Partial<PurchaseDraftItem> = { materialId, unitId: material?.defaultUnitId ?? "" };
+    if (row?.bomItemId && row.bomMaterialId !== materialId) { patch.bomItemId = undefined; patch.bomMaterialId = undefined; }
+    updatePurchaseItem(index, patch);
   }
 
-  function changePurchaseMaterial(index: number, materialId: string) { const material = materials.find((item) => item.id === materialId); updatePurchaseItem(index, { materialId, unitId: material?.defaultUnitId ?? "" }); }
+  /** 拉当前 BOM 每一行的累计下单情况（草稿表里的「下单状态」列）。取不到就不显示状态，不阻断导入。 */
+  async function refreshBomOrderStatus(bomId: string) {
+    try {
+      const result = await apiGet<BomItemOrderStatus[]>(`/purchase-orders/bom-item-status?bom_id=${encodeURIComponent(bomId)}`);
+      setBomOrderStatus(Object.fromEntries(result.data.map((row) => [row.bom_item_id, row])));
+    } catch { setBomOrderStatus({}); }
+  }
 
   async function importBomItems(bomId: string) {
     const bom = await apiGet<Bom>(`/boms/${bomId}`);
@@ -273,7 +384,10 @@ export default function PurchaseOrdersPage() {
     const stockMap = stock.data.reduce<Record<string, string>>((acc, item) => { acc[`${item.material_id}|${item.unit_id}`] = item.quantity; acc[item.material_id] = (Number(acc[item.material_id] ?? 0) + Number(item.quantity)).toString(); return acc; }, {});
     setStockByMaterial((current) => ({ ...current, ...stockMap }));
     setSelectedDraftRows([]);
-    setPurchaseDraft((draft) => draft ? { ...draft, items: bom.data.items.map((item) => { const unitId = item.unitId ?? units.find((u) => u.name === item.unit)?.id ?? ""; return { materialId: item.materialId, model: item.model || item.specificationModel || "", quantity: item.requiredQuantity, unitId, unitPrice: "0", supplierId: "", expectedDate: "", bomItemId: item.id, currentStock: stockMap[`${item.materialId}|${unitId}`] ?? "0" }; }) } : draft);
+    // 刚导入 BOM，草稿里已经没有 BOM 外的行了：把上一次的原因清掉，否则会张冠李戴
+    setOutsideBomReason("");
+    await refreshBomOrderStatus(bomId);
+    setPurchaseDraft((draft) => draft ? { ...draft, items: bom.data.items.map((item) => { const unitId = item.unitId ?? units.find((u) => u.name === item.unit)?.id ?? ""; return { materialId: item.materialId, model: item.model || item.specificationModel || "", quantity: item.requiredQuantity, unitId, unitPrice: "0", supplierId: "", expectedDate: "", bomItemId: item.id, bomMaterialId: item.materialId, currentStock: stockMap[`${item.materialId}|${unitId}`] ?? "0" }; }) } : draft);
   }
 
   async function selectPurchaseBom(bomId: string) { setPurchaseDraft((draft) => draft ? { ...draft, bomId } : draft); if (purchaseDraft?.importBomItems && bomId) { try { await importBomItems(bomId); } catch (cause) { notifyError(messageOf(cause, "BOM表明细带入失败")); } } }
@@ -286,34 +400,58 @@ export default function PurchaseOrdersPage() {
       const result = await apiGet<PurchaseOrder>(`/purchase-orders/${id}`);
       const order = result.data;
       setSelectedDraftRows([]);
-      setPurchaseDraft({ id: order.id, orderNo: order.orderNo, bomId: order.bomId ?? "", currency: order.currency ?? "CNY", importBomItems: false, items: order.items.map((item) => ({ materialId: item.materialId, model: item.model ?? "", quantity: item.quantity, unitId: item.unitId, unitPrice: item.unitPrice ?? "0", supplierId: item.supplierId ?? order.supplierId ?? "", expectedDate: item.expectedDate?.slice(0, 10) ?? order.expectedDate?.slice(0, 10) ?? "", bomItemId: item.bomItemId ?? undefined })) });
+      setEditReason("");
+      setEditingStatus(order.status);
+      // 已经存在的 BOM 外行本来就带着原因：带出来，用户不用重打一遍
+      setOutsideBomReason(order.items.find((item) => item.extensionData?.outside_bom_reason)?.extensionData?.outside_bom_reason ?? "");
+      if (order.bomId) await refreshBomOrderStatus(order.bomId); else setBomOrderStatus({});
+      setPurchaseDraft({ id: order.id, purchaseOrderNo: order.purchaseOrderNo, orderNo: order.orderNo, bomId: order.bomId ?? "", currency: order.currency ?? "CNY", importBomItems: false, items: order.items.map((item) => ({ materialId: item.materialId, model: item.model ?? "", quantity: item.quantity, unitId: item.unitId, unitPrice: item.unitPrice ?? "0", supplierId: item.supplierId ?? order.supplierId ?? "", expectedDate: item.expectedDate?.slice(0, 10) ?? order.expectedDate?.slice(0, 10) ?? "", bomItemId: item.bomItemId ?? undefined })) });
     } catch (cause) { setError(messageOf(cause, "采购单加载失败")); }
   }
 
+  /**
+   * 保存 / 收束下单。
+   *
+   * 用户 2026-09-17：「导入 BOM 物料之后，用户对采购单进行编辑，填写供应商等等 column。
+   * 支持保存草稿。然后再根据供应商收束下单。一个采购单内，一个供应商下一个单。」
+   *
+   * 所以保存与下单**都**按供应商收束，走的是同一个请求体，只差 `place_order`：
+   *   - 新建 → `POST /purchase-orders/split`
+   *   - 收束一张已经建好的单 → `POST /purchase-orders/:id/split`（第一组沿用原单，单号不变）
+   * 两个端点都在一个事务里落全部组，所以「按供应商收束」不会出现「一半建好一半失败」。
+   *
+   * 已经下单的单：保存后仍是已下单，不能靠「保存草稿」把它悄悄退回草稿
+   * （那张单已经发给供应商了，系统里退回草稿等于假装没下过单）。
+   *
+   * 一张明细都没有的空草稿走**普通建/存单接口**：没有供应商可分组，收束接口会以
+   * 「至少需要一个分组」拒绝，而「选定销售单即可保存」是 2026-09-17 之前就有的行为。
+   */
   async function savePurchaseOrder(mode: "draft" | "order" = "draft") {
     if (!purchaseDraft) return;
-    if (!purchaseDraft.orderNo) { setError("请先选择销售单"); return; }
-    const incomplete = purchaseDraft.items.findIndex((item) => !item.materialId || !item.unitId || !item.quantity || item.unitPrice === "" || !item.supplierId);
-    if (incomplete >= 0) { setError(`第 ${incomplete + 1} 行明细请补齐物料/单位/数量/单价/供应商`); return; }
-    if (mode === "order") {
-      if (!purchaseDraft.bomId) { setError("下单前请选择 BOM 表"); return; }
-      if (!purchaseDraft.items.length) { setError("下单前请至少添加一行明细"); return; }
-      const missingDate = purchaseDraft.items.findIndex((item) => !item.expectedDate);
-      if (missingDate >= 0) { setError(`第 ${missingDate + 1} 行明细请填写预计到货日期`); return; }
-    }
+    if (!validateDraft(mode)) return;
+    const placeOrder = mode === "order" || editingOrdered;
     setError("");
     try {
-      const payload = { order_no: purchaseDraft.orderNo, bom_id: purchaseDraft.bomId || undefined, purchase_date: new Date().toISOString(), currency: purchaseDraft.currency, items: purchaseDraft.items.map((item) => ({ material_id: item.materialId, model: item.model || undefined, unit_id: item.unitId, bom_item_id: item.bomItemId, supplier_id: item.supplierId, expected_date: item.expectedDate ? new Date(item.expectedDate).toISOString() : undefined, quantity: item.quantity, unit_price: item.unitPrice })) };
-      const saved = purchaseDraft.id ? await apiRequest<PurchaseOrder>(`/purchase-orders/${purchaseDraft.id}`, { method: "PATCH", body: JSON.stringify(payload) }) : await apiPost<PurchaseOrder>("/purchase-orders", payload);
-      if (mode === "order") {
-        const savedId = saved.data?.id ?? purchaseDraft.id;
-        if (!savedId) throw new Error("采购单保存后未返回单号，无法下单");
-        await apiPost(`/purchase-orders/${savedId}/order`, {});
+      if (!purchaseDraft.items.length) {
+        const body = { order_no: purchaseDraft.orderNo, bom_id: purchaseDraft.bomId || undefined, purchase_date: new Date().toISOString(), currency: purchaseDraft.currency, items: [] as unknown[], ...(purchaseDraft.id ? { reason: editReason.trim() || undefined } : {}) };
+        const result = purchaseDraft.id
+          ? await apiRequest<PurchaseOrder>(`/purchase-orders/${purchaseDraft.id}`, { method: "PATCH", body: JSON.stringify(body) })
+          : await apiPost<PurchaseOrder>("/purchase-orders", body);
+        notifySuccess(`${purchaseDraft.id ? "采购草稿已更新" : "采购草稿已创建"}：${result.data?.purchaseOrderNo ?? ""}`);
+      } else {
+        const payload = collapsePayload(placeOrder);
+        if (!payload) return;
+        const result = purchaseDraft.id
+          ? await apiPost<PurchaseOrder[]>(`/purchase-orders/${purchaseDraft.id}/split`, payload)
+          : await apiPost<PurchaseOrder[]>("/purchase-orders/split", payload);
+        const saved = result.data ?? [];
+        const numbers = saved.map((order) => order?.purchaseOrderNo).filter(Boolean).join("、");
+        const verb = placeOrder ? "已按供应商收束下单" : "已按供应商收束保存草稿";
+        notifySuccess(saved.length > 1 ? `${verb}：${saved.length} 张采购单（${numbers}）` : `${verb}：${numbers}`);
       }
-      setPurchaseDraft(null); setSelectedDraftRows([]);
-      notifySuccess(mode === "order" ? "采购单已下单" : purchaseDraft.id ? "采购草稿已更新" : "采购草稿已创建");
+      setPurchaseDraft(null); setSelectedDraftRows([]); setEditingStatus(""); setEditReason("");
       await load();
-    } catch (cause) { setError(messageOf(cause, mode === "order" ? "采购单下单失败" : purchaseDraft.id ? "采购草稿更新失败" : "采购草稿创建失败")); }
+    } catch (cause) { setError(messageOf(cause, placeOrder ? "按供应商收束下单失败" : "按供应商收束保存草稿失败")); }
   }
 
   async function refreshMaterialStock(ids: string[]) {
@@ -340,7 +478,14 @@ export default function PurchaseOrdersPage() {
     { id: "status", header: "状态", cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
     { id: "amount", header: "金额", cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },
     ...auditColumns<PurchaseOrder>(),
-    { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; return <div className="action-row">{isDraft && <><Button size="sm" variant="secondary" onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button><Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button></>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" asChild><Link href={`/procurement/orders/${row.original.id}`}>到货跟踪</Link></Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}
+    { id: "actions", header: "操作", cell: ({ row }) => { const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity)); const closed = row.original.extensionData?.arrival_closed; const isDraft = row.original.status === "draft"; const isOrdered = row.original.status === "ordered"; const noReceipts = row.original.items.every((item) => item.receipts.length === 0); const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed; /**
+       * 可编辑范围（用户 2026-09-17：「已经建好的采购单也要能编辑」）：
+       * 草稿随时改；已下单但还没有任何到货的也能直接改明细（保存时要填原因）——
+       * 那张单已经发给供应商了，逼用户先「回到草稿」等于在系统里假装没下过单。
+       * 有到货之后明细只读（质检/入库/应付都挂在到货上），只能改打印信息。
+       */
+      const editable = isDraft || (isOrdered && noReceipts);
+      return <div className="action-row">{editable && <Button size="sm" variant="secondary" data-testid={`order-edit-${row.original.purchaseOrderNo}`} onClick={() => void editPurchaseOrder(row.original.id)}>编辑</Button>}{isDraft && <Button size="sm" onClick={() => void action(`/purchase-orders/${row.original.id}/order`, undefined, "采购单已下单")}>下单</Button>}{isOrdered && noReceipts && <Button size="sm" variant="ghost" onClick={() => revertPurchaseOrder(row.original)}>回到草稿</Button>}{canReceive && <Button size="sm" variant="secondary" asChild><Link href={`/procurement/orders/${row.original.id}`}>到货跟踪</Link></Button>}{complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}
         {/* 打印信息（付款方式/交期条款/交货地址/交货日期/回签三格）：任何状态都能填，含已下单 */}
         <Button size="sm" variant="secondary" data-testid={`order-print-info-${row.original.purchaseOrderNo}`} onClick={() => openPrintInfo(row.original)}>打印信息</Button>
         {/* 导出这一张采购订单的 Excel（2026-09-16 之前这个函数定义了却没有入口，页面上找不到） */}
@@ -400,8 +545,8 @@ export default function PurchaseOrdersPage() {
       <Sheet open={Boolean(purchaseDraft)} onOpenChange={(open) => { if (!open) setPurchaseDraft(null); }}>
         <SheetContent className="material-issue-sheet purchase-workspace">
           <SheetHeader>
-            <SheetTitle>{purchaseDraft?.id ? "编辑采购单" : "新建采购单"}</SheetTitle>
-            <SheetDescription>可先保存草稿：选定销售单即可，BOM 表与预计到货日期可稍后补；下单前必须补齐 BOM 与每行明细。</SheetDescription>
+            <SheetTitle>{purchaseDraft?.id ? `编辑采购单：${purchaseDraft.purchaseOrderNo ?? ""}` : "新建采购单"}</SheetTitle>
+            <SheetDescription>导入 BOM 物料后逐行填供应商、单价与预计到货，然后保存草稿或收束下单。保存与下单都按供应商收束：几个供应商就落几张采购单，一张采购单只有一个供应商，到货、应付、对账的口径才唯一。草稿允许先不选供应商（没选的行会先存进一张还没有供应商的草稿），收束下单前必须补齐。</SheetDescription>
           </SheetHeader>
           {purchaseDraft && (
             <div className="detail-list">
@@ -413,23 +558,72 @@ export default function PurchaseOrdersPage() {
               <label><Button type="button" size="sm" variant="secondary" data-testid="purchase-edit-bom" disabled={!purchaseDraft.bomId} onClick={() => openBom(purchaseDraft.bomId, purchaseDraft.orderNo)}>编辑BOM表</Button></label>
               <label>币种<Select value={purchaseDraft.currency || undefined} onValueChange={(value) => setPurchaseDraft({ ...purchaseDraft, currency: value })}><SelectTrigger><SelectValue placeholder="请选择币种" /></SelectTrigger><SelectContent>{currencyOptionsWithCurrent(currencyCatalogue, purchaseDraft.currency).map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></label>
               <label><Button type="button" aria-label="带入 BOM表明细" variant={purchaseDraft.importBomItems ? "secondary" : "ghost"} aria-pressed={purchaseDraft.importBomItems} onClick={() => void toggleBomImport(!purchaseDraft.importBomItems)}>带入 BOM表明细：{purchaseDraft.importBomItems ? "是" : "否"}</Button></label>
+              {/* BOM 外的行（补料/替代料）后端要求逐行给 `outside_bom_reason`，界面原来根本给不出这个值，
+                  于是「添加行 → 保存草稿」在选了 BOM 的情况下必然失败（PURCHASE_OUTSIDE_BOM_REASON_REQUIRED）。 */}
+              {needsOutsideBomReason && (
+                <label>BOM 外新增原因（{outsideBomRows.length} 行不在 BOM 表上，补料/替代料必填）
+                  <Input value={outsideBomReason} onChange={(event) => setOutsideBomReason(event.target.value)} aria-label="BOM 外新增原因" placeholder="例如：原 BOM 物料缺货，改用替代料" />
+                </label>
+              )}
               <div className="page-actions">
                 <Button size="sm" variant="secondary" onClick={addPurchaseItem}>添加行</Button>
                 <Button size="sm" variant="destructive" disabled={!selectedDraftRows.length} onClick={removeSelectedDraftRows}>{selectedDraftRows.length ? `移除选中 ${selectedDraftRows.length} 行` : "移除选中行"}</Button>
-                <Button size="sm" variant="secondary" onClick={() => void savePurchaseOrder("draft")}>保存草稿</Button>
-                <Button size="sm" onClick={() => void savePurchaseOrder("order")}>下单</Button>
+                {editingOrdered ? <>
+                  <label className="purchase-edit-reason">修改原因（必填）
+                    <Input value={editReason} onChange={(event) => setEditReason(event.target.value)} aria-label="修改原因" placeholder="例如：单价录错，供应商报价 3.5" />
+                  </label>
+                  <Button size="sm" data-testid="purchase-save" onClick={() => void savePurchaseOrder("draft")}>保存修改</Button>
+                </> : <>
+                  <Button size="sm" variant="secondary" data-testid="purchase-save-draft" onClick={() => void savePurchaseOrder("draft")}>保存草稿{draftGroups.length > 1 ? `（${draftGroups.length} 张）` : ""}</Button>
+                  <Button size="sm" data-testid="purchase-save-order" onClick={() => void savePurchaseOrder("order")}>收束下单{assignedGroups.length > 1 ? `（${assignedGroups.length} 张）` : ""}</Button>
+                </>}
               </div>
-              {draftGroups.length > 1 && (
+              {(draftGroups.length > 1 || unassignedGroup) && (
                 <div className="panel panel-body" data-testid="purchase-split-preview">
-                  <p className="panel-note">按供应商分组（同供应商合并成一张采购单，共 {draftGroups.length} 张）：</p>
-                  <ul className="draft-split-list">{draftGroups.map((g) => <li key={g.supplierId || "unassigned"}>{(g.supplierName || "未选择供应商")} · {g.items.length} 行 · 金额合计 {g.amount.toFixed(2)} {purchaseDraft.currency}</li>)}</ul>
-                  <div className="page-actions">
-                    <Button size="sm" variant="secondary" onClick={() => void splitPurchaseOrder(false)}>按供应商拆分保存 {draftGroups.length} 张草稿</Button>
-                    <Button size="sm" onClick={() => void splitPurchaseOrder(true)}>按供应商拆分下单（{draftGroups.length} 张）</Button>
-                  </div>
+                  <p className="panel-note">{assignedGroups.length ? `按供应商收束（同供应商合并成一张采购单，共 ${assignedGroups.length} 张）：` : "按供应商收束：还没有任何一行选了供应商。"}</p>
+                  <ul className="draft-split-list">{draftGroups.map((g) => <li key={g.supplierId || "unassigned"}>{g.supplierName || "未选择供应商"} · {g.items.length} 行 · 金额合计 {g.amount.toFixed(2)} {purchaseDraft.currency}{g.supplierId ? "" : "（还没选供应商）"}</li>)}</ul>
+                  {unassignedGroup && <p className="panel-note">没选供应商的行不会被下单：保存草稿会把它们先存进一张「还没有供应商」的草稿，收束下单前必须补齐。</p>}
+                  {purchaseDraft.id && assignedGroups.length > 0 && <p className="panel-note">第 1 组（{draftGroups[0]?.supplierName ?? "未选择供应商"}）沿用本单单号 {purchaseDraft.purchaseOrderNo}，其余组新建采购单。</p>}
                 </div>
               )}
-              <div className="table-wrap"><table className="data-table"><thead><tr><th className="draft-select-cell"><input type="checkbox" aria-label="全选采购明细" checked={purchaseDraft.items.length > 0 && selectedDraftRows.length === purchaseDraft.items.length} onChange={(event) => toggleAllDraftRows(event.target.checked)} /></th><th>名称</th><th>型号</th><th>需求量</th><th>当前库存量</th><th>单位</th><th>单价</th><th>供应商</th><th>预计到货</th><th className="sr-only">操作</th></tr></thead><tbody>{purchaseDraft.items.map((item, index) => <tr key={`${item.materialId}-${index}`}><td className="draft-select-cell"><input type="checkbox" aria-label={`选择第 ${index + 1} 行采购明细`} checked={selectedDraftRows.includes(index)} onChange={() => toggleDraftRow(index)} /></td><td><Select value={item.materialId || undefined} onValueChange={(value) => changePurchaseMaterial(index, value)}><SelectTrigger><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input value={item.model} onChange={(event) => updatePurchaseItem(index, { model: event.target.value })} /></td><td><Input type="number" min="0" step="0.0001" value={item.quantity} onChange={(event) => updatePurchaseItem(index, { quantity: event.target.value })} /></td><td className={Number(stockFor(item.materialId, item.unitId)) >= Number(item.quantity) ? "stock-ok" : "stock-low"} title={otherUnitStock(item.materialId, item.unitId) ? `本行单位库存 ${stockFor(item.materialId, item.unitId)}；另有 ${otherUnitStock(item.materialId, item.unitId)}（单位不同，未相加）` : undefined}>{stockFor(item.materialId, item.unitId)}{otherUnitStock(item.materialId, item.unitId) ? <span className="panel-note">（另有 {otherUnitStock(item.materialId, item.unitId)}）</span> : null}</td><td><Select value={item.unitId || undefined} onValueChange={(value) => updatePurchaseItem(index, { unitId: value })}><SelectTrigger><SelectValue placeholder="请选择单位" /></SelectTrigger><SelectContent>{unitOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input type="number" min="0" step="0.0001" value={item.unitPrice} onChange={(event) => updatePurchaseItem(index, { unitPrice: event.target.value })} /></td><td><Select value={item.supplierId || undefined} onValueChange={(value) => updatePurchaseItem(index, { supplierId: value })}><SelectTrigger><SelectValue placeholder="请选择供应商" /></SelectTrigger><SelectContent>{supplierOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td><td><Input type="date" value={item.expectedDate} onChange={(event) => updatePurchaseItem(index, { expectedDate: event.target.value })} aria-label="预计到货日期" /></td><td><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setPurchaseDraft({ ...purchaseDraft, items: purchaseDraft.items.filter((_, i) => i !== index) })}><Trash2 size={16} /></Button></td></tr>)}</tbody></table></div>
+              {/* 列宽全部由 .draft-col-* 显式指定：这一页的 Sheet 复用了 .material-issue-sheet，
+                  而那里写着 nth-child(1)=24%（给领料单的物料列用的），不覆盖就会把行首复选框撑成 24% 宽。 */}
+              <div className="table-wrap">
+                <table className="data-table purchase-draft-table">
+                  <thead>
+                    <tr>
+                      <th className="draft-col-select"><input type="checkbox" aria-label="全选采购明细" checked={purchaseDraft.items.length > 0 && selectedDraftRows.length === purchaseDraft.items.length} onChange={(event) => toggleAllDraftRows(event.target.checked)} /></th>
+                      <th className="draft-col-material">名称</th>
+                      <th className="draft-col-model">型号</th>
+                      <th className="draft-col-order">下单状态</th>
+                      <th className="draft-col-qty">需求量</th>
+                      <th className="draft-col-stock">当前库存量</th>
+                      <th className="draft-col-unit">单位</th>
+                      <th className="draft-col-price">单价</th>
+                      <th className="draft-col-supplier">供应商</th>
+                      <th className="draft-col-expected">预计到货</th>
+                      <th className="draft-col-action">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {purchaseDraft.items.map((item, index) => (
+                      <tr key={`${item.materialId}-${index}`}>
+                        <td className="draft-col-select"><input type="checkbox" aria-label={`选择第 ${index + 1} 行采购明细`} checked={selectedDraftRows.includes(index)} onChange={() => toggleDraftRow(index)} /></td>
+                        <td className="draft-col-material"><Select value={item.materialId || undefined} onValueChange={(value) => changePurchaseMaterial(index, value)}><SelectTrigger><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td>
+                        <td className="draft-col-model"><Input value={item.model} onChange={(event) => updatePurchaseItem(index, { model: event.target.value })} /></td>
+                        <td className="draft-col-order">{bomOrderCell(item)}</td>
+                        <td className="draft-col-qty"><Input type="number" min="0" step="0.0001" value={item.quantity} onChange={(event) => updatePurchaseItem(index, { quantity: event.target.value })} /></td>
+                        <td className={`draft-col-stock ${Number(stockFor(item.materialId, item.unitId)) >= Number(item.quantity) ? "stock-ok" : "stock-low"}`} title={otherUnitStock(item.materialId, item.unitId) ? `本行单位库存 ${stockFor(item.materialId, item.unitId)}；另有 ${otherUnitStock(item.materialId, item.unitId)}（单位不同，未相加）` : undefined}>{stockFor(item.materialId, item.unitId)}{otherUnitStock(item.materialId, item.unitId) ? <span className="panel-note">（另有 {otherUnitStock(item.materialId, item.unitId)}）</span> : null}</td>
+                        <td className="draft-col-unit"><Select value={item.unitId || undefined} onValueChange={(value) => updatePurchaseItem(index, { unitId: value })}><SelectTrigger><SelectValue placeholder="请选择单位" /></SelectTrigger><SelectContent>{unitOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td>
+                        <td className="draft-col-price"><Input type="number" min="0" step="0.0001" value={item.unitPrice} onChange={(event) => updatePurchaseItem(index, { unitPrice: event.target.value })} /></td>
+                        <td className="draft-col-supplier"><Select value={item.supplierId || undefined} onValueChange={(value) => updatePurchaseItem(index, { supplierId: value })}><SelectTrigger><SelectValue placeholder="请选择供应商" /></SelectTrigger><SelectContent>{supplierOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}</SelectContent></Select></td>
+                        <td className="draft-col-expected"><Input type="date" value={item.expectedDate} onChange={(event) => updatePurchaseItem(index, { expectedDate: event.target.value })} aria-label="预计到货日期" /></td>
+                        <td className="draft-col-action"><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setPurchaseDraft({ ...purchaseDraft, items: purchaseDraft.items.filter((_, i) => i !== index) })}><Trash2 size={16} /></Button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </SheetContent>

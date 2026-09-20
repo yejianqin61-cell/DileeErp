@@ -1,21 +1,23 @@
 // 采购模块（purchase-orders）HTTP 契约测试 —— 针对**运行中的真实 API**。
 //
-// 覆盖 15 个路由（apps/api/src/modules/procurement/purchase-orders.controller.ts:22-36）：
+// 覆盖 17 个路由（apps/api/src/modules/procurement/purchase-orders.controller.ts）：
 //   1. GET    /api/v1/purchase-orders                       列表（order_no 过滤，无分页）
-//   2. POST   /api/v1/purchase-orders                       新建（201）
-//   3. POST   /api/v1/purchase-orders/split                 按供应商拆分成多张采购单
-//   4. PATCH  /api/v1/purchase-orders/:id                   修改（只允许草稿）
-//   5. PATCH  /api/v1/purchase-orders/:id/print-fields      打印信息（付款方式/交期条款/交货地址/交货日期/备注/回签三格）
-//   6. GET    /api/v1/purchase-orders/:id                   详情
-//   7. GET    /api/v1/purchase-orders/:id/impact-preview    变更影响预览
-//   8. POST   /api/v1/purchase-orders/:id/order             下单
-//   9. POST   /api/v1/purchase-orders/:id/revert-draft      退回草稿（需 reason）
-//  10. POST   /api/v1/purchase-orders/:id/cancel            取消
-//  11. POST   /api/v1/purchase-orders/:id/revert-arrivals   到货回退（需 reason）
-//  12. POST   /api/v1/purchase-orders/:id/close-arrivals    关闭到货
-//  13. POST   /api/v1/purchase-orders/:id/items/:itemId/receipts   登记分批到货
-//  14. PATCH  /api/v1/purchase-orders/receipts/:receiptId          修改到货批次（子资源在顶层，不在 :id 下）
-//  15. POST   /api/v1/purchase-orders/receipts/:receiptId/cancel   撤销到货批次
+//   2. GET    /api/v1/purchase-orders/bom-item-status       BOM 每行的累计下单情况（四态，需 bom_id，声明在 :id 之前）
+//   3. POST   /api/v1/purchase-orders                       新建（201）
+//   4. POST   /api/v1/purchase-orders/split                 按供应商拆分成多张采购单
+//   5. POST   /api/v1/purchase-orders/:id/split             按供应商收束一张已存在的单（第 1 组沿用原单）
+//   6. PATCH  /api/v1/purchase-orders/:id                   修改（草稿自由改；已下单未到货需 reason）
+//   7. PATCH  /api/v1/purchase-orders/:id/print-fields      打印信息（付款方式/交期条款/交货地址/交货日期/备注/回签三格）
+//   8. GET    /api/v1/purchase-orders/:id                   详情
+//   9. GET    /api/v1/purchase-orders/:id/impact-preview    变更影响预览
+//  10. POST   /api/v1/purchase-orders/:id/order             下单
+//  11. POST   /api/v1/purchase-orders/:id/revert-draft      退回草稿（需 reason）
+//  12. POST   /api/v1/purchase-orders/:id/cancel            取消
+//  13. POST   /api/v1/purchase-orders/:id/revert-arrivals   到货回退（需 reason）
+//  14. POST   /api/v1/purchase-orders/:id/close-arrivals    关闭到货
+//  15. POST   /api/v1/purchase-orders/:id/items/:itemId/receipts   登记分批到货
+//  16. PATCH  /api/v1/purchase-orders/receipts/:receiptId          修改到货批次（子资源在顶层，不在 :id 下）
+//  17. POST   /api/v1/purchase-orders/receipts/:receiptId/cancel   撤销到货批次
 //
 // 环境约束（违反会得到随机失败，见 tests/helpers/api-client.cjs:73-82）：
 //   - 本 API 是**单会话**的：AuthService.login() 先删该用户全部 session 再建新的
@@ -105,11 +107,16 @@ function detailFor(body, field) {
   return detail;
 }
 
-/** 15 个路由的清单，用于逐条打鉴权（route.name 与控制器方法名一一对应）。 */
+/** 17 个路由的清单，用于逐条打鉴权（route.name 与控制器方法名一一对应）。 */
 const ROUTES = [
   { body: undefined, method: "GET", name: "list", path: "/api/v1/purchase-orders" },
+  // 2026-09-17 新增：BOM 每行的累计下单情况。必须排在 :id 之前（控制器里也是这么声明的），
+  // 否则 "bom-item-status" 会被当成一个采购单 id 吃掉。
+  { body: undefined, method: "GET", name: "bomItemStatus", path: `/api/v1/purchase-orders/bom-item-status?bom_id=${UNKNOWN_ORDER_ID}` },
   { body: {}, method: "POST", name: "create", path: "/api/v1/purchase-orders" },
   { body: {}, method: "POST", name: "split", path: "/api/v1/purchase-orders/split" },
+  // 2026-09-17 新增：按供应商收束一张**已经存在**的采购单（第 1 组沿用原单）。
+  { body: { order_no: "PROBE", groups: [{ supplier_id: UNKNOWN_ORDER_ID, items: [] }] }, method: "POST", name: "splitExisting", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/split` },
   { body: {}, method: "PATCH", name: "update", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}` },
   { body: { payment_terms: "月结30天" }, method: "PATCH", name: "updatePrintFields", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/print-fields` },
   { body: undefined, method: "GET", name: "get", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}` },
@@ -225,8 +232,8 @@ test("purchase_orders.anonymous_requests_are_401_on_every_route", async () => {
   // 守卫链是 AuthenticationGuard → ModulePermissionGuard（控制器 :18）。
   // 无 cookie 时 AuthenticationGuard 先抛 UnauthorizedException（auth.service.ts:37），
   // 所以匿名访问**所有**受保护路由都是 401，而不是 ModulePermissionGuard 的 403。
-  assert.equal(ROUTES.length, 15, "本文件必须覆盖控制器的全部 15 个路由");
-  assert.equal(new Set(ROUTES.map((route) => route.name)).size, 15, "路由名不可重复");
+  assert.equal(ROUTES.length, 17, "本文件必须覆盖控制器的全部 17 个路由");
+  assert.equal(new Set(ROUTES.map((route) => route.name)).size, 17, "路由名不可重复");
 
   const anonymous = apiClient(baseUrl);
   for (const route of ROUTES) {

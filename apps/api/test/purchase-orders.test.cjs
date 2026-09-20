@@ -60,9 +60,29 @@ test("purchase order rejects finished products even with an outside-BOM reason",
   );
 });
 
-test("only draft purchase orders can replace their rows", async () => {
+// 2026-09-17 用户要求「采购板块要支持对已经建好的采购单进行编辑」：
+// 旧规则是「非草稿一律不可编辑，要先点『回到草稿』」，但那张单已经发给供应商了，
+// 在系统里把它退回草稿等于假装没下过单。新规则见 purchase-orders.service.ts 的 assertEditable：
+//   草稿 → 自由编辑；已下单但无任何到货 → 也能编辑，但必须填原因；其余一律拒绝。
+test("an ordered purchase order without receipts is editable, but only with a reason", async () => {
   const service = new PurchaseOrdersService({ purchaseOrder: { findFirst: async () => ({ id: "purchase-1", status: "ordered", items: [] }) } }, {});
-  await assert.rejects(() => service.update("purchase-1", {}, {}), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ORDER_NOT_EDITABLE");
+  await assert.rejects(
+    () => service.update("purchase-1", {}, {}),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "CORRECTION_REASON_REQUIRED",
+  );
+});
+
+test("purchase orders that already have arrival facts cannot replace their rows", async () => {
+  // 到货行要带上 get() 拼批次视图时会读的两个字段（真实 Prisma 由 include 填）
+  const receipted = { id: "purchase-1", status: "ordered", items: [{ receipts: [{ id: "receipt-1", inspections: [], rawMaterialInbounds: [] }] }] };
+  const partiallyArrived = { id: "purchase-1", status: "partially_arrived", items: [] };
+  for (const row of [receipted, partiallyArrived]) {
+    const service = new PurchaseOrdersService({ purchaseOrder: { findFirst: async () => row } }, {});
+    await assert.rejects(
+      () => service.update("purchase-1", {}, {}),
+      (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ORDER_NOT_EDITABLE",
+    );
+  }
 });
 
 test("completed receipt totals remain closable until arrival closure is recorded", async () => {
@@ -182,11 +202,52 @@ const refsPrisma = (suppliers) => ({
   bomItem: { findMany: async () => [{ id: "bomItem-1", materialId: "material-1" }] },
 });
 
-test("purchase order requires a supplier on every item", async () => {
+// 2026-09-17：明细行的供应商变成可空（草稿要能存下刚导入、还没定供应商的 BOM 明细），
+// 「每行必须有供应商」从 refs() 挪到了**下单门禁** assertOrderableItems。
+test("refs accepts items without a supplier so an unfinished draft can be saved", async () => {
   const service = new PurchaseOrdersService(refsPrisma([{ id: "supplier-1" }]), {});
+  const refs = await service.refs({ order_no: "SO-1", bom_id: "bom-1", purchase_date: new Date().toISOString(), currency: "CNY", items: [{ material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", quantity: "1", unit_price: "1" }] });
+  assert.equal(refs.supplier, undefined, "整单还没有供应商");
+  assert.equal(refs.items[0].supplier_id, undefined);
+});
+
+test("ordering still requires a supplier on every item", async () => {
+  const service = new PurchaseOrdersService({}, {});
+  // assertOrderableItems 是**同步**抛错，所以用 assert.throws 而不是 assert.rejects
+  // （rejects 收到同步异常会把它当成断言自身出错，验证函数根本不会被调用）。
+  assert.throws(
+    () => service.assertOrderableItems("bom-1", [{ materialId: "material-1", unitId: "unit-1", supplierId: "", quantity: "1", unitPrice: "1" }]),
+    (error) => error instanceof UnprocessableEntityException
+      && error.getResponse().code === "PURCHASE_ORDER_INCOMPLETE"
+      && error.getResponse().details.some((detail) => detail.code === "ITEM_INCOMPLETE" && detail.message.includes("供应商")),
+  );
+});
+
+// 用户 2026-09-17：「一个采购单内，一个供应商下一个单」。
+// 这条以前只靠界面保证（界面走 /split，一组一个供应商），现在写进 refs()，
+// 因为头部供应商/币种/金额一旦混了，到货、应付、对账都失去单一口径。
+test("a purchase order may hold items from at most one supplier", async () => {
+  const service = new PurchaseOrdersService(refsPrisma([{ id: "supplier-2" }, { id: "supplier-3" }]), {});
   await assert.rejects(
-    () => service.refs({ order_no: "SO-1", bom_id: "bom-1", purchase_date: new Date().toISOString(), currency: "CNY", items: [{ material_id: "material-1", unit_id: "unit-1", quantity: "1", unit_price: "1", extension_data: { outside_bom_reason: "临时" } }] }),
-    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ITEM_SUPPLIER_REQUIRED",
+    () => service.refs({
+      order_no: "SO-1", bom_id: "bom-1", purchase_date: new Date().toISOString(), currency: "USD",
+      items: [
+        { material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", supplier_id: "supplier-2", quantity: "1", unit_price: "2" },
+        { material_id: "material-2", unit_id: "unit-2", supplier_id: "supplier-3", quantity: "1", unit_price: "2", extension_data: { outside_bom_reason: "临时新增" } },
+      ],
+    }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ORDER_MULTIPLE_SUPPLIERS",
+  );
+});
+
+test("the header supplier counts towards the one-supplier rule", async () => {
+  const service = new PurchaseOrdersService(refsPrisma([{ id: "supplier-2" }, { id: "supplier-3" }]), {});
+  await assert.rejects(
+    () => service.refs({
+      order_no: "SO-1", bom_id: "bom-1", supplier_id: "supplier-2", purchase_date: new Date().toISOString(), currency: "USD",
+      items: [{ material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", supplier_id: "supplier-3", quantity: "1", unit_price: "2" }],
+    }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ORDER_MULTIPLE_SUPPLIERS",
   );
 });
 
@@ -198,32 +259,32 @@ test("purchase order rejects unknown or disabled item suppliers", async () => {
   );
 });
 
-test("refs resolves per-item suppliers and keeps an order-level snapshot compatible", async () => {
-  const service = new PurchaseOrdersService(refsPrisma([{ id: "supplier-2", name: "乙供应商" }, { id: "supplier-3", name: "丙供应商" }]), {});
+test("refs resolves the item supplier and keeps an order-level snapshot compatible", async () => {
+  const service = new PurchaseOrdersService(refsPrisma([{ id: "supplier-2", name: "乙供应商" }]), {});
   const refs = await service.refs({
     order_no: "SO-1", bom_id: "bom-1", purchase_date: new Date().toISOString(), currency: "USD",
     items: [
       { material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", supplier_id: "supplier-2", expected_date: "2026-09-10", quantity: "1", unit_price: "2" },
-      { material_id: "material-2", unit_id: "unit-2", supplier_id: "supplier-3", expected_date: "2026-09-12", quantity: "1", unit_price: "2", extension_data: { outside_bom_reason: "临时新增" } },
+      { material_id: "material-2", unit_id: "unit-2", supplier_id: "supplier-2", expected_date: "2026-09-12", quantity: "1", unit_price: "2", extension_data: { outside_bom_reason: "临时新增" } },
     ],
   });
   assert.equal(refs.supplier.id, "supplier-2");
-  assert.equal(refs.supplierMap.get("supplier-3").name, "丙供应商");
-  assert.equal(refs.supplierMap.size, 2);
+  assert.equal(refs.supplierMap.get("supplier-2").name, "乙供应商");
+  assert.equal(refs.supplierMap.size, 1);
 });
 
-test("create writes per-item supplier snapshots and derives the order-level supplier and expected date", async () => {
+test("create writes the item supplier snapshot and derives the order-level supplier and expected date", async () => {
   let captured = null;
   const created = { id: "purchase-1", orderNo: "SO-1", status: "draft", items: [], extensionData: {} };
   const tx = { purchaseOrder: { create: async ({ data }) => { captured = data; return created; } } };
-  const prisma = { ...refsPrisma([{ id: "supplier-2", name: "乙供应商" }, { id: "supplier-3", name: "丙供应商" }]), $transaction: async (fn) => fn(tx), purchaseOrder: { findFirst: async () => created } };
+  const prisma = { ...refsPrisma([{ id: "supplier-2", name: "乙供应商" }]), $transaction: async (fn) => fn(tx), purchaseOrder: { findFirst: async () => created } };
   const audit = { create: () => ({}), update: () => ({}), record: async () => {} };
   const service = new PurchaseOrdersService(prisma, audit);
   await service.create({
     order_no: "SO-1", bom_id: "bom-1", purchase_date: "2026-09-08", currency: "USD",
     items: [
       { material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", supplier_id: "supplier-2", expected_date: "2026-09-10", quantity: "2", unit_price: "3" },
-      { material_id: "material-2", unit_id: "unit-2", supplier_id: "supplier-3", expected_date: "2026-09-12", quantity: "1", unit_price: "2", extension_data: { outside_bom_reason: "临时新增" } },
+      { material_id: "material-2", unit_id: "unit-2", supplier_id: "supplier-2", expected_date: "2026-09-12", quantity: "1", unit_price: "2", extension_data: { outside_bom_reason: "临时新增" } },
     ],
   }, { id: "user-1" });
   assert.equal(captured.supplierId, "supplier-2");
@@ -232,11 +293,27 @@ test("create writes per-item supplier snapshots and derives the order-level supp
   assert.equal(captured.items.create[0].supplierId, "supplier-2");
   assert.equal(captured.items.create[0].supplierSnapshot.name, "乙供应商");
   assert.equal(captured.items.create[0].expectedDate.getTime(), new Date("2026-09-10").getTime());
-  assert.equal(captured.items.create[1].supplierId, "supplier-3");
+  assert.equal(captured.items.create[1].supplierId, "supplier-2");
   assert.equal(captured.items.create[1].expectedDate.getTime(), new Date("2026-09-12").getTime());
 });
 
-test("update replaces rows with per-item suppliers and keeps the order-level supplier in sync", async () => {
+test("a draft created without any supplier keeps the item supplier empty", async () => {
+  let captured = null;
+  const created = { id: "purchase-1", orderNo: "SO-1", status: "draft", items: [], extensionData: {} };
+  const tx = { purchaseOrder: { create: async ({ data }) => { captured = data; return created; } } };
+  const prisma = { ...refsPrisma([]), $transaction: async (fn) => fn(tx), purchaseOrder: { findFirst: async () => created } };
+  const audit = { create: () => ({}), update: () => ({}), record: async () => {} };
+  const service = new PurchaseOrdersService(prisma, audit);
+  await service.create({
+    order_no: "SO-1", bom_id: "bom-1", currency: "CNY",
+    items: [{ material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", quantity: "2", unit_price: "3" }],
+  }, { id: "user-1" });
+  assert.equal(captured.supplierId, null, "整单还没有供应商");
+  assert.equal(captured.items.create[0].supplierId, null, "明细行也没有供应商");
+  assert.equal(captured.items.create[0].supplierSnapshot, undefined);
+});
+
+test("update replaces rows with the item supplier and keeps the order-level supplier in sync", async () => {
   let createManyData = null;
   let orderUpdateData = null;
   const row = { id: "purchase-1", status: "draft", orderNo: "SO-1", items: [], extensionData: {} };
