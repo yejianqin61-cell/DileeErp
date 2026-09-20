@@ -56,7 +56,12 @@ test("后台刷新必须静默：不能切整页 loading（会卸载正在编辑
   ];
   for (const file of pages) {
     const source = readFileSync(join(webRoot, file), "utf8");
-    assert.match(source, /load\(\{ silent: true \}\)|load\(undefined, \{ silent: true \}\)/, `${file} 的后台刷新必须静默`);
+    // ⚠️ 断言的是**焦点/可见性那一条路径**本身静默，而不是「文件里某处出现过 silent: true」。
+    // 2026-09-20 收紧：采购单页在「保存打印信息」里也有一句 `load({ silent: true })`，
+    // 于是把焦点刷新改成非静默也照样绿 —— 那样的守卫盯错了地方。
+    const background = /const refresh = \(\) =>[^;]*;/.exec(source)?.[0] ?? "";
+    assert.ok(background, `${file} 未找到 const refresh（焦点/可见性刷新的入口）`);
+    assert.match(background, /silent: true/, `${file} 的后台刷新必须静默（且必须是焦点/可见性那一条路径）`);
     assert.match(source, /if \(!options\.silent\) setLoading\(true\)/, `${file} 的 load 必须支持 silent 选项`);
     assert.match(source, /if \(!options\.silent\) setLoading\(false\)/, `${file} 的 silent 刷新不能把 loading 置回初始态`);
   }

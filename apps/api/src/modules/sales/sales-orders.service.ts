@@ -72,6 +72,28 @@ export type SpecScalarFields = Partial<Record<SpecScalarKey, string | null>>;
 export type SpecDetailInput = { group_name: string; name: string; color?: string; barcode?: string; quantity?: string; unit?: string; sort_order?: number };
 
 /**
+ * Prisma 行（**列名** camelCase）→ 37 个细化标量的**请求键**（snake_case）取值。
+ *
+ * 为什么必须有这一步（2026-09-20 现场问题「材料明细写了、保存了，再打开就没了」）：
+ * `SPEC_SCALAR_FIELDS` 是「请求键 → 列」的**单向**表，写入侧按它映射，读出来的一律是列名。
+ * 而读取侧（前端表单回填、工艺单导出）是**按请求键取值**的。Prisma 整行直接按请求键读，
+ * 除了 `factory`（键名与列名恰好相同）之外**全部拿到 undefined** —— 于是界面上一片空白，
+ * 工艺单上「材料 / 明细 / 布量」整块消失。读侧一律先过这个函数，不要再直接吃 Prisma 行。
+ *
+ * 两种形状都认（先请求键、再列名）：版本快照 `sales_order_versions.snapshot` 存的就是请求键，
+ * 而 `prisma.salesOrder` 给的是列名——两种都在这个库里真实存在，认两种比逼调用方先转换安全。
+ */
+export function specScalarRow(row: Record<string, unknown>): Record<SpecScalarKey, string | null> {
+  const values = {} as Record<SpecScalarKey, string | null>;
+  for (const [key, column] of SPEC_SCALAR_FIELDS) {
+    const fromRequestKey = row[key];
+    const raw = fromRequestKey === undefined || fromRequestKey === null ? row[column] : fromRequestKey;
+    values[key] = raw === undefined || raw === null ? null : String(raw);
+  }
+  return values;
+}
+
+/**
  * 单位归一：把「同一个单位的几种写法」认成一种。
  *
  * 为什么必须有这一步：模板样本1 的表头是 `1960支`、伞布明细里写的是 `100pcs` —— 是同一个单位；

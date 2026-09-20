@@ -108,8 +108,8 @@ test("salary payment posting rejects payroll payable amount mismatch", async () 
 
 // 2026-09-15：工资台账新增房补与迟到/旷工/早退扣款。付款过账时的实发校验必须走同一份公式，
 // 否则新类目会被静默忽略（工资应付 10、实发 19 却照样按 10 核销）。
-function postingFixture({ housing = "15", late = "1", absence = "2", early = "3", payableAmount = "10" } = {}) {
-  const payment = { id: "payment-1", status: "draft", amount: "100", currency: "CNY", bankId: "bank-1", paymentNo: "SALARY-1", paymentDate: new Date("2026-09-05"), paymentMethod: "bank", remark: null };
+function postingFixture({ housing = "15", late = "1", absence = "2", early = "3", payableAmount = "10", storedSubjectId = null } = {}) {
+  const payment = { id: "payment-1", status: "draft", amount: "100", currency: "CNY", bankId: "bank-1", paymentNo: "SALARY-1", paymentDate: new Date("2026-09-05"), paymentMethod: "bank", remark: null, subjectId: storedSubjectId };
   const ledger = {
     id: "ledger-1", employeeId: "employee-1", currency: "CNY", status: "confirmed",
     baseSalary: new Prisma.Decimal("10"), productionSourceAmount: new Prisma.Decimal("0"),
@@ -132,8 +132,20 @@ function postingFixture({ housing = "15", late = "1", absence = "2", early = "3"
   const prisma = { bank: bankStub, salaryPayment: { findFirst: async () => payment }, $transaction: async (fn) => fn(tx) };
   const audit = { create: () => ({}), update: () => ({}), record: async () => {} };
   const cashFlowCalls = [];
-  const service = new SalaryPaymentService(prisma, audit, { refreshStatus: async () => {} }, undefined, { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } });
-  return { service, created, cashFlowCalls };
+  const subjectLookups = [];
+  const service = new SalaryPaymentService(prisma, audit, { refreshStatus: async () => {} }, undefined, {
+    autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; },
+    // 科目校验的唯一实现（CashFlowService.requireSubject）：只认两个「存在」的科目 id，
+    // 其余抛 ACCOUNTING_SUBJECT_NOT_FOUND —— 与真实实现的「不存在/已停用一律 422」同口径。
+    requireSubject: async (subjectId) => {
+      subjectLookups.push(subjectId);
+      if (!subjectId) return null;
+      if (subjectId === "subject-wage-payment") return { id: subjectId, name: "工资支付" };
+      if (subjectId === "subject-other") return { id: subjectId, name: "管理费用" };
+      throw new UnprocessableEntityException({ code: "ACCOUNTING_SUBJECT_NOT_FOUND", message: "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认", details: [] });
+    },
+  });
+  return { service, created, cashFlowCalls, subjectLookups };
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +222,66 @@ test("工资付款过账：草稿上没有发放银行时拒绝（历史草稿�
     () => service.post("payment-1", [{ ledger_id: "ledger-1", amount: "10" }], { id: "user-1" }),
     (error) => error.getResponse().code === "SALARY_PAYMENT_BANK_REQUIRED",
   );
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-20（用户要求「工资的确认支付也要加上会计科目，会计科目里面多加一个工资支付。
+//   这样确认支付工资的时候就能归类到工资支付里面。好做账，好出表。」）：
+//   优先级与收付款单一致 —— 过账时传的 → 付款单上存的 → 都不给则按来源自动归类（候选链首位「工资支付」）。
+// ---------------------------------------------------------------------------
+
+test("工资付款过账：过账时选的会计科目决定流水的归类（人工选择优先于付款单上存的）", async () => {
+  const { service, cashFlowCalls, subjectLookups } = postingFixture({ payableAmount: "19", storedSubjectId: "subject-wage-payment" });
+  await service.post("payment-1", [{ ledger_id: "ledger-1", amount: "19" }], { id: "user-1" }, "subject-other");
+  assert.equal(subjectLookups.at(-1), "subject-other", "过账传的科目要被校验");
+  assert.equal(cashFlowCalls[0].subjectId, "subject-other", "过账时的人工选择优先于付款单上存的");
+  // 候选链仍然传下去：科目被停用/删除时 CashFlowService 会按它兜底，但要先按 subjectId 用。
+  assert.deepEqual(cashFlowCalls[0].subjectNames, ["工资支付", "临时工资", "基本生产成本"]);
+});
+
+test("工资付款过账：没传科目时用付款单上存的那个（建草稿时选的）", async () => {
+  const { service, cashFlowCalls, subjectLookups } = postingFixture({ payableAmount: "19", storedSubjectId: "subject-wage-payment" });
+  await service.post("payment-1", [{ ledger_id: "ledger-1", amount: "19" }], { id: "user-1" });
+  assert.deepEqual(subjectLookups, [], "没传就不必校验：单据上存的那个在创建时已经校验过了");
+  assert.equal(cashFlowCalls[0].subjectId, "subject-wage-payment");
+});
+
+test("工资付款过账：单据上也没存科目时传 null，交给后端按来源自动归类（首位就是工资支付）", async () => {
+  const { service, cashFlowCalls } = postingFixture({ payableAmount: "19" });
+  await service.post("payment-1", [{ ledger_id: "ledger-1", amount: "19" }], { id: "user-1" });
+  assert.equal(cashFlowCalls[0].subjectId, null, "null = 不指定，CashFlowService 会走 subjectNames 候选链");
+  assert.equal(cashFlowCalls[0].subjectNames[0], "工资支付");
+});
+
+test("工资付款过账：科目非法时 422 且不写任何付款/核销/流水", async () => {
+  const { service, created, cashFlowCalls } = postingFixture({ payableAmount: "19" });
+  await assert.rejects(
+    () => service.post("payment-1", [{ ledger_id: "ledger-1", amount: "19" }], { id: "user-1" }, "subject-deleted"),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND",
+  );
+  assert.deepEqual(created, [], "科目非法时不得落任何核销行");
+  assert.deepEqual(cashFlowCalls, [], "更不该写出流水");
+});
+
+test("工资付款建单：会计科目随单存下并写进审计；非法科目在落库前就被拒", async () => {
+  let created = null;
+  const audits = [];
+  const prisma = { bank: bankStub, salaryPayment: { create: async ({ data }) => { created = data; return { id: "payment-9", ...data }; } } };
+  const cashFlow = {
+    requireSubject: async (subjectId) => (subjectId === "subject-wage-payment" ? { id: subjectId, name: "工资支付" } : (() => { throw new UnprocessableEntityException({ code: "ACCOUNTING_SUBJECT_NOT_FOUND", message: "会计科目不存在或已停用", details: [] }); })()),
+  };
+  const service = new SalaryPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async (...args) => { audits.push(args); } }, {}, undefined, cashFlow);
+
+  await service.create({ payment_date: "2026-09-05", amount: "100", currency: "CNY", payment_method: "银行转账", bank_id: "bank-1", subject_id: "subject-wage-payment" }, user);
+  assert.equal(created.subjectId, "subject-wage-payment", "科目要随付款单存下来（批量付款时是整批共用）");
+  assert.equal(audits.at(-1)[4].subject_id, "subject-wage-payment", "审计里要能看出归到哪个科目");
+
+  created = null;
+  await assert.rejects(
+    () => service.create({ payment_date: "2026-09-05", amount: "100", currency: "CNY", payment_method: "银行转账", bank_id: "bank-1", subject_id: "subject-deleted" }, user),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND",
+  );
+  assert.equal(created, null, "科目非法时不得落库");
 });
 
 test("行内付款：不指定发放银行时在建任何单据之前就 422", async () => {

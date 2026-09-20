@@ -21,29 +21,34 @@ const audit = { create: () => ({}), update: () => ({}), record: async () => {} }
  * 组装服务。
  *
  * 假 Prisma **按 where 里的条件真的过滤**（而不是无脑返回全部）：
- * 本文件要验证的正是「已取消的采购单被排除」「软删的明细行被排除」这两条查询口径，
- * 用一个恒返回全部数据的桩会把这两条断言变成永远通过。
+ * 本文件要验证的正是「已取消的采购单被排除」「软删的明细行被排除」「按采购单的 BOM 而不是
+ * 按当前行 ID 归集」这几条查询口径，用一个恒返回全部数据的桩会把断言变成永远通过。
  */
 function makeService({ bomItems = [], rows = [], missing = false } = {}) {
   const prisma = {
     bom: { findFirst: async () => (missing ? null : { id: "bom-1" }) },
     bomItem: { findMany: async ({ where }) => bomItems.filter((item) => item.deletedAt === null && item.bomId === where.bomId) },
     purchaseOrderItem: {
-      findMany: async ({ where }) => rows.filter((row) => (
-        where.bomItemId.in.includes(row.bomItemId)
-        && row.deletedAt === null
-        && row.purchaseOrder.deletedAt === null
-        && row.purchaseOrder.status !== where.purchaseOrder.status.not
-      )),
+      findMany: async ({ where }) => rows.filter((row) => {
+        if (row.deletedAt !== null) return false;
+        if (where.bomItemId?.in && !where.bomItemId.in.includes(row.bomItemId)) return false;
+        if (where.bomItemId?.not === null && row.bomItemId === null) return false;
+        const order = row.purchaseOrder;
+        if (order.deletedAt !== null) return false;
+        if (where.purchaseOrder?.status?.not && order.status === where.purchaseOrder.status.not) return false;
+        // 2026-09-20：归集范围改成「采购单挂的那张 BOM」——占位断言见文件末尾的回归用例。
+        if (where.purchaseOrder?.bomId && order.bomId !== where.purchaseOrder.bomId) return false;
+        return true;
+      }),
     },
   };
   return new PurchaseOrdersService(prisma, audit);
 }
 
 /** 一行 BOM 明细需求的默认形态（需求量 5，未删除）。 */
-const need = (id, requiredQuantity = "5") => ({ id, bomId: "bom-1", requiredQuantity, deletedAt: null });
+const need = (id, requiredQuantity = "5", materialId = undefined) => ({ id, bomId: "bom-1", requiredQuantity, materialId, deletedAt: null });
 /** 一条采购明细行：指向某个 BOM 行，挂在某个状态的采购单上。 */
-const ordered = (bomItemId, quantity, status = "ordered", purchaseOrderNo = "PO-1", deletedAt = null) => ({ bomItemId, quantity, deletedAt, purchaseOrder: { purchaseOrderNo, status, deletedAt: null } });
+const ordered = (bomItemId, quantity, status = "ordered", purchaseOrderNo = "PO-1", deletedAt = null, materialId = undefined) => ({ bomItemId, materialId, quantity, deletedAt, purchaseOrder: { purchaseOrderNo, status, deletedAt: null, bomId: "bom-1" } });
 
 const byId = (result, id) => result.find((row) => row.bom_item_id === id);
 
@@ -148,4 +153,60 @@ test("返回需求量，界面才能显示「已下单 2 / 需求 5」", async (
   const service = makeService({ bomItems: [need("bi-1", "12.5")], rows: [ordered("bi-1", "2")] });
   const row = (await service.bomItemOrderStatus("bom-1"))[0];
   assert.equal(row.required_quantity, "12.5000");
+});
+
+// ---------------------------------------------------------------------------------------------
+// 回归 2026-09-20：用户「有些物料已经下单了，但新建采购单里下单状态还是未下单」。
+
+test("回归：BOM 表存过一次之后（明细整体替换 = 行 ID 全换），已下单量仍要看得见", async () => {
+  // 现场机制：`PUT /boms/:id/items`（界面上的「保存 BOM 表」，采购单页里就有「编辑BOM表」入口）
+  // 是「软删全部旧行 + 整批建新行」，**存一次 BOM，所有行 ID 都换掉**；
+  // 而采购明细里存的 `bom_item_id` 是**下单当时那一版**的 ID。
+  // 按「当前未删除的行 ID」去 `in` 一下，那些量会整块消失 → 显示「未下单」→ 采购员再下一张。
+  const service = makeService({
+    bomItems: [need("bi-new", "5", "material-1")],                                  // 现在的 BOM 行
+    rows: [ordered("bi-old", "5", "ordered", "PO-1", null, "material-1")],           // 采购单还指着老行
+  });
+
+  const row = (await service.bomItemOrderStatus("bom-1"))[0];
+
+  assert.equal(row.state, "ordered", "已经下过单的物料不许显示成「未下单」——那会让人再下一张，重复采购");
+  assert.equal(row.ordered_quantity, "5.0000");
+  assert.deepEqual(row.ordered_purchase_order_nos, ["PO-1"], "单号也要带出来，采购员才知道是哪一张");
+});
+
+test("回归：BOM 行被换掉后仍按行 ID 精确归集（行还在的照旧，不许被摊到别的行上）", async () => {
+  // 分摊只针对「行 ID 已经不在了」的历史量；当前行 ID 还在的必须逐行精确。
+  const service = makeService({
+    bomItems: [need("bi-1", "5", "material-1"), need("bi-2", "5", "material-2")],
+    rows: [ordered("bi-2", "3", "ordered", "PO-2", null, "material-2")],
+  });
+
+  const result = await service.bomItemOrderStatus("bom-1");
+
+  assert.equal(byId(result, "bi-1").state, "none", "material-1 没有被下过单");
+  assert.equal(byId(result, "bi-2").ordered_quantity, "3.0000");
+});
+
+test("回归：物料已经从 BOM 里删掉了，那条历史下单不摊到别的行上（宁可不显示，也不能张冠李戴）", async () => {
+  const service = makeService({
+    bomItems: [need("bi-new", "5", "material-1")],
+    rows: [ordered("bi-old", "5", "ordered", "PO-1", null, "material-999")],
+  });
+
+  const row = (await service.bomItemOrderStatus("bom-1"))[0];
+
+  assert.equal(row.state, "none");
+  assert.equal(row.ordered_quantity, "0.0000");
+});
+
+test("回归：BOM 外新增行（bom_item_id 为空）不占 BOM 行的需求量", async () => {
+  // 补料/替代料行没有 BOM 行号：即使物料相同，也不算「这一行的需求已经买过了」。
+  const service = makeService({
+    bomItems: [need("bi-1", "5", "material-1")],
+    rows: [ordered(null, "5", "ordered", "PO-1", null, "material-1")],
+  });
+
+  const row = (await service.bomItemOrderStatus("bom-1"))[0];
+  assert.equal(row.state, "none");
 });

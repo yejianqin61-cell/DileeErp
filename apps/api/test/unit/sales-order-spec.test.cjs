@@ -13,7 +13,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
-const { SalesOrdersService, SPEC_SCALAR_FIELDS, normalizeSpecUnit } = require("../../dist/modules/sales/sales-orders.service.js");
+const { SalesOrdersService, SPEC_SCALAR_FIELDS, normalizeSpecUnit, specScalarRow } = require("../../dist/modules/sales/sales-orders.service.js");
 
 const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "sales", display_name: "销售测试" };
 const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: async () => undefined };
@@ -217,4 +217,27 @@ test("模板样本2 的情形：15 款伞头 × 167打 = 2505打", async () => {
     row: { quantity: new Prisma.Decimal("2505"), unit: "打", specDetails: Array.from({ length: 15 }, () => detail("167", "打")) },
   });
   assert.equal((await service(prisma).get("order-1")).spec_quantity_notice, null);
+});
+
+// -------------------------------------------------- 读侧：行 → 请求键（2026-09-20）
+
+test("specScalarRow：Prisma 行（列名 camelCase）→ 请求键（snake_case），37 键一个不少", () => {
+  const row = { factory: "JBN", completionRemark: "进仓", attentionNote: "防水线", ribSpec: "双碳纤骨", qcRequirement: "要质检报告", fabricUsageCanopy: new Prisma.Decimal("1.2000") };
+  const values = specScalarRow(row);
+
+  assert.equal(values.rib_spec, "双碳纤骨");
+  assert.equal(values.qc_requirement, "要质检报告");
+  assert.equal(values.completion_remark, "进仓");
+  assert.equal(values.fabric_usage_canopy, "1.2", "Decimal 列转成文本给导出/表单用（Decimal 会把 1.2000 归一成 1.2）");
+  assert.equal(values.canopy_spec, null, "行上没有的字段是 null（而不是 undefined 混进快照）");
+  assert.equal(Object.keys(values).length, 37, "键数必须是 37 —— 少一个就有一格永远读不出来");
+  for (const [key] of SPEC_SCALAR_FIELDS) assert.ok(key in values, `缺 ${key}`);
+});
+
+test("specScalarRow：版本快照的请求键也认，两种同名时以请求键为准", () => {
+  assert.equal(specScalarRow({ rib_spec: "快照里的伞骨" }).rib_spec, "快照里的伞骨");
+  assert.equal(specScalarRow({ rib_spec: "请求键", ribSpec: "列名" }).rib_spec, "请求键");
+  assert.equal(specScalarRow({}).rib_spec, null);
+  // 空串是「用户清了这一格」，不能被当成「没有值」再回落到列名上
+  assert.equal(specScalarRow({ attention_note: "", attentionNote: "旧值" }).attention_note, "");
 });

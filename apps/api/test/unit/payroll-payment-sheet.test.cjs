@@ -16,11 +16,11 @@ const dec = (value) => new Prisma.Decimal(value);
 
 const HEADERS = [
   "月份", "工号", "姓名", "部门", "岗位", "员工类型", "币种",
-  "应发工资", "已付", "未付", "是否付款", "台账状态", "付款笔数",
+  "应发工资", "社保", "个税", "已付", "未付", "是否付款", "台账状态", "付款笔数",
   "末次付款日期", "末次付款方式", "发放银行", "付款单号", "备注",
 ];
 
-/** 一行台账来源（默认：已确认、应发 1000、一分未付）。 */
+/** 一行台账来源（默认：已确认、应发 1000、社保 120、个税 30、一分未付）。 */
 function source(over = {}) {
   return {
     month: "2026-03",
@@ -31,6 +31,8 @@ function source(over = {}) {
     employeeType: "workshop",
     currency: "CNY",
     payableAmount: dec("1000"),
+    socialInsurance: dec("120"),
+    individualTax: dec("30"),
     paidAmount: dec("0"),
     outstandingAmount: dec("1000"),
     status: "confirmed",
@@ -55,35 +57,45 @@ function readSheet(buffer) {
 
 /* ------------------------------------------------------------ 列定义 */
 
-test("payroll-payment-sheet：sheet 名与 18 列的列名列序按用户要求固定", () => {
+test("payroll-payment-sheet：sheet 名与 20 列的列名列序按用户要求固定", () => {
   const table = buildPayrollPaymentSheetTable([source()]);
   assert.equal(table.sheetName, "工资付款");
+  assert.equal(HEADERS.length, 20);
   assert.deepEqual(table.columns.map((column) => column.header), HEADERS);
   assert.deepEqual(table.columns.map((column) => column.header), PAYROLL_PAYMENT_SHEET_COLUMNS.map((column) => column.header));
 });
 
-test("payroll-payment-sheet：只有三个金额列是数值列（带 numFmt），其余是文本列", () => {
+test("payroll-payment-sheet：五个金额列是数值列（带 numFmt），其余是文本列", () => {
   const numeric = PAYROLL_PAYMENT_SHEET_COLUMNS.filter((column) => column.numFmt).map((column) => column.header);
-  assert.deepEqual(numeric, ["应发工资", "已付", "未付"], "数值列少一个 → 数字会落成文本（Excel 里 SUM 得 0）；多一个 → 文本列被当成金额");
+  assert.deepEqual(numeric, ["应发工资", "社保", "个税", "已付", "未付"], "数值列少一个 → 数字会落成文本（Excel 里 SUM 得 0）；多一个 → 文本列被当成金额");
 });
 
 /* ------------------------------------------------------------ 行内容 */
+
+test("payroll-payment-sheet：社保/个税 是独立列（用户 2026-09-20：工资要体现出税、社保，好做账好出表）", () => {
+  const table = buildPayrollPaymentSheetTable([source()]);
+  const row = table.rows[0];
+  assert.equal(row[COL["社保"]], 120, "社保按台账原值带出（正数 = 从应发里扣减）");
+  assert.equal(row[COL["个税"]], 30);
+  // 表尾必须解释「应发工资已经扣掉这两项」，否则财务会以为漏扣了
+  assert.match(table.footnotes.join("\n"), /「应发工资」=.*− 社保（个人部分）− 个税/);
+});
 
 test("payroll-payment-sheet：金额列落成 JS number，缺字段留空（空单元格 ≠ 0）", () => {
   const table = buildPayrollPaymentSheetTable([
     source(),
     // 金额缺失（理论上不该有，但导出层不能因此炸）：留空，不写 0，也不写 ""
-    source({ employeeNo: "E-002", employeeName: "李四", payableAmount: null, paidAmount: null, outstandingAmount: null }),
+    source({ employeeNo: "E-002", employeeName: "李四", payableAmount: null, socialInsurance: null, individualTax: null, paidAmount: null, outstandingAmount: null }),
   ]);
   const [first, second] = table.rows;
-  for (const header of ["应发工资", "已付", "未付"]) {
+  for (const header of ["应发工资", "社保", "个税", "已付", "未付"]) {
     assert.equal(typeof first[COL[header]], "number", `${header} 必须是数值类型`);
   }
   assert.equal(first[COL["应发工资"]], 1000);
   assert.equal(first[COL["已付"]], 0, "确实为零就要写 0（不是空单元格）");
-  assert.equal(second[COL["应发工资"]], null);
-  assert.equal(second[COL["已付"]], null);
-  assert.equal(second[COL["未付"]], null);
+  for (const header of ["应发工资", "社保", "个税", "已付", "未付"]) {
+    assert.equal(second[COL[header]], null, `${header} 缺字段就留空`);
+  }
 });
 
 test("payroll-payment-sheet：员工类型与台账状态用页面同款中文标签", () => {
@@ -164,12 +176,12 @@ test("payroll-payment-sheet：付款单号全部列出；超过 3 张只列前 3
 
 /* ------------------------------------------------------------ 合计与表尾 */
 
-test("payroll-payment-sheet：整批同一币种时给出三个金额列的合计", () => {
+test("payroll-payment-sheet：整批同一币种时给出五个金额列的合计", () => {
   const table = buildPayrollPaymentSheetTable([
     source({ payableAmount: dec("1000"), paidAmount: dec("400"), outstandingAmount: dec("600") }),
     source({ employeeNo: "E-002", payableAmount: dec("500.5"), paidAmount: dec("0"), outstandingAmount: dec("500.5") }),
   ]);
-  assert.deepEqual(table.totalColumns, [COL["应发工资"], COL["已付"], COL["未付"]]);
+  assert.deepEqual(table.totalColumns, [COL["应发工资"], COL["社保"], COL["个税"], COL["已付"], COL["未付"]]);
 });
 
 test("payroll-payment-sheet：混币种时**不给合计**并在表尾说明（绝不跨币种相加）", () => {
@@ -203,13 +215,15 @@ test("payroll-payment-sheet：渲染成工作簿后金额列仍是数值单元�
   const buffer = await renderReportWorkbook([table]);
   const { name, sheet } = readSheet(buffer);
   assert.equal(name, "工资付款");
-  // 第 2 行是第一条数据；H/I/J 三列（应发工资/已付/未付）必须是数值
-  for (const address of ["H2", "I2", "J2"]) {
+  // 第 2 行是第一条数据；H..L 五列（应发工资/社保/个税/已付/未付）必须是数值
+  for (const address of ["H2", "I2", "J2", "K2", "L2"]) {
     assert.equal(sheet[address].t, "n", `${address} 必须是数值单元格（文本型数字在 Excel 里 SUM 得 0）`);
   }
-  // 合计行写的是 SUM 公式 + 缓存结果
+  // 合计行写的是 SUM 公式 + 缓存结果（五列各有自己的 SUM）
   assert.equal(sheet["H3"].f, "SUM(H2:H2)");
   assert.equal(sheet["H3"].v, 1000);
+  assert.equal(sheet["I3"].v, 120);
+  assert.equal(sheet["J3"].v, 30);
   const offenders = Object.entries(sheet).filter(([address, cell]) => !address.startsWith("!") && cell.t === "s" && typeof cell.v === "string" && /^-?\d+(\.\d+)?$/.test(cell.v.trim()));
   assert.deepEqual(offenders.map(([address]) => address), [], "不允许把数字写成文本单元格");
 });

@@ -67,6 +67,40 @@ export const SPEC_SCALAR_KEYS: readonly string[] = [
   ...SPEC_PROCESS_FIELDS.map(([key]) => key),
 ];
 
+/**
+ * 请求键（snake_case）→ Prisma 列名（camelCase）。
+ *
+ * 为什么要机械转换而不是再抄一份映射表：后端 `SPEC_SCALAR_FIELDS` 已经是「请求键 → 列」的
+ * 权威表，这里再抄 37 行就是第三份清单；机械转换只依赖「列名 = 请求键的驼峰」这一条假设，
+ * 而这条假设由 `apps/api/test/unit/sales-order-dto.test.cjs` 逐键钉住（分叉立刻红）。
+ */
+export function snakeToCamel(key: string): string {
+  return key.replace(/_([a-z0-9])/g, (_match, char: string) => char.toUpperCase());
+}
+
+/**
+ * 从**接口返回的销售单**里取 37 个细化字段，转成表单能直接用的 `{ 请求键: 文本 }`。
+ *
+ * 这里踩过一个把两个读侧一起打穿的坑（2026-09-20「材料明细写了、保存了，再打开就又没有了」）：
+ * `GET /sales-orders/:id` 是把 Prisma 整行转 JSON 出去的，细化字段的键是**列名 camelCase**
+ * （`ribSpec` / `fabricUsageCanopy`），而表单用的是**请求键 snake_case**。读的时候拿请求键去
+ * 索引 camelCase 的行，除了 `factory`（键名与列名恰好相同）之外全部 `undefined` → 界面一片空白；
+ * 更糟的是再点保存会把这 37 格当「空串」发回去，服务层按「空串 = 清除这一格」把库里真实存在的
+ * 值**清成 NULL**（数据被擦掉，不只是没显示）。工艺单导出（`sales-order-export.service.ts`）
+ * 也在读侧犯了同一个错，那一版导出的「材料 / 明细 / 布量」整块是空的。
+ *
+ * 两种形状都认（先请求键、再列名）：版本快照存的是请求键，接口返回的是列名。
+ */
+export function specFromOrder(order: Record<string, unknown>): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const key of SPEC_SCALAR_KEYS) {
+    const fromRequestKey = order[key];
+    const raw = fromRequestKey === undefined || fromRequestKey === null ? order[snakeToCamel(key)] : fromRequestKey;
+    values[key] = raw === undefined || raw === null ? "" : String(raw);
+  }
+  return values;
+}
+
 /** 细分明细的列（与后端 SpecDetailDto 的字段名一一对应）。 */
 export const SPEC_DETAIL_COLUMNS: ReadonlyArray<readonly [string, string]> = [
   ["group_name", "分组名"],

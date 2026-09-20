@@ -30,6 +30,9 @@ export const PAYROLL_PAYMENT_SHEET_COLUMNS: ReportColumn[] = [
   { header: "员工类型", width: 10 },
   { header: "币种", width: 8 },
   numeric("应发工资", 14),
+  // 两项代扣紧跟「应发工资」，让「应发为什么是这个数」在同一行里读得出来（用户 2026-09-20）。
+  numeric("社保", 12),
+  numeric("个税", 12),
   numeric("已付", 14),
   numeric("未付", 14),
   { header: "是否付款", width: 10 },
@@ -46,8 +49,8 @@ function numeric(header: string, width: number): ReportColumn {
   return { header, width, numFmt: NUMBER_FORMAT };
 }
 
-/** 三个金额列的下标（0 基）：应发工资 / 已付 / 未付。合计只可能落在这三列上。 */
-const MONEY_TOTAL_COLUMNS = [7, 8, 9];
+/** 五个金额列的下标（0 基）：应发工资 / 社保 / 个税 / 已付 / 未付。合计只可能落在这五列上。 */
+const MONEY_TOTAL_COLUMNS = [7, 8, 9, 10, 11];
 
 /**
  * 台账状态 → 中文，与 `apps/web/components/finance/salary-workspace.tsx` 的 `statusLabels` 一字不差。
@@ -79,7 +82,16 @@ export type PayrollPaymentSheetSource = {
   /** 员工类型原值（workshop / non_workshop），中文标签在构造层映射 */
   employeeType: string;
   currency: string;
+  /** 应发（= 已扣社保与个税之后的实际应发放额）。 */
   payableAmount: Prisma.Decimal | string | number | null;
+  /**
+   * 两项代扣（社保个人部分 / 个税），**正数**，由财务在工资台账页填写。
+   *
+   * 2026-09-20 用户要求「工资还要体现出税、社保……好做账，好出表」：只给一个「应发工资」，
+   * 财务无法回答「这个数怎么来的、为什么比工资表低」。这两列让导出表自己解释清楚。
+   */
+  socialInsurance: Prisma.Decimal | string | number | null;
+  individualTax: Prisma.Decimal | string | number | null;
   paidAmount: Prisma.Decimal | string | number | null;
   outstandingAmount: Prisma.Decimal | string | number | null;
   /** 台账状态原值（draft / confirmed / ...），中文标签在构造层映射 */
@@ -149,7 +161,9 @@ export function buildPayrollPaymentSheetTable(rows: PayrollPaymentSheetSource[],
         row.positionName, // 岗位
         employeeTypeText(row.employeeType), // 员工类型
         row.currency, // 币种
-        toExportNumber(payable), // 应发工资
+        toExportNumber(payable), // 应发工资（已扣社保与个税）
+        toExportNumber(toDecimal(row.socialInsurance)), // 社保（个人部分，扣减项）
+        toExportNumber(toDecimal(row.individualTax)), // 个税（扣减项）
         toExportNumber(paid), // 已付
         toExportNumber(outstanding), // 未付
         paymentStateText(payable ?? zero, paid ?? zero, outstanding ?? zero), // 是否付款
@@ -172,6 +186,7 @@ export function buildPayrollPaymentSheetTable(rows: PayrollPaymentSheetSource[],
   if (currencies.length <= 1) table.totalColumns = MONEY_TOTAL_COLUMNS;
 
   table.footnotes = [
+    "「应发工资」= 基本工资 + 生产工资 + 补贴等应加项 − 迟到/旷工/早退扣款 − 社保（个人部分）− 个税，即实际应发放给员工的金额；「社保」「个税」两列就是被扣掉的那两项，正数表示扣减。",
     "「是否付款」：应发工资 ≤ 0 记「无需付款」；未付 ≤ 0 记「已付清」；已付 > 0 记「部分付款」；其余记「未付款」。",
     "「已付」只统计已过账（posted）的工资付款核销：付款草稿与已冲销的核销都不计入。",
     ...(currencies.length > 1

@@ -21,7 +21,7 @@ import { fetchCurrencyOptions, currencyOptionsWithCurrent, type CurrencyOption }
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
   SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_PROCESS_FIELDS,
-  SPEC_SCALAR_KEYS, emptySpecDetailRow, isBlankSpecDetail, specPayload, specQuantityNotice, validateSpecDetails, type SpecDetailRow,
+  SPEC_SCALAR_KEYS, emptySpecDetailRow, isBlankSpecDetail, specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type SpecDetailRow,
 } from "../../lib/sales-order-spec";
 
 type Customer = { id: string; customerCode?: string; name: string; isActive?: boolean; currency?: string | null; contacts?: Array<{ id: string; name: string; phone?: string | null; isDefault?: boolean }> };
@@ -132,9 +132,9 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
           settlement_method: String(order.settlementMethod ?? ""),
           local_currency_amount: asText(order.localCurrencyAmount),
         });
-        const loadedSpec: Record<string, string> = {};
-        for (const key of SPEC_SCALAR_KEYS) loadedSpec[key] = asText(order[key]);
-        setSpec(loadedSpec);
+        // ⚠️ 必须过 `specFromOrder`：接口给的是 Prisma **列名**（`ribSpec` / `fabricUsageCanopy`），
+        // 而表单按**请求键**（`rib_spec`）取值。直接 `order[key]` 会全部读成空 —— 见该函数的注释。
+        setSpec(specFromOrder(order));
         const rows = (order.specDetails ?? []).map((row) => ({
           group_name: String(row.groupName ?? ""), name: String(row.name ?? ""), color: String(row.color ?? ""),
           barcode: String(row.barcode ?? ""), quantity: asText(row.quantity), unit: String(row.unit ?? ""),

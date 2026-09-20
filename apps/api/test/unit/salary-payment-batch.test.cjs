@@ -55,7 +55,7 @@ test("批量付款：勾选几人就串行调用几次行内付款（一人一�
   const { service, calls } = batchFixture();
   const result = await service.payBatch(items, batchInput, user);
   assert.deepEqual(calls.map((item) => item[0]), ["ledger-1", "ledger-2", "ledger-3"], "必须串行、按提交顺序：payLedger 会加台账行锁并写审计，并发会让审计顺序不确定");
-  assert.deepEqual(calls[0][1], { amount: "100", payment_date: "2026-03-25", payment_method: "银行转账", currency: undefined, bank_id: "bank-1", remark: undefined });
+  assert.deepEqual(calls[0][1], { amount: "100", payment_date: "2026-03-25", payment_method: "银行转账", currency: undefined, bank_id: "bank-1", subject_id: undefined, remark: undefined });
   assert.equal(result.requested_count, 3);
   assert.equal(result.succeeded_count, 3);
   assert.equal(result.failed_count, 0);
@@ -68,8 +68,19 @@ test("批量付款：勾选几人就串行调用几次行内付款（一人一�
   ]);
 });
 
-test("批量付款：某一条失败只影响本人，其余照付，合计只算成功的金额", async () => {
-  const { service, calls } = batchFixture({
+test("批量付款：会计科目整批共用，逐条带给行内付款（用户 2026-09-20：一人一张单，但归同一个科目）", async () => {
+  const { service, calls } = batchFixture();
+  await service.payBatch(items, { ...batchInput, subject_id: "subject-wage-payment" }, user);
+  assert.deepEqual(calls.map((item) => item[1].subject_id), ["subject-wage-payment", "subject-wage-payment", "subject-wage-payment"], "科目必须逐条传给 payLedger，否则流水会退回按来源自动归类");
+});
+
+test("批量付款：不传科目时逐条带 undefined（= 不指定，走后端候选链首位「工资支付」）", async () => {
+  const { service, calls } = batchFixture();
+  await service.payBatch(items, batchInput, user);
+  for (const call of calls) assert.equal(call[1].subject_id, undefined);
+});
+
+test("批量付款：某一条失败只影响本人，其余照付，合计只算成功的金额", async () => {  const { service, calls } = batchFixture({
     failures: { "ledger-2": new UnprocessableEntityException({ code: "PAYROLL_NOT_ALLOCATABLE", message: "台账尚未确认或已结清，不能付款", details: [] }) },
   });
   const result = await service.payBatch(items, batchInput, user);

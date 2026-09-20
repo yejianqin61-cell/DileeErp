@@ -8,6 +8,8 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const {
   ACCOUNTING_SUBJECTS,
+  ACCOUNTING_SUBJECT_SEEDS,
+  SUPPLEMENTARY_SUBJECTS,
   ACCOUNTING_SUBJECT_CATEGORIES,
   LEGACY_CASH_FLOW_ITEM_SUBJECTS,
   LEGACY_CASH_FLOW_ITEM_DICTIONARY_KEY,
@@ -106,11 +108,48 @@ test("每一种资金动账来源的自动归类候选都指向真实存在的�
     ...RECEIVABLE_CONFIRM_SUBJECT_NAMES.map((name) => ["确认应收", name]),
     ...PAYABLE_CONFIRM_SUBJECT_NAMES.map((name) => ["确认应付", name]),
   ];
-  const names = new Set(ACCOUNTING_SUBJECTS.map((subject) => subject.name));
+  // 用**实际种入库的那份**（财务科目表 + 系统补充科目）：候选指向一个「不在种入清单里」的科目
+  // 与指向一个不存在的科目是同一类事故 —— 2026-09-20 的「工资支付」正好落在补充清单里。
+  const names = new Set(ACCOUNTING_SUBJECT_SEEDS.map((subject) => subject.name));
   for (const [source, name] of all) {
-    assert.ok(names.has(name), `${source} 的候选科目「${name}」在科目表里不存在，这一类动账会被 422 挡住`);
+    assert.ok(names.has(name), `${source} 的候选科目「${name}」不在种入清单里，这一类动账会被 422 挡住`);
   }
   assert.equal(all.length > 0, true, "候选链不能是空的（空链等于所有自动写入都失败）");
+});
+
+test("工资付款的默认归类指向「工资支付」（用户 2026-09-20：好做账、好出表）", () => {
+  assert.equal(paymentSubjectNames("salary_payment")[0], "工资支付", "候选链首位必须是工资支付，否则不选科目时会归到临时工资");
+  assert.deepEqual(paymentSubjectNames("salary_payment"), ["工资支付", "临时工资", "基本生产成本"], "后两个是历史兜底，不能被删掉");
+});
+
+/* ------------------------------------------------- 系统补充科目（不在财务那张表里） */
+
+test("补充科目：不混进 ACCOUNTING_SUBJECTS（财务科目表 121 行的口径必须保持纯净）", () => {
+  assert.equal(ACCOUNTING_SUBJECTS.length, 121, "补一个科目就把长度改成 122，等于把「科目表 = 财务那张 xls」的守卫废掉");
+  assert.ok(SUPPLEMENTARY_SUBJECTS.length >= 1);
+  const tableNames = new Set(ACCOUNTING_SUBJECTS.map((subject) => subject.name));
+  for (const subject of SUPPLEMENTARY_SUBJECTS) {
+    assert.equal(tableNames.has(subject.name), false, `补充科目「${subject.name}」不该同时出现在财务科目表里`);
+  }
+  assert.equal(ACCOUNTING_SUBJECT_SEEDS.length, ACCOUNTING_SUBJECTS.length + SUPPLEMENTARY_SUBJECTS.length);
+});
+
+test("补充科目「工资支付」：成本类、借方、名称与排序号都不与既有科目冲突", () => {
+  const wagePayment = ACCOUNTING_SUBJECT_SEEDS.find((subject) => subject.name === "工资支付");
+  assert.ok(wagePayment, "工资支付必须种入库");
+  assert.equal(wagePayment.category, "成本类");
+  assert.equal(wagePayment.balanceDirection, "借");
+  assert.equal(wagePayment.sortOrder, 715);
+
+  // 与合并后的全量清单一起校验：名称唯一、sortOrder 唯一且递增、分类仍连成段。
+  const names = ACCOUNTING_SUBJECT_SEEDS.map((subject) => subject.name);
+  assert.equal(new Set(names).size, names.length, "科目名重复会让自动归类变得不确定");
+  const orders = ACCOUNTING_SUBJECT_SEEDS.map((subject) => subject.sortOrder);
+  assert.deepEqual(orders, [...orders].sort((left, right) => left - right), "合并后 sortOrder 仍须递增");
+  assert.equal(new Set(orders).size, orders.length, "合并后 sortOrder 不能重复");
+  const sequence = ACCOUNTING_SUBJECT_SEEDS.map((subject) => subject.category);
+  const blocks = sequence.filter((category, index) => index === 0 || sequence[index - 1] !== category);
+  assert.equal(blocks.length, new Set(sequence).size, "同一分类必须连续（否则报表的分类小计会被拆成两行）");
 });
 
 test("未知来源走兜底候选，不返回空数组", () => {

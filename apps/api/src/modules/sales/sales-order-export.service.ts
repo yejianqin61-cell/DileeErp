@@ -4,7 +4,7 @@ import * as ExcelJS from "exceljs";
 import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { beijingDate, beijingDateTime } from "../../platform/time/beijing-time";
-import { SPEC_SCALAR_FIELDS } from "./sales-orders.service";
+import { SPEC_SCALAR_FIELDS, specScalarRow } from "./sales-orders.service";
 
 /**
  * 销售单「工艺单」导出（2026-09-16）。
@@ -70,10 +70,12 @@ export class SalesOrderExportService {
 
   /** 单张工艺单的可测试文档形状（与 Excel 落格分开：断言内容不必依赖坐标）。 */
   document(order: ExportOrder, makerName: string, now: Date = new Date()): ProductionSheetDocument {
-    const text = (key: SpecKey): string => {
-      const value = (order as unknown as Record<string, unknown>)[key];
-      return value === null || value === undefined ? "" : String(value).trim();
-    };
+    // 下面 37 个细化字段（材料 / 工艺 / 布量 / 表头补充）都是按**请求键**（snake_case）读的，
+    // 而 Prisma 行给的是**列名**（camelCase）：先统一翻译一次。少了这一步，除了 `factory`
+    // ——键名与列名恰好相同——之外全部读成 undefined，工艺单上的「材料」「明细」「布量」
+    // 会整块消失（用户 2026-09-20「再打开就又没有了」同一个根因，读侧一律不许直接吃 Prisma 行）。
+    const spec = specScalarRow(order as unknown as Record<string, unknown>);
+    const text = (key: SpecKey): string => (spec[key] ?? "").trim();
     return {
       company: "厦 门 迪 礼 伞 业 有 限 公 司",
       factory: text("factory"),
@@ -311,8 +313,11 @@ export type ExportOrder = {
   createdBy: string;
   customer: { name: string; countryRegion: string | null } | null;
   specDetails: Array<{ groupName: string; name: string; color: string | null; barcode: string | null; quantity: Prisma.Decimal | null; unit: string | null }>;
-  /** 37 个细化标量按请求键读取（见 SPEC_SCALAR_FIELDS）。 */
-  [specKey: string]: unknown;
+  /**
+   * 37 个细化标量**不在这里逐条列**：它们由 `specScalarRow` 从行上按请求键/列名取（见 `document`）。
+   * 以前这里留了个 `[specKey: string]: unknown` 索引签名，等于告诉编译器「随便按什么名字取都行」——
+   * 于是「按请求键取 camelCase 行」这个错永远编译得过、测试也测不出来。索引签名已删除。
+   */
 };
 
 export type ProductionSheetDocument = {

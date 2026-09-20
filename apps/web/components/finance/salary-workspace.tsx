@@ -32,6 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { DataTable } from "../data/data-table";
 import { ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+import { ACCOUNTING_SUBJECTS_PATH, toSubjectOptions, type AccountingSubject } from "../../lib/accounting-subjects";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { downloadFile } from "../../lib/download";
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
@@ -137,9 +138,26 @@ const dec = (value: string | number | undefined) => {
 /** 发放银行显示口径：与收付款/对账页一致（`名称（账号）`）；没有银行就显示 `-`，不编账户名。 */
 const bankLabel = (bank: BankLink | null) => (bank ? `${bank.bankName}（${bank.accountNumber}）` : "-");
 
-/** 表格里可编辑的类目 → 后端字段名（键必须与 PayrollSheet 的列 key 一致）。 */
-const CATEGORY_FIELDS: Record<string, string> = { baseSalary: "base_salary", performance: "performance_amount", housing: "housing_allowance", late: "late_deduction", absence: "absence_deduction", earlyLeave: "early_leave_deduction" };
-const CATEGORY_LABELS: Record<string, string> = { baseSalary: "基本工资", performance: "绩效", housing: "房补", late: "迟到扣款", absence: "旷工扣款", earlyLeave: "早退扣款" };
+/**
+ * 表格里可编辑的类目 → 后端字段名（键必须与 PayrollSheet 的列 key 一致）。
+ *
+ * 社保与个税（2026-09-20 用户要求「工资还要体现出税、社保，这些字段允许财务自行填写」）
+ * 也在这里：它们与其他类目**同一套逐格保存**，不是只读的派生值。
+ */
+const CATEGORY_FIELDS: Record<string, string> = { baseSalary: "base_salary", performance: "performance_amount", housing: "housing_allowance", late: "late_deduction", absence: "absence_deduction", earlyLeave: "early_leave_deduction", social: "social_insurance", tax: "individual_tax" };
+const CATEGORY_LABELS: Record<string, string> = { baseSalary: "基本工资", performance: "绩效", housing: "房补", late: "迟到扣款", absence: "旷工扣款", earlyLeave: "早退扣款", social: "社保", tax: "个税" };
+
+/**
+ * 工资付款的会计科目下拉里「不指定」的哨兵值。
+ *
+ * ActionDialog 的字段值一律是字符串，`undefined` 表达不出「我就是要清空」；与收付款页的
+ * `SUBJECT_CLEAR` 同一个道理，只是这里的语义是「不指定 → 由后端按来源自动归类（工资支付）」。
+ * 提交前用 `subjectValue()` 转成 `undefined`（**不发送**该字段），让后端走自己的候选链 ——
+ * 发一个空串会被 DTO 的 `@IsUUID()` 判成非法而 400。
+ */
+const SUBJECT_KEEP_SOURCE = "__keep_source__";
+const subjectValue = (value: string | undefined): string | undefined =>
+  !value || value === SUBJECT_KEEP_SOURCE ? undefined : value;
 
 export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "page-finance-salary-payments" : "page-finance-salary-ledger", initialMonth = "", initialDepartmentId = "", initialPositionId = "" }: {
   /** ledger = 工资台账（可编辑满页表格）；payments = 工资付款（当月台账只留「总工资」+ 行内付款/冲销）。 */
@@ -161,6 +179,8 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   // 银行账户池（财务 → 银行账户）：工资付款的「发放银行」只从这里选。
   const [banks, setBanks] = useState<BankRef[]>([]);
+  // 会计科目表（财务 → 会计科目）：工资付款的「会计科目」只从这里选（用户 2026-09-20）。
+  const [subjects, setSubjects] = useState<AccountingSubject[]>([]);
   // 工资付款表格：每行一个金额输入（默认等于该行未付），付款日期与付款方式在表格上方统一给。
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [paying, setPaying] = useState("");
@@ -185,6 +205,13 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   // 发放银行只能从银行账户池里选（**停用的不出现**：后端 requireActiveBank 会按 BANK_NOT_FOUND 拒收）。
   const bankOptions = useMemo(() => banks.filter((bank) => bank.isActive).map((bank) => ({ value: bank.id, label: `${bank.bankName} / ${bank.accountNumber}（${bank.currency}）` })), [banks]);
   /**
+   * 会计科目下拉选项（只列启用科目，与「收支管理」「应收/应付」同一口径 ——
+   * 停用科目不该再被选进新单据；历史单据上已有的停用科目仍会原样显示）。
+   */
+  const subjectOptions = useMemo(() => toSubjectOptions(subjects.filter((subject) => subject.isActive)).map((option) => ({ value: option.id, label: option.label })), [subjects]);
+  /** 「工资支付」科目的 id：预选默认值用，科目表里没有它时为 null（退回后端自动归类）。 */
+  const wagePaymentSubjectId = useMemo(() => subjects.find((subject) => subject.isActive && subject.name === "工资支付")?.id ?? null, [subjects]);
+  /**
    * 发放银行下拉。
    *
    * 与收付款/对账页的银行字段同一套写法，但**没有**「（不指定银行）」哨兵：那里银行是可选字段
@@ -192,6 +219,27 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
    * `SALARY_PAYMENT_BANK_REQUIRED`。银行池为空时不是摆一个空选项糊过去，而是把入口禁用（见 payActions）。
    */
   const bankField = (label: string): ActionField => ({ name: "bank_id", label, type: "select", required: true, options: bankOptions, placeholder: "请选择发放银行" });
+
+  /**
+   * 会计科目下拉（工资付款）。
+   *
+   * 用户 2026-09-20：「工资的确认支付也要加上会计科目，会计科目里面多加一个工资支付。
+   * 这样确认支付工资的时候就能归类到工资支付里面。好做账，好出表。」
+   *
+   * 默认**预选「成本类 / 工资支付」**：科目已经由我们种进科目表（后端候选链首位也是它），
+   * 所以最省事的做法是一进来就选好，财务不改也能归对；要改的（比如这笔算别的科目）
+   * 从搜索框里挑。放在「不指定」哨兵项让财务能显式回到「按来源自动归类」——
+   * 那与后端的默认行为一致，不是「清空成一个未分类」。
+   */
+  const subjectField = (): ActionField => ({
+    name: "subject_id",
+    label: "会计科目",
+    type: "searchable-select",
+    options: [{ value: SUBJECT_KEEP_SOURCE, label: "（不指定，按来源自动归类为「工资支付」）" }, ...subjectOptions],
+    // 预选工资支付：科目表里没有它（老库还没迁移/被改名）时留空，退回后端自动归类。
+    defaultValue: wagePaymentSubjectId ?? SUBJECT_KEEP_SOURCE,
+    placeholder: "请选择会计科目",
+  });
 
   useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
   // 部门/岗位是静态主数据，只在挂载时拉一次；岗位按所选部门收窄。
@@ -239,17 +287,20 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
       const suffix = params.toString() ? `?${params.toString()}` : "";
       // 工资付款页只用台账列表（当月台账搬过去当付款行，核销明细已经 include 在里面）；
       // 工资应付与员工清单只有工资台账页用得上，不为另一页白拉。
-      // 银行账户池走 finance 权限：只有 HR 权限的账号可能拉不到，但不应因此整页报错（选项留空 → 付款入口禁用）。
-      const [ledgerResult, payableResult, employeeResult, bankResult] = await Promise.all([
+      // 银行账户池与会计科目都走 finance 权限：只有 HR 权限的账号可能拉不到，但不应因此整页报错
+      // （选项留空 → 付款入口禁用 / 科目退回后端自动归类）。
+      const [ledgerResult, payableResult, employeeResult, bankResult, subjectResult] = await Promise.all([
         apiGet<Ledger[]>(`/hr/payroll-ledgers${suffix}`),
         mode === "ledger" ? apiGet<PayrollPayable[]>("/hr/payroll-payables") : Promise.resolve({ data: [] as PayrollPayable[] }),
         mode === "ledger" ? apiGet<Employee[]>("/production/employees") : Promise.resolve({ data: [] as Employee[] }),
         apiGet<BankRef[]>("/finance/banks").catch(() => ({ data: [] as BankRef[], meta: {} })),
+        apiGet<AccountingSubject[]>(ACCOUNTING_SUBJECTS_PATH).catch(() => ({ data: [] as AccountingSubject[], meta: {} })),
       ]);
       setLedgers(ledgerResult.data);
       setPayables(payableResult.data);
       setEmployees(employeeResult.data);
       setBanks(bankResult.data);
+      setSubjects(subjectResult.data);
     } catch (cause) {
       setError(messageOf(cause, "工资数据加载失败"));
     } finally {
@@ -405,8 +456,9 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
       fields: [
         { name: "pay_summary", label: `将向 ${ledger.employee.name} 发放 ${value}（${paymentDate} · ${paymentMethod}）`, type: "info" },
         bankField("发放银行"),
+        subjectField(),
       ],
-      submit: (values) => payLedgerRow(ledger, value, values.bank_id),
+      submit: (values) => payLedgerRow(ledger, value, values.bank_id, values.subject_id),
     });
   }
 
@@ -417,12 +469,12 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
    * （后端对缺 bank_id 的工资付款会 422，前端不该把必然失败的请求发出去）。
    * 失败必须把错误**抛回**弹窗，否则弹窗会静默关闭、用户只看到「什么都没发生」。
    */
-  async function payLedgerRow(ledger: Ledger, amount: string, bankId: string) {
+  async function payLedgerRow(ledger: Ledger, amount: string, bankId: string, subjectId?: string) {
     if (paying) return;
     if (!bankId) { const message = "请选择发放银行：发工资必须指定从哪个银行账户支出"; notifyError(message); throw new Error(message); }
     setPaying(ledger.id);
     try {
-      await apiPost(`/hr/payroll-ledgers/${ledger.id}/pay`, { amount, payment_date: paymentDate, payment_method: paymentMethod, bank_id: bankId });
+      await apiPost(`/hr/payroll-ledgers/${ledger.id}/pay`, { amount, payment_date: paymentDate, payment_method: paymentMethod, bank_id: bankId, subject_id: subjectValue(subjectId) });
       notifySuccess(`${ledger.employee.name} 已付款 ${amount}，从所选银行账户支出`);
       setAmounts((current) => { const next = { ...current }; delete next[ledger.id]; return next; });
       await load();
@@ -488,7 +540,11 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     { key: "late", header: "迟到扣款", numeric: true, total: true, text: (row) => dec(row.lateDeduction), edit: (row) => (editableStatuses.includes(row.status) ? "money" : undefined), readOnlyHint: (row) => (editableStatuses.includes(row.status) ? undefined : LOCKED_HINT) },
     { key: "absence", header: "旷工扣款", numeric: true, total: true, text: (row) => dec(row.absenceDeduction), edit: (row) => (editableStatuses.includes(row.status) ? "money" : undefined), readOnlyHint: (row) => (editableStatuses.includes(row.status) ? undefined : LOCKED_HINT) },
     { key: "earlyLeave", header: "早退扣款", numeric: true, total: true, text: (row) => dec(row.earlyLeaveDeduction), edit: (row) => (editableStatuses.includes(row.status) ? "money" : undefined), readOnlyHint: (row) => (editableStatuses.includes(row.status) ? undefined : LOCKED_HINT) },
-    { key: "other", header: "其他增减", numeric: true, total: true, text: (row) => dec(row.otherAdjustmentAmount), readOnlyHint: () => "加班/考勤扣款/补贴/社保/个税/其他调整与已过账工资调整的净额，详情里可逐项查看" },
+    // 社保 / 个税（2026-09-20 用户要求）：与绩效/房补同级——各自一列、财务逐行填写，且都从应发里扣掉。
+    // 此前它们被叠进只读的「其他增减」，财务既看不见单独的数、也没法填，只能借「其他调整」这一格硬凑。
+    { key: "social", header: "社保", numeric: true, total: true, text: (row) => dec(row.socialInsurance), edit: (row) => (editableStatuses.includes(row.status) ? "money" : undefined), readOnlyHint: (row) => (editableStatuses.includes(row.status) ? "社保（个人部分）：从应发里扣除，由财务填写" : LOCKED_HINT) },
+    { key: "tax", header: "个税", numeric: true, total: true, text: (row) => dec(row.individualTax), edit: (row) => (editableStatuses.includes(row.status) ? "money" : undefined), readOnlyHint: (row) => (editableStatuses.includes(row.status) ? "个人所得税：从应发里扣除，由财务填写" : LOCKED_HINT) },
+    { key: "other", header: "其他增减", numeric: true, total: true, text: (row) => dec(row.otherAdjustmentAmount), readOnlyHint: () => "加班/考勤扣款/补贴/其他调整与已过账工资调整的净额（社保与个税已单列，不在这里），详情里可逐项查看" },
     { key: "payable", header: "应发", numeric: true, total: true, text: (row) => dec(row.payableAmount), readOnlyHint: () => AUTO_HINT },
     { key: "paid", header: "已付", numeric: true, total: true, text: (row) => dec(row.paidAmount), readOnlyHint: () => "有效核销且工资付款已过账的金额合计" },
     { key: "outstanding", header: "未付", numeric: true, total: true, text: (row) => dec(row.outstandingAmount), readOnlyHint: () => AUTO_HINT },
@@ -521,7 +577,11 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
     { key: "name", header: "姓名", text: (row) => row.employee.name },
     { key: "department", header: "部门", text: (row) => row.employee.department?.name ?? "-" },
     { key: "position", header: "岗位", text: (row) => row.employee.position?.name ?? "-" },
-    { key: "total", header: "总工资", numeric: true, total: true, text: (row) => dec(row.payableAmount), readOnlyHint: () => "本月工资台账的应发合计（基本工资/绩效/房补/扣款等明细见「工资台账」页）" },
+    { key: "total", header: "总工资", numeric: true, total: true, text: (row) => dec(row.payableAmount), readOnlyHint: () => "本月工资台账的应发合计（已扣社保与个税；明细见「工资台账」页）" },
+    // 付款页也把两项代扣摊开（用户 2026-09-20：「好做账，好出表」）：只给「总工资」一个数，
+    // 财务无法回答「这个数是怎么来的、为什么比工资表低」。
+    { key: "social", header: "社保", numeric: true, total: true, text: (row) => dec(row.socialInsurance), readOnlyHint: () => "个人部分社保（已在总工资里扣掉，由财务在「工资台账」页填写）" },
+    { key: "tax", header: "个税", numeric: true, total: true, text: (row) => dec(row.individualTax), readOnlyHint: () => "个人所得税（已在总工资里扣掉，由财务在「工资台账」页填写）" },
     { key: "paid", header: "已付", numeric: true, total: true, text: (row) => dec(row.paidAmount), readOnlyHint: () => "有效核销且工资付款已过账的金额合计" },
     { key: "outstanding", header: "未付", numeric: true, total: true, text: (row) => dec(row.outstandingAmount), readOnlyHint: () => "总工资 − 已付" },
     // 发放银行：工资是从哪个账户发出去的。台账行本身不带银行，所以取该行**已过账**付款的发放银行。
@@ -645,8 +705,9 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         { name: "batch_summary", label: `本次共 ${items.length} 人，合计 ${selectedTotal}（付款日期 ${paymentDate} · ${paymentMethod}）`, type: "info" },
         ...items.map((item, index) => ({ name: `batch_item_${index}`, label: `${item.ledger.employee.employeeNo} / ${item.ledger.employee.name}：${item.amount}`, type: "info" as const })),
         bankField("发放银行"),
+        subjectField(),
       ],
-      submit: (values) => payBatchRows(items, values.bank_id),
+      submit: (values) => payBatchRows(items, values.bank_id, values.subject_id),
     });
   }
 
@@ -657,7 +718,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
    * 操作员改完原因（比如去工资台账确认那一行）可以直接重试，不用重新勾一遍。
    * 无论成败都 `await load()`：成功的行已变成「已付」，金额与状态都要立刻刷新。
    */
-  async function payBatchRows(items: Array<{ ledger: Ledger; amount: string }>, bankId: string) {
+  async function payBatchRows(items: Array<{ ledger: Ledger; amount: string }>, bankId: string, subjectId?: string) {
     if (batchBusy) return;
     if (!bankId) { const message = "请选择发放银行：发工资必须从银行账户支出"; notifyError(message); throw new Error(message); }
     setBatchBusy(true);
@@ -667,6 +728,7 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
         payment_date: paymentDate,
         payment_method: paymentMethod,
         bank_id: bankId,
+        subject_id: subjectValue(subjectId),
       });
       const data = result.data;
       if (!data.failed_count) {

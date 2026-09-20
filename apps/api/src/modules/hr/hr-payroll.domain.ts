@@ -59,18 +59,31 @@ export function payrollBasicSalaryAmount(fields: Pick<PayrollAmountFields, "base
 }
 
 /**
- * 「其他增减」这一格的值：除 6 个可编辑类目之外的历史类目净额。
+ * 「其他增减」这一格的值：除可编辑类目之外的**历史类目**净额。
  *
- * 2026-09-15 的类目清单只要求 6 个可编辑类目，但加班/考勤扣款/补贴/社保/个税/其他调整都参与应发。
+ * 2026-09-15 的类目清单只要求 6 个可编辑类目，但加班/考勤扣款/补贴都在参与应发。
  * 不把它显示出来，表上就会出现「应发 ≠ 可见列之和」的黑洞，所以单列一个只读列把它兜住。
+ *
+ * ⚠️ 2026-09-20 起**不再包含社保与个税**：用户要求「工资还要体现出税、社保，这些字段允许财务
+ * 自行填写」，两者已经升格为表上**自己的可编辑列**（与绩效/房补同级）。继续把它们叠进这个只读的
+ * 净额里，会在表上出现「社保扣了两次」的错觉，而财务根本没法核对 —— 该列现在的口径是
+ * 「加班 − 考勤扣款 + 补贴 + 其他调整」，加上已过账的工资调整（由调用方另加）。
  */
-export function payrollOtherAdjustmentAmount(fields: Pick<PayrollAmountFields, "overtime_amount" | "attendance_deduction" | "allowance_amount" | "social_insurance" | "individual_tax" | "other_adjustment">): Prisma.Decimal {
+export function payrollOtherAdjustmentAmount(fields: Pick<PayrollAmountFields, "overtime_amount" | "attendance_deduction" | "allowance_amount" | "other_adjustment">): Prisma.Decimal {
   return dec(fields.overtime_amount)
     .minus(dec(fields.attendance_deduction))
     .plus(dec(fields.allowance_amount))
-    .minus(dec(fields.social_insurance))
-    .minus(dec(fields.individual_tax))
     .plus(dec(fields.other_adjustment));
+}
+
+/**
+ * 「社保 + 个税」的应扣合计（**正数**）：财务自行填写的两项代扣，都从应发里减掉。
+ *
+ * 单独一个函数是为了让前端/导出与 `payrollBaseAmount` 用**同一份口径**算这两个格子，
+ * 而不是各处各写一遍 `dec(社保).plus(dec(个税))`；两处写法的差异在表上表现为「扣减合计对不上」。
+ */
+export function payrollDeductionAmount(fields: Pick<PayrollAmountFields, "social_insurance" | "individual_tax">): Prisma.Decimal {
+  return dec(fields.social_insurance).plus(dec(fields.individual_tax));
 }
 
 export function productionSourceAmount(sources: PayrollSource[]) {

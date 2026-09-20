@@ -9,7 +9,9 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { CashFlowService } = require("../../dist/modules/finance/cash-flow.service.js");
-const { ACCOUNTING_SUBJECTS, PAYMENT_SUBJECT_NAMES, DEFAULT_PAYMENT_SUBJECT_NAMES, paymentSubjectNames } = require("../../dist/modules/finance/accounting-subject-catalog.js");
+// 用 ACCOUNTING_SUBJECT_SEEDS（财务科目表 + 系统补充科目）：候选必须指向**实际种入库**的科目，
+// 只看财务那张 121 行表会把 2026-09-20 新增的「工资支付」误判成不存在。
+const { ACCOUNTING_SUBJECT_SEEDS, PAYMENT_SUBJECT_NAMES, DEFAULT_PAYMENT_SUBJECT_NAMES, paymentSubjectNames } = require("../../dist/modules/finance/accounting-subject-catalog.js");
 
 const payment = { paymentNo: "SPAY-1", paymentDate: new Date("2026-09-15T00:00:00.000Z"), amount: new Prisma.Decimal("300"), currency: "CNY", counterpartyName: "晋江大田", direction: "expense", settlementMethod: "转账--农业银行5706", sourceType: "supplier_payment", sourceId: "payment-1", subjectNames: ["主营业务成本", "原材料"] };
 
@@ -139,7 +141,7 @@ test("结算账户按账号匹配到字典项；匹配不上就留空（不造�
 });
 
 test("会计科目候选覆盖每一种资金动账来源，且候选名称都真的在科目表里", () => {
-  const subjectNames = new Set(ACCOUNTING_SUBJECTS.map((subject) => subject.name));
+  const subjectNames = new Set(ACCOUNTING_SUBJECT_SEEDS.map((subject) => subject.name));
   for (const [source, names] of Object.entries(PAYMENT_SUBJECT_NAMES)) {
     assert.ok(names.length > 0, `${source} 必须有会计科目候选`);
     assert.ok(names.some((name) => subjectNames.has(name)), `${source} 至少要有一个候选存在于科目表（否则过账后会 422）`);
@@ -155,6 +157,9 @@ test("会计科目候选覆盖每一种资金动账来源，且候选名称都�
   assert.deepEqual(paymentSubjectNames("outsource_receipt"), ["加工费"]);
   assert.deepEqual(paymentSubjectNames("other"), ["管理费用", "其他管理费用"]);
   assert.deepEqual(paymentSubjectNames("customer_payment"), ["主营业务收入"]);
-  assert.deepEqual(paymentSubjectNames("salary_payment"), ["临时工资", "基本生产成本"]);
+  // 2026-09-20：工资付款的候选链首位改成专门新增的「工资支付」（用户要求「确认支付工资的时候
+  // 就能归类到工资支付里面。好做账，好出表」）；后两个是历史兜底，保留。
+  assert.deepEqual(paymentSubjectNames("salary_payment"), ["工资支付", "临时工资", "基本生产成本"]);
+  assert.ok(subjectNames.has("工资支付"), "候选指向的科目必须真的在种入清单里");
   assert.deepEqual(paymentSubjectNames("unknown_source"), DEFAULT_PAYMENT_SUBJECT_NAMES, "未知来源走兜底候选，而不是空数组");
 });

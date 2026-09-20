@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_PROCESS_FIELDS, SPEC_SCALAR_KEYS,
-  emptySpecDetailRow, isBlankSpecDetail, normalizeSpecUnit, specPayload, specQuantityNotice, validateSpecDetails,
+  emptySpecDetailRow, isBlankSpecDetail, normalizeSpecUnit, snakeToCamel, specFromOrder, specPayload, specQuantityNotice, validateSpecDetails,
 } from "./sales-order-spec.ts";
 
 test("字段清单：37 个标量，顺序是「表头 → 布量 → 材料 → 工艺」", () => {
@@ -54,6 +54,61 @@ test("载荷：一格都不填时 37 个键全是空串 —— 这是新建销�
   const payload = specPayload({}, [emptySpecDetailRow()]);
   for (const key of SPEC_SCALAR_KEYS) assert.equal(payload[key], "", `${key} 应是空串（而不是被省略）`);
   assert.deepEqual(payload.spec_details, [], "只有一行空行时不提交任何明细");
+});
+
+test("回填：接口给的是 camelCase 列名（真实形状），37 格都必须读出来", () => {
+  // 2026-09-20 现场问题：「材料明细，我是写了，然后还保存了，但是再打开就又没有了」。
+  // 根因就在这里：接口 `GET /sales-orders/:id` 返回的是 Prisma 整行 —— 键是**列名 camelCase**
+  // （`ribSpec` / `fabricUsageCanopy`），而表单按**请求键 snake_case** 取值。
+  // 拿请求键去索引 camelCase 行，除了 `factory`（两种名字恰好一样）之外全是 undefined。
+  const fromApi = {
+    factory: "JBN", completionRemark: "进仓", attentionNote: "都需使用防水线",
+    fabricUsageCanopy: "1.2", fabricUsageStrap: null,
+    ribSpec: "50cm*5K三折手开双碳纤骨", qcRequirement: "所有材料和成品都要质检报告",
+    shippingMarkFront: "（正唛图稿）",
+  };
+  const spec = specFromOrder(fromApi);
+
+  assert.equal(spec.rib_spec, "50cm*5K三折手开双碳纤骨");
+  assert.equal(spec.fabric_usage_canopy, "1.2");
+  assert.equal(spec.qc_requirement, "所有材料和成品都要质检报告");
+  assert.equal(spec.attention_note, "都需使用防水线");
+  assert.equal(spec.shipping_mark_front, "（正唛图稿）");
+  assert.equal(spec.factory, "JBN");
+  // 没填的字段是空串（表单初值），不能是 "undefined"/"null" 这种字符串
+  assert.equal(spec.fabric_usage_strap, "");
+  assert.equal(spec.canopy_spec, "");
+  for (const key of SPEC_SCALAR_KEYS) assert.equal(typeof spec[key], "string", `${key} 必须是字符串`);
+  // 37 格全在（少一格就是「界面填了、库里没存」的镜像问题：库里存了、界面不显示）
+  assert.equal(Object.keys(spec).length, 37);
+});
+
+test("回填：Decimal / null / 缺键 都要变成能放进输入框的文本", () => {
+  // 布量在库里是 Decimal(18,4)，序列化进 JSON 是字符串（decimal.js 的 toJSON 走 toString，
+  // 所以 1.2000 出来是 "1.2"）；这里约束的是**透传**：前端不做四舍五入、也不截断。
+  const spec = specFromOrder({ fabricUsageCanopy: "1.2", fabricUsageBag: null, ribSpec: undefined });
+  assert.equal(spec.fabric_usage_canopy, "1.2", "数值列照原样进输入框，不在前端做四舍五入");
+  assert.equal(spec.fabric_usage_bag, "", "null = 没填 = 空串");
+  assert.equal(spec.rib_spec, "", "缺键 = 没填 = 空串（不能变成 \"undefined\"）");
+});
+
+test("回填：版本快照形状（请求键 snake_case）也认 —— 两种键名都要认", () => {
+  // `sales_order_versions.snapshot` 存的是请求键；只认列名的话，从快照渲染的路径又会断一次。
+  const spec = specFromOrder({ rib_spec: "快照里的伞骨", attention_note: "快照里的注意事项" });
+  assert.equal(spec.rib_spec, "快照里的伞骨");
+  assert.equal(spec.attention_note, "快照里的注意事项");
+  // 两种同时出现时以请求键为准（快照优先），并保持一致
+  assert.equal(specFromOrder({ rib_spec: "请求键", ribSpec: "列名" }).rib_spec, "请求键");
+});
+
+test("snakeToCamel：37 个请求键都能机械转成后端列名（这把「再抄一份映射表」省掉了）", () => {
+  // 后端 `SPEC_SCALAR_FIELDS` 是「请求键 → 列」的权威表；这里只允许依赖「列名 = 请求键的驼峰」
+  // 这一条假设，而它由 apps/api/test/unit/sales-order-dto.test.cjs 逐键钉住。
+  assert.equal(snakeToCamel("rib_spec"), "ribSpec");
+  assert.equal(snakeToCamel("fabric_usage_wood_ear"), "fabricUsageWoodEar");
+  assert.equal(snakeToCamel("top_stitch_requirement"), "topStitchRequirement");
+  assert.equal(snakeToCamel("factory"), "factory", "没有下划线的键原样返回");
+  assert.equal(snakeToCamel("hang_tag_note"), "hangTagNote");
 });
 
 test("明细校验：分组名与品番品名必填、数量必须是数字，逐行报错且整行空的不报", () => {

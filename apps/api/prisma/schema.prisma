@@ -1822,6 +1822,7 @@ model AccountingSubject {
   cashFlowEntries               CashFlowEntry[]
   customerPayments              CustomerPayment[]
   supplierPayments              SupplierPayment[]
+  salaryPayments                SalaryPayment[]
   receivableReconciliations     ReceivableReconciliation[]
   payableReconciliations        SupplierPayableReconciliation[]
 
@@ -2535,6 +2536,13 @@ model SalaryPayment {
   /// 缺了它这笔支出不会落到任何账户上，银行余额会与真实银行账永久对不上。
   /// 列本身可空只为兼容升级前的历史单据。
   bankId        String?                   @map("bank_id") @db.Uuid
+  /// 会计科目（`accounting_subjects`）：工资付款这笔支出归到哪个科目。
+  ///
+  /// 用户 2026-09-20：「工资的确认支付也要加上会计科目……这样确认支付工资的时候就能归类到
+  /// 工资支付里面。好做账，好出表」。为空时按来源自动归类（候选链首位就是「工资支付」），
+  /// 填了就**以它为准**（`CashFlowService` 对人工选择不做静默替换）。
+  /// 与 `customer_payments.subject_id` / `supplier_payments.subject_id` 同一口径。
+  subjectId     String?                   @map("subject_id") @db.Uuid
   status        String                    @default("draft") @db.VarChar(30)
   attachment    Json                      @default("[]")
   remark        String?                   @db.VarChar(1000)
@@ -2545,6 +2553,7 @@ model SalaryPayment {
   deletedAt     DateTime?                 @map("deleted_at")
   deletedBy     String?                   @map("deleted_by") @db.Uuid
   bank          Bank?                     @relation(fields: [bankId], references: [id])
+  subject       AccountingSubject?        @relation(fields: [subjectId], references: [id])
   allocations   SalaryPaymentAllocation[]
 
   @@map("salary_payments")

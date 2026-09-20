@@ -52,6 +52,10 @@ const bomStatuses = [
   { bom_item_id: "bi-3", required_quantity: "5.0000", ordered_quantity: "0.0000", draft_quantity: "3.0000", state: "draft", ordered_purchase_order_nos: [], draft_purchase_order_nos: ["PO-79"] },
 ];
 
+/** 「未下单」与「已下单足量」两种口径：供「切回本页要刷新」用例切换（模拟同事刚把这一行下了单）。 */
+const notOrderedYet = [{ bom_item_id: "bi-1", required_quantity: "5.0000", ordered_quantity: "0.0000", draft_quantity: "0.0000", state: "none", ordered_purchase_order_nos: [], draft_purchase_order_nos: [] }];
+const orderedBySomeoneElse = [{ bom_item_id: "bi-1", required_quantity: "5.0000", ordered_quantity: "5.0000", draft_quantity: "0.0000", state: "ordered", ordered_purchase_order_nos: ["PO-90"], draft_purchase_order_nos: [] }];
+
 /** 一张已经建好的采购单（供「编辑」用例用）。 */
 function existingOrder(overrides: Record<string, unknown> = {}) {
   return {
@@ -66,10 +70,10 @@ function existingOrder(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function stubProcurement(order: Record<string, unknown> | null = null) {
+function stubProcurement(order: Record<string, unknown> | null = null, statusProvider: () => unknown = () => bomStatuses) {
   return stubApi((url) => {
     if (url === EP.purchaseOrders) return apiOk(order ? [order] : []);
-    if (url.startsWith(EP.bomItemStatus)) return apiOk(bomStatuses);
+    if (url.startsWith(EP.bomItemStatus)) return apiOk(statusProvider());
     if (url === `${EP.purchaseOrders}/po-1`) return apiOk(order);
     if (url === EP.materials) return apiOk(materials);
     if (url === EP.units) return apiOk(units);
@@ -104,6 +108,18 @@ const bodyOf = (call: StubbedCall) => JSON.parse(String(call.body)) as Record<st
 /** 打开「新建采购单」并带入 BOM 明细（销售单 SO-1 → BOM-1 → 3 行明细）。 */
 async function openNewDraftWithBom(order: Record<string, unknown> | null = null) {
   const calls = stubProcurement(order);
+  render(<><PurchaseOrdersPage /><Toaster /></>);
+  await screen.findByTestId("page-procurement-orders");
+  await userEvent.click(screen.getByRole("button", { name: "新建采购单" }));
+  await pickSelect(0, "SO-1");
+  await pickSelect(1, "SO-1");
+  await waitFor(() => expect(rows()).toHaveLength(3));
+  return calls;
+}
+
+/** 与 `openNewDraftWithBom` 同一条路，但「下单状态」由调用方随时改（模拟别的窗口刚下了单）。 */
+async function openNewDraftWithChangingStatus(statusProvider: () => unknown) {
+  const calls = stubProcurement(null, statusProvider);
   render(<><PurchaseOrdersPage /><Toaster /></>);
   await screen.findByTestId("page-procurement-orders");
   await userEvent.click(screen.getByRole("button", { name: "新建采购单" }));
@@ -151,6 +167,22 @@ describe("新建采购单：「下单状态」列", () => {
 
     await waitFor(() => expect(rows()).toHaveLength(4));
     expect(rows()[3].children[3].textContent).toContain("BOM 外新增");
+  });
+
+  it("回归 2026-09-20：别的窗口刚下过单，切回本页要刷新「下单状态」（不是只刷采购单列表）", async () => {
+    // 用户报的：「采购单中有些物料已经下单了，但是新建采购单中 column 下单状态没有及时更新」。
+    // 这一列原来只在「带入 BOM 明细」那一刻拉过一次，之后窗口焦点/可见性刷新**只刷采购单列表**，
+    // 于是同事（或另一个窗口）刚下的单在这张草稿表里看不见 —— 而这一列存在的意义正是防止重复采购。
+    let statuses: unknown = notOrderedYet;
+    await openNewDraftWithChangingStatus(() => statuses);
+
+    expect(rows()[0].children[3].textContent).toContain("未下单");
+
+    // 另一个窗口把这一行的单下了；用户切回本页 → window focus → 应当把「下单状态」也刷新
+    statuses = orderedBySomeoneElse;
+    fireEvent.focus(window);
+
+    await waitFor(() => expect(rows()[0].children[3].textContent).toContain("已下单"));
   });
 });
 

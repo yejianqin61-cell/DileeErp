@@ -3,7 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { CURRENCY_DICTIONARY_KEY, DEFAULT_CURRENCIES } from "../src/platform/currency/currency-catalog";
 import { DEFAULT_SETTLEMENT_ACCOUNTS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "../src/modules/finance/cash-flow-catalog";
-import { ACCOUNTING_SUBJECTS } from "../src/modules/finance/accounting-subject-catalog";
+import { ACCOUNTING_SUBJECT_SEEDS } from "../src/modules/finance/accounting-subject-catalog";
 
 const prisma = new PrismaClient();
 
@@ -57,7 +57,11 @@ async function main() {
     // 会计科目：用户 2026-09-17 交付的科目表（分类 = 科目类别，项目 = 科目名称）。
     // 与迁移 20260917120000_accounting_subjects 用同一份清单（accounting-subject-catalog.ts）。
     // 注意这里**不再种「收支项目」字典** —— 它已并入会计科目，迁移会把老库上那张表软删掉。
-    for (const subject of ACCOUNTING_SUBJECTS) {
+    //
+    // 用 ACCOUNTING_SUBJECT_SEEDS（= 财务科目表 + 系统补充科目，如 2026-09-20 的「工资支付」）：
+    // 只种 ACCOUNTING_SUBJECTS 会让新库缺掉我们后来加的科目，而老库因为迁移补齐反而有 ——
+    // 这种「新库少、老库多」的差异最难查。
+    for (const subject of ACCOUNTING_SUBJECT_SEEDS) {
       await tx.accountingSubject.upsert({
         where: { category_name: { category: subject.category, name: subject.name } },
         update: { balanceDirection: subject.balanceDirection, sortOrder: subject.sortOrder, isActive: true, updatedBy: id },

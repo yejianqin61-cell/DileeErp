@@ -300,9 +300,10 @@ test("列表返回「基本工资」与「其他增减」两格的显示值，�
   const service = new PayrollLedgerService({ payrollLedger: { findMany: async () => [row] } }, {});
   const result = (await service.list())[0];
   assert.equal(result.basicSalaryAmount, "150.0000", "基本工资格 = 基本工资 + 生产来源（车间生产工资）");
-  assert.equal(result.otherAdjustmentAmount, "16.0000", "其他增减 = 加班 7 − 考勤 3 + 补贴 2 − 社保 1 − 个税 4 + 其他 6 + 已过账调整 9 = 16");
-  // 六个可编辑类目（基本工资 150 + 绩效 30 + 房补 40 − 迟到 10 − 旷工 20 − 早退 5）与只读格必须正好等于应发。
-  const visible = new Prisma.Decimal("150").plus("30").plus("40").minus("10").minus("20").minus("5").plus(result.otherAdjustmentAmount);
+  assert.equal(result.otherAdjustmentAmount, "21.0000", "其他增减 = 加班 7 − 考勤 3 + 补贴 2 + 其他 6 + 已过账调整 9 = 21（社保/个税自 2026-09-20 起是独立列，不再叠进来）");
+  // 可见列 = 基本工资 150 + 绩效 30 + 房补 40 − 迟到 10 − 旷工 20 − 早退 5 + 社保 1 与个税 4（独立列，各为扣减）+ 其他增减
+  const visible = new Prisma.Decimal("150").plus("30").plus("40").minus("10").minus("20").minus("5")
+    .minus(result.socialInsurance).minus(result.individualTax).plus(result.otherAdjustmentAmount);
   assert.ok(visible.eq(result.payableAmount), `表上可见列之和 ${visible} 必须等于应发 ${result.payableAmount}`);
   assert.equal(result.payableAmount, "201.0000");
 });

@@ -139,10 +139,16 @@ describe("销售单整页编辑器", () => {
   });
 
   it("编辑既有销售单：回填细化字段与明细，已确认的单子改要填原因", async () => {
+    // ⚠️ 形状必须与**真实接口一致**：`GET /sales-orders/:id` 直接把 Prisma 整行转 JSON 出去，
+    // 所以细化字段是 schema 里的 **camelCase 列名**（`ribSpec` / `fabricUsageCanopy`），
+    // 不是请求侧的 snake_case 键名。之前这里写的是 snake_case，于是「回填」这条路
+    // 一直在测一个不存在的接口形状（见「材料明细保存后再打开就没了」）。
     const order = {
       id: "order-1", orderNo: "DL260134", status: "confirmed", orderDate: "2026-06-18T00:00:00.000Z", deliveryDate: null,
       productName: "折叠伞", productSpec: "旧规格", quantity: "1960.0000", unit: "支", currency: "USD",
-      customer: { id: "customer-1" }, contact: null, rib_spec: "旧伞骨", factory: "JBN",
+      customer: { id: "customer-1" }, contact: null,
+      ribSpec: "旧伞骨", factory: "JBN", attentionNote: "都需使用防水线", qcRequirement: "所有材料和成品都要质检报告",
+      fabricUsageCanopy: "1.2",
       created_by_name: "张三", updated_by_name: "李四", createdAt: "2026-09-01T02:30:00.000Z", updatedAt: "2026-09-02T06:05:00.000Z",
       specDetails: [{ groupName: "伞布明细", name: "27621 流水花扇PKGY", color: "PKGY", barcode: null, quantity: "1960.0000", unit: "pcs" }],
     };
@@ -151,6 +157,11 @@ describe("销售单整页编辑器", () => {
 
     await waitFor(() => expect((field("sales-spec-rib_spec") as HTMLTextAreaElement).value).toBe("旧伞骨"));
     expect((field("sales-spec-factory") as HTMLInputElement).value).toBe("JBN");
+    // 用户 2026-09-20：「材料明细，我是写了，然后还保存了，但是再打开就又没有了」——
+    // 四个区各抽查一格，防止「只修好其中一个区」。
+    expect((field("sales-spec-attention_note") as HTMLTextAreaElement).value).toBe("都需使用防水线");
+    expect((field("sales-spec-qc_requirement") as HTMLTextAreaElement).value).toBe("所有材料和成品都要质检报告");
+    expect((field("sales-spec-fabric_usage_canopy") as HTMLInputElement).value).toBe("1.2");
     expect((field("sales-detail-0-name") as HTMLInputElement).value).toBe("27621 流水花扇PKGY");
     // 审计四行（上一轮的全站治理）：编辑页也要能看到创建人 / 最后修改人
     const audit = screen.getByTestId("sales-order-audit").textContent ?? "";

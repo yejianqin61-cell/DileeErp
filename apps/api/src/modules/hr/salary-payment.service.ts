@@ -14,11 +14,11 @@ import { monthRange, payrollBaseAmount } from "./hr-payroll.domain";
 import type { PayrollPaymentSheetSource } from "./payroll-payment-sheet";
 import { toDateText } from "../finance/finance-report.domain";
 
-type Input = { payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; bank_id?: string; attachment?: unknown[]; remark?: string };
+type Input = { payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; bank_id?: string; /** 会计科目（可选）：付款这笔支出归到哪个科目；不给则按来源自动归类（候选链首位是「工资支付」）。 */ subject_id?: string; attachment?: unknown[]; remark?: string };
 type Allocation = { ledger_id: string; amount: string; remark?: string };
 /** 批量付款的入参与逐条结果（见 `payBatch`）：金额一律十进制字符串，与全站金额口径一致。 */
 type BatchItem = { ledger_id: string; amount: string };
-type BatchInput = { payment_date: string; payment_method: string; bank_id?: string; currency?: string; remark?: string };
+type BatchInput = { payment_date: string; payment_method: string; bank_id?: string; currency?: string; subject_id?: string; remark?: string };
 
 @Injectable()
 export class SalaryPaymentService {
@@ -48,11 +48,16 @@ export class SalaryPaymentService {
    *   - 后续任何一步失败，本次新建的付款草稿会被软删除并审计，不把失败尝试留成孤儿单据
    *     （付款单没有删除接口，只有 posting 才可冲销，孤儿草稿会一直挂在列表里）。
    */
-  async payLedger(ledgerId: string, input: { amount: string; payment_date: string; payment_method: string; currency?: string; bank_id?: string; remark?: string }, user: CurrentUser) {
+  async payLedger(ledgerId: string, input: { amount: string; payment_date: string; payment_method: string; currency?: string; bank_id?: string; subject_id?: string; remark?: string }, user: CurrentUser) {
     const amount = this.positive(input.amount);
     // 发放银行必填，且**在生成任何单据之前**校验：发工资都是走银行发放的，
     // 半路才发现账户非法会留下刚建好的工资应付，用户还得回头清理。
     await this.requireBank(input.bank_id);
+    // 会计科目同理**先校验**：科目填错要在这里就报「科目不存在或已停用」，
+    // 而不是等到过账时才失败、把刚建好的工资应付与付款草稿留成孤儿。
+    // 只在**真的传了**科目时才查库：没传就是「不指定」（后端会按来源自动归类），
+    // 不必为每一次付款白跑一次科目查询。
+    if (input.subject_id !== undefined) await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const ledger = await this.prisma.payrollLedger.findFirst({ where: { id: ledgerId, deletedAt: null } });
     if (!ledger) throw this.notFound("PAYROLL_LEDGER_NOT_FOUND", "薪资台账不存在");
     if (!["confirmed", "partially_paid"].includes(ledger.status)) throw this.invalid("PAYROLL_NOT_ALLOCATABLE", "台账尚未确认或已结清，不能付款：请先在工资台账里确认该月台账");
@@ -69,7 +74,7 @@ export class SalaryPaymentService {
     if (["reversed", "voided"].includes(payable.status)) throw this.invalid("PAYROLL_PAYABLE_NOT_PAYABLE", "该台账的工资应付已冲销，不能再次付款；请先在工资应付里处理");
     if (payable.status === "draft") await payables.confirm(payable.id, user);
 
-    const payment = await this.create({ payment_date: input.payment_date, amount: input.amount, currency: ledger.currency, payment_method: input.payment_method, bank_id: input.bank_id, remark: input.remark }, user);
+    const payment = await this.create({ payment_date: input.payment_date, amount: input.amount, currency: ledger.currency, payment_method: input.payment_method, bank_id: input.bank_id, subject_id: input.subject_id, remark: input.remark }, user);
     try {
       return await this.post(payment.id, [{ ledger_id: ledgerId, amount: input.amount }], user);
     } catch (error) {
@@ -136,7 +141,7 @@ export class SalaryPaymentService {
       const employeeNo = ledger?.employee?.employeeNo ?? item.ledger_id;
       const employeeName = ledger?.employee?.name ?? item.ledger_id;
       try {
-        await this.payLedger(item.ledger_id, { amount: item.amount, payment_date: input.payment_date, payment_method: input.payment_method, currency: input.currency, bank_id: input.bank_id, remark: input.remark }, user);
+        await this.payLedger(item.ledger_id, { amount: item.amount, payment_date: input.payment_date, payment_method: input.payment_method, currency: input.currency, bank_id: input.bank_id, subject_id: input.subject_id, remark: input.remark }, user);
         succeeded.push({ ledger_id: item.ledger_id, employee_no: employeeNo, employee_name: employeeName, amount: item.amount });
         // 只有成功的条目参与合计（失败的钱没有出去）。Decimal 累加，不做浮点求和。
         total = total.plus(new Prisma.Decimal(item.amount));
@@ -235,6 +240,9 @@ export class SalaryPaymentService {
           employeeType: row.employee.employeeType,
           currency: row.currency,
           payableAmount: payable,
+          // 两项代扣原样带出（正数 = 被扣减的金额），供导出表解释「应发为什么是这个数」。
+          socialInsurance: row.socialInsurance,
+          individualTax: row.individualTax,
           paidAmount: paid,
           outstandingAmount: payable.minus(paid),
           status: row.status,
@@ -245,11 +253,23 @@ export class SalaryPaymentService {
       // 按工号排序：导出表是给人对账看的，人员顺序与台账页的「工号/姓名」列一致才扫得快。
       .sort((left, right) => left.employeeNo.localeCompare(right.employeeNo) || (left.month ?? "").localeCompare(right.month ?? ""));
   }
-  async create(input: Input, user: CurrentUser) { await this.currencies?.assertSupported(input.currency, "工资付款币种"); const amount = this.positive(input.amount); const bank = await this.requireBank(input.bank_id); const row = await this.prisma.salaryPayment.create({ data: { paymentNo: this.number("SALARY"), paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, bankId: bank.id, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } }); await this.audit.record("salary_payment.create", "salary_payment", user.id, row.id, { amount: row.amount.toString(), bank_id: bank.id }); return row; }
-  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; bank_reference?: string; bank_id?: string | null; remark?: string }, user: CurrentUser) {
+  async create(input: Input, user: CurrentUser) {
+    await this.currencies?.assertSupported(input.currency, "工资付款币种");
+    const amount = this.positive(input.amount);
+    const bank = await this.requireBank(input.bank_id);
+    // 会计科目：**先校验再落库**（与收付款单同一口径）。空值表示「不指定」，过账时按来源自动归类；
+    // 填了非法 id 直接 422，不让它落成一条指向不存在科目的付款单。只在真传了科目时才查库。
+    const subject = input.subject_id === undefined ? null : await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
+    const row = await this.prisma.salaryPayment.create({ data: { paymentNo: this.number("SALARY"), paymentDate: this.date(input.payment_date), amount, currency: input.currency, paymentMethod: input.payment_method, bankReference: input.bank_reference, bankId: bank.id, subjectId: subject?.id ?? null, attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user) } });
+    await this.audit.record("salary_payment.create", "salary_payment", user.id, row.id, { amount: row.amount.toString(), bank_id: bank.id, subject_id: subject?.id ?? null });
+    return row;
+  }
+  async updateDraft(id: string, input: { amount?: string; payment_date?: string; payment_method?: string; bank_reference?: string; bank_id?: string | null; subject_id?: string | null; remark?: string }, user: CurrentUser) {
     // bank_id 传 null / 空串表示**清空**（选错了要能去掉），传 undefined 表示不改 —— 与收付款草稿同一约定。
     // 但草稿「没有银行」是暂时的：过账/发放前服务层仍会要求一个可用账户（`requireBank`）。
     if (input.bank_id) await this.requireBank(input.bank_id);
+    // subject_id 同一约定：null/空串 = 清空（回到按来源自动归类），undefined = 不改。
+    const subject = input.subject_id === undefined ? undefined : await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM salary_payments WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.salaryPayment.findFirst({ where: { id, deletedAt: null } });
@@ -257,7 +277,8 @@ export class SalaryPaymentService {
       if (current.status !== "draft") throw this.invalid("SALARY_PAYMENT_NOT_EDITABLE", "只有草稿工资付款可以编辑");
       const amount = input.amount === undefined ? current.amount : this.positive(input.amount);
       const bankId = input.bank_id === undefined ? current.bankId : (input.bank_id || null);
-      return tx.salaryPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, bankReference: input.bank_reference ?? current.bankReference, bankId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      const subjectId = input.subject_id === undefined ? current.subjectId : (subject?.id ?? null);
+      return tx.salaryPayment.update({ where: { id }, data: { amount, paymentDate: input.payment_date ? this.date(input.payment_date) : current.paymentDate, paymentMethod: input.payment_method ?? current.paymentMethod, bankReference: input.bank_reference ?? current.bankReference, bankId, subjectId, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
     });
     await this.audit.record("salary_payment.update", "salary_payment", user.id, id, { amount: row.amount.toString() });
     return row;
@@ -278,7 +299,14 @@ export class SalaryPaymentService {
     if (!bank) throw this.invalid("SALARY_PAYMENT_BANK_REQUIRED", "工资付款必须指定发放银行");
     return bank;
   }
-  async post(id: string, allocations: Allocation[], user: CurrentUser) { const current = await this.prisma.salaryPayment.findFirst({ where: { id, deletedAt: null } }); if (!current) throw this.notFound("SALARY_PAYMENT_NOT_FOUND", "工资付款不存在"); if (current.status !== "draft") throw this.invalid("SALARY_PAYMENT_NOT_POSTABLE", "只有草稿工资付款可以过账"); const bank = await this.requireBank(current.bankId); const items = allocations ?? []; if (!items.length) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "工资付款过账至少需要核销一条有效工资台账"); if (new Set(items.map((item) => item.ledger_id)).size !== items.length) throw this.invalid("DUPLICATE_SALARY_ALLOCATION", "同一付款不得重复核销同一台账"); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM salary_payments WHERE id = ${id}::uuid FOR UPDATE`; const lockedPayment = await tx.salaryPayment.findFirst({ where: { id, deletedAt: null } }); if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("SALARY_PAYMENT_NOT_POSTABLE", "只有草稿工资付款可以过账"); let total = new Prisma.Decimal(0); for (const item of items) { const amount = this.positive(item.amount); await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${item.ledger_id}::uuid FOR UPDATE`; const ledger = await tx.payrollLedger.findFirst({ where: { id: item.ledger_id, deletedAt: null } }); if (!ledger || ledger.currency !== lockedPayment.currency || !["confirmed", "partially_paid"].includes(ledger.status)) throw this.invalid("PAYROLL_NOT_ALLOCATABLE", "台账不存在、币种不一致或尚未确认"); const payable = await tx.payrollPayableEntry.findFirst({ where: { ledgerId: ledger.id, deletedAt: null } }); if (!payable) throw this.invalid("PAYROLL_PAYABLE_REQUIRED", "工资付款必须核销已生成的工资应付"); if (!["confirmed", "partially_paid"].includes(payable.status)) throw this.invalid("PAYROLL_PAYABLE_NOT_ALLOCATABLE", "工资应付尚未确认或已关闭"); const base = payrollBaseAmount({ base_salary: ledger.baseSalary, production_source_amount: ledger.productionSourceAmount, overtime_amount: ledger.overtimeAmount, attendance_deduction: ledger.attendanceDeduction, late_deduction: ledger.lateDeduction, absence_deduction: ledger.absenceDeduction, early_leave_deduction: ledger.earlyLeaveDeduction, performance_amount: ledger.performanceAmount, allowance_amount: ledger.allowanceAmount, housing_allowance: ledger.housingAllowance, social_insurance: ledger.socialInsurance, individual_tax: ledger.individualTax, other_adjustment: ledger.otherAdjustment }); const adjustments = await tx.payrollAdjustment.findMany({ where: { ledgerId: ledger.id, deletedAt: null, status: "posted" } }); const net = base.plus(adjustments.reduce((sum, row) => sum.plus(row.effect === "increase" ? row.amount : row.amount.negated()), new Prisma.Decimal(0))); if (!payable.amount.eq(net)) throw this.invalid("PAYROLL_PAYABLE_AMOUNT_MISMATCH", "工资应付金额与台账实发金额不一致，请先重新生成工资应付"); const paid = await tx.salaryPaymentAllocation.aggregate({ where: { ledgerId: ledger.id, deletedAt: null, status: "active", payment: { status: "posted" } }, _sum: { amount: true } }); const available = net.minus(paid._sum.amount ?? 0); if (amount.gt(available)) throw new UnprocessableEntityException({ code: "SALARY_ALLOCATION_EXCEEDED", message: "核销金额超过薪资未付余额", details: [{ available_amount: available.toString() }] }); total = total.plus(amount); await tx.salaryPaymentAllocation.create({ data: { paymentId: id, ledgerId: ledger.id, payrollPayableId: payable.id, employeeId: ledger.employeeId, amount, currency: lockedPayment.currency, remark: item.remark, ...this.audit.create(user) } }); } if (total.gt(lockedPayment.amount)) throw new UnprocessableEntityException({ code: "SALARY_PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过工资付款金额", details: [] }); const payment = await tx.salaryPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } }); for (const item of items) await this.payroll.refreshStatus(tx, item.ledger_id, user); if (this.payables) for (const item of items) await this.payables.refreshStatusForLedger(tx, item.ledger_id, user); return payment; }); await this.audit.record("salary_payment.post", "salary_payment", user.id, id, { allocation_count: items.length }); for (const item of items) await this.audit.record("salary_payment_allocation.create", "salary_payment_allocation", user.id, id, { ledger_id: item.ledger_id, amount: item.amount }); await this.cashFlow.autoCreateFromPayment({ paymentNo: result.paymentNo, paymentDate: result.paymentDate, amount: result.amount, currency: result.currency, counterpartyName: `工资付款 ${result.paymentNo}`, direction: "expense", settlementMethod: result.paymentMethod, settlementAccountId: null, bankId: bank.id, sourceType: "salary_payment", sourceId: result.id, subjectNames: paymentSubjectNames("salary_payment"), remark: result.remark ?? undefined }, user); return result; }
+  /**
+   * 过账（发放）工资付款：核销台账 + 写支出流水。
+   *
+   * `subjectId`（可选）：这次过账人工选定的会计科目。**优先级与收付款单一致**：
+   * 过账时传的 → 付款单上存的（建草稿时选的）→ 都不给则按来源自动归类（候选链首位「工资支付」）。
+   * 允许过账时再覆盖一次，是因为批量付款往往一次性批量建草稿，财务是到付款那一刻才决定归哪个科目。
+   */
+  async post(id: string, allocations: Allocation[], user: CurrentUser, subjectId?: string | null) { const current = await this.prisma.salaryPayment.findFirst({ where: { id, deletedAt: null } }); if (!current) throw this.notFound("SALARY_PAYMENT_NOT_FOUND", "工资付款不存在"); if (current.status !== "draft") throw this.invalid("SALARY_PAYMENT_NOT_POSTABLE", "只有草稿工资付款可以过账"); const requestedSubject = subjectId === undefined ? undefined : await this.cashFlow.requireSubject(subjectId, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认"); const effectiveSubjectId = subjectId === undefined ? (current.subjectId ?? null) : (requestedSubject?.id ?? null); const bank = await this.requireBank(current.bankId); const items = allocations ?? []; if (!items.length) throw this.invalid("PAYMENT_ALLOCATION_REQUIRED", "工资付款过账至少需要核销一条有效工资台账"); if (new Set(items.map((item) => item.ledger_id)).size !== items.length) throw this.invalid("DUPLICATE_SALARY_ALLOCATION", "同一付款不得重复核销同一台账"); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM salary_payments WHERE id = ${id}::uuid FOR UPDATE`; const lockedPayment = await tx.salaryPayment.findFirst({ where: { id, deletedAt: null } }); if (!lockedPayment || lockedPayment.status !== "draft") throw this.invalid("SALARY_PAYMENT_NOT_POSTABLE", "只有草稿工资付款可以过账"); let total = new Prisma.Decimal(0); for (const item of items) { const amount = this.positive(item.amount); await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${item.ledger_id}::uuid FOR UPDATE`; const ledger = await tx.payrollLedger.findFirst({ where: { id: item.ledger_id, deletedAt: null } }); if (!ledger || ledger.currency !== lockedPayment.currency || !["confirmed", "partially_paid"].includes(ledger.status)) throw this.invalid("PAYROLL_NOT_ALLOCATABLE", "台账不存在、币种不一致或尚未确认"); const payable = await tx.payrollPayableEntry.findFirst({ where: { ledgerId: ledger.id, deletedAt: null } }); if (!payable) throw this.invalid("PAYROLL_PAYABLE_REQUIRED", "工资付款必须核销已生成的工资应付"); if (!["confirmed", "partially_paid"].includes(payable.status)) throw this.invalid("PAYROLL_PAYABLE_NOT_ALLOCATABLE", "工资应付尚未确认或已关闭"); const base = payrollBaseAmount({ base_salary: ledger.baseSalary, production_source_amount: ledger.productionSourceAmount, overtime_amount: ledger.overtimeAmount, attendance_deduction: ledger.attendanceDeduction, late_deduction: ledger.lateDeduction, absence_deduction: ledger.absenceDeduction, early_leave_deduction: ledger.earlyLeaveDeduction, performance_amount: ledger.performanceAmount, allowance_amount: ledger.allowanceAmount, housing_allowance: ledger.housingAllowance, social_insurance: ledger.socialInsurance, individual_tax: ledger.individualTax, other_adjustment: ledger.otherAdjustment }); const adjustments = await tx.payrollAdjustment.findMany({ where: { ledgerId: ledger.id, deletedAt: null, status: "posted" } }); const net = base.plus(adjustments.reduce((sum, row) => sum.plus(row.effect === "increase" ? row.amount : row.amount.negated()), new Prisma.Decimal(0))); if (!payable.amount.eq(net)) throw this.invalid("PAYROLL_PAYABLE_AMOUNT_MISMATCH", "工资应付金额与台账实发金额不一致，请先重新生成工资应付"); const paid = await tx.salaryPaymentAllocation.aggregate({ where: { ledgerId: ledger.id, deletedAt: null, status: "active", payment: { status: "posted" } }, _sum: { amount: true } }); const available = net.minus(paid._sum.amount ?? 0); if (amount.gt(available)) throw new UnprocessableEntityException({ code: "SALARY_ALLOCATION_EXCEEDED", message: "核销金额超过薪资未付余额", details: [{ available_amount: available.toString() }] }); total = total.plus(amount); await tx.salaryPaymentAllocation.create({ data: { paymentId: id, ledgerId: ledger.id, payrollPayableId: payable.id, employeeId: ledger.employeeId, amount, currency: lockedPayment.currency, remark: item.remark, ...this.audit.create(user) } }); } if (total.gt(lockedPayment.amount)) throw new UnprocessableEntityException({ code: "SALARY_PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过工资付款金额", details: [] }); const payment = await tx.salaryPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } }); for (const item of items) await this.payroll.refreshStatus(tx, item.ledger_id, user); if (this.payables) for (const item of items) await this.payables.refreshStatusForLedger(tx, item.ledger_id, user); return payment; }); await this.audit.record("salary_payment.post", "salary_payment", user.id, id, { allocation_count: items.length }); for (const item of items) await this.audit.record("salary_payment_allocation.create", "salary_payment_allocation", user.id, id, { ledger_id: item.ledger_id, amount: item.amount }); await this.cashFlow.autoCreateFromPayment({ paymentNo: result.paymentNo, paymentDate: result.paymentDate, amount: result.amount, currency: result.currency, counterpartyName: `工资付款 ${result.paymentNo}`, direction: "expense", settlementMethod: result.paymentMethod, settlementAccountId: null, bankId: bank.id, sourceType: "salary_payment", sourceId: result.id, subjectNames: paymentSubjectNames("salary_payment"), subjectId: effectiveSubjectId, remark: result.remark ?? undefined }, user); return result; }
   async reverse(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "REVERSAL_REASON_REQUIRED", message: "冲销必须填写原因", details: [] }); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM salary_payments WHERE id = ${id}::uuid FOR UPDATE`; const locked = await tx.salaryPayment.findFirst({ where: { id, deletedAt: null } }); if (!locked) throw this.notFound("SALARY_PAYMENT_NOT_FOUND", "工资付款不存在"); if (locked.status !== "posted") throw this.invalid("SALARY_PAYMENT_NOT_REVERSIBLE", "当前工资付款不可冲销"); const allocations = await tx.salaryPaymentAllocation.findMany({ where: { paymentId: id, deletedAt: null, status: "active" } }); for (const ledgerId of [...new Set(allocations.map((item) => item.ledgerId))].sort()) await tx.$queryRaw`SELECT id FROM payroll_ledgers WHERE id = ${ledgerId}::uuid FOR UPDATE`; await tx.salaryPaymentAllocation.updateMany({ where: { paymentId: id, deletedAt: null, status: "active" }, data: { status: "reversed", ...this.audit.update(user) } }); const payment = await tx.salaryPayment.update({ where: { id }, data: { status: "reversed", remark: `${locked.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } }); for (const item of allocations) await this.payroll.refreshStatus(tx, item.ledgerId, user); if (this.payables) for (const ledgerId of [...new Set(allocations.map((item) => item.ledgerId))]) await this.payables.refreshStatusForLedger(tx, ledgerId, user); return { payment, allocations }; }); await this.audit.record("salary_payment.reverse", "salary_payment", user.id, id, { reason }); await this.cashFlow.autoReverseFromPayment("salary_payment", id, "工资付款冲销：" + reason, user); for (const item of result.allocations) await this.audit.record("salary_payment_allocation.reverse", "salary_payment_allocation", user.id, item.id, { payment_id: id, ledger_id: item.ledgerId, reason }); return result.payment; }
   private positive(value: string) { try { const n = new Prisma.Decimal(value); if (!n.gt(0)) throw new Error(); return n; } catch { throw this.invalid("INVALID_AMOUNT", "金额必须是大于零的十进制数"); } }
   private date(value: string) { const d = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(d.valueOf())) throw this.invalid("INVALID_PAYMENT_DATE", "付款日期无效"); return d; }

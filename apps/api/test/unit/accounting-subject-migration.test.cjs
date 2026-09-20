@@ -142,7 +142,9 @@ test("空库（无用户）时科目种入整段跳过，交给 seed.ts", () => 
 });
 
 test("seed.ts 种同一份科目表（新库与老库升级必须得到同一份清单）", () => {
-  assert.ok(seed.includes("ACCOUNTING_SUBJECTS"), "seed 必须种会计科目");
+  // 用 ACCOUNTING_SUBJECT_SEEDS（财务科目表 + 系统补充科目），而不是只种 ACCOUNTING_SUBJECTS：
+  // 否则新库会缺掉后来补的「工资支付」，而老库因为迁移补过反而有 —— 「新库少、老库多」最难查。
+  assert.ok(seed.includes("ACCOUNTING_SUBJECT_SEEDS"), "seed 必须种会计科目（含系统补充科目）");
   assert.ok(seed.includes("accounting-subject-catalog"), "seed 从 accounting-subject-catalog 导入，与迁移共用一份清单");
   assert.ok(seed.includes("accountingSubject.upsert"), "seed 必须幂等（upsert）");
   assert.match(seed, /category_name: \{ category: subject\.category, name: subject\.name \}/, "幂等键必须与唯一键 @@unique([category, name]) 一致");

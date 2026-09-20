@@ -6,6 +6,7 @@ const {
   payrollBaseAmount,
   payrollBasicSalaryAmount,
   payrollOtherAdjustmentAmount,
+  payrollDeductionAmount,
   payrollPayableAmount,
   allocationRemaining,
   paymentRemaining,
@@ -69,11 +70,26 @@ test("「基本工资」格 = 基本工资 + 生产来源（车间的生产工�
   assert.equal(payrollBasicSalaryAmount({ base_salary: "5000", production_source_amount: "0" }).toString(), "5000");
 });
 
-test("「其他增减」格 = 老类目净额，保证 应发 = 六个可编辑类目 + 其他增减", () => {
+test("「其他增减」格 = 老类目净额（不含社保/个税），保证 应发 = 可见列之和", () => {
   const fields = categories({ base_salary: "5000", production_source_amount: "1200", performance_amount: "300", housing_allowance: "400", late_deduction: "50", absence_deduction: "200", early_leave_deduction: "30", overtime_amount: "100", attendance_deduction: "20", allowance_amount: "200", social_insurance: "300", individual_tax: "80", other_adjustment: "10" });
-  const editable = new Prisma.Decimal("5000").plus("1200").plus("300").plus("400").minus("50").minus("200").minus("30");
-  assert.equal(payrollOtherAdjustmentAmount(fields).toString(), "-90");
-  assert.equal(editable.plus(payrollOtherAdjustmentAmount(fields)).toString(), payrollBaseAmount(fields).toString(), "表上可见列之和必须等于应发，否则就是有金额藏在表外");
+  // 2026-09-20 起社保/个税是表上自己的列，不再叠进这个只读净额：其他增减 = 100 − 20 + 200 + 10。
+  assert.equal(payrollOtherAdjustmentAmount(fields).toString(), "290");
+  // 可见列 = 基本工资(含生产来源) + 绩效 + 房补 − 迟到 − 旷工 − 早退 + 其他增减 − 社保 − 个税
+  const visible = new Prisma.Decimal("5000").plus("1200").plus("300").plus("400")
+    .minus("50").minus("200").minus("30")
+    .plus(payrollOtherAdjustmentAmount(fields))
+    .minus(payrollDeductionAmount(fields));
+  assert.equal(visible.toString(), payrollBaseAmount(fields).toString(), "表上可见列之和必须等于应发，否则就是有金额藏在表外");
+});
+
+test("社保与个税：财务自行填写，两项都从应发里扣掉，且不再重复出现在其他增减里", () => {
+  const base = categories({ base_salary: "5000" });
+  assert.equal(payrollDeductionAmount({ social_insurance: "300", individual_tax: "80" }).toString(), "380");
+  assert.equal(payrollBaseAmount({ ...base, social_insurance: "300" }).toString(), "4700", "只填社保就只扣社保");
+  assert.equal(payrollBaseAmount({ ...base, individual_tax: "80" }).toString(), "4920", "只填个税就只扣个税");
+  assert.equal(payrollBaseAmount({ ...base, social_insurance: "300", individual_tax: "80" }).toString(), "4620");
+  // 关键回归：其他增减里**不能**再有社保/个税，否则界面上「社保」会显示两次而应发只扣一次。
+  assert.equal(payrollOtherAdjustmentAmount({ ...base, social_insurance: "300", individual_tax: "80", other_adjustment: "0" }).toString(), "0");
 });
 
 test("金额字段接受 Prisma.Decimal 与字符串混合（列表行与 DTO 两种来源）", () => {

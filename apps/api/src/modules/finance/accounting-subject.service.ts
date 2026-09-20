@@ -127,14 +127,17 @@ export class AccountingSubjectService {
 
   /** 被引用的次数（删除前的守卫，也用于界面提示）。 */
   async usageCount(id: string): Promise<number> {
-    const [entries, customerPayments, supplierPayments, receivables, payables] = await Promise.all([
+    const [entries, customerPayments, supplierPayments, salaryPayments, receivables, payables] = await Promise.all([
       this.prisma.cashFlowEntry.count({ where: { subjectId: id } }),
       this.prisma.customerPayment.count({ where: { subjectId: id } }),
       this.prisma.supplierPayment.count({ where: { subjectId: id } }),
+      // 工资付款单自 2026-09-20 起也带会计科目（「工资支付」）：漏掉这一处，
+      // 财务删掉一个只被工资付款引用的科目就会撞外键 RESTRICT（数据库报错，财务看不懂）。
+      this.prisma.salaryPayment.count({ where: { subjectId: id } }),
       this.prisma.receivableReconciliation.count({ where: { subjectId: id } }),
       this.prisma.supplierPayableReconciliation.count({ where: { subjectId: id } }),
     ]);
-    return entries + customerPayments + supplierPayments + receivables + payables;
+    return entries + customerPayments + supplierPayments + salaryPayments + receivables + payables;
   }
 
   /** 新科目的排序号：接在**本分类最后一个科目**之后（不是全局最大值，理由见 `list()` 的注释）。 */

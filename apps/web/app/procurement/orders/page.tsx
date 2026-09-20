@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Trash2 } from "lucide-react";
@@ -84,6 +84,8 @@ export default function PurchaseOrdersPage() {
   const [selectedDraftRows, setSelectedDraftRows] = useState<number[]>([]);
   /** 当前 BOM 每一行的累计下单情况（按 bom_item_id 索引），用于草稿表里的「下单状态」列。 */
   const [bomOrderStatus, setBomOrderStatus] = useState<Record<string, BomItemOrderStatus>>({});
+  /** 上面这份状态属于哪一张 BOM：刷新失败时用来判断「该清掉还是留着上一次的结果」。 */
+  const statusBomIdRef = useRef("");
   /** BOM 外新增行（补料/替代料）必须填的原因：后端要求每行都给 `outside_bom_reason`。 */
   const [outsideBomReason, setOutsideBomReason] = useState("");
   /** 编辑**已下单**采购单时必须填的改动原因（宪法：已下单后变更要留前后值与原因）。 */
@@ -117,8 +119,28 @@ export default function PurchaseOrdersPage() {
 
   useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((opts) => { if (!cancelled) setCurrencyCatalogue(opts); }); return () => { cancelled = true; }; }, []);
   useEffect(() => { void load(); }, []);
+  /**
+   * 当前草稿对应的 BOM：刷新「下单状态」时要打它。
+   *
+   * 用 ref 而不是直接读 `purchaseDraft`：焦点/可见性监听只挂一次，闭包里的 `purchaseDraft`
+   * 永远停在打开那一刻 —— 那样切回本页会打到上一张 BOM 上，越刷越错。
+   */
+  const draftBomIdRef = useRef("");
+  useEffect(() => { draftBomIdRef.current = purchaseDraft?.bomId ?? ""; }, [purchaseDraft?.bomId]);
+  /**
+   * 刷新「采购单列表 + 草稿表的『下单状态』」。
+   *
+   * 两个数据源是两次独立请求，只刷一处就会自相矛盾：列表里那张单已经下了，草稿表里同一行还写着
+   * 「未下单」（用户 2026-09-20：「有些物料已经下单了，但是新建采购单中 column 下单状态没有及时更新」）。
+   * 这一列存在的意义就是防止重复采购，所以它必须跟着窗口焦点一起刷新，而不是只在「带入 BOM 明细」
+   * 那一刻拉一次 —— 同事或另一个窗口刚下的单，本页要能看见。
+   */
+  async function refreshListAndOrderStatus(options: { silent?: boolean } = {}) {
+    await load(options);
+    if (draftBomIdRef.current) await refreshBomOrderStatus(draftBomIdRef.current);
+  }
   useEffect(() => {
-    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load({ silent: true }); };
+    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void refreshListAndOrderStatus({ silent: true }); };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
@@ -144,7 +166,7 @@ export default function PurchaseOrdersPage() {
       if (method === "PATCH") await apiRequest(path, { method, body: JSON.stringify(body) });
       else await apiPost(path, body);
       notifySuccess(success);
-      await load();
+      await refreshListAndOrderStatus();
     } catch (cause) { notifyError(messageOf(cause, "操作失败")); }
   }
 
@@ -211,6 +233,7 @@ export default function PurchaseOrdersPage() {
   function createPurchaseOrder() {
     setSelectedDraftRows([]);
     setBomOrderStatus({});
+    statusBomIdRef.current = "";
     setOutsideBomReason("");
     setEditReason("");
     setEditingStatus("");
@@ -375,7 +398,13 @@ export default function PurchaseOrdersPage() {
     try {
       const result = await apiGet<BomItemOrderStatus[]>(`/purchase-orders/bom-item-status?bom_id=${encodeURIComponent(bomId)}`);
       setBomOrderStatus(Object.fromEntries(result.data.map((row) => [row.bom_item_id, row])));
-    } catch { setBomOrderStatus({}); }
+      statusBomIdRef.current = bomId;
+    } catch {
+      // 换了一张 BOM：旧状态是错的，清掉（显示「未下单」是诚实的）。
+      // 但**同一张 BOM 的刷新失败**不能清 —— 把「已下单」刷成「未下单」正好会诱发这一列要防的重复采购，
+      // 宁可留着上一次的结果（大不了略微过期），也不给一个错误的「没买过」。
+      if (statusBomIdRef.current !== bomId) setBomOrderStatus({});
+    }
   }
 
   async function importBomItems(bomId: string) {
@@ -404,7 +433,7 @@ export default function PurchaseOrdersPage() {
       setEditingStatus(order.status);
       // 已经存在的 BOM 外行本来就带着原因：带出来，用户不用重打一遍
       setOutsideBomReason(order.items.find((item) => item.extensionData?.outside_bom_reason)?.extensionData?.outside_bom_reason ?? "");
-      if (order.bomId) await refreshBomOrderStatus(order.bomId); else setBomOrderStatus({});
+      if (order.bomId) await refreshBomOrderStatus(order.bomId); else { setBomOrderStatus({}); statusBomIdRef.current = ""; }
       setPurchaseDraft({ id: order.id, purchaseOrderNo: order.purchaseOrderNo, orderNo: order.orderNo, bomId: order.bomId ?? "", currency: order.currency ?? "CNY", importBomItems: false, items: order.items.map((item) => ({ materialId: item.materialId, model: item.model ?? "", quantity: item.quantity, unitId: item.unitId, unitPrice: item.unitPrice ?? "0", supplierId: item.supplierId ?? order.supplierId ?? "", expectedDate: item.expectedDate?.slice(0, 10) ?? order.expectedDate?.slice(0, 10) ?? "", bomItemId: item.bomItemId ?? undefined })) });
     } catch (cause) { setError(messageOf(cause, "采购单加载失败")); }
   }

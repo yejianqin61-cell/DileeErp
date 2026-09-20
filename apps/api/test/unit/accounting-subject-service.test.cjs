@@ -26,7 +26,7 @@ const subjectRow = (overrides = {}) => ({
 });
 
 /**
- * 记账式 Prisma 替身：会计科目表 + 五张引用表 + 审计事件。
+ * 记账式 Prisma 替身：会计科目表 + 六张引用表 + 审计事件。
  *
  * 三种 `accountingSubject.findFirst` 的调用形状不同，替身按 where 区分：
  *   - 带 `name`：唯一性检查（`assertUnique`，**连软删的科目一起查**，见那里的注释）；
@@ -68,6 +68,7 @@ function harness({ subjects = [], duplicate = undefined, maxSortOrder = null, us
     cashFlowEntry: { count: async (args) => { calls.count.push({ table: "cashFlowEntry", ...args }); return usage.cashFlowEntry ?? 0; } },
     customerPayment: { count: async (args) => { calls.count.push({ table: "customerPayment", ...args }); return usage.customerPayment ?? 0; } },
     supplierPayment: { count: async (args) => { calls.count.push({ table: "supplierPayment", ...args }); return usage.supplierPayment ?? 0; } },
+    salaryPayment: { count: async (args) => { calls.count.push({ table: "salaryPayment", ...args }); return usage.salaryPayment ?? 0; } },
     receivableReconciliation: { count: async (args) => { calls.count.push({ table: "receivableReconciliation", ...args }); return usage.receivableReconciliation ?? 0; } },
     supplierPayableReconciliation: { count: async (args) => { calls.count.push({ table: "supplierPayableReconciliation", ...args }); return usage.supplierPayableReconciliation ?? 0; } },
   };
@@ -285,15 +286,17 @@ test("update：余额方向非法与 rename 非法用同一套校验", async () 
 
 /* ------------------------------------------------------------------ remove / usageCount */
 
-test("usageCount：五张引用表的计数相加（少算一张就会删掉还在用的科目）", async () => {
+test("usageCount：六张引用表的计数相加（少算一张就会删掉还在用的科目）", async () => {
   const { service, calls } = harness({
     subjects: [subjectRow()],
-    usage: { cashFlowEntry: 2, customerPayment: 3, supplierPayment: 4, receivableReconciliation: 5, supplierPayableReconciliation: 6 },
+    // salaryPayment 自 2026-09-20 起也引用科目（工资付款的「工资支付」）：漏算它，
+    // 财务删除一个只被工资付款引用的科目会撞外键 RESTRICT —— 数据库报错，财务看不懂。
+    usage: { cashFlowEntry: 2, customerPayment: 3, supplierPayment: 4, salaryPayment: 7, receivableReconciliation: 5, supplierPayableReconciliation: 6 },
   });
-  assert.equal(await service.usageCount("subject-1"), 20);
+  assert.equal(await service.usageCount("subject-1"), 27);
   assert.deepEqual(
     calls.count.map((call) => call.table).sort(),
-    ["cashFlowEntry", "customerPayment", "receivableReconciliation", "supplierPayableReconciliation", "supplierPayment"],
+    ["cashFlowEntry", "customerPayment", "receivableReconciliation", "salaryPayment", "supplierPayableReconciliation", "supplierPayment"],
   );
   for (const call of calls.count) assert.deepEqual(call.where, { subjectId: "subject-1" });
 });

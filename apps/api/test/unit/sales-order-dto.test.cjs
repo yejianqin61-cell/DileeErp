@@ -134,6 +134,18 @@ test("字段清单不许分叉：apps/web 的 37 个键必须与后端 SPEC_SCAL
   assert.deepEqual(webSpecScalarKeys(), backend, "前端表单会提交的键必须与后端能接收的键完全一致（顺序也要一致）");
 });
 
+test("列名必须是请求键的机械驼峰：前端靠这条假设回填 37 格", () => {
+  // 前端回填（`apps/web/lib/sales-order-spec.ts` 的 `specFromOrder`）是拿 `snakeToCamel(请求键)`
+  // 去索引接口返回的 Prisma 行。这条假设一旦不成立（有人把请求键改名而没改列名，或反过来），
+  // 前端会**静默**读成空 —— 正是 2026-09-20「材料明细写了、保存了，再打开就又没了」的形态：
+  // 没有报错、没有 400，只是格子里没字，然后再点保存就把库里的值清成 NULL。
+  // `.test.mjs` 那边单独验 `snakeToCamel` 的实现，这里验它算出来的名字与后端表逐个相符。
+  const camel = (key) => key.replace(/_([a-z0-9])/g, (_match, char) => char.toUpperCase());
+  for (const [key, column] of SPEC_SCALAR_FIELDS) {
+    assert.equal(camel(key), column, `${key} 的列名应是机械驼峰 ${camel(key)}，实际是 ${column}`);
+  }
+});
+
 test("新建销售单（整页编辑器）：只填必填项、37 个细化格全空，必须通过校验", async () => {
   const spec = Object.fromEntries(SPEC_SCALAR_FIELDS.map(([key]) => [key, ""]));
   const editorBody = {

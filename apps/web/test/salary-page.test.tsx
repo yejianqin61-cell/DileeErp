@@ -18,6 +18,7 @@
 //   POST   /hr/payroll-ledgers/:id/unpay                  行内冲销：把该台账下已过账的付款整体回退
 //   GET    /hr/payroll-ledgers/payment-sheet.xlsx         按月导出工资付款表（含「是否付款」列）
 //   GET    /finance/banks                                 发放银行下拉的账户池（财务 → 银行账户；停用的不可选）
+//   GET    /finance/accounting-subjects                   会计科目下拉（默认预选「工资支付」，用户 2026-09-20）
 //
 // 2026-09-16 用户：「工资支付那边也是全部要加上银行账户，因为发工资都是要用银行账户发放的工资」。
 // 因此行内付款不再是「点一下直接发请求」，而是先弹窗问清发放银行（必填），请求体固定带 `bank_id`；
@@ -45,11 +46,18 @@ const EP = {
   payables: "/api/v1/hr/payroll-payables",
   payments: "/api/v1/hr/salary-payments",
   banks: "/api/v1/finance/banks",
+  subjects: "/api/v1/finance/accounting-subjects",
   currencies: "/api/v1/dictionaries/currency/items",
 } as const;
 
 type Handler = (url: string, call: StubbedCall) => Response | undefined | Promise<Response | undefined>;
-type SalaryData = Partial<Record<"employees" | "departments" | "positions" | "ledgers" | "payables" | "banks" | "currencies", unknown[]>> & { imported?: Record<string, unknown> };
+type SalaryData = Partial<Record<"employees" | "departments" | "positions" | "ledgers" | "payables" | "banks" | "subjects" | "currencies", unknown[]>> & { imported?: Record<string, unknown> };
+
+/**
+ * 会计科目表（财务 → 会计科目）的一行。默认只给「工资支付」——
+ * 工资付款的会计科目下拉会把它预选上（用户 2026-09-20：确认支付工资时就能归类到工资支付）。
+ */
+const wagePaymentSubject = { id: "subject-wage-payment", category: "成本类", name: "工资支付", balanceDirection: "借", sortOrder: 715, isActive: true };
 
 /** 按月导入的默认响应：一次导入 2 人、新建 2 条。 */
 const importResult = (overrides: Record<string, unknown> = {}) => ({
@@ -72,6 +80,9 @@ function stubSalary(data: SalaryData = {}, extra?: Handler) {
     if (url.startsWith(EP.positions)) return apiOk(data.positions ?? []);
     if (url.startsWith(EP.payables)) return apiOk(data.payables ?? []);
     if (url.startsWith(EP.banks)) return apiOk(data.banks ?? []);
+    // 会计科目：默认给「工资支付」一行（付款弹窗会预选它）。返回**数组**是必须的 ——
+    // 通配的 `apiOk({})` 会让页面在 `subjects.filter` 上直接崩，整页白屏。
+    if (url.startsWith(EP.subjects)) return apiOk(data.subjects ?? [wagePaymentSubject]);
     if (url.startsWith(EP.currencies)) return apiOk(data.currencies ?? []);
     if (url.startsWith(EP.ledgers)) return call.method === "GET" ? apiOk(data.ledgers ?? []) : apiOk({});
     return apiOk({});
@@ -120,6 +131,16 @@ function editCell(ledgerId: string, key: string, value: string) {
 /** 打开 Radix Select 并选中某一项（选项文案即 value 的可读形式）。 */
 async function pickOption(testId: string, optionName: string | RegExp) {
   await userEvent.click(screen.getByTestId(testId));
+  await userEvent.click(await screen.findByRole("option", { name: optionName }));
+}
+
+/**
+ * 会计科目是 `searchable-select`：它的 testid 落在**根 div** 上，点根 div 不会展开
+ * （组件的注释写明了「用例要点它里面的 button」）。所以这里不能复用 `pickOption`。
+ */
+async function pickSubjectOption(optionName: string | RegExp) {
+  const wrapper = screen.getByTestId("action-field-subject_id");
+  await userEvent.click(wrapper.querySelector("button") as HTMLElement);
   await userEvent.click(await screen.findByRole("option", { name: optionName }));
 }
 
@@ -489,6 +510,11 @@ describe("工资管理：工资台账可编辑表格", () => {
     fireEvent.keyDown(cell("pl-1", "payable"), { key: "ArrowLeft" });
     expect(cell("pl-1", "other").className).toContain("payroll-sheet-active");
     fireEvent.keyDown(cell("pl-1", "other"), { key: "ArrowLeft" });
+    // 2026-09-20 起「社保」「个税」插在「早退扣款」与「其他增减」之间（各占一列、可逐格改）
+    expect(cell("pl-1", "tax").className).toContain("payroll-sheet-active");
+    fireEvent.keyDown(cell("pl-1", "tax"), { key: "ArrowLeft" });
+    expect(cell("pl-1", "social").className).toContain("payroll-sheet-active");
+    fireEvent.keyDown(cell("pl-1", "social"), { key: "ArrowLeft" });
     expect(cell("pl-1", "earlyLeave").className).toContain("payroll-sheet-active");
     fireEvent.keyDown(cell("pl-1", "earlyLeave"), { key: "Enter" });
     expect(screen.getByTestId("payroll-cell-input-pl-1-earlyLeave")).toBeInTheDocument();
@@ -496,11 +522,11 @@ describe("工资管理：工资台账可编辑表格", () => {
     expect(screen.queryByTestId("payroll-cell-input-pl-1-earlyLeave")).toBeNull();
   });
 
-  it("表格展示六个可编辑类目列 + 只读格 + 合计行，金额不带四位尾零", async () => {
+  it("表格展示八个可编辑类目列（含社保与个税）+ 只读格 + 合计行，金额不带四位尾零", async () => {
     stubSalary({ ledgers: [workshopLedger, officeLedger] });
     await openSalary();
     const table = panel("工资台账");
-    for (const [key, header] of [["baseSalary", "基本工资"], ["performance", "绩效"], ["housing", "房补"], ["late", "迟到扣款"], ["absence", "旷工扣款"], ["earlyLeave", "早退扣款"], ["other", "其他增减"], ["payable", "应发"], ["paid", "已付"], ["outstanding", "未付"], ["currency", "币种"]]) {
+    for (const [key, header] of [["baseSalary", "基本工资"], ["performance", "绩效"], ["housing", "房补"], ["late", "迟到扣款"], ["absence", "旷工扣款"], ["earlyLeave", "早退扣款"], ["social", "社保"], ["tax", "个税"], ["other", "其他增减"], ["payable", "应发"], ["paid", "已付"], ["outstanding", "未付"], ["currency", "币种"]]) {
       expect(table.getByTestId(`payroll-sheet-head-${key}`)).toHaveTextContent(header);
     }
     expect(table.getByTestId("payroll-cell-pl-1-baseSalary")).toHaveTextContent("1234.5");
@@ -689,7 +715,7 @@ describe("工资管理：工资付款（当月台账只留总工资，操作在�
     await payRow("pl-2");
     await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
     const call = postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0];
-    expect(bodyOf(call)).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "现金", bank_id: "bank-1" });
+    expect(bodyOf(call)).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "现金", bank_id: "bank-1", subject_id: "subject-wage-payment" });
     await expectToast("张三 已付款 1234.5");
   });
 
@@ -804,7 +830,59 @@ describe("工资管理：工资付款的发放银行", () => {
     await pickOption("action-field-bank_id", /农业银行/);
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
-    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0])).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "银行转账", bank_id: "bank-1" });
+    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0])).toEqual({ amount: "1234.5", payment_date: "2026-03-25", payment_method: "银行转账", bank_id: "bank-1", subject_id: "subject-wage-payment" });
+  });
+
+  /* ------------------------------------------------------------------ 会计科目（2026-09-20） */
+
+  it("付款弹窗带会计科目，默认预选「工资支付」：不改也能归对科目", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: activeBanks });
+    await openSalary("payments");
+
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    // 科目表里有「工资支付」→ 弹窗一打开就选好它（好做账、好出表）
+    expect(screen.getByTestId("action-field-subject_id")).toHaveTextContent("成本类 / 工资支付");
+
+    await pickOption("action-field-bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0]).subject_id).toBe("subject-wage-payment");
+  });
+
+  it("付款弹窗可以改选别的会计科目，也可以显式选「不指定」回到按来源自动归类", async () => {
+    const calls = stubSalary({
+      ledgers: [confirmedLedger],
+      banks: activeBanks,
+      subjects: [wagePaymentSubject, { id: "subject-other", category: "损益类", name: "管理费用", balanceDirection: "借", sortOrder: 1030, isActive: true }],
+    });
+    await openSalary("payments");
+
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await pickSubjectOption(/损益类 \/ 管理费用/);
+    await pickOption("action-field-bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0]).subject_id).toBe("subject-other");
+
+    // 「不指定」= 不发 subject_id，让后端走自己的候选链（首位就是工资支付），
+    // 而不是发一个空串（DTO 的 @IsUUID 会判非法）。
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await pickSubjectOption(/不指定/);
+    await pickOption("action-field-bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(2));
+    expect("subject_id" in (bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[1]) as Record<string, unknown>)).toBe(false);
+  });
+
+  it("科目表里没有「工资支付」时不预选，提交也不带 subject_id（老库还没迁移也能付款）", async () => {
+    const calls = stubSalary({ ledgers: [confirmedLedger], banks: activeBanks, subjects: [] });
+    await openSalary("payments");
+
+    await userEvent.click(screen.getByTestId("salary-pay-button-pl-2"));
+    await pickOption("action-field-bank_id", /农业银行/);
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")).toHaveLength(1));
+    expect("subject_id" in (bodyOf(postsTo(calls, "/hr/payroll-ledgers/pl-2/pay")[0]) as Record<string, unknown>)).toBe(false);
   });
 
   it("付款表展示发放银行：已过账付款显示「名称（账号）」，没有银行的显示 -", async () => {
@@ -1018,6 +1096,8 @@ describe("工资管理：工资付款的批量付款", () => {
       payment_date: "2026-03-25",
       payment_method: "现金",
       bank_id: "bank-1",
+      // 整批共用一个会计科目，与发放银行同一套「只问一次」的口径（用户 2026-09-20）
+      subject_id: "subject-wage-payment",
     });
     await expectToast("2 人已付款，合计 6234.5");
     await waitFor(() => expect(checkbox("pl-2").checked).toBe(false));

@@ -31,38 +31,48 @@ const SAMPLE1_DETAILS = [
 const SAMPLE2_DETAILS = ["Eva", "Hawái", "Dalila", "Kassem", "Fares", "Kalili", "Abdala", "Sari", "Amaya", "Zainab fares", "Asía fares", "Fátima ale", "Afef Kassem", "Salim", "Alaya"]
   .map((name, index) => ({ groupName: "伞头配色", name, color: "配色按图片", quantity: new Prisma.Decimal("167"), unit: "打", barcode: `4894300069470`, sortOrder: index }));
 
+/**
+ * ⚠️ 形状 = **真实 Prisma 行**：`prisma.salesOrder.findFirst()` 返回的字段名是 schema 里的
+ * `camelCase` 列名（`@map("rib_spec")` 只改数据库列名，不改客户端字段名）。
+ *
+ * 这里以前写的是**请求键**（`rib_spec`），也就是 `POST /sales-orders` 的 body 形状——不是读出来的
+ * 形状。于是「按请求键去索引 camelCase 行」这个错在测试里永远读得到值、全绿，而真实导出
+ * 除了 `factory`（键名与列名恰好相同）之外一个字都印不出来。用户 2026-09-20 的
+ * 「材料明细写了、保存了，再打开就又没有了」与这是同一个根因，所以这份夹具必须一直保持
+ * **Prisma 行形状**，不许再退回请求键。
+ */
 const sample1 = () => ({
   id: "order-1", orderNo: "DL260134", orderDate: new Date("2026-06-18T00:00:00.000Z"), deliveryDate: new Date("2026-07-30T00:00:00.000Z"),
   productName: "50cm*5K 三折手开碳纤维伞", productSpec: null, quantity: new Prisma.Decimal("1960"), unit: "支", createdBy: user.id,
   customer: { name: "家百纳", countryRegion: "日本" }, specDetails: SAMPLE1_DETAILS,
-  factory: "JBN", completion_remark: "进仓",
-  attention_note: "1、此订单共12款图案，对应数量请参考伞布规格；2、布套、吊牌、吊牌绳7月24日提前出货，越快越好；3、此订单都需使用防水线；4、魔术贴颜色统一用黑色",
-  rib_spec: "50cm*5K三折手开双碳纤骨双黑铝骨;7.6三折黑铝圆形顺杆中棒，配伞头尾",
-  canopy_spec: "30D全遮光黑涂层（30D贴膜），数码印刷，共12款设计图案",
-  handle_spec: "宇豪兴配套伞头（薄型黑色成型把手+黑色圆形弹力伞带）",
-  handle_strap_spec: "黑色圆形弹力伞头带", tail_spec: "宇豪兴配套伞尾", runner_spec: "配套黑色一体伞珠",
-  strap_spec: "1.5cm本布伞带+魔术贴", strap_fastener_spec: "黑色粘扣", inner_label_spec: "无", woven_label_spec: "无",
-  hang_tag_spec: "一张，正反面印刷", opp_spec: "一支一个（厚度：4C）", bag_spec: "本布袖口套+提耳",
-  packaging_spec: "1支一个opp袋，60支一个外箱+内围，无内盒",
-  sample_requirement: "大货样：每个设计各1支", cutting_requirement: "小裁要求：4层",
-  edge_requirement: "伞边普通三卷，伞带缝合用产品相同布料", joining_requirement: "10针（此订单都需使用防水线！）",
-  top_stitch_requirement: "三圈，缝线不外露", sewing_requirement: "手缝三步",
-  hang_tag_note: "吊牌与布套都需提前出货，布套每捆需要标明数量", qc_requirement: "所有材料和成品都要质检报告",
-  shipping_mark_front: "（正唛图稿）", shipping_mark_side: "参考伞布规格对应的品番和颜色",
-  fabric_usage_canopy: "1.2", fabric_usage_strap: "0.3",
+  factory: "JBN", completionRemark: "进仓",
+  attentionNote: "1、此订单共12款图案，对应数量请参考伞布规格；2、布套、吊牌、吊牌绳7月24日提前出货，越快越好；3、此订单都需使用防水线；4、魔术贴颜色统一用黑色",
+  ribSpec: "50cm*5K三折手开双碳纤骨双黑铝骨;7.6三折黑铝圆形顺杆中棒，配伞头尾",
+  canopySpec: "30D全遮光黑涂层（30D贴膜），数码印刷，共12款设计图案",
+  handleSpec: "宇豪兴配套伞头（薄型黑色成型把手+黑色圆形弹力伞带）",
+  handleStrapSpec: "黑色圆形弹力伞头带", tailSpec: "宇豪兴配套伞尾", runnerSpec: "配套黑色一体伞珠",
+  strapSpec: "1.5cm本布伞带+魔术贴", strapFastenerSpec: "黑色粘扣", innerLabelSpec: "无", wovenLabelSpec: "无",
+  hangTagSpec: "一张，正反面印刷", oppSpec: "一支一个（厚度：4C）", bagSpec: "本布袖口套+提耳",
+  packagingSpec: "1支一个opp袋，60支一个外箱+内围，无内盒",
+  sampleRequirement: "大货样：每个设计各1支", cuttingRequirement: "小裁要求：4层",
+  edgeRequirement: "伞边普通三卷，伞带缝合用产品相同布料", joiningRequirement: "10针（此订单都需使用防水线！）",
+  topStitchRequirement: "三圈，缝线不外露", sewingRequirement: "手缝三步",
+  hangTagNote: "吊牌与布套都需提前出货，布套每捆需要标明数量", qcRequirement: "所有材料和成品都要质检报告",
+  shippingMarkFront: "（正唛图稿）", shippingMarkSide: "参考伞布规格对应的品番和颜色",
+  fabricUsageCanopy: new Prisma.Decimal("1.2"), fabricUsageStrap: new Prisma.Decimal("0.3"),
 });
 
 const sample2 = () => ({
   id: "order-2", orderNo: "DL260001-1 FLOWER1", orderDate: new Date("2025-12-15T00:00:00.000Z"), deliveryDate: null,
   productName: "21.5\"X8K三折自动开双层伞", productSpec: null, quantity: new Prisma.Decimal("2505"), unit: "打", createdBy: "u-2",
   customer: { name: "IS", countryRegion: null }, specDetails: SAMPLE2_DETAILS,
-  rib_spec: "21.5\"X8K三折自动伞，黑色电着铁中棒", canopy_spec: "双层：外层足178T碰击花布，内层足155T涤纶素色布",
-  tail_spec: "配色喷PU棉塑料伞尾", runner_spec: "黑镍色西德珠", strap_spec: "本布伞带，足3.3CM",
-  inner_label_spec: "4x18cm 对折条码内标", hang_tag_spec: "5.5x11.5cm 新款红色双面吊牌",
-  keychain_spec: "1支一个钥匙扣，挂在伞头带上", opp_spec: "一支一个OPP袋,印刷白色LOGO",
-  bag_spec: "本布斜切口布套加卡其色F9097包边", printing_spec: "伞面和布套无印刷", top_fabric_spec: "透明天布", wood_ear_spec: "黑色海绵木耳花",
-  sample_requirement: "产前样：各色1支", top_stitch_requirement: "三圈", sewing_requirement: "枪打两步",
-  hang_tag_note: "吊牌图稿发客人确认", qc_requirement: "出货前发给客人质量检测报告",
+  ribSpec: "21.5\"X8K三折自动伞，黑色电着铁中棒", canopySpec: "双层：外层足178T碰击花布，内层足155T涤纶素色布",
+  tailSpec: "配色喷PU棉塑料伞尾", runnerSpec: "黑镍色西德珠", strapSpec: "本布伞带，足3.3CM",
+  innerLabelSpec: "4x18cm 对折条码内标", hangTagSpec: "5.5x11.5cm 新款红色双面吊牌",
+  keychainSpec: "1支一个钥匙扣，挂在伞头带上", oppSpec: "一支一个OPP袋,印刷白色LOGO",
+  bagSpec: "本布斜切口布套加卡其色F9097包边", printingSpec: "伞面和布套无印刷", topFabricSpec: "透明天布", woodEarSpec: "黑色海绵木耳花",
+  sampleRequirement: "产前样：各色1支", topStitchRequirement: "三圈", sewingRequirement: "枪打两步",
+  hangTagNote: "吊牌图稿发客人确认", qcRequirement: "出货前发给客人质量检测报告",
   // 样本2 没有布量区
 });
 
@@ -155,10 +165,35 @@ test("样本2：没有布量区（整块不印），伞头配色带条码，15×
 });
 
 test("工艺要求跳号要重排：只填打顶与质检时是 1./2.，不能出现 5./9.", () => {
-  const order = { ...sample1(), rib_spec: null, canopy_spec: null, handle_spec: null, handle_strap_spec: null, tail_spec: null, runner_spec: null, strap_spec: null, strap_fastener_spec: null, inner_label_spec: null, woven_label_spec: null, hang_tag_spec: null, opp_spec: null, bag_spec: null, packaging_spec: null, sample_requirement: null, cutting_requirement: null, edge_requirement: null, joining_requirement: null, sewing_requirement: null, hang_tag_note: null };
+  const order = { ...sample1(), ribSpec: null, canopySpec: null, handleSpec: null, handleStrapSpec: null, tailSpec: null, runnerSpec: null, strapSpec: null, strapFastenerSpec: null, innerLabelSpec: null, wovenLabelSpec: null, hangTagSpec: null, oppSpec: null, bagSpec: null, packagingSpec: null, sampleRequirement: null, cuttingRequirement: null, edgeRequirement: null, joiningRequirement: null, sewingRequirement: null, hangTagNote: null };
   const doc = fakeService(order).document(order, "张三");
   assert.deepEqual(doc.processLines, ["1.三圈，缝线不外露", "2.所有材料和成品都要质检报告"]);
   assert.deepEqual(doc.materialLines, [], "材料全空时整块为空");
+});
+
+test("回归 2026-09-20：Prisma 行（camelCase 列名）必须读得出——材料/工艺/布量/注意事项都不许是空的", () => {
+  // 这条用例是那次「材料明细写了、保存了、再打开就又没有了」的回归钉子。
+  // 修之前：`materialLines` 是 0 行、`processLines` 是 0 条、`fabricUsage` 是空数组、
+  // `attentionNote` 是空串——工艺单要发给工厂，材料那一整块是空白的。
+  const doc = fakeService(sample1()).document(sample1(), "张三");
+  assert.equal(doc.factory, "JBN", "factory 的键名与列名恰好相同，所以它以前是唯一「碰巧没坏」的一个");
+  assert.match(doc.attentionNote, /^1、此订单共12款图案/);
+  assert.equal(doc.completionText, "2026.7.30进仓", "完工日期后缀也要读到，不能只剩日期");
+  assert.equal(doc.materialLines.length, 14, "材料明细整块要在（修之前是 0 行）");
+  assert.equal(doc.processLines.length, 8, "工艺要求整块要在（修之前是 0 条）");
+  assert.deepEqual(doc.fabricUsage.map((line) => line.value), ["1.2", "0.3"], "布量是 Decimal 列，也要读成文本");
+  assert.equal(doc.shippingMarkFront, "（正唛图稿）");
+});
+
+test("回归：版本快照形状（请求键 snake_case）也读得出——读侧两种键名都认", () => {
+  // `sales_order_versions.snapshot` 存的是**请求键**（v1 快照就是它把用户填的值留下来的）。
+  // 读侧如果只认列名，从快照渲染的路径又会断一次。
+  const snapshotShaped = { ...sample1(), rib_spec: "快照里的伞骨", attention_note: "快照里的注意事项" };
+  delete snapshotShaped.ribSpec;
+  delete snapshotShaped.attentionNote;
+  const doc = fakeService(snapshotShaped).document(snapshotShaped, "张三");
+  assert.equal(doc.materialLines.find((line) => line.label === "伞骨（孔对孔）").value, "快照里的伞骨");
+  assert.equal(doc.attentionNote, "快照里的注意事项");
 });
 
 test("明细合计与单头数量不一致时给出核对提示", () => {

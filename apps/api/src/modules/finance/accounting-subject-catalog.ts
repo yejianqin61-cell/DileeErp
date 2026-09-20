@@ -155,6 +155,42 @@ export const ACCOUNTING_SUBJECTS: readonly AccountingSubjectSeed[] = [
   { category: "损益类", name: "所得税费用", balanceDirection: "借", sortOrder: 1210 },
 ];
 
+/**
+ * 系统补充科目：**不在财务那张 `科目表(2).xls` 里**、因业务需要由我们新增的科目。
+ *
+ * 为什么单独一份清单而不是直接塞进 `ACCOUNTING_SUBJECTS`：`ACCOUNTING_SUBJECTS` 的口径是
+ * 「财务科目表 A2:H122 共 121 行的照抄」，`apps/api/test/unit/accounting-subject-catalog.test.cjs`
+ * 用长度与分类计数守着这一点（它是「老库升级 / 新库初始化种出同一张表」的唯一保障）。
+ * 把新增科目混进去，那条守卫就会为了迁就我们而放松，以后再也分不清「哪些是财务的表、
+ * 哪些是我们加的」。
+ *
+ * 种入时用 `ACCOUNTING_SUBJECT_SEEDS`（= 表 + 补充），两处清单都走 `@@unique([category, name])`
+ * 做幂等 upsert，所以重复执行安全。
+ *
+ * ⚠️ 新增一项时 `sortOrder` 必须**全局唯一**且落在同一分类的连续区间内
+ * （分类必须整块连续，否则列表与报表的「分类小计」会被拆成两行）。
+ */
+export const SUPPLEMENTARY_SUBJECTS: readonly AccountingSubjectSeed[] = [
+  // 用户 2026-09-20：「工资的确认支付也要加上会计科目，会计科目里面多加一个工资支付。
+  // 这样确认支付工资的时候就能归类到工资支付里面。好做账，好出表。」
+  // 归在成本类、挨着「临时工资」（同为工资性质的支出科目），sortOrder 715 落在
+  // 临时工资 610…印刷费 710 之后、所有者权益类 720 之前，保持成本类整块连续。
+  { category: "成本类", name: "工资支付", balanceDirection: "借", sortOrder: 715 },
+];
+
+/**
+ * 实际种入库里的**全部**科目 = 财务科目表 + 系统补充，**按 sortOrder 归并成一张有序表**。
+ *
+ * 为什么要显式排序而不是简单拼接：拼接会让补充科目（如「工资支付」715）排到数组最末尾，
+ * 于是这份常量既不是科目表的阅读顺序，也不再满足「同分类连续 / sortOrder 递增」这两条
+ * 守卫测试守着的性质（写库本身不受影响 —— seed 用 upsert 且显式带 sortOrder —— 但常量读起来
+ * 会自相矛盾：`ACCOUNTING_SUBJECT_SEEDS` 明明就是「全量科目表」的样子）。
+ */
+export const ACCOUNTING_SUBJECT_SEEDS: readonly AccountingSubjectSeed[] = [
+  ...ACCOUNTING_SUBJECTS,
+  ...SUPPLEMENTARY_SUBJECTS,
+].sort((left, right) => left.sortOrder - right.sortOrder);
+
 /** 科目在代码里的稳定标识：`分类/名称`（老表没有唯一编码，两段拼起来才是唯一的）。 */
 export function accountingSubjectKey(category: string, name: string): string {
   return `${category}/${name}`;
@@ -293,8 +329,15 @@ export function legacySubjectOf(legacyKey: string): LegacyCashFlowItemSubject | 
 export const PAYMENT_SUBJECT_NAMES = {
   /** 收到客户货款（收）。 */
   customer_payment: ["主营业务收入"],
-  /** 工资付款（支）。 */
-  salary_payment: ["临时工资", "基本生产成本"],
+  /**
+   * 工资付款（支）。
+   *
+   * 2026-09-20 用户要求给工资付款一个专门的科目「工资支付」（见 SUPPLEMENTARY_SUBJECTS）：
+   * 排在候选链第一位，于是**不额外选科目时也会自动归到「工资支付」**，好做账好出表。
+   * 后面两个保留原样，只为兼容「科目被停用/改名」的历史环境 —— 一条候选都不命中会让整笔
+   * 资金动账写不进流水（`CashFlowService` 会抛 ACCOUNTING_SUBJECT_NOT_FOUND，而不是静默跳过）。
+   */
+  salary_payment: ["工资支付", "临时工资", "基本生产成本"],
   /** 原料入库形成的应付付款（支）。 */
   raw_material_inbound: ["主营业务成本", "原材料"],
   /** 到货单来源（已禁用，仅兼容历史数据）。 */
