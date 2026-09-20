@@ -15,7 +15,8 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { ErrorState, LoadingState } from "../feedback/states";
 import { notifyError, notifySuccess } from "../ui/toaster";
-import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { apiErrorText } from "../../lib/api-error-text";
 import { fetchCurrencyOptions, currencyOptionsWithCurrent, type CurrencyOption } from "../../lib/currency-catalogue";
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
@@ -47,7 +48,38 @@ const BASE_FIELDS: ReadonlyArray<{ key: string; label: string; type?: "textarea"
 
 const SETTLEMENT_METHODS: ReadonlyArray<readonly [string, string]> = [["", "（不填）"], ["tt", "T/T 电汇"], ["letter_of_credit", "信用证"], ["cash", "现金"], ["monthly", "月结"], ["other", "其他"]];
 
-const errorOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
+/**
+ * 后端字段名 → 界面中文名，用于把 400 的原因说到具体一格（`lib/api-error-text`）。
+ *
+ * 直接从上面这几张**已经在用的**清单拼出来，不另抄一份：抄一份的下场是「界面改了名字、
+ * 报错还叫着旧名字」，而这种漂移没人会去看。整块数组的键（`spec_details`）也登记，
+ * 这样「整行不合法」也能说成「细分明细：…」。
+ */
+const FIELD_LABELS: Record<string, string> = {
+  ...Object.fromEntries(BASE_FIELDS.map((field) => [field.key, field.label])),
+  ...Object.fromEntries(SPEC_HEADER_FIELDS),
+  ...Object.fromEntries(SPEC_FABRIC_FIELDS),
+  ...Object.fromEntries(SPEC_MATERIAL_FIELDS),
+  ...Object.fromEntries(SPEC_PROCESS_FIELDS),
+  ...Object.fromEntries(SPEC_DETAIL_COLUMNS),
+  spec_details: "细分明细",
+  customer_id: "客户",
+  contact_id: "联系人",
+  settlement_method: "结算方式",
+  order_date: "下单日期",
+  delivery_date: "交货日期",
+  unit: "单位",
+  currency: "币种",
+};
+
+/**
+ * 失败原因：`apiErrorText` 会把后端的字段级 details 接在消息后面。
+ *
+ * 为什么不能只显示 `cause.message`（2026-09-20 现场问题）：DTO 校验失败时后端回的一直是
+ * 「请求参数校验失败」+ `details: [{ field, rule, message }]`，而这里原来只取了 message，
+ * 于是「明细第 2 行数量不是数字」和「布量填了字母」在界面上长得一模一样，用户只能盲试。
+ */
+const errorOf = (cause: unknown, fallback: string) => apiErrorText(cause, fallback, FIELD_LABELS);
 
 export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const router = useRouter();

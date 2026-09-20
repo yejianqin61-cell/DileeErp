@@ -47,7 +47,7 @@ function fileForm(field, fileName, mimeType, content) {
 async function postMultipart(cookie, path, form) {
   const response = await fetch(new URL(path, baseUrl), { body: form, headers: { cookie }, method: "POST" });
   const contentType = response.headers.get("content-type") ?? "";
-  const body = contentType.includes("application/json") ? await response.json().catch(() => ({})) : await response.text().catch(() => "");
+  const body = contentType.includes("application/json") ? await response.json().catch(() => ({})) : Buffer.from(await response.arrayBuffer()).toString("latin1");
   return { body, contentType, headers: response.headers, requestId: response.headers.get("x-request-id"), status: response.status };
 }
 
@@ -152,8 +152,12 @@ test("stocktake.import_requires_an_excel_file_and_validates_the_period_month", a
   const noFile = await client.post(`${P}/import`, { period_month: "2026-09" });
   expectBusinessRuleViolation(noFile, { code: "STOCKTAKE_IMPORT_FILE_REQUIRED", context: "JSON 体没有文件" });
 
-  // 非 Excel 被 Multer 白名单挡下（cb(null, false)）→ 落到同一个「没有文件」的 422
-  const wrongType = await client.multipart(`${P}/import`, fileForm("file", "probe.txt", "text/plain", "not an excel"));
+  // 非 Excel 被 Multer 白名单挡下（cb(null, false)）→ 落到同一个「没有文件」的 422。
+  // **必须带上合法的 period_month**：DTO 校验先于控制器执行，少了月份就会先撞 400
+  // （见下一条用例），那样这一层文件白名单永远测不到。
+  const wrongTypeForm = fileForm("file", "probe.txt", "text/plain", "not an excel");
+  wrongTypeForm.append("period_month", "2026-09");
+  const wrongType = await client.multipart(`${P}/import`, wrongTypeForm);
   expectBusinessRuleViolation(wrongType, { code: "STOCKTAKE_IMPORT_FILE_REQUIRED", context: "上传 .txt" });
 
   // 盘点月份格式在 DTO 层拦下（400），且发生在文件检查之前
@@ -231,7 +235,12 @@ test("stocktake.line_update_validates_actual_quantity_at_the_guard_layer", async
     const response = await client.patch(`${P}/lines/${id}`, { actual_quantity });
     expectValidationError(response, { context: `PATCH lines actual_quantity=${actual_quantity}` });
     assert.equal(response.body.error.details[0].field, "actual_quantity");
-    assert.equal(response.body.error.details[0].rule, "matches");
+    // 该字段同时挂着 @IsDecimal 与 @Matches，两条都在 details 里（isDecimal 在前）。
+    // 断言「含可读的那条中文规则」而不是「第 0 条是谁」——按位置断言会随装饰器顺序假红。
+    assert.ok(
+      response.body.error.details.some((detail) => detail.rule === "matches"),
+      `应给出可读的格式规则；实际 ${JSON.stringify(response.body.error.details)}`,
+    );
   }
   // 0 通过校验层（随后因行不存在而 404，说明它没有被 400 拦下）
   const zero = await client.patch(`${P}/lines/${id}`, { actual_quantity: "0" });

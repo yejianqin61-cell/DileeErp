@@ -109,7 +109,7 @@ test("KNOWN_CONTRACT_DEFECT D9: unknown query params are rejected on DTO endpoin
   expectSuccessEnvelope(ignored);
 });
 
-test("KNOWN_CONTRACT_DEFECT D10: nested DTO validation failures lose their details", async () => {
+test("contract D10: nested DTO validation failures keep their details, with a locatable field path", async () => {
   const session = await adminSession();
   const client = apiClient(baseUrl, { cookie: session.cookie });
 
@@ -118,12 +118,22 @@ test("KNOWN_CONTRACT_DEFECT D10: nested DTO validation failures lose their detai
   assert.equal(topLevel.status, 400);
   assert.equal(topLevel.body.error.details[0].field, "bogus_field");
 
-  // 嵌套数组里的错误则丢掉全部 details：exceptionFactory 只读顶层 error.constraints，
-  // 不递归 error.children（api-exception.filter.ts:26）
+  // 嵌套数组里的错误同样必须给出 details（曾经是空数组：exceptionFactory 只读顶层 constraints）。
+  // 修复：`platform/http/validation-exception.factory.ts` 递归 error.children，并把数组下标写成 `[n]`。
   const nested = await client.post("/api/v1/purchase-orders", { items: [{ quantity: "not-a-decimal" }], order_no: "PROBE-NESTED", supplier_id: "00000000-0000-4000-8000-000000000000" });
   assert.equal(nested.status, 400, "嵌套校验失败仍应是 400");
   expectErrorEnvelope(nested, { code: "VALIDATION_ERROR", status: 400 });
-  assert.deepEqual(nested.body.error.details, [], "当前实现会丢掉嵌套字段错误 —— 修复后此断言应变红，请同步更新");
+  const nestedDetails = nested.body.error.details;
+  assert.ok(nestedDetails.length > 0, "嵌套字段的错误必须出现在 details 里（D10 已修复），而不是空数组");
+  for (const detail of nestedDetails) {
+    assert.equal(typeof detail.field, "string");
+    assert.equal(typeof detail.rule, "string");
+    assert.equal(typeof detail.message, "string");
+  }
+  assert.ok(
+    nestedDetails.some((detail) => /^items\[\d+\]\./.test(detail.field)),
+    `至少有一条明细字段级错误应能定位到 items[n].xxx，实际：${JSON.stringify(nestedDetails)}`,
+  );
 });
 
 test("KNOWN_CONTRACT_DEFECT D7: report meta.total reports the page length for four endpoints", async () => {

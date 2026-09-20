@@ -8,6 +8,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
+import { EmptyStringToNull } from "../../platform/http/empty-string-to-null.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { SalesOrdersService } from "./sales-orders.service";
 import { SalesOrderExportService } from "./sales-order-export.service";
@@ -38,6 +39,13 @@ class SpecDetailDto {
  * 这里**故意不加 `EmptyStringToUndefined`**：空串的语义是「清除这一格」（服务层的 `specScalars`
  * 把 "" 落成 NULL），而 `EmptyStringToUndefined` 会把它变成 undefined 也就是「不动」——
  * 两者写反的后果正好相反（「删了没保存上」 vs 「只改一格结果把别的清空了」）。
+ *
+ * ⚠️ 但**数值列（5 个布量）必须显式加 `EmptyStringToNull`**，否则「清除这一格」根本走不到服务层：
+ * 文本列的 `@IsString()` 放行空串，而 `@IsOptional()` 只跳过 null/undefined，`""` 会走到
+ * `@Matches` / `@IsDecimal` 上被判成「不是合法小数」→ 新建销售单必然 400。
+ * 前端 `specPayload` 是**把 37 个键全带上**的（不带就永远清不掉一格），所以布量留空 = 每次必踩。
+ * `EmptyStringToNull` 把空串变成 `null`：校验能过（`@IsOptional()` 跳过 null），
+ * 服务层 `specScalars` 把 null 原样落库 —— 与文本列的空串**同一个语义**（清除），不是「不动」。
  */
 export class SalesOrderSpecDto {
   // 表头补充
@@ -47,11 +55,12 @@ export class SalesOrderSpecDto {
   @IsOptional() @IsString() @MaxLength(2000) shipping_mark_front?: string;
   @IsOptional() @IsString() @MaxLength(2000) shipping_mark_side?: string;
   // 布量（伞面 / 伞带 / 木耳 / 天布 / 布套）
-  @IsOptional() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_canopy?: string;
-  @IsOptional() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_strap?: string;
-  @IsOptional() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_wood_ear?: string;
-  @IsOptional() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_top?: string;
-  @IsOptional() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_bag?: string;
+  // 这 5 个是上面 37 格里**仅有的数值格**，空串必须先归一成 null 才能过校验（见类注释）。
+  @IsOptional() @EmptyStringToNull() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_canopy?: string | null;
+  @IsOptional() @EmptyStringToNull() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_strap?: string | null;
+  @IsOptional() @EmptyStringToNull() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_wood_ear?: string | null;
+  @IsOptional() @EmptyStringToNull() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_top?: string | null;
+  @IsOptional() @EmptyStringToNull() @Matches(NON_NEGATIVE_DECIMAL, { message: "布量必须是不小于 0 的十进制数" }) @IsDecimal() fabric_usage_bag?: string | null;
   // 材料明细（两样本并集 18 项）
   @IsOptional() @IsString() @MaxLength(1000) rib_spec?: string;
   @IsOptional() @IsString() @MaxLength(1000) canopy_spec?: string;

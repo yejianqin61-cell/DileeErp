@@ -335,12 +335,16 @@ test("production_orders.operations_routes_validate_their_bodies", async () => {
   expectValidationError(tooMany, { code: "VALIDATION_ERROR", context: "batch 51 项" });
   assert.equal(ruleFor(tooMany, "operations"), "arrayMaxSize");
 
-  // KNOWN_DEFECT（已记录为 recon 的 D10 / nested_dto_validation_loses_details）：嵌套数组元素的
-  // 校验错误全部落空 —— exceptionFactory 只读顶层 error.constraints，不递归 error.children
-  // （api-exception.filter.ts:26），因此 details 是空数组，客户端拿不到字段定位。
+  // D10 已修复（2026-09-20）：exceptionFactory 现在递归 error.children
+  // （platform/http/validation-exception.factory.ts），嵌套数组元素的错误会带上
+  // `operations[0].operation_id` 这样的可定位路径 —— 客户端终于能指出是哪一行错了。
+  // 这条断言原本钉的是「details 是空数组」（旧缺陷），现在反过来钉「路径必须出现」。
   const nested = await asAdmin((client) => client.post(`${ORDERS}/${UNKNOWN_ID}/operations/batch`, { operations: [{ operation_id: "not-a-uuid", target_quantity: 1 }] }));
   expectValidationError(nested, { code: "VALIDATION_ERROR", context: "batch 嵌套字段非法" });
-  assert.deepEqual(nested.body.error.details, [], "嵌套元素错误丢失 details（D10）；修复后此断言应变红");
+  assert.ok(
+    nested.body.error.details.some((detail) => detail.field === "operations[0].operation_id"),
+    `嵌套元素错误必须带可定位路径（D10 回归护栏）；实际 ${JSON.stringify(nested.body.error.details)}`,
+  );
 
   // 取消工序（controller.ts:17）：reason 必填
   const cancel = await asAdmin((client) => client.post(`${ORDERS}/${UNKNOWN_ID}/operations/${UNKNOWN_ID}/cancel`, {}));

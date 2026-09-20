@@ -204,6 +204,14 @@ const ENDPOINTS = [
   endpoint("procurement-master-data.suppliers", "modules/procurement/procurement-master-data.controller.ts", "GET", "/api/v1/suppliers", {
     allow: { procurement: 200 }, deny: ["warehouse", NO_MODULE], note: "类级 procurement",
   }),
+  // 物料清单批量导入（2026-09-20）：批量只是「新建物料」的批量入口，与 POST /materials 同一档权限，
+  // 不额外要求管理员（与盘点导入的理由一致）。procurement 角色过了守卫后因没有文件而 422。
+  // 注意管理员探测的期望值必须**显式声明**：默认规则是「非 GET 一律 400」
+  // （见 administrator_short_circuits... 里的 `entry.allow[ADMIN] ?? (GET ? 200 : 400)`），
+  // 而这条路由是 multipart，空 body 会走到控制器的「没有文件」业务检查 → 422 而不是 400。
+  endpoint("procurement-master-data.materials-import", "modules/procurement/procurement-master-data.controller.ts", "POST", "/api/v1/materials/import", {
+    allow: { administrator: 422, procurement: "not403" }, body: {}, deny: ["warehouse", NO_MODULE], note: "类级 procurement；导入模板 GET /materials/import-template.xlsx 同权限",
+  }),
   endpoint("purchase-order-export.single", "modules/procurement/purchase-order-export.controller.ts", "GET", "/api/v1/procurement/reports/purchase-order.xlsx", {
     allow: { administrator: "not403" }, deny: ["procurement", NO_MODULE], note: "procurement 且 admin", require: "admin",
   }),

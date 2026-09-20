@@ -267,16 +267,19 @@ test("purchase_orders.create_validates_body_before_touching_the_database", async
   expectErrorEnvelope(unknownField, { code: "VALIDATION_ERROR", context: "POST /purchase-orders（未知字段）", status: 400 });
   assert.equal(detailFor(unknownField.body, "bogus_field").rule, "whitelistValidation");
 
-  // KNOWN_CONTRACT_DEFECT（D10，责任文件 apps/api/src/platform/http/api-exception.filter.ts:26）：
-  // 嵌套数组（items[]）里的校验错误只读顶层 error.constraints，不递归 error.children，
-  // 因此 details 被丢空 —— 客户端拿不到任何字段级定位。修复后此断言应变红。
+  // D10 已修复（2026-09-20）：exceptionFactory 递归 error.children（platform/http/validation-exception.factory.ts），
+  // 嵌套数组里的错误会带 `items[0].material_id` 这样的路径。这条断言原本钉「details 被丢空」，
+  // 现在反过来钉「嵌套路径必须出现」——即 D10 的回归护栏。
   const nested = await client.post("/api/v1/purchase-orders", {
     items: [{ quantity: "not-a-decimal" }],
     order_no: "PROBE-NESTED",
     supplier_id: UNKNOWN_ORDER_ID,
   });
   expectErrorEnvelope(nested, { code: "VALIDATION_ERROR", context: "POST /purchase-orders（嵌套 items 非法）", status: 400 });
-  assert.deepEqual(nested.body.error.details, [], "当前实现会丢掉嵌套字段错误（D10）");
+  assert.ok(
+    nested.body.error.details.some((detail) => String(detail.field).startsWith("items[0].")),
+    `嵌套数组元素必须带可定位路径（D10 回归护栏）；实际 ${JSON.stringify(nested.body.error.details)}`,
+  );
 
   // DTO 合法但业务前置条件不满足：refs() 在**任何事务之前**抛错（purchase-orders.service.ts:135-136），
   // 因此这条探测不会写入任何数据，却覆盖了「业务 404」这一层。

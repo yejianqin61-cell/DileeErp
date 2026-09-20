@@ -44,6 +44,13 @@ function apiClient(baseUrl, options = {}) {
   /**
    * 发起请求。返回 { status, body, headers, requestId }。
    * body 解析失败时回退为 {}（204 空体、二进制导出都会走到这里）。
+   *
+   * 二进制（xlsx 导出）必须**按 latin1 解码成字符串**，不能直接 `response.text()`：
+   * 后者按 UTF-8 解码，>0x7F 的字节会被替换成 U+FFFD（有损），调用方再用
+   * `Buffer.from(body, "latin1")` 还原时 zip 结构已经坏了 —— 表现是
+   * `Bad compressed size: 0 != 834`（不是接口的问题，是 harness 把字节读坏了）。
+   * 全程 latin1 才是无损的字节↔字符串往返；那些「harness 以 latin1 回退二进制」的
+   * 注释说的正是这个意思，但实现一直是 UTF-8，所以这两条 xlsx 断言长期是假红。
    */
   async function request(path, requestOptions = {}) {
     const hasBody = requestOptions.body !== undefined && requestOptions.body !== null;
@@ -51,7 +58,9 @@ function apiClient(baseUrl, options = {}) {
     if (hasBody && !headers["content-type"]) headers["content-type"] = "application/json";
     const response = await fetch(new URL(path, baseUrl), { ...requestOptions, headers });
     const contentType = response.headers.get("content-type") ?? "";
-    const body = contentType.includes("application/json") ? await response.json().catch(() => ({})) : await response.text().catch(() => "");
+    const body = contentType.includes("application/json")
+      ? await response.json().catch(() => ({}))
+      : Buffer.from(await response.arrayBuffer()).toString("latin1");
     return { body, contentType, headers: response.headers, requestId: response.headers.get(REQUEST_ID_HEADER), status: response.status };
   }
 

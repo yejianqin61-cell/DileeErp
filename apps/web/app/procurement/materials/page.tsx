@@ -5,12 +5,19 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
+import { FileInput } from "../../../components/ui/file-input";
 import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
+import { downloadFile } from "../../../lib/download";
 import { fuzzyMatch } from "../../../lib/fuzzy-search";
+import {
+  MATERIAL_IMPORT_ACCEPT, MATERIAL_IMPORT_COLUMNS, MATERIAL_IMPORT_PATH, MATERIAL_IMPORT_TEMPLATE_FILENAME,
+  MATERIAL_IMPORT_TEMPLATE_PATH, materialImportErrorField, materialImportOutcome, materialImportSummary,
+  type MaterialImportResult,
+} from "../../../lib/material-import";
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
@@ -30,6 +37,9 @@ export default function MaterialsPage() {
   const [query, setQuery] = useState("");
   // 「新建物料」弹窗（共享组件）：打开时是新建，关闭即销毁，草稿不跨次保留。
   const [creating, setCreating] = useState(false);
+  // 「批量导入物料」（用户 2026-09-20）：上传中 + 上一次的逐行结果（整份留在页面上，不做成一条 toast）。
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<MaterialImportResult | null>(null);
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
   const [categoryDialog, setCategoryDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
 
@@ -56,6 +66,52 @@ export default function MaterialsPage() {
   }
 
   useEffect(() => { void load(); }, []);
+
+  /**
+   * 下载导入模板。走 lib/download 的 fetch + blob（带鉴权 cookie，并从 Content-Disposition 解出
+   * 中文文件名）—— 直接 `<a href>` 会丢掉 cookie，后端只回 401。
+   */
+  async function downloadTemplate() {
+    try {
+      await downloadFile(MATERIAL_IMPORT_TEMPLATE_PATH, MATERIAL_IMPORT_TEMPLATE_FILENAME);
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : "模板下载失败");
+    }
+  }
+
+  /**
+   * 上传物料清单。
+   *
+   * 上传的是 multipart（FormData），不能走 apiPost —— 那会把 body JSON 化。
+   * 结果整份留在页面上（逐行错误 + 新增清单 + 缺哪些列 + 提示），不做成一条 toast：
+   * 「第 7 行默认单位找不到」这类信息必须能逐条看清，否则操作员只能瞎猜。
+   */
+  async function importMaterials(file: File | undefined) {
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    setError("");
+    setMessage("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetch(MATERIAL_IMPORT_PATH, { method: "POST", credentials: "include", body: form });
+      const body = await response.json();
+      if (!response.ok || body.error) throw new ApiClientError(body.error?.code ?? "MATERIAL_IMPORT_FAILED", body.error?.message ?? "导入失败", body.error?.details ?? []);
+      const result = body.data as MaterialImportResult;
+      setImportResult(result);
+      // 导入了才刷新列表（一条都没进时刷新没有意义，反而会把逐行结果挤下去）。
+      if (result.imported > 0) await load();
+      const outcome = materialImportOutcome(result);
+      if (outcome === "success") notifySuccess(materialImportSummary(result));
+      else if (outcome === "partial") notifyError(`${materialImportSummary(result)}：未导入的行请看下方逐行原因`);
+      else notifyError("没有可导入的行，请按下方逐行原因修改后重传");
+    } catch (cause) {
+      notifyError(messageOf(cause, "物料导入失败"));
+    } finally {
+      setImporting(false);
+    }
+  }
 
   async function action(path: string, body?: unknown, success = "操作已完成", method: "POST" | "PATCH" = "POST") {
     setError("");
@@ -149,6 +205,54 @@ export default function MaterialsPage() {
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
+
+      <section className="panel">
+        <div className="panel-heading"><h2>批量导入物料</h2><span className="panel-note">下载模板 → 填写 → 上传；出错的行会逐条告诉你第几行、哪一格、为什么</span></div>
+        <div className="panel-body">
+          <div className="filter-bar">
+            <Button size="sm" variant="secondary" data-testid="material-import-template" onClick={() => void downloadTemplate()}>下载模板</Button>
+            <FileInput accept={MATERIAL_IMPORT_ACCEPT} data-testid="material-import-file" disabled={importing} onChange={(event) => { void importMaterials(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+          </div>
+          {importing && <LoadingState label="正在导入" />}
+          {importResult && (
+            <div data-testid="material-import-result">
+              <p data-testid="material-import-summary" className={materialImportOutcome(importResult) === "success" ? "status-success" : materialImportOutcome(importResult) === "partial" ? "status-warning" : "status-error"}>
+                {materialImportSummary(importResult)}
+              </p>
+              {importResult.missingColumns.length > 0 && <p className="status-error">缺少必需列：{importResult.missingColumns.join("、")}</p>}
+              {importResult.ignoredColumns.length > 0 && <p>以下列不属于物料口径，已忽略：{importResult.ignoredColumns.join("、")}</p>}
+              {importResult.ignoredTrailingRows > 0 && <p>表尾 {importResult.ignoredTrailingRows} 行未识别为数据，已跳过</p>}
+              {importResult.hints.map((hint) => <p key={hint} className="panel-note">{hint}</p>)}
+              {importResult.errors.length > 0 && <>
+                <h3>未导入的行（共 {importResult.errorCount} 条原因）</h3>
+                <DataTable columns={[
+                  { accessorKey: "row", header: "Excel 行号" },
+                  { id: "field", header: "字段", cell: ({ row }) => materialImportErrorField(row.original) },
+                  { accessorKey: "reason", header: "原因" },
+                ]} data={importResult.errors} empty={null} />
+              </>}
+              {importResult.created.length > 0 && <>
+                <h3>已新增的物料（{importResult.created.length} 条）</h3>
+                <DataTable columns={[
+                  { accessorKey: "row", header: "Excel 行号" },
+                  { accessorKey: "material_code", header: "物料编码" },
+                  { id: "auto", header: "编码来源", cell: ({ row }) => row.original.auto_code ? "自动生成" : "表里填写" },
+                  { accessorKey: "name", header: "物料名称" },
+                ]} data={importResult.created} empty={null} />
+              </>}
+            </div>
+          )}
+          {!importResult && !importing && (
+            <p className="panel-note">
+              模板 {MATERIAL_IMPORT_COLUMNS.length} 列：{MATERIAL_IMPORT_COLUMNS.join(" / ")}。
+              <strong>物料名称</strong>与<strong>默认单位</strong>必填；<strong>物料编码留空即自动生成</strong>（MAT-当天日期-序号），
+              自己填则必须唯一（匹配忽略大小写与空格）。默认单位要填系统里已有的单位名称，写错会逐行报错、不会自动新建单位。
+              本导入只新增、不修改已有物料；编码或「名称+规格型号+颜色」撞上库里已有的记录会逐行报错。
+            </p>
+          )}
+        </div>
+      </section>
+
       <section className="panel">
         <div className="panel-heading">
           <h2>物料清单</h2>

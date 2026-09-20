@@ -1,5 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
 import { IsBoolean, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import type { Express, Response } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -7,6 +10,14 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { ProcurementMasterDataService } from "./procurement-master-data.service";
+
+/** 与「库存盘点导入」「其他应付导入」「花名册导入」同一套白名单：只放行 Excel。 */
+const EXCEL_MIME = new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"]);
+function materialImportFileFilter(_req: Express.Request, file: Express.Multer.File, callback: (error: Error | null, acceptFile: boolean) => void) {
+  const name = (file.originalname ?? "").toLowerCase();
+  const extensionOk = name.endsWith(".xlsx") || name.endsWith(".xls");
+  callback(null, extensionOk || (EXCEL_MIME.has(file.mimetype) && file.mimetype !== "application/octet-stream"));
+}
 
 class ActiveDto { @IsBoolean() is_active!: boolean; }
 class UnitDto { @IsString() @MaxLength(30) name!: string; @IsOptional() @IsString() @MaxLength(500) remark?: string; }
@@ -33,6 +44,30 @@ export class ProcurementMasterDataController {
   // D8: restore a soft-deleted unit (deletedAt cleared, isActive back to true).
   @Post("units/:id/restore") async restoreUnit(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.data.restoreUnit(id, user), meta: {} }; }
   @Post("materials") async createMaterial(@Body() body: MaterialDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.createMaterial(body, user), meta: {} }; }
+  /**
+   * 物料清单批量导入（用户 2026-09-20）：下载模板 → 填写 → 上传 → 看逐行结果。
+   *
+   * ⚠️ `materials/import-template.xlsx` 与 `materials/import` 都**必须排在任何 `materials/:id` 之前**：
+   * Nest 按声明顺序匹配，单段静态路径会被 `:id` 当成一个 id 吃掉（`payable-entries/import-template.xlsx`
+   * 与 `stocktakes/import-template.xlsx` 都踩过同一个坑）。本控制器的 :id 路由都在下面，这里天然安全，
+   * 但把导入放在一起是为了让下一个加 `@Get("materials/:id")` 的人一眼看到顺序是有意为之。
+   *
+   * 权限**只要 procurement 模块**，不额外要求管理员：批量只是「新建物料」的批量入口，
+   * 与 `POST /materials` 同一档权限（与盘点导入同样只要求模块权限，理由一致）。
+   */
+  @Get("materials/import-template.xlsx")
+  async materialImportTemplate(@Res() response: Response) {
+    const body = this.data.materialTemplate();
+    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent("迪礼ERP-物料清单导入模板.xlsx")}`);
+    response.setHeader("Cache-Control", "no-store");
+    return response.send(body);
+  }
+  @Post("materials/import")
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: materialImportFileFilter }))
+  async importMaterials(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.data.importMaterials(file, user), meta: {} };
+  }
   @Patch("materials/:id") async updateMaterial(@Param("id") id: string, @Body() body: UpdateMaterialDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.updateMaterial(id, body, user), meta: {} }; }
   @Patch("materials/:id/active") async activeMaterial(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.setMaterialActive(id, body.is_active, user), meta: {} }; }
   @Delete("materials/:id") async deleteMaterial(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.data.deleteMaterial(id, user), meta: {} }; }

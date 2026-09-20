@@ -54,7 +54,7 @@ function jsonInit(method, payload) {
 async function postMultipart(cookie, path, form) {
   const response = await fetch(new URL(path, baseUrl), { body: form, headers: { cookie }, method: "POST" });
   const contentType = response.headers.get("content-type") ?? "";
-  const body = contentType.includes("application/json") ? await response.json().catch(() => ({})) : await response.text().catch(() => "");
+  const body = contentType.includes("application/json") ? await response.json().catch(() => ({})) : Buffer.from(await response.arrayBuffer()).toString("latin1");
   return { body, contentType, headers: response.headers, requestId: response.headers.get("x-request-id"), status: response.status };
 }
 

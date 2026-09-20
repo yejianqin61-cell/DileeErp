@@ -46,6 +46,16 @@ test("载荷：每个标量键都带上（空串 = 清除这一格），空明�
   assert.deepEqual(payload.spec_details[0], { group_name: "伞布明细", name: "27621 流水花扇PKGY", color: "PKGY", barcode: "", quantity: "100", unit: "pcs", sort_order: 0 });
 });
 
+test("载荷：一格都不填时 37 个键全是空串 —— 这是新建销售单的默认形态，后端必须收得下", () => {
+  // 2026-09-20 的现场问题：这个形态**每次**都被后端判 400（5 个布量是数值列，
+  // `@IsOptional()` 不跳过空串，"" 撞上 @Matches/@IsDecimal）。
+  // 前端这边不能「聪明地」把空键删掉来绕过 —— 删了就等于永远清不掉一格（见 specPayload 的注释）。
+  // 所以契约是：前端照发空串，后端负责把数值列的空串归一成「清空」。
+  const payload = specPayload({}, [emptySpecDetailRow()]);
+  for (const key of SPEC_SCALAR_KEYS) assert.equal(payload[key], "", `${key} 应是空串（而不是被省略）`);
+  assert.deepEqual(payload.spec_details, [], "只有一行空行时不提交任何明细");
+});
+
 test("明细校验：分组名与品番品名必填、数量必须是数字，逐行报错且整行空的不报", () => {
   const errors = validateSpecDetails([
     { group_name: "", name: "只有名字", color: "", barcode: "", quantity: "", unit: "" },

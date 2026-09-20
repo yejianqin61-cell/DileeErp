@@ -1,6 +1,7 @@
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
-import { BadRequestException, ValidationError, ValidationPipe } from "@nestjs/common";
+import { ValidationPipe } from "@nestjs/common";
+import { validationExceptionFactory } from "./platform/http/validation-exception.factory";
 import { RequestIdMiddleware } from "./platform/http/request-id.middleware";
 import { ResponseEnvelopeInterceptor } from "./platform/http/response-envelope.interceptor";
 import { AuditActorInterceptor } from "./platform/audit/audit-actor.interceptor";
@@ -18,15 +19,13 @@ async function bootstrap() {
   app.use(cookieParser());
   app.use(new RequestIdMiddleware().use);
   app.use(new RequestLogMiddleware().use);
+  // exceptionFactory 抽到 platform/http（可单测）：它负责把校验失败拍平成
+  // `spec_details[1].quantity` 这样的字段级 details —— 细节见该文件里的注释（曾经的 D10 缺陷）。
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
     transform: true,
     forbidNonWhitelisted: true,
-    exceptionFactory: (errors: ValidationError[]) => new BadRequestException({
-      code: "VALIDATION_ERROR",
-      message: "请求参数校验失败",
-      details: errors.flatMap((error) => Object.entries(error.constraints ?? {}).map(([rule, message]) => ({ field: error.property, rule, message }))),
-    }),
+    exceptionFactory: validationExceptionFactory,
   }));
   // 顺序不影响结果：AuditActorInterceptor 同时认「裸返回值」与「已包信封」两种形态。
   // 它按页一次性把 createdBy/updatedBy 解析成姓名（`created_by_name` / `updated_by_name`），

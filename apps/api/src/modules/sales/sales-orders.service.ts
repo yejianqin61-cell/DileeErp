@@ -60,8 +60,14 @@ export const SPEC_SCALAR_FIELDS = [
 ] as const;
 
 export type SpecScalarKey = (typeof SPEC_SCALAR_FIELDS)[number][0];
-/** 细化标量字段（全部可选：历史销售单没有这些字）。 */
-export type SpecScalarFields = Partial<Record<SpecScalarKey, string>>;
+/**
+ * 细化标量字段（全部可选：历史销售单没有这些字）。
+ *
+ * 值允许 `null`：数值列（5 个布量）留空时前端提交空串，由 DTO 上的 `EmptyStringToNull`
+ * 归一成 `null`（`@IsOptional()` 跳过 null 才能过校验），服务层把 null 原样落库 = 清空这一格。
+ * 类型里不写 `null` 的话，控制器把 DTO 交给服务时 `string | null` 对不上 `string`，编译期就红。
+ */
+export type SpecScalarFields = Partial<Record<SpecScalarKey, string | null>>;
 /** 细分明细行（一张通用表 + 分组名）。 */
 export type SpecDetailInput = { group_name: string; name: string; color?: string; barcode?: string; quantity?: string; unit?: string; sort_order?: number };
 
