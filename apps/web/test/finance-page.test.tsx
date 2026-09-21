@@ -185,7 +185,7 @@ describe("财务一级页：板块入口", () => {
 // ------------------------------------------------------------------ 应收管理
 
 describe("应收管理 · 成品出库条目", () => {
-  it("展示客户/出库单/未收余额与待确认合计，并给出三个子栏目", async () => {
+  it("展示客户/出库单/未收余额与待确认合计，并给出两个子栏目（对账与确认已合并）", async () => {
     stubFinance({ receivables: [source()] });
     await open(<ReceivableWorkspace tab="outbound-entries" testId="page-finance-receivable" />, "page-finance-receivable");
     const table = panel("成品出库条目");
@@ -196,12 +196,15 @@ describe("应收管理 · 成品出库条目", () => {
     expect(table.getAllByText("120.0000 USD")).toHaveLength(2);
     expect(table.getByText("草稿")).toBeInTheDocument();
     expect(screen.getByText(/待确认应收 1 笔 \/ 合计 120\.00/)).toBeInTheDocument();
-    // 三个子栏目都是真实链接（可收藏），地址带 tab 参数
-    for (const [key, title] of [["outbound-entries", "成品出库条目"], ["reconciliations", "应收对账"], ["confirmed", "确认应收"]] as const) {
+    // 2026-09-20（用户要求）：应收对账与确认应收合并成一个页签，所以只剩两个子栏目，
+    // 且都是真实链接（可收藏），地址带 tab 参数。
+    for (const [key, title] of [["outbound-entries", "成品出库条目"], ["reconciliations", "应收对账与确认"]] as const) {
       const link = screen.getByTestId(`finance-tab-${key}`);
       expect(link).toHaveAttribute("href", `/finance/receivable?tab=${key}`);
       expect(within(link).getByText(title)).toBeInTheDocument();
     }
+    // 合并前的旧页签值不再是页签，但仍能被解析到合并视图（`RECEIVABLE_TAB_ALIASES`）
+    expect(screen.queryByTestId("finance-tab-confirmed")).toBeNull();
   });
 
   it("双击行弹出居中详情弹窗，按 :id 拉详情并展示全部字段与操作", async () => {
@@ -1207,6 +1210,125 @@ describe("凭证管理：从收支流水生成凭证", () => {
   });
 });
 
+// ------------------------------------------------------------------ 对账与确认合并 + 收款单（2026-09-20）
+
+/**
+ * 用户 2026-09-20 两条：
+ *   ①「应收管理中，应收对账和确认应收我们合并在一起。合并到一个视图里。但是仍然需要用户进行
+ *     先创建对账，再确认的这两个动作。同样的，应付管理中，应付对账和确认应付也要合并在一起。」
+ *   ②「应收，应付。支持勾选多选条目，进行收束集中收款付款。并提供付款单的编辑和导出。
+ *     同理，收款单的编辑和导出。」
+ *
+ * ① 的两条都要钉住：**一个视图**（不用再切页签）与**两个动作都还在**（对账归对账、确认归确认）——
+ * 只做前者就是把两步并成一步，那是账务上的越权。
+ * ② 的收款单是付款单的**镜像**：预填请求勾的是应收来源（不是应付条目）、对方是客户、
+ * 贷方一条一条应收、借方一行银行存款；入口与付款单完全对称（行内 + 勾选批量）。
+ */
+describe("应收管理：对账与确认合并成一个视图 + 收款单", () => {
+  const receiptSlipDraft = {
+    kind: "receipt", slip_no: "SK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "香港迪礼",
+    bank_name: "中国银行", bank_account: "7624", attachment_count: 1, remark: "", maker: "小叶",
+    lines: [
+      { summary: "收香港迪礼折叠伞款", general_subject: "主营业务收入", detail_subject: "", debit: "", credit: "120", remark: "" },
+      { summary: "收香港迪礼款项合计", general_subject: "银行存款", detail_subject: "中国银行", debit: "120", credit: "", remark: "" },
+    ],
+  };
+  const xlsxResponse = () => new Response(new Uint8Array([0x50, 0x4b]), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
+  /** 下载三件套：只关心 URL 与文件名（与 payable-page.test.tsx 同一套）。 */
+  let anchors: Array<{ download: string; href: string }> = [];
+  const captureDownloads = () => {
+    anchors = [];
+    Object.assign(URL, { createObjectURL: vi.fn(() => `blob:http://localhost/${anchors.length + 1}`), revokeObjectURL: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      anchors.push({ download: this.getAttribute("download") ?? "", href: this.getAttribute("href") ?? "" });
+    });
+  };
+  const slipStub = (data: Partial<Record<keyof typeof EP, unknown>> = {}, draftResult: unknown = receiptSlipDraft) => stubFinance(data, (url, call) => {
+    if (call.method !== "POST") return undefined;
+    if (url.endsWith("/finance/receipt-slips/draft")) return draftResult instanceof Response ? draftResult : apiOk(draftResult);
+    if (url.endsWith("/finance/receipt-slips.xlsx")) return xlsxResponse();
+    return undefined;
+  });
+  /** 已对平、范围里还有一条草稿应收的对账单（列表接口给 flow）。 */
+  const confirmableReconciliation = () => receivableReconciliation({
+    status: "matched",
+    flow: { entry_count: 1, draft_count: 1, draft_amount: "120.0000", can_confirm_receivables: true, order_nos: ["SO-1"], product_names: ["折叠伞"], product_specifications: ["黑胶"] },
+  });
+
+  it("合并页签里三张表同时在场，两个动作各自还在；旧的 ?tab=confirmed 也落在同一处", async () => {
+    stubFinance({ receivables: [source()], reconciliations: [confirmableReconciliation()] });
+    await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    expect(screen.getByTestId("receivable-pending-entries")).toBeInTheDocument();
+    expect(screen.getByTestId("receivable-reconciliations")).toBeInTheDocument();
+    expect(screen.getByText("确认应收", { selector: "h2" })).toBeInTheDocument();
+    expect(screen.getByTestId("receivable-batch-bar")).toBeInTheDocument();
+    // 动作一：创建对账；动作二：按对账单确认 + 勾选批量确认
+    expect(screen.getAllByRole("button", { name: "创建对账" }).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("reconciliation-confirm-recon-1")).toBeInTheDocument();
+    expect(screen.getByTestId("receivable-batch-confirm")).toBeInTheDocument();
+    // 合并之后「确认应收」不再是独立页签
+    expect(screen.queryByTestId("finance-tab-confirmed")).toBeNull();
+  });
+
+  it("行内「收款单」→ 按这条应收预填 → 改金额 / 加行 / 写收款备注 → 提交出的就是改过的那张", async () => {
+    captureDownloads();
+    const calls = slipStub({ receivables: [source({ status: "confirmed" })] });
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    // 收款情况默认「未收」：已确认的那条要切到「已收」才看得见
+    await pickOption("receivable-payment-filter", /已收（1）/);
+    fireEvent.click(screen.getByTestId("receivable-slip-rec-1"));
+    const editor = await screen.findByTestId("receipt-slip-editor");
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receipt-slips/draft")).toHaveLength(1));
+    // 勾的是**应收来源**（不是 payable_entry_ids）：传错字段名会变成「勾了却查不到条目」
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/receipt-slips/draft")[0])).toEqual({ receivable_source_ids: ["rec-1"] });
+    await waitFor(() => expect((within(editor).getByTestId("receipt-slip-editor-counterparty") as HTMLInputElement).value).toBe("香港迪礼"));
+    expect(within(editor).getByTestId("receipt-slip-editor-totals")).toHaveTextContent("贷方合计 120");
+
+    // 「本次实收 100」：改贷方行 + 自己加一行手续费，让借贷仍然相等
+    setValue("receipt-slip-editor-credit-0", "98");
+    await userEvent.click(within(editor).getByTestId("receipt-slip-editor-add"));
+    setValue("receipt-slip-editor-summary-2", "银行手续费");
+    setValue("receipt-slip-editor-general-2", "财务费用");
+    setValue("receipt-slip-editor-credit-2", "2");
+    setValue("receipt-slip-editor-debit-1", "100");
+    setValue("receipt-slip-editor-remark", "本次实收 100（扣手续费 2）");
+    await waitFor(() => expect(screen.queryByTestId("receipt-slip-editor-blockers")).toBeNull());
+
+    fireEvent.click(screen.getByTestId("receipt-slip-editor-export"));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receipt-slips.xlsx")).toHaveLength(1));
+    const body = bodyOf(callsTo(calls, "/api/v1/finance/receipt-slips.xlsx")[0]);
+    expect(body).toMatchObject({ kind: "receipt", slip_no: "SK-202609-001", counterparty_name: "香港迪礼", remark: "本次实收 100（扣手续费 2）" });
+    expect((body.lines as unknown[]).length).toBe(3);
+    expect(anchors[0].download).toBe("迪礼收款单-SK-202609-001.xlsx");
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已导出收款单 SK-202609-001"))).toBe(true));
+  });
+
+  it("勾选多条 → 一张收款单（集中收款），预填请求带全部应收 id", async () => {
+    const calls = slipStub({ receivables: [source(), source({ id: "rec-2", sourceNo: "AR-002" })] });
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    await userEvent.click(screen.getByTestId("receivable-select-all"));
+    await userEvent.click(screen.getByTestId("receivable-slip-batch"));
+
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receipt-slips/draft")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/receipt-slips/draft")[0])).toEqual({ receivable_source_ids: ["rec-1", "rec-2"] });
+    expect(await screen.findByTestId("receipt-slip-editor")).toBeVisible();
+  });
+
+  it("预填失败（跨客户）时弹窗仍然打开并把原因写出来，不让用户以为按钮坏了", async () => {
+    slipStub({ receivables: [source({ status: "confirmed" })] }, apiErr(422, "RECEIPT_SLIP_MULTI_COUNTERPARTY", "一张收款单只能有一个付款单位：请按客户分批导出"));
+    await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
+
+    await pickOption("receivable-payment-filter", /已收（1）/);
+    fireEvent.click(screen.getByTestId("receivable-slip-rec-1"));
+    const error = await screen.findByTestId("receipt-slip-editor-draft-error");
+    expect(error).toHaveTextContent("一张收款单只能有一个付款单位：请按客户分批导出");
+    expect(screen.getByTestId("receipt-slip-editor-export")).toBeDisabled();
+  });
+});
+
 // ------------------------------------------------------------------ 失败态
 
 describe("财务模块：失败态与权限降级", () => {
@@ -1268,14 +1390,19 @@ describe("应收管理：一个搜索框管本页所有表", () => {
 
     // 这个页签原来**根本没有**筛选条（标题下方直接就是两张表）
     expect(screen.getByTestId("receivable-search")).toBeInTheDocument();
-    // 待创建对账 2 行 + 应收对账单 2 行
-    expect(screen.getAllByTestId("data-table-row")).toHaveLength(4);
+    // 待创建对账 2 行 + 应收对账单 2 行（合并之后这一页还有「确认应收」那张台账，
+    // 所以按表定位，不数全页行数）
+    const pending = within(screen.getByTestId("receivable-pending-entries"));
+    const reconciliations = within(screen.getByTestId("receivable-reconciliations"));
+    expect(pending.getAllByTestId("data-table-row")).toHaveLength(2);
+    expect(reconciliations.getAllByTestId("data-table-row")).toHaveLength(2);
 
     setValue("receivable-search", "REC-009");
 
     // 待创建对账那两行看的是单据号/客户/产品，对账单号不在其中 → 全部被筛掉；对账单只剩 REC-009
-    expect(screen.getAllByTestId("data-table-row")).toHaveLength(1);
-    expect(screen.getByText("REC-009")).toBeVisible();
+    expect(pending.queryAllByTestId("data-table-row")).toHaveLength(0);
+    expect(reconciliations.getAllByTestId("data-table-row")).toHaveLength(1);
+    expect(reconciliations.getByText("REC-009")).toBeVisible();
     expect(screen.queryByText("REC-001")).toBeNull();
     // 面板上的条数也要跟着搜索走，否则「共 2 张」与表里 1 行对不上
     expect(screen.getByText(/共 1 张/)).toBeVisible();
@@ -1286,10 +1413,13 @@ describe("应收管理：一个搜索框管本页所有表", () => {
     await open(<ReceivableWorkspace tab="confirmed" testId="page-finance-receivable" />, "page-finance-receivable");
 
     expect(screen.getByTestId("receivable-search")).toBeInTheDocument();
-    expect(screen.getAllByTestId("data-table-row")).toHaveLength(2);
+    // 合并之后 `tab="confirmed"` 落在「应收对账与确认」上：同一页里也有「待创建对账」那张表，
+    // 所以把范围收在「确认应收」这张台账里数行数。
+    const ledger = within(screen.getByText("确认应收", { selector: "h2" }).closest("section") as HTMLElement);
+    expect(ledger.getAllByTestId("data-table-row")).toHaveLength(2);
     setValue("receivable-search", "AR-009");
-    expect(screen.getAllByTestId("data-table-row")).toHaveLength(1);
-    expect(screen.getByText("AR-009")).toBeVisible();
+    expect(ledger.getAllByTestId("data-table-row")).toHaveLength(1);
+    expect(ledger.getByText("AR-009")).toBeVisible();
     setValue("receivable-search", "根本不存在的单号");
     expect(screen.queryAllByTestId("data-table-row")).toHaveLength(0);
   });

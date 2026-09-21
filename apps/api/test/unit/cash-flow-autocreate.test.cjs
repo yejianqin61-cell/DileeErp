@@ -90,11 +90,12 @@ test("同来源已写过流水时不重复创建（幂等）", async () => {  co
 
 test("冲销收付款时回冲对应流水；没有对应流水时返回 null 且不阻断冲销", async () => {
   const reversed = [];
-  const row = { id: "cf-1", status: "posted", remark: null, entryDate: new Date(), counterpartyName: "晋江大田", direction: "expense", amount: new Prisma.Decimal("300"), currency: "CNY", subjectId: "subject-1", settlementMethod: null, settlementAccountId: null };
+  const row = { id: "cf-1", status: "posted", remark: null, entryNo: "CF-1", entryDate: new Date(), counterpartyName: "晋江大田", direction: "expense", amount: new Prisma.Decimal("300"), currency: "CNY", subjectId: "subject-1", settlementMethod: null, settlementAccountId: null };
   const prisma = {
-    // autoReverseFromPayment 按来源查、reverse() 内部按 id 查，两种查法都要能命中同一行。
+    // 回冲按**来源**查（`reverseSourceFlowInTransaction` 用 findMany：同一来源历史上可能留下多条流水），
+    // 查回来的一行带着 entryNo，供调用方在事务外记审计。
     cashFlowEntry: {
-      findFirst: async (args) => (args.where.sourceId === "payment-other" ? null : row),
+      findMany: async (args) => (args.where.sourceId === "payment-other" ? [] : [{ id: row.id, entryNo: row.entryNo, amount: row.amount, remark: row.remark }]),
       update: async ({ data }) => { reversed.push(data); return { ...row, ...data }; },
     },
     accountingSubject: { findFirst: async () => ({ id: "subject-1" }) },

@@ -287,6 +287,14 @@ export class FinanceController {
   @Get("supplier-payable-reconciliations/:id") async getSupplierReconciliation(@Param("id") id: string) { return { data: await this.supplierReconciliations.get(id), meta: {} }; }
   @Post("supplier-payable-reconciliations") async createSupplierReconciliation(@Body() body: SupplierReconciliationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.create(body, user), meta: {} }; }
   @Post("supplier-payable-reconciliations/:id/resolve") async resolveSupplierReconciliation(@Param("id") id: string, @Body() body: ResolutionDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.resolve(id, body.resolution_remark, user), meta: {} }; }
+  /**
+   * 逻辑删除应付对账单（用户 2026-09-20）。
+   *
+   * 与「其他应付」的删除配对：删那条误录的应付时会被「请先处理那张对账单」挡住，
+   * 所以这里给出可执行的下一步。路径是这一条资源的 DELETE，原因走 body（与 `/reopen`、`/reverse` 同一套写法）；
+   * 边界由服务层把关 —— 已经用于确认应付并记账的对账单拒删（见 `remove` 的注释）。
+   */
+  @Delete("supplier-payable-reconciliations/:id") async deleteSupplierReconciliation(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.remove(id, body.reason, user), meta: {} }; }
   // 「先对账、再确认应付」：对账对平（或差异已处理）后，一次性确认该对账范围内的草稿应付。
   @Post("supplier-payable-reconciliations/:id/confirm-payables") async confirmReconciliationPayables(@Param("id") id: string, @Body() body: ConfirmReconciliationDto, @CurrentUser() user: CurrentUserType) { return { data: await this.supplierReconciliations.confirmPayables(id, user, body ?? {}), meta: {} }; }
 }

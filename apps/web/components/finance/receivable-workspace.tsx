@@ -25,14 +25,16 @@ import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client"
 import { downloadFile } from "../../lib/download";
 import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
-import { RECEIVABLE_TABS, type ReceivableTabKey } from "../../lib/finance-sections";
+import { RECEIVABLE_TABS, RECEIVABLE_TAB_ALIASES, resolveFinanceTab, type ReceivableTabParam } from "../../lib/finance-sections";
 import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, toSubjectOptions, type AccountingSubject } from "../../lib/accounting-subjects";
 import { paymentNatureOptions } from "../../lib/payment-natures";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
+import FinanceSlipEditor from "./finance-slip-editor";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { financeStatus } from "./finance-status";
+import { financeSlipDraftBody, financeSlipDraftPath, type FinanceSlipDraft } from "../../lib/finance-slip";
 
 /**
  * 银行下拉的「清空」哨兵值。
@@ -111,7 +113,7 @@ const day = (value: string | null | undefined) => (value ? value.slice(0, 10) : 
 const monthOf = (value: string | null | undefined) => (value ? value.slice(0, 7) : "-");
 const monthRange = (month: string) => ({ start: `${month}-01`, end: new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10) });
 
-export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTabKey; testId: string }) {
+export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTabParam; testId: string }) {
   const [sources, setSources] = useState<ReceivableSource[]>([]);
   const [reconciliations, setReconciliations] = useState<Reconciliation[]>([]);
   const [customers, setCustomers] = useState<Reference[]>([]);
@@ -142,6 +144,13 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [exporting, setExporting] = useState(false);
+  /**
+   * 收款单编辑器（财务 2026-09-20：「同理，收款单的编辑和导出」）。
+   *
+   * 与付款单同一套：打开时先按勾选的应收条目向后端预填（单号 / 客户 / 开户行 / 科目 / 借贷行），
+   * 再让财务改金额、加行、写备注，最后出 xlsx。收款单**不落库**（它是一张打印件）。
+   */
+  const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; draft: FinanceSlipDraft | null }>({ open: false, loading: false, error: "", draft: null });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -390,6 +399,24 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     }
   }
 
+  /**
+   * 打开收款单编辑器：先按勾选的应收条目向后端要一份预填。
+   *
+   * 一行一条应收（贷「主营业务收入」等确认时实际用的科目）+ 借方一行银行存款等于合计；
+   * 财务要拆收入与税就自己加行、要少收就自己改金额（与手续费/折扣等零星扣减对应）。
+   * 预填失败（跨客户 / 跨币种）时**照样打开弹窗**把原因写出来：静默什么都不发生，
+   * 用户只会以为按钮坏了。
+   */
+  async function openReceiptSlip(ids: string[]) {
+    setSlip({ open: true, loading: true, error: "", draft: null });
+    try {
+      const result = await apiPost<FinanceSlipDraft>(financeSlipDraftPath("receipt"), financeSlipDraftBody("receipt", ids));
+      setSlip({ open: true, loading: false, error: "", draft: result.data });
+    } catch (cause) {
+      setSlip({ open: true, loading: false, error: messageOf(cause, "收款单预填失败"), draft: null });
+    }
+  }
+
   function createReconciliation(preset?: { customerId: string; month: string }) {    const range = preset ? monthRange(preset.month) : undefined;
     setDialog({ title: "创建应收对账", fields: [
       { name: "customer_id", label: "客户", type: "select", required: true, canAddCategory: true, options: customerOptions, defaultValue: preset?.customerId },
@@ -483,9 +510,13 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   );
   // 应收来源行的操作：成品出库条目与确认应收两张表共用同一套动作，避免两边行为漂移。
   // 没有「登记收款」：确认应收已经把钱记进账户，再登记一次收款就是把同一笔款进两次。
-  const sourceActions = (item: ReceivableSource) => <div className="action-row">
+  // `withSlip`：只有「确认应收」那张台账给「收款单」入口（与应付侧对称 —— 出库条目那张表是
+  // 来源视图，在这里出单容易对着还没确认的条目开票）。
+  const sourceActions = (item: ReceivableSource, withSlip = false) => <div className="action-row">
     {item.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmSource(item)}>确认应收</Button><Button size="sm" variant="ghost" onClick={() => editSource(item)}>编辑</Button><Button size="sm" variant="ghost" onClick={() => cancelSource(item)}>取消</Button></>}
     {item.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenSource(item)}>回退草稿</Button>}
+    {/* 收款单：草稿（准备收款）与已确认（钱已经进来）都能出单 —— 它是一张打印件，不改任何数据。 */}
+    {withSlip && <Button size="sm" variant="ghost" data-testid={`receivable-slip-${item.id}`} onClick={() => void openReceiptSlip([item.id])}>收款单</Button>}
   </div>;
 
   // 勾选只对草稿开放：已确认/取消的条目没有「再确认一次」这回事。
@@ -528,7 +559,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "due", header: "到期日", cell: ({ row }) => day(row.original.dueDate) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "receivable") },
     ...auditColumns<ReceivableSource>(),
-    { id: "actions", header: "操作", cell: ({ row }) => sourceActions(row.original) },
+    { id: "actions", header: "操作", cell: ({ row }) => sourceActions(row.original, true) },
   ];
   const reconciliationColumns: ColumnDef<Reconciliation>[] = [
     { accessorKey: "reconciliationNo", header: "对账单号" },
@@ -661,7 +692,12 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   }
 
   const detailTitle = detail?.kind === "source" ? `应收来源 ${(detailData as ReceivableSource | null)?.sourceNo ?? ""}` : `应收对账 ${(detailData as Reconciliation | null)?.reconciliationNo ?? ""}`;
-  const activeTab = RECEIVABLE_TABS.find((item) => item.key === tab) ?? RECEIVABLE_TABS[0];
+  /**
+   * 当前页签。走 `resolveFinanceTab` 而不是自己 `find`：合并之后**旧的 `confirmed` 必须仍然落在
+   * 合并视图上**（收藏过的链接、遗留重定向都写着它），而组件里的 `tab` 既可能来自服务端解析过的
+   * searchParams、也可能是调用方直接传进来的，两条路必须得出同一个页签。
+   */
+  const activeTab = RECEIVABLE_TABS.find((item) => item.key === resolveFinanceTab(RECEIVABLE_TABS, RECEIVABLE_TAB_ALIASES, tab)) ?? RECEIVABLE_TABS[0];
 
   if (loading) return <><PageHeader title="应收管理" /><LoadingState /></>;
 
@@ -683,6 +719,15 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       // 显示原因，ActionDialog 靠 onSubmit 是否 reject 决定关不关（与应付页同一理由）。
       onSubmit={(values) => dialog?.submit(values)} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) { setCategoryDialog(null); setPendingDialog(null); } }} title={categoryDialog?.title ?? "新建客户"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => { categoryDialog?.submit(values); }} />
+    {/* 收款单编辑器：预填 → 现改（金额 / 增删行 / 收款备注）→ 导出 xlsx。不改系统里的任何数据。 */}
+    <FinanceSlipEditor
+      kind="receipt"
+      open={slip.open}
+      onOpenChange={(open) => setSlip((current) => open ? current : { ...current, open: false, draft: null, error: "" })}
+      draft={slip.draft}
+      loading={slip.loading}
+      error={slip.error}
+    />
     <RecordDetailDialog
       open={Boolean(detail)}
       onOpenChange={(open) => { if (!open) setDetail(null); }}
@@ -710,6 +755,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         <div className="panel-body"><DataTable columns={sourceColumns} data={matchedSources} empty={<EmptyState title="暂无成品出库形成的应收来源" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" /></div>
       </section>
     </>}
+    {/* 2026-09-20（用户要求）：「应收对账」与「确认应收」合并到**一个视图**里，两个动作仍然分开：
+        上面两张面板里先建对账单（待创建对账 → 行内「创建对账」），下面那张台账里再勾选确认/收款。 */}
     {!error && activeTab.key === "reconciliations" && <>
       <section className="panel">
         <div className="panel-heading">
@@ -729,10 +776,16 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       </section>
       <section className="panel">
         <div className="panel-heading"><h2>应收对账单</h2><span className="panel-note">共 {filteredReconciliations.length} 张</span></div>
-        <div className="panel-body"><DataTable columns={reconciliationColumns} data={filteredReconciliations} empty={<EmptyState title={sourceFilter.trim() ? "没有符合搜索条件的应收对账单" : "暂无应收对账单"} />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" /></div>
+        <div className="panel-body">
+          {/* 包一层带 testid 的容器（与「待创建对账」对称）：合并之后这一页同时有三张表，
+              测试与脚本要能按表定位行数/文案，而不是在全页范围内碰运气。 */}
+          <div data-testid="receivable-reconciliations">
+            <DataTable columns={reconciliationColumns} data={filteredReconciliations} empty={<EmptyState title={sourceFilter.trim() ? "没有符合搜索条件的应收对账单" : "暂无应收对账单"} />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" />
+          </div>
+        </div>
       </section>
     </>}
-    {!error && activeTab.key === "confirmed" && <section className="panel">
+    {!error && activeTab.key === "reconciliations" && <section className="panel">
       <div className="panel-heading"><h2>确认应收</h2><span className="panel-note">共 {ledgerSources.length} 条（未收 {paymentTally.unpaid} / 已收 {paymentTally.paid}）</span></div>
       <div className="panel-body">
         {/* 收款情况默认「未收」：已经确认过（钱已经进账）的条目不再占着待办清单；需要时切到「已收 / 全部」。 */}
@@ -753,6 +806,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         </div>
         <div style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }} data-testid="receivable-batch-bar">
           <span className="panel-note" data-testid="receivable-selected-count">已选 {selectedDrafts.length} 条</span>
+          {/* 导出收款单（用户 2026-09-20）：勾选几条 → 一张收款单（一行一条应收）。走预填接口，
+              不改任何数据；金额、分录行、收款备注都在弹窗里现改。与应付侧的付款单完全对称。 */}
+          <Button size="sm" variant="secondary" data-testid="receivable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openReceiptSlip(selectedDrafts.map((draft) => draft.id))}>导出收款单（{selectedDrafts.length} 条）</Button>
           <Button size="sm" data-testid="receivable-batch-confirm" disabled={!selectedDrafts.length} onClick={batchConfirm}>批量确认（{selectedDrafts.length} 条）</Button>
         </div>
         <DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="没有符合条件的应收条目" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" />

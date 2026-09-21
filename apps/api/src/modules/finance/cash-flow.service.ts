@@ -536,16 +536,51 @@ export class CashFlowService {
   }
 
   /**
+   * 在**调用方的事务里**回冲某张来源单据的收支流水（找不到对应流水返回空数组，不阻断调用方）。
+   *
+   * 与 `autoReverseFromPayment` 的分工：那个自带事务与审计，适合「冲销单据」这种独立动作；
+   * 这个把「找到流水 → 置为已冲销」放进调用方自己的事务里，因为有些动作必须与回冲**同生共死**：
+   * 删除一条已确认的「其他应付」时，若软删除已经提交、回冲却失败，界面上那条应付没了、
+   * 钱却还挂在支出里 —— 而且它已经从列表上消失，用户再也点不到它去补救。
+   *
+   * 审计仍由调用方在事务外记（全站纪律：审计不写进业务事务）。
+   */
+  async reverseSourceFlowInTransaction(client: Prisma.TransactionClient, sourceType: string, sourceId: string, reason: string, user: CurrentUser) {
+    const entries = await client.cashFlowEntry.findMany({
+      where: { sourceType, sourceId, status: "posted", deletedAt: null },
+      select: { id: true, entryNo: true, amount: true, remark: true },
+    });
+    // 返回**更新后**的行（带上 `status: "reversed"` 与审计列），调用方才能既记审计又拿到终态。
+    const reversed = [];
+    for (const entry of entries) {
+      reversed.push(await client.cashFlowEntry.update({
+        where: { id: entry.id },
+        data: { status: "reversed", remark: `${entry.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) },
+      }));
+    }
+    return reversed;
+  }
+
+  /**
    * 冲销收付款时回冲它的收支流水。
    *
    * 为什么必须有：付款冲销后钱并没有真的出去，流水里却一直留着那笔支出/收入，
    * 收支汇总表就会比银行账多出一笔。原实现只在过账时写流水、从不处理冲销。
    * 找不到对应流水（例如当年因字典缺项被跳过）时返回 null，不阻断冲销本身。
+   *
+   * 2026-09-20 起这条路径也供「删除其他应付」复用（`reverseSourceFlowInTransaction`）：
+   * 「怎么算冲销」只有一处实现，不再各写一份。
    */
   async autoReverseFromPayment(sourceType: string, sourceId: string, reason: string, user: CurrentUser) {
-    const entry = await this.prisma.cashFlowEntry.findFirst({ where: { sourceType, sourceId, status: "posted", deletedAt: null }, select: { id: true } });
-    if (!entry) return null;
-    return this.reverse(entry.id, reason, user);
+    const entries = await this.reverseSourceFlowInTransaction(this.prisma, sourceType, sourceId, reason, user);
+    for (const entry of entries) {
+      await this.audit.record("cash_flow_entry.reverse", "cash_flow_entry", user.id, entry.id, {
+        entry_no: entry.entryNo,
+        reason: reason.trim(),
+        amount: entry.amount.toString(),
+      });
+    }
+    return entries[0] ?? null;
   }
 
   private dateText(value: Date): string {

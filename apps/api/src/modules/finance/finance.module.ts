@@ -10,6 +10,8 @@ import { CashFlowController } from "./cash-flow.controller";
 import { CashFlowService } from "./cash-flow.service";
 import { FinanceController } from "./finance.controller";
 import { PayableNotificationController } from "./payable-notification.controller";
+import { FinanceSlipController } from "./finance-slip.controller";
+import { FinanceSlipService } from "./finance-slip.service";
 import { FinanceReportController } from "./finance-report.controller";
 import { BomMaterialCostService } from "./finance-report-cost.service";
 import { FinanceReportQueryService } from "./finance-report-query.service";
@@ -25,5 +27,5 @@ import { SupplierPayableReconciliationService } from "./supplier-payable-reconci
 import { VoucherController } from "./voucher.controller";
 import { VoucherService } from "./voucher.service";
 
-@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceReportController, CashFlowController, AccountingSubjectController, BankController, BankTransferController, VoucherController, OverheadAllocationController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, AccountingSubjectService, BankService, BankTransferService, VoucherService, OverheadAllocationService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, AccountingSubjectService, BankService, BankTransferService, VoucherService, OverheadAllocationService] })
+@Module({ imports: [AuditModule], controllers: [FinanceController, PayableNotificationController, FinanceSlipController, FinanceReportController, CashFlowController, AccountingSubjectController, BankController, BankTransferController, VoucherController, OverheadAllocationController], providers: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceSlipService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, AccountingSubjectService, BankService, BankTransferService, VoucherService, OverheadAllocationService], exports: [ReceivableService, CustomerPaymentService, ReceivableAdjustmentService, ReconciliationService, SupplierPayableService, SupplierPaymentService, SupplierPayableReconciliationService, FinanceSlipService, FinanceReportQueryService, BomMaterialCostService, CashFlowService, AccountingSubjectService, BankService, BankTransferService, VoucherService, OverheadAllocationService] })
 export class FinanceModule {}

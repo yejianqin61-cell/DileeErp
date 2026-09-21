@@ -33,13 +33,15 @@ import { ApiClientError, apiDelete, apiGet, apiPatch, apiPost } from "../../lib/
 import { downloadFile } from "../../lib/download";
 import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
-import { PAYABLE_TABS, type PayableTabKey } from "../../lib/finance-sections";
+import { PAYABLE_TABS, PAYABLE_TAB_ALIASES, resolveFinanceTab, type PayableTabParam } from "../../lib/finance-sections";
 import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, toSubjectOptions, type AccountingSubject } from "../../lib/accounting-subjects";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
+import FinanceSlipEditor from "./finance-slip-editor";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { financeStatus } from "./finance-status";
+import { financeSlipDraftBody, financeSlipDraftPath, type FinanceSlipDraft } from "../../lib/finance-slip";
 
 /** 银行下拉的「清空」哨兵值（见 bankField / bankValue）：Radix Select 不接受空串 value。 */
 const BANK_CLEAR = "__no_bank__";
@@ -157,7 +159,7 @@ type OtherPayableImportResult = {
   hints: string[];
 };
 
-export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; testId: string }) {
+export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam; testId: string }) {
   const [inboundSources, setInboundSources] = useState<PayableSource[]>([]);
   const [outsourceSources, setOutsourceSources] = useState<OutsourcePayableSource[]>([]);
   const [entries, setEntries] = useState<PayableEntry[]>([]);
@@ -193,6 +195,14 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [exporting, setExporting] = useState(false);
+  /**
+   * 付款单编辑器（财务 2026-09-20：「她需要在付款界面能导出付款单」）。
+   *
+   * 打开时先去后端预填（单号 / 收款单位 / 开户行 / 科目 / 借贷行），再把结果交给编辑器 ——
+   * 预填口径（科目取确认时实际记账的那个、单号按「该供应商本月第几笔付款」）只有服务端知道，
+   * 前端拍不出来。付款单**不落库**：改完直接出 xlsx（见 components/finance/payment-slip-editor.tsx）。
+   */
+  const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; draft: FinanceSlipDraft | null }>({ open: false, loading: false, error: "", draft: null });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -414,19 +424,57 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     setDialog({ title: `冲销应付：${item.payableNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/payable-entries/${item.id}/reverse`, { reason: v.reason }, "应付已冲销") });
   }
   /**
-   * 逻辑删除「其他应付」（用户 2026-09-20：「其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」）。
+   * 逻辑删除「其他应付」（用户 2026-09-20：「其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」，
+   * 随后追问「包括删除确认应付和应付对账」）。
    *
    * 为什么原因必填：删除是唯一一个「记录会从台账上消失」的动作，事后要能说清是谁、什么时候、
    * 为什么删的。前端必填 + 后端必填（`DELETION_REASON_REQUIRED`）两道，原因同时写进备注与审计。
    *
-   * 按钮只在「其他应付 且 草稿」的行上出现，与后端的三条边界一致 —— 界面上摆一个点了必然报错的按钮
-   * 比不摆更糟。已被对账单覆盖时后端会回一句可执行的说明（先去处理那张对账单）。
+   * 按钮出现在「其他应付」的**草稿与已确认**行上（界面上与后端的三条边界一致 —— 摆一个点了必然报错的
+   * 按钮比不摆更糟）：草稿删了就是没发生过；已确认的删的时候后端会在同一个事务里**冲回那笔支出**
+   * （钱回到账上），所以文案里把这件事说清楚，避免财务以为只是「列表上少一行」。已被对账单覆盖时
+   * 后端会回一句可执行的说明（先去删那张对账单）。
    */
   function deleteOtherPayable(item: PayableEntry) {
     setDialog({ title: `删除其他应付：${item.payableNo}`, fields: [
-      { name: "info", label: `将从台账删除「${item.sourceNoSnapshot}」${money(item.amount, item.currency)}；记录与删除原因保留在审计里，不会真的从数据库消失`, type: "info" as const },
+      { name: "info", label: `将从台账删除「${item.sourceNoSnapshot}」${money(item.amount, item.currency)}${item.status === "confirmed" ? "；这条已确认并记过账，删除时会同时冲回那笔支出（钱回到账上）" : ""}。记录与删除原因保留在审计里，不会真的从数据库消失`, type: "info" as const },
       { name: "reason", label: "删除原因（录错了请写清错在哪）", type: "textarea", required: true },
     ], submit: (v) => submitAction(`/finance/payable-entries/${item.id}`, { reason: v.reason }, `其他应付 ${item.payableNo} 已删除`, "delete") });
+  }
+  /**
+   * 逻辑删除一张应付对账单（用户 2026-09-20：「包括删除确认应付和应付对账」）。
+   *
+   * 这条入口是那句错误提示的「下一步」：删一条误录的其他应付时会被「该应付已纳入对账单 XXX，
+   * 请先删除那张对账单」挡住，而对账单原先根本没有删除入口。
+   * 已经用于确认应付并记账的对账单会被后端拒删（那笔支出会失去来源单号），界面原样显示原因。
+   */
+  function deleteReconciliation(item: SupplierReconciliation) {
+    setDialog({ title: `删除应付对账：${item.reconciliationNo}`, fields: [
+      { name: "info", label: `将从应付对账删除 ${item.reconciliationNo}（${item.supplier?.name ?? item.supplierId}，期间 ${day(item.periodStart)} 至 ${day(item.periodEnd)}，系统余额 ${money(item.systemBalance, item.currency)}）。被它覆盖的草稿应付会重新回到「待创建对账」`, type: "info" as const },
+      { name: "reason", label: "删除原因（录错了请写清错在哪）", type: "textarea", required: true },
+    ], submit: (v) => submitAction(`/finance/supplier-payable-reconciliations/${item.id}`, { reason: v.reason }, `应付对账单 ${item.reconciliationNo} 已删除`, "delete") });
+  }
+
+  /**
+   * 打开付款单编辑器：先按勾选的应付条目向后端要一份预填。
+   *
+   * 一行一条应付（金额全额，**不自动拆进项税** —— 系统里的单价是含税价，按税率拆在取得普票、
+   * 优惠税率或部分抵扣时会被填错），贷方一行银行存款等于合计；财务要拆进项税就自己加行、
+   * 要少付就自己改金额（用户原话：「我要付款 100，我可以自己填加行」）。
+   *
+   * 预填失败（跨供应商 / 跨币种）时**照样打开弹窗**把原因写出来：静默什么都不发生，
+   * 用户只会以为按钮坏了。
+   */
+  async function openPaymentSlip(ids: string[]) {
+    setSlip({ open: true, loading: true, error: "", draft: null });
+    try {
+      // 路径与请求体由 lib 的 `financeSlipDraftPath` / `financeSlipDraftBody` 给：
+      // 「付款单勾应付条目、收款单勾应收来源」这条区分只该有一处知道（与后端两个 DTO 对称）。
+      const result = await apiPost<FinanceSlipDraft>(financeSlipDraftPath("payment"), financeSlipDraftBody("payment", ids));
+      setSlip({ open: true, loading: false, error: "", draft: result.data });
+    } catch (cause) {
+      setSlip({ open: true, loading: false, error: messageOf(cause, "付款单预填失败"), draft: null });
+    }
   }
   /**
    * 逐条确认应付 —— 与「勾选批量确认」「按对账单确认」是同一件事的三条入口，都**确认即记账**。
@@ -709,8 +757,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmEntry(row.original)}>确认应付</Button><Button size="sm" variant="ghost" onClick={() => editEntry(row.original)}>编辑</Button></>}
       {row.original.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退</Button>}
-      {/* 只有「其他应付」的草稿给删除：原料/外加工形成的应付是到货事实的账，录错了要走冲销。 */}
-      {row.original.status === "draft" && row.original.sourceType === "other" && <Button size="sm" variant="destructive" data-testid={`payable-delete-${row.original.id}`} onClick={() => deleteOtherPayable(row.original)}>删除</Button>}
+      {/* 付款单：草稿（准备付款）与已确认（钱已经出去了）都能出单 —— 它是一张打印件，不改任何数据。 */}
+      <Button size="sm" variant="ghost" data-testid={`payable-slip-${row.original.id}`} onClick={() => void openPaymentSlip([row.original.id])}>付款单</Button>
+      {/* 只有「其他应付」给删除：原料/外加工形成的应付是到货事实的账，录错了要走冲销。
+          草稿与已确认都给（用户 2026-09-20：「包括删除确认应付」）—— 已确认的由后端在同一事务里冲回支出。 */}
+      {(row.original.status === "draft" || row.original.status === "confirmed") && row.original.sourceType === "other" && <Button size="sm" variant="destructive" data-testid={`payable-delete-${row.original.id}`} onClick={() => deleteOtherPayable(row.original)}>删除</Button>}
     </div> },
   ];
   const reconciliationColumns: ColumnDef<SupplierReconciliation>[] = [
@@ -735,6 +786,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
       {row.original.flow?.can_confirm_payables ? <Button size="sm" data-testid={`reconciliation-confirm-${row.original.id}`} onClick={() => confirmReconciliationPayables(row.original)}>确认 {row.original.flow.draft_count} 条应付</Button> : null}
       {["matched", "resolved"].includes(row.original.status) && row.original.flow && row.original.flow.draft_count === 0 ? <span className="panel-note">范围内没有待确认应付</span> : null}
+      {/* 删除对账单（用户 2026-09-20）：「已用于确认应付并记账」的那张会被后端拒删并把流水号说出来。 */}
+      <Button size="sm" variant="destructive" data-testid={`reconciliation-delete-${row.original.id}`} onClick={() => deleteReconciliation(row.original)}>删除</Button>
     </div> },
   ];
   /** 「待创建对账」= **逐条**列出还没有被任何对账单覆盖的草稿应付（汇总行看不出「这条在不在」）。 */
@@ -751,7 +804,12 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
     { id: "confirmationDate", header: "确认日期", cell: ({ row }) => day(row.original.confirmationDate) },
     // 「待创建对账」是**逐条**列（注释里写明「汇总行看不出这条在不在」），所以按业务列表给两列。
     ...auditColumns<PayableEntry>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" title="按这条的供应商 + 月份创建：一张对账单覆盖该供应商该月全部待确认应付" onClick={() => createReconciliation({ supplierId: row.original.supplierId, month: monthOf(row.original.confirmationDate ?? row.original.createdAt) })}>创建对账</Button> },
+    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
+      <Button size="sm" variant="secondary" title="按这条的供应商 + 月份创建：一张对账单覆盖该供应商该月全部待确认应付" onClick={() => createReconciliation({ supplierId: row.original.supplierId, month: monthOf(row.original.confirmationDate ?? row.original.createdAt) })}>创建对账</Button>
+      {/* 用户 2026-09-20：「其他应付的条目支持删除，包括……应付对账」—— 这一页原先只有「创建对账」，
+          录错的那条只能跑到「确认应付」页去删。这里给同一个动作同一套边界（后端仍是同一条 DELETE）。 */}
+      {row.original.sourceType === "other" && <Button size="sm" variant="destructive" data-testid={`payable-pending-delete-${row.original.id}`} onClick={() => deleteOtherPayable(row.original)}>删除</Button>}
+    </div> },
   ];
 
   // ---------------------------------------------------------------- 详情
@@ -872,7 +930,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       const item = detailData as PayableEntry;
       return <>
         {item.status === "draft" && <><Button onClick={() => confirmEntry(item)}>确认应付</Button><Button variant="secondary" onClick={() => editEntry(item)}>编辑草稿</Button></>}
-        {item.status === "draft" && item.sourceType === "other" && <Button variant="destructive" onClick={() => deleteOtherPayable(item)}>删除（录错了）</Button>}
+        {/* 删除对「草稿 + 已确认」都开放（与行内按钮同一套边界）：已确认的删的时候会冲回那笔支出。 */}
+        {["draft", "confirmed"].includes(item.status) && item.sourceType === "other" && <Button variant="destructive" onClick={() => deleteOtherPayable(item)}>删除（录错了）</Button>}
         {item.status === "confirmed" && <Button variant="secondary" onClick={() => reopenEntry(item)}>回退草稿</Button>}
         {["confirmed", "partially_paid", "paid"].includes(item.status) && <Button variant="destructive" onClick={() => reverseEntry(item)}>冲销应付</Button>}
       </>;
@@ -882,13 +941,19 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       return <>
         {item.status === "difference" && <Button onClick={() => resolveReconciliation(item)}>处理差异</Button>}
         {item.details?.can_confirm_payables ? <Button onClick={() => confirmReconciliationPayables(item)}>确认应付（{item.details.draft_count} 条）</Button> : null}
+        <Button variant="destructive" onClick={() => deleteReconciliation(item)}>删除对账单</Button>
       </>;
     }
     return null;
   }
 
   const detailTitle = detail?.kind === "source" ? "应付来源详情" : detail?.kind === "entry" ? `应付条目 ${(detailData as PayableEntry | null)?.payableNo ?? ""}` : `应付对账 ${(detailData as SupplierReconciliation | null)?.reconciliationNo ?? ""}`;
-  const activeTab = PAYABLE_TABS.find((item) => item.key === tab) ?? PAYABLE_TABS[0];
+  /**
+   * 当前页签。走 `resolveFinanceTab` 而不是自己 `find`：合并之后**旧的 `confirmed` 必须仍然落在
+   * 合并视图上**（收藏过的链接、流转看板、遗留重定向都写着它），而组件里的 `tab` 既可能来自
+   * 服务端解析过的 searchParams、也可能是调用方直接传进来的（测试就是），两条路必须得出同一个页签。
+   */
+  const activeTab = PAYABLE_TABS.find((item) => item.key === resolveFinanceTab(PAYABLE_TABS, PAYABLE_TAB_ALIASES, tab)) ?? PAYABLE_TABS[0];
 
   if (loading) return <><PageHeader title="应付管理" /><LoadingState /></>;
 
@@ -905,6 +970,15 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       ], submit: createSupplier }); }}
       onSubmit={(values) => dialog?.submit(values)} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) { setCategoryDialog(null); setPendingDialog(null); } }} title={categoryDialog?.title ?? "新建供应商"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => categoryDialog?.submit(values)} />
+    {/* 付款单编辑器：预填 → 现改（金额 / 增删行 / 付款备注）→ 导出 xlsx。不改系统里的任何数据。 */}
+    <FinanceSlipEditor
+      kind="payment"
+      open={slip.open}
+      onOpenChange={(open) => setSlip((current) => open ? current : { ...current, open: false, draft: null, error: "" })}
+      draft={slip.draft}
+      loading={slip.loading}
+      error={slip.error}
+    />
     <RecordDetailDialog
       open={Boolean(detail)}
       onOpenChange={(open) => { if (!open) setDetail(null); }}
@@ -934,12 +1008,14 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
         </li>
         <li data-testid="payable-flow-pay">
           <strong>④ 已确认 {confirmedCount} 条</strong>
-          <Link href="/finance/payable?tab=confirmed">去确认 →</Link>
+          {/* ③④ 与②现在是**同一个页签**（2026-09-20 合并「应付对账 + 确认应付」）：
+              链接地址因此相同，但四步各自说明「卡在哪一步」，不合并成一句。 */}
+          <Link href="/finance/payable?tab=reconciliations">去确认 →</Link>
         </li>
       </ol>
     </section>}
     {!error && <section className="panel panel-body">
-      {/* 一个搜索框管本页四个页签的全部表格（原料入库 / 外加工签收 / 应付对账的两张表 / 确认应付）。
+      {/* 一个搜索框管本页三个页签的全部表格（原料入库 / 外加工签收 / 「应付对账与确认」里的三张表）。
           data-testid 补上：这是财务最常用的控件，而它是本页唯一没有 testid 的筛选器，
           测试只能靠 placeholder 定位 —— 改一次文案就会把用例打散。 */}
       <div className="filter-bar"><label>搜索<Input data-testid="payable-search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="单号 / 订单号 / 采购单号 / 供应商 / 原料" /></label></div>
@@ -952,6 +1028,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
       <div className="panel-heading"><h2>外加工签收</h2><span className="panel-note">待接收 {pendingOutsource.length} 条 · 已接收 {receivedOutsourceCount} 条</span></div>
       <div className="panel-body"><DataTable columns={outsourceColumns} data={filteredOutsource} empty={<EmptyState title="暂无待接收的外加工签收来源" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id, row })} rowTitle="双击查看详情" /></div>
     </section>}
+    {/* 2026-09-20（用户要求）：「应付对账」与「确认应付」合并到**一个视图**里，但两个动作仍然分开：
+        上面这张面板里先建对账单（待创建对账 → 行内「创建对账」），下面那张面板里再勾选确认/付款。
+        合并的只是「不用再切页签」，不是把两步合成一步 —— 对账对不清的金额不该被确认成生效负债。 */}
     {!error && activeTab.key === "reconciliations" && <section className="panel">
       <div className="panel-heading"><h2>应付对账</h2><span className="panel-note">待创建 {pendingEntries.length} 条 · 对账单 {filteredReconciliations.length} 张</span></div>
       <div className="panel-body">
@@ -968,10 +1047,14 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
           另有 {coveredDrafts.length} 条草稿已纳入对账单、不在此重复对账：{coveredDrafts.map((entry) => `${entry.payableNo}（${entry.reconciliation?.reconciliation_no}）`).join("、")}
         </p> : null}
         <h3>已创建对账单</h3>
-        <DataTable columns={reconciliationColumns} data={filteredReconciliations} empty={<EmptyState title={filter.trim() ? "没有符合搜索条件的应付对账单" : "暂无应付对账单"} />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" />
+        {/* 包一层带 testid 的容器（与「待创建对账」对称）：合并之后这一页同时有三张表，
+            测试与脚本要能按表定位行数/文案，而不是在全页范围内碰运气。 */}
+        <div data-testid="payable-reconciliations">
+          <DataTable columns={reconciliationColumns} data={filteredReconciliations} empty={<EmptyState title={filter.trim() ? "没有符合搜索条件的应付对账单" : "暂无应付对账单"} />} onRowDoubleClick={(row) => setDetail({ kind: "reconciliation", id: row.id })} rowTitle="双击查看详情" />
+        </div>
       </div>
     </section>}
-    {!error && activeTab.key === "confirmed" && <section className="panel">
+    {!error && activeTab.key === "reconciliations" && <section className="panel">
       <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">共 {ledgerEntries.length} 条（未付 {paymentTally.unpaid} / 已付 {paymentTally.paid}）</span></div>
       <div className="panel-body">
         {/* 付款情况默认「未付」：已经确认过（钱已经出去）的条目不再占着待办清单；需要时切到「已付 / 全部」。 */}
@@ -994,6 +1077,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabKey; 
           <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
           <Button size="sm" variant="secondary" data-testid="payable-other-import" onClick={() => { setImportResult(null); setImportOpen(true); }}>批量导入其他应付</Button>
           <span className="panel-note" data-testid="payable-selected-count">已选 {selectedDrafts.length} 条</span>
+          {/* 导出付款单（用户 2026-09-20）：勾选几条 → 一张付款单（一行一条应付）。走的是预填接口，
+              不改任何数据；金额、分录行、付款备注都在弹窗里现改。 */}
+          <Button size="sm" variant="secondary" data-testid="payable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openPaymentSlip(selectedDrafts.map((draft) => draft.id))}>导出付款单（{selectedDrafts.length} 条）</Button>
           <Button size="sm" data-testid="payable-batch-confirm" disabled={!selectedDrafts.length} onClick={batchConfirm}>批量确认（{selectedDrafts.length} 条）</Button>
         </div>
         <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />

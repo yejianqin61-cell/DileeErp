@@ -240,6 +240,51 @@ export class SupplierPayableReconciliationService {
     };
   }
 
+  /**
+   * 逻辑删除一张应付对账单（用户 2026-09-20：「其他应付的条目支持删除，包括删除确认应付和应付对账」）。
+   *
+   * 为什么需要它：以前删一条误录的「其他应付」会被一句话挡住 ——「该应付已纳入对账单 XXX，
+   * 请先处理那张对账单再删除」—— 而对账单**根本没有删除入口**。于是那条误录的应付永远删不掉，
+   * 卡在一张同样录错的对账单后面。这个接口就是把那句提示变成可执行的下一步。
+   *
+   * 边界：**已经用它确认过应付的对账单不能删**。确认应付即记账，写的是「以这张对账单为来源」的
+   * 那一条支出流水；而对账范围内到底哪几条应付是被这次确认翻成 confirmed 的**没有单独记录**
+   * （可能同时被逐条确认、也可能与另一张对账单重叠），删掉对账单就会让那笔支出失去来源单号、
+   * 也让「谁确认的」无从追查。要撤销请先冲销那笔支出。
+   *
+   * 删掉之后的连带效果是正确的：`payableInReconciliationScope` 只看未删除的对账单，所以
+   * 原本被它覆盖的草稿应付会重新回到「待创建对账」，也就重新变得可删除。
+   */
+  async remove(id: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw this.invalid("DELETION_REASON_REQUIRED", "删除必须填写原因");
+    const note = reason.trim();
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payable_reconciliations WHERE id = ${id}::uuid FOR UPDATE`;
+      const current = await tx.supplierPayableReconciliation.findFirst({ where: { id, deletedAt: null } });
+      if (!current) throw this.notFound("RECONCILIATION_NOT_FOUND", "应付对账不存在");
+      const confirmed = await tx.cashFlowEntry.findMany({
+        where: { sourceType: "supplier_payable_reconciliation", sourceId: id, status: "posted", deletedAt: null },
+        select: { entryNo: true },
+      });
+      if (confirmed.length) {
+        throw this.invalid("RECONCILIATION_HAS_CONFIRMED_PAYABLES", `该对账单已用于确认应付并记账（支出流水 ${confirmed.map((entry) => entry.entryNo).join("、")}），请先冲销那笔支出再删除`);
+      }
+      return tx.supplierPayableReconciliation.update({
+        where: { id },
+        // 备注是 VARCHAR(1000)：原因过长时截断（全文在审计里），不让数据库抛错把删除整个回滚。
+        data: { remark: `${current.remark ?? ""}\n删除原因：${note}`.trim().slice(0, 1000), ...this.audit.softDelete(user) },
+      });
+    });
+    await this.audit.record("supplier_payable_reconciliation.delete", "supplier_payable_reconciliation", user.id, id, {
+      reconciliation_no: row.reconciliationNo,
+      supplier_id: row.supplierId,
+      status_when_deleted: row.status,
+      system_balance: row.systemBalance.toString(),
+      reason: note,
+    });
+    return row;
+  }
+
   /** 对账范围：供应商 + 币种 + 期间，可选收窄到订单/采购单。create / get / confirmPayables / flows 必须完全一致。 */
   private entryScope(row: { supplierId: string; currency: string; orderNo: string | null | undefined; purchaseOrderId: string | null | undefined; periodStart: Date; periodEnd: Date }) {
     return {

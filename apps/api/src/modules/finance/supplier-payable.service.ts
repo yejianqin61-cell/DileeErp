@@ -326,29 +326,38 @@ export class SupplierPayableService {
 
   /**
    * 逻辑删除「其他应付」条目（用户 2026-09-20：「应付管理中，其他应付这种类型的，允许进行逻辑删除。
-   * 因为有时候录错了」）。
+   * 因为有时候录错了」，随后又补一句：「包括删除确认应付」）。
    *
    * 为什么只放给「其他应付」这一个来源类型：原料入库 / 外加工签收形成的应付是**入库与签收事实的账**，
    * 删掉它等于把一笔真实到货从账上抹掉，而货款并不会因此不存在。那些录错了应当走冲销或回退来源。
    * 「其他应付」不一样 —— 它是财务手工录（或 Excel 导入）的**非订单支出**，来源就是这一次录入本身，
    * 录错了除了删掉没有别的纠正办法（现在的流程里只能留一条冲销记录，反而更难看懂）。
    *
-   * 三条边界：
-   *   1. **只允许草稿**：已确认的应付已经记账（金额从银行账户支出、并在收支流水里留了一笔），
-   *      删条目会让那笔流水失去来源单号；要撤销请先「回退草稿」或「冲销」。
+   * 四条边界：
+   *   1. **草稿或已确认（未付款）**：草稿还没记账，删了就是没发生过；已确认的**在同一事务里回冲
+   *      它那笔支出流水**（钱要回到账上，见 `reverseSourceFlowInTransaction`），然后软删除。
+   *      已被付款核销（部分付款 / 已付清）的拒绝 —— 核销记录会指向一条不存在的应付。
    *   2. **已被对账单覆盖时拒绝**：对账单上的应付快照是发给供应商的既成事实，
-   *      条目消失后快照与系统余额会对不上，而表上看不出原因。请先处理那张对账单。
+   *      条目消失后快照与系统余额会对不上，而表上看不出原因。现在有可执行的下一步了 ——
+   *      去「应付对账」把那张对账单删掉（`SupplierPayableReconciliationService.remove`）再回来删这条。
    *   3. **软删除 + 必填原因**：`deletedAt/deletedBy` 落库，原因写进备注并单独记一条审计 ——
-   *      「录错了所以删掉」正是事后最需要能查清的事（谁删的、什么时候、为什么）。
+   *      「录错了所以删掉」正是事后最需要能查清的事（谁删的、什么时候、为什么删的）。
+   *   4. **状态不改成 reversed**：删除 ≠ 冲销。行是软删除的（所有查询都带 `deletedAt: null`），
+   *      保留原状态才能从「含已删除」的审计视角看出「它是确认状态下被删的」。
    */
   async removeOther(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("DELETION_REASON_REQUIRED", "删除必须填写原因");
-    const row = await this.prisma.$transaction(async (tx) => {
+    const note = reason.trim();
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
-      const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null } });
+      const current = await tx.supplierPayableEntry.findFirst({
+        where: { id, deletedAt: null },
+        include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: { select: { status: true } } } } },
+      });
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
       if (current.sourceType !== "other") throw this.invalid("SUPPLIER_PAYABLE_NOT_OTHER", "只有「其他应付」可以删除；原料入库 / 外加工签收形成的应付请用冲销");
-      if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_DELETABLE", "只有草稿应付可以删除；已确认的请先回退草稿或冲销");
+      if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "该应付已被付款核销，请先冲销那些付款再删除");
+      if (!["draft", "confirmed"].includes(current.status)) throw this.invalid("SUPPLIER_PAYABLE_NOT_DELETABLE", "只有草稿与已确认（尚未付款）的其他应付可以删除");
       // 覆盖判定与台账列表、对账服务共用同一个纯函数（`payableInReconciliationScope`），
       // 否则会出现「列表说没对过账、这里说已覆盖」这种各说各话。
       const scopes = await tx.supplierPayableReconciliation.findMany({
@@ -356,18 +365,33 @@ export class SupplierPayableService {
         select: { id: true, reconciliationNo: true, status: true, supplierId: true, currency: true, orderNo: true, purchaseOrderId: true, periodStart: true, periodEnd: true },
       });
       const covering = coveringPayableReconciliation(current, scopes);
-      if (covering) throw this.invalid("SUPPLIER_PAYABLE_IN_RECONCILIATION", `该应付已纳入对账单 ${covering.reconciliationNo}，请先处理那张对账单再删除`);
-      const note = `${current.remark ?? ""}\n删除原因：${reason.trim()}`.trim();
-      return tx.supplierPayableEntry.update({
+      if (covering) throw this.invalid("SUPPLIER_PAYABLE_IN_RECONCILIATION", `该应付已纳入对账单 ${covering.reconciliationNo}，请先在「应付对账」里删除那张对账单，再删除这条应付`);
+      // 已确认的应付在确认那一刻写过一条支出流水（确认即记账）。删条目必须同时把钱回冲 ——
+      // 放在**同一个事务**里：软删除提交了、回冲却失败的话，这条应付已经从列表上消失，
+      // 用户再也点不到它去补救，而钱一直挂在支出里。
+      const reversedFlows = current.status === "confirmed"
+        ? await this.cashFlow.reverseSourceFlowInTransaction(tx, "supplier_payable_entry", id, `删除其他应付 ${current.payableNo}：${note}`, user)
+        : [];
+      const row = await tx.supplierPayableEntry.update({
         where: { id },
         // 备注是 VARCHAR(1000)，原因可能很长：截断而不是让数据库抛错（原因全文在审计里，不会丢）。
-        data: { remark: note.slice(0, 1000), ...this.audit.softDelete(user) },
+        data: { remark: `${current.remark ?? ""}\n删除原因：${note}`.trim().slice(0, 1000), ...this.audit.softDelete(user) },
       });
+      return { row, reversedFlows };
     });
+    for (const flow of result.reversedFlows) {
+      await this.audit.record("cash_flow_entry.reverse", "cash_flow_entry", user.id, flow.id, {
+        entry_no: flow.entryNo, reason: note, amount: flow.amount.toString(), because: "supplier_payable.delete_other",
+      });
+    }
     await this.audit.record("supplier_payable.delete_other", "supplier_payable_entry", user.id, id, {
-      payable_no: row.payableNo, amount: row.amount.toString(), currency: row.currency, reason: reason.trim(),
+      payable_no: result.row.payableNo, amount: result.row.amount.toString(), currency: result.row.currency,
+      // 删的时候是什么状态：草稿（没记过账）与已确认（回冲了一笔支出）在事后审计里是完全不同的两件事。
+      status_when_deleted: result.row.status,
+      reversed_cash_flow_entry_nos: result.reversedFlows.map((flow) => flow.entryNo),
+      reason: note,
     });
-    return row;
+    return result.row;
   }
 
   async allocationBalance(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {

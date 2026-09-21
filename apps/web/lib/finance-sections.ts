@@ -23,20 +23,53 @@ export type FinanceBoardKey = (typeof FINANCE_BOARDS)[number]["key"];
 /** 应收管理子栏目。tab 同时是查询参数（/finance/receivable?tab=<key>）。 */
 export const RECEIVABLE_TABS = [
   { key: "outbound-entries", title: "成品出库条目" },
-  { key: "reconciliations", title: "应收对账" },
-  { key: "confirmed", title: "确认应收" },
+  { key: "reconciliations", title: "应收对账与确认" },
 ] as const;
 
 /** 应付管理子栏目。 */
 export const PAYABLE_TABS = [
   { key: "raw-inbound-entries", title: "原料入库条目" },
   { key: "outsource-entries", title: "外加工签收" },
-  { key: "reconciliations", title: "应付对账" },
-  { key: "confirmed", title: "确认应付" },
+  { key: "reconciliations", title: "应付对账与确认" },
 ] as const;
 
 export type ReceivableTabKey = (typeof RECEIVABLE_TABS)[number]["key"];
 export type PayableTabKey = (typeof PAYABLE_TABS)[number]["key"];
+
+/**
+ * 2026-09-20（用户要求）：「应收管理中，应收对账和确认应收我们合并在一起。合并到一个视图里。
+ * 但是仍然需要用户进行先创建对账，再确认的这两个动作。同样的，应付管理中，应付对账和确认应付
+ * 也要合并在一起。」
+ *
+ * 所以两侧的「对账」与「确认」合并成**一个 tab**，里面依然是两个动作
+ * （先在「待创建对账」里建对账单 → 在「确认应收 / 应付」里勾选确认）。
+ * 合并后只保留对账那一个 key，而**旧的 `confirmed` 链接必须继续能用**（收藏了的、
+ * 流转看板里的、以及 `FINANCE_LEGACY_REDIRECTS` 里的地址都写着它）—— 所以用一张**别名表**
+ * 在解析时把它折到合并后的 key，而不是让那些地址默默落到第一个 tab。
+ */
+export const RECEIVABLE_TAB_ALIASES: Record<string, ReceivableTabKey> = { confirmed: "reconciliations" };
+export const PAYABLE_TAB_ALIASES: Record<string, PayableTabKey> = { confirmed: "reconciliations" };
+
+/**
+ * 页面 / 组件接受的 tab 入参：真实 key **加上**合并前的旧值。
+ *
+ * 为什么不干脆只留真实 key：旧的 `?tab=confirmed` 是有人收藏过的地址，组件与页面都必须认它
+ * （`resolveFinanceTab` 负责折算）。把入参类型写死成新 key，就等于逼调用方先自己折算一遍 ——
+ * 那种「每个调用点各折算一次」的写法迟早漏掉一处，而漏掉的表现是**默默落到第一个页签**。
+ */
+export type ReceivableTabParam = ReceivableTabKey | "confirmed";
+export type PayableTabParam = PayableTabKey | "confirmed";
+
+/**
+ * 查询参数里的 tab → 真实 tab key（先查别名表，再查 tab 清单，都中不了就回第一个）。
+ *
+ * 统一在一处：两个二级页的代码里各写一遍这段判断，就会出现「一边认别名、另一边不认」
+ * 这种只有一个页面生病的情况。
+ */
+export function resolveFinanceTab<T extends { key: string }>(tabs: readonly T[], aliases: Record<string, string>, tab: string | undefined): string {
+  const wanted = tab && aliases[tab] ? aliases[tab] : tab;
+  return tabs.find((item) => item.key === wanted)?.key ?? tabs[0].key;
+}
 
 /**
  * 财务报表子栏目：一张老表一个 tab。
@@ -133,10 +166,11 @@ export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: st
 export const FINANCE_LEGACY_REDIRECTS = [
   { key: "receivable-sources", target: "/finance/receivable?tab=outbound-entries" },
   { key: "reconciliations", target: "/finance/receivable?tab=reconciliations" },
-  { key: "customer-payments", target: "/finance/receivable?tab=confirmed" },
+  // 2026-09-20 起「确认应收 / 确认应付」与各自的「对账」合并成同一个 tab，这三个老地址跟着改到合并后的那个。
+  { key: "customer-payments", target: "/finance/receivable?tab=reconciliations" },
   { key: "payable-sources", target: "/finance/payable?tab=raw-inbound-entries" },
-  { key: "payable-entries", target: "/finance/payable?tab=confirmed" },
-  { key: "supplier-payments", target: "/finance/payable?tab=confirmed" },
+  { key: "payable-entries", target: "/finance/payable?tab=reconciliations" },
+  { key: "supplier-payments", target: "/finance/payable?tab=reconciliations" },
   { key: "supplier-reconciliations", target: "/finance/payable?tab=reconciliations" },
 ] as const;
 

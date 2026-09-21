@@ -148,9 +148,10 @@ describe("应付管理：流转看板", () => {
     expect(flow.getByTestId("payable-flow-reconcile")).toHaveTextContent("待确认应付草稿 1 条（500.00）");
     expect(flow.getByTestId("payable-flow-confirm")).toHaveTextContent("已对平待确认 2 条");
     expect(flow.getByTestId("payable-flow-pay")).toHaveTextContent("已确认 1 条");
-    // 「去对账」「去确认」都指到应付对账子栏目
+    // 「去对账」「去确认」现在指向**同一个合并后的页签**（2026-09-20：应付对账 + 确认应付合并成一个视图），
+    // 四步看板仍然各自说明「卡在哪一步」。
     expect(within(flow.getByTestId("payable-flow-reconcile")).getByRole("link")).toHaveAttribute("href", "/finance/payable?tab=reconciliations");
-    expect(within(flow.getByTestId("payable-flow-pay")).getByRole("link")).toHaveAttribute("href", "/finance/payable?tab=confirmed");
+    expect(within(flow.getByTestId("payable-flow-pay")).getByRole("link")).toHaveAttribute("href", "/finance/payable?tab=reconciliations");
     expect(flow.getByTestId("payable-flow-confirm").className).toContain("flow-step-active");
   });
 });
@@ -703,6 +704,41 @@ describe("应付管理：其他应付批量导入", () => {
   });
 });
 
+// ------------------------------------------------------------------ 对账与确认合并（2026-09-20）
+
+/**
+ * 用户 2026-09-20：「应付管理中，应付对账和确认应付也要合并在一起。仍然需要两个动作。」
+ *
+ * 两条都要钉住：**一个视图**（不用再切页签）与**两个动作都还在**（对账归对账、确认归确认）——
+ * 只做前者就是把两步并成一步，那是账务上的越权。
+ */
+describe("应付管理：应付对账与确认应付合并成一个视图", () => {
+  it("合并页签里三张表同时在场（待创建对账 / 对账单 / 确认应付），两个动作各自还在", async () => {
+    stubPayable({ entries: [draftEntry], reconciliations: [matchedReconciliation] });
+    await openPayable("reconciliations");
+
+    expect(screen.getByTestId("payable-pending-entries")).toBeInTheDocument();
+    expect(screen.getByTestId("payable-reconciliations")).toBeInTheDocument();
+    expect(screen.getByText("确认应付", { selector: "h2" })).toBeInTheDocument();
+    expect(screen.getByTestId("payable-batch-bar")).toBeInTheDocument();
+    // 动作一：建对账；动作二：确认应付（行内 + 勾选批量 + 导出付款单）
+    expect(screen.getAllByRole("button", { name: "创建对账" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "确认应付" }).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("payable-batch-confirm")).toBeInTheDocument();
+    expect(screen.getByTestId("payable-slip-batch")).toBeInTheDocument();
+    // 合并之后「确认应付」不再是独立页签
+    expect(screen.queryByTestId("finance-tab-confirmed")).toBeNull();
+  });
+
+  it("旧的 ?tab=confirmed 也落在合并视图上（收藏过的链接不会默默跳到「原料入库条目」）", async () => {
+    stubPayable({ entries: [draftEntry] });
+    await openPayable("confirmed");
+
+    expect(screen.getByText("确认应付", { selector: "h2" })).toBeInTheDocument();
+    expect(screen.queryByText("原料入库条目", { selector: "h2" })).toBeNull();
+  });
+});
+
 // ------------------------------------------------------------------ 失败态
 
 describe("应付管理：失败态", () => {
@@ -717,19 +753,25 @@ describe("应付管理：失败态", () => {
 // ------------------------------------------------------------------ 其他应付的逻辑删除与全表搜索（2026-09-20）
 
 const otherDraft = { ...draftEntry, id: "entry-other", payableNo: "APO-001", sourceType: "other", sourceNoSnapshot: "其他应付-快递费", orderNo: null };
+/** 已确认（未付款）的其他应付：用户 2026-09-20 追问「包括删除确认应付」说的就是这种。 */
+const otherConfirmed = { ...otherDraft, id: "entry-other-2", payableNo: "APO-002", status: "confirmed", paid_amount: "0.0000", outstanding_amount: "500.0000" };
 
 describe("应付管理：其他应付的逻辑删除", () => {
   /**
-   * 用户 2026-09-20 第 2 条：「应付管理中，其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」。
+   * 用户 2026-09-20 第 2 条：「应付管理中，其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」，
+   * 随后追问：「包括删除确认应付和应付对账」。
    *
-   * 按钮只出现在「其他应付 且 草稿」的行上 —— 与后端的三条边界一致（原料/外加工是到货事实的账、
-   * 已确认的已经记账、被对账单覆盖的要先处理对账单）。界面上摆一个点了必然报错的按钮比不摆更糟。
+   * 按钮只出现在「其他应付」上，且**草稿与已确认都给**（已确认的由后端在同一事务里冲回那笔支出）；
+   * 原料入库 / 外加工签收是到货事实的账，什么状态都不给删除（要纠正走冲销）。
    */
-  it("只有「其他应付」的草稿给删除按钮；原料入库草稿与已确认条目都不给", async () => {
-    stubPayable({ entries: [otherDraft, draftEntry, confirmedEntry] });
+  it("删除按钮只给「其他应付」（草稿与已确认各一条）；原料入库草稿与已确认都不给", async () => {
+    stubPayable({ entries: [otherDraft, otherConfirmed, draftEntry, confirmedEntry] });
     await openPayable("confirmed");
+    // 默认只列未付：先切到「全部」才看得到已确认的那条
+    await pickOption("payable-payment-filter", /全部（4）/);
 
     expect(screen.getByTestId("payable-delete-entry-other")).toBeInTheDocument();
+    expect(screen.getByTestId("payable-delete-entry-other-2")).toBeInTheDocument();
     expect(screen.queryByTestId("payable-delete-entry-1")).toBeNull();
     expect(screen.queryByTestId("payable-delete-entry-2")).toBeNull();
   });
@@ -754,6 +796,215 @@ describe("应付管理：其他应付的逻辑删除", () => {
     expect(bodyOf(call)).toMatchObject({ reason: "金额录错，应是 50 不是 500" });
     await expectToast("其他应付 APO-001 已删除");
   });
+
+  it("已确认的其他应付也能删：弹窗里先说清「会同时冲回那笔支出」，再发同一条 DELETE", async () => {
+    const calls = stubPayable({ entries: [otherConfirmed] });
+    await openPayable("confirmed");
+    await pickOption("payable-payment-filter", /已付（1）/);
+
+    fireEvent.click(screen.getByTestId("payable-delete-entry-other-2"));
+    const dialog = await screen.findByTestId("action-dialog");
+    // 删除已确认的条目会动到钱，弹窗必须写出来（否则财务以为只是列表上少一行）
+    expect(within(dialog).getByText(/删除时会同时冲回那笔支出/)).toBeVisible();
+
+    setValue("action-field-reason", "整条录错，供应商也不对");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-other-2")).toHaveLength(1));
+    expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-other-2")[0].method).toBe("DELETE");
+    await expectToast("其他应付 APO-002 已删除");
+  });
+
+  it("「应付对账 → 待创建对账」这张表上也能删其他应付（用户 2026-09-20：包括应付对账）", async () => {
+    const calls = stubPayable({ entries: [otherDraft] });
+    await openPayable("reconciliations");
+
+    const pending = within(screen.getByTestId("payable-pending-entries"));
+    fireEvent.click(pending.getByTestId("payable-pending-delete-entry-other"));
+    await screen.findByTestId("action-dialog");
+    setValue("action-field-reason", "重复录入");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-other")).toHaveLength(1));
+    expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-other")[0].method).toBe("DELETE");
+  });
+
+  it("已被对账单覆盖时后端拒删：原因与「先删那张对账单」的下一步原样显示，列表不刷新", async () => {
+    const calls = stubPayable({ entries: [otherDraft] }, (url, call) => (
+      call.method === "DELETE" && url.endsWith("/finance/payable-entries/entry-other")
+        ? apiErr(422, "SUPPLIER_PAYABLE_IN_RECONCILIATION", "该应付已纳入对账单 APREC-001，请先在「应付对账」里删除那张对账单，再删除这条应付")
+        : undefined
+    ));
+    await openPayable("confirmed");
+    fireEvent.click(screen.getByTestId("payable-delete-entry-other"));
+    await screen.findByTestId("action-dialog");
+    setValue("action-field-reason", "录错了");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await expectToast("该应付已纳入对账单 APREC-001，请先在「应付对账」里删除那张对账单，再删除这条应付");
+    expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("请先在「应付对账」里删除那张对账单");
+    // 失败时条目还在（不能提示成功、也不能刷新成空表）。按面板定位：合并之后这条草稿同时出现在
+    // 「待创建对账」与「确认应付」两张表里，全页范围找会撞上「找到多个」。
+    // 用 `getByText(..., { selector: "h2" })` 找面板标题而不是 getByRole：失败时 ActionDialog 仍开着，
+    // Radix 会给页面其余部分加 aria-hidden，role 查询会因此找不到它；而「确认应付」这四个字
+    // 也是台账行内那颗按钮的文案，所以必须限定是标题。
+    const ledger = within(screen.getByText("确认应付", { selector: "h2" }).closest("section") as HTMLElement);
+    expect(ledger.getByText("APO-001")).toBeVisible();
+    expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-other")).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------------------------ 删除应付对账单（2026-09-20）
+
+describe("应付管理：删除应付对账单", () => {
+  /**
+   * 用户 2026-09-20：「其他应付的条目支持删除，包括删除确认应付和应付对账」。
+   *
+   * 这条入口是「请先处理那张对账单」的下一步：以前那句话指向一个**不存在的**操作，
+   * 误录的应付被一张同样录错的对账单永远挡在后面。
+   */
+  it("对账单行上有删除入口：DELETE /finance/supplier-payable-reconciliations/:id 带 { reason }", async () => {
+    const calls = stubPayable({ reconciliations: [matchedReconciliation] });
+    await openPayable("reconciliations");
+
+    fireEvent.click(screen.getByTestId("reconciliation-delete-recon-1"));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText("删除应付对账：APREC-001")).toBeVisible();
+    setValue("action-field-reason", "供应商选错了，这张是重复建的");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/recon-1")).toHaveLength(1));
+    const call = callsTo(calls, "/api/v1/finance/supplier-payable-reconciliations/recon-1")[0];
+    expect(call.method).toBe("DELETE");
+    expect(bodyOf(call)).toMatchObject({ reason: "供应商选错了，这张是重复建的" });
+    await expectToast("应付对账单 APREC-001 已删除");
+  });
+
+  it("已用于确认应付并记账的对账单：后端拒删并把那笔支出流水号说出来，对账单仍在列表上", async () => {
+    stubPayable({ reconciliations: [matchedReconciliation] }, (url, call) => (
+      call.method === "DELETE" && url.endsWith("/finance/supplier-payable-reconciliations/recon-1")
+        ? apiErr(422, "RECONCILIATION_HAS_CONFIRMED_PAYABLES", "该对账单已用于确认应付并记账（支出流水 CF-20260920-7），请先冲销那笔支出再删除")
+        : undefined
+    ));
+    await openPayable("reconciliations");
+    fireEvent.click(screen.getByTestId("reconciliation-delete-recon-1"));
+    await screen.findByTestId("action-dialog");
+    setValue("action-field-reason", "录错了");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await expectToast("该对账单已用于确认应付并记账（支出流水 CF-20260920-7），请先冲销那笔支出再删除");
+    expect(screen.getByText("APREC-001")).toBeVisible();
+  });
+});
+
+// ------------------------------------------------------------------ 付款单（2026-09-20）
+
+/**
+ * 用户 2026-09-20：「她需要在付款界面能导出付款单……允许用户编辑付款单中的一些字段。
+ * 比如我要付款 100，我可以自己填加行，我可以写付款备注」。
+ *
+ * 付款单**不落库**：行内 / 勾选 → 后端按应付条目预填（`/finance/payment-slips/draft`）→
+ * 财务在弹窗里改（金额、加行、付款备注）→ `POST /finance/payment-slips.xlsx` 出文件。
+ * 这一组钉住「预填的请求体」「改完提交的请求体」与「借贷不平不让导出」三件事。
+ */
+describe("应付管理：导出付款单（可编辑）", () => {
+  /** 后端预填的一张单：借 原材料 500 / 贷 银行存款 500（系统不自动拆进项税，要拆由财务自己加行）。 */
+  const slipDraft = {
+    kind: "payment", slip_no: "FK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "晋江大田",
+    bank_name: "农业银行", bank_account: "5706", attachment_count: 1, remark: "", maker: "小叶",
+    lines: [
+      { summary: "支付晋江大田涤纶布款", general_subject: "原材料", detail_subject: "", debit: "500", credit: "", remark: "" },
+      { summary: "支付晋江大田款项合计", general_subject: "银行存款", detail_subject: "农业银行", debit: "", credit: "500", remark: "" },
+    ],
+  };
+  const xlsxResponse = () => new Response(new Uint8Array([0x50, 0x4b]), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
+  const slipStub = (data: Data = {}, draftResult: unknown = slipDraft) => stubPayable(data, (url, call) => {
+    if (call.method !== "POST") return undefined;
+    if (url.endsWith("/finance/payment-slips/draft")) return draftResult instanceof Response ? draftResult : apiOk(draftResult);
+    if (url.endsWith("/api/v1/finance/payment-slips.xlsx")) return xlsxResponse();
+    return undefined;
+  });
+
+  it("行内「付款单」→ 按这条应付预填 → 改金额 / 加行 / 写付款备注 → 提交出的就是改过的那张", async () => {
+    captureDownloads();
+    const calls = slipStub({ entries: [draftEntry] });
+    await openPayable("confirmed");
+
+    fireEvent.click(screen.getByTestId("payable-slip-entry-1"));
+    const editor = await screen.findByTestId("payment-slip-editor");
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payment-slips/draft")).toHaveLength(1));
+    // 预填：收款单位 / 银行 / 科目 / 附单据张数 / 制单人都是后端给的
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/payment-slips/draft")[0])).toEqual({ payable_entry_ids: ["entry-1"] });
+    await waitFor(() => expect((within(editor).getByTestId("payment-slip-editor-counterparty") as HTMLInputElement).value).toBe("晋江大田"));
+    expect((within(editor).getByTestId("payment-slip-editor-bank-account") as HTMLInputElement).value).toBe("5706");
+    expect((within(editor).getByTestId("payment-slip-editor-maker") as HTMLInputElement).value).toBe("小叶");
+    expect(within(editor).getByTestId("payment-slip-editor-totals")).toHaveTextContent("借方合计 500");
+
+    // 「我要付款 100」：改借方行 + 自己加一行进项税，让借贷仍然相等
+    setValue("payment-slip-editor-debit-0", "86.96");
+    await userEvent.click(within(editor).getByTestId("payment-slip-editor-add"));
+    setValue("payment-slip-editor-summary-2", "进项税额");
+    setValue("payment-slip-editor-general-2", "应交税费-进项税");
+    setValue("payment-slip-editor-debit-2", "13.04");
+    setValue("payment-slip-editor-credit-1", "100");
+    setValue("payment-slip-editor-remark", "本次先付 100，余款月结");
+    expect(within(editor).getByTestId("payment-slip-editor-totals")).toHaveTextContent("借方合计 100");
+    await waitFor(() => expect(screen.queryByTestId("payment-slip-editor-blockers")).toBeNull());
+
+    fireEvent.click(screen.getByTestId("payment-slip-editor-export"));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")[0])).toEqual({
+      kind: "payment",
+      slip_no: "FK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "晋江大田",
+      bank_name: "农业银行", bank_account: "5706", attachment_count: 1, remark: "本次先付 100，余款月结", maker: "小叶",
+      lines: [
+        { summary: "支付晋江大田涤纶布款", general_subject: "原材料", detail_subject: "", debit: "86.96", credit: "", remark: "" },
+        { summary: "支付晋江大田款项合计", general_subject: "银行存款", detail_subject: "农业银行", debit: "", credit: "100", remark: "" },
+        { summary: "进项税额", general_subject: "应交税费-进项税", detail_subject: "", debit: "13.04", credit: "", remark: "" },
+      ],
+    });
+    expect(anchorClicks).toHaveLength(1);
+    expect(anchorClicks[0].download).toBe("迪礼付款单-FK-202609-001.xlsx");
+    await expectToast("已导出付款单 FK-202609-001");
+  });
+
+  it("勾选多条 → 一张付款单（预填请求带全部 id），财务在弹窗里再决定要不要合并", async () => {
+    const second = { ...draftEntry, id: "entry-2", payableNo: "AP-002", amount: "300.0000" };
+    const calls = slipStub({ entries: [draftEntry, second] });
+    await openPayable("confirmed");
+
+    await userEvent.click(screen.getByTestId("payable-select-all"));
+    await userEvent.click(screen.getByTestId("payable-slip-batch"));
+
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payment-slips/draft")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/payment-slips/draft")[0])).toEqual({ payable_entry_ids: ["entry-1", "entry-2"] });
+    expect(await screen.findByTestId("payment-slip-editor")).toBeVisible();
+  });
+
+  it("预填失败（跨供应商 / 跨币种）时弹窗仍然打开并把原因写出来，不让用户以为按钮坏了", async () => {
+    slipStub(
+      { entries: [draftEntry] },
+      apiErr(422, "PAYMENT_SLIP_MULTI_COUNTERPARTY", "一张付款单只能有一个收款单位：请按供应商分批导出"),
+    );
+    await openPayable("confirmed");
+
+    fireEvent.click(screen.getByTestId("payable-slip-entry-1"));
+    const error = await screen.findByTestId("payment-slip-editor-draft-error");
+    expect(error).toHaveTextContent("一张付款单只能有一个收款单位：请按供应商分批导出");
+    expect(screen.getByTestId("payment-slip-editor-export")).toBeDisabled();
+  });
+
+  it("借贷不平不让导出：按钮禁用，并把差额写在界面上（禁用的按钮点不动，原因不能只在点击后出现）", async () => {
+    const calls = slipStub({ entries: [draftEntry] });
+    await openPayable("confirmed");
+    fireEvent.click(screen.getByTestId("payable-slip-entry-1"));
+    await screen.findByTestId("payment-slip-editor");
+    await waitFor(() => expect((screen.getByTestId("payment-slip-editor-counterparty") as HTMLInputElement).value).toBe("晋江大田"));
+
+    setValue("payment-slip-editor-debit-0", "100");
+    const blockers = await screen.findByTestId("payment-slip-editor-blockers");
+    expect(blockers).toHaveTextContent("借贷不平衡：借方 100 / 贷方 500（差额 400）");
+    expect(screen.getByTestId("payment-slip-editor-export")).toBeDisabled();
+    expect(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")).toHaveLength(0);
+  });
 });
 
 describe("应付管理：一个搜索框管本页所有表", () => {
@@ -770,16 +1021,23 @@ describe("应付管理：一个搜索框管本页所有表", () => {
     });
     await openPayable("reconciliations");
 
-    // 收窄前：两条待创建 + 两张对账单
-    expect(within(screen.getByTestId("payable-pending-entries")).getAllByTestId("data-table-row")).toHaveLength(2);
-    expect(screen.getAllByTestId("data-table-row")).toHaveLength(4);
+    // 收窄前：两条待创建 + 两张对账单（合并之后这一页还有「确认应付」那张台账，
+    // 所以按表定位，不数全页行数）
+    const pending = within(screen.getByTestId("payable-pending-entries"));
+    const reconciliations = within(screen.getByTestId("payable-reconciliations"));
+    const ledger = within(screen.getByRole("heading", { name: "确认应付" }).closest("section") as HTMLElement);
+    expect(pending.getAllByTestId("data-table-row")).toHaveLength(2);
+    expect(reconciliations.getAllByTestId("data-table-row")).toHaveLength(2);
+    // 确认应付台账也吃同一个关键字（未付 2 条）
+    expect(ledger.getAllByTestId("data-table-row")).toHaveLength(2);
 
     setValue("payable-search", "APREC-002");
 
-    // 待创建对账里没有对账单号这一列，所以被清空；对账单只剩 APREC-002 那张
-    expect(within(screen.getByTestId("payable-pending-entries")).queryAllByTestId("data-table-row")).toHaveLength(0);
-    expect(screen.getAllByTestId("data-table-row")).toHaveLength(1);
-    expect(screen.getByText("APREC-002")).toBeVisible();
+    // 待创建对账里没有对账单号这一列，所以被清空；对账单只剩 APREC-002 那张；台账里两条也不命中
+    expect(pending.queryAllByTestId("data-table-row")).toHaveLength(0);
+    expect(reconciliations.getAllByTestId("data-table-row")).toHaveLength(1);
+    expect(ledger.queryAllByTestId("data-table-row")).toHaveLength(0);
+    expect(reconciliations.getByText("APREC-002")).toBeVisible();
     expect(screen.queryByText("APREC-001")).toBeNull();
     // 面板上的条数跟着搜索走，否则「2 张」与表里 1 行对不上
     expect(screen.getByText(/待创建 0 条 · 对账单 1 张/)).toBeVisible();

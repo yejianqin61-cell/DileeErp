@@ -227,3 +227,74 @@ test("对账详情返回 flow 摘要，且逐条明细带物料名称与规格�
   assert.equal(detail.details.payable_entries[0].unit_name, "米");
   assert.equal(detail.details.payable_entries[0].purchase_order_no, "PO-1");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-20（用户要求）：「其他应付的条目支持删除，包括删除确认应付和应付对账」。
+//
+// 删一条误录的其他应付时，原来会被「请先处理那张对账单」挡住 —— 而对账单根本没有删除入口。
+// 这条接口就是那个「下一步」：把录错的对账单删掉，被它覆盖的草稿应付重新回到「待创建对账」，
+// 也就重新变得可删除。已经用于确认应付并记账的对账单不能删（那笔支出会失去来源单号）。
+// ---------------------------------------------------------------------------
+
+/** 删除对账单的替身：记录被写入的 data、审计事件与「以这张对账单为来源的支出流水」查询。 */
+function removeReconciliationHarness({ row, flows = [] } = {}) {
+  const updates = [];
+  const events = [];
+  const locks = [];
+  const tx = {
+    $queryRaw: async () => { locks.push("supplier_payable_reconciliations"); return []; },
+    supplierPayableReconciliation: {
+      findFirst: async () => row,
+      update: async ({ data }) => { updates.push(data); return { ...row, ...data }; },
+    },
+    cashFlowEntry: { findMany: async () => flows },
+  };
+  const prisma = { $transaction: async (fn) => fn(tx) };
+  const audit = {
+    softDelete: () => ({ deletedAt: new Date("2026-09-20T00:00:00.000Z"), deletedBy: "user-1", updatedBy: "user-1" }),
+    record: async (action, entityType, actorId, entityId, details) => { events.push({ action, entityType, actorId, entityId, details }); },
+  };
+  return { service: new SupplierPayableReconciliationService(prisma, audit, cashFlowStub()), updates, events, locks };
+}
+
+const reconciliationRow = (extra = {}) => ({
+  id: "recon-1", reconciliationNo: "APREC-1", status: "matched", supplierId: "supplier-1", currency: "CNY",
+  orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z"),
+  systemBalance: new Prisma.Decimal("1200"), remark: null, ...extra,
+});
+
+test("应付对账可以逻辑删除：行锁 + 写删除原因 + 软删除 + 一条审计", async () => {
+  const { service, updates, events, locks } = removeReconciliationHarness({ row: reconciliationRow() });
+  const row = await service.remove("recon-1", "供应商选错了，这张是重复建的", { id: "user-1" });
+  assert.equal(locks.length, 1, "删除也要先锁行（与 resolve / confirmPayables 同一把锁）");
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].deletedBy, "user-1");
+  assert.ok(updates[0].deletedAt instanceof Date);
+  assert.equal(updates[0].remark, "删除原因：供应商选错了，这张是重复建的");
+  assert.equal(updates[0].status, undefined, "删除 ≠ 改状态：软删除标记才是「这条已经不在账上」的唯一标记");
+  assert.equal(row.deletedBy, "user-1");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, "supplier_payable_reconciliation.delete");
+  assert.equal(events[0].details.reconciliation_no, "APREC-1");
+  assert.equal(events[0].details.status_when_deleted, "matched");
+  assert.equal(events[0].details.reason, "供应商选错了，这张是重复建的");
+});
+
+test("应付对账删除：原因必填；已用于确认应付并记账的对账单拒删并点名那笔支出流水", async () => {
+  const blank = removeReconciliationHarness({ row: reconciliationRow() });
+  await assert.rejects(() => blank.service.remove("recon-1", "   ", { id: "user-1" }), (error) => error.getResponse().code === "DELETION_REASON_REQUIRED");
+  assert.equal(blank.updates.length, 0);
+
+  const confirmed = removeReconciliationHarness({ row: reconciliationRow(), flows: [{ entryNo: "CF-20260920-7" }] });
+  await assert.rejects(
+    () => confirmed.service.remove("recon-1", "录错了", { id: "user-1" }),
+    (error) => error.getResponse().code === "RECONCILIATION_HAS_CONFIRMED_PAYABLES" && error.getResponse().message.includes("CF-20260920-7"),
+  );
+  assert.equal(confirmed.updates.length, 0, "被拦下时不写任何字段");
+});
+
+test("应付对账删除：对账单不存在时 404（不静默成功）", async () => {
+  const { service, updates } = removeReconciliationHarness({ row: null });
+  await assert.rejects(() => service.remove("recon-x", "录错了", { id: "user-1" }), (error) => error.getResponse().code === "RECONCILIATION_NOT_FOUND");
+  assert.equal(updates.length, 0);
+});

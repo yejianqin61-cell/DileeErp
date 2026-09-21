@@ -12,23 +12,62 @@ export function filenameFromDisposition(disposition: string | null, fallback: st
   return plain ? plain[1].trim() : fallback;
 }
 
-/** 触发浏览器下载；失败时抛出可读错误（含超时与后端错误信息）。 */
-export async function downloadFile(url: string, fallbackName: string, timeoutMs = 120000): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(url, { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
-  } catch (cause) {
-    if (cause instanceof DOMException && (cause.name === "TimeoutError" || cause.name === "AbortError")) throw new Error("导出超时，请缩小筛选范围后重试");
-    throw new Error("无法连接服务，导出失败");
+/** 把一次导出请求的失败翻译成能给用户看的错误（超时 / 连不上 / 后端的 error.message）。 */
+async function failureOf(cause: unknown, response?: Response): Promise<Error> {
+  if (cause) {
+    if (cause instanceof DOMException && (cause.name === "TimeoutError" || cause.name === "AbortError")) return new Error("导出超时，请缩小筛选范围后重试");
+    return new Error("无法连接服务，导出失败");
   }
-  if (!response.ok) {
-    const body = await response.json().catch(() => null) as { error?: { message?: string } } | null;
-    throw new Error(body?.error?.message ?? `导出失败（HTTP ${response.status}）`);
-  }
+  const body = await response!.json().catch(() => null) as { error?: { message?: string } } | null;
+  return new Error(body?.error?.message ?? `导出失败（HTTP ${response!.status}）`);
+}
+
+/** 响应体 → 浏览器下载（文件名优先取后端给的那个，缺失时才用兜底名）。 */
+async function saveAs(response: Response, fallbackName: string): Promise<void> {
   const objectUrl = URL.createObjectURL(await response.blob());
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
   anchor.download = filenameFromDisposition(response.headers.get("content-disposition"), fallbackName);
   anchor.click();
   URL.revokeObjectURL(objectUrl);
+}
+
+/** 触发浏览器下载；失败时抛出可读错误（含超时与后端错误信息）。 */
+export async function downloadFile(url: string, fallbackName: string, timeoutMs = 120000): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url, { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+  } catch (cause) {
+    throw await failureOf(cause);
+  }
+  if (!response.ok) throw await failureOf(null, response);
+  await saveAs(response, fallbackName);
+}
+
+/**
+ * 带 JSON body 的下载（POST 导出）。
+ *
+ * 为什么付款单要走 POST 而不是像台账那样拼查询串：付款单是**服务端渲染**的一份文件，
+ * 而它上面每一个字段（金额、分录行、付款备注）都是财务在界面上现改的 ——
+ * 那些内容塞不进 URL，也必须有请求体长度上限（见 finance-slip.controller.ts 的 DTO）。
+ *
+ * 超时与错误翻译与 `downloadFile` 共用一处：两条路必须给出同样的「导出超时 / 无法连接服务」
+ * 提示，否则用户分不清是网络问题还是这张单子有问题。
+ */
+export async function downloadPost(url: string, body: unknown, fallbackName: string, timeoutMs = 120000): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (cause) {
+    throw await failureOf(cause);
+  }
+  if (!response.ok) throw await failureOf(null, response);
+  await saveAs(response, fallbackName);
 }

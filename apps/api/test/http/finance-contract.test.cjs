@@ -1,9 +1,10 @@
 // finance 模块 HTTP 契约测试（只读探测）。
 //
-// 目标控制器：apps/api/src/modules/finance/finance.controller.ts —— 42 个路由，全项目最大控制器。
+// 目标控制器：apps/api/src/modules/finance/finance.controller.ts 与 finance-slip.controller.ts
+//   —— 合计 48 个路由（18 GET + 24 POST + 4 PATCH + 2 DELETE），全项目最大的模块面。
 //   - 类级 @UseGuards(AuthenticationGuard, ModulePermissionGuard) + @RequireModules("finance")（:63-64）。
 //   - **本题目标描述里假设的"方法级 RequireAnyModules / RequireAdministrator 差异"在当前代码中不存在**：
-//     42 个路由上没有任何方法级权限装饰器，权限要求完全一致（都只要求 finance 模块）。
+//     48 个路由上没有任何方法级权限装饰器，权限要求完全一致（都只要求 finance 模块）。
 //     方法级放宽之所以不可行，控制器 :93-95 的注释已说明（类级 @RequireModules 先于方法级 ANY 校验），
 //     相关接口已迁到 PayableNotificationController（payable-notification.controller.ts:31）。
 //     因此 403 维度只能由「有会话但无 finance 权限的用户」覆盖 —— 见文件末尾的环境门控用例。
@@ -64,7 +65,13 @@ const READ_ROUTES = [
   `${FINANCE}/supplier-payable-reconciliations/${UNKNOWN_ID}`,
 ];
 
-/** 20 个 POST 路由。 */
+/**
+ * 24 个 POST 路由。
+ *
+ * 最后四条（收/付款单的预填与导出）属于 `FinanceSlipController`（2026-09-20 新增，
+ * `apps/api/src/modules/finance/finance-slip.controller.ts`）：它同样挂在 `finance` 前缀、
+ * 同样带类级 `@RequireModules("finance")`，所以鉴权与校验维度必须一起被本表覆盖。
+ */
 const POST_ROUTES = [
   `${FINANCE}/receivable-sources/from-outbound/${UNKNOWN_ID}`,
   `${FINANCE}/receivable-sources/${UNKNOWN_ID}/confirm`,
@@ -86,6 +93,10 @@ const POST_ROUTES = [
   `${FINANCE}/supplier-payments/${UNKNOWN_ID}/reverse`,
   `${FINANCE}/supplier-payable-reconciliations`,
   `${FINANCE}/supplier-payable-reconciliations/${UNKNOWN_ID}/resolve`,
+  `${FINANCE}/payment-slips/draft`,
+  `${FINANCE}/payment-slips.xlsx`,
+  `${FINANCE}/receipt-slips/draft`,
+  `${FINANCE}/receipt-slips.xlsx`,
 ];
 
 /** 4 个 PATCH 路由。 */
@@ -94,6 +105,19 @@ const PATCH_ROUTES = [
   `${FINANCE}/customer-payments/${UNKNOWN_ID}`,
   `${FINANCE}/payable-entries/${UNKNOWN_ID}`,
   `${FINANCE}/supplier-payments/${UNKNOWN_ID}`,
+];
+
+/**
+ * 2 个 DELETE 路由（2026-09-20 补齐：这一维度此前完全没进本表）。
+ *
+ * 两条都是「逻辑删除 + 原因走 body」：删除其他应付（`payable-entries/:id`，草稿与已确认都给，
+ * 已确认的会在同一事务里回冲那笔支出）与删除应付对账单（`supplier-payable-reconciliations/:id`，
+ * 已用于确认应付并记账的拒删）。空 body 会在管道层被 `ReasonDto` 拦下（400 VALIDATION_ERROR），
+ * 所以匿名探测与校验探测都能覆盖它们，而不会碰到任何业务数据。
+ */
+const DELETE_ROUTES = [
+  `${FINANCE}/payable-entries/${UNKNOWN_ID}`,
+  `${FINANCE}/supplier-payable-reconciliations/${UNKNOWN_ID}`,
 ];
 
 /** 6 个真正返回业务列表（其余数组端点是无参筛选的摘要端点）。 */
@@ -162,6 +186,15 @@ const VALIDATION_PROBES = [
   { body: { amount: 123 }, method: "PATCH", path: `${FINANCE}/customer-payments/${UNKNOWN_ID}` },
   { body: { amount: 123 }, method: "PATCH", path: `${FINANCE}/payable-entries/${UNKNOWN_ID}` },
   { body: { amount: 123 }, method: "PATCH", path: `${FINANCE}/supplier-payments/${UNKNOWN_ID}` },
+  // 收/付款单（2026-09-20）：预填要条目 id 非空数组、导出要 slip_no/slip_date/counterparty_name/lines，
+  // 空对象一律停在管道层（`PaymentSlipDraftDto` / `ReceiptSlipDraftDto` / `FinanceSlipDto`）。
+  { body: {}, method: "POST", path: `${FINANCE}/payment-slips/draft` },
+  { body: {}, method: "POST", path: `${FINANCE}/payment-slips.xlsx` },
+  { body: {}, method: "POST", path: `${FINANCE}/receipt-slips/draft` },
+  { body: {}, method: "POST", path: `${FINANCE}/receipt-slips.xlsx` },
+  // 两条 DELETE 的 body 是必填的删除原因（`ReasonDto`），空对象同样停在管道层。
+  { body: {}, method: "DELETE", path: `${FINANCE}/payable-entries/${UNKNOWN_ID}` },
+  { body: {}, method: "DELETE", path: `${FINANCE}/supplier-payable-reconciliations/${UNKNOWN_ID}` },
 ];
 
 /**
@@ -232,24 +265,27 @@ function adminAgent() {
 }
 
 test("finance.route_table_matches_the_controller_size", () => {
-  // 42 个路由 = 18 GET + 20 POST + 4 PATCH，与 finance.controller.ts:67-111 一一对应。
+  // 48 个路由 = 18 GET + 24 POST + 4 PATCH + 2 DELETE（finance.controller.ts 与
+  // finance-slip.controller.ts 的并集，两者同挂 `finance` 前缀、同用 finance 模块守卫）。
   // 控制器新增/删除路由时本用例会变红，提示同步更新上面的路由表与覆盖统计。
   assert.equal(READ_ROUTES.length, 18, "GET 路由数应为 18");
-  assert.equal(POST_ROUTES.length, 20, "POST 路由数应为 20");
+  assert.equal(POST_ROUTES.length, 24, "POST 路由数应为 24");
   assert.equal(PATCH_ROUTES.length, 4, "PATCH 路由数应为 4");
-  assert.equal(READ_ROUTES.length + POST_ROUTES.length + PATCH_ROUTES.length, 42, "FinanceController 共 42 个路由");
+  assert.equal(DELETE_ROUTES.length, 2, "DELETE 路由数应为 2");
+  assert.equal(READ_ROUTES.length + POST_ROUTES.length + PATCH_ROUTES.length + DELETE_ROUTES.length, 48, "finance 模块共 48 个路由");
 });
 
 test("finance.anonymous_requests_are_rejected_with_401_on_every_route", async () => {
   // 匿名探测是零风险的：AuthenticationGuard 在管道与 handler 之前抛 401（authentication.guard.ts:12 →
-  // auth.service.ts:36-40），请求体根本不会被解析到 DTO。这里一次性覆盖全部 42 个路由的鉴权维度。
+  // auth.service.ts:36-40），请求体根本不会被解析到 DTO。这里一次性覆盖全部 48 个路由的鉴权维度。
   const anonymous = apiClient(baseUrl);
   const probes = [
     ...READ_ROUTES.map((path) => ({ method: "GET", path })),
     ...POST_ROUTES.map((path) => ({ body: "{}", method: "POST", path })),
     ...PATCH_ROUTES.map((path) => ({ body: "{}", method: "PATCH", path })),
+    ...DELETE_ROUTES.map((path) => ({ body: "{}", method: "DELETE", path })),
   ];
-  assert.equal(probes.length, 42, "匿名探测必须覆盖全部 42 个路由");
+  assert.equal(probes.length, 48, "匿名探测必须覆盖全部 48 个路由");
 
   for (const { body, method, path } of probes) {
     const response = await anonymous.request(path, { body, method });

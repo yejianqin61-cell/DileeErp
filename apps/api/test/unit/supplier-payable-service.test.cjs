@@ -472,17 +472,21 @@ test("外加工签收来源创建应付时带上批次关联", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2026-09-20（用户要求）：「应付管理中，其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」。
+// 2026-09-20（用户要求）：「应付管理中，其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」，
+// 随后又补一句「包括删除确认应付和应付对账」。
 //
-// 四条边界都要钉住：① 只有其他应付能删（原料/外加工是到货事实的账，录错了要走冲销）；
-// ② 只有草稿能删（已确认的已经记账）；③ 已被对账单覆盖时拒绝（快照是发给供应商的事实）；
-// ④ 原因必填、走软删除、写进备注并单独记一条审计。
+// 五条边界都要钉住：① 只有其他应付能删（原料/外加工是到货事实的账，录错了要走冲销）；
+// ② 草稿与**已确认（未付款）**都能删，已确认的必须在**同一个事务**里回冲那笔支出（钱要回到账上）；
+// ③ 已被付款核销（部分付款/已付清）的不能删（核销记录会指向不存在的应付）；
+// ④ 已被对账单覆盖时拒绝，并给出可执行的下一步（去「应付对账」删掉那张对账单）；
+// ⑤ 原因必填、走软删除、写进备注并单独记一条审计。
 // ---------------------------------------------------------------------------
 
-/** 逻辑删除的替身：记录被写入的 data 与审计事件。 */
-function removeOtherHarness({ entry, scopes = [] } = {}) {
+/** 逻辑删除的替身：记录被写入的 data、审计事件与「回冲流水」的调用（含它拿到的是不是同一个事务）。 */
+function removeOtherHarness({ entry, scopes = [], flows = [] } = {}) {
   const updates = [];
   const events = [];
+  const reversals = [];
   const tx = {
     $queryRaw: async () => [],
     supplierPayableEntry: {
@@ -494,29 +498,40 @@ function removeOtherHarness({ entry, scopes = [] } = {}) {
   const prisma = { supplierPayableEntry: { findFirst: async () => entry }, $transaction: async (fn) => fn(tx) };
   const audit = {
     softDelete: () => ({ deletedAt: new Date("2026-09-20T00:00:00.000Z"), deletedBy: "user-1", updatedBy: "user-1" }),
+    update: () => ({ updatedBy: "user-1" }),
     record: async (action, entityType, actorId, entityId, details) => { events.push({ action, entityType, actorId, entityId, details }); },
   };
-  return { service: new SupplierPayableService(prisma, audit, cashFlowStub()), updates, events };
+  const cashFlow = cashFlowStub({
+    // 只有传进来的 client 是**那个事务**、且条目确实是已确认时，才回冲 ——
+    // 替身必须能区分这两件事，否则「软删除提交了、回冲却失败」这类缺陷测不出来。
+    reverseSourceFlowInTransaction: async (client, sourceType, sourceId, reason) => {
+      reversals.push({ client, sourceType, sourceId, reason, sameTransaction: client === tx });
+      return entry?.status === "confirmed" ? flows : [];
+    },
+  });
+  return { service: new SupplierPayableService(prisma, audit, cashFlow), updates, events, reversals, tx };
 }
 
 const otherDraft = (extra = {}) => ({
   id: "entry-other", payableNo: "APO-1", sourceType: "other", status: "draft", supplierId: "supplier-1",
   currency: "CNY", orderNo: null, purchaseOrderId: null, confirmationDate: new Date("2026-09-10T00:00:00.000Z"),
-  amount: new Prisma.Decimal("500"), remark: null, ...extra,
+  amount: new Prisma.Decimal("500"), remark: null, allocations: [], ...extra,
 });
 
 test("其他应付草稿可以逻辑删除：写删除原因、软删除并记一条审计", async () => {
-  const { service, updates, events } = removeOtherHarness({ entry: otherDraft() });
+  const { service, updates, events, reversals } = removeOtherHarness({ entry: otherDraft() });
   const row = await service.removeOther("entry-other", "金额录错，应是 50 不是 500", { id: "user-1" });
   assert.equal(updates.length, 1);
   assert.equal(updates[0].deletedBy, "user-1");
   assert.ok(updates[0].deletedAt instanceof Date);
   assert.equal(updates[0].remark, "删除原因：金额录错，应是 50 不是 500");
   assert.equal(row.deletedBy, "user-1");
+  assert.equal(reversals.length, 0, "草稿从没记过账，不该去回冲任何流水");
   assert.equal(events.length, 1);
   assert.equal(events[0].action, "supplier_payable.delete_other");
   assert.equal(events[0].details.reason, "金额录错，应是 50 不是 500");
   assert.equal(events[0].details.amount, "500");
+  assert.equal(events[0].details.status_when_deleted, "draft");
 });
 
 test("其他应付删除：原有备注被保留（删除原因追加在后面，不覆盖）", async () => {
@@ -543,21 +558,68 @@ test("其他应付删除：原料入库 / 外加工签收形成的应付不能�
   }
 });
 
-test("其他应付删除：已确认的不能删（钱已经从账户支出去了，要撤销请回退或冲销）", async () => {
-  const { service, updates } = removeOtherHarness({ entry: otherDraft({ status: "confirmed" }) });
-  await assert.rejects(
-    () => service.removeOther("entry-other", "录错了", { id: "user-1" }),
-    (error) => error.getResponse().code === "SUPPLIER_PAYABLE_NOT_DELETABLE",
-  );
-  assert.equal(updates.length, 0);
+// ---------------------------------------------------------------------------
+// 2026-09-20（用户追问）：「包括删除确认应付」。
+//
+// 原来只放给草稿，理由是「已确认的已经记账」—— 但那正是她录错的那一条的来源：
+// 导入 / 手工录的其他应付常常是先确认了才发现录错。既有的「回退草稿 → 再删除」也绕不过去，
+// 因为回退会把条目退回草稿态（钱仍然挂着）。所以改成：**已确认（未付款）也能删，
+// 删的时候在同一个事务里把那笔支出流水回冲掉**，钱回到账上。
+// ---------------------------------------------------------------------------
+
+test("其他应付删除：已确认（未付款）也能删，且**在同一个事务里**回冲那笔支出流水", async () => {
+  const flows = [{ id: "cf-1", entryNo: "CF-20260920-1", amount: new Prisma.Decimal("500") }];
+  const { service, updates, events, reversals, tx } = removeOtherHarness({ entry: otherDraft({ status: "confirmed" }), flows });
+  const row = await service.removeOther("entry-other", "整张单子录错了，供应商也不对", { id: "user-1" });
+
+  assert.equal(reversals.length, 1, "已确认的应付删掉时必须回冲它那句支出流水");
+  assert.equal(reversals[0].sameTransaction, true, "回冲必须发生在**同一个事务**里：软删除提交了、回冲失败的话，这条应付已经从列表上消失，用户再也点不到它");
+  assert.equal(reversals[0].sourceType, "supplier_payable_entry");
+  assert.equal(reversals[0].sourceId, "entry-other");
+  assert.ok(reversals[0].reason.includes("删除其他应付 APO-1"), "回冲原因要写明是因为删了哪条应付");
+
+  assert.equal(updates.length, 1);
+  assert.ok(updates[0].deletedAt instanceof Date);
+  // 删除 ≠ 冲销：状态原样保留，只是软删除 —— 事后从「含已删除」的视角才看得出它是什么状态下被删的。
+  assert.equal(updates[0].status, undefined, "不该改状态");
+  assert.equal(row.status, "confirmed");
+  assert.equal(events.length, 2, "一条冲销流水的审计 + 一条删除的审计");
+  assert.equal(events[0].action, "cash_flow_entry.reverse");
+  assert.equal(events[0].details.entry_no, "CF-20260920-1");
+  assert.equal(events[0].details.because, "supplier_payable.delete_other");
+  assert.equal(events[1].action, "supplier_payable.delete_other");
+  assert.equal(events[1].details.status_when_deleted, "confirmed");
+  assert.deepEqual(events[1].details.reversed_cash_flow_entry_nos, ["CF-20260920-1"]);
+  assert.equal(tx.supplierPayableEntry !== undefined, true);
 });
 
-test("其他应付删除：已被对账单覆盖时拒绝，并在错误里点名是哪张对账单", async () => {
+test("其他应付删除：已被付款核销（部分付款 / 已付清）的不能删 —— 核销记录会指向不存在的应付", async () => {
+  for (const status of ["partially_paid", "paid"]) {
+    const entry = otherDraft({ status, allocations: [{ status: "active", amount: new Prisma.Decimal("200"), payment: { status: "posted" } }] });
+    const { service, updates, reversals } = removeOtherHarness({ entry });
+    await assert.rejects(
+      () => service.removeOther("entry-other", "录错了", { id: "user-1" }),
+      (error) => error.getResponse().code === "SUPPLIER_PAYABLE_HAS_ALLOCATIONS",
+      status,
+    );
+    assert.equal(updates.length, 0);
+    assert.equal(reversals.length, 0, "被拦下时既不改数据也不回冲流水");
+  }
+  // 草稿付款（未过账）的核销不算「已经付出去的钱」：它不在余额里，也不挡删除。
+  const draftAllocation = otherDraft({ allocations: [{ status: "active", amount: new Prisma.Decimal("200"), payment: { status: "draft" } }] });
+  const { service, updates } = removeOtherHarness({ entry: draftAllocation });
+  await service.removeOther("entry-other", "录错了", { id: "user-1" });
+  assert.equal(updates.length, 1);
+});
+
+test("其他应付删除：已被对账单覆盖时拒绝，并在错误里点名是哪张对账单（下一步是去删那张对账单）", async () => {
   const scope = { id: "recon-1", reconciliationNo: "APREC-9", status: "matched", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
   const { service, updates } = removeOtherHarness({ entry: otherDraft(), scopes: [scope] });
   await assert.rejects(
     () => service.removeOther("entry-other", "录错了", { id: "user-1" }),
-    (error) => error.getResponse().code === "SUPPLIER_PAYABLE_IN_RECONCILIATION" && error.getResponse().message.includes("APREC-9"),
+    (error) => error.getResponse().code === "SUPPLIER_PAYABLE_IN_RECONCILIATION"
+      && error.getResponse().message.includes("APREC-9")
+      && error.getResponse().message.includes("删除那张对账单"),
   );
   assert.equal(updates.length, 0, "被拦下时不写任何字段");
 });

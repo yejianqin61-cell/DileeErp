@@ -556,6 +556,17 @@ button { cursor: pointer; }
 .voucher-editor-row-head { color: var(--text-muted); font-size: 12px; font-weight: 700; }
 .voucher-template-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
+/* 付款单编辑器（components/finance/payment-slip-editor.tsx）。
+   形状照财务给的付款单模板：上面是四行表头（单据编号 / 付款日期 / 付款方式 / 收款单位 / 开户银行 /
+   银行账号 / 附单据张数 / 制单人），下面是六列分录行。用 grid 而不是 table，理由与凭证分录编辑器相同：
+   每行的输入控件是普通 input，塞进 <td> 只会被表格的裁切盒限制宽度；分录行数由财务随时增删，
+   grid 的列宽不会因为某一行变长而跳。 */
+.payment-slip-editor-dialog { width: min(97vw, 1240px); }
+.payment-slip-editor-head { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 12px; margin-bottom: 12px; }
+.payment-slip-editor-row { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(110px, 0.9fr) minmax(110px, 0.9fr) 110px 110px minmax(110px, 1fr) 64px; align-items: center; gap: 8px; margin-bottom: 8px; }
+.payment-slip-editor-row-head { color: var(--text-muted); font-size: 12px; font-weight: 700; }
+@media (max-width: 900px) { .payment-slip-editor-head { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 /* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
    满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，
    表头吸顶（几百行时滑到底不能忘了列名），合计行加粗。 */
