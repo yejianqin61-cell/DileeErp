@@ -81,6 +81,7 @@ function confirmHarness(reconciliation, drafts) {
   const updates = [];
   const audits = [];
   const cashFlowCalls = [];
+  const accrualCalls = [];
   const reconciliationUpdates = [];
   const prisma = {
     receivableReconciliation: {
@@ -100,7 +101,12 @@ function confirmHarness(reconciliation, drafts) {
   });
   const audit = { create: () => ({}), update: () => ({ updatedBy: "user-1" }), record: async (...args) => audits.push(args), recordWithOrderNo: async (...args) => audits.push(args) };
   const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
-  return { service: new ReconciliationService(prisma, audit, {}, cashFlow), locks, updates, audits, cashFlowCalls, reconciliationUpdates };
+  // 2026-09-24 起「确认应收」= 挂账（逐条一张凭证），不再写收支流水：cashFlowCalls 现在是反向护栏。
+  const vouchers = {
+    createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
+    accruedSourceIds: async () => new Set(),
+  };
+  return { service: new ReconciliationService(prisma, audit, {}, cashFlow, undefined, vouchers), locks, updates, audits, cashFlowCalls, accrualCalls, reconciliationUpdates };
 }
 
 const draftSource = (id, amount) => ({ id, sourceNo: `AR-${id}`, orderNo: "SO-1", amount: new Prisma.Decimal(amount), currency: "CNY" });
@@ -114,17 +120,23 @@ test("对账还有未处理差异时不允许批量确认应收（先对账、�
   assert.deepEqual(updates, [], "被拒绝时不得写入任何应收");
 });
 
-test("对账对平后批量确认范围内的草稿应收，逐条行锁并回报金额", async () => {
-  const { service, locks, updates, audits } = confirmHarness({ id: "recon-1", status: "matched", reconciliationNo: "REC-1", customerId: "customer-1", orderNo: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30") }, [draftSource("s1", "10"), draftSource("s2", "32.5")]);
-  const result = await service.confirmReceivables("recon-1", { id: "user-1" });
+test("对账对平后批量确认范围内的草稿应收，逐条行锁、逐条挂账并回报金额", async () => {
+  const harness = confirmHarness({ id: "recon-1", status: "matched", reconciliationNo: "REC-1", customerId: "customer-1", orderNo: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30") }, [draftSource("s1", "10"), draftSource("s2", "32.5")]);
+  const result = await harness.service.confirmReceivables("recon-1", { id: "user-1" });
   assert.equal(result.confirmed_count, 2);
   assert.equal(result.confirmed_amount, "42.5000");
-  assert.deepEqual(updates.map((item) => item.status), ["confirmed", "confirmed"]);
+  assert.deepEqual(harness.updates.map((item) => item.status), ["confirmed", "confirmed"]);
   // 1 次对账行锁 + 每条应收一次行锁
-  assert.equal(locks.filter((sql) => sql.includes("receivable_reconciliations")).length, 1);
-  assert.equal(locks.filter((sql) => sql.includes("receivable_sources")).length, 2);
-  assert.equal(audits[0][0], "receivable_reconciliation.confirm_receivables");
-  assert.equal(audits[0][4].confirmed_count, 2);
+  assert.equal(harness.locks.filter((sql) => sql.includes("receivable_reconciliations")).length, 1);
+  assert.equal(harness.locks.filter((sql) => sql.includes("receivable_sources")).length, 2);
+  assert.equal(harness.audits[0][0], "receivable_reconciliation.confirm_receivables");
+  assert.equal(harness.audits[0][4].confirmed_count, 2);
+  // 挂账：逐条一张（不是合计一张）—— 合并成一张会让「这条应收有没有挂过账」查不出来。
+  assert.deepEqual(harness.cashFlowCalls, [], "确认不再写收支流水：钱还没到");
+  assert.deepEqual(harness.accrualCalls.map((call) => call.source_id), ["s1", "s2"]);
+  assert.deepEqual(harness.accrualCalls.map((call) => call.amount.toString()), ["10", "32.5"]);
+  assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
+  assert.equal(result.bank_missing, false);
 });
 
 test("已处理差异（resolved）的对账同样可以批量确认应收", async () => {
@@ -194,57 +206,57 @@ test("应收对账不选银行时不做任何银行查询（银行是可选字�
 });
 
 // ---------------------------------------------------------------------------
-// 2026-09-16（用户要求「一旦确认应收，金额就要进入对应的账户」）：
-//   确认应收 = 记账。金额必须写成一条**收入流水**并落到对账单的银行账户上，
-//   否则银行余额永远不变、收支明细表也看不到这笔钱。
+// 2026-09-24（两步口径）：确认应收 = **挂账**。金额不再写成「钱已进银行」的收入流水，
+//   而是每条应收一张挂账凭证（借应收账款 / 贷收入）；现金那条留给「登记收款」。
+//   2026-09-16 当年的「确认即记账」是她的明确要求，改口径的来龙去脉见
+//   docs/design/finance-accrual-two-step-2026-09-24.md。
 // ---------------------------------------------------------------------------
 
 const reconcilableRow = (extra = {}) => ({ id: "recon-1", status: "matched", reconciliationNo: "REC-1", customerId: "customer-1", customer: { id: "customer-1", name: "香港迪礼" }, orderNo: null, currency: "CNY", periodStart: new Date("2026-09-01"), periodEnd: new Date("2026-09-30"), bankId: "bank-1", subjectId: null, ...extra });
 
-test("确认应收把金额写成收入流水，并落到对账单的回款银行上", async () => {
-  const { service, cashFlowCalls } = confirmHarness(reconcilableRow(), [draftSource("s1", "10"), draftSource("s2", "32.5")]);
-  const result = await service.confirmReceivables("recon-1", { id: "user-1" });
-  assert.equal(cashFlowCalls.length, 1, "确认要记账：写一条收支流水");
-  const input = cashFlowCalls[0];
-  assert.equal(input.direction, "income", "确认应收 = 钱进来");
-  assert.equal(input.amount.toString(), "42.5");
+test("确认应收走挂账：每条应收一张凭证（借应收账款 / 贷收入），不写收支流水", async () => {
+  const harness = confirmHarness(reconcilableRow(), [draftSource("s1", "10"), draftSource("s2", "32.5")]);
+  const result = await harness.service.confirmReceivables("recon-1", { id: "user-1" });
+  assert.deepEqual(harness.cashFlowCalls, [], "钱还没到：确认这一步绝不能写「钱进银行」的流水");
+  assert.equal(harness.accrualCalls.length, 2, "对账单只是「一次确认多条」的入口，挂账仍然逐条");
+  const input = harness.accrualCalls[0];
+  assert.equal(input.amount.toString(), "10");
   assert.equal(input.currency, "CNY");
-  assert.equal(input.bankId, "bank-1", "金额必须落到对账单指定的银行账户，否则银行余额不会变");
-  assert.equal(input.counterpartyName, "香港迪礼", "对方名称取客户名，不能退化成 UUID");
-  assert.equal(input.sourceType, "receivable_reconciliation");
-  assert.equal(input.sourceId, "recon-1");
-  assert.deepEqual(input.subjectNames, ["主营业务收入", "营业外收入"], "默认归到「主营业务收入」（科目名称候选链，第一个存在的生效）");
+  assert.equal(input.counterparty_name, "香港迪礼", "对方名称取客户名，不能退化成 UUID");
+  assert.equal(input.source_type, "receivable_source");
+  assert.equal(input.source_id, "s1");
+  assert.deepEqual(input.contra_subject_names, ["主营业务收入", "营业外收入"], "默认归到「主营业务收入」（科目名称候选链，第一个存在的生效）");
   assert.equal(result.bank_id, "bank-1");
   assert.equal(result.bank_missing, false);
-  assert.equal(result.cash_flow_entry_id, "cf-1");
+  assert.equal(result.cash_flow_entry_id, null);
+  assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
 });
 
 test("确认应收时补的银行与会计科目会回写到对账单上（单子上写的与实际记账一致）", async () => {
-  const { service, cashFlowCalls, reconciliationUpdates } = confirmHarness(reconcilableRow({ bankId: null, subjectId: null }), [draftSource("s1", "10")]);
-  const result = await service.confirmReceivables("recon-1", { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-9" });
-  assert.equal(cashFlowCalls[0].bankId, "bank-1");
-  assert.equal(cashFlowCalls[0].subjectId, "subject-9");
-  assert.equal(reconciliationUpdates.length, 1, "补的银行/科目要回写，否则单子上还写着「没选」");
-  assert.equal(reconciliationUpdates[0].bankId, "bank-1");
-  assert.equal(reconciliationUpdates[0].subjectId, "subject-9");
+  const harness = confirmHarness(reconcilableRow({ bankId: null, subjectId: null }), [draftSource("s1", "10")]);
+  const result = await harness.service.confirmReceivables("recon-1", { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-9" });
+  assert.equal(harness.accrualCalls[0].contra_subject_id, "subject-9", "弹窗里补的科目就是挂账的对方科目");
+  assert.equal(harness.reconciliationUpdates.length, 1, "补的银行/科目要回写，否则单子上还写着「没选」");
+  assert.equal(harness.reconciliationUpdates[0].bankId, "bank-1");
+  assert.equal(harness.reconciliationUpdates[0].subjectId, "subject-9");
   assert.equal(result.subject_id, "subject-9");
   assert.equal(result.bank_missing, false);
 });
 
-test("对账单没有银行账户时：流水照写（收支事实不丢），但明确回报 bank_missing", async () => {
-  const { service, cashFlowCalls } = confirmHarness(reconcilableRow({ bankId: null }), [draftSource("s1", "10")]);
-  const result = await service.confirmReceivables("recon-1", { id: "user-1" });
-  assert.equal(cashFlowCalls[0].bankId, null);
-  assert.equal(result.bank_missing, true, "没指定账户必须让界面提示，而不是静默把钱记成「不在任何账户上」");
+test("对账单没有银行账户时：照样挂账（挂账不动钱），也没有 bank_missing 警告", async () => {
+  const harness = confirmHarness(reconcilableRow({ bankId: null }), [draftSource("s1", "10")]);
+  const result = await harness.service.confirmReceivables("recon-1", { id: "user-1" });
+  assert.equal(harness.accrualCalls.length, 1);
+  assert.equal(result.bank_missing, false, "挂账与银行无关：这里再提示「没选账户」只会让人以为账没记上");
 });
 
 test("确认应收时不能用一个不在池子里的银行账户", async () => {
-  const { service, cashFlowCalls } = confirmHarness(reconcilableRow({ bankId: null }), [draftSource("s1", "10")]);
+  const harness = confirmHarness(reconcilableRow({ bankId: null }), [draftSource("s1", "10")]);
   await assert.rejects(
-    () => service.confirmReceivables("recon-1", { id: "user-1" }, { bank_id: "bank-dead" }),
+    () => harness.service.confirmReceivables("recon-1", { id: "user-1" }, { bank_id: "bank-dead" }),
     (error) => error.getResponse().code === "BANK_NOT_FOUND",
   );
-  assert.deepEqual(cashFlowCalls, [], "银行非法时不得记账");
+  assert.deepEqual(harness.accrualCalls, [], "银行非法时不得挂账");
 });
 
 // ---------------------------------------------------------------------------

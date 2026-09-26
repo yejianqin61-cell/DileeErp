@@ -1,4 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
+import { AnyFilesInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
 import { Type } from "class-transformer";
 import type { Response } from "express";
 import { IsArray, IsDateString, IsDecimal, IsIn, IsInt, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, Matches, MaxLength, ValidateNested } from "class-validator";
@@ -30,6 +32,21 @@ class SpecDetailDto {
   @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "明细数量必须是不小于 0 的十进制数" }) @IsDecimal() quantity?: string;
   @IsOptional() @IsString() @MaxLength(30) unit?: string;
   @IsOptional() @IsInt() sort_order?: number;
+}
+
+/**
+ * 一格材料明细对某个物料的引用。
+ *
+ * `spec_key` 只限「材料明细」那 18 个栏位，具体判定在服务层（`SPEC_MATERIAL_KEYS`）——
+ * DTO 里只做长度与形状校验，因为「哪些栏位允许引用」是**业务清单**说了算的，
+ * 把它抄成 18 个 `@IsIn` 只是一份会过期的副本。
+ *
+ * 声明在 `SalesOrderSpecDto` **之前**：`@Type(() => MaterialRefDto)` 虽然是惰性求值，
+ * 但把被引用的类放在引用它的类之前，读的人不必去想「这个装饰器什么时候求值」。
+ */
+export class MaterialRefDto {
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(50) spec_key!: string;
+  @IsUUID() material_id!: string;
 }
 
 /**
@@ -92,6 +109,11 @@ export class SalesOrderSpecDto {
   @IsOptional() @IsString() @MaxLength(1000) qc_requirement?: string;
   /** 细分明细：传了就整块替换（空数组 = 清空），没传 = 不动。 */
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => SpecDetailDto) spec_details?: SpecDetailDto[];
+  /**
+   * 材料明细的物料引用（用户 2026-09-24：「每个部件，既支持填空，也支持从现有的物料清单中引用」）：
+   * 传了就整块替换（空数组 = 全部取消引用），没传 = 不动。
+   */
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MaterialRefDto) material_refs?: MaterialRefDto[];
 }
 
 // 导出以便契约测试直接用真实 ValidationPipe 校验前端请求体。
@@ -176,11 +198,33 @@ export class SalesOrdersController {
    */
   @Get(":id/production-sheet.xlsx") async productionSheet(@Param("id") id: string, @Res() response: Response) {
     const { buffer, orderNo } = await this.productionSheetExport.exportOrder(id);
-    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`迪礼ERP-工艺单-${orderNo}.xlsx`)}`);
-    response.setHeader("Cache-Control", "no-store");
-    return response.send(buffer);
+    return this.sendSheet(response, buffer, `迪礼ERP-工艺单-${orderNo}.xlsx`);
   }
+  /**
+   * 工艺单导出（带选中的物料图片）：用户 2026-09-24「导出销售单的时候，每个有图片的物料允许用户
+   * 勾选是否 excel 中一并导出这个图片」。
+   *
+   * 为什么是 **multipart** 而不是 JSON：图片字节走 JSON 会撞上 Express 默认 100KB 的 body 上限，
+   * 而放开全局上限是拿整站的攻击面换一个导出接口。multipart 本来就是为字节准备的：
+   * 一个勾选的栏位 = 一个文件，**字段名就是 `spec_key`**（`AnyFilesInterceptor` 把 `fieldname`
+   * 原样给我们），所以不必再发明一套「第几个文件对应哪一格」的约定。
+   *
+   * 没勾任何图片时不带文件即可（等于普通工艺单），所以界面只有这一条导出路径 —— 少一条路，
+   * 就少一处「带图/不带图两份版式会慢慢分叉」的机会。
+   */
+  @Post(":id/production-sheet.xlsx")
+  @UseInterceptors(AnyFilesInterceptor({ storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 20 } }))
+  async productionSheetWithImages(@Param("id") id: string, @UploadedFiles() files: Express.Multer.File[], @Res() response: Response) {
+    const selected = (files ?? []).map((file) => ({ spec_key: file.fieldname, buffer: file.buffer }));
+    const { buffer, orderNo } = await this.productionSheetExport.exportOrderWithImages(id, selected);
+    return this.sendSheet(response, buffer, `迪礼ERP-工艺单-${orderNo}.xlsx`);
+  }
+  /**
+   * 导出弹窗要列出的候选：这一单引用了哪些物料、各自有没有图。
+   *
+   * 两个 `:id/...` 段的路由都不会被单段的 `@Get(":id")` 吃掉（同 `:id/production-sheet.xlsx` 的说明）。
+   */
+  @Get(":id/export-images") async exportImages(@Param("id") id: string) { return { data: { images: await this.productionSheetExport.exportImageCandidates(id) }, meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
   // 成品入库/出库情况 + 出库通知（销售页「打开销售订单能看到成品入库情况」）。
   @Get(":id/finished-goods") async finishedGoods(@Param("id") id: string) { return { data: await this.outboundNotices.summary(id), meta: {} }; }
@@ -191,4 +235,15 @@ export class SalesOrdersController {
   @Post(":id/confirm") async confirm(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.confirm(id, user), meta: {} }; }
   @Post(":id/revert-draft") async revertDraft(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.revertToDraft(id, body.reason, user), meta: {} }; }
   @Post(":id/close") async close(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.close(id, user), meta: {} }; }
+
+  /**
+   * xlsx 下发的三件事一处写全：`Content-Type` + `filename*=UTF-8''`（中文文件名）+ `no-store`。
+   * 两个导出路由共用它 —— 抄两遍必然有一处漏掉中文文件名或缓存头（别处的教训）。
+   */
+  private sendSheet(response: Response, buffer: Buffer, fileName: string) {
+    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    response.setHeader("Cache-Control", "no-store");
+    return response.send(buffer);
+  }
 }

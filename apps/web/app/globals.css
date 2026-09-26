@@ -132,6 +132,14 @@ button { cursor: pointer; }
 .page-header p { margin: 7px 0 0; color: var(--text-muted); font-size: 13px; }
 .page-actions { display: flex; align-items: center; gap: 8px; }
 .action-row { display: flex; flex-wrap: wrap; gap: 4px; }
+/* 物料图片（用户 2026-09-24）：缩略图与藏在按钮后面的文件选择框。
+   原生的 `<input type=file>` 在各浏览器里长相、文案都不同，所以藏起来由「上传图片 / 换图」按钮去点它。 */
+.material-image-cell { display: flex; flex-direction: column; gap: 4px; }
+.material-image-input { display: none; }
+.material-thumb { border: 1px solid var(--border); border-radius: var(--radius); object-fit: cover; background: var(--surface-muted); }
+.material-thumb-empty { display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 12px; }
+/* 材料明细「填空或引用物料」的每一格（用户 2026-09-24）：文字在上，引用选择器 + 缩略图在下。 */
+.material-ref-field { display: flex; flex-direction: column; gap: 6px; }
 .contact-block { border-top: 1px solid var(--border); padding: 8px 0; }
 .feedback-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; }
 .feedback-state strong { color: var(--text); font-size: 14px; }
@@ -542,10 +550,13 @@ button { cursor: pointer; }
 @media print {
   /* visibility（而不是 display）才能让祖先隐藏、后代重新可见；对话框在打印时改为普通文档流，避免被裁切 */
   body * { visibility: hidden !important; }
-  .voucher-sheet, .voucher-sheet * { visibility: visible !important; }
-  .voucher-sheet { position: absolute; left: 0; top: 0; width: 100%; border: 0; padding: 0; gap: 8px; }
-  .voucher-print-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+  .voucher-sheet, .voucher-sheet *, .transfer-slip-sheet, .transfer-slip-sheet * { visibility: visible !important; }
+  .voucher-sheet, .transfer-slip-sheet { position: absolute; left: 0; top: 0; width: 100%; border: 0; padding: 0; gap: 8px; }
+  .voucher-print-dialog, .transfer-slip-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
   .ui-dialog-header, .ui-dialog-footer, .ui-dialog-close, .ui-dialog-overlay { display: none !important; }
+  /* 跨行转账单：灰底标签要印出来（默认会被浏览器抠掉背景色），输入框去掉聚焦虚线与取值高亮。 */
+  .transfer-slip-section td, .transfer-slip-label { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .transfer-slip-input { outline: none !important; }
 }
 
 /* 记账凭证的**分录编辑器**（components/finance/voucher-line-editor.tsx）。
@@ -566,6 +577,31 @@ button { cursor: pointer; }
 .payment-slip-editor-row { display: grid; grid-template-columns: minmax(150px, 1.2fr) minmax(110px, 0.9fr) minmax(110px, 0.9fr) 110px 110px minmax(110px, 1fr) 64px; align-items: center; gap: 8px; margin-bottom: 8px; }
 .payment-slip-editor-row-head { color: var(--text-muted); font-size: 12px; font-weight: 700; }
 @media (max-width: 900px) { .payment-slip-editor-head { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* 队列切换条（finance-slip-editor.tsx）：一次集中付款可能拆出多张单子（按对方单位 + 币种），
+   当前张用主色按钮标出来，标题里带对方单位与合计，否则「第 1 张 / 第 2 张」认不出是哪一家。 */
+.payment-slip-editor-queue { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+
+/* 跨行转账单（components/finance/bank-transfer-slip-editor.tsx）——版式照
+   `example/财务/跨行转账单.html`：宋体、细边框、段标题与标签灰底加粗、四个签字格。
+   每一格都是 `.transfer-slip-input`（无边框输入框），所以屏幕上它看起来就是一张填空的单子，
+   打印时值落在格子里（见上面的 @media print）。 */
+.transfer-slip-dialog { width: min(96vw, 900px); }
+.transfer-slip-sheet { font-family: "SimSun", "宋体", serif; color: #1a1a1a; max-width: 780px; margin: 0 auto; }
+.transfer-slip-title { text-align: center; font-size: 20px; letter-spacing: 6px; margin: 0 0 6px; font-family: "SimHei", "黑体", sans-serif; }
+.transfer-slip-no { text-align: right; font-size: 13px; margin-bottom: 8px; }
+.transfer-slip-table, .transfer-slip-sign { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.transfer-slip-table td, .transfer-slip-sign td { border: 1px solid #444; padding: 6px 8px; vertical-align: middle; }
+.transfer-slip-section td { background: #f2f2f2; font-weight: bold; text-align: center; font-family: "SimHei", "黑体", sans-serif; letter-spacing: 4px; }
+.transfer-slip-label { background: #f2f2f2; font-weight: bold; text-align: center; width: 130px; }
+.transfer-slip-sign { margin-top: 14px; }
+.transfer-slip-sign td { text-align: center; height: 46px; }
+.transfer-slip-sign-label { font-weight: bold; }
+.transfer-slip-cap td { height: 40px; }
+.transfer-slip-note { font-size: 13px; color: #555555; margin-top: 8px; }
+.transfer-slip-input { width: 100%; border: 0; background: transparent; font: inherit; color: inherit; padding: 2px 4px; }
+.transfer-slip-input:focus-visible { outline: 1px dashed var(--primary); }
+.transfer-slip-amount .transfer-slip-input { font-weight: bold; text-align: right; }
 
 /* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
    满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，

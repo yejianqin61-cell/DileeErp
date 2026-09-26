@@ -10,6 +10,52 @@ const { FinanceReportController } = require("../../dist/modules/finance/finance-
 
 const dec = (value) => new Prisma.Decimal(value);
 
+/**
+ * 三大报表取数桩（2026-09-24）。
+ *
+ * 本文件测的是「取数 → 表格 → 响应」这条接线，用桩替换取数服务；三大报表那三张表的
+ * **口径**由 `finance-three-statements.test.cjs`（内核）、`finance-three-statements-service.test.cjs`
+ * （取数）与 `finance-three-statements-tables.test.cjs`（版式）覆盖，这里只验接线与文件名。
+ */
+function statementsStub(overrides = {}) {
+  const calls = { balance: [], income: [], cash: [] };
+  const emptyLine = (row, label) => ({ row, label, value: 0n });
+  const balanceSheet = async (filter) => {
+    calls.balance.push(filter);
+    return overrides.balanceSheet ?? {
+      currency: "CNY",
+      period: { to: filter.to ?? "2026-09-30", yearStart: "2025-12-31" },
+      current: { assets: [emptyLine(1, "货币资金"), emptyLine(34, "资产总计")], equities: [emptyLine(34, "负债和所有者权益总计")], totalAssets: 0n, totalEquities: 0n, difference: 0n, balanced: true, retainedEarnings: 0n, retainedFromProfit: 0n, openingDifference: 0n, unmapped: [], notes: [] },
+      yearStartResult: { assets: [emptyLine(1, "货币资金"), emptyLine(34, "资产总计")], equities: [emptyLine(34, "负债和所有者权益总计")], totalAssets: 0n, totalEquities: 0n, difference: 0n, balanced: true, retainedEarnings: 0n, retainedFromProfit: 0n, openingDifference: 0n, unmapped: [], notes: [] },
+      gap: { entriesWithoutVoucher: 0, draftVouchers: 0, otherCurrencies: [], unconverted: [] },
+    };
+  };
+  const incomeStatement = async (filter) => {
+    calls.income.push(filter);
+    return overrides.incomeStatement ?? {
+      currency: "CNY",
+      period: { from: filter.from ?? "2026-09-01", to: filter.to ?? "2026-09-30" },
+      previousPeriod: { from: "2026-08-01", to: "2026-08-31" },
+      current: { lines: [{ row: 1, label: "一、营业收入", value: 0n }], operatingProfit: 0n, totalProfit: 0n, netProfit: 0n, unmapped: [], notes: [] },
+      previous: { lines: [{ row: 1, label: "一、营业收入", value: 0n }], operatingProfit: 0n, totalProfit: 0n, netProfit: 0n, unmapped: [], notes: [] },
+      gap: { entriesWithoutVoucher: 0, draftVouchers: 0, otherCurrencies: [], unconverted: [] },
+    };
+  };
+  const cashFlowStatement = async (filter) => {
+    calls.cash.push(filter);
+    return overrides.cashFlowStatement ?? {
+      currency: "CNY",
+      period: { from: filter.from ?? "2026-09-01", to: filter.to ?? "2026-09-30" },
+      previousPeriod: { from: "2026-08-01", to: "2026-08-31" },
+      current: { lines: [{ row: 1, label: "销售商品、提供劳务收到的现金", value: 0n }], netIncrease: 0n, closing: 0n, unmapped: [], nonCashVouchers: 0, internalTransfers: 0, notes: [] },
+      previous: { lines: [{ row: 1, label: "销售商品、提供劳务收到的现金", value: 0n }], netIncrease: 0n, closing: 0n, unmapped: [], nonCashVouchers: 0, internalTransfers: 0, notes: [] },
+      cashOpening: 0n,
+      gap: { entriesWithoutVoucher: 0, draftVouchers: 0, otherCurrencies: [], unconverted: [] },
+    };
+  };
+  return { statements: { balanceSheet, incomeStatement, cashFlowStatement }, calls };
+}
+
 /** 取数服务桩：记录收到的筛选条件，返回固定的报表源行。 */
 function stubReports(overrides = {}) {
   const filters = { sales: [], purchase: [], summary: [], profit: [], cost: [], cashDetail: [], cashSummary: [], forex: [] };
@@ -193,7 +239,7 @@ function stubResponse(currentUser = { id: "user-1", username: "caiwu", display_n
 
 test("finance-report.api：预览返回表格本身（列定义 + 行 + 合计）与行数", async () => {
   const { service } = stubReports();
-  const response = await new FinanceReportController(service).salesReconciliationDetail({});
+  const response = await new FinanceReportController(service, statementsStub().statements).salesReconciliationDetail({});
   assert.equal(response.data.sheet_name, "销售对账明细");
   assert.equal(response.data.columns.length, 23);
   assert.equal(response.data.rows.length, 1);
@@ -207,7 +253,7 @@ test("finance-report.api：预览返回表格本身（列定义 + 行 + 合计�
 
 test("finance-report.api：预览与导出的列定义是同一份（看到的和导出的不可能不一致）", async () => {
   const { service } = stubReports();
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   const preview = await controller.salesReconciliationDetail({});
   const response = stubResponse();
   await controller.exportSalesReconciliationDetail({}, response);
@@ -221,7 +267,7 @@ test("finance-report.api：预览与导出的列定义是同一份（看到的�
 test("finance-report.api：导出响应头是 xlsx 附件，文件名是中文并带生成时间与行数", async () => {
   const { service } = stubReports();
   const response = stubResponse();
-  await new FinanceReportController(service).exportSalesReconciliationDetail({}, response);
+  await new FinanceReportController(service, statementsStub().statements).exportSalesReconciliationDetail({}, response);
 
   assert.equal(response.headers["Content-Type"], "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   assert.equal(response.headers["Cache-Control"], "no-store");
@@ -234,7 +280,7 @@ test("finance-report.api：导出响应头是 xlsx 附件，文件名是中文�
 test("finance-report.api：导出的 body 是真正的 xlsx 二进制（zip 魔数）", async () => {
   const { service } = stubReports();
   const response = stubResponse();
-  await new FinanceReportController(service).exportSalesReconciliationDetail({}, response);
+  await new FinanceReportController(service, statementsStub().statements).exportSalesReconciliationDetail({}, response);
   assert.ok(Buffer.isBuffer(response.body));
   assert.deepEqual([...response.body.subarray(0, 4)], [0x50, 0x4b, 0x03, 0x04], "xlsx 是 zip 容器，前四字节应是 PK\\x03\\x04");
 });
@@ -242,7 +288,7 @@ test("finance-report.api：导出的 body 是真正的 xlsx 二进制（zip 魔�
 test("finance-report.api：采购对账明细表的导出文件名与工作表名", async () => {
   const { service } = stubReports();
   const response = stubResponse();
-  await new FinanceReportController(service).exportPurchaseReconciliationDetail({}, response);
+  await new FinanceReportController(service, statementsStub().statements).exportPurchaseReconciliationDetail({}, response);
   const fileName = decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(response.headers["Content-Disposition"])[1]);
   assert.match(fileName, /^迪礼ERP-采购对账明细-/);
   const workbook = XLSX.read(response.body, { type: "buffer" });
@@ -251,7 +297,7 @@ test("finance-report.api：采购对账明细表的导出文件名与工作表�
 
 test("finance-report.api：外汇一览表预览只回明细那张，但把「客户汇总」作为 extra_sheets 报出来", async () => {
   const { service } = stubReports();
-  const response = await new FinanceReportController(service).forexReceipts({});
+  const response = await new FinanceReportController(service, statementsStub().statements).forexReceipts({});
   assert.equal(response.data.sheet_name, "外汇一览");
   assert.equal(response.data.columns.length, 21, "明细 21 列（老表 19 列 + 币种 + 其他到账）");
   assert.equal(response.meta.row_count, 1);
@@ -266,7 +312,7 @@ test("finance-report.api：外汇一览表预览只回明细那张，但把「�
 test("finance-report.api：外汇一览表导出是**一个工作簿两张表**，文件名行数取主表", async () => {
   const { service } = stubReports();
   const response = stubResponse();
-  await new FinanceReportController(service).exportForexReceipts({}, response);
+  await new FinanceReportController(service, statementsStub().statements).exportForexReceipts({}, response);
   const workbook = XLSX.read(response.body, { type: "buffer" });
   assert.deepEqual(workbook.SheetNames, ["外汇一览", "客户汇总"], "明细与汇总必须在同一个文件里 —— 分开传正是对账对不上的经典原因");
   const fileName = decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(response.headers["Content-Disposition"])[1]);
@@ -276,7 +322,7 @@ test("finance-report.api：外汇一览表导出是**一个工作簿两张表**�
 
 test("finance-report.api：外汇一览表把筛选条件原样传给取数层（期间/客户/订单号/币种）", async () => {
   const { service, filters } = stubReports();
-  await new FinanceReportController(service).forexReceipts({ from: "2026-05-01", to: "2026-05-31", customer_id: "c-1", order_no: "DL260002", currency: "USD" });
+  await new FinanceReportController(service, statementsStub().statements).forexReceipts({ from: "2026-05-01", to: "2026-05-31", customer_id: "c-1", order_no: "DL260002", currency: "USD" });
   assert.deepEqual(filters.forex[0], {
     from: "2026-05-01",
     to: "2026-05-31",
@@ -294,13 +340,13 @@ test("finance-report.api：外汇一览表把筛选条件原样传给取数层�
 test("finance-report.api：单张表的报表仍然只写一个工作表（多表能力不是给每张表都加一张）", async () => {
   const { service } = stubReports();
   const response = stubResponse();
-  await new FinanceReportController(service).exportCashFlowSummary({}, response);
+  await new FinanceReportController(service, statementsStub().statements).exportCashFlowSummary({}, response);
   const workbook = XLSX.read(response.body, { type: "buffer" });
   assert.deepEqual(workbook.SheetNames, ["收支汇总"]);
 });
 
 test("finance-report.api：查询参数映射到取数条件（下划线转驼峰、include_draft 只认 true）", async () => {  const { service, filters } = stubReports();
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   await controller.salesReconciliationDetail({
     from: "2026-09-01",
     to: "2026-09-30",
@@ -326,7 +372,7 @@ test("finance-report.api：查询参数映射到取数条件（下划线转驼�
 
 test("finance-report.api：不给 include_draft 时默认不含草稿", async () => {
   const { service, filters } = stubReports();
-  await new FinanceReportController(service).salesReconciliationDetail({});
+  await new FinanceReportController(service, statementsStub().statements).salesReconciliationDetail({});
   assert.equal(filters.sales[0].includeDraft, false);
   assert.equal(filters.sales[0].from, undefined);
 });
@@ -334,7 +380,7 @@ test("finance-report.api：不给 include_draft 时默认不含草稿", async ()
 test("finance-report.api：空结果照样导出表头（能确定「确实是 0 行」，不是导出失败）", async () => {
   const { service } = stubReports({ salesRows: [], purchaseRows: [] });
   const response = stubResponse();
-  await new FinanceReportController(service).exportSalesReconciliationDetail({}, response);
+  await new FinanceReportController(service, statementsStub().statements).exportSalesReconciliationDetail({}, response);
   const workbook = XLSX.read(response.body, { type: "buffer" });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
@@ -352,7 +398,7 @@ test("finance-report.api：空结果照样导出表头（能确定「确实是 0
 
 test("finance-report.api：销售对账汇总表预览与导出（10 列、工作表名、文件名）", async () => {
   const { service } = stubReports();
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   const preview = await controller.salesReconciliationSummary({});
   assert.equal(preview.data.sheet_name, "销售对账汇总");
   assert.equal(preview.data.columns.length, 10);
@@ -371,7 +417,7 @@ test("finance-report.api：销售对账汇总表预览与导出（10 列、工�
 test("finance-report.api：销售利润报表预览带表尾说明（缺采购价物料 / 没有 BOM）", async () => {
   const footnotes = ["缺采购价物料（成本按 0 计入，毛利偏高）（1-1/1）：WPTM9 未知料"];
   const { service } = stubReports({ footnotes });
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   const preview = await controller.salesGrossProfit({});
   assert.equal(preview.data.sheet_name, "销售利润(毛利)");
   assert.equal(preview.data.rows[0][6], 14525, "销售利润 = 销售金额 − 成本金额");
@@ -385,7 +431,7 @@ test("finance-report.api：销售利润报表预览带表尾说明（缺采购�
 
 test("finance-report.api：利润表的筛选条件与其它报表一致地映射", async () => {
   const { service, filters } = stubReports();
-  await new FinanceReportController(service).salesGrossProfit({ from: "2026-06-01", customer_id: "c-1", include_draft: "true" });
+  await new FinanceReportController(service, statementsStub().statements).salesGrossProfit({ from: "2026-06-01", customer_id: "c-1", include_draft: "true" });
   assert.equal(filters.profit[0].from, "2026-06-01");
   assert.equal(filters.profit[0].customerId, "c-1");
   assert.equal(filters.profit[0].includeDraft, true);
@@ -395,7 +441,7 @@ test("finance-report.api：利润表的筛选条件与其它报表一致地映�
 
 test("finance-report.api：收支明细表预览与导出（9 列：老表 6 列 + 分类 + 项目 + 银行账户）", async () => {
   const { service } = stubReports();
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   const preview = await controller.cashFlowDetail({});
   assert.equal(preview.data.sheet_name, "收支明细");
   assert.equal(preview.data.columns.length, 9);
@@ -416,7 +462,7 @@ test("finance-report.api：收支明细表预览与导出（9 列：老表 6 列
 
 test("finance-report.api：收支汇总表预览与导出（分类 × 项目 × 币种，分类段末小计 + 币种段末合计）", async () => {
   const { service } = stubReports();
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   const preview = await controller.cashFlowSummary({});
   assert.equal(preview.data.sheet_name, "收支汇总");
   assert.deepEqual(preview.data.columns.map((column) => column.header), ["分类", "项目", "币种", "收入", "支出"]);
@@ -442,7 +488,7 @@ test("finance-report.api：收支汇总表预览与导出（分类 × 项目 × 
 
 test("finance-report.api：收支报表的 subject_id / category / direction 参数照实映射", async () => {
   const { service, filters } = stubReports();
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   await controller.cashFlowDetail({ subject_id: "subject-2", category: "损益类", direction: "expense", currency: "CNY" });
   assert.equal(filters.cashDetail[0].subjectId, "subject-2");
   assert.equal(filters.cashDetail[0].category, "损益类");
@@ -455,7 +501,7 @@ test("finance-report.api：收支报表的 subject_id / category / direction 参
 test("finance-report.api：采购对账明细导出把「订单号」写在「采购单号」前面", async () => {
   const { service } = stubReports();
   const response = stubResponse();
-  await new FinanceReportController(service).exportPurchaseReconciliationDetail({}, response);
+  await new FinanceReportController(service, statementsStub().statements).exportPurchaseReconciliationDetail({}, response);
   const workbook = XLSX.read(response.body, { type: "buffer" });
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets["采购对账明细"], { header: 1, raw: true, defval: null });
   const header = rows[0];
@@ -470,7 +516,7 @@ test("finance-report.api：采购对账明细导出把「订单号」写在「�
 test("finance-report.api：核算表预览与导出（20 列、工作表名、文件名、表尾说明）", async () => {
   const footnotes = ["本表金额列一律为人民币本位币口径（老表没有币种列）：…"];
   const { service } = stubReports({ costFootnotes: footnotes });
-  const controller = new FinanceReportController(service);
+  const controller = new FinanceReportController(service, statementsStub().statements);
   const preview = await controller.costAccounting({ from: "2026-09-01", to: "2026-09-30" });
 
   assert.equal(preview.data.sheet_name, "核算表");
@@ -492,11 +538,69 @@ test("finance-report.api：核算表预览与导出（20 列、工作表名、�
 
 test("finance-report.api：核算表的筛选条件与其它报表一致地映射", async () => {
   const { service, filters } = stubReports();
-  await new FinanceReportController(service).costAccounting({ from: "2026-09-01", to: "2026-09-30", customer_id: "c-1", order_no: "SO-1", currency: "CNY" });
+  await new FinanceReportController(service, statementsStub().statements).costAccounting({ from: "2026-09-01", to: "2026-09-30", customer_id: "c-1", order_no: "SO-1", currency: "CNY" });
   assert.equal(filters.cost[0].from, "2026-09-01");
   assert.equal(filters.cost[0].to, "2026-09-30");
   assert.equal(filters.cost[0].customerId, "c-1");
   assert.equal(filters.cost[0].orderNo, "SO-1");
   assert.equal(filters.cost[0].currency, "CNY");
   assert.equal(filters.cost[0].includeDraft, false);
+});
+
+/* ------------------------------------------------------------ 三大报表（2026-09-24） */
+
+test("finance-report.api：资产负债表预览是 8 列两栏对照 + 勾稽核对行，导出文件名与工作表名正确", async () => {
+  const { service } = stubReports();
+  const { statements } = statementsStub();
+  const controller = new FinanceReportController(service, statements);
+
+  const preview = await controller.balanceSheet({ to: "2026-09-30" });
+  assert.deepEqual(preview.data.columns.map((column) => column.header), ["资产", "行次", "期末余额", "年初余额", "负债和所有者权益（或股东权益）", "行次", "期末余额", "年初余额"]);
+  assert.equal(preview.data.sheet_name, "资产负债表");
+  // 勾稽核对行必须在（模板最后一行，✓/✗ 一眼看得出）
+  assert.ok(preview.data.rows.some((row) => String(row[0]).startsWith("勾稽核对") && row[4] === "✓ 平衡"));
+
+  const response = stubResponse();
+  await controller.exportBalanceSheet({ to: "2026-09-30" }, response);
+  assert.match(response.headers["Content-Disposition"], /%E8%B5%84%E4%BA%A7%E8%B4%9F%E5%80%BA%E8%A1%A8/, "文件名里是 URL 编码的「资产负债表」");
+  const workbook = XLSX.read(response.body, { type: "buffer" });
+  assert.deepEqual(workbook.SheetNames, ["资产负债表"]);
+});
+
+test("finance-report.api：利润表与现金流量表预览是 4 列（项目/行次/本期金额/上期金额）并带上期", async () => {
+  const { service } = stubReports();
+  const { statements, calls } = statementsStub();
+  const controller = new FinanceReportController(service, statements);
+
+  const income = await controller.incomeStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.deepEqual(income.data.columns.map((column) => column.header), ["项目", "行次", "本期金额", "上期金额"]);
+  assert.equal(income.data.sheet_name, "利润表");
+
+  const cash = await controller.cashFlowStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(cash.data.sheet_name, "现金流量表");
+  assert.deepEqual(cash.data.columns.map((column) => column.header), ["项目", "行次", "本期金额", "上期金额"]);
+
+  // 期间与币种照实传给取数层（三大报表只吃这三项）
+  assert.equal(calls.income[0].from, "2026-09-01");
+  assert.equal(calls.cash[0].to, "2026-09-30");
+});
+
+test("finance-report.api：三大报表的缺口写进表尾（未生成凭证 / 草稿凭证 / 其他币种未折算）", async () => {
+  const { service } = stubReports();
+  const gap = { entriesWithoutVoucher: 3, draftVouchers: 2, otherCurrencies: [{ currency: "USD", count: 4, period: "2026-09" }], unconverted: [] };
+  const { statements } = statementsStub({
+    balanceSheet: {
+      currency: "CNY",
+      period: { to: "2026-09-30", yearStart: "2025-12-31" },
+      current: { assets: [{ row: 1, label: "货币资金", value: 0n }, { row: 34, label: "资产总计", value: 0n }], equities: [{ row: 34, label: "负债和所有者权益总计", value: 0n }], totalAssets: 0n, totalEquities: 0n, difference: 0n, balanced: true, retainedEarnings: 0n, retainedFromProfit: 0n, openingDifference: 0n, unmapped: [], notes: [] },
+      yearStartResult: { assets: [{ row: 1, label: "货币资金", value: 0n }, { row: 34, label: "资产总计", value: 0n }], equities: [{ row: 34, label: "负债和所有者权益总计", value: 0n }], totalAssets: 0n, totalEquities: 0n, difference: 0n, balanced: true, retainedEarnings: 0n, retainedFromProfit: 0n, openingDifference: 0n, unmapped: [], notes: [] },
+      gap,
+    },
+  });
+  const controller = new FinanceReportController(service, statements);
+  const preview = await controller.balanceSheet({ to: "2026-09-30" });
+  const notes = preview.data.footnotes.join("\n");
+  assert.ok(notes.includes("3 条已生效的收支流水"), "未生成凭证的流水必须报出来（否则报表里那些钱像不存在）");
+  assert.ok(notes.includes("2 张草稿凭证"));
+  assert.ok(notes.includes("4 张 USD 凭证") && notes.includes("2026-09 的期末汇率折算"), "已折算的币种要写明用的是哪个月的汇率");
 });

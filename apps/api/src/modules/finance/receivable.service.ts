@@ -10,21 +10,36 @@ import { coveringReceivableReconciliation } from "./receivable.domain";
 import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
+import { SOURCE_RECEIVABLE, VoucherService } from "./voucher.service";
 import { RECEIVABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
 
 /**
  * 确认应收的三个入口（逐条 / 勾选批量 / 按对账单一键）共用同一组参数。
  *
- * `payment_nature` 是 2026-09-17 为老表「外汇一览表」加的口径（定金 / 货款 / 尾款 / 其他）：
- * 确认就是记账，钱的性质必须在这唯一一次录入口里问清楚，事后补标只能靠逐条改流水。
- * 传 `undefined` 表示「不动已有标注」（反复点确认不该把上次标的性质抹掉），
- * 传 `null` / 空串表示「清空」。
+ * `subject_id` 是挂账凭证的**对方科目**（默认主营业务收入，可以选营业外收入）；
+ * `bank_id` 在两步口径下**已经不用**（挂账不动现金，钱进哪个账户由「登记收款」决定），
+ * 但仍保留校验与回显：界面上选的账户若已停用，报错早于「确认成功」出现更好解释。
+ * `payment_nature`（定金/货款/尾款）同理移到了收款登记那一步，这里只写进挂账凭证的备注。
  */
 type ConfirmReceivableOptions = { bank_id?: string | null; subject_id?: string | null; payment_nature?: string | null };
 
 @Injectable()
 export class ReceivableService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+    private readonly cashFlow: CashFlowService,
+    @Optional() private readonly currencies?: CurrencyService,
+    // 放在最后且可选：位置参数是历史测试的构造方式（`new ReceivableService(prisma, audit, cashFlow)`），
+    // 插在中间会让「币种字典」那一格悄悄错位 —— 那种错位在测试里表现为「功能莫名失效」。
+    @Optional() private readonly vouchers?: VoucherService,
+  ) {}
+
+  /** 挂账用的凭证服务；DI 漏了必须炸出来（静默跳过＝这笔应收没进账，谁也不会发现）。 */
+  private get accruals(): VoucherService {
+    if (!this.vouchers) throw new Error("VoucherService 未注入：确认应收必须能挂账（见 finance.module.ts 的 providers）");
+    return this.vouchers;
+  }
 
   /**
    * 应收来源列表。
@@ -161,25 +176,41 @@ export class ReceivableService {
     });
     const row = result.updated;
     await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo });
-    const cashFlow = await this.cashFlow.recordConfirmation({
-      sourceType: "receivable_source",
-      sourceId: id,
-      documentNo: row.sourceNo,
-      entryDate: this.today(),
-      amount: row.amount,
+    const accrual = await this.accrue(row, result.customerName, user, options);
+    return { ...row, cash_flow_entry_id: null, accrual_voucher_id: accrual?.id ?? null, accrual_replayed: accrual?.replayed ?? false, bank_missing: false };
+  }
+
+  /**
+   * **挂账**（确认应收那一步真正的账务动作）：借 `应收账款` / 贷 收入类科目。
+   *
+   * 用户 2026-09-24 已确认的口径（方案 `docs/design/finance-accrual-two-step-2026-09-24.md`）：
+   * 确认那一刻钱还没到，所以这一步**不写任何收支流水、不进任何银行账户**（当年「确认即记账」
+   * 把「应收成立」和「钱收到」压成一个动作，于是钱还没到就先记了收款）。
+   * 真正收到钱时在「登记收款」里记现金：借 `银行存款` / 贷 `应收账款`。
+   *
+   * 三个入口（逐条 / 勾选批量 / 按订单 / 按对账单）都走这里，靠凭证唯一键 `(source_type, source_id)` 幂等：
+   * 同一条应收被两个入口先后确认时拿到同一张凭证，不会挂两遍账（挂两遍＝收入翻倍）。
+   */
+  private accrue(
+    row: { id: string; sourceNo: string; amount: Prisma.Decimal; currency: string },
+    counterpartyName: string,
+    user: CurrentUser,
+    options: ConfirmReceivableOptions,
+  ) {
+    return this.accruals.createAccrual({
+      source_type: SOURCE_RECEIVABLE,
+      source_id: row.id,
+      document_no: row.sourceNo,
+      voucher_date: this.today(),
       currency: row.currency,
-      counterpartyName: result.customerName,
-      direction: "income",
-      subjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
-      subjectId: options.subject_id,
-      bankId: options.bank_id ?? null,
-      // 订单号随单据一起落到流水上：外汇一览表要按订单把收款归集起来（定金在出货前就收到了，
-      // 那条流水没有来源可挂，只能靠这个字段）。这里来源单据自己就知道订单号，不必财务手填。
-      orderNo: row.orderNo,
-      paymentNature: options.payment_nature,
-      remark: `确认应收 ${row.sourceNo}`,
+      amount: row.amount,
+      counterparty_name: counterpartyName,
+      contra_subject_names: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
+      contra_subject_id: options.subject_id,
+      // 款项性质（定金/货款/尾款）在挂账这一步只留个痕：它是**现金**的属性，
+      // 现在归「登记收款」那条流水（外汇一览表按它的口径没变，只是数据来源跟着钱走）。
+      remark: options.payment_nature ? `确认应收 ${row.sourceNo}（款项性质：${options.payment_nature}）` : undefined,
     }, user);
-    return { ...row, cash_flow_entry_id: cashFlow?.id ?? null, bank_missing: !options.bank_id };
   }
 
   /**
@@ -215,28 +246,12 @@ export class ReceivableService {
       if (updated.count !== drafts.length) throw this.invalid("RECEIVABLE_CONFIRM_CONFLICT", "勾选的应收已被其他操作改动，请刷新后重试");
       return { drafts, skipped: ids.length - drafts.length };
     });
-    const cashFlowEntryIds: string[] = [];
+    const accrualVoucherIds: string[] = [];
     const totals = new Map<string, Prisma.Decimal>();
     for (const draft of result.drafts) {
       await this.audit.record("receivable_source.confirm", "receivable_source", user.id, draft.id, { order_no: draft.orderNo, batch: true });
-      const entry = await this.cashFlow.recordConfirmation({
-        sourceType: "receivable_source",
-        sourceId: draft.id,
-        documentNo: draft.sourceNo,
-        entryDate: this.today(),
-        amount: draft.amount,
-        currency: draft.currency,
-        counterpartyName: draft.customer?.name ?? draft.customerId,
-        direction: "income",
-        subjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
-        subjectId: options.subject_id,
-        bankId: options.bank_id ?? null,
-        // 逐条记账时订单号从这一条应收自己带过来（见 confirm 的同名注释）。
-        orderNo: draft.orderNo,
-        paymentNature: options.payment_nature,
-        remark: `确认应收 ${draft.sourceNo}（勾选批量确认）`,
-      }, user);
-      if (entry) cashFlowEntryIds.push(entry.id);
+      const accrual = await this.accrue(draft, draft.customer?.name ?? draft.customerId, user, options);
+      if (accrual) accrualVoucherIds.push(accrual.id);
       totals.set(draft.currency, (totals.get(draft.currency) ?? new Prisma.Decimal(0)).plus(draft.amount));
     }
     return {
@@ -245,8 +260,9 @@ export class ReceivableService {
       skipped_count: result.skipped,
       // 合计**按币种分组**：跨币种相加得到一个没有意义的数（与财务报表「不跨币种相加」同一口径）。
       amounts: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: amount.toFixed(4) })),
-      cash_flow_entry_ids: cashFlowEntryIds,
-      bank_missing: !options.bank_id,
+      cash_flow_entry_ids: [],
+      accrual_voucher_ids: accrualVoucherIds,
+      bank_missing: false,
     };
   }
 
@@ -280,27 +296,12 @@ export class ReceivableService {
     for (const id of result.ids) {
       await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: result.orderNo, batch: true });
     }
-    const cashFlowEntryIds: string[] = [];
+    const accrualVoucherIds: string[] = [];
     for (const draft of result.drafts) {
-      const entry = await this.cashFlow.recordConfirmation({
-        sourceType: "receivable_source",
-        sourceId: draft.id,
-        documentNo: draft.sourceNo,
-        entryDate: this.today(),
-        amount: draft.amount,
-        currency: draft.currency,
-        counterpartyName: draft.customer?.name ?? draft.customerId,
-        direction: "income",
-        subjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
-        subjectId: options.subject_id,
-        bankId: options.bank_id ?? null,
-        orderNo: result.orderNo,
-        paymentNature: options.payment_nature,
-        remark: `确认应收 ${draft.sourceNo}（订单 ${result.orderNo} 批量确认）`,
-      }, user);
-      if (entry) cashFlowEntryIds.push(entry.id);
+      const accrual = await this.accrue(draft, draft.customer?.name ?? draft.customerId, user, options);
+      if (accrual) accrualVoucherIds.push(accrual.id);
     }
-    return { orderNo: result.orderNo, count: result.count, ids: result.ids, cash_flow_entry_ids: cashFlowEntryIds, bank_missing: !options.bank_id };
+    return { orderNo: result.orderNo, count: result.count, ids: result.ids, cash_flow_entry_ids: [], accrual_voucher_ids: accrualVoucherIds, bank_missing: false };
   }
   /**
    * 编辑草稿应收来源：金额、到期日、金额原因、**币种**、备注。

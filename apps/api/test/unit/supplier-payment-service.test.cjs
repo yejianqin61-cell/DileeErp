@@ -74,7 +74,7 @@ const createDeps = (prisma) => new SupplierPaymentService(prisma, { create: () =
 // 历史缺陷：写死的收支项目 key「外加工费」在字典里不存在（字典里是「外加工费 晋江大田工资」），
 // CashFlowService 当时遇到缺项直接 return null，于是**每一笔供应商付款都被静默丢掉**。
 // 2026-09-17 起候选链给的是会计科目**名称**，缺项仍然显式 422（见 cash-flow-autocreate 测试）。
-function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", subjectId = null } = {}) {
+function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", subjectId = null, accrued = [] } = {}) {
   const cashFlowCalls = [];
   const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId, subjectId, remark: null };
   const prisma = {
@@ -87,7 +87,9 @@ function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋�
   };
   const payable = { allocationBalance: async () => ({ entry: { id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; }, autoReverseFromPayment: async () => null };
-  const service = new SupplierPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, payable, cashFlow);
+  // 销账科目取决于「这批应付有没有先挂过账」：`accrued` 给出已挂账的 entry id（默认空 = 历史数据，走老口径）。
+  const vouchers = { accruedSourceIds: async () => new Set(accrued) };
+  const service = new SupplierPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, payable, cashFlow, undefined, vouchers);
   return { service, cashFlowCalls };
 }
 
@@ -123,6 +125,19 @@ test("供应商付款过账：外加工与其他应付各自映射到对应会�
   const other = postFixture({ sourceType: "other" });
   await other.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
   assert.deepEqual(other.cashFlowCalls[0].subjectNames, ["管理费用", "其他管理费用"]);
+});
+
+test("供应商付款过账：挂过账的应付销账借「应付账款」（成本在挂账时已记过），历史数据仍借成本", async () => {
+  // 2026-09-24 两步口径：确认应付 = 挂账（借成本 / 贷应付账款），付款 = 销账（借应付账款 / 贷银行存款）。
+  // 这条应付挂过账 → 借方必须是应付账款，再借一次成本就是成本翻倍。
+  const settled = postFixture({ accrued: ["entry-1"] });
+  await settled.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.deepEqual(settled.cashFlowCalls[0].subjectNames, ["应付账款"], "挂过账 → 借应付账款");
+
+  // 没挂过账（当年「确认即记账」的历史单据）：仍按老口径借成本/存货，历史不动。
+  const legacy = postFixture({ accrued: [] });
+  await legacy.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.deepEqual(legacy.cashFlowCalls[0].subjectNames, ["主营业务成本", "原材料"], "没挂过账 → 老口径");
 });
 
 test("供应商付款冲销时回冲收支流水（钱没付出去，流水里不能留着）", async () => {

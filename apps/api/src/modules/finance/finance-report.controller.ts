@@ -7,6 +7,12 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { FinanceReportQueryService } from "./finance-report-query.service";
+import { FinanceThreeStatementsService } from "./finance-three-statements.service";
+import {
+  buildBalanceSheetTable,
+  buildCashFlowStatementTable,
+  buildIncomeStatementTable,
+} from "./finance-three-statements.tables";
 import {
   buildCashFlowDetailTable,
   buildCashFlowSummaryTable,
@@ -60,13 +66,19 @@ type FinanceReportKey =
   | "cost-accounting"
   | "cash-flow-detail"
   | "cash-flow-summary"
-  | "forex-receipts";
+  | "forex-receipts"
+  | "balance-sheet"
+  | "income-statement"
+  | "cash-flow-statement";
 
 @Controller("finance/reports")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("finance")
 export class FinanceReportController {
-  constructor(private readonly reports: FinanceReportQueryService) {}
+  constructor(
+    private readonly reports: FinanceReportQueryService,
+    private readonly statements: FinanceThreeStatementsService,
+  ) {}
 
   /** 销售对账明细表：页面预览。 */
   @Get("sales-reconciliation-detail")
@@ -173,6 +185,46 @@ export class FinanceReportController {
   }
 
   /**
+   * 财务三大报表（2026-09-24 财务交付标准格式，用户 2026-09-24 确认要做）。
+   *
+   * 与上面 8 张对账报表**共用同一套预览与导出**（`ReportTable` + `sendWorkbook`），
+   * 差别只有取数：三张表取的是**已过账凭证**（不是业务单据），并按期间切片
+   * （资产负债表要期末/年初，利润表与现金流量表要本期/上期）。
+   */
+  @Get("balance-sheet")
+  async balanceSheet(@Query() query: FinanceReportFilterDto) {
+    return this.preview(await this.tableFor("balance-sheet", this.filter(query)));
+  }
+
+  @Get("balance-sheet.xlsx")
+  @RequireAdministrator()
+  async exportBalanceSheet(@Query() query: FinanceReportFilterDto, @Res() response: Response) {
+    return this.send(response, await this.tableFor("balance-sheet", this.filter(query)), "资产负债表");
+  }
+
+  @Get("income-statement")
+  async incomeStatement(@Query() query: FinanceReportFilterDto) {
+    return this.preview(await this.tableFor("income-statement", this.filter(query)));
+  }
+
+  @Get("income-statement.xlsx")
+  @RequireAdministrator()
+  async exportIncomeStatement(@Query() query: FinanceReportFilterDto, @Res() response: Response) {
+    return this.send(response, await this.tableFor("income-statement", this.filter(query)), "利润表");
+  }
+
+  @Get("cash-flow-statement")
+  async cashFlowStatement(@Query() query: FinanceReportFilterDto) {
+    return this.preview(await this.tableFor("cash-flow-statement", this.filter(query)));
+  }
+
+  @Get("cash-flow-statement.xlsx")
+  @RequireAdministrator()
+  async exportCashFlowStatement(@Query() query: FinanceReportFilterDto, @Res() response: Response) {
+    return this.send(response, await this.tableFor("cash-flow-statement", this.filter(query)), "现金流量表");
+  }
+
+  /**
    * 每张表的取数分支集中在这里，便于对照。
    *
    * 返回**数组**而不是单张表：外汇一览表是一张明细 + 一张客户汇总（同一个工作簿里的两个工作表）。
@@ -210,6 +262,13 @@ export class FinanceReportController {
           buildForexCustomerSummaryTable(rows, { currencyLabels }),
         ];
       }
+      // 三大报表：取数走凭证（不是业务单据），因此单独一个 service，但版式与出口仍是同一套。
+      case "balance-sheet":
+        return [buildBalanceSheetTable(await this.statements.balanceSheet(filter))];
+      case "income-statement":
+        return [buildIncomeStatementTable(await this.statements.incomeStatement(filter))];
+      case "cash-flow-statement":
+        return [buildCashFlowStatementTable(await this.statements.cashFlowStatement(filter))];
     }
   }
 

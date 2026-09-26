@@ -895,31 +895,44 @@ describe("应付管理：删除应付对账单", () => {
   });
 });
 
-// ------------------------------------------------------------------ 付款单（2026-09-20）
+// ------------------------------------------------------------------ 集中付款（付款单队列）
 
 /**
  * 用户 2026-09-20：「她需要在付款界面能导出付款单……允许用户编辑付款单中的一些字段。
  * 比如我要付款 100，我可以自己填加行，我可以写付款备注」。
+ * 用户 2026-09-24：「还是不能实现一起付款，只能算是一起确认了，然后还是一个个的改付款单。」
  *
- * 付款单**不落库**：行内 / 勾选 → 后端按应付条目预填（`/finance/payment-slips/draft`）→
- * 财务在弹窗里改（金额、加行、付款备注）→ `POST /finance/payment-slips.xlsx` 出文件。
- * 这一组钉住「预填的请求体」「改完提交的请求体」与「借贷不平不让导出」三件事。
+ * 所以这一组钉住三件事：
+ *   ① 一次勾选 → 后端按「收款单位 + 币种」**拆成多张**，队列里逐张改、逐张导出，或一次全部导出；
+ *   ② 队列里改一张不影响另一张（「一个个改」之所以痛，是因为以前每张都要重新勾选+重开弹窗）；
+ *   ③ 「一起付款」的另一半：队列底部能把这一批里还没确认的条目交回批量确认。
+ * 付款单**不落库**：改完直接出文件。
  */
-describe("应付管理：导出付款单（可编辑）", () => {
-  /** 后端预填的一张单：借 原材料 500 / 贷 银行存款 500（系统不自动拆进项税，要拆由财务自己加行）。 */
+describe("应付管理：集中付款（付款单队列，可编辑）", () => {
+  /** 后端预填的第一张单：借 原材料 500 / 贷 银行存款 500（系统不自动拆进项税，要拆由财务自己加行）。 */
   const slipDraft = {
-    kind: "payment", slip_no: "FK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "晋江大田",
-    bank_name: "农业银行", bank_account: "5706", attachment_count: 1, remark: "", maker: "小叶",
+    kind: "payment", currency: "CNY", slip_no: "FK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "晋江大田",
+    our_bank_name: "农业银行", our_bank_account: "5706", counterparty_bank_name: "兴业银行", counterparty_bank_account: "1573", attachment_count: 1, remark: "", maker: "小叶",
     lines: [
       { summary: "支付晋江大田涤纶布款", general_subject: "原材料", detail_subject: "", debit: "500", credit: "", remark: "" },
       { summary: "支付晋江大田款项合计", general_subject: "银行存款", detail_subject: "农业银行", debit: "", credit: "500", remark: "" },
     ],
   };
+  /** 预填的第二张：另一家供应商 + 另一个币种（一次勾选拆出多张的常态）。 */
+  const secondDraft = {
+    kind: "payment", currency: "USD", slip_no: "FK-202609-002", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "富雨鑫",
+    our_bank_name: "中国银行", our_bank_account: "7624", counterparty_bank_name: "招商银行", counterparty_bank_account: "6225", attachment_count: 1, remark: "", maker: "小叶",
+    lines: [
+      { summary: "支付富雨鑫材料款", general_subject: "原材料", detail_subject: "", debit: "70", credit: "", remark: "" },
+      { summary: "支付富雨鑫款项合计", general_subject: "银行存款", detail_subject: "中国银行", debit: "", credit: "70", remark: "" },
+    ],
+  };
   const xlsxResponse = () => new Response(new Uint8Array([0x50, 0x4b]), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
-  const slipStub = (data: Data = {}, draftResult: unknown = slipDraft) => stubPayable(data, (url, call) => {
+  const slipStub = (data: Data = {}, drafts: unknown = [slipDraft]) => stubPayable(data, (url, call) => {
     if (call.method !== "POST") return undefined;
-    if (url.endsWith("/finance/payment-slips/draft")) return draftResult instanceof Response ? draftResult : apiOk(draftResult);
+    if (url.endsWith("/finance/payment-slips/draft")) return drafts instanceof Response ? drafts : apiOk({ slips: drafts });
     if (url.endsWith("/api/v1/finance/payment-slips.xlsx")) return xlsxResponse();
+    if (url.endsWith("/api/v1/finance/payment-slips/batch.xlsx")) return xlsxResponse();
     return undefined;
   });
 
@@ -934,9 +947,14 @@ describe("应付管理：导出付款单（可编辑）", () => {
     // 预填：收款单位 / 银行 / 科目 / 附单据张数 / 制单人都是后端给的
     expect(bodyOf(callsTo(calls, "/api/v1/finance/payment-slips/draft")[0])).toEqual({ payable_entry_ids: ["entry-1"] });
     await waitFor(() => expect((within(editor).getByTestId("payment-slip-editor-counterparty") as HTMLInputElement).value).toBe("晋江大田"));
-    expect((within(editor).getByTestId("payment-slip-editor-bank-account") as HTMLInputElement).value).toBe("5706");
+    // 我方与对方各两格（用户 2026-09-24）：我方是确认时走的那张卡，对方是供应商结算信息里认出来的。
+    expect((within(editor).getByTestId("payment-slip-editor-our-bank-account") as HTMLInputElement).value).toBe("5706");
+    expect((within(editor).getByTestId("payment-slip-editor-counterparty-bank-name") as HTMLInputElement).value).toBe("兴业银行");
+    expect((within(editor).getByTestId("payment-slip-editor-counterparty-bank-account") as HTMLInputElement).value).toBe("1573");
     expect((within(editor).getByTestId("payment-slip-editor-maker") as HTMLInputElement).value).toBe("小叶");
     expect(within(editor).getByTestId("payment-slip-editor-totals")).toHaveTextContent("借方合计 500");
+    // 只有一张时不显示队列切换条（多一行按钮只是噪音）。
+    expect(within(editor).queryByTestId("payment-slip-editor-queue")).toBeNull();
 
     // 「我要付款 100」：改借方行 + 自己加一行进项税，让借贷仍然相等
     setValue("payment-slip-editor-debit-0", "86.96");
@@ -952,9 +970,9 @@ describe("应付管理：导出付款单（可编辑）", () => {
     fireEvent.click(screen.getByTestId("payment-slip-editor-export"));
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")[0])).toEqual({
-      kind: "payment",
+      kind: "payment", currency: "CNY",
       slip_no: "FK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "晋江大田",
-      bank_name: "农业银行", bank_account: "5706", attachment_count: 1, remark: "本次先付 100，余款月结", maker: "小叶",
+      our_bank_name: "农业银行", our_bank_account: "5706", counterparty_bank_name: "兴业银行", counterparty_bank_account: "1573", attachment_count: 1, remark: "本次先付 100，余款月结", maker: "小叶",
       lines: [
         { summary: "支付晋江大田涤纶布款", general_subject: "原材料", detail_subject: "", debit: "86.96", credit: "", remark: "" },
         { summary: "支付晋江大田款项合计", general_subject: "银行存款", detail_subject: "农业银行", debit: "", credit: "100", remark: "" },
@@ -966,9 +984,9 @@ describe("应付管理：导出付款单（可编辑）", () => {
     await expectToast("已导出付款单 FK-202609-001");
   });
 
-  it("勾选多条 → 一张付款单（预填请求带全部 id），财务在弹窗里再决定要不要合并", async () => {
+  it("勾选多条跨两家供应商 → 队列（预填请求带全部 id），不是报错逼她一家家重选", async () => {
     const second = { ...draftEntry, id: "entry-2", payableNo: "AP-002", amount: "300.0000" };
-    const calls = slipStub({ entries: [draftEntry, second] });
+    const calls = slipStub({ entries: [draftEntry, second] }, [slipDraft, secondDraft]);
     await openPayable("confirmed");
 
     await userEvent.click(screen.getByTestId("payable-select-all"));
@@ -976,20 +994,56 @@ describe("应付管理：导出付款单（可编辑）", () => {
 
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payment-slips/draft")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/payment-slips/draft")[0])).toEqual({ payable_entry_ids: ["entry-1", "entry-2"] });
-    expect(await screen.findByTestId("payment-slip-editor")).toBeVisible();
+    const editor = await screen.findByTestId("payment-slip-editor");
+    expect(await within(editor).findByTestId("payment-slip-editor-queue")).toBeVisible();
+    // 队列标题带对方单位与币种：同公司两个币种时必须分得清哪张是哪张。
+    expect(within(editor).getByTestId("payment-slip-editor-queue-0")).toHaveTextContent("1. 晋江大田（CNY） 合计 500");
+    expect(within(editor).getByTestId("payment-slip-editor-queue-1")).toHaveTextContent("2. 富雨鑫（USD） 合计 70");
+    // 当前显示的是第一张
+    expect((within(editor).getByTestId("payment-slip-editor-counterparty") as HTMLInputElement).value).toBe("晋江大田");
   });
 
-  it("预填失败（跨供应商 / 跨币种）时弹窗仍然打开并把原因写出来，不让用户以为按钮坏了", async () => {
-    slipStub(
-      { entries: [draftEntry] },
-      apiErr(422, "PAYMENT_SLIP_MULTI_COUNTERPARTY", "一张付款单只能有一个收款单位：请按供应商分批导出"),
-    );
+  it("队列里切到第二张改金额 → 「全部导出」一次提交两张，改过的那张带新值、另一张原样", async () => {
+    const second = { ...draftEntry, id: "entry-2", payableNo: "AP-002", amount: "300.0000" };
+    captureDownloads();
+    const calls = slipStub({ entries: [draftEntry, second] }, [slipDraft, secondDraft]);
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByTestId("payable-select-all"));
+    await userEvent.click(screen.getByTestId("payable-slip-batch"));
+    const editor = await screen.findByTestId("payment-slip-editor");
+    await within(editor).findByTestId("payment-slip-editor-queue");
+
+    // 切到第二张，把 70 改成 100（这一张的两行都要改，否则不平）
+    await userEvent.click(within(editor).getByTestId("payment-slip-editor-queue-1"));
+    expect((within(editor).getByTestId("payment-slip-editor-counterparty") as HTMLInputElement).value).toBe("富雨鑫");
+    setValue("payment-slip-editor-debit-0", "100");
+    setValue("payment-slip-editor-credit-1", "100");
+    // 再切回第一张：它还是 500（每张各自保存自己的编辑）
+    await userEvent.click(within(editor).getByTestId("payment-slip-editor-queue-0"));
+    expect(within(editor).getByTestId("payment-slip-editor-totals")).toHaveTextContent("借方合计 500");
+    await userEvent.click(within(editor).getByTestId("payment-slip-editor-queue-1"));
+
+    await userEvent.click(within(editor).getByTestId("payment-slip-editor-export-all"));
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payment-slips/batch.xlsx")).toHaveLength(1));
+    const body = bodyOf(callsTo(calls, "/api/v1/finance/payment-slips/batch.xlsx")[0]) as { slips: Array<Record<string, unknown>> };
+    expect(body.slips).toHaveLength(2);
+    expect(body.slips[0]).toMatchObject({ slip_no: "FK-202609-001", counterparty_name: "晋江大田", currency: "CNY" });
+    expect((body.slips[0].lines as Array<{ debit: string }>)[0].debit).toBe("500"); // 第一张没被第二张的改动波及
+    expect(body.slips[1]).toMatchObject({ slip_no: "FK-202609-002", counterparty_name: "富雨鑫", currency: "USD" });
+    expect((body.slips[1].lines as Array<{ debit: string }>)[0].debit).toBe("100"); // 改过的金额出的就是改过的那张
+    expect(anchorClicks[0].download).toBe("迪礼付款单-2张.xlsx");
+    await expectToast("已导出 2 张付款单");
+  });
+
+  it("预填失败时弹窗仍然打开并把原因写出来，不让用户以为按钮坏了", async () => {
+    slipStub({ entries: [draftEntry] }, apiErr(422, "PAYMENT_SLIP_ENTRY_NOT_FOUND", "勾选的应付条目里有不存在或已删除的，请刷新后重试"));
     await openPayable("confirmed");
 
     fireEvent.click(screen.getByTestId("payable-slip-entry-1"));
     const error = await screen.findByTestId("payment-slip-editor-draft-error");
-    expect(error).toHaveTextContent("一张付款单只能有一个收款单位：请按供应商分批导出");
+    expect(error).toHaveTextContent("勾选的应付条目里有不存在或已删除的，请刷新后重试");
     expect(screen.getByTestId("payment-slip-editor-export")).toBeDisabled();
+    expect(screen.getByTestId("payment-slip-editor-export-all")).toBeDisabled();
   });
 
   it("借贷不平不让导出：按钮禁用，并把差额写在界面上（禁用的按钮点不动，原因不能只在点击后出现）", async () => {
@@ -1004,6 +1058,32 @@ describe("应付管理：导出付款单（可编辑）", () => {
     expect(blockers).toHaveTextContent("借贷不平衡：借方 100 / 贷方 500（差额 400）");
     expect(screen.getByTestId("payment-slip-editor-export")).toBeDisabled();
     expect(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")).toHaveLength(0);
+  });
+
+  it("队列底部直接把这一批里未确认的条目交回批量确认（出单与付款在同一个地方，不用来回跑）", async () => {
+    const calls = stubPayable(
+      { entries: [draftEntry] },
+      (url, call) => {
+        if (call.method !== "POST") return undefined;
+        if (url.endsWith("/finance/payment-slips/draft")) return apiOk({ slips: [slipDraft] });
+        if (url.startsWith(EP.batchConfirm)) return apiOk({ confirmed_count: 1, skipped_count: 0, amounts: [{ currency: "CNY", amount: "500.0000" }], bank_missing: false });
+        return undefined;
+      },
+    );
+    await openPayable("confirmed");
+
+    fireEvent.click(screen.getByTestId("payable-slip-entry-1"));
+    const editor = await screen.findByTestId("payment-slip-editor");
+    const confirm = await within(editor).findByTestId("payment-slip-editor-confirm-pending");
+    expect(confirm).toHaveTextContent("确认这 1 条（付款）");
+    await userEvent.click(confirm);
+
+    // 队列关掉、批量确认弹窗打开（用的是同一批 id）
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText("确认 1 条草稿应付（合计 500.0000 CNY）")).toBeVisible();
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, EP.batchConfirm)).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toMatchObject({ ids: ["entry-1"] });
   });
 });
 

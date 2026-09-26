@@ -209,3 +209,36 @@ test("编辑销售单（整页编辑器）：清空布量提交空串 = 清空�
   assert.equal(result.fabric_usage_strap, null, "纯空白同样算清空");
   assert.equal(result.attention_note, "");
 });
+
+/** 只填必填项的新建请求体（引用那两条用例的基准：其余字段都不是它们要测的东西）。 */
+const minimalBody = () => ({
+  order_no: "SO-20260924-001",
+  customer_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+  product_name: "折叠伞",
+  quantity: "10",
+  unit: "把",
+  currency: "USD",
+  order_date: "2026-09-24",
+});
+
+test("材料明细引用物料：形状对就通过（空数组 = 全部取消引用）", async () => {
+  const refs = [{ spec_key: "rib_spec", material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }];
+  const created = await validateBody(SalesOrderDto, { ...minimalBody(), material_refs: refs });
+  // class-transformer 给出的是 DTO 实例（原型不是 Object），所以按字段比而不是按引用比。
+  assert.deepEqual(created.material_refs.map((ref) => ({ ...ref })), refs, "整组透传给服务层（幂等替换在服务层做）");
+  const cleared = await validateBody(UpdateSalesOrderDto, { material_refs: [] });
+  assert.deepEqual(cleared.material_refs, [], "空数组是合法值（= 取消全部引用），不能被当成「没传」");
+  const untouched = await validateBody(UpdateSalesOrderDto, {});
+  assert.equal(untouched.material_refs, undefined, "没传 = 整块不动");
+});
+
+test("材料明细引用物料：material_id 必须是 UUID、spec_key 不能空（坏形状在 DTO 就挡下）", async () => {
+  const base = minimalBody();
+  await assertRejected(SalesOrderDto, { ...base, material_refs: [{ spec_key: "rib_spec", material_id: "not-a-uuid" }] }, "material_id 必须是 UUID");
+  await assertRejected(SalesOrderDto, { ...base, material_refs: [{ spec_key: "", material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }] }, "spec_key 不能为空");
+  await assertRejected(SalesOrderDto, { ...base, material_refs: [{ material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }] }, "spec_key 必填");
+  // 「这个栏位能不能引用」是业务清单说了算的（服务层 SPEC_MATERIAL_KEYS）——DTO 只做形状校验，
+  // 所以 qc_requirement 在这里能过，到服务层才以 MATERIAL_REF_KEY_UNSUPPORTED 被拒。
+  const shapeOnly = await validateBody(SalesOrderDto, { ...base, material_refs: [{ spec_key: "qc_requirement", material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }] });
+  assert.equal(shapeOnly.material_refs.length, 1, "DTO 不替业务清单做判断（那条判定有单测钉在服务层）");
+});

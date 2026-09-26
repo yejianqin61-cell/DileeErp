@@ -1,4 +1,5 @@
 import * as ExcelJS from "exceljs";
+import { formatUnits, toPositiveUnits } from "./money";
 import { NUMBER_FORMAT, toExportNumber } from "./finance-report.domain";
 
 /**
@@ -60,10 +61,31 @@ export type FinanceSlip = {
   slip_method: string;
   /** 对方单位：付款单是收款单位（供应商），收款单是付款单位（客户）。 */
   counterparty_name: string;
-  /** 对方开户银行。 */
-  bank_name: string;
+  /**
+   * **我方**开户银行 / 银行账号（用户 2026-09-24：「付款单/收款单上，我方和对方账户都分别设置对应的字段」）。
+   *
+   * 这两格是「钱从我们哪个账户走/进」，与对方的两格是**两回事**。原来只有一对 `bank_name` /
+   * `bank_account`，而预填塞进去的其实是**我方**那张卡（来源是确认时写下的资金流水
+   * `cash_flow_entries.bank`，那是我们自己的账户）—— 但模板上「收款单位 / 开户银行 / 银行账号」
+   * 说的都是**对方**，于是打印出来是一张把自家账号填在收款人开户行栏里的单据。
+   * 拆成两对之后：我方两格继续吃流水里的账户（这是唯一可靠的我方来源），
+   * 对方两格回到它本来的位置（手工填，能从对方主数据的结算信息里认出来就预填）。
+   */
+  our_bank_name: string;
+  our_bank_account: string;
+  /** 对方开户银行（收款人/付款人的开户行）。 */
+  counterparty_bank_name: string;
   /** 对方银行账号。 */
-  bank_account: string;
+  counterparty_bank_account: string;
+  /**
+   * 币种（`CNY` / `USD`…）。
+   *
+   * 模板上**没有**币种格（一张单子只有一个币种，金额写在摘要与分录里），所以 xlsx 不渲染它；
+   * 它的用处是「一次勾选拆成多张单子」时的**分组键与队列标题**：同一家供应商可能同时有 CNY 与 USD
+   * 两笔待付，队列里必须一眼分得清哪张是哪张（用户 2026-09-24：「还是不能实现一起付款……
+   * 然后还是一个个的改付款单」——拆张之后这个字段就是「为什么拆成两张」的答案）。
+   */
+  currency: string;
   /** 附单据张数。 */
   attachment_count: number;
   /** 付款备注 / 收款备注（模板表头下方那一行，用户明确要求「我可以写付款备注」）。 */
@@ -75,23 +97,86 @@ export type FinanceSlip = {
   footnote?: string;
 };
 
+// --------------------------------------------------------------------------- 对方账户
+
+/** 对方的开户银行与银行账号（我方与对方分开之后，对方那两格的预填值）。 */
+export type CounterpartyBank = { bank_name: string; bank_account: string };
+
+/**
+ * 供应商 / 客户「结算信息」里认出来的对方账户。
+ *
+ * 为什么是猜而不是查字段：结算信息（`Supplier.settlementInfo` / `Customer` 快照里的同名 JSON）
+ * 是**自由形状**的 JSON，建供应商时爱怎么填就怎么填，库里既没有 `bank_name` 列也没有约束
+ * （用户 2026-09-24 那轮的拍板是「不动主数据，单子上手工填，能从结算信息里认出来就预填」）。
+ * 所以这里只做一件事：在几个最常见的键名里找出**第一个非空字符串**，认不出来就留空让财务自己写。
+ *
+ * 宁可留空也不猜错的理由：这四格是银行单据上的账号，填一个看起来像真的、实际不是的值，
+ * 比空着危险得多（空着财务会去核对，填了她会直接照抄）。
+ *
+ * 认的键名覆盖三种写法：系统自己的 snake_case（`bank_name` / `account_number`）、
+ * 前端 camelCase（`bankName` / `accountNumber`）、以及人工在备注里写的中文（`开户银行` / `银行账号`）。
+ * 值必须是字符串：`{ bank: { name: "工行" } }` 这种嵌套对象一律当成没认出来。
+ */
+export function counterpartyBankOf(settlementInfo: unknown): CounterpartyBank {
+  const source = settlementInfo && typeof settlementInfo === "object" && !Array.isArray(settlementInfo) ? (settlementInfo as Record<string, unknown>) : {};
+  const pick = (keys: readonly string[]): string => {
+    for (const key of keys) {
+      const value = source[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  };
+  return {
+    bank_name: pick(["bank_name", "bankName", "bank", "开户银行", "开户行", "银行名称"]),
+    bank_account: pick(["account_number", "accountNumber", "account", "银行账号", "账号", "账号号码"]),
+  };
+}
+
+// --------------------------------------------------------------------------- 分组（一次勾选 → 多张单子）
+
+/**
+ * 把勾选的条目按「对方单位 + 币种」分组：**一组就是一张单子**。
+ *
+ * 为什么必须分组而不是报错（这条改动的前因）：模板上「收款单位」「开户银行」「银行账号」都只有一格，
+ * 所以一张单子在会计上只能对应一个对方单位与一个币种；而财务要的动作是「选一批、一次把该付的都付掉」
+ * —— 一批里有多家供应商是这个动作的**常态**（月结日就是一天付十几家）。
+ * 2026-09-24 财务的原话是「还是不能实现一起付款，只能算是一起确认了，然后还是一个个的改付款单」：
+ * 当时的实现选到第二家就 422，于是她只能一家一家重选、一张一张改单。
+ *
+ * 分组键里的币种与对方单位是**同一层**的约束，不能只按对方单位分：同一家供应商的 CNY 与 USD 应付款
+ * 也不能出现在同一张单子上（单子只有一个大写金额与小写金额）。
+ *
+ * 顺序：保持**首次出现**的顺序（入参已按日期 + 单号排好），调用方不必再排一次 ——
+ * 队列里的先后必须稳定，否则财务每次打开看到的顺序都不一样。
+ */
+export function groupSlipEntries<T extends { currency: string }>(entries: readonly T[], counterpartyOf: (entry: T) => string): T[][] {
+  const groups = new Map<string, T[]>();
+  for (const entry of entries) {
+    const key = `${counterpartyOf(entry)}|${entry.currency}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(entry);
+    else groups.set(key, [entry]);
+  }
+  return [...groups.values()];
+}
+
 // --------------------------------------------------------------------------- 金额
 
-const MONEY = /^(\d+)(?:\.(\d{1,4}))?$/;
-
-/** 金额文本 → 整数「分」（1e-4 精度）。非法或 ≤ 0 返回 null。 */
+/**
+ * 金额口径只有一份实现（`money.ts`）：`parseAmount` / `formatAmount` 现在是它的两个薄包装。
+ *
+ * 为什么当时不放在这里而是挪出去：三大报表的余额与发生额要按同一精度相加，
+ * 而那套运算还要能处理**负数**（资产类科目出现贷方余额）—— 两处各写一份「点分转整数」
+ * 迟早出现「单子上是 149.5、报表上是 149.49999999」。这里的 `parseAmount` 保留原语义
+ * （非法或 ≤ 0 返回 null）只是为了不改动调用点与测试。
+ */
 export function parseAmount(value: string | null | undefined): bigint | null {
-  const match = MONEY.exec((value ?? "").trim());
-  if (!match) return null;
-  const [, whole, fraction = ""] = match;
-  const units = BigInt(`${whole}${fraction.padEnd(4, "0")}`);
-  return units > 0n ? units : null;
+  return toPositiveUnits(value);
 }
 
 /** 整数「分」→ 十进制字符串（去掉无意义的尾零）。 */
 export function formatAmount(units: bigint): string {
-  const fraction = (units % 10000n).toString().padStart(4, "0").replace(/0+$/, "");
-  return fraction ? `${units / 10000n}.${fraction}` : `${units / 10000n}`;
+  return formatUnits(units);
 }
 
 export type SlipTotals = {
@@ -301,6 +386,15 @@ const THIN_BORDER: Partial<ExcelJS.Borders> = {
 /** 列宽与财务模板逐列对齐：A 摘要（也是表头标签列）/ B 总账科目 / C 明细科目 / D 借方 / E 贷方 / F 备注。 */
 const SLIP_COLUMNS = [{ width: 30 }, { width: 16 }, { width: 16 }, { width: 14 }, { width: 14 }, { width: 20 }];
 const LAST_COLUMN = "F";
+/**
+ * 表头区与分录区的起始行，写成常量而不是散落的字面量。
+ *
+ * 为什么钉住：2026-09-24 在两方账户之间插了「我方开户银行 / 我方银行账号」一整行（R5），
+ * 分录区整体下移一行。这种下移最容易漏改的就是 `totalRow` 那一处 —— 漏了的话合计行会正好压在
+ * 最后一条分录上，而导出只是「看起来有点怪」，不会报错。让行号只有一个来源，测试再钉一遍。
+ */
+const HEADER_ROW = 6;
+const FIRST_LINE_ROW = 7;
 
 /**
  * 表头字段的显示名（模板上的写法）。测试靠它定位，改文案就会红。
@@ -312,8 +406,10 @@ const LAST_COLUMN = "F";
  */
 export const SLIP_LABELS = {
   slipNo: "单据编号：",
-  bankName: "开户银行：",
-  bankAccount: "银行账号：",
+  bankName: "对方开户银行：",
+  bankAccount: "对方银行账号：",
+  ourBankName: "我方开户银行：",
+  ourBankAccount: "我方银行账号：",
   attachment: "附单据：",
   attachmentUnit: "张",
   summary: "摘要",
@@ -405,14 +501,45 @@ function merged(sheet: ExcelJS.Worksheet, range: string, value: ExcelJS.CellValu
 /**
  * 渲染收/付款单工作簿。
  *
- * 版式与财务给的模板**逐格对齐**（标题、四行表头、分录表、合计行、大写行、备注行、两行签字栏），
+ * 版式与财务给的模板**逐格对齐**（标题、五行表头、分录表、合计行、大写行、备注行、两行签字栏），
  * 差别只有一处：表尾多一行落款（`制表人 / 制表时间`），与全站导出件同一套纪律
- * （那份文件是谁、什么时候生成的）。
+ * （那份文件是谁、什么时候生成的）。表头是五行而不是四行，是因为用户 2026-09-24 要求
+ * 「我方和对方账户都分别设置对应的字段」——我方那两格单独占一行（R5）。
  */
-export async function renderFinanceSlipWorkbook(slip: FinanceSlip): Promise<Buffer> {
-  const labels = slipLabels(slip.kind);
+export function renderFinanceSlipWorkbook(slip: FinanceSlip): Promise<Buffer> {
+  return renderFinanceSlipsWorkbook([slip]);
+}
+
+/**
+ * 渲染**多张**收/付款单：一张单子一个工作表。
+ *
+ * 为什么不逐张下载：一次「集中付款」可能拆出十几张单子，浏览器会把连续下载当弹窗拦掉
+ * （财务看到的是「只出来了第一张」）。一个工作簿多个工作表既能一次拿全，也能逐张打印
+ * ——每个工作表的打印设置是独立的（见 `renderSlipSheet` 的 `pageSetup`）。
+ *
+ * 工作表名：`付款单1-晋江大田`（Excel 上限 31 字，且不允许 `[]:*?/\` 这几个字符）。
+ * 名称里带序号是**必须**的：同名工作表 ExcelJS 会直接抛错，而两家供应商完全可能同名去重后撞在一起。
+ */
+export async function renderFinanceSlipsWorkbook(slips: readonly FinanceSlip[]): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet(labels.name, {
+  slips.forEach((slip, index) => renderSlipSheet(workbook, slip, slipSheetName(slip, index)));
+  const data = await workbook.xlsx.writeBuffer();
+  return Buffer.from(data);
+}
+
+/** 工作表名（单张导出时沿用单据名，多张时带序号与对方单位）。 */
+function slipSheetName(slip: FinanceSlip, index: number): string {
+  const labels = slipLabels(slip.kind);
+  // 单张导出保持原来的工作表名（`付款单`）：财务是按这个名字在 Excel 里找表的。
+  if (index === 0) return labels.name;
+  const counterparty = slip.counterparty_name.replace(/[[\]:*?/\\]/g, " ").replace(/\s+/g, " ").trim();
+  return `${labels.name}${index + 1}${counterparty ? `-${counterparty}` : ""}`.slice(0, 31);
+}
+
+/** 一张单子写进一个工作表。抽出来是为了「多张」与「单张」共用同一份版式代码。 */
+function renderSlipSheet(workbook: ExcelJS.Workbook, slip: FinanceSlip, sheetName: string): void {
+  const labels = slipLabels(slip.kind);
+  const sheet = workbook.addWorksheet(sheetName, {
     pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } },
   });
   sheet.columns = SLIP_COLUMNS;
@@ -435,31 +562,41 @@ export async function renderFinanceSlipWorkbook(slip: FinanceSlip): Promise<Buff
     [labels.methodLabel, slip.slip_method || "银行转账"],
   ]);
 
-  // R3 对方单位 / 开户银行：开户行的名字比「一格」宽，所以它的值跨 D:F。
+  // R3 对方单位 / 对方开户银行：开户行的名字比「一格」宽，所以它的值跨 D:F。
   sheet.getCell("A3").value = labels.counterpartyLabel;
   sheet.getCell("B3").value = text(slip.counterparty_name);
   sheet.getCell("C3").value = labels.bankName;
-  merged(sheet, `D3:${LAST_COLUMN}3`, text(slip.bank_name), { font: LABEL_FONT });
+  merged(sheet, `D3:${LAST_COLUMN}3`, text(slip.counterparty_bank_name), { font: LABEL_FONT });
   paint(sheet, "A3:C3", { font: LABEL_FONT });
 
-  // R4 银行账号 / 附单据 N 张：账号跨 B:C，张数在 E、单位在 F（与模板逐格一致）。
+  // R4 对方银行账号 / 附单据 N 张：账号跨 B:C，张数在 E、单位在 F（与模板逐格一致）。
   sheet.getCell("A4").value = labels.bankAccount;
-  merged(sheet, "B4:C4", text(slip.bank_account), { font: LABEL_FONT });
+  merged(sheet, "B4:C4", text(slip.counterparty_bank_account), { font: LABEL_FONT });
   sheet.getCell("D4").value = labels.attachment;
   sheet.getCell("E4").value = slip.attachment_count;
   sheet.getCell("F4").value = labels.attachmentUnit;
   paint(sheet, "A4", { font: LABEL_FONT });
   paint(sheet, "D4:F4", { font: LABEL_FONT });
 
-  // R5 表头
-  const headers = [labels.summary, labels.generalSubject, labels.detailSubject, labels.debit, labels.credit, labels.remarkColumn];
-  headers.forEach((header, index) => { sheet.getCell(5, index + 1).value = header; });
-  paint(sheet, `A5:${LAST_COLUMN}5`, { font: HEADER_FONT, align: { horizontal: "center", wrapText: true } });
-  sheet.getRow(5).height = 22;
+  // R5 我方开户银行 / 我方银行账号（用户 2026-09-24 要求两方账户各占各的格子）。
+  // 账号一律走 `text()` 写成**文本**单元格：银行账号动辄十几位，落成数值会丢前导零，
+  // 也会被 Excel 右对齐当成金额（与「数字一律是数值类型」那条纪律不冲突——那是金额，这是标识）。
+  sheet.getCell("A5").value = labels.ourBankName;
+  merged(sheet, "B5:C5", text(slip.our_bank_name), { font: LABEL_FONT });
+  sheet.getCell("D5").value = labels.ourBankAccount;
+  merged(sheet, `E5:${LAST_COLUMN}5`, text(slip.our_bank_account), { font: LABEL_FONT });
+  paint(sheet, "A5", { font: LABEL_FONT });
+  paint(sheet, "D5", { font: LABEL_FONT });
 
-  // R6.. 分录行
+  // R6 表头
+  const headers = [labels.summary, labels.generalSubject, labels.detailSubject, labels.debit, labels.credit, labels.remarkColumn];
+  headers.forEach((header, index) => { sheet.getCell(HEADER_ROW, index + 1).value = header; });
+  paint(sheet, `A${HEADER_ROW}:${LAST_COLUMN}${HEADER_ROW}`, { font: HEADER_FONT, align: { horizontal: "center", wrapText: true } });
+  sheet.getRow(HEADER_ROW).height = 22;
+
+  // R7.. 分录行
   slip.lines.forEach((line, index) => {
-    const row = 6 + index;
+    const row = FIRST_LINE_ROW + index;
     sheet.getCell(row, 1).value = text(line.summary);
     sheet.getCell(row, 2).value = text(line.general_subject);
     sheet.getCell(row, 3).value = text(line.detail_subject);
@@ -478,7 +615,7 @@ export async function renderFinanceSlipWorkbook(slip: FinanceSlip): Promise<Buff
   });
 
   const totals = slipTotals(slip.lines);
-  const totalRow = 6 + slip.lines.length;
+  const totalRow = FIRST_LINE_ROW + slip.lines.length;
   merged(sheet, `A${totalRow}:C${totalRow}`, labels.total, { font: HEADER_FONT, align: { horizontal: "center" } });
   sheet.getCell(totalRow, 4).value = toExportNumber(totals.debit);
   sheet.getCell(totalRow, 4).numFmt = NUMBER_FORMAT;
@@ -528,12 +665,19 @@ export async function renderFinanceSlipWorkbook(slip: FinanceSlip): Promise<Buff
     cell.value = slip.footnote;
     cell.font = BODY_FONT;
   }
-
-  const data = await workbook.xlsx.writeBuffer();
-  return Buffer.from(data);
 }
 
 /** 导出文件名（控制器用它写 `Content-Disposition`）。 */
 export function financeSlipFileName(slip: Pick<FinanceSlip, "kind" | "slip_no">): string {
   return `${SLIP_KIND_LABELS[slip.kind].filePrefix}-${slip.slip_no.trim() || "未编号"}.xlsx`;
+}
+
+/**
+ * 「全部导出」的文件名：`迪礼付款单-3张.xlsx`。
+ *
+ * 带张数而不是把三个单号拼起来：单号是财务本子上的东西（界面里可改、可以重复），
+ * 拼进文件名既长又可能与内容不符；张数是这份文件最要紧的信息（一次拿到几张单子）。
+ */
+export function financeSlipsFileName(kind: FinanceSlipKind, count: number): string {
+  return `${SLIP_KIND_LABELS[kind].filePrefix}-${count}张.xlsx`;
 }

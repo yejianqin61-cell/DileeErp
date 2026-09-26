@@ -6,7 +6,7 @@
 //   1. 原料入库条目：原料入库过账生成的**待接收**应付来源；
 //   2. 外加工签收：外加工实际签收生成的**待接收**应付来源；
 //   3. 应付对账：对账创建 + 对账单列表合并在同一视图；
-//   4. 确认应付：应付台账，**勾选多条一次确认**（确认即记账，金额从所选银行账户支出）。
+//   4. 确认应付：应付台账，**勾选多条一次确认**（2026-09-24 起确认 = **挂账**：借成本/存货、贷应付账款，付款时再登记）。
 // 双击任意行弹出居中详情（展示全部字段与当前可执行操作）。
 //
 // 2026-09-16（用户要求，三条）：
@@ -196,13 +196,15 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const [dateTo, setDateTo] = useState("");
   const [exporting, setExporting] = useState(false);
   /**
-   * 付款单编辑器（财务 2026-09-20：「她需要在付款界面能导出付款单」）。
+   * 付款单编辑器（财务 2026-09-20：「她需要在付款界面能导出付款单」；2026-09-24 改为**队列**）。
    *
    * 打开时先去后端预填（单号 / 收款单位 / 开户行 / 科目 / 借贷行），再把结果交给编辑器 ——
    * 预填口径（科目取确认时实际记账的那个、单号按「该供应商本月第几笔付款」）只有服务端知道，
-   * 前端拍不出来。付款单**不落库**：改完直接出 xlsx（见 components/finance/payment-slip-editor.tsx）。
+   * 前端拍不出来。跨供应商 / 跨币种时后端会**拆成多张**（一次集中付款 = 一队单子），
+   * 所以这里存的是数组；`pending_ids` 是这批里**还没确认**的条目（钱还没出账），
+   * 队列底部据此给出「确认这 N 条」的出路。付款单**不落库**：改完直接出 xlsx。
    */
-  const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; draft: FinanceSlipDraft | null }>({ open: false, loading: false, error: "", draft: null });
+  const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; drafts: FinanceSlipDraft[] | null; pendingIds: string[] }>({ open: false, loading: false, error: "", drafts: null, pendingIds: [] });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -274,7 +276,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   /**
    * 「确认应付」三个入口（逐条 / 勾选批量 / 按对账单）共用的提交与提示。
    *
-   * 三条路径都是**确认即记账**（用户要求「一旦确认应付，金额就要转出对应的账户」），
+   * 三条路径都是**挂账**（借成本 / 贷应付账款）：钱还没付，所以这里不能再报「金额已记入所选银行账户」。
    * 所以不能再用 submitAction 一句「已确认」了事：响应里的 `bank_missing` 表示钱已经记进收支流水、
    * 但不属于任何银行账户 —— 这时报成功会让财务以为账户里已经少了这笔钱，必须改成警告。
    */
@@ -456,28 +458,34 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   }
 
   /**
-   * 打开付款单编辑器：先按勾选的应付条目向后端要一份预填。
+   * 打开付款单队列：先按勾选的应付条目向后端要一份预填（可能是一队多张）。
    *
    * 一行一条应付（金额全额，**不自动拆进项税** —— 系统里的单价是含税价，按税率拆在取得普票、
    * 优惠税率或部分抵扣时会被填错），贷方一行银行存款等于合计；财务要拆进项税就自己加行、
    * 要少付就自己改金额（用户原话：「我要付款 100，我可以自己填加行」）。
    *
-   * 预填失败（跨供应商 / 跨币种）时**照样打开弹窗**把原因写出来：静默什么都不发生，
+   * 后端按「收款单位 + 币种」拆张（用户 2026-09-24：「还是不能实现一起付款，只能算是一起确认了，
+   * 然后还是一个个的改付款单」）：一次勾选多家供应商不再报错，而是一队单子——她在队列里逐张核对，
+   * 也能一次全部导出。预填失败时**照样打开弹窗**把原因写出来：静默什么都不发生，
    * 用户只会以为按钮坏了。
    */
   async function openPaymentSlip(ids: string[]) {
-    setSlip({ open: true, loading: true, error: "", draft: null });
+    setSlip({ open: true, loading: true, error: "", drafts: null, pendingIds: [] });
     try {
       // 路径与请求体由 lib 的 `financeSlipDraftPath` / `financeSlipDraftBody` 给：
       // 「付款单勾应付条目、收款单勾应收来源」这条区分只该有一处知道（与后端两个 DTO 对称）。
-      const result = await apiPost<FinanceSlipDraft>(financeSlipDraftPath("payment"), financeSlipDraftBody("payment", ids));
-      setSlip({ open: true, loading: false, error: "", draft: result.data });
+      const result = await apiPost<{ slips: FinanceSlipDraft[] }>(financeSlipDraftPath("payment"), financeSlipDraftBody("payment", ids));
+      setSlip({ open: true, loading: false, error: "", drafts: result.data.slips, pendingIds: draftsAmong(ids) });
     } catch (cause) {
-      setSlip({ open: true, loading: false, error: messageOf(cause, "付款单预填失败"), draft: null });
+      setSlip({ open: true, loading: false, error: messageOf(cause, "付款单预填失败"), drafts: null, pendingIds: [] });
     }
   }
+  /** 这批勾选里还没确认的条目 id（队列底部要据此显示「确认这 N 条（付款）」）。 */
+  function draftsAmong(ids: string[]): string[] {
+    return ids.filter((id) => entries.some((entry) => entry.id === id && isDraft(entry)));
+  }
   /**
-   * 逐条确认应付 —— 与「勾选批量确认」「按对账单确认」是同一件事的三条入口，都**确认即记账**。
+   * 逐条确认应付 —— 与「勾选批量确认」「按对账单确认」是同一件事的三条入口，都**挂账**（借成本 / 贷应付账款）。
    *
    * 应付条目本身不挂银行账户（它来自入库 / 签收来源），所以这里必须问清「钱从哪个账户出」：
    * 不指定就只能在收支流水里留一笔无归属的钱（后端回 bank_missing，上面会警告）。
@@ -488,7 +496,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       bankField("支付银行"),
       subjectEditField("会计科目"),
     ], submit: (v) => submitConfirm(`/finance/payable-entries/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => ({
-      success: `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}），金额已记入所选银行账户`,
+      success: `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）并挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
       warning: `未指定支付银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
     }), "确认应付失败") });
   }
@@ -497,9 +505,12 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
    *
    * 整批共用一个支付银行与一个会计科目（后端仍是**每条应付写一条流水**，所以每条都追得回来源单号）；
    * 合计**按币种分组**显示，跨币种不相加。勾选里混进已被别人确认掉的条目时，后端会跳过并回报条数。
+   *
+   * `ids` 默认取当前勾选；付款单队列底部那条「确认这 N 条」会把**那一批**的 id 传进来
+   * （队列可能是从行内单条打开的，那时它不在勾选里 —— 传勾选会让「确认」按到别的条目上）。
    */
-  function batchConfirm() {
-    const drafts = entries.filter((entry) => isDraft(entry) && selected.includes(entry.id));
+  function batchConfirm(ids: string[] = selectedDrafts.map((draft) => draft.id)) {
+    const drafts = entries.filter((entry) => isDraft(entry) && ids.includes(entry.id));
     const totals = new Map<string, number>();
     for (const draft of drafts) totals.set(draft.currency, (totals.get(draft.currency) ?? 0) + Number(draft.amount));
     setDialog({ title: `批量确认应付（${drafts.length} 条）`, fields: [
@@ -510,7 +521,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
       return {
-        success: `已确认 ${data.confirmed_count ?? drafts.length} 条应付（${amount}）${skipped}，金额已记入所选银行账户`,
+        success: `已确认 ${data.confirmed_count ?? drafts.length} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
         warning: `未指定支付银行：${amount} 已记入收支流水，但不会体现在任何银行账户余额里`,
       };
     }, "批量确认应付失败") });
@@ -636,7 +647,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       const currency = data.currency ?? item.currency;
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
       return {
-        success: `${item.reconciliationNo} 已确认 ${data.confirmed_count ?? 0} 条应付（${amount}）${skipped}，金额已记入所选银行账户`,
+        success: `${item.reconciliationNo} 已确认 ${data.confirmed_count ?? 0} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
         warning: `未指定支付银行：${amount} ${currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
       };
     }, "批量确认应付失败");
@@ -970,14 +981,18 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       ], submit: createSupplier }); }}
       onSubmit={(values) => dialog?.submit(values)} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) { setCategoryDialog(null); setPendingDialog(null); } }} title={categoryDialog?.title ?? "新建供应商"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => categoryDialog?.submit(values)} />
-    {/* 付款单编辑器：预填 → 现改（金额 / 增删行 / 付款备注）→ 导出 xlsx。不改系统里的任何数据。 */}
+    {/* 付款单编辑器：预填 → 现改（金额 / 增删行 / 付款备注）→ 导出 xlsx。不改系统里的任何数据。
+        一次勾选多家供应商时后端会拆成多张，编辑器就是**队列**（见 finance-slip-editor.tsx 顶部）。 */}
     <FinanceSlipEditor
       kind="payment"
       open={slip.open}
-      onOpenChange={(open) => setSlip((current) => open ? current : { ...current, open: false, draft: null, error: "" })}
-      draft={slip.draft}
+      onOpenChange={(open) => setSlip((current) => open ? current : { ...current, open: false, drafts: null, error: "", pendingIds: [] })}
+      drafts={slip.drafts}
       loading={slip.loading}
       error={slip.error}
+      /* 「一起付款」的另一半：队列里还有没确认的条目 → 关掉队列、按同一批 id 打开确认弹窗。 */
+      pendingCount={slip.pendingIds.length}
+      onConfirmPending={() => { const ids = slip.pendingIds; setSlip((current) => ({ ...current, open: false })); batchConfirm(ids); }}
     />
     <RecordDetailDialog
       open={Boolean(detail)}
@@ -1077,10 +1092,12 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
           <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
           <Button size="sm" variant="secondary" data-testid="payable-other-import" onClick={() => { setImportResult(null); setImportOpen(true); }}>批量导入其他应付</Button>
           <span className="panel-note" data-testid="payable-selected-count">已选 {selectedDrafts.length} 条</span>
-          {/* 导出付款单（用户 2026-09-20）：勾选几条 → 一张付款单（一行一条应付）。走的是预填接口，
-              不改任何数据；金额、分录行、付款备注都在弹窗里现改。 */}
-          <Button size="sm" variant="secondary" data-testid="payable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openPaymentSlip(selectedDrafts.map((draft) => draft.id))}>导出付款单（{selectedDrafts.length} 条）</Button>
-          <Button size="sm" data-testid="payable-batch-confirm" disabled={!selectedDrafts.length} onClick={batchConfirm}>批量确认（{selectedDrafts.length} 条）</Button>
+          {/* 导出付款单（用户 2026-09-20）：勾选几条 → 一队付款单（按收款单位 + 币种拆张，
+              一行一条应付）。走的是预填接口，不改任何数据；金额、分录行、付款备注都在弹窗里现改。
+              用户 2026-09-24 的抱怨正是「还是不能实现一起付款……然后还是一个个的改付款单」，
+              所以这条按钮现在出的是**一次拿全的队列**，而不是「跨供应商直接报错」。 */}
+          <Button size="sm" variant="secondary" data-testid="payable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openPaymentSlip(selectedDrafts.map((draft) => draft.id))}>集中付款单（{selectedDrafts.length} 条）</Button>
+          <Button size="sm" data-testid="payable-batch-confirm" disabled={!selectedDrafts.length} onClick={() => batchConfirm()}>批量确认（{selectedDrafts.length} 条）</Button>
         </div>
         <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
       </div>

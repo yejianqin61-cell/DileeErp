@@ -8,6 +8,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { payableInReconciliationScope } from "./supplier-payable.domain";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
+import { SOURCE_PAYABLE, VoucherService } from "./voucher.service";
 import { PAYABLE_CONFIRM_SUBJECT_NAMES, paymentSubjectNames } from "./accounting-subject-catalog";
 
 const STATUS_LABELS: Record<string, string> = { pending: "待处理", matched: "已对平", difference: "有差异", resolved: "差异已处理" };
@@ -50,7 +51,7 @@ type FlowEntry = {
 
 @Injectable()
 export class SupplierPayableReconciliationService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService, @Optional() private readonly vouchers?: VoucherService) {}
 
   /**
    * 对账列表。
@@ -113,6 +114,12 @@ export class SupplierPayableReconciliationService {
         pending_sources: [...payableSources.map((source) => ({ ...source, source_type: "purchase_or_inbound", source_no: source.rawMaterialInbound?.inboundNo ?? source.purchaseReceipt?.receiptNo ?? source.id })), ...outsourceSources.map((source) => ({ ...source, source_type: "outsource_receipt", source_no: source.outsourceReceipt?.id ?? source.id }))],
       },
     };
+  }
+
+  /** 挂账用的凭证服务（DI 漏了就炸，静默跳过等于这笔应付没进账）。 */
+  private get accruals(): VoucherService {
+    if (!this.vouchers) throw new Error("VoucherService 未注入：确认应付必须能挂账（见 finance.module.ts 的 providers）");
+    return this.vouchers;
   }
 
   async create(input: { supplier_id: string; order_no?: string; purchase_order_id?: string; period_start: string; period_end: string; external_balance: string; currency: string; bank_id?: string; subject_id?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
@@ -195,32 +202,35 @@ export class SupplierPayableReconciliationService {
       return { current, confirmed, skipped, bankId, subjectId };
     });
     const confirmedAmount = result.confirmed.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
-    // 项目归类与供应商付款过账同一套口径：按本次确认金额最大的来源类型选候选链，
-    // 这样「原料入库」确认出来是「原材料 成本」、「外加工签收」确认出来是「成品外加工费」。
-    const sourceAmounts = new Map<string, Prisma.Decimal>();
-    for (const entry of result.confirmed) sourceAmounts.set(entry.sourceType, (sourceAmounts.get(entry.sourceType) ?? new Prisma.Decimal(0)).plus(entry.amount));
-    const dominant = [...sourceAmounts.entries()].sort((left, right) => right[1].minus(left[1]).toNumber())[0]?.[0];
-    const cashFlow = await this.cashFlow.recordConfirmation({
-      sourceType: "supplier_payable_reconciliation",
-      sourceId: id,
-      documentNo: result.current.reconciliationNo,
-      entryDate: this.today(),
-      amount: confirmedAmount,
-      currency: result.current.currency,
-      counterpartyName: result.current.supplier?.name ?? result.current.supplierId,
-      direction: "expense",
-      subjectNames: dominant ? paymentSubjectNames(dominant) : PAYABLE_CONFIRM_SUBJECT_NAMES,
-      subjectId: result.subjectId,
-      bankId: result.bankId,
-      remark: `应付对账确认（${result.confirmed.length} 条）`,
-    }, user);
+    // **挂账**（确认应付那一步）：每条应付各挂一张，借 成本/存货类科目 / 贷 `应付账款`。
+    // 对账单只是「一次确认多条」的入口，所以仍然逐条 —— 合并成一张会让「这条应付有没有挂过账」
+    // 变得查不出来（销账时要按来源判定，见 VoucherService.accruedSourceIds）。
+    const accrualVoucherIds: string[] = [];
+    for (const entry of result.confirmed) {
+      const accrual = await this.accruals.createAccrual({
+        source_type: SOURCE_PAYABLE,
+        source_id: entry.id,
+        document_no: entry.payableNo,
+        voucher_date: this.today(),
+        currency: entry.currency,
+        amount: entry.amount,
+        counterparty_name: result.current.supplier?.name ?? result.current.supplierId,
+        // 项目归类与供应商付款过账同一套口径：按来源类型选候选链，
+        // 这样「原料入库」确认出来是「原材料 成本」、「外加工签收」确认出来是「成品外加工费」。
+        contra_subject_names: entry.sourceType ? paymentSubjectNames(entry.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
+        contra_subject_id: result.subjectId,
+        remark: `应付对账确认（${result.current.reconciliationNo}）`,
+      }, user);
+      if (accrual) accrualVoucherIds.push(accrual.id);
+    }
     await this.audit.record("supplier_payable_reconciliation.confirm_payables", "supplier_payable_reconciliation", user.id, id, {
       reconciliation_no: result.current.reconciliationNo,
       supplier_id: result.current.supplierId,
       confirmed_count: result.confirmed.length,
       confirmed_amount: confirmedAmount.toFixed(4),
       bank_id: result.bankId,
-      cash_flow_entry_id: cashFlow?.id ?? null,
+      cash_flow_entry_id: null,
+      accrual_voucher_ids: accrualVoucherIds,
       skipped: result.skipped,
     });
     return {
@@ -231,9 +241,10 @@ export class SupplierPayableReconciliationService {
       currency: result.current.currency,
       bank_id: result.bankId,
       subject_id: result.subjectId,
-      cash_flow_entry_id: cashFlow?.id ?? null,
-      /** 没指定银行账户：钱记进了收支流水，但不会体现在任何银行余额里，界面必须提示。 */
-      bank_missing: !result.bankId,
+      cash_flow_entry_id: null,
+      /** 挂账凭证（每条应付一张）：钱还没动，付款的现金分录在「登记付款」那一步。 */
+      accrual_voucher_ids: accrualVoucherIds,
+      bank_missing: false,
       skipped_count: result.skipped.length,
       skipped: result.skipped,
       entries: result.confirmed.map((entry) => ({ id: entry.id, payable_no: entry.payableNo, order_no: entry.orderNo, amount: entry.amount.toFixed(4), currency: entry.currency, status: "confirmed" })),

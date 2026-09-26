@@ -102,6 +102,19 @@ export const FINANCE_REPORT_TABS = [
   { key: "cash-flow-detail", title: "收支明细表", scope: "cash" },
   { key: "cash-flow-summary", title: "收支汇总表", scope: "cash" },
   { key: "forex-receipts", title: "外汇一览表", scope: "customer" },
+  /**
+   * 财务三大报表（2026-09-24 财务交付标准格式，用户确认要做）。
+   *
+   * `scope: "period"` 是这里新加的第三种筛选形态：**只要期间（起止日期）与币种** ——
+   * 三大报表取的是凭证、按期间切片，没有客户/供应商/订单号，也没有「含草稿」这一说
+   * （草稿凭证不是账），所以筛选条上不该出现那些控件。
+   *
+   * 排在最后是按「一张老表一个页签」的历史顺序加的，不动默认页签（`tabs[0]`）——
+   * 默认页签一变，所有收藏了 `/finance/reports` 的人打开看到的就换了一张表。
+   */
+  { key: "balance-sheet", title: "资产负债表", scope: "period" },
+  { key: "income-statement", title: "利润表", scope: "period" },
+  { key: "cash-flow-statement", title: "现金流量表", scope: "period" },
 ] as const;
 
 export type FinanceReportTabKey = (typeof FINANCE_REPORT_TABS)[number]["key"];

@@ -7,6 +7,7 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
+import { SOURCE_RECEIVABLE, VoucherService } from "./voucher.service";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
 import { receivableInReconciliationScope } from "./receivable.domain";
 import { RECEIVABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
@@ -40,7 +41,7 @@ type ReconciliationFlow = {
 
 @Injectable()
 export class ReconciliationService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly adjustments: ReceivableAdjustmentService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly adjustments: ReceivableAdjustmentService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService, @Optional() private readonly vouchers?: VoucherService) {}
 
   /**
    * 对账列表。
@@ -171,33 +172,33 @@ export class ReconciliationService {
       return { current, drafts, bankId, subjectId };
     });
     const confirmedAmount = result.drafts.reduce((sum, draft) => sum.plus(draft.amount), new Prisma.Decimal(0));
-    // 确认即记账：金额进对账单指定的银行账户。没有银行账户时流水照样写（收支事实不能丢），
-    // 但它不属于任何账户，因此不进任何账户余额 —— 用 bank_missing 明确告诉界面提示财务。
-    const cashFlow = await this.cashFlow.recordConfirmation({
-      sourceType: "receivable_reconciliation",
-      sourceId: id,
-      documentNo: result.current.reconciliationNo,
-      entryDate: this.today(),
-      amount: confirmedAmount,
-      currency: result.current.currency,
-      counterpartyName: result.current.customer?.name ?? result.current.customerId,
-      direction: "income",
-      subjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
-      subjectId: result.subjectId,
-      bankId: result.bankId,
-      // 对账单自己就知道订单号（按客户期间建的对账单没有订单号，那就留空）：
-      // 外汇一览表要按订单归集收款，能带就带，带不了的不猜。
-      orderNo: result.current.orderNo,
-      paymentNature: override.payment_nature,
-      remark: `应收对账确认（${result.drafts.length} 条）`,
-    }, user);
+    // **挂账**（确认应收那一步）：每条应收各挂一张，借应收账款 / 贷收入类科目。
+    // 对账单在这里只是「一次确认多条」的入口，所以仍然**逐条**挂账 —— 合并成一张会让
+    // 「这条应收有没有挂过账」变得查不出来（销账时要按来源判定，见 VoucherService.accruedSourceIds）。
+    const accrualVoucherIds: string[] = [];
+    for (const draft of result.drafts) {
+      const accrual = await this.accruals.createAccrual({
+        source_type: SOURCE_RECEIVABLE,
+        source_id: draft.id,
+        document_no: draft.sourceNo,
+        voucher_date: this.today(),
+        currency: draft.currency,
+        amount: draft.amount,
+        counterparty_name: result.current.customer?.name ?? result.current.customerId,
+        contra_subject_names: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
+        contra_subject_id: result.subjectId,
+        remark: `应收对账确认（${result.current.reconciliationNo}）`,
+      }, user);
+      if (accrual) accrualVoucherIds.push(accrual.id);
+    }
     await this.audit.record("receivable_reconciliation.confirm_receivables", "receivable_reconciliation", user.id, id, {
       reconciliation_no: result.current.reconciliationNo,
       customer_id: result.current.customerId,
       confirmed_count: result.drafts.length,
       confirmed_amount: confirmedAmount.toFixed(4),
       bank_id: result.bankId,
-      cash_flow_entry_id: cashFlow?.id ?? null,
+      cash_flow_entry_id: null,
+      accrual_voucher_ids: accrualVoucherIds,
       source_nos: result.drafts.map((draft) => draft.sourceNo),
     });
     return {
@@ -208,11 +209,18 @@ export class ReconciliationService {
       currency: result.current.currency,
       bank_id: result.bankId,
       subject_id: result.subjectId,
-      cash_flow_entry_id: cashFlow?.id ?? null,
-      /** 没指定银行账户：钱记进了收支流水，但不会体现在任何银行余额里，界面必须提示。 */
-      bank_missing: !result.bankId,
+      cash_flow_entry_id: null,
+      /** 挂账凭证（每条应收一张）：钱还没动，收款的现金分录在「登记收款」那一步。 */
+      accrual_voucher_ids: accrualVoucherIds,
+      bank_missing: false,
       entries: result.drafts.map((draft) => ({ id: draft.id, source_no: draft.sourceNo, order_no: draft.orderNo, amount: draft.amount.toFixed(4), currency: draft.currency, status: "confirmed" })),
     };
+  }
+
+  /** 挂账用的凭证服务（DI 漏了就炸，静默跳过等于这笔应收没进账）。 */
+  private get accruals(): VoucherService {
+    if (!this.vouchers) throw new Error("VoucherService 未注入：确认应收必须能挂账（见 finance.module.ts 的 providers）");
+    return this.vouchers;
   }
 
   async orderClosePreview(orderNo: string) {

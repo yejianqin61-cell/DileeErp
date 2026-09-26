@@ -1,11 +1,13 @@
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 import * as XLSX from "xlsx";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { dailyCodePrefix, nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { isUniqueConstraintViolation, isUniqueConstraintViolationOn } from "../../platform/database/prisma-error";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { validateMaterialImage } from "./material-image";
 import {
   MATERIAL_IMPORT_MAX_ROWS,
   materialCodeKey,
@@ -24,6 +26,17 @@ type SupplierInput = { supplier_code?: string; name: string; contact_name?: stri
 
 /** Multer 的文件对象只用得到这两个字段（与盘点导入同一形状）。 */
 type UploadedWorkbook = { buffer?: Buffer; originalname?: string };
+
+/**
+ * 物料图片的公开形状（**没有 `data`**）。
+ *
+ * 单独抽成常量而不是各处手写 select：物料列表、销售单引用、上传回执三处都要「有图 / 图的宽高 /
+ * 图是什么时候换的」，抄三遍必然有一处漏掉 `data` 的排除，那处就会把几百 KB 的字节塞进 JSON。
+ */
+export const MATERIAL_IMAGE_SUMMARY = { id: true, width: true, height: true, byteSize: true, sha256: true, updatedAt: true } as const;
+
+/** 上传的图片文件（只用得到 buffer；`originalname` 留着是为了错误提示里能点名是哪个文件）。 */
+type UploadedImage = { buffer?: Buffer; originalname?: string; mimetype?: string };
 
 /** 逐行导入的结果：形状与「库存盘点导入」「其他应付导入」一致，前端复用同一套结果面板。 */
 export type MaterialImportResult = {
@@ -68,11 +81,83 @@ export class ProcurementMasterDataService {
     }
   }
 
-  async listMaterials() { return this.prisma.material.findMany({ where: { deletedAt: null, materialType: "raw_material" }, include: { defaultUnit: true }, orderBy: { materialCode: "asc" } }); }
+  async listMaterials() {
+    // ⚠️ `image` 只 select **元数据**，绝不 select `data`：物料列表是采购/BOM/仓库/销售页
+    // 每次打开都要拉的接口，带上字节就是几百 KB × 每个物料。页面靠 `image !== null` 判断有没有图，
+    // 图片本身走 `GET /materials/:id/image`（浏览器可以缓存、可以 304）。
+    return this.prisma.material.findMany({
+      where: { deletedAt: null, materialType: "raw_material" },
+      include: { defaultUnit: true, image: { select: MATERIAL_IMAGE_SUMMARY } },
+      orderBy: { materialCode: "asc" },
+    });
+  }
   async createMaterial(input: MaterialInput & { code_mode?: string }, user: CurrentUser) { await this.requireActiveUnit(input.default_unit_id); const materialType = input.material_type ?? "raw_material"; if (!["raw_material", "finished_product"].includes(materialType)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_TYPE", message: "物料类型不合法", details: [] }); const code = input.code_mode === "auto" ? await this.nextMaterialCode() : input.material_code?.trim(); if (!code) throw new UnprocessableEntityException({ code: "MATERIAL_CODE_REQUIRED", message: "手动编码模式必须填写物料编码", details: [] }); return this.write("material", () => this.prisma.material.create({ data: { materialCode: code, name: input.name.trim(), specificationModel: this.materialKey(input.specification_model), color: this.materialKey(input.color), defaultUnitId: input.default_unit_id, materialType, remark: input.remark, ...this.audit.create(user) } }), user); }
   async updateMaterial(id: string, input: Partial<MaterialInput>, user: CurrentUser) { await this.requireMaterial(id); if (input.default_unit_id) await this.requireActiveUnit(input.default_unit_id); if (input.material_type && !["raw_material", "finished_product"].includes(input.material_type)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_TYPE", message: "物料类型不合法", details: [] }); return this.write("material", () => this.prisma.material.update({ where: { id }, data: { ...(input.material_code === undefined || input.material_code === null ? {} : { materialCode: input.material_code }), ...(input.name === undefined || input.name === null ? {} : { name: input.name.trim() }), ...(input.specification_model === undefined ? {} : { specificationModel: this.materialKey(input.specification_model) }), ...(input.color === undefined ? {} : { color: this.materialKey(input.color) }), ...(input.default_unit_id === undefined || input.default_unit_id === null ? {} : { defaultUnitId: input.default_unit_id }), ...(input.material_type === undefined || input.material_type === null ? {} : { materialType: input.material_type }), ...(input.remark === undefined ? {} : { remark: input.remark }), ...this.audit.update(user) } }), user, id); }
   async setMaterialActive(id: string, isActive: boolean, user: CurrentUser) { await this.requireMaterial(id); return this.prisma.material.update({ where: { id }, data: { isActive, ...this.audit.update(user) } }); }
   async deleteMaterial(id: string, user: CurrentUser) { await this.requireMaterial(id); return this.ensureUnusedAndDelete("material", id, user); }
+
+  // ------------------------------------------------------------------
+  // 物料图片（用户 2026-09-24：「物料清单，要给物料配上图片。图片上传之后要压缩成 webp 再存进数据库里」）
+  // ------------------------------------------------------------------
+
+  /**
+   * 换一张物料图（同一物料只有一张，所以是 upsert 而不是「传一批」）。
+   *
+   * 三步，缺一不可：
+   *   1. **校验**（`validateMaterialImage`，纯函数）：是不是真的 WebP（RIFF 容器 + 三种块头的尺寸）
+   *      以及大小/边长是否在限内。用户选的是「浏览器压缩、服务端只校验」那条路，所以这一步是
+   *      唯一能挡住「伪装成 webp 的别的东西」的地方 —— 绝不相信客户端的 Content-Type；
+   *   2. **落库**：字节进 `material_images.data`（bytea），元数据（宽高/字节数/sha256）进列；
+   *      `sha256` 既当 `ETag` 也当「换没换图」的判断依据；
+   *   3. **审计**：图片是主数据的一部分，谁什么时候换的必须查得到（审计只记元数据，不记字节）。
+   *
+   * 为什么 `mimeType` 写死 `image/webp` 而不是照抄上传的 mimetype：走完第 1 步之后字节一定是 WebP，
+   * 抄客户端那个值只会让库里出现「内容是 WebP、mime 写着 image/png」的自相矛盾记录。
+   */
+  async setMaterialImage(id: string, file: UploadedImage | undefined, user: CurrentUser) {
+    await this.requireMaterial(id);
+    const checked = validateMaterialImage(file?.buffer);
+    if (!checked.ok) throw this.invalid(checked.code, checked.message);
+    // 自己分配一个 `ArrayBuffer` 再 `set`，而不是 `Buffer.from` / `Uint8Array.from`：
+    // Prisma 的 `Bytes` 列要 `Uint8Array<ArrayBuffer>`，而 Node 的 `Buffer` 是
+    // `Buffer<ArrayBufferLike>`（可能是 SharedArrayBuffer），两个 `from` 也都保留了这个宽类型。
+    const source = file!.buffer!;
+    const data = new Uint8Array(source.byteLength);
+    data.set(source);
+    const saved = await this.prisma.materialImage.upsert({
+      where: { materialId: id },
+      create: { materialId: id, ...this.imageColumns(data, checked), ...this.audit.create(user) },
+      update: { ...this.imageColumns(data, checked), ...this.audit.update(user) },
+      select: MATERIAL_IMAGE_SUMMARY,
+    });
+    await this.audit.record("material.image_set", "material", user.id, id, { width: checked.width, height: checked.height, byte_size: data.length });
+    return saved;
+  }
+
+  /**
+   * 删除物料图。**硬删**（这张表没有 `deletedAt`）：一行就是一个物料的**当前**图片，
+   * 不是历史版本；留着软删的行只会让「这个物料到底有没有图」多一种要判的状态。
+   * 「谁什么时候删的」由审计事件回答（`material.image_cleared`）。
+   */
+  async clearMaterialImage(id: string, user: CurrentUser) {
+    await this.requireMaterial(id);
+    const existing = await this.prisma.materialImage.findUnique({ where: { materialId: id }, select: { id: true, sha256: true } });
+    if (!existing) throw new NotFoundException({ code: "MATERIAL_IMAGE_NOT_FOUND", message: "该物料没有图片", details: [] });
+    await this.prisma.materialImage.delete({ where: { materialId: id } });
+    await this.audit.record("material.image_cleared", "material", user.id, id, { sha256: existing.sha256 });
+    return { material_id: id, cleared: true };
+  }
+
+  /** 读图片字节（`GET /materials/:id/image`）。返回 null 表示这个物料没有图。 */
+  async materialImage(id: string) {
+    const row = await this.prisma.materialImage.findUnique({ where: { materialId: id }, include: { material: { select: { materialCode: true, name: true } } } });
+    if (!row) return null;
+    return { data: Buffer.from(row.data), mimeType: row.mimeType, sha256: row.sha256, fileName: `${row.material?.materialCode ?? id}.webp` };
+  }
+
+  private imageColumns(data: Uint8Array<ArrayBuffer>, checked: { width: number; height: number }) {
+    return { data, mimeType: "image/webp", width: checked.width, height: checked.height, byteSize: data.length, sha256: createHash("sha256").update(data).digest("hex") };
+  }
 
   // ------------------------------------------------------------------
   // 物料清单批量导入（用户 2026-09-20）

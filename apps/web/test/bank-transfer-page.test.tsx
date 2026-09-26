@@ -13,7 +13,7 @@
 //   GET  /api/v1/finance/bank-transfers          互转列表（from/to/bank_id 可选）
 //   POST /api/v1/finance/bank-transfers          建单 → { data: { transfer, source_balance_before, source_balance_after, insufficient_balance } }
 //   POST /api/v1/finance/bank-transfers/:id/reverse  body: { reason }
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import BankTransferWorkspace from "../components/finance/bank-transfer-workspace";
@@ -299,5 +299,141 @@ describe("银行余额互转 · 冲销", () => {
 
     expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("只有生效中的互转可以冲销");
     expect(screen.getByTestId("action-dialog")).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ 跨行转账单（2026-09-24） */
+
+/**
+ * 用户 2026-09-24：「银行账户互转的时候，`跨行转账单.html`，支持编辑这个样式的表单，
+ * 并且支持导出打印」——模板在 `example/财务/跨行转账单.html`。
+ *
+ * 这一组钉住四件事：
+ *   ① 预填走 `GET /finance/bank-transfers/:id/slip`（账户**全称**只有服务端读得到），
+ *      版式照模板三段：付款方 / 收款方 / 转账金额 + 金额大写 + 用途附言 + 四个签字格；
+ *   ② 导出走 `POST /api/v1/finance/bank-transfer-slips.xlsx`（裸 fetch，必须自带 /api/v1）；
+ *   ③ 改金额就**清空大写**（界面不算中文大写，留空 = 让后端按金额算，纸上不会出现过期大写）；
+ *   ④ 打印按钮走浏览器打印（与记账凭证纸同一做法）。
+ */
+describe("银行余额互转 · 跨行转账单（编辑 + 打印 + 导出）", () => {
+  const SLIP = {
+    transfer_id: "bt-1", document_no: "BTR-20260917-AAAAAAAA",
+    payer_name: "迪礼贸易有限公司", payer_account: "5706", payer_bank: "农业银行",
+    payee_name: "迪礼贸易有限公司", payee_account: "1234", payee_bank: "工商银行", payee_bank_no: "",
+    transfer_date: "2026-09-17", currency: "CNY", exchange_rate: "1", amount_original: "5000.0000", amount_cny: "5000.0000",
+    amount_in_words: "伍仟元整", remark: "月末资金归集", maker: "小叶", reviewer: "", cashier: "", approver: "",
+  };
+  const xlsxResponse = () => new Response(new Uint8Array([0x50, 0x4b]), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
+  let anchors: Array<{ download: string }> = [];
+  const captureDownloads = () => {
+    anchors = [];
+    Object.assign(URL, { createObjectURL: vi.fn(() => `blob:http://localhost/${anchors.length + 1}`), revokeObjectURL: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      anchors.push({ download: this.getAttribute("download") ?? "" });
+    });
+  };
+  const slipStub = (extra?: Handler, draft: unknown = SLIP) => stubTransferPage((url, call) => {
+    const injected = extra?.(url, call);
+    if (injected) return injected;
+    // 按 `/slip` 结尾匹配（不是写死 bt-1）：预填路由是 `bank-transfers/:id/slip`，
+    // 写死某个 id 时另一条互转的请求会掉进 `stubTransferPage` 的兜底分支，拿回一个**数组** ——
+    // 那不是这份单子的形状（当年的收/付款单就是这么被夹具骗过一次的）。
+    if (url.endsWith("/slip")) return draft instanceof Response ? draft : apiOk(draft);
+    if (url.endsWith("/api/v1/finance/bank-transfer-slips.xlsx")) return xlsxResponse();
+    return undefined;
+  });
+
+  it("行内「跨行转账单」→ 按互转单预填 → 改联行号与用途 → 导出的就是改过的那张", async () => {
+    captureDownloads();
+    const calls = slipStub();
+    await open();
+    fireEvent.click(screen.getByTestId("bank-transfer-slip-bt-1"));
+
+    const editor = await screen.findByTestId("transfer-slip-editor");
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/bank-transfers/bt-1/slip")).toHaveLength(1));
+    const value = (field: string) => (within(editor).getByTestId(`transfer-slip-field-${field}`) as HTMLInputElement).value;
+    // 预填写进输入框是在**请求回来之后**的另一轮渲染里（弹窗先以 loading 状态出现），
+    // 所以第一格必须等 —— 只等「请求已发出」在读值时会随机读到空格子（并行跑测试时就露出来）。
+    await waitFor(() => expect(value("payer_name")).toBe("迪礼贸易有限公司"));
+    // 预填：双方全称 / 账号 / 开户行 / 日期 / 币种 / 汇率 / 金额 / 大写 / 制单人
+    expect(value("payer_account")).toBe("5706");
+    expect(value("payee_bank")).toBe("工商银行");
+    expect(value("transfer_date")).toBe("2026-09-17");
+    expect(value("amount_original")).toBe("5000.0000");
+    expect(value("amount_in_words")).toBe("伍仟元整");
+    expect(value("remark")).toBe("月末资金归集");
+    // 联行号系统里没存档：留空由财务填，不猜一个号（错的联行号会把钱转到别人账上）
+    expect(value("payee_bank_no")).toBe("");
+
+    fireEvent.change(within(editor).getByTestId("transfer-slip-field-payee_bank_no"), { target: { value: "102100099996" } });
+    fireEvent.change(within(editor).getByTestId("transfer-slip-field-remark"), { target: { value: "月末资金归集（补联行号）" } });
+    fireEvent.click(screen.getByTestId("transfer-slip-export"));
+
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/bank-transfer-slips.xlsx")).toHaveLength(1));
+    expect(bodyOf(callsTo(calls, "/api/v1/finance/bank-transfer-slips.xlsx")[0])).toMatchObject({
+      transfer_id: "bt-1", document_no: "BTR-20260917-AAAAAAAA",
+      payer_name: "迪礼贸易有限公司", payer_account: "5706", payer_bank: "农业银行",
+      payee_name: "迪礼贸易有限公司", payee_account: "1234", payee_bank: "工商银行", payee_bank_no: "102100099996",
+      transfer_date: "2026-09-17", currency: "CNY", amount_original: "5000.0000", amount_cny: "5000.0000",
+      amount_in_words: "伍仟元整", remark: "月末资金归集（补联行号）", maker: "小叶",
+    });
+    expect(anchors[0].download).toBe("迪礼跨行转账单-BTR-20260917-AAAAAAAA.xlsx");
+    await waitFor(() => expect(toastText()).toContain("已导出跨行转账单"));
+  });
+
+  it("改金额就清空大写（界面不算中文大写，留空＝让后端按金额重算）", async () => {
+    slipStub();
+    await open();
+    fireEvent.click(screen.getByTestId("bank-transfer-slip-bt-1"));
+    const editor = await screen.findByTestId("transfer-slip-editor");
+    await waitFor(() => expect((within(editor).getByTestId("transfer-slip-field-amount_in_words") as HTMLInputElement).value).toBe("伍仟元整"));
+
+    fireEvent.change(within(editor).getByTestId("transfer-slip-field-amount_cny"), { target: { value: "8000" } });
+    // 留着旧大写，纸上就会出现大写与小写不一致的单子
+    expect((within(editor).getByTestId("transfer-slip-field-amount_in_words") as HTMLInputElement).value).toBe("");
+    expect(within(editor).getByTestId("transfer-slip-field-amount_in_words")).toHaveAttribute("placeholder", "留空则导出时按金额自动计算");
+  });
+
+  it("缺格就禁用导出并把原因写在界面上（禁用的按钮点不动，原因不能只在点击后出现）", async () => {
+    const calls = slipStub();
+    await open();
+    fireEvent.click(screen.getByTestId("bank-transfer-slip-bt-1"));
+    const editor = await screen.findByTestId("transfer-slip-editor");
+    await waitFor(() => expect((within(editor).getByTestId("transfer-slip-field-payee_account") as HTMLInputElement).value).toBe("1234"));
+    expect(screen.getByTestId("transfer-slip-export")).toBeEnabled();
+
+    fireEvent.change(within(editor).getByTestId("transfer-slip-field-payee_account"), { target: { value: "" } });
+    expect(await screen.findByTestId("transfer-slip-blockers")).toHaveTextContent("请填写收款账号");
+    expect(screen.getByTestId("transfer-slip-export")).toBeDisabled();
+    expect(callsTo(calls, "/api/v1/finance/bank-transfer-slips.xlsx")).toHaveLength(0);
+  });
+
+  it("「打印 / 另存 PDF」走浏览器打印（打印时页面上只留这张单子，见 globals.css 的 @media print）", async () => {
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    slipStub();
+    await open();
+    fireEvent.click(screen.getByTestId("bank-transfer-slip-bt-1"));
+    await screen.findByTestId("transfer-slip-editor");
+    // 单子的版式在弹窗里就是那张纸（三段 + 签字栏 + 注），打印时按 .transfer-slip-sheet 只留它
+    expect(screen.getByTestId("transfer-slip-sheet")).toBeVisible();
+    fireEvent.click(screen.getByTestId("transfer-slip-print"));
+    expect(print).toHaveBeenCalledTimes(1);
+  });
+
+  it("预填失败（互转单不存在）时弹窗仍然打开并把原因写出来", async () => {
+    slipStub(undefined, apiErr(404, "BANK_TRANSFER_NOT_FOUND", "银行互转记录不存在"));
+    await open();
+    fireEvent.click(screen.getByTestId("bank-transfer-slip-bt-1"));
+    expect(await screen.findByTestId("transfer-slip-draft-error")).toHaveTextContent("银行互转记录不存在");
+    expect(screen.getByTestId("transfer-slip-export")).toBeDisabled();
+  });
+
+  it("已冲销的互转也能出单（它是一张打印件，不改任何数据）", async () => {
+    const calls = slipStub(undefined, { ...SLIP, transfer_id: "bt-2", document_no: "BTR-20260916-BBBBBBBB" });
+    await open();
+    expect(screen.getByTestId("bank-transfer-slip-bt-2")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("bank-transfer-slip-bt-2"));
+    await screen.findByTestId("transfer-slip-editor");
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/bank-transfers/bt-2/slip")).toHaveLength(1));
   });
 });

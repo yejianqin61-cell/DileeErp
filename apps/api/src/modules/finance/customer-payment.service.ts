@@ -8,6 +8,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
 import { paymentSubjectNames } from "./accounting-subject-catalog";
 import { CashFlowService } from "./cash-flow.service";
+import { SOURCE_RECEIVABLE, VoucherService } from "./voucher.service";
 import { ReceivableService } from "./receivable.service";
 
 type PaymentInput = { customer_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payer_name?: string; bank_id?: string; subject_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
@@ -15,7 +16,13 @@ type Allocation = { receivable_source_id: string; amount: string };
 
 @Injectable()
 export class CustomerPaymentService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly receivable: ReceivableService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly receivable: ReceivableService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService, @Optional() private readonly vouchers?: VoucherService) {}
+
+  /** 挂账用的凭证服务（销账时要问「这条应收挂过账没有」；DI 漏了就炸，不许静默按老口径记收入）。 */
+  private get accruals(): VoucherService {
+    if (!this.vouchers) throw new Error("VoucherService 未注入：收款销账必须能判断挂账（见 finance.module.ts 的 providers）");
+    return this.vouchers;
+  }
 
   /** 收款列表：带上客户名称与被核销的应收来源编号，否则财务只看得到一串 UUID。 */
   async list(orderNo?: string, customerId?: string) {
@@ -96,6 +103,16 @@ export class CustomerPaymentService {
       return { payment, customerName: lockedPayment.customer?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
     });
     await this.audit.record("customer_payment.post", "customer_payment", user.id, id, { order_no: result.payment.orderNo, allocation_count: allocations?.length ?? 0 });
+    // **销账**：钱真的到了，这条流水才写现金。对方科目取决于「这条应收有没有先挂过账」
+    // （两步口径见 `voucher.service.ts` 的 createAccrual / accruedSourceIds）：
+    //   - 挂过账 → 贷 `应收账款`（收入已经在挂账时记过，这里再贷一次收入就是收入翻倍）；
+    //   - 没挂过账（历史数据、当年「确认即记账」的应收）→ 仍按老口径贷收入，历史不动。
+    // 只要有一条来源没挂账，就按老口径（不猜）：混着两种口径的收款本来就说不清贷方是谁。
+    const allocatedIds = (allocations ?? []).map((allocation) => allocation.receivable_source_id);
+    const accrued = await this.accruals.accruedSourceIds(SOURCE_RECEIVABLE, allocatedIds);
+    const settled: readonly string[] = allocatedIds.length > 0 && allocatedIds.every((sourceId) => accrued.has(sourceId))
+      ? ["应收账款"]
+      : paymentSubjectNames("customer_payment");
     // 过账即写收支流水：对方名称优先取付款人，其次客户名称，最后才退化成 id（不能一上来就是 UUID）。
     await this.cashFlow.autoCreateFromPayment({
       paymentNo: result.payment.paymentNo, paymentDate: result.payment.paymentDate, amount: result.payment.amount, currency: result.payment.currency,
@@ -109,7 +126,7 @@ export class CustomerPaymentService {
       bankId: result.payment.bankId ?? null,
       settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "customer_payment", sourceId: result.payment.id,
-      subjectNames: paymentSubjectNames("customer_payment"),
+      subjectNames: settled,
       // 过账时临时选的项目优先；没选就用建单时填在收款单上的项目；都没有则按来源自动归类。
       subjectId: subjectId ?? result.payment.subjectId ?? null,
       // 订单号带给流水：外汇一览表按订单归集收款。收款单上的 orderNo 本来就填了，

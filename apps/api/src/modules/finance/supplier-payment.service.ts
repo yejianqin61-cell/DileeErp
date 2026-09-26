@@ -8,6 +8,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
 import { paymentSubjectNames } from "./accounting-subject-catalog";
 import { CashFlowService } from "./cash-flow.service";
+import { SOURCE_PAYABLE, VoucherService } from "./voucher.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 
 type PaymentInput = { supplier_id: string; order_no?: string; payment_date: string; amount: string; currency: string; payment_method: string; bank_reference?: string; payee_name?: string; bank_id?: string; subject_id?: string; attachment?: unknown[]; idempotency_key?: string; remark?: string };
@@ -15,7 +16,13 @@ type AllocationInput = { payable_entry_id: string; amount: string; remark?: stri
 
 @Injectable()
 export class SupplierPaymentService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payable: SupplierPayableService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly payable: SupplierPayableService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService, @Optional() private readonly vouchers?: VoucherService) {}
+
+  /** 挂账用的凭证服务（销账时要问「这批应付挂过账没有」；DI 漏了就炸，不许静默按老口径记成本）。 */
+  private get accruals(): VoucherService {
+    if (!this.vouchers) throw new Error("VoucherService 未注入：付款销账必须能判断挂账（见 finance.module.ts 的 providers）");
+    return this.vouchers;
+  }
 
   async list(orderNo?: string, supplierId?: string, status?: string) {
     const rows = await this.prisma.supplierPayment.findMany({
@@ -102,6 +109,16 @@ export class SupplierPaymentService {
     // 过账即写收支流水：项目按本次付款金额最大的应付来源选定（采购 / 外加工 / 其他），
     // 字典里候选一个都不存在时由 CashFlowService 显式报错，不会静默丢掉这笔支出。
     const dominant = [...result.sourceAmounts.entries()].sort((left, right) => right[1].minus(left[1]).toNumber())[0]?.[0] ?? "other";
+    // **销账**：钱真的付了，这条流水才写现金。对方科目取决于「这批应付有没有先挂过账」
+    // （两步口径见 `voucher.service.ts` 的 createAccrual / accruedSourceIds）：
+    //   - 挂过账 → 借 `应付账款`（成本已经在挂账时记过，这里再借一次成本就是成本翻倍）；
+    //   - 没挂过账（历史数据、当年「确认即记账」的应付）→ 仍按老口径借成本/存货，历史不动。
+    // 只要有一条来源没挂账，就按老口径（不猜）：混着两种口径的付款本来就说不清借方是谁。
+    const allocatedIds = items.map((item) => item.payable_entry_id);
+    const accrued = await this.accruals.accruedSourceIds(SOURCE_PAYABLE, allocatedIds);
+    const settled: readonly string[] = allocatedIds.length > 0 && allocatedIds.every((payableId) => accrued.has(payableId))
+      ? ["应付账款"]
+      : paymentSubjectNames(dominant);
     await this.cashFlow.autoCreateFromPayment({
       paymentNo: result.payment.paymentNo, paymentDate: result.payment.paymentDate, amount: result.payment.amount, currency: result.payment.currency,
       counterpartyName: result.payment.payeeName ?? result.supplierName ?? result.payment.supplierId,
@@ -112,7 +129,7 @@ export class SupplierPaymentService {
       bankId: result.payment.bankId ?? null,
       settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "supplier_payment", sourceId: result.payment.id,
-      subjectNames: paymentSubjectNames(dominant),
+      subjectNames: settled,
       // 过账时临时选的项目优先；没选就用建单时填在付款单上的项目；都没有则按来源自动归类。
       subjectId: subjectId ?? result.payment.subjectId ?? null,
       remark: result.payment.remark ?? undefined,

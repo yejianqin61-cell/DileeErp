@@ -8,14 +8,29 @@
 //   4. 已被引用的科目删除会被后端拒（ACCOUNTING_SUBJECT_IN_USE），页面要把原因说出来，
 //      并引导财务改用停用 —— 而不是静默失败。
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AccountingSubjectWorkspace from "../components/finance/accounting-subject-workspace";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
 
+/**
+ * 下拉必须真实点开再点选项（与 finance-page.test.tsx 同一套）。
+ *
+ * 弹层渲染在 portal 里（不在 panel 内），所以选项要从 `screen` 上找；
+ * `SearchableSelect` 的 testid 落在根 div 上，里面的 button 才是 trigger。
+ */
+async function pickOption(scope: ReturnType<typeof within>, testId: string, optionName: RegExp) {
+  const root = scope.getByTestId(testId);
+  await userEvent.click((root.querySelector("button") ?? root) as HTMLElement);
+  await userEvent.click(await screen.findByRole("option", { name: optionName }));
+}
+
 const EP = {
   subjects: "/api/v1/finance/accounting-subjects",
   categories: "/api/v1/finance/accounting-subjects/categories",
+  openings: "/api/v1/finance/opening-balances",
+  rates: "/api/v1/finance/exchange-rates",
 };
 
 const SUBJECTS = [
@@ -33,10 +48,30 @@ function stubSubjects(extra?: (url: string, call: StubbedCall) => Response | und
     // categories 必须排在 subjects 前面判断：它的地址以 subjects 为前缀。
     if (url.includes(EP.categories)) return apiOk(CATEGORIES);
     if (url.includes(EP.subjects)) return apiOk(SUBJECTS);
+    if (url.includes(EP.openings)) return apiOk(OPENINGS);
+    if (url.includes(EP.rates)) return apiOk(RATES);
     return apiOk([]);
   });
   return { calls };
 }
+
+/** 期末汇率（2026-09-24）：面板与科目表在同一页。 */
+const RATES = {
+  period: "2026-09",
+  rows: [{ currency: "USD", rate: "7.1234", remark: "中国银行" }],
+  periods: ["2026-09"],
+};
+
+/** 建账期初余额（2026-09-24）：面板与科目表在同一页。 */
+const OPENINGS = {
+  as_of_date: "2026-09-01",
+  currency: "CNY",
+  rows: [
+    { subject_key: "资产类/库存现金（备用金）", subject_label: "库存现金（备用金）", direction: "debit", amount: "3000" },
+    { subject_key: "所有者权益类/实收资本", subject_label: "实收资本", direction: "credit", amount: "3000" },
+  ],
+  totals: { debit: "3000", credit: "3000", difference: "0", balanced: true },
+};
 
 async function open() {
   render(<><AccountingSubjectWorkspace /><Toaster /></>);
@@ -208,5 +243,126 @@ describe("会计科目 · 删除", () => {
     await open();
     fireEvent.click(screen.getByTestId("accounting-subject-delete-sub-2"));
     expect(await screen.findByText(/该科目已被业务单据引用，不能删除；请改为停用/)).toBeInTheDocument();
+  });
+});
+
+/**
+ * 建账期初余额（2026-09-24：用户「1,3,4 都要」的第 ③ 件）。
+ *
+ * 三条：读出来的是已有期初（含日期与试算平衡）、整批保存走 PUT（没出现的行由服务层软删）、
+ * 借贷不平**不拦**（财务可能分批录）但差额必须显示出来。
+ */
+describe("会计科目 · 建账期初余额", () => {
+  it("列出已有期初（建账日期 / 科目 / 借或贷 / 金额）并显示借贷合计", async () => {
+    stubSubjects();
+    await open();
+    const panel = within(screen.getByTestId("opening-balance-panel"));
+    expect((panel.getByTestId("opening-balance-date") as HTMLInputElement).value).toBe("2026-09-01");
+    expect(panel.getByTestId("opening-balance-row-0")).toBeInTheDocument();
+    expect(panel.getByTestId("opening-balance-totals")).toHaveTextContent("借方合计 3000");
+    expect(panel.getByTestId("opening-balance-totals")).toHaveTextContent("借贷平衡");
+  });
+
+  it("整批保存：新增一行后 PUT 出去，请求体带建账日期、币种与**全部**行", async () => {
+    const { calls } = stubSubjects((url, call) => (call.method === "PUT" && url.includes(EP.openings)
+      ? apiOk({ as_of_date: "2026-09-01", currency: "CNY", saved: 3, removed: 0, totals: { debit: "3000", credit: "3000", difference: "0", balanced: true } })
+      : undefined));
+    await open();
+    const panel = within(screen.getByTestId("opening-balance-panel"));
+
+    await userEvent.click(panel.getByTestId("opening-balance-add"));
+    await pickOption(panel, "opening-balance-subject-2", /损益类 \/ 主营业务收入/);
+    fireEvent.change(panel.getByTestId("opening-balance-amount-2"), { target: { value: "500" } });
+    fireEvent.click(panel.getByTestId("opening-balance-save"));
+
+    await waitFor(() => expect(calls.filter((call) => call.method === "PUT").length).toBe(1));
+    const body = JSON.parse(String(calls.find((call) => call.method === "PUT")!.body));
+    expect(body.as_of_date).toBe("2026-09-01");
+    expect(body.currency).toBe("CNY");
+    expect(body.rows).toHaveLength(3);
+    expect(body.rows[2]).toMatchObject({ subject_key: "损益类/主营业务收入", direction: "debit", amount: "500" });
+  });
+
+  it("缺科目或金额拦在保存前（一次说完）；整行都没填的空行直接丢掉、不挡保存", async () => {
+    const { calls } = stubSubjects();
+    await open();
+    const panel = within(screen.getByTestId("opening-balance-panel"));
+
+    // 整行空着的新行：与收/付款单、凭证编辑器同一约定 —— 丢掉，不报「第 3 行请选科目」。
+    await userEvent.click(panel.getByTestId("opening-balance-add"));
+    fireEvent.click(panel.getByTestId("opening-balance-save"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "PUT").length).toBe(1));
+    expect(JSON.parse(String(calls.find((call) => call.method === "PUT")!.body)).rows).toHaveLength(2);
+  });
+
+  it("填了金额却没选科目：拦在保存前并指名第几行（不发注定 422 的请求）", async () => {
+    const { calls } = stubSubjects();
+    await open();
+    const panel = within(screen.getByTestId("opening-balance-panel"));
+
+    await userEvent.click(panel.getByTestId("opening-balance-add"));
+    fireEvent.change(panel.getByTestId("opening-balance-amount-2"), { target: { value: "500" } });
+    fireEvent.click(panel.getByTestId("opening-balance-save"));
+
+    expect(await panel.findByTestId("opening-balance-error")).toHaveTextContent("第 3 行请选择会计科目");
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
+  });
+});
+
+/**
+ * 期末汇率（2026-09-24：用户「1,3,4 都要」的第 ④ 件）。
+ *
+ * 三条：读出来的是这一期已维护的汇率与「报表会回退用哪一期」的提示、整批保存走 PUT
+ * （没出现的币种由服务层软删）、本币与重复币种拦在保存前（不发注定 422 的请求）。
+ */
+describe("会计科目 · 期末汇率", () => {
+  it("列出这一期已维护的汇率，并说明没维护时会回退用哪一期折算", async () => {
+    stubSubjects();
+    await open();
+    const panel = within(screen.getByTestId("exchange-rate-panel"));
+    expect((panel.getByTestId("exchange-rate-period") as HTMLInputElement).value).toBe("2026-09");
+    expect((panel.getByTestId("exchange-rate-currency-0") as HTMLInputElement).value).toBe("USD");
+    expect((panel.getByTestId("exchange-rate-rate-0") as HTMLInputElement).value).toBe("7.1234");
+    expect(panel.getByTestId("exchange-rate-summary")).toHaveTextContent("本期 1 个币种");
+    expect(panel.getByTestId("exchange-rate-periods")).toHaveTextContent("已维护：2026-09");
+    expect(panel.getByTestId("exchange-rate-note")).toHaveTextContent("2026-09 的汇率已维护");
+  });
+
+  it("整批保存：新增一个币种后 PUT 出去，请求体带期间与**全部**币种（没出现的由服务层软删）", async () => {
+    const { calls } = stubSubjects((url, call) => (call.method === "PUT" && url.includes(EP.rates)
+      ? apiOk({ period: "2026-09", saved: 2, removed: 0, rows: [] })
+      : undefined));
+    await open();
+    const panel = within(screen.getByTestId("exchange-rate-panel"));
+
+    await userEvent.click(panel.getByTestId("exchange-rate-add"));
+    fireEvent.change(panel.getByTestId("exchange-rate-currency-1"), { target: { value: "hkd" } });
+    fireEvent.change(panel.getByTestId("exchange-rate-rate-1"), { target: { value: "0.91" } });
+    fireEvent.click(panel.getByTestId("exchange-rate-save"));
+
+    await waitFor(() => expect(calls.filter((call) => call.method === "PUT").length).toBe(1));
+    const body = JSON.parse(String(calls.find((call) => call.method === "PUT")!.body));
+    expect(body.period).toBe("2026-09");
+    expect(body.rows).toHaveLength(2);
+    expect(body.rows[1]).toMatchObject({ currency: "HKD", rate: "0.91" });
+  });
+
+  it("本币不需要汇率、同币种不许重复：拦在保存前并指名第几行", async () => {
+    const { calls } = stubSubjects();
+    await open();
+    const panel = within(screen.getByTestId("exchange-rate-panel"));
+
+    await userEvent.click(panel.getByTestId("exchange-rate-add"));
+    fireEvent.change(panel.getByTestId("exchange-rate-currency-1"), { target: { value: "usd" } });
+    fireEvent.change(panel.getByTestId("exchange-rate-rate-1"), { target: { value: "7.2" } });
+    await userEvent.click(panel.getByTestId("exchange-rate-add"));
+    fireEvent.change(panel.getByTestId("exchange-rate-currency-2"), { target: { value: "CNY" } });
+    fireEvent.change(panel.getByTestId("exchange-rate-rate-2"), { target: { value: "1" } });
+    fireEvent.click(panel.getByTestId("exchange-rate-save"));
+
+    const error = await panel.findByTestId("exchange-rate-error");
+    expect(error).toHaveTextContent("第 2 行币种 USD 重复了");
+    expect(error).toHaveTextContent("第 3 行是本币 CNY：本币不需要汇率");
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(0);
   });
 });

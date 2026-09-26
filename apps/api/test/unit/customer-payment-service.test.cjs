@@ -165,17 +165,49 @@ test("收款过账：到账银行带给收支流水，且结算方式按老表�
   };
   const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } };
-  const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlow);
+  // 这条应收**先挂过账**（借应收账款 / 贷收入）→ 销账这条现金分录必须贷「应收账款」，
+  // 再贷一次收入就是收入翻倍（两步口径见 docs/design/finance-accrual-two-step-2026-09-24.md）。
+  const vouchers = { accruedSourceIds: async () => new Set(["source-1"]) };
+  const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlow, undefined, vouchers);
   await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" });
   assert.equal(cashFlowCalls.length, 1);
   const input = cashFlowCalls[0];
   assert.equal(input.direction, "income");
+  assert.deepEqual(input.subjectNames, ["应收账款"], "挂过账的应收：销账贷应收账款，收入在挂账时已经记过");
   assert.equal(input.counterpartyName, "晋江大田", "对方名称取客户名，不能退化成 UUID");
   assert.equal(input.settlementMethod, "转账--农业银行5706");
   assert.deepEqual(input.settlementAccountHint, { bankName: "农业银行", accountNumber: "5706" });
   // 2026-09-16：bankId 是银行余额的唯一依据 —— 单据上选了银行就必须落到流水上，
   // 只给 settlementAccountHint（那只是拿去猜字典的）会让钱进不了任何账户。
   assert.equal(input.bankId, "bank-1", "到账银行要写进流水的 bankId，否则这笔钱进不了银行余额");
+});
+
+test("收款过账：没挂过账的应收（历史数据）仍按老口径贷收入，不让应收账款变成负数", async () => {
+  const cashFlowCalls = [];
+  const payment = { id: "payment-1", paymentNo: "PAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("100"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payerName: null, customerId: "customer-1", bankId: null, subjectId: null, remark: null };
+  const prisma = {
+    customerPayment: { findFirst: async () => ({ ...payment, status: "draft" }) },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      customerPayment: { findFirst: async () => ({ ...payment, status: "draft", customer: { name: "晋江大田" }, bank: null }), update: async () => payment },
+      receivableAllocation: { count: async () => 0, create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+    }),
+  };
+  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } };
+  // 一条都没挂账：贷应收账款会让「应收账款」凭空出现贷方余额（历史那笔钱从没进过应收）。
+  const vouchers = { accruedSourceIds: async () => new Set() };
+  const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlow, undefined, vouchers);
+  await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" });
+  assert.deepEqual(cashFlowCalls[0].subjectNames, ["主营业务收入"], "老口径：直接贷收入（历史不动）");
+
+  // 一半挂过账、一半没有 → 也退回老口径：混着两种口径的收款说不清贷方是谁，不猜。
+  const mixed = [];
+  const cashFlowMixed = { autoCreateFromPayment: async (input) => { mixed.push(input); return { id: "cf-2" }; } };
+  const vouchersMixed = { accruedSourceIds: async () => new Set(["source-1"]) };
+  const serviceMixed = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlowMixed, undefined, vouchersMixed);
+  await serviceMixed.post("payment-1", [{ receivable_source_id: "source-1", amount: "60" }, { receivable_source_id: "source-2", amount: "40" }], { id: "user-1" });
+  assert.deepEqual(mixed[0].subjectNames, ["主营业务收入"], "有一条没挂账就整笔按老口径");
 });
 
 test("收款过账：过账时选的科目优先，其次用建单时存在收款单上的科目", async () => {
@@ -191,7 +223,7 @@ test("收款过账：过账时选的科目优先，其次用建单时存在收�
   };
   const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } };
-  const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlow);
+  const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlow, undefined, { accruedSourceIds: async () => new Set() });
   await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" });
   await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" }, "subject-at-post");
   assert.equal(cashFlowCalls[0].subjectId, "subject-from-draft", "过账没选科目时要用建单时填在收款单上的科目，表单里填过的不能丢");

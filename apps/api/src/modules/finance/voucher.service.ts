@@ -9,9 +9,25 @@ import { accountingSubjectKey } from "./accounting-subject-catalog";
 import { fundLineFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
 import { VOUCHER_TEMPLATES, resolveVoucherTemplate, type ResolvedTemplateLine } from "./voucher-template";
 
-/** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」。 */
-const SOURCE_CASH_FLOW = "cash_flow_entry";
-const SOURCE_VOUCHER = "voucher";
+/** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」；**手工凭证没有来源**。 */
+export const SOURCE_CASH_FLOW = "cash_flow_entry";
+export const SOURCE_VOUCHER = "voucher";
+export const SOURCE_MANUAL = "manual";
+/** 挂账凭证的来源：一条应收来源 / 一条应付，各自最多一张挂账凭证（唯一键 (source_type, source_id) 兜底）。 */
+export const SOURCE_RECEIVABLE = "receivable_source";
+export const SOURCE_PAYABLE = "supplier_payable";
+
+/**
+ * 挂账时的「占用科目」：确认应收 = 借**应收账款**，确认应付 = 贷**应付账款**。
+ *
+ * 这是「确认 = 挂账」这条口径落地的地方（方案 `docs/design/finance-accrual-two-step-2026-09-24.md`）：
+ * 确认那一刻钱还没到，所以借方不能是银行存款，只能是应收；等到登记收款/付款（销账）时，
+ * 那条**现金**分录才是「借银行存款 / 贷应收账款」，钱与收入各记一次，不重不漏。
+ */
+export const ACCRUAL_SUBJECT_NAMES: Record<string, string> = {
+  [SOURCE_RECEIVABLE]: "应收账款",
+  [SOURCE_PAYABLE]: "应付账款",
+};
 
 const ENTRY_INCLUDE = {
   // 会计科目：凭证的业务分录科目直接取它（分类 = 科目类别，项目 = 科目名称），
@@ -58,7 +74,12 @@ export class VoucherService {
       include: { lines: { orderBy: { lineNo: "asc" }, include: { bank: { select: { id: true, bankName: true, accountNumber: true } } } } },
       orderBy: [{ voucherDate: "desc" }, { voucherNo: "desc" }],
     });
-    const entryIds = rows.filter((row) => row.sourceType === SOURCE_CASH_FLOW).map((row) => row.sourceId);
+    // 手工凭证的来源为空（`sourceId` 可空，见 20260924100000_voucher_manual_source）：
+    // 只有「来源是收支流水/凭证」的那些行才有 id 可查，所以先滤掉空值再查。
+    const entryIds = rows
+      .filter((row) => row.sourceType === SOURCE_CASH_FLOW)
+      .map((row) => row.sourceId)
+      .filter((id): id is string => Boolean(id));
     const entries = entryIds.length
       ? await this.prisma.cashFlowEntry.findMany({ where: { id: { in: [...new Set(entryIds)] } }, select: { id: true, entryNo: true, status: true, direction: true, entryDate: true } })
       : [];
@@ -67,7 +88,7 @@ export class VoucherService {
       ...row,
       status_label: STATUS_LABELS[row.status] ?? row.status,
       line_count: row.lines.length,
-      source_entry: row.sourceType === SOURCE_CASH_FLOW ? byId.get(row.sourceId) ?? null : null,
+      source_entry: row.sourceType === SOURCE_CASH_FLOW && row.sourceId ? byId.get(row.sourceId) ?? null : null,
     }));
   }
 
@@ -75,10 +96,11 @@ export class VoucherService {
   async get(id: string) {
     const row = await this.prisma.voucher.findFirst({ where: { id, deletedAt: null }, include: { lines: { orderBy: { lineNo: "asc" }, include: { bank: { select: { id: true, bankName: true, accountNumber: true, accountName: true } } } } } });
     if (!row) throw this.notFound("VOUCHER_NOT_FOUND", "凭证不存在");
-    const sourceEntry = row.sourceType === SOURCE_CASH_FLOW
+    // 手工凭证（sourceType = manual）的来源 id 是空的：跳过来源查询，界面上「来源」显示为「-」。
+    const sourceEntry = row.sourceType === SOURCE_CASH_FLOW && row.sourceId
       ? await this.prisma.cashFlowEntry.findFirst({ where: { id: row.sourceId }, include: ENTRY_INCLUDE })
       : null;
-    const counterpart = row.sourceType === SOURCE_VOUCHER
+    const counterpart = row.sourceType === SOURCE_VOUCHER && row.sourceId
       ? await this.prisma.voucher.findFirst({ where: { id: row.sourceId, deletedAt: null }, select: { id: true, voucherNo: true, status: true, summary: true } })
       : null;
     const reversalOf = row.status === "reversed"
@@ -98,7 +120,7 @@ export class VoucherService {
     if (!entry) throw this.notFound("CASH_FLOW_ENTRY_NOT_FOUND", "收支流水不存在");
     if (entry.status !== "posted") throw this.invalid("CASH_FLOW_ENTRY_NOT_VOUCHERABLE", "已冲销的收支流水不能生成凭证");
     const existing = await this.prisma.voucher.findFirst({ where: { sourceType: SOURCE_CASH_FLOW, sourceId: entry.id, deletedAt: null } });
-    if (existing) return { ...(await this.get(existing.id)), replayed: true };
+    if (existing) return { ...(await this.get(existing.id)), replayed: true };  // 幂等命中：同一来源只挂一张账
 
     const draft = this.draftForEntry(entry);
     const amount = new Prisma.Decimal(entry.amount);
@@ -123,6 +145,188 @@ export class VoucherService {
   }
 
   /**
+   * **手工新增凭证**（财务 2026-09-24：「1、3、4 都要」里的第 ① 件）。
+   *
+   * 为什么必须有这条路：凭证原先只能由收支流水生成，而折旧、摊销、工资计提、结转成本这些
+   * **非现金分录根本没有流水**（钱没动），于是它们在系统里无处可录 —— 三大报表的
+   * 「固定资产 / 累计折旧 / 应付职工薪酬 / 库存商品」等行永远填不上（设计文档 §2 的事实②）。
+   *
+   * 与「由流水生成」的区别只有来源：`source_type = manual`、`source_id = null`
+   * （迁移 `20260924100000_voucher_manual_source` 把这一列放宽成可空；为什么不用「编一个随机 id」
+   * 见那个迁移的注释）。其余一律同一套：凭证号 `记-YYYYMM-####` 在期间内顺延、借贷必须相等、
+   * 科目来自科目表的快照、资金行可引用具体银行账户。
+   *
+   * 落库状态是**草稿**：与流水生成的凭证一致，财务核对后再过账（过账后不可改，只能红冲）。
+   */
+  async createManual(input: {
+    voucher_date: string;
+    currency?: string;
+    summary?: string;
+    remark?: string;
+    lines: VoucherLineInput[];
+  }, user: CurrentUser) {
+    const voucherDate = this.dateOf(input.voucher_date);
+    const currency = (input.currency ?? "CNY").trim().toUpperCase() || "CNY";
+    await this.currencies?.assertSupported(currency, "凭证币种");
+    const period = voucherPeriodFor(voucherDate);
+    return this.createVoucher({
+      voucherDate,
+      currency,
+      // 摘要留空时给一句能认出来的兜底（一张没有摘要的凭证在清单里等于没写）。
+      summary: (input.summary ?? "").trim().slice(0, 500) || `手工凭证 ${period}`,
+      remark: input.remark ?? null,
+      lines: input.lines ?? [],
+    }, { sourceType: SOURCE_MANUAL, sourceId: null }, user);
+  }
+
+  /**
+   * **挂账凭证**（确认应收 / 确认应付那一步；用户 2026-09-24 已确认的口径）。
+   *
+   * 确认一个应收/应付时，钱还没动，所以这一张凭证**不能**有资金分录：
+   *   - 确认应收 → 借 `应收账款` / 贷 收入类科目（默认主营业务收入）；
+   *   - 确认应付 → 借 成本/存货类科目 / 贷 `应付账款`。
+   * 现金流量表天然看不见它（没有资金分录的凭证本来就不进表），而资产负债表从此有了「应收账款 / 应付账款」。
+   *
+   * 收支两条线因此各自只记一次：挂账记权责（收入/成本与往来），销账（登记收款/付款）记现金
+   * （借银行存款 / 贷应收账款）——「确认即记账」当年把两件事压成一件，等于钱还没到就先记了收款。
+   *
+   * 幂等靠唯一键 `(source_type, source_id)`：同一条应收被两个入口（逐条 / 批量 / 对账单）先后确认时，
+   * 第二个入口拿到的是同一张凭证（`replayed = true`），不会挂两遍账 —— 挂两遍就是收入翻倍。
+   */
+  async createAccrual(input: {
+    source_type: string;
+    source_id: string;
+    document_no: string;
+    voucher_date: string | Date;
+    currency?: string;
+    amount: string | Prisma.Decimal;
+    counterparty_name?: string | null;
+    /** 对方科目候选链（收：主营业务收入…；付：主营业务成本…），按优先级取第一个存在的。 */
+    contra_subject_names: readonly string[];
+    /** 人工指定的对方科目（确认弹窗里选过就传）；给了但不存在显式 422，不静默换一个。 */
+    contra_subject_id?: string | null;
+    remark?: string;
+  }, user: CurrentUser) {
+    const accrualSubjectName = ACCRUAL_SUBJECT_NAMES[input.source_type];
+    if (!accrualSubjectName) throw this.invalid("ACCRUAL_SOURCE_UNSUPPORTED", `不支持挂账的来源类型：${input.source_type}`);
+    const amount = new Prisma.Decimal(input.amount ?? 0);
+    // 金额为 0 的应收/应付不挂账（与 `recordConfirmation` 同一处理：0 元往来是噪音，不是账）。
+    if (amount.lte(0)) return null;
+
+    const existing = await this.prisma.voucher.findFirst({ where: { sourceType: input.source_type, sourceId: input.source_id, deletedAt: null } });
+    if (existing) return { ...(await this.get(existing.id)), replayed: true };  // 幂等命中：同一来源只挂一张账
+
+    const voucherDate = input.voucher_date instanceof Date ? input.voucher_date : this.dateOf(input.voucher_date);
+    const currency = (input.currency ?? "CNY").trim().toUpperCase() || "CNY";
+    await this.currencies?.assertSupported(currency, "凭证币种");
+    const accrual = await this.subjectByName([accrualSubjectName], `挂账需要会计科目「${accrualSubjectName}」，请在「收支管理 → 会计科目」里补上`);
+    const contra = input.contra_subject_id
+      ? await this.subjectById(input.contra_subject_id, "挂账指定的对方科目不存在或已停用，请在「收支管理 → 会计科目」里确认")
+      : await this.subjectByName(input.contra_subject_names, `挂账需要会计科目「${input.contra_subject_names.join("」或「")}」，请在「收支管理 → 会计科目」里补上`);
+    const text = amount.toFixed(4);
+    const isReceivable = input.source_type === SOURCE_RECEIVABLE;
+    const counterparty = (input.counterparty_name ?? "").trim();
+    // 返回值统一带上 `replayed`（false = 这次真的挂的账）：调用方要拿它写审计与界面提示，
+    // 两条分支的形状必须一样，否则「幂等命中」那一支会在调用处变成 `undefined`。
+    const created = await this.createVoucher({
+      voucherDate,
+      currency,
+      summary: `${isReceivable ? "确认应收" : "确认应付"} ${input.document_no}${counterparty ? `（${counterparty}）` : ""} 挂账`,
+      remark: input.remark ?? `挂账凭证：${input.document_no}（钱未动；收到/付出时在收付款登记里记现金）`,
+      lines: isReceivable
+        ? [
+            { direction: "debit", subject_key: accrual.key, subject_label: accrual.label, amount: text, summary: `应收 ${input.document_no}` },
+            { direction: "credit", subject_key: contra.key, subject_label: contra.label, amount: text },
+          ]
+        : [
+            { direction: "debit", subject_key: contra.key, subject_label: contra.label, amount: text },
+            { direction: "credit", subject_key: accrual.key, subject_label: accrual.label, amount: text, summary: `应付 ${input.document_no}` },
+          ],
+    }, { sourceType: input.source_type, sourceId: input.source_id }, user);
+    return { ...created, replayed: false };
+  }
+
+  /**
+   * 已挂账的来源 id（销账时用来判断「这条应收有没有先挂账」）。
+   *
+   * 销账那条现金分录的对方科目取决于它：**挂了账的**贷 `应收账款`（收入已经在挂账时记过），
+   * **没挂账的**（历史数据、或当年「确认即记账」的那些）仍按老口径贷收入 —— 历史不动，
+   * 否则同一笔钱会既记收入又挂在应收上，两边都错。
+   */
+  async accruedSourceIds(sourceType: string, sourceIds: readonly string[]): Promise<Set<string>> {
+    const ids = [...new Set(sourceIds.filter(Boolean))];
+    if (!ids.length) return new Set();
+    const rows = await this.prisma.voucher.findMany({
+      where: { sourceType, sourceId: { in: ids }, deletedAt: null, status: { not: "reversed" } },
+      select: { sourceId: true },
+    });
+    return new Set(rows.map((row) => row.sourceId).filter((id): id is string => Boolean(id)));
+  }
+
+  /** 分录的科目必须来自科目表（快照 `分类/名称`）：按名称候选链取第一个存在的。 */
+  private async subjectByName(names: readonly string[], message: string) {
+    if (!names.length) throw this.invalid("VOUCHER_SUBJECT_REQUIRED", "挂账需要指定对方科目");
+    const candidates = await this.prisma.accountingSubject.findMany({
+      where: { name: { in: [...names] }, deletedAt: null, isActive: true },
+      select: { category: true, name: true },
+    });
+    const found = names.map((name) => candidates.find((candidate) => candidate.name === name)).find((row): row is { category: string; name: string } => Boolean(row));
+    if (!found) throw this.invalid("ACCOUNTING_SUBJECT_NOT_FOUND", message);
+    return { key: accountingSubjectKey(found.category, found.name), label: found.name };
+  }
+
+  /** 人工选定的科目：不存在/已停用显式 422（挂账凭证的科目不能是凭空编出来的名字）。 */
+  private async subjectById(id: string, message: string) {
+    const found = await this.prisma.accountingSubject.findFirst({ where: { id, deletedAt: null, isActive: true }, select: { category: true, name: true } });
+    if (!found) throw this.invalid("ACCOUNTING_SUBJECT_NOT_FOUND", message);
+    return { key: accountingSubjectKey(found.category, found.name), label: found.name };
+  }
+
+  /**
+   * 真正落库的那一段（手工凭证 / 挂账凭证共用）。
+   *
+   * 抽出来的理由：两条路只有「来源」和「科目怎么来」不同，其余（分录校验、借贷平衡、期间编号、
+   * 银行账户存在性、审计）**必须逐字一致** —— 复制一份就会分叉成「手工凭证查银行、挂账凭证不查」这种
+   * 只有出事故时才会发现的差别。
+   */
+  private async createVoucher(
+    input: { voucherDate: Date; currency: string; summary: string; remark?: string | null; lines: VoucherLineInput[] },
+    source: { sourceType: string; sourceId: string | null },
+    user: CurrentUser,
+  ) {
+    if (!input.lines?.length) throw this.invalid("VOUCHER_LINE_REQUIRED", "凭证至少需要一条分录");
+    const lines = this.normalizeLines(input.lines, input.currency);
+    if (lines.length < 2) throw this.invalid("VOUCHER_LINE_REQUIRED", "凭证至少需要一条借方与一条贷方分录");
+    await this.assertBanks(lines.map((line) => line.bank_id));
+    const totals = { debit: this.sumBy(lines, "debit"), credit: this.sumBy(lines, "credit") };
+    if (totals.debit.lte(0)) throw this.invalid("VOUCHER_AMOUNT_REQUIRED", "凭证金额必须大于零");
+    if (!totals.debit.eq(totals.credit)) {
+      throw this.invalid("VOUCHER_NOT_BALANCED", `借贷不平衡：借方 ${totals.debit.toString()} / 贷方 ${totals.credit.toString()}`);
+    }
+    const period = voucherPeriodFor(input.voucherDate);
+    const row = await this.prisma.$transaction(async (tx) => {
+      // 与「由流水生成」同一套编号规则：期间内顺延，唯一索引兜底并发。
+      const siblings = await tx.voucher.findMany({ where: { voucherNo: { startsWith: `记-${period}-` } }, select: { voucherNo: true } });
+      const voucherNo = nextSequenceCode(`记-${period}-`, siblings.map((item) => item.voucherNo));
+      const created = await tx.voucher.create({
+        data: {
+          voucherNo, voucherDate: input.voucherDate, period, sourceType: source.sourceType, sourceId: source.sourceId,
+          summary: input.summary, currency: input.currency, debitTotal: totals.debit, creditTotal: totals.credit, status: "draft",
+          remark: (input.remark ?? null) || null,
+          ...this.audit.create(user),
+        },
+      });
+      await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(created.id, line, null, user)) });
+      return created;
+    });
+    await this.audit.record("voucher.create", "voucher", user.id, row.id, {
+      voucher_no: row.voucherNo, source_type: source.sourceType, source_id: source.sourceId,
+      amount: totals.debit.toString(), line_count: lines.length,
+    });
+    return this.get(row.id);
+  }
+
+  /**
    * **重新生成**草稿凭证：按来源流水**现在的**内容重算整张凭证（摘要/分录/银行账户/金额/期间）。
    *
    * 为什么需要：生成之后流水还可能被改（补银行账户、改收支项目、改金额、改备注），
@@ -140,6 +344,8 @@ export class VoucherService {
     if (!current) throw this.notFound("VOUCHER_NOT_FOUND", "凭证不存在");
     if (current.status !== "draft") throw this.invalid("VOUCHER_NOT_REGENERABLE", "只有草稿凭证可以重新生成；已过账的凭证请先红冲");
     if (current.sourceType !== SOURCE_CASH_FLOW) throw this.invalid("VOUCHER_NOT_REGENERABLE", "红冲凭证不能重新生成（它的内容由被红冲的凭证决定）");
+    // 手工凭证不进这条路（sourceId 为空）；这里显式挡住，顺带把类型收窄成 string。
+    if (!current.sourceId) throw this.invalid("VOUCHER_NOT_REGENERABLE", "手工凭证没有来源流水，不能重新生成（直接编辑分录即可）");
     const entry = await this.prisma.cashFlowEntry.findFirst({ where: { id: current.sourceId, deletedAt: null }, include: ENTRY_INCLUDE });
     if (!entry) throw this.invalid("VOUCHER_SOURCE_MISSING", "来源收支流水已不存在，无法重新生成");
     if (entry.status !== "posted") throw this.invalid("CASH_FLOW_ENTRY_NOT_VOUCHERABLE", "来源收支流水已冲销，不能重新生成凭证");
@@ -401,6 +607,16 @@ export class VoucherService {
     const known = new Set(found.map((row) => row.id));
     const missing = ids.filter((id) => !known.has(id));
     if (missing.length) throw this.invalid("VOUCHER_BANK_NOT_FOUND", `分录引用的银行账户不存在或已删除：${missing.join("、")}`);
+  }
+
+  /** `YYYY-MM-DD` → UTC 零点（与 `@db.Date` 列的比较口径一致）；非法直接 422。 */
+  private dateOf(value: string): Date {
+    const text = (value ?? "").slice(0, 10);
+    const date = new Date(`${text}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(date.valueOf())) {
+      throw this.invalid("INVALID_VOUCHER_DATE", "凭证日期无效（应为 YYYY-MM-DD）");
+    }
+    return date;
   }
 
   private sumBy(lines: Array<{ direction: string; amount: string }>, direction: string) {

@@ -4,18 +4,25 @@
 //   1. **金额转中文大写**：单子上「金额（大写）」是银行看的格子，错一个字整张单子作废 ——
 //      用例表逐条对齐财务模板样张（`149.50 → 壹佰肆拾玖元伍角整`）；
 //   2. **借贷合计与校验**：界面上「导出」按钮能不能点、后端收不收，用的是同一套纯函数；
-//   3. **版式**：标题 / 四行表头 / 分录表 / 合计行 / 大写行 / 备注行 / 两行签字栏的位置，
+//   3. **版式**：标题 / 五行表头 / 分录表 / 合计行 / 大写行 / 备注行 / 两行签字栏的位置，
 //      以及**金额必须是 Excel 数值类型**（文本型数字在 Excel 里 SUM 得 0）；
 //   4. **付款单与收款单是同一套实现、只差用词**：两种单据各跑一遍版式与校验，
 //      任何一边把文案写歪（「收款单必须填写收款单位」）都会红 —— 这正是用户
-//      「同理，收款单的编辑和导出」那句话的落点。
+//      「同理，收款单的编辑和导出」那句话的落点；
+//   5. **我方与对方账户是两对格子**（用户 2026-09-24：「付款单/收款单上，我方和对方账户都分别设置
+//      对应的字段」）：板式上是 R3/R4（对方）与 R5（我方），并且对方账户的预填必须认得出结算信息
+//      （`counterpartyBankOf`）—— 拆开之前我方账户被填在「收款单位开户银行」那一格，印出来是错的。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const XLSX = require("xlsx");
 const {
   amountInWords,
+  counterpartyBankOf,
   financeSlipFileName,
+  financeSlipsFileName,
+  groupSlipEntries,
   renderFinanceSlipWorkbook,
+  renderFinanceSlipsWorkbook,
   slipLabels,
   slipTotals,
   validateFinanceSlip,
@@ -34,16 +41,16 @@ function readSheet(buffer) {
 /**
  * 金额区扫描：不允许存在「看起来是数字却写成文本」的单元格（Excel 里无法求和/筛选/排序）。
  *
- * 只扫**分录表与合计/大写行**的金额列（D/E，行号 ≥ 6）：单子的表头区里有**本来就该是文本**的
- * 数字串 —— 银行账号 `7624` 写成数值会丢前导零、也会被 Excel 当金额右对齐。报表那套「全表扫描」
- * 在这里不适用（那里每一列都是数据，这里表头是表单）。
+ * 只扫**分录表与合计/大写行**的金额列（D/E，行号 ≥ 7 = 分录首行）：单子的表头区里有**本来就该是文本**的
+ * 数字串 —— 银行账号 `7624` 写成数值会丢前导零、也会被 Excel 当金额右对齐（我方账号正好落在 E5）。
+ * 报表那套「全表扫描」在这里不适用（那里每一列都是数据，这里表头是表单）。
  */
 function assertNoTextNumbers(sheet) {
   const offenders = [];
   for (const [address, cell] of Object.entries(sheet)) {
     if (address.startsWith("!")) continue;
     const match = /^([A-F]+)(\d+)$/.exec(address);
-    if (!match || Number(match[2]) < 6 || !["D", "E"].includes(match[1])) continue;
+    if (!match || Number(match[2]) < 7 || !["D", "E"].includes(match[1])) continue;
     if (cell.t === "s" && typeof cell.v === "string" && /^-?\d+(\.\d+)?$/.test(cell.v.trim())) offenders.push(`${address}=${cell.v}`);
   }
   assert.deepEqual(offenders, [], "金额列不允许把数字写成文本单元格（Excel 里无法求和/筛选/排序）");
@@ -51,15 +58,22 @@ function assertNoTextNumbers(sheet) {
 
 const line = (extra = {}) => ({ summary: "", general_subject: "", detail_subject: "", debit: "", credit: "", remark: "", ...extra });
 
-/** 财务模板样张的那张付款单：借 原材料 130、借 应交税费-进项税 19.50、贷 银行存款 149.50。 */
+/**
+ * 财务模板样张的那张付款单：借 原材料 130、借 应交税费-进项税 19.50、贷 银行存款 149.50。
+ *
+ * 银行账户是**两对**：对方（收款单位富雨鑫）的两格照模板样张写，我方两格是另一张卡 ——
+ * 两对用不同的数字是刻意的，否则「有没有填错格子」在测试里根本看不出来。
+ */
 const SAMPLE = {
   kind: "payment",
   slip_no: "FK-202609-001",
   slip_date: "2026-09-20",
   slip_method: "银行转账",
   counterparty_name: "富雨鑫",
-  bank_name: "中国农业银行",
-  bank_account: "4039 0001 0400 45706",
+  counterparty_bank_name: "中国农业银行",
+  counterparty_bank_account: "4039 0001 0400 45706",
+  our_bank_name: "中国银行",
+  our_bank_account: "7624",
   attachment_count: 1,
   remark: "月结 30 天，款到发货",
   maker: "小叶",
@@ -77,8 +91,10 @@ const RECEIPT_SAMPLE = {
   slip_date: "2026-09-20",
   slip_method: "银行转账",
   counterparty_name: "香港迪礼",
-  bank_name: "中国银行",
-  bank_account: "7624",
+  counterparty_bank_name: "中国银行",
+  counterparty_bank_account: "7624",
+  our_bank_name: "中国农业银行",
+  our_bank_account: "4039 0001 0400 45706",
   attachment_count: 2,
   remark: "月结 30 天",
   maker: "小叶",
@@ -194,34 +210,36 @@ test("finance-slip：付款单版式与财务模板逐格对齐（标题 / 表�
   assert.equal(rows[0][0], PAY.title, "第一行是标题");
   // R2：单据编号 / 付款日期 / 付款方式 三组「标签 + 值」
   assert.deepEqual(rows[1].slice(0, 6), [PAY.slipNo, "FK-202609-001", PAY.dateLabel, "2026-09-20", PAY.methodLabel, "银行转账"]);
-  // R3：收款单位 + 开户银行（值跨列，读回来仍在 D 位置）
+  // R3：收款单位 + **对方**开户银行（值跨 D:F，读回来仍在 D 位置）
   assert.equal(rows[2][0], PAY.counterpartyLabel);
   assert.equal(rows[2][1], "富雨鑫");
   assert.equal(rows[2][2], PAY.bankName);
   assert.equal(rows[2][3], "中国农业银行");
-  // R4：银行账号 + 附单据 N 张
+  // R4：**对方**银行账号 + 附单据 N 张
   assert.deepEqual([rows[3][0], rows[3][1], rows[3][3], rows[3][4], rows[3][5]], [PAY.bankAccount, "4039 0001 0400 45706", PAY.attachment, 1, PAY.attachmentUnit]);
-  // R5 表头
-  assert.deepEqual(rows[4], [PAY.summary, PAY.generalSubject, PAY.detailSubject, PAY.debit, PAY.credit, PAY.remarkColumn]);
-  // R6–R8 分录：借方只在 D、贷方只在 E，另一侧是真正的空单元格
-  assert.deepEqual(rows[5].slice(0, 6), ["支付富雨鑫材料款", "原材料", null, 130, null, null]);
-  assert.deepEqual(rows[6].slice(0, 6), ["应交税费-进项税", null, null, 19.5, null, null]);
-  assert.deepEqual(rows[7].slice(0, 6), ["支付富雨鑫材料款（含税）", "银行存款", "中国农业银行", null, 149.5, null]);
-  for (const address of ["C6", "E6", "F6", "B7", "C7", "E7", "F7", "D8", "F8"]) {
+  // R5：**我方**开户银行 + 我方银行账号（用户 2026-09-24 新增的一整行）
+  assert.deepEqual(rows[4].slice(0, 6), [PAY.ourBankName, "中国银行", null, PAY.ourBankAccount, "7624", null]);
+  // R6 表头
+  assert.deepEqual(rows[5], [PAY.summary, PAY.generalSubject, PAY.detailSubject, PAY.debit, PAY.credit, PAY.remarkColumn]);
+  // R7–R9 分录：借方只在 D、贷方只在 E，另一侧是真正的空单元格
+  assert.deepEqual(rows[6].slice(0, 6), ["支付富雨鑫材料款", "原材料", null, 130, null, null]);
+  assert.deepEqual(rows[7].slice(0, 6), ["应交税费-进项税", null, null, 19.5, null, null]);
+  assert.deepEqual(rows[8].slice(0, 6), ["支付富雨鑫材料款（含税）", "银行存款", "中国农业银行", null, 149.5, null]);
+  for (const address of ["C7", "E7", "F7", "B8", "C8", "E8", "F8", "D9", "F9"]) {
     assert.equal(sheet[address]?.v ?? null, null, `${address} 必须是空单元格（写 0 会被当成「确实为零」的事实）`);
   }
-  // R9 合计 + 借贷平衡标记
-  assert.deepEqual(rows[8].slice(0, 6), [PAY.total, null, null, 149.5, 149.5, PAY.balanced]);
-  // R10 付款金额（大写）+ 小写
-  assert.equal(rows[9][0], PAY.amountInWordsLabel);
-  assert.equal(rows[9][1], "壹佰肆拾玖元伍角整");
-  assert.equal(rows[9][5], 149.5);
-  // R11 付款备注（用户要求「我可以写付款备注」）
-  assert.equal(rows[10][0], PAY.remarkLabel);
-  assert.equal(rows[10][1], "月结 30 天，款到发货");
-  // R12–R13 两行签字栏，制单人已经填好（其余留空给手签），最后一格是「领款人」
-  assert.deepEqual(rows[11].slice(0, 6), [PAY.maker, "小叶", PAY.reviewer, null, PAY.cashier, null]);
-  assert.deepEqual(rows[12].slice(0, 6), [PAY.department, null, PAY.financeHead, null, PAY.signerLabel, null]);
+  // R10 合计 + 借贷平衡标记
+  assert.deepEqual(rows[9].slice(0, 6), [PAY.total, null, null, 149.5, 149.5, PAY.balanced]);
+  // R11 付款金额（大写）+ 小写
+  assert.equal(rows[10][0], PAY.amountInWordsLabel);
+  assert.equal(rows[10][1], "壹佰肆拾玖元伍角整");
+  assert.equal(rows[10][5], 149.5);
+  // R12 付款备注（用户要求「我可以写付款备注」）
+  assert.equal(rows[11][0], PAY.remarkLabel);
+  assert.equal(rows[11][1], "月结 30 天，款到发货");
+  // R13–R14 两行签字栏，制单人已经填好（其余留空给手签），最后一格是「领款人」
+  assert.deepEqual(rows[12].slice(0, 6), [PAY.maker, "小叶", PAY.reviewer, null, PAY.cashier, null]);
+  assert.deepEqual(rows[13].slice(0, 6), [PAY.department, null, PAY.financeHead, null, PAY.signerLabel, null]);
   assertNoTextNumbers(sheet);
 });
 
@@ -232,18 +250,20 @@ test("finance-slip：收款单版式与付款单同构，用词与借贷方向�
   assert.deepEqual(rows[1].slice(0, 4), [RECEIPT.slipNo, "SK-202609-001", RECEIPT.dateLabel, "2026-09-20"]);
   assert.equal(rows[2][0], RECEIPT.counterpartyLabel, "收款单上对方是「付款单位」");
   assert.equal(rows[2][1], "香港迪礼");
+  // 我方那两格与付款单样张正好互换：收款单的我方是农业银行那张卡
+  assert.deepEqual(rows[4].slice(0, 6), [RECEIPT.ourBankName, "中国农业银行", null, RECEIPT.ourBankAccount, "4039 0001 0400 45706", null]);
   // 贷方两条、借方一条（与付款单相反）
-  assert.deepEqual(rows[5].slice(0, 6), ["收香港迪礼折叠伞款", "主营业务收入", null, null, 130, null]);
-  assert.deepEqual(rows[7].slice(0, 6), ["收香港迪礼款项合计", "银行存款", "中国银行", 149.5, null, null]);
-  assert.deepEqual(rows[8].slice(0, 6), [RECEIPT.total, null, null, 149.5, 149.5, RECEIPT.balanced]);
-  assert.equal(rows[9][0], RECEIPT.amountInWordsLabel);
-  assert.equal(rows[12][4], RECEIPT.signerLabel, "签字栏最后一格是「交款人」");
+  assert.deepEqual(rows[6].slice(0, 6), ["收香港迪礼折叠伞款", "主营业务收入", null, null, 130, null]);
+  assert.deepEqual(rows[8].slice(0, 6), ["收香港迪礼款项合计", "银行存款", "中国银行", 149.5, null, null]);
+  assert.deepEqual(rows[9].slice(0, 6), [RECEIPT.total, null, null, 149.5, 149.5, RECEIPT.balanced]);
+  assert.equal(rows[10][0], RECEIPT.amountInWordsLabel);
+  assert.equal(rows[13][4], RECEIPT.signerLabel, "签字栏最后一格是「交款人」");
   assertNoTextNumbers(sheet);
 });
 
 test("finance-slip：落款（制表人 / 制表时间）写在签字栏下面，不出现在可求和区域", async () => {
   const { rows } = readSheet(await renderFinanceSlipWorkbook({ ...SAMPLE, footnote: "制表人：小叶；制表时间：2026-09-20 14:30:05（北京时间）" }));
-  assert.equal(rows[14][0], "制表人：小叶；制表时间：2026-09-20 14:30:05（北京时间）");
+  assert.equal(rows[15][0], "制表人：小叶；制表时间：2026-09-20 14:30:05（北京时间）");
 });
 
 test("finance-slip：加行与删行只改变明细行数，合计与大写金额跟着走", async () => {
@@ -257,13 +277,66 @@ test("finance-slip：加行与删行只改变明细行数，合计与大写金�
   };
   assert.deepEqual(validateFinanceSlip(slip), []);
   const { rows } = readSheet(await renderFinanceSlipWorkbook(slip));
-  assert.deepEqual(rows[5].slice(0, 4), ["支付富雨鑫材料款", "原材料", null, 88.5]);
-  assert.deepEqual(rows[8].slice(3, 6), [100, 100, PAY.balanced]);
-  assert.equal(rows[9][1], "壹佰元整", "「我要付款 100」时大写正好是壹佰元整");
+  assert.deepEqual(rows[6].slice(0, 4), ["支付富雨鑫材料款", "原材料", null, 88.5]);
+  assert.deepEqual(rows[9].slice(3, 6), [100, 100, PAY.balanced]);
+  assert.equal(rows[10][1], "壹佰元整", "「我要付款 100」时大写正好是壹佰元整");
+});
+
+/* ------------------------------------------------------- 我方 / 对方账户（2026-09-24） */
+
+test("finance-slip：对方账户从结算信息里认得出就取，认不出留空（宁可空着也不猜一个账号）", () => {
+  // 系统自己的键名（供应商结算信息就是自由 JSON，历史数据里三种写法都可能出现）
+  assert.deepEqual(counterpartyBankOf({ bank_name: "兴业银行", account_number: "1573 0001" }), { bank_name: "兴业银行", bank_account: "1573 0001" });
+  // 前端 camelCase
+  assert.deepEqual(counterpartyBankOf({ bankName: "工商银行", accountNumber: "6222" }), { bank_name: "工商银行", bank_account: "6222" });
+  // 人工写的中文键
+  assert.deepEqual(counterpartyBankOf({ 开户银行: "建设银行", 银行账号: "3500" }), { bank_name: "建设银行", bank_account: "3500" });
+  // 短写法（`{ bank: "工行", account: "6222" }` 是 procurement 单测里的真实形状）
+  assert.deepEqual(counterpartyBankOf({ bank: "工行", account: "6222" }), { bank_name: "工行", bank_account: "6222" });
+  // 认不出来：空对象 / null / 数组 / 非字符串值 / 只有空白
+  for (const value of [undefined, null, {}, [], "中国银行", 42, { bank: { name: "工行" }, account: 6222 }, { bank: "   " }]) {
+    assert.deepEqual(counterpartyBankOf(value), { bank_name: "", bank_account: "" }, `${JSON.stringify(value)} 不该被认成账户`);
+  }
+  // 只认出一半时另一半留空（不把银行名当成账号）
+  assert.deepEqual(counterpartyBankOf({ bank_name: "兴业银行" }), { bank_name: "兴业银行", bank_account: "" });
 });
 
 test("finance-slip：导出文件名带种类前缀（付款单 / 收款单），没编号时不编一个", () => {
   assert.equal(financeSlipFileName(SAMPLE), "迪礼付款单-FK-202609-001.xlsx");
   assert.equal(financeSlipFileName(RECEIPT_SAMPLE), "迪礼收款单-SK-202609-001.xlsx");
   assert.equal(financeSlipFileName({ kind: "receipt", slip_no: "  " }), "迪礼收款单-未编号.xlsx");
+  assert.equal(financeSlipsFileName("payment", 3), "迪礼付款单-3张.xlsx");
+});
+
+/* ------------------------------------------------------------ 一次勾选拆成多张（2026-09-24） */
+
+test("finance-slip：分组按「对方单位 + 币种」，顺序是首次出现（队列顺序必须稳定）", () => {
+  const entries = [
+    { id: "a", supplierId: "s-1", currency: "CNY" },
+    { id: "b", supplierId: "s-2", currency: "CNY" },
+    { id: "c", supplierId: "s-1", currency: "USD" },
+    { id: "d", supplierId: "s-1", currency: "CNY" },
+  ];
+  const groups = groupSlipEntries(entries, (entry) => entry.supplierId);
+  assert.deepEqual(groups.map((group) => group.map((entry) => entry.id)), [["a", "d"], ["b"], ["c"]], "同一组的条目连在一起，组与组按首次出现的顺序");
+  assert.deepEqual(groupSlipEntries([], (entry) => entry.supplierId), [], "空勾选没有组（不是一组空的）");
+  // 只有一家一个币种时就是一张单子（最常见的那条路不能被拆张逻辑改变）。
+  assert.equal(groupSlipEntries([{ id: "a", currency: "CNY" }], () => "s-1").length, 1);
+});
+
+test("finance-slip：多张渲染成一个工作簿（工作表名带序号与对方单位，且都遵守 Excel 的 31 字上限）", async () => {
+  const second = { ...SAMPLE, slip_no: "FK-202609-002", counterparty_name: "晋江大田纺织有限公司（美元户）", currency: "USD" };
+  const third = { ...SAMPLE, slip_no: "FK-202609-003", counterparty_name: "富雨鑫[特殊]字符/测试", currency: "CNY" };
+  const buffer = await renderFinanceSlipsWorkbook([SAMPLE, second, third]);
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+
+  assert.deepEqual(workbook.SheetNames, ["付款单", "付款单2-晋江大田纺织有限公司（美元户）", "付款单3-富雨鑫 特殊 字符 测试"], "第一张沿用单据名；工作表名里的非法字符换成空格");
+  for (const name of workbook.SheetNames) assert.ok(name.length <= 31, `${name} 超过 Excel 的工作表名上限（31 字）`);
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[1]], { header: 1, raw: true, defval: null, blankrows: true });
+  assert.equal(rows[2][1], "晋江大田纺织有限公司（美元户）", "每一张的工作表里是自己的内容");
+  assert.equal(rows[9][3], 149.5);
+
+  // 单张导出走的是同一条路（版式只有一份实现）。
+  const single = XLSX.read(await renderFinanceSlipWorkbook(SAMPLE), { type: "buffer" });
+  assert.deepEqual(single.SheetNames, ["付款单"]);
 });

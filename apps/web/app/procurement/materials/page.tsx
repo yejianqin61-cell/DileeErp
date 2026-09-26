@@ -19,9 +19,11 @@ import {
   type MaterialImportResult,
 } from "../../../lib/material-import";
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
+import { MaterialImageUploader } from "../../../components/procurement/material-image";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Reference = AuditRow & { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; isActive?: boolean; defaultUnitId?: string; materialType?: string; remark?: string | null };
+type MaterialImageRow = { id: string; width: number; height: number; byteSize: number; sha256: string; updatedAt: string };
+type Reference = AuditRow & { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; isActive?: boolean; defaultUnitId?: string; materialType?: string; remark?: string | null; image?: MaterialImageRow | null };
 type Unit = { id: string; name?: string; isActive?: boolean };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -170,6 +172,8 @@ export default function MaterialsPage() {
     { accessorKey: "specificationModel", header: "规格型号", cell: ({ row }) => row.original.specificationModel ?? "-" },
     { accessorKey: "color", header: "颜色", cell: ({ row }) => row.original.color ?? "-" },
     { id: "unit", header: "默认单位", cell: ({ row }) => units.find((u) => u.id === row.original.defaultUnitId)?.name ?? "-" },
+    // 图片（用户 2026-09-24）：缩略图 + 上传/换图/删除。空着也是信息 —— 销售单编辑时要按它决定能不能引用图片。
+    { id: "image", header: "图片", cell: ({ row }) => <MaterialImageUploader materialId={row.original.id} hasImage={Boolean(row.original.image)} version={row.original.image?.sha256} onChanged={load} /> },
     { id: "status", header: "状态", cell: ({ row }) => row.original.isActive === false ? "停用" : "启用" },
     ...auditColumns<Reference>(),
     {

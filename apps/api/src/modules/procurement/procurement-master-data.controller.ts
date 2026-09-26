@@ -9,6 +9,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
+import { MAX_MATERIAL_IMAGE_BYTES } from "./material-image";
 import { ProcurementMasterDataService } from "./procurement-master-data.service";
 
 /** 与「库存盘点导入」「其他应付导入」「花名册导入」同一套白名单：只放行 Excel。 */
@@ -17,6 +18,18 @@ function materialImportFileFilter(_req: Express.Request, file: Express.Multer.Fi
   const name = (file.originalname ?? "").toLowerCase();
   const extensionOk = name.endsWith(".xlsx") || name.endsWith(".xls");
   callback(null, extensionOk || (EXCEL_MIME.has(file.mimetype) && file.mimetype !== "application/octet-stream"));
+}
+
+/**
+ * 物料图片的外圈白名单：只放行 `.webp` / `image/webp`。
+ *
+ * 前端的 canvas 一定会产出 `image/webp`，所以这里放行 `.webp` 与 `image/webp` 两种写法就够了。
+ * 「内容是不是真 WebP」由服务层的 `validateMaterialImage` 判 —— 白名单只看得到名字，
+ * 而名字是客户端随便写的（这一层只负责把「明显不是图片的 PDF/Excel」挡在解析之前）。
+ */
+function materialImageFileFilter(_req: Express.Request, file: Express.Multer.File, callback: (error: Error | null, acceptFile: boolean) => void) {
+  const name = (file.originalname ?? "").toLowerCase();
+  callback(null, name.endsWith(".webp") || file.mimetype === "image/webp");
 }
 
 class ActiveDto { @IsBoolean() is_active!: boolean; }
@@ -71,6 +84,22 @@ export class ProcurementMasterDataController {
   @Patch("materials/:id") async updateMaterial(@Param("id") id: string, @Body() body: UpdateMaterialDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.updateMaterial(id, body, user), meta: {} }; }
   @Patch("materials/:id/active") async activeMaterial(@Param("id") id: string, @Body() body: ActiveDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.setMaterialActive(id, body.is_active, user), meta: {} }; }
   @Delete("materials/:id") async deleteMaterial(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.data.deleteMaterial(id, user), meta: {} }; }
+  /**
+   * 上传 / 替换物料图片（用户 2026-09-24：「要给物料配上图片。图片上传之后要压缩成 webp 再存进数据库里」）。
+   *
+   * 走 multipart（`FileInterceptor("file")`），前端先用 canvas 把选中的图压成 WebP 再传。
+   * 这里的 multer 白名单只是**外圈**：它按扩展名/mimetype 挡一道，真正的判据是服务层的
+   * `validateMaterialImage`（解开 RIFF 容器读真实尺寸），因为客户端的 mimetype 可以是谎话。
+   *
+   * `limits.fileSize` 与 `MAX_MATERIAL_IMAGE_BYTES` 对齐：超限的文件在 multer 层就被拦下，
+   * 不会先读进内存再判。
+   */
+  @Post("materials/:id/image")
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: MAX_MATERIAL_IMAGE_BYTES }, fileFilter: materialImageFileFilter }))
+  async uploadMaterialImage(@Param("id") id: string, @UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.data.setMaterialImage(id, file, user), meta: {} };
+  }
+  @Delete("materials/:id/image") async deleteMaterialImage(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.data.clearMaterialImage(id, user), meta: {} }; }
   @Get("suppliers") async suppliers() { return { data: await this.data.listSuppliers(), meta: {} }; }
   @Post("suppliers") async createSupplier(@Body() body: SupplierDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.createSupplier(body, user), meta: {} }; }
   @Patch("suppliers/:id") async updateSupplier(@Param("id") id: string, @Body() body: UpdateSupplierDto, @CurrentUser() user: CurrentUserType) { return { data: await this.data.updateSupplier(id, body, user), meta: {} }; }

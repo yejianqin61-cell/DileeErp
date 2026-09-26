@@ -315,9 +315,11 @@ test("unit.restore_non-P2002-error_propagates-unchanged", async () => {
 test("material.list_only-raw-materials-not-deleted-with-default-unit", async () => {
   const h = makeHarness();
   await h.service.listMaterials();
+  // `image` 只 select 元数据（用户 2026-09-24 的物料图片）：物料列表是采购/BOM/仓库/销售页每次
+  // 打开都要拉的接口，一旦把 `data` 带上就是几百 KB × 每个物料，页面会直接卡住。
   assert.deepEqual(h.calls.material.findMany, [{
     where: { deletedAt: null, materialType: "raw_material" },
-    include: { defaultUnit: true },
+    include: { defaultUnit: true, image: { select: { id: true, width: true, height: true, byteSize: true, sha256: true, updatedAt: true } } },
     orderBy: { materialCode: "asc" },
   }]);
 });

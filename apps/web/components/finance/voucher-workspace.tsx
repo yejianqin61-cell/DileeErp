@@ -83,6 +83,8 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   const [busy, setBusy] = useState("");
   /** 分录编辑器里的那张凭证（草稿）。非 null 即打开编辑器。 */
   const [editing, setEditing] = useState<Voucher | null>(null);
+  /** 手工新建凭证（编辑器的新建态：日期/币种自己填，保存走 POST）。 */
+  const [creating, setCreating] = useState(false);
   /**
    * 会计科目表（分录编辑器的科目下拉）。
    *
@@ -330,6 +332,9 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
 
   return <div className="page-root finance-page voucher-page" data-testid={testId}>
     <PageHeader title="凭证管理">
+      {/* 手工新增凭证（2026-09-24）：折旧 / 摊销 / 工资计提 / 结转成本这类**非现金分录**没有收支流水可挂，
+          所以凭证不能只从流水生成 —— 没有这条路，三大报表的固定资产/累计折旧/应付职工薪酬等行永远填不上。 */}
+      <Button data-testid="voucher-create" onClick={() => setCreating(true)}>新建凭证</Button>
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
     </PageHeader>
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
@@ -365,11 +370,13 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       </section>
     </>}
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
-    {/* 分录编辑器：草稿专用，独立于通用表单弹窗（详见 voucher-line-editor.tsx 顶部）。 */}
+    {/* 分录编辑器：草稿专用，独立于通用表单弹窗（详见 voucher-line-editor.tsx 顶部）。
+        `creating` 打开的是同一套编辑器的**新建态**（日期/币种在这里填、保存走 POST）。 */}
     <VoucherLineEditor
-      open={Boolean(editing)}
-      onOpenChange={(open) => { if (!open) setEditing(null); }}
+      open={Boolean(editing) || creating}
+      onOpenChange={(open) => { if (!open) { setEditing(null); setCreating(false); } }}
       voucher={editing}
+      creating={creating}
       subjects={subjects}
       onSaved={() => void load()}
     />

@@ -36,14 +36,28 @@ export type FinanceSlipEditorLine = {
   remark: string;
 };
 
-/** 单子的表头（模板上表头那四行 + 备注 + 制单人）。字段名与种类无关，用词由 `slipLabels` 决定。 */
+/** 单子的表头（模板上表头那五行 + 备注 + 制单人）。字段名与种类无关，用词由 `slipLabels` 决定。 */
 export type FinanceSlipHeader = {
   slip_no: string;
   slip_date: string;
   slip_method: string;
   counterparty_name: string;
-  bank_name: string;
-  bank_account: string;
+  /**
+   * 我方 / 对方各两格（用户 2026-09-24：「付款单/收款单上，我方和对方账户都分别设置对应的字段」）。
+   *
+   * 与后端 `finance-slip.ts` 是同一条口径：原来只有一对 `bank_name` / `bank_account`，
+   * 而预填塞进去的是**我方**账户 —— 模板上那两格说的却是对方。拆开之后我方两格吃确认流水里的账户，
+   * 对方两格由财务填（供应商能从结算信息里认出来就预填，客户认不出）。
+   */
+  our_bank_name: string;
+  our_bank_account: string;
+  counterparty_bank_name: string;
+  counterparty_bank_account: string;
+  /**
+   * 币种。模板上**没有**这一格（后端类型里有同样的注释）：它只用于队列里分辨「哪张是哪张」——
+   * 同一家供应商可能同时有 CNY 与 USD 两笔待付，而这两个字段在界面上不可编辑（来自预填）。
+   */
+  currency: string;
   attachment_count: number;
   remark: string;
   maker: string;
@@ -62,11 +76,15 @@ export type FinanceSlipDraft = FinanceSlipHeader & { kind: FinanceSlipKind; line
 export const SLIP_LABELS = {
   payment: {
     name: "付款单", counterparty: "收款单位", date: "付款日期", method: "付款方式", remark: "付款备注",
+    ourBankName: "我方开户银行", ourBankAccount: "我方银行账号",
+    counterpartyBankName: "对方开户银行", counterpartyBankAccount: "对方银行账号",
     summary: "摘要", generalSubject: "总账科目", detailSubject: "明细科目",
     debit: "借方金额", credit: "贷方金额", remarkColumn: "备注", maker: "制单人",
   },
   receipt: {
     name: "收款单", counterparty: "付款单位", date: "收款日期", method: "收款方式", remark: "收款备注",
+    ourBankName: "我方开户银行", ourBankAccount: "我方银行账号",
+    counterpartyBankName: "对方开户银行", counterpartyBankAccount: "对方银行账号",
     summary: "摘要", generalSubject: "总账科目", detailSubject: "明细科目",
     debit: "借方金额", credit: "贷方金额", remarkColumn: "备注", maker: "制单人",
   },
@@ -98,6 +116,17 @@ export function financeSlipDraftPath(kind: FinanceSlipKind): string {
  */
 export function financeSlipExportPath(kind: FinanceSlipKind): string {
   return `/api/v1/finance/${kind === "payment" ? "payment" : "receipt"}-slips.xlsx`;
+}
+
+/**
+ * 「全部导出」的路径（一次导出队列里的全部张，一个工作簿多张工作表）。
+ *
+ * 前缀的理由与 `financeSlipExportPath` 完全相同（`downloadPost` 是裸 fetch）——
+ * 两条路径写在一起就是为了让人一眼看到它们**都要**带 `/api/v1`：
+ * 只给其中一条带前缀，那种病在测试里只表现为「一条记录都没有」，很难查。
+ */
+export function financeSlipBatchExportPath(kind: FinanceSlipKind): string {
+  return `/api/v1/finance/${kind === "payment" ? "payment" : "receipt"}-slips/batch.xlsx`;
 }
 
 /**
@@ -239,8 +268,11 @@ export function financeSlipPayload(kind: FinanceSlipKind, header: FinanceSlipHea
     slip_date: header.slip_date,
     slip_method: header.slip_method.trim(),
     counterparty_name: header.counterparty_name.trim(),
-    bank_name: header.bank_name.trim(),
-    bank_account: header.bank_account.trim(),
+    our_bank_name: header.our_bank_name.trim(),
+    our_bank_account: header.our_bank_account.trim(),
+    counterparty_bank_name: header.counterparty_bank_name.trim(),
+    counterparty_bank_account: header.counterparty_bank_account.trim(),
+    currency: header.currency.trim(),
     attachment_count: header.attachment_count,
     remark: header.remark.trim(),
     maker: header.maker.trim(),
@@ -262,4 +294,40 @@ export function financeSlipPayload(kind: FinanceSlipKind, header: FinanceSlipHea
  */
 export function financeSlipFileName(kind: FinanceSlipKind, slipNo: string): string {
   return `${kind === "payment" ? "迪礼付款单" : "迪礼收款单"}-${slipNo.trim() || "未编号"}.xlsx`;
+}
+
+/** 「全部导出」的兜底文件名：`迪礼付款单-3张.xlsx`（与后端 `financeSlipsFileName` 同一形状）。 */
+export function financeSlipsFileName(kind: FinanceSlipKind, count: number): string {
+  return `${kind === "payment" ? "迪礼付款单" : "迪礼收款单"}-${count}张.xlsx`;
+}
+
+/**
+ * 「全部导出」的请求体：队列里**每一张**的表头 + 分录。
+ *
+ * 一张一张地拼（而不是把编辑器状态整个丢过去）：队列里每张单子的可编辑状态是独立的，
+ * 服务端要拿到的也只是「这一张长什么样」，多传状态只会让接口与界面状态机绑死。
+ */
+export function financeSlipBatchPayload(kind: FinanceSlipKind, slips: ReadonlyArray<{ header: FinanceSlipHeader; lines: readonly FinanceSlipEditorLine[] }>) {
+  return { slips: slips.map((slip) => financeSlipPayload(kind, slip.header, slip.lines)) };
+}
+
+/**
+ * 队列里一张单子的标题：`2. 绍兴纺织（USD）合计 200`。
+ *
+ * 为什么要标题而不是只给序号：一次集中付款拆出的单子常常是**同一家公司不同币种**的两张，
+ * 只写「第 1 张 / 第 2 张」财务根本认不出哪张是哪张（用户 2026-09-24 抱怨的正是
+ * 「还要一张张改付款单」——队列必须让她一眼定位）。
+ */
+export function slipQueueLabel(index: number, counterparty: string, currency: string, total: string): string {
+  return `${index + 1}. ${counterparty.trim() || "未填对方单位"}${currency.trim() ? `（${currency.trim()}）` : ""} 合计 ${total}`;
+}
+
+/**
+ * 队列底部「去确认」那条按钮的文案。
+ *
+ * 为什么单独成一个函数：这句里的动作词必须跟着种类走 —— 写死「付款」会让**收款单**队列底部出现
+ * 「确认这 2 条（付款）」，而它确认的是收款。测试就是靠这条断言发现的那句话。
+ */
+export function slipConfirmPendingLabel(kind: FinanceSlipKind, count: number): string {
+  return `确认这 ${count} 条（${kind === "payment" ? "付款" : "收款"}）`;
 }

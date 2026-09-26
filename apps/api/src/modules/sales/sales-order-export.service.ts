@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import * as ExcelJS from "exceljs";
 import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { columnSpanWidth, rowHeightFor, type RowHeightBlock } from "../../platform/excel/row-height";
 import { beijingDate, beijingDateTime } from "../../platform/time/beijing-time";
-import { SPEC_SCALAR_FIELDS, specScalarRow } from "./sales-orders.service";
+import { SPEC_MATERIAL_KEYS, SPEC_SCALAR_FIELDS, specScalarRow } from "./sales-orders.service";
 
 /**
  * 销售单「工艺单」导出（2026-09-16）。
@@ -18,7 +19,9 @@ import { SPEC_SCALAR_FIELDS, specScalarRow } from "./sales-orders.service";
  *   1. **空盘位自动省略**：材料行/工艺条目/布量只有有值的才印；整块为空（样本2 没有布量区）
  *      就整块不印，不留一片空白；
  *   2. **工艺要求重新编号**：跳过的条目不能留出「1、2、5、7」这种断号；
- *   3. **图片格留空**：花色明细里的「图片」列照模板留出列位，单元格一律空（用户明确不导出图片）。
+ *   3. **行高按内容自动算**（用户 2026-09-24：「行高需要自己调，不美观，太扁了」）：
+ *      ExcelJS 不做自动行高，所以这里按「文字显示宽度 ÷ 跨列可用宽度」估折行数再乘行高
+ *      （`platform/excel/row-height.ts`），把写死的高度全部换掉。
  */
 @Injectable()
 export class SalesOrderExportService {
@@ -102,23 +105,109 @@ export class SalesOrderExportService {
 
   /** 单张导出：返回二进制与订单号（文件名用订单号，不用 UUID）。 */
   async exportOrder(id: string): Promise<{ buffer: Buffer; orderNo: string }> {
+    return this.render(await this.loadOrder(id), []);
+  }
+
+  /**
+   * 导出并把这几个栏位的物料图片排进表尾的图片区（用户 2026-09-24：
+   * 「导出销售单的时候，每个有图片的物料允许用户勾选是否 excel 中一并导出这个图片。
+   * excel 中图片我们就单独排成一排放在底下的一个图片区。然后让用户自行拖拽就好了」）。
+   *
+   * 图片由**浏览器**转成 JPEG 再传上来（见 `decodeSelectedImage` 里的理由），这里只负责
+   * 「这张图属于哪一格、该多大、放在哪」。
+   */
+  async exportOrderWithImages(id: string, selected: ReadonlyArray<SelectedImageInput>): Promise<{ buffer: Buffer; orderNo: string }> {
     const order = await this.loadOrder(id);
+    return this.render(order, this.resolveImages(order, selected));
+  }
+
+  /**
+   * 导出弹窗要列出来的候选：这一单引用了哪些物料、各自有没有图。
+   *
+   * 顺序照**材料明细的印刷顺序**（`SPEC_MATERIAL_KEYS`）：弹窗里的勾选顺序与工艺单上材料行的
+   * 先后一致，用户才能对着纸核对「哪张图是哪一格」。
+   */
+  async exportImageCandidates(id: string): Promise<ExportImageCandidate[]> {
+    const order = await this.loadOrder(id);
+    const labels = new Map(SalesOrderExportService.MATERIAL_LABELS);
+    const rank = new Map(SPEC_MATERIAL_KEYS.map((key, index) => [key as string, index]));
+    return (order.materialRefs ?? [])
+      .map((ref) => ({
+        spec_key: ref.specKey,
+        label: labels.get(ref.specKey as SpecKey) ?? ref.specKey,
+        material_id: ref.material.id,
+        material_code: ref.material.materialCode,
+        material_name: [ref.material.name, ref.material.specificationModel, ref.material.color].map((part) => (part ?? "").trim()).filter(Boolean).join(" "),
+        has_image: Boolean(ref.material.image),
+        image_version: ref.material.image?.sha256 ?? null,
+      }))
+      // 认不出来的栏位排在最后（而不是丢掉）：那是数据出了问题，要让它看得见。
+      .sort((left, right) => (rank.get(left.spec_key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right.spec_key) ?? Number.MAX_SAFE_INTEGER));
+  }
+
+  private async render(order: ExportOrder, images: readonly ProductionSheetImage[]): Promise<{ buffer: Buffer; orderNo: string }> {
     const names = await this.actors.namesOf([order.createdBy]);
     const workbook = new ExcelJS.Workbook();
-    this.addSheet(workbook, this.document(order, names.get(order.createdBy) ?? ""));
+    this.addSheet(workbook, this.document(order, names.get(order.createdBy) ?? ""), images);
     return { buffer: await this.toBuffer(workbook), orderNo: order.orderNo };
+  }
+
+  /**
+   * 勾选 → 真正要嵌进表里的图片。
+   *
+   * 三道闸门（缺一不可）：
+   *   1. `spec_key` 必须是**这一单真的引用过**的栏位，而且那个物料**确实有图** ——
+   *      否则一个构造出来的请求就能把任意字节塞进导出件（字节本身没法在服务端解码校验，
+   *      见 `decodeSelectedImage`，所以「这一格该不该有图」必须由服务端说了算）；
+   *   2. 字节必须是 **JPEG**（ExcelJS 只认 png/jpeg/gif，WebP 写进去 Excel 打不开）；
+   *   3. 单张与总量都有上限（一张工艺单塞几十张图会变成一个几百 MB 的文件）。
+   */
+  private resolveImages(order: ExportOrder, selected: ReadonlyArray<SelectedImageInput>): ProductionSheetImage[] {
+    const refs = new Map((order.materialRefs ?? []).map((ref) => [ref.specKey, ref]));
+    const labels = new Map(SalesOrderExportService.MATERIAL_LABELS);
+    const images: ProductionSheetImage[] = [];
+    let total = 0;
+    for (const item of selected) {
+      const ref = refs.get(item.spec_key);
+      const image = ref?.material.image ?? null;
+      if (!ref || !image) {
+        throw new UnprocessableEntityException({
+          code: "PRODUCTION_SHEET_IMAGE_UNSUPPORTED",
+          message: `「${labels.get(item.spec_key as SpecKey) ?? item.spec_key}」这一格没有可导出的物料图片：请先在【采购 → 物料清单】给它引用的物料上传图片`,
+          details: [{ spec_key: item.spec_key }],
+        });
+      }
+      const material = [ref.material.name, ref.material.specificationModel, ref.material.color].map((part) => (part ?? "").trim()).filter(Boolean).join(" ");
+      const buffer = checkSelectedImage(item.buffer, item.spec_key);
+      total += buffer.length;
+      if (total > MAX_SELECTED_IMAGE_TOTAL) throw invalidImage(item.spec_key, `本次勾选的图片合计超过 ${MAX_SELECTED_IMAGE_TOTAL / 1024 / 1024}MB：请少勾几张，或换更小的图`);
+      images.push({
+        label: `${labels.get(item.spec_key as SpecKey) ?? item.spec_key}：${ref.material.materialCode}${material ? ` ${material}` : ""}`,
+        buffer,
+        // 用**库里存的**宽高算比例，而不是去解上传上来的 JPEG 头：比例是同一张图的比例，
+        // 而库里那份尺寸是服务端自己解出来的、可信的（上传的字节只信任到「是 JPEG」为止）。
+        aspect: { width: image.width, height: image.height },
+      });
+    }
+    return images;
   }
 
   private async loadOrder(id: string): Promise<ExportOrder> {
     const order = await this.prisma.salesOrder.findFirst({
       where: { id, deletedAt: null },
-      include: { customer: true, specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } } }
+      include: {
+        customer: true,
+        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } },
+        // 物料引用（用户 2026-09-24）：导出图片要按它把「哪一格的图」与「哪个物料」对上。
+        // `image` 只取尺寸与 sha（**不取字节**）：拉一次订单详情不该把图片一起读回来。
+        materialRefs: { where: { deletedAt: null }, include: { material: { select: { id: true, materialCode: true, name: true, image: { select: { width: true, height: true, sha256: true } } } } } },
+      }
     });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
     return order as unknown as ExportOrder;
   }
 
-  private addSheet(workbook: ExcelJS.Workbook, doc: ProductionSheetDocument) {
+  private addSheet(workbook: ExcelJS.Workbook, doc: ProductionSheetDocument, images: readonly ProductionSheetImage[] = []) {
     const sheet = workbook.addWorksheet((doc.orderNo || "工艺单").slice(0, 28), {
       pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
     });
@@ -134,17 +223,18 @@ export class SalesOrderExportService {
     sheet.getRow(row).height = 26;
     row += 1;
 
-    // 表头：每行恰好占满 A–J 十列（行内 标签+值 的跨列数加起来必须是 10，否则会串到 K 列）
-    this.pairs(sheet, row, [[["工　厂", doc.factory], 1], [["客户单号", doc.orderNo], 2], [["客户代码", doc.customerName], 2], [["下单日期", doc.orderDate], 0]]);
+    // 表头：每行恰好占满 A–J 十列（行内 标签+值 的跨列数加起来必须是 10，否则会串到 K 列）。
+    // `pairs` 会把「每个值跨了几列」回报出来，行高就按这些块的折行数算（见 autoHeight）。
+    this.autoHeight(sheet, row, this.pairs(sheet, row, [[["工　厂", doc.factory], 1], [["客户单号", doc.orderNo], 2], [["客户代码", doc.customerName], 2], [["下单日期", doc.orderDate], 0]]));
     row += 1;
-    this.pairs(sheet, row, [[["数　量", doc.quantityText], 2], [["品名规格", doc.productSpecText], 4], [["地区", doc.region], 0]]);
+    this.autoHeight(sheet, row, this.pairs(sheet, row, [[["数　量", doc.quantityText], 2], [["品名规格", doc.productSpecText], 4], [["地区", doc.region], 0]]));
     row += 1;
-    this.pairs(sheet, row, [[["完工日期", doc.completionText], 2]]);
+    this.autoHeight(sheet, row, this.pairs(sheet, row, [[["完工日期", doc.completionText], 2]]));
     row += 1;
 
     // 注意事项：整块为空则不印（不占位）
     if (doc.attentionNote) {
-      this.block(sheet, row, "A", "J", `注意：${doc.attentionNote}`);
+      this.autoHeight(sheet, row, [this.block(sheet, row, "A", "J", `注意：${doc.attentionNote}`)]);
       row += 1;
     }
 
@@ -156,19 +246,22 @@ export class SalesOrderExportService {
     row += 1;
     for (let index = 0; index < Math.max(doc.materialLines.length, doc.processLines.length); index += 1) {
       const material = doc.materialLines[index];
+      // 这一行左右两栏各写各的：行高取**需要行数更多的那一栏**（`rowHeightFor` 取 max）。
+      const blocks: RowHeightBlock[] = [];
       if (material) {
         sheet.getCell(`A${row}`).value = material.label;
         sheet.getCell(`A${row}`).font = HEADER_FONT;
-        this.block(sheet, row, "B", "F", material.value);
+        blocks.push(this.block(sheet, row, "B", "F", material.value));
       }
       const process = doc.processLines[index];
-      if (process) this.block(sheet, row, "G", "J", process);
+      if (process) blocks.push(this.block(sheet, row, "G", "J", process));
+      this.autoHeight(sheet, row, blocks);
       row += 1;
     }
 
     // 细分明细：每个分组一块；「图片」列照模板留出列位但**一律留空**
     for (const group of doc.detailGroups) {
-      this.block(sheet, row, "A", "J", `${doc.orderNo} ${group.groupName}（图片见客户原稿，本表不导出图片）`);
+      this.autoHeight(sheet, row, [this.block(sheet, row, "A", "J", `${doc.orderNo} ${group.groupName}（图片见客户原稿，本表不导出图片）`)]);
       sheet.getCell(`A${row}`).font = HEADER_FONT;
       row += 1;
       const headers: Array<[string, string]> = [["A", "品番/品名"], ["C", "图片"], ["D", "颜色"], ["E", "条码"], ["F", "数量"], ["G", "单位"]];
@@ -181,11 +274,15 @@ export class SalesOrderExportService {
       for (const line of group.lines) {
         sheet.mergeCells(`A${row}:B${row}`);
         sheet.getCell(`A${row}`).value = line.name;
-        // C 列（图片）刻意不写值：用户要求图片不导出，只保留列位。
+        // C 列（图片）刻意不写值：模板要求留出列位，图片本身走表尾的图片区（见 `images`）。
         sheet.getCell(`D${row}`).value = line.color;
         sheet.getCell(`E${row}`).value = line.barcode;
         sheet.getCell(`F${row}`).value = line.quantity === "" ? null : Number(line.quantity);
         sheet.getCell(`G${row}`).value = line.unit;
+        // 品名/品番是这一行唯一可能很长的一格（「27621 流水花扇PKGY」这类），按 A:B 的宽度算行高；
+        // 顺带给它开自动换行 —— 不开的话算出来的高度没有意义，文字照样被截断。
+        sheet.getCell(`A${row}`).alignment = { vertical: "middle", wrapText: true };
+        this.autoHeight(sheet, row, [{ text: line.name, width: columnSpanWidth(COLUMN_WIDTHS, 1, 2) }]);
         row += 1;
       }
     }
@@ -194,32 +291,90 @@ export class SalesOrderExportService {
     if (doc.shippingMarkFront || doc.shippingMarkSide) {
       sheet.getCell(`A${row}`).value = "正　唛";
       sheet.getCell(`A${row}`).font = HEADER_FONT;
-      this.block(sheet, row, "B", "E", doc.shippingMarkFront);
+      const front = this.block(sheet, row, "B", "E", doc.shippingMarkFront);
       sheet.getCell(`F${row}`).value = "侧　唛";
       sheet.getCell(`F${row}`).font = HEADER_FONT;
-      this.block(sheet, row, "G", "J", doc.shippingMarkSide);
+      const side = this.block(sheet, row, "G", "J", doc.shippingMarkSide);
+      this.autoHeight(sheet, row, [front, side]);
       row += 1;
     }
     for (const usage of doc.fabricUsage) {
       sheet.getCell(`A${row}`).value = usage.label;
-      this.block(sheet, row, "B", "E", `${usage.value}（Y/DZ)`);
+      this.autoHeight(sheet, row, [this.block(sheet, row, "B", "E", `${usage.value}（Y/DZ)`)]);
       row += 1;
     }
 
     // 表尾：制单人写**姓名**（不是 UUID）；「审核」留白供手签，与模板一致
-    this.block(sheet, row, "A", "J", `制单：${doc.makerName}　　审核：　　制表时间：${doc.madeAt}（北京时间）`);
+    this.autoHeight(sheet, row, [this.block(sheet, row, "A", "J", `制单：${doc.makerName}　　审核：　　制表时间：${doc.madeAt}（北京时间）`)]);
     row += 1;
     if (doc.quantityNotice) {
-      this.block(sheet, row, "A", "J", `核对提示：${doc.quantityNotice}`);
+      this.autoHeight(sheet, row, [this.block(sheet, row, "A", "J", `核对提示：${doc.quantityNotice}`)]);
       sheet.getCell(`A${row}`).font = WARNING_FONT;
+      row += 1;
     }
+
+    // 表尾图片区（用户 2026-09-24）：只排「一排一排 + 每张下面一行标签」，位置由用户自己在 Excel 里拖。
+    if (images.length) this.addImageArea(workbook, sheet, row + 1, images);
+  }
+
+  /**
+   * 表尾图片区：每排 {@link IMAGES_PER_ROW} 张，每张占 {@link IMAGE_COLUMNS} 列，图片正下方是它的标签。
+   *
+   * 三条取舍：
+   *   1. **图片锚在「一格」上（oneCellAnchor）**：`tl` 给列/行的小数偏移、`ext` 给像素尺寸。
+   *      这样图片只是「浮在这一排上面」，用户在 Excel 里一拖就走 —— 正好是用户要的
+   *      「让用户自行拖拽就好了」（如果用 `twoCellAnchor` 把图钉死在两个单元格之间，
+   *      拖动会连带改行高列宽，反而不好收拾）；
+   *   2. **行高写死 20 磅 × 7 行**：图片区的高度必须**大于**图片本身，否则 Excel 里图片会盖住
+   *      下面的标签行。7 行 ≈ 187px > 130px 的最大图，留出的余量正好给拖拽；
+   *   3. **标签写「序号 + 栏位名 + 物料编码/名称」**：图片拖走之后还得认得出来它原来是哪一格 ——
+   *      这是「排成一排让用户自己拖」这个做法唯一的风险，标签就是补它的。
+   */
+  private addImageArea(workbook: ExcelJS.Workbook, sheet: ExcelJS.Worksheet, startRow: number, images: readonly ProductionSheetImage[]) {
+    let row = startRow;
+    this.autoHeight(sheet, row, [this.block(sheet, row, "A", "J", `图片区：本单材料参考图（${images.length} 张，可自行拖拽到上面的对应位置）`)]);
+    sheet.getCell(`A${row}`).font = HEADER_FONT;
+    row += 1;
+
+    for (let offset = 0; offset < images.length; offset += IMAGES_PER_ROW) {
+      const band = images.slice(offset, offset + IMAGES_PER_ROW);
+      band.forEach((image, index) => {
+        const box = imageBoxFor(image.aspect);
+        const id = workbook.addImage({ buffer: image.buffer as unknown as ExcelJS.Buffer, extension: "jpeg" });
+        sheet.addImage(id, {
+          tl: { col: index * IMAGE_COLUMNS + 0.1, row: row - 1 + 0.1 },
+          ext: { width: box.width, height: box.height },
+        });
+      });
+      for (let line = 0; line < IMAGE_BAND_ROWS; line += 1) sheet.getRow(row + line).height = 20;
+      const labelRow = row + IMAGE_BAND_ROWS;
+      band.forEach((image, index) => {
+        const from = columnLetter(index * IMAGE_COLUMNS);
+        const to = columnLetter(index * IMAGE_COLUMNS + IMAGE_COLUMNS - 1);
+        this.autoHeight(sheet, labelRow, [this.block(sheet, labelRow, from, to, `${offset + index + 1}. ${image.label}`)]);
+      });
+      row = labelRow + 1;
+    }
+  }
+
+  /**
+   * 按内容设置这一行的高度（用户 2026-09-24：「行高需要自己调，不美观，太扁了」）。
+   *
+   * ExcelJS 不会自动算行高，所以算在服务端 —— 口径与上限见 `platform/excel/row-height.ts`。
+   */
+  private autoHeight(sheet: ExcelJS.Worksheet, row: number, blocks: readonly RowHeightBlock[]) {
+    sheet.getRow(row).height = rowHeightFor(blocks);
   }
 
   /**
    * 一行里放若干「标签 + 值」：`[[标签, 值], 值的跨列数]`。
    * 跨列数 0 表示「吃掉剩下的列」——最后一段总是用它，这样每行必然正好占满 10 列。
+   *
+   * **返回每个值块的可用宽度**：调用方拿它算行高（表头里的「品名规格」跨 4 列、能放下 1000 字，
+   * 不回报宽度就只能按整行宽度猜，猜宽了行高不够、文字被截）。
    */
-  private pairs(sheet: ExcelJS.Worksheet, row: number, entries: Array<[[string, string], number]>) {
+  private pairs(sheet: ExcelJS.Worksheet, row: number, entries: Array<[[string, string], number]>): RowHeightBlock[] {
+    const blocks: RowHeightBlock[] = [];
     let column = 1;
     for (const [[label, value], span] of entries) {
       sheet.getCell(row, column).value = label;
@@ -228,15 +383,21 @@ export class SalesOrderExportService {
       const width = span === 0 ? LAST_COLUMN - column + 1 : span;
       if (width > 1) sheet.mergeCells(row, column, row, column + width - 1);
       sheet.getCell(row, column).value = value;
+      // 表头的值格也开自动换行：不开的话行高算了也是白算（Excel 会把长文字截成一行）。
+      sheet.getCell(row, column).alignment = { vertical: "middle", wrapText: true };
+      blocks.push({ text: value, width: columnSpanWidth(COLUMN_WIDTHS, column, column + width - 1) });
       column += width;
     }
+    return blocks;
   }
 
-  private block(sheet: ExcelJS.Worksheet, row: number, from: string, to: string, value: string) {
+  /** 写一块合并区，并把它的**可用宽度**回报给调用方算行高（见 `blockWidth`）。 */
+  private block(sheet: ExcelJS.Worksheet, row: number, from: string, to: string, value: string): RowHeightBlock {
     sheet.mergeCells(`${from}${row}:${to}${row}`);
     const cell = sheet.getCell(`${from}${row}`);
     cell.value = value;
     cell.alignment = { vertical: "middle", wrapText: true };
+    return { text: value, width: blockWidth(from, to) };
   }
 
   private async toBuffer(workbook: ExcelJS.Workbook): Promise<Buffer> {
@@ -247,6 +408,89 @@ export class SalesOrderExportService {
 
 const LAST_COLUMN = 10;
 const COLUMN_WIDTHS = [16, 14, 10, 12, 14, 10, 8, 10, 10, 10];
+
+// --------------------------------------------------------------------------- 表尾图片区
+//
+// 用户 2026-09-24：「excel 中图片我们就单独排成一排放在底下的一个图片区。然后让用户自行拖拽就好了」。
+// 所以这里只做**排版**，不做「把图贴到对应材料行」那件事 —— 拖拽是用户在 Excel 里自己完成的，
+// 系统只要保证「每一张都在、顺序对得上、不至于糊到看不清」。
+
+/** 每排 5 张（A–J 十列，每张占 2 列）。 */
+const IMAGES_PER_ROW = 5;
+/** 每张图占的列数（与下面的标签格合并宽度一致，标签才落在对应图片正下方）。 */
+const IMAGE_COLUMNS = 2;
+/** 单张图的最大边（像素）。工艺单是 A4 竖版，130px 打出来约 3.4cm，够看清是什么零件。 */
+const IMAGE_BOX = 130;
+/** 图片占的行数：7 行 × 20 磅 = 140 磅 ≈ 187px，比 130px 的图略高一点，留出拖拽的余量。 */
+const IMAGE_BAND_ROWS = 7;
+/** 单张图（压缩后 JPEG）的上限。 */
+const MAX_SELECTED_IMAGE_BYTES = 2 * 1024 * 1024;
+/** 一批图的总上限：18 格全选也不该超过这个数。 */
+const MAX_SELECTED_IMAGE_TOTAL = 12 * 1024 * 1024;
+
+/** 导出请求里挑中的一张图：栏位 + **浏览器转好的 JPEG 字节**（走 multipart 上传，不套 base64）。 */
+export type SelectedImageInput = { spec_key: string; buffer: Buffer };
+
+/** 导出弹窗的候选项（`GET /sales-orders/:id/export-images`）。 */
+export type ExportImageCandidate = {
+  spec_key: string;
+  label: string;
+  material_id: string;
+  material_code: string;
+  material_name: string;
+  has_image: boolean;
+  image_version: string | null;
+};
+
+/** 落格时用的一张图：标签 + 字节 + 原始比例。 */
+export type ProductionSheetImage = { label: string; buffer: Buffer; aspect: { width: number; height: number } };
+
+/**
+ * 上传上来的图片 → JPEG 字节校验。
+ *
+ * ## 为什么这里只校验「是 JPEG」，不解码
+ *
+ * 库里存的是 **WebP**，而 ExcelJS 只认 png/jpeg/gif —— WebP media part 写进 xlsx，Excel 会画一个
+ * 红叉（它的图片解码器不认 WebP）。服务端要把 WebP 转成 JPEG 就得有解码器，而用户明确选了
+ * 「不引 sharp 那种原生依赖」那条路。所以转换放在**浏览器**做（它天生能解 WebP），
+ * 服务端只核对「这确实是一张 JPEG」。
+ *
+ * 这个取舍要说清楚：`spec_key` 与「那个物料有图」由服务端把关（`resolveImages` 里查库），
+ * 但**像素内容**信任上传者。这是内部工具里的导出件，最坏情况是有人给自己导出一张别的图。
+ *
+ * 为什么不套 base64 走 JSON：Express 的 JSON body 默认上限 100KB，十几张图必然 413；
+ * 而放开全局 body 上限是拿整站的攻击面去换一个导出接口。multipart 本来就是为字节准备的。
+ */
+function checkSelectedImage(buffer: Buffer, specKey: string): Buffer {
+  if (!buffer?.length) throw invalidImage(specKey, "图片内容为空，请重新勾选后再导出");
+  if (buffer.length > MAX_SELECTED_IMAGE_BYTES) throw invalidImage(specKey, `单张图片超过 ${MAX_SELECTED_IMAGE_BYTES / 1024 / 1024}MB，请重新导出`);
+  if (buffer[0] !== 0xff || buffer[1] !== 0xd8 || buffer[2] !== 0xff) throw invalidImage(specKey, "图片不是 JPEG（Excel 需要 JPEG/PNG 才能显示，WebP 在 Excel 里是红叉），请重新导出");
+  return buffer;
+}
+
+function invalidImage(specKey: string, message: string) {
+  return new UnprocessableEntityException({ code: "PRODUCTION_SHEET_IMAGE_INVALID", message, details: [{ spec_key: specKey }] });
+}
+
+/** 等比缩到 `IMAGE_BOX` 的方框内（不放大）。 */
+export function imageBoxFor(aspect: { width: number; height: number }): { width: number; height: number } {
+  const longest = Math.max(aspect.width, aspect.height);
+  if (!Number.isFinite(longest) || longest <= 0) return { width: IMAGE_BOX, height: IMAGE_BOX };
+  const scale = Math.min(1, IMAGE_BOX / longest);
+  return { width: Math.max(1, Math.round(aspect.width * scale)), height: Math.max(1, Math.round(aspect.height * scale)) };
+}
+
+/** 0 起的列号 → 列字母（`IMAGE_COLUMNS` 是 2，所以只需要 A–J 这一段）。 */
+function columnLetter(index: number): string {
+  return String.fromCharCode(65 + index);
+}
+
+/** 两个列字母之间的可用宽度（含两端），供 `block()` 回报行高用多少地方。 */
+function blockWidth(from: string, to: string): number {
+  const index = (letter: string) => letter.toUpperCase().charCodeAt(0) - 64;
+  return columnSpanWidth(COLUMN_WIDTHS, index(from), index(to));
+}
+
 const TITLE_FONT = { name: "宋体", size: 16, bold: true } as const;
 const HEADER_FONT = { name: "宋体", size: 11, bold: true } as const;
 const WARNING_FONT = { name: "宋体", size: 11, color: { argb: "FFB00020" } } as const;
@@ -313,6 +557,22 @@ export type ExportOrder = {
   createdBy: string;
   customer: { name: string; countryRegion: string | null } | null;
   specDetails: Array<{ groupName: string; name: string; color: string | null; barcode: string | null; quantity: Prisma.Decimal | null; unit: string | null }>;
+  /**
+   * 材料明细里对物料的引用（2026-09-24）。可空：历史销售单没有引用，
+   * 而**所有读它的地方都要 `?? []`**（测试夹具也大多不写这一项）。
+   * `image` 只取尺寸与 sha，绝不取 `data`。
+   */
+  materialRefs?: Array<{
+    specKey: string;
+    material: {
+      id: string;
+      materialCode: string;
+      name: string;
+      specificationModel: string | null;
+      color: string | null;
+      image: { width: number; height: number; sha256: string } | null;
+    };
+  }>;
   /**
    * 37 个细化标量**不在这里逐条列**：它们由 `specScalarRow` 从行上按请求键/列名取（见 `document`）。
    * 以前这里留了个 `[specKey: string]: unknown` 索引签名，等于告诉编译器「随便按什么名字取都行」——

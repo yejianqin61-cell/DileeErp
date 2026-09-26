@@ -374,6 +374,7 @@ model SalesOrder {
   receivableAdjustments     ReceivableAdjustment[]
   receivableReconciliations ReceivableReconciliation[]
   specDetails               SalesOrderSpecDetail[]
+  materialRefs              SalesOrderMaterialRef[]
 
   @@index([customerId, status])
   @@index([orderDate])
@@ -413,6 +414,40 @@ model SalesOrderSpecDetail {
 
   @@index([salesOrderId, sortOrder])
   @@map("sales_order_spec_details")
+}
+
+/// 销售单「材料明细」里对物料清单的引用（用户 2026-09-24：「在编辑销售单的时候，每个部件，
+/// 既支持填空，也支持从现有的物料清单中引用。同时要体现对应的物料的图片」）。
+///
+/// 为什么单独一张表而不是往 `sales_orders` 上再加 18 个 `*_material_id` 列：
+/// 18 个可空外键列会把这行宽推到 60+ 列，而且「哪些栏位能引用」这件事本身是**材料明细清单**
+/// （`SPEC_MATERIAL_FIELDS`）说了算的 —— 那张清单一改，列就得跟着加。一行一个引用
+/// （`spec_key` + `material_id`）跟着清单走，不需要动 schema。
+///
+/// 为什么是**引用**而不是把图片抄进销售单：图片是物料主数据的属性，同一个伞骨用在十张单子上，
+/// 抄十份之后改一次图要改十处。引用让「物料换图」立刻反映到所有引用它的销售单上，
+/// 也让「导出时勾选哪张图」有唯一的事实来源。
+///
+/// 软删除 + `@@unique([salesOrderId, specKey])` 并存：换引用是**改这一行**（清 `deletedAt`、
+/// 换 `materialId`），不是删一行建一行 —— 硬删会撞唯一索引，也会丢掉「这一格原来引用的是谁」。
+model SalesOrderMaterialRef {
+  id           String     @id @default(uuid()) @db.Uuid
+  salesOrderId String     @map("sales_order_id") @db.Uuid
+  /// 材料明细的 18 个栏位之一（与 `SPEC_MATERIAL_FIELDS` 的请求键同源：`rib_spec` / `canopy_spec` …）
+  specKey      String     @map("spec_key") @db.VarChar(50)
+  materialId   String     @map("material_id") @db.Uuid
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  createdBy    String     @map("created_by") @db.Uuid
+  updatedBy    String     @map("updated_by") @db.Uuid
+  deletedAt    DateTime?  @map("deleted_at")
+  deletedBy    String?    @map("deleted_by") @db.Uuid
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
+  material     Material   @relation(fields: [materialId], references: [id])
+
+  @@unique([salesOrderId, specKey])
+  @@index([materialId])
+  @@map("sales_order_material_refs")
 }
 
 model SalesOrderVersion {
@@ -598,10 +633,43 @@ model Material {
   outsourceLogisticsBatches OutsourceLogisticsBatch[]
   outsourceReturnTransfers  OutsourceReturnTransfer[]
   stocktakeLines            StocktakeLine[]
+  image                     MaterialImage?
+  salesOrderMaterialRefs    SalesOrderMaterialRef[]
 
   @@unique([name, specificationModel, color])
   @@index([defaultUnitId])
   @@map("materials")
+}
+
+/// 物料图片（用户 2026-09-24：「物料清单，要给物料配上图片。图片上传之后要压缩成 webp 再存进数据库里」）。
+///
+/// 为什么单独一张 1:1 从表、而不是在 `materials` 上加几列：`materials` 是**热表** ——
+/// 采购、BOM、库存、生产到处都在 `findMany` 它（`include: { material: true }` 遍地都是），
+/// 字节列一旦挂在主表上，每一次列表查询都会顺手把几百 KB 的图片读回来。
+/// Prisma 只在该关系被**显式** select/include 时才取它，所以从表是这里唯一安全的形状。
+///
+/// 压缩口径：**浏览器**用 canvas 把图转成 WebP 再上传，服务端只**校验**
+/// （RIFF/WEBP 容器 + VP8/VP8L/VP8X 尺寸 + 大小与边长上限，见 `material-image.ts`），不重新编码 ——
+/// 用户明确选了「不引 sharp 那种原生依赖」这条路，所以服务端必须拒掉伪装成 WebP 的字节，
+/// 而不是相信客户端给的 Content-Type。
+model MaterialImage {
+  id         String   @id @default(uuid()) @db.Uuid
+  materialId String   @unique @map("material_id") @db.Uuid
+  /// 图片字节（WebP）。PostgreSQL 的 bytea。
+  data       Bytes
+  mimeType   String   @default("image/webp") @map("mime_type") @db.VarChar(50)
+  width      Int
+  height     Int
+  byteSize   Int      @map("byte_size")
+  /// 内容摘要：既当 `ETag` 用，也是「换没换图」的唯一判断依据（`updatedAt` 粒度不够）。
+  sha256     String   @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  createdBy  String   @map("created_by") @db.Uuid
+  updatedBy  String   @map("updated_by") @db.Uuid
+  material   Material @relation(fields: [materialId], references: [id])
+
+  @@map("material_images")
 }
 
 model Supplier {
@@ -1846,9 +1914,11 @@ model Voucher {
   voucherDate DateTime      @map("voucher_date") @db.Date
   /// 会计期间 YYYY-MM（取自凭证日期），便于按期间出凭证清单
   period      String        @db.VarChar(7)
-  /// 来源单据类型：cash_flow_entry / voucher（红冲）
+  /// 来源单据类型：cash_flow_entry（由收支流水生成）/ voucher（红冲）/ manual（财务手工录入）
   sourceType  String        @map("source_type") @db.VarChar(40)
-  sourceId    String        @map("source_id") @db.Uuid
+  /// 来源单据 id。**手工凭证为 null**（它没有来源单据）；
+  /// 唯一索引 (source_type, source_id) 不约束 NULL，所以「一条来源一张凭证」对流水来源依然成立。
+  sourceId    String?       @map("source_id") @db.Uuid
   summary     String        @db.VarChar(500)
   currency    String        @db.VarChar(10)
   /// 借贷合计（生成/编辑时校验相等；两边恒为正数，方向由分录的 direction 决定）
@@ -1871,6 +1941,72 @@ model Voucher {
   @@index([period, status])
   @@index([voucherDate])
   @@map("vouchers")
+}
+
+/// 建账期初余额（财务 2026-09-24：三大报表的起点）。
+///
+/// 为什么需要它：银行账户档案里只有**货币资金**的期初余额，其它科目没有 —— 只把货币资金期初加进
+/// 资产侧，资产负债表会一直差一个「期初余额」的差额（勾稽不平，看起来像报表算错了）。
+/// 财务录一次全科目的期初（试算平衡的借/贷两侧），报表的勾稽才真正为 0。
+///
+/// 三条口径：
+///   1. 金额存「方向 + 正数金额」，不存负数（与 `voucher_lines` / `cash_flow_entries` 同一约定：库层不存负数）；
+///   2. 科目用与凭证同一套键 `分类/名称`（`subject_key`），这样期初与凭证的余额能直接相加；
+///   3. `as_of_date` 是**建账日期**：余额是这一天之前的累计。报表取数 = 建账期初 + 建账日之后的凭证，
+///      两边不会重复计算（见 `finance-three-statements.service.ts`）。
+model AccountingOpeningBalance {
+  id           String    @id @default(uuid()) @db.Uuid
+  asOfDate     DateTime  @map("as_of_date") @db.Date
+  subjectKey   String    @map("subject_key") @db.VarChar(200)
+  subjectLabel String    @map("subject_label") @db.VarChar(200)
+  currency     String    @db.VarChar(10)
+  /// debit / credit（借/贷余额，与凭证分录同一套方向词）
+  direction    String    @db.VarChar(10)
+  amount       Decimal   @db.Decimal(18, 4)
+  remark       String?   @db.VarChar(1000)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  createdBy    String    @map("created_by") @db.Uuid
+  updatedBy    String    @map("updated_by") @db.Uuid
+  deletedAt    DateTime? @map("deleted_at")
+  deletedBy    String?   @map("deleted_by") @db.Uuid
+
+  /// 同一建账日 + 同一科目 + 同一币种只有一行。**软删除后仍占着这个键**（与月度管理费分摊同一处理）：
+  /// 服务层「整批替换」时按这个三元组 upsert（把软删的那条恢复回来），所以唯一索引成立，也不会出现
+  /// 「同一科目两条期初，报表用哪条」的歧义。
+  @@unique([asOfDate, subjectKey, currency])
+  @@index([asOfDate, currency])
+  @@map("accounting_opening_balances")
+}
+
+/// 期末汇率：财务每月维护一次，「1 外币 = rate 人民币」。
+///
+/// 为什么需要它：凭证上有 `currency` 但没有汇率，而三大报表是**人民币**报表 ——
+/// 不折算就只能按币种分列（表尾写「不跨币种相加」），财务拿到的不是一张能对外报的表。
+/// 折算的口径（哪个时点用哪个月的汇率）写在 `finance-three-statements.service.ts` 的注释里。
+model ExchangeRate {
+  id        String   @id @default(uuid()) @db.Uuid
+  /// 汇率所属期间 `YYYY-MM`（期末汇率是「某月月末」的汇率，按月维护；不用记账日期——
+  /// 财务维护的是「9 月的汇率」，而不是「9 月 30 日那天的汇率」，月底最后一天是几号不该影响取数）
+  period    String   @db.VarChar(7)
+  /// 外币币种（本币 CNY 不录：本币对自身恒为 1，录进来只会多一个「报表到底用哪条」的歧义）
+  currency  String   @db.VarChar(10)
+  /// 1 外币 = rate 人民币。精度 DECIMAL(18,8) 见 `money.ts` 的 `RATE_SCALE` 注释
+  rate      Decimal  @db.Decimal(18, 8)
+  remark    String?  @db.VarChar(1000)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy String   @map("created_by") @db.Uuid
+  updatedBy String   @map("updated_by") @db.Uuid
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by") @db.Uuid
+
+  /// 同一期间 + 同一币种只有一行。**软删除后仍占着这个键**（与期初余额 / 月度分摊同一处理）：
+  /// 「整批替换」时按这个二元组 upsert（把软删的那条恢复回来），所以不会出现
+  /// 「同一期间同一币种两条汇率、报表取哪条」这种查不出来的错。
+  @@unique([period, currency])
+  @@index([currency, period])
+  @@map("exchange_rates")
 }
 
 /// 凭证分录：借/贷各一行或多行。金额恒为正数，方向由 direction 决定（与收支流水同一约定）。

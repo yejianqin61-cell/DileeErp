@@ -110,7 +110,10 @@ test("supplier payable confirmation rejects a voided source", async () => {
 // ---------------------------------------------------------------------------
 
 function payableConfirmHarness(entry) {
+  // 2026-09-24 起「确认应付」= 挂账（借成本 / 贷应付账款），不再写收支流水：
+  // cashFlowCalls 现在是反向护栏 —— 哪天有人把 recordConfirmation 加回确认路径，这些用例会立刻红。
   const cashFlowCalls = [];
+  const accrualCalls = [];
   const prisma = {
     bank: { findFirst: async ({ where }) => (where.id === "bank-dead" ? null : { id: where.id, bankName: "农业银行", accountNumber: "5706" }) },
     supplierPayableEntry: { findFirst: async () => entry, update: async ({ data }) => ({ ...entry, ...data }) },
@@ -118,7 +121,11 @@ function payableConfirmHarness(entry) {
   prisma.$transaction = async (fn) => fn({ $queryRaw: async () => [], supplierPayableEntry: prisma.supplierPayableEntry });
   const audit = { update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} };
   const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
-  return { service: new SupplierPayableService(prisma, audit, cashFlow), cashFlowCalls };
+  const vouchers = {
+    createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
+    accruedSourceIds: async () => new Set(),
+  };
+  return { service: new SupplierPayableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls };
 }
 
 const draftPayable = (extra = {}) => ({
@@ -127,37 +134,37 @@ const draftPayable = (extra = {}) => ({
   supplier: { name: "晋江大田" }, payableSource: { status: "received" }, outsourcePayableSource: null, ...extra,
 });
 
-test("逐条确认应付：写一条支出流水并从指定的支付银行转出", async () => {
-  const { service, cashFlowCalls } = payableConfirmHarness(draftPayable());
+test("逐条确认应付：挂一张账（借成本 / 贷应付账款），不写收支流水、不动银行", async () => {
+  const { service, cashFlowCalls, accrualCalls } = payableConfirmHarness(draftPayable());
   const result = await service.confirm("payable-1", { id: "user-1" }, { bank_id: "bank-1" });
-  assert.equal(cashFlowCalls.length, 1);
-  const input = cashFlowCalls[0];
-  assert.equal(input.direction, "expense", "确认应付 = 钱出去");
-  assert.equal(input.sourceType, "supplier_payable_entry");
-  assert.equal(input.sourceId, "payable-1");
+  assert.deepEqual(cashFlowCalls, [], "确认那一刻钱还没付：写支出流水就等于「钱还没付先记了付款」");
+  assert.equal(accrualCalls.length, 1);
+  const input = accrualCalls[0];
+  assert.equal(input.source_type, "supplier_payable");
+  assert.equal(input.source_id, "payable-1");
+  assert.equal(input.document_no, "AP-1");
   assert.equal(input.amount.toString(), "500");
-  assert.equal(input.bankId, "bank-1");
-  assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
-  assert.deepEqual(input.subjectNames, ["主营业务成本", "原材料"], "会计科目候选链按来源类型选定");
-  assert.equal(result.cash_flow_entry_id, "cf-1");
+  assert.equal(input.counterparty_name, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
+  assert.deepEqual(input.contra_subject_names, ["主营业务成本", "原材料"], "会计科目候选链按来源类型选定（借成本 / 贷应付账款）");
+  assert.equal(result.accrual_voucher_id, "voucher-1");
+  assert.equal(result.cash_flow_entry_id, null);
   assert.equal(result.bank_missing, false);
 });
 
-test("逐条确认应付：外加工来源归到「加工费」；没选银行时回报 bank_missing", async () => {
+test("逐条确认应付：外加工来源归到「加工费」；没选银行也不再报 bank_missing", async () => {
   const outsource = payableConfirmHarness(draftPayable({ sourceType: "outsource_receipt", outsourcePayableSource: { status: "received" }, payableSource: null }));
   const result = await outsource.service.confirm("payable-1", { id: "user-1" });
-  assert.deepEqual(outsource.cashFlowCalls[0].subjectNames, ["加工费"]);
-  assert.equal(outsource.cashFlowCalls[0].bankId, null);
-  assert.equal(result.bank_missing, true);
+  assert.deepEqual(outsource.accrualCalls[0].contra_subject_names, ["加工费"]);
+  assert.equal(result.bank_missing, false, "挂账不动钱：银行在「登记付款」那一步才问");
 });
 
 test("逐条确认应付：银行非法时先拒绝，不确认任何应付", async () => {
-  const { service, cashFlowCalls } = payableConfirmHarness(draftPayable());
+  const { service, accrualCalls } = payableConfirmHarness(draftPayable());
   await assert.rejects(
     () => service.confirm("payable-1", { id: "user-1" }, { bank_id: "bank-dead" }),
     (error) => error.getResponse().code === "BANK_NOT_FOUND",
   );
-  assert.deepEqual(cashFlowCalls, []);
+  assert.deepEqual(accrualCalls, []);
 });
 
 // ---------------------------------------------------------------------------
@@ -174,6 +181,7 @@ const batchDraft = (id, extra = {}) => ({
 
 function batchHarness(rows, options = {}) {
   const cashFlowCalls = [];
+  const accrualCalls = [];
   const writes = [];
   let locks = 0;
   const entryTable = {
@@ -193,21 +201,26 @@ function batchHarness(rows, options = {}) {
   prisma.$transaction = async (fn) => fn({ $queryRaw: async () => { locks += 1; return []; }, supplierPayableEntry: entryTable });
   const audit = { update: () => ({ updatedBy: "user-1" }), recordWithOrderNo: async () => {} };
   const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: `cf-${cashFlowCalls.length}` }; } });
-  return { service: new SupplierPayableService(prisma, audit, cashFlow), cashFlowCalls, writes, locks: () => locks };
+  const vouchers = {
+    createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
+    accruedSourceIds: async () => new Set(),
+  };
+  return { service: new SupplierPayableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls, writes, locks: () => locks };
 }
 
-test("勾选批量确认：每条应付各写一条支出流水，并按币种给合计", async () => {
+test("勾选批量确认：每条应付各挂一张账，并按币种给合计", async () => {
   const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { amount: new Prisma.Decimal("250") }), batchDraft("p3", { status: "confirmed" })]);
   const result = await harness.service.batchConfirm(["p1", "p2", "p3"], { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-1" });
   assert.equal(result.confirmed_count, 2);
-  assert.equal(result.skipped_count, 1, "已经被确认过的条目要跳过，不能重复记账（同一笔钱扣两次）");
-  assert.equal(harness.cashFlowCalls.length, 2, "逐条写流水，才追得回是哪批料的钱");
-  assert.deepEqual(harness.cashFlowCalls.map((call) => call.sourceId), ["p1", "p2"]);
-  assert.deepEqual(harness.cashFlowCalls.map((call) => call.amount.toString()), ["100", "250"]);
-  assert.equal(harness.cashFlowCalls.every((call) => call.direction === "expense" && call.bankId === "bank-1" && call.subjectId === "subject-1"), true);
+  assert.equal(result.skipped_count, 1, "已经被确认过的条目要跳过，不能重复挂账（挂两遍＝成本翻倍）");
+  assert.deepEqual(harness.cashFlowCalls, [], "批量确认也不写流水：钱还没付");
+  assert.equal(harness.accrualCalls.length, 2, "逐条挂账，才追得回是哪批料的应付");
+  assert.deepEqual(harness.accrualCalls.map((call) => call.source_id), ["p1", "p2"]);
+  assert.deepEqual(harness.accrualCalls.map((call) => call.amount.toString()), ["100", "250"]);
+  assert.equal(harness.accrualCalls.every((call) => call.contra_subject_id === "subject-1"), true, "弹窗里选的科目是挂账的对方科目");
   assert.deepEqual(result.amounts, [{ currency: "CNY", amount: "350.0000" }]);
   assert.equal(result.bank_missing, false);
-  assert.deepEqual(result.cash_flow_entry_ids, ["cf-1", "cf-2"]);
+  assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
 });
 
 test("勾选批量确认：来源已作废的条目不确认，但也不让整批失败", async () => {
@@ -215,17 +228,18 @@ test("勾选批量确认：来源已作废的条目不确认，但也不让整�
   const result = await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
   assert.equal(result.confirmed_count, 1);
   assert.equal(result.skipped_count, 1);
-  assert.deepEqual(harness.cashFlowCalls.map((call) => call.sourceId), ["p1"]);
+  assert.deepEqual(harness.accrualCalls.map((call) => call.source_id), ["p1"]);
   assert.deepEqual(harness.writes[0].ids, ["p1"], "作废来源那条不能被写成已确认");
 });
 
-test("勾选批量确认：勾的全是不可确认的条目时拒绝，一条流水都不写", async () => {
+test("勾选批量确认：勾的全是不可确认的条目时拒绝，一张账都不挂", async () => {
   const harness = batchHarness([batchDraft("p1", { status: "confirmed" })]);
   await assert.rejects(
     () => harness.service.batchConfirm(["p1"], { id: "user-1" }),
     (error) => error.getResponse().code === "NO_DRAFT_PAYABLES",
   );
   assert.deepEqual(harness.cashFlowCalls, []);
+  assert.deepEqual(harness.accrualCalls, []);
   assert.deepEqual(harness.writes, []);
 });
 
@@ -245,6 +259,7 @@ test("勾选批量确认：银行非法时先拒绝，一条都不确认", async
     (error) => error.getResponse().code === "BANK_NOT_FOUND",
   );
   assert.deepEqual(harness.cashFlowCalls, []);
+  assert.deepEqual(harness.accrualCalls, []);
   assert.deepEqual(harness.writes, []);
 });
 
@@ -252,13 +267,13 @@ test("勾选批量确认：合计按币种分组，不跨币种相加", async ()
   const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { currency: "USD", amount: new Prisma.Decimal("20") })]);
   const result = await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
   assert.deepEqual(result.amounts, [{ currency: "CNY", amount: "100.0000" }, { currency: "USD", amount: "20.0000" }]);
-  assert.equal(result.bank_missing, true, "没指定银行时界面必须给出警告，而不是一句成功");
+  assert.equal(result.bank_missing, false, "挂账不动现金：这里不再有「没选银行」的警告");
 });
 
 test("勾选批量确认：会计科目候选链按每条自己的来源类型选定", async () => {
   const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { sourceType: "outsource_receipt", payableSource: null, outsourcePayableSource: { status: "received" } })]);
   await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
-  assert.deepEqual(harness.cashFlowCalls.map((call) => call.subjectNames), [["主营业务成本", "原材料"], ["加工费"]]);
+  assert.deepEqual(harness.accrualCalls.map((call) => call.contra_subject_names), [["主营业务成本", "原材料"], ["加工费"]]);
 });
 
 test("勾选批量确认：状态被别的入口改动时整批拒绝，不出现「界面说确认了、库里没确认」", async () => {
@@ -267,7 +282,7 @@ test("勾选批量确认：状态被别的入口改动时整批拒绝，不出�
     () => harness.service.batchConfirm(["p1"], { id: "user-1" }),
     (error) => error.getResponse().code === "PAYABLE_CONFIRM_CONFLICT",
   );
-  assert.deepEqual(harness.cashFlowCalls, [], "没写成状态就绝不能记账");
+  assert.deepEqual(harness.accrualCalls, [], "没写成状态就绝不能挂账");
 });
 
 // ---------------------------------------------------------------------------

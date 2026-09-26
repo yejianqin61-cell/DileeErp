@@ -74,6 +74,10 @@ function queryOf(filters: Filters, scope: string): string {
   if (filters.from) params.set("from", filters.from);
   if (filters.to) params.set("to", filters.to);
   if (filters.currency) params.set("currency", filters.currency);
+  if (scope === "period") {
+    // 三大报表只吃期间与币种（取的是凭证，按期间切片）：多带参数只会让人以为筛选生效了。
+    return params.toString();
+  }
   if (scope === "cash") {
     // 收支流水没有订单号，也没有草稿态：带上这两个参数只会让人以为筛选生效了。
     if (filters.category) params.set("category", filters.category);
@@ -260,7 +264,9 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
             </Select>
           </label>
         </>}
-        {scope !== "cash" && <label>草稿
+        {/* 三大报表（scope: "period"）不吃「草稿」这一项：它们取的是**已过账凭证**，
+            草稿凭证不是账，摆一个永远无效的开关只会让人以为选了它数字会变。 */}
+        {scope !== "cash" && scope !== "period" && <label>草稿
           <Select value={draft.includeDraft ? "true" : "false"} onValueChange={(value) => setDraft({ ...draft, includeDraft: value === "true" })}>
             <SelectTrigger data-testid="finance-report-include-draft"><SelectValue /></SelectTrigger>
             <SelectContent>

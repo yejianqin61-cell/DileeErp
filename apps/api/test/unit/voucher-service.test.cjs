@@ -501,3 +501,238 @@ test("编辑分录：引用不存在的银行账户时 422（而不是让外键�
   );
   assert.equal(createdLines.length, 0);
 });
+
+/* ------------------------------------------------------------ 手工新增凭证（2026-09-24） */
+
+/**
+ * 折旧 / 摊销 / 工资计提 / 结转成本这些**非现金分录**没有收支流水可挂，
+ * 而凭证原先只能由流水生成 —— 于是它们在系统里无处可录，三大报表的固定资产/累计折旧/
+ * 应付职工薪酬等行永远填不上（用户 2026-09-24 确认「都要」的第 ① 件）。
+ *
+ * 这里钉四件事：来源标记（manual + null）、期间与编号、借贷校验、以及银行账户引用。
+ */
+function manualHarness({ siblingCodes = [], banks = [{ id: "bank-1" }], events = [] } = {}) {
+  const vouchers = [];
+  const lines = [];
+  const tx = {
+    voucher: {
+      findMany: async () => siblingCodes.map((voucherNo) => ({ voucherNo })),
+      create: async ({ data }) => { vouchers.push(data); return { id: "voucher-manual", ...data }; },
+    },
+    voucherLine: { createMany: async ({ data }) => { lines.push(...(Array.isArray(data) ? data : [data])); return { count: 1 }; } },
+  };
+  const prisma = {
+    bank: { findMany: async () => banks },
+    voucher: { findFirst: async () => null, findMany: async () => [] },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new VoucherService(prisma, { ...audit(), record: async (...args) => events.push(args) });
+  service.get = async (id) => ({ id, ...vouchers[0], lines });
+  return { service, vouchers, lines, events };
+}
+
+const MANUAL_USER = { id: "user-1", username: "caiwu", display_name: "小叶" };
+const depreciationLines = () => [
+  { direction: "debit", subject_key: "损益类/管理费用", subject_label: "管理费用", amount: "2500" },
+  { direction: "credit", subject_key: "资产类/累计折旧", subject_label: "累计折旧", amount: "2500" },
+];
+
+test("手工新增凭证：来源标记 manual + source_id 为空，期间取自日期，编号在期间内顺延", async () => {
+  const { service, vouchers, lines, events } = manualHarness({ siblingCodes: ["记-2026-09-0001"] });
+  const created = await service.createManual({ voucher_date: "2026-09-30", summary: "计提 9 月折旧", lines: depreciationLines() }, MANUAL_USER);
+
+  assert.equal(vouchers[0].sourceType, "manual", "手工凭证的来源类型是 manual");
+  assert.equal(vouchers[0].sourceId, null, "手工凭证没有来源单据 —— source_id 必须是 null（不是编一个随机 id）");
+  assert.equal(vouchers[0].period, "2026-09");
+  assert.match(vouchers[0].voucherNo, /^记-2026-09-0002$/, "同一期间里顺延（已有 0001）");
+  assert.equal(vouchers[0].status, "draft", "新建是草稿：核对后再过账（过账后只能红冲）");
+  assert.equal(vouchers[0].debitTotal.toString(), "2500");
+  assert.equal(vouchers[0].creditTotal.toString(), "2500");
+  assert.equal(vouchers[0].currency, "CNY", "币种默认本币");
+  assert.equal(vouchers[0].summary, "计提 9 月折旧");
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines.map((line) => [line.direction, line.subjectLabel, line.amount.toString()]), [["debit", "管理费用", "2500"], ["credit", "累计折旧", "2500"]]);
+  assert.equal(lines[0].cashFlowEntryId, null, "手工凭证的分录不挂任何流水");
+  assert.equal(events.length, 1);
+  assert.equal(events[0][0], "voucher.create");
+  assert.equal(events[0][4].source_type, "manual");
+  assert.equal(created.id, "voucher-manual");
+});
+
+test("手工新增凭证：借贷必须相等、至少一借一贷、金额与日期都校验（给出的原因是人话）", async () => {
+  const { service } = manualHarness();
+  const unbalanced = [
+    { direction: "debit", subject_label: "管理费用", amount: "100" },
+    { direction: "credit", subject_label: "累计折旧", amount: "99" },
+  ];
+  await assert.rejects(
+    () => service.createManual({ voucher_date: "2026-09-30", lines: unbalanced }, MANUAL_USER),
+    (error) => error.getResponse().code === "VOUCHER_NOT_BALANCED" && /借方 100/.test(error.getResponse().message),
+  );
+  await assert.rejects(
+    () => service.createManual({ voucher_date: "2026-09-30", lines: [depreciationLines()[0]] }, MANUAL_USER),
+    (error) => error.getResponse().code === "VOUCHER_LINE_REQUIRED",
+  );
+  await assert.rejects(
+    () => service.createManual({ voucher_date: "2026-09-30", lines: [] }, MANUAL_USER),
+    (error) => error.getResponse().code === "VOUCHER_LINE_REQUIRED",
+  );
+  await assert.rejects(
+    () => service.createManual({ voucher_date: "2026-09-30", lines: [
+      { direction: "debit", subject_label: "管理费用", amount: "0" },
+      { direction: "credit", subject_label: "累计折旧", amount: "0" },
+    ] }, MANUAL_USER),
+    (error) => error.getResponse().code === "INVALID_VOUCHER_AMOUNT",
+  );
+  await assert.rejects(
+    () => service.createManual({ voucher_date: "2026/09/30", lines: depreciationLines() }, MANUAL_USER),
+    (error) => error.getResponse().code === "INVALID_VOUCHER_DATE",
+  );
+  await assert.rejects(
+    () => service.createManual({ voucher_date: "2026-09-30", lines: [{ direction: "两边都算", subject_label: "管理费用", amount: "1" }, depreciationLines()[1]] }, MANUAL_USER),
+    (error) => error.getResponse().code === "INVALID_VOUCHER_DIRECTION",
+  );
+});
+
+test("手工新增凭证：摘要留空有兜底（一张没摘要的凭证在清单里等于没写）", async () => {
+  const { service, vouchers } = manualHarness();
+  await service.createManual({ voucher_date: "2026-10-05", lines: depreciationLines() }, MANUAL_USER);
+  assert.equal(vouchers[0].summary, "手工凭证 2026-10");
+});
+
+test("手工新增凭证：分录引用不存在的银行账户时 422（而不是让外键在提交时抛数据库错误）", async () => {
+  const { service, vouchers } = manualHarness({ banks: [] });
+  await assert.rejects(
+    () => service.createManual({ voucher_date: "2026-09-30", lines: [
+      { direction: "debit", subject_label: "管理费用", amount: "100" },
+      { direction: "credit", subject_label: "银行存款", amount: "100", bank_id: "bank-gone" },
+    ] }, MANUAL_USER),
+    (error) => error.getResponse().code === "VOUCHER_BANK_NOT_FOUND",
+  );
+  assert.equal(vouchers.length, 0, "校验不过不写任何数据");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-24（二步口径）：**挂账凭证**。确认应收/应付那一步钱还没动，
+//   所以凭证是「借应收账款 / 贷收入」或「借成本 / 贷应付账款」，**没有资金分录**。
+//   方案见 docs/design/finance-accrual-two-step-2026-09-24.md。
+// ---------------------------------------------------------------------------
+
+const ACCRUAL_SUBJECTS = [
+  { id: "sub-ar", category: "资产类", name: "应收账款" },
+  { id: "sub-ap", category: "负债类", name: "应付账款" },
+  { id: "sub-rev", category: "损益类", name: "主营业务收入" },
+  { id: "sub-cost", category: "损益类", name: "主营业务成本" },
+];
+
+function accrualHarness({ existing = null, subjects = ACCRUAL_SUBJECTS, siblingCodes = [] } = {}) {
+  const vouchers = [];
+  const lines = [];
+  const events = [];
+  const tx = {
+    voucher: {
+      findMany: async () => siblingCodes.map((voucherNo) => ({ voucherNo })),
+      create: async ({ data }) => { vouchers.push(data); return { id: "voucher-accrual", ...data }; },
+    },
+    voucherLine: { createMany: async ({ data }) => { lines.push(...(Array.isArray(data) ? data : [data])); return { count: data.length }; } },
+  };
+  const prisma = {
+    voucher: { findFirst: async () => existing, findMany: async () => [] },
+    accountingSubject: {
+      findMany: async ({ where }) => subjects.filter((subject) => where.name.in.includes(subject.name)),
+      findFirst: async ({ where }) => subjects.find((subject) => subject.id === where.id) ?? null,
+    },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new VoucherService(prisma, { ...audit(), record: async (...args) => events.push(args) });
+  service.get = async (id) => ({ id, ...vouchers[0], lines });
+  return { service, vouchers, lines, events };
+}
+
+test("挂账凭证（应收）：借应收账款 / 贷收入，来源是那条应收，草稿；再确认一次拿到同一张（幂等）", async () => {
+  const { service, vouchers, lines, events } = accrualHarness({ siblingCodes: ["记-2026-09-0007"] });
+  const created = await service.createAccrual({
+    source_type: "receivable_source", source_id: "ar-1", document_no: "AR-001",
+    voucher_date: "2026-09-30", currency: "USD", amount: "120.5",
+    counterparty_name: "香港迪礼", contra_subject_names: ["主营业务收入", "营业外收入"],
+  }, MANUAL_USER);
+
+  assert.equal(vouchers[0].sourceType, "receivable_source", "来源是那条应收（唯一键 (source_type, source_id) 就是幂等根）");
+  assert.equal(vouchers[0].sourceId, "ar-1");
+  assert.equal(vouchers[0].status, "draft", "挂账先落草稿，财务核对后过账");
+  assert.equal(vouchers[0].currency, "USD");
+  assert.equal(vouchers[0].voucherNo, "记-2026-09-0008", "编号与手工凭证同一套（期间内顺延）");
+  assert.match(vouchers[0].summary, /确认应收 AR-001（香港迪礼） 挂账/);
+  assert.deepEqual(lines.map((line) => [line.direction, line.subjectKey, line.amount.toString()]), [
+    ["debit", "资产类/应收账款", "120.5"],
+    ["credit", "损益类/主营业务收入", "120.5"],
+  ]);
+  assert.equal(lines.every((line) => line.bankId === null), true, "挂账**没有资金分录**：钱还没动");
+  assert.equal(created.replayed, false);
+  assert.equal(events[0][4].source_type, "receivable_source");
+
+  // 幂等：同一条应收被另一个入口（批量 / 对账单）再确认一次 → 拿到同一张，不挂第二遍账。
+  const second = new VoucherService({ voucher: { findFirst: async () => ({ id: "voucher-accrual" }) } }, audit());
+  second.get = async (id) => ({ id, voucherNo: "记-2026-09-0008" });
+  const replayed = await second.createAccrual({
+    source_type: "receivable_source", source_id: "ar-1", document_no: "AR-001",
+    voucher_date: "2026-09-30", amount: "120.5", contra_subject_names: ["主营业务收入"],
+  }, MANUAL_USER);
+  assert.equal(replayed.replayed, true, "第二次是「幂等命中」，不是新挂一张（挂两遍＝收入翻倍）");
+  assert.equal(replayed.id, "voucher-accrual");
+});
+
+test("挂账凭证（应付）：借成本 / 贷应付账款（方向与应收相反）", async () => {
+  const { service, lines } = accrualHarness();
+  await service.createAccrual({
+    source_type: "supplier_payable", source_id: "ap-1", document_no: "AP-001",
+    voucher_date: "2026-09-30", amount: "800", contra_subject_names: ["主营业务成本", "原材料"],
+  }, MANUAL_USER);
+  assert.deepEqual(lines.map((line) => [line.direction, line.subjectKey, line.amount.toString()]), [
+    ["debit", "损益类/主营业务成本", "800"],
+    ["credit", "负债类/应付账款", "800"],
+  ]);
+});
+
+test("挂账凭证：科目缺失显式 422（不静默跳过），0 元往来返回 null（不挂空账）", async () => {
+  const missing = accrualHarness({ subjects: ACCRUAL_SUBJECTS.filter((subject) => subject.name !== "应收账款") });
+  await assert.rejects(
+    () => missing.service.createAccrual({ source_type: "receivable_source", source_id: "ar-1", document_no: "AR-001", voucher_date: "2026-09-30", amount: "10", contra_subject_names: ["主营业务收入"] }, MANUAL_USER),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND" && /应收账款/.test(error.getResponse().message),
+  );
+  assert.equal(missing.vouchers.length, 0, "校验不过不写任何数据");
+
+  const noContra = accrualHarness({ subjects: ACCRUAL_SUBJECTS.filter((subject) => subject.name !== "主营业务收入") });
+  await assert.rejects(
+    () => noContra.service.createAccrual({ source_type: "receivable_source", source_id: "ar-1", document_no: "AR-001", voucher_date: "2026-09-30", amount: "10", contra_subject_names: ["主营业务收入", "营业外收入"] }, MANUAL_USER),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND",
+  );
+
+  const zero = accrualHarness();
+  assert.equal(await zero.service.createAccrual({ source_type: "receivable_source", source_id: "ar-9", document_no: "AR-009", voucher_date: "2026-09-30", amount: "0", contra_subject_names: ["主营业务收入"] }, MANUAL_USER), null);
+  assert.equal(zero.vouchers.length, 0);
+  await assert.rejects(
+    () => zero.service.createAccrual({ source_type: "unknown_source", source_id: "x-1", document_no: "X-1", voucher_date: "2026-09-30", amount: "10", contra_subject_names: ["主营业务收入"] }, MANUAL_USER),
+    (error) => error.getResponse().code === "ACCRUAL_SOURCE_UNSUPPORTED",
+  );
+});
+
+test("accruedSourceIds：只认未红冲的挂账凭证（销账时据此决定贷应收账款还是贷收入）", async () => {
+  const seen = [];
+  const prisma = {
+    voucher: {
+      findMany: async ({ where }) => {
+        seen.push(where);
+        return [{ sourceId: "ar-1" }, { sourceId: "ar-2" }];
+      },
+    },
+  };
+  const service = new VoucherService(prisma, audit());
+  const ids = await service.accruedSourceIds("receivable_source", ["ar-1", "ar-2", "ar-1", ""]);
+  assert.deepEqual([...ids].sort(), ["ar-1", "ar-2"]);
+  assert.deepEqual(seen[0].sourceId.in, ["ar-1", "ar-2"], "重复与空 id 先去重再查");
+  assert.equal(seen[0].status.not, "reversed", "已红冲的挂账不算数（那张账已经不存在了）");
+  assert.equal(seen[0].deletedAt, null);
+
+  assert.deepEqual([...(await service.accruedSourceIds("receivable_source", []))], [], "没有来源就不查库");
+});

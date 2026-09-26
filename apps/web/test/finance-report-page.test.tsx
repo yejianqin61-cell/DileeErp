@@ -21,6 +21,9 @@ const EP = {
   cashDetail: "/api/v1/finance/reports/cash-flow-detail",
   cashSummary: "/api/v1/finance/reports/cash-flow-summary",
   forex: "/api/v1/finance/reports/forex-receipts",
+  balanceSheet: "/api/v1/finance/reports/balance-sheet",
+  incomeStatement: "/api/v1/finance/reports/income-statement",
+  cashFlowStatement: "/api/v1/finance/reports/cash-flow-statement",
   subjects: "/api/v1/finance/accounting-subjects",
   customers: "/api/v1/customers",
   suppliers: "/api/v1/suppliers",
@@ -198,8 +201,53 @@ function xlsxResponse(bytes: number[] = [0x50, 0x4b, 0x03, 0x04]) {
   });
 }
 
-type Download = { blob: Blob; url: string };
-let downloads: Download[] = [];
+/**
+ * 三大报表的预览形状（2026-09-24）：资产负债表是 8 列两栏对照 + 勾稽核对行；
+ * 利润表/现金流量表是 4 列（项目/行次/本期金额/上期金额）。
+ */
+function balanceSheetTable() {
+  return {
+    sheet_name: "资产负债表",
+    columns: [
+      { header: "资产", num_fmt: null, align: null },
+      { header: "行次", num_fmt: null, align: "center" },
+      { header: "期末余额", num_fmt: "0.####", align: null },
+      { header: "年初余额", num_fmt: "0.####", align: null },
+      { header: "负债和所有者权益（或股东权益）", num_fmt: null, align: null },
+      { header: "行次", num_fmt: null, align: "center" },
+      { header: "期末余额", num_fmt: "0.####", align: null },
+      { header: "年初余额", num_fmt: "0.####", align: null },
+    ],
+    rows: [
+      ["货币资金", 1, 200, 100, "短期借款", 1, 0, 0],
+      ["资产总计", 34, 200, 100, "负债和所有者权益总计", 34, 200, 100],
+      ["勾稽核对：资产总计 − 负债和所有者权益总计", null, 0, 0, "✓ 平衡", null, null, null],
+    ],
+    total_columns: [],
+    totals: null,
+    footnotes: ["期初余额只填了货币资金 100：系统还没有「科目期初余额表」，所以勾稽差额 = 100（不是算错了）"],
+    extra_sheets: [],
+  };
+}
+
+function twoPeriodStatementTable(sheetName: string) {
+  return {
+    sheet_name: sheetName,
+    columns: [
+      { header: "项目", num_fmt: null, align: null },
+      { header: "行次", num_fmt: null, align: "center" },
+      { header: "本期金额", num_fmt: "0.####", align: null },
+      { header: "上期金额", num_fmt: "0.####", align: null },
+    ],
+    rows: [["一、营业收入", 1, 1000, 800], ["二、营业利润（亏损以“-”号填列）", 14, 300, 200]],
+    total_columns: [],
+    totals: null,
+    footnotes: ["期间：2026-09-01 至 2026-09-30（上期 2026-08-01 至 2026-08-31）"],
+    extra_sheets: [],
+  };
+}
+
+type Download = { blob: Blob; url: string };let downloads: Download[] = [];
 let revokedUrls: string[] = [];
 let anchorClicks: Array<{ download: string; href: string }> = [];
 
@@ -249,7 +297,7 @@ function costTable(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: unknown; profit?: unknown; costAccounting?: unknown; cashDetail?: unknown; cashSummary?: unknown; forex?: unknown; extra?: Handler } = {}) {
+function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: unknown; profit?: unknown; costAccounting?: unknown; cashDetail?: unknown; cashSummary?: unknown; forex?: unknown; balanceSheet?: unknown; incomeStatement?: unknown; cashFlowStatement?: unknown; extra?: Handler } = {}) {
   return stubApi((url, call) => {
     // 把 call 透传给 extra：核算表的用例要按 **method** 区分「读分摊口径」与「登记管理费」两个端点。
     const injected = options.extra?.(url, call);
@@ -263,6 +311,9 @@ function stubReports(options: { sales?: unknown; purchase?: unknown; summary?: u
     if (url.includes(EP.cashDetail)) return apiOk(options.cashDetail ?? cashDetailTable());
     if (url.includes(EP.cashSummary)) return apiOk(options.cashSummary ?? cashSummaryTable());
     if (url.includes(EP.forex)) return apiOk(options.forex ?? forexTable());
+    if (url.includes(EP.balanceSheet)) return apiOk(options.balanceSheet ?? balanceSheetTable());
+    if (url.includes(EP.incomeStatement)) return apiOk(options.incomeStatement ?? twoPeriodStatementTable("利润表"));
+    if (url.includes(EP.cashFlowStatement)) return apiOk(options.cashFlowStatement ?? twoPeriodStatementTable("现金流量表"));
     // 会计科目表（分类 = 科目类别，项目 = 科目名称）：报表筛选的「分类 / 会计科目」两个下拉都取自它。
     if (url.includes(EP.subjects)) return apiOk([
       { id: "subject-1", category: "损益类", name: "主营业务收入", balanceDirection: "贷", sortOrder: 1, isActive: true },
@@ -321,13 +372,49 @@ describe("财务报表 · 加载与预览", () => {
     expect(totals).not.toHaveTextContent("销售单号");
   });
 
-  it("展示八个报表子栏目（老表 6 份 + 外汇一览表 + 核算表），地址可收藏", async () => {
+  it("展示全部财务报表子栏目（老表 6 份 + 外汇一览表 + 核算表 + 三大报表），地址可收藏", async () => {
     captureDownloads();
     stubReports();
     await open(<FinanceReportWorkspace tab="sales-reconciliation-detail" />, "page-finance-reports");
-    for (const key of ["sales-reconciliation-detail", "sales-reconciliation-summary", "purchase-reconciliation-detail", "sales-gross-profit", "cost-accounting", "cash-flow-detail", "cash-flow-summary", "forex-receipts"]) {
+    for (const key of ["sales-reconciliation-detail", "sales-reconciliation-summary", "purchase-reconciliation-detail", "sales-gross-profit", "cost-accounting", "cash-flow-detail", "cash-flow-summary", "forex-receipts", "balance-sheet", "income-statement", "cash-flow-statement"]) {
       expect(screen.getByTestId(`finance-tab-${key}`)).toHaveAttribute("href", `/finance/reports?tab=${key}`);
     }
+    expect(screen.getByTestId("finance-tab-balance-sheet")).toHaveTextContent("资产负债表");
+  });
+
+  /**
+   * 三大报表（2026-09-24）：取的是**已过账凭证**，按期间切片 —— 所以筛选条上只该有期间与币种，
+   * 客户/供应商/订单号/「含草稿」对它们毫无意义（草稿凭证不是账）。
+   */
+  it("三大报表：筛选条只留期间与币种，两栏对照 8 列 + 勾稽核对行 + 缺口说明都渲染出来", async () => {
+    captureDownloads();
+    const calls = stubReports();
+    await open(<FinanceReportWorkspace tab="balance-sheet" />, "page-finance-reports");
+    await waitFor(() => expect(previews(calls, EP.balanceSheet).length).toBe(1));
+
+    const request = previews(calls, EP.balanceSheet)[0];
+    expect(request.url).toContain("from=");
+    expect(request.url).toContain("to=");
+    expect(request.url).not.toContain("include_draft");
+    expect(request.url).not.toContain("order_no");
+    expect(request.url).not.toContain("customer_id");
+
+    const rows = screen.getAllByTestId("data-table-row");
+    expect(rows).toHaveLength(3);
+    expect(within(rows[2]).getByText("勾稽核对：资产总计 − 负债和所有者权益总计")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("✓ 平衡")).toBeInTheDocument();
+    // 列名照标准格式（两栏各「行次 / 期末余额 / 年初余额」）
+    expect(screen.getByRole("columnheader", { name: "负债和所有者权益（或股东权益）" })).toBeInTheDocument();
+    expect(screen.getAllByRole("columnheader", { name: "年初余额" })).toHaveLength(2);
+    // 缺口说明必须在页面上看得到（只在导出文件里等于没说）
+    expect(screen.getByTestId("finance-report-footnotes")).toHaveTextContent("科目期初余额表");
+    // 草稿开关不出现
+    expect(screen.queryByTestId("finance-report-include-draft")).toBeNull();
+
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(anchorClicks).toHaveLength(1));
+    expect(anchorClicks[0].download).toContain("资产负债表");
+    expect(xlsxCalls(calls)[0].url).toContain("/api/v1/finance/reports/balance-sheet.xlsx");
   });
 
   /**

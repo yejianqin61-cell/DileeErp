@@ -20,13 +20,15 @@ import { apiErrorText } from "../../lib/api-error-text";
 import { fetchCurrencyOptions, currencyOptionsWithCurrent, type CurrencyOption } from "../../lib/currency-catalogue";
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
-  SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_PROCESS_FIELDS,
-  SPEC_SCALAR_KEYS, emptySpecDetailRow, isBlankSpecDetail, specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type SpecDetailRow,
+  SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_MATERIAL_KEYS, SPEC_PROCESS_FIELDS,
+  SPEC_SCALAR_KEYS, emptySpecDetailRow, isBlankSpecDetail, materialOptionLabel, materialRefsFromOrder, materialSpecText,
+  specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialOption, type MaterialRefState, type SpecDetailRow,
 } from "../../lib/sales-order-spec";
+import { MaterialThumb } from "../procurement/material-image";
 
 type Customer = { id: string; customerCode?: string; name: string; isActive?: boolean; currency?: string | null; contacts?: Array<{ id: string; name: string; phone?: string | null; isDefault?: boolean }> };
 type Unit = { id: string; name: string };
-type DetailResponse = AuditRow & Record<string, unknown> & { id: string; orderNo: string; status: string; customer?: { id: string }; contact?: { id: string } | null; specDetails?: Array<Record<string, unknown>> };
+type DetailResponse = AuditRow & Record<string, unknown> & { id: string; orderNo: string; status: string; customer?: { id: string }; contact?: { id: string } | null; specDetails?: Array<Record<string, unknown>>; materialRefs?: Array<Record<string, unknown>> };
 
 /** 基础字段：与弹窗时代同一批（口径没变，只是换了个更能装的形式）。 */
 const BASE_FIELDS: ReadonlyArray<{ key: string; label: string; type?: "textarea" | "date" | "number"; required?: boolean }> = [
@@ -87,6 +89,9 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const [base, setBase] = useState<Record<string, string>>({ order_date: new Date().toISOString().slice(0, 10), quantity: "1" });
   const [spec, setSpec] = useState<Record<string, string>>({});
   const [details, setDetails] = useState<SpecDetailRow[]>([emptySpecDetailRow()]);
+  // 材料明细的物料引用（用户 2026-09-24）：键 = 栏位请求键，值 = 引用的物料（null = 只填文字）。
+  const [refs, setRefs] = useState<MaterialRefState>(() => Object.fromEntries(SPEC_MATERIAL_KEYS.map((key) => [key, null])));
+  const [materials, setMaterials] = useState<MaterialOption[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
@@ -101,14 +106,20 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     setLoading(true);
     setError("");
     try {
-      const [customerList, unitList, currencyList] = await Promise.all([
+      const [customerList, unitList, currencyList, materialList] = await Promise.all([
         apiGet<Customer[]>("/customers?page_size=200"),
         apiGet<Unit[]>("/units"),
         fetchCurrencyOptions().catch(() => [] as CurrencyOption[]),
+        // 物料清单：引用选择器与缩略图都要用。失败时降级成空清单（那一格仍然能填空，
+        // 不能因为物料池拉不到就把整张销售单卡住）。
+        apiGet<MaterialOption[]>("/materials").catch(() => ({ data: [] as MaterialOption[], meta: {} })),
       ]);
       setCustomers(customerList.data.filter((item) => item.isActive !== false));
       setUnits(unitList.data);
       setCurrencies(currencyList);
+      // 物料池拉不到时降级成空清单（那一格仍然能填空）——**不能**因为物料清单失败就把整张
+      // 销售单卡住：引用是「锦上添花」，填字才是主干。`Array.isArray` 是给「接口回了非数组」兜底。
+      setMaterials((Array.isArray(materialList.data) ? materialList.data : []).filter((item) => (item as { isActive?: boolean }).isActive !== false));
       if (orderId) {
         const order = (await apiGet<DetailResponse>(`/sales-orders/${orderId}`)).data;
         setBase({
@@ -135,6 +146,7 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         // ⚠️ 必须过 `specFromOrder`：接口给的是 Prisma **列名**（`ribSpec` / `fabricUsageCanopy`），
         // 而表单按**请求键**（`rib_spec`）取值。直接 `order[key]` 会全部读成空 —— 见该函数的注释。
         setSpec(specFromOrder(order));
+        setRefs(materialRefsFromOrder(order));
         const rows = (order.specDetails ?? []).map((row) => ({
           group_name: String(row.groupName ?? ""), name: String(row.name ?? ""), color: String(row.color ?? ""),
           barcode: String(row.barcode ?? ""), quantity: asText(row.quantity), unit: String(row.unit ?? ""),
@@ -160,6 +172,23 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const setBaseField = (key: string, value: string) => setBase((current) => ({ ...current, [key]: value }));
   const setDetailField = (index: number, key: string, value: string) => setDetails((current) => current.map((row, at) => (at === index ? { ...row, [key]: value } : row)));
 
+  /**
+   * 从物料清单里引用一个物料（用户 2026-09-24：「每个部件，既支持填空，也支持从现有的物料清单中引用」）。
+   *
+   * 选中会把物料的「名称 规格型号 颜色」**写进那一格**：工艺单上印的是文字（工厂照字做伞），
+   * 只记一个引用的话那一格在纸上是空的。写进去之后仍然可改 —— 引用只是省掉手打，不是锁死这一格
+   * （用户明确要的是「既支持填空，也支持引用」）。
+   */
+  function pickMaterial(key: string, materialId: string) {
+    const material = materials.find((item) => item.id === materialId) ?? null;
+    setRefs((current) => ({ ...current, [key]: material }));
+    if (material) setSpec((current) => ({ ...current, [key]: materialSpecText(material) }));
+  }
+  /** 取消引用：**不动已经写好的文字**（用户想留着那些字就留着，清除引用只是不再挂图片）。 */
+  function clearMaterialRef(key: string) {
+    setRefs((current) => ({ ...current, [key]: null }));
+  }
+
   async function save() {
     if (!base.order_no?.trim()) { setError("订单号必填"); return; }
     if (!base.customer_id) { setError("请选择客户"); return; }
@@ -173,7 +202,7 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
 
     setSaving(true);
     setError("");
-    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details) };
+    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs) };
     // 基础字段的空串当「没填」删掉：可选字段的 @IsDecimal/@IsDateString 会因为空串报 400。
     // 细化字段相反——空串 = 清除这一格，必须原样发出去（`specPayload` 已经把 37 个键都带上了）。
     for (const key of Object.keys(base)) if (base[key] === "" && !SPEC_SCALAR_KEYS.includes(key)) delete payload[key];
@@ -265,13 +294,31 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
       </section>
 
       <section className="panel">
-        <div className="panel-heading"><h2>材料明细</h2><span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行</span></div>
+        <div className="panel-heading">
+          <h2>材料明细</h2>
+          <span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行。每一格<strong>既可以手打文字，也可以从物料清单里引用一个物料</strong>（选中会把名称/规格/颜色填进格子，并带上它的图片）</span>
+        </div>
         <div className="panel-body form-grid">
-          {SPEC_MATERIAL_FIELDS.map(([key, label]) => (
-            <label key={key}>{label}
-              <textarea className="ui-input" rows={2} data-testid={`sales-spec-${key}`} value={spec[key] ?? ""} onChange={(event) => setSpec((current) => ({ ...current, [key]: event.target.value }))} />
-            </label>
-          ))}
+          {SPEC_MATERIAL_FIELDS.map(([key, label]) => {
+            const ref = refs[key] ?? null;
+            return (
+              <div key={key} className="material-ref-field">
+                <label>{label}
+                  <textarea className="ui-input" rows={2} data-testid={`sales-spec-${key}`} value={spec[key] ?? ""} onChange={(event) => setSpec((current) => ({ ...current, [key]: event.target.value }))} />
+                </label>
+                <div className="action-row">
+                  <Select value={ref?.id ?? ""} onValueChange={(value) => pickMaterial(key, value)}>
+                    <SelectTrigger data-testid={`sales-material-ref-${key}`}><SelectValue placeholder="从物料清单引用…" /></SelectTrigger>
+                    <SelectContent>{materials.map((material) => <SelectItem key={material.id} value={material.id}>{materialOptionLabel(material)}</SelectItem>)}</SelectContent>
+                  </Select>
+                  {ref && <MaterialThumb materialId={ref.id} version={ref.image?.sha256} alt={materialOptionLabel(ref)} size={36} />}
+                  {ref && <Button size="sm" variant="ghost" data-testid={`sales-material-ref-clear-${key}`} onClick={() => clearMaterialRef(key)}>清除引用</Button>}
+                </div>
+                {/* 引用了但那个物料还没有图 —— 导出时这一格没有图可带。说出来，别让用户以为是导出坏了。 */}
+                {ref && !ref.image && <span className="panel-note" data-testid={`sales-material-ref-no-image-${key}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+              </div>
+            );
+          })}
         </div>
       </section>
 

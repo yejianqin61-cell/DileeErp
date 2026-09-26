@@ -12,6 +12,10 @@
 #   pwsh -File scripts/deploy-incremental.ps1 -SkipValidation # 只打包部署（本地不校验）
 #   pwsh -File scripts/deploy-incremental.ps1 -Force          # 允许 HEAD 与线上版本相同也重发
 #
+# 第 2 步（本地校验）里还有一个**有条件**的 HTTP 契约测试：它需要真实数据库与已启动的 API，
+# 本地不总是具备。条件满足时它会跑并且**跑挂了就阻断**（"有就跑"不能变成"跑了不算"）；
+# 条件不满足时跳过并打印怎么把环境开起来（scripts/dev-test-up.ps1 + 启动 API）。
+#
 # 回滚：ssh 到服务器执行 scripts/deploy/remote-rollback.sh（见脚本头部说明）。
 
 [CmdletBinding()]
@@ -49,9 +53,38 @@ function Invoke-Native([scriptblock]$action) {
 
 function Invoke-Local([string]$description, [scriptblock]$action) {
   Write-Host "  -> $description"
-  Invoke-Native $action | Out-Null
-  if ($LASTEXITCODE -ne 0) { Die "$description（退出码 $LASTEXITCODE）" }
+  $output = Invoke-Native $action
+  if ($LASTEXITCODE -ne 0) {
+    # 失败时**必须**把子进程输出打出来。这里原本是 `Invoke-Native $action | Out-Null`，
+    # 失败只报「退出码 1」——实测踩过：本地单测偶发红，看不到是哪条用例，只能手工逐条重跑
+    # 才判断得出是 flake 还是真错。诊断信息是部署脚本最不该省的东西。
+    $output | ForEach-Object { Write-Host "     $_" }
+    Die "$description（退出码 $LASTEXITCODE）"
+  }
   Ok $description
+}
+
+# HTTP 契约测试（apps/api/test/http/*.test.cjs）：需要**真实数据库 + 已启动的 API**，
+# 因此它是"有就跑、没有就说明怎么开"，而不是无条件硬门禁。
+# 两条开启条件：TEST_DATABASE_URL 非空（库名必须含 test，tests/helpers 会强校验，防误连生产）
+# 且 API_BASE_URL（默认 http://127.0.0.1:3001）的健康检查为 ok。
+# 一旦跑起来它就是**阻断式**的：红了必须停下，否则等于没跑。
+function Invoke-ContractTests() {
+  Write-Host "  -> HTTP 契约测试（可选）"
+  if (-not $env:TEST_DATABASE_URL) {
+    Warn "跳过：未设置 TEST_DATABASE_URL。启用方式：跑 scripts/dev-test-up.ps1，再 dot-source `$env:TEMP\dilee-test-env.ps1"
+    return
+  }
+  $apiBase = if ($env:API_BASE_URL) { $env:API_BASE_URL } else { "http://127.0.0.1:3001" }
+  try { $health = Invoke-RestMethod -Uri "$apiBase/api/v1/health" -TimeoutSec 5 } catch { $health = $null }
+  if (-not $health -or $health.data.status -ne "ok") {
+    Warn "跳过：API 未就绪（$apiBase/api/v1/health 不可用）。在测试库上启动 API：`$env:DATABASE_URL=`$env:TEST_DATABASE_URL; `$env:PORT=3001; node apps/api/dist/main.js"
+    return
+  }
+  Write-Host "     测试库：$env:TEST_DATABASE_URL"
+  Write-Host "     API   ：$apiBase"
+  $env:API_INTERNAL_URL = $apiBase
+  Invoke-Local "HTTP 契约测试" { node --test --test-concurrency=1 apps/api/test/http/*.test.cjs | Out-Null }
 }
 
 function Invoke-Remote([string]$description, [string]$command, [switch]$Capture) {
@@ -72,10 +105,13 @@ Write-Host "  线上版本  : $liveVersion"
 
 git diff --quiet; $dirtyWorktree = $LASTEXITCODE -ne 0
 git diff --cached --quiet; $dirtyIndex = $LASTEXITCODE -ne 0
-$untracked = (git status --porcelain | Where-Object { $_ -like '??*' }).Count
+# 注意 `-like '??*'` 是**错的**：PowerShell 的 `?` 是单字符通配符，'??*' 等价于「任意 3 个及以上字符」——
+# 所有状态行都满足，于是"未跟踪文件数"会把已修改文件一起算进去、脏文件清单反而是空的。
+# 实测被它误导过两次（每次都说"有 N 个未跟踪文件"，而 N 其实是全部条目）。判断状态码前缀只能用正则。
+$untracked = (git status --porcelain | Where-Object { $_ -match '^\?\?' }).Count
 if ($dirtyWorktree -or $dirtyIndex) {
   Warn "工作区存在已跟踪的未提交改动（发布包只含已提交内容）："
-  git status --short | Where-Object { $_ -notlike '??*' } | ForEach-Object { Write-Host "     $_" }
+  git status --short | Where-Object { $_ -notmatch '^\?\?' } | ForEach-Object { Write-Host "     $_" }
   Die "请先提交（或暂存）后再部署；如需带走他人未提交改动，请由对方提交。"
 }
 if ($untracked -gt 0) { Warn "有 $untracked 个未跟踪文件不会被发布（确认是否合理，例如 @types 缓存/临时目录）" }
@@ -104,8 +140,11 @@ if ($SkipValidation) {
   } else {
     Invoke-Local "API 单元测试" { node --test apps/api/test/unit/*.test.cjs | Out-Null }
     Invoke-Local "API 根测试" { node --test apps/api/test/*.test.cjs | Out-Null }
-    Invoke-Local "Web lib 测试" { node --test apps/web/lib/*.test.mjs | Out-Null }
+    # `apps/web/lib/*.test.mjs` 只扫顶层，会静默漏掉 apps/web/lib/production/ 下的用例
+    # （实测漏了 12 条，表现为"作者说 229 条、闸门只跑 217 条"）。要递归必须用 `**`。
+    Invoke-Local "Web lib 测试" { node --test apps/web/lib/**/*.test.mjs | Out-Null }
     Invoke-Local "Web 组件测试 (vitest)" { npm run test:components --workspace=@dilee/web | Out-Null }
+    Invoke-ContractTests
   }
 }
 $errlogBaseline = 0
@@ -117,7 +156,9 @@ Invoke-Local "生成发布包（拒绝脏工作区）" { & (Join-Path $PSScriptR
 # 先取全量再截前几行：`tar | Select-Object -First n` 会提前中断原生进程
 $allEntries = & tar -tzf $archive
 Write-Host "  包顶层：$((($allEntries | Select-Object -First 5) -join ' | '))  共 $($allEntries.Count) 项"
-Write-Host "  包顶层：$($entries -join ' | ')"
+# 这里原本是 `Write-Host "  包顶层：$($entries -join ' | ')"` —— `$entries` 从未定义，
+# 于是每次都多打一行空的"包顶层："（实测日志里就是那样）。改成打真正有用的大小。
+Write-Host "  包大小：$([math]::Round((Get-Item $archive).Length / 1MB, 1)) MB"
 Invoke-Remote "准备远端目录" "rm -rf $remoteDir && mkdir -p $remoteDir"
 Write-Host "  -> 上传发布包与部署脚本"
 & scp @sshBase $archive "${DeployHost}:/tmp/$archive" | Out-Null

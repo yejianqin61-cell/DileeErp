@@ -25,6 +25,8 @@ import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { currencyOptions, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
+import BankTransferSlipEditor from "./bank-transfer-slip-editor";
+import { transferSlipDraftPath, type BankTransferSlip } from "../../lib/bank-transfer-slip";
 
 /** 银行账户池条目（财务 → 银行账户）。互转的两端都只能从这里选，不在这里手输账户。 */
 type BankRef = { id: string; bankCode: string; bankName: string; accountName: string; accountNumber: string; currency: string; isActive: boolean; openingBalance: string };
@@ -68,6 +70,16 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
   const [fromFilter, setFromFilter] = useState("");
   const [toFilter, setToFilter] = useState("");
   const [bankFilter, setBankFilter] = useState("");
+  /**
+   * 跨行转账单（财务 2026-09-24：「银行账户互转的时候，跨行转账单，支持编辑这个样式的表单，
+   * 并且支持导出打印」）。
+   *
+   * 打开时先按这笔互转向后端要一份预填（双方全称 / 账号 / 开户行、日期、币种、汇率、原币金额、
+   * 折合人民币、用途）。预填口径（账户名 `account_name`、折合人民币取哪条腿）只有服务端知道，
+   * 而列表里的 `fromBank/toBank` 只带开户行与账号，前端拍不出账户全称。
+   * 单子**不落库**：它是一张交给银行的打印件（与收/付款单同一处理）。
+   */
+  const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; slip: BankTransferSlip | null }>({ open: false, loading: false, error: "", slip: null });
 
   useEffect(() => { let cancelled = false; void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencyCatalogue(options); }); return () => { cancelled = true; }; }, []);
 
@@ -180,8 +192,18 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
     });
   }
 
-  function openReverse(item: BankTransfer) {
-    setDialog({
+  /** 打开跨行转账单：先向后端要一份预填，再交给编辑器（可编辑 + 打印 + 导出）。 */
+  async function openSlip(item: BankTransfer) {
+    setSlip({ open: true, loading: true, error: "", slip: null });
+    try {
+      const result = await apiGet<BankTransferSlip>(transferSlipDraftPath(item.id));
+      setSlip({ open: true, loading: false, error: "", slip: result.data });
+    } catch (cause) {
+      setSlip({ open: true, loading: false, error: messageOf(cause, "跨行转账单预填失败"), slip: null });
+    }
+  }
+
+  function openReverse(item: BankTransfer) {    setDialog({
       title: `冲销互转单 ${item.transferNo}`,
       fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true, placeholder: "例如：账号选错，重新互转" }],
       submit: async (values) => {
@@ -240,6 +262,9 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
       id: "actions",
       header: "操作",
       cell: ({ row }) => <div className="action-row" data-testid={`bank-transfer-actions-${row.original.id}`}>
+        {/* 跨行转账单是一张打印件（不改任何数据），所以**已冲销**的互转也允许出单：
+            财务常常是先冲销错的、再照原样补一张纸，把按钮禁用只会让她去翻别的办法。 */}
+        <Button size="sm" variant="secondary" data-testid={`bank-transfer-slip-${row.original.id}`} disabled={busy} onClick={() => void openSlip(row.original)}>跨行转账单</Button>
         <Button size="sm" variant="secondary" data-testid={`bank-transfer-reverse-${row.original.id}`} disabled={busy || row.original.status !== "posted"} onClick={() => openReverse(row.original)}>冲销</Button>
       </div>,
     },
@@ -259,6 +284,15 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
       title={dialog?.title ?? "操作"}
       fields={dialog?.fields ?? []}
       onSubmit={(values) => (dialog ? dialog.submit(values) : undefined)}
+    />
+
+    {/* 跨行转账单：预填 → 现改（联行号 / 用途 / 签字格）→ 打印 或 导出 xlsx。不改系统里的任何数据。 */}
+    <BankTransferSlipEditor
+      open={slip.open}
+      onOpenChange={(open) => setSlip((current) => open ? current : { ...current, open: false, slip: null, error: "" })}
+      slip={slip.slip}
+      loading={slip.loading}
+      error={slip.error}
     />
 
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}

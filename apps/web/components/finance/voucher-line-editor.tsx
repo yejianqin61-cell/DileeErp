@@ -21,7 +21,7 @@ import { Textarea } from "../ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { SearchableSelect } from "../ui/searchable-select";
 import { LoadingState } from "../feedback/states";
-import { ApiClientError, apiGet, apiPatch } from "../../lib/api-client";
+import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import {
   DIRECTION_OPTIONS,
@@ -50,18 +50,29 @@ export type EditableVoucher = {
 
 const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
 
-export default function VoucherLineEditor({ open, onOpenChange, voucher, subjects, onSaved }: {
+export default function VoucherLineEditor({ open, onOpenChange, voucher, subjects, onSaved, creating = false }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 被编辑的草稿凭证；为 null 时（详情还没加载完）不渲染内容。 */
+  /** 被编辑的草稿凭证；为 null 时，编辑态下不渲染内容，**新建态下就是「一张空凭证」**。 */
   voucher: EditableVoucher | null;
   /** 全量启用的会计科目（下拉选项）。 */
   subjects: EditorSubject[];
   onSaved: () => void;
+  /**
+   * 新建态（2026-09-24：折旧/摊销/计提/结转这类**非现金分录**没有收支流水可挂，只能手工录）。
+   *
+   * 与编辑态的三处差别：① 日期与币种要在这里填（编辑态的它们来自凭证本身）；
+   * ② 保存走 `POST /finance/vouchers` 而不是 PATCH；③ 不显示模板栏 ——
+   * 模板接口是 `vouchers/:id/templates`（模板里带着「这张凭证的资金行用哪张卡」），
+   * 新建时还没有 id，摆一个点不动的按钮不如不摆。
+   */
+  creating?: boolean;
 }) {
   const [lines, setLines] = useState<VoucherEditorLine[]>([]);
   const [summary, setSummary] = useState("");
   const [remark, setRemark] = useState("");
+  const [voucherDate, setVoucherDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [currency, setCurrency] = useState("CNY");
   const [templates, setTemplates] = useState<VoucherTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState("");
@@ -77,18 +88,30 @@ export default function VoucherLineEditor({ open, onOpenChange, voucher, subject
    * 用它会在一保存完（父组件重拉列表）就把用户正在编辑的内容冲掉。
    */
   const reset = useCallback(() => {
-    if (!voucher) return;
+    if (!voucher) {
+      // 新建：一借一贷两条空行（最常见的分录形状，且默认就是合法形状），金额与科目由财务填。
+      if (creating) {
+        setLines([emptyVoucherLine(nextLineKey(), "debit"), emptyVoucherLine(nextLineKey(), "credit")]);
+        setSummary("");
+        setRemark("");
+        setVoucherDate(new Date().toISOString().slice(0, 10));
+        setCurrency("CNY");
+        setError("");
+      }
+      return;
+    }
     setLines(linesFromVoucher(voucher.lines, subjects));
     setSummary(voucher.summary);
     setRemark(voucher.remark ?? "");
     setError("");
-  }, [voucher?.id, subjects]);
+  }, [voucher?.id, subjects, creating]);
 
   useEffect(() => { if (open) reset(); }, [open, reset]);
 
   // 模板从后端取：它是会计口径（与科目表同源），而且「资金行用哪张卡」只有后端知道。
+  // 新建态没有凭证 id，所以这条只在编辑态跑（见 creating 的说明）。
   useEffect(() => {
-    if (!open || !voucher) return;
+    if (!open || !voucher || creating) return;
     let cancelled = false;
     setTemplatesLoading(true);
     setTemplatesError("");
@@ -97,7 +120,7 @@ export default function VoucherLineEditor({ open, onOpenChange, voucher, subject
       .catch((cause) => { if (!cancelled) setTemplatesError(messageOf(cause, "模板加载失败")); })
       .finally(() => { if (!cancelled) setTemplatesLoading(false); });
     return () => { cancelled = true; };
-  }, [open, voucher?.id]);
+  }, [open, voucher?.id, creating]);
 
   const totals = useMemo(() => voucherLineTotals(lines), [lines]);
   /** 借贷差额（绝对值）。合计相等时为 0。 */
@@ -113,7 +136,7 @@ export default function VoucherLineEditor({ open, onOpenChange, voucher, subject
   const applyTemplate = (template: VoucherTemplate) => setLines(applyVoucherTemplate(template, lines.find((line) => line.bankId) ?? null));
 
   async function save() {
-    if (!voucher) return;
+    if (!voucher && !creating) return;
     // 三种原因分开说：合成一句「请检查分录」会让财务在四行金额里逐个试。
     if (totals.invalid) { setError("每行金额都必须是大于零的数字（最多 4 位小数）"); return; }
     if (totals.subjectMissing) { setError("每一行都必须选择会计科目"); return; }
@@ -122,16 +145,18 @@ export default function VoucherLineEditor({ open, onOpenChange, voucher, subject
     setSaving(true);
     setError("");
     try {
-      await apiPatch(`/finance/vouchers/${voucher.id}`, {
-        summary: summary.trim() || undefined,
-        remark: remark.trim(),
-        lines: voucherLinePayload(lines, subjects),
-      });
-      notifySuccess(`凭证 ${voucher.voucherNo} 的分录已更新`);
+      const linesPayload = voucherLinePayload(lines, subjects);
+      if (creating) {
+        await apiPost("/finance/vouchers", { voucher_date: voucherDate, currency, summary: summary.trim() || undefined, remark: remark.trim() || undefined, lines: linesPayload });
+        notifySuccess("凭证已新建（草稿），核对后请过账");
+      } else {
+        await apiPatch(`/finance/vouchers/${voucher!.id}`, { summary: summary.trim() || undefined, remark: remark.trim(), lines: linesPayload });
+        notifySuccess(`凭证 ${voucher!.voucherNo} 的分录已更新`);
+      }
       onOpenChange(false);
       onSaved();
     } catch (cause) {
-      const message = messageOf(cause, "凭证保存失败");
+      const message = messageOf(cause, creating ? "凭证新建失败" : "凭证保存失败");
       setError(message);
       notifyError(message);
     } finally {
@@ -141,21 +166,27 @@ export default function VoucherLineEditor({ open, onOpenChange, voucher, subject
 
   return <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>
     <DialogContent className="voucher-editor-dialog" data-testid="voucher-line-editor">
-      <DialogHeader><DialogTitle>编辑凭证 {voucher?.voucherNo ?? ""} 的分录</DialogTitle></DialogHeader>
+      <DialogHeader><DialogTitle>{creating ? "新建凭证" : `编辑凭证 ${voucher?.voucherNo ?? ""} 的分录`}</DialogTitle></DialogHeader>
       <DialogBody>
-        {!voucher ? <LoadingState /> : <>
+        {!voucher && !creating ? <LoadingState /> : <>
+          {creating && <div className="filter-bar">
+            {/* 日期与币种在编辑态来自凭证本身，新建时只能在这里填（日期决定会计期间）。 */}
+            <label>凭证日期<Input data-testid="voucher-editor-date" type="date" value={voucherDate} onChange={(event) => setVoucherDate(event.target.value)} disabled={saving} /></label>
+            <label>币种<Input data-testid="voucher-editor-currency" value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} disabled={saving} placeholder="CNY" /></label>
+          </div>}
           <div className="filter-bar">
-            <label>摘要<Input data-testid="voucher-editor-summary" value={summary} onChange={(event) => setSummary(event.target.value)} /></label>
-            <label>模板
+            <label>摘要<Input data-testid="voucher-editor-summary" value={summary} onChange={(event) => setSummary(event.target.value)} disabled={saving} placeholder={creating ? "如：计提 9 月折旧" : undefined} /></label>
+            {!creating && <label>模板
               {/* 模板**替换**全部分录，所以文案里写明，避免「我只是想加两行，怎么原来的没了」。 */}
               <span className="voucher-template-bar" data-testid="voucher-editor-templates">
                 {templatesLoading && <span className="panel-note">模板加载中…</span>}
                 {templatesError && <span className="panel-note status-error">{templatesError}</span>}
                 {!templatesLoading && !templatesError && templates.map((template) => <Button key={template.key} size="sm" variant="secondary" title={`${template.description}（会覆盖现有分录）`} data-testid={`voucher-template-${template.key}`} disabled={saving} onClick={() => applyTemplate(template)}>套用「{template.name}」</Button>)}
               </span>
-            </label>
+            </label>}
           </div>
-          <p className="panel-note">套用模板会覆盖下面现有分录；金额留空由你填写（系统不按税率自动拆进项税：取得普票不抵扣、优惠税率时会被自动填错）。</p>
+          {/* 模板说明只在编辑态出现（新建态没有模板栏）。 */}
+          {!creating && <p className="panel-note">套用模板会覆盖下面现有分录；金额留空由你填写（系统不按税率自动拆进项税：取得普票不抵扣、优惠税率时会被自动填错）。</p>}
 
           <div className="voucher-editor-row voucher-editor-row-head">
             <span>方向</span><span>会计科目</span><span>摘要</span><span>金额</span><span />
@@ -191,7 +222,7 @@ export default function VoucherLineEditor({ open, onOpenChange, voucher, subject
       </DialogBody>
       <DialogFooter>
         <Button variant="secondary" data-testid="voucher-editor-cancel" disabled={saving} onClick={() => onOpenChange(false)}>取消</Button>
-        <Button data-testid="voucher-editor-save" disabled={saving || !voucher || !totals.balanced} onClick={() => void save()}>{saving ? "保存中…" : "保存分录"}</Button>
+        <Button data-testid="voucher-editor-save" disabled={saving || (!creating && !voucher) || !totals.balanced} onClick={() => void save()}>{saving ? "保存中…" : creating ? "新建凭证" : "保存分录"}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

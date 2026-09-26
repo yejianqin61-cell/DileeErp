@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SalesOrderEditor } from "../components/sales/sales-order-editor";
-import { SPEC_SCALAR_KEYS } from "../lib/sales-order-spec";
+import { SPEC_MATERIAL_FIELDS, SPEC_SCALAR_KEYS } from "../lib/sales-order-spec";
 
 const routerPush = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -181,6 +181,109 @@ describe("销售单整页编辑器", () => {
     expect(body.rib_spec).toBe("旧伞骨");
     expect("order_no" in body).toBe(false);
     expect("customer_id" in body).toBe(false);
+  });
+});
+
+/* ------------------------------------------------ 材料明细：填空或引用物料（2026-09-24） */
+
+/**
+ * 用户原话：「在编辑销售单的时候，每个部件，既支持填空，也支持从现有的物料清单中引用。
+ * 同时要体现对应的物料的图片」。
+ *
+ * 四条：① 18 个部件各有一个引用选择器；② 选中就把物料的名称/规格/颜色填进格子（工艺单印的是文字）
+ * 并显示缩略图；③ 取消引用**不动文字**（用户想留着那些字）；④ 保存时 `material_refs` 是整块替换。
+ */
+describe("销售单编辑器：材料明细引用物料", () => {
+  const material = (extra: Record<string, unknown> = {}) => ({
+    id: "m-1", materialCode: "MAT-1", name: "伞骨", specificationModel: "50cm", color: "黑",
+    image: { sha256: "sha-1", updatedAt: "2026-09-24T00:00:00.000Z" }, isActive: true, ...extra,
+  });
+
+  function stubWithMaterials(materials: unknown[]) {
+    return stubApi([["/materials", () => ({ data: materials, meta: {} })]]);
+  }
+
+  it("18 个材料栏位各有一个「从物料清单引用…」选择器", async () => {
+    stubWithMaterials([material()]);
+    render(<SalesOrderEditor />);
+    await screen.findByText("材料明细");
+
+    for (const [key] of SPEC_MATERIAL_FIELDS) expect(field(`sales-material-ref-${key}`), `缺引用选择器 ${key}`).toBeTruthy();
+    // 工艺要求栏位不该有选择器（它们不是「部件」）。
+    expect(screen.queryByTestId("sales-material-ref-qc_requirement")).toBeNull();
+  });
+
+  it("选中物料：把名称/规格/颜色填进格子、显示缩略图，保存时发出 material_refs", async () => {
+    const calls = stubWithMaterials([material(), material({ id: "m-2", materialCode: "MAT-2", name: "伞布", specificationModel: "190T", color: "藏青", image: null })]);
+    render(<SalesOrderEditor />);
+    await screen.findByText("材料明细");
+    await pickSelect("sales-base-customer_id", "C001");
+    await pickSelect("sales-base-unit", "支");
+    await pickSelect("sales-base-currency", "美元");
+    await fillBase();
+
+    await pickSelect("sales-material-ref-rib_spec", "MAT-1");
+    // 选中就把物料文字填进格子（工艺单印的是文字）
+    expect((field("sales-spec-rib_spec") as HTMLTextAreaElement).value).toBe("伞骨 50cm 黑");
+    expect((field("material-image-thumb-m-1") as HTMLImageElement).getAttribute("src")).toBe("/api/v1/materials/m-1/image?v=sha-1");
+
+    // 第二个部件引用一个**没有图**的物料：要明说，别让人以为是导出坏了
+    await pickSelect("sales-material-ref-canopy_spec", "MAT-2");
+    expect(field("sales-material-ref-no-image-canopy_spec")).toHaveTextContent("该物料还没有图片");
+
+    await userEvent.click(field("sales-order-save"));
+    const saved = calls.find((call) => call.method === "POST" && call.url.includes("/sales-orders"));
+    expect((saved!.body as Record<string, unknown>).material_refs).toEqual([
+      { spec_key: "rib_spec", material_id: "m-1" },
+      { spec_key: "canopy_spec", material_id: "m-2" },
+    ]);
+  });
+
+  it("取消引用：文字留着、缩略图消失、载荷里不再有这一格", async () => {
+    const calls = stubWithMaterials([material()]);
+    render(<SalesOrderEditor />);
+    await screen.findByText("材料明细");
+    await pickSelect("sales-base-customer_id", "C001");
+    await pickSelect("sales-base-unit", "支");
+    await pickSelect("sales-base-currency", "美元");
+    await fillBase();
+    await pickSelect("sales-material-ref-rib_spec", "MAT-1");
+
+    await userEvent.click(field("sales-material-ref-clear-rib_spec"));
+    // 清除引用不动已经写好的文字
+    expect((field("sales-spec-rib_spec") as HTMLTextAreaElement).value).toBe("伞骨 50cm 黑");
+    expect(screen.queryByTestId("material-image-thumb-m-1")).toBeNull();
+
+    await userEvent.click(field("sales-order-save"));
+    const saved = calls.find((call) => call.method === "POST" && call.url.includes("/sales-orders"));
+    expect((saved!.body as Record<string, unknown>).material_refs).toEqual([]);
+  });
+
+  it("编辑既有销售单：materialRefs（列名形状）回填成引用与缩略图，并原样再发出去", async () => {
+    const order = {
+      id: "order-1", orderNo: "DL260134", status: "draft", orderDate: "2026-06-18T00:00:00.000Z", deliveryDate: null,
+      productName: "折叠伞", quantity: "1960", unit: "支", currency: "USD", customer: { id: "customer-1" }, contact: null,
+      ribSpec: "伞骨 50cm 黑", specDetails: [],
+      materialRefs: [{ specKey: "rib_spec", material: { id: "m-1", materialCode: "MAT-1", name: "伞骨", specificationModel: "50cm", color: "黑", image: { sha256: "sha-1" } } }],
+    };
+    const calls = stubApi([["/sales-orders/order-1", () => ({ data: order, meta: {} })], ["/materials", () => ({ data: [material()], meta: {} })]]);
+    render(<SalesOrderEditor orderId="order-1" />);
+
+    await waitFor(() => expect(field("sales-material-ref-clear-rib_spec")).toBeTruthy());
+    expect((field("material-image-thumb-m-1") as HTMLImageElement).getAttribute("src")).toBe("/api/v1/materials/m-1/image?v=sha-1");
+
+    await userEvent.click(field("sales-order-save"));
+    const patched = calls.find((call) => call.method === "PATCH" && call.url.includes("/sales-orders/order-1"));
+    expect((patched!.body as Record<string, unknown>).material_refs).toEqual([{ spec_key: "rib_spec", material_id: "m-1" }]);
+  });
+
+  it("物料清单拉不到时整页照样能用（引用是锦上添花，填字才是主干）", async () => {
+    stubApi([["/materials", () => ({ data: { unexpected: "shape" }, meta: {} })]]);
+    render(<SalesOrderEditor />);
+
+    await screen.findByText("材料明细");
+    expect(field("sales-spec-rib_spec")).toBeTruthy();
+    expect(field("sales-material-ref-rib_spec")).toBeTruthy();
   });
 });
 

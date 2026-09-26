@@ -102,3 +102,53 @@ test("发布包布局与 .gitattributes 约束仍在", () => {
   const attrs = read(".gitattributes");
   assert.match(attrs, /\*\.sh text eol=lf/, ".gitattributes 必须强制 shell 脚本 LF");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-26「改进部署」：把这几轮实际踩到的坑固化成断言。
+// 每一条都对应一次真实事故，而不是假想的风险。
+//
+// 注意这些断言看的是**代码行**（剥掉 `#` 注释）：注释里为了说明"为什么不能这么写"会**引用**
+// 被禁掉的老写法，直接匹配全文会自我误伤（第一版就是这么红的）。
+// ---------------------------------------------------------------------------
+const codeOf = (text) => text.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
+const driverCode = codeOf(driver);
+
+test("本地校验失败时必须打印子进程输出（只报退出码会让人无从下手）", () => {
+  // 事故：本地单测偶发红，`Invoke-Native $action | Out-Null` 把输出丢了，只看到「退出码 1」，
+  // 只能手工逐条重跑才判断得出是 flake 还是真错。
+  assert.doesNotMatch(driverCode, /Invoke-Native \$action \| Out-Null/, "不得丢弃本地校验输出");
+  assert.match(driverCode, /\$output = Invoke-Native \$action/, "必须捕获输出以便失败时打印");
+  assert.match(driverCode, /if \(\$LASTEXITCODE -ne 0\) \{[\s\S]{0,200}?\$output \| ForEach-Object \{ Write-Host/, "失败分支必须打印捕获到的输出");
+});
+
+test("git 状态码前缀必须用正则判断：'-like \\'??*\\'' 是错的", () => {
+  // 事故：PowerShell 的 `?` 是单字符通配符，'??*' 等价于「任意 ≥3 个字符」——所有状态行都匹配，
+  // 于是"未跟踪文件数"把已修改文件也算进去、脏文件清单反而是空的。被它误导过两次。
+  assert.ok(!driverCode.includes("-like '??*'"), "不得用 -like '??*' 判断未跟踪");
+  assert.ok(!driverCode.includes("-notlike '??*'"), "不得用 -notlike '??*' 过滤脏文件");
+  assert.ok(driverCode.includes("-match '^\\?\\?'"), "未跟踪必须用 -match '^\\?\\?'");
+  assert.ok(driverCode.includes("-notmatch '^\\?\\?'"), "脏文件清单必须用 -notmatch '^\\?\\?'");
+});
+
+test("本地校验必须递归 web lib（* 只扫顶层，会静默漏掉子目录用例）", () => {
+  // 事故：apps/web/lib/*.test.mjs 漏掉 apps/web/lib/production/daily-report-view.test.mjs 的 12 条，
+  // 表现为「作者说 229 条、闸门只跑了 217 条」。
+  assert.match(driverCode, /apps\/web\/lib\/\*\*\/\*\.test\.mjs/, "web lib 必须用 ** 递归");
+  assert.doesNotMatch(driverCode, /apps\/web\/lib\/\*\.test\.mjs/, "不得退回只扫顶层的写法");
+});
+
+test("HTTP 契约测试：有环境就跑且跑挂要阻断，缺环境要说清怎么开", () => {
+  // 契约套件需要真实库 + 已启动的 API，之前每轮都靠人工另外跑（作者日志里反复写"留给部署侧"）。
+  // 现在有条件地纳入闸门：条件满足必须阻断（"有就跑"不能变成"跑了不算"），不满足要给出开启步骤。
+  assert.match(driverCode, /function Invoke-ContractTests/, "必须有契约测试步骤");
+  assert.match(driverCode, /TEST_DATABASE_URL/, "开启条件之一：测试库连接串");
+  assert.match(driverCode, /API_BASE_URL/, "开启条件之一：已启动的 API");
+  assert.match(driverCode, /apps\/api\/test\/http\/\*\.test\.cjs/, "必须真的跑契约套件");
+  assert.match(driverCode, /dev-test-up\.ps1/, "跳过时必须告诉人怎么把环境开起来");
+  assert.match(driverCode, /Invoke-Local "HTTP 契约测试"/, "契约测试必须走 Invoke-Local（跑挂即阻断）");
+});
+
+test("打包信息行不得引用未定义变量（历史上多打了一行空的「包顶层：」）", () => {
+  assert.ok(!driverCode.includes("$entries"), "驱动脚本里没有 $entries 这个变量，引用它只会打印空行");
+  assert.match(driverCode, /包大小：/, "应改为打印真正有用的信息（包大小）");
+});

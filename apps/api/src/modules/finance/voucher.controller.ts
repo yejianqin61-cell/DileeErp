@@ -37,6 +37,20 @@ class ReasonDto {
   @IsString() @MaxLength(1000) reason!: string;
 }
 
+/**
+ * 手工新增凭证（2026-09-24）。
+ *
+ * `voucher_date` 必填（决定会计期间），`lines` 至少两条且必须借贷相等（服务层校验并给出可读原因）。
+ * `currency` 默认 CNY；`summary` 留空时服务层按期间给一句兜底。
+ */
+class VoucherCreateDto {
+  @IsString() @MaxLength(20) voucher_date!: string;
+  @IsOptional() @IsString() @MaxLength(10) currency?: string;
+  @IsOptional() @IsString() @MaxLength(500) summary?: string;
+  @IsOptional() @IsString() @MaxLength(1000) remark?: string;
+  @IsArray() @ValidateNested({ each: true }) @Type(() => VoucherLineDto) lines!: VoucherLineDto[];
+}
+
 @Controller("finance/vouchers")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("finance")
@@ -65,6 +79,17 @@ export class VoucherController {
   @Get(":id")
   async get(@Param("id") id: string) {
     return { data: await this.vouchers.get(id), meta: {} };
+  }
+
+  /**
+   * 手工新增凭证（折旧 / 摊销 / 工资计提 / 结转成本这类**非现金分录**没有收支流水可挂）。
+   *
+   * 声明在 `@Get(":id")` 之前的老规矩在这里同样适用：这是 `POST` 集合路由，
+   * 与 `POST :id/post` 之类不冲突，但集合路由放在最前面是这条链路上的一致做法。
+   */
+  @Post()
+  async create(@Body() body: VoucherCreateDto, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.vouchers.createManual(body, user), meta: {} };
   }
 
   /** 由一条收支流水生成凭证（幂等：该流水已有凭证就返回原凭证）。 */

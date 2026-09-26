@@ -71,3 +71,31 @@ export async function downloadPost(url: string, body: unknown, fallbackName: str
   if (!response.ok) throw await failureOf(null, response);
   await saveAs(response, fallbackName);
 }
+
+/**
+ * 带 **multipart** body 的下载（POST 导出，请求里带文件）。
+ *
+ * 为什么需要它（而不是复用 `downloadPost`）：工艺单要一并导出用户勾选的物料图片，
+ * 而图片是二进制 —— 塞进 JSON 会撞上后端 Express 默认 100KB 的 body 上限，放开那个上限是
+ * 拿整站攻击面换一个导出接口。multipart 本来就是为字节准备的。
+ *
+ * ⚠️ **不要**自己写 `Content-Type`：multipart 的 boundary 由浏览器生成，
+ * 手写一个 `multipart/form-data` 会缺少 boundary，后端解析不出任何字段（表现为「一张图都没有」）。
+ * 超时给 5 分钟：十几张图要先在浏览器里转码再上传。
+ */
+export async function downloadFormPost(url: string, form: FormData, fallbackName: string, timeoutMs = 300000): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (cause) {
+    throw await failureOf(cause);
+  }
+  if (!response.ok) throw await failureOf(null, response);
+  await saveAs(response, fallbackName);
+}

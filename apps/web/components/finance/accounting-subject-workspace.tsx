@@ -24,6 +24,8 @@ import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib
 import { ACCOUNTING_SUBJECTS_PATH, type AccountingSubject } from "../../lib/accounting-subjects";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
+import OpeningBalancePanel from "./opening-balance-panel";
+import ExchangeRatePanel from "./exchange-rate-panel";
 
 /** 会计科目（后端 `accounting_subjects`）。类型与显示口径在 lib/accounting-subjects.ts 里统一。 */
 export type AccountingSubjectRow = AuditRow & AccountingSubject;
@@ -224,5 +226,13 @@ export default function AccountingSubjectWorkspace({ testId = "page-finance-acco
         <DataTable columns={columns} data={visible} empty={<EmptyState title="没有符合条件的会计科目" />} />
       </div>}
     </section>
+
+    {/* 建账期初余额（2026-09-24）：科目表是「有哪些科目」，这一块是「建账那天各科目各是多少」——
+        三大报表的起点。放在同一页是因为两件事都是财务口径的维护入口，分两页反而要多找一次。 */}
+    <OpeningBalancePanel />
+
+    {/* 期末汇率（2026-09-24）：外币凭证要折成人民币才能进三大报表。与期初余额同为「报表口径的维护入口」，
+        所以也在这一页 —— 财务的月度动作就这两件：维护期初一次、维护汇率每月一次。 */}
+    <ExchangeRatePanel />
   </div>;
 }

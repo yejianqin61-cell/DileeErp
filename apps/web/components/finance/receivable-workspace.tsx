@@ -5,7 +5,7 @@
 // 三个子栏目按业务顺序排列，对应「先有出库、再对账、最后确认应收」：
 //   1. 成品出库条目：成品出库过账自动生成的应收来源（一个订单分批出库 = 多条），草稿可编辑/确认/取消；
 //   2. 应收对账：按客户 + 期间创建对账单（自动汇总该期间的出库条目为明细），对平后可一键确认一批；
-//   3. 确认应收：应收台账，**勾选多条一次确认**（确认即记账，金额记入所选银行账户）。
+//   3. 确认应收：应收台账，**勾选多条一次确认**（2026-09-24 起确认 = **挂账**：借应收账款/贷收入，钱到账再登记收款）。
 // 双击任意行都会弹出居中详情页（展示全部字段与可用操作），详情数据来自对应的 :id 接口。
 //
 // 2026-09-16（用户要求「应收侧也改成勾选 + 批量确认」）：确认应收本身就会记一笔收入，
@@ -145,12 +145,14 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [dateTo, setDateTo] = useState("");
   const [exporting, setExporting] = useState(false);
   /**
-   * 收款单编辑器（财务 2026-09-20：「同理，收款单的编辑和导出」）。
+   * 收款单编辑器（财务 2026-09-20：「同理，收款单的编辑和导出」；2026-09-24 改为**队列**）。
    *
    * 与付款单同一套：打开时先按勾选的应收条目向后端预填（单号 / 客户 / 开户行 / 科目 / 借贷行），
-   * 再让财务改金额、加行、写备注，最后出 xlsx。收款单**不落库**（它是一张打印件）。
+   * 再让财务改金额、加行、写备注，最后出 xlsx。跨客户 / 跨币种时后端拆成多张（一次集中收款 =
+   * 一队单子），所以这里存的是数组；`pendingIds` 是这批里还没确认的条目（钱还没进来）。
+   * 收款单**不落库**（它是一张打印件）。
    */
-  const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; draft: FinanceSlipDraft | null }>({ open: false, loading: false, error: "", draft: null });
+  const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; drafts: FinanceSlipDraft[] | null; pendingIds: string[] }>({ open: false, loading: false, error: "", drafts: null, pendingIds: [] });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -198,9 +200,12 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   /**
    * 「确认应收」三个入口（逐条 / 勾选批量 / 按对账单）共用的提交与提示。
    *
-   * 这三条路径现在都是**确认即记账**（用户要求「一旦确认应收，金额就要进入对应的账户」），
-   * 所以不能再用 action() 一句「已确认」了事：响应里的 `bank_missing` 表示钱已经记进收支流水、
-   * 但不属于任何银行账户 —— 这时报成功会让财务以为银行里已经多了这笔钱，必须改成警告。
+   * 2026-09-24 起这三条路径是**挂账**（借应收账款 / 贷收入），不是「确认即记账」：
+   * 钱还没到，所以这里不能再报「金额已记入所选银行账户」——那会让财务以为银行里已经多了这笔钱。
+   * 收到钱时在「登记收款」里记现金（借银行存款 / 贷应收账款）。
+   * （历史数据仍然按老口径：那些应收没有挂账凭证，收款时按老口径贷收入 —— 见后端 `accruedSourceIds`。）
+   *
+   * 响应里的 `bank_missing` 现在恒为 false（挂账不动现金），保留这条判断只为兼容老服务端。
    *
    * 失败时把错误**抛回** ActionDialog（它靠 onSubmit 是否 reject 决定关不关弹窗），
    * 与应付页 submitAction 同一理由：失败不能静默关闭。
@@ -339,7 +344,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `应收回退草稿：${item.sourceNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/receivable-sources/${item.id}/reopen`, { reason: v.reason }, "应收已回退草稿") });
   }
   /**
-   * 逐条确认应收 —— 与「勾选批量确认」「一键确认应收」（按对账单）是同一件事的三条入口，都**确认即记账**。
+   * 逐条确认应收 —— 与「勾选批量确认」「一键确认应收」（按对账单）是同一件事的三条入口，都**挂账**（借应收账款 / 贷收入）。
    *
    * 应收来源本身不挂银行账户（它来自出库单），所以这里必须问清「钱进哪个账户」：
    * 不指定就只能在收支流水里留一笔无归属的钱（后端回 bank_missing，上面会警告）。
@@ -351,7 +356,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       subjectEditField("会计科目"),
       paymentNatureField(),
     ], submit: (v) => submitConfirm(`/finance/receivable-sources/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => ({
-      success: `应收 ${item.sourceNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}），金额已记入所选银行账户`,
+      success: `应收 ${item.sourceNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）并挂账（借应收账款 / 贷收入）；收到钱后在「登记收款」里记现金`,
       warning: `未指定入账银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
     }), "确认应收失败") });
   }
@@ -361,8 +366,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
    * 整批共用一个入账银行与一个会计科目（后端仍是**每条应收写一条流水**，所以每条都追得回来源编号）；
    * 合计**按币种分组**显示，跨币种不相加。勾选里混进已被别人确认掉的条目时，后端会跳过并回报条数。
    */
-  function batchConfirm() {
-    const drafts = sources.filter((source) => source.status === "draft" && selected.includes(source.id));
+  function batchConfirm(ids: string[] = selectedDrafts.map((draft) => draft.id)) {
+    const drafts = sources.filter((source) => source.status === "draft" && ids.includes(source.id));
     const totals = new Map<string, number>();
     for (const draft of drafts) totals.set(draft.currency, (totals.get(draft.currency) ?? 0) + Number(draft.amount));
     setDialog({ title: `批量确认应收（${drafts.length} 条）`, fields: [
@@ -374,7 +379,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
       return {
-        success: `已确认 ${data.confirmed_count ?? drafts.length} 条应收（${amount}）${skipped}，金额已记入所选银行账户`,
+        success: `已确认 ${data.confirmed_count ?? drafts.length} 条应收（${amount}）${skipped}，并逐条挂账（借应收账款 / 贷收入）；收到钱后在「登记收款」里记现金`,
         warning: `未指定入账银行：${amount} 已记入收支流水，但不会体现在任何银行账户余额里`,
       };
     }, "批量确认应收失败") });
@@ -400,20 +405,20 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   }
 
   /**
-   * 打开收款单编辑器：先按勾选的应收条目向后端要一份预填。
+   * 打开收款单队列：先按勾选的应收条目向后端要一份预填（可能是一队多张）。
    *
    * 一行一条应收（贷「主营业务收入」等确认时实际用的科目）+ 借方一行银行存款等于合计；
    * 财务要拆收入与税就自己加行、要少收就自己改金额（与手续费/折扣等零星扣减对应）。
-   * 预填失败（跨客户 / 跨币种）时**照样打开弹窗**把原因写出来：静默什么都不发生，
-   * 用户只会以为按钮坏了。
+   * 后端按「客户 + 币种」拆张（与应付侧同一口径，用户 2026-09-24 要求「收款也一并检查是否支持
+   * 收束收款」）；预填失败时**照样打开弹窗**把原因写出来：静默什么都不发生，用户只会以为按钮坏了。
    */
   async function openReceiptSlip(ids: string[]) {
-    setSlip({ open: true, loading: true, error: "", draft: null });
+    setSlip({ open: true, loading: true, error: "", drafts: null, pendingIds: [] });
     try {
-      const result = await apiPost<FinanceSlipDraft>(financeSlipDraftPath("receipt"), financeSlipDraftBody("receipt", ids));
-      setSlip({ open: true, loading: false, error: "", draft: result.data });
+      const result = await apiPost<{ slips: FinanceSlipDraft[] }>(financeSlipDraftPath("receipt"), financeSlipDraftBody("receipt", ids));
+      setSlip({ open: true, loading: false, error: "", drafts: result.data.slips, pendingIds: ids.filter((id) => sources.some((source) => source.id === id && source.status === "draft")) });
     } catch (cause) {
-      setSlip({ open: true, loading: false, error: messageOf(cause, "收款单预填失败"), draft: null });
+      setSlip({ open: true, loading: false, error: messageOf(cause, "收款单预填失败"), drafts: null, pendingIds: [] });
     }
   }
 
@@ -459,7 +464,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const amount = data.confirmed_amount ?? data.amount ?? "-";
       const currency = data.currency ?? item.currency;
       return {
-        success: `${item.reconciliationNo} 已确认 ${count} 条应收（${amount} ${currency}），金额已记入所选银行账户`,
+        success: `${item.reconciliationNo} 已确认 ${count} 条应收（${amount} ${currency}），并逐条挂账（借应收账款 / 贷收入）；收到钱后在「登记收款」里记现金`,
         warning: `未指定入账银行：${amount} ${currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
       };
     }, "批量确认应收失败");
@@ -719,14 +724,18 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       // 显示原因，ActionDialog 靠 onSubmit 是否 reject 决定关不关（与应付页同一理由）。
       onSubmit={(values) => dialog?.submit(values)} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) { setCategoryDialog(null); setPendingDialog(null); } }} title={categoryDialog?.title ?? "新建客户"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => { categoryDialog?.submit(values); }} />
-    {/* 收款单编辑器：预填 → 现改（金额 / 增删行 / 收款备注）→ 导出 xlsx。不改系统里的任何数据。 */}
+    {/* 收款单编辑器：预填 → 现改（金额 / 增删行 / 收款备注）→ 导出 xlsx。不改系统里的任何数据。
+        一次勾选多个客户时后端会拆成多张，编辑器就是**队列**（与应付侧完全对称）。 */}
     <FinanceSlipEditor
       kind="receipt"
       open={slip.open}
-      onOpenChange={(open) => setSlip((current) => open ? current : { ...current, open: false, draft: null, error: "" })}
-      draft={slip.draft}
+      onOpenChange={(open) => setSlip((current) => open ? current : { ...current, open: false, drafts: null, error: "", pendingIds: [] })}
+      drafts={slip.drafts}
       loading={slip.loading}
       error={slip.error}
+      /* 「收束收款」的另一半：队列里还有没确认的条目 → 关掉队列、按同一批 id 打开确认弹窗。 */
+      pendingCount={slip.pendingIds.length}
+      onConfirmPending={() => { const ids = slip.pendingIds; setSlip((current) => ({ ...current, open: false })); batchConfirm(ids); }}
     />
     <RecordDetailDialog
       open={Boolean(detail)}
@@ -806,10 +815,10 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         </div>
         <div style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }} data-testid="receivable-batch-bar">
           <span className="panel-note" data-testid="receivable-selected-count">已选 {selectedDrafts.length} 条</span>
-          {/* 导出收款单（用户 2026-09-20）：勾选几条 → 一张收款单（一行一条应收）。走预填接口，
-              不改任何数据；金额、分录行、收款备注都在弹窗里现改。与应付侧的付款单完全对称。 */}
-          <Button size="sm" variant="secondary" data-testid="receivable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openReceiptSlip(selectedDrafts.map((draft) => draft.id))}>导出收款单（{selectedDrafts.length} 条）</Button>
-          <Button size="sm" data-testid="receivable-batch-confirm" disabled={!selectedDrafts.length} onClick={batchConfirm}>批量确认（{selectedDrafts.length} 条）</Button>
+          {/* 导出收款单（用户 2026-09-20）：勾选几条 → 一队收款单（按客户 + 币种拆张，一行一条应收）。
+              走预填接口，不改任何数据；金额、分录行、收款备注都在弹窗里现改。与应付侧的付款单完全对称。 */}
+          <Button size="sm" variant="secondary" data-testid="receivable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openReceiptSlip(selectedDrafts.map((draft) => draft.id))}>集中收款单（{selectedDrafts.length} 条）</Button>
+          <Button size="sm" data-testid="receivable-batch-confirm" disabled={!selectedDrafts.length} onClick={() => batchConfirm()}>批量确认（{selectedDrafts.length} 条）</Button>
         </div>
         <DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="没有符合条件的应收条目" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" />
       </div>

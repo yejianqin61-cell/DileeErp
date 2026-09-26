@@ -294,3 +294,26 @@ test("核对提示会印在表尾（不一致时必须让工厂看到）", async
   assert.ok(notice, "不一致时要有核对提示行");
   assert.match(String(notice[0]), /明细数量合计 1960 与单头数量 2000 支 不一致/);
 });
+
+test("行高按内容自动算：长材料/工艺行比短行高，短行不低于下限（用户 2026-09-24「太扁了」）", async () => {
+  const { sheet, rows } = await readSheet(fakeService(sample1()), "order-1");
+  const heightOf = (label) => {
+    const index = rows.findIndex((row) => row.includes(label));
+    assert.ok(index >= 0, `找不到 ${label} 那一行`);
+    return sheet.getRow(index + 1).height;
+  };
+  // 样张里的伞骨那一格是 40 多个字、宽度只有 B:F（60 个单位），必然要多行；
+  // 内标「无」只有一个字 —— 两行的高度必须拉开。
+  const longRow = heightOf("伞骨（孔对孔）");
+  const shortRow = heightOf("内标");
+  assert.ok(longRow > shortRow, `长内容行（${longRow}）必须比短内容行（${shortRow}）高`);
+  assert.ok(shortRow >= 20, "短行也不能低于下限（下限与历史上写死的 20 一致）");
+  // 上限：备注/注意事项最长 2000 字，不封顶会把一张工艺单撑成两页。
+  const capped = { ...sample1(), attentionNote: "甲".repeat(2000) };
+  const cappedRead = await readSheet(fakeService(capped), "order-1");
+  const noteIndex = cappedRead.rows.findIndex((row) => String(row[0]).startsWith("注意："));
+  assert.ok(noteIndex >= 0, "超长注意事项那一行要在");
+  const noteHeight = cappedRead.sheet.getRow(noteIndex + 1).height;
+  assert.ok(noteHeight <= 300, `超长注意事项必须封顶，实际 ${noteHeight}`);
+  assert.ok(noteHeight > 20, "但它仍然要比普通行高");
+});

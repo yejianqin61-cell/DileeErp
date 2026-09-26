@@ -12,25 +12,30 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   emptyFinanceSlipLine,
+  financeSlipBatchExportPath,
+  financeSlipBatchPayload,
   financeSlipBlockers,
   financeSlipDraftBody,
   financeSlipDraftPath,
   financeSlipExportPath,
   financeSlipFileName,
   financeSlipPayload,
+  financeSlipsFileName,
   formatSlipAmount,
   nextFinanceSlipLineKey,
   parseSlipAmount,
   slipDifference,
+  slipConfirmPendingLabel,
   slipLabels,
   slipLinesFromDraft,
+  slipQueueLabel,
   slipTotals,
 } from "./finance-slip.ts";
 
 const line = (extra = {}) => ({ ...emptyFinanceSlipLine(nextFinanceSlipLineKey()), ...extra });
 const header = (extra = {}) => ({
   slip_no: "FK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "富雨鑫",
-  bank_name: "中国农业银行", bank_account: "4039", attachment_count: 1, remark: "", maker: "小叶", ...extra,
+  our_bank_name: "中国农业银行", our_bank_account: "4039", counterparty_bank_name: "兴业银行", counterparty_bank_account: "1573", currency: "CNY", attachment_count: 1, remark: "", maker: "小叶", ...extra,
 });
 /** 财务模板样张那张单（借 原材料 130 + 借 进项税 19.50 / 贷 银行存款 149.50）。 */
 const sampleLines = () => [
@@ -89,10 +94,37 @@ test("finance-slip：收款单的用词跟着种类走，接口路径与请求�
   // 用户只会看到「导出失败」（这条断言就是那次 404 的回归保护）。
   assert.equal(financeSlipExportPath("payment"), "/api/v1/finance/payment-slips.xlsx");
   assert.equal(financeSlipExportPath("receipt"), "/api/v1/finance/receipt-slips.xlsx");
+  // 「全部导出」同样走裸 fetch：两条路径的断言放在一起，就是为了让「只有一条带了前缀」这种病
+  // 一眼可见（2026-09-20 那次 404 就是这么来的）。
+  assert.equal(financeSlipBatchExportPath("payment"), "/api/v1/finance/payment-slips/batch.xlsx");
+  assert.equal(financeSlipBatchExportPath("receipt"), "/api/v1/finance/receipt-slips/batch.xlsx");
   assert.deepEqual(financeSlipDraftBody("payment", ["a"]), { payable_entry_ids: ["a"] });
   assert.deepEqual(financeSlipDraftBody("receipt", ["a"]), { receivable_source_ids: ["a"] }, "传错字段名会变成「勾了却查不到条目」");
   assert.equal(financeSlipFileName("payment", "FK-1"), "迪礼付款单-FK-1.xlsx");
   assert.equal(financeSlipFileName("receipt", "SK-1"), "迪礼收款单-SK-1.xlsx");
+  assert.equal(financeSlipsFileName("payment", 3), "迪礼付款单-3张.xlsx");
+  assert.equal(financeSlipsFileName("receipt", 2), "迪礼收款单-2张.xlsx");
+});
+
+test("finance-slip：队列标题带对方单位与币种（同公司两个币种必须分得清哪张是哪张）", () => {
+  assert.equal(slipQueueLabel(0, "富雨鑫", "CNY", "149.5"), "1. 富雨鑫（CNY） 合计 149.5");
+  assert.equal(slipQueueLabel(1, " 香港迪礼 ", "USD", "120"), "2. 香港迪礼（USD） 合计 120");
+  assert.equal(slipQueueLabel(0, "", "", "0"), "1. 未填对方单位 合计 0", "对方单位被清空时也要有可认的标题");
+  // 动作词跟着种类走：写死「付款」会让收款单队列底部出现「确认这 2 条（付款）」。
+  assert.equal(slipConfirmPendingLabel("payment", 2), "确认这 2 条（付款）");
+  assert.equal(slipConfirmPendingLabel("receipt", 2), "确认这 2 条（收款）");
+});
+
+test("finance-slip：队列请求体是「每一张的表头 + 分录」，币种跟着表头走", () => {
+  const payload = financeSlipBatchPayload("payment", [
+    { header: header(), lines: sampleLines() },
+    { header: header({ slip_no: "FK-202609-002", counterparty_name: "晋江大田", currency: "USD" }), lines: sampleLines() },
+  ]);
+  assert.equal(payload.slips.length, 2);
+  assert.equal(payload.slips[0].currency, "CNY", "币种必须进请求体：界面靠它分辨同公司不同币种的两张单");
+  assert.equal(payload.slips[1].slip_no, "FK-202609-002");
+  assert.equal(payload.slips[1].counterparty_name, "晋江大田");
+  assert.equal(payload.slips[1].lines.length, 3, "每一张各自带自己的分录（不是合并成一张）");
 });
 
 test("finance-slip：行级问题指到具体第几行；空白行不算一行、不挡导出", () => {

@@ -11,6 +11,7 @@ import { sourceType, coveringPayableReconciliation } from "./supplier-payable.do
 import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
+import { SOURCE_PAYABLE, VoucherService } from "./voucher.service";
 import { paymentSubjectNames, PAYABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
 import { OTHER_PAYABLE_MAX_ROWS, otherPayableTemplateWorkbook, parseOtherPayableRows, type OtherPayableImportError } from "./other-payable-import";
 
@@ -39,7 +40,7 @@ export type OtherPayableImportResult = {
 
 @Injectable()
 export class SupplierPayableService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly cashFlow: CashFlowService, @Optional() private readonly currencies?: CurrencyService, @Optional() private readonly vouchers?: VoucherService) {}
 
   /**
    * 应付台账列表。
@@ -192,21 +193,43 @@ export class SupplierPayableService {
     });
     const row = result.updated;
     await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { payable_no: row.payableNo });
-    const cashFlow = await this.cashFlow.recordConfirmation({
-      sourceType: "supplier_payable_entry",
-      sourceId: id,
-      documentNo: row.payableNo,
-      entryDate: this.today(),
-      amount: row.amount,
+    const accrual = await this.accrue(row, result.supplierName, user, options);
+    return { ...row, cash_flow_entry_id: null, accrual_voucher_id: accrual?.id ?? null, accrual_replayed: accrual?.replayed ?? false, bank_missing: false };
+  }
+
+  /**
+   * **挂账**（确认应付那一步真正的账务动作）：借 成本/存货类科目 / 贷 `应付账款`。
+   *
+   * 与应收侧完全对称（方案 `docs/design/finance-accrual-two-step-2026-09-24.md`）：
+   * 确认那一刻钱还没付出，所以这一步**不写任何收支流水、不动任何银行账户**。
+   * 真正付款时在「登记付款」里记现金：借 `应付账款` / 贷 `银行存款`。
+   *
+   * 会计科目候选链按**来源类型**选定（原料入库 → 原材料/成本；外加工签收 → 加工费），
+   * 人工选了就以人工为准；幂等靠凭证唯一键 `(source_type, source_id)`。
+   */
+  private accrue(
+    row: { id: string; payableNo: string; amount: Prisma.Decimal; currency: string; sourceType?: string | null },
+    counterpartyName: string,
+    user: CurrentUser,
+    options: { bank_id?: string | null; subject_id?: string | null },
+  ) {
+    return this.accruals.createAccrual({
+      source_type: SOURCE_PAYABLE,
+      source_id: row.id,
+      document_no: row.payableNo,
+      voucher_date: this.today(),
       currency: row.currency,
-      counterpartyName: result.supplierName,
-      direction: "expense",
-      subjectNames: row.sourceType ? paymentSubjectNames(row.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
-      subjectId: options.subject_id,
-      bankId: options.bank_id ?? null,
-      remark: `确认应付 ${row.payableNo}`,
+      amount: row.amount,
+      counterparty_name: counterpartyName,
+      contra_subject_names: row.sourceType ? paymentSubjectNames(row.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
+      contra_subject_id: options.subject_id,
     }, user);
-    return { ...row, cash_flow_entry_id: cashFlow?.id ?? null, bank_missing: !options.bank_id };
+  }
+
+  /** 挂账用的凭证服务；DI 漏了必须炸出来（静默跳过＝这笔应付没进账，谁也不会发现）。 */
+  private get accruals(): VoucherService {
+    if (!this.vouchers) throw new Error("VoucherService 未注入：确认应付必须能挂账（见 finance.module.ts 的 providers）");
+    return this.vouchers;
   }
 
   /**
@@ -244,25 +267,12 @@ export class SupplierPayableService {
       if (updated.count !== confirmable.length) throw this.invalid("PAYABLE_CONFIRM_CONFLICT", "勾选的应付已被其他操作改动，请刷新后重试");
       return { confirmable, skipped: ids.length - confirmable.length };
     });
-    const cashFlowEntryIds: string[] = [];
+    const accrualVoucherIds: string[] = [];
     const totals = new Map<string, Prisma.Decimal>();
     for (const draft of result.confirmable) {
       await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", draft.orderNo ?? "", user.id, draft.id, { payable_no: draft.payableNo, batch: true });
-      const entry = await this.cashFlow.recordConfirmation({
-        sourceType: "supplier_payable_entry",
-        sourceId: draft.id,
-        documentNo: draft.payableNo,
-        entryDate: this.today(),
-        amount: draft.amount,
-        currency: draft.currency,
-        counterpartyName: draft.supplier?.name ?? draft.supplierId,
-        direction: "expense",
-        subjectNames: draft.sourceType ? paymentSubjectNames(draft.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
-        subjectId: options.subject_id,
-        bankId: options.bank_id ?? null,
-        remark: `确认应付 ${draft.payableNo}（勾选批量确认）`,
-      }, user);
-      if (entry) cashFlowEntryIds.push(entry.id);
+      const accrual = await this.accrue(draft, draft.supplier?.name ?? draft.supplierId, user, options);
+      if (accrual) accrualVoucherIds.push(accrual.id);
       totals.set(draft.currency, (totals.get(draft.currency) ?? new Prisma.Decimal(0)).plus(draft.amount));
     }
     return {
@@ -271,8 +281,9 @@ export class SupplierPayableService {
       skipped_count: result.skipped,
       // 合计**按币种分组**：跨币种相加得到的是一个没有意义的数（与财务报表「不跨币种相加」同一口径）。
       amounts: [...totals.entries()].map(([currency, amount]) => ({ currency, amount: amount.toFixed(4) })),
-      cash_flow_entry_ids: cashFlowEntryIds,
-      bank_missing: !options.bank_id,
+      cash_flow_entry_ids: [],
+      accrual_voucher_ids: accrualVoucherIds,
+      bank_missing: false,
     };
   }
 

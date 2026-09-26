@@ -60,6 +60,37 @@ export const SPEC_SCALAR_FIELDS = [
 ] as const;
 
 export type SpecScalarKey = (typeof SPEC_SCALAR_FIELDS)[number][0];
+
+/**
+ * 「材料明细」那 18 个栏位的请求键 —— 只有这些栏位**可以引用物料**（用户 2026-09-24：
+ * 「在编辑销售单的时候，每个部件，既支持填空，也支持从现有的物料清单中引用」）。
+ *
+ * 为什么单列一份而不是用 `SPEC_SCALAR_FIELDS.slice(10, 28)`：切片的下标会随着「表头/布量那几项
+ * 增删」而整体错位，而错位的后果是「引用被写到了一个不该有引用的栏位上」—— 那种错在界面上看不出来，
+ * 直到导出时图片配错了行。显式列出来，配一条测试钉住「它就是 SPEC_SCALAR_FIELDS 里材料那一段」。
+ * 前端 `apps/web/lib/sales-order-spec.ts` 的 `SPEC_MATERIAL_FIELDS` 是同一份清单（两个 workspace
+ * 没有共享包，只能各有一份，靠同一组测试向量对齐）。
+ */
+export const SPEC_MATERIAL_KEYS = [
+  "rib_spec",
+  "canopy_spec",
+  "handle_spec",
+  "handle_strap_spec",
+  "tail_spec",
+  "runner_spec",
+  "strap_spec",
+  "strap_fastener_spec",
+  "inner_label_spec",
+  "woven_label_spec",
+  "hang_tag_spec",
+  "opp_spec",
+  "bag_spec",
+  "packaging_spec",
+  "top_fabric_spec",
+  "wood_ear_spec",
+  "keychain_spec",
+  "printing_spec",
+] as const;
 /**
  * 细化标量字段（全部可选：历史销售单没有这些字）。
  *
@@ -70,6 +101,34 @@ export type SpecScalarKey = (typeof SPEC_SCALAR_FIELDS)[number][0];
 export type SpecScalarFields = Partial<Record<SpecScalarKey, string | null>>;
 /** 细分明细行（一张通用表 + 分组名）。 */
 export type SpecDetailInput = { group_name: string; name: string; color?: string; barcode?: string; quantity?: string; unit?: string; sort_order?: number };
+/**
+ * 材料明细里「这一格引用的是哪个物料」（用户 2026-09-24）。
+ *
+ * 语义是**整块替换**（与 `spec_details` 一致）：请求带了这个键就按它对齐全部引用
+ * （没提到的栏位 = 取消引用），没带就整块不动。
+ */
+export type MaterialRefInput = { spec_key: string; material_id: string };
+
+/**
+ * 销售单引用的物料（读侧形状）：物料摘要 + **有没有图**（含图的 sha 用于破缓存）。
+ *
+ * `image` 只取 `sha256`/`updatedAt`，绝不取 `data` —— 销售单详情是编辑页每次打开都拉的接口。
+ */
+export const MATERIAL_REF_INCLUDE = {
+  where: { deletedAt: null },
+  include: {
+    material: {
+      select: {
+        id: true,
+        materialCode: true,
+        name: true,
+        specificationModel: true,
+        color: true,
+        image: { select: { sha256: true, updatedAt: true } },
+      },
+    },
+  },
+} as const;
 
 /**
  * Prisma 行（**列名** camelCase）→ 37 个细化标量的**请求键**（snake_case）取值。
@@ -116,7 +175,7 @@ export function normalizeSpecUnit(unit: string | null | undefined): string | nul
 }
 
 type SalesOrderBaseInput = { order_no: string; customer_id: string; contact_id?: string; customer_po_no?: string; external_contract_no?: string; order_date: string; product_name: string; product_spec?: string; quantity: string; unit: string; delivery_date?: string; currency: string; unit_price?: string; total_amount?: string; tax_rate?: string; settlement_unit_price?: string; receivable_amount?: string; settlement_method?: string; local_currency_amount?: string; extension_data?: Record<string, unknown> };
-type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[] };
+type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[]; material_refs?: MaterialRefInput[] };
 type SalesOrderUpdate = Partial<Omit<SalesOrderInput, "order_no" | "customer_id">> & { reason?: string };
 
 @Injectable()
@@ -130,8 +189,11 @@ export class SalesOrdersService {
   }
 
   async get(id: string) {
-    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, include: { customer: true, contact: true, versions: { orderBy: { version: "desc" } }, boms: { where: { deletedAt: null }, orderBy: { version: "desc" } }, specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } } } });
+    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, include: { customer: true, contact: true, versions: { orderBy: { version: "desc" } }, boms: { where: { deletedAt: null }, orderBy: { version: "desc" } }, specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } }, materialRefs: MATERIAL_REF_INCLUDE } });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
+    // 引用走 `materialRefs`（列名，与 `specDetails` 同一个形状），**不另起一个 snake_case 别名**：
+    // 37 个细化标量当年就是因为「读侧有两套键名」而丢过数据（见 specScalarRow 的注释），
+    // 这里是嵌套关系不是标量，一种键名就够，多一份只会让下一个读的人再犯一次同样的错。
     return { ...order, spec_quantity_notice: this.specQuantityNotice(order) };
   }
 
@@ -165,6 +227,7 @@ export class SalesOrdersService {
         const created = await tx.salesOrder.create({ data: { orderNo: input.order_no, customerId: input.customer_id, contactId: input.contact_id, customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, customerPoNo: input.customer_po_no, externalContractNo: input.external_contract_no, orderDate: new Date(input.order_date), productName: input.product_name, productSpec: input.product_spec, quantity: input.quantity, unit: input.unit, deliveryDate: input.delivery_date ? new Date(input.delivery_date) : undefined, currency: input.currency, unitPrice: input.unit_price, totalAmount: input.total_amount, taxRate: input.tax_rate, settlementUnitPrice: input.settlement_unit_price, receivableAmount: input.receivable_amount, settlementMethod: input.settlement_method, localCurrencyAmount: input.local_currency_amount, extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue, ...this.specScalars(input), ...this.audit.create(user) } });
         await tx.salesOrderVersion.create({ data: { salesOrderId: created.id, version: 1, snapshot, ...this.audit.create(user) } });
         await this.replaceSpecDetails(tx, created.id, input.spec_details, user);
+        await this.replaceMaterialRefs(tx, created.id, input.material_refs, user);
         return created;
       });
       await this.audit.record("sales_order.create", "sales_order", user.id, order.id, { order_no: order.orderNo });
@@ -195,6 +258,7 @@ export class SalesOrdersService {
       const result = await tx.salesOrder.update({ where: { id }, data });
       await tx.salesOrderVersion.create({ data: { salesOrderId: id, version: nextVersion, snapshot, ...this.audit.create(user) } });
       await this.replaceSpecDetails(tx, id, input.spec_details, user);
+      await this.replaceMaterialRefs(tx, id, input.material_refs, user);
       return result;
     });
     await this.audit.record("sales_order.update", "sales_order", user.id, id, { order_no: current.orderNo, version: nextVersion, reason: input.reason, fields: Object.keys(input).filter((field) => field !== "reason") });
@@ -254,6 +318,9 @@ export class SalesOrdersService {
       merged[key] = fromInput !== undefined ? fromInput : current[column] ?? null;
     }
     if (input.spec_details !== undefined) merged.spec_details = input.spec_details;
+    // 引用也进快照：回看某个版本时要能回答「当时这一格引用的是哪个物料」——
+    // 物料主数据会被改名/换图，光看当前值答不了这个问题（与 spec_details 同一条理由）。
+    if (input.material_refs !== undefined) merged.material_refs = input.material_refs;
     return merged;
   }
 
@@ -283,6 +350,62 @@ export class SalesOrdersService {
     await tx.salesOrderSpecDetail.createMany({ data: details.map((detail, index) => ({ salesOrderId, groupName: detail.group_name, name: detail.name, color: detail.color, barcode: detail.barcode, quantity: detail.quantity, unit: detail.unit, sortOrder: detail.sort_order ?? index, ...this.audit.create(user) })) });
   }
 
+  /**
+   * 物料引用的替换语义：**整块替换**（`undefined` = 不动，`[]` = 全部取消），与 `spec_details` 一致。
+   *
+   * ⚠️ 为什么不是「软删旧的 + 建新的」（`replaceSpecDetails` 那种写法）：引用的唯一键是
+   * `(salesOrderId, specKey)`，而**数据库的唯一索引不看 `deletedAt`** —— 删了再建必然撞唯一约束
+   * （同一张单子改一次引用就会 500）。所以这里按栏位**逐行对齐**：
+   * 值变了就改这一行（顺手把 `deletedAt` 清回来，等于「复活」）、请求里没提到的栏位软删、
+   * 全新出现的栏位才插入。这样每一行始终是同一条记录，`createdAt` 也真的表示「这一格第一次引用
+   * 是什么时候」。
+   *
+   * 同一个栏位在请求里出现两次时**后写覆盖先写**（前端不可能这么发，但接口是公开的）：
+   * 报错要求调用方先去重，只会让「界面自己发重了」变成一个用户看不懂的 400。
+   */
+  private async replaceMaterialRefs(tx: Prisma.TransactionClient, salesOrderId: string, refs: MaterialRefInput[] | undefined, user: CurrentUser) {
+    if (refs === undefined) return;
+    const wanted = new Map<string, string>();
+    for (const ref of refs) wanted.set(ref.spec_key, ref.material_id);
+    // 只让「材料明细」那 18 个栏位能挂引用；其余键（工艺要求、布量、表头）一律拒绝 ——
+    // 静默忽略会让前端的键名写错变成一个「点了没反应」的问题。
+    for (const key of wanted.keys()) {
+      if (!(SPEC_MATERIAL_KEYS as readonly string[]).includes(key)) {
+        throw new UnprocessableEntityException({ code: "MATERIAL_REF_KEY_UNSUPPORTED", message: `「${key}」不是材料明细的栏位，不能引用物料`, details: [{ spec_key: key }] });
+      }
+    }
+    await this.assertMaterialsExist(wanted.values());
+
+    const existing = await tx.salesOrderMaterialRef.findMany({ where: { salesOrderId } });
+    for (const row of existing) {
+      const materialId = wanted.get(row.specKey);
+      wanted.delete(row.specKey);
+      if (!materialId) {
+        if (row.deletedAt === null) await tx.salesOrderMaterialRef.update({ where: { id: row.id }, data: this.audit.softDelete(user) });
+        continue;
+      }
+      if (row.materialId === materialId && row.deletedAt === null) continue;
+      await tx.salesOrderMaterialRef.update({ where: { id: row.id }, data: { materialId, deletedAt: null, deletedBy: null, ...this.audit.update(user) } });
+    }
+    const fresh = [...wanted.entries()];
+    if (fresh.length) await tx.salesOrderMaterialRef.createMany({ data: fresh.map(([specKey, materialId]) => ({ salesOrderId, specKey, materialId, ...this.audit.create(user) })) });
+  }
+
+  /**
+   * 引用必须是**真实存在、未删除**的物料。
+   *
+   * 一条 SQL 查全部（而不是逐个查）：一次保存最多 18 个引用，逐个查是 18 次往返；
+   * 而「哪些不存在」要**一次说清**（前端要能把缺的那几个栏位标出来）。
+   */
+  private async assertMaterialsExist(materialIds: Iterable<string>) {
+    const ids = [...new Set(materialIds)];
+    if (!ids.length) return;
+    const found = await this.prisma.material.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+    const known = new Set(found.map((row) => row.id));
+    const missing = ids.filter((id) => !known.has(id));
+    if (missing.length) throw new NotFoundException({ code: "MATERIAL_NOT_FOUND", message: `引用的物料不存在或已删除（${missing.length} 个）：请刷新物料清单后重选`, details: missing.map((id) => ({ material_id: id })) });
+  }
+
   private async resolveReferences(input: { customer_id: string; contact_id?: string }, _user: CurrentUser) {
     const customer = await this.prisma.customer.findFirst({ where: { id: input.customer_id, deletedAt: null, isActive: true } });
     if (!customer) throw new NotFoundException({ code: "CUSTOMER_NOT_FOUND", message: "客户不存在或已停用", details: [] });
@@ -305,6 +428,7 @@ export class SalesOrdersService {
     const fields: Record<string, unknown> = {};
     for (const [key] of SPEC_SCALAR_FIELDS) fields[key] = input[key] ?? null;
     if (input.spec_details !== undefined) fields.spec_details = input.spec_details;
+    if (input.material_refs !== undefined) fields.material_refs = input.material_refs;
     return fields;
   }
   private compact(value: object) { return JSON.parse(JSON.stringify(value, (_key, item) => item === undefined ? undefined : item)); }
