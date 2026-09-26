@@ -12,6 +12,9 @@ const { AuditService } = require("../../dist/platform/audit/audit.service.js");
 const { RequestIdMiddleware } = require("../../dist/platform/http/request-id.middleware.js");
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// entityId 落进 `audit_events.entity_id`（UUID 列）：夹具要用 UUID 形状，
+// 否则测到的是"服务接受任意字符串"这条生产上不成立的假设（真实库会报 UUID 非法）。
+const ENTITY_ID = "4b5c6d7e-8f9a-4b1c-8d2e-3f4a5b6c7d8e";
 
 test("request id middleware: generates a UUID, writes it to the response header and request.requestId", () => {
   const headers = {};
@@ -79,12 +82,12 @@ test("KNOWN_CONTRACT_DEFECT audit: record() stores order_no only inside details,
   // 后果：按 WHERE order_no = ? 查审计**查不到**这些事件（schema 的 audit_events.order_no 恒为 NULL），
   // 测试清理若只按该列删就会让 audit_events 持续堆积。
   const prisma = fakePrisma();
-  await new AuditService(prisma).record("raw_material_inbound.post", "raw_material_inbound", "u-1", "entity-1", { idempotency_key: "k", order_no: "ORD-1" });
+  await new AuditService(prisma).record("raw_material_inbound.post", "raw_material_inbound", "u-1", ENTITY_ID, { idempotency_key: "k", order_no: "ORD-1" });
 
   const written = prisma.created[0];
   assert.equal(written.action, "raw_material_inbound.post");
   assert.equal(written.entityType, "raw_material_inbound");
-  assert.equal(written.entityId, "entity-1");
+  assert.equal(written.entityId, ENTITY_ID);
   assert.equal(written.actorId, "u-1");
   assert.equal(written.orderNo, undefined, "record() 不写 orderNo 列（缺口）；此处变红说明已修复");
   assert.equal(written.details.order_no, "ORD-1", "订单号只存在于 details 里");

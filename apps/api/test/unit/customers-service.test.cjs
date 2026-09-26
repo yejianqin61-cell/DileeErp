@@ -11,6 +11,10 @@ const { dailyCodePrefix } = require("../../dist/platform/database/daily-sequence
 const USER = { id: "user-1" };
 const CUSTOMER_ID = "11111111-1111-4111-8111-111111111111";
 const CONTACT_ID = "22222222-2222-4222-8222-222222222222";
+// 桩里"新建返回的行 id"：审计把它当 entityId 落进 `audit_events.entity_id`（UUID 列），
+// 所以必须是 UUID 形状 —— 合成 id（如 CUSTOMER_CREATED_ID）在生产上会让审计写入直接报 UUID 非法。
+const CUSTOMER_CREATED_ID = "33333333-3333-4333-8333-333333333333";
+const CONTACT_CREATED_ID = "44444444-4444-4444-8444-444444444444";
 
 /** Prisma P2002：target 可为列名数组 / 约束名 / 缺失（拿不到 target 时服务应保守不重试）。 */
 function uniqueViolation(target) {
@@ -29,7 +33,7 @@ function fakePrisma(overrides = {}) {
   };
   const customerContact = {
     async findFirst(args) { calls.contactFindFirst.push(args); return null; },
-    async create(args) { calls.contactCreate.push(args); calls.sequence.push("contact.create"); return { id: "contact-created", ...args.data }; },
+    async create(args) { calls.contactCreate.push(args); calls.sequence.push("contact.create"); return { id: CONTACT_CREATED_ID, ...args.data }; },
     async update(args) { calls.contactUpdate.push(args); calls.sequence.push("contact.update"); return { id: args.where.id, ...args.data }; },
     async updateMany(args) { calls.contactUpdateMany.push(args); calls.sequence.push("contact.updateMany"); return { count: 1 }; },
     async delete(args) { calls.contactHardDelete.push(args); return { id: args.where.id }; },
@@ -38,7 +42,7 @@ function fakePrisma(overrides = {}) {
     async findMany(args) { calls.findMany.push(args); return []; },
     async count(args) { calls.count.push(args); return 0; },
     async findFirst(args) { calls.findFirst.push(args); return { id: args.where.id, deletedAt: null }; },
-    async create(args) { calls.create.push(args); return { id: "customer-created", ...args.data }; },
+    async create(args) { calls.create.push(args); return { id: CUSTOMER_CREATED_ID, ...args.data }; },
     async update(args) { calls.update.push(args); return { id: args.where.id, ...args.data }; },
     async delete(args) { calls.hardDelete.push(args); return { id: args.where.id }; },
   };
@@ -178,13 +182,13 @@ test("customers.create_manualCode_writesTrimmedCodeAuditFieldsAndAuditEvent", as
   assert.equal(data.countryRegion, "CN");
   assert.equal(data.createdBy, "user-1");
   assert.equal(data.updatedBy, "user-1");
-  assert.equal(customer.id, "customer-created");
+  assert.equal(customer.id, CUSTOMER_CREATED_ID);
   assert.equal(prisma.calls.findMany.length, 0, "手工编码模式不应去查当天最大序号");
 
   const event = prisma.calls.auditEvents[0];
   assert.equal(event.action, "customer.create");
   assert.equal(event.entityType, "customer");
-  assert.equal(event.entityId, "customer-created");
+  assert.equal(event.entityId, CUSTOMER_CREATED_ID);
   assert.equal(event.actorId, "user-1");
   assert.deepEqual(event.details, { customer_code: "CUS-20260912-0007", name: "客户A" });
 });
@@ -284,7 +288,7 @@ test("customers.create_autoMode_retriesOnCustomerCodeViolationAndRecomputesTheCo
       create: async (args) => {
         prisma.calls.create.push(args);
         if (prisma.calls.create.length === 1) throw uniqueViolation(["customer_code"]);
-        return { id: "customer-created", ...args.data };
+        return { id: CUSTOMER_CREATED_ID, ...args.data };
       },
     },
   });
@@ -295,7 +299,7 @@ test("customers.create_autoMode_retriesOnCustomerCodeViolationAndRecomputesTheCo
   assert.equal(prisma.calls.create[0].data.customerCode, `${prefix}0002`);
   assert.equal(prisma.calls.create[1].data.customerCode, `${prefix}0003`, "重试必须重新查当天最大值");
   assert.equal(prisma.calls.findMany.length, 2);
-  assert.equal(customer.id, "customer-created");
+  assert.equal(customer.id, CUSTOMER_CREATED_ID);
   assert.equal(prisma.calls.auditEvents.length, 1, "只有成功的写入才记审计");
 });
 
@@ -505,12 +509,12 @@ test("customers.createContact_defaultContact_clearsOtherDefaultsBeforeInsert", a
   assert.equal(data.isActive, true);
   assert.equal(data.createdBy, "user-1");
   assert.equal(data.updatedBy, "user-1");
-  assert.equal(contact.id, "contact-created");
+  assert.equal(contact.id, CONTACT_CREATED_ID);
 
   const event = prisma.calls.auditEvents[0];
   assert.equal(event.action, "customer_contact.create");
   assert.equal(event.entityType, "customer_contact");
-  assert.equal(event.entityId, "contact-created");
+  assert.equal(event.entityId, CONTACT_CREATED_ID);
   assert.deepEqual(event.details, { customer_id: CUSTOMER_ID });
 });
 

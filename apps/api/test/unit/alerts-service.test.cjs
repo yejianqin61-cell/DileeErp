@@ -10,6 +10,9 @@ const { AuditService } = require("../../dist/platform/audit/audit.service.js");
 
 const USER = { id: "user-1", username: "tester", display_name: "测试用户" };
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// 审计的 entityId 落进 `audit_events.entity_id`（UUID 列），所以桩里的行 id 必须是 UUID 形状。
+// 沿用 HANDLING_ID 这类合成 id 会让测试与生产走出两条不同路径（真实库会直接报 UUID 非法）。
+const HANDLING_ID = "3a4b5c6d-7e8f-4a1b-8c2d-3e4f5a6b7c8d";
 
 /** 手写假 Prisma：记录调用参数；alertHandling 用一个内存 store 模拟真实表。 */
 function fakePrisma(config = {}) {
@@ -48,12 +51,12 @@ function fakePrisma(config = {}) {
         calls.handlingUpsert.push(args);
         const key = args.where.sourceType_sourceId_alertType;
         const existing = handlingStore.find((row) => row.sourceType === key.sourceType && row.sourceId === key.sourceId && row.alertType === key.alertType);
-        const row = existing ? { ...existing, ...args.update } : { id: "handling-1", ...args.create };
+        const row = existing ? { ...existing, ...args.update } : { id: HANDLING_ID, ...args.create };
         if (existing) Object.assign(existing, row); else handlingStore.push(row);
         return config.upsertRow ?? row;
       },
-      create: async (args) => { calls.handlingOther.push(args); return config.upsertRow ?? { id: "handling-1", ...args.data }; },
-      update: async (args) => { calls.handlingOther.push(args); return config.upsertRow ?? { id: "handling-1", ...args.data }; },
+      create: async (args) => { calls.handlingOther.push(args); return config.upsertRow ?? { id: HANDLING_ID, ...args.data }; },
+      update: async (args) => { calls.handlingOther.push(args); return config.upsertRow ?? { id: HANDLING_ID, ...args.data }; },
     },
     auditEvent: { create: async (args) => { calls.auditCreate.push(args); return { id: "audit-1" }; } },
     $queryRaw: async () => { calls.queryRaw += 1; return []; },
@@ -67,7 +70,7 @@ const serviceWith = (prisma) => new AlertsService(prisma, new AuditService(prism
 const dailyRow = (id, alertType = "over_order", orderNo = "ORD-1", createdAt = new Date("2026-08-23T01:00:00Z")) => ({ id, alertType, orderNo, createdAt });
 const qcRow = (id, orderNo = "ORD-2", createdAt = new Date("2026-08-23T02:00:00Z")) => ({ id, orderNo, createdAt });
 const negativeRow = (orderNo, delta) => ({ orderNo, _sum: { quantityDelta: new Prisma.Decimal(delta) } });
-const handlingRow = (overrides = {}) => ({ id: "handling-1", sourceType: "production_daily_alert", sourceId: "d-1", alertType: "over_order", status: "acknowledged", remark: "已核对", ...overrides });
+const handlingRow = (overrides = {}) => ({ id: HANDLING_ID, sourceType: "production_daily_alert", sourceId: "d-1", alertType: "over_order", status: "acknowledged", remark: "已核对", ...overrides });
 const bySourceType = (data) => Object.fromEntries(data.map((row) => [row.source_type, row]));
 
 /** 反向用例统一断言：失败路径不产生任何写入。 */
@@ -268,7 +271,7 @@ test("alerts.list_page_size_boundaries_are_unvalidated", async () => {
 test("alerts.handle_daily_alert_upserts_handling_and_audits", async () => {
   const prisma = fakePrisma({ dailySource: { id: "d-1", alertType: "over_order", orderNo: "ORD-1" } });
   const row = await serviceWith(prisma).handle("d-1", "acknowledged", "  已核对  ", USER);
-  assert.equal(row.id, "handling-1");
+  assert.equal(row.id, HANDLING_ID);
   assert.deepEqual(prisma.calls.dailyFindFirst[0], { where: { id: "d-1", deletedAt: null }, select: { id: true, alertType: true, orderNo: true } });
   const upsert = prisma.calls.handlingUpsert[0];
   assert.deepEqual(upsert.where, { sourceType_sourceId_alertType: { sourceType: "production_daily_alert", sourceId: "d-1", alertType: "over_order" } });
@@ -279,7 +282,7 @@ test("alerts.handle_daily_alert_upserts_handling_and_audits", async () => {
   assert.deepEqual(upsert.update, { status: "acknowledged", remark: "已核对", updatedBy: "user-1" });
   assert.equal("createdBy" in upsert.update, false, "更新分支不得改写 createdBy");
   assert.deepEqual(prisma.calls.auditCreate[0].data, {
-    action: "alert.acknowledged", entityType: "alert_handling", actorId: "user-1", entityId: "handling-1",
+    action: "alert.acknowledged", entityType: "alert_handling", actorId: "user-1", entityId: HANDLING_ID,
     details: { source_type: "production_daily_alert", source_id: "d-1", alert_type: "over_order", remark: "已核对" },
   });
 });

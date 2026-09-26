@@ -8,10 +8,14 @@ import { AuditActorInterceptor } from "./platform/audit/audit-actor.interceptor"
 import { AuditActorService } from "./platform/audit/audit-actor.service";
 import { ApiExceptionFilter } from "./platform/http/api-exception.filter";
 import { StructuredLogger } from "./platform/logging/structured-logger";
+import { installBigIntJson } from "./platform/http/bigint-json";
 import cookieParser from "cookie-parser";
 import { RequestLogMiddleware } from "./platform/http/request-log.middleware";
 
 async function bootstrap() {
+  // 必须在任何响应之前打好 BigInt 的 JSON 补丁：BigInt 序列化失败是**运行时**才炸的
+  // （实测 `/finance/opening-balances` 与 `/attachments` 各因此 500）。细节见该文件注释。
+  installBigIntJson();
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
   app.getHttpAdapter().getInstance().disable("etag");
   app.setGlobalPrefix("api/v1");

@@ -4,7 +4,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { isFundSubject, normalizeSubjectKey, type SummedAmount } from "./finance-three-statements";
-import { toUnits } from "./money";
+import { formatUnits, toUnits } from "./money";
 
 /**
  * 建账期初余额（财务 2026-09-24：「科目期初余额表」）。
@@ -62,6 +62,18 @@ export function openingBalanceTotals(rows: ReadonlyArray<{ direction: string; am
   return { debit, credit, difference: debit - credit, balanced: debit === credit };
 }
 
+/**
+ * 出参用的试算平衡：金额一律**字符串十进制**。
+ *
+ * 不能直接把 `openingBalanceTotals` 的结果丢给控制器：它是 BigInt，而
+ * `JSON.stringify(BigInt)` 会抛 `TypeError: Do not know how to serialize a BigInt` ——
+ * **整个 `GET /finance/opening-balances` 500**（实测，2026-09-26）。字符串也是全站金额约定。
+ */
+export function openingBalanceTotalsPayload(rows: ReadonlyArray<{ direction: string; amount: { toString(): string } | string }>) {
+  const totals = openingBalanceTotals(rows);
+  return { debit: formatUnits(totals.debit), credit: formatUnits(totals.credit), difference: formatUnits(totals.difference), balanced: totals.balanced };
+}
+
 /** 把两张表（期初 + 凭证）按科目相加：同一科目两边都有时借贷分别累加，报表不必知道数据来自哪。 */
 export function mergeBalances(base: ReadonlyMap<string, SummedAmount>, extra: ReadonlyMap<string, SummedAmount>): Map<string, SummedAmount> {
   const merged = new Map<string, SummedAmount>();
@@ -80,12 +92,12 @@ export class OpeningBalanceService {
   async list(filter: { asOfDate?: string; currency?: string } = {}) {
     const currency = (filter.currency?.trim() || "CNY").toUpperCase();
     const asOfDate = filter.asOfDate ? utcDate(filter.asOfDate) : await this.latestAsOfDate(currency);
-    if (!asOfDate) return { as_of_date: null, currency, rows: [], totals: openingBalanceTotals([]) };
+    if (!asOfDate) return { as_of_date: null, currency, rows: [], totals: openingBalanceTotalsPayload([]) };
     const rows = await this.prisma.accountingOpeningBalance.findMany({
       where: { asOfDate, currency, deletedAt: null },
       orderBy: [{ subjectKey: "asc" }],
     });
-    return { as_of_date: asOfDate.toISOString().slice(0, 10), currency, rows, totals: openingBalanceTotals(rows) };
+    return { as_of_date: asOfDate.toISOString().slice(0, 10), currency, rows, totals: openingBalanceTotalsPayload(rows) };
   }
 
   /**

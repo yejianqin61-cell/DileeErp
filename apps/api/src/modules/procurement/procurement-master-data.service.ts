@@ -299,7 +299,11 @@ export class ProcurementMasterDataService {
     if (errors.length) hints.push(`${errors.length} 行未导入（见下方逐行原因），其余 ${planned.length} 行已新增`);
     hints.push("本导入只新增物料，不修改已有物料");
 
-    await this.audit.record("material.import", "material", user.id, planned[0]?.data.materialCode ?? "batch", {
+    // entityId 是**审计表的 UUID 列**：这里原先传的是 `planned[0]?.data.materialCode ?? "batch"`
+    // （物料编码 / 字面量），Prisma 建行时直接报 `Error creating UUID ... found 'M' at 1`，
+    // **整个导入请求 500**（实测 2026-09-22 生产两次）。物料编码不是实体 id，它属于 details。
+    await this.audit.record("material.import", "material", user.id, undefined, {
+      material_code: planned[0]?.data.materialCode ?? null,
       imported: planned.length,
       total: parsed.total,
       error_count: errors.length,

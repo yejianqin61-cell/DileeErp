@@ -184,3 +184,32 @@ test("期初余额纯函数：行 → 借贷累计（与凭证同型）、两表
   assert.equal(hasFundOpening([{ subjectKey: "资产类/应收账款" }]), false);
   assert.equal(openingBalanceTotals(rows).difference, 0n);
 });
+
+test("list() 的出参必须能被 JSON.stringify（BigInt 会让整个 GET 接口 500）", async () => {
+  // 事故（2026-09-26）：list() 原先把 `openingBalanceTotals()` 的 BigInt 结果直接回给控制器，
+  // express 序列化时抛 `Do not know how to serialize a BigInt` → **GET /finance/opening-balances 整个 500**。
+  // 出参金额一律字符串十进制（全站约定），并且整份响应必须过得了 JSON.stringify。
+  const { service } = harness({
+    latest: { asOfDate: new Date("2026-09-01T00:00:00.000Z") },
+    existing: [
+      { subjectKey: "资产类/库存现金", subjectLabel: "库存现金", direction: "debit", amount: new Prisma.Decimal("1234.5600"), currency: "CNY" },
+      { subjectKey: "负债类/应付账款", subjectLabel: "应付账款", direction: "credit", amount: new Prisma.Decimal("1000.0000"), currency: "CNY" },
+    ],
+  });
+  const result = await service.list({ currency: "CNY" });
+
+  assert.equal(typeof result.totals.debit, "string", "金额出参必须是字符串（BigInt 会 500）");
+  assert.equal(typeof result.totals.credit, "string");
+  assert.equal(typeof result.totals.difference, "string");
+  assert.equal(result.totals.debit, "1234.56");
+  assert.equal(result.totals.credit, "1000");
+  assert.equal(result.totals.difference, "234.56");
+  assert.equal(result.totals.balanced, false);
+  assert.equal(typeof result.totals.balanced, "boolean", "balanced 仍是布尔（不要被序列化一起变成字符串）");
+  assert.doesNotThrow(() => JSON.stringify(result), "整份响应必须能被 JSON.stringify");
+
+  // 空表（还没有任何期初）这条分支同样要能序列化 —— 它返回的是同一族的 totals。
+  const empty = await service.list({ currency: "USD" });
+  assert.equal(typeof empty.totals.debit, "string");
+  assert.doesNotThrow(() => JSON.stringify(empty));
+});

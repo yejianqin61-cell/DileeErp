@@ -297,6 +297,13 @@ test("导入成功：手工编码原样落库、自动编码按 MAT-当天日期
   assert.ok(audit, "批量导入要留审计");
   assert.equal(audit[4].imported, 3);
   assert.equal(audit[4].auto_code_count, 2);
+  // `audit.record(action, entityType, actorId, entityId, details)` 的第 4 个参数落进
+  // `audit_events.entity_id` —— **一个 UUID 列**。这里原本传的是物料编码（或字面量 "batch"），
+  // 于是 Prisma 建行时报 `Error creating UUID ... found 'M' at 1`，**整个导入请求 500**
+  // （实测 2026-09-22 生产两次：数据在一个事务里写好了，用户看到的却是失败）。
+  // 物料编码不是实体 id，它属于 details。
+  assert.equal(audit[3], undefined, "审计 entityId 必须是 undefined 或 UUID：传物料编码会让整个导入 500");
+  assert.equal(audit[4].material_code, "MAT-1001", "物料编码改记到 details 里（别丢掉这条信息）");
 });
 
 test("自动编码接在库里已有编码之后，并跳过被占用的号（含已软删的记录）", async () => {

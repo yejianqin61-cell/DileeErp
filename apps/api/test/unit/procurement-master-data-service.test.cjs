@@ -18,6 +18,15 @@ const SUPPLIER_ID = "33333333-3333-3333-3333-333333333333";
 const MAT_PREFIX = dailyCodePrefix("MAT");
 const SUP_PREFIX = dailyCodePrefix("SUP");
 
+/**
+ * 桩返回的「新建行 id」必须是 **UUID 形状**。
+ *
+ * 为什么：审计把它当 `entityId` 落进 `audit_events.entity_id` —— 一个 UUID 列。
+ * 沿用 `unit-created` 这类合成 id，测试与生产就会走出两条不同路径（真实库直接报 UUID 非法，
+ * 而这条路径在生产上真的发生过 500）。定义在模块级，让断言与桩用同一个函数。
+ */
+const createdIdFor = (kind) => `77777777-7777-4777-8777-${(kind.charCodeAt(0) * 7919).toString().padStart(12, "0").slice(0, 12)}`;
+
 function p2002(target) {
   const error = new Error("unique constraint failed");
   error.code = "P2002";
@@ -68,7 +77,7 @@ function makeHarness(options = {}) {
   const createFor = (kind) => async (args) => {
     calls[kind].create.push(args);
     if (options.createError?.[kind]) throw options.createError[kind];
-    return { id: `${kind}-created`, ...args.data };
+    return { id: createdIdFor(kind), ...args.data };
   };
   const updateFor = (kind) => async (args) => {
     calls[kind].update.push(args);
@@ -123,10 +132,10 @@ test("unit.create_persists-name-remark-and-audit-fields", async () => {
   const h = makeHarness();
   const created = await h.service.createUnit({ name: "千克", remark: "重量单位" }, USER);
   assert.deepEqual(h.calls.unit.create, [{ data: { name: "千克", remark: "重量单位", createdBy: USER.id, updatedBy: USER.id } }]);
-  assert.equal(created.id, "unit-created");
+  assert.equal(created.id, createdIdFor("unit"));
   assert.deepEqual(auditActions(h.calls), ["unit.create"]);
   assert.equal(h.calls.auditEvent.create[0].data.entityType, "unit");
-  assert.equal(h.calls.auditEvent.create[0].data.entityId, "unit-created", "新建的审计 entityId 必须是被创建行的 id");
+  assert.equal(h.calls.auditEvent.create[0].data.entityId, createdIdFor("unit"), "新建的审计 entityId 必须是被创建行的 id");
 });
 
 test("unit.create_does-not-trim-name-unlike-material", async () => {
@@ -361,7 +370,7 @@ test("material.create_defaults-type-conditionally-and-normalizes-composite-key",
     createdBy: USER.id,
     updatedBy: USER.id,
   });
-  assert.equal(created.id, "material-created");
+  assert.equal(created.id, createdIdFor("material"));
   assert.deepEqual(auditActions(h.calls), ["material.create"]);
 
   // material_type: null 同样落到默认值（?? 而不是 === undefined 判断）

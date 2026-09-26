@@ -4,6 +4,8 @@ const { AuditService } = require("../../dist/platform/audit/audit.service.js");
 const { FormsService } = require("../../dist/platform/forms/forms.service.js");
 
 const USER = { id: "11111111-1111-1111-1111-111111111111", username: "tester", display_name: "Tester" };
+// 表单定义的 id：审计把它当 entityId 落进 `audit_events.entity_id`（UUID 列），故用 UUID 形状。
+const DEF_ID = "55555555-5555-4555-8555-555555555555";
 
 // Hand written fake Prisma following the repository convention (no real database).
 // `calls` records every model interaction so tests can assert the query shape and,
@@ -23,7 +25,7 @@ function fakePrisma(overrides = {}) {
       },
       async create(args) {
         calls.create.push(args);
-        return overrides.create ? overrides.create(args) : { id: "def-1", status: "draft", ...args.data };
+        return overrides.create ? overrides.create(args) : { id: DEF_ID, status: "draft", ...args.data };
       },
       async update(args) {
         calls.update.push(args);
@@ -63,7 +65,7 @@ function assertNestError(code, status) {
 }
 
 test("forms.list_without_form_key_returns_only_active_definitions", async () => {
-  const rows = [{ id: "def-1", formKey: "sales_intake", version: 2, fields: [] }];
+  const rows = [{ id: DEF_ID, formKey: "sales_intake", version: 2, fields: [] }];
   const { prisma, service } = buildService({ findMany: () => rows });
 
   const result = await service.list();
@@ -133,12 +135,12 @@ test("forms.create_first_version_of_a_form_key_starts_at_one", async () => {
   assert.equal(data.updatedBy, USER.id);
   assert.deepEqual(data.fields.create, []);
   assert.deepEqual(prisma.calls.create[0].include, { fields: { orderBy: { sortOrder: "asc" } } });
-  assert.equal(result.id, "def-1");
+  assert.equal(result.id, DEF_ID);
   assert.deepEqual(prisma.calls.audit[0].data, {
     action: "form_definition.create",
     entityType: "form_definition",
     actorId: USER.id,
-    entityId: "def-1",
+    entityId: DEF_ID,
     details: { form_key: "sales_intake", version: 1 },
   });
 });
@@ -329,27 +331,27 @@ test("forms.create_accepts_negative_sort_order_without_range_check", async () =>
 });
 
 test("forms.publish_draft_definition_sets_published_status", async () => {
-  const { prisma, service } = buildService({ findFirst: () => ({ id: "def-1", formKey: "sales_intake", version: 1, status: "draft" }) });
+  const { prisma, service } = buildService({ findFirst: () => ({ id: DEF_ID, formKey: "sales_intake", version: 1, status: "draft" }) });
 
-  const result = await service.publish("def-1", USER);
+  const result = await service.publish(DEF_ID, USER);
 
   assert.equal(prisma.calls.update.length, 1);
-  assert.deepEqual(prisma.calls.update[0], { where: { id: "def-1" }, data: { status: "published", updatedBy: USER.id } });
+  assert.deepEqual(prisma.calls.update[0], { where: { id: DEF_ID }, data: { status: "published", updatedBy: USER.id } });
   assert.equal(result.status, "published");
   assert.deepEqual(prisma.calls.audit[0].data, {
     action: "form_definition.publish",
     entityType: "form_definition",
     actorId: USER.id,
-    entityId: "def-1",
+    entityId: DEF_ID,
     details: { form_key: "sales_intake", version: 1 },
   });
 });
 
 test("forms.publish_non_draft_definition_is_rejected_without_writing", async () => {
   for (const status of ["published", "archived", ""]) {
-    const { prisma, service } = buildService({ findFirst: () => ({ id: "def-1", formKey: "sales_intake", version: 1, status }) });
+    const { prisma, service } = buildService({ findFirst: () => ({ id: DEF_ID, formKey: "sales_intake", version: 1, status }) });
 
-    await assert.rejects(() => service.publish("def-1", USER), assertNestError("INVALID_STATE_TRANSITION", 422), `status=${status}`);
+    await assert.rejects(() => service.publish(DEF_ID, USER), assertNestError("INVALID_STATE_TRANSITION", 422), `status=${status}`);
 
     assert.equal(prisma.calls.update.length, 0, `update must not run for status=${status}`);
     assert.equal(prisma.calls.audit.length, 0, `audit must not run for status=${status}`);
@@ -425,7 +427,7 @@ test("forms.create_definition_is_written_before_audit_and_is_not_rolled_back", a
   const { service } = buildService({
     create: (args) => {
       createCount += 1;
-      return { id: "def-1", ...args.data };
+      return { id: DEF_ID, ...args.data };
     },
     auditCreate: () => {
       throw new Error("audit backend unavailable");
