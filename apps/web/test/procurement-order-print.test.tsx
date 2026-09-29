@@ -16,6 +16,14 @@ import PurchaseOrdersPage from "../app/procurement/orders/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
 
+// 采购单列表页会读 `?order_no=`（T13 的深链补口）：测试环境没有 App Router 上下文，
+// 不 mock `next/navigation` 的话 `useSearchParams()` 会直接抛错。
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(),
+  usePathname: () => "/procurement/orders",
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
+}));
+
 /** 下载三件套（与 payable-page.test.tsx 同一套）：只关心 URL 与文件名。 */
 let anchorClicks: Array<{ download: string; href: string }> = [];
 function captureDownloads() {

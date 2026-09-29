@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Trash2 } from "lucide-react";
 import { PageHeader } from "../../../components/layout/app-shell";
@@ -68,13 +69,18 @@ const inspectionStatusLabel: Record<string, string> = { pending: "待质检", in
 const inboundStatusLabel: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已冲销" };
 
 export default function PurchaseOrdersPage() {
+  const searchParams = useSearchParams();
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [materials, setMaterials] = useState<Reference[]>([]);
   const [units, setUnits] = useState<Reference[]>([]);
   const [suppliers, setSuppliers] = useState<Reference[]>([]);
   const [boms, setBoms] = useState<Reference[]>([]);
   const [salesOrders, setSalesOrders] = useState<Reference[]>([]);
-  const [query, setQuery] = useState("");
+  // 预置筛选（2026-09-26，T13）：工作台与【返单与总结】都会用 `?order_no=` 跳过来。
+  // 在此之前那个参数**根本没人读**，链接落在一个没筛选的列表上 —— 也就是说"点过去看这批的单"
+  // 一直是半个功能。照 `app/production/page.tsx` 的写法：只在挂载时取初值，
+  // 之后的手工清空/输入不受影响（预置值是起点，不是锁）。
+  const [query, setQuery] = useState(searchParams.get("order_no") ?? "");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");

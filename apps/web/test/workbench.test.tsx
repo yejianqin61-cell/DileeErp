@@ -298,7 +298,7 @@ describe("工作台：查看详情与模块状态", () => {
 
     // 详情路径必须编码，否则带 / 与空格的订单号会打到别的路由上
     expect(screen.getByRole("link", { name: /成品库存/ })).toHaveAttribute("href", "/warehouse?order_no=SO%2F2026%20001");
-    expect(screen.getByRole("link", { name: /采购 \/ 应付/ })).toHaveAttribute("href", "/procurement?order_no=SO%2F2026%20001");
+    expect(screen.getByRole("link", { name: /采购 \/ 应付/ })).toHaveAttribute("href", "/procurement/orders?order_no=SO%2F2026%20001");
     expect(screen.getByRole("link", { name: /应收/ })).toHaveAttribute("href", "/finance?order_no=SO%2F2026%20001");
   });
 

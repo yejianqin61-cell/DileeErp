@@ -49,7 +49,10 @@ export default function WorkbenchPage() {
   const visibleOrders = useMemo(() => orders.filter((order) => `${order.order_no} ${order.overall_status_label} ${order.blockers.map((item) => item.label).join(" ")}`.toLowerCase().includes(filter.toLowerCase())), [filter, orders]);
   const selected = selectedOrder;
   const selectedMeasurements = measurements.filter((item) => item.order_no === selectedOrderNo);
-  const moduleCards: Array<[string, string, ModuleSummary]> = selected ? [["采购 / 应付", "/procurement", selected.procurement_summary], ["原料库存", "/warehouse", selected.raw_material_inventory_summary], ["生产", "/production", selected.production_summary], ["成品质检", "/qc", selected.finished_goods_qc_summary], ["成品库存", "/warehouse", selected.finished_goods_inventory_summary], ["发货", "/warehouse", selected.shipping_summary], ["应收", "/finance", selected.receivable_summary], ["应付", "/finance", selected.payable_summary]] : [];
+  // 采购卡片指向**采购单列表页**而不是 `/procurement` 那个只有板块入口的 hub：
+  // hub 不读 `?order_no=`，链接会落在一个没筛选的页面上（T13 修的正是这个）。
+  // 应收/应付仍指向 `/finance`（财务侧是客户端 workspace，透传 order_no 的面更大，本轮不做）。
+  const moduleCards: Array<[string, string, ModuleSummary]> = selected ? [["采购 / 应付", "/procurement/orders", selected.procurement_summary], ["原料库存", "/warehouse", selected.raw_material_inventory_summary], ["生产", "/production", selected.production_summary], ["成品质检", "/qc", selected.finished_goods_qc_summary], ["成品库存", "/warehouse", selected.finished_goods_inventory_summary], ["发货", "/warehouse", selected.shipping_summary], ["应收", "/finance", selected.receivable_summary], ["应付", "/finance", selected.payable_summary]] : [];
   // 工作台上的卡片按表面权限过滤：卡片本身带目标路径，所以"哪些卡片该藏"直接由权限决定，
   // 不用再维护一张"卡片→权限"的映射表。用户拍板：其他角色连工作台上的财务卡片也不该看到。
   const sections = profile?.surface_sections ?? SURFACE_SECTIONS;

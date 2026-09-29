@@ -8,12 +8,20 @@
 //   2. 一张销售订单 → 多张采购单：按供应商分组，一次 POST /purchase-orders/split。
 //
 // 纪律：真实渲染页面 + 真实点击 + 真实 fetch 桩；只断言 DOM 文本与 stubApi 记录到的 method + URL + body。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PurchaseOrdersPage from "../app/procurement/orders/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
+
+// 采购单列表页会读 `?order_no=`（T13 的深链补口）：测试环境没有 App Router 上下文，
+// 不 mock `next/navigation` 的话 `useSearchParams()` 会直接抛错。
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(),
+  usePathname: () => "/procurement/orders",
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn() }),
+}));
 
 const EP = {
   purchaseOrders: "/api/v1/purchase-orders",
