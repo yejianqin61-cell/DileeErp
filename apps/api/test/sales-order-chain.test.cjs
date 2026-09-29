@@ -249,6 +249,32 @@ test("货号：已确认单改货号不锁下游（它不在 coreFields 里）�
   );
 });
 
+test("货号：已关闭单**只放行补货号**这一种改动（历史单补录的唯一出路），其余字段照旧拒绝", async () => {
+  // 为什么必须放行：返单来源必须是「已确认或已关闭」，而来源没货号就不能返单 ——
+  // 不放行的话那些单会永远卡在「既不能返单、又不能补货号」里（T12 的补录面板就点不动它们）。
+  const closed = salesOrderRow({ status: "closed", itemNo: null, boms: [{ id: "bom-1", version: 1, status: "draft" }] });
+  const allowed = updateHarness(closed);
+  await allowed.service.update("order-1", { item_no: "27621 补录", reason: "历史单补货号" }, user);
+  assert.equal(allowed.captured.updateData.itemNo, "27621 补录");
+
+  // 但要留痕：只改货号也得填原因。
+  const missingReason = updateHarness(closed);
+  await assert.rejects(
+    () => missingReason.service.update("order-1", { item_no: "27621 补录" }, user),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "CORRECTION_REASON_REQUIRED",
+  );
+
+  // 其余字段（哪怕同时带了货号）仍然是「已关闭不可编辑」。
+  for (const patch of [{ product_spec: "改规格", reason: "x" }, { item_no: "27621", product_spec: "改规格", reason: "x" }]) {
+    const blocked = updateHarness(closed);
+    await assert.rejects(
+      () => blocked.service.update("order-1", patch, user),
+      (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_CLOSED",
+    );
+    assert.equal(blocked.captured.updateData, undefined, "拒绝的请求不该写库");
+  }
+});
+
 test("货号：销售单列表搜索命中货号", async () => {
   let findManyArguments;
   const prisma = {

@@ -59,14 +59,18 @@ export function UnassignedPanel() {
 
   useEffect(() => { void load(); }, [load]);
 
-  /** 已确认单改货号必须填原因（后端也拦一道；这里先拦是为了不让用户白跑一次请求）。 */
-  const needsReason = (ids: string[]) => ids.some((id) => rows.find((row) => row.sales_order_id === id)?.status === "confirmed");
+  /**
+   * 需要填原因的两类单（后端也拦一道；这里先拦是为了不让用户白跑一次请求）：
+   *   · 已确认单：任何修改都要原因（既有规则）；
+   *   · 已关闭单：只放行「补货号」这一种改动，同样要留痕。
+   */
+  const needsReason = (ids: string[]) => ids.some((id) => rows.find((row) => row.sales_order_id === id)?.status !== "draft");
 
   async function assign() {
     if (!dialog) return;
     const itemNo = dialog.itemNo.trim();
     if (!itemNo) { setDialog({ ...dialog, failure: "请填写货号" }); return; }
-    if (needsReason(dialog.ids) && !dialog.reason.trim()) { setDialog({ ...dialog, failure: "已确认销售单修改必须填写原因" }); return; }
+    if (needsReason(dialog.ids) && !dialog.reason.trim()) { setDialog({ ...dialog, failure: "已确认 / 已关闭销售单修改必须填写原因" }); return; }
     setDialog({ ...dialog, busy: true, failure: "" });
     const failed: string[] = [];
     for (const id of dialog.ids) {
@@ -172,7 +176,7 @@ export function UnassignedPanel() {
               <ItemNoInput value={dialog?.itemNo ?? ""} onChange={(value) => setDialog((current) => (current ? { ...current, itemNo: value, failure: "" } : current))} suggestions={suggestions} testId="unassigned-item-no" />
             </label>
             {dialog && needsReason(dialog.ids) ? (
-              <label>修改原因（已确认销售单必填）
+              <label>修改原因（已确认 / 已关闭销售单必填）
                 <Input data-testid="unassigned-reason" value={dialog.reason} onChange={(event) => setDialog({ ...dialog, reason: event.target.value, failure: "" })} placeholder="例如：历史单补货号" />
               </label>
             ) : null}

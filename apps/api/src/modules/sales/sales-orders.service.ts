@@ -406,8 +406,19 @@ export class SalesOrdersService {
   async update(id: string, input: SalesOrderUpdate, user: CurrentUser) {
     await this.currencies?.assertSupported(input.currency, "销售单币种");
     const current = await this.get(id);
-    if (current.status === "closed") throw new UnprocessableEntityException({ code: "SALES_ORDER_CLOSED", message: "已关闭销售单不可编辑", details: [] });
+    /**
+     * 已关闭销售单不可编辑 —— **货号是唯一的例外**，而且是必须的例外。
+     *
+     * 为什么放行它：货号是贴在这一单上的标签（不进 `coreFields`、不锁下游、不影响任何金额），
+     * 而「给历史已关闭单补货号」正是返单链最需要的一步 —— 返单来源必须是**已确认或已关闭**，
+     * 来源没有货号就不能返单，于是那些单会永远卡在"既不能返单、又不能补货号"里。
+     * 放行的面**只有**「这次改动除了 item_no（与 reason）没有别的键」，其余字段照旧一律拒绝。
+     */
+    const onlyItemNo = input.item_no !== undefined && Object.keys(input).every((key) => key === "item_no" || key === "reason");
+    if (current.status === "closed" && !onlyItemNo) throw new UnprocessableEntityException({ code: "SALES_ORDER_CLOSED", message: "已关闭销售单不可编辑", details: [] });
     if (current.status === "confirmed" && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已确认销售单修改必须填写原因", details: [] });
+    // 已关闭单补货号同样要留痕：它是审计该记的事（改的是历史单据上的一个标识）。
+    if (current.status === "closed" && onlyItemNo && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已关闭销售单补货号必须填写原因", details: [] });
     // 结算金额类字段同样属于「动了就要重算下游」的核心字段；结算方式只是说明信息，允许后补。
     const coreFields = ["product_name", "product_spec", "quantity", "unit", "currency", "unit_price", "total_amount", "tax_rate", "settlement_unit_price", "receivable_amount", "local_currency_amount"] as const;
     if (current.status === "confirmed" && coreFields.some((field) => input[field] !== undefined)) {

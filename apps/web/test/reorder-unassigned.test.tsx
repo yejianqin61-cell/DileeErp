@@ -43,6 +43,8 @@ describe("未填货号补录", () => {
 
     fireEvent.click(screen.getByTestId("unassigned-assign-DL260001-1"));
     fireEvent.change(await screen.findByTestId("unassigned-item-no"), { target: { value: "27621 流水花扇" } });
+    // 已关闭单也要填原因（后端对「已关闭单补货号」同样要求留痕）。
+    fireEvent.change(screen.getByTestId("unassigned-reason"), { target: { value: "历史单补货号" } });
     fireEvent.click(screen.getByTestId("unassigned-submit"));
 
     await waitFor(() => expect(screen.queryByTestId("unassigned-row-DL260001-1")).toBeNull());
@@ -50,7 +52,18 @@ describe("未填货号补录", () => {
     expect(screen.getByTestId("unassigned-select-DL260002-1")).toBeChecked();
     const patch = calls.find((call) => call.method === "PATCH");
     expect(patch?.url).toContain("/sales-orders/so-1");
-    expect(JSON.parse(String(patch?.body))).toEqual({ item_no: "27621 流水花扇" });
+    expect(JSON.parse(String(patch?.body))).toEqual({ item_no: "27621 流水花扇", reason: "历史单补货号" });
+  });
+
+  it("已关闭单也必填原因（只放行补货号这一种改动，但同样要留痕）", async () => {
+    const calls = stub();
+    render(<UnassignedPanel />);
+    await screen.findByTestId("unassigned-table");
+    fireEvent.click(screen.getByTestId("unassigned-assign-DL260001-1"));
+    fireEvent.change(await screen.findByTestId("unassigned-item-no"), { target: { value: "27621" } });
+    fireEvent.click(screen.getByTestId("unassigned-submit"));
+    await screen.findByTestId("unassigned-failure");
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
   });
 
   it("已确认单必填原因：没填就不发请求，并说明原因", async () => {
@@ -107,6 +120,7 @@ describe("未填货号补录", () => {
     fireEvent.click(screen.getByTestId("unassigned-assign-DL260001-1"));
     // 全角空格 + 小写：前端不该把它改成 "27621 流水花扇"
     fireEvent.change(await screen.findByTestId("unassigned-item-no"), { target: { value: "dl27621\u3000流水" } });
+    fireEvent.change(screen.getByTestId("unassigned-reason"), { target: { value: "补录" } });
     fireEvent.click(screen.getByTestId("unassigned-submit"));
     await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(calls.find((call) => call.method === "PATCH")?.body)).item_no).toBe("dl27621\u3000流水");
@@ -120,6 +134,7 @@ describe("未填货号补录", () => {
     const input = await screen.findByTestId("unassigned-item-no");
     await userEvent.clear(input);
     await userEvent.type(input, "NEW-9527");
+    fireEvent.change(screen.getByTestId("unassigned-reason"), { target: { value: "补录" } });
     fireEvent.click(screen.getByTestId("unassigned-submit"));
     await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(calls.find((call) => call.method === "PATCH")?.body)).item_no).toBe("NEW-9527");
