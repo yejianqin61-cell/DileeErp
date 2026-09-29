@@ -4,7 +4,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { normalizeItemNo } from "./item-no";
+import { normalizeItemNo, itemNoKey } from "./item-no";
 
 /**
  * 下单口径细化的固定字段映射：请求键（snake_case）→ Prisma 列（camelCase）。
@@ -192,6 +192,28 @@ export class SalesOrdersService {
     const where = { deletedAt: null, ...(status ? { status } : {}), ...(search ? { OR: [{ orderNo: { contains: search, mode: "insensitive" as const } }, { productName: { contains: search, mode: "insensitive" as const } }, { itemNo: { contains: search, mode: "insensitive" as const } }] } : {}) };
     const [data, total] = await this.prisma.$transaction([this.prisma.salesOrder.findMany({ where, orderBy: { updatedAt: "desc" }, skip: (page - 1) * pageSize, take: pageSize, include: { customer: true, contact: true, boms: { where: { deletedAt: null }, select: { id: true, version: true, status: true } } } }), this.prisma.salesOrder.count({ where })]);
     return { data, total };
+  }
+
+  /**
+   * 货号候选（销售单编辑器的「可挑可输」输入框用）。
+   *
+   * 按 `itemNo` 列去重：`groupBy` 出来的行是**列值**分组的，所以 `27621` 与 `27621 ` 会各占一行 ——
+   * 这里是**建议**用途，不做跨行归并（归并要读全部行，代价不成比例）；真正的分组归并在返单与总结模块。
+   * 空货号（null）不进候选：它不是可选项，而是「还没填」。
+   */
+  async itemNoOptions(q?: string, limit = 50) {
+    const take = Math.min(Math.max(limit || 50, 1), 200);
+    const search = (q ?? "").trim();
+    const rows = await this.prisma.salesOrder.groupBy({
+      by: ["itemNo"],
+      where: { deletedAt: null, itemNo: { not: null, ...(search ? { contains: search, mode: "insensitive" as const } : {}) } },
+      _count: { _all: true },
+    });
+    return rows
+      .filter((row): row is typeof row & { itemNo: string } => row.itemNo !== null)
+      .map((row) => ({ item_no: row.itemNo, item_no_key: itemNoKey(row.itemNo), order_count: row._count._all }))
+      .sort((left, right) => right.order_count - left.order_count || left.item_no.localeCompare(right.item_no))
+      .slice(0, take);
   }
 
   async get(id: string) {

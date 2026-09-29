@@ -397,6 +397,16 @@ button { cursor: pointer; }
 .ui-searchable-select-chevron { flex: 0 0 auto; color: var(--text-muted); }
 .ui-searchable-select-placeholder { color: var(--text-muted); }
 
+/* 货号输入框（components/sales/item-no-input.tsx）：一个可自由输入的框 + 既有货号建议。
+   与 searchable-select 的区别是它**允许输入系统里还没有的值**，所以样式按「输入框 + 下拉」写，
+   不套用 select 的 trigger 外观。 */
+.ui-item-no { position: relative; width: 100%; }
+.ui-item-no-popover { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 70; max-height: 288px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: 0 12px 32px rgb(23 32 51 / 24%); padding: 4px; }
+.ui-item-no-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 7px 10px; border: 0; border-radius: calc(var(--radius) - 2px); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ui-item-no-option:hover, .ui-item-no-option[data-active="true"] { background: var(--surface-muted); }
+.ui-item-no-option small { color: var(--text-muted); flex: 0 0 auto; }
+.ui-item-no-empty { padding: 8px 10px; color: var(--text-muted); }
+
 .ui-multi-select { display: grid; gap: 6px; }
 .ui-multi-select-searchbox { position: relative; }
 .ui-multi-select-searchbox .ui-input { padding-right: 32px; }

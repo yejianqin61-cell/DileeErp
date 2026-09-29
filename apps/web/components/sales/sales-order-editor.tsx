@@ -25,6 +25,7 @@ import {
   specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialOption, type MaterialRefState, type SpecDetailRow,
 } from "../../lib/sales-order-spec";
 import { MaterialThumb } from "../procurement/material-image";
+import { ItemNoInput, type ItemNoSuggestion } from "./item-no-input";
 
 type Customer = { id: string; customerCode?: string; name: string; isActive?: boolean; currency?: string | null; contacts?: Array<{ id: string; name: string; phone?: string | null; isDefault?: boolean }> };
 type Unit = { id: string; name: string };
@@ -72,6 +73,9 @@ const FIELD_LABELS: Record<string, string> = {
   delivery_date: "交货日期",
   unit: "单位",
   currency: "币种",
+  // 货号在基本信息里由专用输入框渲染（`ItemNoInput`），不在这条 BASE_FIELDS 循环里 ——
+  // 但错误文案要用到它的中文名，所以单独登记一条。
+  item_no: "货号",
 };
 
 /**
@@ -92,6 +96,9 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   // 材料明细的物料引用（用户 2026-09-24）：键 = 栏位请求键，值 = 引用的物料（null = 只填文字）。
   const [refs, setRefs] = useState<MaterialRefState>(() => Object.fromEntries(SPEC_MATERIAL_KEYS.map((key) => [key, null])));
   const [materials, setMaterials] = useState<MaterialOption[]>([]);
+  // 货号候选（老板 2026-09-26 的「货号」字段）：来自 GET /sales-orders/item-nos。
+  // 拉不到就降级成空列表 —— 输入框仍然能输新货号，**不能**因为建议列表失败把整单卡住。
+  const [itemNoSuggestions, setItemNoSuggestions] = useState<ItemNoSuggestion[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
@@ -114,6 +121,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         // 不能因为物料池拉不到就把整张销售单卡住）。
         apiGet<MaterialOption[]>("/materials").catch(() => ({ data: [] as MaterialOption[], meta: {} })),
       ]);
+      // 货号候选：独立取、独立降级（与物料清单同一条理由：建议是锦上添花，填字才是主干）。
+      void apiGet<ItemNoSuggestion[]>("/sales-orders/item-nos").then((result) => setItemNoSuggestions(Array.isArray(result.data) ? result.data : [])).catch(() => setItemNoSuggestions([]));
       setCustomers(customerList.data.filter((item) => item.isActive !== false));
       setUnits(unitList.data);
       setCurrencies(currencyList);
@@ -142,6 +151,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
           receivable_amount: asText(order.receivableAmount),
           settlement_method: String(order.settlementMethod ?? ""),
           local_currency_amount: asText(order.localCurrencyAmount),
+          // 货号是**列名**（`itemNo`），不在 37 个细化标量里 —— 直接读列名，不走 specFromOrder。
+          item_no: String(order.itemNo ?? ""),
         });
         // ⚠️ 必须过 `specFromOrder`：接口给的是 Prisma **列名**（`ribSpec` / `fabricUsageCanopy`），
         // 而表单按**请求键**（`rib_spec`）取值。直接 `order[key]` 会全部读成空 —— 见该函数的注释。
@@ -206,6 +217,9 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     // 基础字段的空串当「没填」删掉：可选字段的 @IsDecimal/@IsDateString 会因为空串报 400。
     // 细化字段相反——空串 = 清除这一格，必须原样发出去（`specPayload` 已经把 37 个键都带上了）。
     for (const key of Object.keys(base)) if (base[key] === "" && !SPEC_SCALAR_KEYS.includes(key)) delete payload[key];
+    // 货号与细化标量同语义：**空串 = 清除这一格**（落 NULL），不是「不动」。上面那条循环会把空串删掉，
+    // 所以这里显式补回来 —— 否则「把货号删空再保存」会变成「什么都没发生」。
+    payload.item_no = (base.item_no ?? "").trim() || null;
     if (editing) {
       // 订单号与客户不可改（后端也是这么要求的：update 不接受这两个键）。
       delete payload.order_no;
@@ -269,6 +283,21 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
               <SelectTrigger data-testid="sales-base-settlement_method"><SelectValue placeholder="（不填）" /></SelectTrigger>
               <SelectContent>{SETTLEMENT_METHODS.filter(([value]) => value !== "").map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
             </Select>
+          </label>
+          {/*
+            货号（老板 2026-09-26：「每个销售单多一个字段，叫做货号」）：可挑既有、也可直接输新的。
+            放在基本信息里而不是塞进 `BASE_FIELDS` —— 那条循环只渲染纯 Input，塞进去会让它长出一个
+            特例分支；而货号的候选列表是**跨单**的（这个字段的语义就是跨单复用），与循环里那些
+            「只属于这一张单」的字段不是一回事。
+          */}
+          <label>货号
+            <ItemNoInput
+              value={base.item_no ?? ""}
+              onChange={(value) => setBaseField("item_no", value)}
+              suggestions={itemNoSuggestions}
+              disabled={saving}
+              testId="sales-base-item_no"
+            />
           </label>
           {BASE_FIELDS.map((field) => (
             <label key={field.key}>{field.label}{field.required ? "（必填）" : ""}

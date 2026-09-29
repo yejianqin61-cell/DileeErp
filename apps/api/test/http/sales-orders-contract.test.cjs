@@ -40,11 +40,14 @@ const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 /** 非 UUID 的 id 段：验证 id 参数是否被 UUID 校验拦下（见文件末尾 KNOWN_CONTRACT_DEFECT 用例）。 */
 const NON_UUID_ID = "not-a-uuid";
 
-/** sales-orders.controller.ts 的全部 12 个路由。 */
+/** sales-orders.controller.ts 的全部 13 个路由。 */
 const ROUTES = [
   { label: "GET /", method: "get", path: "/api/v1/sales-orders" },
   { label: "POST /", method: "post", path: "/api/v1/sales-orders", payload: {} },
   { label: "GET /finished-goods-summary", method: "get", path: "/api/v1/sales-orders/finished-goods-summary" },
+  // 货号候选（2026-09-26）：与 finished-goods-summary 同一类——**必须声明在 :id 之前**，
+  // 否则 "item-nos" 会被当成销售单 id 去查库。
+  { label: "GET /item-nos", method: "get", path: "/api/v1/sales-orders/item-nos" },
   { label: "GET /:id/impact-preview", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/impact-preview` },
   { label: "GET /:id/finished-goods", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/finished-goods` },
   { label: "POST /:id/outbound-notices", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, payload: {} },
@@ -244,6 +247,23 @@ test("sales_orders.finished_goods_summary_hits_its_own_handler_not_the_id_route"
       assert.equal(typeof group[key], "string", `${key} 必须是字符串`);
     }
     assert.equal(Number(group.unshipped_quantity) >= 0, true, "未出库数不应为负数");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 货号候选：与成品总览同一类路由顺序护栏（单段静态路径不能被 @Get(":id") 吃掉）
+// ---------------------------------------------------------------------------
+test("sales_orders.item_nos_hits_its_own_handler_not_the_id_route", async () => {
+  const client = sessionClient();
+  const response = await client.get("/api/v1/sales-orders/item-nos");
+  // 若被 :id 吃掉，这里会是 404 SALES_ORDER_NOT_FOUND（"item-nos" 不是 UUID），
+  // 而输入框的建议列表会永远为空 —— 那正是「推荐不出来就等于没有」的场景。
+  const body = expectSuccessEnvelope(response, { context: "GET /item-nos" });
+  assert.ok(Array.isArray(body.data), "货号候选必须是数组");
+  for (const option of body.data) {
+    assert.equal(typeof option.item_no, "string");
+    assert.equal(typeof option.item_no_key, "string");
+    assert.equal(typeof option.order_count, "number");
   }
 });
 

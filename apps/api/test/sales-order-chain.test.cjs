@@ -263,3 +263,49 @@ test("货号：销售单列表搜索命中货号", async () => {
   assert.ok(or.some((clause) => clause.itemNo && clause.itemNo.contains === "27621"), "搜索必须能按货号命中（现场常常只记得货号）");
   assert.equal(or.find((clause) => clause.itemNo).itemNo.mode, "insensitive", "货号搜索不区分大小写");
 });
+
+test("货号候选：按单数降序、空货号不进候选、带上归一键", async () => {
+  let groupByArguments;
+  const prisma = {
+    salesOrder: {
+      groupBy: (arguments_) => {
+        groupByArguments = arguments_;
+        return Promise.resolve([
+          { itemNo: "27621", _count: { _all: 3 } },
+          { itemNo: "DL27621", _count: { _all: 1 } },
+          { itemNo: "27621 流水花扇", _count: { _all: 5 } },
+        ]);
+      },
+    },
+  };
+  const options = await new SalesOrdersService(prisma, audit).itemNoOptions();
+  assert.deepEqual(options.map((option) => option.item_no), ["27621 流水花扇", "27621", "DL27621"], "按单数降序（常用的排在前面）");
+  assert.equal(options[0].item_no_key, "27621流水花扇", "匹配键由服务端给，前端不自己算");
+  assert.equal(groupByArguments.by[0], "itemNo");
+  assert.equal(groupByArguments.where.itemNo.not, null, "空货号不是候选：它是「还没填」，不是可选项");
+});
+
+test("货号候选：q 先 trim 且不区分大小写；limit 有上限（默认 50 / 最大 200）", async () => {
+  let groupByArguments;
+  const prisma = { salesOrder: { groupBy: (arguments_) => { groupByArguments = arguments_; return Promise.resolve([]); } } };
+  const service = new SalesOrdersService(prisma, audit);
+  await service.itemNoOptions("  dl27621  ", 20);
+  assert.equal(groupByArguments.where.itemNo.contains, "dl27621", "入参先 trim");
+  assert.equal(groupByArguments.where.itemNo.mode, "insensitive");
+  // 候选列表不是导出接口：给一个能一次拉爆页面的上限没有意义。
+  const many = Array.from({ length: 260 }, (_, index) => ({ itemNo: `A${String(index).padStart(3, "0")}`, _count: { _all: 1 } }));
+  const capped = new SalesOrdersService({ salesOrder: { groupBy: async () => many } }, audit);
+  assert.equal((await capped.itemNoOptions(undefined, 9999)).length, 200, "limit 上限 200");
+  assert.equal((await capped.itemNoOptions(undefined, 0)).length, 50, "limit 传 0 落到默认 50（不是 0 条）");
+});
+
+test("货号候选：路由必须声明在 @Get(\":id\") 之前（否则会被当成销售单 id 吃掉）", () => {
+  const source = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "src", "modules", "sales", "sales-orders.controller.ts"), "utf8");
+  const itemNos = source.indexOf('@Get("item-nos")');
+  // 找的是**真正的路由声明**（带 ` async`），不是注释里提到 `@Get(":id")` 的那几处说明文字 ——
+  // 上面两个路由的注释里都写着「必须声明在 @Get(":id") 之前」，纯搜字符串会命中注释、断言反过来失败。
+  const byId = source.indexOf('@Get(":id") async');
+  assert.ok(itemNos > 0, "item-nos 路由必须存在");
+  assert.ok(byId > 0, "预期控制器里仍有一条 @Get(\":id\") 路由");
+  assert.ok(itemNos < byId, "Nest 按声明顺序匹配：item-nos 必须在 :id 之前，否则建议列表永远是空的");
+});

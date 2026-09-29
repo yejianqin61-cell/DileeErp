@@ -153,7 +153,7 @@ export class SalesOrderDto extends SalesOrderSpecDto {
    * 货号**不是必填**：历史单没有货号，强制会让「确认」这个既有动作变成破坏性变更。
    * 补录待办在【返单与总结 → 未填货号】。
    */
-  @IsOptional() @IsString() @MaxLength(ITEM_NO_MAX_LENGTH) item_no?: string;
+  @IsOptional() @IsString() @MaxLength(ITEM_NO_MAX_LENGTH) item_no?: string | null;
   /**
    * 返单来源销售单号：**只由「返单建单」写入**（服务层从来源单取值）。
    * 更新接口的 DTO 里没有这个键，服务层的 `SalesOrderUpdate` 也把它排除了 —— 两处都不接受改写。
@@ -185,7 +185,7 @@ export class UpdateSalesOrderDto extends SalesOrderSpecDto {
    * **故意不放进 `coreFields`**：货号不锁下游 —— 否则下单后想改一个打错的货号，
    * 必须先回退 BOM/采购/生产，那是不可接受的。
    */
-  @IsOptional() @IsString() @MaxLength(ITEM_NO_MAX_LENGTH) item_no?: string;
+  @IsOptional() @IsString() @MaxLength(ITEM_NO_MAX_LENGTH) item_no?: string | null;
 }
 class SalesOrderQueryDto extends PaginationQueryDto {
   @IsOptional() @IsString() status?: string;
@@ -212,6 +212,18 @@ export class SalesOrdersController {
   // 必须声明在 @Get(":id") 之前：Nest 按声明顺序匹配，否则 "finished-goods-summary"
   // 会被当成销售单 ID 去查库（与「其他应付导入模板」被 :id 吃掉是同一类问题）。
   @Get("finished-goods-summary") async finishedGoodsSummary() { return { data: await this.outboundNotices.overview(), meta: {} }; }
+  /**
+   * 货号候选（2026-09-26）：销售单编辑器里那个「可挑可输」的货号输入框的建议来源。
+   *
+   * **必须声明在 `@Get(":id")` 之前**：Nest 按声明顺序匹配，否则 "item-nos" 会被当成销售单 ID 去查库。
+   * 这条与 `finished-goods-summary` 是同一类问题（那个注释里写着同样的教训）。
+   *
+   * 为什么不复用 `GET /sales-orders?page_size=200` 让前端自己推：那样只能看到前 200 张单的货号，
+   * 老货号根本推荐不出来 —— 推荐不出来就等于没有。这里按列去重，不看翻页窗口。
+   */
+  @Get("item-nos") async itemNos(@Query("q") q?: string, @Query("limit") limit?: string) {
+    return { data: await this.orders.itemNoOptions(q, limit === undefined ? undefined : Number(limit)), meta: {} };
+  }
   /**
    * 工艺单导出（2026-09-16）：按 example/销售单 的模板版式，图片格留空。
    *
