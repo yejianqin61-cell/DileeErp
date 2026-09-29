@@ -209,8 +209,9 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     const material = materials.find((item) => item.id === materialId);
     const row = rows[index];
     // 换掉物料之后这一行就不再是 BOM 上那一行：`bom_item_id` 必须一起清掉，
-    // 否则后端以 PURCHASE_BOM_ITEM_MISMATCH 拒绝整份计划（而报错看不出是哪一行）。
-    const keepBom = row?.bomItemId && row.materialName !== (material?.name ?? row.materialName) ? { bomItemId: null } : {};
+    // 否则后端以 PURCHASE_BOM_ITEM_MISMATCH 拒绝**整份计划**（而报错看不出是哪一行）。
+    // 判据是**物料 id 变了**，不是"名字变了" —— 名字相同但其实是另一个物料时同样要清。
+    const keepBom = row?.bomItemId && row.materialId !== materialId ? { bomItemId: null } : {};
     updateRow(index, { materialId, materialName: material?.name ?? "", unitId: material?.defaultUnitId ?? row?.unitId ?? "", unitName: units.find((item) => item.id === (material?.defaultUnitId ?? row?.unitId))?.name ?? "", ...keepBom });
   }
 
