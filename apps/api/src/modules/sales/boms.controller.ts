@@ -25,6 +25,8 @@ class BomItemDto {
   @IsOptional() @IsString() base_usage?: string;
   @IsString() unit!: string;
   @IsOptional() @IsUUID() unit_id?: string;
+  /** BOM 行的默认供应商（2026-09-26）：可空；填了就必须是启用的供应商（服务层校验）。 */
+  @IsOptional() @IsUUID() supplier_id?: string;
   @IsOptional() @IsString() loss_quantity?: string;
   @IsOptional() @IsString() loss_rate?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;

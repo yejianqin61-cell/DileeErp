@@ -117,3 +117,68 @@ test("bom items get sequential numbers starting from one", async () => {
   ], user);
   assert.deepEqual(saved.map((row) => row.sequence), [1, 2]);
 });
+
+// ---- BOM 行默认供应商（2026-09-26，「BOM 表新增一个 column：供应商」）----
+
+test("BOM 行的默认供应商：落库时写 id + 快照（供应商改名后 BOM 上仍看得见当时记的是哪家）", async () => {
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    supplier: { findMany: async () => [{ id: "supplier-1", supplierCode: "S-001", name: "宁波辅料厂" }] },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "2", unit: "米", supplier_id: "supplier-1" }], user);
+  assert.equal(saved[0].supplierId, "supplier-1");
+  assert.deepEqual(saved[0].supplierSnapshot, { id: "supplier-1", supplierCode: "S-001", name: "宁波辅料厂" });
+});
+
+test("BOM 行的默认供应商：不存在或已停用一律拒绝（列表里找不到的供应商不能挂上去）", async () => {
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    // 已停用的供应商不会被查出来
+    supplier: { findMany: async ({ where }) => where.id.in.filter((id) => id === "supplier-1").map((id) => ({ id, supplierCode: "S-001", name: "宁波辅料厂" })) },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async () => {} } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await assert.rejects(
+    () => service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "2", unit: "米", supplier_id: "supplier-9" }], user),
+    (error) => error.getResponse().code === "BOM_SUPPLIER_NOT_FOUND",
+  );
+});
+
+test("BOM 行的默认供应商：留空写 SQL NULL（不是 JSON 的 null 字面量）", async () => {
+  const { Prisma } = require("@prisma/client");
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    supplier: { findMany: async () => [] },
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "2", unit: "米" }], user);
+  assert.equal(saved[0].supplierId, null);
+  // 必须是 `DbNull`（SQL NULL）而不是 `JsonNull`（JSON 的 null 字面量）：后者会让
+  // `WHERE supplier_snapshot IS NULL` 找不到这些行 —— 将来查"哪些行没有快照"会漏。
+  assert.equal(saved[0].supplierSnapshot, Prisma.DbNull);
+});
+
+test("BOM 行的默认供应商：轻量桩（没有 supplier 表）也能保存 —— 与 unit/material 同一套写法", async () => {
+  let saved;
+  const bom = { id: "bom-1", status: "draft", orderNo: "DL260001", version: 1, items: [] };
+  const prisma = {
+    bom: { findFirst: async () => bom },
+    // 故意不给 supplier：老调用方/单测桩没有这张表时不该炸
+    $transaction: async (callback) => callback({ bomItem: { updateMany: async () => {}, createMany: async ({ data }) => { saved = data; } } }),
+  };
+  const service = new BomsService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+  service.get = async () => bom;
+  await service.replaceItems("bom-1", [{ material_id: "material-1", material_name: "面料", material_snapshot: { name: "面料" }, required_quantity: "2", unit: "米" }], user);
+  assert.equal(saved[0].supplierId, null);
+});

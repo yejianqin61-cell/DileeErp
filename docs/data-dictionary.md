@@ -108,6 +108,8 @@ BOM表
 | F-0052 | `production_batch_base` | decimal | BOM 明细 | 生产用量 | 计算 | 已实现 |
 | F-0053 | `material_unit_id` | UUID | 单位池 | BOM、采购、库存、生产 | 外键/单位隔离 | 已实现 |
 | F-0054 | `material_add_reason` | string | 采购/BOM外物料 | 审计、采购单 | 审计门禁 | 已实现 |
+| F-0231 | `bom_item_supplier_id` | UUID | 供应商池（BOM 表内下拉可快速新建） | BOM 明细行 | 外键/备查 | 已实现 |
+| F-0232 | `bom_item_supplier_snapshot` | JSON | BOM 行保存时 | BOM 展示、审计 | 快照 | 已实现 |
 
 ### 3.4 采购与来料质检模块
 

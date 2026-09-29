@@ -565,6 +565,15 @@ model BomItem {
   lossQuantity       Decimal?            @map("loss_quantity") @db.Decimal(18, 4)
   lossRate           Decimal?            @map("loss_rate") @db.Decimal(8, 4)
   extensionData      Json                @default("{}") @map("extension_data")
+  // ---- BOM 行的默认供应商（2026-09-26，老板要求「BOM 表新增一个 column：供应商」）----
+  // 用途是**备查**：这个部件通常找哪家做（伞骨找五金厂、伞布找纺织厂）。
+  // 用户已明确：**不预填到采购单** —— 采购仍逐行自己选供应商，不改变既有采购流程。
+  //   · 可空：历史 BOM 行没有供应商；
+  //   · 存 `supplier_snapshot`：供应商被改名/停用之后，BOM 上仍要看得见当时记的是哪一家
+  //     （与 `materialSnapshot` 同一条理由）；
+  //   · 引用而不是抄名字：供应商主数据是唯一真源（抄十份、改一次要改十处）。
+  supplierId         String?             @map("supplier_id") @db.Uuid
+  supplierSnapshot   Json?               @map("supplier_snapshot")
   createdAt          DateTime            @default(now()) @map("created_at")
   updatedAt          DateTime            @updatedAt @map("updated_at")
   createdBy          String              @map("created_by") @db.Uuid
@@ -574,10 +583,14 @@ model BomItem {
   bom                Bom                 @relation(fields: [bomId], references: [id])
   material           Material            @relation(fields: [materialId], references: [id])
   unitRecord         Unit?               @relation(fields: [unitId], references: [id])
+  /** BOM 行的默认供应商（可选关系 → Postgres 侧必须是 ON DELETE SET NULL，见迁移注释）。 */
+  supplier           Supplier?           @relation(fields: [supplierId], references: [id])
   purchaseOrderItems PurchaseOrderItem[]
 
   @@index([bomId])
   @@index([materialId])
+  /// 「这个供应商供哪些部件」要能查（备查用途之外，将来按供应商归集也走它）。
+  @@index([supplierId])
   @@map("bom_items")
 }
 
@@ -705,6 +718,7 @@ model Supplier {
   deletedBy               String?                  @map("deleted_by") @db.Uuid
   purchaseOrders          PurchaseOrder[]
   purchaseOrderItems      PurchaseOrderItem[]
+  bomItems                BomItem[]
   rawMaterialInbounds     RawMaterialInbound[]
   payableSources          PayableSource[]
   outsourcePayableSources OutsourcePayableSource[]

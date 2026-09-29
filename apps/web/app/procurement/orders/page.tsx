@@ -531,7 +531,7 @@ export default function PurchaseOrdersPage() {
   if (loading) return <><PageHeader title="采购单" breadcrumb={["采购", "采购单"]} /><LoadingState /></>;
   if (bomWorkbench) return <>
     <PageHeader title="采购单" breadcrumb={["采购", "采购单"]} />
-    <BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} onCreateMaterial={(apply) => setMaterialApply(() => apply)} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} />
+    <BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} onCreateMaterial={(apply) => setMaterialApply(() => apply)} onSupplierCreated={(supplier) => setSuppliers((items) => (items.some((item) => item.id === supplier.id) ? items : [...items, supplier as Reference]))} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} />
     <MaterialCreateDialog
       open={Boolean(materialApply)}
       units={units}
