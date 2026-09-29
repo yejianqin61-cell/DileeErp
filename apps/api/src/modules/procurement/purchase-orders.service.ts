@@ -6,11 +6,15 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 
-type Item = { material_id: string; unit_id: string; bom_item_id?: string; supplier_id?: string; expected_date?: string; model?: string; quantity: string; unit_price: string; tax_rate?: string; extra_fee?: string; extension_data?: Record<string, unknown> };
+/** 采购明细入参（导出给「采购计划下单」用：它要把计划行映射成同一形状，两条路径共用一套校验）。 */
+export type PurchaseOrderItemInput = { material_id: string; unit_id: string; bom_item_id?: string; supplier_id?: string; expected_date?: string; model?: string; quantity: string; unit_price: string; tax_rate?: string; extra_fee?: string; extension_data?: Record<string, unknown> };
+type Item = PurchaseOrderItemInput;
 type Input = { order_no: string; bom_id?: string; bom_version?: number; supplier_id?: string; purchase_date?: string; expected_date?: string; currency?: string; remark?: string; reason?: string; extension_data?: Record<string, unknown>; items?: Item[] };
 /** 按供应商收束：一组 = 一张采购单。`supplier_id` 可空 = 这一组是「还没选供应商」的行。 */
-type SplitGroup = { supplier_id?: string; currency?: string; expected_date?: string; remark?: string; items?: Item[] };
-type SplitInput = { order_no: string; bom_id?: string; purchase_date?: string; currency?: string; remark?: string; reason?: string; place_order?: boolean; extension_data?: Record<string, unknown>; groups?: SplitGroup[] };
+export type SplitGroup = { supplier_id?: string; currency?: string; expected_date?: string; remark?: string; items?: Item[] };
+export type SplitInput = { order_no: string; bom_id?: string; purchase_date?: string; currency?: string; remark?: string; reason?: string; place_order?: boolean; extension_data?: Record<string, unknown>; groups?: SplitGroup[] };
+/** 收束后的分组（参照物已解析、下单前校验已过），可以直接落库。 */
+export type MergedGroup = { input: Input; prepared: Prepared };
 type OrderableItem = { materialId: string; unitId: string; supplierId: string; quantity: string; unitPrice: string };
 /** BOM 明细行上的下单情况（新建采购单时给采购员看的「这一行是不是已经买过了」）。 */
 type BomItemOrderState = "none" | "draft" | "partial" | "ordered";
@@ -72,16 +76,26 @@ export class PurchaseOrdersService {
     const placeOrder = input.place_order === true;
     const merged = await this.collectGroups(input, placeOrder);
     const targetStatus = placeOrder ? "ordered" : "draft";
-    const created = await this.prisma.$transaction(async (tx) => {
-      const rows = [];
-      for (const entry of merged) rows.push(await tx.purchaseOrder.create({ data: this.orderData(entry.prepared, entry.input, user, targetStatus) }));
-      return rows;
-    });
+    const created = await this.prisma.$transaction((tx) => this.createOrdersFromGroups(tx, merged, targetStatus, user));
     for (const row of created) {
       await this.audit.record("purchase_order.create", "purchase_order", user.id, row.id, { order_no: row.orderNo, purchase_order_no: row.purchaseOrderNo, split_by_supplier: true, group_count: created.length });
       if (placeOrder) await this.audit.record("purchase_order.order", "purchase_order", user.id, row.id, { order_no: row.orderNo, split_by_supplier: true });
     }
     return Promise.all(created.map((row) => this.get(row.id)));
+  }
+  /**
+   * 把已收束好的分组落成采购单 —— **在调用方给的事务里**写。
+   *
+   * 为什么单独开放这一步（2026-09-27 采购计划下单）：计划下单要在**同一个事务**里回写
+   * `purchase_plan_items.purchase_order_item_id`。分成两次事务的话，中途失败会留下
+   * 「采购单已经建好、计划还显示未下单」的中间态 —— 而那正是重复采购的入口。
+   *
+   * 收束与校验仍然共用 `collectGroups()`，本方法只负责写，两条路径不会漂移。
+   */
+  async createOrdersFromGroups(tx: Prisma.TransactionClient, merged: MergedGroup[], status: "draft" | "ordered", user: CurrentUser) {
+    const rows = [];
+    for (const entry of merged) rows.push(await tx.purchaseOrder.create({ data: this.orderData(entry.prepared, entry.input, user, status) }));
+    return rows;
   }
   /**
    * 按供应商收束一张**已经存在**的采购单（草稿，或已下单但没有任何到货）。
@@ -132,7 +146,7 @@ export class PurchaseOrdersService {
    * （用户 2026-09-17：「导入 BOM 明细，也视为对采购单的编辑，允许保存」）。
    * 未选供应商的组最多一个 —— 它们同属一张「还没定供应商」的草稿。
    */
-  private async collectGroups(input: SplitInput, placeOrder: boolean) {
+  async collectGroups(input: SplitInput, placeOrder: boolean): Promise<MergedGroup[]> {
     const groups = input.groups ?? [];
     if (!groups.length) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_GROUPS_REQUIRED", message: "按供应商收束至少需要一个供应商分组", details: [] });
     if (placeOrder) {
@@ -143,7 +157,7 @@ export class PurchaseOrdersService {
     if (unassignedGroups > 1) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_UNASSIGNED_DUPLICATE", message: "未选供应商的明细只能合成一组（它们同属一张还没有供应商的草稿）", details: [] });
     const emptyGroup = groups.findIndex((group) => !(group.items ?? []).length);
     if (emptyGroup >= 0) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_ITEMS_REQUIRED", message: `第 ${emptyGroup + 1} 组没有采购明细`, details: [] });
-    const merged: Array<{ input: Input; prepared: Prepared }> = [];
+    const merged: MergedGroup[] = [];
     for (const [index, group] of groups.entries()) {
       const currency = group.currency ?? input.currency ?? "CNY";
       await this.currencies?.assertSupported(currency, "采购单币种");

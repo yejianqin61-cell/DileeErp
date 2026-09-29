@@ -4,6 +4,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { itemNoKey } from "../sales/item-no";
+import { PurchaseOrdersService, type PurchaseOrderItemInput, type SplitGroup, type SplitInput } from "./purchase-orders.service";
 import { countBomMaterialsMissingFromPlan, planStatusOf, purchasePlanNo, PURCHASE_PLAN_STATUS_LABELS, type PurchasePlanStatus } from "./purchase-plans.domain";
 
 /**
@@ -36,6 +37,15 @@ export type PlanItemInput = {
 export type PlanInput = { bom_id?: string; items?: PlanItemInput[]; extension_data?: Record<string, unknown>; expected_updated_at?: string; reason?: string };
 export type PlanListQuery = { order_no?: string; item_no?: string; status?: string; q?: string };
 
+/**
+ * 收束下单的入参：**按供应商分组**，每组一个币种（口径 10），`items` 是计划行 ID。
+ *
+ * 没收进任何一组的行**留在计划里**（口径 6 的多波次）—— 分批下单是采购现实
+ * （这家先下、那家还在等图纸）。
+ */
+export type PlanOrderGroup = { supplier_id?: string; currency?: string; expected_date?: string; remark?: string; items: string[] };
+export type PlanOrderInput = { purchase_date?: string; remark?: string; extension_data?: Record<string, unknown>; groups: PlanOrderGroup[] };
+
 /** 保存时要比对的最小行形状（只取已下单行保护用得上的列）。 */
 type WritablePlanItem = {
   id: string;
@@ -47,6 +57,8 @@ type WritablePlanItem = {
   model: string | null;
   expectedDate: Date | null;
   purchaseOrderItemId: string | null;
+  bomItemId: string | null;
+  extensionData: unknown;
 };
 
 /** 落库前的计划行（日期已解析、快照已备好）。 */
@@ -96,7 +108,7 @@ function contactLine(supplier: { contactName?: string | null; phone?: string | n
 
 @Injectable()
 export class PurchasePlansService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly orders: PurchaseOrdersService) {}
 
   /**
    * 计划列表。
@@ -379,7 +391,7 @@ export class PurchasePlansService {
         extensionData: true,
         items: {
           where: { deletedAt: null },
-          select: { id: true, materialId: true, unitId: true, supplierId: true, quantity: true, unitPrice: true, model: true, expectedDate: true, purchaseOrderItemId: true },
+          select: { id: true, materialId: true, unitId: true, supplierId: true, quantity: true, unitPrice: true, model: true, expectedDate: true, purchaseOrderItemId: true, bomItemId: true, extensionData: true },
         },
       },
     });
@@ -423,8 +435,19 @@ export class PurchasePlansService {
     return null;
   }
 
-  /** 两个日期是不是同一时刻（都为 null 也算相同）。 */
-  private sameDate(current: Date | null, next: Date | null) {
+  /**
+   * 把一个 `bom_item_id` 归到**当前** BOM 的行 ID 上。
+   *
+   * `BomsService.replaceItems` 存一次 BOM 就会换掉**全部**行 ID，而计划（与草稿不同）是长期存在的，
+   * 所以它必然持有"当前 BOM 里已经不存在"的 ID。规则：给定的 ID 还在就用它（物料对不上由调用方判错），
+   * 不在就**按物料找回**当前 BOM 的对应行；找不回（物料已不在 BOM 里）返回 null，当作 BOM 外的行处理。
+   */
+  private resolveBomItemId(bomItemId: string | null, materialId: string, bomItems: Array<{ id: string; materialId: string }>): string | null {
+    if (bomItemId && bomItems.some((row) => row.id === bomItemId)) return bomItemId;
+    return bomItems.find((row) => row.materialId === materialId)?.id ?? null;
+  }
+
+  /** 两个日期是不是同一时刻（都为 null 也算相同）。 */  private sameDate(current: Date | null, next: Date | null) {
     if (current === null && next === null) return true;
     if (current === null || next === null) return false;
     return current.getTime() === next.getTime();
@@ -437,6 +460,98 @@ export class PurchasePlansService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 收束下单（口径 6 + 口径 10）。
+   *
+   * 勾选的行按**供应商**分组 → 一组一张采购单（复用采购单既有的 `collectGroups()`：
+   * 一个供应商一张单的不变式、下单前校验、金额与快照全部沿用，不另写一套建单逻辑）；
+   * **没勾的行留在计划里**，下次再下。
+   *
+   * 三件事必须**在同一个事务里**：建采购单、回写计划行的 1:1 链接、计划头的时间戳。
+   * 分成两次事务的话，中途失败会留下「采购单已经建好、计划还显示未下单」的中间态 ——
+   * 那正是重复采购的入口。
+   *
+   * 认领关系**不靠 Prisma 嵌套 create 的返回顺序**：下单时把计划行 ID 写进采购明细的
+   * `extension_data.purchase_plan_item_id`，落库后按这个标记回写（顺带留下了
+   * "这条采购明细来自哪一行计划"的可追溯性）。
+   */
+  async order(id: string, input: PlanOrderInput, user: CurrentUser) {
+    const current = await this.loadForWrite(id);
+    const groups = input.groups ?? [];
+    if (!groups.length) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_GROUPS_REQUIRED", message: "请至少勾选一行并按供应商分组后再下单", details: [] });
+    const bomItems = await this.prisma.bomItem.findMany({ where: { bomId: current.bomId, deletedAt: null }, select: { id: true, materialId: true } });
+    const lineById = new Map(current.items.map((item) => [item.id, item]));
+    const claimed = new Set<string>();
+    const splitGroups: SplitGroup[] = [];
+    for (const [index, group] of groups.entries()) {
+      if (!group.supplier_id) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_SUPPLIER_REQUIRED", message: `第 ${index + 1} 组还没选供应商，不能下单`, details: [] });
+      const ids = group.items ?? [];
+      if (!ids.length) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_ITEMS_REQUIRED", message: `第 ${index + 1} 组没有计划行`, details: [] });
+      const items: PurchaseOrderItemInput[] = [];
+      for (const lineId of ids) {
+        const line = lineById.get(lineId);
+        if (!line) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_LINE_INVALID", message: "有采购行不属于这份计划", details: [{ plan_item_id: lineId }] });
+        if (line.purchaseOrderItemId) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_LINE_ALREADY_ORDERED", message: "有采购行已经下过单了，刷新后再试", details: [{ plan_item_id: lineId, purchase_order_item_id: line.purchaseOrderItemId }] });
+        if (claimed.has(lineId)) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_LINE_DUPLICATE", message: "同一行被分到了多个供应商组", details: [{ plan_item_id: lineId }] });
+        claimed.add(lineId);
+        const bomItemId = this.resolveBomItemId(line.bomItemId, line.materialId, bomItems);
+        const reason = (line.extensionData as { outside_bom_reason?: unknown } | null)?.outside_bom_reason;
+        if (!bomItemId && !(typeof reason === "string" && reason.trim())) {
+          throw new UnprocessableEntityException({ code: "PURCHASE_OUTSIDE_BOM_REASON_REQUIRED", message: "这行的物料已经不在 BOM 表里了，请先在计划里填写「BOM 外新增原因」再下单", details: [{ plan_item_id: lineId }] });
+        }
+        items.push({
+          material_id: line.materialId,
+          unit_id: line.unitId,
+          bom_item_id: bomItemId ?? undefined,
+          supplier_id: group.supplier_id,
+          expected_date: line.expectedDate ? line.expectedDate.toISOString() : undefined,
+          model: line.model ?? undefined,
+          quantity: line.quantity.toFixed(4),
+          unit_price: line.unitPrice.toFixed(4),
+          extension_data: { ...((line.extensionData ?? {}) as Record<string, unknown>), purchase_plan_item_id: line.id, purchase_plan_no: current.planNo },
+        });
+      }
+      splitGroups.push({ supplier_id: group.supplier_id, currency: group.currency, expected_date: group.expected_date, remark: group.remark, items });
+    }
+    const splitInput: SplitInput = {
+      order_no: current.orderNo,
+      bom_id: current.bomId,
+      purchase_date: input.purchase_date,
+      remark: input.remark,
+      place_order: true,
+      extension_data: { ...(input.extension_data ?? {}), purchase_plan: { plan_id: id, plan_no: current.planNo } },
+      groups: splitGroups,
+    };
+    // 校验与收束在用事务之前完成：失败时一个字都没写。
+    const merged = await this.orders.collectGroups(splitInput, true);
+    const created = await this.prisma.$transaction(async (tx) => {
+      const rows = await this.orders.createOrdersFromGroups(tx, merged, "ordered", user);
+      const createdItems = await tx.purchaseOrderItem.findMany({
+        where: { purchaseOrderId: { in: rows.map((row) => row.id) }, deletedAt: null },
+        select: { id: true, extensionData: true },
+      });
+      for (const item of createdItems) {
+        const planItemId = (item.extensionData as { purchase_plan_item_id?: string } | null)?.purchase_plan_item_id;
+        if (!planItemId) continue;
+        await tx.purchasePlanItem.update({ where: { id: planItemId }, data: { purchaseOrderItemId: item.id, ...this.audit.update(user) } });
+      }
+      return rows;
+    });
+    await this.audit.record("purchase_plan.order", "purchase_plan", user.id, id, {
+      plan_no: current.planNo,
+      order_no: current.orderNo,
+      ordered_line_count: claimed.size,
+      remaining_line_count: current.items.length - claimed.size,
+      group_count: created.length,
+      purchase_order_nos: created.map((row) => row.purchaseOrderNo),
+    });
+    const plan = await this.get(id);
+    return {
+      plan,
+      orders: created.map((row) => ({ id: row.id, purchaseOrderNo: row.purchaseOrderNo, currency: row.currency, totalAmount: row.totalAmount.toFixed(4) })),
+    };
   }
 
   /** 列表/详情共用的摘要：行数、未下单行数、派生状态。 */
@@ -543,8 +658,7 @@ export class PurchasePlansService {
       // 不做这一步的后果很重：BOM 改过一次之后，这份计划里所有行都带着"当前 BOM 里不存在"的行 ID，
       // 于是**计划再也保存不了**（`PURCHASE_BOM_ITEM_MISMATCH`），而计划是长期存在的，
       // 窗口比一次性的草稿大得多。按物料找回与 `bomItemOrderStatus` 的"换行 ID 就按物料摊回"同一口径。
-      let bomItemId = item.bom_item_id ?? null;
-      if (bomItemId && !bomItemMap.has(bomItemId)) bomItemId = bomItems.find((row) => row.materialId === item.material_id)?.id ?? null;
+      const bomItemId = this.resolveBomItemId(item.bom_item_id ?? null, item.material_id, bomItems);
       if (bomItemId && bomItemMap.get(bomItemId)?.materialId !== item.material_id) throw new UnprocessableEntityException({ code: "PURCHASE_BOM_ITEM_MISMATCH", message: "计划行必须引用当前 BOM 表中的对应物料", details: [] });
       // BOM 外的补料/替代料必须写原因 —— 与采购单 `refs()` 的同一条规则。
       // 放在计划这一侧校验，是为了让用户在**保存计划**时就看见，而不是等下单时才 422。

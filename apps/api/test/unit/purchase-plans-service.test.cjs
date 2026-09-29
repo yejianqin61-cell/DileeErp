@@ -64,6 +64,11 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
   ]);
   const materialOf = (id) => ({ id, materialCode: `M-${id}`, name: `物料 ${id}`, specificationModel: null, color: null });
   const orderItemById = new Map(purchaseOrderItems.map((row) => [row.id, row]));
+  // 「收束下单」落库的采购单与采购明细（假的采购单服务写进来的）。
+  const createdOrders = [];
+  const createdOrderItems = [];
+  let recordedSplit = null;
+  const findOrderItem = (id) => orderItemById.get(id) ?? createdOrderItems.find((row) => row.id === id) ?? null;
 
   const hydrateItem = (item) => ({
     ...item,
@@ -73,7 +78,7 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
     material: materialOf(item.materialId),
     unit: units.find((unit) => unit.id === item.unitId) ?? null,
     supplier: item.supplierId ? { id: item.supplierId, supplierCode: "SUP-1", name: "五金厂", contactName: "张伟", phone: "13800000000", address: "浙江省金华市", isActive: true, deletedAt: null } : null,
-    purchaseOrderItem: item.purchaseOrderItemId ? orderItemById.get(item.purchaseOrderItemId) ?? null : null,
+    purchaseOrderItem: item.purchaseOrderItemId ? findOrderItem(item.purchaseOrderItemId) : null,
   });
   const hydratePlan = (plan) => ({
     ...plan,
@@ -142,11 +147,36 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
         Object.assign(row, data);
         return row;
       },
+      // 「收束下单」落库后按 `extension_data.purchase_plan_item_id` 回写计划行的链接，
+      // 所以这里要能把刚建出来的采购明细读回来。
+      findMany: async ({ where }) => createdOrderItems.filter((row) => (where.purchaseOrderId?.in ?? []).includes(row.purchaseOrderId) && row.deletedAt === null),
     },
     $queryRaw: async () => [],
     $transaction: async (fn) => fn(prisma),
   };
-  return { service: new PurchasePlansService(prisma, audit), plans, planItems };
+  /**
+   * 假的采购单服务：只记录**收到什么**并造出采购单/明细。
+   *
+   * 收束与建单的真实逻辑在 `purchase-orders.service.ts`（它自己有 20+ 条单测），
+   * 这里要验证的是**计划这一侧把什么交给了它**：分组、按组币种、行映射、
+   * 以及写进采购明细的 `purchase_plan_item_id` 认领标记。
+   */
+  const fakeOrders = {
+    collectGroups: async (input, placeOrder) => {
+      recordedSplit = { input, placeOrder };
+      return input.groups.map((group) => ({ input: { ...input, supplier_id: group.supplier_id, currency: group.currency, items: group.items }, prepared: { refs: {}, items: group.items, total: "0" } }));
+    },
+    createOrdersFromGroups: async (tx, merged, status) => {
+      const rows = merged.map((entry) => {
+        const order = { id: `po-${createdOrders.length + 1}`, purchaseOrderNo: `PO-20260927-${createdOrders.length + 1}`, currency: entry.input.currency ?? "CNY", status, totalAmount: new Prisma.Decimal("0") };
+        createdOrders.push(order);
+        for (const item of entry.input.items ?? []) createdOrderItems.push({ id: `poi-${createdOrderItems.length + 1}`, purchaseOrderId: order.id, deletedAt: null, extensionData: item.extension_data, purchaseOrder: { purchaseOrderNo: order.purchaseOrderNo, status } });
+        return order;
+      });
+      return rows;
+    },
+  };
+  return { service: new PurchasePlansService(prisma, audit, fakeOrders), plans, planItems, split: () => recordedSplit, createdOrders, createdOrderItems };
 }
 
 const bomFixture = { id: "bom-1", orderNo: "SO-1", salesOrderId: "so-1", version: 3, status: "draft", deletedAt: null, salesOrder: { status: "confirmed", deletedAt: null } };
@@ -522,6 +552,127 @@ test("删除：有任何一行已下单 → 422；全部未下单 → 软删计�
 test("保存/删除：计划不存在 → 404", async () => {
   await assert.rejects(() => makeService().service.update("plan-404", { items: [] }, user), (error) => error.getResponse().code === "PURCHASE_PLAN_NOT_FOUND");
   await assert.rejects(() => makeService().service.remove("plan-404", user), (error) => error.getResponse().code === "PURCHASE_PLAN_NOT_FOUND");
+});
+
+// ---------------------------------------------------------------------------------------------
+// 收束下单（T4）：按供应商分组、按组币种、多波次、回写 1:1 链接。
+
+/** 一份两行都还没下单的计划。 */
+function freePlanFixture() {
+  return {
+    plan: { ...thePlan },
+    items: [
+      { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: "M-9", expectedDate: new Date("2026-10-08T00:00:00Z"), purchaseOrderItemId: null, bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} },
+      { id: "i-2", planId: "plan-1", materialId: "mat-2", unitId: "unit-m", supplierId: "sup-2", quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("1.0000"), model: null, expectedDate: null, purchaseOrderItemId: null, bomItemId: "bi-2", deletedAt: null, sequence: 2, extensionData: {} },
+    ],
+  };
+}
+
+test("收束下单：两个供应商 → 两张采购单（按组币种），计划行的链接被回写、状态变成已完成", async () => {
+  const { plan, items } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  const result = await s.service.order("plan-1", {
+    groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }, { supplier_id: "sup-2", currency: "USD", items: ["i-2"] }],
+  }, user);
+
+  assert.equal(result.orders.length, 2, "一个供应商一张单");
+  assert.deepEqual(result.orders.map((order) => order.currency), ["CNY", "USD"], "币种按组给（口径 10）");
+  assert.equal(result.plan.status, "completed");
+  assert.equal(items[0].purchaseOrderItemId, "poi-1", "链接回写 = 这一行已下单");
+  assert.equal(items[1].purchaseOrderItemId, "poi-2");
+  assert.equal(result.plan.items[0].purchaseOrderNo, "PO-20260927-1", "计划里看得见落到了哪张单");
+  assert.equal(s.split().placeOrder, true, "交给采购单服务的必须是下单态");
+});
+
+test("多波次：只下一部分行，其余留在计划里，状态是部分下单", async () => {
+  const { plan, items } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  const result = await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user);
+
+  assert.equal(result.orders.length, 1);
+  assert.equal(items[0].purchaseOrderItemId, "poi-1");
+  assert.equal(items[1].purchaseOrderItemId, null, "没勾的行留在计划里 —— 分批下单是采购现实");
+  assert.equal(result.plan.status, "partial");
+  assert.equal(result.plan.unorderedCount, 1);
+});
+
+test("收束下单：行映射带上物料/单位/数量/单价/型号/预计到货，并写 purchase_plan_item_id 认领标记", async () => {
+  const { plan, items } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user);
+
+  const sent = s.split().input.groups[0].items[0];
+  assert.equal(sent.material_id, "mat-1");
+  assert.equal(sent.unit_id, "unit-pcs");
+  assert.equal(sent.quantity, "5.0000");
+  assert.equal(sent.unit_price, "3.5000");
+  assert.equal(sent.model, "M-9");
+  assert.equal(sent.expected_date, new Date("2026-10-08T00:00:00Z").toISOString(), "行级预计到货要带过去");
+  assert.equal(sent.supplier_id, "sup-1", "组供应商盖到每一行（一个供应商一张单）");
+  assert.equal(sent.extension_data.purchase_plan_item_id, "i-1", "认领标记：不靠嵌套 create 的返回顺序");
+  assert.equal(sent.extension_data.purchase_plan_no, "PP-1");
+});
+
+test("收束下单：组里没选供应商 / 空组 / 一个组都没有 → 422", async () => {
+  const cases = [
+    [{ groups: [] }, "PURCHASE_PLAN_ORDER_GROUPS_REQUIRED"],
+    [{ groups: [{ currency: "CNY", items: ["i-1"] }] }, "PURCHASE_PLAN_ORDER_SUPPLIER_REQUIRED"],
+    [{ groups: [{ supplier_id: "sup-1", items: [] }] }, "PURCHASE_PLAN_ORDER_ITEMS_REQUIRED"],
+  ];
+  for (const [body, code] of cases) {
+    const { plan, items } = freePlanFixture();
+    const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+    await assert.rejects(() => s.service.order("plan-1", body, user), (error) => error.getResponse().code === code, code);
+  }
+});
+
+test("收束下单：已下过单的行、不属于本计划的行、被分到两组同一行 → 422", async () => {
+  // 已下过单
+  const a = freePlanFixture();
+  a.items[0].purchaseOrderItemId = "poi-1";
+  await assert.rejects(
+    () => makeService({ plans: [a.plan], planItems: a.items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem }).service.order("plan-1", { groups: [{ supplier_id: "sup-1", items: ["i-1"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_ORDER_LINE_ALREADY_ORDERED",
+  );
+  // 不属于本计划
+  const b = freePlanFixture();
+  await assert.rejects(
+    () => makeService({ plans: [b.plan], planItems: b.items, bomItems: bomRows() }).service.order("plan-1", { groups: [{ supplier_id: "sup-1", items: ["i-999"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_ORDER_LINE_INVALID",
+  );
+  // 同一行分两组
+  const c = freePlanFixture();
+  await assert.rejects(
+    () => makeService({ plans: [c.plan], planItems: c.items, bomItems: bomRows() }).service.order("plan-1", { groups: [{ supplier_id: "sup-1", items: ["i-1"] }, { supplier_id: "sup-2", items: ["i-1"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_ORDER_LINE_DUPLICATE",
+  );
+});
+
+test("收束下单：计划里记的是上一版 BOM 的行 ID → 按物料找回当前行 ID 再下单", async () => {
+  // 不这么做的话，`refs()` 会以 PURCHASE_BOM_ITEM_MISMATCH 拒绝整张单 ——
+  // 而 BOM 被改过一次是常态（存一次 BOM 就换掉全部行 ID）。
+  const { plan, items } = freePlanFixture();
+  items[0].bomItemId = "bi-old-1";
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", items: ["i-1"] }] }, user);
+
+  assert.equal(s.split().input.groups[0].items[0].bom_item_id, "bi-1");
+});
+
+test("收束下单：物料已经不在 BOM 里、又没写「BOM 外新增原因」→ 422 且说清要先在计划里补原因", async () => {
+  const { plan, items } = freePlanFixture();
+  items[0].materialId = "mat-gone";
+  items[0].bomItemId = "bi-old-gone";
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  await assert.rejects(
+    () => s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", items: ["i-1"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_OUTSIDE_BOM_REASON_REQUIRED" && /BOM 外新增原因/.test(error.getResponse().message),
+  );
 });
 
 // ---------------------------------------------------------------------------------------------

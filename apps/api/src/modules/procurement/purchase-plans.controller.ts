@@ -54,6 +54,23 @@ class PlanListQueryDto {
   @IsOptional() @IsString() @MaxLength(100) q?: string;
 }
 
+/** 一组 = 一张采购单（同一个供应商）。`items` 是计划行 ID；没勾的行留在计划里（多波次）。 */
+class PlanOrderGroupDto {
+  @IsOptional() @IsUUID() supplier_id?: string;
+  /** 币种按**组**选（口径 10）：币种是"一张采购单"的属性，而一张采购单=一个供应商。 */
+  @IsOptional() @IsString() @MaxLength(10) currency?: string;
+  @IsOptional() @IsDateString() expected_date?: string;
+  @IsOptional() @IsString() @MaxLength(1000) remark?: string;
+  @IsArray() @IsUUID(undefined, { each: true }) items!: string[];
+}
+
+class PlanOrderDto {
+  @IsOptional() @IsDateString() purchase_date?: string;
+  @IsOptional() @IsString() @MaxLength(1000) remark?: string;
+  @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
+  @IsArray() @ValidateNested({ each: true }) @Type(() => PlanOrderGroupDto) groups!: PlanOrderGroupDto[];
+}
+
 /**
  * 采购计划（2026-09-27）。
  *
@@ -87,6 +104,11 @@ export class PurchasePlansController {
   /** 软删。有任何一行已下单就 422 `PURCHASE_PLAN_HAS_ORDERED_LINES`。 */
   @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) {
     return { data: await this.plans.remove(id, user), meta: {} };
+  }
+
+  /** 按供应商收束下单：一组一张采购单，没勾的行留在计划里。 */
+  @Post(":id/order") async order(@Param("id") id: string, @Body() body: PlanOrderDto, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.plans.order(id, body, user), meta: {} };
   }
 
   @Get(":id") async get(@Param("id") id: string) {
