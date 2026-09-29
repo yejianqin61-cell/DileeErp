@@ -21,7 +21,12 @@ const { Prisma } = require("@prisma/client");
 const { PurchasePlansService } = require("../../dist/modules/procurement/purchase-plans.service.js");
 const { planStatusOf, purchasePlanNo, countBomMaterialsMissingFromPlan } = require("../../dist/modules/procurement/purchase-plans.domain.js");
 
-const audit = { create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }), record: async () => {} };
+const audit = {
+  create: () => ({ createdBy: "user-1", updatedBy: "user-1" }),
+  update: () => ({ updatedBy: "user-1" }),
+  softDelete: () => ({ deletedAt: new Date("2026-09-27T03:00:00Z"), deletedBy: "user-1" }),
+  record: async () => {},
+};
 
 /** 一行 BOM 明细的默认形态。 */
 const bomRow = (id, overrides = {}) => ({
@@ -99,15 +104,37 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
         plans.push(plan);
         return plan;
       },
+      update: async ({ where, data }) => {
+        const plan = plans.find((row) => row.id === where.id);
+        Object.assign(plan, data);
+        return plan;
+      },
     },
     purchasePlanItem: {
       createMany: async ({ data }) => {
         for (const row of data) planItems.push({ id: `item-${planItems.length + 1}`, purchaseOrderItemId: null, deletedAt: null, ...row, quantity: new Prisma.Decimal(row.quantity), unitPrice: new Prisma.Decimal(row.unitPrice) });
         return { count: data.length };
       },
+      create: async ({ data }) => {
+        const row = { id: `item-${planItems.length + 1}`, purchaseOrderItemId: null, deletedAt: null, ...data, quantity: new Prisma.Decimal(data.quantity), unitPrice: new Prisma.Decimal(data.unitPrice) };
+        planItems.push(row);
+        return row;
+      },
+      // 假 Prisma 按 where 真的过滤（写路径的软删范围正是本文件要验证的口径之一）。
+      updateMany: async ({ where, data }) => {
+        const hit = planItems.filter((row) => row.planId === where.planId && row.deletedAt === null && (where.purchaseOrderItemId === null ? row.purchaseOrderItemId === null : true));
+        for (const row of hit) Object.assign(row, data);
+        return { count: hit.length };
+      },
+      update: async ({ where, data }) => {
+        const row = planItems.find((candidate) => candidate.id === where.id);
+        Object.assign(row, data);
+        return row;
+      },
     },
     material: { findMany: async ({ where }) => (where.id?.in ?? []).map(materialOf) },
     supplier: { findMany: async () => [] },
+    $queryRaw: async () => [],
     $transaction: async (fn) => fn(prisma),
   };
   return { service: new PurchasePlansService(prisma, audit), plans, planItems };
@@ -339,6 +366,139 @@ test("候选：只有「已确认销售单 + 未删 BOM + 还没有计划」的 
   assert.deepEqual(candidates.map((row) => row.bomId), ["bom-1"], "已经有计划的（bom-2）与未确认销售单的（bom-3）都不该出现在下拉里");
   assert.equal(candidates[0].itemNo, "27621");
   assert.equal(candidates[0].customerName, "客户甲");
+});
+
+// ---------------------------------------------------------------------------------------------
+// 保存（整体替换 + 已下单行保护 + 乐观锁）与软删。
+
+const SAVED_AT = new Date("2026-09-27T02:00:00Z");
+const thePlan = { id: "plan-1", planNo: "PP-1", orderNo: "SO-1", bomId: "bom-1", bomVersion: 3, extensionData: {}, deletedAt: null, createdAt: SAVED_AT, updatedAt: SAVED_AT, createdBy: "u", updatedBy: "u" };
+/** 两行：i-ordered 已经下过单（挂在 poi-1），i-free 还没有。 */
+function seededItems() {
+  return [
+    { id: "i-ordered", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), purchaseOrderItemId: "poi-1", bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} },
+    { id: "i-free", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: null, quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("0.0000"), purchaseOrderItemId: null, bomItemId: "bi-2", deletedAt: null, sequence: 2, extensionData: {} },
+  ];
+}
+const bomRows = () => [bomRow("bi-1", { materialId: "mat-1" }), bomRow("bi-2", { materialId: "mat-2" })];
+const orderedPoItem = [{ id: "poi-1", purchaseOrderId: "po-1", purchaseOrder: { purchaseOrderNo: "PO-1", status: "ordered" } }];
+/** 把一行按前端的方式回传（`id` 带上 = 这是已有行）。 */
+const lineOf = (item, overrides = {}) => ({ id: item.id, material_id: item.materialId, unit_id: item.unitId, bom_item_id: item.bomItemId ?? undefined, supplier_id: item.supplierId ?? undefined, quantity: item.quantity.toFixed(4), unit_price: item.unitPrice.toFixed(4), ...overrides });
+/** 一行 BOM 外的补料（必须带原因）。 */
+const outsideLine = (overrides = {}) => ({ material_id: "mat-3", unit_id: "unit-pcs", quantity: "1.0000", unit_price: "2.0000", extension_data: { outside_bom_reason: "原物料缺货，改用替代料" }, ...overrides });
+
+test("保存：未下单的行整体替换，已下单的行原样留下（含数量不动）", async () => {
+  const items = seededItems();
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  const updated = await service.update("plan-1", {
+    expected_updated_at: SAVED_AT.toISOString(),
+    items: [lineOf(items[0]), lineOf(items[1], { quantity: "7.0000", unit_price: "1.5000" }), outsideLine()],
+  }, user);
+
+  assert.equal(updated.lineCount, 3);
+  assert.equal(updated.orderedCount, 1, "已下单的那一行还在");
+  assert.ok(items[1].deletedAt, "未下单的老行是软删的，不是硬删");
+  const freshFree = planItems.filter((row) => row.deletedAt === null && row.materialId === "mat-2").pop();
+  assert.equal(freshFree.quantity.toString(), "7", "未下单的行被替换成新的数量");
+  assert.equal(items[0].quantity.toString(), "5", "已下单的行内容不许被动");
+  assert.equal(planItems.filter((row) => row.deletedAt === null).length, 3);
+  assert.deepEqual(planItems.filter((row) => row.deletedAt === null).map((row) => row.sequence).sort(), [1, 2, 3]);
+});
+
+test("保存：已下单的行没带 id 回来 → 422（不能从计划里悄悄移除一张已经发出的单）", async () => {
+  const items = seededItems();
+  const { service } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await assert.rejects(
+    () => service.update("plan-1", { items: [lineOf(items[1])] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_ORDERED_LINE_REMOVED" && /退回采购计划/.test(error.getResponse().message),
+  );
+});
+
+test("保存：已下单的行被改内容 → 422，并说清是哪个字段（数量/单价/供应商/物料/单位都要拦）", async () => {
+  for (const [field, override] of [["数量", { quantity: "6.0000" }], ["单价", { unit_price: "9.9000" }], ["供应商", { supplier_id: "sup-2" }], ["物料", { material_id: "mat-9" }], ["单位", { unit_id: "unit-m" }]]) {
+    const items = seededItems();
+    const { service } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+    await assert.rejects(
+      () => service.update("plan-1", { items: [lineOf(items[0], override), lineOf(items[1])] }, user),
+      (error) => error.getResponse().code === "PURCHASE_PLAN_ORDERED_LINE_LOCKED" && error.getResponse().message.includes(field),
+      `${field} 必须在计划里被锁住 —— 那张单已经发给供应商了，要改得先退回计划`,
+    );
+  }
+});
+
+test("保存：已下单行的**序号**允许重排（序号是展示，不是业务内容）", async () => {
+  const items = seededItems();
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await service.update("plan-1", { items: [lineOf(items[1], { quantity: "7.0000" }), lineOf(items[0])] }, user);
+
+  const orderedRow = planItems.find((row) => row.id === "i-ordered");
+  assert.equal(orderedRow.sequence, 2, "顺序跟着提交走，行本身没有被替换");
+  assert.equal(orderedRow.deletedAt, null);
+  assert.equal(orderedRow.quantity.toString(), "5");
+});
+
+test("保存：乐观锁 —— 令牌不一致 422 且不写入；一致则通过", async () => {
+  const items = seededItems();
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await assert.rejects(
+    () => service.update("plan-1", { expected_updated_at: new Date("2026-09-27T05:00:00Z").toISOString(), items: [lineOf(items[0]), lineOf(items[1])] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_UPDATE_CONFLICT",
+  );
+  assert.equal(items[1].deletedAt, null, "冲突时一个字都不能写");
+
+  await service.update("plan-1", { expected_updated_at: SAVED_AT.toISOString(), items: [lineOf(items[0]), lineOf(items[1])] }, user);
+  assert.ok(items[1].deletedAt, "令牌一致就正常保存");
+});
+
+test("保存：BOM 行 ID 被换掉之后仍然能保存（按物料找回当前 BOM 的对应行）", async () => {
+  // 现场机制：`BomsService.replaceItems` 存一次 BOM 就软删全部旧行 + 建新行，**所有行 ID 都换**。
+  // 计划是长期存在的（不像草稿是一次性的），不做这一步的话，BOM 改过一次这份计划**再也存不了**。
+  const items = seededItems();
+  items[1].bomItemId = "bi-old-2"; // 计划里记的是上一版 BOM 的行 ID
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await service.update("plan-1", { items: [lineOf(items[0]), lineOf(items[1], { bom_item_id: "bi-old-2" })] }, user);
+
+  const fresh = planItems.filter((row) => row.deletedAt === null && row.materialId === "mat-2").pop();
+  assert.equal(fresh.bomItemId, "bi-2", "按物料找回当前 BOM 的行号");
+});
+
+test("保存：BOM 外的行必须写原因（与采购单同一条规则，在计划这一侧就拦住）", async () => {
+  const items = seededItems();
+  const { service } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await assert.rejects(
+    () => service.update("plan-1", { items: [lineOf(items[0]), outsideLine({ extension_data: {} })] }, user),
+    (error) => error.getResponse().code === "PURCHASE_OUTSIDE_BOM_REASON_REQUIRED",
+  );
+});
+
+test("删除：有任何一行已下单 → 422；全部未下单 → 软删计划与全部行", async () => {
+  const withOrder = seededItems();
+  const first = makeService({ plans: [thePlan], planItems: withOrder, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+  await assert.rejects(
+    () => first.service.remove("plan-1", user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_HAS_ORDERED_LINES" && /退回采购计划/.test(error.getResponse().message),
+  );
+
+  const onlyFree = seededItems().filter((row) => row.purchaseOrderItemId === null);
+  const second = makeService({ plans: [Object.assign({}, thePlan)], planItems: onlyFree });
+  const result = await second.service.remove("plan-1", user);
+
+  assert.equal(result.deleted, true);
+  assert.equal(result.planNo, "PP-1");
+  assert.ok(second.plans[0].deletedAt, "计划是软删（还要留痕）");
+  assert.ok(onlyFree.every((row) => row.deletedAt), "行一起软删");
+  assert.deepEqual(await second.service.list(), [], "删掉的计划不再出现在列表里");
+});
+
+test("保存/删除：计划不存在 → 404", async () => {
+  await assert.rejects(() => makeService().service.update("plan-404", { items: [] }, user), (error) => error.getResponse().code === "PURCHASE_PLAN_NOT_FOUND");
+  await assert.rejects(() => makeService().service.remove("plan-404", user), (error) => error.getResponse().code === "PURCHASE_PLAN_NOT_FOUND");
 });
 
 // ---------------------------------------------------------------------------------------------

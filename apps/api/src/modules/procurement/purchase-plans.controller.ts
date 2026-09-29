@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { IsArray, IsDateString, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
@@ -9,6 +9,8 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { PurchasePlansService } from "./purchase-plans.service";
 
 class PlanItemDto {
+  /** 已有行的身份。**已下单的行必须带着它回来**（不带 = 被当成新行 = 会以 `PURCHASE_PLAN_ORDERED_LINE_REMOVED` 拒绝）。 */
+  @IsOptional() @IsUUID() id?: string;
   @IsUUID() material_id!: string;
   @IsUUID() unit_id!: string;
   @IsOptional() @IsUUID() bom_item_id?: string;
@@ -24,6 +26,20 @@ class CreatePlanDto {
   @IsUUID() bom_id!: string;
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => PlanItemDto) items?: PlanItemDto[];
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
+}
+
+/**
+ * 保存计划。
+ *
+ * `bom_id` **不在**这里：计划一旦建好就绑死那张 BOM（"一个销售单一份 BOM 一份计划"）。
+ * 换 BOM 等于换一份计划，应该删掉重建，而不是把一份计划的行与另一张 BOM 对上。
+ */
+class UpdatePlanDto {
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => PlanItemDto) items?: PlanItemDto[];
+  @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
+  /** 乐观锁令牌：`GET /:id` 拿到的 `updatedAt`。不传则跳过冲突比对（兼容脚本与既有单测桩）。 */
+  @IsOptional() @IsString() expected_updated_at?: string;
+  @IsOptional() @IsString() @MaxLength(1000) reason?: string;
 }
 
 /**
@@ -62,6 +78,15 @@ export class PurchasePlansController {
 
   @Post() async create(@Body() body: CreatePlanDto, @CurrentUser() user: CurrentUserType) {
     return { data: await this.plans.create(body, user), meta: {} };
+  }
+
+  @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdatePlanDto, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.plans.update(id, body, user), meta: {} };
+  }
+
+  /** 软删。有任何一行已下单就 422 `PURCHASE_PLAN_HAS_ORDERED_LINES`。 */
+  @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.plans.remove(id, user), meta: {} };
   }
 
   @Get(":id") async get(@Param("id") id: string) {
