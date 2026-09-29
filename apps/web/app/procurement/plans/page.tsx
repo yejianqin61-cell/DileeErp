@@ -31,6 +31,12 @@ type PlanRow = {
   id: string; planNo: string; orderNo: string; itemNo: string | null; customerName: string | null;
   bomId: string; bomVersion: number | null; lineCount: number; unorderedCount: number; orderedCount: number;
   status: "unordered" | "partial" | "completed"; statusLabel: string; updatedByName: string | null;
+  /**
+   * 审计列工厂（`components/data/audit-columns.tsx`）读的是**全站统一的 snake_case 契约**
+   * （`updated_by_name`）—— 后端按模块惯例下发的是 camelCase，所以在这里补一个别名。
+   * 这是刻意的一处适配：让 70 多处表格共用同一个列工厂，比让每个模块各自改字段名便宜。
+   */
+  updated_by_name?: string | null;
   createdAt: string; updatedAt: string;
 };
 type Candidate = { bomId: string; orderNo: string; bomVersion: number | null; itemNo: string | null; customerName: string | null; deliveryDate: string | null; itemCount: number };
@@ -76,7 +82,7 @@ export default function PurchasePlansPage() {
         apiGet<PlanMaterialRef[]>("/materials"),
         apiGet<PlanUnitRef[]>("/units"),
       ]);
-      setRows(plans.data ?? []);
+      setRows((plans.data ?? []).map((row) => ({ ...row, updated_by_name: row.updatedByName })));
       setCandidates(cands.data ?? []);
       setMaterials(ms.data ?? []);
       setUnits(us.data ?? []);

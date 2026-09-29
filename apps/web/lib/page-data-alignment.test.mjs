@@ -160,7 +160,10 @@ test("采购子页每个状态 setter 绑定到对应接口（单位取 /units�
 
     const masked = maskStrings(source);
     const resolved = call.names.map((name, index) => {
-      const setter = new RegExp(`(set[A-Za-z0-9_]+)\\(\\s*${name}\\.data`).exec(masked);
+      // `\\(?` 允许 `setRows((plans.data ?? []).map(...))` 这种写法：2026-09-27 采购计划页
+      // 要在写进状态前补一个字段别名（`updated_by_name`），所以状态 setter 的第一个参数不是
+      // 光秃秃的 `xxx.data`。断言的本意是"这个响应**被用到了**"，不是"它必须以哪种括号形态出现"。
+      const setter = new RegExp(`(set[A-Za-z0-9_]+)\\(\\s*\\(?\\s*${name}\\.data`).exec(masked);
       return { name, setter: setter ? setter[1] : null, endpoint: call.elements[index] };
     });
 

@@ -194,6 +194,9 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     const material = materials.find((item) => item.isActive !== false);
     const unitId = material?.defaultUnitId ?? "";
     setRows((current) => [...current, { materialId: material?.id ?? "", materialName: material?.name ?? "", model: "", quantity: "1", unitId, unitName: units.find((item) => item.id === unitId)?.name ?? "", unitPrice: "0", supplierId: "", ordered: false, expectedDate: "", currentStock: stockFor(material?.id ?? "", unitId) }]);
+    // 新加的行默认**勾上**：刚加一行本来就是"打算买"，不勾的话下一步「收束下单」会静默漏掉它 ——
+    // 与"默认全选未下单行"是同一条思路。
+    setSelected((current) => [...current, rows.length]);
   }
   function removeSelected() {
     if (!selected.length) { setError("请先勾选要移除的行"); return; }
