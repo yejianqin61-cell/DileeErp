@@ -1,7 +1,7 @@
 // 采购单「收束」与「编辑」的行为测试（用户 2026-09-17 的四条采购要求）。
 //
 // 覆盖四件事：
-//   1. 新建采购单里多一列「下单状态」：已下单足量 / 部分下单 / 草稿中 / 未下单，带累计数量与采购单号；
+//   1. 新建采购单里多一列「下单状态」：已下单足量 / 部分下单 / **计划中** / 未下单，带累计数量与计划编号；
 //   2. 「BOM 外新增原因」：后端要求逐行给 `outside_bom_reason`，界面以前根本给不出这个值，
 //      于是「添加行 → 保存草稿」在选了 BOM 的情况下必然失败；
 //   3. 换掉物料必须把 `bom_item_id` 一起清掉，否则后端以 PURCHASE_BOM_ITEM_MISMATCH 拒绝整张单；
@@ -53,11 +53,12 @@ const bomItems = [
   { id: "bi-2", materialId: "m-2", materialName: "面料B", requiredQuantity: "5", unit: "米", unitId: "u-1", materialSnapshot: {} },
   { id: "bi-3", materialId: "m-3", materialName: "拉链", requiredQuantity: "5", unit: "米", unitId: "u-1", materialSnapshot: {} },
 ];
-/** 三行的下单情况故意各不相同：已下单足量 / 部分下单 / 草稿中。 */
+/** 三行的下单情况故意各不相同：已下单足量 / 部分下单 / 计划中。 */
 const bomStatuses = [
   { bom_item_id: "bi-1", required_quantity: "5.0000", ordered_quantity: "5.0000", draft_quantity: "0.0000", state: "ordered", ordered_purchase_order_nos: ["PO-77"], draft_purchase_order_nos: [] },
   { bom_item_id: "bi-2", required_quantity: "5.0000", ordered_quantity: "2.0000", draft_quantity: "0.0000", state: "partial", ordered_purchase_order_nos: ["PO-78"], draft_purchase_order_nos: [] },
-  { bom_item_id: "bi-3", required_quantity: "5.0000", ordered_quantity: "0.0000", draft_quantity: "3.0000", state: "draft", ordered_purchase_order_nos: [], draft_purchase_order_nos: ["PO-79"] },
+  // `draft_*` 是历史字段名（设计文档 §4.2 保留），里面装的是**计划编号 PP-…**。
+  { bom_item_id: "bi-3", required_quantity: "5.0000", ordered_quantity: "0.0000", draft_quantity: "3.0000", state: "draft", ordered_purchase_order_nos: [], draft_purchase_order_nos: ["PP-79"] },
 ];
 
 /** 「未下单」与「已下单足量」两种口径：供「切回本页要刷新」用例切换（模拟同事刚把这一行下了单）。 */
@@ -155,16 +156,16 @@ describe("新建采购单：「下单状态」列", () => {
     expect(cells[0]).toContain("已下单 5");
     expect(cells[0]).toContain("PO-77");
     expect(cells[1]).toContain("部分下单 2 / 需求 5");
-    expect(cells[2]).toContain("草稿中 3");
-    expect(cells[2]).toContain("PO-79");
+    expect(cells[2]).toContain("计划中 3");
+    expect(cells[2]).toContain("PP-79");
   });
 
-  it("草稿不算已下单，但要标出「草稿中」，避免同一行被重复开单", async () => {
+  it("计划不算已下单，但要标出「计划中」，避免同一行被重复开单", async () => {
     await openNewDraftWithBom();
 
-    // 第 3 行只有草稿覆盖：既不是「未下单」也不是「已下单」
+    // 第 3 行只有计划覆盖：既不是「未下单」也不是「已下单」
     const cell = rows()[2].children[3];
-    expect(cell.textContent).toContain("草稿中");
+    expect(cell.textContent).toContain("计划中");
     expect(cell.textContent).not.toContain("未下单");
   });
 

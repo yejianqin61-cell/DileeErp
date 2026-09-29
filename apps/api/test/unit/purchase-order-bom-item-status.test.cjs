@@ -1,16 +1,21 @@
 // 「BOM 明细行的下单情况」的单元测试（手写假 Prisma，不连数据库）。
 //
-// 用户 2026-09-17：「已经选中并下单的 BOM 物料，再新建采购单中要显示已下单。因此要多一个 column」。
+// 2026-09-17 新增这一列：「已经选中并下单的 BOM 物料，再新建采购单中要显示已下单」。
+// 2026-09-27 口径 13：第二档从「草稿中」改成「**计划中**」—— 草稿这个中间态已经被
+// **采购计划**接管（迁移把历史草稿归并成计划），所以这一档改为数**计划行里还没下单的那些行**。
+// 字段名与枚举值按设计文档 §4.2 **刻意保留**（`draft_quantity` / `draft_purchase_order_nos` /
+// `state: "draft"`），但里面的单号已经是**计划编号 `PP-…`**，界面文案是「计划中」。
 //
 // 生产文件：apps/api/src/modules/procurement/purchase-orders.service.ts 的 bomItemOrderStatus
 // 入口：GET /api/v1/purchase-orders/bom-item-status?bom_id=…（purchase-orders.controller.ts）
 //
 // 本文件钉住的核心约定：
-//   1. 四态：未下单 / 草稿中 / 部分下单 / 已下单足量；
-//   2. 草稿**不算**已下单，但要单独累计并标出来 —— 已经有草稿覆盖的行同样不该再开一张；
-//   3. 已取消的采购单不参与（它不再对外）；
-//   4. 只算未删除的明细行（改单时老行是软删的，不能重复计入）；
-//   5. 需求量为 0 的行不因为「0 已下单」被判成已下单足量。
+//   1. 四态：未下单 / 计划中 / 部分下单 / 已下单足量；
+//   2. **计划不算已下单**，但要单独累计并标出来 —— 已经有计划覆盖的行同样不该再开一张；
+//   3. **已下单的行不再计入「计划中」档**（否则"还差多少"会算少）；
+//   4. 已取消的采购单不参与、只算未删除的明细行；
+//   5. 需求量为 0 的行不因为「0 已下单」被判成已下单足量；
+//   6. **换过行 ID 的量按物料摊回**（BOM 存一次就会换掉全部行 ID）—— 采购明细与计划行都适用。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { PurchaseOrdersService } = require("../../dist/modules/procurement/purchase-orders.service.js");
@@ -22,9 +27,10 @@ const audit = { create: () => ({}), update: () => ({}), record: async () => {} }
  *
  * 假 Prisma **按 where 里的条件真的过滤**（而不是无脑返回全部）：
  * 本文件要验证的正是「已取消的采购单被排除」「软删的明细行被排除」「按采购单的 BOM 而不是
- * 按当前行 ID 归集」这几条查询口径，用一个恒返回全部数据的桩会把断言变成永远通过。
+ * 按当前行 ID 归集」「计划行只数没下单的」这几条查询口径，用一个恒返回全部数据的桩会把断言
+ * 变成永远通过。
  */
-function makeService({ bomItems = [], rows = [], missing = false } = {}) {
+function makeService({ bomItems = [], rows = [], planned = [], missing = false } = {}) {
   const prisma = {
     bom: { findFirst: async () => (missing ? null : { id: "bom-1" }) },
     bomItem: { findMany: async ({ where }) => bomItems.filter((item) => item.deletedAt === null && item.bomId === where.bomId) },
@@ -41,6 +47,12 @@ function makeService({ bomItems = [], rows = [], missing = false } = {}) {
         return true;
       }),
     },
+    // 2026-09-27：第二档的数据源。只取「计划未删 + 行未删 + **还没下单**（purchase_order_item_id 为空）」的行。
+    purchasePlanItem: {
+      findMany: async ({ where }) => planned.filter((row) => row.deletedAt === null
+        && row.purchaseOrderItemId === null
+        && row.bomId === where.plan.bomId),
+    },
   };
   return new PurchaseOrdersService(prisma, audit);
 }
@@ -49,18 +61,20 @@ function makeService({ bomItems = [], rows = [], missing = false } = {}) {
 const need = (id, requiredQuantity = "5", materialId = undefined) => ({ id, bomId: "bom-1", requiredQuantity, materialId, deletedAt: null });
 /** 一条采购明细行：指向某个 BOM 行，挂在某个状态的采购单上。 */
 const ordered = (bomItemId, quantity, status = "ordered", purchaseOrderNo = "PO-1", deletedAt = null, materialId = undefined) => ({ bomItemId, materialId, quantity, deletedAt, purchaseOrder: { purchaseOrderNo, status, deletedAt: null, bomId: "bom-1" } });
+/** 一条**计划行**（还没下单）：指向某个 BOM 行，挂在一份计划上。 */
+const planned = (bomItemId, quantity, planNo = "PP-1", materialId = undefined) => ({ bomItemId, materialId, quantity, planNo, purchaseOrderItemId: null, deletedAt: null, bomId: "bom-1", plan: { planNo } });
 
 const byId = (result, id) => result.find((row) => row.bom_item_id === id);
 
-test("四态：未下单 / 草稿中 / 部分下单 / 已下单足量", async () => {
+test("四态：未下单 / 计划中 / 部分下单 / 已下单足量", async () => {
   const service = makeService({
     bomItems: [need("bi-1"), need("bi-2"), need("bi-3"), need("bi-4")],
     rows: [
-      ordered("bi-1", "5"),                 // 需求 5，已下单 5 → 足量
-      ordered("bi-2", "2"),                 // 需求 5，已下单 2 → 部分
-      ordered("bi-3", "3", "draft", "PO-9"), // 只有草稿 → 草稿中
-      // bi-4 什么都没有 → 未下单
+      ordered("bi-1", "5"),                   // 需求 5，已下单 5 → 足量
+      ordered("bi-2", "2"),                   // 需求 5，已下单 2 → 部分
     ],
+    planned: [planned("bi-3", "3", "PP-9")],  // 只有计划 → 计划中
+    // bi-4 什么都没有 → 未下单
   });
 
   const result = await service.bomItemOrderStatus("bom-1");
@@ -72,18 +86,44 @@ test("四态：未下单 / 草稿中 / 部分下单 / 已下单足量", async ()
   assert.equal(byId(result, "bi-3").draft_quantity, "3.0000");
 });
 
-test("草稿不计入已下单，但单独累计并带上草稿单号", async () => {
+test("计划中档：计划**不算**已下单，但单独累计并带上**计划编号**（字段名是历史原因）", async () => {
+  const service = makeService({ bomItems: [need("bi-1")], planned: [planned("bi-1", "5", "PP-20260927-AAAA1111")] });
+
+  const row = (await service.bomItemOrderStatus("bom-1"))[0];
+
+  assert.equal(row.state, "draft", "已经有计划覆盖的行不该显示成「未下单」，否则会被重复开一张");
+  assert.equal(row.ordered_quantity, "0.0000", "计划不等于下单");
+  assert.deepEqual(row.draft_purchase_order_nos, ["PP-20260927-AAAA1111"], "这里塞的是计划编号，不是采购单号");
+  assert.deepEqual(row.ordered_purchase_order_nos, []);
+});
+
+test("已下单的行**不再**计入计划中档（否则「还差多少」会算少）", async () => {
+  // 现实场景：一行先被计划覆盖，然后收束下单了 —— 计划行与采购明细**同时**存在，
+  // 但已下单之后它只该出现在「已下单」那一档里。
+  const orderedPlanLine = { ...planned("bi-1", "5", "PP-1"), purchaseOrderItemId: "poi-1" };
   const service = makeService({
     bomItems: [need("bi-1")],
-    rows: [ordered("bi-1", "5", "draft", "PO-9")],
+    rows: [ordered("bi-1", "2", "ordered", "PO-1")],
+    planned: [orderedPlanLine], // 已经认领了采购明细的计划行（假 Prisma 会按 purchase_order_item_id 过滤掉）
   });
 
   const row = (await service.bomItemOrderStatus("bom-1"))[0];
 
-  assert.equal(row.state, "draft", "已经有草稿覆盖的行不该显示成「未下单」，否则会被重复开单");
-  assert.equal(row.ordered_quantity, "0.0000");
-  assert.deepEqual(row.draft_purchase_order_nos, ["PO-9"]);
-  assert.deepEqual(row.ordered_purchase_order_nos, []);
+  assert.equal(row.ordered_quantity, "2.0000");
+  assert.equal(row.draft_quantity, "0.0000", "已经下单的行不该再算进计划中");
+  assert.equal(row.state, "partial");
+});
+
+test("同一 BOM 行有多份计划行时数量相加、计划号去重", async () => {
+  const service = makeService({
+    bomItems: [need("bi-1")],
+    planned: [planned("bi-1", "2", "PP-1"), planned("bi-1", "3", "PP-2")],
+  });
+
+  const row = (await service.bomItemOrderStatus("bom-1"))[0];
+
+  assert.equal(row.draft_quantity, "5.0000");
+  assert.deepEqual(row.draft_purchase_order_nos, ["PP-1", "PP-2"]);
 });
 
 test("同一 BOM 行被多张单覆盖时数量相加、单号去重且全部列出", async () => {
@@ -109,10 +149,11 @@ test("已下单量超过需求量仍是「已下单足量」（超买不该显�
   assert.equal(row.ordered_quantity, "7.0000");
 });
 
-test("部分已下单 + 另有草稿时按「部分下单」显示（已下单优先于草稿）", async () => {
+test("部分已下单 + 另有计划时按「部分下单」显示（已下单优先于计划）", async () => {
   const service = makeService({
     bomItems: [need("bi-1")],
-    rows: [ordered("bi-1", "2", "ordered", "PO-1"), ordered("bi-1", "3", "draft", "PO-9")],
+    rows: [ordered("bi-1", "2", "ordered", "PO-1")],
+    planned: [planned("bi-1", "3", "PP-1")],
   });
 
   const row = (await service.bomItemOrderStatus("bom-1"))[0];
@@ -131,6 +172,14 @@ test("已取消的采购单不参与统计", async () => {
 
 test("软删的明细行不参与统计（改单时老行是软删的）", async () => {
   const service = makeService({ bomItems: [need("bi-1")], rows: [ordered("bi-1", "5", "ordered", "PO-1", new Date("2026-09-16"))] });
+  const row = (await service.bomItemOrderStatus("bom-1"))[0];
+  assert.equal(row.state, "none");
+});
+
+test("软删的计划行不参与统计（保存计划时老行是软删的）", async () => {
+  const plannedRow = planned("bi-1", "5", "PP-1");
+  plannedRow.deletedAt = new Date("2026-09-27");
+  const service = makeService({ bomItems: [need("bi-1")], planned: [plannedRow] });
   const row = (await service.bomItemOrderStatus("bom-1"))[0];
   assert.equal(row.state, "none");
 });
@@ -164,8 +213,8 @@ test("回归：BOM 表存过一次之后（明细整体替换 = 行 ID 全换）
   // 而采购明细里存的 `bom_item_id` 是**下单当时那一版**的 ID。
   // 按「当前未删除的行 ID」去 `in` 一下，那些量会整块消失 → 显示「未下单」→ 采购员再下一张。
   const service = makeService({
-    bomItems: [need("bi-new", "5", "material-1")],                                  // 现在的 BOM 行
-    rows: [ordered("bi-old", "5", "ordered", "PO-1", null, "material-1")],           // 采购单还指着老行
+    bomItems: [need("bi-new", "5", "material-1")],                          // 现在的 BOM 行
+    rows: [ordered("bi-old", "5", "ordered", "PO-1", null, "material-1")],   // 采购单还指着老行
   });
 
   const row = (await service.bomItemOrderStatus("bom-1"))[0];
@@ -173,6 +222,21 @@ test("回归：BOM 表存过一次之后（明细整体替换 = 行 ID 全换）
   assert.equal(row.state, "ordered", "已经下过单的物料不许显示成「未下单」——那会让人再下一张，重复采购");
   assert.equal(row.ordered_quantity, "5.0000");
   assert.deepEqual(row.ordered_purchase_order_nos, ["PO-1"], "单号也要带出来，采购员才知道是哪一张");
+});
+
+test("回归 2026-09-27：计划行的行 ID 被换掉后同样要按物料摊回", async () => {
+  // 计划是**长期存在**的，BOM 被改过是常态；不摊回的话这一档会整块消失，
+  // 采购员会以为"没人计划过"而重复开一张计划行。
+  const service = makeService({
+    bomItems: [need("bi-new", "5", "material-1")],
+    planned: [planned("bi-old", "5", "PP-1", "material-1")],
+  });
+
+  const row = (await service.bomItemOrderStatus("bom-1"))[0];
+
+  assert.equal(row.state, "draft");
+  assert.equal(row.draft_quantity, "5.0000");
+  assert.deepEqual(row.draft_purchase_order_nos, ["PP-1"]);
 });
 
 test("回归：BOM 行被换掉后仍按行 ID 精确归集（行还在的照旧，不许被摊到别的行上）", async () => {

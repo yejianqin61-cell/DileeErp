@@ -39,17 +39,6 @@ export function purchasePlanNo(now: Date = new Date(), suffix: string = randomUU
   return `PP-${now.toISOString().slice(0, 10).replaceAll("-", "")}-${suffix.toUpperCase()}`;
 }
 
-/**
- * 计划行的「下单状态」里那一档**计划中**的判定。
- *
- * 与采购明细的累计口径并列：`bomItemOrderStatus` 的 `draft` 档原来数的是草稿采购单
- * （草稿已经不存在了），现在改数**计划行**里还没下单的那些行。
- * 名字保留 `draft`（4 个前端文件与既有契约都按它取值），语义变成"计划中"。
- */
-export function isPlannedNotOrdered(purchaseOrderItemId: string | null | undefined): boolean {
-  return !purchaseOrderItemId;
-}
-
 /** 计划列表按 BOM 汇总时说「这张 BOM 比计划多几个物料」——按**物料**比，不按 BOM 行 ID。 */
 export function countBomMaterialsMissingFromPlan(bomMaterialIds: readonly string[], planMaterialIds: readonly string[]): number {
   const planned = new Set(planMaterialIds);

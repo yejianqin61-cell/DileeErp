@@ -42,8 +42,11 @@ type Bom = { id: string; orderNo: string; salesOrderId: string; status: string; 
 /**
  * 一行 BOM 明细的累计下单情况（`GET /purchase-orders/bom-item-status`）。
  *
- * 四态来自后端：`ordered` 已下单足量 / `partial` 部分下单 / `draft` 草稿中 / `none` 未下单。
- * 草稿**不算**已下单，但要单独标出来 —— 已经有草稿覆盖的行同样不该再开一张。
+ * 四态来自后端：`ordered` 已下单足量 / `partial` 部分下单 / `draft` **计划中** / `none` 未下单。
+ * 2026-09-27 口径 13：第二档的数据源从「草稿采购单」换成了**采购计划行**（草稿已被采购计划接管），
+ * 但字段名与枚举值刻意保留（设计文档 §4.2）—— 所以 `draft_purchase_order_nos` 里装的
+ * 现在是**计划编号 `PP-…`**，界面文案是「计划中」。
+ * 计划**不算**已下单，但要单独标出来 —— 已经被计划覆盖的行同样不该再开一张。
  */
 type BomItemOrderStatus = { bom_item_id: string; required_quantity: string; ordered_quantity: string; draft_quantity: string; state: "none" | "draft" | "partial" | "ordered"; ordered_purchase_order_nos: string[]; draft_purchase_order_nos: string[] };
 /**
@@ -263,17 +266,17 @@ export default function PurchaseOrdersPage() {
   }
   function unitName(unitId: string) { return units.find((item) => item.id === unitId)?.name ?? "其它单位"; }
   /**
-   * 草稿表里「下单状态」这一格。
+   * 「下单状态」这一格。
    *
    * 用户 2026-09-17：「已经选中并下单的 BOM 物料，再新建采购单中要显示已下单。因此要多一个 column」。
-   * 四态由后端按 `bom_item_id` 归集累计下单量给出：已下单足量 / 部分下单 / 草稿中 / 未下单。
-   * 草稿**不算**已下单，但一样要看得见 —— 已经有草稿盖住的行同样不该再开一张。
+   * 四态由后端按 `bom_item_id` 归集累计下单量给出：已下单足量 / 部分下单 / **计划中** / 未下单。
+   * 计划**不算**已下单，但一样要看得见 —— 已经被计划盖住的行同样不该再开一张。
    */
   function bomOrderCell(item: PurchaseDraftItem) {
     if (!item.bomItemId) return <span className="panel-note">BOM 外新增</span>;
     const status = bomOrderStatus[item.bomItemId];
     if (!status || status.state === "none") return <span className="panel-note">未下单</span>;
-    if (status.state === "draft") return <span className="bom-order-draft" title={status.draft_purchase_order_nos.join("、")}>草稿中 {trimQuantity(status.draft_quantity)}{status.draft_purchase_order_nos.length ? `（${status.draft_purchase_order_nos.join("、")}）` : ""}</span>;
+    if (status.state === "draft") return <span className="bom-order-draft" title={status.draft_purchase_order_nos.join("、")}>计划中 {trimQuantity(status.draft_quantity)}{status.draft_purchase_order_nos.length ? `（${status.draft_purchase_order_nos.join("、")}）` : ""}</span>;
     if (status.state === "partial") return <span className="bom-order-partial" title={status.ordered_purchase_order_nos.join("、")}>部分下单 {trimQuantity(status.ordered_quantity)} / 需求 {trimQuantity(status.required_quantity)}</span>;
     return <span className="status-success" title={status.ordered_purchase_order_nos.join("、")}>已下单 {trimQuantity(status.ordered_quantity)}{status.ordered_purchase_order_nos.length ? `（${status.ordered_purchase_order_nos.join("、")}）` : ""}</span>;
   }

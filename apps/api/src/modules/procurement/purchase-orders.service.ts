@@ -16,7 +16,12 @@ export type SplitInput = { order_no: string; bom_id?: string; purchase_date?: st
 /** 收束后的分组（参照物已解析、下单前校验已过），可以直接落库。 */
 export type MergedGroup = { input: Input; prepared: Prepared };
 type OrderableItem = { materialId: string; unitId: string; supplierId: string; quantity: string; unitPrice: string };
-/** BOM 明细行上的下单情况（新建采购单时给采购员看的「这一行是不是已经买过了」）。 */
+/**
+ * BOM 明细行上的下单情况（采购计划里给采购员看的「这一行是不是已经买过了」）。
+ *
+ * ⚠️ `draft` 这个值 2026-09-27 起的语义是**计划中**（数据源从草稿采购单换成了计划行），
+ * 名字按设计文档 §4.2 刻意保留，界面文案是「计划中」。
+ */
 type BomItemOrderState = "none" | "draft" | "partial" | "ordered";
 /** 已下单的采购单状态（草稿不算，已取消已被查询排除）。 */
 const ORDERED_PURCHASE_STATUSES = ["ordered", "partially_arrived", "arrived_complete"];
@@ -216,12 +221,21 @@ export class PurchaseOrdersService {
     };
   }
   /**
-   * 某张 BOM 上每一行的下单情况 —— 新建采购单时用来避免同一行被重复采购。
+   * 某张 BOM 上每一行的下单情况 —— 用来避免同一行被重复采购（新建计划时就看得见）。
    *
    * 归集口径：**按采购单挂的那张 BOM**（`purchase_orders.bom_id`）取它的明细行，只算未删除的
-   * 采购明细、排除已取消的采购单；草稿与已下单**分开累计**：草稿不算「已下单」，但要单独标出来
-   * （已经有草稿覆盖的行同样不该再开一张）。四态：已下单足量（ordered）/ 部分下单（partial）/
-   * 草稿中（draft）/ 未下单（none）。
+   * 采购明细、排除已取消的采购单。四态：
+   *
+   * | 档 | 数据源 |
+   * | --- | --- |
+   * | `ordered` 已下单足量 / `partial` 部分下单 | **采购明细**（已下单及之后的单） |
+   * | `draft` **计划中** | **采购计划行**（还没下单的那些，`purchase_order_item_id IS NULL`） |
+   * | `none` 未下单 | 以上都没有 |
+   *
+   * ⚠️ 2026-09-27：第二档的数据源从"草稿采购单"换成了"计划行"，草稿已经不存在（采购计划接管了它）。
+   * **字段名与枚举值刻意没改**（`draft_quantity` / `draft_purchase_order_nos` / `state: "draft"`）：
+   * 设计文档 §4.2 明确保留，避免同时改动前端契约。所以这里要记住：**这一档里的单号是计划编号
+   * （`PP-…`），不是采购单号（`PO-…`）**，界面上的文案是「计划中」。
    *
    * ⚠️ 为什么不能按「BOM 当前行的 ID」去归集（2026-09-20 现场问题：「有些物料已经下单了，
    * 但新建采购单里下单状态还是未下单」）：`PUT /boms/:id/items`（界面上的「保存 BOM 表」，
@@ -232,6 +246,7 @@ export class PurchaseOrdersService {
    *
    * 所以：按 BOM 取单，再按行 ID **精确**归集；行 ID 已被换掉的历史量按**物料**摊回该物料在
    * 当前 BOM 的第一行（同一物料在 BOM 里出现多行时只会摊到第一行，不重复计数）。
+   * **计划行同样要摊回** —— 它存的也是"建计划当时那一版"的行 ID。
    */
   async bomItemOrderStatus(bomId: string) {
     const bom = await this.prisma.bom.findFirst({ where: { id: bomId, deletedAt: null }, select: { id: true } });
@@ -242,15 +257,24 @@ export class PurchaseOrdersService {
       where: { deletedAt: null, bomItemId: { not: null }, purchaseOrder: { deletedAt: null, bomId, status: { not: "cancelled" } } },
       select: { bomItemId: true, materialId: true, quantity: true, purchaseOrder: { select: { purchaseOrderNo: true, status: true } } },
     });
+    // 第二档（计划中）：这张 BOM 的计划里**还没下单**的行。已下单的行不算在这里 ——
+    // 它们的量已经通过上面的采购明细进了 `ordered` 档，重复计一次会让"还差多少"算少。
+    const plannedRows = await this.prisma.purchasePlanItem.findMany({
+      where: { deletedAt: null, purchaseOrderItemId: null, plan: { bomId, deletedAt: null } },
+      select: { bomItemId: true, materialId: true, quantity: true, plan: { select: { planNo: true } } },
+    });
     const currentIds = new Set(items.map((item) => item.id));
     // 摊回目标：该物料在当前 BOM 里的第一行。行 ID 还在的走精确归集，不会用到这张表。
     const firstRowOfMaterial = new Map<string, string>();
     for (const item of items) if (item.materialId && !firstRowOfMaterial.has(item.materialId)) firstRowOfMaterial.set(item.materialId, item.id);
     const accumulator = new Map<string, { ordered: Prisma.Decimal; draft: Prisma.Decimal; orderedNos: Set<string>; draftNos: Set<string> }>();
+    /** `bom_item_id` 为空的是 BOM 外的新增行（补料/替代料）：它不占任何 BOM 行的需求量。 */
+    const keyOf = (row: { bomItemId: string | null; materialId: string | null }) => {
+      if (!row.bomItemId) return undefined;
+      return currentIds.has(row.bomItemId) ? row.bomItemId : (row.materialId ? firstRowOfMaterial.get(row.materialId) : undefined);
+    };
     for (const row of rows) {
-      // `bom_item_id` 为空的是 BOM 外新增行（补料/替代料）：它不占任何 BOM 行的需求量。
-      if (!row.bomItemId) continue;
-      const key = currentIds.has(row.bomItemId) ? row.bomItemId : (row.materialId ? firstRowOfMaterial.get(row.materialId) : undefined);
+      const key = keyOf(row);
       // 物料已经从 BOM 里删掉了：这条历史下单不摊到别的行上（宁可少显示，也不能张冠李戴）。
       if (!key) continue;
       const entry = accumulator.get(key) ?? { ordered: new Prisma.Decimal(0), draft: new Prisma.Decimal(0), orderedNos: new Set<string>(), draftNos: new Set<string>() };
@@ -258,10 +282,16 @@ export class PurchaseOrdersService {
       if (ORDERED_PURCHASE_STATUSES.includes(row.purchaseOrder?.status ?? "")) {
         entry.ordered = entry.ordered.plus(quantity);
         if (row.purchaseOrder?.purchaseOrderNo) entry.orderedNos.add(row.purchaseOrder.purchaseOrderNo);
-      } else if (row.purchaseOrder?.status === "draft") {
-        entry.draft = entry.draft.plus(quantity);
-        if (row.purchaseOrder?.purchaseOrderNo) entry.draftNos.add(row.purchaseOrder.purchaseOrderNo);
       }
+      accumulator.set(key, entry);
+    }
+    for (const row of plannedRows) {
+      const key = keyOf(row);
+      if (!key) continue;
+      const entry = accumulator.get(key) ?? { ordered: new Prisma.Decimal(0), draft: new Prisma.Decimal(0), orderedNos: new Set<string>(), draftNos: new Set<string>() };
+      entry.draft = entry.draft.plus(new Prisma.Decimal(row.quantity ?? 0));
+      // 这里塞进去的是**计划编号**（`PP-…`）。字段名叫 `draft_purchase_order_nos` 是历史原因，见方法注释。
+      if (row.plan?.planNo) entry.draftNos.add(row.plan.planNo);
       accumulator.set(key, entry);
     }
     return items.map((item) => {
@@ -270,6 +300,7 @@ export class PurchaseOrdersService {
       const ordered = entry?.ordered ?? new Prisma.Decimal(0);
       const draft = entry?.draft ?? new Prisma.Decimal(0);
       // 「已下单足量」按需求量比；需求量为 0 的行不因为「0 已下单」而被判成足量。
+      // 计划中的量**不**计入 ordered：计划不等于下单，这正是这一档存在的意义。
       const state: BomItemOrderState = required.gt(0) && ordered.gte(required) ? "ordered" : ordered.gt(0) ? "partial" : draft.gt(0) ? "draft" : "none";
       return { bom_item_id: item.id, required_quantity: required.toFixed(4), ordered_quantity: ordered.toFixed(4), draft_quantity: draft.toFixed(4), state, ordered_purchase_order_nos: [...(entry?.orderedNos ?? [])], draft_purchase_order_nos: [...(entry?.draftNos ?? [])] };
     });
