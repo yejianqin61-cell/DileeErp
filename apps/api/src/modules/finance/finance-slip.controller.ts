@@ -1,60 +1,15 @@
 import { Body, Controller, Post, Res, UseGuards } from "@nestjs/common";
 import { Type } from "class-transformer";
-import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min, ValidateNested } from "class-validator";
+import { ArrayMaxSize, ArrayNotEmpty, IsArray, IsUUID, ValidateNested } from "class-validator";
 import type { Response } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
+import { financeSlipFromDto, FinanceSlipDto } from "./finance-slip.dto";
 import { FinanceSlipService } from "./finance-slip.service";
 import type { FinanceSlip, FinanceSlipKind } from "./finance-slip";
-
-/**
- * 收/付款单的一行（模板上的六格）。
- *
- * 金额用 `@IsString()` 而不是 `@IsDecimal()`：全站金额都是**字符串十进制**（DECIMAL(18,4)），
- * 具体是不是合法金额由 `finance-slip.ts` 的同一套纯函数判定 —— 那一套前端也在用，
- * 两处口径一致才不会出现「界面说能导出、后端说不行」。
- */
-class FinanceSlipLineDto {
-  @IsOptional() @IsString() @MaxLength(500) summary?: string;
-  @IsOptional() @IsString() @MaxLength(200) general_subject?: string;
-  @IsOptional() @IsString() @MaxLength(200) detail_subject?: string;
-  @IsOptional() @IsString() @MaxLength(50) debit?: string;
-  @IsOptional() @IsString() @MaxLength(50) credit?: string;
-  @IsOptional() @IsString() @MaxLength(500) remark?: string;
-}
-
-/**
- * 收/付款单的表头 + 明细。
- *
- * 长度上限都写了：单子是打印件，字段长度不与数据库列对齐（它不落库），但**必须有上限** ——
- * 无上限的字符串会被原样写进 xlsx 单元格，一个粘贴进来的十万字备注能把工作簿撑坏。
- */
-class FinanceSlipDto {
-  @IsString() @MaxLength(100) slip_no!: string;
-  @IsString() @MaxLength(20) slip_date!: string;
-  @IsOptional() @IsString() @MaxLength(50) slip_method?: string;
-  @IsString() @MaxLength(200) counterparty_name!: string;
-  /**
-   * 我方 / 对方各两格（用户 2026-09-24：「付款单/收款单上，我方和对方账户都分别设置对应的字段」）。
-   *
-   * 原来的 `bank_name` / `bank_account` **已删除**，不是改名：它的语义本来就是错的
-   * （预填塞的是我方账户，而模板上那是对方的栏位）。留着旧字段只会让「填到哪一格」继续含糊，
-   * 所以这是一次有意的破坏性改动 —— 前端同一提交内改完，契约测试钉住新字段名。
-   */
-  @IsOptional() @IsString() @MaxLength(200) our_bank_name?: string;
-  @IsOptional() @IsString() @MaxLength(100) our_bank_account?: string;
-  @IsOptional() @IsString() @MaxLength(200) counterparty_bank_name?: string;
-  @IsOptional() @IsString() @MaxLength(100) counterparty_bank_account?: string;
-  /** 币种（模板上没有这一格，只用于界面上「哪张是哪张」与审计）。 */
-  @IsOptional() @IsString() @MaxLength(10) currency?: string;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(0) @Max(9999) attachment_count?: number;
-  @IsOptional() @IsString() @MaxLength(1000) remark?: string;
-  @IsOptional() @IsString() @MaxLength(100) maker?: string;
-  @IsArray() @ValidateNested({ each: true }) @Type(() => FinanceSlipLineDto) lines!: FinanceSlipLineDto[];
-}
 
 /**
  * 「全部导出」的入参：队列里的**全部**单子（不是单张）。
@@ -93,6 +48,9 @@ class ReceiptSlipDraftDto {
  * 合成一条就会出现「导出的到底是我改过的，还是系统又算了一遍的」这种说不清的情况。
  * 单张与批量也不合成：单张导出保持「一个文件一张单子」这个银行认可的形态，
  * 批量导出是为了一次拿到全部（逐张下载会被浏览器拦掉）。
+ *
+ * **存档**（保存 / 列表 / 再打开 / 删除）不在这里：它是另一件事 ——
+ * 「这张单子我改到一半，先存下来」。见 `finance-slip-store.controller.ts`。
  */
 @Controller("finance")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
@@ -146,30 +104,8 @@ export class FinanceSlipController {
     return response.send(result.body);
   }
 
-  /** DTO → 纯函数要的形状：把可选字段补齐成空串（模板上「没填」就是一格空白）。 */
+  /** DTO → 纯函数要的形状（映射也搬到了 `finance-slip.dto.ts`：保存那条路认的是同一张单子）。 */
   private toSlip(kind: FinanceSlipKind, body: FinanceSlipDto): FinanceSlip {
-    return {
-      kind,
-      slip_no: body.slip_no,
-      slip_date: body.slip_date,
-      slip_method: body.slip_method ?? "",
-      counterparty_name: body.counterparty_name,
-      our_bank_name: body.our_bank_name ?? "",
-      our_bank_account: body.our_bank_account ?? "",
-      counterparty_bank_name: body.counterparty_bank_name ?? "",
-      counterparty_bank_account: body.counterparty_bank_account ?? "",
-      currency: body.currency ?? "",
-      attachment_count: body.attachment_count ?? 0,
-      remark: body.remark ?? "",
-      maker: body.maker ?? "",
-      lines: body.lines.map((line) => ({
-        summary: line.summary ?? "",
-        general_subject: line.general_subject ?? "",
-        detail_subject: line.detail_subject ?? "",
-        debit: line.debit ?? "",
-        credit: line.credit ?? "",
-        remark: line.remark ?? "",
-      })),
-    };
+    return financeSlipFromDto(kind, body);
   }
 }

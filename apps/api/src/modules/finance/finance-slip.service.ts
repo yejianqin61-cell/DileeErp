@@ -173,6 +173,11 @@ export class FinanceSlipService {
       slips.push({
         kind: "payment",
         currency: group[0].currency,
+        // 汇率与折合人民币**预填不出来**（2026-09-26 加的那两格）：币种是已知的，但按什么价折算
+        // 只有财务对着银行回单才知道（外币付款的折算价随银行走），所以留空让她填。
+        // 系统也**不替她算**「合计 × 汇率」—— 与「不按税率自动拆进项税」同一条口径。
+        exchange_rate: "",
+        amount_cny: "",
         slip_no: await this.suggestNumber("payment", counterpartyId, slipDate, group.length, offset),
         slip_date: slipDate,
         slip_method: "银行转账",
@@ -249,6 +254,9 @@ export class FinanceSlipService {
       slips.push({
         kind: "receipt",
         currency: group[0].currency,
+        // 同付款单：汇率与折合人民币留空由财务填（见 draftPayment 的同一条注释）。
+        exchange_rate: "",
+        amount_cny: "",
         slip_no: await this.suggestNumber("receipt", counterpartyId, slipDate, group.length, offset),
         slip_date: slipDate,
         slip_method: "银行转账",

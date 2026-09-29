@@ -971,6 +971,8 @@ describe("应付管理：集中付款（付款单队列，可编辑）", () => {
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")).toHaveLength(1));
     expect(bodyOf(callsTo(calls, "/api/v1/finance/payment-slips.xlsx")[0])).toEqual({
       kind: "payment", currency: "CNY",
+      // 汇率与折合人民币：人民币付款两格留空（2026-09-26 加的那一行 R6）。
+      exchange_rate: "", amount_cny: "",
       slip_no: "FK-202609-001", slip_date: "2026-09-20", slip_method: "银行转账", counterparty_name: "晋江大田",
       our_bank_name: "农业银行", our_bank_account: "5706", counterparty_bank_name: "兴业银行", counterparty_bank_account: "1573", attachment_count: 1, remark: "本次先付 100，余款月结", maker: "小叶",
       lines: [

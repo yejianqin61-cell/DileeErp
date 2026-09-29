@@ -76,12 +76,13 @@ const NO_MODULE = "noModule";
 const MODULE_ROLES = ["sales", "procurement", "warehouse", "finance", "production", "hr"];
 const ALL_ROLES = [...MODULE_ROLES, NO_MODULE, ADMIN];
 
-/** 38 个控制器文件（recon §5.4 的同一份清单）；矩阵必须逐一覆盖。 */
+/** 39 个控制器文件（recon §5.4 的清单 + 2026-09-26 的收付款单存档）；矩阵必须逐一覆盖。 */
 const CONTROLLER_FILES = [
   "health.controller.ts",
   "modules/alerts/alerts.controller.ts",
   "modules/finance/finance.controller.ts",
   "modules/finance/payable-notification.controller.ts",
+  "modules/finance/finance-slip-store.controller.ts",
   "modules/hr/hr.controller.ts",
   "modules/order-workbench/order-workbench.controller.ts",
   "modules/procurement/incoming-inspections.controller.ts",
@@ -191,6 +192,11 @@ const ENDPOINTS = [
   }),
   endpoint("payable-notification.payable-entries", "modules/finance/payable-notification.controller.ts", "GET", "/api/v1/finance/payable-entries", {
     allow: { finance: 200, procurement: 200 }, deny: ["sales", NO_MODULE], note: "独立 controller：ANY(finance, procurement)",
+  }),
+  // 收付款单的**存档**（2026-09-26 的「保存键」）：与导出那两个 controller 分开的第三个文件，
+  // 读写都走 finance（出单/存档/作废是财务的本职动作，锁管理员会把这条链掐断）。
+  endpoint("finance-slips.list", "modules/finance/finance-slip-store.controller.ts", "GET", "/api/v1/finance/slips", {
+    allow: { finance: 200 }, deny: ["sales", NO_MODULE], note: "类级 finance（列表 / 详情 / 保存 / 作废）",
   }),
   endpoint("hr.attendance-records", "modules/hr/hr.controller.ts", "GET", "/api/v1/hr/attendance-records", {
     allow: { hr: 200 }, deny: ["sales", NO_MODULE], note: "类级 hr（33 路由）",
@@ -564,9 +570,9 @@ test("authz.require_administrator_separates_read_routes_from_write_routes_on_mas
   assert.notEqual(adminExport.status, 401, "会话必须有效");
 });
 
-test("authz.matrix_covers_all_38_controllers_and_their_route_shapes", () => {
+test("authz.matrix_covers_all_39_controllers_and_their_route_shapes", () => {
   const covered = new Set(ENDPOINTS.map((entry) => entry.file));
-  assert.equal(covered.size, 38, `矩阵应覆盖 38 个控制器文件，实际 ${covered.size}`);
+  assert.equal(covered.size, 39, `矩阵应覆盖 39 个控制器文件，实际 ${covered.size}`);
   for (const file of CONTROLLER_FILES) assert.ok(covered.has(file), `矩阵缺少控制器：${file}`);
 
   const ids = ENDPOINTS.map((entry) => entry.id);

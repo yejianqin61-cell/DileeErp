@@ -241,9 +241,10 @@ test("付款单导出：以界面提交的内容为准（财务把金额改成 1
   assert.equal(result.fileName, "迪礼付款单-FK-202609-001.xlsx");
   const workbook = XLSX.read(result.body, { type: "buffer" });
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1, raw: true, defval: null, blankrows: true });
-  assert.equal(rows[9][3], 100, "借方合计 = 财务自己拆的两行之和");
-  assert.equal(rows[9][4], 100);
-  assert.equal(rows[10][1], "壹佰元整");
+  // 行号跟着版式走：2026-09-26 加了 R6（币种/汇率/折合人民币），合计行从第 10 行变成第 11 行。
+  assert.equal(rows[10][3], 100, "借方合计 = 财务自己拆的两行之和");
+  assert.equal(rows[10][4], 100);
+  assert.equal(rows[11][1], "壹佰元整");
   assert.equal(events.length, 1);
   assert.equal(events[0][0], "payment_slip.export");
   assert.equal(events[0][1], "payment_slip");
@@ -280,7 +281,7 @@ test("付款单「全部导出」：多张渲染成**一个工作簿多个工作
   assert.equal(workbook.SheetNames[0], "付款单", "第一张沿用单据名");
   assert.equal(workbook.SheetNames[1], "付款单2-晋江大田", "第二张带序号与对方单位（同名工作表会让 ExcelJS 直接抛错）");
   const second = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[1]], { header: 1, raw: true, defval: null, blankrows: true });
-  assert.equal(second[8][3], 70, "第二张是自己的金额，不是第一张的 100");
+  assert.equal(second[9][3], 70, "第二张是自己的金额，不是第一张的 100");
   // 审计：一张一条（单据是逐张签发的凭证），并标出这是一次集中付款。
   assert.equal(events.length, 2);
   assert.deepEqual(events.map((event) => event[4].slip_no), ["FK-202609-001", "FK-202609-002"]);

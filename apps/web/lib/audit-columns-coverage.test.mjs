@@ -39,6 +39,15 @@ const EXEMPT = new Map(Object.entries({
 
   // 财务报表沿用老系统版式，列与合计由后端 ReportTable 下发，且都是「期间聚合」口径。
   "components/finance/finance-report-workspace.tsx": "报表列与合计由后端 ReportTable 下发，属期间聚合口径，无单一操作人",
+
+  // 收付款单存档（2026-09-26）：这一页的行身份是「一张要拿去银行/走签字的纸」，
+  // 而纸面上那个「谁」是**制单人**（`maker`，单独一列，是印在单子上的签字格），
+  // 与「谁在系统里点了保存」是两个人 —— 代录时它们不一样，摆两列反而要财务去分辨哪个是哪个。
+  // 「谁保存的」属审计口径：`finance_slips.created_by / updated_by` 有列，
+  // 每次保存/作废也都写一条审计事件（`payment_slip.save` / `_slip.delete`）。
+  // 另外这一页的列已经很宽（编号/日期/对方/币种/汇率/折合人民币/合计/行数/制单人/保存时间），
+  // 再塞两列会把这一页存在的理由（看汇率与折合人民币）挤到屏幕外。
+  "components/finance/finance-slips-workspace.tsx": "存档列表的行身份是待打印的单据，纸面上的「谁」是制单人（已有列）；谁保存的属审计口径（有列 + 审计事件），列宽也放不下",
 }));
 
 function walk(dir) {

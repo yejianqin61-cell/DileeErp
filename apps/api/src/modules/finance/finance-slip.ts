@@ -1,5 +1,5 @@
 import * as ExcelJS from "exceljs";
-import { formatUnits, toPositiveUnits } from "./money";
+import { formatUnits, toPositiveUnits, toRateUnits } from "./money";
 import { NUMBER_FORMAT, toExportNumber } from "./finance-report.domain";
 
 /**
@@ -31,9 +31,23 @@ import { NUMBER_FORMAT, toExportNumber } from "./finance-report.domain";
  *    `不含税 = 含税 ÷ (1+税率)` 在取得普票（不抵扣）、优惠税率或部分抵扣时会被自动填错，而这种错误
  *    在单子看不出来。预填只给「一行一条、金额全额」，要拆由财务自己加行 —— 这正是用户说的
  *    「我可以自己填加行」。这与记账凭证模板（`voucher-template.ts`）是同一条既定口径。
+ *    **「折合人民币」也照此办理**（2026-09-26 加汇率那一格时定的）：它是手填的一格，
+ *    系统不按「合计 × 汇率」替财务算 —— 银行的折算价与我们的报价本来就可能不同，
+ *    而自动算出来的数在单子上同样看不出错。
  *
  * 3. **借贷不平衡不许导出**。单子是要拿去走付款/收款与签字的原始单据，借贷不平流出去就是一张错账凭证；
  *    界面上实时显示差额、导出接口再校验一次（两处同一套 `slipTotals`）。
+ *
+ * ## 校验分两层（2026-09-26 落库之后）
+ *
+ * 单子有了「保存键」之后，校验必须分成两层，否则会互相打架：
+ *   - `validateFinanceSlipShape`：**结构**（日期、附单据张数、汇率与折合人民币的格式、每一行的金额格式）。
+ *     结构坏了的单子连存都存不进去（`slip_date` 是 DATE 列），所以保存用它；
+ *   - `validateFinanceSlip`：结构 + **导出前才必须满足**的那些（编号、对方单位、借贷平衡）。
+ *     财务改到一半就该能保存 —— 逼她填平了才能存，等于把「保存」变成「必须一次做完」。
+ *
+ * 存档（谁保存的、什么时候、勾了哪些条目）不在这里：本文件保持纯函数，落库在
+ * `finance-slip-store.service.ts`。
  */
 
 /** 单据种类：付款单 / 收款单。 */
@@ -86,6 +100,22 @@ export type FinanceSlip = {
    * 然后还是一个个的改付款单」——拆张之后这个字段就是「为什么拆成两张」的答案）。
    */
   currency: string;
+  /**
+   * 汇率（用户 2026-09-26：「付款单要有填写汇率的地方」）。人民币付款可留空。
+   *
+   * 精度与全站汇率口径一致（最多 8 位小数，见 `money.ts` 的 `toRateUnits`）——
+   * 「跨行转账单」那一格的 6 位是它自己那一份实现，这里不跟它走：汇率的精度只该有一个出处，
+   * 而 8 位正是 `exchange_rates.rate` 的列精度。
+   */
+  exchange_rate: string;
+  /**
+   * 折合人民币（2026-09-26 与汇率同时加的一格）。人民币付款可留空。
+   *
+   * **手填，系统不自动折算**：银行的折算价与我们的报价本来就可能不同，而自动算出来的数
+   * 在单子上看不出错（与「不自动拆进项税」同一条口径，见文件头第 2 条）。
+   * 留空就是留空 —— 导出的单子上那一格也是空的，界面上另有提示说明这一点。
+   */
+  amount_cny: string;
   /** 附单据张数。 */
   attachment_count: number;
   /** 付款备注 / 收款备注（模板表头下方那一行，用户明确要求「我可以写付款备注」）。 */
@@ -233,23 +263,29 @@ export function slipTotals(lines: readonly FinanceSlipLine[]): SlipTotals {
 export type SlipProblem = { code: string; message: string; details: Array<Record<string, unknown>> };
 
 /**
- * 导出一张单子前的校验。**返回全部问题**（不是抛第一个）：界面上一次把「第 2 行没金额、
- * 第 5 行两边都填了」说清楚，比让财务改一个、导出一次、再被告知下一个要快得多。
+ * **结构**校验：只拦「这张单子根本存不下来 / 读不出来」的问题 —— 日期不是日期（`slip_date` 是 DATE 列）、
+ * 附单据张数不是非负整数、汇率与折合人民币写了非数字、行里的金额格式非法。
  *
- * 错误码是**与种类无关**的 `SLIP_*`（文案里才出现「付款单 / 收款单」）：同一套规则、同一套码，
- * 前端与测试不必为两种单据各记一套码。对方的称谓取自 `slipLabels(kind)`，
- * 所以收款单报的是「收款单必须填写付款单位」而不是「收款单位」。
+ * 保存（草稿）与导出都跑它，所以财务改到一半也能存下：编号、对方单位、借贷平衡这三件
+ * 是**导出前**才必须满足的（见 `validateFinanceSlip`）—— 逼她填平才能保存，
+ * 等于把「保存」变成「必须一次做完」，而一次集中付款有十几张单子。
  */
-export function validateFinanceSlip(slip: FinanceSlip): SlipProblem[] {
+export function validateFinanceSlipShape(slip: FinanceSlip): SlipProblem[] {
   const labels = slipLabels(slip.kind);
   const problems: SlipProblem[] = [];
-  if (!slip.slip_no.trim()) problems.push({ code: "SLIP_NO_REQUIRED", message: `${labels.name}必须填写单据编号`, details: [{ field: "slip_no" }] });
-  if (!slip.counterparty_name.trim()) problems.push({ code: "SLIP_COUNTERPARTY_REQUIRED", message: `${labels.name}必须填写${labels.counterpartyLabel.replace("：", "")}`, details: [{ field: "counterparty_name" }] });
   if (!/^\d{4}-\d{2}-\d{2}$/.test(slip.slip_date ?? "") || Number.isNaN(new Date(`${slip.slip_date}T00:00:00.000Z`).valueOf())) {
     problems.push({ code: "SLIP_DATE_INVALID", message: `${labels.dateLabel.replace("：", "")}无效（应为 YYYY-MM-DD）`, details: [{ field: "slip_date" }] });
   }
   if (!Number.isInteger(slip.attachment_count) || slip.attachment_count < 0) {
     problems.push({ code: "SLIP_ATTACHMENT_INVALID", message: "附单据张数必须是非负整数", details: [{ field: "attachment_count" }] });
+  }
+  // 汇率与折合人民币都可以留空（人民币付款那两格本来就空着）；填了就必须是合法数字。
+  // 用全站那一套汇率精度（≤8 位小数），不另写一个正则 —— 见 `exchange_rate` 字段的注释。
+  if ((slip.exchange_rate ?? "").trim() && toRateUnits(slip.exchange_rate) === null) {
+    problems.push({ code: "SLIP_RATE_INVALID", message: "汇率必须是大于零的数字（最多 8 位小数），人民币付款可留空", details: [{ field: "exchange_rate" }] });
+  }
+  if ((slip.amount_cny ?? "").trim() && parseAmount(slip.amount_cny) === null) {
+    problems.push({ code: "SLIP_CNY_AMOUNT_INVALID", message: "折合人民币必须是大于零的数字（最多 4 位小数），人民币付款可留空", details: [{ field: "amount_cny" }] });
   }
   if (slip.lines.length === 0) {
     problems.push({ code: "SLIP_LINE_REQUIRED", message: `${labels.name}至少需要一行分录`, details: [] });
@@ -279,6 +315,28 @@ export function validateFinanceSlip(slip: FinanceSlip): SlipProblem[] {
       problems.push({ code: "SLIP_LINE_AMOUNT_INVALID", message: `第 ${row} 行金额必须是大于零的数字（最多 4 位小数）`, details: [{ row }] });
     }
   });
+  return problems;
+}
+
+/**
+ * 导出一张单子前的校验。**返回全部问题**（不是抛第一个）：界面上一次把「第 2 行没金额、
+ * 第 5 行两边都填了」说清楚，比让财务改一个、导出一次、再被告知下一个要快得多。
+ *
+ * 错误码是**与种类无关**的 `SLIP_*`（文案里才出现「付款单 / 收款单」）：同一套规则、同一套码，
+ * 前端与测试不必为两种单据各记一套码。对方的称谓取自 `slipLabels(kind)`，
+ * 所以收款单报的是「收款单必须填写付款单位」而不是「收款单位」。
+ *
+ * 导出比保存多拦的三件：**必须有编号**（一张没号的单子银行不认）、**必须有对方单位**
+ * （单子上那一格是收付款对象）、**借贷必须平**（不平就是一张错账凭证）。见 `validateFinanceSlipShape`。
+ */
+export function validateFinanceSlip(slip: FinanceSlip): SlipProblem[] {
+  const labels = slipLabels(slip.kind);
+  const problems: SlipProblem[] = [];
+  if (!slip.slip_no.trim()) problems.push({ code: "SLIP_NO_REQUIRED", message: `${labels.name}必须填写单据编号`, details: [{ field: "slip_no" }] });
+  if (!slip.counterparty_name.trim()) problems.push({ code: "SLIP_COUNTERPARTY_REQUIRED", message: `${labels.name}必须填写${labels.counterpartyLabel.replace("：", "")}`, details: [{ field: "counterparty_name" }] });
+  problems.push(...validateFinanceSlipShape(slip));
+  // 没有分录时上面已经报过 SLIP_LINE_REQUIRED 了：再走一遍合计会报出**同一句话的第二遍**。
+  if (slip.lines.length === 0) return problems;
   const totals = slipTotals(slip.lines);
   if (!totals.invalid && !problems.some((problem) => problem.code.startsWith("SLIP_LINE_AMOUNT"))) {
     if (totals.empty) problems.push({ code: "SLIP_LINE_REQUIRED", message: `${labels.name}至少需要一行有金额的分录`, details: [] });
@@ -390,11 +448,15 @@ const LAST_COLUMN = "F";
  * 表头区与分录区的起始行，写成常量而不是散落的字面量。
  *
  * 为什么钉住：2026-09-24 在两方账户之间插了「我方开户银行 / 我方银行账号」一整行（R5），
- * 分录区整体下移一行。这种下移最容易漏改的就是 `totalRow` 那一处 —— 漏了的话合计行会正好压在
+ * 2026-09-26 又插了「币种 / 汇率 / 折合人民币」一整行（R6），分录区整体下移两行。
+ * 这种下移最容易漏改的就是 `totalRow` 那一处 —— 漏了的话合计行会正好压在
  * 最后一条分录上，而导出只是「看起来有点怪」，不会报错。让行号只有一个来源，测试再钉一遍。
  */
-const HEADER_ROW = 6;
-const FIRST_LINE_ROW = 7;
+const HEADER_ROW = 7;
+const FIRST_LINE_ROW = 8;
+
+/** 汇率那一格的显示格式（最多 8 位小数，与 `money.ts` 的汇率精度一致）。 */
+const RATE_FORMAT = "0.########";
 
 /**
  * 表头字段的显示名（模板上的写法）。测试靠它定位，改文案就会红。
@@ -410,6 +472,11 @@ export const SLIP_LABELS = {
   bankAccount: "对方银行账号：",
   ourBankName: "我方开户银行：",
   ourBankAccount: "我方银行账号：",
+  // 币种 / 汇率 / 折合人民币（用户 2026-09-26 加的一整行 R6）。模板原样没有这三格，
+  // 但汇率离开币种就读不懂，所以三格一起加。
+  currency: "币种：",
+  exchangeRate: "汇率：",
+  amountCny: "折合人民币：",
   attachment: "附单据：",
   attachmentUnit: "张",
   summary: "摘要",
@@ -501,10 +568,11 @@ function merged(sheet: ExcelJS.Worksheet, range: string, value: ExcelJS.CellValu
 /**
  * 渲染收/付款单工作簿。
  *
- * 版式与财务给的模板**逐格对齐**（标题、五行表头、分录表、合计行、大写行、备注行、两行签字栏），
+ * 版式与财务给的模板**逐格对齐**（标题、六行表头、分录表、合计行、大写行、备注行、两行签字栏），
  * 差别只有一处：表尾多一行落款（`制表人 / 制表时间`），与全站导出件同一套纪律
- * （那份文件是谁、什么时候生成的）。表头是五行而不是四行，是因为用户 2026-09-24 要求
- * 「我方和对方账户都分别设置对应的字段」——我方那两格单独占一行（R5）。
+ * （那份文件是谁、什么时候生成的）。表头是六行而不是模板的四行，多出来的两行是：
+ * R5 我方账户（用户 2026-09-24 要求「我方和对方账户都分别设置对应的字段」）、
+ * R6 币种/汇率/折合人民币（用户 2026-09-26 要求「付款单要有填写汇率的地方」）。
  */
 export function renderFinanceSlipWorkbook(slip: FinanceSlip): Promise<Buffer> {
   return renderFinanceSlipsWorkbook([slip]);
@@ -587,6 +655,22 @@ function renderSlipSheet(workbook: ExcelJS.Workbook, slip: FinanceSlip, sheetNam
   merged(sheet, `E5:${LAST_COLUMN}5`, text(slip.our_bank_account), { font: LABEL_FONT });
   paint(sheet, "A5", { font: LABEL_FONT });
   paint(sheet, "D5", { font: LABEL_FONT });
+
+  // R6 币种 / 汇率 / 折合人民币（用户 2026-09-26：「付款单要有填写汇率的地方」）。
+  // 三组「标签 + 值」正好占满六列，与 R2 同一种排法。汇率与折合人民币落**数值**单元格
+  // （与金额同一条纪律：文本型数字在 Excel 里没法求和/排序）；折合人民币那一格留空就是**真空白**，
+  // 不写 0（写 0 会被读成「折合下来是 0 元」这个事实）。
+  sheet.getCell("A6").value = labels.currency;
+  sheet.getCell("B6").value = text(slip.currency);
+  sheet.getCell("C6").value = labels.exchangeRate;
+  const rate = toExportNumber(slip.exchange_rate);
+  if (rate !== null) { sheet.getCell("D6").value = rate; sheet.getCell("D6").numFmt = RATE_FORMAT; }
+  sheet.getCell("E6").value = labels.amountCny;
+  const amountCny = toExportNumber(slip.amount_cny);
+  if (amountCny !== null) { sheet.getCell("F6").value = amountCny; sheet.getCell("F6").numFmt = NUMBER_FORMAT; }
+  paint(sheet, "A6:F6", { font: LABEL_FONT });
+  sheet.getCell("D6").alignment = { horizontal: "right", vertical: "middle" };
+  sheet.getCell("F6").alignment = { horizontal: "right", vertical: "middle" };
 
   // R6 表头
   const headers = [labels.summary, labels.generalSubject, labels.detailSubject, labels.debit, labels.credit, labels.remarkColumn];

@@ -11,6 +11,10 @@ export const FINANCE_BOARDS = [
   { key: "receivable", title: "应收管理" },
   { key: "payable", title: "应付管理" },
   { key: "salary", title: "工资管理" },
+  // 收付款单的**存档**（2026-09-26 用户要的「保存键」）：保存过的单子在这一页找回、再导出、作废。
+  // 为什么单占一个板块而不是塞进应付/应收页：单子一旦落库就有了自己的生命周期（改、导、废），
+  // 而应付/应收页回答的是另一个问题（哪些钱还没结）。
+  { key: "slips", title: "收付款单" },
   { key: "banks", title: "银行账户" },
   { key: "bank-transfers", title: "银行余额互转" },
   { key: "cash-flow", title: "收支管理" },
@@ -158,11 +162,14 @@ export const SALARY_SECTIONS = [
 
 export type SalarySectionKey = (typeof SALARY_SECTIONS)[number]["key"];
 
-/** 每个板块的子栏目。凭证管理、银行账户与银行余额互转没有子栏目（都是单页满页表格）。 */
+/** 每个板块的子栏目。凭证管理、银行账户、银行余额互转与收付款单没有子栏目（都是单页满页表格）。 */
 export const FINANCE_BOARD_TABS: Record<FinanceBoardKey, ReadonlyArray<{ key: string; title: string }>> = {
   receivable: RECEIVABLE_TABS,
   payable: PAYABLE_TABS,
   salary: SALARY_SECTIONS,
+  // 收付款单页内部有「付款单 / 收款单」两个真实链接（`/finance/slips?kind=...`），
+  // 但它不是这个板块的子栏目清单：那些链接是**同一条路**的不同参数，不是不同页面。
+  slips: [],
   banks: [],
   "bank-transfers": [],
   "cash-flow": CASH_FLOW_TABS,

@@ -11,12 +11,18 @@
 // 所以现在这个组件管的是**一队列单子**（后端按「对方单位 + 币种」拆好的）：
 //   - 顶部一行是张数与切换（`第 2 张：绍兴纺织（USD）合计 200`），每张**各自保存**自己的编辑
 //     （改一张再切走不会丢）；
-//   - 底部三个动作：导出这一张、全部导出（一个工作簿）、以及「批量确认未确认的 N 条」
-//     （把「一起付款」的另一半接上：勾选 → 出单 → 确认付款，不用离开这个弹窗来回跑）。
+//   - 底部四个动作：导出这一张、全部导出（一个工作簿）、**保存这一张**（2026-09-26 用户要的
+//     「保存键」）、以及「批量确认未确认的 N 条」（把「一起付款」的另一半接上）。
+//
+// 「保存」与「导出」的区别（这一轮最容易搞混的一处，值得写在代码里）：
+//   - **保存**只把这张单子存下来（`POST/PATCH /finance/slips`），**不改任何账**：不写收支流水、
+//     不生成凭证、不动应付/应收状态。它的门槛也低一档 —— 编号、对方单位、借贷平衡都还不要求，
+//     财务改到一半就能存下（后端 `validateFinanceSlipShape`）；
+//   - **导出**是拿去银行/走签字的那张纸，全套校验都要过（后端 `validateFinanceSlip`）。
+//   第三次点保存是**覆盖同一张**（把后端返回的 id 记回队列），否则财务会得到两张一样的单子。
 //
 // 界面上的取舍：
-//   - **不改系统里的任何数据**：单子是一张打印件，不是系统单据。预填来自后端
-//     (`/finance/{payment,receipt}-slips/draft`，详见 lib/finance-slip.ts 顶部)，改完直接出 xlsx；
+//   - 单子的内容仍然以**界面提交的为准**（预填只是起点），保存也不回头用系统算的值覆盖它；
 //   - 底部实时显示借/贷合计与差额，**借贷不平就禁用导出**并把原因写出来（后端还会再校验一次）；
 //   - testid 前缀按种类取（`payment-slip-editor` / `receipt-slip-editor`）：两种单据在同一个页面上
 //     可能同时存在，用同一套 testid 会让「点的是哪一张」在测试里说不清。
@@ -27,6 +33,7 @@ import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { LoadingState } from "../feedback/states";
 import { downloadPost } from "../../lib/download";
+import { ApiClientError, apiPatch, apiPost } from "../../lib/api-client";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import {
   emptyFinanceSlipLine,
@@ -37,6 +44,10 @@ import {
   financeSlipFileName,
   financeSlipPayload,
   financeSlipsFileName,
+  financeSlipRecordPath,
+  financeSlipSaveBlockers,
+  financeSlipSaveBody,
+  FINANCE_SLIPS_PATH,
   nextFinanceSlipLineKey,
   slipDifference,
   slipLabels,
@@ -44,10 +55,12 @@ import {
   slipConfirmPendingLabel,
   slipQueueLabel,
   slipTotals,
+  SLIP_CNY_EMPTY_HINT,
   type FinanceSlipDraft,
   type FinanceSlipEditorLine,
   type FinanceSlipHeader,
   type FinanceSlipKind,
+  type FinanceSlipRecord,
 } from "../../lib/finance-slip";
 
 /** 表头里可编辑的字符串字段（`attachment_count` 在输入框里是字符串，提交前才转数字）。 */
@@ -60,16 +73,24 @@ type SlipFields = {
   our_bank_account: string;
   counterparty_bank_name: string;
   counterparty_bank_account: string;
+  /** 汇率与折合人民币（用户 2026-09-26）：人民币付款两格都留空。 */
+  exchange_rate: string;
+  amount_cny: string;
   attachment: string;
   remark: string;
 };
 
-/** 队列里一张单子的**可编辑状态**（表头 + 分录行）。`currency` 与 `maker` 不可改，随预填带过来。 */
-type SlipEntry = { fields: SlipFields; lines: FinanceSlipEditorLine[]; currency: string; maker: string };
+/**
+ * 队列里一张单子的**可编辑状态**（表头 + 分录行）。
+ *
+ * `currency` 与 `maker` 不可改，随预填带过来；`id` 有值 = 这张单子已经存过，
+ * 保存就是覆盖它（见组件头部第三条）；`sourceEntryIds` 是预填时的勾选，保存时原样回传（只用于追溯）。
+ */
+type SlipEntry = { fields: SlipFields; lines: FinanceSlipEditorLine[]; currency: string; maker: string; id?: string; sourceEntryIds?: string[] };
 
 /** 占位预填（`useState` 的初值，避免用 `null` 把每个字段都变成可空判断）：真正的值在打开时铺进来。 */
 const EMPTY_ENTRY: SlipEntry = {
-  fields: { slip_no: "", slip_date: "", slip_method: "银行转账", counterparty_name: "", our_bank_name: "", our_bank_account: "", counterparty_bank_name: "", counterparty_bank_account: "", attachment: "1", remark: "" },
+  fields: { slip_no: "", slip_date: "", slip_method: "银行转账", counterparty_name: "", our_bank_name: "", our_bank_account: "", counterparty_bank_name: "", counterparty_bank_account: "", exchange_rate: "", amount_cny: "", attachment: "1", remark: "" },
   lines: [],
   currency: "",
   maker: "",
@@ -85,15 +106,20 @@ const entryOf = (draft: FinanceSlipDraft): SlipEntry => ({
     our_bank_account: draft.our_bank_account,
     counterparty_bank_name: draft.counterparty_bank_name,
     counterparty_bank_account: draft.counterparty_bank_account,
+    exchange_rate: draft.exchange_rate ?? "",
+    amount_cny: draft.amount_cny ?? "",
     attachment: String(draft.attachment_count),
     remark: draft.remark,
   },
   lines: slipLinesFromDraft(draft.lines),
   currency: draft.currency,
   maker: draft.maker,
+  // 存档信息跟着走：打开一张已保存的单子再点保存，必须覆盖它而不是再建一张。
+  ...(draft.id ? { id: draft.id } : {}),
+  ...(draft.source_entry_ids?.length ? { sourceEntryIds: draft.source_entry_ids } : {}),
 });
 
-export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, loading, error, pendingCount = 0, onConfirmPending }: {
+export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, loading, error, pendingCount = 0, onConfirmPending, onSaved }: {
   kind: FinanceSlipKind;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -106,12 +132,15 @@ export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, lo
   pendingCount?: number;
   /** 点「批量确认」时回调（父组件负责关掉队列、打开确认弹窗，用的是同一批勾选）。 */
   onConfirmPending?: () => void;
+  /** 保存成功后的回调（父组件刷新「已保存的单据」列表；不传就只是弹个成功提示）。 */
+  onSaved?: (slip: FinanceSlipRecord) => void;
 }) {
   const labels = slipLabels(kind);
   const testId = `${kind}-slip-editor`;
   const [queue, setQueue] = useState<SlipEntry[]>([]);
   const [index, setIndex] = useState(0);
   const [exporting, setExporting] = useState<"one" | "all" | null>(null);
+  const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState("");
 
   /**
@@ -140,6 +169,8 @@ export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, lo
     counterparty_bank_name: fields.counterparty_bank_name,
     counterparty_bank_account: fields.counterparty_bank_account,
     currency: current.currency,
+    exchange_rate: fields.exchange_rate,
+    amount_cny: fields.amount_cny,
     // 空 / 非数字 / 负数都交给同一套校验去说（`Number("")` 是 0，会被误当成「0 张」，所以空串单独给 -1）。
     attachment_count: fields.attachment.trim() === "" ? -1 : Number(fields.attachment),
     remark: fields.remark,
@@ -148,6 +179,13 @@ export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, lo
 
   const totals = useMemo(() => slipTotals(lines), [lines]);
   const blockers = useMemo(() => financeSlipBlockers(kind, header, lines), [kind, header, lines]);
+  /**
+   * 保存的阻断原因（比导出少三件：编号、对方单位、借贷平衡）。
+   *
+   * 为什么不直接复用 `blockers`：那会让「改到一半存不下来」，而这一轮做保存键的原因正是
+   * 「一次十几张单子，改到第五张被叫走」。后端的分层是同一件事（`validateFinanceSlipShape`）。
+   */
+  const saveBlockers = useMemo(() => financeSlipSaveBlockers(kind, header, lines), [kind, header, lines]);
   /**
    * 全部导出的**整队列**阻断原因：任何一张不过关就整批不出。
    *
@@ -164,6 +202,36 @@ export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, lo
   const patchLine = (lineIndex: number, next: Partial<FinanceSlipEditorLine>) => setQueue((all) => all.map((entry, position) => position === index ? { ...entry, lines: entry.lines.map((line, at) => at === lineIndex ? { ...line, ...next } : line) } : entry));
   const addLine = () => setQueue((all) => all.map((entry, position) => position === index ? { ...entry, lines: [...entry.lines, emptyFinanceSlipLine(nextFinanceSlipLineKey())] } : entry));
   const removeLine = (lineIndex: number) => setQueue((all) => all.map((entry, position) => position === index ? { ...entry, lines: entry.lines.filter((_, at) => at !== lineIndex) } : entry));
+
+  /**
+   * 保存**当前这一张**（用户 2026-09-26 要的「保存键」）。
+   *
+   * 三个要点：
+   *   1. 已有 `id` 的走 `PATCH`（覆盖），没有的走 `POST`（新建）—— 否则点两次保存会得到两张一样的单子；
+   *   2. 保存成功后把返回的 `id` **记回队列里的那一条**：第二次保存才是覆盖，而不是又建一张；
+   *   3. 失败原因写进 `problem`（红字）并弹提示：预填失败与保存失败是两件事，不能只留一个状态位。
+   */
+  async function saveCurrent() {
+    if (saveBlockers.length) { setProblem(saveBlockers.join("；")); return; }
+    setSaving(true);
+    setProblem("");
+    try {
+      const body = financeSlipSaveBody(kind, header, lines, current.sourceEntryIds);
+      const result = current.id
+        ? await apiPatch<{ slip: FinanceSlipRecord }>(financeSlipRecordPath(current.id), body)
+        : await apiPost<{ slip: FinanceSlipRecord }>(FINANCE_SLIPS_PATH, body);
+      const saved = result.data.slip;
+      setQueue((all) => all.map((entry, position) => position === index ? { ...entry, id: saved.id } : entry));
+      notifySuccess(`已保存${labels.name} ${saved.slip_no || "未编号"}`);
+      onSaved?.(saved);
+    } catch (cause) {
+      const message = cause instanceof ApiClientError ? cause.message : `${labels.name}保存失败`;
+      setProblem(message);
+      notifyError(message);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   /** 导出队列里的**一张**（银行要一张一张给，这条路必须留着）。 */
   async function exportOne() {
@@ -231,6 +299,12 @@ export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, lo
             <label className="ui-form-item">{labels.ourBankAccount}<Input data-testid={`${testId}-our-bank-account`} value={fields.our_bank_account} onChange={(event) => patchFields({ our_bank_account: event.target.value })} /></label>
             <label className="ui-form-item">{labels.counterpartyBankName}<Input data-testid={`${testId}-counterparty-bank-name`} value={fields.counterparty_bank_name} onChange={(event) => patchFields({ counterparty_bank_name: event.target.value })} /></label>
             <label className="ui-form-item">{labels.counterpartyBankAccount}<Input data-testid={`${testId}-counterparty-bank-account`} value={fields.counterparty_bank_account} onChange={(event) => patchFields({ counterparty_bank_account: event.target.value })} /></label>
+            {/* 币种只读：它来自预填（勾选的条目是哪个币种就是哪个），手工改成别的会让单子与账对不上。
+                汇率与折合人民币是**手填**的两格（用户 2026-09-26：「付款单要有填写汇率的地方」）：
+                人民币付款两格都留空；系统不替财务按「合计 × 汇率」折算（见 lib 里的 SLIP_CNY_EMPTY_HINT）。 */}
+            <label className="ui-form-item">{labels.currency}<Input data-testid={`${testId}-currency`} value={header.currency} readOnly /></label>
+            <label className="ui-form-item">{labels.exchangeRate}<Input data-testid={`${testId}-exchange-rate`} value={fields.exchange_rate} onChange={(event) => patchFields({ exchange_rate: event.target.value })} inputMode="decimal" placeholder="人民币付款可留空" /></label>
+            <label className="ui-form-item">{labels.amountCny}<Input data-testid={`${testId}-amount-cny`} value={fields.amount_cny} onChange={(event) => patchFields({ amount_cny: event.target.value })} inputMode="decimal" placeholder="人民币付款可留空" /></label>
             <label className="ui-form-item">附单据（张）<Input data-testid={`${testId}-attachment`} inputMode="numeric" value={fields.attachment} onChange={(event) => patchFields({ attachment: event.target.value })} /></label>
             <label className="ui-form-item">{labels.maker}<Input data-testid={`${testId}-maker`} value={header.maker} readOnly /></label>
           </div>
@@ -255,8 +329,13 @@ export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, lo
           </div>
 
           <label className="ui-form-item">{labels.remark}<Textarea data-testid={`${testId}-remark`} value={fields.remark} onChange={(event) => patchFields({ remark: event.target.value })} placeholder="如：本次先付 100，余款月结" /></label>
+          {/* 「填了汇率、折合人民币空着」时把口径说明白：这两格看起来是一对（跨行转账单上就是一对），
+              不说的话财务会以为系统替她算过了 —— 导出后才发现那一格是空的。 */}
+          {fields.exchange_rate.trim() && !fields.amount_cny.trim() && <p className="panel-note" data-testid={`${testId}-cny-hint`}>{SLIP_CNY_EMPTY_HINT}</p>}
           {/* 不能导出时**必须把原因写在界面上**：按钮是禁用的，点不动，所以提示不能只在点击后出现。 */}
           {blockers.length > 0 && <p className="panel-note" data-testid={`${testId}-blockers`}>{blockers.join("；")}</p>}
+          {/* 保存的门槛低一档，所以它自己的原因单独一条（不然「保存能点、导出不能点」会被看成 bug）。 */}
+          {saveBlockers.length > 0 && <p className="panel-note" data-testid={`${testId}-save-blockers`}>{`暂时不能保存：${saveBlockers.join("；")}`}</p>}
           {/* 提交后才发现的问题（例如后端判定某行金额非法）单独红字显示。 */}
           {problem && <p className="status-error" role="alert" data-testid={`${testId}-error`}>{problem}</p>}
         </>}
@@ -264,10 +343,11 @@ export default function FinanceSlipEditor({ kind, open, onOpenChange, drafts, lo
       <DialogFooter>
         {/* 「一起付款」的另一半：勾选的条目里还有没确认的，就在这一处直接去确认（钱才真的出账）。
             父组件用同一批勾选打开确认弹窗，所以这里只报个数并回调，不自己发请求。 */}
-        {pendingCount > 0 && onConfirmPending && <Button variant="secondary" data-testid={`${testId}-confirm-pending`} disabled={Boolean(exporting)} onClick={onConfirmPending}>{slipConfirmPendingLabel(kind, pendingCount)}</Button>}
-        <Button variant="secondary" data-testid={`${testId}-cancel`} disabled={Boolean(exporting)} onClick={() => onOpenChange(false)}>取消</Button>
-        <Button variant="secondary" data-testid={`${testId}-export`} disabled={Boolean(exporting) || !drafts?.length || blockers.length > 0} onClick={() => void exportOne()}>{exporting === "one" ? "导出中…" : `导出这一张`}</Button>
-        <Button data-testid={`${testId}-export-all`} disabled={Boolean(exporting) || !drafts?.length || queueBlockers.length > 0} onClick={() => void exportAll()}>{exporting === "all" ? "导出中…" : `全部导出（${queue.length} 张）`}</Button>
+        {pendingCount > 0 && onConfirmPending && <Button variant="secondary" data-testid={`${testId}-confirm-pending`} disabled={Boolean(exporting) || saving} onClick={onConfirmPending}>{slipConfirmPendingLabel(kind, pendingCount)}</Button>}
+        <Button variant="secondary" data-testid={`${testId}-cancel`} disabled={Boolean(exporting) || saving} onClick={() => onOpenChange(false)}>取消</Button>
+        <Button variant="secondary" data-testid={`${testId}-save`} disabled={Boolean(exporting) || saving || !drafts?.length || saveBlockers.length > 0} onClick={() => void saveCurrent()}>{saving ? "保存中…" : current.id ? "保存修改" : "保存这一张"}</Button>
+        <Button variant="secondary" data-testid={`${testId}-export`} disabled={Boolean(exporting) || saving || !drafts?.length || blockers.length > 0} onClick={() => void exportOne()}>{exporting === "one" ? "导出中…" : `导出这一张`}</Button>
+        <Button data-testid={`${testId}-export-all`} disabled={Boolean(exporting) || saving || !drafts?.length || queueBlockers.length > 0} onClick={() => void exportAll()}>{exporting === "all" ? "导出中…" : `全部导出（${queue.length} 张）`}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
@@ -285,6 +365,8 @@ function entryHeaderOf(entry: SlipEntry): Omit<FinanceSlipHeader, "maker"> {
     counterparty_bank_name: entry.fields.counterparty_bank_name,
     counterparty_bank_account: entry.fields.counterparty_bank_account,
     currency: entry.currency,
+    exchange_rate: entry.fields.exchange_rate,
+    amount_cny: entry.fields.amount_cny,
     attachment_count: entry.fields.attachment.trim() === "" ? -1 : Number(entry.fields.attachment),
     remark: entry.fields.remark,
   };

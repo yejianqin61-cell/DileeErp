@@ -391,3 +391,34 @@ SELECT to_regclass('public.sales_order_material_refs');       -- 期望非空
 git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260924180000_material_images_and_sales_order_material_refs apps/api/src/platform/excel apps/api/src/modules/procurement apps/api/src/modules/sales apps/api/src/modules/finance/finance-slip.ts apps/api/src/modules/finance/finance-slip.service.ts apps/api/src/modules/finance/finance-slip.controller.ts apps/api/test/unit apps/api/test/sales-order-production-sheet.test.cjs apps/web/lib apps/web/components/procurement apps/web/components/sales apps/web/app/procurement/materials/page.tsx apps/web/app/sales/page.tsx apps/web/app/globals.css apps/web/test docs/design/material-images-and-sales-order-material-refs-2026-09-24.md docs/log/2026-09-24.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
 git commit -m "feat: material images and sales order material references"
 ```
+
+## 收付款单存档 + 汇率与折合人民币 + 交税凭证模板
+
+用户 2026-09-26：**「付款单要有填写汇率的地方，保存键。生成凭证时要有交税的那一项。」**
+
+设计文档：`docs/design/finance-slip-archive-and-tax-voucher-template-2026-09-26.md`。
+
+**一条迁移尚未执行**（`finance_slips` + `finance_slip_lines` 两张表），部署时先跑：
+```powershell
+npm run db:generate --workspace=@dilee/api
+npm run db:migrate:deploy
+```
+```sql
+-- 迁移后确认两张表都建出来了（以及汇率/折合人民币两列可空：人民币付款留空 = NULL）
+SELECT to_regclass('public.finance_slips');        -- 期望非空
+SELECT to_regclass('public.finance_slip_lines');   -- 期望非空
+SELECT column_name, is_nullable FROM information_schema.columns
+WHERE table_name = 'finance_slips' AND column_name IN ('exchange_rate', 'amount_cny');  -- 期望两行都是 YES
+```
+
+> **口径边界（部署/验收时别搞混）**：保存一张付款单**不改任何账** —— 不写收支流水、不生成凭证、
+> 不动应付/应收状态。单子仍然是拿去银行/走签字的纸；「钱到底付没付」由确认付款那条链回答。
+>
+> **没有破坏性改动**：`finance-slips.xlsx` 那几条导出接口的请求体只**新增**了
+> `exchange_rate` / `amount_cny` 两个可选字段（DTO 有 `forbidNonWhitelisted`，所以旧前端调用仍可用，
+> 只是导出的单子上汇率与折合人民币两格是空的）。前后端可以不同时上线。
+
+```powershell
+git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260926120000_finance_slips apps/api/src/modules/finance apps/api/test/unit apps/web/lib/finance-slip.ts apps/web/lib/finance-slip.test.mjs apps/web/lib/audit-columns-coverage.test.mjs apps/web/components/finance apps/api/src/modules/finance/voucher-template.ts apps/web/app/finance/slips/page.tsx apps/web/lib/finance-sections.ts apps/web/test/finance-slips-workspace.test.tsx apps/web/test/finance-page.test.tsx apps/web/test/payable-page.test.tsx apps/web/test/testid-pages.test.ts docs/design/finance-slip-archive-and-tax-voucher-template-2026-09-26.md docs/log/2026-09-26.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
+git commit -m "feat: archive finance slips with exchange rate and add the tax voucher template"
+```

@@ -1,11 +1,21 @@
 // finance 模块 HTTP 契约测试（只读探测）。
 //
-// 目标控制器：apps/api/src/modules/finance/finance.controller.ts、finance-slip.controller.ts 与
-//   bank-transfer-slip.controller.ts（跨行转账单：预填 + 导出）
-//   —— 合计 50 个路由（19 GET + 25 POST + 4 PATCH + 2 DELETE），全项目最大的模块面。
+// 目标控制器：apps/api/src/modules/finance/finance.controller.ts、finance-slip.controller.ts、
+//   bank-transfer-slip.controller.ts（跨行转账单：预填 + 导出）与
+//   finance-slip-store.controller.ts（收付款单的**存档**，2026-09-26）
+//   —— 本表登记 56 个路由（20 GET + 28 POST + 5 PATCH + 3 DELETE）。
 //   - 类级 @UseGuards(AuthenticationGuard, ModulePermissionGuard) + @RequireModules("finance")（:63-64）。
 //   - **本题目标描述里假设的"方法级 RequireAnyModules / RequireAdministrator 差异"在当前代码中不存在**：
-//     50 个路由上没有任何方法级权限装饰器，权限要求完全一致（都只要求 finance 模块）。
+//     这四个控制器上没有任何方法级权限装饰器，权限要求完全一致（都只要求 finance 模块）。
+//
+// ⚠️ **本表是「精选子集」，不是全量路由清单**（2026-09-26 核对）：
+//   四个控制器实际声明 67 个路由（GET 24 / POST 35 / PATCH 5 / DELETE 3，按装饰器逐条数），
+//   本表登记 56 个 —— 差额是**已知缺口**（例如 `receivable-sources/batch-confirm*`、
+//   `payable-entries/import`、`payable-entries/other`、两张 `.xlsx` 导入模板、
+//   `reconciliations/:id/confirm-receivables` 等写路由没进校验探测）。
+//   缺口为什么先留着：这些路由要么带必填业务 body（本文件只发空/非法 body，无法在不创建数据的前提下探测），
+//   要么是导出（`*.xlsx`）。**断言只保证「表自身与下面的数字一致」**，不再声称等于控制器规模；
+//   要把缺口补上，得先给每条路由设计一个「只读且能抵达校验层」的探测方式。
 //     方法级放宽之所以不可行，控制器 :93-95 的注释已说明（类级 @RequireModules 先于方法级 ANY 校验），
 //     相关接口已迁到 PayableNotificationController（payable-notification.controller.ts:31）。
 //     因此 403 维度只能由「有会话但无 finance 权限的用户」覆盖 —— 见文件末尾的环境门控用例。
@@ -44,7 +54,7 @@ const FINANCE = "/api/v1/finance";
 /** 保证不存在的 id：随机 UUID，避免与任何真实/其他 agent 写入的数据撞车。 */
 const UNKNOWN_ID = randomUUID();
 
-/** FinanceController 的 19 个 GET 路由（读取型探测）。 */
+/** FinanceController 的 20 个 GET 路由（读取型探测）。 */
 const READ_ROUTES = [
   `${FINANCE}/receivable-sources`,
   `${FINANCE}/receivable-sources/${UNKNOWN_ID}`,
@@ -67,10 +77,14 @@ const READ_ROUTES = [
   // 跨行转账单预填（`BankTransferSlipController`，2026-09-24）：随机 UUID 查不到互转单 → 404，
   // 与上面那些详情路由一样是只读的。
   `${FINANCE}/bank-transfers/${UNKNOWN_ID}/slip`,
+  // 收付款单存档列表（`FinanceSlipStoreController`，2026-09-26）：无筛选参数，空库返回空数组。
+  // 它的 meta **带着** page / page_size / total（唯一一个真分页的 finance 列表端点），
+  // 所以它不进 LIST_ROUTES（那一组断言 meta 恒为 {} 与「无分页字段」，是旧控制器的缺陷护栏）。
+  `${FINANCE}/slips`,
 ];
 
 /**
- * 24 个 POST 路由。
+ * 28 个 POST 路由。
  *
  * 最后四条（收/付款单的预填与导出）属于 `FinanceSlipController`（2026-09-20 新增，
  * `apps/api/src/modules/finance/finance-slip.controller.ts`）：它同样挂在 `finance` 前缀、
@@ -106,14 +120,20 @@ const POST_ROUTES = [
   `${FINANCE}/receipt-slips/batch.xlsx`,
   // 跨行转账单导出（`BankTransferSlipController`）：内容以界面提交的为准，只有审计落库。
   `${FINANCE}/bank-transfer-slips.xlsx`,
+  // 收付款单存档（`FinanceSlipStoreController`，2026-09-26）的新建。**这条不是只读探测**：
+  // 匿名探测阶段守卫先抛 401、校验探测阶段空 body 被 DTO 拦下，两次都不会抵达 service
+  // （真正写入只可能发生在带合法 body 的请求里，而本文件不发那种请求）。
+  `${FINANCE}/slips`,
 ];
 
-/** 4 个 PATCH 路由。 */
+/** 5 个 PATCH 路由。 */
 const PATCH_ROUTES = [
   `${FINANCE}/receivable-sources/${UNKNOWN_ID}`,
   `${FINANCE}/customer-payments/${UNKNOWN_ID}`,
   `${FINANCE}/payable-entries/${UNKNOWN_ID}`,
   `${FINANCE}/supplier-payments/${UNKNOWN_ID}`,
+  // 存档的**覆盖保存**：随机 UUID + 空 body 同样停在管道层。
+  `${FINANCE}/slips/${UNKNOWN_ID}`,
 ];
 
 /**
@@ -127,6 +147,8 @@ const PATCH_ROUTES = [
 const DELETE_ROUTES = [
   `${FINANCE}/payable-entries/${UNKNOWN_ID}`,
   `${FINANCE}/supplier-payable-reconciliations/${UNKNOWN_ID}`,
+  // 存档作废（`FinanceSlipStoreController`，2026-09-26）：原因必填（`ReasonDto`），空 body 停在管道层。
+  `${FINANCE}/slips/${UNKNOWN_ID}`,
 ];
 
 /** 6 个真正返回业务列表（其余数组端点是无参筛选的摘要端点）。 */
@@ -164,14 +186,17 @@ const DETAIL_404_ROUTES = [
   { code: "SUPPLIER_PAYABLE_NOT_FOUND", path: `${FINANCE}/payable-entries/${UNKNOWN_ID}` },
   { code: "SUPPLIER_PAYMENT_NOT_FOUND", path: `${FINANCE}/supplier-payments/${UNKNOWN_ID}` },
   { code: "RECONCILIATION_NOT_FOUND", path: `${FINANCE}/supplier-payable-reconciliations/${UNKNOWN_ID}` },
+  // 存档详情（`FinanceSlipStoreController.get`，2026-09-26）：软删或不存在都是这个码。
+  { code: "FINANCE_SLIP_NOT_FOUND", path: `${FINANCE}/slips/${UNKNOWN_ID}` },
 ];
 
 /**
- * 17 个带 body DTO 的 POST 路由 + 4 个 PATCH 路由的校验层探测。
+ * 写路由的校验层探测（33 条：POST / PATCH / DELETE）。
  * 全部使用**非法请求体**：ValidationPipe（main.ts:19-28，whitelist + forbidNonWhitelisted）在
  * service 之前就拒绝，因此不会触碰任何业务数据。
  * 用 `{ amount: 123 }` 而不是 `{}` 的原因：SourceDto / DraftFinanceUpdateDto 的字段全是 @IsOptional，
  * 空对象会通过校验并进入 service；改成类型错误才能停在管道层。
+ * （2026-09-26 加的收付款单存档那三条相反：它的 DTO 有必填字段，空对象就够。）
  */
 const VALIDATION_PROBES = [
   { body: { amount: 123 }, method: "POST", path: `${FINANCE}/receivable-sources/from-outbound/${UNKNOWN_ID}` },
@@ -208,6 +233,12 @@ const VALIDATION_PROBES = [
   // 两条 DELETE 的 body 是必填的删除原因（`ReasonDto`），空对象同样停在管道层。
   { body: {}, method: "DELETE", path: `${FINANCE}/payable-entries/${UNKNOWN_ID}` },
   { body: {}, method: "DELETE", path: `${FINANCE}/supplier-payable-reconciliations/${UNKNOWN_ID}` },
+  // 收付款单存档（2026-09-26）：`FinanceSlipSaveDto` 的 kind / slip_no / slip_date /
+  // counterparty_name / lines 都是必填（与上面那些全可选的 PATCH DTO 不同），所以**空对象**
+  // 就足以停在管道层；DELETE 的 body 是必填的作废原因。
+  { body: {}, method: "POST", path: `${FINANCE}/slips` },
+  { body: {}, method: "PATCH", path: `${FINANCE}/slips/${UNKNOWN_ID}` },
+  { body: {}, method: "DELETE", path: `${FINANCE}/slips/${UNKNOWN_ID}` },
 ];
 
 /**
@@ -278,20 +309,24 @@ function adminAgent() {
 }
 
 test("finance.route_table_matches_the_controller_size", () => {
-  // 50 个路由 = 19 GET + 25 POST + 4 PATCH + 2 DELETE（finance.controller.ts、
-  // finance-slip.controller.ts 与 bank-transfer-slip.controller.ts 的并集，
-  // 三者同挂 `finance` 前缀、同用 finance 模块守卫）。
-  // 控制器新增/删除路由时本用例会变红，提示同步更新上面的路由表与覆盖统计。
-  assert.equal(READ_ROUTES.length, 19, "GET 路由数应为 19");
-  assert.equal(POST_ROUTES.length, 25, "POST 路由数应为 25");
-  assert.equal(PATCH_ROUTES.length, 4, "PATCH 路由数应为 4");
-  assert.equal(DELETE_ROUTES.length, 2, "DELETE 路由数应为 2");
-  assert.equal(READ_ROUTES.length + POST_ROUTES.length + PATCH_ROUTES.length + DELETE_ROUTES.length, 50, "finance 模块共 50 个路由");
+  // 56 个登记路由 = 20 GET + 28 POST + 5 PATCH + 3 DELETE（finance.controller.ts、
+  // finance-slip.controller.ts、bank-transfer-slip.controller.ts 与 finance-slip-store.controller.ts
+  // 的并集里**本文件登记的那一部分**，见文件头「精选子集」说明）。
+  // 路由表增删条目时本用例会变红，提示同步更新上面的表与覆盖统计。
+  //
+  // 这一条曾经长期是**红的**（HTTP 契约测试需要有数据库连接串才会跑，而部署侧那一步是条件执行）：
+  // 2026-09-24 那批加了 3 条 POST 路由（两张 batch.xlsx + bank-transfer-slips.xlsx）却只把断言从 24 改到 25。
+  // 2026-09-26 逐条数过一遍并对齐：表里现在确为 20 / 28 / 5 / 3。
+  assert.equal(READ_ROUTES.length, 20, "GET 路由数应为 20");
+  assert.equal(POST_ROUTES.length, 28, "POST 路由数应为 28");
+  assert.equal(PATCH_ROUTES.length, 5, "PATCH 路由数应为 5");
+  assert.equal(DELETE_ROUTES.length, 3, "DELETE 路由数应为 3");
+  assert.equal(READ_ROUTES.length + POST_ROUTES.length + PATCH_ROUTES.length + DELETE_ROUTES.length, 56, "本文件登记 56 个 finance 路由");
 });
 
 test("finance.anonymous_requests_are_rejected_with_401_on_every_route", async () => {
   // 匿名探测是零风险的：AuthenticationGuard 在管道与 handler 之前抛 401（authentication.guard.ts:12 →
-  // auth.service.ts:36-40），请求体根本不会被解析到 DTO。这里一次性覆盖全部 50 个路由的鉴权维度。
+  // auth.service.ts:36-40），请求体根本不会被解析到 DTO。这里一次性覆盖全部 56 个登记路由的鉴权维度。
   const anonymous = apiClient(baseUrl);
   const probes = [
     ...READ_ROUTES.map((path) => ({ method: "GET", path })),
@@ -299,7 +334,7 @@ test("finance.anonymous_requests_are_rejected_with_401_on_every_route", async ()
     ...PATCH_ROUTES.map((path) => ({ body: "{}", method: "PATCH", path })),
     ...DELETE_ROUTES.map((path) => ({ body: "{}", method: "DELETE", path })),
   ];
-  assert.equal(probes.length, 50, "匿名探测必须覆盖全部 50 个路由");
+  assert.equal(probes.length, 56, "匿名探测必须覆盖全部 56 个登记路由");
 
   for (const { body, method, path } of probes) {
     const response = await anonymous.request(path, { body, method });
@@ -432,12 +467,13 @@ test("finance.unsupported_methods_return_404_never_405", async () => {
 test("KNOWN_CONTRACT_DEFECT finance.404_carries_resource_specific_codes_instead_of_the_global_NOT_FOUND", async () => {
   // 期望（docs/design/global-api-contract.md:59-69）：404 的默认码是 NOT_FOUND，
   //   且"更精确的大写下划线码"只被允许用于 409 / 422。
-  // 实际：finance 的 8 个按 id 取详情的路由全部抛 NotFoundException({ code: "XXX_NOT_FOUND" }),
+  // 实际：finance 的 9 个按 id 取详情的路由全部抛 NotFoundException({ code: "XXX_NOT_FOUND" }),
   //   返回 404 + 业务码；因此 harness 的 expectNotFound（固定 NOT_FOUND）在这些路由上**不成立**，
   //   而全局路由/方法不匹配仍然返回 NOT_FOUND —— 同一个 404 状态码出现两套码，前端无法只按状态码分发。
   // 责任文件：apps/api/src/modules/finance/receivable.service.ts:33（RECEIVABLE_SOURCE_NOT_FOUND）、
   //   customer-payment.service.ts:17、receivable-adjustment.service.ts:38、reconciliation.service.ts:21、
-  //   supplier-payable.service.ts:26、supplier-payment.service.ts:22、supplier-payable-reconciliation.service.ts:15。
+  //   supplier-payable.service.ts:26、supplier-payment.service.ts:22、supplier-payable-reconciliation.service.ts:15、
+  //   finance-slip-store.service.ts 的 notFound（FINANCE_SLIP_NOT_FOUND，2026-09-26 加入这个家族）。
   // 修复（改为 NOT_FOUND 或把业务码下沉到 details）后本用例应变红，请同步更新本文件与 recon 记录。
   const agent = adminAgent();
 

@@ -54,6 +54,8 @@ const EXPECTED: Record<string, string> = {
   "finance/cash-flow/page.tsx": "page-finance-cash-flow",
   "finance/banks/page.tsx": "page-finance-banks",
   "finance/bank-transfers/page.tsx": "page-finance-bank-transfers",
+  // 收付款单存档（2026-09-26 用户要的「保存键」）：保存过的单子在这一页找回 / 再导出 / 作废。
+  "finance/slips/page.tsx": "page-finance-slips",
   "finance/reports/page.tsx": "page-finance-reports",
   "hr/page.tsx": "page-hr",
   "hr/departments/page.tsx": "page-hr-departments",

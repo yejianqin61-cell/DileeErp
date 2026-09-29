@@ -14,6 +14,11 @@ import { accountingSubjectKey } from "./accounting-subject-catalog";
  *       应交税费——应交增值税（进项税额）  （如取得专票）
  *       贷：应付账款——泉州峰峰雨伞    18 000
  *
+ * 2026-09-26 又加了第三张（用户：「生成凭证时要有**交税**的那一项」）：
+ *
+ *   借：应交税费            （增值税 / 所得税 / 附加税）
+ *       贷：银行存款
+ *
  * 并追问「现在自动生成的不能改、。这是什么意思？」—— 系统原先只能从收支流水生成
  * **一借一贷**两行，页面上只允许改这两行的科目与金额，不能增删行、不能改借贷方向，
  * 所以财务那套「一借多贷」的工资凭证根本录不进来。
@@ -67,6 +72,19 @@ export type VoucherTemplate = {
 
 export const SALARY_ACCRUAL_TEMPLATE_KEY = "salary-accrual";
 export const RAW_MATERIAL_PURCHASE_TEMPLATE_KEY = "raw-material-purchase";
+/**
+ * 交税（用户 2026-09-26：「生成凭证时要有**交税**的那一项」）。
+ *
+ * 财务要的形状是「借 应交税费 / 贷 银行存款」：钱付给税务局，冲的是已经计提的应交税费。
+ * 这张模板与另外两张的区别是**它常常不从收支流水生成**：交税那笔钱可能是财务手工录的收支流水，
+ * 也可能是别的来源，所以它两行都不带金额、资金行也只是标记（见下面第 3 条口径）。
+ *
+ * 候选名按「科目表里最贴近财务说法」的顺序给：科目表（`accounting_subject_catalog.ts`）里
+ * 有「应交税费」本体（负债类），也有「应交税费-进项税 / -销项税」两个明细 ——
+ * 交的是哪一项税，财务在编辑器的科目下拉里自己挑；候选先落到「应交税费」本体，
+ * 因为它对「交增值税 / 交所得税 / 交附加税」都成立（明细错了整张凭证的税种就错了）。
+ */
+export const TAX_PAYMENT_TEMPLATE_KEY = "tax-payment";
 
 export const VOUCHER_TEMPLATES: readonly VoucherTemplate[] = [
   {
@@ -92,6 +110,20 @@ export const VOUCHER_TEMPLATES: readonly VoucherTemplate[] = [
       // 财务的说法是「应交税费——应交增值税（进项税额）」，科目表里对应的是「应交税费-进项税」。
       { direction: "debit", subjects: ["应交税费-应交增值税（进项税额）", "应交税费-进项税", "应交税费"], fallbackLabel: "应交税费——应交增值税（进项税额）", role: "business", summary: "进项税额（取得专票时）" },
       { direction: "credit", subjects: ["应付账款"], fallbackLabel: "应付账款", role: "business", summary: "应付供应商货款" },
+    ],
+  },
+  {
+    key: TAX_PAYMENT_TEMPLATE_KEY,
+    name: "交税",
+    description: "借 应交税费（增值税 / 所得税 / 附加税，按实际缴纳的税种选明细）；贷 银行存款。金额留空由财务填写。",
+    lines: [
+      // 候选顺序 = 「越具体越靠后」：科目表里有「应交税费-进项税 / -销项税」两个明细，
+      // 但交的是哪一种税只有财务知道（交增值税、交所得税、交附加税的科目都不同），
+      // 所以默认落在「应交税费」本体上，让她在编辑器里改成具体那个明细 —— 猜一个具体的
+      // 反而更容易错（税种选错了，凭证上看不出任何异常）。
+      { direction: "debit", subjects: ["应交税费"], fallbackLabel: "应交税费", role: "business", summary: "缴纳增值税" },
+      // 资金行：科目与银行账户由**被套用的那张凭证**决定（它来自哪条收支流水，钱落在哪张卡是事实）。
+      { direction: "credit", subjects: ["银行存款", "库存现金"], fallbackLabel: "银行存款", role: "fund", summary: "银行扣款" },
     ],
   },
 ];

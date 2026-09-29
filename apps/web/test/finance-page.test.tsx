@@ -175,16 +175,17 @@ const supplierReconciliation = (over: Record<string, unknown> = {}) => ({
 // ------------------------------------------------------------------ 一级页
 
 describe("财务一级页：板块入口", () => {
-  it("展示 8 个入口，并分别指向二级页地址", async () => {
+  it("展示 9 个入口，并分别指向二级页地址", async () => {
     stubFinance();
     render(<FinanceBoardIndex />);
     expect(screen.getByTestId("page-finance")).toBeInTheDocument();
-    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "工资管理"], ["banks", "银行账户"], ["bank-transfers", "银行余额互转"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
+    // 第 9 个是「收付款单」（2026-09-26 的存档页）：保存过的收/付款单在那里找回、再导出、作废。
+    for (const [key, title] of [["receivable", "应收管理"], ["payable", "应付管理"], ["salary", "工资管理"], ["slips", "收付款单"], ["banks", "银行账户"], ["bank-transfers", "银行余额互转"], ["cash-flow", "收支管理"], ["reports", "财务报表"], ["voucher", "凭证管理"]] as const) {
       const card = screen.getByTestId(`finance-board-${key}`);
       expect(card).toHaveAttribute("href", `/finance/${key}`);
       expect(within(card).getByRole("heading", { name: title })).toBeInTheDocument();
     }
-    expect(screen.getByTestId("finance-board-grid").querySelectorAll("a")).toHaveLength(8);
+    expect(screen.getByTestId("finance-board-grid").querySelectorAll("a")).toHaveLength(9);
   });
 });
 

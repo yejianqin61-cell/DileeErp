@@ -2932,3 +2932,77 @@ model OverheadAllocation {
 
   @@map("overhead_allocations")
 }
+
+/// 收/付款单的存档（用户 2026-09-26：「付款单要有填写汇率的地方，**保存键**」）。
+///
+/// **口径的变化要说清**：2026-09-20 那一轮的口径是「单子不落库 —— 它是一张打印件，不是系统单据」，
+/// 所以它只预填 + 编辑 + 导出。现在用户要一个「保存键」，于是它落库了，但**仍然不是账务单据**：
+/// 保存不改任何账（不写收支流水、不生成凭证、不动应付/应收状态），金额与科目仍以界面提交的内容为准。
+/// 落库解决的是另一个问题：财务改到一半关掉弹窗，那张单子就没了 —— 一次集中付款十几张，
+/// 她只能从头再勾一遍、再改一遍。
+///
+/// 为什么分录行是**从表**而不是一个 JSON 列：金额落在 `DECIMAL` 列上时，「这一侧没有金额」
+/// 只能是 `NULL`（写 0 会被读成「确实为零」的事实）—— JSON 里做不到这条，而它与凭证分录
+/// （`VoucherLine`）本就该同形状。
+///
+/// `sourceEntryIds` **刻意不建外键**：条目可以被删掉，而这张单子已经打出去、必须留着。
+model FinanceSlip {
+  id               String   @id @default(uuid()) @db.Uuid
+  /// payment（付款单）/ receipt（收款单）。两种单据共用一张表与一套代码，只有用词不同。
+  kind             String   @db.VarChar(20)
+  /// 单据编号（模板上的 `FK-202609-001`）。系统给**建议值**，财务可以改成自己本子上的号，
+  /// 所以这里**不是唯一键** —— 她的本子上本来就可能重号，加唯一约束会让她导出不了。
+  slipNo           String   @map("slip_no") @db.VarChar(100)
+  slipDate         DateTime @map("slip_date") @db.Date
+  slipMethod       String   @map("slip_method") @db.VarChar(50)
+  counterpartyName String   @map("counterparty_name") @db.VarChar(200)
+  /// 币种（模板上没有这一格，但汇率与折合人民币离开币种就读不懂，见 R6）。
+  currency         String   @default("CNY") @db.VarChar(10)
+  /// 汇率快照（人民币付款留空）。8 位小数与 `exchange_rates.rate` 同精度 —— `money.ts` 是
+  /// 汇率口径的唯一实现，为一个字段再定一套 6 位精度就是第二份口径。
+  exchangeRate     Decimal? @map("exchange_rate") @db.Decimal(18, 8)
+  /// 折合人民币（**手填**，人民币付款留空）。系统不自动折算：自动算出来的数在单子上看不出错，
+  /// 与「不按税率自动拆进项税」是同一条口径（见 finance-slip.ts 顶部第 2 条）。
+  amountCny        Decimal? @map("amount_cny") @db.Decimal(18, 4)
+  /// 我方开户银行 / 我方银行账号（钱从我们哪个账户走）。
+  ourBankName      String   @default("") @map("our_bank_name") @db.VarChar(200)
+  ourBankAccount   String   @default("") @map("our_bank_account") @db.VarChar(100)
+  /// 对方开户银行 / 对方银行账号（收款单位或付款单位的账户）。
+  counterpartyBankName    String @default("") @map("counterparty_bank_name") @db.VarChar(200)
+  counterpartyBankAccount String @default("") @map("counterparty_bank_account") @db.VarChar(100)
+  attachmentCount  Int      @default(1) @map("attachment_count")
+  remark           String   @default("") @db.VarChar(1000)
+  /// 制单人（签字栏那一格，与「谁保存的」是两件事：代录时它们不一样）。
+  maker            String   @default("") @db.VarChar(100)
+  /// 预填时勾选的条目 id：付款单 = `supplier_payable_entries`，收款单 = `receivable_sources`。
+  sourceEntryIds   Json?    @map("source_entry_ids")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  createdBy        String   @map("created_by") @db.Uuid
+  updatedBy        String   @map("updated_by") @db.Uuid
+  deletedAt        DateTime? @map("deleted_at")
+  deletedBy        String?   @map("deleted_by") @db.Uuid
+  lines            FinanceSlipLine[]
+
+  /// 列表默认按「种类 + 日期倒序」翻页，两个条件一起用一个索引。
+  @@index([kind, slipDate])
+  @@map("finance_slips")
+}
+
+/// 收/付款单的一行分录（模板上那六格）。金额可空：**空 ≠ 0**。
+model FinanceSlipLine {
+  id             String      @id @default(uuid()) @db.Uuid
+  slipId         String      @map("slip_id") @db.Uuid
+  /// 行序从 1 开始（与单子上、与错误文案里的「第 N 行」同一个数）。
+  lineNo         Int         @map("line_no")
+  summary        String      @default("") @db.VarChar(500)
+  generalSubject String      @default("") @map("general_subject") @db.VarChar(200)
+  detailSubject  String      @default("") @map("detail_subject") @db.VarChar(200)
+  debit          Decimal?    @db.Decimal(18, 4)
+  credit         Decimal?    @db.Decimal(18, 4)
+  remark         String      @default("") @db.VarChar(500)
+  slip           FinanceSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
+
+  @@unique([slipId, lineNo])
+  @@map("finance_slip_lines")
+}

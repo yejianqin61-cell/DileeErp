@@ -377,6 +377,26 @@ test("凭证模板：原材料采购是「两借一贷」，进项税落到「�
   ]);
 });
 
+test("凭证模板：交税是「借 应交税费 / 贷 银行存款」（用户 2026-09-26 要的那一项）", async () => {
+  const service = templateHarness({ subjects: subjectRows });
+  const templates = await service.templates("voucher-1");
+  const tax = templates.find((template) => template.key === "tax-payment");
+  assert.ok(tax, "必须提供「交税」模板（用户原话：「生成凭证时要有交税的那一项」）");
+  assert.equal(tax.name, "交税");
+  assert.deepEqual(tax.lines.map((line) => [line.direction, line.subject_label]), [
+    ["debit", "应交税费"],
+    ["credit", "银行存款"],
+  ]);
+  // 资金行只是标记（不带金额）：科目与银行账户由被套用的那张凭证决定。
+  assert.deepEqual(tax.lines.map((line) => line.role), ["business", "fund"]);
+  assert.equal(tax.lines.some((line) => line.amount !== undefined), false, "模板不带金额（交多少税只有财务知道）");
+  // 科目表里没有「应交税费」时退到建议名，而不是编一个 id（与另外两张模板同一条纪律）。
+  const empty = templateHarness({ subjects: [] });
+  const fallback = (await empty.templates("voucher-1")).find((template) => template.key === "tax-payment");
+  assert.equal(fallback.lines[0].subject_id, null);
+  assert.equal(fallback.lines[0].subject_label, "应交税费");
+});
+
 test("凭证模板：候选一个都不命中时 subject_id 为 null 并给出建议名（不编一个科目 id）", async () => {
   const service = templateHarness({ subjects: [] });
   const templates = await service.templates("voucher-1");
