@@ -156,4 +156,25 @@
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `e193816`，在 T08 的提交里有一处响应形状的修正）。
+
+- 交付物：`modules/reorder/{reorder.module,reorder.controller,reorder.service,reorder.domain}.ts`；
+  `app.module.ts` 注册；`GET /reorder/articles`；`apps/api/test/unit/reorder-articles.test.cjs`（21 条）；
+  权限矩阵登记第 40 个控制器。
+- 与计划的差异：
+  1. **`unassigned` 参数改成一个独立端点 `GET /reorder/unassigned-orders`**：待补录要的是**订单行**
+     （按单补货号），而货号清单是**货号组**。塞进同一个端点会让响应变成两种形状，
+     前端得写两套分支。功能等价、形状更清楚，T12 因此变成纯前端任务。
+  2. `LIGHT_SELECT` 里多取了 `currentVersion` / `customerId` / `reorderFromOrderNo`（T08 的详情要用），
+     避免同一个查询写两遍。
+  3. 排序改用**码位比较**而不是 `localeCompare`：后者受运行环境 ICU/locale 影响，
+     会让"同一页里行的先后换台机器就变"，测试也变成环境相关。
+- **测试暴露的一个真缺陷（在 T08 的提交里修掉）**：`aggregate()` 当时是 `{...article, ...}` 展开，
+  于是清单响应**同时**给了 `itemNo`（camel）与 `item_no`（snake）两套键名 ——
+  一个响应两种键名正是本仓库反复踩过的那类坑（读侧取到 undefined 而没人发现）。
+  现在统一 snake_case，两个测试文件都钉住。
+- 验证：`npm run typecheck` 通过；`npm run test:unit:api` **2091/2091**（T07 + T08 合计）。
+- **未验证**：`groupBy`/`findMany` 的真实 SQL 只跑过假 Prisma；http 契约里的矩阵条目（第 40 个控制器）
+  需真实环境才能执行。
+- 踩到的坑：`localeCompare` 的那次是**测试先红**才发现的（`支` 与 `打` 的顺序），
+  正好说明"顺序进响应"这件事必须用与环境无关的比较器。

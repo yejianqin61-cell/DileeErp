@@ -93,4 +93,20 @@
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `8699bd7`）。**T11 未完成之前 `/reorder` 是一条死链** ——
+本批次全部完成前不会 push，所以最终形态里两者同时到位（任务文档里预留的处置方式）。
+
+- 交付物：`surface-scope.ts`（栏目表 + `general` 档）、`surface-permission.ts`（四处表）、
+  `app-shell.tsx`（导航项，图标 `History`）；测试同步三处
+  （api `surface-scope.test.cjs` +1 条、web `surface-permission.test.mjs` 矩阵与菜单过滤、web `app-shell.test.tsx` 导航清单）。
+- 决策落地：**单开栏目**（不是挂在 `/sales/reorder` 下）；`hr` 档**不加** `reorder`，
+  测试里有一条断言钉住它（人事不该看到全公司的采购/生产/质检汇总）。
+- 与计划的差异：
+  1. 栏目插在 `sales` 之后、`customers` 之前（任务文档写的是"`/sales` 之后、`/customers` 之前即可"），
+     并在测试里断言这个顺序 —— 两端（后端下发集合 / 前端菜单表）靠同一顺序罗列权限范围文案。
+  2. 前端测试里补了一条**前缀相近**的断言：`/reorders` 归工作台、`/reorder` 不能被 `/reports`
+     或 `/sales` 抢走（这一层是门禁的唯一判定，前缀判断写错就是"能进不该进的页面"）。
+- 验证：`npm run typecheck` 通过；`npm run test:unit:api` **2120/2120**；
+  web lib **284/284**；web 组件 **55 文件 / 977 条**。
+- **未验证**：真实浏览器里的菜单观感（图标与新项的位置）；账号中心那页的权限范围文案
+  在真实会话下的显示（组件测试已覆盖）。

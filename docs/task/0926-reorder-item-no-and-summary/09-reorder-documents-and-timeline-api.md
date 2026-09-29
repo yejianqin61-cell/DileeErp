@@ -164,4 +164,30 @@
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `8d638a4`）。
+
+- 交付物：`GET /reorder/articles/:item_no/documents`、`GET /reorder/articles/:item_no/timeline`；
+  `reorder.domain.ts` 的 `DOCUMENT_GROUPS`（17 组）/ `DOCUMENT_STATUS_LABELS` / `documentRow` / `TIMELINE_LIMIT`；
+  `apps/api/test/unit/reorder-documents.test.cjs`（17 条，含与工作台的交叉一致）。
+- 逐条落地：
+  - **空组也返回**（老板问的正是"当时有没有做 QC"，空组与"没有这个模块"是两条不同的信息）。
+  - 两条守卫：`order_no` 必填（400）、该单不属于这个货号 → 404 `ORDER_NOT_IN_ARTICLE`。
+  - `date_source` 标出"这个日期是哪个日期"：原料入库/成品入库/次品/来料质检**没有业务日期列**，
+    回落 `createdAt` 并标注 —— 不标的话月末对账会把它当成真实业务日期。
+  - 工序日报**聚合成一行**（一个工序一条 + 条数 + 首末日）。
+  - 来料质检没有单号 → 「到货单号 质检」，并带 `receipt_id` 供 `/qc/incoming?receipt_id=` 深链。
+  - 应付来源用入库/到货单号标识（不甩 UUID）。
+  - 时间线超过 200 条回报 `truncated`（工作台是静默 `take: 200`，会让人以为"这就是全部"）。
+- 与计划的差异：
+  1. `payable_sources` 这一组**故意不带软删过滤** —— 该表根本没有 `deleted_at` 列。
+     代码里写了注释，免得下一个人"顺手补上"把查询改到编译不过。
+  2. 17 组里 `bom` 的数量用 `_count.items`（带 `deletedAt: null` 过滤），而不是只给版本号。
+- 交叉一致（任务文档第 13 条）：新增一条**与工作台对照**的测试 —— 同一订单的采购金额与
+  QC 合格数两边必须相等。工作台把采购金额跨币种加成一个数（它自己的既有口径），
+  所以对照用单一币种；返单模块更严：按币种分行，永不跨币种相加。
+- 验证：`npm run typecheck` 通过；`npm run test:unit:api` **2119/2119**。
+- **未验证**：17 条查询的真实 SQL 与 `_count` 的过滤语义只跑过假 Prisma；
+  `http` 契约里的探测未执行。
+- 踩到的坑：第一版时间线测试**断言了排序**，但假 Prisma 不会按 `orderBy` 排序 ——
+  测的其实是假实现。改成断言"要求数据库怎么排"（`orderBy` / `take` 参数），
+  并在注释里写明为什么。

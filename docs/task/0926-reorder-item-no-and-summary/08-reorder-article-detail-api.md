@@ -142,4 +142,17 @@
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `c947163`）。
+
+- 交付物：`GET /reorder/articles/:item_no`；`SalesOrdersService` 之外的结算/批次聚合在
+  `reorder.service.ts` 的 `articleDetail()`；`apps/api/test/unit/reorder-article-detail.test.cjs`（11 条）。
+- 决策落地（任务文档要求二选一的那条）：**查不到给 404 `ARTICLE_NOT_FOUND`**，
+  与工作台 `ORDER_NOT_FOUND` 同形状 —— 只选一种，前端不必写两套分支。
+- 与计划的差异：
+  1. 顺带把下游查询收敛成两处（货号级 4 条 + 批次级 3 条），列表与详情共用，避免同一份数据查两遍。
+  2. 详情多返回 `item_no`（该货号下出现最多的写法）与 `order_nos`，便于前端直接用。
+  3. 每批带 `reorder_from_order_no`（T05 的返单来源）—— 详情页要能显示"这批是从哪返来的"。
+- 边界守住（任务文档的重点）：**不重算工作台那套阻塞与配平**，每批给 `workbench_href`。
+  测试里有一条反向断言：这些批次行里**不该出现** `blockers` / `overall_status` / `procurement_summary`。
+- 验证：`npm run typecheck` 通过；`npm run test:unit:api` **2091/2091**。
+- **未验证**：真实库上的聚合 SQL；`bom_versions` 的排序只在假数据上验过。
