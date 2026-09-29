@@ -44,6 +44,8 @@ type WritablePlanItem = {
   supplierId: string | null;
   quantity: Prisma.Decimal;
   unitPrice: Prisma.Decimal;
+  model: string | null;
+  expectedDate: Date | null;
   purchaseOrderItemId: string | null;
 };
 
@@ -295,13 +297,24 @@ export class PurchasePlansService {
     // 未下单的行随便改：它们还只是"打算买什么"。
     const replacement = incoming.filter((item) => !(item.id && orderedIds.has(item.id)));
     const prepared = await this.prepareItems({ id: current.bomId }, replacement, user);
+    const orderedById = new Map(ordered.map((item) => [item.id, item]));
+    let syncedArrivalDates = 0;
     await this.prisma.$transaction(async (tx) => {
       await this.assertNotStale(tx, id, input.expected_updated_at);
       await tx.purchasePlanItem.updateMany({ where: { planId: id, deletedAt: null, purchaseOrderItemId: null }, data: { ...this.audit.softDelete(user) } });
       let preparedCursor = 0;
       for (const [index, item] of incoming.entries()) {
-        if (item.id && orderedIds.has(item.id)) {
-          await tx.purchasePlanItem.update({ where: { id: item.id }, data: { sequence: index + 1, ...this.audit.update(user) } });
+        const existing = item.id ? orderedById.get(item.id) : undefined;
+        if (existing) {
+          const nextDate = this.parseDate(item.expected_date);
+          const dateChanged = !this.sameDate(existing.expectedDate, nextDate);
+          await tx.purchasePlanItem.update({ where: { id: existing.id }, data: { sequence: index + 1, ...(dateChanged ? { expectedDate: nextDate } : {}), ...this.audit.update(user) } });
+          // 预计到货改了就同步进那张已下单的采购明细：否则同一行会有两个"预计到货"，
+          // 而采购员拿去跟供应商对的是采购单上那一份。
+          if (dateChanged && existing.purchaseOrderItemId) {
+            await tx.purchaseOrderItem.update({ where: { id: existing.purchaseOrderItemId }, data: { expectedDate: nextDate, ...this.audit.update(user) } });
+            syncedArrivalDates += 1;
+          }
           continue;
         }
         preparedCursor += 1;
@@ -317,6 +330,7 @@ export class PurchasePlansService {
       order_no: current.orderNo,
       item_count: incoming.length,
       ordered_line_count: ordered.length,
+      synced_arrival_dates: syncedArrivalDates || undefined,
       reason: input.reason?.trim() || undefined,
     });
     return this.get(id);
@@ -365,7 +379,7 @@ export class PurchasePlansService {
         extensionData: true,
         items: {
           where: { deletedAt: null },
-          select: { id: true, materialId: true, unitId: true, supplierId: true, quantity: true, unitPrice: true, purchaseOrderItemId: true },
+          select: { id: true, materialId: true, unitId: true, supplierId: true, quantity: true, unitPrice: true, model: true, expectedDate: true, purchaseOrderItemId: true },
         },
       },
     });
@@ -392,14 +406,28 @@ export class PurchasePlansService {
     }
   }
 
-  /** 已下单的行能不能被这次提交改动？返回被改的字段名（没改则返回 null）。 */
+  /**
+   * 已下单的行能不能被这次提交改动？返回被改的字段名（没改则返回 null）。
+   *
+   * `expectedDate` **不在这里**：预计到货是「预期」而不是「既成事实」，供应商说这周到不了、
+   * 下周到，采购员必须能记下来。锁死它等于系统里再没有任何地方能改这个日期
+   * （口径 7 已经把采购单页的明细编辑关掉了）。改它时**同步进采购明细**，保证只有一份值。
+   */
   private orderedLineChanged(item: WritablePlanItem, next: PlanItemInput): string | null {
     if (next.material_id !== item.materialId) return "物料";
     if (next.unit_id !== item.unitId) return "单位";
     if ((item.supplierId ?? null) !== (next.supplier_id ?? null)) return "供应商";
+    if ((item.model ?? null) !== (next.model ?? null)) return "型号";
     if (!this.decimalEquals(item.quantity, next.quantity)) return "数量";
     if (!this.decimalEquals(item.unitPrice, next.unit_price)) return "单价";
     return null;
+  }
+
+  /** 两个日期是不是同一时刻（都为 null 也算相同）。 */
+  private sameDate(current: Date | null, next: Date | null) {
+    if (current === null && next === null) return true;
+    if (current === null || next === null) return false;
+    return current.getTime() === next.getTime();
   }
 
   /** Decimal 比较：非法输入一律判成"改了"（宁可让用户重新加载，也不能静默放过一次改动）。 */

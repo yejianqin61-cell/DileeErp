@@ -134,6 +134,15 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
     },
     material: { findMany: async ({ where }) => (where.id?.in ?? []).map(materialOf) },
     supplier: { findMany: async () => [] },
+    // 预计到货的同步写在这一侧（已下单行的"预期"改了要跟着进采购明细）。
+    purchaseOrderItem: {
+      update: async ({ where, data }) => {
+        const row = purchaseOrderItems.find((candidate) => candidate.id === where.id);
+        if (!row) throw new Error(`测试桩：找不到采购明细 ${where.id}`);
+        Object.assign(row, data);
+        return row;
+      },
+    },
     $queryRaw: async () => [],
     $transaction: async (fn) => fn(prisma),
   };
@@ -376,8 +385,8 @@ const thePlan = { id: "plan-1", planNo: "PP-1", orderNo: "SO-1", bomId: "bom-1",
 /** 两行：i-ordered 已经下过单（挂在 poi-1），i-free 还没有。 */
 function seededItems() {
   return [
-    { id: "i-ordered", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), purchaseOrderItemId: "poi-1", bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} },
-    { id: "i-free", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: null, quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("0.0000"), purchaseOrderItemId: null, bomItemId: "bi-2", deletedAt: null, sequence: 2, extensionData: {} },
+    { id: "i-ordered", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: null, expectedDate: null, purchaseOrderItemId: "poi-1", bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} },
+    { id: "i-free", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: null, quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("0.0000"), model: null, expectedDate: null, purchaseOrderItemId: null, bomItemId: "bi-2", deletedAt: null, sequence: 2, extensionData: {} },
   ];
 }
 const bomRows = () => [bomRow("bi-1", { materialId: "mat-1" }), bomRow("bi-2", { materialId: "mat-2" })];
@@ -416,8 +425,8 @@ test("保存：已下单的行没带 id 回来 → 422（不能从计划里悄�
   );
 });
 
-test("保存：已下单的行被改内容 → 422，并说清是哪个字段（数量/单价/供应商/物料/单位都要拦）", async () => {
-  for (const [field, override] of [["数量", { quantity: "6.0000" }], ["单价", { unit_price: "9.9000" }], ["供应商", { supplier_id: "sup-2" }], ["物料", { material_id: "mat-9" }], ["单位", { unit_id: "unit-m" }]]) {
+test("保存：已下单的行被改内容 → 422，并说清是哪个字段（物料/单位/数量/单价/供应商/型号都要拦）", async () => {
+  for (const [field, override] of [["数量", { quantity: "6.0000" }], ["单价", { unit_price: "9.9000" }], ["供应商", { supplier_id: "sup-2" }], ["物料", { material_id: "mat-9" }], ["单位", { unit_id: "unit-m" }], ["型号", { model: "X-1" }]]) {
     const items = seededItems();
     const { service } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
     await assert.rejects(
@@ -426,6 +435,20 @@ test("保存：已下单的行被改内容 → 422，并说清是哪个字段（
       `${field} 必须在计划里被锁住 —— 那张单已经发给供应商了，要改得先退回计划`,
     );
   }
+});
+
+test("保存：已下单行的**预计到货**可以改，并且同步进采购明细（「预期」不是「既成事实」）", async () => {
+  // 口径 7 把采购单页的明细编辑关掉之后，如果这里也锁死，系统里就**再没有任何地方**能改这个日期。
+  // 而供应商说"这周到不了、下周到"是每天都发生的事。同步是为了不让同一行有两个预计到货。
+  const items = seededItems();
+  const poItems = [{ id: "poi-1", purchaseOrderId: "po-1", expectedDate: null, purchaseOrder: { purchaseOrderNo: "PO-1", status: "ordered" } }];
+  const { service } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: poItems });
+
+  await service.update("plan-1", { items: [lineOf(items[0], { expected_date: "2026-10-08" }), lineOf(items[1])] }, user);
+
+  assert.equal(items[0].expectedDate.toISOString().slice(0, 10), "2026-10-08", "计划行记下新的预计到货");
+  assert.equal(poItems[0].expectedDate.toISOString().slice(0, 10), "2026-10-08", "采购明细同步，否则采购员拿去跟供应商对的是另一份");
+  assert.equal(items[0].quantity.toString(), "5", "同步日期不等于放开了别的列");
 });
 
 test("保存：已下单行的**序号**允许重排（序号是展示，不是业务内容）", async () => {
