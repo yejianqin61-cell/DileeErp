@@ -49,8 +49,7 @@ test("人事：只能访问人事页面及其下属页面（账号中心是唯�
   assert.equal(surfaceSectionsOf(["renshi"]).includes("dashboard"), false);
 });
 
-test("其他：除财务、人事之外的页面（工作台与报表都在内）", () => {
-  const sections = surfaceSectionsOf(["qita"]);
+test("其他：除财务、人事之外的页面（工作台与报表都在内）", () => {  const sections = surfaceSectionsOf(["qita"]);
   assert.deepEqual(sorted(sections), sorted(FINANCE_FREE.filter((section) => section !== "hr")));
   assert.ok(sections.includes("dashboard"), "工作台属于其他角色");
   assert.ok(sections.includes("reports"), "报表与告警属于其他角色（用户 2026-09-19 拍板）");
@@ -92,9 +91,9 @@ test("isSurfaceRoleKey / surfaceRoleName / 范围文案", () => {
 
 test("规则矩阵：每个范围对每个栏目的可达性（前后端共用的那张表）", () => {
   const expected = {
-    full: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, customers: true, reports: true, finance: true, hr: true, account: true },
-    hr: { dashboard: false, production: false, procurement: false, qc: false, warehouse: false, sales: false, customers: false, reports: false, finance: false, hr: true, account: true },
-    general: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, customers: true, reports: true, finance: false, hr: false, account: true },
+    full: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, reorder: true, customers: true, reports: true, finance: true, hr: true, account: true },
+    hr: { dashboard: false, production: false, procurement: false, qc: false, warehouse: false, sales: false, reorder: false, customers: false, reports: false, finance: false, hr: true, account: true },
+    general: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, reorder: true, customers: true, reports: true, finance: false, hr: false, account: true },
   };
   const sectionsOfScope = { full: ["laoban"], hr: ["renshi"], general: ["qita"] };
   for (const [scope, row] of Object.entries(expected)) {
@@ -103,4 +102,17 @@ test("规则矩阵：每个范围对每个栏目的可达性（前后端共用�
       assert.equal(sections.includes(section), allowed, `范围 ${scope} 对栏目 ${section} 的可达性应为 ${allowed}`);
     }
   }
+});
+
+test("返单与总结（2026-09-26）：除人事外都看得到 —— 它是跨模块只读页", () => {
+  // 为什么单开一个栏目而不是塞进 sales：它的内容横跨采购/生产/质检/仓库/财务，
+  // 归在「客户与销售」名下会让「其他」角色以为它只是客户的附属页。
+  assert.ok(SURFACE_SECTIONS.includes("reorder"));
+  for (const key of ["laoban", "caiwu", "qita", "administrator"]) {
+    assert.ok(surfaceSectionsOf([key]).includes("reorder"), `${key} 应看到返单与总结`);
+  }
+  assert.equal(surfaceSectionsOf(["renshi"]).includes("reorder"), false, "人事不该看到全公司的采购/生产/质检汇总");
+  // 顺序也是契约：两端（后端下发的集合 / 前端菜单表）按同一个顺序罗列权限范围文案。
+  assert.ok(SURFACE_SECTIONS.indexOf("reorder") > SURFACE_SECTIONS.indexOf("sales"));
+  assert.ok(SURFACE_SECTIONS.indexOf("reorder") < SURFACE_SECTIONS.indexOf("customers"));
 });

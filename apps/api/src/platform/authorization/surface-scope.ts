@@ -26,6 +26,7 @@ export const SURFACE_SECTIONS = [
   "qc", // 质检
   "warehouse", // 仓库
   "sales", // 客户与销售
+  "reorder", // 返单与总结（2026-09-26：按货号看历次批次与单据，横跨采购/生产/质检/仓库/财务）
   "customers", // 客户
   "reports", // 报表与告警
   "finance", // 财务
@@ -59,7 +60,9 @@ const SECTIONS_BY_SCOPE: Record<SurfaceScope, readonly SurfaceSection[]> = {
   // 用户原话"只能访问人事页面及其下属页面"。账号管理中心是用户单独拍板的"所有人可进"，
   // 所以它是唯一在人事范围里的例外（否则人事连改自己密码的地方都没有）。
   hr: ["hr", "account"],
-  general: ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reports", "account"],
+  // `reorder`（返单与总结）归在"其他"这一档：它是跨模块只读页，除人事外都该看得到；
+  // **不要**加进 `hr` —— 那会让"只能看人事"的角色看到全公司的采购/生产/质检汇总。
+  general: ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reorder", "reports", "account"],
 };
 
 export function isSurfaceRoleKey(key: string): key is SurfaceRoleKey {

@@ -29,12 +29,13 @@ const NAV_ITEMS = [
   { label: "仓库", href: "/warehouse", testId: "nav-link-warehouse" },
   { label: "人事", href: "/hr", testId: "nav-link-hr" },
   { label: "客户与销售", href: "/sales", testId: "nav-link-sales" },
+  { label: "返单与总结", href: "/reorder", testId: "nav-link-reorder" },
   { label: "报表与告警", href: "/reports", testId: "nav-link-reports" },
   { label: "账号中心", href: "/account", testId: "nav-link-account" },
 ] as const;
 
 /** 老板/财务的可见栏目（= 全部）与人事的可见栏目（= 人事 + 账号中心）。 */
-const FULL_SECTIONS = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reports", "finance", "hr", "account"];
+const FULL_SECTIONS = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "reorder", "customers", "reports", "finance", "hr", "account"];
 const HR_SECTIONS = ["hr", "account"];
 const ALL_MODULES = ["sales", "procurement", "production", "warehouse", "finance", "hr"];
 

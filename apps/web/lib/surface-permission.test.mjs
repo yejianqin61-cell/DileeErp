@@ -23,7 +23,7 @@ import {
 /** 与会话接口下发的栏目集合等价的三个范围（按角色算出来的一样）。 */
 const FULL = [...SURFACE_SECTIONS];
 const HR = ["hr", "account"];
-const GENERAL = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reports", "account"];
+const GENERAL = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "reorder", "customers", "reports", "account"];
 
 test("sectionOfPath：一级路径与子路径都归到自己的栏目", () => {
   assert.equal(sectionOfPath("/"), "dashboard");
@@ -33,7 +33,15 @@ test("sectionOfPath：一级路径与子路径都归到自己的栏目", () => {
   assert.equal(sectionOfPath("/finance/salary/ledger"), "finance");
   assert.equal(sectionOfPath("/hr"), "hr");
   assert.equal(sectionOfPath("/sales/orders/new"), "sales");
+  assert.equal(sectionOfPath("/reorder"), "reorder");
+  assert.equal(sectionOfPath("/reorder/articles/27621"), "reorder");
   assert.equal(sectionOfPath("/account"), "account");
+});
+
+test("sectionOfPath：/reorder 不会被 /reports 或 /sales 抢走（前缀相近的几个页面）", () => {
+  assert.equal(sectionOfPath("/reorders"), "dashboard", "多一个字母就不是那个栏目");
+  assert.notEqual(sectionOfPath("/reorder"), "reports");
+  assert.notEqual(sectionOfPath("/reorder/articles/x"), "sales");
 });
 
 test("sectionOfPath：按「段」匹配，前缀相同的另一个页面不会被误判", () => {
@@ -60,6 +68,8 @@ test("canVisitPath：三个范围的规则矩阵（与后端同一张表）", ()
     ["/qc", true, false, true],
     ["/warehouse", true, false, true],
     ["/sales", true, false, true],
+    ["/reorder", true, false, true],
+    ["/reorder/articles/27621", true, false, true],
     ["/customers", true, false, true],
     ["/reports", true, false, true],
     ["/finance", true, false, false],
@@ -92,11 +102,11 @@ test("landingPathFor：登录后落到自己进得去的第一个页面", () => 
 });
 
 test("菜单过滤：无权入口必须被隐藏（用户拍板）", () => {
-  const navigation = [["工作台", "/"], ["生产", "/production"], ["采购", "/procurement"], ["质检", "/qc"], ["财务", "/finance"], ["仓库", "/warehouse"], ["人事", "/hr"], ["客户与销售", "/sales"], ["报表与告警", "/reports"]];
+  const navigation = [["工作台", "/"], ["生产", "/production"], ["采购", "/procurement"], ["质检", "/qc"], ["财务", "/finance"], ["仓库", "/warehouse"], ["人事", "/hr"], ["客户与销售", "/sales"], ["返单与总结", "/reorder"], ["报表与告警", "/reports"]];
   const visible = (sections) => navigation.filter(([, href]) => canVisitPath(sections, href)).map(([label]) => label);
-  assert.deepEqual(visible(FULL), ["工作台", "生产", "采购", "质检", "财务", "仓库", "人事", "客户与销售", "报表与告警"]);
+  assert.deepEqual(visible(FULL), ["工作台", "生产", "采购", "质检", "财务", "仓库", "人事", "客户与销售", "返单与总结", "报表与告警"]);
   assert.deepEqual(visible(HR), ["人事"], "人事只应看到人事");
-  assert.deepEqual(visible(GENERAL), ["工作台", "生产", "采购", "质检", "仓库", "客户与销售", "报表与告警"], "其他不应看到财务与人事");
+  assert.deepEqual(visible(GENERAL), ["工作台", "生产", "采购", "质检", "仓库", "客户与销售", "返单与总结", "报表与告警"], "其他不应看到财务与人事，但要看到返单与总结");
 });
 
 test("工作台卡片：财务卡片对「其他」角色不显示（按卡片目标路径判定）", () => {
