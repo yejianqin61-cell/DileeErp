@@ -407,6 +407,13 @@ button { cursor: pointer; }
 .ui-item-no-option small { color: var(--text-muted); flex: 0 0 auto; }
 .ui-item-no-empty { padding: 8px 10px; color: var(--text-muted); }
 
+/* 返单来源横幅（components/sales/sales-order-editor.tsx）：
+   说明「这张单从哪来、哪几格必须重填」。 */
+.reorder-banner { display: grid; gap: 6px; }
+.reorder-banner-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.reorder-banner-head a { color: var(--accent); text-decoration: underline; }
+.reorder-must-fill { margin-left: 4px; color: var(--warning, #b45309); font-size: 12px; }
+
 .ui-multi-select { display: grid; gap: 6px; }
 .ui-multi-select-searchbox { position: relative; }
 .ui-multi-select-searchbox .ui-input { padding-right: 32px; }

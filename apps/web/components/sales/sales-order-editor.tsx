@@ -8,7 +8,8 @@
 // 字段清单与载荷规则全部来自 `lib/sales-order-spec.ts`（纯函数，有 node:test 覆盖），
 // 这个组件只负责渲染与取数，不再自己拼字段名——否则清单会分叉成「界面有、库里没有」。
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "../layout/app-shell";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -18,6 +19,7 @@ import { notifyError, notifySuccess } from "../ui/toaster";
 import { apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { apiErrorText } from "../../lib/api-error-text";
 import { fetchCurrencyOptions, currencyOptionsWithCurrent, type CurrencyOption } from "../../lib/currency-catalogue";
+import { itemNoKey } from "../../lib/item-no";
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
   SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_MATERIAL_KEYS, SPEC_PROCESS_FIELDS,
@@ -50,6 +52,52 @@ const BASE_FIELDS: ReadonlyArray<{ key: string; label: string; type?: "textarea"
 ];
 
 const SETTLEMENT_METHODS: ReadonlyArray<readonly [string, string]> = [["", "（不填）"], ["tt", "T/T 电汇"], ["letter_of_credit", "信用证"], ["cash", "现金"], ["monthly", "月结"], ["other", "其他"]];
+
+/**
+ * 返单时必须重填的四格（与服务端 `reorderPreview().must_fill` 同一份清单）。
+ *
+ * 为什么前端还要存一份：服务端给的是**数据**（预览响应里的数组），而这里要在渲染时就知道
+ * 「这一格要不要打标记」。两份都对不上时以服务端为准（它才决定建单能不能过），
+ * 所以这条只是**提示**，不是校验 —— 真正的必填校验仍在保存前那几条 + 后端 DTO 上。
+ */
+const REORDER_MUST_FILL: ReadonlySet<string> = new Set(["order_no", "order_date", "quantity", "delivery_date"]);
+
+/** 返单预览响应（`GET /sales-orders/reorder-preview`）里本组件用到的部分。 */
+type ReorderPreview = {
+  source_order_no: string;
+  source_order_id: string;
+  item_no: string;
+  customer_id?: string | null;
+  contact_id?: string | null;
+  copy: Record<string, unknown>;
+  must_fill: string[];
+  warnings: string[];
+};
+
+/**
+ * 返单来源横幅：回答「这张单是从哪来的」。
+ *
+ * · 新建态（返单）：来自 URL 的来源单，带「查看来源单」；
+ * · 编辑态：单子上本来就记着来源，只读展示 —— 后端在更新接口上不接受改写 `reorder_from_order_no`，
+ *   所以这里**不给**「换来源」的入口（给了就是一个点了必然 400 的按钮）。
+ */
+function ReorderBanner({ sourceOrderNo, sourceOrderId, itemNo, itemNoChanged }: { sourceOrderNo: string; sourceOrderId?: string; itemNo?: string | null; itemNoChanged?: boolean }) {
+  if (!sourceOrderNo) return null;
+  return (
+    <section className="panel panel-body reorder-banner" data-testid="reorder-source-banner">
+      <div className="reorder-banner-head">
+        <span>由 <strong>{sourceOrderNo}</strong> 返单{itemNo ? <>（同货号 <strong>{itemNo}</strong>）</> : null}</span>
+        {sourceOrderId ? <Link href={`/sales/orders/${sourceOrderId}/edit`} data-testid="reorder-source-link">查看来源单</Link> : null}
+      </div>
+      <p className="panel-note">数量、下单日期与交货日期必须按这一批重新填写；单价沿用上次，请复核。</p>
+      {itemNoChanged ? (
+        <p className="status-warning" data-testid="reorder-item-no-changed">
+          货号已改动：这张单在【返单与总结】里会归到新的货号下，不再与 {sourceOrderNo} 同组。
+        </p>
+      ) : null}
+    </section>
+  );
+}
 
 /**
  * 后端字段名 → 界面中文名，用于把 400 的原因说到具体一格（`lib/api-error-text`）。
@@ -89,7 +137,16 @@ const errorOf = (cause: unknown, fallback: string) => apiErrorText(cause, fallba
 
 export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const editing = Boolean(orderId);
+  /**
+   * 返单（2026-09-26）：`/sales/orders/new?reorder_from_order_no=DL260001-1`。
+   *
+   * 用 URL 参数而不是内部状态：业务要能把「以这一单返单」的链接直接发给同事，
+   * 也要能从【返单与总结】跳进来（那个页面的每一批都带这个链接）。
+   */
+  const reorderFromOrderNo = (searchParams.get("reorder_from_order_no") ?? "").trim();
+  const reorderMode = !editing && reorderFromOrderNo !== "";
   const [base, setBase] = useState<Record<string, string>>({ order_date: new Date().toISOString().slice(0, 10), quantity: "1" });
   const [spec, setSpec] = useState<Record<string, string>>({});
   const [details, setDetails] = useState<SpecDetailRow[]>([emptySpecDetailRow()]);
@@ -99,6 +156,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   // 货号候选（老板 2026-09-26 的「货号」字段）：来自 GET /sales-orders/item-nos。
   // 拉不到就降级成空列表 —— 输入框仍然能输新货号，**不能**因为建议列表失败把整单卡住。
   const [itemNoSuggestions, setItemNoSuggestions] = useState<ItemNoSuggestion[]>([]);
+  /** 返单来源（预览成功后才有）：来源单号 + id（跳来源单用）+ 货号（横幅上显示「同货号」）。 */
+  const [reorderSource, setReorderSource] = useState<{ order_no: string; order_id: string; item_no: string } | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
@@ -165,13 +224,49 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         setDetails(rows.length ? rows : [emptySpecDetailRow()]);
         setAudit(order);
         setStatus(String(order.status ?? "draft"));
+      } else if (reorderFromOrderNo) {
+        // 返单：先拉预览，再把结果**一次性**灌进四块 state。
+        // 逐键 set 会与 `setBaseField` 的浅合并产生竞态，出现「填了一半」的表单 ——
+        // 而填了一半的表单最危险：销售以为工艺已经带过来了，直接存下去就是一张缺工艺的单。
+        const preview = (await apiGet<ReorderPreview>(`/sales-orders/reorder-preview?order_no=${encodeURIComponent(reorderFromOrderNo)}`)).data;
+        const copy = (preview.copy ?? {}) as Record<string, unknown>;
+        const text = (value: unknown) => (value === null || value === undefined ? "" : String(value));
+        setBase({
+          // 必须重填的四格**留空**：来源单的数量/下单日/交期是上一批的口径，抄过来就是错的下单数据。
+          // 页面上它们带「返单必填」提示（见 REORDER_MUST_FILL）。
+          order_no: "", order_date: "", quantity: "", delivery_date: "",
+          customer_id: text(preview.customer_id),
+          contact_id: text(preview.contact_id),
+          product_name: text(copy.product_name),
+          product_spec: text(copy.product_spec),
+          unit: text(copy.unit),
+          currency: text(copy.currency),
+          customer_po_no: text(copy.customer_po_no),
+          external_contract_no: text(copy.external_contract_no),
+          unit_price: text(copy.unit_price),
+          settlement_unit_price: text(copy.settlement_unit_price),
+          tax_rate: text(copy.tax_rate),
+          settlement_method: text(copy.settlement_method),
+          item_no: text(preview.item_no),
+          // 总金额/应收/本币金额**故意不预填**：它们由数量派生，抄过来必然与新数量矛盾。
+        });
+        // 预览的 `copy` 用的是**请求键**（与快照同形状），正好是 `specFromOrder` 认的第一种形状。
+        setSpec(specFromOrder(copy));
+        const detailRows = Array.isArray(copy.spec_details) ? (copy.spec_details as Array<Record<string, unknown>>).map((row) => ({ group_name: text(row.group_name), name: text(row.name), color: text(row.color), barcode: text(row.barcode), quantity: text(row.quantity), unit: text(row.unit) })) : [];
+        setDetails(detailRows.length ? detailRows : [emptySpecDetailRow()]);
+        // 引用照抄：预览里带了物料摘要（`material_refs[].material`），所以能直接把芯片显示出来，
+        // 不依赖物料池那一次请求成不成功。
+        setRefs(materialRefsFromOrder({ material_refs: copy.material_refs }));
+        setReorderSource({ order_no: preview.source_order_no, order_id: preview.source_order_id, item_no: text(preview.item_no) });
       }
     } catch (cause) {
-      setError(errorOf(cause, "销售单数据加载失败"));
+      // 返单预览失败**必须出错误态**，不能退化成空表单：空表单会让销售以为「这单本来就没工艺要求」，
+      // 直接存下去就是一张缺工艺的下单。
+      setError(errorOf(cause, reorderMode ? "返单来源加载失败：请回到【返单与总结】重试，或新建普通销售单" : "销售单数据加载失败"));
     } finally {
       setLoading(false);
     }
-  }, [orderId]);
+  }, [orderId, reorderFromOrderNo, reorderMode]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -225,6 +320,9 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
       delete payload.order_no;
       delete payload.customer_id;
       payload.reason = reason.trim() || undefined;
+    } else if (reorderSource) {
+      // 返单来源只在**新建**时带（后端在更新接口上不接受改写它）。
+      payload.reorder_from_order_no = reorderSource.order_no;
     }
     try {
       const saved = editing
@@ -243,6 +341,23 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
 
   if (loading) return <div className="page-root" data-testid="sales-order-editor"><PageHeader title={editing ? "编辑销售单" : "新建销售单"} breadcrumb={["销售", "销售单"]} /><LoadingState /></div>;
 
+  /**
+   * 返单来源拉不到时**不渲染表单**。
+   *
+   * 只在错误横幅下面留一张空白表单是不够的：空白表单看起来就是「这一单本来就没有工艺要求」，
+   * 销售填几个数直接存下去，得到的是一张缺工艺的下单 —— 而返单的全部意义就是沿用上一批的工艺。
+   * 所以这里退成一张纯粹的失败页，只给重试与返回。
+   */
+  if (reorderMode && !reorderSource) {
+    return (
+      <div className="page-root" data-testid="sales-order-editor">
+        <PageHeader title="新建销售单（返单）" breadcrumb={["销售", "销售单"]} />
+        <section className="panel"><ErrorState message={error || "返单来源加载失败"} onRetry={() => void load()} /></section>
+        <section className="panel panel-body"><Button variant="secondary" onClick={() => router.push("/sales")}>返回销售单列表</Button></section>
+      </div>
+    );
+  }
+
   return (
     <div className="page-root" data-testid="sales-order-editor">
       <PageHeader title={editing ? `编辑销售单 ${base.order_no ?? ""}` : "新建销售单"} breadcrumb={["销售", "销售单"]}>
@@ -250,6 +365,19 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         <Button onClick={() => void save()} disabled={saving} data-testid="sales-order-save">{saving ? "保存中…" : "保存"}</Button>
       </PageHeader>
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
+
+      {/*
+        返单横幅（2026-09-26）：回答「这张单是从哪来的」。
+        · 新建态：来自 URL 的来源单，带「查看来源单」；
+        · 编辑态：单子上本来就记着来源（`reorderFromOrderNo`），只读展示 ——
+          后端在更新接口上不接受改写它，所以这里不给「换来源」的入口。
+      */}
+      <ReorderBanner
+        sourceOrderNo={reorderSource?.order_no ?? String((audit as Record<string, unknown> | null)?.reorderFromOrderNo ?? "")}
+        sourceOrderId={reorderSource?.order_id}
+        itemNo={reorderSource?.item_no ?? (audit as Record<string, unknown> | null)?.itemNo as string | undefined}
+        itemNoChanged={reorderMode && reorderSource !== null && itemNoKey(base.item_no ?? "") !== itemNoKey(reorderSource.item_no)}
+      />
 
       <section className="panel">
         <div className="panel-heading"><h2>基本信息</h2><span className="panel-note">这些是原销售单就有的字段，口径没变</span></div>
@@ -300,7 +428,11 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
             />
           </label>
           {BASE_FIELDS.map((field) => (
-            <label key={field.key}>{field.label}{field.required ? "（必填）" : ""}
+            <label key={field.key}>{field.label}
+              {/* 返单时这四格必须重填：来源单的数量/日期是上一批的口径（后端 must_fill 同一份清单）。 */}
+              {reorderMode && REORDER_MUST_FILL.has(field.key)
+                ? <span className="reorder-must-fill" data-testid={`reorder-must-fill-${field.key}`}>（返单必填）</span>
+                : field.required ? "（必填）" : ""}
               {field.type === "textarea"
                 ? <textarea className="ui-input" rows={2} data-testid={`sales-base-${field.key}`} value={base[field.key] ?? ""} onChange={(event) => setBaseField(field.key, event.target.value)} />
                 : <Input type={field.type === "number" ? "text" : field.type ?? "text"} inputMode={field.type === "number" ? "decimal" : undefined} data-testid={`sales-base-${field.key}`} value={base[field.key] ?? ""} onChange={(event) => setBaseField(field.key, event.target.value)} />}
