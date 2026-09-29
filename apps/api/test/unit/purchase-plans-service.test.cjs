@@ -822,6 +822,35 @@ test("退回采购计划：历史单的明细没有计划行认领 → 按原值
   assert.equal(restored.extensionData.restored_from_reverted_order, "PO-1", "留一条来路");
 });
 
+test("详情：老快照没有地址/联系人也不炸（2026-09-27 之前的供应商快照只有 id/name）", async () => {
+  // BOM 明细行 / 采购明细的快照形状变过；计划的读侧对"快照里没有那一格"必须容忍，
+  // 否则一条历史行会让整页 500。
+  const plans = [{ id: "plan-1", planNo: "PP-1", orderNo: "SO-1", bomId: "bom-1", bomVersion: 3, deletedAt: null, createdAt: new Date(), updatedAt: new Date(), createdBy: "u", updatedBy: "u" }];
+  const legacyItem = { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", quantity: new Prisma.Decimal("5"), deletedAt: null, purchaseOrderItemId: null, supplierId: null, supplierSnapshot: { name: "老快照的五金厂" } };
+  const { service } = makeService({ plans, planItems: [legacyItem], bomItems: [] });
+
+  const plan = await service.get("plan-1");
+
+  assert.equal(plan.items[0].supplierName, "老快照的五金厂");
+  assert.equal(plan.items[0].supplierAddress, null, "老快照没有地址 → null，不是抛错");
+  assert.equal(plan.items[0].supplierContact, null);
+  assert.equal(plan.items[0].supplierCode, null);
+});
+
+test("软删之后可以再建一份同 BOM 的计划（部分唯一索引存在的理由）", async () => {
+  // 全量唯一索引会让"软删一份计划之后再建一份"直接撞约束 —— 那正是要允许的操作
+  // （录错了删掉重来）。数据库侧靠 `purchase_plans_bom_id_active_key ... WHERE deleted_at IS NULL`，
+  // 服务侧的"已存在"检查也必须只看未删的那一份。
+  const { plan, items } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: [bomRow("bi-1", { materialId: "mat-1" }), bomRow("bi-2", { materialId: "mat-2" })], boms: [bomFixture] });
+
+  await s.service.remove("plan-1", user);
+  const rebuilt = await s.service.create({ bom_id: "bom-1" }, user);
+
+  assert.notEqual(rebuilt.id, "plan-1");
+  assert.equal(s.plans.filter((row) => row.deletedAt === null).length, 1, "未删的计划只有新的那一份");
+});
+
 // ---------------------------------------------------------------------------------------------
 // 口径纯函数（domain）：状态派生、编号格式、BOM 差异计数。
 

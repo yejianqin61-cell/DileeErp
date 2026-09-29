@@ -91,6 +91,9 @@ const CONTROLLER_FILES = [
   "modules/procurement/procurement-master-data.controller.ts",
   "modules/procurement/purchase-order-export.controller.ts",
   "modules/procurement/purchase-orders.controller.ts",
+  // 2026-09-27：采购计划。**没有自己的模块键**，与采购单同一道门（@RequireModules("procurement")）——
+  // 计划是采购员的日常工作面，不是另一个角色的东西。
+  "modules/procurement/purchase-plans.controller.ts",
   "modules/procurement/raw-material-inbound-notices.controller.ts",
   "modules/procurement/raw-material-inbounds.controller.ts",
   "modules/production/employee-daily-reports.controller.ts",
@@ -229,6 +232,14 @@ const ENDPOINTS = [
   }),
   endpoint("purchase-orders.list", "modules/procurement/purchase-orders.controller.ts", "GET", "/api/v1/purchase-orders", {
     allow: { procurement: 200 }, deny: ["warehouse", NO_MODULE], note: "类级 procurement",
+  }),
+  // 2026-09-27：采购计划。同一道门（类级 procurement）—— 两个端点都是只读探测，
+  // 不落任何业务数据（`/candidates` 会查 BOM/计划，够不到写路径）。
+  endpoint("purchase-plans.list", "modules/procurement/purchase-plans.controller.ts", "GET", "/api/v1/purchase-plans", {
+    allow: { procurement: 200 }, deny: ["warehouse", NO_MODULE], note: "类级 procurement",
+  }),
+  endpoint("purchase-plans.candidates", "modules/procurement/purchase-plans.controller.ts", "GET", "/api/v1/purchase-plans/candidates", {
+    allow: { procurement: 200 }, deny: ["warehouse", NO_MODULE], note: "类级 procurement；同一文件第二个代表端点，用来钉住「candidates 不被 :id 吃掉」",
   }),
   endpoint("inbound-notices.list", "modules/procurement/raw-material-inbound-notices.controller.ts", "GET", "/api/v1/raw-material-inbound-notices", {
     allow: { procurement: 200, warehouse: 200 }, deny: ["hr", NO_MODULE], note: "类级无要求，方法级 ANY(procurement, warehouse)",
@@ -576,9 +587,14 @@ test("authz.require_administrator_separates_read_routes_from_write_routes_on_mas
   assert.notEqual(adminExport.status, 401, "会话必须有效");
 });
 
-test("authz.matrix_covers_all_39_controllers_and_their_route_shapes", () => {
+test("authz.matrix_covers_all_41_controllers_and_their_route_shapes", () => {
   const covered = new Set(ENDPOINTS.map((entry) => entry.file));
-  assert.equal(covered.size, 39, `矩阵应覆盖 39 个控制器文件，实际 ${covered.size}`);
+  // ⚠️ 这个数字**必须与 `CONTROLLER_FILES.length` 一致**，而它在本轮之前是**过期的**：
+  // 2026-09-26 的收付款单存档那轮把清单从 39 加到 40、却把断言留在 39，
+  // 于是这条用例在真实库上一直是红的（本文件需要 TEST_DATABASE_URL，本地跑不到，
+  // 所以没人看见）。2026-09-27 加入采购计划控制器时一并校正为 41。
+  assert.equal(covered.size, 41, `矩阵应覆盖 41 个控制器文件，实际 ${covered.size}`);
+  assert.equal(covered.size, CONTROLLER_FILES.length, "两张清单必须一一对应，否则新增控制器会静默漏出鉴权矩阵");
   for (const file of CONTROLLER_FILES) assert.ok(covered.has(file), `矩阵缺少控制器：${file}`);
 
   const ids = ENDPOINTS.map((entry) => entry.id);
