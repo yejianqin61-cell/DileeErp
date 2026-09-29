@@ -76,7 +76,7 @@ const NO_MODULE = "noModule";
 const MODULE_ROLES = ["sales", "procurement", "warehouse", "finance", "production", "hr"];
 const ALL_ROLES = [...MODULE_ROLES, NO_MODULE, ADMIN];
 
-/** 39 个控制器文件（recon §5.4 的清单 + 2026-09-26 的收付款单存档）；矩阵必须逐一覆盖。 */
+/** 40 个控制器文件（recon §5.4 的清单 + 2026-09-26 的收付款单存档 + 返单与总结）；矩阵必须逐一覆盖。 */
 const CONTROLLER_FILES = [
   "health.controller.ts",
   "modules/alerts/alerts.controller.ts",
@@ -85,6 +85,7 @@ const CONTROLLER_FILES = [
   "modules/finance/finance-slip-store.controller.ts",
   "modules/hr/hr.controller.ts",
   "modules/order-workbench/order-workbench.controller.ts",
+  "modules/reorder/reorder.controller.ts",
   "modules/procurement/incoming-inspections.controller.ts",
   "modules/procurement/master-data-read.controller.ts",
   "modules/procurement/procurement-master-data.controller.ts",
@@ -183,6 +184,11 @@ const ENDPOINTS = [
   }),
   endpoint("order-workbench.orders", "modules/order-workbench/order-workbench.controller.ts", "GET", "/api/v1/order-workbench/orders", {
     allow: { finance: 200 }, deny: [NO_MODULE], note: "ANY(6 个模块)",
+  }),
+  // 返单与总结（2026-09-26）：与工作台同口径的活动范围 —— 人事也能读（那张单的汇总横跨
+  // 采购/生产/质检/仓库/财务，只给某一个模块看等于把它废掉）。
+  endpoint("reorder.articles", "modules/reorder/reorder.controller.ts", "GET", "/api/v1/reorder/articles", {
+    allow: { finance: 200 }, deny: [NO_MODULE], note: "ANY(6 个模块)，纯读",
   }),
   endpoint("reports.orders", "modules/reports/reports.controller.ts", "GET", "/api/v1/reports/orders", {
     allow: { sales: 200 }, deny: [NO_MODULE], note: "ANY(6 个模块)",
