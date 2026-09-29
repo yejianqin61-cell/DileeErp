@@ -23,7 +23,7 @@ const baseItem = (overrides: Record<string, unknown> = {}) => ({ id: "bi-1", mat
 const bodyOf = (call: StubbedCall) => JSON.parse(String(call.body)) as Record<string, unknown>;
 const itemsOf = (call: StubbedCall) => bodyOf(call).items as Array<Record<string, unknown>>;
 
-function renderWorkbench(options: { onSupplierCreated?: (supplier: Record<string, unknown>) => void; items?: Array<Record<string, unknown>> } = {}) {
+function renderWorkbench(options: { onSupplierCreated?: (supplier: Record<string, unknown>) => void; items?: Array<Record<string, unknown>>; showSupplier?: boolean } = {}) {
   const calls = stubApi((url, call) => {
     if (url.endsWith("/boms/bom-1") && call.method === "GET") return apiOk(bomWith(options.items ?? [baseItem()]));
     if (url.endsWith("/boms/bom-1/items") && call.method === "PUT") return apiOk(bomWith(options.items ?? [baseItem()]));
@@ -35,7 +35,7 @@ function renderWorkbench(options: { onSupplierCreated?: (supplier: Record<string
     return apiOk({});
   });
   render(<>
-    <BomWorkbench bomId="bom-1" title="SO-1" materials={materials} units={units} onSupplierCreated={options.onSupplierCreated} onClose={() => undefined} />
+    <BomWorkbench bomId="bom-1" title="SO-1" materials={materials} units={units} showSupplier={options.showSupplier} onSupplierCreated={options.onSupplierCreated} onClose={() => undefined} />
     <Toaster />
   </>);
   return calls;
@@ -136,5 +136,19 @@ describe("BOM 表：下拉里快速新建供应商", () => {
     // 弹窗还在、名字还在（不用重新填），原因摆在弹窗里
     expect(await screen.findByDisplayValue("重复的厂家")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("供应商编码已存在")).toBeTruthy());
+  });
+
+  it("生产侧不显示这一列（showSupplier=false），但保存时行上已有的供应商照旧回传、不会被抹掉", async () => {
+    // 用户 2026-09-27：「现在，生产模块里面的 BOM 表里面不用填写供应商。」
+    // 这一列是采购的知识（这个部件通常找哪家做）；生产保存 BOM 不该把采购标过的供应商清掉。
+    const calls = renderWorkbench({ showSupplier: false, items: [baseItem({ supplierId: "s-1", supplier: { id: "s-1", supplierCode: "S-001", name: "宁波辅料厂", isActive: true } })] });
+    await screen.findByRole("button", { name: "保存BOM表" });
+
+    expect(screen.queryByRole("columnheader", { name: "供应商" })).toBeNull();
+    expect(screen.queryByTestId("bom-supplier-select-0")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "保存BOM表" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
+    expect(itemsOf(calls.find((call) => call.method === "PUT")!)[0].supplier_id).toBe("s-1");
   });
 });

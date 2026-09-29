@@ -155,7 +155,10 @@ export default function ProductionPage() {
     <PageHeader title="生产"><Button onClick={() => void openProductionOrder()} disabled={loading} data-testid="production-create-order">新建生产单</Button></PageHeader>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
     {/* BOM 工作区放在加载分支之外：保存后刷新列表时它不会被卸载，用户的编辑不会被吞掉。 */}
-    {bomWorkbench && <BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} onCreateMaterial={(apply) => setMaterialApply(() => apply)} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} />}
+    {/* 生产侧**不显示**「默认供应商」列（2026-09-27，用户：「生产模块里面的 BOM 表里面不用填写供应商」）：
+        那一列是采购的知识（这个部件通常找哪家做）。数据没有被清掉 —— 保存时行上的值照旧回传，
+        所以生产保存 BOM 不会抹掉采购标过的供应商。 */}
+    {bomWorkbench && <BomWorkbench bomId={bomWorkbench.id} title={bomWorkbench.label} materials={materials} units={units} showSupplier={false} onCreateMaterial={(apply) => setMaterialApply(() => apply)} onClose={() => setBomWorkbench(null)} onSaved={() => void load()} />}
     <MaterialCreateDialog
       open={Boolean(materialApply)}
       units={units}

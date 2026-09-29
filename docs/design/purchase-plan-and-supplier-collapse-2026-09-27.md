@@ -285,13 +285,23 @@ schema 里只声明 `@@index([bomId])`。漂移代价见 §7.3。
 
 ### 6.4 BOM 工作区的供应商列按入口显隐
 
-`BomWorkbench` 加一个 prop（例如 `showSupplier?: boolean`），**不复制组件**：
+`BomWorkbench` 加一个 prop（例如 `showSupplier?: boolean`，**默认 `true`**），**不复制组件**：
 
 | 入口 | 传值 |
 | --- | --- |
-| `/procurement/boms` | `true` |
-| `/procurement/orders` | `true` |
-| `/production` | 不传（false） |
+| `/procurement/boms` | 不传（默认显示） |
+| `/production` | **显式传 `false`** |
+
+> 为什么默认是 `true` 而不是文档初稿写的「不传即 false」：这一列是**采购**的知识
+> （这个部件通常找哪家做），采购入口本来就要它；而组件是共用的，默认隐藏会让
+> "这个入口要不要供应商"变成每个新入口都得记得判断一次的事 —— 忘了就是不显示，
+> 而且要等采购员问"供应商列哪去了"才发现。
+>
+> 隐藏**只影响显示与编辑**：行状态里的 `supplierId` 仍在，保存时原样回传，
+> 所以生产侧保存 BOM **不会**把采购标过的供应商抹掉。
+>
+> 另：`/procurement/orders` 不再是 BOM 工作区的入口 —— 那个入口挂在被删掉的草稿工作区 Sheet 里
+> （§6.3）。BOM 仍在 `/procurement/boms` 与生产侧可编辑。
 
 ### 6.5 「一次性展示所有 column」的 CSS 要从 `.finance-page` 里提出来
 

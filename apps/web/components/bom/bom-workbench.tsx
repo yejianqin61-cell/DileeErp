@@ -64,7 +64,7 @@ const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiCli
 /** 规格型号/颜色只在「选择物料 / 新建物料」时引用主数据；保存时不再回填，避免覆盖人工修改。 */
 const specOf = (material?: BomMaterialRef | null) => ({ specificationModel: material?.specificationModel ?? "", color: material?.color ?? "" });
 
-export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial, onSupplierCreated, onClose, onSaved }: {
+export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial, onSupplierCreated, showSupplier = true, onClose, onSaved }: {
   bomId: string;
   title?: string;
   materials: BomMaterialRef[];
@@ -73,6 +73,20 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
   onCreateMaterial?: (apply: (material: BomMaterialRef) => void) => void;
   /** 在 BOM 里快速新建了供应商时通知调用方，让它把自己那份供应商池也补上（可选）。 */
   onSupplierCreated?: (supplier: BomSupplierRef) => void;
+  /**
+   * 要不要显示「默认供应商」这一列（2026-09-27）。
+   *
+   * 用户原话：「现在，生产模块里面的 BOM 表里面不用填写供应商。」
+   * —— 这一列回答的是"这个部件**通常找哪家做**"，是**采购**的知识；生产只关心做多少、
+   * 用什么料。所以生产侧显式传 `false`（`app/production/page.tsx`）。
+   *
+   * 默认 `true`：采购那两个入口本来就要它，而且组件是共用的 —— 默认隐藏会让
+   * "这个入口要不要供应商"变成每个新入口都得记得判断一次的事。
+   * ⚠️ 隐藏**只影响显示与编辑**：行状态里的 `supplierId` 仍在，保存时会原样回传，
+   * 所以生产侧保存 BOM **不会**把采购标过的供应商抹掉（`BomItem.supplier_id` 是
+   * "这个部件通常找哪家做"的长期知识，不该因为换了个入口保存就丢）。
+   */
+  showSupplier?: boolean;
   onClose: () => void;
   onSaved?: () => void;
 }) {
@@ -169,7 +183,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
         <Button size="sm" disabled={saving} onClick={() => void save()}>{saving ? "保存中..." : "保存BOM表"}</Button>
       </div>
       {!onCreateMaterial && <p className="panel-note">物料池由【采购 → 物料清单】维护；这里可以直接改用量、单位、规格型号与颜色。</p>}
-      <div className="table-wrap"><table className="data-table"><thead><tr><th>序号</th><th>物料名称</th><th>型号</th><th>规格型号</th><th>颜色</th><th>数量</th><th>单位</th><th>供应商</th><th><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
+      <div className="table-wrap"><table className="data-table"><thead><tr><th>序号</th><th>物料名称</th><th>型号</th><th>规格型号</th><th>颜色</th><th>数量</th><th>单位</th>{showSupplier && <th>供应商</th>}<th><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
         <td>{index + 1}</td>
         <td><Select value={row.materialId || undefined} onValueChange={(value) => changeMaterial(index, value)}><SelectTrigger><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
         <td><Input value={row.model ?? ""} onChange={(event) => updateItem(index, { model: event.target.value })} /></td>
@@ -181,8 +195,12 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
           默认供应商（2026-09-26）：下拉里搜不到可以就地新建（见 SupplierSelect）。
           停用/已删的供应商在列表里找不到，但**当行已有值**时要显示得出来 —— 否则用户会以为这一格空了，
           一保存就把记录抹掉。所以占位优先用当前关系，其次用快照。
+
+          2026-09-27：生产侧不显示这一列（`showSupplier={false}`，用户：「生产模块里面的 BOM 表里面
+          不用填写供应商」）。注意**行状态里的值不因此清空**，保存时照旧回传 —— 生产侧保存 BOM
+          不会把采购标过的供应商抹掉。
         */}
-        <td data-testid={`bom-supplier-${index}`}>
+        {showSupplier && <td data-testid={`bom-supplier-${index}`}>
           <SupplierSelect
             value={row.supplierId ?? ""}
             suppliers={row.supplierId && !suppliers.some((supplier) => supplier.id === row.supplierId) && (row.supplier ?? row.supplierSnapshot) ? [...suppliers, { id: row.supplierId, supplierCode: row.supplier?.supplierCode ?? (row.supplierSnapshot?.supplierCode as string | undefined) ?? null, name: row.supplier?.name ?? (row.supplierSnapshot?.name as string | undefined) ?? "（已停用的供应商）", isActive: true }] : suppliers}
@@ -190,7 +208,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
             onCreated={(supplier) => { setSuppliers((current) => (current.some((item) => item.id === supplier.id) ? current : [...current, supplier])); onSupplierCreated?.(supplier); }}
             testId={`bom-supplier-select-${index}`}
           />
-        </td>
+        </td>}
         <td><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setItems((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={16} /></Button></td>
       </tr>)}</tbody></table></div>
       {!items.length && <p className="panel-note">这张 BOM 还没有明细行：点「添加行」或「新建物料」开始录入。</p>}
