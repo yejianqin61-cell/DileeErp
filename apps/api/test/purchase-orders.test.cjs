@@ -60,30 +60,16 @@ test("purchase order rejects finished products even with an outside-BOM reason",
   );
 });
 
-// 2026-09-17 用户要求「采购板块要支持对已经建好的采购单进行编辑」：
-// 旧规则是「非草稿一律不可编辑，要先点『回到草稿』」，但那张单已经发给供应商了，
-// 在系统里把它退回草稿等于假装没下过单。新规则见 purchase-orders.service.ts 的 assertEditable：
-//   草稿 → 自由编辑；已下单但无任何到货 → 也能编辑，但必须填原因；其余一律拒绝。
-test("an ordered purchase order without receipts is editable, but only with a reason", async () => {
-  const service = new PurchaseOrdersService({ purchaseOrder: { findFirst: async () => ({ id: "purchase-1", status: "ordered", items: [] }) } }, {});
-  await assert.rejects(
-    () => service.update("purchase-1", {}, {}),
-    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "CORRECTION_REASON_REQUIRED",
-  );
-});
-
-test("purchase orders that already have arrival facts cannot replace their rows", async () => {
-  // 到货行要带上 get() 拼批次视图时会读的两个字段（真实 Prisma 由 include 填）
-  const receipted = { id: "purchase-1", status: "ordered", items: [{ receipts: [{ id: "receipt-1", inspections: [], rawMaterialInbounds: [] }] }] };
-  const partiallyArrived = { id: "purchase-1", status: "partially_arrived", items: [] };
-  for (const row of [receipted, partiallyArrived]) {
-    const service = new PurchaseOrdersService({ purchaseOrder: { findFirst: async () => row } }, {});
-    await assert.rejects(
-      () => service.update("purchase-1", {}, {}),
-      (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ORDER_NOT_EDITABLE",
-    );
-  }
-});
+// 2026-09-27（口径 7）：采购单**明细**的编辑已经关闭。
+//
+// 2026-09-17 曾经允许「已下单未到货的单直接改明细，填个原因就行」，现在不给了：
+// 数量/单价/供应商的唯一编辑点是**采购计划**，否则同一批货会有两份数字，
+// 而「这张 BOM 还差什么没买」立刻失真。要改一张已下单的单，走「退回采购计划」。
+//
+// 这个端点的行为（包括"已经有到货事实的单也一样只认打印字段"）现在钉在
+// `apps/api/test/unit/purchase-order-detail-readonly.test.cjs`；
+// 「已有到货事实不能退回采购计划」钉在 `apps/api/test/unit/purchase-plans-service.test.cjs`。
+// 本文件不再重复这两条，只保留下面这条**仍然存在**的写入路径：按供应商收束。
 
 test("completed receipt totals remain closable until arrival closure is recorded", async () => {
   const rows = [
@@ -313,10 +299,10 @@ test("a draft created without any supplier keeps the item supplier empty", async
   assert.equal(captured.items.create[0].supplierSnapshot, undefined);
 });
 
-test("update replaces rows with the item supplier and keeps the order-level supplier in sync", async () => {
+test("按供应商收束（splitExisting）把明细的供应商写进去，并保持整单供应商同步", async () => {
   let createManyData = null;
   let orderUpdateData = null;
-  const row = { id: "purchase-1", status: "draft", orderNo: "SO-1", items: [], extensionData: {} };
+  const row = { id: "purchase-1", purchaseOrderNo: "PO-1", status: "draft", orderNo: "SO-1", items: [], extensionData: {} };
   const tx = {
     purchaseOrderItem: { updateMany: async () => {}, createMany: async ({ data }) => { createManyData = data; } },
     purchaseOrder: { update: async ({ data }) => { orderUpdateData = data; return row; } },
@@ -324,9 +310,9 @@ test("update replaces rows with the item supplier and keeps the order-level supp
   const prisma = { ...refsPrisma([{ id: "supplier-1", name: "甲供应商" }]), $transaction: async (fn) => fn(tx), purchaseOrder: { findFirst: async () => row } };
   const audit = { create: () => ({}), update: () => ({}), record: async () => {} };
   const service = new PurchaseOrdersService(prisma, audit);
-  await service.update("purchase-1", {
-    order_no: "SO-1", bom_id: "bom-1", purchase_date: "2026-09-08", currency: "USD",
-    items: [{ material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", supplier_id: "supplier-1", expected_date: "2026-09-15", quantity: "2", unit_price: "3" }],
+  await service.splitExisting("purchase-1", {
+    order_no: "SO-1", bom_id: "bom-1", purchase_date: "2026-09-08",
+    groups: [{ supplier_id: "supplier-1", currency: "USD", expected_date: "2026-09-15", items: [{ material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", expected_date: "2026-09-15", quantity: "2", unit_price: "3" }] }],
   }, { id: "user-1" });
   assert.equal(createManyData[0].supplierId, "supplier-1");
   assert.equal(createManyData[0].supplierSnapshot.name, "甲供应商");

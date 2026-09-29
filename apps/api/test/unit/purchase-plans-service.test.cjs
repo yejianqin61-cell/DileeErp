@@ -25,7 +25,8 @@ const audit = {
   create: () => ({ createdBy: "user-1", updatedBy: "user-1" }),
   update: () => ({ updatedBy: "user-1" }),
   softDelete: () => ({ deletedAt: new Date("2026-09-27T03:00:00Z"), deletedBy: "user-1" }),
-  record: async () => {},
+  record: async (...args) => { audit.events.push(args); },
+  events: [],
 };
 
 /** 一行 BOM 明细的默认形态。 */
@@ -53,7 +54,7 @@ const bomRow = (id, overrides = {}) => ({
  * 「只用已确认销售单的 BOM」「排除已有计划的 BOM」「排除已软删的计划」这几条查询口径，
  * 一个恒返回全部数据的桩会把断言变成永远通过。
  */
-function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], missingBom = false } = {}) {
+function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], purchaseOrders = [], missingBom = false } = {}) {
   const units = [
     { id: "unit-pcs", name: "个", isActive: true, deletedAt: null },
     { id: "unit-m", name: "米", isActive: true, deletedAt: null },
@@ -91,8 +92,13 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
     bom: {
       findFirst: async ({ where }) => {
         if (missingBom) return null;
-        if (where.id) return boms.find((bom) => bom.id === where.id && bom.deletedAt === null) ?? null;
-        return boms[0] ?? null;
+        // 按 where 真的过滤：`deletedAt: null` 只有调用方要求时才生效 ——
+        // 「退回采购计划」读 BOM 时**不看软删**（那条路不该被堵死）。
+        const match = (bom) => bom.id === where.id
+          && (where.deletedAt === null ? bom.deletedAt === null : true)
+          && (where.salesOrder?.status ? bom.salesOrder?.status === where.salesOrder.status : true);
+        if (where.id) return boms.find(match) ?? null;
+        return boms.find((bom) => bom.deletedAt === null) ?? null;
       },
       findMany: async () => boms.filter((bom) => bom.deletedAt === null && (bom.salesOrder?.status === "confirmed") && !plans.some((plan) => plan.bomId === bom.id && plan.deletedAt === null)).map((bom) => ({ ...bom, items: bomItems.filter((item) => item.bomId === bom.id && item.deletedAt === null) })),
     },
@@ -116,6 +122,8 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
       },
     },
     purchasePlanItem: {
+      // 「退回采购计划」要先找出认领了这张单明细的计划行。
+      findMany: async ({ where }) => planItems.filter((row) => row.deletedAt === null && (where.purchaseOrderItemId?.in ?? []).includes(row.purchaseOrderItemId)),
       createMany: async ({ data }) => {
         for (const row of data) planItems.push({ id: `item-${planItems.length + 1}`, purchaseOrderItemId: null, deletedAt: null, ...row, quantity: new Prisma.Decimal(row.quantity), unitPrice: new Prisma.Decimal(row.unitPrice) });
         return { count: data.length };
@@ -127,7 +135,11 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
       },
       // 假 Prisma 按 where 真的过滤（写路径的软删范围正是本文件要验证的口径之一）。
       updateMany: async ({ where, data }) => {
-        const hit = planItems.filter((row) => row.planId === where.planId && row.deletedAt === null && (where.purchaseOrderItemId === null ? row.purchaseOrderItemId === null : true));
+        const hit = planItems.filter((row) => {
+          if (where.id?.in) return where.id.in.includes(row.id) && row.deletedAt === null;
+          if (row.planId !== where.planId || row.deletedAt !== null) return false;
+          return where.purchaseOrderItemId === null ? row.purchaseOrderItemId === null : true;
+        });
         for (const row of hit) Object.assign(row, data);
         return { count: hit.length };
       },
@@ -150,6 +162,22 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
       // 「收束下单」落库后按 `extension_data.purchase_plan_item_id` 回写计划行的链接，
       // 所以这里要能把刚建出来的采购明细读回来。
       findMany: async ({ where }) => createdOrderItems.filter((row) => (where.purchaseOrderId?.in ?? []).includes(row.purchaseOrderId) && row.deletedAt === null),
+      updateMany: async ({ where, data }) => {
+        // 明细可能来自 `purchaseOrderItems`（直接种的）或 `purchaseOrders[].items`（整单种的）。
+        const pool = [...purchaseOrderItems, ...purchaseOrders.flatMap((row) => row.items ?? [])];
+        const hit = pool.filter((row) => row.purchaseOrderId === where.purchaseOrderId && row.deletedAt === null);
+        for (const row of hit) Object.assign(row, data);
+        return { count: hit.length };
+      },
+    },
+    // 「退回采购计划」要读那张采购单、软删它的明细、把它标成已取消。
+    purchaseOrder: {
+      findFirst: async ({ where }) => purchaseOrders.find((row) => row.id === where.id && row.deletedAt === null) ?? null,
+      update: async ({ where, data }) => {
+        const row = purchaseOrders.find((candidate) => candidate.id === where.id);
+        Object.assign(row, data);
+        return row;
+      },
     },
     $queryRaw: async () => [],
     $transaction: async (fn) => fn(prisma),
@@ -673,6 +701,125 @@ test("收束下单：物料已经不在 BOM 里、又没写「BOM 外新增原�
     () => s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", items: ["i-1"] }] }, user),
     (error) => error.getResponse().code === "PURCHASE_OUTSIDE_BOM_REASON_REQUIRED" && /BOM 外新增原因/.test(error.getResponse().message),
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// 退回采购计划（T5）：可逆、不丢数据、与既有不变式同一条线。
+
+/** 一张已下单（无到货）的采购单，它的明细 poi-1 被计划行 i-1 认领着。 */
+function orderedOrderFixture({ bomId = "bom-1", status = "ordered", receipts = [] } = {}) {
+  return {
+    id: "po-1", purchaseOrderNo: "PO-1", orderNo: "SO-1", bomId, status, deletedAt: null,
+    items: [{
+      id: "poi-1", purchaseOrderId: "po-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1",
+      quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: "M-9", expectedDate: null,
+      bomItemId: "bi-1", materialSnapshot: { id: "mat-1", name: "物料 1" }, unitSnapshot: { id: "unit-pcs", name: "个" },
+      supplierSnapshot: { id: "sup-1", name: "五金厂" }, extensionData: {}, deletedAt: null, receipts,
+    }],
+  };
+}
+/** 计划行：i-1 已经下单（认领着 poi-1），i-2 还没下。 */
+const linkItems = () => [
+  { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: "M-9", expectedDate: null, purchaseOrderItemId: "poi-1", bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} },
+  { id: "i-2", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: null, quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("0.0000"), model: null, expectedDate: null, purchaseOrderItemId: null, bomItemId: "bi-2", deletedAt: null, sequence: 2, extensionData: {} },
+];
+
+test("退回采购计划：断开链接、单作废、数据全留（可逆，不用重录）", async () => {
+  audit.events.length = 0;
+  const order = orderedOrderFixture();
+  const items = linkItems();
+  const s = makeService({ plans: [{ ...thePlan }], planItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  const result = await s.service.revertPurchaseOrder("po-1", "供应商说做不了", user);
+
+  assert.equal(items[0].purchaseOrderItemId, null, "行回到未下单 —— 数量/单价/供应商都还在");
+  assert.equal(items[0].quantity.toString(), "5");
+  assert.equal(items[0].unitPrice.toString(), "3.5");
+  assert.equal(items[0].supplierId, "sup-1");
+  assert.equal(order.status, "cancelled", "那张单作废（不进采购单列表，审计里留痕）");
+  assert.ok(order.items[0].deletedAt, "明细软删，不是硬删");
+  assert.equal(result.planNo, "PP-1");
+  assert.equal(result.returnedLineCount, 1);
+  assert.equal(result.restoredLineCount, 0);
+  assert.equal(s.planItems.length, 2, "没有多出计划行");
+  const record = audit.events.find((args) => args[0] === "purchase_order.revert_to_plan");
+  assert.ok(record, "留一条审计");
+  assert.equal(record[4].reason, "供应商说做不了");
+  assert.equal(record[4].purchase_order_no, "PO-1");
+});
+
+test("退回采购计划：已有到货事实 / 状态不是已下单 → 422，且什么都没写", async () => {
+  for (const [label, order] of [
+    ["有到货", orderedOrderFixture({ receipts: [{ id: "gr-1" }] })],
+    ["部分到货", orderedOrderFixture({ status: "partially_arrived" })],
+    ["到货完成", orderedOrderFixture({ status: "arrived_complete" })],
+    ["已取消", orderedOrderFixture({ status: "cancelled" })],
+  ]) {
+    const items = linkItems();
+    const statusBefore = order.status;
+    const s = makeService({ plans: [{ ...thePlan }], planItems: items, purchaseOrders: [order], bomItems: bomRows() });
+    await assert.rejects(
+      () => s.service.revertPurchaseOrder("po-1", "想退", user),
+      (error) => error.getResponse().code === "PURCHASE_ORDER_NOT_REVERTIBLE",
+      label,
+    );
+    assert.equal(items[0].purchaseOrderItemId, "poi-1", `${label}：一个字都不该写`);
+    assert.equal(order.status, statusBefore, `${label}：状态不能变`);
+    assert.equal(order.items[0].deletedAt, null, `${label}：明细不能被动`);
+  }
+});
+
+test("退回采购计划：没有 BOM / 原因为空 / 单不存在 → 各自的错误码", async () => {
+  const blank = makeService({ plans: [{ ...thePlan }], planItems: linkItems(), purchaseOrders: [orderedOrderFixture()], bomItems: bomRows() });
+  await assert.rejects(() => blank.service.revertPurchaseOrder("po-1", "   ", user), (error) => error.getResponse().code === "CORRECTION_REASON_REQUIRED");
+
+  const noBom = makeService({ plans: [{ ...thePlan }], planItems: linkItems(), purchaseOrders: [orderedOrderFixture({ bomId: null })], bomItems: bomRows() });
+  await assert.rejects(() => noBom.service.revertPurchaseOrder("po-1", "想退", user), (error) => error.getResponse().code === "PURCHASE_ORDER_WITHOUT_BOM_NOT_REVERTIBLE");
+
+  const missing = makeService({ purchaseOrders: [] });
+  await assert.rejects(() => missing.service.revertPurchaseOrder("po-404", "想退", user), (error) => error.getResponse().code === "PURCHASE_ORDER_NOT_FOUND");
+});
+
+test("退回采购计划：计划不存在时**自动补建**一份（历史单也能退回）", async () => {
+  const order = orderedOrderFixture();
+  const s = makeService({ plans: [], planItems: [], purchaseOrders: [order], bomItems: bomRows(), boms: [bomFixture] });
+
+  const result = await s.service.revertPurchaseOrder("po-1", "历史单退回", user);
+
+  assert.equal(s.plans.length, 1, "补建一份计划");
+  assert.match(result.planNo, /^PP-\d{8}-/);
+  assert.ok(s.planItems.length >= 1, "补建的计划带上了这张 BOM 的需求行");
+  assert.equal(order.status, "cancelled");
+});
+
+test("退回采购计划：BOM 已被软删、销售单已关闭也照样能退（不把唯一的出路堵死）", async () => {
+  const order = orderedOrderFixture();
+  const softDeletedBom = { ...bomFixture, deletedAt: new Date("2026-09-20"), salesOrder: { status: "closed", deletedAt: null } };
+  const s = makeService({ plans: [], planItems: [], purchaseOrders: [order], bomItems: [], boms: [softDeletedBom] });
+
+  const result = await s.service.revertPurchaseOrder("po-1", "这批不做了", user);
+
+  assert.match(result.planNo, /^PP-\d{8}-/);
+  assert.equal(result.restoredLineCount, 1, "BOM 行没了，退回的明细以镜像行落进计划");
+  assert.equal(s.planItems[0].materialId, "mat-1");
+});
+
+test("退回采购计划：历史单的明细没有计划行认领 → 按原值镜像成新的计划行（不丢采购员填过的数据）", async () => {
+  // 2026-09-27 之前建的已下单采购单没有计划行链接。退回时不能只是作废那张单 ——
+  // 那等于"这批货不用买了"，而用户的意思是"回到计划里重来"。
+  const order = orderedOrderFixture();
+  const s = makeService({ plans: [{ ...thePlan }], planItems: [], purchaseOrders: [order], bomItems: bomRows() });
+
+  const result = await s.service.revertPurchaseOrder("po-1", "下错了", user);
+
+  assert.equal(result.restoredLineCount, 1);
+  const restored = s.planItems.find((row) => row.materialId === "mat-1");
+  assert.equal(restored.quantity.toString(), "5", "数量照搬");
+  assert.equal(restored.unitPrice.toString(), "3.5", "单价照搬");
+  assert.equal(restored.supplierId, "sup-1", "供应商照搬");
+  assert.equal(restored.bomItemId, "bi-1");
+  assert.equal(restored.purchaseOrderItemId ?? null, null, "镜像出来的行是未下单的");
+  assert.equal(restored.extensionData.restored_from_reverted_order, "PO-1", "留一条来路");
 });
 
 // ---------------------------------------------------------------------------------------------

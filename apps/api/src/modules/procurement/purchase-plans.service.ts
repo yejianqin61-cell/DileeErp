@@ -178,6 +178,15 @@ export class PurchasePlansService {
     const bom = await this.loadBom(input.bom_id);
     const existing = await this.prisma.purchasePlan.findFirst({ where: { bomId: bom.id, deletedAt: null }, select: { id: true, planNo: true } });
     if (existing) throw new ConflictException({ code: "PURCHASE_PLAN_ALREADY_EXISTS", message: `该 BOM 已经有一份采购计划（${existing.planNo}）`, details: [{ plan_id: existing.id, plan_no: existing.planNo }] });
+    const created = await this.createPlanRecord(bom, input, user);
+    return this.get(created.id);
+  }
+
+  /**
+   * 建一条计划记录（头 + 行）并写审计。**不做"已存在"检查** —— 语义由调用方决定：
+   * 新建接口看到已存在要报 409；退回采购计划时看到已存在要**复用它**。
+   */
+  private async createPlanRecord(bom: Awaited<ReturnType<PurchasePlansService["loadBom"]>>, input: PlanInput, user: CurrentUser) {
     const items = input.items?.length ? await this.prepareItems(bom, input.items, user) : await this.itemsFromBom(bom);
     try {
       const created = await this.prisma.$transaction(async (tx) => {
@@ -197,13 +206,119 @@ export class PurchasePlansService {
         return plan;
       });
       await this.audit.record("purchase_plan.create", "purchase_plan", user.id, created.id, { plan_no: created.planNo, order_no: created.orderNo, bom_id: bom.id, item_count: items.length, prefilled_suppliers: items.filter((item) => item.supplierId).length });
-      return this.get(created.id);
+      return created;
     } catch (error) {
       // 部分唯一索引（`bom_id WHERE deleted_at IS NULL`）挡住并发重复建：两个人同时点"新建"时，
       // 先到的赢，后到的拿到的是同一句人话，而不是一个 500。
       if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "PURCHASE_PLAN_ALREADY_EXISTS", message: "该 BOM 已经有一份采购计划", details: [] });
       throw error;
     }
+  }
+
+  /**
+   * 取该 BOM 的未删计划；**没有就补建一份**（口径 15 ③）。
+   *
+   * 什么时候会没有：这张已下单的采购单是 2026-09-27 之前建的（那时没有计划），
+   * 或者它的 BOM 后来才补上计划。退回时不能因为"计划不存在"就把用户挡回去 ——
+   * 补建出来的计划带的是**这张 BOM 的全部需求行**，正好就是"这些还要买"的工作面。
+   */
+  private async ensurePlanForBom(bomId: string, user: CurrentUser) {
+    const existing = await this.prisma.purchasePlan.findFirst({ where: { bomId, deletedAt: null }, select: { id: true, planNo: true } });
+    if (existing) return existing;
+    try {
+      const created = await this.createPlanRecord(await this.loadBomForRevert(bomId), {}, user);
+      return { id: created.id, planNo: created.planNo };
+    } catch (error) {
+      // 并发下别人刚补建出来：复用它，别把用户的退回动作顶掉。
+      if (error instanceof ConflictException) {
+        const raced = await this.prisma.purchasePlan.findFirst({ where: { bomId, deletedAt: null }, select: { id: true, planNo: true } });
+        if (raced) return raced;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 退回时用的 BOM 读取：**不看软删、不看销售单状态**。
+   *
+   * 与 `loadBom`（新建计划用）的差别是有理由的：那张采购单已经存在，它的 `bom_id` 一定指向
+   * 一行真实存在的 BOM（外键保证），而那张 BOM 可能后来被软删、销售单也可能已经关闭。
+   * 这些都**不该**把"退回"这条唯一的出路堵死 —— 计划表的外键只需要那行还在，软删的行也在。
+   * BOM 行已经全被软删时，补建出来的计划是空的，退回的明细会以镜像行的形式落进去，正好。
+   */
+  private async loadBomForRevert(bomId: string) {
+    const bom = await this.prisma.bom.findFirst({ where: { id: bomId } });
+    if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在（采购单引用的 BOM 已不在库里）", details: [] });
+    return bom;
+  }
+
+  /**
+   * 退回采购计划（口径 15 ③，替换已删除的 `revertToDraft`）。
+   *
+   * 什么时候用：供应商说做不了、价格谈崩了、下错了 —— 这张单还没发出有效到货事实。
+   *
+   * 为什么是"可逆"的：**不删任何数据**。计划行保留原来的数量、单价、供应商，
+   * 只是把「已下单」这个链接断开，行回到未下单，采购员改完可以重新收束。
+   * 那张采购单记 `cancelled` 且不进列表，审计里留痕（谁、何时、什么原因）。
+   *
+   * 历史单（2026-09-27 之前建的、没有计划行链接）也不丢：把它的明细**镜像成新的计划行**，
+   * 数量/单价/供应商/预计到货/BOM 外原因全部照搬。
+   */
+  async revertPurchaseOrder(purchaseOrderId: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "退回采购计划必须填写原因", details: [] });
+    const order = await this.prisma.purchaseOrder.findFirst({
+      where: { id: purchaseOrderId, deletedAt: null },
+      include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null }, select: { id: true } } } } },
+    });
+    if (!order) throw new NotFoundException({ code: "PURCHASE_ORDER_NOT_FOUND", message: "采购单不存在", details: [] });
+    // 与既有 `revertToDraft` 完全同一条不变式（错误码也沿用）：只有"已下单且没有任何到货事实"能退。
+    // 已有到货的单要改，走质检/退货那条线 —— 到货是既成事实，退回计划会与它打架。
+    if (order.status !== "ordered" || order.items.some((item) => item.receipts.length)) {
+      throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_REVERTIBLE", message: "仅无到货事实的已下单采购单可以退回采购计划", details: [{ status: order.status }] });
+    }
+    if (!order.bomId) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_WITHOUT_BOM_NOT_REVERTIBLE", message: "这张采购单没有 BOM 表，没有可退回的采购计划", details: [] });
+    const plan = await this.ensurePlanForBom(order.bomId, user);
+    const itemIds = order.items.map((item) => item.id);
+    const linked = itemIds.length ? await this.prisma.purchasePlanItem.findMany({ where: { purchaseOrderItemId: { in: itemIds }, deletedAt: null }, select: { id: true, purchaseOrderItemId: true } }) : [];
+    const linkedIds = new Set(linked.map((row) => row.purchaseOrderItemId));
+    const orphanItems = order.items.filter((item) => !linkedIds.has(item.id));
+    await this.prisma.$transaction(async (tx) => {
+      if (linked.length) await tx.purchasePlanItem.updateMany({ where: { id: { in: linked.map((row) => row.id) } }, data: { purchaseOrderItemId: null, ...this.audit.update(user) } });
+      if (orphanItems.length) {
+        // 历史单：没有计划行认领这些明细，按原值补成计划行（数量/单价/供应商照搬，不重录）。
+        await tx.purchasePlanItem.createMany({
+          data: orphanItems.map((item, index) => ({
+            planId: plan.id,
+            materialId: item.materialId,
+            materialSnapshot: item.materialSnapshot as Prisma.InputJsonValue,
+            unitId: item.unitId,
+            unitSnapshot: item.unitSnapshot as Prisma.InputJsonValue,
+            bomItemId: item.bomItemId,
+            supplierId: item.supplierId,
+            supplierSnapshot: (item.supplierSnapshot ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
+            model: item.model,
+            quantity: item.quantity.toFixed(4),
+            unitPrice: item.unitPrice.toFixed(4),
+            expectedDate: item.expectedDate,
+            sequence: linked.length + index + 1,
+            extensionData: { ...((item.extensionData ?? {}) as Record<string, unknown>), restored_from_reverted_order: order.purchaseOrderNo },
+            ...this.audit.create(user),
+          })),
+        });
+      }
+      await tx.purchaseOrderItem.updateMany({ where: { purchaseOrderId: order.id, deletedAt: null }, data: { ...this.audit.softDelete(user) } });
+      await tx.purchaseOrder.update({ where: { id: order.id }, data: { status: "cancelled", ...this.audit.update(user) } });
+    });
+    await this.audit.record("purchase_order.revert_to_plan", "purchase_order", user.id, order.id, {
+      order_no: order.orderNo,
+      purchase_order_no: order.purchaseOrderNo,
+      plan_id: plan.id,
+      plan_no: plan.planNo,
+      reason: reason.trim(),
+      returned_line_count: linked.length,
+      restored_line_count: orphanItems.length,
+    });
+    return { purchaseOrderId: order.id, purchaseOrderNo: order.purchaseOrderNo, planId: plan.id, planNo: plan.planNo, returnedLineCount: linked.length, restoredLineCount: orphanItems.length };
   }
 
   /**

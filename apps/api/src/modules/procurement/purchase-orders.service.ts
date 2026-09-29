@@ -20,8 +20,25 @@ type OrderableItem = { materialId: string; unitId: string; supplierId: string; q
 type BomItemOrderState = "none" | "draft" | "partial" | "ordered";
 /** 已下单的采购单状态（草稿不算，已取消已被查询排除）。 */
 const ORDERED_PURCHASE_STATUSES = ["ordered", "partially_arrived", "arrived_complete"];
+/**
+ * 采购单**列表**的范围（口径 11）：采购单模块就是"所有已经过供应商收束下单的采购单"。
+ *
+ * 草稿已经不存在（采购计划接管了它），已取消的单不进列表（它不再对外，留在审计里可查）。
+ */
+const LISTED_PURCHASE_STATUSES = ORDERED_PURCHASE_STATUSES;
 /** 可整体编辑的采购单状态：草稿自由改；已下单未到货的也能改，但要留下原因与前后值。 */
 const EDITABLE_PURCHASE_STATUSES = ["draft", "ordered"];
+/**
+ * `PATCH /purchase-orders/:id` 里**容忍但一律拒绝**的字段。
+ *
+ * 为什么不是直接删掉这个端点：老客户端（含已发布的打印页）还在发这些键，
+ * 让它们拿到一句"明细只能在采购计划里改"，比一个 404 有用得多。
+ * 而 `ValidationPipe` 开了 `forbidNonWhitelisted`，所以这些键必须先 declared 出来才收得到。
+ *
+ * ⚠️ **`expected_date` 与 `remark` 不在这里**：它们同时是"打印信息"的字段
+ * （交货日期 / 备注，见 `PrintFieldsDto`）—— 同一列两个用途，列进来会把打印路径打死。
+ */
+const PURCHASE_ORDER_DETAIL_KEYS = ["order_no", "bom_id", "bom_version", "supplier_id", "purchase_date", "currency", "items", "reason"] as const;
 /**
  * 采购单「打印信息」的入参：只含采购订单打印表上那些与明细/金额无关的字。
  * `expected_date`（交货日期）与 `remark`（备注）用 `null` 表示「清掉这一格」。
@@ -54,7 +71,7 @@ export class PurchaseOrdersService {
   // 此时跳过字典校验而在真实运行时（CurrencyModule 全局提供）始终校验。
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
   async list(orderNo?: string) {
-    const rows = await this.prisma.purchaseOrder.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null } }, material: true, unit: true, supplier: true } }, supplier: true }, orderBy: { updatedAt: "desc" } });
+    const rows = await this.prisma.purchaseOrder.findMany({ where: { deletedAt: null, status: { in: LISTED_PURCHASE_STATUSES }, ...(orderNo ? { orderNo } : {}) }, include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null } }, material: true, unit: true, supplier: true } }, supplier: true }, orderBy: { updatedAt: "desc" } });
     return rows.map((row) => row.status === "arrived_complete" && !this.arrivalClosed(row.extensionData) ? { ...row, status: "partially_arrived" } : row);
   }
   async get(id: string) { const po = await this.prisma.purchaseOrder.findFirst({ where: { id, deletedAt: null }, include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null }, orderBy: { receivedDate: "asc" }, include: { inspections: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } }, rawMaterialInbounds: { where: { deletedAt: null }, orderBy: { createdAt: "asc" } }, payableSources: { where: { status: { not: "voided" } }, orderBy: { createdAt: "asc" }, include: { supplierPayableEntry: { include: { allocations: true } } } } } }, material: true, unit: true, supplier: true } }, supplier: true, bom: true } }); if (!po) throw new NotFoundException({ code: "PURCHASE_ORDER_NOT_FOUND", message: "采购单不存在", details: [] }); return { ...po, items: po.items.map((item) => ({ ...item, receipts: item.receipts.map((receipt, index) => ({ ...receipt, batchSequence: this.batchSequence(receipt.extensionData, index + 1) })), batchWorkflows: item.receipts.map((receipt, index) => ({ receiptId: receipt.id, receiptNo: receipt.receiptNo, batchSequence: this.batchSequence(receipt.extensionData, index + 1), receivedQuantity: receipt.quantity, inspections: receipt.inspections, inbounds: receipt.rawMaterialInbounds.map((inbound) => ({ ...inbound, settlementUnitPrice: inbound.settlementUnitPrice, settlementTotalAmount: inbound.settlementTotalAmount })), payableSources: receipt.payableSources })) })) }; }
@@ -293,34 +310,27 @@ export class PurchaseOrdersService {
     return { supplierId: itemSupplier?.id ?? null, supplierSnapshot: (itemSupplier ?? undefined) as unknown as Prisma.InputJsonValue | undefined, expectedDate: this.itemExpectedDate(item), materialId: material.id, materialSnapshot: material as unknown as Prisma.InputJsonValue, unitId: unit.id, unitSnapshot: unit as unknown as Prisma.InputJsonValue, bomItemId: item.bom_item_id, model: item.model, quantity: item.quantity, unitPrice: item.unit_price, taxRate: item.tax_rate, extraFee: item.extra_fee ?? "0", amount: this.amount(item).toFixed(4), extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) };
   }
   /**
-   * 整体替换一张采购单的内容（头部 + 明细）。
+   * `PATCH /purchase-orders/:id`：**只收打印信息**，明细变更一律拒绝（口径 7）。
    *
-   * 可编辑范围（用户 2026-09-17：「采购板块要支持对已经建好的采购单进行编辑」）：
-   *   草稿 → 自由编辑；
-   *   已下单但**没有任何有效到货** → 也能直接编辑，但必须填原因，审计留下改动前后值。
-   * 曾经的规则是「非草稿一律不可编辑，要先点『回到草稿』」：那张单已经发给供应商了，
-   * 在系统里把它退回草稿等于假装没下过单，而供应商手里那份单还在。
-   * 已经有到货的单不可编辑 —— 质检/入库/应付来源都挂在到货上，改数量或单价会与已发生的事实打架。
+   * 2026-09-27 之前这里是「整体替换头部 + 明细」，已下单未到货的单也能改（要填原因）。
+   * 现在数量/单价/供应商的**唯一编辑点是采购计划**：两个模块都能改数量，
+   * 就会出现同一批货两份数字，而「这张 BOM 还差什么没买」会失真 ——
+   * 现有草稿工作区就出现过「已经下单了，但下单状态没及时更新」这条真实缺陷。
+   *
+   * 老客户端还在发 `items`/`supplier_id` 这些键，所以**给一句话**而不是 404：
+   * 422 `PURCHASE_ORDER_DETAIL_READONLY`，提示去采购计划里改。
+   * 要改一张已下单的单，正确动作是「**退回采购计划**」（见 `PurchasePlansService.revertPurchaseOrder`）。
    */
-  async update(id: string, input: Input, user: CurrentUser) {
-    await this.currencies?.assertSupported(input.currency, "采购单币种");
-    const current = await this.get(id);
-    this.assertEditable(current, "编辑");
-    const wasOrdered = current.status === "ordered";
-    const reason = input.reason?.trim();
-    if (wasOrdered && !reason) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "修改已下单采购单必须填写原因", details: [] });
-    const prepared = await this.prepare(input);
-    await this.prisma.$transaction((tx) => this.replaceOrder(tx, id, prepared, input, user));
-    await this.audit.record("purchase_order.update", "purchase_order", user.id, id, {
-      order_no: prepared.refs.order.orderNo,
-      item_count: prepared.items.length,
-      status: current.status,
-      reason: reason || undefined,
-      // 已下单的单改动必须留下前后值（宪法《Reversible Business Changes》）
-      before: wasOrdered ? this.orderSnapshot(current) : undefined,
-      after: wasOrdered ? this.orderSnapshot(this.snapshotSource(prepared, input)) : undefined,
-    });
-    return this.get(id);
+  async update(id: string, input: Input & PrintFieldsInput, user: CurrentUser) {
+    const sent = PURCHASE_ORDER_DETAIL_KEYS.filter((key) => (input as Record<string, unknown>)[key] !== undefined);
+    if (sent.length) {
+      throw new UnprocessableEntityException({
+        code: "PURCHASE_ORDER_DETAIL_READONLY",
+        message: "采购单的数量/单价/供应商/明细（以及单号、币种、采购日期）只能在采购计划里改——采购单是对外凭证；这里只能填打印信息（付款方式/交期条款/交货地址/交货日期/备注/回签），要改内容请先「退回采购计划」",
+        details: [{ fields: sent }],
+      });
+    }
+    return this.updatePrintFields(id, input, user);
   }
   /**
    * 把一张采购单的内容整体换成 prepared：老明细软删 + 新明细批量建 + 头部字段更新。
@@ -393,8 +403,13 @@ export class PurchaseOrdersService {
   }
 
   async order(id: string, user: CurrentUser) { const po = await this.get(id); if (po.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_STATE", message: "只有草稿采购单可以下单", details: [] }); this.assertOrderable(po); const headSupplierId = po.supplierId ?? po.items[0]?.supplierId ?? null; const result = await this.prisma.purchaseOrder.update({ where: { id }, data: { status: "ordered", supplierId: headSupplierId, purchaseDate: po.purchaseDate ?? new Date(), currency: po.currency ?? "CNY", ...this.audit.update(user) } }); await this.audit.record("purchase_order.order", "purchase_order", user.id, id, { order_no: po.orderNo }); return result; }
-  async revertToDraft(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "采购单回退草稿必须填写原因", details: [] }); const po = await this.get(id); if (po.status !== "ordered" || po.items.some((item) => item.receipts.length)) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_REVERTIBLE", message: "仅无到货事实的已下单采购单可以退回草稿", details: [] }); const result = await this.prisma.purchaseOrder.update({ where: { id }, data: { status: "draft", ...this.audit.update(user) } }); await this.audit.record("purchase_order.revert_to_draft", "purchase_order", user.id, id, { order_no: po.orderNo, reason: reason.trim() }); return result; }
-  async cancel(id: string, user: CurrentUser) { const po = await this.get(id); if (po.status !== "draft" || po.items.some((item) => item.receipts.length)) throw new UnprocessableEntityException({ code: "DOWNSTREAM_RECORD_EXISTS", message: "已有下游事实的采购单不能直接取消", details: [] }); return this.prisma.purchaseOrder.update({ where: { id }, data: { status: "cancelled", ...this.audit.update(user) } }); }
+  // `revertToDraft` 与 `cancel` 已在 2026-09-27 删除：
+  //   · 前者把已下单的单退回 `draft`，而草稿这个概念已经被采购计划接管（迁移会把历史草稿归并成计划），
+  //     退回草稿等于回到一个不存在的状态。改单的正确动作是「退回采购计划」，
+  //     它由 `PurchasePlansService.revertPurchaseOrder` 实现 —— 放在计划那一侧是因为
+  //     **退回的落点是计划行**（断开 1:1 链接），而且这样两条服务的依赖是单向的
+  //     （计划 → 采购单），不会绕成循环依赖。
+  //   · 后者只允许取消 `draft`（草稿消失后它是死代码）；"供应商说做不了"的出口也是退回计划。
   async receipt(id: string, itemId: string, input: { quantity: string; received_date: string; reference_no?: string; remark?: string; idempotency_key?: string; over_receipt_reason?: string }, user: CurrentUser) { const quantity = this.positive(input.quantity, "到货数量必须是大于零的十进制数"); const receipt = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT id FROM purchase_orders WHERE id = ${id}::uuid FOR UPDATE`; const po = await tx.purchaseOrder.findFirst({ where: { id, deletedAt: null }, include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null }, orderBy: { receivedDate: "asc" } }, material: true } } } }); if (!po || !["ordered", "partially_arrived"].includes(po.status)) throw new UnprocessableEntityException({ code: "INVALID_PURCHASE_STATE", message: "当前采购单不可登记到货", details: [] }); const item = po.items.find((candidate) => candidate.id === itemId); if (!item) throw new UnprocessableEntityException({ code: "INVALID_RECEIPT", message: "到货明细或数量不合法", details: [] }); if (item.material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "PURCHASE_FINISHED_PRODUCT_FORBIDDEN", message: "采购单只能登记原料到货", details: [] }); const existing = input.idempotency_key ? item.receipts.find((row) => (row.extensionData as { idempotency_key?: string } | null)?.idempotency_key === input.idempotency_key) : undefined; if (existing) return { created: existing, po, batchSequence: item.receipts.indexOf(existing) + 1, payableAmount: new Prisma.Decimal(((existing.extensionData as { payable_amount?: string } | null)?.payable_amount) ?? existing.quantity.mul(item.unitPrice).toFixed(4)) }; const currentReceived = item.receipts.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)); const totalReceived = currentReceived.plus(quantity); if (totalReceived.gt(item.quantity) && !input.over_receipt_reason?.trim()) throw new UnprocessableEntityException({ code: "PURCHASE_OVER_RECEIPT_REASON_REQUIRED", message: "到货数量超过采购数量，必须填写超收原因", details: [{ ordered_quantity: item.quantity.toString(), received_quantity: currentReceived.toString(), requested_quantity: quantity.toString() }] }); const batchSequence = item.receipts.length + 1; const extensionData = { idempotency_key: input.idempotency_key ?? null, batch_sequence: batchSequence, payable_status: "not_applicable_until_inbound_posted", payable_amount: "0.0000", over_receipt_reason: input.over_receipt_reason ?? null }; const created = await tx.purchaseReceipt.create({ data: { purchaseOrderId: po.id, purchaseOrderItemId: item.id, orderNo: po.orderNo, receiptNo: `GR-${randomUUID().slice(0, 12).toUpperCase()}`, referenceNo: input.reference_no, receivedDate: new Date(input.received_date), quantity, extensionData, remark: input.remark, ...this.audit.create(user) } }); await tx.incomingInspection.create({ data: { purchaseReceiptId: created.id, orderNo: po.orderNo, inspectedQuantity: 0, acceptedQuantity: 0, conditionalQuantity: 0, rejectedQuantity: 0, status: "pending", extensionData: { batch_sequence: batchSequence }, ...this.audit.create(user) } }); const items = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: po.id, deletedAt: null }, include: { receipts: { where: { deletedAt: null } } } }); const complete = items.length > 0 && items.every((candidate) => candidate.receipts.reduce((sum, row) => sum.plus(row.quantity), new Prisma.Decimal(0)).gte(candidate.quantity)); await tx.purchaseOrder.update({ where: { id }, data: { status: complete ? "arrived_complete" : "partially_arrived", ...this.audit.update(user) } }); return { created, po, batchSequence }; }); await this.audit.record("purchase_receipt.create", "purchase_receipt", user.id, receipt.created.id, { order_no: receipt.po.orderNo, purchase_order_id: id, batch_sequence: receipt.batchSequence }); return { ...receipt.created, batchSequence: receipt.batchSequence, payableStatus: "not_applicable_until_inbound_posted", payableAmount: "0.0000" }; }
   async updateReceipt(id: string, input: { quantity: string; reference_no?: string; remark?: string; over_receipt_reason?: string; reason: string }, user: CurrentUser) { const quantity = this.positive(input.quantity, "到货数量必须是大于零的十进制数"); if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "INVALID_RECEIPT_UPDATE", message: "到货数量和修改原因必须填写", details: [] }); const updated = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT purchase_order_id FROM purchase_receipts WHERE id = ${id}::uuid FOR UPDATE`; const receipt = await tx.purchaseReceipt.findFirst({ where: { id, deletedAt: null }, include: { purchaseOrder: true, purchaseOrderItem: true, inspections: { where: { deletedAt: null } }, rawMaterialInbounds: { where: { deletedAt: null } }, payableSources: { where: { status: { not: "voided" } } } } }); if (!receipt) throw new NotFoundException({ code: "RECEIPT_NOT_FOUND", message: "到货记录不存在", details: [] }); await tx.$queryRaw`SELECT id FROM purchase_orders WHERE id = ${receipt.purchaseOrderId}::uuid FOR UPDATE`; const lockedOrder = await tx.purchaseOrder.findFirst({ where: { id: receipt.purchaseOrderId, deletedAt: null }, select: { extensionData: true } }); if (lockedOrder && this.arrivalClosed(lockedOrder.extensionData)) throw new UnprocessableEntityException({ code: "PURCHASE_ARRIVALS_CLOSED", message: "采购单到货已关闭，不可修改批次", details: [] }); if (receipt.inspections.some((row) => row.inspectedQuantity.gt(0)) || receipt.rawMaterialInbounds.length || receipt.payableSources.some((row) => row.status === "posted")) throw new UnprocessableEntityException({ code: "RECEIPT_DOWNSTREAM_EXISTS", message: "已有质检、入库或财务过账事实的到货批次不可直接修改", details: [] }); const sibling = await tx.purchaseReceipt.aggregate({ where: { purchaseOrderItemId: receipt.purchaseOrderItemId, id: { not: id }, deletedAt: null }, _sum: { quantity: true } }); const total = new Prisma.Decimal(sibling._sum.quantity ?? 0).plus(quantity); if (total.gt(receipt.purchaseOrderItem.quantity) && !input.over_receipt_reason?.trim()) throw new UnprocessableEntityException({ code: "PURCHASE_OVER_RECEIPT_REASON_REQUIRED", message: "到货数量超过采购数量，必须填写超收原因", details: [{ ordered_quantity: receipt.purchaseOrderItem.quantity.toString(), received_quantity: sibling._sum.quantity?.toString() ?? "0", requested_quantity: quantity.toString() }] }); const currentData = (receipt.extensionData ?? {}) as Record<string, unknown>; const extensionData = { ...currentData, over_receipt_reason: input.over_receipt_reason ?? (currentData.over_receipt_reason as string | null) ?? null } as Prisma.InputJsonValue; const row = await tx.purchaseReceipt.update({ where: { id }, data: { quantity, referenceNo: input.reference_no, remark: input.remark, extensionData, ...this.audit.update(user) } }); return { row, orderNo: receipt.orderNo }; }); await this.audit.record("purchase_receipt.update", "purchase_receipt", user.id, id, { order_no: updated.orderNo, reason: input.reason }); return updated.row; }
   async cancelReceipt(id: string, reason: string, user: CurrentUser) { if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "撤销到货必须填写原因", details: [] }); const result = await this.prisma.$transaction(async (tx) => { await tx.$queryRaw`SELECT purchase_order_id FROM purchase_receipts WHERE id = ${id}::uuid FOR UPDATE`; const receipt = await tx.purchaseReceipt.findFirst({ where: { id, deletedAt: null }, include: { purchaseOrder: true, inspections: { where: { deletedAt: null } }, rawMaterialInbounds: { where: { deletedAt: null } }, payableSources: { where: { status: { not: "voided" } } } } }); if (!receipt) throw new NotFoundException({ code: "RECEIPT_NOT_FOUND", message: "到货记录不存在", details: [] }); await tx.$queryRaw`SELECT id FROM purchase_orders WHERE id = ${receipt.purchaseOrderId}::uuid FOR UPDATE`; const lockedOrder = await tx.purchaseOrder.findFirst({ where: { id: receipt.purchaseOrderId, deletedAt: null }, select: { extensionData: true } }); if (lockedOrder && this.arrivalClosed(lockedOrder.extensionData)) throw new UnprocessableEntityException({ code: "PURCHASE_ARRIVALS_CLOSED", message: "采购单到货已关闭，不可撤销批次", details: [] }); if (receipt.inspections.some((row) => row.inspectedQuantity.gt(0)) || receipt.rawMaterialInbounds.length || receipt.payableSources.some((row) => row.status === "posted")) throw new UnprocessableEntityException({ code: "RECEIPT_DOWNSTREAM_EXISTS", message: "已有质检、入库或财务过账事实的到货批次不可直接撤销", details: [] }); const row = await tx.purchaseReceipt.update({ where: { id }, data: { ...this.audit.softDelete(user) } }); await tx.incomingInspection.updateMany({ where: { purchaseReceiptId: id, deletedAt: null }, data: { ...this.audit.softDelete(user) } }); await tx.payableSource.updateMany({ where: { purchaseReceiptId: id, status: { not: "voided" } }, data: { status: "voided", ...this.audit.update(user) } }); const items = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: receipt.purchaseOrderId, deletedAt: null }, include: { receipts: { where: { deletedAt: null } } } }); const complete = items.length > 0 && items.every((item) => item.receipts.reduce((sum, current) => sum.plus(current.quantity), new Prisma.Decimal(0)).gte(item.quantity)); const hasReceipt = items.some((item) => item.receipts.length > 0); await tx.purchaseOrder.update({ where: { id: receipt.purchaseOrderId }, data: { status: complete ? "arrived_complete" : hasReceipt ? "partially_arrived" : "ordered", ...this.audit.update(user) } }); return { row, orderNo: receipt.orderNo }; }); await this.audit.record("purchase_receipt.cancel", "purchase_receipt", user.id, id, { order_no: result.orderNo, reason }); return result.row; }

@@ -6,18 +6,17 @@
 //   3. POST   /api/v1/purchase-orders                       新建（201）
 //   4. POST   /api/v1/purchase-orders/split                 按供应商拆分成多张采购单
 //   5. POST   /api/v1/purchase-orders/:id/split             按供应商收束一张已存在的单（第 1 组沿用原单）
-//   6. PATCH  /api/v1/purchase-orders/:id                   修改（草稿自由改；已下单未到货需 reason）
+//   6. PATCH  /api/v1/purchase-orders/:id                   只收打印信息（明细变更 → 422 DETAIL_READONLY）
 //   7. PATCH  /api/v1/purchase-orders/:id/print-fields      打印信息（付款方式/交期条款/交货地址/交货日期/备注/回签三格）
 //   8. GET    /api/v1/purchase-orders/:id                   详情
 //   9. GET    /api/v1/purchase-orders/:id/impact-preview    变更影响预览
 //  10. POST   /api/v1/purchase-orders/:id/order             下单
-//  11. POST   /api/v1/purchase-orders/:id/revert-draft      退回草稿（需 reason）
-//  12. POST   /api/v1/purchase-orders/:id/cancel            取消
-//  13. POST   /api/v1/purchase-orders/:id/revert-arrivals   到货回退（需 reason）
-//  14. POST   /api/v1/purchase-orders/:id/close-arrivals    关闭到货
-//  15. POST   /api/v1/purchase-orders/:id/items/:itemId/receipts   登记分批到货
-//  16. PATCH  /api/v1/purchase-orders/receipts/:receiptId          修改到货批次（子资源在顶层，不在 :id 下）
-//  17. POST   /api/v1/purchase-orders/receipts/:receiptId/cancel   撤销到货批次
+//  11. POST   /api/v1/purchase-orders/:id/revert-to-plan    退回采购计划（需 reason，2026-09-27 替换 revert-draft）
+//  12. POST   /api/v1/purchase-orders/:id/revert-arrivals   到货回退（需 reason）
+//  13. POST   /api/v1/purchase-orders/:id/close-arrivals    关闭到货
+//  14. POST   /api/v1/purchase-orders/:id/items/:itemId/receipts   登记分批到货
+//  15. PATCH  /api/v1/purchase-orders/receipts/:receiptId          修改到货批次（子资源在顶层，不在 :id 下）
+//  16. POST   /api/v1/purchase-orders/receipts/:receiptId/cancel   撤销到货批次
 //
 // 环境约束（违反会得到随机失败，见 tests/helpers/api-client.cjs:73-82）：
 //   - 本 API 是**单会话**的：AuthService.login() 先删该用户全部 session 再建新的
@@ -117,13 +116,13 @@ const ROUTES = [
   { body: {}, method: "POST", name: "split", path: "/api/v1/purchase-orders/split" },
   // 2026-09-17 新增：按供应商收束一张**已经存在**的采购单（第 1 组沿用原单）。
   { body: { order_no: "PROBE", groups: [{ supplier_id: UNKNOWN_ORDER_ID, items: [] }] }, method: "POST", name: "splitExisting", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/split` },
-  { body: {}, method: "PATCH", name: "update", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}` },
+  { body: { payment_terms: "月结30天" }, method: "PATCH", name: "patchPrintFields", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}` },
   { body: { payment_terms: "月结30天" }, method: "PATCH", name: "updatePrintFields", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/print-fields` },
   { body: undefined, method: "GET", name: "get", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}` },
   { body: undefined, method: "GET", name: "impact", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/impact-preview` },
   { body: undefined, method: "POST", name: "order", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/order` },
-  { body: { reason: "probe" }, method: "POST", name: "revertDraft", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-draft` },
-  { body: undefined, method: "POST", name: "cancel", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/cancel` },
+  // 2026-09-27：`revert-draft` 与 `cancel` 已删除（草稿被采购计划接管），换成「退回采购计划」。
+  { body: { reason: "probe" }, method: "POST", name: "revertToPlan", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-to-plan` },
   { body: { reason: "probe" }, method: "POST", name: "revertArrivals", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-arrivals` },
   { body: undefined, method: "POST", name: "closeArrivals", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/close-arrivals` },
   { body: { quantity: "1", received_date: "2026-01-01" }, method: "POST", name: "receipt", path: `/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/items/${UNKNOWN_ITEM_ID}/receipts` },
@@ -287,20 +286,25 @@ test("purchase_orders.create_validates_body_before_touching_the_database", async
   expectErrorEnvelope(missingSalesOrder, { code: "SALES_ORDER_NOT_CONFIRMED", context: "POST /purchase-orders（销售单不存在）", status: 404 });
 });
 
-test("purchase_orders.update_validates_body_before_looking_up_the_order", async () => {
+test("purchase_orders.patch_only_accepts_print_fields", async () => {
   const client = await adminClient();
 
-  // 关键契约：即使 :id 不存在（甚至不是 UUID），请求体校验也先失败 → 400，而不是 404/500。
-  // 依据：ValidationPipe 是参数级管道，在 handler 之前执行；而 update() 才去 get(id)。
+  // 2026-09-27 口径 7：这个端点**只收打印信息**，明细变更一律 422。
+  // 全可选 DTO → 空体是合法请求，随后因单子不存在而 404（不是 400）。
   const empty = await client.patch(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}`, {});
-  expectErrorEnvelope(empty, { code: "VALIDATION_ERROR", context: "PATCH /purchase-orders/:id {}", status: 400 });
-  assert.equal(detailFor(empty.body, "order_no").rule, "isString");
+  expectErrorEnvelope(empty, { code: "PURCHASE_ORDER_NOT_FOUND", context: "PATCH /purchase-orders/:id {}", status: 404 });
 
-  const unknownField = await client.patch(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}`, { bogus_field: 1, order_no: "PROBE-NOT-EXIST" });
+  // 明细键仍然被 declared（老客户端还在发），但服务层见到就拒绝 ——
+  // 而且这条判定发生在查单之前（单子不存在也照样给"去采购计划改"这句话）。
+  const detail = await client.patch(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}`, { items: [] });
+  expectErrorEnvelope(detail, { code: "PURCHASE_ORDER_DETAIL_READONLY", context: "PATCH /purchase-orders/:id（明细只读）", status: 422 });
+
+  // 未知字段仍然 400（白名单校验没被放松）
+  const unknownField = await client.patch(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}`, { bogus_field: 1 });
   expectErrorEnvelope(unknownField, { code: "VALIDATION_ERROR", context: "PATCH /purchase-orders/:id（未知字段）", status: 400 });
   assert.equal(detailFor(unknownField.body, "bogus_field").rule, "whitelistValidation");
 
-  // 非 UUID 的 :id 也要先走校验层（@Param("id") 是 string，无 ParseUUIDPipe）
+  // 非 UUID 的 :id 也要先走校验层（ParseUUIDPipe）——否则会落到 Prisma 的 UUID 列上炸成 500
   const nonUuid = await client.patch("/api/v1/purchase-orders/not-a-uuid", {});
   expectErrorEnvelope(nonUuid, { code: "VALIDATION_ERROR", context: "PATCH /purchase-orders/not-a-uuid", status: 400 });
 });
@@ -350,8 +354,8 @@ test("KNOWN_CONTRACT_DEFECT purchase_orders.malformed_uuid_path_param_returns_50
   const impact = await client.get("/api/v1/purchase-orders/not-a-uuid/impact-preview");
   expectErrorEnvelope(impact, { code: "REQUEST_ERROR", context: "GET /purchase-orders/not-a-uuid/impact-preview", status: 500 });
 
-  // 对照：参数校验失败（DTO 层）永远是 400，与上面的 500 形成鲜明对比 —— 所以同一个控制器里
-  // 「非 UUID 的 id」在 PATCH 上是 400（body 先失败，见上一个用例），在 GET 上却是 500。
+  // 对照：PATCH 上的「非 UUID 的 id」是 400 —— 2026-09-27 起靠 `ParseUUIDPipe` 保证
+  // （那个端点改成全可选的打印字段 DTO 之后，已没有必填字段能替它兜底）。
   const patched = await client.patch("/api/v1/purchase-orders/not-a-uuid", {});
   expectErrorEnvelope(patched, { code: "VALIDATION_ERROR", context: "PATCH /purchase-orders/not-a-uuid", status: 400 });
 });
@@ -359,8 +363,9 @@ test("KNOWN_CONTRACT_DEFECT purchase_orders.malformed_uuid_path_param_returns_50
 test("purchase_orders.status_actions_return_404_for_unknown_order", async () => {
   const client = await adminClient();
 
-  // 三个无 body 的状态动作都先 get(id)（service:37/39/45-49），不存在的单子 → 业务 404，且**无写操作**。
-  for (const action of ["order", "cancel", "close-arrivals"]) {
+  // 状态动作都先 get(id)（service:37/39/45-49），不存在的单子 → 业务 404，且**无写操作**。
+  // `cancel` 已于 2026-09-27 删除（它只允许取消草稿，草稿已被采购计划接管）。
+  for (const action of ["order", "close-arrivals"]) {
     const response = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/${action}`);
     expectErrorEnvelope(response, { code: "PURCHASE_ORDER_NOT_FOUND", context: `POST /purchase-orders/:id/${action}`, status: 404 });
   }
@@ -372,7 +377,8 @@ test("purchase_orders.reason_actions_split_validation_400_and_business_422", asy
   // 第一层：ReasonDto.reason 是必填 string（controller:15）→ 缺字段时 400，请求根本到不了 service。
   // 注意 reason 同时挂了 @IsString 与 @MaxLength(1000)，class-validator 会为同一个值生成多条约束，
   // details 的顺序不保证 → 只断言「存在 reason 的字段级错误，且规则来自这两个装饰器之一」。
-  for (const action of ["revert-draft", "revert-arrivals"]) {
+  // `revert-draft` 已于 2026-09-27 换成 `revert-to-plan`（退回的落点是采购计划）。
+  for (const action of ["revert-to-plan", "revert-arrivals"]) {
     const missing = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/${action}`, {});
     expectErrorEnvelope(missing, { code: "VALIDATION_ERROR", context: `POST /:id/${action} {}`, status: 400 });
     const rule = detailFor(missing.body, "reason").rule;
@@ -380,17 +386,17 @@ test("purchase_orders.reason_actions_split_validation_400_and_business_422", asy
   }
 
   // 第二层：reason 是空白串（通过 IsString，但业务要求 trim 后非空）→ 422 精确业务码。
-  // 两个动作都在**任何数据库操作之前**校验 reason（service:38、service:113），因此这条探测零写入。
-  const blankDraft = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-draft`, { reason: "   " });
-  expectErrorEnvelope(blankDraft, { code: "CORRECTION_REASON_REQUIRED", context: "revert-draft 空白 reason", status: 422 });
+  // 两个动作都在**任何数据库操作之前**校验 reason，因此这条探测零写入。
+  const blankPlan = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-to-plan`, { reason: "   " });
+  expectErrorEnvelope(blankPlan, { code: "CORRECTION_REASON_REQUIRED", context: "revert-to-plan 空白 reason", status: 422 });
   const blankArrivals = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-arrivals`, { reason: "   " });
   expectErrorEnvelope(blankArrivals, { code: "PURCHASE_ARRIVAL_REVERSAL_REASON_REQUIRED", context: "revert-arrivals 空白 reason", status: 422 });
 
   // 第三层：reason 合法但单子不存在 → 业务 404。
-  // revert-draft 在 get(id) 处抛错、revert-arrivals 在事务内 findFirst 返回 null 处抛错（service:117），
+  // revert-to-plan 在读采购单处抛错、revert-arrivals 在事务内 findFirst 返回 null 处抛错，
   // 两者都在 update 之前，故不产生任何写入。
-  const draft = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-draft`, { reason: "probe" });
-  expectErrorEnvelope(draft, { code: "PURCHASE_ORDER_NOT_FOUND", context: "revert-draft 合法 reason", status: 404 });
+  const plan = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-to-plan`, { reason: "probe" });
+  expectErrorEnvelope(plan, { code: "PURCHASE_ORDER_NOT_FOUND", context: "revert-to-plan 合法 reason", status: 404 });
   const arrivals = await client.post(`/api/v1/purchase-orders/${UNKNOWN_ORDER_ID}/revert-arrivals`, { reason: "probe" });
   expectErrorEnvelope(arrivals, { code: "PURCHASE_ORDER_NOT_FOUND", context: "revert-arrivals 合法 reason", status: 404 });
 });
