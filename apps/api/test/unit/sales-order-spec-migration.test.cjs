@@ -50,9 +50,16 @@ test("细分明细表：分组名 + 名称 + 颜色 + 条码 + 数量 + 单位 +
   for (const column of ['"group_name" VARCHAR(100) NOT NULL', '"name" VARCHAR(200) NOT NULL', '"color" VARCHAR(100)', '"barcode" VARCHAR(100)', '"quantity" DECIMAL(18,4)', '"unit" VARCHAR(30)', '"sort_order" INTEGER NOT NULL DEFAULT 0']) {
     assert.ok(sql.includes(column), `sales_order_spec_details 缺列或类型不符：${column}`);
   }
-  // 只 name/group_name 必填，其余可空：样本1 的花色没有条码，样本2 的伞头没有颜色以外的字段
-  assert.equal(/CREATE TABLE "sales_order_spec_details"[\s\S]*?"color" VARCHAR\(100\) NOT NULL/i.test(sql), false);
-  assert.equal(/CREATE TABLE "sales_order_spec_details"[\s\S]*?"quantity" DECIMAL\(18,4\) NOT NULL/i.test(sql), false);
+  // 只 name/group_name 必填，其余可空：样本1 的花色没有条码，样本2 的伞头没有颜色以外的字段。
+  //
+  // ⚠️ 断言必须**只看这张表自己的定义**。`migrationSql()` 把 prisma/migrations 下所有
+  // migration.sql 拼成一份大字符串，而 `[\s\S]*?` 会一路跨到后面任意一张表去 ——
+  // 2026-09-27 新增的 `purchase_plan_items`（同样是 `"quantity" DECIMAL(18,4) NOT NULL`）
+  // 就让这条断言红了，而它盯的表其实完全正常。挪进 `CREATE TABLE ... );` 块里才钉得住本意。
+  const tableBlock = /CREATE TABLE "sales_order_spec_details" \(([\s\S]*?)\n\);/i.exec(sql)?.[1] ?? "";
+  assert.ok(tableBlock.length > 0, "没取到 sales_order_spec_details 的建表语句，正则可能已失效");
+  assert.equal(/"color" VARCHAR\(100\) NOT NULL/i.test(tableBlock), false);
+  assert.equal(/"quantity" DECIMAL\(18,4\) NOT NULL/i.test(tableBlock), false);
 });
 
 test("明细按 (销售单, 排序) 取，外键指向 sales_orders", () => {
