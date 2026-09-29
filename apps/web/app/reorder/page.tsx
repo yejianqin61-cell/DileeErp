@@ -18,6 +18,9 @@ import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/
 import { DocumentGroups, type DocumentGroup } from "../../components/reorder/document-groups";
 import { UnassignedPanel } from "../../components/reorder/unassigned-panel";
 import { ApiClientError, apiGet } from "../../lib/api-client";
+import { downloadFile } from "../../lib/download";
+import { useSessionProfile } from "../../lib/session-context";
+import { canVisitPath } from "../../lib/surface-permission";
 
 type UnitQuantity = { unit: string; quantity: string };
 type CurrencyAmount = { currency: string; amount: string };
@@ -54,15 +57,28 @@ type BatchRow = {
   production_order_count: number;
   qc_qualified_quantity: string;
   qc_rejected_quantity: string;
+  qc_inspected_quantity: string;
   finished_inbound_quantity: string;
   outbound_quantity: string;
   reorder_from_order_no: string | null;
   can_reorder: boolean;
   can_reorder_reason: string | null;
   workbench_href: string;
+  /** 交期达成（T14）：承诺 vs **最早一次真正发出**的出库；未出货/无交期都不算准时。 */
+  delivery: { promised_date: string | null; actual_date: string | null; verdict: string; verdict_label: string; days_delta: number | null };
 };
 
-type ArticleDetail = ArticleRow & { customers: Array<{ customer_id: string; name: string | null; order_count: number }>; orders: BatchRow[] };
+type GrossMarginBatch = { order_no: string; included: boolean; currency: string | null; sales_amount: string | null; cost_amount: string | null; gross_profit: string | null; cost_caveat: boolean };
+type GrossMargin = { batches: GrossMarginBatch[]; totals: Array<{ currency: string; order_count: number; sales_amount: string; cost_amount: string; gross_profit: string }>; footnotes: string[] };
+
+type ArticleDetail = ArticleRow & {
+  customers: Array<{ customer_id: string; name: string | null; order_count: number }>;
+  orders: BatchRow[];
+  delivery_summary: Record<string, number>;
+  quality_trend: Array<{ order_no: string; order_date: string | null; inspected: string; qualified: string; qualified_rate: string | null }>;
+  /** 毛利：复用财务侧「销售利润报表(毛利)」的口径；财务模块不可用时是 null。 */
+  gross_margin: GrossMargin | null;
+};
 
 /** 订单状态中文（本页只用得到这三个 —— 销售单就 draft/confirmed/closed 三态）。 */
 const ORDER_STATUS_LABELS: Record<string, string> = { draft: "草稿", confirmed: "已确认", closed: "已关闭" };
@@ -73,10 +89,19 @@ const unitText = (rows: UnitQuantity[]) => (rows.length ? rows.map((row) => `${r
 const moneyText = (rows: CurrencyAmount[]) => (rows.length ? rows.map((row) => `${row.amount} ${row.currency}`).join("、") : "-");
 /** 合格率 `null` → `-`：没有质检事实与「全部不合格」是两回事。 */
 const rateText = (rate: string | null) => (rate === null ? "-" : `${(Number(rate) * 100).toFixed(2)}%`);
+/** 交期五档的中文与顺序（与后端 `DELIVERY_VERDICT_LABELS` 同一份口径）。 */
+const DELIVERY_ROWS: ReadonlyArray<readonly [string, string]> = [["early", "提前"], ["on_time", "准时"], ["late", "逾期"], ["not_shipped", "未出货"], ["no_promise", "无交期"]];
+const money = (value: string | null, currency: string | null) => (value === null ? "-" : `${value}${currency ? ` ${currency}` : ""}`);
 
 export default function ReorderPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const profile = useSessionProfile();
+  /**
+   * 毛利（金额类内容）按**表面权限**过滤：「其他」角色看不到财务页，也就不该在这里看到金额。
+   * 与工作台卡片用同一套判定（`canVisitPath(sections, "/finance")`），不另维护一张表。
+   */
+  const canSeeFinance = canVisitPath(profile?.surface_sections, "/finance");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [itemNo, setItemNo] = useState(searchParams.get("item_no") ?? "");
@@ -160,6 +185,9 @@ export default function ReorderPage() {
   return (
     <div className="page-root" data-testid="page-reorder">
       <PageHeader title="返单与总结" description="按货号查看历次批次与那一批的采购、生产、质检全部单据">
+        {itemNo ? (
+          <Button variant="secondary" data-testid="reorder-export" onClick={() => void downloadFile(`/reorder/articles/${encodeURIComponent(itemNo)}/summary.xlsx`, `迪礼ERP-货号总结-${itemNo.replace(/[\\/:*?"<>|]/g, "_")}.xlsx`).catch(() => setError("导出失败：请稍后重试"))}>导出总结表</Button>
+        ) : null}
         <Button variant="secondary" data-testid="reorder-toggle-unassigned" onClick={() => setShowUnassigned((current) => !current)}>{showUnassigned ? "收起未填货号" : "未填货号（补录）"}</Button>
         <Button variant="secondary" onClick={() => selectArticle(itemNo)}>刷新</Button>
       </PageHeader>
@@ -230,7 +258,63 @@ export default function ReorderPage() {
                   <p>应收金额：{moneyText(detail.receivable_amounts)}</p>
                   <p>QC：受检 {detail.qc.inspected} / 合格 {detail.qc.qualified} / 不合格 {detail.qc.rejected}（合格率 {rateText(detail.qc.qualified_rate)}）</p>
                   <p>客户：{detail.customers.map((customer) => `${customer.name ?? "-"}×${customer.order_count}`).join("、") || "-"}</p>
+                  <p data-testid="reorder-delivery-summary">交期：{DELIVERY_ROWS.map(([key, label]) => `${label} ${detail.delivery_summary?.[key] ?? 0}`).join(" / ")}（未出货与无交期都不算准时）</p>
                 </div>
+
+                {/*
+                  毛利（T14）：口径来自财务的「销售利润报表(毛利)」——同一单在这两处必须一致。
+                  缺采购价/缺 BOM 会让成本少算、毛利虚高，所以警告**原样显示**，绝不在这里吃掉。
+                */}
+                {canSeeFinance && detail.gross_margin ? (
+                  <section className="panel" data-testid="reorder-gross-margin">
+                    <div className="panel-heading"><h3>毛利（BOM 原料成本口径）</h3><span className="panel-note">与财务「销售利润报表(毛利)」同一口径</span></div>
+                    <div className="panel-body">
+                      <div className="table-wrap">
+                        <table className="ui-table">
+                          <thead><tr><th className="ui-table-head">币种</th><th className="ui-table-head">批数</th><th className="ui-table-head">销售金额</th><th className="ui-table-head">成本金额</th><th className="ui-table-head">毛利</th></tr></thead>
+                          <tbody>
+                            {detail.gross_margin.totals.map((total) => (
+                              <tr key={total.currency}>
+                                <td>{total.currency}</td>
+                                <td>{total.order_count}</td>
+                                <td>{total.sales_amount}</td>
+                                <td>{total.cost_amount}</td>
+                                <td>{total.gross_profit}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {detail.gross_margin.batches.some((batch) => !batch.included) ? <p className="panel-note">草稿单不计入毛利（利润报表按已确认/已关闭取数），它们在表里显示为 -。</p> : null}
+                      {detail.gross_margin.footnotes.length ? <p className="status-warning" data-testid="reorder-gross-margin-footnotes">{detail.gross_margin.footnotes.join("；")}</p> : null}
+                    </div>
+                  </section>
+                ) : null}
+
+                {/* 合格率趋势：**至少两批**有质检事实才给（一批没有"趋势"可言）。 */}
+                {detail.quality_trend.length >= 2 ? (
+                  <section className="panel" data-testid="reorder-quality-trend">
+                    <div className="panel-heading"><h3>合格率趋势（{detail.quality_trend.length} 批）</h3></div>
+                    <div className="panel-body">
+                      <div className="table-wrap">
+                        <table className="ui-table">
+                          <thead><tr><th className="ui-table-head">订单号</th><th className="ui-table-head">下单日</th><th className="ui-table-head">受检</th><th className="ui-table-head">合格</th><th className="ui-table-head">合格率</th></tr></thead>
+                          <tbody>
+                            {detail.quality_trend.map((point) => (
+                              <tr key={point.order_no}>
+                                <td>{point.order_no}</td>
+                                <td>{point.order_date ? point.order_date.slice(0, 10) : "-"}</td>
+                                <td>{point.inspected}</td>
+                                <td>{point.qualified}</td>
+                                <td>{rateText(point.qualified_rate)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
 
                 <h3>历次批次</h3>
                 <div className="table-wrap">
@@ -243,6 +327,7 @@ export default function ReorderPage() {
                         <th className="ui-table-head">数量</th>
                         <th className="ui-table-head">状态</th>
                         <th className="ui-table-head">QC 合格 / 不合格</th>
+                        <th className="ui-table-head">交期</th>
                         <th className="ui-table-head">已出库</th>
                         <th className="ui-table-head">操作</th>
                       </tr>
@@ -256,6 +341,10 @@ export default function ReorderPage() {
                           <td>{batch.quantity} {batch.unit}</td>
                           <td>{ORDER_STATUS_LABELS[batch.status] ?? batch.status}</td>
                           <td>{batch.qc_qualified_quantity} / {batch.qc_rejected_quantity}</td>
+                          <td data-testid={`reorder-delivery-${batch.order_no}`}>
+                            {batch.delivery.verdict_label}
+                            {batch.delivery.days_delta !== null && batch.delivery.days_delta !== 0 ? `（${batch.delivery.days_delta > 0 ? "+" : ""}${batch.delivery.days_delta} 天）` : ""}
+                          </td>
                           <td>{batch.outbound_quantity}</td>
                           <td>
                             <div className="action-row">

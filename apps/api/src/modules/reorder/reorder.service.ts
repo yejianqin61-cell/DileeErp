@@ -1,8 +1,9 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { FinanceReportQueryService } from "../finance/finance-report-query.service";
 import { itemNoKey } from "../sales/item-no";
-import { mergeArticles, qualifiedRate, sumByCurrency, unassignedOrderRow, documentRow, DOCUMENT_GROUPS, TIMELINE_LIMIT, OPEN_PRODUCTION_STATUSES, SHIPPED_OUTBOUND_STATUSES, type ArticleOrderRow, type DocumentRow, type DocumentType, type MergedArticle } from "./reorder.domain";
+import { mergeArticles, qualifiedRate, sumByCurrency, unassignedOrderRow, documentRow, deliveryVerdict, deliverySummary, qualityTrend, DELIVERY_VERDICT_LABELS, DOCUMENT_GROUPS, TIMELINE_LIMIT, OPEN_PRODUCTION_STATUSES, SHIPPED_OUTBOUND_STATUSES, type ArticleOrderRow, type DeliveryVerdict, type DocumentRow, type DocumentType, type MergedArticle } from "./reorder.domain";
 
 /** 分组中文名：从 `DOCUMENT_GROUPS` 反查，避免同一份清单抄两遍（漏一处就是一个没有标题的组）。 */
 const GROUP_LABELS = new Map<string, string>(DOCUMENT_GROUPS.map((group) => [group.type, group.label]));
@@ -71,7 +72,12 @@ type DownstreamSources = {
 
 @Injectable()
 export class ReorderService {
-  constructor(private readonly prisma: PrismaService) {}
+  /**
+   * `finance` 是**可选**依赖：毛利要复用财务侧既有的口径（`salesGrossProfit` 的销售金额/BOM 原料成本），
+   * 而这个模块的其余部分（清单/详情/单据/时间线）不该因为财务模块不在就整体不可用。
+   * 拿不到就不给毛利（`gross_margin: null`），前端据此隐藏那一段 —— 而不是在这里写第二套成本口径。
+   */
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly finance?: FinanceReportQueryService) {}
 
   /** 订单的轻字段：货号清单与待补录清单都只要这些（下游聚合另算）。 */
   private static readonly LIGHT_SELECT = {
@@ -151,38 +157,105 @@ export class ReorderService {
     const outboundByOrder = index(facts.outbounds);
     const sumOf = <T>(rows: T[], pick: (row: T) => Prisma.Decimal) => rows.reduce((total, row) => total.plus(pick(row)), new Prisma.Decimal(0)).toString();
 
+    /** 交期达成：承诺交期 vs **最早一次真正发出**的出库（分批出货时第一批决定是否延误）。 */
+    const deliveryOf = (row: ArticleOrderRow) => {
+      const shipped = (outboundByOrder.get(row.orderNo) ?? []).filter((outbound) => (SHIPPED_OUTBOUND_STATUSES as readonly string[]).includes(outbound.status));
+      const dates = shipped.map((outbound) => outbound.shipmentDate ?? outbound.createdAt).filter((value): value is Date => Boolean(value));
+      const actual = dates.length ? new Date(Math.min(...dates.map((value) => new Date(value).getTime()))) : null;
+      const { verdict, days_delta } = deliveryVerdict(row.deliveryDate, actual);
+      return { promised_date: row.deliveryDate ? new Date(row.deliveryDate).toISOString() : null, actual_date: actual ? actual.toISOString() : null, verdict, days_delta };
+    };
+    const orders = orderNos.map((orderNo) => {
+      const row = rows.find((candidate) => candidate.orderNo === orderNo)!;
+      const qcRows = qcByOrder.get(orderNo) ?? [];
+      const shipped = (outboundByOrder.get(orderNo) ?? []).filter((outbound) => (SHIPPED_OUTBOUND_STATUSES as readonly string[]).includes(outbound.status));
+      const delivery = deliveryOf(row);
+      return {
+        sales_order_id: row.id,
+        order_no: row.orderNo,
+        order_date: new Date(row.orderDate).toISOString(),
+        delivery_date: row.deliveryDate ? new Date(row.deliveryDate).toISOString() : null,
+        status: row.status,
+        quantity: row.quantity.toString(),
+        unit: row.unit,
+        customer: { id: row.customerId, name: row.customerName },
+        current_version: row.currentVersion,
+        bom_versions: (facts.boms.get(orderNo) ?? []).map((bom) => bom.version).sort((left, right) => left - right),
+        purchase_order_count: sources.purchases.filter((purchase) => purchase.orderNo === orderNo).length,
+        production_order_count: sources.production.filter((production) => production.orderNo === orderNo).length,
+        qc_qualified_quantity: sumOf(qcRows, (row_) => row_.qualifiedQuantity),
+        qc_rejected_quantity: sumOf(qcRows, (row_) => row_.rejectedQuantity),
+        qc_inspected_quantity: sumOf(qcRows, (row_) => row_.inspectedQuantity),
+        finished_inbound_quantity: sumOf(inboundByOrder.get(orderNo) ?? [], (row_) => row_.quantity),
+        outbound_quantity: sumOf(shipped, (row_) => row_.quantity),
+        reorder_from_order_no: row.reorderFromOrderNo,
+        // 「能不能拿它返单」由**服务端**判定并给出中文理由：前端自己拼条件，
+        // 改口径时就会出现「按钮亮着、点了 422」。
+        ...ReorderService.reorderability(row),
+        workbench_href: `/?order_no=${encodeURIComponent(row.orderNo)}`,
+        delivery: { ...delivery, verdict_label: DELIVERY_VERDICT_LABELS[delivery.verdict] },
+      };
+    });
+
+    const verdicts = orders.map((order) => order.delivery.verdict as DeliveryVerdict);
     return {
       ...this.aggregate(article, sources),
       item_no: article.itemNo,
       customers: this.customersOf(rows, orderNos),
-      orders: orderNos.map((orderNo) => {
-        const row = rows.find((candidate) => candidate.orderNo === orderNo)!;
-        const qcRows = qcByOrder.get(orderNo) ?? [];
-        const shipped = (outboundByOrder.get(orderNo) ?? []).filter((outbound) => (SHIPPED_OUTBOUND_STATUSES as readonly string[]).includes(outbound.status));
-        return {
-          sales_order_id: row.id,
-          order_no: row.orderNo,
-          order_date: new Date(row.orderDate).toISOString(),
-          delivery_date: row.deliveryDate ? new Date(row.deliveryDate).toISOString() : null,
-          status: row.status,
-          quantity: row.quantity.toString(),
-          unit: row.unit,
-          customer: { id: row.customerId, name: row.customerName },
-          current_version: row.currentVersion,
-          bom_versions: (facts.boms.get(orderNo) ?? []).map((bom) => bom.version).sort((left, right) => left - right),
-          purchase_order_count: (sources.purchases ?? []).filter((purchase) => purchase.orderNo === orderNo).length,
-          production_order_count: sources.production.filter((production) => production.orderNo === orderNo).length,
-          qc_qualified_quantity: sumOf(qcRows, (row_) => row_.qualifiedQuantity),
-          qc_rejected_quantity: sumOf(qcRows, (row_) => row_.rejectedQuantity),
-          finished_inbound_quantity: sumOf(inboundByOrder.get(orderNo) ?? [], (row_) => row_.quantity),
-          outbound_quantity: sumOf(shipped, (row_) => row_.quantity),
-          reorder_from_order_no: row.reorderFromOrderNo,
-          // 「能不能拿它返单」由**服务端**判定并给出中文理由：前端自己拼条件，
-          // 改口径时就会出现「按钮亮着、点了 422」。
-          ...ReorderService.reorderability(row),
-          workbench_href: `/?order_no=${encodeURIComponent(row.orderNo)}`,
-        };
-      }),
+      orders,
+      /**
+       * 复盘增强（T14）。三块都在这里给，前端只展示：
+       * 交期达成、合格率趋势（≥2 批才给）、毛利（复用财务侧口径，拿不到就是 null）。
+       */
+      delivery_summary: deliverySummary(verdicts),
+      quality_trend: qualityTrend(orders.map((order) => ({ orderNo: order.order_no, orderDate: order.order_date, inspected: order.qc_inspected_quantity, qualified: order.qc_qualified_quantity }))),
+      gross_margin: await this.grossMargin(orderNos),
+    };
+  }
+
+  /**
+   * 毛利：**逐批**调用财务侧的 `salesGrossProfit`（销售利润报表(毛利)的取数），不自己算成本。
+   *
+   * 为什么逐批而不是一次查完：那个服务按 `orderNo`（单值）筛选，没有"给一批订单号"的入口。
+   * 一张货号的批次是几十的量级，逐批并发的代价远低于在返单模块里再写一套成本口径 ——
+   * 而第二套口径一定会与利润报表漂移（漂移时业务会先怀疑数据、再怀疑系统）。
+   *
+   * 缺采购价 / 缺 BOM 会让成本少算、毛利虚高，财务那边的 `footnotes` 把这件事说清楚了，
+   * 原样带过来（`cost_caveat`），**绝不在这里把警告吃掉**。
+   */
+  private async grossMargin(orderNos: string[]) {
+    if (!this.finance || !orderNos.length) return null;
+    const results = await Promise.all(orderNos.map((orderNo) => this.finance!.salesGrossProfit({ orderNo })));
+    const batches = results.map((result, position) => {
+      const row = result.rows[0];
+      const sales = row?.salesAmount ? new Prisma.Decimal(row.salesAmount.toString()) : null;
+      const cost = row?.costAmount ? new Prisma.Decimal(row.costAmount.toString()) : null;
+      return {
+        order_no: orderNos[position],
+        // 草稿单不在利润报表的行集里（它按已确认/已关闭取数）：这时给 null，前端显示"—"而不是 0。
+        included: Boolean(row),
+        currency: row?.currency ?? null,
+        sales_amount: sales?.toString() ?? null,
+        cost_amount: cost?.toString() ?? null,
+        gross_profit: sales && cost ? sales.minus(cost).toString() : null,
+        cost_caveat: result.footnotes.length > 0,
+        footnotes: result.footnotes,
+      };
+    });
+    const totals = new Map<string, { sales: Prisma.Decimal; cost: Prisma.Decimal; count: number }>();
+    for (const batch of batches) {
+      if (!batch.included || !batch.currency) continue;
+      const current = totals.get(batch.currency) ?? { sales: new Prisma.Decimal(0), cost: new Prisma.Decimal(0), count: 0 };
+      current.sales = current.sales.plus(batch.sales_amount ?? 0);
+      current.cost = current.cost.plus(batch.cost_amount ?? 0);
+      current.count += 1;
+      totals.set(batch.currency, current);
+    }
+    return {
+      batches,
+      totals: [...totals.entries()].map(([currency, value]) => ({ currency, order_count: value.count, sales_amount: value.sales.toString(), cost_amount: value.cost.toString(), gross_profit: value.sales.minus(value.cost).toString() })).sort((left, right) => (left.currency < right.currency ? -1 : 1)),
+      /** 口径说明（原样来自财务侧的脚注）：缺采购价、缺 BOM 会让毛利偏高。 */
+      footnotes: [...new Set(batches.flatMap((batch) => batch.footnotes))],
     };
   }
 
@@ -343,7 +416,7 @@ export class ReorderService {
     const [boms, inbounds, outbounds] = await Promise.all([
       this.prisma.bom.findMany({ where: { orderNo: { in: orderNos }, deletedAt: null }, select: { orderNo: true, version: true } }),
       this.prisma.finishedGoodsInbound.findMany({ where: { orderNo: { in: orderNos }, deletedAt: null }, select: { orderNo: true, quantity: true } }),
-      this.prisma.finishedGoodsOutbound.findMany({ where: { orderNo: { in: orderNos }, deletedAt: null }, select: { orderNo: true, quantity: true, status: true } }),
+      this.prisma.finishedGoodsOutbound.findMany({ where: { orderNo: { in: orderNos }, deletedAt: null }, select: { orderNo: true, quantity: true, status: true, shipmentDate: true, createdAt: true } }),
     ]);
     return { boms: ReorderService.groupByOrder(boms), inbounds, outbounds };
   }

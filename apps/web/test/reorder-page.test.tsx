@@ -12,7 +12,21 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ReorderPage from "../app/reorder/page";
+import { SessionContext } from "../lib/session-context";
 import { apiErr, apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
+
+/** 两个范围的栏目集合（与后端 surfaceSectionsOf 算出来的一样）：用来验证金额按表面权限过滤。 */
+const FULL_SECTIONS = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "reorder", "customers", "reports", "finance", "hr", "account"];
+const GENERAL_SECTIONS = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "reorder", "customers", "reports", "account"];
+
+/** 带上会话档案渲染：毛利那块靠 `surface_sections` 决定显不显示。 */
+function session(node: React.ReactElement, sections: string[]) {
+  return (
+    <SessionContext.Provider value={{ id: "u-1", username: "boss", display_name: "老板", surface_sections: sections, surface_roles: [], role_keys: [], module_keys: [], surface_scope: "full" } as never}>
+      {node}
+    </SessionContext.Provider>
+  );
+}
 
 const router = vi.hoisted(() => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn(), searchParams: new URLSearchParams() }));
 vi.mock("next/navigation", () => ({
@@ -43,7 +57,13 @@ const batch = (overrides: Record<string, unknown> = {}) => ({
 const detail = (overrides: Record<string, unknown> = {}) => ({
   ...article(),
   customers: [{ customer_id: "c-1", name: "FLOWER1", order_count: 3 }],
-  orders: [batch(), batch({ sales_order_id: "so-2", order_no: "DL260140-1", order_date: "2026-07-01T00:00:00.000Z", status: "draft", can_reorder: false, can_reorder_reason: "草稿单不能作为返单来源" })],
+  orders: [
+    batch({ delivery: { promised_date: "2026-06-30T00:00:00.000Z", actual_date: "2026-06-25T00:00:00.000Z", verdict: "early", verdict_label: "提前", days_delta: -5 } }),
+    batch({ sales_order_id: "so-2", order_no: "DL260140-1", order_date: "2026-07-01T00:00:00.000Z", status: "draft", can_reorder: false, can_reorder_reason: "草稿单不能作为返单来源", delivery: { promised_date: null, actual_date: null, verdict: "no_promise", verdict_label: "无交期", days_delta: null } }),
+  ],
+  delivery_summary: { early: 1, on_time: 0, late: 0, not_shipped: 0, no_promise: 1 },
+  quality_trend: [],
+  gross_margin: null,
   ...overrides,
 });
 
@@ -215,6 +235,76 @@ describe("返单与总结：待补录入口", () => {
     expect(screen.queryByTestId("unassigned-panel")).toBeNull();
     fireEvent.click(await screen.findByTestId("reorder-toggle-unassigned"));
     await screen.findByTestId("unassigned-panel");
+  });
+});
+
+describe("返单与总结：复盘增强（T14）", () => {
+  const financeDetail = (overrides = {}) => detail({
+    quality_trend: [
+      { order_no: "DL260001-1", order_date: "2026-05-01T00:00:00.000Z", inspected: "1960", qualified: "1930", qualified_rate: "0.9847" },
+      { order_no: "DL260140-1", order_date: "2026-07-01T00:00:00.000Z", inspected: "500", qualified: "480", qualified_rate: "0.96" },
+    ],
+    gross_margin: {
+      batches: [
+        { order_no: "DL260001-1", included: true, currency: "USD", sales_amount: "2352", cost_amount: "1200", gross_profit: "1152", cost_caveat: true },
+        { order_no: "DL260140-1", included: false, currency: null, sales_amount: null, cost_amount: null, gross_profit: null, cost_caveat: false },
+      ],
+      totals: [{ currency: "USD", order_count: 1, sales_amount: "2352", cost_amount: "1200", gross_profit: "1152" }],
+      footnotes: ["缺采购价物料（成本按 0 计入，毛利偏高）：MAT-9 伞骨"],
+    },
+    ...overrides,
+  });
+
+  it("交期：汇总五档都在，每批显示结论与天数（未出货/无交期不算准时）", async () => {
+    router.searchParams = new URLSearchParams({ item_no: "27621 流水花扇" });
+    stub();
+    render(<ReorderPage />);
+    const summary = await screen.findByTestId("reorder-delivery-summary");
+    expect(summary).toHaveTextContent("提前 1");
+    expect(summary).toHaveTextContent("未出货 0");
+    expect(summary).toHaveTextContent("无交期 1");
+    expect(screen.getByTestId("reorder-delivery-DL260001-1")).toHaveTextContent("提前（-5 天）");
+    expect(screen.getByTestId("reorder-delivery-DL260140-1")).toHaveTextContent("无交期");
+  });
+
+  it("合格率趋势：不足两批就不显示那块（一批没有趋势可言）", async () => {
+    router.searchParams = new URLSearchParams({ item_no: "27621 流水花扇" });
+    stub();
+    render(<ReorderPage />);
+    await screen.findByTestId("reorder-batch-table");
+    expect(screen.queryByTestId("reorder-quality-trend")).toBeNull();
+  });
+
+  it("毛利：有财务权限时显示汇总与缺价警告；「其他」角色看不到金额", async () => {
+    router.searchParams = new URLSearchParams({ item_no: "27621 流水花扇" });
+    stub({ "/reorder/articles/": () => apiOk(financeDetail()) });
+
+    // ① 有财务权限（老板）：毛利与警告都要露出来，草稿单不计入也要说明
+    const { unmount } = render(session(<ReorderPage />, FULL_SECTIONS));
+    await screen.findByTestId("reorder-gross-margin");
+    expect(screen.getByTestId("reorder-gross-margin")).toHaveTextContent("1152");
+    expect(screen.getByTestId("reorder-gross-margin-footnotes")).toHaveTextContent("缺采购价物料");
+    expect(screen.getByTestId("reorder-quality-trend")).toBeTruthy();
+    unmount();
+
+    // ② 无财务权限（其他）：金额类内容整块不显示，但交期与合格率趋势照常
+    render(session(<ReorderPage />, GENERAL_SECTIONS));
+    await screen.findByTestId("reorder-batch-table");
+    expect(screen.queryByTestId("reorder-gross-margin")).toBeNull();
+    expect(screen.getByTestId("reorder-quality-trend")).toBeTruthy();
+  });
+
+  it("导出按钮：有选中货号时才出现（导出的是这个货号的总结表）", async () => {
+    stub();
+    const { unmount } = render(<ReorderPage />);
+    await screen.findByTestId("reorder-article-table");
+    expect(screen.queryByTestId("reorder-export")).toBeNull();
+    unmount();
+
+    router.searchParams = new URLSearchParams({ item_no: "27621 流水花扇" });
+    render(<ReorderPage />);
+    await screen.findByTestId("reorder-detail");
+    expect(screen.getByTestId("reorder-export")).toBeTruthy();
   });
 });
 

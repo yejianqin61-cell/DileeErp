@@ -1,9 +1,11 @@
-import { Controller, Get, Param, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Param, Query, Res, UseGuards } from "@nestjs/common";
+import type { Response } from "express";
 import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import { Type } from "class-transformer";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireAnyModules } from "../../platform/authorization/require-any-modules.decorator";
+import { ReorderExportService } from "./reorder-export.service";
 import { ReorderService } from "./reorder.service";
 
 /**
@@ -51,7 +53,8 @@ class TimelineQueryDto {
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireAnyModules("sales", "procurement", "production", "warehouse", "finance", "hr")
 export class ReorderController {
-  constructor(private readonly service: ReorderService) {}
+  // 参数名不能叫 `export`（保留字，TS1359）；这个类名也是全站唯一一个 import 之后必须改名的。
+  constructor(private readonly service: ReorderService, private readonly exportService: ReorderExportService) {}
 
   /** 货号清单：一行一个货号。`meta.total` 是**归并后的货号数**，不是销售单数。 */
   @Get("articles") async articles(@Query() query: ArticleQueryDto) {
@@ -87,5 +90,17 @@ export class ReorderController {
   /** 审计时间线：给 `order_no` 只看这一批，不给则整个货号合并（超过 200 条回报 `truncated`）。 */
   @Get("articles/:item_no/timeline") async timeline(@Param("item_no") itemNo: string, @Query() query: TimelineQueryDto) {
     return { data: await this.service.articleTimeline(itemNo, query.order_no), meta: {} };
+  }
+
+  /**
+   * 货号总结表（T14）：一张 xlsx，口径与页面**完全一致**（复用同一个 `articleDetail`）。
+   * 路径是三段，不会被 `articles/:item_no` 吃掉（Nest 按声明顺序匹配，但更长的静态后缀也是独立路由）。
+   */
+  @Get("articles/:item_no/summary.xlsx") async summarySheet(@Param("item_no") itemNo: string, @Res() response: Response) {
+    const { buffer, fileName } = await this.exportService.articleSummary(itemNo);
+    response.setHeader("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    // 文件名含中文：走 RFC 5987 的 filename*，否则某些浏览器会拿到乱码名。
+    response.setHeader("content-disposition", `attachment; filename="summary.xlsx"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+    response.send(buffer);
   }
 }

@@ -263,3 +263,51 @@ export function documentRow(input: {
 
 /** 时间线上限：老板要的是"查得到"，静默截断会让人以为这就是全部 —— 所以同时回报 `truncated`。 */
 export const TIMELINE_LIMIT = 200;
+
+// ---------------------------------------------------------------- 复盘增强（T14）
+
+/** 交期结论。`not_shipped` 与 `no_promise` 都**不能**算成"准时"。 */
+export type DeliveryVerdict = "early" | "on_time" | "late" | "not_shipped" | "no_promise";
+
+export const DELIVERY_VERDICT_LABELS: Record<DeliveryVerdict, string> = {
+  early: "提前", on_time: "准时", late: "逾期", not_shipped: "未出货", no_promise: "无交期",
+};
+
+/**
+ * 交期达成：承诺交期（销售单的交货日期）vs **最早一次真正发出的出库**（`shipmentDate`）。
+ *
+ * 三条取舍：
+ *   · 没承诺交期 → `no_promise`；没发出去 → `not_shipped` —— **两者都不是"准时"**。
+ *     把它们算作按时，会让"这个货交期很稳"变成一个假结论。
+ *   · 用**最早**的出货：分批出货时第一批就决定了是否延误（后面几批是补货）。
+ *   · 天数差按**自然日**算（业务看的是日历，不是工时）。
+ */
+export function deliveryVerdict(promised: Date | null | undefined, actual: Date | null | undefined): { verdict: DeliveryVerdict; days_delta: number | null } {
+  if (!promised) return { verdict: "no_promise", days_delta: null };
+  if (!actual) return { verdict: "not_shipped", days_delta: null };
+  const day = 24 * 60 * 60 * 1000;
+  const startOf = (value: Date) => Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
+  const days = Math.round((startOf(new Date(actual)) - startOf(new Date(promised))) / day);
+  return { verdict: days < 0 ? "early" : days === 0 ? "on_time" : "late", days_delta: days };
+}
+
+/** 交期结论计数（每一档都要出现在汇总里，包括 0 的那些 —— 缺档会让人以为没算）。 */
+export function deliverySummary(verdicts: DeliveryVerdict[]): Record<DeliveryVerdict, number> {
+  const summary = { early: 0, on_time: 0, late: 0, not_shipped: 0, no_promise: 0 };
+  for (const verdict of verdicts) summary[verdict] += 1;
+  return summary;
+}
+
+/**
+ * 合格率趋势：**至少两批有质检事实**才给。
+ *
+ * 一批没有"趋势"可言；硬画一条单点曲线比不画更误导（看图的人会以为看到了走势）。
+ * 分母为 0 的批次**不进趋势**（那批根本没送检），但它的行仍在 `orders` 里。
+ */
+export function qualityTrend(rows: Array<{ orderNo: string; orderDate: Date | string; inspected: { toString(): string } | null | undefined; qualified: { toString(): string } | null | undefined }>) {
+  const points = rows
+    .map((row) => ({ order_no: row.orderNo, order_date: toIso(new Date(row.orderDate)), inspected: row.inspected?.toString() ?? "0", qualified: row.qualified?.toString() ?? "0" }))
+    .filter((point) => new Prisma.Decimal(point.inspected).gt(0))
+    .map((point) => ({ ...point, qualified_rate: qualifiedRate(point.inspected, point.qualified) }));
+  return points.length >= 2 ? points : [];
+}
