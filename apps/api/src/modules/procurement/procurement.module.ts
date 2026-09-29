@@ -5,6 +5,8 @@ import { MasterDataReadController } from "./master-data-read.controller";
 import { ProcurementMasterDataService } from "./procurement-master-data.service";
 import { PurchaseOrdersController } from "./purchase-orders.controller";
 import { PurchaseOrdersService } from "./purchase-orders.service";
+import { PurchasePlansController } from "./purchase-plans.controller";
+import { PurchasePlansService } from "./purchase-plans.service";
 import { IncomingInspectionsController } from "./incoming-inspections.controller";
 import { IncomingInspectionsService } from "./incoming-inspections.service";
 import { RawMaterialInboundsController } from "./raw-material-inbounds.controller";
@@ -16,5 +18,5 @@ import { BomsService } from "../sales/boms.service";
 import { PurchaseOrderExportController } from "./purchase-order-export.controller";
 import { PurchaseOrderExportService } from "./purchase-order-export.service";
 
-@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, MasterDataReadController, PurchaseOrdersController, IncomingInspectionsController, RawMaterialInboundsController, RawMaterialInboundNoticesController, BomsController, PurchaseOrderExportController], providers: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService, PurchaseOrderExportService], exports: [ProcurementMasterDataService, PurchaseOrdersService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService, PurchaseOrderExportService] })
+@Module({ imports: [AuditModule], controllers: [ProcurementMasterDataController, MasterDataReadController, PurchaseOrdersController, PurchasePlansController, IncomingInspectionsController, RawMaterialInboundsController, RawMaterialInboundNoticesController, BomsController, PurchaseOrderExportController], providers: [ProcurementMasterDataService, PurchaseOrdersService, PurchasePlansService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService, PurchaseOrderExportService], exports: [ProcurementMasterDataService, PurchaseOrdersService, PurchasePlansService, IncomingInspectionsService, RawMaterialInboundsService, RawMaterialInboundNoticesService, BomsService, PurchaseOrderExportService] })
 export class ProcurementModule {}
