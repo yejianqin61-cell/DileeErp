@@ -110,9 +110,9 @@ BOM 工作区的「供应商」列**只在采购侧显示**，生产侧隐藏；
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`cd apps/web; npm run test:unit`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `2530335` |
+| 实际交付物（文件 + 条数） | `apps/web/components/bom/bom-workbench.tsx`（新增 `showSupplier` prop，默认 `true`）、`apps/web/app/production/page.tsx`（传 `showSupplier={false}`）、`apps/web/test/bom-supplier.test.tsx`（补生产侧隐藏的用例） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`cd apps/web; npm run test:unit`：lib 284/284、组件 59 文件 1010 条（本机实测） |
+| 与设计的差异（含理由） | ①prop `showSupplier` **默认 `true`**（设计文档初稿写的是"不传=false"）：共用组件不该让每个入口记得判断，默认值与"采购侧要看"一致，生产侧**显式**传 `false`——`bom-workbench.tsx:67` 的默认值。②隐藏**只影响显示与编辑**：行上的 `supplier_id` 保存时照旧回传，所以生产侧保存一次 BOM **不会抹掉**采购标过的供应商（有新用例钉住这条） |
+| 未验证项（环境阻断） | 生产侧 BOM 表隐藏一列之后的列宽与观感未目测；"两个入口列宽对齐"只能部署后看 |
+| 踩到的坑 | 默认值的方向容易写反：初稿"不传=false"会让三个入口里忘记传的那个**静默失去**供应商列，而默认 `true` 的最坏情况只是"多显示一列" |

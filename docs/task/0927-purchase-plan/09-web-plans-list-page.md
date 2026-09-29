@@ -121,9 +121,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`cd apps/web; npm run test:unit`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `295db17`（后续两次改动落在 T11 的 `1362152` 与 T14 的 `66b8db7` 里） |
+| 实际交付物（文件 + 条数） | `apps/web/app/procurement/plans/page.tsx`（新建，列表页；后续被 T11 与 T14 各改一次）、`apps/web/app/procurement/page.tsx`（采购枢纽页加计划卡片）、`apps/web/test/testid-pages.test.ts`（登记 `page-procurement-plans`）、`apps/api/src/modules/procurement/purchase-plans.service.ts` + `apps/api/test/unit/purchase-plans-service.test.cjs`（`updatedByName` / `createdByName`） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`cd apps/web; npm run test:unit`：lib 284/284、组件 59 文件 1010 条（本机实测，含本任务的列表页） |
+| 与设计的差异（含理由） | ①列表列宽用 `DataTable` 的 `meta.width` / `meta.ellipsis` —— 机制在语义上属于 T13，但 **T13 的提交先落地**（`c878baa` 早于 `295db17`），所以这里只是"用上"了它。②列宽用的是 `updatedByColumn()` 工厂而不是手写表头；`audit-columns-coverage` 的白名单条目在 **T11 的 `1362152`** 里补的（口径 14 只有「最后更新」一列，创建人没有业务动作挂在上面） |
+| 未验证项（环境阻断） | 13 列（列表 9 列 + 枢纽布局）在 1366px 下**没有横向滚动条**这件事只能部署后目测——jsdom 不排版，组件用例证不了 CSS 生效 |
+| 踩到的坑 | — |

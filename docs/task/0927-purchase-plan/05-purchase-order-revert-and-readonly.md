@@ -168,9 +168,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`npm run test:unit:api`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `e344b00` |
+| 实际交付物（文件 + 条数） | `apps/api/src/modules/procurement/purchase-orders.controller.ts`（新增 `revert-to-plan`；删除 `revert-draft` 与 `cancel`）、`purchase-orders.service.ts`、`purchase-plans.service.ts`（退回时把行还原成未下单）、`apps/api/test/unit/purchase-order-detail-readonly.test.cjs`（6 条，新建）、`apps/api/test/unit/purchase-order-list-scope.test.cjs`（4 条，新建）、`apps/api/test/purchase-orders.test.cjs`、`apps/api/test/unit/purchase-order-edit-ordered.test.cjs`、`apps/api/test/unit/purchase-plans-service.test.cjs`、`apps/api/test/http/purchase-orders-contract.test.cjs`（路由清单跟着改） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`npm run test:unit:api`：2207/2207；`purchase-order-detail-readonly.test.cjs` 6/6、`purchase-order-list-scope.test.cjs` 4/4（本机实测）；`apps/api/test/http/purchase-orders-contract.test.cjs`：**环境阻断**（需要 `API_BASE_URL` 与已启动的 API，本机没有） |
+| 与设计的差异（含理由） | ①`PURCHASE_ORDER_NOT_REVERTIBLE` 是**既有码**（在被删掉的 `revertToDraft()` 里，守的正是"`ordered` 且无到货事实"这条不变式），本任务是把它连同文案搬进 `revert-to-plan`，**不是新起一个码**——所以前端不必新增分支。②`revert-draft` 与 `cancel` 两个端点**已删除**（设计文档要求删入口而不是隐藏）。③另外给 `PATCH :id` 加了 `ParseUUIDPipe`：DTO 改成全可选之后，没有任何必填字段能替非 UUID 的 `:id` 兜底 |
+| 未验证项（环境阻断） | 「退回采购计划」的并发行为（两人同时退同一张单）只靠事务与行锁推断，没有压测；`purchase-orders-contract.test.cjs`（http 套件）**没跑**——环境阻断，不写"通过" |
+| 踩到的坑 | 给 `PATCH :id` 补 `ParseUUIDPipe` 这一步是"改 DTO 的连带后果"：把字段全改成可选之后，原先靠必填字段校验顺带挡住的非法 id 会直接进服务层 |

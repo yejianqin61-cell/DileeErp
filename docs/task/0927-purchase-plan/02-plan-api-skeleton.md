@@ -146,9 +146,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`npm run test:unit:api`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `30f8f99`、`295db17` |
+| 实际交付物（文件 + 条数） | `apps/api/src/modules/procurement/purchase-plans.controller.ts`（列表 / 候选 / 新建 / 详情）、`purchase-plans.service.ts`、`purchase-plans.domain.ts`、`apps/api/src/modules/procurement/procurement.module.ts`（注册）、`apps/api/test/unit/purchase-plans-service.test.cjs`（46 条，含后续任务追加的用例） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`npm run test:unit:api`：2207/2207；`purchase-plans-service.test.cjs` 46/46（本机实测） |
+| 与设计的差异（含理由） | `list()` 在 **T09 的提交 `295db17`** 里补了 `updatedByName` / `createdByName`，并注入 `AuditActorService`（`purchase-plans.service.ts:4`、`:112`、`:137`）—— 口径 14 的「最后更新（人 + 北京时间）」要人名，而姓名得另查 `users` 表。这处补丁落在 T09 的提交里，不在 T02 自己那一次，记在这里以免下一个人以为列表接口一开始就带人名 |
+| 未验证项（环境阻断） | 列表 / 候选 / 新建 / 详情的真实 SQL 只跑过假 Prisma；`AuditActorService` 查询 `users` 的真库行为未验证 |
+| 踩到的坑 | — |

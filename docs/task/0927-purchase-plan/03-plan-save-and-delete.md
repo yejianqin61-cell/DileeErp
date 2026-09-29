@@ -159,9 +159,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`npm run test:unit:api`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `57729f7`、`11df043` |
+| 实际交付物（文件 + 条数） | `apps/api/src/modules/procurement/purchase-plans.controller.ts`（保存 / 删除端点）、`purchase-plans.service.ts`（整块替换行 + 乐观锁 + 已下单行保护）、`apps/api/test/unit/purchase-plans-service.test.cjs`（46 条，与 T02/T04/T05 共用这个文件） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`npm run test:unit:api`：2207/2207；`purchase-plans-service.test.cjs` 46/46（本机实测） |
+| 与设计的差异（含理由） | ①除 `sequence` 外，**`expected_date` 也允许改**，并同步写进 `purchase_order_items.expected_date`（`11df043`）—— 口径 7 关掉采购单页的明细编辑之后，这里是改预计到货的**唯一通路**（设计文档 §4.4 已补）。②**换行 ID 的坑**（实现中发现并修掉，设计文档 §5.5 已补）：`BomsService.replaceItems` 存一次 BOM 会**换掉全部行 ID**，而计划是长期存在的实体——不按 `material_id` 找回当前行的话，BOM 改过一次之后**计划再也保存不了** |
+| 未验证项（环境阻断） | 乐观锁并发（两人同时保存同一份计划）只有事务与行锁推断，没有压测；已下单行保护的字段边界只在单测层面验过，没在真库上跑过 |
+| 踩到的坑 | 就是上面 ②：BOM 一保存行 ID 全换，计划按行 ID 回写就必然对不上——这是**实现时才暴露**的，设计文档初稿没有它 |

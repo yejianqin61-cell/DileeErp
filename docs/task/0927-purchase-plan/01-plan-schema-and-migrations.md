@@ -167,9 +167,9 @@ CREATE UNIQUE INDEX "purchase_plans_bom_id_active_key" ON "purchase_plans"("bom_
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`npm run test:unit:api`：｜守卫条数： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `ee246ed`、`2ac0508` |
+| 实际交付物（文件 + 条数） | `apps/api/prisma/migrations/20260928090000_purchase_plan/migration.sql`（建两张表 + 索引 + 外键 + 部分唯一索引）；`apps/api/prisma/migrations/20260928100000_purchase_plan_backfill_drafts/migration.sql`（草稿按 `bom_id` 归并成计划、原草稿行软删，幂等）；`apps/api/prisma/schema.prisma`（`PurchasePlan` / `PurchasePlanItem` 两个 model，各带审计六列与软删列）；`apps/api/test/unit/purchase-plan-migration.test.cjs`（11 条）；顺带 `apps/api/test/unit/sales-order-spec-migration.test.cjs`（懒正则修正） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`npm run test:unit:api`：2207/2207；守卫条数：`purchase-plan-migration.test.cjs` 11/11（本机实测，逐条跑过） |
+| 与设计的差异（含理由） | 建表、外键动作、部分唯一索引、幂等都按 §3.4 与 §4 落地，无偏差。唯一一处是**顺带修的既有测试**：`purchase_plan_items.quantity` 这个列名触发了 `sales-order-spec-migration.test.cjs` 里那条懒正则的假失败（它跨过了整份拼接 SQL，把别的表也算了进来），改成按语句匹配（`2ac0508`）——不是本任务的设计变更，但是由本任务新增的列名引出来的 |
+| 未验证项（环境阻断） | 两条迁移**没有在真实 PostgreSQL 上执行过**（本机无库）；`prisma migrate status` / `migrate diff` 的实际漂移行数没测——部分唯一索引 `purchase_plans_bom_id_active_key` 会让基线漂移小幅增加（预期内，判定标准见 README「迁移与部署红线」）；搬迁 SQL 的幂等只有静态断言（含 `WHERE NOT EXISTS`、无 `DELETE`/`DROP`），没有在影子库干跑核对行数与金额 |
+| 踩到的坑 | 就是上面那条懒正则：它按"整份拼接后的 SQL 文本"匹配，于是**任何**新增的带 `quantity` 列的表都会让它假红。教训是"用正则守迁移"必须限定到单条语句，否则守卫会随无关改动变红而被人习惯性放宽 |

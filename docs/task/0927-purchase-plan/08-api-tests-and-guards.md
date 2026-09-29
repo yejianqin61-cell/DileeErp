@@ -117,9 +117,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`npm run test:unit:api`（计数口径）： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `d837553` |
+| 实际交付物（文件 + 条数） | `apps/api/test/unit/purchase-plans-controller.test.cjs`（5 条，新建：路由顺序 / 死端点 / 门禁 / 历史快照）、`apps/api/test/unit/purchase-plans-service.test.cjs`（46 条，本任务与 T02/T03/T04/T05 共用的那一个文件）、`apps/api/test/http/authorization-matrix-contract.test.cjs`（登记计划路由） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`npm run test:unit:api`（计数口径：根 `test:unit:api`，**不含** `test/http`）：2207/2207；`purchase-plans-controller.test.cjs` 5/5、`purchase-plans-service.test.cjs` 46/46（本机实测）。`test/http` 里的 `authorization-matrix-contract.test.cjs`：**环境阻断**（需要 `TEST_DATABASE_URL`） |
+| 与设计的差异（含理由） | ①测试文件**合并**了，没有按初稿拆成 7 个（`purchase-plan-service` / `save` / `order` / `bom-item-status` / `revert-to-plan` / `supplier-snapshot`）：它们共用**同一套假 Prisma 夹具**，拆开要复制 6 份（与 T14 把三个前端搬迁文件合成一个的理由是同一条）。实际文件是 `purchase-plans-service.test.cjs`（46 条）、`purchase-plans-controller.test.cjs`（5 条）、`purchase-plan-migration.test.cjs`（11 条）等。②**修掉一个既有的过期断言**：鉴权矩阵原来断言覆盖 39 个控制器，而 `CONTROLLER_FILES` 在 2026-09-26 那轮已经到 40 —— 也就是说它在真实库上**一直是红的** |
+| 未验证项（环境阻断） | 鉴权矩阵与 http 契约**没跑**（需要真实库与已启动 API）——环境阻断，不写"通过"；上面那条过期断言正是"只有跑 http 套件才会红"的典型，本机看不见 |
+| 踩到的坑 | 那条过期断言：`CONTROLLER_FILES` 加了控制器而断言里的数字没跟着改，红了一整轮而没人发现——说明"用数字钉住清单长度"这种守卫要么改成按集合比对，要么必须在 CI 里真的跑到 |

@@ -119,10 +119,10 @@ P1 + P2 全部任务（[T01](./01-plan-schema-and-migrations.md) – [T14](./14-
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文档 + 节） |  |
-| 验证命令与结果 | `npm run typecheck`：｜API：｜web： |
-| 部署说明落在哪一处 |  |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `471bf8f`（任务批次 README + 15 个任务文档）、`ccc0d2a`（四处补正：已下单行锁边界、退回码、测试搬迁边界、Sheet 差异）、`85f0cb2`（**收口本体**：当日日志、设计文档实施结果、数据字典、能力目录与术语表） |
+| 实际交付物（文档 + 节） | `docs/task/0927-purchase-plan/README.md` + 15 个任务文档（本任务批次的全部文档）；`docs/log/2026-09-27.md`（当天开发日志）；`docs/design/purchase-plan-and-supplier-collapse-2026-09-27.md` 的实施结果节；`docs/data-dictionary.md` 新增「表单：采购计划与采购计划明细」；`docs/product/module-capability-catalog.md` 与 `docs/product/术语词典.md`；`README.md` 的「迁移与部署红线」（第 98–109 行）就是本轮的**部署说明**：先 `prisma migrate deploy`（两条迁移）再切代码、DDL 与 DML 分两个目录、搬迁前 `pg_dump` + 影子库干跑、漂移判定标准（只允许来自那条 Prisma 不认识的 partial unique index）、外键动作、`Prisma.DbNull` 的规则 |
+| 验证命令与结果 | `npm run typecheck`：双绿；API：`npm run test:unit:api` **2207/2207**（本机两次实测一致）；web：`cd apps/web; npm run test:unit` → lib 284/284、组件 59 文件 / 1010 条；`test:api` / `test:integration` / `test:e2e`：**环境阻断，未跑** |
+| 部署说明落在哪一处 | `docs/task/0927-purchase-plan/README.md` 的「迁移与部署红线」（第 98–109 行）+ 各任务文档的「未验证项」（逐条承接设计文档 §9 的 6 条）；`docs/log/2026-09-27.md` 记了本轮的验证计数与未验证项 |
+| 与设计的差异（含理由） | ①**收口本体 `85f0cb2` 落在本批次范围（`13b06c1..66b8db7`）之外**：我先按当时的实际状态记了"当日日志与设计文档实施结果由需求方撰写、数据字典尚未收录"，收口提交落地后据此更正——三处都已交付。②`docs/data-dictionary.html` 初记"没有同步"，收口时**已补齐**（手工同步，该仓库无生成脚本）；顺带发现它其实**早就滞后两批**（停在 F-0228），本轮把 F-0229~F-0242 一起补了 |
+| 未验证项（环境阻断） | `docs/data-dictionary.html` 的同步是**人工**的：只补了模块编号区间与表单绑定行，HTML 本身是概览（不逐字段），字段级说明仍以 `.md` 为准。设计文档 §9 的 6 条未验证项已逐条落进各任务文档（迁移未在真库跑过、漂移行数未测、浏览器观感未目测、并发只有事务与行锁推断、jsdom 证不了 CSS、http/integration/e2e 未跑） |
+| 踩到的坑 | 收口提交晚于本批次范围，所以"数据字典未更新"这句话**一度是真的**：文档记录必须按**提交落地的时点**写，不能按计划写——这也是本条最终被更正的原因 |

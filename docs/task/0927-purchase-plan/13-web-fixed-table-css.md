@@ -126,10 +126,10 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`cd apps/web; npm run test:unit`：｜构建： |
-| 权重复核结论（新旧 specificity） |  |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `c878baa` |
+| 实际交付物（文件 + 条数） | `apps/web/app/globals.css`：三条规则从 `.finance-page` 前缀提为通用（`.ui-table.data-table-fixed` 的 `table-layout: fixed`、`.data-table-fixed .ui-table-head/.ui-table-cell` 的 `overflow: hidden`、省略号那条），再加采购计划明细表的 13 列宽；文件里补了两段注释说明"为什么提出来"与"权重为什么这么叠"（`globals.css:205-230`） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`cd apps/web; npm run test:unit`：lib 284/284、组件 59 文件 1010 条；构建：`npm run build --workspace=@dilee/web` **通过**（exit 0，产物落在 `apps/web/.next/server/app/procurement/plans/page.js`）—— 该格是收口时补跑的；**CSS 是否真的生效仍证不了**（见「未验证项」） |
+| 权重复核结论（新旧 specificity） | `table-layout: fixed` 与 `overflow: hidden` 两条是（0,2,0），只作用于**自愿加入**的表（`DataTable` 在"有列给了 `meta.width`"时自己加 `data-table-fixed` 类）；省略号那条特意叠成 `.ui-table.data-table-fixed .ui-table-cell.cell-ellipsis`（4 个类，CSS 注释记为 (0,4,1)），压过财务页 `.finance-page .data-table td` 的 (0,2,1) —— **不依赖样式表先后顺序**。财务页那几条更具体的选择器（`.finance-page .data-table td, .finance-page .ui-table-cell { white-space: normal; ... }`）原样保留，所以财务四张表行为不变 |
+| 与设计的差异（含理由） | 本任务只改一个 CSS 文件，但**提交 `c878baa` 排在 T09/T10 之前**（提交哈希早于 `295db17` / `d059b14`）：页面要先有列宽样式才好写。直接后果是守护它的断言当时还钉着旧的 `.finance-page .ui-table.data-table-fixed` 前缀，**红到 T11 的 `1362152`** 才同步更新（那次同时改了页面与守卫）——提交顺序与任务编号不一致的代价，记在这里供下一个人对照 |
+| 未验证项（环境阻断） | "财务四张表行为一字未变"只有守卫断言与权重推导，**没在浏览器里量过**；计划表 13 列在 1366 / 1440 / 1920 下无横向滚动条只能部署后目测（jsdom 不排版，组件用例证不了 CSS 生效） |
+| 踩到的坑 | 就是上面那条时间差：CSS 先落地、断言后更新，中间那一段守卫是红的。若按任务编号顺序提交（T13 在 T11 之后）就不会有这段窗口 |

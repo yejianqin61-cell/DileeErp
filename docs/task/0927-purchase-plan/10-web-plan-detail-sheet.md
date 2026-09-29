@@ -153,9 +153,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`cd apps/web; npm run test:unit`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `d059b14`（`addRow` 默认勾选那次改动落在 T14 的 `66b8db7`） |
+| 实际交付物（文件 + 条数） | `apps/web/components/procurement/plan-detail-sheet.tsx`（新建：13 列一次展示 + 供应商快速新建）、`apps/web/components/procurement/plan-order-preview.tsx`（新建：按供应商收束预览，币种按组各选一个） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`cd apps/web; npm run test:unit`：lib 284/284、组件 59 文件 1010 条（本机实测；Sheet 的行为断言在 T14 的 `procurement-plans.test.tsx` 里） |
+| 与设计的差异（含理由） | ①`addRow()` 在 **T14（`66b8db7`）** 里改成**新加的行默认勾选**：否则下一步收束下单会**静默漏掉**刚加的那一行（默认全选的是"已有未下单行"，新加的行不在那批里）。设计文档初稿没写这条。②本批次之后另有一条修复 `cfe02f6` 落在同一个文件上：换物料时判断要不要清 `bom_item_id` 的判据，从"名字变了"改成"**物料 id 变了**"——名字相同但其实是另一个物料时，旧判据会留下过期的 `bom_item_id`，后端以 `PURCHASE_BOM_ITEM_MISMATCH` 拒绝**整份计划** |
+| 未验证项（环境阻断） | 13 列在真实浏览器下的观感（固定列宽、省略号、hover 看全文、Sheet 滚动与表头）未目测——jsdom 不排版 |
+| 踩到的坑 | 上面那条"新加的行默认不勾选"就是实现后才发现的漏行风险：默认全选与 `addRow` 是两个独立动作，不显式对齐就会漏 |

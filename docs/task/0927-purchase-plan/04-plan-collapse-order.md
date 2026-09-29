@@ -141,9 +141,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`npm run test:unit:api`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `23426b9` |
+| 实际交付物（文件 + 条数） | `apps/api/src/modules/procurement/purchase-plans.controller.ts`（收束下单端点）、`purchase-plans.service.ts`（按供应商分组 + 回写 1:1 链接）、`apps/api/src/modules/procurement/purchase-orders.service.ts`（复用既有 `collectGroups` 与 `orderData`，不抄第二份）、`apps/api/test/unit/purchase-plans-service.test.cjs`（下单用例） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`npm run test:unit:api`：2207/2207；`purchase-plans-service.test.cjs` 46/46（本机实测，含按供应商收束的用例） |
+| 与设计的差异（含理由） | 回写方式**定稿为「逐行 create，并在同一个事务里回写 `purchase_order_item_id`」**（不是事后反查）：`apps/api/src/modules/procurement/purchase-orders.service.ts:130` 的 `createOrdersFromGroups(tx, merged, "ordered", user)` 在**调用方的事务里**写采购单，计划行在同事务内回写链接；`:121-129` 记了理由——分成两次事务会留下「采购单已经建好、计划还显示未下单」的中间态，而那正是**重复采购的入口**。其余：同一行出现在两组的处理规则按本文档「校验 4」定稿；币种**按供应商分组各选一个**（默认 CNY，口径 10）；多波次下单：下过的行留在计划里并回写 PO 号；分组与校验**复用 `collectGroups()`**（抄一份的代价是两条路径慢慢漂移，最终以"计划下的单没有快照"这种形式爆掉） |
+| 未验证项（环境阻断） | 一次收束生成 N 张采购单的整条链路（PO 号唯一性、并发下的生成）没在真实库上跑过；金额与快照的落库形状只在单测断言里 |
+| 踩到的坑 | — |

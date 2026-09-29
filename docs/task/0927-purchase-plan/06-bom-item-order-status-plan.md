@@ -115,9 +115,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`npm run test:unit:api`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `52e05a0` |
+| 实际交付物（文件 + 条数） | `apps/api/src/modules/procurement/purchase-orders.service.ts`（`bomItemOrderStatus` 第二档数据源换成计划行）、`apps/api/src/modules/procurement/purchase-plans.domain.ts`、`apps/api/test/unit/purchase-order-bom-item-status.test.cjs`（18 条）、`apps/web/app/procurement/orders/page.tsx`（文案「计划中」）、`apps/web/test/procurement-order-collapse.test.tsx`（该文件在 T11 被删除，见下） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`npm run test:unit:api`：2207/2207；`purchase-order-bom-item-status.test.cjs` 18/18（本机实测） |
+| 与设计的差异（含理由） | 字段名与枚举值**按设计文档 §4.2 保留**（`draft_quantity` / `draft_purchase_order_nos` / `state: "draft"`），但里面装的是**计划编号 `PP-…`**、界面文案是「计划中」。这是刻意的选择：先只换数据源、保语义与 diff 可审；改名（`planned_quantity` / `state: "planned"`）是一次**4 个文件的小改动**（服务方法、`BomItemOrderState` 类型、前端类型、单测标题），想改随时可以单独提一次。为此在那四处都留了说明 |
+| 未验证项（环境阻断） | 「摊回」逻辑依赖 BOM 保存会换行 ID 这一既有行为，未在真库上验证；本任务的前端断言所在文件 `apps/web/test/procurement-order-collapse.test.tsx` 在 T11 被删除（整篇在测已经搬走的草稿工作区），**等价覆盖在 T14 的 `apps/web/test/procurement-plans.test.tsx` 里重建** |
+| 踩到的坑 | "换行 ID 摊回"那段逻辑是**保留而不是重写**：它是被真实数据打出来的（BOM 一保存行 ID 就全换），重写一遍等于再踩一次 |

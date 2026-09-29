@@ -118,9 +118,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`cd apps/web; npm run test:unit`： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `1362152` |
+| 实际交付物（文件 + 条数） | `apps/web/app/procurement/orders/page.tsx`（-604 行改动：去掉「新建采购单」「草稿」tab、「编辑明细」，「回到草稿」→「退回采购计划」）、`apps/web/app/procurement/plans/page.tsx`、`apps/web/test/procurement-order-slimming.test.tsx`（3 条，新建）、`apps/web/test/procurement-order-deeplink.test.tsx`（1 行：搜索框占位符跟着改）；四个源码级约定守卫：`apps/web/lib/refresh-policy.test.mjs`、`apps/web/lib/page-data-alignment.test.mjs`、`apps/web/lib/finance-table-width.test.mjs`、`apps/web/lib/audit-columns-coverage.test.mjs`；**删除** `apps/web/test/procurement-draft.test.tsx`（284 行 / 8 条）与 `apps/web/test/procurement-order-collapse.test.tsx`（400 行 / 14 条） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`cd apps/web; npm run test:unit`：lib 284/284、组件 59 文件 1010 条；`procurement-order-slimming.test.tsx` 3/3（本机实测） |
+| 与设计的差异（含理由） | ①删掉那两个测试文件而不是改写它们——整篇都在测已经搬走的草稿工作区；**等价覆盖在 T14 的 `apps/web/test/procurement-plans.test.tsx` 里重建**（8 + 14 条的行为改成在 `PlanDetailSheet` 上断言）。②`page-data-alignment` 里采购单页从"两张表"移除、四条主数据加载搬到计划页。③`finance-table-width.test.mjs` 的更新顺带把 T13 那三条通用 CSS 规则也钉住了（**T13 的提交只改了 CSS，断言红到这一次才同步**，见 T13 的完成记录） |
+| 未验证项（环境阻断） | 采购单页瘦身后的真实观感（还剩哪些按钮、布局是否空）未目测；页面级用例证不了 CSS 生效 |
+| 踩到的坑 | 删测试文件之前先确认"它测的行为在新页面有等价断言"，否则删掉的是覆盖、不是重复——这也是本任务把等价用例留到 T14 补的原因（先删后建中间那一步没有覆盖） |

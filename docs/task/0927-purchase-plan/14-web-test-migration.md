@@ -145,9 +145,9 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 完成日期 / 提交 |  |
-| 实际交付物（文件 + 条数） |  |
-| 验证命令与结果 | `npm run typecheck`：｜`cd apps/web; npm run test:unit`（文件数/用例数）： |
-| 与设计的差异（含理由） |  |
-| 未验证项（环境阻断） |  |
-| 踩到的坑 |  |
+| 完成日期 / 提交 | 2026-09-27 / `66b8db7` |
+| 实际交付物（文件 + 条数） | `apps/web/test/procurement-plans.test.tsx`（**新建，13 条 / 296 行**，本任务唯一的搬迁产物）、`apps/web/components/procurement/plan-detail-sheet.tsx`（`addRow` 默认勾选，+3 行）、`apps/web/app/procurement/plans/page.tsx`（+8 行）、`apps/web/lib/page-data-alignment.test.mjs`（跟着页面改） |
+| 验证命令与结果 | `npm run typecheck`：双绿；`cd apps/web; npm run test:unit`（文件数 / 用例数）：lib 284/284、组件 **59 文件 / 1010 条**（本机实测；本任务新建的 `procurement-plans.test.tsx` 13/13、T11 建的 `procurement-order-slimming.test.tsx` 3/3） |
+| 与设计的差异（含理由） | ①文档初稿的交付物表写的是 `plans-draft.test.tsx` / `plans-collapse-order.test.tsx` / `plans-deeplink.test.tsx` **三个**新文件，**实际只建了一个**：`apps/web/test/procurement-plans.test.tsx`（13 条）。理由是**共用同一套假 API 桩**——草稿工作区的行为（添加行 / 保存 / 按供应商收束 / 下单状态列）改为在 `PlanDetailSheet` 上断言，拆三个文件要复制三份夹具（与 T08 后端测试合并的理由是同一条）。等价覆盖：13 列与列名、地址联系人只读派生、保存带乐观锁与冲突时保留本地改动、已下单行只读 + 两个例外、默认全选未下单行、未选供应商成组并阻断、币种按组发出、供应商下拉快速新建。②`procurement-order-deeplink.test.tsx` **留在原地**（没有搬到计划页）：它测的是**采购单列表**的 `?order_no=` 深链，而那个筛选还在采购单页上（T11 只把搜索框占位符跟着改了）；**计划页自己的深链 `?plan_id=` 写在新的合并文件里**（`procurement-plans.test.tsx:289`）。③初稿里"`procurement-order-print.test.tsx` 原地保留、只改按钮集合断言"这句**没有发生**：该文件一行都没改——它不依赖被删掉的入口。④T11 删掉的两个文件（`procurement-draft` 8 条 / `procurement-order-collapse` 14 条）的**等价覆盖就在这个新文件里** |
+| 未验证项（环境阻断） | jsdom **不排版**：13 列的横向滚动条、省略号、hover 看全文这三件事在本层证不了，只能部署后目测；真实浏览器的交互（Sheet 内滚动、下拉弹层定位）同样未测 |
+| 踩到的坑 | "先删后建"的窗口：T11 删掉两个旧文件、本任务才重建覆盖，中间那几步的测试覆盖是空的。若两件事放在同一次提交里就不会有这个空档 |
