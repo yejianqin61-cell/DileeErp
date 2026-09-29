@@ -386,7 +386,7 @@ schema 里只声明 `@@index([bomId])`。漂移代价见 §7.3。
 | 检查 | 结果 |
 | --- | --- |
 | `npm run typecheck` | 双绿 |
-| `npm run test:unit:api` | 2206/2206 |
+| `npm run test:unit:api` | 2207/2207 |
 | web `npm run test:lib` | 284/284 |
 | web `npm run test:components` | 59 文件 / 1010 条 |
 | `test:api` / `test:integration` / `test:e2e` | 环境阻断（无真实库） |
