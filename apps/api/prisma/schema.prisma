@@ -377,6 +377,7 @@ model SalesOrder {
   versions                  SalesOrderVersion[]
   boms                      Bom[]
   purchaseOrders            PurchaseOrder[]
+  purchasePlans             PurchasePlan[]
   productionOrders          ProductionOrder[]
   finishedGoodsOutbounds    FinishedGoodsOutbound[]
   finishedGoodsOutboundNotices FinishedGoodsOutboundNotice[]
@@ -500,6 +501,7 @@ model Bom {
   formDefinition      FormDefinition?   @relation(fields: [formDefinitionId], references: [id])
   items               BomItem[]
   purchaseOrders      PurchaseOrder[]
+  purchasePlans       PurchasePlan[]
   productionOrders    ProductionOrder[]
 
   @@index([salesOrderId])
@@ -586,6 +588,7 @@ model BomItem {
   /** BOM 行的默认供应商（可选关系 → Postgres 侧必须是 ON DELETE SET NULL，见迁移注释）。 */
   supplier           Supplier?           @relation(fields: [supplierId], references: [id])
   purchaseOrderItems PurchaseOrderItem[]
+  purchasePlanItems  PurchasePlanItem[]
 
   @@index([bomId])
   @@index([materialId])
@@ -608,6 +611,7 @@ model Unit {
   materials                 Material[]
   bomItems                  BomItem[]
   purchaseOrderItems        PurchaseOrderItem[]
+  purchasePlanItems         PurchasePlanItem[]
   rawMaterialInbounds       RawMaterialInbound[]
   inboundNotices            RawMaterialInboundNotice[]
   inventoryFacts            InventoryFact[]
@@ -653,6 +657,7 @@ model Material {
   defaultUnit               Unit                      @relation(fields: [defaultUnitId], references: [id])
   bomItems                  BomItem[]
   purchaseOrderItems        PurchaseOrderItem[]
+  purchasePlanItems         PurchasePlanItem[]
   rawMaterialInbounds       RawMaterialInbound[]
   inboundNotices            RawMaterialInboundNotice[]
   inventoryFacts            InventoryFact[]
@@ -719,6 +724,7 @@ model Supplier {
   purchaseOrders          PurchaseOrder[]
   purchaseOrderItems      PurchaseOrderItem[]
   bomItems                BomItem[]
+  purchasePlanItems       PurchasePlanItem[]
   rawMaterialInbounds     RawMaterialInbound[]
   payableSources          PayableSource[]
   outsourcePayableSources OutsourcePayableSource[]
@@ -819,6 +825,8 @@ model PurchaseOrderItem {
   unit                      Unit                      @relation(fields: [unitId], references: [id])
   supplier                  Supplier?                 @relation(fields: [supplierId], references: [id])
   bomItem                   BomItem?                  @relation(fields: [bomItemId], references: [id])
+  /// 反向关系：这一条采购明细是否由某一行采购计划下单而来（1:1，见 PurchasePlanItem）。
+  purchasePlanItem          PurchasePlanItem?
   receipts                  PurchaseReceipt[]
   rawMaterialInbounds       RawMaterialInbound[]
   inboundNotices            RawMaterialInboundNotice[]
@@ -832,6 +840,95 @@ model PurchaseOrderItem {
   /// 新建采购单时要按 BOM 明细行归集「这一行已经下过多少」（bomItemOrderStatus）。
   @@index([bomItemId])
   @@map("purchase_order_items")
+}
+
+/// 采购计划（2026-09-27，老板要求「采购模块多一个采购计划栏目」）。
+///
+/// 为什么要独立成表、而不是继续拿采购单草稿当计划 —— 见
+/// `docs/design/purchase-plan-and-supplier-collapse-2026-09-27.md` §1，一句话：**粒度不同**。
+/// 采购单的粒度是「一个供应商 × 一个币种」（头部三格才有单一含义），计划是「一个销售单 / 一份 BOM」
+/// （一张计划里同时有多个供应商的行）。把多供应商的工作台塞进单供应商的凭证里，
+/// 头部就会长期处于「有时有意义、有时没意义」的状态。
+///
+/// 「一个 BOM 一份计划」由**部分唯一索引**保证（`deleted_at IS NULL` 上唯一），
+/// 所以这里**只有 `@@index`，没有 `@unique`** —— 写 `@unique` 生成的是全量唯一索引，
+/// 会让「软删一份计划之后再也建不出第二份」。照抄 `boms` 的先例
+/// （`20260826100000_unique_editable_bom`）。
+model PurchasePlan {
+  id             String             @id @default(uuid()) @db.Uuid
+  /// `PP-{YYYYMMDD}-{UUID前8位}`，与采购单号同格式（`PO-` 前缀）。
+  planNo         String             @unique @map("plan_no") @db.VarChar(100)
+  orderNo        String             @map("order_no") @db.VarChar(100)
+  salesOrderId   String             @map("sales_order_id") @db.Uuid
+  bomId          String             @map("bom_id") @db.Uuid
+  bomVersion     Int?               @map("bom_version")
+  /// BOM 被软删之后，计划上仍要看得见「这是哪一版 BOM 的计划」（它是独立存活的历史记录）。
+  bomSnapshot    Json?              @map("bom_snapshot")
+  extensionData  Json               @default("{}") @map("extension_data")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+  createdBy      String             @map("created_by") @db.Uuid
+  updatedBy      String             @map("updated_by") @db.Uuid
+  deletedAt      DateTime?          @map("deleted_at")
+  deletedBy      String?            @map("deleted_by") @db.Uuid
+  salesOrder     SalesOrder         @relation(fields: [salesOrderId], references: [id])
+  bom            Bom                @relation(fields: [bomId], references: [id])
+  items          PurchasePlanItem[]
+
+  /// 列表按销售单/货号筛（货号走「订单号集合」反查，与返单模块同一口径）。
+  @@index([orderNo])
+  /// 与部分唯一索引并存：照抄 `boms` 的形状（schema 声明普通索引，SQL 里另建 partial unique）。
+  @@index([bomId])
+  @@map("purchase_plans")
+}
+
+/// 采购计划的一行 = 一个「采购意图」。
+///
+/// 数量与单价**可改**（BOM 要 100、实际只买 80 是常态）；`purchaseOrderItemId` 是
+/// 「这一行已经下过单了」的**唯一表示**：
+///   · 下单时在同一事务里建采购单 + 明细，再把这一列指过去；
+///   · 「退回采购计划」把这一列清空 → 行回到未下单，而数量/单价/供应商**原样保留**（可逆，不用重录）；
+///   · 多波次下单天然成立：一次只给勾选的行写链接。
+/// `@unique` 保证一条采购明细只能被一行计划认领。
+model PurchasePlanItem {
+  id                  String             @id @default(uuid()) @db.Uuid
+  planId              String             @map("plan_id") @db.Uuid
+  materialId          String             @map("material_id") @db.Uuid
+  materialSnapshot    Json               @map("material_snapshot")
+  unitId              String             @map("unit_id") @db.Uuid
+  unitSnapshot        Json               @map("unit_snapshot")
+  /// 指向来源 BOM 行。BOM 外新增的补料/替代料为 null（沿用 `outside_bom_reason` 口径）。
+  /// 注意：`BomsService.replaceItems` 会**换掉全部行 ID**，所以归集要按物料摊回，见 service 注释。
+  bomItemId           String?            @map("bom_item_id") @db.Uuid
+  /// 可空：计划允许先存下「还没定供应商」的行（与采购明细同一口径）。
+  supplierId          String?            @map("supplier_id") @db.Uuid
+  supplierSnapshot    Json?              @map("supplier_snapshot")
+  model               String?            @db.VarChar(200)
+  quantity            Decimal            @db.Decimal(18, 4)
+  unitPrice           Decimal            @map("unit_price") @db.Decimal(18, 4)
+  expectedDate        DateTime?          @map("expected_date")
+  /// 已下单时指向采购明细；为空 = 未下单。见模型注释。
+  purchaseOrderItemId String?            @unique @map("purchase_order_item_id") @db.Uuid
+  sequence            Int?
+  extensionData       Json               @default("{}") @map("extension_data")
+  createdAt           DateTime           @default(now()) @map("created_at")
+  updatedAt           DateTime           @updatedAt @map("updated_at")
+  createdBy           String             @map("created_by") @db.Uuid
+  updatedBy           String             @map("updated_by") @db.Uuid
+  deletedAt           DateTime?          @map("deleted_at")
+  deletedBy           String?            @map("deleted_by") @db.Uuid
+  plan                PurchasePlan       @relation(fields: [planId], references: [id])
+  material            Material           @relation(fields: [materialId], references: [id])
+  unit                Unit               @relation(fields: [unitId], references: [id])
+  supplier            Supplier?          @relation(fields: [supplierId], references: [id])
+  bomItem             BomItem?           @relation(fields: [bomItemId], references: [id])
+  purchaseOrderItem   PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id])
+
+  @@index([planId])
+  @@index([supplierId])
+  /// 「这张 BOM 的这一行已经计划了多少」要能查（下单状态的「计划中」档）。
+  @@index([bomItemId])
+  @@map("purchase_plan_items")
 }
 
 model PurchaseReceipt {
