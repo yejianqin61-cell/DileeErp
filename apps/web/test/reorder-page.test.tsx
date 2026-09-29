@@ -208,6 +208,16 @@ describe("返单与总结：单据清单", () => {
   });
 });
 
+describe("返单与总结：待补录入口", () => {
+  it("「未填货号（补录）」默认收起，点开才展开待办面板", async () => {
+    stub();
+    render(<ReorderPage />);
+    expect(screen.queryByTestId("unassigned-panel")).toBeNull();
+    fireEvent.click(await screen.findByTestId("reorder-toggle-unassigned"));
+    await screen.findByTestId("unassigned-panel");
+  });
+});
+
 describe("返单与总结：失败态", () => {
   it("详情接口失败 → 错误态，且**不留**上一批的数据", async () => {
     router.searchParams = new URLSearchParams({ item_no: "27621 流水花扇" });

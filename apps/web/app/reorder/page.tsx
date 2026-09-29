@@ -16,6 +16,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { DocumentGroups, type DocumentGroup } from "../../components/reorder/document-groups";
+import { UnassignedPanel } from "../../components/reorder/unassigned-panel";
 import { ApiClientError, apiGet } from "../../lib/api-client";
 
 type UnitQuantity = { unit: string; quantity: string };
@@ -87,6 +88,8 @@ export default function ReorderPage() {
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [documentsLoading, setDocumentsLoading] = useState(false);
+  /** 待补录面板是否展开（历史单补货号的入口；默认收起，平时不该占版面）。 */
+  const [showUnassigned, setShowUnassigned] = useState(false);
   const [error, setError] = useState("");
   const [detailError, setDetailError] = useState("");
   /** 单据清单的错误**单独一份**：混进 detailError 会让它在详情成功时无处显示（第一版就是这样，测试抓出来了）。 */
@@ -157,8 +160,10 @@ export default function ReorderPage() {
   return (
     <div className="page-root" data-testid="page-reorder">
       <PageHeader title="返单与总结" description="按货号查看历次批次与那一批的采购、生产、质检全部单据">
+        <Button variant="secondary" data-testid="reorder-toggle-unassigned" onClick={() => setShowUnassigned((current) => !current)}>{showUnassigned ? "收起未填货号" : "未填货号（补录）"}</Button>
         <Button variant="secondary" onClick={() => selectArticle(itemNo)}>刷新</Button>
       </PageHeader>
+      {showUnassigned ? <UnassignedPanel /> : null}
       {error ? <section className="panel"><ErrorState message={error} onRetry={() => setDebouncedQuery(query)} /></section> : null}
 
       <section className="panel">
