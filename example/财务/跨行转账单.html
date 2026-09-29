@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>跨行转账单（带汇率）</title>
+<style>
+  :root {
+    --border-color: #444444;
+    --label-bg: #f2f2f2;
+    --text-color: #1a1a1a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "SimSun", "宋体", serif;
+    color: var(--text-color);
+    background: #ffffff;
+    margin: 0;
+    padding: 40px 48px;
+    font-size: 12pt;
+    line-height: 1.6;
+  }
+  .doc-page {
+    max-width: 780px;
+    margin: 0 auto;
+  }
+  h1 {
+    text-align: center;
+    font-size: 20pt;
+    letter-spacing: 6px;
+    margin: 0 0 6px 0;
+    font-family: "SimHei", "黑体", sans-serif;
+  }
+  .doc-no {
+    text-align: right;
+    font-size: 10.5pt;
+    margin-bottom: 10px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  th, td {
+    border: 1px solid var(--border-color);
+    padding: 8px 10px;
+    vertical-align: middle;
+    word-break: break-all;
+  }
+  .section-title td {
+    background: var(--label-bg);
+    font-weight: bold;
+    text-align: center;
+    font-family: "SimHei", "黑体", sans-serif;
+    letter-spacing: 4px;
+  }
+  .label {
+    background: var(--label-bg);
+    font-weight: bold;
+    text-align: center;
+    width: 130px;
+  }
+  .amount-value { font-weight: bold; }
+  .cap-row td { height: 44px; }
+  .sign-table td {
+    height: 52px;
+    text-align: center;
+    vertical-align: middle;
+  }
+  .sign-table .sign-label {
+    font-weight: bold;
+  }
+  .note {
+    font-size: 10.5pt;
+    color: #555555;
+    margin-top: 10px;
+  }
+</style>
+</head>
+<body>
+<div class="doc-page">
+
+  <h1>跨行转账单</h1>
+  <div class="doc-no">
+    单据编号：<span data-docx-field="document_no" data-docx-bookmark="单据编号">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>
+  </div>
+
+  <table>
+    <tr class="section-title">
+      <td colspan="4">付　款　方</td>
+    </tr>
+    <tr>
+      <td class="label">付款人全称</td>
+      <td colspan="3"><span data-docx-field="payer_name" data-docx-bookmark="付款人全称">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+    <tr>
+      <td class="label">付款账号</td>
+      <td><span data-docx-field="payer_account" data-docx-bookmark="付款账号">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td class="label">付款开户行</td>
+      <td><span data-docx-field="payer_bank" data-docx-bookmark="付款开户行">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+
+    <tr class="section-title">
+      <td colspan="4">收　款　方</td>
+    </tr>
+    <tr>
+      <td class="label">收款人全称</td>
+      <td colspan="3"><span data-docx-field="payee_name" data-docx-bookmark="收款人全称">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+    <tr>
+      <td class="label">收款账号</td>
+      <td><span data-docx-field="payee_account" data-docx-bookmark="收款账号">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td class="label">收款开户行</td>
+      <td><span data-docx-field="payee_bank" data-docx-bookmark="收款开户行">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+    <tr>
+      <td class="label">联行号</td>
+      <td><span data-docx-field="payee_bank_no" data-docx-bookmark="收款联行号">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td class="label">转账日期</td>
+      <td><span data-docx-field="transfer_date" data-docx-bookmark="转账日期">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;年&nbsp;&nbsp;&nbsp;&nbsp;月&nbsp;&nbsp;&nbsp;&nbsp;日&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+
+    <tr class="section-title">
+      <td colspan="4">转　账　金　额</td>
+    </tr>
+    <tr>
+      <td class="label">币种</td>
+      <td><span data-docx-field="currency" data-docx-bookmark="币种">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td class="label">汇率</td>
+      <td><span data-docx-field="exchange_rate" data-docx-bookmark="汇率">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+    <tr>
+      <td class="label">转账金额（原币）</td>
+      <td class="amount-value"><span data-docx-field="amount_original" data-docx-bookmark="转账金额原币">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td class="label">折合人民币</td>
+      <td class="amount-value"><span data-docx-field="amount_cny" data-docx-bookmark="折合人民币金额">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+    <tr class="cap-row">
+      <td class="label">金额大写</td>
+      <td colspan="3"><span data-docx-field="amount_in_words" data-docx-bookmark="金额大写">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+    <tr class="cap-row">
+      <td class="label">用途／附言</td>
+      <td colspan="3"><span data-docx-field="remark" data-docx-bookmark="用途附言">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+  </table>
+
+  <table class="sign-table" style="margin-top: 14px;">
+    <tr>
+      <td style="width:25%;"><span class="sign-label">制单人：</span><span data-docx-field="maker" data-docx-bookmark="制单人">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td style="width:25%;"><span class="sign-label">复核：</span><span data-docx-field="reviewer" data-docx-bookmark="复核人">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td style="width:25%;"><span class="sign-label">出纳：</span><span data-docx-field="cashier" data-docx-bookmark="出纳人">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+      <td style="width:25%;"><span class="sign-label">审批：</span><span data-docx-field="approver" data-docx-bookmark="审批人">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span></td>
+    </tr>
+  </table>
+
+  <p class="note">注：涉及外币转账时，请填写汇率及折合人民币金额；人民币转账可划去汇率栏。</p>
+
+</div>
+</body>
+</html>

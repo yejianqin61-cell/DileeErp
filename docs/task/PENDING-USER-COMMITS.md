@@ -2,6 +2,15 @@
 
 本文件记录已完成、但因本地 `.git` ACL 暂不能由 Codex 执行的提交。请在仓库根目录按顺序执行；每条提交独立对应一个完成的任务。
 
+> **2026-09-26 现状：下面这些命令的「代码」部分已经全部入库并上线，不要再照着跑。**
+> 部署 agent 已按 pathspec 把代码提交为
+> `06bdd8e`（第六轮）/ `3663019`（第七轮）/ `08824d9`（09-26 生产 500 修复），
+> 生产 release = `08824d9`，四条迁移均已应用（`migrations applied = 91 / failed = 0`）。
+> 未入库的只剩**文档**（本文件里那串 `docs/...` 路径），以及 `example/` 下的样本文件 ——
+> 部署侧的既定口径是「作者的 docs 改动不入库，部署时暂存、之后归还」。
+> 因此这个文件现在的用途是一份**变更清单**（每轮改了什么、部署要注意什么），
+> 而不是待执行命令；命令里对代码路径的 `git add` 会命中「已经提交、无改动」的空操作。
+
 ## 人事绩效入口
 
 ```powershell
@@ -271,3 +280,114 @@ git commit -m "feat: add the foreign exchange receipt register with payment natu
 ```
 
 > `example/财务/外汇一览表.xlsx` 是本轮口径的依据（列映射逐列来自它），建议一并纳入版本库。
+
+## 采购第三轮：编辑已建单、列宽、下单状态列、按供应商收束
+
+四件事，建议**拆成一个提交**：请求体与前端调用点是一套（前端只走 `/split` 与 `/:id/split`，
+旧代码上没有 `POST :id/split`），拆开会让中间那个提交点不可用。
+schema 有**两处**改动：一条纯新增索引，一条**放松约束**
+（`purchase_order_items.supplier_id / supplier_snapshot` 改回可空，让「刚导入 BOM、还没选供应商」
+的草稿存得下来）。放松约束的那条必须与代码**同一个提交点** ——
+否则「保存还没选供应商的草稿」会撞上数据库的 NOT NULL 违约。
+
+- `PATCH /purchase-orders/:id` 放开到「已下单但无任何到货」（必填 `reason`，审计留前后值）；
+  有到货事实或状态在 `draft|ordered` 之外的一律拒绝。
+- 新增 `POST /purchase-orders/:id/split`：收束一张**已存在**的单，第 1 组沿用原单（单号不变），
+  其余组新建；草稿收束后仍是草稿，已下单的收束后仍是已下单。
+- 新增 `GET /purchase-orders/bom-item-status?bom_id=`：BOM 每行的四态下单情况
+  （**必须声明在 `@Get(":id")` 之前**）。
+- 前端「保存草稿 / 收束下单」统一按供应商收束；草稿表新增「下单状态」列与「BOM 外新增原因」输入；
+  换物料时清掉 `bom_item_id`；列表的编辑入口放开到「已下单未到货」。
+- **导入 BOM 明细后即可保存草稿**：草稿允许「还没选供应商」的行，它们单独落成一张供应商为空的草稿；
+  收束下单仍然要求每行都有供应商。明细行的供应商因此可空
+  （迁移 `20260920120000_purchase_order_item_supplier_nullable`），
+  而「一个供应商一张采购单」改由**下单门禁**（`assertOrderableItems`）与
+  **写入门禁**（`refs()` → `PURCHASE_ORDER_MULTIPLE_SUPPLIERS`）共同保证。
+- 修掉 CSS 权重泄漏：采购工作区复用了 `.material-issue-sheet`，继承了写给领料单的
+  `td:nth-child(1) { width: 24% }`，把行首复选框列撑到 460px（详见设计文档第 4.1 节）。
+
+部署顺序：先 `npm run db:generate --workspace=@dilee/api` → `prisma migrate deploy` → 再切代码。
+迁移后确认放松生效：
+```sql
+SELECT column_name, is_nullable FROM information_schema.columns
+WHERE table_name = 'purchase_order_items' AND column_name IN ('supplier_id', 'supplier_snapshot');
+-- 期望两行都是 YES
+```
+
+设计与口径见 `docs/design/purchase-order-collapse-and-edit-2026-09-17.md`，
+**请业务过目的五件待确认事项**见 `docs/memo/0917-采购单收束与编辑待确认事项.md`。
+
+> **提交前先看 `git status`**：写这份清单时，财务侧的并行工作流已经把
+> `apps/api/prisma/schema.prisma` 里它自己的改动**暂存**（`git add`）进了索引（`MM` 状态）。
+> 直接 `git commit` 会把它的半成品一起提交。两个办法：
+> 先 `git restore --staged apps/api/prisma/schema.prisma` 把索引清干净，或改用
+> `git commit -m "..." -- <上面那串路径>`（pathspec 限定的提交，只提交指定路径）。
+> 更稳妥的是先和那条工作流对齐，别把两边的东西混进一个提交。
+
+```powershell
+git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260920100000_purchase_order_item_bom_item_index apps/api/prisma/migrations/20260920120000_purchase_order_item_supplier_nullable apps/api/src/modules/procurement apps/api/src/modules/production/outsource-logistics.service.ts apps/api/test/purchase-orders.test.cjs apps/api/test/http/purchase-orders-contract.test.cjs apps/api/test/unit/purchase-order-edit-ordered.test.cjs apps/api/test/unit/purchase-order-split-existing.test.cjs apps/api/test/unit/purchase-order-split.test.cjs apps/api/test/unit/purchase-order-bom-item-status.test.cjs apps/api/test/unit/purchase-order-bom-item-index-migration.test.cjs apps/api/test/unit/purchase-order-item-supplier-nullable-migration.test.cjs apps/web/app/procurement/orders/page.tsx apps/web/app/globals.css apps/web/test/procurement-order-collapse.test.tsx apps/web/test/procurement-draft.test.tsx docs/design/purchase-order-collapse-and-edit-2026-09-17.md docs/memo/0917-采购单收束与编辑待确认事项.md docs/task/0917-procurement-collapse-and-edit.md docs/log/2026-09-17.md docs/product/术语词典.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
+git commit -m "feat: collapse purchase orders by supplier and allow editing built orders"
+```
+
+## 财务三大报表（标准格式）全量落地：手工凭证 / 期初余额 / 期末汇率
+
+用户 2026-09-24：「2 按你说的做，1,3,4 都要」。方案与口径见
+`docs/design/finance-three-statements-2026-09-24.md`（§8.2/8.5 已落地）、
+下一步的权责发生制两步方案见 `docs/design/finance-accrual-two-step-2026-09-24.md`（**待财务拍板，代码未动**）。
+
+**三条迁移尚未执行，部署时先跑**：
+```powershell
+npm run db:generate --workspace=@dilee/api
+npm run db:migrate:deploy
+```
+```sql
+-- 迁移后确认三处生效
+SELECT is_nullable FROM information_schema.columns WHERE table_name = 'vouchers' AND column_name = 'source_id';            -- 期望 YES
+SELECT to_regclass('public.accounting_opening_balances');                                                                   -- 期望非空
+SELECT to_regclass('public.exchange_rates');                                                                                -- 期望非空
+```
+
+> `apps/api/prisma/schema.prisma` 同时含其它并行工作流的改动：提交前先看 `git status`，
+> 用下面这条 pathspec 限定的提交（别把别人的半成品一起提交），或先 `git restore --staged` 清索引。
+> 三个新表/新模型（`vouchers.source_id` 可空、`AccountingOpeningBalance`、`ExchangeRate`）都在 `schema.prisma` 里，
+> **另注**：本轮之后「确认应收」= 挂账（不再写收支流水），涉及 `receivable.service.ts` / `reconciliation.service.ts` /
+> `customer-payment.service.ts` / `voucher.service.ts` —— 都在 `apps/api/src/modules/finance` 这一条 `git add` 里。
+> 漏了它 API 编译不过 —— 若索引里混了别人的改动，改用 `git commit -m "..." -- <下面这串路径>`。
+
+```powershell
+git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260924100000_voucher_manual_source apps/api/prisma/migrations/20260924130000_accounting_opening_balances apps/api/prisma/migrations/20260924160000_exchange_rates apps/api/src/modules/finance apps/api/test/unit apps/api/test/http/finance-contract.test.cjs apps/web/lib apps/web/components/finance apps/web/test docs/design/finance-three-statements-2026-09-24.md docs/design/finance-accrual-two-step-2026-09-24.md docs/log/2026-09-24.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
+git commit -m "feat: ship the three standard financial statements end to end"
+```
+
+## 物料图片 + 销售单引用物料 + 工艺单行高与带图导出
+
+用户 2026-09-24 的第二批四件事：① 付款单/收款单的我方与对方账户分开（旧的
+`bank_name`/`bank_account` **已删除**，前后端必须同一个提交点）；② 工艺单导出按内容自动算行高；
+③ 物料清单支持上传图片（浏览器压成 WebP 入库，服务端只校验容器与尺寸）；
+④ 销售单材料明细 18 项可引用物料并在工艺单导出时勾选带图。
+
+设计文档：`docs/design/material-images-and-sales-order-material-refs-2026-09-24.md`。
+
+**一条迁移尚未执行**（`material_images` 与 `sales_order_material_refs` 两张表），部署时先跑：
+```powershell
+npm run db:generate --workspace=@dilee/api
+npm run db:migrate:deploy
+```
+```sql
+-- 迁移后确认两张表都建出来了
+SELECT to_regclass('public.material_images');                 -- 期望非空
+SELECT to_regclass('public.sales_order_material_refs');       -- 期望非空
+```
+
+> ⚠️ **`finance-slip.ts` 的字段改名是破坏性改动**：`bank_name` / `bank_account` 换成了
+> `our_bank_name` / `our_bank_account` / `counterparty_bank_name` / `counterparty_bank_account`。
+> 后端与前端（`apps/web/lib/finance-slip.ts` + `finance-slip-editor.tsx`）必须**一起**上线，
+> 只发一侧会让导出接口 422（DTO 有 `forbidNonWhitelisted`）。
+>
+> `apps/api/prisma/schema.prisma` 同时含其它并行工作流的改动：提交前先看 `git status`，
+> 用下面这条 pathspec 限定的提交，或先 `git restore --staged apps/api/prisma/schema.prisma` 清索引。
+
+```powershell
+git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260924180000_material_images_and_sales_order_material_refs apps/api/src/platform/excel apps/api/src/modules/procurement apps/api/src/modules/sales apps/api/src/modules/finance/finance-slip.ts apps/api/src/modules/finance/finance-slip.service.ts apps/api/src/modules/finance/finance-slip.controller.ts apps/api/test/unit apps/api/test/sales-order-production-sheet.test.cjs apps/web/lib apps/web/components/procurement apps/web/components/sales apps/web/app/procurement/materials/page.tsx apps/web/app/sales/page.tsx apps/web/app/globals.css apps/web/test docs/design/material-images-and-sales-order-material-refs-2026-09-24.md docs/log/2026-09-24.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
+git commit -m "feat: material images and sales order material references"
+```
