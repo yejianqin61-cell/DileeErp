@@ -15,6 +15,7 @@ import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-unde
 import { SalesOrdersService } from "./sales-orders.service";
 import { SalesOrderExportService } from "./sales-order-export.service";
 import { FinishedGoodsOutboundNoticeService } from "./finished-goods-outbound-notice.service";
+import { ITEM_NO_MAX_LENGTH } from "./item-no";
 
 /** 金额类字段的非负校验：class-validator 的 @Min 对字符串不生效（会直接判不通过），这里用十进制正则。 */
 const NON_NEGATIVE_DECIMAL = /^\d+(?:\.\d+)?$/;
@@ -142,6 +143,22 @@ export class SalesOrderDto extends SalesOrderSpecDto {
   @IsOptional() @EmptyStringToUndefined() @IsIn(SETTLEMENT_METHODS) settlement_method?: string;
   @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() local_currency_amount?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
+  /**
+   * 货号（老板 2026-09-26：「每个销售单多一个字段，叫做货号」）。
+   *
+   * **空串的语义是「清除货号」**（服务层的 `normalizeItemNo` 把它落成 `NULL`），与 37 个细化标量一致。
+   * 所以这里**故意不加** `EmptyStringToUndefined`：那会把空串变成 undefined 也就是「不动」，
+   * 两者写反的后果正好相反（「删了没保存上」 vs 「只改一格结果把货号清空了」）。
+   *
+   * 货号**不是必填**：历史单没有货号，强制会让「确认」这个既有动作变成破坏性变更。
+   * 补录待办在【返单与总结 → 未填货号】。
+   */
+  @IsOptional() @IsString() @MaxLength(ITEM_NO_MAX_LENGTH) item_no?: string;
+  /**
+   * 返单来源销售单号：**只由「返单建单」写入**（服务层从来源单取值）。
+   * 更新接口的 DTO 里没有这个键，服务层的 `SalesOrderUpdate` 也把它排除了 —— 两处都不接受改写。
+   */
+  @IsOptional() @IsString() @MaxLength(100) reorder_from_order_no?: string;
 }
 export class UpdateSalesOrderDto extends SalesOrderSpecDto {
   @IsOptional() @IsString() contact_id?: string;
@@ -163,6 +180,12 @@ export class UpdateSalesOrderDto extends SalesOrderSpecDto {
   @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "金额必须是不小于 0 的十进制数" }) @IsDecimal() local_currency_amount?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
   @IsOptional() @IsString() @MaxLength(500) reason?: string;
+  /**
+   * 货号：可改（打错的货号要能修），已确认单改它走既有的「必须填原因」守卫。
+   * **故意不放进 `coreFields`**：货号不锁下游 —— 否则下单后想改一个打错的货号，
+   * 必须先回退 BOM/采购/生产，那是不可接受的。
+   */
+  @IsOptional() @IsString() @MaxLength(ITEM_NO_MAX_LENGTH) item_no?: string;
 }
 class SalesOrderQueryDto extends PaginationQueryDto {
   @IsOptional() @IsString() status?: string;

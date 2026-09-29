@@ -137,3 +137,129 @@ test("销售单有下游事实时，改结算金额（核心字段）必须先�
     (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_CORE_FIELDS_LOCKED",
   );
 });
+
+// ---- 货号（2026-09-26）：老板要求「每个销售单多一个字段，叫做货号」 ----
+// 口径见 docs/design/reorder-item-no-and-summary-2026-09-26.md 与
+// docs/task/0926-reorder-item-no-and-summary/02-sales-order-item-no-api.md。
+
+/** 一个最小可用的销售单行（`get()` 的形状），测试里只覆盖关心的字段。 */
+function salesOrderRow(overrides = {}) {
+  return { id: "order-1", orderNo: "TEST-SO-001", status: "draft", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date("2026-09-12T00:00:00.000Z"), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, itemNo: null, reorderFromOrderNo: null, boms: [], versions: [], specDetails: [], ...overrides };
+}
+
+/** 造一个只在事务里被调用的假 Prisma（update 路径）。 */
+function updateHarness(order, { withBom = false } = {}) {
+  const captured = { updateData: undefined, versionData: undefined };
+  const tx = {
+    salesOrder: { update: async ({ data }) => { captured.updateData = data; return { ...order, ...data }; } },
+    salesOrderVersion: { create: async ({ data }) => { captured.versionData = data; return data; } },
+  };
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1", name: "海外客户", isActive: true }) },
+    customerContact: { findFirst: async () => null },
+    salesOrder: { findFirst: async () => order },
+    ...(withBom ? { bom: { count: async () => 1 } } : {}),
+    $transaction: async (fn) => fn(tx),
+  };
+  return { service: new SalesOrdersService(prisma, audit), captured };
+}
+
+test("货号：新建销售单入库前先归一（去首尾空白、全角空格折成半角），并进版本快照", async () => {
+  const customer = { id: "customer-1", customerCode: "CUS-1", name: "海外客户", isActive: true };
+  let createData;
+  let versionData;
+  const created = salesOrderRow({ orderNo: "TEST-SO-010" });
+  const tx = {
+    salesOrder: { create: async ({ data }) => { createData = data; return created; } },
+    salesOrderVersion: { create: async ({ data }) => { versionData = data; return data; } },
+  };
+  const prisma = {
+    customer: { findFirst: async () => customer },
+    customerContact: { findFirst: async () => null },
+    salesOrder: { findFirst: async () => ({ ...created, customer, contact: null }) },
+    $transaction: async (fn) => fn(tx),
+  };
+  await new SalesOrdersService(prisma, audit).create({
+    order_no: "TEST-SO-010", customer_id: customer.id, order_date: "2026-09-12T00:00:00.000Z",
+    product_name: "雨伞", quantity: "10", unit: "个", currency: "USD",
+    item_no: "　27621　流水花扇 ", // 全角空格 + 首尾空白，现场抄单的典型形状
+  }, user);
+  assert.equal(createData.itemNo, "27621 流水花扇", "库里存归一后的原样（保留大小写与内部空格）");
+  assert.equal(createData.reorderFromOrderNo, null, "不是返单建的就不该有来源单号");
+  assert.equal(versionData.snapshot.item_no, "27621 流水花扇", "快照里记的必须与库里存的是同一个值");
+});
+
+test("货号：留空 / 只填空格 → 落 null（不是空串）", async () => {
+  const customer = { id: "customer-1", name: "海外客户", isActive: true };
+  let createData;
+  const created = salesOrderRow({ orderNo: "TEST-SO-011" });
+  const tx = { salesOrder: { create: async ({ data }) => { createData = data; return created; } }, salesOrderVersion: { create: async ({ data }) => data } };
+  const prisma = {
+    customer: { findFirst: async () => customer },
+    customerContact: { findFirst: async () => null },
+    salesOrder: { findFirst: async () => ({ ...created, customer, contact: null }) },
+    $transaction: async (fn) => fn(tx),
+  };
+  await new SalesOrdersService(prisma, audit).create({
+    order_no: "TEST-SO-011", customer_id: customer.id, order_date: "2026-09-12T00:00:00.000Z",
+    product_name: "雨伞", quantity: "10", unit: "个", currency: "USD", item_no: "   ",
+  }, user);
+  assert.equal(createData.itemNo, null, "空串在库里没有意义：没有货号就是 null（历史单全是这一种）");
+});
+
+test("货号：更新只动传了的键 —— 空串是「清除」，没传是「不动」", async () => {
+  const order = salesOrderRow({ itemNo: "27621" });
+  const harness = updateHarness(order);
+  await harness.service.update("order-1", { item_no: "  DL27621 " }, user);
+  assert.equal(harness.captured.updateData.itemNo, "DL27621", "传了货号就写归一后的值");
+  assert.equal(harness.captured.versionData.snapshot.item_no, "DL27621");
+
+  const clearing = updateHarness(order);
+  await clearing.service.update("order-1", { item_no: "" }, user);
+  assert.equal(clearing.captured.updateData.itemNo, null, "空串 = 清除这一格（落 null），不是「不动」");
+
+  const untouched = updateHarness(order);
+  await untouched.service.update("order-1", { product_spec: "50cm 三折" }, user);
+  assert.equal("itemNo" in untouched.captured.updateData, false, "没传货号就不该写这一列");
+  assert.equal(untouched.captured.versionData.snapshot.item_no, "27621", "但快照仍要记当前货号：每版快照都是全量口径");
+});
+
+test("货号：返单来源不可被更新接口改写（返单链的出处必须永远答得出来）", async () => {
+  const order = salesOrderRow({ status: "confirmed", reorderFromOrderNo: "DL260001-1", itemNo: "27621" });
+  const harness = updateHarness(order);
+  // 用 `reorder_from_order_no` 硬塞（外部请求走 DTO 会被白名单挡掉；这里同时验证服务层自己也不认它）。
+  // 注意改的是 `attention_note`（工艺说明，不在 coreFields 里）：coreFields 会先撞下游锁，测不到这里想测的东西。
+  await harness.service.update("order-1", { attention_note: "补一句工艺", reason: "补工艺", reorder_from_order_no: "DL999999-1" }, user);
+  assert.equal("reorderFromOrderNo" in harness.captured.updateData, false, "更新接口不能改写返单来源");
+  assert.equal(harness.captured.versionData.snapshot.reorder_from_order_no, "DL260001-1", "快照记的是当前来源，不是这次塞进来的值");
+});
+
+test("货号：已确认单改货号不锁下游（它不在 coreFields 里），但仍需填修改原因", async () => {
+  // 已有 BOM 的已确认单：改货号必须放行 —— 否则「下单后发现货号打错」要先回退 BOM/采购/生产才能修。
+  const order = salesOrderRow({ status: "confirmed", itemNo: "27621", boms: [{ id: "bom-1", version: 1, status: "draft" }] });
+  const allowed = updateHarness(order, { withBom: true });
+  await allowed.service.update("order-1", { item_no: "27621 修正", reason: "货号抄错" }, user);
+  assert.equal(allowed.captured.updateData.itemNo, "27621 修正");
+
+  // 但「已确认单改动必须填原因」这条既有守卫仍然生效。
+  const missingReason = updateHarness(order, { withBom: true });
+  await assert.rejects(
+    () => missingReason.service.update("order-1", { item_no: "27621 修正" }, user),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "CORRECTION_REASON_REQUIRED",
+  );
+});
+
+test("货号：销售单列表搜索命中货号", async () => {
+  let findManyArguments;
+  const prisma = {
+    salesOrder: {
+      findMany: (arguments_) => { findManyArguments = arguments_; return Promise.resolve([]); },
+      count: () => Promise.resolve(0),
+    },
+    $transaction: async (operations) => Promise.all(operations),
+  };
+  await new SalesOrdersService(prisma, audit).list(1, 20, "27621");
+  const or = findManyArguments.where.OR ?? [];
+  assert.ok(or.some((clause) => clause.itemNo && clause.itemNo.contains === "27621"), "搜索必须能按货号命中（现场常常只记得货号）");
+  assert.equal(or.find((clause) => clause.itemNo).itemNo.mode, "insensitive", "货号搜索不区分大小写");
+});
