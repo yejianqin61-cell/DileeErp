@@ -104,4 +104,17 @@ const [query, setQuery] = useState(searchParams.get("order_no") ?? "");
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `a2534a7`）。
+
+- 交付物：`apps/web/app/procurement/orders/page.tsx` 读 `?order_no=` 作 `query` 初值；
+  `apps/web/app/workbench.tsx` 的「采购 / 应付」卡片改直达 `/procurement/orders`；
+  新增 `apps/web/test/procurement-order-deeplink.test.tsx`（3 条）；
+  三个既有采购测试文件补 `next/navigation` 的 mock。
+- 决策落地：**选 A**（只改工作台卡片直达列表页，hub 不动）——少一跳、改动最小、老书签仍有效。
+- 与计划的差异 / 顺手处理的一件事：**页面开始读 `searchParams` 之后，三个既有采购测试文件会直接抛错**
+  （jsdom 里没有 App Router 上下文）。给它们补上 `vi.mock("next/navigation", …)`，
+  这是"让页面能读查询参数"的必要代价，不是顺手的重构。
+- 财务侧（应收/应付）**本轮不做**：筛选在客户端 workspace 组件内部、页面是服务端只读 `tab`，
+  透传 `order_no` 的面比采购侧大得多 —— 有意的范围裁剪，已在提交信息里写明。
+- 验证：`npm run typecheck` 通过；web lib **284/284**；web 组件 **58 文件 1004 条**（当时）。
+- **未验证**：真实浏览器里点一遍「工作台 → 采购单列表已筛选」的整条交互。

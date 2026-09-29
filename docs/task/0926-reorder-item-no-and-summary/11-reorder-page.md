@@ -161,4 +161,24 @@ const DOCUMENT_ROUTES: Record<DocumentType, (doc: Document) => string> = {
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `83f6269`）。
+
+- 交付物：`apps/web/app/reorder/page.tsx`、`apps/web/components/reorder/document-groups.tsx`
+  （含 `DOCUMENT_ROUTES` 与 `documentDateText`）、`globals.css` 两条样式、
+  `apps/web/test/reorder-page.test.tsx`（15 条）；页面 testid 登记进 `testid-pages.test.ts`。
+- 与计划的差异：**四个展示组件合并进 page.tsx**，只把 `document-groups.tsx` 单独抽出
+  （它带跳转映射与"日期是哪一种"的判定，值得单独一个文件与测试）。理由是把 List/Summary/Timeline
+  再拆三个文件只是搬运 props，收益不足以抵一次改动的面积 —— 这条按 T15 记下来，供下一个人判断。
+- 逐条落地：三个状态走 URL（可分享/可回退）；搜索防抖 300ms；分行展示；`null` 合格率显示 `-`；
+  批次顺序照服务端；「以此返单」/「查看单据」都 URL 编码；`can_reorder` 只读服务端判定；
+  17 组单据 + 空组「未建立」；`date_source=created_at` 显示「（登记时间）」。
+- **测试抓出来的两个真缺陷**（都在本提交里修掉）：
+  1. 单据行的跳转 testid 写成了 `document.document_type`，而单据**行**没有这个字段 ——
+     testid 全变成 `document-link-undefined`。该用**分组**的类型。
+  2. 单据清单的错误被塞进 `detailError`，而详情成功时那段错误**没有任何地方显示** ——
+     失败被静默吞掉。现在单据错误单独一份 state 并在单据面板里报出来。
+- 另有一个类型层问题：`Record<string, fn>` 让 `route ? … : …` 被 TS 判定恒真（TS2774），
+  改成显式 `| undefined`。
+- 验证：`npm run typecheck` 通过；web lib **284/284**；web 组件 **57 文件 1000 条**（T12 后）。
+- **未验证**：没有在真实浏览器里点过这一页（jsdom 不排版）；「以此返单 → 编辑器预填 → 保存」的
+  端到端交互仍只有两侧各自的组件测试。
