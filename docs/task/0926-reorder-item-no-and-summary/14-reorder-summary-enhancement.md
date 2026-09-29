@@ -111,4 +111,26 @@
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `f92f0c0`）。
+
+- 交付物：`reorder.domain.ts` 的 `deliveryVerdict` / `deliverySummary` / `qualityTrend`；
+  `reorder.service.ts` 的 `grossMargin()` 与 `articleDetail` 新增的三块；
+  `reorder-export.service.ts`（总结表）；`ReorderModule.imports: [FinanceModule]`；
+  控制器 `GET /reorder/articles/:item_no/summary.xlsx`；页面上的交期/趋势/毛利/导出按钮；
+  `apps/api/test/unit/reorder-summary.test.cjs`（7 条）+ 页面测试 4 条。
+- 逐条落地：交期五档（未出货/无交期**不算准时**）、趋势至少两批、毛利复用财务口径、
+  导出与页面**同源**（复用 `articleDetail`，不重新取数）、数值格/比例格、表尾写清口径。
+- **关于「观察一轮再开工」那个门槛**：开工时核对过——真正要复用的口径（销售金额 = 总额退应收、
+  成本 = BOM 原料成本、缺价按 0 并出脚注）**已经在财务的「销售利润报表(毛利)」上线使用**，
+  本次是调用它而不是重新定义它，所以"口径未确认"的风险不成立。真正待业务确认的只是 P3 的**汇总口径**
+  （数量/金额分行、合格率分母为 0 给 `-`），而那一块不改毛利算法，改了也能单独调。
+- 与计划的差异：
+  1. `FinanceReportQueryService` 用 `@Optional()` 注入：拿不到就 `gross_margin: null`，
+     这个模块的其余部分不该因为财务模块不在就整体不可用（也让既有单测不用改构造方式）。
+  2. 毛利**逐批**调用（那个服务只按单值 `orderNo` 筛选）：一张货号的批次是几十的量级，
+     逐批并发的代价远低于再写一套成本口径。
+  3. 导出的合计按**币种分行**（不跨币种相加），草稿批次不计入并在页面上说明。
+- 验证：`npm run typecheck` 通过；API **2128/2128**；web lib **284/284**；web 组件 **58 文件 1009 条**。
+- **未验证**：真实库上 `salesGrossProfit({ orderNo })` 的调用（本机无库）；
+  导出的 xlsx 只在回读层面验过数值格与表尾，**未在真实 Excel 里打开看过版式**；
+  没有在浏览器里点过导出按钮（`downloadFile` 的落盘行为只有既有测试覆盖）。
