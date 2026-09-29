@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Param, Query, UseGuards } from "@nestjs/common";
 import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
 import { Type } from "class-transformer";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -32,6 +32,11 @@ class UnassignedQueryDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) page_size = 20;
 }
 
+class ArticleDetailQueryDto {
+  @IsOptional() @IsIn(["true", "false"]) include_closed?: string;
+  @IsOptional() @IsIn(["true", "false"]) include_deleted?: string;
+}
+
 @Controller("reorder")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireAnyModules("sales", "procurement", "production", "warehouse", "finance", "hr")
@@ -48,5 +53,16 @@ export class ReorderController {
   @Get("unassigned-orders") async unassignedOrders(@Query() query: UnassignedQueryDto) {
     const result = await this.service.listUnassignedOrders(query);
     return { data: result.data, meta: { page: result.page, page_size: result.page_size, total: result.total } };
+  }
+
+  /**
+   * 货号详情：该货号的**每一批**（销售单）与跨批汇总。
+   *
+   * 路径参数是**货号本身**（不是 id）：业务手上有的就是这个编码，而它可能含空格与中文，
+   * 客户端要 `encodeURIComponent`。查不到给 404 `ARTICLE_NOT_FOUND`
+   * （与工作台 `ORDER_NOT_FOUND` 同一形状；**只选一种**，前端不必写两套分支）。
+   */
+  @Get("articles/:item_no") async article(@Param("item_no") itemNo: string, @Query() query: ArticleDetailQueryDto) {
+    return { data: await this.service.articleDetail(itemNo, query), meta: {} };
   }
 }

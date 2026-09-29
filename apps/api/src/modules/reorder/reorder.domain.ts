@@ -21,11 +21,15 @@ export type ArticleOrderRow = {
   orderDate: Date;
   deliveryDate: Date | null;
   status: string;
+  currentVersion: number;
   quantity: Prisma.Decimal;
   unit: string;
   currency: string;
   productName: string;
+  customerId: string;
   customerName: string | null;
+  /** 返单来源单号（T05）；详情里要显示「这批是从哪返来的」。 */
+  reorderFromOrderNo: string | null;
 };
 
 export type MergedArticle = {
@@ -43,6 +47,12 @@ export type MergedArticle = {
 
 /** 还没走完的生产状态 —— 「在制批次数」按它算。 */
 export const OPEN_PRODUCTION_STATUSES = ["draft", "in_progress", "paused"] as const;
+
+/**
+ * 「已出库」的状态清单 —— 与工作台同一份口径（`order-workbench.service.ts` 里那段注释）：
+ * 草稿是**待出库**，`cancelled` / `reversed` 都不算，把它们累加会报出虚高的已出库量。
+ */
+export const SHIPPED_OUTBOUND_STATUSES = ["posted", "shipped", "signed"] as const;
 
 const toIso = (value: Date | null | undefined): string | null => (value ? new Date(value).toISOString() : null);
 const decimalString = (value: { toString(): string } | null | undefined): string => value?.toString() ?? "0";

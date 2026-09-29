@@ -139,7 +139,7 @@ test("清单：q 按**归一键**匹配（大小写与空白不敏感）", async
   assert.equal((await service.listArticles({ q: "27621" })).total, 1);
   assert.equal((await service.listArticles({ q: " 27621 " })).total, 1, "q 自己也要归一（前后空格不该把结果滤没）");
   assert.equal((await service.listArticles({ q: "流水" })).total, 1);
-  assert.equal((await service.listArticles({ q: "88001" })).data[0].itemNo, "88001 新版");
+  assert.equal((await service.listArticles({ q: "88001" })).data[0].item_no, "88001 新版");
   assert.equal((await service.listArticles({})).total, 2);
 });
 
@@ -154,8 +154,10 @@ test("清单：分页的 total 是**归并后的货号数**，第 2 页不重不
   const first = await service.listArticles({ page: 1, page_size: 2 });
   const second = await service.listArticles({ page: 2, page_size: 2 });
   assert.equal(first.total, 3, "total 是货号数（3），不是销售单数（4）");
-  assert.deepEqual(first.data.map((article) => article.itemNo), ["C", "B"]);
-  assert.deepEqual(second.data.map((article) => article.itemNo), ["A"]);
+  // 响应用 **snake_case**（`item_no`）—— 不要同时给 camelCase 别名：一个响应两种键名
+  // 正是本仓库反复踩过的那类坑（读侧两套键名 → 取到 undefined 而没人发现）。
+  assert.deepEqual(first.data.map((article) => article.item_no), ["C", "B"]);
+  assert.deepEqual(second.data.map((article) => article.item_no), ["A"]);
   assert.equal(first.data.length + second.data.length, 3);
 });
 
