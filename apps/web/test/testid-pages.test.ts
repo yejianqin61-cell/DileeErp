@@ -31,6 +31,8 @@ const EXPECTED: Record<string, string> = {
   "procurement/materials/page.tsx": "page-procurement-materials",
   "procurement/suppliers/page.tsx": "page-procurement-suppliers",
   "procurement/boms/page.tsx": "page-procurement-boms",
+  // 采购计划（2026-09-27）：一个销售单的一份 BOM 一份计划，承接原来的采购单草稿。
+  "procurement/plans/page.tsx": "page-procurement-plans",
   "procurement/orders/page.tsx": "page-procurement-orders",
   "procurement/orders/[id]/page.tsx": "page-procurement-orders-detail",
   "procurement/incoming-qc/page.tsx": "page-procurement-incoming-qc",

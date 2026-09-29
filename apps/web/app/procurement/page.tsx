@@ -7,7 +7,8 @@ const links = [
   { href: "/procurement/materials", label: "物料清单", description: "统一维护物料主数据，BOM、采购和库存会共用这里的物料。" },
   { href: "/procurement/suppliers", label: "供应商池", description: "统一维护供应商主数据，采购单每行明细通过供应商列引用此处的供应商。" },
   { href: "/procurement/boms", label: "BOM表", description: "在已确认销售单上建立物料 BOM 表，采购与生产共用。" },
-  { href: "/procurement/orders", label: "采购单", description: "选定销售单后按供应商拆分下单；登记到货、记录批次流转至质检。" },
+  { href: "/procurement/plans", label: "采购计划", description: "一个销售单的一份 BOM 一份计划：填供应商、单价、预计到货，按供应商收束下单。" },
+  { href: "/procurement/orders", label: "采购单", description: "经过供应商收束下单的采购单；登记到货、记录批次流转至质检。" },
   { href: "/procurement/incoming-qc", label: "来料质检", description: "到货批次的送检登记、判定、入库通知与退货，集成质检模块。" },
   { href: "/procurement/inbounds", label: "原料入库", description: "查看跨模块的入库状态与财务付款通知，入库过账在仓库模块执行。" },
 ];

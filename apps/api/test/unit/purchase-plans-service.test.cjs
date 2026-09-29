@@ -204,7 +204,7 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
       return rows;
     },
   };
-  return { service: new PurchasePlansService(prisma, audit, fakeOrders), plans, planItems, split: () => recordedSplit, createdOrders, createdOrderItems };
+  return { service: new PurchasePlansService(prisma, audit, fakeOrders, { namesOf: async () => new Map([["user-1", "张三"]]) }), plans, planItems, split: () => recordedSplit, createdOrders, createdOrderItems };
 }
 
 const bomFixture = { id: "bom-1", orderNo: "SO-1", salesOrderId: "so-1", version: 3, status: "draft", deletedAt: null, salesOrder: { status: "confirmed", deletedAt: null } };
@@ -409,6 +409,16 @@ test("列表：状态筛选与关键词筛选", async () => {
   assert.deepEqual((await service.list({ status: "all" })).length, 2);
   assert.deepEqual((await service.list({ q: "另一个客户" })).map((row) => row.planNo), ["PP-2"], "客户名可以搜");
   assert.deepEqual((await service.list({ q: "pp-1" })).map((row) => row.planNo), ["PP-1"], "计划编号可以搜（大小写不敏感）");
+});
+
+test("列表：最后更新带上**人名**（不是 UUID）—— 列表那一列是「人 + 北京时间」", async () => {
+  const plans = [{ id: "plan-1", planNo: "PP-1", orderNo: "SO-1", bomId: "bom-1", bomVersion: 1, deletedAt: null, createdAt: new Date(), updatedAt: new Date(), createdBy: "user-1", updatedBy: "user-1" }];
+  const { service } = makeService({ plans });
+
+  const [row] = await service.list();
+
+  assert.equal(row.updatedByName, "张三");
+  assert.equal(row.createdByName, "张三");
 });
 
 test("列表：已经软删的计划不出现", async () => {

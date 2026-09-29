@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
+import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { itemNoKey } from "../sales/item-no";
@@ -108,7 +109,7 @@ function contactLine(supplier: { contactName?: string | null; phone?: string | n
 
 @Injectable()
 export class PurchasePlansService {
-  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly orders: PurchaseOrdersService) {}
+  constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly orders: PurchaseOrdersService, private readonly actors: AuditActorService) {}
 
   /**
    * 计划列表。
@@ -130,10 +131,14 @@ export class PurchasePlansService {
       orderBy: { updatedAt: "desc" },
     });
     const summaries = rows.map((row) => this.summaryOf(row as PlanSummarySource));
+    // 列表要显示"最后更新（人 + 北京时间）"，所以把操作人姓名一并解析出来。
+    // 只输出**姓名**、绝不输出 UUID —— 全站治理要消灭的正是「制单：6f3a1c8e-…」那种显示。
+    const names = rows.length ? await this.actors.namesOf(rows.flatMap((row) => [row.updatedBy, row.createdBy])) : new Map<string, string>();
+    const withNames = summaries.map((row, index) => ({ ...row, updatedByName: names.get(rows[index].updatedBy) ?? null, createdByName: names.get(rows[index].createdBy) ?? null }));
     const status = query.status?.trim();
     const key = itemNoKey(query.item_no);
     const text = query.q?.trim().toLowerCase();
-    return summaries.filter((row) => {
+    return withNames.filter((row) => {
       if (status && status !== "all" && row.status !== status) return false;
       if (key && itemNoKey(row.itemNo) !== key) return false;
       if (text && !`${row.planNo} ${row.orderNo} ${row.itemNo ?? ""} ${row.customerName ?? ""}`.toLowerCase().includes(text)) return false;
@@ -669,7 +674,11 @@ export class PurchasePlansService {
     };
   }
 
-  /** 列表/详情共用的摘要：行数、未下单行数、派生状态。 */
+  /**
+   * 列表/详情共用的摘要：行数、未下单行数、派生状态。
+   *
+   * `updatedByName` 由调用方补（列表要显示"最后更新（人 + 北京时间）"，而姓名要另查 `users`）。
+   */
   private summaryOf(row: PlanSummarySource) {
     const lineCount = row.items.length;
     const unorderedCount = row.items.filter((item) => !item.purchaseOrderItemId).length;
