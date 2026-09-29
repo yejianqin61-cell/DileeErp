@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Query, UseGuards } from "@nestjs/common";
-import { IsIn, IsInt, IsOptional, IsString, Max, Min } from "class-validator";
+import { IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Max, MaxLength, Min } from "class-validator";
 import { Type } from "class-transformer";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
@@ -37,6 +37,16 @@ class ArticleDetailQueryDto {
   @IsOptional() @IsIn(["true", "false"]) include_deleted?: string;
 }
 
+/** 单据清单：`order_no` **必填**（不给会一次吐出该货号全部批次的单据）。 */
+class DocumentsQueryDto {
+  @IsNotEmpty() @IsString() @MaxLength(100) order_no!: string;
+}
+
+/** 时间线：`order_no` 可选（给 = 只看这一批；不给 = 整个货号合并）。 */
+class TimelineQueryDto {
+  @IsOptional() @IsString() @MaxLength(100) order_no?: string;
+}
+
 @Controller("reorder")
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireAnyModules("sales", "procurement", "production", "warehouse", "finance", "hr")
@@ -64,5 +74,18 @@ export class ReorderController {
    */
   @Get("articles/:item_no") async article(@Param("item_no") itemNo: string, @Query() query: ArticleDetailQueryDto) {
     return { data: await this.service.articleDetail(itemNo, query), meta: {} };
+  }
+
+  /**
+   * 一批的全部单据（17 组）。老板原话的落点：「查看当时该批货号的采购，生产，QC 的所有表单，信息」。
+   * `order_no` 必填；该单不属于这个货号时 404 `ORDER_NOT_IN_ARTICLE`。
+   */
+  @Get("articles/:item_no/documents") async documents(@Param("item_no") itemNo: string, @Query() query: DocumentsQueryDto) {
+    return { data: await this.service.orderDocuments(itemNo, query.order_no), meta: {} };
+  }
+
+  /** 审计时间线：给 `order_no` 只看这一批，不给则整个货号合并（超过 200 条回报 `truncated`）。 */
+  @Get("articles/:item_no/timeline") async timeline(@Param("item_no") itemNo: string, @Query() query: TimelineQueryDto) {
+    return { data: await this.service.articleTimeline(itemNo, query.order_no), meta: {} };
   }
 }

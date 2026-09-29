@@ -2,7 +2,46 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { itemNoKey } from "../sales/item-no";
-import { mergeArticles, qualifiedRate, sumByCurrency, unassignedOrderRow, OPEN_PRODUCTION_STATUSES, SHIPPED_OUTBOUND_STATUSES, type ArticleOrderRow, type MergedArticle } from "./reorder.domain";
+import { mergeArticles, qualifiedRate, sumByCurrency, unassignedOrderRow, documentRow, DOCUMENT_GROUPS, TIMELINE_LIMIT, OPEN_PRODUCTION_STATUSES, SHIPPED_OUTBOUND_STATUSES, type ArticleOrderRow, type DocumentRow, type DocumentType, type MergedArticle } from "./reorder.domain";
+
+/** 分组中文名：从 `DOCUMENT_GROUPS` 反查，避免同一份清单抄两遍（漏一处就是一个没有标题的组）。 */
+const GROUP_LABELS = new Map<string, string>(DOCUMENT_GROUPS.map((group) => [group.type, group.label]));
+const labelOf = (type: DocumentType): string => GROUP_LABELS.get(type) ?? type;
+
+/** 领料单的三种形态（`RawMaterialMovement.documentType`）→ 中文。 */
+const MOVEMENT_LABELS: Record<string, string> = { issue: "领料", replenishment: "补料", return: "退料", scrap: "报废" };
+
+function supplierNameOf(snapshot: Prisma.JsonValue | null | undefined): string | null {
+  const value = (snapshot ?? {}) as { name?: unknown };
+  return typeof value.name === "string" ? value.name : null;
+}
+
+/**
+ * 工序日报**聚合**成一行（一个工序一条）。
+ *
+ * 逐条列出来会把这一页淹掉（同一个工序几十条日报），而业务要看的是「这道工序做了多少、做到了哪天」。
+ * `extra.report_count` 给出条数，需要看明细的去生产模块。
+ */
+function aggregateDailyReports(rows: Array<{ id: string; productionOrderNoSnapshot: string; operationNameSnapshot: string; reportDate: Date; completedQuantity: Prisma.Decimal; unit: { name: string } | null }>): DocumentRow[] {
+  const groups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = `${row.productionOrderNoSnapshot}|${row.operationNameSnapshot}|${row.unit?.name ?? ""}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  return [...groups.values()].map((group) => {
+    const first = group[0];
+    const dates = group.map((row) => new Date(row.reportDate).getTime());
+    return documentRow({
+      documentNo: `${first.productionOrderNoSnapshot} / ${first.operationNameSnapshot}`,
+      businessDate: new Date(Math.max(...dates)),
+      quantity: group.reduce((total, row) => total.plus(row.completedQuantity), new Prisma.Decimal(0)),
+      unit: first.unit?.name ?? null,
+      status: "active",
+      sourceId: first.id,
+      extra: { operation_name: first.operationNameSnapshot, report_count: group.length, first_report_date: new Date(Math.min(...dates)).toISOString() },
+    });
+  });
+}
 
 /**
  * 「返单与总结」的读模型（2026-09-26）。
@@ -145,6 +184,105 @@ export class ReorderService {
         };
       }),
     };
+  }
+
+  /**
+   * 一批（一张销售单）的**全部单据**，按模块分组。
+   *
+   * 老板原话的落点：「查看当时该批货号的采购，生产，QC 的所有表单，信息」。
+   *
+   * 两条守卫先写：**没给订单号就 400**（不给会一次吐出该货号全部批次的单据，响应大到没人看得懂），
+   * **订单不属于该货号就 404**（否则这就是一条绕过货号口径取任意订单全部单据的通道）。
+   */
+  async orderDocuments(itemNo: string, orderNo: string) {
+    const order = await this.assertOrderInArticle(itemNo, orderNo);
+    const [boms, purchaseOrders, receipts, inspections, inbounds, productionOrders, movements, dailyReports, submissions, qcRecords, notices, finishedInbounds, defectives, outbounds, receivables, payableSources, payables] = await Promise.all([
+      this.prisma.bom.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, version: true, status: true, createdAt: true, _count: { select: { items: { where: { deletedAt: null } } } } }, orderBy: { version: "asc" } }),
+      this.prisma.purchaseOrder.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, purchaseOrderNo: true, purchaseDate: true, createdAt: true, status: true, totalAmount: true, currency: true, supplierSnapshot: true }, orderBy: { purchaseOrderNo: "asc" } }),
+      this.prisma.purchaseReceipt.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, receiptNo: true, receivedDate: true, quantity: true, status: true }, orderBy: { receivedDate: "asc" } }),
+      // 来料质检**没有单号**：用「到货单号 + 批次」标识它，别在界面上甩一个 UUID。
+      this.prisma.incomingInspection.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, status: true, qcResult: true, createdAt: true, inspectedQuantity: true, acceptedQuantity: true, conditionalQuantity: true, rejectedQuantity: true, purchaseReceiptId: true, purchaseReceipt: { select: { receiptNo: true } } }, orderBy: { createdAt: "asc" } }),
+      this.prisma.rawMaterialInbound.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, inboundNo: true, quantity: true, status: true, createdAt: true, unit: { select: { name: true } }, material: { select: { name: true } } }, orderBy: { createdAt: "asc" } }),
+      this.prisma.productionOrder.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, productionOrderNo: true, plannedQuantity: true, status: true, executionMode: true, plannedStartedOn: true, completedOn: true, deliveryDueOn: true, createdAt: true, unit: { select: { name: true } }, executionLocation: { select: { name: true } } }, orderBy: { productionOrderNo: "asc" } }),
+      this.prisma.rawMaterialMovement.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, movementNo: true, documentType: true, status: true, businessDate: true, reason: true, lines: { where: { deletedAt: null }, select: { quantity: true } } }, orderBy: { businessDate: "asc" } }),
+      this.prisma.operationDailyReport.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, productionOrderNoSnapshot: true, operationNameSnapshot: true, reportDate: true, completedQuantity: true, unit: { select: { name: true } } }, orderBy: { reportDate: "asc" } }),
+      this.prisma.finishedGoodsInspectionSubmission.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, submissionNo: true, submissionDate: true, submittedQuantity: true, status: true, sourceType: true, unitNameSnapshot: true }, orderBy: { submissionDate: "asc" } }),
+      this.prisma.finishedGoodsQcRecord.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, qcNo: true, inspectionDate: true, inspectedQuantity: true, qualifiedQuantity: true, conditionalAcceptQuantity: true, rejectedQuantity: true, conclusion: true, status: true, rejectionReason: true }, orderBy: { inspectionDate: "asc" } }),
+      this.prisma.finishedGoodsInboundNotice.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, noticeNo: true, noticeDate: true, noticeQuantity: true, status: true, operationNameSnapshot: true }, orderBy: { noticeDate: "asc" } }),
+      this.prisma.finishedGoodsInbound.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, inboundNo: true, quantity: true, status: true, createdAt: true, productNameSnapshot: true }, orderBy: { createdAt: "asc" } }),
+      this.prisma.finishedGoodsDefective.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, defectiveNo: true, quantity: true, status: true, disposition: true, createdAt: true }, orderBy: { createdAt: "asc" } }),
+      this.prisma.finishedGoodsOutbound.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, outboundNo: true, quantity: true, status: true, shipmentDate: true, createdAt: true, carrier: true }, orderBy: { createdAt: "asc" } }),
+      this.prisma.receivableSource.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, sourceNo: true, amount: true, currency: true, status: true, dueDate: true, createdAt: true }, orderBy: { createdAt: "asc" } }),
+      // `payable_sources` **没有** `deleted_at` 列（它是待财务处理的来源，只有"被确认成应付单"这一步）——
+      // 所以这一条**故意**不带软删过滤。别"顺手补上"，那会让整个查询编译不过。
+      this.prisma.payableSource.findMany({ where: { orderNo }, select: { id: true, amount: true, currency: true, status: true, createdAt: true, purchaseReceipt: { select: { receiptNo: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } } }, orderBy: { createdAt: "asc" } }),
+      this.prisma.supplierPayableEntry.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, payableNo: true, amount: true, currency: true, status: true, confirmationDate: true, createdAt: true, sourceNoSnapshot: true }, orderBy: { createdAt: "asc" } }),
+    ]);
+
+    const groups: Array<{ document_type: DocumentType; label: string; documents: DocumentRow[] }> = [
+      { document_type: "bom", label: labelOf("bom"), documents: boms.map((row) => documentRow({ documentNo: `BOM v${row.version}`, createdAt: row.createdAt, quantity: new Prisma.Decimal(row._count.items), status: row.status, sourceId: row.id, extra: { version: row.version, item_count: row._count.items } })) },
+      { document_type: "purchase_order", label: labelOf("purchase_order"), documents: purchaseOrders.map((row) => documentRow({ documentNo: row.purchaseOrderNo, businessDate: row.purchaseDate, createdAt: row.createdAt, status: row.status, sourceId: row.id, extra: { amount: row.totalAmount.toString(), currency: row.currency, supplier_name: supplierNameOf(row.supplierSnapshot) } })) },
+      { document_type: "purchase_receipt", label: labelOf("purchase_receipt"), documents: receipts.map((row) => documentRow({ documentNo: row.receiptNo, businessDate: row.receivedDate, quantity: row.quantity, status: row.status, sourceId: row.id })) },
+      { document_type: "incoming_inspection", label: labelOf("incoming_inspection"), documents: inspections.map((row) => documentRow({ documentNo: row.purchaseReceipt?.receiptNo ? `${row.purchaseReceipt.receiptNo} 质检` : null, createdAt: row.createdAt, quantity: row.inspectedQuantity, status: row.status, sourceId: row.id, extra: { qc_result: row.qcResult, accepted_quantity: row.acceptedQuantity.toString(), conditional_quantity: row.conditionalQuantity.toString(), rejected_quantity: row.rejectedQuantity.toString(), receipt_id: row.purchaseReceiptId, receipt_no: row.purchaseReceipt?.receiptNo ?? null } })) },
+      { document_type: "raw_material_inbound", label: labelOf("raw_material_inbound"), documents: inbounds.map((row) => documentRow({ documentNo: row.inboundNo, createdAt: row.createdAt, quantity: row.quantity, unit: row.unit?.name ?? null, status: row.status, sourceId: row.id, extra: { material_name: row.material?.name ?? null } })) },
+      { document_type: "production_order", label: labelOf("production_order"), documents: productionOrders.map((row) => documentRow({ documentNo: row.productionOrderNo, businessDate: row.plannedStartedOn ?? row.completedOn, createdAt: row.createdAt, quantity: row.plannedQuantity, unit: row.unit?.name ?? null, status: row.status, sourceId: row.id, extra: { execution_mode: row.executionMode, execution_location: row.executionLocation?.name ?? null, completed_on: row.completedOn ? new Date(row.completedOn).toISOString() : null, delivery_due_on: row.deliveryDueOn ? new Date(row.deliveryDueOn).toISOString() : null } })) },
+      { document_type: "material_movement", label: labelOf("material_movement"), documents: movements.map((row) => documentRow({ documentNo: row.movementNo, businessDate: row.businessDate, quantity: row.lines.reduce((total, line) => total.plus(line.quantity), new Prisma.Decimal(0)), status: row.status, sourceId: row.id, extra: { document_type: row.documentType, document_type_label: MOVEMENT_LABELS[row.documentType] ?? row.documentType, reason: row.reason } })) },
+      // 工序日报**聚合**成一行（一个工序一条）：逐条列出来会把这一页淹掉，而业务要看的是"这道工序做了多少"。
+      { document_type: "operation_daily_report", label: labelOf("operation_daily_report"), documents: aggregateDailyReports(dailyReports) },
+      { document_type: "finished_submission", label: labelOf("finished_submission"), documents: submissions.map((row) => documentRow({ documentNo: row.submissionNo, businessDate: row.submissionDate, quantity: row.submittedQuantity, unit: row.unitNameSnapshot, status: row.status, sourceId: row.id, extra: { source_type: row.sourceType } })) },
+      { document_type: "finished_qc", label: labelOf("finished_qc"), documents: qcRecords.map((row) => documentRow({ documentNo: row.qcNo, businessDate: row.inspectionDate, quantity: row.inspectedQuantity, status: row.conclusion || row.status, sourceId: row.id, extra: { qualified_quantity: row.qualifiedQuantity.toString(), conditional_accept_quantity: row.conditionalAcceptQuantity.toString(), rejected_quantity: row.rejectedQuantity.toString(), record_status: row.status, rejection_reason: row.rejectionReason } })) },
+      { document_type: "finished_inbound_notice", label: labelOf("finished_inbound_notice"), documents: notices.map((row) => documentRow({ documentNo: row.noticeNo, businessDate: row.noticeDate, quantity: row.noticeQuantity, status: row.status, sourceId: row.id, extra: { operation_name: row.operationNameSnapshot } })) },
+      { document_type: "finished_inbound", label: labelOf("finished_inbound"), documents: finishedInbounds.map((row) => documentRow({ documentNo: row.inboundNo, createdAt: row.createdAt, quantity: row.quantity, status: row.status, sourceId: row.id, extra: { product_name: row.productNameSnapshot } })) },
+      { document_type: "finished_defective", label: labelOf("finished_defective"), documents: defectives.map((row) => documentRow({ documentNo: row.defectiveNo, createdAt: row.createdAt, quantity: row.quantity, status: row.status, sourceId: row.id, extra: { disposition: row.disposition } })) },
+      { document_type: "finished_outbound", label: labelOf("finished_outbound"), documents: outbounds.map((row) => documentRow({ documentNo: row.outboundNo, businessDate: row.shipmentDate, createdAt: row.createdAt, quantity: row.quantity, status: row.status, sourceId: row.id, extra: { carrier: row.carrier } })) },
+      { document_type: "receivable", label: labelOf("receivable"), documents: receivables.map((row) => documentRow({ documentNo: row.sourceNo, businessDate: row.dueDate, createdAt: row.createdAt, quantity: row.amount, unit: row.currency, status: row.status, sourceId: row.id, extra: { amount: row.amount.toString(), currency: row.currency } })) },
+      { document_type: "payable_source", label: labelOf("payable_source"), documents: payableSources.map((row) => documentRow({ documentNo: row.rawMaterialInbound?.inboundNo ?? row.purchaseReceipt?.receiptNo ?? null, createdAt: row.createdAt, quantity: row.amount, unit: row.currency, status: row.status, sourceId: row.id, extra: { amount: row.amount.toString(), currency: row.currency, purchase_order_no: row.purchaseOrder?.purchaseOrderNo ?? null } })) },
+      { document_type: "supplier_payable", label: labelOf("supplier_payable"), documents: payables.map((row) => documentRow({ documentNo: row.payableNo, businessDate: row.confirmationDate, createdAt: row.createdAt, quantity: row.amount, unit: row.currency, status: row.status, sourceId: row.id, extra: { amount: row.amount.toString(), currency: row.currency, source_no: row.sourceNoSnapshot } })) },
+    ];
+    // **空组也返回**：老板的问题包含"当时有没有做 QC"，空组与"没有这个模块"是两条不同的信息。
+    return { order_no: orderNo, item_no: order.itemNo, groups };
+  }
+
+  /**
+   * 时间线：一批（或整个货号）的审计事件，按时间倒排。
+   *
+   * `take` 上限之上**必须回报 `truncated`**：工作台的 timeline 是静默 `take: 200`，
+   * 那会让人以为"这就是全部"——老板要的恰恰是"查得到"。
+   */
+  async articleTimeline(itemNo: string, orderNo?: string) {
+    let orderNos: string[];
+    if (orderNo) {
+      orderNos = [(await this.assertOrderInArticle(itemNo, orderNo)).orderNo];
+    } else {
+      const key = itemNoKey(itemNo);
+      const article = mergeArticles(await this.loadRows({}, { not: null }), itemNoKey).find((candidate) => candidate.itemNoKey === key);
+      if (!article) throw new NotFoundException({ code: "ARTICLE_NOT_FOUND", message: `没有找到货号「${itemNo}」的销售单`, details: [{ item_no: itemNo }] });
+      orderNos = article.orderNos;
+    }
+    const events = await this.prisma.auditEvent.findMany({ where: { orderNo: { in: orderNos } }, orderBy: { createdAt: "desc" }, take: TIMELINE_LIMIT + 1 });
+    const truncated = events.length > TIMELINE_LIMIT;
+    return {
+      order_nos: orderNos,
+      truncated,
+      events: events.slice(0, TIMELINE_LIMIT).map((event) => ({
+        id: event.id, action: event.action, entity_type: event.entityType, entity_id: event.entityId,
+        actor_id: event.actorId, order_no: event.orderNo, details: event.details, created_at: new Date(event.createdAt).toISOString(),
+      })),
+    };
+  }
+
+  /**
+   * 守卫：这批单必须**属于该货号**。
+   *
+   * 没有这一条，`/reorder/articles/27621/documents?order_no=别的货号的单` 就是一条
+   * 绕过货号口径、取任意订单全部单据的通道。软删的订单也不给看（404 ORDER_NOT_FOUND）。
+   */
+  private async assertOrderInArticle(itemNo: string, orderNo: string) {
+    const order = await this.prisma.salesOrder.findFirst({ where: { orderNo }, select: { id: true, orderNo: true, itemNo: true, deletedAt: true } });
+    if (!order || order.deletedAt) throw new NotFoundException({ code: "ORDER_NOT_FOUND", message: `销售单不存在：${orderNo}`, details: [{ order_no: orderNo }] });
+    const orderKey = itemNoKey(order.itemNo);
+    if (!orderKey || orderKey !== itemNoKey(itemNo)) throw new NotFoundException({ code: "ORDER_NOT_IN_ARTICLE", message: `销售单 ${orderNo} 不属于货号「${itemNo}」`, details: [{ order_no: orderNo, item_no: itemNo }] });
+    return order;
   }
 
   /** 待补货号的历史单（T12 的待办表）：这里返回的是**订单行**，不是货号组。 */

@@ -162,3 +162,104 @@ export function unassignedOrderRow(row: ArticleOrderRow) {
     status: row.status,
   };
 }
+
+// ---------------------------------------------------------------- 单据清单（T09）
+
+/**
+ * 单据分组的**稳定枚举**：前端按 `document_type` 映射跳转路径，API **不拼 URL**
+ * （跳转是展示层的事；把路径写进接口就意味着改一次前端路由要动后端）。
+ *
+ * 顺序 = 页面上的分组顺序 = 这批货实际走的顺序（BOM → 采购 → 到货 → 质检 → 入库 → 生产 →
+ * 领料 → 日报 → 送检 → QC → 入库 → 次品 → 出库 → 财务）。
+ */
+export const DOCUMENT_GROUPS = [
+  { type: "bom", label: "BOM 表" },
+  { type: "purchase_order", label: "采购单" },
+  { type: "purchase_receipt", label: "采购到货" },
+  { type: "incoming_inspection", label: "来料质检" },
+  { type: "raw_material_inbound", label: "原料入库" },
+  { type: "production_order", label: "生产单" },
+  { type: "material_movement", label: "领料 / 补料 / 退料" },
+  { type: "operation_daily_report", label: "工序日报" },
+  { type: "finished_submission", label: "成品送检" },
+  { type: "finished_qc", label: "成品 QC" },
+  { type: "finished_inbound_notice", label: "成品入库通知" },
+  { type: "finished_inbound", label: "成品入库" },
+  { type: "finished_defective", label: "次品" },
+  { type: "finished_outbound", label: "成品出库" },
+  { type: "receivable", label: "应收来源" },
+  { type: "payable_source", label: "应付来源（待财务）" },
+  { type: "supplier_payable", label: "应付单" },
+] as const;
+
+export type DocumentType = (typeof DOCUMENT_GROUPS)[number]["type"];
+
+/**
+ * 单据状态 → 中文。**本页只有这一份映射**（工作台也不给 status_label）。
+ *
+ * 认不出来的状态**原样返回状态码**而不是空字符串：空着会让人以为"这张单没有状态"，
+ * 而状态码至少能拿去搜代码。新增状态时在这里补一行即可。
+ */
+export const DOCUMENT_STATUS_LABELS: Record<string, string> = {
+  draft: "草稿", submitted: "已提交", pending: "待处理", pending_outbound: "待出库", pending_finance: "待财务",
+  ordered: "已下单", received: "已到货", inspecting: "质检中", completed: "已完成", accepted: "全部入库",
+  conditionally_accepted: "条件接收", partially_accepted: "部分入库", rejected: "拒收", cancelled: "已取消",
+  in_progress: "生产中", paused: "已暂停", closed: "已关闭", active: "有效", posted: "已过账",
+  shipped: "已发出", signed: "已签收", reversed: "已红冲", confirmed: "已确认", outbound_created: "已建出库单",
+  partially_outbound: "已部分出库", pending_reconciliation: "待对账", reconciled: "已对账", paid: "已付款",
+};
+
+export function documentStatusLabel(status: string | null | undefined): string {
+  const key = (status ?? "").trim();
+  if (!key) return "";
+  return DOCUMENT_STATUS_LABELS[key] ?? key;
+}
+
+/**
+ * 一条单据行。
+ *
+ * `date_source` 说明**这个日期是哪个日期**：仓库那几张表（原料入库/成品入库/次品/来料质检）
+ * 根本没有业务日期列，只能回落 `createdAt`。不标出来的话，业务会把"登记时间"当成真实业务日期 ——
+ * 而这两者在月末对账时差一天就是两个月的数。
+ */
+export type DocumentRow = {
+  document_no: string | null;
+  date: string | null;
+  date_source: "business" | "created_at" | "none";
+  quantity: string | null;
+  unit: string | null;
+  status: string;
+  status_label: string;
+  source_id: string;
+  extra: Record<string, unknown>;
+};
+
+/** 组装一条单据行：把"哪个日期、数量字符串化、状态中文"这三件事收在一处，免得 17 组各写一遍。 */
+export function documentRow(input: {
+  documentNo?: string | null;
+  businessDate?: Date | null;
+  createdAt?: Date | null;
+  quantity?: { toString(): string } | null;
+  unit?: string | null;
+  status?: string | null;
+  sourceId: string;
+  extra?: Record<string, unknown>;
+}): DocumentRow {
+  const business = input.businessDate ? new Date(input.businessDate) : null;
+  const created = input.createdAt ? new Date(input.createdAt) : null;
+  const date = business ?? created;
+  return {
+    document_no: input.documentNo ?? null,
+    date: date ? date.toISOString() : null,
+    date_source: business ? "business" : created ? "created_at" : "none",
+    quantity: input.quantity === null || input.quantity === undefined ? null : input.quantity.toString(),
+    unit: input.unit ?? null,
+    status: input.status ?? "",
+    status_label: documentStatusLabel(input.status),
+    source_id: input.sourceId,
+    extra: input.extra ?? {},
+  };
+}
+
+/** 时间线上限：老板要的是"查得到"，静默截断会让人以为这就是全部 —— 所以同时回报 `truncated`。 */
+export const TIMELINE_LIMIT = 200;
