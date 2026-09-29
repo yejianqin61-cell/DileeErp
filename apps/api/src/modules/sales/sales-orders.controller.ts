@@ -190,6 +190,10 @@ export class UpdateSalesOrderDto extends SalesOrderSpecDto {
 class SalesOrderQueryDto extends PaginationQueryDto {
   @IsOptional() @IsString() status?: string;
 }
+/** 返单预览的入参：来源**销售单号**（不是 id）——界面手上有的就是单号。 */
+class ReorderPreviewQueryDto {
+  @IsNotEmpty() @IsString() @MaxLength(100) order_no!: string;
+}
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 // 销售「通知仓库出库」：不传 production_order_id 时对该订单所有可出库的生产单各建一张整批通知；
 // 传 notice_quantity 时只通知这一部分（分批通知），此时必须同时指定 production_order_id。
@@ -223,6 +227,13 @@ export class SalesOrdersController {
    */
   @Get("item-nos") async itemNos(@Query("q") q?: string, @Query("limit") limit?: string) {
     return { data: await this.orders.itemNoOptions(q, limit === undefined ? undefined : Number(limit)), meta: {} };
+  }
+  /**
+   * 返单预览（2026-09-26）：把「会带过来什么 / 必须重填什么」摆给编辑器，**不建单**。
+   * 与上面那条同理，**必须声明在 `@Get(":id")` 之前**（"reorder-preview" 不是 UUID）。
+   */
+  @Get("reorder-preview") async reorderPreview(@Query() query: ReorderPreviewQueryDto) {
+    return { data: await this.orders.reorderPreview(query.order_no), meta: {} };
   }
   /**
    * 工艺单导出（2026-09-16）：按 example/销售单 的模板版式，图片格留空。

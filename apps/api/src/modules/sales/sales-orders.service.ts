@@ -244,22 +244,162 @@ export class SalesOrdersService {
     return `明细数量合计 ${total.toString()} 与单头数量 ${order.quantity.toString()} ${order.unit} 不一致，请核对。`;
   }
 
+  /**
+   * 解析返单来源单并做三条守卫（老板 2026-09-26：「以后客户返单，从系统里面调取，返单客户货号不变」）。
+   *
+   * 三条守卫都是**业务不可能绕开**的：
+   *   1. 来源必须存在且未删除 —— 否则「这张单从哪返来的」无从回答；
+   *   2. 来源必须是**已确认或已关闭**：草稿单还没下给工厂，拿它返单等于复制一份没做过的东西；
+   *   3. 来源必须**有货号** —— 老板要的是「返单货号不变」，来源没货号就变不出来，
+   *      硬返出一张没货号的单会把「按货号调取历次批次」这条链断在这里。
+   *      文案带上单号：现场一眼知道该去补哪张单。
+   */
+  async resolveReorderSource(orderNo: string) {
+    const source = await this.prisma.salesOrder.findFirst({
+      where: { orderNo, deletedAt: null },
+      include: {
+        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } },
+        // 引用带上物料摘要：返单预填要能在界面上把「引用的是哪个物料」显示出来（芯片/图片），
+        // 只给一个 UUID 的话前端还得再查一次物料池，而物料池可能拉不到。
+        materialRefs: { where: { deletedAt: null }, include: { material: { select: { id: true, materialCode: true, name: true, specificationModel: true, color: true, image: { select: { sha256: true, updatedAt: true } } } } } },
+      },
+    });
+    if (!source) throw new NotFoundException({ code: "REORDER_SOURCE_NOT_FOUND", message: `返单来源销售单不存在：${orderNo}`, details: [{ order_no: orderNo }] });
+    if (!["confirmed", "closed"].includes(source.status)) throw new UnprocessableEntityException({ code: "REORDER_SOURCE_NOT_CONFIRMED", message: `只有已确认或已关闭的销售单可以返单：${orderNo} 当前是「${source.status}」`, details: [{ order_no: orderNo, status: source.status }] });
+    if (!source.itemNo) throw new UnprocessableEntityException({ code: "REORDER_SOURCE_ITEM_NO_MISSING", message: `来源单 ${orderNo} 没有货号：请先给它补货号，再返单`, details: [{ order_no: orderNo }] });
+    return source;
+  }
+
+  /**
+   * 返单预览：把「会带过来什么 / 必须重填什么」摆给编辑器，**不建单**。
+   *
+   * `must_fill` 与 `warnings` 由服务端给（前端只展示）：这样「必须重填哪几格」只有一处定义，
+   * 前端自己拼条件必然与后端漂移（漂移的后果是按钮亮着、点了 422）。
+   */
+  async reorderPreview(orderNo: string) {
+    const source = await this.resolveReorderSource(orderNo);
+    const spec = specScalarRow(source as unknown as Record<string, unknown>);
+    const warnings: string[] = [];
+    if (source.unitPrice) warnings.push(`单价沿用上次（${source.unitPrice.toString()} ${source.currency}），请复核`);
+    warnings.push("应收金额 / 本币金额不沿用（它们与数量绑定），保存后按新的数量重新计算");
+    return {
+      source_order_no: source.orderNo,
+      source_order_id: source.id,
+      item_no: source.itemNo,
+      customer: source.customerSnapshot,
+      customer_id: source.customerId,
+      contact_id: source.contactId,
+      copy: {
+        product_name: source.productName,
+        product_spec: source.productSpec,
+        unit: source.unit,
+        currency: source.currency,
+        customer_po_no: source.customerPoNo,
+        external_contract_no: source.externalContractNo,
+        unit_price: source.unitPrice?.toString() ?? null,
+        settlement_unit_price: source.settlementUnitPrice?.toString() ?? null,
+        tax_rate: source.taxRate?.toString() ?? null,
+        settlement_method: source.settlementMethod,
+        ...spec,
+        spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder })),
+        material_refs: source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId, material: row.material })),
+      },
+      must_fill: ["order_no", "order_date", "quantity", "delivery_date"],
+      warnings,
+    };
+  }
+
+  /**
+   * 返单的复制语义：**请求给了就用请求的，没给就沿用来源单**（`??` 逐键判定）。
+   *
+   * 复制什么、不复制什么是一张**逐条的清单**（见设计文档 §三.1），规律只有一条：
+   *   * 「这一单卖的是什么」→ 复制（货号、客户、产品、工艺、明细、材料引用、结算口径）；
+   *   * 「这一单卖多少、什么时候交」→ **不复制**（数量、下单日、交期）；
+   *   * 「由数量派生的金额」→ **不复制**（总额、应收、本币金额）：抄过来必然与新的数量矛盾，
+   *     而矛盾会一路传到应收来源；
+   *   * 「这一单走到哪了」→ **不复制**（状态、版本号、BOM、下游事实）。
+   *
+   * 为什么走 `create()` 而不是另写一个 `createFromReorder()`：后者会绕过币种校验、
+   * 客户/联系人解析、材料存在性校验与唯一键冲突处理（`ORDER_NO_CONFLICT`）。
+   * 那类绕过不会当场报错，只会在几个月后以「返单能建出一张没有客户的单」的形式爆掉。
+   */
+  private reorderInput(source: Awaited<ReturnType<SalesOrdersService["resolveReorderSource"]>>, input: SalesOrderInput): SalesOrderInput {
+    const requested = input as unknown as Record<string, unknown>;
+    const copied: Record<string, unknown> = {};
+    // 37 个细化标量：每个键单独判定（请求没带 = 沿用来源单的当前值）。
+    for (const [key, column] of SPEC_SCALAR_FIELDS) copied[key] = requested[key] !== undefined ? requested[key] : (source as unknown as Record<string, unknown>)[column] ?? null;
+    return {
+      ...input,
+      customer_id: input.customer_id ?? source.customerId,
+      contact_id: input.contact_id ?? source.contactId ?? undefined,
+      product_name: input.product_name ?? source.productName,
+      product_spec: input.product_spec ?? source.productSpec ?? undefined,
+      unit: input.unit ?? source.unit,
+      currency: input.currency ?? source.currency,
+      customer_po_no: input.customer_po_no ?? source.customerPoNo ?? undefined,
+      external_contract_no: input.external_contract_no ?? source.externalContractNo ?? undefined,
+      settlement_method: input.settlement_method ?? source.settlementMethod ?? undefined,
+      unit_price: input.unit_price ?? source.unitPrice?.toString(),
+      settlement_unit_price: input.settlement_unit_price ?? source.settlementUnitPrice?.toString(),
+      tax_rate: input.tax_rate ?? source.taxRate?.toString(),
+      extension_data: input.extension_data ?? (source.extensionData as Record<string, unknown>),
+      item_no: input.item_no ?? source.itemNo,
+      reorder_from_order_no: source.orderNo,
+      spec_details: input.spec_details ?? source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color ?? undefined, barcode: row.barcode ?? undefined, quantity: row.quantity?.toString(), unit: row.unit ?? undefined, sort_order: row.sortOrder })),
+      material_refs: input.material_refs ?? source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })),
+      ...(copied as Record<string, never>),
+    };
+  }
+
+  /**
+   * 复制引用时把**已经不存在**的物料剔掉。
+   *
+   * 为什么必须有这一步：物料主数据是可以被删的，而一张几年前的来源单完全可能引用过它。
+   * 不过滤的话，整张返单会被一个**用户在界面上看不见**的旧引用卡死
+   * （`assertMaterialsExist` 抛 MATERIAL_NOT_FOUND，提示还叫人「刷新物料清单后重选」——
+   * 而复制的这条路根本没有"重选"这个动作）。剔掉的栏位会回报给调用方，不静默吞掉。
+   */
+  private async usableMaterialRefs(refs: MaterialRefInput[]): Promise<{ refs: MaterialRefInput[]; dropped: string[] }> {
+    if (!refs.length) return { refs, dropped: [] };
+    const ids = [...new Set(refs.map((ref) => ref.material_id))];
+    const found = await this.prisma.material.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+    const known = new Set(found.map((row) => row.id));
+    return { refs: refs.filter((ref) => known.has(ref.material_id)), dropped: refs.filter((ref) => !known.has(ref.material_id)).map((ref) => ref.spec_key) };
+  }
+
   async create(input: SalesOrderInput, user: CurrentUser) {
-    await this.currencies?.assertSupported(input.currency, "销售单币种");
-    const refs = await this.resolveReferences(input, user);
+    // 返单：先把来源单的值填进「请求没给的键」，再走与普通建单**完全同一条**校验与写入路径。
+    const source = input.reorder_from_order_no ? await this.resolveReorderSource(input.reorder_from_order_no) : null;
+    let effective = input;
+    let droppedRefKeys: string[] = [];
+    if (source) {
+      effective = this.reorderInput(source, input);
+      // 只有「从来源单复制引用」这条路要过滤；请求自己带了 `material_refs` 就按请求的
+      // （那是用户在界面上确认过的，缺物料就该当场报错让他重选）。
+      if (input.material_refs === undefined) {
+        const usable = await this.usableMaterialRefs(effective.material_refs ?? []);
+        effective = { ...effective, material_refs: usable.refs };
+        droppedRefKeys = usable.dropped;
+      }
+    }
+    await this.currencies?.assertSupported(effective.currency, "销售单币种");
+    const refs = await this.resolveReferences(effective, user);
     // 快照要能回答「v1 时下给工厂的是什么」：所以细化标量**每个键都进快照**（没填的记 null），
     // 而不是只记这次请求里出现的键。
-    const snapshot = this.snapshot({ ...input, ...this.specSnapshotSource({}, input) }, refs.customer, refs.contact);
+    const snapshot = this.snapshot({ ...effective, ...this.specSnapshotSource({}, effective) }, refs.customer, refs.contact);
     try {
       const order = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.salesOrder.create({ data: { orderNo: input.order_no, customerId: input.customer_id, contactId: input.contact_id, customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, customerPoNo: input.customer_po_no, externalContractNo: input.external_contract_no, orderDate: new Date(input.order_date), productName: input.product_name, productSpec: input.product_spec, quantity: input.quantity, unit: input.unit, deliveryDate: input.delivery_date ? new Date(input.delivery_date) : undefined, currency: input.currency, unitPrice: input.unit_price, totalAmount: input.total_amount, taxRate: input.tax_rate, settlementUnitPrice: input.settlement_unit_price, receivableAmount: input.receivable_amount, settlementMethod: input.settlement_method, localCurrencyAmount: input.local_currency_amount, extensionData: (input.extension_data ?? {}) as Prisma.InputJsonValue, itemNo: normalizeItemNo(input.item_no), reorderFromOrderNo: input.reorder_from_order_no?.trim() || null, ...this.specScalars(input), ...this.audit.create(user) } });
+        const created = await tx.salesOrder.create({ data: { orderNo: effective.order_no, customerId: effective.customer_id, contactId: effective.contact_id, customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, customerPoNo: effective.customer_po_no, externalContractNo: effective.external_contract_no, orderDate: new Date(effective.order_date), productName: effective.product_name, productSpec: effective.product_spec, quantity: effective.quantity, unit: effective.unit, deliveryDate: effective.delivery_date ? new Date(effective.delivery_date) : undefined, currency: effective.currency, unitPrice: effective.unit_price, totalAmount: effective.total_amount, taxRate: effective.tax_rate, settlementUnitPrice: effective.settlement_unit_price, receivableAmount: effective.receivable_amount, settlementMethod: effective.settlement_method, localCurrencyAmount: effective.local_currency_amount, extensionData: (effective.extension_data ?? {}) as Prisma.InputJsonValue, itemNo: normalizeItemNo(effective.item_no), reorderFromOrderNo: effective.reorder_from_order_no?.trim() || null, ...this.specScalars(effective), ...this.audit.create(user) } });
         await tx.salesOrderVersion.create({ data: { salesOrderId: created.id, version: 1, snapshot, ...this.audit.create(user) } });
-        await this.replaceSpecDetails(tx, created.id, input.spec_details, user);
-        await this.replaceMaterialRefs(tx, created.id, input.material_refs, user);
+        await this.replaceSpecDetails(tx, created.id, effective.spec_details, user);
+        await this.replaceMaterialRefs(tx, created.id, effective.material_refs, user);
         return created;
       });
-      await this.audit.record("sales_order.create", "sales_order", user.id, order.id, { order_no: order.orderNo });
-      return this.get(order.id);
+      // 返单来源进审计：这是唯一能回答「这张单是从哪张返来的」的业务事实（另一处是列本身）。
+      await this.audit.record("sales_order.create", "sales_order", user.id, order.id, { order_no: order.orderNo, ...(effective.reorder_from_order_no ? { reorder_from_order_no: effective.reorder_from_order_no } : {}) });
+      const created = await this.get(order.id);
+      // 剔掉过引用就回报一次，不静默：用户得知道"这一格的图片没了"是为什么。
+      return droppedRefKeys.length ? { ...created, reorder_warnings: [`来源单引用的物料已不存在，返单时已跳过：${droppedRefKeys.join("、")}`] } : created;
     } catch (error) { this.handleUnique(error); throw error; }
   }
 

@@ -40,7 +40,7 @@ const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 /** 非 UUID 的 id 段：验证 id 参数是否被 UUID 校验拦下（见文件末尾 KNOWN_CONTRACT_DEFECT 用例）。 */
 const NON_UUID_ID = "not-a-uuid";
 
-/** sales-orders.controller.ts 的全部 13 个路由。 */
+/** sales-orders.controller.ts 的全部 14 个路由。 */
 const ROUTES = [
   { label: "GET /", method: "get", path: "/api/v1/sales-orders" },
   { label: "POST /", method: "post", path: "/api/v1/sales-orders", payload: {} },
@@ -48,6 +48,7 @@ const ROUTES = [
   // 货号候选（2026-09-26）：与 finished-goods-summary 同一类——**必须声明在 :id 之前**，
   // 否则 "item-nos" 会被当成销售单 id 去查库。
   { label: "GET /item-nos", method: "get", path: "/api/v1/sales-orders/item-nos" },
+  { label: "GET /reorder-preview", method: "get", path: "/api/v1/sales-orders/reorder-preview?order_no=contract-probe" },
   { label: "GET /:id/impact-preview", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/impact-preview` },
   { label: "GET /:id/finished-goods", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/finished-goods` },
   { label: "POST /:id/outbound-notices", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, payload: {} },
@@ -125,9 +126,9 @@ function expectNotFoundWithCode(response, code, context) {
 }
 
 // ---------------------------------------------------------------------------
-// 鉴权：匿名访问 12 个路由必须全部 401 UNAUTHENTICATED
+// 鉴权：匿名访问 14 个路由必须全部 401 UNAUTHENTICATED
 // ---------------------------------------------------------------------------
-test("sales_orders.anonymous_access_is_rejected_on_all_twelve_routes", async () => {
+test("sales_orders.anonymous_access_is_rejected_on_all_fourteen_routes", async () => {
   const anonymous = apiClient(baseUrl); // 无 Cookie
   for (const route of ROUTES) {
     const response = route.method === "get" ? await anonymous.get(route.path) : await anonymous[route.method](route.path, route.payload);
@@ -265,6 +266,18 @@ test("sales_orders.item_nos_hits_its_own_handler_not_the_id_route", async () => 
     assert.equal(typeof option.item_no_key, "string");
     assert.equal(typeof option.order_count, "number");
   }
+});
+
+// ---------------------------------------------------------------------------
+// 返单预览：路由顺序护栏（与成品总览、货号候选同一类）+ 来源不存在的拒绝码
+// ---------------------------------------------------------------------------
+test("sales_orders.reorder_preview_hits_its_own_handler_not_the_id_route", async () => {
+  const client = sessionClient();
+  const response = await client.get("/api/v1/sales-orders/reorder-preview?order_no=contract-probe-does-not-exist");
+  // 若被 :id 吃掉，会得到 404 SALES_ORDER_NOT_FOUND（"reorder-preview" 不是 UUID）；
+  // 命中自己的处理器则是 404 REORDER_SOURCE_NOT_FOUND —— 两个码不同，正好可以把「谁处理的」断言出来。
+  const body = expectNotFoundWithCode(response, "REORDER_SOURCE_NOT_FOUND", "GET /reorder-preview");
+  assert.match(String(body.error.message), /contract-probe-does-not-exist/, "文案要带上单号，现场才知道去查哪一张");
 });
 
 // ---------------------------------------------------------------------------
