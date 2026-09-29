@@ -81,6 +81,8 @@ BOM表
 | F-0034 | `sales_total_amount` | decimal | 销售单表单 | 应收/报表 | 派生 | 已实现 |
 | F-0035 | `customer_snapshot` | JSON | 销售单确认 | 客户主数据 | 应收、审计、导出 | 快照 | 已实现 |
 | F-0036 | `sales_order_version` | int | 销售单/BOM | 销售单确认 | BOM/生产 | 版本引用 | 已实现 |
+| F-0229 | `item_no` | string | 销售单表单（可挑既有货号，也可输新货号） | 销售单、返单与总结聚合、工艺单/采购单打印 | 返单分组键 | 已实现 |
+| F-0230 | `reorder_from_order_no` | string | 返单建单（系统写入，更新接口不接受改写） | 销售单 | 返单链追溯 | 已实现 |
 | F-0037 | `sales_confirmed_at` | datetime | 销售单确认 | 销售单 | BOM 创建门禁 | 状态门禁 | 已实现 |
 
 ### 3.3 BOM 模块
