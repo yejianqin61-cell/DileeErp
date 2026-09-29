@@ -414,6 +414,10 @@ button { cursor: pointer; }
 .reorder-banner-head a { color: var(--accent); text-decoration: underline; }
 .reorder-must-fill { margin-left: 4px; color: var(--warning, #b45309); font-size: 12px; }
 
+/* 返单与总结的单据分组（components/reorder/document-groups.tsx）：17 组纵向排开，组间留出间距。 */
+.document-groups { display: grid; gap: 12px; }
+.document-groups .panel-heading h3 { margin: 0; font-size: 14px; }
+
 .ui-multi-select { display: grid; gap: 6px; }
 .ui-multi-select-searchbox { position: relative; }
 .ui-multi-select-searchbox .ui-input { padding-right: 32px; }
