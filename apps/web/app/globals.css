@@ -210,17 +210,24 @@ button { cursor: pointer; }
    `.ui-table` 一并写上即恢复上面注释里实测过的行为（不改任何页面）。
    刻意**不**把 `.ui-table-wrap` 的 `overflow` 改成 hidden：换行之后表本来就放得下、滚动条不会出现，
    而万一某张表真的放不下（以后加了列），`hidden` 会让右侧的列彻底够不着 —— 那是把一个问题换成更糟的一个。 */
-/* 记账凭证页反过来：显式固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 条
+/* 记账凭证页先这么做：显式固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 条
    「可以固定column宽度，超过的就省略显示，鼠标hover的时候再展示。保证一次性展示全部column」）。
    固定布局下内容无法再把列撑宽 —— 这正是「一次性展示全部column」的实现方式；
-   与上面「放开换行」是两种取舍，各自用在自己合适的表上。 */
-.finance-page .ui-table.data-table-fixed { table-layout: fixed; }
+   与上面「放开换行」是两种取舍，各自用在自己合适的表上。
+
+   2026-09-27 把这三条从 `.finance-page` 前缀里**提出来变成通用规则**：
+   采购计划的 13 列表也要这一套，而页面私有规则等于让下一个模块再抄一遍 ——
+   抄出来的那份一旦与这份不一致，表现是「某个页面没省略」，查半天。
+   之所以只影响"自愿加入"的表：`data-table-fixed` 是 `DataTable` 在**有列给了 meta.width 时**
+   自己加上的类（components/data/data-table.tsx），没给宽度的表不受影响。
+   财务那四张表的原有行为由 `.finance-page` 那几条更具体的选择器保着，逻辑不变。 */
+.ui-table.data-table-fixed { table-layout: fixed; }
 .data-table-fixed .ui-table-head, .data-table-fixed .ui-table-cell { overflow: hidden; }
 /* 权重必须压过 `.finance-page .ui-table-cell { white-space: normal }`（(0,2,1)）：
    写成 `.cell-ellipsis`（(0,1,0)）会**静默失效** —— 省略号永远不出现，而页面看起来只是「没省略」。
    这个叠到 (0,4,1) 的选择器就是为了不依赖样式表先后顺序。 */
-.finance-page .ui-table.data-table-fixed .ui-table-cell.cell-ellipsis,
-.finance-page .ui-table.data-table-fixed .ui-table-head.cell-ellipsis { white-space: nowrap; text-overflow: ellipsis; }
+.ui-table.data-table-fixed .ui-table-cell.cell-ellipsis,
+.ui-table.data-table-fixed .ui-table-head.cell-ellipsis { white-space: nowrap; text-overflow: ellipsis; }
 /* 工资台账用的是 .ui-table（不是 .data-table），同样收内边距并放开换行。 */
 .finance-page .payroll-sheet-table { font-size: 12px; font-variant-numeric: tabular-nums; }
 .finance-page .payroll-sheet-table .ui-table-head { padding: 4px 8px; white-space: normal; line-height: 1.2; }
@@ -475,6 +482,48 @@ button { cursor: pointer; }
 .purchase-workspace.material-issue-sheet .data-table .draft-col-select input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
 /* 操作列只有一个图标按钮：默认内边距会把 60px 挤爆，压掉它。 */
 .purchase-workspace.material-issue-sheet .data-table .draft-col-action .ui-button { padding: 0; }
+
+/* ---------------------------------------------- 采购计划的明细表（2026-09-27，13 列一次展示）
+   用户原话：「表单要保证一次性展示所有column。可以限制每个column的宽度，如果超出就省略。
+   鼠标hover的时候再展示全部文本。」
+
+   这一页的 Sheet 同样复用 `.material-issue-sheet`，所以先把它的两条硬约束顶掉：
+     · `.material-issue-sheet .data-table { min-width: 1180px }` —— 那会让 13 列的表格
+       在 1366px 屏上横向滚动，而用户要的正是「不横滑」；
+     · 上面那条 `nth-child(1) { width: 24% }`（领料单的口径）—— 与 `.draft-col-*` 同一个坑。
+   选择器叠到 (0,3,0) / (0,4,0)，压过 `.material-issue-sheet .data-table`(0,2,0)
+   与 `td:nth-child(1)`(0,3,1)：同分的话谁生效取决于样式表顺序，挪一下就会静默退回。 */
+.purchase-plan-sheet.material-issue-sheet .data-table { min-width: 0; table-layout: fixed; font-size: 11px; }
+.purchase-plan-sheet.material-issue-sheet .data-table th,
+.purchase-plan-sheet.material-issue-sheet .data-table td { padding: 4px 5px; }
+/* 13 列宽度的总和必须是 100%：加起来超过 100 就会把表撑出容器（横滑就是这么来的）。
+   两列只读文本（地址联系人）用省略号 + 原生 title 看全文，宽一点的列留给可编辑的下拉与输入。 */
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-select { width: 3%; text-align: center; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-material { width: 11%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-model { width: 8%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-order { width: 9%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-qty { width: 7%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-stock { width: 7%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-unit { width: 5%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-price { width: 7%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-supplier { width: 11%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-address { width: 12%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-contact { width: 9%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-expected { width: 7%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-action { width: 4%; text-align: center; }
+/* 只读文本列：超长省略、悬停用原生 title 看全文（口径 5 里"能做到 hover 看全文"的那一半）。
+   注意这是**手写的 `<table>`**，单元格不是 `.ui-table-cell`，所以上面那套
+   `data-table-fixed` 规则管不到它 —— 必须在这里自己写一遍。 */
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-cell-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 可编辑单元格里的输入控件要能被压缩（`table-layout: fixed` 下不压缩就会溢出到邻列）。
+   下拉的 `SelectValue` 渲染成无类名 span，同样要约束，否则长供应商名会把列撑开。 */
+.purchase-plan-sheet.material-issue-sheet .data-table .ui-input,
+.purchase-plan-sheet.material-issue-sheet .data-table .ui-select-trigger { width: 100%; min-width: 0; height: 30px; padding: 0 6px; font-size: 12px; }
+.purchase-plan-sheet.material-issue-sheet .data-table .ui-select-trigger > span { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-select input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-action .ui-button { padding: 0; }
+/* 计划列表（只读汇总）也是 13 列以内，同样不横滑；列宽交给 DataTable 的 meta.width。 */
+.purchase-plan-list .data-table-fixed { font-size: 12px; }
 
 /* 「下单状态」列的配色：未下单走 .panel-note，已下单走 .status-success。 */
 .bom-order-draft { color: #5a6b7a; }
