@@ -49,11 +49,20 @@ test("财务表格允许换行：这是「不横向滚动」的关键（nowrap �
   assert.match(css, /\.finance-page \.payroll-sheet-table \.ui-table-cell \{ padding: 6px 8px; white-space: normal; \}/);
 });
 
-test("记账凭证页反过来：固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 条）", () => {
+test("固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 条；2026-09-27 起是**通用**规则）", () => {
   // 固定布局：不切 fixed 的话「列宽」只是建议值，长摘要照样把列撑宽。
-  assert.match(css, /\.finance-page \.ui-table\.data-table-fixed \{ table-layout: fixed; \}/);
-  // 省略号规则的权重必须压过 `white-space: normal`（否则静默失效：看起来只是「没省略」）。
-  assert.match(css, /\.finance-page \.ui-table\.data-table-fixed \.ui-table-cell\.cell-ellipsis,\n\.finance-page \.ui-table\.data-table-fixed \.ui-table-head\.cell-ellipsis \{ white-space: nowrap; text-overflow: ellipsis; \}/);
+  // 2026-09-27：这三条从 `.finance-page` 前缀里**提出来变成通用规则** —— 采购计划的 13 列表
+  // （用户：「表单要保证一次性展示所有column」）也要这一套，而页面私有规则等于让下一个模块
+  // 再抄一遍，抄歪了的表现是「某个页面没省略」（那三条注释自己就在警告这个坑）。
+  // 只影响**自愿加入**的表：`data-table-fixed` 是 DataTable 在「有列给了 meta.width」时自己加的类。
+  assert.match(css, /^\.ui-table\.data-table-fixed \{ table-layout: fixed; \}$/m);
+  assert.match(css, /^\.data-table-fixed \.ui-table-head, \.data-table-fixed \.ui-table-cell \{ overflow: hidden; \}$/m);
+  // 省略号规则的权重必须压过 `.finance-page .ui-table-cell { white-space: normal }`（否则静默失效：
+  // 看起来只是「没省略」）—— 所以要叠到 (0,4,1)，不依赖样式表先后顺序。
+  assert.match(css, /^\.ui-table\.data-table-fixed \.ui-table-cell\.cell-ellipsis,\n\.ui-table\.data-table-fixed \.ui-table-head\.cell-ellipsis \{ white-space: nowrap; text-overflow: ellipsis; \}$/m);
+  // 财务页那几条更具体的规则**原样保留**（紧凑/换行仍在 .finance-page 内），所以财务四张表的
+  // 行为一字未变；下面这条同时是"没被顺手删掉"的守卫。
+  assert.match(css, /\.finance-page \.data-table td, \.finance-page \.ui-table-cell \{ white-space: normal; overflow-wrap: anywhere; \}/);
   // 只有「给了宽度」的表才切固定布局；列宽由 meta 决定，见 DataTable。
   assert.match(dataTable, /const fixed = columns\.some\(\(column\) => metaOf\(column\.meta\)\.width\);/, "有列宽才切固定布局");
   assert.match(dataTable, /title=\{meta\.ellipsis \? ellipsisTitle\(rendered\) : undefined\}/, "省略的单元格要带上原生 title（鼠标悬停显示全文）");

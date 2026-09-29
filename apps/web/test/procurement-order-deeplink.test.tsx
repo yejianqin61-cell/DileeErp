@@ -44,7 +44,7 @@ describe("采购单列表：?order_no= 深链", () => {
     stub();
     render(<PurchaseOrdersPage />);
     await screen.findByText("PO-1");
-    await userEvent.clear(screen.getByPlaceholderText("输入订单号"));
+    await userEvent.clear(screen.getByPlaceholderText("采购单号 / 订单号 / 状态"));
     await waitFor(() => expect(screen.getByText("PO-2")).toBeTruthy());
     expect(screen.getByText("PO-1")).toBeTruthy();
   });

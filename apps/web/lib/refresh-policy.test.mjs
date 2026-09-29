@@ -25,6 +25,9 @@ test("展示入库状态的页面必须注册焦点/可见性刷新并提供刷�
     "app/warehouse/raw-material-storage/page.tsx",
     "app/procurement/orders/page.tsx",
     "app/procurement/inbounds/page.tsx",
+    // 2026-09-27：采购计划列表上的「未下单行数 / 状态」同样会被别人改（同事在另一个窗口下了单），
+    // 所以它和上面几页一样必须跟着焦点刷新。
+    "app/procurement/plans/page.tsx",
   ];
   for (const file of pages) {
     const source = readFileSync(join(webRoot, file), "utf8");
@@ -49,6 +52,7 @@ test("仓储页的入库状态要显示中文，不能直接暴露英文原值",
 test("后台刷新必须静默：不能切整页 loading（会卸载正在编辑的弹窗、清空用户输入）", () => {
   const pages = [
     "app/procurement/orders/page.tsx",
+    "app/procurement/plans/page.tsx",
     "app/procurement/inbounds/page.tsx",
     "app/warehouse/raw-material-storage/page.tsx",
     "app/warehouse/finished-goods-storage/page.tsx",

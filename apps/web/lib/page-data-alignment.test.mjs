@@ -101,7 +101,11 @@ test("每个 Promise.all 数据加载的绑定名与请求数一致", () => {
 const LOAD_ORDER = {
   // 2026-09-14 拆分后，原采购页一次性加载的 9 个接口拆成两个子页各自的位置型解构：
   // orders = 采购单与主数据；inbounds = 原料入库、应付来源与应付台账。
-  "app/procurement/orders/page.tsx": ["/purchase-orders", "/materials", "/units", "/suppliers", "/boms", "/sales-orders"],
+  //
+  // 2026-09-27：采购单页**瘦身**之后只剩一个接口（`/purchase-orders`，不再是位置型解构），
+  // 所以从这张表里移除 —— 一个接口没有"错位"可言。它原来的四种主数据加载随草稿工作区
+  // 一起搬到了采购计划页（下一行），绑定表也跟着搬。
+  "app/procurement/plans/page.tsx": ["/purchase-plans", "/purchase-plans/candidates", "/materials", "/units"],
   "app/procurement/inbounds/page.tsx": ["/raw-material-inbounds", "/payable-sources", "/finance/payable-entries"],
   // 来料质检已迁到质检模块的独立面板：到货批次 → 质检记录 → 原料入库 → 入库通知，
   // 位置型解构错位在采购页不再可见，所以绑定表跟着搬到这个文件。
@@ -132,14 +136,13 @@ test("主要数据加载页的接口顺序与绑定表一致（防止插入/换�
 // 采购字段语义表：每个 setter 必须绑定到它真正对应的接口。
 // 位置型解构一旦错位（即使请求数不变），这里立刻变红。
 // 2026-09-14 拆分后按子页分表：orders 管采购单与主数据，inbounds 管入库与应付。
+// 2026-09-27：orders 只剩一个接口（不再是位置型解构），主数据那四条落到采购计划页。
 const PROCUREMENT_BINDINGS = {
-  "app/procurement/orders/page.tsx": {
-    setOrders: "/purchase-orders",
+  "app/procurement/plans/page.tsx": {
+    setRows: "/purchase-plans",
+    setCandidates: "/purchase-plans/candidates",
     setMaterials: "/materials",
-    setUnits: "/units",
-    setSuppliers: "/suppliers",
-    setBoms: "/boms",
-    setSalesOrders: "/sales-orders"
+    setUnits: "/units"
   },
   "app/procurement/inbounds/page.tsx": {
     setInbounds: "/raw-material-inbounds",
@@ -164,7 +167,12 @@ test("采购子页每个状态 setter 绑定到对应接口（单位取 /units�
     const missing = resolved.filter((row) => !row.setter);
     assert.deepEqual(missing.map((row) => row.name), [], `${relativePath}: 以下响应没有写入任何状态，页面拿不到数据：${missing.map((row) => row.name).join(", ")}`);
 
-    const mismatched = resolved.filter((row) => bindings[row.setter] !== row.endpoint);
+    // 与上面那张表同一条匹配规则：**按前缀**比。
+    // 2026-09-27 收紧过一次又放开：采购计划页的第一个请求带查询串
+    // （`/purchase-plans${suffix}` —— 筛选条件拼出来的），要求逐字相等就只能把 `${suffix}`
+    // 抄进绑定表，那样的断言盯的是"字符串长什么样"而不是"哪个 setter 拿了哪个接口"。
+    // 两张表用同一条规则，也免得以后有人只改一张。
+    const mismatched = resolved.filter((row) => typeof bindings[row.setter] !== "string" || !row.endpoint.startsWith(bindings[row.setter]));
     assert.deepEqual(
       mismatched.map((row) => `${row.name} → ${row.setter} 却绑定 ${row.endpoint}（应为 ${bindings[row.setter] ?? "未知 setter"}）`),
       [],

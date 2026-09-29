@@ -24,6 +24,7 @@ import { updatedByColumn } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { PlanDetailSheet, type PlanMaterialRef, type PlanUnitRef } from "../../../components/procurement/plan-detail-sheet";
 import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
+import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError } from "../../../components/ui/toaster";
 
 type PlanRow = {
@@ -58,15 +59,19 @@ export default function PurchasePlansPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (!options.silent) setLoading(true);
     setError("");
     try {
       const params = new URLSearchParams();
       if (query.trim()) params.set("order_no", query.trim());
       if (itemNo.trim()) params.set("item_no", itemNo.trim());
       if (status !== "all") params.set("status", status);
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      // 位置型解构：`lib/page-data-alignment.test.mjs` 的绑定表按**顺序**盯着这四条，
+      // 插入/换序会让那张表立刻变红（这正是它存在的意义）。
       const [plans, cands, ms, us] = await Promise.all([
-        apiGet<PlanRow[]>(`/purchase-plans${params.toString() ? `?${params.toString()}` : ""}`),
+        apiGet<PlanRow[]>(`/purchase-plans${suffix}`),
         apiGet<Candidate[]>("/purchase-plans/candidates"),
         apiGet<PlanMaterialRef[]>("/materials"),
         apiGet<PlanUnitRef[]>("/units"),
@@ -78,11 +83,27 @@ export default function PurchasePlansPage() {
     } catch (cause) {
       setError(messageOf(cause, "采购计划加载失败"));
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
   }, [query, itemNo, status]);
 
   useEffect(() => { void load(); }, [load]);
+  /**
+   * 「未下单行数 / 状态」要跟着窗口焦点刷新，而不是只在挂载时拉一次。
+   *
+   * 场景：同事在另一个窗口把某张 BOM 的行下了单，本页那份计划如果不刷新就还写着"未下单 N"。
+   * 两条要求（`lib/refresh-policy.test.mjs` 有守卫盯着）：只在页面**可见**时刷；**静默**刷
+   * （切回本页不能整页 loading）。
+
+   * ⚠️ 这里刻意不刷 `?plan_id=` 打开的那份计划 —— 那是详情 Sheet 自己的事，
+   * 而且它正在被人编辑，外部刷新会覆盖未保存的改动（Sheet 里只刷「下单状态」那一列）。
+   */
+  useEffect(() => {
+    const refresh = () => { if (shouldRefreshOnVisibility(document.visibilityState)) void load({ silent: true }); };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
+  }, [load]);
 
   /** 新建：选一张还没有计划的 BOM。建完直接打开它 —— 行已经带好了，不用再点一次。 */
   async function createPlan(values: Record<string, string>) {
@@ -119,6 +140,7 @@ export default function PurchasePlansPage() {
   return (
     <div className="page-root purchase-plan-list" data-testid="page-procurement-plans">
       <PageHeader title="采购计划" description="一个销售单的一份 BOM 对应一份计划：逐行填供应商、单价与预计到货，再按供应商收束下单到采购单。">
+        <Button variant="secondary" onClick={() => void load()}>刷新</Button>
         <Button data-testid="plan-create" onClick={() => setCreateOpen(true)}>新建采购计划</Button>
       </PageHeader>
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
