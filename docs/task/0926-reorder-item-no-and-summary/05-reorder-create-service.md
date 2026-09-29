@@ -142,4 +142,23 @@
 
 ## 完成记录
 
-（认领后填写。）
+**2026-09-26 完成**（提交 `7d10cdb`，含一次 amend）。
+
+- 交付物：`SalesOrdersService.resolveReorderSource()` / `reorderPreview()` / `reorderInput()` / `usableMaterialRefs()`；
+  `create()` 接来源单；`GET /sales-orders/reorder-preview`（**声明在 `@Get(":id")` 之前**）；
+  测试 `apps/api/test/unit/sales-order-reorder.test.cjs`（19 条）+ http 契约 2 条。
+- 与计划的差异 / 补做的两件事：
+  1. **预览的 `material_refs` 带上物料摘要**（`include: { material: { select: … } }`）：
+     只给 UUID 的话前端还得再查一次物料池，而物料池可能拉不到 —— 引用芯片就显示不出来。
+  2. **复制引用时剔除已删除的物料**（`usableMaterialRefs`，是本任务开工后才发现的缺口）：
+     物料主数据可以被删，几年前的来源单可能引用过它；不过滤的话整张返单会被一个
+     **用户在界面上看不见**的旧引用卡死（`assertMaterialsExist` 抛 MATERIAL_NOT_FOUND，
+     文案还叫人「刷新物料清单后重选」——而复制的这条路上根本没有"重选"这个动作）。
+     剔掉的栏位通过响应里的 `reorder_warnings` 回报，不静默。
+     请求自己带了 `material_refs` 时**不过滤**：那是用户在界面上确认过的，缺物料就该当场报错让他重选。
+- 验证：`npm run typecheck` 通过；返单测试 19/19；`npm run test:unit:api` **2070/2070**。
+- **未验证**：整条链路（真库上的 `$transaction` 回滚、`assertMaterialsExist` 的真实查询）没跑过 ——
+  本机无 PostgreSQL；http 契约里的两条探测同样未执行。
+- 踩到的坑：写"引用没写进去"的断言时，第一版断言的是「订单没被创建」，但实现里
+  `salesOrder.create` 与引用校验在**同一个事务**内、顺序是 create → 校验，靠回滚保证不落库；
+  假 tx 不回滚，所以那个断言会得出错误结论。改为断言「引用行没被写」并在注释里写明原因。
