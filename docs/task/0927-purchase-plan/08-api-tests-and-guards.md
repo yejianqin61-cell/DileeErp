@@ -66,7 +66,7 @@
 | --- | --- |
 | [T01](./01-plan-schema-and-migrations.md) | 部分唯一索引带 `WHERE deleted_at IS NULL`；schema 无 `@unique`；外键动作；两迁移顺序；搬迁幂等（`WHERE NOT EXISTS`）；搬迁只软删不 `DELETE` |
 | [T02](./02-plan-api-skeleton.md) | 派生状态三态；新建带全 BOM 明细（需求量 / 单价 0 / 供应商预填）；同 BOM 重复建 → 409；候选过滤；`bom_extra_material_count`；路由顺序静态断言 |
-| [T03](./03-plan-save-and-delete.md) | 整体替换；乐观锁冲突 `PURCHASE_PLAN_UPDATE_CONFLICT` 时零写入；已下单行**内容不可改**（`PURCHASE_PLAN_ORDERED_LINE_LOCKED`）/ **不可删**（`PURCHASE_PLAN_ORDERED_LINE_REMOVED`）；**`sequence` 可重排**；软删守卫 `PURCHASE_PLAN_HAS_ORDERED_LINES`；软删后可再建；`DbNull` |
+| [T03](./03-plan-save-and-delete.md) | 整体替换；乐观锁冲突 `PURCHASE_PLAN_UPDATE_CONFLICT` 时零写入；已下单行**内容不可改**（`PURCHASE_PLAN_ORDERED_LINE_LOCKED`）/ **不可删**（`PURCHASE_PLAN_ORDERED_LINE_REMOVED`）；**两个例外**：`sequence` 可重排、`expected_date` 可改**并同步写进 `purchase_order_items`**；软删守卫 `PURCHASE_PLAN_HAS_ORDERED_LINES`；软删后可再建；`DbNull` |
 | [T04](./04-plan-collapse-order.md) | 组=单；币种按组；1:1 回写；未勾选行不动；重复下单 422；空组 422；事务回滚无半截数据 |
 | [T05](./05-purchase-order-revert-and-readonly.md) | 列表过滤；明细只读 422 + 指路文案；退回清链接**保数据**；自动补建计划；无 BOM 单 422；有到货 422；reason 必填 |
 | [T06](./06-bom-item-order-status-plan.md) | `draft` 档来自计划行；字段名/枚举未变；换行 ID 摊回；软删计划不计入 |

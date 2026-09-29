@@ -31,7 +31,7 @@
   而计划里已下单行的内容也是锁的（[T03](./03-plan-save-and-delete.md)），所以**退回是改这些内容的唯一通路**。
 - **§4.3**：退回的步骤与错误码；作废单**不进列表**，只在审计里可查。
   可退不变式 = **`status === "ordered"` 且无任何到货事实**；被拒用 `PURCHASE_ORDER_NOT_REVERTIBLE`
-  （本批次**新起**，命名照同族既有 `PURCHASE_ARRIVAL_NOT_REVERTIBLE` —— 后者是"到货状态回退"的判据，语义不同）。
+  （**既有码**：就在要删掉的 `revertToDraft()` 里，本任务是把它搬过来，不是新起一个）。
 - **§5.2**：其余端点的去留表。
 - **状态集合（已确认）**：`draft` / `ordered` / `partially_arrived` / `arrived_complete` / `cancelled`，
   **没有** `partially_ordered` —— 不要引入它。
@@ -91,18 +91,19 @@
 `cancelled` 已经作废；所以"可退"实际只有 `ordered` 一档。
 **采购单状态只有 `draft` / `ordered` / `partially_arrived` / `arrived_complete` / `cancelled` 五个**，
 **没有** `partially_ordered`（设计文档 §4.3 里那句"`ordered` / `partially_ordered` 之外"作废）。
-被拒时统一用 `PURCHASE_ORDER_NOT_REVERTIBLE`（**不新造第二个同义码**；该码本批次新起，
-见下方"实测"与 §决策记录 —— 仓库里目前没有它，同族既有的是 `PURCHASE_ARRIVAL_NOT_REVERTIBLE`）。
+被拒时统一用 `PURCHASE_ORDER_NOT_REVERTIBLE`（**沿用既有码，不新造同义码**）。
 
 事务内五步：
 
 1. 校验上面那条不变式（状态 = `ordered` 且无 `receipt`）；不满足 → 422 **`PURCHASE_ORDER_NOT_REVERTIBLE`**，
    文案说明原因（"已有到货事实" / "当前状态不可退回"）。
-   > ⚠️ **实测**：这个码**本批次新起**，仓库里目前没有它。
-   > 同族的既有码是 `PURCHASE_ARRIVAL_NOT_REVERTIBLE`（`purchase-orders.service.ts:462`），
-   > 但那是"到货状态回退"用的（判据是 `partially_arrived`/`arrived_complete`），**语义不同，不要混用**。
-   > 命名照它的款式（`PURCHASE_<对象>_NOT_REVERTIBLE`）。
-   > 若实现时想复用 `PURCHASE_ARRIVAL_NOT_REVERTIBLE`，那是**改口径**，先回到设计文档确认。
+   > ✅ **实测（2026-09-27 复核）**：这个码**仓库里已经有了** ——
+   > `purchase-orders.service.ts:396` 的 `revertToDraft()`：
+   > `if (po.status !== "ordered" || po.items.some((item) => item.receipts.length)) throw … code: "PURCHASE_ORDER_NOT_REVERTIBLE", message: "仅无到货事实的已下单采购单可以退回草稿"`。
+   > 它守的**就是本条不变式**，而且 `revertToDraft` 本任务要删 ——
+   > 所以这个码是**整体搬到 `revert-to-plan`**（连同文案改成"退回采购计划"），不是新起一个。
+   > 它藏在一行到底的单行方法里，`grep 'PURCHASE_ORDER_NOT_REVERTIBLE'` 才看得见，
+   > 按 `PURCHASE_ARRIVAL_NOT_REVERTIBLE`（`:462`）找会漏掉。
 2. 找目标计划：该单 `bom_id` 对应的**未删**计划；**不存在就自动补建一份**（口径 15 ③）。
    连 `bom_id` 都没有的历史单 → 422 `PURCHASE_ORDER_WITHOUT_BOM_NOT_REVERTIBLE`。
 3. 把指向这张单明细的计划行 `purchase_order_item_id` **清空**（`purchase_order_item_id` 上有 `@unique`，
@@ -158,8 +159,10 @@
 - **`partially_ordered` 不存在**：采购单状态只有 `draft` / `ordered` / `partially_arrived` /
   `arrived_complete` / `cancelled` 五个；设计文档 §4.3 那句"`ordered` / `partially_ordered` 之外"作废
   （已由设计文档作者确认）。
-- **`PURCHASE_ORDER_NOT_REVERTIBLE` 是本批次新起的码**（仓库里没有同名的）：命名照同族既有
-  `PURCHASE_ARRIVAL_NOT_REVERTIBLE`，但那个码的判据是"是不是到货状态"，与本处不同，不复用。
+- **`PURCHASE_ORDER_NOT_REVERTIBLE` 是既有码，不是新起的**（2026-09-27 复核更正）：
+  它在 `purchase-orders.service.ts:396` 的 `revertToDraft()` 里，守的正是"`ordered` 且无到货事实"
+  这条不变式。本任务删掉 `revertToDraft`，所以是把它连同文案**搬进** `revert-to-plan`。
+  （同族的 `PURCHASE_ARRIVAL_NOT_REVERTIBLE:462` 判据不同，不复用。）
 
 ## 完成记录
 

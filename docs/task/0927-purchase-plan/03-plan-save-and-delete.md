@@ -134,8 +134,8 @@
 | 2 | 乐观锁：令牌不一致 → 422 `PURCHASE_PLAN_UPDATE_CONFLICT` 且**一行都没写** | 同上（断言冲突时没有 `updateMany`/`createMany` 调用） |
 | 3 | 不传令牌时跳过比对（兼容旧调用方） | 同上 |
 | 4 | 一个**已下单**行从提交里消失 → 422 `PURCHASE_PLAN_ORDERED_LINE_REMOVED`，且库里那一行还在 | 同上 |
-| 5 | 改**已下单**行的任意内容列（物料/单位/数量/单价/供应商/预计到货之一）→ 422 `PURCHASE_PLAN_ORDERED_LINE_LOCKED` | 同上（逐列各来一条，最少覆盖物料/数量/单价/供应商） |
-| 6 | **只**重排 `sequence`（其余列原样）→ **允许**，保存成功 | 同上（`sequence` 例外） |
+| 5 | 改**已下单**行的内容列（物料/单位/数量/单价/供应商/型号之一）→ 422 `PURCHASE_PLAN_ORDERED_LINE_LOCKED`，且库里那一行没变 | 同上（逐列各来一条，最少覆盖物料/数量/单价/供应商） |
+| 6 | **两个例外都放行**：① 只重排 `sequence`（其余列原样）→ 保存成功；② 改已下单行的 `expected_date` → 保存成功，**并且同步写进对应的 `purchase_order_items.expected_date`** | 同上（`sequence` 例外 + `expected_date` 同步，见 §2 两个例外） |
 | 7 | 未下单行可删、可改；新行可加 | 同上 |
 | 8 | `DELETE` 有已下单行 → 422 `PURCHASE_PLAN_HAS_ORDERED_LINES` | 同上 |
 | 9 | `DELETE` 未下单 → 软删（`deleted_at` 非空、`deleted_by` 有值），明细行**不**被级联删 | 同上 |
