@@ -104,6 +104,27 @@ async function readSheet(service, id) {
 
 const rowWith = (rows, label) => rows.find((row) => row.includes(label));
 
+// ------------------------------------------------------------------ 货号（2026-09-26）
+
+test("货号：文档形状里带 itemNo（归一后的原样），没有货号时是空串", () => {
+  const service = fakeService(sample1());
+  assert.equal(service.document({ ...sample1(), itemNo: " 27621 流水花扇 " }, "张三").itemNo, "27621 流水花扇");
+  assert.equal(service.document(sample1(), "张三").itemNo, "", "历史单没有货号 → 空串（不是 null，落格时判空更省事）");
+});
+
+test("货号：印在「完工日期」那一行（右边本来是空的），老单那一行必须与改造前一致", async () => {
+  // 有货号：同一行里补一格，不动任何行号/列号。
+  const withItemNo = await readSheet(fakeService({ ...sample1(), itemNo: "27621 流水花扇" }), "order-1");
+  const completionRow = rowWith(withItemNo.rows, "完工日期");
+  assert.ok(completionRow.includes("货　号"), "货号标签应印在「完工日期」那一行（该行右侧本来是空的）");
+  assert.ok(completionRow.includes("27621 流水花扇"), "货号值要原样印出来");
+
+  // 没有货号：整张表里不该出现「货　号」——否则老单会多一个空格子，与改造前的导出件产生无谓差异。
+  const withoutItemNo = await readSheet(fakeService(sample1()), "order-1");
+  assert.equal(withoutItemNo.all.some((value) => String(value).includes("货　号")), false, "没有货号就不该印这一格");
+  assert.equal(withoutItemNo.all.some((value) => String(value).includes("undefined")), false, "更不许印出 undefined/null");
+});
+
 // ------------------------------------------------------------------ 纯文档
 
 test("dotDate / trimDecimal：模板的日期与数量写法", () => {

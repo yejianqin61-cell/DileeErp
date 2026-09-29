@@ -92,6 +92,24 @@ function headerFields(sheet) {
 }
 const allText = (sheet) => { const values = []; sheet.eachRow((row) => row.eachCell((cell) => values.push(String(cell.value ?? "")))); return values; };
 
+// ------------------------------------------------------------------ 货号（2026-09-26）
+
+test("货号：跟着「订单号」那一格印（采购单不存货号列，导出时 join 销售单）", async () => {
+  const { service } = fixture({ salesOrder: { itemNo: "27621" } });
+  const fields = headerFields(await sheetOf(service));
+  assert.equal(fields.get("订单号："), "DL260001（货号 27621）", "货号与订单号读在一起：这一单是哪个货号");
+});
+
+test("货号：历史单（销售单没有货号）时那一格与改造前逐字相同", async () => {
+  // 两种「没有货号」都要同一条路径：销售单没有该字段（老夹具）、以及字段为空。
+  for (const overrides of [{}, { salesOrder: { itemNo: null } }, { salesOrder: null }]) {
+    const { service } = fixture(overrides);
+    const fields = headerFields(await sheetOf(service));
+    assert.equal(fields.get("订单号："), "DL260001", `overrides=${JSON.stringify(overrides)}`);
+    assert.equal(allText(await sheetOf(service)).some((value) => value.includes("货号")), false, "没有货号就不该出现「货号」字样");
+  }
+});
+
 test("表头：用户点名的 12 项都在，且顺序与清单一致（外加原模板的电话与采购单号）", async () => {
   const { service } = fixture();
   const sheet = await sheetOf(service);

@@ -25,6 +25,10 @@ export type PurchaseOrderDocument = {
   purchaseOrderNo: string;
   /** 模板的「订单单号」显示销售订单号；采购单号另占一格。 */
   salesOrderNo: string;
+  /**
+   * 货号（销售单上的货号，2026-09-26）。历史单没有货号 → 空串，此时打印件与改造前**逐字相同**。
+   */
+  itemNo: string;
   supplierName: string;
   /** 供应商联系人（用户 2026-09-16 的表头清单用语，此前印成「联系人」）。 */
   contactName: string;
@@ -143,6 +147,8 @@ type ExportOrder = {
   deliveryTerms: string | null;
   deliveryAddress: string | null;
   supplier: { name: string; contactName: string | null; phone: string | null };
+  /** 销售单上的货号（2026-09-26）。**不落采购单自己的列**：货号只有销售单一处真源，这里 join 出来印。 */
+  salesOrder: { itemNo: string | null } | null;
   items: ExportItem[];
 };
 
@@ -193,6 +199,8 @@ export class PurchaseOrderExportService {
   private include() {
     return {
       supplier: true,
+      // 货号只有销售单一处真源（采购单**不存**货号列），打印时 join 出来 —— 见设计文档 §二。
+      salesOrder: { select: { itemNo: true } },
       items: { where: { deletedAt: null }, include: { material: true, unit: true, supplier: true }, orderBy: { createdAt: "asc" } }
     } as const;
   }
@@ -219,6 +227,7 @@ export class PurchaseOrderExportService {
     return {
       purchaseOrderNo: order.purchaseOrderNo,
       salesOrderNo: order.orderNo,
+      itemNo: order.salesOrder?.itemNo ?? "",
       supplierName: order.supplier?.name ?? "",
       contactName: order.supplier?.contactName ?? "",
       phone: order.supplier?.phone ?? "",
@@ -273,8 +282,15 @@ export class PurchaseOrderExportService {
     // 列序照用户 2026-09-16 给的表头清单：订单号 / 供应商名称 / 供应商联系人 / 采购人 / 操作人 /
     // 下单录入时间 / 操作时间 / 总价 / 交货日期 / 付款方式，最后一行补上原模板就有的 电话 / 采购单号
     // （采购单号是厂商对账的唯一抓手，不能因为清单里没写就不印）。
+    //
+    // 货号（2026-09-26）：**跟着「订单号」那一格印**（`DL260001-1（货号 27621）`），不新开一格。
+    // 为什么不新开：这 12 格是用户逐项点名的，明细表的 9 列又牵着列宽/小计公式/边框循环，
+    // 而「这一单是哪个货号」本来就与订单号读在一起；为一个单元格去动列数或加第 5 行，
+    // 代价是整张打印件的行列号全面位移，收益只是一个更松的排版。
+    // **没有货号时这一格与改造前逐字相同**（历史单打印件不受影响）。
+    const salesOrderCell = document.itemNo ? `${document.salesOrderNo}（货号 ${document.itemNo}）` : document.salesOrderNo;
     const headerRows: Array<Array<[string, string | number]>> = [
-      [["订单号：", document.salesOrderNo], ["供应商名称：", document.supplierName], ["供应商联系人：", document.contactName]],
+      [["订单号：", salesOrderCell], ["供应商名称：", document.supplierName], ["供应商联系人：", document.contactName]],
       [["采购人：", document.buyerName], ["操作人：", document.operatorName], ["下单录入时间：", document.enteredAt]],
       [["操作时间：", document.operatedAt], ["总价：", document.totalAmount], ["交货日期：", document.deliveryDate]],
       [["付款方式：", document.paymentTerms], ["电话：", document.phone], ["采购单号：", document.purchaseOrderNo]]

@@ -83,6 +83,9 @@ export class SalesOrderExportService {
       company: "厦 门 迪 礼 伞 业 有 限 公 司",
       factory: text("factory"),
       orderNo: order.orderNo,
+      // 货号（2026-09-26）：`order.itemNo` 是列名，与 37 个细化字段不同 —— 它**不在**
+      // `specScalarRow` 的清单里（那是细化标量），所以直接读列名，不走 spec 翻译。
+      itemNo: (order.itemNo ?? "").trim(),
       customerName: order.customer?.name ?? "",
       orderDate: dotDate(order.orderDate),
       quantityText: `${trimDecimal(order.quantity.toString())}${order.unit}`,
@@ -229,7 +232,12 @@ export class SalesOrderExportService {
     row += 1;
     this.autoHeight(sheet, row, this.pairs(sheet, row, [[["数　量", doc.quantityText], 2], [["品名规格", doc.productSpecText], 4], [["地区", doc.region], 0]]));
     row += 1;
-    this.autoHeight(sheet, row, this.pairs(sheet, row, [[["完工日期", doc.completionText], 2]]));
+    // 货号（2026-09-26）：跟着「完工日期」那一行印 —— 该行本来只用掉 A–C 三列，右边整片空着，
+    // 加一格不必动任何行号/列号。**有值才印**：老单没有货号，印出一个空格子会让改造前后的
+    // 导出件产生无谓差异（验收要求「无货号时逐格一致」）。
+    const completionPairs: Array<[[string, string], number]> = [[["完工日期", doc.completionText], 2]];
+    if (doc.itemNo) completionPairs.push([["货　号", doc.itemNo], 0]);
+    this.autoHeight(sheet, row, this.pairs(sheet, row, completionPairs));
     row += 1;
 
     // 注意事项：整块为空则不印（不占位）
@@ -548,6 +556,8 @@ type SpecKey = (typeof SPEC_SCALAR_FIELDS)[number][0];
 
 export type ExportOrder = {
   orderNo: string;
+  /** 货号（2026-09-26）。可空：历史销售单没有货号，导出时为空串（不印这一格）。 */
+  itemNo: string | null;
   orderDate: Date;
   deliveryDate: Date | null;
   productName: string;
@@ -584,6 +594,8 @@ export type ProductionSheetDocument = {
   company: string;
   factory: string;
   orderNo: string;
+  /** 货号（2026-09-26）：空串 = 不印这一格（历史单与改造前逐格一致）。 */
+  itemNo: string;
   customerName: string;
   orderDate: string;
   quantityText: string;
