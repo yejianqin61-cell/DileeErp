@@ -182,7 +182,10 @@ test("arrived-complete orders accept another receipt before close", async () => 
 const refsPrisma = (suppliers) => ({
   salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "SO-1" }) },
   bom: { findFirst: async () => ({ id: "bom-1", salesOrderId: "order-1", orderNo: "SO-1", version: 1 }) },
-  supplier: { findMany: async () => suppliers },
+  // 假 Prisma **真的按 `select` 投影**：`refs()` 的供应商那一行是原样写进 `supplier_snapshot` 的，
+  // 所以"给它加个 select: {id, name}"这种改动必须能被断言抓到 —— 恒返回整行的桩会让
+  // 「地址/联系人要冻住」那条用例永远通过。
+  supplier: { findMany: async ({ select } = {}) => suppliers.map((row) => (select ? Object.fromEntries(Object.keys(select).map((key) => [key, row[key]])) : row)) },
   material: { findMany: async () => [{ id: "material-1" }, { id: "material-2" }] },
   unit: { findMany: async () => [{ id: "unit-1" }, { id: "unit-2" }] },
   bomItem: { findMany: async () => [{ id: "bomItem-1", materialId: "material-1" }] },
@@ -281,6 +284,32 @@ test("create writes the item supplier snapshot and derives the order-level suppl
   assert.equal(captured.items.create[0].expectedDate.getTime(), new Date("2026-09-10").getTime());
   assert.equal(captured.items.create[1].supplierId, "supplier-2");
   assert.equal(captured.items.create[1].expectedDate.getTime(), new Date("2026-09-12").getTime());
+});
+
+test("下单时把供应商的**地址与联系人**一起冻进快照（改档案不影响已发出的单）", async () => {
+  // 口径 4：地址/联系人是主数据的事实，但在下单那一刻要**冻结**在采购单上——
+  // 供应商以后搬了厂、换了业务员，去年的单上仍要看得见当时那一句。
+  //
+  // 这条是**回归**：`refs()` 里那句 `supplier.findMany` 一旦被"优化"成
+  // `select: { id, name }`，快照就会悄悄少掉这三格，而且不会有任何报错。
+  let captured = null;
+  const created = { id: "purchase-1", orderNo: "SO-1", status: "ordered", items: [], extensionData: {} };
+  const tx = { purchaseOrder: { create: async ({ data }) => { captured = data; return created; } } };
+  const supplierRow = { id: "supplier-1", supplierCode: "SUP-001", name: "五金厂", contactName: "张伟", phone: "13800000000", address: "浙江省金华市婺城区某路 1 号" };
+  const prisma = { ...refsPrisma([supplierRow]), $transaction: async (fn) => fn(tx), purchaseOrder: { findFirst: async () => created } };
+  const service = new PurchaseOrdersService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} });
+
+  await service.create({
+    order_no: "SO-1", bom_id: "bom-1", purchase_date: "2026-09-28", currency: "CNY",
+    items: [{ material_id: "material-1", unit_id: "unit-1", bom_item_id: "bomItem-1", supplier_id: "supplier-1", quantity: "2", unit_price: "3" }],
+  }, { id: "user-1" });
+
+  for (const snapshot of [captured.supplierSnapshot, captured.items.create[0].supplierSnapshot]) {
+    assert.equal(snapshot.supplierCode, "SUP-001");
+    assert.equal(snapshot.contactName, "张伟", "联系人要冻住");
+    assert.equal(snapshot.phone, "13800000000");
+    assert.equal(snapshot.address, "浙江省金华市婺城区某路 1 号", "地址要冻住");
+  }
 });
 
 test("a draft created without any supplier keeps the item supplier empty", async () => {

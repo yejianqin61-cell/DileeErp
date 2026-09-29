@@ -58,12 +58,25 @@ type PrintFieldsInput = {
   supplier_signed?: string | null;
   supervisor_signature?: string | null;
 };
-/** `refs()` 的返回结构（只保留下单/建单真正用到的字段，避免耦合 Prisma 生成类型）。 */
+/**
+ * `refs()` 的返回结构（只保留下单/建单真正用到的字段，避免耦合 Prisma 生成类型）。
+ *
+ * ⚠️ 供应商这三格（`supplier` / `supplierMap`）**刻意写全**：它们会被原样写进
+ * `supplier_snapshot`（`orderData` / `itemData`），也就是"下单那一刻这家长什么样"的冻结件。
+ * 口径 4（设计文档 `purchase-plan-and-supplier-collapse-2026-09-27.md`）要的就是
+ * **地址与联系人在下单时冻结**——供应商以后改了地址，去年的采购单上仍要看得见当时那句。
+ *
+ * 所以：**不要**给 `refs()` 里那句 `supplier.findMany` 加 `select: { id, name }`。
+ * 加了不会报错，只会让快照悄悄少掉地址/联系人（`purchase-orders.test.cjs` 里有一条
+ * 钉住这三格的回归用例）。类型写窄了同样是陷阱——原来这里只声明 `{id, name}`，
+ * 而实际写入的是整行，读代码的人会以为快照里没有地址。
+ */
+type SupplierSnapshotSource = { id: string; supplierCode: string; name: string; contactName: string | null; phone: string | null; address: string | null };
 type Refs = {
   order: { id: string; orderNo: string };
   bom: { id: string; version: number } | null;
-  supplier: { id: string; name: string } | undefined;
-  supplierMap: Map<string, { id: string; name: string }>;
+  supplier: SupplierSnapshotSource | undefined;
+  supplierMap: Map<string, SupplierSnapshotSource>;
   materials: Map<string, { id: string; materialCode: string; name: string }>;
   units: Map<string, { id: string; name: string }>;
   items: Item[];
@@ -544,6 +557,8 @@ export class PurchaseOrdersService {
     if (supplierIds.length > 1) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_MULTIPLE_SUPPLIERS", message: "一张采购单只能有一个供应商，请按供应商收束后再保存", details: [] });
     const [bom, suppliers, materials, units] = await Promise.all([
       input.bom_id ? this.prisma.bom.findFirst({ where: { id: input.bom_id, salesOrderId: order.id, orderNo: input.order_no, deletedAt: null } }) : Promise.resolve(null),
+      // ⚠️ 供应商**不写 select**：这一行整行都会被写进 `supplier_snapshot`（地址/联系人要冻在单上），
+      // 加了 `select: { id, name }` 不会报错，只会让快照悄悄少掉那几格。见 `Refs` 的注释。
       supplierIds.length ? this.prisma.supplier.findMany({ where: { id: { in: supplierIds }, isActive: true, deletedAt: null } }) : Promise.resolve([]),
       items.length ? this.prisma.material.findMany({ where: { id: { in: items.map((item) => item.material_id) }, materialType: "raw_material", isActive: true, deletedAt: null } }) : Promise.resolve([]),
       items.length ? this.prisma.unit.findMany({ where: { id: { in: items.map((item) => item.unit_id) }, isActive: true, deletedAt: null } }) : Promise.resolve([]),
