@@ -162,7 +162,9 @@ schema 里只声明 `@@index([bomId])`。漂移代价见 §7.3。
 `POST /purchase-orders/:id/revert-to-plan`，`reason` 必填。前置条件与既有 `assertEditable` 一致
 （没有任何到货事实）。事务内：
 
-1. 校验：状态属于 `ordered` / `partially_ordered` 之外的可退状态（即 `ordered`），且无 receipt。
+1. 校验：**可退 = `status === "ordered"` 且该单没有任何到货事实**
+   （`partially_arrived` / `arrived_complete` 必然已经有到货，`cancelled` 已经作废，
+   迁移之后不会再有 `draft`）。错误码沿用既有的 `PURCHASE_ORDER_NOT_REVERTIBLE`，不新造同义码。
 2. 找到目标计划：该单 `bom_id` 对应的未删计划；**不存在就自动补建一份**（口径 15）。
    连 `bom_id` 都没有的历史单 → 422 `PURCHASE_ORDER_WITHOUT_BOM_NOT_REVERTIBLE`。
 3. 把指向这张单明细的计划行 `purchase_order_item_id` 清空。
@@ -173,6 +175,18 @@ schema 里只声明 `@@index([bomId])`。漂移代价见 §7.3。
 `POST /:id/revert-draft` 端点**删除**（草稿不存在了，它没有语义）。
 `POST /:id/cancel` 同样删除 —— 它只允许取消 `draft`（`purchase-orders.service.ts:383`），
 草稿消失后它是死代码；"供应商说做不了"的出口改成退回计划。
+
+---
+
+### 4.4 已下单的行在计划里还能改什么
+
+一行一旦已下单（`purchase_order_item_id` 非空），它的内容就归那张采购单了。保存计划时：
+
+| 字段 | 能不能改 | 为什么 |
+| --- | --- | --- |
+| 物料 / 单位 / 数量 / 单价 / 供应商 / 型号 | **不能** | 这些是"跟供应商谈定了什么"。计划里改掉，系统就出现"这张单的明细在计划里查不到"的状态，而「这张 BOM 还差什么没买」立刻失真。要改先**退回采购计划** |
+| `sequence`（序号） | 能 | 只是展示顺序，不是业务内容 |
+| `expected_date`（预计到货） | 能，**并同步写进对应的采购明细** | 它是「**预期**」不是「既成事实」（供应商说这周到不了、下周到）。而口径 7 已经关掉了采购单页的明细编辑——这里若也锁死，系统里就**再没有任何地方**能改这个日期。同步是为了不让同一行有两个预计到货 |
 
 ---
 
@@ -221,10 +235,22 @@ schema 里只声明 `@@index([bomId])`。漂移代价见 §7.3。
 ### 5.4 供应商快照要带上地址与联系人
 
 现在 `refs()` 的 `supplierMap` 只装 `{id, name}`，写进 `supplierSnapshot` 的也就这两个字段
-（`purchase-orders.service.ts:262,279,320`）。口径 4 要求下单时**冻结**当时的地址/联系人，
+（`purchase-orders.service.ts:278` 取用、`:321` 写入）。口径 4 要求下单时**冻结**当时的地址/联系人，
 所以 `refs()` 的 supplier 选择要扩成 `{id, supplierCode, name, contactName, phone, address}`。
 这是**对既有行为的加强**（原来根本没冻结地址），不需要迁移：旧单的快照里没有这两格，
 前端按"-"显示。
+
+### 5.5 计划行引用的 BOM 行 ID 会被换掉（实现时发现，口径 12 的必然推论）
+
+`BomsService.replaceItems` 是「软删全部旧行 + 整批建新行」，**存一次 BOM，所有行 ID 都换**。
+采购单靠 `bomItemOrderStatus` 的"行 ID 精确归集 → 换掉了就按物料摊回"来兼容这件事（见 §4.2）。
+
+计划是**长期存在**的（不像草稿是一次性的），所以它一定会持有"当前 BOM 里已经不存在"的行 ID。
+如果按原样校验 `PURCHASE_BOM_ITEM_MISMATCH`，后果是 **BOM 改过一次之后这份计划再也保存不了**。
+
+处理：保存计划时，若某行的 `bom_item_id` 在当前 BOM 里查不到，就**按物料找回**当前 BOM 的对应行；
+找不回（物料已经不在 BOM 里）才当作 BOM 外的行处理 —— 那一步才要求填 `outside_bom_reason`。
+与 §4.2 的摊回逻辑同一口径。
 
 ---
 
