@@ -11,7 +11,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SalesOrderEditor } from "../components/sales/sales-order-editor";
+import { SalesOrderEditor, orderNoImpactText } from "../components/sales/sales-order-editor";
 import { SPEC_MATERIAL_FIELDS, SPEC_SCALAR_KEYS } from "../lib/sales-order-spec";
 
 const routerPush = vi.fn();
@@ -414,6 +414,155 @@ describe("销售单编辑器：细分明细的自定义列名", () => {
     await userEvent.click(field("sales-order-save"));
     expect(await screen.findByText(/超过 20 字/)).toBeVisible();
     expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+  });
+});
+
+/* ------------------------------------------------ 订单号改号（2026-09-30） */
+
+/**
+ * 用户原话：「创建销售单，订单号写错了要支持编辑和修改。要做好全链条订单号的联动调整」。
+ *
+ * 界面上它不是"改一格"：一次改号会在同一个事务里改掉全库 38 张表里属于这张单的行
+ * （另加别的单上的返单来源引用与本单的版本快照）。所以保存路径分成两段 ——
+ * 先拉影响面弹确认（原因必填），确认后才 PATCH。
+ *
+ * 老口径的坑（本轮修掉的）：这一格一直可编辑，但 `save()` 里 `delete payload.order_no`，
+ * 于是"改完点保存 → 提示已保存 → 号还是旧的"。第 2 个用例是它的回归守卫。
+ */
+describe("销售单编辑器：改订单号（全链联动）", () => {
+  const order = {
+    id: "order-1", orderNo: "DL26001", status: "draft", orderDate: "2026-06-18T00:00:00.000Z", deliveryDate: null,
+    productName: "折叠伞", quantity: "1960.0000", unit: "支", currency: "USD",
+    customer: { id: "customer-1" }, contact: null, specDetails: [], materialRefs: [],
+  };
+  const impactBody = (extra: Record<string, unknown> = {}) => ({
+    data: {
+      sales_order_id: "order-1", current_order_no: "DL26001", next_order_no: "DL260001", changed: true,
+      conflict: null, reason_required: true,
+      targets: [{ key: "PurchaseOrder", label: "采购单", count: 3 }, { key: "Bom", label: "BOM 表", count: 1 }],
+      total: 4, version_snapshots: 1, reorder_references: 1, ...extra,
+    },
+    meta: {},
+  });
+  /** 打开编辑页并把订单号改成 DL260001。 */
+  async function openAndRetype() {
+    render(<SalesOrderEditor orderId="order-1" />);
+    await waitFor(() => expect((field("sales-base-order_no") as HTMLInputElement).value).toBe("DL26001"));
+    fireEvent.change(field("sales-base-order_no"), { target: { value: "DL260001" } });
+  }
+
+  it("改号：先弹影响确认（此时不落库），原因必填，确认后 PATCH 才带上新号", async () => {
+    const calls = stubApi([
+      ["/order-no-impact", () => impactBody()],
+      ["/sales-orders/order-1", (init) => (init.method === "PATCH"
+        ? { data: { id: "order-1", orderNo: "DL260001", order_no_changed: true, previous_order_no: "DL26001" }, meta: {} }
+        : { data: order, meta: {} })],
+    ]);
+    await openAndRetype();
+    await userEvent.click(field("sales-order-save"));
+
+    // 第一步：只拉影响面，一个写请求都不该发出去
+    await waitFor(() => expect(calls.some((call) => call.url.includes("/order-no-impact"))).toBe(true));
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(dialog.textContent).toContain("DL26001 → DL260001");
+    expect(dialog.textContent).toContain("将同步更新 2 类下游单据共 4 条");
+    expect(dialog.textContent).toContain("采购单 3");
+    expect(dialog.textContent).toContain("历史版本快照 1 条");
+    expect(dialog.textContent).toContain("返单来源 1 条");
+
+    // 原因必填：不填点提交被拦下，仍然不发请求
+    await userEvent.click(field("action-dialog-submit"));
+    expect((await screen.findByTestId("action-dialog-error")).textContent).toContain("请填写改号原因");
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+
+    // 填了原因才落库，并且新号真的发出去了（老口径是 delete payload.order_no）
+    fireEvent.change(field("action-field-reason"), { target: { value: "单号手误" } });
+    await userEvent.click(field("action-dialog-submit"));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    const patched = calls.find((call) => call.method === "PATCH")!;
+    expect((patched.body as Record<string, unknown>).order_no).toBe("DL260001");
+    expect((patched.body as Record<string, unknown>).reason).toBe("单号手误");
+  });
+
+  it("改号：没改号就不拉影响面、也不发 order_no（老口径的回归守卫）", async () => {
+    const calls = stubApi([
+      ["/order-no-impact", () => impactBody()],
+      ["/sales-orders/order-1", (init) => (init.method === "PATCH" ? { data: { id: "order-1", orderNo: "DL26001" }, meta: {} } : { data: order, meta: {} })],
+    ]);
+    render(<SalesOrderEditor orderId="order-1" />);
+    await waitFor(() => expect((field("sales-base-order_no") as HTMLInputElement).value).toBe("DL26001"));
+
+    fireEvent.change(field("sales-base-product_name"), { target: { value: "折叠伞（改规格）" } });
+    await userEvent.click(field("sales-order-save"));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+
+    expect(calls.some((call) => call.url.includes("/order-no-impact")), "没改号就别去打扰影响面接口").toBe(false);
+    const body = calls.find((call) => call.method === "PATCH")!.body as Record<string, unknown>;
+    expect("order_no" in body).toBe(false);
+    expect(screen.queryByTestId("action-dialog")).toBeNull();
+  });
+
+  it("改号：影响面已经算出新号被占用，就当场说出来（不必等到保存失败）", async () => {
+    stubApi([
+      ["/order-no-impact", () => impactBody({ conflict: { order_no: "DL260001", order_id: "so-9", status: "closed", deleted: false, message: "订单号 DL260001 已被另一张销售单占用（closed）" } })],
+      ["/sales-orders/order-1", () => ({ data: order, meta: {} })],
+    ]);
+    await openAndRetype();
+    await userEvent.click(field("sales-order-save"));
+
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(dialog.textContent).toContain("已被另一张销售单占用");
+  });
+
+  it("改号：后端拒绝时弹窗不关闭，把原因留在弹窗里（别把用户填的一堆字段丢在页面上）", async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      const method = (init.method ?? "GET").toUpperCase();
+      calls.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.includes("/order-no-impact")) return { ok: true, status: 200, json: async () => impactBody({ conflict: null }) };
+      if (method === "PATCH") return { ok: false, status: 409, json: async () => ({ error: { code: "ORDER_NO_CONFLICT", message: "订单号 DL260001 已被另一张销售单占用", details: [] } }) };
+      // 其余下拉数据源必须与 stubApi 的默认一致：/customers 回的不是数组的话，load() 会整个抛错，
+      // 表单根本填不上（那样这个用例测的就不是"后端拒绝"了）。
+      if (url.includes("/customers")) return { ok: true, status: 200, json: async () => ({ data: [customer], meta: {} }) };
+      if (url.includes("/units")) return { ok: true, status: 200, json: async () => ({ data: units, meta: {} }) };
+      if (url.includes("/dictionaries/currency/items")) return { ok: true, status: 200, json: async () => currencyItems };
+      return { ok: true, status: 200, json: async () => ({ data: order, meta: {} }) };
+    });
+    await openAndRetype();
+    await userEvent.click(field("sales-order-save"));
+    await screen.findByTestId("action-dialog");
+    fireEvent.change(field("action-field-reason"), { target: { value: "单号手误" } });
+    await userEvent.click(field("action-dialog-submit"));
+
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    expect((await screen.findByTestId("action-dialog-error")).textContent).toContain("已被另一张销售单占用");
+    expect(screen.getByTestId("action-dialog")).toBeVisible();
+  });
+});
+
+describe("改号影响面文案", () => {
+  const base = { sales_order_id: "so-1", current_order_no: "DL26001", next_order_no: "DL260001", changed: true, conflict: null, reason_required: true, targets: [], total: 0, version_snapshots: 0, reorder_references: 0 };
+
+  it("有下游：把「几类、共几条、按类明细」说全，并交代旧号只留在审计里", () => {
+    const text = orderNoImpactText({ ...base, targets: [{ key: "PurchaseOrder", label: "采购单", count: 3 }, { key: "Bom", label: "BOM 表", count: 1 }], total: 4, version_snapshots: 2, reorder_references: 1 });
+    expect(text).toContain("订单号 DL26001 → DL260001");
+    expect(text).toContain("将同步更新 2 类下游单据共 4 条（采购单 3、BOM 表 1）");
+    expect(text).toContain("历史版本快照 2 条");
+    expect(text).toContain("返单来源 1 条");
+    expect(text).toContain("旧单号只留在审计里");
+  });
+
+  it("没有下游：明说「只改销售单本身」，不编一个 0 条的影响面", () => {
+    expect(orderNoImpactText(base)).toContain("这一单还没有下游单据，改号只改销售单本身");
+  });
+
+  it("冲突优先说：冲突时不再报下游条数（先说能不能改）", () => {
+    const text = orderNoImpactText({ ...base, targets: [{ key: "Bom", label: "BOM 表", count: 1 }], total: 1, conflict: { order_no: "DL260001", order_id: "so-9", status: "closed", deleted: true, message: "订单号 DL260001 被一张已删除的销售单占着，请换一个" } });
+    expect(text).toContain("被一张已删除的销售单占着");
+    expect(text).not.toContain("将同步更新");
   });
 });
 

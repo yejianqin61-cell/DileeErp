@@ -36,9 +36,46 @@ type Customer = { id: string; customerCode?: string; name: string; isActive?: bo
 type Unit = { id: string; name: string };
 type DetailResponse = AuditRow & Record<string, unknown> & { id: string; orderNo: string; status: string; customer?: { id: string }; contact?: { id: string } | null; specDetails?: Array<Record<string, unknown>>; materialRefs?: Array<Record<string, unknown>> };
 
-/** 基础字段：与弹窗时代同一批（口径没变，只是换了个更能装的形式）。 */
-const BASE_FIELDS: ReadonlyArray<{ key: string; label: string; type?: "textarea" | "date" | "number"; required?: boolean }> = [
-  { key: "order_no", label: "订单号", required: true },
+/**
+ * 改号影响面（`GET /sales-orders/:id/order-no-impact?order_no=新号`）。
+ *
+ * 为什么要先拉这个：改号会在**一个事务里**改掉全库 38 张表里属于这张单的行。用户看不见这个后果，
+ * 所以保存前必须把「会同步改哪几类单据、各多少条」摆出来 —— 与后端执行用的是同一份登记表，
+ * 说会改的表就是真会改的表。
+ */
+type OrderNoImpactTarget = { key: string; label: string; count: number };
+type OrderNoImpact = {
+  sales_order_id: string; current_order_no: string; next_order_no: string; changed: boolean;
+  conflict: { order_no: string; order_id: string; status: string; deleted: boolean; message: string } | null;
+  reason_required: boolean; targets: OrderNoImpactTarget[]; total: number;
+  version_snapshots: number; reorder_references: number;
+};
+
+/** 保存响应：`order_no_changed` 只有改号那一次才会有（后端 update 的返回）。 */
+type SavedOrder = { id: string; orderNo: string; order_no_changed?: boolean; previous_order_no?: string | null };
+
+/** 影响面那句人话。抽成纯函数：测试可以直接钉住文案（不用去 render 一张对话框再读文字）。 */
+export function orderNoImpactText(impact: OrderNoImpact): string {
+  const head = impact.changed ? `订单号 ${impact.current_order_no} → ${impact.next_order_no}` : `订单号未变（${impact.current_order_no}）`;
+  if (impact.conflict) return `${head}。${impact.conflict.message}`;
+  const extra = [
+    impact.version_snapshots ? `历史版本快照 ${impact.version_snapshots} 条` : "",
+    impact.reorder_references ? `别的销售单上的返单来源 ${impact.reorder_references} 条` : "",
+  ].filter(Boolean);
+  if (!impact.total && !extra.length) return `${head}。这一单还没有下游单据，改号只改销售单本身。`;
+  const detail = impact.targets.map((row) => `${row.label} ${row.count}`).join("、");
+  const downstream = impact.total ? `将同步更新 ${impact.targets.length} 类下游单据共 ${impact.total} 条（${detail}）` : "没有下游单据";
+  return `${head}。${downstream}${extra.length ? `，另有${extra.join("、")}` : ""}。改完旧单号只留在审计里。`;
+}
+
+/**
+ * 基础字段：与弹窗时代同一批（口径没变，只是换了个更能装的形式）。
+ *
+ * `hint` 只用在「这一格改动的后果不在本页」的字段上（目前只有订单号）：提示必须贴在输入框旁边，
+ * 而不是等用户点了保存才从弹窗里第一次看到。
+ */
+const BASE_FIELDS: ReadonlyArray<{ key: string; label: string; type?: "textarea" | "date" | "number"; required?: boolean; hint?: string }> = [
+  { key: "order_no", label: "订单号", required: true, hint: "改这里会同步改下游全部单据（采购/生产/入库/应收应付…），保存前会先给你看影响面" },
   { key: "external_contract_no", label: "外部合同号" },
   { key: "customer_po_no", label: "客户 PO 号" },
   { key: "product_name", label: "产品名称", required: true },
@@ -175,6 +212,15 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const [audit, setAudit] = useState<AuditRow | null>(null);
   const [status, setStatus] = useState("draft");
   const [reason, setReason] = useState("");
+  /**
+   * 库里那个订单号（编辑态由 `load()` 记下来）。
+   *
+   * 为什么要单独存一份：判断"用户到底改没改号"必须和**库里现在的值**比，不能和渲染中的 `base` 比 ——
+   * 后者会因为一次输入被重渲染。
+   */
+  const [savedOrderNo, setSavedOrderNo] = useState("");
+  /** 改号确认弹窗（`null` = 没打开）：影响面 + 用户要填的原因。 */
+  const [renameDialog, setRenameDialog] = useState<{ impact: OrderNoImpact; nextOrderNo: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -237,6 +283,7 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         setDetails(rows.length ? rows : [emptySpecDetailRow()]);
         setAudit(order);
         setStatus(String(order.status ?? "draft"));
+        setSavedOrderNo(String(order.orderNo ?? ""));
       } else if (reorderFromOrderNo) {
         // 返单：先拉预览，再把结果**一次性**灌进四块 state。
         // 逐键 set 会与 `setBaseField` 的浅合并产生竞态，出现「填了一半」的表单 ——
@@ -346,6 +393,13 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     setRefs((current) => ({ ...current, [key]: null }));
   }
 
+  /**
+   * 保存前的最后一道分流：**改了订单号就先弹影响面确认**，其余情况直接落库。
+   *
+   * 为什么改号要多一步：它会在一个事务里改掉全库 38 张表里属于这张单的行（另加返单来源引用与
+   * 版本快照）。用户看不见这个后果，所以先给一张「会同步改哪几类单据、各多少条」的清单，
+   * 并强制填原因 —— 原因会进审计，事后要能回答「这张单什么时候从哪个号改成哪个号」。
+   */
   async function save() {
     if (!base.order_no?.trim()) { setError("订单号必填"); return; }
     if (!base.customer_id) { setError("请选择客户"); return; }
@@ -358,8 +412,33 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     // 列名太长当场拦下：后端也会拒（SPEC_DETAIL_LABEL_TOO_LONG），但等一个来回才看到原因没必要。
     const labelProblem = validateSpecDetailLabels(detailLabelOverrides);
     if (labelProblem) { setError(labelProblem); return; }
+
+    const nextOrderNo = (base.order_no ?? "").trim();
+    if (editing && nextOrderNo !== savedOrderNo) { await openRenameDialog(nextOrderNo); return; }
     if (editing && status === "confirmed" && !reason.trim()) { setError("已确认销售单修改必须填写原因"); return; }
 
+    await persist();
+  }
+
+  /** 拉影响面并打开确认弹窗（只读，不写任何东西）。 */
+  async function openRenameDialog(nextOrderNo: string) {
+    setError("");
+    try {
+      const impact = (await apiGet<OrderNoImpact>(`/sales-orders/${orderId}/order-no-impact?order_no=${encodeURIComponent(nextOrderNo)}`)).data;
+      setRenameDialog({ impact, nextOrderNo });
+    } catch (cause) {
+      setError(errorOf(cause, "改号影响面加载失败"));
+    }
+  }
+
+  /**
+   * 真正落库。
+   *
+   * `orderNo` / `submitReason` 由改号弹窗直接传进来（**不能**靠 `setReason` 之后再读 state：
+   * 那是下一次渲染的值，读到的还是空的）。`rethrow` 给弹窗用 —— 失败时把原因留在弹窗里显示，
+   * 而不是关掉弹窗把用户填的一堆字段丢在页面上。
+   */
+  async function persist(orderNo?: string, submitReason?: string, options: { rethrow?: boolean } = {}) {
     setSaving(true);
     setError("");
     const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs, detailLabelOverrides) };
@@ -370,28 +449,47 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     // 所以这里显式补回来 —— 否则「把货号删空再保存」会变成「什么都没发生」。
     payload.item_no = (base.item_no ?? "").trim() || null;
     if (editing) {
-      // 订单号与客户不可改（后端也是这么要求的：update 不接受这两个键）。
-      delete payload.order_no;
+      // 客户不可改（后端 update 也不接受这个键）。
       delete payload.customer_id;
-      payload.reason = reason.trim() || undefined;
+      // 订单号**只在真改了的时候发**：没改就不发（老口径下"不发"是为了防误改，现在是为了不动全链）。
+      const renaming = orderNo !== undefined && orderNo !== savedOrderNo;
+      if (renaming) payload.order_no = orderNo;
+      else delete payload.order_no;
+      payload.reason = (submitReason ?? reason).trim() || undefined;
     } else if (reorderSource) {
       // 返单来源只在**新建**时带（后端在更新接口上不接受改写它）。
       payload.reorder_from_order_no = reorderSource.order_no;
     }
     try {
       const saved = editing
-        ? (await apiPatch<{ id: string; orderNo: string }>(`/sales-orders/${orderId}`, payload)).data
-        : (await apiPost<{ id: string; orderNo: string }>("/sales-orders", payload)).data;
-      notifySuccess(editing ? "销售单已保存" : `销售单已创建（${saved.orderNo}）`);
+        ? (await apiPatch<SavedOrder>(`/sales-orders/${orderId}`, payload)).data
+        : (await apiPost<SavedOrder>("/sales-orders", payload)).data;
+      if (saved.order_no_changed) notifySuccess(`订单号已改为 ${saved.orderNo}（下游单据已同步）`);
+      else notifySuccess(editing ? "销售单已保存" : `销售单已创建（${saved.orderNo}）`);
       router.push("/sales/orders");
     } catch (cause) {
       // 保存失败留在页面上：用户填的 37 格 + 明细不能因为一次网络抖动白填。
-      setError(errorOf(cause, "保存失败"));
-      notifyError(errorOf(cause, "保存失败"));
+      const message = errorOf(cause, "保存失败");
+      setError(message);
+      notifyError(message);
+      if (options.rethrow) throw new Error(message);
     } finally {
       setSaving(false);
     }
   }
+
+  /**
+   * 改号弹窗的字段清单必须**记住身份**（`useMemo`）。
+   *
+   * `ActionDialog` 的 `useEffect` 依赖 `fields`，每次依赖变化都会 `setValues(...)` 一次；
+   * 如果这里每次渲染都现拼一个新数组，就会「setValues → 重渲染 → 新数组 → 再 setValues」无限循环
+   * （React 会报 Maximum update depth exceeded）。`renameDialog` 是 state，身份稳定，
+   * 所以把它当依赖就够。
+   */
+  const renameFields = useMemo<ActionField[]>(() => renameDialog ? [
+    { name: "impact", label: orderNoImpactText(renameDialog.impact), type: "info" },
+    { name: "reason", label: "改号原因", type: "textarea", required: true, placeholder: "为什么改（写进审计，事后按旧号也能查到这次改动）" },
+  ] : [], [renameDialog]);
 
   if (loading) return <div className="page-root" data-testid="sales-order-editor"><PageHeader title={editing ? "编辑销售单" : "新建销售单"} breadcrumb={["客户与销售", "销售单"]} /><LoadingState /></div>;
 
@@ -420,6 +518,24 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
       </PageHeader>
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <ActionDialog open={Boolean(labelDialog)} onOpenChange={(open) => { if (!open) setLabelDialog(null); }} title={labelDialog?.title ?? "细分明细的列名"} fields={labelDialog?.fields ?? []} onSubmit={(values) => { void labelDialog?.submit(values); }} />
+      {/*
+        改号确认（2026-09-30）：影响面 + 原因，两者缺一不可。
+        `info` 那个字段不是输入项，是 ActionDialog 支持的只读说明格 —— 影响面文案直接用它渲染，
+        用户要签字的那一格只有「原因」。
+      */}
+      <ActionDialog
+        open={Boolean(renameDialog)}
+        onOpenChange={(open) => { if (!open) setRenameDialog(null); }}
+        title="确认修改订单号"
+        submitLabel="确认改号"
+        fields={renameFields}
+        onSubmit={async (values) => {
+          const nextOrderNo = renameDialog?.nextOrderNo;
+          if (!nextOrderNo) return;
+          setReason(values.reason ?? "");
+          await persist(nextOrderNo, values.reason, { rethrow: true });
+        }}
+      />
 
       {/*
         返单横幅（2026-09-26）：回答「这张单是从哪来的」。
@@ -488,6 +604,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
               {reorderMode && REORDER_MUST_FILL.has(field.key)
                 ? <span className="reorder-must-fill" data-testid={`reorder-must-fill-${field.key}`}>（返单必填）</span>
                 : field.required ? "（必填）" : ""}
+              {/* 后果不在本页的字段（目前只有订单号）：提示贴在输入框旁边，不要等保存时才第一次看到。 */}
+              {field.hint && <span className="panel-note" data-testid={`sales-base-${field.key}-hint`}>{field.hint}</span>}
               {field.type === "textarea"
                 ? <textarea className="ui-input" rows={2} data-testid={`sales-base-${field.key}`} value={base[field.key] ?? ""} onChange={(event) => setBaseField(field.key, event.target.value)} />
                 : <Input type={field.type === "number" ? "text" : field.type ?? "text"} inputMode={field.type === "number" ? "decimal" : undefined} data-testid={`sales-base-${field.key}`} value={base[field.key] ?? ""} onChange={(event) => setBaseField(field.key, event.target.value)} />}
