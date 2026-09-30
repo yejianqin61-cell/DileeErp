@@ -1,4 +1,4 @@
-// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（12 个路由）。
+// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（15 个路由）。
 //
 // 覆盖维度：成功/失败信封、状态码（200/201/204 不可写路径 → 401/400/404/422/500）、
 //   鉴权（匿名 401）、DTO 校验（body 与 query）、404（不存在的 id / 路由方法不匹配无 405）、
@@ -40,7 +40,7 @@ const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 /** 非 UUID 的 id 段：验证 id 参数是否被 UUID 校验拦下（见文件末尾 KNOWN_CONTRACT_DEFECT 用例）。 */
 const NON_UUID_ID = "not-a-uuid";
 
-/** sales-orders.controller.ts 的全部 14 个路由。 */
+/** sales-orders.controller.ts 的全部 15 个路由。 */
 const ROUTES = [
   { label: "GET /", method: "get", path: "/api/v1/sales-orders" },
   { label: "POST /", method: "post", path: "/api/v1/sales-orders", payload: {} },
@@ -50,6 +50,8 @@ const ROUTES = [
   { label: "GET /item-nos", method: "get", path: "/api/v1/sales-orders/item-nos" },
   { label: "GET /reorder-preview", method: "get", path: "/api/v1/sales-orders/reorder-preview?order_no=contract-probe" },
   { label: "GET /:id/impact-preview", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/impact-preview` },
+  // 改号影响面预览（2026-09-30）：只读，未登录必须 401。
+  { label: "GET /:id/order-no-impact", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/order-no-impact?order_no=contract-probe` },
   { label: "GET /:id/finished-goods", method: "get", path: `/api/v1/sales-orders/${UNKNOWN_ID}/finished-goods` },
   { label: "POST /:id/outbound-notices", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices`, payload: {} },
   { label: "POST /:id/outbound-notices/:noticeId/cancel", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/outbound-notices/${UNKNOWN_ID}/cancel`, payload: { reason: "contract-probe" } },
@@ -126,9 +128,9 @@ function expectNotFoundWithCode(response, code, context) {
 }
 
 // ---------------------------------------------------------------------------
-// 鉴权：匿名访问 14 个路由必须全部 401 UNAUTHENTICATED
+// 鉴权：匿名访问 15 个路由必须全部 401 UNAUTHENTICATED
 // ---------------------------------------------------------------------------
-test("sales_orders.anonymous_access_is_rejected_on_all_fourteen_routes", async () => {
+test("sales_orders.anonymous_access_is_rejected_on_all_fifteen_routes", async () => {
   const anonymous = apiClient(baseUrl); // 无 Cookie
   for (const route of ROUTES) {
     const response = route.method === "get" ? await anonymous.get(route.path) : await anonymous[route.method](route.path, route.payload);
@@ -156,7 +158,7 @@ test("sales_orders.unknown_id_returns_not_found_on_every_id_route", async () => 
   const client = sessionClient();
 
   // 查询类：get(id) 先抛 SALES_ORDER_NOT_FOUND（sales-orders.service.ts:22）
-  for (const path of [`/api/v1/sales-orders/${UNKNOWN_ID}`, `/api/v1/sales-orders/${UNKNOWN_ID}/impact-preview`, `/api/v1/sales-orders/${UNKNOWN_ID}/finished-goods`]) {
+  for (const path of [`/api/v1/sales-orders/${UNKNOWN_ID}`, `/api/v1/sales-orders/${UNKNOWN_ID}/impact-preview`, `/api/v1/sales-orders/${UNKNOWN_ID}/order-no-impact?order_no=PROBE`, `/api/v1/sales-orders/${UNKNOWN_ID}/finished-goods`]) {
     expectNotFoundWithCode(await client.get(path), "SALES_ORDER_NOT_FOUND", `GET ${path}`);
   }
 
@@ -325,14 +327,24 @@ test("sales_orders.create_reports_missing_references_without_creating_data", asy
 });
 
 // ---------------------------------------------------------------------------
-// 更新（PATCH /:id）请求体校验：DTO 面比创建窄（order_no / customer_id 只读）
+// 更新（PATCH /:id）请求体校验
+//
+// 2026-09-30 起 `order_no` **可改**（用户：「创建销售单，订单号写错了要支持编辑和修改」），
+// 改号走全链联动（38 张表 + 返单来源引用 + 版本快照）→ DTO 必须放行它；
+// 只剩 `customer_id` 是只读的（客户快照一旦下给工厂就不能换头）。
 // ---------------------------------------------------------------------------
-test("sales_orders.update_body_validation_rejects_create_only_and_invalid_fields", async () => {
+test("sales_orders.update_body_validation_accepts_order_no_but_still_locks_customer", async () => {
   const client = sessionClient();
 
-  const createOnly = expectValidationError(await client.patch(`/api/v1/sales-orders/${UNKNOWN_ID}`, { order_no: "X" }), { code: "VALIDATION_ERROR", context: "PATCH order_no" });
-  assert.equal(createOnly.error.details[0].field, "order_no");
-  assert.equal(createOnly.error.details[0].rule, "whitelistValidation");
+  // order_no 不再被白名单拦下：未知 id 上它会一路走到 service 的 get(id) → 404
+  expectNotFoundWithCode(await client.patch(`/api/v1/sales-orders/${UNKNOWN_ID}`, { order_no: "PROBE-NEW-NO", reason: "改号" }), "SALES_ORDER_NOT_FOUND", "PATCH order_no 现在可改");
+
+  // 空订单号仍然 400：空串不是「不动」，是「没填」（静默丢弃正是本轮修掉的病）
+  expectFieldValidation(await client.patch(`/api/v1/sales-orders/${UNKNOWN_ID}`, { order_no: "" }), "order_no", "PATCH 空 order_no");
+
+  const customerLocked = expectValidationError(await client.patch(`/api/v1/sales-orders/${UNKNOWN_ID}`, { customer_id: UNKNOWN_ID }), { code: "VALIDATION_ERROR", context: "PATCH customer_id" });
+  assert.equal(customerLocked.error.details[0].field, "customer_id");
+  assert.equal(customerLocked.error.details[0].rule, "whitelistValidation");
 
   expectFieldValidation(await client.patch(`/api/v1/sales-orders/${UNKNOWN_ID}`, { quantity: "-5" }), "quantity", "PATCH 负数量");
   expectFieldValidation(await client.patch(`/api/v1/sales-orders/${UNKNOWN_ID}`, { bogus: 1 }), "bogus", "PATCH 未知字段");

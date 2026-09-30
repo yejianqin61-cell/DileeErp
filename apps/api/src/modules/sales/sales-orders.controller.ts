@@ -191,6 +191,18 @@ export class UpdateSalesOrderDto extends SalesOrderSpecDto {
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
   @IsOptional() @IsString() @MaxLength(500) reason?: string;
   /**
+   * 订单号：**可改**（2026-09-30，用户：「创建销售单，订单号写错了要支持编辑和修改」）。
+   *
+   * 与货号不同，它不是一次普通的列写入：改号要过全链联动（38 张冗余 `order_no` 的表 + 别的单上的
+   * 返单来源引用 + 本单历史版本快照），并且**必须填原因**，保存前要先看影响面
+   * （`GET /sales-orders/:id/order-no-impact`）。但它**不进 `coreFields`**：改号不动任何一张下游单的
+   * 数量与金额，所以已确认、已有 BOM/采购/生产的单可以直接改，不必先回退整条链。
+   *
+   * **故意不加 `EmptyStringToUndefined`**：那会把空串变成 undefined 也就是「不动」，
+   * 而"改了却发现没生效"正是本轮要修的病。空串在这里走 `@IsNotEmpty()` → 400。
+   */
+  @IsOptional() @IsNotEmpty() @IsString() @MaxLength(100) order_no?: string;
+  /**
    * 货号：可改（打错的货号要能修），已确认单改它走既有的「必须填原因」守卫。
    * **故意不放进 `coreFields`**：货号不锁下游 —— 否则下单后想改一个打错的货号，
    * 必须先回退 BOM/采购/生产，那是不可接受的。
@@ -202,6 +214,14 @@ class SalesOrderQueryDto extends PaginationQueryDto {
 }
 /** 返单预览的入参：来源**销售单号**（不是 id）——界面手上有的就是单号。 */
 class ReorderPreviewQueryDto {
+  @IsNotEmpty() @IsString() @MaxLength(100) order_no!: string;
+}
+/**
+ * 改号影响面预览的入参（`GET /sales-orders/:id/order-no-impact?order_no=新号`）。
+ * 新建单号是**候选值**而不是既有单号，所以这里不做"必须已存在"之类的判断 ——
+ * 冲突由服务层按唯一索引口径回答（软删单占着的号也算冲突）。
+ */
+class OrderNoImpactQueryDto {
   @IsNotEmpty() @IsString() @MaxLength(100) order_no!: string;
 }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
@@ -282,6 +302,13 @@ export class SalesOrdersController {
    */
   @Get(":id/export-images") async exportImages(@Param("id") id: string) { return { data: { images: await this.productionSheetExport.exportImageCandidates(id) }, meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
+  /**
+   * 改号的**影响面预览**（2026-09-30）：保存前把「会同步改哪几类单据、各多少条」摆给用户。
+   *
+   * 只读、不写。与执行共用同一份登记表（`ORDER_NO_RENAME_TARGETS`），所以预览说的与真改的不会分叉。
+   * 路径两段（`:id/order-no-impact`），不会被单段的 `@Get(":id")` 吃掉。
+   */
+  @Get(":id/order-no-impact") async orderNoImpact(@Param("id") id: string, @Query() query: OrderNoImpactQueryDto) { return { data: await this.orders.orderNoImpact(id, query.order_no), meta: {} }; }
   // 成品入库/出库情况 + 出库通知（销售页「打开销售订单能看到成品入库情况」）。
   @Get(":id/finished-goods") async finishedGoods(@Param("id") id: string) { return { data: await this.outboundNotices.summary(id), meta: {} }; }
   @Post(":id/outbound-notices") async notifyOutbound(@Param("id") id: string, @Body() body: OutboundNoticeDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outboundNotices.createNotices(id, body, user), meta: {} }; }

@@ -5,6 +5,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { normalizeItemNo, itemNoKey } from "./item-no";
+import { countVersionSnapshotsWithOrderNo, normalizeOrderNo, orderNoRenameImpact, renameSalesOrderNo, type OrderNoRenameReport } from "./sales-order-order-no";
 
 /**
  * 下单口径细化的固定字段映射：请求键（snake_case）→ Prisma 列（camelCase）。
@@ -238,8 +239,16 @@ type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?:
  * 更新载荷**排除** `reorder_from_order_no`：返单来源是既成事实，改它就是篡改返单链的出处
  * （「这张单是从哪张返来的」必须永远回答得出来）。控制器侧的 `UpdateSalesOrderDto` 也没有这个键，
  * 两处一起挡：类型层面挡住自己人，DTO 层面挡住外部请求。
+ *
+ * `order_no` 曾经也在这份排除名单里 —— 那是 2026-09-30 之前的口径，用户为此吃过一次静默丢数据：
+ * 界面那一格可编辑、`save()` 却 `delete payload.order_no`（`sales-order-editor.tsx:374`），
+ * 于是"改完点保存、提示已保存、号还是旧的"。现在**允许改**，但不是把它当普通字段写：
+ * 它要经过 `renameSalesOrderNo` 全链联动（38 张表 + 返单来源引用 + 版本快照），
+ * 理由见 `apps/api/src/modules/sales/sales-order-order-no.ts` 的文件头。
+ *
+ * `customer_id` 仍不可改（既有口径：客户快照一旦下给工厂就不能换头）。
  */
-type SalesOrderUpdate = Partial<Omit<SalesOrderInput, "order_no" | "customer_id" | "reorder_from_order_no">> & { reason?: string };
+type SalesOrderUpdate = Partial<Omit<SalesOrderInput, "customer_id" | "reorder_from_order_no">> & { reason?: string };
 
 @Injectable()
 export class SalesOrdersService {
@@ -466,18 +475,36 @@ export class SalesOrdersService {
     await this.currencies?.assertSupported(input.currency, "销售单币种");
     const current = await this.get(id);
     /**
-     * 已关闭销售单不可编辑 —— **货号是唯一的例外**，而且是必须的例外。
+     * 改号判定放在所有守卫之前：后面几条守卫的文案与豁免面都要看它。
      *
-     * 为什么放行它：货号是贴在这一单上的标签（不进 `coreFields`、不锁下游、不影响任何金额），
+     * 空串**不当作"不动"**（那样又会变成一次静默丢弃）：`normalizeOrderNo("")` 为空 → 422 把它顶回来。
+     * DTO 侧同样用 `@IsNotEmpty()` 而不是 `EmptyStringToUndefined`，两处口径一致。
+     */
+    const nextOrderNo = input.order_no === undefined ? undefined : normalizeOrderNo(input.order_no);
+    if (nextOrderNo !== undefined && !nextOrderNo) throw new UnprocessableEntityException({ code: "ORDER_NO_REQUIRED", message: "订单号不能为空", details: [] });
+    const renaming = nextOrderNo !== undefined && nextOrderNo !== current.orderNo;
+    // 改号必须留原因：它是一种"正名"动作，事后要能回答「这张单什么时候从哪个号改成哪个号」。
+    // 放在"已确认单修改必须填原因"之前，是为了让改号拿到**它自己**的文案（那一句说的是别的字段）。
+    if (renaming && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: `改订单号必须填写原因（${current.orderNo} → ${nextOrderNo}）`, details: [{ from: current.orderNo, to: nextOrderNo }] });
+    /**
+     * 已关闭销售单不可编辑 —— **货号与订单号是仅有的两个例外**，而且都是必须的例外。
+     *
+     * 为什么放行货号：它是贴在这一单上的标签（不进 `coreFields`、不锁下游、不影响任何金额），
      * 而「给历史已关闭单补货号」正是返单链最需要的一步 —— 返单来源必须是**已确认或已关闭**，
      * 来源没有货号就不能返单，于是那些单会永远卡在"既不能返单、又不能补货号"里。
-     * 放行的面**只有**「这次改动除了 item_no（与 reason）没有别的键」，其余字段照旧一律拒绝。
+     *
+     * 为什么放行订单号：它同样是"这一单的标识"而不是业务数据，改它不动任何一张下游单的数量与金额
+     * （38 张表是**跟着一起改**，不是重新算）。打错的号在单关闭之后才发现，是常事；
+     * 不放行的话这张单就会永久带着一个错号，而它同时是财务与客户对账时用的那个号。
+     *
+     * 放行的面**只有**「这次改动除了 item_no / order_no（与 reason）没有别的键」，其余字段照旧一律拒绝。
      */
-    const onlyItemNo = input.item_no !== undefined && Object.keys(input).every((key) => key === "item_no" || key === "reason");
-    if (current.status === "closed" && !onlyItemNo) throw new UnprocessableEntityException({ code: "SALES_ORDER_CLOSED", message: "已关闭销售单不可编辑", details: [] });
+    const onlyTagFields = (input.item_no !== undefined || nextOrderNo !== undefined) && Object.keys(input).every((key) => key === "item_no" || key === "order_no" || key === "reason");
+    if (current.status === "closed" && !onlyTagFields) throw new UnprocessableEntityException({ code: "SALES_ORDER_CLOSED", message: "已关闭销售单不可编辑", details: [] });
     if (current.status === "confirmed" && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已确认销售单修改必须填写原因", details: [] });
     // 已关闭单补货号同样要留痕：它是审计该记的事（改的是历史单据上的一个标识）。
-    if (current.status === "closed" && onlyItemNo && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已关闭销售单补货号必须填写原因", details: [] });
+    // （改号那条守卫在上面已经拦过，这里只剩货号这一路。）
+    if (current.status === "closed" && onlyTagFields && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已关闭销售单补货号必须填写原因", details: [] });
     // 结算金额类字段同样属于「动了就要重算下游」的核心字段；结算方式只是说明信息，允许后补。
     const coreFields = ["product_name", "product_spec", "quantity", "unit", "currency", "unit_price", "total_amount", "tax_rate", "settlement_unit_price", "receivable_amount", "local_currency_amount"] as const;
     if (current.status === "confirmed" && coreFields.some((field) => input[field] !== undefined)) {
@@ -487,22 +514,92 @@ export class SalesOrdersService {
       ]);
       if (current.boms.length || purchaseCount || productionCount) throw new UnprocessableEntityException({ code: "SALES_ORDER_CORE_FIELDS_LOCKED", message: "销售单已有 BOM、采购或生产下游事实，核心字段需先回退下游", details: [{ bom_count: current.boms.length, purchase_order_count: purchaseCount, production_order_count: productionCount }] });
     }
+    /**
+     * 新号的占用预检。**故意不带 `deletedAt` 过滤**：`sales_orders_order_no_key` 是一条普通唯一索引
+     * （见 `20260821120000_sales_domain_foundation`），软删单占着的号数据库也不会放行 ——
+     * 预检过滤掉它们，只会把一个必然发生的事务失败推迟成一条看不懂的报错。
+     */
+    if (renaming) {
+      const taken = await this.prisma.salesOrder.findFirst({ where: { orderNo: nextOrderNo }, select: { id: true, status: true, deletedAt: true } });
+      if (taken) throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: taken.deletedAt ? `订单号 ${nextOrderNo} 被一张已删除的销售单占着，请换一个` : `订单号 ${nextOrderNo} 已被另一张销售单占用`, details: [{ order_id: taken.id, status: taken.status, deleted: Boolean(taken.deletedAt) }] });
+    }
     const refs = await this.resolveReferences({ customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined }, user);
-    const nextInput = { ...input, customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined, order_no: current.orderNo, order_date: input.order_date ?? current.orderDate.toISOString(), product_name: input.product_name ?? current.productName, quantity: input.quantity ?? current.quantity.toString(), unit: input.unit ?? current.unit, currency: input.currency ?? current.currency, extension_data: input.extension_data ?? (current.extensionData as Record<string, unknown>), item_no: input.item_no === undefined ? current.itemNo : input.item_no, // 返单来源不可改：快照里始终记当前值
+    const nextInput = { ...input, customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined, order_no: renaming ? (nextOrderNo as string) : current.orderNo, order_date: input.order_date ?? current.orderDate.toISOString(), product_name: input.product_name ?? current.productName, quantity: input.quantity ?? current.quantity.toString(), unit: input.unit ?? current.unit, currency: input.currency ?? current.currency, extension_data: input.extension_data ?? (current.extensionData as Record<string, unknown>), item_no: input.item_no === undefined ? current.itemNo : input.item_no, // 返单来源不可改：快照里始终记当前值
       reorder_from_order_no: current.reorderFromOrderNo, ...this.specSnapshotSource(current as unknown as Record<string, unknown>, input) };
     const nextVersion = current.currentVersion + 1;
     const snapshot = this.snapshot(nextInput, refs.customer, refs.contact);
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const { updated, renameReport } = await this.prisma.$transaction(async (tx) => {
+      /**
+       * 改号：**先锁本单行**，再扫全链。
+       *
+       * 先锁是有意的：生产单/采购单/原料入库等建单路径在写之前也对同一行 `FOR UPDATE`
+       * （例：`production-orders.service.ts:29`、`revertToDraft` 用的是同一条），先锁能把并发建单
+       * 压到本次改名提交之后 —— 那时它们读到的是新号，天然一致。锁定挡不住的那部分由
+       * `renameSalesOrderNo` 末尾的残留校验兜底（非零即整事务回滚）。
+       */
+      let report: OrderNoRenameReport | null = null;
+      if (renaming) {
+        await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${id}::uuid FOR UPDATE`;
+        report = await renameSalesOrderNo(tx, { salesOrderId: id, from: current.orderNo, to: nextOrderNo as string });
+      }
       const data: Prisma.SalesOrderUncheckedUpdateInput = { ...(input.contact_id === undefined ? {} : { contactId: input.contact_id }), ...(input.customer_po_no === undefined ? {} : { customerPoNo: input.customer_po_no }), ...(input.external_contract_no === undefined ? {} : { externalContractNo: input.external_contract_no }), ...(input.order_date === undefined ? {} : { orderDate: new Date(input.order_date) }), ...(input.product_name === undefined ? {} : { productName: input.product_name }), ...(input.product_spec === undefined ? {} : { productSpec: input.product_spec }), ...(input.quantity === undefined ? {} : { quantity: input.quantity }), ...(input.unit === undefined ? {} : { unit: input.unit }), ...(input.delivery_date === undefined ? {} : { deliveryDate: input.delivery_date ? new Date(input.delivery_date) : null }), ...(input.currency === undefined ? {} : { currency: input.currency }), ...(input.unit_price === undefined ? {} : { unitPrice: input.unit_price }), ...(input.total_amount === undefined ? {} : { totalAmount: input.total_amount }), ...(input.tax_rate === undefined ? {} : { taxRate: input.tax_rate }), ...(input.settlement_unit_price === undefined ? {} : { settlementUnitPrice: input.settlement_unit_price }), ...(input.receivable_amount === undefined ? {} : { receivableAmount: input.receivable_amount }), ...(input.settlement_method === undefined ? {} : { settlementMethod: input.settlement_method }), ...(input.local_currency_amount === undefined ? {} : { localCurrencyAmount: input.local_currency_amount }), ...(input.extension_data === undefined ? {} : { extensionData: input.extension_data as Prisma.InputJsonValue }), ...this.specScalars(input), // 货号：undefined = 不动（快照里仍记当前值）；空串 = 清除（落 NULL）
-      ...(input.item_no === undefined ? {} : { itemNo: normalizeItemNo(input.item_no) }), ...(input.spec_detail_labels === undefined ? {} : { specDetailLabels: normalizeSpecDetailLabels(input.spec_detail_labels) as Prisma.InputJsonValue }), customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, currentVersion: nextVersion, ...this.audit.update(user) };
+      ...(input.item_no === undefined ? {} : { itemNo: normalizeItemNo(input.item_no) }), ...(input.spec_detail_labels === undefined ? {} : { specDetailLabels: normalizeSpecDetailLabels(input.spec_detail_labels) as Prisma.InputJsonValue }), // 订单号：只有真的要改时才写（保持"没传 = 不动"的既有语义）
+      ...(renaming ? { orderNo: nextOrderNo as string } : {}), customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, currentVersion: nextVersion, ...this.audit.update(user) };
       const result = await tx.salesOrder.update({ where: { id }, data });
       await tx.salesOrderVersion.create({ data: { salesOrderId: id, version: nextVersion, snapshot, ...this.audit.create(user) } });
       await this.replaceSpecDetails(tx, id, input.spec_details, user);
       await this.replaceMaterialRefs(tx, id, input.material_refs, user);
-      return result;
+      return { updated: result, renameReport: report };
+    }).catch((error: unknown) => {
+      /**
+       * 唯一索引是并发下的最后一道闸：两个请求同时改到同一个新号时，`salesOrder.update` 会抛 P2002。
+       * 只在改号时才把它翻译成 `ORDER_NO_CONFLICT` —— 不改号时的 P2002 只可能是
+       * `sales_order_versions(sales_order_id, version)` 的并发冲突，套上"订单号已存在"会把人带偏。
+       */
+      if (renaming) this.handleUnique(error);
+      throw error;
     });
-    await this.audit.record("sales_order.update", "sales_order", user.id, id, { order_no: current.orderNo, version: nextVersion, reason: input.reason, fields: Object.keys(input).filter((field) => field !== "reason") });
-    return { ...(await this.get(updated.id)), impact_warning: current.status === "confirmed" && current.boms.length > 0 ? "销售单已有关联 BOM，请物控复核来源版本" : null };
+    await this.audit.record("sales_order.update", "sales_order", user.id, id, { order_no: renaming ? (nextOrderNo as string) : current.orderNo, ...(renaming ? { previous_order_no: current.orderNo } : {}), version: nextVersion, reason: input.reason, fields: Object.keys(input).filter((field) => field !== "reason") });
+    // 改号另记一条事件：审计是"什么时候发生了什么"的事件流，旧号必须留在事件里（列上不回写，见 sales-order-order-no.ts）。
+    if (renameReport) await this.audit.record("sales_order.rename_order_no", "sales_order", user.id, id, { from: renameReport.from, to: renameReport.to, reason: input.reason, targets: renameReport.targets, total: renameReport.total, version_snapshots: renameReport.version_snapshots, reorder_references: renameReport.reorder_references });
+    return { ...(await this.get(updated.id)), order_no_changed: renaming, previous_order_no: renaming ? current.orderNo : null, rename_report: renameReport, impact_warning: current.status === "confirmed" && current.boms.length > 0 ? "销售单已有关联 BOM，请物控复核来源版本" : null };
+  }
+
+  /**
+   * 改号的**影响面预览**（`GET /sales-orders/:id/order-no-impact?order_no=新号`）：只读，不写任何东西。
+   *
+   * 为什么要有它：改号会同时改动几十张表里的行，这是一个**用户看不见后果**的动作。保存前先把
+   * 「将同步更新哪几类单据、各多少条」摆出来，用户才知道自己在做什么；而"说会改的表"与"真的改了的表"
+   * 用的是同一份登记表（`ORDER_NO_RENAME_TARGETS`），所以两边不可能不一致 ——
+   * 与返单预览「预览过不了的单建不出来」是同一个套路。
+   */
+  async orderNoImpact(id: string, nextOrderNoInput: string) {
+    const nextOrderNo = normalizeOrderNo(nextOrderNoInput);
+    if (!nextOrderNo) throw new UnprocessableEntityException({ code: "ORDER_NO_REQUIRED", message: "新订单号不能为空", details: [] });
+    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, select: { id: true, orderNo: true, status: true } });
+    if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
+    const changed = nextOrderNo !== order.orderNo;
+    const taken = changed ? await this.prisma.salesOrder.findFirst({ where: { orderNo: nextOrderNo }, select: { id: true, orderNo: true, status: true, deletedAt: true } }) : null;
+    const impact = changed ? await orderNoRenameImpact(this.prisma, order.orderNo) : { targets: [] as Array<{ key: string; label: string; count: number }>, total: 0 };
+    // 版本快照与"别的单上的返单来源"不在 `ORDER_NO_RENAME_TARGETS` 里（前者是 JSON、后者是同一张表的另一列），
+    // 但它们一样会被改，所以预览与报告都各自算一份 —— 少说一项，用户就会以为那一项没被改。
+    const [versionSnapshots, reorderReferences] = changed
+      ? await Promise.all([countVersionSnapshotsWithOrderNo(this.prisma, id, order.orderNo), this.prisma.salesOrder.count({ where: { reorderFromOrderNo: order.orderNo } })])
+      : [0, 0];
+    return {
+      sales_order_id: id,
+      current_order_no: order.orderNo,
+      next_order_no: nextOrderNo,
+      changed,
+      conflict: taken
+        ? { order_no: taken.orderNo, order_id: taken.id, status: taken.status, deleted: Boolean(taken.deletedAt), message: taken.deletedAt ? `订单号 ${nextOrderNo} 被一张已删除的销售单占着，请换一个` : `订单号 ${nextOrderNo} 已被另一张销售单占用（${taken.status}）` }
+        : null,
+      reason_required: true,
+      targets: impact.targets,
+      total: impact.total,
+      version_snapshots: versionSnapshots,
+      reorder_references: reorderReferences,
+    };
   }
 
   async impactPreview(id: string) {
