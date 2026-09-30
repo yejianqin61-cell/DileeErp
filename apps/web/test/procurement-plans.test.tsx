@@ -1,8 +1,9 @@
 // 采购计划的前端行为（2026-09-27）。
 //
-// 覆盖任务文档 T09/T10 的验收点：13 列与列名、只读的地址/联系人、供应商下拉里快速新建、
+// 覆盖任务文档 T09/T10 的验收点：14 列与列名、只读的地址/联系人、供应商下拉里快速新建、
 // 保存带乐观锁与冲突保留本地改动、已下单行的只读与两个例外、勾选默认全选、
-// 未选供应商的行单独成组并阻断下单、币种按组发出、下单后行还在并显示 PO 号。
+// 未选供应商的行单独成组并阻断下单、币种按组发出、下单后行还在并显示 PO 号、
+// 行总价与按币种分列的计划合计（2026-09-30 价格字段）。
 //
 // 渲染方式：Sheet 相关的用例**直接渲染 `PlanDetailSheet`**（它自己取详情、下单状态、库存、供应商池），
 // 不走列表页 —— 列表页那几个请求与这些断言无关，混在一起只会让失败原因难查。
@@ -35,7 +36,7 @@ const suppliers = [
 /** 计划详情：两行未下单（一行有供应商与地址联系人，一行没有），一行已下单。 */
 const planItem = (overrides: Record<string, unknown> = {}) => ({
   id: "i-1", materialId: "m-1", materialName: "面料A", materialCode: "M-001", model: "A-1", unitId: "u-1", unitName: "米",
-  quantity: "5.0000", unitPrice: "3.5000", bomItemId: "bi-1", supplierId: null, supplierName: null,
+  quantity: "5.0000", unitPrice: "3.5000", currency: "CNY", bomItemId: "bi-1", supplierId: null, supplierName: null,
   supplierAddress: null, supplierContact: null, expectedDate: null, purchaseOrderItemId: null, purchaseOrderNo: null,
   extensionData: {}, ...overrides,
 });
@@ -73,12 +74,14 @@ const headers = () => screen.getAllByRole("columnheader").map((cell) => cell.tex
 /** `SearchableSelect` 的根 div 带 testid，但**点它不会展开**（testid 不在按钮上）—— 要点里面的 combobox。 */
 const openSelect = async (testId: string) => { await userEvent.click(within(await screen.findByTestId(testId)).getByRole("combobox")); };
 
-describe("采购计划明细：13 列一次展示（口径 5/9）", () => {
-  it("13 列都在、顺序与 §6.2 一致，且「需求量」已改名「本次采购量」", async () => {
+describe("采购计划明细：14 列一次展示（口径 5/9）", () => {
+  it("14 列都在、顺序与 §6.2 一致，且「需求量」已改名「本次采购量」", async () => {
     renderSheet();
     await screen.findByRole("button", { name: "保存计划" });
 
-    expect(headers()).toEqual(["", "名称", "型号", "下单状态", "本次采购量", "当前库存量", "单位", "单价", "供应商", "供应商地址", "联系人", "预计到货", "操作"]);
+    // 2026-09-30 加了「行总价」（用户：「添加价格字段，单价，总价」）：紧挨单价右侧，
+    // 只读派生（数量 × 单价），本地即时算 —— 改一次数量或单价就能看见钱变了。
+    expect(headers()).toEqual(["", "名称", "型号", "下单状态", "本次采购量", "当前库存量", "单位", "单价", "行总价", "供应商", "供应商地址", "联系人", "预计到货", "操作"]);
     expect(headers()).not.toContain("需求量");
   });
 
@@ -239,6 +242,107 @@ describe("采购计划明细：按供应商收束下单（口径 6/10）", () =>
   });
 });
 
+describe("采购计划明细：不在物料池里的物料/单位仍要显示这一行的名字（用户 2026-09-30）", () => {
+  /**
+   * 用户原话：「采购计划那边，要展示相应的采购物料啊，有的地方没有显示相应的采购物料。」
+   *
+   * 真正会"有的行没有显示"的场景：物料被停用 / 软删 / 改成成品之后就不在 `GET /materials` 里了，
+   * 而 Radix 的 `SelectValue` 只在选项列表里找得到对应项时才显示文字 —— 找不到就退回
+   * 占位符「请选择物料」。计划里明明记着物料的那一格于是看起来是空的（像漏买了这个部件），
+   * 而服务端的 `get()` 其实已经把物料名从快照里兜回来了。
+   */
+  const staleItem = planItem({ materialId: "m-gone", materialCode: "M-900", materialName: "停用的面料", unitId: "u-gone", unitName: "卷" });
+  const renderStale = () => {
+    stubSheet({ items: [staleItem] });
+    render(<PlanDetailSheet planId="plan-1" materials={materials} units={units} onClose={() => undefined} onSaved={() => undefined} onDeleted={() => undefined} />);
+  };
+
+  it("名称格与单位格显示这一行的值（不再是「请选择物料」/ 空单位）", async () => {
+    renderStale();
+    await screen.findByRole("button", { name: "保存计划" });
+
+    const row = screen.getByTestId("plan-row-0");
+    // 行内顺序：物料下拉 → 单位下拉 → 供应商下拉（收起态都是 combobox）
+    const triggers = within(row).getAllByRole("combobox") as HTMLButtonElement[];
+    expect(triggers[0].textContent).toContain("停用的面料");
+    expect(triggers[0].textContent).toContain("M-900");
+    expect(triggers[1].textContent).toContain("卷");
+    expect(within(row).queryByText("请选择物料")).toBeNull();
+  });
+
+  it("补回来的那一项是 disabled：显示得出来，但选不到别的行上（服务端也会拒）", async () => {
+    renderStale();
+    await screen.findByRole("button", { name: "保存计划" });
+
+    await userEvent.click(within(screen.getByTestId("plan-row-0")).getAllByRole("combobox")[0]);
+    const option = await screen.findByRole("option", { name: /停用的面料/ });
+
+    expect(option.getAttribute("aria-disabled")).toBe("true");
+  });
+});
+
+describe("采购计划明细：行总价与按币种分列的计划合计（用户 2026-09-30）", () => {
+  /**
+   * 用户原话：「针对当前的采购计划，要求添加价格字段，单价，总价。不然财务没法付钱。」
+   *
+   * 单价本来就有（第 8 列），缺的是**总价**。这里钉住三件事：
+   *   1. 行总价 = 数量 × 单价，且是**本地即时算**的（改一次单价就跟着变）；
+   *   2. 合计**按币种分列**（金额不跨币种合计）+ 分出「其中未下单」；
+   *   3. **单价 0 的行不能下单** —— 应付金额 = 入库数量 × 采购明细单价，0 单价就是 0 元应付，
+   *      财务收到一张没法付的单而全链路不报错。前端先拦一次是为了把话说清楚。
+   */
+  it("行总价 = 数量 × 单价，改单价立刻跟着变（本地即时算，不用等服务端）", async () => {
+    renderSheet({ items: [planItem({ quantity: "5.0000", unitPrice: "3.5000" })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    expect(screen.getByTestId("plan-amount-0").textContent).toBe("17.50");
+
+    // 行内 spinbutton 的顺序：数量、单价（其余是下拉与日期）
+    const unitPrice = screen.getAllByRole("spinbutton")[1];
+    await userEvent.clear(unitPrice);
+    await userEvent.type(unitPrice, "4");
+
+    expect(screen.getByTestId("plan-amount-0").textContent).toBe("20.00");
+  });
+
+  it("计划合计按币种分列，并分出「其中未下单」", async () => {
+    renderSheet({
+      items: [
+        planItem({ id: "i-1", quantity: "5.0000", unitPrice: "3.5000", currency: "CNY" }),
+        // 已下单的行按那张采购单的币种（美元）计 —— 合计不能把它和人民币加成一个数
+        planItem({ id: "i-2", materialId: "m-2", materialName: "伞骨", materialCode: "M-002", quantity: "2.0000", unitPrice: "1.0000", currency: "USD", purchaseOrderItemId: "poi-1", purchaseOrderNo: "PO-1" }),
+      ],
+    });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    const total = screen.getByTestId("plan-total");
+    expect(total.textContent).toContain("CNY 17.50");
+    expect(total.textContent).toContain("USD 2.00");
+    // 「还要花多少钱」= 只有未下单的行（这里是人民币那一行）
+    expect(screen.getByTestId("plan-total-unordered").textContent).toBe("CNY 17.50");
+  });
+
+  it("单价为 0 的行不能下单：提示说清是第几行，且**不发**下单请求", async () => {
+    const calls = renderSheet({ items: [planItem({ quantity: "5.0000", unitPrice: "0.0000", supplierId: "s-1" })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    await userEvent.click(screen.getByTestId("plan-order"));
+
+    expect(screen.getByTestId("plan-error").textContent).toContain("第 1 行");
+    expect(screen.getByTestId("plan-error").textContent).toContain("单价");
+    expect(calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(false);
+  });
+
+  it("单价 0 的行在表里标红（漏填报价最快的入口）", async () => {
+    renderSheet({ items: [planItem({ unitPrice: "0.0000" }), planItem({ id: "i-2", materialId: "m-2", quantity: "2.0000", unitPrice: "1.5000" })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    expect(screen.getByTestId("plan-amount-0").className).toContain("status-danger");
+    expect(screen.getByTestId("plan-amount-1").className).not.toContain("status-danger");
+    expect(screen.getByTestId("plan-amount-1").textContent).toBe("3.00");
+  });
+});
+
 describe("采购计划列表：新建与深链（T09）", () => {
   const stubList = (candidates: Array<Record<string, unknown>> = []) => stubApi((url) => {
     if (url.includes("/purchase-plans/candidates")) return apiOk(candidates);
@@ -258,6 +362,41 @@ describe("采购计划列表：新建与深链（T09）", () => {
     expect(screen.getByText("流水花扇客户")).toBeTruthy();
     expect(screen.getByText("张三")).toBeTruthy();
     expect(screen.getByTestId("page-procurement-plans")).toBeTruthy();
+  });
+
+  it("列表有「计划金额」一列：按币种分列显示服务端算好的合计（金额不跨币种相加）", async () => {
+    route.searchParams = new URLSearchParams();
+    // 金额由服务端按币种算好下发（`GET /purchase-plans` 的 `amounts`），列表只负责显示。
+    stubApi((url) => {
+      if (url.includes("/purchase-plans/candidates")) return apiOk([]);
+      if (url.includes("/purchase-plans")) return apiOk([{
+        id: "plan-1", planNo: "PP-1", orderNo: "DL260001-1", itemNo: "27621", customerName: "流水花扇客户",
+        bomId: "bom-1", bomVersion: 3, lineCount: 4, unorderedCount: 2, orderedCount: 2,
+        amounts: [{ currency: "CNY", amount: "1234.5678" }, { currency: "USD", amount: "200.0000" }],
+        unorderedAmounts: [{ currency: "CNY", amount: "234.5678" }],
+        status: "partial", statusLabel: "部分下单", updatedByName: "张三", createdAt: "2026-09-27T01:00:00Z", updatedAt: "2026-09-27T02:00:00Z",
+      }]);
+      if (url.endsWith("/materials")) return apiOk(materials);
+      if (url.endsWith("/units")) return apiOk(units);
+      return apiOk({});
+    });
+    render(<PurchasePlansPage />);
+
+    expect(await screen.findByText("CNY 1234.57 · USD 200.00")).toBeTruthy();
+  });
+
+  it("计划里一行价都还没填时，金额那格说「未填价」而不是显示 0（0 与「还没谈」是两件事）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubApi((url) => {
+      if (url.includes("/purchase-plans/candidates")) return apiOk([]);
+      if (url.includes("/purchase-plans")) return apiOk([{ id: "plan-1", planNo: "PP-1", orderNo: "DL260001-1", itemNo: null, customerName: null, bomId: "bom-1", bomVersion: 3, lineCount: 1, unorderedCount: 1, orderedCount: 0, amounts: [], unorderedAmounts: [], status: "unordered", statusLabel: "未下单", updatedByName: null, createdAt: "2026-09-27T01:00:00Z", updatedAt: "2026-09-27T02:00:00Z" }]);
+      if (url.endsWith("/materials")) return apiOk(materials);
+      if (url.endsWith("/units")) return apiOk(units);
+      return apiOk({});
+    });
+    render(<PurchasePlansPage />);
+
+    expect(await screen.findByText("未填价")).toBeTruthy();
   });
 
   it("新建：只能选还没有计划的 BOM，建完直接打开计划", async () => {

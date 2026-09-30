@@ -399,6 +399,13 @@ button { cursor: pointer; }
 .ui-searchable-select-popover-up { bottom: calc(100% + 4px); }
 .ui-searchable-select-list { max-height: 280px; overflow-y: auto; }
 .ui-searchable-select-option[data-active="true"] { background: var(--surface-muted); }
+/* 选项文字**换行**（用户 2026-09-30：「如果页面不够展示，那就换行，而不是超出页面显示范围」）。
+   引用下拉的 label 是「编码 / 名称 规格 颜色」四段拼起来的，长物料名在固定宽度的弹层里放不下：
+   弹层是 `left: 0; right: 0; overflow: auto`，而选项文字默认是 flex 项（最小宽度 = min-content），
+   于是它既不换行也不收缩 —— 结果是弹层横向滚动，那行字被切在可视范围之外。
+   `min-width: 0` 让它能收缩、`overflow-wrap: anywhere` 让没有空格的编码/长英文也有断点
+   （中文本来就能逐字断行）。弹层高度仍由上面的 `max-height` 封顶，只是每项可能占两行。 */
+.ui-searchable-select-option-text { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .ui-searchable-select-trigger { justify-content: space-between; text-align: left; }
 .ui-searchable-select-trigger-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-searchable-select-chevron { flex: 0 0 auto; color: var(--text-muted); }
@@ -483,34 +490,44 @@ button { cursor: pointer; }
 /* 操作列只有一个图标按钮：默认内边距会把 60px 挤爆，压掉它。 */
 .purchase-workspace.material-issue-sheet .data-table .draft-col-action .ui-button { padding: 0; }
 
-/* ---------------------------------------------- 采购计划的明细表（2026-09-27，13 列一次展示）
+/* ---------------------------------------------- 采购计划的明细表（2026-09-27 起 13 列，2026-09-30 加「行总价」成 14 列）
    用户原话：「表单要保证一次性展示所有column。可以限制每个column的宽度，如果超出就省略。
    鼠标hover的时候再展示全部文本。」
 
    这一页的 Sheet 同样复用 `.material-issue-sheet`，所以先把它的两条硬约束顶掉：
-     · `.material-issue-sheet .data-table { min-width: 1180px }` —— 那会让 13 列的表格
+     · `.material-issue-sheet .data-table { min-width: 1180px }` —— 那会让 14 列的表格
        在 1366px 屏上横向滚动，而用户要的正是「不横滑」；
      · 上面那条 `nth-child(1) { width: 24% }`（领料单的口径）—— 与 `.draft-col-*` 同一个坑。
    选择器叠到 (0,3,0) / (0,4,0)，压过 `.material-issue-sheet .data-table`(0,2,0)
    与 `td:nth-child(1)`(0,3,1)：同分的话谁生效取决于样式表顺序，挪一下就会静默退回。 */
-.purchase-plan-sheet.material-issue-sheet .data-table { min-width: 0; table-layout: fixed; font-size: 11px; }
+.purchase-plan-sheet.material-issue-sheet .data-table { min-width: 0; table-layout: fixed; font-size: 12px; }
+/* 2026-09-30 用户：「采购物料那个表单高度太小了，可以高度大一点，这样视图更方便」。
+   这一页 14 列挤在一屏里，原来行内边距 4px + 控件 30px，扫一行要贴着屏幕看。
+   行高由**内边距 + 控件高度**决定（表格没有写死 height）：4px/30px → 8px/34px，
+   表头与单元格同时抬高。列宽的总和仍然是 100%（见下面那一组），所以调高不会带来横向滚动。 */
 .purchase-plan-sheet.material-issue-sheet .data-table th,
-.purchase-plan-sheet.material-issue-sheet .data-table td { padding: 4px 5px; }
-/* 13 列宽度的总和必须是 100%：加起来超过 100 就会把表撑出容器（横滑就是这么来的）。
-   两列只读文本（地址联系人）用省略号 + 原生 title 看全文，宽一点的列留给可编辑的下拉与输入。 */
+.purchase-plan-sheet.material-issue-sheet .data-table td { padding: 8px 6px; }
+/* **14** 列宽度的总和必须是 100%：加起来超过 100 就会把表撑出容器（横滑就是这么来的）。
+   只用省略号 + 原生 title 看全文的列（地址/联系人/行总价）可以让一点宽度出来，
+   宽一点的列留给可编辑的下拉与输入。2026-09-30 加「行总价」那一列（用户：「添加价格字段，单价，总价」）：
+   从型号/下单状态/采购量/库存/单价/地址/联系人各让出 1 个点，正好给到新列 7 个点，总和仍是 100%。 */
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-select { width: 3%; text-align: center; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-material { width: 11%; }
-.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-model { width: 8%; }
-.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-order { width: 9%; }
-.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-qty { width: 7%; }
-.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-stock { width: 7%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-model { width: 7%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-order { width: 8%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-qty { width: 6%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-stock { width: 6%; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-unit { width: 5%; }
-.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-price { width: 7%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-price { width: 6%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-amount { width: 7%; text-align: right; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-supplier { width: 11%; }
-.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-address { width: 12%; }
-.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-contact { width: 9%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-address { width: 11%; }
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-col-contact { width: 8%; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-expected { width: 7%; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-action { width: 4%; text-align: center; }
+/* 计划合计（表下方那一行）：按币种分列，一行放不下就换行，不横滑。 */
+.plan-total { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; margin: 8px 0 0; font-size: 13px; color: var(--text-muted); }
+.plan-total strong { color: var(--text); font-size: 14px; }
 /* 只读文本列：超长省略、悬停用原生 title 看全文（口径 5 里"能做到 hover 看全文"的那一半）。
    注意这是**手写的 `<table>`**，单元格不是 `.ui-table-cell`，所以上面那套
    `data-table-fixed` 规则管不到它 —— 必须在这里自己写一遍。 */
@@ -518,7 +535,7 @@ button { cursor: pointer; }
 /* 可编辑单元格里的输入控件要能被压缩（`table-layout: fixed` 下不压缩就会溢出到邻列）。
    下拉的 `SelectValue` 渲染成无类名 span，同样要约束，否则长供应商名会把列撑开。 */
 .purchase-plan-sheet.material-issue-sheet .data-table .ui-input,
-.purchase-plan-sheet.material-issue-sheet .data-table .ui-select-trigger { width: 100%; min-width: 0; height: 30px; padding: 0 6px; font-size: 12px; }
+.purchase-plan-sheet.material-issue-sheet .data-table .ui-select-trigger { width: 100%; min-width: 0; height: 34px; padding: 0 6px; font-size: 12px; }
 .purchase-plan-sheet.material-issue-sheet .data-table .ui-select-trigger > span { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-select input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-action .ui-button { padding: 0; }

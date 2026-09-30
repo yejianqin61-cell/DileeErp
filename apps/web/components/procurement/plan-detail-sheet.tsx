@@ -9,7 +9,7 @@
 // 因为两个模块都能改数量，同一批货就有两份数字，「这张 BOM 还差什么没买」立刻失真。
 //
 // 三条会让人踩坑、所以写在最上面的约定：
-//   1. **13 列一次展示、不横向滚动**（口径 5）：列宽由 `.plan-col-*` 写死、和正好 100%，
+//   1. **14 列一次展示、不横向滚动**（口径 5）：列宽由 `.plan-col-*` 写死、和正好 100%，
 //      只读文本列用 `.plan-cell-ellipsis` + 原生 title 看全文；编辑格**不**做省略号
 //      （对输入框做省略没有意义，它本来就能横向滚动看全）。
 //   2. **已下单的行留在表里**（口径 6），但内容列只读、不能删。
@@ -27,11 +27,14 @@ import { SupplierSelect, type BomSupplierRef } from "../bom/supplier-select";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
 import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
+import { amountSummaryText, lineAmountText, sumPlanAmounts, DEFAULT_PLAN_CURRENCY, type PlanAmount } from "../../lib/purchase-plan-amount";
 import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
 import { PlanOrderPreview, groupPlanRows, type PlanDraftRow } from "./plan-order-preview";
 
 export type PlanMaterialRef = { id: string; materialCode?: string; code?: string; name?: string; isActive?: boolean; defaultUnitId?: string };
 export type PlanUnitRef = { id: string; name?: string; isActive?: boolean };
+/** 下拉选项。`disabled` 只用来显示「这一行选中的值已经不在池子里」（见 `materialOptionsOf`）。 */
+type PlanOption = { value: string; label: string; disabled?: boolean };
 
 type PlanItem = {
   id: string;
@@ -43,6 +46,10 @@ type PlanItem = {
   unitName?: string | null;
   quantity: string;
   unitPrice: string;
+  /** 行总价（服务端派生：数量 × 单价）。表里显示的是**本地即时算**的那一个，见 `lineAmountText`。 */
+  amount?: string | null;
+  /** 这一行单价的币种：未下单是默认人民币，下单时按供应商组写回（见后端模型注释）。 */
+  currency?: string | null;
   bomItemId?: string | null;
   supplierId?: string | null;
   supplierName?: string | null;
@@ -57,6 +64,8 @@ export type PlanDetail = {
   id: string; planNo: string; orderNo: string; itemNo?: string | null; customerName?: string | null;
   bomId: string; bomVersion?: number | null; status: string; statusLabel: string;
   lineCount: number; unorderedCount: number; orderedCount: number;
+  /** 计划合计（按币种分列）与「其中未下单」——服务端口径。表下方那一行以本地即时算的为准（正在编辑）。 */
+  amounts?: PlanAmount[]; unorderedAmounts?: PlanAmount[];
   bomDeleted?: boolean; bomExtraMaterialCount?: number; deliveryDate?: string | null;
   updatedAt: string; items: PlanItem[];
 };
@@ -95,9 +104,35 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
   const [conflict, setConflict] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const materialOptions = useMemo(() => materials.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` })), [materials]);
-  const unitOptions = useMemo(() => units.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: item.name ?? item.id })), [units]);
+  const materialOptions = useMemo<PlanOption[]>(() => materials.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` })), [materials]);
+  const unitOptions = useMemo<PlanOption[]>(() => units.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: item.name ?? item.id })), [units]);
+  const poolMaterialIds = useMemo(() => new Set(materialOptions.map((option) => option.value)), [materialOptions]);
+  const poolUnitIds = useMemo(() => new Set(unitOptions.map((option) => option.value)), [unitOptions]);
   const supplierNameOf = useCallback((id: string) => suppliers.find((item) => item.id === id)?.name ?? "供应商", [suppliers]);
+
+  /**
+   * 这一行真正要显示的选项 = 物料池 + **这一行自己那个值**。
+   *
+   * 为什么必须补上后者（用户 2026-09-30：「有的地方没有显示相应的采购物料」）：
+   * 物料被停用 / 软删 / 改成成品之后就不再出现在 `GET /materials` 里，而 Radix 的 `SelectValue`
+   * 只在**选项列表里找得到**对应项时才显示文字 —— 找不到就退回占位符「请选择物料」。
+   * 于是计划里明明记着物料的那一格看起来是空的，像"这份计划漏了这个部件"。
+   * 服务端（`purchase-plans.service.ts` 的 `get()`）已经为此把物料名从快照里兜回来
+   * （`materialName: item.material?.name ?? snapshotName(item.materialSnapshot)`），前端不能把它丢掉。
+   *
+   * 补进来的这一项是 `disabled`：名字要显示（选中的项即使是 disabled，Radix 仍会把它的文字
+   * 放进触发框），但**不能再被选到别的行上** —— 真选了服务端也会以「物料不存在或已停用」
+   * 拒绝整份计划，那是个只有撞上才知道原因的错。
+   */
+  function materialOptionsOf(row: PlanDraftRow): PlanOption[] {
+    if (!row.materialId || poolMaterialIds.has(row.materialId)) return materialOptions;
+    return [{ value: row.materialId, label: `${row.materialCode ? `${row.materialCode} / ` : ""}${row.materialName || "物料"}（不在物料池）`, disabled: true }, ...materialOptions];
+  }
+  /** 单位同理：单位被停用后不在 `GET /units` 的可用项里，那一格会退化成一个空的「单位」。 */
+  function unitOptionsOf(row: PlanDraftRow): PlanOption[] {
+    if (!row.unitId || poolUnitIds.has(row.unitId)) return unitOptions;
+    return [{ value: row.unitId, label: `${row.unitName || "单位"}（不在单位池）`, disabled: true }, ...unitOptions];
+  }
 
   const load = useCallback(async () => {
     setError("");
@@ -109,11 +144,13 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
         id: item.id,
         materialId: item.materialId,
         materialName: item.materialName,
+        materialCode: item.materialCode ?? "",
         model: item.model ?? "",
         quantity: trimQuantity(item.quantity),
         unitId: item.unitId,
         unitName: item.unitName ?? "",
         unitPrice: trimQuantity(item.unitPrice),
+        currency: item.currency ?? DEFAULT_PLAN_CURRENCY,
         supplierId: item.supplierId ?? "",
         ordered: Boolean(item.purchaseOrderItemId),
         purchaseOrderNo: item.purchaseOrderNo ?? null,
@@ -193,7 +230,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
   function addRow() {
     const material = materials.find((item) => item.isActive !== false);
     const unitId = material?.defaultUnitId ?? "";
-    setRows((current) => [...current, { materialId: material?.id ?? "", materialName: material?.name ?? "", model: "", quantity: "1", unitId, unitName: units.find((item) => item.id === unitId)?.name ?? "", unitPrice: "0", supplierId: "", ordered: false, expectedDate: "", currentStock: stockFor(material?.id ?? "", unitId) }]);
+    setRows((current) => [...current, { materialId: material?.id ?? "", materialName: material?.name ?? "", model: "", quantity: "1", unitId, unitName: units.find((item) => item.id === unitId)?.name ?? "", unitPrice: "0", currency: DEFAULT_PLAN_CURRENCY, supplierId: "", ordered: false, expectedDate: "", currentStock: stockFor(material?.id ?? "", unitId) }]);
     // 新加的行默认**勾上**：刚加一行本来就是"打算买"，不勾的话下一步「收束下单」会静默漏掉它 ——
     // 与"默认全选未下单行"是同一条思路。
     setSelected((current) => [...current, rows.length]);
@@ -212,7 +249,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     // 否则后端以 PURCHASE_BOM_ITEM_MISMATCH 拒绝**整份计划**（而报错看不出是哪一行）。
     // 判据是**物料 id 变了**，不是"名字变了" —— 名字相同但其实是另一个物料时同样要清。
     const keepBom = row?.bomItemId && row.materialId !== materialId ? { bomItemId: null } : {};
-    updateRow(index, { materialId, materialName: material?.name ?? "", unitId: material?.defaultUnitId ?? row?.unitId ?? "", unitName: units.find((item) => item.id === (material?.defaultUnitId ?? row?.unitId))?.name ?? "", ...keepBom });
+    updateRow(index, { materialId, materialName: material?.name ?? "", materialCode: material?.materialCode ?? material?.code ?? "", unitId: material?.defaultUnitId ?? row?.unitId ?? "", unitName: units.find((item) => item.id === (material?.defaultUnitId ?? row?.unitId))?.name ?? "", ...keepBom });
   }
 
   const outsideBomRows = rows.filter((row) => !row.bomItemId);
@@ -220,6 +257,13 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
   const selectedRows = rows.filter((_, index) => selected.includes(index));
   const groups = useMemo(() => groupPlanRows(selectedRows, supplierNameOf), [selectedRows, supplierNameOf]);
   const currencyOf = useCallback((supplierId: string) => groupCurrency[supplierId] ?? "CNY", [groupCurrency]);
+  /**
+   * 合计**本地即时算**（用户一边改单价一边要看钱），口径与后端 `sumPlanAmounts` 完全一致
+   * （同一组向量钉在 `lib/purchase-plan-amount.test.mjs` 与 API 单测里）。
+   * 不用服务端返回的 `plan.amounts`：那是**上次保存时**的数，正在编辑的这一屏会与它不一致。
+   */
+  const planAmounts = useMemo(() => sumPlanAmounts(rows), [rows]);
+  const unorderedAmounts = useMemo(() => sumPlanAmounts(rows.filter((row) => !row.ordered)), [rows]);
 
   /** 保存的请求体：整体替换行。已下单行的内容由服务端锁住（只允许序号与预计到货）。 */
   function itemsPayload() {
@@ -267,6 +311,14 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     const assigned = groups.filter((group) => group.supplierId);
     if (!assigned.length) { setError("还没有任何一行选了供应商"); return; }
     if (groups.some((group) => !group.supplierId)) { setError("有行还没选供应商，不能下单（一个供应商一张单）"); return; }
+    // 单价为 0 的行不能下单（服务端同样拒绝，这里先拦一次是为了把话说清楚、并指出是哪几行）。
+    // 不是"多一层校验"：应付金额 = 入库数量 × 采购明细单价，0 单价会变成一条 0 元应付 ——
+    // 财务收到一张没法付的单，而全链路不报错。用户原话：「不然财务没法付钱」。
+    const unpriced = selectedRows.map((row, index) => ({ row, index })).filter(({ row }) => !(Number(row.unitPrice) > 0));
+    if (unpriced.length) {
+      setError(`第 ${unpriced.map(({ index }) => index + 1).join("、")} 行还没填单价，不能下单：应付金额就是按「数量 × 单价」算出来的`);
+      return;
+    }
     setBusy("order");
     try {
       const result = await apiPost<{ orders: Array<{ purchaseOrderNo: string }> }>(`/purchase-plans/${planId}/order`, {
@@ -365,7 +417,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             </label>
           ) : null}
 
-          {/* 13 列：列宽全部由 `.plan-col-*` 显式指定（和 = 100%，`table-layout: fixed`），
+          {/* 14 列：列宽全部由 `.plan-col-*` 显式指定（和 = 100%，`table-layout: fixed`），
               所以**不会有横向滚动条**。只读文本列加 `plan-cell-ellipsis`，hover 用原生 title 看全文；
               编辑格不加（对输入框做省略没有意义）。 */}
           <div className="table-wrap">
@@ -380,6 +432,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                   <th className="plan-col-stock">当前库存量</th>
                   <th className="plan-col-unit">单位</th>
                   <th className="plan-col-price">单价</th>
+                  <th className="plan-col-amount">行总价</th>
                   <th className="plan-col-supplier">供应商</th>
                   <th className="plan-col-address">供应商地址</th>
                   <th className="plan-col-contact">联系人</th>
@@ -394,7 +447,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                     <td className="plan-col-material">
                       <Select value={row.materialId || undefined} onValueChange={(value) => changeMaterial(index, value)} disabled={row.ordered}>
                         <SelectTrigger title={row.ordered ? lockedHint : undefined}><SelectValue placeholder="请选择物料" /></SelectTrigger>
-                        <SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                        <SelectContent>{materialOptionsOf(row).map((option) => <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>)}</SelectContent>
                       </Select>
                     </td>
                     <td className="plan-col-model"><Input value={row.model} disabled={row.ordered} title={row.ordered ? lockedHint : undefined} onChange={(event) => updateRow(index, { model: event.target.value })} /></td>
@@ -406,10 +459,16 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                     <td className="plan-col-unit">
                       <Select value={row.unitId || undefined} onValueChange={(value) => updateRow(index, { unitId: value, unitName: units.find((item) => item.id === value)?.name ?? "" })} disabled={row.ordered}>
                         <SelectTrigger title={row.ordered ? lockedHint : undefined}><SelectValue placeholder="单位" /></SelectTrigger>
-                        <SelectContent>{unitOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+                        <SelectContent>{unitOptionsOf(row).map((option) => <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>)}</SelectContent>
                       </Select>
                     </td>
                     <td className="plan-col-price"><Input type="number" min="0" step="0.0001" value={row.unitPrice} disabled={row.ordered} title={row.ordered ? lockedHint : undefined} onChange={(event) => updateRow(index, { unitPrice: event.target.value })} /></td>
+                    {/* 行总价：**只读派生**（数量 × 单价），本地即时算 —— 改一次数量或单价就能看见钱变了。
+                        单价为 0 的行标红：那些行**不能下单**（应付金额 = 入库数量 × 单价，0 就是 0 元应付），
+                        这一格是采购员发现"漏填报价"最快的入口。 */}
+                    <td className={`plan-col-amount plan-cell-ellipsis${!row.ordered && !(Number(row.unitPrice) > 0) ? " status-danger" : ""}`} data-testid={`plan-amount-${index}`} title={`${row.currency ?? DEFAULT_PLAN_CURRENCY} ${lineAmountText(row.quantity, row.unitPrice)}`}>
+                      {lineAmountText(row.quantity, row.unitPrice)}
+                    </td>
                     <td className="plan-col-supplier">
                       {/* 下拉里可「＋ 新建供应商」（复用 BOM 那一份组件，不复制第二份）。 */}
                       <SupplierSelect
@@ -434,6 +493,14 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                 ))}
               </tbody>
             </table>
+          </div>
+
+          {/* 计划合计：**按币种分列**（金额不跨币种合计）。放在表下而不是做成第 15 列 ——
+              它是"这一张计划一共要花多少"，不是某一行的事；而且多一列会把 1366px 上的表格挤横。
+              「其中未下单」是采购员与财务真正问的那个问题：**还要花多少钱**。 */}
+          <div className="plan-total" data-testid="plan-total">
+            <span>计划合计 <strong>{amountSummaryText(planAmounts) || "CNY 0.00"}</strong>（{rows.length} 行）</span>
+            <span className="panel-note">其中未下单 <strong data-testid="plan-total-unordered">{amountSummaryText(unorderedAmounts) || "CNY 0.00"}</strong>（{rows.filter((row) => !row.ordered).length} 行）</span>
           </div>
 
           <PlanOrderPreview

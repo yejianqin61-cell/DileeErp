@@ -25,11 +25,14 @@ import { EmptyState, ErrorState, LoadingState } from "../../../components/feedba
 import { PlanDetailSheet, type PlanMaterialRef, type PlanUnitRef } from "../../../components/procurement/plan-detail-sheet";
 import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
+import { amountSummaryText, type PlanAmount } from "../../../lib/purchase-plan-amount";
 import { notifyError } from "../../../components/ui/toaster";
 
 type PlanRow = {
   id: string; planNo: string; orderNo: string; itemNo: string | null; customerName: string | null;
   bomId: string; bomVersion: number | null; lineCount: number; unorderedCount: number; orderedCount: number;
+  /** 计划金额：**按币种分列**（后端 `sumPlanAmounts`，金额不跨币种合计）。`unorderedAmounts` 是其中未下单的那部分。 */
+  amounts?: PlanAmount[]; unorderedAmounts?: PlanAmount[];
   status: "unordered" | "partial" | "completed"; statusLabel: string; updatedByName: string | null;
   /**
    * 审计列工厂（`components/data/audit-columns.tsx`）读的是**全站统一的 snake_case 契约**
@@ -118,17 +121,31 @@ export default function PurchasePlansPage() {
   }
 
   const columns = useMemo<ColumnDef<PlanRow, any>[]>(() => [
-    { id: "planNo", header: "计划编号", meta: { width: "12%", ellipsis: true }, cell: ({ row }) => <Button variant="link" data-testid={`plan-open-${row.original.planNo}`} onClick={() => setOpenPlanId(row.original.id)}>{row.original.planNo}</Button> },
-    { accessorKey: "orderNo", header: "销售单号", meta: { width: "12%", ellipsis: true } },
-    { id: "itemNo", header: "货号", meta: { width: "10%", ellipsis: true }, cell: ({ row }) => row.original.itemNo ?? "-" },
-    { id: "customerName", header: "客户", meta: { width: "14%", ellipsis: true }, cell: ({ row }) => row.original.customerName ?? "-" },
-    { id: "bomVersion", header: "BOM 版本", meta: { width: "7%" }, cell: ({ row }) => String(row.original.bomVersion ?? "-") },
-    { id: "lineCount", header: "行数", meta: { width: "6%" }, cell: ({ row }) => String(row.original.lineCount) },
+    { id: "planNo", header: "计划编号", meta: { width: "11%", ellipsis: true }, cell: ({ row }) => <Button variant="link" data-testid={`plan-open-${row.original.planNo}`} onClick={() => setOpenPlanId(row.original.id)}>{row.original.planNo}</Button> },
+    { accessorKey: "orderNo", header: "销售单号", meta: { width: "11%", ellipsis: true } },
+    { id: "itemNo", header: "货号", meta: { width: "8%", ellipsis: true }, cell: ({ row }) => row.original.itemNo ?? "-" },
+    { id: "customerName", header: "客户", meta: { width: "11%", ellipsis: true }, cell: ({ row }) => row.original.customerName ?? "-" },
+    { id: "bomVersion", header: "BOM 版本", meta: { width: "6%" }, cell: ({ row }) => String(row.original.bomVersion ?? "-") },
+    { id: "lineCount", header: "行数", meta: { width: "5%" }, cell: ({ row }) => String(row.original.lineCount) },
     // 「未下单行数」是这一页存在的理由：一眼扫过去就知道哪张单还没买齐。
-    { id: "unorderedCount", header: "未下单", meta: { width: "8%" }, cell: ({ row }) => row.original.unorderedCount ? <span className="status-warning">{row.original.unorderedCount}</span> : <span className="status-success">0</span> },
-    { id: "status", header: "状态", meta: { width: "9%" }, cell: ({ row }) => row.original.statusLabel },
+    { id: "unorderedCount", header: "未下单", meta: { width: "7%" }, cell: ({ row }) => row.original.unorderedCount ? <span className="status-warning">{row.original.unorderedCount}</span> : <span className="status-success">0</span> },
+    // 金额（2026-09-30 用户：「添加价格字段，单价，总价。不然财务没法付钱」）：
+    // 币种写在数字前面，多个币种用「·」分开 —— 金额不跨币种合计，加成一个数就没人看得出来了。
+    // 只读文本列，`ellipsis` 让长串收敛、hover 用原生 title 看全文（口径 5）。
+    {
+      id: "amounts",
+      header: "计划金额",
+      meta: { width: "13%", ellipsis: true },
+      cell: ({ row }) => {
+        const text = amountSummaryText(row.original.amounts ?? []);
+        const unordered = amountSummaryText(row.original.unorderedAmounts ?? []);
+        if (!text) return <span className="panel-note">未填价</span>;
+        return <span title={unordered ? `其中未下单 ${unordered}` : undefined}>{text}</span>;
+      },
+    },
+    { id: "status", header: "状态", meta: { width: "7%" }, cell: ({ row }) => row.original.statusLabel },
     updatedByColumn<PlanRow>(),
-    { id: "open", header: "操作", meta: { width: "9%" }, cell: ({ row }) => <Button size="sm" variant="secondary" data-testid={`plan-enter-${row.original.planNo}`} onClick={() => setOpenPlanId(row.original.id)}>打开计划</Button> },
+    { id: "open", header: "操作", meta: { width: "8%" }, cell: ({ row }) => <Button size="sm" variant="secondary" data-testid={`plan-enter-${row.original.planNo}`} onClick={() => setOpenPlanId(row.original.id)}>打开计划</Button> },
   ], []);
 
   const candidateField: ActionField = {
