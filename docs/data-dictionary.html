@@ -15,7 +15,7 @@
 <h1>Dilee ERP · 全站数据字段字典</h1>
 <p class="subtitle">字段编号、表单绑定、上下游指针、联动类型与实现状态索引</p>
 <div class="badges"><span class="badge">统一业务身份：order_no</span><span class="badge">UUID：内部关联</span><span class="badge">库存事实驱动余额</span><span class="badge">批次级追溯</span><span class="badge">草稿 / 确认 / 过账 / 冲销</span></div>
-<div class="stats"><div class="stat"><strong>242</strong><span>统一字段编号（F-0001 ~ F-0242）</span></div><div class="stat"><strong>20+</strong><span>业务表单/工作区</span></div><div class="stat"><strong>26</strong><span>关键关系指针（R-0001 起）</span></div><div class="stat"><strong>13</strong><span>业务模块/支撑域</span></div></div>
+<div class="stats"><div class="stat"><strong>244</strong><span>统一字段编号（F-0001 ~ F-0244）</span></div><div class="stat"><strong>20+</strong><span>业务表单/工作区</span></div><div class="stat"><strong>26</strong><span>关键关系指针（R-0001 起）</span></div><div class="stat"><strong>13</strong><span>业务模块/支撑域</span></div></div>
 <div class="links"><a href="data-dictionary.md">打开完整 Markdown 字典</a><a href="data-flow.svg">打开数据流 SVG</a><a href="business-pipeline-overview.html">打开业务管线总览</a></div>
 </section>
 
@@ -31,7 +31,7 @@
 <div class="module"><h3>平台基础与公共字段</h3><p>身份、状态、审计、幂等、附件、扩展字段</p><p class="range">F-0001 ~ F-0014</p></div>
 <div class="module"><h3>客户池与销售</h3><p>客户、联系人、销售单、订单号、客户/销售快照、货号与返单来源</p><p class="range">F-0015 ~ F-0037、F-0229 ~ F-0230</p></div>
 <div class="module"><h3>BOM</h3><p>BOM版本、明细、原料、型号、颜色、用量与单位、明细行的默认供应商</p><p class="range">F-0038 ~ F-0054、F-0231 ~ F-0232</p></div>
-<div class="module"><h3>采购与来料质检</h3><p>采购计划、采购单、采购明细、到货批次、QC、超收与入库门禁</p><p class="range">F-0055 ~ F-0079、F-0233 ~ F-0242</p></div>
+<div class="module"><h3>采购与来料质检</h3><p>采购计划、采购单、采购明细、到货批次、QC、超收与入库门禁</p><p class="range">F-0055 ~ F-0079、F-0233 ~ F-0244</p></div>
 <div class="module"><h3>原料仓库与生产领料</h3><p>原料入库、库存事实、领料、退料、报废、冲销、预览</p><p class="range">F-0080 ~ F-0096</p></div>
 <div class="module"><h3>生产主数据 / 生产单</h3><p>员工、部门、岗位、工序、地点、生产单、生产工序、进度</p><p class="range">F-0097 ~ F-0117</p></div>
 <div class="module"><h3>生产日报与工资来源</h3><p>工序日报、员工日报、计件/计时、人工单价、差异告警</p><p class="range">F-0118 ~ F-0130</p></div>
@@ -52,7 +52,7 @@
 <tr><td>销售</td><td>销售单新建/编辑/确认</td><td>F-0002、F-0024~F-0037</td><td>客户、人工</td><td>BOM、采购、生产、应收</td></tr>
 <tr><td>销售</td><td>货号 / 以此返单</td><td>F-0229~F-0230</td><td>客户返单、上一张单</td><td>采购、生产、返单与总结</td></tr>
 <tr><td>BOM</td><td>BOM新建/编辑/发布</td><td>F-0038~F-0054、F-0231~F-0232</td><td>已确认销售单、原料池、供应商池</td><td>采购计划、生产</td></tr>
-<tr><td>采购</td><td>采购计划（明细 13 列）</td><td>F-0002、F-0038、F-0233~F-0242</td><td>BOM、供应商</td><td>采购单、到货、应付</td></tr>
+<tr><td>采购</td><td>采购计划（明细 14 列）</td><td>F-0002、F-0038、F-0233~F-0244</td><td>BOM、供应商</td><td>采购单、到货、应付</td></tr>
 <tr><td>采购</td><td>采购单（只含已下单及之后）</td><td>F-0002、F-0038、F-0055~F-0066</td><td>采购计划收束下单</td><td>到货、应付</td></tr>
 <tr><td>采购</td><td>到货批次</td><td>F-0002、F-0061~F-0073</td><td>采购明细</td><td>QC、入库、应付</td></tr>
 <tr><td>来料QC</td><td>来料检验</td><td>F-0067~F-0079</td><td>到货批次</td><td>原料入库、不良品</td></tr>

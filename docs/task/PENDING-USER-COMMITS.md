@@ -422,3 +422,129 @@ WHERE table_name = 'finance_slips' AND column_name IN ('exchange_rate', 'amount_
 git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260926120000_finance_slips apps/api/src/modules/finance apps/api/test/unit apps/web/lib/finance-slip.ts apps/web/lib/finance-slip.test.mjs apps/web/lib/audit-columns-coverage.test.mjs apps/web/components/finance apps/api/src/modules/finance/voucher-template.ts apps/web/app/finance/slips/page.tsx apps/web/lib/finance-sections.ts apps/web/test/finance-slips-workspace.test.tsx apps/web/test/finance-page.test.tsx apps/web/test/payable-page.test.tsx apps/web/test/testid-pages.test.ts docs/design/finance-slip-archive-and-tax-voucher-template-2026-09-26.md docs/log/2026-09-26.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
 git commit -m "feat: archive finance slips with exchange rate and add the tax voucher template"
 ```
+
+## 销售板块二级页 + 引用物料的导出兜底 + 明细自定义列名
+
+用户 2026-09-30 的五件事：① 成品出库总览 / 客户池 / 销售单收进二级页面；
+② 引用了物料的材料明细在导出的 Excel 里印不出来（那一格是空的）；③ 引用下拉支持搜索；
+④ 细分明细的列名可按单自定义；⑤ 工艺要求每一点带标题。
+
+设计文档：`docs/design/sales-order-subpages-and-detail-labels-2026-09-30.md`。
+
+**一条迁移尚未执行**（给 `sales_orders` 加 `spec_detail_labels`），部署时先跑：
+```powershell
+npm run db:generate --workspace=@dilee/api
+npm run db:migrate:deploy
+```
+```sql
+-- 迁移后确认列建出来了：JSONB、NOT NULL、默认空对象（空对象 = 全部用默认列名）
+SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
+WHERE table_name = 'sales_orders' AND column_name = 'spec_detail_labels';
+-- 期望一行：jsonb / NO / '{}'::jsonb
+```
+
+> **前后端可以不同时上线**：`spec_detail_labels` 是**新增可选字段**（DTO 里没传 = 这一块不动），
+> 旧前端调用照常可用（只是不能改列名）；旧版本导出件里明细表头那一格的默认名从「颜色」变成
+> 「颜色/配色」——这是"列名只有一个真源"的结果，不是漂移（见设计文档 §四）。
+>
+> **没有破坏性改动**：工艺要求多印了标题（`1.样品要求：…`）、材料明细多了一层
+> 「引用了物料但格子里没字」的兜底 —— 都是"纸上多印/多一行"，不动任何数据结构。
+>
+> `apps/api/prisma/schema.prisma` 同时含其它并行工作流的改动：提交前先看 `git status`，
+> 用下面这条 pathspec 限定的提交（别把别人的半成品一起提交），或先
+> `git restore --staged apps/api/prisma/schema.prisma` 清索引。
+
+```powershell
+git add apps/api/prisma/schema.prisma apps/api/prisma/migrations/20260930120000_sales_order_spec_detail_labels apps/api/src/modules/sales apps/api/test/unit apps/api/test/sales-order-production-sheet.test.cjs apps/web/lib apps/web/components/sales apps/web/app/sales apps/web/app/customers/page.tsx apps/web/test docs/design/sales-order-subpages-and-detail-labels-2026-09-30.md docs/log/2026-09-30.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
+git commit -m "feat: sales subpages, material-ref export fallback and per-order detail labels"
+```
+
+> **2026-09-30 16:00 现状**：上面这一轮的**代码**已经入库（`62b92de`，作者 Ye Jianqin），
+> 未入库的只剩本文档末尾那串 `docs/...` 路径（以及 `example/` 下的样本文件）——
+> 与文件顶部那条「作者的 docs 改动不入库」的既定口径一致。
+> 所以下面这一轮的命令里，路径对已提交的文件是空操作，新代码只有前端与测试。
+
+## 采购计划明细加高 + 不在池里的物料仍显示 + 引用下拉长文字换行
+
+用户 2026-09-30 的三件事：① 采购计划要展示采购物料（**他后来确认第 1 条前半句是自己看错了**，
+所以采购计划列表没有加列）、采购物料表单太矮；② 检查采购计划下单后能否自动流转到采购单；
+③ 销售单引用下拉的信息若放不下就**换行**，而不是超出页面。
+
+设计文档：`docs/design/purchase-plan-readability-and-ref-wrap-2026-09-30.md`。
+
+**没有迁移、没有 API 行为改动**（API 侧只有测试文件）—— 前后端可以不同时上线，
+两边都不动数据结构；`ordered`（下单落成的状态）本来就由计划服务写下。
+
+> 「采购计划下单后是否自动流转」的核查结论：**是**。同一个事务里建采购单 + 回写计划行链接，
+> 落成 `ordered`，而采购单列表的范围就是 `ordered / partially_arrived / arrived_complete`。
+> 本轮补的守卫断言的是"落成的是**已下单**而不是草稿"——落成草稿的话，单子永远不进采购单列表，
+> 而界面上不会有任何报错（唯一那种"错了也不响"的风险点）。
+
+> ⚠️ **写这份清单时，另一条并行工作流（采购计划定价，`docs/design/purchase-plan-pricing-2026-09-30.md`）
+> 正在同一个目录里动手**：它已经改了 `apps/api/prisma/schema.prisma`（给 `purchase_plan_items`
+> 加 `currency`），并且大概率会改**同一个** `components/procurement/plan-detail-sheet.tsx`
+> 与 `app/globals.css`。所以下面这条**逐文件列路径**，不要用目录：
+> 用目录的话会把那条工作流的半成品一起提交（它可能还没有迁移文件，提了会当场坏了别人的单）。
+> 提交前先 `git status` + `git diff -- <文件>` 确认每一个文件里只有这一轮的改动。
+
+```powershell
+git add apps/api/test/unit/purchase-plans-service.test.cjs apps/web/app/globals.css apps/web/components/procurement/plan-detail-sheet.tsx apps/web/components/procurement/plan-order-preview.tsx apps/web/lib/purchase-plan-table.test.mjs apps/web/lib/searchable-select-wrap.test.mjs apps/web/test/procurement-plans.test.tsx docs/design/purchase-plan-readability-and-ref-wrap-2026-09-30.md docs/log/2026-09-30.md docs/product/module-capability-catalog.md docs/task/PENDING-USER-COMMITS.md
+git commit -m "feat: enlarge purchase plan rows and wrap long reference labels"
+```
+
+> `apps/web/app/globals.css` 里同时有上一轮（销售板块）那批样式，也可能混进定价工作流的样式：
+> 这一条提交会把它们一起带上。只想提本轮那四处的话，先 `git add -p apps/web/app/globals.css` 逐块挑，
+> 或者干脆等两条工作流都落地后一次提交（本轮与定价工作流**没有**功能依赖关系）。
+
+> **2026-09-30 收尾现状**：这一轮（采购计划明细加高 / 不在池里的物料仍显示 / 引用下拉换行）
+> 与并行的**采购计划定价**那一轮**已经一起入库**（同一天第三批的三个提交）。
+> 上面那条命令因此是**空操作**，留着只为说明"哪几处属于这一轮"。
+
+## 采购计划加价格字段（单价 / 行总价 / 计划合计）+ 采购↔财务对齐度排查
+
+用户 2026-09-30：
+
+> 「针对当前的采购计划，要求添加价格字段，单价，总价。不然财务没法付钱。
+> 你也排查一下采购链路和财务链路的对齐度」
+
+设计文档：[`purchase-plan-pricing-2026-09-30.md`](../design/purchase-plan-pricing-2026-09-30.md)；
+对齐度排查（13 条，含 4 条高严重度，**本轮一条都没动账务**）：
+[`procurement-finance-alignment-2026-09-30.md`](../design/procurement-finance-alignment-2026-09-30.md)。
+
+**一条迁移尚未执行**（给 `purchase_plan_items` 加 `currency`），部署时先跑：
+
+```powershell
+npm run db:generate --workspace=@dilee/api
+npm run db:migrate:deploy
+```
+
+```sql
+-- 迁移后确认列建出来了：VARCHAR(10) / NOT NULL / 默认 'CNY'
+SELECT column_name, data_type, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_name = 'purchase_plan_items' AND column_name = 'currency';
+-- 期望一行：character varying / NO / 'CNY'::character varying
+```
+
+> **加列是唯一的数据库改动**，纯新增 + 常量默认值（PostgreSQL 11+ 不重写全表）；
+> 历史行自动得到 `CNY`。**前后端不需要同时上线**：`currency` 只参与计划的读取展示，
+> 旧前端（不传这个字段）下单时服务端仍会按组币种写回。
+>
+> ⚠️ **有一处行为收紧（不是数据结构改动）**：**单价为 0 的采购行不能再下单**
+> （计划侧 `PURCHASE_PLAN_PRICE_REQUIRED`，采购单侧的下单门禁从"不为负"收紧成"必须大于 0"）。
+> 上线前建议先查一次有没有"正在流程里、单价还是 0"的计划行：
+>
+> ```sql
+> SELECT pp.plan_no, ppi.id, ppi.quantity, ppi.unit_price
+> FROM purchase_plan_items ppi JOIN purchase_plans pp ON pp.id = ppi.plan_id
+> WHERE ppi.deleted_at IS NULL AND pp.deleted_at IS NULL
+>   AND ppi.purchase_order_item_id IS NULL AND ppi.unit_price = 0;
+> ```
+>
+> 有的话不影响升级，但那几行必须由采购员补上单价才能下单（这正是本轮要拦的事）。
+>
+> **历史数据不迁移**：过去已经产生的 0 元采购单/0 元应付仍留在库里（见对齐度文档 §4 的核查 SQL）。
+>
+> 本轮改动已随同一天第三批的三个提交入库（后端 / 前端 / 文档），无需再手工 `git add`。
+
+
