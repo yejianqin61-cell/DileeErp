@@ -78,7 +78,7 @@
 <section class="card">
 <div class="toolbar"><label>搜索字段<input id="fieldSearch" placeholder="例如：order_no、库存、应收"></label><label>联动类型<select id="typeFilter"><option value="">全部联动</option><option>引用</option><option>外键</option><option>派生</option><option>汇总</option><option>状态门禁</option><option>库存事实</option><option>告警</option></select></label></div>
 <div class="scroll"><table id="fieldTable"><thead><tr><th>编号</th><th>技术字段</th><th>中文含义</th><th>上游</th><th>下游</th><th>联动</th><th>状态</th></tr></thead><tbody>
-<tr><td>F-0002</td><td><span class="code">order_no</span></td><td>订单号</td><td>销售单人工录入</td><td>BOM、采购、生产、仓库、财务、工作台</td><td>引用/聚合</td><td><span class="status done">已实现</span></td></tr>
+<tr><td>F-0002</td><td><span class="code">order_no</span></td><td>订单号（可更正：改号全链联动改名）</td><td>销售单人工录入</td><td>BOM、采购、生产、仓库、财务、工作台（38 张表冗余引用）</td><td>引用/聚合/改号级联</td><td><span class="status done">已实现</span></td></tr>
 <tr><td>F-0029</td><td><span class="code">order_quantity</span></td><td>订单数量</td><td>销售单</td><td>生产计划、BOM、出库上限</td><td>引用/数量门禁</td><td><span class="status done">已实现</span></td></tr>
 <tr><td>F-0043</td><td><span class="code">material_id</span></td><td>物料主数据 ID</td><td>物料池</td><td>BOM、采购、库存、领料</td><td>外键/边界校验</td><td><span class="status done">已实现</span></td></tr>
 <tr><td>F-0067</td><td><span class="code">receipt_id</span></td><td>到货批次 ID</td><td>采购明细</td><td>来料QC、原料入库、应付</td><td>外键/批次追溯</td><td><span class="status done">已实现</span></td></tr>

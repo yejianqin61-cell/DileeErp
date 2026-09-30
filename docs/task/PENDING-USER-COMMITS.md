@@ -547,4 +547,51 @@ WHERE table_name = 'purchase_plan_items' AND column_name = 'currency';
 >
 > 本轮改动已随同一天第三批的三个提交入库（后端 / 前端 / 文档），无需再手工 `git add`。
 
+## 销售单订单号可改 + 全链联动改名
+
+用户 2026-09-30：
+
+> 「创建销售单，订单号写错了要支持编辑和修改。要做好全链条订单号的联动调整」
+
+设计文档：[`sales-order-no-rename-2026-09-30.md`](../design/sales-order-no-rename-2026-09-30.md)。
+
+**没有任何数据库迁移、没有新列/新表** —— 改号只更新既有列的值。部署就是普通代码发布。
+
+> ⚠️ **行为变化（会被人当成 bug 报上来，先知道）**：
+> 1. 销售单编辑页的「订单号」**现在真的能改了**。此前那一格可编辑、但保存时被
+>    `delete payload.order_no` 丢掉（`sales-order-editor.tsx`），点保存不报错、号还是旧的 ——
+>    这一条是本轮修掉的主症；
+> 2. 改号会**弹一张影响面确认并强制填原因**（原因进审计）。改号不是"改一格"：
+>    同一个事务里会改掉 **38 张冗余 `order_no` 的表** + 别的销售单上的返单来源引用 + 本单全部版本快照，
+>    末尾还有残留校验（并发建单时整事务回滚，提示"请稍后重试"）；
+> 3. **PATCH 请求体里现在允许 `order_no`**（此前 DTO 白名单会 400）。若有外部脚本依赖
+>    "PATCH 带 order_no 必然 400"这条行为，需要同步；`customer_id` 仍然只读；
+> 4. 空订单号仍然 400（空串不是"不动"，是"没填"）。
+
+> **上线后需要业务做一件事（只有业务知道改什么）**：把历史上写错的订单号在销售单编辑页逐张改一次。
+> 先查有哪些候选（单号形态明显异常的，按需要人工判断）：
+>
+> ```sql
+> -- 人工判断用：数据里长什么样的单号各有多少（不自动判对错）
+> SELECT order_no, status, count(*) OVER () AS total
+> FROM sales_orders WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 50;
+> -- 已经跑到下游、且单号里带空格/小写这类明显输入痕迹的（按需放宽）
+> SELECT so.order_no, so.status,
+>        (SELECT count(*) FROM purchase_orders po WHERE po.order_no = so.order_no AND po.deleted_at IS NULL) AS purchase_orders,
+>        (SELECT count(*) FROM production_orders mo WHERE mo.order_no = so.order_no AND mo.deleted_at IS NULL) AS production_orders
+> FROM sales_orders so
+> WHERE so.deleted_at IS NULL AND (so.order_no <> btrim(so.order_no) OR so.order_no <> upper(so.order_no))
+> ORDER BY so.created_at DESC;
+> ```
+>
+> 改号**不需要**先回退下游：改号不动任何一张单的数量与金额。但**已关闭单只能单独改号**（要原因），
+> 不能顺手改别的字段。**审计里的旧号不会回写** —— 按旧号反查要走
+> `audit_events` 里 `action = 'sales_order.rename_order_no'` 的事件（details 带 `from` / `to` / 逐表条数）。
+>
+> **JSON 快照里的旧号不追改**（`purchase_orders.bom_snapshot`、`purchase_plans.bom_snapshot`、
+> `production_orders.bom_snapshot`、`production_payroll_sources.source_snapshot`、`payroll_ledgers.source_snapshot`）——
+> 它们只写不读（`grep -n 'bomSnapshot\|sourceSnapshot' apps/api/src` 全是写入与类型声明），
+> 属于"存档证据"；唯一例外是本单的版本快照 `sales_order_versions.snapshot.order_no`，那个跟着改。
+
+
 
