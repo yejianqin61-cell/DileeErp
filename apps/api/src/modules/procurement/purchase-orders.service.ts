@@ -408,7 +408,11 @@ export class PurchaseOrdersService {
       if (!item.unitId) reasons.push("单位");
       if (!item.supplierId) reasons.push("供应商");
       if (!this.isPositive(item.quantity)) reasons.push("数量");
-      if (!this.isNonNegative(item.unitPrice)) reasons.push("单价");
+      // 单价必须**大于 0**，不是"不为负"（2026-09-30）：应付金额 = 入库数量 × 采购明细单价，
+      // 所以 0 单价的下单会变成一条 0 元应付 —— 财务收到一张没法付的单，而全链路不报错。
+      // 收束下单那条路上计划侧还会先给一句更具体的提示（`PURCHASE_PLAN_PRICE_REQUIRED`），
+      // 这一层是**不变式本身**：`POST /purchase-orders` 与 `/split` 两个原始接口也必须过同一道门。
+      if (!this.isPositive(item.unitPrice)) reasons.push("单价");
       if (reasons.length) missing.push({ code: "ITEM_INCOMPLETE", message: `第 ${index + 1} 行明细缺少：${reasons.join("、")}` });
     });
     if (missing.length) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_INCOMPLETE", message: "草稿尚未填写完整，不能下单", details: missing });

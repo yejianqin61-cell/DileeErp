@@ -6,7 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { itemNoKey } from "../sales/item-no";
 import { PurchaseOrdersService, type PurchaseOrderItemInput, type SplitGroup, type SplitInput } from "./purchase-orders.service";
-import { countBomMaterialsMissingFromPlan, planStatusOf, purchasePlanNo, PURCHASE_PLAN_STATUS_LABELS, type PurchasePlanStatus } from "./purchase-plans.domain";
+import { countBomMaterialsMissingFromPlan, DEFAULT_PLAN_CURRENCY, planLineAmount, planStatusOf, purchasePlanNo, PURCHASE_PLAN_STATUS_LABELS, sumPlanAmounts, type PurchasePlanStatus } from "./purchase-plans.domain";
 
 /**
  * 采购计划：老板要求「采购模块多一个采购计划栏目，承接原来的采购单草稿」。
@@ -36,6 +36,7 @@ export type PlanItemInput = {
   extension_data?: Record<string, unknown>;
 };
 export type PlanInput = { bom_id?: string; items?: PlanItemInput[]; extension_data?: Record<string, unknown>; expected_updated_at?: string; reason?: string };
+
 export type PlanListQuery = { order_no?: string; item_no?: string; status?: string; q?: string };
 
 /**
@@ -55,6 +56,8 @@ type WritablePlanItem = {
   supplierId: string | null;
   quantity: Prisma.Decimal;
   unitPrice: Prisma.Decimal;
+  /** 币种只在**下单**时由服务端写回，客户端不参与比对（见 `orderedLineChanged` 的注释）。 */
+  currency: string;
   model: string | null;
   expectedDate: Date | null;
   purchaseOrderItemId: string | null;
@@ -74,6 +77,7 @@ type PreparedPlanItem = {
   model: string | null;
   quantity: string;
   unitPrice: string;
+  currency: string;
   expectedDate: Date | null;
   extensionData: Record<string, unknown>;
 };
@@ -89,7 +93,7 @@ export type PlanSummarySource = {
   updatedAt: Date;
   createdBy: string;
   updatedBy: string;
-  items: Array<{ id: string; purchaseOrderItemId: string | null }>;
+  items: Array<{ id: string; purchaseOrderItemId: string | null; quantity: Prisma.Decimal; unitPrice: Prisma.Decimal; currency: string }>;
   salesOrder: { orderNo: string; itemNo: string | null; customerSnapshot: unknown } | null;
 };
 
@@ -125,7 +129,9 @@ export class PurchasePlansService {
     const rows = await this.prisma.purchasePlan.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) },
       include: {
-        items: { where: { deletedAt: null }, select: { id: true, purchaseOrderItemId: true } },
+        // 金额要在这里算出来：列表的「计划金额」列与明细表下方那一行合计同一口径
+        // （`sumPlanAmounts` 只此一处实现），所以数量/单价/币种都要取回来。
+        items: { where: { deletedAt: null }, select: { id: true, purchaseOrderItemId: true, quantity: true, unitPrice: true, currency: true } },
         salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true } },
       },
       orderBy: { updatedAt: "desc" },
@@ -304,6 +310,8 @@ export class PurchasePlansService {
             model: item.model,
             quantity: item.quantity.toFixed(4),
             unitPrice: item.unitPrice.toFixed(4),
+            // 镜像回来的行沿用**那张单**的币种：钱是那张单谈的，数量/单价都照搬了，币种也一样。
+            currency: order.currency,
             expectedDate: item.expectedDate,
             sequence: linked.length + index + 1,
             extensionData: { ...((item.extensionData ?? {}) as Record<string, unknown>), restored_from_reverted_order: order.purchaseOrderNo },
@@ -371,6 +379,10 @@ export class PurchasePlansService {
         unitName: item.unit?.name ?? snapshotName(item.unitSnapshot),
         quantity: item.quantity.toFixed(4),
         unitPrice: item.unitPrice.toFixed(4),
+        /** 行总价 = 数量 × 单价（**派生**，与列表的合计同一个函数）—— 财务看的就是这个数。 */
+        amount: planLineAmount(item.quantity, item.unitPrice).toFixed(4),
+        /** 币种在下单时按供应商组写回，见模型注释；未下单的行是默认人民币。 */
+        currency: item.currency ?? DEFAULT_PLAN_CURRENCY,
         bomItemId: item.bomItemId,
         supplierId: item.supplierId,
         // 供应商停用/软删之后仍要用快照显示"当时记的是哪一家"：否则这一格看起来是空的，
@@ -427,8 +439,12 @@ export class PurchasePlansService {
       }
     });
     // 未下单的行随便改：它们还只是"打算买什么"。
+    // 币种由**库里那一行**带过来（客户端根本不传这个字段：`PlanItemDto` 里没有它）——
+    // 行是整体替换的（软删 + 重建），不带过来，"保存一次计划"就会把一行退回计划后
+    // 留下的美元静默重置成人民币，而这行人的钱本来是谈好的。
+    const currencyById = new Map(current.items.map((item) => [item.id, item.currency]));
     const replacement = incoming.filter((item) => !(item.id && orderedIds.has(item.id)));
-    const prepared = await this.prepareItems({ id: current.bomId }, replacement, user);
+    const prepared = await this.prepareItems({ id: current.bomId }, replacement, user, currencyById);
     const orderedById = new Map(ordered.map((item) => [item.id, item]));
     let syncedArrivalDates = 0;
     await this.prisma.$transaction(async (tx) => {
@@ -511,7 +527,7 @@ export class PurchasePlansService {
         extensionData: true,
         items: {
           where: { deletedAt: null },
-          select: { id: true, materialId: true, unitId: true, supplierId: true, quantity: true, unitPrice: true, model: true, expectedDate: true, purchaseOrderItemId: true, bomItemId: true, extensionData: true },
+          select: { id: true, materialId: true, unitId: true, supplierId: true, quantity: true, unitPrice: true, currency: true, model: true, expectedDate: true, purchaseOrderItemId: true, bomItemId: true, extensionData: true },
         },
       },
     });
@@ -603,6 +619,8 @@ export class PurchasePlansService {
     if (!groups.length) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_GROUPS_REQUIRED", message: "请至少勾选一行并按供应商分组后再下单", details: [] });
     const bomItems = await this.prisma.bomItem.findMany({ where: { bomId: current.bomId, deletedAt: null }, select: { id: true, materialId: true } });
     const lineById = new Map(current.items.map((item) => [item.id, item]));
+    /** 报错要说"第几行"：这是给采购员看的，不是给调用方解析的。 */
+    const rowNoOf = (lineId: string) => current.items.findIndex((item) => item.id === lineId) + 1;
     const claimed = new Set<string>();
     const splitGroups: SplitGroup[] = [];
     for (const [index, group] of groups.entries()) {
@@ -616,6 +634,20 @@ export class PurchasePlansService {
         if (line.purchaseOrderItemId) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_LINE_ALREADY_ORDERED", message: "有采购行已经下过单了，刷新后再试", details: [{ plan_item_id: lineId, purchase_order_item_id: line.purchaseOrderItemId }] });
         if (claimed.has(lineId)) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_LINE_DUPLICATE", message: "同一行被分到了多个供应商组", details: [{ plan_item_id: lineId }] });
         claimed.add(lineId);
+        // 单价必须大于 0（用户 2026-09-30：「添加价格字段…不然财务没法付钱」）。
+        //
+        // 这条门禁掐的是一条真的能走通的链：从 BOM 新建的计划行单价固定是 0，而原来只校验
+        // 「不为负」，于是 0 单价可以一路下单成 0 元采购单、到货入库后变成一条 **0 元应付** ——
+        // 财务确实没法付钱，而系统里没有任何一处会报错。钱的根就在这一格（应付金额 =
+        // 入库数量 × 这里的单价，见 raw-material-inbounds.service.ts）。
+        // 草稿不受影响：计划里单价可以先留 0（还没谈价），不能做的是**带着 0 单价下单**。
+        if (!line.unitPrice.gt(0)) {
+          throw new UnprocessableEntityException({
+            code: "PURCHASE_PLAN_PRICE_REQUIRED",
+            message: `第 ${rowNoOf(lineId)} 行还没填单价，不能下单：应付金额就是按这一行的「数量 × 单价」算出来的`,
+            details: [{ plan_item_id: lineId, row_no: rowNoOf(lineId) }],
+          });
+        }
         const bomItemId = this.resolveBomItemId(line.bomItemId, line.materialId, bomItems);
         const reason = (line.extensionData as { outside_bom_reason?: unknown } | null)?.outside_bom_reason;
         if (!bomItemId && !(typeof reason === "string" && reason.trim())) {
@@ -650,12 +682,16 @@ export class PurchasePlansService {
       const rows = await this.orders.createOrdersFromGroups(tx, merged, "ordered", user);
       const createdItems = await tx.purchaseOrderItem.findMany({
         where: { purchaseOrderId: { in: rows.map((row) => row.id) }, deletedAt: null },
-        select: { id: true, extensionData: true },
+        // 连采购单头一起读回来：币种是**头**上的（一张单一个币种，见口径 10），
+        // 而计划的合计要按币种分列 —— 就在这一次读里把两个都拿到，不另查一遍。
+        select: { id: true, extensionData: true, purchaseOrder: { select: { currency: true } } },
       });
       for (const item of createdItems) {
         const planItemId = (item.extensionData as { purchase_plan_item_id?: string } | null)?.purchase_plan_item_id;
         if (!planItemId) continue;
-        await tx.purchasePlanItem.update({ where: { id: planItemId }, data: { purchaseOrderItemId: item.id, ...this.audit.update(user) } });
+        // 币种**写回**这一行：不是两次输入，是把"这张单谈的是什么钱"记到计划行上。
+        // 写回之后，已下单行的币种永远等于那张采购单的币种，计划合计（按币种分列）才不会说谎。
+        await tx.purchasePlanItem.update({ where: { id: planItemId }, data: { purchaseOrderItemId: item.id, currency: item.purchaseOrder.currency, ...this.audit.update(user) } });
       }
       return rows;
     });
@@ -675,7 +711,12 @@ export class PurchasePlansService {
   }
 
   /**
-   * 列表/详情共用的摘要：行数、未下单行数、派生状态。
+   * 列表/详情共用的摘要：行数、未下单行数、派生状态、**金额合计**。
+   *
+   * 金额**按币种分列**返回（`金额不跨币种合计`）：计划里既有人民币行又有美元行时，
+   * 调用方拼成 `CNY 12,345.60 · USD 2,000.00`，绝不加成一个数。
+   * 「未下单金额」不是装饰：列表的「未下单 N」回答还有几行没买，金额那一栏回答还剩多少钱没买 ——
+   * 采购员与财务问的是后一个问题（用户 2026-09-30：「不然财务没法付钱」）。
    *
    * `updatedByName` 由调用方补（列表要显示"最后更新（人 + 北京时间）"，而姓名要另查 `users`）。
    */
@@ -696,6 +737,10 @@ export class PurchasePlansService {
       orderedCount: lineCount - unorderedCount,
       status,
       statusLabel: PURCHASE_PLAN_STATUS_LABELS[status],
+      /** 全部行的金额（含已下过单的）：这张 BOM 一共要花多少。 */
+      amounts: sumPlanAmounts(row.items),
+      /** 未下单行的金额：还要花多少。 */
+      unorderedAmounts: sumPlanAmounts(row.items.filter((item) => !item.purchaseOrderItemId)),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       createdBy: row.createdBy,
@@ -750,6 +795,9 @@ export class PurchasePlansService {
         model: row.model ?? row.specificationModel ?? null,
         quantity: row.requiredQuantity.toFixed(4),
         unitPrice: "0",
+        // 从 BOM 带出来的行**单价是 0**（要采购员按报价填），所以币种只是先放一个默认值；
+        // 真正决定钱的是「收束下单」时按供应商组选的币种，那一组下完单会写回这里。
+        currency: DEFAULT_PLAN_CURRENCY,
         expectedDate: null,
         extensionData: {},
       });
@@ -759,7 +807,7 @@ export class PurchasePlansService {
   }
 
   /** 前端传进来的行。校验口径与采购明细**完全一致**（否则会出现"计划里能存、下单时被拒"）。 */
-  private async prepareItems(bom: { id: string }, items: PlanItemInput[], _user: CurrentUser): Promise<PreparedPlanItem[]> {
+  private async prepareItems(bom: { id: string }, items: PlanItemInput[], _user: CurrentUser, currencyById?: Map<string, string>): Promise<PreparedPlanItem[]> {
     const [materials, units, suppliers, bomItems] = await Promise.all([
       this.prisma.material.findMany({ where: { id: { in: items.map((item) => item.material_id) }, materialType: "raw_material", isActive: true, deletedAt: null }, select: { id: true, materialCode: true, name: true, specificationModel: true, color: true } }),
       this.prisma.unit.findMany({ where: { id: { in: items.map((item) => item.unit_id) }, isActive: true, deletedAt: null }, select: { id: true, name: true } }),
@@ -799,6 +847,10 @@ export class PurchasePlansService {
         model: item.model ?? material.specificationModel ?? null,
         quantity: new Prisma.Decimal(item.quantity).toFixed(4),
         unitPrice: new Prisma.Decimal(item.unit_price).toFixed(4),
+        // 币种**不来自请求体**：新行一律默认人民币；已有的未下单行由调用方从库里带过来
+        // （`currencyById`）。真正的决策点是「收束下单」里按供应商组选的那一格 —— 那一组
+        // 下完单会把币种写回这里，所以计划合计按币种分列时才不会说谎。
+        currency: currencyById?.get(item.id ?? "") ?? DEFAULT_PLAN_CURRENCY,
         expectedDate: this.parseDate(item.expected_date),
         extensionData: item.extension_data ?? {},
       };
@@ -820,6 +872,7 @@ export class PurchasePlansService {
       model: item.model,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
+      currency: item.currency,
       expectedDate: item.expectedDate,
       sequence,
       extensionData: item.extensionData as Prisma.InputJsonValue,

@@ -915,6 +915,16 @@ model PurchasePlanItem {
   model               String?            @db.VarChar(200)
   quantity            Decimal            @db.Decimal(18, 4)
   unitPrice           Decimal            @map("unit_price") @db.Decimal(18, 4)
+  /// 这一行单价的币种（2026-09-30 用户：「添加价格字段，单价，总价」）。
+  ///
+  /// **币种按行记、不按计划头记**：一张计划里同时有多个供应商，而"一个币种"是
+  /// **一张采购单**的属性（采购单粒度 = 一个供应商 × 一个币种）。固定在计划头上，
+  /// 等于把"不同供应商可能报不同货币"从数据模型里删掉。
+  ///
+  /// 默认人民币；**「收束下单」时按该供应商组选的币种写回这一组每一行** ——
+  /// 写回之后已下单行的币种永远等于那张采购单的币种（一次输入、两处记录，不是两次输入）。
+  /// 「退回采购计划」不清这一列：退回的是"哪张单"，不是"谈的是哪国钱"。
+  currency            String             @default("CNY") @map("currency") @db.VarChar(10)
   expectedDate        DateTime?          @map("expected_date")
   /// 已下单时指向采购明细；为空 = 未下单。见模型注释。
   purchaseOrderItemId String?            @unique @map("purchase_order_item_id") @db.Uuid

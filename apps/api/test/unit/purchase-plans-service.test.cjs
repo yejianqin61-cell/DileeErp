@@ -19,7 +19,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { PurchasePlansService } = require("../../dist/modules/procurement/purchase-plans.service.js");
-const { planStatusOf, purchasePlanNo, countBomMaterialsMissingFromPlan } = require("../../dist/modules/procurement/purchase-plans.domain.js");
+const { planStatusOf, purchasePlanNo, countBomMaterialsMissingFromPlan, planLineAmount, sumPlanAmounts, DEFAULT_PLAN_CURRENCY } = require("../../dist/modules/procurement/purchase-plans.domain.js");
 
 const audit = {
   create: () => ({ createdBy: "user-1", updatedBy: "user-1" }),
@@ -76,6 +76,8 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
     // 真 Prisma 的 Decimal 列读出来是 Decimal 对象（`toFixed` 是它的方法），假 Prisma 要一样。
     quantity: new Prisma.Decimal(item.quantity ?? "0"),
     unitPrice: new Prisma.Decimal(item.unitPrice ?? "0"),
+    // 真 Prisma 里这一列是 `NOT NULL DEFAULT 'CNY'`，所以桩也不能返回 undefined。
+    currency: item.currency ?? "CNY",
     material: materialOf(item.materialId),
     unit: units.find((unit) => unit.id === item.unitId) ?? null,
     supplier: item.supplierId ? { id: item.supplierId, supplierCode: "SUP-1", name: "五金厂", contactName: "张伟", phone: "13800000000", address: "浙江省金华市", isActive: true, deletedAt: null } : null,
@@ -198,7 +200,7 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
       const rows = merged.map((entry) => {
         const order = { id: `po-${createdOrders.length + 1}`, purchaseOrderNo: `PO-20260927-${createdOrders.length + 1}`, currency: entry.input.currency ?? "CNY", status, totalAmount: new Prisma.Decimal("0") };
         createdOrders.push(order);
-        for (const item of entry.input.items ?? []) createdOrderItems.push({ id: `poi-${createdOrderItems.length + 1}`, purchaseOrderId: order.id, deletedAt: null, extensionData: item.extension_data, purchaseOrder: { purchaseOrderNo: order.purchaseOrderNo, status } });
+        for (const item of entry.input.items ?? []) createdOrderItems.push({ id: `poi-${createdOrderItems.length + 1}`, purchaseOrderId: order.id, deletedAt: null, extensionData: item.extension_data, purchaseOrder: { purchaseOrderNo: order.purchaseOrderNo, status, currency: order.currency } });
         return order;
       });
       return rows;
@@ -621,6 +623,11 @@ test("收束下单：两个供应商 → 两张采购单（按组币种），计
   assert.equal(items[1].purchaseOrderItemId, "poi-2");
   assert.equal(result.plan.items[0].purchaseOrderNo, "PO-20260927-1", "计划里看得见落到了哪张单");
   assert.equal(s.split().placeOrder, true, "交给采购单服务的必须是下单态");
+  // 落成**已下单**而不是草稿。这一条是用户 2026-09-30 问的「采购计划下单之后，能不能自动流转到
+  // 采购单那边去」的核心：草稿不在采购单列表的范围里（`LISTED_PURCHASE_STATUSES`），
+  // 落成草稿就等于"下了单但采购单模块里看不见"，而界面上不会有任何报错。
+  assert.deepEqual(s.createdOrders.map((order) => order.status), ["ordered", "ordered"], "两张单都要是已下单态，才看得见");
+  assert.deepEqual(s.createdOrders.map((order) => order.purchaseOrderNo), ["PO-20260927-1", "PO-20260927-2"], "计划行回写的采购单号就是这两张");
 });
 
 test("多波次：只下一部分行，其余留在计划里，状态是部分下单", async () => {
@@ -720,6 +727,8 @@ test("收束下单：物料已经不在 BOM 里、又没写「BOM 外新增原�
 function orderedOrderFixture({ bomId = "bom-1", status = "ordered", receipts = [] } = {}) {
   return {
     id: "po-1", purchaseOrderNo: "PO-1", orderNo: "SO-1", bomId, status, deletedAt: null,
+    // 采购单头的币种是 NOT NULL（一张单一个币种）。退回时镜像出来的计划行要沿用它。
+    currency: "CNY",
     items: [{
       id: "poi-1", purchaseOrderId: "po-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1",
       quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: "M-9", expectedDate: null,
@@ -880,4 +889,129 @@ test("domain：BOM 差异计数按物料去重", () => {
   assert.equal(countBomMaterialsMissingFromPlan(["m1", "m1", "m2"], ["m1"]), 1);
   assert.equal(countBomMaterialsMissingFromPlan([], []), 0);
   assert.equal(countBomMaterialsMissingFromPlan(["m1"], ["m1", "m2"]), 0, "计划里有 BOM 没有的行（补料）不算差异");
+});
+
+// ---------------------------------------------------------------------------------------------
+// 金额口径（T01/T02/T03，2026-09-30）：
+// 用户原话「针对当前的采购计划，要求添加价格字段，单价，总价。不然财务没法付钱。」
+//
+// 三件必须钉住的事：
+//   1. 行总价与计划合计都是**派生**的（数量 × 单价），不落列 —— 落列就会有第二个真源；
+//   2. 合计**按币种分列**（仓库约定「金额不跨币种合计」）：一张计划里既有人民币行又有美元行时，
+//      加成一个数得到的是没有会计意义的数，而它看起来是对的；
+//   3. **单价 0 的行不能下单** —— 上面那条「财务没法付钱」指的正是这个：BOM 带出来的行单价是 0，
+//      原来只校验「不为负」，于是 0 元采购单 → 0 元应付，而全链路不报错。
+
+test("domain：行总价 = 数量 × 单价（Decimal 精度，不走浮点）", () => {
+  assert.equal(planLineAmount("5.0000", "3.5000").toFixed(4), "17.5000");
+  // 0.1 + 0.2 那种浮点误差在这里必须不存在：金额是拿来对账的。
+  assert.equal(planLineAmount(new Prisma.Decimal("0.1"), new Prisma.Decimal("3")).toFixed(4), "0.3000");
+  assert.equal(planLineAmount("2", "1.1111").toFixed(4), "2.2222");
+});
+
+test("domain：计划合计按币种分组，绝不跨币种相加", () => {
+  const rows = [
+    { quantity: "5", unitPrice: "3.5000", currency: "USD" },
+    { quantity: "2", unitPrice: "1.0000", currency: "CNY" },
+    { quantity: "3", unitPrice: "2.0000", currency: "USD" },
+  ];
+  assert.deepEqual(sumPlanAmounts(rows), [
+    { currency: "CNY", amount: "2.0000" },
+    { currency: "USD", amount: "23.5000" },
+  ], "美元那两行加起来是 23.5，不能与人民币的 2 合成 25.5");
+  // 币种缺省按人民币算（`NOT NULL DEFAULT 'CNY'` 的读侧兜底），空输入不返回一行假合计。
+  assert.deepEqual(sumPlanAmounts([{ quantity: "1", unitPrice: "9", currency: null }]), [{ currency: DEFAULT_PLAN_CURRENCY, amount: "9.0000" }]);
+  assert.deepEqual(sumPlanAmounts([]), []);
+});
+
+test("详情/列表：返回按币种分列的金额，并分出「未下单金额」", async () => {
+  const { service } = makeService({
+    plans: [{ ...thePlan }],
+    planItems: [
+      { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5"), unitPrice: new Prisma.Decimal("3.5"), currency: "CNY", deletedAt: null, purchaseOrderItemId: "poi-1", bomItemId: "bi-1" },
+      { id: "i-2", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: "sup-2", quantity: new Prisma.Decimal("2"), unitPrice: new Prisma.Decimal("10"), currency: "USD", deletedAt: null, purchaseOrderItemId: null, bomItemId: "bi-2" },
+    ],
+    bomItems: bomRows(),
+    purchaseOrderItems: [{ id: "poi-1", purchaseOrderId: "po-1", purchaseOrder: { purchaseOrderNo: "PO-1", status: "ordered", currency: "CNY" } }],
+  });
+
+  const plan = await service.get("plan-1");
+
+  // 5 × 3.5 = 17.5（人民币，已下单）；2 × 10 = 20（美元，未下单）
+  assert.deepEqual(plan.amounts, [{ currency: "CNY", amount: "17.5000" }, { currency: "USD", amount: "20.0000" }], "计划合计 = 全部行");
+  assert.deepEqual(plan.unorderedAmounts, [{ currency: "USD", amount: "20.0000" }], "还要花多少 = 只有未下单的行");
+  const line = plan.items.find((item) => item.id === "i-2");
+  assert.equal(line.amount, "20.0000", "行总价 = 数量 × 单价");
+  assert.equal(line.currency, "USD");
+
+  const [row] = await service.list();
+  assert.deepEqual(row.amounts, plan.amounts, "列表与详情必须是同一口径（同一个纯函数）");
+  assert.deepEqual(row.unorderedAmounts, plan.unorderedAmounts);
+});
+
+test("详情：每行都带上币种，老行没有值时兜底人民币（列是 NOT NULL DEFAULT 'CNY'）", async () => {
+  const { service } = makeService({
+    plans: [{ ...thePlan }],
+    planItems: [{ id: "i-legacy", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", quantity: new Prisma.Decimal("5"), unitPrice: new Prisma.Decimal("3.5"), deletedAt: null, purchaseOrderItemId: null, bomItemId: "bi-1" }],
+    bomItems: bomRows(),
+  });
+
+  const plan = await service.get("plan-1");
+
+  assert.equal(plan.items[0].currency, "CNY");
+  assert.equal(plan.items[0].amount, "17.5000");
+});
+
+test("收束下单：按供应商组选的币种**写回**这一组的每一行（一次输入、两处记录）", async () => {
+  const { plan, items } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }, { supplier_id: "sup-2", currency: "USD", items: ["i-2"] }] }, user);
+
+  assert.deepEqual(items.map((row) => row.currency), ["CNY", "USD"], "写回之后，已下单行的币种永远等于那张采购单的币种");
+  const after = await s.service.get("plan-1");
+  // 5 × 3.5 = 17.5（人民币那张单）；2 × 1 = 2（美元那张单）
+  assert.deepEqual(after.amounts, [{ currency: "CNY", amount: "17.5000" }, { currency: "USD", amount: "2.0000" }]);
+});
+
+test("收束下单：单价 0 的行不能下单（BOM 带出来的行单价就是 0）", async () => {
+  // 这条链原来是能走通的：计划行单价 0 → 采购单总额 0 → 到货入库 → 应付金额 0（应付 = 入库数量 × 单价）
+  // → 财务收到一条没法付的应付，而全链路没有任何一处报错。
+  const { plan, items } = freePlanFixture();
+  items[0].unitPrice = new Prisma.Decimal("0");
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  await assert.rejects(
+    () => s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_PRICE_REQUIRED"
+      && /第 1 行/.test(error.getResponse().message)
+      && /单价/.test(error.getResponse().message),
+  );
+  assert.equal(s.createdOrders.length, 0, "校验在写之前：一张采购单都不该建出来");
+  assert.equal(s.split(), null, "连收束校验都不该走到");
+  assert.equal(items[0].purchaseOrderItemId, null);
+});
+
+test("保存：未下单行的币种从库里带过来（行是整体替换的，不能把美元重置成人民币）", async () => {
+  const items = seededItems();
+  items[1].currency = "USD";
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await service.update("plan-1", { expected_updated_at: SAVED_AT.toISOString(), items: [lineOf(items[0]), lineOf(items[1], { unit_price: "1.5000" })] }, user);
+
+  const fresh = planItems.filter((row) => row.deletedAt === null && row.materialId === "mat-2").pop();
+  assert.equal(fresh.currency, "USD", "客户端不传币种，服务端要从老行带过来");
+  assert.equal(fresh.unitPrice.toString(), "1.5", "带币种不等于放开了别的内容");
+});
+
+test("保存：新建的行默认人民币（币种不由客户端决定）", async () => {
+  const items = seededItems();
+  // 就算调用方硬塞一个 currency，也不该被采纳 —— `PlanItemDto` 里根本没有这个字段。
+  const forged = { ...outsideLine({ extension_data: { outside_bom_reason: "缺货替代" } }), currency: "JPY" };
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await service.update("plan-1", { expected_updated_at: SAVED_AT.toISOString(), items: [lineOf(items[0]), lineOf(items[1]), forged] }, user);
+
+  const created = planItems.filter((row) => row.deletedAt === null).find((row) => row.materialId === "mat-3");
+  assert.equal(created.currency, DEFAULT_PLAN_CURRENCY, "新行一律默认人民币，币种只在下单时由服务端写回");
 });
