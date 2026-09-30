@@ -1,11 +1,7 @@
-// S6：/customers 复用销售页实现；这里不再直接 re-export，
-// 而是用一层 .page-root 包装补上本路由自己的 page-customers 钩子。
-import SalesPage from "../sales/page";
+// 客户栏目（独立授权）的落地页：渲染与 `/sales/customers` 同一个客户池组件，
+// 只是页面根 testid 用本路由自己的 `page-customers`（两页口径只有一份）。
+import CustomerPool from "../../components/sales/customer-pool";
 
 export default function CustomersPage() {
-  return (
-    <div className="page-root" data-testid="page-customers">
-      <SalesPage />
-    </div>
-  );
+  return <CustomerPool testId="page-customers" />;
 }

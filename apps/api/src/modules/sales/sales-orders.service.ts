@@ -93,6 +93,63 @@ export const SPEC_MATERIAL_KEYS = [
   "printing_spec",
 ] as const;
 /**
+ * 「细分明细」那 6 个列键与它们的默认中文名（用户 2026-09-30：「细分明细那边，可以改成自定义字段名称」）。
+ *
+ * 为什么默认名也写在后端：导出件是**服务端渲染**的（销售单导出/工艺单导出），它得知道
+ * 「这一单没改过的列叫什么」。前端 `apps/web/lib/sales-order-spec.ts` 的 `SPEC_DETAIL_COLUMNS`
+ * 是同一份清单（两个 workspace 没有共享包），两边用同一组测试向量钉住键名与默认名。
+ *
+ * 键名与 `SpecDetailDto` 的字段名一一对应 —— 自定义的只是**印出来的名字**，
+ * 数据形状一个字都不许动（动了就是"改了列名，明细存不进去了"）。
+ */
+export const SPEC_DETAIL_LABELS = [
+  ["group_name", "分组名"],
+  ["name", "品番/品名"],
+  ["color", "颜色/配色"],
+  ["barcode", "条码"],
+  ["quantity", "数量"],
+  ["unit", "单位"],
+] as const;
+export type SpecDetailLabelKey = (typeof SPEC_DETAIL_LABELS)[number][0];
+/** 列名长度上限：表头要印在一格里（A4 竖版），太长会把明细表挤变形。 */
+export const SPEC_DETAIL_LABEL_MAX_LENGTH = 20;
+export const SPEC_DETAIL_LABEL_KEYS: readonly string[] = SPEC_DETAIL_LABELS.map(([key]) => key);
+
+/**
+ * 自定义列名归一：只留 6 个已知列键、去掉两端空格、丢掉空值（空 = 这一列用默认名）。
+ *
+ * 为什么**不认识就报错**而不是静默忽略：静默忽略的表现是「在界面上改了名字、导出还是老名字」，
+ * 而那种错没人能查（请求里明明有这个键）。一次点名说出是哪个键，比让人猜强。
+ */
+export function normalizeSpecDetailLabels(input: Record<string, unknown> | null | undefined): Record<string, string> {
+  const labels: Record<string, string> = {};
+  if (!input) return labels;
+  for (const [key, value] of Object.entries(input)) {
+    if (!SPEC_DETAIL_LABEL_KEYS.includes(key)) {
+      throw new UnprocessableEntityException({ code: "SPEC_DETAIL_LABEL_KEY_UNSUPPORTED", message: `「${key}」不是细分明细的列（可自定义的只有：${SPEC_DETAIL_LABELS.map(([, label]) => label).join("、")}）`, details: [{ key }] });
+    }
+    const text = String(value ?? "").trim();
+    if (!text) continue;
+    if (text.length > SPEC_DETAIL_LABEL_MAX_LENGTH) {
+      throw new UnprocessableEntityException({ code: "SPEC_DETAIL_LABEL_TOO_LONG", message: `列名「${text}」超过 ${SPEC_DETAIL_LABEL_MAX_LENGTH} 字（表头要印在一格里）`, details: [{ key, max: SPEC_DETAIL_LABEL_MAX_LENGTH }] });
+    }
+    labels[key] = text;
+  }
+  return labels;
+}
+
+/** 默认列名 + 这一单的自定义覆盖（读侧统一走它，别在两处各写一遍回退逻辑）。 */
+export function specDetailLabelsWithDefaults(overrides: Record<string, unknown> | null | undefined): Record<string, string> {
+  const merged = Object.fromEntries(SPEC_DETAIL_LABELS.map(([key, label]) => [key, label])) as Record<string, string>;
+  for (const key of SPEC_DETAIL_LABEL_KEYS) {
+    const value = overrides?.[key];
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text) merged[key] = text;
+  }
+  return merged;
+}
+
+/**
  * 细化标量字段（全部可选：历史销售单没有这些字）。
  *
  * 值允许 `null`：数值列（5 个布量）留空时前端提交空串，由 DTO 上的 `EmptyStringToNull`
@@ -176,7 +233,7 @@ export function normalizeSpecUnit(unit: string | null | undefined): string | nul
 }
 
 type SalesOrderBaseInput = { order_no: string; customer_id: string; contact_id?: string; customer_po_no?: string; external_contract_no?: string; order_date: string; product_name: string; product_spec?: string; quantity: string; unit: string; delivery_date?: string; currency: string; unit_price?: string; total_amount?: string; tax_rate?: string; settlement_unit_price?: string; receivable_amount?: string; settlement_method?: string; local_currency_amount?: string; extension_data?: Record<string, unknown>; /** 货号：空串 = 清除（落 NULL），与 37 个细化标量同一语义。 */ item_no?: string | null; /** 返单来源销售单号：只在「返单建单」时写入，见 T05 的复制语义。 */ reorder_from_order_no?: string | null };
-type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[]; material_refs?: MaterialRefInput[] };
+type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[]; material_refs?: MaterialRefInput[]; /** 细分明细的自定义列名（2026-09-30）：`{ 列键: 列名 }`，空串/空对象 = 用默认列名。 */ spec_detail_labels?: Record<string, string> };
 /**
  * 更新载荷**排除** `reorder_from_order_no`：返单来源是既成事实，改它就是篡改返单链的出处
  * （「这张单是从哪张返来的」必须永远回答得出来）。控制器侧的 `UpdateSalesOrderDto` 也没有这个键，
@@ -347,6 +404,8 @@ export class SalesOrdersService {
       reorder_from_order_no: source.orderNo,
       spec_details: input.spec_details ?? source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color ?? undefined, barcode: row.barcode ?? undefined, quantity: row.quantity?.toString(), unit: row.unit ?? undefined, sort_order: row.sortOrder })),
       material_refs: input.material_refs ?? source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })),
+      // 返单沿用来源单的明细列名（返单就是把上一批的工艺口径带过来，列名属于这个口径的一部分）。
+      spec_detail_labels: input.spec_detail_labels ?? (source.specDetailLabels as Record<string, string> | undefined),
       ...(copied as Record<string, never>),
     };
   }
@@ -389,7 +448,7 @@ export class SalesOrdersService {
     const snapshot = this.snapshot({ ...effective, ...this.specSnapshotSource({}, effective) }, refs.customer, refs.contact);
     try {
       const order = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.salesOrder.create({ data: { orderNo: effective.order_no, customerId: effective.customer_id, contactId: effective.contact_id, customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, customerPoNo: effective.customer_po_no, externalContractNo: effective.external_contract_no, orderDate: new Date(effective.order_date), productName: effective.product_name, productSpec: effective.product_spec, quantity: effective.quantity, unit: effective.unit, deliveryDate: effective.delivery_date ? new Date(effective.delivery_date) : undefined, currency: effective.currency, unitPrice: effective.unit_price, totalAmount: effective.total_amount, taxRate: effective.tax_rate, settlementUnitPrice: effective.settlement_unit_price, receivableAmount: effective.receivable_amount, settlementMethod: effective.settlement_method, localCurrencyAmount: effective.local_currency_amount, extensionData: (effective.extension_data ?? {}) as Prisma.InputJsonValue, itemNo: normalizeItemNo(effective.item_no), reorderFromOrderNo: effective.reorder_from_order_no?.trim() || null, ...this.specScalars(effective), ...this.audit.create(user) } });
+        const created = await tx.salesOrder.create({ data: { orderNo: effective.order_no, customerId: effective.customer_id, contactId: effective.contact_id, customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, customerPoNo: effective.customer_po_no, externalContractNo: effective.external_contract_no, orderDate: new Date(effective.order_date), productName: effective.product_name, productSpec: effective.product_spec, quantity: effective.quantity, unit: effective.unit, deliveryDate: effective.delivery_date ? new Date(effective.delivery_date) : undefined, currency: effective.currency, unitPrice: effective.unit_price, totalAmount: effective.total_amount, taxRate: effective.tax_rate, settlementUnitPrice: effective.settlement_unit_price, receivableAmount: effective.receivable_amount, settlementMethod: effective.settlement_method, localCurrencyAmount: effective.local_currency_amount, extensionData: (effective.extension_data ?? {}) as Prisma.InputJsonValue, itemNo: normalizeItemNo(effective.item_no), reorderFromOrderNo: effective.reorder_from_order_no?.trim() || null, specDetailLabels: normalizeSpecDetailLabels(effective.spec_detail_labels) as Prisma.InputJsonValue, ...this.specScalars(effective), ...this.audit.create(user) } });
         await tx.salesOrderVersion.create({ data: { salesOrderId: created.id, version: 1, snapshot, ...this.audit.create(user) } });
         await this.replaceSpecDetails(tx, created.id, effective.spec_details, user);
         await this.replaceMaterialRefs(tx, created.id, effective.material_refs, user);
@@ -435,7 +494,7 @@ export class SalesOrdersService {
     const snapshot = this.snapshot(nextInput, refs.customer, refs.contact);
     const updated = await this.prisma.$transaction(async (tx) => {
       const data: Prisma.SalesOrderUncheckedUpdateInput = { ...(input.contact_id === undefined ? {} : { contactId: input.contact_id }), ...(input.customer_po_no === undefined ? {} : { customerPoNo: input.customer_po_no }), ...(input.external_contract_no === undefined ? {} : { externalContractNo: input.external_contract_no }), ...(input.order_date === undefined ? {} : { orderDate: new Date(input.order_date) }), ...(input.product_name === undefined ? {} : { productName: input.product_name }), ...(input.product_spec === undefined ? {} : { productSpec: input.product_spec }), ...(input.quantity === undefined ? {} : { quantity: input.quantity }), ...(input.unit === undefined ? {} : { unit: input.unit }), ...(input.delivery_date === undefined ? {} : { deliveryDate: input.delivery_date ? new Date(input.delivery_date) : null }), ...(input.currency === undefined ? {} : { currency: input.currency }), ...(input.unit_price === undefined ? {} : { unitPrice: input.unit_price }), ...(input.total_amount === undefined ? {} : { totalAmount: input.total_amount }), ...(input.tax_rate === undefined ? {} : { taxRate: input.tax_rate }), ...(input.settlement_unit_price === undefined ? {} : { settlementUnitPrice: input.settlement_unit_price }), ...(input.receivable_amount === undefined ? {} : { receivableAmount: input.receivable_amount }), ...(input.settlement_method === undefined ? {} : { settlementMethod: input.settlement_method }), ...(input.local_currency_amount === undefined ? {} : { localCurrencyAmount: input.local_currency_amount }), ...(input.extension_data === undefined ? {} : { extensionData: input.extension_data as Prisma.InputJsonValue }), ...this.specScalars(input), // 货号：undefined = 不动（快照里仍记当前值）；空串 = 清除（落 NULL）
-      ...(input.item_no === undefined ? {} : { itemNo: normalizeItemNo(input.item_no) }), customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, currentVersion: nextVersion, ...this.audit.update(user) };
+      ...(input.item_no === undefined ? {} : { itemNo: normalizeItemNo(input.item_no) }), ...(input.spec_detail_labels === undefined ? {} : { specDetailLabels: normalizeSpecDetailLabels(input.spec_detail_labels) as Prisma.InputJsonValue }), customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, currentVersion: nextVersion, ...this.audit.update(user) };
       const result = await tx.salesOrder.update({ where: { id }, data });
       await tx.salesOrderVersion.create({ data: { salesOrderId: id, version: nextVersion, snapshot, ...this.audit.create(user) } });
       await this.replaceSpecDetails(tx, id, input.spec_details, user);
@@ -499,6 +558,10 @@ export class SalesOrdersService {
       merged[key] = fromInput !== undefined ? fromInput : current[column] ?? null;
     }
     if (input.spec_details !== undefined) merged.spec_details = input.spec_details;
+    // 明细列名与标量同一条规矩（当前值打底、请求值覆盖）：只记"这次改了哪几个"的话，
+    // 回看某个版本的工艺单口径会以为那一版没有自定义列名。
+    const labels = input.spec_detail_labels !== undefined ? input.spec_detail_labels : current.specDetailLabels;
+    if (labels !== undefined) merged.spec_detail_labels = labels;
     // 引用也进快照：回看某个版本时要能回答「当时这一格引用的是哪个物料」——
     // 物料主数据会被改名/换图，光看当前值答不了这个问题（与 spec_details 同一条理由）。
     if (input.material_refs !== undefined) merged.material_refs = input.material_refs;

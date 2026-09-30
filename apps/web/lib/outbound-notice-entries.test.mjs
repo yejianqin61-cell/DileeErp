@@ -7,7 +7,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 const read = (relative) => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
-const salesPage = read("../app/sales/page.tsx");
+// 2026-09-30：销售页拆成「一级卡片 + 三个二级页」之后，成品入库/出库与出库通知的实现落在
+// components/sales/sales-orders-list.tsx（app/sales/page.tsx 只剩卡片入口）。
+// 本文件是**源码正则守卫**（行为由 test/outbound-notice-pages.test.tsx 覆盖），所以跟着实现走。
+const salesPage = read("../components/sales/sales-orders-list.tsx");
 const warehousePage = read("../app/warehouse/finished-goods-storage/page.tsx");
 // 财务页在 2026-09-14 拆成「一级 4 板块 + 二级子栏目」，应收侧的实现落在 receivable-workspace.tsx。
 const receivableWorkspace = read("../components/finance/receivable-workspace.tsx");

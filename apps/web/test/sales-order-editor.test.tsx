@@ -99,7 +99,8 @@ describe("销售单整页编辑器", () => {
     // 没填的细化字段要发空串（后端据此清空这一格），不能省略键——否则「清空」永远保存不上。
     expect(body.handle_spec).toBe("");
     expect(body.spec_details).toEqual([{ group_name: "伞布明细", name: "27621 流水花扇PKGY", color: "PKGY", barcode: "", quantity: "1960", unit: "pcs", sort_order: 0 }]);
-    expect(routerPush).toHaveBeenCalledWith("/sales");
+    // 2026-09-30 拆页后回列表页（而不是一级卡片页）：销售存完单要继续处理下一张单。
+    expect(routerPush).toHaveBeenCalledWith("/sales/orders");
   });
 
   it("明细必填缺失时逐行报错并拦住保存（不发请求）", async () => {
@@ -213,8 +214,50 @@ describe("销售单编辑器：材料明细引用物料", () => {
     expect(screen.queryByTestId("sales-material-ref-qc_requirement")).toBeNull();
   });
 
-  it("选中物料：把名称/规格/颜色填进格子、显示缩略图，保存时发出 material_refs", async () => {
-    const calls = stubWithMaterials([material(), material({ id: "m-2", materialCode: "MAT-2", name: "伞布", specificationModel: "190T", color: "藏青", image: null })]);
+  /**
+   * 用户 2026-09-26：「材料明细，引用的下拉列表也支持搜索」。
+   *
+   * 为什么这条重要：物料池动辄几百条，改造前是一个平铺的 Radix Select ——
+   * 要靠肉眼在一长串「MAT-x / 名称 规格 颜色」里翻到要的那一根伞骨。这里钉住四件事：
+   *   ① 打开就是搜索框（而不是一屏选项）；② 按**编码**能搜到；③ 按**规格/颜色**也能搜到；
+   *   ④ 搜不到时给出可读的空态（不是一片空白，让人以为物料池坏了）。
+   */
+  it("引用下拉支持搜索：按编码/规格/颜色过滤，搜不到时给可读空态", async () => {
+    stubWithMaterials([
+      material(),
+      material({ id: "m-2", materialCode: "MAT-2", name: "伞布", specificationModel: "190T", color: "藏青" }),
+      material({ id: "m-3", materialCode: "MAT-3", name: "伞头", specificationModel: "直柄", color: "银灰" }),
+    ]);
+    render(<SalesOrderEditor />);
+    await screen.findByText("材料明细");
+
+    const root = screen.getByTestId("sales-material-ref-rib_spec");
+    await userEvent.click(within(root).getByRole("combobox"));
+    const search = await screen.findByTestId("searchable-select-search");
+    expect(screen.getAllByTestId("searchable-select-option")).toHaveLength(3);
+
+    // 按编码搜
+    await userEvent.type(search, "MAT-3");
+    expect(screen.getAllByTestId("searchable-select-option").map((option) => option.textContent)).toEqual(["MAT-3 / 伞头 直柄 银灰"]);
+
+    // 按规格搜（不只是名称与编码）
+    await userEvent.clear(search);
+    await userEvent.type(search, "190T");
+    expect(screen.getAllByTestId("searchable-select-option").map((option) => option.textContent)).toEqual(["MAT-2 / 伞布 190T 藏青"]);
+
+    // 按颜色搜
+    await userEvent.clear(search);
+    await userEvent.type(search, "藏青");
+    expect(screen.getAllByTestId("searchable-select-option").map((option) => option.textContent)).toEqual(["MAT-2 / 伞布 190T 藏青"]);
+
+    // 搜不到：可读空态，而不是一片空白
+    await userEvent.clear(search);
+    await userEvent.type(search, "不存在的物料");
+    expect(screen.queryAllByTestId("searchable-select-option")).toHaveLength(0);
+    expect(screen.getByText("没有匹配的物料（可到【采购 → 物料清单】新建）")).toBeVisible();
+  });
+
+  it("选中物料：把名称/规格/颜色填进格子、显示缩略图，保存时发出 material_refs", async () => {    const calls = stubWithMaterials([material(), material({ id: "m-2", materialCode: "MAT-2", name: "伞布", specificationModel: "190T", color: "藏青", image: null })]);
     render(<SalesOrderEditor />);
     await screen.findByText("材料明细");
     await pickSelect("sales-base-customer_id", "C001");
@@ -222,13 +265,13 @@ describe("销售单编辑器：材料明细引用物料", () => {
     await pickSelect("sales-base-currency", "美元");
     await fillBase();
 
-    await pickSelect("sales-material-ref-rib_spec", "MAT-1");
+    await pickMaterialRef("rib_spec", "MAT-1");
     // 选中就把物料文字填进格子（工艺单印的是文字）
     expect((field("sales-spec-rib_spec") as HTMLTextAreaElement).value).toBe("伞骨 50cm 黑");
     expect((field("material-image-thumb-m-1") as HTMLImageElement).getAttribute("src")).toBe("/api/v1/materials/m-1/image?v=sha-1");
 
     // 第二个部件引用一个**没有图**的物料：要明说，别让人以为是导出坏了
-    await pickSelect("sales-material-ref-canopy_spec", "MAT-2");
+    await pickMaterialRef("canopy_spec", "MAT-2");
     expect(field("sales-material-ref-no-image-canopy_spec")).toHaveTextContent("该物料还没有图片");
 
     await userEvent.click(field("sales-order-save"));
@@ -247,7 +290,7 @@ describe("销售单编辑器：材料明细引用物料", () => {
     await pickSelect("sales-base-unit", "支");
     await pickSelect("sales-base-currency", "美元");
     await fillBase();
-    await pickSelect("sales-material-ref-rib_spec", "MAT-1");
+    await pickMaterialRef("rib_spec", "MAT-1");
 
     await userEvent.click(field("sales-material-ref-clear-rib_spec"));
     // 清除引用不动已经写好的文字
@@ -287,11 +330,116 @@ describe("销售单编辑器：材料明细引用物料", () => {
   });
 });
 
+/* ------------------------------------------------ 细分明细：自定义列名（2026-09-30） */
+
+/**
+ * 用户原话：「细分明细那边，可以改成自定义字段名称。」
+ *
+ * 四条：① 打开既有单能把改过的列名显示在表头；② 「修改列名」能一次改完 6 格，表头跟着变；
+ * ③ 保存时把列名发出（只发改过的，空 = 恢复默认）；④ 清空一格 = 那一列回到默认名。
+ */
+describe("销售单编辑器：细分明细的自定义列名", () => {
+  const orderWithLabels = (labels: Record<string, string>) => ({
+    id: "order-1", orderNo: "DL260134", status: "draft", orderDate: "2026-06-18T00:00:00.000Z", deliveryDate: null,
+    productName: "折叠伞", quantity: "1960", unit: "支", currency: "USD", customer: { id: "customer-1" }, contact: null,
+    specDetails: [{ groupName: "伞头配色", name: "Hawái", color: "配色按图片", barcode: "489", quantity: "167", unit: "打" }],
+    specDetailLabels: labels,
+  });
+
+  const headText = (key: string) => field(`sales-detail-head-${key}`).textContent;
+
+  it("打开既有单：改过的列名显示在表头，没改的仍用默认名", async () => {
+    stubApi([["/sales-orders/order-1", () => ({ data: orderWithLabels({ name: "伞头英文名", quantity: "数量/打" }), meta: {} })]]);
+    render(<SalesOrderEditor orderId="order-1" />);
+    await waitFor(() => expect(headText("name")).toBe("伞头英文名"));
+
+    expect(headText("quantity")).toBe("数量/打");
+    expect(headText("group_name")).toBe("分组名");
+    expect(headText("color")).toBe("颜色/配色");
+    // 行内输入框的可访问名也跟着列名走（读屏用户看到的与表头一致）
+    expect(field("sales-detail-0-name").getAttribute("aria-label")).toBe("伞头英文名");
+  });
+
+  it("「修改列名」：预填当前列名，改完表头立即变；保存时只发改过的列名", async () => {
+    const calls = stubApi([["/sales-orders/order-1", () => ({ data: orderWithLabels({ name: "伞头英文名" }), meta: {} })]]);
+    render(<SalesOrderEditor orderId="order-1" />);
+    await waitFor(() => expect(headText("name")).toBe("伞头英文名"));
+
+    await userEvent.click(field("sales-detail-labels"));
+    // 6 个明细列各一格，且预填当前值（弹窗里就能看出哪几列已经改过）
+    for (const key of ["group_name", "name", "color", "barcode", "quantity", "unit"]) expect(field(`action-field-${key}`)).toBeTruthy();
+    expect((field("action-field-name") as HTMLInputElement).value).toBe("伞头英文名");
+
+    await userEvent.clear(field("action-field-quantity"));
+    await userEvent.type(field("action-field-quantity"), "数量/打");
+    await userEvent.click(field("action-dialog-submit"));
+
+    await waitFor(() => expect(headText("quantity")).toBe("数量/打"));
+    expect(headText("color")).toBe("颜色/配色"); // 没填的格子仍是默认名
+
+    await userEvent.click(field("sales-order-save"));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    const patched = calls.find((call) => call.method === "PATCH");
+    expect((patched!.body as Record<string, unknown>).spec_detail_labels).toEqual({ name: "伞头英文名", quantity: "数量/打" });
+  });
+
+  it("清空某一列 = 那一列回到默认名，且不再出现在载荷里", async () => {
+    const calls = stubApi([["/sales-orders/order-1", () => ({ data: orderWithLabels({ name: "伞头英文名", color: "配色" }), meta: {} })]]);
+    render(<SalesOrderEditor orderId="order-1" />);
+    await waitFor(() => expect(headText("name")).toBe("伞头英文名"));
+
+    await userEvent.click(field("sales-detail-labels"));
+    await userEvent.clear(field("action-field-name"));
+    await userEvent.click(field("action-dialog-submit"));
+
+    await waitFor(() => expect(headText("name")).toBe("品番/品名"));
+    expect(headText("color")).toBe("配色"); // 没被清空的那一列留着
+
+    await userEvent.click(field("sales-order-save"));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    // 只发非空项：后端据此把 name 的覆盖删掉 —— 这正是「恢复默认」的表达方式
+    expect((calls.find((call) => call.method === "PATCH")!.body as Record<string, unknown>).spec_detail_labels).toEqual({ color: "配色" });
+  });
+
+  it("列名超过 20 字：保存前当场拦下，不发请求", async () => {
+    const calls = stubApi([["/sales-orders/order-1", () => ({ data: orderWithLabels({}), meta: {} })]]);
+    render(<SalesOrderEditor orderId="order-1" />);
+    await waitFor(() => expect(headText("name")).toBe("品番/品名"));
+
+    await userEvent.click(field("sales-detail-labels"));
+    await userEvent.type(field("action-field-name"), "名".repeat(21));
+    await userEvent.click(field("action-dialog-submit"));
+    await waitFor(() => expect(headText("name")).toBe("名".repeat(21)));
+
+    await userEvent.click(field("sales-order-save"));
+    expect(await screen.findByText(/超过 20 字/)).toBeVisible();
+    expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+  });
+});
+
 /** Radix Select 的选择动作：点开触发器，再点选项。 */
 async function pickSelect(testid: string, optionText: string) {
   const trigger = screen.getByTestId(testid);
   await userEvent.click(trigger);
   const option = await screen.findByRole("option", { name: new RegExp(optionText) });
+  await userEvent.click(option);
+}
+
+/**
+ * 材料明细的**引用下拉**（`ui/searchable-select`，用户 2026-09-26 要求「支持搜索」）：
+ * 点开触发点 → 在搜索框里输入关键词 → 点中过滤后的那一项。
+ *
+ * 为什么不能沿用 `pickSelect`：SearchableSelect 收起态是一个 `button`、展开态换成搜索框，
+ * testid 在**根 div** 上（点击根 div 不展开）—— 这是两个原语，交互不一样。
+ * 关键词一律用「物料编码」：它同时验证了「搜索命中的是 label 而不是只有名称」。
+ */
+async function pickMaterialRef(key: string, query: string) {
+  const root = screen.getByTestId(`sales-material-ref-${key}`);
+  const trigger = within(root).getByRole("combobox");
+  await userEvent.click(trigger);
+  const search = await screen.findByTestId("searchable-select-search");
+  await userEvent.type(search, query);
+  const option = (await screen.findAllByTestId("searchable-select-option"))[0];
   await userEvent.click(option);
 }
 

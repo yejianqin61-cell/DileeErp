@@ -56,6 +56,12 @@ const EXEMPT = new Map(Object.entries({
   // 而它已经在 1366px 上按百分比分完了宽度。
   // 用的是同一个列工厂（`updatedByColumn()`），不是自己手写表头。
   "app/procurement/plans/page.tsx": "口径 14 定死的列表只有「最后更新」一列（用 updatedByColumn 工厂），创建人没有业务动作挂在上面，且列宽已按 10 列分完",
+
+  // 成品出库总览（2026-09-30 拆成独立二级页）：这一页是**按「产品 + 单位」聚合**的口径表
+  // （后端 `GET /sales-orders/finished-goods-summary` 返回的是分组汇总），一行是「某产品还有多少压在
+  // 成品仓」，根本不是某张单据 —— 没有"谁创建/谁最后改了这一行"可言，硬塞两列只能填出空值。
+  // 行对应的**来源事实**（生产单 + 成品出入库单）各自在自己的页面上已有这两列。
+  "components/sales/finished-goods-overview.tsx": "按产品+单位聚合的存量汇总表，一行是分组结果而不是单据，没有单一操作人",
 }));
 
 function walk(dir) {

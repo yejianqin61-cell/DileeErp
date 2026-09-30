@@ -5,7 +5,7 @@ import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { columnSpanWidth, rowHeightFor, type RowHeightBlock } from "../../platform/excel/row-height";
 import { beijingDate, beijingDateTime } from "../../platform/time/beijing-time";
-import { SPEC_MATERIAL_KEYS, SPEC_SCALAR_FIELDS, specScalarRow } from "./sales-orders.service";
+import { SPEC_MATERIAL_KEYS, SPEC_SCALAR_FIELDS, specDetailLabelsWithDefaults, specScalarRow } from "./sales-orders.service";
 
 /**
  * 销售单「工艺单」导出（2026-09-16）。
@@ -79,6 +79,18 @@ export class SalesOrderExportService {
     // 会整块消失（用户 2026-09-20「再打开就又没有了」同一个根因，读侧一律不许直接吃 Prisma 行）。
     const spec = specScalarRow(order as unknown as Record<string, unknown>);
     const text = (key: SpecKey): string => (spec[key] ?? "").trim();
+    /**
+     * 「这一格引用了哪个物料」→ 印在格子里的兜底文字。
+     *
+     * 为什么必须有这层兜底（用户 2026-09-26 现场问题：「材料明细那边，如果是使用引用的资料，
+     * 在导出的 excel 中无法显示」）：格子里的文字与「引用了哪个物料」是**两条独立的记录**——
+     * 引用是 `sales_order_material_refs` 一行，文字是 `sales_orders.rib_spec` 那种标量列。
+     * 只要文字那条为空（清过格子、老数据、别处写进来的行），今天这一格就**整行不印**
+     * （见下面 `filter((line) => line.value)` 的「空盘位自动省略」）——
+     * 于是「引用了物料」这件事在纸上完全消失，工厂照着一张少了一个部件的工艺单做伞。
+     * 取「格子里有人写的字」优先（那是人对着这一单说的话），空则退回引用的物料。
+     */
+    const refText = new Map((order.materialRefs ?? []).map((ref) => [ref.specKey, materialRefText(ref.material)]));
     return {
       company: "厦 门 迪 礼 伞 业 有 限 公 司",
       factory: text("factory"),
@@ -94,9 +106,16 @@ export class SalesOrderExportService {
       completionText: `${dotDate(order.deliveryDate)}${text("completion_remark")}`,
       attentionNote: text("attention_note"),
       // 只印有值的行；工艺要求按留下的条目重新编号（不能出现断号）。
-      materialLines: SalesOrderExportService.MATERIAL_LABELS.map(([key, label]) => ({ label, value: text(key) })).filter((line) => line.value),
-      processLines: SalesOrderExportService.PROCESS_LABELS.map(([key]) => text(key)).filter(Boolean).map((value, index) => `${index + 1}.${value}`),
+      materialLines: SalesOrderExportService.MATERIAL_LABELS.map(([key, label]) => ({ label, value: text(key) || (refText.get(key) ?? "") })).filter((line) => line.value),
+      // 工艺要求：**每一点都要带标题**（用户 2026-09-26：「工艺要求那边，每一点的标题也需要显示」）。
+      // 改造前只印 `1.<内容>`，看纸上的人得自己猜这一条是"样品要求"还是"裁布要求"——
+      // 而 9 个栏位在界面里本来就各有中文名（`PROCESS_LABELS`），只是当年没印出来。
+      processLines: SalesOrderExportService.PROCESS_LABELS.map(([key, label]) => ({ label, value: text(key) })).filter((line) => line.value),
       detailGroups: groupDetails(order.specDetails),
+      // 明细列名（用户 2026-09-30）：这一单改过的名字优先，没改的用默认（`SPEC_DETAIL_LABELS`）。
+      // 两种形状都认（请求键 `spec_detail_labels` = 版本快照存的形状；列名 `specDetailLabels` = 接口给的行），
+      // 与 37 个细化标量当年那个坑同一条纪律：**读侧不许只认一种**。
+      detailLabels: specDetailLabelsWithDefaults(specDetailLabelsOf(order as unknown as Record<string, unknown>)),
       fabricUsage: SalesOrderExportService.FABRIC_LABELS.map(([key, label]) => ({ label, value: text(key) })).filter((line) => line.value),
       shippingMarkFront: text("shipping_mark_front"),
       shippingMarkSide: text("shipping_mark_side"),
@@ -262,7 +281,7 @@ export class SalesOrderExportService {
         blocks.push(this.block(sheet, row, "B", "F", material.value));
       }
       const process = doc.processLines[index];
-      if (process) blocks.push(this.block(sheet, row, "G", "J", process));
+      if (process) blocks.push(this.block(sheet, row, "G", "J", `${index + 1}.${process.label}：${process.value}`));
       this.autoHeight(sheet, row, blocks);
       row += 1;
     }
@@ -272,7 +291,7 @@ export class SalesOrderExportService {
       this.autoHeight(sheet, row, [this.block(sheet, row, "A", "J", `${doc.orderNo} ${group.groupName}（图片见客户原稿，本表不导出图片）`)]);
       sheet.getCell(`A${row}`).font = HEADER_FONT;
       row += 1;
-      const headers: Array<[string, string]> = [["A", "品番/品名"], ["C", "图片"], ["D", "颜色"], ["E", "条码"], ["F", "数量"], ["G", "单位"]];
+      const headers: Array<[string, string]> = [["A", doc.detailLabels.name], ["C", "图片"], ["D", doc.detailLabels.color], ["E", doc.detailLabels.barcode], ["F", doc.detailLabels.quantity], ["G", doc.detailLabels.unit]];
       sheet.mergeCells(`A${row}:B${row}`);
       for (const [column, label] of headers) {
         sheet.getCell(`${column}${row}`).value = label;
@@ -480,8 +499,18 @@ function invalidImage(specKey: string, message: string) {
   return new UnprocessableEntityException({ code: "PRODUCTION_SHEET_IMAGE_INVALID", message, details: [{ spec_key: specKey }] });
 }
 
-/** 等比缩到 `IMAGE_BOX` 的方框内（不放大）。 */
-export function imageBoxFor(aspect: { width: number; height: number }): { width: number; height: number } {
+/**
+ * 引用物料的**兜底印刷文字**：`MAT-1 伞骨 50cm 黑`（编码 + 名称 + 规格型号 + 颜色，空的段不留多余空格）。
+ *
+ * 为什么带上**编码**（而勾选弹窗里的 `material_name` 不带）：这一行是「格子里没有人写的字」时才用的，
+ * 看到它的人（车间/工厂）手上只有这张纸，编码是唯一能在【采购 → 物料清单】里查到的标识。
+ * 与 `imageBoxFor` 一样是纯函数，单独导出便于测试直接验它。
+ */
+export function materialRefText(material: { materialCode?: string | null; name?: string | null; specificationModel?: string | null; color?: string | null }): string {
+  return [material.materialCode, material.name, material.specificationModel, material.color].map((part) => (part ?? "").trim()).filter(Boolean).join(" ");
+}
+
+/** 等比缩到 `IMAGE_BOX` 的方框内（不放大）。 */export function imageBoxFor(aspect: { width: number; height: number }): { width: number; height: number } {
   const longest = Math.max(aspect.width, aspect.height);
   if (!Number.isFinite(longest) || longest <= 0) return { width: IMAGE_BOX, height: IMAGE_BOX };
   const scale = Math.min(1, IMAGE_BOX / longest);
@@ -491,6 +520,19 @@ export function imageBoxFor(aspect: { width: number; height: number }): { width:
 /** 0 起的列号 → 列字母（`IMAGE_COLUMNS` 是 2，所以只需要 A–J 这一段）。 */
 function columnLetter(index: number): string {
   return String.fromCharCode(65 + index);
+}
+
+/**
+ * 从订单行里取「自定义明细列名」，**两种形状都认**：先请求键（`spec_detail_labels`，版本快照的形状），
+ * 再列名（`specDetailLabels`，Prisma 行/接口的形状）。
+ *
+ * 与 `specScalarRow` 同一类坑、同一条纪律：读侧只认一种形状的话，另一种在本库里真实存在的形状
+ * 就会静默变成「没改过列名」。取不到就给 null（由 `specDetailLabelsWithDefaults` 全用默认）。
+ */
+export function specDetailLabelsOf(order: Record<string, unknown>): Record<string, unknown> | null {
+  const fromRequestKey = order.spec_detail_labels;
+  const raw = fromRequestKey === undefined || fromRequestKey === null ? order.specDetailLabels : fromRequestKey;
+  return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
 }
 
 /** 两个列字母之间的可用宽度（含两端），供 `block()` 回报行高用多少地方。 */
@@ -558,6 +600,11 @@ export type ExportOrder = {
   orderNo: string;
   /** 货号（2026-09-26）。可空：历史销售单没有货号，导出时为空串（不印这一格）。 */
   itemNo: string | null;
+  /**
+   * 细分明细的自定义列名（2026-09-30）。**列名形状**（接口返回的行）；版本快照那条路上的
+   * 请求键形状（`spec_detail_labels`）由 `specDetailLabelsOf` 认 —— 那里是 `Record<string, unknown>`。
+   */
+  specDetailLabels?: Record<string, string> | null;
   orderDate: Date;
   deliveryDate: Date | null;
   productName: string;
@@ -604,8 +651,15 @@ export type ProductionSheetDocument = {
   completionText: string;
   attentionNote: string;
   materialLines: Array<{ label: string; value: string }>;
-  processLines: string[];
+  /** 工艺要求：**带标题**的条目（`label` = 栏位中文名，如「样品要求」），导出落格时编成 `1.样品要求：…`。 */
+  processLines: Array<{ label: string; value: string }>;
   detailGroups: Array<{ groupName: string; lines: Array<{ name: string; color: string; barcode: string; quantity: string; unit: string }> }>;
+  /**
+   * 细分明细的**列名**（2026-09-30）：默认 6 个中文名与这一单的自定义覆盖合并后的结果，
+   * 落格直接用它。`group_name` 这一项在导出件里**没有列位**（模板版式没有"分组名"列，
+   * 分组是靠分组标题行表达的），所以它只影响编辑页 —— 这一条写在设计文档里，不装作没这回事。
+   */
+  detailLabels: Record<string, string>;
   fabricUsage: Array<{ label: string; value: string }>;
   shippingMarkFront: string;
   shippingMarkSide: string;

@@ -151,9 +151,9 @@ test("样本1：表头、材料行、工艺条目重新编号、明细分组都�
   assert.deepEqual(doc.materialLines.map((line) => line.label), ["伞骨（孔对孔）", "伞布规格", "伞头", "伞头带", "伞尾、笠", "伞束、珠", "伞带", "伞带粘扣", "内标", "织标", "吊牌", "OPP", "布套", "包装明细"]);
   assert.equal(doc.materialLines.find((line) => line.label === "伞骨（孔对孔）").value.startsWith("50cm*5K三折手开双碳纤骨"), true);
 
-  // 工艺要求：编号从 1 连续
-  assert.deepEqual(doc.processLines.map((line) => line.slice(0, 2)), ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."]);
-  assert.equal(doc.processLines[0], "1.大货样：每个设计各1支");
+  // 工艺要求：编号从 1 连续，且**每一点都带标题**（用户 2026-09-26：「每一点的标题也需要显示」）
+  assert.deepEqual(doc.processLines.map((line) => line.label), ["样品要求", "裁布要求", "拉边要求", "合片要求", "打顶要求", "缝伞要求", "吊牌位置", "质检报告"]);
+  assert.deepEqual(doc.processLines[0], { label: "样品要求", value: "大货样：每个设计各1支" });
 
   // 明细：一组 12 行，图片不在文档里（留空由落格处理）
   assert.equal(doc.detailGroups.length, 1);
@@ -188,7 +188,7 @@ test("样本2：没有布量区（整块不印），伞头配色带条码，15×
 test("工艺要求跳号要重排：只填打顶与质检时是 1./2.，不能出现 5./9.", () => {
   const order = { ...sample1(), ribSpec: null, canopySpec: null, handleSpec: null, handleStrapSpec: null, tailSpec: null, runnerSpec: null, strapSpec: null, strapFastenerSpec: null, innerLabelSpec: null, wovenLabelSpec: null, hangTagSpec: null, oppSpec: null, bagSpec: null, packagingSpec: null, sampleRequirement: null, cuttingRequirement: null, edgeRequirement: null, joiningRequirement: null, sewingRequirement: null, hangTagNote: null };
   const doc = fakeService(order).document(order, "张三");
-  assert.deepEqual(doc.processLines, ["1.三圈，缝线不外露", "2.所有材料和成品都要质检报告"]);
+  assert.deepEqual(doc.processLines, [{ label: "打顶要求", value: "三圈，缝线不外露" }, { label: "质检报告", value: "所有材料和成品都要质检报告" }]);
   assert.deepEqual(doc.materialLines, [], "材料全空时整块为空");
 });
 
@@ -242,13 +242,15 @@ test("样本1 落格：表头/材料/工艺/明细/布量/表尾都在，且**�
   // 材料行与工艺条目并排
   const ribRow = rowWith(rows, "伞骨（孔对孔）");
   assert.ok(String(ribRow?.join(" ")).includes("50cm*5K三折手开双碳纤骨"));
-  assert.ok(String(ribRow?.join(" ")).includes("1.大货样：每个设计各1支"), "同一行右侧是第 1 条工艺要求");
+  assert.ok(String(ribRow?.join(" ")).includes("1.样品要求：大货样：每个设计各1支"), "同一行右侧是第 1 条工艺要求，且带栏位标题");
 
   // 明细块：12 行花色 + 图片列留空
   assert.ok(rows.some((row) => String(row[0]).includes("伞布明细")));
   const headerIndex = rows.findIndex((row) => row.includes("品番/品名") && row.includes("图片"));
   assert.ok(headerIndex > 0, "明细表头要有「图片」列");
-  assert.equal(rows[headerIndex].includes("颜色") && rows[headerIndex].includes("数量"), true);
+  // 2026-09-30 起明细表头印的是**列名的唯一真源**（后端 SPEC_DETAIL_LABELS / 前端 SPEC_DETAIL_COLUMNS）：
+  // 所以「颜色」变成编辑页上一直写的那个「颜色/配色」—— 列名可以按单改了，导出与页面的默认名必须是同一份。
+  assert.equal(rows[headerIndex].includes("颜色/配色") && rows[headerIndex].includes("数量"), true);
   assert.equal(rows[headerIndex][2], "图片", "表头第 3 列是「图片」");
   const firstDetail = rows[headerIndex + 1];
   const dataRow = rows[headerIndex + 2];

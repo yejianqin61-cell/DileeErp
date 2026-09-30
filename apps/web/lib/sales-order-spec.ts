@@ -186,6 +186,74 @@ export const SPEC_DETAIL_COLUMNS: ReadonlyArray<readonly [string, string]> = [
   ["unit", "单位"],
 ];
 
+// ------------------------------------------------------------------ 细分明细的自定义列名（2026-09-30）
+//
+// 用户原话：「细分明细那边，可以改成自定义字段名称。」
+// 与后端 `apps/api/src/modules/sales/sales-orders.service.ts` 的 `SPEC_DETAIL_LABELS` 是同一份清单
+// （两个 workspace 没有共享包，只能两份），两边用同一组测试向量钉住键名与默认名。
+// **键名与顺序直接取自 `SPEC_DETAIL_COLUMNS`**，连抄都不用抄 —— 分叉的后果是
+// 「界面上改了名字、导出还是老名字」这种查不出来的错。
+
+/** 可自定义的 6 个列键（顺序 = 表格列序）。 */
+export const SPEC_DETAIL_LABEL_KEYS: readonly string[] = SPEC_DETAIL_COLUMNS.map(([key]) => key);
+
+/** 默认列名（用户没改过时印的名字）。 */
+export const DEFAULT_SPEC_DETAIL_LABELS: Readonly<Record<string, string>> = Object.fromEntries(SPEC_DETAIL_COLUMNS);
+
+/** 列名长度上限（与后端同一口径）：表头要印在一格里，太长会把明细表挤变形。 */
+export const SPEC_DETAIL_LABEL_MAX_LENGTH = 20;
+
+/**
+ * 明细列名的**自定义覆盖**（只含用户改过的那些；没改 / 改回空的都不在这里）。
+ *
+ * ⚠️ 两种键名形状都认：接口返回的 Prisma 行是列名 `specDetailLabels`，
+ * 而版本快照/返单预览里是请求键 `spec_detail_labels` —— 与 37 个细化标量当初
+ * 「按请求键去索引 camelCase 行」那个坑同一条纪律（那次是整块空白）。
+ */
+export function specDetailLabelsFromOrder(order: Record<string, unknown>): Record<string, string> {
+  const raw = order.specDetailLabels ?? order.spec_detail_labels;
+  const overrides: Record<string, string> = {};
+  if (!raw || typeof raw !== "object") return overrides;
+  for (const key of SPEC_DETAIL_LABEL_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text && text.length <= SPEC_DETAIL_LABEL_MAX_LENGTH) overrides[key] = text;
+  }
+  return overrides;
+}
+
+/** 默认列名 + 这一单的覆盖（界面上要显示、导出要用，两处都走它，别各写一遍回退）。 */
+export function detailLabelsWithDefaults(overrides: Readonly<Record<string, string>> | null | undefined): Record<string, string> {
+  const merged: Record<string, string> = { ...DEFAULT_SPEC_DETAIL_LABELS };
+  for (const key of SPEC_DETAIL_LABEL_KEYS) {
+    const text = (overrides?.[key] ?? "").trim();
+    if (text) merged[key] = text;
+  }
+  return merged;
+}
+
+/**
+ * 覆盖 → 提交载荷：只发**非空**的项（清空一格 = 不发这个键 = 后端把覆盖删掉 = 回到默认名）。
+ * 总是整块发（与 `material_refs` 同一个「整块替换」语义）：只发变化的那几项表达不出"恢复默认"。
+ */
+export function specDetailLabelsPayload(overrides: Readonly<Record<string, string>> | null | undefined): Record<string, string> {
+  const payload: Record<string, string> = {};
+  for (const key of SPEC_DETAIL_LABEL_KEYS) {
+    const text = (overrides?.[key] ?? "").trim();
+    if (text) payload[key] = text.slice(0, SPEC_DETAIL_LABEL_MAX_LENGTH);
+  }
+  return payload;
+}
+
+/** 提交前拦一刀：列名太长时给出人话（后端也会拒，但让用户当场看见更好）。 */
+export function validateSpecDetailLabels(overrides: Readonly<Record<string, string>> | null | undefined): string | null {
+  for (const key of SPEC_DETAIL_LABEL_KEYS) {
+    const text = (overrides?.[key] ?? "").trim();
+    if (text.length > SPEC_DETAIL_LABEL_MAX_LENGTH) return `列名「${text}」超过 ${SPEC_DETAIL_LABEL_MAX_LENGTH} 字，请改短一点（表头要印在一格里）`;
+  }
+  return null;
+}
+
 export type SpecDetailRow = { group_name: string; name: string; color: string; barcode: string; quantity: string; unit: string };
 
 export const emptySpecDetailRow = (): SpecDetailRow => ({ group_name: "", name: "", color: "", barcode: "", quantity: "", unit: "" });
@@ -219,8 +287,11 @@ export function validateSpecDetails(rows: SpecDetailRow[]): Array<{ row: number;
  * `refs` 是材料明细的物料引用（用户 2026-09-24）。**总是整块发**（引用是整块替换语义：
  * 只发变化的那几个，会让「取消引用」变得表达不出来）。不传时载荷里不带这个键 ——
  * `undefined` = 不动，是后端约定好的第三种语义，测试也依赖它。
+ *
+ * `detailLabels` 是细分明细的自定义列名（用户 2026-09-30），同一条整块替换语义：
+ * 不传 = 不动这一块，传 `{}` = 全部恢复默认列名（"恢复默认"必须表达得出来）。
  */
-export function specPayload(values: Record<string, string>, details: SpecDetailRow[], refs?: MaterialRefState): Record<string, unknown> {
+export function specPayload(values: Record<string, string>, details: SpecDetailRow[], refs?: MaterialRefState, detailLabels?: Readonly<Record<string, string>>): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   for (const key of SPEC_SCALAR_KEYS) payload[key] = (values[key] ?? "").trim();
   const rows = details.filter((row) => !isBlankSpecDetail(row));
@@ -234,6 +305,7 @@ export function specPayload(values: Record<string, string>, details: SpecDetailR
     sort_order: index,
   }));
   if (refs) payload.material_refs = materialRefsPayload(refs);
+  if (detailLabels) payload.spec_detail_labels = specDetailLabelsPayload(detailLabels);
   return payload;
 }
 

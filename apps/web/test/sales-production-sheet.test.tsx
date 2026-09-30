@@ -23,7 +23,7 @@ vi.mock("../lib/production-sheet-image", async (importOriginal) => {
   return { ...actual, browserSheetImageDeps: () => imageDeps };
 });
 
-import SalesPage from "../app/sales/page";
+import SalesOrdersList from "../components/sales/sales-orders-list";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
 
 const order = { id: "order-1", orderNo: "DL260134", status: "draft", productName: "雨伞", quantity: "10", unit: "支", customer: { id: "c-1", name: "家百纳", isActive: true, contacts: [] }, boms: [] };
@@ -59,8 +59,8 @@ function stub(images: unknown[]) {
 }
 
 async function open() {
-  render(<SalesPage />);
-  await screen.findByTestId("page-sales");
+  render(<SalesOrdersList />);
+  await screen.findByTestId("page-sales-orders");
   await screen.findByTestId("order-production-sheet-DL260134");
 }
 

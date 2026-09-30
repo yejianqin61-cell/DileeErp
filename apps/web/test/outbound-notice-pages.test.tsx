@@ -23,7 +23,8 @@
 import { describe, expect, it } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import SalesPage from "../app/sales/page";
+import SalesOrdersList from "../components/sales/sales-orders-list";
+import FinishedGoodsOverview from "../components/sales/finished-goods-overview";
 import FinishedGoodsStoragePage from "../app/warehouse/finished-goods-storage/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
@@ -139,7 +140,17 @@ function salesApi(routes: { summary?: (callIndex: number) => Response; notify?: 
 function renderSales() {
   return render(
     <>
-      <SalesPage />
+      <SalesOrdersList />
+      <Toaster />
+    </>
+  );
+}
+
+/** 成品出库总览是**独立二级页**（2026-09-30 拆页）：它自己的加载/错误/重试在这一页上验。 */
+function renderOverview() {
+  return render(
+    <>
+      <FinishedGoodsOverview />
       <Toaster />
     </>
   );
@@ -155,9 +166,9 @@ const notifyButtons = () => screen.getAllByRole("button", { name: "通知仓库�
 const batchNotifyButton = () => screen.getByRole("button", { name: "通知仓库出库（全部可出库批次）" });
 
 describe("销售页：出库通知明细（成品入库与出库）", () => {
-  it("销售页顶部：成品出库总览给出全部成品数 / 已出库数 / 未出库数（按产品与单位分行）", async () => {
+  it("成品出库总览二级页：给出全部成品数 / 已出库数 / 未出库数（按产品与单位分行）", async () => {
     const { calls, overviewCalls } = salesApi();
-    renderSales();
+    renderOverview();
 
     const panel = within(await screen.findByTestId("finished-goods-overview"));
     expect(callsTo(calls, "/api/v1/sales-orders/finished-goods-summary")).toHaveLength(1);
@@ -175,16 +186,18 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
     expect(within(row).getByText("80")).toBeVisible();
   });
 
-  it("成品总览加载失败：就地给出错误态与重试，客户池/销售单两张表照常渲染", async () => {
+  it("成品出库总览二级页：失败只影响这一页（自己给错误态与重试），且它只拉总览这一个接口", async () => {
     let failing = true;
     const { calls } = salesApi({ overview: () => (failing ? apiErr(500, "INTERNAL", "成品总览服务暂不可用") : apiOk(finishedGoodsOverview)) });
-    renderSales();
+    renderOverview();
 
     const panel = within(await screen.findByTestId("finished-goods-overview"));
     expect(await panel.findByText("成品总览服务暂不可用")).toBeVisible();
     expect(panel.queryByText("正在加载成品总览…")).toBeNull();
-    expect(screen.getByRole("heading", { name: "客户池" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "销售单" })).toBeVisible();
+    // 拆页的收益就在这里：客户池与销售单的数据**根本没被这个页面请求**，
+    // 所以总览接口挂掉时不可能连累它们（改造前三个板块挤一页，靠"各写各的错误态"来兜）。
+    expect(callsTo(calls, "/api/v1/customers?page_size=200")).toHaveLength(0);
+    expect(callsTo(calls, "/api/v1/sales-orders?page_size=200")).toHaveLength(0);
 
     failing = false;
     await userEvent.click(panel.getByTestId("error-state-retry"));
@@ -402,7 +415,8 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
   // 期望：失败要给出错误态（错误文案 + 重试），至少不能一直假装在加载；
   // 实际：loadFinishedGoods/useEffect 的 catch 只 setFinishedGoods(null)，而渲染分支
   //       `!finishedGoods ? "正在加载成品情况…"` 把 null 当成"加载中"，用户看不到任何失败信号。
-  // 责任文件：apps/web/app/sales/page.tsx:38-39（catch 吞掉错误）与 :376-379（null 即加载中）。
+  // 责任文件：apps/web/components/sales/sales-orders-list.tsx:79（catch 吞掉错误）
+  //           与 :227（null 即加载中）。2026-09-30 从 app/sales/page.tsx 原样搬进这个组件。
   it("成品情况接口失败时永久停在「正在加载成品情况…」，没有错误态也没有重试（KNOWN_DEFECT）", async () => {
     const { calls } = salesApi({ summary: () => apiErr(500, "INTERNAL", "成品情况服务暂不可用") });
     renderSales();

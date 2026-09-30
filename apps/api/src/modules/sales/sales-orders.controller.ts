@@ -115,6 +115,16 @@ export class SalesOrderSpecDto {
    * 传了就整块替换（空数组 = 全部取消引用），没传 = 不动。
    */
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MaterialRefDto) material_refs?: MaterialRefDto[];
+  /**
+   * 细分明细的自定义列名（用户 2026-09-30：「细分明细那边，可以改成自定义字段名称」）：
+   * `{ 列键: 列名 }`，键只能是 6 个明细列（`SPEC_DETAIL_LABELS`），空串 = 这一列用默认名。
+   *
+   * 这里只验"是个对象"（`@IsObject`）：**键与值长度由服务层的
+   * `normalizeSpecDetailLabels` 判**，因为「哪 6 个列」是业务清单说了算的，
+   * 抄进 DTO 就是一份会过期的副本（与 `material_refs` 的 `spec_key` 同一条理由）。
+   * 传了就是**整块替换**（空对象 = 全部恢复默认列名）——"恢复默认"必须表达得出来。
+   */
+  @IsOptional() @IsObject() spec_detail_labels?: Record<string, string>;
 }
 
 // 导出以便契约测试直接用真实 ValidationPipe 校验前端请求体。

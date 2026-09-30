@@ -24,6 +24,7 @@ const {
 const {
   SalesOrderExportService,
   imageBoxFor,
+  materialRefText,
 } = require("../../dist/modules/sales/sales-order-export.service.js");
 
 const user = { id: "00000000-0000-0000-0000-0000000000aa", username: "sales", display_name: "张三" };
@@ -257,4 +258,47 @@ test("imageBoxFor：等比缩进方框，小图不放大，坏尺寸不炸", () 
   assert.deepEqual(imageBoxFor({ width: 100, height: 100 }), { width: 100, height: 100 }, "本来就小的图不放大");
   assert.deepEqual(imageBoxFor({ width: 0, height: 0 }), { width: 130, height: 130 }, "读不出尺寸时给一个方图，不能给 0（Excel 会画不出来）");
   assert.deepEqual(imageBoxFor({ width: Number.NaN, height: 10 }), { width: 130, height: 130 });
+});
+
+// ------------------------------------------------------------------ 导出：引用了物料但格子里没有字（2026-09-26）
+
+/**
+ * 用户 2026-09-26 现场问题：「新建销售单，材料明细那边，如果是使用引用的资料，在导出的 excel 中无法显示」。
+ *
+ * 根因是**两条记录可以不同步**：格子的文字是 `sales_orders.rib_spec` 那种标量列，
+ * 「引用了哪个物料」是 `sales_order_material_refs` 一行。文字为空时，早先的导出会把这一格
+ * 当「空盘位自动省略」整行不印 —— 于是"引用了物料"这件事在纸上彻底消失。
+ */
+test("导出：格子空但引用了物料 —— 用引用的物料兜底印出来（编码 + 名称 + 规格 + 颜色）", () => {
+  const row = orderRow({ ribSpec: null, canopySpec: null, handleSpec: null });
+  const doc = exportService(row).document(row, "张三");
+  assert.equal(doc.materialLines.find((line) => line.label === "伞骨（孔对孔）").value, "MAT-1 伞骨 50cm 黑");
+  assert.equal(doc.materialLines.find((line) => line.label === "伞布规格").value, "MAT-2 伞布 190T 藏青");
+  assert.equal(doc.materialLines.find((line) => line.label === "伞头").value, "MAT-3 伞头", "规格/颜色为空时不留多余空格");
+  // 既没文字也没引用的栏位仍然整行不印（「空盘位自动省略」没有被这次改动推翻）
+  assert.equal(doc.materialLines.some((line) => line.label === "印刷"), false);
+  assert.equal(doc.materialLines.length, 3);
+});
+
+test("导出：格子里有字时**以字为准**（人对着这一单写的话优先于物料摘要）", () => {
+  const row = orderRow({ ribSpec: "50cm 碳纤骨（师傅按样品改）" });
+  const doc = exportService(row).document(row, "张三");
+  assert.equal(doc.materialLines.find((line) => line.label === "伞骨（孔对孔）").value, "50cm 碳纤骨（师傅按样品改）");
+});
+
+test("materialRefText：只拼有值的段，全空时是空串（不会印出一串空格）", () => {
+  assert.equal(materialRefText({ materialCode: "MAT-1", name: "伞骨", specificationModel: "50cm", color: "黑" }), "MAT-1 伞骨 50cm 黑");
+  assert.equal(materialRefText({ materialCode: "MAT-1", name: "伞骨", specificationModel: null, color: "" }), "MAT-1 伞骨");
+  assert.equal(materialRefText({}), "");
+});
+
+test("导出落格：引用了物料但格子里没有字的行，必须在 Excel 里看得见", async () => {
+  const row = orderRow({ ribSpec: null, canopySpec: null, handleSpec: null });
+  const { buffer } = await exportService(row).exportOrder(ORDER_ID);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const texts = [];
+  workbook.worksheets[0].eachRow((line) => texts.push(line.values.join(" ")));
+  assert.ok(texts.some((text) => text.includes("伞骨（孔对孔）") && text.includes("MAT-1 伞骨 50cm 黑")), "材料行与兜底文字要在同一行上");
+  assert.ok(texts.some((text) => text.includes("MAT-2 伞布 190T 藏青")));
 });

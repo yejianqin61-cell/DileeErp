@@ -6,8 +6,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_PROCESS_FIELDS, SPEC_SCALAR_KEYS,
-  emptySpecDetailRow, isBlankSpecDetail, normalizeSpecUnit, snakeToCamel, specFromOrder, specPayload, specQuantityNotice, validateSpecDetails,
+  DEFAULT_SPEC_DETAIL_LABELS, SPEC_DETAIL_COLUMNS, SPEC_DETAIL_LABEL_KEYS, SPEC_DETAIL_LABEL_MAX_LENGTH,
+  SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_PROCESS_FIELDS, SPEC_SCALAR_KEYS,
+  detailLabelsWithDefaults, emptySpecDetailRow, isBlankSpecDetail, normalizeSpecUnit, snakeToCamel,
+  specDetailLabelsFromOrder, specFromOrder, specPayload, specQuantityNotice, validateSpecDetailLabels, validateSpecDetails,
 } from "./sales-order-spec.ts";
 
 test("字段清单：37 个标量，顺序是「表头 → 布量 → 材料 → 工艺」", () => {
@@ -155,4 +157,45 @@ test("isBlankSpecDetail：全空才算空行，只填一格就不算", () => {
   assert.equal(isBlankSpecDetail(emptySpecDetailRow()), true);
   assert.equal(isBlankSpecDetail({ ...emptySpecDetailRow(), name: "x" }), false);
   assert.equal(isBlankSpecDetail({ ...emptySpecDetailRow(), group_name: "  " }), true, "纯空白也算空");
+});
+
+// ------------------------------------------------------------------ 细分明细的自定义列名（2026-09-30）
+
+test("列名清单：6 个列键与后端 SPEC_DETAIL_LABELS 同序同键，默认名非空", () => {
+  assert.deepEqual(SPEC_DETAIL_LABEL_KEYS, ["group_name", "name", "color", "barcode", "quantity", "unit"]);
+  assert.deepEqual(DEFAULT_SPEC_DETAIL_LABELS, { group_name: "分组名", name: "品番/品名", color: "颜色/配色", barcode: "条码", quantity: "数量", unit: "单位" });
+  assert.equal(SPEC_DETAIL_LABEL_MAX_LENGTH, 20, "与后端 SPEC_DETAIL_LABEL_MAX_LENGTH 同一口径");
+});
+
+test("列名回填：接口的列名形状与快照的请求键形状都认（只认一种就是又一轮「再打开就没了」）", () => {
+  assert.deepEqual(specDetailLabelsFromOrder({ specDetailLabels: { name: "品名", color: "配色" } }), { name: "品名", color: "配色" });
+  assert.deepEqual(specDetailLabelsFromOrder({ spec_detail_labels: { name: "品名" } }), { name: "品名" });
+  // 认不出的键、空白值、超长的值都不进覆盖（超长的会被后端拒，读侧不该把它当成生效中的列名）
+  assert.deepEqual(specDetailLabelsFromOrder({ specDetailLabels: { price: "单价", color: "   ", unit: "单".repeat(30) } }), {});
+  assert.deepEqual(specDetailLabelsFromOrder({}), {});
+  assert.deepEqual(specDetailLabelsFromOrder({ specDetailLabels: null }), {});
+});
+
+test("列名合并：默认名打底、覆盖优先、空覆盖回落默认名", () => {
+  const merged = detailLabelsWithDefaults({ name: "伞头英文名", quantity: " " });
+  assert.equal(merged.name, "伞头英文名");
+  assert.equal(merged.quantity, "数量", "空值 = 用默认名");
+  assert.equal(merged.barcode, "条码");
+  assert.equal(Object.keys(merged).length, 6);
+  assert.deepEqual(detailLabelsWithDefaults(null), DEFAULT_SPEC_DETAIL_LABELS);
+});
+
+test("列名载荷：只发非空的项（清空一格 = 不发这个键 = 后端删掉覆盖 = 回到默认名）", () => {
+  const payload = specPayload({}, [emptySpecDetailRow()], undefined, { name: "品名", color: "  ", price: "单价" });
+  assert.deepEqual(payload.spec_detail_labels, { name: "品名" }, "空值与不认识的值都不该发出去");
+  // 整块替换语义：传了 `{}` 就是"全部恢复默认"，所以这个键必须发出去（不能因为空就省略）
+  assert.deepEqual(specPayload({}, [emptySpecDetailRow()], undefined, {}).spec_detail_labels, {});
+  // 不传 = 不动这一块（undefined 是后端约定好的第三种语义，返单/其它调用方依赖它）
+  assert.equal("spec_detail_labels" in specPayload({}, [emptySpecDetailRow()]), false);
+});
+
+test("列名校验：超过 20 字给出人话（保存前拦下，别等一个来回）", () => {
+  assert.equal(validateSpecDetailLabels({ name: "品".repeat(SPEC_DETAIL_LABEL_MAX_LENGTH) }), null);
+  assert.match(validateSpecDetailLabels({ name: "品".repeat(SPEC_DETAIL_LABEL_MAX_LENGTH + 1) }), /超过 20 字/);
+  assert.equal(validateSpecDetailLabels({}), null);
 });

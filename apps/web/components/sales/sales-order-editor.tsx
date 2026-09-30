@@ -11,9 +11,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "../layout/app-shell";
+import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { ErrorState, LoadingState } from "../feedback/states";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { apiGet, apiPatch, apiPost } from "../../lib/api-client";
@@ -23,7 +25,8 @@ import { itemNoKey } from "../../lib/item-no";
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
   SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_MATERIAL_KEYS, SPEC_PROCESS_FIELDS,
-  SPEC_SCALAR_KEYS, emptySpecDetailRow, isBlankSpecDetail, materialOptionLabel, materialRefsFromOrder, materialSpecText,
+  SPEC_SCALAR_KEYS, DEFAULT_SPEC_DETAIL_LABELS, SPEC_DETAIL_LABEL_MAX_LENGTH, detailLabelsWithDefaults, emptySpecDetailRow, isBlankSpecDetail,
+  materialOptionLabel, materialRefsFromOrder, materialSpecText, specDetailLabelsFromOrder, validateSpecDetailLabels,
   specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialOption, type MaterialRefState, type SpecDetailRow,
 } from "../../lib/sales-order-spec";
 import { MaterialThumb } from "../procurement/material-image";
@@ -150,6 +153,14 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const [base, setBase] = useState<Record<string, string>>({ order_date: new Date().toISOString().slice(0, 10), quantity: "1" });
   const [spec, setSpec] = useState<Record<string, string>>({});
   const [details, setDetails] = useState<SpecDetailRow[]>([emptySpecDetailRow()]);
+  /**
+   * 细分明细的自定义列名（用户 2026-09-30：「细分明细那边，可以改成自定义字段名称」）。
+   * 只存**用户改过的**（空 = 用默认名），渲染与提交都过 `detailLabelsWithDefaults` /
+   * `specDetailLabelsPayload`，不在渲染里各写一遍回退。
+   */
+  const [detailLabelOverrides, setDetailLabelOverrides] = useState<Record<string, string>>({});
+  /** 改列名的弹窗（ActionDialog 的字段清单在这里现拼，见下面「修改列名」按钮）。 */
+  const [labelDialog, setLabelDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
   // 材料明细的物料引用（用户 2026-09-24）：键 = 栏位请求键，值 = 引用的物料（null = 只填文字）。
   const [refs, setRefs] = useState<MaterialRefState>(() => Object.fromEntries(SPEC_MATERIAL_KEYS.map((key) => [key, null])));
   const [materials, setMaterials] = useState<MaterialOption[]>([]);
@@ -217,6 +228,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         // 而表单按**请求键**（`rib_spec`）取值。直接 `order[key]` 会全部读成空 —— 见该函数的注释。
         setSpec(specFromOrder(order));
         setRefs(materialRefsFromOrder(order));
+        // 明细列名的自定义覆盖（接口给的是**列名**形状 `specDetailLabels`，函数里两种都认）。
+        setDetailLabelOverrides(specDetailLabelsFromOrder(order));
         const rows = (order.specDetails ?? []).map((row) => ({
           group_name: String(row.groupName ?? ""), name: String(row.name ?? ""), color: String(row.color ?? ""),
           barcode: String(row.barcode ?? ""), quantity: asText(row.quantity), unit: String(row.unit ?? ""),
@@ -257,6 +270,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         // 引用照抄：预览里带了物料摘要（`material_refs[].material`），所以能直接把芯片显示出来，
         // 不依赖物料池那一次请求成不成功。
         setRefs(materialRefsFromOrder({ material_refs: copy.material_refs }));
+        // 明细列名跟着来源单（返单就是把上一批的工艺口径带过来，列名属于这个口径的一部分）。
+        setDetailLabelOverrides(specDetailLabelsFromOrder(copy));
         setReorderSource({ order_no: preview.source_order_no, order_id: preview.source_order_id, item_no: text(preview.item_no) });
       }
     } catch (cause) {
@@ -272,11 +287,47 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
 
   const quantityNotice = useMemo(() => specQuantityNotice(base.quantity ?? "", base.unit ?? "", details), [base.quantity, base.unit, details]);
   const detailErrors = useMemo(() => validateSpecDetails(details), [details]);
+  /** 当前生效的列名（默认名 + 这一单的覆盖）：表头、行内 aria-label、改列名弹窗都用它。 */
+  const detailLabels = useMemo(() => detailLabelsWithDefaults(detailLabelOverrides), [detailLabelOverrides]);
+  // 引用下拉的选项（label = `编码 / 名称 规格 颜色`，与全站物料选择器同一份文字口径）。
+  // 搜索由 `SearchableSelect` 内部按 label 子串过滤 —— 所以「按编码」「按名称」「按规格」「按颜色」都能搜到。
+  const materialOptions = useMemo(() => materials.map((material) => ({ value: material.id, label: materialOptionLabel(material) })), [materials]);
   const selectedCustomer = customers.find((item) => item.id === base.customer_id);
   const contacts = selectedCustomer?.contacts ?? [];
 
   const setBaseField = (key: string, value: string) => setBase((current) => ({ ...current, [key]: value }));
   const setDetailField = (index: number, key: string, value: string) => setDetails((current) => current.map((row, at) => (at === index ? { ...row, [key]: value } : row)));
+
+  /**
+   * 「修改列名」（用户 2026-09-30：「细分明细那边，可以改成自定义字段名称」）。
+   *
+   * 6 个列名**一次改完**，不做成"点某个表头就地编辑"：这一组名字是一起看的
+   * （「品番/品名」与「颜色/配色」是同一张表的列），逐列弹窗只会让人漏改两格，
+   * 而漏改的表现是"导出里一半是新名字、一半是旧名字"。
+   * **留空 = 用默认名**（清空一格就是恢复那一列的默认），这一句写在占位文案里。
+   */
+  function openDetailLabels() {
+    setLabelDialog({
+      title: "细分明细的列名",
+      fields: SPEC_DETAIL_COLUMNS.map(([key, defaultLabel], index) => ({
+        name: key,
+        label: `第 ${index + 1} 列（默认「${defaultLabel}」）`,
+        defaultValue: detailLabelOverrides[key] ?? "",
+        placeholder: `留空则用默认名：${defaultLabel}（最多 ${SPEC_DETAIL_LABEL_MAX_LENGTH} 字）`,
+      })),
+      submit: (values) => {
+        // 只留非空的（空 = 恢复默认），键取自同一份列清单，不另抄一份。
+        const next: Record<string, string> = {};
+        for (const [key] of SPEC_DETAIL_COLUMNS) {
+          const text = (values[key] ?? "").trim();
+          if (text) next[key] = text;
+        }
+        setDetailLabelOverrides(next);
+        setLabelDialog(null);
+        notifySuccess("明细列名已更新（保存后跟着这张单导出）");
+      },
+    });
+  }
 
   /**
    * 从物料清单里引用一个物料（用户 2026-09-24：「每个部件，既支持填空，也支持从现有的物料清单中引用」）。
@@ -304,11 +355,14 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     if (!base.currency?.trim()) { setError("请选择币种"); return; }
     if (!base.order_date?.trim()) { setError("下单日期必填"); return; }
     if (detailErrors.length) { setError(`明细第 ${detailErrors[0].row} 行：${detailErrors[0].reason}`); return; }
+    // 列名太长当场拦下：后端也会拒（SPEC_DETAIL_LABEL_TOO_LONG），但等一个来回才看到原因没必要。
+    const labelProblem = validateSpecDetailLabels(detailLabelOverrides);
+    if (labelProblem) { setError(labelProblem); return; }
     if (editing && status === "confirmed" && !reason.trim()) { setError("已确认销售单修改必须填写原因"); return; }
 
     setSaving(true);
     setError("");
-    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs) };
+    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs, detailLabelOverrides) };
     // 基础字段的空串当「没填」删掉：可选字段的 @IsDecimal/@IsDateString 会因为空串报 400。
     // 细化字段相反——空串 = 清除这一格，必须原样发出去（`specPayload` 已经把 37 个键都带上了）。
     for (const key of Object.keys(base)) if (base[key] === "" && !SPEC_SCALAR_KEYS.includes(key)) delete payload[key];
@@ -329,7 +383,7 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         ? (await apiPatch<{ id: string; orderNo: string }>(`/sales-orders/${orderId}`, payload)).data
         : (await apiPost<{ id: string; orderNo: string }>("/sales-orders", payload)).data;
       notifySuccess(editing ? "销售单已保存" : `销售单已创建（${saved.orderNo}）`);
-      router.push("/sales");
+      router.push("/sales/orders");
     } catch (cause) {
       // 保存失败留在页面上：用户填的 37 格 + 明细不能因为一次网络抖动白填。
       setError(errorOf(cause, "保存失败"));
@@ -339,7 +393,7 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     }
   }
 
-  if (loading) return <div className="page-root" data-testid="sales-order-editor"><PageHeader title={editing ? "编辑销售单" : "新建销售单"} breadcrumb={["销售", "销售单"]} /><LoadingState /></div>;
+  if (loading) return <div className="page-root" data-testid="sales-order-editor"><PageHeader title={editing ? "编辑销售单" : "新建销售单"} breadcrumb={["客户与销售", "销售单"]} /><LoadingState /></div>;
 
   /**
    * 返单来源拉不到时**不渲染表单**。
@@ -351,20 +405,21 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   if (reorderMode && !reorderSource) {
     return (
       <div className="page-root" data-testid="sales-order-editor">
-        <PageHeader title="新建销售单（返单）" breadcrumb={["销售", "销售单"]} />
+        <PageHeader title="新建销售单（返单）" breadcrumb={["客户与销售", "销售单"]} />
         <section className="panel"><ErrorState message={error || "返单来源加载失败"} onRetry={() => void load()} /></section>
-        <section className="panel panel-body"><Button variant="secondary" onClick={() => router.push("/sales")}>返回销售单列表</Button></section>
+        <section className="panel panel-body"><Button variant="secondary" onClick={() => router.push("/sales/orders")}>返回销售单列表</Button></section>
       </div>
     );
   }
 
   return (
     <div className="page-root" data-testid="sales-order-editor">
-      <PageHeader title={editing ? `编辑销售单 ${base.order_no ?? ""}` : "新建销售单"} breadcrumb={["销售", "销售单"]}>
-        <Button variant="secondary" onClick={() => router.push("/sales")} disabled={saving}>取消</Button>
+      <PageHeader title={editing ? `编辑销售单 ${base.order_no ?? ""}` : "新建销售单"} breadcrumb={["客户与销售", "销售单"]}>
+        <Button variant="secondary" onClick={() => router.push("/sales/orders")} disabled={saving}>取消</Button>
         <Button onClick={() => void save()} disabled={saving} data-testid="sales-order-save">{saving ? "保存中…" : "保存"}</Button>
       </PageHeader>
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
+      <ActionDialog open={Boolean(labelDialog)} onOpenChange={(open) => { if (!open) setLabelDialog(null); }} title={labelDialog?.title ?? "细分明细的列名"} fields={labelDialog?.fields ?? []} onSubmit={(values) => { void labelDialog?.submit(values); }} />
 
       {/*
         返单横幅（2026-09-26）：回答「这张单是从哪来的」。
@@ -468,10 +523,22 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
                   <textarea className="ui-input" rows={2} data-testid={`sales-spec-${key}`} value={spec[key] ?? ""} onChange={(event) => setSpec((current) => ({ ...current, [key]: event.target.value }))} />
                 </label>
                 <div className="action-row">
-                  <Select value={ref?.id ?? ""} onValueChange={(value) => pickMaterial(key, value)}>
-                    <SelectTrigger data-testid={`sales-material-ref-${key}`}><SelectValue placeholder="从物料清单引用…" /></SelectTrigger>
-                    <SelectContent>{materials.map((material) => <SelectItem key={material.id} value={material.id}>{materialOptionLabel(material)}</SelectItem>)}</SelectContent>
-                  </Select>
+                  {/*
+                    用**可搜索**的下拉（用户 2026-09-26：「材料明细，引用的下拉列表也支持搜索」）：
+                    物料池动辄几百条，靠肉眼在一长串里找一个伞骨是不现实的。
+                    `ui/searchable-select` 是全站既有的搜索下拉原语（应收账款科目、工资科目等在用），
+                    这里不另造一个：过滤语义（label 与 value 都命中、忽略大小写）只该有一处实现。
+                  */}
+                  <SearchableSelect
+                    testId={`sales-material-ref-${key}`}
+                    value={ref?.id ?? ""}
+                    options={materialOptions}
+                    onChange={(value) => pickMaterial(key, value)}
+                    placeholder="从物料清单引用…"
+                    label={`${label}：从物料清单引用`}
+                    searchPlaceholder="输入物料编码 / 名称 / 规格 / 颜色搜索"
+                    noResultsText="没有匹配的物料（可到【采购 → 物料清单】新建）"
+                  />
                   {ref && <MaterialThumb materialId={ref.id} version={ref.image?.sha256} alt={materialOptionLabel(ref)} size={36} />}
                   {ref && <Button size="sm" variant="ghost" data-testid={`sales-material-ref-clear-${key}`} onClick={() => clearMaterialRef(key)}>清除引用</Button>}
                 </div>
@@ -508,7 +575,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
       <section className="panel">
         <div className="panel-heading">
           <h2>细分明细</h2>
-          <span className="panel-note">一张通用表：用「分组名」区分（伞布明细 / 伞头配色 / 外层花色搭配…）；图片不录入、导出留空</span>
+          <span className="panel-note">一张通用表：用「分组名」区分（伞布明细 / 伞头配色 / 外层花色搭配…）；图片不录入、导出留空。列名可以改成你们的叫法，导出件跟着这张单印。</span>
+          <Button size="sm" variant="secondary" data-testid="sales-detail-labels" onClick={openDetailLabels}>修改列名</Button>
           <Button size="sm" variant="secondary" data-testid="sales-detail-add" onClick={() => setDetails((current) => [...current, emptySpecDetailRow()])}>加一行</Button>
         </div>
         <div className="panel-body">
@@ -516,13 +584,13 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
           {detailErrors.length > 0 && <div className="status-error" data-testid="sales-detail-errors">{detailErrors.map((item) => <p key={`${item.row}-${item.reason}`}>第 {item.row} 行：{item.reason}</p>)}</div>}
           <div className="table-wrap">
             <table className="ui-table">
-              <thead><tr>{SPEC_DETAIL_COLUMNS.map(([, label]) => <th key={label}>{label}</th>)}<th>操作</th></tr></thead>
+              <thead><tr>{SPEC_DETAIL_COLUMNS.map(([key]) => <th key={key} data-testid={`sales-detail-head-${key}`}>{detailLabels[key]}</th>)}<th>操作</th></tr></thead>
               <tbody>
                 {details.map((row, index) => (
                   <tr key={index} data-testid={`sales-detail-row-${index}`}>
-                    {SPEC_DETAIL_COLUMNS.map(([key, label]) => (
+                    {SPEC_DETAIL_COLUMNS.map(([key]) => (
                       <td key={key}>
-                        <Input aria-label={label} data-testid={`sales-detail-${index}-${key}`} value={row[key as keyof SpecDetailRow]} onChange={(event) => setDetailField(index, key, event.target.value)} />
+                        <Input aria-label={detailLabels[key]} data-testid={`sales-detail-${index}-${key}`} value={row[key as keyof SpecDetailRow]} onChange={(event) => setDetailField(index, key, event.target.value)} />
                       </td>
                     ))}
                     <td>

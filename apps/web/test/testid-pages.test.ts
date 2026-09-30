@@ -18,6 +18,10 @@ const EXPECTED: Record<string, string> = {
   "login/page.tsx": "page-login",
   "customers/page.tsx": "page-customers",
   "sales/page.tsx": "page-sales",
+  // 销售的三个板块收进二级页面（2026-09-30 用户要求）：一级页只剩卡片入口，各自一页只拉一个接口。
+  "sales/finished-goods/page.tsx": "page-sales-finished-goods",
+  "sales/customers/page.tsx": "page-sales-customers",
+  "sales/orders/page.tsx": "page-sales-orders",
   // 下单口径细化后的整页编辑器（2026-09-16）：字段太多，弹窗放不下，所以新建/编辑各一个路由。
   "sales/orders/new/page.tsx": "page-sales-orders-new",
   "sales/orders/[id]/edit/page.tsx": "page-sales-orders-edit",

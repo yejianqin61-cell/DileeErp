@@ -23,7 +23,7 @@ const read = (relative) => readFileSync(resolve(here, "..", relative), "utf8");
 const POOLS = [
   ["app/procurement/suppliers/page.tsx", "供应商池"],
   ["app/procurement/materials/page.tsx", "物料池（物料清单）"],
-  ["app/sales/page.tsx", "客户池"],
+  ["components/sales/customer-pool.tsx", "客户池"],
   ["components/production/master-data-pool-page.tsx", "工序池 / 加工地点池"],
   ["components/production/unit-pool-page.tsx", "单位池"],
   ["components/hr/organization-pool.tsx", "部门池 / 岗位池"],
@@ -52,7 +52,9 @@ test("池子清单不要漏登记：这些文件里出现的「池」标题都�
     "app/procurement/suppliers/page.tsx",
     "app/procurement/materials/page.tsx",
     "app/procurement/boms/page.tsx",
-    "app/sales/page.tsx",
+    // 2026-09-30：客户池从销售页搬进独立组件（销售二级页与 /customers 共用），
+    // 所以候选表里盯的是这个组件文件 —— 一级页 app/sales/page.tsx 现在只剩卡片入口。
+    "components/sales/customer-pool.tsx",
     "app/customers/page.tsx",
     "app/finance/banks/page.tsx",
     "app/production/operations/page.tsx",

@@ -366,6 +366,15 @@ model SalesOrder {
   strapRequirement          String?                    @map("strap_requirement") @db.VarChar(1000)
   hangTagNote               String?                    @map("hang_tag_note") @db.VarChar(1000)
   qcRequirement             String?                    @map("qc_requirement") @db.VarChar(1000)
+  // ---- 细分明细的自定义列名（2026-09-30，用户要求）----
+  // 「细分明细那边，可以改成自定义字段名称」：明细表那 6 个列名（分组名 / 品番品名 / 颜色配色 /
+  // 条码 / 数量 / 单位）**按单**改成用户自己的叫法，导出件跟着这张单印。
+  // 为什么是 JSON 而不是 6 个列：这是一组"可有可无的显示名"，没有任何一条业务规则挂在上面
+  // （既不参与校验、也不参与计算），为它加 6 列会让这行再宽 6 格，而默认值就在代码里
+  // （`SPEC_DETAIL_LABELS`）。空对象 `{}` = 全部用默认列名。
+  // 为什么不做成"用字典维护、全站一份"：同一张单的不同分组列名本来就不同（模板样本里
+  // 「伞布明细」与「伞头配色」两块的表头就不一样），而用户要的是"这一单按我写的印"。
+  specDetailLabels          Json                       @default("{}") @map("spec_detail_labels")
   createdAt                 DateTime                   @default(now()) @map("created_at")
   updatedAt                 DateTime                   @updatedAt @map("updated_at")
   createdBy                 String                     @map("created_by") @db.Uuid

@@ -115,7 +115,9 @@ const LOAD_ORDER = {
   // 仓库枢纽页已改为纯导航页（只单发一次 /raw-material-inbound-notices，没有位置型解构），
   // 原来的多接口加载分别落在 production/material-issues 与 warehouse/raw-material-storage 上，见上下两行。
   "app/warehouse/raw-material-storage/page.tsx": ["/materials", "/units", "/incoming-inspections", "/raw-material-inbounds"],
-  "app/sales/page.tsx": ["/customers?page_size=200", "/sales-orders?page_size=200", "/units"],
+  // 2026-09-30：销售页拆成三个二级页之后，原来这一行（三个接口的位置型解构）不存在了 ——
+  // 客户池与销售单各自一页、各发一个请求（单请求没有"错位"可言），成品总览另有一页。
+  // 与上面采购单页瘦身时同样的处理：从这张表里移除，而不是留一行指向一个不存在的解构。
   "app/production/material-issues/page.tsx": ["/production/material-movements", "/production/orders"]
 };
 

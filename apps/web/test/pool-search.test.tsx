@@ -1,7 +1,7 @@
 // 池子搜索的**行为**测试（用户 2026-09-16：「供应商池，要支持搜索」「所有池子，都要支持搜索」）。
 //
 // 覆盖本轮补上搜索框的三个池子：供应商池（/procurement/suppliers）、物料清单/物料池
-// （/procurement/materials）、客户池（销售页 /sales，/customers 复用同一个页面）。
+// （/procurement/materials）、客户池（销售二级页 /sales/customers，/customers 复用同一个组件）。
 // 其余池子（工序池、加工地点池、单位池、部门池、岗位池、银行账户池）本来就有搜索框，
 // 本轮只把它们统一到同一套匹配语义（多词 AND），语义本身由 lib/fuzzy-search.test.mjs 推演。
 //
@@ -11,7 +11,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SuppliersPage from "../app/procurement/suppliers/page";
 import MaterialsPage from "../app/procurement/materials/page";
-import SalesPage from "../app/sales/page";
+import CustomerPool from "../components/sales/customer-pool";
 import { apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
 
 const EP = {
@@ -156,7 +156,7 @@ describe("物料池（物料清单）：搜索", () => {
   });
 });
 
-// ------------------------------------------------------------------ 客户池（销售页）
+// ------------------------------------------------------------------ 客户池（销售二级页）
 
 const customers = [
   { id: "c-1", customerCode: "C-001", name: "香港迪礼国际贸易有限公司", countryRegion: "中国香港", address: "九龙弥敦道 1 号", paymentTerms: "T/T 30 天", currency: "USD", remark: null, isActive: true, contacts: [{ id: "ct-1", name: "李经理", position: "采购", phone: "13700000001", email: "li@example.com", isDefault: true, isActive: true }] },
@@ -167,13 +167,10 @@ const customers = [
 async function openCustomers() {
   stubApi((url) => {
     if (url === EP.customers) return apiOk(customers);
-    if (url === EP.salesOrders) return apiOk([]);
-    if (url === EP.units) return apiOk(units);
     if (url === EP.currencies) return apiOk([{ key: "USD", label: "美元", sortOrder: 10 }]);
     return apiOk([]);
   });
-  render(<SalesPage />);
-  await screen.findByText("客户池");
+  render(<CustomerPool />);
   await screen.findByText("香港迪礼国际贸易有限公司");
 }
 

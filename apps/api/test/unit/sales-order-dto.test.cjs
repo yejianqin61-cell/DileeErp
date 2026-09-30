@@ -242,3 +242,25 @@ test("材料明细引用物料：material_id 必须是 UUID、spec_key 不能空
   const shapeOnly = await validateBody(SalesOrderDto, { ...base, material_refs: [{ spec_key: "qc_requirement", material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }] });
   assert.equal(shapeOnly.material_refs.length, 1, "DTO 不替业务清单做判断（那条判定有单测钉在服务层）");
 });
+
+// 细分明细的自定义列名（2026-09-30 用户要求：「细分明细那边，可以改成自定义字段名称」）。
+test("细分明细列名：对象透传，空对象 = 全部恢复默认列名（不能被当成「没传」）", async () => {
+  const labels = { name: "伞头英文名", quantity: "数量/打" };
+  const created = await validateBody(SalesOrderDto, { ...minimalBody(), spec_detail_labels: labels });
+  assert.deepEqual(created.spec_detail_labels, labels, "整块透传给服务层（键与长度的判定在服务层）");
+  const cleared = await validateBody(UpdateSalesOrderDto, { spec_detail_labels: {} });
+  assert.deepEqual(cleared.spec_detail_labels, {}, "空对象是合法值（= 全部恢复默认），不等于「没传」");
+  const untouched = await validateBody(UpdateSalesOrderDto, {});
+  assert.equal(untouched.spec_detail_labels, undefined, "没传 = 这一块不动");
+});
+
+test("细分明细列名：不是对象就在 DTO 挡下（数组/字符串/数字都不行）", async () => {
+  const base = minimalBody();
+  await assertRejected(SalesOrderDto, { ...base, spec_detail_labels: ["name"] }, "数组不是「列键 → 列名」");
+  await assertRejected(SalesOrderDto, { ...base, spec_detail_labels: "name=品名" }, "字符串不是对象");
+  await assertRejected(SalesOrderDto, { ...base, spec_detail_labels: 3 }, "数字不是对象");
+  // 认不出的列键同样在 DTO 过、到服务层才拒（SPEC_DETAIL_LABEL_KEY_UNSUPPORTED）：
+  // 「哪 6 个列可以改名」是业务清单说了算的，抄进 DTO 就是一份会过期的副本。
+  const shapeOnly = await validateBody(SalesOrderDto, { ...base, spec_detail_labels: { price: "单价" } });
+  assert.deepEqual(shapeOnly.spec_detail_labels, { price: "单价" });
+});

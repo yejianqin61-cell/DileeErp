@@ -13,7 +13,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { ItemNoInput, type ItemNoSuggestion } from "../components/sales/item-no-input";
 import { SalesOrderEditor } from "../components/sales/sales-order-editor";
-import SalesPage from "../app/sales/page";
+import SalesOrdersList from "../components/sales/sales-orders-list";
 import { apiOk, stubApi } from "./helpers/api-stub";
 
 const routerPush = vi.fn();
@@ -190,8 +190,8 @@ async function openSales(orders: unknown[]) {
     if (url.includes("/dictionaries/currency/items")) return apiOk({ data: [] });
     return apiOk([]);
   });
-  render(<SalesPage />);
-  await screen.findByTestId("page-sales");
+  render(<SalesOrdersList />);
+  await screen.findByTestId("page-sales-orders");
 }
 
 const bodyRows = () => screen.queryAllByRole("row").map((row) => within(row).queryAllByRole("cell").map((cell) => cell.textContent ?? "").join(" | "));
