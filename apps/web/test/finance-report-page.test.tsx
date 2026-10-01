@@ -423,6 +423,9 @@ describe("财务报表 · 加载与预览", () => {
    */
   it("核算表：同屏给出「本月管理费」登记面板，保存后重取报表（费率变了表必须变）", async () => {
     captureDownloads();
+    // 「本月」= 跑测试时的当前月。页面用 `firstDayOfMonth()`（`new Date()`）算期间，
+    // 所以这里**不能写死月份** —— 写死就会在下个月 1 号变成一颗定时炸弹（2026-10-01 真实炸过一次，把部署门禁压红了）。
+    const month = new Date().toISOString().slice(0, 7);
     const calls = stubReports({ extra: (url, call) => {
       if (url.includes("/finance/overhead-allocations/resolved")) return apiOk({ period: "2026-09", record: { id: "oa-1", period: "2026-09", amount: "220000", unit: "打", quantity_override: null, remark: null }, unit: "打", auto_quantity: "4000", quantity: "4000", rate: "55" });
       if (call.method === "POST" && url.includes("/finance/overhead-allocations")) return apiOk({ period: "2026-09", record: null, unit: "打", auto_quantity: "4000", quantity: "4000", rate: "55" });
@@ -443,7 +446,7 @@ describe("财务报表 · 加载与预览", () => {
     setValue("overhead-amount", "180000");
     fireEvent.click(screen.getByTestId("overhead-save"));
     await waitFor(() => expect(calls.filter((call) => call.method === "POST" && call.url.includes("/finance/overhead-allocations")).length).toBe(1));
-    expect(bodyOf(calls.find((call) => call.method === "POST" && call.url.includes("/finance/overhead-allocations"))!)).toMatchObject({ period: "2026-09", amount: "180000", unit: "打" });
+    expect(bodyOf(calls.find((call) => call.method === "POST" && call.url.includes("/finance/overhead-allocations"))!)).toMatchObject({ period: month, amount: "180000", unit: "打" });
     // 保存成功后重取报表：费率变了，表上的管理费列必须跟着变
     await waitFor(() => expect(previews(calls, EP.costAccounting).length).toBe(2));
   });
