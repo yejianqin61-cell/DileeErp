@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>销售模块完成度与联动度评估 · 接单可用、管控空白</title>
+<style>
+:root{
+  --bg:#f7f8fa; --panel:#ffffff; --ink:#1a2029; --muted:#5b6675; --line:#e2e6ec;
+  --accent:#2563eb; --accent-soft:#eef3ff;
+  --ok:#15803d; --ok-soft:#eaf7ee; --warn:#b45309; --warn-soft:#fdf4e7; --gap:#b91c1c; --gap-soft:#fdeeee;
+  --code:#f2f4f7; --radius:12px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0f141b; --panel:#161d27; --ink:#e7ecf3; --muted:#9aa7b6; --line:#27303c;
+    --accent:#78a6ff; --accent-soft:#16233a;
+    --ok:#5ed08a; --ok-soft:#122a1c; --warn:#f0b354; --warn-soft:#2c2213; --gap:#f08585; --gap-soft:#2e1616;
+    --code:#1b232e;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+main,header,footer{max-width:1000px;margin:0 auto;padding:0 20px}
+header{padding-top:36px}
+h1{font-size:26px;line-height:1.35;margin:0 0 10px}
+h2{font-size:19px;margin:34px 0 10px;padding-left:10px;border-left:4px solid var(--accent)}
+h3{font-size:16px;margin:20px 0 6px}
+p{margin:8px 0}
+.meta{color:var(--muted);font-size:13px;margin:0 0 16px}
+.verdict{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:var(--radius);padding:18px 20px;margin:0 0 8px}
+.verdict p{margin:0 0 8px}
+.verdict p:last-child{margin-bottom:0}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:18px 0 4px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi b{display:block;font-size:22px;line-height:1.2;color:var(--accent)}
+.kpi span{font-size:12px;color:var(--muted)}
+nav{max-width:1000px;margin:18px auto 0;padding:0 20px;font-size:14px}
+nav ol{margin:0;padding-left:20px;columns:2}
+nav a{color:var(--accent);text-decoration:none}
+nav a:hover{text-decoration:underline}
+section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:4px 20px 18px;margin:16px 0}
+section.plain{background:none;border:0;padding:0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.card h4{margin:0 0 6px;font-size:14px;color:var(--muted);font-weight:600}
+.card ul{margin:0;padding-left:18px;font-size:14px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin:10px 0}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--accent-soft);color:var(--ink);font-weight:600}
+tbody tr:nth-child(even) td{background:color-mix(in srgb,var(--bg) 60%,var(--panel))}
+td code,li code,p code{background:var(--code);border-radius:4px;padding:1px 5px;font:12.5px ui-monospace,SFMono-Regular,Consolas,monospace;word-break:break-all}
+.pill{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;white-space:nowrap;border:1px solid}
+.pill.done{color:var(--ok);background:var(--ok-soft);border-color:var(--ok)}
+.pill.warn{color:var(--warn);background:var(--warn-soft);border-color:var(--warn)}
+.pill.gap{color:var(--gap);background:var(--gap-soft);border-color:var(--gap)}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0 2px}
+.controls span{font-size:13px;color:var(--muted)}
+button{font:inherit;font-size:13px;padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.flow{margin:14px 0 6px;font-size:13px}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 8px}
+.row b.tag{min-width:64px;color:var(--muted);font-weight:600;font-size:12px}
+.node{border:1.5px solid var(--line);border-radius:8px;padding:5px 10px;background:var(--bg);white-space:nowrap}
+.node.fk{border-color:var(--accent);background:var(--accent-soft);font-weight:600}
+.node.soft{border-style:dashed}
+.node.root{border-color:var(--accent);background:var(--accent-soft);font-weight:700;font-size:14.5px;padding:8px 14px}
+.arrow{color:var(--muted);font-size:12px;display:inline-flex;flex-direction:column;align-items:center;line-height:1.15}
+.arrow small{font-size:10.5px;color:var(--muted)}
+.legend{font-size:12.5px;color:var(--muted);margin:6px 0 0}
+.legend i{font-style:normal}
+.legend .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px;border:1.5px solid var(--accent);background:var(--accent-soft)}
+.legend .sw.soft{border-style:dashed;border-color:var(--line);background:none}
+details{border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:8px 0;background:var(--bg)}
+summary{cursor:pointer;font-weight:600;font-size:14px}
+details .body{font-size:14px;padding-top:8px}
+ol,ul{padding-left:22px}
+.takeaway{font-size:13.5px;color:var(--muted);margin-top:0}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow:auto;font:12.5px ui-monospace,SFMono-Regular,Consolas,monospace;margin:10px 0 0}
+footer{color:var(--muted);font-size:12.5px;border-top:1px solid var(--line);margin-top:30px;padding:16px 20px 40px}
+.hide{display:none !important}
+@media (prefers-reduced-motion: no-preference){html{scroll-behavior:smooth}}
+@media print{
+  nav,.controls,button{display:none !important}
+  body{background:#fff;color:#000;font-size:11pt}
+  section,.verdict,.card{break-inside:avoid;border-color:#999}
+  details .body{display:block !important}
+  details summary{display:none}
+  th{background:#eee}
+  main,header,footer{max-width:none;padding:0}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>销售模块完成度与联动度评估：接单可用、管控空白</h1>
+  <p class="meta">仓库 <code>DileeErp</code> · 数据截止 <b>2026-09-30</b>（提交 <code>d9fc9f3</code>）· 结论可反对、口径见 §2</p>
+  <div class="verdict" id="verdict">
+    <p><b>结论：接单段已完成、联动很深；交易管控段是空白。</b></p>
+    <p>能做的：客户与联系人、销售单（87 列单头含 37 个工艺标量）、BOM 起点、货号与返单链、出货通知、工艺单导出、订单号全链更正。<b>31 条</b>销售域 API 路由，<b>6</b> 个 <code>/sales</code> 页面。</p>
+    <p>联动：<b>11 张跨模块表有硬外键</b>指向销售单，另 <b>38 张下游表各带一份 <code>order_no</code></b>；出货→应收是自动链路，计价有三档明确口径。但是<b>「身份共享 + 单向推送」</b>：下游引用后核心字段改不动（必须先回退整条链），下游状态也不回写销售单。</p>
+    <p>空白：报价、销售合同、样品单、信用额度、销售发票单据；价格每单手打，没有价目表。</p>
+    <p><b>要你决定：</b>① 是否给订单号定生成规则（成本小、收益直接）；② 是否往商务前段走 —— 决定前先定「报价是否版本化」和「信用额度是硬门禁还是提示」。</p>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><b>31</b><span>销售域 API 路由</span></div>
+    <div class="kpi"><b>6</b><span><code>/sales</code> 页面</span></div>
+    <div class="kpi"><b>87</b><span>销售单单头列数</span></div>
+    <div class="kpi"><b>11</b><span>跨模块硬外键</span></div>
+    <div class="kpi"><b>38</b><span>只带 order_no 的下游表</span></div>
+    <div class="kpi"><b>24</b><span>销售域测试文件</span></div>
+  </div>
+</header>
+
+<nav aria-label="目录">
+  <ol>
+    <li><a href="#how">用什么口径评、边界在哪</a></li>
+    <li><a href="#can">现在能做什么、缺什么</a></li>
+    <li><a href="#link">和别的模块联动有多深</a></li>
+    <li><a href="#struct">联动的结构性问题是什么</a></li>
+    <li><a href="#risk">风险与已知缺陷</a></li>
+    <li><a href="#next">建议下一步做什么</a></li>
+    <li><a href="#verify">怎么复核这份评估</a></li>
+    <li><a href="#scope">什么不在这份评估里</a></li>
+  </ol>
+</nav>
+
+<main>
+<section id="how">
+  <h2>用什么口径评、边界在哪</h2>
+  <div class="grid2">
+    <div class="card">
+      <h4>完成度：五条判据</h4>
+      <ul>
+        <li>端到端可跑（不只在库里落一行）</li>
+        <li>异常有出口（更正 / 回退 / 冲销）</li>
+        <li>有门禁与口径</li>
+        <li>有交付物（打印 / 导出）</li>
+        <li>有测试守卫</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>联动度：四条判据</h4>
+      <ul>
+        <li>覆盖多少下游域</li>
+        <li>载体强度（硬外键 &gt; 文本冗余）</li>
+        <li>方向（单向 / 双向 / 回写）</li>
+        <li>一致性有没有守卫</li>
+      </ul>
+    </div>
+  </div>
+  <h3>边界</h3>
+  <p>只评销售域及其直接联动。返单与总结、订单工作台只作为联动证据，不单独评分。不含 UI 视觉与性能。</p>
+  <h3>假设（这是评估者的判断，不是你的验收标准）</h3>
+  <ul>
+    <li><b>假设 1</b>：本机没有 PostgreSQL 与 API 实例，所以「能跑通」的依据是单测与源码路径，<b>不是端到端实测</b>；唯一的实机验证是本报告在真实 Chromium 里的渲染。</li>
+    <li><b>假设 2</b>：文档里出现的行号与计数取自提交 <code>d9fc9f3</code> 的工作区。</li>
+  </ul>
+</section>
+
+<section id="can">
+  <h2>现在能做什么、缺什么</h2>
+  <p class="takeaway">七段完成、两段部分、三段空白。空白全在「商务前段与管控」，不在接单主流程。</p>
+  <div class="controls" role="group" aria-label="按完成状态筛选能力表">
+    <span>筛选：</span>
+    <button type="button" data-filter="all" aria-pressed="true">全部</button>
+    <button type="button" data-filter="done" aria-pressed="false">完成</button>
+    <button type="button" data-filter="warn" aria-pressed="false">部分</button>
+    <button type="button" data-filter="gap" aria-pressed="false">空白</button>
+  </div>
+  <table id="capability">
+    <thead><tr><th style="width:20%">能力段</th><th style="width:9%">状态</th><th style="width:38%">依据</th><th>缺口</th></tr></thead>
+    <tbody>
+      <tr data-status="done"><td>客户与联系人</td><td><span class="pill done">完成</span></td><td>9 条路由含停用与软删；客户快照进单</td><td>无信用额度；<code>payment_terms</code> 只是文本</td></tr>
+      <tr data-status="done"><td>接单（建 / 改 / 确认 / 关闭 / 回退草稿）</td><td><span class="pill done">完成</span></td><td><code>sales-orders.controller.ts</code> 18 条路由；版本快照；<code>coreFields</code> 锁保护下游</td><td>价格无主数据；不校验客户信用</td></tr>
+      <tr data-status="done"><td>工艺单口径（37 标量 + 18 处物料引用 + 明细列名自定义）</td><td><span class="pill done">完成</span></td><td>迁移 + 回填 + 导出一致；历史丢数据问题已修</td><td>—</td></tr>
+      <tr data-status="done"><td>货号与返单链</td><td><span class="pill done">完成</span></td><td>货号候选；返单三条守卫；来源文本引用</td><td>无按旧号反查（本轮按既定口径不做）</td></tr>
+      <tr data-status="done"><td>订单号更正（全链改名）</td><td><span class="pill done">完成</span></td><td>38 表 + 返单来源 + 版本快照一个事务；schema 覆盖守卫</td><td>存量错号靠人工逐张改</td></tr>
+      <tr data-status="done"><td>出货通知与成品视图</td><td><span class="pill done">完成</span></td><td>整批与分批通知；成品出入库总览</td><td>销售单自身不体现发货进度</td></tr>
+      <tr data-status="done"><td>工艺单导出</td><td><span class="pill done">完成</span></td><td>两样本并集版式；图片勾选；行高自适应</td><td>—</td></tr>
+      <tr data-status="warn"><td>交期管理</td><td><span class="pill warn">部分</span></td><td>有 <code>delivery_date</code>；阻塞原因在工作台汇总</td><td>无排程；无交期预警推给销售</td></tr>
+      <tr data-status="warn"><td>价格与折扣</td><td><span class="pill warn">部分</span></td><td>单价 / 总额 / 结算币价 / 应收金额 4 格齐全；出库→应收有优先级</td><td>无价目表；无折扣规则；无审批</td></tr>
+      <tr data-status="gap"><td>报价 · 销售合同 · 样品单 · 接单转化</td><td><span class="pill gap">空白</span></td><td>无表、无路由（schema 里只有 <code>sample_requirement</code> 一个文字格）</td><td>V1.0 明确不支持</td></tr>
+      <tr data-status="gap"><td>信用额度与账期控制</td><td><span class="pill gap">空白</span></td><td>无字段、无门禁</td><td>超发只能靠人工填风险原因</td></tr>
+      <tr data-status="gap"><td>销售发票单据</td><td><span class="pill gap">空白</span></td><td>只有 <code>invoice_no</code> / <code>invoice_date</code> 两个文本格</td><td>无单据；无税额计算</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="link">
+  <h2>和别的模块联动有多深</h2>
+  <p class="takeaway">方向图：销售单是起点，三支下游各自一条链；<b>实线框＝有硬外键</b>，<b>虚线框＝只带 <code>order_no</code></b>。所有下游都另带一份订单号，一致性靠改号级联维持。</p>
+  <div class="flow">
+    <div class="row">
+      <span class="node root">销售单</span>
+      <span class="arrow">→<small>建单</small></span>
+      <span class="node fk">BOM 表</span>
+      <span class="arrow">→<small>收束下单</small></span>
+      <span class="node fk">采购计划</span>
+      <span class="arrow">→<small>下单</small></span>
+      <span class="node fk">采购单</span>
+      <span class="arrow">→<small>登记到货</small></span>
+      <span class="node soft">到货 / QC</span>
+      <span class="arrow">→<small>质检入库</small></span>
+      <span class="node soft">原料入库</span>
+      <span class="arrow">→<small>挂账</small></span>
+      <span class="node soft">应付台账</span>
+      <b class="tag">采购链</b>
+    </div>
+    <div class="row">
+      <b class="tag">生产链</b>
+      <span class="node fk">生产单</span>
+      <span class="arrow">→<small>领料</small></span>
+      <span class="node soft">领料单</span>
+      <span class="arrow">→<small>日报</small></span>
+      <span class="node soft">工序 / 员工日报</span>
+      <span class="arrow">→<small>计件</small></span>
+      <span class="node soft">计件工资</span>
+    </div>
+    <div class="row">
+      <b class="tag">钱链</b>
+      <span class="node fk">出库通知</span>
+      <span class="arrow">→<small>发货</small></span>
+      <span class="node fk">成品出库</span>
+      <span class="arrow">→<small>过账计价</small></span>
+      <span class="node fk">应收来源</span>
+      <span class="arrow">→<small>收款核销</small></span>
+      <span class="node fk">收款单</span>
+      <span class="arrow">→<small>对账</small></span>
+      <span class="node fk">应收对账单</span>
+    </div>
+    <p class="legend"><i><span class="sw"></span>硬外键：不会指向不存在的单（11 张跨模块表）</i> · <i><span class="sw soft"></span>只带 order_no：文本冗余，查询快但不自证（38 张表）</i></p>
+    <p class="takeaway">要点：<b>应付不在这条因果链上</b> —— 应付由采购驱动，订单号只是共享维度；销售侧看不到应付，这是边界不是缺陷。</p>
+  </div>
+
+  <table>
+    <thead><tr><th style="width:17%">下游域</th><th style="width:19%">载体</th><th style="width:16%">方向</th><th style="width:26%">证据（文件:行）</th><th>断链点</th></tr></thead>
+    <tbody>
+      <tr><td>BOM</td><td>硬外键 + <code>order_no</code></td><td>销售 → BOM</td><td><code>boms.service.ts:36</code></td><td>已确认单改核心字段被锁</td></tr>
+      <tr><td>采购（计划 / 采购单 / 到货 / 质检 / 入库）</td><td>硬外键（采购单、计划）+ <code>order_no</code></td><td>单向：销售 → 采购</td><td><code>purchase-orders.service.ts:560,568</code></td><td>销售不感知采购进度</td></tr>
+      <tr><td>生产单 / 领料 / 日报</td><td>硬外键 + <code>order_no</code></td><td>单向：销售 → 生产</td><td><code>production-orders.service.ts:29,35</code></td><td>同上</td></tr>
+      <tr><td>仓库（成品出入库 / 退货 / 库存事实）</td><td>硬外键（出库、退货）+ <code>order_no</code>（入库、事实）</td><td>销售发起出库通知</td><td><code>finished-goods-outbound-notice.service.ts:157</code></td><td>成品入库 / QC 只带 <code>order_no</code>，无外键</td></tr>
+      <tr><td>应收 / 收款 / 调整 / 对账</td><td>硬外键 + <code>order_no</code></td><td><b>双向</b>：出库过账→应收；收款核销→应收</td><td><code>receivable.service.ts:146</code> · <code>finished-goods-settlement.ts:30-50</code></td><td>收款进度不回写销售单</td></tr>
+      <tr><td>应付 / 付款</td><td><b>只有 <code>order_no</code></b></td><td><b>非因果链</b>：应付由采购驱动</td><td><code>raw-material-inbounds.service.ts:163-184</code></td><td>销售与应付之间无外键</td></tr>
+      <tr><td>现金流（定金）</td><td>只有 <code>order_no</code>（可空）</td><td>人工录入</td><td><code>cash-flow-workspace.tsx:198</code></td><td>定金靠人填单号归集</td></tr>
+      <tr><td>计件工资</td><td>只有 <code>order_no</code></td><td>生产日报 → 工资</td><td><code>employee-daily-reports.service.ts:50</code></td><td>—</td></tr>
+      <tr><td>报表 / 工作台 / 告警</td><td>按 <code>order_no</code> 聚合</td><td>只读</td><td><code>finance-report-query.service.ts:705</code> · <code>reports.service.ts:25</code></td><td>全部只读</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="struct">
+  <h2>联动的结构性问题是什么</h2>
+  <details open>
+    <summary>问题 1：一硬一软两套引用，软的那套只靠一条路径保证一致</summary>
+    <div class="body">
+      <p>11 张跨模块表有硬外键；另 38 张只靠文本 <code>order_no</code>。文本冗余换来查询速度，但一致性<b>只由改号级联这一条路径维持</b>（本轮才补齐）。</p>
+      <p>后果很具体：任何一次人工 SQL 改名都会留下脏引用，而脏引用只表现为「查询少数据」，不报错 —— 最后在财务对账差额里才暴露。</p>
+    </div>
+  </details>
+  <details>
+    <summary>问题 2：单向推送 + 锁死，销售单回答不了「这单走到哪了」</summary>
+    <div class="body">
+      <p>销售单一经下游引用，核心字段（数量 / 单价 / 币种 / 金额）就改不动，必须先回退 BOM、采购、生产（错误码 <code>SALES_ORDER_CORE_FIELDS_LOCKED</code>）。</p>
+      <p>下游也不回写销售单：销售单只有<b>草稿 / 已确认 / 已关闭</b>三态，发货与收款进度都是派生视图（工作台、成品视图）。这是设计取态，不是 bug，但它决定了销售要跨页看进度。</p>
+    </div>
+  </details>
+  <details>
+    <summary>问题 3：钱的口径是全链最紧的一环，同时刻意留了尾差</summary>
+    <div class="body">
+      <p>出库→应收有三档优先级：<b>应收金额 ÷ 订单数量</b> › <b>结算币价</b> › <b>销售单价</b>；整单出库时直接取应收金额本身，避免 4 位小数折算误差。</p>
+      <p>分批出库时每单按比例折算，逐单相乘会有尾差；代码把它写进应收备注（<code>finished-goods-settlement.ts:61-67</code>）：<b>逐单尾差 ≤ 0.0001，合计以销售单应收为准</b>。财务看到不为零的小尾差时要按这条口径读，不要当错账。</p>
+    </div>
+  </details>
+</section>
+
+<section id="risk">
+  <h2>风险与已知缺陷</h2>
+  <table>
+    <thead><tr><th style="width:26%">风险</th><th style="width:34%">证据</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td>订单号是人类手打，<b>没有生成规则、没有格式校验</b></td><td><code>docs/product/术语词典.md</code> 把「单据编号规则」列为待确认</td><td>改号降低了错的代价，但没有解决「为什么会错」</td></tr>
+      <tr><td>销售单变更<b>不级联到下游事实</b></td><td><code>impact-preview</code> 返回「已存在 BOM，销售单变更不会自动改写下游事实」</td><td>靠核心字段锁把风险挡在门口，而不是事后修数据</td></tr>
+      <tr><td>采购↔财务的 4 条高严重度缺陷会<b>污染销售侧看到的报表数字</b></td><td><code>docs/design/procurement-finance-alignment-2026-09-30.md</code> §3</td><td>不在销售模块内，但与销售同看一份报表</td></tr>
+      <tr><td>超发允许（填风险原因即可）→ 应收可超销售单应收</td><td>出库服务的 <code>risk_reason</code> 门禁</td><td>有门禁、有理由留痕，属刻意设计</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="next">
+  <h2>建议下一步做什么</h2>
+  <ol>
+    <li><b>给订单号定规则</b>（前缀 + 日期 + 流水），或至少加格式与重复的软校验。成本小、收益直接 —— 现在能改号，但「能改」不该是主要防线。</li>
+    <li><b>把「这单走到哪了」嵌进销售单详情</b>：工作台的汇总接口已经存在，缺的只是把它嵌到销售单页面。销售不必再跳两个页面。</li>
+    <li><b>往商务前段走之前，先答两个问题</b>：报价是否要版本化？信用额度是硬门禁还是提示？这两个决定决定数据模型 —— 先别写表。</li>
+  </ol>
+</section>
+
+<section id="verify">
+  <h2>怎么复核这份评估</h2>
+  <div class="controls">
+    <button type="button" id="copy-cmd">复制命令</button>
+    <span id="copy-note" role="status" aria-live="polite"></span>
+  </div>
+  <pre id="commands">git log --oneline -3
+# 联动面：order_no 列共 40 个（38 张下游表 + 审计 + 源头）
+(Select-String apps/api/prisma/schema.prisma -Pattern '@map\("order_no"\)').Count
+# 硬外键：14 条 SalesOrder 关系（含销售自身 3 张子表）
+(Select-String apps/api/prisma/schema.prisma -Pattern 'SalesOrder\??\s+@relation').Count
+# 销售域路由数：18 + 9 + 4 = 31
+(Select-String apps/api/src/modules/sales/*.controller.ts -Pattern '^\s*@(Get|Post|Patch|Delete)\(').Count
+npm run test:unit:api</pre>
+  <p class="takeaway">测试基线：API 单测 <b>2275/2275</b>、web 组件 <b>1035/1035</b>（60 文件）、web lib <b>301/301</b>、<code>test:deploy</code> <b>32/32</b>、<code>next build</code> 通过。</p>
+</section>
+
+<section id="scope">
+  <h2>什么不在这份评估里</h2>
+  <ul>
+    <li>返单与总结、订单工作台的<b>功能完成度</b>（只作联动证据）。</li>
+    <li>UI 视觉、性能、权限矩阵。</li>
+    <li><b>端到端实测</b>：本机无 PostgreSQL 与 API 实例，HTTP 契约与集成测试未运行。</li>
+    <li>与竞品或既有 ERP 的功能对照 —— 没有做。</li>
+  </ul>
+</section>
+</main>
+
+<footer>
+  依据：本仓库源码与提交 <code>d9fc9f3</code>（2026-09-30）；数字随时间会变，复核命令见 §7。<br>
+  本文件为单文件报告：无外部依赖、无网络请求，可直接从磁盘打开或打印。<br>
+  评估者判断与事实分开标注：标注「假设」的是判断，带 <code>文件:行</code> 的是源码事实。
+</footer>
+
+<script>
+(function(){
+  var buttons = document.querySelectorAll('.controls [data-filter]');
+  var rows = document.querySelectorAll('#capability tbody tr');
+  buttons.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var want = btn.getAttribute('data-filter');
+      buttons.forEach(function(other){ other.setAttribute('aria-pressed', String(other === btn)); });
+      rows.forEach(function(row){
+        var show = want === 'all' || row.getAttribute('data-status') === want;
+        row.classList.toggle('hide', !show);
+      });
+    });
+  });
+  var copy = document.getElementById('copy-cmd');
+  var note = document.getElementById('copy-note');
+  if (copy) {
+    copy.addEventListener('click', function(){
+      var text = document.getElementById('commands').textContent;
+      var done = function(){ note.textContent = '已复制'; setTimeout(function(){ note.textContent = ''; }, 2000); };
+      var fail = function(){ note.textContent = '请手动选中复制'; };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fail);
+      else fail();
+    });
+  }
+})();
+</script>
+</body>
+</html>

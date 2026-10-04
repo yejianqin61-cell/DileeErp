@@ -115,6 +115,8 @@
   [物料图片与销售单材料引用设计](../design/material-images-and-sales-order-material-refs-2026-09-24.md) 与
   [销售板块二级页与明细列名设计](../design/sales-order-subpages-and-detail-labels-2026-09-30.md)
 - 询盘、报价、样品单、英文合同、接单转化：**V1.0 不支持**
+- **本模块的完成度与联动度评估**（2026-09-30，含方向图、能力状态表、结构性问题与风险）：
+  [sales-module-completeness-2026-09-30.html](sales-module-completeness-2026-09-30.html)（单文件报告，可直接打开或打印）
 
 ### 3.3 BOM
 
