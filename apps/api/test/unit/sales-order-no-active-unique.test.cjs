@@ -28,6 +28,15 @@ test("迁移：订单号唯一性改成「未删除行上唯一」，并先挡�
   // 未删除行里已有重复号时，索引建不上 —— 迁移要在那之前显式失败，而不是留下半个状态。
   assert.match(migrationSql, /HAVING COUNT\(\*\) > 1/, "要先检出重复订单号");
   assert.match(migrationSql, /RAISE EXCEPTION/, "有重复数据就报错中止");
+  // 被 DROP 的 `sales_orders_order_no_key` 与被声明的 `@@index([orderNo])` 是**两条不同的索引**，
+  // 前者顶不上后者：少了这条普通索引，按号反查里不带 `deleted_at` 条件的入口（改号全链扫描、
+  // 影响面预览、返单来源反查）没有索引可用，`migrate diff` 也会长期多出 3 行漂移。
+  // 2026-10-08 原迁移漏了这一条（drift 293 → 296），部署 agent 在影子库上发现并补上。
+  assert.match(
+    migrationSql,
+    /CREATE INDEX "sales_orders_order_no_idx" ON "sales_orders"\("order_no"\);/,
+    "必须补上 @@index([orderNo]) 对应的普通索引",
+  );
 });
 
 test("schema：SalesOrder.orderNo 不能带 @unique（那会让软删的号永远占着）", () => {

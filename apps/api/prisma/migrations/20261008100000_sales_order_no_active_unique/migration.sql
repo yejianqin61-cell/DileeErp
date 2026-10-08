@@ -23,3 +23,13 @@ END $$;
 
 DROP INDEX IF EXISTS "sales_orders_order_no_key";
 CREATE UNIQUE INDEX "sales_orders_order_no_active_key" ON "sales_orders"("order_no") WHERE "deleted_at" IS NULL;
+
+-- 普通索引**必须补上**：`schema.prisma` 把 `@unique` 换成了 `@@index([orderNo])`（名字由 Prisma 定为
+-- `sales_orders_order_no_idx`），而被 DROP 掉的 `sales_orders_order_no_key` 是**另一条**索引，
+-- 它顶不上这一条。少了它有两处真实代价：
+--   1. 按号反查里**不带 `deleted_at IS NULL`** 的那些入口（改号的全链扫描与影响面预览、
+--      返单来源反查、`order_no` 精确取单）失去索引 —— 部分索引只覆盖带该条件的查询，Postgres 用不上。
+--   2. `prisma migrate diff` 会长期多出 3 行漂移（`CREATE INDEX "sales_orders_order_no_idx" …`）。
+--      漂移不报错、只是悄悄攒着，本仓库把它当缺陷（有过 6 行漂移的教训）。
+-- 非唯一、纯新增，不改任何数据。
+CREATE INDEX "sales_orders_order_no_idx" ON "sales_orders"("order_no");
