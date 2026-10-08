@@ -716,3 +716,54 @@ button { cursor: pointer; }
 .payroll-sheet-saving { color: var(--text-muted); }
 .payroll-sheet-input { width: 100%; min-width: 72px; border: 0; background: transparent; color: inherit; font: inherit; text-align: right; outline: none; }
 .payroll-sheet-table tfoot .ui-table-cell { border-top: 1px solid var(--border); background: var(--surface-muted); font-weight: 700; }
+
+/* BOM 表悬浮居中页 + 列宽（components/bom/bom-workbench.tsx，2026-10-08）。
+   用户原话：「1.BOM表页面，物料名称一长，后面的column就被压缩很窄。这很不好。我要求，扩大BOM表悬浮居中页面的
+   占页面大小，并且固定物料名称这一列的宽度。一旦字数超出，就省略显示，鼠标hover时显示全部文字。」
+
+   三个入口（采购→BOM表、采购单→编辑BOM、生产→BOM表）渲染的是同一个组件，所以这里改一处、三处同时生效。
+
+   ① 悬浮页放大：居中摆位来自 `.ui-sheet-right`（(0,1,0)，`min(80vw, 1280px)`），
+      这里用 `.ui-sheet-content.bom-workbench`（(0,2,0)）压过它 —— 不靠样式表先后顺序
+      （依赖顺序的写法在这个文件里静默失效过一次，见上面 `.cell-ellipsis` 的注释）。
+      实测悬浮页宽（改前 → 改后）：1920 屏 1280 → 1843（+563）、1600 屏 1280 → 1536（+256）、
+      1440 屏 1152 → 1382（+230）、1366 屏 1093 → 1311（+218）、1024 屏 819 → 983（+164）。
+      `min()` 的第三个参数是给窄屏的：96vw 在 375px 屏上比 `100vw - 24px` 还宽 9px，
+      会把居中页推出屏幕（`@media (max-width: 720px)` 那条只有 (0,1,0)，压不过这条）。
+      高度原来封在 min(80vh, 100vh - 40px)，一并放到 `100vh - 24px`。
+
+   ② 列宽固定：`table-layout: fixed` 让列宽**只由下面的 width 决定、与单元格内容无关**，
+      这就是「物料名称一长，后面的 column 就被压缩很窄」的根治办法。
+      实测（1920 屏，有供应商列，物料名 6 字 → 46 字）：
+        改前  物料名称 154 → 487px（+333），型号 179 → 92、颜色 179 → 92、数量 179 → 92（各自 −87px）；
+        改后  物料名称 451px，型号 198、颜色 162、数量 144 —— 与字数完全无关。
+      1366 屏改前更糟：整张表被长名顶到 1086px、可用宽度只有 1055px，于是底下出现横向滚动条（33px）。
+
+      每一列都写了显式百分比宽度、总和正好 100%（守卫见 lib/bom-table.test.mjs）：
+      固定布局下这 9 个 width 就是 9 个列宽，浏览器不必再替任何一列"猜"宽度 —— 那正是长名字挤别人的入口。
+      **为什么全用百分比、不拿 px 混搭**：生产侧不显示供应商列（`showSupplier={false}`，少 17%），
+      实测混合两种单位时浏览器会把那 17% 全塞给 px 那两列（1920 屏：序号 48 → 208px、操作 56 → 243px，
+      两个畸形列）；全百分比则按比例摊给每一列（1920 屏：物料名称 451 → 543、序号 72 → 87），
+      两种模式都不会出现一根撑得莫名其妙的列。
+      表的最小宽度 1180px：窄屏宁可横向滚动，也不把列压到放不下内容（1024 视口：悬浮页 983px、
+      表 1180px → 237px 横向滚动）。滚动条本来就归 `.table-wrap`，且改前长名字同样会拖出 307px。
+
+   ③ 物料名称列：超出省略 + hover 看全文（`title` 由 bom-workbench.tsx 给）。
+      `min-width: 0` 不能省：`.ui-select-trigger` 是 flex 容器，里面的 Radix Value `<span>` 默认
+      最小宽度是 min-content，只写 overflow/text-overflow 它照样把列撑开。同一条规则在
+      `.purchase-workspace`、`.purchase-plan-sheet` 上已经用过两次。
+      内边距 14px → 10px：固定布局下列宽不再随内容变，这省下的 8px 是每列实打实的可用宽度。 */
+.ui-sheet-content.bom-workbench { width: min(96vw, 1880px, calc(100vw - 24px)); max-height: calc(100vh - 24px); }
+.bom-table { table-layout: fixed; min-width: 1180px; }
+.data-table.bom-table th, .data-table.bom-table td { padding: 0 10px; }
+.bom-table .bom-col-index { width: 4%; }
+.bom-table .bom-col-material { width: 25%; }
+.bom-table .bom-col-model { width: 11%; }
+.bom-table .bom-col-spec { width: 12%; }
+.bom-table .bom-col-color { width: 9%; }
+.bom-table .bom-col-quantity { width: 8%; }
+.bom-table .bom-col-unit { width: 9%; }
+.bom-table .bom-col-supplier { width: 17%; }
+.bom-table .bom-col-action { width: 5%; }
+.bom-table .bom-col-material .ui-select-trigger { min-width: 0; }
+.bom-table .bom-col-material .ui-select-trigger > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

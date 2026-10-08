@@ -117,6 +117,14 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
   useEffect(() => { void load(); }, [load]);
 
   const materialOptions = materials.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` }));
+  /**
+   * 物料名称列里触发器**正在显示**的那串字（省略号吃掉长名之后，hover 用它看全文）。
+   *
+   * 为什么不用 `row.materialName`：触发器显示的是下拉选项的 label（「编码 / 名称」），
+   * title 必须与眼睛看到的逐字一致，否则 hover 出来的是另一份东西。
+   * 物料被停用/删除时它不在 `materialOptions` 里、触发器本来也退回占位符 —— 那就没有 title。
+   */
+  const materialLabelOf = (materialId: string) => materialOptions.find((option) => option.value === materialId)?.label ?? "";
   const unitOptions = units.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: item.name ?? item.id }));
   const updateItem = (index: number, patch: Partial<BomRow>) => setItems((rows) => rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)));
   function changeMaterial(index: number, materialId: string) {
@@ -183,14 +191,26 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
         <Button size="sm" disabled={saving} onClick={() => void save()}>{saving ? "保存中..." : "保存BOM表"}</Button>
       </div>
       {!onCreateMaterial && <p className="panel-note">物料池由【采购 → 物料清单】维护；这里可以直接改用量、单位、规格型号与颜色。</p>}
-      <div className="table-wrap"><table className="data-table"><thead><tr><th>序号</th><th>物料名称</th><th>型号</th><th>规格型号</th><th>颜色</th><th>数量</th><th>单位</th>{showSupplier && <th>供应商</th>}<th><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
-        <td>{index + 1}</td>
-        <td><Select value={row.materialId || undefined} onValueChange={(value) => changeMaterial(index, value)}><SelectTrigger><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
-        <td><Input value={row.model ?? ""} onChange={(event) => updateItem(index, { model: event.target.value })} /></td>
-        <td><Input value={row.specificationModel ?? ""} onChange={(event) => updateItem(index, { specificationModel: event.target.value })} /></td>
-        <td><Input value={row.color ?? ""} onChange={(event) => updateItem(index, { color: event.target.value })} /></td>
-        <td><Input type="number" min="0" step="0.0001" value={row.requiredQuantity} onChange={(event) => updateItem(index, { requiredQuantity: event.target.value })} /></td>
-        <td><Select value={row.unitId ?? undefined} onValueChange={(value) => updateItem(index, { unitId: value, unit: units.find((unit) => unit.id === value)?.name ?? value })}><SelectTrigger><SelectValue placeholder={row.unit || "选择单位"} /></SelectTrigger><SelectContent>{unitOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
+      {/*
+        2026-10-08（用户）：「BOM表页面，物料名称一长，后面的column就被压缩很窄。这很不好。我要求，
+        扩大BOM表悬浮居中页面的占页面大小，并且固定物料名称这一列的宽度。一旦字数超出，就省略显示，
+        鼠标hover时显示全部文字。」
+
+        两个东西各占一半，缺一不可：
+          · `.bom-table` 上的 `table-layout: fixed` + 每列显式宽度（globals.css）——列宽不再由内容决定，
+            长物料名撑不宽自己、也就挤不窄别人。**列宽必须写在 CSS 里**：`width` 在 auto 布局下只是"建议"，
+            内容一长就被推翻（这正是"被压缩很窄"的机理）。
+          · 物料名称列的 `title`（下面每行的 SelectTrigger）——省略号把字吃掉之后，hover 要有地方看全文。
+            文案取 `materialOptions` 的 label，与触发器里显示的**同一份字符串**，不会两处不一致。
+      */}
+      <div className="table-wrap"><table className="data-table bom-table"><thead><tr><th className="bom-col-index">序号</th><th className="bom-col-material">物料名称</th><th className="bom-col-model">型号</th><th className="bom-col-spec">规格型号</th><th className="bom-col-color">颜色</th><th className="bom-col-quantity">数量</th><th className="bom-col-unit">单位</th>{showSupplier && <th className="bom-col-supplier">供应商</th>}<th className="bom-col-action"><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
+        <td className="bom-col-index">{index + 1}</td>
+        <td className="bom-col-material"><Select value={row.materialId || undefined} onValueChange={(value) => changeMaterial(index, value)}><SelectTrigger data-testid={`bom-material-${index}`} title={materialLabelOf(row.materialId) || undefined}><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
+        <td className="bom-col-model"><Input value={row.model ?? ""} onChange={(event) => updateItem(index, { model: event.target.value })} /></td>
+        <td className="bom-col-spec"><Input value={row.specificationModel ?? ""} onChange={(event) => updateItem(index, { specificationModel: event.target.value })} /></td>
+        <td className="bom-col-color"><Input value={row.color ?? ""} onChange={(event) => updateItem(index, { color: event.target.value })} /></td>
+        <td className="bom-col-quantity"><Input type="number" min="0" step="0.0001" value={row.requiredQuantity} onChange={(event) => updateItem(index, { requiredQuantity: event.target.value })} /></td>
+        <td className="bom-col-unit"><Select value={row.unitId ?? undefined} onValueChange={(value) => updateItem(index, { unitId: value, unit: units.find((unit) => unit.id === value)?.name ?? value })}><SelectTrigger><SelectValue placeholder={row.unit || "选择单位"} /></SelectTrigger><SelectContent>{unitOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
         {/*
           默认供应商（2026-09-26）：下拉里搜不到可以就地新建（见 SupplierSelect）。
           停用/已删的供应商在列表里找不到，但**当行已有值**时要显示得出来 —— 否则用户会以为这一格空了，
@@ -200,7 +220,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
           不用填写供应商」）。注意**行状态里的值不因此清空**，保存时照旧回传 —— 生产侧保存 BOM
           不会把采购标过的供应商抹掉。
         */}
-        {showSupplier && <td data-testid={`bom-supplier-${index}`}>
+        {showSupplier && <td data-testid={`bom-supplier-${index}`} className="bom-col-supplier">
           <SupplierSelect
             value={row.supplierId ?? ""}
             suppliers={row.supplierId && !suppliers.some((supplier) => supplier.id === row.supplierId) && (row.supplier ?? row.supplierSnapshot) ? [...suppliers, { id: row.supplierId, supplierCode: row.supplier?.supplierCode ?? (row.supplierSnapshot?.supplierCode as string | undefined) ?? null, name: row.supplier?.name ?? (row.supplierSnapshot?.name as string | undefined) ?? "（已停用的供应商）", isActive: true }] : suppliers}
@@ -209,7 +229,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
             testId={`bom-supplier-select-${index}`}
           />
         </td>}
-        <td><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setItems((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={16} /></Button></td>
+        <td className="bom-col-action"><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setItems((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={16} /></Button></td>
       </tr>)}</tbody></table></div>
       {!items.length && <p className="panel-note">这张 BOM 还没有明细行：点「添加行」或「新建物料」开始录入。</p>}
       <p className="panel-note">状态：{bom ? String(displayText(bom.status)) : "-"}　版本：{bom?.version ?? "-"}　最后更新：{bom?.updatedAt ? String(bom.updatedAt).slice(0, 19).replace("T", " ") : "-"}</p>

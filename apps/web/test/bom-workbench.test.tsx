@@ -149,3 +149,58 @@ describe("BOM 工作区：新建物料入口按模块开放", () => {
     expect(items[0].material_name).toBe("伞骨");
   });
 });
+
+// 2026-10-08（用户）：「1.BOM表页面，物料名称一长，后面的column就被压缩很窄。这很不好。我要求，
+// 扩大BOM表悬浮居中页面的占页面大小，并且固定物料名称这一列的宽度。一旦字数超出，就省略显示，
+// 鼠标hover时显示全部文字。」
+//
+// "列不再被压缩"靠的是 `table-layout: fixed` + 每列显式宽度，"省略"靠的是三家 CSS 属性 ——
+// 那部分没有 jsdom 能测的东西，守卫在 `lib/bom-table.test.mjs`（钉 CSS 规则）与真实 Chromium 实测里。
+// 这里钉的是它们依赖的两样**代码里的**契约：列的类名（CSS 规则挂在这些类上）、
+// 以及触发器的 title（被省略掉的字要有地方看，且必须是屏幕上正在显示的那串字）。
+describe("BOM 表：物料名称列（固定列宽 / 省略 / hover 全文）", () => {
+  const LONG_NAME = "超细纤维防风防水涂层复合单面摇粒绒面料（加厚款 320g）";
+  const longMaterial = { id: "m-long", materialCode: "M-20261008", name: LONG_NAME, materialType: "raw_material", isActive: true };
+  const otherMaterial = { id: "m-2", materialCode: "M-002", name: "面料B", materialType: "raw_material", isActive: true };
+  const item = (overrides: Record<string, unknown> = {}) => ({ id: "bi-1", materialId: "m-long", materialName: LONG_NAME, model: "", requiredQuantity: "2", unit: "米", unitId: "u-1", materialSnapshot: {}, ...overrides });
+
+  function renderWith(rows: Array<Record<string, unknown>>, materialPool = [longMaterial, otherMaterial]) {
+    stubApi((url, call) => (url.endsWith("/boms/bom-1") && call.method === "GET"
+      ? apiOk({ id: "bom-1", orderNo: "SO-1", status: "draft", version: 1, updatedAt: OPENED_AT, items: rows })
+      : apiOk({})));
+    return render(<BomWorkbench bomId="bom-1" title="SO-1" materials={materialPool} units={units} onClose={() => undefined} />);
+  }
+
+  it("表头每一列都挂着与 CSS 列宽规则一一对应的类（类名一改，CSS 静默失效）", async () => {
+    renderWith([item()]);
+    const pairs: Array<[string, string]> = [
+      ["序号", "bom-col-index"], ["物料名称", "bom-col-material"], ["型号", "bom-col-model"],
+      ["规格型号", "bom-col-spec"], ["颜色", "bom-col-color"], ["数量", "bom-col-quantity"],
+      ["单位", "bom-col-unit"], ["供应商", "bom-col-supplier"], ["操作", "bom-col-action"],
+    ];
+    for (const [header, className] of pairs) {
+      expect((await screen.findByRole("columnheader", { name: header })).className).toContain(className);
+    }
+    expect(screen.getByTestId("bom-material-0").closest("td")?.className).toContain("bom-col-material");
+  });
+
+  it("title 是完整物料名（省略号只发生在屏幕上，不会进 title）", async () => {
+    renderWith([item()]);
+    const trigger = await screen.findByTestId("bom-material-0");
+    expect(trigger).toHaveAttribute("title", `M-20261008 / ${LONG_NAME}`);
+    // hover 出来的必须与眼睛看到的是同一份字符串：触发器里显示的正是下拉选项的 label
+    expect(trigger.textContent).toContain(`M-20261008 / ${LONG_NAME}`);
+  });
+
+  it("换了物料，title 跟着换（不是只在首次渲染时算一次）", async () => {
+    renderWith([item()]);
+    await userEvent.click(await screen.findByTestId("bom-material-0"));
+    await userEvent.click(await screen.findByText("M-002 / 面料B"));
+    await waitFor(() => expect(screen.getByTestId("bom-material-0")).toHaveAttribute("title", "M-002 / 面料B"));
+  });
+
+  it("行里还没选物料时不给 title（空提示比没有提示更糟）", async () => {
+    renderWith([item({ materialId: "", materialName: "" })]);
+    expect(await screen.findByTestId("bom-material-0")).not.toHaveAttribute("title");
+  });
+});
