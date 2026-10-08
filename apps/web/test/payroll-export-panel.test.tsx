@@ -162,16 +162,18 @@ function panelAlertMessage() {
 
 const currentMonth = new Date().toISOString().slice(0, 7);
 
-describe("生产工序导出面板 · 五个入口与弹窗", () => {
-  it("五个入口按钮各打开自己的对话框，取消后弹窗关闭", async () => {
+describe("生产工序导出面板 · 六个入口与弹窗", () => {
+  it("六个入口按钮各打开自己的对话框，取消后弹窗关闭", async () => {
     stubApi(() => xlsxResponse());
     renderPanel();
 
-    // 客户要求把「材料与车间生产对应表」拆成上表/下表两张独立导出表。
+    // 客户要求把「材料与车间生产对应表」拆成上表/下表两张独立导出表；
+    // 「生产月报表」是总表 + 每道工序一张明细（口径与生产进度页一致：两源逐日取大）。
     const entries: Array<[string, string]> = [
       ["工序盘点表", "导出工序盘点表"],
       ["订单号盘点表", "导出订单号盘点表"],
       ["当月工序明细总表", "导出当月工序明细总表"],
+      ["生产月报表", "导出生产月报表"],
       ["原料对应表", "导出原料对应表"],
       ["生产进度表", "导出生产进度表"],
     ];
@@ -383,6 +385,56 @@ describe("生产工序导出面板 · 当月工序明细总表", () => {
 
     expect(screen.getByText("请填写有效月份")).toBeInTheDocument();
     expect(calls).toHaveLength(0);
+    expect(panelDialog()).toBeVisible();
+  });
+});
+
+// 生产月报表（总表 + 每道工序一张明细）：与「当月工序明细总表」是两个不同的导出，
+// 端点、文件名、口径都不同，所以这里单独钉 URL 与文件名 —— 串到隔壁端点用户拿到的是另一种报表。
+describe("生产工序导出面板 · 生产月报表", () => {
+  it("默认月份就是本月：请求带 month 的月报端点，并触发一次带正确文件名的下载", async () => {
+    const calls = stubApi(() => xlsxResponse());
+    renderPanel();
+    await openDialog("生产月报表");
+
+    expect(monthInput()).toHaveValue(currentMonth);
+    await clickExport();
+
+    await waitFor(() => expect(anchorClicks).toHaveLength(1));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("GET");
+    expect(calls[0].url).toBe(`/api/v1/production/reports/monthly-production-report.xlsx?month=${currentMonth}`);
+    expect(downloads).toHaveLength(1);
+    expect(anchorClicks[0]).toEqual({ download: "迪礼ERP-生产月报表.xlsx", href: downloads[0].url });
+  });
+
+  it("月份为空时拦截：不发请求、不产生下载，弹窗保持打开", async () => {
+    const calls = stubApi(() => xlsxResponse());
+    renderPanel();
+    await openDialog("生产月报表");
+
+    fireEvent.change(monthInput(), { target: { value: "" } });
+    await clickExport();
+
+    expect(screen.getByText("请填写有效月份")).toBeInTheDocument();
+    expect(calls).toHaveLength(0);
+    expect(downloads).toHaveLength(0);
+    expect(panelDialog()).toBeVisible();
+  });
+
+  it("服务端拒绝：弹出服务端原因、不产生下载、弹窗不关闭", async () => {
+    const calls = stubApi(() => apiErr(403, "FORBIDDEN", "没有导出生产月报表的权限"));
+    renderPanel();
+    await openDialog("生产月报表");
+    fireEvent.change(monthInput(), { target: { value: "2026-06" } });
+
+    await clickExport();
+
+    expect(await screen.findByText("没有导出生产月报表的权限")).toBeVisible();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("/api/v1/production/reports/monthly-production-report.xlsx?month=2026-06");
+    expect(downloads).toHaveLength(0);
+    expect(anchorClicks).toHaveLength(0);
     expect(panelDialog()).toBeVisible();
   });
 });
