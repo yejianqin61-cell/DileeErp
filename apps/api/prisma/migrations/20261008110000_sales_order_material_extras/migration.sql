@@ -17,8 +17,22 @@
 -- 没有唯一键：替换语义是「软删旧的 + 建新的」（与 `sales_order_spec_details` 一致），
 -- 所以行 id 每次保存都会变；图片导出候选按 `extra:<行 id>` 标识（见 sales-order-export.service.ts）。
 --
--- ⚠️ 外键一律 `ON DELETE RESTRICT`（与整条销售链上的既有口径一致：销售单与其附表都不带
--- `CASCADE`，草稿删除是软删）。`material_id` 可空：那一行可以只填文字。
+-- ⚠️ 两条外键的 `ON DELETE` **不一样**，不是笔误 —— 它是 Prisma 按「可空 / 不可空」定的默认口径，
+-- 而 schema 与本文件必须一致：不一致就是 6 行**永久漂移**（`npx prisma migrate diff` 会一直要求
+-- DROP 掉这条外键再按 `SET NULL` 建回来）。
+--
+--   `sales_order_id` 不可空 → `RESTRICT`：删销售单不许把附表悄悄带走（整条销售链都不带 `CASCADE`，
+--   草稿删除是软删）。与 `sales_order_material_refs` / `sales_order_spec_details` 同一条口径。
+--
+--   `material_id` 可空 → `SET NULL`：**这一行可以只填文字**（`material_id` 为 NULL 是它的正常状态，
+--   不是异常），所以物料被硬删时该行**留着文字、只摘掉引用**。这与服务层 `usableMaterialExtras`
+--   （返单时发现引用的物料已删 → 保留文字、只摘引用，并回报一条 warning）是同一条业务口径，
+--   也与既有那两条**可空的**物料外键一致（`outsource_return_transfers_material_id_fkey`、
+--   `inventory_facts_material_id_fkey` 都是 `SET NULL`）。反过来用 `RESTRICT` 的话，
+--   表现是「删一个物料被一张单子的『其它』行挡住」——用户看不出来是被哪个类目挡的。
+--
+-- 注：物料走的是软删（`materials.deleted_at`），正常情况下这两条外键都不会触发；
+-- 它们防的是直连数据库硬删的那种情况。
 CREATE TABLE "sales_order_material_extras" (
     "id" UUID NOT NULL,
     "sales_order_id" UUID NOT NULL,
@@ -42,4 +56,4 @@ CREATE INDEX "sales_order_material_extras_material_id_idx" ON "sales_order_mater
 
 ALTER TABLE "sales_order_material_extras" ADD CONSTRAINT "sales_order_material_extras_sales_order_id_fkey" FOREIGN KEY ("sales_order_id") REFERENCES "sales_orders"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
-ALTER TABLE "sales_order_material_extras" ADD CONSTRAINT "sales_order_material_extras_material_id_fkey" FOREIGN KEY ("material_id") REFERENCES "materials"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "sales_order_material_extras" ADD CONSTRAINT "sales_order_material_extras_material_id_fkey" FOREIGN KEY ("material_id") REFERENCES "materials"("id") ON DELETE SET NULL ON UPDATE CASCADE;

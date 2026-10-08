@@ -12,8 +12,11 @@
 //   ⑤ 进版本快照；返单照抄来源单（物料被删掉时保留文字、只摘引用，并把这件事回报出来）；
 //   ⑥ 工艺单：18 项之后印这些行，内容空时用引用物料的摘要兜底；
 //   ⑦ 图片导出候选带 `extra:<行 id>` 键、排在 18 项之后；过期的键要报错（不能把图配到别的行上）。
+//   ⑧ 迁移里两条外键的 `ON DELETE` 必须与 schema 声明的一致（见文件末尾那一节）。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const fs = require("node:fs");
+const path = require("node:path");
 const ExcelJS = require("exceljs");
 const {
   MATERIAL_EXTRA_CONTENT_MAX_LENGTH,
@@ -259,3 +262,54 @@ test("导出取数：物料摘要的 select 必须带 规格/颜色，而且两�
   assert.deepEqual(Object.keys(extras).sort(), Object.keys(fixed).sort(), "两处物料摘要必须是同一份 select（否则「其它」行的兜底文字会少字段）");
   assert.equal(captured.include.materialExtras.orderBy.sortOrder, "asc", "这些行是有序的（用户排的先后就是纸上的先后）");
 });
+
+// ------------------------------------------------------------------ ⑧ 迁移与 schema 的外键口径
+
+/**
+ * 2026-10-08 的漏洞（部署 agent 在影子库上发现，上线前修掉）：迁移把**两条**外键都写成了
+ * `ON DELETE RESTRICT`（注释里写的是"外键一律 RESTRICT"），但 `material_id` 是**可空**的，
+ * Prisma 对可空外键的默认是 `SET NULL` —— schema 与本文件不一致，`prisma migrate diff` 于是
+ * 长期多出 6 行漂移（DROP 掉这条外键再按 `SET NULL` 建回来）。
+ *
+ * 为什么单测抓不到：单测用的是内存替身，**看不到迁移里的外键**（与 `employee-daily-report-migration-guards`
+ * 同一条教训）。所以这里直接读 SQL 与 schema，把「两边一致」这件事钉死 —— 而且不是钉死某个字面值，
+ * 是**按 schema 声明的可空性算出期望值再比**：以后谁把 `materialId` 改成不可空（或加了显式
+ * `onDelete`），这条断言会跟着变，不会变成一个过期的副本。
+ */
+test("迁移：两条外键的 ON DELETE 必须与 schema 一致（可空 → SET NULL，不可空 → RESTRICT）", () => {
+  const apiRoot = path.join(__dirname, "..", "..");
+  const migrationSql = fs.readFileSync(path.join(apiRoot, "prisma", "migrations", "20261008110000_sales_order_material_extras", "migration.sql"), "utf8");
+  const schema = fs.readFileSync(path.join(apiRoot, "prisma", "schema.prisma"), "utf8");
+  const modelStart = schema.indexOf("model SalesOrderMaterialExtra {");
+  assert.ok(modelStart > 0, "schema 里必须有这个模型");
+  const model = schema.slice(modelStart, modelStart + schema.slice(modelStart).indexOf("\n}"));
+
+  /** Prisma 的默认口径：不可空 = RESTRICT，可空 = SET NULL（显式写了就以显式为准）。 */
+  const expectedOnDelete = (nullable, explicit) => explicit ?? (nullable ? "SET NULL" : "RESTRICT");
+  const relationLine = (field) => model.split("\n").find((line) => new RegExp(`^\\s*${field}\\s`).test(line)) ?? "";
+  const explicitOf = (line) => (/onDelete:\s*(\w+)/.exec(line)?.[1] ?? null)?.replace(/([a-z])([A-Z])/g, "$1 $2").toUpperCase() ?? null;
+  const actualOf = (constraint) => {
+    // 只认 `ADD CONSTRAINT "…" … ON DELETE X ON UPDATE …` 那一条语句（不能拿注释里的字样凑数）。
+    const match = new RegExp(`ADD CONSTRAINT "${constraint}"[^;]*?ON DELETE ([A-Z ]+?) ON UPDATE`).exec(migrationSql);
+    return match?.[1] ?? null;
+  };
+
+  // sales_order_id：不可空 → RESTRICT（删销售单不许把附表带走，整条销售链都不带 CASCADE）。
+  const salesOrderIdNullable = /^\s*salesOrderId\s+String\?\s/m.test(model);
+  assert.equal(
+    actualOf("sales_order_material_extras_sales_order_id_fkey"),
+    expectedOnDelete(salesOrderIdNullable, explicitOf(relationLine("salesOrder"))),
+    "sales_order_id 的外键动作要与 schema 一致",
+  );
+  // material_id：**可空**（只填文字的行是正常状态）→ SET NULL，与 usableMaterialExtras 同一口径。
+  const materialIdNullable = /^\s*materialId\s+String\?\s/m.test(model);
+  assert.equal(materialIdNullable, true, "material_id 必须是可空的：那一行可以只填文字");
+  assert.equal(
+    actualOf("sales_order_material_extras_material_id_fkey"),
+    expectedOnDelete(materialIdNullable, explicitOf(relationLine("material"))),
+    "material_id 的外键动作要与 schema 一致（不一致就是 6 行永久漂移）",
+  );
+  assert.equal(actualOf("sales_order_material_extras_material_id_fkey"), "SET NULL", "可空的物料引用：物料被删时保留文字、只摘引用");
+  assert.ok(!/ON DELETE CASCADE/.test(migrationSql), "这张表上不许出现 CASCADE（草稿删除是软删）");
+});
+

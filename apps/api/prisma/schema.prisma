@@ -522,7 +522,12 @@ model SalesOrderMaterialExtra {
   deletedAt    DateTime?  @map("deleted_at")
   deletedBy    String?    @map("deleted_by") @db.Uuid
   salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
-  material     Material?  @relation(fields: [materialId], references: [id])
+  /// ⚠️ `onDelete: SetNull` **必须写出来**（2026-10-08 补）：它是可空外键的 Prisma 默认值，
+  /// 而迁移文件里当初按「外键一律 RESTRICT」写成了 `RESTRICT` —— 两边不一致就是 6 行**永久漂移**
+  /// （`prisma migrate diff` 会一直要求把这条外键 DROP 掉再按 `SET NULL` 建回来）。
+  /// 业务上这个值也是对的：`material_id` 可空（只填文字的行），物料被硬删时该行留着文字、只摘引用
+  /// —— 与服务层 `usableMaterialExtras` 同一条口径；写死默认值是为了让它可见、不再被"顺手统一"掉。
+  material     Material?  @relation(fields: [materialId], references: [id], onDelete: SetNull)
 
   @@index([salesOrderId, sortOrder])
   @@index([materialId])
