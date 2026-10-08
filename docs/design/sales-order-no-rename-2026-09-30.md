@@ -21,7 +21,17 @@
 
 ## 二、为什么不能只改一格：订单号是全库引用键，不是一格数据
 
-`sales_orders.order_no` 是**唯一**的业务主键（`CREATE UNIQUE INDEX "sales_orders_order_no_key"`，见 `apps/api/prisma/migrations/20260821120000_sales_domain_foundation/migration.sql:96`），另外 **40 个列**存了它的副本（`@map("order_no")`，扫 `schema.prisma` 得到）：
+`sales_orders.order_no` 是**唯一**的业务主键，另外 **40 个列**存了它的副本（`@map("order_no")`，扫 `schema.prisma` 得到）：
+
+> ⚠️ **2026-10-08 补充**：唯一性的范围在这一天变了 —— 由
+> `CREATE UNIQUE INDEX "sales_orders_order_no_key"`（全表唯一，见
+> `apps/api/prisma/migrations/20260821120000_sales_domain_foundation/migration.sql:96`）
+> 改成**未删除行上唯一**的部分唯一索引
+> `sales_orders_order_no_active_key ... WHERE deleted_at IS NULL`
+> （迁移 `20261008100000_sales_order_no_active_unique`），因为用户选定「删除草稿要释放订单号」。
+> 本文下面所有"订单号唯一 ⇒ 按值改不会改错行"的推理依据随之变成：
+> **唯一性在未删除行上成立，而删除守卫保证被删的单没有任何下游行**；
+> 完整的例外说明与影响面见 `docs/log/2026-10-08.md` 第七节。除了这一点，本文其余结论不变。
 
 - **销售**：`sales_orders.order_no`（源头）
 - **下游 38 张业务表**：`boms`、`purchase_orders`、`purchase_plans`、`purchase_receipts`、`incoming_inspections`、`raw_material_inbound_notices`、`raw_material_inbounds`、`inventory_facts`、`payable_sources`、`outsource_logistics_batches`、`outsource_receipts`、`outsource_payable_sources`、`supplier_payable_entries`、`supplier_payments`、`supplier_payment_allocations`、`outsource_return_transfers`、`outsource_direct_shipments`、`finished_goods_inspection_submissions`、`finished_goods_qc_records`、`finished_goods_inbound_notices`、`finished_goods_inbounds`、`finished_goods_defectives`、`finished_goods_outbounds`、`finished_goods_outbound_notices`、`customer_returns`、`receivable_sources`、`customer_payments`、`receivable_adjustments`、`receivable_reconciliations`、`supplier_payable_reconciliations`、`cash_flow_entries`、`production_orders`、`raw_material_movements`、`operation_daily_reports`、`employee_daily_reports`、`production_daily_alerts`、`production_payroll_sources`、`payroll_payable_entries`

@@ -53,35 +53,51 @@ balance.entry.supplierId !== lockedPayment.supplierId
 - `subject_id` 只在建单时送（建单会校验存在且启用并落库）；过账的 `subject_id` 是「临时覆盖」入口，
   两处都送只会多一个能对不上的地方。
 
-## 4. 未解决：台账「已付 / 未付」还是旧口径（本轮最重要的待定项）
+## 4. 台账「已付 / 未付」口径：已按用户决定改掉（2026-10-08 第二轮）
 
-`ledger-filter.ts:44` 把 `confirmed` 也算「已付」：
+**问题（第一轮结束时发现）**：`ledger-filter.ts` 把 `confirmed` 也算「已付」：
 
 ```ts
-export const PAID_LEDGER_STATUSES = ["confirmed", "partially_paid", "paid"] as const;
+export const PAID_LEDGER_STATUSES = ["confirmed", "partially_paid", "paid"] as const;   // 旧
 ```
 
 这条口径来自「**确认即记账**」年代（注释里写着「界面上没有第二步付款，若把『已付』定义成
 『有付款单核销』，那这个筛选项永远是空的」）。但 2026-09-24 的
 `finance-accrual-two-step-2026-09-24.md` 已经把确认改成了**挂账**：
 `supplier-payable.service.ts:204` 明写「确认那一刻钱还没付出，所以这一步**不写任何收支流水、不动任何银行账户**；
-真正付款时在『登记付款』里记现金」。本轮又把第二步（真核销）接到了界面上。
+真正付款时在『登记付款』里记现金」。紧接着本轮又把第二步（真核销）接到了界面上 —— 前提彻底不成立了。
 
 **后果**：确认应付页默认的「未付」视图只列**草稿**，而「合并付款」要勾的 `confirmed` / `partially_paid`
-全被默认筛掉（要切到「全部」）。本轮**没有改**这个口径，理由是它同时影响**应收**侧、
-导出台账里的「付款情况」列（`ledger-workbook.ts:113`）、以及两个工作区约 6 个测试文件，
-属于「改一次对方语义」的独立决定，应由用户拍板（另见 `docs/task/PENDING-USER-COMMITS.md`）。
-本轮只在页面上给了一句实话提示（`payable-merge-hidden-hint`：还有 N 条已确认未结清的应付被当前筛选藏着，
-切到「全部」就能勾选合并付款）。
+全被默认筛掉（要切到「全部」）——功能做出来了，目标数据却藏在另一个筛选档里。
+第一轮没有擅自改：它同时影响**应收**侧、导出台账的「付款情况」列与约 6 个测试文件，
+属于「改一次对方语义」的决定，交回用户拍板，并在页面上先给了一句实话提示。
 
-建议的修法（下一轮）：`未付 = draft + confirmed + partially_paid`（钱还没付完／还没付），
-`已付 = paid`，`partially_paid` 归「未付」因为还欠着钱；应收侧同一份文件同改（两边共用）。
+**用户 2026-10-08 拍板「可以」，第二轮已实施**：
+
+```ts
+export const UNPAID_LEDGER_STATUSES = ["draft", "confirmed", "partially_paid"] as const;
+export const PAID_LEDGER_STATUSES = ["paid"] as const;
+```
+
+- **未付/未收 = 草稿 + 已确认 + 部分付款**（草稿还没挂账、已确认只挂了账、部分付款还欠着钱）；
+  **已付/已收 = 已付清/已收清**；作废/冲销仍只在「全部」里出现。
+- `paymentBucket` 改为由上面两个集合推出（不另抄一份状态名），集合与函数不会再各自漂移。
+- 改动面：`ledger-filter.ts` + web 侧同口径镜像 `finance-ledger-filter.ts`；
+  导出台账的「付款情况 / 收款情况」列与脚注（`ledger-workbook.ts`）；控制器参数注释；
+  「确认应付」页那条 `payable-merge-hidden-hint` 提示与它的派生状态一并删除（前提消失）。
+- **应收侧一并改**：收款情况与付款情况共用同一份口径文件与同一个 `payment` 参数，只改一半会自相矛盾。
+- **预期效果**：现有数据下「未付/未收」计数变大（已确认的从已付档移入），界面与导出条数同步变化；
+  默认视图现在就能勾选合并付款。
+- 顺手修了 4 处仍在教旧口径的方法注释（`receivable.service` / `supplier-payable.service` 的
+  「确认即记账」标题，以及两条对账单批量确认路径的同款说明）。复核确认那两条对账单路径实际调用的
+  也是 `createAccrual`（挂账），**不存在「一条路径挂账、另一条路径记现金」的分裂**。
 
 ## 5. 验证
 
 - API 单测 `supplier-payment-service.test.cjs` **19/19**（原 14 + 5）。
-- web `payable-page.test.tsx` **58/58**（原 50 + 8）；全量 web **lib 301 / components 1049**。
-- 全量 API 单测 **2304/2304**；`typecheck` 双工作区干净；`next build` 通过。
+- web `payable-page.test.tsx` **58/58**（原 50 + 8）。
+- 第二轮（台账口径）之后的**最终**门禁：全量 API 单测 **2308/2308**；web **lib 302/302 + components 1049/1049**；
+  `typecheck` 双工作区干净；`test:deploy` 32/32；`next build` 通过。
 - **本环境无法验证**：`finance-payable-chain.test.cjs`（集成）需要 Postgres，`finance-contract.test.cjs`（HTTP）
   需要跑起来的 API + admin 口令 —— 两者都没有，所以「真实过账确实改了台账与银行余额」只有
   服务层单测与请求契约作证，**没有端到端实测**。上线后第一次合并付款请人工核一次：
