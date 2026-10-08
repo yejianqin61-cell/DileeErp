@@ -78,7 +78,13 @@ function createHarness(options = {}) {
     salesOrder: {
       ...overrides.salesOrder,
       findFirst: async (args) => {
-        if (args.where && args.where.orderNo !== undefined) return options.taken && options.taken.orderNo === args.where.orderNo ? options.taken : null;
+        if (args.where && args.where.orderNo !== undefined) {
+          if (!options.taken || options.taken.orderNo !== args.where.orderNo) return null;
+          // 替身必须真的执行 where：唯一性自 2026-10-08 起是「未删除行上唯一」（部分唯一索引），
+          // 预检带 `deletedAt: null` —— 替身若不看这个条件，就测不出「软删单占过的号已释放」。
+          if (args.where.deletedAt === null && options.taken.deletedAt) return null;
+          return options.taken;
+        }
         return state;
       },
     },
@@ -190,16 +196,23 @@ test("守卫：空串/纯空白不是「不动」，而是 422 —— 静默丢�
   }
 });
 
-test("守卫：新号被别的单占用 → 409 ORDER_NO_CONFLICT（软删单占的号也算）", async () => {
-  for (const taken of [{ id: "so-9", orderNo: NEW, status: "draft", deletedAt: null }, { id: "so-9", orderNo: NEW, status: "closed", deletedAt: new Date() }]) {
-    const harness = createHarness({ taken });
-    await assert.rejects(
-      () => harness.service.update("so-1", { order_no: NEW, reason: "手误" }, user),
-      (error) => error instanceof ConflictException && error.getResponse().code === "ORDER_NO_CONFLICT",
-      taken.deletedAt ? "软删单占着的号也要拦（唯一索引跨软删行）" : "普通占用要拦",
-    );
-    assert.equal(harness.state.orderNo, OLD);
-  }
+test("守卫：新号被别的**未删除**单占用 → 409 ORDER_NO_CONFLICT，源头那一格不动", async () => {
+  const harness = createHarness({ taken: { id: "so-9", orderNo: NEW, status: "draft", deletedAt: null } });
+  await assert.rejects(
+    () => harness.service.update("so-1", { order_no: NEW, reason: "手误" }, user),
+    (error) => error instanceof ConflictException && error.getResponse().code === "ORDER_NO_CONFLICT" && /已被另一张销售单占用/.test(error.getResponse().message),
+  );
+  assert.equal(harness.state.orderNo, OLD);
+});
+
+test("守卫：软删单占过的号**已释放** —— 改到那个号必须放行（2026-10-08 部分唯一索引）", async () => {
+  // 用户 2026-10-08 拍板：「删除要释放订单号」。唯一性改成 `WHERE deleted_at IS NULL` 的部分唯一索引后，
+  // 一张已删除的单不再占着号 —— 预检若还把软删单算成占用，就会拦下数据库本来允许的改号。
+  const harness = createHarness({ taken: { id: "so-9", orderNo: NEW, status: "closed", deletedAt: new Date("2026-10-01T00:00:00.000Z") } });
+  const result = await harness.service.update("so-1", { order_no: NEW, reason: "删掉那张写错的草稿后，把号用回来" }, user);
+  assert.equal(harness.state.orderNo, NEW, "软删单的号要能用");
+  assert.equal(result.order_no_changed, true);
+  assert.equal(result.rename_report.reorder_references, 1, "联动改名照常执行");
 });
 
 test("守卫：已关闭单可以单独改号（要原因），但带上别的字段一律拒绝", async () => {
@@ -270,15 +283,16 @@ test("影响面预览：给出当前号、新号、逐表条数、版本快照�
   assert.ok(impact.targets.every((row) => row.label.length > 0), "确认框要显示中文单据名");
 });
 
-test("影响面预览：新号已被占用时先把冲突说出来（软删单也认），不装作没事", async () => {
+test("影响面预览：新号被占用时先把冲突说出来（只认未删除的行），不装作没事", async () => {
   const harness = createHarness({ taken: { id: "so-9", orderNo: NEW, status: "closed", deletedAt: null } });
   const impact = await harness.service.orderNoImpact("so-1", NEW);
   assert.equal(impact.conflict.order_id, "so-9");
   assert.equal(impact.conflict.deleted, false);
   assert.match(impact.conflict.message, /已被另一张销售单占用/);
 
+  // 软删单占过的号已经释放 → 预览里不能再报冲突（否则用户会去改一个数据库本来就接受的号）。
   const deleted = createHarness({ taken: { id: "so-9", orderNo: NEW, status: "closed", deletedAt: new Date() } });
-  assert.match((await deleted.service.orderNoImpact("so-1", NEW)).conflict.message, /已删除/);
+  assert.equal((await deleted.service.orderNoImpact("so-1", NEW)).conflict, null);
 });
 
 test("影响面预览：号没变时返回空影响面（前端据此不弹确认框）", async () => {

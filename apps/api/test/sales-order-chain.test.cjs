@@ -446,30 +446,14 @@ test("sales.order.delete_does_not_cascade_into_child_tables", async () => {
   assert.equal(events.length, 1);
 });
 
-test("sales.order.create explains that a deleted order still holds its order number", async () => {
-  // 软删不释放订单号（普通唯一索引，不看 deletedAt）——「删掉号写错的草稿，再用同一个号建单」
-  // 必然撞 P2002。这时列表上已经看不到那张单了，所以报错必须说清是"已删除的单占着"。
+test("sales.order.create names the live holder when the order number is taken", async () => {
+  // 自 2026-10-08 起唯一性是「未删除行上唯一」（部分唯一索引）→ 能撞上 P2002 的只可能是**未删除**的另一张单。
+  // 报错要把那张单点出来（用户手上没有任何线索去查是哪一张），并且必须带上 `deletedAt: null` 去查。
   const p2002 = Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
-  const customer = { id: "customer-1", name: "FLOWER1" };
-  const prisma = {
-    customer: { findFirst: async () => customer },
-    salesOrder: { findFirst: async () => ({ id: "order-9", status: "draft", deletedAt: new Date("2026-10-08T00:00:00.000Z") }) },
-    $transaction: async () => { throw p2002; },
-  };
-  const service = new SalesOrdersService(prisma, deleteAudit([]));
-  await assert.rejects(
-    () => service.create({ order_no: "DL260009-1", customer_id: "customer-1", order_date: "2026-10-08", product_name: "雨伞", quantity: "10", unit: "个", currency: "USD" }, user),
-    (error) => error.getResponse().code === "ORDER_NO_CONFLICT"
-      && /已删除/.test(error.getResponse().message)
-      && error.getResponse().details[0].deleted === true,
-  );
-});
-
-test("sales.order.create keeps the plain order-number message when the holder is alive", async () => {
-  const p2002 = Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+  const findFirstArgs = [];
   const prisma = {
     customer: { findFirst: async () => ({ id: "customer-1", name: "FLOWER1" }) },
-    salesOrder: { findFirst: async () => ({ id: "order-9", status: "confirmed", deletedAt: null }) },
+    salesOrder: { findFirst: async (args) => { findFirstArgs.push(args); return { id: "order-9", status: "confirmed" }; } },
     $transaction: async () => { throw p2002; },
   };
   const service = new SalesOrdersService(prisma, deleteAudit([]));
@@ -478,6 +462,24 @@ test("sales.order.create keeps the plain order-number message when the holder is
     (error) => error.getResponse().code === "ORDER_NO_CONFLICT"
       && /已被另一张销售单占用/.test(error.getResponse().message)
       && error.getResponse().details[0].deleted === false,
+  );
+  assert.equal(findFirstArgs.length, 1, "占用查询只查一次");
+  assert.equal(findFirstArgs[0].where.deletedAt, null, "必须只查未删除的行：软删单占过的号已经释放");
+});
+
+test("sales.order.create falls back to the plain message when no live order holds the number", async () => {
+  // 软删单占过的号已经释放 → 未删除行里查不到占用者。此时 P2002 只可能来自别的唯一键，
+  // 所以退回通用文案，不硬说"订单号被谁占着"（说了就是编一个不存在的单子）。
+  const p2002 = Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1", name: "FLOWER1" }) },
+    salesOrder: { findFirst: async () => null },
+    $transaction: async () => { throw p2002; },
+  };
+  const service = new SalesOrdersService(prisma, deleteAudit([]));
+  await assert.rejects(
+    () => service.create({ order_no: "DL260009-1", customer_id: "customer-1", order_date: "2026-10-08", product_name: "雨伞", quantity: "10", unit: "个", currency: "USD" }, user),
+    (error) => error.getResponse().code === "ORDER_NO_CONFLICT" && error.getResponse().message === "订单号已存在" && error.getResponse().details.length === 0,
   );
 });
 

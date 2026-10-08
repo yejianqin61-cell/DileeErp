@@ -283,7 +283,12 @@ model CustomerContact {
 
 model SalesOrder {
   id                        String                     @id @default(uuid()) @db.Uuid
-  orderNo                   String                     @unique @map("order_no") @db.VarChar(100)
+  /// 订单号在**未删除的行**上唯一：部分唯一索引
+  /// `sales_orders_order_no_active_key ... WHERE deleted_at IS NULL`（见迁移
+  /// `20261008100000_sales_order_no_active_unique`）。这里**刻意不写 `@unique`** ——
+  /// `@unique` 生成的是全量唯一索引，会让「软删一张号写错的草稿之后，再用同一个号重新建单」
+  /// 这条最顺手的路走不通（用户 2026-10-08 拍板要能走通）。照抄 `boms` / `purchase_plans` 的先例。
+  orderNo                   String                     @map("order_no") @db.VarChar(100)
   customerId                String                     @map("customer_id") @db.Uuid
   contactId                 String?                    @map("contact_id") @db.Uuid
   customerSnapshot          Json                       @map("customer_snapshot")
@@ -402,6 +407,10 @@ model SalesOrder {
   @@index([orderDate])
   /// 货号清单要按 (货号, 下单日期) 取数（reorder 模块的 articles 聚合）。
   @@index([itemNo, orderDate])
+  /// 订单号反查（按号取单、返单来源、改号占用预检都走它）。
+  /// 与部分唯一索引并存：schema 声明普通索引，SQL 里另建 partial unique（照抄 `boms` / `purchase_plans`）——
+  /// 部分索引只覆盖带 `deleted_at IS NULL` 的查询，别的入口（不带该条件的反查）还得靠这条普通索引。
+  @@index([orderNo])
   @@map("sales_orders")
 }
 

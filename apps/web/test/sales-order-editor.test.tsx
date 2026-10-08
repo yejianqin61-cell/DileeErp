@@ -560,8 +560,9 @@ describe("改号影响面文案", () => {
   });
 
   it("冲突优先说：冲突时不再报下游条数（先说能不能改）", () => {
-    const text = orderNoImpactText({ ...base, targets: [{ key: "Bom", label: "BOM 表", count: 1 }], total: 1, conflict: { order_no: "DL260001", order_id: "so-9", status: "closed", deleted: true, message: "订单号 DL260001 被一张已删除的销售单占着，请换一个" } });
-    expect(text).toContain("被一张已删除的销售单占着");
+    // 2026-10-08 起唯一性是「未删除行上唯一」：冲突只可能来自**未删除**的另一张单（软删单占过的号已释放）。
+    const text = orderNoImpactText({ ...base, targets: [{ key: "Bom", label: "BOM 表", count: 1 }], total: 1, conflict: { order_no: "DL260001", order_id: "so-9", status: "confirmed", deleted: false, message: "订单号 DL260001 已被另一张销售单占用（confirmed）" } });
+    expect(text).toContain("已被另一张销售单占用");
     expect(text).not.toContain("将同步更新");
   });
 });

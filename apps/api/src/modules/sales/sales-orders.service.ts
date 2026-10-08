@@ -470,12 +470,11 @@ export class SalesOrdersService {
       return droppedRefKeys.length ? { ...created, reorder_warnings: [`来源单引用的物料已不存在，返单时已跳过：${droppedRefKeys.join("、")}`] } : created;
     } catch (error) {
       /**
-       * 订单号冲突要说出「这个号在谁手里」。
+       * 订单号冲突出错时说出「这个号在谁手里」。
        *
-       * 自 2026-10-08 起草稿可以删除，而**删除不释放订单号**：`sales_orders_order_no_key` 是一条普通
-       * 唯一索引（见 20260821120000_sales_domain_foundation），不看 `deletedAt`。于是「删掉一张号写错的
-       * 草稿 → 再用同一个号建单」必然撞 P2002，而那时列表上已经看不到这个号了 —— 只说一句
-       * "订单号已存在"会让人以为系统在骗他（对着一个不存在的单子反复重试）。
+       * 自 2026-10-08 起软删会释放订单号（部分唯一索引，见 `throwOrderNoConflict`），
+       * 所以能撞上 P2002 的只可能是**未删除**的另一张单 —— 报错要把那张单点出来，
+       * 而不是笼统地说"订单号已存在"（用户手上没有任何线索去查是哪一张）。
        */
       await this.throwOrderNoConflict(error, effective.order_no);
       throw error;
@@ -526,13 +525,15 @@ export class SalesOrdersService {
       if (current.boms.length || purchaseCount || productionCount) throw new UnprocessableEntityException({ code: "SALES_ORDER_CORE_FIELDS_LOCKED", message: "销售单已有 BOM、采购或生产下游事实，核心字段需先回退下游", details: [{ bom_count: current.boms.length, purchase_order_count: purchaseCount, production_order_count: productionCount }] });
     }
     /**
-     * 新号的占用预检。**故意不带 `deletedAt` 过滤**：`sales_orders_order_no_key` 是一条普通唯一索引
-     * （见 `20260821120000_sales_domain_foundation`），软删单占着的号数据库也不会放行 ——
-     * 预检过滤掉它们，只会把一个必然发生的事务失败推迟成一条看不懂的报错。
+     * 新号的占用预检，**只查未删除的行**：订单号的唯一性是「未删除行上唯一」的部分唯一索引
+     * （`sales_orders_order_no_active_key ... WHERE deleted_at IS NULL`，见
+     * `20261008100000_sales_order_no_active_unique`），所以软删单占过的号可以再用 ——
+     * 预检若把这些号也算成占用，就会拦下数据库本来允许的改号
+     * （「删掉号写错的草稿 → 把另一张单改成那个号」正是要能走通的路）。
      */
     if (renaming) {
-      const taken = await this.prisma.salesOrder.findFirst({ where: { orderNo: nextOrderNo }, select: { id: true, status: true, deletedAt: true } });
-      if (taken) throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: taken.deletedAt ? `订单号 ${nextOrderNo} 被一张已删除的销售单占着，请换一个` : `订单号 ${nextOrderNo} 已被另一张销售单占用`, details: [{ order_id: taken.id, status: taken.status, deleted: Boolean(taken.deletedAt) }] });
+      const taken = await this.prisma.salesOrder.findFirst({ where: { orderNo: nextOrderNo, deletedAt: null }, select: { id: true, status: true } });
+      if (taken) throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: `订单号 ${nextOrderNo} 已被另一张销售单占用`, details: [{ order_id: taken.id, status: taken.status, deleted: false }] });
     }
     const refs = await this.resolveReferences({ customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined }, user);
     const nextInput = { ...input, customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined, order_no: renaming ? (nextOrderNo as string) : current.orderNo, order_date: input.order_date ?? current.orderDate.toISOString(), product_name: input.product_name ?? current.productName, quantity: input.quantity ?? current.quantity.toString(), unit: input.unit ?? current.unit, currency: input.currency ?? current.currency, extension_data: input.extension_data ?? (current.extensionData as Record<string, unknown>), item_no: input.item_no === undefined ? current.itemNo : input.item_no, // 返单来源不可改：快照里始终记当前值
@@ -590,7 +591,8 @@ export class SalesOrdersService {
     const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, select: { id: true, orderNo: true, status: true } });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
     const changed = nextOrderNo !== order.orderNo;
-    const taken = changed ? await this.prisma.salesOrder.findFirst({ where: { orderNo: nextOrderNo }, select: { id: true, orderNo: true, status: true, deletedAt: true } }) : null;
+    // 同 `update` 的占用预检：只认未删除的行（唯一性是部分唯一索引，软删单占过的号已释放）。
+    const taken = changed ? await this.prisma.salesOrder.findFirst({ where: { orderNo: nextOrderNo, deletedAt: null }, select: { id: true, orderNo: true, status: true } }) : null;
     const impact = changed ? await orderNoRenameImpact(this.prisma, order.orderNo) : { targets: [] as Array<{ key: string; label: string; count: number }>, total: 0 };
     // 版本快照与"别的单上的返单来源"不在 `ORDER_NO_RENAME_TARGETS` 里（前者是 JSON、后者是同一张表的另一列），
     // 但它们一样会被改，所以预览与报告都各自算一份 —— 少说一项，用户就会以为那一项没被改。
@@ -603,7 +605,7 @@ export class SalesOrdersService {
       next_order_no: nextOrderNo,
       changed,
       conflict: taken
-        ? { order_no: taken.orderNo, order_id: taken.id, status: taken.status, deleted: Boolean(taken.deletedAt), message: taken.deletedAt ? `订单号 ${nextOrderNo} 被一张已删除的销售单占着，请换一个` : `订单号 ${nextOrderNo} 已被另一张销售单占用（${taken.status}）` }
+        ? { order_no: taken.orderNo, order_id: taken.id, status: taken.status, deleted: false, message: `订单号 ${nextOrderNo} 已被另一张销售单占用（${taken.status}）` }
         : null,
       reason_required: true,
       targets: impact.targets,
@@ -848,18 +850,18 @@ export class SalesOrdersService {
   /**
    * 建单撞唯一键时把「号在谁手里」查出来再说。
    *
+   * **只查未删除的行**：订单号唯一性是部分唯一索引（`... WHERE deleted_at IS NULL`，
+   * `20261008100000_sales_order_no_active_unique`），软删单占过的号数据库已经放行，
+   * 不可能再是 P2002 的原因。
+   *
    * 只处理 P2002，其余错误原样放过（调用方 catch 里紧接着 `throw error`）。
    * 查不到占用行时退回与 `handleUnique` 同一句话 —— P2002 也可能来自别的唯一键，
    * 不能反过来断言"一定是订单号"。
    */
   private async throwOrderNoConflict(error: unknown, orderNo: string): Promise<void> {
     if (!(error && typeof error === "object" && "code" in error && error.code === "P2002")) return;
-    const taken = await this.prisma.salesOrder.findFirst({ where: { orderNo }, select: { id: true, status: true, deletedAt: true } });
+    const taken = await this.prisma.salesOrder.findFirst({ where: { orderNo, deletedAt: null }, select: { id: true, status: true } });
     if (!taken) throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: "订单号已存在", details: [] });
-    throw new ConflictException({
-      code: "ORDER_NO_CONFLICT",
-      message: taken.deletedAt ? `订单号 ${orderNo} 曾被一张已删除的销售单使用；系统不释放已用过的订单号，请换一个号` : `订单号 ${orderNo} 已被另一张销售单占用`,
-      details: [{ order_id: taken.id, status: taken.status, deleted: Boolean(taken.deletedAt) }],
-    });
+    throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: `订单号 ${orderNo} 已被另一张销售单占用`, details: [{ order_id: taken.id, status: taken.status, deleted: false }] });
   }
 }
