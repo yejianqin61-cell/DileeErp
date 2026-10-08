@@ -206,8 +206,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const [selected, setSelected] = useState<string[]>([]);
   /**
    * 「确认应付」页的筛选：付款情况 + 确认日期区间（用户要求「已付的条目不要出现在那里」+
-   * 「按已付未付、按时间范围筛选」）。**默认只显示未付**（草稿）—— 这一页是待办清单，
-   * 已经确认过（钱已经出去）的条目默认不在这里，需要时用筛选器切到「已付」或「全部」。
+   * 「按已付未付、按时间范围筛选」）。**默认只显示未付**＝草稿 + 已确认（挂账，钱还没付）+
+   * 部分付款（还欠着钱，见 `finance-ledger-filter.ts`）—— 这一页是待办清单，只有已付清的
+   * 才默认不在；需要时用筛选器切到「已付」或「全部」。
    */
   const [payment, setPayment] = useState<LedgerPaymentFilter>("unpaid");
   const [dateFrom, setDateFrom] = useState("");
@@ -746,18 +747,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
    */
   const settleAnchor = useMemo(() => settleAnchorOf(mergeRows), [mergeRows]);
   const settleLock = (entry: PayableEntry) => settleAnchor ? settleLockReasons(settleAnchor, { supplierId: entry.supplierId, currency: entry.currency }) : [];
-  /**
-   * 被「付款情况」筛选藏起来的、可核销的应付条数。
-   *
-   * 为什么需要这个数：`finance-ledger-filter.ts` 的「已付 / 未付」还是**旧口径**（确认即记账年代：
-   * `confirmed` 一律算「已付」），而本轮确认只是挂账、钱还没出去 —— 所以默认的「未付」视图里
-   * 一条可核销的应付都看不到，用户会以为「合并付款」没有入口。筛选口径的改动牵动后端同名实现与
-   * 两边的既有测试（不在本次改动范围内），这里先把去处写出来，不让功能藏起来。
-   */
-  const hiddenSettleable = useMemo(
-    () => scopedEntries.filter((entry) => isSettleable(entry) && !ledgerEntries.some((row) => row.id === entry.id)).length,
-    [scopedEntries, ledgerEntries],
-  );
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.includes(id));
   const toggleOne = (id: string) => setSelected((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
   const toggleAll = () => setSelected((ids) => allSelected ? ids.filter((id) => !selectableIds.includes(id)) : [...new Set([...ids, ...selectableIds])]);
@@ -825,7 +814,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmEntry(row.original)}>确认应付</Button><Button size="sm" variant="ghost" onClick={() => editEntry(row.original)}>编辑</Button></>}
       {row.original.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退</Button>}
-      {/* 付款单：草稿（准备付款）与已确认（钱已经出去了）都能出单 —— 它是一张打印件，不改任何数据。 */}
+      {/* 付款单：草稿与已确认（挂账，钱还没付）都能出单 —— 它是一张打印件，不改任何数据。 */}
       <Button size="sm" variant="ghost" data-testid={`payable-slip-${row.original.id}`} onClick={() => void openPaymentSlip([row.original.id])}>付款单</Button>
       {/* 只有「其他应付」给删除：原料/外加工形成的应付是到货事实的账，录错了要走冲销。
           草稿与已确认都给（用户 2026-09-20：「包括删除确认应付」）—— 已确认的由后端在同一事务里冲回支出。 */}
@@ -1140,7 +1129,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     {!error && activeTab.key === "reconciliations" && <section className="panel">
       <div className="panel-heading"><h2>确认应付</h2><span className="panel-note">共 {ledgerEntries.length} 条（未付 {paymentTally.unpaid} / 已付 {paymentTally.paid}）</span></div>
       <div className="panel-body">
-        {/* 付款情况默认「未付」：已经确认过（钱已经出去）的条目不再占着待办清单；需要时切到「已付 / 全部」。 */}
+        {/* 付款情况默认「未付」＝草稿 + 已确认（挂账，钱还没付）+ 部分付款：待办清单要能看到它们；
+            只有已付清（核销走完）才切到「已付」或「全部」。 */}
         <div className="filter-bar">
           <label>付款情况
             <Select value={payment} onValueChange={(value) => setPayment(value as LedgerPaymentFilter)}>
@@ -1171,7 +1161,6 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
               上面的勾选框锁掉并写明原因，后端 :96 也会拒）。 */}
           <Button size="sm" data-testid="payable-merge-pay" disabled={!mergeRows.length} onClick={() => setMergeOpen(true)}>合并付款（{mergeRows.length} 条）</Button>
           {mergeRows.length ? <span className="panel-note" data-testid="payable-merge-hint">合并付款：{mergeRows[0].supplierName} / {mergeRows[0].currency}，未核销余额合计 {settleOutstandingTotal(mergeRows)}（同一供应商 + 同一币种才能合并；金额可在弹窗里逐行改小）</span> : null}
-          {!mergeRows.length && hiddenSettleable ? <span className="panel-note" data-testid="payable-merge-hidden-hint">另有 {hiddenSettleable} 条已确认未结清的应付被当前「付款情况」筛选藏着：切到「全部」就能勾选合并付款（一次核销同一供应商的多条，可跨订单）</span> : null}
         </div>
         <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
       </div>

@@ -5,11 +5,14 @@
 //      → ledger-filter.ts 的分档与区间口径（应收/应付共用）；
 //   ②「两处表单要支持导出 excel」→ 导出的金额/数量必须是 **Excel 数值类型**
 //      （文本型数字在 Excel 里 SUM 得 0、筛选分不出数值区间，见 finance-report-workbook.ts 顶部说明）。
+//
+// 2026-10-08（用户拍板）：确认改成两步挂账后，「已付」不再等于「已确认」—— 未付 = 草稿 + 已确认 +
+// 部分付款，已付 = 已付清。分档与导出的「付款情况」列都按新口径钉住（见下面的边界测试）。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const XLSX = require("xlsx");
 const {
-  PAID_LEDGER_STATUSES, ledgerDateText, matchesLedgerFilter, paymentBucket, paymentCounts,
+  PAID_LEDGER_STATUSES, UNPAID_LEDGER_STATUSES, ledgerDateText, matchesLedgerFilter, paymentBucket, paymentCounts,
 } = require("../../dist/modules/finance/ledger-filter.js");
 const {
   buildPayableLedgerTable, buildReceivableLedgerTable, payablePaymentText, receivablePaymentText,
@@ -20,10 +23,29 @@ const { renderReportWorkbook } = require("../../dist/modules/finance/finance-rep
 // 一、筛选口径
 // --------------------------------------------------------------------------
 
-test("付款分档：草稿=未付；已确认及以后=已付；冲销/作废/取消只在「全部」里出现", () => {
-  assert.equal(paymentBucket("draft"), "unpaid");
+test("付款分档：草稿/已确认（挂账）/部分付款=未付；已付清=已付；冲销/作废/取消只在「全部」里出现", () => {
+  for (const status of UNPAID_LEDGER_STATUSES) assert.equal(paymentBucket(status), "unpaid");
   for (const status of PAID_LEDGER_STATUSES) assert.equal(paymentBucket(status), "paid");
   for (const status of ["reversed", "voided", "cancelled", "closed"]) assert.equal(paymentBucket(status), "void");
+});
+
+test("新口径的边界：确认只挂账（钱没动）→ 算未付不算已付；只有付清算已付；作废/冲销两边都不算", () => {
+  // 确认应付/应收那一刻钱还没动（supplier-payable.service.ts:200-227），所以 confirmed 归未付
+  assert.equal(paymentBucket("draft"), "unpaid");
+  assert.equal(paymentBucket("confirmed"), "unpaid");
+  assert.equal(paymentBucket("partially_paid"), "unpaid", "部分付款还欠着钱，仍算未付");
+  assert.equal(paymentBucket("paid"), "paid");
+  assert.notEqual(paymentBucket("confirmed"), "paid");
+  assert.equal(paymentBucket("reversed"), "void");
+  assert.equal(paymentBucket("voided"), "void");
+  assert.deepEqual([...UNPAID_LEDGER_STATUSES], ["draft", "confirmed", "partially_paid"]);
+  assert.deepEqual([...PAID_LEDGER_STATUSES], ["paid"]);
+
+  const rows = [{ status: "confirmed" }, { status: "paid" }, { status: "partially_paid" }, { status: "voided" }];
+  const pick = (payment) => rows.filter((row) => matchesLedgerFilter({ ...row, date: null, search: [] }, { payment })).map((row) => row.status);
+  assert.deepEqual(pick("unpaid"), ["confirmed", "partially_paid"], "确认未结清的行出现在未付里");
+  assert.deepEqual(pick("paid"), ["paid"]);
+  assert.deepEqual(pick("all"), ["confirmed", "paid", "partially_paid", "voided"], "作废行只在全部里");
 });
 
 test("默认（不传 payment）不过滤状态：导出「全部」时不能把冲销的行也丢掉", () => {
@@ -31,12 +53,12 @@ test("默认（不传 payment）不过滤状态：导出「全部」时不能把
   assert.equal(matchesLedgerFilter({ status: "reversed", date: null, search: [] }, { payment: "all" }), true);
 });
 
-test("筛选：未付只留草稿，已付只留已确认及以后", () => {
-  const rows = [{ status: "draft" }, { status: "confirmed" }, { status: "paid" }, { status: "reversed" }];
+test("筛选：未付留草稿 + 已确认 + 部分付款，已付只留已付清", () => {
+  const rows = [{ status: "draft" }, { status: "confirmed" }, { status: "partially_paid" }, { status: "paid" }, { status: "reversed" }];
   const pick = (payment) => rows.filter((row) => matchesLedgerFilter({ ...row, date: null, search: [] }, { payment })).map((row) => row.status);
-  assert.deepEqual(pick("unpaid"), ["draft"]);
-  assert.deepEqual(pick("paid"), ["confirmed", "paid"]);
-  assert.deepEqual(pick("all"), ["draft", "confirmed", "paid", "reversed"]);
+  assert.deepEqual(pick("unpaid"), ["draft", "confirmed", "partially_paid"]);
+  assert.deepEqual(pick("paid"), ["paid"]);
+  assert.deepEqual(pick("all"), ["draft", "confirmed", "partially_paid", "paid", "reversed"]);
 });
 
 test("时间范围含两端；没有日期的行在设了区间时不算命中（不能证明落在区间内就不列）", () => {
@@ -65,8 +87,8 @@ test("关键字按「与列表页搜索同一批字段」做大小写不敏感�
 });
 
 test("筛选器上的计数：all 含冲销/作废，所以不等于 unpaid + paid", () => {
-  const counts = paymentCounts([{ status: "draft" }, { status: "draft" }, { status: "confirmed" }, { status: "reversed" }]);
-  assert.deepEqual(counts, { unpaid: 2, paid: 1, void: 1, all: 4 });
+  const counts = paymentCounts([{ status: "draft" }, { status: "draft" }, { status: "confirmed" }, { status: "paid" }, { status: "reversed" }]);
+  assert.deepEqual(counts, { unpaid: 3, paid: 1, void: 1, all: 5 });
 });
 
 // --------------------------------------------------------------------------
@@ -104,14 +126,26 @@ const auditCells = (row, start) => row.slice(start, start + 4);
 
 
 test("应付台账导出：付款情况/状态按中文口径，来源类型也是中文", () => {
-  const table = buildPayableLedgerTable([payableRow(), payableRow({ payableNo: "AP-002", status: "confirmed" })]);
-  const [first, second] = table.rows;
+  const table = buildPayableLedgerTable([
+    payableRow(),
+    payableRow({ payableNo: "AP-002", status: "confirmed" }),
+    payableRow({ payableNo: "AP-003", status: "partially_paid" }),
+    payableRow({ payableNo: "AP-004", status: "paid" }),
+  ]);
+  const [first, second, third, fourth] = table.rows;
   assert.equal(first[14], "未付");
   assert.equal(first[15], "应付草稿");
-  assert.equal(second[14], "已付", "已确认 = 钱已经从账户付出去了");
+  // 确认只是挂账、钱还没付出（supplier-payable.service.ts:200-227），所以不再写「已付」
+  assert.equal(second[14], "未付", "已确认 = 挂账，钱还没付出去");
   assert.equal(second[15], "应付已确认");
+  assert.equal(third[14], "部分付款", "部分付款单列，但它同样属于未付（还欠着钱）");
+  assert.equal(fourth[14], "已付清", "只有付清才是已付");
+  assert.equal(fourth[15], "已付清");
   assert.equal(first[3], "原料入库");
   assert.equal(first[0], "2026-09-10");
+  assert.equal(payablePaymentText("confirmed"), "未付");
+  // 付清与确认在「付款情况」列上必须分得开：前者已付、后者未付
+  assert.notEqual(payablePaymentText("confirmed"), payablePaymentText("paid"));
   // 金额列（下标 12）与数量/单价是**数值**，文本列是字符串
   assert.equal(typeof first[12], "number");
   assert.equal(first[12], 500);
@@ -121,10 +155,18 @@ test("应付台账导出：付款情况/状态按中文口径，来源类型也�
 });
 
 test("应收台账导出：收款情况/状态按中文口径", () => {
-  const table = buildReceivableLedgerTable([receivableRow(), receivableRow({ sourceNo: "AR-002", status: "paid" })]);
+  const table = buildReceivableLedgerTable([
+    receivableRow(),
+    receivableRow({ sourceNo: "AR-003", status: "confirmed" }),
+    receivableRow({ sourceNo: "AR-002", status: "paid" }),
+  ]);
   assert.equal(table.rows[0][13], "未收");
   assert.equal(table.rows[0][14], "草稿");
-  assert.equal(table.rows[1][13], "已收清");
+  // 应收侧与应付侧同一口径：确认只是挂账，钱还没收到
+  assert.equal(table.rows[1][13], "未收", "已确认 = 挂账，钱还没收到");
+  assert.equal(table.rows[1][14], "已确认");
+  assert.equal(table.rows[2][13], "已收清");
+  assert.equal(receivablePaymentText("confirmed"), "未收");
   assert.equal(table.rows[0][0], "2026-09-07", "时间筛选与导出用创建日期（出库过账生成来源的日期）");
   assert.equal(payablePaymentText("partially_paid"), "部分付款");
   assert.equal(receivablePaymentText("partially_paid"), "部分收款");
@@ -176,10 +218,11 @@ test("导出落到 Excel 里必须是数值类型（文本型数字在 Excel 里
 test("含多种币种时表尾写明不做合计（跨币种相加没有意义）", () => {
   const mixed = buildPayableLedgerTable([payableRow(), payableRow({ payableNo: "AP-002", currency: "USD" })]);
   assert.equal(mixed.footnotes.length, 2);
+  assert.match(mixed.footnotes[0], /草稿与已确认（确认只是挂账，钱还没付）= 未付；部分付款 = 还欠着钱，也是未付；已付清 = 已付/);
   assert.match(mixed.footnotes[1], /共 2 种币种，金额列不做合计/);
   assert.equal(mixed.totalColumns, undefined, "不设合计行");
 
   const single = buildReceivableLedgerTable([receivableRow()]);
   assert.equal(single.footnotes.length, 1, "单币种只留状态口径说明");
-  assert.match(single.footnotes[0], /草稿 = 未收；已确认 = 已收/);
+  assert.match(single.footnotes[0], /草稿与已确认（确认只是挂账，钱还没收到）= 未收；部分收款 = 尾款还没收到，也是未收；已收清 = 已收/);
 });

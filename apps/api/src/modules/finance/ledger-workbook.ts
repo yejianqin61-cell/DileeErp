@@ -12,8 +12,9 @@ import { beijingDateTime } from "../../platform/time/beijing-time";
  * 否则财务在 Excel 里 `SUM` 得 0、筛选与排序都会错（见 finance-report-workbook.ts 顶部说明）。
  *
  * 两个口径写在表尾说明里（不写进单元格，免得污染可求和区域）：
- *   - 「付款情况」按状态口径：草稿 = 未付；已确认 = 已付（确认即记账，钱已经从所选银行账户出去）；
- *     部分付款 / 已付清来自收付款核销。
+ *   - 「付款情况」按状态口径（与 `ledger-filter.ts` 的 paymentBucket 同源）：草稿与已确认（确认只是
+ *     挂账，钱还没出去，见 supplier-payable.service.ts:200-227）= 未付；部分付款 = 还欠着钱，也是未付；
+ *     已付清 = 已付；已冲销 / 已作废不算未付也不算已付，只在「全部」里出现。
  *   - 含多种币种时**不做合计**：跨币种相加是一个没有意义的数（与全站既定口径一致）。
  */
 
@@ -107,10 +108,16 @@ export type ReceivableLedgerExportRow = {
 
 const SOURCE_LABELS: Record<string, string> = { raw_material_inbound: "原料入库", purchase_receipt: "采购到货", outsource_receipt: "外加工签收", other: "其他应付" };
 
-/** 应付台账的「付款情况」（与筛选口径同源：见 ledger-filter.ts 的 paymentBucket）。 */
+/**
+ * 应付台账的「付款情况」（与筛选口径同源：见 ledger-filter.ts 的 paymentBucket）。
+ *
+ * 草稿与已确认都写「未付」：确认只是挂账，钱还在账上（`supplier-payable.service.ts:200-227`），
+ * 两者由旁边的「状态」列区分（应付草稿 / 应付已确认）。部分付款单列，但它同样属于「未付」——
+ * 还欠着钱。只有已付清才是「已付」。
+ */
 export function payablePaymentText(status: string): string {
   if (status === "draft") return "未付";
-  if (status === "confirmed") return "已付";
+  if (status === "confirmed") return "未付";
   if (status === "partially_paid") return "部分付款";
   if (status === "paid") return "已付清";
   if (status === "reversed") return "已冲销";
@@ -123,9 +130,10 @@ export function payableStatusText(status: string): string {
   return labels[status] ?? status;
 }
 
+/** 应收台账的「收款情况」（与应付侧、与筛选口径同一套：草稿/已确认都还没收到钱）。 */
 export function receivablePaymentText(status: string): string {
   if (status === "draft") return "未收";
-  if (status === "confirmed") return "已收";
+  if (status === "confirmed") return "未收";
   if (status === "partially_paid") return "部分收款";
   if (status === "paid") return "已收清";
   if (status === "cancelled") return "已取消";
@@ -183,7 +191,7 @@ export function buildPayableLedgerTable(rows: PayableLedgerExportRow[]): ReportT
       row.remark ?? "",
       ...auditLedgerCells(row),
     ]),
-    footnotes: ledgerFootnotes(rows.map((row) => row.currency), "付款情况按状态口径：草稿 = 未付；已确认 = 已付（确认应付即记账，金额已从所选银行账户支出）；部分付款 / 已付清来自收付款核销。"),
+    footnotes: ledgerFootnotes(rows.map((row) => row.currency), "付款情况按状态口径：草稿与已确认（确认只是挂账，钱还没付）= 未付；部分付款 = 还欠着钱，也是未付；已付清 = 已付；已冲销 / 已作废不算未付也不算已付，只在「全部」里出现。"),
   };
 }
 
@@ -231,7 +239,7 @@ export function buildReceivableLedgerTable(rows: ReceivableLedgerExportRow[]): R
       row.remark ?? "",
       ...auditLedgerCells(row),
     ]),
-    footnotes: ledgerFootnotes(rows.map((row) => row.currency), "收款情况按状态口径：草稿 = 未收；已确认 = 已收（确认应收即记账，金额已记入所选银行账户）；部分收款 / 已收清来自收付款核销。"),
+    footnotes: ledgerFootnotes(rows.map((row) => row.currency), "收款情况按状态口径：草稿与已确认（确认只是挂账，钱还没收到）= 未收；部分收款 = 尾款还没收到，也是未收；已收清 = 已收；已取消 / 已关闭不算未收也不算已收，只在「全部」里出现。"),
   };
 }
 

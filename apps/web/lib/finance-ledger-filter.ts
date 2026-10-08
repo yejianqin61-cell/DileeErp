@@ -4,22 +4,26 @@
 //
 // ## 「已付 / 未付」到底是什么
 //
-// 第十三/十五轮把「确认」改成**确认即记账**：确认应付时金额从所选银行账户转出，确认应收时记进所选账户。
-// 所以：
-//   - 未付 / 未收 = 草稿（还没确认，钱还没动）；
-//   - 已付 / 已收 = 已确认（钱已经进出账户）；
-//   - 部分付款 / 已付清 / 部分收款 / 已收清 = 有收付款核销金额的（历史数据或接口写入）；
+// 2026-09-24 起「确认」是**两步挂账**的第一步：确认 = 挂账，钱没动（确认这一步不写收支流水、
+// 不动银行账户，见 `apps/api/src/modules/finance/supplier-payable.service.ts:200-227` 与
+// `docs/design/finance-accrual-two-step-2026-09-24.md`）。钱真正出去/进来由付款/收款那一步决定，
+// 所以「已付」不再等于「已确认」（「界面上没有第二步付款」的旧前提已经不存在）：
+//   - 未付 / 未收 = 草稿 + 已确认 + 部分付款（都还没付清；部分付款归未付是因为还欠着钱）；
+//   - 已付 / 已收 = 已付清 / 已收清；
 //   - 已冲销 / 已作废 / 已取消既不算未付也不算已付，只在「全部」里出现。
-// 界面上没有第二步付款，把「已付」定义成「有付款单核销」的话，这个筛选项永远是空的。
 
 export type LedgerPaymentFilter = "unpaid" | "paid" | "all";
 export type LedgerPaymentBucket = "unpaid" | "paid" | "void";
 
-/** 已付/已收的状态集合（`confirmed` 起都算钱已经动过）。 */
-export const PAID_LEDGER_STATUSES = ["confirmed", "partially_paid", "paid"] as const;
+/** 未付/未收的状态集合（钱没有全部付出去）。 */
+export const UNPAID_LEDGER_STATUSES = ["draft", "confirmed", "partially_paid"] as const;
 
+/** 已付/已收的状态集合（只有付清算已付）。 */
+export const PAID_LEDGER_STATUSES = ["paid"] as const;
+
+/** 分档：未付 / 已付 / 其余（冲销、作废…只在「全部」里）。由上面两个集合推出，不另抄一份状态名。 */
 export function paymentBucket(status: string): LedgerPaymentBucket {
-  if (status === "draft") return "unpaid";
+  if ((UNPAID_LEDGER_STATUSES as readonly string[]).includes(status)) return "unpaid";
   return (PAID_LEDGER_STATUSES as readonly string[]).includes(status) ? "paid" : "void";
 }
 

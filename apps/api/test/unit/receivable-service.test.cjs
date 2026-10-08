@@ -234,23 +234,28 @@ test("勾选批量确认应收：状态被别的入口改动时整批拒绝，�
 // 2026-09-16（用户要求）：「确认应收里如果是已收款的条目就不要出现了」+
 //   「支持按已收未收、按时间范围筛选」。时间用**创建日期**（= 出库过账生成来源的日期）：
 //   应收来源没有确认日期列，列表页的「待对账月份 / 出库日期」用的也是它。
+//
+// 2026-10-08（用户拍板）：确认改成两步挂账后口径反转 —— 确认应收那一刻钱还没收到
+//   （receivable.service.ts:187），所以 confirmed 属于**未收**；只有 paid（收清）才是已收。
 // ---------------------------------------------------------------------------
 
-test("应收台账按收款情况筛选：未收只留草稿，已收含已确认及以后", async () => {
+test("应收台账按收款情况筛选：未收含草稿 + 已确认（挂账未收）+ 部分收款，已收只含收清", async () => {
   const base = { amount: new Prisma.Decimal("100"), currency: "USD", orderNo: "SO-1", customerId: "c-1", customer: null, outbound: null, allocations: [], dueDate: null };
   const rows = [
     { ...base, id: "r-draft", sourceNo: "AR-001", status: "draft", createdAt: new Date("2026-09-07T00:00:00.000Z") },
     { ...base, id: "r-confirmed", sourceNo: "AR-002", status: "confirmed", createdAt: new Date("2026-09-08T00:00:00.000Z") },
+    { ...base, id: "r-partial", sourceNo: "AR-004", status: "partially_paid", createdAt: new Date("2026-09-10T00:00:00.000Z") },
+    { ...base, id: "r-paid", sourceNo: "AR-005", status: "paid", createdAt: new Date("2026-09-11T00:00:00.000Z") },
     { ...base, id: "r-cancelled", sourceNo: "AR-003", status: "cancelled", createdAt: new Date("2026-09-09T00:00:00.000Z") },
   ];
   const prisma = { receivableSource: { findMany: async () => rows }, receivableReconciliation: { findMany: async () => [] } };
   const service = new ReceivableService(prisma, {}, cashFlowStub());
   const ids = (filter) => service.list(undefined, undefined, undefined, filter).then((result) => result.map((row) => row.id));
 
-  assert.deepEqual(await ids({ payment: "unpaid" }), ["r-draft"]);
-  assert.deepEqual(await ids({ payment: "paid" }), ["r-confirmed"]);
-  assert.deepEqual(await ids({ payment: "all" }), ["r-draft", "r-confirmed", "r-cancelled"], "全部包含已取消的");
-  assert.deepEqual(await ids({}), ["r-draft", "r-confirmed", "r-cancelled"], "不传筛选时保持原行为");
+  assert.deepEqual(await ids({ payment: "unpaid" }), ["r-draft", "r-confirmed", "r-partial"]);
+  assert.deepEqual(await ids({ payment: "paid" }), ["r-paid"]);
+  assert.deepEqual(await ids({ payment: "all" }), ["r-draft", "r-confirmed", "r-partial", "r-paid", "r-cancelled"], "全部包含已取消的");
+  assert.deepEqual(await ids({}), ["r-draft", "r-confirmed", "r-partial", "r-paid", "r-cancelled"], "不传筛选时保持原行为");
 });
 
 test("应收台账按创建日期区间与关键字筛选（区间含两端，无日期的行不算命中）", async () => {

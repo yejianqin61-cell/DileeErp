@@ -289,23 +289,34 @@ test("勾选批量确认：状态被别的入口改动时整批拒绝，不出�
 // 2026-09-16（用户要求）：「确认应付里如果是已付款的条目就不要出现了」+
 //   「支持按已付未付、按时间范围筛选」。过滤在映射之后做（关键字要匹配物料名/供应商名/来源批次号，
 //   这些都是映射阶段才从关联里摊平出来的），所以这里断言的是最终列表。
+//
+// 2026-10-08（用户拍板）：确认改成两步挂账后，口径反转 —— 确认那一笔钱还没付出去
+//   （supplier-payable.service.ts:200-227），所以 confirmed 属于**未付**；只有 paid（付清）才是已付。
 // ---------------------------------------------------------------------------
 
-test("应付台账按付款情况筛选：未付只留草稿，已付含已确认及以后", async () => {
+test("应付台账按付款情况筛选：未付含草稿 + 已确认（挂账未付）+ 部分付款，已付只含付清", async () => {
   const base = { amount: new Prisma.Decimal("100"), allocations: [], payableSource: null, outsourcePayableSource: null, supplier: null, orderNo: "SO-1", currency: "CNY", purchaseOrderId: null };
   const rows = [
     { ...base, id: "p-draft", payableNo: "AP-001", status: "draft", supplierId: "s-1", confirmationDate: new Date("2026-09-10T00:00:00.000Z") },
     { ...base, id: "p-confirmed", payableNo: "AP-002", status: "confirmed", supplierId: "s-1", confirmationDate: new Date("2026-09-11T00:00:00.000Z") },
-    { ...base, id: "p-reversed", payableNo: "AP-003", status: "reversed", supplierId: "s-1", confirmationDate: new Date("2026-09-12T00:00:00.000Z") },
+    { ...base, id: "p-partial", payableNo: "AP-004", status: "partially_paid", supplierId: "s-1", confirmationDate: new Date("2026-09-12T00:00:00.000Z") },
+    { ...base, id: "p-paid", payableNo: "AP-005", status: "paid", supplierId: "s-1", confirmationDate: new Date("2026-09-13T00:00:00.000Z") },
+    { ...base, id: "p-reversed", payableNo: "AP-003", status: "reversed", supplierId: "s-1", confirmationDate: new Date("2026-09-14T00:00:00.000Z") },
   ];
   const prisma = { supplierPayableEntry: { findMany: async () => rows }, supplierPayableReconciliation: { findMany: async () => [] } };
   const service = new SupplierPayableService(prisma, {}, cashFlowStub());
   const ids = (filter) => service.list(undefined, undefined, undefined, filter).then((result) => result.map((row) => row.id));
 
-  assert.deepEqual(await ids({ payment: "unpaid" }), ["p-draft"]);
-  assert.deepEqual(await ids({ payment: "paid" }), ["p-confirmed"]);
-  assert.deepEqual(await ids({ payment: "all" }), ["p-draft", "p-confirmed", "p-reversed"], "全部包含已冲销的");
-  assert.deepEqual(await ids({}), ["p-draft", "p-confirmed", "p-reversed"], "不传筛选时保持原行为（不静默丢行）");
+  // 确认只挂账、钱没动，所以它在未付里；付清了才进已付
+  assert.deepEqual(await ids({ payment: "unpaid" }), ["p-draft", "p-confirmed", "p-partial"]);
+  assert.deepEqual(await ids({ payment: "paid" }), ["p-paid"]);
+  assert.deepEqual(await ids({ payment: "all" }), ["p-draft", "p-confirmed", "p-partial", "p-paid", "p-reversed"], "全部包含已冲销的");
+  assert.deepEqual(await ids({}), ["p-draft", "p-confirmed", "p-partial", "p-paid", "p-reversed"], "不传筛选时保持原行为（不静默丢行）");
+  // 冲销的行两边都不算：只在「全部」里出现
+  const unpaid = await ids({ payment: "unpaid" });
+  const paid = await ids({ payment: "paid" });
+  assert.equal(unpaid.includes("p-reversed"), false);
+  assert.equal(paid.includes("p-reversed"), false);
 });
 
 test("应付台账按确认日期区间与关键字筛选（区间含两端，无日期的行不算命中）", async () => {

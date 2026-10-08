@@ -21,8 +21,8 @@
 //
 // 2026-09-16（用户要求）：确认应付这边不再有「登记付款 → 过账核销」这第二遍流程
 // （当时确认应付本身就把钱从账户支出去了），改成**勾选 + 批量确认**；两个「待接收」列表里
-// 不再出现已接收的来源。后续又加了两件事：已付的条目默认不出现在确认页（可用「付款情况」切出来），
-// 以及按确认日期区间筛选 + 导出 Excel。
+// 不再出现已接收的来源。后续又加了两件事：默认只列未付（2026-10-08 起未付 = 草稿 + 已确认挂账 +
+// 部分付款，只有付清的才算已付，可用「付款情况」切档），以及按确认日期区间筛选 + 导出 Excel。
 //
 // 2026-10-08（用户确认）：确认应付已改回**挂账**（钱没出去），第二步因此回来了 —— 「合并付款」
 // 勾选多条已确认应付（同一供应商 + 同一币种，**可跨订单**）后真的建付款单 + 过账核销。
@@ -547,7 +547,8 @@ describe("应付管理：新建供应商支持自动生成与手动填写编码"
  * 用户三条要求：①「如果是已付款的条目就不要出现在确认应付里」；
  * ②「支持按已付未付筛选」；③「支持按时间范围筛选」；外加「要支持导出 excel」。
  *
- * 默认「未付」：这一页是待办清单，已经确认过（钱已经从账户出去）的条目不占位置；
+ * 默认「未付」＝草稿 + 已确认（挂账，钱还没付）+ 部分付款 —— 这一页是待办清单，只有已付清
+ * （核销走完）的才默认不占位置（2026-10-08 用户拍板的口径）；
  * 筛选器上按**当前条件**给出各档条数，切档即可看到被隐藏的行。
  */
 describe("应付管理：确认应付的付款情况 / 日期筛选与导出", () => {
@@ -559,19 +560,20 @@ describe("应付管理：确认应付的付款情况 / 日期筛选与导出", (
   };
   const confirmedEntry = { ...draftEntry, id: "entry-2", payableNo: "AP-002", status: "confirmed", confirmationDate: "2026-09-20T00:00:00.000Z" };
 
-  it("默认只列未付；筛选器按当前条件给条数，切到「已付 / 全部」才显示已确认的条目", async () => {
+  it("默认只列未付（草稿 + 已确认挂账 + 部分付款）；只有已付清的才切到「已付」", async () => {
     stubPayable({ entries: [draftEntry, confirmedEntry] });
     await openPayable("confirmed");
     const table = panelOf("确认应付");
+    // 确认只是挂账、钱还没付出去，所以它属于未付：默认视图里就看得见（旧口径下它被算作已付）
     expect(table.getByText("AP-001")).toBeVisible();
-    expect(table.queryByText("AP-002")).toBeNull();
-    expect(screen.getByText("共 1 条（未付 1 / 已付 1）")).toBeVisible();
-
-    await pickOption("payable-payment-filter", /已付（1）/);
     expect(table.getByText("AP-002")).toBeVisible();
-    expect(table.queryByText("AP-001")).toBeNull();
+    expect(screen.getByText("共 2 条（未付 2 / 已付 0）")).toBeVisible();
 
-    await pickOption("payable-payment-filter", /全部（2）/);
+    await pickOption("payable-payment-filter", /已付（0）/);
+    expect(table.queryByText("AP-001")).toBeNull();
+    expect(table.queryByText("AP-002")).toBeNull();
+
+    await pickOption("payable-payment-filter", /未付（2）/);
     expect(table.getByText("AP-001")).toBeVisible();
     expect(table.getByText("AP-002")).toBeVisible();
   });
@@ -776,7 +778,7 @@ describe("应付管理：其他应付的逻辑删除", () => {
   it("删除按钮只给「其他应付」（草稿与已确认各一条）；原料入库草稿与已确认都不给", async () => {
     stubPayable({ entries: [otherDraft, otherConfirmed, draftEntry, confirmedEntry] });
     await openPayable("confirmed");
-    // 默认只列未付：先切到「全部」才看得到已确认的那条
+    // 切到「全部」：两种来源的草稿与已确认（挂账）都能一并看到，不被付款情况挡住
     await pickOption("payable-payment-filter", /全部（4）/);
 
     expect(screen.getByTestId("payable-delete-entry-other")).toBeInTheDocument();
@@ -809,8 +811,8 @@ describe("应付管理：其他应付的逻辑删除", () => {
   it("已确认的其他应付也能删：弹窗里先说清「会同时冲回那笔支出」，再发同一条 DELETE", async () => {
     const calls = stubPayable({ entries: [otherConfirmed] });
     await openPayable("confirmed");
-    await pickOption("payable-payment-filter", /已付（1）/);
-
+    // 已确认 = 挂账（钱还没付），所以它就在默认的「未付」清单里，不用切档
+    expect(screen.getByTestId("payable-delete-entry-other-2")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("payable-delete-entry-other-2"));
     const dialog = await screen.findByTestId("action-dialog");
     // 删除已确认的条目会动到钱，弹窗必须写出来（否则财务以为只是列表上少一行）
@@ -1128,23 +1130,25 @@ describe("应付管理：合并付款（多笔应付一次核销）", () => {
       return undefined;
     });
   }
-  /** 已确认的应付默认被「付款情况 = 未付」筛掉（确认在旧口径里算已付），切到「全部」才看得到。 */
+  /** 已确认未结清的应付就在默认的「未付」档里（确认只是挂账，钱还没付）；这里切「全部」保证口径无关。 */
   async function openLedger() {
     await openPayable("confirmed");
     await pickOption("payable-payment-filter", /全部（\d+）/);
   }
 
-  it("已确认未结清的应付默认被「付款情况 = 未付」筛掉：给出提示与去处，切「全部」就能勾", async () => {
+  it("已确认未结清的应付就在默认「未付」视图里：直接可勾选合并付款，不再有「被筛选藏着」的提示", async () => {
     mergeStub([payableA]);
     await openPayable("confirmed");
-    // 「未付」还是旧口径（confirmed 一律算已付），所以默认视图里看不到可核销的条目
-    expect(screen.queryByTestId("payable-select-entry-a")).toBeNull();
-    expect(screen.getByTestId("payable-merge-pay")).toBeDisabled();
-    expect(screen.getByTestId("payable-merge-hidden-hint")).toHaveTextContent("另有 1 条已确认未结清的应付被当前「付款情况」筛选藏着");
-
-    await pickOption("payable-payment-filter", /全部（1）/);
+    // 确认只是挂账（钱没出去），所以默认的「未付」档里就有这条可核销的应付
     expect(screen.getByTestId("payable-select-entry-a")).toBeInTheDocument();
     expect(screen.queryByTestId("payable-merge-hidden-hint")).toBeNull();
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    expect(screen.getByTestId("payable-merge-pay")).toBeEnabled();
+    expect(screen.getByTestId("payable-merge-pay")).toHaveTextContent("合并付款（1 条）");
+
+    // 只有付清的才算「已付」：这条确认未结清的应付不在已付档里
+    await pickOption("payable-payment-filter", /已付（0）/);
+    expect(screen.queryByTestId("payable-select-entry-a")).toBeNull();
   });
 
   it("勾选两条跨订单的已确认应付 → 建单省略 order_no，过账按每条应付一行核销", async () => {

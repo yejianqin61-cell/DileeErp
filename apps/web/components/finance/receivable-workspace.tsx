@@ -136,7 +136,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [selected, setSelected] = useState<string[]>([]);
   /**
    * 「确认应收」页的筛选：收款情况 + 出库日期区间（与应付侧同一口径，见 lib/finance-ledger-filter.ts）。
-   * **默认只显示未收**（草稿）—— 这一页是待办清单，已经确认过（钱已经进账）的条目默认不在这里。
+   * **默认只显示未收**＝草稿 + 已确认（挂账，钱还没收到）+ 部分收款（尾款还欠着）—— 这一页是待办
+   * 清单，只有已收清的才默认不在；需要时用筛选器切到「已收」或「全部」。
    * 时间用创建日期（= 成品出库过账生成这条来源的日期）：应收来源没有确认日期列，
    * 列表页的「待对账月份 / 出库日期」用的也是它。
    */
@@ -478,7 +479,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const pendingSources = useMemo(() => sources.filter((item) => item.status === "draft"), [sources]);
   const pendingAmount = pendingSources.reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
   // 应收台账 = 全部应收来源（含草稿），再按「确认应收」页的筛选收窄：
-  // 关键字 → 出库日期区间 → 收款情况（默认只留未收，即草稿）。
+  // 关键字 → 出库日期区间 → 收款情况（默认只留未收＝草稿 + 已确认 + 部分收款）。
   // 成品出库条目那张表也用这一份（原来是另一套只差一个字段的匹配规则，两处迟早会漂移）。
   const matchedSources = useMemo(() => {
     const text = sourceFilter.trim().toLowerCase();
@@ -797,7 +798,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     {!error && activeTab.key === "reconciliations" && <section className="panel">
       <div className="panel-heading"><h2>确认应收</h2><span className="panel-note">共 {ledgerSources.length} 条（未收 {paymentTally.unpaid} / 已收 {paymentTally.paid}）</span></div>
       <div className="panel-body">
-        {/* 收款情况默认「未收」：已经确认过（钱已经进账）的条目不再占着待办清单；需要时切到「已收 / 全部」。 */}
+        {/* 收款情况默认「未收」＝草稿 + 已确认（挂账，钱还没收到）+ 部分收款；只有已收清才切到「已收 / 全部」。 */}
         <div className="filter-bar">
           <label>收款情况
             <Select value={payment} onValueChange={(value) => setPayment(value as LedgerPaymentFilter)}>

@@ -384,10 +384,11 @@ describe("应收管理 · 确认应收", () => {
     const confirmed = panel("确认应收");
     expect(confirmed.getByText("AR-001")).toBeInTheDocument();
     expect(confirmed.getByRole("button", { name: "确认应收" })).toBeInTheDocument();
-    // 已收（已确认，钱已经进账）的条目**默认不出现**在这张待办清单里（用户要求），
-    // 需要时用「收款情况」筛选器切到「已收 / 全部」。
+    // 已收 = 收清了；已确认只是挂账（钱还没进账），所以它和草稿一起留在默认的「未收」清单里
+    expect(confirmed.getByText("AR-002")).toBeInTheDocument();
+    await pickOption("receivable-payment-filter", /已收（0）/);
     expect(confirmed.queryByText("AR-002")).toBeNull();
-    await pickOption("receivable-payment-filter", /已收（1）/);
+    await pickOption("receivable-payment-filter", /未收（2）/);
     expect(confirmed.getByText("AR-002")).toBeInTheDocument();
     expect(confirmed.getByText("已确认")).toBeInTheDocument();
     // 确认即记账：台账行内不再有「登记收款」这第二步（再登记一次收款就是把同一笔款进两次账户）
@@ -538,7 +539,7 @@ describe("应付管理 · 应付对账与确认应付", () => {
     expect(pending.getByTestId("payable-covered-drafts")).toHaveTextContent("另有 1 条草稿已纳入对账单、不在此重复对账：AP-009（APREC-001）");
   });
 
-  it("确认应付是台账视图：默认只列未付（草稿），已付要用筛选器切出来", async () => {
+  it("确认应付是台账视图：默认列未付（草稿 + 已确认挂账），已付清才要用筛选器切出来", async () => {
     const calls = stubFinance({
       payables: [payableEntry(), payableEntry({ id: "pe-2", payableNo: "AP-002", status: "confirmed", outstanding_amount: "50.0000" })],
     });
@@ -546,9 +547,12 @@ describe("应付管理 · 应付对账与确认应付", () => {
     const table = panel("确认应付");
     expect(table.getByText("AP-001")).toBeInTheDocument();
     expect(table.getByRole("button", { name: "确认应付" })).toBeInTheDocument();
-    // 已付（已确认，钱已经从账户出去）的条目默认不出现；筛选器上按当前条件给出条数。
+    // 已确认只是挂账、钱还没付出（supplier-payable.service.ts:200-227），所以它在默认的未付清单里；
+    // 已付档只留给付清的条目 —— 这里一条都没有。
+    expect(table.getByText("AP-002")).toBeInTheDocument();
+    await pickOption("payable-payment-filter", /已付（0）/);
     expect(table.queryByText("AP-002")).toBeNull();
-    await pickOption("payable-payment-filter", /已付（1）/);
+    await pickOption("payable-payment-filter", /未付（2）/);
     expect(table.getByText("AP-002")).toBeInTheDocument();
 
     fireEvent.click(table.getByRole("button", { name: "回退" }));
@@ -1341,8 +1345,7 @@ describe("应收管理：对账与确认合并成一个视图 + 收款单", () =
     const calls = slipStub({ receivables: [source({ status: "confirmed" })] });
     await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
 
-    // 收款情况默认「未收」：已确认的那条要切到「已收」才看得见
-    await pickOption("receivable-payment-filter", /已收（1）/);
+    // 收款情况默认「未收」：已确认＝挂账（钱还没收到），所以这条就在默认视图里
     fireEvent.click(screen.getByTestId("receivable-slip-rec-1"));
     const editor = await screen.findByTestId("receipt-slip-editor");
     await waitFor(() => expect(callsTo(calls, "/api/v1/finance/receipt-slips/draft")).toHaveLength(1));
@@ -1418,7 +1421,7 @@ describe("应收管理：对账与确认合并成一个视图 + 收款单", () =
     slipStub({ receivables: [source({ status: "confirmed" })] }, apiErr(422, "RECEIPT_SLIP_ENTRY_NOT_FOUND", "勾选的应收条目里有不存在或已删除的，请刷新后重试"));
     await open(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />, "page-finance-receivable");
 
-    await pickOption("receivable-payment-filter", /已收（1）/);
+    // 已确认＝挂账（钱还没收到），默认「未收」档里就有这条，不用切档
     fireEvent.click(screen.getByTestId("receivable-slip-rec-1"));
     const error = await screen.findByTestId("receipt-slip-editor-draft-error");
     expect(error).toHaveTextContent("勾选的应收条目里有不存在或已删除的，请刷新后重试");

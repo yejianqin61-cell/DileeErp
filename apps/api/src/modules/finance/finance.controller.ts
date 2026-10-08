@@ -150,8 +150,9 @@ class BatchConfirmDto {
 /**
  * 台账导出的筛选条件（确认应收 / 确认应付共用）。
  *
- * `payment` 是「付款情况 / 收款情况」：unpaid=未付未收（草稿）、paid=已付已收（已确认及以后）、
- * all=全部。口径见 `ledger-filter.ts` —— 界面上没有第二步付款，所以「已付」= 已确认（钱已进出账户）。
+ * `payment` 是「付款情况 / 收款情况」：unpaid=未付未收（草稿 + 已确认 + 部分付款：钱都还没付清）、
+ * paid=已付已收（只有已付清 / 已收清）、all=全部。口径见 `ledger-filter.ts` —— 确认只是挂账、
+ * 钱没动（`supplier-payable.service.ts:200-227`），所以「已付」≠「已确认」。
  */
 class LedgerExportDto {
   @IsOptional() @IsString() order_no?: string;

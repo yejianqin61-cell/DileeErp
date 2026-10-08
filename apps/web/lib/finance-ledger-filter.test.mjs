@@ -4,17 +4,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  PAID_LEDGER_STATUSES, ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange,
+  PAID_LEDGER_STATUSES, UNPAID_LEDGER_STATUSES, ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange,
 } from "./finance-ledger-filter.ts";
 
-test("付款分档：草稿=未付；已确认及以后=已付；冲销/作废/取消只在「全部」里出现", () => {
-  assert.equal(paymentBucket("draft"), "unpaid");
+test("付款分档：草稿/已确认（挂账）/部分付款=未付；已付清=已付；冲销/作废/取消只在「全部」里出现", () => {
+  for (const status of UNPAID_LEDGER_STATUSES) assert.equal(paymentBucket(status), "unpaid");
   for (const status of PAID_LEDGER_STATUSES) assert.equal(paymentBucket(status), "paid");
   for (const status of ["reversed", "voided", "cancelled", "closed"]) assert.equal(paymentBucket(status), "void");
 });
 
+test("新口径的边界：确认只挂账（钱没动）→ 算未付不算已付；只有付清算已付；作废/冲销两边都不算", () => {
+  assert.equal(paymentBucket("confirmed"), "unpaid");
+  assert.equal(paymentBucket("partially_paid"), "unpaid", "部分付款还欠着钱，仍算未付");
+  assert.equal(paymentBucket("paid"), "paid");
+  assert.notEqual(paymentBucket("confirmed"), "paid");
+  assert.equal(paymentBucket("reversed"), "void");
+  assert.equal(paymentBucket("voided"), "void");
+  assert.deepEqual([...UNPAID_LEDGER_STATUSES], ["draft", "confirmed", "partially_paid"]);
+  assert.deepEqual([...PAID_LEDGER_STATUSES], ["paid"]);
+});
+
 test("计数：all 含作废/冲销，所以不等于未付 + 已付", () => {
-  assert.deepEqual(paymentCounts([{ status: "draft" }, { status: "confirmed" }, { status: "voided" }]), { unpaid: 1, paid: 1, void: 1, all: 3 });
+  assert.deepEqual(paymentCounts([{ status: "draft" }, { status: "confirmed" }, { status: "partially_paid" }, { status: "paid" }, { status: "voided" }]),
+    { unpaid: 3, paid: 1, void: 1, all: 5 });
   assert.deepEqual(paymentCounts([]), { unpaid: 0, paid: 0, void: 0, all: 0 });
 });
 
