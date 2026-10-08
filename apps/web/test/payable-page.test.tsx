@@ -16,16 +16,23 @@
 //   POST /api/v1/finance/payable-entries/batch-confirm                   勾选多条草稿一次确认（确认即记账）
 //   POST /api/v1/finance/supplier-payable-reconciliations                 创建应付对账
 //   POST /api/v1/finance/supplier-payable-reconciliations/:id/confirm-payables  对账后批量确认应付
+//   POST /api/v1/finance/supplier-payments                               合并付款第一步：建一张草稿付款单
+//   POST /api/v1/finance/supplier-payments/:id/post                      合并付款第二步：过账并逐条核销
 //
 // 2026-09-16（用户要求）：确认应付这边不再有「登记付款 → 过账核销」这第二遍流程
-// （确认应付本身就把钱从账户支出去了），改成**勾选 + 批量确认**；两个「待接收」列表里
+// （当时确认应付本身就把钱从账户支出去了），改成**勾选 + 批量确认**；两个「待接收」列表里
 // 不再出现已接收的来源。后续又加了两件事：已付的条目默认不出现在确认页（可用「付款情况」切出来），
 // 以及按确认日期区间筛选 + 导出 Excel。
+//
+// 2026-10-08（用户确认）：确认应付已改回**挂账**（钱没出去），第二步因此回来了 —— 「合并付款」
+// 勾选多条已确认应付（同一供应商 + 同一币种，**可跨订单**）后真的建付款单 + 过账核销。
+// 本文件钉住它的两条请求体（建单与过账）、跨订单时**故意省略 order_no**、以及混币种/混供应商被锁。
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PayableWorkspace from "../components/finance/payable-workspace";
 import { Toaster } from "../components/ui/toaster";
+import { formatBeijingDate } from "../lib/audit-time";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
 
 /** 下载三件套（与 finance-report-page.test.tsx 同一套）：只关心 URL 与文件名。 */
@@ -318,12 +325,14 @@ describe("应付管理：会计科目与确认应付入账", () => {
     await expectToast("已确认 2 条应付（800.0000 CNY）");
   });
 
-  it("勾选只对草稿开放：已确认的条目没有勾选框，没勾选时批量确认按钮不可点", async () => {
+  it("未核销余额为 0（已付清）的条目没有勾选框：可勾的是草稿与「已确认且还有未核销余额」的应付", async () => {
     stubPayable({ entries: [draftEntry, confirmedEntry] });
     await openPayable("confirmed");
     expect(screen.getByTestId("payable-select-entry-1")).toBeInTheDocument();
     expect(screen.queryByTestId("payable-select-entry-2")).toBeNull();
     expect(screen.getByTestId("payable-batch-confirm")).toBeDisabled();
+    // 可核销的那一类：草稿一条，已付清的那条（余额 0）两边都不算
+    expect(screen.getByTestId("payable-merge-pay")).toBeDisabled();
 
     await userEvent.click(screen.getByTestId("payable-select-all"));
     expect(screen.getByTestId("payable-selected-count")).toHaveTextContent("已选 1 条");
@@ -1086,6 +1095,221 @@ describe("应付管理：集中付款（付款单队列，可编辑）", () => {
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, EP.batchConfirm)).toHaveLength(1));
     expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toMatchObject({ ids: ["entry-1"] });
+  });
+});
+
+// ------------------------------------------------------------------ 合并付款（多笔应付一次核销，2026-10-08）
+
+/**
+ * 用户要的是「同一供应商多笔应付（可跨多张订单）一次付款并**真正核销**」。
+ *
+ * 这一组钉住的就是“真正”两个字：请求体必须是**两步** —— 先建一张付款单（头：供应商 / 币种 /
+ * 金额 / 银行 / 幂等键），再过账并逐条核销（每条应付一行 allocation、金额是各行自己的数）。
+ * 两个关键约定：
+ *  ① **跨订单时建单不带 `order_no`**：后端只在付款单自带订单号时才校验订单一致
+ *     （`supplier-payment.service.ts:96`），省略它正是「一次付款核销多个订单」的开关；带错了会 422；
+ *  ② **金额只有一个真源**：表头「本次付款金额」= 各行「本次核销金额」之和（派生、随行变），
+ *     不做成两个可以各说各话的输入框。
+ */
+describe("应付管理：合并付款（多笔应付一次核销）", () => {
+  const bank = { id: "bank-1", bankCode: "B001", bankName: "农业银行", accountName: "迪礼公司", accountNumber: "5706", currency: "CNY", isActive: true, swiftCode: null, remark: null };
+  /** 同一供应商、同一币种、**两个不同订单**的已确认未付款应付（合并付款的主场景）。 */
+  const payableA = { ...draftEntry, id: "entry-a", payableNo: "AP-A", orderNo: "SO-1", status: "confirmed", paid_amount: "0.0000", outstanding_amount: "500.0000" };
+  const payableB = { ...draftEntry, id: "entry-b", payableNo: "AP-B", orderNo: "SO-2", amount: "300.0000", status: "confirmed", paid_amount: "0.0000", outstanding_amount: "300.0000" };
+
+  /** 合并付款的两步请求桩：建单回一张草稿付款单，过账回已过账。`extra` 可以拦下任何一步来造失败。 */
+  function mergeStub(entries: unknown[], extra?: Handler) {
+    return stubPayable({ entries, banks: [bank] }, async (url, call) => {
+      const injected = await extra?.(url, call);
+      if (injected) return injected;
+      if (call.method !== "POST") return undefined;
+      if (url.endsWith("/finance/supplier-payments")) return apiOk({ id: "spay-1", paymentNo: "SPAY-1", status: "draft" });
+      if (url.endsWith("/finance/supplier-payments/spay-1/post")) return apiOk({ id: "spay-1", status: "posted" });
+      return undefined;
+    });
+  }
+  /** 已确认的应付默认被「付款情况 = 未付」筛掉（确认在旧口径里算已付），切到「全部」才看得到。 */
+  async function openLedger() {
+    await openPayable("confirmed");
+    await pickOption("payable-payment-filter", /全部（\d+）/);
+  }
+
+  it("已确认未结清的应付默认被「付款情况 = 未付」筛掉：给出提示与去处，切「全部」就能勾", async () => {
+    mergeStub([payableA]);
+    await openPayable("confirmed");
+    // 「未付」还是旧口径（confirmed 一律算已付），所以默认视图里看不到可核销的条目
+    expect(screen.queryByTestId("payable-select-entry-a")).toBeNull();
+    expect(screen.getByTestId("payable-merge-pay")).toBeDisabled();
+    expect(screen.getByTestId("payable-merge-hidden-hint")).toHaveTextContent("另有 1 条已确认未结清的应付被当前「付款情况」筛选藏着");
+
+    await pickOption("payable-payment-filter", /全部（1）/);
+    expect(screen.getByTestId("payable-select-entry-a")).toBeInTheDocument();
+    expect(screen.queryByTestId("payable-merge-hidden-hint")).toBeNull();
+  });
+
+  it("勾选两条跨订单的已确认应付 → 建单省略 order_no，过账按每条应付一行核销", async () => {
+    const calls = mergeStub([payableA, payableB]);
+    await openLedger();
+    const entriesBefore = callsTo(calls, EP.entries).filter((call) => call.method === "GET").length;
+
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    await userEvent.click(screen.getByTestId("payable-select-entry-b"));
+    const merge = screen.getByTestId("payable-merge-pay");
+    expect(merge).toBeEnabled();
+    expect(merge).toHaveTextContent("合并付款（2 条）");
+    await userEvent.click(merge);
+
+    const dialog = await screen.findByTestId("payable-merge-dialog");
+    // 逐行列出要核销的应付，默认按该行**全额未核销余额**核销
+    expect(within(dialog).getByTestId("payable-merge-row-entry-a")).toHaveTextContent("SO-1");
+    expect(within(dialog).getByTestId("payable-merge-row-entry-b")).toHaveTextContent("SO-2");
+    expect((within(dialog).getByTestId("payable-merge-amount-entry-a") as HTMLInputElement).value).toBe("500.0000");
+    expect((within(dialog).getByTestId("payable-merge-amount-entry-b") as HTMLInputElement).value).toBe("300.0000");
+    // 合计是派生值（唯一真源 = 各行）：初始等于两条未核销余额之和
+    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 800 CNY");
+    expect(within(dialog).queryByTestId("payable-merge-blockers")).toBeNull();
+
+    fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
+
+    // 第一步：建付款单。跨订单 → **不带 order_no**（这正是允许跨订单核销的原因）
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(1));
+    const create = bodyOf(postsTo(calls, "/finance/supplier-payments")[0]);
+    expect(create.order_no).toBeUndefined();
+    expect(create).toMatchObject({
+      supplier_id: "supplier-1", amount: "800", currency: "CNY", payment_method: "银行转账",
+      bank_id: "bank-1", payment_date: formatBeijingDate(new Date()),
+    });
+    // 一次弹窗一个幂等键：过账失败重试时命中同一张草稿，不会撞上重复草稿守卫、也不会多建一张
+    expect(String(create.idempotency_key)).toMatch(/^web-supplier-payment-/);
+
+    // 第二步：过账并核销，每条应付一行（订单号由后端从各条应付复制到核销行上）
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments/spay-1/post")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments/spay-1/post")[0])).toEqual({ allocations: [
+      { payable_entry_id: "entry-a", amount: "500" },
+      { payable_entry_id: "entry-b", amount: "300" },
+    ] });
+    await expectToast("已付款并核销 2 条应付（800 CNY）");
+    // 核销后要刷新台账：状态与未核销余额都变了，界面必须自动跟上
+    await waitFor(() => expect(callsTo(calls, EP.entries).filter((call) => call.method === "GET").length).toBeGreaterThan(entriesBefore));
+  });
+
+  it("两条应付同属一个订单 → 建单带上 order_no（付款单与订单对得上）", async () => {
+    const sameOrder = { ...payableB, id: "entry-c", payableNo: "AP-C", orderNo: "SO-1", amount: "200.0000", outstanding_amount: "200.0000" };
+    const calls = mergeStub([payableA, sameOrder]);
+    await openLedger();
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    await userEvent.click(screen.getByTestId("payable-select-entry-c"));
+    await userEvent.click(screen.getByTestId("payable-merge-pay"));
+    const dialog = await screen.findByTestId("payable-merge-dialog");
+    expect(within(dialog).getByTestId("payable-merge-scope")).toHaveTextContent("涉及订单 SO-1");
+
+    fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments")[0])).toMatchObject({ order_no: "SO-1", amount: "700" });
+  });
+
+  it("逐行改小做部分付款：合计随行变，提交的就是改过的数（改回全额可用「按未核销余额重填」）", async () => {
+    const calls = mergeStub([payableA, payableB]);
+    await openLedger();
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    await userEvent.click(screen.getByTestId("payable-select-entry-b"));
+    await userEvent.click(screen.getByTestId("payable-merge-pay"));
+    const dialog = await screen.findByTestId("payable-merge-dialog");
+
+    setValue("payable-merge-amount-entry-b", "100");
+    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 600 CNY");
+    fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments")[0])).toMatchObject({ amount: "600" });
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments/spay-1/post")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments/spay-1/post")[0])).toEqual({ allocations: [
+      { payable_entry_id: "entry-a", amount: "500" },
+      { payable_entry_id: "entry-b", amount: "100" },
+    ] });
+  });
+
+  it("核销金额超过未核销余额：按钮点不动并把原因写在界面上，一个请求都不发", async () => {
+    const calls = mergeStub([payableA]);
+    await openLedger();
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    await userEvent.click(screen.getByTestId("payable-merge-pay"));
+    const dialog = await screen.findByTestId("payable-merge-dialog");
+    expect(within(dialog).getByTestId("payable-merge-submit")).toBeEnabled();
+
+    setValue("payable-merge-amount-entry-a", "600");
+    expect(within(dialog).getByTestId("payable-merge-blockers")).toHaveTextContent("AP-A 的本次核销金额不能超过未核销余额 500.0000");
+    expect(within(dialog).getByTestId("payable-merge-submit")).toBeDisabled();
+
+    // 「按未核销余额重填」一键还原 → 又可以提交了
+    await userEvent.click(within(dialog).getByTestId("payable-merge-reset"));
+    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 500 CNY");
+    expect(within(dialog).queryByTestId("payable-merge-blockers")).toBeNull();
+    expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(0);
+  });
+
+  it("币种是不变量：选了 CNY 之后，USD 的行勾选框锁住并写明原因", async () => {
+    const usd = { ...payableB, id: "entry-usd", payableNo: "AP-USD", orderNo: "SO-3", currency: "USD", outstanding_amount: "300.0000" };
+    mergeStub([payableA, usd]);
+    await openLedger();
+
+    // 先勾一条：锚点定下 CNY
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    const usdBox = screen.getByTestId("payable-select-entry-usd");
+    expect(usdBox).toBeDisabled();
+    expect(screen.getByTestId("payable-select-lock-entry-usd")).toHaveTextContent("不能与已选的 CNY 应付合并在一次付款里（金额不跨币种合计）");
+    // 不可勾 → 合并付款只能有 1 条，提交出去的不可能混币种
+    expect(screen.getByTestId("payable-merge-pay")).toHaveTextContent("合并付款（1 条）");
+    expect(screen.getByTestId("payable-merge-hint")).toHaveTextContent("晋江大田 / CNY");
+    // 取消锚点后那条 USD 又能勾了（锁只跟着当前勾选，不是永久禁用）
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    expect(screen.getByTestId("payable-select-entry-usd")).toBeEnabled();
+  });
+
+  it("供应商是不变量：一个付款单只对一个供应商，另一家的行同样锁住", async () => {
+    const other = { ...payableB, id: "entry-other", payableNo: "AP-OTHER", orderNo: "SO-4", supplierId: "supplier-2", supplier_name: "联晟" };
+    mergeStub([payableA, other]);
+    await openLedger();
+
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    expect(screen.getByTestId("payable-select-entry-other")).toBeDisabled();
+    expect(screen.getByTestId("payable-select-lock-entry-other")).toHaveTextContent("不能与已选的「晋江大田」合并在一次付款里（一张付款单只对一个供应商）");
+    expect(screen.getByTestId("payable-merge-pay")).toHaveTextContent("合并付款（1 条）");
+  });
+
+  it("过账失败：明确说清草稿付款单已创建、怎么继续，弹窗不关、草稿单号留在界面上", async () => {
+    const calls = mergeStub([payableA], (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/supplier-payments/spay-1/post")
+        ? apiErr(422, "PAYABLE_ALLOCATION_EXCEEDED", "核销金额超过应付未核销余额")
+        : undefined
+    ));
+    await openLedger();
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    await userEvent.click(screen.getByTestId("payable-merge-pay"));
+    const dialog = await screen.findByTestId("payable-merge-dialog");
+    // 先部分付款（100）：草稿金额就是 100，重试的核销合计因此不能超过它
+    setValue("payable-merge-amount-entry-a", "100");
+    fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments/spay-1/post")).toHaveLength(1));
+    // 建单成功、过账失败：不能只说一句「失败」 —— 库里已经有这张草稿了
+    const notice = await within(dialog).findByTestId("payable-merge-draft-notice");
+    expect(notice).toHaveTextContent("已创建草稿付款单 SPAY-1");
+    expect(notice).toHaveTextContent("核销未完成：核销金额超过应付未核销余额");
+    expect(notice).toHaveTextContent("再次提交会复用这张草稿继续核销");
+    expect(screen.getByTestId("payable-merge-dialog")).toBeInTheDocument();
+    expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已创建草稿付款单 SPAY-1"))).toBe(true);
+
+    // 重试时把金额改大到超过草稿金额：拦下来（复用同一张草稿，改大只会一直失败），不发请求
+    setValue("payable-merge-amount-entry-a", "500");
+    expect(within(dialog).getByTestId("payable-merge-blockers")).toHaveTextContent("本次核销合计不能超过已创建的草稿付款单金额 100 CNY");
+    expect(within(dialog).getByTestId("payable-merge-submit")).toBeDisabled();
+
+    // 改回草稿金额再重试：仍然只用这一个幂等键，不会建出第二张草稿，也不会撞上「重复草稿」守卫
+    setValue("payable-merge-amount-entry-a", "100");
+    fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(2));
+    const [first, second] = postsTo(calls, "/finance/supplier-payments");
+    expect(bodyOf(second).idempotency_key).toBe(bodyOf(first).idempotency_key);
   });
 });
 

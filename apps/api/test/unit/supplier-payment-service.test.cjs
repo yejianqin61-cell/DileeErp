@@ -2,6 +2,9 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { SupplierPaymentService } = require("../../dist/modules/finance/supplier-payment.service.js");
+// 应付侧的真实现：合并付款要断言「部分核销 → partially_paid、结清 → paid」，而状态口径只有一处
+// （`SupplierPayableService.refreshStatus`），测试里不重抄一遍。
+const { SupplierPayableService } = require("../../dist/modules/finance/supplier-payable.service.js");
 
 test("supplier payment draft update locks and rechecks current status", async () => {
   let lockCount = 0;
@@ -247,4 +250,184 @@ test("编辑草稿付款：bank_id 传 null 清空支付银行，undefined 不�
   await service.updateDraft("payment-1", { amount: "310" }, { id: "user-1" });
   assert.equal(rows[0].bankId, null, "null 表示清空银行");
   assert.equal(rows[1].bankId, "bank-1", "undefined 表示保持原值");
+});
+
+// ------------------------------------------------------------------ 合并付款：一次核销多条应付（可跨订单）
+//
+// 2026-10-08（用户确认）：「同一供应商多笔应付（可跨多张订单）一次付款并**真正核销**」。
+//
+// 后端的关键就是 `post` 的 `:96`：订单一致性**只在付款单自己带 `order_no` 时才校验** ——
+// 所以界面在跨订单时有意省略 `order_no`，这一条允许一次核销多张订单的应付；其余红线
+// （供应商 / 币种必须与付款单一致、单条不超未核销余额、合计不超付款金额）一条都不放松。
+// 下面逐条钉住，并且钉住「被拒时一行核销都不落库」（事务回滚）。
+
+/**
+ * 多笔应付的过账夹具。
+ *
+ * 与上面的 `postFixture`（单条应付）的差别：这里一次给出**多条**应付（各自的订单号 / 币种 /
+ * 供应商 / 金额），并记录每一行落库的核销 —— 多订单核销的关键断言就是这些核销行。
+ *
+ * `$transaction` 带**回滚**：抛错时把内存里的核销行与台账恢复原样，这样「被拒时一行都不落库」
+ * 才是真的在验事务（真库的事务本来就会回滚，夹具不能比真库更宽松）。
+ *
+ * `realStatus: true` 时用**真的** `SupplierPayableService.refreshStatus`（状态口径的唯一实现，
+ * 见 `supplier-payable.service.ts:408-421`），在内存台账上算「已核销多少」，用于钉住
+ * 「部分核销 → partially_paid，结清 → paid」。
+ */
+function mergeFixture({ payables, payment = {}, realStatus = false }) {
+  const allocationRows = [];
+  const refreshed = [];
+  const ledger = [];
+  const entries = new Map(payables.map((row) => [row.id, { supplierId: "supplier-1", currency: "CNY", status: "confirmed", sourceType: "raw_material_inbound", ...row, amount: new Prisma.Decimal(row.amount) }]));
+  const draft = {
+    id: "payment-1", paymentNo: "SPAY-1", status: "draft", orderNo: null,
+    amount: new Prisma.Decimal("800"), currency: "CNY", paymentDate: new Date("2026-10-08T00:00:00.000Z"),
+    paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId: "bank-1", subjectId: null, remark: null,
+    supplier: { name: "晋江大田" }, bank: { bankName: "农业银行", accountNumber: "5706" },
+    ...payment,
+  };
+  const client = {
+    $queryRaw: async () => [],
+    supplierPayment: { findFirst: async () => ({ ...draft }), update: async ({ data }) => ({ ...draft, ...data }) },
+    supplierPaymentAllocation: {
+      create: async ({ data }) => {
+        allocationRows.push(data);
+        ledger.push({ payableEntryId: data.payableEntryId, amount: data.amount });
+        return { id: `alloc-${allocationRows.length}`, ...data };
+      },
+      aggregate: async ({ where }) => ({
+        _sum: { amount: ledger.filter((row) => row.payableEntryId === where.payableEntryId).reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)) },
+      }),
+    },
+    supplierPayableEntry: {
+      findFirst: async ({ where }) => (entries.has(where.id) ? { ...entries.get(where.id) } : null),
+      update: async ({ where, data }) => { Object.assign(entries.get(where.id), data); return { ...entries.get(where.id) }; },
+    },
+  };
+  const prisma = {
+    supplierPayment: { findFirst: async () => ({ ...draft }) },
+    $transaction: async (fn) => {
+      const rowsBefore = [...allocationRows];
+      const ledgerBefore = [...ledger];
+      try {
+        return await fn(client);
+      } catch (error) {
+        allocationRows.length = 0; allocationRows.push(...rowsBefore);
+        ledger.length = 0; ledger.push(...ledgerBefore);
+        throw error;
+      }
+    },
+  };
+  const payable = realStatus ? new SupplierPayableService(client, { update: () => ({}) }) : {
+    allocationBalance: async (id) => {
+      const row = entries.get(id);
+      return { entry: { ...row }, available: new Prisma.Decimal(row.available ?? row.amount) };
+    },
+    refreshStatus: async (_tx, id) => { refreshed.push(id); },
+  };
+  const cashFlowCalls = [];
+  const service = new SupplierPaymentService(
+    prisma,
+    { create: () => ({}), update: () => ({}), record: async () => {} },
+    payable,
+    { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; }, autoReverseFromPayment: async () => null },
+    undefined,
+    { accruedSourceIds: async () => new Set() },
+  );
+  return { service, allocationRows, refreshed, cashFlowCalls, entries, ledger };
+}
+
+test("合并付款过账：一次核销多张订单的应付（付款单不写订单号）→ 每条应付一行核销、订单号逐条复制", async () => {
+  const fixture = mergeFixture({ payables: [
+    { id: "entry-a", orderNo: "SO-1", amount: "500" },
+    { id: "entry-b", orderNo: "SO-2", amount: "300" },
+  ] });
+  const posted = await fixture.service.post("payment-1", [
+    { payable_entry_id: "entry-a", amount: "500" },
+    { payable_entry_id: "entry-b", amount: "300" },
+  ], { id: "user-1" });
+
+  assert.equal(posted.status, "posted");
+  assert.equal(fixture.allocationRows.length, 2, "N 条应付 → N 行核销（跨订单也不例外）");
+  // 每条核销行复制**它自己那条应付**的订单号：付款单没有订单号，核销行必须追得回订单。
+  assert.deepEqual(
+    fixture.allocationRows.map((row) => [row.payableEntryId, row.orderNo, row.amount.toString(), row.currency]),
+    [["entry-a", "SO-1", "500", "CNY"], ["entry-b", "SO-2", "300", "CNY"]],
+  );
+  assert.deepEqual(fixture.refreshed, ["entry-a", "entry-b"], "每条应付都要刷新状态（不是只刷第一条）");
+  // 钱只出一次：写一条按付款单汇总的收支流水，金额是整张付款单的金额。
+  assert.equal(fixture.cashFlowCalls.length, 1);
+  assert.equal(fixture.cashFlowCalls[0].amount.toString(), "800");
+  assert.equal(fixture.cashFlowCalls[0].bankId, "bank-1", "银行必须落到流水上（银行余额的依据）");
+});
+
+test("合并付款过账：付款单写了订单号 → 同订单的应付能核销，另一张订单的被拒（ALLOCATION_REFERENCE_MISMATCH）", async () => {
+  // 同订单：界面把 order_no 写上，后端校验通过（付款单与订单对得上）。
+  const sameOrder = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "500" }], payment: { orderNo: "SO-1" } });
+  await sameOrder.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "500" }], { id: "user-1" });
+  assert.equal(sameOrder.allocationRows.length, 1);
+
+  // 跨订单：付款单带着 SO-1，却想核销 SO-2 的应付 —— 必须拒，且**一行都不能落库**。
+  const crossed = mergeFixture({ payables: [{ id: "entry-b", orderNo: "SO-2", amount: "300" }], payment: { orderNo: "SO-1" } });
+  await assert.rejects(
+    () => crossed.service.post("payment-1", [{ payable_entry_id: "entry-b", amount: "300" }], { id: "user-1" }),
+    (error) => error.getResponse().code === "ALLOCATION_REFERENCE_MISMATCH",
+  );
+  assert.equal(crossed.allocationRows.length, 0, "被拒时核销行必须随事务回滚");
+});
+
+test("合并付款过账：供应商不一致、币种不一致都被拒（ALLOCATION_REFERENCE_MISMATCH）", async () => {
+  const otherSupplier = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "500", supplierId: "supplier-2" }] });
+  await assert.rejects(
+    () => otherSupplier.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "500" }], { id: "user-1" }),
+    (error) => error.getResponse().code === "ALLOCATION_REFERENCE_MISMATCH",
+  );
+  assert.equal(otherSupplier.allocationRows.length, 0);
+
+  // 金额不跨币种合计：付款单是 CNY，USD 的应付不能混进来。
+  const otherCurrency = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "500", currency: "USD" }] });
+  await assert.rejects(
+    () => otherCurrency.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "500" }], { id: "user-1" }),
+    (error) => error.getResponse().code === "ALLOCATION_REFERENCE_MISMATCH",
+  );
+  assert.equal(otherCurrency.allocationRows.length, 0);
+});
+
+test("合并付款过账：单条超过未核销余额、合计超过付款金额都被拒，且一行都不落库", async () => {
+  // 单条超余额：未核销余额 300，却要核销 400。
+  const overBalance = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800", available: "300" }] });
+  await assert.rejects(
+    () => overBalance.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "400" }], { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYABLE_ALLOCATION_EXCEEDED" && error.getResponse().details[0].available_amount === "300",
+  );
+  assert.equal(overBalance.allocationRows.length, 0);
+
+  // 合计超付款金额：两条各 500（余额充足），付款单只有 800。
+  const overTotal = mergeFixture({ payables: [
+    { id: "entry-a", orderNo: "SO-1", amount: "500" },
+    { id: "entry-b", orderNo: "SO-2", amount: "500" },
+  ] });
+  await assert.rejects(
+    () => overTotal.service.post("payment-1", [
+      { payable_entry_id: "entry-a", amount: "500" },
+      { payable_entry_id: "entry-b", amount: "500" },
+    ], { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYMENT_ALLOCATION_EXCEEDED",
+  );
+  assert.equal(overTotal.allocationRows.length, 0, "超过付款金额时先前写入的核销行也必须回滚");
+});
+
+test("合并付款：部分核销 → 应付是 partially_paid，第二笔付款结清后变 paid（真 refreshStatus + 累计核销）", async () => {
+  // 应付 800，先付 300（部分），再付 500（结清）。状态由 `SupplierPayableService.refreshStatus`
+  // 按「应付金额 - 已过账核销累计」判定，这里用真实现，避免在测试里再抄一遍状态口径。
+  const first = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800" }], payment: { amount: new Prisma.Decimal("300") }, realStatus: true });
+  await first.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "300" }], { id: "user-1" });
+  assert.equal(first.entries.get("entry-a").status, "partially_paid", "部分核销后是部分付款");
+
+  // 第二笔付款接着核销余额（同一张应付、累计核销额相加）—— 用一个共享台账的夹具模拟同一张应付。
+  const second = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800" }], payment: { amount: new Prisma.Decimal("500") }, realStatus: true });
+  // 把第一笔的核销搬进第二笔的台账（真库里它们本来就是同一张应付上的两行核销）。
+  second.ledger.push({ payableEntryId: "entry-a", amount: new Prisma.Decimal("300") });
+  await second.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "500" }], { id: "user-1" });
+  assert.equal(second.entries.get("entry-a").status, "paid", "核销额累计到应付金额后是已付款");
 });

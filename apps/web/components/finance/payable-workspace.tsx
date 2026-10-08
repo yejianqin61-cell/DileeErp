@@ -12,8 +12,13 @@
 // 2026-09-16（用户要求，三条）：
 //   ① 说明性语句全部去掉，界面只留数据；
 //   ② **已接收**的来源不再出现在两个「待接收」列表里（它已经是应付草稿了，看草稿就行）；
-//   ③ 不再有「登记付款 → 过账核销」这第二遍流程 —— 确认应付已经把金额从账户上支出了，
+//   ③ 「登记付款 → 过账核销」这第二遍流程当时被拿掉了：那时确认应付**同时记账**（钱直接从账户出去），
 //      再登记一次付款等于同一笔钱扣两次；所以确认这边只保留「勾选 + 批量确认」。
+//
+// 2026-10-08（用户确认）：确认应付已经是**挂账**（借成本/存货、贷应付账款，钱还没出去），
+//   第二步因此回来了，而且是**真的核销**：勾选多条已确认应付 → 「合并付款」建一张付款单
+//   （同一供应商 + 同一币种，**可跨多个订单**）→ 过账逐条写核销行、刷应付状态、写收支流水（含银行）。
+//   行内「付款单」与「集中付款单」队列仍是**打印件**（不改任何数据），两条路各有各的用途。
 //
 // 「采购到货」不单独成栏：后端明确禁用到货单作为可接收应付来源
 // （supplier-payable.service.ts 的 PURCHASE_RECEIPT_PAYABLE_DISABLED），应付来源只由原料入库过账产生。
@@ -42,6 +47,7 @@ import { RecordDetailDialog, money, type DetailField } from "./record-detail-dia
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { financeStatus } from "./finance-status";
 import { financeSlipDraftBody, financeSlipDraftPath, type FinanceSlipDraft } from "../../lib/finance-slip";
+import PayableMergePaymentDialog, { isSettleable, settleAnchorOf, settleLockReasons, settleOutstandingTotal, type MergePayable } from "./payable-merge-payment-dialog";
 
 /** 银行下拉的「清空」哨兵值（见 bankField / bankValue）：Radix Select 不接受空串 value。 */
 const BANK_CLEAR = "__no_bank__";
@@ -142,6 +148,18 @@ const SOURCE_TYPE_LABELS: Record<string, string> = { raw_material_inbound: "原�
 /** 「待接收」判定：没有应付单关联、且来源状态还没被接收过（历史数据的 status 可能停在 pending_finance）。 */
 const awaitingReceipt = (item: { payable_entry?: SourcePayableLink | null; status: string }) => !item.payable_entry && item.status === "pending_finance";
 const isDraft = (entry: PayableEntry) => entry.status === "draft";
+/**
+ * 台账的一行 → 「合并付款」要的那几个字段。
+ *
+ * `outstanding_amount` 是列表接口算好的「应付金额 - 已过账核销」（`supplier-payable.service.ts:82-83,98`），
+ * 前端不重算：核销口径只有服务端一处，前端再算一遍就会出现「界面说能付、后端说超了」。
+ * 进到这里来的行都由 `isSettleable` 筛过（余额必然有值且 > 0），所以兜底只服务类型系统。
+ */
+const mergePayableOf = (entry: PayableEntry): MergePayable => ({
+  id: entry.id, payableNo: entry.payableNo, orderNo: entry.orderNo, supplierId: entry.supplierId,
+  supplierName: entry.supplier_name ?? entry.supplier?.name ?? entry.supplierId,
+  currency: entry.currency, amount: entry.amount, outstanding: entry.outstanding_amount ?? entry.amount,
+});
 
 /** 其他应付批量导入的结果（后端 `POST /finance/payable-entries/import` 的 data）。 */
 type OtherPayableImportResult = {
@@ -205,6 +223,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
    * 队列底部据此给出「确认这 N 条」的出路。付款单**不落库**：改完直接出 xlsx。
    */
   const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; drafts: FinanceSlipDraft[] | null; pendingIds: string[] }>({ open: false, loading: false, error: "", drafts: null, pendingIds: [] });
+  /** 合并付款弹窗（真的建付款单 + 过账核销，与上面那张打印件队列不是一回事）。 */
+  const [mergeOpen, setMergeOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -224,9 +244,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       ]);
       setInboundSources(inbound.data); setOutsourceSources(outsource.data); setEntries(e.data);
       setReconciliations(r.data); setSuppliers(s.data); setOrders(o.data); setBanks(b.data); setSubjects(i.data);
-      // 勾选状态跟着数据走：已被确认/冲销的条目自动退出勾选（界面上再也点不到它们，
-      // 留着 id 会让「批量确认 N 条」里的 N 与实际能确认的条数对不上）。
-      setSelected((ids) => ids.filter((id) => e.data.some((entry) => entry.id === id && isDraft(entry))));
+      // 勾选状态跟着数据走：已经不能确认、也不能核销（已付清/已冲销）的条目自动退出勾选
+      // （界面上再也点不到它们，留着 id 会让「批量确认 N 条 / 合并付款 N 条」里的 N 与实际能操作的条数对不上）。
+      setSelected((ids) => ids.filter((id) => e.data.some((entry) => entry.id === id && (isDraft(entry) || isSettleable(entry)))));
     } catch (cause) {
       setError(messageOf(cause, "应付数据加载失败"));
     } finally {
@@ -707,20 +727,55 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const coveredDrafts = useMemo(() => entries.filter((entry) => entry.status === "draft" && entry.reconciliation), [entries]);
   const pendingTotal = pendingEntries.reduce((sum, entry) => sum + Number(entry.amount), 0);
 
-  // 勾选只对草稿开放：已确认/冲销的条目没有「再确认一次」这回事。
+  // 勾选对**两条流程**开放（2026-10-08），各自只认自己那一部分：
+  //   - 草稿行 → 「集中付款单」（打印件，不改数据）与「批量确认」；
+  //   - 已确认 / 部分付款、且未核销余额 > 0 的行 → 「合并付款」（真的建单 + 过账核销）。
+  // 已付清（余额 0）与已冲销的行没有可做的事，勾选框都不给。
   // 勾选范围跟着**当前筛选结果**走：被筛选器藏起来的条目不参与全选，也不计入「已选 N 条」。
-  const selectableIds = useMemo(() => ledgerEntries.filter(isDraft).map((entry) => entry.id), [ledgerEntries]);
+  const selectableIds = useMemo(() => ledgerEntries.filter((entry) => isDraft(entry) || isSettleable(entry)).map((entry) => entry.id), [ledgerEntries]);
   const selectedDrafts = useMemo(() => ledgerEntries.filter((entry) => isDraft(entry) && selected.includes(entry.id)), [ledgerEntries, selected]);
+  const selectedSettleable = useMemo(() => ledgerEntries.filter((entry) => isSettleable(entry) && selected.includes(entry.id)), [ledgerEntries, selected]);
+  const mergeRows = useMemo(() => selectedSettleable.map(mergePayableOf), [selectedSettleable]);
+  /**
+   * 「合并付款」这一批的锚点（第一条被选中的可核销应付）：它决定整批的供应商与币种 ——
+   * 一张付款单只能对一个供应商、一个币种（后端 `supplier-payment.service.ts:96` 会以
+   * ALLOCATION_REFERENCE_MISMATCH 拒绝混在一起的），所以其余不同供应商/币种的行在界面上直接
+   * 锁掉并写明原因，而不是让她勾完再吃一个 422。
+   *
+   * 草稿行**不受**这把锁影响：集中付款单是打印件，后端本来就会按「收款单位 + 币种」拆成多张。
+   */
+  const settleAnchor = useMemo(() => settleAnchorOf(mergeRows), [mergeRows]);
+  const settleLock = (entry: PayableEntry) => settleAnchor ? settleLockReasons(settleAnchor, { supplierId: entry.supplierId, currency: entry.currency }) : [];
+  /**
+   * 被「付款情况」筛选藏起来的、可核销的应付条数。
+   *
+   * 为什么需要这个数：`finance-ledger-filter.ts` 的「已付 / 未付」还是**旧口径**（确认即记账年代：
+   * `confirmed` 一律算「已付」），而本轮确认只是挂账、钱还没出去 —— 所以默认的「未付」视图里
+   * 一条可核销的应付都看不到，用户会以为「合并付款」没有入口。筛选口径的改动牵动后端同名实现与
+   * 两边的既有测试（不在本次改动范围内），这里先把去处写出来，不让功能藏起来。
+   */
+  const hiddenSettleable = useMemo(
+    () => scopedEntries.filter((entry) => isSettleable(entry) && !ledgerEntries.some((row) => row.id === entry.id)).length,
+    [scopedEntries, ledgerEntries],
+  );
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.includes(id));
   const toggleOne = (id: string) => setSelected((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
   const toggleAll = () => setSelected((ids) => allSelected ? ids.filter((id) => !selectableIds.includes(id)) : [...new Set([...ids, ...selectableIds])]);
 
   const selectionColumn: ColumnDef<PayableEntry> = {
     id: "select",
-    header: () => <input type="checkbox" aria-label="全选待确认应付" data-testid="payable-select-all" checked={allSelected} disabled={!selectableIds.length} onChange={toggleAll} />,
-    cell: ({ row }) => isDraft(row.original)
-      ? <input type="checkbox" aria-label={`选择 ${row.original.payableNo}`} data-testid={`payable-select-${row.original.id}`} checked={selected.includes(row.original.id)} onChange={() => toggleOne(row.original.id)} />
-      : null,
+    // 表头全选覆盖「可确认的草稿 + 可核销的已确认应付」两类（见 selectableIds 的注释）。
+    header: () => <input type="checkbox" aria-label="全选可确认/可核销应付" data-testid="payable-select-all" checked={allSelected} disabled={!selectableIds.length} onChange={toggleAll} />,
+    cell: ({ row }) => {
+      const settleable = isSettleable(row.original);
+      if (!isDraft(row.original) && !settleable) return null;
+      // 锁只对可核销的行生效；锁住的原因就写在勾选框旁边（禁用的控件点不动，原因不能只在 title 里）。
+      const locks = settleable ? settleLock(row.original) : [];
+      return <>
+        <input type="checkbox" aria-label={`选择 ${row.original.payableNo}`} data-testid={`payable-select-${row.original.id}`} title={locks.join("；") || undefined} disabled={locks.length > 0} checked={selected.includes(row.original.id)} onChange={() => toggleOne(row.original.id)} />
+        {locks.length ? <span className="panel-note status-error" data-testid={`payable-select-lock-${row.original.id}`}>{locks.join("；")}</span> : null}
+      </>;
+    },
   };
   const inboundColumns: ColumnDef<PayableSource>[] = [
     { id: "source", header: "入库单号", cell: ({ row }) => row.original.rawMaterialInbound?.inboundNo ?? row.original.id.slice(0, 8) },
@@ -750,9 +805,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     ...auditColumns<OutsourcePayableSource>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button></div> },
   ];
-  // 台账不再列「已付 / 未付」：这两列来自**付款单核销**，而本轮已经把「登记付款 → 过账核销」从确认流程里去掉了
-  // （确认应付本身就把钱从账户支出去了）。留着它们只会让每条已确认的应付都显示「未付 = 全额」，
-  // 与「钱已经出去了」自相矛盾。核销明细仍在双击后的详情里。
+  // 「未核销余额」这一列回来了（2026-10-08）：核销现在是真的（「合并付款」过账时真的写核销行），
+  // 所以「应付金额 - 已核销」是个可用的数，也是勾选合并付款的依据（余额 0 = 已付清，勾不了）。
+  // 当年把它删掉是因为确认即记账：那时每条已确认应付的未付都是全额，与「钱已经出去了」自相矛盾。
+  // 核销明细仍在双击后的详情里。
   const entryColumns: ColumnDef<PayableEntry>[] = [
     selectionColumn,
     { accessorKey: "payableNo", header: "应付单号" },
@@ -762,6 +818,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier_name ?? row.original.supplier?.name ?? "-" },
     { id: "material", header: "原料 / 说明", cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : materialText(row.original) },
     { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "outstanding", header: "未核销余额", cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) },
     { id: "confirmationDate", header: "确认日期", cell: ({ row }) => day(row.original.confirmationDate) },
     { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") },
     ...auditColumns<PayableEntry>(),
@@ -994,6 +1051,17 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       pendingCount={slip.pendingIds.length}
       onConfirmPending={() => { const ids = slip.pendingIds; setSlip((current) => ({ ...current, open: false })); batchConfirm(ids); }}
     />
+    {/* 合并付款：真的建付款单并过账核销（与上面那张**打印件**队列不是一回事）。
+        金额、币种、供应商、幂等键、两步请求体都在弹窗里（payable-merge-payment-dialog.tsx），
+        页面只负责刷新台账 —— 核销后状态与未核销余额必须立刻能看见。 */}
+    <PayableMergePaymentDialog
+      open={mergeOpen}
+      rows={mergeRows}
+      banks={bankOptions}
+      subjects={subjectOptions}
+      onOpenChange={setMergeOpen}
+      onSettled={async () => { await load(); }}
+    />
     <RecordDetailDialog
       open={Boolean(detail)}
       onOpenChange={(open) => { if (!open) setDetail(null); }}
@@ -1091,13 +1159,19 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
         <div style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }} data-testid="payable-batch-bar">
           <Button size="sm" variant="secondary" onClick={createOtherPayable}>新建其他应付</Button>
           <Button size="sm" variant="secondary" data-testid="payable-other-import" onClick={() => { setImportResult(null); setImportOpen(true); }}>批量导入其他应付</Button>
-          <span className="panel-note" data-testid="payable-selected-count">已选 {selectedDrafts.length} 条</span>
+          <span className="panel-note" data-testid="payable-selected-count">已选 {selected.length} 条（可确认 {selectedDrafts.length} / 可核销 {mergeRows.length}）</span>
           {/* 导出付款单（用户 2026-09-20）：勾选几条 → 一队付款单（按收款单位 + 币种拆张，
               一行一条应付）。走的是预填接口，不改任何数据；金额、分录行、付款备注都在弹窗里现改。
               用户 2026-09-24 的抱怨正是「还是不能实现一起付款……然后还是一个个的改付款单」，
               所以这条按钮现在出的是**一次拿全的队列**，而不是「跨供应商直接报错」。 */}
           <Button size="sm" variant="secondary" data-testid="payable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openPaymentSlip(selectedDrafts.map((draft) => draft.id))}>集中付款单（{selectedDrafts.length} 条）</Button>
           <Button size="sm" data-testid="payable-batch-confirm" disabled={!selectedDrafts.length} onClick={() => batchConfirm()}>批量确认（{selectedDrafts.length} 条）</Button>
+          {/* 合并付款（2026-10-08，用户确认）：与上面两条**不是一回事** —— 它真的建付款单并过账核销，
+              动应付状态、未核销余额与银行流水。只对同一供应商 + 同一币种开放（不同供应商/币种的行会被
+              上面的勾选框锁掉并写明原因，后端 :96 也会拒）。 */}
+          <Button size="sm" data-testid="payable-merge-pay" disabled={!mergeRows.length} onClick={() => setMergeOpen(true)}>合并付款（{mergeRows.length} 条）</Button>
+          {mergeRows.length ? <span className="panel-note" data-testid="payable-merge-hint">合并付款：{mergeRows[0].supplierName} / {mergeRows[0].currency}，未核销余额合计 {settleOutstandingTotal(mergeRows)}（同一供应商 + 同一币种才能合并；金额可在弹窗里逐行改小）</span> : null}
+          {!mergeRows.length && hiddenSettleable ? <span className="panel-note" data-testid="payable-merge-hidden-hint">另有 {hiddenSettleable} 条已确认未结清的应付被当前「付款情况」筛选藏着：切到「全部」就能勾选合并付款（一次核销同一供应商的多条，可跨订单）</span> : null}
         </div>
         <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
       </div>
