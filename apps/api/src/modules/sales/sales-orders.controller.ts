@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
 import { AnyFilesInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { Type } from "class-transformer";
@@ -318,6 +318,16 @@ export class SalesOrdersController {
   @Post(":id/confirm") async confirm(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.confirm(id, user), meta: {} }; }
   @Post(":id/revert-draft") async revertDraft(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.revertToDraft(id, body.reason, user), meta: {} }; }
   @Post(":id/close") async close(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.close(id, user), meta: {} }; }
+  /**
+   * 删除草稿销售单（2026-10-08）。
+   *
+   * 不带 body：删除原因不强制（用户 2026-10-08 选定 —— 草稿多是录错或重复录入，多填一格只是多一步；
+   * 「谁删的、删的是哪张单」审计里都有）。守卫全在服务层：只有 draft 可删、锁行复查、下游事实盘点。
+   *
+   * 与另外三个状态流转端点（confirm / revert-draft / close）一样只走模块权限，不额外锁管理员 ——
+   * 销售自己录错的草稿，要能自己删掉。
+   */
+  @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.delete(id, user), meta: {} }; }
 
   /**
    * xlsx 下发的三件事一处写全：`Content-Type` + `filename*=UTF-8''`（中文文件名）+ `no-store`。

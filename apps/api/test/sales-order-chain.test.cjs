@@ -335,3 +335,149 @@ test("货号候选：路由必须声明在 @Get(\":id\") 之前（否则会被�
   assert.ok(byId > 0, "预期控制器里仍有一条 @Get(\":id\") 路由");
   assert.ok(itemNos < byId, "Nest 按声明顺序匹配：item-nos 必须在 :id 之前，否则建议列表永远是空的");
 });
+
+// ------------------------------ 删除草稿销售单（2026-10-08） ------------------------------
+const draftOrder = (status = "draft") => ({ id: "order-1", orderNo: "TEST-SO-DEL", status, customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] });
+
+/** 11 张下游表的计数桩：默认全 0（可删除），用 overrides 让某一类"有事实"。 */
+function downstreamCounts(overrides = {}) {
+  const calls = [];
+  const count = (name, value) => ({ count: async () => { calls.push(name); return value; } });
+  const zero = () => 0;
+  return {
+    calls,
+    tx: {
+      bom: count("bom", overrides.bom ?? zero()),
+      purchaseOrder: count("purchaseOrder", overrides.purchaseOrder ?? zero()),
+      purchasePlan: count("purchasePlan", overrides.purchasePlan ?? zero()),
+      productionOrder: count("productionOrder", overrides.productionOrder ?? zero()),
+      finishedGoodsOutbound: count("finishedGoodsOutbound", overrides.finishedGoodsOutbound ?? zero()),
+      finishedGoodsOutboundNotice: count("finishedGoodsOutboundNotice", overrides.finishedGoodsOutboundNotice ?? zero()),
+      customerReturn: count("customerReturn", overrides.customerReturn ?? zero()),
+      receivableSource: count("receivableSource", overrides.receivableSource ?? zero()),
+      customerPayment: count("customerPayment", overrides.customerPayment ?? zero()),
+      receivableAdjustment: count("receivableAdjustment", overrides.receivableAdjustment ?? zero()),
+      receivableReconciliation: count("receivableReconciliation", overrides.receivableReconciliation ?? zero()),
+    },
+  };
+}
+
+/** 删除路径要用到 softDelete（基座 audit 桩没有它）；顺带把审计事件收进数组，供断言。*/
+function deleteAudit(events) {
+  return { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), softDelete: (actor) => ({ deletedAt: new Date("2026-10-08T00:00:00.000Z"), deletedBy: actor.id, updatedBy: actor.id }), record: async (...args) => { events.push(args); } };
+}
+
+function deletePrisma(order, locked, rest) {
+  let updateData;
+  const prisma = {
+    salesOrder: { findFirst: async () => order, update: async ({ data }) => { updateData = data; return { ...order, ...data }; } },
+    $transaction: async (fn) => fn({ $queryRaw: async () => undefined, salesOrder: { findFirst: async () => locked, update: async ({ data }) => { updateData = data; return { ...order, ...data }; } }, ...rest }),
+  };
+  return { prisma, updated: () => updateData };
+}
+
+test("sales.order.delete_soft_deletes_a_draft_and_writes_an_audit_event", async () => {
+  const events = [];
+  const { tx } = downstreamCounts();
+  const { prisma, updated } = deletePrisma(draftOrder(), { status: "draft" }, tx);
+  const service = new SalesOrdersService(prisma, deleteAudit(events));
+  const result = await service.delete("order-1", user);
+  // 软删：不是 salesOrder.delete，而是 deletedAt/deletedBy 落地 + updatedBy 跟着走。
+  assert.ok(updated().deletedAt instanceof Date, "必须写 deletedAt");
+  assert.equal(updated().deletedBy, user.id);
+  assert.equal(updated().updatedBy, user.id);
+  assert.equal(result.status, "draft");
+  const codes = events.map(([code]) => code);
+  assert.deepEqual(codes, ["sales_order.delete"]);
+  assert.equal(events[0][4].order_no, "TEST-SO-DEL");
+});
+
+test("sales.order.rejects_deleting_a_non_draft_order", async () => {
+  let enteredTransaction = false;
+  const prisma = { salesOrder: { findFirst: async () => draftOrder("confirmed") }, $transaction: async () => { enteredTransaction = true; } };
+  const service = new SalesOrdersService(prisma, deleteAudit([]));
+  await assert.rejects(
+    () => service.delete("order-1", user),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_NOT_DELETABLE",
+  );
+  assert.equal(enteredTransaction, false, "非草稿不该进事务（守卫在读单之后立刻拦下）");
+});
+
+test("sales.order.delete_rechecks_status_inside_the_locked_transaction", async () => {
+  let updateData;
+  const prisma = {
+    // 读单时是 draft，锁内已被并发 confirm —— 必须按锁内的状态判，不能用读单时的结论。
+    salesOrder: { findFirst: async () => draftOrder("draft") },
+    $transaction: async (fn) => fn({ $queryRaw: async () => undefined, salesOrder: { findFirst: async () => ({ status: "confirmed" }), update: async ({ data }) => { updateData = data; } } }),
+  };
+  const service = new SalesOrdersService(prisma, deleteAudit([]));
+  await assert.rejects(
+    () => service.delete("order-1", user),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_NOT_DELETABLE" && /状态已变化/.test(error.getResponse().message),
+  );
+  assert.equal(updateData, undefined);
+});
+
+test("sales.order.delete_counts_all_eleven_downstream_tables_not_just_bom_purchase_production", async () => {
+  // 这条是本次实现的核心守卫：`revertToDraft` 只数 BOM/采购/生产三类，
+  // 而删除更彻底，必须把成品出库/出库通知/退货/应收/收款这些也数上。
+  const { tx, calls } = downstreamCounts({ receivableSource: 2 });
+  const { prisma, updated } = deletePrisma(draftOrder(), { status: "draft" }, tx);
+  const service = new SalesOrdersService(prisma, deleteAudit([]));
+  await assert.rejects(
+    () => service.delete("order-1", user),
+    (error) => error instanceof UnprocessableEntityException
+      && error.getResponse().code === "SALES_ORDER_DOWNSTREAM_EXISTS"
+      && /应收来源 2 张/.test(error.getResponse().message)
+      && error.getResponse().details[0].receivable_source_count === 2,
+  );
+  assert.equal(updated(), undefined, "有下游事实就不许软删");
+  assert.deepEqual([...calls].sort(), ["bom", "customerPayment", "customerReturn", "finishedGoodsOutbound", "finishedGoodsOutboundNotice", "productionOrder", "purchaseOrder", "purchasePlan", "receivableAdjustment", "receivableReconciliation", "receivableSource"].sort());
+});
+
+test("sales.order.delete_does_not_cascade_into_child_tables", async () => {
+  // 子表桩只有 count：一旦实现里出现任何"顺手删子行"的写法，就会抛 TypeError 而不是静默通过。
+  const events = [];
+  const { tx } = downstreamCounts();
+  const { prisma } = deletePrisma(draftOrder(), { status: "draft" }, tx);
+  const service = new SalesOrdersService(prisma, deleteAudit(events));
+  await service.delete("order-1", user);
+  // 版本快照/细分明细/物料引用不在盘点范围内：软删父单即可，不去碰它们。
+  assert.equal(events.length, 1);
+});
+
+test("sales.order.create explains that a deleted order still holds its order number", async () => {
+  // 软删不释放订单号（普通唯一索引，不看 deletedAt）——「删掉号写错的草稿，再用同一个号建单」
+  // 必然撞 P2002。这时列表上已经看不到那张单了，所以报错必须说清是"已删除的单占着"。
+  const p2002 = Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+  const customer = { id: "customer-1", name: "FLOWER1" };
+  const prisma = {
+    customer: { findFirst: async () => customer },
+    salesOrder: { findFirst: async () => ({ id: "order-9", status: "draft", deletedAt: new Date("2026-10-08T00:00:00.000Z") }) },
+    $transaction: async () => { throw p2002; },
+  };
+  const service = new SalesOrdersService(prisma, deleteAudit([]));
+  await assert.rejects(
+    () => service.create({ order_no: "DL260009-1", customer_id: "customer-1", order_date: "2026-10-08", product_name: "雨伞", quantity: "10", unit: "个", currency: "USD" }, user),
+    (error) => error.getResponse().code === "ORDER_NO_CONFLICT"
+      && /已删除/.test(error.getResponse().message)
+      && error.getResponse().details[0].deleted === true,
+  );
+});
+
+test("sales.order.create keeps the plain order-number message when the holder is alive", async () => {
+  const p2002 = Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+  const prisma = {
+    customer: { findFirst: async () => ({ id: "customer-1", name: "FLOWER1" }) },
+    salesOrder: { findFirst: async () => ({ id: "order-9", status: "confirmed", deletedAt: null }) },
+    $transaction: async () => { throw p2002; },
+  };
+  const service = new SalesOrdersService(prisma, deleteAudit([]));
+  await assert.rejects(
+    () => service.create({ order_no: "DL260009-1", customer_id: "customer-1", order_date: "2026-10-08", product_name: "雨伞", quantity: "10", unit: "个", currency: "USD" }, user),
+    (error) => error.getResponse().code === "ORDER_NO_CONFLICT"
+      && /已被另一张销售单占用/.test(error.getResponse().message)
+      && error.getResponse().details[0].deleted === false,
+  );
+});
+

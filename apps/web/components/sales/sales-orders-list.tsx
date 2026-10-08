@@ -21,7 +21,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { DataTable } from "../data/data-table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
-import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
+import { ApiClientError, apiDelete, apiGet, apiPost } from "../../lib/api-client";
 import { downloadFile } from "../../lib/download";
 import { exportImagesPath, productionSheetExportPath, productionSheetFileName, selectableImages, type ExportImageCandidate } from "../../lib/production-sheet-image";
 import ProductionSheetExportDialog from "./production-sheet-export-dialog";
@@ -127,6 +127,12 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
 
   function confirmOrder(order: Order) { void run(() => apiPost(`/sales-orders/${order.id}/confirm`), "销售单已确认"); }
   function revertOrder(order: Order) { setDialog({ title: "销售单回退草稿", fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void run(() => apiPost(`/sales-orders/${order.id}/revert-draft`, v), "销售单已回到草稿") }); }
+  /**
+   * 删除草稿销售单（2026-10-08）。**不弹确认框、不填原因**（用户 2026-10-08 选定：草稿多是录错或
+   * 重复录入，点一下就该消失，多一次确认只是多一步）——与 `outsource-logistics-panel` 的草稿删除同一形状。
+   * 服务端是软删：只有 draft 能删，且会先盘点下游事实；列表默认视图不再显示它，删错了由审计追。
+   */
+  function deleteOrder(order: Order) { void run(() => apiDelete(`/sales-orders/${order.id}`), `已删除草稿 ${order.orderNo}`); }
   async function run(action: () => Promise<unknown>, success: string) {
     setError("");
     try {
@@ -176,6 +182,7 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
       {/* 工艺单：按 example/销售单 的模板版式导出，图片格留空。销售每天要打这张单，所以不锁管理员。 */}
       <Button size="sm" variant="secondary" data-testid={`order-production-sheet-${row.original.orderNo}`} disabled={exportingId === row.original.id} onClick={() => void exportProductionSheet(row.original)}>{exportingId === row.original.id ? "导出中…" : "工艺单"}</Button>
       {row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => confirmOrder(row.original)}>确认</Button>}
+      {row.original.status === "draft" && <Button size="sm" variant="destructive" data-testid={`order-delete-${row.original.orderNo}`} onClick={() => deleteOrder(row.original)}>删除</Button>}
       {row.original.status === "confirmed" && <Button size="sm" variant="secondary" onClick={() => revertOrder(row.original)}>回到草稿</Button>}
     </div> },
   ];
@@ -183,7 +190,7 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   if (loading) return <div className="page-root" data-testid={testId}><PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} /><LoadingState /></div>;
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} description="销售单列表：确认与回退、导出工艺单、通知仓库出库。">
+    <PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} description="销售单列表：确认与回退、删除草稿、导出工艺单、通知仓库出库。">
       <Button asChild><Link href="/sales/orders/new" data-testid="sales-order-new">新建销售单</Link></Button>
     </PageHeader>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={async (values) => { await dialog?.submit(values); setDialog(null); }} />

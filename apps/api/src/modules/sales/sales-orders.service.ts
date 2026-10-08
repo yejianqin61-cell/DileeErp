@@ -468,7 +468,18 @@ export class SalesOrdersService {
       const created = await this.get(order.id);
       // 剔掉过引用就回报一次，不静默：用户得知道"这一格的图片没了"是为什么。
       return droppedRefKeys.length ? { ...created, reorder_warnings: [`来源单引用的物料已不存在，返单时已跳过：${droppedRefKeys.join("、")}`] } : created;
-    } catch (error) { this.handleUnique(error); throw error; }
+    } catch (error) {
+      /**
+       * 订单号冲突要说出「这个号在谁手里」。
+       *
+       * 自 2026-10-08 起草稿可以删除，而**删除不释放订单号**：`sales_orders_order_no_key` 是一条普通
+       * 唯一索引（见 20260821120000_sales_domain_foundation），不看 `deletedAt`。于是「删掉一张号写错的
+       * 草稿 → 再用同一个号建单」必然撞 P2002，而那时列表上已经看不到这个号了 —— 只说一句
+       * "订单号已存在"会让人以为系统在骗他（对着一个不存在的单子反复重试）。
+       */
+      await this.throwOrderNoConflict(error, effective.order_no);
+      throw error;
+    }
   }
 
   async update(id: string, input: SalesOrderUpdate, user: CurrentUser) {
@@ -644,6 +655,64 @@ export class SalesOrdersService {
   }
 
   /**
+   * 删除草稿销售单（2026-10-08）。
+   *
+   * 为什么是软删而不是 `salesOrder.delete`：整条销售链上**一个 `ON DELETE CASCADE` 都没有**
+   * —— 14 张子表的外键在迁移里一律落成 `RESTRICT`（唯一的 `SET NULL` 是 `customer_payments`
+   * 的可选引用），何况草稿单本来就带着版本快照、细分明细、物料引用。硬删在有子行时必然被
+   * Postgres 拒绝，所以「删除」只能是软删 + 审计留痕（`audit.softDelete` 的既有口径）。
+   *
+   * 为什么把 11 张下游表全数一遍，而不是照抄 `revertToDraft` 只数 BOM/采购/生产：下游事实的
+   * **创建**虽然都卡着 confirmed，但「回退草稿」那条路只复查了那三类 —— 成品出库、出库通知、
+   * 退货、应收/收款在回退时根本没被看过。删除比回退更彻底（列表上直接消失），所以守卫按
+   * 「库里到底有没有下游事实」来数，不按「理论上建不出来」来推。
+   *
+   * 锁行后再复查状态：`confirm` 可能与删除并发，先读到的 draft 在锁内可能已经不是。
+   * 与 `revertToDraft` 用同一把锁、同一个顺序（先锁销售单行，再数下游）。
+   */
+  async delete(id: string, user: CurrentUser) {
+    const order = await this.get(id);
+    if (order.status !== "draft") throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_DELETABLE", message: "只有草稿销售单可以删除", details: [{ status: order.status }] });
+    const deleted = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.salesOrder.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!locked || locked.status !== "draft") throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_DELETABLE", message: "销售单状态已变化，请刷新后重试", details: [] });
+      const facts = await this.countDownstreamFacts(tx, id);
+      if (facts.total) throw new UnprocessableEntityException({ code: "SALES_ORDER_DOWNSTREAM_EXISTS", message: `销售单已有下游事实（${facts.summary}），不能删除；请先处理这些单据`, details: [facts.counts] });
+      return tx.salesOrder.update({ where: { id }, data: this.audit.softDelete(user) });
+    });
+    // 审计只留「谁删的、删的是哪张单」：删除原因不强制（用户 2026-10-08 选定，草稿多是录错/重复录入）。
+    await this.audit.record("sales_order.delete", "sales_order", user.id, id, { order_no: order.orderNo, status: order.status });
+    return deleted;
+  }
+
+  /**
+   * 删除守卫用的下游事实盘点：只数「单据与账务」，不数版本快照 / 细分明细 / 物料引用
+   * （那三样是草稿自带的内容，软删父单后随它一起从默认视图里消失）。
+   */
+  private async countDownstreamFacts(tx: Prisma.TransactionClient, salesOrderId: string) {
+    const [bom, purchaseOrder, purchasePlan, productionOrder, outbound, outboundNotice, customerReturn, receivableSource, customerPayment, receivableAdjustment, receivableReconciliation] = await Promise.all([
+      tx.bom.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.purchaseOrder.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.purchasePlan.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.productionOrder.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.finishedGoodsOutbound.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.finishedGoodsOutboundNotice.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.customerReturn.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.receivableSource.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.customerPayment.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.receivableAdjustment.count({ where: { salesOrderId, deletedAt: null } }),
+      tx.receivableReconciliation.count({ where: { salesOrderId, deletedAt: null } }),
+    ]);
+    const counts = { bom_count: bom, purchase_order_count: purchaseOrder, purchase_plan_count: purchasePlan, production_order_count: productionOrder, finished_goods_outbound_count: outbound, finished_goods_outbound_notice_count: outboundNotice, customer_return_count: customerReturn, receivable_source_count: receivableSource, customer_payment_count: customerPayment, receivable_adjustment_count: receivableAdjustment, receivable_reconciliation_count: receivableReconciliation };
+    const labels: Array<[number, string]> = [[bom, "BOM"], [purchaseOrder, "采购单"], [purchasePlan, "采购计划"], [productionOrder, "生产单"], [outbound, "成品出库单"], [outboundNotice, "出库通知"], [customerReturn, "客户退货"], [receivableSource, "应收来源"], [customerPayment, "客户收款"], [receivableAdjustment, "应收调整"], [receivableReconciliation, "应收对账"]];
+    const total = labels.reduce((sum, [count]) => sum + count, 0);
+    // 报错文案要能直接告诉用户「卡在哪一类下游」——只说"有下游"会让人去翻遍七个模块。
+    const summary = labels.filter(([count]) => count > 0).map(([count, label]) => `${label} ${count} 张`).join("、");
+    return { total, counts, summary };
+  }
+
+  /**
    * 版本快照里的细化字段：**当前值打底、请求值覆盖**，所以每个版本都能看到当时的完整工艺口径
    * （只记「这次改了哪几个」的快照，回看时会以为别的字段是空的）。
    * 明细只在这次请求带了 `spec_details` 时才进快照（明细是整体替换语义）。
@@ -775,4 +844,22 @@ export class SalesOrdersService {
   }
   private compact(value: object) { return JSON.parse(JSON.stringify(value, (_key, item) => item === undefined ? undefined : item)); }
   private handleUnique(error: unknown) { if (error && typeof error === "object" && "code" in error && error.code === "P2002") throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: "订单号已存在", details: [] }); }
+
+  /**
+   * 建单撞唯一键时把「号在谁手里」查出来再说。
+   *
+   * 只处理 P2002，其余错误原样放过（调用方 catch 里紧接着 `throw error`）。
+   * 查不到占用行时退回与 `handleUnique` 同一句话 —— P2002 也可能来自别的唯一键，
+   * 不能反过来断言"一定是订单号"。
+   */
+  private async throwOrderNoConflict(error: unknown, orderNo: string): Promise<void> {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "P2002")) return;
+    const taken = await this.prisma.salesOrder.findFirst({ where: { orderNo }, select: { id: true, status: true, deletedAt: true } });
+    if (!taken) throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: "订单号已存在", details: [] });
+    throw new ConflictException({
+      code: "ORDER_NO_CONFLICT",
+      message: taken.deletedAt ? `订单号 ${orderNo} 曾被一张已删除的销售单使用；系统不释放已用过的订单号，请换一个号` : `订单号 ${orderNo} 已被另一张销售单占用`,
+      details: [{ order_id: taken.id, status: taken.status, deleted: Boolean(taken.deletedAt) }],
+    });
+  }
 }

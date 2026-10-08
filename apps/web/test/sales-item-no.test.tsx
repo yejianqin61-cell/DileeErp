@@ -14,7 +14,8 @@ import userEvent from "@testing-library/user-event";
 import { ItemNoInput, type ItemNoSuggestion } from "../components/sales/item-no-input";
 import { SalesOrderEditor } from "../components/sales/sales-order-editor";
 import SalesOrdersList from "../components/sales/sales-orders-list";
-import { apiOk, stubApi } from "./helpers/api-stub";
+import { Toaster } from "../components/ui/toaster";
+import { apiErr, apiOk, stubApi } from "./helpers/api-stub";
 
 const routerPush = vi.fn();
 vi.mock("next/navigation", () => ({
@@ -232,3 +233,53 @@ async function pickSelect(testid: string, optionText: string) {
   await userEvent.click(screen.getByTestId(testid));
   await userEvent.click(await screen.findByRole("option", { name: new RegExp(optionText) }));
 }
+
+// ------------------------------------------------------------------ 删除草稿销售单
+//
+// 老板 2026-10-01：「销售单部分，draft 状态的销售单支持删除。」选定的是**不弹确认框、不填原因**：
+// 点一下就该消失（草稿多是录错或重复录入）。服务端是软删，且只有 draft 能删。
+describe("销售单列表：删除草稿销售单", () => {
+  async function openWithToaster(orders: unknown[], onDelete?: () => Response) {
+    const calls = stubApi((url, call) => {
+      if (url.includes("/sales-orders/finished-goods-summary")) return apiOk({ production_order_count: 0, groups: [] });
+      if (url.includes("/sales-orders?")) return apiOk(orders);
+      if (call.method === "DELETE") return onDelete ? onDelete() : apiOk({ id: "order-1" });
+      return apiOk([]);
+    });
+    render(<><SalesOrdersList /><Toaster /></>);
+    await screen.findByTestId("page-sales-orders");
+    return calls;
+  }
+
+  it("只有草稿行出现「删除」，已确认/已关闭行没有", async () => {
+    await openWithToaster([orderRow({ status: "draft" }), orderRow({ id: "order-2", orderNo: "DL260002-1", status: "confirmed" })]);
+    await waitFor(() => expect(screen.getByTestId("order-delete-DL260001-1")).toBeTruthy());
+    expect(screen.queryByTestId("order-delete-DL260002-1")).toBeNull();
+  });
+
+  it("点一下即发 DELETE（不弹确认框、不要原因），成功后重新拉列表", async () => {
+    const calls = await openWithToaster([orderRow({ status: "draft" })]);
+    await waitFor(() => expect(screen.getByTestId("order-delete-DL260001-1")).toBeTruthy());
+    await userEvent.click(screen.getByTestId("order-delete-DL260001-1"));
+    await waitFor(() => expect(calls.some((call) => call.method === "DELETE")).toBe(true));
+    const deleted = calls.find((call) => call.method === "DELETE");
+    expect(deleted?.url.endsWith("/sales-orders/order-1")).toBe(true);
+    // 没有确认框：删除请求发出前不该出现任何对话框/原因输入框。
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已删除草稿 DL260001-1"))).toBe(true));
+    // 删完必须重新取列表：否则被删的单还留在屏幕上，用户会以为没删掉。
+    await waitFor(() => expect(calls.filter((call) => call.method === "GET" && call.url.includes("/sales-orders?")).length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("服务端拒绝（存在下游事实）时把原因 toast 出来，列表不刷新", async () => {
+    const calls = await openWithToaster([orderRow({ status: "draft" })], () => apiErr(422, "SALES_ORDER_DOWNSTREAM_EXISTS", "销售单已有下游事实（BOM 1 张），不能删除"));
+    await waitFor(() => expect(screen.getByTestId("order-delete-DL260001-1")).toBeTruthy());
+    const listCallsBefore = calls.filter((call) => call.method === "GET" && call.url.includes("/sales-orders?")).length;
+    await userEvent.click(screen.getByTestId("order-delete-DL260001-1"));
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("不能删除"))).toBe(true));
+    expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已删除草稿"))).toBe(false);
+    // 失败不刷新：行还在（用户得先处理 BOM）
+    expect(calls.filter((call) => call.method === "GET" && call.url.includes("/sales-orders?")).length).toBe(listCallsBefore);
+  });
+});
+

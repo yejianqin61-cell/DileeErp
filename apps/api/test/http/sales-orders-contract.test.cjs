@@ -1,5 +1,5 @@
-// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（**18 条**路由）。
-// 下面的 ROUTES 探针覆盖其中 15 条；3 条 xlsx / 图片导出路由不在清单里（版式与占位行为由
+// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（**19 条**路由）。
+// 下面的 ROUTES 探针覆盖其中 16 条；3 条 xlsx / 图片导出路由不在清单里（版式与占位行为由
 // `sales-order-production-sheet.test.cjs` 等单测覆盖）。计数口径：`^\s*@(Get|Post|Patch|Delete)\(`。
 //
 // 覆盖维度：成功/失败信封、状态码（200/201/204 不可写路径 → 401/400/404/422/500）、
@@ -42,7 +42,7 @@ const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 /** 非 UUID 的 id 段：验证 id 参数是否被 UUID 校验拦下（见文件末尾 KNOWN_CONTRACT_DEFECT 用例）。 */
 const NON_UUID_ID = "not-a-uuid";
 
-/** 本文件用匿名探针覆盖的 15 条路由（controller 共 18 条，3 条 xlsx/图片导出路由不在清单里）。 */
+/** 本文件用匿名探针覆盖的 16 条路由（controller 共 19 条，3 条 xlsx/图片导出路由不在清单里）。 */
 const ROUTES = [
   { label: "GET /", method: "get", path: "/api/v1/sales-orders" },
   { label: "POST /", method: "post", path: "/api/v1/sales-orders", payload: {} },
@@ -62,6 +62,9 @@ const ROUTES = [
   { label: "POST /:id/confirm", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/confirm`, payload: {} },
   { label: "POST /:id/revert-draft", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/revert-draft`, payload: { reason: "contract-probe" } },
   { label: "POST /:id/close", method: "post", path: `/api/v1/sales-orders/${UNKNOWN_ID}/close`, payload: {} },
+  // 删除草稿销售单（2026-10-08）：匿名探测只走到鉴权层（401），不会真的删到数据 ——
+  // 本文件「只读探测」的约束因此仍然成立。nil uuid 上即便登录也只会是 404。
+  { label: "DELETE /:id", method: "delete", path: `/api/v1/sales-orders/${UNKNOWN_ID}` },
 ];
 
 /** 每用例独立登录（约束 1）。登录本身顺带覆盖「POST 默认 201」。 */
@@ -132,7 +135,7 @@ function expectNotFoundWithCode(response, code, context) {
 // ---------------------------------------------------------------------------
 // 鉴权：匿名访问 15 个路由必须全部 401 UNAUTHENTICATED
 // ---------------------------------------------------------------------------
-test("sales_orders.anonymous_access_is_rejected_on_all_fifteen_routes", async () => {
+test("sales_orders.anonymous_access_is_rejected_on_all_sixteen_routes", async () => {
   const anonymous = apiClient(baseUrl); // 无 Cookie
   for (const route of ROUTES) {
     const response = route.method === "get" ? await anonymous.get(route.path) : await anonymous[route.method](route.path, route.payload);
@@ -389,7 +392,8 @@ test("sales_orders.method_mismatch_returns_404_never_405", async () => {
   const client = sessionClient();
 
   const cases = [
-    ["del", `/api/v1/sales-orders/${UNKNOWN_ID}`, "DELETE"],
+    // `DELETE /:id` 自 2026-10-08 起是**真路由**（删除草稿销售单），所以它不再属于"方法不匹配"这一组：
+    // 它在下面的 404 用例里按业务错误码断言（见 `sales_orders.delete_unknown_id_returns_business_not_found`）。
     ["put", `/api/v1/sales-orders/${UNKNOWN_ID}`, "PUT"],
     ["del", "/api/v1/sales-orders", "DELETE"],
     ["patch", "/api/v1/sales-orders", "PATCH"],
@@ -401,6 +405,14 @@ test("sales_orders.method_mismatch_returns_404_never_405", async () => {
     expectErrorEnvelope(response, { code: "NOT_FOUND", context: `${verb} ${path}`, status: 404 });
     assert.match(response.body.error.message, new RegExp(`^Cannot ${verb}`), `${verb} ${path} 的 message 由 Nest 生成`);
   }
+});
+
+// 删除草稿销售单（2026-10-08）：这是一条**真路由**，不是"方法不匹配"——
+// nil uuid 上按业务错误码 404，且服务层先 get() 再判状态，找不到单子就停住，不写任何数据。
+test("sales_orders.delete_unknown_id_returns_business_not_found", async () => {
+  const client = sessionClient();
+  const response = await client.del(`/api/v1/sales-orders/${UNKNOWN_ID}`);
+  expectNotFoundWithCode(response, "SALES_ORDER_NOT_FOUND", "DELETE /:id");
 });
 
 // ---------------------------------------------------------------------------
