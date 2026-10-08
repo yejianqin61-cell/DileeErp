@@ -32,7 +32,7 @@ const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), upda
 const ORDER_ID = "33333333-3333-4333-8333-333333333333";
 const CUSTOMER_ID = "11111111-1111-4111-8111-111111111111";
 /** 返单来源单（必须有货号：老单没货号不能返单，那是既有的业务规则）。 */
-const sourceRow = (extra = {}) => ({ id: ORDER_ID, orderNo: "SO-1", status: "confirmed", currentVersion: 1, customerId: CUSTOMER_ID, customer: { id: CUSTOMER_ID, name: "家百纳" }, contact: null, versions: [], boms: [], specDetails: [], materialRefs: [], specDetailLabels: { name: "伞头英文名" }, itemNo: "27621", orderDate: new Date(), quantity: "10", unit: "支", currency: "USD", extensionData: {}, ...extra });
+const sourceRow = (extra = {}) => ({ id: ORDER_ID, orderNo: "SO-1", status: "confirmed", currentVersion: 1, customerId: CUSTOMER_ID, customer: { id: CUSTOMER_ID, name: "家百纳" }, contact: null, versions: [], boms: [], specDetails: [], materialRefs: [], materialExtras: [], specDetailLabels: { name: "伞头英文名" }, itemNo: "27621", orderDate: new Date(), quantity: "10", unit: "支", currency: "USD", extensionData: {}, ...extra });
 
 // ------------------------------------------------------------------ ① 迁移
 
@@ -106,7 +106,7 @@ test("默认名与覆盖合并：没改的列用默认名，空覆盖回落默�
 /** 假 prisma：只实现 create / update 两条路要用的那几张表（与 material-refs 那份同形）。 */
 function writeHarness({ sourceRow = null } = {}) {
   const calls = { create: [], update: [] };
-  const emptyRow = { id: ORDER_ID, orderNo: "SO-1", status: "draft", currentVersion: 1, customerId: CUSTOMER_ID, customer: { id: CUSTOMER_ID, name: "家百纳" }, contact: null, versions: [], boms: [], specDetails: [], materialRefs: [], specDetailLabels: {}, orderDate: new Date(), quantity: "10", unit: "支", currency: "USD", extensionData: {} };
+  const emptyRow = { id: ORDER_ID, orderNo: "SO-1", status: "draft", currentVersion: 1, customerId: CUSTOMER_ID, customer: { id: CUSTOMER_ID, name: "家百纳" }, contact: null, versions: [], boms: [], specDetails: [], materialRefs: [], materialExtras: [], specDetailLabels: {}, orderDate: new Date(), quantity: "10", unit: "支", currency: "USD", extensionData: {} };
   const tx = {
     salesOrder: {
       create: async ({ data }) => { calls.create.push(data); return { id: ORDER_ID, orderNo: "SO-1", ...data }; },
@@ -115,6 +115,8 @@ function writeHarness({ sourceRow = null } = {}) {
     salesOrderVersion: { create: async ({ data }) => data },
     salesOrderSpecDetail: { updateMany: async () => ({}), createMany: async () => ({}) },
     salesOrderMaterialRef: { findMany: async () => [], update: async (args) => args.data, createMany: async () => ({ count: 1 }) },
+    // 「其它」行（2026-10-08）：返单会把来源单的空列表照抄过来（= 显式清空），所以这条路真的会写一次。
+    salesOrderMaterialExtra: { updateMany: async () => ({ count: 0 }), createMany: async ({ data }) => ({ count: data.length }) },
   };
   const prisma = {
     customer: { findFirst: async () => ({ id: CUSTOMER_ID, customerCode: "CUS-1", name: "家百纳", isActive: true }) },

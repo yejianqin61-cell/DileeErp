@@ -6,7 +6,8 @@
 //   ① 只列**有图**的候选，默认全勾；
 //   ② 缩放到最大边 640 且不放大；
 //   ③ 装表单时字段名 = 栏位键（后端就是按 fieldname 认栏位的，写错就变成「一张图都没有」）；
-//   ④ 导出地址自带 /api/v1（走的是裸 fetch，不像 api-client 会补前缀）。
+//   ④ 导出地址自带 /api/v1（走的是裸 fetch，不像 api-client 会补前缀）；
+//   ⑤ 字段名对前端是**不透明字符串**（材料明细「其它」行的键是 `extra:<行 id>`，2026-10-08）。
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
@@ -70,6 +71,20 @@ test("production-sheet-image：装表单时字段名 = 栏位键（后端按 fie
   assert.equal((form.get("rib_spec")).type, "image/jpeg", "必须是 JPEG —— Excel 不认 WebP");
   assert.equal((form.get("rib_spec")).name, "rib_spec.jpg");
   assert.equal([...form.keys()].length, 2, "勾两张就只发两张");
+});
+
+/**
+ * 「其它」行的候选键是 `extra:<行 id>`（2026-10-08）。这一条钉住「字段名对前端是不透明的」：
+ * 后端按 fieldname 认栏位，前端**不能**对键做任何形状假设（例如"必须是 `*_spec`"）——
+ * 真做了的话，「其它」行勾了图就会静默少发一个文件（后端于是报"这一格没有可导出的图片"）。
+ */
+test("production-sheet-image：键名是后端给的原样字符串（「其它」行是 extra:<行 id>，前端不许改写）", async () => {
+  const fake = deps();
+  const extraKey = "extra:55555555-5555-5555-5555-555555555555";
+  const form = await buildProductionSheetForm([candidate({ spec_key: extraKey, label: "弹簧" })], fake);
+  assert.equal(form.get(extraKey) instanceof File, true);
+  assert.equal(form.get(extraKey).name, `${extraKey}.jpg`);
+  assert.deepEqual([...form.keys()], [extraKey]);
 });
 
 test("production-sheet-image：一张都没勾时不取任何图（表单是空的，等于普通工艺单）", async () => {

@@ -264,3 +264,40 @@ test("细分明细列名：不是对象就在 DTO 挡下（数组/字符串/数�
   const shapeOnly = await validateBody(SalesOrderDto, { ...base, spec_detail_labels: { price: "单价" } });
   assert.deepEqual(shapeOnly.spec_detail_labels, { price: "单价" });
 });
+
+// 材料明细末尾的「其它」自定义类目行（2026-10-08 用户要求：「可以自行添加类目…允许用户增删改」）。
+test("「其它」行：形状对就通过（类目 + 内容 / 类目 + 引用物料），空数组 = 全部删掉", async () => {
+  const extras = [
+    { label: "弹簧", content: "5cm 不锈钢" },
+    { label: "胶袋", material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", sort_order: 1 },
+  ];
+  const created = await validateBody(SalesOrderDto, { ...minimalBody(), material_extras: extras });
+  // class-transformer 给出的是 DTO 实例（每个声明过的键都在，没传的是 undefined），所以按"有值的那几个"比。
+  const pick = (row) => ({ label: row.label, content: row.content ?? null, material_id: row.material_id ?? null, sort_order: row.sort_order ?? null });
+  assert.deepEqual(created.material_extras.map(pick), [
+    { label: "弹簧", content: "5cm 不锈钢", material_id: null, sort_order: null },
+    { label: "胶袋", content: null, material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301", sort_order: 1 },
+  ], "整组透传给服务层（归一与替换在服务层做）");
+  const cleared = await validateBody(UpdateSalesOrderDto, { material_extras: [] });
+  assert.deepEqual(cleared.material_extras, [], "空数组是合法值（= 全部删掉），不能被当成「没传」");
+  const untouched = await validateBody(UpdateSalesOrderDto, {});
+  assert.equal(untouched.material_extras, undefined, "没传 = 这一块不动");
+  // 内容空串是常见的形态（那一行只引用了物料）：@IsOptional() 不跳过空串，所以这里要能过。
+  const refOnly = await validateBody(SalesOrderDto, { ...minimalBody(), material_extras: [{ label: "弹簧", content: "", material_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301" }] });
+  assert.equal(refOnly.material_extras[0].content, "");
+});
+
+test("「其它」行：坏形状在 DTO 就挡下（空类目 / 非 UUID 物料 / 未声明字段 / 类目超长）", async () => {
+  const base = minimalBody();
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "", content: "有内容" }] }, "类目不能为空");
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "   ", content: "有内容" }] }, "纯空格的类目同样不行");
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ content: "有内容" }] }, "类目必填");
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", material_id: "not-a-uuid" }] }, "material_id 必须是 UUID");
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹".repeat(51), content: "x" }] }, `类目最长 50 字（第 51 个字就要 400）`);
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", sort_order: 1.5 }] }, "sort_order 必须是整数");
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", price: "1" }] }, "未声明的字段必须 400（写错了键名不能静默丢掉）");
+  // 「内容与引用至少有一个」是业务口径，跟"类目必填"一起判在服务层（normalizeMaterialExtras），
+  // 所以「只有类目」这种形状在 DTO 会过 —— 那条判定有单测钉在服务层的 extras 文件里。
+  const shapeOnly = await validateBody(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧" }] });
+  assert.equal(shapeOnly.material_extras.length, 1);
+});

@@ -8,6 +8,31 @@ import { beijingDate, beijingDateTime } from "../../platform/time/beijing-time";
 import { SPEC_MATERIAL_KEYS, SPEC_SCALAR_FIELDS, specDetailLabelsWithDefaults, specScalarRow } from "./sales-orders.service";
 
 /**
+ * 导出要用的物料摘要（**不取字节**）：`document()` 的兜底文字要 名称/规格/颜色，图片区要尺寸与 sha。
+ *
+ * ⚠️ 这份 select 曾经漏了 `specificationModel` / `color`：测试夹具里带着这两个字段，所以单测全绿，
+ * 而真实导出里「引用了物料但格子里没写字」的兜底文字只有「MAT-1 伞骨」—— 规格与颜色在纸上消失
+ * （与 2026-09-26 那次「引用的资料在导出的 excel 中无法显示」是同一处）。2026-10-08 补齐，
+ * 并加了一条**钉住这份 select** 的测试：夹具比真实查询更"全"，是这类漏洞的温床。
+ */
+const EXPORT_MATERIAL_SELECT = { id: true, materialCode: true, name: true, specificationModel: true, color: true, image: { select: { width: true, height: true, sha256: true } } } as const;
+
+/**
+ * 「其它」行在**图片导出**里的键：`extra:<行 id>`。
+ *
+ * 为什么带前缀：18 个固定栏位的键（`rib_spec` …）不能与用户自定义的类目混在一起 ——
+ * 前缀让两套键一眼分得开，`materialRefLookup` 那份查找表也是「固定栏位 + 其它行」合成的。
+ *
+ * 为什么用**行 id** 而不是行序号：这些行是「整块替换」语义，每次保存行 id 都会变；而用户完全可能
+ * 在另一个标签页里刚保存过，手上那份候选就是过期的。过期时按 id 查不到 → 报「这一格没有可导出的
+ * 图片」，重开一次弹窗就好；按序号查会在序号仍然有效的情况下**把图悄悄配到另一行上**，
+ * 而那种错在纸上看不出来。
+ */
+export function materialExtraRefKey(extraId: string): string {
+  return `extra:${extraId}`;
+}
+
+/**
  * 销售单「工艺单」导出（2026-09-16）。
  *
  * 版式依据：`example/销售单/DL260134 JBN生产单(1).xls`（A–J）与
@@ -91,6 +116,17 @@ export class SalesOrderExportService {
      * 取「格子里有人写的字」优先（那是人对着这一单说的话），空则退回引用的物料。
      */
     const refText = new Map((order.materialRefs ?? []).map((ref) => [ref.specKey, materialRefText(ref.material)]));
+    /**
+     * 「材料明细 → 其它」行（用户 2026-10-08：「材料明细最后还需要加一个『其它』」）。
+     *
+     * 印在 18 项**之后**（用户说的就是"最后"），类目名用用户自己起的那个字，内容取「人写的字」优先、
+     * 空则退回引用物料的摘要 —— 与上面 18 格同一条兜底规则（那条规则是 2026-09-26 的现场问题换来的：
+     * 一格引用了物料却没写字时，早先的导出会整行不印，工厂照着一张少了一个部件的单子做伞）。
+     * 内容与引用都空的行仍然不印（「空盘位自动省略」没有被这次改动推翻）。
+     */
+    const extraLines = (order.materialExtras ?? [])
+      .map((row) => ({ label: (row.label ?? "").trim(), value: (row.content ?? "").trim() || materialRefText(row.material ?? {}) }))
+      .filter((line) => line.label && line.value);
     return {
       company: "厦 门 迪 礼 伞 业 有 限 公 司",
       factory: text("factory"),
@@ -106,7 +142,10 @@ export class SalesOrderExportService {
       completionText: `${dotDate(order.deliveryDate)}${text("completion_remark")}`,
       attentionNote: text("attention_note"),
       // 只印有值的行；工艺要求按留下的条目重新编号（不能出现断号）。
-      materialLines: SalesOrderExportService.MATERIAL_LABELS.map(([key, label]) => ({ label, value: text(key) || (refText.get(key) ?? "") })).filter((line) => line.value),
+      materialLines: [
+        ...SalesOrderExportService.MATERIAL_LABELS.map(([key, label]) => ({ label, value: text(key) || (refText.get(key) ?? "") })).filter((line) => line.value),
+        ...extraLines,
+      ],
       // 工艺要求：**每一点都要带标题**（用户 2026-09-26：「工艺要求那边，每一点的标题也需要显示」）。
       // 改造前只印 `1.<内容>`，看纸上的人得自己猜这一条是"样品要求"还是"裁布要求"——
       // 而 9 个栏位在界面里本来就各有中文名（`PROCESS_LABELS`），只是当年没印出来。
@@ -151,12 +190,14 @@ export class SalesOrderExportService {
    */
   async exportImageCandidates(id: string): Promise<ExportImageCandidate[]> {
     const order = await this.loadOrder(id);
-    const labels = new Map(SalesOrderExportService.MATERIAL_LABELS);
-    const rank = new Map(SPEC_MATERIAL_KEYS.map((key, index) => [key as string, index]));
-    return (order.materialRefs ?? [])
+    const rank = new Map<string, number>(SPEC_MATERIAL_KEYS.map((key, index) => [key as string, index]));
+    // 「其它」行排在 18 项之后，行序照用户在界面上排的先后（`sortOrder`）。
+    for (const row of order.materialExtras ?? []) rank.set(materialExtraRefKey(row.id), SPEC_MATERIAL_KEYS.length + row.sortOrder);
+    const { labels, refs } = this.materialRefLookup(order);
+    return [...refs.values()]
       .map((ref) => ({
         spec_key: ref.specKey,
-        label: labels.get(ref.specKey as SpecKey) ?? ref.specKey,
+        label: labels.get(ref.specKey) ?? ref.specKey,
         material_id: ref.material.id,
         material_code: ref.material.materialCode,
         material_name: [ref.material.name, ref.material.specificationModel, ref.material.color].map((part) => (part ?? "").trim()).filter(Boolean).join(" "),
@@ -165,6 +206,26 @@ export class SalesOrderExportService {
       }))
       // 认不出来的栏位排在最后（而不是丢掉）：那是数据出了问题，要让它看得见。
       .sort((left, right) => (rank.get(left.spec_key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right.spec_key) ?? Number.MAX_SAFE_INTEGER));
+  }
+
+  /**
+   * 「哪一格 / 哪一行引用了哪个物料」+「它印出来的名字」—— 导出候选与实际带图**共用一份**。
+   *
+   * 为什么必须共用：候选（弹窗里列出来的）与嵌图时的校验（`resolveImages`）如果各建一份映射，
+   * 分叉的表现是「弹窗里勾得到、导出时报这一格没有图」，或者更糟 —— 图配到别的行上。
+   * 「其它」行的键是 `extra:<行 id>`（见 `materialExtraRefKey`），标签用它自己的类目名
+   * （工艺单材料那一列印的也是这个字，两处一致）。
+   */
+  private materialRefLookup(order: ExportOrder): { labels: Map<string, string>; refs: Map<string, MaterialRefRow> } {
+    const labels = new Map<string, string>(SalesOrderExportService.MATERIAL_LABELS as ReadonlyArray<readonly [string, string]>);
+    const refs = new Map<string, MaterialRefRow>((order.materialRefs ?? []).map((ref) => [ref.specKey, ref]));
+    for (const row of order.materialExtras ?? []) {
+      if (!row.material) continue;
+      const key = materialExtraRefKey(row.id);
+      labels.set(key, row.label);
+      refs.set(key, { specKey: key, material: row.material });
+    }
+    return { labels, refs };
   }
 
   private async render(order: ExportOrder, images: readonly ProductionSheetImage[]): Promise<{ buffer: Buffer; orderNo: string }> {
@@ -185,8 +246,7 @@ export class SalesOrderExportService {
    *   3. 单张与总量都有上限（一张工艺单塞几十张图会变成一个几百 MB 的文件）。
    */
   private resolveImages(order: ExportOrder, selected: ReadonlyArray<SelectedImageInput>): ProductionSheetImage[] {
-    const refs = new Map((order.materialRefs ?? []).map((ref) => [ref.specKey, ref]));
-    const labels = new Map(SalesOrderExportService.MATERIAL_LABELS);
+    const { labels, refs } = this.materialRefLookup(order);
     const images: ProductionSheetImage[] = [];
     let total = 0;
     for (const item of selected) {
@@ -195,7 +255,7 @@ export class SalesOrderExportService {
       if (!ref || !image) {
         throw new UnprocessableEntityException({
           code: "PRODUCTION_SHEET_IMAGE_UNSUPPORTED",
-          message: `「${labels.get(item.spec_key as SpecKey) ?? item.spec_key}」这一格没有可导出的物料图片：请先在【采购 → 物料清单】给它引用的物料上传图片`,
+          message: `「${labels.get(item.spec_key) ?? item.spec_key}」这一格没有可导出的物料图片：请先在【采购 → 物料清单】给它引用的物料上传图片`,
           details: [{ spec_key: item.spec_key }],
         });
       }
@@ -204,7 +264,7 @@ export class SalesOrderExportService {
       total += buffer.length;
       if (total > MAX_SELECTED_IMAGE_TOTAL) throw invalidImage(item.spec_key, `本次勾选的图片合计超过 ${MAX_SELECTED_IMAGE_TOTAL / 1024 / 1024}MB：请少勾几张，或换更小的图`);
       images.push({
-        label: `${labels.get(item.spec_key as SpecKey) ?? item.spec_key}：${ref.material.materialCode}${material ? ` ${material}` : ""}`,
+        label: `${labels.get(item.spec_key) ?? item.spec_key}：${ref.material.materialCode}${material ? ` ${material}` : ""}`,
         buffer,
         // 用**库里存的**宽高算比例，而不是去解上传上来的 JPEG 头：比例是同一张图的比例，
         // 而库里那份尺寸是服务端自己解出来的、可信的（上传的字节只信任到「是 JPEG」为止）。
@@ -222,7 +282,9 @@ export class SalesOrderExportService {
         specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } },
         // 物料引用（用户 2026-09-24）：导出图片要按它把「哪一格的图」与「哪个物料」对上。
         // `image` 只取尺寸与 sha（**不取字节**）：拉一次订单详情不该把图片一起读回来。
-        materialRefs: { where: { deletedAt: null }, include: { material: { select: { id: true, materialCode: true, name: true, image: { select: { width: true, height: true, sha256: true } } } } } },
+        materialRefs: { where: { deletedAt: null }, include: { material: { select: EXPORT_MATERIAL_SELECT } } },
+        // 「其它」行（2026-10-08）：既是「材料区要印的行」，也是图片导出的候选，所以这里必须带上。
+        materialExtras: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { material: { select: EXPORT_MATERIAL_SELECT } } },
       }
     });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
@@ -631,11 +693,35 @@ export type ExportOrder = {
     };
   }>;
   /**
+   * 「材料明细 → 其它」行（用户 2026-10-08）。可空：历史销售单没有这些行，
+   * 而**所有读它的地方都要 `?? []`**（与 `materialRefs` 同一条纪律）。
+   *
+   * `id` 是图片导出用的键（`extra:<id>`，见 `materialExtraRefKey`）；`sortOrder` 决定印在
+   * 18 项之后的先后；`material` 可空 = 这一行只填了文字。
+   */
+  materialExtras?: Array<{
+    id: string;
+    label: string;
+    content: string | null;
+    sortOrder: number;
+    material: {
+      id: string;
+      materialCode: string;
+      name: string;
+      specificationModel: string | null;
+      color: string | null;
+      image: { width: number; height: number; sha256: string } | null;
+    } | null;
+  }>;
+  /**
    * 37 个细化标量**不在这里逐条列**：它们由 `specScalarRow` 从行上按请求键/列名取（见 `document`）。
    * 以前这里留了个 `[specKey: string]: unknown` 索引签名，等于告诉编译器「随便按什么名字取都行」——
    * 于是「按请求键取 camelCase 行」这个错永远编译得过、测试也测不出来。索引签名已删除。
    */
 };
+
+/** 一行「引用了某个物料」的读侧形状：18 个固定栏位（`materialRefs`）与「其它」行共用一份。 */
+type MaterialRefRow = NonNullable<ExportOrder["materialRefs"]>[number];
 
 export type ProductionSheetDocument = {
   company: string;

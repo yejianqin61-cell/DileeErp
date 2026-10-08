@@ -6,10 +6,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  DEFAULT_SPEC_DETAIL_LABELS, SPEC_DETAIL_COLUMNS, SPEC_DETAIL_LABEL_KEYS, SPEC_DETAIL_LABEL_MAX_LENGTH,
+  DEFAULT_SPEC_DETAIL_LABELS, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT,
+  SPEC_DETAIL_COLUMNS, SPEC_DETAIL_LABEL_KEYS, SPEC_DETAIL_LABEL_MAX_LENGTH,
   SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_PROCESS_FIELDS, SPEC_SCALAR_KEYS,
-  detailLabelsWithDefaults, emptySpecDetailRow, isBlankSpecDetail, normalizeSpecUnit, snakeToCamel,
-  specDetailLabelsFromOrder, specFromOrder, specPayload, specQuantityNotice, validateSpecDetailLabels, validateSpecDetails,
+  detailLabelsWithDefaults, emptyMaterialExtraRow, emptySpecDetailRow, isBlankMaterialExtra, isBlankSpecDetail, materialExtrasFromOrder,
+  materialExtrasPayload, normalizeSpecUnit, snakeToCamel, specDetailLabelsFromOrder, specFromOrder, specPayload, specQuantityNotice,
+  validateMaterialExtras, validateSpecDetailLabels, validateSpecDetails,
 } from "./sales-order-spec.ts";
 
 test("字段清单：37 个标量，顺序是「表头 → 布量 → 材料 → 工艺」", () => {
@@ -198,4 +200,77 @@ test("列名校验：超过 20 字给出人话（保存前拦下，别等一个�
   assert.equal(validateSpecDetailLabels({ name: "品".repeat(SPEC_DETAIL_LABEL_MAX_LENGTH) }), null);
   assert.match(validateSpecDetailLabels({ name: "品".repeat(SPEC_DETAIL_LABEL_MAX_LENGTH + 1) }), /超过 20 字/);
   assert.equal(validateSpecDetailLabels({}), null);
+});
+
+// ------------------------------------------------------------------ 「其它」自定义类目行（2026-10-08）
+//
+// 用户原话：「材料明细最后还需要加一个『其它』，可以自行添加类目。有时候还需要别的物料。
+// 允许用户增删改」。
+//
+// 这一组钉住四件事：① 上限与后端同一组数字；② 载荷形状（类目 + 内容 + 可选引用 + sort_order，
+// 空行不提交）；③ 回填认两种键名（接口的列名 / 预览与快照的请求键）；④ 逐行校验的口径。
+
+test("「其它」的上限与后端同一组数字（分叉的后果是界面放过去、后端 422，或者反过来）", () => {
+  assert.equal(MATERIAL_EXTRA_LIMIT, 20);
+  assert.equal(MATERIAL_EXTRA_LABEL_MAX_LENGTH, 50);
+  assert.equal(MATERIAL_EXTRA_CONTENT_MAX_LENGTH, 1000);
+});
+
+test("「其它」载荷：丢整行空、去空格、按顺序补 sort_order、没引用就不发 material_id", () => {
+  const payload = materialExtrasPayload([
+    { label: "  弹簧 ", content: " 5cm 不锈钢 ", material: null },
+    emptyMaterialExtraRow(),
+    { label: "胶袋", content: "", material: { id: "m-9", materialCode: "MAT-9", name: "胶袋" } },
+  ]);
+  assert.deepEqual(payload, [
+    { label: "弹簧", content: "5cm 不锈钢", sort_order: 0 },
+    { label: "胶袋", content: "", material_id: "m-9", sort_order: 1 },
+  ]);
+  assert.deepEqual(materialExtrasPayload([]), []);
+});
+
+test("「其它」回填：接口的列名形状（materialExtras）与预览/快照的请求键形状（material_extras）都要认", () => {
+  const fromApi = { materialExtras: [{ label: "弹簧", content: "5cm", material: { id: "m-1", materialCode: "MAT-1", name: "弹簧" } }, { label: "", content: "" }] };
+  const rows = materialExtrasFromOrder(fromApi);
+  assert.equal(rows.length, 1, "整行空的回填行丢掉（用户加了行又没填）");
+  assert.equal(rows[0].label, "弹簧");
+  assert.equal(rows[0].material.id, "m-1", "行上带的物料摘要要认：返单预览靠它显示芯片，不依赖物料池请求成功");
+
+  const fromPreview = { material_extras: [{ label: "胶袋", content: "200x300", material_id: "m-9" }] };
+  assert.deepEqual(materialExtrasFromOrder(fromPreview).map((row) => [row.label, row.content, row.material]), [["胶袋", "200x300", null]]);
+  // 没有这一块 / 形状不对时是空数组，而不是 undefined（渲染侧直接 map）
+  assert.deepEqual(materialExtrasFromOrder({}), []);
+  assert.deepEqual(materialExtrasFromOrder({ materialExtras: { unexpected: true } }), []);
+});
+
+test("「其它」校验：类目必填、内容与引用至少有一个、长度与条数上限；整行空的不报错", () => {
+  assert.deepEqual(validateMaterialExtras([emptyMaterialExtraRow()]), [], "整行空 = 还没填，不该报错");
+  assert.deepEqual(validateMaterialExtras([{ label: "弹簧", content: "5cm", material: null }]), []);
+  assert.deepEqual(validateMaterialExtras([{ label: "胶袋", content: "", material: { id: "m-9" } }]), [], "只引用物料也合法（导出用物料摘要兜底）");
+
+  assert.deepEqual(validateMaterialExtras([{ label: "", content: "有内容", material: null }]), [{ row: 1, reason: "类目不能为空（例如：弹簧 / 螺丝 / 胶袋）" }]);
+  assert.deepEqual(validateMaterialExtras([{ label: "弹簧", content: "", material: null }]), [{ row: 1, reason: "内容与引用的物料至少要有一个" }]);
+  assert.equal(validateMaterialExtras([{ label: "弹".repeat(MATERIAL_EXTRA_LABEL_MAX_LENGTH + 1), content: "x", material: null }])[0].reason, `类目名超过 ${MATERIAL_EXTRA_LABEL_MAX_LENGTH} 字`);
+  assert.match(validateMaterialExtras([{ label: "弹簧", content: "x".repeat(MATERIAL_EXTRA_CONTENT_MAX_LENGTH + 1), material: null }])[0].reason, /内容超过 1000 字/);
+  // 行号按"丢过空行之后"的位置算：与提交的数组一一对应，用户点得到是哪一行。
+  assert.deepEqual(validateMaterialExtras([emptyMaterialExtraRow(), { label: "", content: "x", material: null }]).map((item) => item.row), [1]);
+  const tooMany = Array.from({ length: MATERIAL_EXTRA_LIMIT + 1 }, () => ({ label: "弹簧", content: "x", material: null }));
+  assert.equal(validateMaterialExtras(tooMany).at(-1).reason, `最多 ${MATERIAL_EXTRA_LIMIT} 行（工艺单是一张 A4 纸），当前 ${MATERIAL_EXTRA_LIMIT + 1} 行`);
+});
+
+test("「其它」进载荷：传了才发（整块替换），空数组 = 全部删掉，不传 = 不动", () => {
+  const extras = [{ label: "弹簧", content: "5cm", material: null }];
+  const payload = specPayload({}, [emptySpecDetailRow()], undefined, undefined, extras);
+  assert.deepEqual(payload.material_extras, [{ label: "弹簧", content: "5cm", sort_order: 0 }]);
+  assert.deepEqual(specPayload({}, [emptySpecDetailRow()], undefined, undefined, []).material_extras, [], "空数组是合法值（= 全部删掉），不能被当成「没传」");
+  assert.equal("material_extras" in specPayload({}, [emptySpecDetailRow()]), false, "不传 = 这一块不动（返单与别的调用方依赖这个语义）");
+  // 37 个标量键不受影响：这一块是**加**上去的，不是替掉的。
+  for (const key of SPEC_SCALAR_KEYS) assert.ok(key in payload, `载荷缺 ${key}`);
+});
+
+test("isBlankMaterialExtra：整行空才算空；只填一格就不算", () => {
+  assert.equal(isBlankMaterialExtra(emptyMaterialExtraRow()), true);
+  assert.equal(isBlankMaterialExtra({ label: "  ", content: "", material: null }), true, "纯空白也算空");
+  assert.equal(isBlankMaterialExtra({ label: "弹簧", content: "", material: null }), false);
+  assert.equal(isBlankMaterialExtra({ label: "", content: "", material: { id: "m-1" } }), false, "只引用了物料也不算空行");
 });

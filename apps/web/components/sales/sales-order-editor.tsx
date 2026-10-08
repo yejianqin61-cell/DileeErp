@@ -25,9 +25,9 @@ import { itemNoKey } from "../../lib/item-no";
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
   SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_MATERIAL_KEYS, SPEC_PROCESS_FIELDS,
-  SPEC_SCALAR_KEYS, DEFAULT_SPEC_DETAIL_LABELS, SPEC_DETAIL_LABEL_MAX_LENGTH, detailLabelsWithDefaults, emptySpecDetailRow, isBlankSpecDetail,
-  materialOptionLabel, materialRefsFromOrder, materialSpecText, specDetailLabelsFromOrder, validateSpecDetailLabels,
-  specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialOption, type MaterialRefState, type SpecDetailRow,
+  SPEC_SCALAR_KEYS, DEFAULT_SPEC_DETAIL_LABELS, MATERIAL_EXTRA_LIMIT, SPEC_DETAIL_LABEL_MAX_LENGTH, detailLabelsWithDefaults, emptyMaterialExtraRow, emptySpecDetailRow, isBlankSpecDetail,
+  materialExtrasFromOrder, materialOptionLabel, materialRefsFromOrder, materialSpecText, specDetailLabelsFromOrder, validateMaterialExtras, validateSpecDetailLabels,
+  specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialExtraRow, type MaterialOption, type MaterialRefState, type SpecDetailRow,
 } from "../../lib/sales-order-spec";
 import { MaterialThumb } from "../procurement/material-image";
 import { ItemNoInput, type ItemNoSuggestion } from "./item-no-input";
@@ -200,6 +200,14 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const [labelDialog, setLabelDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
   // 材料明细的物料引用（用户 2026-09-24）：键 = 栏位请求键，值 = 引用的物料（null = 只填文字）。
   const [refs, setRefs] = useState<MaterialRefState>(() => Object.fromEntries(SPEC_MATERIAL_KEYS.map((key) => [key, null])));
+  /**
+   * 材料明细末尾的「其它」行（用户 2026-10-08：「材料明细最后还需要加一个『其它』，可以自行添加类目。
+   * 有时候还需要别的物料。允许用户增删改」）。
+   *
+   * 与上面 18 个固定栏位不同：这些行的**条数与类目名都是用户自己定的**，所以是一个数组而不是
+   * 一格一个 state —— 增、删、改都只动这个数组，保存时整块发出去（后端也是整块替换语义）。
+   */
+  const [extras, setExtras] = useState<MaterialExtraRow[]>([]);
   const [materials, setMaterials] = useState<MaterialOption[]>([]);
   // 货号候选（老板 2026-09-26 的「货号」字段）：来自 GET /sales-orders/item-nos。
   // 拉不到就降级成空列表 —— 输入框仍然能输新货号，**不能**因为建议列表失败把整单卡住。
@@ -274,6 +282,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         // 而表单按**请求键**（`rib_spec`）取值。直接 `order[key]` 会全部读成空 —— 见该函数的注释。
         setSpec(specFromOrder(order));
         setRefs(materialRefsFromOrder(order));
+        // 「其它」行（接口给的是列名形状 `materialExtras`，函数里两种键名都认）。
+        setExtras(materialExtrasFromOrder(order));
         // 明细列名的自定义覆盖（接口给的是**列名**形状 `specDetailLabels`，函数里两种都认）。
         setDetailLabelOverrides(specDetailLabelsFromOrder(order));
         const rows = (order.specDetails ?? []).map((row) => ({
@@ -317,6 +327,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         // 引用照抄：预览里带了物料摘要（`material_refs[].material`），所以能直接把芯片显示出来，
         // 不依赖物料池那一次请求成不成功。
         setRefs(materialRefsFromOrder({ material_refs: copy.material_refs }));
+        // 「其它」行跟着来源单（返单就是把上一批的完整材料口径带过来）。
+        setExtras(materialExtrasFromOrder(copy));
         // 明细列名跟着来源单（返单就是把上一批的工艺口径带过来，列名属于这个口径的一部分）。
         setDetailLabelOverrides(specDetailLabelsFromOrder(copy));
         setReorderSource({ order_no: preview.source_order_no, order_id: preview.source_order_id, item_no: text(preview.item_no) });
@@ -334,6 +346,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
 
   const quantityNotice = useMemo(() => specQuantityNotice(base.quantity ?? "", base.unit ?? "", details), [base.quantity, base.unit, details]);
   const detailErrors = useMemo(() => validateSpecDetails(details), [details]);
+  /** 「其它」行的逐行错误（与后端 `normalizeMaterialExtras` 同一套口径）：页面上先摆出来，保存前再拦一刀。 */
+  const extraErrors = useMemo(() => validateMaterialExtras(extras), [extras]);
   /** 当前生效的列名（默认名 + 这一单的覆盖）：表头、行内 aria-label、改列名弹窗都用它。 */
   const detailLabels = useMemo(() => detailLabelsWithDefaults(detailLabelOverrides), [detailLabelOverrides]);
   // 引用下拉的选项（label = `编码 / 名称 规格 颜色`，与全站物料选择器同一份文字口径）。
@@ -344,6 +358,9 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
 
   const setBaseField = (key: string, value: string) => setBase((current) => ({ ...current, [key]: value }));
   const setDetailField = (index: number, key: string, value: string) => setDetails((current) => current.map((row, at) => (at === index ? { ...row, [key]: value } : row)));
+  const setExtraField = (index: number, key: "label" | "content", value: string) => setExtras((current) => current.map((row, at) => (at === index ? { ...row, [key]: value } : row)));
+  /** 删掉一行「其它」：用户要的就是"允许增删改"，所以不保留任何占位（与明细那行的「最后一行空行」规则不同）。 */
+  const removeExtra = (index: number) => setExtras((current) => current.filter((_row, at) => at !== index));
 
   /**
    * 「修改列名」（用户 2026-09-30：「细分明细那边，可以改成自定义字段名称」）。
@@ -394,6 +411,23 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   }
 
   /**
+   * 「其它」行引用一个物料（同一套可搜索下拉 + 缩略图）。
+   *
+   * 与上面 18 格**故意有一点不同**：只在内容格为空时预填「名称 规格 颜色」。18 格是模板上印死的
+   * 固定栏位（每一格就是那一个部件的规格，选中就是替人省掉手打），而「其它」行的内容是人手写的
+   * 自由文本（可能写着「弹簧 5cm 不锈钢（按上次那批）」之类工厂要照做的话）—— 无条件覆盖等于把
+   * 那句话悄悄改掉。引用本身照记：它决定缩略图与导出时能不能带上这张图。
+   */
+  function pickExtraMaterial(index: number, materialId: string) {
+    const material = materials.find((item) => item.id === materialId) ?? null;
+    setExtras((current) => current.map((row, at) => (at === index ? { ...row, material, content: row.content.trim() || !material ? row.content : materialSpecText(material) } : row)));
+  }
+  /** 取消「其它」行的引用：与 18 格同一条口径 —— 只摘掉引用，不动文字。 */
+  function clearExtraRef(index: number) {
+    setExtras((current) => current.map((row, at) => (at === index ? { ...row, material: null } : row)));
+  }
+
+  /**
    * 保存前的最后一道分流：**改了订单号就先弹影响面确认**，其余情况直接落库。
    *
    * 为什么改号要多一步：它会在一个事务里改掉全库 38 张表里属于这张单的行（另加返单来源引用与
@@ -409,6 +443,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     if (!base.currency?.trim()) { setError("请选择币种"); return; }
     if (!base.order_date?.trim()) { setError("下单日期必填"); return; }
     if (detailErrors.length) { setError(`明细第 ${detailErrors[0].row} 行：${detailErrors[0].reason}`); return; }
+    // 「其它」行同一套逐行拦截（后端也会拒，但让用户当场看见是哪一行）。
+    if (extraErrors.length) { setError(`「其它」第 ${extraErrors[0].row} 行：${extraErrors[0].reason}`); return; }
     // 列名太长当场拦下：后端也会拒（SPEC_DETAIL_LABEL_TOO_LONG），但等一个来回才看到原因没必要。
     const labelProblem = validateSpecDetailLabels(detailLabelOverrides);
     if (labelProblem) { setError(labelProblem); return; }
@@ -441,7 +477,7 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   async function persist(orderNo?: string, submitReason?: string, options: { rethrow?: boolean } = {}) {
     setSaving(true);
     setError("");
-    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs, detailLabelOverrides) };
+    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs, detailLabelOverrides, extras) };
     // 基础字段的空串当「没填」删掉：可选字段的 @IsDecimal/@IsDateString 会因为空串报 400。
     // 细化字段相反——空串 = 清除这一格，必须原样发出去（`specPayload` 已经把 37 个键都带上了）。
     for (const key of Object.keys(base)) if (base[key] === "" && !SPEC_SCALAR_KEYS.includes(key)) delete payload[key];
@@ -630,7 +666,7 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
       <section className="panel">
         <div className="panel-heading">
           <h2>材料明细</h2>
-          <span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行。每一格<strong>既可以手打文字，也可以从物料清单里引用一个物料</strong>（选中会把名称/规格/颜色填进格子，并带上它的图片）</span>
+          <span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行。每一格<strong>既可以手打文字，也可以从物料清单里引用一个物料</strong>（选中会把名称/规格/颜色填进格子，并带上它的图片）。模板以外的物料写在下面的「其它」里。</span>
         </div>
         <div className="panel-body form-grid">
           {SPEC_MATERIAL_FIELDS.map(([key, label]) => {
@@ -665,6 +701,58 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
               </div>
             );
           })}
+        </div>
+        {/*
+          「其它」（用户 2026-10-08：「材料明细最后还需要加一个『其它』，可以自行添加类目。有时候还需要
+          别的物料。允许用户增删改」）。
+          放在 18 格**同一块面板里**、紧跟着它们：用户说的位置就是「材料明细最后」—— 另起一块面板会让人
+          以为是另一个业务对象。每一行是「类目 + 内容 + 引用」（与 18 格同一套选择器与缩略图）。
+        */}
+        <div className="panel-body material-extra-block">
+          <div className="panel-heading">
+            <h3>其它</h3>
+            <span className="panel-note">模板上那 18 项以外的物料写在这里：类目名自己起（弹簧 / 螺丝 / 胶袋…），内容可以手打，也可以像上面一样从物料清单引用（带缩略图，导出时能勾选把图带上）。类目与内容都空的行不会被保存，导出也不印。</span>
+            <Button
+              size="sm"
+              variant="secondary"
+              data-testid="sales-material-extra-add"
+              disabled={extras.length >= MATERIAL_EXTRA_LIMIT}
+              onClick={() => setExtras((current) => [...current, emptyMaterialExtraRow()])}
+            >加一行</Button>
+          </div>
+          {extraErrors.length > 0 && <div className="status-error" data-testid="sales-material-extra-errors">{extraErrors.map((item) => <p key={`${item.row}-${item.reason}`}>第 {item.row} 行：{item.reason}</p>)}</div>}
+          {extras.length === 0 && <p className="panel-note" data-testid="sales-material-extra-empty">还没有自定义类目 —— 只在需要模板 18 项以外的物料时才点右上角的「加一行」。</p>}
+          {extras.map((row, index) => {
+            const material = row.material;
+            return (
+              <div key={index} className="material-extra-row form-grid" data-testid={`sales-material-extra-row-${index}`}>
+                <label>类目
+                  <Input data-testid={`sales-material-extra-label-${index}`} value={row.label} placeholder="例如：弹簧" onChange={(event) => setExtraField(index, "label", event.target.value)} />
+                </label>
+                <label>内容
+                  <textarea className="ui-input" rows={2} data-testid={`sales-material-extra-content-${index}`} value={row.content} placeholder="规格说明；引用了物料之后可以留空（导出会用物料摘要印出来）" onChange={(event) => setExtraField(index, "content", event.target.value)} />
+                </label>
+                <div className="action-row">
+                  <SearchableSelect
+                    testId={`sales-material-extra-ref-${index}`}
+                    value={material?.id ?? ""}
+                    options={materialOptions}
+                    onChange={(value) => pickExtraMaterial(index, value)}
+                    placeholder="从物料清单引用…"
+                    label={`其它第 ${index + 1} 行（${row.label || "未填类目"}）：从物料清单引用`}
+                    searchPlaceholder="输入物料编码 / 名称 / 规格 / 颜色搜索"
+                    noResultsText="没有匹配的物料（可到【采购 → 物料清单】新建）"
+                  />
+                  {material && <MaterialThumb materialId={material.id} version={material.image?.sha256} alt={materialOptionLabel(material)} size={36} />}
+                  {material && <Button size="sm" variant="ghost" data-testid={`sales-material-extra-ref-clear-${index}`} onClick={() => clearExtraRef(index)}>清除引用</Button>}
+                  <Button size="sm" variant="ghost" data-testid={`sales-material-extra-remove-${index}`} onClick={() => removeExtra(index)}>删除这一行</Button>
+                </div>
+                {/* 与 18 格同一条提示：引用了但那个物料没有图，导出时这一行没有图可带。 */}
+                {material && !material.image && <span className="panel-note" data-testid={`sales-material-extra-no-image-${index}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+              </div>
+            );
+          })}
+          {extras.length >= MATERIAL_EXTRA_LIMIT && <p className="panel-note" data-testid="sales-material-extra-limit">已经 {extras.length} 行，到上限 {MATERIAL_EXTRA_LIMIT} 行了（工艺单是一张 A4 纸，再多就印不下）。</p>}
         </div>
       </section>
 

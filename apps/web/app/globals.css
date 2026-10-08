@@ -140,6 +140,14 @@ button { cursor: pointer; }
 .material-thumb-empty { display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 12px; }
 /* 材料明细「填空或引用物料」的每一格（用户 2026-09-24）：文字在上，引用选择器 + 缩略图在下。 */
 .material-ref-field { display: flex; flex-direction: column; gap: 6px; }
+/* 材料明细末尾的「其它」自定义类目行（用户 2026-10-08「可以自行添加类目…允许用户增删改」）。
+   与上面 18 格同一块面板里的一个子块：一行一张小卡（类目 / 内容 / 引用 + 删除），
+   `panel-heading h3` 在这里补上与 h2 同一档的字号（全局只有 .document-groups 给 h3 定过样式）。 */
+.material-extra-block { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); }
+.material-extra-block .panel-heading { padding: 10px 0 0; border-bottom: none; }
+.material-extra-block .panel-heading h3 { margin: 0; font-size: 14px; }
+.material-extra-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; align-items: end; }
+.material-extra-row label { display: flex; flex-direction: column; gap: 4px; }
 .contact-block { border-top: 1px solid var(--border); padding: 8px 0; }
 .feedback-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; }
 .feedback-state strong { color: var(--text); font-size: 14px; }

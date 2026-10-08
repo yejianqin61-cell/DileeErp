@@ -18,7 +18,7 @@ function orderFixture(overrides = {}) {
     id: "so-1", orderNo: OLD, status: "confirmed", customerId: "c-1", contactId: null,
     currentVersion: 2, orderDate: new Date("2026-09-01T00:00:00.000Z"), quantity: "100", unit: "支",
     currency: "USD", productName: "伞", extensionData: {}, reorderFromOrderNo: null,
-    customer: { id: "c-1", name: "客户" }, contact: null, boms: [], versions: [], specDetails: [], materialRefs: [],
+    customer: { id: "c-1", name: "客户" }, contact: null, boms: [], versions: [], specDetails: [], materialRefs: [], materialExtras: [],
     ...overrides,
   };
 }

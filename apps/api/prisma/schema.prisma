@@ -402,6 +402,7 @@ model SalesOrder {
   receivableReconciliations ReceivableReconciliation[]
   specDetails               SalesOrderSpecDetail[]
   materialRefs              SalesOrderMaterialRef[]
+  materialExtras            SalesOrderMaterialExtra[]
 
   @@index([customerId, status])
   @@index([orderDate])
@@ -481,6 +482,51 @@ model SalesOrderMaterialRef {
   @@unique([salesOrderId, specKey])
   @@index([materialId])
   @@map("sales_order_material_refs")
+}
+
+/// 销售单「材料明细」末尾的「其它」行（用户 2026-10-08：「材料明细最后还需要加一个『其它』，
+/// 可以自行添加类目。有时候还需要别的物料。允许用户增删改」）。
+///
+/// 为什么是**行**而不是继续往 `sales_orders` 上加列：上面那 18 项是模板上印死的栏位
+/// （用户 2026-09-16 拍板「按两张样本的并集做成固定字段」），而「其它」的类目名是**用户自己起的**、
+/// 条数也不固定 —— 列加不出来。
+///
+/// 为什么不复用 `SalesOrderSpecDetail`（同为「一行一条」的表）：那张表的形状是
+/// 「分组名 + 品番/品名 + 颜色 + 条码 + 数量 + 单位」，导出时落在工艺单**下半部的明细区**；
+/// 而「其它」是材料明细的一块、印在**材料区**，形状只有「类目 + 内容（+ 引用物料）」。
+/// 塞进同一张表就得让导出侧靠 `groupName` 猜「这行到底是明细还是材料」，猜错就是整块版面错位。
+///
+/// 为什么 `materialId` 是**这一行上的可空外键**、而不是进 `sales_order_material_refs`：
+/// 那张表的唯一键是 `(sales_order_id, spec_key)`，而 `spec_key` 的语义是「18 个栏位之一」——
+/// 「其它」行的条数用户随时增删，没有稳定的栏位键。拿序号当键的话，删掉中间一行会让后面每一行的
+/// 引用整体错位，而错位的表现是「图配到了别的物料上」，在纸上看不出来。
+///
+/// 与 `SalesOrderSpecDetail` 同一条替换语义（保存时软删旧的 + 建新的）：这张表上没有唯一键，
+/// 所以行 id 每次保存都会变。图片导出候选因此按 `extra:<行 id>` 标识，且**每次导出都要重新拉一次
+/// 候选**（销售单页面本来就是这么做的）。用行 id 而不是序号是有意的：候选过期时宁可报
+/// 「这一格没有可导出的图片」，也不能把图悄悄配到另一行上。
+model SalesOrderMaterialExtra {
+  id           String     @id @default(uuid()) @db.Uuid
+  salesOrderId String     @map("sales_order_id") @db.Uuid
+  /// 类目名（用户自己起：弹簧 / 螺丝 / 胶袋 …）。必填 —— 它印在工艺单「材料」那一列。
+  label        String     @db.VarChar(50)
+  /// 内容（规格说明）。可空：这一行可能只引用了物料，引用摘要会兜底印出来（与 18 格同一条规则）。
+  content      String?    @db.VarChar(1000)
+  /// 引用的物料（可空 = 只填文字）。用途与上面 18 格的引用完全一致：填字 + 带图。
+  materialId   String?    @map("material_id") @db.Uuid
+  sortOrder    Int        @default(0) @map("sort_order")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  createdBy    String     @map("created_by") @db.Uuid
+  updatedBy    String     @map("updated_by") @db.Uuid
+  deletedAt    DateTime?  @map("deleted_at")
+  deletedBy    String?    @map("deleted_by") @db.Uuid
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
+  material     Material?  @relation(fields: [materialId], references: [id])
+
+  @@index([salesOrderId, sortOrder])
+  @@index([materialId])
+  @@map("sales_order_material_extras")
 }
 
 model SalesOrderVersion {
@@ -685,6 +731,7 @@ model Material {
   stocktakeLines            StocktakeLine[]
   image                     MaterialImage?
   salesOrderMaterialRefs    SalesOrderMaterialRef[]
+  salesOrderMaterialExtras  SalesOrderMaterialExtra[]
 
   @@unique([name, specificationModel, color])
   @@index([defaultUnitId])

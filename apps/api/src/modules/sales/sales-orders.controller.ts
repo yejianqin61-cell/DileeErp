@@ -12,7 +12,7 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { EmptyStringToNull } from "../../platform/http/empty-string-to-null.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
-import { SalesOrdersService } from "./sales-orders.service";
+import { SalesOrdersService, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT, SPEC_MATERIAL_KEYS } from "./sales-orders.service";
 import { SalesOrderExportService } from "./sales-order-export.service";
 import { FinishedGoodsOutboundNoticeService } from "./finished-goods-outbound-notice.service";
 import { ITEM_NO_MAX_LENGTH } from "./item-no";
@@ -48,6 +48,27 @@ class SpecDetailDto {
 export class MaterialRefDto {
   @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(50) spec_key!: string;
   @IsUUID() material_id!: string;
+}
+
+/**
+ * 「材料明细 → 其它」的一行（用户 2026-10-08：「材料明细最后还需要加一个『其它』，可以自行添加类目。
+ * 有时候还需要别的物料。允许用户增删改」）。
+ *
+ * 这里只做形状与长度校验；「类目必填、内容与引用至少要有一个、最多几行」由服务层的
+ * `normalizeMaterialExtras` 判 —— 与 `material_refs` 的 `spec_key` 同一条理由：
+ * 「几条算多」是业务口径，抄进 DTO 就是一份会过期的副本（长度上限从服务层 import，不抄数字）。
+ *
+ * `content` 空串与省略是一回事（那一行只有引用）：与 37 个细化标量的「空串 = 清除这一格」不同 ——
+ * 那些是整单固定的 37 格，逐格清空必须表达得出来；而「其它」是**整块数组**（整块替换），
+ * 数组本身就是全量，没有"单独清一格"这回事。
+ *
+ * 与 `MaterialRefDto` 同样声明在 `SalesOrderSpecDto` **之前**（`@Type` 惰性求值，但读的人不必去想）。
+ */
+export class MaterialExtraDto {
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(MATERIAL_EXTRA_LABEL_MAX_LENGTH) label!: string;
+  @IsOptional() @IsString() @MaxLength(MATERIAL_EXTRA_CONTENT_MAX_LENGTH) content?: string;
+  @IsOptional() @IsUUID() material_id?: string;
+  @IsOptional() @IsInt() sort_order?: number;
 }
 
 /**
@@ -115,6 +136,11 @@ export class SalesOrderSpecDto {
    * 传了就整块替换（空数组 = 全部取消引用），没传 = 不动。
    */
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MaterialRefDto) material_refs?: MaterialRefDto[];
+  /**
+   * 「材料明细」末尾的「其它」行（用户 2026-10-08）：用户自己起的类目 + 内容（可挂一个物料引用）。
+   * 传了就整块替换（空数组 = 全部删掉），没传 = 不动 —— 与 `spec_details` / `material_refs` 同一语义。
+   */
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MaterialExtraDto) material_extras?: MaterialExtraDto[];
   /**
    * 细分明细的自定义列名（用户 2026-09-30：「细分明细那边，可以改成自定义字段名称」）：
    * `{ 列键: 列名 }`，键只能是 6 个明细列（`SPEC_DETAIL_LABELS`），空串 = 这一列用默认名。
@@ -287,9 +313,13 @@ export class SalesOrdersController {
    *
    * 没勾任何图片时不带文件即可（等于普通工艺单），所以界面只有这一条导出路径 —— 少一条路，
    * 就少一处「带图/不带图两份版式会慢慢分叉」的机会。
+   *
+   * ⚠️ `files` 上限从写死的 20 改成「18 个固定栏位 + 「其它」行上限」（2026-10-08）：上限不跟着
+   * 「能勾的格子数」走的话，「其它」行也勾了图时会撞 multer 的 LIMIT_FILE_COUNT 报一个用户看不懂的错。
+   * 真正的体积闸门仍在下游（单张 2MB + 合计 12MB，见 `sales-order-export.service.ts`）。
    */
   @Post(":id/production-sheet.xlsx")
-  @UseInterceptors(AnyFilesInterceptor({ storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: 20 } }))
+  @UseInterceptors(AnyFilesInterceptor({ storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: SPEC_MATERIAL_KEYS.length + MATERIAL_EXTRA_LIMIT } }))
   async productionSheetWithImages(@Param("id") id: string, @UploadedFiles() files: Express.Multer.File[], @Res() response: Response) {
     const selected = (files ?? []).map((file) => ({ spec_key: file.fieldname, buffer: file.buffer }));
     const { buffer, orderNo } = await this.productionSheetExport.exportOrderWithImages(id, selected);

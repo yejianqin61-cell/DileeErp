@@ -190,6 +190,70 @@ export const MATERIAL_REF_INCLUDE = {
 } as const;
 
 /**
+ * 「材料明细」末尾的自定义类目行 —— 界面上那一块叫「其它」（用户 2026-10-08：
+ * 「材料明细最后还需要加一个『其它』，可以自行添加类目。有时候还需要别的物料。允许用户增删改」）。
+ *
+ * 语义与 `spec_details` / `material_refs` 完全一致：**整块替换**（请求带了这个键就按它对齐全部行，
+ * 没提到 = 整块不动，空数组 = 清空全部）。每一行可以挂一个物料引用 —— 与上面 18 格同一套引用
+ * （选中填字 + 带缩略图 + 导出时可勾选带图），理由同 `sales_order_material_refs` 的模型注释。
+ *
+ * 为什么上限与长度上限写在服务层而不是只在 DTO：DTO 也要写一份 `@MaxLength`（拦下明显超长的请求），
+ * 而「最多几行」是**业务口径**（工艺单是一张 A4 纸，行数再多就印不下），只有服务层说得清。
+ */
+export const MATERIAL_EXTRA_LIMIT = 20;
+export const MATERIAL_EXTRA_LABEL_MAX_LENGTH = 50;
+export const MATERIAL_EXTRA_CONTENT_MAX_LENGTH = 1000;
+export type MaterialExtraInput = { label: string; content?: string | null; material_id?: string | null; sort_order?: number };
+
+/**
+ * 「其它」行的读侧形状：行 + 引用物料的摘要（含 `image.sha256` 用于破缓存、`updatedAt` 用于缩略图，
+ * **不含字节**）。与 `MATERIAL_REF_INCLUDE` 同一套 select：编辑器要显示缩略图，导出候选要尺寸。
+ *
+ * `orderBy` 必须有：这些行是**有序**的（用户排的先后就是工艺单上的先后），
+ * 而 `material_refs` 是一格一行的映射、不靠顺序，所以那边没有 orderBy。
+ */
+export const MATERIAL_EXTRA_INCLUDE = {
+  where: { deletedAt: null },
+  orderBy: { sortOrder: "asc" },
+  include: {
+    material: {
+      select: {
+        id: true,
+        materialCode: true,
+        name: true,
+        specificationModel: true,
+        color: true,
+        image: { select: { sha256: true, updatedAt: true } },
+      },
+    },
+  },
+} as const;
+
+/**
+ * 「其它」行的归一与校验：去空格、丢整行空、类目必填、内容与引用至少有一个、条数封顶。
+ *
+ * 为什么「内容与引用至少有一个」在这里挡，而不是让导出侧印一个空格子：工艺单是给工厂照做的，
+ * 一行只有类目、右边一格空着，工人只会来问「这个类目到底要什么」。同理**整行空**（类目与内容都空、
+ * 也没有引用）的新增行是「加了行还没填」，提交前丢掉 —— 与 `isBlankSpecDetail` 同一条口径。
+ */
+export function normalizeMaterialExtras(input: MaterialExtraInput[] | null | undefined): Array<{ label: string; content: string | null; materialId: string | null; sort_order: number }> {
+  const rows: Array<{ label: string; content: string | null; materialId: string | null; sort_order: number }> = [];
+  for (const [index, row] of (input ?? []).entries()) {
+    const label = String(row?.label ?? "").trim();
+    const content = String(row?.content ?? "").trim();
+    const materialId = row?.material_id ? String(row.material_id) : null;
+    if (!label && !content && !materialId) continue;
+    if (!label) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LABEL_REQUIRED", message: `「其它」第 ${index + 1} 行没有类目名：类目印在工艺单的「材料」那一列，不能为空`, details: [{ row: index + 1 }] });
+    if (label.length > MATERIAL_EXTRA_LABEL_MAX_LENGTH) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LABEL_TOO_LONG", message: `「其它」第 ${index + 1} 行的类目名「${label}」超过 ${MATERIAL_EXTRA_LABEL_MAX_LENGTH} 字（材料那一列只有一格）`, details: [{ row: index + 1, max: MATERIAL_EXTRA_LABEL_MAX_LENGTH }] });
+    if (content.length > MATERIAL_EXTRA_CONTENT_MAX_LENGTH) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_CONTENT_TOO_LONG", message: `「其它」第 ${index + 1} 行的内容超过 ${MATERIAL_EXTRA_CONTENT_MAX_LENGTH} 字`, details: [{ row: index + 1, max: MATERIAL_EXTRA_CONTENT_MAX_LENGTH }] });
+    if (!content && !materialId) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_CONTENT_REQUIRED", message: `「其它」第 ${index + 1} 行（${label}）既没有内容也没有引用物料：请至少填一样`, details: [{ row: index + 1 }] });
+    rows.push({ label, content: content || null, materialId, sort_order: row.sort_order ?? rows.length });
+  }
+  if (rows.length > MATERIAL_EXTRA_LIMIT) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LIMIT_EXCEEDED", message: `「其它」最多 ${MATERIAL_EXTRA_LIMIT} 行（工艺单是一张 A4 纸，再多就印不下了）`, details: [{ max: MATERIAL_EXTRA_LIMIT, count: rows.length }] });
+  return rows;
+}
+
+/**
  * Prisma 行（**列名** camelCase）→ 37 个细化标量的**请求键**（snake_case）取值。
  *
  * 为什么必须有这一步（2026-09-20 现场问题「材料明细写了、保存了，再打开就没了」）：
@@ -234,7 +298,7 @@ export function normalizeSpecUnit(unit: string | null | undefined): string | nul
 }
 
 type SalesOrderBaseInput = { order_no: string; customer_id: string; contact_id?: string; customer_po_no?: string; external_contract_no?: string; order_date: string; product_name: string; product_spec?: string; quantity: string; unit: string; delivery_date?: string; currency: string; unit_price?: string; total_amount?: string; tax_rate?: string; settlement_unit_price?: string; receivable_amount?: string; settlement_method?: string; local_currency_amount?: string; extension_data?: Record<string, unknown>; /** 货号：空串 = 清除（落 NULL），与 37 个细化标量同一语义。 */ item_no?: string | null; /** 返单来源销售单号：只在「返单建单」时写入，见 T05 的复制语义。 */ reorder_from_order_no?: string | null };
-type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[]; material_refs?: MaterialRefInput[]; /** 细分明细的自定义列名（2026-09-30）：`{ 列键: 列名 }`，空串/空对象 = 用默认列名。 */ spec_detail_labels?: Record<string, string> };
+type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[]; material_refs?: MaterialRefInput[]; /** 「材料明细 → 其它」的自定义类目行（2026-10-08）：整块替换，见 `normalizeMaterialExtras`。 */ material_extras?: MaterialExtraInput[]; /** 细分明细的自定义列名（2026-09-30）：`{ 列键: 列名 }`，空串/空对象 = 用默认列名。 */ spec_detail_labels?: Record<string, string> };
 /**
  * 更新载荷**排除** `reorder_from_order_no`：返单来源是既成事实，改它就是篡改返单链的出处
  * （「这张单是从哪张返来的」必须永远回答得出来）。控制器侧的 `UpdateSalesOrderDto` 也没有这个键，
@@ -283,7 +347,7 @@ export class SalesOrdersService {
   }
 
   async get(id: string) {
-    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, include: { customer: true, contact: true, versions: { orderBy: { version: "desc" } }, boms: { where: { deletedAt: null }, orderBy: { version: "desc" } }, specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } }, materialRefs: MATERIAL_REF_INCLUDE } });
+    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, include: { customer: true, contact: true, versions: { orderBy: { version: "desc" } }, boms: { where: { deletedAt: null }, orderBy: { version: "desc" } }, specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } }, materialRefs: MATERIAL_REF_INCLUDE, materialExtras: MATERIAL_EXTRA_INCLUDE } });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
     // 引用走 `materialRefs`（列名，与 `specDetails` 同一个形状），**不另起一个 snake_case 别名**：
     // 37 个细化标量当年就是因为「读侧有两套键名」而丢过数据（见 specScalarRow 的注释），
@@ -328,6 +392,9 @@ export class SalesOrdersService {
         // 引用带上物料摘要：返单预填要能在界面上把「引用的是哪个物料」显示出来（芯片/图片），
         // 只给一个 UUID 的话前端还得再查一次物料池，而物料池可能拉不到。
         materialRefs: { where: { deletedAt: null }, include: { material: { select: { id: true, materialCode: true, name: true, specificationModel: true, color: true, image: { select: { sha256: true, updatedAt: true } } } } } },
+        // 「其它」行（2026-10-08）与引用带上同样的物料摘要：返单预填要能在界面上把「引用的哪个物料」
+        // 直接显示出来（芯片/缩略图），不依赖物料池那一次请求成不成功。
+        materialExtras: MATERIAL_EXTRA_INCLUDE,
       },
     });
     if (!source) throw new NotFoundException({ code: "REORDER_SOURCE_NOT_FOUND", message: `返单来源销售单不存在：${orderNo}`, details: [{ order_no: orderNo }] });
@@ -369,6 +436,8 @@ export class SalesOrdersService {
         ...spec,
         spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder })),
         material_refs: source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId, material: row.material })),
+        // 「其它」行照抄（含引用的物料摘要）：返单就是沿用上一批的完整材料口径。
+        material_extras: source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, sort_order: row.sortOrder, material: row.material })),
       },
       must_fill: ["order_no", "order_date", "quantity", "delivery_date"],
       warnings,
@@ -413,6 +482,8 @@ export class SalesOrdersService {
       reorder_from_order_no: source.orderNo,
       spec_details: input.spec_details ?? source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color ?? undefined, barcode: row.barcode ?? undefined, quantity: row.quantity?.toString(), unit: row.unit ?? undefined, sort_order: row.sortOrder })),
       material_refs: input.material_refs ?? source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })),
+      // 「其它」行同一条复制语义（请求给了就用请求的，没给就沿用来源单）。
+      material_extras: input.material_extras ?? source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, sort_order: row.sortOrder })),
       // 返单沿用来源单的明细列名（返单就是把上一批的工艺口径带过来，列名属于这个口径的一部分）。
       spec_detail_labels: input.spec_detail_labels ?? (source.specDetailLabels as Record<string, string> | undefined),
       ...(copied as Record<string, never>),
@@ -435,11 +506,33 @@ export class SalesOrdersService {
     return { refs: refs.filter((ref) => known.has(ref.material_id)), dropped: refs.filter((ref) => !known.has(ref.material_id)).map((ref) => ref.spec_key) };
   }
 
+  /**
+   * 复制「其它」行时把**已经不存在**的物料引用剔掉，但**保留那一行**（与 18 格的引用不同）。
+   *
+   * 差别是有意的：18 格的引用被剔掉后剩下的是一格文字（可能为空 → 整行不印），而「其它」行的
+   * 内容是用户自己写的规格说明 —— 物料被删掉不该连字一起丢掉，只把那个引用去掉。
+   * 剔掉的行回报给调用方（`dropped` 存类目名，用户才知道是哪一行），不静默吞掉。
+   */
+  private async usableMaterialExtras(extras: MaterialExtraInput[]): Promise<{ extras: MaterialExtraInput[]; dropped: string[] }> {
+    const ids = [...new Set(extras.map((row) => row.material_id).filter((id): id is string => Boolean(id)))];
+    if (!ids.length) return { extras, dropped: [] };
+    const found = await this.prisma.material.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true } });
+    const known = new Set(found.map((row) => row.id));
+    const dropped: string[] = [];
+    const kept = extras.map((row) => {
+      if (!row.material_id || known.has(row.material_id)) return row;
+      dropped.push(row.label);
+      return { ...row, material_id: null };
+    });
+    return { extras: kept, dropped };
+  }
+
   async create(input: SalesOrderInput, user: CurrentUser) {
     // 返单：先把来源单的值填进「请求没给的键」，再走与普通建单**完全同一条**校验与写入路径。
     const source = input.reorder_from_order_no ? await this.resolveReorderSource(input.reorder_from_order_no) : null;
     let effective = input;
     let droppedRefKeys: string[] = [];
+    let droppedExtraLabels: string[] = [];
     if (source) {
       effective = this.reorderInput(source, input);
       // 只有「从来源单复制引用」这条路要过滤；请求自己带了 `material_refs` 就按请求的
@@ -448,6 +541,12 @@ export class SalesOrdersService {
         const usable = await this.usableMaterialRefs(effective.material_refs ?? []);
         effective = { ...effective, material_refs: usable.refs };
         droppedRefKeys = usable.dropped;
+      }
+      // 「其它」行同一条规矩，但剔掉的只是引用（文字留着），见 `usableMaterialExtras`。
+      if (input.material_extras === undefined) {
+        const usable = await this.usableMaterialExtras(effective.material_extras ?? []);
+        effective = { ...effective, material_extras: usable.extras };
+        droppedExtraLabels = usable.dropped;
       }
     }
     await this.currencies?.assertSupported(effective.currency, "销售单币种");
@@ -461,13 +560,18 @@ export class SalesOrdersService {
         await tx.salesOrderVersion.create({ data: { salesOrderId: created.id, version: 1, snapshot, ...this.audit.create(user) } });
         await this.replaceSpecDetails(tx, created.id, effective.spec_details, user);
         await this.replaceMaterialRefs(tx, created.id, effective.material_refs, user);
+        await this.replaceMaterialExtras(tx, created.id, effective.material_extras, user);
         return created;
       });
       // 返单来源进审计：这是唯一能回答「这张单是从哪张返来的」的业务事实（另一处是列本身）。
       await this.audit.record("sales_order.create", "sales_order", user.id, order.id, { order_no: order.orderNo, ...(effective.reorder_from_order_no ? { reorder_from_order_no: effective.reorder_from_order_no } : {}) });
       const created = await this.get(order.id);
       // 剔掉过引用就回报一次，不静默：用户得知道"这一格的图片没了"是为什么。
-      return droppedRefKeys.length ? { ...created, reorder_warnings: [`来源单引用的物料已不存在，返单时已跳过：${droppedRefKeys.join("、")}`] } : created;
+      const reorderWarnings = [
+        ...(droppedRefKeys.length ? [`来源单引用的物料已不存在，返单时已跳过：${droppedRefKeys.join("、")}`] : []),
+        ...(droppedExtraLabels.length ? [`「其它」行引用的物料已不存在，返单时只保留了文字：${droppedExtraLabels.join("、")}`] : []),
+      ];
+      return reorderWarnings.length ? { ...created, reorder_warnings: reorderWarnings } : created;
     } catch (error) {
       /**
        * 订单号冲突出错时说出「这个号在谁手里」。
@@ -561,6 +665,7 @@ export class SalesOrdersService {
       await tx.salesOrderVersion.create({ data: { salesOrderId: id, version: nextVersion, snapshot, ...this.audit.create(user) } });
       await this.replaceSpecDetails(tx, id, input.spec_details, user);
       await this.replaceMaterialRefs(tx, id, input.material_refs, user);
+      await this.replaceMaterialExtras(tx, id, input.material_extras, user);
       return { updated: result, renameReport: report };
     }).catch((error: unknown) => {
       /**
@@ -689,8 +794,8 @@ export class SalesOrdersService {
   }
 
   /**
-   * 删除守卫用的下游事实盘点：只数「单据与账务」，不数版本快照 / 细分明细 / 物料引用
-   * （那三样是草稿自带的内容，软删父单后随它一起从默认视图里消失）。
+   * 删除守卫用的下游事实盘点：只数「单据与账务」，不数版本快照 / 细分明细 / 物料引用 /「其它」行
+   * （那四样是草稿自带的内容，软删父单后随它一起从默认视图里消失）。
    */
   private async countDownstreamFacts(tx: Prisma.TransactionClient, salesOrderId: string) {
     const [bom, purchaseOrder, purchasePlan, productionOrder, outbound, outboundNotice, customerReturn, receivableSource, customerPayment, receivableAdjustment, receivableReconciliation] = await Promise.all([
@@ -726,6 +831,9 @@ export class SalesOrdersService {
       merged[key] = fromInput !== undefined ? fromInput : current[column] ?? null;
     }
     if (input.spec_details !== undefined) merged.spec_details = input.spec_details;
+    // 「其它」行（2026-10-08）与明细同一条规矩（只有这次请求带了才进快照）。进的是**整块**：
+    // 它是「这一版下给工厂的材料口径」的一部分，只记变化量的话回看时会以为那一版没有这些行。
+    if (input.material_extras !== undefined) merged.material_extras = input.material_extras;
     // 明细列名与标量同一条规矩（当前值打底、请求值覆盖）：只记"这次改了哪几个"的话，
     // 回看某个版本的工艺单口径会以为那一版没有自定义列名。
     const labels = input.spec_detail_labels !== undefined ? input.spec_detail_labels : current.specDetailLabels;
@@ -818,6 +926,26 @@ export class SalesOrdersService {
     if (missing.length) throw new NotFoundException({ code: "MATERIAL_NOT_FOUND", message: `引用的物料不存在或已删除（${missing.length} 个）：请刷新物料清单后重选`, details: missing.map((id) => ({ material_id: id })) });
   }
 
+  /**
+   * 「其它」行的替换语义：软删旧的 + 建新的，同一个事务（与 `replaceSpecDetails` 一致）。
+   *
+   * 为什么这里可以「软删 + 新建」、而 `replaceMaterialRefs` 必须逐行对齐：那张表上有
+   * `(salesOrderId, specKey)` 的唯一键（唯一索引不看 `deletedAt`，删了再建必然撞），而这张表
+   * 没有唯一键 —— 行的身份就是它自己，用户每次保存改的就是整块内容。代价是行 id 每次保存都会变，
+   * 所以图片导出候选按 `extra:<行 id>` 标识、且每次导出都重新拉候选（见 schema 的模型注释）。
+   *
+   * 先校验（类目必填 / 内容或引用至少一个 / 条数封顶 / 引用的物料真实存在）再写：
+   * 一行不合法时**一个字节都不写** —— 半截数据比报错更难查。
+   */
+  private async replaceMaterialExtras(tx: Prisma.TransactionClient, salesOrderId: string, extras: MaterialExtraInput[] | undefined, user: CurrentUser) {
+    if (extras === undefined) return;
+    const rows = normalizeMaterialExtras(extras);
+    await this.assertMaterialsExist(rows.map((row) => row.materialId).filter((id): id is string => Boolean(id)));
+    await tx.salesOrderMaterialExtra.updateMany({ where: { salesOrderId, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
+    if (!rows.length) return;
+    await tx.salesOrderMaterialExtra.createMany({ data: rows.map((row) => ({ salesOrderId, label: row.label, content: row.content, materialId: row.materialId, sortOrder: row.sort_order, ...this.audit.create(user) })) });
+  }
+
   private async resolveReferences(input: { customer_id: string; contact_id?: string }, _user: CurrentUser) {
     const customer = await this.prisma.customer.findFirst({ where: { id: input.customer_id, deletedAt: null, isActive: true } });
     if (!customer) throw new NotFoundException({ code: "CUSTOMER_NOT_FOUND", message: "客户不存在或已停用", details: [] });
@@ -841,6 +969,7 @@ export class SalesOrdersService {
     const fields: Record<string, unknown> = {};
     for (const [key] of SPEC_SCALAR_FIELDS) fields[key] = input[key] ?? null;
     if (input.spec_details !== undefined) fields.spec_details = input.spec_details;
+    if (input.material_extras !== undefined) fields.material_extras = input.material_extras;
     if (input.material_refs !== undefined) fields.material_refs = input.material_refs;
     return fields;
   }

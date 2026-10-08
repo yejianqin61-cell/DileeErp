@@ -69,7 +69,7 @@ function writeHarness({ existing = [], materials = [{ id: MATERIAL_A }, { id: MA
     customer: { findFirst: async () => ({ id: "customer-1", customerCode: "CUS-1", name: "家百纳", isActive: true }) },
     customerContact: { findFirst: async () => null },
     material: { findMany: async (args) => { calls.materialFindMany.push(args); return materials; } },
-    salesOrder: { findFirst: async () => ({ id: ORDER_ID, orderNo: "SO-1", status: "draft", currentVersion: 1, customerId: "customer-1", customer: { id: "customer-1", name: "家百纳" }, contact: null, versions: [], boms: [], specDetails: [], materialRefs: [], orderDate: new Date(), quantity: "10", unit: "支", currency: "USD", extensionData: {} }) },
+    salesOrder: { findFirst: async () => ({ id: ORDER_ID, orderNo: "SO-1", status: "draft", currentVersion: 1, customerId: "customer-1", customer: { id: "customer-1", name: "家百纳" }, contact: null, versions: [], boms: [], specDetails: [], materialRefs: [], materialExtras: [], orderDate: new Date(), quantity: "10", unit: "支", currency: "USD", extensionData: {} }) },
     $transaction: async (fn) => fn(tx),
   };
   return { service: new SalesOrdersService(prisma, audit), calls };

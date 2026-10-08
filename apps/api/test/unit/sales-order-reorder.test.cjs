@@ -31,6 +31,10 @@ function sourceOrder(overrides = {}) {
       { groupName: "伞布明细", name: "27622 流水花扇PKBK", color: "PKBK", barcode: "690123", quantity: new Prisma.Decimal("200"), unit: "pcs", sortOrder: 1 },
     ],
     materialRefs: [{ specKey: "rib_spec", materialId: "material-1", material: { id: "material-1", materialCode: "MAT-1", name: "伞骨", specificationModel: "58cm", color: null, image: null } }],
+    // 「材料明细 → 其它」的自定义类目行（2026-10-08）：来源单这一版没有这些行。
+    // 真实查询 `include` 一定会带上这个关系，所以夹具也要有 —— 少一个字段会以
+    // 「Cannot read properties of undefined」的形式炸在返单复制那一行上（而不是静默少带一块）。
+    materialExtras: [],
     ...overrides,
   };
 }
@@ -45,6 +49,8 @@ function createHarness(source, created = {}, options = {}) {
     salesOrderVersion: { create: async ({ data }) => { captured.versionData = data; return data; } },
     salesOrderSpecDetail: { updateMany: async () => ({}), createMany: async ({ data }) => { captured.specDetailRows = data; return { count: data.length }; } },
     salesOrderMaterialRef: { findMany: async () => [], update: async () => ({}), createMany: async ({ data }) => { captured.refRows = data; return { count: data.length }; } },
+    // 「其它」行（2026-10-08）：来源单这一版没有这些行，返单于是照抄一个空列表（= 显式清空）。
+    salesOrderMaterialExtra: { updateMany: async () => ({ count: 0 }), createMany: async ({ data }) => { captured.extraRows = data; return { count: data.length }; } },
   };
   const prisma = {
     customer: { findFirst: async () => ({ id: "customer-1", customerCode: "CUS-1", name: "家百纳", isActive: true }) },

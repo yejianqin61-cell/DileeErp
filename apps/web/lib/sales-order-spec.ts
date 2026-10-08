@@ -142,6 +142,86 @@ export function materialRefsPayload(refs: MaterialRefState): Array<{ spec_key: s
 /** 每张销售单能引用的图片上限 = 材料明细栏位数（后端也是按栏位收的）。 */
 export const MATERIAL_REF_LIMIT = SPEC_MATERIAL_KEYS.length;
 
+// ------------------------------------------------------------------ 「其它」自定义类目行（2026-10-08）
+//
+// 用户原话：「材料明细最后还需要加一个『其它』，可以自行添加类目。有时候还需要别的物料。
+// 允许用户增删改」。
+//
+// 与后端 `apps/api/src/modules/sales/sales-orders.service.ts` 的 `MATERIAL_EXTRA_*` 与
+// `normalizeMaterialExtras` 是同一套口径（两个 workspace 没有共享包，只能两份），
+// 两边用同一组测试向量钉住上限、键名与错误口径 —— 分叉的后果是「界面放过去、后端 422」，
+// 或者更糟：**界面拦下、后端其实允许**（用户以为功能坏了）。
+
+/** 「其它」行的条数上限：工艺单是一张 A4 纸，行数再多就印不下了（与后端同一个数）。 */
+export const MATERIAL_EXTRA_LIMIT = 20;
+export const MATERIAL_EXTRA_LABEL_MAX_LENGTH = 50;
+export const MATERIAL_EXTRA_CONTENT_MAX_LENGTH = 1000;
+
+/** 「其它」行在表单里的形状：类目 + 内容 + 引用的物料（`null` = 只填文字）。 */
+export type MaterialExtraRow = { label: string; content: string; material: MaterialOption | null };
+
+export const emptyMaterialExtraRow = (): MaterialExtraRow => ({ label: "", content: "", material: null });
+
+/** 整行空（类目与内容都没写、也没引用物料）：用户加了行还没填，提交前丢掉（与明细行同一条口径）。 */
+export const isBlankMaterialExtra = (row: MaterialExtraRow): boolean => !row.label.trim() && !row.content.trim() && !row.material;
+
+/**
+ * 逐行校验（行号从 1 起，与后端 `normalizeMaterialExtras` 同一套口径）。
+ *
+ * 三条规则各自的理由：**类目必填**（它印在工艺单「材料」那一列）；**内容与引用至少有一个**
+ * （只印一个类目、右边空着，工人只会来问"这个到底要什么"）；**内容长度**（一格印不下）。
+ * 不整批丢弃、逐条给原因，与全站导入的提示口径一致。
+ */
+export function validateMaterialExtras(rows: MaterialExtraRow[]): Array<{ row: number; reason: string }> {
+  const errors: Array<{ row: number; reason: string }> = [];
+  const kept = rows.filter((row) => !isBlankMaterialExtra(row));
+  kept.forEach((row, index) => {
+    if (!row.label.trim()) errors.push({ row: index + 1, reason: "类目不能为空（例如：弹簧 / 螺丝 / 胶袋）" });
+    else if (row.label.trim().length > MATERIAL_EXTRA_LABEL_MAX_LENGTH) errors.push({ row: index + 1, reason: `类目名超过 ${MATERIAL_EXTRA_LABEL_MAX_LENGTH} 字` });
+    if (row.content.trim().length > MATERIAL_EXTRA_CONTENT_MAX_LENGTH) errors.push({ row: index + 1, reason: `内容超过 ${MATERIAL_EXTRA_CONTENT_MAX_LENGTH} 字` });
+    if (!row.content.trim() && !row.material) errors.push({ row: index + 1, reason: "内容与引用的物料至少要有一个" });
+  });
+  if (kept.length > MATERIAL_EXTRA_LIMIT) errors.push({ row: kept.length, reason: `最多 ${MATERIAL_EXTRA_LIMIT} 行（工艺单是一张 A4 纸），当前 ${kept.length} 行` });
+  return errors;
+}
+
+/**
+ * 从接口返回的销售单（或返单预览的 `copy`）里取「其它」行。
+ *
+ * ⚠️ **两种键名形状都认**：接口给的是 Prisma 列名 `materialExtras`，返单预览与版本快照里是请求键
+ * `material_extras` —— 与 37 个细化标量、明细列名踩过的同一个坑（读侧只认一种，那条路就断一次，
+ * 而表现是"填了、保存了、再打开又没了"）。行上带的物料摘要（`row.material`）也认：
+ * 返单预览带了它，编辑器就不必依赖物料池那一次请求成功。
+ */
+export function materialExtrasFromOrder(order: Record<string, unknown>): MaterialExtraRow[] {
+  const raw = order.materialExtras ?? order.material_extras;
+  if (!Array.isArray(raw)) return [];
+  return (raw as Array<Record<string, unknown>>)
+    .map((item) => {
+      const row = (item ?? {}) as Record<string, unknown>;
+      const text = (value: unknown) => (value === null || value === undefined ? "" : String(value));
+      return { label: text(row.label), content: text(row.content), material: (row.material ?? null) as MaterialOption | null };
+    })
+    .filter((row) => !isBlankMaterialExtra(row));
+}
+
+/**
+ * 「其它」行 → 提交载荷（丢掉整行空的，其余按数组顺序补 `sort_order`）。
+ *
+ * 没引用物料时**不带 `material_id` 这个键**（而不是发 null）：整块替换语义下"没带"就是"这一行没有引用"，
+ * 少发一个 null 少一处键名形状分叉的机会。
+ */
+export function materialExtrasPayload(rows: MaterialExtraRow[]): Array<Record<string, unknown>> {
+  return rows
+    .filter((row) => !isBlankMaterialExtra(row))
+    .map((row, index) => ({
+      label: row.label.trim(),
+      content: row.content.trim(),
+      ...(row.material ? { material_id: row.material.id } : {}),
+      sort_order: index,
+    }));
+}
+
 /**
  * 请求键（snake_case）→ Prisma 列名（camelCase）。
  *
@@ -290,8 +370,11 @@ export function validateSpecDetails(rows: SpecDetailRow[]): Array<{ row: number;
  *
  * `detailLabels` 是细分明细的自定义列名（用户 2026-09-30），同一条整块替换语义：
  * 不传 = 不动这一块，传 `{}` = 全部恢复默认列名（"恢复默认"必须表达得出来）。
+ *
+ * `extras` 是材料明细末尾的「其它」行（用户 2026-10-08），同一条整块替换语义：
+ * 不传 = 不动这一块，传 `[]` = 全部删掉。
  */
-export function specPayload(values: Record<string, string>, details: SpecDetailRow[], refs?: MaterialRefState, detailLabels?: Readonly<Record<string, string>>): Record<string, unknown> {
+export function specPayload(values: Record<string, string>, details: SpecDetailRow[], refs?: MaterialRefState, detailLabels?: Readonly<Record<string, string>>, extras?: MaterialExtraRow[]): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   for (const key of SPEC_SCALAR_KEYS) payload[key] = (values[key] ?? "").trim();
   const rows = details.filter((row) => !isBlankSpecDetail(row));
@@ -306,6 +389,7 @@ export function specPayload(values: Record<string, string>, details: SpecDetailR
   }));
   if (refs) payload.material_refs = materialRefsPayload(refs);
   if (detailLabels) payload.spec_detail_labels = specDetailLabelsPayload(detailLabels);
+  if (extras) payload.material_extras = materialExtrasPayload(extras);
   return payload;
 }
 
