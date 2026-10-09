@@ -45,6 +45,10 @@ const bomRow = (id, overrides = {}) => ({
   deletedAt: null,
   supplierId: overrides.supplierId ?? null,
   supplier: overrides.supplier ?? null,
+  // 参考单价（2026-10-08）：真实 `Decimal` —— 服务里会 `.gt(0)` 与 `.toFixed(4)`；
+  // 默认 `null` = 没填（历史 BOM 行都是这个形状）。
+  referenceUnitPrice: overrides.referenceUnitPrice ?? null,
+  referenceCurrency: overrides.referenceCurrency ?? null,
 });
 
 /**
@@ -238,6 +242,34 @@ test("新建：自动带出该 BOM 全部明细行，数量取 BOM 需求量、�
   const second = plan.items.find((item) => item.materialId === "mat-2");
   assert.equal(second.supplierId, null);
   assert.equal(planItems.find((item) => item.materialId === "mat-2").supplierSnapshot, Prisma.DbNull, "没有供应商要写 SQL NULL，不是 JSON 的 null 字面量");
+});
+
+/**
+ * 参考单价预填（2026-10-08，用户：「采购计划要下单需要填写单价，但是BOM表没办法填写单价」）。
+ *
+ * 口径（用户选定）：BOM 行上手填的参考单价**预填**到计划行的单价，采购员按实际报价改；
+ * 没填或填 0 时仍是 0（0 价不能下单，所以 0 与"没填"在这里等价）。币种跟着价一起来 ——
+ * 不带币种的话，"计划合计按币种分列"会把一笔美元报价当成人民币。
+ */
+test("新建：BOM 行上的参考单价预填到计划行（含币种）；没填/填 0 仍是 0 价人民币", async () => {
+  const { service, planItems } = makeService({
+    boms: [bomFixture],
+    bomItems: [
+      bomRow("bi-1", { materialId: "mat-1", referenceUnitPrice: new Prisma.Decimal("12.5000"), referenceCurrency: "USD" }),
+      bomRow("bi-2", { materialId: "mat-2", referenceUnitPrice: new Prisma.Decimal("0.0000"), referenceCurrency: "USD" }),
+      bomRow("bi-3", { materialId: "mat-3" }),
+    ],
+  });
+
+  const plan = await service.create({ bom_id: "bom-1" }, user);
+
+  assert.equal(plan.lineCount, 3);
+  assert.deepEqual(
+    planItems.map((item) => [item.unitPrice.toFixed(4), item.currency]),
+    [["12.5000", "USD"], ["0.0000", "CNY"], ["0.0000", "CNY"]],
+    "第一条带价带币种；填 0 与没填都退回 0 价人民币",
+  );
+  assert.equal(plan.items[0].unitPrice, "12.5000", "计划详情里也要看得见预填的价（不只是落库值）");
 });
 
 test("新建：停用中的 BOM 供应商不预填（预填下去注定在下单时被拒）", async () => {

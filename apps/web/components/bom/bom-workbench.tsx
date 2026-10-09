@@ -19,6 +19,8 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiRequest } from "../../lib/api-client";
+import { currencyOptionsWithCurrent, type CurrencyOption } from "../../lib/currency-options";
+import { fetchCurrencyOptions } from "../../lib/currency-catalogue";
 import { displayText } from "../../lib/display-text";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { SupplierSelect, type BomSupplierRef } from "./supplier-select";
@@ -56,6 +58,12 @@ export type BomRow = {
   supplierSnapshot?: Record<string, unknown> | null;
   /** 只读关系（服务端 include 回来的当前供应商）。 */
   supplier?: { id: string; supplierCode?: string | null; name?: string | null; isActive?: boolean } | null;
+  /**
+   * 参考单价 + 币种（2026-10-08）：这一行「通常多少钱」。备查 + 预填到采购计划，**不参与任何金额计算**。
+   * 服务端回的是 Decimal 字符串（如 `"12.5000"`），空/null 都是「没填」。
+   */
+  referenceUnitPrice?: string | null;
+  referenceCurrency?: string | null;
 };
 
 type BomPayload = { id: string; orderNo: string; status: string; version: number; updatedAt?: string; items: BomRow[] };
@@ -63,8 +71,19 @@ type BomPayload = { id: string; orderNo: string; status: string; version: number
 const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
 /** 规格型号/颜色只在「选择物料 / 新建物料」时引用主数据；保存时不再回填，避免覆盖人工修改。 */
 const specOf = (material?: BomMaterialRef | null) => ({ specificationModel: material?.specificationModel ?? "", color: material?.color ?? "" });
+/**
+ * 服务端回的参考单价是 4 位小数的 Decimal 字符串（`"12.5000"`）：输入框里显示 `12.5` 更好读。
+ *
+ * 与采购计划的 `trimQuantity` 只差一处：**空字符串保持空**。价格里"没填"与"填了 0"是两个意思
+ * （0 价不能下单），把空变成 `"0"` 会让这一格看起来像填过了。
+ * 全程按字符串处理，不进 `Number`：金额相关的一律不碰浮点（全站口径）。
+ */
+const trimPrice = (value?: string | null) => {
+  const text = String(value ?? "").trim();
+  return text.includes(".") ? text.replace(/0+$/, "").replace(/\.$/, "") : text;
+};
 
-export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial, onSupplierCreated, showSupplier = true, onClose, onSaved }: {
+export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial, onSupplierCreated, showSupplier = true, showReferencePrice = true, onClose, onSaved }: {
   bomId: string;
   title?: string;
   materials: BomMaterialRef[];
@@ -87,6 +106,20 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
    * "这个部件通常找哪家做"的长期知识，不该因为换了个入口保存就丢）。
    */
   showSupplier?: boolean;
+  /**
+   * 要不要显示「参考单价」这一列（2026-10-08）。
+   *
+   * 用户原话：「采购计划要下单需要填写单价，但是BOM表没办法填写单价，检查一下这条链路。尤其是前端。」
+   * 用户选定：BOM 行上手填参考单价（含币种），新建采购计划时预填到计划行。
+   * 与「默认供应商」同一条判断：这一列回答的是"这个部件**通常多少钱**、找哪家做"，
+   * 是**采购**的知识；生产只关心做多少、用什么料，所以生产侧显式传 `false`。
+   *
+   * 为什么另开一个 prop 而不是复用 `showSupplier`：两个列**现在**恰好同开同关，
+   * 但"要不要显示供应商"和"要不要显示价"是两件独立的事（将来生产侧想看见价、或者采购侧
+   * 想先不上价，都只需要改一个入口的一个参数），共用一个开关会让下一次改动被迫一起动。
+   * ⚠️ 与供应商同理：隐藏**只影响显示与编辑**，行里的价仍在，保存时照旧回传。
+   */
+  showReferencePrice?: boolean;
   onClose: () => void;
   onSaved?: () => void;
 }) {
@@ -94,6 +127,12 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
   const [items, setItems] = useState<BomRow[]>([]);
   /** 供应商池由本组件自己取：BOM 的三个入口（采购→BOM表、采购单→编辑BOM、生产→BOM表）不必各自加载一遍。 */
   const [suppliers, setSuppliers] = useState<BomSupplierRef[]>([]);
+  /**
+   * 币种选项（参考单价的币种格）。与采购计划的收束预览用同一个来源
+   * （`lib/currency-catalogue.ts` 的 `fetchCurrencyOptions`：字典接口失败时回落到内置清单）。
+   * 生产侧不显示这一列（`showReferencePrice={false}`）时不拉它 —— 少一次请求，也不会有"看不见的输入"。
+   */
+  const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [conflict, setConflict] = useState("");
@@ -108,13 +147,19 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
         apiGet<BomSupplierRef[]>("/suppliers").catch(() => ({ data: [] as BomSupplierRef[], meta: {} })),
       ]);
       setBom(result.data);
-      setItems(result.data.items ?? []);
+      setItems((result.data.items ?? []).map((item) => ({ ...item, referenceUnitPrice: trimPrice(item.referenceUnitPrice) })));
       setSuppliers(Array.isArray(supplierList.data) ? supplierList.data : []);
     } catch (cause) {
       setError(messageOf(cause, "BOM表加载失败"));
     } finally { setLoading(false); }
   }, [bomId]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!showReferencePrice) return;
+    let cancelled = false;
+    void fetchCurrencyOptions().then((options) => { if (!cancelled) setCurrencies(options); });
+    return () => { cancelled = true; };
+  }, [showReferencePrice]);
 
   const materialOptions = materials.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` }));
   /**
@@ -149,18 +194,24 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
   }
 
   async function save() {
+    // 参考单价是可选字段，唯一能在前端先拦下的坏值是负数：负价没有任何业务含义，
+    // 而服务端会以 INVALID_BOM_ITEM 拒绝**整张表**（保存失败但看不出是哪一行）。
+    const negativePrice = items.findIndex((row) => row.referenceUnitPrice !== undefined && row.referenceUnitPrice !== null && row.referenceUnitPrice !== "" && !(Number(row.referenceUnitPrice) >= 0));
+    if (negativePrice >= 0) { setError(`第 ${negativePrice + 1} 行的参考单价不能是负数（或直接清空这一格）`); return; }
     setSaving(true); setError("");
     try {
       const result = await apiRequest<BomPayload>(`/boms/${bomId}/items`, {
         method: "PUT",
         body: JSON.stringify({
-          items: items.map((row) => ({ material_id: row.materialId, material_name: row.materialName, model: row.model || undefined, specification_model: row.specificationModel || undefined, color: row.color || undefined, production_batch_base: row.productionBatchBase || undefined, base_usage: row.baseUsage || undefined, material_snapshot: row.materialSnapshot, required_quantity: row.requiredQuantity, unit: row.unit, unit_id: row.unitId || undefined, supplier_id: row.supplierId || undefined })),
+          items: items.map((row) => ({ material_id: row.materialId, material_name: row.materialName, model: row.model || undefined, specification_model: row.specificationModel || undefined, color: row.color || undefined, production_batch_base: row.productionBatchBase || undefined, base_usage: row.baseUsage || undefined, material_snapshot: row.materialSnapshot, required_quantity: row.requiredQuantity, unit: row.unit, unit_id: row.unitId || undefined, supplier_id: row.supplierId || undefined, // 参考单价：空 = 服务端存 NULL（"没填"），不是 0。
+            // 币种**只在有价时**才发：没有价的币种是没有意义的孤儿值（再打开时下拉本来也默认显示 CNY）。
+            reference_unit_price: row.referenceUnitPrice || undefined, reference_currency: row.referenceUnitPrice ? (row.referenceCurrency || "CNY") : undefined })),
           // 乐观锁令牌：服务端比对失败会返回 422 BOM_UPDATE_CONFLICT，本组件不覆盖、只提示。
           expected_updated_at: bom?.updatedAt,
         }),
       });
       setBom(result.data);
-      setItems(result.data.items ?? []);
+      setItems((result.data.items ?? []).map((item) => ({ ...item, referenceUnitPrice: trimPrice(item.referenceUnitPrice) })));
       setConflict("");
       notifySuccess("BOM表已保存");
       onSaved?.();
@@ -191,6 +242,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
         <Button size="sm" disabled={saving} onClick={() => void save()}>{saving ? "保存中..." : "保存BOM表"}</Button>
       </div>
       {!onCreateMaterial && <p className="panel-note">物料池由【采购 → 物料清单】维护；这里可以直接改用量、单位、规格型号与颜色。</p>}
+      {showReferencePrice && <p className="panel-note" data-testid="bom-price-hint">「参考单价」是这个部件通常多少钱：填了之后，新建采购计划时会自动预填到计划行的单价（采购员仍按实际报价改）；留空就是还没谈价，计划行单价为 0、不能下单。</p>}
       {/*
         2026-10-08（用户）：「BOM表页面，物料名称一长，后面的column就被压缩很窄。这很不好。我要求，
         扩大BOM表悬浮居中页面的占页面大小，并且固定物料名称这一列的宽度。一旦字数超出，就省略显示，
@@ -203,7 +255,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
           · 物料名称列的 `title`（下面每行的 SelectTrigger）——省略号把字吃掉之后，hover 要有地方看全文。
             文案取 `materialOptions` 的 label，与触发器里显示的**同一份字符串**，不会两处不一致。
       */}
-      <div className="table-wrap"><table className="data-table bom-table"><thead><tr><th className="bom-col-index">序号</th><th className="bom-col-material">物料名称</th><th className="bom-col-model">型号</th><th className="bom-col-spec">规格型号</th><th className="bom-col-color">颜色</th><th className="bom-col-quantity">数量</th><th className="bom-col-unit">单位</th>{showSupplier && <th className="bom-col-supplier">供应商</th>}<th className="bom-col-action"><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
+      <div className="table-wrap"><table className="data-table bom-table"><thead><tr><th className="bom-col-index">序号</th><th className="bom-col-material">物料名称</th><th className="bom-col-model">型号</th><th className="bom-col-spec">规格型号</th><th className="bom-col-color">颜色</th><th className="bom-col-quantity">数量</th><th className="bom-col-unit">单位</th>{showSupplier && <th className="bom-col-supplier">供应商</th>}{showReferencePrice && <th className="bom-col-price">参考单价</th>}<th className="bom-col-action"><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
         <td className="bom-col-index">{index + 1}</td>
         <td className="bom-col-material"><Select value={row.materialId || undefined} onValueChange={(value) => changeMaterial(index, value)}><SelectTrigger data-testid={`bom-material-${index}`} title={materialLabelOf(row.materialId) || undefined}><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
         <td className="bom-col-model"><Input value={row.model ?? ""} onChange={(event) => updateItem(index, { model: event.target.value })} /></td>
@@ -228,6 +280,27 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
             onCreated={(supplier) => { setSuppliers((current) => (current.some((item) => item.id === supplier.id) ? current : [...current, supplier])); onSupplierCreated?.(supplier); }}
             testId={`bom-supplier-select-${index}`}
           />
+        </td>}
+        {/*
+          参考单价（2026-10-08，用户：「采购计划要下单需要填写单价，但是BOM表没办法填写单价，
+          检查一下这条链路。尤其是前端。」）。
+
+          这一格是"这个部件通常多少钱"，与左边的供应商配对：**备查 + 预填到采购计划**，
+          不参与任何金额计算（成本/毛利/应付一律取采购单上的实际单价，取价口径没变）。
+          所以它没有校验"必须 > 0"：没谈价就留空，采购员到计划里按实际报价填。
+
+          币种紧挨着价：不记币种的话，一笔美元报价预填进计划会让"计划合计按币种分列"说谎。
+          币种只显示代码（`CNY`）而不是「CNY 人民币」—— 这一格要跟输入框挤在同一列里，
+          汉字标签会把价挤到看不见；代码本身没有歧义，label 留在 hover 与下拉里。
+        */}
+        {showReferencePrice && <td data-testid={`bom-price-cell-${index}`} className="bom-col-price">
+          <div className="bom-price-cell">
+            <Select value={row.referenceCurrency || "CNY"} onValueChange={(value) => updateItem(index, { referenceCurrency: value })}>
+              <SelectTrigger data-testid={`bom-price-currency-${index}`} aria-label={`第 ${index + 1} 行参考单价的币种`}><SelectValue /></SelectTrigger>
+              <SelectContent>{currencyOptionsWithCurrent(currencies, row.referenceCurrency || "CNY").map((option) => <SelectItem key={option.value} value={option.value}>{option.value}</SelectItem>)}</SelectContent>
+            </Select>
+            <Input type="number" min="0" step="0.0001" data-testid={`bom-price-${index}-input`} aria-label={`第 ${index + 1} 行参考单价`} placeholder="未填" value={row.referenceUnitPrice ?? ""} onChange={(event) => updateItem(index, { referenceUnitPrice: event.target.value })} />
+          </div>
         </td>}
         <td className="bom-col-action"><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setItems((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={16} /></Button></td>
       </tr>)}</tbody></table></div>

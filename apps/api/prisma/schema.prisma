@@ -645,6 +645,18 @@ model BomItem {
   //   · 引用而不是抄名字：供应商主数据是唯一真源（抄十份、改一次要改十处）。
   supplierId         String?             @map("supplier_id") @db.Uuid
   supplierSnapshot   Json?               @map("supplier_snapshot")
+  // ---- BOM 行的「参考单价」（2026-10-08）----
+  // 用户原话：「采购计划要下单需要填写单价，但是BOM表没办法填写单价，检查一下这条链路。尤其是前端。」
+  // 用户选定：**在 BOM 行上手填一个参考单价（含币种），新建采购计划时预填到计划行，仍可改**。
+  // 它是「这个部件通常多少钱」的**备查/预填**信息，与默认供应商同一形状、同一地位：
+  //   · 可空：历史 BOM 行没有价（`null` = 没填，与「填了 0」不是一件事）；
+  //   · **不参与任何金额计算**：成本/毛利/应付一律取采购单上的实际单价
+  //     （`finance-report-cost.service.ts` 的取价口径没变），落在这里的价不会自己变成钱；
+  //   · 计划行仍是唯一真源：预填只是省一次手打，采购员按实际报价改掉它即可；
+  //   · 币种按行记：一家供应商报美元、另一家报人民币，BOM 上不说清币种，预填到计划里
+  //     会让"计划合计按币种分列"直接说谎（`purchase_plan_items.currency` 同一套字典）。
+  referenceUnitPrice Decimal?            @map("reference_unit_price") @db.Decimal(18, 4)
+  referenceCurrency  String?             @map("reference_currency") @db.VarChar(10)
   createdAt          DateTime            @default(now()) @map("created_at")
   updatedAt          DateTime            @updatedAt @map("updated_at")
   createdBy          String              @map("created_by") @db.Uuid

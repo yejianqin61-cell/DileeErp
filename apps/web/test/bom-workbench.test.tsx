@@ -204,3 +204,90 @@ describe("BOM 表：物料名称列（固定列宽 / 省略 / hover 全文）", 
     expect(await screen.findByTestId("bom-material-0")).not.toHaveAttribute("title");
   });
 });
+
+// 2026-10-08（用户）：「1.采购计划要下单需要填写单价，但是BOM表没办法填写单价，检查一下这条链路。
+// 尤其是前端。」用户选定：BOM 行上手填「参考单价」（含币种），新建采购计划时预填到计划行（仍可改）。
+//
+// 这一列回答的是"这个部件通常多少钱"，与左边的供应商配对：**备查 + 预填**，
+// 不参与任何金额计算（成本/毛利/应付都取采购单上的实际单价）。
+describe("BOM 表：参考单价列", () => {
+  const CURRENCIES = [{ key: "CNY", label: "人民币", isActive: true }, { key: "USD", label: "美元", isActive: true }];
+  const row = (overrides: Record<string, unknown> = {}) => ({ id: "bi-1", materialId: "m-1", materialName: "面料A", model: "", requiredQuantity: "2", unit: "米", unitId: "u-1", materialSnapshot: {}, ...overrides });
+
+  function renderWith(rows: Array<Record<string, unknown>>, options: { showReferencePrice?: boolean } = {}) {
+    const calls = stubApi((url, call) => {
+      if (url.endsWith("/boms/bom-1") && call.method === "GET") return apiOk({ id: "bom-1", orderNo: "SO-1", status: "draft", version: 1, updatedAt: OPENED_AT, items: rows });
+      if (url.endsWith("/boms/bom-1/items") && call.method === "PUT") return apiOk({ id: "bom-1", orderNo: "SO-1", status: "draft", version: 1, updatedAt: OPENED_AT, items: rows });
+      if (url.endsWith("/dictionaries/currency/items")) return apiOk(CURRENCIES);
+      return apiOk({});
+    });
+    render(<BomWorkbench bomId="bom-1" title="SO-1" materials={materials} units={units} showReferencePrice={options.showReferencePrice} onClose={() => undefined} />);
+    return calls;
+  }
+
+  const putBody = (calls: StubbedCall[]) => bodyOf(calls.find((call) => call.method === "PUT")!);
+
+  it("列头是「参考单价」，并把服务端带出的 4 位小数显示成好读的形式（12.5000 → 12.5）", async () => {
+    renderWith([row({ referenceUnitPrice: "12.5000", referenceCurrency: "USD" })]);
+    expect((await screen.findByRole("columnheader", { name: "参考单价" })).className).toContain("bom-col-price");
+    expect(await screen.findByTestId("bom-price-0-input")).toHaveValue(12.5);
+    expect(screen.getByTestId("bom-price-currency-0")).toHaveTextContent("USD");
+  });
+
+  it("填价 + 选币种 → 保存请求体带 reference_unit_price / reference_currency", async () => {
+    const calls = renderWith([row({ referenceUnitPrice: "12.5000", referenceCurrency: "CNY" })]);
+    const price = await screen.findByTestId("bom-price-0-input");
+    await userEvent.clear(price);
+    await userEvent.type(price, "8.25");
+    await userEvent.click(screen.getByTestId("bom-price-currency-0"));
+    await userEvent.click(await screen.findByText("USD"));
+    await userEvent.click(screen.getByRole("button", { name: "保存BOM表" }));
+
+    const items = putBody(calls).items as Array<Record<string, unknown>>;
+    expect(items[0].reference_unit_price).toBe("8.25");
+    expect(items[0].reference_currency).toBe("USD");
+  });
+
+  it("清空价格 → 请求体里根本没有这个键（服务端存 NULL＝没填，不是 0）", async () => {
+    const calls = renderWith([row({ referenceUnitPrice: "12.5000", referenceCurrency: "CNY" })]);
+    await userEvent.clear(await screen.findByTestId("bom-price-0-input"));
+    await userEvent.click(screen.getByRole("button", { name: "保存BOM表" }));
+
+    const items = putBody(calls).items as Array<Record<string, unknown>>;
+    expect("reference_unit_price" in items[0]).toBe(false);
+    expect("reference_currency" in items[0]).toBe(false);
+  });
+
+  it("负数不发请求，并指出是第几行（服务端会拒整张表，先说清楚）", async () => {
+    const calls = renderWith([row(), row({ id: "bi-2", materialId: "m-2" })]);
+    const second = (await screen.findAllByTestId(/-input$/))[1];
+    await userEvent.clear(second);
+    await userEvent.type(second, "-3");
+    await userEvent.click(screen.getByRole("button", { name: "保存BOM表" }));
+
+    expect(await screen.findByText(/第 2 行的参考单价不能是负数/)).toBeVisible();
+    expect(calls.some((call) => call.method === "PUT")).toBe(false);
+  });
+
+  it("提示语把这条链路说清楚：填了会预填到采购计划的单价", async () => {
+    renderWith([row()]);
+    expect(await screen.findByTestId("bom-price-hint")).toHaveTextContent(/新建采购计划时会自动预填到计划行的单价/);
+  });
+
+  it("生产侧不显示这一列（showReferencePrice=false），但行上已有的价照旧回传、不会被抹掉", async () => {
+    // 与「默认供应商」同一条道理：价是采购的知识，生产保存 BOM 不该把采购填过的价清掉。
+    const calls = renderWith([row({ referenceUnitPrice: "7.0000", referenceCurrency: "USD" })], { showReferencePrice: false });
+    await screen.findByRole("button", { name: "保存BOM表" });
+
+    expect(screen.queryByRole("columnheader", { name: "参考单价" })).toBeNull();
+    expect(screen.queryByTestId("bom-price-cell-0")).toBeNull();
+    expect(screen.queryByTestId("bom-price-hint")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "保存BOM表" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
+    const items = putBody(calls).items as Array<Record<string, unknown>>;
+    // 前端去掉尾零显示 7，服务端仍按 DECIMAL(18,4) 存 7.0000
+    expect(items[0].reference_unit_price).toBe("7");
+    expect(items[0].reference_currency).toBe("USD");
+  });
+});

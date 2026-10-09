@@ -39,23 +39,36 @@ test("那张表是固定布局，且组件上真的挂着 .bom-table（类名一
   assert.match(component, /<table className="data-table bom-table">/);
 });
 
-test("九列都有显式百分比宽度、总和正好 100%（少一列就轮到浏览器替它猜，长名字会再挤一次）", () => {
+test("每一列都有显式百分比宽度、总和正好 100%（少一列就轮到浏览器替它猜，长名字会再挤一次）", () => {
   // 列清单从 JSX 里取，不从 CSS 里取：CSS 里漏写一列时"总和"照样能凑成 100%，
   // 而漏掉的那一列会被自动分摊 —— 那正是横滑/挤歪的入口。
   const used = new Set([...component.matchAll(/bom-col-([a-z]+)/g)].map((match) => match[1]));
   const widths = new Map([...css.matchAll(/\.bom-col-([a-z]+) \{ width: ([\d.]+)%; \}/g)].map((match) => [match[1], Number(match[2])]));
 
-  assert.ok(used.size >= 9, "BOM 表是 序号/物料名称/型号/规格型号/颜色/数量/单位/供应商/操作 九列");
+  assert.ok(used.size >= 10, "BOM 表是 序号/物料名称/型号/规格型号/颜色/数量/单位/供应商/参考单价/操作 十列");
   for (const column of used) assert.ok(widths.has(column), `列 ${column} 没有显式百分比宽度（fixed 布局下会被自动分摊，挤歪别人）`);
   assert.equal([...widths.values()].reduce((sum, width) => sum + width, 0), 100, "总和不是 100% 就会横向滚动");
 
-  // 为什么全是百分比、没有一个 px：生产侧不显示供应商列（少 17%），实测混入 px 时浏览器会把
-  // 多余宽度整块塞给 px 那两列（1920 屏序号 48→208px、操作 56→243px），全百分比则按比例摊开。
+  // 为什么全是百分比、没有一个 px：生产侧不显示供应商列与参考单价列（少 25%），
+  // 实测混入 px 时浏览器会把多余宽度整块塞给 px 那两列（1920 屏序号 48→208px、操作 56→243px），
+  // 全百分比则按比例摊开。
   const material = widths.get("material");
   assert.ok(material >= 20, `物料名称列只拿到 ${material}%（它是本表最长的一列文本，得占最大的一份）`);
-  for (const column of ["model", "spec", "color", "quantity"]) {
-    assert.ok(widths.get(column) >= 8, `列 ${column} 太窄，行内输入框会看不到自己填的值`);
-  }
+  for (const column of ["model", "spec", "color"]) assert.ok(widths.get(column) >= 8, `列 ${column} 太窄，行内输入框会看不到自己填的值`);
+  assert.ok(widths.get("quantity") >= 7, "数量列要放得下四位小数");
+  assert.ok(widths.get("price") >= 10, "参考单价列里要放「币种 + 四位数」两个控件");
+});
+
+test("参考单价列：币种格定死宽度、剩下的全给价（价才是这一列的主角）", () => {
+  // 两条各管一半：币种格 flex: 0 0 64px（只放 CNY/USD 三个字母），价输入框 flex: 1 1 auto 吃剩下的宽度。
+  // 少了前者，币种格会跟着「CNY 人民币」这种长标签变宽、把价挤到看不见。
+  assert.match(css, /\.bom-table \.bom-col-price \.bom-price-cell \{ display: flex; align-items: center; gap: 6px; \}/);
+  assert.match(css, /\.bom-table \.bom-col-price \.bom-price-cell \.ui-select-trigger \{ flex: 0 0 64px; padding: 0 6px; font-size: 12px; \}/);
+  assert.match(css, /\.bom-table \.bom-col-price \.bom-price-cell \.ui-input \{ flex: 1 1 auto; min-width: 0; \}/);
+  assert.match(component, /<td data-testid=\{`bom-price-cell-\$\{index\}`\} className="bom-col-price">/);
+  // 这一列必须够宽（实测：11% 时价输入框只剩 29px，连 `12.5` 都看不全；13% 时有 63px）。
+  const width = Number(/\.bom-col-price \{ width: ([\d.]+)%; \}/.exec(css)?.[1]);
+  assert.ok(width >= 13, `参考单价列只有 ${width}%，价格输入框会被币种格挤到看不见`);
 });
 
 test("物料名称列：超长省略 + hover 看全文（两条各管一半，缺一条都不成立）", () => {

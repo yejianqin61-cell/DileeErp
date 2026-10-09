@@ -78,7 +78,7 @@ export class BomsService {
     }
   }
 
-  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; specification_model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; production_batch_base?: string; base_usage?: string; unit: string; unit_id?: string; supplier_id?: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser, expectedUpdatedAt?: string) {
+  async replaceItems(id: string, items: Array<{ material_id: string; material_name?: string; model?: string; specification_model?: string; color?: string; material_snapshot: Record<string, unknown>; required_quantity: string; production_batch_base?: string; base_usage?: string; unit: string; unit_id?: string; supplier_id?: string; reference_unit_price?: string; reference_currency?: string; loss_quantity?: string; loss_rate?: string; extension_data?: Record<string, unknown> }>, user: CurrentUser, expectedUpdatedAt?: string) {
     const bom = await this.get(id);
     // Material master data stays authoritative for raw-material checks only.
     // Quantity and unit are user-maintained BOM fields: required_quantity is
@@ -99,8 +99,17 @@ export class BomsService {
     const supplierMap = new Map(supplierRows.map((row) => [row.id, row]));
     if (supplierIds.some((supplierId) => !supplierMap.has(supplierId))) throw new UnprocessableEntityException({ code: "BOM_SUPPLIER_NOT_FOUND", message: "BOM 明细的默认供应商不存在或已停用", details: [] });
     const order = this.prisma.salesOrder?.findUnique ? await this.prisma.salesOrder.findUnique({ where: { id: bom.salesOrderId }, select: { quantity: true } }) : { quantity: new Prisma.Decimal(1) };
+    /**
+     * 参考单价（2026-10-08）：可空。空串按「没填」处理（`null`），填了就必须是 ≥ 0 的四位小数——
+     * 与 `loss_quantity` 同一套数字校验，不新造一种写法。
+     * 它**不参与任何金额计算**（成本/毛利/应付都取采购单上的实际单价），所以这里只校验"是不是个数"。
+     */
+    const referencePrices = items.map((item) => (item.reference_unit_price ?? "").trim());
+    if (referencePrices.some((value) => value !== "" && !this.isNonNegativeDecimal(value))) {
+      throw new UnprocessableEntityException({ code: "INVALID_BOM_ITEM", message: "BOM 明细的物料、数量、单位或参考单价不合法", details: [] });
+    }
     if (!order || items.some((item) => !item.material_id || !item.unit || !(item.material_name ?? String(item.material_snapshot.name ?? "")).trim() || !this.isPositiveDecimal(item.required_quantity) || (item.production_batch_base !== undefined && !this.isPositiveDecimal(item.production_batch_base)) || (item.base_usage !== undefined && !this.isPositiveDecimal(item.base_usage)) || (item.loss_quantity !== undefined && !this.isNonNegativeDecimal(item.loss_quantity)) || (item.loss_rate !== undefined && !this.isNonNegativeDecimal(item.loss_rate)))) {
-      throw new UnprocessableEntityException({ code: "INVALID_BOM_ITEM", message: "BOM 明细的物料、数量或单位不合法", details: [] });
+      throw new UnprocessableEntityException({ code: "INVALID_BOM_ITEM", message: "BOM 明细的物料、数量、单位或参考单价不合法", details: [] });
     }
     const expected = expectedUpdatedAt?.trim();
     await this.prisma.$transaction(async (tx) => {
@@ -121,7 +130,8 @@ export class BomsService {
         await tx.bomItem.createMany({ data: items.map((item, index) => { const required = new Prisma.Decimal(item.required_quantity); const supplier = item.supplier_id ? supplierMap.get(item.supplier_id) : undefined; return { bomId: id, materialId: item.material_id, materialName: item.material_name ?? String(item.material_snapshot.name ?? ""), model: item.model, specificationModel: item.specification_model, color: item.color, unitId: item.unit_id ?? materialMap.get(item.material_id)?.defaultUnitId, materialSnapshot: item.material_snapshot as Prisma.InputJsonValue, requiredQuantity: required, productionBatchBase: item.production_batch_base ?? "1", baseUsage: item.base_usage ?? required, approvedUsage: required, sequence: index + 1, unit: item.unit, supplierId: item.supplier_id ?? null, // 快照存当时那家的编码与名称：供应商改名/停用后，BOM 上仍看得见记录。
           // 没选供应商时写 **DbNull（SQL NULL）** 而不是 `Prisma.JsonNull`：后者存的是 JSON 的
           // `null` 字面量，`WHERE supplier_snapshot IS NULL` 找不到它 —— 将来想查"哪些行没有快照"会漏。
-          supplierSnapshot: supplier ? ({ id: supplier.id, supplierCode: supplier.supplierCode, name: supplier.name } as Prisma.InputJsonValue) : Prisma.DbNull, lossQuantity: item.loss_quantity, lossRate: item.loss_rate, extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) });
+          supplierSnapshot: supplier ? ({ id: supplier.id, supplierCode: supplier.supplierCode, name: supplier.name } as Prisma.InputJsonValue) : Prisma.DbNull, // 参考单价：空串 = 没填（存 NULL，不是 0）。币种没填时也存 NULL —— 预填到计划时按人民币兜底。
+          referenceUnitPrice: (item.reference_unit_price ?? "").trim() === "" ? null : new Prisma.Decimal(item.reference_unit_price!.trim()), referenceCurrency: (item.reference_currency ?? "").trim() || null, lossQuantity: item.loss_quantity, lossRate: item.loss_rate, extensionData: (item.extension_data ?? {}) as Prisma.InputJsonValue, ...this.audit.create(user) }; }) });
       }
     });
     await this.audit.record("bom.items.replace", "bom", user.id, id, { order_no: bom.orderNo, version: bom.version, item_count: items.length });

@@ -784,6 +784,15 @@ export class PurchasePlansService {
       // 只有**启用中**的供应商才预填：停用的供应商在下单时会被 `refs()` 拒掉，
       // 预填一格注定报错的值比留空更糟（用户会以为已经选好了）。
       const supplier = row.supplier && row.supplier.isActive && !row.supplier.deletedAt ? row.supplier : undefined;
+      /**
+       * 参考单价（2026-10-08，用户：「采购计划要下单需要填写单价，但是BOM表没办法填写单价」）。
+       *
+       * BOM 行上填过的价**预填**到计划行，采购员按实际报价改；没填（或填 0）时仍写 `"0"`
+       * —— 0 价不能下单（口径 1.4），所以 0 与"没填"在这里等价，区别只在库里的 BOM 行上。
+       * 币种跟着这一行的价一起带过来：不带的话，"计划合计按币种分列"会把美元价当成人民币。
+       * 预填**不改变**任何既有校验与账务链路：计划行仍是唯一真源，成本/应付一律取采购单上的价。
+       */
+      const referencePrice = row.referenceUnitPrice && row.referenceUnitPrice.gt(0) ? row.referenceUnitPrice.toFixed(4) : "0";
       items.push({
         materialId: row.materialId,
         materialSnapshot: row.materialSnapshot as Prisma.InputJsonValue,
@@ -794,10 +803,9 @@ export class PurchasePlansService {
         supplierSnapshot: supplier ? ({ id: supplier.id, supplierCode: supplier.supplierCode, name: supplier.name } as Prisma.InputJsonValue) : Prisma.DbNull,
         model: row.model ?? row.specificationModel ?? null,
         quantity: row.requiredQuantity.toFixed(4),
-        unitPrice: "0",
-        // 从 BOM 带出来的行**单价是 0**（要采购员按报价填），所以币种只是先放一个默认值；
-        // 真正决定钱的是「收束下单」时按供应商组选的币种，那一组下完单会写回这里。
-        currency: DEFAULT_PLAN_CURRENCY,
+        unitPrice: referencePrice,
+        // 币种来自 BOM 行上那笔参考价；没有参考价时就是默认值（人民币）。
+        currency: referencePrice === "0" ? DEFAULT_PLAN_CURRENCY : row.referenceCurrency || DEFAULT_PLAN_CURRENCY,
         expectedDate: null,
         extensionData: {},
       });

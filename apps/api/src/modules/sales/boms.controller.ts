@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Param, Patch, Post, Put, Query, UseGuards } from "@nestjs/common";
-import { IsArray, IsDateString, IsObject, IsOptional, IsString, IsUUID } from "class-validator";
+import { IsArray, IsDateString, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -27,6 +27,14 @@ class BomItemDto {
   @IsOptional() @IsUUID() unit_id?: string;
   /** BOM 行的默认供应商（2026-09-26）：可空；填了就必须是启用的供应商（服务层校验）。 */
   @IsOptional() @IsUUID() supplier_id?: string;
+  /**
+   * BOM 行的参考单价 + 币种（2026-10-08）：可空；填了就必须是 ≥ 0 的十进制数。
+   *
+   * 币种只按「不超过 10 个字符」校验，与销售单/采购单的 `currency` 同一口径
+   * （不查字典：历史单据上的币种即使后来被停用也必须还能存着）。
+   */
+  @IsOptional() @IsString() reference_unit_price?: string;
+  @IsOptional() @IsString() @MaxLength(10) reference_currency?: string;
   @IsOptional() @IsString() loss_quantity?: string;
   @IsOptional() @IsString() loss_rate?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
