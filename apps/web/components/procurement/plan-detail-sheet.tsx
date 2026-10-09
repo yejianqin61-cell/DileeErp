@@ -50,6 +50,15 @@ type PlanItem = {
   amount?: string | null;
   /** 这一行单价的币种：未下单是默认人民币，下单时按供应商组写回（见后端模型注释）。 */
   currency?: string | null;
+  /**
+   * BOM 表上这个物料的**参考单价**（2026-10-08 第二轮）。
+   *
+   * 为什么计划详情要下发它：计划是**建立时的快照**，BOM 之后填的价不会回头进已有计划 ——
+   * 于是"先建计划、后去 BOM 填价"的人永远看到 0 价、下不了单（用户原话：「为什么BOM表保存了单价之后，
+   * 采购计划显示不了单价，下单不了」）。它只用于**单价还是 0 的未下单行**的预填，落库仍只在保存计划时。
+   */
+  bomReferenceUnitPrice?: string | null;
+  bomReferenceCurrency?: string | null;
   bomItemId?: string | null;
   supplierId?: string | null;
   supplierName?: string | null;
@@ -140,26 +149,49 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
       const result = await apiGet<PlanDetail>(`/purchase-plans/${planId}`);
       const detail = result.data;
       setPlan(detail);
-      setRows(detail.items.map((item) => ({
-        id: item.id,
-        materialId: item.materialId,
-        materialName: item.materialName,
-        materialCode: item.materialCode ?? "",
-        model: item.model ?? "",
-        quantity: trimQuantity(item.quantity),
-        unitId: item.unitId,
-        unitName: item.unitName ?? "",
-        unitPrice: trimQuantity(item.unitPrice),
-        currency: item.currency ?? DEFAULT_PLAN_CURRENCY,
-        supplierId: item.supplierId ?? "",
-        ordered: Boolean(item.purchaseOrderItemId),
-        purchaseOrderNo: item.purchaseOrderNo ?? null,
-        bomItemId: item.bomItemId ?? null,
-        expectedDate: toDateInput(item.expectedDate),
-        supplierAddress: item.supplierAddress ?? null,
-        supplierContact: item.supplierContact ?? null,
-        extensionData: item.extensionData ?? null,
-      })));
+      /**
+       * BOM 参考单价回填（2026-10-08 第二轮）。
+       *
+       * 背景：计划的明细是**建立时的快照**（口径 12：BOM 后来加物料也不自动插行），所以报价后来才填进
+       * BOM 的话，已有计划永远停在 0 价 —— 而 0 价不能下单。用户就是这么被卡住的。
+       *
+       * 取三条同时成立才预填：
+       *   ① **未下单**（已下单的行在服务端被硬锁，预填等于制造一次注定被拒的保存）；
+       *   ② **单价还是 0**（谈过价的行绝不动：那才是"跟供应商谈定了什么"）；
+       *   ③ **BOM 上确实有 > 0 的参考价**。
+       * 预填只写进**界面状态**（`priceFromBom` 标记出来源，用户一改就清掉），
+       * **点「保存计划」才落库** —— 与"不猜价格"的口径不冲突：这个价是采购员自己填在 BOM 上的。
+       */
+      setRows(detail.items.map((item) => {
+        const ordered = Boolean(item.purchaseOrderItemId);
+        const unitPrice = trimQuantity(item.unitPrice);
+        const reference = item.bomReferenceUnitPrice ? trimQuantity(item.bomReferenceUnitPrice) : "";
+        const fromBom = !ordered && Number(unitPrice) === 0 && Number(reference) > 0;
+        return {
+          id: item.id,
+          materialId: item.materialId,
+          materialName: item.materialName,
+          materialCode: item.materialCode ?? "",
+          model: item.model ?? "",
+          quantity: trimQuantity(item.quantity),
+          unitId: item.unitId,
+          unitName: item.unitName ?? "",
+          unitPrice: fromBom ? reference : unitPrice,
+          // 币种跟着这一格里的价走：预填的是 BOM 上那笔价（可能是美元），留着人民币会算错合计。
+          currency: fromBom ? (item.bomReferenceCurrency ?? DEFAULT_PLAN_CURRENCY) : item.currency ?? DEFAULT_PLAN_CURRENCY,
+          priceFromBom: fromBom,
+          bomReferenceUnitPrice: item.bomReferenceUnitPrice ?? null,
+          bomReferenceCurrency: item.bomReferenceCurrency ?? null,
+          supplierId: item.supplierId ?? "",
+          ordered,
+          purchaseOrderNo: item.purchaseOrderNo ?? null,
+          bomItemId: item.bomItemId ?? null,
+          expectedDate: toDateInput(item.expectedDate),
+          supplierAddress: item.supplierAddress ?? null,
+          supplierContact: item.supplierContact ?? null,
+          extensionData: item.extensionData ?? null,
+        };
+      }));
       // 默认全选**未下单**的行：采购员多数时候就是"都买"，少数例外才需要取消勾选。
       // 已下单的行不参与（它们已经落在某张单上了）。
       setSelected(detail.items.flatMap((item, index) => (item.purchaseOrderItemId ? [] : [index])));
@@ -253,6 +285,14 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
   }
 
   const outsideBomRows = rows.filter((row) => !row.bomItemId);
+  /**
+   * 从 BOM 参考单价预填过来、**还没保存**的行。
+   *
+   * 面板上必须说清这件事：单价本来都是 0，一打开计划却有了数，不说来源就会被当成"供应商报价"。
+   * （用户 2026-10-08 的原话就是「BOM表保存了单价之后，采购计划显示不了单价，下单不了」——
+   * 这条说明就是把那个疑问的答案摆在页面上。）
+   */
+  const fromBomRows = rows.filter((row) => row.priceFromBom);
   const needsOutsideBomReason = outsideBomRows.length > 0;
   const selectedRows = rows.filter((_, index) => selected.includes(index));
   const groups = useMemo(() => groupPlanRows(selectedRows, supplierNameOf), [selectedRows, supplierNameOf]);
@@ -316,7 +356,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     // 财务收到一张没法付的单，而全链路不报错。用户原话：「不然财务没法付钱」。
     const unpriced = selectedRows.map((row, index) => ({ row, index })).filter(({ row }) => !(Number(row.unitPrice) > 0));
     if (unpriced.length) {
-      setError(`第 ${unpriced.map(({ index }) => index + 1).join("、")} 行还没填单价，不能下单：应付金额就是按「数量 × 单价」算出来的`);
+      setError(`第 ${unpriced.map(({ index }) => index + 1).join("、")} 行还没填单价，不能下单：应付金额就是按「数量 × 单价」算出来的。可以在 BOM 表上给这些物料填「参考单价」，重新打开本计划时会自动带过来；也可以直接在这一格里手填。`);
       return;
     }
     setBusy("order");
@@ -417,6 +457,16 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             </label>
           ) : null}
 
+          {/* BOM 参考单价预填的说明（2026-10-08 第二轮）：单价本来都是 0，一打开却有了数，
+              不说来源就会被当成"供应商报价"。 */}
+          {fromBomRows.length > 0 ? (
+            <p className="panel-note" data-testid="plan-price-from-bom">
+              {fromBomRows.length} 行的单价是按 <strong>BOM 表上的「参考单价」</strong>预填的（那几格带浅黄底）：
+              它是"这个部件通常多少钱"的参考、不是供应商报价；<strong>保存计划后才会写进计划</strong>，逐行都能改。
+              还空着的行说明 BOM 上也没填参考价 —— 请直接手填，或去 BOM 表补上参考单价后再打开本计划。
+            </p>
+          ) : null}
+
           {/* 14 列：列宽全部由 `.plan-col-*` 显式指定（和 = 100%，`table-layout: fixed`），
               所以**不会有横向滚动条**。只读文本列加 `plan-cell-ellipsis`，hover 用原生 title 看全文；
               编辑格不加（对输入框做省略没有意义）。 */}
@@ -462,7 +512,18 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                         <SelectContent>{unitOptionsOf(row).map((option) => <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>)}</SelectContent>
                       </Select>
                     </td>
-                    <td className="plan-col-price"><Input type="number" min="0" step="0.0001" value={row.unitPrice} disabled={row.ordered} title={row.ordered ? lockedHint : undefined} onChange={(event) => updateRow(index, { unitPrice: event.target.value })} /></td>
+                    {/* 单价格：`priceFromBom` 的行是"从 BOM 参考单价预填来的"——
+                        用浅黄底 + title 标出来源（这一格只有 6% 宽，塞不下文字标签，见 globals.css）。
+                        用户一改这一格就清掉标记：那一格从此是他填的。 */}
+                    <td className={`plan-col-price${row.priceFromBom ? " plan-price-from-bom" : ""}`}>
+                      <Input
+                        type="number" min="0" step="0.0001" value={row.unitPrice} disabled={row.ordered}
+                        title={row.ordered ? lockedHint : row.priceFromBom ? `按 BOM 表的「参考单价」预填：${row.bomReferenceUnitPrice ?? ""} ${row.bomReferenceCurrency ?? DEFAULT_PLAN_CURRENCY}（还没保存；保存计划后生效，可改）` : undefined}
+                        data-testid={`plan-price-${index}`}
+                        aria-label={`第 ${index + 1} 行单价`}
+                        onChange={(event) => updateRow(index, { unitPrice: event.target.value, priceFromBom: false })}
+                      />
+                    </td>
                     {/* 行总价：**只读派生**（数量 × 单价），本地即时算 —— 改一次数量或单价就能看见钱变了。
                         单价为 0 的行标红：那些行**不能下单**（应付金额 = 入库数量 × 单价，0 就是 0 元应付），
                         这一格是采购员发现"漏填报价"最快的入口。 */}

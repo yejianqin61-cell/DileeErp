@@ -343,6 +343,106 @@ describe("采购计划明细：行总价与按币种分列的计划合计（用�
   });
 });
 
+describe("采购计划明细：按 BOM 参考单价回填（用户 2026-10-08 第二轮）", () => {
+  /**
+   * 用户原话：「为什么BOM表保存了单价之后，采购计划显示不了单价，下单不了」。
+   *
+   * 根因：计划的明细是**建立时的快照**，从 BOM 预填单价只发生在"新建计划那一刻"——
+   * 先建计划、后去 BOM 填价的人，计划永远停在 0 价，而 0 价不能下单。
+   *
+   * 修法：详情接口把**当前 BOM 的参考单价**随行下发，前端对「未下单 + 单价还是 0 + BOM 上有 > 0 的价」
+   * 的行预填；只写进界面状态（`priceFromBom` 标出来源 + 面板说明），**点保存才落库**。
+   * 谈过价的行、已下单的行一律不动 —— 那才是"跟供应商谈定了什么"。
+   */
+  it("未下单 + 单价 0 + BOM 上有参考价 → 自动带回那一格（含币种），并说明来源", async () => {
+    renderSheet({
+      items: [planItem({ unitPrice: "0.0000", bomReferenceUnitPrice: "12.5000", bomReferenceCurrency: "USD" })],
+    });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    const price = screen.getByTestId("plan-price-0");
+    expect(price).toHaveValue(12.5);
+    expect(price.closest("td")?.className).toContain("plan-price-from-bom");
+    expect(price.getAttribute("title")).toContain("BOM");
+    // 币种跟着这一格里的价走：预填的是美元价，留着人民币会让合计说谎
+    expect(screen.getByTestId("plan-total").textContent).toContain("USD 62.50");
+    // 页面上必须说清来源与"还没保存"，否则会被当成供应商报价
+    const note = screen.getByTestId("plan-price-from-bom");
+    expect(note.textContent).toContain("1 行");
+    expect(note.textContent).toContain("参考单价");
+    expect(note.textContent).toContain("保存计划后才会写进计划");
+  });
+
+  it("不改动谈过价的行（单价 > 0 时 BOM 参考价只是陪跑，不覆盖）", async () => {
+    renderSheet({ items: [planItem({ unitPrice: "3.5000", bomReferenceUnitPrice: "12.5000", bomReferenceCurrency: "USD" })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    expect(screen.getByTestId("plan-price-0")).toHaveValue(3.5);
+    expect(screen.getByTestId("plan-price-0").closest("td")?.className).not.toContain("plan-price-from-bom");
+    expect(screen.queryByTestId("plan-price-from-bom")).toBeNull();
+  });
+
+  it("已下单的行不预填（服务端把那些行硬锁，预填等于制造一次注定被拒的保存）", async () => {
+    renderSheet({
+      items: [planItem({ unitPrice: "0.0000", purchaseOrderItemId: "poi-1", purchaseOrderNo: "PO-1", bomReferenceUnitPrice: "12.5000", bomReferenceCurrency: "USD" })],
+    });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    expect(screen.getByTestId("plan-price-0")).toHaveValue(0);
+    expect(screen.queryByTestId("plan-price-from-bom")).toBeNull();
+  });
+
+  it("BOM 上没填参考价（或填了 0）→ 不预填、也不出说明", async () => {
+    renderSheet({ items: [planItem({ unitPrice: "0.0000", bomReferenceUnitPrice: null, bomReferenceCurrency: null })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    expect(screen.getByTestId("plan-price-0")).toHaveValue(0);
+    expect(screen.queryByTestId("plan-price-from-bom")).toBeNull();
+  });
+
+  it("用户一改那一格，标记就消失（这一格从此是他填的），保存时发出去的就是他改的值", async () => {
+    const calls = renderSheet({ items: [planItem({ unitPrice: "0.0000", supplierId: "s-1", bomReferenceUnitPrice: "12.5000", bomReferenceCurrency: "USD" })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    const price = screen.getByTestId("plan-price-0");
+    await userEvent.clear(price);
+    await userEvent.type(price, "9");
+    expect(price.closest("td")?.className).not.toContain("plan-price-from-bom");
+
+    await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    const body = JSON.parse(String(calls.find((call) => call.method === "PATCH")?.body)) as { items: Array<Record<string, unknown>> };
+    expect(body.items[0].unit_price).toBe("9");
+  });
+
+  it("预填之后可以直接下单：保存带过去的就是 BOM 参考单价（0 价那道路障不再拦它）", async () => {
+    const calls = renderSheet({
+      items: [planItem({ unitPrice: "0.0000", supplierId: "s-1", bomReferenceUnitPrice: "12.5000", bomReferenceCurrency: "CNY" })],
+    });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    await userEvent.click(screen.getByRole("button", { name: "保存计划" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    const patched = JSON.parse(String(calls.find((call) => call.method === "PATCH")?.body)) as { items: Array<Record<string, unknown>> };
+    expect(patched.items[0].unit_price).toBe("12.5");
+
+    await userEvent.click(screen.getByTestId("plan-order"));
+    expect(screen.queryByTestId("plan-error")).toBeNull();
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(true));
+  });
+
+  it("0 价被拦时的提示直接把出路写出来（BOM 补参考单价，或手填）", async () => {
+    renderSheet({ items: [planItem({ unitPrice: "0.0000", supplierId: "s-1", bomReferenceUnitPrice: null })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    await userEvent.click(screen.getByTestId("plan-order"));
+    const message = screen.getByTestId("plan-error").textContent ?? "";
+    expect(message).toContain("第 1 行");
+    expect(message).toContain("参考单价");
+    expect(message).toContain("手填");
+  });
+});
+
 describe("采购计划列表：新建与深链（T09）", () => {
   const stubList = (candidates: Array<Record<string, unknown>> = []) => stubApi((url) => {
     if (url.includes("/purchase-plans/candidates")) return apiOk(candidates);

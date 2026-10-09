@@ -48,3 +48,16 @@ test("每一列都有显式宽度、且总和正好 100%（少了或多了都会
 test("那张表确实挂着 .purchase-plan-sheet（改了类名这些 CSS 会静默失效）", () => {
   assert.match(sheet, /className="material-issue-sheet purchase-plan-sheet"/);
 });
+
+test("按 BOM 参考单价预填的那一格有可见标记（浅黄底；文字说明在 title 与面板上）", () => {
+  // 用户 2026-10-08 第二轮：「为什么BOM表保存了单价之后，采购计划显示不了单价，下单不了」——
+  // 单价本来都是 0，一打开却有了数，**不标出来源就会被当成供应商报价**。
+  // 这一列只有 6% 宽、塞不下文字标签，所以可见标记只有底色，文字放在 input 的 title 与表上方的面板说明里。
+  assert.match(
+    css,
+    /\.purchase-plan-sheet\.material-issue-sheet \.data-table \.plan-price-from-bom \.ui-input \{ background: #fff8e8; border-color: #f0d69b; \}/,
+    "少了这条，预填来的价与手填的价在屏幕上完全一样（来源就看不见了）",
+  );
+  assert.match(sheet, /plan-price-from-bom/);
+  assert.match(sheet, /data-testid="plan-price-from-bom"/, "面板上那句说明也要在（颜色标记之外的文字说明）");
+});

@@ -40,6 +40,18 @@ export type PlanDraftRow = {
   supplierAddress?: string | null;
   supplierContact?: string | null;
   extensionData?: Record<string, unknown> | null;
+  /**
+   * BOM 表上这一行物料的**参考单价**（`GET /purchase-plans/:id` 随行下发；服务端按**物料**匹配 ——
+   * BOM 存一次行 ID 全换，不能按行 ID）。
+   *
+   * 用途只有一个：**单价还是 0 的未下单行，让计划也能拿到 BOM 上那个价**（见 `plan-detail-sheet.tsx`
+   * 的 `load()` 与面板说明）。它是"这个部件通常多少钱"的参考，**不是供应商报价**；
+   * 计划行的单价仍是唯一真源（下单时写进采购明细，应付 = 入库量 × 采购明细单价）。
+   */
+  bomReferenceUnitPrice?: string | null;
+  bomReferenceCurrency?: string | null;
+  /** 当前这一格的价是**从 BOM 参考单价预填来的**（用户一改就清掉，用来标出来源）。 */
+  priceFromBom?: boolean;
 };
 
 export type PlanGroup = { supplierId: string; supplierName: string; rows: PlanDraftRow[] };

@@ -362,7 +362,21 @@ export class PurchasePlansService {
     // 口径 12 的提示：BOM 后来新增了物料就标出来，但**不自动插行**（计划可能已经部分下单，
     // 系统自动把"已下单"的行改成别的物料 = 数据损坏）。按**物料**比，不按 BOM 行 ID ——
     // `BomsService.replaceItems` 存一次 BOM 就会把全部行 ID 换掉。
-    const bomItems = plan.bom && !plan.bom.deletedAt ? await this.prisma.bomItem.findMany({ where: { bomId: plan.bomId, deletedAt: null }, select: { materialId: true } }) : [];
+    //
+    // 同一次查询顺带把 BOM 行的**参考单价**读回来（2026-10-08 第二轮，用户：「为什么BOM表保存了单价之后，
+    // 采购计划显示不了单价，下单不了」）：计划是**建立时的快照**，BOM 之后填的价不会回头进已有计划，
+    // 于是"先有计划、后填价"的人永远卡在 0 价不能下单。这里把**当前 BOM 的参考单价**随行下发（只读），
+    // 由前端对「未下单 + 单价还是 0」的行做预填 —— 计划行单价仍是唯一真源，落库只在用户保存计划时发生。
+    // 已下单的行不下发预填意图（前端也会跳过：那些行在服务端被硬锁）。
+    const bomItems = plan.bom && !plan.bom.deletedAt
+      ? await this.prisma.bomItem.findMany({ where: { bomId: plan.bomId, deletedAt: null }, select: { materialId: true, referenceUnitPrice: true, referenceCurrency: true } })
+      : [];
+    // 同一物料在 BOM 上出现多次时取**第一个有参考价**的那一行（BOM 允许同一物料多行，价通常一致）。
+    const referenceByMaterial = new Map<string, { unitPrice: string; currency: string }>();
+    for (const row of bomItems) {
+      if (!row.referenceUnitPrice || !row.referenceUnitPrice.gt(0) || referenceByMaterial.has(row.materialId)) continue;
+      referenceByMaterial.set(row.materialId, { unitPrice: row.referenceUnitPrice.toFixed(4), currency: row.referenceCurrency || DEFAULT_PLAN_CURRENCY });
+    }
     return {
       ...this.summaryOf(plan as unknown as PlanSummarySource),
       deliveryDate: plan.salesOrder?.deliveryDate ?? null,
@@ -383,6 +397,9 @@ export class PurchasePlansService {
         amount: planLineAmount(item.quantity, item.unitPrice).toFixed(4),
         /** 币种在下单时按供应商组写回，见模型注释；未下单的行是默认人民币。 */
         currency: item.currency ?? DEFAULT_PLAN_CURRENCY,
+        /** BOM 表上这个物料的参考单价（只读；单价为 0 的未下单行用它预填，见上面注释）。 */
+        bomReferenceUnitPrice: referenceByMaterial.get(item.materialId)?.unitPrice ?? null,
+        bomReferenceCurrency: referenceByMaterial.get(item.materialId)?.currency ?? null,
         bomItemId: item.bomItemId,
         supplierId: item.supplierId,
         // 供应商停用/软删之后仍要用快照显示"当时记的是哪一家"：否则这一格看起来是空的，

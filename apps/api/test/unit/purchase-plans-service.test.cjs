@@ -58,7 +58,7 @@ const bomRow = (id, overrides = {}) => ({
  * 「只用已确认销售单的 BOM」「排除已有计划的 BOM」「排除已软删的计划」这几条查询口径，
  * 一个恒返回全部数据的桩会把断言变成永远通过。
  */
-function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], purchaseOrders = [], missingBom = false } = {}) {
+function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], purchaseOrders = [], missingBom = false, bomDeleted = false } = {}) {
   const units = [
     { id: "unit-pcs", name: "个", isActive: true, deletedAt: null },
     { id: "unit-m", name: "米", isActive: true, deletedAt: null },
@@ -90,7 +90,8 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
   const hydratePlan = (plan) => ({
     ...plan,
     salesOrder: salesOrders.get(plan.orderNo) ?? null,
-    bom: { id: plan.bomId, version: plan.bomVersion ?? 1, status: "draft", deletedAt: null },
+    // `bomDeleted`：计划可以比 BOM 活得久（BOM 软删后计划独立存活，页面上有告警条）。
+    bom: { id: plan.bomId, version: plan.bomVersion ?? 1, status: "draft", deletedAt: bomDeleted ? new Date("2026-10-01T00:00:00Z") : null },
     items: planItems.filter((item) => item.planId === plan.id && item.deletedAt === null).map(hydrateItem),
   });
 
@@ -992,6 +993,60 @@ test("详情：每行都带上币种，老行没有值时兜底人民币（列�
 
   assert.equal(plan.items[0].currency, "CNY");
   assert.equal(plan.items[0].amount, "17.5000");
+});
+
+/**
+ * 已有计划拿到 BOM 参考单价的路径（2026-10-08 第二轮）。
+ *
+ * 用户原话：「为什么BOM表保存了单价之后，采购计划显示不了单价，下单不了」——
+ * 根因是计划为**建立时的快照**，BOM 之后填的价不会回头进已有计划。修法：详情把**当前 BOM 的参考单价**
+ * 随行下发（只读），由前端对「未下单 + 单价还是 0」的行预填；落库仍只在保存计划时。
+ * 这里钉的是取数侧：按**物料**匹配（BOM 存一次行 ID 全换）、没填/为 0/不在 BOM 上时给 null。
+ */
+test("详情：随行下发 BOM 上的参考单价（按物料匹配；没填、为 0、物料不在 BOM 上都给 null）", async () => {
+  const { service } = makeService({
+    plans: [{ ...thePlan }],
+    planItems: [
+      { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", quantity: new Prisma.Decimal("5"), unitPrice: new Prisma.Decimal("0"), deletedAt: null, purchaseOrderItemId: null, bomItemId: "bi-OLD" },
+      { id: "i-2", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", quantity: new Prisma.Decimal("2"), unitPrice: new Prisma.Decimal("0"), deletedAt: null, purchaseOrderItemId: null, bomItemId: "bi-2" },
+      { id: "i-3", planId: "plan-1", materialId: "mat-3", unitId: "unit-pcs", quantity: new Prisma.Decimal("1"), unitPrice: new Prisma.Decimal("0"), deletedAt: null, purchaseOrderItemId: null, bomItemId: null },
+      { id: "i-4", planId: "plan-1", materialId: "mat-4", unitId: "unit-pcs", quantity: new Prisma.Decimal("1"), unitPrice: new Prisma.Decimal("0"), deletedAt: null, purchaseOrderItemId: null, bomItemId: null },
+    ],
+    bomItems: [
+      // 计划里记的是上一版 BOM 的行 ID（bi-OLD）：必须按**物料**找回当前那一行。
+      bomRow("bi-new-1", { materialId: "mat-1", referenceUnitPrice: new Prisma.Decimal("12.5000"), referenceCurrency: "USD" }),
+      // 填了 0 = 还没谈价：与没填一样，不下发（前端据此跳过预填）。
+      bomRow("bi-2", { materialId: "mat-2", referenceUnitPrice: new Prisma.Decimal("0.0000"), referenceCurrency: "USD" }),
+      // 有价但没填币种：兜底人民币（与计划行同一套默认值）。
+      bomRow("bi-3", { materialId: "mat-3", referenceUnitPrice: new Prisma.Decimal("7.0000") }),
+      // mat-4 不在 BOM 上（补料/替代料）：没有参考价。
+    ],
+  });
+
+  const plan = await service.get("plan-1");
+  const byMaterial = new Map(plan.items.map((item) => [item.materialId, item]));
+
+  assert.equal(byMaterial.get("mat-1").bomReferenceUnitPrice, "12.5000", "按物料匹配：BOM 存一次行 ID 就全换了");
+  assert.equal(byMaterial.get("mat-1").bomReferenceCurrency, "USD");
+  assert.equal(byMaterial.get("mat-2").bomReferenceUnitPrice, null, "参考价 0 = 还没谈价");
+  assert.equal(byMaterial.get("mat-3").bomReferenceUnitPrice, "7.0000");
+  assert.equal(byMaterial.get("mat-3").bomReferenceCurrency, "CNY", "没填币种时兜底人民币");
+  assert.equal(byMaterial.get("mat-4").bomReferenceUnitPrice, null, "不在 BOM 上的行没有参考价");
+  // 只读：它不改变计划行自己的单价（唯一真源仍是 unitPrice，落库只在保存计划时）。
+  assert.equal(byMaterial.get("mat-1").unitPrice, "0.0000");
+});
+
+test("详情：BOM 被软删时不下发参考单价（那份 BOM 已经不是当前事实）", async () => {
+  const { service } = makeService({
+    plans: [{ ...thePlan }],
+    planItems: [{ id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", quantity: new Prisma.Decimal("5"), unitPrice: new Prisma.Decimal("0"), deletedAt: null, purchaseOrderItemId: null, bomItemId: "bi-1" }],
+    bomItems: [bomRow("bi-1", { materialId: "mat-1", referenceUnitPrice: new Prisma.Decimal("12.5000"), referenceCurrency: "USD" })],
+    bomDeleted: true,
+  });
+
+  const plan = await service.get("plan-1");
+  assert.equal(plan.items[0].bomReferenceUnitPrice, null);
+  assert.equal(plan.bomDeleted, true, "前提：这一份计划确实挂在一张已删的 BOM 上");
 });
 
 test("收束下单：按供应商组选的币种**写回**这一组的每一行（一次输入、两处记录）", async () => {

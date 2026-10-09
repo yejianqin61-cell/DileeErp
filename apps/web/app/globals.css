@@ -545,6 +545,10 @@ button { cursor: pointer; }
 .purchase-plan-sheet.material-issue-sheet .data-table .ui-input,
 .purchase-plan-sheet.material-issue-sheet .data-table .ui-select-trigger { width: 100%; min-width: 0; height: 34px; padding: 0 6px; font-size: 12px; }
 .purchase-plan-sheet.material-issue-sheet .data-table .ui-select-trigger > span { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「单价是从 BOM 参考单价预填来的」那一格（2026-10-08 第二轮）：浅黄底标出来源。
+   这一列只有 6% 宽、塞不下文字标签，所以完整说明放在 input 的 title 与表上方的面板说明里
+   （`.plan-price-from-bom` 选择器叠到 (0,5,0)，压过上面那条控件样式）。 */
+.purchase-plan-sheet.material-issue-sheet .data-table .plan-price-from-bom .ui-input { background: #fff8e8; border-color: #f0d69b; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-select input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-action .ui-button { padding: 0; }
 /* 计划列表（只读汇总）也是 13 列以内，同样不横滑；列宽交给 DataTable 的 meta.width。 */
