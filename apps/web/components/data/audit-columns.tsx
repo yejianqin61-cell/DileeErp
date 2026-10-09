@@ -34,12 +34,22 @@ export type AuditRow = {
 const firstInstant = (...values: Instant[]): Instant => values.find((value) => value !== null && value !== undefined && value !== "") ?? null;
 const textOrDash = (value: string | null | undefined): string => (value && value.trim() ? value : "—");
 
-/** 单元格内容：姓名 + 次行小字时间。两行合一列，避免财务/生产那些本来就很宽的表再横向滚动。 */
+/**
+ * 单元格内容：姓名 + 次行小字时间。两行合一列，避免财务/生产那些本来就很宽的表再横向滚动。
+ *
+ * 容器上带 `title`（2026-10-08 加）：这两格是**两段**文字，窄列里会被列宽裁掉一部分，
+ * 而 DataTable 的省略 title 给不出来 —— 这两列用的是 `id` + 自定义 `cell`，没有可回退的值
+ * （`ellipsisTitle` 只认字符串/数字，见 data-table.tsx），于是被裁掉的「姓名 / 时间」原本没有
+ * 任何地方能看到。这里补在容器上：文案就是这两段文字本身，不是把按钮文案拼成一句话。
+ * （唯一使用者：物料清单页把这两列压到 8%，同年的时间 58.7px 放得下、跨年的 86.9px 会被裁，
+ * 悬停能看到完整的「姓名 + 时间」。）
+ */
 export function auditActorCell(name: string | null | undefined, at: Instant): ReactNode {
   const time = formatBeijingShort(at);
+  const actor = textOrDash(name);
   return (
-    <div className="audit-actor-cell">
-      <span className="audit-actor-name">{textOrDash(name)}</span>
+    <div className="audit-actor-cell" title={time ? `${actor} ${time}` : actor}>
+      <span className="audit-actor-name">{actor}</span>
       {time ? <span className="audit-actor-time">{time}</span> : null}
     </div>
   );

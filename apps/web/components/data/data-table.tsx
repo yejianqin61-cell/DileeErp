@@ -19,7 +19,13 @@ declare module "@tanstack/react-table" {
   interface ColumnMeta<TData extends RowData, TValue> {
     /** 固定列宽（CSS 长度，如 `"18%"`）。**只要有一列给了宽度，整张表就切成 `table-layout: fixed`**（见下）。 */
     width?: string;
-    /** 内容超宽时省略号截断，鼠标悬停用原生 `title` 展示全文（用户 2026-09-20 第 6 条）。 */
+    /**
+     * 内容超宽时省略号截断，鼠标悬停用原生 `title` 展示全文（用户 2026-09-20 第 6 条）。
+     *
+     * 「写得出来的文本」两种列都算：显式 `cell` 返回字符串的列，以及只写 `accessorKey` 的列
+     * （后者由 `ellipsisTitle` 从**这一格的值**里取，见那里的注释）。
+     * 装的若是按钮 / 缩略图这类 ReactNode，本开关不会给出 title —— 那类格子自己决定要不要提示。
+     */
     ellipsis?: boolean;
   }
 }
@@ -38,19 +44,36 @@ function metaOf(meta: unknown): { width?: string; ellipsis?: boolean } {
 }
 
 /**
- * 悬停提示的文本。
+ * 把一格的内容变成能给 `title` 的字符串：**只认字符串与数字**。
  *
- * 只对**字符串/数字**单元格给 `title`：这两种是绝大多数文本列的实际类型，而且被截断的正是它们。
- * ReactNode 单元格（操作按钮之类）不给 —— 把按钮的文案拼成一句「确认应付编辑回退」当提示，
- * 比没有提示更让人困惑。
- *
- * 同时刻意**不**用整行的 `rowTitle`（「双击查看详情」）兜底：那是行的说明，
- * 而用户 hover 一列是想看**这一格**被省略掉的全文。
+ * 为什么只认这两种：它们才是「被省略掉的文本」。ReactNode —— 按钮、缩略图、审计格那种
+ * 「姓名 + 时间」两行结构 —— 拼成一句提示比没有更让人困惑；那类格子要提示就自己在容器上加
+ * `title`（见 audit-columns.tsx 的 `auditActorCell`）。
  */
-function ellipsisTitle(value: ReactNode): string | undefined {
+function titleText(value: unknown): string | undefined {
   if (typeof value === "string") return value || undefined;
   if (typeof value === "number") return String(value);
   return undefined;
+}
+
+/**
+ * 悬停提示的文本，两层，顺序不能反：
+ *   ① **渲染结果**是字符串 —— 显式 `cell` 直接返回文字的列；
+ *   ② **这一格的值**（字符串/数字）—— 只写 `accessorKey` / `accessorFn` 的列。
+ *
+ * 第二层是 2026-10-08 补的（用户：「物料清单太宽了…超过就省略显示，鼠标hover才显示所有文字」）。
+ * 在这之前只有第一层，而 TanStack 对没写 `cell` 的列用的是默认 cell（`props => props.renderValue()`），
+ * `flexRender` 见到函数就 `createElement` —— `typeof rendered === "string"` 永不成立。
+ * 表现是：省略号正常出现、鼠标悬停却一片空白，**而且看不出来是坏的**
+ * （物料清单页的「物料编码 / 物料名称」第一次上线正是这个样子）。
+ *
+ * ⚠️ 第二层的前提是**这一列有值**：`accessorKey` / `accessorFn` 都取得到；
+ * 只有 `id` + 自定义 `cell`（没写 accessor）的列取不到 —— 那种列要么改成 `accessorFn`
+ * 把屏幕上显示的那串字作为值（物料清单页的「默认单位」就是），要么像审计格那样
+ * 自己在容器上写 title（components/data/audit-columns.tsx）。
+ */
+function ellipsisTitle(rendered: ReactNode, value: unknown): string | undefined {
+  return titleText(rendered) ?? titleText(value);
 }
 
 export function DataTable<T>({ columns, data, loading = false, empty, pageSize = 20, onRowDoubleClick, rowTitle, tableClassName }: { columns: ColumnDef<T, any>[]; data: T[]; loading?: boolean; empty?: ReactNode; pageSize?: number; onRowDoubleClick?: (row: T) => void; rowTitle?: string; tableClassName?: string }) {
@@ -65,7 +88,7 @@ export function DataTable<T>({ columns, data, loading = false, empty, pageSize =
   return <><div className="table-wrap" data-testid="data-table"><Table className={className}><TableHeader>{table.getHeaderGroups().map(group => <TableRow key={group.id}>{group.headers.map(header => <TableHead key={header.id} style={metaOf(header.column.columnDef.meta).width ? { width: metaOf(header.column.columnDef.meta).width } : undefined}>{header.isPlaceholder ? null : text(flexRender(header.column.columnDef.header, header.getContext()))}</TableHead>)}</TableRow>)}</TableHeader><TableBody>{table.getRowModel().rows.map(row => <TableRow key={row.id} data-testid="data-table-row" title={rowTitle} onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row.original) : undefined} className={onRowDoubleClick ? "table-row-clickable" : undefined}>{row.getVisibleCells().map(cell => {
     const meta = metaOf(cell.column.columnDef.meta);
     const rendered = text(flexRender(cell.column.columnDef.cell, cell.getContext()));
-    return <TableCell key={cell.id} style={meta.width ? { width: meta.width } : undefined} className={meta.ellipsis ? "cell-ellipsis" : undefined} title={meta.ellipsis ? ellipsisTitle(rendered) : undefined}>{rendered}</TableCell>;
+    return <TableCell key={cell.id} style={meta.width ? { width: meta.width } : undefined} className={meta.ellipsis ? "cell-ellipsis" : undefined} title={meta.ellipsis ? ellipsisTitle(rendered, cell.getValue()) : undefined}>{rendered}</TableCell>;
   })}</TableRow>)}</TableBody></Table></div>{table.getPageCount() > 1 && <div className="table-pagination"><span>第 {table.getState().pagination.pageIndex + 1} / {table.getPageCount()} 页，共 {data.length} 条</span><div><Button size="sm" variant="secondary" disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>上一页</Button><Button size="sm" variant="secondary" disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>下一页</Button></div></div>}</>;
 }
 

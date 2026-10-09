@@ -782,3 +782,51 @@ button { cursor: pointer; }
 .bom-table .bom-col-price .bom-price-cell .ui-select-trigger { flex: 0 0 64px; padding: 0 6px; font-size: 12px; }
 .bom-table .bom-col-price .bom-price-cell .ui-select-trigger > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bom-table .bom-col-price .bom-price-cell .ui-input { flex: 1 1 auto; min-width: 0; }
+
+/* 物料清单页（采购 → 物料清单）的固定列宽。用户 2026-10-08：
+   「物料清单太宽了，表格所有列宽限定长度，超过就省略显示，鼠标hover才显示所有文字。尽量保证所有column一次性展示。」
+
+   这张表 10 列：物料编码 / 物料名称 / 规格型号 / 颜色 / 默认单位 / 图片 / 状态 / 创建人 / 最后修改人 / 操作。
+   列宽的唯一来源是页面上的 `COLUMN_WIDTH`（app/procurement/materials/page.tsx，十列总和正好 100%）：
+   DataTable 见到 `meta.width` 就给 `<table>` 加上 `data-table-fixed`，于是 2026-09-27 起通用的
+   「固定布局 + 超长省略（`cell-ellipsis`）+ hover 看全文（title）」那三条接手（见上面它们的注释）。
+   这里只补两件通用规则管不到的事：
+
+   ① 紧凑：默认 `.ui-table-cell` 是 `padding: 12px`，十列光内边距就吃掉 240px。
+      收到 8px、字号 13 → 12px 后，每列内容盒多出 8px（十列合计 ≈ 80px）。实测这一档正好决定
+      物料编码看不看得全：自动编码 17 个字符（`MAT-20261008-0012`）在 1440 屏（列宽 133px、
+      内容盒 117px）整串看得见，1366 屏（124px / 108px）还要省略最后两个字符（有 title 可悬停）。
+      与财务页、采购计划页同一种取舍：列多的表先用内边距换宽度。
+      （表头同样 nowrap + `overflow: hidden`，所以每列也要装得下列名：最长的是「最后修改人」= 60px，
+      本页给到 8% → 1366 屏 82.7px、内容盒 66.7px；最窄的「状态」列 5% → 51.7px、内容盒 35.7px。）
+
+   ② 「创建人 / 最后修改人」两列是**两段**文字（姓名 + 时间）。`auditActorCell`（components/data/audit-columns.tsx）
+      从 2026-09-16 起的注释就写着「姓名 + 次行小字时间」，但全站一直没写对应的 CSS ——
+      实际渲染成一行：「张三 10-08 15:30」实测 88.1px（跨年的「2025-12-31 09:05」要 118.8px），
+      比这两列的内容盒（1366 屏 66.7px）宽，于是被 `overflow: hidden` 裁掉；而且**裁掉的部分没有 title
+      可看** —— 这两列用的是 `id` + 自定义 `cell`，没有可回退的值，DataTable 的省略 title 算不出来
+      （`ellipsisTitle` 只认字符串/数字，见 data-table.tsx），所以容器自己带 title（同一次改动）。
+      这里把注释里的意图补上（两行 + 时间小字）：同年那行的宽度需求 88.1 → **58.7px**、跨年 118.8 → 86.9px。
+      于是同年行整格看得全，跨年行的尾巴仍会被裁（86.9 > 66.7）—— 靠同一次改动给审计格容器加的 `title`
+      兜住（悬停显示完整「姓名 + 时间」）。只作用于本页：类挂在 `<table>` 上，其它页面的审计格一个字都没变。
+
+   实测（真实 Chromium + 本文件 + 这张表的真实 DOM，改前的 DOM 用同一份 CSS 但按改前的类名与列定义还原；
+   表可用宽度 = 视口 − 232（侧栏） − 64（内容区内边距） − 32（面板内边距） − 4（两层边框）；
+   「导入表」= 批量导入结果里那张「未导入的行」小表（同一页，原因是一整句中文提示））：
+     | 视口      | 表可用宽度 | 改前 主表宽 / 横向滚动条 | 改前导入表 | 改后 横向滚动条（两者） | 改后行高 |
+     | 1280x800  | 948px      | 1387.4px / **439px**     | **588px**  | **0px**                 | 80.5px   |
+     | 1366x768  | 1034px     | 1387.4px / **353px**     | **502px**  | **0px**                 | 80.5px   |
+     | 1440x900  | 1108px     | 1387.4px / **279px**     | **428px**  | **0px**                 | 80.5px   |
+     | 1600x900  | 1268px     | 1387.4px / **119px**     | **268px**  | **0px**                 | 44.5px   |
+     | 1920x1080 | 1588px     | 1588px / 0px             | 0px        | **0px**                 | 44.5px   |
+   改前的溢出与 BOM 表同源：`.ui-table-cell` 是 nowrap、表格是自动布局，于是每一列的 min-content
+   等于那一格里最长的那串文本 —— 一个 26 字的物料名称 + 一段 24 字的规格型号就把表顶到 1387px
+   （比 1366 屏的 1034px 多出 353px），这正是用户说的「太宽了」。同一次实测里改前的行高是 128.5px：
+   自动布局把「图片」（94px）和「操作」（70px）两列压到最窄，两个按钮各折了三行。
+   改后表宽 = 容器宽（逐列宽度与内容完全无关：同一视口下短名字那行与长名字那行的十列宽度逐列相同），
+   长文本一律省略、悬停看全文；行高 80.5px 是「图片 / 操作」两列在 1440 及以下折成两行的结果
+   （1600 起这两列分别有 190px / 165px，三个控件一行放得下 → 44.5px）。 */
+.ui-table.materials-page-table { font-size: 12px; }
+.materials-page-table .ui-table-head, .materials-page-table .ui-table-cell { padding: 6px 8px; }
+.materials-page-table .audit-actor-cell { display: grid; gap: 1px; }
+.materials-page-table .audit-actor-time { color: var(--text-muted); font-size: 11px; }

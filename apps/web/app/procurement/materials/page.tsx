@@ -8,7 +8,7 @@ import { Button } from "../../../components/ui/button";
 import { FileInput } from "../../../components/ui/file-input";
 import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
-import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
+import { createdByColumn, updatedByColumn, type AuditRow } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
 import { downloadFile } from "../../../lib/download";
@@ -27,6 +27,43 @@ type Reference = AuditRow & { id: string; materialCode?: string; code?: string; 
 type Unit = { id: string; name?: string; isActive?: boolean };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+
+/**
+ * 物料清单表的列宽（百分比，总和正好 100%）。
+ *
+ * 用户 2026-10-08：「物料清单太宽了，表格所有列宽限定长度，超过就省略显示，鼠标hover才显示所有文字。
+ * 尽量保证所有column一次性展示。」—— 十列各给一个显式宽度，`DataTable` 一旦看到有列带 `meta.width`
+ * 就给 `<table>` 加上 `data-table-fixed`（components/data/data-table.tsx），固定布局下内容再也撑不宽列；
+ * 总和恰好 100% 时表宽 = 容器宽，「一次性展示」于是由布局保证，而不是靠文本恰好不长。
+ *
+ * 每个数字的来历（真实 Chromium 实测见 docs/design/materials-table-column-widths-2026-10-08.md）：
+ *   - 物料编码 / 物料名称 / 规格型号 / 颜色 / 默认单位：**文本列**，超长的部分省略号、hover 看全文
+ *     （`title` 由 DataTable 按 `meta.ellipsis` 加，取的就是这一格渲染出来的那串字）；
+ *   - 图片 15%：一行里要放 40px 缩略图 +「换图」+「删除图片」，单行需要 162px；操作 13%：
+ *     编辑 / 停用 / 删除三个按钮单行需要 142px（实测值）。这两列装的是**控件**不是文字，
+ *     `action-row` 自己会换行，缺的是宽度而不是省略号（也不给 title：把按钮文案拼成一句提示
+ *     比没有更让人困惑，见 data-table.tsx 的注释）。1600 屏（内容宽 1268px）上这两列拿到 190/165px，
+ *     三个控件一行放得下；1366 屏（1034px）只有 155/134px，会折成两行、行高 44 → 80px ——
+ *     这是"宁可让按钮折行、也不把文本列压到看不清"的取舍（把宽度让给文本列，编码/名称才不至于一上来就被省略）。
+ *   - 创建人 / 最后修改人各 8%：姓名 + 次行小字时间（配合 globals.css 里的同名规则），
+ *     两行布局实测需要 58.7px，8% 在 1366 屏有 82.7px（内容 66.7px）。
+ * 改数字之前先看那张实测表：总和不等于 100% 时，少掉的那一列由浏览器自动分摊，
+ * 长名字会重新把别的列挤窄 —— 那正是用户报的这个毛病。
+ */
+const COLUMN_WIDTH = {
+  materialCode: "12%",
+  materialName: "14%",
+  specificationModel: "11%",
+  color: "7%",
+  unit: "7%",
+  image: "15%",
+  status: "5%",
+  // 这两列的键名刻意不叫 createdBy / updatedBy：`lib/audit-columns-coverage.test.mjs` 有一条守卫
+  // 抓「JSX 里直接渲染 xxx.createdBy」（那会显示 UUID），键名撞上去会被误判。
+  auditCreated: "8%",
+  auditUpdated: "8%",
+  actions: "13%",
+} as const;
 
 export default function MaterialsPage() {
   const [materials, setMaterials] = useState<Reference[]>([]);
@@ -167,17 +204,24 @@ export default function MaterialsPage() {
   }
 
   const columns: ColumnDef<Reference>[] = [
-    { accessorKey: "materialCode", header: "物料编码" },
-    { accessorKey: "name", header: "物料名称" },
-    { accessorKey: "specificationModel", header: "规格型号", cell: ({ row }) => row.original.specificationModel ?? "-" },
-    { accessorKey: "color", header: "颜色", cell: ({ row }) => row.original.color ?? "-" },
-    { id: "unit", header: "默认单位", cell: ({ row }) => units.find((u) => u.id === row.original.defaultUnitId)?.name ?? "-" },
+    { accessorKey: "materialCode", header: "物料编码", meta: { width: COLUMN_WIDTH.materialCode, ellipsis: true } },
+    { accessorKey: "name", header: "物料名称", meta: { width: COLUMN_WIDTH.materialName, ellipsis: true } },
+    { accessorKey: "specificationModel", header: "规格型号", meta: { width: COLUMN_WIDTH.specificationModel, ellipsis: true }, cell: ({ row }) => row.original.specificationModel ?? "-" },
+    { accessorKey: "color", header: "颜色", meta: { width: COLUMN_WIDTH.color, ellipsis: true }, cell: ({ row }) => row.original.color ?? "-" },
+    // 「默认单位」用 accessorFn 而不是 `id` + 自定义 cell：DataTable 的省略 title 从**这一格的值**里取
+    // （accessorKey / accessorFn 都有值，纯 `id` 写法没有）—— 用 id 写法的话，省略号会出现、
+    // 鼠标悬停却什么都没有。屏幕上显示的就是这里的值，两边不会漂。
+    { id: "unit", header: "默认单位", meta: { width: COLUMN_WIDTH.unit, ellipsis: true }, accessorFn: (row) => unitNameOf(row.defaultUnitId) || "-" },
     // 图片（用户 2026-09-24）：缩略图 + 上传/换图/删除。空着也是信息 —— 销售单编辑时要按它决定能不能引用图片。
-    { id: "image", header: "图片", cell: ({ row }) => <MaterialImageUploader materialId={row.original.id} hasImage={Boolean(row.original.image)} version={row.original.image?.sha256} onChanged={load} /> },
-    { id: "status", header: "状态", cell: ({ row }) => row.original.isActive === false ? "停用" : "启用" },
-    ...auditColumns<Reference>(),
+    { id: "image", header: "图片", meta: { width: COLUMN_WIDTH.image }, cell: ({ row }) => <MaterialImageUploader materialId={row.original.id} hasImage={Boolean(row.original.image)} version={row.original.image?.sha256} onChanged={load} /> },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => row.original.isActive === false ? "停用" : "启用" },
+    // 两列审计信息（姓名 + 时间）不写成 `...auditColumns()`：那一对工厂不给宽度，
+    // 而这张表的每一列都必须有宽度，否则固定布局会把缺口自动分摊给别的列。
+    // 用的是同一对工厂（createdByColumn / updatedByColumn），字段与格式仍然只有一份。
+    { ...createdByColumn<Reference>(), meta: { width: COLUMN_WIDTH.auditCreated } },
+    { ...updatedByColumn<Reference>(), meta: { width: COLUMN_WIDTH.auditUpdated } },
     {
-      id: "actions", header: "操作",
+      id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions },
       cell: ({ row }) => (
         <div className="action-row">
           <Button size="sm" variant="secondary" onClick={() => editMaterial(row.original)}>编辑</Button>
@@ -230,19 +274,21 @@ export default function MaterialsPage() {
               {importResult.errors.length > 0 && <>
                 <h3>未导入的行（共 {importResult.errorCount} 条原因）</h3>
                 <DataTable columns={[
-                  { accessorKey: "row", header: "Excel 行号" },
-                  { id: "field", header: "字段", cell: ({ row }) => materialImportErrorField(row.original) },
-                  { accessorKey: "reason", header: "原因" },
-                ]} data={importResult.errors} empty={null} />
+                  // 「原因」是整句中文提示，长起来能到一百多个字（nowrap + 自动布局时它一个人就能把这
+                  // 张小表顶出面板）。同样按「固定列宽 + 超长省略 + hover 看全文」处理。
+                  { accessorKey: "row", header: "Excel 行号", meta: { width: "12%" } },
+                  { id: "field", header: "字段", meta: { width: "18%", ellipsis: true }, cell: ({ row }) => materialImportErrorField(row.original) },
+                  { accessorKey: "reason", header: "原因", meta: { width: "70%", ellipsis: true } },
+                ]} data={importResult.errors} empty={null} tableClassName="materials-page-table" />
               </>}
               {importResult.created.length > 0 && <>
                 <h3>已新增的物料（{importResult.created.length} 条）</h3>
                 <DataTable columns={[
-                  { accessorKey: "row", header: "Excel 行号" },
-                  { accessorKey: "material_code", header: "物料编码" },
-                  { id: "auto", header: "编码来源", cell: ({ row }) => row.original.auto_code ? "自动生成" : "表里填写" },
-                  { accessorKey: "name", header: "物料名称" },
-                ]} data={importResult.created} empty={null} />
+                  { accessorKey: "row", header: "Excel 行号", meta: { width: "14%" } },
+                  { accessorKey: "material_code", header: "物料编码", meta: { width: "30%", ellipsis: true } },
+                  { id: "auto", header: "编码来源", meta: { width: "18%" }, cell: ({ row }) => row.original.auto_code ? "自动生成" : "表里填写" },
+                  { accessorKey: "name", header: "物料名称", meta: { width: "38%", ellipsis: true } },
+                ]} data={importResult.created} empty={null} tableClassName="materials-page-table" />
               </>}
             </div>
           )}
@@ -269,6 +315,7 @@ export default function MaterialsPage() {
           <DataTable
             columns={columns}
             data={visible}
+            tableClassName="materials-page-table"
             empty={query.trim()
               ? <EmptyState title={`没有匹配\u201c${query.trim()}\u201d的物料`} description={`共 ${materials.length} 个物料，换个关键词或清空搜索框。`} />
               : <EmptyState title="暂无物料" />}

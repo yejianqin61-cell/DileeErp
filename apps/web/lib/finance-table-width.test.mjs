@@ -65,7 +65,10 @@ test("固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 �
   assert.match(css, /\.finance-page \.data-table td, \.finance-page \.ui-table-cell \{ white-space: normal; overflow-wrap: anywhere; \}/);
   // 只有「给了宽度」的表才切固定布局；列宽由 meta 决定，见 DataTable。
   assert.match(dataTable, /const fixed = columns\.some\(\(column\) => metaOf\(column\.meta\)\.width\);/, "有列宽才切固定布局");
-  assert.match(dataTable, /title=\{meta\.ellipsis \? ellipsisTitle\(rendered\) : undefined\}/, "省略的单元格要带上原生 title（鼠标悬停显示全文）");
+  // 2026-10-08：第二个参数（这一格的值）不能省 —— 只写 `ellipsisTitle(rendered)` 时，
+  // `accessorKey` 写法的文本列（没写 cell，TanStack 默认 cell 是函数 → flexRender 返回元素）
+  // 永远算不出 title：省略号在、悬停却空白。物料清单页的「物料编码 / 物料名称」踩过这个坑。
+  assert.match(dataTable, /title=\{meta\.ellipsis \? ellipsisTitle\(rendered, cell\.getValue\(\)\) : undefined\}/, "省略的单元格要带上原生 title（鼠标悬停显示全文）");
 });
 
 test("金额不会被换行拆开：money() 用不换行空格连接金额与币种", () => {

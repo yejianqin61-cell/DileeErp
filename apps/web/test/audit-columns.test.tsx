@@ -71,6 +71,15 @@ describe("auditColumns：全站统一的创建人 / 最后修改人两列", () =
     for (const cell of cells) expect(cell.closest(".audit-actor-cell")?.querySelector(".audit-actor-time")).toBeNull();
   });
 
+  it("两段文字被窄列裁掉时，悬停能看到完整的「姓名 + 时间」", () => {
+    // DataTable 的省略 title 从**这一格的值**里取，而这两列用的是 id + 自定义 cell —— 没有值可回退，
+    // 所以「姓名 + 时间」两段文字得由容器自己带 title（否则窄列里被裁掉的时间没有地方能看到）。
+    const [first, , third] = renderRows();
+    expect(first.getByText("张三").closest(".audit-actor-cell")?.getAttribute("title")).toBe("张三 09-16 08:30");
+    // 姓名取不到：title 就是那个占位符本身，不拼出「— null」这种怪东西
+    expect(third.getAllByText("—")[0].closest(".audit-actor-cell")?.getAttribute("title")).toBe("—");
+  });
+
   it("三种来源字段命名都认（否则报表类接口会静默显示空）", () => {
     const [first] = renderRows([{ no: "R-1", created_by_name: "赵六", updated_by_name: "赵六", created_at: at("09-16", "00:30"), updated_at: at("09-16", "06:05") }]);
     expect(first.getByText("09-16 08:30")).toBeVisible();

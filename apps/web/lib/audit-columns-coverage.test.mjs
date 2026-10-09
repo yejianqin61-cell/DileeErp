@@ -81,7 +81,18 @@ const source = (file) => readFileSync(file, "utf8");
 
 const files = [...walk(join(webRoot, "app")), ...walk(join(webRoot, "components"))];
 const tableFiles = files.filter((file) => /<DataTable/.test(source(file)));
-const usesAuditColumns = (file) => /auditColumns|auditDetailFields/.test(source(file));
+/**
+ * 「这一页接上了这两列」的判据。
+ *
+ * 2026-10-08 补第二种写法：物料清单页为了给每一列指定宽度（用户要求「表格所有列宽限定长度…保证所有
+ * column一次性展示」）不能再整块铺 `auditColumns()`，改成 `...createdByColumn()` / `...updatedByColumn()`
+ * 逐列挂 `meta`。**两个工厂必须都出现**才算「两列都在」——只用一个的文件（采购计划列表只有「最后更新」）
+ * 仍然走白名单，否则这条守卫会把它误判成"已经接了两列"。
+ */
+const usesAuditColumns = (file) => {
+  const text = source(file);
+  return /auditColumns|auditDetailFields/.test(text) || (/createdByColumn/.test(text) && /updatedByColumn/.test(text));
+};
 
 test("渲染表格的文件要么接了两列，要么在白名单里写明理由", () => {
   const unclassified = tableFiles.filter((file) => !usesAuditColumns(file) && !EXEMPT.has(rel(file))).map(rel);
