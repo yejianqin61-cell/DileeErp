@@ -58,7 +58,7 @@ const bomRow = (id, overrides = {}) => ({
  * 「只用已确认销售单的 BOM」「排除已有计划的 BOM」「排除已软删的计划」这几条查询口径，
  * 一个恒返回全部数据的桩会把断言变成永远通过。
  */
-function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], purchaseOrders = [], missingBom = false, bomDeleted = false } = {}) {
+function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], purchaseOrders = [], receipts = [], missingBom = false, bomDeleted = false } = {}) {
   const units = [
     { id: "unit-pcs", name: "个", isActive: true, deletedAt: null },
     { id: "unit-m", name: "米", isActive: true, deletedAt: null },
@@ -158,7 +158,9 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
     },
     material: { findMany: async ({ where }) => (where.id?.in ?? []).map(materialOf) },
     supplier: { findMany: async () => [] },
-    // 预计到货的同步写在这一侧（已下单行的"预期"改了要跟着进采购明细）。
+    // 预计到货的同步写在这一侧（已下单行的"预期"改了要跟着进采购明细）；
+    // 「补价」（2026-10-09）也走这一侧：已下单但单价是 0 的行补价时，要连采购明细的
+    // unitPrice/amount 与单头 totalAmount 一起改 —— 所以假 Prisma 必须能读回那一行的数量与费用。
     purchaseOrderItem: {
       update: async ({ where, data }) => {
         const row = purchaseOrderItems.find((candidate) => candidate.id === where.id);
@@ -166,9 +168,21 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
         Object.assign(row, data);
         return row;
       },
+      findUnique: async ({ where }) => {
+        const row = purchaseOrderItems.find((candidate) => candidate.id === where.id);
+        if (!row) return null;
+        const order = purchaseOrders.find((candidate) => candidate.id === row.purchaseOrderId);
+        return { id: row.id, quantity: new Prisma.Decimal(row.quantity ?? "0"), extraFee: new Prisma.Decimal(row.extraFee ?? "0"), purchaseOrderId: row.purchaseOrderId, purchaseOrder: { purchaseOrderNo: order?.purchaseOrderNo ?? "PO-1" } };
+      },
       // 「收束下单」落库后按 `extension_data.purchase_plan_item_id` 回写计划行的链接，
-      // 所以这里要能把刚建出来的采购明细读回来。
-      findMany: async ({ where }) => createdOrderItems.filter((row) => (where.purchaseOrderId?.in ?? []).includes(row.purchaseOrderId) && row.deletedAt === null),
+      // 所以这里要能把刚建出来的采购明细读回来；
+      // 补价那一步则按 `purchaseOrderId` 读同单全部明细来重算单头合计 —— 两种 where 都要认。
+      findMany: async ({ where }) => {
+        if (where.purchaseOrderId && typeof where.purchaseOrderId === "string") {
+          return [...purchaseOrderItems, ...purchaseOrders.flatMap((row) => row.items ?? [])].filter((row) => row.purchaseOrderId === where.purchaseOrderId && row.deletedAt === null).map((row) => ({ id: row.id, amount: row.amount ?? "0" }));
+        }
+        return createdOrderItems.filter((row) => (where.purchaseOrderId?.in ?? []).includes(row.purchaseOrderId) && row.deletedAt === null);
+      },
       updateMany: async ({ where, data }) => {
         // 明细可能来自 `purchaseOrderItems`（直接种的）或 `purchaseOrders[].items`（整单种的）。
         const pool = [...purchaseOrderItems, ...purchaseOrders.flatMap((row) => row.items ?? [])];
@@ -176,6 +190,10 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
         for (const row of hit) Object.assign(row, data);
         return { count: hit.length };
       },
+    },
+    // 补价前要确认这一行**没有到货事实**（有到货就不能事后改单价）。默认 0 条。
+    purchaseReceipt: {
+      count: async ({ where }) => receipts.filter((row) => row.purchaseOrderItemId === where.purchaseOrderItemId && row.deletedAt === null).length,
     },
     // 「退回采购计划」要读那张采购单、软删它的明细、把它标成已取消。
     purchaseOrder: {
@@ -1077,6 +1095,70 @@ test("收束下单：单价 0 的行不能下单（BOM 带出来的行单价就�
   assert.equal(s.createdOrders.length, 0, "校验在写之前：一张采购单都不该建出来");
   assert.equal(s.split(), null, "连收束校验都不该走到");
   assert.equal(items[0].purchaseOrderItemId, null);
+});
+
+test("收束下单：显式允许「价格待定」时可以带着 0 单价下单，审计里记下是哪几行", async () => {
+  // 用户 2026-10-09：「其他辅料是要等客户确认资料了，才有价格出来的，现在客户都没给资料，
+  // 也问不来的价格的」—— 辅料的价要等客户确认资料，采购员又必须先占住供应商与交期。
+  // 放行必须是**显式**的（`allow_pending_price`）：默认仍然拒绝 0 价下单。
+  // 钱的那道门挪到了下游：0 价明细不许登记到货（见 purchase-orders.test.cjs）。
+  const { plan, items } = freePlanFixture();
+  items[0].unitPrice = new Prisma.Decimal("0");
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+  audit.events = [];
+
+  const result = await s.service.order("plan-1", { allow_pending_price: true, groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user);
+
+  assert.equal(result.orders.length, 1, "先占住供应商与交期，价出来再补");
+  assert.equal(s.split().placeOrder, true, "仍然是下单态（不是草稿）");
+  const event = audit.events.find(([action]) => action === "purchase_plan.order");
+  assert.ok(event, "下单要留审计");
+  assert.deepEqual(event[4].pending_price_row_nos, [1], "哪几行没价要写进审计，事后能回答「当初为什么没价」");
+  assert.equal(event[4].pending_price_line_count, 1);
+});
+
+test("补价：已下单但单价是 0 的行可以在计划里补上，采购明细与单头合计一起改", async () => {
+  // 这是「价格待定」的出口：单已经发给供应商了，价出来了要能补回去，而不是先退回计划（那会作废那张单）。
+  const items = [{ id: "i-pending", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("10.0000"), unitPrice: new Prisma.Decimal("0.0000"), model: null, expectedDate: null, purchaseOrderItemId: "poi-1", bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} }];
+  const poItem = { id: "poi-1", purchaseOrderId: "po-1", quantity: "10.0000", extraFee: "0.0000", unitPrice: "0.0000", amount: "0.0000", deletedAt: null };
+  const po = { id: "po-1", purchaseOrderNo: "PO-1", totalAmount: new Prisma.Decimal("0"), deletedAt: null, items: [] };
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: [poItem], purchaseOrders: [po] });
+  audit.events = [];
+
+  await service.update("plan-1", { expected_updated_at: SAVED_AT.toISOString(), items: [lineOf(items[0], { unit_price: "12.5000" })] }, user);
+
+  assert.equal(String(planItems[0].unitPrice), "12.5000", "计划行补上了价");
+  assert.equal(poItem.unitPrice, "12.5000", "采购明细同步（采购单是对外凭证，不能与计划两份价）");
+  assert.equal(poItem.amount, "125.0000", "10 × 12.5");
+  assert.equal(String(po.totalAmount), "125.0000", "单头合计重算 = Σ 明细 amount");
+  const refill = audit.events.find(([action]) => action === "purchase_order_item.price_refilled");
+  assert.ok(refill, "补价要单独留一条审计：它改的是已经发给供应商的那张单上的钱");
+  assert.equal(refill[3], "poi-1");
+  assert.equal(refill[4].unit_price, "12.5000");
+  assert.equal(audit.events.find(([action]) => action === "purchase_plan.update")[4].refilled_prices, 1);
+});
+
+test("补价：已经有到货事实的 0 价行不许从计划里补（钱早就按 0 走过账了）", async () => {
+  const items = [{ id: "i-pending", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("10.0000"), unitPrice: new Prisma.Decimal("0.0000"), model: null, expectedDate: null, purchaseOrderItemId: "poi-1", bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} }];
+  const poItem = { id: "poi-1", purchaseOrderId: "po-1", quantity: "10.0000", extraFee: "0.0000", unitPrice: "0.0000", amount: "0.0000", deletedAt: null };
+  const { service, planItems } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: [poItem], purchaseOrders: [{ id: "po-1", purchaseOrderNo: "PO-1", totalAmount: new Prisma.Decimal("0"), deletedAt: null, items: [] }], receipts: [{ id: "gr-1", purchaseOrderItemId: "poi-1", deletedAt: null }] });
+
+  await assert.rejects(
+    () => service.update("plan-1", { expected_updated_at: SAVED_AT.toISOString(), items: [lineOf(items[0], { unit_price: "12.5000" })] }, user),
+    (error) => error.getResponse().code === "PURCHASE_ORDER_ITEM_PRICE_LOCKED" && /到货/.test(error.getResponse().message),
+  );
+  assert.equal(poItem.unitPrice, "0.0000");
+  assert.equal(String(planItems[0].unitPrice), "0", "校验在写之前：被拦住时连计划行都没动");
+});
+
+test("保存：有价的已下单行照旧锁死（补价只对「价格待定」那一档开）", async () => {
+  const items = seededItems();
+  const { service } = makeService({ plans: [thePlan], planItems: items, bomItems: bomRows(), purchaseOrderItems: orderedPoItem });
+
+  await assert.rejects(
+    () => service.update("plan-1", { expected_updated_at: SAVED_AT.toISOString(), items: [lineOf(items[0], { unit_price: "9.0000" }), lineOf(items[1])] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_ORDERED_LINE_LOCKED" && error.getResponse().details[0].field === "单价",
+  );
 });
 
 test("保存：未下单行的币种从库里带过来（行是整体替换的，不能把美元重置成人民币）", async () => {

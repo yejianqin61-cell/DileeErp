@@ -46,7 +46,16 @@ export type PlanListQuery = { order_no?: string; item_no?: string; status?: stri
  * （这家先下、那家还在等图纸）。
  */
 export type PlanOrderGroup = { supplier_id?: string; currency?: string; expected_date?: string; remark?: string; items: string[] };
-export type PlanOrderInput = { purchase_date?: string; remark?: string; extension_data?: Record<string, unknown>; groups: PlanOrderGroup[] };
+/**
+ * 收束下单的入参。
+ *
+ * `allow_pending_price`（2026-10-09）：**价格待定**放行开关。辅料要等客户确认资料才有价、
+ * 现在问不到价，采购员又必须先占住供应商与交期 —— 这时允许带着 0 单价下单，
+ * 但要显式说"我知道这些行还没价"（不是默认行为：默认仍然拒绝 0 价下单）。
+ * 代价由下游一道门兜住：`PurchaseOrdersService.receipt()` 拒绝给 0 价明细登记到货，
+ * 所以不会出现 0 元应付。补价入口仍在计划里（已下单但单价是 0 的行可以补）。
+ */
+export type PlanOrderInput = { purchase_date?: string; remark?: string; extension_data?: Record<string, unknown>; allow_pending_price?: boolean; groups: PlanOrderGroup[] };
 
 /** 保存时要比对的最小行形状（只取已下单行保护用得上的列）。 */
 type WritablePlanItem = {
@@ -437,6 +446,8 @@ export class PurchasePlansService {
     const ordered = current.items.filter((item) => item.purchaseOrderItemId);
     const orderedIds = new Set(ordered.map((item) => item.id));
     const incomingById = new Map(incoming.flatMap((item) => (item.id ? [[item.id, item] as const] : [])));
+    /** 这一次要补价的行（已下单 + 库里单价 0 + 这次填了正数）：见 `pendingPriceOf`。 */
+    const priceRefills = new Map<string, Prisma.Decimal>();
     ordered.forEach((item, index) => {
       const next = incomingById.get(item.id);
       if (!next) {
@@ -446,7 +457,9 @@ export class PurchasePlansService {
           details: [{ plan_item_id: item.id, purchase_order_item_id: item.purchaseOrderItemId }],
         });
       }
-      const changed = this.orderedLineChanged(item, next);
+      const refillPrice = this.pendingPriceOf(item, next);
+      if (refillPrice) priceRefills.set(item.id, refillPrice);
+      const changed = this.orderedLineChanged(item, next, { allowPrice: refillPrice !== null });
       if (changed) {
         throw new UnprocessableEntityException({
           code: "PURCHASE_PLAN_ORDERED_LINE_LOCKED",
@@ -464,6 +477,8 @@ export class PurchasePlansService {
     const prepared = await this.prepareItems({ id: current.bomId }, replacement, user, currencyById);
     const orderedById = new Map(ordered.map((item) => [item.id, item]));
     let syncedArrivalDates = 0;
+    /** 补价写进采购明细的行（事务后写审计；顺带把"补的是哪张单的哪一行"留下来）。 */
+    const refilledPrices: Array<{ plan_item_id: string; purchase_order_item_id: string; purchase_order_no: string | null; unit_price: string; amount: string }> = [];
     await this.prisma.$transaction(async (tx) => {
       await this.assertNotStale(tx, id, input.expected_updated_at);
       await tx.purchasePlanItem.updateMany({ where: { planId: id, deletedAt: null, purchaseOrderItemId: null }, data: { ...this.audit.softDelete(user) } });
@@ -473,12 +488,36 @@ export class PurchasePlansService {
         if (existing) {
           const nextDate = this.parseDate(item.expected_date);
           const dateChanged = !this.sameDate(existing.expectedDate, nextDate);
-          await tx.purchasePlanItem.update({ where: { id: existing.id }, data: { sequence: index + 1, ...(dateChanged ? { expectedDate: nextDate } : {}), ...this.audit.update(user) } });
+          const refillPrice = priceRefills.get(existing.id);
+          // 补价先校验、后写入：「校验在写之前」是仓库里反复强调的一条（假 Prisma 的事务不回滚，
+          // 顺序错了连测试都会给出错误的安全感）。两道校验：
+          //   ① 明细还在（采购单被退回过又会重建，ID 可能已经过期）；
+          //   ② 这一行**没有到货事实** —— 有到货就说明钱已经按当时的单价走过账了。
+          let poItem: { id: string; quantity: Prisma.Decimal; extraFee: Prisma.Decimal | null; purchaseOrderId: string; purchaseOrder: { purchaseOrderNo: string } | null } | null = null;
+          if (refillPrice && existing.purchaseOrderItemId) {
+            poItem = await tx.purchaseOrderItem.findUnique({ where: { id: existing.purchaseOrderItemId }, select: { id: true, quantity: true, extraFee: true, purchaseOrderId: true, purchaseOrder: { select: { purchaseOrderNo: true } } } });
+            if (!poItem) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_ITEM_NOT_FOUND", message: `第 ${index + 1} 行对应的采购明细已经不存在了，不能补价`, details: [{ plan_item_id: existing.id, purchase_order_item_id: existing.purchaseOrderItemId }] });
+            // 已经有到货事实的行不许补价：那条链上的钱（应付 = 入库量 × 单价）早就按 0 记过账了，
+            // 事后改单价只会让"账实不符"，正确动作是走财务侧的应付调整。
+            const receipts = await tx.purchaseReceipt.count({ where: { purchaseOrderItemId: poItem.id, deletedAt: null } });
+            if (receipts > 0) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_ITEM_PRICE_LOCKED", message: `第 ${index + 1} 行已经有到货记录，不能再从计划里补单价；请走财务的应付调整`, details: [{ plan_item_id: existing.id, purchase_order_item_id: poItem.id }] });
+          }
+          await tx.purchasePlanItem.update({ where: { id: existing.id }, data: { sequence: index + 1, ...(dateChanged ? { expectedDate: nextDate } : {}), ...(refillPrice ? { unitPrice: refillPrice.toFixed(4) } : {}), ...this.audit.update(user) } });
           // 预计到货改了就同步进那张已下单的采购明细：否则同一行会有两个"预计到货"，
           // 而采购员拿去跟供应商对的是采购单上那一份。
           if (dateChanged && existing.purchaseOrderItemId) {
             await tx.purchaseOrderItem.update({ where: { id: existing.purchaseOrderItemId }, data: { expectedDate: nextDate, ...this.audit.update(user) } });
             syncedArrivalDates += 1;
+          }
+          // 补价（价格待定 → 有价）：计划行、采购明细、单头合计三处一起改，一次事务里要么全成要么全不成。
+          if (refillPrice && poItem) {
+            const amount = new Prisma.Decimal(poItem.quantity).mul(refillPrice).plus(new Prisma.Decimal(poItem.extraFee ?? 0));
+            await tx.purchaseOrderItem.update({ where: { id: poItem.id }, data: { unitPrice: refillPrice.toFixed(4), amount: amount.toFixed(4), ...this.audit.update(user) } });
+            // 单头合计 = Σ 未删明细的 amount（与建单时同一个口径：`prepare()` 的 total）。
+            const siblings = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: poItem.purchaseOrderId, deletedAt: null }, select: { amount: true } });
+            const total = siblings.reduce((sum, row) => sum.plus(new Prisma.Decimal(row.amount ?? 0)), new Prisma.Decimal(0));
+            await tx.purchaseOrder.update({ where: { id: poItem.purchaseOrderId }, data: { totalAmount: total.toFixed(4), ...this.audit.update(user) } });
+            refilledPrices.push({ plan_item_id: existing.id, purchase_order_item_id: poItem.id, purchase_order_no: poItem.purchaseOrder?.purchaseOrderNo ?? null, unit_price: refillPrice.toFixed(4), amount: amount.toFixed(4) });
           }
           continue;
         }
@@ -496,8 +535,20 @@ export class PurchasePlansService {
       item_count: incoming.length,
       ordered_line_count: ordered.length,
       synced_arrival_dates: syncedArrivalDates || undefined,
+      // 补价要单独留一条：它改的是**已经发给供应商**的那张单上的钱，事后查"这张单的价是谁、什么时候补的"。
+      refilled_prices: refilledPrices.length || undefined,
       reason: input.reason?.trim() || undefined,
     });
+    for (const row of refilledPrices) {
+      await this.audit.record("purchase_order_item.price_refilled", "purchase_order_item", user.id, row.purchase_order_item_id, {
+        plan_id: id,
+        plan_no: current.planNo,
+        plan_item_id: row.plan_item_id,
+        purchase_order_no: row.purchase_order_no,
+        unit_price: row.unit_price,
+        amount: row.amount,
+      });
+    }
     return this.get(id);
   }
 
@@ -577,15 +628,36 @@ export class PurchasePlansService {
    * `expectedDate` **不在这里**：预计到货是「预期」而不是「既成事实」，供应商说这周到不了、
    * 下周到，采购员必须能记下来。锁死它等于系统里再没有任何地方能改这个日期
    * （口径 7 已经把采购单页的明细编辑关掉了）。改它时**同步进采购明细**，保证只有一份值。
+   *
+   * `options.allowPrice`（2026-10-09）：**这一行是"价格待定"下的单**（已下单时单价是 0），
+   * 这时允许填上一次价 —— 辅料要等客户确认资料才有价，采购员先把单占下来、价出来再补。
+   * 补价之外的一切改动照旧锁死；补过价之后 `item.unitPrice` 已经 > 0，这条路自然关闭。
    */
-  private orderedLineChanged(item: WritablePlanItem, next: PlanItemInput): string | null {
+  private orderedLineChanged(item: WritablePlanItem, next: PlanItemInput, options: { allowPrice?: boolean } = {}): string | null {
     if (next.material_id !== item.materialId) return "物料";
     if (next.unit_id !== item.unitId) return "单位";
     if ((item.supplierId ?? null) !== (next.supplier_id ?? null)) return "供应商";
     if ((item.model ?? null) !== (next.model ?? null)) return "型号";
     if (!this.decimalEquals(item.quantity, next.quantity)) return "数量";
-    if (!this.decimalEquals(item.unitPrice, next.unit_price)) return "单价";
+    if (!options.allowPrice && !this.decimalEquals(item.unitPrice, next.unit_price)) return "单价";
     return null;
+  }
+
+  /**
+   * 「补价」判定：这一行**已下单**、库里单价还是 0（= 价格待定下单）、这次填了 > 0 的价。
+   *
+   * 返回要补的那个价；不是补价就返回 null（那就按"已下单行锁死"处理）。
+   * 只认"0 → 正数"：0 → 0 算没改（`orderedLineChanged` 自己会放过），
+   * 0 → 负数、有价 → 任何值都不放行（要改先「退回采购计划」）。
+   */
+  private pendingPriceOf(item: WritablePlanItem, next: PlanItemInput): Prisma.Decimal | null {
+    if (item.unitPrice.gt(0)) return null;
+    try {
+      const price = new Prisma.Decimal(next.unit_price);
+      return price.gt(0) ? price : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -640,6 +712,8 @@ export class PurchasePlansService {
     const rowNoOf = (lineId: string) => current.items.findIndex((item) => item.id === lineId) + 1;
     const claimed = new Set<string>();
     const splitGroups: SplitGroup[] = [];
+    /** 这一次下单里"价格待定"（单价 0）的行号：写进审计，事后能回答"这张单当初为什么没价"。 */
+    const pendingPriceRowNos: number[] = [];
     for (const [index, group] of groups.entries()) {
       if (!group.supplier_id) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_SUPPLIER_REQUIRED", message: `第 ${index + 1} 组还没选供应商，不能下单`, details: [] });
       const ids = group.items ?? [];
@@ -658,12 +732,22 @@ export class PurchasePlansService {
         // 财务确实没法付钱，而系统里没有任何一处会报错。钱的根就在这一格（应付金额 =
         // 入库数量 × 这里的单价，见 raw-material-inbounds.service.ts）。
         // 草稿不受影响：计划里单价可以先留 0（还没谈价），不能做的是**带着 0 单价下单**。
+        //
+        // 2026-10-09 的例外：辅料要等客户确认资料才有价（用户原话：「其他辅料是要等客户确认资料了，
+        // 才有价格出来的，现在客户都没给资料，也问不来的价格的」）。这时允许**显式**带着 0 价下单
+        // （`allow_pending_price`），门禁从"这一格必须有价"挪到下游：0 价的明细**不能登记到货**
+        // （`PurchaseOrdersService.receipt()` 的 `PURCHASE_ITEM_PRICE_PENDING`），
+        // 所以 0 元应付这条链仍然不存在；补价入口留在这份计划的同一行（已下单但单价是 0 的行）。
+        // 不传这个开关时行为与以前一字不差。
         if (!line.unitPrice.gt(0)) {
-          throw new UnprocessableEntityException({
-            code: "PURCHASE_PLAN_PRICE_REQUIRED",
-            message: `第 ${rowNoOf(lineId)} 行还没填单价，不能下单：应付金额就是按这一行的「数量 × 单价」算出来的`,
-            details: [{ plan_item_id: lineId, row_no: rowNoOf(lineId) }],
-          });
+          if (!input.allow_pending_price) {
+            throw new UnprocessableEntityException({
+              code: "PURCHASE_PLAN_PRICE_REQUIRED",
+              message: `第 ${rowNoOf(lineId)} 行还没填单价，不能下单：应付金额就是按这一行的「数量 × 单价」算出来的`,
+              details: [{ plan_item_id: lineId, row_no: rowNoOf(lineId) }],
+            });
+          }
+          pendingPriceRowNos.push(rowNoOf(lineId));
         }
         const bomItemId = this.resolveBomItemId(line.bomItemId, line.materialId, bomItems);
         const reason = (line.extensionData as { outside_bom_reason?: unknown } | null)?.outside_bom_reason;
@@ -694,7 +778,8 @@ export class PurchasePlansService {
       groups: splitGroups,
     };
     // 校验与收束在用事务之前完成：失败时一个字都没写。
-    const merged = await this.orders.collectGroups(splitInput, true);
+    // `allowPendingPrice` 只从这里传进去（HTTP 请求体里没有这个键，见 `collectGroups` 的注释）。
+    const merged = await this.orders.collectGroups(splitInput, true, { allowPendingPrice: input.allow_pending_price === true });
     const created = await this.prisma.$transaction(async (tx) => {
       const rows = await this.orders.createOrdersFromGroups(tx, merged, "ordered", user);
       const createdItems = await tx.purchaseOrderItem.findMany({
@@ -719,6 +804,9 @@ export class PurchasePlansService {
       remaining_line_count: current.items.length - claimed.size,
       group_count: created.length,
       purchase_order_nos: created.map((row) => row.purchaseOrderNo),
+      // 价格待定的行要在审计里留名：这批单子到货前必须先补价，而"当初是谁同意不带价下单的"要有据可查。
+      pending_price_row_nos: pendingPriceRowNos.length ? pendingPriceRowNos : undefined,
+      pending_price_line_count: pendingPriceRowNos.length || undefined,
     });
     const plan = await this.get(id);
     return {

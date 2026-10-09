@@ -75,8 +75,16 @@ describe("物料清单：列宽 / 省略 / hover 看全文", () => {
     const headers = Array.from(table.querySelectorAll("thead th")) as HTMLElement[];
     expect(headers.map((header) => header.textContent)).toEqual(HEADERS);
     const widths = headers.map((header) => header.style.width);
-    expect(widths).toEqual(["12%", "14%", "11%", "7%", "7%", "15%", "5%", "8%", "8%", "13%"]);
+    // 断言**性质**而不是逐列写死那十个数字：这份分配在 2026-10-09 的全站列宽治理里被重新配平过
+    // （物料名称 14% → 11%、操作 13% → 16%），把十个数字钉在这里只会让"别人调列宽"变成一次
+    // 无意义的红灯，而真正的不变式是下面三条：每列都是百分比、总和 100%、控件列放得下自己的控件。
+    // 逐列的**精确**数字由 `lib/materials-table-width.test.mjs` 从页面源码里读（那里才是列宽的唯一来源）。
+    expect(widths.every((width) => /^\d+(\.\d+)?%$/.test(width))).toBe(true);
     expect(widths.reduce((sum, width) => sum + Number.parseFloat(width), 0)).toBe(100);
+    const percent = (index: number) => Number.parseFloat(widths[index]);
+    expect(percent(1)).toBeGreaterThanOrEqual(10); // 物料名称：本表最长的文本列
+    expect(percent(5)).toBeGreaterThanOrEqual(14); // 图片：40px 缩略图 + 换图 + 删除图片
+    expect(percent(9)).toBeGreaterThanOrEqual(12); // 操作：编辑 / 停用 / 删除三个按钮
   });
 
   it("每一格沿用本列的宽度（固定布局的前提：列宽只由列定义决定，与内容无关）", async () => {

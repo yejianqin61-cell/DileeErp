@@ -115,6 +115,30 @@ test("split requires a bom when placing orders", async () => {
   assert.deepEqual(captured, []);
 });
 
+test("价格待定（0 单价）只有在调用方显式放行时才放行：原始接口那道门没松", async () => {
+  // 用户 2026-10-09：「其他辅料是要等客户确认资料了，才有价格出来的，现在客户都没给资料，也问不来的价格的」。
+  // 放行开关只在**服务内部**（`collectGroups` 的第三个参数，采购计划侧传）—— HTTP 请求体里没有这个键，
+  // 所以 `POST /purchase-orders` 与 `/split` 两个原始接口仍然一律要求单价 > 0。
+  const { service } = makeService();
+  const zeroPriced = [{ supplier_id: "supplier-2", items: [item("material-1", "supplier-2", { unit_price: "0" })] }];
+
+  await assert.rejects(
+    () => service.collectGroups(input(zeroPriced), true),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ORDER_INCOMPLETE" && error.getResponse().details.some((row) => row.message.includes("单价")),
+    "不传开关时 0 单价与以前一样被拦（原来的门禁一个字没改）",
+  );
+
+  const merged = await service.collectGroups(input(zeroPriced), true, { allowPendingPrice: true });
+  assert.equal(merged.length, 1, "显式放行时 0 单价可以下单（先占住供应商与交期）");
+  assert.equal(merged[0].prepared.items[0].unit_price, "0");
+
+  // 放行的是"还没谈价"，不是"乱填"：负数仍然一律拒绝（在 prepare() 那一层就拦下了）。
+  await assert.rejects(
+    () => service.collectGroups(input([{ supplier_id: "supplier-2", items: [item("material-1", "supplier-2", { unit_price: "-1" })] }]), true, { allowPendingPrice: true }),
+    (error) => error.getResponse().code === "INVALID_PURCHASE_ITEM",
+  );
+});
+
 test("split rejects empty or missing groups before reading references", async () => {
   const { service, prisma, captured } = makeService();
   let referenceReads = 0;

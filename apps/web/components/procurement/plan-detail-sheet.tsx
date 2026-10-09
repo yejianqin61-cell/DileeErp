@@ -28,8 +28,10 @@ import { notifyError, notifySuccess } from "../ui/toaster";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
 import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { amountSummaryText, lineAmountText, sumPlanAmounts, DEFAULT_PLAN_CURRENCY, type PlanAmount } from "../../lib/purchase-plan-amount";
+import { importBomPrices, mergeBomReferences, pendingPriceIndexes, priceImportSummary, trimPlanNumber, type PriceImportOutcome } from "../../lib/purchase-plan-price-entry";
 import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
 import { PlanOrderPreview, groupPlanRows, type PlanDraftRow } from "./plan-order-preview";
+import { PlanPriceDialog } from "./plan-price-dialog";
 
 export type PlanMaterialRef = { id: string; materialCode?: string; code?: string; name?: string; isActive?: boolean; defaultUnitId?: string };
 export type PlanUnitRef = { id: string; name?: string; isActive?: boolean };
@@ -84,7 +86,12 @@ type BomItemOrderStatus = { bom_item_id: string; required_quantity: string; orde
 const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
 /** 冲突要认**错误码**而不是文案（文案会变，码是契约）。 */
 const errorCodeOf = (cause: unknown) => (cause instanceof ApiClientError ? cause.code : undefined);
-const trimQuantity = (value: string) => { const trimmed = String(value ?? "").replace(/0+$/, "").replace(/\.$/, ""); return trimmed === "" ? "0" : trimmed; };
+/**
+ * 数字的显示形式（`10.0000` → `10`）。实现只有一处：`lib/purchase-plan-price-entry.ts` 的
+ * `trimPlanNumber`（那边有用例钉着「只在**小数点之后**剥零」—— 就地写的 `replace(/0+$/, "")`
+ * 会把 `"10"` 剥成 `"1"`）。这里留个短名，免得 7 处调用点都要跟着改。
+ */
+const trimQuantity = trimPlanNumber;
 const toDateInput = (value?: string | null) => (value ? String(value).slice(0, 10) : "");
 
 export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, onDeleted }: {
@@ -112,6 +119,18 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
   /** 乐观锁冲突：**保留本地改动**，只给一个"重新加载（放弃本次修改）"的入口（照 BOM 工作区写法）。 */
   const [conflict, setConflict] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /**
+   * 「填单价」浮层（2026-10-09，用户：「我真没看到哪里可以手填单价的。可以重新设计这一块」）。
+   * 它改的是**同一份 rows 状态**，所以关掉浮层表里那一格也变了。
+   */
+  const [priceDialog, setPriceDialog] = useState(false);
+  /** 上一次「导入 BOM 参考单价」的结果（给浮层里那句结果文案用）。 */
+  const [priceImport, setPriceImport] = useState<PriceImportOutcome | null>(null);
+  /**
+   * 收束下单时"价格待定"的二次确认：有 0 价的行被勾中时先弹一次，确认后才发请求
+   * （行号存下来只是为了在弹窗里说清是哪几行）。取消 = 一个请求都不发。
+   */
+  const [pendingPriceConfirm, setPendingPriceConfirm] = useState<number[] | null>(null);
 
   const materialOptions = useMemo<PlanOption[]>(() => materials.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` })), [materials]);
   const unitOptions = useMemo<PlanOption[]>(() => units.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: item.name ?? item.id })), [units]);
@@ -254,6 +273,35 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
   }
 
   function updateRow(index: number, patch: Partial<PlanDraftRow>) { setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row))); }
+  /**
+   * 「导入 BOM 参考单价」：只填空的未下单行 —— 手填过的价与已下单的行一律不动。
+   *
+   * 先**重新取一次详情**再导：BOM 上的参考价可能是这份计划打开之后才填的（比如采购员去 BOM 表
+   * 补了价再回来点这个按钮）—— 只拿内存里那份数据，"导入"就等于什么都没做。
+   * 合并时**只并参考单价两个字段**，绝不动用户已经改过的数量/单价/供应商（那次请求是只读的）。
+   * 判据与结果文案都在 `lib/purchase-plan-price-entry.ts`（有用例逐条钉着"哪些行不许被碰"）。
+   */
+  async function importBomPricesIntoRows() {
+    setBusy("import-price");
+    setError("");
+    try {
+      const result = await apiGet<PlanDetail>(`/purchase-plans/${planId}`);
+      const merged = mergeBomReferences(rows, result.data.items);
+      const outcome = importBomPrices(merged);
+      const patchByIndex = new Map(outcome.patches.map((patch) => [patch.index, patch]));
+      setRows(merged.map((row, index) => {
+        const patch = patchByIndex.get(index);
+        if (!patch) return row;
+        // 币种跟着这笔参考价走（BOM 上没写币种时沿用这一行原来的），否则合计会按错的币种算。
+        return { ...row, unitPrice: patch.unitPrice, currency: patch.currency ?? row.currency ?? DEFAULT_PLAN_CURRENCY, priceFromBom: true };
+      }));
+      setPriceImport(outcome);
+      if (outcome.filled) notifySuccess(priceImportSummary(outcome));
+      else notifyError(priceImportSummary(outcome));
+    } catch (cause) {
+      notifyError(messageOf(cause, "导入 BOM 参考单价失败"));
+    } finally { setBusy(""); }
+  }
   function toggleRow(index: number) { setSelected((current) => (current.includes(index) ? current.filter((i) => i !== index) : [...current, index])); }
   function toggleAll(checked: boolean) {
     // 全选不含已下单行（它们已经落在某张单上了）。
@@ -293,6 +341,14 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
    * 这条说明就是把那个疑问的答案摆在页面上。）
    */
   const fromBomRows = rows.filter((row) => row.priceFromBom);
+  /**
+   * 还没填单价的行号（0 或空）。状态条、填价浮层与下单确认共用这**一个**判据
+   * （实现与用例在 lib/purchase-plan-price-entry.ts）—— 三处各写一遍 `Number(...) > 0`
+   * 早晚会漂成"状态条说还有 2 行、下单却放过了"。
+   */
+  const pendingPriceIndexesOfRows = pendingPriceIndexes(rows);
+  /** 勾选中的行里还没填单价的行号（从 1 数，报给用户看）。 */
+  const pendingSelectedRows = rows.flatMap((row, index) => (selected.includes(index) && !(Number(row.unitPrice) > 0) ? [index + 1] : []));
   const needsOutsideBomReason = outsideBomRows.length > 0;
   const selectedRows = rows.filter((_, index) => selected.includes(index));
   const groups = useMemo(() => groupPlanRows(selectedRows, supplierNameOf), [selectedRows, supplierNameOf]);
@@ -351,18 +407,30 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     const assigned = groups.filter((group) => group.supplierId);
     if (!assigned.length) { setError("还没有任何一行选了供应商"); return; }
     if (groups.some((group) => !group.supplierId)) { setError("有行还没选供应商，不能下单（一个供应商一张单）"); return; }
-    // 单价为 0 的行不能下单（服务端同样拒绝，这里先拦一次是为了把话说清楚、并指出是哪几行）。
-    // 不是"多一层校验"：应付金额 = 入库数量 × 采购明细单价，0 单价会变成一条 0 元应付 ——
-    // 财务收到一张没法付的单，而全链路不报错。用户原话：「不然财务没法付钱」。
-    const unpriced = selectedRows.map((row, index) => ({ row, index })).filter(({ row }) => !(Number(row.unitPrice) > 0));
-    if (unpriced.length) {
-      setError(`第 ${unpriced.map(({ index }) => index + 1).join("、")} 行还没填单价，不能下单：应付金额就是按「数量 × 单价」算出来的。可以在 BOM 表上给这些物料填「参考单价」，重新打开本计划时会自动带过来；也可以直接在这一格里手填。`);
-      return;
-    }
+    // 单价为 0 的行默认不能下单：应付金额 = 入库数量 × 采购明细单价，0 单价会变成一条 0 元应付 ——
+    // 财务收到一张没法付的单，而全链路不报错（用户原话：「不然财务没法付钱」）。
+    //
+    // 2026-10-09 起有一条**显式**的出路：辅料要等客户确认资料才有价（用户原话：
+    // 「其他辅料是要等客户确认资料了，才有价格出来的，现在客户都没给资料，也问不来的价格的」），
+    // 采购员需要先把供应商与交期占下来。点过一次确认才放行，并且那些行**到货登记前必须先补价**
+    // （补价入口就在本计划里 —— 已下单但单价是 0 的行仍然能填）。
+    if (pendingSelectedRows.length) { setPendingPriceConfirm(pendingSelectedRows); return; }
+    await placeOrder();
+  }
+
+  /** 真正发下单请求（「价格待定」确认之后走这里，或者所有勾选行都有价时直接走）。 */
+  async function placeOrder() {
+    setError("");
+    setPendingPriceConfirm(null);
+    const assigned = groups.filter((group) => group.supplierId);
+    const pendingPrice = pendingSelectedRows.length > 0;
     setBusy("order");
     try {
       const result = await apiPost<{ orders: Array<{ purchaseOrderNo: string }> }>(`/purchase-plans/${planId}/order`, {
         purchase_date: new Date().toISOString(),
+        // 只有确实勾中了 0 价的行才带这个开关：它是"我确认这些行价格待定"的显式声明，
+        // 服务端据此放行（不带就是原来的 `PURCHASE_PLAN_PRICE_REQUIRED`）。
+        allow_pending_price: pendingPrice || undefined,
         groups: assigned.map((group) => ({
           supplier_id: group.supplierId,
           currency: currencyOf(group.supplierId),
@@ -370,7 +438,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
         })),
       });
       const numbers = (result.data?.orders ?? []).map((order) => order.purchaseOrderNo).join("、");
-      notifySuccess(`已按供应商收束下单 ${result.data?.orders?.length ?? 0} 张${numbers ? `：${numbers}` : ""}`);
+      notifySuccess(`已按供应商收束下单 ${result.data?.orders?.length ?? 0} 张${numbers ? `：${numbers}` : ""}${pendingPrice ? "（含价格待定的行：到货前请先补单价）" : ""}`);
       await load();
       onSaved();
     } catch (cause) {
@@ -451,6 +519,21 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             <Button size="sm" variant="ghost" data-testid="plan-delete" disabled={busy === "delete"} onClick={() => setConfirmDelete(true)}>删除计划</Button>
           </div>
 
+          {/* 填单价入口（2026-10-09）。用户原话：「我还是希望在采购计划中前端也能允许填写价格。
+              也可以选择导入BOM的对应的物料的价格。」以及「我真没看到哪里可以手填单价的。可以重新设计这一块」——
+              单价原来只是第 8 列里一个 6% 宽的输入框，14 列的表里确实看不出来。
+              所以提一个状态条 + 一个专门逐行填的浮层（导入 BOM 参考单价也在浮层里）。 */}
+          <div className="page-actions" data-testid="plan-price-bar">
+            <Button size="sm" data-testid="plan-open-price-dialog" onClick={() => { setPriceImport(null); setPriceDialog(true); }}>
+              {pendingPriceIndexesOfRows.length ? `填单价（还有 ${pendingPriceIndexesOfRows.length} 行没填）` : "填单价"}
+            </Button>
+            <span className="panel-note" data-testid="plan-price-bar-note">
+              {pendingPriceIndexesOfRows.length
+                ? `共 ${rows.length} 行，还有 ${pendingPriceIndexesOfRows.length} 行是 0 价：逐行手填，或从 BOM 参考单价导入（只补空格、不覆盖已填的价）。0 价的行不能下单，除非在收束下单时确认「价格待定」。`
+                : `共 ${rows.length} 行，单价都填好了；要改还是在这里改（点「保存计划」后生效）。`}
+            </span>
+          </div>
+
           {needsOutsideBomReason ? (
             <label className="purchase-edit-reason">BOM 外新增原因（{outsideBomRows.length} 行不在 BOM 表上，补料/替代料必填）
               <Input value={outsideBomReason} onChange={(event) => setOutsideBomReason(event.target.value)} aria-label="BOM 外新增原因" placeholder="例如：原 BOM 物料缺货，改用替代料" />
@@ -463,7 +546,8 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             <p className="panel-note" data-testid="plan-price-from-bom">
               {fromBomRows.length} 行的单价是按 <strong>BOM 表上的「参考单价」</strong>预填的（那几格带浅黄底）：
               它是"这个部件通常多少钱"的参考、不是供应商报价；<strong>保存计划后才会写进计划</strong>，逐行都能改。
-              还空着的行说明 BOM 上也没填参考价 —— 请直接手填，或去 BOM 表补上参考单价后再打开本计划。
+              还空着的行说明 BOM 上也没填参考价 —— 点上面的「填单价」逐行手填，
+              或在那个浮层里点「导入 BOM 参考单价」重新导一次（只补空格、不覆盖已填的价）。
             </p>
           ) : null}
 
@@ -501,7 +585,14 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                       </Select>
                     </td>
                     <td className="plan-col-model"><Input value={row.model} disabled={row.ordered} title={row.ordered ? lockedHint : undefined} onChange={(event) => updateRow(index, { model: event.target.value })} /></td>
-                    <td className="plan-col-order">{orderStatusCell(row)}{orderedCell(row) ? <div>{orderedCell(row)}</div> : null}</td>
+                    <td className="plan-col-order">
+                      {orderStatusCell(row)}
+                      {orderedCell(row) ? <div>{orderedCell(row)}</div> : null}
+                      {/* 「价格待定」下单的行（2026-10-09）：这一档在「单价」那 6% 里写不下，标在这里。 */}
+                      {row.ordered && !(Number(row.unitPrice) > 0)
+                        ? <div><span className="status-warning" data-testid={`plan-price-pending-${index}`} title="下单时单价还是 0（价格待定）：到货登记前必须先补单价">价格待定</span></div>
+                        : null}
+                    </td>
                     <td className="plan-col-qty"><Input type="number" min="0" step="0.0001" value={row.quantity} disabled={row.ordered} title={row.ordered ? lockedHint : undefined} onChange={(event) => updateRow(index, { quantity: event.target.value })} /></td>
                     <td className="plan-col-stock plan-cell-ellipsis" title={otherUnitStock(row.materialId, row.unitId) ? `本行单位库存 ${stockFor(row.materialId, row.unitId)}；另有 ${otherUnitStock(row.materialId, row.unitId)}（单位不同，未相加）` : undefined}>
                       {stockFor(row.materialId, row.unitId)}{otherUnitStock(row.materialId, row.unitId) ? <span className="panel-note">（另有 {otherUnitStock(row.materialId, row.unitId)}）</span> : null}
@@ -514,20 +605,25 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                     </td>
                     {/* 单价格：`priceFromBom` 的行是"从 BOM 参考单价预填来的"——
                         用浅黄底 + title 标出来源（这一格只有 6% 宽，塞不下文字标签，见 globals.css）。
-                        用户一改这一格就清掉标记：那一格从此是他填的。 */}
+                        用户一改这一格就清掉标记：那一格从此是他填的。
+                        2026-10-09：**已下单但单价是 0** 的行（价格待定下单）这一格仍然可填 —— 那是补价的唯一入口；
+                        一旦补过价（> 0）就锁死，与其它已下单行一样（要改先「退回采购计划」）。 */}
                     <td className={`plan-col-price${row.priceFromBom ? " plan-price-from-bom" : ""}`}>
                       <Input
-                        type="number" min="0" step="0.0001" value={row.unitPrice} disabled={row.ordered}
-                        title={row.ordered ? lockedHint : row.priceFromBom ? `按 BOM 表的「参考单价」预填：${row.bomReferenceUnitPrice ?? ""} ${row.bomReferenceCurrency ?? DEFAULT_PLAN_CURRENCY}（还没保存；保存计划后生效，可改）` : undefined}
+                        type="number" min="0" step="0.0001" value={row.unitPrice} disabled={row.ordered && Number(row.unitPrice) > 0}
+                        placeholder="手填单价"
+                        title={row.ordered
+                          ? (Number(row.unitPrice) > 0 ? lockedHint : "已下单 · 价格待定：可以补填单价（保存计划后同步到那张采购单）；补上之后这一行就锁住了")
+                          : row.priceFromBom ? `按 BOM 表的「参考单价」预填：${row.bomReferenceUnitPrice ?? ""} ${row.bomReferenceCurrency ?? DEFAULT_PLAN_CURRENCY}（还没保存；保存计划后生效，可改）` : undefined}
                         data-testid={`plan-price-${index}`}
                         aria-label={`第 ${index + 1} 行单价`}
                         onChange={(event) => updateRow(index, { unitPrice: event.target.value, priceFromBom: false })}
                       />
                     </td>
                     {/* 行总价：**只读派生**（数量 × 单价），本地即时算 —— 改一次数量或单价就能看见钱变了。
-                        单价为 0 的行标红：那些行**不能下单**（应付金额 = 入库数量 × 单价，0 就是 0 元应付），
-                        这一格是采购员发现"漏填报价"最快的入口。 */}
-                    <td className={`plan-col-amount plan-cell-ellipsis${!row.ordered && !(Number(row.unitPrice) > 0) ? " status-danger" : ""}`} data-testid={`plan-amount-${index}`} title={`${row.currency ?? DEFAULT_PLAN_CURRENCY} ${lineAmountText(row.quantity, row.unitPrice)}`}>
+                        单价为 0 的行标红（**含已下单但价格待定的行**：那些行的钱还没定下来，
+                        到货前必须先补价，所以同样要看得见）。 */}
+                    <td className={`plan-col-amount plan-cell-ellipsis${!(Number(row.unitPrice) > 0) ? " status-danger" : ""}`} data-testid={`plan-amount-${index}`} title={`${row.currency ?? DEFAULT_PLAN_CURRENCY} ${lineAmountText(row.quantity, row.unitPrice)}`}>
                       {lineAmountText(row.quantity, row.unitPrice)}
                     </td>
                     <td className="plan-col-supplier">
@@ -574,6 +670,28 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
           />
         </SheetContent>
       </Sheet>
+      {priceDialog ? (
+        <PlanPriceDialog
+          planNo={plan?.planNo}
+          rows={rows}
+          importOutcome={priceImport}
+          importing={busy === "import-price"}
+          onImportBom={() => void importBomPricesIntoRows()}
+          onChange={(index, patch) => updateRow(index, patch)}
+          onClose={() => setPriceDialog(false)}
+        />
+      ) : null}
+      {pendingPriceConfirm ? (
+        // 「价格待定」的二次确认：说清后果（到货前必须补价）才放行 —— 0 价绝不是默认行为。
+        <ActionDialog
+          open
+          title="这些行还没有单价（价格待定）"
+          fields={[{ name: "note", type: "info", label: `第 ${pendingPriceConfirm.join("、")} 行还没填单价。确认下单 = 这几行按「价格待定」发给供应商（单价记 0）；**到货登记前必须先补单价** —— 应付金额 = 入库数量 × 单价，价没补上系统不会让它们入库出应付。出路：在本计划里点「填单价」逐行手填，或在那个浮层里「导入 BOM 参考单价」（整行保存后同步到那张采购单）。` }]}
+          submitLabel="确认下单（价格待定）"
+          onOpenChange={(open) => { if (!open) setPendingPriceConfirm(null); }}
+          onSubmit={() => placeOrder()}
+        />
+      ) : null}
       {confirmDelete ? (
         <ActionDialog
           open

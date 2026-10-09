@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsArray, IsDateString, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
+import { IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
@@ -68,6 +68,12 @@ class PlanOrderDto {
   @IsOptional() @IsDateString() purchase_date?: string;
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
+  /**
+   * 允许「价格待定」的行一起下单（2026-10-09）：辅料要等客户确认资料才有价，采购员先占住供应商与交期。
+   * 必须由调用方**显式**给 `true` —— 默认仍然拒绝 0 价下单（`PURCHASE_PLAN_PRICE_REQUIRED`），
+   * 且下游 `receipt()` 拒绝给 0 价明细登记到货，所以不会出现 0 元应付。
+   */
+  @IsOptional() @IsBoolean() allow_pending_price?: boolean;
   @IsArray() @ValidateNested({ each: true }) @Type(() => PlanOrderGroupDto) groups!: PlanOrderGroupDto[];
 }
 

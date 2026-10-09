@@ -179,6 +179,42 @@ test("arrived-complete orders accept another receipt before close", async () => 
   assert.equal(result.id, "receipt-2");
 });
 
+test("价格待定的明细不许登记到货：0 元应付那条链的门留在这里", async () => {
+  // 用户 2026-10-09：「其他辅料是要等客户确认资料了，才有价格出来的，现在客户都没给资料，
+  // 也问不来的价格的」—— 计划侧因此允许**显式**带着 0 价下单（`allow_pending_price`）。
+  // 钱的那道门就挪到这一步：0 价的明细不许登记到货（应付 = 入库数量 × 单价，0 就是 0 元应付）。
+  // 补价入口在采购计划里（已下单但单价是 0 的行可以补），补完这里就通过了。
+  let writes = 0;
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseOrder: {
+      findFirst: async () => ({ id: "purchase-1", orderNo: "SO-1", status: "ordered", extensionData: {}, currency: "CNY", items: [{ id: "item-1", quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("0"), material: { materialType: "raw_material" }, receipts: [] }] }),
+      update: async () => { writes += 1; return {}; },
+    },
+    purchaseReceipt: { create: async () => { writes += 1; return { id: "receipt-9", extensionData: {} }; } },
+    incomingInspection: { create: async () => { writes += 1; return {}; } },
+    purchaseOrderItem: { findMany: async () => [] },
+  };
+  const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { create: () => ({}), update: () => ({}), record: async () => undefined });
+  await assert.rejects(
+    () => service.receipt("purchase-1", "item-1", { quantity: "2", received_date: "2026-10-09" }, { id: "user-1" }),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "PURCHASE_ITEM_PRICE_PENDING" && /补填单价/.test(error.getResponse().message),
+  );
+  assert.equal(writes, 0, "被拦住时一个字都不许写（到货/质检/单状态）");
+});
+
+test("到货登记仍然拒绝非原料（这一条门与价格门是两道，顺序不影响结论）", async () => {
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseOrder: { findFirst: async () => ({ id: "purchase-1", orderNo: "SO-1", status: "ordered", extensionData: {}, items: [{ id: "item-1", quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("2"), material: { materialType: "finished_product" }, receipts: [] }] }) },
+  };
+  const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { record: async () => undefined });
+  await assert.rejects(
+    () => service.receipt("purchase-1", "item-1", { quantity: "2", received_date: "2026-10-09" }, { id: "user-1" }),
+    (error) => error.getResponse().code === "PURCHASE_FINISHED_PRODUCT_FORBIDDEN",
+  );
+});
+
 const refsPrisma = (suppliers) => ({
   salesOrder: { findFirst: async () => ({ id: "order-1", orderNo: "SO-1" }) },
   bom: { findFirst: async () => ({ id: "bom-1", salesOrderId: "order-1", orderNo: "SO-1", version: 1 }) },

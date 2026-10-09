@@ -322,14 +322,16 @@ describe("采购计划明细：行总价与按币种分列的计划合计（用�
     expect(screen.getByTestId("plan-total-unordered").textContent).toBe("CNY 17.50");
   });
 
-  it("单价为 0 的行不能下单：提示说清是第几行，且**不发**下单请求", async () => {
+  it("单价为 0 的行不能直接下单：先弹「价格待定」确认，未确认时**不发**下单请求", async () => {
     const calls = renderSheet({ items: [planItem({ quantity: "5.0000", unitPrice: "0.0000", supplierId: "s-1" })] });
     await screen.findByRole("button", { name: "保存计划" });
 
     await userEvent.click(screen.getByTestId("plan-order"));
 
-    expect(screen.getByTestId("plan-error").textContent).toContain("第 1 行");
-    expect(screen.getByTestId("plan-error").textContent).toContain("单价");
+    // 2026-10-09：以前这里只给一句"不能下单"。辅料要等客户确认资料才有价（用户原话），
+    // 所以现在给一条**显式**的出路，但要确认一次 —— 确认前一个请求都不发。
+    expect(await screen.findByText(/这些行还没有单价（价格待定）/)).toBeTruthy();
+    expect(screen.getByText(/第 1 行还没填单价/)).toBeTruthy();
     expect(calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(false);
   });
 
@@ -431,15 +433,17 @@ describe("采购计划明细：按 BOM 参考单价回填（用户 2026-10-08 �
     await waitFor(() => expect(calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(true));
   });
 
-  it("0 价被拦时的提示直接把出路写出来（BOM 补参考单价，或手填）", async () => {
+  it("0 价被拦时把出路直接写出来（手填，或导入 BOM 参考单价）", async () => {
     renderSheet({ items: [planItem({ unitPrice: "0.0000", supplierId: "s-1", bomReferenceUnitPrice: null })] });
     await screen.findByRole("button", { name: "保存计划" });
 
     await userEvent.click(screen.getByTestId("plan-order"));
-    const message = screen.getByTestId("plan-error").textContent ?? "";
-    expect(message).toContain("第 1 行");
-    expect(message).toContain("参考单价");
-    expect(message).toContain("手填");
+    // 2026-10-09：这句提示从"面板上的红字"挪进了「价格待定」确认框（确认前一个请求都不发），
+    // 但**出路照旧要写出来**：去哪补价、以及"到货前必须补"的后果。
+    const note = await screen.findByText(/第 1 行还没填单价/);
+    expect(note.textContent).toContain("填单价");
+    expect(note.textContent).toContain("导入 BOM 参考单价");
+    expect(screen.getByText(/到货登记前必须先补单价/)).toBeTruthy();
   });
 });
 
