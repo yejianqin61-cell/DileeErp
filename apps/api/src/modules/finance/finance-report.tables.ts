@@ -716,7 +716,7 @@ export function reportTotalRow(table: ReportTable): ReportCell[] | null {
  * 所以缺价物料必须列进表尾。列表可能很长，因此按每行 `perLine` 项折行、
  * 最多 `maxLines` 行，超出部分只给条数 —— 表尾不该盖过正文。
  */
-export function footnoteLines(label: string, values: readonly string[], perLine = 10, maxLines = 3): string[] {
+export function footnoteLines(label: string, values: readonly string[], perLine = 10, maxLines = 3, overflowHint = "请检查 BOM 与物料采购价维护情况"): string[] {
   if (!values.length) return [];
   const lines: string[] = [];
   const shown = Math.min(values.length, perLine * maxLines);
@@ -724,6 +724,6 @@ export function footnoteLines(label: string, values: readonly string[], perLine 
     const end = Math.min(index + perLine, values.length);
     lines.push(`${label}（${index + 1}-${end}/${values.length}）：${values.slice(index, end).join("、")}`);
   }
-  if (values.length > shown) lines.push(`${label}：另有 ${values.length - shown} 项未列出，请检查 BOM 与物料采购价维护情况`);
+  if (values.length > shown) lines.push(`${label}：另有 ${values.length - shown} 项未列出，${overflowHint}`);
   return lines;
 }

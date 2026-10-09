@@ -55,6 +55,35 @@ const PAYABLE_REPORT_STATUSES = ["confirmed", "partially_paid", "paid"] as const
 const SALES_ORDER_STATUSES = ["confirmed", "closed"] as const;
 
 /**
+ * 「已出货」判据（2026-10-08，用户：「财务，财务报表，核算表，用户要求出了货才要进核算表。改进！」，
+ * 并选定**核算表与销售利润表(毛利)两张表一起改**，避免两张表行集不再逐行对得上）。
+ *
+ * 两个数据源合起来才算「出了货」（缺一个都会漏单）：
+ *   ① 成品出库单 `finished_goods_outbounds` 状态 ∈ posted/shipped/signed
+ *      —— 与 `reorder.domain.ts` 的 `SHIPPED_OUTBOUND_STATUSES` **同值**（那边是返单模块的同一口径：
+ *      草稿是"待出库"、cancelled/reversed 是没出去）。刻意各留一份常量而不是跨模块 import：
+ *      报表侧读的是销售单，返单侧读的是订单号 + 出库候选，两边绑一起改动的收益小于耦合的代价；
+ *      同值由 `finance-report-shipped-scope.test.cjs` 里一条**读两份文件比对**的守盯着（照
+ *      `sales-order-spec.test.mjs` 那种"镜像 + 用同一条用例钉住"的既有做法）。
+ *   ② 外加工直装柜 `outsource_direct_shipments` 状态 = dispatched
+ *      —— 外加工的货**直接从加工厂发走**，根本不进我们仓库，所以没有成品出库单；
+ *      只查①会把外加工订单整批漏掉（而它们是真出了货的）。
+ *
+ * **部分出货也算进了货**（用户选定）：一行一张销售单的口径不变，只出一部分也进表，
+ * 但必须在表尾点名（否则读者会以为这张单已经全部交付、收入已经全额实现）。
+ */
+const SHIPPED_OUTBOUND_STATUSES = ["posted", "shipped", "signed"] as const;
+const DISPATCHED_DIRECT_SHIPMENT_STATUSES = ["dispatched"] as const;
+
+/** 一张（批）销售单的出货事实：行集过滤 + 表尾「部分出货」用。 */
+type ShipmentFacts = {
+  /** 已出过货的销售单 id。 */
+  shipped: Set<string>;
+  /** 销售单 id → 累计出货量（同一个销售单的多张出库单按十进制相加）。 */
+  shippedQuantity: Map<string, Prisma.Decimal>;
+};
+
+/**
  * 外汇一览表的归属输入（一次性读回来的三张表 + 两个派生索引）。
  *
  * 单独成类型而不是散在方法里：`forexAttributionInputs` 读、`attributeForexEntry` 用，
@@ -300,11 +329,16 @@ export class FinanceReportQueryService {
   /**
    * 销售利润报表(毛利)取数：一个销售单一行，成本 = BOM 原料成本（R5）。
    *
-   * 与对账表不同，这里以**销售单**为基准（已确认/已关闭）：毛利是订单级的经营指标，
-   * 不依赖是否已出库。`include_draft=true` 时把草稿销售单也算进来。
+   * 以**销售单**为基准（已确认/已关闭）；`include_draft=true` 时把草稿销售单也算进来
+   * （草稿是"例外查看"的口径，出货过滤对它们同样生效）。
    *
-   * 返回表尾说明：缺采购价物料、没有 BOM 的销售单 —— 这两种情况都会让成本少算、毛利虚高，
-   * 必须在导出文件里说清楚，否则从表上看不出来。
+   * 2026-10-08 起**只含已出货的销售单**（用户：「核算表…出了货才要进核算表」，并选定两张表一起改）。
+   * 这条**覆盖**了 2026-09-30 的旧口径「毛利是订单级的经营指标，不依赖是否已出库」——
+   * 旧口径的代价是：一张刚确认、货还在车间里的订单也算出一份毛利，读者会当成已经赚到的钱。
+   * 覆盖的理由与两张表的对齐关系写在 `docs/design/finance-shipped-only-reports-2026-10-08.md`。
+   *
+   * 返回表尾说明：行集（未出货被排除的单 / 部分出货的单）、缺采购价物料、没有 BOM 的销售单 ——
+   * 这几种情况都会让表上的数看着"对"而其实少算了，必须在导出文件里说清楚。
    */
   async salesGrossProfit(filter: FinanceReportFilter): Promise<{ rows: SalesGrossProfitSource[]; footnotes: string[] }> {
     const period = financeDayRange(filter.from, filter.to);
@@ -323,6 +357,7 @@ export class FinanceReportQueryService {
         orderDate: true,
         currency: true,
         quantity: true,
+        unit: true,
         totalAmount: true,
         receivableAmount: true,
         localCurrencyAmount: true,
@@ -332,8 +367,12 @@ export class FinanceReportQueryService {
     });
     this.assertWithinLimit(orders.length);
 
-    const costs = await this.cost.materialCosts(orders.map((order) => ({ salesOrderId: order.id, quantity: order.quantity })));
-    const rows: SalesGrossProfitSource[] = orders.map((order) => ({
+    // 只留**已出货**的单（2026-10-08 用户要求，见 SHIPPED_OUTBOUND_STATUSES 的注释）。
+    // `assertWithinLimit` 仍然卡在过滤**前**：上限管的是"这次查询规模"，不是"最后几行"。
+    const scope = this.shippedScope(orders, await this.shipmentFacts(orders));
+    const shipped = scope.orders;
+    const costs = await this.cost.materialCosts(shipped.map((order) => ({ salesOrderId: order.id, quantity: order.quantity })));
+    const rows: SalesGrossProfitSource[] = shipped.map((order) => ({
       date: order.orderDate,
       orderNo: order.orderNo,
       customerName: order.customer?.name ?? null,
@@ -344,14 +383,16 @@ export class FinanceReportQueryService {
     }));
 
     const missing = new Map<string, string>();
-    for (const order of orders) {
+    for (const order of shipped) {
       for (const item of costs.get(order.id)?.missingPrice ?? []) {
         missing.set(`${item.materialCode}|${item.materialName}`, item.materialCode ? `${item.materialCode} ${item.materialName}` : item.materialName);
       }
     }
     const footnotes = [
+      // 行集说明排在**最前面**：读者第一个问题是"这张单怎么不在表里"。
+      ...scope.footnotes,
       ...footnoteLines("缺采购价物料（成本按 0 计入，毛利偏高）", [...missing.values()]),
-      ...footnoteLines("没有 BOM 或 BOM 无明细的销售单（成本按 0 计入，毛利偏高）", orders.filter((order) => !costs.get(order.id)?.hasBom).map((order) => order.orderNo)),
+      ...footnoteLines("没有 BOM 或 BOM 无明细的销售单（成本按 0 计入，毛利偏高）", shipped.filter((order) => !costs.get(order.id)?.hasBom).map((order) => order.orderNo)),
     ];
     return { rows, footnotes };
   }
@@ -365,8 +406,9 @@ export class FinanceReportQueryService {
    * 物控有录人工费。我这边录管理费，就可以出这个表」。所以这张表是**三处录入的汇合点**，
    * 任何一块缺了都必须在表尾点名，否则「费用合计少了」在表上完全看不出来。
    *
-   * 与销售利润报表(毛利)的关系：行集与筛选条件**故意完全一致**（已确认/已关闭销售单、按销售单日期），
-   * 这样两张表能逐行对上；差别只在费用多了计件人工与管理费分摊，且金额一律人民币本位币。
+   * 与销售利润报表(毛利)的关系：行集与筛选条件**故意完全一致**（已确认/已关闭销售单、按销售单日期、
+   * 且**都只含已出货的单**，2026-10-08 起），这样两张表能逐行对上；
+   * 差别只在费用多了计件人工与管理费分摊，且金额一律人民币本位币。
    *
    * 管理费是**期间级**输入：费率 = 某月管理费总额 ÷ 该月分摊数量，本表只按数量乘回去
    * （口径全在 `overhead-allocation.domain.ts`）。单位不一致的订单不套费率 ——
@@ -400,8 +442,13 @@ export class FinanceReportQueryService {
     });
     this.assertWithinLimit(orders.length);
 
-    const costs = await this.cost.materialCosts(orders.map((order) => ({ salesOrderId: order.id, quantity: order.quantity })));
-    const labor = await this.laborByOrder(orders.map((order) => order.orderNo), period);
+    // 只留**已出货**的单（2026-10-08 用户：「核算表…出了货才要进核算表」）。
+    // 与销售利润表共用同一个过滤与同一套表尾说明：两张表必须逐行对得上。
+    const scope = this.shippedScope(orders, await this.shipmentFacts(orders));
+    const shipped = scope.orders;
+
+    const costs = await this.cost.materialCosts(shipped.map((order) => ({ salesOrderId: order.id, quantity: order.quantity })));
+    const labor = await this.laborByOrder(shipped.map((order) => order.orderNo), period);
 
     // 管理费按月登记：有起始日就用起始月，否则用结束日所在月（见 `allocationPeriodOf`）。
     // 一个期间都取不到（压根没给区间）时不查登记表，管理费四列留空并在表尾说清 ——
@@ -411,7 +458,7 @@ export class FinanceReportQueryService {
     const overheadUnit = allocation?.unit ?? null;
     const overheadRate = toDecimal(allocation?.rate);
 
-    const rows: CostAccountingSource[] = orders.map((order) => ({
+    const rows: CostAccountingSource[] = shipped.map((order) => ({
       date: order.orderDate,
       orderNo: order.orderNo,
       customerName: order.customer?.name ?? null,
@@ -438,17 +485,17 @@ export class FinanceReportQueryService {
 
     // 本币收入缺失 = 外币订单没填本币金额。这类行收入与利润都会留空，
     // 光看表会以为「这单没收入」，所以必须点名（美元单填了 0 与留空是两件事）。
-    const missingRevenue = orders
+    const missingRevenue = shipped
       .filter((order) => !localRevenueOf({ currency: order.currency, totalAmount: order.totalAmount, receivableAmount: order.receivableAmount, localCurrencyAmount: order.localCurrencyAmount }))
       .map((order) => order.orderNo);
     const missing = new Map<string, string>();
-    for (const order of orders) {
+    for (const order of shipped) {
       for (const item of costs.get(order.id)?.missingPrice ?? []) {
         missing.set(`${item.materialCode}|${item.materialName}`, item.materialCode ? `${item.materialCode} ${item.materialName}` : item.materialName);
       }
     }
     // 单位对不上时 `overheadUnit` 才有值（没登记就没有单位，那时「对不上」是必然的、没有信息量）。
-    const mismatched = overheadUnit ? orders.filter((order) => !allocationUnitMatches(order.unit, overheadUnit)).map((order) => order.orderNo) : [];
+    const mismatched = overheadUnit ? shipped.filter((order) => !allocationUnitMatches(order.unit, overheadUnit)).map((order) => order.orderNo) : [];
 
     const overheadNotes: string[] = [];
     if (!allocationPeriod) {
@@ -465,11 +512,13 @@ export class FinanceReportQueryService {
     }
 
     const footnotes = [
+      // 行集说明排在最前面：读者第一个问题是"这张单怎么不在表里"（未出货 / 只出了一部分）。
+      ...scope.footnotes,
       "本表金额列一律为人民币本位币口径（老表没有币种列）：收入金额取销售单上的本币金额，外币订单没有本币金额时该行收入与利润留空。",
       ...footnoteLines("本币收入缺失的订单（收入金额与利润留空）", missingRevenue),
       // 与销售利润报表(毛利)用同一句话：缺价/缺 BOM 会让成本偏小、利润偏大，两张表要能对着读。
       ...footnoteLines("缺采购价物料（成本按 0 计入，毛利偏高）", [...missing.values()]),
-      ...footnoteLines("没有 BOM 或 BOM 无明细的销售单（成本按 0 计入，毛利偏高）", orders.filter((order) => !costs.get(order.id)?.hasBom).map((order) => order.orderNo)),
+      ...footnoteLines("没有 BOM 或 BOM 无明细的销售单（成本按 0 计入，毛利偏高）", shipped.filter((order) => !costs.get(order.id)?.hasBom).map((order) => order.orderNo)),
       ...overheadNotes,
       ...footnoteLines("订单单位与分摊单位不一致的订单（管理费三列留空）", mismatched),
     ];
@@ -903,6 +952,74 @@ export class FinanceReportQueryService {
 
   private statuses(allowed: ReadonlyArray<string>, includeDraft?: boolean): string[] {
     return includeDraft ? ["draft", ...allowed] : [...allowed];
+  }
+
+  /**
+   * 读回这批销售单的出货事实（两个数据源，见 `SHIPPED_OUTBOUND_STATUSES` 的注释）。
+   *
+   * 一次 IN 查询读两张表，不做逐单查询 —— 报表一次可能几百行，逐单查就是几百次往返。
+   * 两个 `findMany` 都是空数组就短路：没有订单时不该发空 IN 查询（既有写法）。
+   */
+  private async shipmentFacts(orders: ReadonlyArray<{ id: string; orderNo: string }>): Promise<ShipmentFacts> {
+    const shipped = new Set<string>();
+    const shippedQuantity = new Map<string, Prisma.Decimal>();
+    if (!orders.length) return { shipped, shippedQuantity };
+    const [outbounds, directShipments] = await Promise.all([
+      this.prisma.finishedGoodsOutbound.findMany({
+        where: { salesOrderId: { in: orders.map((order) => order.id) }, deletedAt: null, status: { in: [...SHIPPED_OUTBOUND_STATUSES] } },
+        select: { salesOrderId: true, quantity: true },
+      }),
+      this.prisma.outsourceDirectShipment.findMany({
+        where: { orderNo: { in: orders.map((order) => order.orderNo) }, deletedAt: null, status: { in: [...DISPATCHED_DIRECT_SHIPMENT_STATUSES] } },
+        select: { orderNo: true, quantity: true },
+      }),
+    ]);
+    const idByOrderNo = new Map(orders.map((order) => [order.orderNo, order.id]));
+    const add = (salesOrderId: string, quantity: Prisma.Decimal) => {
+      shipped.add(salesOrderId);
+      shippedQuantity.set(salesOrderId, (shippedQuantity.get(salesOrderId) ?? new Prisma.Decimal(0)).plus(quantity));
+    };
+    for (const row of outbounds) add(row.salesOrderId, row.quantity);
+    for (const row of directShipments) {
+      // 直装柜按**订单号**关联（这张表没有 sales_order_id 列）：查不到对应销售单的直发记录与本次报表无关。
+      const salesOrderId = idByOrderNo.get(row.orderNo);
+      if (salesOrderId) add(salesOrderId, row.quantity);
+    }
+    return { shipped, shippedQuantity };
+  }
+
+  /**
+   * 把「订单全集」收窄成「真的出了货的单」，同时把两件必须让读者看见的事写成表尾。
+   *
+   * 两张表（销售利润表 / 核算表）共用这一个函数：它们的行集**必须逐行对得上**
+   * （2026-09-30 的既有口径），所以过滤与说明都不允许各写一份。
+   *
+   * 表尾两条：
+   *   · 未出货而被排除的单**必须列出单号**。不列的话，「这张单怎么不在核算表里」只能靠人回忆；
+   *     列了才能一眼看出"还没发货"。
+   *   · 部分出货的单：一行仍是整单的数（收入 / 材料成本都按订单量算），所以要点名它没出完，
+   *     否则读者会以为这张单已经全部交付、收入已经全额实现。
+   */
+  private shippedScope<T extends { id: string; orderNo: string; quantity: Prisma.Decimal; unit?: string | null }>(
+    orders: readonly T[],
+    facts: ShipmentFacts,
+  ): { orders: T[]; footnotes: string[] } {
+    const included = orders.filter((order) => facts.shipped.has(order.id));
+    const excluded = orders.filter((order) => !facts.shipped.has(order.id));
+    const partial = included
+      .map((order) => ({ order, shippedQuantity: facts.shippedQuantity.get(order.id) }))
+      .filter((row): row is { order: T; shippedQuantity: Prisma.Decimal } => Boolean(row.shippedQuantity))
+      // 订单数量为 0 时不比（0 不是"出了一部分"，是这张单本来就没有量）；
+      // 出货量 ≥ 订单量就是出完了（超发不再单独点名：超发另有原因与流程管着）。
+      .filter((row) => row.order.quantity.gt(0) && row.shippedQuantity.lt(row.order.quantity))
+      .map((row) => `${row.order.orderNo}（已出 ${row.shippedQuantity.toString()} / 订单 ${row.order.quantity.toString()}${row.order.unit ? ` ${row.order.unit}` : ""}）`);
+    return {
+      orders: included,
+      footnotes: [
+        ...footnoteLines("尚未出货的销售单（未计入本表）", excluded.map((order) => order.orderNo), 10, 3, "这些单还没有出货，等出货后会出现在出货月对应的报表里"),
+        ...footnoteLines("部分出货的销售单（本表按整单计入）", partial, 10, 3, "这些单只出了一部分，本表按整单数量计入，出货量以出库单为准"),
+      ],
+    };
   }
 
   /**

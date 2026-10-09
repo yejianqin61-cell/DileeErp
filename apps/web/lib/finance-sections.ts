@@ -96,6 +96,12 @@ export function resolveFinanceTab<T extends { key: string }>(tabs: readonly T[],
  * 外汇一览表的期间是**收款（到账）日期**（用户 2026-09-17 选定）——老表标题就是
  * 「外汇入款一览表」，看的是钱什么时候进来；它的导出文件里还有第二张工作表「客户汇总」，
  * 页面只预览明细（见 finance-report-workspace 的 extra_sheets 提示）。
+ *
+ * 2026-10-08（用户「核算表…出了货才要进核算表」）：**核算表与销售利润表(毛利)现在只含已出货的销售单**
+ * （成品出库单 posted/shipped/signed，或外加工直装柜 dispatched；部分出货按整单计入并在表尾点名）。
+ * 前端不需要改：这件事完全落在取数侧，表尾说明（未出货的单号、部分出货的数量）由后端给，
+ * 页面与导出用同一份。期间口径仍是销售单日期 —— 待确认是否改为按出货日期，
+ * 见 [`finance-shipped-only-reports-2026-10-08.md`](../../docs/design/finance-shipped-only-reports-2026-10-08.md) §五。
  */
 export const FINANCE_REPORT_TABS = [
   { key: "sales-reconciliation-detail", title: "销售对账明细表", scope: "customer" },

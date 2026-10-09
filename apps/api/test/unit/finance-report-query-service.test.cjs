@@ -229,14 +229,21 @@ test("finance-report.query：正好等于上限时放行", async () => {
 
 /* ------------------------------------------------------------ 二期：汇总表与利润表 */
 
-/** 二期取数需要的桩：应收来源 + 已过账调整 + 销售单 + BOM 成本服务。 */
-function stubPhase2({ sources = [], adjustments = [], orders = [], costs = new Map() } = {}) {
-  const calls = { receivableSource: [], receivableAdjustment: [], salesOrder: [] };
+/** 二期取数需要的桩：应收来源 + 已过账调整 + 销售单 + BOM 成本服务 + 出货事实（2026-10-08 起）。 */
+function stubPhase2({ sources = [], adjustments = [], orders = [], costs = new Map(), outbounds = null, directShipments = [] } = {}) {
+  const calls = { receivableSource: [], receivableAdjustment: [], salesOrder: [], finishedGoodsOutbound: [], outsourceDirectShipment: [] };
   const costCalls = [];
+  /**
+   * 出货事实默认「**每张订单都已出完**」（quantity = 订单数量）：本文件的用例测的是取数形状与
+   * 成本/期间口径，行集本身（谁进表、谁不进）由 `finance-report-shipped-scope.test.cjs` 专门钉住。
+   */
+  const shippedRows = outbounds ?? orders.map((row) => ({ salesOrderId: row.id, quantity: row.quantity ?? dec("0") }));
   const prisma = {
     receivableSource: { findMany: async (args) => { calls.receivableSource.push(args); return sources; } },
     receivableAdjustment: { findMany: async (args) => { calls.receivableAdjustment.push(args); return adjustments; } },
     salesOrder: { findMany: async (args) => { calls.salesOrder.push(args); return orders; } },
+    finishedGoodsOutbound: { findMany: async (args) => { calls.finishedGoodsOutbound.push(args); return shippedRows; } },
+    outsourceDirectShipment: { findMany: async (args) => { calls.outsourceDirectShipment.push(args); return directShipments; } },
   };
   const cost = { materialCosts: async (input) => { costCalls.push(input); return costs; } };
   return { service: new FinanceReportQueryService(prisma, cost), calls, costCalls };

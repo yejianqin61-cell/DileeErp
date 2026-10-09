@@ -256,12 +256,20 @@ test("核算表：落到工作簿后占比列仍是数值单元格，合计公�
 
 /* ================================================================== 二、取数（查询服务） */
 
-/** 桩：销售单 + 计件日报 + 两个外部服务（成本 / 管理费分摊）。 */
-function stubQuery({ orders = [], labor = [], costs = new Map(), allocation = null } = {}) {
-  const calls = { salesOrder: [], employeeDailyReport: [], materialCosts: [], resolved: [] };
+/** 桩：销售单 + 计件日报 + 两个外部服务（成本 / 管理费分摊）+ 出货事实（成品出库单 / 外加工直装柜）。 */
+function stubQuery({ orders = [], labor = [], costs = new Map(), allocation = null, outbounds = null, directShipments = [] } = {}) {
+  const calls = { salesOrder: [], employeeDailyReport: [], materialCosts: [], resolved: [], finishedGoodsOutbound: [], outsourceDirectShipment: [] };
+  /**
+   * 出货事实默认是「**每一张订单都已出完**」：本文件绝大多数用例测的是版式、算术与表尾口径，
+   * 不是行集 —— 默认全部出货，那些用例的含义与改前完全一致（行数不变、也不多出"部分出货"的表尾）。
+   * 「谁进表、谁不进表」由 `finance-report-shipped-scope.test.cjs` 专门钉住。
+   */
+  const shippedRows = outbounds ?? orders.map((row) => ({ salesOrderId: row.id, quantity: row.quantity ?? dec("0") }));
   const prisma = {
     salesOrder: { findMany: async (args) => { calls.salesOrder.push(args); return orders; } },
     employeeDailyReport: { groupBy: async (args) => { calls.employeeDailyReport.push(args); return labor; } },
+    finishedGoodsOutbound: { findMany: async (args) => { calls.finishedGoodsOutbound.push(args); return shippedRows; } },
+    outsourceDirectShipment: { findMany: async (args) => { calls.outsourceDirectShipment.push(args); return directShipments; } },
   };
   const cost = { materialCosts: async (input) => { calls.materialCosts.push(input); return costs; } };
   const overhead = {
