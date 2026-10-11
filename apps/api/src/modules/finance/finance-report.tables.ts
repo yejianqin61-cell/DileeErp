@@ -207,7 +207,7 @@ export type PurchaseReconciliationDetailSource = {
 
 export function buildPurchaseReconciliationDetailTable(
   rows: PurchaseReconciliationDetailSource[],
-  options: { currencyLabels: ReadonlyMap<string, string> },
+  options: { currencyLabels: ReadonlyMap<string, string>; excludedOtherCount?: number },
 ): ReportTable {
   return {
     sheetName: "采购对账明细",
@@ -236,6 +236,16 @@ export function buildPurchaseReconciliationDetailTable(
       toExportNumber(row.amount),
     ]),
     totalColumns: PURCHASE_TOTAL_COLUMNS,
+    /**
+     * 「其他应付」被排除的笔数必须在表尾点名（2026-10-11 财务：「备用金不进采购对账单」）。
+     *
+     * 为什么宁可多一句话：这张表里原本是**有**那些行的，现在它们不见了。
+     * 只删不说的话，财务对不上时只能靠回忆「是不是上个月还有一笔备用金」，
+     * 而她无从知道是被**有意排除**了、还是导出漏了。所以这里给出笔数与去处。
+     */
+    footnotes: options.excludedOtherCount
+      ? [`本表不含「其他应付」${options.excludedOtherCount} 笔（备用金 / 房租 / 水电 / 运费等非采购支出）：采购对账按供应商与物料数量逐项核对，这些条目没有采购单与物料，故不纳入本表。它们仍在「应付管理 → 应付对账」与「收支管理 → 收支流水」里。`]
+      : undefined,
   };
 }
 

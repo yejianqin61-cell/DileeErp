@@ -184,28 +184,53 @@ export class FinanceReportQueryService {
     }));
   }
 
-  /** 采购对账明细表取数（主表 = 应付条目，与销售侧的「应收来源」对称）。 */
-  async purchaseReconciliationDetail(filter: FinanceReportFilter): Promise<PurchaseReconciliationDetailSource[]> {
+  /**
+   * 采购对账明细表取数（主表 = 应付条目，与销售侧的「应收来源」对称）。
+   *
+   * ## 为什么「其他应付」不进这张表（2026-10-11 财务反馈）
+   *
+   * 财务原话：「怎么让录进去的备用金不进采购单里／采购对账单／不然导采购单，就一起出来了」。
+   *
+   * 根因：应付条目有四种来源（`raw_material_inbound` / `purchase_receipt` /
+   * `outsource_receipt` / `other`）。**其他应付落库时也是一条 `supplier_payable_entry`**
+   * （见 `supplier-payable.service.ts` 的 `otherEntryData`），而这里原先**一个来源类型都没筛**，
+   * 于是备用金、房租、水电、运费这些也进了采购对账明细表。
+   *
+   * 为什么这是错的而不是「少一列」：**采购对账是按供应商逐项核对物料与数量的**，
+   * 备用金既没有供应商物料、也没有数量与采购单 —— 它进表只会得到一行对不上的空壳，
+   * 财务逐行核对时永远对不平（她对不平的第一反应只能是怀疑整张表）。
+   *
+   * 为什么不干脆删掉：**其他应付确实是应付**，它进「应付对账」是对的（见
+   * `docs/design/other-payable-batch-import-2026-09-16.md`：其他应付导入后立刻出现在
+   * 应付对账 → 待创建对账）。所以这里只把**采购**对账明细表收窄，并把被排除的笔数
+   * 在表尾点名（`excludedOtherCount`）—— 静默少一行比多一行更难查。
+   */
+  async purchaseReconciliationDetail(
+    filter: FinanceReportFilter,
+  ): Promise<{ rows: PurchaseReconciliationDetailSource[]; excludedOtherCount: number }> {
     const period = financeDayRange(filter.from, filter.to);
+    // 两个查询共用同一组条件：被排除的笔数必须与主查询**同一范围**，
+    // 否则筛了供应商却报出全公司的备用金笔数，表尾那句话就成了假话。
+    const scope = {
+      deletedAt: null,
+      status: { in: this.statuses(PAYABLE_REPORT_STATUSES, filter.includeDraft) },
+      ...(filter.supplierId ? { supplierId: filter.supplierId } : {}),
+      ...(filter.orderNo ? { orderNo: filter.orderNo } : {}),
+      ...(filter.currency ? { currency: filter.currency } : {}),
+      // 「日期」列 = 采购单的采购日期，为空时回落应付条目创建时间；
+      // 过滤条件必须覆盖这两种情况，否则采购日期为空的历史条目会被静默漏掉。
+      ...(period
+        ? {
+            OR: [
+              { purchaseOrder: { purchaseDate: period } },
+              { purchaseOrder: { purchaseDate: null }, createdAt: period },
+              { purchaseOrderId: null, createdAt: period },
+            ],
+          }
+        : {}),
+    };
     const rows = await this.prisma.supplierPayableEntry.findMany({
-      where: {
-        deletedAt: null,
-        status: { in: this.statuses(PAYABLE_REPORT_STATUSES, filter.includeDraft) },
-        ...(filter.supplierId ? { supplierId: filter.supplierId } : {}),
-        ...(filter.orderNo ? { orderNo: filter.orderNo } : {}),
-        ...(filter.currency ? { currency: filter.currency } : {}),
-        // 「日期」列 = 采购单的采购日期，为空时回落应付条目创建时间；
-        // 过滤条件必须覆盖这两种情况，否则采购日期为空的历史条目会被静默漏掉。
-        ...(period
-          ? {
-              OR: [
-                { purchaseOrder: { purchaseDate: period } },
-                { purchaseOrder: { purchaseDate: null }, createdAt: period },
-                { purchaseOrderId: null, createdAt: period },
-              ],
-            }
-          : {}),
-      },
+      where: { ...scope, sourceType: { not: "other" } },
       include: {
         supplier: { select: { name: true } },
         purchaseOrder: { select: { purchaseOrderNo: true, purchaseDate: true } },
@@ -236,7 +261,12 @@ export class FinanceReportQueryService {
       orderBy: [{ createdAt: "asc" }],
     });
     this.assertWithinLimit(rows.length);
-    return rows.map((row) => {
+    // 被排除的「其他应付」笔数：与主查询同一范围，只换来源类型。
+    // 用 count 而不是把行读回来 —— 表尾只需要一个笔数，不需要它们的字段。
+    const excludedOtherCount = await this.prisma.supplierPayableEntry.count({
+      where: { ...scope, sourceType: "other" },
+    });
+    return { rows: rows.map((row) => {
       const item = row.payableSource?.purchaseOrderItem ?? null;
       // 外加工签收形成的应付没有采购明细，物料挂在物流批次的原料上。
       const material = item?.material ?? row.outsourcePayableSource?.logisticsBatch?.material ?? null;
@@ -258,7 +288,7 @@ export class FinanceReportQueryService {
         quantity: row.quantity,
         amount: row.amount,
       };
-    });
+    }), excludedOtherCount };
   }
 
   /**

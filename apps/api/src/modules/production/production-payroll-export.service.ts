@@ -55,6 +55,10 @@ export const ROW_TOTAL_LABEL = "各工序合计（非完工量）";
 
 type Filters = { operation_id?: string; month?: string; order_no?: string };
 const LIMIT = 10000;
+/** 执行方式的中文写法（与页面「生产单执行方式」一致，导出里不出现 in_house 这种内部值）。 */
+const EXECUTION_MODE_LABELS: Record<string, string> = { in_house: "本厂", outsourced: "外发" };
+/** 「工序月度汇总」sheet 名。 */
+export const MONTHLY_OPERATION_SUMMARY_SHEET = "工序月度汇总";
 
 type ReportRow = Prisma.EmployeeDailyReportGetPayload<{ include: { employee: { include: { department: true } }; productionOrderOperation: true } }>;
 
@@ -366,8 +370,158 @@ export class ProductionPayrollExportService {
       return [{ name: column.label, rows: sheetRows }];
     });
 
-    const sheets = [{ name: MONTHLY_REPORT_SHEET, rows: summarySheetRows }, ...detailSheets];
+    // 工作表顺序：总表（一个订单一行） → 工序月度汇总（一行一个工序） → 每道工序一张明细。
+    // 汇总紧跟总表而不是放在最后：财务翻这份文件时先看「哪张单做到哪」，紧接着看「这个月每道工序多少」，
+    // 再往下才是逐工序逐工人的明细。明细 sheet 有十几张，汇总放最后等于每次都要翻到最后。
+    const sheets = [{ name: MONTHLY_REPORT_SHEET, rows: summarySheetRows }, { name: MONTHLY_OPERATION_SUMMARY_SHEET, rows: this.monthlyOperationSummaryRows({ cells: cells.values(), columns, employeeRows, metaOf, month: filters.month, user }) }, ...detailSheets];
     return this.buildBook(sheets, { report_type: MONTHLY_REPORT_SHEET, filters, row_count: summaryRows.length, operation_count: columns.length, sheet_count: sheets.length }, user);
+  }
+
+  /**
+   * 工序月度汇总 sheet 的行构造（2026-10-11 用户转述财务：「月报表就是工序的汇总表」）。
+   *
+   * 与总表的区别就一句：总表是**一个订单一行 × 工序横向展开**（看「哪张单做到哪道工序了」），
+   * 这张是**一行一个工序 × 全月跨所有订单汇总**（看「这个月每道工序做了多少、花了多少钱」）——
+   * 财务要的是后者：核算表的「计件人工」就是按工序逐道累加出来的，她拿这张表才能和账对上。
+   *
+   * ## 与总表的对账关系（写清楚，因为它是本表唯一的自证方式）
+   *
+   * 两处用的是**同一份 `cells`（同一套逐日取大结果）**，但切法不同：
+   *   · 总表按**工序列**切，而一列可能把多个东西并进同一格 —— 字典名与客户叫法
+   *     （`验片` / `验伞面`，见 `MONTHLY_TEMPLATE_COLUMNS` 的 aliases）、以及未按执行方式拆分的
+   *     工序列里本厂与外发两批活；
+   *   · 本表按 **(工序, 单位, 生产单执行方式)** 切成一行一行的明细。
+   *
+   * 所以**要说的是加总关系，不是单格相等**：
+   *   本表同一道工序的**各行相加** = 总表该工序列**各订单格子相加**。
+   * 单看一行可能小于总表那一格（总表把几批活并成了一格），这不是算错。
+   * 第一版这里写的是「与总表对应工序列同一个数」—— 那句话在别名与未拆分执行方式的列上是**假话**，
+   * 而工序列的取值也没有跟总表一样把客户叫法并到字典名上，于是同一道工序在两张表里被拆成了两行。
+   * 现在工序列统一取**总表列名**（`labelOf`），别名与字典名合成一行，加总关系才真的成立。
+   */
+  private monthlyOperationSummaryRows(input: {
+    cells: Iterable<{ orderNo: string; operationName: string; unit: string; executionMode: string; quantity: Prisma.Decimal }>;
+    columns: Array<{ label: string; names: string[]; executionMode?: "in_house" | "outsourced" }>;
+    employeeRows: ReportRow[];
+    /** 工序 id → 单位与执行方式。由调用方一次取回（见 exportMonthlyProduction 的 operationMeta），这里不另查。 */
+    metaOf: (operationId: string) => { unit: string; executionMode: "in_house" | "outsourced" };
+    month: string;
+    user: CurrentUser;
+  }): Array<Array<string | number | null>> {
+    const { columns, employeeRows, metaOf, month } = input;
+    // 入口可能是 Map.values()（一个迭代器，只能走一遍），后面要按分组取数与合计，先落成数组。
+    const cells = [...input.cells];
+    /**
+     * 工序名 → 它在总表里的**列名**。这是与总表对齐的关键：
+     * 总表一列可能同时装字典名（`验片`）与客户叫法（`验伞面`），两处必须合成一行，
+     * 否则同一道工序在本表被拆成两行，而总表只有一格（对账时怎么加都对不上）。
+     * 取不到列名的工序（历史快照已改名的）回落成自己的名字 —— 与总表「补上已不在字典里的历史工序名」
+     * 那段一致，绝不因为认不出列就把数量丢掉。
+     */
+    const labelOf = new Map<string, string>();
+    for (const column of columns) for (const name of column.names) if (!labelOf.has(name)) labelOf.set(name, column.label);
+    const labelFor = (operationName: string) => labelOf.get(operationName) ?? operationName;
+
+    /**
+     * 分组键用**列名**而不是原始工序名。
+     *
+     * 这一处是最初写错的地方：`验片` 与 `验伞面` 在总表里是**同一列**（列名 `验片`），
+     * 所以它们必须合成一行。只在显示列上写 `label` 是不够的 —— 键里若仍是原始名，
+     * 两行会**长得一模一样地各占一行**（都显示「验片」），数量却各是一半，
+     * 比单纯多一行更难查：读者会以为系统把同一道工序重复统计了。
+     * 键里同时去掉原始名，才能真正合成一行。
+     */
+    const keyOfParts = (label: string, unit: string, executionMode: string) => [label, unit, executionMode].join("\u0000");
+    type Group = { label: string; unit: string; executionMode: string; amount: Prisma.Decimal; durationMinutes: Prisma.Decimal };
+    const groups = new Map<string, Group>();
+    /** 分组键 → 该组的全部格子。一次建好，后面按组取数量就不再遍历整张 cells。 */
+    const cellsOfGroup = new Map<string, Array<{ orderNo: string; operationName: string; unit: string; executionMode: string; quantity: Prisma.Decimal }>>();
+    const seed = (operationName: string, unit: string, executionMode: string): Group => {
+      const label = labelFor(operationName);
+      const key = keyOfParts(label, unit, executionMode);
+      const existing = groups.get(key);
+      if (existing) return existing;
+      const created: Group = { label, unit, executionMode, amount: new Prisma.Decimal(0), durationMinutes: new Prisma.Decimal(0) };
+      groups.set(key, created);
+      return created;
+    };
+    for (const cell of cells) {
+      seed(cell.operationName, cell.unit, cell.executionMode);
+      const key = keyOfParts(labelFor(cell.operationName), cell.unit, cell.executionMode);
+      const bucket = cellsOfGroup.get(key) ?? [];
+      bucket.push(cell);
+      cellsOfGroup.set(key, bucket);
+    }
+    // 金额与工时只来自员工日报（只有它有员工维度与计薪方式）；数量来自工序日报与员工日报逐日取大。
+    // 两列不做等值假设：那天只有员工面报了数而被工序面顶掉时，数量按逐日取大会取工序面（更小），
+    // 金额却照记 —— 所以「金额有值而数量更小（甚至为 0）」是正常现象，不是漏算。
+    for (const row of employeeRows) {
+      const meta = metaOf(row.productionOrderOperationId);
+      const group = seed(row.operationNameSnapshot, meta.unit, meta.executionMode);
+      group.amount = group.amount.plus(row.calculatedAmount);
+      if (row.wageMode === "time_rate") group.durationMinutes = group.durationMinutes.plus(row.durationMinutes ?? 0);
+    }
+
+    // 排序：按总表的工序列顺序（工序字典顺序），同一道工序内按 单位 → 执行方式 定序（与明细一致的码位比较）。
+    // 别名也映射到列序号，否则它会被当成「认不出列的工序」掉到最末，而总表里它就在字典名那一列。
+    const orderOf = new Map<string, number>();
+    columns.forEach((column, index) => column.names.forEach((name) => { if (!orderOf.has(name)) orderOf.set(name, index); }));
+    const sorted = [...groups.values()].sort((left, right) => {
+      const leftOrder = orderOf.get(left.label) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = orderOf.get(right.label) ?? Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      // 列序号相同时按列名（不是原始工序名）定序：同一列里的别名与字典名已经合成一行，这里只需稳定。
+      return (
+        this.byCodeUnit(left.label, right.label) ||
+        this.byCodeUnit(left.unit, right.unit) ||
+        this.byCodeUnit(left.executionMode, right.executionMode)
+      );
+    });
+
+    /**
+     * 一格的数量：分组键里已经带了**单位**与执行方式，所以同一组内的格子单位必然一致
+     * （「数量不跨单位合计」这条纪律是在**分组键**上落地的，不是靠这里拼字符串兜）。给数值，
+     * 而不是拼成文本 —— Excel 里文本型数字不能求和/筛选/排序。
+     */
+    const quantityOf = (group: Group): number | null => {
+      const bucket = cellsOfGroup.get(keyOfParts(group.label, group.unit, group.executionMode));
+      if (!bucket?.length) return null;
+      return this.num(bucket.reduce((sum, cell) => sum.plus(cell.quantity), new Prisma.Decimal(0)));
+    };
+
+    const body = sorted.map((group) => [
+      group.label, // 工序列取**总表列名**：字典名与客户叫法合成一行，与总表对得齐
+      EXECUTION_MODE_LABELS[group.executionMode] ?? group.executionMode,
+      group.unit,
+      quantityOf(group),
+      this.num(group.amount),
+      this.hoursOrBlank(group.durationMinutes),
+    ] as Array<string | number | null>);
+    const amountTotal = sorted.reduce((sum, group) => sum.plus(group.amount), new Prisma.Decimal(0));
+    const durationTotal = sorted.reduce((sum, group) => sum.plus(group.durationMinutes), new Prisma.Decimal(0));
+    // 合计行的**数量刻意留空**：一行一个单位，跨行相加要跨单位（全站纪律）。
+    // 金额与工时是元/小时，不受那条纪律约束，照常合计。
+    const totalRow: Array<string | number | null> = ["合计", null, null, null, this.num(amountTotal), this.hoursOrBlank(durationTotal)];
+    if (!body.length) body.push(["（本月无生产日报数据）", null, null, null, null, null]);
+
+    return [
+      ["工序月度汇总表"],
+      ["统计月份", month],
+      [
+        "数据范围",
+        "当月（按生产日期划分）全部订单的工序产量与计件金额，**一行一个工序**；工序列取总表的列名（客户叫法 验伞面 并到字典名 验片 那一行）。同一道工序出现多个单位或多个生产单执行方式（本厂/外发）时分行列出，绝不相加。",
+      ],
+      [
+        "口径说明",
+        "数量＝max(工序日报日合计, 员工日报日合计) 逐日取大后累加，与总表 sheet「生产月报表」用的是同一份结果；本表按 (工序, 单位, 执行方式) 切成明细行，所以**同一道工序各行相加 = 总表该工序列各订单格子相加**，单看一行可能小于总表那一格（总表会把验片/验伞面、本厂/外发并进同一格）。金额与工时只来自员工日报（只有它有员工维度与计薪方式），因此「有金额而数量更小甚至为 0」可能成立（那天只有员工面报了数、被逐日取大取掉了），两列不做等值假设。金额是员工日报的金额快照合计（元）。工时只统计**计时**行（元/小时那一档），计件行不产生工时，无计时工时的行该格留空而不是 0。合计行的数量留空：一行一个单位，跨行相加会跨单位。这张表是**全月跨所有订单**的汇总；按订单看请读总表 sheet。",
+      ],
+      ["生成时间", beijingDateTime(new Date(), { seconds: true })],
+      ["导出人", input.user.username],
+      [],
+      ["工序", "执行方式", "单位", "数量", "计件金额（元）", "工时（小时，仅计时）"],
+      ...body,
+      totalRow,
+    ];
   }
 
   /** 订单号盘点表：单订单明细（时长小时、合计），表头附每道工序的生产日期数组、计划数量与汇总数量；可选按生产日期月份过滤。 */
@@ -636,6 +790,20 @@ export class ProductionPayrollExportService {
   private hours(durationMinutes: Prisma.Decimal | null) {
     if (durationMinutes === null || durationMinutes === undefined) return null;
     return Number(this.trimZeros(new Prisma.Decimal(durationMinutes).div(60).toFixed(8)));
+  }
+
+  /**
+   * 工时列（工序月度汇总）的取值：**没有计时工时就是空单元格，不是 0**。
+   *
+   * `hours()` 是给「这一行本来就有时长」的明细表用的，0 分钟在那里是「报了 0 小时」这个事实；
+   * 而工序汇总的一行是一道工序的全月汇总，**全月没有任何计时行**时它根本不是「零工时」，
+   * 而是「这道工序这个月没有计时工」—— 写 0 会被读成「有计时工但一小时都没干」。
+   * 与「计件人工 = 0 与收入 = 空是两件事」同一条取舍（见 finance-report.tables.ts）。
+   */
+  private hoursOrBlank(durationMinutes: Prisma.Decimal | null) {
+    const value = durationMinutes ? new Prisma.Decimal(durationMinutes) : null;
+    if (!value || value.eq(0)) return null;
+    return this.hours(value);
   }
 
   /**

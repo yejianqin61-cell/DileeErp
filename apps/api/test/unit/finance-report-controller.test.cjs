@@ -81,22 +81,26 @@ function stubReports(overrides = {}) {
     },
     purchaseReconciliationDetail: async (filter) => {
       filters.purchase.push(filter);
-      return overrides.purchaseRows ?? [
-        {
-          date: new Date("2026-09-08T00:00:00.000Z"),
-          orderNo: "XSDD2026090700001",
-          purchaseOrderNo: "CGDH1319",
-          supplierName: "碧江",
-          productName: "23寸*10K 三折自开收",
-          materialCode: "WPTM1",
-          specification: "黑色电着铁中棒",
-          unit: "打",
-          currency: "CNY",
-          unitPrice: dec("99"),
-          quantity: dec("42"),
-          amount: dec("4158"),
-        },
-      ];
+      return {
+        rows: overrides.purchaseRows ?? [
+          {
+            date: new Date("2026-09-08T00:00:00.000Z"),
+            orderNo: "XSDD2026090700001",
+            purchaseOrderNo: "CGDH1319",
+            supplierName: "碧江",
+            productName: "23寸*10K 三折自开收",
+            materialCode: "WPTM1",
+            specification: "黑色电着铁中棒",
+            unit: "打",
+            currency: "CNY",
+            unitPrice: dec("99"),
+            quantity: dec("42"),
+            amount: dec("4158"),
+          },
+        ],
+        // 「其他应付」（备用金 / 房租…）被排除的笔数 —— 表尾要用它点名，见 2026-10-11 财务反馈。
+        excludedOtherCount: overrides.excludedOtherCount ?? 0,
+      };
     },
     salesReconciliationSummary: async (filter) => {
       filters.summary.push(filter);
@@ -494,6 +498,29 @@ test("finance-report.api：收支报表的 subject_id / category / direction 参
   assert.equal(filters.cashDetail[0].category, "损益类");
   assert.equal(filters.cashDetail[0].direction, "expense");
   assert.equal(filters.cashDetail[0].currency, "CNY");
+});
+
+/* ------------------------------------------------------------ 采购对账明细：排除其他应付 */
+
+// 2026-10-11 财务：「怎么让录进去的备用金不进采购单里／采购对账单／不然导采购单，就一起出来了」。
+// 「其他应付」（备用金 / 房租 / 水电 / 运费）与采购到货、外加工签收一样都是一条 supplier_payable_entry，
+// 所以取数层必须按来源类型收窄；被排除的笔数必须在表尾点名（静默少一行比多一行更让人对不上）。
+test("finance-report.api：采购对账明细把被排除的「其他应付」笔数写在表尾，且不含那些行", async () => {
+  const { service } = stubReports({ excludedOtherCount: 3 });
+  const preview = await new FinanceReportController(service, statementsStub().statements).purchaseReconciliationDetail({});
+  const notes = preview.data.footnotes.join("\n");
+  assert.match(notes, /其他应付/, "必须点名被排除的是什么");
+  assert.match(notes, /3 笔/, "必须给笔数：财务要能核对「我录的 3 笔备用金去哪了」");
+  assert.match(notes, /应付对账/, "还要给出它们仍然在的地方（否则读起来像这些钱丢了）");
+  // 行集里只有采购侧的条目：假取数层只回了 1 行采购，被排除的行不在这份数据里。
+  assert.equal(preview.data.rows.length, 1);
+  assert.equal(preview.data.rows[0][4], "碧江", "供应商名称仍在第 5 列（列序一字未动）");
+});
+
+test("finance-report.api：没有被排除的其他应付时不加那句表尾（不制造噪音）", async () => {
+  const { service } = stubReports({ excludedOtherCount: 0 });
+  const preview = await new FinanceReportController(service, statementsStub().statements).purchaseReconciliationDetail({});
+  assert.equal(preview.data.footnotes.some((note) => note.includes("其他应付")), false);
 });
 
 /* ------------------------------------------------------------ 采购对账明细：订单号列 */

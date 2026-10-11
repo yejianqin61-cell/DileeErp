@@ -2,15 +2,18 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
 const XLSX = require("xlsx");
-const { ProductionPayrollExportService, ROW_TOTAL_LABEL } = require("../dist/modules/production/production-payroll-export.service.js");
+const { ProductionPayrollExportService, ROW_TOTAL_LABEL, MONTHLY_OPERATION_SUMMARY_SHEET } = require("../dist/modules/production/production-payroll-export.service.js");
 
 // 生产月报表（`GET /production/reports/monthly-production-report.xlsx`）：总表＝订单 × 工序矩阵，
-// 另给每道工序一张明细 sheet。形状照用户手工台账 example/财务/2026.6月同安.xlsx。
+// 第二张「工序月度汇总」＝一行一个工序（全月跨所有订单），另给每道工序一张明细 sheet。
+// 形状照用户手工台账 example/财务/2026.6月同安.xlsx。
 //
 // 这里要钉住的都是**静默出错**的口径，错了界面看不出来、只会把错的数印到车间墙上：
 //   1) 数量＝max(工序日报, 员工日报) **逐日**取大后累加：同一天不能相加（重复计数），
 //      也不能整月取大（3 号录工序日报、7 号录员工日报时会丢掉一半）；
-//   2) 总表单元格与工序明细 sheet 的汇总列必须同源同值，两张表不能各算一套；
+//   2) 总表单元格、工序明细 sheet 的汇总列、工序月度汇总三处必须来自**同一份逐日取大结果**：
+//      总表格子 = 该工序明细的「汇总数量」；而工序汇总按 (工序, 单位, 执行方式) 切成明细行，
+//      所以它是**加总关系** —— 同一道工序各行相加 = 总表该工序列各订单格子相加（不是逐行相等）；
 //   3) 拉边按生产单执行方式分本厂/外发（本厂与外发是两批不同的活）；
 //   4) 数量**不跨单位合计**（全站纪律，reorder.domain.ts:11）：多单位时按单位分行列出，绝不相加；
 //   5) 模板外的工序（剪线头）只要有数据就要有一列，不能因为不在模板里就丢掉数量；
@@ -189,14 +192,16 @@ function lastRow(book, sheetName) {
  * 文本型数字在 Excel 里是一格文字：SUM 得 0、筛选分不出区间、排序按字典序（"100" < "20"）。
  * 覆盖**整个工作簿的每一张 sheet**，新增列只要写成字符串就会被抓住。
  *
- * 唯一豁免是**订单号列**：订单号是标识符不是数量（车间台账里就是 240206 这种纯数字写法），
+ * 唯一豁免是**标识符列**（订单号 / 工序）：订单号是标识符不是数量（车间台账里就是 240206 这种纯数字写法），
  * 写成文本才不会丢前导零、也不会被 Excel 当成科学计数法，且它永远不参与求和。
+ * 工序月度汇总表的「工序」列同理（工序名本身不会是纯数字，但它是这一行的标识符）。
  */
 function assertNoTextNumbers(book, label) {
   const offenders = [];
+  const HEADER_FIRST_CELLS = ["月份", "订单号", "工序"];
   for (const sheetName of book.SheetNames) {
     const rows = rowsOf(book, sheetName);
-    const headerRow = rows.findIndex((row) => Array.isArray(row) && (row[0] === "月份" || row[0] === "订单号"));
+    const headerRow = rows.findIndex((row) => Array.isArray(row) && HEADER_FIRST_CELLS.includes(row[0]));
     const orderColumn = rows[headerRow][0] === "月份" ? 1 : 0;
     const range = XLSX.utils.decode_range(book.Sheets[sheetName]["!ref"]);
     for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex += 1) {
@@ -373,11 +378,248 @@ test("多单位不静默相加：包装一格拆成两个单位分行写，末�
   assert.equal(packTotal[packHeader.indexOf("周八 金额")], 153.6, "金额是元，跨单位也要照常相加");
 });
 
+// ------------------------------------------------------------------ 工序月度汇总（一行一个工序）
+
+// 2026-10-11 用户转述财务：「月报表就是工序的汇总表」。
+// 总表是「一个订单一行 × 工序横向展开」，财务要的是「一行一个工序 × 全月跨所有订单」——
+// 核算表的「计件人工」就是按工序逐道累加出来的，她拿这张表才能和账对上。
+
+function operationSummaryHeader(book) {
+  return rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET).find((row) => Array.isArray(row) && row[0] === "工序");
+}
+
+/** 工序汇总表里某一行的某列（同一道工序有多行时按执行方式区分）。 */
+function operationSummaryRow(book, operationName, executionMode = null) {
+  return rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET).find(
+    (row) => Array.isArray(row) && row[0] === operationName && (executionMode === null || row[1] === executionMode),
+  );
+}
+
+test("工序月度汇总：一行一个工序，数量是全月跨所有订单的产量汇总额", async () => {
+  const { book } = await exportMonthlyProduction();
+  const header = operationSummaryHeader(book);
+  assert.deepEqual(header, ["工序", "执行方式", "单位", "数量", "计件金额（元）", "工时（小时，仅计时）"]);
+
+  // 缝伞：SO-001 的 190 + SO-002 的 20 = 210（**跨订单相加**，这正是总表做不到的那件事）
+  const sew = operationSummaryRow(book, "缝伞");
+  assert.equal(sew[header.indexOf("数量")], 210, "工序汇总必须把全月所有订单的同一道工序加到一起");
+  assert.equal(sew[header.indexOf("单位")], "支");
+  // 金额来自员工日报：30 + 12 + 6 = 48
+  assert.equal(sew[header.indexOf("计件金额（元）")], 48);
+
+  assert.equal(operationSummaryRow(book, "大裁")[header.indexOf("数量")], 200);
+  assert.equal(operationSummaryRow(book, "剪线头")[header.indexOf("数量")], 33);
+});
+
+test("工序月度汇总：拉边按执行方式分两行（本厂与外发是两批不同的活，不能合成一行）", async () => {
+  const { book } = await exportMonthlyProduction();
+  const header = operationSummaryHeader(book);
+  // 总表把拉边拆成「拉边-本厂」「拉边-外发」两列；本表的工序列取总表列名（`拉边-本厂`），
+  // 执行方式另占一列 —— 所以同一道工序的两批活各占一行，且两行的工序名相同。
+  const inHouse = operationSummaryRow(book, "拉边-本厂", "本厂");
+  const outsourced = operationSummaryRow(book, "拉边-本厂", "外发");
+  assert.ok(inHouse && outsourced, "同一道工序的本厂 / 外发必须各占一行");
+  assert.equal(inHouse[header.indexOf("数量")], 55, "本厂取大 55");
+  assert.equal(outsourced[header.indexOf("数量")], 70, "外发 70，不能被本厂的行掩盖");
+  // 两行相加 = 总表两列各订单之和（拉边只有 SO-001 有数据）
+  assert.equal(inHouse[header.indexOf("数量")] + outsourced[header.indexOf("数量")], 125);
+});
+
+test("工序月度汇总：多单位的包装拆成两行，绝不相加成一个数", async () => {
+  const { book } = await exportMonthlyProduction();
+  const header = operationSummaryHeader(book);
+  const rows = rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET).filter((row) => Array.isArray(row) && row[0] === "包装");
+  assert.equal(rows.length, 2, "60 支与 4 打是两个单位，必须两行");
+  const byUnit = new Map(rows.map((row) => [row[header.indexOf("单位")], row[header.indexOf("数量")]]));
+  assert.equal(byUnit.get("支"), 60);
+  assert.equal(byUnit.get("打"), 4);
+  // 金额是元，跨单位照常各自累计（不受「不跨单位」约束）
+  assert.equal(rows.reduce((sum, row) => sum + row[header.indexOf("计件金额（元）")], 0), 153.6);
+});
+
+/** 某个工序在「工序月度汇总」里的**全部行**（同一道工序可能按单位/执行方式分成多行）。 */
+function operationSummaryRows(book, operationLabel) {
+  return rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET).filter((row) => Array.isArray(row) && row[0] === operationLabel);
+}
+
+test("工序月度汇总：同一道工序各行相加 = 总表该工序列各订单格子相加（跨订单的加总关系）", async () => {
+  const { book } = await exportMonthlyProduction();
+  const summaryHeaderRow = summaryHeader(book);
+  const operationHeader = operationSummaryHeader(book);
+  for (const operation of ["缝伞", "大裁", "剪线头"]) {
+    const summarySum = operationSummaryRows(book, operation).reduce((sum, row) => sum + (row[operationHeader.indexOf("数量")] ?? 0), 0);
+    const perOrder = rowsOf(book, "生产月报表")
+      .filter((row) => Array.isArray(row) && row[0] === MONTH)
+      .map((row) => row[summaryHeaderRow.indexOf(operation)])
+      .filter((value) => typeof value === "number");
+    assert.equal(summarySum, perOrder.reduce((sum, value) => sum + value, 0), `${operation}：工序汇总各行相加必须等于总表该列各订单相加`);
+  }
+});
+
+test("工序月度汇总：客户叫法（验伞面）并进字典名那一行，与总表同一列同一个数", async () => {
+  // 总表的一列可能同时装字典名（验片）与客户叫法（验伞面）：`MONTHLY_TEMPLATE_COLUMNS` 的 aliases
+  // 就是为这种历史数据准备的。本表若按原始名字分组，同一道工序会被拆成两行，而总表只有一格 ——
+  // 财务拿着两张表怎么加都对不上。所以工序列必须取**总表列名**。
+  const state = fixture();
+  state.operations.push({ id: "opr-inspect", unit: { name: "支" }, productionOrder: { executionMode: "in_house" } });
+  state.employeeReports.push(
+    employeeReport({ id: "er-alias-1", operationNameSnapshot: "验片", productionOrderOperationId: "opr-inspect", reportDate: day("2026-06-14"), quantity: new Prisma.Decimal("200"), unitPrice: new Prisma.Decimal("0.05"), calculatedAmount: new Prisma.Decimal("10") }),
+    // 同一个生产单工序（opr-inspect），但快照是客户叫法
+    employeeReport({ id: "er-alias-2", operationNameSnapshot: "验伞面", productionOrderOperationId: "opr-inspect", reportDate: day("2026-06-15"), employeeNameSnapshot: "李四", quantity: new Prisma.Decimal("100"), unitPrice: new Prisma.Decimal("0.05"), calculatedAmount: new Prisma.Decimal("5") }),
+  );
+  const { book } = await exportMonthlyProduction(state);
+
+  // 总表：验片那一格是两者之和（该列 names 同时含 验片 与 验伞面）
+  const mainCell = summaryRow(book, "SO-2026-001")[summaryHeader(book).indexOf("验片")];
+  assert.equal(mainCell, 300, "总表把字典名与客户叫法并进同一列同一格");
+
+  // 工序汇总：只能有**一行**「验片」，数量与总表那一格相等；绝不能出现一行「验伞面」
+  const rows = operationSummaryRows(book, "验片");
+  assert.equal(rows.length, 1, "客户叫法必须并进字典名那一行，不能另起一行");
+  const operationHeader = operationSummaryHeader(book);
+  assert.equal(rows[0][operationHeader.indexOf("数量")], mainCell, "并成一行之后，两者才真的是同一个数");
+  assert.equal(operationSummaryRows(book, "验伞面").length, 0, "绝不出「验伞面」这一行");
+  // 明细 sheet 与总表仍然逐格相等（原来那条不变量不能因为本表而变）
+  assert.equal(detailRow(book, "验片", "SO-2026-001")[tableHeader(book, "验片").indexOf("汇总数量")], mainCell);
+});
+
+test("工序月度汇总：未按执行方式拆分的工序（缝伞）分行后相加等于总表该列各订单之和", async () => {
+  // 总表只有拉边按执行方式拆列；缝伞是本厂/外发混在一格的。本表按执行方式分行，
+  // 所以单看一行会小于总表那一格 —— 这是要**说清加总关系**而不是「单格相等」的原因。
+  const state = fixture();
+  state.operations.push({ id: "opr-sew-out", unit: { name: "支" }, productionOrder: { executionMode: "outsourced" } });
+  state.employeeReports.push(employeeReport({ id: "er-sew-out", orderNo: "SO-2026-001", operationNameSnapshot: "缝伞", productionOrderOperationId: "opr-sew-out", reportDate: day("2026-06-18"), employeeNameSnapshot: "外发工", quantity: new Prisma.Decimal("70"), calculatedAmount: new Prisma.Decimal("21") }));
+  const { book } = await exportMonthlyProduction(state);
+
+  const header = summaryHeader(book);
+  const operationHeader = operationSummaryHeader(book);
+  const rows = operationSummaryRows(book, "缝伞");
+  const byMode = new Map(rows.map((row) => [row[operationHeader.indexOf("执行方式")], row[operationHeader.indexOf("数量")]]));
+  // 缝伞跨两张订单：本厂 = SO-001 的 190 + SO-002 的 20 = 210；外发只有这次新加的 70
+  assert.equal(byMode.get("本厂"), 210, "本厂是两张订单的和（190 + 20）");
+  assert.equal(byMode.get("外发"), 70, "外发单独一行，不能被本厂那行掩盖");
+  // 正确的不变量：**该工序在总表各订单格子之和 = 本表各行之和**。
+  // 刻意不断言「某一张订单的格子 = 某一行」—— 那两者本来就不同：
+  // 本表一行是**全月跨所有订单**的汇总，而总表一格只是**一张订单**；
+  // 而且总表那一格还把本厂/外发并在一起，所以单看一行必然小于所有订单加起来的那格。
+  const perOrderTotal = rowsOf(book, "生产月报表")
+    .filter((row) => Array.isArray(row) && row[0] === MONTH)
+    .reduce((sum, row) => sum + (row[header.indexOf("缝伞")] ?? 0), 0);
+  const summaryTotal = rows.reduce((sum, row) => sum + row[operationHeader.indexOf("数量")], 0);
+  assert.equal(summaryTotal, perOrderTotal, "工序汇总各行相加 = 总表该列各订单相加");
+  assert.equal(summaryTotal, 280, "190（SO-001 本厂）+ 70（SO-001 外发）+ 20（SO-002 本厂）");
+  assert.ok(byMode.get("本厂") < perOrderTotal, "单看一行本来就小于各订单之和：本表一行是全月汇总，总表那格只是其中一张单");
+});
+
+test("工序月度汇总的三处数量必须来自同一份结果：总表格子 = 工序明细汇总，且工序汇总各行相加 = 总表该列各订单相加", async () => {
+  // 这三处的关系不是「三个数逐格相等」：
+  //   · 总表格子 与 该工序明细 sheet 的「汇总数量」是**逐格相等**（同一个 (工序, 订单)，必须一模一样）；
+  //   · 工序汇总按 (工序, 单位, 执行方式) 切行，所以它是**加总关系**（同一工序各行相加 = 总表该列各订单相加）。
+  // 这一条把两半都走了：明细 sheet 真的打开来读表头定位（不是只看总表）。
+  const { book } = await exportMonthlyProduction();
+  const summaryHeaderRow = summaryHeader(book);
+  const operationHeader = operationSummaryHeader(book);
+  for (const operation of ["缝伞", "大裁", "剪线头"]) {
+    const orders = rowsOf(book, "生产月报表").filter((row) => Array.isArray(row) && row[0] === MONTH).map((row) => row[1]);
+    // 逐格：总表格子 = 该工序明细的「汇总数量」
+    const detailHeader = tableHeader(book, operation);
+    for (const orderNo of orders) {
+      // 两边都可能「没有这一格」：SO-2026-002 在剪线头/大裁上没有产量，明细里就没有那一行。
+      // 「两边都没有」是相等的，所以要按 null 比 —— 用 undefined 会让 deepEqual 假红，
+      // 用不存在的行去 indexOf 则直接抛异常。
+      const summaryLine = summaryRow(book, orderNo);
+      const mainCell = summaryLine ? summaryLine[summaryHeaderRow.indexOf(operation)] ?? null : null;
+      const detailLine = detailRow(book, operation, orderNo);
+      const detailValue = detailLine && detailHeader ? detailLine[detailHeader.indexOf("汇总数量")] ?? null : null;
+      assert.deepEqual(detailValue, mainCell, `${operation} / ${orderNo}：明细汇总必须与总表同格相等`);
+    }
+    // 加总：工序汇总同一工序各行相加 = 总表该列各订单相加
+    const summarySum = operationSummaryRows(book, operation).reduce((sum, row) => sum + (row[operationHeader.indexOf("数量")] ?? 0), 0);
+    const perOrder = orders.map((orderNo) => summaryRow(book, orderNo)?.[summaryHeaderRow.indexOf(operation)] ?? null).filter((value) => typeof value === "number");
+    assert.equal(summarySum, perOrder.reduce((sum, value) => sum + value, 0), `${operation}：工序汇总各行相加必须等于总表该列各订单相加`);
+  }
+});
+
+test("工序月度汇总：工时只统计计时行，计件行不产生工时；合计行的数量留空", async () => {
+  const { book } = await exportMonthlyProduction();
+  const header = operationSummaryHeader(book);
+  const hoursColumn = header.indexOf("工时（小时，仅计时）");
+  // 夹具里全是计件行（piece_rate），所以没有工时 —— 留空而不是 0（0 是「确实零工时」这个事实）
+  assert.equal(operationSummaryRow(book, "缝伞")[hoursColumn], null);
+  const last = lastRow(book, MONTHLY_OPERATION_SUMMARY_SHEET);
+  assert.equal(last[0], "合计");
+  assert.equal(last[header.indexOf("数量")], null, "合计行的数量必须留空：跨行相加会跨单位");
+  // 合计金额＝夹具里全部员工日报的金额快照之和：30+12+7+2.5+3.5+0.66+6+144+9.6 = 215.26
+  // （独立用 node -e 加过一遍；写错了这条断言会掩盖「金额漏算了一部分」这个真缺陷）
+  assert.equal(last[header.indexOf("计件金额（元）")], 215.26, "金额是元，不受「不跨单位」约束，照常合计");
+});
+
+test("工序月度汇总：计时行按小时给工时（落库是分钟，导出统一换算成小时）", async () => {
+  const state = fixture();
+  state.employeeReports.push(employeeReport({ id: "er-time", operationNameSnapshot: "缝伞", productionOrderOperationId: "opr-sew-1", reportDate: day("2026-06-25"), employeeNameSnapshot: "计时工", wageMode: "time_rate", durationMinutes: new Prisma.Decimal("90"), quantity: new Prisma.Decimal("15"), unitPrice: new Prisma.Decimal("20"), calculatedAmount: new Prisma.Decimal("30") }));
+  const { book } = await exportMonthlyProduction(state);
+  const header = operationSummaryHeader(book);
+  const sew = operationSummaryRow(book, "缝伞");
+  assert.equal(sew[header.indexOf("工时（小时，仅计时）")], 1.5, "90 分钟 = 1.5 小时");
+  assert.notEqual(sew[header.indexOf("工时（小时，仅计时）")], 90, "表头写的是小时，单元格就不能还是分钟");
+});
+
+test("工序月度汇总：软删除与上月的日报不进汇总（与总表同一批数据）", async () => {
+  const { book } = await exportMonthlyProduction();
+  const text = JSON.stringify(rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET));
+  assert.equal(text.includes("999"), false, "软删除的员工日报不得进工序汇总");
+  assert.equal(text.includes("888"), false, "软删除的工序日报不得进工序汇总");
+  assert.equal(text.includes("777"), false, "上个月的日报不得进工序汇总（月份边界是 [当月1日, 下月1日)）");
+});
+
+test("工序月度汇总：数量/金额/工时都是数值单元格，工序名与单位是文本", async () => {
+  const { book } = await exportMonthlyProduction();
+  const header = operationSummaryHeader(book);
+  const rows = rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET);
+  const headerIndex = rows.findIndex((row) => Array.isArray(row) && row[0] === "工序");
+  const dataIndex = rows.findIndex((row) => Array.isArray(row) && row[0] === "缝伞");
+  assert.ok(headerIndex > 0 && dataIndex > headerIndex);
+  for (const column of ["数量", "计件金额（元）"]) {
+    assert.equal(cellType(book, MONTHLY_OPERATION_SUMMARY_SHEET, dataIndex, header.indexOf(column)), "n", `工序汇总 ${column} 必须是数值单元格`);
+  }
+  assert.equal(cellType(book, MONTHLY_OPERATION_SUMMARY_SHEET, dataIndex, header.indexOf("工序")), "s");
+  assert.equal(cellType(book, MONTHLY_OPERATION_SUMMARY_SHEET, dataIndex, header.indexOf("执行方式")), "s");
+});
+
+test("工序月度汇总的元信息写明「一行一个工序 / 加总关系 / 合计行数量留空的原因」", async () => {
+  const { book } = await exportMonthlyProduction();
+  const rows = rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET);
+  const scope = rows.find((row) => row[0] === "数据范围")[1];
+  const caliber = rows.find((row) => row[0] === "口径说明")[1];
+  assert.match(scope, /一行一个工序/);
+  assert.match(scope, /验伞面/, "数据范围要写明客户叫法并到字典名那一行");
+  assert.match(caliber, /逐日取大/);
+  assert.match(caliber, /全月跨所有订单/);
+  assert.match(caliber, /各行相加/, "与总表的关系必须写成加总关系（写成「同一个数」是假话）");
+  assert.match(caliber, /合计行的数量留空/);
+  // 旧版的错句不能再回来：它在别名与未拆分执行方式的列上不成立
+  assert.equal(caliber.includes("对应工序列**同一个数**"), false);
+});
+
+test("工序月度汇总：工序行序跟随总表列序，历史工序（不在字典里）也照样出现", async () => {
+  const state = fixture();
+  state.catalog = state.catalog.filter((row) => row.operationName !== "包装");
+  const { book } = await exportMonthlyProduction(state);
+  const names = rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET)
+    .filter((row) => Array.isArray(row) && row[0] !== "合计" && row[0] !== "工序" && row[0] !== "（本月无生产日报数据）")
+    .map((row) => row[0]);
+  // 包装已不在字典里，但当月有 64 件产量 —— 汇总里同样不能丢
+  assert.ok(names.includes("包装"), "字典删掉工序后，当月数据仍须出现在工序汇总里");
+  // 行序跟随总表列序：大裁在缝伞之前，缝伞在包装之前
+  assert.ok(names.indexOf("大裁") < names.indexOf("缝伞"));
+  assert.ok(names.indexOf("缝伞") < names.indexOf("包装"));
+});
+
 // ------------------------------------------------------------------ sheet 结构 / 顺序 / 审计
 
-test("sheet 数量与名称：总表在前，其余按工序一列一张", async () => {
+test("sheet 数量与名称：总表 → 工序月度汇总 → 其余按工序一列一张", async () => {
   const { book } = await exportMonthlyProduction();
-  assert.deepEqual(book.SheetNames, ["生产月报表", "大裁", "拉边-本厂", "拉边-外发", "缝伞", "包装", "剪线头"]);
+  assert.deepEqual(book.SheetNames, ["生产月报表", MONTHLY_OPERATION_SUMMARY_SHEET, "大裁", "拉边-本厂", "拉边-外发", "缝伞", "包装", "剪线头"]);
 });
 
 test("总表：标题 + 元信息 + 表头 + 一行一个订单号（订单号升序）", async () => {
@@ -422,11 +664,19 @@ test("空月份：仍然出一张有表头的总表，并写明「本月无生�
   state.employeeReports = [];
   state.operationReports = [];
   const { book } = await exportMonthlyProduction(state);
-  assert.deepEqual(book.SheetNames, ["生产月报表"], "没有数据的工序不该出一堆空 sheet");
+  assert.deepEqual(book.SheetNames, ["生产月报表", MONTHLY_OPERATION_SUMMARY_SHEET], "没有数据的工序不该出一堆空 sheet，但工序汇总仍要在（它是「本月确实为零」的证据）");
   const rows = rowsOf(book, "生产月报表");
   assert.equal(rows[8][1], "（本月无生产日报数据）");
   // 字典里的工序列仍在（表头稳定，读者能确定「确实是 0」而不是漏了列）
   assert.ok(rows[7].includes("缝伞"));
+  // 工序汇总在空月份给一行说明，而不是一张只有表头的空表（空表分不清「没数据」和「导错了」）
+  const summaryRows = rowsOf(book, MONTHLY_OPERATION_SUMMARY_SHEET);
+  const emptyNote = summaryRows.find((row) => Array.isArray(row) && String(row[0]).includes("本月无生产日报数据"));
+  assert.ok(emptyNote, "空月份的工序汇总必须有一行说明，而不是一张只有表头的空表");
+  // 空月份：金额/工时合计是 0，数量留空（一行一个单位的纪律在空表上也成立）
+  const emptyTotal = lastRow(book, MONTHLY_OPERATION_SUMMARY_SHEET);
+  assert.equal(emptyTotal[0], "合计");
+  assert.equal(emptyTotal[1], null);
 });
 
 test("审计：记 production_payroll_export / employee_daily_report，并带上报表类型与筛选项", async () => {
@@ -439,7 +689,7 @@ test("审计：记 production_payroll_export / employee_daily_report，并带上
   assert.equal(entityId, undefined);
   assert.equal(details.report_type, "生产月报表");
   assert.deepEqual(details.filters, { month: MONTH });
-  assert.equal(details.sheet_count, 7);
+  assert.equal(details.sheet_count, 8, "总表 + 工序月度汇总 + 6 张工序明细");
 });
 
 test("月份格式非法直接 422，不产出文件", async () => {

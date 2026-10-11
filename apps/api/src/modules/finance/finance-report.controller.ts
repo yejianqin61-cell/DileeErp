@@ -236,8 +236,12 @@ export class FinanceReportController {
     switch (report) {
       case "sales-reconciliation-detail":
         return [buildSalesReconciliationDetailTable(await this.reports.salesReconciliationDetail(filter), { currencyLabels })];
-      case "purchase-reconciliation-detail":
-        return [buildPurchaseReconciliationDetailTable(await this.reports.purchaseReconciliationDetail(filter), { currencyLabels })];
+      case "purchase-reconciliation-detail": {
+        // 「其他应付」（备用金 / 房租 / 水电…）**不进这张表** —— 采购对账是按供应商逐项核对
+        // 物料与数量的，那些条目没有采购单与物料。笔数透给表尾点名，见 `excludedOtherCount`。
+        const { rows, excludedOtherCount } = await this.reports.purchaseReconciliationDetail(filter);
+        return [buildPurchaseReconciliationDetailTable(rows, { currencyLabels, excludedOtherCount })];
+      }
       case "sales-reconciliation-summary":
         return [buildSalesReconciliationSummaryTable(await this.reports.salesReconciliationSummary(filter), { currencyLabels })];
       case "sales-gross-profit": {
