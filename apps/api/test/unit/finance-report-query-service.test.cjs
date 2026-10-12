@@ -30,8 +30,7 @@ function stubPrisma(overrides = {}) {
         calls.supplierPayableEntry.push(args);
         return overrides.purchaseRows ?? [];
       },
-      // 表尾「另有 N 笔其他应付未纳入本表」的笔数。假 prisma 也要真的按 where 数，
-      // 否则断言只是「我把 where 传下去了」，而不是「备用金确实被排除了」。
+      // 保留 count：导入「其他应付」等路径仍会用到，且假 prisma 也要真的按 where 数。
       count: async (args) => {
         calls.supplierPayableEntryCount.push(args);
         if (typeof overrides.excludedOtherCount === "number") return overrides.excludedOtherCount;
@@ -216,47 +215,86 @@ test("finance-report.query：采购明细在物料缺失时回退到采购快照
   assert.equal(rows[0].materialCode, null);
 });
 
-test("finance-report.query：采购对账明细按来源收窄为采购三类，其他应付（备用金）不进表", async () => {
+test("finance-report.query：采购对账明细**不再按来源排除**其他应付（2026-10-12：排除之后财务看不到备用金）", async () => {
   const { prisma, calls } = stubPrisma();
   await new FinanceReportQueryService(prisma).purchaseReconciliationDetail({});
-  // `not: "other"` 而不是白名单：采购到的三种来源（原料入库 / 采购到货 / 外加工签收）
-  // 加上未来新增的采购类来源都该进表，只有非采购的其他应付要被挡住。
-  assert.deepEqual(calls.supplierPayableEntry[0].where.sourceType, { not: "other" });
-  assert.deepEqual(calls.supplierPayableEntryCount[0].where.sourceType, "other", "被排除的笔数要单独数一遍");
+  // 10-11 那次是 `sourceType: { not: "other" }`（把备用金整行挡掉）；财务随即反馈
+  // 「周金红那几行备用金看不到明细」—— 排除掉就永远对不上那笔钱，所以现在一个来源筛都没有，
+  // 两类行都进来，靠「费用说明」列 + 表尾行数区分。
+  assert.equal(calls.supplierPayableEntry[0].where.sourceType, undefined, "不能再按来源类型筛");
+  assert.equal(calls.supplierPayableEntryCount.length, 0, "笔数不再单独数一遍（行已经在表里了）");
 });
 
-test("finance-report.query：被排除的其他应付笔数与主查询同一筛选范围（筛了供应商就不能报全公司的笔数）", async () => {
-  const { prisma, calls } = stubPrisma();
-  await new FinanceReportQueryService(prisma).purchaseReconciliationDetail({ supplierId: "s-1", from: "2026-09-01", to: "2026-09-30" });
-  const included = calls.supplierPayableEntry[0].where;
-  const excluded = calls.supplierPayableEntryCount[0].where;
-  for (const key of ["deletedAt", "status", "supplierId", "orderNo", "currency", "OR"]) {
-    assert.deepEqual(excluded[key], included[key], `「${key}」两个查询必须一致，否则表尾那句话就是假话`);
-  }
-  assert.deepEqual(Object.keys(excluded.OR[0]), ["purchaseOrder"], "期间边界同样要传下去");
+test("finance-report.query：其他应付行带出「费用说明」与手选科目，采购行两列都为空", async () => {
+  const purchaseRow = {
+    sourceType: "raw_material_inbound",
+    sourceNoSnapshot: "原料入库-20260908-001",
+    orderNo: "XSDD2026090700001",
+    remark: "备注不该被当成费用说明",
+    currency: "CNY",
+    unitPrice: dec("99"),
+    quantity: dec("42"),
+    amount: dec("4158"),
+    createdAt: new Date("2026-09-08T00:00:00.000Z"),
+    supplier: { name: "碧江" },
+    subject: null,
+    purchaseOrder: { purchaseOrderNo: "CGDH1319", purchaseDate: new Date("2026-09-08T00:00:00.000Z") },
+    payableSource: null,
+    outsourcePayableSource: null,
+  };
+  const otherRow = {
+    sourceType: "other",
+    // 落库时写成 `其他应付-<说明>`（说明被截到 30 字），报表要还原掉那个前缀。
+    sourceNoSnapshot: "其他应付-9 月厂房租金",
+    orderNo: null,
+    remark: "银行转账",
+    currency: "CNY",
+    unitPrice: dec("1200"),
+    quantity: dec("1"),
+    amount: dec("1200"),
+    createdAt: new Date("2026-09-16T00:00:00.000Z"),
+    supplier: { name: "周金红" },
+    subject: { category: "资产类", name: "库存现金（备用金）" },
+    purchaseOrder: null,
+    payableSource: null,
+    outsourcePayableSource: null,
+  };
+  const { prisma, calls } = stubPrisma({ purchaseRows: [purchaseRow, otherRow] });
+  const result = await new FinanceReportQueryService(prisma).purchaseReconciliationDetail({});
+
+  // `subjectName` 是**服务层拼出来的**（取数时只给了 `subject: {category, name}`），
+  // 所以这里必须同时钉住「include 真的带上了科目」——只喂手写行测不出漏 include 的错。
+  assert.deepEqual(calls.supplierPayableEntry[0].include.subject, { select: { category: true, name: true } });
+  assert.equal(result.purchaseRowCount, 1);
+  assert.equal(result.otherRowCount, 1);
+  assert.equal(result.rows[0].otherDescription, null, "采购行没有费用说明（备注不是费用说明）");
+  assert.equal(result.rows[0].subjectName, null, "采购行没手选过科目 —— 空着，不替财务写一个她没选过的科目");
+  assert.equal(result.rows[1].otherDescription, "9 月厂房租金", "其他应付行必须有说明，否则财务认不出这一行");
+  assert.equal(result.rows[1].subjectName, "资产类 / 库存现金（备用金）", "显示口径与界面下拉一致：分类 / 名称");
+  assert.equal(result.rows[1].orderNo, null, "其他应付没有销售订单号 —— 说明写在「费用说明」列，不塞进订单号");
+  assert.equal("sourceType" in result.rows[1], false, "sourceType 只是取数时的中间字段，不该漏进报表行");
 });
 
-test("finance-report.query：真数一遍 —— 备用金这条其他应付被排除在行集外、但计入表尾笔数", async () => {
-  // 这一条刻意不喂 excludedOtherCount（固定值），而是喂**台账本身**让假 prisma 真的按 where 数：
-  // 只断言「有值」的桩测不出「数错范围」这种错，而表尾那句话正是财务唯一能核对的依据。
-  const { prisma } = stubPrisma({
-    allPayableRows: [
-      { id: "a", sourceType: "other", status: "confirmed", deletedAt: null, supplierId: "s-1", orderNo: null, currency: "CNY" },
-      { id: "b", sourceType: "other", status: "confirmed", deletedAt: null, supplierId: "s-1", orderNo: null, currency: "CNY" },
-      { id: "c", sourceType: "raw_material_inbound", status: "confirmed", deletedAt: null, supplierId: "s-1", orderNo: null, currency: "CNY" },
-      // 软删除的备用金：不进行集，也**不该**进表尾笔数（它不在任何报表里）
-      { id: "d", sourceType: "other", status: "confirmed", deletedAt: new Date("2026-09-20T00:00:00.000Z"), supplierId: "s-1", orderNo: null, currency: "CNY" },
-      // 还是草稿（默认不含草稿）：同样不该进笔数
-      { id: "e", sourceType: "other", status: "draft", deletedAt: null, supplierId: "s-1", orderNo: null, currency: "CNY" },
-    ],
-  });
-  const { rows, excludedOtherCount } = await new FinanceReportQueryService(prisma).purchaseReconciliationDetail({});
-  assert.equal(excludedOtherCount, 2, "只数「活着 + 已确认 + 其他应付」的那些：2 笔备用金");
-  assert.equal(rows.length, 0, "假 prisma 的 findMany 这次没给行，但排除笔数的口径必须是上面那条");
-
-  // 换了供应商筛选，笔数必须跟着收窄（否则表尾报的是全公司的备用金笔数）
-  const scoped = await new FinanceReportQueryService(prisma).purchaseReconciliationDetail({ supplierId: "s-2" });
-  assert.equal(scoped.excludedOtherCount, 0, "别家供应商的其他应付不能算进这张表的表尾");
+test("finance-report.query：说明为空的其他应付回落到备注（历史数据可能没写说明）", async () => {
+  const row = {
+    sourceType: "other",
+    sourceNoSnapshot: "其他应付-",
+    orderNo: null,
+    remark: "手工补的说明",
+    currency: "CNY",
+    unitPrice: dec("1"),
+    quantity: dec("1"),
+    amount: dec("1"),
+    createdAt: new Date("2026-09-16T00:00:00.000Z"),
+    supplier: { name: "陈镝" },
+    subject: null,
+    purchaseOrder: null,
+    payableSource: null,
+    outsourcePayableSource: null,
+  };
+  const { prisma } = stubPrisma({ purchaseRows: [row] });
+  const result = await new FinanceReportQueryService(prisma).purchaseReconciliationDetail({});
+  assert.equal(result.rows[0].otherDescription, "手工补的说明");
 });
 
 test("finance-report.query：币种标签包含已停用币种（历史单据不能回落成代码）", async () => {

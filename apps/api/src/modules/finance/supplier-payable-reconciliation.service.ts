@@ -169,6 +169,11 @@ export class SupplierPayableReconciliationService {
    * 因为「上游冲销后不得确认」是既定规则（SupplierPayableService.confirm 同口径）。
    *
    * `override`：确认时补/改银行账户与会计科目（历史对账单可能没填），给了就回写到对账单上。
+   *
+   * 科目优先级（2026-10-12 起）：**条目自己的科目 > 对账单上的科目 > 按来源类型的候选链**。
+   * 为什么条目优先：一张对账单可以同时含备用金、房租、水电（来源类型都是 `other`），
+   * 而对账单上的科目是**一个**值 —— 拿它盖住所有条目，备用金就会被记成「管理费用」。
+   * 对账单上的科目仍然是「这批应付整体算什么」的缺省值（历史对账单只有它）。
    */
   async confirmPayables(id: string, user: CurrentUser, override: { bank_id?: string | null; subject_id?: string | null } = {}) {
     // **先进校验、后进事务**：等事务提交完才发现银行非法，应付已被确认、流水却没写，
@@ -182,7 +187,7 @@ export class SupplierPayableReconciliationService {
       if (!this.canConfirmPayables(current.status)) throw this.invalid("RECONCILIATION_NOT_COMPLETED", `对账尚未完成（当前：${STATUS_LABELS[current.status] ?? current.status}），请先处理差异`);
       const drafts = await tx.supplierPayableEntry.findMany({
         where: { ...this.entryScope(current), status: "draft" },
-        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
+        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, subjectId: true, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
         orderBy: { createdAt: "asc" },
       });
       const confirmed: typeof drafts = [];
@@ -220,7 +225,9 @@ export class SupplierPayableReconciliationService {
         // 项目归类与供应商付款过账同一套口径：按来源类型选候选链，
         // 这样「原料入库」确认出来是「原材料 成本」、「外加工签收」确认出来是「成品外加工费」。
         contra_subject_names: entry.sourceType ? paymentSubjectNames(entry.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
-        contra_subject_id: result.subjectId,
+        // 条目上填过科目就以它为准（见方法注释的优先级）：其他应付的四类支出共用 `other` 这个来源类型，
+        // 只有条目自己知道这一笔是备用金还是房租。
+        contra_subject_id: entry.subjectId ?? result.subjectId,
         remark: `应付对账确认（${result.current.reconciliationNo}）`,
       }, user);
       if (accrual) accrualVoucherIds.push(accrual.id);

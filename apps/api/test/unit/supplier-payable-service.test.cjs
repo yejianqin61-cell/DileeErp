@@ -168,6 +168,41 @@ test("逐条确认应付：银行非法时先拒绝，不确认任何应付", as
 });
 
 // ---------------------------------------------------------------------------
+// 2026-10-12：条目自己的科目优先于弹窗里临时选的那个（其他应付 = 备用金 / 房租 / 水电）。
+//
+// 为什么这条必须有守卫：备用金在财务那张科目表里是**资产类「库存现金（备用金）」**，
+// 而其他应付的候选链首位是损益类「管理费用」—— 挂错了就是把资产记成一笔费用。
+// 「一键确认应付」（对账单入口）本来就走 `entry.subjectId ?? result.subjectId`，
+// 而「确认应付」页这两条入口（逐条 / 批量）原先**只看弹窗传的科目**，
+// 于是同一笔备用金走两个入口会写出两种账。
+// ---------------------------------------------------------------------------
+
+test("逐条确认应付：条目自带科目时以条目为准（备用金不能被挂成管理费用）", async () => {
+  const entry = draftPayable({ sourceType: "other", payableSource: null, subjectId: "subject-allowance", sourceNoSnapshot: "其他应付-备用金" });
+  const { service, accrualCalls } = payableConfirmHarness(entry);
+
+  // 财务在弹窗里没改科目（没传 subject_id）：必须落到条目自己的资产类科目，而不是候选链的管理费用
+  await service.confirm("payable-1", { id: "user-1" }, {});
+  assert.equal(accrualCalls[0].contra_subject_id, "subject-allowance");
+
+  // 弹窗里临时改过（这里给另一个科目）时**条目仍然优先** —— 界面上的默认值就是条目科目，
+  // 两者不一致只可能是调用方绕过了界面，此时以条目上留存的账务口径为准。
+  await service.confirm("payable-1", { id: "user-1" }, { subject_id: "subject-typed-in-dialog" });
+  assert.equal(accrualCalls[1].contra_subject_id, "subject-allowance", "条目 > 弹窗（与对账单路径同一优先级）");
+
+  // 条目没填科目时，弹窗传的照旧生效（历史行为不变）
+  const legacy = payableConfirmHarness(draftPayable());
+  await legacy.service.confirm("payable-1", { id: "user-1" }, { subject_id: "subject-from-dialog" });
+  assert.equal(legacy.accrualCalls[0].contra_subject_id, "subject-from-dialog");
+
+  // 条目与弹窗都没有 → undefined，由 createAccrual 退回按来源类型的候选链
+  const none = payableConfirmHarness(draftPayable({ sourceType: "other", payableSource: null }));
+  await none.service.confirm("payable-1", { id: "user-1" }, {});
+  assert.equal(none.accrualCalls[0].contra_subject_id, undefined);
+  assert.deepEqual(none.accrualCalls[0].contra_subject_names, ["管理费用", "其他管理费用"]);
+});
+
+// ---------------------------------------------------------------------------
 // 2026-09-16（用户要求「不要又是登记付款又是确认应付，直接就是支持勾选，批量确认」）：
 //   界面勾选多条草稿应付 → 一次确认。整批共用「支付银行 + 会计科目」，但**每条应付各写一条流水**
 //   （每条都有自己的单号，合并成一条就追不回是哪批料的钱）；已确认/来源作废的条目跳过而非整批失败。
@@ -183,10 +218,12 @@ function batchHarness(rows, options = {}) {
   const cashFlowCalls = [];
   const accrualCalls = [];
   const writes = [];
+  /** findMany 的入参：`select.subjectId` 漏了的话「条目自带科目」这条路径永远读不到值。 */
+  const findManyArgs = [];
   let locks = 0;
   const entryTable = {
     // 替身照做服务端的过滤条件（id 列表 + status = draft），才能断言「已确认的会被跳过」。
-    findMany: async (args) => rows.filter((row) => args.where.id.in.includes(row.id) && row.status === "draft"),
+    findMany: async (args) => { findManyArgs.push(args); return rows.filter((row) => args.where.id.in.includes(row.id) && row.status === "draft"); },
     updateMany: async ({ where, data }) => {
       const targets = rows.filter((row) => where.id.in.includes(row.id) && row.status === "draft");
       writes.push({ ids: where.id.in, data });
@@ -205,7 +242,7 @@ function batchHarness(rows, options = {}) {
     createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
     accruedSourceIds: async () => new Set(),
   };
-  return { service: new SupplierPayableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls, writes, locks: () => locks };
+  return { service: new SupplierPayableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls, writes, findManyArgs, locks: () => locks };
 }
 
 test("勾选批量确认：每条应付各挂一张账，并按币种给合计", async () => {
@@ -223,8 +260,29 @@ test("勾选批量确认：每条应付各挂一张账，并按币种给合计",
   assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
 });
 
-test("勾选批量确认：来源已作废的条目不确认，但也不让整批失败", async () => {
-  const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { payableSource: { status: "voided" } })]);
+test("勾选批量确认：条目自带科目时**逐条**按各自的科目挂账，弹窗那个只是没填时的兜底", async () => {
+  // 一批里混着备用金（资产类）与房租（成本类）：取一条的值当整批的默认值就会把两者挂到同一个科目上。
+  const harness = batchHarness([
+    batchDraft("p1", { sourceType: "other", payableSource: null, subjectId: "subject-allowance" }),
+    batchDraft("p2", { sourceType: "other", payableSource: null, subjectId: "subject-rent" }),
+  ]);
+  await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, { subject_id: "subject-typed-in-dialog" });
+  assert.deepEqual(
+    harness.accrualCalls.map((call) => call.contra_subject_id),
+    ["subject-allowance", "subject-rent"],
+    "每条按自己的科目挂账（弹窗那个被条目盖住）",
+  );
+
+  // 条目没填时才落到弹窗/候选链（历史行为）
+  const legacy = batchHarness([batchDraft("p1", { sourceType: "other", payableSource: null }), batchDraft("p2")]);
+  await legacy.service.batchConfirm(["p1", "p2"], { id: "user-1" }, { subject_id: "subject-from-dialog" });
+  assert.deepEqual(legacy.accrualCalls.map((call) => call.contra_subject_id), ["subject-from-dialog", "subject-from-dialog"]);
+  // 而且取数时**必须把 subjectId 查出来**：select 里漏了这一列，条目科目永远是 undefined
+  // （这条正是本轮修掉的缺陷：批量确认原先的 select 没有 subjectId）。
+  assert.equal(legacy.findManyArgs[0].select.subjectId, true);
+});
+
+test("勾选批量确认：来源已作废的条目不确认，但也不让整批失败", async () => {  const harness = batchHarness([batchDraft("p1"), batchDraft("p2", { payableSource: { status: "voided" } })]);
   const result = await harness.service.batchConfirm(["p1", "p2"], { id: "user-1" }, {});
   assert.equal(result.confirmed_count, 1);
   assert.equal(result.skipped_count, 1);
@@ -334,6 +392,37 @@ test("应付台账按确认日期区间与关键字筛选（区间含两端，�
   assert.deepEqual(await ids({ from: "2026-09-02" }), ["p-2", "p-3"]);
   assert.deepEqual(await ids({ q: "SO-2" }), ["p-2"], "关键字走与列表页搜索同一批字段");
   assert.deepEqual(await ids({ q: "ap-003" }), ["p-3"], "单号大小写不敏感");
+});
+
+test("应付台账的「会计科目」列：条目手选 > 对账单填的 > 按来源候选链（与记账口径同一优先级）", async () => {
+  const base = {
+    amount: new Prisma.Decimal("100"), allocations: [], payableSource: null, outsourcePayableSource: null,
+    supplier: null, status: "draft", currency: "CNY", purchaseOrderId: null, confirmationDate: new Date("2026-09-10T00:00:00.000Z"),
+  };
+  const rows = [
+    // ① 条目自己填过（其他应付 = 备用金）：显示条目的资产类科目
+    { ...base, id: "p-own", payableNo: "AP-001", supplierId: "s-1", orderNo: null, sourceType: "other", subjectId: "subj-allowance", subject: { category: "资产类", name: "库存现金（备用金）" } },
+    // ② 条目没填，但覆盖它的对账单填了：显示对账单那个（确认应付走对账单入口时真正写进凭证的就是它）
+    { ...base, id: "p-covered", payableNo: "AP-002", supplierId: "s-1", orderNo: "SO-7", sourceType: "raw_material_inbound", subjectId: null, subject: null },
+    // ③ 两处都没有：显示按来源类型的候选链首位（财务要知道「点确认会挂到哪」）
+    { ...base, id: "p-chain", payableNo: "AP-003", supplierId: "s-1", orderNo: null, sourceType: "outsource_receipt", subjectId: null, subject: null },
+  ];
+  const reconciliations = [{
+    id: "rec-1", reconciliationNo: "APREC-001", status: "matched", supplierId: "s-1", currency: "CNY",
+    orderNo: "SO-7", purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z"),
+    subjectId: "subj-rent",
+  }];
+  const prisma = {
+    supplierPayableEntry: { findMany: async () => rows },
+    supplierPayableReconciliation: { findMany: async () => reconciliations },
+    accountingSubject: { findMany: async ({ where }) => where.id.in.includes("subj-rent") ? [{ id: "subj-rent", category: "成本类", name: "房租费" }] : [] },
+  };
+  const service = new SupplierPayableService(prisma, {}, cashFlowStub());
+  const byId = new Map((await service.list()).map((row) => [row.id, row]));
+
+  assert.equal(byId.get("p-own").subject_name, "资产类 / 库存现金（备用金）");
+  assert.equal(byId.get("p-covered").subject_name, "成本类 / 房租费", "对账单上填的科目也要显示（否则台账与凭证会各说各话）");
+  assert.equal(byId.get("p-chain").subject_name, "成本类 / 加工费", "两处都没填时给候选链首位，别让财务面对空格子");
 });
 
 test("supplier payable reversal locks and rechecks active allocations", async () => {

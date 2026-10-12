@@ -148,22 +148,31 @@ export function buildSalesReconciliationDetailTable(
 /* ------------------------------------------------------------------ 采购对账明细表 */
 
 /**
- * 采购对账明细表的列定义：17 列。
+ * 采购对账明细表的列定义：**19 列**。
  *
- * 列名与列序**基本**照抄 `采购对账明细表.xls`，有两处按用户要求调整：
+ * 列名与列序**基本**照抄 `采购对账明细表.xls`，有三处按用户要求调整：
  * 2026-09-17 用户要求「产品名称放在采购单号前面」—— 因为这张表是**按物料**核对的
  * （财务拿它跟供应商逐项对料号与数量），先看到「是什么」再看到「哪张单」才顺；
  * 照抄老表反而要每次从左往右数过单号才能定位到物料。
  * 2026-09-20 用户要求加「订单号」（销售单号）列：采购单号只说得清「向谁买的」，
  * 说不清「为哪张销售订单买的」—— 缺了它，一张采购单的成本摊到哪个订单上只能靠人猜。
  * 该列紧挨在「采购单号」前面，与「应付管理」列表里两列的顺序一致（同一组字段在站内到哪都是一个先后）。
- * 其余 15 列与老表逐列一致，「金额 / 含税金额」仍在最后两列。
+ *
+ * 2026-10-12 加两列（财务反馈：备用金那 62 行「看不到明细」）：
+ *   - **「费用说明」**紧跟「采购单号」：其他应付没有物料、没有采购单，一行里能说明它是
+ *     「9 月厂房租金」还是「周金红备用金」的只有财务自己录的这句说明。放在这张表
+ *     最靠左的信息区（是什么 → 是哪张单 → 是什么费用），而不是塞进「订单号」列 ——
+ *     那一列是销售单号，混进费用说明以后再也分不清哪格是单号、哪格是说明。
+ *   - **「会计科目」**放在合计列（金额 / 含税金额）之前：金额列永远在最后两列是这张表的
+ *     既定版式（`PURCHASE_TOTAL_COLUMNS` 靠下标取合计列，列一动合计就会落到别的列上）。
+ *     这一列只有「其他应付」行有值，见 `PurchaseReconciliationDetailSource.subjectName` 的注释。
  */
 export const PURCHASE_RECONCILIATION_DETAIL_COLUMNS: ReportColumn[] = [
   { header: "日期", width: 12 },
   { header: "产品名称", width: 30 },
   { header: "订单号", width: 20 },
   { header: "采购单号", width: 20 },
+  { header: "费用说明", width: 28 },
   { header: "供应商名称", width: 22 },
   { header: "产品代码", width: 18 },
   { header: "规格型号", width: 24 },
@@ -175,17 +184,18 @@ export const PURCHASE_RECONCILIATION_DETAIL_COLUMNS: ReportColumn[] = [
   numeric("折扣", 10),
   numeric("税额", 12),
   numeric("调整金额", 14),
+  { header: "会计科目", width: 26 },
   numeric("金额", 14),
   numeric("含税金额", 14),
 ];
 
 /**
- * 合计列：金额(15) 与 含税金额(16)。
+ * 合计列：金额(17) 与 含税金额(18)，0 起算的下标。
  *
- * 插入「订单号」后所有下标后移一位，所以这两个数**必须逐列数出来**而不是沿用旧值：
- * 沿用旧值会让合计悄悄落到「调整金额」与「金额」上，报表上完全看不出来（两者都是金额列、都右对齐）。
+ * 插过两次列（「订单号」、「费用说明 + 会计科目」），所以这两个数**必须逐列数出来**而不是沿用旧值：
+ * 沿用旧值会让合计悄悄落到别的列上，报表上完全看不出来（金额列都右对齐、格式都一样）。
  */
-const PURCHASE_TOTAL_COLUMNS = [15, 16];
+const PURCHASE_TOTAL_COLUMNS = [17, 18];
 
 /** 一行采购对账明细的取数结果。 */
 export type PurchaseReconciliationDetailSource = {
@@ -193,6 +203,22 @@ export type PurchaseReconciliationDetailSource = {
   date: Date | null;
   /** 销售单号（`supplier_payable_entries.order_no`），不是采购单号 */
   orderNo: string | null;
+  /**
+   * 其他应付的「费用说明」（备用金 / 房租 / 水电 / 运费这类非采购支出的摘要）；采购行恒为 null。
+   *
+   * 取值来自 `supplier_payable_entries.source_no_snapshot`（落库时写成 `其他应付-<说明>`，
+   * 说明被截到 30 字）；快照认不出来时回落到用户填的「备注」。
+   */
+  otherDescription: string | null;
+  /**
+   * 会计科目：**只有录入时手选过科目的行才有值**（目前只有「其他应付」有这个入口，2026-10-12 起）。
+   *
+   * 为什么不像收支流水那样「一定有值」：其他应付没手选科目时，科目是在**确认应付**那一步
+   * 按来源类型自动归类的（`other` → 「管理费用」）。这里如果也照候选链写上「损益类 / 管理费用」，
+   * 财务看到的就是一句**可能还没发生**的归类（草稿还没确认），而且备用金会被显示成一个费用科目 ——
+   * 这张表是拿来核对的，宁可留空 + 表尾点名，也不要写一个她自己都没选过的科目。
+   */
+  subjectName: string | null;
   purchaseOrderNo: string | null;
   supplierName: string | null;
   productName: string | null;
@@ -207,7 +233,7 @@ export type PurchaseReconciliationDetailSource = {
 
 export function buildPurchaseReconciliationDetailTable(
   rows: PurchaseReconciliationDetailSource[],
-  options: { currencyLabels: ReadonlyMap<string, string>; excludedOtherCount?: number },
+  options: { currencyLabels: ReadonlyMap<string, string>; purchaseRowCount: number; otherRowCount: number },
 ): ReportTable {
   return {
     sheetName: "采购对账明细",
@@ -217,8 +243,10 @@ export function buildPurchaseReconciliationDetailTable(
       // 产品名称在采购单号前面（用户 2026-09-17 要求，见列定义注释）。
       row.productName, // 产品名称
       // 订单号（销售单号）紧挨在采购单号前（用户 2026-09-20 要求，见列定义注释）。
+      // 其他应付行恒为空：它没有销售订单，说明写在「费用说明」列。
       row.orderNo, // 订单号
       row.purchaseOrderNo, // 采购单号
+      row.otherDescription, // 费用说明（其他应付行；采购行空）
       row.supplierName, // 供应商名称
       row.materialCode, // 产品代码（= 物料编码）
       row.specification, // 规格型号
@@ -231,21 +259,33 @@ export function buildPurchaseReconciliationDetailTable(
       null, // 折扣（系统无字段，留空）
       null, // 税额（系统只有税率，没有税额，留空）
       null, // 调整金额（应付侧没有调整单据模型，留空）
+      row.subjectName, // 会计科目（其他应付手选过才有；见类型注释）
       toExportNumber(row.amount), // 金额
       // 含税金额 = 金额（R3）
       toExportNumber(row.amount),
     ]),
     totalColumns: PURCHASE_TOTAL_COLUMNS,
     /**
-     * 「其他应付」被排除的笔数必须在表尾点名（2026-10-11 财务：「备用金不进采购对账单」）。
+     * 表尾必须说清两拨行各占多少（2026-10-12 财务：「周金红那几行看不到明细」）。
      *
-     * 为什么宁可多一句话：这张表里原本是**有**那些行的，现在它们不见了。
-     * 只删不说的话，财务对不上时只能靠回忆「是不是上个月还有一笔备用金」，
-     * 而她无从知道是被**有意排除**了、还是导出漏了。所以这里给出笔数与去处。
+     * 为什么不能只给总数：这张表里**混着两类东西** —— 有物料数量的采购行，和没有物料、
+     * 只有一句费用说明的其他应付行（备用金 / 房租 / 水电 / 运费）。财务逐行核对时，
+     * 看到一片空的「产品名称 / 产品代码 / 规格 / 单位」会以为导出坏了。
+     * 所以表尾点名：有多少行是非采购支出、它们靠哪一列认、它们的科目在哪看。
+     *
+     * 为什么不再写「本表不含其他应付 N 笔」：那是 2026-10-11 的口径（把它们整行排除），
+     * 财务随即反馈「看不到明细」—— 排除掉就永远对不上备用金那笔钱。现在它们在表里，只是没有采购字段。
      */
-    footnotes: options.excludedOtherCount
-      ? [`本表不含「其他应付」${options.excludedOtherCount} 笔（备用金 / 房租 / 水电 / 运费等非采购支出）：采购对账按供应商与物料数量逐项核对，这些条目没有采购单与物料，故不纳入本表。它们仍在「应付管理 → 应付对账」与「收支管理 → 收支流水」里。`]
-      : undefined,
+    footnotes: options.otherRowCount
+      ? [
+          `本表共 ${options.purchaseRowCount + options.otherRowCount} 行：采购行 ${options.purchaseRowCount} 行 + 非采购支出（其他应付）${options.otherRowCount} 行。`,
+          "非采购支出行（备用金 / 房租 / 水电 / 运费等）没有采购单、物料与数量，所以「产品名称 / 产品代码 / 规格型号 / 单位 / 采购单号」为空；它们靠「费用说明」列认，金额记在「金额」列。",
+          "「会计科目」列只有录入时**手选过科目**的其他应付行才有值（历史行与未选科目的行为空）：这些支出的科目在【应付管理 → 确认应付】时才按来源归类，本表不替财务预先写一个她没选过的科目。",
+        ]
+      : [
+          `本表共 ${options.purchaseRowCount} 行，全部是采购行。`,
+          "「费用说明」与「会计科目」两列只有非采购支出（其他应付）行才有值，本表没有这类行。",
+        ],
   };
 }
 

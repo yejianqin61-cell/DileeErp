@@ -715,6 +715,115 @@ describe("应付管理：其他应付批量导入", () => {
   });
 });
 
+// ------------------------------------------------------------------ 新建其他应付的会计科目（2026-10-12）
+
+/**
+ * 财务反馈：导出件里「周金红」那 62 行备用金「看不到明细」。排查发现更根本的一处 ——
+ * 备用金 / 房租 / 水电的来源类型都是 `other`，系统一律按候选链归到**损益类「管理费用」**，
+ * 而备用金在财务那张科目表里是**资产类「库存现金（备用金）」**。
+ *
+ * 所以「新建其他应付」补一格会计科目：填了就以填的为准，留空仍按来源自动归类（老习惯不变）。
+ * 这一格**不是必填** —— 逼着填会让「先录下来、以后再归类」这条现实做法走不通。
+ */
+describe("应付管理：新建其他应付可以指定会计科目", () => {
+  const backupSubject = { id: "sub-backup", category: "资产类", name: "库存现金（备用金）", balanceDirection: "借", sortOrder: 10, isActive: true };
+
+  async function openCreateOther() {
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByRole("button", { name: "新建其他应付" }));
+    return screen.findByTestId("action-dialog");
+  }
+
+  it("弹窗里有「会计科目」且可搜索选择；选了就按 subject_id 提交", async () => {
+    const calls = stubPayable({ entries: [draftEntry], suppliers: [{ id: "supplier-1", name: "周金红", supplierCode: "S-001" }], subjects: [backupSubject] }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/payable-entries/other") ? apiOk({ id: "entry-other", payableNo: "APO-001" }) : undefined
+    ));
+    const dialog = await openCreateOther();
+
+    // 供应商 / 金额 / 币种 / 支出说明 / 会计科目 / 确认日期 / 备注
+    // 供应商下拉的文案是「编码 / 名称」，所以按名称模糊匹配（正则），不写死整串
+    await pickOption("action-field-supplier_id", /周金红/);
+    setValue("action-field-amount", "485");
+    setValue("action-field-description", "备用金");
+    await pickOption("action-field-subject_id", "资产类 / 库存现金（备用金）");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/other")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/payable-entries/other")[0])).toMatchObject({
+      amount: "485", description: "备用金", subject_id: "sub-backup",
+    });
+  });
+
+  it("不选科目也提交得出去（留空 = 按来源自动归类，不逼着财务先想清楚科目）", async () => {
+    const calls = stubPayable({ entries: [draftEntry], suppliers: [{ id: "supplier-1", name: "周金红", supplierCode: "S-001" }], subjects: [backupSubject] }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/payable-entries/other") ? apiOk({ id: "entry-other", payableNo: "APO-001" }) : undefined
+    ));
+    const dialog = await openCreateOther();
+
+    // 供应商下拉的文案是「编码 / 名称」，所以按名称模糊匹配（正则），不写死整串
+    await pickOption("action-field-supplier_id", /周金红/);
+    setValue("action-field-amount", "50");
+    setValue("action-field-description", "杂费");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/other")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/payable-entries/other")[0]).subject_id).toBeUndefined();
+  });
+
+  it("逐条确认弹窗默认带出**条目自己填的**科目（备用金不能被默认成管理费用）", async () => {
+    stubPayable({
+      entries: [{ ...draftEntry, id: "entry-o1", sourceType: "other", sourceNoSnapshot: "其他应付-备用金", subjectId: "sub-backup", subject: backupSubject, subject_name: "资产类 / 库存现金（备用金）" }],
+      suppliers: [{ id: "supplier-1", name: "周金红", supplierCode: "S-001" }],
+      subjects: [backupSubject],
+    });
+    await openPayable("confirmed");
+
+    await userEvent.click(screen.getAllByRole("button", { name: "确认应付" })[0]);
+
+    const dialog = await screen.findByTestId("action-dialog");
+    // 下拉的 trigger 里显示的就是带出来的选项文案（SearchableSelect 自己渲染）
+    expect(within(dialog).getByTestId("action-field-subject_id")).toHaveTextContent("资产类 / 库存现金（备用金）");
+  });
+
+  it("批量确认：整批不是同一个科目时留空（不拿第一条的值盖住整批）", async () => {
+    stubPayable({
+      entries: [
+        { ...draftEntry, id: "entry-o1", sourceType: "other", subjectId: "sub-backup", subject: backupSubject, subject_name: "资产类 / 库存现金（备用金）" },
+        { ...draftEntry, id: "entry-o2", sourceType: "other", subjectId: "sub-rent", subject: { id: "sub-rent", category: "成本类", name: "房租费" }, subject_name: "成本类 / 房租费" },
+      ],
+      subjects: [backupSubject, { id: "sub-rent", category: "成本类", name: "房租费", balanceDirection: "借", sortOrder: 20, isActive: true }],
+    });
+    await openPayable("confirmed");
+
+    await userEvent.click(screen.getByTestId("payable-select-all"));
+    await userEvent.click(screen.getByTestId("payable-batch-confirm"));
+
+    const dialog = await screen.findByTestId("action-dialog");
+    // 留空 = 后端逐条按条目自己的科目挂账：下拉停在占位文案上，**不能**显示第一个条目的科目
+    const subjectField = within(dialog).getByTestId("action-field-subject_id");
+    expect(subjectField).toHaveTextContent("请选择");
+    expect(subjectField).not.toHaveTextContent("库存现金（备用金）");
+    expect(subjectField).not.toHaveTextContent("房租费");
+  });
+
+  it("确认应付台账有「会计科目」一列：显示后端算好的分类/名称，没有时退回科目表反查", async () => {
+    stubPayable({
+      entries: [
+        // 手工指定过（后端已经算好 subject_name）
+        { ...draftEntry, id: "entry-o1", sourceType: "other", sourceNoSnapshot: "其他应付-备用金", subjectId: "sub-backup", subject: backupSubject, subject_name: "资产类 / 库存现金（备用金）" },
+        // 没指定（后端按来源给候选链首位）
+        { ...draftEntry, id: "entry-o2", sourceType: "other", sourceNoSnapshot: "其他应付-房租", subjectId: null, subject: null, subject_name: "损益类 / 管理费用" },
+      ],
+      subjects: [backupSubject],
+    });
+    await openPayable("confirmed");
+
+    const table = screen.getByTestId("payable-entries");
+    expect(within(table).getByText("资产类 / 库存现金（备用金）")).toBeVisible();
+    expect(within(table).getByText("损益类 / 管理费用")).toBeVisible();
+  });
+});
+
 // ------------------------------------------------------------------ 对账与确认合并（2026-09-20）
 
 /**

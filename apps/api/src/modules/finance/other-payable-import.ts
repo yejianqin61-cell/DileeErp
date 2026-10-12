@@ -29,6 +29,7 @@ export type OtherPayableField =
   | "currency"
   | "description"
   | "confirmation_date"
+  | "subject_name"
   | "remark";
 
 /** 模板列（表头名即口径）。顺序不与解析绑定：解析按表头名认列。 */
@@ -38,6 +39,7 @@ export const OTHER_PAYABLE_TEMPLATE_HEADERS = [
   "应付金额",
   "币种",
   "费用说明",
+  "会计科目",
   "确认日期",
   "备注",
 ] as const;
@@ -50,6 +52,7 @@ export const OTHER_PAYABLE_HEADER_ALIASES: Record<OtherPayableField, readonly st
   currency: ["币种", "货币", "结算币种"],
   description: ["费用说明", "费用项目", "费用内容", "摘要", "说明", "用途"],
   confirmation_date: ["确认日期", "记账日期", "费用日期", "日期"],
+  subject_name: ["会计科目", "科目", "科目名称", "费用科目", "总账科目"],
   remark: ["备注"],
 };
 
@@ -60,13 +63,14 @@ export const OTHER_PAYABLE_FIELD_LABELS: Record<OtherPayableField, string> = {
   currency: "币种",
   description: "费用说明",
   confirmation_date: "确认日期",
+  subject_name: "会计科目",
   remark: "备注",
 };
 
 /** 模板里的示例行：供应商编码故意留空，靠名称自动建档，避免示例编码被当真。 */
 export const OTHER_PAYABLE_SAMPLE_ROWS: ReadonlyArray<ReadonlyArray<string>> = [
-  ["", "示例-请替换成供应商名称", "1200.00", "CNY", "9 月厂房租金", "2026-09-16", "银行转账"],
-  ["", "示例-请替换成供应商名称", "86.50", "", "8 月快递费", "", "月结，留空日期按今天记账"],
+  ["", "示例-请替换成供应商名称", "1200.00", "CNY", "9 月厂房租金", "房租费", "2026-09-16", "银行转账"],
+  ["", "示例-请替换成供应商名称", "86.50", "", "8 月快递费", "顺丰快递", "", "月结，留空日期按今天记账"],
 ];
 
 /** 币种的中文/别名写法 → 标准代码。认不出时按 3 位字母代码兜底。 */
@@ -87,6 +91,14 @@ export type OtherPayableImportRow = {
   amount: string;
   currency: string;
   description: string;
+  /**
+   * 会计科目**名称**（2026-10-12 新增，可留空 = 按来源自动归类）。
+   *
+   * 为什么这里存名字而不是 id：这份文件是给人填的，财务只会写「库存现金（备用金）」，
+   * 不会写 UUID；纯解析函数也不该去查库。名字 → id 的解析在服务层做
+   * （`SupplierPayableService.resolveSubjectByName`），认不出/重名按行报错。
+   */
+  subjectName: string;
   /** YYYY-MM-DD；空表示「按今天记账」。 */
   confirmationDate: string | null;
   remark: string;
@@ -185,7 +197,7 @@ export function parseOtherPayableRows(rows: readonly unknown[][]): OtherPayableP
       missingColumns: missing,
       errors: [{ row: 0, reason: missing.length
         ? `缺少必需列：${missing.join("、")}（请使用「下载模板」得到的表头）`
-        : "找不到表头行：请使用「下载模板」，第一行必须是表头（供应商编码 / 供应商名称 / 应付金额 / 币种 / 费用说明 / 确认日期 / 备注）" }],
+        : "找不到表头行：请使用「下载模板」，第一行必须是表头（供应商编码 / 供应商名称 / 应付金额 / 币种 / 费用说明 / 会计科目 / 确认日期 / 备注）" }],
     };
   }
 
@@ -215,6 +227,7 @@ export function parseOtherPayableRows(rows: readonly unknown[][]): OtherPayableP
     const supplierCode = textCell(row, indexes.get("supplier_code"));
     const supplierName = textCell(row, indexes.get("supplier_name"));
     const description = textCell(row, indexes.get("description"));
+    const subjectName = textCell(row, indexes.get("subject_name"));
     const remark = textCell(row, indexes.get("remark"));
     const currencyCell = textCell(row, indexes.get("currency"));
     const dateCell = indexes.has("confirmation_date") ? row[indexes.get("confirmation_date")!] : "";
@@ -243,15 +256,19 @@ export function parseOtherPayableRows(rows: readonly unknown[][]): OtherPayableP
     }
 
     if (remark.length > 1000) rowErrors.push({ row: excelRow, field: OTHER_PAYABLE_FIELD_LABELS.remark, reason: "备注过长（最多 1000 字）" });
+    // 科目名上限跟着科目表 `accounting_subjects.name` 的 VarChar(100) 走：超长在写库时才报的话，
+    // 一整个文件会因为一行超长而整体回滚（事务要么全进要么全不进），财务只能自己一行行找。
+    if (subjectName.length > 100) rowErrors.push({ row: excelRow, field: OTHER_PAYABLE_FIELD_LABELS.subject_name, reason: "会计科目名称过长（最多 100 字）" });
 
     // 同一份文件里的重复行直接拒绝：金额行重复入账等于重复付款，比少导一行危险得多。
+    // 判据里**不含会计科目**：同一笔支出一行填了科目、一行没填，仍然是重复入账，不是两笔。
     const key = [supplierCode || supplierName, amount, currency, confirmationDate ?? "", description].join("\u0001");
     const duplicateOf = seen.get(key);
     if (duplicateOf !== undefined) rowErrors.push({ row: excelRow, reason: `与本文件第 ${duplicateOf} 行重复（同一供应商、金额、币种、日期与说明）` });
     else seen.set(key, excelRow);
 
     if (rowErrors.length) { errors.push(...rowErrors); continue; }
-    parsedRows.push({ row: excelRow, supplierCode, supplierName, amount, currency, description, confirmationDate, remark });
+    parsedRows.push({ row: excelRow, supplierCode, supplierName, amount, currency, description, subjectName, confirmationDate, remark });
   }
 
   if (!total) {
@@ -295,7 +312,8 @@ export function otherPayableTemplateWorkbook(): Buffer {
     ["6. 应付金额必须大于 0，可以带千分位和货币符号（1,200.00 与 ￥1200 都认）。"],
     ["7. 同一份文件里「同一供应商 + 同一金额 + 同一币种 + 同一日期 + 同一说明」的重复行会被拒绝，避免重复记账。"],
     ["8. 导入只生成**应付草稿**：它们出现在【应付管理 → 应付对账 → 待创建对账】，也可以在【应付管理 → 确认应付】里勾选批量确认。"],
-    [`9. 单次最多 ${OTHER_PAYABLE_MAX_ROWS} 行。`],
+    ["9. 「会计科目」可留空：留空时按来源自动归类为「管理费用」。填了就以填的为准（确认应付时会把这笔挂到这个科目上）—— 备用金这类**不是费用**的支出请填出来，例如「库存现金（备用金）」「其他应收款」，否则账上会记成一笔管理费用。科目名要跟【财务 → 收支管理 → 会计科目】里的名字**完全一致**，认不出的行不会入库（导入结果里会逐行说明）。"],
+    [`10. 单次最多 ${OTHER_PAYABLE_MAX_ROWS} 行。`],
   ]);
   notes["!cols"] = [{ wch: 120 }];
   const book = XLSX.utils.book_new();

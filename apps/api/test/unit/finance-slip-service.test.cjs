@@ -106,6 +106,22 @@ test("付款单预填：科目优先用确认时实际记账的科目，查不�
   assert.ok(slip.lines[1].general_subject.length > 0, "候选链首位必须给一个能用的科目名，不能让财务面对空格子");
 });
 
+test("付款单预填：条目自己选过科目时以它为准（其他应付的备用金不能被写成一笔管理费用）", async () => {
+  // 备用金 / 房租 / 水电的来源类型都是 `other`，候选链首位是损益类「管理费用」；
+  // 只有条目自己知道这一笔是资产类「库存现金（备用金）」。排序见 finance-slip.service.ts 的 general_subject。
+  const entries = [
+    payableEntry({ id: "entry-1", sourceType: "other", sourceNoSnapshot: "其他应付-备用金", payableSource: null, subject: { category: "资产类", name: "库存现金（备用金）" } }),
+  ];
+  const { service } = paymentHarness({ entries, settledThisMonth: 1 });
+  const [slip] = await service.draft("payment", ["entry-1"], USER);
+  assert.equal(slip.lines[0].general_subject, "资产类 / 库存现金（备用金）", "显示口径与界面下拉一致：分类 / 名称");
+
+  // 没有手选科目、也没有确认流水时才退回候选链（历史行为一字不变）
+  const legacy = paymentHarness({ entries: [payableEntry({ id: "entry-1", sourceType: "other", sourceNoSnapshot: "其他应付-备用金", payableSource: null })], settledThisMonth: 1 });
+  const [legacySlip] = await legacy.service.draft("payment", ["entry-1"], USER);
+  assert.equal(legacySlip.lines[0].general_subject, "管理费用", "候选链首位（PAYMENT_SUBJECT_NAMES.other）");
+});
+
 test("付款单预填：多条应付指向不同银行时**我方**开户行/账号留空（填一个看起来像真的账户比留空更危险）", async () => {
   const entries = [payableEntry(), payableEntry({ id: "entry-2" })];
   const { service } = paymentHarness({

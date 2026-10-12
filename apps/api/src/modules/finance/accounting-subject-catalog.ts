@@ -196,6 +196,17 @@ export function accountingSubjectKey(category: string, name: string): string {
   return `${category}/${name}`;
 }
 
+/**
+ * 科目在凭证、单据、导出件里的显示文案：`分类 / 名称`。
+ *
+ * 与前端 `apps/web/lib/accounting-subjects.ts` 的 `subjectOptionLabel` **逐字一致**：
+ * 同一个科目在界面上写「资产类 / 库存现金（备用金）」、在付款单上写别的写法，
+ * 财务会以为这是两个科目。分类必须拼进去 —— 科目表的唯一键是 `(分类, 名称)`，允许不同分类同名。
+ */
+export function accountingSubjectLabel(category: string, name: string): string {
+  return `${category} / ${name}`;
+}
+
 /* ------------------------------------------------------------------ 分类顺序 */
 
 /** 不在 5 类之内的分类（迁移带出来的「未分类」、财务自建的分类）排在最后，彼此按名称排。 */
@@ -360,4 +371,18 @@ export const PAYABLE_CONFIRM_SUBJECT_NAMES: readonly string[] = ["主营业务�
 /** 来源类型 → 科目候选；未知来源用兜底链。 */
 export function paymentSubjectNames(sourceType: string): readonly string[] {
   return (PAYMENT_SUBJECT_NAMES as Record<string, readonly string[]>)[sourceType] ?? DEFAULT_PAYMENT_SUBJECT_NAMES;
+}
+
+/**
+ * 候选链里的一个科目名 → `分类 / 名称` 的显示文案（在**种入的科目表**里找分类）。
+ *
+ * 用途：报表/台账要把「按来源类型自动归类会写到哪个科目」显示出来（候选链里只有名字，没有分类）。
+ * 为什么用常量表而不是查库：种入的科目表就是行集（`ACCOUNTING_SUBJECT_SEEDS`），
+ * 而候选链里的名字全部来自这张表；查库只会多一次往返，结果一样。
+ * 万一名字不在表里（科目改过名/停用过），**原样返回名字**而不是编一个分类 ——
+ * 「其他管理费用」比「未分类 / 其他管理费用」更接近事实（后者会被当成一个真实存在的分类）。
+ */
+export function catalogSubjectLabel(name: string): string {
+  const seed = ACCOUNTING_SUBJECT_SEEDS.find((item) => item.name === name);
+  return seed ? accountingSubjectLabel(seed.category, seed.name) : name;
 }

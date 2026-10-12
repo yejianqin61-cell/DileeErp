@@ -99,7 +99,7 @@ export class FinanceReportController {
     return this.preview(await this.tableFor("purchase-reconciliation-detail", this.filter(query)));
   }
 
-  /** 采购对账明细表：导出 XLSX（16 列，列名列序照抄老表）。 */
+  /** 采购对账明细表：导出 XLSX（19 列：老表 16 列 + 订单号 + 费用说明 + 会计科目，见 `PURCHASE_RECONCILIATION_DETAIL_COLUMNS`）。 */
   @Get("purchase-reconciliation-detail.xlsx")
   @RequireAdministrator()
   async exportPurchaseReconciliationDetail(@Query() query: FinanceReportFilterDto, @Res() response: Response) {
@@ -237,10 +237,11 @@ export class FinanceReportController {
       case "sales-reconciliation-detail":
         return [buildSalesReconciliationDetailTable(await this.reports.salesReconciliationDetail(filter), { currencyLabels })];
       case "purchase-reconciliation-detail": {
-        // 「其他应付」（备用金 / 房租 / 水电…）**不进这张表** —— 采购对账是按供应商逐项核对
-        // 物料与数量的，那些条目没有采购单与物料。笔数透给表尾点名，见 `excludedOtherCount`。
-        const { rows, excludedOtherCount } = await this.reports.purchaseReconciliationDetail(filter);
-        return [buildPurchaseReconciliationDetailTable(rows, { currencyLabels, excludedOtherCount })];
+        // 「其他应付」（备用金 / 房租 / 水电…）**留在本表里**，靠新增的「费用说明」列被认出来
+        // （2026-10-12 财务反馈：10-11 那次整行排除之后，「周金红那几行备用金看不到明细」）。
+        // 两类行的行数透给表尾点名，否则一片空的「产品名称 / 产品代码」看着像导出坏了。
+        const { rows, purchaseRowCount, otherRowCount } = await this.reports.purchaseReconciliationDetail(filter);
+        return [buildPurchaseReconciliationDetailTable(rows, { currencyLabels, purchaseRowCount, otherRowCount })];
       }
       case "sales-reconciliation-summary":
         return [buildSalesReconciliationSummaryTable(await this.reports.salesReconciliationSummary(filter), { currencyLabels })];

@@ -12,6 +12,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const XLSX = require("xlsx");
 const { Prisma } = require("@prisma/client");
+const { UnprocessableEntityException } = require("@nestjs/common");
 const { parseOtherPayableRows, otherPayableTemplateWorkbook, normalizeAmountCell, OTHER_PAYABLE_MAX_ROWS } = require("../../dist/modules/finance/other-payable-import.js");
 const { SupplierPayableService } = require("../../dist/modules/finance/supplier-payable.service.js");
 
@@ -29,10 +30,32 @@ function sheetRows(buffer, sheetName) {
   return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
 }
 
-const HEADER = ["供应商编码", "供应商名称", "应付金额", "币种", "费用说明", "确认日期", "备注"];
+/**
+ * 测试用的表头。**与模板同一套列**（含 2026-10-12 加的「会计科目」），
+ * 否则「模板能写、解析器不认」这种错测不出来。
+ */
+const HEADER = ["供应商编码", "供应商名称", "应付金额", "币种", "费用说明", "会计科目", "确认日期", "备注"];
 
-/** 解析一份「表头 + 若干数据行」的文件。 */
-function parse(rows) { return parseOtherPayableRows(sheetRows(workbookBuffer([HEADER, ...rows]))); }
+/** 在「费用说明」与「确认日期」之间补一个空科目位（历史用例写的是 7 列）。 */
+const withEmptySubject = (row) => [...row.slice(0, 5), "", ...row.slice(5)];
+
+/** 7 列的数据行 → 8 列（空科目位）：不改动那些只测供应商/金额/日期的历史用例。 */
+const dataRow = (...cells) => withEmptySubject(cells.map((cell) => (cell === undefined || cell === null ? "" : String(cell))));
+
+/** 8 列的数据行（顺序与 HEADER 逐列对齐，含会计科目）：测科目的用例用这个。 */
+const fullRow = (...cells) => cells.map((cell) => (cell === undefined || cell === null ? "" : String(cell)));
+
+/**
+ * 解析一份「表头 + 若干数据行」的文件。
+ *
+ * 7 列的行会被补一个空科目位（`withEmptySubject`）：这个文件里绝大多数用例都在测
+ * 供应商/金额/币种/日期/说明的校验，读的时候不该被「会计科目」那一格打断；
+ * 真要测科目的用例显式写 8 列（见「会计科目列」那条）。
+ */
+function parse(rows) {
+  const normalized = rows.map((row) => (row.length === HEADER.length - 1 ? withEmptySubject(row) : row));
+  return parseOtherPayableRows(sheetRows(workbookBuffer([HEADER, ...normalized])));
+}
 
 // ---------------------------------------------------------------------------
 // 纯函数：表头与模板
@@ -56,8 +79,8 @@ test("模板闭环：下载的模板能被自己的解析器读回，两行示�
 
 test("按表头名认列：列顺序打乱、多余列被忽略、缺列不影响其它列", () => {
   const parsed = parseOtherPayableRows(sheetRows(workbookBuffer([
-    ["费用说明", "备注", "应付金额", "供应商名称", "币种", "摊销月份", "供应商编码", "确认日期"],
-    ["9 月厂房租金", "银行转账", "1200", "上海房东", "CNY", "2026-09", "SUP-1", "2026-09-16"],
+    ["费用说明", "备注", "应付金额", "供应商名称", "币种", "摊销月份", "供应商编码", "确认日期", ""],
+    ["9 月厂房租金", "银行转账", "1200", "上海房东", "CNY", "2026-09", "SUP-1", "2026-09-16", ""],
   ])));
 
   assert.equal(parsed.status, "ok");
@@ -65,8 +88,53 @@ test("按表头名认列：列顺序打乱、多余列被忽略、缺列不影�
   assert.deepEqual(parsed.ignoredColumns, ["摊销月份"]);
   assert.deepEqual(parsed.rows[0], {
     row: 2, supplierCode: "SUP-1", supplierName: "上海房东", amount: "1200",
-    currency: "CNY", description: "9 月厂房租金", confirmationDate: "2026-09-16", remark: "银行转账",
+    currency: "CNY", description: "9 月厂房租金", subjectName: "", confirmationDate: "2026-09-16", remark: "银行转账",
   });
+});
+
+test("会计科目列：按表头名认列、空列不影响其它列；同义表头也认", () => {
+  // 「会计科目」不在必需列里（留空 = 按来源自动归类），所以缺了它整批仍然能导。
+  const withoutSubject = parseOtherPayableRows(sheetRows(workbookBuffer([
+    ["供应商名称", "应付金额", "费用说明", ""],
+    ["上海房东", "1200", "9 月厂房租金", ""],
+  ])));
+  assert.equal(withoutSubject.status, "ok");
+  assert.equal(withoutSubject.rows[0].subjectName, "", "没有这一列时科目名是空串，不是 undefined");
+  assert.deepEqual(withoutSubject.ignoredColumns, []);
+
+  const parsed = parse([
+    fullRow("SUP-1", "上海房东", "1200", "CNY", "备用金", "库存现金（备用金）", "2026-09-16", ""),
+    fullRow("SUP-2", "顺丰", "86.5", "CNY", "快递费", "", "2026-09-16", ""),
+  ]);
+  assert.equal(parsed.rows[0].subjectName, "库存现金（备用金）");
+  assert.equal(parsed.rows[1].subjectName, "");
+
+  // 财务手写「科目」「费用科目」也要认（别名表里那几条），否则她改了表头就白填。
+  const alias = parseOtherPayableRows(sheetRows(workbookBuffer([
+    ["供应商名称", "应付金额", "费用说明", "费用科目", ""],
+    ["上海房东", "1200", "9 月厂房租金", "房租费", ""],
+  ])));
+  assert.equal(alias.rows[0].subjectName, "房租费");
+  assert.deepEqual(alias.ignoredColumns, [], "别名命中的列不能被当成「不属于口径的列」");
+});
+
+test("科目名超过 100 字按行报错（不能等写库时整批回滚）", () => {
+  const parsed = parse([
+    fullRow("SUP-1", "上海房东", "1200", "CNY", "房租", "科".repeat(101), "2026-09-16", ""),
+  ]);
+  assert.equal(parsed.status, "failed");
+  assert.equal(parsed.errors.length, 1);
+  assert.match(parsed.errors[0].reason, /会计科目名称过长/);
+});
+
+test("重复行判据不含会计科目：同一笔支出一行填了科目、一行没填，仍是重复", () => {
+  const parsed = parse([
+    fullRow("SUP-1", "上海房东", "1200", "CNY", "9 月厂房租金", "房租费", "2026-09-16", ""),
+    fullRow("SUP-1", "上海房东", "1200", "CNY", "9 月厂房租金", "", "2026-09-16", ""),
+  ]);
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.errors.length, 1);
+  assert.match(parsed.errors[0].reason, /与本文件第 2 行重复/);
 });
 
 test("缺必需列：只回一条整体错误、一行都不解析（不是把每行都报一遍）", () => {
@@ -229,7 +297,21 @@ test("文档形态（表头不在第一行）：到第一个空行为止，表�
 // ---------------------------------------------------------------------------
 
 const auditStub = () => ({ record: async () => {}, create: () => ({ createdBy: "user-1", updatedBy: "user-1" }), update: () => ({ updatedBy: "user-1" }) });
-const cashFlowStub = () => ({ requireSubject: async () => null, recordConfirmation: async () => null });
+/**
+ * 收支服务替身：`requireSubject(id)` 模拟真实现（`CashFlowService.requireSubject`）的两条分支 ——
+ * 空 id 返回 null（表示「不指定」），给了 id 但科目不存在/已停用则**抛 422**。
+ * 只返回 null 不抛的替身会让「科目校验不过时一行都不写」这条断言永远为真。
+ */
+const cashFlowStub = (options = {}) => ({
+  requireSubject: async (id) => {
+    const trimmed = id?.trim();
+    if (!trimmed) return null;
+    const found = (options.subjects ?? []).find((row) => row.id === trimmed);
+    if (!found) throw new UnprocessableEntityException({ code: "ACCOUNTING_SUBJECT_NOT_FOUND", message: "会计科目不存在或已停用" });
+    return { id: found.id, name: found.name };
+  },
+  recordConfirmation: async () => null,
+});
 const USER = { id: "user-1" };
 /** 自动编码的前缀带当天日期（平台统一规则）：断言里必须用当天，否则只有写测试那天才会绿。 */
 const TODAY = new Date().toISOString().slice(0, 10).replaceAll("-", "");
@@ -260,13 +342,16 @@ function prismaStub(options = {}) {
   const prisma = {
     supplier,
     supplierPayableEntry,
+    // 会计科目按**名字**解析成 id（模板里给人填的是名字）：认不出/重名由服务层按行报错，
+    // 所以这里要能返回 0 / 1 / 2 条，才能测出那两条分支。
+    accountingSubject: { findMany: async ({ where }) => (options.subjects ?? []).filter((row) => row.name === where.name) },
     $transaction: async (fn) => { usedTransaction.count += 1; return fn({ supplier, supplierPayableEntry }); },
   };
   return { prisma, createdEntries, createdSuppliers, usedTransaction };
 }
 
-function serviceWith(stub) {
-  return new SupplierPayableService(stub.prisma, auditStub(), cashFlowStub());
+function serviceWith(stub, options = {}) {
+  return new SupplierPayableService(stub.prisma, auditStub(), cashFlowStub(options));
 }
 
 test("导入生成其他应付草稿：命中已有供应商（按编码或名称），字段与手工新建完全同形", async () => {
@@ -274,8 +359,8 @@ test("导入生成其他应付草稿：命中已有供应商（按编码或名�
   const service = serviceWith(stub);
   const file = { buffer: workbookBuffer([
     HEADER,
-    ["SUP-0001", "", "1200.00", "CNY", "9 月厂房租金", "2026-09-16", "银行转账"],
-    ["", "顺丰速运", "86.50", "USD", "8 月快递费", "", ""],
+    dataRow("SUP-0001", "", "1200.00", "CNY", "9 月厂房租金", "2026-09-16", "银行转账"),
+    dataRow("", "顺丰速运", "86.50", "USD", "8 月快递费", "", ""),
   ]), originalname: "其他应付.xlsx" };
 
   const result = await service.importOther(file, USER);
@@ -306,8 +391,8 @@ test("供应商池里没有的对方按名称自动建档，编码走 SUP-当天
   const service = serviceWith(stub);
   const file = { buffer: workbookBuffer([
     HEADER,
-    ["", "新房东", "5000", "CNY", "押金", "2026-09-16", ""],
-    ["", " 新 房东 ", "3000", "CNY", "首月租金", "2026-09-16", ""],
+    dataRow("", "新房东", "5000", "CNY", "押金", "2026-09-16", ""),
+    dataRow("", " 新 房东 ", "3000", "CNY", "首月租金", "2026-09-16", ""),
   ]) };
 
   const result = await service.importOther(file, USER);
@@ -328,8 +413,8 @@ test("匹配忽略大小写与空格：文件里写 sup-0001 / 上海 房东 都
   const service = serviceWith(stub);
   const file = { buffer: workbookBuffer([
     HEADER,
-    ["sup-0001", "", "100", "CNY", "房租", "2026-09-16", ""],
-    ["", "上海 房东", "100", "CNY", "水电", "2026-09-16", ""],
+    dataRow("sup-0001", "", "100", "CNY", "房租", "2026-09-16", ""),
+    dataRow("", "上海 房东", "100", "CNY", "水电", "2026-09-16", ""),
   ]) };
 
   const result = await service.importOther(file, USER);
@@ -344,9 +429,9 @@ test("行级错误不连坐：坏行不写库，好行照常导入并在结果�
   const service = serviceWith(stub);
   const file = { buffer: workbookBuffer([
     HEADER,
-    ["SUP-0001", "", "1200", "CNY", "房租", "2026-09-16", ""],
-    ["SUP-0001", "", "0", "CNY", "零金额", "2026-09-16", ""],
-    ["SUP-0001", "", "1200", "CNY", "房租", "2026-09-16", ""],
+    dataRow("SUP-0001", "", "1200", "CNY", "房租", "2026-09-16", ""),
+    dataRow("SUP-0001", "", "0", "CNY", "零金额", "2026-09-16", ""),
+    dataRow("SUP-0001", "", "1200", "CNY", "房租", "2026-09-16", ""),
   ]) };
 
   const result = await service.importOther(file, USER);
@@ -365,8 +450,8 @@ test("写库阶段任何失败都整批回滚（不留下半个文件），错�
   const service = serviceWith(stub);
   const file = { buffer: workbookBuffer([
     HEADER,
-    ["SUP-0001", "", "1200", "CNY", "房租", "2026-09-16", ""],
-    ["SUP-0002", "", "86.5", "CNY", "快递费", "2026-09-16", ""],
+    dataRow("SUP-0001", "", "1200", "CNY", "房租", "2026-09-16", ""),
+    dataRow("SUP-0002", "", "86.5", "CNY", "快递费", "2026-09-16", ""),
   ]) };
 
   await assert.rejects(() => service.importOther(file, USER), /entry-create-failed/);
@@ -401,7 +486,7 @@ test("超过行数上限的文件被挡住（付款账目不做无上限的一�
   const service = serviceWith(stub);
   const rows = [HEADER];
   for (let index = 0; index < OTHER_PAYABLE_MAX_ROWS + 30; index += 1) {
-    rows.push(["SUP-0001", "", "1", "CNY", `费用 ${index}`, "2026-09-16", ""]);
+    rows.push(dataRow("SUP-0001", "", "1", "CNY", `费用 ${index}`, "2026-09-16", ""));
   }
 
   await assert.rejects(() => service.importOther({ buffer: workbookBuffer(rows) }, USER), (error) => error.getResponse?.().code === "PAYABLE_IMPORT_ROWS_EXCEEDED");
@@ -413,7 +498,7 @@ test("建单口径与手工「新建其他应付」一致（同一个构造函�
   stub.prisma.supplier.findFirst = async () => ({ id: "sup-1", name: "上海房东" });
 
   const manual = await service.createOther({ supplier_id: "sup-1", amount: "1200", currency: "CNY", description: "9 月厂房租金", confirmation_date: "2026-09-16", remark: "银行转账" }, USER);
-  await service.importOther({ buffer: workbookBuffer([HEADER, ["SUP-0001", "", "1200", "CNY", "9 月厂房租金", "2026-09-16", "银行转账"]]) }, USER);
+  await service.importOther({ buffer: workbookBuffer([HEADER, dataRow("SUP-0001", "", "1200", "CNY", "9 月厂房租金", "2026-09-16", "银行转账")]) }, USER);
 
   const manualData = stub.createdEntries[0];
   const importedData = stub.createdEntries[1];
@@ -426,4 +511,83 @@ test("建单口径与手工「新建其他应付」一致（同一个构造函�
   assert.equal(importedData.taxRate.toString(), manualData.taxRate.toString());
   assert.deepEqual(importedData.attachment, manualData.attachment);
   assert.equal(manual.payableNo.startsWith("APO-"), true);
+});
+
+// ---------------------------------------------------------------------------
+// 会计科目（2026-10-12：财务反馈「备用金看不到明细」→ 其他应付可指定科目）
+// ---------------------------------------------------------------------------
+
+/** 科目工厂：只用到 (id, name) 两个字段（服务层按名字解析）。 */
+const subjectRow = (id, name) => ({ id, name });
+
+test("导入：模板里填的会计科目名被解析成 id 写进应付条目；留空写 null", async () => {
+  const stub = prismaStub({ subjects: [subjectRow("subj-1", "库存现金（备用金）"), subjectRow("subj-2", "房租费")] });
+  const service = serviceWith(stub);
+  const file = { buffer: workbookBuffer([
+    HEADER,
+    fullRow("SUP-0001", "", "485", "CNY", "备用金", "库存现金（备用金）", "2026-09-16", ""),
+    fullRow("SUP-0001", "", "1200", "CNY", "9 月厂房租金", "房租费", "2026-09-16", ""),
+    fullRow("SUP-0001", "", "50", "CNY", "杂费", "", "2026-09-16", ""),
+  ]) };
+
+  const result = await service.importOther(file, USER);
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.imported, 3);
+  assert.deepEqual(stub.createdEntries.map((row) => row.subjectId), ["subj-1", "subj-2", null]);
+  // 名称解析不该污染别的字段（这是「科目」这一格唯一的副作用）
+  assert.deepEqual(stub.createdEntries.map((row) => row.sourceNoSnapshot), ["其他应付-备用金", "其他应付-9 月厂房租金", "其他应付-杂费"]);
+});
+
+test("导入：科目名认不出按行报错、该行不入库，别的行照常导入", async () => {
+  const stub = prismaStub({ subjects: [subjectRow("subj-1", "库存现金（备用金）")] });
+  const service = serviceWith(stub);
+  const file = { buffer: workbookBuffer([
+    HEADER,
+    fullRow("SUP-0001", "", "485", "CNY", "备用金", "库存现金（备用金）", "2026-09-16", ""),
+    fullRow("SUP-0001", "", "1200", "CNY", "房租", "管理费", "2026-09-16", ""),
+  ]) };
+
+  const result = await service.importOther(file, USER);
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.imported, 1);
+  assert.equal(result.errorCount, 1);
+  assert.equal(result.errors[0].field, "会计科目");
+  assert.match(result.errors[0].reason, /不存在或已停用/);
+  assert.match(result.hints.join(" "), /1 行填的会计科目认不出或重名/);
+  assert.deepEqual(stub.createdEntries.map((row) => row.subjectId), ["subj-1"]);
+});
+
+test("导入：同名科目落在两个分类下时拒绝，不猜一个（猜错就是把钱记到别的科目）", async () => {
+  const stub = prismaStub({ subjects: [subjectRow("subj-1", "管理费用"), subjectRow("subj-2", "管理费用")] });
+  const service = serviceWith(stub);
+  const rows = [HEADER, fullRow("SUP-0001", "", "100", "CNY", "房租", "管理费用", "2026-09-16", "")];
+  const result = await service.importOther({ buffer: workbookBuffer(rows) }, USER);
+
+  assert.equal(result.imported, 0);
+  // 状态是 partial 而不是 failed：解析期这行是**好行**（供应商/金额/日期都对），
+  // 坏在服务层解析科目那一步。`imported = 0` + 逐行错误说明才是财务要看的两个数。
+  assert.equal(result.status, "partial");
+  assert.match(result.errors[0].reason, /多个同类名科目/);
+  assert.equal(stub.createdEntries.length, 0);
+});
+
+test("新建其他应付：填了科目就存下来；科目不存在/已停用当场 422（不能等到对账那天才发现）", async () => {
+  const stub = prismaStub({ subjects: [subjectRow("subj-1", "备用金")] });
+  const service = serviceWith(stub, { subjects: [subjectRow("subj-1", "备用金")] });
+  stub.prisma.supplier.findFirst = async () => ({ id: "sup-1", name: "上海房东" });
+
+  await service.createOther({ supplier_id: "sup-1", amount: "485", currency: "CNY", description: "备用金", subject_id: "subj-1" }, USER);
+  assert.equal(stub.createdEntries[0].subjectId, "subj-1");
+
+  // 不填科目仍然可用（历史习惯：留空 = 确认应付时按来源自动归类）
+  await service.createOther({ supplier_id: "sup-1", amount: "50", currency: "CNY", description: "杂费" }, USER);
+  assert.equal(stub.createdEntries[1].subjectId, null);
+
+  await assert.rejects(
+    () => service.createOther({ supplier_id: "sup-1", amount: "1", currency: "CNY", description: "x", subject_id: "subj-gone" }, USER),
+    (error) => error.getResponse?.().code === "ACCOUNTING_SUBJECT_NOT_FOUND",
+  );
+  assert.equal(stub.createdEntries.length, 2, "科目校验不过时一行都不能写");
 });

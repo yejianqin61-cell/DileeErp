@@ -96,10 +96,14 @@ function stubReports(overrides = {}) {
             unitPrice: dec("99"),
             quantity: dec("42"),
             amount: dec("4158"),
+            otherDescription: null,
+            subjectName: null,
           },
         ],
-        // 「其他应付」（备用金 / 房租…）被排除的笔数 —— 表尾要用它点名，见 2026-10-11 财务反馈。
-        excludedOtherCount: overrides.excludedOtherCount ?? 0,
+        // 两类行的行数（2026-10-12 起其他应付**留在表里**了，所以不再是「被排除的笔数」，
+        // 而是表尾点名的「采购行 N 行 + 非采购支出 M 行」）。
+        purchaseRowCount: overrides.purchaseRowCount ?? 1,
+        otherRowCount: overrides.otherRowCount ?? 0,
       };
     },
     salesReconciliationSummary: async (filter) => {
@@ -500,30 +504,50 @@ test("finance-report.api：收支报表的 subject_id / category / direction 参
   assert.equal(filters.cashDetail[0].currency, "CNY");
 });
 
-/* ------------------------------------------------------------ 采购对账明细：排除其他应付 */
+/* ------------------------------------------------------------ 采购对账明细：其他应付行与「费用说明」列 */
 
-// 2026-10-11 财务：「怎么让录进去的备用金不进采购单里／采购对账单／不然导采购单，就一起出来了」。
-// 「其他应付」（备用金 / 房租 / 水电 / 运费）与采购到货、外加工签收一样都是一条 supplier_payable_entry，
-// 所以取数层必须按来源类型收窄；被排除的笔数必须在表尾点名（静默少一行比多一行更让人对不上）。
-test("finance-report.api：采购对账明细把被排除的「其他应付」笔数写在表尾，且不含那些行", async () => {
-  const { service } = stubReports({ excludedOtherCount: 3 });
+// 2026-10-11 财务：「怎么让录进去的备用金不进采购单里／采购对账单」→ 当时整行排除。
+// 2026-10-12 财务（拿到 10-10 那张 97 行导出件）：「周金红那几行，也就是备用金付款，看不到明细」
+// → 排除掉她就看不到那笔钱了。现在其他应付**留在表里**，靠新增的「费用说明」列认出来，
+// 表尾点名两类行各多少行（否则一片空的「产品名称 / 产品代码」看着像导出坏了）。
+test("finance-report.api：采购对账明细把其他应付行留在表里，表尾点名两类行各多少行", async () => {
+  const otherRow = {
+    date: new Date("2026-09-16T00:00:00.000Z"),
+    orderNo: null,
+    purchaseOrderNo: null,
+    supplierName: "周金红",
+    productName: null,
+    materialCode: null,
+    specification: null,
+    unit: null,
+    currency: "CNY",
+    unitPrice: dec("485"),
+    quantity: dec("1"),
+    amount: dec("485"),
+    otherDescription: "备用金",
+    subjectName: "资产类 / 库存现金（备用金）",
+  };
+  const { service } = stubReports({ purchaseRows: [otherRow], purchaseRowCount: 0, otherRowCount: 1 });
   const preview = await new FinanceReportController(service, statementsStub().statements).purchaseReconciliationDetail({});
   const notes = preview.data.footnotes.join("\n");
-  assert.match(notes, /其他应付/, "必须点名被排除的是什么");
-  assert.match(notes, /3 笔/, "必须给笔数：财务要能核对「我录的 3 笔备用金去哪了」");
-  assert.match(notes, /应付对账/, "还要给出它们仍然在的地方（否则读起来像这些钱丢了）");
-  // 行集里只有采购侧的条目：假取数层只回了 1 行采购，被排除的行不在这份数据里。
-  assert.equal(preview.data.rows.length, 1);
-  assert.equal(preview.data.rows[0][4], "碧江", "供应商名称仍在第 5 列（列序一字未动）");
+  assert.match(notes, /非采购支出（其他应付）1 行/, "必须给行数：财务要能核对「我录的备用金在哪」");
+  assert.match(notes, /费用说明/, "要告诉她这类行靠哪一列认（否则一片空的物料列看着像导出坏了）");
+  assert.match(notes, /会计科目/, "手选过科目的行在哪看也要说清");
+  assert.equal(preview.data.rows.length, 1, "其他应付行**在**表里（不再被排除）");
+  assert.equal(preview.data.rows[0][4], "备用金", "第 5 列是「费用说明」");
+  assert.equal(preview.data.rows[0][16], "资产类 / 库存现金（备用金）", "第 17 列是「会计科目」");
+  assert.equal(preview.data.rows[0][17], 485, "金额仍在倒数第二列");
 });
 
-test("finance-report.api：没有被排除的其他应付时不加那句表尾（不制造噪音）", async () => {
-  const { service } = stubReports({ excludedOtherCount: 0 });
+test("finance-report.api：全是采购行时表尾说清「本表没有这类行」，不制造歧义", async () => {
+  const { service } = stubReports();
   const preview = await new FinanceReportController(service, statementsStub().statements).purchaseReconciliationDetail({});
-  assert.equal(preview.data.footnotes.some((note) => note.includes("其他应付")), false);
+  const notes = preview.data.footnotes.join("\n");
+  assert.match(notes, /全部是采购行/);
+  assert.match(notes, /费用说明/, "两列即使全空也要说明它们为什么空");
 });
 
-/* ------------------------------------------------------------ 采购对账明细：订单号列 */
+/* ------------------------------------------------------------ 采购对账明细：订单号与费用说明列 */
 
 test("finance-report.api：采购对账明细导出把「订单号」写在「采购单号」前面", async () => {
   const { service } = stubReports();
@@ -532,12 +556,14 @@ test("finance-report.api：采购对账明细导出把「订单号」写在「�
   const workbook = XLSX.read(response.body, { type: "buffer" });
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets["采购对账明细"], { header: 1, raw: true, defval: null });
   const header = rows[0];
-  assert.equal(header.length, 17, "16 列 + 订单号 = 17 列");
+  // 19 列 = 老表 16 列 + 「订单号」(2026-09-20) + 「费用说明」「会计科目」(2026-10-12)。
+  assert.equal(header.length, 19, "16 列 + 订单号 + 费用说明 + 会计科目 = 19 列");
   assert.equal(header[header.indexOf("订单号") + 1], "采购单号", "订单号紧挨在采购单号前面");
+  assert.equal(header[header.indexOf("采购单号") + 1], "费用说明", "费用说明紧跟采购单号（其他应付行靠它认）");
+  assert.equal(header[header.length - 1], "含税金额", "金额列永远在最后两列");
   assert.equal(rows[1][2], "XSDD2026090700001", "数据行的第 3 格是订单号（销售单号）");
   assert.equal(rows[1][3], "CGDH1319", "第 4 格才是采购单号");
 });
-
 /* ------------------------------------------------------------ 五期：核算表 */
 
 test("finance-report.api：核算表预览与导出（20 列、工作表名、文件名、表尾说明）", async () => {

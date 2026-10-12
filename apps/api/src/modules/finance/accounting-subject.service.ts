@@ -127,7 +127,7 @@ export class AccountingSubjectService {
 
   /** 被引用的次数（删除前的守卫，也用于界面提示）。 */
   async usageCount(id: string): Promise<number> {
-    const [entries, customerPayments, supplierPayments, salaryPayments, receivables, payables] = await Promise.all([
+    const [entries, customerPayments, supplierPayments, salaryPayments, receivables, payables, payableEntries] = await Promise.all([
       this.prisma.cashFlowEntry.count({ where: { subjectId: id } }),
       this.prisma.customerPayment.count({ where: { subjectId: id } }),
       this.prisma.supplierPayment.count({ where: { subjectId: id } }),
@@ -136,8 +136,11 @@ export class AccountingSubjectService {
       this.prisma.salaryPayment.count({ where: { subjectId: id } }),
       this.prisma.receivableReconciliation.count({ where: { subjectId: id } }),
       this.prisma.supplierPayableReconciliation.count({ where: { subjectId: id } }),
+      // 应付条目（2026-10-12 起「其他应付」可手选科目）：同一条纪律 —— 外键是 RESTRICT，
+      // 数漏了这一处，删除会变成 500。
+      this.prisma.supplierPayableEntry.count({ where: { subjectId: id } }),
     ]);
-    return entries + customerPayments + supplierPayments + salaryPayments + receivables + payables;
+    return entries + customerPayments + supplierPayments + salaryPayments + receivables + payables + payableEntries;
   }
 
   /** 新科目的排序号：接在**本分类最后一个科目**之后（不是全局最大值，理由见 `list()` 的注释）。 */

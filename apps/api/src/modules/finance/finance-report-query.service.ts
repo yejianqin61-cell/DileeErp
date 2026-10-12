@@ -1,7 +1,7 @@
 import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { compareAccountingSubjects } from "./accounting-subject-catalog";
+import { accountingSubjectLabel, compareAccountingSubjects } from "./accounting-subject-catalog";
 import { BomMaterialCostService } from "./finance-report-cost.service";
 import { LOCAL_CURRENCY, localRevenueOf, receivableOutstanding, salesAmountOf, toDecimal } from "./finance-report.domain";
 import { financeDayRange } from "./finance-period";
@@ -51,6 +51,30 @@ export const MAX_REPORT_ROWS = 20000;
 const SALES_REPORT_STATUSES = ["confirmed", "partially_paid", "paid"] as const;
 /** 默认纳入报表的应付状态（不含 draft / 已冲销）。 */
 const PAYABLE_REPORT_STATUSES = ["confirmed", "partially_paid", "paid"] as const;
+
+/**
+ * 其他应付那一行的「费用说明」。
+ *
+ * 取值优先级：
+ *   1. **来源快照** `其他应付-<说明>`（`otherEntryData` 落库时写的）—— 去掉前缀就是财务录单时填的说明；
+ *   2. 快照认不出来时（历史数据、或说明本身被清空）回落到用户填的**备注**；
+ *   3. 都没有返回 null（导出时空单元格，而不是一个看起来像数据的横杠）。
+ *
+ * 为什么不用「备注」当首选：备注是**另一格**（导入模板里的「备注」列常写「银行转账」「月结」），
+ * 把它当费用说明会让财务看到「这一笔花在 银行转账 上」。
+ *
+ * 为什么在服务层拼而不让导出去查：快照里的说明被截到 30 字（`slice(0, 30)`），
+ * 这是落库时就定下的，报表只能如实转述 —— 不在这里假装能还原全文。
+ */
+function otherPayableDescription(
+  sourceType: string,
+  sourceNoSnapshot: string | null | undefined,
+  remark: string | null | undefined,
+): string | null {
+  if (sourceType !== "other") return null;
+  const withoutPrefix = (sourceNoSnapshot ?? "").replace(/^其他应付[-—]/, "").trim();
+  return withoutPrefix || remark?.trim() || null;
+}
 /** 默认纳入利润表的销售单状态（draft 未确认，closed 是已交付关闭，都算已成立的口径）。 */
 const SALES_ORDER_STATUSES = ["confirmed", "closed"] as const;
 
@@ -187,30 +211,30 @@ export class FinanceReportQueryService {
   /**
    * 采购对账明细表取数（主表 = 应付条目，与销售侧的「应收来源」对称）。
    *
-   * ## 为什么「其他应付」不进这张表（2026-10-11 财务反馈）
+   * ## 「其他应付」在表里是怎么处理的（两次反馈、两个相反的口径）
    *
-   * 财务原话：「怎么让录进去的备用金不进采购单里／采购对账单／不然导采购单，就一起出来了」。
+   * 财务原话（2026-10-11）：「怎么让录进去的备用金不进采购单里／采购对账单／不然导采购单，
+   * 就一起出来了」。当时的处置：**整行排除**，并在表尾点名被排除的笔数。
    *
-   * 根因：应付条目有四种来源（`raw_material_inbound` / `purchase_receipt` /
-   * `outsource_receipt` / `other`）。**其他应付落库时也是一条 `supplier_payable_entry`**
-   * （见 `supplier-payable.service.ts` 的 `otherEntryData`），而这里原先**一个来源类型都没筛**，
-   * 于是备用金、房租、水电、运费这些也进了采购对账明细表。
+   * 财务原话（2026-10-12，拿到 10-10 那张 97 行的导出件）：「这边的周金红那几行，
+   * 也就是备用金付款，看不到明细」。**排除掉之后她看不到钱了** —— 那 62 行的
+   * 「产品名称 / 订单号 / 采购单号」本来就全是空的（其他应付没有物料、没有采购单），
+   * 她真正要的是「这一行到底花在什么上」。所以现在的口径是：
    *
-   * 为什么这是错的而不是「少一列」：**采购对账是按供应商逐项核对物料与数量的**，
-   * 备用金既没有供应商物料、也没有数量与采购单 —— 它进表只会得到一行对不上的空壳，
-   * 财务逐行核对时永远对不平（她对不平的第一反应只能是怀疑整张表）。
+   *   1. 其他应付行**留在表里**（排除等于让备用金从采购对账里彻底消失，那笔钱再也对不上）；
+   *   2. 新加「费用说明」列装财务录单时写的那句说明（`其他应付-<说明>` 的来源快照）；
+   *   3. 「订单号」列**不放**说明 —— 它是销售单号，混进费用说明以后这一列就再也分不清了；
+   *   4. 表尾点名两类行各多少行（见 `buildPurchaseReconciliationDetailTable` 的 footnotes）。
    *
-   * 为什么不干脆删掉：**其他应付确实是应付**，它进「应付对账」是对的（见
-   * `docs/design/other-payable-batch-import-2026-09-16.md`：其他应付导入后立刻出现在
-   * 应付对账 → 待创建对账）。所以这里只把**采购**对账明细表收窄，并把被排除的笔数
-   * 在表尾点名（`excludedOtherCount`）—— 静默少一行比多一行更难查。
+   * ## 会不会和「采购对账」的原意冲突
+   *
+   * 不会：这张表本来就是**应付条目**的明细（`supplierPayableEntry` 是主表），
+   * 其他应付也是应付。财务不需要为了「看到备用金」去另一张表；她需要的只是**能认出这一行**。
    */
   async purchaseReconciliationDetail(
     filter: FinanceReportFilter,
-  ): Promise<{ rows: PurchaseReconciliationDetailSource[]; excludedOtherCount: number }> {
+  ): Promise<{ rows: PurchaseReconciliationDetailSource[]; purchaseRowCount: number; otherRowCount: number }> {
     const period = financeDayRange(filter.from, filter.to);
-    // 两个查询共用同一组条件：被排除的笔数必须与主查询**同一范围**，
-    // 否则筛了供应商却报出全公司的备用金笔数，表尾那句话就成了假话。
     const scope = {
       deletedAt: null,
       status: { in: this.statuses(PAYABLE_REPORT_STATUSES, filter.includeDraft) },
@@ -219,6 +243,7 @@ export class FinanceReportQueryService {
       ...(filter.currency ? { currency: filter.currency } : {}),
       // 「日期」列 = 采购单的采购日期，为空时回落应付条目创建时间；
       // 过滤条件必须覆盖这两种情况，否则采购日期为空的历史条目会被静默漏掉。
+      // 其他应付没有采购单，只能靠创建时间 —— 这条 OR 本来就把它覆盖住了。
       ...(period
         ? {
             OR: [
@@ -230,9 +255,11 @@ export class FinanceReportQueryService {
         : {}),
     };
     const rows = await this.prisma.supplierPayableEntry.findMany({
-      where: { ...scope, sourceType: { not: "other" } },
+      where: scope,
       include: {
         supplier: { select: { name: true } },
+        // 会计科目：只有录入时手选过的行才有（2026-10-12 起「其他应付」可填）；采购行恒为 null。
+        subject: { select: { category: true, name: true } },
         purchaseOrder: { select: { purchaseOrderNo: true, purchaseDate: true } },
         payableSource: {
           select: {
@@ -261,12 +288,7 @@ export class FinanceReportQueryService {
       orderBy: [{ createdAt: "asc" }],
     });
     this.assertWithinLimit(rows.length);
-    // 被排除的「其他应付」笔数：与主查询同一范围，只换来源类型。
-    // 用 count 而不是把行读回来 —— 表尾只需要一个笔数，不需要它们的字段。
-    const excludedOtherCount = await this.prisma.supplierPayableEntry.count({
-      where: { ...scope, sourceType: "other" },
-    });
-    return { rows: rows.map((row) => {
+    const mapped = rows.map((row) => {
       const item = row.payableSource?.purchaseOrderItem ?? null;
       // 外加工签收形成的应付没有采购明细，物料挂在物流批次的原料上。
       const material = item?.material ?? row.outsourcePayableSource?.logisticsBatch?.material ?? null;
@@ -279,6 +301,8 @@ export class FinanceReportQueryService {
         orderNo: row.orderNo,
         purchaseOrderNo: order?.purchaseOrderNo ?? null,
         supplierName: row.supplier?.name ?? null,
+        otherDescription: otherPayableDescription(row.sourceType, row.sourceNoSnapshot, row.remark),
+        subjectName: row.subject ? accountingSubjectLabel(row.subject.category, row.subject.name) : null,
         productName: material?.name ?? snapshot?.name ?? null,
         materialCode: material?.materialCode ?? null,
         specification: material?.specificationModel ?? snapshot?.specificationModel ?? null,
@@ -287,8 +311,15 @@ export class FinanceReportQueryService {
         unitPrice: row.unitPrice,
         quantity: row.quantity,
         amount: row.amount,
+        sourceType: row.sourceType,
       };
-    }), excludedOtherCount };
+    });
+    const otherRowCount = mapped.filter((row) => row.sourceType === "other").length;
+    return {
+      rows: mapped.map(({ sourceType: _sourceType, ...rest }) => rest),
+      purchaseRowCount: mapped.length - otherRowCount,
+      otherRowCount,
+    };
   }
 
   /**

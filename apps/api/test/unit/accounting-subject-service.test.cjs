@@ -71,6 +71,9 @@ function harness({ subjects = [], duplicate = undefined, maxSortOrder = null, us
     salaryPayment: { count: async (args) => { calls.count.push({ table: "salaryPayment", ...args }); return usage.salaryPayment ?? 0; } },
     receivableReconciliation: { count: async (args) => { calls.count.push({ table: "receivableReconciliation", ...args }); return usage.receivableReconciliation ?? 0; } },
     supplierPayableReconciliation: { count: async (args) => { calls.count.push({ table: "supplierPayableReconciliation", ...args }); return usage.supplierPayableReconciliation ?? 0; } },
+    // 应付条目自 2026-10-12 起也引用科目（「其他应付」可在建单/导入时手选）：漏掉这一张，
+    // 财务删掉一个只被其他应付引用的科目会撞外键 RESTRICT（数据库报错，财务看不懂）。
+    supplierPayableEntry: { count: async (args) => { calls.count.push({ table: "supplierPayableEntry", ...args }); return usage.supplierPayableEntry ?? 0; } },
   };
   const audit = {
     create: (user) => ({ createdBy: user.id, updatedBy: user.id }),
@@ -286,17 +289,18 @@ test("update：余额方向非法与 rename 非法用同一套校验", async () 
 
 /* ------------------------------------------------------------------ remove / usageCount */
 
-test("usageCount：六张引用表的计数相加（少算一张就会删掉还在用的科目）", async () => {
+test("usageCount：七张引用表的计数相加（少算一张就会删掉还在用的科目）", async () => {
   const { service, calls } = harness({
     subjects: [subjectRow()],
     // salaryPayment 自 2026-09-20 起也引用科目（工资付款的「工资支付」）：漏算它，
     // 财务删除一个只被工资付款引用的科目会撞外键 RESTRICT —— 数据库报错，财务看不懂。
-    usage: { cashFlowEntry: 2, customerPayment: 3, supplierPayment: 4, salaryPayment: 7, receivableReconciliation: 5, supplierPayableReconciliation: 6 },
+    // supplierPayableEntry 自 2026-10-12 起也引用科目（「其他应付」手选科目）：同一条纪律。
+    usage: { cashFlowEntry: 2, customerPayment: 3, supplierPayment: 4, salaryPayment: 7, receivableReconciliation: 5, supplierPayableReconciliation: 6, supplierPayableEntry: 8 },
   });
-  assert.equal(await service.usageCount("subject-1"), 27);
+  assert.equal(await service.usageCount("subject-1"), 35);
   assert.deepEqual(
     calls.count.map((call) => call.table).sort(),
-    ["cashFlowEntry", "customerPayment", "receivableReconciliation", "salaryPayment", "supplierPayableReconciliation", "supplierPayment"],
+    ["cashFlowEntry", "customerPayment", "receivableReconciliation", "salaryPayment", "supplierPayableEntry", "supplierPayableReconciliation", "supplierPayment"],
   );
   for (const call of calls.count) assert.deepEqual(call.where, { subjectId: "subject-1" });
 });

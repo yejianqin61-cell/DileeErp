@@ -170,6 +170,15 @@ class SupplierOtherPayableDto {
   @IsString() currency!: string;
   @IsString() @MaxLength(200) description!: string;
   @IsOptional() @IsDateString() confirmation_date?: string;
+  /**
+   * 会计科目（2026-10-12 新增，可选）：这一笔支出记到哪个科目。
+   *
+   * 为什么其他应付要比原料入库多这一格：原料/外加工的科目能从来源类型推出来（原料入库→成本、外加工→加工费），
+   * 而其他应付的四类支出（备用金 / 房租 / 水电 / 运费）来源类型**都是 `other`**，
+   * 自动候选链首位是损益类「管理费用」—— 备用金会被记成一笔费用，而它其实是资产类「库存现金（备用金）」。
+   * 留空 = 不指定，行为与以前完全一致（确认应付时按来源自动归类）。
+   */
+  @IsOptional() @IsUUID() subject_id?: string;
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }

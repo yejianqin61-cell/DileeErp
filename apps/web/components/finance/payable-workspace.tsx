@@ -92,6 +92,12 @@ type PayableEntry = AuditRow & {
   source_no?: string | null; purchase_order_no?: string | null; batch_sequence?: number | null;
   material_name?: string | null; material_code?: string | null; material_specification?: string | null; material_color?: string | null; unit_name?: string | null;
   supplier_name?: string | null; supplier_code?: string | null;
+  /**
+   * 会计科目（2026-10-12 起「其他应付」可在建单/导入时手选）：
+   * `subject` 是接口内嵌的科目（分类 + 名称），`subjectId` 是它的外键；
+   * `subject_name` 是后端算好的 `分类 / 名称`（没有手选时 = 按来源类型自动归类到哪个科目）。
+   */
+  subjectId?: string | null; subject?: SubjectLink | null; subject_name?: string | null;
   paid_amount?: string; outstanding_amount?: string;
   reconciliation?: ReconciliationRef | null;
   supplier?: SupplierRef | null;
@@ -145,6 +151,92 @@ const materialText = (item: { material_name?: string | null; material_code?: str
   return spec ? `${name}（${spec}）` : name;
 };
 const SOURCE_TYPE_LABELS: Record<string, string> = { raw_material_inbound: "原料入库", purchase_receipt: "采购到货", outsource_receipt: "外加工签收", other: "其他应付" };
+
+/**
+ * 每列的显式宽度（2026-10-09 起 `data-table.tsx` **一律**给 `<table>` 加 `data-table-fixed` →
+ * `table-layout: fixed`；没写 `meta.width` 的列由浏览器**均分**容器宽度）。
+ *
+ * 为什么逐列给：均分是「谁也不优化」——单号/供应商/金额这些长短差别极大的列被分成一样宽，
+ * 金额截断、空白浪费。这里的数字按**内容需要**分配，规则来自财务口径：
+ *   - 单号 / 摘要 / 对方单位 / 供应商 / 金额 ≥ 8%（金额被省略等于看不清钱）；
+ *   - 日期 6%~7%；币种 / 状态 / 类型 5%~6%；
+ *   - 操作列 = 最多同时出现的按钮数 × 44px + 间距 4px，按 1034px 可用宽度折算（见各表注释），最小 8%。
+ *
+ * 两类表的目标和不一样（这是硬性约束，改数字前先算总和）：
+ *   - 用了 `auditColumns()` 的表（下面带 `audit` 段注释的那几张）：**总和恰好 84%**。
+ *     工厂产出的「创建人 / 最后修改人」两列**不给宽度**（`lib/audit-columns-coverage.test.mjs`
+ *     盯着这个用法，不要改成逐列挂 meta），剩下 16% 由它们均分（各 8%）。
+ *   - 没有审计列的表（详情弹窗里的三张 + 导入错误表）：**总和恰好 100%**。
+ *
+ * 页面里的财务表（`.finance-page` 里）在 `app/globals.css` 被那三条
+ * `.finance-page .ui-table.data-table-fixed` 规则放回「自动布局 + 换行」，所以这里的宽度在
+ * **页面里是建议宽度**（长文本靠换行显示全，不靠省略）；弹窗走 Radix Portal 挂到 body、
+ * 够不到 `.finance-page`，那里的宽度是**硬约束**（截断 + hover 看全文）。
+ *
+ * 不写 `ellipsis: true`（2026-10-09 起是默认），也不写 `ellipsis: false`：
+ * 后者在关掉省略号的同时会连原生 `title` 一起关掉，固定布局里就变成「硬裁掉且悬停一片空白」。
+ * 财务页「不省略」由 `.finance-page` 那三条 CSS 负责，不靠列的开关。
+ *
+ * 勾选框 / 金额 span / 状态 badge 这类**渲染 JSX** 的列，`ellipsisTitle` 的第一层（渲染结果是字符串）
+ * 拿不到内容，只有第二层（这一格的值）能拿到 —— 所以这些列都补了 `accessorFn` 返回**屏幕上那串字**
+ * （渲染仍走各自的 `cell`）。列上不留 `accessorFn` 的只有勾选框：它本来就没有文字可看。
+ */
+const COLUMN_WIDTH = {
+  // ---- 页面：原料入库条目（inboundColumns，12 个业务列 + 审计两列，总和 84%）----
+  // 「入库单号 / 订单号 / 采购单号」是单号列（口诀 ≥8%）；供应商与原料要能认出是谁、什么货（≥8%）；
+  // 「应付金额」是钱（≥8%）；「单价」「入库数量」（带单位）各 7%；「批次」只有「第 N 批」（7%）；
+  // 「来源状态」四个字（7%）；
+  // 「操作」只有一个「接收应付」按钮：44px ÷ 1034px ≈ 4.3%，取口诀下限 8%（按钮不许折行）。
+  inboundNo: "8%", inboundOrderNo: "8%", inboundPurchaseOrder: "8%", inboundBatch: "7%",
+  inboundSupplier: "8%", inboundMaterial: "8%", inboundQuantity: "7%", inboundUnitPrice: "7%",
+  inboundAmount: "8%", inboundStatus: "7%", inboundActions: "8%",
+  // ---- 页面：外加工签收（outsourceColumns，11 个业务列 + 审计两列，总和 84%）----
+  // 同上一张，少一列（没有「入库单号」）：批次 / 签收单 / 数量 / 单价各 7%，
+  // 来源状态回到 8%（这一页状态词「待财务接收」比上一页长一点）。总和比上一张少一整列 = 84%。
+  outsourceBatch: "7%", outsourceReceipt: "7%", outsourceOrderNo: "8%", outsourcePurchaseOrder: "8%",
+  outsourceSupplier: "8%", outsourceMaterial: "8%", outsourceQuantity: "7%", outsourceUnitPrice: "7%",
+  outsourceAmount: "8%", outsourceStatus: "8%", outsourceActions: "8%",
+  // ---- 页面：待创建对账（pendingEntryColumns，11 个业务列 + 审计两列，总和 84%）----
+  // 单号/供应商/采购物料/金额按口径 ≥8%；「待对账月份」是 YYYY-MM（6%）；「来源批次 / 订单号 /
+  // 采购单号」都是单号（8%）；「规格型号」较长但可与物料列分工（7%）；
+  // 「操作」最多同时两个按钮（创建对账 + 删除）：2×44 + 4 = 92px ÷ 1034px ≈ 8.9% → 9%。
+  pendingSupplier: "8%", pendingPayableNo: "8%", pendingMonth: "6%", pendingSourceNo: "8%",
+  pendingOrderNo: "8%", pendingPurchaseOrder: "8%", pendingMaterial: "8%", pendingSpecification: "7%",
+  pendingAmount: "8%", pendingConfirmationDate: "6%", pendingActions: "9%",
+  // ---- 页面：应付对账（reconciliationColumns，17 个业务列 + 审计两列，总和 84%）----
+  // 与「确认应付台账」同样装不下理想值，所以 8% 只给认人/认钱的四列
+  // （对账单号 / 供应商 / 应付快照 / 已付快照）；单号与期间压到 7%，
+  // 金额列（系统余额 / 外部余额 / 差异）与「会计科目」6%（标签是「分类 / 名称」，长了靠换行）。
+  reconNo: "8%", reconSupplier: "8%", reconOrderNo: "7%", reconPurchaseOrder: "7%",
+  reconMaterial: "7%", reconSpecification: "6%", reconPeriod: "7%", reconDraftEntries: "7%",
+  reconPayable: "8%", reconPaid: "8%", reconSystem: "6%", reconExternal: "6%", reconDifference: "6%",
+  reconBank: "7%", reconSubject: "6%", reconStatus: "7%", reconActions: "8%",
+  // ---- 页面：确认应付台账（entryColumns，12 个业务列 + 审计两列 = 18 列，总和 84%）----
+  // 老实说这一张和下面的对账明细都**装不下**口径的理想值，见文件末尾那段说明：
+  // 18 列要把 84% 分完，平均 4.7%/列，所以 8% 只能留给真正不能省的列：
+  // 「应付单号」（截断就认不出是哪一单）、「供应商」「原料 / 说明」、
+  // 「应付金额」与「未核销余额」（勾选合并付款看的就是后者）；
+  // 「来源批次 / 来源 / 订单号 / 确认日期 / 状态」压到 6%~7%（页面里靠换行显示全，
+  // 类型词「原料入库 / 外加工签收 / 采购到货 / 其他应付」四个字在 7% ≈ 72px 里放得下）；
+  // 勾选框 3%（28px 的框 + 状态原因会换行）；「操作」8%：这一页按钮数随状态变，
+  // 最少 1 个（已付清只有「付款单」），8% ≈ 83px 放得下一个按钮、多个按钮交给 `.action-row` 折行。
+  ledgerSelect: "3%", ledgerPayableNo: "8%", ledgerSourceNo: "7%", ledgerSourceType: "7%",
+  ledgerOrderNo: "7%", ledgerSupplier: "8%", ledgerMaterial: "8%", ledgerAmount: "8%",
+  ledgerOutstanding: "8%", ledgerConfirmationDate: "6%", ledgerStatus: "6%", ledgerActions: "8%",
+  // ---- 弹窗：应付详情的三张子表 + 导入错误表（没有审计列，各自总和 100%）----
+  // 付款核销记录（4 列）：单号/日期/状态/金额，金额最宽，四个 25%。
+  allocationPaymentNo: "25%", allocationDate: "25%", allocationStatus: "25%", allocationAmount: "25%",
+  // 纳入对账的应付条目（8 列）：单号、采购物料、金额是身份与钱（各 14%）；
+  // 采购单号/来源批次/订单号是单号（各 12%）；规格型号 11%；状态 11%。
+  detailPayableNo: "14%", detailMaterial: "14%", detailSpecification: "11%", detailPurchaseOrder: "12%",
+  detailSourceNo: "12%", detailOrderNo: "12%", detailAmount: "14%", detailStatus: "11%",
+  // 仍待接收的来源（4 列）：来源批次/订单号/数量/金额，同样四等分（各 25%）。
+  // 这几个 key 与页面「待创建对账」的那几列**故意不共用**（同名 key 在同一个对象里只有最后一个生效，
+  // 而两处需要的比例完全不同：页面里靠换行按 8% 给，弹窗里没有 `.finance-page` 兜底、必须给足 25%）。
+  detailPendingSourceNo: "25%", detailPendingOrderNo: "25%", detailPendingQuantity: "25%", detailPendingAmount: "25%",
+  // 导入错误表（3 列）：「原因」是唯一的长文本，70%；「行号」只放数字 12%；「字段」是列名 18%。
+  importErrorRow: "12%", importErrorField: "18%", importErrorReason: "70%",
+} as const;
 /** 「待接收」判定：没有应付单关联、且来源状态还没被接收过（历史数据的 status 可能停在 pending_finance）。 */
 const awaitingReceipt = (item: { payable_entry?: SourcePayableLink | null; status: string }) => !item.payable_entry && item.status === "pending_finance";
 const isDraft = (entry: PayableEntry) => entry.status === "draft";
@@ -405,6 +497,17 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   });
   /** 哨兵/空值 → 提交值：明确清空送 null，未改动送 undefined（后端不更新该字段）。 */
   const subjectValue = (value: string | undefined) => (value === SUBJECT_CLEAR ? null : (value || undefined));
+  /**
+   * 一批草稿应付**共同**的条目科目（整批只有一个值才返回，否则 undefined = 留空）。
+   *
+   * 为什么必须判别而不是取第一条：批量确认整批共用一个科目，而这个默认值会被直接提交出去；
+   * 一批里混着备用金（资产类）与房租（成本类）时，取第一条就会把两者都挂到同一个科目上。
+   * 留空更安全：后端按**每条自己的科目**挂账（条目优先，见 `accrue` 的优先级注释）。
+   */
+  const commonDraftSubjectId = (drafts: PayableEntry[]): string | undefined => {
+    const ids = [...new Set(drafts.map((draft) => draft.subjectId ?? null))];
+    return ids.length === 1 && ids[0] ? ids[0] : undefined;
+  };
 
   // ---------------------------------------------------------------- 操作（全部在表格行内触发，不在页头放按钮）
 
@@ -515,7 +618,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     setDialog({ title: `确认应付：${item.payableNo}`, fields: [
       { name: "confirm", label: `确认应付 ${item.payableNo}：${item.amount} ${item.currency}`, type: "info" as const },
       bankField("支付银行"),
-      subjectEditField("会计科目"),
+      // 默认带出**条目自己填过的**科目（备用金 = 资产类「库存现金（备用金）」）：
+      // 不带出来的话，财务在这里直接提交就会把备用金挂成损益类「管理费用」——
+      // 后端优先级是「条目 > 弹窗」（见 supplier-payable.service.ts 的 accrue），
+      // 但界面必须让她**看见**这次会挂到哪个科目，否则她无从复核。
+      subjectEditField("会计科目", item.subjectId),
     ], submit: (v) => submitConfirm(`/finance/payable-entries/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => ({
       success: `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）并挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
       warning: `未指定支付银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
@@ -537,7 +644,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     setDialog({ title: `批量确认应付（${drafts.length} 条）`, fields: [
       { name: "confirm", label: `确认 ${drafts.length} 条草稿应付（合计 ${[...totals.entries()].map(([currency, amount]) => `${amount.toFixed(4)} ${currency}`).join("、")}）`, type: "info" as const },
       bankField("支付银行"),
-      subjectEditField("会计科目"),
+      // 整批共用一个科目：只在**这一批填的是同一个科目**时带出来，否则留空。
+      // 随手拿第一条的值当整批的默认值，会把「备用金 + 房租」这种混批全部挂到第一条的科目上
+      // （备用金挂成管理费用就是这么来的）。留空时后端仍按每条自己的科目走（条目优先）。
+      subjectEditField("会计科目", commonDraftSubjectId(drafts)),
     ], submit: (v) => submitConfirm("/finance/payable-entries/batch-confirm", { ids: drafts.map((draft) => draft.id), bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => {
       const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
@@ -623,9 +733,13 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       { name: "amount", label: "应付金额", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
       { name: "description", label: "支出说明", required: true },
+      // 会计科目（2026-10-12 加）：备用金 / 房租 / 水电的来源类型都是「其他应付」，
+      // 不填就一律按来源归类成损益类「管理费用」—— 备用金实际是资产类「库存现金（备用金）」。
+      // 留空仍然可用（老习惯不变），所以不加 required。
+      subjectCreateField("会计科目（留空按来源自动归类）"),
       { name: "confirmation_date", label: "确认日期", type: "date", defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => submitAction("/finance/payable-entries/other", { supplier_id: v.supplier_id, amount: v.amount, currency: v.currency, description: v.description, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "其他应付已创建") });
+    ], submit: (v) => submitAction("/finance/payable-entries/other", { supplier_id: v.supplier_id, amount: v.amount, currency: v.currency, description: v.description, subject_id: v.subject_id || undefined, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "其他应付已创建") });
   }
 
   function createReconciliation(preset?: { supplierId: string; month: string }) {
@@ -754,6 +868,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const selectionColumn: ColumnDef<PayableEntry> = {
     id: "select",
     // 表头全选覆盖「可确认的草稿 + 可核销的已确认应付」两类（见 selectableIds 的注释）。
+    /** 勾选框：列上唯一没有文字可看的列，`accessorFn` 无从给起（口径明确允许保持原样）。 */
+    meta: { width: COLUMN_WIDTH.ledgerSelect },
     header: () => <input type="checkbox" aria-label="全选可确认/可核销应付" data-testid="payable-select-all" checked={allSelected} disabled={!selectableIds.length} onChange={toggleAll} />,
     cell: ({ row }) => {
       const settleable = isSettleable(row.original);
@@ -767,32 +883,32 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     },
   };
   const inboundColumns: ColumnDef<PayableSource>[] = [
-    { id: "source", header: "入库单号", cell: ({ row }) => row.original.rawMaterialInbound?.inboundNo ?? row.original.id.slice(0, 8) },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? row.original.purchaseOrder?.purchaseOrderNo ?? "-" },
-    { id: "batch", header: "批次", cell: ({ row }) => row.original.batch_sequence ? `第 ${row.original.batch_sequence} 批` : "-" },
-    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
-    { id: "material", header: "原料", cell: ({ row }) => materialText(row.original) },
-    { id: "quantity", header: "入库数量", cell: ({ row }) => `${row.original.quantity}${row.original.unit_name ? ` ${row.original.unit_name}` : ""}` },
-    { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.settlementUnitPrice ?? row.original.unitPrice },
-    { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
+    { id: "source", header: "入库单号", meta: { width: COLUMN_WIDTH.inboundNo }, accessorFn: (row) => row.rawMaterialInbound?.inboundNo ?? row.id.slice(0, 8), cell: ({ row }) => row.original.rawMaterialInbound?.inboundNo ?? row.original.id.slice(0, 8) },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.inboundOrderNo } },
+    { id: "purchaseOrder", header: "采购单号", meta: { width: COLUMN_WIDTH.inboundPurchaseOrder }, accessorFn: (row) => row.purchase_order_no ?? row.purchaseOrder?.purchaseOrderNo ?? "-", cell: ({ row }) => row.original.purchase_order_no ?? row.original.purchaseOrder?.purchaseOrderNo ?? "-" },
+    { id: "batch", header: "批次", meta: { width: COLUMN_WIDTH.inboundBatch }, accessorFn: (row) => row.batch_sequence ? `第 ${row.batch_sequence} 批` : "-", cell: ({ row }) => row.original.batch_sequence ? `第 ${row.original.batch_sequence} 批` : "-" },
+    { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.inboundSupplier }, accessorFn: (row) => row.supplier?.name ?? "-", cell: ({ row }) => row.original.supplier?.name ?? "-" },
+    { id: "material", header: "原料", meta: { width: COLUMN_WIDTH.inboundMaterial }, accessorFn: (row) => materialText(row), cell: ({ row }) => materialText(row.original) },
+    { id: "quantity", header: "入库数量", meta: { width: COLUMN_WIDTH.inboundQuantity }, accessorFn: (row) => `${row.quantity}${row.unit_name ? ` ${row.unit_name}` : ""}`, cell: ({ row }) => `${row.original.quantity}${row.original.unit_name ? ` ${row.original.unit_name}` : ""}` },
+    { id: "unitPrice", header: "单价", meta: { width: COLUMN_WIDTH.inboundUnitPrice }, accessorFn: (row) => row.settlementUnitPrice ?? row.unitPrice, cell: ({ row }) => row.original.settlementUnitPrice ?? row.original.unitPrice },
+    { id: "amount", header: "应付金额", meta: { width: COLUMN_WIDTH.inboundAmount }, accessorFn: (row) => money(row.amount, row.currency), cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "status", header: "来源状态", meta: { width: COLUMN_WIDTH.inboundStatus }, accessorFn: (row) => financeStatus(row.status, "source"), cell: ({ row }) => financeStatus(row.original.status, "source") },
     ...auditColumns<PayableSource>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => receiveSource("raw_material_inbound", row.original)}>接收应付</Button></div> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.inboundActions }, cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => receiveSource("raw_material_inbound", row.original)}>接收应付</Button></div> },
   ];
   const outsourceColumns: ColumnDef<OutsourcePayableSource>[] = [
-    { id: "batch", header: "外加工批次", cell: ({ row }) => row.original.logisticsBatch?.batchNo ?? "-" },
-    { id: "receipt", header: "签收单", cell: ({ row }) => row.original.outsourceReceipt?.id?.slice(0, 8) ?? "-" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.purchaseOrder?.purchaseOrderNo ?? "-" },
-    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
-    { id: "material", header: "原料", cell: ({ row }) => materialText(row.original) },
-    { id: "quantity", header: "签收数量", cell: ({ row }) => `${row.original.quantity}${row.original.unit_name ? ` ${row.original.unit_name}` : ""}` },
-    { id: "unitPrice", header: "单价", cell: ({ row }) => row.original.unitPrice },
-    { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { id: "status", header: "来源状态", cell: ({ row }) => financeStatus(row.original.status, "source") },
+    { id: "batch", header: "外加工批次", meta: { width: COLUMN_WIDTH.outsourceBatch }, accessorFn: (row) => row.logisticsBatch?.batchNo ?? "-", cell: ({ row }) => row.original.logisticsBatch?.batchNo ?? "-" },
+    { id: "receipt", header: "签收单", meta: { width: COLUMN_WIDTH.outsourceReceipt }, accessorFn: (row) => row.outsourceReceipt?.id?.slice(0, 8) ?? "-", cell: ({ row }) => row.original.outsourceReceipt?.id?.slice(0, 8) ?? "-" },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.outsourceOrderNo } },
+    { id: "purchaseOrder", header: "采购单号", meta: { width: COLUMN_WIDTH.outsourcePurchaseOrder }, accessorFn: (row) => row.purchaseOrder?.purchaseOrderNo ?? "-", cell: ({ row }) => row.original.purchaseOrder?.purchaseOrderNo ?? "-" },
+    { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.outsourceSupplier }, accessorFn: (row) => row.supplier?.name ?? "-", cell: ({ row }) => row.original.supplier?.name ?? "-" },
+    { id: "material", header: "原料", meta: { width: COLUMN_WIDTH.outsourceMaterial }, accessorFn: (row) => materialText(row), cell: ({ row }) => materialText(row.original) },
+    { id: "quantity", header: "签收数量", meta: { width: COLUMN_WIDTH.outsourceQuantity }, accessorFn: (row) => `${row.quantity}${row.unit_name ? ` ${row.unit_name}` : ""}`, cell: ({ row }) => `${row.original.quantity}${row.original.unit_name ? ` ${row.original.unit_name}` : ""}` },
+    { id: "unitPrice", header: "单价", meta: { width: COLUMN_WIDTH.outsourceUnitPrice }, accessorFn: (row) => row.unitPrice, cell: ({ row }) => row.original.unitPrice },
+    { id: "amount", header: "应付金额", meta: { width: COLUMN_WIDTH.outsourceAmount }, accessorFn: (row) => money(row.amount, row.currency), cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "status", header: "来源状态", meta: { width: COLUMN_WIDTH.outsourceStatus }, accessorFn: (row) => financeStatus(row.status, "source"), cell: ({ row }) => financeStatus(row.original.status, "source") },
     ...auditColumns<OutsourcePayableSource>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button></div> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.outsourceActions }, cell: ({ row }) => <div className="action-row"><Button size="sm" variant="secondary" onClick={() => receiveSource("outsource_receipt", row.original)}>接收应付</Button></div> },
   ];
   // 「未核销余额」这一列回来了（2026-10-08）：核销现在是真的（「合并付款」过账时真的写核销行），
   // 所以「应付金额 - 已核销」是个可用的数，也是勾选合并付款的依据（余额 0 = 已付清，勾不了）。
@@ -800,18 +916,24 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   // 核销明细仍在双击后的详情里。
   const entryColumns: ColumnDef<PayableEntry>[] = [
     selectionColumn,
-    { accessorKey: "payableNo", header: "应付单号" },
-    { id: "sourceNo", header: "来源批次", cell: ({ row }) => row.original.source_no ?? row.original.sourceNoSnapshot },
-    { id: "sourceType", header: "来源", cell: ({ row }) => SOURCE_TYPE_LABELS[row.original.sourceType] ?? row.original.sourceType },
-    { id: "orderNo", header: "订单号", cell: ({ row }) => row.original.orderNo ?? (row.original.sourceType === "other" ? "无" : "-") },
-    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier_name ?? row.original.supplier?.name ?? "-" },
-    { id: "material", header: "原料 / 说明", cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : materialText(row.original) },
-    { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { id: "outstanding", header: "未核销余额", cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) },
-    { id: "confirmationDate", header: "确认日期", cell: ({ row }) => day(row.original.confirmationDate) },
-    { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") },
+    { accessorKey: "payableNo", header: "应付单号", meta: { width: COLUMN_WIDTH.ledgerPayableNo } },
+    { id: "sourceNo", header: "来源批次", meta: { width: COLUMN_WIDTH.ledgerSourceNo }, accessorFn: (row) => row.source_no ?? row.sourceNoSnapshot, cell: ({ row }) => row.original.source_no ?? row.original.sourceNoSnapshot },
+    { id: "sourceType", header: "来源", meta: { width: COLUMN_WIDTH.ledgerSourceType }, accessorFn: (row) => SOURCE_TYPE_LABELS[row.sourceType] ?? row.sourceType, cell: ({ row }) => SOURCE_TYPE_LABELS[row.original.sourceType] ?? row.original.sourceType },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.ledgerOrderNo }, accessorFn: (row) => row.orderNo ?? (row.sourceType === "other" ? "无" : "-"), cell: ({ row }) => row.original.orderNo ?? (row.original.sourceType === "other" ? "无" : "-") },
+    { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.ledgerSupplier }, accessorFn: (row) => row.supplier_name ?? row.supplier?.name ?? "-", cell: ({ row }) => row.original.supplier_name ?? row.original.supplier?.name ?? "-" },
+    { id: "material", header: "原料 / 说明", meta: { width: COLUMN_WIDTH.ledgerMaterial }, accessorFn: (row) => row.sourceType === "other" ? row.sourceNoSnapshot : materialText(row), cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : materialText(row.original) },
+    { id: "amount", header: "应付金额", meta: { width: COLUMN_WIDTH.ledgerAmount }, accessorFn: (row) => money(row.amount, row.currency), cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "outstanding", header: "未核销余额", meta: { width: COLUMN_WIDTH.ledgerOutstanding }, accessorFn: (row) => money(row.outstanding_amount, row.currency), cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) },
+    { id: "confirmationDate", header: "确认日期", meta: { width: COLUMN_WIDTH.ledgerConfirmationDate }, accessorFn: (row) => day(row.confirmationDate), cell: ({ row }) => day(row.original.confirmationDate) },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.ledgerStatus }, accessorFn: (row) => financeStatus(row.status, "payable"), cell: ({ row }) => financeStatus(row.original.status, "payable") },
+    /**
+     * 会计科目（2026-10-12 加）：这条应付挂在哪。
+     * 优先用后端算好的 `subject_name`（没有手选科目的行也会给出「按来源类型自动归类到哪个科目」，
+     * 前端自己推不出来）；接口没给时退回内嵌科目 / 科目表反查。
+     */
+    { id: "subject", header: "会计科目", meta: { width: COLUMN_WIDTH.reconSubject }, accessorFn: (row) => row.subject_name ?? subjectLabel(row.subject, row.subjectId), cell: ({ row }) => row.original.subject_name ?? subjectLabel(row.original.subject, row.original.subjectId) },
     ...auditColumns<PayableEntry>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.ledgerActions }, cell: ({ row }) => <div className="action-row">
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmEntry(row.original)}>确认应付</Button><Button size="sm" variant="ghost" onClick={() => editEntry(row.original)}>编辑</Button></>}
       {row.original.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退</Button>}
       {/* 付款单：草稿与已确认（挂账，钱还没付）都能出单 —— 它是一张打印件，不改任何数据。 */}
@@ -822,24 +944,24 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     </div> },
   ];
   const reconciliationColumns: ColumnDef<SupplierReconciliation>[] = [
-    { accessorKey: "reconciliationNo", header: "对账单号" },
-    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
-    { id: "order", header: "订单号", cell: ({ row }) => row.original.orderNo ?? (row.original.flow?.order_nos.length ? row.original.flow.order_nos.join("、") : "全部订单") },
-    { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.flow?.purchase_order_nos.join("、") || row.original.purchaseOrder?.purchaseOrderNo || "-" },
-    { id: "material", header: "采购物料", cell: ({ row }) => row.original.flow?.material_names.join("、") || "-" },
-    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.flow?.material_specifications?.join("、") || "-" },
-    { id: "period", header: "期间", cell: ({ row }) => `${day(row.original.periodStart)} 至 ${day(row.original.periodEnd)}` },
-    { id: "entries", header: "待确认应付", cell: ({ row }) => row.original.flow && row.original.flow.draft_count > 0 ? `${row.original.flow.draft_count} 条 / ${row.original.flow.draft_amount}` : "-" },
-    { id: "payable", header: "应付快照", cell: ({ row }) => money(row.original.payableAmountSnapshot, row.original.currency) },
-    { id: "paid", header: "已付快照", cell: ({ row }) => money(row.original.paymentAmountSnapshot, row.original.currency) },
-    { id: "system", header: "系统余额", cell: ({ row }) => money(row.original.systemBalance, row.original.currency) },
-    { id: "external", header: "外部余额", cell: ({ row }) => money(row.original.externalBalance, row.original.currency) },
-    { id: "difference", header: "差异", cell: ({ row }) => money(row.original.difference, row.original.currency) },
-    { id: "bank", header: "支付银行", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
-    { id: "subject", header: "会计科目", cell: ({ row }) => subjectLabel(row.original.subject, row.original.subjectId) },
-    { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
+    { accessorKey: "reconciliationNo", header: "对账单号", meta: { width: COLUMN_WIDTH.reconNo } },
+    { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.reconSupplier }, accessorFn: (row) => row.supplier?.name ?? "-", cell: ({ row }) => row.original.supplier?.name ?? "-" },
+    { id: "order", header: "订单号", meta: { width: COLUMN_WIDTH.reconOrderNo }, accessorFn: (row) => row.orderNo ?? (row.flow?.order_nos.length ? row.flow.order_nos.join("、") : "全部订单"), cell: ({ row }) => row.original.orderNo ?? (row.original.flow?.order_nos.length ? row.original.flow.order_nos.join("、") : "全部订单") },
+    { id: "purchaseOrder", header: "采购单号", meta: { width: COLUMN_WIDTH.reconPurchaseOrder }, accessorFn: (row) => row.flow?.purchase_order_nos.join("、") || row.purchaseOrder?.purchaseOrderNo || "-", cell: ({ row }) => row.original.flow?.purchase_order_nos.join("、") || row.original.purchaseOrder?.purchaseOrderNo || "-" },
+    { id: "material", header: "采购物料", meta: { width: COLUMN_WIDTH.reconMaterial }, accessorFn: (row) => row.flow?.material_names.join("、") || "-", cell: ({ row }) => row.original.flow?.material_names.join("、") || "-" },
+    { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.reconSpecification }, accessorFn: (row) => row.flow?.material_specifications?.join("、") || "-", cell: ({ row }) => row.original.flow?.material_specifications?.join("、") || "-" },
+    { id: "period", header: "期间", meta: { width: COLUMN_WIDTH.reconPeriod }, accessorFn: (row) => `${day(row.periodStart)} 至 ${day(row.periodEnd)}`, cell: ({ row }) => `${day(row.original.periodStart)} 至 ${day(row.original.periodEnd)}` },
+    { id: "entries", header: "待确认应付", meta: { width: COLUMN_WIDTH.reconDraftEntries }, accessorFn: (row) => row.flow && row.flow.draft_count > 0 ? `${row.flow.draft_count} 条 / ${row.flow.draft_amount}` : "-", cell: ({ row }) => row.original.flow && row.original.flow.draft_count > 0 ? `${row.original.flow.draft_count} 条 / ${row.original.flow.draft_amount}` : "-" },
+    { id: "payable", header: "应付快照", meta: { width: COLUMN_WIDTH.reconPayable }, accessorFn: (row) => money(row.payableAmountSnapshot, row.currency), cell: ({ row }) => money(row.original.payableAmountSnapshot, row.original.currency) },
+    { id: "paid", header: "已付快照", meta: { width: COLUMN_WIDTH.reconPaid }, accessorFn: (row) => money(row.paymentAmountSnapshot, row.currency), cell: ({ row }) => money(row.original.paymentAmountSnapshot, row.original.currency) },
+    { id: "system", header: "系统余额", meta: { width: COLUMN_WIDTH.reconSystem }, accessorFn: (row) => money(row.systemBalance, row.currency), cell: ({ row }) => money(row.original.systemBalance, row.original.currency) },
+    { id: "external", header: "外部余额", meta: { width: COLUMN_WIDTH.reconExternal }, accessorFn: (row) => money(row.externalBalance, row.currency), cell: ({ row }) => money(row.original.externalBalance, row.original.currency) },
+    { id: "difference", header: "差异", meta: { width: COLUMN_WIDTH.reconDifference }, accessorFn: (row) => money(row.difference, row.currency), cell: ({ row }) => money(row.original.difference, row.original.currency) },
+    { id: "bank", header: "支付银行", meta: { width: COLUMN_WIDTH.reconBank }, accessorFn: (row) => row.bank ? `${row.bank.bankName}（${row.bank.accountNumber}）` : "-", cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
+    { id: "subject", header: "会计科目", meta: { width: COLUMN_WIDTH.reconSubject }, accessorFn: (row) => subjectLabel(row.subject, row.subjectId), cell: ({ row }) => subjectLabel(row.original.subject, row.original.subjectId) },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.reconStatus }, accessorFn: (row) => financeStatus(row.status, "reconciliation"), cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
     ...auditColumns<SupplierReconciliation>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row" data-testid={`reconciliation-actions-${row.original.id}`}>
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.reconActions }, cell: ({ row }) => <div className="action-row" data-testid={`reconciliation-actions-${row.original.id}`}>
       {row.original.status === "difference" && <Button size="sm" variant="secondary" onClick={() => resolveReconciliation(row.original)}>处理差异</Button>}
       {row.original.flow?.can_confirm_payables ? <Button size="sm" data-testid={`reconciliation-confirm-${row.original.id}`} onClick={() => confirmReconciliationPayables(row.original)}>确认 {row.original.flow.draft_count} 条应付</Button> : null}
       {["matched", "resolved"].includes(row.original.status) && row.original.flow && row.original.flow.draft_count === 0 ? <span className="panel-note">范围内没有待确认应付</span> : null}
@@ -849,19 +971,19 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   ];
   /** 「待创建对账」= **逐条**列出还没有被任何对账单覆盖的草稿应付（汇总行看不出「这条在不在」）。 */
   const pendingEntryColumns: ColumnDef<PayableEntry>[] = [
-    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier_name ?? row.original.supplier?.name ?? row.original.supplierId },
-    { accessorKey: "payableNo", header: "应付单号" },
-    { id: "month", header: "待对账月份", cell: ({ row }) => monthOf(row.original.confirmationDate ?? row.original.createdAt) },
-    { id: "sourceNo", header: "来源批次", cell: ({ row }) => row.original.source_no ?? row.original.sourceNoSnapshot },
-    { id: "orderNo", header: "订单号", cell: ({ row }) => row.original.orderNo ?? (row.original.sourceType === "other" ? "无" : "-") },
-    { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" },
-    { id: "material", header: "采购物料", cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : (row.original.material_name ?? row.original.material_code ?? "-") },
-    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material_specification || "-" },
-    { id: "amount", header: "应付金额", cell: ({ row }) => money(row.original.amount, row.original.currency) },
-    { id: "confirmationDate", header: "确认日期", cell: ({ row }) => day(row.original.confirmationDate) },
+    { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.pendingSupplier }, accessorFn: (row) => row.supplier_name ?? row.supplier?.name ?? row.supplierId, cell: ({ row }) => row.original.supplier_name ?? row.original.supplier?.name ?? row.original.supplierId },
+    { accessorKey: "payableNo", header: "应付单号", meta: { width: COLUMN_WIDTH.pendingPayableNo } },
+    { id: "month", header: "待对账月份", meta: { width: COLUMN_WIDTH.pendingMonth }, accessorFn: (row) => monthOf(row.confirmationDate ?? row.createdAt), cell: ({ row }) => monthOf(row.original.confirmationDate ?? row.original.createdAt) },
+    { id: "sourceNo", header: "来源批次", meta: { width: COLUMN_WIDTH.pendingSourceNo }, accessorFn: (row) => row.source_no ?? row.sourceNoSnapshot, cell: ({ row }) => row.original.source_no ?? row.original.sourceNoSnapshot },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.pendingOrderNo }, accessorFn: (row) => row.orderNo ?? (row.sourceType === "other" ? "无" : "-"), cell: ({ row }) => row.original.orderNo ?? (row.original.sourceType === "other" ? "无" : "-") },
+    { id: "purchaseOrder", header: "采购单号", meta: { width: COLUMN_WIDTH.pendingPurchaseOrder }, accessorFn: (row) => row.purchase_order_no ?? "-", cell: ({ row }) => row.original.purchase_order_no ?? "-" },
+    { id: "material", header: "采购物料", meta: { width: COLUMN_WIDTH.pendingMaterial }, accessorFn: (row) => row.sourceType === "other" ? row.sourceNoSnapshot : (row.material_name ?? row.material_code ?? "-"), cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : (row.original.material_name ?? row.original.material_code ?? "-") },
+    { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.pendingSpecification }, accessorFn: (row) => row.material_specification || "-", cell: ({ row }) => row.original.material_specification || "-" },
+    { id: "amount", header: "应付金额", meta: { width: COLUMN_WIDTH.pendingAmount }, accessorFn: (row) => money(row.amount, row.currency), cell: ({ row }) => money(row.original.amount, row.original.currency) },
+    { id: "confirmationDate", header: "确认日期", meta: { width: COLUMN_WIDTH.pendingConfirmationDate }, accessorFn: (row) => day(row.confirmationDate), cell: ({ row }) => day(row.original.confirmationDate) },
     // 「待创建对账」是**逐条**列（注释里写明「汇总行看不出这条在不在」），所以按业务列表给两列。
     ...auditColumns<PayableEntry>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.pendingActions }, cell: ({ row }) => <div className="action-row">
       <Button size="sm" variant="secondary" title="按这条的供应商 + 月份创建：一张对账单覆盖该供应商该月全部待确认应付" onClick={() => createReconciliation({ supplierId: row.original.supplierId, month: monthOf(row.original.confirmationDate ?? row.original.createdAt) })}>创建对账</Button>
       {/* 用户 2026-09-20：「其他应付的条目支持删除，包括……应付对账」—— 这一页原先只有「创建对账」，
           录错的那条只能跑到「确认应付」页去删。这里给同一个动作同一套边界（后端仍是同一条 DELETE）。 */}
@@ -925,6 +1047,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
         { label: "应付金额", value: money(item.amount, item.currency) },
         { label: "已付金额", value: money(item.paid_amount, item.currency) }, { label: "未付金额", value: money(item.outstanding_amount, item.currency) },
         { label: "确认日期", value: day(item.confirmationDate) },
+        // 会计科目（2026-10-12）：详情也要能看到这条应付挂在哪个科目（列表页已有这一列）。
+        { label: "会计科目", value: item.subject_name ?? subjectLabel(item.subject, item.subjectId) },
         { label: "备注", value: item.remark, wide: true },
         ...auditDetailFields(item),
       ];
@@ -959,7 +1083,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       const item = detailData as PayableEntry;
       const allocations = item.allocations ?? [];
       return [{ title: `付款核销记录（${allocations.length} 条）`, content: allocations.length
-        ? <DataTable pageSize={10} columns={[{ id: "payment", header: "付款单号", cell: ({ row }) => row.original.payment?.paymentNo ?? "-" }, { id: "date", header: "付款日期", cell: ({ row }) => day(row.original.payment?.paymentDate) }, { id: "status", header: "付款状态", cell: ({ row }) => financeStatus(row.original.payment?.status, "payable") }, { id: "amount", header: "核销金额", cell: ({ row }) => money(row.original.amount, row.original.payment?.currency ?? item.currency) }] as ColumnDef<NonNullable<PayableEntry["allocations"]>[number]>[]} data={allocations} /> : <p className="panel-note">暂无付款核销</p> }];
+        ? <DataTable pageSize={10} columns={[{ id: "payment", header: "付款单号", meta: { width: COLUMN_WIDTH.allocationPaymentNo }, accessorFn: (row) => row.payment?.paymentNo ?? "-", cell: ({ row }) => row.original.payment?.paymentNo ?? "-" }, { id: "date", header: "付款日期", meta: { width: COLUMN_WIDTH.allocationDate }, accessorFn: (row) => day(row.payment?.paymentDate), cell: ({ row }) => day(row.original.payment?.paymentDate) }, { id: "status", header: "付款状态", meta: { width: COLUMN_WIDTH.allocationStatus }, accessorFn: (row) => financeStatus(row.payment?.status, "payable"), cell: ({ row }) => financeStatus(row.original.payment?.status, "payable") }, { id: "amount", header: "核销金额", meta: { width: COLUMN_WIDTH.allocationAmount }, accessorFn: (row) => money(row.amount, row.payment?.currency ?? item.currency), cell: ({ row }) => money(row.original.amount, row.original.payment?.currency ?? item.currency) }] as ColumnDef<NonNullable<PayableEntry["allocations"]>[number]>[]} data={allocations} /> : <p className="panel-note">暂无付款核销</p> }];
     }
     if (detail?.kind === "reconciliation" && detailData) {
       const item = detailData as SupplierReconciliation;
@@ -967,9 +1091,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       const pending = item.details?.pending_sources ?? [];
       return [
         { title: `纳入对账的应付条目（${ents.length} 条）`, content: ents.length
-          ? <DataTable pageSize={10} columns={[{ accessorKey: "payableNo", header: "应付单号" }, { id: "material", header: "采购物料", cell: ({ row }) => row.original.material_name ?? "-" }, { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material_specification || "-" }, { id: "purchaseOrder", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" }, { accessorKey: "sourceNoSnapshot", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "status", header: "状态", cell: ({ row }) => financeStatus(row.original.status, "payable") }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["payable_entries"][number]>[]} data={ents} /> : <p className="panel-note">该期间没有纳入对账的应付条目</p> },
+          ? <DataTable pageSize={10} columns={[{ accessorKey: "payableNo", header: "应付单号", meta: { width: COLUMN_WIDTH.detailPayableNo } }, { id: "material", header: "采购物料", meta: { width: COLUMN_WIDTH.detailMaterial }, accessorFn: (row) => row.material_name ?? "-", cell: ({ row }) => row.original.material_name ?? "-" }, { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.detailSpecification }, accessorFn: (row) => row.material_specification || "-", cell: ({ row }) => row.original.material_specification || "-" }, { id: "purchaseOrder", header: "采购单号", meta: { width: COLUMN_WIDTH.detailPurchaseOrder }, accessorFn: (row) => row.purchase_order_no ?? "-", cell: ({ row }) => row.original.purchase_order_no ?? "-" }, { accessorKey: "sourceNoSnapshot", header: "来源批次", meta: { width: COLUMN_WIDTH.detailSourceNo } }, { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.detailOrderNo } }, { id: "amount", header: "金额", meta: { width: COLUMN_WIDTH.detailAmount }, accessorFn: (row) => money(row.amount, row.currency), cell: ({ row }) => money(row.original.amount, row.original.currency) }, { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.detailStatus }, accessorFn: (row) => financeStatus(row.status, "payable"), cell: ({ row }) => financeStatus(row.original.status, "payable") }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["payable_entries"][number]>[]} data={ents} /> : <p className="panel-note">该期间没有纳入对账的应付条目</p> },
         { title: `仍待接收的来源（${pending.length} 条）`, content: pending.length
-          ? <DataTable pageSize={10} columns={[{ accessorKey: "source_no", header: "来源批次" }, { accessorKey: "orderNo", header: "订单号" }, { accessorKey: "quantity", header: "数量" }, { id: "amount", header: "金额", cell: ({ row }) => money(row.original.amount, row.original.currency) }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["pending_sources"][number]>[]} data={pending} /> : <p className="panel-note">该期间没有待接收来源</p> },
+          ? <DataTable pageSize={10} columns={[{ accessorKey: "source_no", header: "来源批次", meta: { width: COLUMN_WIDTH.detailPendingSourceNo } }, { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.detailPendingOrderNo } }, { accessorKey: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.detailPendingQuantity } }, { id: "amount", header: "金额", meta: { width: COLUMN_WIDTH.detailPendingAmount }, accessorFn: (row) => money(row.amount, row.currency), cell: ({ row }) => money(row.original.amount, row.original.currency) }] as ColumnDef<NonNullable<SupplierReconciliation["details"]>["pending_sources"][number]>[]} data={pending} /> : <p className="panel-note">该期间没有待接收来源</p> },
       ];
     }
     return [];
@@ -1162,7 +1286,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
           <Button size="sm" data-testid="payable-merge-pay" disabled={!mergeRows.length} onClick={() => setMergeOpen(true)}>合并付款（{mergeRows.length} 条）</Button>
           {mergeRows.length ? <span className="panel-note" data-testid="payable-merge-hint">合并付款：{mergeRows[0].supplierName} / {mergeRows[0].currency}，未核销余额合计 {settleOutstandingTotal(mergeRows)}（同一供应商 + 同一币种才能合并；金额可在弹窗里逐行改小）</span> : null}
         </div>
-        <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
+        {/* 包一层带 testid 的容器（与「待创建对账」「应付对账」两张表对称）：合并之后这一页同时有三张表，
+            测试与脚本要能按表定位，而不是在全页范围内碰运气。 */}
+        <div data-testid="payable-entries">
+          <DataTable columns={entryColumns} data={ledgerEntries} empty={<EmptyState title="没有符合条件的应付条目" />} onRowDoubleClick={(row) => setDetail({ kind: "entry", id: row.id })} rowTitle="双击查看详情" />
+        </div>
       </div>
     </section>}
     {/* 批量导入其他应付：模板 + 上传 + 逐行结果。文案只留数据与去处，不写说明性句子（用户 2026-09-16 第①条）。 */}
@@ -1183,9 +1311,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
             {importResult.createdSuppliers.length > 0 && <p data-testid="payable-import-suppliers">新增供应商：{importResult.createdSuppliers.map((item) => `${item.name}（${item.supplierCode}，${item.rows} 条）`).join("、")}</p>}
             {importResult.hints.map((hint) => <p key={hint} className="panel-note">{hint}</p>)}
             {importResult.errors.length > 0 && <DataTable columns={[
-              { accessorKey: "row", header: "行号" },
-              { accessorKey: "field", header: "字段", cell: ({ row }) => row.original.field ?? "-" },
-              { accessorKey: "reason", header: "原因" },
+              { accessorKey: "row", header: "行号", meta: { width: COLUMN_WIDTH.importErrorRow } },
+              { accessorKey: "field", header: "字段", meta: { width: COLUMN_WIDTH.importErrorField }, accessorFn: (row) => row.field ?? "-", cell: ({ row }) => row.original.field ?? "-" },
+              { accessorKey: "reason", header: "原因", meta: { width: COLUMN_WIDTH.importErrorReason } },
             ]} data={importResult.errors} empty={null} />}
             {importResult.imported > 0 && <div className="action-row">
               <Button size="sm" variant="secondary" asChild><Link href="/finance/payable?tab=reconciliations">去应付对账 →</Link></Button>

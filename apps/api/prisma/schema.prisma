@@ -1357,6 +1357,12 @@ model SupplierPayableEntry {
   currency                  String                      @db.VarChar(10)
   confirmationDate          DateTime                    @map("confirmation_date") @db.Date
   status                    String                      @default("draft") @db.VarChar(30)
+  /// 会计科目（可选，目前只有「其他应付」在建单时手选）：
+  /// 备用金、房租、水电这类非采购支出**不能靠来源类型猜科目** —— 它们的来源都是 `other`，
+  /// 而 `other` 的自动候选链首位是「管理费用」（损益类）。备用金实际是资产类
+  /// 「库存现金（备用金）」，房租是成本类「房租费」：一条链分不开它们，只能由录单的人指。
+  /// 为空 = 没指定，确认应付时仍退回按来源的候选链（历史行全部为空）。
+  subjectId                 String?                     @map("subject_id") @db.Uuid
   attachment                Json                        @default("[]")
   remark                    String?                     @db.VarChar(1000)
   createdAt                 DateTime                    @default(now()) @map("created_at")
@@ -1366,6 +1372,11 @@ model SupplierPayableEntry {
   deletedAt                 DateTime?                   @map("deleted_at")
   deletedBy                 String?                     @map("deleted_by") @db.Uuid
   supplier                  Supplier                    @relation(fields: [supplierId], references: [id])
+  /// `onDelete: Restrict` 与迁移 `20261013090000_other_payable_subject` 的 DDL 逐字一致：
+  /// 科目只停用不删除（宪法《Configurable Business Categories》），被引用的科目必须留成历史快照 ——
+  /// 默认的 `SetNull` 会让「删科目」把历史单据上的科目悄悄抹成空，而 Prisma 生成的迁移又会
+  /// 与手写迁移永久漂移（`prisma migrate diff` 会一直报差异）。
+  subject                   AccountingSubject?          @relation(fields: [subjectId], references: [id], onDelete: Restrict)
   payableSource             PayableSource?              @relation("RawMaterialPayableEntry", fields: [payableSourceId], references: [id])
   outsourcePayableSource    OutsourcePayableSource?     @relation("OutsourceSourcePayableEntry", fields: [outsourcePayableSourceId], references: [id])
   allocations               SupplierPaymentAllocation[]
@@ -1379,6 +1390,9 @@ model SupplierPayableEntry {
   @@index([orderNo, status])
   @@index([supplierId, status])
   @@index([sourceType, status])
+  /// 与迁移里的 `supplier_payable_entries_subject_id_idx` 对齐：会计科目是筛选维度
+  /// （「这个科目下有哪些应付」），没有索引就是全表扫。不写在这里，`migrate dev` 下次会把它删掉。
+  @@index([subjectId])
   @@map("supplier_payable_entries")
 }
 
@@ -2107,6 +2121,8 @@ model AccountingSubject {
   cashFlowEntries               CashFlowEntry[]
   customerPayments              CustomerPayment[]
   supplierPayments              SupplierPayment[]
+  /// 应付条目上的科目：目前只有「其他应付」在建单/导入时手选（见 `SupplierPayableEntry.subjectId`）。
+  supplierPayableEntries        SupplierPayableEntry[]
   salaryPayments                SalaryPayment[]
   receivableReconciliations     ReceivableReconciliation[]
   payableReconciliations        SupplierPayableReconciliation[]

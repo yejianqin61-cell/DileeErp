@@ -5,7 +5,7 @@ import { makerStamp } from "../../platform/audit/maker-stamp";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { beijingDateTime } from "../../platform/time/beijing-time";
-import { RECEIVABLE_CONFIRM_SUBJECT_NAMES, paymentSubjectNames } from "./accounting-subject-catalog";
+import { RECEIVABLE_CONFIRM_SUBJECT_NAMES, accountingSubjectLabel, paymentSubjectNames } from "./accounting-subject-catalog";
 import {
   SLIP_KIND_LABELS,
   counterpartyBankOf,
@@ -123,6 +123,8 @@ export class FinanceSlipService {
       where: { id: { in: ids }, deletedAt: null, status: { in: [...ENTRY_STATUSES] } },
       include: {
         supplier: { select: { id: true, name: true, settlementInfo: true } },
+        // 条目自己的科目（2026-10-12 起「其他应付」可填）：单子上的「总账科目」优先取它，理由见下面那行注释。
+        subject: { select: { category: true, name: true } },
         payableSource: { select: { purchaseOrderItem: { select: { material: { select: { name: true } }, materialSnapshot: true } } } },
         outsourcePayableSource: { select: { logisticsBatch: { select: { material: { select: { name: true } } } } } },
       },
@@ -151,8 +153,12 @@ export class FinanceSlipService {
         total = total.plus(entry.amount);
         return {
           summary: `支付${counterpartyName}${this.materialLabel(entry)}款`,
-          // 科目优先取**确认时实际用的那个**；查不到（例如还没确认、或当年流水缺失）时退回按来源的候选链首位。
-          general_subject: this.subjectOf(flows, entry.id) ?? paymentSubjectNames(entry.sourceType)[0] ?? "",
+          // 科目优先级：**条目自己填的** > 确认时实际用的那个 > 按来源的候选链首位。
+          // 条目优先是 2026-10-12 加的：其他应付（备用金 / 房租 / 水电）的来源类型都是 `other`，
+          // 候选链首位是「管理费用」，只有条目自己知道这笔是备用金（资产类）还是房租（成本类）。
+          general_subject: entry.subject
+            ? accountingSubjectLabel(entry.subject.category, entry.subject.name)
+            : this.subjectOf(flows, entry.id) ?? paymentSubjectNames(entry.sourceType)[0] ?? "",
           detail_subject: "",
           debit: entry.amount.toString(),
           credit: "",

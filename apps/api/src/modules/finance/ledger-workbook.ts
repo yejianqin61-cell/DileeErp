@@ -62,6 +62,11 @@ export type PayableLedgerExportRow = {
   sourceType: string;
   source_no?: string | null;
   sourceNoSnapshot: string;
+  /**
+   * 会计科目（`分类 / 名称`，2026-10-12 新增）：由 `SupplierPayableService.list()` 算好
+   * （条目手选的科目 > 按来源类型自动归类的候选首位）。这条应付**挂在哪**是财务对账时要看的。
+   */
+  subject_name?: string | null;
   orderNo: string | null;
   purchase_order_no?: string | null;
   material_name?: string | null;
@@ -164,6 +169,7 @@ export const PAYABLE_LEDGER_COLUMNS: ReportColumn[] = [
   { header: "付款情况", width: 12 },
   { header: "状态", width: 14 },
   { header: "备注", width: 30 },
+  { header: "会计科目", width: 26 },
   ...AUDIT_LEDGER_COLUMNS,
 ];
 
@@ -189,6 +195,7 @@ export function buildPayableLedgerTable(rows: PayableLedgerExportRow[]): ReportT
       payablePaymentText(row.status),
       payableStatusText(row.status),
       row.remark ?? "",
+      row.subject_name ?? "",
       ...auditLedgerCells(row),
     ]),
     footnotes: ledgerFootnotes(rows.map((row) => row.currency), "付款情况按状态口径：草稿与已确认（确认只是挂账，钱还没付）= 未付；部分付款 = 还欠着钱，也是未付；已付清 = 已付；已冲销 / 已作废不算未付也不算已付，只在「全部」里出现。"),

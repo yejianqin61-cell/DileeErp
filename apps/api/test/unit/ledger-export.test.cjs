@@ -99,8 +99,8 @@ test("筛选器上的计数：all 含冲销/作废，所以不等于 unpaid + pa
 // AuditActorService.attachAll 解析好；时间固定按北京时间写到分。
 const AUDIT_NAMES = { created_by_name: "张三", updated_by_name: "李四" };
 const AUDIT_UPDATED_AT = new Date("2026-09-02T06:05:00.000Z");
-// 应付台账原有 17 列（下标 0..16），审计四列接在末尾 17..20
-const PAYABLE_AUDIT_START = 17;
+// 应付台账原有 17 列（下标 0..16），2026-10-12 在「备注」后加了「会计科目」(17)，审计四列因此接在 18..21
+const PAYABLE_AUDIT_START = 18;
 // 应收台账原有 16 列（下标 0..15），审计四列接在末尾 16..19
 const RECEIVABLE_AUDIT_START = 16;
 
@@ -109,6 +109,8 @@ const payableRow = (extra = {}) => ({
   sourceType: "raw_material_inbound", source_no: "IN-001", sourceNoSnapshot: "IN-001", orderNo: "SO-1", purchase_order_no: "PO-1",
   material_name: "涤纶布", material_specification: "150D", quantity: "100.0000", unit_name: "米",
   unitPrice: "5.0000", amount: "500.0000", currency: "CNY", status: "draft", remark: null,
+  // 会计科目由服务层算好（条目手选 > 按来源类型自动归类首位）：2026-10-12 起台账导出这一列。
+  subject_name: "成本类 / 主营业务成本",
   createdAt: new Date("2026-09-01T02:30:00.000Z"), updatedAt: AUDIT_UPDATED_AT, ...AUDIT_NAMES, ...extra,
 });
 
@@ -213,6 +215,17 @@ test("导出落到 Excel 里必须是数值类型（文本型数字在 Excel 里
   assert.deepEqual(rows[0].slice(PAYABLE_AUDIT_START, PAYABLE_AUDIT_START + 4), ["创建人", "创建时间", "最后修改人", "最后修改时间"]);
   assert.equal(rows[1][PAYABLE_AUDIT_START], "张三");
   assert.equal(rows[1][PAYABLE_AUDIT_START + 1], "2026-09-01 10:30");
+});
+
+test("应付台账导出：会计科目一列在「备注」与审计四列之间，缺值时留空而不是漏列", () => {
+  const table = buildPayableLedgerTable([payableRow(), payableRow({ payableNo: "AP-002", subject_name: null, remark: "月结" })]);
+  const headers = table.columns.map((column) => column.header);
+  assert.deepEqual(headers.slice(15, 18), ["状态", "备注", "会计科目"], "会计科目紧跟备注，审计四列仍在最后");
+  assert.equal(table.rows[0][17], "成本类 / 主营业务成本", "分类 / 名称：与界面下拉、付款单同一口径");
+  assert.equal(table.rows[1][17], "", "算不出科目（历史行）时留空，不能少一格 —— 少一格后面所有列都会左移");
+  assert.equal(table.rows[1][16], "月结", "备注仍在原位");
+  // 行宽与表头必须逐列对齐：这是导出件里最容易悄悄错位的地方
+  for (const row of table.rows) assert.equal(row.length, table.columns.length);
 });
 
 test("含多种币种时表尾写明不做合计（跨币种相加没有意义）", () => {

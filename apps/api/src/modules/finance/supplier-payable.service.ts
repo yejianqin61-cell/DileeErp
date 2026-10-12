@@ -12,7 +12,7 @@ import { matchesLedgerFilter, type LedgerFilter } from "./ledger-filter";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
 import { SOURCE_PAYABLE, VoucherService } from "./voucher.service";
-import { paymentSubjectNames, PAYABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
+import { paymentSubjectNames, PAYABLE_CONFIRM_SUBJECT_NAMES, accountingSubjectLabel, catalogSubjectLabel } from "./accounting-subject-catalog";
 import { OTHER_PAYABLE_MAX_ROWS, otherPayableTemplateWorkbook, parseOtherPayableRows, type OtherPayableImportError } from "./other-payable-import";
 
 type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
@@ -37,6 +37,23 @@ export type OtherPayableImportResult = {
   hints: string[];
 };
 
+/** 台账「会计科目」列要用的最小科目形状。 */
+type SubjectRef = { category: string; name: string };
+
+/**
+ * 应付台账的「会计科目」显示值（纯函数，便于单测）。
+ *
+ * 取值链与**记账口径逐字对齐**：条目手选 > 覆盖这张条目的对账单上填的 > 按来源类型的候选首位。
+ * 前两级就是 `confirmPayables` 里的 `entry.subjectId ?? result.subjectId`，
+ * 所以「台账显示什么」与「凭证写了什么」不会各说各话；最后一级是候选链
+ * （`createAccrual` 在没有人工科目时用的那条），让财务仍能看到「点确认会挂到哪」。
+ */
+function ledgerSubjectName(entrySubject: SubjectRef | null | undefined, coverageSubject: SubjectRef | undefined, sourceType: string | null | undefined): string {
+  if (entrySubject) return accountingSubjectLabel(entrySubject.category, entrySubject.name);
+  if (coverageSubject) return accountingSubjectLabel(coverageSubject.category, coverageSubject.name);
+  return catalogSubjectLabel((sourceType ? paymentSubjectNames(sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES)[0]);
+}
+
 
 @Injectable()
 export class SupplierPayableService {
@@ -52,7 +69,7 @@ export class SupplierPayableService {
    * 比在 SQL 里重写一套近似规则更不容易漂移。
    */
   async list(orderNo?: string, supplierId?: string, status?: string, filter: LedgerFilter = {}) {
-    const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, allocations: { where: { deletedAt: null }, include: { payment: { select: { status: true } } } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
+    const rows = await this.prisma.supplierPayableEntry.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(supplierId ? { supplierId } : {}), ...(status ? { status } : {}) }, include: { supplier: { select: { id: true, name: true, supplierCode: true } }, subject: { select: { category: true, name: true } }, allocations: { where: { deletedAt: null }, include: { payment: { select: { status: true } } } }, payableSource: { include: { purchaseReceipt: { select: { receiptNo: true, extensionData: true } }, rawMaterialInbound: { select: { inboundNo: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, purchaseOrderItem: { select: { materialSnapshot: true, material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } }, outsourcePayableSource: { include: { outsourceReceipt: { select: { id: true } }, purchaseOrder: { select: { purchaseOrderNo: true } }, logisticsBatch: { select: { material: { select: { materialCode: true, name: true, specificationModel: true, color: true } }, unit: { select: { name: true } } } } } } }, orderBy: { createdAt: "desc" } });
     /**
      * 「这条应付是否已经被某张对账单覆盖」。
      *
@@ -68,10 +85,23 @@ export class SupplierPayableService {
     const scopes = supplierIds.length
       ? await this.prisma.supplierPayableReconciliation.findMany({
         where: { deletedAt: null, supplierId: { in: supplierIds } },
-        select: { id: true, reconciliationNo: true, status: true, supplierId: true, currency: true, orderNo: true, purchaseOrderId: true, periodStart: true, periodEnd: true },
+        select: { id: true, reconciliationNo: true, status: true, supplierId: true, currency: true, orderNo: true, purchaseOrderId: true, periodStart: true, periodEnd: true, subjectId: true },
         orderBy: { createdAt: "desc" },
       })
       : [];
+    /**
+     * 覆盖这张条目的对账单上填的科目（可能为空）。
+     *
+     * 为什么要带上它：确认应付若是对账单入口点下去的，**真正写进凭证的科目可能来自对账单**
+     * （`SupplierPayableReconciliation.confirmPayables` 的 `entry.subjectId ?? result.subjectId`）。
+     * 台账这一列如果只看条目自己的科目，就会出现「台账写着管理费用、凭证上却是别的科目」——
+     * 那是一条只有财务对账时才会发现的偏差。所以取值链跟着记账口径走。
+     */
+    const coverageSubjectIds = [...new Set(scopes.map((row) => row.subjectId).filter((id): id is string => Boolean(id)))];
+    const coverageSubjects = coverageSubjectIds.length
+      ? await this.prisma.accountingSubject.findMany({ where: { id: { in: coverageSubjectIds } }, select: { id: true, category: true, name: true } })
+      : [];
+    const coverageSubjectById = new Map(coverageSubjects.map((row) => [row.id, row]));
     const mapped = rows.map((row) => {
       const receiptData = row.payableSource?.purchaseReceipt?.extensionData as { batch_sequence?: number } | null | undefined;
       const item = row.payableSource?.purchaseOrderItem;
@@ -85,6 +115,16 @@ export class SupplierPayableService {
       return {
         ...row,
         source_no: row.payableSource?.rawMaterialInbound?.inboundNo ?? row.payableSource?.purchaseReceipt?.receiptNo ?? row.outsourcePayableSource?.outsourceReceipt?.id ?? row.sourceNoSnapshot,
+        /**
+         * 会计科目（2026-10-12）：`分类 / 名称`，与界面上「会计科目」下拉的写法逐字一致。
+         *
+         * 取值链与**记账口径逐字对齐**：**条目手选** > 覆盖这张条目的对账单上填的
+         * > 按来源类型自动归类的候选首位。前两级就是 `confirmPayables` 里
+         * `entry.subjectId ?? result.subjectId` 的那两级，所以「台账显示什么」与「凭证写了什么」一致。
+         * 最后一级是候选链（`createAccrual` 在没有人工科目时用的那条链），
+         * 让财务在没有人工指定时也能看到「点确认会挂到哪个科目」。
+         */
+        subject_name: ledgerSubjectName(row.subject, covering?.subjectId ? coverageSubjectById.get(covering.subjectId) : undefined, row.sourceType),
         purchase_order_no: row.payableSource?.purchaseOrder?.purchaseOrderNo ?? row.outsourcePayableSource?.purchaseOrder?.purchaseOrderNo ?? null,
         batch_sequence: receiptData?.batch_sequence ?? null,
         material_name: material?.name ?? snapshot,
@@ -210,9 +250,15 @@ export class SupplierPayableService {
    *
    * 会计科目候选链按**来源类型**选定（原料入库 → 原材料/成本；外加工签收 → 加工费），
    * 人工选了就以人工为准；幂等靠凭证唯一键 `(source_type, source_id)`。
+   *
+   * **科目优先级（2026-10-12）**：条目自己填的科目 > 弹窗上临时代填的 > 按来源类型的候选链。
+   * 条目优先：其他应付的备用金 / 房租 / 水电来源类型都是 `other`，候选链首位是损益类「管理费用」，
+   * 而备用金是资产类「库存现金（备用金）」。这条路径原先只看弹窗传的科目（`options.subject_id`），
+   * 于是**通过「确认应付」页确认的备用金照样被记成管理费用** —— 与「一键确认应付」（对账单路径）
+   * 的口径也不一致。现在两条路径同一条优先级。
    */
   private accrue(
-    row: { id: string; payableNo: string; amount: Prisma.Decimal; currency: string; sourceType?: string | null },
+    row: { id: string; payableNo: string; amount: Prisma.Decimal; currency: string; sourceType?: string | null; subjectId?: string | null },
     counterpartyName: string,
     user: CurrentUser,
     options: { bank_id?: string | null; subject_id?: string | null },
@@ -226,7 +272,7 @@ export class SupplierPayableService {
       amount: row.amount,
       counterparty_name: counterpartyName,
       contra_subject_names: row.sourceType ? paymentSubjectNames(row.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
-      contra_subject_id: options.subject_id,
+      contra_subject_id: row.subjectId ?? options.subject_id,
     }, user);
   }
 
@@ -258,7 +304,9 @@ export class SupplierPayableService {
       for (const id of ids) await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
       const drafts = await tx.supplierPayableEntry.findMany({
         where: { id: { in: ids }, deletedAt: null, status: "draft" },
-        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, supplierId: true, supplier: { select: { name: true } }, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
+        // `subjectId`：条目上填过的科目（2026-10-12 起「其他应付」可填）—— 挂账时优先用它，
+        // 否则批量确认会把备用金记成损益类「管理费用」（见 `accrue` 的优先级注释）。
+        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, subjectId: true, supplierId: true, supplier: { select: { name: true } }, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
       });
       // 来源已作废的不能确认（与逐条确认同一条校验）；但它不该让整批失败 —— 跳过并如实回报条数。
       const confirmable = drafts.filter((draft) => draft.payableSource?.status !== "voided" && draft.outsourcePayableSource?.status !== "voided");
@@ -431,24 +479,50 @@ export class SupplierPayableService {
     return { order_no: orderNo, payable_entry_count: entries.length, payable_amount: amount.toString(), allocated_amount: allocated.toString(), outstanding_amount: amount.minus(allocated).toString(), status: amount.eq(0) || allocated.eq(0) ? "unpaid" : allocated.gte(amount) ? "paid" : "partially_paid" };
   }
 
-  async createOther(input: { supplier_id: string; amount: string; currency: string; description: string; confirmation_date?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+  /**
+   * 新建「其他应付」。
+   *
+   * `subject_id`（2026-10-12 新增，可选）：这一笔支出记到哪个会计科目。
+   * 为什么这一列必须由录单的人指：其他应付的四种支出（备用金 / 房租 / 水电 / 运费）
+   * 来源类型都是 `other`，自动候选链首位是「管理费用」（损益类）—— 备用金实际是资产类
+   * 「库存现金（备用金）」，房租是成本类「房租费」。同一条链分不开它们，
+   * 于是财务在报表上看到的是「管理费用」，而钱其实还是自己的现金。
+   * 留空 = 不指定，确认应付时仍按来源类型自动归类（历史行为不变）。
+   */
+  async createOther(input: { supplier_id: string; amount: string; currency: string; description: string; confirmation_date?: string; subject_id?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null }, select: { id: true, name: true } });
     if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
     const amount = this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
+    // 建单时就校验科目（与客户收款/供应商付款同一条纪律）：表单里填过的东西不能在确认前丢掉，
+    // 也不能等到对账确认那天才发现「科目已停用」——那时财务已经照着这张单对完账了。
+    const subject = await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
     const row = await this.prisma.supplierPayableEntry.create({ data: this.otherEntryData({
       supplierId: supplier.id, amount, currency: input.currency, description: input.description,
       confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
-      attachment: input.attachment, remark: input.remark,
+      attachment: input.attachment, remark: input.remark, subjectId: subject?.id ?? null,
     }, user) });
-    await this.audit.record("supplier_payable.create_other", "supplier_payable_entry", user.id, row.id, { payable_no: row.payableNo, description: input.description, amount: row.amount.toString(), supplier_name: supplier.name });
+    await this.audit.record("supplier_payable.create_other", "supplier_payable_entry", user.id, row.id, { payable_no: row.payableNo, description: input.description, amount: row.amount.toString(), supplier_name: supplier.name, subject_id: subject?.id ?? null });
     return row;
+  }
+
+  /**
+   * 按**科目名称**解析科目 id（其他应付导入用；导出的模板里给人填的只能是名字，不是 UUID）。
+   *
+   * 认不出返回 `undefined`、重名返回 `"ambiguous"`，由调用方按行报错 ——
+   * 静默按 NULL 收下等于「财务填了科目但系统没采纳」，那种少一列的账最难查。
+   */
+  private async resolveSubjectByName(name: string): Promise<string | undefined | "ambiguous"> {
+    const candidates = await this.prisma.accountingSubject.findMany({ where: { name, deletedAt: null, isActive: true }, select: { id: true } });
+    if (candidates.length === 1) return candidates[0].id;
+    if (candidates.length > 1) return "ambiguous";
+    return undefined;
   }
 
   /**
    * 其他应付条目的**唯一**建单口径：单条新建（`createOther`）与批量导入都走这里，
    * 否则「页面上新建的」与「导入进来的」会在来源快照、数量/单价、税率这些字段上慢慢分叉。
    */
-  private otherEntryData(input: { supplierId: string; amount: Prisma.Decimal; currency: string; description: string; confirmationDate: Date; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+  private otherEntryData(input: { supplierId: string; amount: Prisma.Decimal; currency: string; description: string; confirmationDate: Date; subjectId: string | null; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     return {
       payableNo: this.number("APO"), orderNo: null, supplierId: input.supplierId,
       sourceType: "other", payableSourceId: null, outsourcePayableSourceId: null,
@@ -456,6 +530,7 @@ export class SupplierPayableService {
       sourceNoSnapshot: `其他应付-${input.description.slice(0, 30)}`, quantity: new Prisma.Decimal(1),
       unitPrice: input.amount, taxRate: new Prisma.Decimal(0), amount: input.amount, currency: input.currency,
       confirmationDate: input.confirmationDate,
+      subjectId: input.subjectId,
       attachment: (input.attachment ?? []) as Prisma.InputJsonValue,
       remark: input.remark, ...this.audit.create(user),
     };
@@ -497,11 +572,37 @@ export class SupplierPayableService {
     const existingCodes = await this.prisma.supplier.findMany({ where: { supplierCode: { startsWith: dailyCodePrefix("SUP") } }, select: { supplierCode: true } });
     const usedCodes = existingCodes.map((row) => row.supplierCode);
 
+    /**
+     * 会计科目：表头列给人填的是**名字**，写库要 id，所以在事务外一次性解析。
+     *
+     * 认不出（名字打错或该科目已停用）与重名（不同分类下有同名科目，无法判定是哪一个）
+     * 都按**行级错误**处理、该行不入库：静默收下等于财务填了科目而账上没采纳，
+     * 那种少一列的账比报错更难查。错误合并进 `parsed.errors` 一起回报（与解析期错误同一个出口）。
+     */
+    const subjectErrors: OtherPayableImportError[] = [];
+    const subjectIds = new Map<number, string | null>();
+    for (const row of parsed.rows) {
+      if (!row.subjectName) { subjectIds.set(row.row, null); continue; }
+      const resolved = await this.resolveSubjectByName(row.subjectName);
+      if (resolved === "ambiguous") {
+        subjectErrors.push({ row: row.row, field: "会计科目", reason: `「${row.subjectName}」有多个同类名科目，无法确定是哪一个，请改用唯一的名字或在【收支管理 → 会计科目】里改名` });
+        continue;
+      }
+      if (!resolved) {
+        subjectErrors.push({ row: row.row, field: "会计科目", reason: `会计科目「${row.subjectName}」不存在或已停用（名称要与【收支管理 → 会计科目】里的完全一致；也可以留空按来源自动归类）` });
+        continue;
+      }
+      subjectIds.set(row.row, resolved);
+    }
+    // 解析后有错的行整行不写（与解析期的行级校验同一条纪律：别的行照常入账）。
+    const writableRows = parsed.rows.filter((row) => subjectIds.has(row.row));
+    const allErrors = [...parsed.errors, ...subjectErrors];
+
     const created: string[] = [];
     const createdSuppliers = new Map<string, { name: string; supplierCode: string; rows: number }>();
 
     await this.prisma.$transaction(async (tx) => {
-      for (const row of parsed.rows) {
+      for (const row of writableRows) {
         const codeKey = row.supplierCode ? key(row.supplierCode) : "";
         const nameKey = row.supplierName ? key(row.supplierName) : "";
         let supplier = (codeKey ? byCode.get(codeKey) : undefined) ?? (nameKey ? byName.get(nameKey) : undefined);
@@ -528,6 +629,7 @@ export class SupplierPayableService {
           description: row.description,
           // 日期留空 = 按导入当天记账（与手工新建其他应付的默认值一致）。
           confirmationDate: row.confirmationDate ? this.date(row.confirmationDate) : new Date(),
+          subjectId: subjectIds.get(row.row) ?? null,
           remark: row.remark || undefined,
         }, user) });
         created.push(entry.payableNo);
@@ -540,22 +642,24 @@ export class SupplierPayableService {
       });
     }
     await this.audit.record("supplier_payable.import_other", "supplier_payable_entry", user.id, undefined, {
-      imported: created.length, total: parsed.total, error_count: parsed.errors.length,
+      imported: created.length, total: parsed.total, error_count: allErrors.length,
       created_suppliers: [...createdSuppliers.values()],
+      subject_error_count: subjectErrors.length,
     });
 
     const hints = [...parsed.hints];
+    if (subjectErrors.length) hints.push(`${subjectErrors.length} 行填的会计科目认不出或重名，这些行没有入库（见下方逐行说明）`);
     if (createdSuppliers.size) hints.push(`新增了 ${createdSuppliers.size} 个供应商（${[...createdSuppliers.values()].map((item) => item.name).join("、")}）：请到【采购 → 供应商池】补联系方式`);
     hints.push("导入的是应付草稿：可在【应付对账 → 待创建对账】继续对账，也可直接在【确认应付】勾选批量确认");
 
     return {
-      status: parsed.errors.length ? "partial" : "ok",
+      status: allErrors.length ? "partial" : "ok",
       total: parsed.total,
       imported: created.length,
       successCount: created.length,
-      errorCount: parsed.errors.length,
+      errorCount: allErrors.length,
       headerRow: parsed.headerRow,
-      errors: parsed.errors,
+      errors: allErrors,
       missingColumns: parsed.missingColumns,
       ignoredColumns: parsed.ignoredColumns,
       ignoredTrailingRows: parsed.ignoredTrailingRows,
