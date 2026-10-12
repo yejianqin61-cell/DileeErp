@@ -1097,24 +1097,63 @@ test("收束下单：单价 0 的行不能下单（BOM 带出来的行单价就�
   assert.equal(items[0].purchaseOrderItemId, null);
 });
 
-test("收束下单：显式允许「价格待定」时可以带着 0 单价下单，审计里记下是哪几行", async () => {
-  // 用户 2026-10-09：「其他辅料是要等客户确认资料了，才有价格出来的，现在客户都没给资料，
-  // 也问不来的价格的」—— 辅料的价要等客户确认资料，采购员又必须先占住供应商与交期。
-  // 放行必须是**显式**的（`allow_pending_price`）：默认仍然拒绝 0 价下单。
-  // 钱的那道门挪到了下游：0 价明细不许登记到货（见 purchase-orders.test.cjs）。
+test("收束下单：0 单价一律不能下单，没有任何「放行」开关（2026-10-11 口径）", async () => {
+  // 用户 2026-10-11：「确定单价的能下单，没确定单价的先不下单」。
+  // 2026-10-09 曾经可以显式带 `allow_pending_price` 把 0 价行一起下出去（先占供应商与交期），
+  // **已删除** —— 留一个开关就是给「0 元采购单 → 0 元应付」留一条后门。
+  // 现在 0 价的行由前端排除在本次下单之外、留在计划里，补价后再下一波。
   const { plan, items } = freePlanFixture();
   items[0].unitPrice = new Prisma.Decimal("0");
   const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
-  audit.events = [];
 
-  const result = await s.service.order("plan-1", { allow_pending_price: true, groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user);
+  await assert.rejects(
+    () => s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_PRICE_REQUIRED"
+      && /第 1 行/.test(error.getResponse().message)
+      && /留在计划里/.test(error.getResponse().message),
+  );
+  assert.equal(s.createdOrders.length, 0, "校验在写之前：一张采购单都不该建出来");
+  assert.equal(s.split(), null, "连收束校验都不该走到");
+  // 关键：这一行**留在计划里**（没被挂到任何采购明细上），补价之后还能再下一波
+  assert.equal(items[0].purchaseOrderItemId, null, "0 价的行不能被下单，必须留在计划里等补价");
 
-  assert.equal(result.orders.length, 1, "先占住供应商与交期，价出来再补");
-  assert.equal(s.split().placeOrder, true, "仍然是下单态（不是草稿）");
-  const event = audit.events.find(([action]) => action === "purchase_plan.order");
-  assert.ok(event, "下单要留审计");
-  assert.deepEqual(event[4].pending_price_row_nos, [1], "哪几行没价要写进审计，事后能回答「当初为什么没价」");
-  assert.equal(event[4].pending_price_line_count, 1);
+  // 即使请求里硬塞那个已删除的开关，也一个字都不放行（服务端只认 groups）
+  await assert.rejects(
+    () => s.service.order("plan-1", { allow_pending_price: true, groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_PRICE_REQUIRED",
+  );
+  assert.equal(s.createdOrders.length, 0);
+});
+
+test("收束下单：同一份计划里**有价的行照常下单、0 价的行留在计划里**（分批的真实形状）", async () => {
+  // 这才是用户要的形状：先下有价的，没价的等报价来了再下一波。
+  const { plan, items } = freePlanFixture();
+  // 夹具本来两行都有价；把第二行改成 0 价（不要 push 新行，否则行数口径会多一行）
+  items[1].unitPrice = new Prisma.Decimal("0");
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  // 前端会把 0 价的行排除在 groups 之外（见 plan-detail-sheet.tsx 的 placedGroups），
+  // 所以这里只把 i-1 交上去 —— 下单成功，i-2 原地不动。
+  const result = await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1"] }] }, user);
+
+  assert.equal(result.orders.length, 1);
+  assert.equal(items[0].purchaseOrderItemId, "poi-1", "有价的那行下单了");
+  assert.equal(items[1].purchaseOrderItemId, null, "0 价的那行留在计划里，等补价后再下");
+});
+
+test("收束下单：被别人硬塞 0 价行时整批拒绝（服务端不信任前端过滤）", async () => {
+  // 前端过滤只是"体验"；钱的这道门必须在服务端。两行里有一行 0 价 → 整批拒绝，
+  // 而不是"悄悄把那一行下成 0 元"（那种静默行为正是当年 0 元应付的来源）。
+  const { plan, items } = freePlanFixture();
+  items[1].unitPrice = new Prisma.Decimal("0");
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  await assert.rejects(
+    () => s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-1", "i-2"] }] }, user),
+    (error) => error.getResponse().code === "PURCHASE_PLAN_PRICE_REQUIRED" && /第 2 行/.test(error.getResponse().message),
+  );
+  assert.equal(s.createdOrders.length, 0, "整批拒绝：不能有价的那行悄悄下出去、没价的那行静默丢掉");
+  assert.equal(items[0].purchaseOrderItemId, null, "被拒时一个字都没写：有价的那行也没下出去");
 });
 
 test("补价：已下单但单价是 0 的行可以在计划里补上，采购明细与单头合计一起改", async () => {

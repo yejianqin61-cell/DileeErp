@@ -12,8 +12,12 @@
 //   · 顶部一个「导入 BOM 参考单价」——只填空的未下单行（口径与用例见 lib/purchase-plan-price-entry.ts）；
 //   · 这里改的就是计划草稿的**同一份状态**：关掉浮层，表里那一格也变了；**点「保存计划」才落库**。
 //
-// 已下单的行分两种：单价 > 0 的只读（要改先退回计划）；单价还是 0 的是"价格待定"下的单，
-// **可以补价**（保存时同步到那张采购单的明细与单头合计）—— 这正是"辅料价要等客户确认资料"的出口。
+// 已下单的行分两种：单价 > 0 的只读（要改先退回计划）；单价还是 0 的**可以补价**
+// （保存时同步到那张采购单的明细与单头合计）。
+//
+// ⚠️ 2026-10-11 起：**新单不会再出现「已下单但单价是 0」这一档**（用户口径「没确定单价的先不下单」，
+// 0 价的行留在计划里等补价）。但这一档必须继续支持 —— 10-09 ~ 10-11 之间按「价格待定」下过的单
+// 还在库里，它们的补价入口就是这里；删掉它等于让那些行永远卡在没价、无法到货。
 //
 // 用 `DataTable` 而不是手写 `<table>`：它已经是全站表格的唯一入口（默认带固定布局 + 超长省略 + 悬停看全文），
 // 手写一张等于自己再维护一套列宽规则，而 `lib/table-width-coverage.test.mjs` 也会要求它单独归一次类。
@@ -32,14 +36,14 @@ type PriceDialogRow = { index: number; row: PlanDraftRow };
 /** 单价格式：`3.5` + 币种。已下单且已有价的行只读显示，用这个拼一句话。 */
 const priceText = (row: PlanDraftRow) => `${row.unitPrice} ${row.currency ?? DEFAULT_PLAN_CURRENCY}`;
 const unfilled = (row: PlanDraftRow) => !(Number(row.unitPrice) > 0);
-/** 已下单 + 已有价 = 锁死；已下单 + 还是 0 = 「价格待定」，可以补价。 */
+/** 已下单 + 已有价 = 锁死；已下单 + 还是 0 = 历史「价格待定」单，仍需补价。 */
 const locked = (row: PlanDraftRow) => row.ordered === true && !unfilled(row);
 
 function statusOf(row: PlanDraftRow): string {
   if (locked(row)) return "已下单 · 单价已锁（要改先「退回采购计划」）";
-  if (row.ordered) return "已下单 · 价格待定：补价后保存，会同步到那张采购单";
+  if (row.ordered) return "已下单 · 单价还是 0：补价后保存，会同步到那张采购单";
   if (row.priceFromBom) return "来自 BOM 参考单价（可改）";
-  if (unfilled(row)) return "还没填（0 价不能下单，除非确认「价格待定」）";
+  if (unfilled(row)) return "还没填（0 价的行不会下单，会留在计划里）";
   return "—";
 }
 
@@ -91,7 +95,7 @@ export function PlanPriceDialog({ planNo, rows, importOutcome, importing = false
           <DialogTitle>填单价{planNo ? `：${planNo}` : ""}</DialogTitle>
           <p className="ui-dialog-description">
             这里填的就是计划里那一格（第 8 列「单价」）：<strong>改完还要点「保存计划」</strong>才写进计划，
-            关掉本窗口不会丢。单价 0 的行不能下单 —— 除非在收束下单时确认「价格待定」（那些行到货登记前必须先补价）。
+            关掉本窗口不会丢。单价 0 的行**不会下单**（收束下单时会被留在计划里），要下单就先在这里填上。
           </p>
         </DialogHeader>
         <DialogBody>

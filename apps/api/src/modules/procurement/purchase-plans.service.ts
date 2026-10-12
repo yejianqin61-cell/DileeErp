@@ -49,13 +49,15 @@ export type PlanOrderGroup = { supplier_id?: string; currency?: string; expected
 /**
  * 收束下单的入参。
  *
- * `allow_pending_price`（2026-10-09）：**价格待定**放行开关。辅料要等客户确认资料才有价、
- * 现在问不到价，采购员又必须先占住供应商与交期 —— 这时允许带着 0 单价下单，
- * 但要显式说"我知道这些行还没价"（不是默认行为：默认仍然拒绝 0 价下单）。
- * 代价由下游一道门兜住：`PurchaseOrdersService.receipt()` 拒绝给 0 价明细登记到货，
- * 所以不会出现 0 元应付。补价入口仍在计划里（已下单但单价是 0 的行可以补）。
+ * 这里曾经有一个 `allow_pending_price`（2026-10-09 的「价格待定」放行开关）：
+ * 辅料要等客户确认资料才有价，于是允许带着 0 单价下单先把供应商与交期占住。
+ *
+ * **2026-10-11 用户改了口径**：「确定单价的能下单，没确定单价的先不下单」——
+ * 0 价的行现在**一律不下单**，留在计划里等补价之后再下一波（分批下单本来就是采购现实）。
+ * 开关连同下游的放行逻辑一起删掉：留着它就是给 0 价采购单留一条后门，
+ * 而那条后门通向一条**0 元应付**（财务收到一张没法付的单，全链路不报错）。
  */
-export type PlanOrderInput = { purchase_date?: string; remark?: string; extension_data?: Record<string, unknown>; allow_pending_price?: boolean; groups: PlanOrderGroup[] };
+export type PlanOrderInput = { purchase_date?: string; remark?: string; extension_data?: Record<string, unknown>; groups: PlanOrderGroup[] };
 
 /** 保存时要比对的最小行形状（只取已下单行保护用得上的列）。 */
 type WritablePlanItem = {
@@ -712,8 +714,6 @@ export class PurchasePlansService {
     const rowNoOf = (lineId: string) => current.items.findIndex((item) => item.id === lineId) + 1;
     const claimed = new Set<string>();
     const splitGroups: SplitGroup[] = [];
-    /** 这一次下单里"价格待定"（单价 0）的行号：写进审计，事后能回答"这张单当初为什么没价"。 */
-    const pendingPriceRowNos: number[] = [];
     for (const [index, group] of groups.entries()) {
       if (!group.supplier_id) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_ORDER_SUPPLIER_REQUIRED", message: `第 ${index + 1} 组还没选供应商，不能下单`, details: [] });
       const ids = group.items ?? [];
@@ -733,21 +733,16 @@ export class PurchasePlansService {
         // 入库数量 × 这里的单价，见 raw-material-inbounds.service.ts）。
         // 草稿不受影响：计划里单价可以先留 0（还没谈价），不能做的是**带着 0 单价下单**。
         //
-        // 2026-10-09 的例外：辅料要等客户确认资料才有价（用户原话：「其他辅料是要等客户确认资料了，
-        // 才有价格出来的，现在客户都没给资料，也问不来的价格的」）。这时允许**显式**带着 0 价下单
-        // （`allow_pending_price`），门禁从"这一格必须有价"挪到下游：0 价的明细**不能登记到货**
-        // （`PurchaseOrdersService.receipt()` 的 `PURCHASE_ITEM_PRICE_PENDING`），
-        // 所以 0 元应付这条链仍然不存在；补价入口留在这份计划的同一行（已下单但单价是 0 的行）。
-        // 不传这个开关时行为与以前一字不差。
+        // 2026-10-11 用户重新拍板：「确定单价的能下单，没确定单价的先不下单」——
+        // 所以这里**没有例外分支**了（2026-10-09 曾有过一个 `allow_pending_price` 放行开关，
+        // 已删）。0 价的行由前端排除在本次下单之外、留在计划里；万一有请求硬把 0 价行塞进来，
+        // 就在这一格被拦住而不是变成一张 0 元采购单。
         if (!line.unitPrice.gt(0)) {
-          if (!input.allow_pending_price) {
-            throw new UnprocessableEntityException({
-              code: "PURCHASE_PLAN_PRICE_REQUIRED",
-              message: `第 ${rowNoOf(lineId)} 行还没填单价，不能下单：应付金额就是按这一行的「数量 × 单价」算出来的`,
-              details: [{ plan_item_id: lineId, row_no: rowNoOf(lineId) }],
-            });
-          }
-          pendingPriceRowNos.push(rowNoOf(lineId));
+          throw new UnprocessableEntityException({
+            code: "PURCHASE_PLAN_PRICE_REQUIRED",
+            message: `第 ${rowNoOf(lineId)} 行还没填单价，不能下单：应付金额就是按这一行的「数量 × 单价」算出来的。这一行会留在计划里，补上单价后再下一波。`,
+            details: [{ plan_item_id: lineId, row_no: rowNoOf(lineId) }],
+          });
         }
         const bomItemId = this.resolveBomItemId(line.bomItemId, line.materialId, bomItems);
         const reason = (line.extensionData as { outside_bom_reason?: unknown } | null)?.outside_bom_reason;
@@ -778,8 +773,7 @@ export class PurchasePlansService {
       groups: splitGroups,
     };
     // 校验与收束在用事务之前完成：失败时一个字都没写。
-    // `allowPendingPrice` 只从这里传进去（HTTP 请求体里没有这个键，见 `collectGroups` 的注释）。
-    const merged = await this.orders.collectGroups(splitInput, true, { allowPendingPrice: input.allow_pending_price === true });
+    const merged = await this.orders.collectGroups(splitInput, true);
     const created = await this.prisma.$transaction(async (tx) => {
       const rows = await this.orders.createOrdersFromGroups(tx, merged, "ordered", user);
       const createdItems = await tx.purchaseOrderItem.findMany({
@@ -804,9 +798,8 @@ export class PurchasePlansService {
       remaining_line_count: current.items.length - claimed.size,
       group_count: created.length,
       purchase_order_nos: created.map((row) => row.purchaseOrderNo),
-      // 价格待定的行要在审计里留名：这批单子到货前必须先补价，而"当初是谁同意不带价下单的"要有据可查。
-      pending_price_row_nos: pendingPriceRowNos.length ? pendingPriceRowNos : undefined,
-      pending_price_line_count: pendingPriceRowNos.length || undefined,
+      // 没有「价格待定的行」这一档了（2026-10-11 起 0 价一律不下单）：留在计划里的行就是
+      // `remaining_line_count`，它们没进任何采购单，所以也不需要额外的待补价清单。
     });
     const plan = await this.get(id);
     return {

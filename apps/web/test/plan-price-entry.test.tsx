@@ -8,9 +8,12 @@
 //   1. 状态条说清还有几行 0 价；浮层里改一格，表里那一格同时变（同一份草稿状态，保存才落库）；
 //   2. 「导入 BOM 参考单价」会**先重新取一次详情**（BOM 上的价可能是打开计划之后才填的），
 //      并且只填空的未下单行：手填过的价、已下单的行一个字都不动，结果文案把"没填上的"也说清楚；
-//   3. 0 价的行下单时先弹「价格待定」确认框，**确认前不发请求**；确认后请求体带 `allow_pending_price: true`；
-//   4. 勾选的行都有价时**不弹**确认框，请求体也不带那个开关（默认行为一字未变）；
-//   5. 已下单的行：单价 0 的可以补价（价格待定），单价 > 0 的只读锁死。
+//   3. **0 价的行不下单**（2026-10-11 用户改的口径「确定单价的能下单，没确定单价的先不下单」）：
+//      勾中的行全没价就直接拦住一个请求都不发；有价与没价混在一起时，复核后**只下有价的那几行**，
+//      没价的行留在计划里，请求体里**没有任何放行开关**；
+//   4. 勾选的行都有价时不弹复核框，直接下单；
+//   5. 已下单的行：单价还是 0 的可以补价（2026-10-11 之前按「价格待定」下过的单，出口仍在这里），
+//      单价 > 0 的只读锁死。
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -131,36 +134,53 @@ describe("采购计划：填单价入口（状态条 + 浮层）", () => {
   });
 });
 
-describe("采购计划：价格待定（0 价下单）与补价", () => {
-  it("0 价的行下单先弹确认框，确认前不发请求；确认后请求体带 allow_pending_price: true", async () => {
+describe("采购计划：0 价不下单（2026-10-11 新口径）与补价", () => {
+  it("勾中的行全都没价：直接拦住，一个请求都不发，并说清是哪几行", async () => {
     const stub = renderSheet([[planItem({ unitPrice: "0.0000" })]]);
     await screen.findByRole("button", { name: "保存计划" });
 
     await userEvent.click(screen.getByTestId("plan-order"));
 
-    // 确认框：说清是哪几行、以及"到货前必须先补价"
-    const note = await screen.findByText(/这些行还没有单价（价格待定）/);
-    expect(note).toBeTruthy();
-    expect(screen.getByText(/第 1 行还没填单价/)).toBeTruthy();
-    expect(screen.getByText(/到货登记前必须先补单价/)).toBeTruthy();
+    // 全都没价 → 不弹"确认放行"，而是直接告诉采购员先填单价（这是"先不下单"的直接表达）
+    // 断言限定在错误条里：页面上别处也有"第 1 行"这类文字，整页查会撞成多个命中。
+    expect(await screen.findByText(/都还没有单价/)).toBeTruthy();
+    expect(await screen.findByTestId("plan-error")).toHaveTextContent("第 1 行");
+    expect(stub.calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(false);
+  });
+
+  it("有价的行 + 0 价的行混在一起：复核后**只下有价的那几行**，请求体不带任何放行开关", async () => {
+    const stub = renderSheet([[planItem({ id: "i-1", unitPrice: "3.5000" }), planItem({ id: "i-2", unitPrice: "0.0000" })]]);
+    await screen.findByRole("button", { name: "保存计划" });
+
+    // 勾选默认是全选（含 0 价那行）：预览里要点名哪几行本次不下单
+    expect(await screen.findByTestId("plan-held-back-note")).toBeTruthy();
+
+    await userEvent.click(screen.getByTestId("plan-order"));
+
+    // 复核框说清"只下有单价的，其余留在计划里"
+    await screen.findByText(/这几行还没填单价，本次不会下单/);
+    // 在弹窗内找，不要在整页找（表里也会出现"第 2 行"这类文字，整页查会撞成多个命中）
+    expect(within(screen.getByTestId("action-dialog")).getByText(/第 2 行/)).toBeTruthy();
     expect(stub.calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(false);
 
-    await userEvent.click(screen.getByRole("button", { name: "确认下单（价格待定）" }));
+    await userEvent.click(screen.getByRole("button", { name: /确定下单/ }));
 
     await waitFor(() => expect(stub.calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(true));
     const body = JSON.parse(String(stub.calls.find((call) => call.url.endsWith("/purchase-plans/plan-1/order"))?.body)) as { allow_pending_price?: boolean; groups: Array<{ items: string[] }> };
-    expect(body.allow_pending_price).toBe(true);
+    // 0 价那一行**不进请求**：它留在计划里，补价后再下一波
     expect(body.groups[0].items).toEqual(["i-1"]);
+    expect(body.allow_pending_price).toBeUndefined();
   });
 
-  it("都有价时不弹确认框，请求体也不带那个开关（默认行为一字未变）", async () => {
+  it("都有价时不弹复核框，直接下单", async () => {
     const stub = renderSheet([[planItem({ unitPrice: "3.5000" })]]);
     await screen.findByRole("button", { name: "保存计划" });
 
     await userEvent.click(screen.getByTestId("plan-order"));
 
     await waitFor(() => expect(stub.calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(true));
-    expect(screen.queryByText(/这些行还没有单价（价格待定）/)).toBeNull();
+    expect(screen.queryByText(/本次不会下单/)).toBeNull();
+    expect(screen.queryByTestId("plan-held-back-note")).toBeNull();
     const body = JSON.parse(String(stub.calls.find((call) => call.url.endsWith("/purchase-plans/plan-1/order"))?.body)) as { allow_pending_price?: boolean };
     expect(body.allow_pending_price).toBeUndefined();
   });
@@ -172,11 +192,11 @@ describe("采购计划：价格待定（0 价下单）与补价", () => {
     ]]);
     await screen.findByRole("button", { name: "保存计划" });
 
-    // 价格待定：状态列有标记，单价这一格仍可填（补价入口），且说明补价的后果
+    // 历史「价格待定」单（2026-10-11 之前下的）：状态列有标记，单价这一格仍可填（补价入口）
     expect(screen.getByTestId("plan-price-pending-0")).toBeTruthy();
     const pending = screen.getByTestId("plan-price-0") as HTMLInputElement;
-    expect(pending).not.toBeDisabled(); // 补价：这是"辅料价等客户确认资料"的出口
-    expect(pending.getAttribute("title")).toContain("价格待定");
+    expect(pending).not.toBeDisabled(); // 补价：10-09~10-11 之间按「价格待定」下过的单，出口仍在这里
+    expect(pending.getAttribute("title")).toContain("补填单价");
     // 行总价同样标红：这笔钱还没定下来
     expect(screen.getByTestId("plan-amount-0").className).toContain("status-danger");
 

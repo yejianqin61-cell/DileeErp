@@ -79,21 +79,39 @@ export function groupAmountText(group: PlanGroup): string {
   return total.toFixed(2);
 }
 
-export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyChange, onOrder, busy }: {
+export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyChange, onOrder, busy, heldBackRowNos = [], selectedRowCount = 0 }: {
+  /** **只含有单价的行**：0 价的行不下单（2026-10-11 用户口径），由调用方先过滤掉（见 `plan-detail-sheet.tsx`）。 */
   groups: PlanGroup[];
   currencies: CurrencyOption[];
   currencyOf: (supplierId: string) => string;
   onCurrencyChange: (supplierId: string, currency: string) => void;
   onOrder: () => void;
   busy: boolean;
+  /** 勾了但**没单价**、因此本次不下单的行号（从 1 数）：要在这里看得见，否则采购不知道自己漏了什么。 */
+  heldBackRowNos?: number[];
+  /** 勾选的行数（含 0 价那些）：只用来判断"按钮该不该可点"，见下面的注释。 */
+  selectedRowCount?: number;
 }) {
   const assigned = groups.filter((group) => group.supplierId);
   const unassigned = groups.find((group) => !group.supplierId);
+  /**
+   * 按钮什么时候灰掉，三种情况要分清楚：
+   *   1. 一行都没勾 → 灰（没什么可下的）；
+   *   2. 勾了但**都没价** → **不灰**：要让人点下去、然后收到「这几行还没填单价」。
+   *      灰着而页面上没有任何解释，采购员只会以为系统坏了（2026-10-09「我真没看到哪里可以手填单价的」同类坑）；
+   *   3. 勾了、有价、但**有价的行还没选供应商** → 灰（一个供应商一张单，收了也没落脚处，预览里已经标红说明）。
+   */
+  const disabled = busy || selectedRowCount === 0 || (!groups.length && !heldBackRowNos.length) || Boolean(unassigned);
   return (
     <div className="panel panel-body" data-testid="plan-split-preview">
       <p className="panel-note">
         {assigned.length ? `按供应商收束（同供应商合并成一张采购单，共 ${assigned.length} 张）：` : "按供应商收束：勾选的行里还没有任何一行选了供应商。"}
       </p>
+      {heldBackRowNos.length ? (
+        <p className="panel-note status-warning" data-testid="plan-held-back-note">
+          第 {heldBackRowNos.join("、")} 行还没填单价，**本次不会下单**（留在计划里，补价后再下一波）。
+        </p>
+      ) : null}
       <ul className="draft-split-list">
         {assigned.map((group) => (
           <li key={group.supplierId} data-testid={`plan-group-${group.supplierId}`}>
@@ -113,7 +131,7 @@ export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyCha
         </p>
       ) : null}
       <div className="page-actions">
-        <Button size="sm" data-testid="plan-order" disabled={busy || !assigned.length || Boolean(unassigned)} onClick={onOrder}>
+        <Button size="sm" data-testid="plan-order" disabled={disabled} onClick={onOrder}>
           收束下单{assigned.length > 1 ? `（${assigned.length} 张）` : ""}
         </Button>
       </div>

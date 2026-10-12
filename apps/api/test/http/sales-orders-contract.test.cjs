@@ -1,6 +1,6 @@
-// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（**19 条**路由）。
-// 下面的 ROUTES 探针覆盖其中 16 条；3 条 xlsx / 图片导出路由不在清单里（版式与占位行为由
-// `sales-order-production-sheet.test.cjs` 等单测覆盖）。计数口径：`^\s*@(Get|Post|Patch|Delete)\(`。
+// 销售单 HTTP 契约测试 —— sales-orders.controller.ts（**20 条**路由）。
+// 下面的 ROUTES 探针覆盖其中 16 条；4 条 xlsx / 图片导出 / 复制快照路由不在清单里（版式与占位行为由
+// `sales-order-production-sheet.test.cjs`、`sales-order-copy.test.cjs` 等单测覆盖）。计数口径：`^\s*@(Get|Post|Patch|Delete)\(`。
 //
 // 覆盖维度：成功/失败信封、状态码（200/201/204 不可写路径 → 401/400/404/422/500）、
 //   鉴权（匿名 401）、DTO 校验（body 与 query）、404（不存在的 id / 路由方法不匹配无 405）、
@@ -42,7 +42,7 @@ const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 /** 非 UUID 的 id 段：验证 id 参数是否被 UUID 校验拦下（见文件末尾 KNOWN_CONTRACT_DEFECT 用例）。 */
 const NON_UUID_ID = "not-a-uuid";
 
-/** 本文件用匿名探针覆盖的 16 条路由（controller 共 19 条，3 条 xlsx/图片导出路由不在清单里）。 */
+/** 本文件用匿名探针覆盖的 16 条路由（controller 共 20 条，4 条 xlsx/图片/复制快照路由不在清单里）。 */
 const ROUTES = [
   { label: "GET /", method: "get", path: "/api/v1/sales-orders" },
   { label: "POST /", method: "post", path: "/api/v1/sales-orders", payload: {} },

@@ -94,13 +94,13 @@ const BASE_FIELDS: ReadonlyArray<{ key: string; label: string; type?: "textarea"
 const SETTLEMENT_METHODS: ReadonlyArray<readonly [string, string]> = [["", "（不填）"], ["tt", "T/T 电汇"], ["letter_of_credit", "信用证"], ["cash", "现金"], ["monthly", "月结"], ["other", "其他"]];
 
 /**
- * 返单时必须重填的四格（与服务端 `reorderPreview().must_fill` 同一份清单）。
+ * 复制 / 返单时必须重填的四格（与服务端 `must_fill` 同一份清单：`reorderPreview` 与 `copySnapshot`）。
  *
- * 为什么前端还要存一份：服务端给的是**数据**（预览响应里的数组），而这里要在渲染时就知道
+ * 为什么前端还要存一份：服务端给的是**数据**（响应里的数组），而这里要在渲染时就知道
  * 「这一格要不要打标记」。两份都对不上时以服务端为准（它才决定建单能不能过），
  * 所以这条只是**提示**，不是校验 —— 真正的必填校验仍在保存前那几条 + 后端 DTO 上。
  */
-const REORDER_MUST_FILL: ReadonlySet<string> = new Set(["order_no", "order_date", "quantity", "delivery_date"]);
+const MUST_FILL_FIELDS: ReadonlySet<string> = new Set(["order_no", "order_date", "quantity", "delivery_date"]);
 
 /** 返单预览响应（`GET /sales-orders/reorder-preview`）里本组件用到的部分。 */
 type ReorderPreview = {
@@ -112,6 +112,26 @@ type ReorderPreview = {
   copy: Record<string, unknown>;
   must_fill: string[];
   warnings: string[];
+};
+
+/**
+ * 复制快照（`GET /sales-orders/:id/copy-snapshot`）里本组件用到的部分。
+ *
+ * 与 `ReorderPreview` 的形状**故意保持一致**（`customer_id` / `contact_id` / `copy` / `must_fill`），
+ * 因为两条路共用同一个预填函数（见 `applyCopiedPayload`）；多一套形状就是多一处会漂移的地方。
+ * `item_no` 在这里放在 `copy` 里（它是"这一单卖的是什么"的一部分），返单那边在顶层（横幅要显示），
+ * 预填函数两种都认。
+ */
+type CopySnapshot = {
+  source_order_no: string;
+  source_order_id: string;
+  source_status?: string;
+  customer_id?: string | null;
+  contact_id?: string | null;
+  copy: Record<string, unknown>;
+  must_fill: string[];
+  dropped?: { material_refs?: string[]; material_extras?: string[] };
+  warnings?: string[];
 };
 
 /**
@@ -135,6 +155,29 @@ function ReorderBanner({ sourceOrderNo, sourceOrderId, itemNo, itemNoChanged }: 
           货号已改动：这张单在【返单与总结】里会归到新的货号下，不再与 {sourceOrderNo} 同组。
         </p>
       ) : null}
+    </section>
+  );
+}
+
+/**
+ * 「由 X 复制」横幅（2026-10-XX）。
+ *
+ * 为什么文案里要**明说新单不记来源**：这张单的工艺与材料跟来源单一模一样，看起来就该归进
+ * 【返单与总结】的返单分组 —— 但它没有来源链，也不该有。不说清，销售会去返单分组里找这张单，
+ * 找不到只会以为系统坏了；更糟的是有人"顺手"把来源补上，那张单从此被算成客户返单，
+ * 返单统计里多一张假单（用户明确要求普通复制与返单分开）。
+ */
+function CopyBanner({ sourceOrderNo, sourceOrderId, dropped }: { sourceOrderNo: string; sourceOrderId?: string; dropped?: string[] }) {
+  if (!sourceOrderNo) return null;
+  return (
+    <section className="panel panel-body copy-banner" data-testid="copy-source-banner">
+      <div className="copy-banner-head">
+        <span>由 <strong>{sourceOrderNo}</strong> 复制</span>
+        {sourceOrderId ? <Link href={`/sales/orders/${sourceOrderId}/edit`} data-testid="copy-source-link">查看来源单</Link> : null}
+      </div>
+      <p className="panel-note">订单号、数量、下单日期与交货日期要按这一张单重填；单价沿用上次，请复核。新单不记来源，不会出现在【返单与总结】的返单分组里。</p>
+      {/* 剔掉了引用就当面说：那一格的图片没了是**预期行为**，不是导出坏了。 */}
+      {dropped?.length ? <p className="status-warning" data-testid="copy-dropped-materials">来源单引用的物料已不存在，复制时已剔掉：{dropped.join("、")}</p> : null}
     </section>
   );
 }
@@ -187,6 +230,15 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
    */
   const reorderFromOrderNo = (searchParams.get("reorder_from_order_no") ?? "").trim();
   const reorderMode = !editing && reorderFromOrderNo !== "";
+  /**
+   * 普通复制（2026-10-11）：`/sales/orders/new?copy_from_id=<销售单 id>`。
+   *
+   * 与返单同样是 URL 参数而不是内部状态：列表每行的「复制」就是一个链接，业务要能把它发给同事。
+   * 用 **id** 而不是单号：列表行手上就是 id，而复制这条路口径上"不限状态、不要求货号"，
+   * 没有任何一步需要先知道单号（返单用单号是因为返单分组与货号链是围绕单号转的）。
+   */
+  const copyFromId = (searchParams.get("copy_from_id") ?? "").trim();
+  const copyMode = !editing && copyFromId !== "";
   const [base, setBase] = useState<Record<string, string>>({ order_date: new Date().toISOString().slice(0, 10), quantity: "1" });
   const [spec, setSpec] = useState<Record<string, string>>({});
   const [details, setDetails] = useState<SpecDetailRow[]>([emptySpecDetailRow()]);
@@ -214,6 +266,20 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const [itemNoSuggestions, setItemNoSuggestions] = useState<ItemNoSuggestion[]>([]);
   /** 返单来源（预览成功后才有）：来源单号 + id（跳来源单用）+ 货号（横幅上显示「同货号」）。 */
   const [reorderSource, setReorderSource] = useState<{ order_no: string; order_id: string; item_no: string } | null>(null);
+  /**
+   * 复制来源（快照拉成功后才有）：来源单号 + id（横幅与「查看来源单」用）+ 被剔掉的失效物料栏位。
+   * 与 `reorderSource` 分开两个 state：编辑态返单横幅读的是单子上记着的来源，而复制**不记来源**，
+   * 混用一个 state 迟早会出现「复制完的新单被显示成返单」。
+   */
+  const [copySource, setCopySource] = useState<{ order_no: string; order_id: string; dropped: string[] } | null>(null);
+  /**
+   * 复制过来的 `extension_data`。
+   *
+   * 为什么单独存一份：表单里没有 `extension_data` 的编辑格（新建/编辑都不发这个键 = 后端用默认 `{}`
+   * 或保持原值）。复制这条路如果也不发，来源单上的扩展数据就在新单里静默消失了 ——
+   * 而这正是"整单导入"被要求的原因（订单描述基本一样）。只在复制模式下带上，其余路径行为不变。
+   */
+  const [copiedExtensionData, setCopiedExtensionData] = useState<Record<string, unknown> | undefined>(undefined);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [currencies, setCurrencies] = useState<CurrencyOption[]>([]);
@@ -232,6 +298,61 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  /**
+   * 把「复制过来的那一份」**一次性**灌进各块 state —— 返单与普通复制共用这一处。
+   *
+   * 为什么必须一次性（而不是逐键 set）：逐键 set 会与 `setBaseField` 的浅合并产生竞态，
+   * 出现「填了一半」的表单 —— 而填了一半的表单最危险：销售以为工艺已经带过来了，
+   * 直接存下去就是一张缺工艺的单。
+   *
+   * 为什么两条路共用一个函数：后端 `reorderPreview` 与 `copySnapshot` 的 `copy` 是**同一份清单、
+   * 同一套请求键**。分两处写，必然有一处先漂移，而漂移的表现是"返单带过来了、复制少带一块"——
+   * 这种错没人会当场发现（少的那一格是空的，看起来就是本来没填）。
+   */
+  function applyCopiedPayloadInternal(payload: { customer_id?: string | null; contact_id?: string | null; item_no?: string | null; copy?: Record<string, unknown> }) {
+    const copy = (payload.copy ?? {}) as Record<string, unknown>;
+    const text = (value: unknown) => (value === null || value === undefined ? "" : String(value));
+    setBase({
+      // 必须重填的四格**留空**：来源单的订单号/数量/下单日/交期属于上一张单，抄过来就是错的下单数据。
+      // 页面上它们带「（复制后必填）」/「（返单必填）」提示（见 MUST_FILL_FIELDS）。
+      order_no: "", order_date: "", quantity: "", delivery_date: "",
+      customer_id: text(payload.customer_id),
+      contact_id: text(payload.contact_id),
+      product_name: text(copy.product_name),
+      product_spec: text(copy.product_spec),
+      unit: text(copy.unit),
+      currency: text(copy.currency),
+      customer_po_no: text(copy.customer_po_no),
+      external_contract_no: text(copy.external_contract_no),
+      unit_price: text(copy.unit_price),
+      settlement_unit_price: text(copy.settlement_unit_price),
+      tax_rate: text(copy.tax_rate),
+      settlement_method: text(copy.settlement_method),
+      // 货号：复制在 `copy.item_no`（清单的一部分），返单在顶层（横幅要显示它）。
+      item_no: text(copy.item_no ?? payload.item_no),
+      // 总金额/应收/本币金额**故意不预填**：它们由数量派生，抄过来必然与新数量矛盾。
+    });
+    // `copy` 用的是**请求键**（与快照同形状），正好是 `specFromOrder` 认的第一种形状。
+    setSpec(specFromOrder(copy));
+    const detailRows = Array.isArray(copy.spec_details) ? (copy.spec_details as Array<Record<string, unknown>>).map((row) => ({ group_name: text(row.group_name), name: text(row.name), color: text(row.color), barcode: text(row.barcode), quantity: text(row.quantity), unit: text(row.unit) })) : [];
+    setDetails(detailRows.length ? detailRows : [emptySpecDetailRow()]);
+    // 引用照抄：快照带了物料摘要（`material_refs[].material`），所以能直接把芯片显示出来，
+    // 不依赖物料池那一次请求成不成功。
+    setRefs(materialRefsFromOrder({ material_refs: copy.material_refs }));
+    // 「其它」行跟着来源单（复制就是把上一批的完整材料口径带过来）。
+    setExtras(materialExtrasFromOrder(copy));
+    // 明细列名跟着来源单（列名属于工艺口径的一部分）。
+    setDetailLabelOverrides(specDetailLabelsFromOrder(copy));
+    // 扩展数据：表单里没有它的输入格，只有复制这条路能把它带过去（见 `copiedExtensionData` 的注释）。
+    setCopiedExtensionData((copy.extension_data as Record<string, unknown> | undefined) ?? undefined);
+  }
+
+  /**
+   * `useCallback(..., [])`：函数体只用 state 的 **setter**（React 保证稳定），不读任何 state ——
+   * 所以身份固定，`load` 把它放进依赖数组也不会每次渲染都重建（那会让 `useEffect` 无限重跑）。
+   */
+  const applyCopiedPayload = useCallback(applyCopiedPayloadInternal, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -295,52 +416,36 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         setStatus(String(order.status ?? "draft"));
         setSavedOrderNo(String(order.orderNo ?? ""));
       } else if (reorderFromOrderNo) {
-        // 返单：先拉预览，再把结果**一次性**灌进四块 state。
-        // 逐键 set 会与 `setBaseField` 的浅合并产生竞态，出现「填了一半」的表单 ——
-        // 而填了一半的表单最危险：销售以为工艺已经带过来了，直接存下去就是一张缺工艺的单。
+        // 返单：先拉预览，再交给 `applyCopiedPayload` **一次性**灌进各块 state（理由见那个函数）。
         const preview = (await apiGet<ReorderPreview>(`/sales-orders/reorder-preview?order_no=${encodeURIComponent(reorderFromOrderNo)}`)).data;
-        const copy = (preview.copy ?? {}) as Record<string, unknown>;
-        const text = (value: unknown) => (value === null || value === undefined ? "" : String(value));
-        setBase({
-          // 必须重填的四格**留空**：来源单的数量/下单日/交期是上一批的口径，抄过来就是错的下单数据。
-          // 页面上它们带「返单必填」提示（见 REORDER_MUST_FILL）。
-          order_no: "", order_date: "", quantity: "", delivery_date: "",
-          customer_id: text(preview.customer_id),
-          contact_id: text(preview.contact_id),
-          product_name: text(copy.product_name),
-          product_spec: text(copy.product_spec),
-          unit: text(copy.unit),
-          currency: text(copy.currency),
-          customer_po_no: text(copy.customer_po_no),
-          external_contract_no: text(copy.external_contract_no),
-          unit_price: text(copy.unit_price),
-          settlement_unit_price: text(copy.settlement_unit_price),
-          tax_rate: text(copy.tax_rate),
-          settlement_method: text(copy.settlement_method),
-          item_no: text(preview.item_no),
-          // 总金额/应收/本币金额**故意不预填**：它们由数量派生，抄过来必然与新数量矛盾。
+        applyCopiedPayload(preview);
+        setReorderSource({ order_no: preview.source_order_no, order_id: preview.source_order_id, item_no: String(preview.item_no ?? "") });
+      } else if (copyFromId) {
+        /**
+         * 普通复制：拉快照 → 一次性预填。
+         *
+         * 与返单**同一套灌法**（同一个 `applyCopiedPayload`），差别只在来源：这条路没有三条门槛
+         * （不限状态、不要求货号），也**不写来源**（保存载荷里没有 `reorder_from_order_no`）。
+         * 失效物料由服务端在快照里就剔掉了（客户端没有"重选"这个动作），剔掉什么挂在横幅上说明。
+         */
+        const snapshot = (await apiGet<CopySnapshot>(`/sales-orders/${copyFromId}/copy-snapshot`)).data;
+        applyCopiedPayload(snapshot);
+        setCopySource({
+          order_no: snapshot.source_order_no,
+          order_id: snapshot.source_order_id,
+          dropped: [...(snapshot.dropped?.material_refs ?? []), ...(snapshot.dropped?.material_extras ?? [])],
         });
-        // 预览的 `copy` 用的是**请求键**（与快照同形状），正好是 `specFromOrder` 认的第一种形状。
-        setSpec(specFromOrder(copy));
-        const detailRows = Array.isArray(copy.spec_details) ? (copy.spec_details as Array<Record<string, unknown>>).map((row) => ({ group_name: text(row.group_name), name: text(row.name), color: text(row.color), barcode: text(row.barcode), quantity: text(row.quantity), unit: text(row.unit) })) : [];
-        setDetails(detailRows.length ? detailRows : [emptySpecDetailRow()]);
-        // 引用照抄：预览里带了物料摘要（`material_refs[].material`），所以能直接把芯片显示出来，
-        // 不依赖物料池那一次请求成不成功。
-        setRefs(materialRefsFromOrder({ material_refs: copy.material_refs }));
-        // 「其它」行跟着来源单（返单就是把上一批的完整材料口径带过来）。
-        setExtras(materialExtrasFromOrder(copy));
-        // 明细列名跟着来源单（返单就是把上一批的工艺口径带过来，列名属于这个口径的一部分）。
-        setDetailLabelOverrides(specDetailLabelsFromOrder(copy));
-        setReorderSource({ order_no: preview.source_order_no, order_id: preview.source_order_id, item_no: text(preview.item_no) });
       }
     } catch (cause) {
-      // 返单预览失败**必须出错误态**，不能退化成空表单：空表单会让销售以为「这单本来就没工艺要求」，
-      // 直接存下去就是一张缺工艺的下单。
-      setError(errorOf(cause, reorderMode ? "返单来源加载失败：请回到【返单与总结】重试，或新建普通销售单" : "销售单数据加载失败"));
+      // 返单预览 / 复制快照失败**必须出错误态**，不能退化成空表单：空表单会让销售以为
+      // 「这单本来就没工艺要求」，直接存下去就是一张缺工艺的下单。
+      setError(errorOf(cause, reorderMode
+        ? "返单来源加载失败：请回到【返单与总结】重试，或新建普通销售单"
+        : copyMode ? "复制来源加载失败：请回到销售单列表重试，或新建普通销售单" : "销售单数据加载失败"));
     } finally {
       setLoading(false);
     }
-  }, [orderId, reorderFromOrderNo, reorderMode]);
+  }, [orderId, reorderFromOrderNo, reorderMode, copyFromId, copyMode, applyCopiedPayload]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -495,6 +600,18 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     } else if (reorderSource) {
       // 返单来源只在**新建**时带（后端在更新接口上不接受改写它）。
       payload.reorder_from_order_no = reorderSource.order_no;
+    } else if (copySource) {
+      /**
+       * 复制这条路**故意什么都不写**。
+       *
+       * 不写 `reorder_from_order_no` 是用户拍板的口径：写了新单就会被【返单与总结】归进返单分组，
+       * 销售会以为这是客户返单（复制只是"照着上一张改细节"，与客户返单是两件事）。
+       * 这也是后端 `copySnapshot` 返回里根本没有来源键的原因 —— 两处一起挡，不靠"前端记得别写"。
+       *
+       * 唯一要显式带的是 `extension_data`：表单里没有它的输入格，不带就等于复制时静默丢掉
+       * （见 `copiedExtensionData` 的注释）。
+       */
+      if (copiedExtensionData !== undefined) payload.extension_data = copiedExtensionData;
     }
     try {
       const saved = editing
@@ -530,10 +647,10 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   if (loading) return <div className="page-root" data-testid="sales-order-editor"><PageHeader title={editing ? "编辑销售单" : "新建销售单"} breadcrumb={["客户与销售", "销售单"]} /><LoadingState /></div>;
 
   /**
-   * 返单来源拉不到时**不渲染表单**。
+   * 返单预览 / 复制快照拉不到时**不渲染表单**。
    *
    * 只在错误横幅下面留一张空白表单是不够的：空白表单看起来就是「这一单本来就没有工艺要求」，
-   * 销售填几个数直接存下去，得到的是一张缺工艺的下单 —— 而返单的全部意义就是沿用上一批的工艺。
+   * 销售填几个数直接存下去，得到的是一张缺工艺的下单 —— 而这两条路的全部意义就是沿用上一张的工艺。
    * 所以这里退成一张纯粹的失败页，只给重试与返回。
    */
   if (reorderMode && !reorderSource) {
@@ -545,10 +662,19 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
       </div>
     );
   }
+  if (copyMode && !copySource) {
+    return (
+      <div className="page-root" data-testid="sales-order-editor">
+        <PageHeader title="新建销售单（复制）" breadcrumb={["客户与销售", "销售单"]} />
+        <section className="panel"><ErrorState message={error || "复制来源加载失败"} onRetry={() => void load()} /></section>
+        <section className="panel panel-body"><Button variant="secondary" onClick={() => router.push("/sales/orders")}>返回销售单列表</Button></section>
+      </div>
+    );
+  }
 
   return (
     <div className="page-root" data-testid="sales-order-editor">
-      <PageHeader title={editing ? `编辑销售单 ${base.order_no ?? ""}` : "新建销售单"} breadcrumb={["客户与销售", "销售单"]}>
+      <PageHeader title={editing ? `编辑销售单 ${base.order_no ?? ""}` : copyMode ? "新建销售单（复制）" : "新建销售单"} breadcrumb={["客户与销售", "销售单"]}>
         <Button variant="secondary" onClick={() => router.push("/sales/orders")} disabled={saving}>取消</Button>
         <Button onClick={() => void save()} disabled={saving} data-testid="sales-order-save">{saving ? "保存中…" : "保存"}</Button>
       </PageHeader>
@@ -586,6 +712,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         itemNoChanged={reorderMode && reorderSource !== null && itemNoKey(base.item_no ?? "") !== itemNoKey(reorderSource.item_no)}
       />
 
+      {/* 复制横幅：说清"由谁复制"、哪几格要重填，以及**新单不记来源**（见 CopyBanner 的注释）。 */}
+      <CopyBanner sourceOrderNo={copySource?.order_no ?? ""} sourceOrderId={copySource?.order_id} dropped={copySource?.dropped} />
       <section className="panel">
         <div className="panel-heading"><h2>基本信息</h2><span className="panel-note">这些是原销售单就有的字段，口径没变</span></div>
         <div className="panel-body form-grid">
@@ -636,10 +764,16 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
           </label>
           {BASE_FIELDS.map((field) => (
             <label key={field.key}>{field.label}
-              {/* 返单时这四格必须重填：来源单的数量/日期是上一批的口径（后端 must_fill 同一份清单）。 */}
-              {reorderMode && REORDER_MUST_FILL.has(field.key)
+              {/*
+                这两条路进来的四格必须重填：来源单的数量/日期是上一张单的口径（后端 must_fill 同一份清单）。
+                标记分开成两个 testid，是因为文案不同 —— 返单的"同货号"语境与复制的"不记来源"语境不是一回事，
+                混用一个 testid 会让「复制模式错显示了返单横幅」这类问题测不出来。
+              */}
+              {reorderMode && MUST_FILL_FIELDS.has(field.key)
                 ? <span className="reorder-must-fill" data-testid={`reorder-must-fill-${field.key}`}>（返单必填）</span>
-                : field.required ? "（必填）" : ""}
+                : copyMode && MUST_FILL_FIELDS.has(field.key)
+                  ? <span className="reorder-must-fill" data-testid={`copy-must-fill-${field.key}`}>（复制后必填）</span>
+                  : field.required ? "（必填）" : ""}
               {/* 后果不在本页的字段（目前只有订单号）：提示贴在输入框旁边，不要等保存时才第一次看到。 */}
               {field.hint && <span className="panel-note" data-testid={`sales-base-${field.key}-hint`}>{field.hint}</span>}
               {field.type === "textarea"

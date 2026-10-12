@@ -127,10 +127,12 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
   /** 上一次「导入 BOM 参考单价」的结果（给浮层里那句结果文案用）。 */
   const [priceImport, setPriceImport] = useState<PriceImportOutcome | null>(null);
   /**
-   * 收束下单时"价格待定"的二次确认：有 0 价的行被勾中时先弹一次，确认后才发请求
-   * （行号存下来只是为了在弹窗里说清是哪几行）。取消 = 一个请求都不发。
+   * 收束下单时「有行会被留下」的复核：勾选里含还没填单价的行时先弹一次，
+   * 说清**哪几行不下单、留在计划里**（行号存下来只是为了在弹窗里点名）。取消 = 一个请求都不发。
+   *
+   * 2026-10-11 起 0 价的行不再是"确认后可以一起下"，而是**排除在本次下单之外**。
    */
-  const [pendingPriceConfirm, setPendingPriceConfirm] = useState<number[] | null>(null);
+  const [holdBackConfirm, setHoldBackConfirm] = useState<number[] | null>(null);
 
   const materialOptions = useMemo<PlanOption[]>(() => materials.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` })), [materials]);
   const unitOptions = useMemo<PlanOption[]>(() => units.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: item.name ?? item.id })), [units]);
@@ -347,11 +349,22 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
    * 早晚会漂成"状态条说还有 2 行、下单却放过了"。
    */
   const pendingPriceIndexesOfRows = pendingPriceIndexes(rows);
-  /** 勾选中的行里还没填单价的行号（从 1 数，报给用户看）。 */
-  const pendingSelectedRows = rows.flatMap((row, index) => (selected.includes(index) && !(Number(row.unitPrice) > 0) ? [index + 1] : []));
   const needsOutsideBomReason = outsideBomRows.length > 0;
   const selectedRows = rows.filter((_, index) => selected.includes(index));
-  const groups = useMemo(() => groupPlanRows(selectedRows, supplierNameOf), [selectedRows, supplierNameOf]);
+  /**
+   * 复核后确认：下单请求**只包含有单价的行**。
+   *
+   * 2026-10-11 用户改了口径：「确定单价的能下单，没确定单价的先不下单」。
+   * 所以勾选集合里那些还没填单价的行**不进本次请求** —— 它们留在计划里，
+   * 补上单价之后再下一波（分批下单本来就是采购现实）。
+   *
+   * 服务端同一道门也在（`PURCHASE_PLAN_PRICE_REQUIRED`）：即使有请求硬把 0 价行塞进去，
+   * 也会被那一格拦住，而不是变成一张 0 元采购单 → 0 元应付（财务收到一张没法付的单）。
+   */
+  const orderableRows = rows.filter((row) => Number(row.unitPrice) > 0);
+  const placedRows = useMemo(() => selectedRows.filter((row) => Number(row.unitPrice) > 0), [selectedRows]);
+  const placedGroups = useMemo(() => groupPlanRows(placedRows, supplierNameOf), [placedRows, supplierNameOf]);
+  const heldBackRowNos = rows.flatMap((row, index) => (selected.includes(index) && !(Number(row.unitPrice) > 0) ? [index + 1] : []));
   const currencyOf = useCallback((supplierId: string) => groupCurrency[supplierId] ?? "CNY", [groupCurrency]);
   /**
    * 合计**本地即时算**（用户一边改单价一边要看钱），口径与后端 `sumPlanAmounts` 完全一致
@@ -401,36 +414,44 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     } finally { setBusy(""); }
   }
 
+  /**
+   * 点「收束下单」时先做**本地**校验，再决定是直接下单还是先复核。
+   *
+   * 0 价的行不再是「要么拦住、要么确认放行」的二选一，而是**排除在本次下单之外**：
+   * 它们留在计划里（`heldBackRowNos` 会点名是哪几行），补价之后再下一波。
+   * 所以这里不再有"放行开关"，只有「先复核一下少了哪几行」。
+   */
   async function order() {
     setError("");
     if (selectedRows.some((row) => !row.id)) { setError("有还没保存过的新行：请先「保存计划」，再收束下单"); return; }
-    const assigned = groups.filter((group) => group.supplierId);
-    if (!assigned.length) { setError("还没有任何一行选了供应商"); return; }
-    if (groups.some((group) => !group.supplierId)) { setError("有行还没选供应商，不能下单（一个供应商一张单）"); return; }
-    // 单价为 0 的行默认不能下单：应付金额 = 入库数量 × 采购明细单价，0 单价会变成一条 0 元应付 ——
-    // 财务收到一张没法付的单，而全链路不报错（用户原话：「不然财务没法付钱」）。
-    //
-    // 2026-10-09 起有一条**显式**的出路：辅料要等客户确认资料才有价（用户原话：
-    // 「其他辅料是要等客户确认资料了，才有价格出来的，现在客户都没给资料，也问不来的价格的」），
-    // 采购员需要先把供应商与交期占下来。点过一次确认才放行，并且那些行**到货登记前必须先补价**
-    // （补价入口就在本计划里 —— 已下单但单价是 0 的行仍然能填）。
-    if (pendingSelectedRows.length) { setPendingPriceConfirm(pendingSelectedRows); return; }
+    if (!selectedRows.length) { setError("还没有勾选任何一行"); return; }
+    if (!placedRows.length) {
+      // 勾中的行全都没价 —— 这时说清「先去填单价」，而不是报一句"没有选供应商"（那是另一个问题）
+      setError(`勾选的 ${heldBackRowNos.length} 行都还没有单价（第 ${heldBackRowNos.join("、")} 行）：先点「填单价」填上，再下单`);
+      return;
+    }
+    if (!orderableRows.length || placedGroups.every((group) => !group.supplierId)) {
+      setError("还没有任何一行选了供应商");
+      return;
+    }
+    if (placedGroups.some((group) => !group.supplierId)) { setError("有行还没选供应商，不能下单（一个供应商一张单）"); return; }
+    // 有行会被留下（勾中但没单价）：先复核一下，确认后**只下有单价的那几行**
+    if (heldBackRowNos.length) { setHoldBackConfirm(heldBackRowNos); return; }
     await placeOrder();
   }
 
-  /** 真正发下单请求（「价格待定」确认之后走这里，或者所有勾选行都有价时直接走）。 */
+  /**
+   * 真正发下单请求。**请求里只有有单价的行**（0 价的行留在计划里，服务端也会拒）。
+   */
   async function placeOrder() {
     setError("");
-    setPendingPriceConfirm(null);
-    const assigned = groups.filter((group) => group.supplierId);
-    const pendingPrice = pendingSelectedRows.length > 0;
+    setHoldBackConfirm(null);
+    const assigned = placedGroups.filter((group) => group.supplierId);
+    if (!assigned.length) { setError("还没有任何一行选了供应商"); return; }
     setBusy("order");
     try {
       const result = await apiPost<{ orders: Array<{ purchaseOrderNo: string }> }>(`/purchase-plans/${planId}/order`, {
         purchase_date: new Date().toISOString(),
-        // 只有确实勾中了 0 价的行才带这个开关：它是"我确认这些行价格待定"的显式声明，
-        // 服务端据此放行（不带就是原来的 `PURCHASE_PLAN_PRICE_REQUIRED`）。
-        allow_pending_price: pendingPrice || undefined,
         groups: assigned.map((group) => ({
           supplier_id: group.supplierId,
           currency: currencyOf(group.supplierId),
@@ -438,7 +459,8 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
         })),
       });
       const numbers = (result.data?.orders ?? []).map((order) => order.purchaseOrderNo).join("、");
-      notifySuccess(`已按供应商收束下单 ${result.data?.orders?.length ?? 0} 张${numbers ? `：${numbers}` : ""}${pendingPrice ? "（含价格待定的行：到货前请先补单价）" : ""}`);
+      const held = heldBackRowNos.length ? `；第 ${heldBackRowNos.join("、")} 行没单价，留在计划里` : "";
+      notifySuccess(`已按供应商收束下单 ${result.data?.orders?.length ?? 0} 张${numbers ? `：${numbers}` : ""}${held}`);
       await load();
       onSaved();
     } catch (cause) {
@@ -487,7 +509,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             </SheetDescription>
           </SheetHeader>
           {loading ? <p className="panel-note">加载中…</p> : null}
-          {error ? <p className="panel-note status-danger" data-testid="plan-error">{error}</p> : null}
+          {error ? <p className="panel-note status-danger" data-testid="plan-error" role="alert">{error}</p> : null}
           {conflict ? (
             <div className="panel panel-body" data-testid="plan-conflict">
               <p className="panel-note status-danger">{conflict}</p>
@@ -529,7 +551,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             </Button>
             <span className="panel-note" data-testid="plan-price-bar-note">
               {pendingPriceIndexesOfRows.length
-                ? `共 ${rows.length} 行，还有 ${pendingPriceIndexesOfRows.length} 行是 0 价：逐行手填，或从 BOM 参考单价导入（只补空格、不覆盖已填的价）。0 价的行不能下单，除非在收束下单时确认「价格待定」。`
+                ? `共 ${rows.length} 行，还有 ${pendingPriceIndexesOfRows.length} 行是 0 价：逐行手填，或从 BOM 参考单价导入（只补空格、不覆盖已填的价）。0 价的行**不会下单**（收束下单时留在计划里，补价后再下一波）。`
                 : `共 ${rows.length} 行，单价都填好了；要改还是在这里改（点「保存计划」后生效）。`}
             </span>
           </div>
@@ -588,9 +610,10 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                     <td className="plan-col-order">
                       {orderStatusCell(row)}
                       {orderedCell(row) ? <div>{orderedCell(row)}</div> : null}
-                      {/* 「价格待定」下单的行（2026-10-09）：这一档在「单价」那 6% 里写不下，标在这里。 */}
+                      {/* 已下单但单价还是 0 —— 2026-10-11 起新单不会再出现这一档，但 10-09~10-11
+                          之间按「价格待定」下过的单还在库里，它们的补价入口就在这里，所以标记留着。 */}
                       {row.ordered && !(Number(row.unitPrice) > 0)
-                        ? <div><span className="status-warning" data-testid={`plan-price-pending-${index}`} title="下单时单价还是 0（价格待定）：到货登记前必须先补单价">价格待定</span></div>
+                        ? <div><span className="status-warning" data-testid={`plan-price-pending-${index}`} title="这张单是 2026-10-11 之前按「价格待定」下的：到货登记前必须先补单价">价格待定（需补价）</span></div>
                         : null}
                     </td>
                     <td className="plan-col-qty"><Input type="number" min="0" step="0.0001" value={row.quantity} disabled={row.ordered} title={row.ordered ? lockedHint : undefined} onChange={(event) => updateRow(index, { quantity: event.target.value })} /></td>
@@ -606,14 +629,14 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                     {/* 单价格：`priceFromBom` 的行是"从 BOM 参考单价预填来的"——
                         用浅黄底 + title 标出来源（这一格只有 6% 宽，塞不下文字标签，见 globals.css）。
                         用户一改这一格就清掉标记：那一格从此是他填的。
-                        2026-10-09：**已下单但单价是 0** 的行（价格待定下单）这一格仍然可填 —— 那是补价的唯一入口；
+                        2026-10-09：**已下单但单价是 0** 的行这一格仍然可填 —— 那是补价的唯一入口；
                         一旦补过价（> 0）就锁死，与其它已下单行一样（要改先「退回采购计划」）。 */}
                     <td className={`plan-col-price${row.priceFromBom ? " plan-price-from-bom" : ""}`}>
                       <Input
                         type="number" min="0" step="0.0001" value={row.unitPrice} disabled={row.ordered && Number(row.unitPrice) > 0}
                         placeholder="手填单价"
                         title={row.ordered
-                          ? (Number(row.unitPrice) > 0 ? lockedHint : "已下单 · 价格待定：可以补填单价（保存计划后同步到那张采购单）；补上之后这一行就锁住了")
+                          ? (Number(row.unitPrice) > 0 ? lockedHint : "已下单 · 单价还是 0：可以补填单价（保存计划后同步到那张采购单）；补上之后这一行就锁住了")
                           : row.priceFromBom ? `按 BOM 表的「参考单价」预填：${row.bomReferenceUnitPrice ?? ""} ${row.bomReferenceCurrency ?? DEFAULT_PLAN_CURRENCY}（还没保存；保存计划后生效，可改）` : undefined}
                         data-testid={`plan-price-${index}`}
                         aria-label={`第 ${index + 1} 行单价`}
@@ -661,12 +684,14 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
           </div>
 
           <PlanOrderPreview
-            groups={groups}
+            groups={placedGroups}
             currencies={currencies}
             currencyOf={currencyOf}
             onCurrencyChange={(supplierId, currency) => setGroupCurrency((current) => ({ ...current, [supplierId]: currency }))}
             onOrder={() => void order()}
             busy={busy === "order"}
+            heldBackRowNos={heldBackRowNos}
+            selectedRowCount={selectedRows.length}
           />
         </SheetContent>
       </Sheet>
@@ -681,14 +706,15 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
           onClose={() => setPriceDialog(false)}
         />
       ) : null}
-      {pendingPriceConfirm ? (
-        // 「价格待定」的二次确认：说清后果（到货前必须补价）才放行 —— 0 价绝不是默认行为。
+      {holdBackConfirm ? (
+        // 「有行会被留下」的复核：0 价的行**不下单**（2026-10-11 用户口径），留在计划里等补价。
+        // 说清哪几行、并且明确"确定之后只下有单价的那几行"，避免采购以为它们也发出去了。
         <ActionDialog
           open
-          title="这些行还没有单价（价格待定）"
-          fields={[{ name: "note", type: "info", label: `第 ${pendingPriceConfirm.join("、")} 行还没填单价。确认下单 = 这几行按「价格待定」发给供应商（单价记 0）；**到货登记前必须先补单价** —— 应付金额 = 入库数量 × 单价，价没补上系统不会让它们入库出应付。出路：在本计划里点「填单价」逐行手填，或在那个浮层里「导入 BOM 参考单价」（整行保存后同步到那张采购单）。` }]}
-          submitLabel="确认下单（价格待定）"
-          onOpenChange={(open) => { if (!open) setPendingPriceConfirm(null); }}
+          title="这几行还没填单价，本次不会下单"
+          fields={[{ name: "note", type: "info", label: `第 ${holdBackConfirm.join("、")} 行还没填单价：本次下单**只下已填单价的行**，这 ${holdBackConfirm.length} 行会**留在计划里**，补上单价后再下一波。要一起下单就先关掉这个框，点上方「填单价」逐行手填（或在该浮层里「导入 BOM 参考单价」）再回来。` }]}
+          submitLabel={`确定下单（只下有单价的 ${placedRows.length} 行）`}
+          onOpenChange={(open) => { if (!open) setHoldBackConfirm(null); }}
           onSubmit={() => placeOrder()}
         />
       ) : null}

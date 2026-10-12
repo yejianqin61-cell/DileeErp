@@ -322,16 +322,17 @@ describe("采购计划明细：行总价与按币种分列的计划合计（用�
     expect(screen.getByTestId("plan-total-unordered").textContent).toBe("CNY 17.50");
   });
 
-  it("单价为 0 的行不能直接下单：先弹「价格待定」确认，未确认时**不发**下单请求", async () => {
+  it("单价为 0 的行不能下单：直接拦住并说明，**不发**下单请求（2026-10-11：不再有「价格待定」放行）", async () => {
     const calls = renderSheet({ items: [planItem({ quantity: "5.0000", unitPrice: "0.0000", supplierId: "s-1" })] });
     await screen.findByRole("button", { name: "保存计划" });
 
     await userEvent.click(screen.getByTestId("plan-order"));
 
-    // 2026-10-09：以前这里只给一句"不能下单"。辅料要等客户确认资料才有价（用户原话），
-    // 所以现在给一条**显式**的出路，但要确认一次 —— 确认前一个请求都不发。
-    expect(await screen.findByText(/这些行还没有单价（价格待定）/)).toBeTruthy();
-    expect(screen.getByText(/第 1 行还没填单价/)).toBeTruthy();
+    // 用户 2026-10-11：「确定单价的能下单，没确定单价的先不下单」——
+    // 所以这里没有"确认后照样下单"的出路了，只有"先去填单价"。
+    // 断言限定在错误条里：页面上别处也有"第 1 行"这类文字，整页查会撞成多个命中。
+    expect(await screen.findByText(/都还没有单价/)).toBeTruthy();
+    expect(await screen.findByTestId("plan-error")).toHaveTextContent("第 1 行");
     expect(calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(false);
   });
 
@@ -433,17 +434,15 @@ describe("采购计划明细：按 BOM 参考单价回填（用户 2026-10-08 �
     await waitFor(() => expect(calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(true));
   });
 
-  it("0 价被拦时把出路直接写出来（手填，或导入 BOM 参考单价）", async () => {
+  it("0 价被拦时把出路直接写出来（去哪填、以及留在计划里）", async () => {
     renderSheet({ items: [planItem({ unitPrice: "0.0000", supplierId: "s-1", bomReferenceUnitPrice: null })] });
     await screen.findByRole("button", { name: "保存计划" });
 
     await userEvent.click(screen.getByTestId("plan-order"));
-    // 2026-10-09：这句提示从"面板上的红字"挪进了「价格待定」确认框（确认前一个请求都不发），
-    // 但**出路照旧要写出来**：去哪补价、以及"到货前必须补"的后果。
-    const note = await screen.findByText(/第 1 行还没填单价/);
+    // 2026-10-11：0 价的行**不再下单**（留在计划里等补价），所以提示要说清"先去填单价"。
+    const note = await screen.findByText(/都还没有单价/);
     expect(note.textContent).toContain("填单价");
-    expect(note.textContent).toContain("导入 BOM 参考单价");
-    expect(screen.getByText(/到货登记前必须先补单价/)).toBeTruthy();
+    expect(note.textContent).toContain("第 1 行");
   });
 });
 

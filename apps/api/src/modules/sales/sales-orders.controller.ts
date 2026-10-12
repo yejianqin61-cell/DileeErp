@@ -333,6 +333,19 @@ export class SalesOrdersController {
   @Get(":id/export-images") async exportImages(@Param("id") id: string) { return { data: { images: await this.productionSheetExport.exportImageCandidates(id) }, meta: {} }; }
   @Get(":id/impact-preview") async impactPreview(@Param("id") id: string) { return { data: await this.orders.impactPreview(id), meta: {} }; }
   /**
+   * 普通复制快照：把一张既有单的详情摆给新建页（`/sales/orders/new?copy_from_id=<id>`），**不建单**。
+   *
+   * 与「返单」并存，不是它的替代：返单记来源、要求已确认/已关闭且有货号；复制**任何状态都能用、
+   * 不要求货号、新单不记来源**（不写 `reorder_from_order_no`，否则新单会被归进返单分组）。
+   *
+   * 参数是**销售单 id**（列表每行的操作区拿到的就是 id，复制不需要先有单号）；
+   * 权限沿用类级的 `sales` 模块守卫 —— 与返单预览同一条，不额外锁管理员。
+   *
+   * 路径两段（`:id/copy-snapshot`），不会被单段的 `@Get(":id")` 吃掉；仍**声明在 `@Get(":id")` 之前**，
+   * 与上面几条同一个约定（Nest 按声明顺序匹配）—— 将来谁把它挪到后面，至少这里写着为什么不能挪。
+   */
+  @Get(":id/copy-snapshot") async copySnapshot(@Param("id") id: string) { return { data: await this.orders.copySnapshot(id), meta: {} }; }
+  /**
    * 改号的**影响面预览**（2026-09-30）：保存前把「会同步改哪几类单据、各多少条」摆给用户。
    *
    * 只读、不写。与执行共用同一份登记表（`ORDER_NO_RENAME_TARGETS`），所以预览说的与真改的不会分叉。

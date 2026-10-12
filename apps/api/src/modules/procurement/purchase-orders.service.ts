@@ -181,7 +181,7 @@ export class PurchaseOrdersService {
    * （用户 2026-09-17：「导入 BOM 明细，也视为对采购单的编辑，允许保存」）。
    * 未选供应商的组最多一个 —— 它们同属一张「还没定供应商」的草稿。
    */
-  async collectGroups(input: SplitInput, placeOrder: boolean, options: { allowPendingPrice?: boolean } = {}): Promise<MergedGroup[]> {
+  async collectGroups(input: SplitInput, placeOrder: boolean): Promise<MergedGroup[]> {
     const groups = input.groups ?? [];
     if (!groups.length) throw new UnprocessableEntityException({ code: "PURCHASE_SPLIT_GROUPS_REQUIRED", message: "按供应商收束至少需要一个供应商分组", details: [] });
     if (placeOrder) {
@@ -199,7 +199,7 @@ export class PurchaseOrdersService {
       // 组内明细的供应商一律取组供应商（未选供应商的组就是「都没有」）：收束的语义就是「一组一个供应商」。
       const groupInput: Input = { order_no: input.order_no, bom_id: input.bom_id, supplier_id: group.supplier_id, purchase_date: input.purchase_date, expected_date: group.expected_date, currency, remark: group.remark ?? input.remark, extension_data: { ...(input.extension_data ?? {}), purchase_split: { by: "supplier", supplier_id: group.supplier_id, group_index: index, group_count: groups.length } }, items: (group.items ?? []).map((item) => ({ ...item, supplier_id: group.supplier_id })) };
       const prepared = await this.prepare(groupInput);
-      if (placeOrder) this.assertOrderableItems(groupInput.bom_id, prepared.items.map((item) => ({ materialId: item.material_id, unitId: item.unit_id, supplierId: item.supplier_id ?? "", quantity: item.quantity, unitPrice: item.unit_price })), options);
+      if (placeOrder) this.assertOrderableItems(groupInput.bom_id, prepared.items.map((item) => ({ materialId: item.material_id, unitId: item.unit_id, supplierId: item.supplier_id ?? "", quantity: item.quantity, unitPrice: item.unit_price })));
       merged.push({ input: groupInput, prepared });
     }
     return merged;
@@ -398,7 +398,7 @@ export class PurchaseOrdersService {
     this.assertOrderableItems(po.bomId, po.items.map((item) => ({ materialId: item.materialId, unitId: item.unitId, supplierId: item.supplierId ?? "", quantity: item.quantity?.toString() ?? "", unitPrice: item.unitPrice?.toString() ?? "" })));
   }
   /** 建单前的同一套下单前校验：拆分下单时明细还只是请求体，没有采购单号可查。 */
-  private assertOrderableItems(bomId: string | null | undefined, items: OrderableItem[], options: { allowPendingPrice?: boolean } = {}) {
+  private assertOrderableItems(bomId: string | null | undefined, items: OrderableItem[]) {
     const missing: Array<{ code: string; message: string }> = [];
     if (!bomId) missing.push({ code: "BOM_REQUIRED", message: "请先选择 BOM 表" });
     if (!items.length) missing.push({ code: "ITEMS_REQUIRED", message: "请至少添加一行采购明细" });
@@ -413,13 +413,10 @@ export class PurchaseOrdersService {
       // 收束下单那条路上计划侧还会先给一句更具体的提示（`PURCHASE_PLAN_PRICE_REQUIRED`），
       // 这一层是**不变式本身**：`POST /purchase-orders` 与 `/split` 两个原始接口也必须过同一道门。
       //
-      // `options.allowPendingPrice` 是**采购计划**专用的例外（2026-10-09）：辅料要等客户确认资料
-      // 才有价、现在问不到价，采购员需要先把单占下来（交期/供应商），价出来再补。
-      // 它只能由服务内部传（`collectGroups` 的第三个参数），HTTP 请求体里没有这个键 ——
-      // 原始接口那条路一个字都没松。0 价放行的前提是**下游另有一道门**：
-      // `receipt()` 拒绝给 0 价的明细登记到货（那样才不会出现 0 元应付）。
-      const priceOk = this.isPositive(item.unitPrice) || (options.allowPendingPrice === true && this.isNonNegative(item.unitPrice));
-      if (!priceOk) reasons.push("单价");
+      // 这里曾经有一个 `allowPendingPrice` 例外（2026-10-09 的「价格待定」下单）。**已删除**：
+      // 2026-10-11 用户改了口径「确定单价的能下单，没确定单价的先不下单」，所以 0 价一律不下单，
+      // 没有任何调用方能放行 —— 少一个开关就少一条通往 0 元应付的后门。
+      if (!this.isPositive(item.unitPrice)) reasons.push("单价");
       if (reasons.length) missing.push({ code: "ITEM_INCOMPLETE", message: `第 ${index + 1} 行明细缺少：${reasons.join("、")}` });
     });
     if (missing.length) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_INCOMPLETE", message: "草稿尚未填写完整，不能下单", details: missing });

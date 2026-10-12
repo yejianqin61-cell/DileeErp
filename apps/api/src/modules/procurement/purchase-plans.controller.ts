@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsArray, IsBoolean, IsDateString, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
+import { IsArray, IsDateString, IsIn, IsObject, IsOptional, IsString, IsUUID, MaxLength, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
@@ -69,11 +69,12 @@ class PlanOrderDto {
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
   @IsOptional() @IsObject() extension_data?: Record<string, unknown>;
   /**
-   * 允许「价格待定」的行一起下单（2026-10-09）：辅料要等客户确认资料才有价，采购员先占住供应商与交期。
-   * 必须由调用方**显式**给 `true` —— 默认仍然拒绝 0 价下单（`PURCHASE_PLAN_PRICE_REQUIRED`），
-   * 且下游 `receipt()` 拒绝给 0 价明细登记到货，所以不会出现 0 元应付。
+   * 这里曾经有一个 `allow_pending_price`（2026-10-09 的「价格待定」下单放行开关）。
+   *
+   * 2026-10-11 用户改了口径：「确定单价的能下单，没确定单价的先不下单」——
+   * 所以 **0 价的行就是不下单**（留在计划里，补价之后再下一波），这个开关连同它下游的
+   * 放行逻辑一并删掉。留着它只会给 0 价采购单留一条后门，而那条后门通向「0 元应付」。
    */
-  @IsOptional() @IsBoolean() allow_pending_price?: boolean;
   @IsArray() @ValidateNested({ each: true }) @Type(() => PlanOrderGroupDto) groups!: PlanOrderGroupDto[];
 }
 

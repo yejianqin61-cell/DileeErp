@@ -445,6 +445,92 @@ export class SalesOrdersService {
   }
 
   /**
+   * 普通复制快照（2026-10-11）：把一张既有单的「详情」整块摆给新建页，**不建单、不记来源**。
+   *
+   * 用户原话：「就是订单描述基本差不多，可以直接用原有的复制，然后我们改下单号和里面的细节就行了」。
+   *
+   * 复制清单与返单 `reorderPreview()` 是同一份（"这一单卖的是什么"照抄；"卖多少 / 什么时候交 /
+   * 由数量派生的金额 / 走到哪了"一律不带），差别只有三处口径，都是用户拍板的：
+   *   1. **不限状态**、草稿也能复制 —— 普通复制不是"拿一张下过工厂的单再返一批"，而是"照着上一张改细节"；
+   *   2. **不要求货号** —— 返单分组的钥匙是货号，普通复制不归组，没有货号照样能复制；
+   *   3. **不写 `reorder_from_order_no`** —— 写了新单就会被归进返单分组，销售会以为这是客户返单。
+   *      这一格是复制这条路上最容易埋错的一处，所以两头一起挡：**这个方法的返回里没有来源键**，
+   *      建单走的标准 `POST /sales-orders` 也只在请求显式带 `reorder_from_order_no` 时才记来源。
+   *
+   * 为什么是「快照」而不是 `createFromCopy()`：建单必须走标准 `create()`（理由见 `reorderInput`——
+   * 另写一条建单路径会绕过币种校验、客户解析、物料存在性与唯一键冲突处理）。前端把 `copy` **一次性**
+   * 预填进新建页，用户改完订单号与细节后按普通新建单保存。
+   *
+   * 引用过滤复用返单那两个函数（`usableMaterialRefs` / `usableMaterialExtras`）：一张旧单引用的物料
+   * 可能已被删，不过滤的话新建页会在 `MATERIAL_NOT_FOUND` 上卡死，而复制这条路**没有"重选"这个动作**
+   * （用户甚至不知道是哪一格）。剔掉什么放在 `dropped` 里回报，不静默吞。
+   */
+  async copySnapshot(id: string) {
+    const source = await this.prisma.salesOrder.findFirst({
+      where: { id, deletedAt: null },
+      include: {
+        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } },
+        // 引用带物料摘要（芯片 / 缩略图）：预填时要能在界面上把「引的是哪个物料」显示出来，
+        // 只给 UUID 的话前端还得再查一次物料池，而物料池可能拉不到。与 `resolveReorderSource` 同一取舍。
+        materialRefs: { where: { deletedAt: null }, include: { material: { select: { id: true, materialCode: true, name: true, specificationModel: true, color: true, image: { select: { sha256: true, updatedAt: true } } } } } },
+        materialExtras: MATERIAL_EXTRA_INCLUDE,
+      },
+    });
+    // 文案带 id：这张单是用户从列表点进来的，说不清"哪一张"就无从排查（返单那边带的是单号）。
+    if (!source) throw new NotFoundException({ code: "COPY_SOURCE_NOT_FOUND", message: "复制来源销售单不存在（可能已被删除）", details: [{ id }] });
+    const spec = specScalarRow(source as unknown as Record<string, unknown>);
+    // 先按请求键投影，再过滤（过滤函数只认 spec_key/material_id，返回的也只有这两个键）；
+    // `material` 摘要随后按 material_id 回挂 —— 不回挂的话界面上的芯片与缩略图就没了，
+    // 而那一刻前端还以为"这一格本来就没引用物料"。
+    const refs = await this.usableMaterialRefs(source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })));
+    const refMaterials = new Map(source.materialRefs.map((row) => [row.materialId, row.material]));
+    const extras = await this.usableMaterialExtras(source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, sort_order: row.sortOrder })));
+    const extraMaterials = new Map(source.materialExtras.filter((row) => row.materialId).map((row) => [row.materialId as string, row.material]));
+    const warnings: string[] = [];
+    // 与返单同一句警告：单价属于"这一单卖的是什么"照抄，但新一批的成本口径可能已经变了，必须复核。
+    if (source.unitPrice) warnings.push(`单价沿用上次（${source.unitPrice.toString()} ${source.currency}），请复核`);
+    warnings.push("应收金额 / 本币金额不沿用（它们与数量绑定），保存后按新的数量重新计算");
+    if (refs.dropped.length) warnings.push(`来源单引用的物料已不存在，复制时已跳过：${refs.dropped.join("、")}`);
+    if (extras.dropped.length) warnings.push(`「其它」行引用的物料已不存在，复制时只保留了文字：${extras.dropped.join("、")}`);
+    return {
+      source_order_no: source.orderNo,
+      source_order_id: source.id,
+      // 来源状态回给前端只为横幅上说清"照的是哪一版"（草稿也能复制），不做任何门槛。
+      source_status: source.status,
+      customer: source.customerSnapshot,
+      customer_id: source.customerId,
+      contact_id: source.contactId,
+      // `copy` 的键名一律用**请求键**（与版本快照、返单预览同形状）：前端 `specFromOrder` /
+      // `materialRefsFromOrder` / `materialExtrasFromOrder` 三种形状都认，返单与复制于是共用同一套灌法。
+      // 数量 / 下单日 / 交期 / 订单号 / 金额三兄弟**故意不在这里**：请求键"没有"比"给了个空值"更难被误用。
+      copy: {
+        item_no: source.itemNo,
+        product_name: source.productName,
+        product_spec: source.productSpec,
+        unit: source.unit,
+        currency: source.currency,
+        customer_po_no: source.customerPoNo,
+        external_contract_no: source.externalContractNo,
+        unit_price: source.unitPrice?.toString() ?? null,
+        settlement_unit_price: source.settlementUnitPrice?.toString() ?? null,
+        tax_rate: source.taxRate?.toString() ?? null,
+        settlement_method: source.settlementMethod,
+        extension_data: source.extensionData,
+        ...spec,
+        spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder })),
+        material_refs: refs.refs.map((row) => ({ ...row, material: refMaterials.get(row.material_id) ?? null })),
+        // 「其它」行照抄；失效引用只摘引用、**保留那一行**（用户自己写的规格说明不该因为物料被删就丢掉）。
+        material_extras: extras.extras.map((row) => ({ ...row, material: row.material_id ? extraMaterials.get(row.material_id) ?? null : null })),
+        // 明细列名属于工艺口径的一部分，跟着来源单（与返单同一条）。
+        spec_detail_labels: source.specDetailLabels ?? {},
+      },
+      must_fill: ["order_no", "order_date", "quantity", "delivery_date"],
+      dropped: { material_refs: refs.dropped, material_extras: extras.dropped },
+      warnings,
+    };
+  }
+
+  /**
    * 返单的复制语义：**请求给了就用请求的，没给就沿用来源单**（`??` 逐键判定）。
    *
    * 复制什么、不复制什么是一张**逐条的清单**（见设计文档 §三.1），规律只有一条：

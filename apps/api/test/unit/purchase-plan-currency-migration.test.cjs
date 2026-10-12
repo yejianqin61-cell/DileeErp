@@ -69,21 +69,17 @@ test("收束下单：计划侧逐行要求单价大于 0（0 单价 = 0 元应�
   assert.match(planService, /第 \$\{rowNoOf\(lineId\)\} 行还没填单价/);
 });
 
-test("采购单侧的下单门禁默认仍然收紧：0 价只能由**显式选项**放行，两个原始接口一个字都没松", () => {
+test("采购单侧的下单门禁一律收紧：0 价没有任何放行口子（2026-10-11 删掉了「价格待定」开关）", () => {
   const start = orderService.indexOf("private assertOrderableItems");
   const gate = orderService.slice(start, orderService.indexOf("采购单「打印信息」", start));
-  // 默认判据必须还是 isPositive（0 单价 = 0 元应付，正是用户说的「财务没法付钱」）。
-  assert.match(gate, /this\.isPositive\(item\.unitPrice\)/, "默认必须是 isPositive，不是「非负」");
-  // 2026-10-09 的例外只认**调用方显式给的选项**，而且负数仍然一律拒绝：
-  // 「价格待定」放行的是"还没谈价"，不是"乱填"（用户原话：「其他辅料是要等客户确认资料了，
-  // 才有价格出来的，现在客户都没给资料，也问不来的价格的」）。
-  assert.match(gate, /options\.allowPendingPrice === true && this\.isNonNegative\(item\.unitPrice\)/);
+  // 判据必须是 isPositive（0 单价 = 0 元应付，正是用户说的「财务没法付钱」），而且**没有例外分支**。
+  assert.match(gate, /if \(!this\.isPositive\(item\.unitPrice\)\) reasons\.push\("单价"\)/, "0 价必须一律拦下");
   assert.equal(/if \(!this\.isNonNegative\(item\.unitPrice\)\) reasons\.push\("单价"\)/.test(gate), false, "旧写法（非负）会放过 0 单价");
-  // 这个口子只在**计划**那条路上开：`create` / `createSplit` 两个原始接口照旧不传它
-  // （HTTP 请求体里根本没有这个键，见 purchase-plans.controller.ts 的 PlanOrderDto）。
-  const rawPaths = orderService.slice(orderService.indexOf("async create("), orderService.indexOf("async collectGroups"));
-  assert.equal(/allowPendingPrice/.test(rawPaths), false, "原始建单/拆分路径不许自己开这个口子");
-  assert.match(orderService, /async collectGroups\(input: SplitInput, placeOrder: boolean, options: \{ allowPendingPrice\?: boolean \} = \{\}\)/);
+  // 2026-10-09 的 `allowPendingPrice` 例外已按用户 2026-10-11 的口径删除：
+  // 「确定单价的能下单，没确定单价的先不下单」。留一个开关就是给 0 元应付留一条后门。
+  // 判据用属性访问而不是裸词：注释里会提到这个名字，裸词会让这条守卫被自己的注释喂饱。
+  assert.equal(/options\.allowPendingPrice|allowPendingPrice\s*[=:?]/.test(orderService), false, "放行开关必须彻底删掉，不能只改默认值");
+  assert.match(orderService, /async collectGroups\(input: SplitInput, placeOrder: boolean\): Promise<MergedGroup\[\]>/);
 });
 
 test("下单写回币种：已下单行的币种永远等于那张采购单的币种（计划合计按币种分列才不说谎）", () => {

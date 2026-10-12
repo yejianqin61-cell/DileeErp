@@ -179,6 +179,13 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
     ...auditColumns<Order>(),
     { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
       {["draft", "confirmed"].includes(row.original.status) && <Button size="sm" variant="secondary" asChild><Link href={`/sales/orders/${row.original.id}/edit`} data-testid={`order-edit-${row.original.orderNo}`}>编辑</Link></Button>}
+      {/*
+        复制（2026-10-XX）：任何状态都能用 —— 含草稿，也**不要求有货号**（与「返单」的三条门槛相反）。
+        是一个链接而不是按钮：新建页的复制模式由 URL 参数决定（`?copy_from_id=`），
+        这样业务能把「照这一张新建」的链接直接发给同事，也不用在这里再实现一遍预填。
+        用 id 而不是单号：列表行手上就是 id，复制这条路口径上不需要先知道单号。
+      */}
+      <Button size="sm" variant="secondary" asChild><Link href={`/sales/orders/new?copy_from_id=${row.original.id}`} data-testid={`order-copy-${row.original.orderNo}`}>复制</Link></Button>
       {/* 工艺单：按 example/销售单 的模板版式导出，图片格留空。销售每天要打这张单，所以不锁管理员。 */}
       <Button size="sm" variant="secondary" data-testid={`order-production-sheet-${row.original.orderNo}`} disabled={exportingId === row.original.id} onClick={() => void exportProductionSheet(row.original)}>{exportingId === row.original.id ? "导出中…" : "工艺单"}</Button>
       {row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => confirmOrder(row.original)}>确认</Button>}
