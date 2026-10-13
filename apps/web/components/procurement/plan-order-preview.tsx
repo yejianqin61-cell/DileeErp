@@ -79,7 +79,7 @@ export function groupAmountText(group: PlanGroup): string {
   return total.toFixed(2);
 }
 
-export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyChange, onOrder, busy, heldBackRowNos = [], selectedRowCount = 0 }: {
+export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyChange, onOrder, busy, heldBackRowNos = [], selectedRowCount = 0, openOrders = [] }: {
   /** **只含有单价的行**：0 价的行不下单（2026-10-11 用户口径），由调用方先过滤掉（见 `plan-detail-sheet.tsx`）。 */
   groups: PlanGroup[];
   currencies: CurrencyOption[];
@@ -91,6 +91,15 @@ export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyCha
   heldBackRowNos?: number[];
   /** 勾选的行数（含 0 价那些）：只用来判断"按钮该不该可点"，见下面的注释。 */
   selectedRowCount?: number;
+  /**
+   * 这份计划里**还能并入**的采购单（2026-10-13 口径 6）：`{ supplierId, currency, purchaseOrderNo, itemCount }`。
+   *
+   * 为什么要把"并到哪张单"写出来：自动收束是**按四条判据**决定并还是新建的
+   * （认据 / 供应商 / 币种 / 有没有到货，见 `docs/design/purchase-plan-split-order-and-flat-list-2026-10-13.md`），
+   * 所以它**有时候并不了**。采购员以为收束了、实际多出一张单，是最难查的一类坏 ——
+   * 这里每组都明写落点，一眼就能看出这一波是并还是新开。
+   */
+  openOrders?: Array<{ supplierId: string | null; currency: string; purchaseOrderNo: string; itemCount: number }>;
 }) {
   const assigned = groups.filter((group) => group.supplierId);
   const unassigned = groups.find((group) => !group.supplierId);
@@ -102,10 +111,12 @@ export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyCha
    *   3. 勾了、有价、但**有价的行还没选供应商** → 灰（一个供应商一张单，收了也没落脚处，预览里已经标红说明）。
    */
   const disabled = busy || selectedRowCount === 0 || (!groups.length && !heldBackRowNos.length) || Boolean(unassigned);
+  /** 这一组会落到哪张已有的单上（没有就是新建一张）。币种也要对得上，否则并不过去。 */
+  const mergeTargetOf = (supplierId: string) => openOrders.find((order) => (order.supplierId ?? "") === supplierId && order.currency === currencyOf(supplierId));
   return (
     <div className="panel panel-body" data-testid="plan-split-preview">
       <p className="panel-note">
-        {assigned.length ? `按供应商收束（同供应商合并成一张采购单，共 ${assigned.length} 张）：` : "按供应商收束：勾选的行里还没有任何一行选了供应商。"}
+        {assigned.length ? `按供应商收束（同一家已有未到货的采购单就**并进那张单**，共 ${assigned.length} 组）：` : "按供应商收束：勾选的行里还没有任何一行选了供应商。"}
       </p>
       {heldBackRowNos.length ? (
         <p className="panel-note status-warning" data-testid="plan-held-back-note">
@@ -113,17 +124,26 @@ export function PlanOrderPreview({ groups, currencies, currencyOf, onCurrencyCha
         </p>
       ) : null}
       <ul className="draft-split-list">
-        {assigned.map((group) => (
-          <li key={group.supplierId} data-testid={`plan-group-${group.supplierId}`}>
-            {/* 金额带上**这一组的币种**（就在右边选）：一个没有币种的数看起来是对的，而它可能是错的。 */}
-            <span>{group.supplierName} · {group.rows.length} 行 · 金额合计 {groupAmountText(group)} {currencyOf(group.supplierId)}</span>
-            {/* 币种是"一张采购单"的属性，而一张采购单=一个供应商 —— 所以在这里选，不在计划头上选。 */}
-            <Select value={currencyOf(group.supplierId)} onValueChange={(value) => onCurrencyChange(group.supplierId, value)}>
-              <SelectTrigger className="plan-group-currency" aria-label={`${group.supplierName}的币种`}><SelectValue /></SelectTrigger>
-              <SelectContent>{currencyOptionsWithCurrent(currencies, currencyOf(group.supplierId)).map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
-            </Select>
-          </li>
-        ))}
+        {assigned.map((group) => {
+          const mergeTarget = mergeTargetOf(group.supplierId);
+          return (
+            <li key={group.supplierId} data-testid={`plan-group-${group.supplierId}`}>
+              {/* 金额带上**这一组的币种**（就在右边选）：一个没有币种的数看起来是对的，而它可能是错的。 */}
+              <span>{group.supplierName} · {group.rows.length} 行 · 金额合计 {groupAmountText(group)} {currencyOf(group.supplierId)}</span>
+              {/* 落点明写（2026-10-13）：并进已有单，还是新建一张。 */}
+              {mergeTarget ? (
+                <span className="panel-note" data-testid={`plan-merge-into-${group.supplierId}`}>并入 {mergeTarget.purchaseOrderNo}（已有 {mergeTarget.itemCount} 行）</span>
+              ) : (
+                <span className="panel-note" data-testid={`plan-merge-new-${group.supplierId}`}>新建一张（这家还没有未到货的已下单采购单 / 已有到货 / 币种不同）</span>
+              )}
+              {/* 币种是"一张采购单"的属性，而一张采购单=一个供应商 —— 所以在这里选，不在计划头上选。 */}
+              <Select value={currencyOf(group.supplierId)} onValueChange={(value) => onCurrencyChange(group.supplierId, value)}>
+                <SelectTrigger className="plan-group-currency" aria-label={`${group.supplierName}的币种`}><SelectValue /></SelectTrigger>
+                <SelectContent>{currencyOptionsWithCurrent(currencies, currencyOf(group.supplierId)).map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </li>
+          );
+        })}
       </ul>
       {unassigned ? (
         <p className="panel-note status-danger" data-testid="plan-unassigned-note">

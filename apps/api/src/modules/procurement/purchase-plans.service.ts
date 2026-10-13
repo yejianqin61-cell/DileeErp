@@ -122,6 +122,57 @@ function contactLine(supplier: { contactName?: string | null; phone?: string | n
   return parts.length ? parts.join(" / ") : null;
 }
 
+/** 列表页展平用的一行（`GET /purchase-plans` 的 `lines[]`，2026-10-13）。 */
+type PlanListLineSource = {
+  id: string;
+  materialId: string;
+  materialSnapshot: unknown;
+  model: string | null;
+  unitSnapshot: unknown;
+  quantity: Prisma.Decimal;
+  unitPrice: Prisma.Decimal;
+  currency: string;
+  purchaseOrderItemId: string | null;
+  expectedDate: Date | null;
+  supplierId: string | null;
+  supplierSnapshot: unknown;
+  material?: { id: string; materialCode: string; name: string } | null;
+  unit?: { id: string; name: string } | null;
+  supplier?: { id: string; name: string } | null;
+  purchaseOrderItem?: { purchaseOrder: { purchaseOrderNo: string } | null } | null;
+};
+
+/**
+ * 列表页那一张表的一行（用户 2026-10-13：「采购计划的那个页面，也要显示物料名称等等 column。都要显示」）。
+ *
+ * 名字刻意叫 `lines` 而**不是** `items`：详情接口的 `items` 是可编辑行（带快照、BOM 参考单价、
+ * 已下单行锁），这里只是渲染那 13 列要用的投影。同名不同形是最容易被误用的那种"一致"。
+ *
+ * 「已下单」仍然只有一个表示：`purchaseOrderItemId` 非空（口径 5 / 2026-09-27 §3.2）。
+ * 物料/单位/供应商名优先取主数据现值、取不到退回快照 —— 与 `get()` 同一口径，
+ * 所以物料改名、供应商停用都不会让列表那一格变空。
+ */
+function planListLines(items: readonly PlanListLineSource[]) {
+  return items.map((item) => ({
+    id: item.id,
+    materialId: item.materialId,
+    materialCode: item.material?.materialCode ?? snapshotField(item.materialSnapshot, "materialCode"),
+    materialName: item.material?.name ?? snapshotName(item.materialSnapshot) ?? "",
+    model: item.model,
+    unitName: item.unit?.name ?? snapshotName(item.unitSnapshot),
+    quantity: item.quantity.toFixed(4),
+    unitPrice: item.unitPrice.toFixed(4),
+    /** 行总价 = 数量 × 单价（**派生**，与详情/合计同一个函数）—— 财务看的就是这个数。 */
+    amount: planLineAmount(item.quantity, item.unitPrice).toFixed(4),
+    currency: item.currency ?? DEFAULT_PLAN_CURRENCY,
+    supplierId: item.supplierId,
+    supplierName: item.supplier?.name ?? snapshotName(item.supplierSnapshot),
+    expectedDate: item.expectedDate,
+    ordered: Boolean(item.purchaseOrderItemId),
+    purchaseOrderNo: item.purchaseOrderItem?.purchaseOrder?.purchaseOrderNo ?? null,
+  }));
+}
+
 @Injectable()
 export class PurchasePlansService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly orders: PurchaseOrdersService, private readonly actors: AuditActorService) {}
@@ -142,7 +193,26 @@ export class PurchasePlansService {
       include: {
         // 金额要在这里算出来：列表的「计划金额」列与明细表下方那一行合计同一口径
         // （`sumPlanAmounts` 只此一处实现），所以数量/单价/币种都要取回来。
-        items: { where: { deletedAt: null }, select: { id: true, purchaseOrderItemId: true, quantity: true, unitPrice: true, currency: true } },
+        //
+        // 2026-10-13（用户：「采购计划的那个页面，也要显示物料名称等等 column。都要显示」）：
+        // 列表页**展平成一行 = 一条明细**，所以这里把渲染那 13 列要用的字段一并取回来 ——
+        // 一次查询解决，不新增接口（`lib/page-data-alignment.test.mjs` 盯着这一页的请求绑定表）。
+        items: {
+          where: { deletedAt: null },
+          orderBy: [{ sequence: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true, materialId: true, materialSnapshot: true, model: true,
+            unitSnapshot: true, quantity: true, unitPrice: true, currency: true,
+            purchaseOrderItemId: true, expectedDate: true,
+            supplierId: true, supplierSnapshot: true,
+            // 物料/单位/供应商名优先取**主数据的现值**，取不到再退回快照（与 `get()` 同一口径）：
+            // 物料改名之后列表要显示新名字，而快照是"建计划那一刻"的旧名字。
+            material: { select: { id: true, materialCode: true, name: true } },
+            unit: { select: { id: true, name: true } },
+            supplier: { select: { id: true, name: true } },
+            purchaseOrderItem: { select: { purchaseOrder: { select: { purchaseOrderNo: true } } } },
+          },
+        },
         salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true } },
       },
       orderBy: { updatedAt: "desc" },
@@ -151,7 +221,7 @@ export class PurchasePlansService {
     // 列表要显示"最后更新（人 + 北京时间）"，所以把操作人姓名一并解析出来。
     // 只输出**姓名**、绝不输出 UUID —— 全站治理要消灭的正是「制单：6f3a1c8e-…」那种显示。
     const names = rows.length ? await this.actors.namesOf(rows.flatMap((row) => [row.updatedBy, row.createdBy])) : new Map<string, string>();
-    const withNames = summaries.map((row, index) => ({ ...row, updatedByName: names.get(rows[index].updatedBy) ?? null, createdByName: names.get(rows[index].createdBy) ?? null }));
+    const withNames = summaries.map((row, index) => ({ ...row, updatedByName: names.get(rows[index].updatedBy) ?? null, createdByName: names.get(rows[index].createdBy) ?? null, lines: planListLines(rows[index].items) }));
     const status = query.status?.trim();
     const key = itemNoKey(query.item_no);
     const text = query.q?.trim().toLowerCase();
@@ -388,11 +458,22 @@ export class PurchasePlansService {
       if (!row.referenceUnitPrice || !row.referenceUnitPrice.gt(0) || referenceByMaterial.has(row.materialId)) continue;
       referenceByMaterial.set(row.materialId, { unitPrice: row.referenceUnitPrice.toFixed(4), currency: row.referenceCurrency || DEFAULT_PLAN_CURRENCY });
     }
+    /**
+     * 这份计划下**还能并入**的采购单（2026-10-13 口径 6）—— 前端收束预览按它把
+     * 「这一组会并到哪张单 / 会新建一张」写出来。
+     *
+     * 与下单时的 `findMergeTarget()` **共用同一段查询**（`queryLinkedOpenOrders`），
+     * 所以"预览说能并、下单却被拒"这种漂移在结构上不可能发生。
+     */
+    const linkedOrderItemIds = plan.items.flatMap((item) => (item.purchaseOrderItemId ? [item.purchaseOrderItemId] : []));
+    const openPurchaseOrders = linkedOrderItemIds.length ? await this.orders.openOrdersForPlan({ orderNo: plan.orderNo, bomId: plan.bomId, linkedOrderItemIds }) : [];
     return {
       ...this.summaryOf(plan as unknown as PlanSummarySource),
       deliveryDate: plan.salesOrder?.deliveryDate ?? null,
       bomDeleted: Boolean(plan.bom?.deletedAt),
       bomExtraMaterialCount: countBomMaterialsMissingFromPlan(bomItems.map((row) => row.materialId), plan.items.map((row) => row.materialId)),
+      /** 可并入的采购单一览（口径 6）：`{id, purchaseOrderNo, supplierId, currency, itemCount, totalAmount}`。 */
+      openPurchaseOrders,
       items: plan.items.map((item) => ({
         id: item.id,
         materialId: item.materialId,
@@ -690,13 +771,20 @@ export class PurchasePlansService {
   }
 
   /**
-   * 收束下单（口径 6 + 口径 10）。
+   * 收束下单（口径 6 + 口径 10 + 2026-10-13 的自动收束）。
    *
-   * 勾选的行按**供应商**分组 → 一组一张采购单（复用采购单既有的 `collectGroups()`：
-   * 一个供应商一张单的不变式、下单前校验、金额与快照全部沿用，不另写一套建单逻辑）；
-   * **没勾的行留在计划里**，下次再下。
+   * 勾选的行按**供应商**分组（复用采购单既有的 `collectGroups()`：一个供应商一张单的不变式、
+   * 下单前校验、金额与快照全部沿用，不另写一套建单逻辑）；**没勾的行留在计划里**，下次再下。
    *
-   * 三件事必须**在同一个事务里**：建采购单、回写计划行的 1:1 链接、计划头的时间戳。
+   * 每一组的落点有两种（2026-10-13，用户：「如果相同的供应商的不同物料没有同时下单，
+   * 下单之后也要自动收束在一个采购单里」）：
+   *   · 这家在同一份计划下**已经有**一张「已下单 + 无任何到货 + 同币种」的单 → **追加**进去
+   *     （`orders.findMergeTarget()` / `orders.appendItems()`，单号不变、已有行不动）；
+   *   · 否则**新建**一张（判据见设计文档 §2.1、§2.2）。
+   * 于是"辅料等客户资料才有价 → 后面再下一波"不会再给同一家生出第二张单，
+   * 而 2026-09-17 那条「一个采购单内，一个供应商下一个单」在跨波次时也成立。
+   *
+   * 三件事必须**在同一个事务里**：建单/追单、回写计划行的 1:1 链接、计划头的时间戳。
    * 分成两次事务的话，中途失败会留下「采购单已经建好、计划还显示未下单」的中间态 ——
    * 那正是重复采购的入口。
    *
@@ -774,37 +862,95 @@ export class PurchasePlansService {
     };
     // 校验与收束在用事务之前完成：失败时一个字都没写。
     const merged = await this.orders.collectGroups(splitInput, true);
-    const created = await this.prisma.$transaction(async (tx) => {
-      const rows = await this.orders.createOrdersFromGroups(tx, merged, "ordered", user);
-      const createdItems = await tx.purchaseOrderItem.findMany({
-        where: { purchaseOrderId: { in: rows.map((row) => row.id) }, deletedAt: null },
-        // 连采购单头一起读回来：币种是**头**上的（一张单一个币种，见口径 10），
-        // 而计划的合计要按币种分列 —— 就在这一次读里把两个都拿到，不另查一遍。
-        select: { id: true, extensionData: true, purchaseOrder: { select: { currency: true } } },
-      });
-      for (const item of createdItems) {
-        const planItemId = (item.extensionData as { purchase_plan_item_id?: string } | null)?.purchase_plan_item_id;
-        if (!planItemId) continue;
-        // 币种**写回**这一行：不是两次输入，是把"这张单谈的是什么钱"记到计划行上。
-        // 写回之后，已下单行的币种永远等于那张采购单的币种，计划合计（按币种分列）才不会说谎。
-        await tx.purchasePlanItem.update({ where: { id: planItemId }, data: { purchaseOrderItemId: item.id, currency: item.purchaseOrder.currency, ...this.audit.update(user) } });
+    /**
+     * 这份计划**已经下过单**的行指向的采购明细 id —— 「并入哪张单」的认据（口径 1 ①）。
+     *
+     * 按链接认、**不按供应商猜**：按供应商猜会把别人手工建的同供应商单吞进来，
+     * 而那类错误不会当场报错，只会让两张不相干的采购单悄悄长在一起。
+     */
+    const linkedOrderItemIds = current.items.flatMap((item) => (item.purchaseOrderItemId ? [item.purchaseOrderItemId] : []));
+    const written = await this.prisma.$transaction(async (tx) => {
+      const rows: Array<{
+        order: { id: string; purchaseOrderNo: string; currency: string; totalAmount: Prisma.Decimal };
+        /** 这一波在这一组上新建的采购明细（并入的那张单上**原有**的明细不在里面）。 */
+        items: Array<{ id: string; extensionData: unknown; currency: string }>;
+        merged: boolean;
+      }> = [];
+      for (const entry of merged) {
+        const supplierId = entry.input.supplier_id;
+        const currency = entry.input.currency ?? DEFAULT_PLAN_CURRENCY;
+        const target = supplierId
+          ? await this.orders.findMergeTarget(tx, { orderNo: current.orderNo, bomId: current.bomId, supplierId, currency, linkedOrderItemIds })
+          : null;
+        if (target) {
+          const appended = await this.orders.appendItems(tx, target.id, entry, user);
+          rows.push({
+            order: appended.order,
+            items: appended.items.map((item) => ({ id: item.id, extensionData: item.extensionData, currency: appended.order.currency })),
+            merged: true,
+          });
+          continue;
+        }
+        const [createdOrder] = await this.orders.createOrdersFromGroups(tx, [entry], "ordered", user);
+        const items = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId: createdOrder.id, deletedAt: null }, select: { id: true, extensionData: true } });
+        rows.push({ order: createdOrder, items: items.map((item) => ({ id: item.id, extensionData: item.extensionData, currency: createdOrder.currency })), merged: false });
+      }
+      /**
+       * 回写链接**只认这一波新建的明细**。
+       *
+       * 并入的那张单上**原有**的明细带着上一波写进去的同一个认领标记；不过滤就会把那些计划行的
+       * `updatedBy/updatedAt` 再刷一遍 —— 不算错，但会让列表的「最后更新（人 + 北京时间）」
+       * 说成这次下单的人，而那个人根本没碰那些行。
+       */
+      for (const row of rows) {
+        for (const item of row.items) {
+          const planItemId = (item.extensionData as { purchase_plan_item_id?: string } | null)?.purchase_plan_item_id;
+          if (!planItemId) continue;
+          // 币种**写回**这一行：不是两次输入，是把"这张单谈的是什么钱"记到计划行上。
+          // 写回之后，已下单行的币种永远等于那张采购单的币种，计划合计（按币种分列）才不会说谎。
+          await tx.purchasePlanItem.update({ where: { id: planItemId }, data: { purchaseOrderItemId: item.id, currency: item.currency, ...this.audit.update(user) } });
+        }
       }
       return rows;
     });
+    const mergedRows = written.filter((row) => row.merged);
     await this.audit.record("purchase_plan.order", "purchase_plan", user.id, id, {
       plan_no: current.planNo,
       order_no: current.orderNo,
       ordered_line_count: claimed.size,
       remaining_line_count: current.items.length - claimed.size,
-      group_count: created.length,
-      purchase_order_nos: created.map((row) => row.purchaseOrderNo),
+      group_count: written.length,
+      purchase_order_nos: written.map((row) => row.order.purchaseOrderNo),
+      /**
+       * 口径 4：并进了哪几张单、各追加了几行要留在审计里。采购单号没换，事后要解释
+       * "这张单为什么比上周多了两行"只能靠这条记录。
+       */
+      merged_purchase_order_nos: mergedRows.map((row) => row.order.purchaseOrderNo),
+      merged_line_count: mergedRows.reduce((sum, row) => sum + row.items.length, 0),
       // 没有「价格待定的行」这一档了（2026-10-11 起 0 价一律不下单）：留在计划里的行就是
       // `remaining_line_count`，它们没进任何采购单，所以也不需要额外的待补价清单。
     });
+    for (const row of mergedRows) {
+      await this.audit.record("purchase_order.append_plan_items", "purchase_order", user.id, row.order.id, {
+        purchase_order_no: row.order.purchaseOrderNo,
+        plan_id: id,
+        plan_no: current.planNo,
+        appended_line_count: row.items.length,
+      });
+    }
     const plan = await this.get(id);
     return {
       plan,
-      orders: created.map((row) => ({ id: row.id, purchaseOrderNo: row.purchaseOrderNo, currency: row.currency, totalAmount: row.totalAmount.toFixed(4) })),
+      orders: written.map((row) => ({
+        id: row.order.id,
+        purchaseOrderNo: row.order.purchaseOrderNo,
+        currency: row.order.currency,
+        totalAmount: row.order.totalAmount.toFixed(4),
+        /** `true` = 这一组**并进了**已有采购单（不是新建）。前端按它把提示分成两半说。 */
+        merged: row.merged,
+        lineCount: row.items.length,
+      })),
+      mergedOrderCount: mergedRows.length,
     };
   }
 

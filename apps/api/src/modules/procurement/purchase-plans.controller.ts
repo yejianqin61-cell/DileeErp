@@ -113,7 +113,14 @@ export class PurchasePlansController {
     return { data: await this.plans.remove(id, user), meta: {} };
   }
 
-  /** 按供应商收束下单：一组一张采购单，没勾的行留在计划里。 */
+  /**
+   * 按供应商收束下单：一组一张采购单，没勾的行留在计划里。
+   *
+   * **同一家已经有「已下单 + 无到货 + 同币种」的单时，这一次的行是追加进那张单**（2026-10-13，
+   * 见 `purchase-orders.service.ts` 的 `findMergeTarget()` / `appendItems()`）：响应里那一组的
+   * `merged: true`、`lineCount` 是本次追加的行数。判据与"没到货才并"的理由见设计文档
+   * `docs/design/purchase-plan-split-order-and-flat-list-2026-10-13.md` §2。
+   */
   @Post(":id/order") async order(@Param("id") id: string, @Body() body: PlanOrderDto, @CurrentUser() user: CurrentUserType) {
     return { data: await this.plans.order(id, body, user), meta: {} };
   }

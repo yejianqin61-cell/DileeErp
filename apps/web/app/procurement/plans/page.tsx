@@ -1,17 +1,23 @@
 "use client";
 
-// 采购计划列表（2026-09-27）。
+// 采购计划列表（2026-09-27 建；**2026-10-13 展平**）。
 //
 // 用户原话：「采购模块那边多一个采购计划栏目。采购计划就承接的是原来的采购单草稿。
-// 在采购计划里面，每个销售单对应一份的BOM对应一份的采购计划。」
+// 在采购计划里面，每个销售单对应一份的BOM对应一份的采购计划。」（2026-09-27）
+// 以及 2026-10-13：「采购计划的那个页面，也要显示物料名称等等 column。都要显示」。
 //
-// 这一页是「哪些单还没买齐」的入口：
-//   · 新建 = 选一张**还没有计划**的 BOM（`GET /purchase-plans/candidates` 就是那张待办清单），
-//     建完自动带出这张 BOM 的全部明细行与预填供应商，然后直接打开计划
-//     （口径 2/3 —— 计划的身份是"这张 BOM 的采购工作面"，诞生时就该包含全部需求）；
-//   · 一行 = 一份计划（一个销售单的 BOM），点进去就是那个工作面。
+// 2026-09-27 那一版是「一行 = 一份计划」，只显示计划级信息（编号/单号/货号/客户/版本/行数/
+// 未下单/金额/状态/最后更新）—— 想知道"这份计划里到底有哪些物料、哪条还没买"只能点进去。
+// 这一版按用户 2026-10-13 的口径**展平**：**一行 = 一条计划明细**，13 列一次显示，
+// 每列都有显式宽度（和 = 100%，`table-layout: fixed`）。
 //
-// 货号筛选走服务端的 `itemNoKey` 归一（`27621` 与 `27621␠` 是同一个货号）—— 与返单模块同一口径。
+// 取舍（口径 7，见 `docs/design/purchase-plan-split-order-and-flat-list-2026-10-13.md`）：
+//   · 计划级汇总（未下单行数 / 计划金额 / 状态 / 最后更新）**不再单独成列** ——
+//     它们与 13 个明细列塞在同一张表里会变成 20+ 列，1366px 上每列不到 70px，
+//     那正是 2026-09-27「一次性展示所有 column」要防的事。
+//     它们挂在「计划编号」那一格的 `title` 上，点进详情也仍然看得见。
+//   · 一份**一行明细都没有**的计划仍然出现在列表里（占位一行）：否则它会凭空消失，
+//     而它唯一的入口就是这一页。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -20,13 +26,28 @@ import { ActionDialog, type ActionField } from "../../../components/ui/action-di
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
-import { updatedByColumn } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { PlanDetailSheet, type PlanMaterialRef, type PlanUnitRef } from "../../../components/procurement/plan-detail-sheet";
 import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
-import { amountSummaryText, type PlanAmount } from "../../../lib/purchase-plan-amount";
+import { formatBeijingShort } from "../../../lib/audit-time";
+import { amountSummaryText, lineAmountText, type PlanAmount } from "../../../lib/purchase-plan-amount";
+import { trimPlanNumber } from "../../../lib/purchase-plan-price-entry";
 import { notifyError } from "../../../components/ui/toaster";
+
+/**
+ * 一条计划明细（`GET /purchase-plans` 的 `lines[]`）。
+ *
+ * 名字与详情接口的 `items` 区别开是刻意的：那些是**可编辑行**（带快照、BOM 参考单价、
+ * 已下单行锁），这里只是渲染下面这 13 列要用的投影。
+ */
+type PlanLine = {
+  id: string; materialId: string; materialCode: string | null; materialName: string; model: string | null;
+  unitName: string | null; quantity: string; unitPrice: string; amount: string; currency: string | null;
+  supplierId: string | null; supplierName: string | null; expectedDate: string | null;
+  /** 「这一行已经下过单」的唯一表示（与后端同一口径）。 */
+  ordered: boolean; purchaseOrderNo: string | null;
+};
 
 type PlanRow = {
   id: string; planNo: string; orderNo: string; itemNo: string | null; customerName: string | null;
@@ -34,15 +55,36 @@ type PlanRow = {
   /** 计划金额：**按币种分列**（后端 `sumPlanAmounts`，金额不跨币种合计）。`unorderedAmounts` 是其中未下单的那部分。 */
   amounts?: PlanAmount[]; unorderedAmounts?: PlanAmount[];
   status: "unordered" | "partial" | "completed"; statusLabel: string; updatedByName: string | null;
-  /**
-   * 审计列工厂（`components/data/audit-columns.tsx`）读的是**全站统一的 snake_case 契约**
-   * （`updated_by_name`）—— 后端按模块惯例下发的是 camelCase，所以在这里补一个别名。
-   * 这是刻意的一处适配：让 70 多处表格共用同一个列工厂，比让每个模块各自改字段名便宜。
-   */
-  updated_by_name?: string | null;
   createdAt: string; updatedAt: string;
+  /** 展平用的明细行（2026-10-13）。老版本接口没有这一项时按空处理，页面不会炸。 */
+  lines?: PlanLine[];
 };
 type Candidate = { bomId: string; orderNo: string; bomVersion: number | null; itemNo: string | null; customerName: string | null; deliveryDate: string | null; itemCount: number };
+/** 展平后的一行：一份计划 + 它的某一条明细（`line === null` = 这份计划一行都没有）。 */
+type FlatRow = { plan: PlanRow; line: PlanLine | null };
+
+/**
+ * 13 列的固定宽度（百分比，**和正好 100%**）。
+ *
+ * 集中写在一处而不是散在 13 个 `meta` 里：`table-layout: fixed` 下总和超过 100% 就是把表撑出容器，
+ * 而"少写一列"的表现只是"那一列由浏览器自动分摊"—— 两者都只能靠人眼看。
+ * `lib/purchase-plan-list-table.test.mjs` 按这个常量断言总和。
+ */
+const COLUMN_WIDTH = {
+  planNo: "9%",
+  orderNo: "9%",
+  itemNo: "6%",
+  customerName: "8%",
+  materialName: "12%",
+  model: "8%",
+  unit: "4%",
+  quantity: "7%",
+  unitPrice: "5%",
+  amount: "7%",
+  supplier: "9%",
+  orderState: "9%",
+  expectedDate: "7%",
+} as const;
 
 const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
 const STATUS_TABS = [
@@ -52,6 +94,21 @@ const STATUS_TABS = [
   { value: "completed", label: "已完成" },
 ];
 
+/**
+ * 计划级汇总挂在「计划编号」那一格的 `title` 上（口径 7：这些数不再单独成列，
+ * 但用户仍然问得到「这张单还差多少、要花多少钱、谁最后动的」）。
+ */
+function planSummaryTitle(plan: PlanRow) {
+  const total = amountSummaryText(plan.amounts ?? []) || "未填价";
+  const unordered = amountSummaryText(plan.unorderedAmounts ?? []) || "未填价";
+  const updatedAt = formatBeijingShort(plan.updatedAt);
+  return [
+    `未下单 ${plan.unorderedCount} / 共 ${plan.lineCount} 行 · ${plan.statusLabel}`,
+    `计划金额 ${total}（其中未下单 ${unordered}）`,
+    `最后更新 ${plan.updatedByName ?? "—"}${updatedAt ? ` ${updatedAt}` : ""}`,
+  ].join("\n");
+}
+
 export default function PurchasePlansPage() {
   const searchParams = useSearchParams();
   // `?order_no=`（工作台/返单跳过来）与 `?plan_id=`（分享/返回某份计划）都只在挂载时取初值：
@@ -59,6 +116,13 @@ export default function PurchasePlansPage() {
   const [query, setQuery] = useState(searchParams.get("order_no") ?? "");
   const [itemNo, setItemNo] = useState("");
   const [status, setStatus] = useState("all");
+  /**
+   * 服务端返回的**每一份计划**。
+   *
+   * ⚠️ 状态名 `rows` / setter `setRows` 与 `lib/page-data-alignment.test.mjs` 的绑定表绑在一起
+   * （那条守卫按"哪个 setter 拿了哪个接口"钉住位置型解构）；改名的收益是 0，改红的代价是
+   * 一条本来有用的守卫，所以展平后的表数据另起名叫 `flatRows`。
+   */
   const [rows, setRows] = useState<PlanRow[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [materials, setMaterials] = useState<PlanMaterialRef[]>([]);
@@ -85,7 +149,7 @@ export default function PurchasePlansPage() {
         apiGet<PlanMaterialRef[]>("/materials"),
         apiGet<PlanUnitRef[]>("/units"),
       ]);
-      setRows((plans.data ?? []).map((row) => ({ ...row, updated_by_name: row.updatedByName })));
+      setRows(plans.data ?? []);
       setCandidates(cands.data ?? []);
       setMaterials(ms.data ?? []);
       setUnits(us.data ?? []);
@@ -103,7 +167,7 @@ export default function PurchasePlansPage() {
    * 场景：同事在另一个窗口把某张 BOM 的行下了单，本页那份计划如果不刷新就还写着"未下单 N"。
    * 两条要求（`lib/refresh-policy.test.mjs` 有守卫盯着）：只在页面**可见**时刷；**静默**刷
    * （切回本页不能整页 loading）。
-
+   *
    * ⚠️ 这里刻意不刷 `?plan_id=` 打开的那份计划 —— 那是详情 Sheet 自己的事，
    * 而且它正在被人编辑，外部刷新会覆盖未保存的改动（Sheet 里只刷「下单状态」那一列）。
    */
@@ -114,38 +178,110 @@ export default function PurchasePlansPage() {
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); };
   }, [load]);
 
+  /**
+   * 展平：一行 = 一条明细。顺序照服务端（计划按最后更新倒序、明细按序号）。
+   * 一行明细都没有的计划补一行占位（`line: null`）。
+   */
+  const flatRows = useMemo<FlatRow[]>(() => {
+    const out: FlatRow[] = [];
+    for (const plan of rows) {
+      const lines = plan.lines ?? [];
+      if (lines.length) for (const line of lines) out.push({ plan, line });
+      else out.push({ plan, line: null });
+    }
+    return out;
+  }, [rows]);
+
   /** 新建：选一张还没有计划的 BOM。建完直接打开它 —— 行已经带好了，不用再点一次。 */
   async function createPlan(values: Record<string, string>) {
     const result = await apiPost<{ id: string }>("/purchase-plans", { bom_id: values.bom_id });
     setOpenPlanId(result.data.id);
   }
 
-  const columns = useMemo<ColumnDef<PlanRow, any>[]>(() => [
-    { id: "planNo", header: "计划编号", meta: { width: "11%", ellipsis: true }, cell: ({ row }) => <Button variant="link" data-testid={`plan-open-${row.original.planNo}`} onClick={() => setOpenPlanId(row.original.id)}>{row.original.planNo}</Button> },
-    { accessorKey: "orderNo", header: "销售单号", meta: { width: "11%", ellipsis: true } },
-    { id: "itemNo", header: "货号", meta: { width: "8%", ellipsis: true }, cell: ({ row }) => row.original.itemNo ?? "-" },
-    { id: "customerName", header: "客户", meta: { width: "11%", ellipsis: true }, cell: ({ row }) => row.original.customerName ?? "-" },
-    { id: "bomVersion", header: "BOM 版本", meta: { width: "6%" }, cell: ({ row }) => String(row.original.bomVersion ?? "-") },
-    { id: "lineCount", header: "行数", meta: { width: "5%" }, cell: ({ row }) => String(row.original.lineCount) },
-    // 「未下单行数」是这一页存在的理由：一眼扫过去就知道哪张单还没买齐。
-    { id: "unorderedCount", header: "未下单", meta: { width: "7%" }, cell: ({ row }) => row.original.unorderedCount ? <span className="status-warning">{row.original.unorderedCount}</span> : <span className="status-success">0</span> },
-    // 金额（2026-09-30 用户：「添加价格字段，单价，总价。不然财务没法付钱」）：
-    // 币种写在数字前面，多个币种用「·」分开 —— 金额不跨币种合计，加成一个数就没人看得出来了。
-    // 只读文本列，`ellipsis` 让长串收敛、hover 用原生 title 看全文（口径 5）。
+  const columns = useMemo<ColumnDef<FlatRow, any>[]>(() => [
     {
-      id: "amounts",
-      header: "计划金额",
-      meta: { width: "13%", ellipsis: true },
+      id: "planNo",
+      header: "计划编号",
+      meta: { width: COLUMN_WIDTH.planNo, ellipsis: true },
+      accessorFn: (row) => row.plan.planNo,
+      // 计划编号就是这一页的入口（口径 7 不再单设「操作」列）：它的 `title` 里带着
+      // 计划级汇总（未下单行数/金额/最后更新），所以少掉那几列不等于少掉那几个答案。
+      cell: ({ row }) => (
+        <Button
+          variant="link"
+          data-testid="plan-open"
+          data-plan-no={row.original.plan.planNo}
+          title={planSummaryTitle(row.original.plan)}
+          onClick={() => setOpenPlanId(row.original.plan.id)}
+        >
+          {row.original.plan.planNo}
+        </Button>
+      ),
+    },
+    { id: "orderNo", header: "销售单号", meta: { width: COLUMN_WIDTH.orderNo, ellipsis: true }, accessorFn: (row) => row.plan.orderNo },
+    { id: "itemNo", header: "货号", meta: { width: COLUMN_WIDTH.itemNo, ellipsis: true }, accessorFn: (row) => row.plan.itemNo ?? "-" },
+    { id: "customerName", header: "客户", meta: { width: COLUMN_WIDTH.customerName, ellipsis: true }, accessorFn: (row) => row.plan.customerName ?? "-" },
+    {
+      id: "materialName",
+      header: "物料名称",
+      meta: { width: COLUMN_WIDTH.materialName, ellipsis: true },
+      accessorFn: (row) => row.line?.materialName ?? "",
       cell: ({ row }) => {
-        const text = amountSummaryText(row.original.amounts ?? []);
-        const unordered = amountSummaryText(row.original.unorderedAmounts ?? []);
-        if (!text) return <span className="panel-note">未填价</span>;
-        return <span title={unordered ? `其中未下单 ${unordered}` : undefined}>{text}</span>;
+        const line = row.original.line;
+        if (!line) return <span className="panel-note">（这份计划一行都没有）</span>;
+        // 物料编码放在悬停提示里：这一列的字数预算全给"叫什么"（13 列一屏，
+        // 编码在物料清单页、BOM 表与计划详情里都有）。
+        return <span title={line.materialCode ? `${line.materialCode} / ${line.materialName}` : line.materialName}>{line.materialName}</span>;
       },
     },
-    { id: "status", header: "状态", meta: { width: "7%" }, cell: ({ row }) => row.original.statusLabel },
-    updatedByColumn<PlanRow>(),
-    { id: "open", header: "操作", meta: { width: "8%" }, cell: ({ row }) => <Button size="sm" variant="secondary" data-testid={`plan-enter-${row.original.planNo}`} onClick={() => setOpenPlanId(row.original.id)}>打开计划</Button> },
+    { id: "model", header: "型号", meta: { width: COLUMN_WIDTH.model, ellipsis: true }, accessorFn: (row) => row.line?.model ?? "-" },
+    { id: "unit", header: "单位", meta: { width: COLUMN_WIDTH.unit, ellipsis: true }, accessorFn: (row) => row.line?.unitName ?? "-" },
+    { id: "quantity", header: "本次采购量", meta: { width: COLUMN_WIDTH.quantity, ellipsis: true }, accessorFn: (row) => (row.line ? trimPlanNumber(row.line.quantity) : "-") },
+    {
+      id: "unitPrice",
+      header: "单价",
+      meta: { width: COLUMN_WIDTH.unitPrice, ellipsis: true },
+      // 0 价 = 还没谈价，而 0 价的行**不会下单**（2026-10-11 口径）：标红，与详情表同一口径。
+      cell: ({ row }) => {
+        const line = row.original.line;
+        if (!line) return "-";
+        const price = trimPlanNumber(line.unitPrice);
+        return Number(line.unitPrice) > 0 ? <span>{price}</span> : <span className="status-danger" title="还没有单价：这一行不会下单，补价后再下一波">{price}</span>;
+      },
+      accessorFn: (row) => (row.line ? trimPlanNumber(row.line.unitPrice) : "-"),
+    },
+    {
+      id: "amount",
+      header: "行总价",
+      meta: { width: COLUMN_WIDTH.amount, ellipsis: true },
+      // 本地即时算（与详情表、后端合计同一个函数），币种放 title —— 5% 的列塞不下「CNY 17.50」还看得清。
+      accessorFn: (row) => (row.line ? lineAmountText(row.line.quantity, row.line.unitPrice) : "-"),
+      cell: ({ row }) => {
+        const line = row.original.line;
+        if (!line) return "-";
+        return <span title={`${line.currency ?? "CNY"} ${lineAmountText(line.quantity, line.unitPrice)}`}>{lineAmountText(line.quantity, line.unitPrice)}</span>;
+      },
+    },
+    { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.supplier, ellipsis: true }, accessorFn: (row) => row.line?.supplierName ?? "-" },
+    {
+      id: "orderState",
+      header: "下单状态",
+      meta: { width: COLUMN_WIDTH.orderState, ellipsis: true },
+      accessorFn: (row) => (row.line ? (row.line.ordered ? `已下单 ${row.line.purchaseOrderNo ?? ""}`.trim() : "未下单") : "-"),
+      // 「这一行落在哪张单」和「有没有买」是同一个问题的两半，合成一格 —— 13 列里没有位置再拆。
+      cell: ({ row }) => {
+        const line = row.original.line;
+        if (!line) return "-";
+        if (!line.ordered) return <span className="panel-note">未下单</span>;
+        return <span className="status-success" title={`已下单：${line.purchaseOrderNo ?? ""}`}>{line.purchaseOrderNo ?? "已下单"}</span>;
+      },
+    },
+    {
+      id: "expectedDate",
+      header: "预计到货",
+      meta: { width: COLUMN_WIDTH.expectedDate, ellipsis: true },
+      accessorFn: (row) => (row.line?.expectedDate ? String(row.line.expectedDate).slice(0, 10) : "-"),
+    },
   ], []);
 
   const candidateField: ActionField = {
@@ -162,7 +298,7 @@ export default function PurchasePlansPage() {
 
   return (
     <div className="page-root purchase-plan-list" data-testid="page-procurement-plans">
-      <PageHeader title="采购计划" description="一个销售单的一份 BOM 对应一份计划：逐行填供应商、单价与预计到货，再按供应商收束下单到采购单。">
+      <PageHeader title="采购计划" description="一个销售单的一份 BOM 对应一份计划：逐行填供应商、单价与预计到货，再按供应商收束下单到采购单（一行 = 一条物料，超长悬停看全文）。">
         <Button variant="secondary" onClick={() => void load()}>刷新</Button>
         <Button data-testid="plan-create" onClick={() => setCreateOpen(true)}>新建采购计划</Button>
       </PageHeader>
@@ -181,7 +317,7 @@ export default function PurchasePlansPage() {
       {loading ? <LoadingState /> : (
         <DataTable
           columns={columns}
-          data={rows}
+          data={flatRows}
           empty={<EmptyState title="还没有采购计划" description="点右上角「新建采购计划」，选一张已经建好 BOM 的销售单。" />}
         />
       )}

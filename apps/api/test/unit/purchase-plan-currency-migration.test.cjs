@@ -85,6 +85,16 @@ test("采购单侧的下单门禁一律收紧：0 价没有任何放行口子（
 test("下单写回币种：已下单行的币种永远等于那张采购单的币种（计划合计按币种分列才不说谎）", () => {
   // 认领链接与币种必须在**同一次**回写里完成：分两次就会有"链接写上了、币种还是人民币"的中间态，
   // 而计划合计恰恰是按币种分列的。
-  assert.match(planService, /data: \{ purchaseOrderItemId: item\.id, currency: item\.purchaseOrder\.currency/);
-  assert.match(planService, /purchaseOrder: \{ select: \{ currency: true \} \}/, "要连采购单头一起读回来，不另查一遍");
+  assert.match(planService, /data: \{ purchaseOrderItemId: item\.id, currency: item\.currency/);
+  /**
+   * 币种的来源必须是**采购单头**，不是请求体里那一格。
+   *
+   * 2026-10-13 自动收束之后，一组的落点有两种（设计文档口径 1）：
+   *   · 新建一张 → `createdOrder.currency`（新建单的头）；
+   *   · 追加进已有那张 → `appended.order.currency`（`appendItems()` 从那张单读回来的头）。
+   * 两条都取自单头 —— 所以"这一行谈的是什么钱"永远等于它落的那张单，而单头币种在
+   * `appendItems()` 里是被四条判据之一（币种必须一致）钉死的。
+   */
+  assert.match(planService, /currency: appended\.order\.currency/, "并入已有单时，币种取那张单的头");
+  assert.match(planService, /currency: createdOrder\.currency/, "新建单时，币种取新建单的头");
 });

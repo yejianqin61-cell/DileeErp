@@ -79,6 +79,12 @@ export type PlanDetail = {
   amounts?: PlanAmount[]; unorderedAmounts?: PlanAmount[];
   bomDeleted?: boolean; bomExtraMaterialCount?: number; deliveryDate?: string | null;
   updatedAt: string; items: PlanItem[];
+  /**
+   * 这份计划下**还能并入**的采购单（2026-10-13 口径 6）：`{id, purchaseOrderNo, supplierId, currency, itemCount, totalAmount}`。
+   * 收束预览按它把「这一组会并到哪张单 / 会新建一张」写出来 —— 自动收束有四条判据，
+   * 所以它**有时候并不了**，而"以为收束了、其实多出一张单"是最难查的一类坏。
+   */
+  openPurchaseOrders?: Array<{ id: string; purchaseOrderNo: string; supplierId: string | null; currency: string; itemCount: number; totalAmount: string }>;
 };
 /** 一行 BOM 明细的累计下单情况（`GET /purchase-orders/bom-item-status`）。字段名是历史原因，见后端注释。 */
 type BomItemOrderStatus = { bom_item_id: string; required_quantity: string; ordered_quantity: string; draft_quantity: string; state: "none" | "draft" | "partial" | "ordered"; ordered_purchase_order_nos: string[]; draft_purchase_order_nos: string[] };
@@ -93,6 +99,21 @@ const errorCodeOf = (cause: unknown) => (cause instanceof ApiClientError ? cause
  */
 const trimQuantity = trimPlanNumber;
 const toDateInput = (value?: string | null) => (value ? String(value).slice(0, 10) : "");
+
+/**
+ * 下单结果的一句话（2026-10-13 自动收束）：落点有两种，必须**分开说**。
+ *
+ * 「并进了那张单」与「新建了一张单」对采购员是两件不同的事 —— 前者供应商手上那张单会多两行
+ * （要跟对方说一声），后者是另一份凭证要发出去。合成一句"下了 N 张"会把这两件事藏起来。
+ */
+function orderOutcomeText(orders: Array<{ purchaseOrderNo: string; merged?: boolean; lineCount?: number }>) {
+  const merged = orders.filter((order) => order.merged);
+  const fresh = orders.filter((order) => !order.merged);
+  const parts: string[] = [];
+  if (merged.length) parts.push(`并入 ${merged.map((order) => `${order.purchaseOrderNo}（${order.lineCount ?? 0} 行）`).join("、")}`);
+  if (fresh.length) parts.push(`新建 ${fresh.map((order) => order.purchaseOrderNo).join("、")}`);
+  return parts.join("；") || "没有落成任何采购单";
+}
 
 export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, onDeleted }: {
   planId: string;
@@ -450,7 +471,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
     if (!assigned.length) { setError("还没有任何一行选了供应商"); return; }
     setBusy("order");
     try {
-      const result = await apiPost<{ orders: Array<{ purchaseOrderNo: string }> }>(`/purchase-plans/${planId}/order`, {
+      const result = await apiPost<{ orders: Array<{ purchaseOrderNo: string; merged?: boolean; lineCount?: number }> }>(`/purchase-plans/${planId}/order`, {
         purchase_date: new Date().toISOString(),
         groups: assigned.map((group) => ({
           supplier_id: group.supplierId,
@@ -458,9 +479,9 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
           items: group.rows.flatMap((row) => (row.id ? [row.id] : [])),
         })),
       });
-      const numbers = (result.data?.orders ?? []).map((order) => order.purchaseOrderNo).join("、");
+      const orders = result.data?.orders ?? [];
       const held = heldBackRowNos.length ? `；第 ${heldBackRowNos.join("、")} 行没单价，留在计划里` : "";
-      notifySuccess(`已按供应商收束下单 ${result.data?.orders?.length ?? 0} 张${numbers ? `：${numbers}` : ""}${held}`);
+      notifySuccess(`已按供应商收束下单 ${placedRows.length} 行：${orderOutcomeText(orders)}${held}`);
       await load();
       onSaved();
     } catch (cause) {
@@ -505,7 +526,8 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             <SheetTitle>{plan ? `采购计划：${plan.planNo}` : "采购计划"}</SheetTitle>
             <SheetDescription>
               这张 BOM 的采购工作面：逐行填供应商、单价与预计到货，勾选后**按供应商收束下单**
-              （一个供应商一张采购单，币种在收束预览里每组各选）。下过的行留在计划里，看得见落到了哪张单。
+              （一个供应商一张采购单，同一家**已有未到货的采购单就并进那张单**；币种在收束预览里每组各选）。
+              下过的行留在计划里，看得见落到了哪张单。
             </SheetDescription>
           </SheetHeader>
           {loading ? <p className="panel-note">加载中…</p> : null}
@@ -692,6 +714,7 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             busy={busy === "order"}
             heldBackRowNos={heldBackRowNos}
             selectedRowCount={selectedRows.length}
+            openOrders={plan?.openPurchaseOrders ?? []}
           />
         </SheetContent>
       </Sheet>

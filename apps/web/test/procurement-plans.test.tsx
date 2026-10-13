@@ -240,6 +240,78 @@ describe("采购计划明细：按供应商收束下单（口径 6/10）", () =>
     const body = JSON.parse(String(calls.find((call) => call.method === "PATCH")?.body)) as { items: Array<Record<string, unknown>> };
     expect(body.items[0].supplier_id).toBe("s-new");
   });
+
+  /**
+   * 自动收束（2026-10-13，用户：「如果相同的供应商的不同物料没有同时下单，下单之后也要自动收束
+   * 在一个采购单里」）。
+   *
+   * 「并 or 新建」有**四条判据**（认据/供应商/币种/有没有到货），所以它**有时候并不了**。
+   * 而"采购员以为收束了、实际多出一张单"是最难查的一类坏 —— 预览里每组必须明写落点。
+   */
+  it("收束预览写明落点：这家已有未到货的已下单单 → 「并入 PO-xxx（已有 N 行）」", async () => {
+    stubApi((url, call) => {
+      if (url.includes("/purchase-orders/bom-item-status")) return apiOk([]);
+      if (url.includes("/inventory/raw-material-balances")) return apiOk([]);
+      if (url.endsWith("/suppliers") && call.method === "GET") return apiOk(suppliers);
+      // 详情接口多下发一条 `openPurchaseOrders`（这份计划下还能并入的单）
+      if (url.includes("/purchase-plans/plan-1")) return apiOk({
+        ...planDetail([planItem({ supplierId: "s-1" })]),
+        openPurchaseOrders: [{ id: "po-1", purchaseOrderNo: "PO-EXISTING", supplierId: "s-1", currency: "CNY", itemCount: 4, totalAmount: "100.0000" }],
+      });
+      return apiOk([]);
+    });
+    render(<PlanDetailSheet planId="plan-1" materials={materials} units={units} onClose={() => undefined} onSaved={() => undefined} onDeleted={() => undefined} />);
+    await screen.findByRole("button", { name: "保存计划" });
+
+    expect(screen.getByTestId("plan-merge-into-s-1").textContent).toContain("并入 PO-EXISTING");
+    expect(screen.getByTestId("plan-merge-into-s-1").textContent).toContain("已有 4 行");
+    expect(screen.queryByTestId("plan-merge-new-s-1")).toBeNull();
+  });
+
+  it("收束预览：没有可并入的单时明写「新建一张」（不静默地有时候并、有时候不并）", async () => {
+    renderSheet({ items: [planItem({ supplierId: "s-1" })] });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    expect(screen.getByTestId("plan-merge-new-s-1").textContent).toContain("新建一张");
+    expect(screen.queryByTestId("plan-merge-into-s-1")).toBeNull();
+  });
+
+  it("币种对不上时不算「能并入」：同一家但 USD 组没有可并入的单", async () => {
+    stubApi((url, call) => {
+      if (url.includes("/purchase-orders/bom-item-status")) return apiOk([]);
+      if (url.includes("/inventory/raw-material-balances")) return apiOk([]);
+      if (url.endsWith("/suppliers") && call.method === "GET") return apiOk(suppliers);
+      if (url.includes("/purchase-plans/plan-1")) return apiOk({
+        ...planDetail([planItem({ supplierId: "s-1" })]),
+        openPurchaseOrders: [{ id: "po-1", purchaseOrderNo: "PO-CNY", supplierId: "s-1", currency: "CNY", itemCount: 4, totalAmount: "100.0000" }],
+      });
+      return apiOk([]);
+    });
+    render(<PlanDetailSheet planId="plan-1" materials={materials} units={units} onClose={() => undefined} onSaved={() => undefined} onDeleted={() => undefined} />);
+    await screen.findByRole("button", { name: "保存计划" });
+
+    // 默认组币种是 CNY → 就是那张 PO-CNY
+    expect(screen.getByTestId("plan-merge-into-s-1").textContent).toContain("PO-CNY");
+    // 改成美元之后，那张人民币的单**不再是**落点（一张单只能有一个币种）
+    await userEvent.click(within(screen.getByTestId("plan-group-s-1")).getByRole("combobox"));
+    await userEvent.click(await screen.findByRole("option", { name: /美元/ }));
+
+    expect(screen.getByTestId("plan-merge-new-s-1").textContent).toContain("新建一张");
+    expect(screen.queryByTestId("plan-merge-into-s-1")).toBeNull();
+  });
+
+  it("下单成功的提示分开说「并入了哪张单」与「新建了哪张单」（落点是两件不同的事）", async () => {
+    const calls = renderSheet({
+      items: [planItem({ supplierId: "s-1" })],
+      onOrder: () => apiOk({ orders: [{ purchaseOrderNo: "PO-EXISTING", merged: true, lineCount: 1 }] }),
+    });
+    await screen.findByRole("button", { name: "保存计划" });
+
+    await userEvent.click(screen.getByTestId("plan-order"));
+
+    await waitFor(() => expect(calls.some((call) => call.url.endsWith("/purchase-plans/plan-1/order"))).toBe(true));
+    expect(await screen.findByText(/并入 PO-EXISTING（1 行）/)).toBeTruthy();
+  });
 });
 
 describe("采购计划明细：不在物料池里的物料/单位仍要显示这一行的名字（用户 2026-09-30）", () => {
@@ -446,60 +518,138 @@ describe("采购计划明细：按 BOM 参考单价回填（用户 2026-10-08 �
   });
 });
 
-describe("采购计划列表：新建与深链（T09）", () => {
-  const stubList = (candidates: Array<Record<string, unknown>> = []) => stubApi((url) => {
+describe("采购计划列表：一行 = 一条明细（2026-10-13 展平）", () => {
+  /**
+   * 用户 2026-10-13：「采购计划的那个页面，也要显示物料名称等等 column。都要显示」。
+   *
+   * 2026-09-27 那一版是「一行 = 一份计划」，只显示计划级信息 —— 想知道"这份计划里到底有哪些
+   * 物料、哪条还没买"只能点进去。这一版**展平**成一行一条明细，13 列一次显示。
+   *
+   * 取舍（口径 7）：计划级汇总（未下单行数 / 计划金额 / 状态 / 最后更新）不再单独成列，
+   * 挂在「计划编号」那一格的 `title` 上 —— 与 13 个明细列挤在同一张表里会变成 20+ 列。
+   */
+  const planLine = (overrides: Record<string, unknown> = {}) => ({
+    id: "l-1", materialId: "m-1", materialCode: "M-001", materialName: "面料A", model: "A-1",
+    unitName: "米", quantity: "5.0000", unitPrice: "3.5000", amount: "17.5000", currency: "CNY",
+    supplierId: "s-1", supplierName: "宁波辅料厂", expectedDate: null, ordered: false, purchaseOrderNo: null,
+    ...overrides,
+  });
+  const planSummary = (overrides: Record<string, unknown> = {}) => ({
+    id: "plan-1", planNo: "PP-1", orderNo: "DL260001-1", itemNo: "27621", customerName: "流水花扇客户",
+    bomId: "bom-1", bomVersion: 3, lineCount: 2, unorderedCount: 1, orderedCount: 1,
+    amounts: [{ currency: "CNY", amount: "22.0000" }], unorderedAmounts: [{ currency: "CNY", amount: "4.0000" }],
+    status: "partial", statusLabel: "部分下单", updatedByName: "张三",
+    createdAt: "2026-09-27T01:00:00Z", updatedAt: "2026-09-27T02:00:00Z",
+    lines: [planLine({ id: "l-1", ordered: true, purchaseOrderNo: "PO-20261001-1" }), planLine({ id: "l-2", materialId: "m-2", materialCode: "M-002", materialName: "伞骨", model: "", quantity: "2.0000", unitPrice: "2.0000", amount: "4.0000" })],
+    ...overrides,
+  });
+  const stubList = (plans: Array<Record<string, unknown>>, candidates: Array<Record<string, unknown>> = []) => stubApi((url) => {
     if (url.includes("/purchase-plans/candidates")) return apiOk(candidates);
-    if (url.includes("/purchase-plans")) return apiOk([{ id: "plan-1", planNo: "PP-1", orderNo: "DL260001-1", itemNo: "27621", customerName: "流水花扇客户", bomId: "bom-1", bomVersion: 3, lineCount: 4, unorderedCount: 2, orderedCount: 2, status: "partial", statusLabel: "部分下单", updatedByName: "张三", createdAt: "2026-09-27T01:00:00Z", updatedAt: "2026-09-27T02:00:00Z" }]);
+    if (url.includes("/purchase-plans")) return apiOk(plans);
     if (url.endsWith("/materials")) return apiOk(materials);
     if (url.endsWith("/units")) return apiOk(units);
     return apiOk({});
   });
 
-  it("列表显示计划编号/销售单/货号/客户/未下单行数/状态/最后更新（人 + 时间）", async () => {
+  it("13 列都在、顺序固定：计划编号/销售单号/货号/客户/物料名称/型号/单位/本次采购量/单价/行总价/供应商/下单状态/预计到货", async () => {
     route.searchParams = new URLSearchParams();
-    stubList();
+    stubList([planSummary()]);
     render(<PurchasePlansPage />);
+    await screen.findByTestId("page-procurement-plans");
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(2));
 
-    expect(await screen.findByText("PP-1")).toBeTruthy();
-    expect(screen.getByText("27621")).toBeTruthy();
-    expect(screen.getByText("流水花扇客户")).toBeTruthy();
-    expect(screen.getByText("张三")).toBeTruthy();
-    expect(screen.getByTestId("page-procurement-plans")).toBeTruthy();
+    expect(screen.getAllByRole("columnheader").map((cell) => cell.textContent?.trim())).toEqual([
+      "计划编号", "销售单号", "货号", "客户", "物料名称", "型号", "单位", "本次采购量", "单价", "行总价", "供应商", "下单状态", "预计到货",
+    ]);
   });
 
-  it("列表有「计划金额」一列：按币种分列显示服务端算好的合计（金额不跨币种相加）", async () => {
+  it("两行明细 = 两行；每行都带上物料名称/数量/单价/行总价/供应商/下单状态（含落在哪张 PO）", async () => {
     route.searchParams = new URLSearchParams();
-    // 金额由服务端按币种算好下发（`GET /purchase-plans` 的 `amounts`），列表只负责显示。
-    stubApi((url) => {
-      if (url.includes("/purchase-plans/candidates")) return apiOk([]);
-      if (url.includes("/purchase-plans")) return apiOk([{
-        id: "plan-1", planNo: "PP-1", orderNo: "DL260001-1", itemNo: "27621", customerName: "流水花扇客户",
-        bomId: "bom-1", bomVersion: 3, lineCount: 4, unorderedCount: 2, orderedCount: 2,
-        amounts: [{ currency: "CNY", amount: "1234.5678" }, { currency: "USD", amount: "200.0000" }],
-        unorderedAmounts: [{ currency: "CNY", amount: "234.5678" }],
-        status: "partial", statusLabel: "部分下单", updatedByName: "张三", createdAt: "2026-09-27T01:00:00Z", updatedAt: "2026-09-27T02:00:00Z",
-      }]);
-      if (url.endsWith("/materials")) return apiOk(materials);
-      if (url.endsWith("/units")) return apiOk(units);
-      return apiOk({});
-    });
+    stubList([planSummary()]);
     render(<PurchasePlansPage />);
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(2));
 
-    expect(await screen.findByText("CNY 1234.57 · USD 200.00")).toBeTruthy();
+    // 第一行：已下单（要看得见落在哪张采购单上）
+    const first = screen.getAllByTestId("data-table-row")[0];
+    expect(within(first).getByText("面料A")).toBeTruthy();
+    expect(within(first).getByText("17.50")).toBeTruthy();
+    expect(within(first).getByText("宁波辅料厂")).toBeTruthy();
+    expect(within(first).getByText("PO-20261001-1")).toBeTruthy();
+
+    // 第二行：未下单（伞骨 2 × 2.00 = 4.00）
+    const second = screen.getAllByTestId("data-table-row")[1];
+    expect(within(second).getByText("伞骨")).toBeTruthy();
+    expect(within(second).getByText("4.00")).toBeTruthy();
+    expect(within(second).getByText("未下单")).toBeTruthy();
+
+    // 同一份计划的两行都重复显示头部信息（展平的代价，用户已确认；换来的是"哪条还没买"一眼可见）
+    expect(within(first).getByText("PP-1")).toBeTruthy();
+    expect(within(second).getByText("PP-1")).toBeTruthy();
   });
 
-  it("计划里一行价都还没填时，金额那格说「未填价」而不是显示 0（0 与「还没谈」是两件事）", async () => {
+  it("物料名称那一格 hover 能看到物料编码（13 列里没有编码的位置，但信息不能丢）", async () => {
     route.searchParams = new URLSearchParams();
-    stubApi((url) => {
-      if (url.includes("/purchase-plans/candidates")) return apiOk([]);
-      if (url.includes("/purchase-plans")) return apiOk([{ id: "plan-1", planNo: "PP-1", orderNo: "DL260001-1", itemNo: null, customerName: null, bomId: "bom-1", bomVersion: 3, lineCount: 1, unorderedCount: 1, orderedCount: 0, amounts: [], unorderedAmounts: [], status: "unordered", statusLabel: "未下单", updatedByName: null, createdAt: "2026-09-27T01:00:00Z", updatedAt: "2026-09-27T02:00:00Z" }]);
-      if (url.endsWith("/materials")) return apiOk(materials);
-      if (url.endsWith("/units")) return apiOk(units);
-      return apiOk({});
-    });
+    stubList([planSummary({ lines: [planLine({ materialCode: "M-001", materialName: "面料A" })] })]);
+    render(<PurchasePlansPage />);
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(1));
+
+    expect(screen.getByText("面料A").getAttribute("title")).toBe("M-001 / 面料A");
+  });
+
+  it("计划级汇总挂在「计划编号」的 title 上（未下单行数 / 计划金额 / 最后更新人 + 北京时间）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubList([planSummary()]);
+    render(<PurchasePlansPage />);
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(2));
+
+    const title = screen.getAllByText("PP-1")[0].getAttribute("title") ?? "";
+    expect(title).toContain("未下单 1 / 共 2 行");
+    expect(title).toContain("计划金额 CNY 22.00（其中未下单 CNY 4.00）");
+    // 时间固定北京时间（`lib/audit-time`）：02:00Z → 10:00
+    expect(title).toContain("最后更新 张三 09-27 10:00");
+  });
+
+  it("一行明细都没有的计划**不会凭空消失**：补一行占位（它唯一的入口就是这一页）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubList([planSummary({ planNo: "PP-EMPTY", lineCount: 0, unorderedCount: 0, orderedCount: 0, amounts: [], unorderedAmounts: [], status: "unordered", statusLabel: "未下单", lines: [] })]);
     render(<PurchasePlansPage />);
 
-    expect(await screen.findByText("未填价")).toBeTruthy();
+    expect(await screen.findByText("PP-EMPTY")).toBeTruthy();
+    expect(screen.getByText("（这份计划一行都没有）")).toBeTruthy();
+  });
+
+  it("单价 0 的行在列表里也标红（0 价不下单，与详情表同一口径）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubList([planSummary({ lines: [planLine({ id: "l-1", unitPrice: "0.0000", amount: "0.0000" }), planLine({ id: "l-2", materialName: "伞骨", unitPrice: "2.0000", amount: "4.0000" })] })]);
+    render(<PurchasePlansPage />);
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(2));
+
+    expect(screen.getAllByTestId("data-table-row")[0].className).not.toContain("status-danger");
+    expect(within(screen.getAllByTestId("data-table-row")[0]).getByText("0").className).toContain("status-danger");
+  });
+
+  it("点计划编号打开那份计划（展平后它是唯一的入口，没有单独的「操作」列）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubApi((url, call) => {
+      // ⚠️ 顺序：详情路径 `/purchase-plans/plan-1` 也命中 `includes("/purchase-plans")`，
+      // 所以更具体的先判。
+      if (url.includes("/purchase-plans/candidates")) return apiOk([]);
+      if (url.includes("/purchase-plans/plan-1")) return apiOk(planDetail([planItem()]));
+      if (url.includes("/purchase-plans")) return apiOk([planSummary({ lines: [planLine()] })]);
+      if (url.includes("/purchase-orders/bom-item-status")) return apiOk([]);
+      if (url.includes("/inventory/raw-material-balances")) return apiOk([]);
+      if (url.endsWith("/suppliers") && call.method === "GET") return apiOk(suppliers);
+      if (url.endsWith("/materials")) return apiOk(materials);
+      if (url.endsWith("/units")) return apiOk(units);
+      return apiOk([]);
+    });
+    render(<PurchasePlansPage />);
+    const open = await screen.findAllByTestId("plan-open");
+
+    expect(open[0].getAttribute("data-plan-no")).toBe("PP-1");
+    await userEvent.click(open[0]);
+
+    expect(await screen.findByText(/PP-20260927-AAAA1111/)).toBeTruthy();
   });
 
   it("新建：只能选还没有计划的 BOM，建完直接打开计划", async () => {
@@ -536,3 +686,4 @@ describe("采购计划列表：新建与深链（T09）", () => {
     expect(await screen.findByText(/PP-20260927-AAAA1111/)).toBeTruthy();
   });
 });
+

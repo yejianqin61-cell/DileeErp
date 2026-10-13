@@ -15,6 +15,13 @@ export type SplitGroup = { supplier_id?: string; currency?: string; expected_dat
 export type SplitInput = { order_no: string; bom_id?: string; purchase_date?: string; currency?: string; remark?: string; reason?: string; place_order?: boolean; extension_data?: Record<string, unknown>; groups?: SplitGroup[] };
 /** 收束后的分组（参照物已解析、下单前校验已过），可以直接落库。 */
 export type MergedGroup = { input: Input; prepared: Prepared };
+/**
+ * 「同一供应商的后续下单」要**并入**的那张采购单（2026-10-13）。
+ *
+ * 与 `splitExisting()` 的差别：那个是"把一张单的内容重新收束一次"（人主动发起、要写原因），
+ * 这个是"往后追加一行"，单号不变、已有的行与到货事实一根不动。
+ */
+export type MergeTarget = { id: string; purchaseOrderNo: string };
 type OrderableItem = { materialId: string; unitId: string; supplierId: string; quantity: string; unitPrice: string };
 /**
  * BOM 明细行上的下单情况（采购计划里给采购员看的「这一行是不是已经买过了」）。
@@ -131,6 +138,121 @@ export class PurchaseOrdersService {
     const rows = [];
     for (const entry of merged) rows.push(await tx.purchaseOrder.create({ data: this.orderData(entry.prepared, entry.input, user, status) }));
     return rows;
+  }
+  /**
+   * **同一供应商的后续下单自动收束进同一张采购单**（2026-10-13，设计文档
+   * `purchase-plan-split-order-and-flat-list-2026-10-13.md` 口径 1）。
+   *
+   * 为什么需要它：2026-10-11 定了「没确定单价的先不下单」，于是同一家的物料**必然**分波下单
+   * （辅料等客户资料才有价）；而 2026-09-17 又定了「一个采购单内，一个供应商下一个单」。
+   * 两条同时成立，只有系统能办到：一波一波下，落点还是同一张单。
+   *
+   * 判据四条，缺一不可（这一条是本功能最容易被改坏的地方，改之前先读设计文档 §2）：
+   *   ① **这张单是这份计划自己下出来的**：用 `linkedOrderItemIds`（计划行回写的链接）认，
+   *      **不按供应商猜** —— 按供应商猜会把别人手工建的同供应商单吞进来；
+   *   ② 供应商与**币种**都对得上：一张单一个供应商、一个币种，"一个币种"是这张单的属性
+   *      （金额不跨币种合计），并错了财务会收到一张"单价是美元、单头写着人民币"的单；
+   *   ③ 状态还是 `ordered`；
+   *   ④ **任一未删明细都没有到货记录**：到货是既成事实，后面挂着质检、入库与应付来源，
+   *      往这样一张单上追新物料，会让"这批到货是哪张单的"多出一个答案。
+   *      ⚠️ 第 ④ 条按**明细的到货记录**判，**不看状态**：`receipt()`（V1）登记到货时不刷单头状态，
+   *      只看 `status === "ordered"` 会把这种单当成可并的。
+   *
+   * 多条候选时取 `createdAt` 倒序的第一张 —— 也就是"上一波下的那张单"。
+   *
+   * 为什么必须在**事务里**调：两个窗口同时给同一家下单时，事务外判定会让两边都看到
+   * "没有可并入的单"从而各建一张，那正是这个功能要消灭的场景。
+   */
+  async findMergeTarget(tx: Prisma.TransactionClient, input: { orderNo: string; bomId: string; supplierId: string; currency: string; linkedOrderItemIds: string[] }): Promise<MergeTarget | null> {
+    if (!input.linkedOrderItemIds.length) return null;
+    const candidates = await this.queryLinkedOpenOrders(tx, input);
+    const open = candidates.find((order) => order.supplierId === input.supplierId && order.currency === input.currency);
+    return open ? { id: open.id, purchaseOrderNo: open.purchaseOrderNo } : null;
+  }
+  /**
+   * 计划详情用：这份计划下**还能并入**的采购单（同供应商 + 同币种 + 已下单 + 无到货）。
+   *
+   * 前端按它把"这一组会并到哪张单 / 会新建一张"写在收束预览里（口径 6）——
+   * 静默地"有时候并、有时候不并"是最难查的一类坏。
+   */
+  async openOrdersForPlan(input: { orderNo: string; bomId: string; linkedOrderItemIds: string[] }): Promise<Array<{ id: string; purchaseOrderNo: string; supplierId: string | null; currency: string; itemCount: number; totalAmount: string }>> {
+    if (!input.linkedOrderItemIds.length) return [];
+    const rows = await this.queryLinkedOpenOrders(this.prisma, input);
+    return rows.map((order) => ({ id: order.id, purchaseOrderNo: order.purchaseOrderNo, supplierId: order.supplierId, currency: order.currency, itemCount: order.itemCount, totalAmount: order.totalAmount }));
+  }
+  /**
+   * 「这份计划下、还能往里追明细的采购单」的**唯一**查询（`findMergeTarget` 与
+   * `openOrdersForPlan` 共用）—— 什么算可并入只有一处实现，否则预览与下单一定会漂移成
+   * 「预览说能并、下单却被拒」。
+   */
+  private async queryLinkedOpenOrders(client: Prisma.TransactionClient, input: { orderNo: string; bomId: string; linkedOrderItemIds: string[] }) {
+    const orders = await client.purchaseOrder.findMany({
+      where: {
+        deletedAt: null,
+        status: "ordered",
+        orderNo: input.orderNo,
+        bomId: input.bomId,
+        // ① 明细里有计划行回写的链接：这张单是**这份计划**下出来的。
+        items: { some: { deletedAt: null, id: { in: input.linkedOrderItemIds } } },
+      },
+      select: {
+        id: true, purchaseOrderNo: true, supplierId: true, currency: true, totalAmount: true, createdAt: true,
+        items: { where: { deletedAt: null }, select: { id: true, receipts: { where: { deletedAt: null }, select: { id: true } } } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    return orders
+      // ④ 没有任何到货事实（含"状态没刷新的已到货单"）。
+      .filter((order) => order.items.every((item) => item.receipts.length === 0))
+      .map((order) => ({ id: order.id, purchaseOrderNo: order.purchaseOrderNo, supplierId: order.supplierId, currency: order.currency, itemCount: order.items.length, totalAmount: order.totalAmount.toFixed(4) }));
+  }
+  /**
+   * 把**一波新明细追加**到一张已经存在的采购单上（口径 3：只追加、不改已有的行）。
+   *
+   * 与 `replaceOrder()` 的区别正是这个功能的意义：后者"老行软删 + 新行重建"，
+   * 用在一张已经发给供应商的单上等于重开一张单；这里只往后加。
+   *
+   * 头部只动两处：`total_amount` **累加**（口径 3）与留痕（口径 4）。
+   * 采购日期 / 交货日期 / 备注 / 供应商 / 币种 / 打印字段**一概不动** —— 那是发出去那份凭证上的字。
+   *
+   * 在**调用方的事务里**写：追加明细与计划行的链接回写必须同生共死，否则会留下
+   * 「采购单上多了几行、计划里还显示未下单」的中间态 —— 而那正是重复采购的入口。
+   */
+  async appendItems(tx: Prisma.TransactionClient, orderId: string, merged: MergedGroup, user: CurrentUser) {
+    const { refs, items, total } = merged.prepared;
+    const order = await tx.purchaseOrder.findFirst({
+      where: { id: orderId, deletedAt: null },
+      select: { id: true, purchaseOrderNo: true, currency: true, status: true, totalAmount: true, extensionData: true, items: { where: { deletedAt: null }, select: { receipts: { where: { deletedAt: null }, select: { id: true } } } } },
+    });
+    if (!order) throw new NotFoundException({ code: "PURCHASE_ORDER_NOT_FOUND", message: "采购单不存在", details: [] });
+    const currency = merged.input.currency ?? "CNY";
+    // 判据在**写之前**再过一次：`findMergeTarget()` 是事务里查的，但中间可能有别的写改掉了这张单
+    // （同一事务里不会，可这道门是"不变式本身"——直接调本方法的调用方也必须过）。
+    if (order.status !== "ordered" || order.items.some((item) => item.receipts.length)) {
+      throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_APPENDABLE", message: "这张采购单已有到货事实或状态已变，不能再追加明细；请重新下单（会新建一张单）", details: [{ purchase_order_id: orderId, status: order.status }] });
+    }
+    if (currency !== order.currency) {
+      throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_CURRENCY_MISMATCH", message: "要追加的明细与这张采购单的币种不一致（一张单只能有一个币种），请改币种或新建一张单", details: [{ purchase_order_currency: order.currency, item_currency: currency }] });
+    }
+    // 逐条 `create`（不用 `createMany`）：计划行要按新明细的 id 回写链接，而 `createMany` 不返回 id。
+    const created = [];
+    for (const item of items) {
+      created.push(await tx.purchaseOrderItem.create({
+        data: { purchaseOrderId: orderId, ...this.itemData(item, refs, user) },
+        select: { id: true, extensionData: true, materialId: true, quantity: true, unitPrice: true },
+      }));
+    }
+    const previous = (order.extensionData ?? {}) as Record<string, unknown>;
+    const plan = (merged.input.extension_data?.purchase_plan ?? {}) as { plan_id?: string; plan_no?: string };
+    const history = Array.isArray(previous.purchase_plan_merges) ? (previous.purchase_plan_merges as unknown[]) : [];
+    // 只留最近 20 条：采购单是长期存在的，单头 JSON 不设上限会被它养成一个越来越大的字段（口径 4）。
+    const merges = [...history, { at: new Date().toISOString(), plan_id: plan.plan_id ?? null, plan_no: plan.plan_no ?? null, line_count: items.length, amount: total }].slice(-20);
+    const updated = await tx.purchaseOrder.update({
+      where: { id: orderId },
+      data: { totalAmount: new Prisma.Decimal(order.totalAmount).plus(total).toFixed(4), extensionData: { ...previous, purchase_plan_merges: merges } as Prisma.InputJsonValue, ...this.audit.update(user) },
+      select: { id: true, purchaseOrderNo: true, currency: true, totalAmount: true, status: true },
+    });
+    return { order: updated, items: created };
   }
   /**
    * 按供应商收束一张**已经存在**的采购单（草稿，或已下单但没有任何到货）。

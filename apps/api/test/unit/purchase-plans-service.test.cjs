@@ -58,7 +58,7 @@ const bomRow = (id, overrides = {}) => ({
  * 「只用已确认销售单的 BOM」「排除已有计划的 BOM」「排除已软删的计划」这几条查询口径，
  * 一个恒返回全部数据的桩会把断言变成永远通过。
  */
-function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], purchaseOrders = [], receipts = [], missingBom = false, bomDeleted = false } = {}) {
+function makeService({ boms = [], bomItems = [], plans = [], planItems = [], purchaseOrderItems = [], purchaseOrders = [], receipts = [], mergeTargets = [], openOrders = [], missingBom = false, bomDeleted = false } = {}) {
   const units = [
     { id: "unit-pcs", name: "个", isActive: true, deletedAt: null },
     { id: "unit-m", name: "米", isActive: true, deletedAt: null },
@@ -72,6 +72,8 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
   // 「收束下单」落库的采购单与采购明细（假的采购单服务写进来的）。
   const createdOrders = [];
   const createdOrderItems = [];
+  /** 每一次「问要不要并入」的入参（断言认据用的是计划行的链接，不是按供应商猜）。 */
+  const mergeQueries = [];
   let recordedSplit = null;
   const findOrderItem = (id) => orderItemById.get(id) ?? createdOrderItems.find((row) => row.id === id) ?? null;
 
@@ -177,11 +179,18 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
       // 「收束下单」落库后按 `extension_data.purchase_plan_item_id` 回写计划行的链接，
       // 所以这里要能把刚建出来的采购明细读回来；
       // 补价那一步则按 `purchaseOrderId` 读同单全部明细来重算单头合计 —— 两种 where 都要认。
+      //
+      // 2026-10-13：自动收束之后，落点有两种（新建一张 / 追加进已有的一张），
+      // 计划服务对**新建**的那一张按 `purchaseOrderId`（字符串）逐单读回明细，
+      // 所以这一支也要把明细完整返回（含 `extensionData`），不能再只给 `{ id, amount }`。
       findMany: async ({ where }) => {
+        const pool = [...purchaseOrderItems, ...createdOrderItems, ...purchaseOrders.flatMap((row) => row.items ?? [])]
+          .filter((row) => row.deletedAt === null)
+          .filter((row, index, all) => all.findIndex((candidate) => candidate.id === row.id) === index);
         if (where.purchaseOrderId && typeof where.purchaseOrderId === "string") {
-          return [...purchaseOrderItems, ...purchaseOrders.flatMap((row) => row.items ?? [])].filter((row) => row.purchaseOrderId === where.purchaseOrderId && row.deletedAt === null).map((row) => ({ id: row.id, amount: row.amount ?? "0" }));
+          return pool.filter((row) => row.purchaseOrderId === where.purchaseOrderId).map((row) => ({ id: row.id, amount: row.amount ?? "0", extensionData: row.extensionData }));
         }
-        return createdOrderItems.filter((row) => (where.purchaseOrderId?.in ?? []).includes(row.purchaseOrderId) && row.deletedAt === null);
+        return pool.filter((row) => (where.purchaseOrderId?.in ?? []).includes(row.purchaseOrderId));
       },
       updateMany: async ({ where, data }) => {
         // 明细可能来自 `purchaseOrderItems`（直接种的）或 `purchaseOrders[].items`（整单种的）。
@@ -228,8 +237,33 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
       });
       return rows;
     },
+    /**
+     * 自动收束（2026-10-13）：真实判据在 `purchase-orders.service.ts`（那边有自己的单测），
+     * 这里只按"这份桩里有哪些可并入的单"回答，要验证的是**计划这一侧**：
+     * 问了没有、拿到了谁、链接指向哪条明细。
+     */
+    findMergeTarget: async (tx, query) => {
+      mergeQueries.push(query);
+      const target = mergeTargets.find((row) => row.deletedAt === null && row.status === "ordered"
+        && row.supplierId === query.supplierId && row.currency === query.currency
+        && row.items.every((item) => (item.receipts ?? []).length === 0));
+      return target ? { id: target.id, purchaseOrderNo: target.purchaseOrderNo } : null;
+    },
+    /** 追加明细：只往后加，头部合计累加（真实的实现在采购单服务里）。 */
+    appendItems: async (tx, orderId, entry) => {
+      const order = mergeTargets.find((row) => row.id === orderId);
+      const appended = [];
+      for (const item of entry.input.items ?? []) {
+        const row = { id: `poi-${createdOrderItems.length + 1}`, purchaseOrderId: order.id, deletedAt: null, extensionData: item.extension_data, purchaseOrder: { purchaseOrderNo: order.purchaseOrderNo, status: order.status, currency: order.currency } };
+        order.items.push(row);
+        createdOrderItems.push(row);
+        appended.push({ id: row.id, extensionData: row.extensionData });
+      }
+      return { order: { id: order.id, purchaseOrderNo: order.purchaseOrderNo, currency: order.currency, totalAmount: order.totalAmount, status: order.status }, items: appended };
+    },
+    openOrdersForPlan: async () => openOrders,
   };
-  return { service: new PurchasePlansService(prisma, audit, fakeOrders, { namesOf: async () => new Map([["user-1", "张三"]]) }), plans, planItems, split: () => recordedSplit, createdOrders, createdOrderItems };
+  return { service: new PurchasePlansService(prisma, audit, fakeOrders, { namesOf: async () => new Map([["user-1", "张三"]]) }), plans, planItems, split: () => recordedSplit, createdOrders, createdOrderItems, mergeTargets, mergeQueries };
 }
 
 const bomFixture = { id: "bom-1", orderNo: "SO-1", salesOrderId: "so-1", version: 3, status: "draft", deletedAt: null, salesOrder: { status: "confirmed", deletedAt: null } };
@@ -1222,4 +1256,222 @@ test("保存：新建的行默认人民币（币种不由客户端决定）", as
 
   const created = planItems.filter((row) => row.deletedAt === null).find((row) => row.materialId === "mat-3");
   assert.equal(created.currency, DEFAULT_PLAN_CURRENCY, "新行一律默认人民币，币种只在下单时由服务端写回");
+});
+
+// ---------------------------------------------------------------------------------------------
+// 自动收束（2026-10-13）：用户原话「如果相同的供应商的不同物料没有同时下单，
+// 下单之后也要自动收束在一个采购单里」。
+//
+// 真实判据（状态 / 到货 / 币种 / 认据）在 `purchase-orders.service.ts` 的
+// `findMergeTarget()` + `appendItems()`（那边有自己的单测）。**本组钉的是计划这一侧**：
+//   · 拿什么当认据去问（计划行回写的采购明细 id，不是按供应商猜）；
+//   · 问的时候带没带币种与供应商；
+//   · 并进来之后，计划行的链接指向**这一波新建的**明细（不是上一波那条）。
+
+/** 一张「已经下过一波」的计划：i-1 已下单（认领着 poi-old），i-2 / i-3 还没下。 */
+function wavePlanFixture() {
+  return {
+    plan: { ...thePlan },
+    items: [
+      { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: null, expectedDate: null, purchaseOrderItemId: "poi-old", bomItemId: "bi-1", deletedAt: null, sequence: 1, extensionData: {} },
+      { id: "i-2", planId: "plan-1", materialId: "mat-2", unitId: "unit-m", supplierId: "sup-1", quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("1.0000"), model: null, expectedDate: null, purchaseOrderItemId: null, bomItemId: "bi-2", deletedAt: null, sequence: 2, extensionData: {} },
+      { id: "i-3", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-2", quantity: new Prisma.Decimal("1.0000"), unitPrice: new Prisma.Decimal("2.0000"), model: null, expectedDate: null, purchaseOrderItemId: null, bomItemId: "bi-1", deletedAt: null, sequence: 3, extensionData: {} },
+    ],
+  };
+}
+
+/** 上一波给 sup-1 下出来的那张单（已下单、无到货、人民币）。 */
+const existingOpenOrder = (overrides = {}) => ({
+  id: "po-1", purchaseOrderNo: "PO-EXISTING", orderNo: "SO-1", bomId: "bom-1", status: "ordered", deletedAt: null,
+  supplierId: "sup-1", currency: "CNY", totalAmount: new Prisma.Decimal("17.5000"), extensionData: {},
+  createdAt: new Date("2026-10-01T00:00:00Z"),
+  items: [{ id: "poi-old", purchaseOrderId: "po-1", materialId: "mat-1", deletedAt: null, receipts: [] }],
+  ...overrides,
+});
+
+test("自动收束：同供应商的第二波**并进已有那张采购单**，不新建", async () => {
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), mergeTargets: [existingOpenOrder()] });
+
+  const result = await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2"] }] }, user);
+
+  assert.equal(result.orders.length, 1);
+  assert.equal(result.orders[0].merged, true, "这一组是**并入**已有单，不是新建");
+  assert.equal(result.orders[0].purchaseOrderNo, "PO-EXISTING");
+  assert.equal(result.mergedOrderCount, 1);
+  assert.equal(s.createdOrders.length, 0, "一张新单都不该建出来 —— 那正是这个功能要消灭的");
+  assert.equal(s.mergeTargets[0].items.length, 2, "旧明细留着，新明细追加在后面（不替换）");
+  assert.equal(items[1].purchaseOrderItemId, "poi-1", "计划行的链接指向**这一波新建的**明细");
+  assert.equal(items[0].purchaseOrderItemId, "poi-old", "上一波那行一根不动");
+  assert.equal(result.plan.items[1].purchaseOrderNo, "PO-EXISTING", "计划里看得见落到了哪张单");
+});
+
+test("自动收束：认据是**计划行回写的采购明细 id**，不按供应商猜", async () => {
+  // 按供应商猜会把别人手工建的同供应商单吞进来（那张单上没有任何计划行认领），
+  // 而这类错误不会当场报错，只会让两张不相干的采购单悄悄长在一起。
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), mergeTargets: [existingOpenOrder()] });
+
+  await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2"] }] }, user);
+
+  assert.equal(s.mergeQueries.length, 1);
+  assert.deepEqual(s.mergeQueries[0].linkedOrderItemIds, ["poi-old"], "只把这份计划自己下过的明细交出去");
+  assert.equal(s.mergeQueries[0].supplierId, "sup-1");
+  assert.equal(s.mergeQueries[0].currency, "CNY", "币种是硬条件：一张单只能有一个币种");
+  assert.equal(s.mergeQueries[0].orderNo, "SO-1");
+  assert.equal(s.mergeQueries[0].bomId, "bom-1");
+});
+
+test("自动收束：这一组没有可并入的单 → 新建（不猜，也不退化成把旧单改一改）", async () => {
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  const result = await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2"] }] }, user);
+
+  assert.equal(result.orders[0].merged, false);
+  assert.equal(result.mergedOrderCount, 0);
+  assert.equal(s.createdOrders.length, 1, "没有可并入的就照旧新建一张");
+  assert.equal(items[1].purchaseOrderItemId, "poi-1");
+});
+
+test("自动收束：币种不同不并入（人民币那张单收不了美元的行）", async () => {
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), mergeTargets: [existingOpenOrder()] });
+
+  const result = await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "USD", items: ["i-2"] }] }, user);
+
+  assert.equal(s.mergeQueries[0].currency, "USD", "问的时候必须带上这一组的币种");
+  assert.equal(result.orders[0].merged, false, "币种对不上只能新建一张");
+  assert.equal(result.orders[0].currency, "USD");
+  assert.equal(s.createdOrders.length, 1);
+});
+
+test("自动收束：已有到货的那张单不会被并（判据在采购单那一侧，计划侧只照实问）", async () => {
+  const { plan, items } = wavePlanFixture();
+  const receipted = existingOpenOrder({ items: [{ id: "poi-old", purchaseOrderId: "po-1", materialId: "mat-1", deletedAt: null, receipts: [{ id: "gr-1" }] }] });
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), mergeTargets: [receipted] });
+
+  const result = await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2"] }] }, user);
+
+  assert.equal(result.orders[0].merged, false, "到货是既成事实：新料属于新的一张单");
+  assert.equal(s.createdOrders.length, 1);
+});
+
+test("自动收束：两个供应商一波下，能并的并、不能并的新建", async () => {
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), mergeTargets: [existingOpenOrder()] });
+
+  // sup-1 有可并入的单；sup-2 没有（这一波是它第一次下单）
+  const result = await s.service.order("plan-1", {
+    groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2"] }, { supplier_id: "sup-2", currency: "CNY", items: ["i-3"] }],
+  }, user);
+
+  assert.deepEqual(result.orders.map((order) => order.merged), [true, false]);
+  assert.deepEqual(result.orders.map((order) => order.purchaseOrderNo), ["PO-EXISTING", "PO-20260927-1"]);
+  assert.equal(result.mergedOrderCount, 1);
+  assert.equal(items[1].purchaseOrderItemId, "poi-1", "并进去的那行");
+  assert.equal(items[2].purchaseOrderItemId, "poi-2", "新建的那张单上的行");
+});
+
+test("自动收束：审计分开记 —— 计划侧记「并进了哪几张、各几行」，采购单侧记一条追加", async () => {
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), mergeTargets: [existingOpenOrder()] });
+  audit.events.length = 0;
+
+  await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2", "i-3"] }] }, user);
+
+  const planOrder = audit.events.find(([action]) => action === "purchase_plan.order")[4];
+  assert.deepEqual(planOrder.merged_purchase_order_nos, ["PO-EXISTING"]);
+  assert.equal(planOrder.merged_line_count, 2);
+  assert.equal(planOrder.group_count, 1);
+  // 采购单号没换，事后要解释"这张单为什么比上周多了两行"只能靠这条：
+  const appended = audit.events.find(([action]) => action === "purchase_order.append_plan_items");
+  assert.ok(appended, "并入要单独留一条审计");
+  assert.equal(appended[3], "po-1");
+  assert.equal(appended[4].purchase_order_no, "PO-EXISTING");
+  assert.equal(appended[4].plan_no, "PP-1");
+  assert.equal(appended[4].appended_line_count, 2);
+});
+
+test("自动收束：没并的单不记追加审计（审计里不能出现没发生的事）", async () => {
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+  audit.events.length = 0;
+
+  await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2"] }] }, user);
+
+  assert.equal(audit.events.some(([action]) => action === "purchase_order.append_plan_items"), false);
+  assert.deepEqual(audit.events.find(([action]) => action === "purchase_plan.order")[4].merged_purchase_order_nos, []);
+});
+
+test("详情：随行下发「还能并入的采购单」（口径 6 —— 自动收束也必须看得见）", async () => {
+  const { plan, items } = wavePlanFixture();
+  const open = [{ id: "po-1", purchaseOrderNo: "PO-EXISTING", supplierId: "sup-1", currency: "CNY", itemCount: 1, totalAmount: "17.5000" }];
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), openOrders: open });
+
+  const detail = await s.service.get("plan-1");
+
+  assert.deepEqual(detail.openPurchaseOrders, open);
+});
+
+test("详情：计划没有已下单行时不问「可并入的单」（没必要多打一次查询）", async () => {
+  const { plan, items } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  const detail = await s.service.get("plan-1");
+
+  assert.deepEqual(detail.openPurchaseOrders, []);
+});
+
+// ---------------------------------------------------------------------------------------------
+// 列表页展平（2026-10-13）：用户原话「采购计划的那个页面，也要显示物料名称等等 column。都要显示」。
+
+test("列表：每份计划下发 `lines[]`（物料名称/型号/单位/数量/单价/行总价/供应商/下单状态/采购单号）", async () => {
+  const { plan, items } = wavePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows(), purchaseOrderItems: [{ id: "poi-old", purchaseOrderId: "po-1", purchaseOrder: { purchaseOrderNo: "PO-EXISTING", status: "ordered" } }] });
+
+  const list = await s.service.list({});
+  const lines = list[0].lines;
+
+  assert.equal(lines.length, 3, "一行 = 一条计划明细");
+  assert.deepEqual(lines.map((line) => line.id), ["i-1", "i-2", "i-3"]);
+  assert.equal(lines[0].materialName, "物料 mat-1", "物料名（主数据现值优先）");
+  assert.equal(lines[0].materialCode, "M-mat-1");
+  assert.equal(lines[1].unitName, "米");
+  assert.equal(lines[1].quantity, "2.0000");
+  assert.equal(lines[1].unitPrice, "1.0000");
+  assert.equal(lines[1].amount, "2.0000", "行总价 = 数量 × 单价（与服务端合计同一个函数）");
+  assert.equal(lines[1].ordered, false);
+  assert.equal(lines[1].purchaseOrderNo, null);
+  assert.equal(lines[1].currency, "CNY", "币种跟着那一行（合计按币种分列）");
+  // 已下单的行：`ordered` 与 PO 号都要有，列表才答得了"这条落在哪张单"
+  assert.equal(lines[0].ordered, true);
+  assert.equal(lines[0].purchaseOrderNo, "PO-EXISTING");
+  // 计划级口径照旧（口径 7 说它们不再单独成列，但**接口不断**）
+  assert.equal(list[0].lineCount, 3);
+  assert.equal(list[0].unorderedCount, 2);
+  assert.deepEqual(list[0].amounts, [{ currency: "CNY", amount: "21.5000" }], "5 × 3.5 + 2 × 1 + 1 × 2");
+});
+
+test("列表：计划级的 `lineCount` / 金额仍然照旧（列不显示 ≠ 字段删掉）", async () => {
+  const { plan, items } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: items, bomItems: bomRows() });
+
+  const list = await s.service.list({});
+
+  assert.equal(list[0].lineCount, 2);
+  assert.equal(list[0].unorderedCount, 2);
+  assert.equal(list[0].statusLabel, "未下单");
+  assert.deepEqual(list[0].amounts, [{ currency: "CNY", amount: "19.5000" }], "5 × 3.5 + 2 × 1 = 19.5");
+});
+
+test("列表：没有明细的计划也照常出现在列表里（前端要给它一行占位，不能凭空消失）", async () => {
+  const { plan } = freePlanFixture();
+  const s = makeService({ plans: [plan], planItems: [], bomItems: bomRows() });
+
+  const list = await s.service.list({});
+
+  assert.equal(list.length, 1);
+  assert.deepEqual(list[0].lines, [], "空计划下发空数组，由前端补一行「（这份计划一行都没有）」");
+  assert.equal(list[0].lineCount, 0);
 });
