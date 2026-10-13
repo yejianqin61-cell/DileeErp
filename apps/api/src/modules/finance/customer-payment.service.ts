@@ -6,8 +6,10 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
-import { paymentSubjectNames } from "./accounting-subject-catalog";
+import { paymentSubjectNames, RECEIVABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
+import { dominantDocumentSubject } from "./cash-flow.domain";
 import { CashFlowService } from "./cash-flow.service";
+import { coveringReceivableReconciliation } from "./receivable.domain";
 import { SOURCE_RECEIVABLE, VoucherService } from "./voucher.service";
 import { ReceivableService } from "./receivable.service";
 
@@ -87,6 +89,12 @@ export class CustomerPaymentService {
       const existing = await tx.receivableAllocation.count({ where: { paymentId: id, deletedAt: null } });
       if (existing) throw this.invalid("CUSTOMER_PAYMENT_ALREADY_POSTED", "收款已存在核销分配");
       let total = new Prisma.Decimal(0);
+      /**
+       * 「收支类目」的取数（2026-10-13）：应收来源上**没有**科目列，所以这里的类目来自
+       * **覆盖这条应收的对账单**（`receivable_reconciliations.subject_id`）——
+       * 与应付侧的「条目 > 对账单」同一条链，只是应收少了条目那一级。
+       */
+      const settledDocuments: Array<{ amount: Prisma.Decimal; subjectId: string | null; scope: { customerId: string; orderNo: string | null; currency: string; createdAt: Date } }> = [];
       for (const allocation of allocations ?? []) {
         const amount = this.decimal(allocation.amount, "INVALID_ALLOCATION_AMOUNT");
         await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${allocation.receivable_source_id}::uuid FOR UPDATE`;
@@ -95,12 +103,21 @@ export class CustomerPaymentService {
         if (!["confirmed", "partially_paid"].includes(source.status)) throw this.invalid("RECEIVABLE_SOURCE_NOT_ALLOCATABLE", "应收来源尚未确认或已关闭");
         if (amount.gt(available)) throw this.exceeded("RECEIVABLE_ALLOCATION_EXCEEDED", available);
         total = total.plus(amount);
+        settledDocuments.push({ amount, subjectId: null, scope: { customerId: source.customerId, orderNo: source.orderNo, currency: source.currency, createdAt: source.createdAt } });
         await tx.receivableAllocation.create({ data: { paymentId: id, receivableSourceId: source.id, amount, currency: current.currency, ...this.audit.create(user) } });
       }
+      // 覆盖本次核销应收的对账单（按范围纯函数匹配；一次性查客户与涉及订单两种口径）。
+      const orderNos = [...new Set(settledDocuments.map((row) => row.scope.orderNo).filter((value): value is string => Boolean(value)))];
+      const coverages = await tx.receivableReconciliation.findMany({
+        where: { deletedAt: null, OR: [{ customerId: lockedPayment.customerId }, ...(orderNos.length ? [{ orderNo: { in: orderNos } }] : [])] },
+        select: { id: true, reconciliationNo: true, status: true, customerId: true, orderNo: true, currency: true, periodStart: true, periodEnd: true, subjectId: true },
+        orderBy: { createdAt: "desc" },
+      });
+      for (const row of settledDocuments) row.subjectId = coveringReceivableReconciliation(row.scope, coverages)?.subjectId ?? null;
       if (total.gt(lockedPayment.amount)) throw this.exceeded("PAYMENT_ALLOCATION_EXCEEDED", lockedPayment.amount);
       const payment = await tx.customerPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const allocation of allocations ?? []) await this.receivable.refreshStatus(tx, allocation.receivable_source_id, user);
-      return { payment, customerName: lockedPayment.customer?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
+      return { payment, settledDocuments, customerName: lockedPayment.customer?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
     });
     await this.audit.record("customer_payment.post", "customer_payment", user.id, id, { order_no: result.payment.orderNo, allocation_count: allocations?.length ?? 0 });
     // **销账**：钱真的到了，这条流水才写现金。对方科目取决于「这条应收有没有先挂过账」
@@ -129,6 +146,12 @@ export class CustomerPaymentService {
       subjectNames: settled,
       // 过账时临时选的项目优先；没选就用建单时填在收款单上的项目；都没有则按来源自动归类。
       subjectId: subjectId ?? result.payment.subjectId ?? null,
+      /**
+       * 收支类目（2026-10-13）：覆盖本次核销应收的**对账单**上填的科目（金额最大的那条），
+       * 没有就退回「主营业务收入」候选链。**不参与记账**（主科目才是拿来生成凭证的那个）。
+       */
+      categorySubjectId: dominantDocumentSubject(result.settledDocuments),
+      categorySubjectNames: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
       // 订单号带给流水：外汇一览表按订单归集收款。收款单上的 orderNo 本来就填了，
       // 不带上等于让同一张单上的信息在流水里凭空消失。
       orderNo: result.payment.orderNo,

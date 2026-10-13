@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
+import { HttpException, Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import * as XLSX from "xlsx";
@@ -16,6 +16,13 @@ import { paymentSubjectNames, PAYABLE_CONFIRM_SUBJECT_NAMES, accountingSubjectLa
 import { OTHER_PAYABLE_MAX_ROWS, otherPayableTemplateWorkbook, parseOtherPayableRows, type OtherPayableImportError } from "./other-payable-import";
 
 type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_receipt";
+/**
+ * 一次批量删除最多几条（2026-10-13）。
+ *
+ * 逐条删除是 N 个事务（每条还要回冲它自己的支出流水），不设上限等于让一次请求能锁住整张表；
+ * 200 条远大于"一次录错了一整批"的规模（其他应付导入单次上限也是几百行）。
+ */
+export const OTHER_PAYABLE_BATCH_DELETE_MAX = 200;
 export type PayableEntryInput = { source_type: SourceType; source_id: string; amount?: string; amount_reason?: string; confirmation_date?: string; attachment?: unknown[]; remark?: string };
 /** 上传的文件（只用到这两个字段，避免为了一个导入去依赖 multer 的类型声明）。 */
 type UploadedWorkbook = { buffer?: Buffer; originalname?: string };
@@ -455,6 +462,47 @@ export class SupplierPayableService {
       reason: note,
     });
     return result.row;
+  }
+
+  /**
+   * **批量**删除其他应付（2026-10-13，用户：「确认应付，加一个搜索框，加一个批量删除
+   * （只支持其他应付的删除）」）。
+   *
+   * 为什么**逐条**而不是整批原子：这个按钮的典型场景是"一次录错了一整批"，
+   * 而一大批里偶尔会夹着一条已经被对账单覆盖（后端按边界会拒）。整批回滚会让她先把那条
+   * 摘出去再重来一遍；逐条结果则"能删的删、不能删的**点名**"（`failed` 里带错误码 + 后端那句人话，
+   * 前端原样显示）。每条删除**本身**仍然是原子的：已确认的那条会在同一个事务里回冲它的支出流水
+   * （钱回到账上），失败也不会留下半条。
+   *
+   * ⚠️ 判据只有一份：全部走 `removeOther()`。别在这里另写一遍条件 —— 那就会出现
+   * 「界面说能删、后端却拒」（或者更糟：前端放过了后端本该拦的）。
+   */
+  async batchRemoveOther(ids: readonly string[], reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw this.invalid("DELETION_REASON_REQUIRED", "删除必须填写原因");
+    const unique = [...new Set((ids ?? []).filter(Boolean))];
+    if (!unique.length) throw this.invalid("PAYABLE_BATCH_DELETE_EMPTY", "请先勾选要删除的其他应付");
+    if (unique.length > OTHER_PAYABLE_BATCH_DELETE_MAX) throw this.invalid("PAYABLE_BATCH_DELETE_TOO_MANY", `一次最多删除 ${OTHER_PAYABLE_BATCH_DELETE_MAX} 条其他应付，请分批操作`);
+    // 先把单号查出来：失败的那几条**没有**行可返回（被拒的原因往往就是那一条），
+    // 而界面上必须点名（「AP-20261012-0007：已纳入对账单 AP-…」），只给一个 UUID 等于没说。
+    const known = await this.prisma.supplierPayableEntry.findMany({ where: { id: { in: unique } }, select: { id: true, payableNo: true } });
+    const payableNoById = new Map(known.map((row) => [row.id, row.payableNo]));
+    const deleted: Array<{ id: string; payable_no: string; amount: string; currency: string; was_confirmed: boolean }> = [];
+    const failed: Array<{ id: string; payable_no: string | null; code: string; message: string }> = [];
+    for (const id of unique) {
+      try {
+        const row = await this.removeOther(id, reason, user);
+        // `status` 在被删的这一刻还是原值（删除只软删行、不改状态），所以能如实回报"这条删的时候记过账"：
+        // 界面据此把「删了 3 条（其中 1 条已确认，已回冲那笔支出）」说清楚。
+        deleted.push({ id: row.id, payable_no: row.payableNo, amount: row.amount.toString(), currency: row.currency, was_confirmed: row.status === "confirmed" });
+      } catch (error) {
+        const payload = error instanceof HttpException ? error.getResponse() : null;
+        // 不是业务拒绝（数据库错误等）就照旧抛出去：那种失败不该被伪装成"这一条不能删"。
+        if (!payload || typeof payload !== "object") throw error;
+        const { code, message } = payload as { code?: string; message?: string };
+        failed.push({ id, payable_no: payableNoById.get(id) ?? null, code: code ?? "PAYABLE_DELETE_FAILED", message: message ?? "删除失败" });
+      }
+    }
+    return { deleted, failed, deleted_count: deleted.length, failed_count: failed.length };
   }
 
   async allocationBalance(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {

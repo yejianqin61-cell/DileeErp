@@ -78,6 +78,54 @@ test("不传人工选择时仍按来源候选链归类（回归保护：默认�
   assert.equal(created[0].subjectId, "subject-原材料");
 });
 
+/* --------------------------------------------------------- 收支类目（2026-10-13） */
+
+test("收支类目：单据上写的科目写进 category_subject_id，**不动**主科目（主科目是拿去生成凭证的那个）", async () => {
+  const { service, created } = cashFlowHarness(["主营业务成本"], { "subject-房租费": { id: "subject-房租费", name: "房租费" } });
+  await service.autoCreateFromPayment({ ...payment, categorySubjectId: "subject-房租费", categorySubjectNames: ["管理费用"] }, { id: "user-1" });
+
+  assert.equal(created[0].subjectId, "subject-主营业务成本", "主科目仍按候选链（已挂账的付款在这里会是「应付账款」）");
+  assert.equal(created[0].categorySubjectId, "subject-房租费", "收支类目取单据上的科目");
+});
+
+test("收支类目：单据上的科目**已停用/被删**时安静退回候选链，不让一笔已经发生的付款过不了账", async () => {
+  // 主科目的严格语义（选了不存在就 422）**不适用于**这一格：它来自单据，可能早就停用了。
+  const { service, created } = cashFlowHarness(["主营业务成本", "管理费用"], {});
+  await service.autoCreateFromPayment({ ...payment, categorySubjectId: "subject-已停用", categorySubjectNames: ["管理费用", "其他管理费用"] }, { id: "user-1" });
+
+  assert.equal(created.length, 1, "不能因为一个分类字段就拒绝过账");
+  assert.equal(created[0].categorySubjectId, "subject-管理费用", "退回候选链里第一个存在的");
+  assert.equal(created[0].subjectId, "subject-主营业务成本");
+});
+
+test("收支类目：单据上没填、候选链也不存在 → 留空（不写一个瞎猜的科目，也不报错）", async () => {
+  const { service, created } = cashFlowHarness(["主营业务成本"], {});
+  await service.autoCreateFromPayment({ ...payment, categorySubjectId: null, categorySubjectNames: ["管理费用"] }, { id: "user-1" });
+
+  assert.equal(created[0].categorySubjectId, null, "收支类目为空 = 报表上那一格空着，不是 0、也不是「-」");
+  assert.equal(created[0].subjectId, "subject-主营业务成本", "主科目照旧");
+});
+
+test("收支类目：完全不传这两项时也留空（手工流水与老调用方不受影响）", async () => {
+  const { service, created } = cashFlowHarness(["主营业务成本"]);
+  await service.autoCreateFromPayment(payment, { id: "user-1" });
+  assert.equal(created[0].categorySubjectId, null);
+});
+
+test("domain：收支类目取「金额最大的那条单据所填的科目」；都没填就是 null", () => {
+  const { dominantDocumentSubject } = require("../../dist/modules/finance/cash-flow.domain.js");
+  const row = (amount, subjectId) => ({ amount: new Prisma.Decimal(amount), subjectId });
+
+  // 一笔付款同时核销备用金（3000）与房租（5000）：占钱最多的是房租 → 类目显示房租费。
+  assert.equal(dominantDocumentSubject([row("3000", "subject-备用金"), row("5000", "subject-房租费")]), "subject-房租费");
+  // 金额相同看先出现的那条（结果确定，不随查询计划漂移）。
+  assert.equal(dominantDocumentSubject([row("5000", "subject-甲"), row("5000", "subject-乙")]), "subject-甲");
+  // 没填科目的行不参与比较；全都没填 → null（交给候选链兜底）。
+  assert.equal(dominantDocumentSubject([row("9000", null), row("100", "subject-乙")]), "subject-乙");
+  assert.equal(dominantDocumentSubject([row("9000", null), row("100", null)]), null);
+  assert.equal(dominantDocumentSubject([]), null);
+});
+
 test("同来源已写过流水时不重复创建（幂等）", async () => {  const created = [];
   const prisma = {
     cashFlowEntry: { findFirst: async () => ({ id: "cf-existing" }), create: async ({ data }) => { created.push(data); return data; } },

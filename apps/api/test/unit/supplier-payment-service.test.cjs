@@ -77,7 +77,7 @@ const createDeps = (prisma) => new SupplierPaymentService(prisma, { create: () =
 // 历史缺陷：写死的收支项目 key「外加工费」在字典里不存在（字典里是「外加工费 晋江大田工资」），
 // CashFlowService 当时遇到缺项直接 return null，于是**每一笔供应商付款都被静默丢掉**。
 // 2026-09-17 起候选链给的是会计科目**名称**，缺项仍然显式 422（见 cash-flow-autocreate 测试）。
-function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", subjectId = null, accrued = [] } = {}) {
+function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", subjectId = null, accrued = [], entries = null, coverages = [] } = {}) {
   const cashFlowCalls = [];
   const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId, subjectId, remark: null };
   const prisma = {
@@ -86,9 +86,11 @@ function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋�
       $queryRaw: async () => [],
       supplierPayment: { findFirst: async () => ({ ...payment, status: "draft", supplier: { name: supplierName }, bank }), update: async () => payment },
       supplierPaymentAllocation: { create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+      // 「收支类目」（2026-10-13）：付款过账会去查覆盖本次核销应付的对账单；默认空表。
+      supplierPayableReconciliation: { findMany: async () => coverages },
     }),
   };
-  const payable = { allocationBalance: async () => ({ entry: { id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const payable = { allocationBalance: async (id) => ({ entry: entries?.get(id) ?? { id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; }, autoReverseFromPayment: async () => null };
   // 销账科目取决于「这批应付有没有先挂过账」：`accrued` 给出已挂账的 entry id（默认空 = 历史数据，走老口径）。
   const vouchers = { accruedSourceIds: async () => new Set(accrued) };
@@ -143,8 +145,63 @@ test("供应商付款过账：挂过账的应付销账借「应付账款」（�
   assert.deepEqual(legacy.cashFlowCalls[0].subjectNames, ["主营业务成本", "原材料"], "没挂过账 → 老口径");
 });
 
-test("供应商付款冲销时回冲收支流水（钱没付出去，流水里不能留着）", async () => {
-  const reversed = [];
+/* ------------------------------------------- 收支类目（2026-10-13，用户要的「这笔钱算什么」） */
+
+/** 一条被核销的应付（`settled` 里带上它自己的科目）。 */
+const settledEntry = (overrides = {}) => ({ id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType: "other", subjectId: null, purchaseOrderId: null, confirmationDate: new Date("2026-10-01T00:00:00.000Z"), ...overrides });
+
+test("收支类目：其他应付条目自己填的科目带进流水（备用金不会被写成「管理费用」）", async () => {
+  const fixture = postFixture({
+    sourceType: "other",
+    entries: new Map([["entry-1", settledEntry({ subjectId: "subject-备用金" })]]),
+  });
+
+  await fixture.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+
+  const input = fixture.cashFlowCalls[0];
+  assert.equal(input.categorySubjectId, "subject-备用金", "单据上填过的科目优先");
+  // 主科目仍是「按来源的候选链 / 应付账款」——它要被拿去生成凭证，不能拿类目顶替。
+  // 这一批没挂过账（历史数据）→ 主科目是「其他应付」的候选链，而类目把**到底是哪一笔**说清楚。
+  assert.deepEqual(input.categorySubjectNames, ["管理费用", "其他管理费用"], "单据上没填时才用候选链兜底");
+  assert.deepEqual(input.subjectNames, ["管理费用", "其他管理费用"], "主科目不受影响（本批未挂账）");
+});
+
+test("收支类目：条目没填科目时取**覆盖它的对账单**科目（与应付台账的显示链逐字对齐）", async () => {
+  const coverage = { id: "recon-1", reconciliationNo: "APR-1", status: "resolved", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-10-31T00:00:00.000Z"), subjectId: "subject-房租费" };
+  const fixture = postFixture({ sourceType: "other", entries: new Map([["entry-1", settledEntry()]]), coverages: [coverage] });
+
+  await fixture.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+
+  assert.equal(fixture.cashFlowCalls[0].categorySubjectId, "subject-房租费");
+});
+
+test("收支类目：一笔付款核销多条时取**金额最大**的那条条目的科目", async () => {
+  const fixture = postFixture({
+    sourceType: "other",
+    entries: new Map([
+      ["entry-1", settledEntry({ id: "entry-1", subjectId: "subject-备用金" })],
+      ["entry-2", settledEntry({ id: "entry-2", subjectId: "subject-房租费" })],
+    ]),
+  });
+  // allocationBalance 的替身按 id 返回对应的条目：`payable` 用 entries.get(id)。
+  await fixture.service.post("payment-1", [
+    { payable_entry_id: "entry-1", amount: "100" },
+    { payable_entry_id: "entry-2", amount: "200" },
+  ], { id: "user-1" });
+
+  assert.equal(fixture.cashFlowCalls[0].categorySubjectId, "subject-房租费", "200 > 100 → 房租费");
+});
+
+test("收支类目：都没填科目时留空，让候选链兜底（不在这里瞎猜）", async () => {
+  const fixture = postFixture({ sourceType: "raw_material_inbound", entries: new Map([["entry-1", settledEntry({ sourceType: "raw_material_inbound" })]]) });
+
+  await fixture.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+
+  assert.equal(fixture.cashFlowCalls[0].categorySubjectId, null, "采购应付没有条目科目 → 交给 categorySubjectNames（原材料/主营业务成本）");
+  assert.deepEqual(fixture.cashFlowCalls[0].categorySubjectNames, ["主营业务成本", "原材料"]);
+});
+
+test("供应商付款冲销时回冲收支流水（钱没付出去，流水里不能留着）", async () => {  const reversed = [];
   const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", remark: null, amount: new Prisma.Decimal("300"), allocations: [] };
   const prisma = {
     supplierPayment: { findFirst: async () => payment, update: async () => payment },
@@ -303,6 +360,9 @@ function mergeFixture({ payables, payment = {}, realStatus = false }) {
       findFirst: async ({ where }) => (entries.has(where.id) ? { ...entries.get(where.id) } : null),
       update: async ({ where, data }) => { Object.assign(entries.get(where.id), data); return { ...entries.get(where.id) }; },
     },
+    // 「收支类目」（2026-10-13）：付款过账会去查覆盖本次核销应付的对账单（条目没填科目时取它的）；
+    // 本文件不涉及对账，给空表 —— 于是类目走候选链兜底。
+    supplierPayableReconciliation: { findMany: async () => [] },
   };
   const prisma = {
     supplierPayment: { findFirst: async () => ({ ...draft }) },

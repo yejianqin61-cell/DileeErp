@@ -139,6 +139,12 @@ type ConfirmResult = {
   amounts?: Array<{ currency: string; amount: string }>;
 };
 type DetailKind = "source" | "entry" | "reconciliation";
+/** 批量删除其他应付的逐条结果（后端 `POST /finance/payable-entries/batch-delete`）。 */
+type BatchDeleteResult = {
+  deleted: Array<{ id: string; payable_no: string; amount: string; currency: string; was_confirmed: boolean }>;
+  failed: Array<{ id: string; payable_no: string | null; code: string; message: string }>;
+  deleted_count: number; failed_count: number;
+};
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const day = (value: string | null | undefined) => (value ? value.slice(0, 10) : "-");
@@ -151,6 +157,23 @@ const materialText = (item: { material_name?: string | null; material_code?: str
   return spec ? `${name}（${spec}）` : name;
 };
 const SOURCE_TYPE_LABELS: Record<string, string> = { raw_material_inbound: "原料入库", purchase_receipt: "采购到货", outsource_receipt: "外加工签收", other: "其他应付" };
+
+/**
+ * 这一条**能不能**被批量删除；能就返回空串，不能就返回一句人话（摆到界面上）。
+ *
+ * 三条边界与后端 `removeOther()` **逐条对齐**（后端仍然是唯一判据 —— 它拒了的会出现在
+ * 批量结果里的 `failed`，不是死胡同）：只有其他应付、只有草稿与已确认未付款、未被对账单覆盖。
+ * 原料入库 / 外加工签收形成的应付来自到货事实，录错了要走冲销。
+ *
+ * 放在模块作用域（不在组件里）：它是**纯函数**，放进组件会让 `useMemo` 的依赖数组里多一个
+ * 每次渲染都换身份的函数（漏进依赖就得到一个永远不重算的记忆值）。
+ */
+function deleteLockReason(entry: PayableEntry): string {
+  if (entry.sourceType !== "other") return "不是「其他应付」（原料入库 / 外加工签收形成的应付要冲销）";
+  if (entry.reconciliation) return `已纳入对账单 ${entry.reconciliation.reconciliation_no}（要先删那张对账单）`;
+  if (!["draft", "confirmed"].includes(entry.status)) return "已付款核销（要先冲销那些付款）";
+  return "";
+}
 
 /**
  * 每列的显式宽度（2026-10-09 起 `data-table.tsx` **一律**给 `<table>` 加 `data-table-fixed` →
@@ -294,6 +317,17 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const [importResult, setImportResult] = useState<OtherPayableImportResult | null>(null);
   const [currencyCatalogue, setCurrencyCatalogue] = useState<CurrencyOption[]>([]);
   const [filter, setFilter] = useState("");
+  /**
+   * 「确认应付」面板**自己**的搜索词（用户 2026-10-13：「确认应付，加一个搜索框」）。
+   *
+   * 为什么与页面上那个 `filter` 分开：那个框在流转看板之上、离这张表很远（财务坐在表前面看不见它），
+   * 而且它管三个页签的全部表格。各写各的状态才不会出现「在确认应付里搜了一下，切到应付对账
+   * 发现那张表也被过滤了」——两件事互不打扰。
+   *
+   * 它比 `filter` 多搜两样：**费用说明**（`sourceNoSnapshot`，其他应付的支出说明）与**会计科目**
+   * （`subject_name`）—— 财务找其他应付时说的就是"那笔房租""备用金那几条"。
+   */
+  const [ledgerFilter, setLedgerFilter] = useState("");
   /** 勾选出来待确认的应付条目 id（「确认应付」页的批量确认用）。 */
   const [selected, setSelected] = useState<string[]>([]);
   /**
@@ -580,6 +614,45 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       { name: "reason", label: "删除原因（录错了请写清错在哪）", type: "textarea", required: true },
     ], submit: (v) => submitAction(`/finance/supplier-payable-reconciliations/${item.id}`, { reason: v.reason }, `应付对账单 ${item.reconciliationNo} 已删除`, "delete") });
   }
+  /**
+   * 批量删除其他应付（2026-10-13，用户：「确认应付，加一个搜索框，加一个批量删除
+   * （只支持其他应付的删除）」）。
+   *
+   * 结果**逐条**给（后端返回 `deleted` / `failed`）：能删的删了，不能删的**点名**说原因 ——
+   * 只报「删了 N 条」会让财务以为整批都删干净了。与逐条删除同一条边界，原因同样必填
+   * （删除是唯一一个「记录会从台账上消失」的动作）。
+   */
+  function batchDeleteOtherPayables() {
+    const targets = deletableOtherEntries;
+    const blocked = blockedOtherEntries;
+    const summary = [
+      `将删除 ${targets.length} 条其他应付：${targets.slice(0, 12).map((entry) => `${entry.payableNo}（${entry.sourceNoSnapshot}）`).join("、")}${targets.length > 12 ? ` 等 ${targets.length} 条` : ""}。`,
+      targets.some((entry) => entry.status === "confirmed") ? "其中已确认的那些会同时冲回它们的支出流水（钱回到账上）。" : "",
+      blocked.length ? `另外 ${blocked.length} 条**本次不会删**：${blocked.slice(0, 6).map((entry) => `${entry.payableNo}——${deleteLockReason(entry)}`).join("；")}${blocked.length > 6 ? " 等" : ""}。` : "",
+      "记录与删除原因保留在审计里，不会真的从数据库消失。",
+    ].filter(Boolean).join(" ");
+    setDialog({ title: `批量删除其他应付（${targets.length} 条）`, fields: [
+      { name: "info", label: summary, type: "info" as const },
+      { name: "reason", label: "删除原因（录错了请写清错在哪）", type: "textarea", required: true },
+    ], submit: async (v) => {
+      try {
+        const result = await apiPost<BatchDeleteResult>("/finance/payable-entries/batch-delete", { ids: targets.map((entry) => entry.id), reason: v.reason });
+        const data = result.data;
+        const reversed = data.deleted.filter((row) => row.was_confirmed).length;
+        notifySuccess(`已删除 ${data.deleted_count} 条其他应付${reversed ? `（其中 ${reversed} 条已确认，已回冲支出流水）` : ""}`);
+        // 没删掉的那几条必须点名（后端给的原因就是它拒的那句话），否则等于静默少删。
+        if (data.failed.length) notifyError(`${data.failed.length} 条没删掉：${data.failed.slice(0, 6).map((row) => `${row.payable_no ?? "（单号未知）"}——${row.message}`).join("；")}${data.failed.length > 6 ? " 等" : ""}`);
+        setDialog(null);
+        setSelected([]);
+        await load();
+      } catch (cause) {
+        const message = messageOf(cause, "批量删除失败");
+        notifyError(message);
+        // 抛出去：弹窗保持打开并显示原因（原因没填、后端拒绝等），不用重新勾一遍
+        throw new Error(message);
+      }
+    } });
+  }
 
   /**
    * 打开付款单队列：先按勾选的应付条目向后端要一份预填（可能是一队多张）。
@@ -817,12 +890,18 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     item.flow?.order_nos.join("、"), item.flow?.purchase_order_nos.join("、"),
     item.purchaseOrder?.purchaseOrderNo, item.flow?.material_names.join("、"),
   ])), [reconciliations, match]);
-  // 「确认应付」页的取数：关键字 + 确认日期区间 → 付款分档计数 → 当前付款情况。
-  // 计数用「日期与关键字已经筛过、但付款情况还没筛」的那一批：筛选器上的
+  // 「确认应付」页的取数：关键字 + 确认日期区间 + **面板自己的搜索** → 付款分档计数 → 当前付款情况。
+  // 计数用「日期、关键字与面板搜索都已经筛过、但付款情况还没筛」的那一批：筛选器上的
   // 「未付（3）/ 已付（5）」才是当前条件下的真实条数（否则切到「已付」会看到另一个口径）。
+  const ledgerMatch = useCallback((entry: PayableEntry) => {
+    const text = ledgerFilter.trim().toLowerCase();
+    if (!text) return true;
+    return [entry.payableNo, entry.orderNo, entry.purchase_order_no, entry.supplier_name, entry.material_name, entry.sourceNoSnapshot, entry.subject_name, entry.subject?.name]
+      .some((value) => (value ?? "").toLowerCase().includes(text));
+  }, [ledgerFilter]);
   const scopedEntries = useMemo(
-    () => filteredEntries.filter((item) => withinDateRange(item.confirmationDate, dateFrom, dateTo)),
-    [filteredEntries, dateFrom, dateTo],
+    () => filteredEntries.filter((item) => withinDateRange(item.confirmationDate, dateFrom, dateTo) && ledgerMatch(item)),
+    [filteredEntries, dateFrom, dateTo, ledgerMatch],
   );
   const paymentTally = useMemo(() => paymentCounts(scopedEntries), [scopedEntries]);
   const ledgerEntries = useMemo(
@@ -851,6 +930,15 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const selectedDrafts = useMemo(() => ledgerEntries.filter((entry) => isDraft(entry) && selected.includes(entry.id)), [ledgerEntries, selected]);
   const selectedSettleable = useMemo(() => ledgerEntries.filter((entry) => isSettleable(entry) && selected.includes(entry.id)), [ledgerEntries, selected]);
   const mergeRows = useMemo(() => selectedSettleable.map(mergePayableOf), [selectedSettleable]);
+  /**
+   * 批量删除（2026-10-13）：勾选里的「其他应付」与其中**真的能删**的那些。
+   *
+   * 只把可删的条数写在按钮上（`批量删除其他应付（2 条）`），其余在弹窗里点名说清为什么不能删 ——
+   * 一个点了必然报错的按钮比不摆更糟，而"勾了 5 条却只删了 2 条"如果不说明，财务会以为删干净了。
+   */
+  const selectedOtherEntries = useMemo(() => ledgerEntries.filter((entry) => selected.includes(entry.id) && entry.sourceType === "other"), [ledgerEntries, selected]);
+  const deletableOtherEntries = useMemo(() => selectedOtherEntries.filter((entry) => !deleteLockReason(entry)), [selectedOtherEntries]);
+  const blockedOtherEntries = useMemo(() => selectedOtherEntries.filter((entry) => deleteLockReason(entry)), [selectedOtherEntries]);
   /**
    * 「合并付款」这一批的锚点（第一条被选中的可核销应付）：它决定整批的供应商与币种 ——
    * 一张付款单只能对一个供应商、一个币种（后端 `supplier-payment.service.ts:96` 会以
@@ -1256,6 +1344,13 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
         {/* 付款情况默认「未付」＝草稿 + 已确认（挂账，钱还没付）+ 部分付款：待办清单要能看到它们；
             只有已付清（核销走完）才切到「已付」或「全部」。 */}
         <div className="filter-bar">
+          {/* 这一张表**自己的**搜索框（用户 2026-10-13：「确认应付，加一个搜索框」）：
+              页面顶部那个框在流转看板之上、离这张表很远，而且它管三个页签；
+              这个只管「确认应付」，并且能搜**费用说明**与**会计科目**（财务找其他应付时
+              说的就是"那笔房租""备用金那几条"）。 */}
+          <label>搜索
+            <Input data-testid="payable-ledger-search" value={ledgerFilter} onChange={(event) => setLedgerFilter(event.target.value)} placeholder="应付单号 / 订单号 / 供应商 / 物料 / 费用说明 / 会计科目" />
+          </label>
           <label>付款情况
             <Select value={payment} onValueChange={(value) => setPayment(value as LedgerPaymentFilter)}>
               <SelectTrigger data-testid="payable-payment-filter"><SelectValue /></SelectTrigger>
@@ -1280,6 +1375,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
               所以这条按钮现在出的是**一次拿全的队列**，而不是「跨供应商直接报错」。 */}
           <Button size="sm" variant="secondary" data-testid="payable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openPaymentSlip(selectedDrafts.map((draft) => draft.id))}>集中付款单（{selectedDrafts.length} 条）</Button>
           <Button size="sm" data-testid="payable-batch-confirm" disabled={!selectedDrafts.length} onClick={() => batchConfirm()}>批量确认（{selectedDrafts.length} 条）</Button>
+          {/* 批量删除（2026-10-13）：**只支持其他应付**，所以条数只数可删的那些；
+              不能删的（非其他应付 / 已对账 / 已付款核销）在弹窗里逐条点名。 */}
+          <Button size="sm" variant="secondary" data-testid="payable-batch-delete" disabled={!deletableOtherEntries.length} onClick={batchDeleteOtherPayables}>批量删除其他应付（{deletableOtherEntries.length} 条）</Button>
+          {blockedOtherEntries.length ? <span className="panel-note" data-testid="payable-batch-delete-blocked">另有 {blockedOtherEntries.length} 条其他应付本次不能删（已对账 / 已付款核销），弹窗里会逐条说明</span> : null}
           {/* 合并付款（2026-10-08，用户确认）：与上面两条**不是一回事** —— 它真的建付款单并过账核销，
               动应付状态、未核销余额与银行流水。只对同一供应商 + 同一币种开放（不同供应商/币种的行会被
               上面的勾选框锁掉并写明原因，后端 :96 也会拒）。 */}

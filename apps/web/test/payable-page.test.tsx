@@ -1475,3 +1475,102 @@ describe("应付管理：一个搜索框管本页所有表", () => {
     expect(screen.queryAllByTestId("data-table-row")).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 确认应付：自己的搜索框 + 批量删除（2026-10-13）
+//
+// 用户：「财务，确认应付，加一个搜索框，加一个批量删除（只支持其他应付的删除）」。
+// 搜索框要**就在这张表上方**（页面顶部那个在流转看板之上、离表很远），而且能按
+// 费用说明与会计科目搜；批量删除只数「其他应付」里真的能删的那些，不能删的在弹窗里点名。
+// ---------------------------------------------------------------------------
+
+describe("应付管理：确认应付自己的搜索框与批量删除", () => {
+  /** 一条其他应付（可删的那一类）。 */
+  const otherEntry = (extra: Record<string, unknown> = {}) => ({
+    ...draftEntry, id: "entry-o1", payableNo: "APO-001", sourceType: "other",
+    sourceNoSnapshot: "其他应付-备用金", material_name: null, ...extra,
+  });
+  const coveredReconciliation = { id: "recon-9", reconciliation_no: "APREC-009", status: "matched", period_start: "2026-09-01T00:00:00.000Z", period_end: "2026-09-30T00:00:00.000Z" };
+  const ledger = () => within(screen.getByTestId("payable-entries"));
+
+  it("确认应付面板里有一个搜索框：按费用说明筛，且只影响这一张表", async () => {
+    stubPayable({ entries: [otherEntry(), { ...draftEntry, id: "entry-1", payableNo: "AP-001" }] });
+    await openPayable("reconciliations");
+
+    // 就在这张表上方（页面顶部那个是另一个框，两个都在）
+    expect(await screen.findByTestId("payable-ledger-search")).toBeInTheDocument();
+    expect(screen.getByTestId("payable-search")).toBeInTheDocument();
+
+    setValue("payable-ledger-search", "备用金");
+
+    await waitFor(() => expect(ledger().getAllByTestId("data-table-row")).toHaveLength(1));
+    expect(ledger().getByText("APO-001")).toBeVisible();
+    expect(ledger().queryByText("AP-001")).toBeNull();
+  });
+
+  it("搜索按**会计科目**也能搜（财务找其他应付时说的就是「房租那几条」）", async () => {
+    const rentSubject = { id: "sub-rent", category: "成本类", name: "房租费", balanceDirection: "借", sortOrder: 20, isActive: true };
+    stubPayable({ entries: [otherEntry({ payableNo: "APO-RENT", subjectId: "sub-rent", subject: rentSubject, subject_name: "成本类 / 房租费" }), otherEntry({ id: "entry-o2", payableNo: "APO-BACK" })] });
+    await openPayable("reconciliations");
+
+    setValue("payable-ledger-search", "房租");
+
+    await waitFor(() => expect(ledger().getAllByTestId("data-table-row")).toHaveLength(1));
+    expect(ledger().getByText("APO-RENT")).toBeVisible();
+  });
+
+  it("批量删除：按钮只数**可删的**其他应付；不能删的（已对账 / 非其他应付）在弹窗里点名", async () => {
+    const calls = stubPayable({
+      entries: [otherEntry(), otherEntry({ id: "entry-o2", payableNo: "APO-002", reconciliation: coveredReconciliation }), { ...draftEntry, id: "entry-1", payableNo: "AP-001" }],
+    }, (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/batch-delete")
+      ? apiOk({ deleted: [{ id: "entry-o1", payable_no: "APO-001", amount: "500.0000", currency: "CNY", was_confirmed: false }], failed: [], deleted_count: 1, failed_count: 0 })
+      : undefined));
+    await openPayable("reconciliations");
+
+    // 全选：三条都能勾（都是草稿），但只有一条「其他应付 + 未对账」可删
+    fireEvent.click(ledger().getAllByRole("checkbox")[0]);
+    await waitFor(() => expect(screen.getByTestId("payable-batch-delete").textContent).toContain("（1 条）"));
+    expect(screen.getByTestId("payable-batch-delete-blocked").textContent).toContain("另有 1 条");
+
+    fireEvent.click(screen.getByTestId("payable-batch-delete"));
+    const dialog = await screen.findByTestId("action-dialog");
+    // 弹窗里说清哪几条不删、为什么（只报"删了 N 条"会让财务以为整批都删干净了）
+    expect(dialog.textContent).toContain("将删除 1 条其他应付");
+    expect(dialog.textContent).toContain("另外 1 条");
+    expect(dialog.textContent).toContain("APREC-009");
+
+    fireEvent.change(within(dialog).getByTestId("action-field-reason"), { target: { value: "整批录错，供应商也不对" } });
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/batch-delete")).toHaveLength(1));
+    // 请求里只有**可删的那条**：不能删的不该被发出去让后端一条条拒
+    expect(bodyOf(postsTo(calls, "/finance/payable-entries/batch-delete")[0])).toEqual({ ids: ["entry-o1"], reason: "整批录错，供应商也不对" });
+    await expectToast("已删除 1 条其他应付");
+  });
+
+  it("批量删除：后端逐条结果里没删掉的那几条，前端点名到单号与原因", async () => {
+    const calls = stubPayable({ entries: [otherEntry()] }, (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/batch-delete")
+      ? apiOk({ deleted: [], failed: [{ id: "entry-o1", payable_no: "APO-001", code: "SUPPLIER_PAYABLE_IN_RECONCILIATION", message: "该应付已纳入对账单 APREC-009，请先在「应付对账」里删除那张对账单，再删除这条应付" }], deleted_count: 0, failed_count: 1 })
+      : undefined));
+    await openPayable("reconciliations");
+
+    fireEvent.click(ledger().getAllByRole("checkbox")[0]);
+    fireEvent.click(await screen.findByTestId("payable-batch-delete"));
+    const dialog = await screen.findByTestId("action-dialog");
+    fireEvent.change(within(dialog).getByTestId("action-field-reason"), { target: { value: "录错了" } });
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/batch-delete")).toHaveLength(1));
+    await expectToast("1 条没删掉");
+    await expectToast("APO-001");
+  });
+
+  it("批量删除：勾选里没有可删的其他应付时按钮是灰的（不摆一个点了必然报错的按钮）", async () => {
+    stubPayable({ entries: [{ ...draftEntry, id: "entry-1", payableNo: "AP-001", sourceType: "raw_material_inbound" }] });
+    await openPayable("reconciliations");
+
+    fireEvent.click(ledger().getAllByRole("checkbox")[0]);
+
+    await waitFor(() => expect((screen.getByTestId("payable-batch-delete") as HTMLButtonElement).disabled).toBe(true));
+  });
+});

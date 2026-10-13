@@ -2040,7 +2040,18 @@ model CashFlowEntry {
   exchangeRate        Decimal?        @map("exchange_rate") @db.Decimal(18, 6)
   localAmount         Decimal?        @map("local_amount") @db.Decimal(18, 4)
   /// 会计科目（分类 + 项目）。2026-09-17 之前这里是「收支项目」字典项，用户要求两者合并成一个。
+  ///
+  /// ⚠️ 这是**销账那条现金分录的对方科目**：已挂账的付款是「应付账款」、收款是「应收账款」。
+  /// 它同时是从这条流水生成凭证时凭证上的对方科目 —— 所以不要拿它去装"这笔钱算什么"。
   subjectId           String          @map("subject_id") @db.Uuid
+  /// 收支类目（2026-10-13）：**这笔钱算什么** —— 取本次核销单据上写的科目
+  /// （应付：条目 > 覆盖它的对账单；应收：覆盖它的应收对账单），单据上没有就按来源类型的候选链
+  /// （采购 → 原材料/主营业务成本、收款 → 主营业务收入）。手工流水留空（主科目就是它的类目）。
+  ///
+  /// 为什么与 `subjectId` 分两列而不是改后者：已挂账的付款，从流水生成凭证要用「应付账款」；
+  /// 拿类目去当对方科目会把成本重复记一次（挂账那一步已经借过），而账面上看不出来。
+  /// 可空 + `SetNull`：它是展示用的业务分类，不是记账依据，删科目不该被它挡住。
+  categorySubjectId   String?         @map("category_subject_id") @db.Uuid
   settlementMethod    String?         @map("settlement_method") @db.VarChar(50)
   settlementAccountId String?         @map("settlement_account_id") @db.Uuid
   /// 资金实际所在的**银行账户**（银行账户池 banks）。与 settlementAccountId（老表结算方式字典）是两回事：
@@ -2075,12 +2086,15 @@ model CashFlowEntry {
   deletedAt           DateTime?       @map("deleted_at")
   deletedBy           String?         @map("deleted_by") @db.Uuid
   subject             AccountingSubject @relation(fields: [subjectId], references: [id])
+  /// 收支类目（见上面 `categorySubjectId`）。可空 + SET NULL（刻意不是 RESTRICT）。
+  categorySubject     AccountingSubject? @relation("CashFlowCategorySubject", fields: [categorySubjectId], references: [id], onDelete: SetNull)
   settlementAccount   DictionaryItem? @relation("CashFlowAccount", fields: [settlementAccountId], references: [id])
   bank                Bank?           @relation(fields: [bankId], references: [id])
   voucherLines        VoucherLine[]
 
   @@index([entryDate, currency])
   @@index([subjectId, direction])
+  @@index([categorySubjectId])
   @@index([currency, status])
   @@index([bankId, status])
   /// 外汇一览表按订单号归集收款（定金流水没有来源可挂，只能按订单号找）。
@@ -2119,6 +2133,8 @@ model AccountingSubject {
   deletedAt        DateTime? @map("deleted_at")
   deletedBy        String?   @map("deleted_by") @db.Uuid
   cashFlowEntries               CashFlowEntry[]
+  /// 被用作「收支类目」的流水（2026-10-13）。与上面那条是一对**具名**关系，不能合并。
+  cashFlowCategoryEntries       CashFlowEntry[] @relation("CashFlowCategorySubject")
   customerPayments              CustomerPayment[]
   supplierPayments              SupplierPayment[]
   /// 应付条目上的科目：目前只有「其他应付」在建单/导入时手选（见 `SupplierPayableEntry.subjectId`）。

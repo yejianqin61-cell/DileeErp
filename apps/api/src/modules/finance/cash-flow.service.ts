@@ -322,6 +322,19 @@ export class CashFlowService {
        * 没给则退回 `subjectNames` 候选链（按来源自动归类）。
        */
       subjectId?: string | null;
+      /**
+       * **收支类目**（2026-10-13）：这笔钱算什么 —— 来源单据上写的科目（可选）。
+       *
+       * 与 `subjectId` 的区别是刻意的：`subjectId` 是**销账那条现金分录的对方科目**（已挂账的付款就是
+       * 「应付账款」），要被拿去生成凭证；这个只是给报表回答"这笔钱花在什么上"，
+       * 存在另一个列里（`cash_flow_entries.category_subject_id`），**不参与任何记账**。
+       *
+       * 语义也刻意更宽松：它来自单据、可能早已停用/被删 —— 认不出就**安静地退回候选链**，
+       * 绝不让一笔已经发生的付款因为一个分类字段过不了账。
+       */
+      categorySubjectId?: string | null;
+      /** 收支类目的候选链（单据上没填时用它兜底，如采购 → 原材料/主营业务成本）。 */
+      categorySubjectNames?: readonly string[];
       /** 款项性质（定金/货款/尾款/其他）。收付款单据上通常没有这个信息，留给调用方按需传。 */
       paymentNature?: string | null;
       /** 订单号：让这笔流水能按订单归集（外汇一览表用）。 */
@@ -337,19 +350,16 @@ export class CashFlowService {
     if (existing) return null;
     const paymentNature = this.requirePaymentNature(input.paymentNature);
     const subject = input.subjectId
-      ? await this.prisma.accountingSubject.findFirst({
-          where: { id: input.subjectId, deletedAt: null, isActive: true },
-          select: { id: true, name: true },
-        })
+      ? await this.activeSubjectById(input.subjectId)
       : await this.firstCandidateSubject(input.subjectNames);
-    if (!subject) {
-      throw this.invalid(
-        "ACCOUNTING_SUBJECT_NOT_FOUND",
-        input.subjectId
-          ? "选择的会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认后重新过账"
-          : `自动写入收支流水需要会计科目「${input.subjectNames.join("」或「")}」，请在「收支管理 → 会计科目」里补上后重新过账`,
-      );
+    if (input.subjectId && !subject) {
+      throw this.invalid("ACCOUNTING_SUBJECT_NOT_FOUND", "选择的会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认后重新过账");
     }
+    if (!subject) {
+      throw this.invalid("ACCOUNTING_SUBJECT_NOT_FOUND", `自动写入收支流水需要会计科目「${input.subjectNames.join("」或「")}」，请在「收支管理 → 会计科目」里补上后重新过账`);
+    }
+    // 收支类目（宽松：单据上的科目停用/被删就退回候选链），见上面 `categorySubjectId` 的注释。
+    const categorySubject = (await this.activeSubjectById(input.categorySubjectId)) ?? await this.firstCandidateSubject(input.categorySubjectNames ?? []);
     const settlementAccountId = input.settlementAccountId ?? await this.matchSettlementAccount(input.settlementAccountHint);
     const row = await this.prisma.cashFlowEntry.create({
       data: {
@@ -360,6 +370,7 @@ export class CashFlowService {
         amount: input.amount,
         currency: input.currency,
         subjectId: subject.id,
+        categorySubjectId: categorySubject?.id ?? null,
         settlementMethod: input.settlementMethod ?? undefined,
         settlementAccountId,
         bankId: input.bankId ?? undefined,
@@ -443,8 +454,7 @@ export class CashFlowService {
           ? "选择的会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认后重新确认"
           : `自动写入收支流水需要会计科目「${input.subjectNames.join("」或「")}」，请在「收支管理 → 会计科目」里补上后重新确认`,
       );
-    }
-    const remark = `自动生成：${input.sourceType} / ${input.documentNo}${input.remark ? ` - ${input.remark}` : ""}`;
+    }    const remark = `自动生成：${input.sourceType} / ${input.documentNo}${input.remark ? ` - ${input.remark}` : ""}`;
     const existing = await this.prisma.cashFlowEntry.findFirst({
       where: { sourceType: input.sourceType, sourceId: input.sourceId, status: "posted", deletedAt: null },
       select: { id: true, amount: true },
@@ -504,6 +514,20 @@ export class CashFlowService {
       select: { id: true, name: true },
     });
     return subjectNames.map((name) => candidates.find((candidate) => candidate.name === name)).find((found) => Boolean(found)) ?? null;
+  }
+
+  /**
+   * 按 id 取**存在且启用**的科目。
+   *
+   * 两条语义共用这一个查询：主科目（`subjectId`）拿它做**严格**判断（取不到就 422 —— 人工选的
+   * 科目不能被静默换掉），收支类目（`categorySubjectId`）拿它做**宽松**判断（取不到就退回候选链）。
+   */
+  private async activeSubjectById(id: string | null | undefined) {
+    if (!id) return null;
+    return this.prisma.accountingSubject.findFirst({
+      where: { id, deletedAt: null, isActive: true },
+      select: { id: true, name: true },
+    });
   }
 
   /**

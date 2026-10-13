@@ -747,3 +747,105 @@ test("其他应付删除：供应商不存在这条时 404；别家的对账单�
   await service.removeOther("entry-other", "录错了", { id: "user-1" });
   assert.equal(updates.length, 1, "别家供应商的对账单不该挡住这条的删除");
 });
+
+// ---------------------------------------------------------------------------
+// 批量删除其他应付（2026-10-13，用户：「确认应付，加一个搜索框，加一个批量删除
+// （只支持其他应付的删除）」）。
+//
+// 与逐条删除共用同一个 `removeOther()`（判据只有一份），差别只在**结果形状**：
+// 逐条返回，能删的删、不能删的点名 —— 一批里夹着一条已对账的是常态，整批回滚会让她
+// 先把那条摘出去再重来一遍。
+// ---------------------------------------------------------------------------
+
+/** 批量删除的替身：多条条目、逐条事务、可看到写入了哪些。 */
+function batchRemoveHarness({ entries = [] } = {}) {
+  const byId = new Map(entries.map((row) => [row.id, row]));
+  const updates = [];
+  const events = [];
+  const tx = {
+    $queryRaw: async () => [],
+    supplierPayableEntry: {
+      findFirst: async ({ where }) => byId.get(where.id) ?? null,
+      update: async ({ where, data }) => { updates.push({ id: where.id, data }); return { ...byId.get(where.id), ...data }; },
+    },
+    supplierPayableReconciliation: { findMany: async () => [] },
+  };
+  const prisma = {
+    // 批量删除会先把单号查出来：失败的条目没有行可返回，而界面上必须点名。
+    supplierPayableEntry: { findMany: async ({ where }) => where.id.in.filter((id) => byId.has(id)).map((id) => ({ id, payableNo: byId.get(id).payableNo })) },
+    $transaction: async (fn) => fn(tx),
+  };
+  const audit = {
+    softDelete: () => ({ deletedAt: new Date("2026-10-13T00:00:00.000Z"), deletedBy: "user-1", updatedBy: "user-1" }),
+    update: () => ({ updatedBy: "user-1" }),
+    record: async (action, entityType, actorId, entityId, details) => { events.push({ action, entityType, actorId, entityId, details }); },
+  };
+  return { service: new SupplierPayableService(prisma, audit, cashFlowStub({ reverseSourceFlowInTransaction: async () => [] })), updates, events };
+}
+
+test("批量删除：能删的删、不能删的**点名**（原料入库形成的应付走冲销，不是删除）", async () => {
+  const { service, updates, events } = batchRemoveHarness({ entries: [
+    otherDraft({ id: "entry-a", payableNo: "APO-A" }),
+    otherDraft({ id: "entry-b", payableNo: "APO-B", status: "confirmed" }),
+    otherDraft({ id: "entry-c", payableNo: "APO-C", sourceType: "raw_material_inbound" }),
+  ] });
+
+  const result = await service.batchRemoveOther(["entry-a", "entry-b", "entry-c"], "整批录错，供应商也不对", { id: "user-1" });
+
+  assert.deepEqual(result.deleted.map((row) => row.payable_no), ["APO-A", "APO-B"]);
+  assert.equal(result.deleted_count, 2);
+  assert.equal(result.failed_count, 1);
+  assert.equal(result.failed[0].payable_no, "APO-C", "失败的那条也要点名（只给 UUID 等于没说）");
+  assert.equal(result.failed[0].code, "SUPPLIER_PAYABLE_NOT_OTHER");
+  assert.match(result.failed[0].message, /只有「其他应付」可以删除/);
+  assert.equal(result.deleted[1].was_confirmed, true, "已确认的那条要标出来（它同时回冲了支出流水）");
+  assert.equal(result.deleted[0].was_confirmed, false);
+  assert.equal(updates.length, 2, "被拒的那条一个字都没写");
+  assert.equal(events.filter((event) => event.action === "supplier_payable.delete_other").length, 2, "每条成功的删除各留一条审计");
+});
+
+test("批量删除：原因必填（与逐条删除同一条边界），一条都不删", async () => {
+  const { service, updates } = batchRemoveHarness({ entries: [otherDraft({ id: "entry-a" })] });
+  await assert.rejects(
+    () => service.batchRemoveOther(["entry-a"], "   ", { id: "user-1" }),
+    (error) => error.getResponse().code === "DELETION_REASON_REQUIRED" && /原因/.test(error.getResponse().message),
+  );
+  assert.equal(updates.length, 0);
+});
+
+test("批量删除：空勾选与超上限各自报错（超上限逐条事务会锁表）", async () => {
+  const { service } = batchRemoveHarness({ entries: [] });
+  await assert.rejects(() => service.batchRemoveOther([], "录错了", { id: "user-1" }), (error) => error.getResponse().code === "PAYABLE_BATCH_DELETE_EMPTY");
+  const tooMany = Array.from({ length: 201 }, (_, index) => `entry-${index}`);
+  await assert.rejects(
+    () => service.batchRemoveOther(tooMany, "录错了", { id: "user-1" }),
+    (error) => error.getResponse().code === "PAYABLE_BATCH_DELETE_TOO_MANY" && /200/.test(error.getResponse().message),
+  );
+});
+
+test("批量删除：同一个 id 传两次只删一次（去重后再逐条走）", async () => {
+  const { service, updates } = batchRemoveHarness({ entries: [otherDraft({ id: "entry-a" })] });
+  const result = await service.batchRemoveOther(["entry-a", "entry-a"], "重复录入", { id: "user-1" });
+  assert.equal(result.deleted_count, 1);
+  assert.equal(result.failed_count, 0);
+  assert.equal(updates.length, 1);
+});
+
+test("批量删除：已纳入对账单的那些被拒时把单号与原因一起回报（前端照原样点名）", async () => {
+  const scope = { id: "recon-1", reconciliationNo: "APREC-9", status: "matched", supplierId: "supplier-1", currency: "CNY", orderNo: null, purchaseOrderId: null, periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-09-30T00:00:00.000Z") };
+  const { service } = batchRemoveHarness({ entries: [otherDraft({ id: "entry-a", payableNo: "APO-A" })] });
+  // 覆盖判定与单条删除共用 `coveringPayableReconciliation`：这里让对账单的范围命中它。
+  service["prisma"].$transaction = async (fn) => fn({
+    $queryRaw: async () => [],
+    supplierPayableEntry: { findFirst: async () => otherDraft({ id: "entry-a", payableNo: "APO-A" }), update: async () => otherDraft({ id: "entry-a" }) },
+    supplierPayableReconciliation: { findMany: async () => [scope] },
+  });
+
+  const result = await service.batchRemoveOther(["entry-a"], "录错了", { id: "user-1" });
+
+  assert.equal(result.deleted_count, 0);
+  assert.equal(result.failed_count, 1);
+  assert.equal(result.failed[0].payable_no, "APO-A");
+  assert.equal(result.failed[0].code, "SUPPLIER_PAYABLE_IN_RECONCILIATION");
+  assert.match(result.failed[0].message, /APREC-9/);
+});

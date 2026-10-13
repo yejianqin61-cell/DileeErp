@@ -126,13 +126,17 @@ function cashDetailTable() {
       { header: "日期", num_fmt: null, align: null },
       { header: "对方名称", num_fmt: null, align: null },
       { header: "币种", num_fmt: null, align: null },
+      { header: "分类", num_fmt: null, align: null },
+      { header: "项目", num_fmt: null, align: null },
+      // 收支类目（2026-10-13）：这笔钱算什么（来源单据上的科目）。
+      { header: "收支类目", num_fmt: null, align: null },
       { header: "收入", num_fmt: "0.####", align: null },
       { header: "支出", num_fmt: "0.####", align: null },
       { header: "结算方式", num_fmt: null, align: null },
     ],
     rows: [
-      ["2026-09-14", "兴田", "人民币", 0, 2900, "转账--农业银行5706"],
-      ["2026-09-14", "中谷ZG", "美元", 1000, 0, "转账--中国银行（美元）7624"],
+      ["2026-09-14", "兴田", "人民币", "负债类", "应付账款", "房租费", 0, 2900, "转账--农业银行5706"],
+      ["2026-09-14", "中谷ZG", "美元", "损益类", "主营业务收入", "", 1000, 0, "转账--中国银行（美元）7624"],
     ],
     total_columns: [],
     totals: null,
@@ -660,6 +664,22 @@ describe("财务报表 · 三期：收支明细表与收支汇总表", () => {
     expect(within(first).getByText("2900")).toBeInTheDocument();
     expect(within(first).getAllByText("0").length).toBe(1);
     expect(screen.getByRole("columnheader", { name: "结算方式" })).toBeInTheDocument();
+  });
+
+  it("收支明细表：「收支类目」列由后端下发、前端照渲染（列名不是前端写死的）", async () => {
+    // 用户 2026-10-13：「也要显示收支类目……导出的 excel 也要显示相应的 column」。
+    // 这一页的列**由后端 `ReportTable.columns` 决定**（见 finance-report-workspace 的 columns useMemo），
+    // 所以后端插一列、页面自动跟着有；这里钉住"下发了就渲染得出来"。
+    captureDownloads();
+    stubReports();
+    await open(<FinanceReportWorkspace tab="cash-flow-detail" />, "page-finance-reports");
+    const table = await screen.findByTestId("data-table");
+
+    expect(screen.getByRole("columnheader", { name: "收支类目" })).toBeInTheDocument();
+    // 第一行：现金分录的对方科目（应付账款）与「这笔钱算什么」（房租费）各占一列，不互相顶替
+    const first = within(table).getAllByTestId("data-table-row")[0];
+    expect(within(first).getByText("应付账款")).toBeInTheDocument();
+    expect(within(first).getByText("房租费")).toBeInTheDocument();
   });
 
   it("收支汇总表：按币种分行渲染，并显示「不跨币种相加」的说明；不出现跨币种合计", async () => {

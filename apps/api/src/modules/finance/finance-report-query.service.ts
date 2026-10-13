@@ -917,6 +917,9 @@ export class FinanceReportQueryService {
       // 所以这两列一定有值；仍然写成 `?? null` 是为了兼容「科目被硬删」这种库层不该发生的情形。
       category: row.subject?.category ?? null,
       subjectName: row.subject?.name ?? null,
+      // 收支类目（2026-10-13）：来源单据上写的科目（其他应付的条目 / 覆盖它的对账单），
+      // 或按来源的归类（采购 → 原材料）。手工流水没有这一格 → 空单元格（见列定义注释）。
+      categorySubjectName: row.categorySubject?.name ?? null,
       // 银行账户（银行账户池）优先；历史流水没落 bank_id 时回落到老表结算账户字典的标签。
       bankLabel: row.bank ? `${row.bank.bankName}${row.bank.accountNumber}` : null,
       settlementMethod: row.settlementMethod,
@@ -990,7 +993,7 @@ export class FinanceReportQueryService {
       },
       // 科目（分类 + 名称）与结算账户标签一次带上：汇总表只读科目，但只为一个 select 分两条查询路径不值得
       // （两条路径的筛选条件一旦分叉，就是「明细与汇总对不上」的来源）。
-      include: { settlementAccount: { select: { label: true } }, subject: { select: { category: true, name: true } }, bank: { select: { bankName: true, accountNumber: true } } },
+      include: { settlementAccount: { select: { label: true } }, subject: { select: { category: true, name: true } }, categorySubject: { select: { name: true } }, bank: { select: { bankName: true, accountNumber: true } } },
       orderBy: [{ entryDate: "asc" }, { createdAt: "asc" }],
     });
   }

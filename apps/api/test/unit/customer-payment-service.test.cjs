@@ -161,6 +161,8 @@ test("收款过账：到账银行带给收支流水，且结算方式按老表�
       $queryRaw: async () => [],
       customerPayment: { findFirst: async () => ({ ...payment, status: "draft", customer: { name: "晋江大田" }, bank }), update: async () => payment },
       receivableAllocation: { count: async () => 0, create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+      // 「收支类目」（2026-10-13）：收款过账会去查覆盖本次核销应收的对账单；本文件不涉及它，给空表。
+      receivableReconciliation: { findMany: async () => [] },
     }),
   };
   const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
@@ -191,6 +193,8 @@ test("收款过账：没挂过账的应收（历史数据）仍按老口径贷�
       $queryRaw: async () => [],
       customerPayment: { findFirst: async () => ({ ...payment, status: "draft", customer: { name: "晋江大田" }, bank: null }), update: async () => payment },
       receivableAllocation: { count: async () => 0, create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+      // 「收支类目」（2026-10-13）：收款过账会去查覆盖本次核销应收的对账单；本文件不涉及它，给空表。
+      receivableReconciliation: { findMany: async () => [] },
     }),
   };
   const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
@@ -219,6 +223,8 @@ test("收款过账：过账时选的科目优先，其次用建单时存在收�
       $queryRaw: async () => [],
       customerPayment: { findFirst: async () => ({ ...payment, status: "draft", customer: { name: "晋江大田" }, bank: null }), update: async () => payment },
       receivableAllocation: { count: async () => 0, create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+      // 「收支类目」（2026-10-13）：收款过账会去查覆盖本次核销应收的对账单；本文件不涉及它，给空表。
+      receivableReconciliation: { findMany: async () => [] },
     }),
   };
   const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
@@ -228,4 +234,30 @@ test("收款过账：过账时选的科目优先，其次用建单时存在收�
   await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" }, "subject-at-post");
   assert.equal(cashFlowCalls[0].subjectId, "subject-from-draft", "过账没选科目时要用建单时填在收款单上的科目，表单里填过的不能丢");
   assert.equal(cashFlowCalls[1].subjectId, "subject-at-post", "过账时临时选的科目优先");
+});
+
+// 收支类目（2026-10-13，用户：「其他应付其他应收也要带上会计科目」）。
+// 应收来源上**没有**科目列，所以这一格取自**覆盖这条应收的应收对账单** ——
+// 与应付侧的「条目 > 对账单」同一条链，只是应收少了条目那一级。
+test("收支类目：收款过账把覆盖这条应收的应收对账科目带给流水（其他应收也带上会计科目）", async () => {
+  const cashFlowCalls = [];
+  const payment = { id: "payment-1", paymentNo: "PAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("100"), currency: "CNY", paymentDate: new Date("2026-10-05T00:00:00.000Z"), paymentMethod: "转账", payerName: null, customerId: "customer-1", bankId: null, subjectId: null, remark: null };
+  const coverage = { id: "recon-1", reconciliationNo: "ARR-1", status: "resolved", customerId: "customer-1", orderNo: null, currency: "CNY", periodStart: new Date("2026-09-01T00:00:00.000Z"), periodEnd: new Date("2026-10-31T00:00:00.000Z"), subjectId: "subject-其他应收款" };
+  const prisma = {
+    customerPayment: { findFirst: async () => ({ ...payment, status: "draft" }) },
+    $transaction: async (fn) => fn({
+      $queryRaw: async () => [],
+      customerPayment: { findFirst: async () => ({ ...payment, status: "draft", customer: { name: "晋江大田" }, bank: null }), update: async () => payment },
+      receivableAllocation: { count: async () => 0, create: async ({ data }) => ({ id: "alloc-1", ...data }) },
+      receivableReconciliation: { findMany: async () => [coverage] },
+    }),
+  };
+  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", orderNo: "SO-1", currency: "CNY", status: "confirmed", createdAt: new Date("2026-10-01T00:00:00.000Z") }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } }, undefined, { accruedSourceIds: async () => new Set(["source-1"]) });
+
+  await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" });
+
+  assert.equal(cashFlowCalls[0].categorySubjectId, "subject-其他应收款", "覆盖它的对账单上填的科目");
+  assert.deepEqual(cashFlowCalls[0].categorySubjectNames, ["主营业务收入", "营业外收入"], "没有对账单时按收款候选链兜底");
+  assert.deepEqual(cashFlowCalls[0].subjectNames, ["应收账款"], "主科目不受影响（挂过账 → 贷应收账款）");
 });

@@ -7,7 +7,9 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { requireActiveBank } from "./bank-selection";
 import { paymentSubjectNames } from "./accounting-subject-catalog";
+import { dominantDocumentSubject } from "./cash-flow.domain";
 import { CashFlowService } from "./cash-flow.service";
+import { coveringPayableReconciliation } from "./supplier-payable.domain";
 import { SOURCE_PAYABLE, VoucherService } from "./voucher.service";
 import { SupplierPayableService } from "./supplier-payable.service";
 
@@ -89,6 +91,18 @@ export class SupplierPaymentService {
       // 按来源类型累计本次付款的金额：一笔付款可能同时核销采购、外加工与其他应付，
       // 会计科目按**金额最大**的那类来源选定（其余来源在备注里体现）。
       const sourceAmounts = new Map<string, Prisma.Decimal>();
+      /**
+       * 「收支类目」的取数（2026-10-13）：每条被核销的单据**自己填的科目**（没有则取覆盖它的对账单科目）。
+       *
+       * 与应付台账的显示链（条目 > 覆盖它的对账单 > 按来源的候选链）**逐字对齐** ——
+       * 报表上写着「房租费」而台账写着「管理费用」这种事，只有财务对账时才会发现。
+       */
+      const settledDocuments: Array<{ amount: Prisma.Decimal; subjectId: string | null }> = [];
+      // 覆盖本次核销条目的对账单（一次查全，循环里按范围纯函数匹配）。
+      const coverages = await tx.supplierPayableReconciliation.findMany({
+        where: { deletedAt: null, supplierId: lockedPayment.supplierId },
+        select: { id: true, reconciliationNo: true, status: true, supplierId: true, currency: true, orderNo: true, purchaseOrderId: true, periodStart: true, periodEnd: true, subjectId: true },
+      });
       for (const item of items) {
         const amount = this.decimal(item.amount, "INVALID_ALLOCATION_AMOUNT");
         await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${item.payable_entry_id}::uuid FOR UPDATE`;
@@ -98,12 +112,16 @@ export class SupplierPaymentService {
         if (amount.gt(balance.available)) throw new UnprocessableEntityException({ code: "PAYABLE_ALLOCATION_EXCEEDED", message: "核销金额超过应付未核销余额", details: [{ available_amount: balance.available.toString() }] });
         total = total.plus(amount);
         sourceAmounts.set(balance.entry.sourceType, (sourceAmounts.get(balance.entry.sourceType) ?? new Prisma.Decimal(0)).plus(amount));
+        settledDocuments.push({
+          amount,
+          subjectId: balance.entry.subjectId ?? coveringPayableReconciliation(balance.entry, coverages)?.subjectId ?? null,
+        });
         await tx.supplierPaymentAllocation.create({ data: { paymentId: id, payableEntryId: balance.entry.id, orderNo: balance.entry.orderNo, amount, currency: lockedPayment.currency, remark: item.remark, ...this.audit.create(user) } });
       }
       if (total.gt(lockedPayment.amount)) throw new UnprocessableEntityException({ code: "PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过付款金额", details: [{ available_amount: lockedPayment.amount.minus(total).toString() }] });
       const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const item of items) await this.payable.refreshStatus(tx, item.payable_entry_id, user);
-      return { payment, sourceAmounts, supplierName: lockedPayment.supplier?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
+      return { payment, sourceAmounts, settledDocuments, supplierName: lockedPayment.supplier?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
     });
     await this.audit.record("supplier_payment.post", "supplier_payment", user.id, id, { order_no: result.payment.orderNo, allocation_count: items.length });
     // 过账即写收支流水：项目按本次付款金额最大的应付来源选定（采购 / 外加工 / 其他），
@@ -132,6 +150,13 @@ export class SupplierPaymentService {
       subjectNames: settled,
       // 过账时临时选的项目优先；没选就用建单时填在付款单上的项目；都没有则按来源自动归类。
       subjectId: subjectId ?? result.payment.subjectId ?? null,
+      /**
+       * 收支类目（2026-10-13）：本次核销**单据**上写的科目（金额最大的那条），
+       * 单据上都没填才退回按来源类型的候选链 —— 见设计文档 §1.2。
+       * 注意它**不参与记账**：主科目才是拿来生成凭证的那个（已挂账的付款必须是「应付账款」）。
+       */
+      categorySubjectId: dominantDocumentSubject(result.settledDocuments),
+      categorySubjectNames: paymentSubjectNames(dominant),
       remark: result.payment.remark ?? undefined,
     }, user);
     return result.payment;

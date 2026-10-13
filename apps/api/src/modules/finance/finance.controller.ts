@@ -148,6 +148,17 @@ class BatchConfirmDto {
 }
 
 /**
+ * 批量删除其他应付（2026-10-13）。
+ *
+ * `reason` 必填：删除是唯一一个「记录会从台账上消失」的动作（软删 + 审计），
+ * 与逐条删除同一条边界（`DELETION_REASON_REQUIRED`）。条数上限在服务层（逐条事务，不设上限会锁表）。
+ */
+class BatchDeleteDto {
+  @IsArray() @ArrayNotEmpty() @IsUUID(undefined, { each: true }) ids!: string[];
+  @IsString() @MaxLength(1000) reason!: string;
+}
+
+/**
  * 台账导出的筛选条件（确认应收 / 确认应付共用）。
  *
  * `payment` 是「付款情况 / 收款情况」：unpaid=未付未收（草稿 + 已确认 + 部分付款：钱都还没付清）、
@@ -251,6 +262,18 @@ export class FinanceController {
   @Get("payable-entries/:id") async getPayableEntry(@Param("id") id: string) { return { data: await this.payable.get(id), meta: {} }; }
   @Post("payable-entries/other") async createOtherPayableEntry(@Body() body: SupplierOtherPayableDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.createOther(body, user), meta: {} }; }
   @Post("payable-entries/batch-confirm") async batchConfirmPayableEntries(@Body() body: BatchConfirmDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.batchConfirm(body.ids, user, body), meta: {} }; }
+
+  /**
+   * 批量删除其他应付（2026-10-13，用户：「确认应付，加一个搜索框，加一个批量删除
+   * （只支持其他应付的删除）」）。
+   *
+   * 返回**逐条结果**（`deleted` / `failed`）而不是一个总数：一批里往往有一条已经被对账单覆盖，
+   * 前端要把「哪几条没删、为什么」原样点到名。逐条边界与 `DELETE payable-entries/:id` 完全一致
+   * （只有其他应付、只有草稿与已确认未付款、已被对账单覆盖的拒绝）。
+   */
+  @Post("payable-entries/batch-delete") async batchDeleteOtherPayableEntries(@Body() body: BatchDeleteDto, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.payable.batchRemoveOther(body.ids, body.reason, user), meta: {} };
+  }
 
   /**
    * 应付台账导出 xlsx（「确认应付」页的导出）。
