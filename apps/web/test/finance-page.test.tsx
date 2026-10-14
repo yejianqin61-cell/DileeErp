@@ -1239,6 +1239,43 @@ describe("凭证管理：从收支流水生成凭证", () => {
     expect(screen.getByTestId("voucher-sheet")).toBeInTheDocument();
   });
 
+  /**
+   * 导出记账凭证 Excel（2026-10-13，用户：「财务模块，记账凭证中，摘要也要一并导出」）。
+   *
+   * 前缀断言**只到接线为止**：文件内容（一行一条分录、摘要/科目/借贷列）在后端
+   * `voucher-workbook.test.cjs` 里逐格钉住 —— 前端要做对的只有"点哪个按钮、打哪个地址"。
+   */
+  it("导出 Excel：打 /finance/vouchers/export.xlsx 并触发下载（后端一行一条分录、带摘要）", async () => {
+    const downloads: Array<{ download: string; href: string }> = [];
+    Object.assign(URL, { createObjectURL: vi.fn(() => "blob:http://localhost/vouchers"), revokeObjectURL: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ download: this.getAttribute("download") ?? "", href: this.getAttribute("href") ?? "" });
+    });
+    try {
+      const calls = stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher()] }, voucherDetail);
+      await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+
+      fireEvent.click(screen.getByTestId("voucher-export"));
+
+      await waitFor(() => expect(callsTo(calls, "/api/v1/finance/vouchers/export.xlsx")).toHaveLength(1));
+      await waitFor(() => expect(downloads).toHaveLength(1));
+      // 文件名优先取后端 Content-Disposition 里的那个（含生成时间与行数）
+      expect(downloads[0].download).toContain("记账凭证");
+      await waitFor(() => expect(screen.getByTestId("toast-item")).toHaveTextContent("已导出 1 张记账凭证"));
+    } finally {
+      click.mockRestore();
+      Reflect.deleteProperty(URL, "createObjectURL");
+      Reflect.deleteProperty(URL, "revokeObjectURL");
+    }
+  });
+
+  it("一张凭证都没有时「导出 Excel」是灰的（不导一个空文件出来）", async () => {
+    stubFinance({ cashFlowEntries: [], vouchers: [] });
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+
+    expect(screen.getByTestId("voucher-export")).toBeDisabled();
+  });
+
   it("红冲必须填原因：不填本地就拦住（不发请求），填了才提交", async () => {    const calls = stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher({ status: "posted" })] }, voucherDetail);
     await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
     fireEvent.click(panel("记账凭证").getByRole("button", { name: "红冲" }));

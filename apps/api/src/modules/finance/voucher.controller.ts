@@ -1,12 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
 import { IsArray, IsIn, IsOptional, IsString, MaxLength, ValidateNested } from "class-validator";
 import { Type } from "class-transformer";
+import type { Response } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
-import { VoucherService } from "./voucher.service";
+import { sendWorkbook } from "./finance-report-workbook";
+import { VoucherService, SOURCE_VOUCHER } from "./voucher.service";
+import { buildVoucherExportTable, type VoucherExportSource } from "./voucher-workbook";
 
 class VoucherLineDto {
   @IsIn(["debit", "credit"]) direction!: string;
@@ -60,6 +63,39 @@ export class VoucherController {
   @Get()
   async list(@Query() query: VoucherListDto) {
     return { data: await this.vouchers.list(query), meta: {} };
+  }
+
+  /**
+   * 记账凭证导出 xlsx（2026-10-13，用户：「记账凭证中，摘要也要一并导出」）。
+   *
+   * **一行一条分录**（摘要与会计科目都在分录行上，凭证头只有一个总摘要），列定义见
+   * `voucher-workbook.ts`。筛选与列表接口同一个 DTO（`period` / `status`），
+   * 所以"导出的就是当前筛出来的"这条口径在这里同样成立。
+   *
+   * ⚠️ 路由名 `export.xlsx` 是**单段**路径，必须声明在 `@Get(":id")` **之前** ——
+   * 排在后面会被 `:id` 当成一个凭证 id 吃掉（同 finance.controller.ts 里 import-template 的教训）。
+   * 不额外加 `@RequireAdministrator()`：它与列表（同一份数据、同一道 finance 门）权限一致，
+   * 导出比看到多不了一层保护 —— 真正的边界是模块权限（类级 `@RequireModules("finance")`）。
+   */
+  @Get("export.xlsx")
+  async exportXlsx(@Query() query: VoucherListDto, @Res() response: Response) {
+    const rows = await this.vouchers.list(query);
+    const table = buildVoucherExportTable(rows.map((row): VoucherExportSource => ({
+      voucherNo: row.voucherNo,
+      voucherDate: row.voucherDate,
+      period: row.period,
+      statusLabel: row.status_label,
+      status: row.status,
+      // 来源与列表列同一句文案（凭证纸上也这么写）：收支流水号 / 红冲 / 手工。
+      sourceLabel: row.source_entry
+        ? `收支流水 ${row.source_entry.entryNo}`
+        : row.sourceType === SOURCE_VOUCHER ? `红冲凭证 ${row.sourceId ?? ""}`.trim() : "手工",
+      summary: row.summary,
+      currency: row.currency,
+      remark: row.remark,
+      lines: row.lines.map((line) => ({ lineNo: line.lineNo, summary: line.summary, subjectLabel: line.subjectLabel, direction: line.direction, amount: line.amount })),
+    })));
+    return sendWorkbook(response, table, "记账凭证");
   }
 
   /**

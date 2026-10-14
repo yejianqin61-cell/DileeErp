@@ -27,7 +27,10 @@ const bomWithOneItem = {
 
 function stubBomsPage() {
   return stubApi((url, call) => {
-    if (url === EP.salesOrders) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
+    // 按**前缀**匹配：这一页取的是 `/sales-orders?status=confirmed&page=1&page_size=200`
+    // （2026-10-13 修：原来取的是不带状态、默认 20 张的 `/sales-orders`，再在页面上过滤已确认 ——
+    // 订单一多那一页就空了，连「新建BOM表」按钮都看不到）。
+    if (url.startsWith(EP.salesOrders)) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
     if (url === EP.boms) return apiOk([{ id: "bom-1", salesOrderId: "so-1", orderNo: "SO-1", status: "draft" }]);
     if (url === EP.materials && call.method === "POST") return apiOk({ id: "m-9", materialCode: "M-009", name: "伞骨", specificationModel: "60cm", color: "银色", defaultUnitId: "u-1", materialType: "raw_material", isActive: true });
     if (url === EP.materials) return apiOk([{ id: "m-1", materialCode: "M-001", name: "面料A", defaultUnitId: "u-1", materialType: "raw_material", isActive: true }]);
@@ -80,7 +83,7 @@ describe("采购 → BOM表：新建物料按钮真的能用", () => {
 
   it("物料建失败时弹窗保持打开、不动 BOM 行、也不发出保存请求", async () => {
     const calls = stubApi((url, call) => {
-      if (url === EP.salesOrders) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
+      if (url.startsWith(EP.salesOrders)) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
       if (url === EP.boms) return apiOk([{ id: "bom-1", salesOrderId: "so-1", orderNo: "SO-1", status: "draft" }]);
       if (url === EP.materials && call.method === "POST") return apiErr(409, "MATERIAL_DUPLICATE", "同名同规格同颜色的物料已存在");
       if (url === EP.materials) return apiOk([{ id: "m-1", materialCode: "M-001", name: "面料A", defaultUnitId: "u-1", materialType: "raw_material", isActive: true }]);
@@ -103,5 +106,45 @@ describe("采购 → BOM表：新建物料按钮真的能用", () => {
     expect(screen.getByDisplayValue("面料A")).toBeVisible();
     // BOM 行没被改动，也没有任何 BOM 写请求
     expect(callsTo(calls, "/boms/bom-1/items")).toEqual([]);
+  });
+});
+
+/**
+ * 用户 2026-10-13：「采购模块，BOM表，没有新建 BOM 表的地方。只要有销售单事实的单子，
+ * 就要允许也在采购中创建保存编辑 BOM 表。」
+ *
+ * 根因是**取数**：这一页原来取 `/sales-orders`（不带状态、默认只取最近 20 张）再在页面上
+ * 按「已确认」过滤 —— 订单一多 / 最近动过的单恰好都是草稿，整页就空（连按钮都没有），
+ * 更早的已确认单也永远轮不到。现在与生产页一致：服务端按已确认筛、一次 200 张。
+ */
+describe("采购 → BOM表：已确认销售单列全（2026-10-13）", () => {
+  it("按 status=confirmed&page_size=200 取销售单，不再「最近 20 张里挑已确认的」", async () => {
+    const calls = stubBomsPage();
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+
+    // `callsTo` 是**后缀**匹配，而这条请求带查询串 —— 这里按前缀自己筛。
+    const salesOrderCalls = calls.filter((call) => call.url.startsWith("/api/v1/sales-orders"));
+    expect(salesOrderCalls).toHaveLength(1);
+    expect(salesOrderCalls[0].url).toContain("status=confirmed");
+    expect(salesOrderCalls[0].url).toContain("page_size=200");
+    // 服务端给的每一张单都有入口（不是被前端再筛一遍）
+    expect(await screen.findByRole("button", { name: "编辑BOM表" })).toBeVisible();
+  });
+
+  it("一张已确认单都没有时，说清「还有 N 张草稿没确认」而不是只写一句「暂无」", async () => {
+    stubApi((url, call) => {
+      if (url.startsWith(`${EP.salesOrders}?status=draft`)) return Response.json({ data: [], meta: { total: 7 } });
+      if (url.startsWith(EP.salesOrders)) return apiOk([]);
+      if (url === EP.boms) return apiOk([]);
+      if (url === EP.materials) return apiOk([]);
+      if (url === EP.units) return apiOk([]);
+      return apiOk([]);
+    });
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+
+    expect(await screen.findByText(/还有 7 张销售单是草稿/)).toBeVisible();
+    expect(screen.getByText(/请先到【销售】确认/)).toBeVisible();
   });
 });

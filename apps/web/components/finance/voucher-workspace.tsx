@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiRequest, apiPost } from "../../lib/api-client";
 import { ACCOUNTING_SUBJECTS_PATH, type AccountingSubject } from "../../lib/accounting-subjects";
+import { downloadFile } from "../../lib/download";
 import { exportVoucherPng } from "../../lib/voucher-image";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { money } from "./record-detail-dialog";
@@ -78,6 +79,8 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   const [sheet, setSheet] = useState<Voucher | null>(null);
   const [sheetLoading, setSheetLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  /** 记「导出 Excel」自己的忙碌态：与导出 PNG 分开，否则一个在跑时另一个也点不动。 */
+  const [exportingXlsx, setExportingXlsx] = useState(false);
   const [filter, setFilter] = useState("");
   const [generated, setGenerated] = useState<"all" | "pending" | "done">("all");
   const [busy, setBusy] = useState("");
@@ -220,6 +223,26 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   }
 
   /**
+   * 导出记账凭证 Excel（2026-10-13，用户：「记账凭证中，摘要也要一并导出」）。
+   *
+   * 一行一条**分录**、带摘要与会计科目（后端 `voucher-workbook.ts` 的列定义）——
+   * 摘要与科目都在分录行上，一张凭证一行的话这两列就看不见了。
+   * 文件名优先用后端给的（`迪礼ERP-记账凭证-<时间戳>-<行数>行.xlsx`），
+   * 兜底名只在该响应头缺失时用得上。
+   */
+  async function exportXlsx() {
+    setExportingXlsx(true);
+    try {
+      await downloadFile("/api/v1/finance/vouchers/export.xlsx", "迪礼ERP-记账凭证.xlsx");
+      notifySuccess(`已导出 ${vouchers.length} 张记账凭证`);
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : "导出失败");
+    } finally {
+      setExportingXlsx(false);
+    }
+  }
+
+  /**
    * 打开分录编辑器（草稿专用）。
    *
    * 原来是「ActionDialog + 每行一个文本框科目」：不能增删行、不能改方向、科目只能手打。
@@ -335,6 +358,9 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       {/* 手工新增凭证（2026-09-24）：折旧 / 摊销 / 工资计提 / 结转成本这类**非现金分录**没有收支流水可挂，
           所以凭证不能只从流水生成 —— 没有这条路，三大报表的固定资产/累计折旧/应付职工薪酬等行永远填不上。 */}
       <Button data-testid="voucher-create" onClick={() => setCreating(true)}>新建凭证</Button>
+      {/* 导出记账凭证（2026-10-13）：一行一条分录、带摘要；与列表同一份数据，
+          所以"看到的就是导出的"（后端 export.xlsx 用同一个 DTO 筛）。 */}
+      <Button variant="secondary" data-testid="voucher-export" disabled={exportingXlsx || !vouchers.length} onClick={() => void exportXlsx()}>{exportingXlsx ? "导出中…" : "导出 Excel"}</Button>
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
     </PageHeader>
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
