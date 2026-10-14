@@ -24,6 +24,44 @@ type Operation = { id: string; operationName: string; defaultUnitId?: string | n
 type Order = { id?: string; orderNo: string; quantity: string; unit?: string; status: string; boms: Array<{ id: string; version: number; status: string }> };
 type ProductionOrder = AuditRow & { id: string; productionOrderNo: string; orderNo: string; executionMode: "in_house" | "outsourced"; status: string; plannedQuantity: string; executionLocation: Location; operations: Array<{ id: string; operationCatalogId?: string; sequenceNo?: number; operationNameSnapshot: string; targetQuantity: string; status: string }> };
 
+/**
+ * 「BOM表」列表（本页 179 行的**手写** `<table className="data-table">`）的列宽，总和恰好 100%。
+ *
+ * 手写表拿不到 DataTable 的 `meta`，所以照 globals.css 里 `.table-bounded` 那段注释的三件事办：
+ * ①表上加 `table-bounded`（= 拿到固定布局）；②每列显式给宽度（fixed 布局下没给宽度的列会被均分）；
+ * ③长文本格自己写 `cell-ellipsis` + `title`（手写表没有 DataTable 那套自动 title）。
+ * 三个数的来历：订单号 45% 是唯一的自由文本列（销售单号），给它绝对多数，长单号也只省略尾部；
+ * 数量 20% 装「数量 + 单位」拼串；BOM表 35% 装「新建/编辑BOM表」按钮（约 96px）——
+ * 按钮列必须有宽度，否则固定布局下它会和文本列一样宽，窄屏时按钮被裁掉。
+ */
+const BOM_COLUMN_WIDTH = { orderNo: "45%", quantity: "20%", bom: "35%" } as const;
+
+/**
+ * 「生产单查找」表（10 列）的声明宽度，**总和 85%**：剩下 15% 留给 `auditColumns()` 产出的
+ * 「创建人 / 最后修改人」两列 —— 工厂列不给宽度、用法也不改（`lib/audit-columns-coverage.test.mjs`
+ * 有守卫盯着），浏览器把那 15% 均分给它们，约 7.5% 一列（与物料清单页给审计列的 8% 同量级）。
+ *
+ * 每个数字的来历（估算基准：1366 屏内容宽 1034px）：
+ *   - 生产单号 13%（=134px）：装「生产单号」链接按钮，单号本体约 16 字符 ≈ 120px；
+ *   - 工序 20%（=207px）：`operations.map(item => item.operationNameSnapshot).join("、")`（145 行）
+ *     是全表最长的自由文本，工序一多就是长串。固定布局下它只能在自己的 20% 里省略 + hover 看全文，
+ *     把宽度给它，别的列才不会被它挤窄 —— 这正是 Phase B 要解决的比例问题；
+ *   - 订单号 10% / 地点 9%：编号与名称型文本，够一屏显示；
+ *   - 执行方式 7% / 计划数 7% / 状态 8%：短列（厂内·外加工 / 数字 / 状态词），按 4%~8% 取上沿；
+ *   - 操作 11%（=114px）：这一列同时最多渲染 1 个按钮（仅 draft 给「启动」，148 行），
+ *     1×44px 远小于 114px，留余量避免按钮折行。
+ */
+const ORDER_COLUMN_WIDTH = {
+  productionOrderNo: "13%",
+  orderNo: "10%",
+  mode: "7%",
+  location: "9%",
+  plannedQuantity: "7%",
+  operations: "20%",
+  status: "8%",
+  actions: "11%",
+} as const;
+
 export default function ProductionPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -137,15 +175,17 @@ export default function ProductionPage() {
   }
 
   const columns: ColumnDef<ProductionOrder>[] = [
-    { accessorKey: "productionOrderNo", header: "生产单号", cell: ({ row }) => <Button variant="link" onClick={() => router.push(`/production/orders/${row.original.id}`)}>{row.original.productionOrderNo}</Button> },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "mode", header: "执行方式", cell: ({ row }) => row.original.executionMode === "in_house" ? "厂内" : "外加工" },
-    { id: "location", header: "地点", cell: ({ row }) => row.original.executionLocation?.name ?? "-" },
-    { accessorKey: "plannedQuantity", header: "计划数" },
-    { id: "operations", header: "工序", cell: ({ row }) => row.original.operations.map((item) => item.operationNameSnapshot).join("、") || "未配置" },
-    { accessorKey: "status", header: "状态", cell: statusCell<ProductionOrder>() },
+    { accessorKey: "productionOrderNo", header: "生产单号", meta: { width: ORDER_COLUMN_WIDTH.productionOrderNo }, cell: ({ row }) => <Button variant="link" onClick={() => router.push(`/production/orders/${row.original.id}`)}>{row.original.productionOrderNo}</Button> },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: ORDER_COLUMN_WIDTH.orderNo } },
+    { id: "mode", header: "执行方式", meta: { width: ORDER_COLUMN_WIDTH.mode }, cell: ({ row }) => row.original.executionMode === "in_house" ? "厂内" : "外加工" },
+    { id: "location", header: "地点", meta: { width: ORDER_COLUMN_WIDTH.location }, cell: ({ row }) => row.original.executionLocation?.name ?? "-" },
+    { accessorKey: "plannedQuantity", header: "计划数", meta: { width: ORDER_COLUMN_WIDTH.plannedQuantity } },
+    // 「工序」是 `id` + 自定义 `cell`（没有 accessor 可回退）：省略号能出现，但 DataTable 只能从
+    // **渲染结果**取 title —— 这里返回的就是字符串，所以 hover 拿得到全文，不必自写 title。
+    { id: "operations", header: "工序", meta: { width: ORDER_COLUMN_WIDTH.operations }, cell: ({ row }) => row.original.operations.map((item) => item.operationNameSnapshot).join("、") || "未配置" },
+    { accessorKey: "status", header: "状态", meta: { width: ORDER_COLUMN_WIDTH.status }, cell: statusCell<ProductionOrder>() },
     ...auditColumns<ProductionOrder>(),
-    { id: "actions", header: "操作", cell: ({ row }) => row.original.status === "draft" ? <Button size="sm" variant="secondary" onClick={() => void run(`/production/orders/${row.original.id}/transition`, { target: "in_progress", reason: "开始生产" }, "生产单已启动")}>启动</Button> : null },
+    { id: "actions", header: "操作", meta: { width: ORDER_COLUMN_WIDTH.actions }, cell: ({ row }) => row.original.status === "draft" ? <Button size="sm" variant="secondary" onClick={() => void run(`/production/orders/${row.original.id}/transition`, { target: "in_progress", reason: "开始生产" }, "生产单已启动")}>启动</Button> : null },
   ];
 
   // 基础资料加载完成前禁止打开建单对话框：openProductionOrder() 用当时的 activeLocations 构造选项，
@@ -176,7 +216,7 @@ export default function ProductionPage() {
     {error ? <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section> : loading ? <LoadingState /> : <>
       <section className="panel" data-testid="production-bom-panel"><div className="panel-heading"><h2>BOM表</h2></div><div className="panel-body">
         <p className="panel-note">BOM 由采购与生产共同维护，两个入口改的是同一张表。保存时会校验版本：若采购已先改过，会提示你重新加载，而不是把对方的修改覆盖掉。</p>
-        {!orders.length ? <EmptyState title="暂无已确认销售单" description="建立并确认销售单后，即可在这里为其建立 BOM 表。" /> : <div className="table-wrap"><table className="data-table"><thead><tr><th>订单号</th><th>数量</th><th>BOM表</th></tr></thead><tbody>{orders.map((order) => { const bom = latestBom(order.boms); return <tr key={order.orderNo}><td>{order.orderNo}</td><td>{order.quantity}{order.unit ? ` ${order.unit}` : ""}</td><td><Button size="sm" variant="secondary" data-testid={`production-bom-${order.orderNo}`} onClick={() => void createOrOpenBom(order)}>{bom ? "编辑BOM表" : "新建BOM表"}</Button></td></tr>; })}</tbody></table></div>}
+        {!orders.length ? <EmptyState title="暂无已确认销售单" description="建立并确认销售单后，即可在这里为其建立 BOM 表。" /> : <div className="table-wrap"><table className="data-table table-bounded"><thead><tr><th style={{ width: BOM_COLUMN_WIDTH.orderNo }}>订单号</th><th style={{ width: BOM_COLUMN_WIDTH.quantity }}>数量</th><th style={{ width: BOM_COLUMN_WIDTH.bom }}>BOM表</th></tr></thead><tbody>{orders.map((order) => { const bom = latestBom(order.boms); return <tr key={order.orderNo}><td className="cell-ellipsis" title={order.orderNo}>{order.orderNo}</td><td className="cell-ellipsis" title={`${order.quantity}${order.unit ? ` ${order.unit}` : ""}`}>{order.quantity}{order.unit ? ` ${order.unit}` : ""}</td><td><Button size="sm" variant="secondary" data-testid={`production-bom-${order.orderNo}`} onClick={() => void createOrOpenBom(order)}>{bom ? "编辑BOM表" : "新建BOM表"}</Button></td></tr>; })}</tbody></table></div>}
       </div></section>
       <section className="panel"><div className="panel-heading"><h2>生产单查找</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索生产单、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label></div><div data-testid="production-order-table"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无生产单" />} /></div></div></section>
       <section className="panel"><div className="panel-heading"><h2>生产基础资料</h2></div><div className="panel-body"><div className="page-actions"><Button asChild variant="secondary"><Link href="/production/operations" data-testid="production-add-operation">工序池（{operations.filter((item) => item.isActive).length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/locations" data-testid="production-add-location">加工地点池（{activeLocations.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/units">单位池（{units.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/material-issues">领料/补料单（按工序）</Link></Button></div></div></section>

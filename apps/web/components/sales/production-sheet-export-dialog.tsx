@@ -95,11 +95,22 @@ export default function ProductionSheetExportDialog({ orderId, orderNo, candidat
           （一排几张，每张下面写着它属于哪一格），导出后可在 Excel 里自行拖拽到材料行旁边。不勾任何一张就是普通工艺单。
         </p>
         <div className="table-wrap">
-          <table className="ui-table">
-            <thead><tr><th>导出图片</th><th>材料栏位 / 物料</th><th>预览</th></tr></thead>
+          {/*
+            手写表：`.table-bounded` 拿到固定布局，列宽总和 100%：导出图片 18% / 材料栏位·物料 62% / 预览 20%。
+            「材料栏位 / 物料」是唯一的长文本列（`candidateLabel` 把栏位名与物料名拼起来），给它大头；
+            预览列放 56px 缩略图，20% 在 1366 屏约 200px，绰绰有余；勾选列只要放得下「导出」两个字 + 复选框。
+            表头/单元格的 `ui-table-head` / `ui-table-cell` 是补的 —— 原来一个类都没有，
+            `.table-bounded` 的省略规则挂在这两个类上（见 globals.css）。
+          */}
+          <table className="ui-table table-bounded">
+            <thead><tr>
+              <th className="ui-table-head cell-ellipsis" style={{ width: "18%" }} title="导出图片">导出图片</th>
+              <th className="ui-table-head cell-ellipsis" style={{ width: "62%" }} title="材料栏位 / 物料">材料栏位 / 物料</th>
+              <th className="ui-table-head cell-ellipsis" style={{ width: "20%" }} title="预览">预览</th>
+            </tr></thead>
             <tbody>
               {selectable.map((candidate) => <tr key={candidate.spec_key} data-testid={`production-sheet-image-row-${candidate.spec_key}`}>
-                <td>
+                <td className="ui-table-cell">
                   <label>
                     <input
                       type="checkbox"
@@ -110,8 +121,8 @@ export default function ProductionSheetExportDialog({ orderId, orderNo, candidat
                     />{" "}导出
                   </label>
                 </td>
-                <td>{candidateLabel(candidate)}</td>
-                <td><MaterialThumb materialId={candidate.material_id} version={candidate.image_version} alt={candidateLabel(candidate)} size={56} /></td>
+                <td className="ui-table-cell cell-ellipsis" title={candidateLabel(candidate)}>{candidateLabel(candidate)}</td>
+                <td className="ui-table-cell"><MaterialThumb materialId={candidate.material_id} version={candidate.image_version} alt={candidateLabel(candidate)} size={56} /></td>
               </tr>)}
             </tbody>
           </table>

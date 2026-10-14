@@ -94,6 +94,63 @@ const SOURCE_LABELS: Record<string, string> = {
   supplier_payable_reconciliation: "应付对账确认",
 };
 
+/**
+ * 收支流水列表的列宽（用户 2026-09-20 第 6 条：「表单可以固定 column 宽度，超过的就省略显示，
+ * 鼠标 hover 的时候再展示。保证一次性展示全部 column」）。
+ *
+ * 2026-10-09 起 `DataTable` 一律给 `<table>` 加 `data-table-fixed`（`table-layout: fixed`）：
+ * 没写宽度的列由浏览器**均分**，那对 16 列的收支流水就是「金额列和状态列一样宽」。
+ * 这里按每一列实际要放什么重新配平。两种口径同时存在：
+ *   - 本表在页面里（`.finance-page`），`app/globals.css` 那三条把它放回**自动布局 + 换行**，
+ *     所以下面的百分比是**建议宽度**：金额与客户名换行也要看得全，不会被省略号吃掉；
+ *   - 一旦这个列数组被搬进弹窗 / Sheet（走 Portal，够不到 `.finance-page`），这些数字就是**硬约束**，
+ *     超长部分靠 DataTable 默认的 `cell-ellipsis` + 原生 `title` 悬停看全文。
+ *
+ * 数字的来历（1366 屏整表可用宽度约 1376px，1% ≈ 13.8px）：
+ *   - 日期 6%：「2026-10-09」定长 10 字符，与凭证表的日期列同一取值。
+ *   - 对方名称 8%：客户/供应商全称，是最长的一列之一；口径要求对面名称这类列 ≥8%，
+ *     8% 是下限 —— 页面里放不下就换行（财务口径不省略），弹窗里剩下靠 hover。
+ *   - 收支 4%：「收入 / 支出」两个字，与凭证表 `direction` 同一取值。
+ *   - 金额 9%：金额是这一页存在的理由，口径要求 ≥8%，在预算内再加 1% ——
+ *     「2900.0000」这类十位数字在 6% 下会被截掉，金额被截断等于这一页白做。
+ *   - 币种 5%：「CNY / USD」三字符，口径 5%~6%。
+ *   - 分类 4%：科目类别（资产类 / 损益类，3 个字）这种定长短词，与 QC 送检表同类短列一致。
+ *   - 项目 7%、结算方式 7%、银行账户 7%：三列都是拼接出来的长文本
+ *     （「资产类 / 库存现金（备用金）」「转账--农业银行5706」「农业银行 / 5706」），
+ *     预算只够给到 7%：页面里靠换行显示全，弹窗里靠 hover 看全。
+ *   - 款项性质 4%：只有「定金 / 货款 / 尾款 / 其他」四个两字取值，且支出行恒为「-」。
+ *   - 订单号 8%：单号类列，口径要求 ≥8%（「DL260002」这种编号截断后认不出是哪一单）。
+ *   - 来源 5%：badge 里的「客户收款 / 应收对账确认」（最长 6 个字）。
+ *   - 状态 5%：「生效 / 已冲销」两字状态词，口径 5%~6%。
+ *   - 操作 5%：两个小按钮（更正 / 冲销）。5% 在 1366 屏约 69px，一行放不下两个，
+ *     `.page-actions` 会折行 —— 宁可按钮折行，也不把金额列压窄（QC 送检表同一取舍）。
+ *
+ * 总和恰好 84%：本表用了 `auditColumns()`，工厂产出的「创建人 / 最后修改人」两列**不给宽度**
+ * （`lib/audit-columns-coverage.test.mjs` 盯着这个用法，不要改成逐列加 meta），
+ * 剩下的 16% 由它们均分（各 8%）。改数字前先看总和：不等于 84% 时，
+ * 缺口会被浏览器摊到那两列以外，长文本列又会重新被挤窄。
+ *
+ * 这里**不写 `ellipsis: true`**（2026-10-09 起是默认）。也不用 `ellipsis: false`：
+ * 它在关掉省略号的同时也关掉了原生 `title`，在固定布局里就变成「硬裁掉且悬停一片空白」——
+ * 比省略号更糟；财务「不省略」的口径由 `.finance-page` 那三条 CSS 负责，不靠这一列的一个开关。
+ */
+const COLUMN_WIDTH = {
+  date: "6%",
+  counterparty: "8%",
+  direction: "4%",
+  amount: "9%",
+  currency: "5%",
+  category: "4%",
+  subject: "7%",
+  settlement: "7%",
+  bank: "7%",
+  paymentNature: "4%",
+  orderNo: "8%",
+  source: "5%",
+  status: "5%",
+  actions: "5%",
+} as const;
+
 export default function CashFlowWorkspace({ tab = "entries", testId = "page-finance-cash-flow" }: { tab?: CashFlowTabKey; testId?: string }) {
   const [from, setFrom] = useState(firstDayOfMonth);
   const [to, setTo] = useState(today);
@@ -269,25 +326,29 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
   }
 
   const columns: ColumnDef<CashFlowEntry>[] = [
-    { accessorKey: "entryDate", header: "日期", cell: ({ row }) => String(row.original.entryDate).slice(0, 10) },
-    { accessorKey: "counterpartyName", header: "对方名称" },
-    { id: "direction", header: "收支", cell: ({ row }) => (row.original.direction === "income" ? "收入" : "支出") },
-    { accessorKey: "amount", header: "金额" },
-    { accessorKey: "currency", header: "币种" },
-    { id: "category", header: "分类", cell: ({ row }) => row.original.subject?.category ?? "-" },
-    { id: "subject", header: "项目", cell: ({ row }) => subjectLabel(row.original.subject, row.original.subject?.id) },
-    { id: "settlement", header: "结算方式", cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
-    { id: "bank", header: "银行账户", cell: ({ row }) => (row.original.bank ? `${row.original.bank.bankName} / ${row.original.bank.accountNumber}` : "-") },
+    { accessorKey: "entryDate", header: "日期", meta: { width: COLUMN_WIDTH.date }, cell: ({ row }) => String(row.original.entryDate).slice(0, 10) },
+    { accessorKey: "counterpartyName", header: "对方名称", meta: { width: COLUMN_WIDTH.counterparty } },
+    { id: "direction", header: "收支", meta: { width: COLUMN_WIDTH.direction }, cell: ({ row }) => (row.original.direction === "income" ? "收入" : "支出") },
+    { accessorKey: "amount", header: "金额", meta: { width: COLUMN_WIDTH.amount } },
+    { accessorKey: "currency", header: "币种", meta: { width: COLUMN_WIDTH.currency } },
+    { id: "category", header: "分类", meta: { width: COLUMN_WIDTH.category }, cell: ({ row }) => row.original.subject?.category ?? "-" },
+    { id: "subject", header: "项目", meta: { width: COLUMN_WIDTH.subject }, cell: ({ row }) => subjectLabel(row.original.subject, row.original.subject?.id) },
+    { id: "settlement", header: "结算方式", meta: { width: COLUMN_WIDTH.settlement }, cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
+    { id: "bank", header: "银行账户", meta: { width: COLUMN_WIDTH.bank }, cell: ({ row }) => (row.original.bank ? `${row.original.bank.bankName} / ${row.original.bank.accountNumber}` : "-") },
     // 款项性质与订单号：老表「外汇一览表」按这两列把收款按客户/订单/期间收束起来。
     // 只对收入显示性质 —— 支出行上这一列永远是空的，显示「-」比显示一个没有意义的标签诚实。
-    { id: "paymentNature", header: "款项性质", cell: ({ row }) => (row.original.direction === "income" ? (paymentNatureLabel(row.original.paymentNature) ?? "-") : "-") },
-    { id: "orderNo", header: "订单号", cell: ({ row }) => row.original.orderNo ?? "-" },
-    { id: "source", header: "来源", cell: ({ row }) => row.original.sourceType ? <span className="badge">{SOURCE_LABELS[row.original.sourceType] ?? row.original.sourceType}</span> : <span className="panel-note">手工录入</span> },
-    { id: "status", header: "状态", cell: ({ row }) => (row.original.status === "posted" ? "生效" : "已冲销") },
+    { id: "paymentNature", header: "款项性质", meta: { width: COLUMN_WIDTH.paymentNature }, cell: ({ row }) => (row.original.direction === "income" ? (paymentNatureLabel(row.original.paymentNature) ?? "-") : "-") },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo }, cell: ({ row }) => row.original.orderNo ?? "-" },
+    // 这一列渲染的是 badge（JSX）：DataTable 的自动 title 只认字符串/数字，
+    // 拿不到元素内容 → 截断了却「悬停一片空白」（`data-table.tsx` 的 `ellipsisTitle` 注释里记着这个坑）。
+    // `accessorFn` 把屏幕上那串字作为这一格的值，title 才取得回来；渲染仍走下面的 `cell`（badge 照旧）。
+    { id: "source", accessorFn: (entry) => (entry.sourceType ? (SOURCE_LABELS[entry.sourceType] ?? entry.sourceType) : "手工录入"), header: "来源", meta: { width: COLUMN_WIDTH.source }, cell: ({ row }) => row.original.sourceType ? <span className="badge">{SOURCE_LABELS[row.original.sourceType] ?? row.original.sourceType}</span> : <span className="panel-note">手工录入</span> },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => (row.original.status === "posted" ? "生效" : "已冲销") },
     ...auditColumns<CashFlowEntry>(),
     {
       id: "actions",
       header: "操作",
+      meta: { width: COLUMN_WIDTH.actions },
       cell: ({ row }) => <div className="page-actions">
         <Button size="sm" variant="secondary" data-testid={`cash-flow-edit-${row.original.id}`} disabled={busy || row.original.status !== "posted"} onClick={() => openEdit(row.original)}>更正</Button>
         <Button size="sm" variant="ghost" data-testid={`cash-flow-reverse-${row.original.id}`} disabled={busy || row.original.status !== "posted"} onClick={() => openReverse(row.original)}>冲销</Button>

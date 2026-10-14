@@ -113,10 +113,18 @@ export function UnassignedPanel() {
           <EmptyState title="没有待补录的销售单" description="所有销售单都有货号了。" />
         ) : (
           <div className="table-wrap">
-            <table className="ui-table" data-testid="unassigned-table">
+            {/*
+              手写表：列宽 + 超长省略 + hover 全文三件事都要自己做（DataTable 那套 meta 它用不上）。
+              `.table-bounded` 是 globals.css 里给的固定布局入口；每列显式宽度、总和 100%：
+              选择 4% / 销售单号 16% / 客户 16% / 产品 20% / 数量 8% / 下单日期 12% / 状态 10% / 操作 14%。
+              产品名是本表唯一的长文本列（20%），客户次之（16%）；复选框列只要 4%。
+              格子上的 `.ui-table-cell` 是 2026-10-09 补的 —— 原来这些 <td> 一个类都没有，
+              连基础内边距和 nowrap 都没有（同一次治理的盘点发现，见 docs/design/table-column-width-audit-2026-10-09.md）。
+            */}
+            <table className="ui-table table-bounded" data-testid="unassigned-table">
               <thead>
                 <tr>
-                  <th className="ui-table-head">
+                  <th className="ui-table-head" style={{ width: "4%" }}>
                     <input
                       type="checkbox"
                       aria-label="全选"
@@ -125,19 +133,19 @@ export function UnassignedPanel() {
                       onChange={(event) => setSelected(event.target.checked ? rows.map((row) => row.sales_order_id) : [])}
                     />
                   </th>
-                  <th className="ui-table-head">销售单号</th>
-                  <th className="ui-table-head">客户</th>
-                  <th className="ui-table-head">产品</th>
-                  <th className="ui-table-head">数量</th>
-                  <th className="ui-table-head">下单日期</th>
-                  <th className="ui-table-head">状态</th>
-                  <th className="ui-table-head">操作</th>
+                  <th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="销售单号">销售单号</th>
+                  <th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="客户">客户</th>
+                  <th className="ui-table-head cell-ellipsis" style={{ width: "20%" }} title="产品">产品</th>
+                  <th className="ui-table-head cell-ellipsis" style={{ width: "8%" }} title="数量">数量</th>
+                  <th className="ui-table-head cell-ellipsis" style={{ width: "12%" }} title="下单日期">下单日期</th>
+                  <th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="状态">状态</th>
+                  <th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="操作">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
                   <tr key={row.sales_order_id} data-testid={`unassigned-row-${row.order_no}`}>
-                    <td>
+                    <td className="ui-table-cell">
                       <input
                         type="checkbox"
                         aria-label={`选择 ${row.order_no}`}
@@ -146,13 +154,13 @@ export function UnassignedPanel() {
                         onChange={(event) => setSelected((current) => (event.target.checked ? [...current, row.sales_order_id] : current.filter((id) => id !== row.sales_order_id)))}
                       />
                     </td>
-                    <td>{row.order_no}</td>
-                    <td>{row.customer_name ?? "-"}</td>
-                    <td>{row.product_name}</td>
-                    <td>{row.quantity} {row.unit}</td>
-                    <td>{row.order_date ? row.order_date.slice(0, 10) : "-"}</td>
-                    <td>{STATUS_LABELS[row.status] ?? row.status}</td>
-                    <td>
+                    <td className="ui-table-cell cell-ellipsis" title={row.order_no}>{row.order_no}</td>
+                    <td className="ui-table-cell cell-ellipsis" title={row.customer_name ?? "-"}>{row.customer_name ?? "-"}</td>
+                    <td className="ui-table-cell cell-ellipsis" title={row.product_name}>{row.product_name}</td>
+                    <td className="ui-table-cell cell-ellipsis" title={`${row.quantity} ${row.unit}`}>{row.quantity} {row.unit}</td>
+                    <td className="ui-table-cell cell-ellipsis" title={row.order_date ? row.order_date.slice(0, 10) : "-"}>{row.order_date ? row.order_date.slice(0, 10) : "-"}</td>
+                    <td className="ui-table-cell cell-ellipsis" title={STATUS_LABELS[row.status] ?? row.status}>{STATUS_LABELS[row.status] ?? row.status}</td>
+                    <td className="ui-table-cell">
                       <Button size="sm" variant="secondary" data-testid={`unassigned-assign-${row.order_no}`} onClick={() => setDialog({ ids: [row.sales_order_id], itemNo: "", reason: "", busy: false, failure: "" })}>
                         指派货号
                       </Button>

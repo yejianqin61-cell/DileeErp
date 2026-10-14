@@ -78,24 +78,30 @@ export function DocumentGroups({ groups, orderNo }: { groups: DocumentGroup[]; o
                 <p className="panel-note" data-testid={`document-empty-${group.document_type}`}>未建立</p>
               ) : (
                 <div className="table-wrap">
-                  <table className="ui-table">
+                  {/*
+                    手写表，与 components/reorder/unassigned-panel.tsx 同一套做法：`.table-bounded` 拿到固定布局，
+                    每列显式宽度、总和 100%：单号 26% / 日期 16% / 数量 16% / 状态 18% / 操作 24%。
+                    单号是唯一的自由文本列，拿最多；「打开模块页」是个链接，24% 保证它不折行。
+                    这些 <td> 原来一个类都没有（连内边距都没有），同一次治理一并补 `.ui-table-cell`。
+                  */}
+                  <table className="ui-table table-bounded">
                     <thead>
                       <tr>
-                        <th className="ui-table-head">单号</th>
-                        <th className="ui-table-head">日期</th>
-                        <th className="ui-table-head">数量</th>
-                        <th className="ui-table-head">状态</th>
-                        <th className="ui-table-head">操作</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "26%" }} title="单号">单号</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="日期">日期</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="数量">数量</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "18%" }} title="状态">状态</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "24%" }} title="操作">操作</th>
                       </tr>
                     </thead>
                     <tbody>
                       {group.documents.map((document) => (
                         <tr key={document.source_id}>
-                          <td>{document.document_no ?? "-"}</td>
-                          <td className={cn(document.date_source === "created_at" && "panel-note")}>{documentDateText(document)}</td>
-                          <td>{document.quantity === null ? "-" : `${document.quantity}${document.unit ? ` ${document.unit}` : ""}`}</td>
-                          <td>{document.status_label || "-"}</td>
-                          <td>
+                          <td className="ui-table-cell cell-ellipsis" title={document.document_no ?? "-"}>{document.document_no ?? "-"}</td>
+                          <td className={cn("ui-table-cell", "cell-ellipsis", document.date_source === "created_at" && "panel-note")} title={documentDateText(document)}>{documentDateText(document)}</td>
+                          <td className="ui-table-cell cell-ellipsis" title={document.quantity === null ? "-" : `${document.quantity}${document.unit ? ` ${document.unit}` : ""}`}>{document.quantity === null ? "-" : `${document.quantity}${document.unit ? ` ${document.unit}` : ""}`}</td>
+                          <td className="ui-table-cell cell-ellipsis" title={document.status_label || "-"}>{document.status_label || "-"}</td>
+                          <td className="ui-table-cell">
                             {route ? (
                               // testid 用**分组**的类型：`document` 是单据行，它身上没有 document_type
                               // （第一版写成 `document.document_type`，于是 testid 变成 document-link-undefined

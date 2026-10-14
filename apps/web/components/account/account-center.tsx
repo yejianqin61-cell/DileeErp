@@ -135,13 +135,26 @@ export function AccountCenter() {
     {manager && <section className="panel" data-testid="account-admin-panel">
       <div className="panel-heading"><h2>账号管理</h2><span className="panel-note">仅老板、财务可见；系统始终保留至少一个老板账号</span><Button onClick={() => setCreateOpen(true)} data-testid="account-create-open"><UserPlus size={15} />新建账号</Button></div>
       <div className="panel-body">
-        <Table>
-          <TableHeader><TableRow><TableHead>用户名</TableHead><TableHead>姓名</TableHead><TableHead>角色</TableHead><TableHead>状态</TableHead><TableHead>创建时间</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
+        {/*
+          手写表（共享 `<Table>` 原语，不是 DataTable）：列宽 + 超长省略 + hover 全文三件事自己写。
+          `.table-bounded` 见 globals.css；宽度总和 100%：用户名 14% / 姓名 12% / 角色 22% / 状态 8% / 创建时间 14% / 操作 30%。
+          角色列要装「角色名、角色名、…」的拼串（最长的自由文本），操作列要同时放三个按钮（改角色 / 重置密码 / 停用），
+          两者拿大头；状态与时间定长，给得最少。用户名是登录名、定长短串，12~14% 够。
+        */}
+        <Table className="table-bounded">
+          <TableHeader><TableRow>
+            <TableHead className="cell-ellipsis" style={{ width: "14%" }} title="用户名">用户名</TableHead>
+            <TableHead className="cell-ellipsis" style={{ width: "12%" }} title="姓名">姓名</TableHead>
+            <TableHead className="cell-ellipsis" style={{ width: "22%" }} title="角色">角色</TableHead>
+            <TableHead className="cell-ellipsis" style={{ width: "8%" }} title="状态">状态</TableHead>
+            <TableHead className="cell-ellipsis" style={{ width: "14%" }} title="创建时间">创建时间</TableHead>
+            <TableHead className="cell-ellipsis" style={{ width: "30%" }} title="操作">操作</TableHead>
+          </TableRow></TableHeader>
           <TableBody>
             {users.map((user) => <TableRow key={user.id} data-testid={`account-row-${user.username}`}>
-              <TableCell>{user.username}</TableCell>
-              <TableCell>{user.display_name}</TableCell>
-              <TableCell data-testid={`account-role-${user.username}`}>{user.surface_roles.length ? user.surface_roles.map(surfaceRoleName).join("、") : (user.role_keys.join("、") || "未分配")}</TableCell>
+              <TableCell className="cell-ellipsis" title={user.username}>{user.username}</TableCell>
+              <TableCell className="cell-ellipsis" title={user.display_name}>{user.display_name}</TableCell>
+              <TableCell className="cell-ellipsis" data-testid={`account-role-${user.username}`} title={user.surface_roles.length ? user.surface_roles.map(surfaceRoleName).join("、") : (user.role_keys.join("、") || "未分配")}>{user.surface_roles.length ? user.surface_roles.map(surfaceRoleName).join("、") : (user.role_keys.join("、") || "未分配")}</TableCell>
               <TableCell>{user.is_active ? "启用" : "已停用"}</TableCell>
               <TableCell>{formatBeijingShort(user.created_at)}</TableCell>
               <TableCell>

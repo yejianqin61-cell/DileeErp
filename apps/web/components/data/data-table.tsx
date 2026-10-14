@@ -17,14 +17,27 @@ import { displayText } from "../../lib/display-text";
 declare module "@tanstack/react-table" {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   interface ColumnMeta<TData extends RowData, TValue> {
-    /** 固定列宽（CSS 长度，如 `"18%"`）。**只要有一列给了宽度，整张表就切成 `table-layout: fixed`**（见下）。 */
+    /**
+     * 固定列宽（CSS 长度，如 `"18%"`）。
+     *
+     * 2026-10-09 起这个字段的含义变了：**整张表一律是 `table-layout: fixed`**（见下面 `className` 处的注释），
+     * 所以它不再是「要不要切固定布局」的开关，而是「这一列占多宽」：
+     *   - 一列都没写的表 → 各列**均分**容器宽度（fixed 布局的默认行为），
+     *     于是「某个 column 不限定宽度把整张表顶宽」从根上不会发生；
+     *   - 写了 `width` 的表 → 按写的来，没写的列分剩下的空间
+     *     （物料清单页 / 采购计划列表 / 凭证管理页就是这样）。
+     * 想让关键列更宽、按钮列更宽，是**逐表配平**的活，见
+     * `docs/design/table-column-width-audit-2026-10-09.md` 的方案 B。
+     */
     width?: string;
     /**
      * 内容超宽时省略号截断，鼠标悬停用原生 `title` 展示全文（用户 2026-09-20 第 6 条）。
      *
-     * 「写得出来的文本」两种列都算：显式 `cell` 返回字符串的列，以及只写 `accessorKey` 的列
-     * （后者由 `ellipsisTitle` 从**这一格的值**里取，见那里的注释）。
-     * 装的若是按钮 / 缩略图这类 ReactNode，本开关不会给出 title —— 那类格子自己决定要不要提示。
+     * 2026-10-09 起**默认开启**，不再需要逐列声明（用户当天：「每个 column 都能限定宽度。
+     * 超过字数就省略显示。鼠标 hover 的时候再显示全部文字」）：只要这一格能取到字符串/数字，
+     * 就自动拿到 `cell-ellipsis` + `title`。写 `ellipsis: false` 可以显式关掉某一列
+     * （例如这串文字本来就必须完整显示、不想被截断）。
+     * 控件列（按钮 / 缩略图 / 勾选框）本来就取不到字符串，因此自动不会加 —— 见 `ellipsisTitle`。
      */
     ellipsis?: boolean;
   }
@@ -81,14 +94,44 @@ export function DataTable<T>({ columns, data, loading = false, empty, pageSize =
   if (loading) return <LoadingState />;
   if (!data.length) return <>{empty ?? <EmptyState />}</>;
   const text = (value: ReactNode): ReactNode => typeof value === "string" ? String(displayText(value)) : value;
-  // 有列给了宽度就切固定布局：不切的话「宽度」只是建议值，长文本照样把列撑宽、把表顶出容器 ——
-  // 而用户要的恰恰是「保证一次性展示全部column」。固定布局下内容只能在自己的格子里换行或被省略。
-  const fixed = columns.some((column) => metaOf(column.meta).width);
-  const className = [fixed ? "data-table-fixed" : "", tableClassName ?? ""].filter(Boolean).join(" ") || undefined;
-  return <><div className="table-wrap" data-testid="data-table"><Table className={className}><TableHeader>{table.getHeaderGroups().map(group => <TableRow key={group.id}>{group.headers.map(header => <TableHead key={header.id} style={metaOf(header.column.columnDef.meta).width ? { width: metaOf(header.column.columnDef.meta).width } : undefined}>{header.isPlaceholder ? null : text(flexRender(header.column.columnDef.header, header.getContext()))}</TableHead>)}</TableRow>)}</TableHeader><TableBody>{table.getRowModel().rows.map(row => <TableRow key={row.id} data-testid="data-table-row" title={rowTitle} onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row.original) : undefined} className={onRowDoubleClick ? "table-row-clickable" : undefined}>{row.getVisibleCells().map(cell => {
+  /**
+   * 2026-10-09：从「有列给了宽度才切固定布局」改成**一律固定布局**。
+   *
+   * 旧写法是 `columns.some((column) => metaOf(column.meta).width)` —— 一套「逐列自愿加入」制，
+   * 而默认值是「不受限」。结果是全站 96 张表里只有 3 个文件（物料清单页 / 采购计划列表 / 凭证管理页）
+   * 给列写过宽度，其余 78 张都是自动布局 + 每格 `white-space: nowrap`：
+   * 每一列的最小宽度 = 该列最长的那串文字，于是表被顶出容器、只能左右拖 ——
+   * 用户 2026-10-09：「我不希望会因为某个 column 不限定宽度而导致表格的左右宽度太大」。
+   *
+   * 固定布局下，**没给 `width` 的列由浏览器均分容器宽度**：表宽恒等于容器宽，「每个 column 都有上界」
+   * 于是成为默认值，新加的表格不用再记得补宽度（盘点见
+   * `docs/design/table-column-width-audit-2026-10-09.md`）。
+   * 固定布局里内容再也撑不宽列，长文本只能在自己的格子里被省略 + hover 看全文。
+   *
+   * 唯一的例外走 CSS：财务页那些表靠**换行**一屏看全（2026-09-16 口径，实测 1366~1920 四个视口 0 溢出），
+   * 口径是「金额与客户名换行也要看得全」而不是「省略掉、hover 才看」，
+   * 所以 `.finance-page .ui-table.data-table-fixed` 那三条把它们放回自动布局。
+   * 弹窗 / Sheet 走 Radix Portal 挂到 body（ui/dialog.tsx、ui/sheet.tsx），够不到 `.finance-page` ——
+   * 那才是**要**被固定布局管住的一批（用户报的「确认应付的表单还需要左右滑动」就是它们）。
+   */
+  const className = ["data-table-fixed", tableClassName ?? ""].filter(Boolean).join(" ");
+  return <><div className="table-wrap" data-testid="data-table"><Table className={className}><TableHeader>{table.getHeaderGroups().map(group => <TableRow key={group.id}>{group.headers.map(header => {
+    // 表头也给省略号 + hover 全文：固定布局下窄列的表头同样会被 `overflow: hidden` 裁掉，
+    // 而 `<TableHead>` 直到 2026-10-09 都没拿到过 `cell-ellipsis`（globals.css 里那条
+    // `.ui-table-head.cell-ellipsis` 对 DataTable 一直是死代码）。列名是长词的页（「含税金额（本）」
+    // 「最后修改人」）以前只能被硬裁，现在能悬停看全。
+    const headerText = header.isPlaceholder ? null : text(flexRender(header.column.columnDef.header, header.getContext()));
+    const headerWidth = metaOf(header.column.columnDef.meta).width;
+    const headerEllipsis = typeof headerText === "string";
+    return <TableHead key={header.id} style={headerWidth ? { width: headerWidth } : undefined} className={headerEllipsis ? "cell-ellipsis" : undefined} title={headerEllipsis ? headerText : undefined}>{headerText}</TableHead>;
+  })}</TableRow>)}</TableHeader><TableBody>{table.getRowModel().rows.map(row => <TableRow key={row.id} data-testid="data-table-row" title={rowTitle} onDoubleClick={onRowDoubleClick ? () => onRowDoubleClick(row.original) : undefined} className={onRowDoubleClick ? "table-row-clickable" : undefined}>{row.getVisibleCells().map(cell => {
     const meta = metaOf(cell.column.columnDef.meta);
     const rendered = text(flexRender(cell.column.columnDef.cell, cell.getContext()));
-    return <TableCell key={cell.id} style={meta.width ? { width: meta.width } : undefined} className={meta.ellipsis ? "cell-ellipsis" : undefined} title={meta.ellipsis ? ellipsisTitle(rendered, cell.getValue()) : undefined}>{rendered}</TableCell>;
+    // 默认就是「超长省略 + hover 看全文」：能取到文字就给 title，`ellipsis: false` 才关掉。
+    // `cell-ellipsis` 跟着 title 走而不是跟着开关走 —— 没有 title 的格子（按钮 / 缩略图 / 审计格）
+    // 也就不会被 `nowrap` 裁掉按钮（物料清单页 2026-10-08 为这两列专门写过一条测试）。
+    const title = meta.ellipsis === false ? undefined : ellipsisTitle(rendered, cell.getValue());
+    return <TableCell key={cell.id} style={meta.width ? { width: meta.width } : undefined} className={title ? "cell-ellipsis" : undefined} title={title}>{rendered}</TableCell>;
   })}</TableRow>)}</TableBody></Table></div>{table.getPageCount() > 1 && <div className="table-pagination"><span>第 {table.getState().pagination.pageIndex + 1} / {table.getPageCount()} 页，共 {data.length} 条</span><div><Button size="sm" variant="secondary" disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>上一页</Button><Button size="sm" variant="secondary" disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>下一页</Button></div></div>}</>;
 }
 

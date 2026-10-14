@@ -116,6 +116,76 @@ const dateTime = (value: string | null) => formatBeijingShort(value) || "-";
 /** 差异着色：盘盈绿、盘亏橙（0 不着色）。带符号展示，避免「5」看不出方向。 */
 const signed = (value: string) => (value.startsWith("-") ? value : `+${value}`);
 
+/**
+ * 库存盘点三张表的列宽（百分比）。
+ *
+ * `DataTable` 2026-10-09 起**一律**给 `<table>` 加 `data-table-fixed`（`table-layout: fixed`）：
+ * 没写 `meta.width` 的列由浏览器**均分**容器宽度，与内容长短无关 ——「来源文件」这种长度无界的
+ * 文件名会和「明细数」一样宽，然后被省略成一串「2026年10…」。这里把每一列的宽度显式写出来，
+ * 把「均分」改成「按内容需要分配」。
+ *
+ * 两条预算（1366 屏的表内容宽约 1034px，是下面所有估值的分母；单元格 13px 字号、左右内边距各 12px，
+ * 表头 12px 字号、同样左右各 12px）：
+ *   - 「盘点单」用 `auditColumns()`，创建人 / 最后修改人两列由工厂追加、**刻意不给宽度**，
+ *     让它们分剩下的 16%（各 8%），所以下面九列声明总和 = 84%；
+ *   - 「盘点明细」与「导入结果 · 错误行」没有审计列 → 各自声明总和 = 100%。
+ *   不给那两列写宽度的另一个原因：列名与字段只有工厂一处定义，`lib/audit-columns-coverage.test.mjs`
+ *   有守卫盯着（键名也不该起 createdBy / updatedBy）。多一个点会溢出，少一个点会被没写宽度的列摊走。
+ *
+ * 每个数字的来历：
+ *   - 长文本列 ≥8%：来源文件 19% / 差异原因 13% / 产品名称 12% / 产品规格 10% / 盘点单号 10% /
+ *     产品代码 8% / 错误行表的字段 18%。这七列的 `cell` 返回的就是字符串，`DataTable` 会自动配
+ *     `cell-ellipsis` + 原生 `title`（hover 看全文），所以**不写 `ellipsis: true`** ——
+ *     2026-10-09 起它已是默认值。
+ *   - 「来源文件」19% 是这两张表里最大的一格：用户上传的 Excel 文件名（中文名常见、没有长度上界），
+ *     同一张表里日期给 9% 就够，而文件名的上界可以无限长。
+ *   - 数量类 5%~6%：三位数量级（“100”）减掉 24px 内边距还剩 30px 以上；带符号的差异（“+12”）同档。
+ *   - 日期列 9%（导入时间 / 确认时间）：内容是 `MM-DD HH:mm`（同年省略年份，见 lib/audit-time）
+ *     约 75px + 24px 内边距 ≈ 9.6%，按「日期 4%~6%」会给得连月日都看不全 —— 高一档是有意的。
+ *   - 短列 4%~6%：状态（两三个汉字）/ 单位 / 行号（四位以内）/ 盘点月份（`2026-10` 定长 7 字符）。
+ *   - 操作列按「最多同时几个按钮」估（每个约 44px + 间距 4px，再 ÷1034px）：
+ *     「盘点单」草稿态同时三个按钮（明细 / 确认 / 删除）= 3×44 + 2×4 = 140px ≈ 13.5% → 14%；
+ *     14% 在 1366 屏约 145px，减掉 24px 内边距剩 121px，第三个按钮由 `.action-row` 的
+ *     `flex-wrap` 折成第二行 —— 与原料仓储页、物料清单页同一取舍：宁可按钮折行，
+ *     也不把来源文件压到一上来就被省略；
+ *     「盘点明细」草稿态同时两个按钮（改实盘数 / 删行）= 2×44 + 4 = 92px ≈ 8.9% → 9%。
+ *   - 「错误行」表只有三列，照 `app/procurement/materials/page.tsx:279-281` 的同形表给 12 / 18 / 70：
+ *     「原因」是后端拼出来的整句中文（含列名与期望格式，能到上百字），余量全给它才不用悬停。
+ */
+const COLUMN_WIDTH = {
+  // 「盘点单」列表（11 列 = 8 业务 + 2 审计 + 1 操作，声明合计 84%）
+  stocktakeNo: "10%",
+  periodMonth: "6%",
+  status: "5%",
+  lineCount: "6%",
+  differingLineCount: "6%",
+  sourceFile: "19%",
+  importedAt: "9%",
+  confirmedAt: "9%",
+  stocktakeActions: "14%",
+  // 「盘点明细」（14 列 = 13 业务 + 1 操作，声明合计 100%）
+  // 「行号」在错误行表里也叫「行号」，两者刻意不共用键：那张表只有三列、余量全给了原因；
+  // 这张表 14 列，行号（四位以内数字）只配得起 4%。
+  lineNo: "4%",
+  productCode: "8%",
+  productName: "12%",
+  specification: "10%",
+  zone: "5%",
+  bin: "6%",
+  unit: "4%",
+  bookQuantitySnapshot: "6%",
+  actualQuantity: "5%",
+  differenceSnapshot: "6%",
+  bookQuantityAtConfirm: "6%",
+  appliedQuantity: "6%",
+  differenceReason: "13%",
+  lineActions: "9%",
+  // 「导入结果 · 错误行」（3 列，无审计列，声明合计 100%）
+  errorRowNo: "12%",
+  errorField: "18%",
+  errorReason: "70%",
+} as const;
+
 export default function StocktakesPage() {
   const [stocktakes, setStocktakes] = useState<Stocktake[]>([]);
   const [detail, setDetail] = useState<StocktakeDetail | null>(null);
@@ -330,18 +400,22 @@ export default function StocktakesPage() {
   const isDraft = open?.status === "draft";
 
   const stocktakeColumns: ColumnDef<Stocktake>[] = [
-    { accessorKey: "stocktake_no", header: "盘点单号" },
-    { accessorKey: "period_month", header: "盘点月份" },
-    { id: "status", header: "状态", cell: ({ row }) => <span className={row.original.status === "confirmed" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{row.original.status_label}</span> },
-    { accessorKey: "line_count", header: "明细数" },
-    { id: "differing", header: "差异行数", cell: ({ row }) => row.original.differing_line_count ? <span className="status-warning">{row.original.differing_line_count}</span> : 0 },
-    { id: "source", header: "来源文件", cell: ({ row }) => row.original.source_file_name ?? "-" },
-    { id: "imported", header: "导入时间", cell: ({ row }) => dateTime(row.original.imported_at) },
-    { id: "confirmed", header: "确认时间", cell: ({ row }) => dateTime(row.original.confirmed_at) },
+    { accessorKey: "stocktake_no", header: "盘点单号", meta: { width: COLUMN_WIDTH.stocktakeNo } },
+    { accessorKey: "period_month", header: "盘点月份", meta: { width: COLUMN_WIDTH.periodMonth } },
+    // 状态 / 差异行数这两格渲染的是带颜色的 span（JSX），而 `DataTable` 的自动 hover title 只认
+    // 字符串与数字：补一个与屏幕同值的 `accessorFn`，被裁掉的格子才拿得到 `cell-ellipsis` + 原生
+    // title（表头自动挂的那个 title 管的是表头，管不到单元格；同原料仓储页 196-215 行的做法）。
+    { id: "status", accessorFn: (row) => row.status_label, header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => <span className={row.original.status === "confirmed" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{row.original.status_label}</span> },
+    { accessorKey: "line_count", header: "明细数", meta: { width: COLUMN_WIDTH.lineCount } },
+    { id: "differing", accessorFn: (row) => row.differing_line_count, header: "差异行数", meta: { width: COLUMN_WIDTH.differingLineCount }, cell: ({ row }) => row.original.differing_line_count ? <span className="status-warning">{row.original.differing_line_count}</span> : 0 },
+    { id: "source", header: "来源文件", meta: { width: COLUMN_WIDTH.sourceFile }, cell: ({ row }) => row.original.source_file_name ?? "-" },
+    { id: "imported", header: "导入时间", meta: { width: COLUMN_WIDTH.importedAt }, cell: ({ row }) => dateTime(row.original.imported_at) },
+    { id: "confirmed", header: "确认时间", meta: { width: COLUMN_WIDTH.confirmedAt }, cell: ({ row }) => dateTime(row.original.confirmed_at) },
     ...auditColumns<Stocktake>(),
     {
       id: "actions",
       header: "操作",
+      meta: { width: COLUMN_WIDTH.stocktakeActions },
       cell: ({ row }) => <div className="action-row">
         <Button size="sm" variant="secondary" onClick={() => void openStocktake(row.original)}>明细</Button>
         {row.original.status === "draft" && <>
@@ -354,22 +428,25 @@ export default function StocktakesPage() {
   ];
 
   const lineColumns: ColumnDef<StocktakeLine>[] = [
-    { accessorKey: "line_no", header: "行号" },
-    { accessorKey: "product_code", header: "产品代码" },
-    { accessorKey: "product_name", header: "产品名称" },
-    { id: "specification", header: "产品规格", cell: ({ row }) => row.original.specification || "-" },
-    { id: "zone", header: "仓位", cell: ({ row }) => row.original.warehouse_zone || "-" },
-    { id: "bin", header: "货位", cell: ({ row }) => row.original.bin_location || "-" },
-    { accessorKey: "unit_name", header: "单位" },
-    { accessorKey: "book_quantity_snapshot", header: "导入时账面" },
-    { accessorKey: "actual_quantity", header: "实盘数" },
-    { id: "difference", header: "导入时差异", cell: ({ row }) => row.original.difference_snapshot === "0" ? "0" : <span className={row.original.difference_snapshot.startsWith("-") ? "status-warning" : "status-success"}>{signed(row.original.difference_snapshot)}</span> },
-    { id: "bookAtConfirm", header: "确认时账面", cell: ({ row }) => row.original.book_quantity_at_confirm ?? "-" },
-    { id: "applied", header: "已应用调整", cell: ({ row }) => row.original.applied_quantity === null ? "-" : row.original.applied_quantity === "0" ? "0" : <span className={row.original.applied_quantity.startsWith("-") ? "status-warning" : "status-success"}>{signed(row.original.applied_quantity)}</span> },
-    { id: "reason", header: "差异原因", cell: ({ row }) => row.original.difference_reason || "-" },
+    { accessorKey: "line_no", header: "行号", meta: { width: COLUMN_WIDTH.lineNo } },
+    { accessorKey: "product_code", header: "产品代码", meta: { width: COLUMN_WIDTH.productCode } },
+    { accessorKey: "product_name", header: "产品名称", meta: { width: COLUMN_WIDTH.productName } },
+    { id: "specification", header: "产品规格", meta: { width: COLUMN_WIDTH.specification }, cell: ({ row }) => row.original.specification || "-" },
+    { id: "zone", header: "仓位", meta: { width: COLUMN_WIDTH.zone }, cell: ({ row }) => row.original.warehouse_zone || "-" },
+    { id: "bin", header: "货位", meta: { width: COLUMN_WIDTH.bin }, cell: ({ row }) => row.original.bin_location || "-" },
+    { accessorKey: "unit_name", header: "单位", meta: { width: COLUMN_WIDTH.unit } },
+    { accessorKey: "book_quantity_snapshot", header: "导入时账面", meta: { width: COLUMN_WIDTH.bookQuantitySnapshot } },
+    { accessorKey: "actual_quantity", header: "实盘数", meta: { width: COLUMN_WIDTH.actualQuantity } },
+    // 差异 / 已应用调整两格同样是带颜色的 span（JSX）：`accessorFn` 供出**与屏幕一致**的文本，
+    // 不是原始值 —— 屏幕上是 `signed()` 之后的「+5」，title 也该是「+5」，否则 hover 与眼睛看到的对不上。
+    { id: "difference", accessorFn: (row) => row.difference_snapshot === "0" ? "0" : signed(row.difference_snapshot), header: "导入时差异", meta: { width: COLUMN_WIDTH.differenceSnapshot }, cell: ({ row }) => row.original.difference_snapshot === "0" ? "0" : <span className={row.original.difference_snapshot.startsWith("-") ? "status-warning" : "status-success"}>{signed(row.original.difference_snapshot)}</span> },
+    { id: "bookAtConfirm", header: "确认时账面", meta: { width: COLUMN_WIDTH.bookQuantityAtConfirm }, cell: ({ row }) => row.original.book_quantity_at_confirm ?? "-" },
+    { id: "applied", accessorFn: (row) => row.applied_quantity === null ? "-" : row.applied_quantity === "0" ? "0" : signed(row.applied_quantity), header: "已应用调整", meta: { width: COLUMN_WIDTH.appliedQuantity }, cell: ({ row }) => row.original.applied_quantity === null ? "-" : row.original.applied_quantity === "0" ? "0" : <span className={row.original.applied_quantity.startsWith("-") ? "status-warning" : "status-success"}>{signed(row.original.applied_quantity)}</span> },
+    { id: "reason", header: "差异原因", meta: { width: COLUMN_WIDTH.differenceReason }, cell: ({ row }) => row.original.difference_reason || "-" },
     {
       id: "actions",
       header: "操作",
+      meta: { width: COLUMN_WIDTH.lineActions },
       cell: ({ row }) => isDraft
         ? <div className="action-row">
           <Button size="sm" variant="secondary" onClick={() => editLine(row.original)}>改实盘数</Button>
@@ -416,9 +493,9 @@ export default function StocktakesPage() {
             {importResult.ignoredTrailingRows > 0 && <p>表尾 {importResult.ignoredTrailingRows} 行未识别为数据，已跳过</p>}
             {importResult.hints.map((hint) => <p key={hint} className="panel-note">{hint}</p>)}
             {importResult.errors.length > 0 && <DataTable columns={[
-              { accessorKey: "row", header: "行号" },
-              { accessorKey: "field", header: "字段", cell: ({ row }) => row.original.field ?? "-" },
-              { accessorKey: "reason", header: "原因" },
+              { accessorKey: "row", header: "行号", meta: { width: COLUMN_WIDTH.errorRowNo } },
+              { accessorKey: "field", header: "字段", meta: { width: COLUMN_WIDTH.errorField }, cell: ({ row }) => row.original.field ?? "-" },
+              { accessorKey: "reason", header: "原因", meta: { width: COLUMN_WIDTH.errorReason } },
             ]} data={importResult.errors} empty={null} />}
           </div>}
           {!importResult && !importing && <p className="panel-note">模板 6 列：产品名称 / 产品规格 / 产品代码 / 仓位 / 货位 / 实际数量。「产品代码」= 物料清单里的物料编码（新建物料时自动生成），匹配忽略大小写与空格；找不到的代码逐行报错，不会自动新建物料。导入只生成盘点草稿，确认后才写库存调整。</p>}

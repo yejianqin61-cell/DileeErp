@@ -21,6 +21,100 @@ const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClie
 // 厂内成品送检来源已改为「成品入库通知」（按包装工序累计报工量分批通知）；历史 in_house_completion 单据仍按厂内完工显示。
 const sourceLabel = (value: string) => value === "finished_goods_inbound_notice" ? "成品入库通知" : value === "in_house_completion" ? "厂内完工（历史）" : "外加工回厂";
 
+/**
+ * 成品质检「订单详情」里三张表的声明列宽（T21 成品来源 10 列 / T22 送检记录 8 列 / T23 质检记录 13 列，
+ * 盘点见 docs/design/table-column-width-audit-2026-10-09/C-生产与质检.md）。
+ *
+ * 三张表叠在同一个 `.panel-body` 里（289 行），宽度基准完全相同：**三张都写宽度，列边界才互相对齐** ——
+ * 只给其中一张写，另外两张仍会按内容重新分配，看起来就是三张表的表头错位（盘点文档 T21 备注）。
+ *
+ * 三张表都用 `auditColumns()`，工厂产出的「创建人 / 最后修改人」两列**不给宽度**（`lib/audit-columns-coverage.test.mjs`
+ * 盯着这个用法，不要改成逐列加 meta），所以每张表的数字**总和都是 84%**，剩下 16% 由浏览器均分给那两列
+ * （约 8% 一列，够放「姓名 + 时间」两行 —— 与物料清单页给这两列各 8% 的口径一致）。
+ * 改数字前先算总和：不等于 84% 时缺口会被摊到那两列以外，长文本列又会被重新挤窄。
+ *
+ * 每个数字的来历（估算基准：1366 屏内容宽 1034px；`.ui-table-cell` 是 `padding: 12px`，所以一列真正能
+ * 写字的宽度 = 百分比 × 1034 − 24px；字号 13px，一个中文字约 13px、一个数字约 7.2px）：
+ *
+ * T21 成品来源（8 列写宽度，总和 84%）
+ *   - 生产单 14%（145px / 可用 121px）：编号型文本（`PO-20261009-001` 这类 15 字符 ≈108px）够一行；
+ *   - 来源 10%（103px / 79px）：「成品入库通知」6 个中文字 ≈78px，是三档标签里最长的一档，刚好放得下；
+ *   - 入库通知/批次 20%（207px / 183px）：`通知单号 / 批次号` 拼接（279 行），盘点文档点名它是这张表
+ *     「最容易变宽的一格」，余量集中给它（`FGIN-001 / B-01` 只占约 100px，留的是长通知单号的余地）；
+ *   - 包装工序 11%（114px / 90px）：工序名（2~6 字）；
+ *   - 可送检数量 6%（62px / 38px）：数量列按 4%~6% 取值。表头「可送检数量」5 字 ≈60px 放不下 ——
+ *     表头自带省略号 + hover 全文（data-table.tsx:126 给表头也挂 `title`），这是刻意取舍；
+ *   - 单位 5%（52px / 28px）、状态 6%（62px / 38px）：1~2 字的单位与短状态词；
+ *   - 操作 12%（124px / 100px）：这一列最多 1 个按钮（`创建送检` 4 字 ≈52px + 按钮内边距 ≈20px = 72px）。
+ *     按「每个小按钮 44px + 间距 4px」估只占 44px（≈4.3%），低于规则下限 8%，所以取 12% ——
+ *     按钮不会贴到省略边界。
+ *
+ * T22 送检记录（6 列写宽度，总和 84%）
+ *   - 送检单 15%（155px / 131px）：编号型文本（`FGIS-001`），够显示前缀 + 序号；
+ *   - 来源 21%（217px / 193px）：`来源标签 / sourceId`（280 行），sourceId 是 36 字符 UUID，一定看不全 ——
+ *     按盘点文档给上限，靠省略 + hover 看全；
+ *   - 成品 20%（207px / 183px）：`产品名 / 规格型号` 两个快照字段拼接，长度同样不可控；
+ *   - 送检数量 6%（62px / 38px）、状态 6%：`100 件` 与短状态词（数量按 4%~6%）；
+ *   - 操作 16%（165px / 141px）：`draft` / `submitted` 行最多同时 3 个按钮（编辑 / 提交送检 / 取消送检），
+ *     按「每个 44px + 间距 4px」= 3×44 + 2×4 = 140px，刚好 16%。真实按钮比 44px 宽时 `.action-row`
+ *     （globals.css:134 带 `flex-wrap`）折成两行 —— 同「领料单 / 补料单」页「不把整张表的 1/3 让给操作列」的取舍。
+ *
+ * T23 质检记录（11 列写宽度，总和 84%）
+ *   - 质检单 10%（103px / 79px）、订单号 10%：两个编号/单号文本，够显示前缀（省略 + hover 看全文）；
+ *   - 送检记录 7%（72px / 48px）：这一格直接渲染 `submission_id`（36 字符 UUID，一定看不全），
+ *     按盘点文档取 6%~7% 的**上限**；这一列是 `accessorKey`（281 行），所以 DataTable 能从取值层拿到 `title`，
+ *     hover 时能看到完整 UUID（若是 `id` + 自定义 `cell` 就必须改成 `accessorFn` 或自己在容器上写 title）；
+ *   - 来源类型 8%（83px / 59px）：「成品入库通知」比列宽长，省略 + hover；
+ *   - 检验日期 6%（62px / 38px）：日期按 4%~6% 取上限，`2026-10-09` ≈66px 会被省略，hover 看全文；
+ *   - 合格数量 / 条件接收 / 不合格 / 可入库数量（净值）各 5%（52px / 28px）：数字列 4%~6%；
+ *     表头「可入库数量（净值）」9 字 ≈108px 放不下，同样靠表头省略 + hover；
+ *   - 单位 4%（41px / 17px）：一个字宽的单位；
+ *   - 操作 19%（196px / 172px）：`available_for_correction === false` 的行渲染整句
+ *     「已有入库/次品事实，不可更正」（12 个中文字 × 13px ≈156px，`.panel-note` 实际是 12px 字号 ≈144px，
+ *     再加斜杠 / 逗号约 162px）。
+ *     这一格是 ReactNode、取不到 `title`（data-table.tsx:88-90），裁掉就再也看不到 —— 必须放得下整句，
+ *     所以给 19%，代价是常见的单个「更正」按钮旁边会留一片空白。
+ *
+ * 没有任何一列写 `ellipsis: true`：2026-10-09 起 DataTable 默认就对文本格做「省略 + hover 看全文」。
+ * 两个「操作」列是按钮 / 说明文字（ReactNode），取不到 title 因此自动不带 `cell-ellipsis`，
+ * `nowrap` 不会把折行的按钮裁掉，所以也不需要写 `ellipsis: false`。
+ *
+ * 上面几张 `id` + 自定义 `cell` 的拼接连（成品来源的 来源 / 入库通知·批次 / 包装工序，送检记录的 来源 / 成品 / 送检数量，
+ * 质检记录的 来源类型 / 检验日期 / 不合格 / 单位）改用 `accessorFn` 把**屏幕上显示的那串字本身**作为取值 ——
+ * 这类列原本没有可回退的值，DataTable 给不出 hover title（data-table.tsx:83-86 的两种情况），
+ * 宽度一收窄就永久看不到被裁掉的部分。渲染结果与改前逐字一致，只是补上了 title 这一层。
+ */
+const COLUMN_WIDTH = {
+  // T21 成品来源
+  sourceProductionOrderNo: "14%",
+  sourceOrigin: "10%",
+  sourceNotice: "20%",
+  sourcePackaging: "11%",
+  sourceAvailableQuantity: "6%",
+  sourceUnit: "5%",
+  sourceStatus: "6%",
+  sourceActions: "12%",
+  // T22 送检记录
+  submissionNo: "15%",
+  submissionOrigin: "21%",
+  submissionProduct: "20%",
+  submissionQuantity: "6%",
+  submissionStatus: "6%",
+  submissionActions: "16%",
+  // T23 质检记录
+  qcNo: "10%",
+  qcOrderNo: "10%",
+  qcSubmission: "7%",
+  qcOriginType: "8%",
+  qcDate: "6%",
+  qcQualified: "5%",
+  qcConditional: "5%",
+  qcRejected: "5%",
+  qcAvailableForInbound: "5%",
+  qcUnit: "4%",
+  qcActions: "19%",
+} as const;
+
 export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: string } = {}) {
   const [sources, setSources] = useState<Source[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
@@ -182,9 +276,9 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
 
   const orderNumbers = useMemo(() => Array.from(new Set([...sources.map((item) => item.order_no), ...submissions.map((item) => item.orderNo)])).sort(), [sources, submissions]);
   const visibleOrders = useMemo(() => orderNumbers.filter((orderNo) => !query.trim() || orderNo.toLowerCase().includes(query.trim().toLowerCase())), [orderNumbers, query]);
-  const sourceColumns: ColumnDef<Source>[] = [{ accessorKey: "production_order_no", header: "生产单" }, { id: "source", header: "来源", cell: ({ row }) => sourceLabel(row.original.source_type) }, { id: "notice", header: "入库通知/批次", cell: ({ row }) => row.original.notice_no ? `${row.original.notice_no}${row.original.batch_no ? ` / ${row.original.batch_no}` : ""}` : "-" }, { id: "packaging", header: "包装工序", cell: ({ row }) => row.original.packaging_operation_name ?? "-" }, { accessorKey: "available_quantity", header: "可送检数量" }, { accessorKey: "unit", header: "单位" }, { accessorKey: "source_status", header: "状态" }, ...auditColumns<Source>(), { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" onClick={() => void createSubmission(row.original)}>创建送检</Button> }];
-  const submissionColumns: ColumnDef<Submission>[] = [{ accessorKey: "submissionNo", header: "送检单" }, { id: "source", header: "来源", cell: ({ row }) => `${sourceLabel(row.original.sourceType)} / ${row.original.sourceId}` }, { id: "product", header: "成品", cell: ({ row }) => `${row.original.productNameSnapshot ?? "-"} / ${row.original.productSpecificationSnapshot ?? "-"}` }, { id: "quantity", header: "送检数量", cell: ({ row }) => `${row.original.submittedQuantity} ${row.original.unitNameSnapshot}` }, { accessorKey: "status", header: "状态" }, ...auditColumns<Submission>(), { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => editSubmission(row.original)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => submit(row.original.id)}>提交送检</Button></>}{["draft", "submitted"].includes(row.original.status) && !row.original.qcRecords.length ? <Button size="sm" variant="ghost" onClick={() => cancelSubmission(row.original)}>取消送检</Button> : null}</div> }];
-  const qcColumns: ColumnDef<QcRecord>[] = [{ accessorKey: "qc_no", header: "质检单" }, { accessorKey: "order_no", header: "订单号" }, { accessorKey: "submission_id", header: "送检记录" }, { accessorKey: "source_type", header: "来源类型", cell: ({ row }) => sourceLabel(row.original.source_type) }, { id: "date", header: "检验日期", cell: ({ row }) => (row.original.inspection_date ?? "").slice(0, 10) || "-" }, { accessorKey: "qualified_quantity", header: "合格数量" }, { accessorKey: "conditional_accept_quantity", header: "条件接收" }, { id: "rejected", header: "不合格", cell: ({ row }) => row.original.rejected_quantity ?? "-" }, { accessorKey: "available_for_inbound_quantity", header: "可入库数量（净值）" }, { id: "unit", header: "单位", cell: ({ row }) => row.original.unit ?? "-" }, ...auditColumns<QcRecord>(), { id: "actions", header: "操作", cell: ({ row }) => row.original.available_for_correction === false ? <span className="panel-note">已有入库/次品事实，不可更正</span> : <Button size="sm" variant="ghost" onClick={() => correctQc(row.original)}>更正</Button> }];
+  const sourceColumns: ColumnDef<Source>[] = [{ accessorKey: "production_order_no", header: "生产单", meta: { width: COLUMN_WIDTH.sourceProductionOrderNo } }, { id: "source", header: "来源", accessorFn: (row) => sourceLabel(row.source_type), meta: { width: COLUMN_WIDTH.sourceOrigin } }, { id: "notice", header: "入库通知/批次", accessorFn: (row) => row.notice_no ? `${row.notice_no}${row.batch_no ? ` / ${row.batch_no}` : ""}` : "-", meta: { width: COLUMN_WIDTH.sourceNotice } }, { id: "packaging", header: "包装工序", accessorFn: (row) => row.packaging_operation_name ?? "-", meta: { width: COLUMN_WIDTH.sourcePackaging } }, { accessorKey: "available_quantity", header: "可送检数量", meta: { width: COLUMN_WIDTH.sourceAvailableQuantity } }, { accessorKey: "unit", header: "单位", meta: { width: COLUMN_WIDTH.sourceUnit } }, { accessorKey: "source_status", header: "状态", meta: { width: COLUMN_WIDTH.sourceStatus } }, ...auditColumns<Source>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.sourceActions }, cell: ({ row }) => <Button size="sm" onClick={() => void createSubmission(row.original)}>创建送检</Button> }];
+  const submissionColumns: ColumnDef<Submission>[] = [{ accessorKey: "submissionNo", header: "送检单", meta: { width: COLUMN_WIDTH.submissionNo } }, { id: "source", header: "来源", accessorFn: (row) => `${sourceLabel(row.sourceType)} / ${row.sourceId}`, meta: { width: COLUMN_WIDTH.submissionOrigin } }, { id: "product", header: "成品", accessorFn: (row) => `${row.productNameSnapshot ?? "-"} / ${row.productSpecificationSnapshot ?? "-"}`, meta: { width: COLUMN_WIDTH.submissionProduct } }, { id: "quantity", header: "送检数量", accessorFn: (row) => `${row.submittedQuantity} ${row.unitNameSnapshot}`, meta: { width: COLUMN_WIDTH.submissionQuantity } }, { accessorKey: "status", header: "状态", meta: { width: COLUMN_WIDTH.submissionStatus } }, ...auditColumns<Submission>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.submissionActions }, cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => editSubmission(row.original)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => submit(row.original.id)}>提交送检</Button></>}{["draft", "submitted"].includes(row.original.status) && !row.original.qcRecords.length ? <Button size="sm" variant="ghost" onClick={() => cancelSubmission(row.original)}>取消送检</Button> : null}</div> }];
+  const qcColumns: ColumnDef<QcRecord>[] = [{ accessorKey: "qc_no", header: "质检单", meta: { width: COLUMN_WIDTH.qcNo } }, { accessorKey: "order_no", header: "订单号", meta: { width: COLUMN_WIDTH.qcOrderNo } }, { accessorKey: "submission_id", header: "送检记录", meta: { width: COLUMN_WIDTH.qcSubmission } }, { id: "source_type", header: "来源类型", accessorFn: (row) => sourceLabel(row.source_type), meta: { width: COLUMN_WIDTH.qcOriginType } }, { id: "date", header: "检验日期", accessorFn: (row) => (row.inspection_date ?? "").slice(0, 10) || "-", meta: { width: COLUMN_WIDTH.qcDate } }, { accessorKey: "qualified_quantity", header: "合格数量", meta: { width: COLUMN_WIDTH.qcQualified } }, { accessorKey: "conditional_accept_quantity", header: "条件接收", meta: { width: COLUMN_WIDTH.qcConditional } }, { id: "rejected", header: "不合格", accessorFn: (row) => row.rejected_quantity ?? "-", meta: { width: COLUMN_WIDTH.qcRejected } }, { accessorKey: "available_for_inbound_quantity", header: "可入库数量（净值）", meta: { width: COLUMN_WIDTH.qcAvailableForInbound } }, { id: "unit", header: "单位", accessorFn: (row) => row.unit ?? "-", meta: { width: COLUMN_WIDTH.qcUnit } }, ...auditColumns<QcRecord>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.qcActions }, cell: ({ row }) => row.original.available_for_correction === false ? <span className="panel-note">已有入库/次品事实，不可更正</span> : <Button size="sm" variant="ghost" onClick={() => correctQc(row.original)}>更正</Button> }];
 
   return <section className="panel" style={{ gridColumn: "1 / -1" }}>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field, values) => field.name === "submission_id" ? openSubmission(values) : setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => dialog?.submit(values)} />

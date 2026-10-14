@@ -23,6 +23,61 @@ const inboundStatusLabels: Record<string, string> = { draft: "待入库登记", 
 // 因此这里既给 received 的中文，也在下面用应付条目关联兜底显示「已通知」。
 const payableStatusLabels: Record<string, string> = { pending_finance: "待通知财务", received: "财务已接收", draft: "待财务确认", confirmed: "财务已确认", partially_paid: "部分付款", paid: "已付款", reversed: "已冲回", voided: "已作废" };
 
+/** 入库状态码 → 界面文字。列定义与它的 `accessorFn` 共用这一处，避免「屏幕上中文、hover 是 posted」。 */
+const inboundStatusText = (status: string) => inboundStatusLabels[status] ?? status;
+
+/**
+ * 原料入库列表的列宽。
+ *
+ * 为什么要有这个常量：2026-10-09 起 `DataTable` **一律**给 `<table>` 加 `data-table-fixed`
+ * （`table-layout: fixed`，`components/data/data-table.tsx`），没写 `meta.width` 的列由浏览器**均分**
+ * 容器宽度 —— 「某个 column 把表顶宽」已经不会发生，这次要做的是把**均分**换成**按内容需要分配**。
+ * 集中写成一个常量，是为了让「总和 = 84%」这件事一眼可核对（散在 11 个 meta 里没法核）。
+ *
+ * 口径与数字来历：
+ *   - 基准容器宽 **1034px**（1366px 视口下表格可用宽，与 `docs/design/table-column-width-audit-2026-10-09/` 同口径），
+ *     百分比 = 需要的像素 ÷ 1034；
+ *   - `.ui-table-cell` 是 `padding: 12px`（`globals.css:89`），即**每格左右各吃掉 12px**：
+ *     一列定 n% 后真正能放字的宽度是 `n% × 1034 - 24`（8% → 58.7px，与 `components/data/audit-columns.tsx:44`
+ *     记的实测值一致）。所以「够不够放」要按这个减完的数看，不是按百分比本身看；
+ *   - 本表 13 列 = 11 列业务列 + `auditColumns()` 产出的「创建人 / 最后修改人」。后两列**刻意不在
+ *     这里给宽度**（工厂用法不能改，`lib/audit-columns-coverage.test.mjs` 有守卫），所以这 11 列的总和
+ *     必须是 **84%**，剩下 16% 由那两列均分（各 8% → 58.7px，正好是工厂注释里记的宽度）。
+ */
+const COLUMN_WIDTH = {
+  // ── 四张单号列：内容 14~16 字符 ≈ 110px（需求 10.6%），但 84% 要分给 11 列，
+  //    单号只能落在规则下限 8%（= 58.7px，放得下约 8 个字符）；长出来的部分统一靠
+  //    「cell-ellipsis 省略 + hover 看全文」兜住 —— 这是本次口径下的既定取舍。
+  inboundNo: "8%",
+  orderNo: "8%",
+  purchaseOrderNo: "8%",
+  receiptNo: "8%",
+  // 到货批次是派生串「第 12 批」≈ 5 个字符 ≈ 45px = 4.4%，属短串 → 5%。
+  batch: "5%",
+  // 数量：几位小数的数字串（"1234.0000" ≈ 58px = 5.6%），取规则 4%~6% 的中段 5%。
+  quantity: "5%",
+  // 质检状态：接口原样下发的状态码（最长 conditionally_accepted = 22 字符 ≈ 158px = 15%），
+  // 远超「短状态 4%~6%」的上限 —— 顶格 6% 也只能放 4 个字符。按 5% 与「入库状态」对齐，
+  // 长码仍然 hover 看全文（这一列只有 accessorKey，title 取的就是屏幕上那串原码，两边一致）。
+  inspectionStatus: "5%",
+  // 入库状态：「待入库登记」5 个汉字 ≈ 65px = 6.3%，但它是固定枚举（三个值）+ 可省略 → 5%。
+  status: "5%",
+  // 应付来源是拼接串「金额（状态）」（"12345.6700（待通知财务）" ≈ 170px = 16%）：
+  // 拼接串按规则下限 8% —— 预算也只够给它 8%（58.7px 放得下金额前 8 位），全文 hover 可见。
+  payable: "7%",
+  // 财务付款：这一列有的行渲染的是按钮（`ui-button-sm`「通知财务付款」= 6 汉字 × 12px + 左右各 10px
+  // 内边距 ≈ 92px），加本格 24px 内边距 = 116px → 116 ÷ 1034 = 11.2% → 取 12%。
+  // 为什么必须给够：这一列下面挂了 `accessorFn`（自动 title 取得到文字），DataTable 会给它加
+  // `cell-ellipsis`（`white-space: nowrap` + `overflow: hidden`）—— 放不下时按钮会被**无声裁掉**，
+  // 不是换成省略号。
+  finance: "11%",
+  // 操作列最多同时两个按钮（「编辑」+ 已过账行的「冲销」）：44px + 间距 4px + 44px = 92px，
+  // 加本格 24px 内边距 = 116px → 11.2% → 12%。同理不能少：`.action-row` 虽会 flex 换行，
+  // 但 92px 挤进更窄的格子会把两个按钮叠成两行、把行高撑起来。
+  // 编辑 / 冲销保持在同一行，避免入库记录的行高被操作按钮撑开。
+  actions: "14%",
+} as const;
+
 export default function InboundsPage() {
   const [inbounds, setInbounds] = useState<Inbound[]>([]);
   const [payables, setPayables] = useState<PayableSource[]>([]);
@@ -72,6 +127,22 @@ export default function InboundsPage() {
 
   const payableSourcesOf = (inbound: Inbound) => payables.find((s) => s.rawMaterialInboundId === inbound.id);
 
+  /**
+   * 「财务付款」这一格在屏幕上到底是哪串字：
+   * 有应付条目 → 「已通知（状态）」；还没过账 / 没有应付来源 → 「仓库入库成功后可通知」；否则 → 按钮文案。
+   *
+   * 为什么要单独写成函数：这一列渲染的是 JSX（状态 span / 按钮），DataTable 的自动 title 只认
+   * 字符串，取不到就只能空着；`accessorFn` 拿这个函数当值，hover 才有全文可看（见 `COLUMN_WIDTH.finance`
+   * 关于「必须给够宽度」的注释）。
+   */
+  const financeTextOf = (inbound: Inbound): string => {
+    const source = payableSourcesOf(inbound);
+    const entry = source ? payableEntries.find((e) => e.payableSourceId === source.id) : undefined;
+    if (entry) return `已通知（${payableStatusLabels[entry.status] ?? entry.status}）`;
+    if (inbound.status !== "posted" || !source) return "仓库入库成功后可通知";
+    return "通知财务付款";
+  };
+
   function editInbound(item: Inbound) {
     setDialog({
       title: "编辑原料入库单",
@@ -105,30 +176,42 @@ export default function InboundsPage() {
   }
 
   const columns: ColumnDef<Inbound>[] = [
-    { accessorKey: "inboundNo", header: "入库单号" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { accessorKey: "purchase_order_no", header: "采购单号" },
-    { id: "batch", header: "到货批次", cell: ({ row }) => `第 ${row.original.batch_sequence ?? "-"} 批` },
-    { accessorKey: "receipt_no", header: "到货记录" },
-    { accessorKey: "quantity", header: "数量" },
-    { accessorKey: "inspection_status", header: "质检状态" },
-    { accessorKey: "status", header: "入库状态", cell: ({ row }) => <span className={row.original.status === "posted" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{inboundStatusLabels[row.original.status] ?? row.original.status}</span> },
-    { id: "payable", header: "应付来源", cell: ({ row }) => { const source = payableSourcesOf(row.original); return source ? `${source.amount}（${payableStatusLabels[source.status] ?? source.status}）` : "待过账生成"; } },
+    { accessorKey: "inboundNo", header: "入库单号", meta: { width: COLUMN_WIDTH.inboundNo } },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
+    { accessorKey: "purchase_order_no", header: "采购单号", meta: { width: COLUMN_WIDTH.purchaseOrderNo } },
+    { id: "batch", header: "到货批次", meta: { width: COLUMN_WIDTH.batch }, cell: ({ row }) => `第 ${row.original.batch_sequence ?? "-"} 批` },
+    { accessorKey: "receipt_no", header: "到货记录", meta: { width: COLUMN_WIDTH.receiptNo } },
+    { accessorKey: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.quantity } },
+    { accessorKey: "inspection_status", header: "质检状态", meta: { width: COLUMN_WIDTH.inspectionStatus } },
     {
-      id: "finance", header: "财务付款",
+      id: "status", header: "入库状态", meta: { width: COLUMN_WIDTH.status },
+      // 这一格包着 <span>（JSX），自动 title 只会回退到「这一格的值」；原来的 accessorKey 取的是
+      // `posted` / `draft` 这类码，hover 出来是英文。改成 accessorFn 返回**屏幕上那串字**。
+      accessorFn: (row) => inboundStatusText(row.status),
+      cell: ({ row }) => <span className={row.original.status === "posted" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{inboundStatusText(row.original.status)}</span>,
+    },
+    { id: "payable", header: "应付来源", meta: { width: COLUMN_WIDTH.payable }, cell: ({ row }) => { const source = payableSourcesOf(row.original); return source ? `${source.amount}（${payableStatusLabels[source.status] ?? source.status}）` : "待过账生成"; } },
+    {
+      id: "finance", header: "财务付款", meta: { width: COLUMN_WIDTH.finance },
+      // 同上：这一列是分支渲染（状态 span / 按钮），原来只有 id + cell，自动 title 取不到文字。
+      // accessorFn 给的是屏幕上那串字（按钮那一行就是按钮文案），省略号与 hover 才配套生效。
+      accessorFn: (row) => financeTextOf(row),
       cell: ({ row }) => {
         const source = payableSourcesOf(row.original);
         const entry = source ? payableEntries.find((e) => e.payableSourceId === source.id) : undefined;
-        if (entry) return <span className="status-success">已通知（{payableStatusLabels[entry.status] ?? entry.status}）</span>;
-        if (row.original.status !== "posted" || !source) return <span className="panel-note">仓库入库成功后可通知</span>;
+        const text = financeTextOf(row.original);
+        if (entry) return <span className="status-success">{text}</span>;
+        if (row.original.status !== "posted" || !source) return <span className="panel-note">{text}</span>;
         return <Button size="sm" variant="secondary" onClick={() => notifyFinance(row.original, source)}>通知财务付款</Button>;
       },
     },
     ...auditColumns<Inbound>(),
     {
-      id: "actions", header: "操作",
+      id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions },
+      // 这一列是纯控件（按钮），刻意不给 accessor / title：没有 title 就没有 `cell-ellipsis`
+      // 的 nowrap + overflow:hidden，两个按钮才不会被裁掉（靠上面 12% 的宽度放下）。
       cell: ({ row }) => (
-        <div className="action-row">
+        <div className="action-row purchase-table-actions">
           <Button size="sm" variant="secondary" onClick={() => editInbound(row.original)}>编辑</Button>
           {row.original.status === "posted" && <Button size="sm" variant="ghost" onClick={() => reverseInbound(row.original)}>冲销</Button>}
         </div>

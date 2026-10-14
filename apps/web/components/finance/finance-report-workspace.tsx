@@ -56,6 +56,100 @@ const today = () => new Date().toISOString().slice(0, 10);
 const firstDayOfMonth = () => `${new Date().toISOString().slice(0, 7)}-01`;
 const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiClientError ? cause.message : fallback);
 
+/**
+ * 报表预览表的**建议列宽**：按「列名里含哪个关键字」查表，命中第一条就返回。
+ *
+ * 为什么要按列名匹配、而不是像别的页那样逐列写死 `meta.width`：
+ * 这张表的列**由后端下发**（`ReportTable.columns`，见下面 columns 的 useMemo），前端只负责渲染。
+ * 一共 11 张报表共用这一个 DataTable（销售对账明细 23 列 / 采购对账明细 17 列 / 三大报表 4~8 列 …），
+ * 列名与列序由 `finance-report.tables.ts`、`finance-report-forex.tables.ts`、
+ * `finance-three-statements.tables.ts` 决定 —— 逐列写死等于把后端列定义抄一份到前端，
+ * 后端一改列（2026-09-17 采购对账明细就插过一列「订单号」、2026-09-20 又调过顺序）就静默错位。
+ * 按列名匹配的代价只是「关键字表里要维护几个词」，换来的是一列都不必跟后端对齐。
+ *
+ * ⚠️ 后端 `ReportColumn.width`（finance-report.tables.ts 每列上的 `width: 12` 之类）**不是这里的宽度**：
+ * 它是**导出 XLSX 的 Excel 列宽**，只写进 xlsx 的 `<col>` 定义、**不参与页面布局**。
+ * 页面宽度与它无关，两边也刻意不追求数字一致（一个以字符为单位、一个是容器百分比）。
+ * 别因为「后端已经写了 width」就把这张表删掉 —— 删了页面就退回「各列均分」。
+ *
+ * 为什么必须有兜底：2026-10-09 起 `DataTable` **一律** `table-layout: fixed`
+ * （components/data/data-table.tsx），**没写 `width` 的列由浏览器均分容器宽度**。
+ * 23 列均分到 1366 屏每列只剩约 45px（扣掉左右内边距 8+8 只剩 29px），金额列会被折成 2~3 行。
+ * 所以「未识别的列」也要给一个宽度，不能留空。
+ *
+ * 这一页在 `.finance-page` 内，`globals.css` 的 `.finance-page .ui-table.data-table-fixed`
+ * 三条（260-264）把它放回「自动布局 + 换行」：因此这里给的是**建议宽度**，
+ * 浏览器会在内容与建议宽度之间再分配一次 —— 金额和客户名靠换行仍然看得全（不会省略号截断）。
+ * 也正因为是自动布局，**不追求总和精确等于 100%**：自动布局下总和 ≠ 100% 只会被浏览器
+ * 按比例伸缩（不溢出、不留空），为了让「金额/名称」这类内容多的列拿到更接近内容的宽度，
+ * 这里把已知列的建议宽度之和放在 100% 上下 —— 强凑 100% 反而会让某些关键字列被迫取整成难看的数字。
+ */
+const REPORT_COLUMN_WIDTH: ReadonlyArray<readonly [keyword: string, width: string]> = [
+  // ① 「本币」列（汇率折算出来的那几列）必须先于它们的不带 (本) 版本匹配，
+  //    否则「含税单价(本)」会先命中「单价」、拿到不带本币列的宽度。
+  ["调整金额(本)", "7%"],
+  ["含税金额(本)", "8%"],
+  ["单价(本)", "6%"],
+  ["含税单价(本)", "7%"],
+  ["税额(本)", "6%"],
+  ["金额(本)", "8%"],
+  // ② 原币的金额类：含税在前，避免被「金额」先吃掉。
+  ["含税金额", "8%"],
+  ["含税单价", "7%"],
+  ["金额", "8%"],
+  ["盈余", "8%"], // 现金流量表的「现金及现金等价物净增加额」等不带「金额」二字
+  ["税额", "6%"],
+  ["税", "6%"], // 兜底：「含税/税率/税额」以外的税相关列名
+  ["调整", "7%"],
+  ["折扣", "6%"],
+  ["汇率", "6%"],
+  // ③ 名称类（长文本）与单号类（订单号 / 采购单号 / 销售单号 / 对账单号…）。
+  ["客户", "11%"],
+  ["供应商", "11%"],
+  ["对方名称", "11%"],
+  ["产品", "11%"], // 产品名称 / 产品代码
+  ["规格", "8%"],
+  ["单位", "6%"],
+  ["项目", "11%"],
+  ["科目", "10%"],
+  ["银行", "11%"], // 银行账户 / 银行手续费（后者本可用金额类，但「银行」在前，给宽更安全）
+  ["结算", "11%"], // 结算方式（对账表里是「方式--账户标签」，很长）
+  ["单号", "9%"],
+  ["订单", "8%"],
+  ["来源", "8%"],
+  ["币种", "6%"],
+  ["数量", "6%"],
+  ["单价", "6%"],
+  ["收入", "7%"],
+  ["支出", "7%"],
+  ["成本", "8%"],
+  ["利润", "8%"],
+  ["管理费", "7%"],
+  ["占比", "7%"],
+  ["备注", "9%"],
+  ["说明", "9%"],
+  ["摘要", "11%"],
+  ["分类", "8%"],
+  // ④ 日期类与状态类（短，给少）。
+  ["日期", "7%"],
+  ["期间", "7%"],
+  ["月份", "6%"],
+  ["本期", "7%"],
+  ["状态", "6%"],
+  ["方向", "5%"],
+  ["行次", "4%"],
+];
+
+/** 未识别的列：给一个不比日期窄的默认值（6%），保证 fixed 布局下不会退化成「均分」。 */
+const REPORT_COLUMN_WIDTH_FALLBACK = "6%";
+
+/** 一列的建议宽度：列名里含宽度表的哪个关键字就用哪个，都不含时用兜底值。 */
+function reportColumnWidth(header: string): string {
+  const name = header.trim();
+  for (const [keyword, width] of REPORT_COLUMN_WIDTH) if (name.includes(keyword)) return width;
+  return REPORT_COLUMN_WIDTH_FALLBACK;
+}
+
 /** 一个月份（`YYYY-MM`）覆盖的日期区间。核算表的管理费是按月登记的，所以它的期间控件是月份。 */
 function monthRange(month: string): { from: string; to: string } {
   const [year, monthNumber] = month.split("-").map(Number);
@@ -152,10 +246,15 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
     return () => { cancelled = true; };
   }, []);
 
+  // 宽度**只**看列名（不看下标）：后端可以插列、换序（2026-09-17 采购对账明细插过「订单号」），
+  // 下标一移位，按下标配的宽度就会安到旁边那一列上，而表面上完全看不出来。
+  // 不写 `ellipsis`：2026-10-09 起它已是默认（数据表自己的注释里写了），而且这一页是自动布局 + 换行，
+  // 显式写 `ellipsis: true` 反而会和 `.finance-page` 那三条豁免打架。
   const columns = useMemo<ColumnDef<ReportRow>[]>(
     () => (table?.columns ?? []).map((column, index) => ({
       id: `col-${index}`,
       header: column.header,
+      meta: { width: reportColumnWidth(column.header) },
       cell: ({ row }) => textOf(row.original.cells[index]),
     })),
     [table],

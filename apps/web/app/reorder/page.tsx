@@ -209,30 +209,28 @@ export default function ReorderPage() {
             <EmptyState title="暂无可查的货号" description="销售单填了货号之后，这里会出现按货号归并的历次批次。" />
           ) : (
             <div className="table-wrap">
-              <table className="ui-table" data-testid="reorder-article-table">
+              <table className="ui-table table-bounded" data-testid="reorder-article-table">
                 <thead>
                   <tr>
-                    <th className="ui-table-head">货号</th>
-                    <th className="ui-table-head">订单数</th>
-                    <th className="ui-table-head">累计数量</th>
-                    <th className="ui-table-head">最近下单</th>
-                    <th className="ui-table-head">最近交期</th>
-                    <th className="ui-table-head">客户</th>
-                    <th className="ui-table-head">QC 合格率</th>
+                    <th className="ui-table-head cell-ellipsis" style={{ width: "12%" }} title="货号">货号</th>
+                    <th className="ui-table-head cell-ellipsis" style={{ width: "8%" }} title="订单数">订单数</th>
+                    <th className="ui-table-head cell-ellipsis" style={{ width: "12%" }} title="累计数量">累计数量</th>
+                    <th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="最近下单">最近下单</th>
+                    <th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="最近交期">最近交期</th>
+                    <th className="ui-table-head cell-ellipsis" style={{ width: "18%" }} title="客户">客户</th>
+                    <th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="QC 合格率">QC 合格率</th>
                   </tr>
                 </thead>
                 <tbody>
                   {articles.map((article) => (
                     <tr key={article.item_no_key}>
-                      <td>
-                        <Button variant="link" data-testid={`reorder-article-${article.item_no_key}`} onClick={() => selectArticle(article.item_no)}>{article.item_no}</Button>
-                      </td>
-                      <td>{article.order_count}{article.open_order_count ? `（在制 ${article.open_order_count}）` : ""}</td>
-                      <td>{unitText(article.quantities)}</td>
-                      <td>{article.last_order_date ? article.last_order_date.slice(0, 10) : "-"}</td>
-                      <td>{article.last_delivery_date ? article.last_delivery_date.slice(0, 10) : "-"}</td>
-                      <td>{article.customer_names.join("、") || "-"}</td>
-                      <td>{rateText(article.qc.qualified_rate)}</td>
+                      <td className="ui-table-cell cell-ellipsis" title={article.item_no}><Button variant="link" data-testid={`reorder-article-${article.item_no_key}`} onClick={() => selectArticle(article.item_no)}>{article.item_no}</Button></td>
+                      <td className="ui-table-cell cell-ellipsis" title={`${article.order_count}${article.open_order_count ? `（在制 ${article.open_order_count}）` : ""}`}>{article.order_count}{article.open_order_count ? `（在制 ${article.open_order_count}）` : ""}</td>
+                      <td className="ui-table-cell cell-ellipsis" title={unitText(article.quantities)}>{unitText(article.quantities)}</td>
+                      <td className="ui-table-cell cell-ellipsis" title={article.last_order_date ? article.last_order_date.slice(0, 10) : "-"}>{article.last_order_date ? article.last_order_date.slice(0, 10) : "-"}</td>
+                      <td className="ui-table-cell cell-ellipsis" title={article.last_delivery_date ? article.last_delivery_date.slice(0, 10) : "-"}>{article.last_delivery_date ? article.last_delivery_date.slice(0, 10) : "-"}</td>
+                      <td className="ui-table-cell cell-ellipsis" title={article.customer_names.join("、") || "-"}>{article.customer_names.join("、") || "-"}</td>
+                      <td className="ui-table-cell cell-ellipsis" title={rateText(article.qc.qualified_rate)}>{rateText(article.qc.qualified_rate)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -270,16 +268,16 @@ export default function ReorderPage() {
                     <div className="panel-heading"><h3>毛利（BOM 原料成本口径）</h3><span className="panel-note">与财务「销售利润报表(毛利)」同一口径</span></div>
                     <div className="panel-body">
                       <div className="table-wrap">
-                        <table className="ui-table">
-                          <thead><tr><th className="ui-table-head">币种</th><th className="ui-table-head">批数</th><th className="ui-table-head">销售金额</th><th className="ui-table-head">成本金额</th><th className="ui-table-head">毛利</th></tr></thead>
+                        <table className="ui-table table-bounded">
+                          <thead><tr><th className="ui-table-head cell-ellipsis" style={{ width: "12%" }} title="币种">币种</th><th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="批数">批数</th><th className="ui-table-head cell-ellipsis" style={{ width: "26%" }} title="销售金额">销售金额</th><th className="ui-table-head cell-ellipsis" style={{ width: "26%" }} title="成本金额">成本金额</th><th className="ui-table-head cell-ellipsis" style={{ width: "26%" }} title="毛利">毛利</th></tr></thead>
                           <tbody>
                             {detail.gross_margin.totals.map((total) => (
                               <tr key={total.currency}>
-                                <td>{total.currency}</td>
-                                <td>{total.order_count}</td>
-                                <td>{total.sales_amount}</td>
-                                <td>{total.cost_amount}</td>
-                                <td>{total.gross_profit}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={total.currency}>{total.currency}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={`${total.order_count}`}>{total.order_count}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={`${total.sales_amount}`}>{total.sales_amount}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={`${total.cost_amount}`}>{total.cost_amount}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={`${total.gross_profit}`}>{total.gross_profit}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -297,16 +295,16 @@ export default function ReorderPage() {
                     <div className="panel-heading"><h3>合格率趋势（{detail.quality_trend.length} 批）</h3></div>
                     <div className="panel-body">
                       <div className="table-wrap">
-                        <table className="ui-table">
-                          <thead><tr><th className="ui-table-head">订单号</th><th className="ui-table-head">下单日</th><th className="ui-table-head">受检</th><th className="ui-table-head">合格</th><th className="ui-table-head">合格率</th></tr></thead>
+                        <table className="ui-table table-bounded">
+                          <thead><tr><th className="ui-table-head cell-ellipsis" style={{ width: "44%" }} title="订单号">订单号</th><th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="下单日">下单日</th><th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="受检">受检</th><th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="合格">合格</th><th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="合格率">合格率</th></tr></thead>
                           <tbody>
                             {detail.quality_trend.map((point) => (
                               <tr key={point.order_no}>
-                                <td>{point.order_no}</td>
-                                <td>{point.order_date ? point.order_date.slice(0, 10) : "-"}</td>
-                                <td>{point.inspected}</td>
-                                <td>{point.qualified}</td>
-                                <td>{rateText(point.qualified_rate)}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={point.order_no}>{point.order_no}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={point.order_date ? point.order_date.slice(0, 10) : "-"}>{point.order_date ? point.order_date.slice(0, 10) : "-"}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={`${point.inspected}`}>{point.inspected}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={`${point.qualified}`}>{point.qualified}</td>
+                                <td className="ui-table-cell cell-ellipsis" title={rateText(point.qualified_rate)}>{rateText(point.qualified_rate)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -318,35 +316,35 @@ export default function ReorderPage() {
 
                 <h3>历次批次</h3>
                 <div className="table-wrap">
-                  <table className="ui-table" data-testid="reorder-batch-table">
+                  <table className="ui-table table-bounded" data-testid="reorder-batch-table">
                     <thead>
                       <tr>
-                        <th className="ui-table-head">订单号</th>
-                        <th className="ui-table-head">下单日</th>
-                        <th className="ui-table-head">交期</th>
-                        <th className="ui-table-head">数量</th>
-                        <th className="ui-table-head">状态</th>
-                        <th className="ui-table-head">QC 合格 / 不合格</th>
-                        <th className="ui-table-head">交期</th>
-                        <th className="ui-table-head">已出库</th>
-                        <th className="ui-table-head">操作</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="订单号">订单号</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="下单日">下单日</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "9%" }} title="交期">交期</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="数量">数量</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "9%" }} title="状态">状态</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "13%" }} title="QC 合格 / 不合格">QC 合格 / 不合格</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "9%" }} title="交期">交期</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "9%" }} title="已出库">已出库</th>
+                        <th className="ui-table-head cell-ellipsis" style={{ width: "17%" }} title="操作">操作</th>
                       </tr>
                     </thead>
                     <tbody>
                       {detail.orders.map((batch) => (
                         <tr key={batch.sales_order_id}>
-                          <td>{batch.order_no}{batch.reorder_from_order_no ? <small className="panel-note">（由 {batch.reorder_from_order_no} 返单）</small> : null}</td>
-                          <td>{batch.order_date.slice(0, 10)}</td>
-                          <td>{batch.delivery_date ? batch.delivery_date.slice(0, 10) : "-"}</td>
-                          <td>{batch.quantity} {batch.unit}</td>
-                          <td>{ORDER_STATUS_LABELS[batch.status] ?? batch.status}</td>
-                          <td>{batch.qc_qualified_quantity} / {batch.qc_rejected_quantity}</td>
-                          <td data-testid={`reorder-delivery-${batch.order_no}`}>
+                          <td className="ui-table-cell cell-ellipsis" title={`${batch.order_no}${batch.reorder_from_order_no ? `（由 ${batch.reorder_from_order_no} 返单）` : ""}`}>{batch.order_no}{batch.reorder_from_order_no ? <small className="panel-note">（由 {batch.reorder_from_order_no} 返单）</small> : null}</td>
+                          <td className="ui-table-cell cell-ellipsis" title={batch.order_date.slice(0, 10)}>{batch.order_date.slice(0, 10)}</td>
+                          <td className="ui-table-cell cell-ellipsis" title={batch.delivery_date ? batch.delivery_date.slice(0, 10) : "-"}>{batch.delivery_date ? batch.delivery_date.slice(0, 10) : "-"}</td>
+                          <td className="ui-table-cell cell-ellipsis" title={`${batch.quantity} ${batch.unit}`}>{batch.quantity} {batch.unit}</td>
+                          <td className="ui-table-cell cell-ellipsis" title={ORDER_STATUS_LABELS[batch.status] ?? batch.status}>{ORDER_STATUS_LABELS[batch.status] ?? batch.status}</td>
+                          <td className="ui-table-cell cell-ellipsis" title={`${batch.qc_qualified_quantity} / ${batch.qc_rejected_quantity}`}>{batch.qc_qualified_quantity} / {batch.qc_rejected_quantity}</td>
+                          <td className="ui-table-cell cell-ellipsis" data-testid={`reorder-delivery-${batch.order_no}`} title={`${batch.delivery.verdict_label}${batch.delivery.days_delta !== null && batch.delivery.days_delta !== 0 ? `（${batch.delivery.days_delta > 0 ? "+" : ""}${batch.delivery.days_delta} 天）` : ""}`}>
                             {batch.delivery.verdict_label}
                             {batch.delivery.days_delta !== null && batch.delivery.days_delta !== 0 ? `（${batch.delivery.days_delta > 0 ? "+" : ""}${batch.delivery.days_delta} 天）` : ""}
                           </td>
-                          <td>{batch.outbound_quantity}</td>
-                          <td>
+                          <td className="ui-table-cell cell-ellipsis" title={`${batch.outbound_quantity}`}>{batch.outbound_quantity}</td>
+                          <td className="ui-table-cell">
                             <div className="action-row">
                               <Button size="sm" variant="secondary" data-testid={`reorder-documents-${batch.order_no}`} onClick={() => selectOrder(batch.order_no)}>查看单据</Button>
                               {/* 「能不能返单」由**服务端**判定：前端自己拼条件会出现「按钮亮着、点了 422」。 */}

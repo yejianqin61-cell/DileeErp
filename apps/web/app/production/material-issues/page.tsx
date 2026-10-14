@@ -57,6 +57,52 @@ const typeLabels: Record<string, string> = { issue: "领料单", replenishment: 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 const idempotencyKey = () => `web-movement-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+/**
+ * 「领料单 / 补料单」列表（11 列）的声明宽度，**总和 86%**：剩下 14% 留给 `auditColumns()` 的
+ * 「创建人 / 最后修改人」（工厂列不给宽度，浏览器把那 14% 均分给它们，约 7% 一列，够放「姓名 + 时间」两行）。
+ *
+ * 每个数字的来历（估算基准：1366 屏内容宽 1034px）：
+ *   - 物料明细 16%（=165px）：`lines.map(line => \`名称 × 数量单位\`).join("、")`（193 行）把整单物料拼成一条长串，
+ *     是全表最长的自由文本 —— 宽度给它，它才不会把别的列挤窄（省略 + hover 看全文）；
+ *   - 单据号 9%（=93px）/ 生产单号 9% / 订单号 8%：编号型文本，够显示前缀；
+ *   - 操作 18%（=186px）：这一列在 draft 状态下要同时渲染 6 个按钮（导出 / 编辑 / 确认提交 / 删除 /
+ *     再建领料单 / 再建补料单，197 行），按「每个小按钮 44px + 间距 4px」估需要 6×44 + 5×4 = 284px，
+ *     18% 只放得下 4 个 —— 放不下时按钮折成两行。这是刻意取舍：把宽度让给「物料明细」，
+ *     也不让这一格吃掉整张表的 1/3（同一取舍见采购物料清单页的「图片 / 操作」两列）；
+ *   - 类型 5% / 数量合计 6% / 登记时间 8% / 状态 7%：短列（领料单·补料单 / 数字 / 日期 / 状态词），
+ *     按 4%~8% 区间取值。
+ */
+const ISSUE_COLUMN_WIDTH = {
+  orderNo: "8%",
+  productionOrder: "9%",
+  documentType: "5%",
+  movementNo: "9%",
+  status: "7%",
+  lines: "16%",
+  total: "6%",
+  createdAt: "8%",
+  actions: "18%",
+} as const;
+
+/**
+ * 详情弹窗里「领用物料（N 项）」小表（6 列）的列宽，**总和恰好 100%**（这张表没有审计列，
+ * 缺的百分比会被浏览器分摊给别的列，所以必须精确）。
+ *   - 物料名称 22% / 备注 22%：两个自由文本列（备注可以是整句说明）；
+ *   - 规格型号 20%：「3cm × 91m 双面哑光」这类型号串；
+ *   - 物料编码 18%：编码本体约 16 字符；
+ *   - 数量 10% / 单位 8%：数字与 1~3 个字的单位。
+ * 这 6 列都是 `id` + 自定义 `cell`，返回的**都是字符串**，所以 DataTable 从渲染结果取得到 title，
+ * hover 看全文不需要另外自写（data-table.tsx 的 `ellipsisTitle` 第一层）。
+ */
+const DETAIL_LINE_COLUMN_WIDTH = {
+  materialCode: "18%",
+  materialName: "22%",
+  specification: "20%",
+  unit: "8%",
+  quantity: "10%",
+  remark: "22%",
+} as const;
+
 export default function MaterialIssuesPage() {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [orders, setOrders] = useState<ProductionOrder[]>([]);
@@ -185,26 +231,26 @@ export default function MaterialIssuesPage() {
   }
 
   const columns: ColumnDef<Issue>[] = [
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "productionOrder", header: "生产单号", cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
-    { id: "documentType", header: "类型", cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
-    { accessorKey: "movementNo", header: "单据号" },
-    { id: "status", header: "状态", cell: ({ row }) => statusLabels[row.original.status] ?? row.original.status },
-    { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
-    { id: "total", header: "数量合计", cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
-    { accessorKey: "createdAt", header: "登记时间", cell: ({ row }) => formatBeijingShort(row.original.createdAt) || "-" },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: ISSUE_COLUMN_WIDTH.orderNo } },
+    { id: "productionOrder", header: "生产单号", meta: { width: ISSUE_COLUMN_WIDTH.productionOrder }, cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
+    { id: "documentType", header: "类型", meta: { width: ISSUE_COLUMN_WIDTH.documentType }, cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
+    { accessorKey: "movementNo", header: "单据号", meta: { width: ISSUE_COLUMN_WIDTH.movementNo } },
+    { id: "status", header: "状态", meta: { width: ISSUE_COLUMN_WIDTH.status }, cell: ({ row }) => statusLabels[row.original.status] ?? row.original.status },
+    { id: "lines", header: "物料明细", meta: { width: ISSUE_COLUMN_WIDTH.lines }, cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
+    { id: "total", header: "数量合计", meta: { width: ISSUE_COLUMN_WIDTH.total }, cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
+    { accessorKey: "createdAt", header: "登记时间", meta: { width: ISSUE_COLUMN_WIDTH.createdAt }, cell: ({ row }) => formatBeijingShort(row.original.createdAt) || "-" },
     ...auditColumns<Issue>(),
-    { id: "actions", header: "操作", cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={movementEditorHref(slip.documentType, { movementId: slip.id })}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void submit(slip)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "pending_outbound" && <><Button size="sm" disabled={busyRow} onClick={() => void confirmOutbound(slip)}>确认出库</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(slip)}>撤回提交</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}<Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("issue", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("replenishment", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
+    { id: "actions", header: "操作", meta: { width: ISSUE_COLUMN_WIDTH.actions }, cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={movementEditorHref(slip.documentType, { movementId: slip.id })}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void submit(slip)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "pending_outbound" && <><Button size="sm" disabled={busyRow} onClick={() => void confirmOutbound(slip)}>确认出库</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(slip)}>撤回提交</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}<Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("issue", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("replenishment", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
   ];
 
   // 详情里的领用物料表：必须逐行列全（用户双击就是为了看「这一单到底领了哪些料」）。
   const detailLineColumns: ColumnDef<MovementLine>[] = [
-    { id: "materialCode", header: "物料编码", cell: ({ row }) => row.original.material?.materialCode ?? "-" },
-    { id: "materialName", header: "物料名称", cell: ({ row }) => row.original.material?.name ?? row.original.materialId },
-    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material?.specificationModel ?? "-" },
-    { id: "unit", header: "单位", cell: ({ row }) => row.original.unit?.name ?? "-" },
-    { accessorKey: "quantity", header: "数量" },
-    { id: "remark", header: "备注", cell: ({ row }) => row.original.remark ?? "-" },
+    { id: "materialCode", header: "物料编码", meta: { width: DETAIL_LINE_COLUMN_WIDTH.materialCode }, cell: ({ row }) => row.original.material?.materialCode ?? "-" },
+    { id: "materialName", header: "物料名称", meta: { width: DETAIL_LINE_COLUMN_WIDTH.materialName }, cell: ({ row }) => row.original.material?.name ?? row.original.materialId },
+    { id: "specification", header: "规格型号", meta: { width: DETAIL_LINE_COLUMN_WIDTH.specification }, cell: ({ row }) => row.original.material?.specificationModel ?? "-" },
+    { id: "unit", header: "单位", meta: { width: DETAIL_LINE_COLUMN_WIDTH.unit }, cell: ({ row }) => row.original.unit?.name ?? "-" },
+    { accessorKey: "quantity", header: "数量", meta: { width: DETAIL_LINE_COLUMN_WIDTH.quantity } },
+    { id: "remark", header: "备注", meta: { width: DETAIL_LINE_COLUMN_WIDTH.remark }, cell: ({ row }) => row.original.remark ?? "-" },
   ];
 
   const detailFields: DetailField[] = detail ? [

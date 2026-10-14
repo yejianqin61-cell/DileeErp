@@ -38,6 +38,48 @@ const typeLabels: Record<string, string> = { issue: "领料单", replenishment: 
 const riskLabels: Record<string, string> = { MATERIAL_NOT_IN_BOM_WARNING: "不在 BOM 中", OVER_ISSUE_WARNING: "超出 BOM 用量", INSUFFICIENT_STOCK_WARNING: "库存不足" };
 const idempotencyKey = () => `web-issue-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+/**
+ * 本面板**两张表**的列宽。
+ *
+ * 估算基准（与仓库其它页同一套）：1366 屏内容宽 1034px（1% = 10.34px），
+ * 数据格 Arial 13px + 左右内边距 24px，表头 12px 加粗 + 24px。
+ *
+ * ⚠️ 面板里那段**手写可编辑草稿网格**（`<table className="ui-table">`，见下面的 draft 分支）
+ * 不归 DataTable 管、也不是 `table-layout: fixed`，所以**一列宽度都不给它**。
+ */
+const COLUMN_WIDTH = {
+  // —— T1「生产领料单」列表（6 个业务列 + 2 个审计列 → 业务列合计恰好 84%）——
+  // 审计两列由 `auditColumns()` 追加，不给宽度，占剩下 16%
+  // （改工厂用法会让 `lib/audit-columns-coverage.test.mjs` 的守卫失守）。
+  // 单据号：长文本列（"LL-20261009-001" 这类单号），给最宽的一档。
+  movementNo: "22%",
+  // 类型：只有领料单 / 补料单 / 退料单 / 报废单 / 冲销单（3 个汉字 = 36px + 24px ≈ 5.8%）。
+  documentType: "10%",
+  // 业务日期：定长 10 字符（2026-10-09）≈ 66.5px + 24px ≈ 8.8%，给 10% 不截断。
+  businessDate: "10%",
+  // 明细：一格塞「N 项 / 合计 X」（约 12 字符），是本表除单号外最长的文本列。
+  lines: "18%",
+  // 状态：草稿 / 待仓库出库 / 已过账 / 已冲销（2~5 个汉字），给 10%（6 列摊 84% 后的下限余量）。
+  status: "10%",
+  // 操作：同一行最多同时 3 个按钮（草稿行的「编辑 / 确认提交 / 删除」）
+  // = 3 × 44px + 2 × 4px 间距 = 140px ≈ 13.5%，向上取 14%（待出库行只有 1 个按钮 + 一句提示，更窄）。
+  actions: "14%",
+
+  // —— T2 详情弹窗「领用物料（N 项）」明细表（6 列，**没有审计列 → 合计必须精确到 100%**）——
+  // 物料编码：编码本体约 12~16 字符。
+  materialCode: "16%",
+  // 物料名称：最长的自由文本列之一。
+  materialName: "22%",
+  // 规格型号：「3cm × 91m 双面哑光」这类型号串。
+  specification: "18%",
+  // 单位：1~3 个字的单位名。
+  unit: "8%",
+  // 数量：纯数字（可能带 4 位小数）。
+  quantity: "10%",
+  // 备注：可以是一整句说明，给最宽的一档。
+  remark: "26%",
+} as const;
+
 export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChanged }: { productionOrderId: string; bomId?: string | null; issuable: boolean; onChanged?: () => void }) {
   const [movements, setMovements] = useState<Movement[]>([]);
   const [bomItems, setBomItems] = useState<BomItem[]>([]);
@@ -184,13 +226,13 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   }
 
   const columns = [
-    { accessorKey: "movementNo", header: "单据号" },
-    { id: "documentType", header: "类型", cell: ({ row }: { row: { original: Movement } }) => typeLabels[row.original.documentType] ?? row.original.documentType },
-    { id: "businessDate", header: "业务日期", cell: ({ row }: { row: { original: Movement } }) => (row.original.businessDate ?? row.original.createdAt ?? "").slice(0, 10) },
-    { id: "lines", header: "明细", cell: ({ row }: { row: { original: Movement } }) => `${row.original.lines.length} 项 / 合计 ${row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0)}` },
-    { id: "status", header: "状态", cell: ({ row }: { row: { original: Movement } }) => statusLabels[row.original.status] ?? row.original.status },
+    { accessorKey: "movementNo", header: "单据号", meta: { width: COLUMN_WIDTH.movementNo } },
+    { id: "documentType", header: "类型", meta: { width: COLUMN_WIDTH.documentType }, cell: ({ row }: { row: { original: Movement } }) => typeLabels[row.original.documentType] ?? row.original.documentType },
+    { id: "businessDate", header: "业务日期", meta: { width: COLUMN_WIDTH.businessDate }, cell: ({ row }: { row: { original: Movement } }) => (row.original.businessDate ?? row.original.createdAt ?? "").slice(0, 10) },
+    { id: "lines", header: "明细", meta: { width: COLUMN_WIDTH.lines }, cell: ({ row }: { row: { original: Movement } }) => `${row.original.lines.length} 项 / 合计 ${row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0)}` },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }: { row: { original: Movement } }) => statusLabels[row.original.status] ?? row.original.status },
     ...auditColumns<Movement>(),
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: Movement } }) => {
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }: { row: { original: Movement } }) => {
       const movement = row.original;
       if (movement.status === "draft") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busy === movement.id} onClick={() => openEdit(movement)}>编辑</Button><Button size="sm" disabled={busy === movement.id} onClick={() => void submit(movement)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busy === movement.id} onClick={() => void remove(movement)}>删除</Button></div>;
       // 待出库阶段不做任何库存动作：这里只提示「已交给仓库」并允许生产自己撤回。
@@ -202,12 +244,12 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
 
   // 详情里的领用物料表：列表行只有 materialId，物料编码/名称/规格型号必须来自详情接口。
   const detailLineColumns = [
-    { id: "materialCode", header: "物料编码", cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.materialCode ?? "-" },
-    { id: "materialName", header: "物料名称", cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.name ?? row.original.materialId },
-    { id: "specification", header: "规格型号", cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.specificationModel ?? "-" },
-    { id: "unit", header: "单位", cell: ({ row }: { row: { original: MovementLine } }) => row.original.unit?.name ?? "-" },
-    { accessorKey: "quantity", header: "数量" },
-    { id: "remark", header: "备注", cell: ({ row }: { row: { original: MovementLine } }) => row.original.remark ?? "-" },
+    { id: "materialCode", header: "物料编码", meta: { width: COLUMN_WIDTH.materialCode }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.materialCode ?? "-" },
+    { id: "materialName", header: "物料名称", meta: { width: COLUMN_WIDTH.materialName }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.name ?? row.original.materialId },
+    { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.specification }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.specificationModel ?? "-" },
+    { id: "unit", header: "单位", meta: { width: COLUMN_WIDTH.unit }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.unit?.name ?? "-" },
+    { accessorKey: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.quantity } },
+    { id: "remark", header: "备注", meta: { width: COLUMN_WIDTH.remark }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.remark ?? "-" },
   ];
 
   const detailFields: DetailField[] = detail ? [

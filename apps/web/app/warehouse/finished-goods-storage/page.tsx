@@ -29,8 +29,115 @@ const outboundStatusLabels: Record<string, string> = { draft: "待出库", poste
 const categoryLabels: Record<string, string> = { finished_goods: "成品", defective_goods: "次品" };
 // 出库通知状态：pending 待仓库建出库单 → outbound_created 已建单待过账 → partially_outbound 已部分出库 → completed 已出库（已通知财务收款）。
 const outboundNoticeStatusLabels: Record<string, string> = { pending: "待建出库单", outbound_created: "已建单待过账", partially_outbound: "已部分出库", completed: "已出库（已通知财务收款）", cancelled: "已取消" };
+/**
+ * 本页六张表的列宽（百分比）。2026-10-09 加。
+ *
+ * 为什么需要：`DataTable` 从 2026-10-09 起一律给 `<table>` 加 `data-table-fixed`
+ * （components/data/data-table.tsx），`table-layout: fixed` 下**没写宽度的列由浏览器均分**容器宽度；
+ * 下面的手写表「成品（按订单号收束）」连 `meta` 都用不上。本页六张表原来一列宽度都没写：
+ * 「入库通知 / 订单号 / 包装工序」跟「状态」「已送检」拿到一样宽 —— 长的只能看到开头、
+ * 短的留着大片空白。这里把宽度从「按列数均分」改成「按内容需要分配」。
+ *
+ * 两种总和：
+ *   - 四张 `DataTable` 用 `auditColumns()` 追加「创建人 / 最后修改人」（待入库通知 / 成品入库单 /
+ *     成品出库通知 / 成品出库单）：那两列是工厂产物，**不给宽度、不改用法**
+ *     （`lib/audit-columns-coverage.test.mjs` 有守卫盯着），所以声明总和 = **84%**，
+ *     剩下 16% 由浏览器均分给它们各 8%（与仓库首页、物料清单页的先例一致）；
+ *   - 「次品」存量（无审计列）与手写表「成品（按订单号收束）」声明总和 = **100%**。
+ *
+ * 估算基准（与仓库首页同一套）：1366 屏内容宽 1034px（1% = 10.34px）；数据格 Arial 13px
+ * + 左右内边距 24px，表头 12px 加粗 + 24px。下面几个数字因此比「数量 / 日期列 4%~6%」的通则宽，
+ * 逐条的理由写在该列旁边，主要是三种定长内容：日期的 10 个字符、三字状态、六字表头。
+ */
+const COLUMN_WIDTH = {
+  // —— T9 手写表「成品（按订单号收束）」（5 列，无审计列 → 合计 100%）——
+  // 展开行（`balanceRowText`）把「生产单 / 成品名 / 规格」拼进**第一列**，最长的一格在订单号列里，
+  // 所以它拿 36%（=372px）；三个数量列各 12%（=124px）是**表头**「成品现存数量」的需要
+  // （6 个汉字 = 72px + 24px ≈ 9.3%，给到 10% 以下先把表头截掉）；「明细」装「N 个成品批次 + 展开按钮」。
+  balanceOrderNo: "36%",
+  balanceStock: "12%",
+  balanceInbound: "12%",
+  balanceOutbound: "12%",
+  balanceDetail: "28%",
+  // —— T10「次品」存量（5 列，无审计列 → 合计 100%）——
+  // 与销售列表里的存量汇总同形：三个自由文本列（订单号 / 成品 / 规格）拿 86%，
+  // 两个短列「类别」（只有成品 / 次品两个值）6%、「存量」8%（数字 + 表头两个字）。
+  defectiveOrderNo: "26%",
+  defectiveProduct: "32%",
+  defectiveSpec: "28%",
+  defectiveCategory: "6%",
+  defectiveQuantity: "8%",
+  // —— T11「待入库通知」（13 列 = 11 业务 + 2 审计 → 业务合计 84%）——
+  // 本模块最宽的一张：11 个业务列摊 84%，长文本列（入库通知 / 订单号 / 批次 / 包装工序）各 8%~11%，
+  // 数值列 6%~7%（表头「已送检」「QC 合格」本身要 60~66px）。这张表必然靠横向滚动，取舍是
+  // 「长文本列不再被数值列挤到 7%」。
+  // 「通知日期」9% 是唯一超出「日期列 4%~6%」的一条：`2026-09-01` 定长 10 字符，
+  // Arial 13px 下 66.5px + 24px 内边距 = 90.5px ≈ 8.8%，给 6% 会截成「2026-09-…」而分不出日期。
+  noticeNo: "11%",
+  noticeOrderNo: "9%",
+  noticeBatch: "8%",
+  noticeOperation: "9%",
+  noticeDate: "9%",
+  noticeQuantity: "7%",
+  noticeSubmitted: "6%",
+  noticePendingSubmit: "6%",
+  noticeQcQualified: "7%",
+  noticeInboundPosted: "6%",
+  // 状态 6% 而不是 5%：标签是三个汉字（待送检 / 入库中 / 已完成 / 已取消），要 36px + 24px = 5.8%。
+  noticeStatus: "6%",
+  // —— T12「成品入库单」（8 列 = 6 业务 + 2 审计 → 业务合计 84%）——
+  // 列少、宽度宽裕：三个文本列拿 56%；「状态」10% 装「待入库登记」（5 个汉字 = 84px）；
+  // 操作列同时只有 1 个按钮（`inboundColumns` 的 actions 三元：过账或冲销），44px + 24px ≈ 6.6%，给 10% 留余量。
+  inboundNo: "16%",
+  inboundOrderNo: "14%",
+  inboundProduct: "26%",
+  inboundQuantity: "8%",
+  inboundStatus: "10%",
+  inboundActions: "10%",
+  // —— T13「成品出库通知（销售发起）」（11 列 = 9 业务 + 2 审计 → 业务合计 84%）——
+  // 「成品」（成品名 / 规格拼串）与「出库单」（一张通知对应多张出库单号的拼接串）是两列高风险长文本；
+  // 「已出库 / 剩余」的表头本身 6 个汉字 + 斜杠 ≈ 106px，给 11% 才不折表头；
+  // 操作列只有一个「生成出库单」（5 个汉字 = 80px + 24px ≈ 10%）。
+  outboundNoticeNo: "10%",
+  outboundNoticeOrderNo: "9%",
+  outboundNoticeCustomer: "8%",
+  outboundNoticeProduct: "11%",
+  outboundNoticeQuantity: "6%",
+  outboundNoticeShipped: "11%",
+  outboundNoticeStatus: "10%",
+  outboundNoticeOutbound: "9%",
+  outboundNoticeActions: "10%",
+  // —— T14「成品出库单」（12 列 = 10 业务 + 2 审计 → 业务合计 84%）——
+  // 全文件最挤的一张：操作列要 21%（理由见下），其余 9 个业务列只剩 63%，
+  // 于是长文本列压到 6%~8%（都还有省略 + hover 全文兜底），金额列按通则保 7%；
+  // 「来源通知」是单号（通则要求 ≥8%），1% 从「发货」挪过来 —— 发货是三段拼串，
+  // 7% 与 8% 都只能露出开头的日期，而单号是按单号检索用的，按通则给足。
+  outboundNo: "8%",
+  outboundOrderNo: "8%",
+  outboundCustomer: "6%",
+  outboundProduct: "8%",
+  outboundQuantity: "5%",
+  outboundAmount: "7%",
+  outboundShipping: "7%",
+  outboundNoticeRef: "8%",
+  outboundStatus: "6%",
+  // 操作列 21%：这一列同时最多渲染 **3** 个按钮（盘点文档写的「最多 5 个」是按 JSX 里 5 个
+  // `<Button>` 数出来的，实际有状态互斥）—— draft 是「过账出库 + 取消出库单」2 个，
+  // posted / shipped 是「维护发货 + 登记签收 + 冲销」3 个，signed 是「登记签收 + 冲销」2 个。
+  // 按钮是 12px 字号的 `ui-button-sm`：四个汉字 68px、两个汉字 44px，最坏一排
+  // 68 + 68 + 44 + 2×4px 间距 = 188px，加 24px 内边距 = 212px ≈ 20.5%，21% 刚好一行放得下
+  // （给 15% 会折成两行、行高翻倍）。`.action-row` 自带 `flex-wrap`，所以按钮本身不会被裁，
+  // 这一列的宽度只决定「一行还是两行」—— 宁可给它 21%，也不让它把九个业务列继续往下压。
+  outboundActions: "21%",
+} as const;
+
 const number = (value: string | undefined) => Number(value ?? 0);
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+/**
+ * 手写表展开行第一格（第 268 行）的文案：`└ 生产单 8 位 / 成品名 / 规格`。
+ * 抽成函数是为了让**格子里显示的文字与 hover 的 title 出自同一处** —— 两边各拼一遍，改一处就会漂。
+ */
+const balanceRowText = (row: Balance) => `└ 生产单 ${row.production_order_id ? row.production_order_id.slice(0, 8) : "-"} / ${row.product_name ?? "-"}${row.product_specification ? ` / ${row.product_specification}` : ""}`;
 
 export default function FinishedGoodsStoragePage() {
   const [orderNo, setOrderNo] = useState("");
@@ -141,59 +248,59 @@ export default function FinishedGoodsStoragePage() {
   }
 
   const balanceColumns = [
-    { id: "order", header: "订单号", cell: ({ row }: { row: { original: Balance } }) => row.original.order_no ?? "-" },
-    { id: "product", header: "成品", cell: ({ row }: { row: { original: Balance } }) => row.original.product_name ?? "-" },
-    { id: "spec", header: "规格", cell: ({ row }: { row: { original: Balance } }) => row.original.product_specification ?? "-" },
-    { accessorKey: "category", header: "类别", cell: ({ row }: { row: { original: Balance } }) => categoryLabels[row.original.category] ?? row.original.category },
-    { accessorKey: "quantity", header: "存量" },
+    { id: "order", header: "订单号", meta: { width: COLUMN_WIDTH.defectiveOrderNo }, cell: ({ row }: { row: { original: Balance } }) => row.original.order_no ?? "-" },
+    { id: "product", header: "成品", meta: { width: COLUMN_WIDTH.defectiveProduct }, cell: ({ row }: { row: { original: Balance } }) => row.original.product_name ?? "-" },
+    { id: "spec", header: "规格", meta: { width: COLUMN_WIDTH.defectiveSpec }, cell: ({ row }: { row: { original: Balance } }) => row.original.product_specification ?? "-" },
+    { accessorKey: "category", header: "类别", meta: { width: COLUMN_WIDTH.defectiveCategory }, cell: ({ row }: { row: { original: Balance } }) => categoryLabels[row.original.category] ?? row.original.category },
+    { accessorKey: "quantity", header: "存量", meta: { width: COLUMN_WIDTH.defectiveQuantity } },
   ];
   const noticeColumns = [
-    { accessorKey: "noticeNo", header: "入库通知" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "batch", header: "批次", cell: ({ row }: { row: { original: Notice } }) => row.original.batchNo ?? "-" },
-    { accessorKey: "operationNameSnapshot", header: "包装工序" },
-    { id: "date", header: "通知日期", cell: ({ row }: { row: { original: Notice } }) => row.original.noticeDate.slice(0, 10) },
-    { id: "quantity", header: "通知数量", cell: ({ row }: { row: { original: Notice } }) => `${row.original.noticeQuantity} ${row.original.unitNameSnapshot}` },
-    { accessorKey: "submittedQuantity", header: "已送检" },
-    { accessorKey: "availableSubmissionQuantity", header: "待送检" },
-    { accessorKey: "qcQualifiedQuantity", header: "QC 合格" },
-    { accessorKey: "inboundPostedQuantity", header: "已入库" },
-    { accessorKey: "status", header: "状态", cell: ({ row }: { row: { original: Notice } }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    { accessorKey: "noticeNo", header: "入库通知", meta: { width: COLUMN_WIDTH.noticeNo } },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.noticeOrderNo } },
+    { id: "batch", header: "批次", meta: { width: COLUMN_WIDTH.noticeBatch }, cell: ({ row }: { row: { original: Notice } }) => row.original.batchNo ?? "-" },
+    { accessorKey: "operationNameSnapshot", header: "包装工序", meta: { width: COLUMN_WIDTH.noticeOperation } },
+    { id: "date", header: "通知日期", meta: { width: COLUMN_WIDTH.noticeDate }, cell: ({ row }: { row: { original: Notice } }) => row.original.noticeDate.slice(0, 10) },
+    { id: "quantity", header: "通知数量", meta: { width: COLUMN_WIDTH.noticeQuantity }, cell: ({ row }: { row: { original: Notice } }) => `${row.original.noticeQuantity} ${row.original.unitNameSnapshot}` },
+    { accessorKey: "submittedQuantity", header: "已送检", meta: { width: COLUMN_WIDTH.noticeSubmitted } },
+    { accessorKey: "availableSubmissionQuantity", header: "待送检", meta: { width: COLUMN_WIDTH.noticePendingSubmit } },
+    { accessorKey: "qcQualifiedQuantity", header: "QC 合格", meta: { width: COLUMN_WIDTH.noticeQcQualified } },
+    { accessorKey: "inboundPostedQuantity", header: "已入库", meta: { width: COLUMN_WIDTH.noticeInboundPosted } },
+    { accessorKey: "status", header: "状态", meta: { width: COLUMN_WIDTH.noticeStatus }, cell: ({ row }: { row: { original: Notice } }) => noticeStatusLabels[row.original.status] ?? row.original.status },
     ...auditColumns<Notice>(),
   ];
   const inboundColumns = [
-    { accessorKey: "inboundNo", header: "入库单" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "product", header: "成品", cell: ({ row }: { row: { original: Inbound } }) => row.original.productNameSnapshot ?? "-" },
-    { accessorKey: "quantity", header: "数量" },
-    { id: "status", header: "状态", cell: ({ row }: { row: { original: Inbound } }) => inboundStatusLabels[row.original.status] ?? row.original.status },
+    { accessorKey: "inboundNo", header: "入库单", meta: { width: COLUMN_WIDTH.inboundNo } },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.inboundOrderNo } },
+    { id: "product", header: "成品", meta: { width: COLUMN_WIDTH.inboundProduct }, cell: ({ row }: { row: { original: Inbound } }) => row.original.productNameSnapshot ?? "-" },
+    { accessorKey: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.inboundQuantity } },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.inboundStatus }, cell: ({ row }: { row: { original: Inbound } }) => inboundStatusLabels[row.original.status] ?? row.original.status },
     ...auditColumns<Inbound>(),
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: Inbound } }) => row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/inbounds/${row.original.id}/post`, {}, "成品入库已过账")}>过账</Button> : row.original.status === "posted" ? <Button size="sm" variant="ghost" onClick={() => reverseInbound(row.original)}>冲销</Button> : null },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.inboundActions }, cell: ({ row }: { row: { original: Inbound } }) => row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/inbounds/${row.original.id}/post`, {}, "成品入库已过账")}>过账</Button> : row.original.status === "posted" ? <Button size="sm" variant="ghost" onClick={() => reverseInbound(row.original)}>冲销</Button> : null },
   ];
   const outboundColumns = [
-    { accessorKey: "outboundNo", header: "出库单" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "customer", header: "客户", cell: ({ row }: { row: { original: Outbound } }) => row.original.salesOrder?.customer?.name ?? "-" },
-    { id: "product", header: "成品", cell: ({ row }: { row: { original: Outbound } }) => row.original.productNameSnapshot ?? "-" },
-    { id: "quantity", header: "数量", cell: ({ row }: { row: { original: Outbound } }) => `${row.original.quantity}${row.original.unit?.name ? ` ${row.original.unit.name}` : ""}` },
-    { id: "amount", header: "应收金额", cell: ({ row }: { row: { original: Outbound } }) => { const price = row.original.salesOrder?.settlementUnitPrice ?? row.original.salesOrder?.unitPrice; return price ? `${(Number(price) * Number(row.original.quantity)).toFixed(2)} ${row.original.salesOrder?.currency ?? ""}` : "-"; } },
-    { id: "shipping", header: "发货", cell: ({ row }: { row: { original: Outbound } }) => row.original.shipmentDate ? `${row.original.shipmentDate.slice(0, 10)}${row.original.carrier ? ` / ${row.original.carrier}` : ""}${row.original.trackingNo ? ` / ${row.original.trackingNo}` : ""}` : "-" },
-    { id: "notice", header: "来源通知", cell: ({ row }: { row: { original: Outbound } }) => row.original.outboundNotice?.noticeNo ?? "-" },
-    { id: "status", header: "状态", cell: ({ row }: { row: { original: Outbound } }) => outboundStatusLabels[row.original.status] ?? row.original.status },
+    { accessorKey: "outboundNo", header: "出库单", meta: { width: COLUMN_WIDTH.outboundNo } },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.outboundOrderNo } },
+    { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.outboundCustomer }, cell: ({ row }: { row: { original: Outbound } }) => row.original.salesOrder?.customer?.name ?? "-" },
+    { id: "product", header: "成品", meta: { width: COLUMN_WIDTH.outboundProduct }, cell: ({ row }: { row: { original: Outbound } }) => row.original.productNameSnapshot ?? "-" },
+    { id: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.outboundQuantity }, cell: ({ row }: { row: { original: Outbound } }) => `${row.original.quantity}${row.original.unit?.name ? ` ${row.original.unit.name}` : ""}` },
+    { id: "amount", header: "应收金额", meta: { width: COLUMN_WIDTH.outboundAmount }, cell: ({ row }: { row: { original: Outbound } }) => { const price = row.original.salesOrder?.settlementUnitPrice ?? row.original.salesOrder?.unitPrice; return price ? `${(Number(price) * Number(row.original.quantity)).toFixed(2)} ${row.original.salesOrder?.currency ?? ""}` : "-"; } },
+    { id: "shipping", header: "发货", meta: { width: COLUMN_WIDTH.outboundShipping }, cell: ({ row }: { row: { original: Outbound } }) => row.original.shipmentDate ? `${row.original.shipmentDate.slice(0, 10)}${row.original.carrier ? ` / ${row.original.carrier}` : ""}${row.original.trackingNo ? ` / ${row.original.trackingNo}` : ""}` : "-" },
+    { id: "notice", header: "来源通知", meta: { width: COLUMN_WIDTH.outboundNoticeRef }, cell: ({ row }: { row: { original: Outbound } }) => row.original.outboundNotice?.noticeNo ?? "-" },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.outboundStatus }, cell: ({ row }: { row: { original: Outbound } }) => outboundStatusLabels[row.original.status] ?? row.original.status },
     ...auditColumns<Outbound>(),
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: Outbound } }) => <div className="action-row">{row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/outbounds/${row.original.id}/post`, {}, "成品出库已过账（已生成应收来源，等待财务收款）")}>过账出库</Button> : null}{row.original.status === "draft" ? <Button size="sm" variant="ghost" onClick={() => cancelOutbound(row.original)}>取消出库单</Button> : null}{["posted", "shipped"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => editShipping(row.original)}>维护发货</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => signOutbound(row.original)}>登记签收</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="ghost" onClick={() => reverseOutbound(row.original)}>冲销</Button> : null}</div> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.outboundActions }, cell: ({ row }: { row: { original: Outbound } }) => <div className="action-row">{row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/outbounds/${row.original.id}/post`, {}, "成品出库已过账（已生成应收来源，等待财务收款）")}>过账出库</Button> : null}{row.original.status === "draft" ? <Button size="sm" variant="ghost" onClick={() => cancelOutbound(row.original)}>取消出库单</Button> : null}{["posted", "shipped"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => editShipping(row.original)}>维护发货</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => signOutbound(row.original)}>登记签收</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="ghost" onClick={() => reverseOutbound(row.original)}>冲销</Button> : null}</div> },
   ];
   const outboundNoticeColumns = [
-    { accessorKey: "noticeNo", header: "出库通知" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "customer", header: "客户", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.salesOrder?.customer?.name ?? "-" },
-    { id: "product", header: "成品", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.productNameSnapshot ?? "-"}${row.original.productSpecificationSnapshot ? ` / ${row.original.productSpecificationSnapshot}` : ""}` },
-    { id: "quantity", header: "通知数量", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.noticeQuantity}${row.original.unit?.name ? ` ${row.original.unit.name}` : ""}` },
-    { id: "shipped", header: "已出库 / 剩余", cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.shippedQuantity ?? "0"} / ${row.original.remaining_quantity ?? "-"}` },
-    { id: "status", header: "状态", cell: ({ row }: { row: { original: OutboundNotice } }) => outboundNoticeStatusLabels[row.original.status] ?? row.original.status },
-    { id: "outbound", header: "出库单", cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.outbound_summary || "-" },
+    { accessorKey: "noticeNo", header: "出库通知", meta: { width: COLUMN_WIDTH.outboundNoticeNo } },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.outboundNoticeOrderNo } },
+    { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.outboundNoticeCustomer }, cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.salesOrder?.customer?.name ?? "-" },
+    { id: "product", header: "成品", meta: { width: COLUMN_WIDTH.outboundNoticeProduct }, cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.productNameSnapshot ?? "-"}${row.original.productSpecificationSnapshot ? ` / ${row.original.productSpecificationSnapshot}` : ""}` },
+    { id: "quantity", header: "通知数量", meta: { width: COLUMN_WIDTH.outboundNoticeQuantity }, cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.noticeQuantity}${row.original.unit?.name ? ` ${row.original.unit.name}` : ""}` },
+    { id: "shipped", header: "已出库 / 剩余", meta: { width: COLUMN_WIDTH.outboundNoticeShipped }, cell: ({ row }: { row: { original: OutboundNotice } }) => `${row.original.shippedQuantity ?? "0"} / ${row.original.remaining_quantity ?? "-"}` },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.outboundNoticeStatus }, cell: ({ row }: { row: { original: OutboundNotice } }) => outboundNoticeStatusLabels[row.original.status] ?? row.original.status },
+    { id: "outbound", header: "出库单", meta: { width: COLUMN_WIDTH.outboundNoticeOutbound }, cell: ({ row }: { row: { original: OutboundNotice } }) => row.original.outbound_summary || "-" },
     ...auditColumns<OutboundNotice>(),
-    { id: "actions", header: "操作", cell: ({ row }: { row: { original: OutboundNotice } }) => ["pending", "outbound_created", "partially_outbound"].includes(row.original.status) && Number(row.original.remaining_quantity ?? row.original.noticeQuantity) > 0 ? <Button size="sm" onClick={() => createOutboundFromNotice(row.original)}>生成出库单</Button> : row.original.status === "cancelled" ? <span>已取消</span> : <span>已发完</span> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.outboundNoticeActions }, cell: ({ row }: { row: { original: OutboundNotice } }) => ["pending", "outbound_created", "partially_outbound"].includes(row.original.status) && Number(row.original.remaining_quantity ?? row.original.noticeQuantity) > 0 ? <Button size="sm" onClick={() => createOutboundFromNotice(row.original)}>生成出库单</Button> : row.original.status === "cancelled" ? <span>已取消</span> : <span>已发完</span> },
   ];
   // 待入库 = 还有「可送检额度」或「在途入库」的通知。不用 remainingForInbound：QC 不合格的部分永远不会入库，
   // 按通知量减已入库会把这类通知永久算成待办。
@@ -253,19 +360,30 @@ export default function FinishedGoodsStoragePage() {
           已入库 / 已出库是单据口径（只统计已过账的入库单与已过账/已发出/已签收的出库单，
           不含退货回仓与转次品）。要对账请以「现存数量」为准。
         </p>
-        <div className="table-wrap"><table className="ui-table">
-          <thead><tr><th className="ui-table-head">订单号</th><th className="ui-table-head">成品现存数量</th><th className="ui-table-head">已入库数量</th><th className="ui-table-head">已出库数量</th><th className="ui-table-head">明细</th></tr></thead>
+        {/*
+          这是**手写** `<table>`（有分组展开行，换成 `DataTable` 会丢掉展开能力），拿不到 `meta` 那套，
+          所以照 globals.css 里 `.table-bounded` 那段注释的三件事办：
+          ①表上加 `table-bounded`（= 拿到固定布局 + `overflow: hidden`）；
+          ②每列显式给宽度（fixed 布局下没给宽度的列会被均分），取 `COLUMN_WIDTH.balance*`，总和 100%；
+          ③长文本格自己写 `cell-ellipsis` + `title`（手写表没有 DataTable 那套自动 title）。
+          展开行第一格（`balanceRowText(row)`）是「生产单 / 成品名 / 规格」三个字段的拼串、也是本表最长的一格，
+          所以它带 `cell-ellipsis` + `title`；收束行第一格装的是链接按钮，按 data-table.tsx 的同一口径
+          **不给** `cell-ellipsis`（按钮是原子内联盒，省略号根本不会出现，只会被 `overflow: hidden` 无声裁掉），
+          改为在格子上挂 `title`，悬停看完整订单号。
+        */}
+        <div className="table-wrap"><table className="ui-table table-bounded">
+          <thead><tr><th className="ui-table-head" style={{ width: COLUMN_WIDTH.balanceOrderNo }}>订单号</th><th className="ui-table-head" style={{ width: COLUMN_WIDTH.balanceStock }}>成品现存数量</th><th className="ui-table-head" style={{ width: COLUMN_WIDTH.balanceInbound }}>已入库数量</th><th className="ui-table-head" style={{ width: COLUMN_WIDTH.balanceOutbound }}>已出库数量</th><th className="ui-table-head" style={{ width: COLUMN_WIDTH.balanceDetail }}>明细</th></tr></thead>
           <tbody>
             {finishedGroups.length ? finishedGroups.map((group) => <Fragment key={group.orderNo}>
               <tr className="ui-table-row">
-                <td className="ui-table-cell"><Button size="sm" variant="link" aria-expanded={Boolean(expandedOrders[group.orderNo])} onClick={() => toggleGroup(group.orderNo)}>{group.orderNo}</Button></td>
+                <td className="ui-table-cell" title={group.orderNo}><Button size="sm" variant="link" aria-expanded={Boolean(expandedOrders[group.orderNo])} onClick={() => toggleGroup(group.orderNo)}>{group.orderNo}</Button></td>
                 <td className="ui-table-cell">{group.stock}</td>
                 <td className="ui-table-cell">{group.inbound}</td>
                 <td className="ui-table-cell">{group.outbound}</td>
                 <td className="ui-table-cell">{group.rows.length} 个成品批次 <Button size="sm" variant="ghost" onClick={() => toggleGroup(group.orderNo)}>{expandedOrders[group.orderNo] ? "收起" : "展开"}</Button></td>
               </tr>
               {expandedOrders[group.orderNo] ? group.rows.map((row, index) => <tr className="ui-table-row" key={`${group.orderNo}-${row.production_order_id ?? "none"}-${index}`}>
-                <td className="ui-table-cell">└ 生产单 {row.production_order_id ? row.production_order_id.slice(0, 8) : "-"} / {row.product_name ?? "-"}{row.product_specification ? ` / ${row.product_specification}` : ""}</td>
+                <td className="ui-table-cell cell-ellipsis" title={balanceRowText(row)}>{balanceRowText(row)}</td>
                 <td className="ui-table-cell">{row.quantity}</td>
                 <td className="ui-table-cell">-</td>
                 <td className="ui-table-cell">-</td>

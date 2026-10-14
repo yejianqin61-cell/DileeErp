@@ -26,6 +26,31 @@ import { notifyError, notifySuccess } from "../ui/toaster";
 
 type Unit = AuditRow & { id: string; name: string; remark?: string | null; isActive: boolean; createdAt?: string; updatedAt?: string };
 
+/**
+ * 单位池列表（6 列 = 4 个业务列 + `auditColumns()` 的「创建人 / 最后修改人」两列）的列宽。
+ *
+ * 业务列声明宽度**合计恰好 84%**，剩下 16% 留给那两列审计列 —— 它们不给宽度
+ * （改工厂用法会让 `lib/audit-columns-coverage.test.mjs` 的守卫失守），由固定布局按剩余空间分配。
+ *
+ * 估算基准（与仓库其它页同一套）：1366 屏内容宽 1034px（1% = 10.34px），
+ * 数据格 Arial 13px + 左右内边距 24px，表头 12px 加粗 + 24px。
+ *
+ * 取舍：只有 4 个业务列却要摊 84%（平均 21%/列），所以「短状态 4%~6%」的通则在这里不可能照办
+ * —— 先保总和精确，宽出来的份额给两个长文本列（单位名称 / 备注），状态压到 12%
+ * （2 个汉字 = 24px + 24px ≈ 4.6%，12% 是「4 列摊 84%」的下限余量）。
+ */
+const COLUMN_WIDTH = {
+  // 单位名称：长文本列（"打" / "平方米" / "KG"，也是搜索命中的列）。
+  name: "26%",
+  // 备注：自由文本（可以是一整句说明），本表最宽的一列，值缺失时回落 "-"。
+  remark: "30%",
+  // 状态：只有启用 / 停用两个字（24px + 24px ≈ 4.6%）。
+  status: "12%",
+  // 操作：同一行同时 3 个按钮（编辑 / 停用（启用）/ 删除）
+  // = 3 × 44px + 2 × 4px 间距 = 140px ≈ 13.5%，向上取 16%（这一分支宽度有余量）。
+  actions: "16%",
+} as const;
+
 export function UnitPoolPage() {
   const [rows, setRows] = useState<Unit[]>([]);
   const [query, setQuery] = useState("");
@@ -60,11 +85,13 @@ export function UnitPoolPage() {
   function remove(row: Unit) { void run(() => apiRequest(`/units/${row.id}`, { method: "DELETE" }), "单位已删除"); }
 
   const columns: ColumnDef<Unit>[] = [
-    { accessorKey: "name", header: "单位名称" },
-    { accessorKey: "remark", header: "备注", cell: ({ row }) => row.original.remark || "-" },
-    { id: "status", header: "状态", cell: ({ row }) => <span className={row.original.isActive ? "status-success" : "status-warning"}>{row.original.isActive ? "启用" : "停用"}</span> },
+    { accessorKey: "name", header: "单位名称", meta: { width: COLUMN_WIDTH.name } },
+    { accessorKey: "remark", header: "备注", meta: { width: COLUMN_WIDTH.remark }, cell: ({ row }) => row.original.remark || "-" },
+    // 「状态」格渲染的是 `<span>`（JSX），DataTable 的 hover title 第一层（渲染结果是字符串）取不到，
+    // 所以补 `accessorFn` 把屏幕上那串字（启用 / 停用）作为这一列的值，title 从第二层拿到。
+    { id: "status", accessorFn: (row) => row.isActive ? "启用" : "停用", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => <span className={row.original.isActive ? "status-success" : "status-warning"}>{row.original.isActive ? "启用" : "停用"}</span> },
     ...auditColumns<Unit>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions"><Button size="sm" variant="secondary" onClick={() => openEdit(row.original)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => toggle(row.original)}>{row.original.isActive ? "停用" : "启用"}</Button><Button size="sm" variant="destructive" onClick={() => remove(row.original)}>删除</Button></div> }
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <div className="page-actions"><Button size="sm" variant="secondary" onClick={() => openEdit(row.original)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => toggle(row.original)}>{row.original.isActive ? "停用" : "启用"}</Button><Button size="sm" variant="destructive" onClick={() => remove(row.original)}>删除</Button></div> }
   ];
 
   return <>

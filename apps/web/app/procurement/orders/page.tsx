@@ -53,6 +53,48 @@ const messageOf = (cause: unknown, fallback: string) => (cause instanceof ApiCli
 const downloadErrorOf = (cause: unknown, fallback: string) => (cause instanceof Error && cause.message ? cause.message : fallback);
 const statusMap: Record<string, string> = { ordered: "已下单", partially_arrived: "部分到货", arrived_complete: "到货完成" };
 
+/**
+ * 采购单列表的列宽（2026-10-09：`DataTable` 一律 `table-layout: fixed`，没写宽度的列由浏览器**均分**，
+ * 这里把「均分」换成「按内容需要分配」）。
+ *
+ * 口径同 `app/procurement/inbounds/page.tsx`，两个常数先记住：
+ *   - 可用宽度基线 **1034px**（1366 视口减侧栏后的实测表宽）；
+ *   - `.ui-table-cell` 左右各 12px 内边距 → 一列定 n% 后真正能放字的宽度是 `n% × 1034 - 24`
+ *     （8% → 58.7px，与 `components/data/audit-columns.tsx:44` 记的实测值一致）。
+ *
+ * 本表 8 列 = 6 列业务列（含「操作」）+ `auditColumns()` 的「创建人 / 最后修改人」。
+ * 后两列**刻意不给宽度、也不改工厂用法**（`lib/audit-columns-coverage.test.mjs` 有守卫），
+ * 所以下面 6 个数字的总和必须是 **84%**，剩下 16% 由那两列均分（各 8% = 58.7px）。
+ */
+const COLUMN_WIDTH = {
+  // 采购单号：`PO-20261009-0001` 一行 16 字符 ≈ 110px（需求 10.6%），但 84% 要分给 6 列、
+  // 其中操作列一个就吃掉 28%（见下）。按内容取 11%（= 89.7px，放得下约 9 个字符），
+  // 长出来的靠「cell-ellipsis 省略 + hover 看全文」兜住。
+  purchaseOrderNo: "11%",
+  // 订单号：与采购单号同形（`SO-20261009-0001`），取 12% —— 它还是打开详情的链接，
+  // 一次能看到整串比省下 1% 更值（多出这 1% 正好把 84% 分平）。
+  orderNo: "12%",
+  // 供应商：供应商名 6~14 汉字（`深圳市恒达精密制造有限公司`），这是本表最长的文本列，
+  // 取规则下限往上 11%（= 89.7px，放得下 7 个汉字）；剩下的靠 hover 看全。
+  supplier: "10%",
+  // 状态：`已下单 / 部分到货 / 到货完成 / 超单`，最长 4 汉字 ≈ 48px，
+  // 短状态 4%~6% 里取 6%（= 38.1px），超长部分 hover。
+  status: "6%",
+  // 金额：`123456.78 CNY` ≈ 13 字符 ≈ 90px，金额列规则下限 7%，这里给 16%（= 141.4px）——
+  // 它的取值区间是「≥7% 无上限」，而金额看错一位就是事故，宁宽勿窄。
+  amount: "14%",
+  // 操作列：**最多同时 6 个控件**（到货跟踪 / 关闭到货 / 退回采购计划 / 打印信息 / 导出 / 「已关闭」标签）。
+  // 按规则「每控件 44px + 间距 4px」：5 个按钮 + 1 个标签 = 6 × 44 + 5 × 4 = 284px，
+  // 加本格 24px 内边距 = 308px → 29.8%。按 12px 字号的实测值重算一遍更松：
+  // `ui-button-sm`（padding 0 10px、font-size 12px）下四字按钮 ≈ 68px、六字按钮 ≈ 92px，
+  // 6 个 ≈ 448px → 43%，做不到；所以取 28%（= 289.5px）。
+  // 为什么必须给到全表最大的一列：`.action-row`（`globals.css:134`）是 `flex-wrap: wrap`，
+  // 格子不够宽时按钮会**叠行**把行高撑起来，且没有任何省略号提示这件事 —— 这里宁可让
+  // 「供应商」只有 11%（hover 看全），也不让操作列叠行。
+  // 给常见的 3～4 个动作留出同一行空间，减少采购单列表的行高抖动。
+  actions: "31%",
+} as const;
+
 export default function PurchaseOrdersPage() {
   const searchParams = useSearchParams();
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
@@ -183,13 +225,13 @@ export default function PurchaseOrdersPage() {
   }
 
   const orderColumns: ColumnDef<PurchaseOrder>[] = [
-    { accessorKey: "purchaseOrderNo", header: "采购单号" },
-    { id: "orderNo", header: "订单号", cell: ({ row }) => <Button variant="link" asChild><Link href={`/procurement/orders/${row.original.id}`}>{row.original.orderNo}</Link></Button> },
-    { id: "supplier", header: "供应商", cell: ({ row }) => row.original.supplier?.name ?? "-" },
-    { id: "status", header: "状态", cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
-    { id: "amount", header: "金额", cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },
+    { accessorKey: "purchaseOrderNo", header: "采购单号", meta: { width: COLUMN_WIDTH.purchaseOrderNo } },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo }, cell: ({ row }) => <Button variant="link" asChild><Link href={`/procurement/orders/${row.original.id}`}>{row.original.orderNo}</Link></Button> },
+    { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.supplier }, cell: ({ row }) => row.original.supplier?.name ?? "-" },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
+    { id: "amount", header: "金额", meta: { width: COLUMN_WIDTH.amount }, cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },
     ...auditColumns<PurchaseOrder>(),
-    { id: "actions", header: "操作", cell: ({ row }) => {
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => {
       const complete = row.original.items.length > 0 && row.original.items.every((item) => item.receipts.reduce((sum, r) => sum + Number(r.quantity), 0) >= Number(item.quantity));
       const closed = row.original.extensionData?.arrival_closed;
       const noReceipts = row.original.items.every((item) => item.receipts.length === 0);
@@ -197,7 +239,7 @@ export default function PurchaseOrdersPage() {
       // 走质检/退货那条线 —— 到货是既成事实，退回计划会与它打架。
       const revertible = row.original.status === "ordered" && noReceipts;
       const canReceive = ["ordered", "partially_arrived", "arrived_complete"].includes(row.original.status) && !closed;
-      return <div className="action-row">
+      return <div className="action-row purchase-table-actions">
         {canReceive && <Button size="sm" variant="secondary" asChild><Link href={`/procurement/orders/${row.original.id}`}>到货跟踪</Link></Button>}
         {complete && !closed && <Button size="sm" variant="secondary" onClick={() => void action(`/purchase-orders/${row.original.id}/close-arrivals`, undefined, "到货已关闭，批次已进入来料质检")}>关闭到货</Button>}
         {revertible && <Button size="sm" variant="ghost" data-testid={`order-revert-to-plan-${row.original.purchaseOrderNo}`} onClick={() => revertToPlan(row.original)}>退回采购计划</Button>}

@@ -37,6 +37,59 @@ const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClie
 const typeLabels: Record<string, string> = { issue: "领料单", replenishment: "补料单" };
 const idempotencyKey = () => `web-outbound-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
+/**
+ * 仓库首页三张表的列宽（百分比）。
+ *
+ * 为什么需要：2026-10-09 起 `DataTable` 一律给 `<table>` 加 `data-table-fixed`
+ * （components/data/data-table.tsx），`table-layout: fixed` 下**没写宽度的列由浏览器均分**容器宽度。
+ * 「某列不受限把表顶宽」因此不会发生，但"均分"对这三张表是错的：`采购/到货`、`物料`（都是
+ * `A / B` 两段拼串）与「物料明细」（整单明细摊成一格）跟「状态」「明细数」拿到一样宽 ——
+ * 长的只能看到开头、短的留着大片空白。这里把宽度从"按列数均分"改成"按内容需要分配"。
+ *
+ * 总和为什么是 84% 而不是 100%：三张表都用 `auditColumns()` 追加「创建人 / 最后修改人」，
+ * 那两列是工厂产物（`lib/audit-columns-coverage.test.mjs` 有守卫盯着用法）**不给宽度** ——
+ * 声明 84% 正好把剩下的 16% 留给它们各 8%，与物料清单页（app/procurement/materials/page.tsx）
+ * 的先例一致。多一个点就会让表比容器宽、把已经消掉的横向滚动条又拉回来。
+ *
+ * 每个数字的来历：
+ *   - 长文本列 ≥8%（通知单号 / 采购·到货拼串 / 物料编码·名称拼串 / 订单号 / 单据号 / 生产单号）：
+ *     内容是长度无界的字符串，给窄了就只能看到开头（省略号 + hover 全文兜底）；
+ *   - 短列 4%~8%（通知时间 / 业务日期 / 提交时间 / 通知数量 / 状态 / 明细数 / 类型）：
+ *     内容是固定形状的日期、数字或三字状态，超过 8% 是浪费；
+ *   - `materialLines`（「待出库通知」的物料明细）14%：第 139 行把整单物料摊成一格
+ *     （`物料名 × 数量单位`，多条用「、」连接），这串文本没有上界，是这张表最该宽的列；
+ *     它的 cell 返回的就是一个字符串，`DataTable` 的省略 title 取得到全文；
+ *   - 操作列 12%：三张表这一列都只渲染一个按钮，最长的文案是 6 个汉字
+ *     （「接收入库通知」「补建入库草稿」），12px 字号下按钮约 92px + 单元格左右内边距 24px = 116px
+ *     ≈ 11.2%，12% 留一点余量，按钮不会折行；
+ *   - 「已接收但缺入库草稿」只有 5 个业务列，同样 84% 的预算摊到更少的列上，同名列必然更宽
+ *     （18/19/19 对 12/14/14）—— 这是按需分配的结果，不是数字抄错了。
+ */
+const COLUMN_WIDTH = {
+  // 三张表共用的列：同名列给同一个宽度，改一处三张表一起走，不容易漂。
+  orderNo: "8%",
+  quantity: "8%",
+  status: "8%",
+  actions: "12%",
+  // 「待入库通知」（10 列 = 7 业务 + 2 审计 + 1 操作）
+  noticeNo: "12%",
+  notifiedAt: "8%",
+  purchase: "14%",
+  material: "14%",
+  // 「待出库通知」（11 列 = 8 业务 + 2 审计 + 1 操作）
+  movementNo: "12%",
+  documentType: "6%",
+  productionOrder: "10%",
+  businessDate: "8%",
+  materialLines: "14%",
+  lineCount: "6%",
+  submittedAt: "8%",
+  // 「已接收但缺入库草稿」（8 列 = 5 业务 + 2 审计 + 1 操作）
+  stuckNoticeNo: "18%",
+  stuckPurchase: "19%",
+  stuckMaterial: "19%",
+} as const;
+
 export default function WarehousePage() {
   const [inboundNotices, setInboundNotices] = useState<InboundNotice[]>([]);
   const [stuckNotices, setStuckNotices] = useState<InboundNotice[]>([]);
@@ -108,39 +161,40 @@ export default function WarehousePage() {
   const noticeStatusLabels: Record<string, string> = { pending: "待接收", acknowledged: "已接收", processing: "入库中", completed: "已完成", cancelled: "已取消" };
 
   const stuckColumns: ColumnDef<InboundNotice>[] = [
-    { accessorKey: "noticeNo", header: "通知单号" },
-    { id: "purchase", header: "采购/到货", cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` },
-    { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
-    { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
-    { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    { accessorKey: "noticeNo", header: "通知单号", meta: { width: COLUMN_WIDTH.stuckNoticeNo } },
+    { id: "purchase", header: "采购/到货", meta: { width: COLUMN_WIDTH.stuckPurchase }, cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` },
+    { id: "material", header: "物料", meta: { width: COLUMN_WIDTH.stuckMaterial }, cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
+    { id: "quantity", header: "通知数量", meta: { width: COLUMN_WIDTH.quantity }, cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
+    { accessorKey: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
     ...auditColumns<InboundNotice>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void repairNotice(row.original)}>补建入库草稿</Button> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void repairNotice(row.original)}>补建入库草稿</Button> },
   ];
 
   const noticeColumns: ColumnDef<InboundNotice>[] = [
-    { accessorKey: "noticeNo", header: "通知单号" },
-    { id: "notifiedAt", header: "通知时间", cell: ({ row }) => formatBeijingShort(row.original.notifiedAt) || "-" },
-    { id: "purchase", header: "采购/到货", cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` },
-    { accessorKey: "orderNo", header: "订单号" },
-    { id: "material", header: "物料", cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
-    { id: "quantity", header: "通知数量", cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
-    { accessorKey: "status", header: "状态", cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
+    { accessorKey: "noticeNo", header: "通知单号", meta: { width: COLUMN_WIDTH.noticeNo } },
+    { id: "notifiedAt", header: "通知时间", meta: { width: COLUMN_WIDTH.notifiedAt }, cell: ({ row }) => formatBeijingShort(row.original.notifiedAt) || "-" },
+    { id: "purchase", header: "采购/到货", meta: { width: COLUMN_WIDTH.purchase }, cell: ({ row }) => `${row.original.purchaseOrder?.purchaseOrderNo ?? "-"} / ${row.original.purchaseReceipt?.receiptNo ?? "-"}` },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
+    { id: "material", header: "物料", meta: { width: COLUMN_WIDTH.material }, cell: ({ row }) => `${row.original.purchaseOrderItem?.material?.materialCode ?? ""} / ${row.original.purchaseOrderItem?.material?.name ?? "-"}` },
+    { id: "quantity", header: "通知数量", meta: { width: COLUMN_WIDTH.quantity }, cell: ({ row }) => `${row.original.notifiedQuantity} ${row.original.purchaseOrderItem?.unit?.name ?? ""}` },
+    { accessorKey: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => noticeStatusLabels[row.original.status] ?? row.original.status },
     ...auditColumns<InboundNotice>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void acknowledgeNotice(row.original)}>接收入库通知</Button> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void acknowledgeNotice(row.original)}>接收入库通知</Button> },
   ];
 
   const pendingOutboundColumns: ColumnDef<PendingOutbound>[] = [
-    { accessorKey: "movementNo", header: "单据号" },
-    { id: "documentType", header: "类型", cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
-    { id: "productionOrder", header: "生产单号", cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
-    { id: "orderNo", header: "订单号", cell: ({ row }) => row.original.orderNo ?? row.original.productionOrder?.orderNo ?? "-" },
-    { id: "businessDate", header: "业务日期", cell: ({ row }) => (row.original.businessDate ?? row.original.createdAt ?? "").slice(0, 10) },
+    { accessorKey: "movementNo", header: "单据号", meta: { width: COLUMN_WIDTH.movementNo } },
+    { id: "documentType", header: "类型", meta: { width: COLUMN_WIDTH.documentType }, cell: ({ row }) => typeLabels[row.original.documentType] ?? row.original.documentType },
+    { id: "productionOrder", header: "生产单号", meta: { width: COLUMN_WIDTH.productionOrder }, cell: ({ row }) => row.original.productionOrder?.productionOrderNo ?? "-" },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo }, cell: ({ row }) => row.original.orderNo ?? row.original.productionOrder?.orderNo ?? "-" },
+    { id: "businessDate", header: "业务日期", meta: { width: COLUMN_WIDTH.businessDate }, cell: ({ row }) => (row.original.businessDate ?? row.original.createdAt ?? "").slice(0, 10) },
     // 仓库最关心「出哪些料、各多少」：把整单明细摊平成一格，多条用「、」连接。
-    { id: "lines", header: "物料明细", cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
-    { id: "lineCount", header: "明细数", cell: ({ row }) => row.original.lines.length },
-    { id: "submittedAt", header: "提交时间", cell: ({ row }) => formatBeijingShort(row.original.submittedAt) || "-" },
+    // 这一列是全表唯一没有长度上界的（14%），且 cell 返回字符串 —— 省略号与 hover 全文都成立。
+    { id: "lines", header: "物料明细", meta: { width: COLUMN_WIDTH.materialLines }, cell: ({ row }) => row.original.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、") || "-" },
+    { id: "lineCount", header: "明细数", meta: { width: COLUMN_WIDTH.lineCount }, cell: ({ row }) => row.original.lines.length },
+    { id: "submittedAt", header: "提交时间", meta: { width: COLUMN_WIDTH.submittedAt }, cell: ({ row }) => formatBeijingShort(row.original.submittedAt) || "-" },
     ...auditColumns<PendingOutbound>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <Button size="sm" disabled={busy === row.original.id} onClick={() => void confirmOutbound(row.original)}>{busy === row.original.id ? "出库中..." : "确认出库"}</Button> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <Button size="sm" disabled={busy === row.original.id} onClick={() => void confirmOutbound(row.original)}>{busy === row.original.id ? "出库中..." : "确认出库"}</Button> },
   ];
 
   if (loading) return <><PageHeader title="仓库" /><LoadingState /></>;

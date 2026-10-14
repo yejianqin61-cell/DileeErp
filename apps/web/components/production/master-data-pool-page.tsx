@@ -23,6 +23,46 @@ const emptyToUndefined = (value: string | undefined) => (value !== undefined && 
 const operationPayload = (values: Record<string, string>) => ({ operation_name: values.operation_name, operation_code: emptyToUndefined(values.operation_code), default_unit_id: emptyToUndefined(values.default_unit_id) });
 const locationPayload = (values: Record<string, string>) => ({ name: values.name, location_type: values.location_type, contact_name: emptyToUndefined(values.contact_name), contact_phone: emptyToUndefined(values.contact_phone), address: emptyToUndefined(values.address), remark: emptyToUndefined(values.remark) });
 
+/**
+ * 主数据池（工序池 / 加工地点池）**两个分支**的列宽。
+ *
+ * 两个分支的列定义都接在 `auditColumns()` 后面，所以业务列声明宽度各自**合计恰好 84%**，
+ * 剩下 16% 留给不给宽度的「创建人 / 最后修改人」（改工厂用法会让
+ * `lib/audit-columns-coverage.test.mjs` 的守卫失守）：
+ *   - 工序分支：5 个业务列（名称 / 编码 / 默认单位 / 状态 / 操作）+ 2 个审计列 = 7 列；
+ *   - 地点分支：4 个业务列（名称 / 类型 / 状态 / 操作）+ 2 个审计列 = 6 列（没有「编码」列）。
+ *
+ * 估算基准（与仓库其它页同一套）：1366 屏内容宽 1034px（1% = 10.34px），
+ * 数据格 Arial 13px + 左右内边距 24px，表头 12px 加粗 + 24px。
+ *
+ * 取舍：列少（4~5 列）却要摊 84%（平均 16.8%~21%/列），所以「短状态 4%~6%」的通则在这里
+ * 不可能照办 —— 取舍是先保总和精确，宽出来的份额给长文本列（名称），短列压到 12%~16%
+ * （它们的表头是 2~4 个汉字，本身就要 4.4%~7.0%）。
+ */
+const COLUMN_WIDTH = {
+  // —— 工序池分支（5 个业务列，合计 28+16+14+12+14 = 84%）——
+  // 工序名称：长文本列（「包装（收尾）」「激光切割」这类名称），给最宽的一档。
+  operationName: "28%",
+  // 编码：自由文本编码（"OP-PACK-01"），长短不一。
+  operationCode: "16%",
+  // 默认单位：单位名（"个" / "平方米"），值缺失时回落 "-"。
+  operationUnit: "14%",
+  // 状态：只有启用 / 停用 / 已删除（2~3 个汉字 = 36px + 24px ≈ 5.8%）。
+  operationStatus: "12%",
+
+  // —— 加工地点池分支（4 个业务列，合计 38+16+16+14 = 84%）——
+  // 地点名称：长文本列（"外加工点 · 某某厂"），这一分支没有编码列，余量都给它。
+  locationName: "38%",
+  // 类型：厂内车间 / 外加工点（4 个汉字 = 48px + 24px ≈ 7.0%）。
+  locationType: "16%",
+  // 状态：与工序分支同义，但这一分支只有 4 列，按 84% 摊下来下限就是 16%。
+  locationStatus: "16%",
+
+  // 操作列两个分支共用：同一行最多同时 3 个按钮（编辑 / 停用（启用）/ 删除），
+  // 已删除的行只有「恢复」一个 = 3 × 44px + 2 × 4px 间距 = 140px ≈ 13.5%，向上取 14%。
+  actions: "14%",
+} as const;
+
 export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" }) {
   const [rows, setRows] = useState<Array<Operation | Location>>([]);
   const [units, setUnits] = useState<Unit[]>([]);
@@ -55,7 +95,7 @@ export function MasterDataPoolPage({ kind }: { kind: "operations" | "locations" 
   function remove(row: Operation | Location) { void run(() => apiRequest(isOperations ? `/production/operations/${row.id}` : `/production/locations/${row.id}`, { method: "DELETE" }), isOperations ? "工序已删除" : "加工地点已删除"); }
   function restore(row: Operation | Location) { void run(() => apiRequest(isOperations ? `/production/operations/${row.id}/restore` : `/production/locations/${row.id}/restore`, { method: "POST" }), isOperations ? "工序已恢复" : "加工地点已恢复"); }
   const actionCell = (row: Operation | Location) => row.deletedAt ? <Button size="sm" variant="secondary" onClick={() => restore(row)}>恢复</Button> : <><Button size="sm" variant="secondary" onClick={() => openEdit(row)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => toggle(row)}>{row.isActive ? "停用" : "启用"}</Button><Button size="sm" variant="destructive" onClick={() => remove(row)}>删除</Button></>;
-  const columns: ColumnDef<Operation | Location>[] = isOperations ? [{ id: "name", header: "工序名称", cell: ({ row }) => (row.original as Operation).operationName }, { id: "code", header: "编码", cell: ({ row }) => (row.original as Operation).operationCode || "-" }, { id: "unit", header: "默认单位", cell: ({ row }) => (row.original as Operation).defaultUnit?.name || "-" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, ...auditColumns<Operation | Location>(), { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }] : [{ id: "name", header: "地点名称", cell: ({ row }) => (row.original as Location).name }, { id: "type", header: "类型", cell: ({ row }) => (row.original as Location).locationType === "workshop" ? "厂内车间" : "外加工点" }, { id: "status", header: "状态", cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, ...auditColumns<Operation | Location>(), { id: "actions", header: "操作", cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }];
+  const columns: ColumnDef<Operation | Location>[] = isOperations ? [{ id: "name", header: "工序名称", meta: { width: COLUMN_WIDTH.operationName }, cell: ({ row }) => (row.original as Operation).operationName }, { id: "code", header: "编码", meta: { width: COLUMN_WIDTH.operationCode }, cell: ({ row }) => (row.original as Operation).operationCode || "-" }, { id: "unit", header: "默认单位", meta: { width: COLUMN_WIDTH.operationUnit }, cell: ({ row }) => (row.original as Operation).defaultUnit?.name || "-" }, { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.operationStatus }, cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, ...auditColumns<Operation | Location>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }] : [{ id: "name", header: "地点名称", meta: { width: COLUMN_WIDTH.locationName }, cell: ({ row }) => (row.original as Location).name }, { id: "type", header: "类型", meta: { width: COLUMN_WIDTH.locationType }, cell: ({ row }) => (row.original as Location).locationType === "workshop" ? "厂内车间" : "外加工点" }, { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.locationStatus }, cell: ({ row }) => row.original.deletedAt ? "已删除" : row.original.isActive ? "启用" : "停用" }, ...auditColumns<Operation | Location>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <div className="page-actions">{actionCell(row.original)}</div> }];
   // 基础资料仍在加载时禁止打开对话框：openCreate() 会把当时的 units 快照进 dialog.fields，
   // 数据到达后不会重建，用户会得到一个**永久为空**的「默认单位」下拉且无法恢复
   // （见 docs/test/results/2026-09-13-e2e-rewrite-and-platform-unit-expansion.md §7.3）。

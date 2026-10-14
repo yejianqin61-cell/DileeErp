@@ -49,26 +49,48 @@ test("财务表格允许换行：这是「不横向滚动」的关键（nowrap �
   assert.match(css, /\.finance-page \.payroll-sheet-table \.ui-table-cell \{ padding: 6px 8px; white-space: normal; \}/);
 });
 
-test("固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 条；2026-09-27 起是**通用**规则）", () => {
+test("固定列宽 + 超长省略 + 悬停看全文（用户 2026-09-20 第 6 条；2026-09-27 起通用，2026-10-09 起是**默认**）", () => {
   // 固定布局：不切 fixed 的话「列宽」只是建议值，长摘要照样把列撑宽。
   // 2026-09-27：这三条从 `.finance-page` 前缀里**提出来变成通用规则** —— 采购计划的 13 列表
   // （用户：「表单要保证一次性展示所有column」）也要这一套，而页面私有规则等于让下一个模块
   // 再抄一遍，抄歪了的表现是「某个页面没省略」（那三条注释自己就在警告这个坑）。
-  // 只影响**自愿加入**的表：`data-table-fixed` 是 DataTable 在「有列给了 meta.width」时自己加的类。
+  // 2026-10-09：适用范围从「自愿加入的表」扩到**所有** DataTable —— 加这个类的判断从
+  // 「有列给了 meta.width」改成无条件（下面第三条断言）。财务页靠 `.finance-page` 那一段显式退出。
   assert.match(css, /^\.ui-table\.data-table-fixed \{ table-layout: fixed; \}$/m);
   assert.match(css, /^\.data-table-fixed \.ui-table-head, \.data-table-fixed \.ui-table-cell \{ overflow: hidden; \}$/m);
   // 省略号规则的权重必须压过 `.finance-page .ui-table-cell { white-space: normal }`（否则静默失效：
   // 看起来只是「没省略」）—— 所以要叠到 (0,4,1)，不依赖样式表先后顺序。
   assert.match(css, /^\.ui-table\.data-table-fixed \.ui-table-cell\.cell-ellipsis,\n\.ui-table\.data-table-fixed \.ui-table-head\.cell-ellipsis \{ white-space: nowrap; text-overflow: ellipsis; \}$/m);
-  // 财务页那几条更具体的规则**原样保留**（紧凑/换行仍在 .finance-page 内），所以财务四张表的
-  // 行为一字未变；下面这条同时是"没被顺手删掉"的守卫。
+  // 财务页那几条更具体的规则**原样保留**（紧凑/换行仍在 .finance-page 内），
+  // 并由 2026-10-09 新增的 `.finance-page .ui-table.data-table-fixed` 三条把财务页的 DataTable
+  // 放回自动布局 —— 财务页的表没有一列写过 meta.width，所以不会下发任何 width 内联样式，
+  // **行为一字未变**；下面这条同时是"没被顺手删掉"的守卫。
   assert.match(css, /\.finance-page \.data-table td, \.finance-page \.ui-table-cell \{ white-space: normal; overflow-wrap: anywhere; \}/);
-  // 只有「给了宽度」的表才切固定布局；列宽由 meta 决定，见 DataTable。
-  assert.match(dataTable, /const fixed = columns\.some\(\(column\) => metaOf\(column\.meta\)\.width\);/, "有列宽才切固定布局");
+  // 2026-10-09 改成**一律固定布局**（旧写法是 `columns.some((column) => metaOf(column.meta).width)`）。
+  // 为什么改：那套「逐列自愿加入」制下，全站 96 张表只有 3 个文件给列写过宽度，其余 78 张都是
+  // 自动布局 + 每格 nowrap，每一列的最小宽度 = 该列最长的那串文字 → 表被顶出容器、只能左右拖
+  // （用户 2026-10-09：「我不希望会因为某个 column 不限定宽度而导致表格的左右宽度太大」）。
+  // 固定布局下没给 width 的列由浏览器**均分**容器宽度，于是「每个 column 都有上界」成为默认值。
+  // 全站盘点与逐表清单：docs/design/table-column-width-audit-2026-10-09.md。
+  assert.match(dataTable, /const className = \["data-table-fixed", tableClassName \?\? ""\]\.filter\(Boolean\)\.join\(" "\);/, "表一律切固定布局");
+  // 「不许门控」这条单独写成代码形状的正则：上面那种 `columns.some(...)` 的旧写法在 data-table.tsx 的
+  // 注释里被原样引用着（作为「为什么改」的说明），直接 doNotMatch 旧表达式会被注释误伤。
+  assert.doesNotMatch(dataTable, /className = \[[^\]]*\?\s*"data-table-fixed"/, "固定布局不许再被条件门控（退回自愿加入制）");
+  // 财务页**显式退出**固定布局的那三条必须还在：财务的口径是「换行也要一屏看全」，
+  // 不是「省略掉、hover 才看」。少了它们，23 列的报表预览与 19 列的应付对账表会把金额省略成看不全
+  // （`.finance-page` 只管页面里的表；弹窗里的财务表走 Portal 挂到 body，不受这三条影响 —— 那是**要**被管住的）。
+  assert.match(css, /^\.finance-page \.ui-table\.data-table-fixed \{ table-layout: auto; \}$/m, "财务页在页面里的表要放回自动布局");
+  assert.match(css, /^\.finance-page \.ui-table\.data-table-fixed \.ui-table-head,\n\.finance-page \.ui-table\.data-table-fixed \.ui-table-cell \{ overflow: visible; \}$/m, "财务页的格子不能被无声裁掉");
+  assert.match(css, /^\.finance-page \.ui-table\.data-table-fixed \.ui-table-head\.cell-ellipsis,\n\.finance-page \.ui-table\.data-table-fixed \.ui-table-cell\.cell-ellipsis \{ white-space: normal; text-overflow: clip; \}$/m, "财务页的单元格要回到换行而不是省略");
   // 2026-10-08：第二个参数（这一格的值）不能省 —— 只写 `ellipsisTitle(rendered)` 时，
   // `accessorKey` 写法的文本列（没写 cell，TanStack 默认 cell 是函数 → flexRender 返回元素）
   // 永远算不出 title：省略号在、悬停却空白。物料清单页的「物料编码 / 物料名称」踩过这个坑。
-  assert.match(dataTable, /title=\{meta\.ellipsis \? ellipsisTitle\(rendered, cell\.getValue\(\)\) : undefined\}/, "省略的单元格要带上原生 title（鼠标悬停显示全文）");
+  // 2026-10-09：title 从「写了 meta.ellipsis 才给」改成**默认给**（能取到文字就给），
+  // `meta.ellipsis: false` 才是显式关掉 —— 用户要的是「鼠标 hover 的时候再显示全部文字」，全站默认。
+  assert.match(dataTable, /const title = meta\.ellipsis === false \? undefined : ellipsisTitle\(rendered, cell\.getValue\(\)\);/, "文本格默认带上原生 title（鼠标悬停显示全文）");
+  // 表头同理：固定布局下窄列的表头也会被 overflow:hidden 裁掉，而 `<TableHead>` 一直没有 cell-ellipsis
+  // （这条 CSS 以前对 DataTable 是死代码）。
+  assert.match(dataTable, /title=\{headerEllipsis \? headerText : undefined\}/, "表头也要能悬停看全文");
 });
 
 test("金额不会被换行拆开：money() 用不换行空格连接金额与币种", () => {

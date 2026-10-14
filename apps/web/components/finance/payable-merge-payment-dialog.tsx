@@ -275,19 +275,36 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
         </div>
         <label className="ui-form-item">备注<Textarea data-testid="payable-merge-remark" value={remark} disabled={busy} onChange={(event) => setRemark(event.target.value)} /></label>
         <div data-testid="payable-merge-rows">
-          <table className="data-table">
-            <thead><tr><th>订单号</th><th>供应商</th><th>币种</th><th>应付金额</th><th>未核销余额</th><th>本次核销金额</th></tr></thead>
-            <tbody>
-              {rows.map((row) => <tr key={row.id} data-testid={`payable-merge-row-${row.id}`}>
-                <td>{row.orderNo ?? "无"}</td>
-                <td>{row.supplierName}</td>
-                <td>{row.currency}</td>
-                <td>{money(row.amount, row.currency)}</td>
-                <td>{money(row.outstanding, row.currency)}</td>
-                <td><Input inputMode="decimal" aria-label={`${row.payableNo} 本次核销金额`} data-testid={`payable-merge-amount-${row.id}`} value={amounts[row.id] ?? ""} disabled={busy} onChange={(event) => setAmounts((current) => ({ ...current, [row.id]: event.target.value }))} /></td>
-              </tr>)}
-            </tbody>
-          </table>
+          {/* 2026-10-09 表格治理：
+              ① 原来这张表**没有滚动容器**（直接是个裸 `<table>`），弹窗窄时右侧列够不着 —— 现在包一层 .table-wrap；
+              ② 表格补 `.table-bounded`（globals.css 里的固定布局入口），每列显式宽度、总和 100%
+                 （订单号 18% / 供应商 26% / 币种 8% / 应付金额 16% / 未核销余额 16% / 本次核销金额 16%）；
+                 供应商是最长的自由文本，金额三列等宽保证「应付 / 未核销 / 本次」上下对得齐；
+              ③ 长文本格补 `cell-ellipsis` + `title`（手写表没有 DataTable 那套自动 title）。
+              最后一列装的是受控 `<Input>`：给它固定宽度而不是省略 —— 输入框被裁掉就没法填了，
+              所以这一格只加 `.ui-table-cell`，不加 `cell-ellipsis`。 */}
+          <div className="table-wrap">
+            <table className="data-table table-bounded">
+              <thead><tr>
+                <th className="cell-ellipsis" style={{ width: "18%" }} title="订单号">订单号</th>
+                <th className="cell-ellipsis" style={{ width: "26%" }} title="供应商">供应商</th>
+                <th className="cell-ellipsis" style={{ width: "8%" }} title="币种">币种</th>
+                <th className="cell-ellipsis" style={{ width: "16%" }} title="应付金额">应付金额</th>
+                <th className="cell-ellipsis" style={{ width: "16%" }} title="未核销余额">未核销余额</th>
+                <th className="cell-ellipsis" style={{ width: "16%" }} title="本次核销金额">本次核销金额</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((row) => <tr key={row.id} data-testid={`payable-merge-row-${row.id}`}>
+                  <td className="cell-ellipsis" title={row.orderNo ?? "无"}>{row.orderNo ?? "无"}</td>
+                  <td className="cell-ellipsis" title={row.supplierName}>{row.supplierName}</td>
+                  <td className="cell-ellipsis" title={row.currency}>{row.currency}</td>
+                  <td className="cell-ellipsis" title={money(row.amount, row.currency)}>{money(row.amount, row.currency)}</td>
+                  <td className="cell-ellipsis" title={money(row.outstanding, row.currency)}>{money(row.outstanding, row.currency)}</td>
+                  <td><Input inputMode="decimal" aria-label={`${row.payableNo} 本次核销金额`} data-testid={`payable-merge-amount-${row.id}`} value={amounts[row.id] ?? ""} disabled={busy} onChange={(event) => setAmounts((current) => ({ ...current, [row.id]: event.target.value }))} /></td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>
         </div>
         <div className="action-row">
           {/* 合计是**派生值**（只读）：它是各行相加的结果，改任何一行这里跟着变 —— 两者不会各说各话。 */}

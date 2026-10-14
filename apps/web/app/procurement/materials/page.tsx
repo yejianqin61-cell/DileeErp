@@ -52,7 +52,7 @@ const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClie
  */
 const COLUMN_WIDTH = {
   materialCode: "12%",
-  materialName: "14%",
+  materialName: "11%",
   specificationModel: "11%",
   color: "7%",
   unit: "7%",
@@ -62,7 +62,8 @@ const COLUMN_WIDTH = {
   // 抓「JSX 里直接渲染 xxx.createdBy」（那会显示 UUID），键名撞上去会被误判。
   auditCreated: "8%",
   auditUpdated: "8%",
-  actions: "13%",
+  // 三个操作按钮必须保持一行，否则整张物料表的行高会从 44px 膨胀到约 80px。
+  actions: "16%",
 } as const;
 
 export default function MaterialsPage() {
@@ -223,7 +224,7 @@ export default function MaterialsPage() {
     {
       id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions },
       cell: ({ row }) => (
-        <div className="action-row">
+        <div className="action-row purchase-table-actions">
           <Button size="sm" variant="secondary" onClick={() => editMaterial(row.original)}>编辑</Button>
           <Button size="sm" variant="ghost" onClick={() => void action(`/materials/${row.original.id}/active`, { is_active: row.original.isActive === false }, row.original.isActive === false ? "物料已启用" : "物料已停用")}>{row.original.isActive === false ? "启用" : "停用"}</Button>
           <Button size="sm" variant="destructive" onClick={() => void deleteMaterial(row.original.id)}>删除</Button>

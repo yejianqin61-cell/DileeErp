@@ -132,6 +132,10 @@ button { cursor: pointer; }
 .page-header p { margin: 7px 0 0; color: var(--text-muted); font-size: 13px; }
 .page-actions { display: flex; align-items: center; gap: 8px; }
 .action-row { display: flex; flex-wrap: wrap; gap: 4px; }
+/* 采购列表的操作控件不能折成两三行，否则表格首屏可见行数会随数据状态抖动。 */
+.purchase-table-actions { flex-wrap: nowrap; }
+.purchase-batch-actions { flex-wrap: nowrap; max-width: 100%; overflow-x: auto; padding-bottom: 2px; }
+.purchase-item-block .action-row { flex-wrap: nowrap; max-width: 100%; overflow-x: auto; padding-bottom: 2px; }
 /* 物料图片（用户 2026-09-24）：缩略图与藏在按钮后面的文件选择框。
    原生的 `<input type=file>` 在各浏览器里长相、文案都不同，所以藏起来由「上传图片 / 换图」按钮去点它。 */
 .material-image-cell { display: flex; flex-direction: column; gap: 4px; }
@@ -236,6 +240,50 @@ button { cursor: pointer; }
    这个叠到 (0,4,1) 的选择器就是为了不依赖样式表先后顺序。 */
 .ui-table.data-table-fixed .ui-table-cell.cell-ellipsis,
 .ui-table.data-table-fixed .ui-table-head.cell-ellipsis { white-space: nowrap; text-overflow: ellipsis; }
+/* 财务页的表格**显式退出**上面那三条（2026-10-09）。
+   为什么需要这一段：2026-10-09 起 `DataTable` **一律**给 `<table>` 加 `data-table-fixed`
+   （components/data/data-table.tsx），于是财务页的表也会拿到「固定布局 + 超长省略」。
+   而财务页的口径不是这个 —— 用户 2026-09-16：「财务部分的表单，我希望能一次性在页面上展示全貌，
+   不需要左右拖动条来拖动」，当时的实测结论就是上面那四条（12px / 8px / 38px / **放开换行**）：
+   靠「内容逐字断行、min-content 只剩一个字」让 16~23 列的表在 1366~1920 四个视口**实测 0 溢出**。
+   两种口径冲突时以财务为准：金额与客户名**换行也要看得全**，而不是「省掉、hover 才看到」。
+   （金额尤其不能被省略：它是这一页存在的理由。）
+
+   选择器权重：(0,3,0) / (0,5,0)，压过 `data-table-fixed` 那三条的 (0,2,0) / (0,4,1) ——
+   不依赖样式表先后顺序（这个文件里依赖顺序的写法静默失效过一次，见上面 `.cell-ellipsis` 那段注释）。
+   `text-overflow: clip` 与 `overflow: visible` 是配套的：只把 `white-space` 改回 normal 的话，
+   `overflow: hidden` 仍在，长内容会被**无声裁掉**（没有省略号、也没有 title 的地方可看）。
+
+   ⚠️ 只管 `.finance-page` **里面**的表。弹窗 / Sheet 走 Radix Portal 挂到 `body`
+   （components/ui/dialog.tsx:13、components/ui/sheet.tsx:14），够不到 `.finance-page` ——
+   而财务模块有 9 张表在弹窗里（应付详情 3 张、导入错误 1 张、应收详情 2 张、工资详情 3 张），
+   它们退回 `padding: 12px + nowrap + 自动布局`、只能横向滚动，正是用户报的
+   「确认应付的表单，还需要左右滑动」的根因。这些表**要**被固定布局管住，所以不能一并豁免。
+   （2026-09-20 那次只修了「留在 .finance-page 里的表」，Portal 这条当时漏了；
+   现在由「一律固定布局」顺手补上。） */
+.finance-page .ui-table.data-table-fixed { table-layout: auto; }
+.finance-page .ui-table.data-table-fixed .ui-table-head,
+.finance-page .ui-table.data-table-fixed .ui-table-cell { overflow: visible; }
+.finance-page .ui-table.data-table-fixed .ui-table-head.cell-ellipsis,
+.finance-page .ui-table.data-table-fixed .ui-table-cell.cell-ellipsis { white-space: normal; text-overflow: clip; }
+/* 手写 `<table>` 的「固定列宽 + 超长省略 + 悬停全文」入口（2026-10-09）。
+   为什么需要它：`DataTable` 渲染的表（class `ui-table`）2026-10-09 起一律拿到 `data-table-fixed`，
+   但全站还有 20 张**手写**的表 —— 它们有的是 `.ui-table`（account-center、reorder 两张、仓库成品存量、
+   入库批次、销售细分、工艺单导出），有的是 `.data-table`（生产单入口、BOM 表、采购计划明细、合并付款）。
+   手写表加不了 `meta`，所以给它一个显式的类 `.table-bounded`：加上它就等于拿到 DataTable 那三条。
+   用法（写表的人三件事一起做，缺一不可）：
+     ① `<table className="... table-bounded">`；
+     ② 每列给宽度（`<th style={{ width: "12%" }}>` 或 CSS，总和 100%）—— fixed 布局下没给宽度的列会被均分；
+     ③ 长文本格加 `className="cell-ellipsis"` + `title={全文}`（手写表没有 DataTable 那套自动 title）。
+   ⚠️ 不要把它加到「可编辑网格 / 打印单据」上（领料单编辑表、日报录入表、工资台账、跨行转账单、凭证纸）：
+   那些格子装的是输入控件，`nowrap + overflow: hidden` 会把控件裁掉 —— 它们各自已经有一整套列宽规则，
+   判断口径见 docs/design/table-column-width-audit-2026-10-09.md 第 6 节。
+   （`.data-table` 的 th/td 本来就是 `white-space: nowrap`，这里只补 `overflow` 与 `text-overflow`。） */
+.ui-table.table-bounded, .data-table.table-bounded { table-layout: fixed; }
+.ui-table.table-bounded .ui-table-head, .ui-table.table-bounded .ui-table-cell,
+.data-table.table-bounded th, .data-table.table-bounded td { overflow: hidden; }
+.ui-table.table-bounded .ui-table-head.cell-ellipsis, .ui-table.table-bounded .ui-table-cell.cell-ellipsis,
+.data-table.table-bounded th.cell-ellipsis, .data-table.table-bounded td.cell-ellipsis { white-space: nowrap; text-overflow: ellipsis; }
 /* 工资台账用的是 .ui-table（不是 .data-table），同样收内边距并放开换行。 */
 .finance-page .payroll-sheet-table { font-size: 12px; font-variant-numeric: tabular-nums; }
 .finance-page .payroll-sheet-table .ui-table-head { padding: 4px 8px; white-space: normal; line-height: 1.2; }
@@ -509,6 +557,12 @@ button { cursor: pointer; }
    选择器叠到 (0,3,0) / (0,4,0)，压过 `.material-issue-sheet .data-table`(0,2,0)
    与 `td:nth-child(1)`(0,3,1)：同分的话谁生效取决于样式表顺序，挪一下就会静默退回。 */
 .purchase-plan-sheet.material-issue-sheet .data-table { min-width: 0; table-layout: fixed; font-size: 12px; }
+/* 采购计划是高频逐行录入表：顶部只读信息不应把明细表挤到首屏只剩一行。
+   让信息区横向收纳，并把表格变成独立滚动区，首屏始终保留多行编辑空间。 */
+.purchase-plan-sheet .detail-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px 12px; }
+.purchase-plan-sheet .detail-list > label { min-width: 0; margin-bottom: 0; }
+.purchase-plan-sheet .detail-list > label .ui-input { min-width: 0; }
+.purchase-plan-sheet .table-wrap { min-height: 300px; max-height: min(52vh, 560px); overflow: auto; }
 /* 2026-09-30 用户：「采购物料那个表单高度太小了，可以高度大一点，这样视图更方便」。
    这一页 14 列挤在一屏里，原来行内边距 4px + 控件 30px，扫一行要贴着屏幕看。
    行高由**内边距 + 控件高度**决定（表格没有写死 height）：4px/30px → 8px/34px，
@@ -551,6 +605,12 @@ button { cursor: pointer; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-price-from-bom .ui-input { background: #fff8e8; border-color: #f0d69b; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-select input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
 .purchase-plan-sheet.material-issue-sheet .data-table .plan-col-action .ui-button { padding: 0; }
+@media (max-width: 900px) {
+  .purchase-plan-sheet .detail-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .purchase-plan-sheet .detail-list { grid-template-columns: 1fr; }
+}
 /* 计划列表（只读汇总）也是 13 列以内，同样不横滑；列宽交给 DataTable 的 meta.width。 */
 .purchase-plan-list .data-table-fixed { font-size: 12px; }
 
@@ -764,6 +824,8 @@ button { cursor: pointer; }
       这一列给到 13% 是实测定的：表的最小宽度 1180px 下，价格输入框还有 63px（够显示 7 个字符），
       给 11% 时只剩 29px（连 `12.5` 都看不全）——第一次就是这么翻车的。 */
 .ui-sheet-content.bom-workbench { width: min(96vw, 1880px, calc(100vw - 24px)); max-height: calc(100vh - 24px); }
+.ui-sheet-content.bom-workbench { display: flex; flex-direction: column; height: min(calc(100vh - 24px), 860px); overflow: hidden; }
+.bom-workbench .table-wrap { flex: 1 1 auto; min-height: 240px; max-height: none; overflow: auto; }
 .bom-table { table-layout: fixed; min-width: 1180px; }
 .data-table.bom-table th, .data-table.bom-table td { padding: 0 10px; }
 .bom-table .bom-col-index { width: 4%; }

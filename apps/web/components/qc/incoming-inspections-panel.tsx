@@ -41,6 +41,53 @@ const INBOUND_READY_NOTICE_STATUSES = ["acknowledged", "processing"];
 /** 可回退重判的状态：与后端允许回退到 pending 的集合一致。 */
 const ROLLBACKABLE_STATUSES = ["accepted", "conditionally_accepted", "partially_accepted", "completed", "rejected"];
 
+/**
+ * 来料质检列表的列宽（百分比）。
+ *
+ * 为什么必须显式给宽度：`DataTable` 现在**一律**给 `<table>` 加 `data-table-fixed`
+ * （components/data/data-table.tsx），没写 `meta.width` 的列由浏览器**均分**容器。
+ * 16 列均分的结果是「物料 / 入库情况 / 入库通知」三串长文本各拿 1/16（1366 屏约 65px，
+ * 扣掉 14px×2 的内边距只剩 37px）——一上来就被裁得看不见；而「送检 / 合格」这种三位数的
+ * 数字列反而白拿同样宽度。逐表配平就是把这笔账从「均分」改成「按内容性质分配」。
+ *
+ * 数字的来历（按 1366 屏、内容区约 1034px 估算；表况盘点见
+ * docs/design/table-column-width-audit-2026-10-09/C-生产与质检.md 的 T20）：
+ *   - 订单号 / 采购单号 各 7%：单号是识别一行的第一眼信息，按本次治理的口径不压到 7% 以下；
+ *   - 物料 8%、入库情况 9%、入库通知 7%：三串**长文本**（物料名；`已建单 X · 剩余可入 Y`
+ *     后面还可能挂「有草稿待过账」「待仓库接收通知…」两段；`通知单号（状态）`）。
+ *     固定布局下它们只会被省略号截断，宽度必须优先给它们；被截掉的部分靠原生 `title` 悬停看全文
+ *     —— 这两格渲染的是元素不是字符串，`DataTable` 的自动 title 取不到，所以在容器上自写了 title。
+ *   - 送检 / 合格 / 不合格 各 5%：纯数字列（“100”量级）。5% 在 1366 屏是 52px，
+ *     减掉 28px 内边距还剩 24px，正好是三位数**看得见**的下限，再压就只能看到一位数。
+ *   - 条件接收 4%：这一格的内容绝大多数是 0，且表头只有 4 个字，让出 1% 给操作列。
+ *   - 质检批次 / 本批总数量 / 最终结果 / 状态 各 4%：「第 N 批」这类定长短文本与中文状态词，
+ *     表头在 1366 屏会被省成两三个字 —— 表头也带 title（`DataTable` 给每个文本表头都挂了），悬停能看全。
+ *   - 操作 12%：这一列按状态**最多同时出现 5 个按钮**（编辑 / 回退重判 / 部分入库 / 按剩余量入库 / 退货）。
+ *     5 个约 44px 的小按钮加 4px 间距需要 236px（约 23%），16 列表里给不出这么多 ——
+ *     12%（1366 屏 124px）能放 2 个一行，其余由 `.action-row` 的 `flex-wrap: wrap` 折行，
+ *     这是「宁可按钮折行、也不把数据列压到看不见」的取舍；压到 7% 以下就会变成一行一个按钮。
+ *
+ * 总和是 85%：本表用了 `auditColumns()`，工厂产出的「创建人 / 最后修改人」两列**不给宽度**
+ * （`lib/audit-columns-coverage.test.mjs` 盯着这用法，不要改成逐列加 meta），剩下的 15% 由它们均分。
+ * 改数字前先看总和：不等于 85% 时缺口会被浏览器摊到那两列以外，长文本列又会重新被挤窄。
+ */
+const COLUMN_WIDTH = {
+  orderNo: "7%",
+  purchaseOrderNo: "7%",
+  material: "8%",
+  batch: "4%",
+  batchTotal: "4%",
+  qcResult: "4%",
+  status: "4%",
+  inspected: "5%",
+  accepted: "5%",
+  conditional: "4%",
+  rejected: "5%",
+  inbound: "9%",
+  notice: "7%",
+  actions: "12%",
+} as const;
+
 export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) {
   const [orders, setOrders] = useState<PurchaseOrder[]>([]);
   const [inspections, setInspections] = useState<Inspection[]>([]);
@@ -270,22 +317,22 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
   }
 
   const columns: ColumnDef<Inspection>[] = [
-    { accessorKey: "orderNo", header: "订单号" },
-    { accessorKey: "purchase_order_no", header: "采购单号", cell: ({ row }) => row.original.purchase_order_no ?? "-" },
-    { accessorKey: "material_name", header: "物料", cell: ({ row }) => row.original.material_name ?? "-" },
-    { id: "batch", header: "质检批次", cell: ({ row }) => `第 ${row.original.batchSequence ?? row.original.purchaseReceipt?.batchSequence ?? "-"} 批` },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
+    { accessorKey: "purchase_order_no", header: "采购单号", meta: { width: COLUMN_WIDTH.purchaseOrderNo }, cell: ({ row }) => row.original.purchase_order_no ?? "-" },
+    { accessorKey: "material_name", header: "物料", meta: { width: COLUMN_WIDTH.material }, cell: ({ row }) => row.original.material_name ?? "-" },
+    { id: "batch", header: "质检批次", meta: { width: COLUMN_WIDTH.batch }, cell: ({ row }) => `第 ${row.original.batchSequence ?? row.original.purchaseReceipt?.batchSequence ?? "-"} 批` },
     // 本批总数量放在「送检」前面：先看到整批多少，再看送检/合格/不合格各多少。
-    { id: "batchTotal", header: "本批总数量", cell: ({ row }) => batchTotalOf(row.original) },
-    { id: "qcResult", header: "最终结果", cell: ({ row }) => qcResultLabel(row.original.qcResult) },
-    { id: "status", header: "状态", cell: ({ row }) => inspectionStatusLabel[row.original.status] ?? row.original.status },
-    { accessorKey: "inspectedQuantity", header: "送检" },
-    { accessorKey: "acceptedQuantity", header: "合格" },
-    { accessorKey: "conditionalQuantity", header: "条件接收" },
-    { accessorKey: "rejectedQuantity", header: "不合格" },
-    { id: "inbound", header: "入库情况", cell: ({ row }) => { const used = inboundUsedByInspection(row.original.id); const remaining = inboundRemainingFor(row.original); const draft = draftInboundFor(row.original.id); const notice = noticeFor(row.original.id); return <span>{`已建单 ${used} · 剩余可入 ${remaining}`}{draft ? <span className="status-warning"> · 有草稿待过账</span> : null}{notice?.status === "pending" ? <span className="panel-note"> · 待仓库接收通知（接收时自动生成入库草稿）</span> : null}</span>; } },
-    { id: "notice", header: "入库通知", cell: ({ row }) => { const notice = noticeFor(row.original.id); return notice ? <span className="status-success">{notice.noticeNo}（{noticeStatusLabel[notice.status] ?? notice.status}）</span> : <span className="batch-empty">未通知</span>; } },
+    { id: "batchTotal", header: "本批总数量", meta: { width: COLUMN_WIDTH.batchTotal }, cell: ({ row }) => batchTotalOf(row.original) },
+    { id: "qcResult", header: "最终结果", meta: { width: COLUMN_WIDTH.qcResult }, cell: ({ row }) => qcResultLabel(row.original.qcResult) },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => inspectionStatusLabel[row.original.status] ?? row.original.status },
+    { accessorKey: "inspectedQuantity", header: "送检", meta: { width: COLUMN_WIDTH.inspected } },
+    { accessorKey: "acceptedQuantity", header: "合格", meta: { width: COLUMN_WIDTH.accepted } },
+    { accessorKey: "conditionalQuantity", header: "条件接收", meta: { width: COLUMN_WIDTH.conditional } },
+    { accessorKey: "rejectedQuantity", header: "不合格", meta: { width: COLUMN_WIDTH.rejected } },
+    { id: "inbound", header: "入库情况", meta: { width: COLUMN_WIDTH.inbound }, cell: ({ row }) => { const used = inboundUsedByInspection(row.original.id); const remaining = inboundRemainingFor(row.original); const draft = draftInboundFor(row.original.id); const notice = noticeFor(row.original.id); return <span title={`已建单 ${used} · 剩余可入 ${remaining}${draft ? " · 有草稿待过账" : ""}${notice?.status === "pending" ? " · 待仓库接收通知" : ""}`}>{`已建单 ${used} · 剩余可入 ${remaining}`}{draft ? <span className="status-warning"> · 有草稿待过账</span> : null}{notice?.status === "pending" ? <span className="panel-note"> · 待仓库接收通知（接收时自动生成入库草稿）</span> : null}</span>; } },
+    { id: "notice", header: "入库通知", meta: { width: COLUMN_WIDTH.notice }, cell: ({ row }) => { const notice = noticeFor(row.original.id); return notice ? <span className="status-success" title={`${notice.noticeNo}（${noticeStatusLabel[notice.status] ?? notice.status}）`}>{notice.noticeNo}（{noticeStatusLabel[notice.status] ?? notice.status}）</span> : <span className="batch-empty">未通知</span>; } },
     ...auditColumns<Inspection>(),
-    { id: "actions", header: "操作", cell: ({ row }) => <div className="action-row">
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <div className="action-row">
       {!row.original.downstream_exists && row.original.status !== "cancelled" && <Button size="sm" variant="secondary" onClick={() => editInspection(row.original)}>编辑</Button>}
       {row.original.status === "pending" && <Button size="sm" variant="secondary" onClick={() => transitionInspection(row.original, "inspecting")}>开始质检</Button>}
       {row.original.status === "inspecting" && <Button size="sm" variant="secondary" onClick={() => transitionInspection(row.original, "completed")}>完成质检</Button>}

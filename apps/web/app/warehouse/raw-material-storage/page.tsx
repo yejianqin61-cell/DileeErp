@@ -28,6 +28,62 @@ type DialogState = { title: string; fields: ActionField[]; submit: (values: Reco
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
+/**
+ * 两张表的列宽（百分比）。
+ *
+ * `DataTable` 2026-10-09 起**一律**给 `<table>` 加 `data-table-fixed`（`table-layout: fixed`）：
+ * 没写 `meta.width` 的列由浏览器**均分**容器宽度，与内容长短无关 ——「物料」这种长文本
+ * 会和「合计」一样宽，然后被省略成一串「M-00…」。这里把每一列的宽度显式写出来，
+ * 把「均分」改成「按内容需要分配」。
+ *
+ * 两条预算（1366 屏的表内容宽约 1034px 是下面估值的分母）：
+ *   - 「库存汇总」六列没有审计列 → 总和 100%；
+ *   - 「原料入库单」用 `auditColumns()`，创建人 / 最后修改人两列由工厂追加、**刻意不给宽度**，
+ *     让它们分剩下的 16%（各 8%），所以下面十列总和 = 84%。
+ *     不给它们写宽度的另一个原因：那两列的列名/字段只有工厂一处定义，
+ *     `lib/audit-columns-coverage.test.mjs` 有守卫盯着（键名也不该起 createdBy/updatedBy）。
+ *
+ * 每个数字的来历：
+ *   - 物料 28%：「物料编码 / 物料名称」拼成一格，是这一行的身份，最长的一列；
+ *     规格型号 26%：原料的关键区分项（同名不同规格是常态），只给物料名无法确认是哪一种。
+ *     这两列的 `cell` 返回的就是字符串，`DataTable` 会自动配 `cell-ellipsis` + 原生 `title`
+ *     （hover 看全文），所以**不写 `ellipsis: true`** —— 2026-10-09 起它已是默认值。
+ *   - 单位 6%：短文本，够放「米 / 条 / 千克」这类单位名。
+ *   - 待入库（未过账）14%：这一列宽的是**表头**（8 个汉字约 96px + 24px 内边距 ≈ 120px），
+ *     里面的数字很短；已过账库存 13% / 合计 13%：5 字表头 + 「120.0000」这类数字。
+ *   - 入库单号 10%：行身份，单号常带日期前缀；订单号 / 采购单号 / 到货记录各 8%：
+ *     单号属长文本列（规则下限 ≥8%），超出的省略号 + hover 看全文。
+ *   - 到货批次 7%：「第 12 批」约 45px + 内边距 = 69px；数量 5%：数字列取规则区间（4%~6%）的中值；
+ *     质检状态 / 入库状态各 7%：`inspection_status` 回落后端原值（如 accepted），
+ *     「入库状态」是 4 个汉字（约 48px + 内边距 = 72px，恰好等于 1034px 的 7%）。
+ *   - 备注 10%：自由文本、无长度上界，给到规则下限以上即可，靠省略号 + hover 看全文。
+ *   - 操作 14%：草稿行最多同时 3 个按钮（编辑 / 过账 / 删除），
+ *     3 × 44px + 2 × 4px 间距 = 140px，140 ÷ 1034px ≈ 13.5%，向上取 14%。
+ *     1366 屏这一列只有约 145px（减掉 12px×2 内边距后 121px），三个按钮会**折成两行** ——
+ *     这是既定取舍：宁可按钮折行，也不把单号 / 备注压到一上来就被省略
+ *     （与物料清单页 2026-10-08 的取舍一致，见 app/procurement/materials/page.tsx 的列宽注释）。
+ */
+const COLUMN_WIDTH = {
+  // 库存汇总：六列，合计 100%
+  material: "28%",
+  specification: "26%",
+  unit: "6%",
+  pending: "14%",
+  postedQuantity: "13%",
+  totalQuantity: "13%",
+  // 原料入库单：十列，合计 84%（剩下 16% 归 auditColumns() 追加的创建人 / 最后修改人）
+  inboundNo: "10%",
+  orderNo: "8%",
+  purchaseOrderNo: "8%",
+  batch: "7%",
+  receiptNo: "8%",
+  quantity: "5%",
+  inspectionStatus: "7%",
+  inboundStatus: "7%",
+  remark: "10%",
+  actions: "14%",
+} as const;
+
 export default function RawMaterialStoragePage() {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
@@ -131,31 +187,38 @@ export default function RawMaterialStoragePage() {
   }
 
   const balanceColumns: ColumnDef<Balance>[] = [
-    { id: "material", header: "物料", cell: ({ row }) => row.original.material?.materialCode + " / " + row.original.material?.name },
+    { id: "material", header: "物料", meta: { width: COLUMN_WIDTH.material }, cell: ({ row }) => row.original.material?.materialCode + " / " + row.original.material?.name },
     // 规格型号是原料的关键区分项（同名不同规格是常态），只给物料名无法确认是哪一种。
-    { id: "specification", header: "规格型号", cell: ({ row }) => row.original.material?.specificationModel || "-" },
-    { accessorKey: "unit_name", header: "单位" },
+    { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.specification }, cell: ({ row }) => row.original.material?.specificationModel || "-" },
+    { accessorKey: "unit_name", header: "单位", meta: { width: COLUMN_WIDTH.unit } },
     // 接收通知后生成的是草稿，库存要过账才会变动；这里把「待入库」单独列出，
     // 否则接收完这个页面看起来“什么都没更新”。
-    { id: "pending", header: "待入库（未过账）", cell: ({ row }) => { const quantity = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return quantity ? <span className="status-warning">{quantity}</span> : "0"; } },
-    { accessorKey: "quantity", header: "已过账库存" },
-    { id: "total", header: "合计", cell: ({ row }) => { const pending = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return (Number(row.original.quantity) + pending).toString(); } }
+    // 这一格的 `cell` 返回的是带颜色的 span（JSX），而 `DataTable` 的自动 hover title 只认字符串：
+    // 补一个与格子同值的 `accessorFn`，非 0 的那几格才拿得到 `cell-ellipsis` + 原生 title。
+    { id: "pending", header: "待入库（未过账）", meta: { width: COLUMN_WIDTH.pending }, accessorFn: (row) => pendingByKey.get(`${row.material_id}|${row.unit_id}`) ?? 0, cell: ({ row }) => { const quantity = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return quantity ? <span className="status-warning">{quantity}</span> : "0"; } },
+    { accessorKey: "quantity", header: "已过账库存", meta: { width: COLUMN_WIDTH.postedQuantity } },
+    { id: "total", header: "合计", meta: { width: COLUMN_WIDTH.totalQuantity }, cell: ({ row }) => { const pending = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return (Number(row.original.quantity) + pending).toString(); } }
   ];
 
   const inboundColumns: ColumnDef<Inbound>[] = [
-    { accessorKey: "inboundNo", header: "入库单号" },
-    { accessorKey: "orderNo", header: "订单号" },
-    { accessorKey: "purchase_order_no", header: "采购单号" },
-    { id: "batch", header: "到货批次", cell: ({ row }) => `第 ${row.original.batch_sequence ?? "-"} 批` },
-    { accessorKey: "receipt_no", header: "到货记录" },
-    { accessorKey: "quantity", header: "数量" },
-    { accessorKey: "inspection_status", header: "质检状态" },
-    { accessorKey: "status", header: "入库状态", cell: ({ row }) => <span className={row.original.status === "posted" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{inboundStatusLabels[row.original.status] ?? row.original.status}</span> },
-    { accessorKey: "remark", header: "备注" },
+    { accessorKey: "inboundNo", header: "入库单号", meta: { width: COLUMN_WIDTH.inboundNo } },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
+    { accessorKey: "purchase_order_no", header: "采购单号", meta: { width: COLUMN_WIDTH.purchaseOrderNo } },
+    { id: "batch", header: "到货批次", meta: { width: COLUMN_WIDTH.batch }, cell: ({ row }) => `第 ${row.original.batch_sequence ?? "-"} 批` },
+    { accessorKey: "receipt_no", header: "到货记录", meta: { width: COLUMN_WIDTH.receiptNo } },
+    { accessorKey: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.quantity } },
+    { accessorKey: "inspection_status", header: "质检状态", meta: { width: COLUMN_WIDTH.inspectionStatus } },
+    // 这一格渲染的是带颜色的 span（JSX），`DataTable` 的自动 hover title 只认字符串：
+    // 不给 accessor 的话，7% 宽的这一列被硬裁时既没有省略号、也没有 title 能看全。
+    // 用 `accessorFn` 供出与屏幕一致的中文标签（要的正是「这一格的值」），
+    // 表头自动加的那个 `title` 管的是表头，管不到单元格。
+    { id: "status", accessorFn: (row) => inboundStatusLabels[row.status] ?? row.status, header: "入库状态", meta: { width: COLUMN_WIDTH.inboundStatus }, cell: ({ row }) => <span className={row.original.status === "posted" ? "status-success" : row.original.status === "reversed" ? "status-warning" : undefined}>{inboundStatusLabels[row.original.status] ?? row.original.status}</span> },
+    { accessorKey: "remark", header: "备注", meta: { width: COLUMN_WIDTH.remark } },
     ...auditColumns<Inbound>(),
     {
       id: "actions",
       header: "操作",
+      meta: { width: COLUMN_WIDTH.actions },
       cell: ({ row }) => <div className="action-row">
         {row.original.status === "draft" && <>
           <Button size="sm" variant="secondary" onClick={() => editInbound(row.original)}>编辑</Button>

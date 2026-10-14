@@ -237,6 +237,97 @@ function employeePayload(values: Record<string, string>, mode: "create" | "edit"
 /** 合同情况：三档 正常 / 即将过期 / 已过期；两份合同都没填结束时间时留空，列表回落 "-"。 */
 const contractCell = (status?: string) => status || "-";
 
+/**
+ * 三张 `DataTable` 的显式列宽（本页只有这三处渲染表格，另有两个列数组 `ledgerColumns` /
+ * `paymentColumns` 定义了但从未被渲染，不动它们）。
+ *
+ * 为什么必须有这张表：2026-10-09 起 `components/data/data-table.tsx` **一律**给 `<table>` 加
+ * `data-table-fixed`（`table-layout: fixed`），没写 `meta.width` 的列由浏览器**均分**容器宽度 ——
+ * 均分对「17 列、长短差三倍」的花名册是错的：工号和性别拿到一样宽。这一页按内容需要把宽度写死。
+ *
+ * 估算基准（与 `app/warehouse/stocktakes/page.tsx`、`components/qc/incoming-inspections-panel.tsx`
+ * 同一套）：1366 屏下表格容器约 1034px；`.ui-table-cell` 的 `padding: 12px` 两侧共 24px 不装字；
+ * 中文约 13px/字、ASCII 数字约 7px/字，表头 12px。「一列能显示几个字」≈ 百分比 × 1034 − 24。
+ *
+ * 两条配平铁律：
+ *   ① 用了 `auditColumns()` 的表，**声明宽度总和 = 84%**：剩下 16% 留给工厂产出的
+ *      「创建人 / 最后修改人」两列（各约 8%，够放「姓名 + 时间」两行）。这两列**不给宽度、
+ *      也不改工厂用法** —— `lib/audit-columns-coverage.test.mjs` 盯着「整块铺 `auditColumns()`」
+ *      这个写法。没有审计列的「导入错误明细」必须精确凑到 **100%**（否则缺口会被摊回其它列）。
+ *   ② 「操作」列按按钮数估：`.action-row` 里每个 `size="sm"` 按钮约 44px + 间距 4px。
+ *      员工目录最多 3 个按钮（编辑 / 离职 / 删除）= 3×44 + 2×4 = 140px ≈ 140 ÷ 1034 ≈ 13.5%；
+ *      这里取 12%（=124px，去掉内边距剩 100px，正好一行排下 2 个，第 3 个由 `.action-row` 的
+ *      `flex-wrap` 折到第二行）—— 与原料仓储页、盘点页同一取舍：宁可按钮折行，也不把文本列
+ *      压到一上来就省略。再降到 11%（内容 90px）就只能一行一个按钮，不接受；最小不低于 8%。
+ *
+ * 逐表数字的来历：
+ *   - 「导入错误明细」（3 列，无审计列，声明合计 100%）：照 `app/procurement/materials/page.tsx:279-281`
+ *     的同形表 12 / 18 / 70 —— 「原因」是后端拼出来的整句中文（含列名与期望格式，能到上百字），
+ *     余量全给它才不用悬停。
+ *   - 「员工目录」（17 列 = 14 业务 + 2 审计 + 1 操作；**声明的 15 列合计 84%**）：17 列平分 1034px
+ *     是 60px 一列（去掉内边距只剩 36px），所以每个数字都是「谁最需要」的排序：长文本列取规则给的
+ *     6%~9% 的**下沿 6%**（姓名 / 部门职务 / 联系方式），短列 4%~5%（性别 / 类型 / 状态 / 合同情况），
+ *     三个日期列各 6%，年龄 / 学历 / 工龄各 4% —— 先把 14 个业务列都塞进 72%（84% − 操作列 12%），
+ *     宽度才有得谈。
+ *     逐列的绝对宽度与「省到什么程度」写在下面每个键上。
+ *   - 「考勤与绩效」（6 列 = 4 业务 + 2 审计；**声明的 4 列合计 84%**）：一行就是一条考勤或绩效，
+ *     只有「日期/周期」会长（`2026-02-01 至 2026-02-28` ≈ 23 字符 ≈ 165px），所以另外三列按需要给
+ *     8 / 16 / 12，剩下的 48% 全给它 —— 这张表只有 6 列，余量没必要摊给定长的短列。
+ */
+const COLUMN_WIDTH = {
+  // 「导入错误明细」（3 列，无审计列，声明合计 100%）
+  /** 行号是 Excel 里的行序（四位以内数字）：12%（内容 100px）。 */
+  errorRowNo: "12%",
+  /** 字段是模板里的列表头（2~6 字）：18%（内容 162px）。 */
+  errorField: "18%",
+  /** 原因是整句中文（最长的一条能到上百字）：70%（内容 700px）。 */
+  errorReason: "70%",
+
+  // 「员工目录」（15 个声明列，合计 84%；另 16% 归「创建人 / 最后修改人」两列）
+  /** 工号：自动生成的是 `EMP-当天日期-序号`（≈17 字符 ≈ 120px），任何百分比都装不下 ——
+   *  6%（=62px，内容 38px）只够显示前 5 个字符，全号靠 hover。 */
+  employeeNo: "6%",
+  /** 姓名 2~4 个汉字（26~52px）：6%（内容 38px）装得下 3 字，4 字靠 hover。 */
+  employeeName: "6%",
+  /** 「部门 / 职务」拼接串（8~12 字符 ≈ 85~150px）：6%（内容 38px）只够显示部门名，职务靠 hover。 */
+  employeeOrg: "6%",
+  /** 性别 `男` / `女`（13px）：4%（内容 17px）刚好。 */
+  employeeGender: "4%",
+  /** 出生日期 `1990-05-20`（10 字符 ≈ 70px，本来要 9%）：6%（内容 38px）显示到月份，hover 看全。 */
+  employeeBirthDate: "6%",
+  /** 年龄 `36`（14px）：4%（内容 17px）刚好。 */
+  employeeAge: "4%",
+  /** 学历 `初中` / `本科`（26px）：4%（内容 17px）会省略 —— 取舍：学历是花名册里的参考字段，
+   *  宽度让给「状态」和「合同情况」这两个一眼要读出结论的列。 */
+  employeeEducation: "4%",
+  employeeHiredOn: "6%",
+  /** 工龄 `0`~`16`（14~28px）：4% 刚好装两位数。 */
+  employeeTenure: "4%",
+  /** 联系方式 `138 0000 0000`（13 字符 ≈ 91px，本来要 11%）：6%（内容 38px）显示 `138 0…`，
+   *  17 列的表给不起手机号的完整宽度，余下的靠 hover。 */
+  employeePhone: "6%",
+  /** 合同情况三档 `正常`（26px）/ `即将过期`（52px）/ `已过期`（39px）：5%（内容 28px）——
+   *  「正常」完整，另两档显示 `即将…` / `已过…`，仍能分辨档位。 */
+  employeeContract: "5%",
+  /** 类型存的是 `workshop` 这类英文键（7 字符 ≈ 49px，本来要 7%）：4%（内容 17px）只显示前 2 个字符。 */
+  employeeType: "4%",
+  /** 状态 `在职`（26px）/ `已离职`（39px）：5%（内容 28px）—— 「在职」完整，其余显示前 2 字仍能分辨。 */
+  employeeStatus: "5%",
+  employeeLeftOn: "6%",
+  /** 操作：最多 3 个按钮 = 140px ≈ 13.5%，取 12%（理由见上面的铁律 ②）。 */
+  employeeActions: "12%",
+
+  // 「考勤与绩效」（4 个声明列，合计 84%；另 16% 归「创建人 / 最后修改人」两列）
+  /** 类型 `考勤` / `绩效`（26px）＋表头 2 字：8%（内容 59px）绰绰有余。 */
+  recordType: "8%",
+  /** 员工：姓名 2~4 字（52px 以内）；员工已不在目录时回落 `employeeId`：16%（内容 141px）。 */
+  recordEmployee: "16%",
+  /** 日期/周期是全表唯一的长文本（22~23 字符 ≈ 165px）：余量全给它，1366 屏下也不必省略。 */
+  recordPeriod: "48%",
+  /** 结果 `出勤` / `A 95` / `- 88`（≈4 字符 ≈ 40px）：12%（内容 100px）。 */
+  recordResult: "12%",
+} as const;
+
 export default function HrPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [departments, setDepartments] = useState<OrganizationItem[]>([]);
@@ -794,62 +885,78 @@ export default function HrPage() {
     ],
   );
   // 列表列 = 花名册口径（含后端实时算出的年龄/工龄/合同到期提醒）。
+  //
+  // 每列显式给 `meta.width`（数字的来历见文件顶部 COLUMN_WIDTH），声明合计 84%；没给宽度的只有
+  // `auditColumns()` 产出的两列，它们分剩下的 16%。
+  //
+  // 纯文本列写成 `accessorFn`（返回**屏幕上那串字**）而不是只写 `cell`：`DataTable` 的 hover `title`
+  // 与 `cell-ellipsis` 都要求这一列**取得到值**，自定义 `cell` 渲染出来的是 ReactNode，取不到值 ——
+  // 那种列既没有省略号也没有 hover 全文（契约见 `test/data-table-ellipsis.test.tsx`）。
   const employeeColumns: ColumnDef<Employee>[] = [
-    { accessorKey: "employeeNo", header: "工号" },
-    { accessorKey: "name", header: "姓名" },
+    { accessorKey: "employeeNo", header: "工号", meta: { width: COLUMN_WIDTH.employeeNo } },
+    { accessorKey: "name", header: "姓名", meta: { width: COLUMN_WIDTH.employeeName } },
     {
       id: "org",
       header: "部门/职务",
-      cell: ({ row }) =>
-        `${row.original.department?.name ?? "-"} / ${row.original.position?.name ?? "-"}`,
+      meta: { width: COLUMN_WIDTH.employeeOrg },
+      accessorFn: (row) => `${row.department?.name ?? "-"} / ${row.position?.name ?? "-"}`,
     },
-    { id: "gender", header: "性别", cell: ({ row }) => row.original.gender ?? "-" },
+    { id: "gender", header: "性别", meta: { width: COLUMN_WIDTH.employeeGender }, accessorFn: (row) => row.gender ?? "-" },
     {
       id: "birthDate",
       header: "出生日期",
-      cell: ({ row }) => isoDate(row.original.birthDate) || "-",
+      meta: { width: COLUMN_WIDTH.employeeBirthDate },
+      accessorFn: (row) => isoDate(row.birthDate) || "-",
     },
     {
       id: "age",
       header: "年龄",
-      cell: ({ row }) => (row.original.age === null || row.original.age === undefined ? "-" : String(row.original.age)),
+      meta: { width: COLUMN_WIDTH.employeeAge },
+      accessorFn: (row) => (row.age === null || row.age === undefined ? "-" : String(row.age)),
     },
-    { id: "education", header: "学历", cell: ({ row }) => row.original.education ?? "-" },
+    { id: "education", header: "学历", meta: { width: COLUMN_WIDTH.employeeEducation }, accessorFn: (row) => row.education ?? "-" },
     {
       id: "hiredOn",
       header: "入职日期",
-      cell: ({ row }) => isoDate(row.original.hiredOn) || "-",
+      meta: { width: COLUMN_WIDTH.employeeHiredOn },
+      accessorFn: (row) => isoDate(row.hiredOn) || "-",
     },
     {
       id: "tenure",
       header: "工龄",
-      cell: ({ row }) => (row.original.tenureYears === null || row.original.tenureYears === undefined ? "-" : String(row.original.tenureYears)),
+      meta: { width: COLUMN_WIDTH.employeeTenure },
+      accessorFn: (row) => (row.tenureYears === null || row.tenureYears === undefined ? "-" : String(row.tenureYears)),
     },
-    { id: "phone", header: "联系方式", cell: ({ row }) => row.original.phone ?? "-" },
+    { id: "phone", header: "联系方式", meta: { width: COLUMN_WIDTH.employeePhone }, accessorFn: (row) => row.phone ?? "-" },
     {
       // 劳动合同与劳务合同合成一列：取两者中最紧急的档位（已过期 > 即将过期 > 正常）。
       id: "contract",
       header: "合同情况",
-      cell: ({ row }) => contractCell(row.original.contractSituation),
+      meta: { width: COLUMN_WIDTH.employeeContract },
+      accessorFn: (row) => contractCell(row.contractSituation),
     },
-    { accessorKey: "employeeType", header: "类型" },
+    { accessorKey: "employeeType", header: "类型", meta: { width: COLUMN_WIDTH.employeeType } },
     {
       id: "status",
       header: "状态",
-      cell: ({ row }) =>
-        row.original.deletedAt
+      meta: { width: COLUMN_WIDTH.employeeStatus },
+      accessorFn: (row) =>
+        row.deletedAt
           ? "已删除"
-          : displayStatus(row.original.employmentStatus),
+          : displayStatus(row.employmentStatus),
     },
     {
       id: "leftOn",
       header: "离职日期",
-      cell: ({ row }) => isoDate(row.original.leftOn) || "-",
+      meta: { width: COLUMN_WIDTH.employeeLeftOn },
+      accessorFn: (row) => isoDate(row.leftOn) || "-",
     },
     ...auditColumns<Employee>(),
     {
+      // 控件列（按钮）：不写 accessor —— 拿不到文本就不加 `cell-ellipsis`，按钮才不会被 nowrap 裁掉。
       id: "actions",
       header: "操作",
+      meta: { width: COLUMN_WIDTH.employeeActions },
       cell: ({ row }) => (
         <div className="action-row">
           {row.original.deletedAt ? (
@@ -894,31 +1001,37 @@ export default function HrPage() {
       ),
     },
   ];
+  // 「考勤与绩效」的 4 个业务列：同样是「自己算出屏幕上的字」的文本列，写成 `accessorFn` 才有
+  // hover 全文 + 省略号（理由同上面的员工目录）。宽度声明合计 84%，另 16% 归两列审计列。
   const recordColumns: ColumnDef<RecordItem>[] = [
     {
       id: "type",
       header: "类型",
-      cell: ({ row }) => (row.original.attendanceDate ? "考勤" : "绩效"),
+      meta: { width: COLUMN_WIDTH.recordType },
+      accessorFn: (row) => (row.attendanceDate ? "考勤" : "绩效"),
     },
     {
       id: "employee",
       header: "员工",
-      cell: ({ row }) => employeeName(row.original.employeeId),
+      meta: { width: COLUMN_WIDTH.recordEmployee },
+      accessorFn: (row) => employeeName(row.employeeId),
     },
     {
       id: "period",
       header: "日期/周期",
-      cell: ({ row }) =>
-        row.original.attendanceDate
-          ? `${row.original.attendanceDate.slice(0, 10)} ${row.original.workStartTime ?? "-"}-${row.original.workEndTime ?? "-"}`
-          : `${row.original.periodStart?.slice(0, 10)} 至 ${row.original.periodEnd?.slice(0, 10)}`,
+      meta: { width: COLUMN_WIDTH.recordPeriod },
+      accessorFn: (row) =>
+        row.attendanceDate
+          ? `${row.attendanceDate.slice(0, 10)} ${row.workStartTime ?? "-"}-${row.workEndTime ?? "-"}`
+          : `${row.periodStart?.slice(0, 10)} 至 ${row.periodEnd?.slice(0, 10)}`,
     },
     {
       id: "result",
       header: "结果",
-      cell: ({ row }) =>
-        row.original.attendanceType ??
-        `${row.original.grade ?? "-"} ${row.original.score ?? ""}`,
+      meta: { width: COLUMN_WIDTH.recordResult },
+      accessorFn: (row) =>
+        row.attendanceType ??
+        `${row.grade ?? "-"} ${row.score ?? ""}`,
     },
     ...auditColumns<RecordItem>(),
   ];
@@ -1039,7 +1152,7 @@ export default function HrPage() {
           </Link>
         </div>
       </PageHeader>
-      <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="hr-import-dialog"><DialogHeader><DialogTitle>批量导入员工</DialogTitle></DialogHeader><DialogBody><p>请使用模板填写员工信息。系统按表头名识别列（列顺序可以调整），先逐行校验格式，通过校验的行会直接导入，出错的行在下方逐条列出，不会因为个别错误整批丢弃。工号留空时按 EMP-当天日期-序号 自动生成。手动维护的花名册（首行是标题、末尾有说明批注）也能直接上传。</p><FileInput accept=".xlsx" onChange={(event) => { void importEmployees(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importResult && <div className="panel-body"><p>共 {importResult.total} 行：成功 {importResult.successCount} 行 / 错误 {importResult.errorCount} 行</p>{Boolean(importResult.autoNumbered) && <p>其中 {importResult.autoNumbered} 行工号由系统自动生成</p>}{Boolean(importResult.inferredEmployeeTypes) && <p>其中 {importResult.inferredEmployeeTypes} 行的员工类型按所属部门已有员工推断，请复核</p>}{(importResult.hints ?? []).map((hint) => <p key={hint} className="panel-note">{hint}</p>)}{Boolean(importResult.ignoredColumns?.length) && <p>以下列不属于员工口径，已忽略：{importResult.ignoredColumns?.join("、")}</p>}{importResult.errors.length > 0 && <DataTable columns={[{ accessorKey: "row", header: "行号" }, { accessorKey: "field", header: "字段" }, { accessorKey: "reason", header: "原因" }]} data={importResult.errors} empty={null} />}</div>}</DialogBody></DialogContent></Dialog>
+      <Dialog open={importOpen} onOpenChange={setImportOpen}><DialogContent className="hr-import-dialog"><DialogHeader><DialogTitle>批量导入员工</DialogTitle></DialogHeader><DialogBody><p>请使用模板填写员工信息。系统按表头名识别列（列顺序可以调整），先逐行校验格式，通过校验的行会直接导入，出错的行在下方逐条列出，不会因为个别错误整批丢弃。工号留空时按 EMP-当天日期-序号 自动生成。手动维护的花名册（首行是标题、末尾有说明批注）也能直接上传。</p><FileInput accept=".xlsx" onChange={(event) => { void importEmployees(event.target.files?.[0]); event.currentTarget.value = ""; }} />{importResult && <div className="panel-body"><p>共 {importResult.total} 行：成功 {importResult.successCount} 行 / 错误 {importResult.errorCount} 行</p>{Boolean(importResult.autoNumbered) && <p>其中 {importResult.autoNumbered} 行工号由系统自动生成</p>}{Boolean(importResult.inferredEmployeeTypes) && <p>其中 {importResult.inferredEmployeeTypes} 行的员工类型按所属部门已有员工推断，请复核</p>}{(importResult.hints ?? []).map((hint) => <p key={hint} className="panel-note">{hint}</p>)}{Boolean(importResult.ignoredColumns?.length) && <p>以下列不属于员工口径，已忽略：{importResult.ignoredColumns?.join("、")}</p>}{importResult.errors.length > 0 && <DataTable columns={[{ accessorKey: "row", header: "行号", meta: { width: COLUMN_WIDTH.errorRowNo } }, { accessorKey: "field", header: "字段", meta: { width: COLUMN_WIDTH.errorField } }, { accessorKey: "reason", header: "原因", meta: { width: COLUMN_WIDTH.errorReason } }]} data={importResult.errors} empty={null} />}</div>}</DialogBody></DialogContent></Dialog>
       {/* 删除确认：用项目里到处在用的 Dialog，而不是 components/ui/alert-dialog.tsx ——
           后者的 Content 包装在当前 Radix 版本下渲染即崩（"Primitive.div failed to slot onto its
           children"），而且全仓库没有任何调用方，属于未验证过的死代码。 */}
