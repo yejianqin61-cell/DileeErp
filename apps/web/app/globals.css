@@ -813,9 +813,13 @@ button { cursor: pointer; }
       表 1180px → 237px 横向滚动）。滚动条本来就归 `.table-wrap`，且改前长名字同样会拖出 307px。
 
    ③ 物料名称列：超出省略 + hover 看全文（`title` 由 bom-workbench.tsx 给）。
-      `min-width: 0` 不能省：`.ui-select-trigger` 是 flex 容器，里面的 Radix Value `<span>` 默认
-      最小宽度是 min-content，只写 overflow/text-overflow 它照样把列撑开。同一条规则在
+      `min-width: 0` 不能省：`.ui-select-trigger` 是 flex 容器，里面那个文字的 `<span>`
+      （2026-10-13 前是 Radix 的 Value span，之后是可搜索下拉的 `.ui-searchable-select-trigger-text`）
+      默认最小宽度是 min-content，只写 overflow/text-overflow 它照样把列撑开。同一条规则在
       `.purchase-workspace`、`.purchase-plan-sheet` 上已经用过两次。
+      ⚠️ 选择器写的是 `.ui-select-trigger > span`：**两种下拉的触发器都带 `.ui-select-trigger` 类**
+      （`SearchableSelect` 额外多一个 `.ui-searchable-select-trigger`），所以换下拉实现时这两条不用改、
+      也不能改成只认某一种 —— 换成只认 Radix 的写法，省略号会在换实现的当天静默失效。
       内边距 14px → 10px：固定布局下列宽不再随内容变，这省下的 8px 是每列实打实的可用宽度。
 
    ④ 「参考单价」列（2026-10-08，用户：「采购计划要下单需要填写单价，但是BOM表没办法填写单价」）：
@@ -840,6 +844,13 @@ button { cursor: pointer; }
 .bom-table .bom-col-action { width: 5%; }
 .bom-table .bom-col-material .ui-select-trigger { min-width: 0; }
 .bom-table .bom-col-material .ui-select-trigger > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 物料名称列的可搜索下拉（2026-10-13，用户：「在添加行，选择物料的时候，要支持搜索功能」）。
+   弹出层默认跟列同宽（`.ui-searchable-select-popover` 是 left:0/right:0），而这一列只有 20%
+   （表最小宽 1180px 时 ≈ 236px）—— 物料名动辄「M-20261008 / 超细纤维防风防水涂层复合单面摇粒绒面料」
+   三十多个字，236px 里会折成三行，一屏看不到几个选项。给它一个 320px 的下限：
+   搜索结果按名字读，宽度换行数才是划得来的。不会因此把版面撑出去 —— 物料列是第 2 列，
+   320px 的弹层离表右边界还有 800px 以上（`.table-wrap` 的横向滚动不受影响）。 */
+.bom-table .bom-col-material .ui-searchable-select-popover { min-width: 320px; }
 .bom-table .bom-col-price .bom-price-cell { display: flex; align-items: center; gap: 6px; }
 .bom-table .bom-col-price .bom-price-cell .ui-select-trigger { flex: 0 0 64px; padding: 0 6px; font-size: 12px; }
 .bom-table .bom-col-price .bom-price-cell .ui-select-trigger > span { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

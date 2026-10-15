@@ -143,6 +143,17 @@ describe("SearchableSelect · 收起态的受控 value 回显", () => {
     expect(stale).toHaveTextContent("SO-2026-999");
     expect(stale).not.toHaveTextContent("请选择订单");
   });
+
+  // 2026-10-13（用户）：「在添加行，选择物料的时候，要支持搜索功能」——BOM 表物料那一列只有 20% 宽，
+  // 长物料名靠 CSS 省略号收，被吃掉的字必须有地方看（`title`），而且必须挂在**触发器**上：
+  // 省略号发生在触发器里，挂到根 div 上 hover 出来的位置就与眼睛看的控件不重合。
+  it("title 落在触发器上（悬停看全文），没传就不加这个属性", () => {
+    const { rerender } = render(<SearchableSelect value="SO-2026-002" options={orders} onChange={vi.fn()} label="订单号" title="订单 SO-2026-002 / 200 件" />);
+    expect(screen.getByRole("combobox", { name: "订单号" })).toHaveAttribute("title", "订单 SO-2026-002 / 200 件");
+
+    rerender(<SearchableSelect value="SO-2026-002" options={orders} onChange={vi.fn()} label="订单号" />);
+    expect(screen.getByRole("combobox", { name: "订单号" })).not.toHaveAttribute("title");
+  });
 });
 
 describe("SearchableSelect · 展开与输入过滤", () => {

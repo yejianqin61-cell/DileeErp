@@ -642,7 +642,8 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
 
     await userEvent.click(screen.getByRole("button", { name: "新建物料" }));
     const dialog = within(await screen.findByTestId("action-dialog"));
-    await userEvent.type(screen.getByLabelText(/物料名称/), "伞骨");
+    // 物料名称输入框要在**弹窗里**找：BOM 行上的物料下拉（可搜索）可访问名同样是「物料名称」。
+    await userEvent.type(dialog.getByLabelText(/物料名称/), "伞骨");
     await userEvent.click(dialog.getByTestId("action-field-default_unit_id"));
     await userEvent.click(await screen.findByRole("option", { name: "米" }));
     await userEvent.click(dialog.getByTestId("action-dialog-submit"));

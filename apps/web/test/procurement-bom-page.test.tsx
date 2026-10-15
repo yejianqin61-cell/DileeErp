@@ -59,7 +59,9 @@ describe("采购 → BOM表：新建物料按钮真的能用", () => {
     await userEvent.click(screen.getByRole("button", { name: "新建物料" }));
     expect(await screen.findByTestId("action-dialog")).toBeVisible();
 
-    await userEvent.type(screen.getByLabelText(/物料名称/), "伞骨");
+    // 物料名称的输入框要**在弹窗里找**：BOM 行上那个物料下拉的可访问名也叫「物料名称」
+    // （2026-10-13 换成可搜索下拉后它带上了 aria-label），全局 `getByLabelText(/物料名称/)` 会撞两个。
+    await userEvent.type(dialog().getByLabelText(/物料名称/), "伞骨");
     await userEvent.click(dialog().getByTestId("action-field-default_unit_id"));
     await userEvent.click(await screen.findByRole("option", { name: "米" }));
     await userEvent.click(dialog().getByTestId("action-dialog-submit"));
@@ -95,7 +97,7 @@ describe("采购 → BOM表：新建物料按钮真的能用", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "新建物料" }));
     await screen.findByTestId("action-dialog");
-    await userEvent.type(screen.getByLabelText(/物料名称/), "面料A");
+    await userEvent.type(dialog().getByLabelText(/物料名称/), "面料A");
     await userEvent.click(dialog().getByTestId("action-field-default_unit_id"));
     await userEvent.click(await screen.findByRole("option", { name: "米" }));
     await userEvent.click(dialog().getByTestId("action-dialog-submit"));

@@ -4,12 +4,17 @@ const { Prisma } = require("@prisma/client");
 const ExcelJS = require("exceljs");
 const { PurchaseOrderExportService, PURCHASE_TRADE_TERMS } = require("../dist/modules/procurement/purchase-order-export.service.js");
 
-// 采购订单导出：模板字段 → 系统字段的映射、表头 12 项的顺序、明细 9 列列序、修正后的条款文字、
+// 采购订单导出：模板字段 → 系统字段的映射、表头 11 项的顺序、明细 7 列列序、修正后的条款文字、
 // 以及表尾三个大格子都必须可验证，因此这里把生成的 xlsx 解析回来逐格断言。
 //
 // 2026-09-16（用户要求）表头从 3 行 9 格扩到 4 行 12 格 + 两行整行（交货地址 / 交期条款），
 // 于是**行号全部后移**。为了不再出现「加两行表头、测试全线错位」，本文件改成
 // 按标签/表头名**定位**而不是写死行号（`findRow` / `headerFields`）。
+//
+// 2026-10-13（用户）：「采购订单导出时，那个 excel 表单里面，可以不用有供应商这一个 column。
+// 采购单号这个字段也不需要导出。交货日期也不需要这个 column」
+// —— 明细表 9 → 7 列、表头 11 格（少「采购单号」）。用户确认：**抬头的「供应商名称：」与
+// 「交货日期：」保留**（只删明细里逐行重复的那两列）。下面这几条就是钉这个口径。
 function fixture(overrides = {}) {
   const order = {
     id: "po-1",
@@ -110,7 +115,7 @@ test("货号：历史单（销售单没有货号）时那一格与改造前逐�
   }
 });
 
-test("表头：用户点名的 12 项都在，且顺序与清单一致（外加原模板的电话与采购单号）", async () => {
+test("表头：用户点名的 10 项 + 电话都在，且顺序与清单一致（2026-10-13 起不再印采购单号）", async () => {
   const { service } = fixture();
   const sheet = await sheetOf(service);
 
@@ -119,27 +124,30 @@ test("表头：用户点名的 12 项都在，且顺序与清单一致（外加�
 
   const fields = headerFields(sheet);
   assert.equal(fields.get("订单号："), "DL260001", "订单号显示销售订单号");
-  assert.equal(fields.get("供应商名称："), "某某五金厂");
+  assert.equal(fields.get("供应商名称："), "某某五金厂", "抬头的供应商名称保留（厂商要知道这张单开给谁）");
   assert.equal(fields.get("供应商联系人："), "李经理");
   assert.equal(fields.get("采购人："), "王采购", "采购人取创建人（用户选择保持自动）");
   assert.equal(fields.get("操作人："), "赵主管", "操作人取最后修改人");
   assert.match(String(fields.get("下单录入时间：")), /2026\/9\/10|2026-09-10/);
   assert.match(String(fields.get("操作时间：")), /2026\/9\/10|2026-09-10/);
   assert.equal(fields.get("总价："), 3460, "总价 = 单头含税总价（数字格）");
-  assert.equal(fields.get("交货日期："), "2026-09-20", "交货日期 = 单头预计到货日");
+  assert.equal(fields.get("交货日期："), "2026-09-20", "整单交期保留在抬头格里");
   assert.equal(fields.get("付款方式："), "月结30天");
-  // 原模板就有的两格保留（采购单号是厂商对账的唯一抓手）
   assert.equal(fields.get("电话："), "13800000000");
-  assert.equal(fields.get("采购单号："), "PO-20260910-1234ABCD");
   // 两行长文本各占整行
   assert.equal(fields.get("交货地址："), "浙江省绍兴市柯桥区迪礼厂区 1 号仓");
   assert.match(String(fields.get("交期条款：")), /合同签订后 15 天内分批交货/);
 
+  // 2026-10-13（用户）：「采购单号这个字段也不需要导出」—— 纸面上任何一格都不该再出现它。
+  assert.equal(fields.has("采购单号："), false, "采购单号那一格已删");
+  assert.equal(allText(sheet).includes("PO-20260910-1234ABCD"), false, "采购单号不该以任何形式印在纸面上");
+
   // 顺序 = 用户清单（订单号 → 供应商名称 → 供应商联系人 → 采购人 → 操作人 → 下单录入时间 →
   // 操作时间 → 总价 → 交货日期 → 付款方式），交货地址与交期条款各占整行。
+  // 第 4 行第 3 组（原「采购单号」）留空，所以整张表只有 11 个字段标签。
   const labels = [];
   sheet.eachRow((row) => row.eachCell((cell) => { const value = String(cell.value ?? ""); if (value.endsWith("：") && !["备注：", "交易条款：", "交货地址：", "交期条款："].includes(value)) labels.push(value); }));
-  assert.deepEqual(labels, ["订单号：", "供应商名称：", "供应商联系人：", "采购人：", "操作人：", "下单录入时间：", "操作时间：", "总价：", "交货日期：", "付款方式：", "电话：", "采购单号："]);
+  assert.deepEqual(labels, ["订单号：", "供应商名称：", "供应商联系人：", "采购人：", "操作人：", "下单录入时间：", "操作时间：", "总价：", "交货日期：", "付款方式：", "电话："]);
 });
 
 test("表头：新字段没填时格子留空，不印 null/undefined", async () => {
@@ -155,32 +163,49 @@ test("表头：新字段没填时格子留空，不印 null/undefined", async ()
   assert.equal(/undefined|null|NaN/.test(joined), false, "空值不能打成 undefined/null/NaN");
 });
 
-test("明细 9 列列序：原模板 7 列顺序不变，仅插入「单位」与「供应商」；含税总价=系统金额", async () => {
+test("明细 7 列列序：模板 7 列顺序不变，仅在「规格型号」后插入「单位」；含税总价=系统金额", async () => {
   const { service } = fixture();
   const sheet = await sheetOf(service);
   const headerRow = findRow(sheet, 1, "序号");
   assert.ok(headerRow > 0, "应能找到明细表头行");
 
   const headers = [];
-  for (let column = 1; column <= 9; column += 1) headers.push(sheet.getRow(headerRow).getCell(column).value);
-  assert.deepEqual(headers, ["序号", "产品名称", "规格型号", "单位", "供应商", "含税单价", "数量", "含税总价", "交货日期"]);
+  for (let column = 1; column <= 7; column += 1) headers.push(sheet.getRow(headerRow).getCell(column).value);
+  assert.deepEqual(headers, ["序号", "产品名称", "规格型号", "单位", "含税单价", "数量", "含税总价"]);
 
   const first = sheet.getRow(headerRow + 1);
   assert.equal(first.getCell(1).value, 1);
   assert.equal(first.getCell(2).value, "伞骨");
   assert.equal(first.getCell(3).value, "58cm", "规格型号取采购明细的型号");
   assert.equal(first.getCell(4).value, "根");
-  assert.equal(first.getCell(5).value, "某某五金厂");
-  assert.equal(first.getCell(6).value, 1.25, "含税单价=系统单价");
-  assert.equal(first.getCell(7).value, 1200);
-  assert.equal(first.getCell(8).value, 1500, "含税总价=系统金额（数量×单价+附加费）");
-  assert.equal(first.getCell(9).value, "2026-09-18", "交货日期取明细行日期");
+  assert.equal(first.getCell(5).value, 1.25, "含税单价=系统单价");
+  assert.equal(first.getCell(6).value, 1200);
+  assert.equal(first.getCell(7).value, 1500, "含税总价=系统金额（数量×单价+附加费）");
 
   const second = sheet.getRow(headerRow + 2);
   assert.equal(second.getCell(3).value, "EVA 主数据", "型号为空时退回物料规格型号");
   assert.equal(second.getCell(4).value, "米");
-  assert.equal(second.getCell(5).value, "另一家纺织厂", "同一采购单的不同供应商逐行显示");
-  assert.equal(second.getCell(9).value, "2026-09-20", "明细无日期时退回单头预计到货日");
+});
+
+test("2026-10-13：明细不再印「供应商」与「交货日期」两列（抬头那两句仍在）", async () => {
+  const { service } = fixture();
+  const sheet = await sheetOf(service);
+  const headerRow = findRow(sheet, 1, "序号");
+  const headers = [];
+  for (let column = 1; column <= 12; column += 1) headers.push(sheet.getRow(headerRow).getCell(column).value ?? null);
+
+  assert.equal(headers.includes("供应商"), false, "「供应商」列已删");
+  assert.equal(headers.includes("交货日期"), false, "「交货日期」列已删");
+  assert.equal(headers[7], null, "第 8 列起应该是空的（表只剩 7 列，不是把内容留在原位置上）");
+
+  // fixture 的明细行上仍有第二个供应商（某某五金厂 / 另一家纺织厂）与逐行日期：
+  // 它们**不该**出现在纸面上 —— 逐行供应商是这次要删的东西（抬头已写明这张单开给谁）。
+  const values = allText(sheet);
+  assert.equal(values.includes("另一家纺织厂"), false, "明细行的供应商不该再印");
+  assert.equal(values.some((value) => value.includes("2026-09-18")), false, "明细行的交货日期不该再印");
+  // 抬头的两句照旧（用户确认保留）
+  assert.equal(values.includes("某某五金厂"), true, "抬头「供应商名称：」保留");
+  assert.equal(values.includes("2026-09-20"), true, "抬头「交货日期：」保留整单交期");
 });
 
 test("小计只对含税总价求和；备注照旧；表尾三个大格子留空供手写", async () => {
@@ -188,8 +213,9 @@ test("小计只对含税总价求和；备注照旧；表尾三个大格子留�
   const sheet = await sheetOf(service);
   const headerRow = findRow(sheet, 1, "序号");
   const subtotal = sheet.getRow(findRow(sheet, 1, "小计"));
-  assert.match(String(subtotal.getCell(8).value.formula), new RegExp(`^SUM\\(H${headerRow + 1}:H${headerRow + 2}\\)$`));
-  assert.equal(subtotal.getCell(7).value, null, "数量跨单位不求和");
+  // 含税总价删列后是第 7 列（G）：公式跟着列走（写死 H 会指向一个空列，纸面上小计变 0）
+  assert.match(String(subtotal.getCell(7).value.formula), new RegExp(`^SUM\\(G${headerRow + 1}:G${headerRow + 2}\\)$`));
+  assert.equal(subtotal.getCell(6).value, null, "数量跨单位不求和");
 
   const remarkRow = findRow(sheet, 1, `备注：${fixture().order.remark}`);
   assert.ok(remarkRow > 0, "备注区保留标签与内容");

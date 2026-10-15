@@ -26,6 +26,18 @@ type SearchableSelectProps = {
   noResultsText?: string;
   className?: string;
   /**
+   * 收起态控件的 `title`（鼠标悬停时显示的全文）。
+   *
+   * 用途只有一个：**触发器里的文字被 CSS 省略号吃掉之后，hover 要有地方看全文**
+   * （第一个用它是 BOM 表的物料名称列，那一列 20% 宽、物料名可以很长，见
+   * `globals.css` 的 `.bom-table .bom-col-material`）。
+   *
+   * 为什么不写在根 div 上：省略号发生在**触发器**里，title 必须与眼睛看到的那个控件重合；
+   * 而且展开后根 div 里是搜索框，挂 title 会弹出一个与当前内容无关的气泡。
+   * 调用方负责传"触发器正在显示的那串字"（不是行上存的原始值）—— 传错了 hover 出来是另一份东西。
+   */
+  title?: string;
+  /**
    * 根元素上的 `data-testid`。默认 `"searchable-select"`。
    *
    * 为什么要可覆盖：把某个 Radix `Select` 换成它时，原来长在 trigger 上的 testid（如
@@ -85,6 +97,7 @@ export function SearchableSelect({
   noResultsText = "无匹配项",
   className,
   testId = "searchable-select",
+  title,
 }: SearchableSelectProps) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -326,6 +339,7 @@ export function SearchableSelect({
           aria-haspopup="listbox"
           aria-expanded={false}
           aria-label={label ?? placeholder}
+          title={title}
           disabled={disabled}
           onClick={() => openWith()}
           onKeyDown={handleTriggerKeyDown}

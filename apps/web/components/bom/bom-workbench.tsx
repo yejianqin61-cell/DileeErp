@@ -17,6 +17,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiRequest } from "../../lib/api-client";
 import { currencyOptionsWithCurrent, type CurrencyOption } from "../../lib/currency-options";
@@ -257,7 +258,23 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
       */}
       <div className="table-wrap"><table className="data-table bom-table"><thead><tr><th className="bom-col-index">序号</th><th className="bom-col-material">物料名称</th><th className="bom-col-model">型号</th><th className="bom-col-spec">规格型号</th><th className="bom-col-color">颜色</th><th className="bom-col-quantity">数量</th><th className="bom-col-unit">单位</th>{showSupplier && <th className="bom-col-supplier">供应商</th>}{showReferencePrice && <th className="bom-col-price">参考单价</th>}<th className="bom-col-action"><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
         <td className="bom-col-index">{index + 1}</td>
-        <td className="bom-col-material"><Select value={row.materialId || undefined} onValueChange={(value) => changeMaterial(index, value)}><SelectTrigger data-testid={`bom-material-${index}`} title={materialLabelOf(row.materialId) || undefined}><SelectValue placeholder="请选择物料" /></SelectTrigger><SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
+        {/*
+          物料名称（2026-10-13，用户）：「建立BOM表的页面，生产和采购都是，在添加行，选择物料的时候，
+          要支持搜索功能，搜索物料清单里面的。」
+
+          改前这里是一个 Radix `Select`：只能滚。物料池是**全量**下发的
+          （`GET /materials` 无分页，见 procurement-master-data.service.ts 的 listMaterials），
+          几百条物料靠肉眼在一长串里找「伞骨」不现实 —— 与 2026-09-16 那次「池子加搜索」是同一个问题，
+          只是当时用户明确选了「只做池页面」，表单里的下拉留到了今天。
+
+          换成全站既有的 `SearchableSelect`（会计科目 / 供应商 / 销售单引用都在用它）：
+          过滤语义（label 与 value 都命中、忽略大小写）只该有一处实现，所以不另造一个。
+          `label` 的写法与下拉里的文案一字不差（`编码 / 名称`），搜索与显示是同一份字符串。
+
+          `title` 取 `materialLabelOf(...)`（触发器**正在显示**的那串字），不是 `row.materialName`：
+          这一列只有 20% 宽，长名靠省略号收，hover 出来的必须与眼睛看到的一致（见 globals.css）。
+        */}
+        <td className="bom-col-material"><SearchableSelect testId={`bom-material-${index}`} value={row.materialId ?? ""} options={materialOptions} onChange={(value) => changeMaterial(index, value)} placeholder="请选择物料" label="物料名称" title={materialLabelOf(row.materialId) || undefined} searchPlaceholder="输入物料编码或名称搜索" noResultsText="没有匹配的物料：到【采购 → 物料清单】维护物料池" /></td>
         <td className="bom-col-model"><Input value={row.model ?? ""} onChange={(event) => updateItem(index, { model: event.target.value })} /></td>
         <td className="bom-col-spec"><Input value={row.specificationModel ?? ""} onChange={(event) => updateItem(index, { specificationModel: event.target.value })} /></td>
         <td className="bom-col-color"><Input value={row.color ?? ""} onChange={(event) => updateItem(index, { color: event.target.value })} /></td>

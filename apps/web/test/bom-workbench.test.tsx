@@ -6,7 +6,7 @@
 //   3. 冲突后「重新加载最新版本」会重新 GET，并显示服务端的最新明细；
 //   4. 没有创建物料入口（生产模块）时只给提示，不渲染「新建物料」按钮。
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BomWorkbench } from "../components/bom/bom-workbench";
 import { Toaster } from "../components/ui/toaster";
@@ -27,6 +27,16 @@ const bomWith = (updatedAt: string, quantity = "2") => ({
 });
 
 const bodyOf = (call: StubbedCall) => JSON.parse(String(call.body)) as Record<string, unknown>;
+
+/**
+ * 物料那一格的**触发器**。
+ *
+ * 2026-10-13 起它是 `SearchableSelect`：`data-testid` 落在**根 div** 上（那个原语自己的约定，
+ * 与 Radix `Select` 把 testid 放在 trigger 按钮上不同），所以 `getByTestId("bom-material-0")`
+ * 拿到的是外层容器 —— 点它不会展开（点了没反应的那种坑），要进到里面找 `combobox`。
+ * 收起态那个 button 与展开态那个搜索框都显式声明了 `role="combobox"`，两种形态下都能用它找到控件。
+ */
+const materialTrigger = async (index = 0) => within(await screen.findByTestId(`bom-material-${index}`)).getByRole("combobox");
 
 function renderWorkbench(options: { onSaved?: () => void; onCreateMaterial?: (apply: (material: (typeof materials)[number]) => void) => void } = {}) {
   return render(<>
@@ -186,7 +196,7 @@ describe("BOM 表：物料名称列（固定列宽 / 省略 / hover 全文）", 
 
   it("title 是完整物料名（省略号只发生在屏幕上，不会进 title）", async () => {
     renderWith([item()]);
-    const trigger = await screen.findByTestId("bom-material-0");
+    const trigger = await materialTrigger();
     expect(trigger).toHaveAttribute("title", `M-20261008 / ${LONG_NAME}`);
     // hover 出来的必须与眼睛看到的是同一份字符串：触发器里显示的正是下拉选项的 label
     expect(trigger.textContent).toContain(`M-20261008 / ${LONG_NAME}`);
@@ -194,14 +204,15 @@ describe("BOM 表：物料名称列（固定列宽 / 省略 / hover 全文）", 
 
   it("换了物料，title 跟着换（不是只在首次渲染时算一次）", async () => {
     renderWith([item()]);
-    await userEvent.click(await screen.findByTestId("bom-material-0"));
+    await userEvent.click(await materialTrigger());
     await userEvent.click(await screen.findByText("M-002 / 面料B"));
-    await waitFor(() => expect(screen.getByTestId("bom-material-0")).toHaveAttribute("title", "M-002 / 面料B"));
+    // 选完下拉自己收起，触发器重新渲染：要重新取一次（不是拿旧节点）
+    await waitFor(() => expect(within(screen.getByTestId("bom-material-0")).getByRole("combobox")).toHaveAttribute("title", "M-002 / 面料B"));
   });
 
   it("行里还没选物料时不给 title（空提示比没有提示更糟）", async () => {
     renderWith([item({ materialId: "", materialName: "" })]);
-    expect(await screen.findByTestId("bom-material-0")).not.toHaveAttribute("title");
+    expect(await materialTrigger()).not.toHaveAttribute("title");
   });
 });
 
@@ -289,5 +300,81 @@ describe("BOM 表：参考单价列", () => {
     // 前端去掉尾零显示 7，服务端仍按 DECIMAL(18,4) 存 7.0000
     expect(items[0].reference_unit_price).toBe("7");
     expect(items[0].reference_currency).toBe("USD");
+  });
+});
+
+// 2026-10-13（用户）：「建立BOM表的页面，生产和采购都是，在添加行，选择物料的时候，
+// 要支持搜索功能，搜索物料清单里面的。」
+//
+// 改前物料那一格是 Radix `Select`（只能滚）：物料池是**全量**下发的（`GET /materials` 无分页），
+// 几百条里找一个伞骨不现实。换成 `SearchableSelect` 之后钉四件事：
+//   ① 「添加行」之后那一格能打开搜索框，并按关键字把候选收窄（不是只多一个框、却还在滚全量）；
+//   ② 搜出来选中之后，值照旧进保存请求体（换下拉实现不能把值弄丢）；
+//   ③ 生产侧的入口（不显示供应商与参考单价）用的是**同一个组件**，所以同样能搜；
+//   ④ 搜不到时给出去哪儿维护物料池的指路，而不是一句"没有匹配项"。
+describe("BOM 表：物料名称列支持搜索（2026-10-13）", () => {
+  const pool = [
+    { id: "m-1", materialCode: "M-001", name: "伞骨", materialType: "raw_material", isActive: true },
+    { id: "m-2", materialCode: "M-002", name: "伞布", materialType: "raw_material", isActive: true },
+    { id: "m-3", materialCode: "M-003", name: "手柄", materialType: "raw_material", isActive: true },
+  ];
+  const emptyBom = { id: "bom-1", orderNo: "SO-1", status: "draft", version: 1, updatedAt: OPENED_AT, items: [] };
+
+  function renderWith(options: { showSupplier?: boolean; showReferencePrice?: boolean } = {}) {
+    const calls = stubApi((url, call) => {
+      if (url.endsWith("/boms/bom-1") && call.method === "GET") return apiOk(emptyBom);
+      if (url.endsWith("/boms/bom-1/items") && call.method === "PUT") return apiOk(emptyBom);
+      if (url.endsWith("/dictionaries/currency/items")) return apiOk([]);
+      return apiOk({});
+    });
+    render(<BomWorkbench bomId="bom-1" title="SO-1" materials={pool} units={units} onClose={() => undefined} showSupplier={options.showSupplier} showReferencePrice={options.showReferencePrice} />);
+    return calls;
+  }
+
+  it("点「添加行」后，那一格能按关键字把物料清单收窄到命中的那几条", async () => {
+    renderWith();
+    await userEvent.click(await screen.findByRole("button", { name: "添加行" }));
+
+    await userEvent.click(await materialTrigger());
+    // 展开态是**搜索框**，不是一个只能滚的长列表
+    const search = await screen.findByTestId("searchable-select-search");
+    await userEvent.type(search, "伞布");
+
+    expect(await screen.findByText("M-002 / 伞布")).toBeVisible();
+    // 不命中的那两条不再出现在候选里（草稿行默认选的伞骨也在其中）
+    expect(screen.queryByText("M-001 / 伞骨")).toBeNull();
+    expect(screen.queryByText("M-003 / 手柄")).toBeNull();
+  });
+
+  it("搜出来选中之后，保存请求体里是那条物料的 id 与名称（换下拉实现不能弄丢值）", async () => {
+    const calls = renderWith();
+    await userEvent.click(await screen.findByRole("button", { name: "添加行" }));
+    await userEvent.click(await materialTrigger());
+    await userEvent.type(await screen.findByTestId("searchable-select-search"), "M-003");
+    await userEvent.click(await screen.findByText("M-003 / 手柄"));
+
+    await userEvent.click(screen.getByRole("button", { name: "保存BOM表" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PUT")).toBe(true));
+    const items = bodyOf(calls.find((call) => call.method === "PUT")!).items as Array<Record<string, unknown>>;
+    expect(items[0]).toMatchObject({ material_id: "m-3", material_name: "手柄" });
+  });
+
+  it("生产侧入口（不显示供应商与参考单价）是同一个组件：一样能搜", async () => {
+    renderWith({ showSupplier: false, showReferencePrice: false });
+    await userEvent.click(await screen.findByRole("button", { name: "添加行" }));
+
+    await userEvent.click(await materialTrigger());
+    await userEvent.type(await screen.findByTestId("searchable-select-search"), "手柄");
+
+    expect(await screen.findByText("M-003 / 手柄")).toBeVisible();
+  });
+
+  it("搜不到时指路到物料清单，而不是只写一句「无匹配项」", async () => {
+    renderWith();
+    await userEvent.click(await screen.findByRole("button", { name: "添加行" }));
+    await userEvent.click(await materialTrigger());
+    await userEvent.type(await screen.findByTestId("searchable-select-search"), "找不到的物料");
+
+    expect(await screen.findByText(/到【采购 → 物料清单】维护物料池/)).toBeVisible();
   });
 });

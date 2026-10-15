@@ -72,8 +72,14 @@ test("参考单价列：币种格定死宽度、剩下的全给价（价才是�
 });
 
 test("物料名称列：超长省略 + hover 看全文（两条各管一半，缺一条都不成立）", () => {
-  // ① 省略号：`min-width: 0` 不能省 —— `.ui-select-trigger` 是 flex 容器，里面的 Radix Value
+  // ① 省略号：`min-width: 0` 不能省 —— `.ui-select-trigger` 是 flex 容器，里面那个文字的
   //    `<span>` 默认最小宽度是 min-content，只写 overflow/text-overflow 它照样把列撑开。
+  //
+  //    ⚠️ 2026-10-13：这一格的下拉从 Radix `Select` 换成了可搜索的 `SearchableSelect`
+  //    （用户：「在添加行，选择物料的时候，要支持搜索功能，搜索物料清单里面的」）。
+  //    下面两条**故意写 `.ui-select-trigger`**：两种下拉的触发器都带这个类
+  //    （`SearchableSelect` 额外多一个 `.ui-searchable-select-trigger`），所以换实现时不用改 CSS，
+  //    但谁要是把它收窄成某一种实现的类名，省略号就会静默失效 —— 这正是这一条守卫要拦的。
   assert.match(
     css,
     /\.bom-table \.bom-col-material \.ui-select-trigger \{ min-width: 0; \}/,
@@ -86,4 +92,18 @@ test("物料名称列：超长省略 + hover 看全文（两条各管一半，�
   // ② 被省略掉的字要有地方看：title 由组件给，而且必须取**触发器正在显示的那串字**。
   assert.match(component, /title=\{materialLabelOf\(row\.materialId\) \|\| undefined\}/);
   assert.match(component, /const materialLabelOf = \(materialId: string\) => materialOptions\.find\(\(option\) => option\.value === materialId\)\?\.label \?\? ""/);
+  // ③ 那一格必须真是可搜索下拉（不是"多一个搜索框、其实还在滚全量"）：
+  //    组件里要用 `SearchableSelect` 渲染 `bom-material-${index}`，搜索文案里点明搜的是编码与名称。
+  assert.match(component, /<SearchableSelect testId=\{`bom-material-\$\{index\}`\}/, "物料名称列要用可搜索下拉渲染");
+  assert.match(component, /searchPlaceholder="输入物料编码或名称搜索"/, "搜索框要说清能按编码/名称搜");
+});
+
+test("物料搜索的弹层比列宽（20%）宽：长物料名不能折成三行", () => {
+  // 弹层默认 left:0/right:0 = 跟列同宽，而物料列只有 20%（表最小宽 1180px 时 ≈ 236px）。
+  // 没有这条下限，几十个字的物料名在候选里会折行，一屏看不到几个选项。
+  assert.match(
+    css,
+    /\.bom-table \.bom-col-material \.ui-searchable-select-popover \{ min-width: 320px; \}/,
+    "少了这条，搜索结果会被列宽挤成一条窄柱",
+  );
 });
