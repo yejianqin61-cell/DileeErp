@@ -13,6 +13,12 @@ test("referenced unit cannot be physically deleted", async () => {
     bomItem: { count: async () => 0 },
     operationCatalog: { count: async () => 0 },
     productionOrderOperation: { count: async () => 0 },
+    // 2026-10-16：单位删除检查补了「数量所在的那几处」——桩里必须给出这些模型，
+    // 否则删除路径会以 TypeError 结束（而不是走到 MASTER_DATA_IN_USE 的分支）。
+    purchaseOrderItem: { count: async () => 0 },
+    rawMaterialInbound: { count: async () => 0 },
+    rawMaterialMovementLine: { count: async () => 0 },
+    inventoryFact: { count: async () => 0 },
     $transaction: async (fn) => fn({ ...prisma, $queryRawUnsafe: async () => [] }),
   };
   const service = new ProcurementMasterDataService(prisma, audit);

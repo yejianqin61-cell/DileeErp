@@ -29,6 +29,30 @@ type DialogState = { title: string; fields: ActionField[]; submit: (values: Reco
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
 /**
+ * 库存余额接口。**刻意不带 `material_ids`**（接口支持这个筛选，但这里不能用）。
+ *
+ * 2026-10-16 排查：「原料入库单过账了（入库状态=入库成功），库存汇总里却看不到那个物料」。
+ *
+ * 根因是这条 URL 的长度。生产机上 `/api/` 要先过 nginx（`.deploy-run-118/nginx-dilee.conf`），
+ * 那份配置**没有**放宽请求行 —— nginx 默认 `large_client_header_buffers 4 8k`，
+ * 而**一条请求行（方法 + URL + HTTP 版本）不能超过一个 buffer**：8192 字节。
+ * 原来这里把**全部物料 id** 拼进查询串，线上 id 是 UUID（36 字符 + 分隔符 = 37 字节/个）：
+ *
+ *   物料 200 个 → 约 7.4KB（勉强过）　物料 300 个 → **11.2KB（nginx 直接回 414）**
+ *
+ * 414 时请求根本到不了 API，而这一页的 `Promise.all` 里前四个请求都成功了，于是
+ * **原料入库单那张表照常显示「入库成功」，库存汇总整表空白** —— 用户看到的就是「入库成功但没库存」。
+ * 本机复现见 `test/raw-material-storage.test.tsx`（300 个物料时请求行 11165 字节 > 8192）。
+ *
+ * 为什么不改成"分批发 id"或"加个更长的限制"：这一页**本来就要全部物料的余额** ——
+ * 它给每个物料都补一行 0（`mergeMaterialBalances`），少了谁都是错的。
+ * 接口在不给 `material_ids` 时返回全部原料余额（`inventory.service.ts` 的空数组=不过滤），
+ * 所以把筛选去掉是**同一个结果集、没有 URL 长度上限**：`app/warehouse/page.tsx` 与
+ * `material-slip-editor.tsx` 也是这么调的。
+ */
+const RAW_MATERIAL_BALANCES_PATH = "/inventory/raw-material-balances";
+
+/**
  * 两张表的列宽（百分比）。
  *
  * `DataTable` 2026-10-09 起**一律**给 `<table>` 加 `data-table-fixed`（`table-layout: fixed`）：
@@ -89,6 +113,14 @@ export default function RawMaterialStoragePage() {
   const [units, setUnits] = useState<Unit[]>([]);
   const [inspections, setInspections] = useState<Inspection[]>([]);
   const [balances, setBalances] = useState<Balance[]>([]);
+  /**
+   * 库存余额**没取到**时的原因（与页面级 `error` 分开）。
+   *
+   * 为什么值得单独一个状态：余额失败时 `balances` 留在空数组，而库存汇总的空态是「暂无原料库存」——
+   * 用户看到的是"没有库存"，事实是"没取到"。这两句话在业务上完全不同（一个是数据、一个是故障），
+   * 混在一起正是 2026-10-16 那个「入库成功但库存里看不到物料」查了半天的原因。
+   */
+  const [balanceError, setBalanceError] = useState("");
   const [inbounds, setInbounds] = useState<Inbound[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -116,9 +148,17 @@ export default function RawMaterialStoragePage() {
       setUnits(u.data);
       setInspections(i.data);
       setInbounds(ib.data);
-      const balanceResult = await apiGet<Balance[]>("/inventory/raw-material-balances?material_ids=" + m.data.map((item) => item.id).join(","));
-      // 单位名必须用本次请求返回的 u.data 解析：渲染期派生的 unitMap 在首次加载时还是空的。
-      setBalances(mergeMaterialBalances(m.data, u.data, balanceResult.data, (row, material) => ({ ...row, material })));
+      // 余额单独一次请求、单独一个 try：它失败不该把「原料入库单」那张表也标成加载失败
+      // （入库单是入库是否生效的唯一凭证，那时候它恰恰是最需要能看的），
+      // 但**也不能静默留空** —— 所以失败时记进 balanceError，由库存汇总那张卡自己说清。
+      try {
+        const balanceResult = await apiGet<Balance[]>(RAW_MATERIAL_BALANCES_PATH);
+        // 单位名必须用本次请求返回的 u.data 解析：渲染期派生的 unitMap 在首次加载时还是空的。
+        setBalances(mergeMaterialBalances(m.data, u.data, balanceResult.data, (row, material) => ({ ...row, material })));
+        setBalanceError("");
+      } catch (cause) {
+        setBalanceError(messageOf(cause, "库存汇总加载失败"));
+      }
     } catch (cause) {
       setError(messageOf(cause, "原料仓储情况加载失败"));
     } finally {
@@ -289,7 +329,13 @@ export default function RawMaterialStoragePage() {
         <div className="panel-heading"><h2>库存汇总</h2>{query ? <span className="panel-note">筛选后 {filteredBalances.length} / {balances.length} 条</span> : null}</div>
         <div className="panel-body">
           <p className="panel-note">「待入库（未过账）」是已接收通知生成的草稿数量，登记实际数量并过账后才会计入「已过账库存」。</p>
-          <DataTable columns={balanceColumns} data={filteredBalances} empty={<EmptyState title={query ? "没有匹配的原料库存" : "暂无原料库存"} description={query ? "换个关键词，或点「清除搜索」看全部。" : undefined} />} />
+          {/*
+            取数失败 ≠ 没有库存。失败时**不渲染这张表**（表在、数据 0 行，读起来就是「库存是空的」），
+            改成把原因摆在这里 + 一个重试入口；下面那张原料入库单照旧可用。
+          */}
+          {balanceError
+            ? <ErrorState message={`库存汇总没取到：${balanceError}`} onRetry={() => void load()} />
+            : <DataTable columns={balanceColumns} data={filteredBalances} empty={<EmptyState title={query ? "没有匹配的原料库存" : "暂无原料库存"} description={query ? "换个关键词，或点「清除搜索」看全部。" : undefined} />} />}
         </div>
       </section>
       <section className="panel">
@@ -310,7 +356,10 @@ export default function RawMaterialStoragePage() {
         <div className="panel-heading"><h2>入库单与库存关系</h2></div>
         <div className="panel-body">
           <p className="panel-note">库存以物料为唯一口径，入库单过账后会同步到汇总库存。</p>
-          <p className="panel-note">当前原料汇总条目：{balances.length}{query ? `（筛选后 ${filteredBalances.length}）` : ""}</p>
+          {/* 余额没取到时不报「当前原料汇总条目：0」——那同样是在把"没取到"说成"没有库存"。 */}
+          {balanceError
+            ? <p className="panel-note status-error">库存汇总没取到数，条目数暂时不可知（原因见上方「库存汇总」）。</p>
+            : <p className="panel-note">当前原料汇总条目：{balances.length}{query ? `（筛选后 ${filteredBalances.length}）` : ""}</p>}
           <p className="panel-note">当前可用入库单：{inbounds.filter((item) => item.status === "draft").length}</p>
           <p className="panel-note">当前已过账入库单：{inbounds.filter((item) => item.status === "posted").length}</p>
           <p className="panel-note">当前已冲销入库单：{inbounds.filter((item) => item.status === "reversed").length}</p>

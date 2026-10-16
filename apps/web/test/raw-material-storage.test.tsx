@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import RawMaterialStoragePage from "../app/warehouse/raw-material-storage/page";
-import { apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
+import { apiErr, apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
 
 const params = vi.hoisted(() => ({ current: new URLSearchParams() }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => params.current }));
@@ -160,6 +160,62 @@ describe("原料仓储情况：模糊搜索", () => {
     stub({ inbounds: [] });
     await open();
     expect(panel("原料入库单").getByText("暂无原料入库单")).toBeInTheDocument();
+  });
+});
+
+/**
+ * 2026-10-16 排查：「原料入库单过账了（入库成功），但库存汇总里看不到那个物料」。
+ *
+ * 这一页的库存汇总数据来自 `GET /api/v1/inventory/raw-material-balances`。生产机上它要穿过 nginx
+ * （`.deploy-run-118/nginx-dilee.conf` 的 `location /api/`），而那份 nginx 配置**没有**放宽请求行：
+ * 默认 `large_client_header_buffers 4 8k`，**一条请求行最多 8192 字节**，超了直接回 414，
+ * 请求根本到不了 API。而这一页原来把**全部物料 id** 拼进了查询串（每个 UUID 37 字节）——
+ * 物料一多（≈220 个以上）URL 就过线，库存汇总整表空白，但下面那张原料入库单照样显示「入库成功」。
+ *
+ * 这两条就是钉这个口径：① 请求行不许过线；② 取数失败不许冒充「没有库存」。
+ */
+const NGINX_REQUEST_LINE_LIMIT = 8192;
+/** nginx 的请求行 = 方法 + 空格 + URL + 空格 + HTTP 版本。 */
+const requestLineLength = (url: string) => "GET ".length + url.length + " HTTP/1.1".length;
+
+describe("原料仓储情况：库存汇总的取数不能被代理打回", () => {
+  // ⚠️ id 必须是 **UUID 形状**（36 字符）才复现得出来：线上物料 id 是 UUID，
+  // 用 `m-1` 这样的短桩算出来的 URL 只有实际的三分之一，测试会假绿。
+  const uuid = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+  const manyMaterials = Array.from({ length: 300 }, (_, index) => ({ id: uuid(index), materialCode: `M-${index}`, name: `物料${index}`, defaultUnitId: "u-1", specificationModel: "-", color: null }));
+
+  it("物料有 300 个时，每一条请求的请求行都在 nginx 的 8k 之内", async () => {
+    const calls = stub({ materials: manyMaterials });
+    await open();
+    const longest = calls.map((call) => requestLineLength(call.url)).sort((a, b) => b - a)[0] ?? 0;
+    expect(longest, `最长请求行 ${longest} 字节（nginx 上限 ${NGINX_REQUEST_LINE_LIMIT}）`).toBeLessThanOrEqual(NGINX_REQUEST_LINE_LIMIT);
+  });
+
+  it("物料有 300 个时，库存汇总仍然收下全部物料（每个物料都有行）", async () => {
+    stub({ materials: manyMaterials });
+    await open();
+    // 表格本身分页（DataTable 每页 20 行），所以看「收下了几条」这个数，而不是当前页的行数。
+    expect(screen.getByText(/当前原料汇总条目：300/)).toBeInTheDocument();
+  });
+
+  it("库存取数失败时，库存汇总要说清是「没取到」，不能显示「暂无原料库存」", async () => {
+    stubApi((url) => {
+      // nginx 414：URL 过长的真实表现（本机无法复现代理，这里按它的等价结果打桩）
+      if (url.startsWith(EP.balances)) return apiErr(414, "REQUEST_ERROR", "请求失败（HTTP 414）");
+      if (url.startsWith(EP.materials)) return apiOk(materials);
+      if (url.startsWith(EP.units)) return apiOk(units);
+      if (url.startsWith(EP.inspections)) return apiOk([]);
+      if (url.startsWith(EP.inbounds)) return apiOk([inboundB]);
+      return apiOk([]);
+    });
+    render(<RawMaterialStoragePage />);
+    await screen.findByTestId("page-warehouse-raw-material-storage");
+
+    // 入库单那张表照旧可用（过账后的行仍然看得到）
+    expect(panel("原料入库单").getByText("IN-002")).toBeInTheDocument();
+    // 库存那张说清原因，而不是假装「没有库存」
+    expect(panel("库存汇总").getByText(/请求失败（HTTP 414）/)).toBeInTheDocument();
+    expect(panel("库存汇总").queryByText("暂无原料库存")).toBeNull();
   });
 });
 

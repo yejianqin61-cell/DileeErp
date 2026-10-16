@@ -44,6 +44,11 @@ function makeHarness(options = {}) {
     productionOrderOperation: { count: [] },
     purchaseOrder: { count: [] },
     purchaseOrderItem: { count: [] },
+    // 2026-10-16：删除检查补了「数量所在的那几处」（采购明细 / 入库单 / 领料行 / 库存事实 / 盘点行）。
+    rawMaterialInbound: { count: [] },
+    rawMaterialMovementLine: { count: [] },
+    inventoryFact: { count: [] },
+    stocktakeLine: { count: [] },
     auditEvent: { create: [] },
     locks: [],
     transactions: 0,
@@ -100,6 +105,10 @@ function makeHarness(options = {}) {
     productionOrderOperation: { count: countFor("productionOrderOperation") },
     purchaseOrder: { count: countFor("purchaseOrder") },
     purchaseOrderItem: { count: countFor("purchaseOrderItem") },
+    rawMaterialInbound: { count: countFor("rawMaterialInbound") },
+    rawMaterialMovementLine: { count: countFor("rawMaterialMovementLine") },
+    inventoryFact: { count: countFor("inventoryFact") },
+    stocktakeLine: { count: countFor("stocktakeLine") },
   };
   const prisma = {
     ...tx,
@@ -265,8 +274,31 @@ test("unit.delete_referenced-by-any-of-four-tables_409-and-no-soft-delete", asyn
   }
 });
 
-test("unit.delete_already-deleted-before-transaction_404-and-skipped", async () => {
-  const h = makeHarness({ unitRow: null });
+/**
+ * 2026-10-16 排查「原料入库单过账了，库存里却看不到那个物料」时补的漏。
+ *
+ * `ensureUnusedAndDelete` 原来只数了 BOM 行（物料）/ 四张表（单位），于是**有采购明细、有入库单、
+ * 有库存事实**的物料或单位照样能被软删。一删，`GET /materials` 与 `/inventory/raw-material-balances`
+ * 两边的 `deletedAt: null` / `materialType: 'raw_material'` 过滤同时把它挡掉 —— 库存事实还在库里，
+ * 但库存汇总里那一行**静默消失**（原料入库单列表照旧显示它，所以看上去「入库成功但没库存」）。
+ */
+test("unit.delete_referenced-by-purchase-or-inventory_409（2026-10-16 补漏）", async () => {
+  const referenceWhere = {
+    purchaseOrderItem: { unitId: UNIT_ID, deletedAt: null },
+    rawMaterialInbound: { unitId: UNIT_ID, deletedAt: null },
+    rawMaterialMovementLine: { unitId: UNIT_ID, deletedAt: null },
+    // inventory_facts 没有 deletedAt（事实不可删改），所以这一条不带它
+    inventoryFact: { unitId: UNIT_ID },
+  };
+  for (const kind of Object.keys(referenceWhere)) {
+    const h = makeHarness({ references: { [kind]: 1 } });
+    await rejectsWithCode(() => h.service.deleteUnit(UNIT_ID, USER), "MASTER_DATA_IN_USE");
+    assert.deepEqual(h.calls[kind].count[0].where, referenceWhere[kind], `${kind} 的引用要按 unit_id 数`);
+    assert.deepEqual(h.calls.unit.update, [], `${kind} 有引用时不能软删单位`);
+  }
+});
+
+test("unit.delete_already-deleted-before-transaction_404-and-skipped", async () => {  const h = makeHarness({ unitRow: null });
   await rejectsWithCode(() => h.service.deleteUnit(UNIT_ID, USER), "UNIT_NOT_FOUND");
   assert.equal(h.calls.transactions, 0, "前置校验失败不应开启事务（不取行锁）");
   assert.deepEqual(h.calls.locks, []);
@@ -547,6 +579,25 @@ test("material.delete_referenced-by-bom_409-locked-and-no-soft-delete", async ()
   assert.deepEqual(h.calls.bomItem.count[0].where, { materialId: MATERIAL_ID, deletedAt: null });
   assert.deepEqual(h.calls.material.update, []);
   assert.deepEqual(auditActions(h.calls), []);
+});
+
+test("material.delete_referenced-by-purchase-or-inventory_409（2026-10-16 补漏）", async () => {
+  // 与上面的单位同理：只数 bomItem 时，「有采购明细 / 有入库单 / 有库存事实」的物料能被删掉，
+  // 删完它就从物料清单与库存汇总里一起消失（库存事实还在），症状就是「入库成功但库存里没有这个物料」。
+  const referenceWhere = {
+    purchaseOrderItem: { materialId: MATERIAL_ID, deletedAt: null },
+    rawMaterialInbound: { materialId: MATERIAL_ID, deletedAt: null },
+    rawMaterialMovementLine: { materialId: MATERIAL_ID, deletedAt: null },
+    // inventory_facts 与 stocktake_lines 都没有 deletedAt（事实与盘点行不可删改）
+    inventoryFact: { materialId: MATERIAL_ID },
+    stocktakeLine: { materialId: MATERIAL_ID },
+  };
+  for (const kind of Object.keys(referenceWhere)) {
+    const h = makeHarness({ references: { [kind]: 1 } });
+    await rejectsWithCode(() => h.service.deleteMaterial(MATERIAL_ID, USER), "MASTER_DATA_IN_USE");
+    assert.deepEqual(h.calls[kind].count[0].where, referenceWhere[kind], `${kind} 的引用要按 material_id 数`);
+    assert.deepEqual(h.calls.material.update, [], `${kind} 有引用时不能软删物料`);
+  }
 });
 
 test("material.delete_unreferenced_soft-deletes-with-code-snapshot", async () => {

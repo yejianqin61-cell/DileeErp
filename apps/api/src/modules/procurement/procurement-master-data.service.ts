@@ -376,9 +376,36 @@ export class ProcurementMasterDataService {
             tx.bomItem.count({ where: { unitId: id, deletedAt: null } }),
             tx.operationCatalog.count({ where: { defaultUnitId: id, deletedAt: null } }),
             tx.productionOrderOperation.count({ where: { unitId: id, deletedAt: null } }),
+            /**
+             * 2026-10-16 补漏（排查「原料入库单过账了，库存里却看不到那个物料」）。
+             *
+             * 上面四张表管的是「主数据与工艺」，下面四张管的是**数量**：采购明细、入库单、
+             * 领料/补料行、库存事实。它们都按 `unit_id` 记账，而库存余额查询
+             * （`InventoryService.rawMaterialBalances`）要求 `unit.deletedAt = null` ——
+             * 单位一旦被软删，这些行**整条从库存汇总里消失**，事实却还在库里。
+             *
+             * 与物料同理：已经写进过数量的单位，正确动作是**停用**，不是删除。
+             * `inventoryFact` 没有 `deletedAt`（事实不可删改，冲销也是一条新事实），所以它不过滤。
+             */
+            tx.purchaseOrderItem.count({ where: { unitId: id, deletedAt: null } }),
+            tx.rawMaterialInbound.count({ where: { unitId: id, deletedAt: null } }),
+            tx.rawMaterialMovementLine.count({ where: { unitId: id, deletedAt: null } }),
+            tx.inventoryFact.count({ where: { unitId: id } }),
           ])
         : kind === "material"
-          ? [await tx.bomItem.count({ where: { materialId: id, deletedAt: null } })]
+          ? await Promise.all([
+              tx.bomItem.count({ where: { materialId: id, deletedAt: null } }),
+              // 与单位同一条道理：以下是「这个物料的量」所在的五处。
+              // 只数 bomItem 时，一个已经收过货、账上有库存的物料照样能被删掉 ——
+              // 删完它同时从 `/materials`（listMaterials 过滤 deletedAt + materialType）与
+              // 库存汇总里消失（两边都要求物料存活且是原料），而库存事实还在库里。
+              tx.purchaseOrderItem.count({ where: { materialId: id, deletedAt: null } }),
+              tx.rawMaterialInbound.count({ where: { materialId: id, deletedAt: null } }),
+              tx.rawMaterialMovementLine.count({ where: { materialId: id, deletedAt: null } }),
+              tx.inventoryFact.count({ where: { materialId: id } }),
+              // StocktakeLine 没有 deletedAt：盘点行是一次导入的快照，冲销也保留行。
+              tx.stocktakeLine.count({ where: { materialId: id } }),
+            ])
           : // supplier：采购单头与采购明细行都会引用；任一未删除引用都应阻止删除。
             await Promise.all([
               tx.purchaseOrder.count({ where: { supplierId: id, deletedAt: null } }),
