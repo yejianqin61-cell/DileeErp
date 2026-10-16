@@ -92,8 +92,27 @@ const purchasePrisma = {
   user: { findMany: async () => [{ id: "user-1", displayName: "王采购" }, { id: "user-2", displayName: "赵主管" }] }
 };
 
+/**
+ * 逐个生成、**互不连坐**：这三个样例是给人工核对打印排版用的，其中一个导出件临时要多一个依赖
+ * （如领料单的导出要 actors 服务），不该把其余样例一起拖住 —— 2026-10 就出过一次：
+ * 领料单报 `TypeError: Cannot read properties of undefined (reading 'namesOf')`，
+ * 于是采购订单样例根本没被写出来，而命令看起来"跑了"。
+ * 失败如实打出来（谁失败、为什么），成功的一个也不少。
+ */
 (async () => {
-  write("领料单-样例.xlsx", await new MaterialSlipExportService(slipPrisma(issue)).exportSlip("issue-1"));
-  write("补料单-样例.xlsx", await new MaterialSlipExportService(slipPrisma(replenishment)).exportSlip("replenishment-1"));
-  write("采购订单-样例.xlsx", await new PurchaseOrderExportService(purchasePrisma).exportOrder("po-1"));
+  const samples = [
+    ["领料单-样例.xlsx", () => new MaterialSlipExportService(slipPrisma(issue)).exportSlip("issue-1")],
+    ["补料单-样例.xlsx", () => new MaterialSlipExportService(slipPrisma(replenishment)).exportSlip("replenishment-1")],
+    ["采购订单-样例.xlsx", () => new PurchaseOrderExportService(purchasePrisma).exportOrder("po-1")],
+  ];
+  const failed = [];
+  for (const [name, build] of samples) {
+    try {
+      write(name, await build());
+    } catch (error) {
+      failed.push(name);
+      console.error("failed:", name, "——", error instanceof Error ? error.message : error);
+    }
+  }
+  if (failed.length) console.error(`有 ${failed.length} 个样例没生成（见上面的原因）：${failed.join("、")}`);
 })();
