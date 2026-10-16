@@ -4,8 +4,8 @@ const { Prisma } = require("@prisma/client");
 const ExcelJS = require("exceljs");
 const { PurchaseOrderExportService, PURCHASE_TRADE_TERMS } = require("../dist/modules/procurement/purchase-order-export.service.js");
 
-// 采购订单导出：模板字段 → 系统字段的映射、表头 11 项的顺序、明细「一列四行」版式、
-// 修正后的条款文字，以及表尾三个大格子都必须可验证，因此这里把生成的 xlsx 解析回来逐格断言。
+// 采购订单导出：模板字段 → 系统字段的映射、表头 11 项的顺序、明细 7 列列序、修正后的条款文字、
+// 以及表尾三个大格子都必须可验证，因此这里把生成的 xlsx 解析回来逐格断言。
 //
 // 2026-09-16（用户要求）表头从 3 行 9 格扩到 4 行 12 格 + 两行整行（交货地址 / 交期条款），
 // 于是**行号全部后移**。为了不再出现「加两行表头、测试全线错位」，本文件改成
@@ -15,12 +15,6 @@ const { PurchaseOrderExportService, PURCHASE_TRADE_TERMS } = require("../dist/mo
 // 采购单号这个字段也不需要导出。交货日期也不需要这个 column」
 // —— 明细表 9 → 7 列、表头 11 格（少「采购单号」）。用户确认：**抬头的「供应商名称：」与
 // 「交货日期：」保留**（只删明细里逐行重复的那两列）。下面这几条就是钉这个口径。
-//
-// 2026-10-13 晚（用户）：「单位、含税单价、数量、含税总价，由于字数比较少，可以合并在一个
-// column 的四行中。同时，产品名称和规格型号宽度可以变宽。为了美观」
-// —— 明细 7 → **4 列**：`序号 / 产品名称 / 规格型号 / 单位·含税单价·数量·含税总价`。
-// 用户确认：**一个产品仍然只占 1 行**，四对「标签：值」堆在同一个格子里换行显示。
-// 连带：小计不再是 `SUM()` 公式（含税总价不再是一列数字），改成服务端算好的**真数字**。
 function fixture(overrides = {}) {
   const order = {
     id: "po-1",
@@ -169,46 +163,28 @@ test("表头：新字段没填时格子留空，不印 null/undefined", async ()
   assert.equal(/undefined|null|NaN/.test(joined), false, "空值不能打成 undefined/null/NaN");
 });
 
-test("明细 4 列：单位 / 含税单价 / 数量 / 含税总价 四句话堆在同一个格子里（一个产品只占 1 行）", async () => {
+test("明细 7 列列序：模板 7 列顺序不变，仅在「规格型号」后插入「单位」；含税总价=系统金额", async () => {
   const { service } = fixture();
   const sheet = await sheetOf(service);
   const headerRow = findRow(sheet, 1, "序号");
   assert.ok(headerRow > 0, "应能找到明细表头行");
 
   const headers = [];
-  for (let column = 1; column <= 4; column += 1) headers.push(sheet.getRow(headerRow).getCell(column).value);
-  assert.deepEqual(headers, ["序号", "产品名称", "规格型号", "单位 / 含税单价 / 数量 / 含税总价"]);
-  // 第 5 列起不再是明细列（外框画到 I，但表头文字只在 A:D）
-  assert.equal(sheet.getRow(headerRow).getCell(5).value, null, "四列之外不该再有明细列名");
+  for (let column = 1; column <= 7; column += 1) headers.push(sheet.getRow(headerRow).getCell(column).value);
+  assert.deepEqual(headers, ["序号", "产品名称", "规格型号", "单位", "含税单价", "数量", "含税总价"]);
 
   const first = sheet.getRow(headerRow + 1);
   assert.equal(first.getCell(1).value, 1);
-  assert.equal(first.getCell(2).value, "伞骨", "产品名称独立成列（用户要求变宽）");
+  assert.equal(first.getCell(2).value, "伞骨");
   assert.equal(first.getCell(3).value, "58cm", "规格型号取采购明细的型号");
-  // 四句话：顺序照用户点名的顺序，值仍是原来那四个数（单位 / 含税单价 / 数量 / 含税总价）
-  assert.equal(
-    first.getCell(4).value,
-    "单位：　　　根\n含税单价：　1.25\n数量：　　　1200\n含税总价：　1500",
-    "四对「标签：值」堆在同一格、用换行分隔；标签补成同宽让冒号对齐",
-  );
-  assert.equal(first.getCell(4).alignment.wrapText, true, "不换行的话四句话会被 Excel 当一行截断");
-  assert.equal(first.height, 60, "行高必须放得下四行（写死行高：ExcelJS 不会自适应）");
+  assert.equal(first.getCell(4).value, "根");
+  assert.equal(first.getCell(5).value, 1.25, "含税单价=系统单价");
+  assert.equal(first.getCell(6).value, 1200);
+  assert.equal(first.getCell(7).value, 1500, "含税总价=系统金额（数量×单价+附加费）");
 
   const second = sheet.getRow(headerRow + 2);
   assert.equal(second.getCell(3).value, "EVA 主数据", "型号为空时退回物料规格型号");
-  assert.match(String(second.getCell(4).value), /单位：　　　米/, "第二个产品的单位跟着走");
-});
-
-test("明细只剩 4 列之后：产品名称与规格型号的列宽明显变宽（用户要的「为了美观」）", async () => {
-  const { service } = fixture();
-  const sheet = await sheetOf(service);
-  const widthOf = (column) => sheet.getColumn(column).width;
-  // 上一版 7 列时是 22 / 16；四列合并腾出 3 列宽度，全部给这两列
-  assert.ok(widthOf(2) >= 28, `产品名称列宽应 ≥28，实际 ${widthOf(2)}`);
-  assert.ok(widthOf(3) >= 22, `规格型号列宽应 ≥22，实际 ${widthOf(3)}`);
-  assert.ok(widthOf(4) >= 20, `「那一列」要放得下「含税总价：　1500.00」，实际 ${widthOf(4)}`);
-  // 表头网格第三组的值格（H）里有手机号（11 位），不能被挤扁
-  assert.ok(widthOf(8) >= 12, `表头「电话」值格列宽应 ≥12，实际 ${widthOf(8)}`);
+  assert.equal(second.getCell(4).value, "米");
 });
 
 test("2026-10-13：明细不再印「供应商」与「交货日期」两列（抬头那两句仍在）", async () => {
@@ -220,7 +196,7 @@ test("2026-10-13：明细不再印「供应商」与「交货日期」两列（�
 
   assert.equal(headers.includes("供应商"), false, "「供应商」列已删");
   assert.equal(headers.includes("交货日期"), false, "「交货日期」列已删");
-  assert.equal(headers[4], null, "第 5 列起应该是空的（表只剩 4 列，不是把内容留在原位置上）");
+  assert.equal(headers[7], null, "第 8 列起应该是空的（表只剩 7 列，不是把内容留在原位置上）");
 
   // fixture 的明细行上仍有第二个供应商（某某五金厂 / 另一家纺织厂）与逐行日期：
   // 它们**不该**出现在纸面上 —— 逐行供应商是这次要删的东西（抬头已写明这张单开给谁）。
@@ -232,18 +208,14 @@ test("2026-10-13：明细不再印「供应商」与「交货日期」两列（�
   assert.equal(values.includes("2026-09-20"), true, "抬头「交货日期：」保留整单交期");
 });
 
-test("小计只对含税总价求和（改成服务端算好的真数字）；备注照旧；表尾三个大格子留空供手写", async () => {
+test("小计只对含税总价求和；备注照旧；表尾三个大格子留空供手写", async () => {
   const { service } = fixture();
   const sheet = await sheetOf(service);
+  const headerRow = findRow(sheet, 1, "序号");
   const subtotal = sheet.getRow(findRow(sheet, 1, "小计"));
-  // 含税总价不再是一列数字（它成了「那一列」里的第 4 行文字），所以小计**不能**再写 SUM：
-  // 写成 SUM 会指向文字格，纸面上小计变成 0 —— 比没有小计更糟。这里断言它是个真算出来的数。
-  assert.equal(subtotal.getCell(4).value, "小计：3460", "小计 = 1500 + 1960（服务端相加）");
-  assert.equal(typeof subtotal.getCell(4).value, "string");
-  assert.equal(sheet.getRow(findRow(sheet, 1, "小计")).getCell(4).value.includes("SUM"), false, "不该再有 SUM 公式");
-  // 数量跨单位不求和：新表里数量在格子里（文字），没有可求和的数值列
-  assert.equal(subtotal.getCell(2).value, null);
-  assert.equal(subtotal.getCell(3).value, null);
+  // 含税总价删列后是第 7 列（G）：公式跟着列走（写死 H 会指向一个空列，纸面上小计变 0）
+  assert.match(String(subtotal.getCell(7).value.formula), new RegExp(`^SUM\\(G${headerRow + 1}:G${headerRow + 2}\\)$`));
+  assert.equal(subtotal.getCell(6).value, null, "数量跨单位不求和");
 
   const remarkRow = findRow(sheet, 1, `备注：${fixture().order.remark}`);
   assert.ok(remarkRow > 0, "备注区保留标签与内容");
