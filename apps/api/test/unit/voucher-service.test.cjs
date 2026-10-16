@@ -23,17 +23,23 @@ const cashFlowEntry = (extra = {}) => ({
 });
 
 /** 生成路径的替身：记录被写入的凭证与分录。 */
-function createHarness({ entry = cashFlowEntry(), existing = null, siblingCodes = [] } = {}) {
+function createHarness({ entry = cashFlowEntry(), existing = null, occupied = null, siblingCodes = [] } = {}) {
   const vouchers = [];
   const lines = [];
+  const revivals = [];
   const tx = {
     $queryRaw: async () => [],
     voucher: {
       findMany: async () => siblingCodes.map((voucherNo) => ({ voucherNo })),
       create: async ({ data }) => { vouchers.push(data); return { id: "voucher-new", ...data }; },
-      findFirst: async () => existing,
+      // 幂等判断（带 `deletedAt: null`）用 `existing`；「占位复活」查的是**含软删除**的那一行，用 `occupied`。
+      findFirst: async () => occupied ?? existing,
+      update: async ({ data }) => { revivals.push(data); return { id: "voucher-deleted", ...data }; },
     },
-    voucherLine: { createMany: async ({ data }) => { lines.push(...(Array.isArray(data) ? data : [data])); return { count: 1 }; } },
+    voucherLine: {
+      createMany: async ({ data }) => { lines.push(...(Array.isArray(data) ? data : [data])); return { count: 1 }; },
+      deleteMany: async ({ where }) => { revivals.push({ deletedLinesOf: where.voucherId }); },
+    },
   };
   const prisma = {
     cashFlowEntry: { findFirst: async () => entry },
@@ -43,7 +49,7 @@ function createHarness({ entry = cashFlowEntry(), existing = null, siblingCodes 
   const service = new VoucherService(prisma, audit());
   // get(id) 在 create 之后被调用：直接回放刚写入的凭据，避免再搭一套查询替身
   service.get = async (id) => ({ id, ...vouchers[0], lines });
-  return { service, vouchers, lines };
+  return { service, vouchers, lines, revivals };
 }
 
 test("由收支流水生成凭证：凭证号按期间顺延，两条分录金额相等且方向正确", async () => {
@@ -76,6 +82,30 @@ test("生成是幂等的：该流水已有凭证就返回原凭证，不再新�
   assert.equal(lines.length, 0);
 });
 
+/**
+ * 2026-10-16：`vouchers(source_type, source_id)` 是**全量**唯一索引（软删除的行照样占着键），
+ * 所以「删掉草稿凭证 → 再点一次生成」不能 INSERT 新行 —— 那会撞唯一键，用户看到的是数据库报错。
+ * 现在改为**原地复活**那一行：清掉软删标记、按现在的内容重写分录、状态回草稿、凭证号沿用原号。
+ *
+ * 这条路径在「资金搬运凭证纠正」之后必然会被走到：那次纠正会删掉草稿挂账凭证，
+ * 财务若把那条应付回退成草稿再确认一次，走的就是它。
+ */
+test("删掉草稿凭证后重新生成：原地复活那一行（不新建、不撞唯一键）", async () => {
+  const { service, vouchers, lines, revivals } = createHarness({ occupied: { id: "voucher-deleted", voucherNo: "记-2026-09-0002" } });
+  const row = await service.createFromCashFlowEntry("cf-1", { id: "user-1" });
+
+  assert.equal(vouchers.length, 0, "不得新建一行（同一个来源只允许一行）");
+  assert.equal(row.id, "voucher-deleted");
+  const update = revivals.find((item) => item.deletedAt !== undefined);
+  assert.equal(update.deletedAt, null, "清掉软删标记（这一行重新生效）");
+  assert.equal(update.deletedBy, null);
+  assert.equal(update.status, "draft");
+  assert.equal(update.voucherNo, "记-2026-09-0002", "凭证号沿用原号：换号会让被删掉的那张在审计里对不上");
+  assert.deepEqual(revivals.find((item) => item.deletedLinesOf), { deletedLinesOf: "voucher-deleted" }, "旧分录先清掉");
+  assert.equal(lines.length, 2, "再按现在的内容写两条分录");
+  assert.deepEqual(lines.map((line) => [line.direction, line.subjectLabel]), [["debit", "银行存款"], ["credit", "主营业务收入"]]);
+});
+
 test("已冲销的收支流水不能生成凭证（钱没真的动过）", async () => {
   const { service } = createHarness({ entry: cashFlowEntry({ status: "reversed" }) });
   await assert.rejects(() => service.createFromCashFlowEntry("cf-1", { id: "user-1" }), (error) => error.getResponse().code === "CASH_FLOW_ENTRY_NOT_VOUCHERABLE");
@@ -88,7 +118,14 @@ test("流水不存在时 404，而不是建一张没有来源的凭证", async (
 
 // ---------------------------------------------------------------- 过账 / 编辑 / 删除 / 红冲
 
-/** 已有凭证的操作替身。 */
+/**
+ * 已有凭证的操作替身。
+ *
+ * `findFirst` 要按查询形状分两路（它们问的是不同的问题）：
+ *   - `where.id` → 行锁校验（返回这张凭证）；
+ *   - `where.sourceType + where.sourceId` → 「这个来源有没有占着唯一键的那一行」：
+ *     本组用例都没有软删过的红字凭证，回 null = 走新建分支。
+ */
 function voucherHarness({ voucher, redLines } = {}) {
   const updated = [];
   const createdVouchers = [];
@@ -96,7 +133,7 @@ function voucherHarness({ voucher, redLines } = {}) {
   const tx = {
     $queryRaw: async () => [],
     voucher: {
-      findFirst: async () => voucher,
+      findFirst: async ({ where } = {}) => (where && where.sourceType ? null : voucher),
       findMany: async () => [],
       create: async ({ data }) => { createdVouchers.push(data); return { id: "red-1", ...data }; },
       update: async ({ data }) => { updated.push(data); return { id: voucher?.id ?? "voucher-1", ...data }; },
@@ -653,8 +690,14 @@ function accrualHarness({ existing = null, subjects = ACCRUAL_SUBJECTS, siblingC
     voucher: {
       findMany: async () => siblingCodes.map((voucherNo) => ({ voucherNo })),
       create: async ({ data }) => { vouchers.push(data); return { id: "voucher-accrual", ...data }; },
+      // 「占位复活」也走这里查（不带 deletedAt 过滤）：本组用例没有软删过的行，回 null = 正常新建。
+      findFirst: async () => existing,
+      update: async ({ data }) => data,
     },
-    voucherLine: { createMany: async ({ data }) => { lines.push(...(Array.isArray(data) ? data : [data])); return { count: data.length }; } },
+    voucherLine: {
+      createMany: async ({ data }) => { lines.push(...(Array.isArray(data) ? data : [data])); return { count: data.length }; },
+      deleteMany: async () => {},
+    },
   };
   const prisma = {
     voucher: { findFirst: async () => existing, findMany: async () => [] },
@@ -700,6 +743,44 @@ test("挂账凭证（应收）：借应收账款 / 贷收入，来源是那条�
   }, MANUAL_USER);
   assert.equal(replayed.replayed, true, "第二次是「幂等命中」，不是新挂一张（挂两遍＝收入翻倍）");
   assert.equal(replayed.id, "voucher-accrual");
+});
+
+/**
+ * 2026-10-16（用户报障）：「该笔应付选择的是备用金付款，该笔凭证的会计科目没法正常显示」——
+ * 凭证纸上写着「借 应付账款 / 贷 库存现金」，她要的是「借 库存现金（备用金）/ 贷 银行存款」。
+ *
+ * 口径（用户选定）：其他应付的会计科目填的是资金科目（如「资产类 / 库存现金（备用金）」）时，
+ * 这笔不是「欠款」而是**资金搬运**（从银行取现到备用金），确认时不该凭空造出一笔应付账款；
+ * 钱在付款那一步一次记完（借方取条目自己的科目，见 supplier-payment.service.ts 的注释）。
+ */
+test("资金搬运（对方科目是资金科目）不挂账：确认不生成「贷应付账款」，普通科目照旧挂账", async () => {
+  const CASH_TRANSFER_SUBJECTS = [
+    ...ACCRUAL_SUBJECTS,
+    { id: "sub-cash-box", category: "资产类", name: "库存现金（备用金）" },
+    { id: "sub-rent", category: "成本类", name: "房租费" },
+  ];
+  const transfer = accrualHarness({ subjects: CASH_TRANSFER_SUBJECTS });
+  const skipped = await transfer.service.createAccrual({
+    source_type: "supplier_payable", source_id: "ap-cash", document_no: "APO-0001",
+    voucher_date: "2026-10-16", amount: "3000", counterparty_name: "周金红",
+    contra_subject_names: ["管理费用", "其他管理费用"], contra_subject_id: "sub-cash-box",
+  }, MANUAL_USER);
+  assert.equal(skipped, null, "不挂账：返回 null，调用方据此回报 accrual_voucher_id: null");
+  assert.equal(transfer.vouchers.length, 0, "不得凭空造出一笔应付账款（那正是用户看到的「会计科目没法正常显示」）");
+  assert.equal(transfer.lines.length, 0);
+  assert.equal(transfer.events[0][0], "voucher.accrual_skipped", "跳过要留审计（账上少了一张凭证，事后要说得清）");
+  assert.equal(transfer.events[0][4].reason, "cash_transfer");
+  assert.equal(transfer.events[0][4].subject, "库存现金（备用金）");
+
+  // 反向守卫：普通对方科目（房租费）照旧挂账 —— 这条口径只针对资金科目。
+  const normal = accrualHarness({ subjects: CASH_TRANSFER_SUBJECTS });
+  await normal.service.createAccrual({
+    source_type: "supplier_payable", source_id: "ap-rent", document_no: "APO-0002",
+    voucher_date: "2026-10-16", amount: "1200", contra_subject_names: ["管理费用"], contra_subject_id: "sub-rent",
+  }, MANUAL_USER);
+  assert.equal(normal.vouchers.length, 1);
+  assert.deepEqual(normal.lines.map((line) => [line.direction, line.subjectLabel]), [["debit", "房租费"], ["credit", "应付账款"]]);
+  assert.equal(normal.lines.every((line) => line.bankId === null), true, "挂账不动钱");
 });
 
 test("挂账凭证（应付）：借成本 / 贷应付账款（方向与应收相反）", async () => {

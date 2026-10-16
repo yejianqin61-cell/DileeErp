@@ -235,6 +235,23 @@ test("现金流量表：方向决定落哪一行（还款不能算成借款）�
   assert.equal(value(35), 400, "期末现金 = 期初 + 净增加");
 });
 
+test("现金流量表：备用金取现算内部划转、用备用金报销才算现金流出（2026-10-16）", () => {
+  const vouchers = [
+    // 用户 2026-10-16 选定的口径：备用金付款 = **从银行取现到备用金**，
+    // 凭证是「借 库存现金（备用金）/ 贷 银行存款」—— 两边都是资金科目，钱只是从银行搬进现金柜。
+    voucher("v1", [debit("资产类/库存现金（备用金）", "3000"), credit(K.bank, "3000")]),
+    // 反向守卫：用备用金付一笔管理费用 —— 这时备用金是**资金侧**，这笔是经营现金流出。
+    // 认不出「库存现金（备用金）」是资金科目的话，这张凭证会被当成「没有资金分录」，
+    // 整笔支出从现金流量表里静默消失（余额勾稽照样平，所以只有财务对账时才发现）。
+    voucher("v2", [debit("损益类/管理费用", "200"), credit("资产类/库存现金（备用金）", "200")]),
+  ];
+  const cash = buildCashFlowStatement({ vouchers });
+  assert.equal(cash.internalTransfers, 1, "取现 = 内部划转，不进现金流量表");
+  assert.equal(cash.nonCashVouchers, 0, "用备用金报销有资金分录，不能算成「非现金凭证」");
+  assert.equal(yuan(cash.lines.find((line) => line.row === 8).value), 200, "用备用金支付的管理费用 = 「支付其他与经营活动有关的现金」");
+  assert.deepEqual(cash.unmapped, [], "资金科目不算「没归位」");
+});
+
 test("现金流量表：认不出落哪一行的对方科目必须报出来（不能静默丢掉一笔现金）", () => {
   const vouchers = [voucher("v1", [debit(K.bank, "80"), credit("损益类/某个还没归位的科目", "80")])];
   const cash = buildCashFlowStatement({ vouchers });

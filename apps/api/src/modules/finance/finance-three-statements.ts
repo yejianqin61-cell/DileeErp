@@ -33,6 +33,7 @@
 
 import { ACCOUNTING_SUBJECT_SEEDS, accountingSubjectKey } from "./accounting-subject-catalog";
 import { formatUnits, toUnits } from "./money";
+import { FUND_SUBJECT_CASH } from "./voucher.domain";
 
 /**
  * 金额（整数 1e-4）→ 十进制字符串；`null` 原样返回（段落行与手填行）。
@@ -64,7 +65,16 @@ export const FUND_SUBJECT_NAMES = ["银行存款", "库存现金"] as const;
 
 export function isFundSubject(subjectKey: string): boolean {
   const { category, name } = splitSubjectKey(subjectKey);
-  return (FUND_SUBJECT_NAMES as readonly string[]).includes(name) && (category === "资产类" || category === "");
+  if (category !== "资产类" && category !== "") return false;
+  // 「库存现金（备用金）」这类**现金明细**也是钱本身（2026-10-16 补）：财务口径里「备用金付款」
+  // 就是「从银行取现到备用金」，凭证是「借 库存现金（备用金）/贷 银行存款」——两边都是资金科目，
+  // 属于内部划转，不能进现金流量表。认不出来时那张凭证会被算成非资金凭证，这笔提现凭空消失。
+  //
+  // 为什么只对「库存现金」用前缀、**不对「银行存款」用**：历史数据把银行账户名当业务科目用
+  // （`美金转入` → `银行存款 中国银行（美元）`，凭证是「借 银行存款 中国银行（美元）/贷 银行存款」），
+  // 前缀匹配银行存款会把客户汇进来的货款判成内部划转、整笔从现金流量表里消失。
+  // 「库存现金（备用金）」没有这个问题：它作为业务科目出现时（取现、备用金报销）都是钱本身在动。
+  return (FUND_SUBJECT_NAMES as readonly string[]).includes(name) || name.startsWith(FUND_SUBJECT_CASH);
 }
 
 /** 凭证上的科目键 → 科目表里的规范键（裸名的资金科目补上「资产类/」）。 */

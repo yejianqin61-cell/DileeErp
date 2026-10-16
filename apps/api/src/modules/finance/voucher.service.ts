@@ -6,7 +6,7 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { accountingSubjectKey } from "./accounting-subject-catalog";
-import { fundLineFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
+import { fundLineFor, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
 import { VOUCHER_TEMPLATES, resolveVoucherTemplate, type ResolvedTemplateLine } from "./voucher-template";
 
 /** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」；**手工凭证没有来源**。 */
@@ -45,6 +45,60 @@ export function bankAccountLabel(bank: { bankName: string; accountNumber: string
 }
 
 const STATUS_LABELS: Record<string, string> = { draft: "草稿", posted: "已过账", reversed: "已红冲" };
+
+/**
+ * `draftForEntry` 的入参（一条收支流水里生成凭证要用的那些字段），也是「资金搬运凭证纠正」里
+ * 重新计算分录的入参 —— 两处用同一个形状，就不会出现「纠正出来的凭证和重新生成出来的不一样」。
+ */
+type CashFlowEntryForDraft = {
+  entryNo: string;
+  entryDate: Date;
+  counterpartyName: string;
+  direction: string;
+  amount: Prisma.Decimal;
+  currency: string;
+  settlementMethod: string | null;
+  remark: string | null;
+  subject: { id: string; category: string; name: string } | null;
+  settlementAccount: { label: string } | null;
+  bank: { id: string; bankName: string; accountNumber: string } | null;
+};
+
+/** 「资金搬运凭证纠正」的取数结果（预览与执行读的是同一份）。 */
+type CashTransferRepairTargets = {
+  accruals: Array<{ id: string; voucherNo: string; status: string; payableNo: string }>;
+  flows: Array<{
+    id: string;
+    entryNo: string;
+    subjectId: string;
+    subjectCategory: string;
+    subjectLabel: string;
+    entry: CashFlowEntryForDraft;
+    voucher: { id: string; voucherNo: string; status: string; sourceId: string | null } | null;
+    payableNos: string[];
+  }>;
+  /** 不能整体改的流水（混着非资金搬运的应付）：如实点名，不硬改。 */
+  skipped: Array<{ entry_no: string; reason: string }>;
+  payableCount: number;
+};
+
+/** 纠正清单的条数汇总（预览与执行结果同形）。 */
+function repairSummary(targets: CashTransferRepairTargets) {
+  const vouchers = targets.flows.map((flow) => flow.voucher).filter((voucher): voucher is NonNullable<typeof voucher> => Boolean(voucher));
+  return {
+    payables: targets.payableCount,
+    accruals: targets.accruals.length,
+    accruals_draft: targets.accruals.filter((accrual) => accrual.status === "draft").length,
+    accruals_posted: targets.accruals.filter((accrual) => accrual.status === "posted").length,
+    flows: targets.flows.length,
+    flows_without_voucher: targets.flows.length - vouchers.length,
+    vouchers_draft: vouchers.filter((voucher) => voucher.status === "draft").length,
+    vouchers_posted: vouchers.filter((voucher) => voucher.status === "posted").length,
+    vouchers_reversed: vouchers.filter((voucher) => voucher.status === "reversed").length,
+    skipped: targets.skipped,
+  };
+}
+
 
 export type VoucherLineInput = { direction: string; subject_key?: string; subject_label?: string; summary?: string; amount: string; bank_id?: string | null };
 
@@ -129,18 +183,13 @@ export class VoucherService {
       // 凭证号按「记-YYYYMM-####」在**期间内**顺延；并发撞号由 vouchers_voucher_no_key 兜底（唯一索引报错而非静默重号）。
       const siblings = await tx.voucher.findMany({ where: { voucherNo: { startsWith: `记-${period}-` } }, select: { voucherNo: true } });
       const voucherNo = nextSequenceCode(`记-${period}-`, siblings.map((item) => item.voucherNo));
-      const created = await tx.voucher.create({
-        data: {
-          voucherNo, voucherDate: entry.entryDate, period, sourceType: SOURCE_CASH_FLOW, sourceId: entry.id,
-          summary: voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark }),
-          currency: entry.currency, debitTotal: amount, creditTotal: amount, status: "draft",
-          ...this.audit.create(user),
-        },
-      });
-      await tx.voucherLine.createMany({ data: draft.lines.map((line) => this.lineData(created.id, line, entry.id, user)) });
-      return created;
+      return this.createOrReviveVoucher(tx, { sourceType: SOURCE_CASH_FLOW, sourceId: entry.id }, {
+        voucherNo, voucherDate: entry.entryDate, period, status: "draft",
+        summary: voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark }),
+        currency: entry.currency, debitTotal: amount, creditTotal: amount,
+      }, draft.lines, entry.id, user);
     });
-    await this.audit.record("voucher.create", "voucher", user.id, row.id, { voucher_no: row.voucherNo, source_type: SOURCE_CASH_FLOW, source_id: entry.id, amount: amount.toString(), bank_id: draft.bankId });
+    await this.audit.record("voucher.create", "voucher", user.id, row.id, { voucher_no: row.voucherNo, source_type: SOURCE_CASH_FLOW, source_id: entry.id, amount: amount.toString(), bank_id: draft.bankId, revived: row.revived });
     return this.get(row.id);
   }
 
@@ -225,6 +274,27 @@ export class VoucherService {
       : await this.subjectByName(input.contra_subject_names, `挂账需要会计科目「${input.contra_subject_names.join("」或「")}」，请在「收支管理 → 会计科目」里补上`);
     const text = amount.toFixed(4);
     const isReceivable = input.source_type === SOURCE_RECEIVABLE;
+    /**
+     * **资金搬运不挂账**（2026-10-16，用户报障 + 选定口径）。
+     *
+     * 一条其他应付的「会计科目」填的是资金科目本身（如「资产类 / 库存现金（备用金）」）时，
+     * 它表达的不是「欠谁的钱」，而是**把钱从银行搬到备用金**（用户原话：借 库存现金（备用金）/
+     * 贷 银行存款）。挂账会凭空造出一笔应付账款：
+     *   确认 → 借 库存现金（备用金） / 贷 应付账款
+     *   付款 → 借 应付账款 / 贷 银行存款
+     * 用户点开凭证纸看到的正是后一张：会计科目写着「应付账款」，而她要的是「库存现金（备用金）」。
+     * 现在确认这一步只改状态、不生成凭证；钱在付款那一步一次记完
+     * （`SupplierPaymentService.post` 的借方取条目自己的科目，见那里的注释）。
+     *
+     * 为什么判定放在这里而不是调用方：只有这一处同时拿着「已解析的对方科目」与来源类型，
+     * 三条确认入口（逐条 / 勾选批量 / 按对账单）就自动同一口径，不会有一处忘了跳过。
+     */
+    if (!isReceivable && isCashFamilySubject(contra.label)) {
+      await this.audit.record("voucher.accrual_skipped", "voucher", user.id, input.source_id, {
+        reason: "cash_transfer", source_type: input.source_type, document_no: input.document_no, subject: contra.label,
+      });
+      return null;
+    }
     const counterparty = (input.counterparty_name ?? "").trim();
     // 返回值统一带上 `replayed`（false = 这次真的挂的账）：调用方要拿它写审计与界面提示，
     // 两条分支的形状必须一样，否则「幂等命中」那一支会在调用处变成 `undefined`。
@@ -308,20 +378,14 @@ export class VoucherService {
       // 与「由流水生成」同一套编号规则：期间内顺延，唯一索引兜底并发。
       const siblings = await tx.voucher.findMany({ where: { voucherNo: { startsWith: `记-${period}-` } }, select: { voucherNo: true } });
       const voucherNo = nextSequenceCode(`记-${period}-`, siblings.map((item) => item.voucherNo));
-      const created = await tx.voucher.create({
-        data: {
-          voucherNo, voucherDate: input.voucherDate, period, sourceType: source.sourceType, sourceId: source.sourceId,
-          summary: input.summary, currency: input.currency, debitTotal: totals.debit, creditTotal: totals.credit, status: "draft",
-          remark: (input.remark ?? null) || null,
-          ...this.audit.create(user),
-        },
-      });
-      await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(created.id, line, null, user)) });
-      return created;
+      return this.createOrReviveVoucher(tx, source, {
+        voucherNo, voucherDate: input.voucherDate, period, summary: input.summary, status: "draft",
+        currency: input.currency, debitTotal: totals.debit, creditTotal: totals.credit, remark: input.remark ?? null,
+      }, lines, null, user);
     });
     await this.audit.record("voucher.create", "voucher", user.id, row.id, {
       voucher_no: row.voucherNo, source_type: source.sourceType, source_id: source.sourceId,
-      amount: totals.debit.toString(), line_count: lines.length,
+      amount: totals.debit.toString(), line_count: lines.length, revived: row.revived,
     });
     return this.get(row.id);
   }
@@ -417,7 +481,7 @@ export class VoucherService {
   /**
    * 由一条收支流水算出「草稿内容」（新建与重新生成两处共用，避免两条路径算出不同口径）。
    */
-  private draftForEntry(entry: { entryNo: string; entryDate: Date; counterpartyName: string; direction: string; amount: Prisma.Decimal; currency: string; settlementMethod: string | null; remark: string | null; subject: { category: string; name: string } | null; settlementAccount: { label: string } | null; bank: { id: string; bankName: string; accountNumber: string } | null }) {
+  private draftForEntry(entry: CashFlowEntryForDraft) {
     const bankLabel = bankAccountLabel(entry.bank);
     const lines = voucherLinesFor({
       entryNo: entry.entryNo,
@@ -436,7 +500,7 @@ export class VoucherService {
       bankId: entry.bank?.id ?? null,
       bankLabel,
     });
-    const fund = fundLineFor({ bankId: entry.bank?.id ?? null, bankLabel, settlementMethod: entry.settlementMethod, settlementAccountLabel: entry.settlementAccount?.label ?? null });
+    const fund = fundLineFor({ bankId: entry.bank?.id ?? null, bankLabel, settlementMethod: entry.settlementMethod, settlementAccountLabel: entry.settlementAccount?.label ?? null, subjectLabel: entry.subject?.name ?? "" });
     return { lines, bankId: fund.bank_id };
   }
 
@@ -534,22 +598,243 @@ export class VoucherService {
       const period = locked.period;
       const siblings = await tx.voucher.findMany({ where: { voucherNo: { startsWith: `记-${period}-` } }, select: { voucherNo: true } });
       const lines = reverseLines(locked.lines.map((line) => ({ direction: line.direction, subject_key: line.subjectKey, subject_label: line.subjectLabel, summary: line.summary, amount: line.amount, currency: line.currency, bank_id: line.bankId })));
-      const created = await tx.voucher.create({
-        data: {
-          voucherNo: nextSequenceCode(`记-${period}-`, siblings.map((item) => item.voucherNo)),
-          voucherDate: new Date(), period, sourceType: SOURCE_VOUCHER, sourceId: locked.id,
-          summary: `红冲 ${locked.voucherNo}：${reason.trim()}`.slice(0, 500),
-          currency: locked.currency, debitTotal: locked.creditTotal, creditTotal: locked.debitTotal, status: "posted",
-          remark: reason.trim(),
-          ...this.audit.create(user),
-        },
-      });
-      await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(created.id, line, null, user)) });
+      // 红字凭证也走「同来源只有一行」的落库路径：它的来源是被红冲的那张凭证，
+      // 所以那张凭证第二次被红冲时要**复活**原来那张红字凭证，而不是新建（全量唯一索引会拦）。
+      const red = await this.createOrReviveVoucher(tx, { sourceType: SOURCE_VOUCHER, sourceId: locked.id }, {
+        voucherNo: nextSequenceCode(`记-${period}-`, siblings.map((item) => item.voucherNo)),
+        voucherDate: new Date(), period, status: "posted",
+        summary: `红冲 ${locked.voucherNo}：${reason.trim()}`.slice(0, 500),
+        currency: locked.currency, debitTotal: locked.creditTotal, creditTotal: locked.debitTotal, remark: reason.trim(),
+      }, lines, null, user);
       await tx.voucher.update({ where: { id }, data: { status: "reversed", ...this.audit.update(user) } });
-      return created;
+      return red;
     });
     await this.audit.record("voucher.reverse", "voucher", user.id, id, { voucher_no: current.voucherNo, red_voucher_no: red.voucherNo, reason: reason.trim() });
     return this.get(red.id);
+  }
+
+  /* ------------------------------------------------ 资金搬运凭证的纠正（2026-10-16，旧数据） */
+
+  /**
+   * 找出「资金搬运」的旧凭证（预览与纠正共用同一次取数，两处口径不会分叉）。
+   *
+   * 资金搬运 = 其他应付的会计科目是**资金科目本身**（`库存现金（备用金）`这类，
+   * 见 `voucher.domain.ts` 的 `isCashFamilySubject`）。2026-10-16 之前它们被当成负债记账：
+   *   确认 → 借 库存现金（备用金） / 贷 应付账款（挂账）
+   *   付款 → 借 应付账款 / 贷 银行存款
+   * 用户点开凭证纸看到的就是后一张：「会计科目」写着应付账款，而她要的是库存现金（备用金）。
+   *
+   * 口径已改成「不挂账 + 付款时借方取条目自己的科目」（见 `createAccrual` 与
+   * `SupplierPaymentService.post`），但**已经生成出来的凭证不会自己变**，所以这里按凭证事实逐张纠正：
+   *   - 挂账凭证：草稿 → 删除（草稿不是账务事实）；已过账 → 红冲（留痕，不改历史数字）；
+   *   - 付款流水：主科目改成条目自己的科目（借 库存现金（备用金）），资金侧按新规则算（贷 银行存款）；
+   *   - 付款凭证：草稿 → 原地按新口径重算分录；已过账 → 先红冲（旧内容留痕）再重开成草稿。
+   *
+   * 为什么「一条流水核销了多条应付、其中混着非资金搬运」时**不动它**：一条流水只有一个主科目，
+   * 拆不开两种语义 —— 宁可点名让人工处理，也不要按金额最大的那条硬改（那种账事后没人说得清）。
+   */
+  private async buildCashTransferRepair() {
+    const empty = { accruals: [], flows: [], skipped: [], payableCount: 0 } as CashTransferRepairTargets;
+    const subjects = await this.prisma.accountingSubject.findMany({ where: { category: "资产类", deletedAt: null }, select: { id: true, name: true, category: true } });
+    const cashSubjects = new Map(subjects.filter((subject) => isCashFamilySubject(subject.name)).map((subject) => [subject.id, subject]));
+    if (!cashSubjects.size) return empty;
+    const payables = await this.prisma.supplierPayableEntry.findMany({
+      where: { deletedAt: null, subjectId: { in: [...cashSubjects.keys()] } },
+      select: { id: true, payableNo: true, subjectId: true },
+    });
+    if (!payables.length) return empty;
+    const payableById = new Map(payables.map((payable) => [payable.id, payable]));
+    const payableIds = [...payableById.keys()];
+
+    const accruals = await this.prisma.voucher.findMany({
+      where: { sourceType: SOURCE_PAYABLE, sourceId: { in: payableIds }, deletedAt: null },
+      select: { id: true, voucherNo: true, status: true, sourceId: true },
+    });
+    // 核销记录 → 付款单 → 收支流水。只认**生效**的核销与**已过账**的付款单：
+    // 冲销掉的付款不该出现在纠正清单里（它的钱已经退回来了）。
+    const allocations = await this.prisma.supplierPaymentAllocation.findMany({
+      where: { payableEntryId: { in: payableIds }, deletedAt: null, status: "active" },
+      select: { paymentId: true, payableEntryId: true, amount: true },
+    });
+    const paymentIds = [...new Set(allocations.map((allocation) => allocation.paymentId))];
+    const postedPayments = paymentIds.length
+      ? await this.prisma.supplierPayment.findMany({ where: { id: { in: paymentIds }, status: "posted", deletedAt: null }, select: { id: true } })
+      : [];
+    const postedPaymentIds = postedPayments.map((payment) => payment.id);
+    const postedSet = new Set(postedPaymentIds);
+    const flows = postedPaymentIds.length
+      ? await this.prisma.cashFlowEntry.findMany({ where: { sourceType: "supplier_payment", sourceId: { in: postedPaymentIds }, status: "posted", deletedAt: null }, include: ENTRY_INCLUDE })
+      : [];
+    const flowVouchers = flows.length
+      ? await this.prisma.voucher.findMany({ where: { sourceType: SOURCE_CASH_FLOW, sourceId: { in: flows.map((flow) => flow.id) }, deletedAt: null }, select: { id: true, voucherNo: true, status: true, sourceId: true } })
+      : [];
+    const voucherByFlow = new Map(flowVouchers.map((voucher) => [voucher.sourceId as string, voucher]));
+    // 每张付款单的**全部**核销（含不属于资金搬运的那些）：用来判断「这条流水能不能整体改」。
+    const paymentAllocations = postedPaymentIds.length
+      ? await this.prisma.supplierPaymentAllocation.findMany({ where: { paymentId: { in: postedPaymentIds }, deletedAt: null, status: "active" }, select: { paymentId: true, payableEntryId: true, amount: true } })
+      : [];
+
+    const targets: CashTransferRepairTargets = { accruals: [], flows: [], skipped: [], payableCount: payables.length };
+    for (const accrual of accruals) {
+      targets.accruals.push({ id: accrual.id, voucherNo: accrual.voucherNo, status: accrual.status, payableNo: payableById.get(accrual.sourceId as string)?.payableNo ?? "" });
+    }
+    for (const flow of flows) {
+      const rows = paymentAllocations.filter((allocation) => allocation.paymentId === flow.sourceId);
+      const outsider = rows.find((row) => !payableById.has(row.payableEntryId));
+      if (outsider) {
+        targets.skipped.push({ entry_no: flow.entryNo, reason: "这条流水还核销了非资金搬运的应付，主科目拆不开，请人工处理" });
+        continue;
+      }
+      // 主科目取金额最大的那条应付自己的科目（多条备用金时它们本来就是同一个科目）。
+      const dominant = [...rows].sort((left, right) => new Prisma.Decimal(right.amount).comparedTo(new Prisma.Decimal(left.amount)))[0];
+      const subjectId = payableById.get(dominant.payableEntryId)?.subjectId ?? null;
+      if (!subjectId) { targets.skipped.push({ entry_no: flow.entryNo, reason: "找不到条目上的会计科目" }); continue; }
+      targets.flows.push({
+        id: flow.id, entryNo: flow.entryNo, entry: flow, subjectId,
+        subjectCategory: cashSubjects.get(subjectId)?.category ?? "资产类",
+        subjectLabel: cashSubjects.get(subjectId)?.name ?? "",
+        voucher: voucherByFlow.get(flow.id) ?? null,
+        payableNos: rows.map((row) => payableById.get(row.payableEntryId)?.payableNo ?? "").filter(Boolean),
+      });
+    }
+    return targets;
+  }
+
+  /** 预览：**不写库**。财务点按钮之前先看清会发生什么（改几张、删几张、红冲几张）。 */
+  async cashTransferRepairPreview() {
+    const targets = await this.buildCashTransferRepair();
+    return {
+      ...repairSummary(targets),
+      targets: targets.flows.map((flow) => ({
+        entry_no: flow.entryNo,
+        cash_flow_entry_id: flow.id,
+        payable_nos: flow.payableNos,
+        subject_label: flow.subjectLabel,
+        voucher_no: flow.voucher?.voucherNo ?? null,
+        voucher_status: flow.voucher?.status ?? null,
+      })),
+    };
+  }
+
+  /**
+   * 撤掉一张凭证的红字凭证（有就撤，返回被撤的凭证号）。
+   *
+   * 为什么纠正动作必须做这一步：红字凭证是「旧内容」的对冲件，而纠正要么把旧内容重写成新口径、
+   * 要么让旧凭证整个从账上消失（挂账凭证本就不该存在）。报表取数只认 `status = "posted"`：
+   * 原凭证 `reversed` 不进表，红字还留在表里就会剩下一笔**没有任何对应正分录的反向金额**
+   * （比不改还糟：账上凭空多一个相反方向的数）。行不物理删除，谁在什么时候撤的在审计里。
+   */
+  private async dropReversalsOf(voucherId: string, reason: string, user: CurrentUser): Promise<string[]> {
+    const reds = await this.prisma.voucher.findMany({
+      where: { sourceType: SOURCE_VOUCHER, sourceId: voucherId, deletedAt: null },
+      select: { id: true, voucherNo: true },
+    });
+    for (const red of reds) {
+      await this.prisma.voucher.update({ where: { id: red.id }, data: { ...this.audit.softDelete(user) } });
+      await this.audit.record("voucher.cash_transfer_repair", "voucher", user.id, red.id, {
+        action: "drop_reversal", voucher_no: red.voucherNo, of_voucher_id: voucherId, reason,
+      });
+    }
+    return reds.map((red) => red.voucherNo);
+  }
+
+  /**
+   * 执行纠正（用户 2026-10-16：「旧的那些也一起纠正过来（已过账的按需红冲，草稿直接改）」）。
+   *
+   * 每一步都留审计；红冲用既有的 `reverse`（同一套编号规则与「红字凭证已过账」的语义），
+   * 不自己写一份 —— 账上的红字凭证必须是标准件。
+   */
+  async repairCashTransferVouchers(user: CurrentUser) {
+    const targets = await this.buildCashTransferRepair();
+    const before = repairSummary(targets);
+    const reason = "资金搬运口径纠正：备用金这类应付的会计科目是资金科目（不挂账），凭证按「借 库存现金（备用金）/贷 银行存款」重记";
+    for (const accrual of targets.accruals) {
+      if (accrual.status === "draft") {
+        await this.prisma.voucher.update({ where: { id: accrual.id }, data: { ...this.audit.softDelete(user) } });
+        await this.audit.record("voucher.cash_transfer_repair", "voucher", user.id, accrual.id, { action: "delete_draft_accrual", voucher_no: accrual.voucherNo, payable_no: accrual.payableNo, reason });
+      } else {
+        // 已过账的先红冲（留痕），再把红字凭证撤掉：这一对在账上必须是**0**（这张挂账凭证本就不该存在）。
+        if (accrual.status === "posted") await this.reverse(accrual.id, reason, user);
+        await this.dropReversalsOf(accrual.id, reason, user);
+      }
+    }
+    let rebuilt = 0;
+    let reopened = 0;
+    let withoutVoucher = 0;
+    for (const flow of targets.flows) {
+      // ① 流水的主科目改成条目自己的科目 —— 这才是凭证业务分录取的那个科目。
+      await this.prisma.cashFlowEntry.update({ where: { id: flow.id }, data: { subjectId: flow.subjectId, ...this.audit.update(user) } });
+      // 科目快照要连**分类**一起换掉：旧流水上挂的是「负债类/应付账款」，只改名会得到
+      // 「负债类/库存现金（备用金）」这种不存在的科目（资产类下才有它）。
+      const entry = { ...flow.entry, subjectId: flow.subjectId, subject: { id: flow.subjectId, category: flow.subjectCategory, name: flow.subjectLabel } };
+      if (!flow.voucher) { withoutVoucher += 1; continue; }
+      // ② 已过账的付款凭证先红冲（旧内容原样留在红字凭证上，可追溯），
+      //    然后连同红字一起撤掉、按新口径重记 —— 见 `dropReversalsOf` 的注释。
+      if (flow.voucher.status === "posted") await this.reverse(flow.voucher.id, reason, user);
+      await this.dropReversalsOf(flow.voucher.id, reason, user);
+      const draft = this.draftForEntry(entry);
+      const amount = new Prisma.Decimal(entry.amount);
+      const summary = voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark });
+      const period = voucherPeriodFor(entry.entryDate);
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM vouchers WHERE id = ${flow.voucher!.id}::uuid FOR UPDATE`;
+        await tx.voucherLine.deleteMany({ where: { voucherId: flow.voucher!.id } });
+        await tx.voucherLine.createMany({ data: draft.lines.map((line) => this.lineData(flow.voucher!.id, line, flow.id, user)) });
+        // 状态回到**草稿**：重记过的内容财务要能再核对一次（已过账的那张内容已经红冲留痕了）。
+        await tx.voucher.update({
+          where: { id: flow.voucher!.id },
+          data: { status: "draft", summary, voucherDate: entry.entryDate, period, currency: entry.currency, debitTotal: amount, creditTotal: amount, ...this.audit.update(user) },
+        });
+      });
+      if (flow.voucher.status === "posted") reopened += 1; else rebuilt += 1;
+      await this.audit.record("voucher.cash_transfer_repair", "voucher", user.id, flow.voucher.id, {
+        action: flow.voucher.status === "posted" ? "reverse_and_reopen" : "rebuild_draft",
+        voucher_no: flow.voucher.voucherNo, entry_no: flow.entryNo, payable_nos: flow.payableNos,
+        subject: flow.subjectLabel, before_status: flow.voucher.status, reason,
+      });
+    }
+    await this.audit.record("voucher.repair_cash_transfer", "voucher", user.id, undefined, { ...before, rebuilt, reopened, without_voucher: withoutVoucher, reason });
+    return { ...before, rebuilt, reopened, without_voucher: withoutVoucher };
+  }
+
+  /**
+   * 落库一张凭证：**同一个来源只允许有一行**（`vouchers_source_type_source_id_key` 是**全量**唯一索引，
+   * 软删除的行照样占着键）。
+   *
+   * 所以「删掉草稿凭证之后再生成一次」不能直接 INSERT —— 那会撞唯一键，用户看到的是数据库报错。
+   * 这里改为**原地复活**那一行：清掉 `deletedAt`、按现在的内容重写分录与金额、状态回草稿。
+   * 两条生成路径（由流水生成 / 手工与挂账）共用它，避免一处复活、另一处照样撞键。
+   *
+   * 「资金搬运凭证纠正」（`repairCashTransferVouchers`）会删掉草稿挂账凭证，
+   * 之后财务如果把那条应付回退成草稿再确认一次，走的正是这条路 —— 没有它就会 500。
+   */
+  private async createOrReviveVoucher(
+    tx: Prisma.TransactionClient,
+    source: { sourceType: string; sourceId: string | null },
+    header: { voucherNo: string; voucherDate: Date; period: string; summary: string; currency: string; debitTotal: Prisma.Decimal; creditTotal: Prisma.Decimal; status: string; remark?: string | null },
+    lines: Array<VoucherLineDraft & { cash_flow_entry_id?: string | null }>,
+    entryId: string | null,
+    user: CurrentUser,
+  ) {
+    // 不带 deletedAt 过滤：要复活的恰恰是那张被软删的行。
+    const occupied = source.sourceId
+      ? await tx.voucher.findFirst({ where: { sourceType: source.sourceType, sourceId: source.sourceId }, select: { id: true, voucherNo: true } })
+      : null;
+    if (occupied) {
+      await tx.voucherLine.deleteMany({ where: { voucherId: occupied.id } });
+      await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(occupied.id, line, entryId, user)) });
+      await tx.voucher.update({
+        where: { id: occupied.id },
+        // 凭证号沿用原来的：同一个来源换一个号会让「那张被删掉的凭证」在审计里对不上。
+        data: { ...header, voucherNo: occupied.voucherNo, remark: header.remark ?? null, deletedAt: null, deletedBy: null, ...this.audit.update(user) },
+      });
+      return { id: occupied.id, voucherNo: occupied.voucherNo, revived: true };
+    }
+    const created = await tx.voucher.create({
+      data: { ...header, sourceType: source.sourceType, sourceId: source.sourceId, remark: header.remark ?? null, ...this.audit.create(user) },
+    });
+    await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(created.id, line, entryId, user)) });
+    return { id: created.id, voucherNo: created.voucherNo, revived: false };
   }
 
   /** 分录落库形状（新建、编辑、重新生成、红冲四处共用，避免字段漂移）。 */

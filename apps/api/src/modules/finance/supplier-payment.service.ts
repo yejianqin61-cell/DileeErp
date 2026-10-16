@@ -134,9 +134,25 @@ export class SupplierPaymentService {
     // 只要有一条来源没挂账，就按老口径（不猜）：混着两种口径的付款本来就说不清借方是谁。
     const allocatedIds = items.map((item) => item.payable_entry_id);
     const accrued = await this.accruals.accruedSourceIds(SOURCE_PAYABLE, allocatedIds);
-    const settled: readonly string[] = allocatedIds.length > 0 && allocatedIds.every((payableId) => accrued.has(payableId))
+    const allAccrued = allocatedIds.length > 0 && allocatedIds.every((payableId) => accrued.has(payableId));
+    const settled: readonly string[] = allAccrued
       ? ["应付账款"]
       : paymentSubjectNames(dominant);
+    /** 条目自己写的科目（金额最大那条；没有则取覆盖它的对账单）。 */
+    const documentSubjectId = dominantDocumentSubject(result.settledDocuments);
+    /** 单据上人工选的科目（过账时临时选 > 建单时填在付款单上）。 */
+    const explicitSubjectId = subjectId ?? result.payment.subjectId ?? null;
+    /**
+     * **借方科目**（会被记成凭证业务分录的那个）的优先级，2026-10-16 补了第 3 条：
+     *   1. 过账时临时选；2. 建单时填在付款单上；3. **未挂账时取条目自己写的科目**；
+     *   4. 都没有才按来源类型的候选链（`settled`）。
+     *
+     * 为什么第 3 条必须存在：资金搬运（其他应付的科目填了「库存现金（备用金）」这类资金科目）
+     * **不挂账**（见 `voucher.service.ts` 的 `createAccrual`），于是「借方」只能从条目自己身上取 ——
+     * 否则备用金取现的凭证会被写成「借 管理费用 / 贷 银行存款」，用户看到的就是
+     * 「该笔凭证的会计科目没法正常显示」。已挂账的付款不适用（成本在挂账时记过，借方只能是应付账款）。
+     */
+    const mainSubjectId = allAccrued ? null : (explicitSubjectId ?? documentSubjectId ?? null);
     await this.cashFlow.autoCreateFromPayment({
       paymentNo: result.payment.paymentNo, paymentDate: result.payment.paymentDate, amount: result.payment.amount, currency: result.payment.currency,
       counterpartyName: result.payment.payeeName ?? result.supplierName ?? result.payment.supplierId,
@@ -148,14 +164,14 @@ export class SupplierPaymentService {
       settlementAccountHint: result.bank ? { bankName: result.bank.bankName, accountNumber: result.bank.accountNumber } : null,
       sourceType: "supplier_payment", sourceId: result.payment.id,
       subjectNames: settled,
-      // 过账时临时选的项目优先；没选就用建单时填在付款单上的项目；都没有则按来源自动归类。
-      subjectId: subjectId ?? result.payment.subjectId ?? null,
+      // 借方：已挂账 → 应付账款（`mainSubjectId` 为 null，交给候选链）；否则人工选的优先于条目自己的科目。
+      subjectId: mainSubjectId,
       /**
-       * 收支类目（2026-10-13）：本次核销**单据**上写的科目（金额最大的那条），
-       * 单据上都没填才退回按来源类型的候选链 —— 见设计文档 §1.2。
+       * 收支类目（2026-10-13）：这笔钱算什么 —— 人工在单据上选的科目优先，其次本次核销**单据**上写的
+       * 科目（金额最大的那条），都没有才退回按来源类型的候选链。
        * 注意它**不参与记账**：主科目才是拿来生成凭证的那个（已挂账的付款必须是「应付账款」）。
        */
-      categorySubjectId: dominantDocumentSubject(result.settledDocuments),
+      categorySubjectId: explicitSubjectId ?? documentSubjectId,
       categorySubjectNames: paymentSubjectNames(dominant),
       remark: result.payment.remark ?? undefined,
     }, user);

@@ -5,7 +5,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
-  FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, fundLineFor, fundSubjectFor, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor,
+  FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, fundLineFor, fundSubjectFor, isBankFamilySubject, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor,
 } = require("../../dist/modules/finance/voucher.domain.js");
 
 const entry = (extra = {}) => ({
@@ -130,4 +130,57 @@ test("红字凭证的分录照旧带银行账户引用（否则银行存款明�
   assert.equal(lines[0].direction, "credit");
   assert.equal(lines[0].bank_id, "bank-1");
   assert.equal(lines[0].subject_label, "银行存款—农业银行5706");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-16：**「备用金付款」= 从银行取现到备用金**（用户报障：备用金那笔应付的凭证纸上
+//   会计科目写着「应付账款」，她要的是「库存现金（备用金）」；选定口径为
+//   「借 库存现金（备用金）/贷 银行存款」）。
+//
+//   原因：备用金这类其他应付的会计科目是「资产类 / 库存现金（备用金）」——它**本身就是现金科目**，
+//   所以「钱从哪来」只可能是银行。而原来的资金侧只看结算方式里有没有「现金」二字，
+//   「提现--备用金现金」这类文本会把两边都判成现金：借 库存现金（备用金）/贷 库存现金
+//   （同一个钱柜自己转给自己，等于科目没显示对）。
+// ---------------------------------------------------------------------------
+
+test("资金科目族判定：库存现金（备用金）算现金科目，银行存款明细算银行科目", () => {
+  assert.equal(isCashFamilySubject("库存现金（备用金）"), true);
+  assert.equal(isCashFamilySubject("库存现金"), true);
+  assert.equal(isCashFamilySubject("银行存款 中国银行（美元）"), false, "银行存款不是现金族");
+  assert.equal(isCashFamilySubject("管理费用"), false);
+  assert.equal(isCashFamilySubject(null), false, "取不到科目名时不能瞎认，按老规则走");
+  assert.equal(isBankFamilySubject("银行存款 中国银行（美元）"), true);
+  assert.equal(isBankFamilySubject("库存现金（备用金）"), false);
+});
+
+test("业务科目是库存现金（备用金）时资金侧取银行存款（即使结算方式里写着「现金」）", () => {
+  const lines = voucherLinesFor(entry({
+    direction: "expense",
+    subjectKey: "资产类/库存现金（备用金）",
+    subjectLabel: "库存现金（备用金）",
+    // 文本里有「现金」，但那是**取现的去向**（备用金现金），不是钱的来源：
+    // 来源是银行，所以贷方必须是银行存款 —— 这就是用户要的那张凭证。
+    settlementMethod: "提现--备用金现金",
+    settlementAccountLabel: null,
+    amount: "3000.0000",
+  }));
+  assert.deepEqual(lines.map((line) => [line.direction, line.subject_label]), [
+    ["debit", "库存现金（备用金）"],
+    ["credit", FUND_SUBJECT_BANK],
+  ]);
+  assert.equal(lines[1].bank_id, null, "没有账户引用时不能编一个 bank_id");
+});
+
+test("业务科目是库存现金（备用金）且单据上选了银行账户时，贷方写「银行存款—账户」并引用它", () => {
+  const line = fundLineFor({
+    bankId: "bank-1", bankLabel: "农业银行5706",
+    settlementMethod: "备用金", settlementAccountLabel: null,
+    subjectLabel: "库存现金（备用金）",
+  });
+  assert.equal(line.subject_key, FUND_SUBJECT_BANK);
+  assert.equal(line.subject_label, "银行存款—农业银行5706");
+  assert.equal(line.bank_id, "bank-1");
+  // 反向守卫：**普通**业务科目仍然按「现金」二字猜资金侧（原来那条口径不变）。
+  const expense = fundLineFor({ bankId: null, bankLabel: null, settlementMethod: "现金报销", settlementAccountLabel: null, subjectLabel: "管理费用" });
+  assert.equal(expense.subject_label, FUND_SUBJECT_CASH);
 });

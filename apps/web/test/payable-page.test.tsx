@@ -785,6 +785,37 @@ describe("应付管理：新建其他应付可以指定会计科目", () => {
     expect(within(dialog).getByTestId("action-field-subject_id")).toHaveTextContent("资产类 / 库存现金（备用金）");
   });
 
+  /**
+   * 2026-10-16：备用金这类「会计科目是资金科目」的应付**不挂账**
+   * （后端 `createAccrual` 直接返回 null，响应里 `accrual_voucher_id` 为空）。
+   *
+   * 确认之后的提示必须跟着这个事实走：一句「并挂账（借成本 / 贷应付账款）」报出去，财务到
+   * 凭证管理里找不到那张凭证，就又要来问一次 —— 她这次报的就是这个（「会计科目没法正常显示」）。
+   */
+  it("确认资金搬运类应付（备用金）：提示说明不挂账、付款时按「借 该科目 / 贷 银行账户」记一张", async () => {
+    stubPayable(
+      {
+        entries: [{ ...draftEntry, id: "entry-o1", sourceType: "other", sourceNoSnapshot: "其他应付-备用金", subjectId: "sub-backup", subject: backupSubject, subject_name: "资产类 / 库存现金（备用金）" }],
+        suppliers: [{ id: "supplier-1", name: "周金红", supplierCode: "S-001" }],
+        subjects: [backupSubject],
+      },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/entry-o1/confirm")
+        ? apiOk({ id: "entry-o1", amount: "485.0000", currency: "CNY", accrual_voucher_id: null, accrual_replayed: false, bank_missing: false })
+        : undefined),
+    );
+    await openPayable("confirmed");
+
+    await userEvent.click(screen.getAllByRole("button", { name: "确认应付" })[0]);
+    const dialog = await screen.findByTestId("action-dialog");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await expectToast("已确认");
+    await expectToast("不挂账");
+    await expectToast("付款后按 借 资产类 / 库存现金（备用金） / 贷 银行账户 记一张凭证");
+    // 反向守卫：不能报「并挂账（借成本 / 贷应付账款）」—— 那正是这次要修掉的假消息。
+    expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("并挂账"))).toBe(false);
+  });
+
   it("批量确认：整批不是同一个科目时留空（不拿第一条的值盖住整批）", async () => {
     stubPayable({
       entries: [

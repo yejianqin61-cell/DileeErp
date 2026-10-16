@@ -15,6 +15,9 @@
  * 本文件顶部原来写着「将来接入正式科目表时只需要改 subjectKey/subjectLabel 的取值来源」——
  * 那次改动就发生在 `voucher.service.ts` 的 `draftForEntry`（科目名 + `分类/项目` 作为科目编码），
  * 凭证与分录模型、页面、打印视图都一行没动，验证了当时的判断。
+ *
+ * 2026-10-16 补的第 0 条判定：**业务科目本身就是现金科目时，资金侧只能是银行存款**
+ * （`备用金付款` = 从银行取现到备用金，用户口径；见 `fundLineFor`）。
  */
 
 /** 资金类科目：默认银行存款。 */
@@ -69,21 +72,49 @@ export function fundSubjectFor(hint?: string | null): string {
 }
 
 /**
+ * **资金科目族**：这个科目名本身就是「钱」（`库存现金`、`库存现金（备用金）`、`银行存款`、
+ * `银行存款 中国银行（美元）`……）—— 科目表里的银行/现金明细就是按前缀分层的
+ * （资产负债表「货币资金」行同样按 `prefixed("库存现金" / "银行存款")` 认，见
+ * `finance-three-statements.ts`）。
+ *
+ * 为什么需要这个判定（2026-10-16，用户报障「备用金付款那笔凭证的会计科目显示成应付账款」）：
+ * 一条**其他应付**的「会计科目」填的是资金科目时，它表达的不是「欠谁的钱」，而是**资金搬运**
+ * （备用金取现：钱从银行搬进备用金柜）。业务上要区分这两种语义，只能看科目名属于哪一族。
+ */
+export function isCashFamilySubject(name?: string | null): boolean {
+  return Boolean(name && name.startsWith(FUND_SUBJECT_CASH));
+}
+
+/** 银行科目族：`银行存款` 及其明细（`银行存款 中国银行（美元）`）。 */
+export function isBankFamilySubject(name?: string | null): boolean {
+  return Boolean(name && name.startsWith(FUND_SUBJECT_BANK));
+}
+
+/**
  * 资金类分录：科目名 + **具体银行账户**。
  *
  * 判定顺序（显式引用优先于文本猜测）：
+ *   0. **业务科目本身就是现金**（`库存现金（备用金）`这类）→ 资金侧只能是银行存款：
+ *      财务口径里的「备用金付款」就是「从银行取现到备用金」（用户 2026-10-16 选定）。
+ *      原来的规则只看结算方式里有没有「现金」二字，于是「提现--备用金现金」这种文本会把两边都判成
+ *      现金，凭证上出现「借 库存现金（备用金）/贷 库存现金」——同一个钱柜自己跟自己转，科目等于没显示对；
  *   1. 流水上挂了 `bank_id`（财务在收付款/确认时从银行池里选的账户）→ 银行存款 + 该账户；
  *   2. 否则按结算方式/结算账户名里有没有「现金」猜 库存现金 / 银行存款（历史数据只有文本）。
  *
  * 科目名（`subject_key`）保持「银行存款」不变 —— 它才是会计科目；账户是明细/辅助核算引用
  * （`bank_id` + 科目名快照），这样「银行存款」仍然能汇总，同时能按账户出明细账。
  */
-export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "bankId" | "bankLabel" | "settlementMethod" | "settlementAccountLabel">): { subject_key: string; subject_label: string; bank_id: string | null } {
+export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "bankId" | "bankLabel" | "settlementMethod" | "settlementAccountLabel" | "subjectLabel">): { subject_key: string; subject_label: string; bank_id: string | null } {
+  /** 银行存款那一行：有账户名快照就带上（宁可不写账户，也不要写一个空的「银行存款—」）。 */
+  const bankLine = () => {
+    const account = entry.bankLabel?.trim();
+    return { subject_key: FUND_SUBJECT_BANK, subject_label: account ? `${FUND_SUBJECT_BANK}—${account}` : FUND_SUBJECT_BANK, bank_id: entry.bankId ?? null };
+  };
+  // 见上面第 0 条：业务科目已经是现金科目时，资金侧一律银行存款（取现的对方就是银行）。
+  if (isCashFamilySubject(entry.subjectLabel)) return bankLine();
   const subject = entry.bankId ? FUND_SUBJECT_BANK : fundSubjectFor(entry.settlementAccountLabel ?? entry.settlementMethod);
   if (subject !== FUND_SUBJECT_BANK) return { subject_key: subject, subject_label: subject, bank_id: null };
-  // 没有账户名快照时退回科目名本身：宁可不写账户，也不要写一个空的「银行存款—」。
-  const account = entry.bankLabel?.trim();
-  return { subject_key: subject, subject_label: account ? `${subject}—${account}` : subject, bank_id: entry.bankId ?? null };
+  return bankLine();
 }
 
 /** 摘要：对方 + 会计科目（+ 备注），并裁剪到 500 字以内（列宽 VARCHAR(500)）。 */

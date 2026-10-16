@@ -99,6 +99,29 @@ export class VoucherController {
   }
 
   /**
+   * 资金搬运凭证的纠正（2026-10-16）。
+   *
+   * 背景：其他应付的会计科目填的是资金科目（如「库存现金（备用金）」）时，它表达的是
+   * 「从银行取现到备用金」而不是负债。旧口径把它走了「挂账 + 付款」两步，用户点开凭证纸
+   * 看到的会计科目是「应付账款」。新口径已经不挂账、付款时借方取条目自己的科目，
+   * 但**已经生成出来的凭证不会自己变** —— 这两个接口就是给财务一键纠正旧凭证用的：
+   *   GET  预览（不写库）：要改几张、删几张、红冲几张；
+   *   POST 执行：草稿直接改/删，已过账的先红冲（旧内容留痕）再按新口径重开成草稿。
+   *
+   * ⚠️ 与 `export.xlsx` 同一规矩：单段路径必须声明在 `@Get(":id")` 之前，
+   * 否则会被当成一个凭证 id 吃掉。
+   */
+  @Get("cash-transfer-repair")
+  async cashTransferRepairPreview() {
+    return { data: await this.vouchers.cashTransferRepairPreview(), meta: {} };
+  }
+
+  @Post("cash-transfer-repair")
+  async repairCashTransferVouchers(@CurrentUser() user: CurrentUserType) {
+    return { data: await this.vouchers.repairCashTransferVouchers(user), meta: {} };
+  }
+
+  /**
    * 记账凭证模板（工资计提 / 原材料采购）。财务 2026-09-20：「我完整的一个工资是这样的，
    * 但是现在都不能改」「原材料的也是要加上应交税费」。
    *

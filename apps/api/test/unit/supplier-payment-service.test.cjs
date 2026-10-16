@@ -201,6 +201,40 @@ test("收支类目：都没填科目时留空，让候选链兜底（不在这�
   assert.deepEqual(fixture.cashFlowCalls[0].categorySubjectNames, ["主营业务成本", "原材料"]);
 });
 
+/**
+ * 2026-10-16（用户报障）：「该笔应付选择的是备用金付款，该笔凭证的会计科目没法正常显示」。
+ *
+ * 备用金这类其他应付的会计科目是「资产类 / 库存现金（备用金）」—— 资金科目，**不是欠款**，
+ * 所以确认时不挂账（见 `voucher.service.ts` 的 `createAccrual`）。于是「借方写谁」只能从条目自己身上取：
+ * 取条目科目 → 凭证 = 借 库存现金（备用金）/ 贷 银行存款；不取的话会被写成「借 管理费用」，
+ * 那正是「会计科目没法正常显示」。
+ */
+test("未挂账的付款：借方取**条目自己**的科目（备用金取现不会被写成管理费用）", async () => {
+  const transfer = postFixture({ sourceType: "other", entries: new Map([["entry-1", settledEntry({ subjectId: "subject-备用金" })]]) });
+  await transfer.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.equal(transfer.cashFlowCalls[0].subjectId, "subject-备用金", "借方 = 条目自己的科目 → 借 库存现金（备用金）");
+  assert.deepEqual(transfer.cashFlowCalls[0].subjectNames, ["管理费用", "其他管理费用"], "候选链仍然带上（条目没科目或科目已停用时兜底）");
+  assert.equal(transfer.cashFlowCalls[0].categorySubjectId, "subject-备用金", "收支类目与借方同源");
+
+  // 反向守卫①：**已挂账**的付款借方只能是应付账款 —— 取条目科目会让成本记两遍、应付账款永远挂在那儿。
+  const accruedFixture = postFixture({ sourceType: "other", entries: new Map([["entry-1", settledEntry({ subjectId: "subject-备用金" })]]), accrued: ["entry-1"] });
+  await accruedFixture.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.equal(accruedFixture.cashFlowCalls[0].subjectId, null, "已挂账 → 交给候选链（应付账款）");
+  assert.deepEqual(accruedFixture.cashFlowCalls[0].subjectNames, ["应付账款"]);
+  assert.equal(accruedFixture.cashFlowCalls[0].categorySubjectId, "subject-备用金", "人工/单据选的科目仍然进「收支类目」，只是不参与记账");
+
+  // 反向守卫②：人工在付款单上选的科目优先于条目自己的科目。
+  const picked = postFixture({ sourceType: "other", entries: new Map([["entry-1", settledEntry({ subjectId: "subject-备用金" })]]), subjectId: "subject-picked" });
+  await picked.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.equal(picked.cashFlowCalls[0].subjectId, "subject-picked");
+
+  // 反向守卫③：条目没填科目（历史数据）→ 仍是老口径的候选链，行为不变。
+  const legacy = postFixture({ sourceType: "other" });
+  await legacy.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
+  assert.equal(legacy.cashFlowCalls[0].subjectId, null);
+  assert.deepEqual(legacy.cashFlowCalls[0].subjectNames, ["管理费用", "其他管理费用"]);
+});
+
 test("供应商付款冲销时回冲收支流水（钱没付出去，流水里不能留着）", async () => {  const reversed = [];
   const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", remark: null, amount: new Prisma.Decimal("300"), allocations: [] };
   const prisma = {

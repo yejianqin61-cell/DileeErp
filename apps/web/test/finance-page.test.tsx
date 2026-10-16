@@ -1304,6 +1304,58 @@ describe("凭证管理：从收支流水生成凭证", () => {
     expect(await screen.findByTestId("action-dialog-error")).toHaveTextContent("只有已过账的凭证可以红冲");
     expect(screen.getByTestId("action-dialog")).toBeInTheDocument();
   });
+
+  /**
+   * 2026-10-16（用户报障）：「如果该笔应付选择的是备用金付款，该笔凭证的会计科目没法正常显示」——
+   * 凭证纸上写着「借 应付账款 / 贷 库存现金」，她要的是「借 库存现金（备用金）/ 贷 银行存款」。
+   *
+   * 新口径已经不再挂账（voucher.service.ts 的 createAccrual）并把借方改成条目自己的科目，
+   * 但**已经生成出来的凭证不会自己变** —— 这一组用例盯的是那个一次性纠正入口：
+   * 先 GET 预览（要删几张、红冲几张、重算几张），财务看清了再 POST 执行。
+   */
+  describe("资金搬运（备用金取现）凭证纠正", () => {
+    const preview = {
+      payables: 2, accruals: 2, accruals_draft: 1, accruals_posted: 1,
+      flows: 1, flows_without_voucher: 0, vouchers_draft: 1, vouchers_posted: 0, vouchers_reversed: 0, skipped: [],
+      targets: [{ entry_no: "CF-20261016-0001", cash_flow_entry_id: "cf-1", payable_nos: ["APO-0001"], subject_label: "库存现金（备用金）", voucher_no: "记-2026-10-0002", voucher_status: "draft" }],
+    };
+
+    it("点按钮先 GET 预览：写清要删 / 红冲 / 重算几张，执行前一个字节都不写", async () => {
+      const calls = stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher()] }, (url, call) =>
+        url.endsWith("/finance/vouchers/cash-transfer-repair")
+          ? (call.method === "POST" ? apiOk({ ...preview, rebuilt: 1, reopened: 0, without_voucher: 0 }) : apiOk(preview))
+          : undefined);
+      await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+
+      fireEvent.click(screen.getByTestId("voucher-repair-cash-transfer"));
+      const dialog = await screen.findByTestId("voucher-repair-dialog");
+      const counts = await within(dialog).findByTestId("voucher-repair-counts");
+      expect(counts).toHaveTextContent("挂账凭证 2 张：草稿 1 张会删除；已过账 1 张会红冲");
+      expect(counts).toHaveTextContent("草稿 1 张直接按新口径重算");
+      expect(within(dialog).getByText("CF-20261016-0001")).toBeInTheDocument();
+      expect(within(dialog).getByText("库存现金（备用金）")).toBeInTheDocument();
+      expect(postsTo(calls, "/finance/vouchers/cash-transfer-repair")).toHaveLength(0);
+      expect(calls.filter((call) => call.url.endsWith("/finance/vouchers/cash-transfer-repair") && call.method === "GET")).toHaveLength(1);
+
+      fireEvent.click(within(dialog).getByTestId("voucher-repair-apply"));
+      await waitFor(() => expect(postsTo(calls, "/api/v1/finance/vouchers/cash-transfer-repair")).toHaveLength(1));
+      await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已纠正"))).toBe(true));
+      await waitFor(() => expect(screen.queryByTestId("voucher-repair-dialog")).toBeNull());
+    });
+
+    it("没有需要纠正的应付时直说，执行按钮点不动（不摆一个点了必然报错的按钮）", async () => {
+      stubFinance({ cashFlowEntries: [flowEntry()], vouchers: [voucher()] }, (url) =>
+        url.endsWith("/finance/vouchers/cash-transfer-repair")
+          ? apiOk({ ...preview, payables: 0, accruals: 0, accruals_draft: 0, accruals_posted: 0, flows: 0, vouchers_draft: 0, vouchers_posted: 0, vouchers_reversed: 0, targets: [] })
+          : undefined);
+      await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+
+      fireEvent.click(screen.getByTestId("voucher-repair-cash-transfer"));
+      const dialog = await screen.findByTestId("voucher-repair-dialog");
+      expect(await within(dialog).findByTestId("voucher-repair-empty")).toBeInTheDocument();
+      expect(within(dialog).getByTestId("voucher-repair-apply")).toBeDisabled();
+    });
+  });
 });
 
 // ------------------------------------------------------------------ 对账与确认合并 + 收款单（2026-09-20）

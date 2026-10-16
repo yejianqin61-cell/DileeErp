@@ -137,6 +137,15 @@ type ConfirmResult = {
   confirmed_amount?: string; confirmed_count?: number; skipped_count?: number;
   /** 勾选批量确认的按币种合计（跨币种不相加）。 */
   amounts?: Array<{ currency: string; amount: string }>;
+  /**
+   * 挂账凭证。**为 null 就是「资金搬运」**（2026-10-16 起）：其他应付的会计科目选的是资金科目
+   * （如「资产类 / 库存现金（备用金）」）时，这笔表达的是「从银行取现到备用金」而不是欠款，
+   * 确认时不挂账（不会出现「贷 应付账款」的凭证），钱在付款那一步一次记完。
+   * 直接打 0 元的应付走不到这里（服务层对 0 元不挂账），所以这个判据不会误报。
+   */
+  accrual_voucher_id?: string | null;
+  /** 勾选批量确认：逐条挂账的凭证 id（条数少于确认条数 = 其中一些是资金搬运）。 */
+  accrual_voucher_ids?: string[];
 };
 type DetailKind = "source" | "entry" | "reconciliation";
 /** 批量删除其他应付的逐条结果（后端 `POST /finance/payable-entries/batch-delete`）。 */
@@ -147,6 +156,15 @@ type BatchDeleteResult = {
 };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+/**
+ * 这笔确认是不是**资金搬运**（没有挂账凭证 → 用户 2026-10-16 选定的口径）。
+ *
+ * 其他应付的会计科目填的是资金科目（如「资产类 / 库存现金（备用金）」）时，它表达的是
+ * 「从银行取现到备用金」而不是欠款：确认不挂账，付款时按「借 库存现金（备用金）/贷 银行存款」记一张。
+ * 界面文案必须跟着这个事实走 —— 一句「并挂账（借成本 / 贷应付账款）」报出去，财务到凭证管理里
+ * 找不到那张凭证，就又要来问一次。
+ */
+const isCashTransfer = (data: ConfirmResult) => !data.accrual_voucher_id;
 const day = (value: string | null | undefined) => (value ? value.slice(0, 10) : "-");
 const monthOf = (value: string | null | undefined) => (value ? value.slice(0, 7) : "-");
 const monthRange = (month: string) => ({ start: `${month}-01`, end: new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).toISOString().slice(0, 10) });
@@ -697,7 +715,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       // 但界面必须让她**看见**这次会挂到哪个科目，否则她无从复核。
       subjectEditField("会计科目", item.subjectId),
     ], submit: (v) => submitConfirm(`/finance/payable-entries/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => ({
-      success: `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）并挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
+      success: isCashTransfer(data)
+        // 资金搬运（备用金这类）：确认不挂账，凭证在付款那一步一次记完（2026-10-16）。
+        ? `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）：这笔是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生「贷 应付账款」的凭证；付款后按 借 ${item.subject_name ?? "该科目"} / 贷 银行账户 记一张凭证`
+        : `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）并挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
       warning: `未指定支付银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
     }), "确认应付失败") });
   }
@@ -724,8 +745,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     ], submit: (v) => submitConfirm("/finance/payable-entries/batch-confirm", { ids: drafts.map((draft) => draft.id), bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => {
       const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
+      const confirmed = data.confirmed_count ?? drafts.length;
+      // 整批里混着资金搬运（备用金这类）时，挂账凭证的条数会少于确认条数：如实说清楚哪一部分没挂账。
+      const transfer = confirmed - (data.accrual_voucher_ids?.length ?? confirmed);
       return {
-        success: `已确认 ${data.confirmed_count ?? drafts.length} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
+        success: `已确认 ${confirmed} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）${transfer > 0 ? `；其中 ${transfer} 条是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生应付账款，付款时按 借 该科目 / 贷 银行账户 记` : ""}；付款后在「登记付款」里记现金`,
         warning: `未指定支付银行：${amount} 已记入收支流水，但不会体现在任何银行账户余额里`,
       };
     }, "批量确认应付失败") });
@@ -854,8 +878,11 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       const amount = data.confirmed_amount ?? data.amount ?? "-";
       const currency = data.currency ?? item.currency;
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
+      const confirmed = data.confirmed_count ?? 0;
+      // 与「勾选批量确认」同一条口径：没有挂账凭证的那些是资金搬运（备用金这类），如实说清楚。
+      const transfer = confirmed - (data.accrual_voucher_ids?.length ?? confirmed);
       return {
-        success: `${item.reconciliationNo} 已确认 ${data.confirmed_count ?? 0} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
+        success: `${item.reconciliationNo} 已确认 ${confirmed} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）${transfer > 0 ? `；其中 ${transfer} 条是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生应付账款，付款时按 借 该科目 / 贷 银行账户 记` : ""}；付款后在「登记付款」里记现金`,
         warning: `未指定支付银行：${amount} ${currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
       };
     }, "批量确认应付失败");

@@ -55,6 +55,42 @@ type Voucher = AuditRow & {
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 
 /**
+ * 「资金搬运凭证纠正」（2026-10-16）。
+ *
+ * 背景：其他应付的会计科目填的是资金科目（如「资产类 / 库存现金（备用金）」）时，它表达的是
+ * 「从银行取现到备用金」而不是负债。旧口径把它走了「确认挂账（贷应付账款）→ 付款（借应付账款）」，
+ * 用户点开凭证纸看到的会计科目是「应付账款」，而她要的是「库存现金（备用金）」。
+ * 新口径已经不挂账、付款时借方取条目自己的科目，但**已经生成出来的凭证不会自己变** ——
+ * 这个按钮按凭证事实逐张纠正：草稿直接改/删；已过账的先红冲（旧内容留痕）再重开成草稿。
+ */
+type CashTransferRepairTarget = { entry_no: string; cash_flow_entry_id: string; payable_nos: string[]; subject_label: string; voucher_no: string | null; voucher_status: string | null };
+type CashTransferRepairPreview = {
+  payables: number;
+  accruals: number;
+  accruals_draft: number;
+  accruals_posted: number;
+  flows: number;
+  flows_without_voucher: number;
+  vouchers_draft: number;
+  vouchers_posted: number;
+  vouchers_reversed: number;
+  skipped: Array<{ entry_no: string; reason: string }>;
+  targets: CashTransferRepairTarget[];
+};
+type CashTransferRepairResult = Omit<CashTransferRepairPreview, "targets"> & { rebuilt: number; reopened: number; without_voucher: number };
+
+/**
+ * 预览清单的列（用 `DataTable` 而不是手写表：这一页的凭证纸是**打印/导出用**的手写版式件
+ * （见 `lib/table-width-coverage.test.mjs` 的豁免说明），弹窗里这张清单该跟全站一样受列宽治理）。
+ */
+const REPAIR_COLUMNS: ColumnDef<CashTransferRepairTarget>[] = [
+  { accessorKey: "entry_no", header: "流水号", meta: { width: "24%" } },
+  { id: "payables", header: "应付单", meta: { width: "26%", ellipsis: true }, cell: ({ row }) => row.original.payable_nos.join("、") || "-" },
+  { accessorKey: "subject_label", header: "纠正后的借方科目", meta: { width: "26%", ellipsis: true } },
+  { id: "voucher", header: "凭证", meta: { width: "24%", ellipsis: true }, cell: ({ row }) => row.original.voucher_no ? `${row.original.voucher_no}（${STATUS_LABELS[row.original.voucher_status ?? ""] ?? row.original.voucher_status}）` : "还没有凭证" },
+];
+
+/**
  * 列表的固定列宽（用户 2026-09-20 第 6 条：「记账凭证这个表单，可以固定column宽度，超过的就省略显示，
  * 鼠标hover的时候再展示。保证一次性展示全部column」）。
  *
@@ -96,6 +132,12 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
    * （`linesFromVoucher` 对不上表就保留文本）。
    */
   const [subjects, setSubjects] = useState<AccountingSubject[]>([]);
+  /**
+   * 「资金搬运凭证纠正」弹窗：先取预览（要改几张、删几张、红冲几张），财务看清了再执行。
+   * 预览与执行是同一个接口的两条路（GET / POST），所以「看到的」与「改的」不可能对不上。
+   */
+  const [repair, setRepair] = useState<{ open: boolean; loading: boolean; preview: CashTransferRepairPreview | null; error: string }>({ open: false, loading: false, preview: null, error: "" });
+  const [repairing, setRepairing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -299,6 +341,38 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
     });
   }
 
+  /**
+   * 打开「资金搬运凭证纠正」：先取预览再开弹窗。
+   *
+   * 失败也照样打开弹窗并把原因写在里面（不静默什么都不发生）——这与付款单预填同一条教训：
+   * 点了没反应，用户只会以为按钮坏了。
+   */
+  async function openRepair() {
+    setRepair({ open: true, loading: true, preview: null, error: "" });
+    try {
+      const result = await apiGet<CashTransferRepairPreview>("/finance/vouchers/cash-transfer-repair");
+      setRepair({ open: true, loading: false, preview: result.data, error: "" });
+    } catch (cause) {
+      setRepair({ open: true, loading: false, preview: null, error: messageOf(cause, "纠正清单加载失败") });
+    }
+  }
+
+  /** 执行纠正：逐张凭证按新口径重记（后端留审计），完成后重拉列表。 */
+  async function applyRepair() {
+    setRepairing(true);
+    try {
+      const result = await apiPost<CashTransferRepairResult>("/finance/vouchers/cash-transfer-repair");
+      const data = result.data;
+      notifySuccess(`已纠正 ${data.accruals} 张挂账凭证、${data.vouchers_draft + data.vouchers_posted} 张付款凭证（重算 ${data.rebuilt} 张 / 红冲后重开 ${data.reopened} 张）`);
+      setRepair({ open: false, loading: false, preview: null, error: "" });
+      await load();
+    } catch (cause) {
+      notifyError(messageOf(cause, "纠正失败"));
+    } finally {
+      setRepairing(false);
+    }
+  }
+
   const entryColumns: ColumnDef<CashFlowEntry>[] = [
     { id: "date", header: "日期", meta: { width: ENTRY_COLUMN_WIDTHS.date }, cell: ({ row }) => day(row.original.entryDate) },
     { accessorKey: "entryNo", header: "流水号", meta: { width: ENTRY_COLUMN_WIDTHS.no } },
@@ -361,6 +435,9 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       {/* 导出记账凭证（2026-10-13）：一行一条分录、带摘要；与列表同一份数据，
           所以"看到的就是导出的"（后端 export.xlsx 用同一个 DTO 筛）。 */}
       <Button variant="secondary" data-testid="voucher-export" disabled={exportingXlsx || !vouchers.length} onClick={() => void exportXlsx()}>{exportingXlsx ? "导出中…" : "导出 Excel"}</Button>
+      {/* 一次性纠正（2026-10-16）：备用金这类其他应付的会计科目是资金科目，旧口径把它们记成了
+          应付账款（挂账 + 付款两张凭证）。新口径不再挂账，但旧凭证要有人按事实改一遍 —— 就是它。 */}
+      <Button variant="secondary" data-testid="voucher-repair-cash-transfer" disabled={repairing} onClick={() => void openRepair()}>{repairing ? "纠正中…" : "纠正备用金/取现凭证"}</Button>
       <Button asChild variant="secondary"><Link href="/finance">返回财务</Link></Button>
     </PageHeader>
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
@@ -414,6 +491,34 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
           <Button variant="secondary" data-testid="voucher-print-close" onClick={() => setSheet(null)}>关闭</Button>
           <Button variant="secondary" data-testid="voucher-png-button" disabled={!sheet?.lines?.length || exporting} onClick={() => { if (sheet?.lines?.length) void exportPng(sheet); }}>{exporting ? "导出中…" : "导出 PNG"}</Button>
           <Button data-testid="voucher-print-button" disabled={!sheet?.lines} onClick={() => window.print()}>打印 / 另存 PDF</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={repair.open} onOpenChange={(open) => { if (!open && !repairing) setRepair({ open: false, loading: false, preview: null, error: "" }); }}>
+      <DialogContent data-testid="voucher-repair-dialog">
+        <DialogHeader><DialogTitle>纠正备用金（资金搬运）凭证</DialogTitle></DialogHeader>
+        <DialogBody>
+          {repair.loading ? <LoadingState /> : repair.error ? <ErrorState message={repair.error} onRetry={() => void openRepair()} /> : repair.preview ? <>
+            <p className="panel-note" data-testid="voucher-repair-scope">
+              要纠正的是「会计科目选了资金科目（如 资产类 / 库存现金（备用金））」的那些应付：它们表达的是
+              「从银行取现到备用金」，不是欠谁的钱，所以不该有「贷 应付账款」的凭证；付款凭证按
+              「借 库存现金（备用金）/ 贷 银行存款」重记。
+            </p>
+            {repair.preview.payables === 0
+              ? <p data-testid="voucher-repair-empty">没有需要纠正的凭证（没有「会计科目是资金科目」的应付）。</p>
+              : <ul className="panel-note" data-testid="voucher-repair-counts">
+                <li>涉及应付 {repair.preview.payables} 条</li>
+                <li>挂账凭证 {repair.preview.accruals} 张：草稿 {repair.preview.accruals_draft} 张会删除；已过账 {repair.preview.accruals_posted} 张会红冲（红字凭证留痕）</li>
+                <li>付款凭证 {repair.preview.vouchers_draft + repair.preview.vouchers_posted + repair.preview.vouchers_reversed} 张：草稿 {repair.preview.vouchers_draft} 张直接按新口径重算；已过账 {repair.preview.vouchers_posted} 张先红冲再重开成草稿；已红冲 {repair.preview.vouchers_reversed} 张按新口径重开</li>
+                {repair.preview.flows_without_voucher > 0 ? <li>另有 {repair.preview.flows_without_voucher} 条流水还没有凭证：只改科目，去「收支流水」点「生成凭证」即可生成正确的凭证</li> : null}
+                {repair.preview.skipped.length > 0 ? <li className="status-error">有 {repair.preview.skipped.length} 条流水不能自动纠正（核销里混着非资金搬运的应付，一个主科目拆不开两种语义）：{repair.preview.skipped.map((item) => `${item.entry_no}——${item.reason}`).join("；")}</li> : null}
+              </ul>}
+            {repair.preview.targets.length ? <div data-testid="voucher-repair-targets"><DataTable columns={REPAIR_COLUMNS} data={repair.preview.targets} empty={null} /></div> : null}
+          </> : null}
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="secondary" data-testid="voucher-repair-cancel" disabled={repairing} onClick={() => setRepair({ open: false, loading: false, preview: null, error: "" })}>取消</Button>
+          <Button data-testid="voucher-repair-apply" disabled={repairing || !repair.preview || repair.preview.payables === 0} onClick={() => void applyRepair()}>{repairing ? "纠正中…" : "执行纠正"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
