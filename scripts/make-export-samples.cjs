@@ -69,6 +69,9 @@ const slipPrisma = (movement) => ({
 });
 
 // ── 采购订单 ──
+// 样例要尽量像一张真单据：字段该填的都填上（地址 / 付款方式 / 交期条款 / 总价），
+// 产品名称与规格型号各留一条长的 —— 用户 2026-10-19 要的正是「名称/规格两列够不够宽」，
+// 样例里全是两个字的名字就看不出差别了。
 const purchaseOrder = {
   id: "po-1",
   purchaseOrderNo: "PO-20260910-1234ABCD",
@@ -80,11 +83,15 @@ const purchaseOrder = {
   updatedBy: "user-2",
   remark: "含税价；交期如有变动请在一天内回复。",
   expectedDate: new Date("2026-09-20T00:00:00Z"),
-  supplier: { name: "某某五金厂", contactName: "李经理", phone: "13800000000" },
+  totalAmount: new Prisma.Decimal("6800.0000"),
+  paymentTerms: "月结30天",
+  deliveryTerms: "合同签订后 15 天内分批交货，首批不少于 500 根",
+  deliveryAddress: "浙江省绍兴市柯桥区迪礼厂区 1 号仓",
+  supplier: { name: "某某五金制品厂", contactName: "李经理", phone: "13800000000" },
   items: [
-    { materialSnapshot: { name: "伞骨" }, model: "58cm", quantity: new Prisma.Decimal("2500"), unitPrice: new Prisma.Decimal("1.25"), amount: new Prisma.Decimal("3125.0000"), expectedDate: new Date("2026-09-18T00:00:00Z"), material: { name: "伞骨", specificationModel: "58cm" }, unit: { name: "根" }, supplier: { name: "某某五金厂" } },
-    { materialSnapshot: { name: "伞布" }, model: "EVA 190T", quantity: new Prisma.Decimal("500"), unitPrice: new Prisma.Decimal("6.5"), amount: new Prisma.Decimal("3250.0000"), expectedDate: null, material: { name: "伞布", specificationModel: "EVA" }, unit: { name: "米" }, supplier: { name: "某某纺织厂" } },
-    { materialSnapshot: { name: "手柄" }, model: null, quantity: new Prisma.Decimal("500"), unitPrice: new Prisma.Decimal("0.85"), amount: new Prisma.Decimal("425.0000"), expectedDate: new Date("2026-09-20T00:00:00Z"), material: { name: "手柄", specificationModel: "直柄" }, unit: { name: "个" }, supplier: { name: "某某五金厂" } }
+    { materialSnapshot: { name: "伞骨" }, model: "58cm×8K 黑色电着", quantity: new Prisma.Decimal("2500"), unitPrice: new Prisma.Decimal("1.25"), amount: new Prisma.Decimal("3125.0000"), expectedDate: new Date("2026-09-18T00:00:00Z"), material: { name: "伞骨", specificationModel: "58cm" }, unit: { name: "根" }, supplier: { name: "某某五金制品厂" } },
+    { materialSnapshot: { name: "伞布" }, model: "EVA 190T 透明", quantity: new Prisma.Decimal("500"), unitPrice: new Prisma.Decimal("6.5"), amount: new Prisma.Decimal("3250.0000"), expectedDate: null, material: { name: "伞布", specificationModel: "EVA" }, unit: { name: "米" }, supplier: { name: "某某纺织厂" } },
+    { materialSnapshot: { name: "手柄（加长款银色电镀带绳孔）" }, model: "直柄 22cm 银色", quantity: new Prisma.Decimal("500"), unitPrice: new Prisma.Decimal("0.85"), amount: new Prisma.Decimal("425.0000"), expectedDate: new Date("2026-09-20T00:00:00Z"), material: { name: "手柄", specificationModel: "直柄" }, unit: { name: "个" }, supplier: { name: "某某五金制品厂" } }
   ]
 };
 const purchasePrisma = {

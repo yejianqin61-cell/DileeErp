@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import * as ExcelJS from "exceljs";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { columnSpanWidth, rowHeightFor, type RowHeightBlock } from "../../platform/excel/row-height";
 import { beijingDateTime } from "../../platform/time/beijing-time";
 
 /**
@@ -96,30 +97,55 @@ const SIGNATURE_ROWS = 4;
 
 // 明细表列序：模板 7 列的相对顺序不变，仅在「规格型号」后插入「单位」。
 // 2026-10-13（用户）：删掉后来的「供应商」列与模板原有的「交货日期」列 → 回到 7 列。
+// 2026-10-19（用户）：「单位这个 column 可以窄一点。然后产品名称和规格型号这两列一定要宽大一点」
+// —— 单位 8 → 6，产品名称 22 → 30，规格型号 16 → 26，腾出/吃进的宽度从「含税单价/数量」里调，
+// 版心总宽 86 → 102（仍然落在 A4 纵向一页宽以内，见 {@link SHEET_LAST_COLUMN} 的打印比例）。
 const COLUMNS: Array<{ header: string; width: number }> = [
   { header: "序号", width: 6 },
-  { header: "产品名称", width: 22 },
-  { header: "规格型号", width: 16 },
-  { header: "单位", width: 8 },
-  { header: "含税单价", width: 12 },
+  { header: "产品名称", width: 30 },
+  { header: "规格型号", width: 26 },
+  { header: "单位", width: 6 },
+  { header: "含税单价", width: 11 },
   { header: "数量", width: 10 },
-  { header: "含税总价", width: 12 }
+  { header: "含税总价", width: 13 }
 ];
+/** 各列宽度（与 `COLUMNS` 同序）：算折行/行高时按它取跨度。 */
+const SHEET_WIDTHS: readonly number[] = COLUMNS.map((column) => column.width);
+/** 版心总宽度（列宽单位）：整行合并格、「备注」这类整行文字的可用宽度。 */
+const SHEET_WIDTH = SHEET_WIDTHS.reduce((total, width) => total + width, 0);
 /**
- * 版心右边界（表头字段网格 / 整行文本 / 签署栏都跨到这里）。
+ * 版心右边界 = 明细表最后一列（G）。
  *
- * ⚠️ 它**不再等于**明细表的最后一列：表头字段网格是 3 组「标签 + 跨两列的值」，
- * 天然占 A:I 九列，与明细表有几列无关。删掉两列明细后两者必须分开 ——
- * 否则要么表头第三组的值格（H:I）落到列定义之外，要么整行文本莫名缩到 G。
- * 明细表的最后一列直接用 `COLUMNS.length`（循环与「小计」公式都按它走）。
+ * 2026-10-13 起版心曾是 A:I：H、I 两列是给表头字段网格第三组「值格」用的尾巴列，
+ * 它们不在明细表里 —— 纸面上就是右边多出 26 个列宽单位的空白，而且把整张表撑到 A4 装不下
+ * （Excel `fitToPage` 会把整页缩到 86%，字反而变小）。
+ * 2026-10-19 表头改成「标签：值」写在同一格里（见 {@link HEADER_FIELD_SPANS}），尾巴列不再需要，
+ * 版心回到明细表的右边界：总宽 102，打印比例 ≈ 95%，纸上的字比改版前更大（改版前 112）。
+ *
+ * ⚠️ 列宽别写 9：ExcelJS 把它当"默认宽度"，不会写进 `xl/worksheets/*.xml` 的 `<cols>`，
+ * Excel 打开时按默认列宽（8.43）渲染 —— 差一点点，但会让人以为设的宽度没生效。
  */
-const SHEET_LAST_COLUMN = "I";
+const SHEET_LAST_COLUMN = "G";
 /**
- * 表头字段网格第三组的两个值格（H / I）的列宽。
- * 明细表只剩 A:G 之后这两列不再是明细列，但仍要给宽度 —— 否则「供应商联系人 / 下单录入时间 /
- * 电话」这几个值会被挤进默认宽度（8.43 字符）里，值格看起来像被压扁了。
+ * 表头字段网格（4 行 × 3 组 = 11 个字段）的列分组，每组一个合并格、格内写「标签：值」。
+ *
+ * ## 为什么标签和值写在同一格（2026-10-19）
+ *
+ * 2026-09-16 起是「标签占一格、值占两格」（标签在 A / D / G，值在 B:C / E:F / H:I）。
+ * 但 xlsx **只有一套列宽**：标签列在明细表里就是「序号」(6) 与「单位」(5/6)，
+ * 而「供应商联系人：」有 14 个列宽单位 —— 实测（用 Excel 把这件导出成 PDF 再放大看）：
+ * 13 个标签里有 7 个被截成「单号：」「购人：」「时间：」「方式：」这种半截字，
+ * 表格顶部看起来像一串没有名字的值。要修只能让标签列变宽，但那会把「序号 / 单位」两列
+ * 一起撑宽 —— 正是用户 2026-10-19 要往反方向调的两列。
+ * 把标签并进值格是唯一同时满足「标签完整」与「明细列宽按业务定」的写法。
  */
-const HEADER_GRID_TAIL_WIDTHS = [12, 14];
+const HEADER_FIELD_SPANS: ReadonlyArray<{ start: number; end: number }> = [
+  { start: 1, end: 2 }, // A:B —— 序号 + 产品名称，36 个单位（「订单号：DL260001（货号 27621）」26 个单位）
+  { start: 3, end: 4 }, // C:D —— 规格型号 + 单位，32 个单位
+  { start: 5, end: 7 } // E:G —— 含税单价 + 数量 + 含税总价，34 个单位（「下单录入时间：2026-09-10 09:20」30 个）
+];
+/** 第 `column` 列（1 起）的列字母。 */
+const columnLetter = (column: number): string => String.fromCharCode("A".charCodeAt(0) + column - 1);
 
 /**
  * 版式行号。表头字段的多少会改变明细表的位置，所以全部由常量推出来，
@@ -133,10 +159,10 @@ const ADDRESS_ROW = 2;
  * 而它是第 4 行第 3 组那个格 —— 于是第 4 行只剩「付款方式 / 电话」两格，右端空着一格。
  * 为什么**不把剩下的格子重排成新的 12 格**：这 12 格的位置是用户 2026-09-16 逐项点名的顺序
  * （订单号 → 供应商名称 → … → 付款方式），重排会让那张已经确认过的单子换个样子；
- * 空着的那个位置在纸面上看不出来（没有标签也没有值格边框），代价最小。
+ * 空着的那个位置在纸面上看不出来（既没有标签也没有下划线），代价最小。
  */
 const HEADER_GRID_START = 3;
-/** 交期条款整行（跨 A:I）：条款是长句，塞进两列宽的格子会被挤成一条线。 */
+/** 交期条款整行（跨 A:G）：条款是长句，塞进两列宽的格子会被挤成一条线。 */
 const TERMS_ROW = HEADER_GRID_START + 4;
 const SPACER_ROW = TERMS_ROW + 1;
 const TABLE_HEADER_ROW = SPACER_ROW + 1;
@@ -286,7 +312,7 @@ export class PurchaseOrderExportService {
     const sheet = workbook.addWorksheet(name, {
       pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, horizontalCentered: true, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 } }
     });
-    sheet.columns = [...COLUMNS.map((column) => ({ width: column.width })), ...HEADER_GRID_TAIL_WIDTHS.map((width) => ({ width }))];
+    sheet.columns = COLUMNS.map((column) => ({ width: column.width }));
     sheet.headerFooter = { oddFooter: "&C第 &P 页 / 共 &N 页" };
 
     // 标题（草稿标注，避免把未生效的采购单当正式订单发给厂商）
@@ -297,72 +323,49 @@ export class PurchaseOrderExportService {
     titleCell.alignment = { horizontal: "center", vertical: "middle" };
     sheet.getRow(1).height = 30;
 
-    // 交货地址：2026-09-16 起系统里有字段（采购单 →「打印信息」里填），不再只能手写
-    const addressLabel = sheet.getCell(`A${ADDRESS_ROW}`);
-    addressLabel.value = "交货地址：";
-    addressLabel.font = BODY_FONT;
-    addressLabel.alignment = { horizontal: "right", vertical: "middle" };
-    sheet.mergeCells(`B${ADDRESS_ROW}:${SHEET_LAST_COLUMN}${ADDRESS_ROW}`);
-    const addressCell = sheet.getCell(`B${ADDRESS_ROW}`);
-    addressCell.value = document.deliveryAddress;
-    addressCell.font = BODY_FONT;
-    addressCell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
-    addressCell.border = { bottom: { style: "thin" } };
-    sheet.getRow(ADDRESS_ROW).height = 20;
+    // 交货地址：2026-09-16 起系统里有字段（采购单 →「打印信息」里填），不再只能手写。
+    // 2026-10-19 起「标签：值」写在同一格 —— 原来标签单独占 A 列（6 个单位宽），
+    // 「交货地址：」有 10 个单位，实测印出来只剩「地址：」。
+    this.fullWidthLine(sheet, ADDRESS_ROW, `交货地址：${document.deliveryAddress}`);
 
-    // 表头字段：每行 3 组「标签 + 跨两列的值」，共 4 行 12 格（2026-10-13 起实填 11 格，见 HEADER_GRID_START）。
+    // 表头字段：每行 3 组，每组一个合并格、格内「标签：值」（见 HEADER_FIELD_SPANS）。
     // 列序照用户 2026-09-16 给的表头清单：订单号 / 供应商名称 / 供应商联系人 / 采购人 / 操作人 /
     // 下单录入时间 / 操作时间 / 总价 / 交货日期 / 付款方式，最后一行是原模板就有的 电话。
     // ⚠️ 2026-10-13（用户）：「采购单号这个字段也不需要导出」—— 原来最后一格印的采购单号已删。
     // 供货商对账改用「订单号」（销售单号，含货号）。采购单号仍用于**工作表名**（见文件头注释）。
     //
-    // 货号（2026-09-26）：**跟着「订单号」那一格印**（`DL260001-1（货号 27621）`），不新开一格。
-    // 为什么不新开：这 12 格是用户逐项点名的，明细表的列数又牵着列宽/小计公式/边框循环，
-    // 而「这一单是哪个货号」本来就与订单号读在一起；为一个单元格去动列数或加第 5 行，
+    // 货号（2026-09-26）：**跟着「订单号」那一格印**（`DL260001（货号 27621）`），不新开一格。
+    // 为什么不新开：这 11 个字段是用户逐项点名的，明细表的列数又牵着列宽/小计公式/边框循环，
+    // 而「这一单是哪个货号」本来就与订单号读在一起；为一个字段去动列数或加第 5 行，
     // 代价是整张打印件的行列号全面位移，收益只是一个更松的排版。
     // **没有货号时这一格与改造前逐字相同**（历史单打印件不受影响）。
     const salesOrderCell = document.itemNo ? `${document.salesOrderNo}（货号 ${document.itemNo}）` : document.salesOrderNo;
-    const headerRows: Array<Array<[string, string | number]>> = [
+    const headerFields: Array<Array<[string, string]>> = [
       [["订单号：", salesOrderCell], ["供应商名称：", document.supplierName], ["供应商联系人：", document.contactName]],
       [["采购人：", document.buyerName], ["操作人：", document.operatorName], ["下单录入时间：", document.enteredAt]],
-      [["操作时间：", document.operatedAt], ["总价：", document.totalAmount], ["交货日期：", document.deliveryDate]],
+      [["操作时间：", document.operatedAt], ["总价：", document.totalAmount.toFixed(2)], ["交货日期：", document.deliveryDate]],
       [["付款方式：", document.paymentTerms], ["电话：", document.phone]]
     ];
-    const labelColumns = ["A", "D", "G"] as const;
-    headerRows.forEach((fields, rowIndex) => {
+    headerFields.forEach((fields, rowIndex) => {
       const rowNumber = HEADER_GRID_START + rowIndex;
-      const row = sheet.getRow(rowNumber);
-      fields.forEach((field, fieldIndex) => {
-        const labelCell = row.getCell(labelColumns[fieldIndex]);
-        labelCell.value = field[0];
-        labelCell.font = BODY_FONT;
-        labelCell.alignment = { horizontal: "right", vertical: "middle" };
-        const valueStart = String.fromCharCode(labelColumns[fieldIndex].charCodeAt(0) + 1);
-        const valueEnd = String.fromCharCode(labelColumns[fieldIndex].charCodeAt(0) + 2);
-        sheet.mergeCells(`${valueStart}${rowNumber}:${valueEnd}${rowNumber}`);
-        const valueCell = sheet.getCell(`${valueStart}${rowNumber}`);
-        valueCell.value = field[1];
-        valueCell.font = BODY_FONT;
-        valueCell.alignment = { horizontal: "left", vertical: "middle" };
-        valueCell.border = { bottom: { style: "thin" } };
-        // 总价是真正的数字格（能直接参与计算），其余是文字
-        if (typeof field[1] === "number") valueCell.numFmt = "0.00##";
+      const blocks: RowHeightBlock[] = [];
+      fields.forEach(([label, value], fieldIndex) => {
+        const span = HEADER_FIELD_SPANS[fieldIndex];
+        if (span.end > span.start) sheet.mergeCells(`${columnLetter(span.start)}${rowNumber}:${columnLetter(span.end)}${rowNumber}`);
+        const cell = sheet.getCell(`${columnLetter(span.start)}${rowNumber}`);
+        const text = `${label}${value}`;
+        cell.value = text;
+        cell.font = BODY_FONT;
+        // 合并格放不下的长值（很长的供应商名称）折行而不是被截断 —— 行高随后按折行数算。
+        cell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+        cell.border = { bottom: { style: "thin" } };
+        blocks.push({ text, width: columnSpanWidth(SHEET_WIDTHS, span.start, span.end) });
       });
-      row.height = 20;
+      sheet.getRow(rowNumber).height = rowHeightFor(blocks);
     });
 
-    // 交期条款整行（跨 A:I）：条款是长句，塞进两列宽的格子会被挤成一条线
-    const termsLabel = sheet.getCell(`A${TERMS_ROW}`);
-    termsLabel.value = "交期条款：";
-    termsLabel.font = BODY_FONT;
-    termsLabel.alignment = { horizontal: "right", vertical: "middle" };
-    sheet.mergeCells(`B${TERMS_ROW}:${SHEET_LAST_COLUMN}${TERMS_ROW}`);
-    const termsCell = sheet.getCell(`B${TERMS_ROW}`);
-    termsCell.value = document.deliveryTerms;
-    termsCell.font = BODY_FONT;
-    termsCell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
-    termsCell.border = { bottom: { style: "thin" } };
-    sheet.getRow(TERMS_ROW).height = 20;
+    // 交期条款整行（跨 A:G）：条款是长句，塞进两列宽的格子会被挤成一条线
+    this.fullWidthLine(sheet, TERMS_ROW, `交期条款：${document.deliveryTerms}`);
     sheet.getRow(SPACER_ROW).height = 6;
 
     // 明细表
@@ -391,7 +394,14 @@ export class PurchaseOrderExportService {
         // 0-based：含税单价 / 数量 / 含税总价 是数字格
         if ([4, 5, 6].includes(columnIndex)) cell.numFmt = "0.00##";
       });
-      row.height = 20;
+      // 行高按文字折行数算（产品名称 30 / 规格型号 26 / 单位 6）：写死 20 时，
+      // 「手柄（加长款银色电镀带绳孔）」这种名字的第二行会被压在行线上（=「太扁」那个病，
+      // 见 platform/excel/row-height.ts 的文件头注释）。
+      row.height = rowHeightFor([
+        { text: line.productName, width: SHEET_WIDTHS[1] },
+        { text: line.specificationModel, width: SHEET_WIDTHS[2] },
+        { text: line.unit, width: SHEET_WIDTHS[3] }
+      ]);
     });
 
     // 小计：只对含税总价求和（数量跨单位相加没有意义）
@@ -419,20 +429,21 @@ export class PurchaseOrderExportService {
     }
     subtotalRow.height = 20;
 
-    // 备注区
+    // 备注区：第一行写备注（行高按折行数算 —— 写死 18 时第二行字会被压在表格线上），后两行留空给手写。
+    // 只画**下边框**：合并格里每个成员格都会继承主格样式，四边框会让预览里多出一排竖线
+    // （Excel 会把合并区内部的边框藏掉，但有的渲染器不藏；下边框两种情况都干净）。
     let cursor = lastDataRow + 2;
-    const remarkLabel = sheet.getCell(`A${cursor}`);
-    remarkLabel.value = "备注：";
-    remarkLabel.font = HEADER_FONT;
+    const remarkText = `备注：${document.remark}`;
     for (let offset = 0; offset < 3; offset += 1) {
       const rowNumber = cursor + offset;
       sheet.mergeCells(`A${rowNumber}:${SHEET_LAST_COLUMN}${rowNumber}`);
-      sheet.getRow(rowNumber).getCell(1).border = THIN_BORDER;
-      sheet.getRow(rowNumber).height = 18;
+      sheet.getRow(rowNumber).getCell(1).border = { bottom: { style: "thin" } };
+      sheet.getRow(rowNumber).height = offset === 0 ? rowHeightFor([{ text: remarkText, width: SHEET_WIDTH }]) : 18;
     }
-    sheet.getRow(cursor).getCell(1).value = `备注：${document.remark}`;
-    sheet.getRow(cursor).getCell(1).font = BODY_FONT;
-    sheet.getRow(cursor).getCell(1).alignment = { horizontal: "left", vertical: "top", wrapText: true };
+    const remarkCell = sheet.getRow(cursor).getCell(1);
+    remarkCell.value = remarkText;
+    remarkCell.font = BODY_FONT;
+    remarkCell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
     cursor += 3;
 
     // 交易条款
@@ -441,12 +452,9 @@ export class PurchaseOrderExportService {
     termsTitle.font = HEADER_FONT;
     cursor += 1;
     for (const term of PURCHASE_TRADE_TERMS) {
-      sheet.mergeCells(`A${cursor}:${SHEET_LAST_COLUMN}${cursor}`);
-      const cell = sheet.getCell(`A${cursor}`);
-      cell.value = term;
-      cell.font = BODY_FONT;
-      cell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
-      sheet.getRow(cursor).height = 18;
+      // 每一条都是一段长句（第一条 60 多个字，在 102 个列宽单位的版心里要折成 2 行）：
+      // 行高必须按折行数算 —— 写死 18 会让第二行字直接压在下一句上面（2026-10-19 实测的渲染就是这样）。
+      this.fullWidthLine(sheet, cursor, term);
       cursor += 1;
     }
     cursor += 1;
@@ -454,7 +462,8 @@ export class PurchaseOrderExportService {
     // 签署栏：三格留空供手写（回签内容存在系统里，但按用户口径不回填打印，见 SIGNATURE_LABELS 注释）
     const signatureRow = cursor;
     for (let offset = 0; offset < SIGNATURE_ROWS; offset += 1) sheet.getRow(signatureRow + offset).height = 24;
-    const signatureSpans: Array<[string, string]> = [["A", "C"], ["D", "F"], ["G", SHEET_LAST_COLUMN]];
+    // 三格按版心 102 拆成 36 / 32 / 34 个单位（A:B / C:D / E:G）：宽度接近三等分才好写字。
+    const signatureSpans: Array<[string, string]> = [["A", "B"], ["C", "D"], ["E", SHEET_LAST_COLUMN]];
     SIGNATURE_LABELS.forEach((label, index) => {
       const [start, end] = signatureSpans[index];
       sheet.mergeCells(`${start}${signatureRow}:${end}${signatureRow + SIGNATURE_ROWS - 1}`);
@@ -465,6 +474,23 @@ export class PurchaseOrderExportService {
       cell.border = THIN_BORDER;
     });
     return sheet;
+  }
+
+  /**
+   * 整行合并的一行文字（交货地址 / 交期条款 / 交易条款）：跨满版心，`wrapText` + 按折行数算行高。
+   *
+   * 「标签：值」写在同一格（2026-10-19）：原来标签单独占 A 列 —— 6 个列宽单位，而「交货地址：」
+   * 有 10 个单位、交易条款更是整句，实测印出来是「地址：」这种半截字。写在同一格里，
+   * 标签就不可能被列宽截断。
+   */
+  private fullWidthLine(sheet: ExcelJS.Worksheet, rowNumber: number, text: string) {
+    sheet.mergeCells(`A${rowNumber}:${SHEET_LAST_COLUMN}${rowNumber}`);
+    const cell = sheet.getCell(`A${rowNumber}`);
+    cell.value = text;
+    cell.font = BODY_FONT;
+    cell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+    cell.border = { bottom: { style: "thin" } };
+    sheet.getRow(rowNumber).height = rowHeightFor([{ text, width: SHEET_WIDTH }]);
   }
 
   private async toBuffer(workbook: ExcelJS.Workbook): Promise<Buffer> {
