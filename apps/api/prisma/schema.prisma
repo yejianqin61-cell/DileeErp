@@ -3255,3 +3255,58 @@ model FinanceSlipLine {
   @@unique([slipId, lineNo])
   @@map("finance_slip_lines")
 }
+
+/// 业务查询 Agent 的会话容器（V0，见 docs/design/business-query-agent-v0-module-design-2026-10-25.md）。
+///
+/// Agent 对业务表一律只读；这三张 agent_* 表是它唯一可写的数据，且不与业务表建外键
+/// （user_id 只是逻辑引用）。所有查询必须带 userId 条件，禁止只凭 UUID 取别人的会话。
+model AgentSession {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("agent_sessions")
+}
+
+/// 一轮问答。状态机：planning → querying → responding → completed；
+/// 澄清可 planning → responding；活动状态均可到 failed/cancelled；终态不可离开。
+/// 同一用户同时最多一个活动 run：应用层先查拦截，数据库的部分唯一索引是最后闸门 ——
+/// 该索引 Prisma 表达不了，只落在迁移 20261025100000 里，改动必须两边同步。
+model AgentRun {
+  id              String   @id @default(uuid()) @db.Uuid
+  sessionId       String   @map("session_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  /// 客户端幂等键。相同键且问题相同返回原 run；键相同问题不同由应用层报 409。
+  clientMessageId String   @map("client_message_id") @db.VarChar(64)
+  question        String   @db.Text
+  /// 最终回答（由 answer_delta 事件在完成时拼接落库；活动 run 以事件流为准）。
+  answer          String?  @db.Text
+  /// 创建时的数据档位（full / operational）。运行中的有效档位取创建时与当前的较低者。
+  accessLevel     String   @map("access_level") @db.VarChar(20)
+  state           String   @db.VarChar(20)
+  errorCode       String?  @map("error_code") @db.VarChar(60)
+  /// 模型与工具用量（token、步骤数）。问题/答案可能含业务信息，权限与保留期按财务数据管。
+  usage           Json?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([sessionId, clientMessageId])
+  @@index([userId, state])
+  @@map("agent_runs")
+}
+
+/// run 的 SSE 事件流：断线重放与刷新恢复的唯一依据。seq 由状态管理器在事务内分配，
+/// 与状态变更同事务落库，所以「取消后迟到的增量」写不进终态 run。
+model AgentRunEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  runId     String   @map("run_id") @db.Uuid
+  seq       Int
+  type      String   @db.VarChar(20)
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([runId, seq])
+  @@map("agent_run_events")
+}
