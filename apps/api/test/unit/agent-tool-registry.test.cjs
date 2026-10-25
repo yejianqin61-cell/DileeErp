@@ -25,7 +25,7 @@ test("能力目录共 31 个 operation，与工程布局的清单一一对应", 
   const counts = {};
   for (const capability of TOOL_CAPABILITIES) counts[capability.tool] = (counts[capability.tool] ?? 0) + 1;
   assert.deepEqual(counts, { order_query: 6, sales_query: 4, procurement_query: 4, production_query: 4, warehouse_query: 6, finance_query: 7 });
-  assert.deepEqual(TOOL_CAPABILITIES.filter((capability) => capability.implemented).map((capability) => capability.operation).sort(), ["search_orders", "get_order_overview", "get_order_status", "get_order_timeline", "get_order_alerts", "get_order_attachments"].sort(), "P3-T1 起订单领域全部实现，其余领域待后续任务");
+  assert.deepEqual(TOOL_CAPABILITIES.filter((capability) => capability.implemented).map((capability) => capability.operation).sort(), ["search_orders", "get_order_overview", "get_order_status", "get_order_timeline", "get_order_alerts", "get_order_attachments", "get_sales_order", "get_customer", "get_bom", "get_sales_returns"].sort(), "P3-T1/T2 起订单与销售领域全部实现，其余领域待后续任务");
 });
 
 test("capability：已注册的取得到；未注册的 name/operation 抛业务错误", () => {

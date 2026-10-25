@@ -3,6 +3,7 @@ import { parseOrderRootInput, type AgentOrderRoot, type OrderRootInput } from ".
 import { getOrderOverview, getOrderStatus } from "./order-overview-tools";
 import { getOrderAlerts, getOrderTimeline } from "./order-query-tools";
 import { getOrderAttachments } from "./attachment-tools";
+import { getBom, getCustomer, getSalesOrder, getSalesReturns } from "./sales-query-tools";
 
 /**
  * 以订单为根的 operation 分发表：executor 的 default 分支查这张表。
@@ -24,4 +25,9 @@ export const ROOTED_OPERATIONS: Record<string, RootedHandler> = {
   get_order_timeline: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getOrderTimeline(client, root, input.page ?? 1) },
   get_order_alerts: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getOrderAlerts(client, root, input.page ?? 1) },
   get_order_attachments: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getOrderAttachments(client, root) },
+  // P3-T2 销售领域
+  get_sales_order: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getSalesOrder(client, root) },
+  get_customer: { parse: (raw) => parseOrderRootInput(raw, { withPage: false }), run: (client, root) => getCustomer(client, root) },
+  get_bom: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getBom(client, root, input.page ?? 1) },
+  get_sales_returns: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getSalesReturns(client, root, input.page ?? 1) },
 };
