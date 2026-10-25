@@ -1,7 +1,8 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from "@nestjs/common";
+import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import type { Request } from "express";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { resolveAccessLevel, type AgentAccessLevel } from "./access-level";
+import { AGENT_ROLE_READER } from "./agent-tokens";
 
 /** 通过 QueryPermissionGuard 后挂在请求上的主体：API 层每次都重查角色得出档位。 */
 export type AgentPrincipal = { user: CurrentUser; accessLevel: AgentAccessLevel };
@@ -26,7 +27,9 @@ export interface AgentRoleReader {
  */
 @Injectable()
 export class QueryPermissionGuard implements CanActivate {
-  constructor(private readonly roleReader: AgentRoleReader) {}
+  // roleReader 是接口不是类，Nest 解析不了它的 token：用 AGENT_ROLE_READER 显式注入
+  // （BusinessQueryAgentModule 提供的实现走只读连接）。
+  constructor(@Inject(AGENT_ROLE_READER) private readonly roleReader: AgentRoleReader) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AgentAuthenticatedRequest>();

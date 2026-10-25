@@ -11,9 +11,7 @@ import { StreamTransport } from "./stream-transport";
 import { BusinessQueryAgentController } from "./business-query-agent.controller";
 import type { AgentRoleReader } from "./query-permission.guard";
 
-export const AGENT_STATE_CLIENT = "AGENT_STATE_CLIENT";
-export const AGENT_READ_CLIENT = "AGENT_READ_CLIENT";
-export const AGENT_ROLE_READER = "AGENT_ROLE_READER";
+import { AGENT_READ_CLIENT, AGENT_ROLE_READER, AGENT_STATE_CLIENT } from "./agent-tokens";
 
 /**
  * 角色重查走**只读连接**（模块设计：users/roles/user_roles 的过滤条件内聚在这里，
