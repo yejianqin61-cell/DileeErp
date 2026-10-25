@@ -78,10 +78,25 @@ test("validateEnvironment.production_with_valid_database_url_is_accepted", async
     // 2026-10-25 起：业务查询 Agent 的两组独立凭据（只读业务账号 + agent_* 状态账号）。
     AGENT_READ_DATABASE_URL: "postgresql://agent_read:secret@db.internal:5432/dilee?schema=public",
     AGENT_STATE_DATABASE_URL: "postgresql://agent_state:secret@db.internal:5432/dilee?schema=public",
+    // 2026-10-25（阶段 2）：生产必须真实 DeepSeek + 密钥 —— 静默回退假 provider 会让线上用户拿到演示答案而不自知。
+    AGENT_LLM_PROVIDER: "deepseek",
+    DEEPSEEK_API_KEY: "sk-test",
   });
   assert.equal(result.NODE_ENV, "production");
   assert.equal(result.PORT, 4000);
   assert.equal(result.DATABASE_URL, "postgresql://dilee:secret@db.internal:5432/dilee?schema=public");
+});
+
+test("validateEnvironment.production_without_agent_llm_config_is_rejected", async () => {
+  const base = {
+    NODE_ENV: "production",
+    DATABASE_URL: "postgresql://dilee:secret@db.internal:5432/dilee?schema=public",
+    AGENT_READ_DATABASE_URL: "postgresql://agent_read:secret@db.internal:5432/dilee?schema=public",
+    AGENT_STATE_DATABASE_URL: "postgresql://agent_state:secret@db.internal:5432/dilee?schema=public",
+  };
+  assert.throws(() => validateEnvironment({ ...base }), /AGENT_LLM_PROVIDER=deepseek/);
+  assert.throws(() => validateEnvironment({ ...base, AGENT_LLM_PROVIDER: "fake" }), /AGENT_LLM_PROVIDER=deepseek/);
+  assert.throws(() => validateEnvironment({ ...base, AGENT_LLM_PROVIDER: "deepseek" }), /DEEPSEEK_API_KEY/);
 });
 
 test("validateEnvironment.production_without_agent_credentials_is_rejected", async () => {
@@ -219,8 +234,8 @@ test("validateEnvironment.port_error_precedes_production_database_url_error", as
 
 test("validateEnvironment.malformed_database_url_reports_format_error_not_missing_error", async () => {
   // 顺序分支：DATABASE_URL 非空（truthy）→ 通过「必须配置」检查 → 落在格式错误。
-  // 生产用例带上 Agent 两组凭据（2026-10-25 起），才能走到 URL 格式这一步。
-  expectRejected({ NODE_ENV: "production", DATABASE_URL: "not-a-url", AGENT_READ_DATABASE_URL: "postgresql://a@db/agent", AGENT_STATE_DATABASE_URL: "postgresql://a@db/agent" }, DATABASE_URL_FORMAT_ERROR);
+  // 生产用例带上 Agent 凭据与模型配置（2026-10-25 起），才能走到 URL 格式这一步。
+  expectRejected({ NODE_ENV: "production", DATABASE_URL: "not-a-url", AGENT_READ_DATABASE_URL: "postgresql://a@db/agent", AGENT_STATE_DATABASE_URL: "postgresql://a@db/agent", AGENT_LLM_PROVIDER: "deepseek", DEEPSEEK_API_KEY: "sk-test" }, DATABASE_URL_FORMAT_ERROR);
   expectRejected({ NODE_ENV: "development", DATABASE_URL: "not-a-url" }, DATABASE_URL_FORMAT_ERROR);
 });
 

@@ -6,6 +6,9 @@ import { createAgentReadClient } from "./query-read-client";
 import { AgentStateManager } from "./state-manager";
 import { ConcurrencyGate } from "./concurrency-gate";
 import { AgentContextManager } from "./context-manager";
+import { createAgentLlmProvider } from "./llm-provider-factory";
+import type { AgentLlmProvider } from "./llm-provider";
+import { AGENT_LLM_PROVIDER } from "./agent-tokens";
 import { ToolExecutor } from "./tools/tool-executor";
 import { FakeLlmProvider } from "./fake-llm-provider";
 import { AgentOrchestrator } from "./agent-orchestrator";
@@ -83,8 +86,19 @@ export class AgentLifecycle implements OnModuleInit, OnApplicationShutdown {
     ConcurrencyGate,
     AgentContextManager,
     { provide: ToolExecutor, inject: [AGENT_READ_CLIENT, AGENT_ROLE_READER], useFactory: (client: PrismaClient, roleReader: AgentRoleReader) => new ToolExecutor(client as never, roleReader) },
-    { provide: FakeLlmProvider, inject: [ConfigService], useFactory: (config: ConfigService) => new FakeLlmProvider(Number(config.get<string>("AGENT_FAKE_DELAY_MS") ?? 0) || 0) },
-    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, FakeLlmProvider, AGENT_ROLE_READER, AgentContextManager, ConfigService], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: FakeLlmProvider, roleReader: AgentRoleReader, context: AgentContextManager, config: ConfigService) => new AgentOrchestrator(state, executor, provider, roleReader, context, { runTimeoutMs: Number(config.get<string>("AGENT_RUN_TIMEOUT_MS") ?? 0) || undefined }) },
+    {
+      provide: AGENT_LLM_PROVIDER,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => createAgentLlmProvider({
+        provider: config.get<string>("AGENT_LLM_PROVIDER"),
+        fakeDelayMs: Number(config.get<string>("AGENT_FAKE_DELAY_MS") ?? 0) || 0,
+        deepseekApiKey: config.get<string>("DEEPSEEK_API_KEY"),
+        deepseekBaseUrl: config.get<string>("DEEPSEEK_BASE_URL"),
+        deepseekModel: config.get<string>("DEEPSEEK_MODEL"),
+        timeoutMs: Number(config.get<string>("AGENT_LLM_TIMEOUT_MS") ?? 0) || undefined,
+      }),
+    },
+    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, AGENT_LLM_PROVIDER, AGENT_ROLE_READER, AgentContextManager, ConfigService], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: AgentLlmProvider, roleReader: AgentRoleReader, context: AgentContextManager, config: ConfigService) => new AgentOrchestrator(state, executor, provider, roleReader, context, { runTimeoutMs: Number(config.get<string>("AGENT_RUN_TIMEOUT_MS") ?? 0) || undefined }) },
     { provide: StreamTransport, inject: [AgentStateManager, AGENT_ROLE_READER], useFactory: (state: AgentStateManager, roleReader: AgentRoleReader) => new StreamTransport(state, roleReader) },
     AgentLifecycle,
   ],

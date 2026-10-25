@@ -11,7 +11,8 @@ export type AgentLlmMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
   | { role: "assistant"; content: string }
-  | { role: "tool"; id: string; tool: AgentToolName; content: string };
+  /** 工具结果消息自包含：id 关联调用、args 供 provider 合成 assistant tool-call、content 是 QueryFact JSON。 */
+  | { role: "tool"; id: string; tool: AgentToolName; args: Record<string, unknown>; content: string };
 
 /** 模型请求的一次工具调用。`id` 是工具结果往返的关联键（DeepSeek 的 toolCallId）。 */
 export type AgentLlmToolCall = { id: string; tool: AgentToolName; operation: string; args: Record<string, unknown> };

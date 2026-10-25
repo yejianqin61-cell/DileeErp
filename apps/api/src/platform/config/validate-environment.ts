@@ -8,6 +8,10 @@ export function validateEnvironment(config: Record<string, unknown>) {
     // 回退到 DATABASE_URL 等于把「业务表只读」这条边界拆掉。
     if (!config.AGENT_READ_DATABASE_URL) throw new Error("生产环境必须配置 AGENT_READ_DATABASE_URL（业务表只读账号）");
     if (!config.AGENT_STATE_DATABASE_URL) throw new Error("生产环境必须配置 AGENT_STATE_DATABASE_URL（Agent 状态表账号）");
+    // 模型（工程布局「外部模型假设」）：生产必须走 DeepSeek 且有密钥 —— 静默回退到假 provider
+    // 会让线上用户拿到演示答案而不自知。
+    if (config.AGENT_LLM_PROVIDER !== "deepseek") throw new Error("生产环境必须配置 AGENT_LLM_PROVIDER=deepseek");
+    if (!config.DEEPSEEK_API_KEY) throw new Error("生产环境必须配置 DEEPSEEK_API_KEY");
   }
   if (config.DATABASE_URL) {
     try { new URL(String(config.DATABASE_URL)); } catch { throw new Error("DATABASE_URL 格式无效"); }

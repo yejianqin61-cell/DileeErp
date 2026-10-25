@@ -77,7 +77,7 @@ export class AgentOrchestrator {
           if (executed >= AGENT_MAX_TOOL_STEPS) break;
           const fact = await this.executeTool(runId, principal, call, signal);
           facts.push(fact);
-          messages.push({ role: "tool", id: call.id, tool: call.tool, content: JSON.stringify(fact) });
+          messages.push({ role: "tool", id: call.id, tool: call.tool, args: call.args, content: JSON.stringify(fact) });
           executed += 1;
         }
         if (executed >= AGENT_MAX_TOOL_STEPS) break;
