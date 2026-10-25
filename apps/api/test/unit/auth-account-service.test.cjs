@@ -57,12 +57,13 @@ function build(overrides = {}) {
 const sessionFor = (user = row()) => ({ session: { user } });
 const roleWith = (key, modules = []) => ({ role: { key, permissions: modules.map((moduleKey) => ({ moduleKey })) } });
 
-test("profile: 表面权限由角色算出，并报出实际权限（模块）——人事只看得到人事与账号中心", async () => {
+test("profile: 表面权限由角色算出，并报出实际权限（模块）——人事看人事、账号中心与业务查询", async () => {
   const { service } = build({ ...sessionFor(), roles: [roleWith("renshi", ["sales", "procurement", "production", "warehouse", "finance", "hr"])] });
   const profile = await service.profile("tok");
   assert.deepEqual(profile.surface_roles, ["renshi"]);
   assert.equal(profile.surface_scope, "hr");
-  assert.deepEqual(profile.surface_sections.sort(), ["account", "hr"]);
+  // 2026-10-25 起业务查询对四类角色都开放页面（数据档位后端另判），与账号中心同列例外。
+  assert.deepEqual(profile.surface_sections.sort(), ["account", "business-query", "hr"]);
   assert.deepEqual(profile.role_keys, ["renshi"]);
   assert.equal(profile.module_keys.length, 6, "人事的实际权限也是全部模块：表面权限与实际权限是两件事");
   assert.equal(profile.username, "caiwu");

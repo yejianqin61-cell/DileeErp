@@ -27,6 +27,8 @@ const EXPECTED: Record<string, string> = {
   "sales/orders/[id]/edit/page.tsx": "page-sales-orders-edit",
   // 返单与总结（2026-09-26）：按**货号**看历次批次与单据，是左侧新 tab 的落地页。
   "reorder/page.tsx": "page-reorder",
+  // 业务查询（2026-10-25）：AI 问答页，四类角色都能进。
+  "business-query/page.tsx": "page-business-query",
   "procurement/page.tsx": "page-procurement",
   "qc/page.tsx": "page-qc",
   "qc/incoming/page.tsx": "page-qc-incoming",

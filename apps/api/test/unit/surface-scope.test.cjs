@@ -40,10 +40,11 @@ test("老板与财务：看得见全部栏目（含财务与人事）", () => {
   }
 });
 
-test("人事：只能访问人事页面及其下属页面（账号中心是唯一例外）", () => {
+test("人事：只能访问人事页面及其下属页面（账号中心与业务查询是仅有的两个例外）", () => {
   // 用户原话"人事，只能访问人事页面及其下属页面"。账号中心是同一轮里单独拍板的"所有人可进"，
-  // 没有它人事连自己的密码都改不了，所以它是规则内唯一被允许的额外栏目。
-  assert.deepEqual(sorted(surfaceSectionsOf(["renshi"])), ["account", "hr"]);
+  // 没有它人事连自己的密码都改不了。业务查询（2026-10-25）同此口径：四类角色都进得去页面，
+  // 但数据档位由 business-query-agent 按角色另判 —— 人事在页面上查不到财务事实。
+  assert.deepEqual(sorted(surfaceSectionsOf(["renshi"])), ["account", "business-query", "hr"]);
   assert.equal(surfaceScopeOf(["renshi"]), "hr");
   // 人事**看不到工作台**：这是按用户规则严格实现的，不是漏配。要放开只需把 dashboard 加进 hr 范围。
   assert.equal(surfaceSectionsOf(["renshi"]).includes("dashboard"), false);
@@ -91,9 +92,9 @@ test("isSurfaceRoleKey / surfaceRoleName / 范围文案", () => {
 
 test("规则矩阵：每个范围对每个栏目的可达性（前后端共用的那张表）", () => {
   const expected = {
-    full: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, reorder: true, customers: true, reports: true, finance: true, hr: true, account: true },
-    hr: { dashboard: false, production: false, procurement: false, qc: false, warehouse: false, sales: false, reorder: false, customers: false, reports: false, finance: false, hr: true, account: true },
-    general: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, reorder: true, customers: true, reports: true, finance: false, hr: false, account: true },
+    full: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, reorder: true, "business-query": true, customers: true, reports: true, finance: true, hr: true, account: true },
+    hr: { dashboard: false, production: false, procurement: false, qc: false, warehouse: false, sales: false, reorder: false, "business-query": true, customers: false, reports: false, finance: false, hr: true, account: true },
+    general: { dashboard: true, production: true, procurement: true, qc: true, warehouse: true, sales: true, reorder: true, "business-query": true, customers: true, reports: true, finance: false, hr: false, account: true },
   };
   const sectionsOfScope = { full: ["laoban"], hr: ["renshi"], general: ["qita"] };
   for (const [scope, row] of Object.entries(expected)) {

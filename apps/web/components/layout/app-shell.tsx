@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Bell, ClipboardList, Coins, Factory, History, LayoutDashboard, LogOut, Package, ShieldCheck, UserCog, Users, WalletCards } from "lucide-react";
+import { Bell, ClipboardList, Coins, Factory, History, LayoutDashboard, LogOut, Package, ShieldCheck, Sparkles, UserCog, Users, WalletCards } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 import { ApiClientError, apiPost } from "../../lib/api-client";
@@ -24,6 +24,8 @@ const navigation = [
   ["客户与销售", "/sales", WalletCards],
   // 返单与总结（2026-09-26）：按**货号**看历次批次与单据；工作台是按订单号看推进状态。
   ["返单与总结", "/reorder", History],
+  // 业务查询（2026-10-25）：AI 问答页，四类角色都能进；数据档位（财务事实可见性）由后端另判。
+  ["业务查询", "/business-query", Sparkles],
   ["报表与告警", "/reports", Bell],
 ] as const;
 

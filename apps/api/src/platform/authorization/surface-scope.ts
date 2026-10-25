@@ -32,6 +32,9 @@ export const SURFACE_SECTIONS = [
   "finance", // 财务
   "hr", // 人事
   "account", // 账号管理中心（所有人可进，见用户拍板）
+  // 业务查询（2026-10-25）排在**最后**：landingPathFor 按"列表里第一个进得去的栏目"挑登录落点，
+  // 放末尾才不会改变人事（→/hr）与普通员工（→/）的既有落点；菜单位置由前端 app-shell 自行决定。
+  "business-query",
 ] as const;
 export type SurfaceSection = (typeof SURFACE_SECTIONS)[number];
 
@@ -59,10 +62,12 @@ const SECTIONS_BY_SCOPE: Record<SurfaceScope, readonly SurfaceSection[]> = {
   full: SURFACE_SECTIONS,
   // 用户原话"只能访问人事页面及其下属页面"。账号管理中心是用户单独拍板的"所有人可进"，
   // 所以它是唯一在人事范围里的例外（否则人事连改自己密码的地方都没有）。
-  hr: ["hr", "account"],
+  // 业务查询（2026-10-25）同此处理：四类表面角色都进得去查询页，但**数据档位**由
+  // business-query-agent 按角色另判（人事在页面上只能查到非财务事实），这与页面可见性是两回事。
+  hr: ["hr", "account", "business-query"],
   // `reorder`（返单与总结）归在"其他"这一档：它是跨模块只读页，除人事外都该看得到；
   // **不要**加进 `hr` —— 那会让"只能看人事"的角色看到全公司的采购/生产/质检汇总。
-  general: ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reorder", "reports", "account"],
+  general: ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "customers", "reorder", "reports", "account", "business-query"],
 };
 
 export function isSurfaceRoleKey(key: string): key is SurfaceRoleKey {

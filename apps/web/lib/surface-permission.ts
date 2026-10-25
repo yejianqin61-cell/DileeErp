@@ -25,6 +25,8 @@ export const SURFACE_SECTIONS = [
   "finance",
   "hr",
   "account",
+  // 业务查询（2026-10-25）与后端同序：排在最后，登录落点（landingPathFor）不受影响。
+  "business-query",
 ] as const;
 export type SurfaceSection = (typeof SURFACE_SECTIONS)[number];
 
@@ -41,6 +43,7 @@ export const SECTION_LABELS: Record<SurfaceSection, string> = {
   finance: "财务",
   hr: "人事",
   account: "账号管理中心",
+  "business-query": "业务查询",
 };
 
 /** 栏目对应的一级路径（账号中心与"回得去的地方"都用它）。 */
@@ -57,6 +60,7 @@ export const SECTION_PATHS: Record<SurfaceSection, string> = {
   finance: "/finance",
   hr: "/hr",
   account: "/account",
+  "business-query": "/business-query",
 };
 
 /** 表面角色：key 与后端 roles.key 一致。 */
@@ -88,6 +92,7 @@ const SECTION_BY_PREFIX: ReadonlyArray<readonly [string, SurfaceSection]> = [
   ["/warehouse", "warehouse"],
   ["/sales", "sales"],
   ["/reorder", "reorder"],
+  ["/business-query", "business-query"],
   ["/customers", "customers"],
   ["/reports", "reports"],
   ["/finance", "finance"],

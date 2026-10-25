@@ -20,10 +20,10 @@ import {
   SURFACE_SECTIONS,
 } from "./surface-permission.ts";
 
-/** 与会话接口下发的栏目集合等价的三个范围（按角色算出来的一样）。 */
+/** 与会话接口下发的栏目集合等价的三个范围（按角色算出来的一样；2026-10-25 起业务查询四类角色都进）。 */
 const FULL = [...SURFACE_SECTIONS];
-const HR = ["hr", "account"];
-const GENERAL = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "reorder", "customers", "reports", "account"];
+const HR = ["hr", "account", "business-query"];
+const GENERAL = ["dashboard", "production", "procurement", "qc", "warehouse", "sales", "reorder", "business-query", "customers", "reports", "account"];
 
 test("sectionOfPath：一级路径与子路径都归到自己的栏目", () => {
   assert.equal(sectionOfPath("/"), "dashboard");
@@ -36,6 +36,7 @@ test("sectionOfPath：一级路径与子路径都归到自己的栏目", () => {
   assert.equal(sectionOfPath("/reorder"), "reorder");
   assert.equal(sectionOfPath("/reorder/articles/27621"), "reorder");
   assert.equal(sectionOfPath("/account"), "account");
+  assert.equal(sectionOfPath("/business-query"), "business-query", "业务查询页归自己的栏目");
 });
 
 test("sectionOfPath：/reorder 不会被 /reports 或 /sales 抢走（前缀相近的几个页面）", () => {
@@ -77,6 +78,9 @@ test("canVisitPath：三个范围的规则矩阵（与后端同一张表）", ()
     ["/hr", true, true, false],
     ["/hr/employees", true, true, false],
     ["/account", true, true, true],
+    // 业务查询（2026-10-25）：四类表面角色都能进页面；财务事实可见性由后端数据档位另判。
+    ["/business-query", true, true, true],
+    ["/business-query/old-run", true, true, true],
   ];
   for (const [path, full, hr, general] of expected) {
     assert.equal(canVisitPath(FULL, path), full, `老板/财务 ${path}`);
