@@ -62,15 +62,16 @@ function fakeExecutor({ error = null } = {}) {
   };
 }
 
-/** 假 provider：plan 返回一次 search_orders；streamAnswer 分三段产出（可注入中途钩子）。 */
+/** 假 provider：plan 默认第一轮返回一次 search_orders、之后返回空（多步循环的回归底线）；streamAnswer 产出 chunk。 */
 function fakeProvider({ planCalls = null, onChunk = null } = {}) {
   const planInputs = [];
   return {
     planInputs,
     async plan(messages, tools, signal) {
-      planInputs.push({ tools, lastUser: [...messages].reverse().find((message) => message.role === "user")?.content });
+      planInputs.push({ tools, toolMessages: messages.filter((message) => message.role === "tool").length });
       if (planCalls) return planCalls();
-      return { toolCalls: [{ tool: "order_query", operation: "search_orders", args: { q: "SO" } }] };
+      if (planInputs.length === 1) return { toolCalls: [{ id: "call-1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }] };
+      return { toolCalls: [] };
     },
     async *streamAnswer(messages, signal) {
       const facts = messages.filter((message) => message.role === "tool").map((message) => JSON.parse(message.content));
@@ -79,8 +80,10 @@ function fakeProvider({ planCalls = null, onChunk = null } = {}) {
       for (const [index, text] of parts.entries()) {
         signal?.throwIfAborted();
         if (onChunk && index === 1) await onChunk();
-        yield text;
+        yield { type: "text", text };
       }
+      signal?.throwIfAborted();
+      yield { type: "usage", usage: { model: "fake-provider", input_tokens: 12, output_tokens: 34 } };
     },
   };
 }
@@ -111,8 +114,48 @@ test("编排正常完成：planning → querying → responding → completed，
   assert.equal(completed.answer, saved.answer);
   assert.deepEqual(completed.sources.map((source) => source.business_no), ["SO-001"]);
   assert.equal(completed.usage.tool_calls, 1);
-  assert.deepEqual(executor.calls[0].call, { tool: "order_query", operation: "search_orders", args: { q: "SO" } });
+  assert.equal(completed.usage.answer_chunks, 3);
+  assert.equal(completed.usage.model, "fake-provider");
+  assert.equal(completed.usage.input_tokens, 12, "provider 用量聚合进 completed.usage");
+  assert.deepEqual(executor.calls[0].call, { id: "call-1", tool: "order_query", operation: "search_orders", args: { q: "SO" } });
   assert.equal(executor.calls[0].principalAccess, "operational", "执行器拿到的档位来自 run 创建时");
+});
+
+test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const provider = fakeProvider({
+    planCalls: () => (provider.planInputs.length <= 2 ? { toolCalls: [{ id: `call-${provider.planInputs.length}`, tool: "order_query", operation: "search_orders", args: { q: "SO" } }] } : { toolCalls: [] }),
+  });
+  const orchestrator = new AgentOrchestrator(state, fakeExecutor(), provider, fakeRoleReader());
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  assert.deepEqual(provider.planInputs.map((input) => input.toolMessages), [0, 1, 2], "每轮 plan 都拿到上一轮的工具结果");
+  const events = db.store.events.filter((event) => event.runId === run.id);
+  assert.equal(events.filter((event) => event.type === "tool_status" && event.payload.status === "completed").length, 2);
+});
+
+test("run 级超时：provider 卡住超过 AGENT_RUN_TIMEOUT_MS → failed/AGENT_RUN_TIMEOUT", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const slowProvider = {
+    async plan() { return { toolCalls: [] }; },
+    async *streamAnswer(messages, signal) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      signal.throwIfAborted();
+      yield { type: "text", text: "不会到达" };
+    },
+  };
+  const orchestrator = new AgentOrchestrator(state, fakeExecutor(), slowProvider, fakeRoleReader(), undefined, { runTimeoutMs: 50 });
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  const saved = db.store.runs.find((row) => row.id === run.id);
+  assert.equal(saved.state, "failed");
+  assert.equal(saved.errorCode, "AGENT_RUN_TIMEOUT");
 });
 
 test("无工具可调（澄清路径）：planning 直达 responding，再完成，无 tool_status 事件", async () => {

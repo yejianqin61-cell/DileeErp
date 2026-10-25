@@ -5,6 +5,7 @@ import { createAgentStateClient } from "./agent-state-client";
 import { createAgentReadClient } from "./query-read-client";
 import { AgentStateManager } from "./state-manager";
 import { ConcurrencyGate } from "./concurrency-gate";
+import { AgentContextManager } from "./context-manager";
 import { ToolExecutor } from "./tools/tool-executor";
 import { FakeLlmProvider } from "./fake-llm-provider";
 import { AgentOrchestrator } from "./agent-orchestrator";
@@ -80,9 +81,10 @@ export class AgentLifecycle implements OnModuleInit, OnApplicationShutdown {
     { provide: AGENT_ROLE_READER, inject: [AGENT_READ_CLIENT], useFactory: roleReaderOf },
     { provide: AgentStateManager, inject: [AGENT_STATE_CLIENT], useFactory: (client: PrismaClient) => new AgentStateManager(client as never) },
     ConcurrencyGate,
+    AgentContextManager,
     { provide: ToolExecutor, inject: [AGENT_READ_CLIENT, AGENT_ROLE_READER], useFactory: (client: PrismaClient, roleReader: AgentRoleReader) => new ToolExecutor(client as never, roleReader) },
-    FakeLlmProvider,
-    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, FakeLlmProvider, AGENT_ROLE_READER], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: FakeLlmProvider, roleReader: AgentRoleReader) => new AgentOrchestrator(state, executor, provider, roleReader) },
+    { provide: FakeLlmProvider, inject: [ConfigService], useFactory: (config: ConfigService) => new FakeLlmProvider(Number(config.get<string>("AGENT_FAKE_DELAY_MS") ?? 0) || 0) },
+    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, FakeLlmProvider, AGENT_ROLE_READER, AgentContextManager, ConfigService], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: FakeLlmProvider, roleReader: AgentRoleReader, context: AgentContextManager, config: ConfigService) => new AgentOrchestrator(state, executor, provider, roleReader, context, { runTimeoutMs: Number(config.get<string>("AGENT_RUN_TIMEOUT_MS") ?? 0) || undefined }) },
     { provide: StreamTransport, inject: [AgentStateManager, AGENT_ROLE_READER], useFactory: (state: AgentStateManager, roleReader: AgentRoleReader) => new StreamTransport(state, roleReader) },
     AgentLifecycle,
   ],

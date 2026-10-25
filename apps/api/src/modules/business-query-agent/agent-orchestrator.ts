@@ -1,38 +1,53 @@
 import { ForbiddenException, HttpException } from "@nestjs/common";
 import { AGENT_ACTIVE_STATES, AgentStateManager, type AgentRunRow } from "./state-manager";
 import type { AgentPrincipal } from "./query-permission.guard";
-import type { AgentLlmMessage, AgentLlmProvider } from "./llm-provider";
+import type { AgentLlmMessage, AgentLlmProvider, AgentLlmUsage } from "./llm-provider";
 import type { QueryFact } from "./tools/query-fact";
-import { resolveAccessLevel, lowerAccessLevel } from "./access-level";
+import { resolveAccessLevel, lowerAccessLevel, type AgentAccessLevel } from "./access-level";
 import type { AgentRoleReader } from "./query-permission.guard";
 import { toolRegistry } from "./tools/tool-registry";
 import type { ToolCall, ToolExecutor } from "./tools/tool-executor";
+import { AgentContextManager } from "./context-manager";
 
 /**
  * Agent orchestrator：唯一运行入口（模块设计「Agent orchestrator」行）。
  *
  * 推进 planning → querying → responding → completed；每个状态变更与事件同事务落库，
- * 异常一律收进 failed 终态。工具步骤有上限（Phase 2 按压测固化阈值）；八轮历史上下文
- * 是 Phase 2（R-6）的接缝 —— 这里只发本次问题。
+ * 异常一律收进 failed 终态。多步工具循环有轮数上限（MAX_TOOL_STEPS），run 整体有
+ * AGENT_RUN_TIMEOUT_MS 超时（默认 120s）—— 这与「输入 token 不限额」是两个不同的控制项。
+ * 超窗（MODEL_CONTEXT_EXCEEDED）由 provider 层映射，统一走这里的 failed 收口。
  */
 
 const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。";
-const MAX_TOOL_STEPS = 8;
+export const AGENT_MAX_TOOL_STEPS = 8;
+const DEFAULT_RUN_TIMEOUT_MS = 120_000;
+
+export type AgentOrchestratorOptions = { runTimeoutMs?: number };
 
 export class AgentOrchestrator {
+  private readonly runTimeoutMs: number;
+
   constructor(
     private readonly state: AgentStateManager,
     private readonly executor: ToolExecutor,
     private readonly provider: AgentLlmProvider,
     private readonly roleReader: AgentRoleReader,
-  ) {}
+    private readonly context?: AgentContextManager,
+    options?: AgentOrchestratorOptions,
+  ) {
+    this.runTimeoutMs = options?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+  }
 
   async run(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
     // 重读并确认仍是 planning：用户可能在编排器启动前就取消（迟到启动是无害空转）。
     const fresh = await this.state.findRun(run.id, principal.user.id);
     if (!fresh || fresh.state !== "planning") return;
+    // run 级超时：模型卡死/工具循环失控不得长期占用并发许可（R-11）。用户取消仍即时生效。
+    const composed = this.runTimeoutMs > 0 && typeof AbortSignal.any === "function"
+      ? AbortSignal.any([signal, AbortSignal.timeout(this.runTimeoutMs)])
+      : signal;
     try {
-      await this.queryPhase(fresh, principal, signal);
+      await this.queryPhase(fresh, principal, composed);
     } catch (error) {
       await this.failRun(fresh.id, principal.user.id, error);
     }
@@ -41,37 +56,55 @@ export class AgentOrchestrator {
   private async queryPhase(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
     const runId = run.id;
     const tools = toolRegistry.visibleTools(run.accessLevel as "full" | "operational");
+    const history = this.context
+      ? await this.context.history(principal.user.id, run.sessionId, run.accessLevel as AgentAccessLevel)
+      : [];
     const messages: AgentLlmMessage[] = [
       { role: "system", content: SYSTEM_PROMPT },
+      ...history,
       { role: "user", content: run.question },
     ];
 
-    const plan = await this.provider.plan(messages, tools, signal);
     const facts: QueryFact[] = [];
-    if (plan.toolCalls.length > 0) {
+    let executed = 0;
+    let firstPlan = await this.provider.plan(messages, tools, signal);
+    if (firstPlan.toolCalls.length > 0) {
       await this.state.transitionAndAppend(runId, { from: "planning", to: "querying" });
-      // 一次模型请求可提多个调用，但同一 run 内按顺序执行，避免重查询同时压数据库。
-      for (const call of plan.toolCalls.slice(0, MAX_TOOL_STEPS)) {
-        const fact = await this.executeTool(runId, principal, call, signal);
-        facts.push(fact);
-        messages.push({ role: "tool", content: JSON.stringify(fact) });
+      // 多步循环：每轮 plan 可提出多个调用，同一 run 内按顺序执行；轮数与总数受 MAX_TOOL_STEPS 约束。
+      let calls = firstPlan.toolCalls;
+      while (calls.length > 0 && executed < AGENT_MAX_TOOL_STEPS) {
+        for (const call of calls) {
+          if (executed >= AGENT_MAX_TOOL_STEPS) break;
+          const fact = await this.executeTool(runId, principal, call, signal);
+          facts.push(fact);
+          messages.push({ role: "tool", id: call.id, tool: call.tool, content: JSON.stringify(fact) });
+          executed += 1;
+        }
+        if (executed >= AGENT_MAX_TOOL_STEPS) break;
+        const next = await this.provider.plan(messages, tools, signal);
+        calls = next.toolCalls;
       }
     }
 
     // 查询结束后重查角色：运行中被降权的 run 在最终回答前就地终止（模块设计）。
     await this.assertStillAuthorized(run, principal.user.id);
-    await this.state.transitionAndAppend(runId, { from: plan.toolCalls.length > 0 ? "querying" : "planning", to: "responding" });
+    await this.state.transitionAndAppend(runId, { from: facts.length > 0 || executed > 0 ? "querying" : "planning", to: "responding" });
 
     let answer = "";
     let chunks = 0;
-    for await (const text of this.provider.streamAnswer(messages, signal)) {
+    let providerUsage: AgentLlmUsage | null = null;
+    for await (const chunk of this.provider.streamAnswer(messages, signal)) {
       signal.throwIfAborted();
-      answer += text;
+      if (chunk.type === "usage") {
+        providerUsage = chunk.usage;
+        continue;
+      }
+      answer += chunk.text;
       chunks += 1;
-      await this.state.transitionAndAppend(runId, { from: "responding", events: [{ type: "answer_delta", payload: { text } }] });
+      await this.state.transitionAndAppend(runId, { from: "responding", events: [{ type: "answer_delta", payload: { text: chunk.text } }] });
     }
 
-    const usage = { model: "fake-provider", tool_calls: facts.length, answer_chunks: chunks };
+    const usage = { ...providerUsage, tool_calls: facts.length, answer_chunks: chunks };
     await this.state.transitionAndAppend(runId, {
       from: "responding",
       to: "completed",
@@ -118,10 +151,13 @@ export class AgentOrchestrator {
     const fresh = await this.state.findRun(runId, userId).catch(() => null);
     if (!fresh || !(AGENT_ACTIVE_STATES as readonly string[]).includes(fresh.state)) return;
     const isBusiness = error instanceof HttpException;
-    const code = isBusiness ? (error.getResponse() as { code?: string }).code ?? "AGENT_RUN_FAILED" : "AGENT_INTERNAL_ERROR";
+    const isTimeout = typeof error === "object" && error !== null && (error as { name?: string }).name === "TimeoutError";
+    const code = isBusiness ? (error.getResponse() as { code?: string }).code ?? "AGENT_RUN_FAILED" : isTimeout ? "AGENT_RUN_TIMEOUT" : "AGENT_INTERNAL_ERROR";
     const message = isBusiness
       ? typeof error.getResponse() === "string" ? error.message : (error.getResponse() as { message?: string }).message ?? "查询执行失败"
-      : "查询执行出错，请稍后重试";
+      : isTimeout
+        ? "本次回答超时，请重试"
+        : "查询执行出错，请稍后重试";
     await this.state.transitionAndAppend(runId, { from: fresh.state, to: "failed", errorCode: code, events: [{ type: "error", payload: { code, message } }] }).catch(() => {});
   }
 }
