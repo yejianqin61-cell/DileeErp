@@ -26,6 +26,8 @@ export type AgentLlmUsage = { model?: string; input_tokens?: number; output_toke
 export type AgentLlmStreamChunk = { type: "text"; text: string } | { type: "usage"; usage: AgentLlmUsage };
 
 export interface AgentLlmProvider {
+  /** 观测用模型标识（R-11 日志里的 model 字段；fake-provider / deepseek-chat 等）。 */
+  readonly name: string;
   /** 查询步骤的一轮：模型从授权清单里挑工具（可多步，由编排器循环驱动）。 */
   plan(messages: AgentLlmMessage[], tools: readonly AgentToolName[], signal: AbortSignal): Promise<AgentLlmPlan>;
   /** 最终回答步骤：分段产出（结尾给一次 usage），逐段作为 answer_delta 落库与推送。 */

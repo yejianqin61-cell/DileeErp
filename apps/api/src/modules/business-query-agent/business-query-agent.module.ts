@@ -8,6 +8,7 @@ import { ConcurrencyGate } from "./concurrency-gate";
 import { AgentContextManager } from "./context-manager";
 import { createAgentLlmProvider } from "./llm-provider-factory";
 import type { AgentLlmProvider } from "./llm-provider";
+import { AgentObservability } from "./observability";
 import { AGENT_LLM_PROVIDER } from "./agent-tokens";
 import { ToolExecutor } from "./tools/tool-executor";
 import { FakeLlmProvider } from "./fake-llm-provider";
@@ -85,6 +86,7 @@ export class AgentLifecycle implements OnModuleInit, OnApplicationShutdown {
     { provide: AgentStateManager, inject: [AGENT_STATE_CLIENT], useFactory: (client: PrismaClient) => new AgentStateManager(client as never) },
     ConcurrencyGate,
     AgentContextManager,
+    AgentObservability,
     { provide: ToolExecutor, inject: [AGENT_READ_CLIENT, AGENT_ROLE_READER], useFactory: (client: PrismaClient, roleReader: AgentRoleReader) => new ToolExecutor(client as never, roleReader) },
     {
       provide: AGENT_LLM_PROVIDER,
@@ -98,7 +100,7 @@ export class AgentLifecycle implements OnModuleInit, OnApplicationShutdown {
         timeoutMs: Number(config.get<string>("AGENT_LLM_TIMEOUT_MS") ?? 0) || undefined,
       }),
     },
-    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, AGENT_LLM_PROVIDER, AGENT_ROLE_READER, AgentContextManager, ConfigService], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: AgentLlmProvider, roleReader: AgentRoleReader, context: AgentContextManager, config: ConfigService) => new AgentOrchestrator(state, executor, provider, roleReader, context, { runTimeoutMs: Number(config.get<string>("AGENT_RUN_TIMEOUT_MS") ?? 0) || undefined }) },
+    { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, AGENT_LLM_PROVIDER, AGENT_ROLE_READER, AgentContextManager, AgentObservability, ConfigService], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: AgentLlmProvider, roleReader: AgentRoleReader, context: AgentContextManager, observability: AgentObservability, config: ConfigService) => new AgentOrchestrator(state, executor, provider, roleReader, context, { runTimeoutMs: Number(config.get<string>("AGENT_RUN_TIMEOUT_MS") ?? 0) || undefined, observability }) },
     { provide: StreamTransport, inject: [AgentStateManager, AGENT_ROLE_READER], useFactory: (state: AgentStateManager, roleReader: AgentRoleReader) => new StreamTransport(state, roleReader) },
     AgentLifecycle,
   ],

@@ -40,12 +40,14 @@ const DOMAIN_INPUT_SCHEMA = jsonSchema<{ operation: string; order_no?: string; q
 });
 
 export class DeepSeekLlmProvider implements AgentLlmProvider {
+  readonly name: string;
   private readonly timeoutMs: number;
   private readonly modelName: string;
   private readonly model: LanguageModel;
 
   constructor(config: DeepSeekProviderConfig & { modelOverride?: LanguageModel }) {
     this.modelName = config.model ?? "deepseek-chat";
+    this.name = this.modelName;
     this.model = config.modelOverride ?? createDeepSeek({ apiKey: config.apiKey, ...(config.baseURL ? { baseURL: config.baseURL } : {}) })(this.modelName);
     this.timeoutMs = config.timeoutMs ?? 60_000;
   }

@@ -46,6 +46,7 @@ function fakeController({ gate, busy = false, failCreate = false } = {}) {
     { run: async () => { throw new Error("编排器不应在失败路径启动"); } },
     {},
     busy ? { tryAcquire: () => null } : gate ?? new ConcurrencyGate(),
+    { record() {} },
   );
 }
 

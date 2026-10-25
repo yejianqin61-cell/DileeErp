@@ -6,6 +6,7 @@ import { CreateRunDto } from "./business-query-agent.dto";
 import { AgentOrchestrator } from "./agent-orchestrator";
 import { ConcurrencyGate } from "./concurrency-gate";
 import { StreamTransport } from "./stream-transport";
+import { AgentObservability } from "./observability";
 import { QueryPermissionGuard, type AgentAuthenticatedRequest, type AgentPrincipal } from "./query-permission.guard";
 
 /**
@@ -24,6 +25,7 @@ export class BusinessQueryAgentController {
     private readonly orchestrator: AgentOrchestrator,
     private readonly transport: StreamTransport,
     private readonly gate: ConcurrencyGate,
+    private readonly observability: AgentObservability,
   ) {}
 
   @Post("sessions")
@@ -85,6 +87,7 @@ export class BusinessQueryAgentController {
       if (!isReadableAt(principal, existing)) {
         throw new ForbiddenException({ code: "AGENT_ACCESS_REVOKED", message: "当前档位已无法读取该回答", details: [] });
       }
+      this.observability.record(existing.id, { kind: "run_replayed", user_id: principal.user.id });
       return { data: { run_id: existing.id, state: existing.state }, meta: {} };
     }
     if (await this.state.hasActiveRun(principal.user.id)) {
@@ -94,6 +97,7 @@ export class BusinessQueryAgentController {
     // 进程内许可（R-8）：无空位 429 + Retry-After，不建 run、不排队。
     const permit = this.gate.tryAcquire(principal.user.id);
     if (!permit) {
+      this.observability.record(`gate:${principal.user.id}`, { kind: "gate_denied", user_id: principal.user.id, active_runs: this.gate.activeCount });
       response.setHeader("Retry-After", "3");
       throw new HttpException({ code: "AGENT_BUSY", message: "当前使用业务查询的人较多，请稍后重试", details: [] }, HttpStatus.TOO_MANY_REQUESTS);
     }
@@ -110,6 +114,7 @@ export class BusinessQueryAgentController {
 
       const abort = new AbortController();
       this.aborts.set(run.id, abort);
+      this.observability.record(run.id, { kind: "run_created", user_id: principal.user.id, access_level: principal.accessLevel });
       // 许可由编排器 finally 释放；启动前的任何失败走下面的 catch 释放，两条路只释放一次。
       void this.orchestrator.run(run, principal, abort.signal).finally(() => {
         this.aborts.delete(run.id);
@@ -148,6 +153,7 @@ export class BusinessQueryAgentController {
     }
     if (!run) throw new NotFoundException({ code: "AGENT_RUN_NOT_FOUND", message: "查询不存在", details: [] });
     this.aborts.get(runId)?.abort();
+    this.observability.record(runId, { kind: "run_cancelled", user_id: principal.user.id, access_level: principal.accessLevel });
     return { data: { state: run.state }, meta: {} };
   }
 }

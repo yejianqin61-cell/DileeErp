@@ -1,13 +1,14 @@
 import { ForbiddenException, HttpException } from "@nestjs/common";
 import { AGENT_ACTIVE_STATES, AgentStateManager, type AgentRunRow } from "./state-manager";
 import type { AgentPrincipal } from "./query-permission.guard";
-import type { AgentLlmMessage, AgentLlmProvider, AgentLlmUsage } from "./llm-provider";
+import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmUsage } from "./llm-provider";
 import type { QueryFact } from "./tools/query-fact";
 import { resolveAccessLevel, lowerAccessLevel, type AgentAccessLevel } from "./access-level";
 import type { AgentRoleReader } from "./query-permission.guard";
 import { toolRegistry } from "./tools/tool-registry";
 import type { ToolCall, ToolExecutor } from "./tools/tool-executor";
 import { AgentContextManager } from "./context-manager";
+import type { AgentObservability } from "./observability";
 
 /**
  * Agent orchestrator：唯一运行入口（模块设计「Agent orchestrator」行）。
@@ -22,10 +23,11 @@ const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮
 export const AGENT_MAX_TOOL_STEPS = 8;
 const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 
-export type AgentOrchestratorOptions = { runTimeoutMs?: number };
+export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: AgentObservability };
 
 export class AgentOrchestrator {
   private readonly runTimeoutMs: number;
+  private readonly observability?: AgentObservability;
 
   constructor(
     private readonly state: AgentStateManager,
@@ -36,6 +38,7 @@ export class AgentOrchestrator {
     options?: AgentOrchestratorOptions,
   ) {
     this.runTimeoutMs = options?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+    this.observability = options?.observability;
   }
 
   async run(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
@@ -46,15 +49,17 @@ export class AgentOrchestrator {
     const composed = this.runTimeoutMs > 0 && typeof AbortSignal.any === "function"
       ? AbortSignal.any([signal, AbortSignal.timeout(this.runTimeoutMs)])
       : signal;
+    const startedAt = Date.now();
     try {
       await this.queryPhase(fresh, principal, composed);
     } catch (error) {
-      await this.failRun(fresh.id, principal.user.id, error);
+      await this.failRun(fresh.id, principal.user.id, error, startedAt);
     }
   }
 
   private async queryPhase(run: AgentRunRow, principal: AgentPrincipal, signal: AbortSignal): Promise<void> {
     const runId = run.id;
+    const startedAt = Date.now();
     const tools = toolRegistry.visibleTools(run.accessLevel as "full" | "operational");
     const history = this.context
       ? await this.context.history(principal.user.id, run.sessionId, run.accessLevel as AgentAccessLevel)
@@ -67,7 +72,15 @@ export class AgentOrchestrator {
 
     const facts: QueryFact[] = [];
     let executed = 0;
-    let firstPlan = await this.provider.plan(messages, tools, signal);
+    let modelSteps = 0;
+    const planOnce = async (): Promise<AgentLlmPlan> => {
+      const planStartedAt = Date.now();
+      const plan = await this.provider.plan(messages, tools, signal);
+      this.observability?.record(runId, { kind: "model_step", user_id: principal.user.id, access_level: run.accessLevel, model: this.provider.name ?? "unknown", step: ++modelSteps, duration_ms: Date.now() - planStartedAt, tool_calls: plan.toolCalls.length });
+      return plan;
+    };
+
+    const firstPlan = await planOnce();
     if (firstPlan.toolCalls.length > 0) {
       await this.state.transitionAndAppend(runId, { from: "planning", to: "querying" });
       // 多步循环：每轮 plan 可提出多个调用，同一 run 内按顺序执行；轮数与总数受 MAX_TOOL_STEPS 约束。
@@ -81,7 +94,7 @@ export class AgentOrchestrator {
           executed += 1;
         }
         if (executed >= AGENT_MAX_TOOL_STEPS) break;
-        const next = await this.provider.plan(messages, tools, signal);
+        const next = await planOnce();
         calls = next.toolCalls;
       }
     }
@@ -112,10 +125,19 @@ export class AgentOrchestrator {
       usage,
       events: [{ type: "completed", payload: { answer, sources: facts.flatMap((fact) => fact.sources), usage } }],
     });
+    this.observability?.record(runId, {
+      kind: "run_completed",
+      user_id: principal.user.id,
+      access_level: run.accessLevel,
+      model: this.provider.name ?? "unknown",
+      duration_ms: Date.now() - startedAt,
+      usage: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, tool_calls: usage.tool_calls, answer_chunks: usage.answer_chunks },
+    });
   }
 
   private async executeTool(runId: string, principal: AgentPrincipal, call: ToolCall, signal: AbortSignal): Promise<QueryFact> {
     await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "running" } }] });
+    const startedAt = Date.now();
     try {
       const fact = await this.executor.execute(call, principal, signal);
       const asOf = new Date().toISOString();
@@ -126,11 +148,13 @@ export class AgentOrchestrator {
           { type: "source", payload: { sources: fact.sources, as_of: asOf } },
         ],
       });
+      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "completed", result_rows: fact.data.length, duration_ms: Date.now() - startedAt });
       return fact;
     } catch (error) {
       // tool_status 只发名称与失败状态，不发原始参数（工程布局「JSON 与 SSE 协议」）。
       const code = error instanceof HttpException ? (error.getResponse() as { code?: string }).code ?? "AGENT_TOOL_FAILED" : "AGENT_TOOL_FAILED";
       await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "failed", code } }] }).catch(() => {});
+      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: Date.now() - startedAt, error_code: code });
       throw error;
     }
   }
@@ -147,7 +171,7 @@ export class AgentOrchestrator {
   }
 
   /** 任何异常都收进 failed 终态；run 已被取消等终态时保持原状。非业务异常只留稳定文案。 */
-  private async failRun(runId: string, userId: string, error: unknown): Promise<void> {
+  private async failRun(runId: string, userId: string, error: unknown, startedAt: number): Promise<void> {
     const fresh = await this.state.findRun(runId, userId).catch(() => null);
     if (!fresh || !(AGENT_ACTIVE_STATES as readonly string[]).includes(fresh.state)) return;
     const isBusiness = error instanceof HttpException;
@@ -159,5 +183,6 @@ export class AgentOrchestrator {
         ? "本次回答超时，请重试"
         : "查询执行出错，请稍后重试";
     await this.state.transitionAndAppend(runId, { from: fresh.state, to: "failed", errorCode: code, events: [{ type: "error", payload: { code, message } }] }).catch(() => {});
+    this.observability?.record(runId, { kind: "run_failed", user_id: userId, access_level: fresh.accessLevel, error_code: code, duration_ms: Date.now() - startedAt });
   }
 }

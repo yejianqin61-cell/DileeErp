@@ -9,6 +9,8 @@ import type { AgentToolName } from "./tools/tool-registry";
  * P2-T5 给它加了可配置延迟（AGENT_FAKE_DELAY_MS），仅用于占住并发窗口做并发证据。
  */
 export class FakeLlmProvider {
+  readonly name = "fake-provider";
+
   constructor(private readonly delayMs = 0) {}
 
   private async pause(signal?: AbortSignal): Promise<void> {
