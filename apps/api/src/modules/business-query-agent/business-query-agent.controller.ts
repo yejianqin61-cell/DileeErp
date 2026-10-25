@@ -1,9 +1,10 @@
-import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, HttpCode, NotFoundException, Param, ParseUUIDPipe, Post, Req, Res, UnauthorizedException, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, HttpCode, HttpException, HttpStatus, NotFoundException, Param, ParseUUIDPipe, Post, Req, Res, UnauthorizedException, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { AgentStateManager, AgentStateTransitionError } from "./state-manager";
 import { CreateRunDto } from "./business-query-agent.dto";
 import { AgentOrchestrator } from "./agent-orchestrator";
+import { ConcurrencyGate } from "./concurrency-gate";
 import { StreamTransport } from "./stream-transport";
 import { QueryPermissionGuard, type AgentAuthenticatedRequest, type AgentPrincipal } from "./query-permission.guard";
 
@@ -22,6 +23,7 @@ export class BusinessQueryAgentController {
     private readonly state: AgentStateManager,
     private readonly orchestrator: AgentOrchestrator,
     private readonly transport: StreamTransport,
+    private readonly gate: ConcurrencyGate,
   ) {}
 
   @Post("sessions")
@@ -69,7 +71,7 @@ export class BusinessQueryAgentController {
 
   @Post("sessions/:id/runs")
   @HttpCode(202)
-  async createRun(@Param("id", ParseUUIDPipe) sessionId: string, @Body() dto: CreateRunDto, @Req() request: AgentAuthenticatedRequest) {
+  async createRun(@Param("id", ParseUUIDPipe) sessionId: string, @Body() dto: CreateRunDto, @Req() request: AgentAuthenticatedRequest, @Res({ passthrough: true }) response: Response) {
     const principal = requirePrincipal(request);
     const session = await this.state.findSession(sessionId, principal.user.id);
     if (!session) throw new NotFoundException({ code: "AGENT_SESSION_NOT_FOUND", message: "会话不存在", details: [] });
@@ -89,19 +91,35 @@ export class BusinessQueryAgentController {
       throw new ConflictException({ code: "RUN_IN_PROGRESS", message: "你已有一个正在进行的查询，请等待完成或取消后再提问", details: [] });
     }
 
-    let run;
-    try {
-      run = await this.state.createRun({ sessionId, userId: principal.user.id, clientMessageId: dto.client_message_id, question: dto.question, accessLevel: principal.accessLevel });
-    } catch (error) {
-      // 部分唯一索引（单用户单活动 run）是并发竞态的最后闸门，撞上即按忙碌处理。
-      if (isUniqueViolation(error)) throw new ConflictException({ code: "RUN_IN_PROGRESS", message: "你已有一个正在进行的查询，请等待完成或取消后再提问", details: [] });
-      throw error;
+    // 进程内许可（R-8）：无空位 429 + Retry-After，不建 run、不排队。
+    const permit = this.gate.tryAcquire(principal.user.id);
+    if (!permit) {
+      response.setHeader("Retry-After", "3");
+      throw new HttpException({ code: "AGENT_BUSY", message: "当前使用业务查询的人较多，请稍后重试", details: [] }, HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    const abort = new AbortController();
-    this.aborts.set(run.id, abort);
-    void this.orchestrator.run(run, principal, abort.signal).finally(() => this.aborts.delete(run.id));
-    return { data: { run_id: run.id, state: run.state }, meta: {} };
+    try {
+      let run;
+      try {
+        run = await this.state.createRun({ sessionId, userId: principal.user.id, clientMessageId: dto.client_message_id, question: dto.question, accessLevel: principal.accessLevel });
+      } catch (error) {
+        // 部分唯一索引（单用户单活动 run）是并发竞态的最后闸门，撞上即按忙碌处理。
+        if (isUniqueViolation(error)) throw new ConflictException({ code: "RUN_IN_PROGRESS", message: "你已有一个正在进行的查询，请等待完成或取消后再提问", details: [] });
+        throw error;
+      }
+
+      const abort = new AbortController();
+      this.aborts.set(run.id, abort);
+      // 许可由编排器 finally 释放；启动前的任何失败走下面的 catch 释放，两条路只释放一次。
+      void this.orchestrator.run(run, principal, abort.signal).finally(() => {
+        this.aborts.delete(run.id);
+        permit.release();
+      });
+      return { data: { run_id: run.id, state: run.state }, meta: {} };
+    } catch (error) {
+      permit.release();
+      throw error;
+    }
   }
 
   /** SSE：归属与档位在此校验（401/403/404 仍走 JSON 错误信封），流由 transport 接管响应。 */

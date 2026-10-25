@@ -4,6 +4,7 @@ import type { PrismaClient } from "@prisma/client";
 import { createAgentStateClient } from "./agent-state-client";
 import { createAgentReadClient } from "./query-read-client";
 import { AgentStateManager } from "./state-manager";
+import { ConcurrencyGate } from "./concurrency-gate";
 import { ToolExecutor } from "./tools/tool-executor";
 import { FakeLlmProvider } from "./fake-llm-provider";
 import { AgentOrchestrator } from "./agent-orchestrator";
@@ -78,6 +79,7 @@ export class AgentLifecycle implements OnModuleInit, OnApplicationShutdown {
     },
     { provide: AGENT_ROLE_READER, inject: [AGENT_READ_CLIENT], useFactory: roleReaderOf },
     { provide: AgentStateManager, inject: [AGENT_STATE_CLIENT], useFactory: (client: PrismaClient) => new AgentStateManager(client as never) },
+    ConcurrencyGate,
     { provide: ToolExecutor, inject: [AGENT_READ_CLIENT, AGENT_ROLE_READER], useFactory: (client: PrismaClient, roleReader: AgentRoleReader) => new ToolExecutor(client as never, roleReader) },
     FakeLlmProvider,
     { provide: AgentOrchestrator, inject: [AgentStateManager, ToolExecutor, FakeLlmProvider, AGENT_ROLE_READER], useFactory: (state: AgentStateManager, executor: ToolExecutor, provider: FakeLlmProvider, roleReader: AgentRoleReader) => new AgentOrchestrator(state, executor, provider, roleReader) },
