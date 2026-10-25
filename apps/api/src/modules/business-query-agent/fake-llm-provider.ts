@@ -30,6 +30,8 @@ export class FakeLlmProvider {
 
   async plan(messages: AgentLlmMessage[], tools: readonly AgentToolName[], signal: AbortSignal): Promise<AgentLlmPlan> {
     await this.pause(signal);
+    // 同一 run 里已经查过 order_query 就不再查（无状态判据：provider 是进程级单例，不能按 run 记状态）。
+    if (messages.some((message) => message.role === "tool" && message.tool === "order_query")) return { toolCalls: [] };
     const lastUser = [...messages].reverse().find((message) => message.role === "user");
     const question = lastUser?.content ?? "";
     if (!question.trim() || !tools.includes("order_query")) return { toolCalls: [] };

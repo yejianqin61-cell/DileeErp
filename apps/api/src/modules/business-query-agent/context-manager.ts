@@ -1,3 +1,4 @@
+import { Injectable } from "@nestjs/common";
 import type { AgentAccessLevel } from "./access-level";
 import type { AgentLlmMessage } from "./llm-provider";
 import { AgentStateManager } from "./state-manager";
@@ -14,6 +15,9 @@ import { AgentStateManager } from "./state-manager";
 
 export const AGENT_HISTORY_TURNS = 8;
 
+// @Injectable() 不是形式：emitDecoratorMetadata 只给「带装饰器的类」发参数类型元数据，
+// 没有它 Nest 解析不了构造参数（实测注入 undefined，run 在 10ms 内 AGENT_INTERNAL_ERROR）。
+@Injectable()
 export class AgentContextManager {
   constructor(private readonly state: AgentStateManager) {}
 

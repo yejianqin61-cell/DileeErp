@@ -1,4 +1,4 @@
-import { ForbiddenException, HttpException } from "@nestjs/common";
+import { ForbiddenException, HttpException, Logger } from "@nestjs/common";
 import { AGENT_ACTIVE_STATES, AgentStateManager, type AgentRunRow } from "./state-manager";
 import type { AgentPrincipal } from "./query-permission.guard";
 import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmUsage } from "./llm-provider";
@@ -28,6 +28,8 @@ export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: 
 export class AgentOrchestrator {
   private readonly runTimeoutMs: number;
   private readonly observability?: AgentObservability;
+  /** 内部错误的服务端堆栈日志（R-11）：只进服务端日志，不进 SSE 事件与对外信封。 */
+  private readonly logger = new Logger("business-query-agent");
 
   constructor(
     private readonly state: AgentStateManager,
@@ -177,6 +179,10 @@ export class AgentOrchestrator {
     const isBusiness = error instanceof HttpException;
     const isTimeout = typeof error === "object" && error !== null && (error as { name?: string }).name === "TimeoutError";
     const code = isBusiness ? (error.getResponse() as { code?: string }).code ?? "AGENT_RUN_FAILED" : isTimeout ? "AGENT_RUN_TIMEOUT" : "AGENT_INTERNAL_ERROR";
+    if (!isBusiness) {
+      // AGENT_INTERNAL_ERROR 对外只有稳定文案；堆栈留在服务端日志里供排查。
+      this.logger.error(`run ${runId} 内部错误（code=${code}）`, error instanceof Error ? error.stack : String(error));
+    }
     const message = isBusiness
       ? typeof error.getResponse() === "string" ? error.message : (error.getResponse() as { message?: string }).message ?? "查询执行失败"
       : isTimeout
