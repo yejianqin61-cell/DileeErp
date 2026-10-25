@@ -16,7 +16,7 @@ const parse = (sink) => JSON.parse(sink.lines.at(-1));
 
 test("tool_executed：run_id/user_id/operation/result_rows/duration_ms 齐全，无内容字段", () => {
   const sink = fakeSink();
-  const observability = new AgentObservability(sink);
+  const observability = AgentObservability.withSink(sink);
   observability.record(RUN, { kind: "tool_executed", user_id: "u-1", access_level: "operational", operation: "search_orders", status: "completed", result_rows: 2, duration_ms: 42 });
 
   const row = parse(sink);
@@ -31,7 +31,7 @@ test("tool_executed：run_id/user_id/operation/result_rows/duration_ms 齐全，
 
 test("model_step：带 model/step/tool_calls/duration_ms，无任何文本字段", () => {
   const sink = fakeSink();
-  const observability = new AgentObservability(sink);
+  const observability = AgentObservability.withSink(sink);
   observability.record(RUN, { kind: "model_step", user_id: "u-1", access_level: "full", model: "deepseek-chat", step: 1, duration_ms: 900, tool_calls: 1 });
 
   const row = parse(sink);
@@ -42,7 +42,7 @@ test("model_step：带 model/step/tool_calls/duration_ms，无任何文本字段
 
 test("run_completed / run_failed / run_cancelled：state 语义由 kind 表达，usage 可聚合", () => {
   const sink = fakeSink();
-  const observability = new AgentObservability(sink);
+  const observability = AgentObservability.withSink(sink);
   observability.record(RUN, { kind: "run_completed", user_id: "u-1", access_level: "operational", model: "deepseek-chat", duration_ms: 3200, usage: { input_tokens: 120, output_tokens: 80, tool_calls: 2, answer_chunks: 5 } });
   observability.record(RUN, { kind: "run_failed", user_id: "u-1", access_level: "operational", error_code: "AGENT_MODEL_TIMEOUT", duration_ms: 60000 });
   observability.record(RUN, { kind: "run_cancelled", user_id: "u-1", access_level: "operational" });
@@ -56,7 +56,7 @@ test("run_completed / run_failed / run_cancelled：state 语义由 kind 表达�
 
 test("gate_denied / run_created / run_replayed：不含问题内容", () => {
   const sink = fakeSink();
-  const observability = new AgentObservability(sink);
+  const observability = AgentObservability.withSink(sink);
   observability.record(RUN, { kind: "run_created", user_id: "u-1", access_level: "operational" });
   observability.record(RUN, { kind: "run_replayed", user_id: "u-1" });
   observability.record(RUN, { kind: "gate_denied", user_id: "u-2", active_runs: 4 });

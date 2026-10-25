@@ -23,10 +23,14 @@ export type AgentLogSink = Pick<Logger, "log" | "warn" | "error">;
 
 @Injectable()
 export class AgentObservability {
-  private readonly logger: AgentLogSink;
+  // 不用构造参数注入 logger：可选参数也会被 Nest 当成 DI 依赖解析（接口 token 解析不了）。
+  // 测试用 withSink 换内存 logger。
+  private logger: AgentLogSink = new Logger("business-query-agent");
 
-  constructor(logger?: AgentLogSink) {
-    this.logger = logger ?? new Logger("business-query-agent");
+  static withSink(logger: AgentLogSink): AgentObservability {
+    const instance = new AgentObservability();
+    instance.logger = logger;
+    return instance;
   }
 
   /** 一条事件一行 JSON：run_id 关联（R-11「每个 run 可按 ID 追踪」）。 */
