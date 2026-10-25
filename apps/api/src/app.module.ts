@@ -21,9 +21,10 @@ import { OrderWorkbenchModule } from "./modules/order-workbench/order-workbench.
 import { ReorderModule } from "./modules/reorder/reorder.module";
 import { ReportsModule } from "./modules/reports/reports.module";
 import { AlertsModule } from "./modules/alerts/alerts.module";
+import { BusinessQueryAgentModule } from "./modules/business-query-agent/business-query-agent.module";
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, InventoryModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, CurrencyModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule, FinanceModule, HrModule, OrderWorkbenchModule, ReorderModule, ReportsModule, AlertsModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnvironment }), DatabaseModule, InventoryModule, AuthModule, AuthorizationModule, AuditModule, DictionariesModule, CurrencyModule, StateMachineModule, AttachmentsModule, FormsModule, ProcurementModule, ProductionModule, SalesModule, FinanceModule, HrModule, OrderWorkbenchModule, ReorderModule, ReportsModule, AlertsModule, BusinessQueryAgentModule],
   controllers: [HealthController],
 })
 export class AppModule {}

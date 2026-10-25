@@ -57,9 +57,10 @@ test("schema 与 SQL 逐字段对齐（本仓库的迁移是手写的，没有�
   assert.match(subjectModel, /cashFlowCategoryEntries\s+CashFlowEntry\[\]\s+@relation\("CashFlowCategorySubject"\)/);
 });
 
-test("迁移目录名带 14 位时间戳，且排在既有迁移之后（部署按目录名排序执行）", () => {
+test("迁移目录名带 14 位时间戳，且紧跟在前一条迁移之后（部署按目录名排序执行）", () => {
   assert.match(MIGRATION_NAME, /^\d{14}_[a-z0-9_]+$/);
   const names = fs.readdirSync(MIGRATIONS).filter((name) => /^\d{14}_/.test(name)).sort();
-  assert.equal(names[names.length - 1], MIGRATION_NAME, "新的迁移必须排在最后");
+  // 2026-10-25 起不再断言「排在最后」：后续功能会继续追加迁移，只要求紧随其前驱。
+  assert.ok(names.indexOf(MIGRATION_NAME) > 0, "它必须存在且不是第一条");
   assert.ok(names.includes("20261013090000_other_payable_subject"), "它前面那条（其他应付科目）要在");
 });

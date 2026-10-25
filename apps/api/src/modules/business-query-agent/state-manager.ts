@@ -39,7 +39,8 @@ const TRANSITIONS: Record<string, readonly string[]> = {
   cancelled: [],
 };
 
-export type AgentRunRow = Awaited<ReturnType<AgentStateStore["agentRun"]["findFirst"]>>;
+/** run 行（非空）：findFirst 的可空返回在查询处收窄，状态管理器的流转方法只收已确认存在的行。 */
+export type AgentRunRow = NonNullable<Awaited<ReturnType<AgentStateStore["agentRun"]["findFirst"]>>>;
 
 export class AgentStateManager {
   constructor(private readonly prisma: AgentStateStore) {}
@@ -53,12 +54,21 @@ export class AgentStateManager {
     return this.prisma.agentSession.findMany({ where: { userId }, orderBy: { updatedAt: "desc" } });
   }
 
-  /** 归属校验以 userId + 资源 ID 双条件查询（模块设计：不先取出他人会话再过滤）。 */
-  async findRun(runId: string, userId: string): Promise<AgentRunRow> {
+  async findSession(sessionId: string, userId: string) {
+    return this.prisma.agentSession.findFirst({ where: { id: sessionId, userId } });
+  }
+
+  /** 某会话下的本人 run（快照恢复用）；降权可见性由调用方按档位过滤。 */
+  async listRuns(sessionId: string, userId: string): Promise<AgentRunRow[]> {
+    return this.prisma.agentRun.findMany({ where: { sessionId, userId }, orderBy: { createdAt: "asc" } });
+  }
+
+  /** 归属校验以 userId + 资源 ID 双条件查询（模块设计：不先取出他人会话再过滤）。查不到返回 null。 */
+  async findRun(runId: string, userId: string): Promise<AgentRunRow | null> {
     return this.prisma.agentRun.findFirst({ where: { id: runId, userId } });
   }
 
-  async findRunByIdempotencyKey(sessionId: string, clientMessageId: string): Promise<AgentRunRow> {
+  async findRunByIdempotencyKey(sessionId: string, clientMessageId: string): Promise<AgentRunRow | null> {
     return this.prisma.agentRun.findFirst({ where: { sessionId, clientMessageId } });
   }
 

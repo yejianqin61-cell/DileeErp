@@ -11,6 +11,11 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const context = host.switchToHttp();
     const request = context.getRequest<Request>();
     const response = context.getResponse<Response>();
+    // SSE（business-query-agent）流中途出错时响应已提交：只终止连接，写 JSON 会再报写头错误。
+    if (response.headersSent) {
+      response.end();
+      return;
+    }
     const isUniqueViolation = exception && typeof exception === "object" && "code" in exception && exception.code === "P2002";
     const status = isUniqueViolation ? HttpStatus.CONFLICT : exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {

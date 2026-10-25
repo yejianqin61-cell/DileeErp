@@ -75,10 +75,20 @@ test("validateEnvironment.production_with_valid_database_url_is_accepted", async
     NODE_ENV: "production",
     PORT: "4000",
     DATABASE_URL: "postgresql://dilee:secret@db.internal:5432/dilee?schema=public",
+    // 2026-10-25 起：业务查询 Agent 的两组独立凭据（只读业务账号 + agent_* 状态账号）。
+    AGENT_READ_DATABASE_URL: "postgresql://agent_read:secret@db.internal:5432/dilee?schema=public",
+    AGENT_STATE_DATABASE_URL: "postgresql://agent_state:secret@db.internal:5432/dilee?schema=public",
   });
   assert.equal(result.NODE_ENV, "production");
   assert.equal(result.PORT, 4000);
   assert.equal(result.DATABASE_URL, "postgresql://dilee:secret@db.internal:5432/dilee?schema=public");
+});
+
+test("validateEnvironment.production_without_agent_credentials_is_rejected", async () => {
+  // 缺任何一组 Agent 凭据都不许起服务：回退 DATABASE_URL 等于拆掉「业务表只读」的边界。
+  const base = { NODE_ENV: "production", DATABASE_URL: "postgresql://dilee:secret@db.internal:5432/dilee?schema=public" };
+  assert.throws(() => validateEnvironment({ ...base }), /AGENT_READ_DATABASE_URL/);
+  assert.throws(() => validateEnvironment({ ...base, AGENT_READ_DATABASE_URL: "postgresql://agent_read:secret@db.internal:5432/dilee" }), /AGENT_STATE_DATABASE_URL/);
 });
 
 test("validateEnvironment.non_production_without_database_url_is_accepted", async () => {
@@ -209,7 +219,8 @@ test("validateEnvironment.port_error_precedes_production_database_url_error", as
 
 test("validateEnvironment.malformed_database_url_reports_format_error_not_missing_error", async () => {
   // 顺序分支：DATABASE_URL 非空（truthy）→ 通过「必须配置」检查 → 落在格式错误。
-  expectRejected({ NODE_ENV: "production", DATABASE_URL: "not-a-url" }, DATABASE_URL_FORMAT_ERROR);
+  // 生产用例带上 Agent 两组凭据（2026-10-25 起），才能走到 URL 格式这一步。
+  expectRejected({ NODE_ENV: "production", DATABASE_URL: "not-a-url", AGENT_READ_DATABASE_URL: "postgresql://a@db/agent", AGENT_STATE_DATABASE_URL: "postgresql://a@db/agent" }, DATABASE_URL_FORMAT_ERROR);
   expectRejected({ NODE_ENV: "development", DATABASE_URL: "not-a-url" }, DATABASE_URL_FORMAT_ERROR);
 });
 

@@ -10,9 +10,12 @@ const { test } = require("node:test");
 const { of, lastValueFrom } = require("rxjs");
 const { ResponseEnvelopeInterceptor } = require("../../dist/platform/http/response-envelope.interceptor.js");
 
-/** 假 ExecutionContext：只需要 switchToHttp().getRequest().header()。 */
+/** 假 ExecutionContext：switchToHttp().getRequest().header() + 未提交的响应（2026-10-25 起拦截器会读 getResponse）。 */
 const contextWith = (requestId) => ({
-  switchToHttp: () => ({ getRequest: () => ({ header: (name) => (name === "x-request-id" ? requestId : undefined) }) }),
+  switchToHttp: () => ({
+    getRequest: () => ({ header: (name) => (name === "x-request-id" ? requestId : undefined) }),
+    getResponse: () => ({ headersSent: false }),
+  }),
 });
 
 /** 跑一遍拦截器，返回最终响应体。 */
