@@ -2,9 +2,11 @@ import { ForbiddenException, UnprocessableEntityException } from "@nestjs/common
 import { lowerAccessLevel, resolveAccessLevel, type AgentAccessLevel } from "../access-level";
 import type { AgentPrincipal, AgentRoleReader } from "../query-permission.guard";
 import { parseSearchOrdersInput, searchOrders, type AgentReadStore } from "./order-query-tools";
-import type { QueryFact } from "./query-fact";
+import type { QueryFact, QuerySource } from "./query-fact";
 import { assertOperationAllowed } from "./tool-permission";
 import { toolRegistry, type ToolCapability } from "./tool-registry";
+import { assertOrderRoot, type AgentOrderRoot } from "./order-root";
+import { ROOTED_OPERATIONS } from "./rooted-operations";
 
 /**
  * 工具执行器：模型与数据库之间的**唯一**通道。
@@ -46,35 +48,53 @@ export class ToolExecutor {
   }
 
   private async dispatch(call: ToolCall, capability: ToolCapability, effective: AgentAccessLevel, signal?: AbortSignal): Promise<{ fact: QueryFact }> {
-    switch (capability.operation) {
-      case "search_orders": {
-        const input = parseSearchOrdersInput(call.args);
-        const rows = await searchOrders(this.prisma, input);
-        signal?.throwIfAborted();
-        const asOf = new Date().toISOString();
-        const data = this.truncate(rows as unknown as Record<string, unknown>[], capability.maxRows);
-        return {
-          fact: {
-            operation: capability.operation,
-            order_no: null,
-            as_of: asOf,
-            data,
-            sources: data.map((row) => ({ business_type: "sales_order", business_no: String(row.order_no), queried_at: asOf })),
-            access_level: effective,
-          },
-        };
-      }
-      default: {
-        // registry 说实现了、dispatch 却没有分支，是实现清单与分发不同步 —— 直接暴露而不是吞掉。
-        throw new UnprocessableEntityException({ code: "AGENT_OPERATION_NOT_IMPLEMENTED", message: `查询能力 ${capability.operation} 尚未开放`, details: [] });
-      }
+    const asOf = new Date().toISOString();
+    if (capability.operation === "search_orders") {
+      const input = parseSearchOrdersInput(call.args);
+      const rows = await searchOrders(this.prisma, input);
+      signal?.throwIfAborted();
+      const data = this.truncateData(rows, capability.maxRows) as Record<string, unknown>[];
+      return {
+        fact: {
+          operation: capability.operation,
+          order_no: null,
+          as_of: asOf,
+          data,
+          sources: data.map((row) => ({ business_type: "sales_order", business_no: String(row.order_no), queried_at: asOf })),
+          access_level: effective,
+        },
+      };
     }
+
+    // 以订单为根的操作：解析输入 → 根验证（404 兜底）→ 只读实现 → 统一组装 QueryFact。
+    const handler = ROOTED_OPERATIONS[capability.operation];
+    if (!handler) {
+      // registry 说实现了、分发表里却没有，是实现清单与分发不同步 —— 直接暴露而不是吞掉。
+      throw new UnprocessableEntityException({ code: "AGENT_OPERATION_NOT_IMPLEMENTED", message: `查询能力 ${capability.operation} 尚未开放`, details: [] });
+    }
+    const input = handler.parse(call.args);
+    const root = await assertOrderRoot(this.prisma, input.orderNo);
+    signal?.throwIfAborted();
+    const result = await handler.run(this.prisma, root, input);
+    signal?.throwIfAborted();
+    const sources: QuerySource[] = (result.sources ?? [{ business_type: "sales_order", business_no: root.orderNo }]).map((source) => ({ ...source, queried_at: asOf }));
+    return {
+      fact: {
+        operation: capability.operation,
+        order_no: root.orderNo,
+        as_of: asOf,
+        data: this.truncateData(result.data, capability.maxRows) as Record<string, unknown> | Record<string, unknown>[],
+        sources,
+        access_level: effective,
+      },
+    };
   }
 
-  /** 行数与字节双重截断：行数按能力登记的 maxRows，字节超限再逐行丢弃。 */
-  private truncate(rows: Record<string, unknown>[], maxRows: number): Record<string, unknown>[] {
-    let data = rows.slice(0, maxRows);
-    while (data.length > 0 && Buffer.byteLength(JSON.stringify(data), "utf8") > MAX_RESULT_BYTES) data = data.slice(0, -1);
-    return data;
+  /** 行数与字节双重截断：数组按能力登记的 maxRows 截行，字节超限逐行丢弃；单对象 DTO 构造上即有界。 */
+  private truncateData(data: unknown, maxRows: number): unknown {
+    if (!Array.isArray(data)) return data;
+    let rows = data.slice(0, maxRows);
+    while (rows.length > 0 && Buffer.byteLength(JSON.stringify(rows), "utf8") > MAX_RESULT_BYTES) rows = rows.slice(0, -1);
+    return rows;
   }
 }

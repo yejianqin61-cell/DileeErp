@@ -1,5 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import type { Prisma, PrismaClient } from "@prisma/client";
+import { deduplicateAlerts } from "../../alerts/alerts.domain";
+import { orderPage } from "./order-root";
 
 /**
  * 订单领域的只读查询。Phase 1 只有 `search_orders`；第二个查询落地时才继续往这里加
@@ -10,7 +12,8 @@ import type { Prisma, PrismaClient } from "@prisma/client";
  * 与可能混入的价格字段一律不带（架构表：禁止返回原销售单或关联客户对象）。
  */
 
-export type AgentReadStore = Pick<PrismaClient, "salesOrder">;
+/** 工具的只读 client：连接串指向只读账号（R-1）；类型上是完整 PrismaClient，写权限由数据库 GRANT 兜底。 */
+export type AgentReadStore = PrismaClient;
 
 export type SearchOrdersInput = { q: string; page: number };
 export const SEARCH_ORDERS_MAX_ROWS = 20;
@@ -53,3 +56,70 @@ export async function searchOrders(client: AgentReadStore, input: SearchOrdersIn
 }
 
 export type SearchOrderRow = Prisma.PromiseReturnType<typeof searchOrders>[number];
+
+// ============================================================================
+// get_order_timeline / get_order_alerts（P3-T1）
+// ============================================================================
+
+/**
+ * 订单时间线的**非财务动作白名单**（模块设计：operational 仅允许非财务动作类型）。
+ *
+ * 依据：全库审计动作枚举（`grep audit.record`，2026-10-26 共 221 个）里，财务相关动作
+ * 全部落在以下前缀——它们**不进**白名单：receivable_*、supplier_payable*、supplier_payment*、
+ * customer_payment*、customer_return*、salary_*、payroll_*、voucher.*、cash_flow_entry.*、
+ * bank*、accounting_subject.*、opening_balance.*、exchange_rate.*、overhead_allocation.*、
+ * operation_rate.*（工序工价=计件单价）、production_payroll_export、supplier.*、
+ * purchase_order_item.price_refilled（采购填价）。
+ * 新增非财务领域时**必须**把前缀加进来，否则时间线会静默缺段——这条注释就是提醒。
+ */
+const TIMELINE_ACTION_PREFIXES = [
+  "sales_order.", "bom.", "purchase_order.", "purchase_plan.", "purchase_receipt.", "incoming_inspection.",
+  "material.", "finished_goods_", "raw_material_", "production_order.", "production_order_operation.",
+  "production_daily_alert.", "outsource_", "operation_daily_report.", "stocktake.", "customer_contact.",
+  "customer.", "employee.", "attendance.", "daily_report_merge_anomaly.", "alert.", "form_definition.",
+  "operation_catalog.", "production_location.", "unit.", "department.", "position.", "performance.",
+  "user.", "auth.",
+] as const;
+
+export type TimelineStore = Pick<PrismaClient, "auditEvent">;
+
+export async function getOrderTimeline(client: TimelineStore, root: { orderNo: string }, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+  const { skip, take } = orderPage({ orderNo: root.orderNo, page }, 20);
+  const events = await client.auditEvent.findMany({
+    // 白名单前缀下推到查询（OR startsWith），而不是取回再滤——分页语义才正确。
+    where: { orderNo: root.orderNo, OR: TIMELINE_ACTION_PREFIXES.map((prefix) => ({ action: { startsWith: prefix } })) },
+    orderBy: { createdAt: "desc" },
+    skip, take,
+    select: { id: true, action: true, entityType: true, entityId: true, createdAt: true },
+  });
+  return {
+    // 固定三字段投影：不传 details 自由 JSON（可能含未审计内容）。
+    data: events.map((event) => ({ time: event.createdAt, action: event.action, entity_type: event.entityType, entity_id: event.entityId })),
+    sources: [{ business_type: "audit_event", business_no: root.orderNo }],
+  };
+}
+
+export type OrderAlertsStore = Pick<PrismaClient, "productionDailyAlert" | "finishedGoodsQcRecord" | "inventoryFact" | "alertHandling">;
+
+/** 三源告警按订单下推（AlertsService.list() 是全库聚合，不能直接复用；去重/分级复用其领域纯函数）。 */
+export async function getOrderAlerts(client: OrderAlertsStore, root: { orderNo: string }, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+  const orderNo = root.orderNo;
+  const [daily, qcRejected, inventoryGroups] = await Promise.all([
+    client.productionDailyAlert.findMany({ where: { deletedAt: null, status: { in: ["pending", "confirmed"] }, orderNo }, select: { id: true, alertType: true, orderNo: true, createdAt: true } }),
+    client.finishedGoodsQcRecord.findMany({ where: { deletedAt: null, conclusion: "rejected", orderNo }, select: { id: true, orderNo: true, createdAt: true } }),
+    // 库存净变动为负：与 AlertsService 同口径，但只算当前订单（group by 收敛到一行）。
+    client.inventoryFact.groupBy({ by: ["orderNo"], where: { orderNo }, _sum: { quantityDelta: true } }),
+  ]);
+  const rows: Array<{ source_type: string; source_id: string; alert_type: string; order_no: string | null; severity: "high" | "medium" | "low"; title: string; suggestion: string; status: string; created_at: Date }> = [
+    ...daily.map((row) => ({ source_type: "production_daily_alert", source_id: row.id, alert_type: row.alertType, order_no: row.orderNo, severity: "high" as const, title: row.alertType === "over_order" ? "生产超单" : "生产日报差异", suggestion: "请核对日报与生产单累计数量。", status: "pending", created_at: row.createdAt })),
+    ...qcRejected.map((row) => ({ source_type: "finished_goods_qc", source_id: row.id, alert_type: "qc_rejected", order_no: row.orderNo, severity: "high" as const, title: "成品 QC 不合格", suggestion: "请处理不良品或重新送检。", status: "pending", created_at: row.createdAt })),
+    ...inventoryGroups.filter((row) => row._sum.quantityDelta !== null && row._sum.quantityDelta !== undefined && (row._sum.quantityDelta as { lt(v: number): boolean }).lt(0)).map((row) => ({ source_type: "inventory", source_id: `00000000-0000-0000-0000-${(row.orderNo ?? "00000000").slice(-12).padStart(12, "0")}`, alert_type: "inventory_delta", order_no: row.orderNo, severity: "medium" as const, title: "库存净变动为负", suggestion: "请核对出入库事实和库存不足风险。", status: "pending", created_at: new Date() })),
+  ];
+  // 处理状态合并：键集合由本订单的告警行决定（不会全表拉取）。
+  const handlings = rows.length ? await client.alertHandling.findMany({ where: { OR: rows.map((row) => ({ sourceType: row.source_type, sourceId: row.source_id, alertType: row.alert_type })) }, select: { sourceType: true, sourceId: true, alertType: true, status: true } }) : [];
+  const handled = new Map(handlings.map((row) => [`${row.sourceType}:${row.sourceId}:${row.alertType}`, row.status]));
+  const { skip, take } = orderPage({ orderNo, page }, 20);
+  const merged = deduplicateAlerts(rows).slice(skip, skip + take);
+  const data = merged.map((row) => ({ source_type: row.source_type, alert_type: row.alert_type, severity: row.severity, title: row.title, suggestion: row.suggestion, status: handled.get(`${row.source_type}:${row.source_id}:${row.alert_type}`) ?? row.status, created_at: row.created_at }));
+  return { data, sources: merged.map((row) => ({ business_type: row.source_type, business_no: row.source_id })) };
+}

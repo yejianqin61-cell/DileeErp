@@ -13,7 +13,8 @@ export type QueryFact = {
   /** 搜索类操作没有订单根，为 null；其余操作必须是已验证的当前 order_no。 */
   order_no: string | null;
   as_of: string;
-  data: Record<string, unknown>[];
+  /** 数组=行集（可分页截断），对象=单据级 DTO（overview/status）。两者都是显式投影，不是 Prisma 原对象。 */
+  data: Record<string, unknown> | Record<string, unknown>[];
   sources: QuerySource[];
   access_level: AgentAccessLevel;
 };

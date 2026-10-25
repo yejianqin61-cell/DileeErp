@@ -32,13 +32,13 @@ const row = (tool: AgentToolName, operation: string, opts: { minAccess?: AgentAc
 });
 
 export const TOOL_CAPABILITIES: ToolCapability[] = [
-  // order_query（6）
+  // order_query（6）—— P3-T1 起订单领域全部实现
   row("order_query", "search_orders", { implemented: true }),
-  row("order_query", "get_order_overview"),
-  row("order_query", "get_order_status"),
-  row("order_query", "get_order_timeline"),
-  row("order_query", "get_order_alerts"),
-  row("order_query", "get_order_attachments"),
+  row("order_query", "get_order_overview", { implemented: true }),
+  row("order_query", "get_order_status", { implemented: true }),
+  row("order_query", "get_order_timeline", { implemented: true }),
+  row("order_query", "get_order_alerts", { implemented: true }),
+  row("order_query", "get_order_attachments", { implemented: true }),
   // sales_query（4）
   row("sales_query", "get_sales_order"),
   row("sales_query", "get_customer"),

@@ -133,7 +133,7 @@ export class AgentOrchestrator {
       access_level: run.accessLevel,
       model: this.provider.name ?? "unknown",
       duration_ms: Date.now() - startedAt,
-      usage: { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, tool_calls: usage.tool_calls, answer_chunks: usage.answer_chunks },
+      usage: { input_tokens: (usage.input_tokens as number | undefined), output_tokens: (usage.output_tokens as number | undefined), tool_calls: usage.tool_calls, answer_chunks: usage.answer_chunks },
     });
   }
 
@@ -150,7 +150,7 @@ export class AgentOrchestrator {
           { type: "source", payload: { sources: fact.sources, as_of: asOf } },
         ],
       });
-      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "completed", result_rows: fact.data.length, duration_ms: Date.now() - startedAt });
+      this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "completed", result_rows: Array.isArray(fact.data) ? fact.data.length : 1, duration_ms: Date.now() - startedAt });
       return fact;
     } catch (error) {
       // tool_status 只发名称与失败状态，不发原始参数（工程布局「JSON 与 SSE 协议」）。
