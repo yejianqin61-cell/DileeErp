@@ -49,15 +49,16 @@ const FACT = {
   access_level: "operational",
 };
 
-/** 假执行器：记录调用，可配置抛错。 */
-function fakeExecutor({ error = null } = {}) {
+/** 假执行器：记录调用，可配置抛错 / 按调用返回事实。 */
+function fakeExecutor({ error = null, factForCall = null } = {}) {
   const calls = [];
   return {
     calls,
     async execute(call, principal, signal) {
       calls.push({ call, principalAccess: principal.accessLevel });
       if (error) throw error;
-      return { ...FACT, access_level: principal.accessLevel };
+      const fact = factForCall ? factForCall(call, principal) : FACT;
+      return { ...fact, access_level: principal.accessLevel };
     },
   };
 }
@@ -173,22 +174,136 @@ test("无工具可调（澄清路径）：planning 直达 responding，再完成
   assert.deepEqual(states, ["planning", "responding", "completed"]);
 });
 
-test("工具执行抛错：run 落 failed，错误码来自业务异常，事件流有 error 终态", async () => {
+test("可回传工具失败：错误信封回喂模型，第二轮 plan 继续，最终完成（不再整轮 failed）", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);
   const run = await planningRun(db, state);
   const { HttpException } = require("@nestjs/common");
   const failure = new HttpException({ code: "AGENT_TOOL_ARGUMENT_INVALID", message: "搜索词 q 不能为空", details: [] }, 400);
+  let planCount = 0;
+  const provider = {
+    planInputs: [],
+    async plan(messages) {
+      this.planInputs.push(messages);
+      planCount += 1;
+      if (planCount === 1) return { toolCalls: [{ id: "call-1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }] };
+      return { toolCalls: [] };
+    },
+    async *streamAnswer(messages) {
+      const toolMessages = messages.filter((message) => message.role === "tool");
+      assert.deepEqual(JSON.parse(toolMessages[0].content), { error: { code: "AGENT_TOOL_ARGUMENT_INVALID", message: "搜索词 q 不能为空" } }, "失败信封必须进入 tool 消息");
+      yield { type: "text", text: "没有查到匹配的订单。" };
+      yield { type: "usage", usage: { model: "fake-provider" } };
+    },
+  };
+  const orchestrator = new AgentOrchestrator(state, fakeExecutor({ error: failure }), provider, fakeRoleReader());
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  const saved = db.store.runs.find((row) => row.id === run.id);
+  assert.equal(saved.state, "completed", "可回传失败不应终止整轮");
+  assert.equal(planCount, 2, "模型必须拿到失败结果后再规划一次");
+  const events = db.store.events.filter((event) => event.runId === run.id);
+  assert.ok(events.some((event) => event.type === "tool_status" && event.payload.status === "failed" && event.payload.code === "AGENT_TOOL_ARGUMENT_INVALID"));
+  assert.ok(!events.some((event) => event.type === "error"), "可回传失败不应写 error 终态");
+});
+
+test("致命工具失败（撤权）仍终止：run 落 failed，错误码来自业务异常", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const { HttpException } = require("@nestjs/common");
+  const failure = new HttpException({ code: "AGENT_ACCESS_REVOKED", message: "当前账号已无可用角色", details: [] }, 403);
   const orchestrator = new AgentOrchestrator(state, fakeExecutor({ error: failure }), fakeProvider(), fakeRoleReader());
 
   await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
 
   const saved = db.store.runs.find((row) => row.id === run.id);
   assert.equal(saved.state, "failed");
-  assert.equal(saved.errorCode, "AGENT_TOOL_ARGUMENT_INVALID");
+  assert.equal(saved.errorCode, "AGENT_ACCESS_REVOKED");
   const lastEvent = db.store.events.filter((event) => event.runId === run.id).at(-1);
   assert.equal(lastEvent.type, "error");
-  assert.equal(lastEvent.payload.code, "AGENT_TOOL_ARGUMENT_INVALID");
+  assert.equal(lastEvent.payload.code, "AGENT_ACCESS_REVOKED");
+});
+
+test("失败预算：同一 run 连续 3 次可回传失败后终止，错误码 AGENT_TOOL_RETRIES_EXHAUSTED", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const { HttpException } = require("@nestjs/common");
+  const failure = new HttpException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] }, 404);
+  let planCount = 0;
+  const provider = {
+    async plan() {
+      planCount += 1;
+      return { toolCalls: [{ id: `call-${planCount}`, tool: "order_query", operation: "search_orders", args: { q: "SO" } }] };
+    },
+    async *streamAnswer() { yield { type: "text", text: "不会到达" }; },
+  };
+  const orchestrator = new AgentOrchestrator(state, fakeExecutor({ error: failure }), provider, fakeRoleReader());
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  const saved = db.store.runs.find((row) => row.id === run.id);
+  assert.equal(saved.state, "failed");
+  assert.equal(saved.errorCode, "AGENT_TOOL_RETRIES_EXHAUSTED");
+  assert.equal(planCount, 3, "预算用尽后不再调模型");
+});
+
+test("运行时守卫：未先 search 的根查询不触达数据库，回传 ORDER_SEARCH_REQUIRED 后模型可自纠", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const exactOrderNo = "DL260170-4H 伞头";
+  const provider = {
+    planInputs: [],
+    async plan(messages) {
+      this.planInputs.push(messages);
+      const step = this.planInputs.length;
+      if (step === 1) return { toolCalls: [{ id: "call-1", tool: "order_query", operation: "get_order_overview", args: { order_no: "DL260170-4H" } }] };
+      if (step === 2) return { toolCalls: [{ id: "call-2", tool: "order_query", operation: "search_orders", args: { q: "DL260170-4H" } }] };
+      if (step === 3) return { toolCalls: [{ id: "call-3", tool: "order_query", operation: "get_order_overview", args: { order_no: exactOrderNo } }] };
+      return { toolCalls: [] };
+    },
+    async *streamAnswer() { yield { type: "text", text: "查询完成。" }; yield { type: "usage", usage: {} }; },
+  };
+  const executor = fakeExecutor({
+    factForCall: (call) => call.operation === "search_orders"
+      ? { ...FACT, data: [{ order_no: exactOrderNo, product_name: "伞头" }], sources: [{ business_type: "sales_order", business_no: exactOrderNo, queried_at: "x" }] }
+      : { operation: "get_order_overview", order_no: exactOrderNo, as_of: "x", data: { status: "生产中" }, sources: [{ business_type: "sales_order", business_no: exactOrderNo, queried_at: "x" }] },
+  });
+  const orchestrator = new AgentOrchestrator(state, executor, provider, fakeRoleReader());
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  const saved = db.store.runs.find((row) => row.id === run.id);
+  assert.equal(saved.state, "completed");
+  assert.deepEqual(executor.calls.map((item) => item.call.operation), ["search_orders", "get_order_overview"], "未搜索的根查询必须被守卫拦下，只有 search 后精确单号的根查询才会执行");
+  const events = db.store.events.filter((event) => event.runId === run.id);
+  assert.ok(events.some((event) => event.type === "tool_status" && event.payload.code === "ORDER_SEARCH_REQUIRED"), "必须记录 ORDER_SEARCH_REQUIRED");
+  const guardFeedback = provider.planInputs[1].find((message) => message.role === "tool");
+  assert.equal(guardFeedback.operation, "get_order_overview", "失败回放必须保留 operation");
+  assert.equal(JSON.parse(guardFeedback.content).error.code, "ORDER_SEARCH_REQUIRED");
+});
+
+test("调用预算：单轮 10 个调用只执行 8 个，超出部分丢弃且不产生 tool_status", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const provider = {
+    async plan() {
+      return { toolCalls: Array.from({ length: 10 }, (_, index) => ({ id: `call-${index}`, tool: "order_query", operation: "search_orders", args: { q: `SO-${index}` } })) };
+    },
+    async *streamAnswer() { yield { type: "text", text: "完成。" }; yield { type: "usage", usage: {} }; },
+  };
+  const executor = fakeExecutor();
+  const orchestrator = new AgentOrchestrator(state, executor, provider, fakeRoleReader());
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  assert.equal(executor.calls.length, 8, "调用预算 8 之外的调用不得执行");
+  const toolStatuses = db.store.events.filter((event) => event.runId === run.id && event.type === "tool_status");
+  assert.equal(toolStatuses.length, 16, "只应有 8 组 running/completed；被丢调用不发 tool_status");
 });
 
 test("非业务异常的错误文本不进事件流（可能夹带业务值）：对外只有稳定文案", async () => {

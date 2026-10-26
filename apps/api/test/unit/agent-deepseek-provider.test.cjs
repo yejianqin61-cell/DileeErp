@@ -142,7 +142,7 @@ test("plan：mock 抛上下文超限错误 → 稳定码 AGENT_MODEL_CONTEXT_EXC
   );
 });
 
-test("工具结果消息合成为 assistant(tool_calls) + tool(tool_result) 对（发到模型的请求形状）", async () => {
+test("工具结果消息回放：assistant tool-call 的 input 是对象且保留 operation（AI SDK v7 契约，不是 JSON 字符串）", async () => {
   const seen = [];
   const model = new MockLanguageModelV4({
     doGenerate: (options) => {
@@ -153,14 +153,18 @@ test("工具结果消息合成为 assistant(tool_calls) + tool(tool_result) 对�
   await makeProvider(model).plan(
     [
       { role: "user", content: "查订单" },
-      { role: "tool", id: "call-9", tool: "order_query", args: { q: "SO" }, content: JSON.stringify({ operation: "search_orders", data: [{ order_no: "SO-001" }] }) },
+      { role: "tool", id: "call-9", tool: "order_query", operation: "search_orders", args: { q: "SO" }, content: JSON.stringify({ operation: "search_orders", data: [{ order_no: "SO-001" }] }) },
     ],
     ["order_query"],
     SIGNAL,
   );
-  const prompt = JSON.stringify(seen[0]);
-  assert.ok(prompt.includes('"tool_calls"') || prompt.includes("tool-call"), "assistant 侧必须有 tool-call");
-  assert.ok(prompt.includes("SO-001"), "工具结果必须随消息对回传");
+  const assistant = seen[0].find((message) => message.role === "assistant");
+  const toolCall = assistant.content.find((part) => part.type === "tool-call");
+  assert.equal(typeof toolCall.input, "object", "input 必须是对象；传 JSON 字符串会被 @ai-sdk/deepseek 二次 stringify（双重编码）");
+  assert.deepEqual(toolCall.input, { operation: "search_orders", q: "SO" }, "回放必须带 operation，且参数保持原对象");
+  const toolMessage = seen[0].find((message) => message.role === "tool");
+  assert.deepEqual(toolMessage.content[0].output, { type: "json", value: { operation: "search_orders", data: [{ order_no: "SO-001" }] } });
+  assert.ok(JSON.stringify(seen[0]).includes("SO-001"), "工具结果必须随消息对回传");
 });
 
 test("工厂：deepseek 缺密钥启动即报错；fake 带 AGENT_FAKE_DELAY_MS", () => {

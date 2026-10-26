@@ -18,12 +18,12 @@ import { AGENT_TOOLS, TOOL_CAPABILITIES, type AgentToolName } from "./tools/tool
 export type DeepSeekProviderConfig = { apiKey: string; baseURL?: string; model?: string; timeoutMs?: number };
 
 const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
-  order_query: "按单号关键字搜索销售订单，或查询某张订单的非财务进展",
-  sales_query: "查询某张订单的销售单、客户、BOM 与退货（非财务字段）",
-  procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检",
-  production_query: "查询某张订单的生产单、工序进度、报工与外加工流转",
-  warehouse_query: "查询原料库存余额、库存流水、领退报废与成品出入库质检",
-  finance_query: "查询某张订单的应收、应付、收付款、对账、成本利润与人工（仅财务档）",
+  order_query: "先调用 search_orders 搜索用户给出的单号或关键字；后续所有订单根查询只能使用搜索结果返回的精确 order_no（原样复制，包含产品名、后缀与空格），不能猜测或截断。可查询该订单的非财务进展。",
+  sales_query: "查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_no 必须是本轮 search_orders 返回的精确值。",
+  procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检。order_no 必须是本轮 search_orders 返回的精确值。",
+  production_query: "查询某张订单的生产单、工序进度、报工与外加工流转。order_no 必须是本轮 search_orders 返回的精确值。",
+  warehouse_query: "查询原料库存余额、库存流水、领退报废与成品出入库质检。order_no 必须是本轮 search_orders 返回的精确值。",
+  finance_query: "查询某张订单的应收、应付、收付款、对账、成本利润与人工（仅财务档）。order_no 必须是本轮 search_orders 返回的精确值。",
 };
 
 /** 每个领域工具只公布其在注册表中登记的 operation，执行器仍会二次校验。 */
@@ -59,14 +59,21 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
     return this.timeoutMs > 0 && typeof AbortSignal.any === "function" ? AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]) : signal;
   }
 
-  /** 自包含工具结果消息 → DeepSeek 要求的 assistant(tool_calls) + tool(tool_result) 消息对。 */
+  /**
+   * 自包含工具结果消息 → DeepSeek 要求的 assistant(tool_calls) + tool(tool_result) 消息对。
+   *
+   * AI SDK v7 的 `ToolCallPart.input` 契约是 **JSON 可序列化对象**（provider-utils 类型注释），
+   * 由 @ai-sdk/deepseek 统一做 `JSON.stringify(part.input)` 落成 OpenAI 的 arguments 字符串。
+   * 这里若先手工 stringify，线上 arguments 会变成“带引号的 JSON 字符串”（双重编码），
+   * 真实模型会模仿这种畸形历史并产出顶层无 operation 的调用，随后被 plan() 静默丢弃。
+   */
   private toModelMessages(messages: AgentLlmMessage[]): ModelMessage[] {
     const result: ModelMessage[] = [];
     for (const message of messages) {
       if (message.role === "tool") {
         result.push({
           role: "assistant",
-          content: [{ type: "tool-call", toolCallId: message.id, toolName: message.tool, input: JSON.stringify(message.args ?? {}) }],
+          content: [{ type: "tool-call", toolCallId: message.id, toolName: message.tool, input: { operation: message.operation, ...message.args } }],
         } as ModelMessage);
         let parsed: unknown = message.content;
         try {

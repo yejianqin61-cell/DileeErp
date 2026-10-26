@@ -1,7 +1,7 @@
-import { ForbiddenException, HttpException, Logger } from "@nestjs/common";
+import { ForbiddenException, HttpException, HttpStatus, Logger } from "@nestjs/common";
 import { AGENT_ACTIVE_STATES, AgentStateManager, type AgentRunRow } from "./state-manager";
 import type { AgentPrincipal } from "./query-permission.guard";
-import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmUsage } from "./llm-provider";
+import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmToolCall, AgentLlmUsage } from "./llm-provider";
 import type { QueryFact } from "./tools/query-fact";
 import { resolveAccessLevel, lowerAccessLevel, type AgentAccessLevel } from "./access-level";
 import type { AgentRoleReader } from "./query-permission.guard";
@@ -17,11 +17,45 @@ import type { AgentObservability } from "./observability";
  * 异常一律收进 failed 终态。多步工具循环有轮数上限（MAX_TOOL_STEPS），run 整体有
  * AGENT_RUN_TIMEOUT_MS 超时（默认 120s）—— 这与「输入 token 不限额」是两个不同的控制项。
  * 超窗（MODEL_CONTEXT_EXCEEDED）由 provider 层映射，统一走这里的 failed 收口。
+ *
+ * 工具级失败分两类（2026-10-26 线上 ORDER_NOT_FOUND 修复）：
+ *   - 可回传失败（订单不存在、参数不合法、未注册、档位不允许、未先搜索）：作为 tool 结果
+ *     回喂模型，让它在下一轮改参数/先 search_orders；受失败预算约束，防死循环；
+ *   - 致命失败（撤权、取消、超时、非业务异常）：仍直接收进 failed 终态。
  */
 
-const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。";
+const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。订单号必须先用 order_query 的 search_orders 取得精确值并原样使用（包含产品名、后缀与空格），不得根据用户输入猜测或截断。";
 export const AGENT_MAX_TOOL_STEPS = 8;
+export const AGENT_MAX_PLAN_STEPS = 4;
+export const AGENT_MAX_RECOVERABLE_TOOL_FAILURES = 3;
 const DEFAULT_RUN_TIMEOUT_MS = 120_000;
+
+/** 可回传给模型自纠的工具级失败码；其余异常一律终止本轮。 */
+const RECOVERABLE_TOOL_ERROR_CODES = new Set([
+  "ORDER_NOT_FOUND",
+  "ORDER_SEARCH_REQUIRED",
+  "AGENT_TOOL_ARGUMENT_INVALID",
+  "AGENT_TOOL_UNKNOWN",
+  "AGENT_OPERATION_NOT_IMPLEMENTED",
+  "AGENT_TOOL_FORBIDDEN",
+]);
+
+type ToolOutcome = { ok: true; fact: QueryFact } | { ok: false; code: string; message: string };
+
+function httpErrorCode(error: unknown): string | null {
+  if (!(error instanceof HttpException)) return null;
+  const response = error.getResponse();
+  if (typeof response !== "object" || response === null) return null;
+  const code = (response as { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
+function httpErrorMessage(error: HttpException, fallback: string): string {
+  const response = error.getResponse();
+  if (typeof response === "string") return response || fallback;
+  const message = (response as { message?: unknown }).message;
+  return typeof message === "string" && message.length > 0 ? message : fallback;
+}
 
 export type AgentOrchestratorOptions = { runTimeoutMs?: number; observability?: AgentObservability };
 
@@ -73,8 +107,11 @@ export class AgentOrchestrator {
     ];
 
     const facts: QueryFact[] = [];
-    let executed = 0;
+    /** 本轮 search_orders 返回过的精确 order_no：根查询只允许使用这里的值。 */
+    const searchedOrderNos = new Set<string>();
+    let attempted = 0;
     let modelSteps = 0;
+    let recoverableFailures = 0;
     const planOnce = async (): Promise<AgentLlmPlan> => {
       const planStartedAt = Date.now();
       const plan = await this.provider.plan(messages, tools, signal);
@@ -85,17 +122,33 @@ export class AgentOrchestrator {
     const firstPlan = await planOnce();
     if (firstPlan.toolCalls.length > 0) {
       await this.state.transitionAndAppend(runId, { from: "planning", to: "querying" });
-      // 多步循环：每轮 plan 可提出多个调用，同一 run 内按顺序执行；轮数与总数受 MAX_TOOL_STEPS 约束。
+      // 多步循环：每轮 plan 可提出多个调用，同一 run 内按顺序执行；轮数与调用总数分别受上限约束。
       let calls = firstPlan.toolCalls;
-      while (calls.length > 0 && executed < AGENT_MAX_TOOL_STEPS) {
+      while (calls.length > 0 && attempted < AGENT_MAX_TOOL_STEPS && modelSteps < AGENT_MAX_PLAN_STEPS) {
         for (const call of calls) {
-          if (executed >= AGENT_MAX_TOOL_STEPS) break;
-          const fact = await this.executeTool(runId, principal, call, signal);
-          facts.push(fact);
-          messages.push({ role: "tool", id: call.id, tool: call.tool, args: call.args, content: JSON.stringify(fact) });
-          executed += 1;
+          if (attempted >= AGENT_MAX_TOOL_STEPS) {
+            this.dropCall(runId, principal, call, "call_budget");
+            continue;
+          }
+          attempted += 1;
+          const guard = this.searchGuardViolation(call, searchedOrderNos);
+          const outcome = guard
+            ? await this.rejectBeforeExecution(runId, principal, call, guard.code, guard.message)
+            : await this.executeTool(runId, principal, call, signal);
+          if (outcome.ok) {
+            facts.push(outcome.fact);
+            this.rememberSearchedOrderNos(searchedOrderNos, outcome.fact);
+            messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: JSON.stringify(outcome.fact) });
+            continue;
+          }
+          // 可回传失败：错误信封进 tool 消息，模型下一轮可改参数或先搜索；受失败预算约束。
+          recoverableFailures += 1;
+          messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: JSON.stringify({ error: { code: outcome.code, message: outcome.message } }) });
+          if (recoverableFailures >= AGENT_MAX_RECOVERABLE_TOOL_FAILURES) {
+            throw new HttpException({ code: "AGENT_TOOL_RETRIES_EXHAUSTED", message: "工具连续失败，本次查询无法继续，请换个问法或稍后重试", details: [] }, HttpStatus.UNPROCESSABLE_ENTITY);
+          }
         }
-        if (executed >= AGENT_MAX_TOOL_STEPS) break;
+        if (attempted >= AGENT_MAX_TOOL_STEPS || modelSteps >= AGENT_MAX_PLAN_STEPS) break;
         const next = await planOnce();
         calls = next.toolCalls;
       }
@@ -103,7 +156,7 @@ export class AgentOrchestrator {
 
     // 查询结束后重查角色：运行中被降权的 run 在最终回答前就地终止（模块设计）。
     await this.assertStillAuthorized(run, principal.user.id);
-    await this.state.transitionAndAppend(runId, { from: facts.length > 0 || executed > 0 ? "querying" : "planning", to: "responding" });
+    await this.state.transitionAndAppend(runId, { from: facts.length > 0 || attempted > 0 ? "querying" : "planning", to: "responding" });
 
     let answer = "";
     let chunks = 0;
@@ -137,7 +190,55 @@ export class AgentOrchestrator {
     });
   }
 
-  private async executeTool(runId: string, principal: AgentPrincipal, call: ToolCall, signal: AbortSignal): Promise<QueryFact> {
+  /**
+   * 根查询的运行时守卫：非 search_orders 的 operation 只能使用**本轮** search_orders 返回的精确
+   * order_no。命中即返回可回传失败 ORDER_SEARCH_REQUIRED，不触达数据库 —— 提示词是概率行为，
+   * 这里才是「先搜索再根查询」的契约。
+   */
+  private searchGuardViolation(call: AgentLlmToolCall, searchedOrderNos: Set<string>): { code: string; message: string } | null {
+    if (call.operation === "search_orders") return null;
+    const raw = call.args?.order_no;
+    const orderNo = typeof raw === "string" ? raw.trim() : "";
+    if (!orderNo) {
+      return { code: "ORDER_SEARCH_REQUIRED", message: "缺少 order_no。请先调用 order_query 的 search_orders，再原样使用返回的精确 order_no 查询该订单" };
+    }
+    if (!searchedOrderNos.has(orderNo)) {
+      return { code: "ORDER_SEARCH_REQUIRED", message: "order_no 不是本轮 search_orders 返回的精确值。请先调用 search_orders，并原样复制返回的 order_no（含产品名、后缀与空格）" };
+    }
+    return null;
+  }
+
+  /** 记录本轮 search_orders 的精确单号，作为后续根查询的白名单。 */
+  private rememberSearchedOrderNos(target: Set<string>, fact: QueryFact): void {
+    if (fact.operation !== "search_orders") return;
+    const rows = Array.isArray(fact.data) ? fact.data : [];
+    for (const row of rows) {
+      if (row === null || typeof row !== "object") continue;
+      const orderNo = (row as { order_no?: unknown }).order_no;
+      if (typeof orderNo === "string" && orderNo.trim().length > 0) target.add(orderNo.trim());
+    }
+  }
+
+  private dropCall(runId: string, principal: AgentPrincipal, call: AgentLlmToolCall, reason: "call_budget" | "plan_budget"): void {
+    // 丢弃的调用只记 operation 与原因，不记参数（R-11 脱敏）。
+    this.logger.warn(`run ${runId} 丢弃工具调用 ${call.tool}/${call.operation}（${reason}）`);
+    this.observability?.record(runId, { kind: "tool_dropped", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, reason });
+  }
+
+  /** 不触达数据库的运行时拒绝：仍发 running/failed 两个 tool_status，前端步骤与真实执行一致。 */
+  private async rejectBeforeExecution(runId: string, principal: AgentPrincipal, call: AgentLlmToolCall, code: string, message: string): Promise<ToolOutcome> {
+    await this.state.transitionAndAppend(runId, {
+      from: "querying",
+      events: [
+        { type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "running" } },
+        { type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "failed", code } },
+      ],
+    }).catch(() => {});
+    this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: 0, error_code: code });
+    return { ok: false, code, message };
+  }
+
+  private async executeTool(runId: string, principal: AgentPrincipal, call: ToolCall, signal: AbortSignal): Promise<ToolOutcome> {
     await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "running" } }] });
     const startedAt = Date.now();
     try {
@@ -151,12 +252,15 @@ export class AgentOrchestrator {
         ],
       });
       this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "completed", result_rows: Array.isArray(fact.data) ? fact.data.length : 1, duration_ms: Date.now() - startedAt });
-      return fact;
+      return { ok: true, fact };
     } catch (error) {
       // tool_status 只发名称与失败状态，不发原始参数（工程布局「JSON 与 SSE 协议」）。
-      const code = error instanceof HttpException ? (error.getResponse() as { code?: string }).code ?? "AGENT_TOOL_FAILED" : "AGENT_TOOL_FAILED";
+      const code = httpErrorCode(error) ?? "AGENT_TOOL_FAILED";
+      const message = error instanceof HttpException ? httpErrorMessage(error, "查询执行失败") : "查询执行失败，请稍后重试";
       await this.state.transitionAndAppend(runId, { from: "querying", events: [{ type: "tool_status", payload: { tool: call.tool, operation: call.operation, status: "failed", code } }] }).catch(() => {});
       this.observability?.record(runId, { kind: "tool_executed", user_id: principal.user.id, access_level: principal.accessLevel, operation: call.operation, status: "failed", result_rows: 0, duration_ms: Date.now() - startedAt, error_code: code });
+      // 可回传失败交给循环回喂模型；其余（撤权/取消/超时/非业务异常）终止本轮。
+      if (error instanceof HttpException && RECOVERABLE_TOOL_ERROR_CODES.has(code)) return { ok: false, code, message };
       throw error;
     }
   }

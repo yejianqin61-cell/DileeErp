@@ -15,6 +15,7 @@ export type AgentObservabilityEvent =
   | { kind: "gate_denied"; user_id: string; active_runs: number }
   | { kind: "model_step"; user_id: string; access_level: string; model: string; step: number; duration_ms: number; tool_calls: number }
   | { kind: "tool_executed"; user_id: string; access_level: string; operation: string; status: "completed" | "failed"; result_rows: number; duration_ms: number; error_code?: string }
+  | { kind: "tool_dropped"; user_id: string; access_level: string; operation: string; reason: "call_budget" | "plan_budget" }
   | { kind: "run_completed"; user_id: string; access_level: string; model: string; duration_ms: number; usage: { input_tokens?: number; output_tokens?: number; tool_calls: number; answer_chunks: number } }
   | { kind: "run_failed"; user_id: string; access_level: string; error_code: string; duration_ms: number }
   | { kind: "run_cancelled"; user_id: string; access_level: string };

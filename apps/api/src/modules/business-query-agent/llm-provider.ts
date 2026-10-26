@@ -11,8 +11,12 @@ export type AgentLlmMessage =
   | { role: "system"; content: string }
   | { role: "user"; content: string }
   | { role: "assistant"; content: string }
-  /** 工具结果消息自包含：id 关联调用、args 供 provider 合成 assistant tool-call、content 是 QueryFact JSON。 */
-  | { role: "tool"; id: string; tool: AgentToolName; args: Record<string, unknown>; content: string };
+  /**
+   * 工具结果消息自包含：id 关联调用、operation + args 供 provider 原样重放 assistant tool-call
+   * （AI SDK v7 的 @ai-sdk/deepseek 会把 input 对象序列化成 arguments，不能再手工 JSON.stringify）、
+   * content 是 QueryFact JSON 或工具失败信封 `{error:{code,message}}`。
+   */
+  | { role: "tool"; id: string; tool: AgentToolName; operation: string; args: Record<string, unknown>; content: string };
 
 /** 模型请求的一次工具调用。`id` 是工具结果往返的关联键（DeepSeek 的 toolCallId）。 */
 export type AgentLlmToolCall = { id: string; tool: AgentToolName; operation: string; args: Record<string, unknown> };
