@@ -23,4 +23,14 @@ describe("BusinessQueryPage · 刷新恢复", () => {
     await waitFor(() => expect(stream).toHaveBeenCalledWith(expect.objectContaining({ runId: "r-1", lastSeq: 7 })));
     expect(api.post).not.toHaveBeenCalled();
   });
+
+  it("恢复中的 run 在首个答案前失败时，页面仍显示稳定错误", async () => {
+    api.get.mockResolvedValueOnce({ data: { sessions: [{ session_id: "s-1" }] } });
+    api.get.mockResolvedValueOnce({ data: { session_id: "s-1", runs: [{ run_id: "r-2", state: "responding", question: "订单进度", answer: "", sources: [], latest_seq: 1, error_code: null, access_level: "operational", created_at: "2026-10-26" }] } });
+    stream.mockImplementationOnce(async (options: { onEvent: (event: unknown) => void }) => options.onEvent({ seq: 2, type: "error", data: { code: "AGENT_RUN_TIMEOUT", message: "本次回答超时，请重试" } }));
+
+    render(<BusinessQueryPage />);
+
+    expect(await screen.findByTestId("business-query-error")).toHaveTextContent("本次回答超时，请重试");
+  });
 });

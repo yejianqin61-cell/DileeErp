@@ -147,7 +147,7 @@ export default function BusinessQueryPage() {
       </div>)}
     </section>}
 
-    {(state.answer || busy) && <section className="rounded-lg border bg-card p-4" aria-label="回答">
+    {(state.answer || busy || state.phase === "error") && <section className="rounded-lg border bg-card p-4" aria-label="回答">
       {state.answer ? <p className="whitespace-pre-wrap text-sm leading-6" data-testid="business-query-answer">{state.answer}{busy && <span className="animate-pulse">▍</span>}</p> : <p className="text-sm text-muted-foreground">正在组织查询…</p>}
       {state.sources.length > 0 && <footer className="mt-3 border-t pt-2 text-xs text-muted-foreground" data-testid="business-query-sources">
         来源：{state.sources.map((source, index) => <span key={`${source.business_type}-${source.business_no}-${index}`} className="mr-2">{sourceLabel(source)}</span>)}
