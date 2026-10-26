@@ -44,11 +44,11 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   row("sales_query", "get_customer", { implemented: true }),
   row("sales_query", "get_bom", { implemented: true }),
   row("sales_query", "get_sales_returns", { implemented: true }),
-  // procurement_query（4）
-  row("procurement_query", "get_purchase_plans"),
-  row("procurement_query", "get_purchase_orders"),
-  row("procurement_query", "get_receipts"),
-  row("procurement_query", "get_incoming_inspections"),
+  // procurement_query（4）—— P3-T3 起采购领域全部实现
+  row("procurement_query", "get_purchase_plans", { implemented: true }),
+  row("procurement_query", "get_purchase_orders", { implemented: true }),
+  row("procurement_query", "get_receipts", { implemented: true }),
+  row("procurement_query", "get_incoming_inspections", { implemented: true }),
   // production_query（4）
   row("production_query", "get_production_orders"),
   row("production_query", "get_operation_progress"),
