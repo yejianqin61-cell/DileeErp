@@ -80,6 +80,11 @@ export function reduce(state: BusinessQueryState, action: BusinessQueryAction): 
 }
 
 function reduceEvent(state: BusinessQueryState, event: BusinessQueryEvent): BusinessQueryState {
+  // ACCESS_REVOKED 是服务端专用的 seq=0 控制帧，必须绕过重放去重与终态锁；
+  // 已在授权时渲染的字节无法收回，但本地缓存不能再被新档位续接或复用。
+  if (event.type === "error" && event.data.code === "ACCESS_REVOKED") {
+    return { ...state, phase: "error", answer: "", sources: [], toolSteps: [], error: { code: "ACCESS_REVOKED", message: String(event.data.message ?? "当前档位已无法读取该回答") } };
+  }
   // 终态锁死 + seq 去重：迟到的重复事件整个忽略（不产生新对象，渲染也不抖动）。
   if (TERMINAL_PHASES.has(state.phase)) return state;
   if (!Number.isInteger(event.seq) || event.seq <= state.lastSeq) return state;

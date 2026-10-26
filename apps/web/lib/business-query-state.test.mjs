@@ -66,6 +66,16 @@ test("error 事件：进入 error，保留已收片段并标记未完成", () =>
   assert.equal(failed.error?.code, "AGENT_INTERNAL_ERROR");
 });
 
+test("ACCESS_REVOKED：即使 SSE 的专用序号为 0，也清掉已缓存的答案、来源和工具片段", () => {
+  const withAnswer = reduce(reduce(streaming, { type: "EVENT", event: { seq: 2, type: "answer_delta", data: { text: "财务金额" } } }), { type: "EVENT", event: { seq: 3, type: "source", data: { sources: [{ business_type: "customer_payment", business_no: "CP-1" }] } } });
+  const revoked = reduce(withAnswer, { type: "EVENT", event: { seq: 0, type: "error", data: { code: "ACCESS_REVOKED", message: "当前档位已无法读取该回答" } } });
+  assert.equal(revoked.phase, "error");
+  assert.equal(revoked.answer, "");
+  assert.deepEqual(revoked.sources, []);
+  assert.deepEqual(revoked.toolSteps, []);
+  assert.equal(revoked.error?.code, "ACCESS_REVOKED");
+});
+
 test("cancelled 事件：进入 cancelled；done 状态的 run 不可再提交续接", () => {
   const cancelled = reduce(streaming, { type: "EVENT", event: { seq: 2, type: "cancelled", data: { state: "cancelled" } } });
   assert.equal(cancelled.phase, "cancelled");

@@ -36,8 +36,8 @@ export class StreamTransport {
     let lastSentAt = Date.now();
 
     // 先重放：Last-Event-ID 之后的事件按序补发；重放里就含终态事件则发完即关。
-    const replayed = await this.state.eventsAfter(run.id, afterSeq);
     if (!(await this.assertCanReceive(run, write))) return close(response);
+    const replayed = await this.state.eventsAfter(run.id, afterSeq);
     for (const event of replayed) {
       writeEvent(write, run.id, event.seq, event.type, event.createdAt.toISOString(), event.payload);
       lastSeq = event.seq;
