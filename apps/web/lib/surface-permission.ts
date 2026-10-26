@@ -43,7 +43,7 @@ export const SECTION_LABELS: Record<SurfaceSection, string> = {
   finance: "财务",
   hr: "人事",
   account: "账号管理中心",
-  "business-query": "业务查询",
+  "business-query": "迪礼顾问",
 };
 
 /** 栏目对应的一级路径（账号中心与"回得去的地方"都用它）。 */

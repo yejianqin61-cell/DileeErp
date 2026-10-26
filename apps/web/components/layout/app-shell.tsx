@@ -15,6 +15,8 @@ import { AccessDenied } from "./access-denied";
 
 const navigation = [
   ["工作台", "/", LayoutDashboard],
+  // 迪礼顾问：AI 问答页，四类角色都能进；数据档位由后端另判。
+  ["迪礼顾问", "/business-query", Sparkles],
   ["生产", "/production", Factory],
   ["采购", "/procurement", ClipboardList],
   ["质检", "/qc", ShieldCheck],
@@ -24,8 +26,6 @@ const navigation = [
   ["客户与销售", "/sales", WalletCards],
   // 返单与总结（2026-09-26）：按**货号**看历次批次与单据；工作台是按订单号看推进状态。
   ["返单与总结", "/reorder", History],
-  // 业务查询（2026-10-25）：AI 问答页，四类角色都能进；数据档位（财务事实可见性）由后端另判。
-  ["业务查询", "/business-query", Sparkles],
   ["报表与告警", "/reports", Bell],
 ] as const;
 

@@ -117,7 +117,7 @@ export default function BusinessQueryPage() {
 
   const busy = isBusyPhase(state.phase);
   return <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6" data-testid="page-business-query">
-    <PageHeader title="业务查询" description="用一句话问订单、采购、生产与库存进展；财务类事实按角色档位开放，回答都带单据来源。" />
+    <PageHeader title="迪礼顾问" description="用一句话问订单、采购、生产与库存进展；财务类事实按角色档位开放，回答都带单据来源。" />
     {notice && <div className="ui-error text-sm" role="alert">{notice}</div>}
 
     <section className="rounded-lg border bg-card p-4">
