@@ -35,5 +35,6 @@ export interface AgentLlmProvider {
   /** 查询步骤的一轮：模型从授权清单里挑工具（可多步，由编排器循环驱动）。 */
   plan(messages: AgentLlmMessage[], tools: readonly AgentToolName[], signal: AbortSignal): Promise<AgentLlmPlan>;
   /** 最终回答步骤：分段产出（结尾给一次 usage），逐段作为 answer_delta 落库与推送。 */
-  streamAnswer(messages: AgentLlmMessage[], signal: AbortSignal): AsyncGenerator<AgentLlmStreamChunk>;
+  /** 最终回答禁止再执行工具；传 tools + toolChoice:none 让模型只能输出文本（否则会输出工具调用标记）。 */
+  streamAnswer(messages: AgentLlmMessage[], signal: AbortSignal, tools?: readonly AgentToolName[]): AsyncGenerator<AgentLlmStreamChunk>;
 }

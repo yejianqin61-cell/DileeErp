@@ -130,6 +130,28 @@ test("streamAnswer：系统指令经 instructions 进入流式模型调用", asy
   assert.deepEqual(user.content, [{ type: "text", text: "总结订单进度" }]);
 });
 
+test("streamAnswer：传入 tools 时强制 toolChoice none，最终回答不能再发起工具调用", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: {
+      stream: simulateReadableStream({
+        chunks: [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "查询完成" },
+          { type: "text-end", id: "t1" },
+          { type: "finish", usage: USAGE, finishReason: FINISH_STOP },
+        ],
+      }),
+    },
+  });
+  const chunks = [];
+  for await (const chunk of makeProvider(model).streamAnswer([{ role: "user", content: "q" }], SIGNAL, ["order_query", "production_query"])) chunks.push(chunk);
+  const call = model.doStreamCalls[0];
+  assert.equal(call.tools.length, 2, "必须声明工具，DeepSeek 才会进入受控的工具模式");
+  assert.equal(call.toolChoice?.type, "none", "最终回答必须 toolChoice=none，否则模型会输出原始 DSML 工具调用标记");
+  assert.equal(chunks.filter((chunk) => chunk.type === "text").length, 1);
+});
+
 test("plan：mock 抛上下文超限错误 → 稳定码 AGENT_MODEL_CONTEXT_EXCEEDED，原文不外传", async () => {
   const model = new MockLanguageModelV4({
     doGenerate: () => {

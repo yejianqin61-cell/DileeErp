@@ -14,8 +14,8 @@ import type { AgentObservability } from "./observability";
  * Agent orchestrator：唯一运行入口（模块设计「Agent orchestrator」行）。
  *
  * 推进 planning → querying → responding → completed；每个状态变更与事件同事务落库，
- * 异常一律收进 failed 终态。多步工具循环有轮数上限（MAX_TOOL_STEPS），run 整体有
- * AGENT_RUN_TIMEOUT_MS 超时（默认 120s）—— 这与「输入 token 不限额」是两个不同的控制项。
+ * 异常一律收进 failed 终态。多步工具循环有轮数与调用总数上限（默认 4 轮 / 16 次调用），
+ * run 整体有 AGENT_RUN_TIMEOUT_MS 超时（默认 120s）—— 这与「输入 token 不限额」是两个不同的控制项。
  * 超窗（MODEL_CONTEXT_EXCEEDED）由 provider 层映射，统一走这里的 failed 收口。
  *
  * 工具级失败分两类（2026-10-26 线上 ORDER_NOT_FOUND 修复）：
@@ -25,7 +25,7 @@ import type { AgentObservability } from "./observability";
  */
 
 const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。订单号必须先用 order_query 的 search_orders 取得精确值并原样使用（包含产品名、后缀与空格），不得根据用户输入猜测或截断。";
-export const AGENT_MAX_TOOL_STEPS = 8;
+export const AGENT_MAX_TOOL_STEPS = 16;
 export const AGENT_MAX_PLAN_STEPS = 4;
 export const AGENT_MAX_RECOVERABLE_TOOL_FAILURES = 3;
 const DEFAULT_RUN_TIMEOUT_MS = 120_000;
@@ -161,7 +161,7 @@ export class AgentOrchestrator {
     let answer = "";
     let chunks = 0;
     let providerUsage: AgentLlmUsage | null = null;
-    for await (const chunk of this.provider.streamAnswer(messages, signal)) {
+    for await (const chunk of this.provider.streamAnswer(messages, signal, tools)) {
       signal.throwIfAborted();
       if (chunk.type === "usage") {
         providerUsage = chunk.usage;

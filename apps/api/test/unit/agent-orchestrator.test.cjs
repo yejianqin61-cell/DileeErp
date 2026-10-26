@@ -286,13 +286,13 @@ test("运行时守卫：未先 search 的根查询不触达数据库，回传 OR
   assert.equal(JSON.parse(guardFeedback.content).error.code, "ORDER_SEARCH_REQUIRED");
 });
 
-test("调用预算：单轮 10 个调用只执行 8 个，超出部分丢弃且不产生 tool_status", async () => {
+test("调用预算：单轮 20 个调用只执行 16 个，超出部分丢弃且不产生 tool_status", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);
   const run = await planningRun(db, state);
   const provider = {
     async plan() {
-      return { toolCalls: Array.from({ length: 10 }, (_, index) => ({ id: `call-${index}`, tool: "order_query", operation: "search_orders", args: { q: `SO-${index}` } })) };
+      return { toolCalls: Array.from({ length: 20 }, (_, index) => ({ id: `call-${index}`, tool: "order_query", operation: "search_orders", args: { q: `SO-${index}` } })) };
     },
     async *streamAnswer() { yield { type: "text", text: "完成。" }; yield { type: "usage", usage: {} }; },
   };
@@ -301,9 +301,9 @@ test("调用预算：单轮 10 个调用只执行 8 个，超出部分丢弃且�
 
   await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
 
-  assert.equal(executor.calls.length, 8, "调用预算 8 之外的调用不得执行");
+  assert.equal(executor.calls.length, 16, "调用预算 16 之外的调用不得执行");
   const toolStatuses = db.store.events.filter((event) => event.runId === run.id && event.type === "tool_status");
-  assert.equal(toolStatuses.length, 16, "只应有 8 组 running/completed；被丢调用不发 tool_status");
+  assert.equal(toolStatuses.length, 32, "只应有 16 组 running/completed；被丢调用不发 tool_status");
 });
 
 test("非业务异常的错误文本不进事件流（可能夹带业务值）：对外只有稳定文案", async () => {

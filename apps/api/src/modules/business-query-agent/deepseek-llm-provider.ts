@@ -131,11 +131,16 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
     }
   }
 
-  async *streamAnswer(messages: AgentLlmMessage[], signal: AbortSignal): AsyncGenerator<AgentLlmStreamChunk> {
+  /**
+   * 最终回答。工具仍然作为声明传入但 `toolChoice: "none"`：DeepSeek 在没有工具声明时，
+   * 会继续输出原始工具调用标记（DSML 文本），被当成答案流给用户；强制 none 才能保证只产出文本。
+   */
+  async *streamAnswer(messages: AgentLlmMessage[], signal: AbortSignal, tools: readonly AgentToolName[] = []): AsyncGenerator<AgentLlmStreamChunk> {
     try {
       const result = streamText({
         model: this.model,
         ...this.promptFor(messages),
+        ...(tools.length > 0 ? { tools: this.toolSetFor(tools), toolChoice: "none" as const } : {}),
         abortSignal: this.composeSignal(signal),
       });
       for await (const delta of result.textStream) {
