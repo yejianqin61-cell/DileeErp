@@ -66,7 +66,7 @@ jobs:
       INITIAL_ADMIN_USERNAME: admin
       INITIAL_ADMIN_PASSWORD: DileeAdmin2026Test
       INITIAL_ADMIN_DISPLAY_NAME: Dilee Admin
-      AGENT_FAKE_DELAY_MS: "500"
+      AGENT_FAKE_DELAY_MS: "1500"
       COOKIE_SECURE: "false"
       PORT: "3001"
     steps:
