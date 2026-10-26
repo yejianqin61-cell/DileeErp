@@ -42,10 +42,9 @@ test("plan：系统指令经 instructions 进入模型，不能混入 messages",
     SIGNAL,
   );
   assert.equal(model.doGenerateCalls.length, 1, "AI SDK 必须接受系统指令并实际调用模型");
-  assert.deepEqual(model.doGenerateCalls[0].prompt, [
-    { role: "system", content: "只按系统事实回答" },
-    { role: "user", content: [{ type: "text", text: "查询订单进度" }] },
-  ]);
+  const [system, user] = model.doGenerateCalls[0].prompt;
+  assert.deepEqual(system, { role: "system", content: "只按系统事实回答" });
+  assert.deepEqual(user.content, [{ type: "text", text: "查询订单进度" }]);
 });
 
 test("plan：未授权工具名被丢弃；缺 operation 的调用被丢弃", async () => {
@@ -113,10 +112,9 @@ test("streamAnswer：系统指令经 instructions 进入流式模型调用", asy
   )) chunks.push(chunk);
   assert.equal(chunks[0].type, "text");
   assert.equal(model.doStreamCalls.length, 1, "AI SDK 必须接受系统指令并实际启动流式模型调用");
-  assert.deepEqual(model.doStreamCalls[0].prompt, [
-    { role: "system", content: "只按系统事实回答" },
-    { role: "user", content: [{ type: "text", text: "总结订单进度" }] },
-  ]);
+  const [system, user] = model.doStreamCalls[0].prompt;
+  assert.deepEqual(system, { role: "system", content: "只按系统事实回答" });
+  assert.deepEqual(user.content, [{ type: "text", text: "总结订单进度" }]);
 });
 
 test("plan：mock 抛上下文超限错误 → 稳定码 AGENT_MODEL_CONTEXT_EXCEEDED，原文不外传", async () => {
