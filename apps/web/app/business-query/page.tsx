@@ -47,6 +47,20 @@ export default function BusinessQueryPage() {
         const latest = snapshot.runs.at(-1);
         if (latest) {
           dispatch({ type: "SNAPSHOT_RESTORED", snapshot: { runId: latest.run_id, state: latest.state, question: latest.question, answer: latest.answer, sources: latest.sources, latestSeq: latest.latest_seq, errorCode: latest.error_code } });
+          if (["planning", "querying", "responding"].includes(latest.state)) {
+            const abort = new AbortController();
+            streamAbort.current = abort;
+            void followRunStream({
+              runId: latest.run_id,
+              lastSeq: latest.latest_seq,
+              signal: abort.signal,
+              onOpen: () => dispatch({ type: "CONNECTED" }),
+              onEvent: (event) => dispatch({ type: "EVENT", event }),
+              onRetry: () => dispatch({ type: "DISCONNECTED" }),
+            }).catch((cause) => {
+              if (!cancelled) setNotice(cause instanceof Error ? cause.message : "恢复连接失败，请刷新页面重试");
+            }).finally(() => { if (streamAbort.current === abort) streamAbort.current = null; });
+          }
         }
       } catch (cause) {
         if (!cancelled) setLoadError(cause instanceof ApiClientError ? cause.message : "无法连接业务查询服务");
