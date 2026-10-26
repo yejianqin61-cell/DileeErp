@@ -82,6 +82,12 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
     return result;
   }
 
+  /** AI SDK 7 只接受 instructions 里的系统指令，不能把 system 混入 messages。 */
+  private promptFor(messages: AgentLlmMessage[]) {
+    const instructions = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
+    return { ...(instructions ? { instructions } : {}), messages: this.toModelMessages(messages.filter((message) => message.role !== "system")) };
+  }
+
   private toolSetFor(tools: readonly AgentToolName[]): ToolSet {
     const set: ToolSet = {};
     for (const name of tools) {
@@ -94,7 +100,7 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
     try {
       const result = await generateText({
         model: this.model,
-        messages: this.toModelMessages(messages),
+        ...this.promptFor(messages),
         tools: this.toolSetFor(tools),
         toolChoice: "auto",
         stopWhen: stepCountIs(1),
@@ -119,7 +125,7 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
     try {
       const result = streamText({
         model: this.model,
-        messages: this.toModelMessages(messages),
+        ...this.promptFor(messages),
         abortSignal: this.composeSignal(signal),
       });
       for await (const delta of result.textStream) {
