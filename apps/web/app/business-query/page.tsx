@@ -134,7 +134,7 @@ export default function BusinessQueryPage() {
         <Button onClick={() => void submit()} disabled={busy || !input.trim()} data-testid="business-query-submit">
           <SendHorizonal size={15} className="mr-1" />提问
         </Button>
-        {busy && <Button variant="secondary" onClick={() => void cancel()} data-testid="business-query-cancel"><Square size={14} className="mr-1" />取消</Button>}
+        {busy && state.runId && <Button variant="secondary" onClick={() => void cancel()} data-testid="business-query-cancel"><Square size={14} className="mr-1" />取消</Button>}
         {state.phase !== "idle" && <span className="text-sm text-muted-foreground" data-testid="business-query-phase">{busy && <Loader2 size={13} className="mr-1 inline animate-spin" />}{PHASE_LABELS[state.phase]}</span>}
       </div>
     </section>
