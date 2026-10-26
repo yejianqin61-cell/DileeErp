@@ -48,12 +48,13 @@ export class StreamTransport {
     while (!controller.signal.aborted && !response.writableEnded) {
       await sleep(POLL_INTERVAL_MS, controller.signal);
       if (controller.signal.aborted || response.writableEnded) break;
+      // 轮询批次也必须先验权；否则降权后的连接虽不发送数据，仍会先读出旧 run 的新事件。
+      if (!(await this.assertCanReceive(run, write))) return close(response);
       const events = await this.state.eventsAfter(run.id, lastSeq).catch(() => []);
       if (events.length === 0) {
         if (Date.now() - lastSentAt >= HEARTBEAT_MS) { write(": ping\n\n"); lastSentAt = Date.now(); }
         continue;
       }
-      if (!(await this.assertCanReceive(run, write))) return close(response);
       for (const event of events) {
         writeEvent(write, run.id, event.seq, event.type, event.createdAt.toISOString(), event.payload);
         lastSeq = event.seq;
