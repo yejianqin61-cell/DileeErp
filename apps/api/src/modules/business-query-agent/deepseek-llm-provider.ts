@@ -3,7 +3,7 @@ import { generateText, jsonSchema, stepCountIs, streamText, tool as defineTool, 
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import type { AgentLlmMessage, AgentLlmPlan, AgentLlmProvider, AgentLlmStreamChunk } from "./llm-provider";
 import { mapModelError } from "./model-errors";
-import { AGENT_TOOLS, type AgentToolName } from "./tools/tool-registry";
+import { AGENT_TOOLS, TOOL_CAPABILITIES, type AgentToolName } from "./tools/tool-registry";
 
 /**
  * DeepSeek provider（R-4）：模型协议、参数解析与消息组装交给 AI SDK，
@@ -26,18 +26,21 @@ const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
   finance_query: "查询某张订单的应收、应付、收付款、对账、成本利润与人工（仅财务档）",
 };
 
-/** 领域工具统一输入形状：以 operation 分发；执行侧（Tool executor）按 operation 严格校验。 */
-const DOMAIN_INPUT_SCHEMA = jsonSchema<{ operation: string; order_no?: string; q?: string; page?: number }>({
-  type: "object",
-  properties: {
-    operation: { type: "string", description: "要执行的内部查询能力，例如 search_orders" },
-    order_no: { type: "string", description: "当前订单号；除 search_orders 外必填" },
-    q: { type: "string", description: "搜索关键字；仅 search_orders 使用" },
-    page: { type: "number", description: "页码，从 1 开始" },
-  },
-  required: ["operation"],
-  additionalProperties: false,
-});
+/** 每个领域工具只公布其在注册表中登记的 operation，执行器仍会二次校验。 */
+function domainInputSchema(tool: AgentToolName) {
+  const operations = TOOL_CAPABILITIES.filter((capability) => capability.tool === tool).map((capability) => capability.operation);
+  return jsonSchema<{ operation: string; order_no?: string; q?: string; page?: number }>({
+    type: "object",
+    properties: {
+      operation: { type: "string", enum: operations, description: `要执行的内部查询能力：${operations.join("、")}` },
+      order_no: { type: "string", description: "当前订单号；订单搜索以外的 operation 必填" },
+      q: { type: "string", description: "搜索关键字；仅 order_query/search_orders 使用" },
+      page: { type: "number", description: "页码，从 1 开始" },
+    },
+    required: ["operation"],
+    additionalProperties: false,
+  });
+}
 
 export class DeepSeekLlmProvider implements AgentLlmProvider {
   readonly name: string;
@@ -91,7 +94,7 @@ export class DeepSeekLlmProvider implements AgentLlmProvider {
   private toolSetFor(tools: readonly AgentToolName[]): ToolSet {
     const set: ToolSet = {};
     for (const name of tools) {
-      set[name] = defineTool({ description: TOOL_DESCRIPTIONS[name], inputSchema: DOMAIN_INPUT_SCHEMA });
+      set[name] = defineTool({ description: TOOL_DESCRIPTIONS[name], inputSchema: domainInputSchema(name) });
     }
     return set;
   }
