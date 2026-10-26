@@ -35,9 +35,11 @@ test("plan：每个领域工具的 operation schema 只允许本领域登记能�
   });
   await makeProvider(model).plan([{ role: "user", content: "查询订单采购进度" }], ["order_query", "procurement_query"], SIGNAL);
   const schemas = Object.fromEntries(model.doGenerateCalls[0].tools.map((tool) => [tool.name, tool.inputSchema]));
+  const orderTool = model.doGenerateCalls[0].tools.find((tool) => tool.name === "order_query");
   assert.deepEqual(schemas.order_query.properties.operation.enum, ["search_orders", "get_order_overview", "get_order_status", "get_order_timeline", "get_order_alerts", "get_order_attachments"]);
   assert.deepEqual(schemas.procurement_query.properties.operation.enum, ["get_purchase_plans", "get_purchase_orders", "get_receipts", "get_incoming_inspections"]);
   assert.ok(!schemas.procurement_query.properties.operation.enum.includes("search_orders"), "采购工具不得接受订单搜索 operation");
+  assert.match(orderTool.description, /先调用 search_orders/, "订单根查询前必须先取得系统返回的精确 order_no");
 });
 
 test("plan：系统指令经 instructions 进入模型，不能混入 messages", async () => {
