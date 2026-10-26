@@ -71,7 +71,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           <Button variant="ghost" size="icon" title="退出登录" aria-label="退出登录" onClick={() => void logout()} data-testid="logout-button"><LogOut size={16} /></Button>
         </div>
       </header>
-      <main className="content-area" data-testid="app-main"><SessionContext.Provider value={profile}>{allowed ? children : <AccessDenied profile={profile} pathname={pathname} />}</SessionContext.Provider></main>
+      {/* 迪礼顾问是唯一「工作区自己滚动」的页面：把内容区定成视口高度并关掉外层滚动，
+          对话区内部再单独滚动（styles 见 globals.css 的 .content-area[data-layout="fixed"]）。
+          其它页面保持原来的整页滚动。 */}
+      <main className="content-area" data-testid="app-main" data-layout={pathname.startsWith("/business-query") ? "fixed" : undefined}><SessionContext.Provider value={profile}>{allowed ? children : <AccessDenied profile={profile} pathname={pathname} />}</SessionContext.Provider></main>
     </div>
   </div>;
 }

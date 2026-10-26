@@ -65,6 +65,10 @@ const EXEMPT = new Map(Object.entries({
   // 打印/导出件：版式是对准纸样的，列宽由表格 own 的 CSS 决定，不是「内容超长要省略」的场景。
   "components/finance/bank-transfer-slip-editor.tsx": "跨行转账单正文与签字栏是打印件，版式照 example/财务/跨行转账单.html，.transfer-slip-table 已 table-layout:fixed",
   "components/finance/voucher-workspace.tsx": "记账凭证纸是打印/导出 PNG 用的版式件（.voucher-sheet-table），列宽服务纸样；该文件的 2 张 DataTable 已达标（见盘点已达标清单）",
+  // AI 对话答案里的表格：列由模型当场生成，构建时不存在列定义，也不可能预先给每列宽度；
+  // 对话阅读的正确做法是「表格自己横向滚」（用户要求「Markdown 表格应支持横向滚动」），
+  // 塞进固定列宽 + 省略号会把答案裁成看不懂的样子。样式见 globals.css 的 .agent-md-table-wrap。
+  "components/agent/agent-markdown.tsx": "AI 回答的 Markdown 表格由模型生成，列数与列宽构建时未知；按对话阅读要求用 .agent-md-table-wrap 横向滚动，不适用 ERP 数据表的列宽/省略号治理",
 }));
 
 function walk(dir) {
