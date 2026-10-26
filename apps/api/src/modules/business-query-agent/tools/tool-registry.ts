@@ -64,9 +64,9 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   // finance_query（7，仅 full）
   row("finance_query", "get_receivables", { minAccess: "full", implemented: true }),
   row("finance_query", "get_customer_payments", { minAccess: "full", implemented: true }),
-  row("finance_query", "get_payables", { minAccess: "full" }),
-  row("finance_query", "get_supplier_payments", { minAccess: "full" }),
-  row("finance_query", "get_reconciliations", { minAccess: "full" }),
+  row("finance_query", "get_payables", { minAccess: "full", implemented: true }),
+  row("finance_query", "get_supplier_payments", { minAccess: "full", implemented: true }),
+  row("finance_query", "get_reconciliations", { minAccess: "full", implemented: true }),
   row("finance_query", "get_order_cost_profit", { minAccess: "full" }),
   row("finance_query", "get_order_payroll", { minAccess: "full" }),
 ];
