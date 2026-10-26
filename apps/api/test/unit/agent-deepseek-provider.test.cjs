@@ -29,6 +29,25 @@ test("plan：单步返回工具调用，operation 从参数拆出、其余参数
   assert.deepEqual(plan.toolCalls, [{ id: "call-1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }]);
 });
 
+test("plan：系统指令经 instructions 进入模型，不能混入 messages", async () => {
+  const model = new MockLanguageModelV4({
+    doGenerate: { content: [], finishReason: FINISH_STOP, usage: USAGE },
+  });
+  await makeProvider(model).plan(
+    [
+      { role: "system", content: "只按系统事实回答" },
+      { role: "user", content: "查询订单进度" },
+    ],
+    ["order_query"],
+    SIGNAL,
+  );
+  assert.equal(model.doGenerateCalls.length, 1, "AI SDK 必须接受系统指令并实际调用模型");
+  assert.deepEqual(model.doGenerateCalls[0].prompt, [
+    { role: "system", content: "只按系统事实回答" },
+    { role: "user", content: [{ type: "text", text: "查询订单进度" }] },
+  ]);
+});
+
 test("plan：未授权工具名被丢弃；缺 operation 的调用被丢弃", async () => {
   const model = new MockLanguageModelV4({
     doGenerate: {
@@ -68,6 +87,36 @@ test("streamAnswer：文本增量逐段产出，结尾给 usage chunk", async ()
   assert.equal(usage.usage.model, "deepseek-chat");
   assert.equal(usage.usage.input_tokens, 10);
   assert.equal(usage.usage.output_tokens, 5);
+});
+
+test("streamAnswer：系统指令经 instructions 进入流式模型调用", async () => {
+  const model = new MockLanguageModelV4({
+    doStream: {
+      stream: simulateReadableStream({
+        chunks: [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "系统事实" },
+          { type: "text-end", id: "t1" },
+          { type: "finish", usage: USAGE, finishReason: FINISH_STOP },
+        ],
+      }),
+    },
+  });
+  const chunks = [];
+  for await (const chunk of makeProvider(model).streamAnswer(
+    [
+      { role: "system", content: "只按系统事实回答" },
+      { role: "user", content: "总结订单进度" },
+    ],
+    SIGNAL,
+  )) chunks.push(chunk);
+  assert.equal(chunks[0].type, "text");
+  assert.equal(model.doStreamCalls.length, 1, "AI SDK 必须接受系统指令并实际启动流式模型调用");
+  assert.deepEqual(model.doStreamCalls[0].prompt, [
+    { role: "system", content: "只按系统事实回答" },
+    { role: "user", content: [{ type: "text", text: "总结订单进度" }] },
+  ]);
 });
 
 test("plan：mock 抛上下文超限错误 → 稳定码 AGENT_MODEL_CONTEXT_EXCEEDED，原文不外传", async () => {
