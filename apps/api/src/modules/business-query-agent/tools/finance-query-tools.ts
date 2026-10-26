@@ -1,4 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { BomMaterialCostService } from "../../finance/finance-report-cost.service";
+import { localRevenueOf, salesAmountOf, salesExchangeRate } from "../../finance/finance-report.domain";
 import type { AgentOrderRoot } from "./order-root";
 
 /**
@@ -6,7 +8,7 @@ import type { AgentOrderRoot } from "./order-root";
  * 闸门到达这里；本文件仍使用 Agent 的只读 client 和窄 DTO，不复用会带
  * 写依赖或自由备注的领域服务返回。
  */
-export type FinanceQueryStore = Pick<PrismaClient, "receivableSource" | "customerPayment" | "supplierPayableEntry" | "supplierPayment" | "receivableReconciliation" | "supplierPayableReconciliation">;
+export type FinanceQueryStore = Pick<PrismaClient, "receivableSource" | "customerPayment" | "supplierPayableEntry" | "supplierPayment" | "receivableReconciliation" | "supplierPayableReconciliation" | "salesOrder" | "finishedGoodsOutbound" | "outsourceDirectShipment" | "employeeDailyReport" | "bom" | "purchaseOrderItem">;
 
 const page = (value: number) => ({ skip: (value - 1) * 20, take: 20 });
 
@@ -145,4 +147,63 @@ export async function getReconciliations(client: FinanceQueryStore, root: AgentO
     } })),
   ].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()).slice((currentPage - 1) * 20, currentPage * 20);
   return { data: rows.map((row) => row.data), sources: rows.map((row) => row.source) };
+}
+
+/**
+ * 报表服务的口径映射在这里以只读 client 重建：不注入含业务凭据的服务。
+ * ponytail: 此 operation 没有期间参数，因此沿用核算表的无期间语义，月度管理费不纳入。
+ */
+export async function getOrderCostProfit(client: FinanceQueryStore, root: AgentOrderRoot, _currentPage: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+  const orders = await client.salesOrder.findMany({
+    where: { orderNo: root.orderNo, deletedAt: null, status: { in: ["confirmed", "closed"] } },
+    select: { id: true, orderNo: true, currency: true, quantity: true, unit: true, totalAmount: true, receivableAmount: true, localCurrencyAmount: true },
+  });
+  if (!orders.length) {
+    return { data: [{ order_no: root.orderNo, shipped: false, cost_basis: "销售利润和核算表仅纳入已确认或已关闭且已出货的订单", footnotes: [`销售单状态不在核算范围：${root.orderNo}`] }], sources: [{ business_type: "sales_order", business_no: root.orderNo }] };
+  }
+  const order = orders[0];
+  const [outbounds, directShipments] = await Promise.all([
+    client.finishedGoodsOutbound.findMany({ where: { salesOrderId: order.id, deletedAt: null, status: { in: ["posted", "shipped", "signed"] } }, select: { quantity: true } }),
+    client.outsourceDirectShipment.findMany({ where: { orderNo: order.orderNo, deletedAt: null, status: "dispatched" }, select: { quantity: true } }),
+  ]);
+  const shippedQuantity = [...outbounds, ...directShipments].reduce((total, row) => total.plus(row.quantity.toString()), new Prisma.Decimal(0));
+  if (shippedQuantity.eq(0)) {
+    return { data: [{ order_no: root.orderNo, shipped: false, cost_basis: "销售利润和核算表仅纳入已出货订单", footnotes: [`尚未出货的销售单（未计入本表）：${root.orderNo}`] }], sources: [{ business_type: "sales_order", business_no: root.orderNo }] };
+  }
+  const costs = await new BomMaterialCostService(client as never).materialCosts([{ salesOrderId: order.id, quantity: order.quantity }]);
+  const cost = costs.get(order.id);
+  const labor = await client.employeeDailyReport.aggregate({ where: { orderNo: root.orderNo, deletedAt: null }, _sum: { calculatedAmount: true } });
+  const orderCurrency = { currency: order.currency, totalAmount: order.totalAmount, receivableAmount: order.receivableAmount, localCurrencyAmount: order.localCurrencyAmount };
+  const material = cost?.cost ?? new Prisma.Decimal(0);
+  const rate = salesExchangeRate(orderCurrency);
+  const materialLocal = rate ? material.mul(rate) : null;
+  const laborAmount = new Prisma.Decimal(labor._sum.calculatedAmount?.toString() ?? 0);
+  const totalCost = materialLocal ? materialLocal.plus(laborAmount) : laborAmount;
+  const revenue = localRevenueOf(orderCurrency);
+  const footnotes = [
+    ...(shippedQuantity.lt(order.quantity) ? [`部分出货的销售单（本表按整单计入）：${root.orderNo}（已出 ${shippedQuantity.toString()} / 订单 ${order.quantity.toString()}${order.unit ? ` ${order.unit}` : ""}）`] : []),
+    ...(cost?.missingPrice.length ? [`缺采购价物料（成本按 0 计入，毛利偏高）：${cost.missingPrice.map((item) => item.materialCode ? `${item.materialCode} ${item.materialName}` : item.materialName).join("、")}`] : []),
+    ...(!cost?.hasBom ? [`没有 BOM 或 BOM 无明细的销售单（成本按 0 计入，毛利偏高）：${root.orderNo}`] : []),
+    ...(revenue ? [] : [`本币收入缺失的订单（收入金额与利润留空）：${root.orderNo}`]),
+  ];
+  return {
+    data: [{
+      order_no: root.orderNo, shipped: true, currency: order.currency, sales_amount: salesAmountOf(orderCurrency)?.toString() ?? null, local_revenue_amount: revenue?.toString() ?? null,
+      material_cost_amount: materialLocal?.toString() ?? null, labor_amount: laborAmount.toString(), total_cost_amount: totalCost.toString(), profit_amount: revenue?.minus(totalCost).toString() ?? null,
+      cost_basis: "BOM 原料成本 + 订单关联日报人工；未指定期间，未纳入月度管理费", footnotes,
+    }],
+    sources: [{ business_type: "sales_order", business_no: root.orderNo }],
+  };
+}
+
+export async function getOrderPayroll(client: FinanceQueryStore, root: AgentOrderRoot, currentPage: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
+  const rows = await client.employeeDailyReport.findMany({
+    where: { orderNo: root.orderNo, deletedAt: null }, orderBy: [{ reportDate: "desc" }, { id: "desc" }], ...page(currentPage),
+    // 员工快照与工序快照可追溯日报；不投影身份、考勤、合同或自由备注。
+    select: { id: true, reportDate: true, employeeNameSnapshot: true, operationNameSnapshot: true, wageMode: true, quantity: true, unitPrice: true, calculatedAmount: true, productionOrderOperation: { select: { unit: { select: { name: true } } } } },
+  });
+  return {
+    data: rows.map((row) => ({ report_date: row.reportDate, employee_name: row.employeeNameSnapshot, operation_name: row.operationNameSnapshot, wage_mode: row.wageMode, quantity: row.quantity.toString(), unit: row.productionOrderOperation.unit?.name ?? null, unit_price: row.unitPrice.toString(), amount: row.calculatedAmount.toString() })),
+    sources: rows.map((row) => ({ business_type: "employee_daily_report", business_no: row.id })),
+  };
 }

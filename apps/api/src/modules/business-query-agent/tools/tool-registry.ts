@@ -67,8 +67,8 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   row("finance_query", "get_payables", { minAccess: "full", implemented: true }),
   row("finance_query", "get_supplier_payments", { minAccess: "full", implemented: true }),
   row("finance_query", "get_reconciliations", { minAccess: "full", implemented: true }),
-  row("finance_query", "get_order_cost_profit", { minAccess: "full" }),
-  row("finance_query", "get_order_payroll", { minAccess: "full" }),
+  row("finance_query", "get_order_cost_profit", { minAccess: "full", implemented: true }),
+  row("finance_query", "get_order_payroll", { minAccess: "full", implemented: true }),
 ];
 
 const CAPABILITY_INDEX = new Map(TOOL_CAPABILITIES.map((capability) => [`${capability.tool}:${capability.operation}`, capability]));
