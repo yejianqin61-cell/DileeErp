@@ -1,4 +1,5 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import type { Request } from "express";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { resolveAccessLevel, type AgentAccessLevel } from "./access-level";
@@ -29,12 +30,19 @@ export interface AgentRoleReader {
 export class QueryPermissionGuard implements CanActivate {
   // roleReader 是接口不是类，Nest 解析不了它的 token：用 AGENT_ROLE_READER 显式注入
   // （BusinessQueryAgentModule 提供的实现走只读连接）。
-  constructor(@Inject(AGENT_ROLE_READER) private readonly roleReader: AgentRoleReader) {}
+  constructor(
+    @Inject(AGENT_ROLE_READER) private readonly roleReader: AgentRoleReader,
+    @Inject(ConfigService) private readonly config?: Pick<ConfigService, "get">,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AgentAuthenticatedRequest>();
     const user = request.currentUser;
     if (!user) throw new UnauthorizedException();
+    // 回退开关在统一入口拒绝，确保没有新 run、角色查询或模型调用；保留所有 agent_* 历史数据。
+    if (this.config?.get<string>("BUSINESS_QUERY_ENABLED") === "false") {
+      throw new ForbiddenException({ code: "AGENT_DISABLED", message: "业务查询当前已关闭", details: [] });
+    }
     // 每个请求都重查：角色在会话期间可能被管理员改掉，缓存会把降权拖到下一次登录。
     const roleKeys = await this.roleReader.readActiveRoleKeys(user.id);
     const level = resolveAccessLevel(roleKeys);
