@@ -49,18 +49,18 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   row("procurement_query", "get_purchase_orders", { implemented: true }),
   row("procurement_query", "get_receipts", { implemented: true }),
   row("procurement_query", "get_incoming_inspections", { implemented: true }),
-  // production_query（4）
-  row("production_query", "get_production_orders"),
-  row("production_query", "get_operation_progress"),
-  row("production_query", "get_operation_reports"),
-  row("production_query", "get_outsource_flow"),
-  // warehouse_query（6）
-  row("warehouse_query", "get_raw_material_balance"),
-  row("warehouse_query", "get_inventory_facts"),
-  row("warehouse_query", "get_material_movements"),
-  row("warehouse_query", "get_finished_goods_qc"),
-  row("warehouse_query", "get_finished_goods_inbounds"),
-  row("warehouse_query", "get_finished_goods_outbounds"),
+  // production_query（4）—— P3-T4 起生产领域全部实现
+  row("production_query", "get_production_orders", { implemented: true }),
+  row("production_query", "get_operation_progress", { implemented: true }),
+  row("production_query", "get_operation_reports", { implemented: true }),
+  row("production_query", "get_outsource_flow", { implemented: true }),
+  // warehouse_query（6）—— P3-T5 起仓库领域全部实现
+  row("warehouse_query", "get_raw_material_balance", { implemented: true }),
+  row("warehouse_query", "get_inventory_facts", { implemented: true }),
+  row("warehouse_query", "get_material_movements", { implemented: true }),
+  row("warehouse_query", "get_finished_goods_qc", { implemented: true }),
+  row("warehouse_query", "get_finished_goods_inbounds", { implemented: true }),
+  row("warehouse_query", "get_finished_goods_outbounds", { implemented: true }),
   // finance_query（7，仅 full）
   row("finance_query", "get_receivables", { minAccess: "full" }),
   row("finance_query", "get_customer_payments", { minAccess: "full" }),

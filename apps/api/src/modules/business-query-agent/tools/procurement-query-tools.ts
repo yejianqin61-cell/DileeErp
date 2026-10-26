@@ -10,7 +10,9 @@ import type { AgentOrderRoot } from "./order-root";
 
 export type ProcurementQueryStore = Pick<PrismaClient, "purchasePlan" | "purchaseOrder" | "purchaseOrderItem" | "purchaseReceipt" | "incomingInspection">;
 
-type Snapshot = Record<string, unknown> | null | undefined;
+// Prisma Json may also be a scalar or array. The guard below accepts only
+// object snapshots with a string name; every other shape is absent.
+type Snapshot = unknown;
 const snapName = (snapshot: Snapshot): string | null => (snapshot && typeof snapshot === "object" && typeof (snapshot as { name?: unknown }).name === "string" ? (snapshot as { name: string }).name : null);
 
 export async function getPurchasePlans(client: ProcurementQueryStore, root: AgentOrderRoot, page: number): Promise<{ data: Record<string, unknown>[]; sources: { business_type: string; business_no: string }[] }> {
