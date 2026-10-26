@@ -73,3 +73,16 @@ test("QueryPermissionGuard：未登录（无 currentUser）→ 401，不查角�
   );
   assert.deepEqual(reader.seen, [], "未登录连角色都不该查");
 });
+
+test("QueryPermissionGuard：BUSINESS_QUERY_ENABLED=false → 403 且不查角色", async () => {
+  const reader = fakeRoleReader(["laoban"]);
+  const guard = new QueryPermissionGuard(reader, { get: () => "false" });
+  const request = { currentUser: { id: "u-3", username: "operator", display_name: "操作员" } };
+
+  await assert.rejects(
+    guard.canActivate(fakeContext(request)),
+    (error) => error.getStatus() === 403 && error.getResponse().code === "AGENT_DISABLED",
+  );
+  assert.deepEqual(reader.seen, [], "关闭入口时不得查角色，更不得创建 run 或调用模型");
+  assert.equal(request.agentPrincipal, undefined);
+});
