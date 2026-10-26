@@ -79,4 +79,13 @@ test("五个不同用户同时提问：恰 4 个 202、1 个 429 AGENT_BUSY + Re
     body: JSON.stringify({ question: "许可释放后的新问题：SO 有哪些订单？", client_message_id: randomUUID() }),
   });
   assert.equal(retry.status, 202, `许可释放后再请求应 202，实际 ${retry.status}：${JSON.stringify(retry.body)}`);
+
+  // 这条 run 只是验证许可没有泄漏；它也必须自己收束，不能把管理员的活动 run 留给后续 HTTP 文件。
+  for (;;) {
+    const snapshot = await sessions[0].client.request(`/api/v1/business-query/sessions/${sessions[0].sessionId}`);
+    const run = snapshot.body.data?.runs?.find((item) => item.run_id === retry.body.data.run_id);
+    if (run && ["completed", "failed", "cancelled"].includes(run.state)) break;
+    if (Date.now() > deadline) throw new Error("等待许可释放验证 run 完成超时");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
 }, { timeout: WAIT_MS + 30_000 });
