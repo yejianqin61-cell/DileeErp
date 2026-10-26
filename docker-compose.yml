@@ -25,6 +25,10 @@ services:
       NODE_ENV: production
       PORT: 3001
       DATABASE_URL: postgresql://${POSTGRES_USER:-dilee}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-dilee_erp}?schema=public
+      AGENT_READ_DATABASE_URL: ${AGENT_READ_DATABASE_URL:?AGENT_READ_DATABASE_URL is required for production Agent reads}
+      AGENT_STATE_DATABASE_URL: ${AGENT_STATE_DATABASE_URL:?AGENT_STATE_DATABASE_URL is required for production Agent state}
+      AGENT_LLM_PROVIDER: ${AGENT_LLM_PROVIDER:?AGENT_LLM_PROVIDER must be deepseek in production}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required for production Agent calls}
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:?INITIAL_ADMIN_USERNAME is required; copy .env.example to .env and set it}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required; copy .env.example to .env and set it}
       INITIAL_ADMIN_DISPLAY_NAME: ${INITIAL_ADMIN_DISPLAY_NAME:-迪礼管理员}

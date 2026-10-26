@@ -43,6 +43,10 @@ const env = Object.fromEntries(
 );
 const url = new URL(env.DATABASE_URL || "");
 if (url.hostname !== "127.0.0.1" || url.port !== "15432") throw new Error("DATABASE_URL must use 127.0.0.1:15432");
+for (const key of ["AGENT_READ_DATABASE_URL", "AGENT_STATE_DATABASE_URL", "AGENT_LLM_PROVIDER", "DEEPSEEK_API_KEY"]) {
+  if (!env[key]) throw new Error(`production .env must configure ${key}`);
+}
+if (env.AGENT_LLM_PROVIDER !== "deepseek") throw new Error("AGENT_LLM_PROVIDER must be deepseek in production");
 '
 
 log "npm ci --include=dev"
