@@ -22,6 +22,9 @@ const switchSh = read("scripts/deploy/remote-switch.sh");
 const rollback = read("scripts/deploy/remote-rollback.sh");
 const verify = read("scripts/deploy/remote-verify.sh");
 const packer = read("scripts/create-release-archive.ps1");
+const pm2Api = read("scripts/pm2-api-start.sh");
+const compose = read("docker-compose.yml");
+const envExample = read(".env.example");
 
 test("驱动脚本按「构建 → 迁移 → 切换 → 核验」顺序执行，构建是硬门禁", () => {
   const iBuild = driver.indexOf("remote-build.sh");
@@ -73,6 +76,15 @@ test("公共脚本固定标准里的容器/端口/健康检查口径", () => {
   assert.match(common, /15432|API_PORT:-3001/, "默认端口口径");
   assert.match(common, /\/api\/v1\/health/, "健康检查路径");
   assert.match(common, /check_archive_layout/, "必须校验发布包顶层结构");
+});
+
+test("生产部署在构建、PM2 与 Compose 三个入口都要求 Agent 专用配置", () => {
+  for (const key of ["AGENT_READ_DATABASE_URL", "AGENT_STATE_DATABASE_URL", "AGENT_LLM_PROVIDER", "DEEPSEEK_API_KEY"]) {
+    assert.match(build, new RegExp(key), `远端构建必须预检 ${key}`);
+    assert.match(pm2Api, new RegExp(`\\$\\{${key}:\\?`), `PM2 启动必须要求 ${key}`);
+    assert.match(compose, new RegExp(`\\$\\{${key}:\\?`), `Compose 必须要求 ${key}`);
+    assert.match(envExample, new RegExp(`^${key}=`, "m"), `.env.example 必须说明 ${key}`);
+  }
 });
 
 test("打包脚本使用原生 tar、RELEASE_VERSION 无 BOM、并禁止本机目录进包", () => {
