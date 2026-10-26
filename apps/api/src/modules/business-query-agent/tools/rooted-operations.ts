@@ -7,6 +7,7 @@ import { getBom, getCustomer, getSalesOrder, getSalesReturns } from "./sales-que
 import { getIncomingInspections, getPurchaseOrders, getPurchasePlans, getReceipts } from "./procurement-query-tools";
 import { getOperationProgress, getOperationReports, getOutsourceFlow, getProductionOrders } from "./production-query-tools";
 import { getFinishedGoodsInbounds, getFinishedGoodsOutbounds, getFinishedGoodsQc, getInventoryFacts, getMaterialMovements, getRawMaterialBalance } from "./warehouse-query-tools";
+import { getCustomerPayments, getReceivables } from "./finance-query-tools";
 
 /**
  * 以订单为根的 operation 分发表：executor 的 default 分支查这张表。
@@ -50,4 +51,7 @@ export const ROOTED_OPERATIONS: Record<string, RootedHandler> = {
   get_finished_goods_qc: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getFinishedGoodsQc(client, root, input.page ?? 1) },
   get_finished_goods_inbounds: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getFinishedGoodsInbounds(client, root, input.page ?? 1) },
   get_finished_goods_outbounds: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getFinishedGoodsOutbounds(client, root, input.page ?? 1) },
+  // P4-T1 财务领域：只有 full capability 能走到这些只读实现。
+  get_receivables: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getReceivables(client, root, input.page ?? 1) },
+  get_customer_payments: { parse: (raw) => parseOrderRootInput(raw), run: async (client, root, input) => getCustomerPayments(client, root, input.page ?? 1) },
 };

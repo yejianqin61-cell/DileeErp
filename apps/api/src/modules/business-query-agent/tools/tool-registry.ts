@@ -62,8 +62,8 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   row("warehouse_query", "get_finished_goods_inbounds", { implemented: true }),
   row("warehouse_query", "get_finished_goods_outbounds", { implemented: true }),
   // finance_query（7，仅 full）
-  row("finance_query", "get_receivables", { minAccess: "full" }),
-  row("finance_query", "get_customer_payments", { minAccess: "full" }),
+  row("finance_query", "get_receivables", { minAccess: "full", implemented: true }),
+  row("finance_query", "get_customer_payments", { minAccess: "full", implemented: true }),
   row("finance_query", "get_payables", { minAccess: "full" }),
   row("finance_query", "get_supplier_payments", { minAccess: "full" }),
   row("finance_query", "get_reconciliations", { minAccess: "full" }),

@@ -78,7 +78,7 @@ test("未注册 / 未实现的 operation 一律拒绝，不触达数据库", asy
 
   await assert.rejects(executor.execute({ tool: "order_query", operation: "drop_table", args: {} }, USER_OPS), (error) => error.getStatus() === 422);
   const fullExecutor = new ToolExecutor(client, fakeRoleReader(["laoban"]));
-  await assert.rejects(fullExecutor.execute({ tool: "finance_query", operation: "get_receivables", args: { order_no: "SO-001" } }, USER_FULL), (error) => error.getStatus() === 422, "P3 完成后，财务能力仍要在 P4 前显式拒绝");
+  await assert.rejects(fullExecutor.execute({ tool: "finance_query", operation: "get_payables", args: { order_no: "SO-001" } }, USER_FULL), (error) => error.getStatus() === 422, "P4-T1 前，未实现的财务能力仍要显式拒绝");
   assert.equal(client.calls.findMany, 0);
 });
 
