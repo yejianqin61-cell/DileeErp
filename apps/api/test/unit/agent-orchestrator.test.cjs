@@ -351,6 +351,28 @@ test("有结果时不追加空结果提示", async () => {
   assert.equal(answerMessages.filter((message) => message.role === "system").length, 1, "只有原始 system prompt");
 });
 
+test("回归：小写单号与多余空格都能走完问答", async () => {
+  for (const query of ["dl260170-4h 伞头", "DL260170-4H  伞头"]) {
+    const hit = { ...FACT, operation: "search_documents", order_no: null, data: [{ document_type: "sales_order", document_no: "DL260170-4H 伞头", sales_order_no: "DL260170-4H 伞头", order_ref: "o_1", related_documents: [] }] };
+    const { db } = await driveWith(scriptedProvider([
+      () => [{ id: "c1", tool: "order_query", operation: "search_documents", args: { q: query } }],
+    ]), () => hit);
+    assert.equal(db.store.runs.at(-1).state, "completed", `「${query}」应当能走完一轮`);
+  }
+});
+
+test("回归：单号不存在时回答上下文写明检索词与 0 条", async () => {
+  const empty = { operation: "search_documents", order_no: null, as_of: "2026-10-27T00:00:00.000Z", data: [], sources: [], access_level: "operational" };
+  const { provider, db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_documents", args: { q: "DL999999-ZZ" } }],
+  ]), () => empty);
+
+  assert.equal(db.store.runs.at(-1).state, "completed", "查不到不是故障，不该整轮失败");
+  const injected = provider.answerInputs[0].filter((message) => message.role === "system").slice(1);
+  assert.match(injected[0].content, /DL999999-ZZ/);
+  assert.match(injected[0].content, /0 条/);
+});
+
 test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);
