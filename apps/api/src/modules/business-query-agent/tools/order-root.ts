@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from "@nestjs/common";
 import type { PrismaClient } from "@prisma/client";
+import { normalizeKeyword } from "./normalize";
 
 /**
  * 订单根验证器（模块设计「工具注册和查询执行如何划清责任」）：
@@ -20,14 +21,28 @@ export type AgentOrderRoot = {
 
 export type OrderRootInput = { orderNo: string; page?: number };
 
-/** 根查询恒带软删过滤；查不到抛 404（不泄露存在性）。 */
+const ORDER_ROOT_SELECT = { id: true, orderNo: true, quantity: true, unit: true, status: true, updatedAt: true } as const;
+
+/**
+ * 根查询恒带软删过滤；查不到抛 404（不泄露存在性）。
+ *
+ * 两步匹配：先精确等值（走单号索引），未命中再按「忽略大小写」找一次。
+ * 为什么要有第二步：单号是业务手输的，模型或用户把 `DL260170-4H 伞头` 写成 `dl260170-4h 伞头`
+ * 时，精确匹配会把整轮打成「订单不存在」——呈现给用户就是「所有工具都查不到」。
+ */
 export async function assertOrderRoot(client: AgentOrderRootStore, orderNo: string): Promise<AgentOrderRoot> {
-  const root = await client.salesOrder.findFirst({
-    where: { orderNo, deletedAt: null },
-    select: { id: true, orderNo: true, quantity: true, unit: true, status: true, updatedAt: true },
+  const value = normalizeKeyword(orderNo);
+  const exact = await client.salesOrder.findFirst({
+    where: { orderNo: value, deletedAt: null },
+    select: ORDER_ROOT_SELECT,
   });
-  if (!root) throw new NotFoundException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] });
-  return root;
+  if (exact) return exact;
+  const loose = await client.salesOrder.findFirst({
+    where: { orderNo: { equals: value, mode: "insensitive" }, deletedAt: null },
+    select: ORDER_ROOT_SELECT,
+  });
+  if (loose) return loose;
+  throw new NotFoundException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] });
 }
 
 function badRequest(message: string) {
@@ -47,7 +62,7 @@ export function parseOrderRootInput(raw: unknown, opts: { withPage?: boolean } =
   if (typeof order_no !== "string" || order_no.trim().length === 0) throw badRequest("订单号 order_no 不能为空");
   if (order_no.length > 100) throw badRequest("订单号 order_no 不能超过 100 个字符");
   if (page !== undefined && (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > 1000)) throw badRequest("page 必须是 1 到 1000 的整数");
-  return { orderNo: order_no.trim(), ...(page !== undefined ? { page } : {}) };
+  return { orderNo: normalizeKeyword(order_no), ...(page !== undefined ? { page } : {}) };
 }
 
 /** 统一 20 行分页：skip = (page-1)*20，take = 20。 */

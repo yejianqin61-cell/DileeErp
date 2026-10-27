@@ -9,7 +9,16 @@ function matches(row, where) {
   return Object.entries(where).every(([key, expected]) => {
     if (key === "OR") return expected.some((clause) => matches(row, clause));
     if (key === "deletedAt") return (row.deletedAt ?? null) === expected;
-    if (expected && typeof expected === "object" && "contains" in expected) return String(row[key] ?? "").includes(expected.contains);
+    if (expected && typeof expected === "object" && "contains" in expected) {
+      const hay = String(row[key] ?? "");
+      const needle = String(expected.contains);
+      return expected.mode === "insensitive" ? hay.toLowerCase().includes(needle.toLowerCase()) : hay.includes(needle);
+    }
+    if (expected && typeof expected === "object" && "equals" in expected) {
+      const hay = String(row[key] ?? "");
+      const needle = String(expected.equals);
+      return expected.mode === "insensitive" ? hay.toLowerCase() === needle.toLowerCase() : hay === needle;
+    }
     return row[key] === expected;
   });
 }
@@ -91,6 +100,26 @@ test("命中超过 20 行时截断到 20", async () => {
   const sales = Array.from({ length: 30 }, (_, index) => order(`SO-${index}`));
   const rows = await searchDocuments(client({ sales }), { q: "SO-", page: 1 });
   assert.equal(rows.length, 20);
+});
+
+test("归一：小写检索词命中大写单号", async () => {
+  const rows = await searchDocuments(client({ sales: [order("DL260170-4H 伞头")] }), { q: "dl260170-4h", page: 1 });
+  assert.equal(rows.length, 1);
+});
+
+test("归一：检索词里的多余空白被合并", async () => {
+  const { parseSearchDocumentsInput } = require("../../dist/modules/business-query-agent/tools/document-search-tools.js");
+  assert.deepEqual(parseSearchDocumentsInput({ q: "  DL260170-4H   伞头  " }), { q: "DL260170-4H 伞头", page: 1 });
+  const rows = await searchDocuments(client({ sales: [order("DL260170-4H 伞头")] }), { q: "DL260170-4H 伞头", page: 1 });
+  assert.equal(rows.length, 1);
+});
+
+test("根验证：大小写不同也能找到同一张单，找不到才 404", async () => {
+  const { assertOrderRoot } = require("../../dist/modules/business-query-agent/tools/order-root.js");
+  const store = { salesOrder: { async findFirst({ where }) { return matches(order("DL260170-4H 伞头"), where) ? order("DL260170-4H 伞头") : null; } } };
+  const root = await assertOrderRoot(store, "dl260170-4h 伞头");
+  assert.equal(root.orderNo, "DL260170-4H 伞头");
+  await assert.rejects(() => assertOrderRoot(store, "DL999999-ZZ"), (error) => error.getStatus() === 404);
 });
 
 test("输入校验：额外字段一律 422，检索词不能为空", () => {

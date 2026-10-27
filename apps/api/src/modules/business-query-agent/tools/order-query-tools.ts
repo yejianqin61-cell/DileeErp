@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { deduplicateAlerts } from "../../alerts/alerts.domain";
 import { orderPage } from "./order-root";
+import { normalizeKeyword } from "./normalize";
 
 /**
  * 订单领域的只读查询。Phase 1 只有 `search_orders`；第二个查询落地时才继续往这里加
@@ -30,7 +31,7 @@ export function parseSearchOrdersInput(raw: unknown): SearchOrdersInput {
   if (typeof q !== "string" || q.trim().length === 0) throw badRequest("搜索词 q 不能为空");
   if (q.length > 100) throw badRequest("搜索词 q 不能超过 100 个字符");
   if (page !== undefined && (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > 1000)) throw badRequest("page 必须是 1 到 1000 的整数");
-  return { q: q.trim(), page: page ?? 1 };
+  return { q: normalizeKeyword(q), page: page ?? 1 };
 }
 
 function badRequest(message: string) {
@@ -39,7 +40,7 @@ function badRequest(message: string) {
 
 export async function searchOrders(client: AgentReadStore, input: SearchOrdersInput) {
   const rows = await client.salesOrder.findMany({
-    where: { deletedAt: null, orderNo: { contains: input.q } },
+    where: { deletedAt: null, orderNo: { contains: input.q, mode: "insensitive" } },
     orderBy: { updatedAt: "desc" },
     skip: (input.page - 1) * SEARCH_ORDERS_MAX_ROWS,
     take: SEARCH_ORDERS_MAX_ROWS,

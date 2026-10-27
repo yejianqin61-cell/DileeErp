@@ -1,5 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import type { PrismaClient } from "@prisma/client";
+import { normalizeKeyword } from "./normalize";
 
 /**
  * 按号检索任意单据（R-1）：销售单号、采购单号、生产单号都能作为入口。
@@ -31,7 +32,7 @@ export function parseSearchDocumentsInput(raw: unknown): DocumentSearchInput {
   if (typeof q !== "string" || q.trim().length === 0) throw badRequest("搜索词 q 不能为空");
   if (q.length > 100) throw badRequest("搜索词 q 不能超过 100 个字符");
   if (page !== undefined && (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > 1000)) throw badRequest("page 必须是 1 到 1000 的整数");
-  return { q: q.trim(), page: page ?? 1 };
+  return { q: normalizeKeyword(q), page: page ?? 1 };
 }
 
 type Row = Record<string, unknown> & { sales_order_no: string; related_documents: { document_type: string; document_no: string }[] };
@@ -41,19 +42,19 @@ export async function searchDocuments(client: DocumentSearchStore, input: Docume
   const contains = input.q;
   const [sales, purchases, productions] = await Promise.all([
     client.salesOrder.findMany({
-      where: { deletedAt: null, orderNo: { contains } },
+      where: { deletedAt: null, orderNo: { contains, mode: "insensitive" } },
       orderBy: { updatedAt: "desc" },
       take,
       select: { orderNo: true, productName: true, quantity: true, unit: true, status: true, deliveryDate: true, updatedAt: true },
     }),
     client.purchaseOrder.findMany({
-      where: { deletedAt: null, OR: [{ purchaseOrderNo: { contains } }, { orderNo: { contains } }] },
+      where: { deletedAt: null, OR: [{ purchaseOrderNo: { contains, mode: "insensitive" } }, { orderNo: { contains, mode: "insensitive" } }] },
       orderBy: { updatedAt: "desc" },
       take,
       select: { purchaseOrderNo: true, orderNo: true, status: true, purchaseDate: true, expectedDate: true, updatedAt: true },
     }),
     client.productionOrder.findMany({
-      where: { deletedAt: null, OR: [{ productionOrderNo: { contains } }, { orderNo: { contains } }] },
+      where: { deletedAt: null, OR: [{ productionOrderNo: { contains, mode: "insensitive" } }, { orderNo: { contains, mode: "insensitive" } }] },
       orderBy: { updatedAt: "desc" },
       take,
       select: { productionOrderNo: true, orderNo: true, status: true, plannedQuantity: true, updatedAt: true },
