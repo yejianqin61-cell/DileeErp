@@ -138,6 +138,8 @@ export class AgentOrchestrator {
     let attempted = 0;
     let modelSteps = 0;
     let recoverableFailures = 0;
+    /** 失败预算耗尽时的最后一次错误：停止继续查，但仍要把原因交给模型去回答。 */
+    let exhausted: { code: string; message: string } | null = null;
     const planOnce = async (): Promise<AgentLlmPlan> => {
       const planStartedAt = Date.now();
       const plan = await this.provider.plan(messages, tools, signal);
@@ -176,13 +178,21 @@ export class AgentOrchestrator {
           recoverableFailures += 1;
           messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: JSON.stringify({ error: { code: outcome.code, message: outcome.message } }) });
           if (recoverableFailures >= AGENT_MAX_RECOVERABLE_TOOL_FAILURES) {
-            throw new HttpException({ code: "AGENT_TOOL_RETRIES_EXHAUSTED", message: "工具连续失败，本次查询无法继续，请换个问法或稍后重试", details: [] }, HttpStatus.UNPROCESSABLE_ENTITY);
+            // 不再整轮失败（R-6）：预算耗尽只停止继续查，用已经拿到的内容作答并在上下文里说明原因。
+            exhausted = { code: outcome.code, message: outcome.message };
+            break;
           }
         }
+        if (exhausted) break;
         if (attempted >= AGENT_MAX_TOOL_STEPS || modelSteps >= AGENT_MAX_PLAN_STEPS) break;
         const next = await planOnce();
         calls = next.toolCalls;
       }
+    }
+
+    // 失败预算耗尽也要给用户一个解释（R-6）：把最后一次错误交给模型，已取得的事实全部保留。
+    if (exhausted) {
+      messages.push({ role: "system", content: `本轮工具连续失败（最后一次：${exhausted.code} ${exhausted.message}）。请基于已经查到的内容作答，并说明哪一步没查成、原因是什么；不得编造业务结论。` });
     }
 
     // 空结果也要说清楚（R-6）：一句「查不到」对用户没有信息量，检索词与 0 条才有。

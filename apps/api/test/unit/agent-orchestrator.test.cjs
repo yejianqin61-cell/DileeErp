@@ -455,28 +455,65 @@ test("致命工具失败（撤权）仍终止：run 落 failed，错误码来自
   assert.equal(lastEvent.payload.code, "AGENT_ACCESS_REVOKED");
 });
 
-test("失败预算：同一 run 连续 3 次可回传失败后终止，错误码 AGENT_TOOL_RETRIES_EXHAUSTED", async () => {
+test("失败预算：连续 3 次可回传失败后降级作答，不再整轮失败", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);
   const run = await planningRun(db, state);
   const { HttpException } = require("@nestjs/common");
   const failure = new HttpException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] }, 404);
   let planCount = 0;
+  const answerInputs = [];
   const provider = {
     async plan() {
       planCount += 1;
       return { toolCalls: [{ id: `call-${planCount}`, tool: "order_query", operation: "search_orders", args: { q: "SO" } }] };
     },
-    async *streamAnswer() { yield { type: "text", text: "不会到达" }; },
+    async *streamAnswer(messages) { answerInputs.push(messages); yield { type: "text", text: "没能查到这张单" }; },
   };
   const orchestrator = new AgentOrchestrator(state, fakeExecutor({ error: failure }), provider, fakeRoleReader());
 
   await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
 
   const saved = db.store.runs.find((row) => row.id === run.id);
-  assert.equal(saved.state, "failed");
-  assert.equal(saved.errorCode, "AGENT_TOOL_RETRIES_EXHAUSTED");
+  assert.equal(saved.state, "completed", "工具失败不该再把整轮打成失败");
+  assert.ok(!saved.errorCode, "降级完成后不该留下错误码");
   assert.equal(planCount, 3, "预算用尽后不再调模型");
+  assert.ok(!db.store.events.some((event) => event.runId === run.id && event.type === "error"), "不再写 error 终态");
+  const injected = answerInputs[0].filter((message) => message.role === "system").slice(1);
+  assert.equal(injected.length, 1);
+  assert.match(injected[0].content, /ORDER_NOT_FOUND/, "降级回答要带上最后一次错误码");
+});
+
+test("降级作答保留已取得的事实与来源", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const { HttpException } = require("@nestjs/common");
+  const failure = new HttpException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] }, 404);
+  let call = 0;
+  const executor = {
+    async execute() {
+      call += 1;
+      if (call === 1) return { ...FACT, operation: "search_orders" };
+      throw failure;
+    },
+  };
+  let planCount = 0;
+  const provider = {
+    async plan() {
+      planCount += 1;
+      const first = { id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } };
+      const rooted = { id: `call-${planCount}`, tool: "order_query", operation: "get_order_overview", args: { order_no: "SO-001" } };
+      return { toolCalls: [planCount === 1 ? first : rooted] };
+    },
+    async *streamAnswer() { yield { type: "text", text: "部分结果" }; },
+  };
+  const orchestrator = new AgentOrchestrator(state, executor, provider, fakeRoleReader());
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  const completed = db.store.events.filter((event) => event.runId === run.id && event.type === "completed").at(-1);
+  assert.deepEqual(completed.payload.sources.map((source) => source.business_no), ["SO-001"], "已查到的来源不能丢");
 });
 
 test("运行时守卫：未先 search 的根查询不触达数据库，回传 ORDER_SEARCH_REQUIRED 后模型可自纠", async () => {
