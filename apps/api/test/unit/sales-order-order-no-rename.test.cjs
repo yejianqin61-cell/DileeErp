@@ -234,3 +234,21 @@ test("守卫：影响面预览路由声明在 :id 之前，且与执行共用同
   assert.ok(impactRoute < byId, "Nest 按声明顺序匹配：两段路由也要在单段 :id 之前");
   assert.ok(serviceSource.includes("await orderNoRenameImpact(this.prisma, order.orderNo)"), "预览必须用登记表算，不能另写一份");
 });
+
+// ------------------------------------------------------------------ 外键一致性（阶段 5）
+
+test("改号只改文本键：下游行的 sales_order_id 原样保留", async () => {
+  const { tx, state } = createFakeTx([
+    { model: "purchaseReceipt", orderNo: "DL1", salesOrderId: "so-1" },
+    { model: "inventoryFact", orderNo: "DL1", salesOrderId: "so-1" },
+    { model: "salesOrder", orderNo: "DL1", reorderFromOrderNo: null },
+  ]);
+
+  await renameSalesOrderNo(tx, { salesOrderId: "so-1", from: "DL1", to: "DL2" });
+
+  for (const model of ["purchaseReceipt", "inventoryFact"]) {
+    const row = state.find((item) => item.model === model);
+    assert.equal(row.orderNo, "DL2", `${model} 的文本键要跟着改`);
+    assert.equal(row.salesOrderId, "so-1", `${model} 的外键不该被改号动到`);
+  }
+});
