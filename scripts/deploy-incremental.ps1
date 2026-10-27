@@ -161,8 +161,20 @@ Write-Host "  包顶层：$((($allEntries | Select-Object -First 5) -join ' | ')
 Write-Host "  包大小：$([math]::Round((Get-Item $archive).Length / 1MB, 1)) MB"
 Invoke-Remote "准备远端目录" "rm -rf $remoteDir && mkdir -p $remoteDir"
 Write-Host "  -> 上传发布包与部署脚本"
-& scp @sshBase $archive "${DeployHost}:/tmp/$archive" | Out-Null
-if ($LASTEXITCODE -ne 0) { Die "上传发布包失败" }
+# 十几 MB 的发布包在跨境链路上偶发被掐断（实测 "Connection reset by peer" / "Broken pipe"，
+# 远端只收到 4.2MB/19.3MB）。单次失败即终止会让整轮构建白跑，所以重试三次。
+$localSize = (Get-Item $archive).Length
+$uploaded = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+  & scp @sshBase $archive "${DeployHost}:/tmp/$archive" | Out-Null
+  if ($LASTEXITCODE -eq 0) { $uploaded = $true; break }
+  Warn "上传发布包失败（第 $attempt/3 次），5 秒后重试"
+  Start-Sleep -Seconds 5
+}
+if (-not $uploaded) { Die "上传发布包失败（已重试 3 次）" }
+# 退出码为 0 不足以证明文件完整：断连可能在退出前留下截断文件，用字节数做终判。
+$remoteSize = (Invoke-Remote "核对远端发布包字节数" "stat -c %s /tmp/$archive" -Capture).Trim()
+if ($remoteSize -ne "$localSize") { Die "上传不完整：远端 $remoteSize 字节，本地 $localSize 字节" }
 & scp @sshBase (Get-ChildItem scripts/deploy/*.sh | ForEach-Object { $_.FullName }) "${DeployHost}:$remoteDir/" | Out-Null
 if ($LASTEXITCODE -ne 0) { Die "上传部署脚本失败" }
 Invoke-Remote "脚本行尾归一为 LF（防 CRLF 导致 bash 报错）" "sed -i 's/\r`$//' $remoteDir/*.sh && ls -1 $remoteDir" | Out-Null
