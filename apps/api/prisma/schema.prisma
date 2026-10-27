@@ -409,6 +409,28 @@ model SalesOrder {
   rawMaterialInboundNotices    RawMaterialInboundNotice[]
   rawMaterialInbounds          RawMaterialInbound[]
   payableSources               PayableSource[]
+  outsourceLogisticsBatches          OutsourceLogisticsBatch[]
+  outsourceReceipts                  OutsourceReceipt[]
+  outsourcePayableSources            OutsourcePayableSource[]
+  outsourceReturnTransfers           OutsourceReturnTransfer[]
+  outsourceDirectShipments           OutsourceDirectShipment[]
+  rawMaterialMovements               RawMaterialMovement[]
+  operationDailyReports              OperationDailyReport[]
+  employeeDailyReports               EmployeeDailyReport[]
+  productionDailyAlerts              ProductionDailyAlert[]
+  productionPayrollSources           ProductionPayrollSource[]
+  inventoryFacts                     InventoryFact[]
+  finishedGoodsInspectionSubmissions FinishedGoodsInspectionSubmission[]
+  finishedGoodsQcRecords             FinishedGoodsQcRecord[]
+  finishedGoodsInboundNotices        FinishedGoodsInboundNotice[]
+  finishedGoodsInbounds              FinishedGoodsInbound[]
+  finishedGoodsDefectives            FinishedGoodsDefective[]
+  supplierPayableEntries             SupplierPayableEntry[]
+  supplierPayments                   SupplierPayment[]
+  supplierPaymentAllocations         SupplierPaymentAllocation[]
+  supplierPayableReconciliations     SupplierPayableReconciliation[]
+  cashFlowEntries                    CashFlowEntry[]
+  payrollPayableEntries              PayrollPayableEntry[]
   @@index([customerId, status])
   @@index([orderDate])
   /// 货号清单要按 (货号, 下单日期) 取数（reorder 模块的 articles 聚合）。
@@ -1180,6 +1202,8 @@ model InventoryFact {
   sourceId                     String?                  @map("source_id") @db.Uuid
   sourceVersion                String?                  @map("source_version") @db.VarChar(50)
   orderNo                      String?                  @map("order_no") @db.VarChar(100)
+  salesOrderId              String?                  @map("sales_order_id") @db.Uuid
+  salesOrder                SalesOrder?              @relation(fields: [salesOrderId], references: [id])
   productionOrderId            String?                  @map("production_order_id") @db.Uuid
   rawMaterialMovementLineId    String?                  @map("raw_material_movement_line_id") @db.Uuid
   /// 盘点调整来源行：盘点确认（盘盈/盘亏）与盘点冲销写进来的数量事实都指向它。
@@ -1263,6 +1287,8 @@ model OutsourceLogisticsBatch {
   id                     String                    @id @default(uuid()) @db.Uuid
   batchNo                String                    @unique @map("batch_no") @db.VarChar(100)
   orderNo                String                    @map("order_no") @db.VarChar(100)
+  salesOrderId        String?                   @map("sales_order_id") @db.Uuid
+  salesOrder          SalesOrder?               @relation(fields: [salesOrderId], references: [id])
   productionOrderId      String                    @map("production_order_id") @db.Uuid
   outsourceLocationId    String                    @map("outsource_location_id") @db.Uuid
   purchaseOrderId        String                    @map("purchase_order_id") @db.Uuid
@@ -1302,6 +1328,8 @@ model OutsourceReceipt {
   id               String                  @id @default(uuid()) @db.Uuid
   logisticsBatchId String                  @map("logistics_batch_id") @db.Uuid
   orderNo          String                  @map("order_no") @db.VarChar(100)
+  salesOrderId   String?                 @map("sales_order_id") @db.Uuid
+  salesOrder     SalesOrder?             @relation(fields: [salesOrderId], references: [id])
   receiptDate      DateTime                @map("receipt_date") @db.Date
   quantity         Decimal                 @db.Decimal(18, 4)
   receiverName     String?                 @map("receiver_name") @db.VarChar(100)
@@ -1330,6 +1358,8 @@ model OutsourcePayableSource {
   outsourceReceiptId   String                  @unique @map("outsource_receipt_id") @db.Uuid
   logisticsBatchId     String                  @map("logistics_batch_id") @db.Uuid
   orderNo              String                  @map("order_no") @db.VarChar(100)
+  salesOrderId        String?                 @map("sales_order_id") @db.Uuid
+  salesOrder          SalesOrder?             @relation(fields: [salesOrderId], references: [id])
   purchaseOrderId      String                  @map("purchase_order_id") @db.Uuid
   purchaseOrderItemId  String                  @map("purchase_order_item_id") @db.Uuid
   supplierId           String                  @map("supplier_id") @db.Uuid
@@ -1360,6 +1390,8 @@ model SupplierPayableEntry {
   id                        String                      @id @default(uuid()) @db.Uuid
   payableNo                 String                      @unique @map("payable_no") @db.VarChar(100)
   orderNo                   String?                     @map("order_no") @db.VarChar(100)
+  salesOrderId             String?                     @map("sales_order_id") @db.Uuid
+  salesOrder               SalesOrder?                 @relation(fields: [salesOrderId], references: [id])
   supplierId                String                      @map("supplier_id") @db.Uuid
   sourceType                String                      @map("source_type") @db.VarChar(40)
   payableSourceId           String?                     @unique @map("payable_source_id") @db.Uuid
@@ -1417,6 +1449,8 @@ model SupplierPayment {
   idempotencyKey String?                    @unique @map("idempotency_key") @db.VarChar(200)
   supplierId    String                      @map("supplier_id") @db.Uuid
   orderNo       String?                     @map("order_no") @db.VarChar(100)
+  salesOrderId  String?                     @map("sales_order_id") @db.Uuid
+  salesOrder    SalesOrder?                 @relation(fields: [salesOrderId], references: [id])
   paymentDate   DateTime                    @map("payment_date") @db.Date
   amount        Decimal                     @db.Decimal(18, 4)
   currency      String                      @db.VarChar(10)
@@ -1450,6 +1484,8 @@ model SupplierPaymentAllocation {
   paymentId      String               @map("payment_id") @db.Uuid
   payableEntryId String               @map("payable_entry_id") @db.Uuid
   orderNo        String?              @map("order_no") @db.VarChar(100)
+  salesOrderId  String?              @map("sales_order_id") @db.Uuid
+  salesOrder    SalesOrder?          @relation(fields: [salesOrderId], references: [id])
   amount         Decimal              @db.Decimal(18, 4)
   currency       String               @db.VarChar(10)
   status         String               @default("active") @db.VarChar(30)
@@ -1474,6 +1510,8 @@ model OutsourceReturnTransfer {
   transferNo            String                   @unique @map("transfer_no") @db.VarChar(100)
   transferType          String                   @map("transfer_type") @db.VarChar(40)
   orderNo               String                   @map("order_no") @db.VarChar(100)
+  salesOrderId       String?                  @map("sales_order_id") @db.Uuid
+  salesOrder         SalesOrder?              @relation(fields: [salesOrderId], references: [id])
   productionOrderId     String                   @map("production_order_id") @db.Uuid
   logisticsBatchId      String?                  @map("logistics_batch_id") @db.Uuid
   materialId            String?                  @map("material_id") @db.Uuid
@@ -1504,6 +1542,8 @@ model OutsourceDirectShipment {
   id                 String          @id @default(uuid()) @db.Uuid
   shipmentNo         String          @unique @map("shipment_no") @db.VarChar(100)
   orderNo            String          @map("order_no") @db.VarChar(100)
+  salesOrderId      String?         @map("sales_order_id") @db.Uuid
+  salesOrder        SalesOrder?     @relation(fields: [salesOrderId], references: [id])
   productionOrderId  String          @map("production_order_id") @db.Uuid
   productDescription String          @map("product_description") @db.VarChar(500)
   unitId             String          @map("unit_id") @db.Uuid
@@ -1532,6 +1572,8 @@ model FinishedGoodsInspectionSubmission {
   id                           String                   @id @default(uuid()) @db.Uuid
   submissionNo                 String                   @unique @map("submission_no") @db.VarChar(100)
   orderNo                      String                   @map("order_no") @db.VarChar(100)
+  salesOrderId              String?                  @map("sales_order_id") @db.Uuid
+  salesOrder                SalesOrder?              @relation(fields: [salesOrderId], references: [id])
   productionOrderId            String                   @map("production_order_id") @db.Uuid
   sourceType                   String                   @map("source_type") @db.VarChar(40)
   sourceId                     String                   @map("source_id") @db.Uuid
@@ -1568,6 +1610,8 @@ model FinishedGoodsQcRecord {
   qcNo                      String                            @unique @map("qc_no") @db.VarChar(100)
   submissionId              String                            @map("submission_id") @db.Uuid
   orderNo                   String                            @map("order_no") @db.VarChar(100)
+  salesOrderId          String?                           @map("sales_order_id") @db.Uuid
+  salesOrder            SalesOrder?                       @relation(fields: [salesOrderId], references: [id])
   productionOrderId         String                            @map("production_order_id") @db.Uuid
   sourceType                String                            @map("source_type") @db.VarChar(40)
   sourceId                  String                            @map("source_id") @db.Uuid
@@ -1606,6 +1650,8 @@ model FinishedGoodsInboundNotice {
   id                           String                  @id @default(uuid()) @db.Uuid
   noticeNo                     String                  @unique @map("notice_no") @db.VarChar(100)
   orderNo                      String                  @map("order_no") @db.VarChar(100)
+  salesOrderId               String?                  @map("sales_order_id") @db.Uuid
+  salesOrder                 SalesOrder?              @relation(fields: [salesOrderId], references: [id])
   productionOrderId            String                  @map("production_order_id") @db.Uuid
   productionOrderOperationId   String                  @map("production_order_operation_id") @db.Uuid
   productionOrderNoSnapshot    String                  @map("production_order_no_snapshot") @db.VarChar(100)
@@ -1641,6 +1687,8 @@ model FinishedGoodsInbound {
   id                           String                            @id @default(uuid()) @db.Uuid
   inboundNo                    String                            @unique @map("inbound_no") @db.VarChar(100)
   orderNo                      String                            @map("order_no") @db.VarChar(100)
+  salesOrderId        String?                           @map("sales_order_id") @db.Uuid
+  salesOrder          SalesOrder?                       @relation(fields: [salesOrderId], references: [id])
   productionOrderId            String                            @map("production_order_id") @db.Uuid
   qcRecordId                   String                            @map("qc_record_id") @db.Uuid
   submissionId                 String                            @map("submission_id") @db.Uuid
@@ -1674,6 +1722,8 @@ model FinishedGoodsDefective {
   id                           String                            @id @default(uuid()) @db.Uuid
   defectiveNo                  String                            @unique @map("defective_no") @db.VarChar(100)
   orderNo                      String                            @map("order_no") @db.VarChar(100)
+  salesOrderId        String?                           @map("sales_order_id") @db.Uuid
+  salesOrder          SalesOrder?                       @relation(fields: [salesOrderId], references: [id])
   productionOrderId            String                            @map("production_order_id") @db.Uuid
   qcRecordId                   String                            @map("qc_record_id") @db.Uuid
   submissionId                 String                            @map("submission_id") @db.Uuid
@@ -2003,6 +2053,8 @@ model SupplierPayableReconciliation {
   id                       String   @id @default(uuid()) @db.Uuid
   reconciliationNo         String   @unique @map("reconciliation_no") @db.VarChar(100)
   orderNo                  String?  @map("order_no") @db.VarChar(100)
+  salesOrderId          String?            @map("sales_order_id") @db.Uuid
+  salesOrder            SalesOrder?        @relation(fields: [salesOrderId], references: [id])
   purchaseOrderId          String?  @map("purchase_order_id") @db.Uuid
   supplierId               String   @map("supplier_id") @db.Uuid
   bankId                   String?  @map("bank_id") @db.Uuid
@@ -2091,6 +2143,8 @@ model CashFlowEntry {
   /// 因此手工录的定金流水没有任何自动来源可挂；外汇一览表要按订单归集定金，只能靠这个字段。
   /// 可空：非订单类收支（房租、水电、退税…）本来就没有订单号。
   orderNo             String?         @map("order_no") @db.VarChar(100)
+  salesOrderId      String?            @map("sales_order_id") @db.Uuid
+  salesOrder        SalesOrder?        @relation(fields: [salesOrderId], references: [id])
   /// posted（生效）/ reversed（已冲销，保留行但报表不计入）
   status              String          @default("posted") @db.VarChar(30)
   remark              String?         @db.VarChar(1000)
@@ -2373,6 +2427,8 @@ model RawMaterialMovement {
   // 历史数据没有工序，因此列可空；新建领料单由服务层强制要求。
   productionOrderOperationId String?          @map("production_order_operation_id") @db.Uuid
   orderNo           String                    @map("order_no") @db.VarChar(100)
+  salesOrderId    String?                   @map("sales_order_id") @db.Uuid
+  salesOrder      SalesOrder?               @relation(fields: [salesOrderId], references: [id])
   businessDate      DateTime                  @map("business_date") @db.Date
   reason            String?                   @db.VarChar(1000)
   remark            String?                   @db.VarChar(1000)
@@ -2647,6 +2703,8 @@ model OperationDailyReport {
   productionOrderId          String                   @map("production_order_id") @db.Uuid
   productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
   orderNo                    String                   @map("order_no") @db.VarChar(100)
+  salesOrderId              String?                  @map("sales_order_id") @db.Uuid
+  salesOrder                SalesOrder?              @relation(fields: [salesOrderId], references: [id])
   productionOrderNoSnapshot  String                   @map("production_order_no_snapshot") @db.VarChar(100)
   operationNameSnapshot      String                   @map("operation_name_snapshot") @db.VarChar(150)
   unitId                     String                   @map("unit_id") @db.Uuid
@@ -2677,6 +2735,8 @@ model EmployeeDailyReport {
   productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
   employeeId                 String                   @map("employee_id") @db.Uuid
   orderNo                    String                   @map("order_no") @db.VarChar(100)
+  salesOrderId              String?                  @map("sales_order_id") @db.Uuid
+  salesOrder                SalesOrder?              @relation(fields: [salesOrderId], references: [id])
   productionOrderNoSnapshot  String                   @map("production_order_no_snapshot") @db.VarChar(100)
   operationNameSnapshot      String                   @map("operation_name_snapshot") @db.VarChar(150)
   employeeNameSnapshot       String                   @map("employee_name_snapshot") @db.VarChar(100)
@@ -2729,6 +2789,8 @@ model ProductionDailyAlert {
   productionOrderId          String                   @map("production_order_id") @db.Uuid
   productionOrderOperationId String                   @map("production_order_operation_id") @db.Uuid
   orderNo                    String                   @map("order_no") @db.VarChar(100)
+  salesOrderId             String?                  @map("sales_order_id") @db.Uuid
+  salesOrder               SalesOrder?              @relation(fields: [salesOrderId], references: [id])
   reportDate                 DateTime                 @map("report_date") @db.Date
   status                     String                   @default("pending") @db.VarChar(20)
   targetQuantity             Decimal?                 @map("target_quantity") @db.Decimal(18, 4)
@@ -2761,6 +2823,8 @@ model ProductionPayrollSource {
   employeeId        String           @map("employee_id") @db.Uuid
   productionOrderId String?          @map("production_order_id") @db.Uuid
   orderNo           String?          @map("order_no") @db.VarChar(100)
+  salesOrderId    String?          @map("sales_order_id") @db.Uuid
+  salesOrder      SalesOrder?      @relation(fields: [salesOrderId], references: [id])
   periodStart       DateTime         @map("period_start") @db.Date
   periodEnd         DateTime         @map("period_end") @db.Date
   wageMode          String           @map("wage_mode") @db.VarChar(20)
@@ -2879,6 +2943,8 @@ model PayrollPayableEntry {
   ledgerId       String        @unique @map("ledger_id") @db.Uuid
   employeeId     String        @map("employee_id") @db.Uuid
   orderNo        String?       @map("order_no") @db.VarChar(100)
+  salesOrderId  String?                   @map("sales_order_id") @db.Uuid
+  salesOrder    SalesOrder?               @relation(fields: [salesOrderId], references: [id])
   amount         Decimal       @db.Decimal(18, 4)
   currency       String        @db.VarChar(10)
   status         String        @default("draft") @db.VarChar(30)
