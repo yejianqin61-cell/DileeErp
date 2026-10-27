@@ -128,6 +128,8 @@ export class AgentOrchestrator {
     ];
 
     const facts: QueryFact[] = [];
+    /** 本轮已经执行过的检索词：空结果时要把它们写进回答上下文（R-6）。 */
+    const searchQueries: string[] = [];
     /** 本轮 search_orders 返回过的精确 order_no：根查询只允许使用这里的值。 */
     const searchedOrderNos = new Set<string>();
     /** 本轮句柄表 `o_1 → DL260170-4H 伞头`：只活在这一轮，跨轮清空（防止旧句柄被复用）。 */
@@ -163,6 +165,10 @@ export class AgentOrchestrator {
           if (outcome.ok) {
             facts.push(outcome.fact);
             this.registerSearchResults(searchRefs, searchedOrderNos, outcome.fact, refCounter);
+            if (SEARCH_OPERATIONS.has(call.operation)) {
+              const query = call.args?.q;
+              if (typeof query === "string" && query.trim().length > 0) searchQueries.push(query.trim());
+            }
             messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: JSON.stringify(outcome.fact) });
             continue;
           }
@@ -177,6 +183,13 @@ export class AgentOrchestrator {
         const next = await planOnce();
         calls = next.toolCalls;
       }
+    }
+
+    // 空结果也要说清楚（R-6）：一句「查不到」对用户没有信息量，检索词与 0 条才有。
+    // 注意判据是「有没有数据行」，不是「有没有事实」——检索成功但 0 行同样会留下一条事实。
+    const hasRows = facts.some((fact) => (Array.isArray(fact.data) ? fact.data.length > 0 : fact.data !== null && fact.data !== undefined));
+    if (!hasRows && searchQueries.length > 0) {
+      messages.push({ role: "system", content: `本轮用「${searchQueries.join("」「")}」检索，命中 0 条。回答必须写明检索词与 0 条结果，并提示用户核对单号；不得编造业务结论。` });
     }
 
     // 查询结束后重查角色：运行中被降权的 run 在最终回答前就地终止（模块设计）。

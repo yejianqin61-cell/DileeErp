@@ -163,10 +163,12 @@ async function driveWith(provider, factForCall) {
 /** 记录每轮 messages 的 provider：用来断言模型实际看到了什么事实。 */
 function scriptedProvider(plans) {
   const captured = [];
+  const answerInputs = [];
   return {
     captured,
+    answerInputs,
     async plan(messages) { captured.push(messages); const next = plans[captured.length - 1]; return { toolCalls: next ? next() : [] }; },
-    async *streamAnswer() { yield { type: "text", text: "ok" }; },
+    async *streamAnswer(messages) { answerInputs.push(messages); yield { type: "text", text: "ok" }; },
   };
 }
 const toolFacts = (messages) => messages.filter((message) => message.role === "tool").map((message) => JSON.parse(message.content));
@@ -324,6 +326,29 @@ test("采购单号检索为空：不发放句柄，后续根查询被拒", async
   assert.equal(executor.calls.length, 1, "空检索后不得再触达执行器");
   const failed = db.store.events.filter((event) => event.type === "tool_status" && event.payload.status === "failed");
   assert.equal(failed[0].payload.code, "ORDER_REF_INVALID");
+});
+
+test("空结果：检索词与 0 条写进回答上下文，run 仍完成", async () => {
+  const empty = { operation: "search_documents", order_no: null, as_of: "2026-10-27T00:00:00.000Z", data: [], sources: [], access_level: "operational" };
+  const { provider, db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_documents", args: { q: "PO-NOPE" } }],
+  ]), () => empty);
+
+  const answerMessages = provider.answerInputs[0];
+  const injected = answerMessages.filter((message) => message.role === "system").slice(1);
+  assert.equal(injected.length, 1, "空结果要在回答前补一条系统提示");
+  assert.match(injected[0].content, /PO-NOPE/, "提示必须点名检索词");
+  assert.match(injected[0].content, /0 条/);
+  assert.equal(db.store.runs.at(-1).state, "completed");
+});
+
+test("有结果时不追加空结果提示", async () => {
+  const { provider } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_documents", args: { q: "SO" } }],
+  ]), () => searchFact([FACT.data[0]]));
+
+  const answerMessages = provider.answerInputs[0];
+  assert.equal(answerMessages.filter((message) => message.role === "system").length, 1, "只有原始 system prompt");
 });
 
 test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
