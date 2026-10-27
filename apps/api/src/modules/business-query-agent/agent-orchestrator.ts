@@ -34,6 +34,8 @@ const DEFAULT_RUN_TIMEOUT_MS = 120_000;
 const RECOVERABLE_TOOL_ERROR_CODES = new Set([
   "ORDER_NOT_FOUND",
   "ORDER_SEARCH_REQUIRED",
+  "ORDER_REF_INVALID",
+  "ORDER_REF_REQUIRED",
   "AGENT_TOOL_ARGUMENT_INVALID",
   "AGENT_TOOL_UNKNOWN",
   "AGENT_OPERATION_NOT_IMPLEMENTED",
@@ -145,10 +147,10 @@ export class AgentOrchestrator {
           }
           attempted += 1;
           await this.appendToolArgs(runId, call);
-          const guard = this.searchGuardViolation(call, searchedOrderNos);
-          const outcome = guard
-            ? await this.rejectBeforeExecution(runId, principal, call, guard.code, guard.message)
-            : await this.executeTool(runId, principal, call, signal);
+          const resolved = this.resolveRootCall(call, searchRefs, searchedOrderNos);
+          const outcome = resolved.error
+            ? await this.rejectBeforeExecution(runId, principal, call, resolved.error.code, resolved.error.message)
+            : await this.executeTool(runId, principal, resolved.call ?? call, signal);
           if (outcome.ok) {
             facts.push(outcome.fact);
             this.registerSearchResults(searchRefs, searchedOrderNos, outcome.fact, refCounter);
@@ -205,21 +207,33 @@ export class AgentOrchestrator {
   }
 
   /**
-   * 根查询的运行时守卫：非 search_orders 的 operation 只能使用**本轮** search_orders 返回的精确
-   * order_no。命中即返回可回传失败 ORDER_SEARCH_REQUIRED，不触达数据库 —— 提示词是概率行为，
-   * 这里才是「先搜索再根查询」的契约。
+   * 根查询的入参解析（R-2）：把句柄还原成真实单号，替掉「让模型复制单号」的旧契约。
+   *
+   * 三种来源，按优先级：
+   *   1. `order_ref`：本轮发放的句柄，命中即还原；未发放的一律拒绝，不触达数据库；
+   *   2. `order_no`：兼容路径，仍必须在本轮检索白名单内；
+   *   3. 都没有：本轮只命中一张单时自动沿用它；多张单则要求带句柄，绝不猜。
+   * 句柄在进入执行器前被剥掉——执行器只认固定 schema，多一个字段就会 400。
    */
-  private searchGuardViolation(call: AgentLlmToolCall, searchedOrderNos: Set<string>): { code: string; message: string } | null {
-    if (call.operation === "search_orders") return null;
-    const raw = call.args?.order_no;
-    const orderNo = typeof raw === "string" ? raw.trim() : "";
-    if (!orderNo) {
-      return { code: "ORDER_SEARCH_REQUIRED", message: "缺少 order_no。请先调用 order_query 的 search_orders，再原样使用返回的精确 order_no 查询该订单" };
+  private resolveRootCall(call: AgentLlmToolCall, refs: Map<string, string>, orderNos: Set<string>): { call?: AgentLlmToolCall; error?: { code: string; message: string } } {
+    if (call.operation === "search_orders") return { call };
+    const args = { ...(call.args ?? {}) } as Record<string, unknown>;
+    const rawRef = args.order_ref;
+    delete args.order_ref;
+    let orderNo = typeof args.order_no === "string" ? args.order_no.trim() : "";
+    if (rawRef !== undefined && rawRef !== null) {
+      const ref = typeof rawRef === "string" ? rawRef.trim() : "";
+      const mapped = refs.get(ref);
+      if (!mapped) return { error: { code: "ORDER_REF_INVALID", message: "order_ref 不是本轮检索发出的句柄。请先调用 search_orders，并使用它返回的 order_ref" } };
+      orderNo = mapped;
+    } else if (!orderNo) {
+      const candidates = new Set(refs.values());
+      if (candidates.size === 1) orderNo = [...candidates][0];
+      else if (candidates.size > 1) return { error: { code: "ORDER_REF_REQUIRED", message: "本轮检索到多张订单，请带上其中一张的 order_ref" } };
     }
-    if (!searchedOrderNos.has(orderNo)) {
-      return { code: "ORDER_SEARCH_REQUIRED", message: "order_no 不是本轮 search_orders 返回的精确值。请先调用 search_orders，并原样复制返回的 order_no（含产品名、后缀与空格）" };
-    }
-    return null;
+    if (!orderNo) return { error: { code: "ORDER_SEARCH_REQUIRED", message: "缺少 order_ref。请先调用 order_query 的 search_orders 取得句柄" } };
+    if (!orderNos.has(orderNo)) return { error: { code: "ORDER_SEARCH_REQUIRED", message: "order_no 不是本轮 search_orders 返回的精确值。请改用检索返回的 order_ref" } };
+    return { call: { ...call, args: { ...args, order_no: orderNo } } };
   }
 
   /**

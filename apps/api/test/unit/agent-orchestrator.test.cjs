@@ -205,6 +205,42 @@ test("非检索操作不发句柄", async () => {
   assert.ok(!JSON.stringify(facts[1]).includes("order_ref"), "根查询事实不带句柄");
 });
 
+test("根查询用句柄还原单号：执行器收到 order_no，且不含 order_ref", async () => {
+  const queue = [searchFact([FACT.data[0]]), { ...FACT, operation: "get_order_overview", order_no: "SO-001", data: { status: "confirmed" } }];
+  const { executor } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "get_order_overview", args: { order_ref: "o_1" } }],
+  ]), () => queue.shift());
+
+  assert.equal(executor.calls.length, 2);
+  assert.equal(executor.calls[1].args.order_no, "SO-001", "句柄被还原成真实单号");
+  assert.ok(!("order_ref" in executor.calls[1].args), "句柄不得漏进执行器，它只认固定 schema");
+});
+
+test("本轮只有一张单时，根查询省略参数也能查", async () => {
+  const queue = [searchFact([FACT.data[0]]), { ...FACT, operation: "get_order_overview", order_no: "SO-001", data: { status: "confirmed" } }];
+  const { executor, db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "get_order_overview", args: {} }],
+  ]), () => queue.shift());
+
+  assert.equal(executor.calls.length, 2, "第二张单自动沿用唯一命中");
+  assert.equal(executor.calls[1].args.order_no, "SO-001");
+  assert.equal(db.store.runs.at(-1).state, "completed");
+});
+
+test("本轮多张单、根查询不带句柄 → 拒绝且不触达执行器", async () => {
+  const rows = [FACT.data[0], { ...FACT.data[0], order_no: "SO-002" }];
+  const { executor, db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "get_order_overview", args: {} }],
+  ]), () => searchFact(rows));
+
+  assert.equal(executor.calls.length, 1, "歧义时不得猜一张单去查");
+  const failed = db.store.events.filter((event) => event.type === "tool_status" && event.payload.status === "failed");
+  assert.equal(failed[0].payload.code, "ORDER_REF_REQUIRED");
+});
+
 test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);
