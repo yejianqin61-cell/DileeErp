@@ -404,6 +404,11 @@ model SalesOrder {
   materialRefs              SalesOrderMaterialRef[]
   materialExtras            SalesOrderMaterialExtra[]
 
+  purchaseReceipts             PurchaseReceipt[]
+  incomingInspections          IncomingInspection[]
+  rawMaterialInboundNotices    RawMaterialInboundNotice[]
+  rawMaterialInbounds          RawMaterialInbound[]
+  payableSources               PayableSource[]
   @@index([customerId, status])
   @@index([orderDate])
   /// 货号清单要按 (货号, 下单日期) 取数（reorder 模块的 articles 聚合）。
@@ -1028,6 +1033,8 @@ model PurchaseReceipt {
   purchaseOrderId     String               @map("purchase_order_id") @db.Uuid
   purchaseOrderItemId String               @map("purchase_order_item_id") @db.Uuid
   orderNo             String               @map("order_no") @db.VarChar(100)
+  salesOrderId      String?                    @map("sales_order_id") @db.Uuid
+  salesOrder        SalesOrder?                @relation(fields: [salesOrderId], references: [id])
   receiptNo           String               @unique @map("receipt_no") @db.VarChar(100)
   referenceNo         String?              @map("reference_no") @db.VarChar(100)
   receivedDate        DateTime             @map("received_date")
@@ -1057,6 +1064,8 @@ model IncomingInspection {
   id                  String               @id @default(uuid()) @db.Uuid
   purchaseReceiptId   String               @map("purchase_receipt_id") @db.Uuid
   orderNo             String               @map("order_no") @db.VarChar(100)
+  salesOrderId      String?                    @map("sales_order_id") @db.Uuid
+  salesOrder        SalesOrder?                @relation(fields: [salesOrderId], references: [id])
   inspectedQuantity   Decimal              @map("inspected_quantity") @db.Decimal(18, 4)
   acceptedQuantity    Decimal              @map("accepted_quantity") @db.Decimal(18, 4)
   conditionalQuantity Decimal              @map("conditional_quantity") @db.Decimal(18, 4)
@@ -1084,6 +1093,8 @@ model RawMaterialInboundNotice {
   id                   String             @id @default(uuid()) @db.Uuid
   noticeNo             String             @unique @map("notice_no") @db.VarChar(100)
   orderNo              String             @map("order_no") @db.VarChar(100)
+  salesOrderId        String?              @map("sales_order_id") @db.Uuid
+  salesOrder          SalesOrder?          @relation(fields: [salesOrderId], references: [id])
   purchaseOrderId      String             @map("purchase_order_id") @db.Uuid
   purchaseOrderItemId  String             @map("purchase_order_item_id") @db.Uuid
   purchaseReceiptId    String             @map("purchase_receipt_id") @db.Uuid
@@ -1120,6 +1131,8 @@ model RawMaterialInbound {
   id                   String             @id @default(uuid()) @db.Uuid
   inboundNo            String             @unique @map("inbound_no") @db.VarChar(100)
   orderNo              String             @map("order_no") @db.VarChar(100)
+  salesOrderId        String?                   @map("sales_order_id") @db.Uuid
+  salesOrder          SalesOrder?               @relation(fields: [salesOrderId], references: [id])
   purchaseOrderId      String             @map("purchase_order_id") @db.Uuid
   purchaseOrderItemId  String             @map("purchase_order_item_id") @db.Uuid
   purchaseReceiptId    String             @map("purchase_receipt_id") @db.Uuid
@@ -1208,6 +1221,8 @@ model PayableSource {
   rawMaterialInboundId String?               @map("raw_material_inbound_id") @db.Uuid
   purchaseReceiptId    String?               @map("purchase_receipt_id") @db.Uuid
   orderNo              String                @map("order_no") @db.VarChar(100)
+  salesOrderId        String?             @map("sales_order_id") @db.Uuid
+  salesOrder          SalesOrder?         @relation(fields: [salesOrderId], references: [id])
   purchaseOrderId      String                @map("purchase_order_id") @db.Uuid
   purchaseOrderItemId  String                @map("purchase_order_item_id") @db.Uuid
   materialId           String?               @map("material_id") @db.Uuid

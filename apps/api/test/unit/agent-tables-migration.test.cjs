@@ -16,11 +16,13 @@ const folder = "20261025100000_business_query_agent_tables";
 const sql = readFileSync(join(migrationsRoot, folder, "migration.sql"), "utf8");
 const schema = readFileSync(join(migrationsRoot, "..", "schema.prisma"), "utf8");
 
-test("agent 表迁移按时间戳排在所有现有迁移之后（Prisma 按目录名顺序执行）", () => {
+test("agent 表迁移按时间戳排在它之前的迁移之后（Prisma 按目录名顺序执行）", () => {
   const folders = readdirSync(migrationsRoot).filter((name) => statSync(join(migrationsRoot, name)).isDirectory()).sort();
   const index = folders.indexOf(folder);
   assert.ok(index >= 0, `迁移目录 ${folder} 必须存在`);
-  assert.equal(index, folders.length - 1, "agent 表迁移必须排在最后，避免插队");
+  // 不许把 agent 迁移倒填到更早的时间戳去「插队」：任何 2026-10-25 之前的迁移都必须排在它前面。
+  const backdated = folders.filter((name) => name !== folder && name.slice(0, 14) < "20261025100000" && name > folder);
+  assert.deepEqual(backdated, [], `agent 表迁移不能早于这些迁移：${backdated.join("、")}`);
   for (const name of folders) assert.match(name.slice(0, 14), /^\d{14}$/, `迁移目录 ${name} 必须以 14 位时间戳开头`);
 });
 
