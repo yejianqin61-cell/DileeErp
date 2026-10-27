@@ -24,7 +24,7 @@ import type { AgentObservability } from "./observability";
  *   - 致命失败（撤权、取消、超时、非业务异常）：仍直接收进 failed 终态。
  */
 
-const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。订单号必须先用 order_query 的 search_orders 取得精确值并原样使用（包含产品名、后缀与空格），不得根据用户输入猜测或截断。";
+const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。任何单号（销售单、采购单、生产单）都先用 order_query 的 search_documents 检索，再原样使用结果里的 order_ref 做后续查询，不要复制或改写单号。";
 export const AGENT_MAX_TOOL_STEPS = 16;
 export const AGENT_MAX_PLAN_STEPS = 4;
 export const AGENT_MAX_RECOVERABLE_TOOL_FAILURES = 3;

@@ -1,6 +1,6 @@
 // 执行步骤文案（lib/agent-tool-labels.ts）的单元测试。
 //
-// 关键一条：后端 tool-registry.ts 里的 31 个 operation 必须**全部**有中文标签。
+// 关键一条：后端 tool-registry.ts 里的 32 个 operation 必须**全部**有中文标签。
 // 后端新增能力而前端没补标签时，这里会红 —— 否则界面上会冒出 get_finished_goods_inbounds 这种英文。
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -22,9 +22,10 @@ function backendOperations() {
   return [...source.matchAll(/row\("([a-z_]+)",\s*"([a-z_]+)"/g)].map((match) => ({ tool: match[1], operation: match[2] }));
 }
 
-test("后端 31 项 operation 全部有中文标签，工具名也全部覆盖", () => {
+test("后端 32 项 operation 全部有中文标签，工具名也全部覆盖", () => {
   const operations = backendOperations();
-  assert.equal(operations.length, 31, "后端 operation 数量变了：先确认是否新增了能力");
+  assert.equal(operations.length, 32, "后端 operation 数量变了：先确认是否新增了能力");
+  assert.equal(AGENT_OPERATION_LABELS.search_documents, "单号检索", "三类单号的统一入口要叫「单号检索」，不能叫「销售订单」");
 
   const missing = operations.filter(({ operation }) => !AGENT_OPERATION_LABELS[operation]);
   assert.deepEqual(missing, [], `缺少中文标签的 operation：${missing.map((item) => item.operation).join("、")}`);

@@ -6,7 +6,7 @@
  * 不发模型原始参数、SQL 或查询结果 —— 这里只把这两个英文标识翻译成人话，
  * 并在失败时把内部错误码翻成业务用户能看懂的原因。**不要**在这里展示参数或数据行。
  *
- * operation 清单与后端 tool-registry.ts 的 31 项一一对应：后端改名会先在它的审计测试里红，
+ * operation 清单与后端 tool-registry.ts 的 32 项一一对应：后端改名会先在它的审计测试里红，
  * 不会静默漂移。
  */
 
@@ -20,9 +20,10 @@ export const AGENT_TOOL_LABELS: Record<string, string> = {
   finance_query: "财务",
 };
 
-/** 31 个内部 operation → 业务对象（用户看得懂的词）。 */
+/** 32 个内部 operation → 业务对象（用户看得懂的词）。 */
 export const AGENT_OPERATION_LABELS: Record<string, string> = {
   // order_query
+  search_documents: "单号检索",
   search_orders: "销售订单",
   get_order_overview: "订单全链路",
   get_order_status: "订单状态",
