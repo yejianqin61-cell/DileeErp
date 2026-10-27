@@ -13,6 +13,10 @@ WEB_PORT="${WEB_PORT:-3000}"
 ARCHIVE="${ARCHIVE:-/tmp/DileeErp-latest.tar.gz}"
 BUILD_LOG="${BUILD_LOG:-/tmp/dilee-remote-build.log}"
 ERRLOG="${ERRLOG:-/home/ubuntu/.pm2/logs/dilee-api-error.log}"
+# 冷启动期第一次 health 探测基本必失败：实测 API 起好后约 13 秒才返回 build。
+# 单次探测会把「慢」判成「坏」，所以探测改成有上限的重试，默认最多等 6 × 5 = 30 秒。
+HEALTH_ATTEMPTS="${HEALTH_ATTEMPTS:-6}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 
 log()  { printf '%s %s\n' "[$(date '+%F %T')]" "$*"; }
 fail() { printf '%s FAIL: %s\n' "[$(date '+%F %T')]" "$*" >&2; exit 1; }

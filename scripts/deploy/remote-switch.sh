@@ -39,10 +39,18 @@ pm2 save
 sleep 5
 pm2 status | grep -E "dilee-(api|web)" || true
 
-build="$(health_build)"
 release="$(cat "$RELEASE_VERSION_FILE")"
+build=""
+attempt=0
+while [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; do
+  attempt=$((attempt + 1))
+  build="$(health_build)"
+  log "健康探测第 ${attempt}/${HEALTH_ATTEMPTS} 次：build=${build}"
+  [ "$build" = "$release" ] && break
+  if [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; then sleep "$HEALTH_INTERVAL"; fi
+done
 log "health build=$build release=$release"
-[ "$build" = "$release" ] || fail "health 返回的 build($build) 与 RELEASE_VERSION($release) 不一致"
+[ "$build" = "$release" ] || fail "health 返回的 build($build) 与 RELEASE_VERSION($release) 不一致（已探测 ${attempt} 次）"
 [ "$build" != "development" ] || fail "health 返回 development，说明不是生产构建"
 
 manifest="$(http_code "http://127.0.0.1:${WEB_PORT}/manifest.webmanifest")"

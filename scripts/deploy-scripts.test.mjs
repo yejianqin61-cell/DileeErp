@@ -59,6 +59,16 @@ test("切换脚本按标准做成功判定，且只清理 app.backup-*", () => {
   assert.doesNotMatch(switchSh, /rm -rf .*app\.failed/, "app.failed-* 必须保留用于排查");
 });
 
+test("健康探测带重试：冷启动不误判，失败信息含 build 与 release", () => {
+  assert.match(common, /HEALTH_ATTEMPTS=/, "探测次数必须可配置");
+  assert.match(common, /HEALTH_INTERVAL=/, "探测间隔必须可配置");
+  const codeOnly = switchSh.split("\n").filter((line) => !line.trimStart().startsWith("#")).join("\n");
+  assert.match(codeOnly, /while \[ "\$attempt" -lt "\$HEALTH_ATTEMPTS" \]/, "单次探测必须改成有上限的重试循环");
+  assert.match(codeOnly, /探测第/, "每次探测必须写一行日志，否则无法判断是哪一次失败的");
+  assert.match(switchSh, /已探测 \$\{attempt\} 次/, "失败信息必须带上探测次数");
+  assert.match(switchSh, /RELEASE_VERSION\(\$release\)/, "失败信息必须同时出现 build 与 release");
+});
+
 test("回滚脚本保留失败目录，不动数据库容器/卷", () => {
   assert.match(rollback, /app\.failed-/, "失败目录必须保留");
   assert.match(rollback, /app\.backup-\*/, "回滚源为 app.backup-*");
