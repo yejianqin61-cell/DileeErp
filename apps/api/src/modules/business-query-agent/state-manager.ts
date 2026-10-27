@@ -14,8 +14,11 @@ import { randomUUID } from "node:crypto";
 export const AGENT_ACTIVE_STATES = ["planning", "querying", "responding"] as const;
 export const AGENT_TERMINAL_STATES = ["completed", "failed", "cancelled"] as const;
 
-/** SSE 事件类型固定 8 种（工程布局「JSON 与 SSE 协议」），别的 type 一律拒收。 */
-export const AGENT_EVENT_TYPES = ["state", "tool_status", "answer_delta", "source", "usage", "completed", "cancelled", "error"] as const;
+/**
+ * 事件类型。前 8 种是 SSE 契约（工程布局「JSON 与 SSE 协议」）；`tool_args` 是**内部事件**：
+ * 只落库供取证，传输层不重放、不推送（见 stream-transport 的 INTERNAL_EVENT_TYPES）。
+ */
+export const AGENT_EVENT_TYPES = ["state", "tool_status", "tool_args", "answer_delta", "source", "usage", "completed", "cancelled", "error"] as const;
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
 export type AgentRunEventInput = { type: AgentEventType; payload: Record<string, unknown> };
 

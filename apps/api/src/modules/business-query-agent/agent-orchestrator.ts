@@ -40,6 +40,16 @@ const RECOVERABLE_TOOL_ERROR_CODES = new Set([
   "AGENT_TOOL_FORBIDDEN",
 ]);
 
+/**
+ * 入参取证（R-5）：只把「模型实际传了什么」写进**事件表**，不写进观测日志。
+ *
+ * 为什么分开：日志的既有红线是「不含业务值」，而排查口径问题的第一步恰恰要知道模型传了
+ * 哪个单号/检索词。事件表本来就存 question/answer，权限口径相同，所以业务值放在这里不扩大
+ * 暴露面；观测日志保持原样。前端也收不到——传输层把 tool_args 当内部事件跳过。
+ */
+const TOOL_ARG_DIGEST_KEYS = ["order_no", "q", "page", "order_ref"] as const;
+const TOOL_ARG_DIGEST_MAX_CHARS = 100;
+
 type ToolOutcome = { ok: true; fact: QueryFact } | { ok: false; code: string; message: string };
 
 function httpErrorCode(error: unknown): string | null {
@@ -131,6 +141,7 @@ export class AgentOrchestrator {
             continue;
           }
           attempted += 1;
+          await this.appendToolArgs(runId, call);
           const guard = this.searchGuardViolation(call, searchedOrderNos);
           const outcome = guard
             ? await this.rejectBeforeExecution(runId, principal, call, guard.code, guard.message)
@@ -217,6 +228,28 @@ export class AgentOrchestrator {
       const orderNo = (row as { order_no?: unknown }).order_no;
       if (typeof orderNo === "string" && orderNo.trim().length > 0) target.add(orderNo.trim());
     }
+  }
+
+  /** 入参取证：写一条内部事件，浏览器收不到；写失败不影响主流程（取证不该拖垮问答）。 */
+  private async appendToolArgs(runId: string, call: AgentLlmToolCall): Promise<void> {
+    const args = this.digestToolArgs(call.args);
+    if (Object.keys(args).length === 0) return;
+    await this.state.transitionAndAppend(runId, {
+      from: "querying",
+      events: [{ type: "tool_args", payload: { tool: call.tool, operation: call.operation, args } }],
+    }).catch(() => {});
+  }
+
+  /** 白名单 + 截断：只留定位问题需要的那四个键，长文本切到 100 字符。 */
+  private digestToolArgs(raw: Record<string, unknown> | undefined): Record<string, unknown> {
+    const digest: Record<string, unknown> = {};
+    if (!raw) return digest;
+    for (const key of TOOL_ARG_DIGEST_KEYS) {
+      const value = raw[key];
+      if (value === undefined || value === null) continue;
+      digest[key] = typeof value === "string" ? value.slice(0, TOOL_ARG_DIGEST_MAX_CHARS) : value;
+    }
+    return digest;
   }
 
   private dropCall(runId: string, principal: AgentPrincipal, call: AgentLlmToolCall, reason: "call_budget" | "plan_budget"): void {

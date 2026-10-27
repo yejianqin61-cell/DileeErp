@@ -110,7 +110,7 @@ test("编排正常完成：planning → querying → responding → completed，
   assert.equal(saved.answer, "根据本轮查询，找到 1 张订单：SO-001（手机壳）。来源：SO-001。");
   const events = db.store.events.filter((event) => event.runId === run.id);
   assert.deepEqual(events.map((event) => event.seq), events.map((_, index) => index + 1), "seq 必须从 1 起单调");
-  assert.deepEqual(events.map((event) => event.type), ["state", "state", "tool_status", "tool_status", "source", "state", "answer_delta", "answer_delta", "answer_delta", "state", "completed"], "状态迁移自动补 state 事件，completed 前也有");
+  assert.deepEqual(events.map((event) => event.type), ["state", "state", "tool_args", "tool_status", "tool_status", "source", "state", "answer_delta", "answer_delta", "answer_delta", "state", "completed"], "状态迁移自动补 state 事件；每次调用先留一条入参事件，completed 前也有");
   const completed = events.at(-1).payload;
   assert.equal(completed.answer, saved.answer);
   assert.deepEqual(completed.sources.map((source) => source.business_no), ["SO-001"]);
@@ -120,6 +120,34 @@ test("编排正常完成：planning → querying → responding → completed，
   assert.equal(completed.usage.input_tokens, 12, "provider 用量聚合进 completed.usage");
   assert.deepEqual(executor.calls[0].call, { id: "call-1", tool: "order_query", operation: "search_orders", args: { q: "SO" } });
   assert.equal(executor.calls[0].principalAccess, "operational", "执行器拿到的档位来自 run 创建时");
+});
+
+test("工具入参写进事件表：只记白名单键，单值截断 100 字符", async () => {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const longQ = "x".repeat(150);
+  let step = 0;
+  const provider = {
+    async plan() {
+      step += 1;
+      if (step === 1) return { toolCalls: [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: longQ } }] };
+      if (step === 2) return { toolCalls: [{ id: "c2", tool: "procurement_query", operation: "get_purchase_orders", args: { order_no: "SO-001", page: 2, filters: { x: 1 } } }] };
+      return { toolCalls: [] };
+    },
+    async *streamAnswer() { yield { type: "text", text: "ok" }; },
+  };
+  const orchestrator = new AgentOrchestrator(state, fakeExecutor(), provider, fakeRoleReader());
+
+  await orchestrator.run(run, PRINCIPAL, new AbortController().signal);
+
+  const argsEvents = db.store.events.filter((event) => event.runId === run.id && event.type === "tool_args");
+  assert.equal(argsEvents.length, 2, "每次工具调用都要留一条入参事件");
+  assert.equal(argsEvents[0].payload.operation, "search_orders");
+  assert.equal(argsEvents[0].payload.args.q.length, 100, "超长入参必须截断");
+  assert.equal(argsEvents[1].payload.args.order_no, "SO-001");
+  assert.equal(argsEvents[1].payload.args.page, 2);
+  assert.ok(!("filters" in argsEvents[1].payload.args), "白名单之外的键不得落库");
 });
 
 test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
