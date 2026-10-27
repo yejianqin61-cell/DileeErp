@@ -52,6 +52,15 @@ const RECOVERABLE_TOOL_ERROR_CODES = new Set([
 const TOOL_ARG_DIGEST_KEYS = ["order_no", "q", "page", "order_ref"] as const;
 const TOOL_ARG_DIGEST_MAX_CHARS = 100;
 
+/** 检索类 operation：不进根验证，结果会登记句柄。 */
+const SEARCH_OPERATIONS = new Set(["search_orders", "search_documents"]);
+
+/** 检索行里「真正作为根」的单号：search_orders 是 order_no，search_documents 是所属销售单号。 */
+function searchRowRootOrderNo(operation: string, row: Record<string, unknown>): string | null {
+  const value = operation === "search_documents" ? row.sales_order_no : row.order_no;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 type ToolOutcome = { ok: true; fact: QueryFact } | { ok: false; code: string; message: string };
 
 function httpErrorCode(error: unknown): string | null {
@@ -216,7 +225,7 @@ export class AgentOrchestrator {
    * 句柄在进入执行器前被剥掉——执行器只认固定 schema，多一个字段就会 400。
    */
   private resolveRootCall(call: AgentLlmToolCall, refs: Map<string, string>, orderNos: Set<string>): { call?: AgentLlmToolCall; error?: { code: string; message: string } } {
-    if (call.operation === "search_orders") return { call };
+    if (SEARCH_OPERATIONS.has(call.operation)) return { call };
     const args = { ...(call.args ?? {}) } as Record<string, unknown>;
     const rawRef = args.order_ref;
     delete args.order_ref;
@@ -244,13 +253,12 @@ export class AgentOrchestrator {
    * 模型只复制 `o_1` 这种短标识；还原在主键层面完成。
    */
   private registerSearchResults(refs: Map<string, string>, orderNos: Set<string>, fact: QueryFact, counter: { value: number }): void {
-    if (fact.operation !== "search_orders") return;
+    if (!SEARCH_OPERATIONS.has(fact.operation)) return;
     const rows = Array.isArray(fact.data) ? fact.data : [];
     for (const row of rows) {
       if (row === null || typeof row !== "object") continue;
-      const orderNo = (row as { order_no?: unknown }).order_no;
-      if (typeof orderNo !== "string" || orderNo.trim().length === 0) continue;
-      const value = orderNo.trim();
+      const value = searchRowRootOrderNo(fact.operation, row as Record<string, unknown>);
+      if (!value) continue;
       orderNos.add(value);
       (row as Record<string, unknown>).order_ref = this.refForOrder(refs, value, counter);
     }

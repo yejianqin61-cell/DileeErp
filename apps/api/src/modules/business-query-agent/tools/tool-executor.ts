@@ -2,6 +2,7 @@ import { ForbiddenException, UnprocessableEntityException } from "@nestjs/common
 import { lowerAccessLevel, resolveAccessLevel, type AgentAccessLevel } from "../access-level";
 import type { AgentPrincipal, AgentRoleReader } from "../query-permission.guard";
 import { parseSearchOrdersInput, searchOrders, type AgentReadStore } from "./order-query-tools";
+import { parseSearchDocumentsInput, searchDocuments } from "./document-search-tools";
 import type { QueryFact, QuerySource } from "./query-fact";
 import { assertOperationAllowed } from "./tool-permission";
 import { toolRegistry, type ToolCapability } from "./tool-registry";
@@ -61,6 +62,24 @@ export class ToolExecutor {
           as_of: asOf,
           data,
           sources: data.map((row) => ({ business_type: "sales_order", business_no: String(row.order_no), queried_at: asOf })),
+          access_level: effective,
+        },
+      };
+    }
+
+    // 按号检索任意单据（R-1）：销售单号、采购单号、生产单号都能进，每行落回所属销售单号。
+    if (capability.operation === "search_documents") {
+      const input = parseSearchDocumentsInput(call.args);
+      const rows = await searchDocuments(this.prisma, input);
+      signal?.throwIfAborted();
+      const data = this.truncateData(rows, capability.maxRows) as Record<string, unknown>[];
+      return {
+        fact: {
+          operation: capability.operation,
+          order_no: null,
+          as_of: asOf,
+          data,
+          sources: data.map((row) => ({ business_type: String(row.document_type), business_no: String(row.document_no), queried_at: asOf })),
           access_level: effective,
         },
       };
