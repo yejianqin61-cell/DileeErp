@@ -7,18 +7,20 @@ const { TOOL_CAPABILITIES } = require("../../dist/modules/business-query-agent/t
 const { ROOTED_OPERATIONS } = require("../../dist/modules/business-query-agent/tools/rooted-operations.js");
 
 const OPS = [
-  "search_orders", "get_order_overview", "get_order_status", "get_order_timeline", "get_order_alerts", "get_order_attachments",
+  "search_documents", "search_orders", "get_order_overview", "get_order_status", "get_order_timeline", "get_order_alerts", "get_order_attachments",
   "get_sales_order", "get_customer", "get_bom", "get_sales_returns",
   "get_purchase_plans", "get_purchase_orders", "get_receipts", "get_incoming_inspections",
   "get_production_orders", "get_operation_progress", "get_operation_reports", "get_outsource_flow",
   "get_raw_material_balance", "get_inventory_facts", "get_material_movements", "get_finished_goods_qc", "get_finished_goods_inbounds", "get_finished_goods_outbounds",
 ];
 
-test("目录审计：31 个 operation 均有实现，24 个非财务限 operational，7 个财务限 full", () => {
+const SEARCH_OPS = ["search_orders", "search_documents"];
+
+test("目录审计：32 个 operation 均有实现，25 个非财务限 operational，7 个财务限 full", () => {
   const nonFinancial = TOOL_CAPABILITIES.filter((item) => item.tool !== "finance_query");
   const financial = TOOL_CAPABILITIES.filter((item) => item.tool === "finance_query");
-  const rooted = TOOL_CAPABILITIES.filter((item) => item.operation !== "search_orders");
-  assert.equal(nonFinancial.length, 24);
+  const rooted = TOOL_CAPABILITIES.filter((item) => !SEARCH_OPS.includes(item.operation));
+  assert.equal(nonFinancial.length, 25);
   assert.deepEqual(nonFinancial.map((item) => item.operation).sort(), OPS.slice().sort());
   assert.ok(nonFinancial.every((item) => item.implemented && item.minAccess === "operational"));
   assert.equal(financial.length, 7);
@@ -38,11 +40,12 @@ test("目录审计：财务 operation 对 operational 是 403，且不触达读�
   assert.equal(calls.roles, 0, "档位不足必须在回查角色、读取业务库之前拒绝");
 });
 
-test("目录审计：31 个 operation 都有领域测试覆盖", () => {
+test("目录审计：32 个 operation 都有领域测试覆盖", () => {
   // 每个领域测试向实现函数喂入 unitPrice/amount/currency/settlement/payable/
   // receivable/wage 等宽字段，并对实际返回 JSON 断言。这里固定覆盖映射，防止
   // 后续新增 capability 却忘了把它纳入红线测试。
   const coverage = {
+    "agent-tool-document-search.test.cjs": ["search_documents"],
     "agent-tool-executor.test.cjs": ["search_orders"],
     "agent-tool-order-domain.test.cjs": ["get_order_overview", "get_order_status", "get_order_timeline", "get_order_alerts", "get_order_attachments"],
     "agent-tool-sales-domain.test.cjs": ["get_sales_order", "get_customer", "get_bom", "get_sales_returns"],
