@@ -150,6 +150,61 @@ test("工具入参写进事件表：只记白名单键，单值截断 100 字符
   assert.ok(!("filters" in argsEvents[1].payload.args), "白名单之外的键不得落库");
 });
 
+/** 建一个 planning run，用给定 provider 与按调用取事实的执行器跑完，返回三者供断言。 */
+async function driveWith(provider, factForCall) {
+  const db = createPrisma();
+  const state = new AgentStateManager(db);
+  const run = await planningRun(db, state);
+  const executor = { calls: [], async execute(call) { this.calls.push(call); return factForCall(call); } };
+  await new AgentOrchestrator(state, executor, provider, fakeRoleReader()).run(run, PRINCIPAL, new AbortController().signal);
+  return { provider, executor, db, run };
+}
+
+/** 记录每轮 messages 的 provider：用来断言模型实际看到了什么事实。 */
+function scriptedProvider(plans) {
+  const captured = [];
+  return {
+    captured,
+    async plan(messages) { captured.push(messages); const next = plans[captured.length - 1]; return { toolCalls: next ? next() : [] }; },
+    async *streamAnswer() { yield { type: "text", text: "ok" }; },
+  };
+}
+const toolFacts = (messages) => messages.filter((message) => message.role === "tool").map((message) => JSON.parse(message.content));
+const searchFact = (rows) => ({
+  operation: "search_orders", order_no: null, as_of: "2026-10-27T00:00:00.000Z", data: rows,
+  sources: rows.map((row) => ({ business_type: "sales_order", business_no: row.order_no })), access_level: "operational",
+});
+
+test("检索结果带本轮句柄：单行 o_1，两行 o_1 与 o_2", async () => {
+  const single = await driveWith(scriptedProvider([() => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }]]), () => searchFact([FACT.data[0]]));
+  assert.equal(toolFacts(single.provider.captured[1])[0].data[0].order_ref, "o_1");
+  assert.equal(toolFacts(single.provider.captured[1])[0].data[0].order_no, "SO-001", "单号仍要留给人和回放看");
+
+  const rows = [FACT.data[0], { ...FACT.data[0], order_no: "SO-002" }];
+  const double = await driveWith(scriptedProvider([() => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }]]), () => searchFact(rows));
+  assert.deepEqual(toolFacts(double.provider.captured[1])[0].data.map((row) => row.order_ref), ["o_1", "o_2"]);
+});
+
+test("句柄跨次检索继续编号，不重号", async () => {
+  const queue = [searchFact([FACT.data[0]]), searchFact([{ ...FACT.data[0], order_no: "SO-009" }])];
+  const { provider } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "search_orders", args: { q: "SO-9" } }],
+  ]), () => queue.shift());
+  const facts = toolFacts(provider.captured[2]);
+  assert.deepEqual(facts.map((fact) => fact.data[0].order_ref), ["o_1", "o_2"]);
+});
+
+test("非检索操作不发句柄", async () => {
+  const queue = [searchFact([FACT.data[0]]), { ...FACT, operation: "get_order_overview", order_no: "SO-001", data: { status: "confirmed" } }];
+  const { provider } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "get_order_overview", args: { order_no: "SO-001" } }],
+  ]), () => queue.shift());
+  const facts = toolFacts(provider.captured[2]);
+  assert.ok(!JSON.stringify(facts[1]).includes("order_ref"), "根查询事实不带句柄");
+});
+
 test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);

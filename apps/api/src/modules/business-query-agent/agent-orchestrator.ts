@@ -119,6 +119,9 @@ export class AgentOrchestrator {
     const facts: QueryFact[] = [];
     /** 本轮 search_orders 返回过的精确 order_no：根查询只允许使用这里的值。 */
     const searchedOrderNos = new Set<string>();
+    /** 本轮句柄表 `o_1 → DL260170-4H 伞头`：只活在这一轮，跨轮清空（防止旧句柄被复用）。 */
+    const searchRefs = new Map<string, string>();
+    const refCounter = { value: 0 };
     let attempted = 0;
     let modelSteps = 0;
     let recoverableFailures = 0;
@@ -148,7 +151,7 @@ export class AgentOrchestrator {
             : await this.executeTool(runId, principal, call, signal);
           if (outcome.ok) {
             facts.push(outcome.fact);
-            this.rememberSearchedOrderNos(searchedOrderNos, outcome.fact);
+            this.registerSearchResults(searchRefs, searchedOrderNos, outcome.fact, refCounter);
             messages.push({ role: "tool", id: call.id, tool: call.tool, operation: call.operation, args: call.args, content: JSON.stringify(outcome.fact) });
             continue;
           }
@@ -219,15 +222,32 @@ export class AgentOrchestrator {
     return null;
   }
 
-  /** 记录本轮 search_orders 的精确单号，作为后续根查询的白名单。 */
-  private rememberSearchedOrderNos(target: Set<string>, fact: QueryFact): void {
+  /**
+   * 记录本轮 search_orders 的结果：单号进白名单，每行发一个句柄写回事实。
+   *
+   * 为什么要句柄：单号是业务自己编的，可能带产品名与空格（`DL260170-4H 伞头`），
+   * 让模型逐字复制它等于把「复制保真度」当成契约。句柄由服务端发放、本轮有效，
+   * 模型只复制 `o_1` 这种短标识；还原在主键层面完成。
+   */
+  private registerSearchResults(refs: Map<string, string>, orderNos: Set<string>, fact: QueryFact, counter: { value: number }): void {
     if (fact.operation !== "search_orders") return;
     const rows = Array.isArray(fact.data) ? fact.data : [];
     for (const row of rows) {
       if (row === null || typeof row !== "object") continue;
       const orderNo = (row as { order_no?: unknown }).order_no;
-      if (typeof orderNo === "string" && orderNo.trim().length > 0) target.add(orderNo.trim());
+      if (typeof orderNo !== "string" || orderNo.trim().length === 0) continue;
+      const value = orderNo.trim();
+      orderNos.add(value);
+      (row as Record<string, unknown>).order_ref = this.refForOrder(refs, value, counter);
     }
+  }
+
+  /** 同一张单复用同一个句柄；新单按发放顺序取下一个编号。 */
+  private refForOrder(refs: Map<string, string>, orderNo: string, counter: { value: number }): string {
+    for (const [ref, value] of refs) if (value === orderNo) return ref;
+    const ref = `o_${++counter.value}`;
+    refs.set(ref, orderNo);
+    return ref;
   }
 
   /** 入参取证：写一条内部事件，浏览器收不到；写失败不影响主流程（取证不该拖垮问答）。 */
