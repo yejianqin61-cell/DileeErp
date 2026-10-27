@@ -42,6 +42,20 @@ test("plan：每个领域工具的 operation schema 只允许本领域登记能�
   assert.match(orderTool.description, /先调用 search_orders/, "订单根查询前必须先取得系统返回的精确 order_no");
 });
 
+test("plan：输入 schema 提供 order_ref 句柄，order_no 保留为兼容", async () => {
+  const model = new MockLanguageModelV4({
+    doGenerate: { content: [], finishReason: FINISH_STOP, usage: USAGE },
+  });
+  await makeProvider(model).plan([{ role: "user", content: "查询订单采购进度" }], ["order_query", "procurement_query"], SIGNAL);
+  const tools = model.doGenerateCalls[0].tools;
+  for (const tool of tools) {
+    assert.ok(tool.inputSchema.properties.order_ref, `${tool.name} 必须提供 order_ref`);
+    assert.match(tool.inputSchema.properties.order_ref.description, /句柄/, "order_ref 的说明必须讲清它是检索返回的句柄");
+    assert.ok(tool.inputSchema.properties.order_no, "order_no 保留兼容，不得删除");
+  }
+  assert.deepEqual(tools[0].inputSchema.required, ["operation"], "句柄不是必填");
+});
+
 test("plan：系统指令经 instructions 进入模型，不能混入 messages", async () => {
   const model = new MockLanguageModelV4({
     doGenerate: { content: [], finishReason: FINISH_STOP, usage: USAGE },

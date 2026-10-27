@@ -18,22 +18,23 @@ import { AGENT_TOOLS, TOOL_CAPABILITIES, type AgentToolName } from "./tools/tool
 export type DeepSeekProviderConfig = { apiKey: string; baseURL?: string; model?: string; timeoutMs?: number };
 
 const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
-  order_query: "先调用 search_orders 搜索用户给出的单号或关键字；后续所有订单根查询只能使用搜索结果返回的精确 order_no（原样复制，包含产品名、后缀与空格），不能猜测或截断。可查询该订单的非财务进展。",
-  sales_query: "查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_no 必须是本轮 search_orders 返回的精确值。",
-  procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检。order_no 必须是本轮 search_orders 返回的精确值。",
-  production_query: "查询某张订单的生产单、工序进度、报工与外加工流转。order_no 必须是本轮 search_orders 返回的精确值。",
-  warehouse_query: "查询原料库存余额、库存流水、领退报废与成品出入库质检。order_no 必须是本轮 search_orders 返回的精确值。",
-  finance_query: "查询某张订单的应收、应付、收付款、对账、成本利润与人工（仅财务档）。order_no 必须是本轮 search_orders 返回的精确值。",
+  order_query: "先调用 search_orders 搜索用户给出的单号或关键字（销售单号、采购单号、生产单号都可以）。根查询用检索结果里的 order_ref 句柄，不要复制单号原文。可查询该订单的非财务进展。",
+  sales_query: "查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_ref 取本轮 search_orders 的结果。",
+  procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检。order_ref 取本轮 search_orders 的结果。",
+  production_query: "查询某张订单的生产单、工序进度、报工与外加工流转。order_ref 取本轮 search_orders 的结果。",
+  warehouse_query: "查询原料库存余额、库存流水、领退报废与成品出入库质检。order_ref 取本轮 search_orders 的结果。",
+  finance_query: "查询某张订单的应收、应付、收付款、对账、成本利润与人工（仅财务档）。order_ref 取本轮 search_orders 的结果。",
 };
 
 /** 每个领域工具只公布其在注册表中登记的 operation，执行器仍会二次校验。 */
 function domainInputSchema(tool: AgentToolName) {
   const operations = TOOL_CAPABILITIES.filter((capability) => capability.tool === tool).map((capability) => capability.operation);
-  return jsonSchema<{ operation: string; order_no?: string; q?: string; page?: number }>({
+  return jsonSchema<{ operation: string; order_ref?: string; order_no?: string; q?: string; page?: number }>({
     type: "object",
     properties: {
       operation: { type: "string", enum: operations, description: `要执行的内部查询能力：${operations.join("、")}` },
-      order_no: { type: "string", description: "当前订单号；订单搜索以外的 operation 必填" },
+      order_ref: { type: "string", description: "检索结果返回的订单句柄（如 o_1）；根查询优先用它，不要复制单号原文" },
+      order_no: { type: "string", description: "当前订单号；兼容用，根查询优先用 order_ref" },
       q: { type: "string", description: "搜索关键字；仅 order_query/search_orders 使用" },
       page: { type: "number", description: "页码，从 1 开始" },
     },
