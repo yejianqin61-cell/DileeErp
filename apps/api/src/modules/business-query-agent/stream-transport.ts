@@ -16,6 +16,11 @@ import { AgentStateManager, type AgentRunRow } from "./state-manager";
 const POLL_INTERVAL_MS = 200;
 const HEARTBEAT_MS = 15_000;
 const TERMINAL_EVENT_TYPES = new Set(["completed", "error", "cancelled"]);
+/**
+ * 内部事件：只落库供取证，**不重放、不推送**。`tool_args` 记的是模型实际传入的单号与检索词，
+ * 属于业务值，浏览器拿不到（R-11 脱敏），但排查口径问题时服务端必须看得到。
+ */
+const INTERNAL_EVENT_TYPES = new Set(["tool_args"]);
 
 export class StreamTransport {
   constructor(private readonly state: AgentStateManager, private readonly roleReader: AgentRoleReader) {}
@@ -39,6 +44,8 @@ export class StreamTransport {
     if (!(await this.assertCanReceive(run, write))) return close(response);
     const replayed = await this.state.eventsAfter(run.id, afterSeq);
     for (const event of replayed) {
+      // 内部事件只推进游标，不下发：游标不前进会把它一直读回来。
+      if (INTERNAL_EVENT_TYPES.has(event.type)) { lastSeq = event.seq; continue; }
       writeEvent(write, run.id, event.seq, event.type, event.createdAt.toISOString(), event.payload);
       lastSeq = event.seq;
       lastSentAt = Date.now();
@@ -56,6 +63,7 @@ export class StreamTransport {
         continue;
       }
       for (const event of events) {
+        if (INTERNAL_EVENT_TYPES.has(event.type)) { lastSeq = event.seq; continue; }
         writeEvent(write, run.id, event.seq, event.type, event.createdAt.toISOString(), event.payload);
         lastSeq = event.seq;
         lastSentAt = Date.now();
