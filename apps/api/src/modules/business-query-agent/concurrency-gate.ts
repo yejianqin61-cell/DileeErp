@@ -28,10 +28,12 @@ export class ConcurrencyGate {
     //
     this.active += 1;//active++. 许可已发放，调用方必须在 finally 里 release。
     let released = false;//为啥啊？
+    //run结束后，return 的对象的 release 方法会被调用，释放许可。
+    //为了防止重复释放许可，使用一个 released 变量来标记是否已经释放过许可。如果已经释放过，则忽略后续的 release 调用。
     return {
       release: () => {//这一行的语法要点是：箭头函数，this 绑定在 ConcurrencyGate 实例上。，release 方法被调用时，this.active 减 1，表示释放一个许可。
         // release 可能被「编排器 finally」与「创建失败的 catch」双双调用：只减一次。
-        if (released) return;// 已释放过，忽略。
+        if (released) return;// 为啥还需要这个判断？因为 release 方法可能被多次调用，如果已经释放过许可，则不再执行 active -= 1，避免 active 计数错误。
         released = true;//
         this.active -= 1;//
       },
@@ -40,6 +42,7 @@ export class ConcurrencyGate {
 
   /** 观测口径之一（R-11：同时活动 run 数）。 */
   get activeCount(): number {
-    return this.active;
+    return this.active;// 返回当前活动 run 的数量，用于观测和调试。
+    //为啥能访问到？因为 active 是 ConcurrencyGate 类的私有属性，activeCount 是该类的公共方法，可以访问私有属性 active。
   }
 }
