@@ -241,6 +241,55 @@ test("本轮多张单、根查询不带句柄 → 拒绝且不触达执行器", 
   assert.equal(failed[0].payload.code, "ORDER_REF_REQUIRED");
 });
 
+test("两步链路完整：检索 → 根查询 → 回答带真实来源", async () => {
+  const queue = [searchFact([FACT.data[0]]), { ...FACT, operation: "get_order_overview", order_no: "SO-001", data: { status: "confirmed" } }];
+  const { db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "get_order_overview", args: { order_ref: "o_1" } }],
+  ]), () => queue.shift());
+
+  const saved = db.store.runs.at(-1);
+  assert.equal(saved.state, "completed");
+  const completed = db.store.events.filter((event) => event.type === "completed").at(-1).payload;
+  assert.deepEqual(completed.sources.map((source) => source.business_no), ["SO-001", "SO-001"], "来源必须指向真实单号");
+});
+
+test("伪造句柄被拒且不触达执行器，错误只有操作名与错误码", async () => {
+  const { executor, db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "get_order_overview", args: { order_ref: "o_9" } }],
+  ]), () => searchFact([FACT.data[0]]));
+
+  assert.equal(executor.calls.length, 1, "伪造句柄不得进入执行器");
+  const failed = db.store.events.filter((event) => event.type === "tool_status" && event.payload.status === "failed");
+  assert.equal(failed[0].payload.code, "ORDER_REF_INVALID");
+  assert.deepEqual(Object.keys(failed[0].payload).sort(), ["code", "operation", "status", "tool"], "拒绝事件不带猜测值");
+});
+
+test("上一轮的句柄在新一轮不可用", async () => {
+  const first = await driveWith(scriptedProvider([() => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }]]), () => searchFact([FACT.data[0]]));
+  assert.equal(first.executor.calls.length, 1);
+
+  const second = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "get_order_overview", args: { order_ref: "o_1" } }],
+  ]), () => searchFact([FACT.data[0]]));
+  assert.equal(second.executor.calls.length, 0, "句柄只在本轮有效");
+  const failed = second.db.store.events.filter((event) => event.type === "tool_status" && event.payload.status === "failed");
+  assert.equal(failed[0].payload.code, "ORDER_REF_INVALID");
+});
+
+test("被拒之后模型带正确句柄重试，该次执行成功", async () => {
+  const queue = [searchFact([FACT.data[0]]), { ...FACT, operation: "get_order_overview", order_no: "SO-001", data: { status: "confirmed" } }];
+  const { executor } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_orders", args: { q: "SO" } }],
+    () => [{ id: "c2", tool: "order_query", operation: "get_order_overview", args: { order_ref: "o_9" } }],
+    () => [{ id: "c3", tool: "order_query", operation: "get_order_overview", args: { order_ref: "o_1" } }],
+  ]), () => queue.shift());
+
+  assert.equal(executor.calls.length, 2, "第二次用对句柄时应真正执行");
+  assert.equal(executor.calls[1].args.order_no, "SO-001");
+});
+
 test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);
