@@ -290,6 +290,42 @@ test("被拒之后模型带正确句柄重试，该次执行成功", async () =>
   assert.equal(executor.calls[1].args.order_no, "SO-001");
 });
 
+test("采购单号入口：检索命中采购单，句柄落到所属销售单，后续根查询用销售单号", async () => {
+  const purchaseHit = {
+    operation: "search_documents", order_no: null, as_of: "2026-10-27T00:00:00.000Z",
+    data: [{ document_type: "purchase_order", document_no: "PO-20260911-FEBD8A15", sales_order_no: "DL260170-4H 伞头", status: "ordered", related_documents: [] }],
+    sources: [{ business_type: "purchase_order", business_no: "PO-20260911-FEBD8A15" }], access_level: "operational",
+  };
+  const purchaseFact = {
+    operation: "get_purchase_orders", order_no: "DL260170-4H 伞头", as_of: "2026-10-27T00:00:00.000Z",
+    data: [{ purchase_order_no: "PO-20260911-FEBD8A15", status: "ordered" }],
+    sources: [{ business_type: "purchase_order", business_no: "PO-20260911-FEBD8A15" }], access_level: "operational",
+  };
+  const queue = [purchaseHit, purchaseFact];
+  const { executor, provider, db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_documents", args: { q: "PO-20260911" } }],
+    () => [{ id: "c2", tool: "procurement_query", operation: "get_purchase_orders", args: { order_ref: "o_1" } }],
+  ]), () => queue.shift());
+
+  const hit = toolFacts(provider.captured[1])[0];
+  assert.equal(hit.data[0].order_ref, "o_1", "句柄发给采购单命中的那一行");
+  assert.equal(executor.calls[1].args.order_no, "DL260170-4H 伞头", "根查询还原成所属销售单号");
+  const completed = db.store.events.filter((event) => event.type === "completed").at(-1).payload;
+  assert.ok(completed.sources.some((source) => source.business_no === "PO-20260911-FEBD8A15"), "来源要含采购单号");
+});
+
+test("采购单号检索为空：不发放句柄，后续根查询被拒", async () => {
+  const empty = { operation: "search_documents", order_no: null, as_of: "2026-10-27T00:00:00.000Z", data: [], sources: [], access_level: "operational" };
+  const { executor, db } = await driveWith(scriptedProvider([
+    () => [{ id: "c1", tool: "order_query", operation: "search_documents", args: { q: "PO-NOPE" } }],
+    () => [{ id: "c2", tool: "procurement_query", operation: "get_purchase_orders", args: { order_ref: "o_1" } }],
+  ]), () => empty);
+
+  assert.equal(executor.calls.length, 1, "空检索后不得再触达执行器");
+  const failed = db.store.events.filter((event) => event.type === "tool_status" && event.payload.status === "failed");
+  assert.equal(failed[0].payload.code, "ORDER_REF_INVALID");
+});
+
 test("多步循环：plan 连续两轮都返回调用后第三轮为空，工具按序执行且每轮结果回填消息", async () => {
   const db = createPrisma();
   const state = new AgentStateManager(db);
