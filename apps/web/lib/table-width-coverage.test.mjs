@@ -60,7 +60,7 @@ const EXEMPT = new Map(Object.entries({
   "components/finance/payroll-sheet.tsx": "工资台账是单元格可编辑网格（每格 input），压窄/裁切会挤坏控件；已有 .payroll-sheet-table 整套列宽与吸顶表头",
   "components/production/daily-reports-panel.tsx": "工序日报草稿表与员工日报更正表都是录入网格（Select/Input），省略号对输入框无意义",
   "components/production/material-issues-panel.tsx": "领料草稿网格是可编辑录入表，单元格是控件；该文件的 DataTable 部分由默认固定布局管住",
-  "components/production/material-slip-editor.tsx": "领料单/补料单编辑网格 13/9 列，已有 .material-slip-editor 的 max-width:240px + overflow:hidden + text-overflow:ellipsis（globals.css:459-471），不能改成 fixed 布局",
+  "components/production/material-slip-editor.tsx": "领料单/补料单编辑网格 14/10 列（2026-10-29 加入单位与配料/已领/余下三列），已有 .material-slip-editor 的 max-width:240px + overflow:hidden + text-overflow:ellipsis，不能改成 fixed 布局",
   "components/sales/sales-order-editor.tsx": "销售单细分明细每格一个受控 Input，压窄会挤坏输入框",
   // 打印/导出件：版式是对准纸样的，列宽由表格 own 的 CSS 决定，不是「内容超长要省略」的场景。
   "components/finance/bank-transfer-slip-editor.tsx": "跨行转账单正文与签字栏是打印件，版式照 example/财务/跨行转账单.html，.transfer-slip-table 已 table-layout:fixed",
@@ -144,7 +144,9 @@ test("只渲染 DataTable 的文件同样受管：默认值不能被改回「有
 });
 
 test("手写表的通用入口在 CSS 里还在（.table-bounded 那三条缺一不可）", () => {
-  const css = readFileSync(join(webRoot, "app", "globals.css"), "utf8");
+  // 先归一化换行：Windows checkout 是 CRLF，而这里的正则按整行锚定（`\n`），
+  // 不归一化会让守卫在 Windows 上无缘无故变红（同一份 CSS 在 Linux 上绿）。
+  const css = readFileSync(join(webRoot, "app", "globals.css"), "utf8").replace(/\r\n/g, "\n");
   // 固定布局：没有它，「列宽」只是建议值，长文本照样把列撑宽。
   assert.match(css, /^\.ui-table\.table-bounded, \.data-table\.table-bounded \{ table-layout: fixed; \}$/m, "缺 table-layout: fixed");
   // 裁切盒：没有它，text-overflow 不生效（省略号永远不出现）。

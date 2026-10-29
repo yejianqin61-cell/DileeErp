@@ -10,7 +10,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 const read = (relative) => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
-const css = read("../app/globals.css");
+// CSS：读入后先把 CRLF 归一成 LF。下面的规则按整行锚定（`\n`），Windows 上 checkout 出来是 CRLF，
+// 不归一化的话同一份 CSS 在 Windows 红、在 Linux 绿（2026-10-29 实测 HEAD 上就是红的）。
+const css = read("../app/globals.css").replace(/\r\n/g, "\n");
 const dialog = read("../components/finance/record-detail-dialog.tsx");
 const dataTable = read("../components/data/data-table.tsx");
 const tablePrimitive = read("../components/ui/table.tsx");

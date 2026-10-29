@@ -19,7 +19,9 @@ import assert from "node:assert/strict";
 
 const webRoot = fileURLToPath(new URL("..", import.meta.url));
 const read = (...parts) => readFileSync(join(webRoot, ...parts), "utf8");
-const css = read("app", "globals.css");
+// CSS 守卫按整行写正则（`... { overflow: hidden; }$`）：Windows 上 checkout 出来是 CRLF，
+// 不归一化的话同一份代码在 Windows 上红、在 Linux 上绿 —— 这不是守卫，是平台抽奖。
+const css = read("app", "globals.css").replace(/\r\n/g, "\n");
 const page = read("app", "procurement", "materials", "page.tsx");
 const auditColumns = read("components", "data", "audit-columns.tsx");
 
