@@ -151,6 +151,12 @@ button { cursor: pointer; }
 .material-extra-block .panel-heading { padding: 10px 0 0; border-bottom: none; }
 .material-extra-block .panel-heading h3 { margin: 0; font-size: 14px; }
 .material-extra-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; align-items: end; }
+/* 「同类目再加一款」（用户 2026-10-29「3 款伞头、2 款伞布」）：追加款挂在所属类目的格子里 ——
+   虚线框让它看起来是「这一类目下面的第 2、3 款」，而不是另一个类目。 */
+.material-ref-field .material-extra-row { border-style: dashed; margin-top: 2px; }
+.material-ref-field .material-extra-row label { font-size: 12px; color: var(--text-muted); }
+/* 校验错误块直接挂在 .panel 下（不属于某个 panel-body）：补一份与 .panel-body 一致的内边距。 */
+.material-extra-errors { margin: 0 16px 12px; }
 .material-extra-row label { display: flex; flex-direction: column; gap: 4px; }
 .contact-block { border-top: 1px solid var(--border); padding: 8px 0; }
 .feedback-state { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-muted); text-align: center; }

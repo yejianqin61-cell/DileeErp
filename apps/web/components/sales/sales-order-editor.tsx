@@ -26,7 +26,7 @@ import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
   SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_MATERIAL_KEYS, SPEC_PROCESS_FIELDS,
   SPEC_SCALAR_KEYS, DEFAULT_SPEC_DETAIL_LABELS, MATERIAL_EXTRA_LIMIT, SPEC_DETAIL_LABEL_MAX_LENGTH, detailLabelsWithDefaults, emptyMaterialExtraRow, emptySpecDetailRow, isBlankSpecDetail,
-  materialExtrasFromOrder, materialOptionLabel, materialRefsFromOrder, materialSpecText, specDetailLabelsFromOrder, validateMaterialExtras, validateSpecDetailLabels,
+  materialExtrasFromOrder, freeMaterialExtras, materialExtrasOfCategory, materialOptionLabel, materialRefsFromOrder, materialSpecText, specDetailLabelsFromOrder, validateMaterialExtras, validateSpecDetailLabels,
   specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialExtraRow, type MaterialOption, type MaterialRefState, type SpecDetailRow,
 } from "../../lib/sales-order-spec";
 import { MaterialThumb } from "../procurement/material-image";
@@ -464,6 +464,13 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
   const setBaseField = (key: string, value: string) => setBase((current) => ({ ...current, [key]: value }));
   const setDetailField = (index: number, key: string, value: string) => setDetails((current) => current.map((row, at) => (at === index ? { ...row, [key]: value } : row)));
   const setExtraField = (index: number, key: "label" | "content", value: string) => setExtras((current) => current.map((row, at) => (at === index ? { ...row, [key]: value } : row)));
+  /**
+   * 给某个固定类目「再加一款」（用户 2026-10-29：「我这一单有3款伞头，2款伞布」）。
+   *
+   * 行里只存 `specKey`：类目名由这份清单推出来（`materialCategoryLabel`），不让用户重复打三次「伞头」，
+   * 也不给打错的机会（打成「伞 头」的话纸上就多出一个没见过的类目）。
+   */
+  const addExtraForCategory = (specKey: string) => setExtras((current) => current.length >= MATERIAL_EXTRA_LIMIT ? current : [...current, emptyMaterialExtraRow(specKey)]);
   /** 删掉一行「其它」：用户要的就是"允许增删改"，所以不保留任何占位（与明细那行的「最后一行空行」规则不同）。 */
   const removeExtra = (index: number) => setExtras((current) => current.filter((_row, at) => at !== index));
 
@@ -548,8 +555,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
     if (!base.currency?.trim()) { setError("请选择币种"); return; }
     if (!base.order_date?.trim()) { setError("下单日期必填"); return; }
     if (detailErrors.length) { setError(`明细第 ${detailErrors[0].row} 行：${detailErrors[0].reason}`); return; }
-    // 「其它」行同一套逐行拦截（后端也会拒，但让用户当场看见是哪一行）。
-    if (extraErrors.length) { setError(`「其它」第 ${extraErrors[0].row} 行：${extraErrors[0].reason}`); return; }
+    // 「其它」/「再加一款」行同一套逐行拦截（后端也会拒，但让用户当场看见是哪一行）。
+    if (extraErrors.length) { setError(`材料明细第 ${extraErrors[0].row} 行：${extraErrors[0].reason}`); return; }
     // 列名太长当场拦下：后端也会拒（SPEC_DETAIL_LABEL_TOO_LONG），但等一个来回才看到原因没必要。
     const labelProblem = validateSpecDetailLabels(detailLabelOverrides);
     if (labelProblem) { setError(labelProblem); return; }
@@ -800,11 +807,15 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
       <section className="panel">
         <div className="panel-heading">
           <h2>材料明细</h2>
-          <span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行。每一格<strong>既可以手打文字，也可以从物料清单里引用一个物料</strong>（选中会把名称/规格/颜色填进格子，并带上它的图片）。模板以外的物料写在下面的「其它」里。</span>
+          <span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行。每一格<strong>既可以手打文字，也可以从物料清单里引用一个物料</strong>（选中会把名称/规格/颜色填进格子，并带上它的图片）。<strong>一个类目要填好几款</strong>（比如这一单有 3 款伞头、2 款伞布）时，点该类目下面的「再加一款」——导出时同一类目的几款会连在一起印。模板以外的物料写在下面的「其它」里。</span>
         </div>
+        {extraErrors.length > 0 && <div className="status-error material-extra-errors" data-testid="sales-material-extra-errors">{extraErrors.map((item) => <p key={`${item.row}-${item.reason}`}>第 {item.row} 行：{item.reason}</p>)}</div>}
         <div className="panel-body form-grid">
           {SPEC_MATERIAL_FIELDS.map(([key, label]) => {
             const ref = refs[key] ?? null;
+            // 「同类目再加一款」（2026-10-29）：伞头那一格下面挂的几行就是这一单的「3 款伞头」。
+            // 行里只存类目键，类目名由清单推 —— 用户不需要也不该重复打三次「伞头」。
+            const categoryRows = materialExtrasOfCategory(extras, key);
             return (
               <div key={key} className="material-ref-field">
                 <label>{label}
@@ -829,9 +840,40 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
                   />
                   {ref && <MaterialThumb materialId={ref.id} version={ref.image?.sha256} alt={materialOptionLabel(ref)} size={36} />}
                   {ref && <Button size="sm" variant="ghost" data-testid={`sales-material-ref-clear-${key}`} onClick={() => clearMaterialRef(key)}>清除引用</Button>}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    data-testid={`sales-material-category-add-${key}`}
+                    title={`${label}再加一款（第 ${categoryRows.length + 2} 款）`}
+                    disabled={extras.length >= MATERIAL_EXTRA_LIMIT}
+                    onClick={() => addExtraForCategory(key)}
+                  >再加一款</Button>
                 </div>
                 {/* 引用了但那个物料还没有图 —— 导出时这一格没有图可带。说出来，别让用户以为是导出坏了。 */}
                 {ref && !ref.image && <span className="panel-note" data-testid={`sales-material-ref-no-image-${key}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+                {categoryRows.map(({ row, index }, position) => (
+                  <div key={index} className="material-extra-row" data-testid={`sales-material-category-row-${key}-${position}`}>
+                    <label>{label} · 第 {position + 2} 款
+                      <textarea className="ui-input" rows={2} data-testid={`sales-material-category-content-${key}-${position}`} value={row.content} placeholder="规格说明；引用了物料之后可以留空（导出会用物料摘要印出来）" onChange={(event) => setExtraField(index, "content", event.target.value)} />
+                    </label>
+                    <div className="action-row">
+                      <SearchableSelect
+                        testId={`sales-material-category-ref-${key}-${position}`}
+                        value={row.material?.id ?? ""}
+                        options={materialOptions}
+                        onChange={(value) => pickExtraMaterial(index, value)}
+                        placeholder="从物料清单引用…"
+                        label={`${label} 第 ${position + 2} 款：从物料清单引用`}
+                        searchPlaceholder="输入物料编码 / 名称 / 规格 / 颜色搜索"
+                        noResultsText="没有匹配的物料（可到【采购 → 物料清单】新建）"
+                      />
+                      {row.material && <MaterialThumb materialId={row.material.id} version={row.material.image?.sha256} alt={materialOptionLabel(row.material)} size={36} />}
+                      {row.material && <Button size="sm" variant="ghost" data-testid={`sales-material-category-ref-clear-${key}-${position}`} onClick={() => clearExtraRef(index)}>清除引用</Button>}
+                      <Button size="sm" variant="ghost" data-testid={`sales-material-category-remove-${key}-${position}`} onClick={() => removeExtra(index)}>删除这一款</Button>
+                    </div>
+                    {row.material && !row.material.image && <span className="panel-note" data-testid={`sales-material-category-no-image-${key}-${position}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+                  </div>
+                ))}
               </div>
             );
           })}
@@ -841,6 +883,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
           别的物料。允许用户增删改」）。
           放在 18 格**同一块面板里**、紧跟着它们：用户说的位置就是「材料明细最后」—— 另起一块面板会让人
           以为是另一个业务对象。每一行是「类目 + 内容 + 引用」（与 18 格同一套选择器与缩略图）。
+          2026-10-29 起这里只管**自由类目**（模板里没有的类目名）；固定类目的追加款在上面各自的格子里，
+          两组分开渲染，否则「3 款伞头」会散在最后、和上面的伞头那一格毫无关系。
         */}
         <div className="panel-body material-extra-block">
           <div className="panel-heading">
@@ -854,39 +898,38 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
               onClick={() => setExtras((current) => [...current, emptyMaterialExtraRow()])}
             >加一行</Button>
           </div>
-          {extraErrors.length > 0 && <div className="status-error" data-testid="sales-material-extra-errors">{extraErrors.map((item) => <p key={`${item.row}-${item.reason}`}>第 {item.row} 行：{item.reason}</p>)}</div>}
-          {extras.length === 0 && <p className="panel-note" data-testid="sales-material-extra-empty">还没有自定义类目 —— 只在需要模板 18 项以外的物料时才点右上角的「加一行」。</p>}
-          {extras.map((row, index) => {
+          {freeMaterialExtras(extras).length === 0 && <p className="panel-note" data-testid="sales-material-extra-empty">还没有自定义类目 —— 只在需要模板 18 项以外的物料时才点右上角的「加一行」。</p>}
+          {freeMaterialExtras(extras).map(({ row, index }, position) => {
             const material = row.material;
             return (
-              <div key={index} className="material-extra-row form-grid" data-testid={`sales-material-extra-row-${index}`}>
+              <div key={index} className="material-extra-row form-grid" data-testid={`sales-material-extra-row-${position}`}>
                 <label>类目
-                  <Input data-testid={`sales-material-extra-label-${index}`} value={row.label} placeholder="例如：弹簧" onChange={(event) => setExtraField(index, "label", event.target.value)} />
+                  <Input data-testid={`sales-material-extra-label-${position}`} value={row.label} placeholder="例如：弹簧" onChange={(event) => setExtraField(index, "label", event.target.value)} />
                 </label>
                 <label>内容
-                  <textarea className="ui-input" rows={2} data-testid={`sales-material-extra-content-${index}`} value={row.content} placeholder="规格说明；引用了物料之后可以留空（导出会用物料摘要印出来）" onChange={(event) => setExtraField(index, "content", event.target.value)} />
+                  <textarea className="ui-input" rows={2} data-testid={`sales-material-extra-content-${position}`} value={row.content} placeholder="规格说明；引用了物料之后可以留空（导出会用物料摘要印出来）" onChange={(event) => setExtraField(index, "content", event.target.value)} />
                 </label>
                 <div className="action-row">
                   <SearchableSelect
-                    testId={`sales-material-extra-ref-${index}`}
+                    testId={`sales-material-extra-ref-${position}`}
                     value={material?.id ?? ""}
                     options={materialOptions}
                     onChange={(value) => pickExtraMaterial(index, value)}
                     placeholder="从物料清单引用…"
-                    label={`其它第 ${index + 1} 行（${row.label || "未填类目"}）：从物料清单引用`}
+                    label={`其它第 ${position + 1} 行（${row.label || "未填类目"}）：从物料清单引用`}
                     searchPlaceholder="输入物料编码 / 名称 / 规格 / 颜色搜索"
                     noResultsText="没有匹配的物料（可到【采购 → 物料清单】新建）"
                   />
                   {material && <MaterialThumb materialId={material.id} version={material.image?.sha256} alt={materialOptionLabel(material)} size={36} />}
-                  {material && <Button size="sm" variant="ghost" data-testid={`sales-material-extra-ref-clear-${index}`} onClick={() => clearExtraRef(index)}>清除引用</Button>}
-                  <Button size="sm" variant="ghost" data-testid={`sales-material-extra-remove-${index}`} onClick={() => removeExtra(index)}>删除这一行</Button>
+                  {material && <Button size="sm" variant="ghost" data-testid={`sales-material-extra-ref-clear-${position}`} onClick={() => clearExtraRef(index)}>清除引用</Button>}
+                  <Button size="sm" variant="ghost" data-testid={`sales-material-extra-remove-${position}`} onClick={() => removeExtra(index)}>删除这一行</Button>
                 </div>
                 {/* 与 18 格同一条提示：引用了但那个物料没有图，导出时这一行没有图可带。 */}
-                {material && !material.image && <span className="panel-note" data-testid={`sales-material-extra-no-image-${index}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+                {material && !material.image && <span className="panel-note" data-testid={`sales-material-extra-no-image-${position}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
               </div>
             );
           })}
-          {extras.length >= MATERIAL_EXTRA_LIMIT && <p className="panel-note" data-testid="sales-material-extra-limit">已经 {extras.length} 行，到上限 {MATERIAL_EXTRA_LIMIT} 行了（工艺单是一张 A4 纸，再多就印不下）。</p>}
+          {extras.length >= MATERIAL_EXTRA_LIMIT && <p className="panel-note" data-testid="sales-material-extra-limit">已经 {extras.length} 行（含各固定类目的追加款），到上限 {MATERIAL_EXTRA_LIMIT} 行了（工艺单是一张 A4 纸，再多就印不下）。</p>}
         </div>
       </section>
 

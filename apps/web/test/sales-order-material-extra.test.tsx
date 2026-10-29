@@ -199,4 +199,56 @@ describe("销售单编辑器：材料明细「其它」", () => {
     const patched = savedCall(calls, "PATCH", "/sales-orders/order-1");
     expect(patched!.body.material_extras).toEqual([{ label: "弹簧", content: "5cm 不锈钢", material_id: "m-1", sort_order: 0 }]);
   });
+
+  // ---------------------------------------------------------------- 「同类目再加一款」（2026-10-29）
+
+  it("「再加一款」：伞头下能填 3 款、伞布 2 款；载荷带 spec_key，导出按类目归位", async () => {
+    const calls = stubApi([["/sales-orders", () => ({ data: { id: "order-1", orderNo: "DL260134" }, meta: {} })]]);
+    render(<SalesOrderEditor />);
+    await screen.findByText("材料明细");
+    await fillRequired();
+
+    // 伞头：固定那一格写第 1 款，下面点两次「再加一款」写第 2、3 款
+    fireEvent.change(field("sales-spec-handle_spec"), { target: { value: "直柄银色" } });
+    await userEvent.click(field("sales-material-category-add-handle_spec"));
+    await userEvent.click(field("sales-material-category-add-handle_spec"));
+    expect(field("sales-material-category-row-handle_spec-0")).toBeTruthy();
+    expect(field("sales-material-category-row-handle_spec-1")).toBeTruthy();
+    fireEvent.change(field("sales-material-category-content-handle_spec-0"), { target: { value: "弯柄黑色" } });
+    fireEvent.change(field("sales-material-category-content-handle_spec-1"), { target: { value: "三折伞头" } });
+
+    // 伞布：固定那一格 + 再加一款
+    fireEvent.change(field("sales-spec-canopy_spec"), { target: { value: "190T 黑" } });
+    await userEvent.click(field("sales-material-category-add-canopy_spec"));
+    fireEvent.change(field("sales-material-category-content-canopy_spec-0"), { target: { value: "210T 藏青" } });
+
+    // 删掉一款：删的是伞头第 2 款（handle_spec 的 0 号），第 3 款顶上来
+    await userEvent.click(field("sales-material-category-remove-handle_spec-0"));
+    expect((field("sales-material-category-content-handle_spec-0") as HTMLTextAreaElement).value).toBe("三折伞头");
+
+    await userEvent.click(field("sales-order-save"));
+    const saved = savedCall(calls, "POST", "/sales-orders");
+    expect(saved!.body.material_extras).toEqual([
+      { spec_key: "handle_spec", label: "伞头", content: "三折伞头", sort_order: 0 },
+      { spec_key: "canopy_spec", label: "伞布规格", content: "210T 藏青", sort_order: 1 },
+    ]);
+  });
+
+  it("打开既有单：「再加一款」的行回到各自类目下（不会被当成「其它」行堆到最下面）", async () => {
+    const order = {
+      id: "order-1", orderNo: "DL260134", status: "draft", orderDate: "2026-10-08T00:00:00.000Z", deliveryDate: null,
+      productName: "折叠伞", quantity: "1960", unit: "支", currency: "USD", customer: { id: "customer-1" }, contact: null,
+      ribSpec: "50cm 碳纤骨", specDetails: [],
+      materialExtras: [
+        { id: "e-1", label: "伞头", content: "弯柄黑色", sortOrder: 0, specKey: "handle_spec", material: null },
+        { id: "e-2", label: "弹簧", content: "5cm 不锈钢", sortOrder: 1, specKey: null, material: null },
+      ],
+    };
+    stubApi([["/sales-orders/order-1", () => ({ data: order, meta: {} })]]);
+    render(<SalesOrderEditor orderId="order-1" />);
+
+    await waitFor(() => expect((field("sales-material-category-content-handle_spec-0") as HTMLTextAreaElement).value).toBe("弯柄黑色"));
+    // 自由类目行仍然从 0 开始编号（两组分开渲染，互不挤占序号）
+    expect((field("sales-material-extra-content-0") as HTMLTextAreaElement).value).toBe("5cm 不锈钢");
+  });
 });

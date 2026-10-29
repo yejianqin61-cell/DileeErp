@@ -6,6 +6,8 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { columnSpanWidth, rowHeightFor, type RowHeightBlock } from "../../platform/excel/row-height";
 import { beijingDate, beijingDateTime } from "../../platform/time/beijing-time";
 import { SPEC_MATERIAL_KEYS, SPEC_SCALAR_FIELDS, specDetailLabelsWithDefaults, specScalarRow } from "./sales-orders.service";
+// 材料类目清单只有一份（服务层也用它给「再加一款」的行定类目名）。
+import { MATERIAL_CATEGORY_LABELS, isMaterialCategoryKey } from "./sales-material-labels";
 
 /**
  * 导出要用的物料摘要（**不取字节**）：`document()` 的兜底文字要 名称/规格/颜色，图片区要尺寸与 sha。
@@ -52,27 +54,13 @@ export function materialExtraRefKey(extraId: string): string {
 export class SalesOrderExportService {
   constructor(private readonly prisma: PrismaService, private readonly actors: AuditActorService) {}
 
-  /** 材料明细的印刷顺序与中文名（模板两张样本的并集，顺序照模板）。 */
-  static readonly MATERIAL_LABELS: ReadonlyArray<readonly [SpecKey, string]> = [
-    ["rib_spec", "伞骨（孔对孔）"],
-    ["canopy_spec", "伞布规格"],
-    ["handle_spec", "伞头"],
-    ["handle_strap_spec", "伞头带"],
-    ["tail_spec", "伞尾、笠"],
-    ["runner_spec", "伞束、珠"],
-    ["strap_spec", "伞带"],
-    ["strap_fastener_spec", "伞带粘扣"],
-    ["inner_label_spec", "内标"],
-    ["woven_label_spec", "织标"],
-    ["hang_tag_spec", "吊牌"],
-    ["opp_spec", "OPP"],
-    ["bag_spec", "布套"],
-    ["packaging_spec", "包装明细"],
-    ["top_fabric_spec", "天布"],
-    ["wood_ear_spec", "木耳"],
-    ["keychain_spec", "钥匙扣"],
-    ["printing_spec", "印刷"],
-  ];
+  /**
+   * 材料明细的印刷顺序与中文名（模板两张样本的并集，顺序照模板）。
+   *
+   * 2026-10-29 起清单本体在 `sales-material-labels.ts`：「同类目再加一款」的类目名要由**服务层**
+   * 落库（不信任前端传的字），而服务层不能 import 导出服务（会成环）。这里只做类型收窄。
+   */
+  static readonly MATERIAL_LABELS: ReadonlyArray<readonly [SpecKey, string]> = MATERIAL_CATEGORY_LABELS as unknown as ReadonlyArray<readonly [SpecKey, string]>;
 
   /** 工艺要求的印刷顺序与分组名（并集；导出时按有值的条目重新编号）。 */
   static readonly PROCESS_LABELS: ReadonlyArray<readonly [SpecKey, string]> = [
@@ -123,10 +111,24 @@ export class SalesOrderExportService {
      * 空则退回引用物料的摘要 —— 与上面 18 格同一条兜底规则（那条规则是 2026-09-26 的现场问题换来的：
      * 一格引用了物料却没写字时，早先的导出会整行不印，工厂照着一张少了一个部件的单子做伞）。
      * 内容与引用都空的行仍然不印（「空盘位自动省略」没有被这次改动推翻）。
+     *
+     * 2026-10-29 起这里只收**自由类目行**（`specKey` 为空）；带 `specKey` 的行是「同类目再加一款」，
+     * 要插进 18 项里那一类的后面（见下面 `categoryExtras`），不能全堆到这里 ——
+     * 用户要的是「3 款伞头连在一起」，不是「末尾出现三行伞头」。
      */
-    const extraLines = (order.materialExtras ?? [])
-      .map((row) => ({ label: (row.label ?? "").trim(), value: (row.content ?? "").trim() || materialRefText(row.material ?? {}) }))
-      .filter((line) => line.label && line.value);
+    const categoryExtras = new Map<string, string[]>();
+    const freeExtraLines: Array<{ label: string; value: string }> = [];
+    for (const row of order.materialExtras ?? []) {
+      const value = (row.content ?? "").trim() || materialRefText(row.material ?? {});
+      if (!value) continue;
+      const specKey = (row.specKey ?? "").trim();
+      if (specKey && isMaterialCategoryKey(specKey)) {
+        categoryExtras.set(specKey, [...(categoryExtras.get(specKey) ?? []), value]);
+        continue;
+      }
+      const label = (row.label ?? "").trim();
+      if (label) freeExtraLines.push({ label, value });
+    }
     return {
       company: "厦 门 迪 礼 伞 业 有 限 公 司",
       factory: text("factory"),
@@ -142,9 +144,17 @@ export class SalesOrderExportService {
       completionText: `${dotDate(order.deliveryDate)}${text("completion_remark")}`,
       attentionNote: text("attention_note"),
       // 只印有值的行；工艺要求按留下的条目重新编号（不能出现断号）。
+      // 材料区：18 个固定类目按印刷顺序，每一类先印自己那一格、再紧跟它的「再加一款」行；
+      // 自由类目的「其它」行仍然印在最后。
       materialLines: [
-        ...SalesOrderExportService.MATERIAL_LABELS.map(([key, label]) => ({ label, value: text(key) || (refText.get(key) ?? "") })).filter((line) => line.value),
-        ...extraLines,
+        ...SalesOrderExportService.MATERIAL_LABELS.flatMap(([key, label]) => {
+          const own = (text(key) || (refText.get(key) ?? "")).trim();
+          return [
+            ...(own ? [{ label, value: own }] : []),
+            ...(categoryExtras.get(key) ?? []).map((value) => ({ label, value })),
+          ];
+        }),
+        ...freeExtraLines,
       ],
       // 工艺要求：**每一点都要带标题**（用户 2026-09-26：「工艺要求那边，每一点的标题也需要显示」）。
       // 改造前只印 `1.<内容>`，看纸上的人得自己猜这一条是"样品要求"还是"裁布要求"——
@@ -191,8 +201,11 @@ export class SalesOrderExportService {
   async exportImageCandidates(id: string): Promise<ExportImageCandidate[]> {
     const order = await this.loadOrder(id);
     const rank = new Map<string, number>(SPEC_MATERIAL_KEYS.map((key, index) => [key as string, index]));
-    // 「其它」行排在 18 项之后，行序照用户在界面上排的先后（`sortOrder`）。
-    for (const row of order.materialExtras ?? []) rank.set(materialExtraRefKey(row.id), SPEC_MATERIAL_KEYS.length + row.sortOrder);
+    // 「再加一款」的行排在它所属类目之后（+0.5 足以排在下一类之前）；自由「其它」行仍排在 18 项之后。
+    for (const row of order.materialExtras ?? []) {
+      const categoryIndex = row.specKey ? (SPEC_MATERIAL_KEYS as readonly string[]).indexOf(row.specKey) : -1;
+      rank.set(materialExtraRefKey(row.id), categoryIndex >= 0 ? categoryIndex + 0.5 + row.sortOrder / 1000 : SPEC_MATERIAL_KEYS.length + row.sortOrder);
+    }
     const { labels, refs } = this.materialRefLookup(order);
     return [...refs.values()]
       .map((ref) => ({
@@ -704,6 +717,11 @@ export type ExportOrder = {
     label: string;
     content: string | null;
     sortOrder: number;
+    /**
+     * 所属固定类目（2026-10-29「同类目再加一款」）：非空 = 这一行紧跟该类目印；空 = 原有「其它」自由行。
+     * 可空是既有事实：改动之前落库的行都没有这一列。
+     */
+    specKey?: string | null;
     material: {
       id: string;
       materialCode: string;

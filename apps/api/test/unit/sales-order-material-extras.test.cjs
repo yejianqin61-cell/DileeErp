@@ -56,9 +56,34 @@ test("归一：去空格、丢整行空、按剩余行的先后补 sort_order", 
     { label: "胶袋", content: "", material_id: MATERIAL_A },
   ]);
   assert.deepEqual(rows, [
-    { label: "弹簧", content: "5cm 不锈钢", materialId: null, sort_order: 0 },
-    { label: "胶袋", content: null, materialId: MATERIAL_A, sort_order: 1 },
+    { label: "弹簧", content: "5cm 不锈钢", materialId: null, specKey: null, sort_order: 0 },
+    { label: "胶袋", content: null, materialId: MATERIAL_A, specKey: null, sort_order: 1 },
   ]);
+});
+
+// 2026-10-29「同类目再加一款」：`spec_key` 决定这一行排在哪个类目后面，类目名由**服务端**按清单定。
+test("「再加一款」：只给 spec_key 也能存（类目名由服务端补），未知类目键要当场拒", () => {
+  const rows = normalizeMaterialExtras([
+    { spec_key: "handle_spec", content: "直柄银色" },
+    { spec_key: "handle_spec", content: "弯柄黑色" },
+    { spec_key: "canopy_spec", content: "190T 黑" },
+    { label: "弹簧", content: "5cm" },
+  ]);
+  assert.deepEqual(rows, [
+    { label: "伞头", content: "直柄银色", materialId: null, specKey: "handle_spec", sort_order: 0 },
+    { label: "伞头", content: "弯柄黑色", materialId: null, specKey: "handle_spec", sort_order: 1 },
+    { label: "伞布规格", content: "190T 黑", materialId: null, specKey: "canopy_spec", sort_order: 2 },
+    { label: "弹簧", content: "5cm", materialId: null, specKey: null, sort_order: 3 },
+  ]);
+  // 请求里传了别的类目名也以类目键为准：纸上的类目名必须与它排的位置一致。
+  assert.equal(normalizeMaterialExtras([{ spec_key: "handle_spec", label: "伞布规格", content: "x" }])[0].label, "伞头");
+
+  assert.throws(
+    () => normalizeMaterialExtras([{ spec_key: "not_a_category", content: "x" }]),
+    (error) => error.getResponse().code === "MATERIAL_EXTRA_SPEC_KEY_UNSUPPORTED",
+  );
+  // 只给了类目键、内容与引用都没有：与「其它」空行同一条口径 —— 加了行还没填，提交前丢掉（不报错）。
+  assert.deepEqual(normalizeMaterialExtras([{ spec_key: "handle_spec" }]), []);
 });
 
 test("校验：类目必填 / 内容与引用至少有一个 / 各自超长 / 条数封顶 —— 错误码要能点名", () => {
@@ -263,6 +288,84 @@ test("导出取数：物料摘要的 select 必须带 规格/颜色，而且两�
   assert.equal(captured.include.materialExtras.orderBy.sortOrder, "asc", "这些行是有序的（用户排的先后就是纸上的先后）");
 });
 
+// ------------------------------------------------------------------ ②b 「同类目再加一款」（2026-10-29）
+//
+// 用户原话：「材料明细那边可以在现有基础上自行添加类目。比如我这一单有3款伞头，2款伞布。
+// 就支持自行添加类目来填写。同时，销售单的导出件也要同步跟上」。
+// 做法：同一张表、多一个 `spec_key`（属于哪个固定类目）；导出时紧跟类目那一行印。
+
+test("新建：「再加一款」的行带 specKey 落库，同类目可以多行", async () => {
+  const { service, calls } = writeHarness();
+  await service.create({ ...baseInput, material_extras: [
+    { spec_key: "handle_spec", content: "直柄银色" },
+    { spec_key: "handle_spec", content: "弯柄黑色" },
+    { spec_key: "canopy_spec", content: "190T 黑" },
+  ] }, user);
+  assert.deepEqual(
+    calls.extraCreateMany[0].data.map((row) => [row.label, row.specKey, row.sortOrder]),
+    [["伞头", "handle_spec", 0], ["伞头", "handle_spec", 1], ["伞布规格", "canopy_spec", 2]],
+    "类目名由服务端按类目键填（同一类目的多行同名、排序靠 sortOrder）",
+  );
+  assert.deepEqual(calls.versionCreate[0].snapshot.material_extras.map((row) => row.spec_key), ["handle_spec", "handle_spec", "canopy_spec"], "版本快照要记住「这一版是哪些类目加了几款」");
+});
+
+test("返单/复制：spec_key 跟着走（「3 款伞头」不会退化成「其它」行）", async () => {
+  const sourceMaterial = { id: MATERIAL_A, materialCode: "MAT-1", name: "伞头", specificationModel: "直柄", color: "银", image: null };
+  const extras = [{ id: EXTRA_ID, label: "伞头", content: "直柄银色", sortOrder: 0, specKey: "handle_spec", materialId: MATERIAL_A, material: sourceMaterial }];
+  const harness = writeHarness({ extras, status: "confirmed", itemNo: "27621" });
+
+  const preview = await harness.service.reorderPreview("SO-1");
+  assert.equal(preview.copy.material_extras[0].spec_key, "handle_spec", "返单预览要带上归属类目，否则新单会把它当成「其它」行印到最后");
+
+  await harness.service.create({ ...baseInput, reorder_from_order_no: "SO-1" }, user);
+  assert.deepEqual(harness.calls.extraCreateMany[0].data.map((row) => [row.label, row.specKey]), [["伞头", "handle_spec"]]);
+});
+
+test("导出正文：「再加一款」按类目归位 —— 3 款伞头连在一起印在伞头那一行之后", () => {
+  const row = orderRow({
+    canopySpec: "190T 黑",
+    handleSpec: "直柄银色",
+    materialExtras: [
+      { id: "e-a", label: "伞头", content: "弯柄黑色", sortOrder: 0, specKey: "handle_spec", material: null },
+      { id: "e-b", label: "伞头", content: "三折伞头", sortOrder: 1, specKey: "handle_spec", material: null },
+      { id: "e-c", label: "伞布规格", content: "210T 藏青", sortOrder: 2, specKey: "canopy_spec", material: null },
+      { id: "e-d", label: "弹簧", content: "5cm", sortOrder: 3, specKey: null, material: null },
+    ],
+  });
+  const doc = exportService(row).document(row, "张三");
+  assert.deepEqual(doc.materialLines.map((line) => [line.label, line.value]), [
+    ["伞骨（孔对孔）", "50cm 碳纤骨"],
+    ["伞布规格", "190T 黑"],
+    ["伞布规格", "210T 藏青"],
+    ["伞头", "直柄银色"],
+    ["伞头", "弯柄黑色"],
+    ["伞头", "三折伞头"],
+    ["弹簧", "5cm"],
+  ], "同类目几款紧跟在类目那一行之后；自由类目的「其它」行仍然在最后");
+});
+
+test("导出正文：本类目那一格空着、只加了款，也要印出来（别因为固定格没填就整类漏掉）", () => {
+  const row = orderRow({
+    handleSpec: "",
+    materialExtras: [{ id: "e-a", label: "伞头", content: "弯柄黑色", sortOrder: 0, specKey: "handle_spec", material: null }],
+  });
+  const doc = exportService(row).document(row, "张三");
+  assert.deepEqual(doc.materialLines.filter((line) => line.label === "伞头").map((line) => line.value), ["弯柄黑色"]);
+});
+
+test("图片候选：「再加一款」的行排在所属类目之后（不是全堆到最后）", async () => {
+  const image = { width: 400, height: 300, sha256: "sha-x" };
+  const row = orderRow({
+    materialRefs: [{ specKey: "canopy_spec", material: { id: MATERIAL_A, materialCode: "MAT-1", name: "伞布", specificationModel: "190T", color: "黑", image: null } }],
+    materialExtras: [
+      { id: EXTRA_ID, label: "伞头", content: "", sortOrder: 0, specKey: "handle_spec", material: { id: MATERIAL_B, materialCode: "MAT-2", name: "伞头", specificationModel: "直柄", color: "银", image } },
+      { id: EXTRA_ID_2, label: "弹簧", content: "", sortOrder: 1, specKey: null, material: { id: MATERIAL_A, materialCode: "MAT-3", name: "弹簧", specificationModel: "5cm", color: null, image } },
+    ],
+  });
+  const candidates = await exportService(row).exportImageCandidates(ORDER_ID);
+  assert.deepEqual(candidates.map((item) => item.spec_key), ["canopy_spec", materialExtraRefKey(EXTRA_ID), materialExtraRefKey(EXTRA_ID_2)], "伞头追加款紧跟伞布之后（类目顺序），自由「其它」行仍在 18 项之后");
+});
+
 // ------------------------------------------------------------------ ⑧ 迁移与 schema 的外键口径
 
 /**
@@ -311,5 +414,13 @@ test("迁移：两条外键的 ON DELETE 必须与 schema 一致（可空 → SE
   );
   assert.equal(actualOf("sales_order_material_extras_material_id_fkey"), "SET NULL", "可空的物料引用：物料被删时保留文字、只摘引用");
   assert.ok(!/ON DELETE CASCADE/.test(migrationSql), "这张表上不许出现 CASCADE（草稿删除是软删）");
+});
+
+test("迁移：spec_key 列在 schema 与迁移里都加上（可空 VARCHAR(40)，老数据即「其它」行）", () => {
+  const apiRoot = path.join(__dirname, "..", "..");
+  const schema = fs.readFileSync(path.join(apiRoot, "prisma", "schema.prisma"), "utf8");
+  assert.match(schema, /^\s*specKey\s+String\?\s+@map\("spec_key"\)\s+@db\.VarChar\(40\)$/m, "schema 里要有可空的 specKey 列");
+  const sql = fs.readFileSync(path.join(apiRoot, "prisma", "migrations", "20261029200000_sales_order_material_extra_spec_key", "migration.sql"), "utf8");
+  assert.match(sql, /ALTER TABLE "sales_order_material_extras" ADD COLUMN "spec_key" VARCHAR\(40\)/, "迁移要真的加这一列（可空 → 老行不报错，就是「其它」行）");
 });
 

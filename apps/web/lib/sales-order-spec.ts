@@ -157,13 +157,33 @@ export const MATERIAL_EXTRA_LIMIT = 20;
 export const MATERIAL_EXTRA_LABEL_MAX_LENGTH = 50;
 export const MATERIAL_EXTRA_CONTENT_MAX_LENGTH = 1000;
 
-/** 「其它」行在表单里的形状：类目 + 内容 + 引用的物料（`null` = 只填文字）。 */
-export type MaterialExtraRow = { label: string; content: string; material: MaterialOption | null };
+/**
+ * 类目键 → 中文名（用户 2026-10-29「3 款伞头、2 款伞布」）：18 个固定类目的名字。
+ * 就是 `SPEC_MATERIAL_FIELDS` 那张表，这里是查法 —— 类目名在界面上只该有一份。
+ */
+const MATERIAL_LABEL_BY_KEY = new Map<string, string>(SPEC_MATERIAL_FIELDS);
+export const materialCategoryLabel = (key: string): string => MATERIAL_LABEL_BY_KEY.get(key) ?? key;
 
-export const emptyMaterialExtraRow = (): MaterialExtraRow => ({ label: "", content: "", material: null });
+/**
+ * 「其它」/「再加一款」行在表单里的形状：类目 + 内容 + 引用的物料（`null` = 只填文字）。
+ *
+ * `specKey`（2026-10-29）：非空 = 这一行是某个固定类目的**追加款**（3 款伞头就是 `handle_spec` 3 行），
+ * 类目名由类目键推出来，不让用户重复打字；空 = 原有「其它」自由类目行（类目名用户自己起）。
+ * 两种行共用一个数组：保存时整块替换，导出时按类目归位。
+ */
+export type MaterialExtraRow = { label: string; content: string; material: MaterialOption | null; specKey: string | null };
 
-/** 整行空（类目与内容都没写、也没引用物料）：用户加了行还没填，提交前丢掉（与明细行同一条口径）。 */
-export const isBlankMaterialExtra = (row: MaterialExtraRow): boolean => !row.label.trim() && !row.content.trim() && !row.material;
+export const emptyMaterialExtraRow = (specKey: string | null = null): MaterialExtraRow => ({ label: specKey ? materialCategoryLabel(specKey) : "", content: "", material: null, specKey });
+
+/**
+ * 整行空：用户加了行还没填，提交前丢掉（与明细行同一条口径）。
+ *
+ * 「再加一款」的行类目名是系统给的，所以判空只看**内容与引用** —— 否则空行永远不算空，
+ * 界面上会留下一排「伞头」空行，保存时还会被后端按「内容与引用至少要有一个」拒掉。
+ */
+export const isBlankMaterialExtra = (row: MaterialExtraRow): boolean => row.specKey
+  ? !row.content.trim() && !row.material
+  : !row.label.trim() && !row.content.trim() && !row.material;
 
 /**
  * 逐行校验（行号从 1 起，与后端 `normalizeMaterialExtras` 同一套口径）。
@@ -171,11 +191,21 @@ export const isBlankMaterialExtra = (row: MaterialExtraRow): boolean => !row.lab
  * 三条规则各自的理由：**类目必填**（它印在工艺单「材料」那一列）；**内容与引用至少有一个**
  * （只印一个类目、右边空着，工人只会来问"这个到底要什么"）；**内容长度**（一格印不下）。
  * 不整批丢弃、逐条给原因，与全站导入的提示口径一致。
+ *
+ * 「再加一款」的行没有「类目必填」这一条：类目名是系统按类目键填的，用户不需要也不该去改它。
+ * 报错文字里带上类目名（「伞头：…」），因为这种行在界面上没有「类目」输入框，只说"第 2 行"
+ * 用户找不到是哪一行。
  */
 export function validateMaterialExtras(rows: MaterialExtraRow[]): Array<{ row: number; reason: string }> {
   const errors: Array<{ row: number; reason: string }> = [];
   const kept = rows.filter((row) => !isBlankMaterialExtra(row));
   kept.forEach((row, index) => {
+    if (row.specKey) {
+      const label = materialCategoryLabel(row.specKey);
+      if (row.content.trim().length > MATERIAL_EXTRA_CONTENT_MAX_LENGTH) errors.push({ row: index + 1, reason: `${label}：内容超过 ${MATERIAL_EXTRA_CONTENT_MAX_LENGTH} 字` });
+      if (!row.content.trim() && !row.material) errors.push({ row: index + 1, reason: `${label}：内容与引用的物料至少要有一个` });
+      return;
+    }
     if (!row.label.trim()) errors.push({ row: index + 1, reason: "类目不能为空（例如：弹簧 / 螺丝 / 胶袋）" });
     else if (row.label.trim().length > MATERIAL_EXTRA_LABEL_MAX_LENGTH) errors.push({ row: index + 1, reason: `类目名超过 ${MATERIAL_EXTRA_LABEL_MAX_LENGTH} 字` });
     if (row.content.trim().length > MATERIAL_EXTRA_CONTENT_MAX_LENGTH) errors.push({ row: index + 1, reason: `内容超过 ${MATERIAL_EXTRA_CONTENT_MAX_LENGTH} 字` });
@@ -200,26 +230,43 @@ export function materialExtrasFromOrder(order: Record<string, unknown>): Materia
     .map((item) => {
       const row = (item ?? {}) as Record<string, unknown>;
       const text = (value: unknown) => (value === null || value === undefined ? "" : String(value));
-      return { label: text(row.label), content: text(row.content), material: (row.material ?? null) as MaterialOption | null };
+      // 2026-10-29「再加一款」：归属类目两种形状都认（列名 `specKey` / 请求键 `spec_key`），
+      // 与 37 个细化标量、明细列名踩过的同一个坑同一条纪律：读侧只认一种，那条路就断一次。
+      const specKeyText = text(row.specKey ?? row.spec_key).trim();
+      const specKey = specKeyText || null;
+      const label = text(row.label).trim() || (specKey ? materialCategoryLabel(specKey) : "");
+      return { label, content: text(row.content), material: (row.material ?? null) as MaterialOption | null, specKey };
     })
     .filter((row) => !isBlankMaterialExtra(row));
 }
 
 /**
- * 「其它」行 → 提交载荷（丢掉整行空的，其余按数组顺序补 `sort_order`）。
+ * 「其它」/「再加一款」行 → 提交载荷（丢掉整行空的，其余按数组顺序补 `sort_order`）。
  *
  * 没引用物料时**不带 `material_id` 这个键**（而不是发 null）：整块替换语义下"没带"就是"这一行没有引用"，
- * 少发一个 null 少一处键名形状分叉的机会。
+ * 少发一个 null 少一处键名形状分叉的机会。带 `spec_key` 时 **label 由类目键推**：
+ * 后端也按同一份清单覆盖它，两边写的是同一个名字 —— 这里发出来只是让接口自解释。
  */
 export function materialExtrasPayload(rows: MaterialExtraRow[]): Array<Record<string, unknown>> {
   return rows
     .filter((row) => !isBlankMaterialExtra(row))
     .map((row, index) => ({
-      label: row.label.trim(),
+      ...(row.specKey ? { spec_key: row.specKey } : {}),
+      label: row.specKey ? materialCategoryLabel(row.specKey) : row.label.trim(),
       content: row.content.trim(),
       ...(row.material ? { material_id: row.material.id } : {}),
       sort_order: index,
     }));
+}
+
+/** 某一类目下的「再加一款」行（界面按类目分组渲染：3 款伞头就是伞头那一格的 3 行）。 */
+export function materialExtrasOfCategory(rows: MaterialExtraRow[], specKey: string): Array<{ row: MaterialExtraRow; index: number }> {
+  return rows.map((row, index) => ({ row, index })).filter((item) => item.row.specKey === specKey);
+}
+
+/** 自由类目的「其它」行（没有归属类目的那些）。 */
+export function freeMaterialExtras(rows: MaterialExtraRow[]): Array<{ row: MaterialExtraRow; index: number }> {
+  return rows.map((row, index) => ({ row, index })).filter((item) => !item.row.specKey);
 }
 
 /**

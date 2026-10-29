@@ -287,17 +287,21 @@ test("「其它」行：形状对就通过（类目 + 内容 / 类目 + 引用�
   assert.equal(refOnly.material_extras[0].content, "");
 });
 
-test("「其它」行：坏形状在 DTO 就挡下（空类目 / 非 UUID 物料 / 未声明字段 / 类目超长）", async () => {
+test("「其它」行：坏形状在 DTO 就挡下（非 UUID 物料 / 未知类目键 / 未声明字段 / 类目超长）", async () => {
   const base = minimalBody();
-  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "", content: "有内容" }] }, "类目不能为空");
-  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "   ", content: "有内容" }] }, "纯空格的类目同样不行");
-  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ content: "有内容" }] }, "类目必填");
   await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", material_id: "not-a-uuid" }] }, "material_id 必须是 UUID");
+  // 2026-10-29「同类目再加一款」：`spec_key` 的**键域**在 DTO 挡（类目名由服务端按清单填）。
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ spec_key: "not_a_category", content: "x" }] }, "未知的 spec_key 要 400");
   await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹".repeat(51), content: "x" }] }, `类目最长 50 字（第 51 个字就要 400）`);
   await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", sort_order: 1.5 }] }, "sort_order 必须是整数");
   await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", price: "1" }] }, "未声明的字段必须 400（写错了键名不能静默丢掉）");
-  // 「内容与引用至少有一个」是业务口径，跟"类目必填"一起判在服务层（normalizeMaterialExtras），
-  // 所以「只有类目」这种形状在 DTO 会过 —— 那条判定有单测钉在服务层的 extras 文件里。
+  // 类目名不再必填：带 `spec_key` 的行由服务端按类目键填（用户不该重复打「伞头」）；
+  // 自由行没有类目名时由服务层 `normalizeMaterialExtras` 以 MATERIAL_EXTRA_LABEL_REQUIRED 拒
+  // —— 那条单测在 sales-order-material-extras.test.cjs（与「内容与引用至少有一个」同处）。
+  for (const row of [{ label: "", content: "有内容" }, { label: "   ", content: "有内容" }, { content: "有内容" }, { spec_key: "handle_spec", content: "直柄银色" }]) {
+    const shapeOnly = await validateBody(SalesOrderDto, { ...base, material_extras: [row] });
+    assert.equal(shapeOnly.material_extras.length, 1, "类目名的判定在服务层，DTO 不再要求 label 必填");
+  }
   const shapeOnly = await validateBody(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧" }] });
   assert.equal(shapeOnly.material_extras.length, 1);
 });

@@ -536,7 +536,13 @@ model SalesOrderMaterialExtra {
   id           String     @id @default(uuid()) @db.Uuid
   salesOrderId String     @map("sales_order_id") @db.Uuid
   /// 类目名（用户自己起：弹簧 / 螺丝 / 胶袋 …）。必填 —— 它印在工艺单「材料」那一列。
+  /// 2026-10-29 起还有第二种用法：`specKey` 非空时这不是用户起的名字，而是**服务端按 18 个固定类目
+  /// 填的中文名**（「同类目再加一款」，见下面 `specKey`），前端传什么都会被覆盖。
   label        String     @db.VarChar(50)
+  /// 所属固定类目（2026-10-29「同类目再加一款」）：18 个材料栏位之一的键（`handle_spec` / `canopy_spec` …）。
+  /// 可空 = 原有「其它」自由类目行。非空时导出件把这一行**紧跟在该类目那一行之后**印，
+  /// 用户填「3 款伞头」就得到 3 行「伞头」，而不是全堆在「其它」区。
+  specKey      String?    @map("spec_key") @db.VarChar(40)
   /// 内容（规格说明）。可空：这一行可能只引用了物料，引用摘要会兜底印出来（与 18 格同一条规则）。
   content      String?    @db.VarChar(1000)
   /// 引用的物料（可空 = 只填文字）。用途与上面 18 格的引用完全一致：填字 + 带图。

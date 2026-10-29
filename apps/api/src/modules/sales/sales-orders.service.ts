@@ -5,6 +5,8 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { normalizeItemNo, itemNoKey } from "./item-no";
+// 材料类目名只有一份（导出服务与这里共用）：「同类目再加一款」的类目名由服务端定，不采用请求里的字。
+import { isMaterialCategoryKey, materialCategoryLabel } from "./sales-material-labels";
 import { countVersionSnapshotsWithOrderNo, normalizeOrderNo, orderNoRenameImpact, renameSalesOrderNo, type OrderNoRenameReport } from "./sales-order-order-no";
 
 /**
@@ -203,7 +205,14 @@ export const MATERIAL_REF_INCLUDE = {
 export const MATERIAL_EXTRA_LIMIT = 20;
 export const MATERIAL_EXTRA_LABEL_MAX_LENGTH = 50;
 export const MATERIAL_EXTRA_CONTENT_MAX_LENGTH = 1000;
-export type MaterialExtraInput = { label: string; content?: string | null; material_id?: string | null; sort_order?: number };
+/**
+ * 「同类目再加一款」（用户 2026-10-29）：「3 款伞头、2 款伞布」就是同一类目下多行。
+ *
+ * `spec_key` 非空 = 这一行是 18 个固定类目之一的追加款（类目名由**服务端**按类目键填，不信前端），
+ * 空/省略 = 原有「其它」自由类目行。两套语义共用一个数组、一张表：
+ * 「谁先印」这件事本来就只能有一处定义（见导出服务的 `MATERIAL_LABELS` 顺序）。
+ */
+export type MaterialExtraInput = { label?: string; content?: string | null; material_id?: string | null; sort_order?: number; spec_key?: string | null };
 
 /**
  * 「其它」行的读侧形状：行 + 引用物料的摘要（含 `image.sha256` 用于破缓存、`updatedAt` 用于缩略图，
@@ -236,18 +245,24 @@ export const MATERIAL_EXTRA_INCLUDE = {
  * 一行只有类目、右边一格空着，工人只会来问「这个类目到底要什么」。同理**整行空**（类目与内容都空、
  * 也没有引用）的新增行是「加了行还没填」，提交前丢掉 —— 与 `isBlankSpecDetail` 同一条口径。
  */
-export function normalizeMaterialExtras(input: MaterialExtraInput[] | null | undefined): Array<{ label: string; content: string | null; materialId: string | null; sort_order: number }> {
-  const rows: Array<{ label: string; content: string | null; materialId: string | null; sort_order: number }> = [];
+export function normalizeMaterialExtras(input: MaterialExtraInput[] | null | undefined): Array<{ label: string; content: string | null; materialId: string | null; specKey: string | null; sort_order: number }> {
+  const rows: Array<{ label: string; content: string | null; materialId: string | null; specKey: string | null; sort_order: number }> = [];
   for (const [index, row] of (input ?? []).entries()) {
-    const label = String(row?.label ?? "").trim();
+    // 注意顺序：`spec_key` 先解析，因为它决定「类目名」从哪里来。
+    const specKey = row?.spec_key ? String(row.spec_key).trim() : null;
+    const givenLabel = String(row?.label ?? "").trim();
     const content = String(row?.content ?? "").trim();
     const materialId = row?.material_id ? String(row.material_id) : null;
-    if (!label && !content && !materialId) continue;
+    if (!givenLabel && !content && !materialId) continue;
+    if (specKey && !isMaterialCategoryKey(specKey)) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_SPEC_KEY_UNSUPPORTED", message: `「其它」第 ${index + 1} 行指定的固定类目「${specKey}」不存在：类目只能是材料明细那 18 项之一`, details: [{ row: index + 1, spec_key: specKey }] });
+    // 「再加一款」的行：类目名是**系统常量**，不采用请求里的 label —— 否则纸上可能印着「伞布」，
+    // 位置却排在「伞头」后面；那种错车间照做出来才发现，而单子已经下给工厂了。
+    const label = specKey ? materialCategoryLabel(specKey) : givenLabel;
     if (!label) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LABEL_REQUIRED", message: `「其它」第 ${index + 1} 行没有类目名：类目印在工艺单的「材料」那一列，不能为空`, details: [{ row: index + 1 }] });
-    if (label.length > MATERIAL_EXTRA_LABEL_MAX_LENGTH) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LABEL_TOO_LONG", message: `「其它」第 ${index + 1} 行的类目名「${label}」超过 ${MATERIAL_EXTRA_LABEL_MAX_LENGTH} 字（材料那一列只有一格）`, details: [{ row: index + 1, max: MATERIAL_EXTRA_LABEL_MAX_LENGTH }] });
+    if (!specKey && label.length > MATERIAL_EXTRA_LABEL_MAX_LENGTH) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LABEL_TOO_LONG", message: `「其它」第 ${index + 1} 行的类目名「${label}」超过 ${MATERIAL_EXTRA_LABEL_MAX_LENGTH} 字（材料那一列只有一格）`, details: [{ row: index + 1, max: MATERIAL_EXTRA_LABEL_MAX_LENGTH }] });
     if (content.length > MATERIAL_EXTRA_CONTENT_MAX_LENGTH) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_CONTENT_TOO_LONG", message: `「其它」第 ${index + 1} 行的内容超过 ${MATERIAL_EXTRA_CONTENT_MAX_LENGTH} 字`, details: [{ row: index + 1, max: MATERIAL_EXTRA_CONTENT_MAX_LENGTH }] });
     if (!content && !materialId) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_CONTENT_REQUIRED", message: `「其它」第 ${index + 1} 行（${label}）既没有内容也没有引用物料：请至少填一样`, details: [{ row: index + 1 }] });
-    rows.push({ label, content: content || null, materialId, sort_order: row.sort_order ?? rows.length });
+    rows.push({ label, content: content || null, materialId, specKey, sort_order: row.sort_order ?? rows.length });
   }
   if (rows.length > MATERIAL_EXTRA_LIMIT) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LIMIT_EXCEEDED", message: `「其它」最多 ${MATERIAL_EXTRA_LIMIT} 行（工艺单是一张 A4 纸，再多就印不下了）`, details: [{ max: MATERIAL_EXTRA_LIMIT, count: rows.length }] });
   return rows;
@@ -437,7 +452,7 @@ export class SalesOrdersService {
         spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder })),
         material_refs: source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId, material: row.material })),
         // 「其它」行照抄（含引用的物料摘要）：返单就是沿用上一批的完整材料口径。
-        material_extras: source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, sort_order: row.sortOrder, material: row.material })),
+        material_extras: source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder, material: row.material })),
       },
       must_fill: ["order_no", "order_date", "quantity", "delivery_date"],
       warnings,
@@ -484,7 +499,7 @@ export class SalesOrdersService {
     // 而那一刻前端还以为"这一格本来就没引用物料"。
     const refs = await this.usableMaterialRefs(source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })));
     const refMaterials = new Map(source.materialRefs.map((row) => [row.materialId, row.material]));
-    const extras = await this.usableMaterialExtras(source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, sort_order: row.sortOrder })));
+    const extras = await this.usableMaterialExtras(source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder })));
     const extraMaterials = new Map(source.materialExtras.filter((row) => row.materialId).map((row) => [row.materialId as string, row.material]));
     const warnings: string[] = [];
     // 与返单同一句警告：单价属于"这一单卖的是什么"照抄，但新一批的成本口径可能已经变了，必须复核。
@@ -569,7 +584,7 @@ export class SalesOrdersService {
       spec_details: input.spec_details ?? source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color ?? undefined, barcode: row.barcode ?? undefined, quantity: row.quantity?.toString(), unit: row.unit ?? undefined, sort_order: row.sortOrder })),
       material_refs: input.material_refs ?? source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })),
       // 「其它」行同一条复制语义（请求给了就用请求的，没给就沿用来源单）。
-      material_extras: input.material_extras ?? source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, sort_order: row.sortOrder })),
+      material_extras: input.material_extras ?? source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder })),
       // 返单沿用来源单的明细列名（返单就是把上一批的工艺口径带过来，列名属于这个口径的一部分）。
       spec_detail_labels: input.spec_detail_labels ?? (source.specDetailLabels as Record<string, string> | undefined),
       ...(copied as Record<string, never>),
@@ -607,7 +622,7 @@ export class SalesOrdersService {
     const dropped: string[] = [];
     const kept = extras.map((row) => {
       if (!row.material_id || known.has(row.material_id)) return row;
-      dropped.push(row.label);
+      dropped.push(row.label ?? row.spec_key ?? "");
       return { ...row, material_id: null };
     });
     return { extras: kept, dropped };
@@ -1029,7 +1044,7 @@ export class SalesOrdersService {
     await this.assertMaterialsExist(rows.map((row) => row.materialId).filter((id): id is string => Boolean(id)));
     await tx.salesOrderMaterialExtra.updateMany({ where: { salesOrderId, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
     if (!rows.length) return;
-    await tx.salesOrderMaterialExtra.createMany({ data: rows.map((row) => ({ salesOrderId, label: row.label, content: row.content, materialId: row.materialId, sortOrder: row.sort_order, ...this.audit.create(user) })) });
+    await tx.salesOrderMaterialExtra.createMany({ data: rows.map((row) => ({ salesOrderId, label: row.label, content: row.content, materialId: row.materialId, specKey: row.specKey, sortOrder: row.sort_order, ...this.audit.create(user) })) });
   }
 
   private async resolveReferences(input: { customer_id: string; contact_id?: string }, _user: CurrentUser) {

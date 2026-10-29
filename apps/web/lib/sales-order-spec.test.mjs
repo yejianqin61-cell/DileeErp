@@ -270,7 +270,45 @@ test("「其它」进载荷：传了才发（整块替换），空数组 = 全�
 
 test("isBlankMaterialExtra：整行空才算空；只填一格就不算", () => {
   assert.equal(isBlankMaterialExtra(emptyMaterialExtraRow()), true);
-  assert.equal(isBlankMaterialExtra({ label: "  ", content: "", material: null }), true, "纯空白也算空");
-  assert.equal(isBlankMaterialExtra({ label: "弹簧", content: "", material: null }), false);
-  assert.equal(isBlankMaterialExtra({ label: "", content: "", material: { id: "m-1" } }), false, "只引用了物料也不算空行");
+  assert.equal(isBlankMaterialExtra({ label: "  ", content: "", material: null, specKey: null }), true, "纯空白也算空");
+  assert.equal(isBlankMaterialExtra({ label: "弹簧", content: "", material: null, specKey: null }), false);
+  assert.equal(isBlankMaterialExtra({ label: "", content: "", material: { id: "m-1" }, specKey: null }), false, "只引用了物料也不算空行");
+});
+
+// ------------------------------------------------------------------ 「同类目再加一款」（2026-10-29）
+//
+// 用户原话：「材料明细那边可以在现有基础上自行添加类目。比如我这一单有3款伞头，2款伞布。
+// 就支持自行添加类目来填写。同时，销售单的导出件也要同步跟上」。
+// 做法：行上多一个 `specKey`（属于固定类目）；类目名由类目键推，不让用户重复打。
+
+test("「再加一款」：类目名由类目键推、载荷带 spec_key、回填两种形状都认", () => {
+  assert.equal(emptyMaterialExtraRow("handle_spec").label, "伞头", "新建的追加款自带类目名（用户不该重新打一遍）");
+  assert.equal(emptyMaterialExtraRow("handle_spec").specKey, "handle_spec");
+  assert.equal(emptyMaterialExtraRow().specKey, null, "不传 = 原有「其它」自由类目行");
+
+  const payload = materialExtrasPayload([
+    { label: "", content: "直柄银色", material: null, specKey: "handle_spec" },
+    { label: "", content: "190T 黑", material: null, specKey: "canopy_spec" },
+    { label: "弹簧", content: "5cm", material: null, specKey: null },
+  ]);
+  assert.deepEqual(payload, [
+    { spec_key: "handle_spec", label: "伞头", content: "直柄银色", sort_order: 0 },
+    { spec_key: "canopy_spec", label: "伞布规格", content: "190T 黑", sort_order: 1 },
+    { label: "弹簧", content: "5cm", sort_order: 2 },
+  ], "追加款带上 spec_key 与系统类目名；自由行与新功能之前一模一样");
+
+  // 回填：接口给的是列名 `specKey`，返单预览/版本快照给的是请求键 `spec_key` —— 两种都要认。
+  const fromApi = materialExtrasFromOrder({ materialExtras: [
+    { label: "伞头", content: "直柄银色", specKey: "handle_spec" },
+    { label: "", content: "190T 黑", spec_key: "canopy_spec" },
+    { label: "弹簧", content: "5cm" },
+  ] });
+  assert.deepEqual(fromApi.map((row) => [row.specKey, row.label]), [["handle_spec", "伞头"], ["canopy_spec", "伞布规格"], [null, "弹簧"]], "label 空时按类目键补，否则界面上那行会没有类目");
+});
+
+test("「再加一款」校验：没有类目必填这一条（类目名是系统给的），空行不报错", () => {
+  assert.deepEqual(validateMaterialExtras([emptyMaterialExtraRow("handle_spec")]), [], "加了行还没填 = 保存时丢掉，不该报错");
+  assert.deepEqual(validateMaterialExtras([{ label: "", content: "", material: { id: "m-1" }, specKey: "handle_spec" }]), [], "只引用物料也合法");
+  assert.deepEqual(validateMaterialExtras([{ label: "", content: "直柄银色", material: null, specKey: "handle_spec" }]), []);
+  assert.deepEqual(validateMaterialExtras([{ label: "", content: "  ", material: null, specKey: "handle_spec" }]), [], "只有空格 = 空行");
 });

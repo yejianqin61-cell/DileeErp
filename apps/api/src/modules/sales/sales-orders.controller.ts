@@ -65,9 +65,16 @@ export class MaterialRefDto {
  * 与 `MaterialRefDto` 同样声明在 `SalesOrderSpecDto` **之前**（`@Type` 惰性求值，但读的人不必去想）。
  */
 export class MaterialExtraDto {
-  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(MATERIAL_EXTRA_LABEL_MAX_LENGTH) label!: string;
+  // 2026-10-29「同类目再加一款」：带 `spec_key` 时类目名由服务端按类目键填，`label` 可以不传；
+  // 不带 `spec_key` 的原有「其它」行仍然必须写类目名（服务层 `normalizeMaterialExtras` 会拒）。
+  @IsOptional() @EmptyStringToUndefined() @IsString() @MaxLength(MATERIAL_EXTRA_LABEL_MAX_LENGTH) label?: string;
   @IsOptional() @IsString() @MaxLength(MATERIAL_EXTRA_CONTENT_MAX_LENGTH) content?: string;
   @IsOptional() @IsUUID() material_id?: string;
+  /**
+   * 所属固定类目（18 个材料栏位之一的键）。只做形状与取值域校验：
+   * 「类目名不采用请求里的字」那条规则在服务层，改不到这里。
+   */
+  @IsOptional() @IsString() @IsIn([...SPEC_MATERIAL_KEYS]) spec_key?: string;
   @IsOptional() @IsInt() sort_order?: number;
 }
 
