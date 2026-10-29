@@ -68,6 +68,11 @@ const EXEMPT = new Map(Object.entries({
   // 一行对应的是计划里的一行明细，不是一张业务单据 —— 没有"谁创建/谁最后改了这行价格"可言。
   // 真正的操作人信息在它背后那一页（采购计划详情 / 列表）上，那里两列都在。
   "components/procurement/plan-price-dialog.tsx": "填单价浮层的录入网格：一行是计划明细而不是单据，操作人信息在其背后的采购计划页",
+  // 单据详情弹窗里的「领用物料」明细（2026-10-29）：一行是一条物料明细，不是一张单据 ——
+  // 「谁创建 / 谁最后改了这一行」在数据上就不存在；单据级的创建人/最后修改人在弹窗头部的
+  // 详情字段里（调用方页面用 `auditDetailFields(detail)` 渲染），两列信息没有丢。
+  // 这张表存在的理由是「把打印件上的四个数量原样显示出来」，与审计列无关。
+  "components/production/material-slip-lines-table.tsx": "单据详情弹窗里的物料明细表：一行是物料明细而不是单据，操作人在弹窗头部的单据字段里（auditDetailFields），明细行本身没有操作人",
 }));
 
 function walk(dir) {

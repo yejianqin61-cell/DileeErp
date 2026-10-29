@@ -328,3 +328,31 @@ test("口径差异实证：配料数量随 BOM 变化（活数据），本次领
   assert.equal(afterLine.getRow(7).getCell(8).value, 0, "已领数量 = 净领料 5 − 本单 5");
 });
 
+// ── 页面详情弹窗：直接复用导出服务的组装结果 ──
+// 2026-10-29 用户要求「系统里的领料单要和导出件保持一致」：详情弹窗若另查 BOM 与库存事实，
+// 就会再造一套数量口径（之前页面与纸面对不上就是这么来的）。
+test("详情弹窗数据：领料单版式，四个数量与导出件是同一组数字", async () => {
+  const service = harness();
+  const slip = await service.buildSlipDocument("movement-1");
+  assert.equal(slip.document_type, "issue");
+  const line = slip.document.lines[0];
+  assert.deepEqual([line.bomQuantity, line.issuedQuantity, line.currentQuantity, line.remainingQuantity], [5, 4, 2, -1], "配料 5、已领 4（不含本单）、本次 2、余下 -1");
+  // 同一张单的 Excel：第 7 行第 7~10 列就是这四个数，必须逐项相等。
+  const sheet = (await open(await service.exportSlip("movement-1"))).getWorksheet("MI-20260910-ABCD1234");
+  assert.deepEqual([sheet.getRow(7).getCell(7).value, sheet.getRow(7).getCell(8).value, sheet.getRow(7).getCell(9).value, sheet.getRow(7).getCell(10).value], [5, 4, 2, -1]);
+  assert.equal(line.remark, null, "行备注为空时页面显示「-」");
+});
+
+test("详情弹窗数据：补料单按补料单版式返回，只有补领数量", async () => {
+  const slip = await replenishmentHarness().buildSlipDocument("replenishment-1");
+  assert.equal(slip.document_type, "replenishment");
+  assert.equal(slip.document.lines[0].replenishQuantity, 12);
+  assert.equal(slip.document.reason, "伞布原始坏片", "补料原因要带出来，详情弹窗要看");
+});
+
+test("详情弹窗数据：领料与补料以外的单据类型（退料/报废/冲销）没有打印版式，直接 404", async () => {
+  const service = harness({ documentType: "return" });
+  await assert.rejects(() => service.buildSlipDocument("movement-1"), (error) => error.getStatus?.() === 404 || /没有领料单\/补料单版式/.test(error.message));
+});
+
+

@@ -23,6 +23,8 @@ export type MaterialIssueDocumentLine = {
   currentQuantity: number;
   /** 余下数量 = 配料数量 − 已领数量 − 本次领料量（可为负，表示超领）。 */
   remainingQuantity: number | null;
+  /** 行备注：打印件不印，但页面详情弹窗要看（与旧版详情一致，不能因为走打印数据就丢掉）。 */
+  remark: string | null;
 };
 
 /** 一张领料单的打印数据；字段与用户提供的 Excel 模板一一对应。 */
@@ -62,6 +64,8 @@ export type MaterialReplenishmentDocumentLine = {
   unit: string;
   /** 补领数量。 */
   replenishQuantity: number;
+  /** 行备注：打印件不印，页面详情弹窗用（补料单没有图片数据源，备注是唯一的行内说明）。 */
+  remark: string | null;
 };
 
 /** 一张补料单的打印数据；字段与用户提供的补料单模板一一对应。 */
@@ -106,6 +110,7 @@ type ExportLine = {
   unitId: string;
   quantity: Prisma.Decimal;
   bomReferenceQuantity: Prisma.Decimal | null;
+  remark: string | null;
   material: { name: string; materialCode: string; specificationModel: string | null; color: string | null };
   unit: { name: string };
 };
@@ -148,6 +153,22 @@ export class MaterialSlipExportService {
     const movement = await this.prisma.rawMaterialMovement.findFirst({ where: { id: movementId, deletedAt: null, documentType: "replenishment" }, include: this.include() });
     if (!movement) throw new NotFoundException({ code: "MATERIAL_REPLENISHMENT_NOT_FOUND", message: "补料单不存在", details: [] });
     return this.assembleReplenishment(movement as unknown as ExportMovement, await this.actors.namesOf([movement.createdBy]));
+  }
+
+  /**
+   * 页面详情弹窗用：与打印件**同一份数据**（同一套口径），按单据类型自动选版式。
+   *
+   * 为什么让页面复用导出服务：四个数量（配料 / 已领 / 本次 / 余下）的口径只写在 assemble 里，
+   * 页面若另查一遍 BOM 与库存事实，等于又造一套算法 —— 2026-10-29 那次「页面与纸面对不上」
+   * 就是这么来的。这里直接返回组装好的单据对象，页面只负责显示。
+   */
+  async buildSlipDocument(movementId: string): Promise<{ document_type: "issue"; document: MaterialIssueDocument } | { document_type: "replenishment"; document: MaterialReplenishmentDocument }> {
+    const movement = await this.prisma.rawMaterialMovement.findFirst({ where: { id: movementId, deletedAt: null }, select: { documentType: true } });
+    if (!movement) throw new NotFoundException({ code: "MATERIAL_SLIP_NOT_FOUND", message: "单据不存在", details: [] });
+    if (movement.documentType === "replenishment") return { document_type: "replenishment", document: await this.buildReplenishmentDocument(movementId) };
+    if (movement.documentType === "issue") return { document_type: "issue", document: await this.buildDocument(movementId) };
+    // 退料/报废/冲销单没有打印版式，详情弹窗也不该按领料单口径去解释它们的数量。
+    throw new NotFoundException({ code: "MATERIAL_SLIP_NOT_FOUND", message: "该单据类型没有领料单/补料单版式", details: [] });
   }
 
   /** 按筛选条件批量组装物料单据（领料单/补料单，各自的版式）。 */
@@ -227,7 +248,8 @@ export class MaterialSlipExportService {
         bomQuantity,
         issuedQuantity: issued,
         currentQuantity: current,
-        remainingQuantity: remainingQuantityOf(bomQuantity, issued, current)
+        remainingQuantity: remainingQuantityOf(bomQuantity, issued, current),
+        remark: line.remark ?? null
       });
     }
     return {
@@ -262,7 +284,8 @@ export class MaterialSlipExportService {
         specificationModel: bomItem?.specificationModel ?? bomItem?.model ?? line.material.specificationModel ?? "",
         color: bomItem?.color ?? line.material.color ?? "",
         unit: line.unit.name,
-        replenishQuantity: toNumber(line.quantity) ?? 0
+        replenishQuantity: toNumber(line.quantity) ?? 0,
+        remark: line.remark ?? null
       };
     });
     return {

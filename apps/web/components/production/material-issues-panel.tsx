@@ -20,6 +20,7 @@ import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib
 // 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按运行宿主时区走。
 import { formatBeijingShort } from "../../lib/audit-time";
 import { isMaterialMovementDocumentType, movementEditorHref } from "../../lib/material-slip-api";
+import { MaterialSlipLinesTable, type SlipDocument } from "./material-slip-lines-table";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string } | null; material?: { materialCode?: string; name: string; specificationModel?: string | null } | null };
@@ -41,13 +42,15 @@ const riskLabels: Record<string, string> = { MATERIAL_NOT_IN_BOM_WARNING: "不�
 const idempotencyKey = () => `web-issue-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 /**
- * 本面板**两张表**的列宽。
+ * 本面板**列表表**（T1）的列宽。
  *
  * 估算基准（与仓库其它页同一套）：1366 屏内容宽 1034px（1% = 10.34px），
  * 数据格 Arial 13px + 左右内边距 24px，表头 12px 加粗 + 24px。
  *
  * ⚠️ 面板里那段**手写可编辑草稿网格**（`<table className="ui-table">`，见下面的 draft 分支）
  * 不归 DataTable 管、也不是 `table-layout: fixed`，所以**一列宽度都不给它**。
+ * 详情弹窗的「领用物料」表已挪到 components/production/material-slip-lines-table（与打印件同源），
+ * 列宽也跟过去了，本文件只留列表的宽度。
  */
 const COLUMN_WIDTH = {
   // —— T1「生产领料单」列表（6 个业务列 + 2 个审计列 → 业务列合计恰好 84%）——
@@ -66,20 +69,6 @@ const COLUMN_WIDTH = {
   // 操作：同一行最多同时 3 个按钮（草稿行的「编辑 / 确认提交 / 删除」）
   // = 3 × 44px + 2 × 4px 间距 = 140px ≈ 13.5%，向上取 14%（待出库行只有 1 个按钮 + 一句提示，更窄）。
   actions: "14%",
-
-  // —— T2 详情弹窗「领用物料（N 项）」明细表（6 列，**没有审计列 → 合计必须精确到 100%**）——
-  // 物料编码：编码本体约 12~16 字符。
-  materialCode: "16%",
-  // 物料名称：最长的自由文本列之一。
-  materialName: "22%",
-  // 规格型号：「3cm × 91m 双面哑光」这类型号串。
-  specification: "18%",
-  // 单位：1~3 个字的单位名。
-  unit: "8%",
-  // 数量：纯数字（可能带 4 位小数）。
-  quantity: "10%",
-  // 备注：可以是一整句说明，给最宽的一档。
-  remark: "26%",
 } as const;
 
 export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChanged }: { productionOrderId: string; bomId?: string | null; issuable: boolean; onChanged?: () => void }) {
@@ -91,9 +80,11 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
-  // 双击条目弹出的详情：列表行给不出全部字段（物料主数据只有明细接口才有），打开时按 id 单独拉一次。
+  // 双击条目弹出的详情：列表行给不出全部字段（物料主数据只有明细接口才有），打开时按 id 单独拉一次；
+  // 明细数量另取「与打印件同源」的 slip-document（导出服务的组装结果）。
   const [detailId, setDetailId] = useState("");
   const [detail, setDetail] = useState<Movement | null>(null);
+  const [slipDocument, setSlipDocument] = useState<SlipDocument | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [detailNonce, setDetailNonce] = useState(0);
@@ -118,11 +109,15 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   }
   useEffect(() => { void load(); }, [productionOrderId, bomId]);
   useEffect(() => {
-    if (!detailId) { setDetail(null); return; }
+    if (!detailId) { setDetail(null); setSlipDocument(null); return; }
     let cancelled = false;
     setDetailLoading(true); setDetailError("");
-    apiGet<Movement>(`/production/material-movements/${detailId}`)
-      .then((result) => { if (!cancelled) setDetail(result.data); })
+    // 单据头取 :id，明细四个数量取 slip-document（导出服务组装，与打印件同一口径）。
+    Promise.all([
+      apiGet<Movement>(`/production/material-movements/${detailId}`),
+      apiGet<SlipDocument>(`/production/material-movements/${detailId}/slip-document`),
+    ])
+      .then(([movement, slip]) => { if (!cancelled) { setDetail(movement.data); setSlipDocument(slip.data); } })
       .catch((cause) => { if (!cancelled) setDetailError(errorText(cause, "领料单详情加载失败")); })
       .finally(() => { if (!cancelled) setDetailLoading(false); });
     return () => { cancelled = true; };
@@ -244,16 +239,6 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     } },
   ];
 
-  // 详情里的领用物料表：列表行只有 materialId，物料编码/名称/规格型号必须来自详情接口。
-  const detailLineColumns = [
-    { id: "materialCode", header: "物料编码", meta: { width: COLUMN_WIDTH.materialCode }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.materialCode ?? "-" },
-    { id: "materialName", header: "物料名称", meta: { width: COLUMN_WIDTH.materialName }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.name ?? row.original.materialId },
-    { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.specification }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.material?.specificationModel ?? "-" },
-    { id: "unit", header: "单位", meta: { width: COLUMN_WIDTH.unit }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.unit?.name ?? "-" },
-    { accessorKey: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.quantity } },
-    { id: "remark", header: "备注", meta: { width: COLUMN_WIDTH.remark }, cell: ({ row }: { row: { original: MovementLine } }) => row.original.remark ?? "-" },
-  ];
-
   const detailFields: DetailField[] = detail ? [
     { label: "单据号", value: detail.movementNo },
     { label: "类型", value: typeLabels[detail.documentType] ?? detail.documentType },
@@ -309,7 +294,7 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
         title={`${typeLabels[detail?.documentType ?? "issue"] ?? "领料单"}详情：${detail?.movementNo ?? ""}`}
         description="双击单据行打开的详情：展示本条单据的全部领用物料与提交信息。"
         fields={detailFields}
-        sections={detail ? [{ title: `领用物料（${detail.lines.length} 项）`, content: <DataTable pageSize={50} columns={detailLineColumns} data={detail.lines} empty={<EmptyState title="该单据没有物料明细" />} /> }] : []}
+        sections={detail && slipDocument ? [{ title: `领用物料（${slipDocument.document.lines.length} 项）`, content: <MaterialSlipLinesTable slip={slipDocument} /> }] : []}
         loading={detailLoading}
         error={detailError}
         onRetry={() => setDetailNonce((value) => value + 1)}

@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Res, UseGuards } from "@nestjs/common";
+import { Controller, Get, Param, Query, Res, UseGuards } from "@nestjs/common";
 import { IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import type { Response } from "express";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -44,6 +44,18 @@ export class MaterialSlipExportController {
     const result = await this.exports.exportSlips(query);
     const stamp = beijingStamp();
     return this.send(response, result.buffer, `迪礼ERP-领料补料单汇总-${stamp}-${result.count}张.xlsx`);
+  }
+
+  /**
+   * 单据详情弹窗用：与导出件同一口径的明细（JSON，不写文件）。
+   *
+   * 与上面两个导出不同，**不要求管理员**：详情弹窗是只读页面，生产、仓库的普通操作员都要看；
+   * 真正的导出（下载 xlsx）仍然只有管理员能给。
+   * 路由比 `GET production/material-movements/:id` 多一段，不会和被当成单据 id 匹配。
+   */
+  @Get("production/material-movements/:id/slip-document")
+  async slipDocument(@Param("id") id: string) {
+    return { data: await this.exports.buildSlipDocument(id), meta: {} };
   }
 
   private send(response: Response, body: Buffer, fileName: string) {

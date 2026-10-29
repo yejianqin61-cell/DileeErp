@@ -66,6 +66,8 @@ type ApiRoutes = {
   movements?: (call: StubbedCall) => Response | Promise<Response>;
   /** 双击行弹出的详情：GET /production/material-movements/:id。 */
   detail?: (call: StubbedCall) => Response | Promise<Response>;
+  /** 详情弹窗的明细（与打印件同源）：GET /production/material-movements/:id/slip-document。 */
+  slipDocument?: (call: StubbedCall) => Response | Promise<Response>;
   bom?: (call: StubbedCall) => Response | Promise<Response>;
   materials?: (call: StubbedCall) => Response | Promise<Response>;
   preview?: (call: StubbedCall) => Response | Promise<Response>;
@@ -109,6 +111,7 @@ function stubPanelApi(routes: ApiRoutes = {}) {
     if (url.endsWith("/materials")) return routes.materials?.(call) ?? apiOk(materials);
     if (url.includes("/production/material-movements")) {
       // 详情 GET 与列表 GET 必须分开：列表桩返回的是数组，直接当成详情会把弹窗撑坏。
+      if (call.method === "GET" && /\/production\/material-movements\/[^/?]+\/slip-document$/.test(url)) return routes.slipDocument?.(call) ?? apiErr(404, "NOT_FOUND", `未打桩的 slip-document 请求：${url}`);
       if (call.method === "GET" && /\/production\/material-movements\/[^/?]+$/.test(url)) return routes.detail?.(call) ?? apiErr(404, "NOT_FOUND", `未打桩的详情请求：${url}`);
       if (call.method === "GET") return routes.movements?.(call) ?? apiOk([]);
       if (call.method === "POST" && url.endsWith("/production/material-movements")) return routes.create?.(call) ?? apiOk({ id: "mv-created" });
@@ -716,7 +719,7 @@ describe("MaterialIssuesPanel：列表行操作", () => {
     });
   });
 
-  it("双击单据行：弹出详情窗口，逐行列出该单**全部**领用物料（名称与数量都要出现）", async () => {
+  it("双击单据行：详情里逐行列出全部领用物料，列名与打印件一致（含四个数量）", async () => {
     const slip = movement({
       id: "mv-9",
       movementNo: "MI-009",
@@ -728,10 +731,16 @@ describe("MaterialIssuesPanel：列表行操作", () => {
         { id: "l-2", materialId: "m-2", quantity: "8", remark: "备损", unit: { name: "条" }, material: { materialCode: "RM-2", name: "拉链B", specificationModel: "3号" } },
       ],
     });
+    // 明细行由「与打印件同源」的 slip-document 提供：配料 / 已领（不含本次）/ 本次 / 余下（已减本次）。
+    const slipDocument = { document_type: "issue", document: { lines: [
+      { sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "米白", unit: "米", bomQuantity: 10, issuedQuantity: 2, currentQuantity: 3, remainingQuantity: 5, remark: null },
+      { sequence: 2, materialName: "拉链B", materialCode: "RM-2", specificationModel: "3号", color: "藏青", unit: "条", bomQuantity: 10, issuedQuantity: 8, currentQuantity: 8, remainingQuantity: -6, remark: "备损" },
+    ] } };
     const calls = stubPanelApi({
       // 列表行只有 materialId；物料编码/名称/规格必须由详情接口补上
       movements: () => apiOk([movement({ id: "mv-9", movementNo: "MI-009", lines: [{ id: "l-1", materialId: "m-1", quantity: "3" }] })]),
       detail: () => apiOk(slip),
+      slipDocument: () => apiOk(slipDocument),
     });
     renderPanel();
     await screen.findByText("MI-009");
@@ -741,18 +750,27 @@ describe("MaterialIssuesPanel：列表行操作", () => {
     const dialog = await screen.findByTestId("material-slip-detail");
     expect(dialog).toBeVisible();
     expect(callsTo(calls, "/production/material-movements/mv-9")).toHaveLength(1);
+    expect(callsTo(calls, "/production/material-movements/mv-9/slip-document")).toHaveLength(1);
     // 全部领用物料都要出现（而不是只给「2 项」的合计）
     expect(within(dialog).getByText("领用物料（2 项）")).toBeVisible();
-    expect(within(dialog).getByText("面料A")).toBeVisible();
-    expect(within(dialog).getByText("拉链B")).toBeVisible();
-    expect(within(dialog).getByText("RM-2")).toBeVisible();
-    expect(within(dialog).getByText("3号")).toBeVisible();
+    // 列名与领料单打印件一致
+    for (const header of ["物料编码", "物料名称", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量", "备注"]) {
+      expect(within(dialog).getByRole("columnheader", { name: header })).toBeVisible();
+    }
     const detailRows = within(dialog).getAllByTestId("data-table-row");
     expect(detailRows).toHaveLength(2);
     expect(detailRows[0]).toHaveTextContent("面料A");
+    expect(detailRows[0]).toHaveTextContent("RM-1");
+    expect(detailRows[0]).toHaveTextContent("150D");
+    expect(detailRows[0]).toHaveTextContent("米白");
+    expect(detailRows[0]).toHaveTextContent("10");
+    expect(detailRows[0]).toHaveTextContent("2");
     expect(detailRows[0]).toHaveTextContent("3");
+    expect(detailRows[0]).toHaveTextContent("5");
     expect(detailRows[1]).toHaveTextContent("拉链B");
-    expect(detailRows[1]).toHaveTextContent("8");
+    expect(detailRows[1]).toHaveTextContent("备损");
+    // 超领：与打印件一样显示负数
+    expect(detailRows[1]).toHaveTextContent("-6");
     // 头部字段也要给全（生产单号 / 订单号 / 提交时间）
     expect(within(dialog).getByText("MO-009")).toBeVisible();
     expect(within(dialog).getByText("SO-009")).toBeVisible();

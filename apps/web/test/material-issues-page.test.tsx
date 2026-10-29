@@ -49,6 +49,8 @@ type ApiRoutes = {
   movements?: (call: StubbedCall) => Response | Promise<Response>;
   /** 双击行弹出的详情：GET /production/material-movements/:id。 */
   detail?: (call: StubbedCall) => Response | Promise<Response>;
+  /** 详情弹窗的明细（与打印件同源）：GET /production/material-movements/:id/slip-document。 */
+  slipDocument?: (call: StubbedCall) => Response | Promise<Response>;
   /** 提交 / 确认出库 / reopen / reverse / 删除等写操作的兜底钩子，返回 undefined 表示不拦截。 */
   actions?: (url: string, call: StubbedCall) => Response | Promise<Response> | undefined;
 };
@@ -59,7 +61,8 @@ function stubPageApi(routes: ApiRoutes = {}) {
     if (intercepted) return intercepted;
     if (url.endsWith("/production/orders")) return apiOk([]);
     if (url.includes("/production/material-movements")) {
-      // 详情 GET 与列表 GET 必须分开：列表桩返回数组，当成详情会把弹窗撑坏。
+      // 详情 GET / 列表 GET / 打印件同源明细要分开：列表桩返回数组，当成详情会把弹窗撑坏。
+      if (call.method === "GET" && /\/production\/material-movements\/[^/?]+\/slip-document$/.test(url)) return routes.slipDocument?.(call) ?? apiErr(404, "NOT_FOUND", `未打桩的 slip-document 请求：${url}`);
       if (call.method === "GET" && /\/production\/material-movements\/[^/?]+$/.test(url)) return routes.detail?.(call) ?? apiErr(404, "NOT_FOUND", `未打桩的详情请求：${url}`);
       if (call.method === "GET") return routes.movements?.(call) ?? apiOk([]);
       return apiOk({});
@@ -159,7 +162,7 @@ describe("领料单列表页：确认提交（草稿 → 待仓库出库）", ()
 });
 
 describe("领料单列表页：双击查看全部领用物料", () => {
-  it("双击单据行：弹窗逐行列出该单全部领用物料（物料名称与数量都出现）", async () => {
+  it("双击单据行：弹窗逐行列出该单全部领用物料，列名与打印件一致（含四个数量）", async () => {
     const detail = issue({
       id: "mi-9",
       movementNo: "MI-009",
@@ -171,10 +174,16 @@ describe("领料单列表页：双击查看全部领用物料", () => {
         line({ id: "l-2", materialId: "m-2", quantity: "8", unit: { name: "条" }, remark: "备损", material: { materialCode: "RM-2", name: "拉链B", specificationModel: "3号" } }),
       ],
     });
+    // 明细行来自「与打印件同源」的 slip-document：已领不含本次、余下已减本次。
+    const slipDocument = { document_type: "issue", document: { lines: [
+      { sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "米白", unit: "米", bomQuantity: 10, issuedQuantity: 2, currentQuantity: 3, remainingQuantity: 5, remark: null },
+      { sequence: 2, materialName: "拉链B", materialCode: "RM-2", specificationModel: "3号", color: "藏青", unit: "条", bomQuantity: 10, issuedQuantity: 8, currentQuantity: 8, remainingQuantity: -6, remark: "备损" },
+    ] } };
     const calls = await renderPage({
       // 列表行只有 materialId，物料编码/名称/规格必须由详情接口补上
       movements: () => apiOk([issue({ id: "mi-9", movementNo: "MI-009", lines: [line({ id: "l-1", materialId: "m-1", quantity: "3", material: undefined })] })]),
       detail: () => apiOk(detail),
+      slipDocument: () => apiOk(slipDocument),
     });
     await screen.findByText("MI-009");
 
@@ -182,14 +191,24 @@ describe("领料单列表页：双击查看全部领用物料", () => {
 
     const dialog = await screen.findByTestId("material-slip-detail");
     expect(callsTo(calls, "/production/material-movements/mi-9")).toHaveLength(1);
+    expect(callsTo(calls, "/production/material-movements/mi-9/slip-document")).toHaveLength(1);
     expect(within(dialog).getByText("领用物料（2 项）")).toBeVisible();
+    for (const header of ["物料编码", "物料名称", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量", "备注"]) {
+      expect(within(dialog).getByRole("columnheader", { name: header })).toBeVisible();
+    }
     const rows = within(dialog).getAllByTestId("data-table-row");
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent("面料A");
+    expect(rows[0]).toHaveTextContent("150D");
+    expect(rows[0]).toHaveTextContent("米白");
+    expect(rows[0]).toHaveTextContent("10");
+    expect(rows[0]).toHaveTextContent("2");
     expect(rows[0]).toHaveTextContent("3");
+    expect(rows[0]).toHaveTextContent("5");
     expect(rows[1]).toHaveTextContent("拉链B");
-    expect(rows[1]).toHaveTextContent("8");
     expect(rows[1]).toHaveTextContent("备损");
+    // 超领：与打印件一样显示负数
+    expect(rows[1]).toHaveTextContent("-6");
     // 头部字段也要齐全
     expect(within(dialog).getByText("MO-009")).toBeVisible();
     expect(within(dialog).getByText("SO-009")).toBeVisible();
