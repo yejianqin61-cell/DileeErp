@@ -64,12 +64,17 @@ const rawBalances = [
   { material_id: "m-2", unit_name: "张", quantity: "5" },
 ];
 
-/** issue-preview 的返回：索引与请求行一一对应。 */
+/**
+ * issue-preview 的返回：索引与请求行一一对应。
+ * `material_quantity / issued_quantity / current_quantity / remaining_quantity` 是与领料单打印件
+ * 同名的四个数量，由后端按统一口径算好（已领不含本次、余下已减本次），前端只负责显示。
+ */
 const previewData = {
   lines: [
-    { material_id: "m-1", material_code: "RM-001", model: "A-1", color: "米白", approved_usage: "12", bom_reference_quantity: "10", inventory_quantity: "30", available_before: "28", purchase_received_quantity: "50", purchase_outstanding_quantity: "6", cumulative_issued_after: "2", production_outstanding_quantity: "8" },
-    { material_id: "m-2", material_code: "RM-002", model: "B-2", color: "藏青", approved_usage: "4", bom_reference_quantity: "4", inventory_quantity: "5", available_before: "5", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_after: "0", production_outstanding_quantity: "4" },
-    { material_id: "m-9", material_code: "RM-009", model: "C-9", color: "灰", approved_usage: "2", bom_reference_quantity: "2", inventory_quantity: "9", available_before: "9", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_after: "0", production_outstanding_quantity: "2" },
+    // 配料 12、已领 2、本次 1 → 余下 9
+    { material_id: "m-1", material_code: "RM-001", model: "A-1", color: "米白", unit: "米", approved_usage: "12", bom_reference_quantity: "10", material_quantity: 12, issued_quantity: 2, current_quantity: 1, remaining_quantity: 9, inventory_quantity: "30", available_before: "28", purchase_received_quantity: "50", purchase_outstanding_quantity: "6", cumulative_issued_before: "2", cumulative_issued_after: "3", production_outstanding_quantity: "10" },
+    { material_id: "m-2", material_code: "RM-002", model: "B-2", color: "藏青", unit: "张", approved_usage: "4", bom_reference_quantity: "4", material_quantity: 4, issued_quantity: 0, current_quantity: 1, remaining_quantity: 3, inventory_quantity: "5", available_before: "5", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "4" },
+    { material_id: "m-9", material_code: "RM-009", model: "C-9", color: "灰", unit: "米", approved_usage: "2", bom_reference_quantity: "2", material_quantity: 2, issued_quantity: 0, current_quantity: 1, remaining_quantity: 1, inventory_quantity: "9", available_before: "9", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "2" },
   ],
   warnings: [] as string[],
 };
@@ -194,19 +199,37 @@ describe("MaterialSlipEditor 领料单：加载与 BOM 数据流", () => {
     expect(deleteButtons()).toHaveLength(1);
   });
 
-  it("预览列渲染核定用量、当前库存量等真实数值", async () => {
+  it("预估列渲染与领料单打印件同名的配料/已领/本次/余下四个数量", async () => {
     stub();
     await renderSlip();
 
-    await waitFor(() => expect(columnValues("核定用量")).toEqual(["12"]));
+    await waitFor(() => expect(columnValues("配料数量")).toEqual(["12"]));
     expect(columnValues("物料代码")).toEqual(["RM-001"]);
     expect(columnValues("型号")).toEqual(["A-1"]);
     expect(columnValues("颜色")).toEqual(["米白"]);
+    expect(columnValues("单位")).toEqual(["米"]);
+    // 已领数量不含本单、余下数量已减本单：12 − 2 − 1 = 9
+    expect(columnValues("已领数量")).toEqual(["2"]);
+    expect(columnValues("余下数量")).toEqual(["9"]);
     expect(columnValues("当前库存量")).toEqual(["30"]);
     expect(columnValues("采购入库数量")).toEqual(["50"]);
     expect(columnValues("采购未入库数量")).toEqual(["6"]);
-    expect(columnValues("生产领用数量")).toEqual(["2"]);
-    expect(columnValues("生产未领用数量")).toEqual(["8"]);
+  });
+
+  it("改本次领料量后重算预估：余下数量取后端返回值（前端不自己算，避免与打印件两套口径）", async () => {
+    // 桩按请求里的数量算：余下 = 配料 12 − 已领 2 − 本次，模拟后端口径。
+    stub({ preview: (call) => {
+      const body = JSON.parse(String(call.body)) as { lines: Array<{ quantity: string }> };
+      return apiOk({ lines: body.lines.map((line) => ({ ...previewData.lines[0], current_quantity: Number(line.quantity), remaining_quantity: 12 - 2 - Number(line.quantity) })) });
+    } });
+    await renderSlip();
+    await waitFor(() => expect(columnValues("余下数量")).toEqual(["9"]));
+
+    await userEvent.clear(quantityInput(0));
+    await userEvent.type(quantityInput(0), "15");
+
+    // 超领时余下为负：与打印件一样显示负数，不能被抹成 0。
+    await waitFor(() => expect(columnValues("余下数量")).toEqual(["-5"]));
   });
 
   it("生产单下拉只列出「厂内生产中」的订单（外协/已完工不出现）", async () => {
@@ -245,7 +268,7 @@ describe("MaterialSlipEditor 领料单：加载与 BOM 数据流", () => {
     stub({ preview: () => apiErr(500, "INTERNAL", "预览失败") });
     await renderSlip();
 
-    await waitFor(() => expect(columnValues("核定用量")).toEqual(["-"]));
+    await waitFor(() => expect(columnValues("配料数量")).toEqual(["-"]));
     expect(columnValues("当前库存量")).toEqual(["-"]);
     expect(quantityInput(0)).toBeEnabled();
     expect(screen.queryByTestId("error-state")).toBeNull();
@@ -566,11 +589,14 @@ describe("MaterialSlipEditor 补料单", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("新建补料单");
     expect(screen.getByRole("columnheader", { name: "补领数量" })).toBeVisible();
     expect(screen.queryByRole("columnheader", { name: "采购入库数量" })).toBeNull();
-    expect(screen.queryByRole("columnheader", { name: "生产未领用数量" })).toBeNull();
+    // 补料单打印件只有「补领数量」：已领 / 余下（以及采购两列）都不该出现。
+    expect(screen.queryByRole("columnheader", { name: "已领数量" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "余下数量" })).toBeNull();
     // 同一物料的多条余额合并展示（m-1：30 米 + 2 卷）
     expect(columnValues("当前库存量")).toEqual(["30 米、2 卷"]);
-    // 核定用量列仍在，但补料单没有预览数据时回落为「-」
-    expect(columnValues("核定用量")).toEqual(["-"]);
+    // 单位与配料数量两列仍在，但补料单没有预览数据时回落为「-」
+    expect(columnValues("单位")).toEqual(["米"]);
+    expect(columnValues("配料数量")).toEqual(["-"]);
   });
 
   it("补料没填原因时保存被拦下，填了才发创建请求（补料接口）", async () => {

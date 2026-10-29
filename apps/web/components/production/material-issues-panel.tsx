@@ -26,7 +26,9 @@ type MovementLine = { id: string; materialId: string; quantity: string; remark?:
 type Movement = AuditRow & { id: string; movementNo: string; documentType: string; status: string; orderNo?: string | null; productionOrderId?: string | null; businessDate?: string | null; submittedAt?: string | null; createdAt: string; remark?: string | null; reason?: string | null; productionOrder?: { productionOrderNo: string; orderNo: string } | null; lines: MovementLine[] };
 type BomItem = { materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; requiredQuantity: string; unit: string; unitId?: string | null };
 type Material = { id: string; materialCode?: string; name: string; materialType?: string; isActive?: boolean };
-type PreviewLine = { material_id: string; material_name?: string; material_code?: string; model?: string | null; unit?: string | null; bom_reference_quantity: string | null; inventory_quantity?: string; available_before: string; available_after: string; cumulative_issued_after: string; production_outstanding_quantity?: string | null; risks: Array<{ type: string }> };
+type PreviewLine = { material_id: string; material_name?: string; material_code?: string; model?: string | null; unit?: string | null; bom_reference_quantity: string | null; inventory_quantity?: string; available_before: string; available_after: string; cumulative_issued_after: string; production_outstanding_quantity?: string | null;
+  /** 与领料单打印件同名的四个数量（后端统一口径算好，前端只显示）。 */
+  material_quantity?: number | null; issued_quantity?: number | null; current_quantity?: number | null; remaining_quantity?: number | null; risks: Array<{ type: string }> };
 type Preview = { lines: PreviewLine[] };
 type DraftLine = { materialId: string; quantity: string; remark: string };
 // documentType 决定过账走 /post 还是 /post-replenishment：这个面板同时列出领料单与补料单。
@@ -278,14 +280,17 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
       {error && <div className="panel-body status-error">{error}</div>}
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { void dialog?.submit(values); }} />
       {draft && <div className="detail-list">
-        <div className="table-wrap"><table className="ui-table"><thead><tr><th className="ui-table-head">物料</th><th className="ui-table-head">BOM 核定用量</th><th className="ui-table-head">当前库存</th><th className="ui-table-head">生产已领累计</th><th className="ui-table-head">生产未领用</th><th className="ui-table-head">本次领料数量</th><th className="ui-table-head">风险</th><th className="ui-table-head">操作</th></tr></thead>
-          <tbody>{draft.lines.map((line, index) => { const info = preview?.lines[index]; return <tr key={`${line.materialId}-${index}`}>
+        <div className="table-wrap"><table className="ui-table"><thead><tr><th className="ui-table-head">物料</th><th className="ui-table-head">配料数量</th><th className="ui-table-head">已领数量</th><th className="ui-table-head">本次领料量</th><th className="ui-table-head">余下数量</th><th className="ui-table-head">当前库存</th><th className="ui-table-head">风险</th><th className="ui-table-head">操作</th></tr></thead>
+          <tbody>{draft.lines.map((line, index) => { const info = preview?.lines[index]; const remaining = info?.remaining_quantity;
+            // 这四列与领料单打印件同名同值（后端 material-slip-quantity 统一口径）：
+            // 已领数量**不含**本次、余下数量**已减**本次，车间拿纸核对系统才能对上。
+            return <tr key={`${line.materialId}-${index}`}>
             <td><Select value={line.materialId || undefined} onValueChange={(value) => updateLine(index, { materialId: value })}><SelectTrigger><SelectValue placeholder="选择原料" /></SelectTrigger><SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
-            <td>{info?.bom_reference_quantity ?? "-"}</td>
-            <td>{info?.inventory_quantity ?? info?.available_before ?? "-"}</td>
-            <td>{info?.cumulative_issued_after ?? "-"}</td>
-            <td>{info?.production_outstanding_quantity ?? "-"}</td>
+            <td>{info?.material_quantity ?? info?.bom_reference_quantity ?? "-"}</td>
+            <td>{info?.issued_quantity ?? "-"}</td>
             <td><Input type="number" min="0" step="0.0001" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></td>
+            <td className={typeof remaining === "number" && remaining < 0 ? "status-danger" : undefined}>{remaining === null || remaining === undefined ? "-" : remaining}</td>
+            <td>{info?.inventory_quantity ?? info?.available_before ?? "-"}</td>
             <td>{info?.risks?.length ? info.risks.map((risk) => riskLabels[risk.type] ?? risk.type).join("、") : "-"}</td>
             <td><Button size="sm" variant="ghost" onClick={() => removeLine(index)}>删除</Button></td>
           </tr>; })}</tbody></table></div>

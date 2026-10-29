@@ -503,9 +503,11 @@ button { cursor: pointer; }
 .ui-multi-select-count { margin: 0; color: var(--text-muted); font-size: 12px; }
 
 /* 领料单/补料单全屏编辑页：列多且物料名很长，必须给关键列固定宽度、单行省略，
-   否则在窄容器里 Select 文案会与相邻单元格互相覆盖（历史 Sheet 版本就是这样）。 */
+   否则在窄容器里 Select 文案会与相邻单元格互相覆盖（历史 Sheet 版本就是这样）。
+   min-width 按列数取：领料单 14 列（2026-10-29 加入单位与配料/已领/余下三个数量列后
+   由 13 列变 14 列），补料单 10 列，取领料单的宽度。 */
 .material-slip-editor .table-wrap { overflow-x: auto; }
-.material-slip-editor .data-table { width: 100%; min-width: 1180px; table-layout: auto; }
+.material-slip-editor .data-table { width: 100%; min-width: 1260px; table-layout: auto; }
 .material-slip-editor .data-table th,
 .material-slip-editor .data-table td { height: auto; max-width: 240px; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
 .material-slip-editor .slip-col-material { min-width: 260px; max-width: 300px; }

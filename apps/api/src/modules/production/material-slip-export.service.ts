@@ -4,6 +4,8 @@ import * as ExcelJS from "exceljs";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import { beijingDateTime } from "../../platform/time/beijing-time";
+// 已领 / 余下的口径与系统页面的预估列共用一份实现（见 material-slip-quantity.ts 的说明）。
+import { issuedBeforeQuantity, remainingQuantity as remainingQuantityOf } from "./material-slip-quantity";
 
 /** 领料单（打印表）明细行。 */
 export type MaterialIssueDocumentLine = {
@@ -213,9 +215,8 @@ export class MaterialSlipExportService {
       const current = toNumber(line.quantity) ?? 0;
       // 已领数量：净领料（领料−退料，原始物料类别）扣除本单自身 —— 只有已过账本单才会进入库存事实。
       const facts = await this.prisma.inventoryFact.aggregate({ where: { productionOrderId: movement.productionOrderId, materialId: line.materialId, unitId: line.unitId, inventoryCategory: "raw_material" }, _sum: { quantityDelta: true } });
-      const netIssued = new Prisma.Decimal(facts._sum.quantityDelta ?? 0).negated();
-      const issuedBefore = netIssued.minus(movement.status === "posted" ? line.quantity : new Prisma.Decimal(0));
-      const issued = toNumber(issuedBefore) ?? 0;
+      const netIssued = toNumber(new Prisma.Decimal(facts._sum.quantityDelta ?? 0).negated()) ?? 0;
+      const issued = issuedBeforeQuantity(netIssued, current, movement.status === "posted");
       lines.push({
         sequence: index + 1,
         materialName: line.material.name,
@@ -226,7 +227,7 @@ export class MaterialSlipExportService {
         bomQuantity,
         issuedQuantity: issued,
         currentQuantity: current,
-        remainingQuantity: bomQuantity === null ? null : Number((bomQuantity - issued - current).toFixed(4))
+        remainingQuantity: remainingQuantityOf(bomQuantity, issued, current)
       });
     }
     return {

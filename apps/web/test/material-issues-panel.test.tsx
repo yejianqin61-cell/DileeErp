@@ -78,16 +78,22 @@ type ApiRoutes = {
 /** 默认预览桩：按请求里的物料行数回同样行数的预估，数值便于断言。 */
 function defaultPreview(call: StubbedCall) {
   const body = bodyOf(call) as { lines: Array<{ material_id: string }> };
+  // 四个数量与领料单打印件同名同值：配料 5、已领 2（不含本次）、本次 1 → 余下 2。
   return apiOk({
     lines: body.lines.map((line, index) => ({
       material_id: line.material_id,
       material_name: index === 0 ? "面料A" : "拉链B",
       material_code: index === 0 ? "RM-1" : "RM-2",
       bom_reference_quantity: "5",
+      material_quantity: 5,
+      issued_quantity: 2,
+      current_quantity: 1,
+      remaining_quantity: 2,
       inventory_quantity: "12",
       available_before: "12",
       available_after: "7",
-      cumulative_issued_after: "2",
+      cumulative_issued_before: "2",
+      cumulative_issued_after: "3",
       production_outstanding_quantity: "3",
       risks: index === 0 ? [{ type: "OVER_ISSUE_WARNING" }] : [],
     })),
@@ -135,6 +141,14 @@ const movementRows = () => screen.getAllByTestId("data-table-row");
 function draftRows() {
   const tables = screen.getAllByRole("table");
   return within(tables[0]).getAllByRole("row").slice(1);
+}
+/** 草稿表格某列的值：按表头文字定位，列顺序变了也不会误判。 */
+function draftColumn(header: string): string[] {
+  const table = screen.getAllByRole("table")[0];
+  const headers = within(table).getAllByRole("columnheader").map((node) => (node.textContent ?? "").trim());
+  const index = headers.indexOf(header);
+  if (index < 0) throw new Error(`草稿表缺少「${header}」列，实际列：${headers.join(" | ")}`);
+  return within(table).getAllByRole("row").slice(1).map((row) => (within(row).getAllByRole("cell")[index]?.textContent ?? "").trim());
 }
 const newIssueButton = () => screen.getByRole("button", { name: /新建领料单|正在编辑草稿/ });
 const openCreate = async () => userEvent.click(newIssueButton());
@@ -240,14 +254,18 @@ describe("MaterialIssuesPanel：新建草稿与 BOM 预估", () => {
       lines: [{ material_id: "m-1", quantity: "1" }],
     });
 
-    // 草稿行：BOM 核定用量 / 当前库存 / 已领累计 / 未领用 都来自预估响应
+    // 草稿行：配料数量 / 已领数量 / 余下数量 / 当前库存 都来自预估响应，
+    // 且列名与领料单打印件一致（已领不含本次、余下已减本次）。
     const row = draftRows()[0];
     expect(row).toHaveTextContent("面料A");
-    expect(row).toHaveTextContent("5");
-    expect(row).toHaveTextContent("12");
-    expect(row).toHaveTextContent("2");
-    expect(row).toHaveTextContent("3");
+    expect(draftColumn("配料数量")).toEqual(["5"]);
+    expect(draftColumn("已领数量")).toEqual(["2"]);
+    expect(draftColumn("余下数量")).toEqual(["2"]);
+    expect(draftColumn("当前库存")).toEqual(["12"]);
     expect(within(row).getByRole("spinbutton")).toHaveValue(1);
+    // 旧列名（含本单的「生产已领累计」等）不能再出现，避免又变成两套口径。
+    expect(screen.queryByRole("columnheader", { name: "生产已领累计" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "生产未领用" })).toBeNull();
   });
 
   it("草稿行的物料下拉列出的是该生产单的 BOM 明细（含规格与核定用量）", async () => {
