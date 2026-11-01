@@ -15,6 +15,7 @@ function patches(): string[] {
     join(packageRoot, 'config', 'coding-agents.cordis.patch.yml'),
     join(packageRoot, 'test', 'scripted-llm.cordis.patch.yml'),
     join(packageRoot, 'config', 'activation-trace.cordis.patch.yml'),
+    join(packageRoot, 'test', 'scripted-llm-activation-trace.cordis.patch.yml'),
   ]
 }
 

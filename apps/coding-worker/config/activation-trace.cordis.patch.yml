@@ -1,0 +1,7 @@
+- id: sdk-jsonrpc-server
+  inject: [sdkAppStartup, loader, dileeActivationTrace]
+
+- insert:
+    - id: dilee-activation-trace
+      name: './activation-trace-plugin.mjs'
+
