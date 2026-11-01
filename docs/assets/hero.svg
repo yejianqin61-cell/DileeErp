@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Dilee ERP</title>
+  <desc id="desc">An order-centered manufacturing platform, with connected planning, production, inventory, and finance.</desc>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1">
+      <stop stop-color="#071b2b"/>
+      <stop offset=".55" stop-color="#0b3443"/>
+      <stop offset="1" stop-color="#0a594f"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop stop-color="#46dcc0" stop-opacity=".24"/>
+      <stop offset="1" stop-color="#46dcc0" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity=".055"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="320" rx="22" fill="url(#bg)"/>
+  <rect width="1200" height="320" rx="22" fill="url(#grid)"/>
+  <circle cx="900" cy="145" r="260" fill="url(#glow)"/>
+  <path d="M52 46h20M52 46v20M1148 274h-20M1148 274v-20" fill="none" stroke="#73e4d1" stroke-opacity=".6" stroke-width="2"/>
+  <g fill="none" stroke="#75dbcc" stroke-opacity=".36" stroke-width="2">
+    <path d="M690 160h93m92 0h40m94 0h40"/>
+    <path d="M830 130V86h92"/>
+    <path d="M960 190v44h102"/>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <g fill="#123b49" stroke="#7bdacb" stroke-opacity=".65">
+      <rect x="778" y="128" width="100" height="64" rx="12"/>
+      <rect x="913" y="128" width="100" height="64" rx="12"/>
+      <rect x="1048" y="128" width="100" height="64" rx="12"/>
+      <rect x="921" y="56" width="100" height="60" rx="12"/>
+      <rect x="1062" y="205" width="86" height="60" rx="12"/>
+    </g>
+    <g fill="#d8f7f1" font-size="12" font-weight="700" letter-spacing="1.5">
+      <text x="828" y="165">ORDER</text>
+      <text x="963" y="165">PLAN</text>
+      <text x="1098" y="165">MAKE</text>
+      <text x="971" y="92">SOURCE</text>
+      <text x="1105" y="241">DELIVER</text>
+    </g>
+  </g>
+  <g fill="#83e1d0">
+    <circle cx="690" cy="160" r="5"/>
+    <circle cx="783" cy="160" r="5"/>
+    <circle cx="913" cy="160" r="5"/>
+    <circle cx="1048" cy="160" r="5"/>
+    <circle cx="922" cy="86" r="5"/>
+    <circle cx="1062" cy="234" r="5"/>
+  </g>
+  <text x="70" y="100" fill="#85ead8" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="700" letter-spacing="5">DILEE / ERP</text>
+  <text x="66" y="178" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="56" font-weight="700" letter-spacing="-2">One order. One system.</text>
+  <text x="70" y="220" fill="#b9d8dd" font-family="Arial, Helvetica, sans-serif" font-size="19">An operating backbone for order-driven manufacturing.</text>
+  <path d="M70 252h404" stroke="#69cfc0" stroke-opacity=".45"/>
+  <text x="70" y="278" fill="#83e1d0" font-family="Arial, Helvetica, sans-serif" font-size="13" letter-spacing="2">SALES  /  PROCUREMENT  /  PRODUCTION  /  INVENTORY  /  FINANCE</text>
+</svg>
