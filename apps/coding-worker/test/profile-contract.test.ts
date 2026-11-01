@@ -42,9 +42,13 @@ test('declares the host orchestrator and two child presets', () => {
   assert.match(topLevelEntry('preset-tool-validator'), /id: tool-validator/)
 })
 
-test('gives the orchestrator only the two fixed delegation targets', () => {
-  assert.match(topLevelEntry('build-tool'), /toolName: build_tool[\s\S]*agentPreset: tool-builder/)
-  assert.match(topLevelEntry('validate-tool'), /toolName: validate_tool[\s\S]*agentPreset: tool-validator/)
+test('gives the orchestrator only the controlled coding-job actions', () => {
+  assert.match(topLevelEntry('build-tool'), /disabled: true/)
+  assert.match(topLevelEntry('validate-tool'), /disabled: true/)
+  assert.match(
+    topLevelEntry('coding-job-policy'),
+    /controlled-coding-tools\.mjs[\s\S]*maxReworks: 1/,
+  )
 })
 
 test('prevents builder and validator presets from delegating', () => {
