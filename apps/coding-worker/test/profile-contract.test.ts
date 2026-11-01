@@ -27,28 +27,24 @@ assert.equal(dump.status, 0, dump.stderr)
 const config = dump.stdout.replaceAll('\r\n', '\n')
 
 function topLevelEntry(id: string): string {
-  const marker = `- id: ${id}\n`
-  const start = config.indexOf(marker)
-  assert.notEqual(start, -1, `missing top-level entry ${id}`)
-  const end = config.indexOf('\n- id: ', start + marker.length)
+  const marker = `\n- id: ${id}\n`
+  const markerStart = config.indexOf(marker)
+  assert.notEqual(markerStart, -1, `missing top-level entry ${id}`)
+  const start = markerStart + 1
+  const end = config.indexOf('\n- id: ', start + marker.length - 1)
   return config.slice(start, end === -1 ? undefined : end)
 }
 
-test('declares the orchestrator, builder, and validator presets', () => {
-  assert.match(topLevelEntry('agent-preset-registry'), /default: coding-orchestrator/)
-  assert.match(topLevelEntry('preset-coding-orchestrator'), /id: coding-orchestrator/)
+test('declares the host orchestrator and two child presets', () => {
+  assert.match(topLevelEntry('system-prompt'), /ERP Tool Coding Orchestrator/)
+  assert.match(topLevelEntry('agent-preset-registry'), /default: tool-builder/)
   assert.match(topLevelEntry('preset-tool-builder'), /id: tool-builder/)
   assert.match(topLevelEntry('preset-tool-validator'), /id: tool-validator/)
 })
 
 test('gives the orchestrator only the two fixed delegation targets', () => {
-  const orchestrator = topLevelEntry('preset-coding-orchestrator')
-  assert.match(orchestrator, /toolName: build_tool[\s\S]*agentPreset: tool-builder/)
-  assert.match(orchestrator, /toolName: validate_tool[\s\S]*agentPreset: tool-validator/)
-  assert.deepEqual([...orchestrator.matchAll(/toolName: (\S+)/g)].map(match => match[1]), [
-    'build_tool',
-    'validate_tool',
-  ])
+  assert.match(topLevelEntry('build-tool'), /toolName: build_tool[\s\S]*agentPreset: tool-builder/)
+  assert.match(topLevelEntry('validate-tool'), /toolName: validate_tool[\s\S]*agentPreset: tool-validator/)
 })
 
 test('prevents builder and validator presets from delegating', () => {
