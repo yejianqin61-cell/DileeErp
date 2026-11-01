@@ -6,7 +6,13 @@ import {
 
 import { assertInstalledRuntimeContract } from './runtime-contract.ts'
 
-export type CodingRuntime = Pick<DeepSeekHarness, 'start' | 'run' | 'close'>
+export interface CodingRuntimeClient {
+  request(method: string, params?: object): Promise<unknown>
+}
+
+export type CodingRuntime = Pick<DeepSeekHarness, 'start' | 'run' | 'close'> & {
+  readonly client: CodingRuntimeClient
+}
 export type CodingRuntimeFactory = (options: DeepSeekHarnessOptions) => CodingRuntime
 
 export interface CodingRuntimeConfig {
@@ -66,7 +72,11 @@ export async function runCodingBatch(
 ): Promise<CodingBatchResult> {
   const run = await runWithCodingRuntime(
     request,
-    runtime => runtime.run(request.prompt, { sessionId: request.parentSessionId }),
+    async (runtime) => {
+      const result = await runtime.run(request.prompt, { sessionId: request.parentSessionId })
+      await runtime.client.request('session/wait', { sessionId: request.parentSessionId })
+      return result
+    },
     factory,
   )
   return {
