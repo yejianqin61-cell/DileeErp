@@ -24,12 +24,14 @@ const dump = spawnSync(
 rmSync(dshHome, { recursive: true, force: true })
 
 assert.equal(dump.status, 0, dump.stderr)
-const config = dump.stdout
+const config = dump.stdout.replaceAll('\r\n', '\n')
 
 function topLevelEntry(id: string): string {
-  const match = new RegExp(`^- id: ${id}\\r?\\n[\\s\\S]*?(?=^- id: |$)`, 'm').exec(config)
-  assert.ok(match, `missing top-level entry ${id}`)
-  return match[0]
+  const marker = `- id: ${id}\n`
+  const start = config.indexOf(marker)
+  assert.notEqual(start, -1, `missing top-level entry ${id}`)
+  const end = config.indexOf('\n- id: ', start + marker.length)
+  return config.slice(start, end === -1 ? undefined : end)
 }
 
 test('declares the orchestrator, builder, and validator presets', () => {
