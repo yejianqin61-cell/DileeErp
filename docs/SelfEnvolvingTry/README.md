@@ -12,6 +12,7 @@
 | [SDK 与子 Agent 源码核查](deepseek-harness-sdk-2026-10-29.md) | SDK、profile、子 Agent、取消和沙箱的源码证据 |
 | [根 Agent、父会话与 Activation 核查](deepseek-harness-root-parent-activation-2026-10-30.md) | Coding Orchestrator 母 Agent、Parent Session、返工和 Activation 语义 |
 | [阶段一架构、验证与施工计划](phase1-architecture-validation-build-plan-2026-10-31.md) | 流程图、调用链、风险、待验证点与 12 工作日证据关口 |
+| [阶段一 R-1/R-2 批次总结](phase1-r1-r2-summary-2026-11-01.md) | 独立 Worker、母 Agent 双子会话、工具隔离证据与未完成项 |
 
 执行中的任务批次见 [阶段一 R-1/R-2 任务](tasks/phase1-r1-r2/README.md)。
 
