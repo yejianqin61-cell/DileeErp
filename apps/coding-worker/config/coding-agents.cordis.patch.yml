@@ -1,0 +1,100 @@
+# Generic delegation is disabled at the Host layer. The orchestrator preset
+# adds back only the two role-bound spawn tools below.
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+
+- insert:
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: coding-orchestrator
+
+    - id: preset-coding-orchestrator
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: coding-orchestrator
+        name: Coding Orchestrator
+        description: Split tool capabilities and coordinate Builder and Validator.
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                You are the ERP Tool Coding Orchestrator. Split each approved tool build request into
+                implementation and independent validation work. Delegate implementation only through
+                build_tool and validation only through validate_tool. Do not edit the ERP directly.
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'
+          - id: build-tool
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: build_tool
+              agentPreset: tool-builder
+              maxDepth: 1
+          - id: validate-tool
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: validate_tool
+              agentPreset: tool-validator
+              maxDepth: 1
+
+    - id: preset-tool-builder
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: tool-builder
+        name: Tool Builder
+        description: Implement one ERP business-agent tool in the candidate workspace.
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                You are the ERP Tool Builder. Implement only the assigned tool in the candidate
+                workspace, run its focused tests, and report the changed files and test evidence.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+
+    - id: preset-tool-validator
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: tool-validator
+        name: Tool Validator
+        description: Review one candidate tool and run adversarial and permission tests.
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                You are the ERP Tool Validator. Independently review the assigned candidate revision,
+                add adversarial and permission-isolation tests, run them, and report pass or rejection
+                with reproducible evidence. Do not delegate work to another Agent.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
