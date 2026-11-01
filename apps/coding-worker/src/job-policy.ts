@@ -18,9 +18,12 @@ export type JobPolicyErrorCode =
   | 'validation-not-complete'
 
 export class JobPolicyError extends Error {
-  constructor(readonly code: JobPolicyErrorCode) {
+  readonly code: JobPolicyErrorCode
+
+  constructor(code: JobPolicyErrorCode) {
     super(code)
     this.name = 'JobPolicyError'
+    this.code = code
   }
 }
 
@@ -63,12 +66,14 @@ const sha256Pattern = /^[a-f0-9]{64}$/
 
 export class CodingJobPolicy {
   private readonly capabilities = new Map<string, CapabilityState>()
+  private readonly options: CodingJobPolicyOptions
   private submitted = false
 
-  constructor(private readonly options: CodingJobPolicyOptions) {
+  constructor(options: CodingJobPolicyOptions) {
     if (!Number.isSafeInteger(options.maxReworks) || options.maxReworks < 0) {
       throw new JobPolicyError('invalid-rework-budget')
     }
+    this.options = options
   }
 
   declareCapabilities(capabilityIds: readonly string[]): void {

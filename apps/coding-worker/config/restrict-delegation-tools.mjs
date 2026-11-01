@@ -1,5 +1,12 @@
 const childPresets = new Set(['tool-builder', 'tool-validator'])
-const delegationTools = ['build_tool', 'validate_tool']
+const delegationTools = [
+  'declare_capabilities',
+  'build_tool',
+  'validate_tool',
+  'record_validation',
+  'revise_tool',
+  'submit_candidate',
+]
 
 export const inject = ['agentPresets', 'tools']
 

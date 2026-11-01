@@ -36,6 +36,7 @@ test('continues the original Builder and accepts only the revalidated revision',
       DILEE_PARENT_SESSION_ID: parentSessionId,
       DILEE_ACTIVATION_LOG_PATH: tracePath,
     },
+    initializeTimeoutMs: 30_000,
     provider: 'dilee-rework-scripted',
     model: 'r3-rework-script',
   })
@@ -59,7 +60,7 @@ test('continues the original Builder and accepts only the revalidated revision',
   assert.match(completionEvidence, /VALIDATOR_REJECTED_H1/)
   assert.match(completionEvidence, /BUILDER_REVISION_H2/)
   assert.match(completionEvidence, /VALIDATOR_APPROVED_H2/)
-  assert.match(JSON.stringify(result.run.events), /"name":"send_message"/)
+  assert.match(JSON.stringify(result.run.events), /"name":"revise_tool"/)
 
   const trace = await readActivationTrace(tracePath)
   const starts = trace.filter(record => record.event === 'start')

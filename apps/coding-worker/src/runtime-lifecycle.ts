@@ -20,6 +20,7 @@ export interface CodingRuntimeConfig {
   dshHome: string
   patches: string[]
   environment: NodeJS.ProcessEnv
+  initializeTimeoutMs?: number
   provider?: string
   model?: string
 }
@@ -46,6 +47,9 @@ function runtimeOptions(config: CodingRuntimeConfig): DeepSeekHarnessOptions {
     dshHome: config.dshHome,
     patches: config.patches,
     env: config.environment,
+    ...config.initializeTimeoutMs === undefined
+      ? {}
+      : { initializeTimeoutMs: config.initializeTimeoutMs },
     ...config.provider === undefined ? {} : { provider: config.provider },
     ...config.model === undefined ? {} : { model: config.model },
   }

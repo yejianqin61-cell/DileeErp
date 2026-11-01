@@ -37,6 +37,7 @@ test('records paired Activation start and end events', { timeout: 30_000 }, asyn
       DILEE_PARENT_SESSION_ID: parentSessionId,
       DILEE_ACTIVATION_LOG_PATH: tracePath,
     },
+    initializeTimeoutMs: 30_000,
     provider: 'dilee-scripted',
     model: 'r3-trace-script',
   })
@@ -78,6 +79,7 @@ test('fails the trace patch when the Worker supplies no log path', { timeout: 30
       ...environment,
       DILEE_PARENT_SESSION_ID: parentSessionId,
     },
+    initializeTimeoutMs: 30_000,
     provider: 'dilee-scripted',
     model: 'r3-trace-script',
   }), /DILEE_ACTIVATION_LOG_PATH/)

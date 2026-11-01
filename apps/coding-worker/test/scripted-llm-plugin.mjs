@@ -2,6 +2,8 @@ import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
 
 const PROVIDER = 'dilee-scripted'
 const parentSessionId = process.env.DILEE_PARENT_SESSION_ID
+const capabilityId = 'packaging-output'
+const h1 = '1'.repeat(64)
 let phase = 0
 let builderProbeSent = false
 
@@ -59,44 +61,64 @@ class ScriptedAdapter extends LlmAdapter {
       throw new Error(`child session received a delegation tool: ${[...toolNames].join(', ')}`)
     }
     let chunks
+    let completedPhase
 
     if (isParent && phase === 0) {
       phase = 1
+      chunks = toolCallResponse('declare-capability', 'declare_capabilities', {
+        capability_ids: [capabilityId],
+      })
+    } else if (isParent && phase === 1) {
+      phase = 2
       chunks = toolCallResponse('build-call', 'build_tool', {
+        capability_id: capabilityId,
         description: 'Build packaging output tool',
         prompt: 'Implement the requested packaging-output query tool and report focused test evidence.',
       })
-    } else if (isParent && phase <= 2) {
-      await waitForPhase(2)
-      phase = 3
+    } else if (isParent && phase <= 3) {
+      await waitForPhase(3)
+      phase = 4
       chunks = toolCallResponse('validate-call', 'validate_tool', {
+        capability_id: capabilityId,
+        code_hash: h1,
         description: 'Validate packaging output tool',
         prompt: 'Independently review the Builder result and verify adversarial permission isolation.',
       })
-    } else if (isParent && phase <= 4) {
-      await waitForPhase(4)
-      phase = 5
+    } else if (isParent && phase <= 5) {
+      await waitForPhase(5)
+      phase = 6
+      chunks = toolCallResponse('record-validation', 'record_validation', {
+        capability_id: capabilityId,
+        code_hash: h1,
+        decision: 'approved',
+      })
+    } else if (isParent && phase === 6) {
+      phase = 7
+      chunks = toolCallResponse('submit-candidate', 'submit_candidate', {})
+    } else if (isParent && phase === 7) {
+      phase = 8
       chunks = textResponse('ORCHESTRATOR_COMPLETE')
-    } else if (!isParent && phase === 1 && !builderProbeSent) {
+    } else if (!isParent && phase === 2 && !builderProbeSent) {
       builderProbeSent = true
       chunks = toolCallResponse('forged-build-call', 'build_tool', {
         description: 'Unauthorized nested build',
         prompt: 'This call must be rejected by the child Agent tool boundary.',
       })
-    } else if (!isParent && phase === 1) {
+    } else if (!isParent && phase === 2) {
       if (!hasUnknownToolResult(options.messages, 'build_tool')) {
         throw new Error('forged child delegation did not return UNKNOWN_TOOL')
       }
       chunks = textResponse('BUILDER_COMPLETE')
-    } else if (!isParent && phase === 3) {
+      completedPhase = 3
+    } else if (!isParent && phase === 4) {
       chunks = textResponse('VALIDATOR_APPROVED')
+      completedPhase = 5
     } else {
       throw new Error(`unexpected scripted request for ${String(options.sessionId)} at phase ${phase}`)
     }
 
     for (const chunk of chunks) yield chunk
-    if (!isParent && phase === 1 && builderProbeSent && chunks[0]?.blockType === 'text') phase = 2
-    if (!isParent && phase === 3) phase = 4
+    if (completedPhase !== undefined) phase = completedPhase
   }
 }
 

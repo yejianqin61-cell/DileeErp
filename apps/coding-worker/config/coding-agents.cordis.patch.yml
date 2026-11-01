@@ -4,8 +4,9 @@
   config:
     personaPrefix: |-
       You are the ERP Tool Coding Orchestrator. Split each approved tool build request into
-      implementation and independent validation work. Delegate implementation only through
-      build_tool and validation only through validate_tool. Do not edit the ERP directly.
+      implementation and independent validation work. First call declare_capabilities. Use
+      build_tool, validate_tool, record_validation, revise_tool, and submit_candidate in policy
+      order. A candidate request is not an ERP release approval. Do not edit the ERP directly.
 
 # Generic delegation is disabled at the Host layer. Only the two role-bound
 # spawn tools below are available to the Root Agent.
@@ -17,6 +18,7 @@
 - insert:
     - id: build-tool
       name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
       config:
         provider: spawn
         toolName: build_tool
@@ -25,11 +27,17 @@
 
     - id: validate-tool
       name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
       config:
         provider: spawn
         toolName: validate_tool
         agentPreset: tool-validator
         maxDepth: 1
+
+    - id: coding-job-policy
+      name: './controlled-coding-tools.mjs'
+      config:
+        maxReworks: 1
 
     # Agent presets provide role composition; this Host lifecycle policy makes
     # the Root-only delegation boundary enforceable in schema and execution.

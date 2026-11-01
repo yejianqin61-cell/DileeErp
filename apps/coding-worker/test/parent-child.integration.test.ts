@@ -28,6 +28,7 @@ test('runs Builder and Validator under one fixed parent Session', { timeout: 30_
       ...process.env,
       DILEE_PARENT_SESSION_ID: parentSessionId,
     },
+    initializeTimeoutMs: 30_000,
     provider: 'dilee-scripted',
     model: 'r2-script',
   })
