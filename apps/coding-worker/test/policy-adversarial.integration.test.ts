@@ -10,6 +10,13 @@ import { CodingBatchTimeoutError, runCodingBatch } from '../src/runtime-lifecycl
 const packageRoot = dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
 const codingPatch = join(packageRoot, 'config', 'coding-agents.cordis.patch.yml')
 
+function toolResultTexts(events: Awaited<ReturnType<typeof runCodingBatch>>['run']['events']): string[] {
+  return events.flatMap((event) => {
+    if (event.type !== 'tool/result') return []
+    return event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : [])
+  })
+}
+
 test('submits the latest approved revision through the controlled actions', { timeout: 40_000 }, async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'dilee-policy-valid-'))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -29,8 +36,9 @@ test('submits the latest approved revision through the controlled actions', { ti
   })
 
   assert.equal(result.run.finalResponse, 'ORCHESTRATOR_COMPLETE')
-  assert.match(JSON.stringify(result.run.events), /"capabilityId":"packaging-output"/)
-  assert.match(JSON.stringify(result.run.events), new RegExp(`"codeHash":"${'1'.repeat(64)}"`))
+  assert.ok(toolResultTexts(result.run.events).includes(JSON.stringify({
+    capabilities: [{ capabilityId: 'packaging-output', codeHash: '1'.repeat(64) }],
+  })))
 })
 
 test('rejects out-of-order, stale-revision, early-submit, and over-budget actions', { timeout: 40_000 }, async (context) => {

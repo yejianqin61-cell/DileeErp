@@ -1,0 +1,7 @@
+- id: sdk-jsonrpc-server
+  inject: [sdkAppStartup, loader, dileePolicyAdversarialLlm]
+
+- insert:
+    - id: dilee-policy-adversarial-llm
+      name: './policy-adversarial-llm-plugin.mjs'
+

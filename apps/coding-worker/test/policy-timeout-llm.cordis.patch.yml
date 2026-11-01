@@ -1,0 +1,7 @@
+- id: sdk-jsonrpc-server
+  inject: [sdkAppStartup, loader, dileePolicyTimeoutLlm]
+
+- insert:
+    - id: dilee-policy-timeout-llm
+      name: './policy-timeout-llm-plugin.mjs'
+

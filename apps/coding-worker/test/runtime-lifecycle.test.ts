@@ -155,6 +155,7 @@ test('starts and closes the real sdk profile without a model request', async (co
       dshHome,
       patches: [],
       environment: { ...process.env },
+      initializeTimeoutMs: 30_000,
     },
     async () => 'initialized',
   )
