@@ -1,0 +1,6 @@
+- id: sdk-jsonrpc-server
+  inject: [sdkAppStartup, loader, dileeScriptedLlm]
+
+- insert:
+    - id: dilee-scripted-llm
+      name: './scripted-llm-plugin.mjs'

@@ -26,7 +26,6 @@ test('runs Builder and Validator under one fixed parent Session', { timeout: 30_
     ],
     environment: {
       ...process.env,
-      DILEE_SCRIPTED_LLM_PLUGIN: join(packageRoot, 'test', 'scripted-llm-plugin.mjs'),
       DILEE_PARENT_SESSION_ID: parentSessionId,
     },
     provider: 'dilee-scripted',
@@ -35,7 +34,11 @@ test('runs Builder and Validator under one fixed parent Session', { timeout: 30_
 
   assert.equal(result.parentSessionId, parentSessionId)
   assert.equal(result.run.sessionId, parentSessionId)
-  assert.equal(result.run.finalResponse, 'ORCHESTRATOR_COMPLETE')
+  assert.equal(
+    result.run.finalResponse,
+    'ORCHESTRATOR_COMPLETE',
+    JSON.stringify({ events: result.run.events, notifications: result.run.notifications }),
+  )
 
   const started = result.run.notifications.filter(item => item.method === 'subagent.started')
   const finished = result.run.notifications.filter(item => item.method === 'subagent.finished')
@@ -52,6 +55,9 @@ test('runs Builder and Validator under one fixed parent Session', { timeout: 30_
   const evidence = JSON.stringify(finished.map(item => item.params.lastAssistantMessage))
   assert.match(evidence, /BUILDER_COMPLETE/)
   assert.match(evidence, /VALIDATOR_APPROVED/)
+
+  const childEvents = JSON.stringify(result.run.notifications)
+  assert.match(childEvents, /unknown tool \\"build_tool\\"/)
 
   const parentEvents = JSON.stringify(result.run.events)
   assert.match(parentEvents, /"name":"build_tool"/)

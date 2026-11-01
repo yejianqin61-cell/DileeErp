@@ -53,4 +53,15 @@
 | 2 | Builder 完成 | 父 Session 收到 Builder 结果并继续 | SDK 通知流 |
 | 3 | Validator 完成 | 父 Session 收到 Validator 结果并结束 | SDK 通知流 |
 | 4 | 固定父 Session ID | 所有后代通知关联同一父 Session | SDK 通知流 |
+| 5 | Builder 伪造 `build_tool` 调用 | 子 Agent schema 不暴露委派工具，执行返回 `UNKNOWN_TOOL`，不产生第三个子 Agent | Agent scoped tool restriction |
+
+## 5. 完成证据
+
+- 固定父 Session：`coding-parent-r2-integration`，SDK 返回的 Session ID 与请求一致。
+- 通知流：2 个 `subagent.started`、2 个 `subagent.finished`；两个子 Session ID 不同，且都关联固定父 Session。
+- 子会话结果：Builder 为 `BUILDER_COMPLETE`，Validator 为 `VALIDATOR_APPROVED`；母 Agent 为 `ORCHESTRATOR_COMPLETE`。
+- 工具隔离：Builder 与 Validator 的模型请求均不含 `build_tool`、`validate_tool`、`subagent`、`subagent_fork`。Builder 伪造 `build_tool` 调用后收到 `unknown tool`，没有启动额外子 Agent。
+- 实现接缝：Host 在公开的 `agent/created` 生命周期中识别 Builder/Validator preset，并在对应 `agent.ctx` 上调用 DSH 的 `tools.restrict()`；Root Agent 的两个定向入口不受影响。
+- 运行方式：真实 SDK、真实 Agent loop、真实 spawn Activation；脚本 LLM 仅替代外部模型，不调用网络或业务数据。
+- 验收结果：Worker 完整测试 13/13 通过，类型检查通过，Harness 配置装载与 dump 通过；集成链单次运行约 6 秒。
 

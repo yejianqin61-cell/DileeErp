@@ -14,6 +14,8 @@ export interface CodingRuntimeConfig {
   dshHome: string
   patches: string[]
   environment: NodeJS.ProcessEnv
+  provider?: string
+  model?: string
 }
 
 export interface CodingBatchRequest extends CodingRuntimeConfig {
@@ -38,6 +40,8 @@ function runtimeOptions(config: CodingRuntimeConfig): DeepSeekHarnessOptions {
     dshHome: config.dshHome,
     patches: config.patches,
     env: config.environment,
+    ...config.provider === undefined ? {} : { provider: config.provider },
+    ...config.model === undefined ? {} : { model: config.model },
   }
 }
 

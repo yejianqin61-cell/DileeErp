@@ -31,6 +31,11 @@
         agentPreset: tool-validator
         maxDepth: 1
 
+    # Agent presets provide role composition; this Host lifecycle policy makes
+    # the Root-only delegation boundary enforceable in schema and execution.
+    - id: restrict-child-delegation-tools
+      name: './restrict-delegation-tools.mjs'
+
     - id: agent-preset-registry
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
