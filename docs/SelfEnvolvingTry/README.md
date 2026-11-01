@@ -14,8 +14,10 @@
 | [阶段一架构、验证与施工计划](phase1-architecture-validation-build-plan-2026-10-31.md) | 流程图、调用链、风险、待验证点与 12 工作日证据关口 |
 | [阶段一 R-1/R-2 批次总结](phase1-r1-r2-summary-2026-11-01.md) | 独立 Worker、母 Agent 双子会话、工具隔离证据与未完成项 |
 | [阶段一 R-3 批次总结](phase1-r3-summary-2026-11-01.md) | 原 Builder 返工、Activation 轮次、哈希门禁与全树收口证据 |
+| [阶段一 R-4 批次总结](phase1-r4-summary-2026-11-01.md) | Cordis 动作规则、返工预算、Worker 截止时间与对抗证据 |
 
 执行中的任务批次见 [阶段一 R-1/R-2 任务](tasks/phase1-r1-r2/README.md)。
 `R-3 失败返工可追溯` 的施工批次见 [阶段一 R-3 任务](tasks/phase1-r3/README.md)。
+`R-4 Cordis 与 Worker 强制规则` 的施工批次见 [阶段一 R-4 任务](tasks/phase1-r4/README.md)。
 
 上游 DeepSeekHarness 源码固定在提交 `f3803c96974ad4a94195fb97e5c637e9c2a3afe3`，本地克隆位于 `tmp/deepseek-harness`。本目录文档记录设计和验证计划；运行实验结果应追加到对应日期的 `docs/log/`。
