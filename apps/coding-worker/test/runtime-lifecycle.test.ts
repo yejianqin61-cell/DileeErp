@@ -25,25 +25,39 @@ const runResult: RunResult = {
   notifications: [],
 }
 
-function fakeRuntime(overrides: Partial<CodingRuntime> = {}): CodingRuntime {
+type WaitableRuntime = CodingRuntime & {
+  client: { request(method: string, params?: object): Promise<unknown> }
+}
+
+function fakeRuntime(overrides: Partial<WaitableRuntime> = {}): WaitableRuntime {
   return {
     start: async () => undefined,
     run: async () => runResult,
+    client: { request: async () => ({}) },
     close: async () => undefined,
     ...overrides,
   }
 }
 
-test('runs one request on the fixed parent session and closes once', async () => {
+test('runs, waits for the fixed parent Session tree, then closes once', async () => {
   let receivedOptions: DeepSeekHarnessOptions | undefined
   let receivedSessionId: string | undefined
-  let closeCount = 0
+  const calls: string[] = []
   const runtime = fakeRuntime({
     run: async (_prompt, options) => {
+      calls.push('run')
       receivedSessionId = options?.sessionId
       return runResult
     },
-    close: async () => { closeCount++ },
+    client: {
+      request: async (method, params) => {
+        calls.push('wait')
+        assert.equal(method, 'session/wait')
+        assert.deepEqual(params, { sessionId: 'parent-batch-1' })
+        return {}
+      },
+    },
+    close: async () => { calls.push('close') },
   })
 
   const result = await runCodingBatch(
@@ -57,7 +71,7 @@ test('runs one request on the fixed parent session and closes once', async () =>
   assert.equal(result.run, runResult)
   assert.equal(result.parentSessionId, 'parent-batch-1')
   assert.equal(receivedSessionId, 'parent-batch-1')
-  assert.equal(closeCount, 1)
+  assert.deepEqual(calls, ['run', 'wait', 'close'])
   assert.deepEqual(receivedOptions, {
     profile: 'sdk',
     cwd: config.workspace,
@@ -71,8 +85,29 @@ test('runs one request on the fixed parent session and closes once', async () =>
 test('propagates a request error after closing once', async () => {
   const failure = new Error('request failed')
   let closeCount = 0
+  let waitCount = 0
   const runtime = fakeRuntime({
     run: async () => { throw failure },
+    client: { request: async () => { waitCount++; return {} } },
+    close: async () => { closeCount++ },
+  })
+
+  await assert.rejects(
+    runCodingBatch(
+      { ...config, batchId: 'batch-1', parentSessionId: 'parent-batch-1', prompt: 'build' },
+      () => runtime,
+    ),
+    error => error === failure,
+  )
+  assert.equal(waitCount, 0)
+  assert.equal(closeCount, 1)
+})
+
+test('propagates a Session tree wait error after closing once', async () => {
+  const failure = new Error('tree wait failed')
+  let closeCount = 0
+  const runtime = fakeRuntime({
+    client: { request: async () => { throw failure } },
     close: async () => { closeCount++ },
   })
 
