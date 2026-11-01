@@ -1,0 +1,7 @@
+- id: sdk-jsonrpc-server
+  inject: [sdkAppStartup, loader, dileeScriptedLlm]
+
+- insert:
+    - id: dilee-rework-scripted-llm
+      name: './rework-scripted-llm-plugin.mjs'
+

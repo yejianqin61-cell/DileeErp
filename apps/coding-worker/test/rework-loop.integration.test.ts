@@ -43,16 +43,16 @@ test('continues the original Builder and accepts only the revalidated revision',
   assert.equal(result.run.finalResponse, 'ORCHESTRATOR_COMPLETE_H2')
   const started = result.run.notifications.filter(item => item.method === 'subagent.started')
   const finished = result.run.notifications.filter(item => item.method === 'subagent.finished')
-  assert.equal(started.length, 3)
+  assert.equal(started.length, 4)
   assert.equal(finished.length, 4)
 
   const builderFinishes = finished.filter(item =>
     JSON.stringify(item.params.lastAssistantMessage).includes('BUILDER_REVISION_H'))
   assert.equal(builderFinishes.length, 2)
   const builderSessionId = builderFinishes[0]?.params.childSessionId
-  assert.ok(builderSessionId)
+  if (typeof builderSessionId !== 'string') assert.fail('Builder completion carried no Session ID')
   assert.ok(builderFinishes.every(item => item.params.childSessionId === builderSessionId))
-  assert.equal(started.filter(item => item.params.childSessionId === builderSessionId).length, 1)
+  assert.equal(started.filter(item => item.params.childSessionId === builderSessionId).length, 2)
 
   const completionEvidence = JSON.stringify(finished.map(item => item.params.lastAssistantMessage))
   assert.match(completionEvidence, /BUILDER_REVISION_H1/)
@@ -79,8 +79,8 @@ test('continues the original Builder and accepts only the revalidated revision',
     JSON.stringify(item.params.lastAssistantMessage).includes('H1'))?.params.childSessionId
   const validatorH2Id = validatorFinishes.find(item =>
     JSON.stringify(item.params.lastAssistantMessage).includes('H2'))?.params.childSessionId
-  assert.ok(validatorH1Id)
-  assert.ok(validatorH2Id)
+  if (typeof validatorH1Id !== 'string') assert.fail('h1 Validator carried no Session ID')
+  if (typeof validatorH2Id !== 'string') assert.fail('h2 Validator carried no Session ID')
   const validatorH1Run = starts.find(record => record.childSessionId === validatorH1Id)
   const validatorH2Run = starts.find(record => record.childSessionId === validatorH2Id)
   assert.ok(validatorH1Run)
