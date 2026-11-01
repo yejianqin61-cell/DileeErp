@@ -6,7 +6,7 @@
 
 | 顺序 | 任务 | 状态 |
 | --- | --- | --- |
-| 1 | [锁定 Worker 运行契约](task-1-lock-runtime-contract.md) | 待实施 |
+| 1 | [锁定 Worker 运行契约](task-1-lock-runtime-contract.md) | 已完成 |
 | 2 | [打通 SDK 生命周期](task-2-sdk-runtime-lifecycle.md) | 待实施 |
 | 3 | [组合三类 Agent preset](task-3-agent-presets-and-delegation.md) | 待实施 |
 | 4 | [验证父会话双子 Agent](task-4-parent-child-integration.md) | 待实施 |
