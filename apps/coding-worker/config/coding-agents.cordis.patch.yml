@@ -1,46 +1,40 @@
-# Generic delegation is disabled at the Host layer. The orchestrator preset
-# adds back only the two role-bound spawn tools below.
+# The SDK server creates its Root Agent without a preset. Keep the mother Agent
+# in the supported Host plane and give child Agents explicit presets.
+- id: system-prompt
+  config:
+    personaPrefix: |-
+      You are the ERP Tool Coding Orchestrator. Split each approved tool build request into
+      implementation and independent validation work. Delegate implementation only through
+      build_tool and validation only through validate_tool. Do not edit the ERP directly.
+
+# Generic delegation is disabled at the Host layer. Only the two role-bound
+# spawn tools below are available to the Root Agent.
 - id: tool-subagent
   disabled: true
 - id: tool-subagent-fork
   disabled: true
 
 - insert:
+    - id: build-tool
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: build_tool
+        agentPreset: tool-builder
+        maxDepth: 1
+
+    - id: validate-tool
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: validate_tool
+        agentPreset: tool-validator
+        maxDepth: 1
+
     - id: agent-preset-registry
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
-        default: coding-orchestrator
-
-    - id: preset-coding-orchestrator
-      name: '@deepseek-ai/dsh-agent-preset'
-      config:
-        id: coding-orchestrator
-        name: Coding Orchestrator
-        description: Split tool capabilities and coordinate Builder and Validator.
-        plugins:
-          - id: persona
-            name: '@deepseek-ai/dsh-persona'
-            config:
-              prefix: |-
-                You are the ERP Tool Coding Orchestrator. Split each approved tool build request into
-                implementation and independent validation work. Delegate implementation only through
-                build_tool and validation only through validate_tool. Do not edit the ERP directly.
-          - id: tool-subagent-control
-            name: '@deepseek-ai/dsh-tool-subagent-control'
-          - id: build-tool
-            name: '@deepseek-ai/dsh-tool-subagent'
-            config:
-              provider: spawn
-              toolName: build_tool
-              agentPreset: tool-builder
-              maxDepth: 1
-          - id: validate-tool
-            name: '@deepseek-ai/dsh-tool-subagent'
-            config:
-              provider: spawn
-              toolName: validate_tool
-              agentPreset: tool-validator
-              maxDepth: 1
+        default: tool-builder
 
     - id: preset-tool-builder
       name: '@deepseek-ai/dsh-agent-preset'
@@ -63,6 +57,8 @@
             name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-fs-search
             name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -92,6 +88,8 @@
             name: '@deepseek-ai/dsh-tool-fs'
           - id: tool-fs-search
             name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
