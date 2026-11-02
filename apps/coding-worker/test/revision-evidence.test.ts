@@ -23,6 +23,18 @@ const validation = (
   decision,
   validatorRunId: 'validator-run',
   validatorSessionId: 'validator-session',
+  reviewedBuilderRunId: 'builder-run',
+  reviewedBuilderSessionId: 'builder-session',
+})
+
+test('rejects evidence that reviewed another Builder session', () => {
+  assert.deepEqual(
+    evaluateRevisionEvidence(revision('packaging-output', h2), {
+      ...validation('packaging-output', h2, 'approved'),
+      reviewedBuilderSessionId: 'older-builder-session',
+    }),
+    { accepted: false, reason: 'builder-session-mismatch' },
+  )
 })
 
 test('rejects a validation rejection for the current revision', () => {

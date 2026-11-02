@@ -11,6 +11,8 @@ export interface ValidationEvidence {
   readonly decision: 'approved' | 'rejected'
   readonly validatorRunId: string
   readonly validatorSessionId: string
+  readonly reviewedBuilderRunId: string
+  readonly reviewedBuilderSessionId: string
 }
 
 export type RevisionEvidenceDecision =
@@ -21,6 +23,7 @@ export type RevisionEvidenceDecision =
       | 'validation-missing'
       | 'capability-mismatch'
       | 'revision-mismatch'
+      | 'builder-session-mismatch'
       | 'validation-rejected'
   }
 
@@ -34,6 +37,10 @@ export function evaluateRevisionEvidence(
   }
   if (validation.codeHash !== revision.codeHash) {
     return { accepted: false, reason: 'revision-mismatch' }
+  }
+  if (validation.reviewedBuilderRunId !== revision.builderRunId
+    || validation.reviewedBuilderSessionId !== revision.builderSessionId) {
+    return { accepted: false, reason: 'builder-session-mismatch' }
   }
   if (validation.decision === 'rejected') {
     return { accepted: false, reason: 'validation-rejected' }

@@ -99,6 +99,8 @@ test('continues the original Builder and accepts only the revalidated revision',
     decision: 'approved',
     validatorRunId: validatorH1Run.runId,
     validatorSessionId: validatorH1Id,
+    reviewedBuilderRunId: builderRuns[0]!.runId,
+    reviewedBuilderSessionId: builderSessionId,
   }), { accepted: false, reason: 'revision-mismatch' })
   assert.deepEqual(evaluateRevisionEvidence(currentRevision, {
     capabilityId: 'packaging-output',
@@ -106,5 +108,7 @@ test('continues the original Builder and accepts only the revalidated revision',
     decision: 'approved',
     validatorRunId: validatorH2Run.runId,
     validatorSessionId: validatorH2Id,
+    reviewedBuilderRunId: builderRuns[1]!.runId,
+    reviewedBuilderSessionId: builderSessionId,
   }), { accepted: true })
 })
