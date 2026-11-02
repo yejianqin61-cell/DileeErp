@@ -36,15 +36,18 @@ test('runs isolated capabilities concurrently and returns request order', async 
   let active = 0
   let maxActive = 0
   const requests = [capability('slow'), capability('fast')]
+  const harnessHomes: string[] = []
   const results = await runParallelCodingBuilds(common, requests, factoryFor(async options => {
     active++
     maxActive = Math.max(maxActive, active)
+    harnessHomes.push(options.dshHome ?? '')
     await new Promise(resolve => setTimeout(resolve, options.cwd?.endsWith('slow') ? 20 : 1))
     active--
     return result(options.cwd ?? '')
   }))
 
   assert.equal(maxActive, 2)
+  assert.equal(new Set(harnessHomes).size, 2)
   assert.deepEqual(results.map(item => item.capabilityId), ['slow', 'fast'])
   assert.deepEqual(results.map(item => item.run.finalResponse), requests.map(item => item.workspace))
 })
@@ -52,6 +55,7 @@ test('runs isolated capabilities concurrently and returns request order', async 
 test('rejects empty, duplicate capability IDs, and shared workspaces', async () => {
   await assert.rejects(runParallelCodingBuilds(common, [], factoryFor(async () => result('x'))), /at least one/)
   await assert.rejects(runParallelCodingBuilds(common, [capability('same'), capability('same', 'C:\\candidate\\other')], factoryFor(async () => result('x'))), /duplicate capabilityId/)
+  await assert.rejects(runParallelCodingBuilds(common, [capability('../escape')], factoryFor(async () => result('x'))), /safe path segment/)
   await assert.rejects(runParallelCodingBuilds(common, [capability('one', 'C:\\candidate\\same'), capability('two', 'C:\\candidate\\same')], factoryFor(async () => result('x'))), /workspace/)
 })
 

@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import {
   runCodingBatch,
@@ -23,6 +23,12 @@ export interface ParallelCodingBuildResult extends CodingBatchResult {
 
 export type ParallelCodingBuildConfig = Omit<CodingRuntimeConfig, 'workspace'>
 
+function assertPathSegment(value: string, name: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(value) || value === '.' || value === '..') {
+    throw new TypeError(`${name} must be a safe path segment`)
+  }
+}
+
 export async function runParallelCodingBuilds(
   config: ParallelCodingBuildConfig,
   capabilities: readonly ParallelCapabilityRequest[],
@@ -33,6 +39,8 @@ export async function runParallelCodingBuilds(
   const ids = new Set<string>()
   const workspaces = new Set<string>()
   for (const capability of capabilities) {
+    assertPathSegment(capability.capabilityId, 'capabilityId')
+    assertPathSegment(capability.attemptId, 'attemptId')
     if (!capability.capabilityId || ids.has(capability.capabilityId)) {
       throw new TypeError(`duplicate capabilityId: ${capability.capabilityId}`)
     }
@@ -63,6 +71,7 @@ export async function runParallelCodingBuilds(
       const batch = await runCodingBatch({
         ...config,
         workspace: capability.workspace,
+        dshHome: join(resolve(config.dshHome), capability.capabilityId, capability.attemptId),
         batchId: `${capability.capabilityId}:${capability.attemptId}`,
         parentSessionId: `${capability.capabilityId}:${capability.attemptId}:parent`,
         prompt: capability.prompt,
