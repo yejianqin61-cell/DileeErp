@@ -1,0 +1,14 @@
+# The installed pi-ai adapter speaks the OpenAI Chat Completions protocol that
+# the local relay exposes.  Keep this separate from llm-deepseek: its native
+# Messages protocol targets /v1/messages and cannot use this relay.
+- id: llm-pi-ai
+  config:
+    providers:
+      phase1-deepseek:
+        apiKeyEnv: DILEE_MODEL_RELAY_TOKEN
+        api: openai-completions
+        baseURL: !!js process.env.DILEE_MODEL_RELAY_URL + '/v1'
+        models:
+          - id: deepseek-flash
+            # Phase-one coding turns are intentionally small and bounded.
+            maxTokens: 1200

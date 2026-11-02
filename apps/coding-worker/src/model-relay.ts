@@ -39,8 +39,12 @@ export async function handleModelRelayRequest(input: {
 import { createServer } from 'node:http'
 
 
-export async function startModelRelay(config: ModelRelayConfig): Promise<{ url: string; close(): Promise<void> }> {
+export async function startModelRelay(
+  config: ModelRelayConfig,
+  observe?: (request: { method: string; path: string }) => void,
+): Promise<{ url: string; close(): Promise<void> }> {
   const server = createServer(async (request, response) => {
+    observe?.({ method: request.method ?? '', path: request.url ?? '' })
     const chunks: Buffer[] = []
     for await (const chunk of request) chunks.push(Buffer.from(chunk))
     const result = await handleModelRelayRequest({

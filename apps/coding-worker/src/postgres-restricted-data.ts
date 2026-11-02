@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import type { RestrictedDataAdapter, RestrictedDataRequest } from './restricted-data-gateway.ts'
 
 export const PHASE1_TEST_DATABASE = 'dilee_phase1_test'
+export const PHASE1_READER_ROLE = 'dilee_phase1_reader'
 
 export type PostgresCommand = (args: readonly string[]) => string
 
@@ -31,8 +32,34 @@ export function createPostgresRestrictedDataAdapter(options: {
   ]).trim() || '[]') as Record<string, unknown>[]
 }
 
-export function localPostgresRestrictedDataCommand(container: string, user: string): PostgresCommand {
-  return args => execFileSync('docker', ['exec', container, 'psql', '-U', user, ...args], {
+export function provisionPhase1ReadOnlyRole(command: PostgresCommand): void {
+  const exists = command([
+    '-d', 'postgres', '-X', '-A', '-t', '-v', 'ON_ERROR_STOP=1',
+    '-c', `SELECT 1 FROM pg_roles WHERE rolname = '${PHASE1_READER_ROLE}';`,
+  ]).trim() === '1'
+  if (!exists) command([
+    '-d', 'postgres', '-X', '-v', 'ON_ERROR_STOP=1',
+    '-c', `CREATE ROLE ${PHASE1_READER_ROLE} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;`,
+  ])
+  command([
+    '-d', PHASE1_TEST_DATABASE, '-X', '-v', 'ON_ERROR_STOP=1',
+    '-c', [
+      `REVOKE CONNECT ON DATABASE ${PHASE1_TEST_DATABASE} FROM PUBLIC;`,
+      `GRANT CONNECT ON DATABASE ${PHASE1_TEST_DATABASE} TO ${PHASE1_READER_ROLE};`,
+      'REVOKE ALL ON SCHEMA public FROM PUBLIC;',
+      `GRANT USAGE ON SCHEMA public TO ${PHASE1_READER_ROLE};`,
+      'REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;',
+      `GRANT SELECT ON TABLE public.employee_daily_reports TO ${PHASE1_READER_ROLE};`,
+    ].join(' '),
+  ])
+}
+
+export function localPostgresRestrictedDataArgs(container: string, args: readonly string[]): string[] {
+  return ['exec', container, 'psql', '-U', PHASE1_READER_ROLE, ...args]
+}
+
+export function localPostgresRestrictedDataCommand(container: string): PostgresCommand {
+  return args => execFileSync('docker', localPostgresRestrictedDataArgs(container, args), {
     encoding: 'utf8', windowsHide: true,
   })
 }

@@ -32,7 +32,7 @@ export async function runRealModelRework(input: {
       dshHome: input.dshHome,
       patches: [
         join(input.workerRoot, 'config', 'coding-agents.cordis.patch.yml'),
-        join(input.workerRoot, 'config', 'real-model-relay.cordis.patch.yml'),
+        join(input.workerRoot, 'config', 'real-model-pi-ai-relay.cordis.patch.yml'),
       ],
       environment: {
         ...process.env,
@@ -42,7 +42,7 @@ export async function runRealModelRework(input: {
         DSH_TELEMETRY_MODE: 'OFF',
       },
       initializeTimeoutMs: 30_000,
-      provider: 'deepseek-official',
+      provider: 'phase1-deepseek',
       model: 'deepseek-flash',
       deadlineMs: input.deadlineMs ?? 20 * 60_000,
     })

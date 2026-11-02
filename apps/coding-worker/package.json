@@ -8,6 +8,7 @@
   },
   "scripts": {
     "harness:config": "dsh --profile sdk --patch config/coding-agents.cordis.patch.yml --dump-config",
+    "test:real-model": "tsx scripts/run-real-model-rework.ts",
     "test": "tsx test/run-tests.ts",
     "test:integration": "tsx test/run-tests.ts parent-child.integration",
     "typecheck": "tsc --noEmit"

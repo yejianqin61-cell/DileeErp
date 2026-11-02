@@ -4,6 +4,7 @@
 | --- | --- |
 | `product/` | 项目总览、PRD、SRS、术语词典和模块边界 |
 | `design/` | 技术设计、架构决策和开发计划 |
+| `SelfEnvolvingTry/` | 自迭代工具阶段的集中设计与 DeepSeekHarness 研究文档 |
 | `task/` | 可由 Agent 认领和执行的子任务 |
 | `test/` | 测试策略、测试记录和验收证据 |
 | `announcement/` | 开发公报、评估报告和对外/对内通知 |

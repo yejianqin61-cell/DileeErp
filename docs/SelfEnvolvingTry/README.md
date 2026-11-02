@@ -12,6 +12,7 @@
 | [SDK 与子 Agent 源码核查](deepseek-harness-sdk-2026-10-29.md) | SDK、profile、子 Agent、取消和沙箱的源码证据 |
 | [根 Agent、父会话与 Activation 核查](deepseek-harness-root-parent-activation-2026-10-30.md) | Coding Orchestrator 母 Agent、Parent Session、返工和 Activation 语义 |
 | [阶段一架构、验证与施工计划](phase1-architecture-validation-build-plan-2026-10-31.md) | 流程图、调用链、风险、待验证点与 12 工作日证据关口 |
+| [阶段一收口设计与施工计划](phase1-closure-design-and-build-plan-2026-11-02.md) | 本地脱敏实库、真实模型生成返工、单母 Agent 双工具并行和严格收口证据 |
 | [阶段一 R-1/R-2 批次总结](phase1-r1-r2-summary-2026-11-01.md) | 独立 Worker、母 Agent 双子会话、工具隔离证据与未完成项 |
 | [阶段一 R-3 批次总结](phase1-r3-summary-2026-11-01.md) | 原 Builder 返工、Activation 轮次、哈希门禁与全树收口证据 |
 | [阶段一 R-4 批次总结](phase1-r4-summary-2026-11-01.md) | Cordis 动作规则、返工预算、Worker 截止时间与对抗证据 |
