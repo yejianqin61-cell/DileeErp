@@ -62,7 +62,7 @@ test('closes every started runtime when one capability fails', async () => {
     start: async () => undefined,
     run: async () => {
       if (options.cwd?.endsWith('bad')) throw failure
-      return result('ok')
+      return new Promise<RunResult>(() => {})
     },
     client: { request: async () => ({}) },
     close: async () => { closeCount++ },

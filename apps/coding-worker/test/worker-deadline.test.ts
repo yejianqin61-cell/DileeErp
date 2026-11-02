@@ -4,6 +4,7 @@ import test from 'node:test'
 import type { RunResult } from '@deepseek-ai/dsh-sdk-client'
 
 import {
+  CodingBatchCancelledError,
   CodingBatchTimeoutError,
   runCodingBatch,
   type CodingRuntime,
@@ -84,4 +85,18 @@ test('preserves timeout and cleanup failures in order', async () => {
       && isTimeout(error.errors[0])
       && error.errors[1] === cleanupFailure,
   )
+})
+
+test('cancels an active run and waits for runtime close', async () => {
+  const controller = new AbortController()
+  let closed = false
+  const subject = runtime({
+    run: () => new Promise<RunResult>(() => {}),
+    close: async () => { closed = true },
+  })
+  const pending = runCodingBatch({ ...request, deadlineMs: undefined, signal: controller.signal }, () => subject)
+  controller.abort()
+
+  await assert.rejects(pending, error => error instanceof CodingBatchCancelledError)
+  assert.equal(closed, true)
 })
