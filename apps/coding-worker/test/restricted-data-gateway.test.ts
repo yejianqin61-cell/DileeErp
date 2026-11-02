@@ -126,17 +126,17 @@ test('projects, sorts and limits valid rows without leaking extra fields', async
 test('returns host-aggregated daily and employee totals without truncating totals', async () => {
   const gateway = new RestrictedDataGateway(async () => [
     {
-      kind: 'daily', reportId: 'r1', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      kind: 'daily', reportIds: ['r1'], orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
       operationName: '包装', employeeId: 'e1', employeeName: '员工甲',
       reportDate: '2026-10-30', quantity: '12', unitPrice: '9.9',
     },
     {
-      kind: 'daily', reportId: 'r2', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      kind: 'daily', reportIds: ['r2'], orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
       operationName: '包装', employeeId: 'e1', employeeName: '员工甲',
       reportDate: '2026-10-31', quantity: '8', remark: 'private',
     },
     {
-      kind: 'daily', reportId: 'r3', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      kind: 'daily', reportIds: ['r3'], orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
       operationName: '包装', employeeId: 'e2', employeeName: '员工乙',
       reportDate: '2026-10-31', quantity: '5', calculatedAmount: '200',
     },
