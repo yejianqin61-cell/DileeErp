@@ -1,5 +1,6 @@
 import { freezeCandidateRevision, type FrozenCandidateRevision } from './candidate-revision.ts'
 import { evaluateRevisionEvidence, type ValidationEvidence } from './revision-evidence.ts'
+import { runOrderACandidateInLinux } from './order-a-candidate-slice.ts'
 
 export interface IndependentGateInput {
   readonly sourceRevision: string
@@ -26,4 +27,25 @@ export function freezeIndependentGateInput(input: {
   }, input.validation)
   if (!decision.accepted) throw new Error(`INDEPENDENT_GATE_EVIDENCE_DENIED: ${decision.reason}`)
   return { sourceRevision: input.sourceRevision, revision, validation: input.validation }
+}
+
+export function verifyFrozenOrderACandidate(input: IndependentGateInput, options: {
+  repositoryRoot: string
+  dockerExecutable?: string
+}): { readonly codeHash: string; readonly testsPassed: true; readonly permissionsPassed: true } {
+  const result = runOrderACandidateInLinux({
+    repositoryRoot: options.repositoryRoot,
+    candidateRoot: input.revision.root,
+    sourceRevision: input.sourceRevision,
+    dockerExecutable: options.dockerExecutable,
+  })
+  const totals = result.fact.data.employee_totals
+  if (totals.length !== 2 || totals[0]?.quantity !== '20.0000' || totals[1]?.quantity !== '5.0000') {
+    throw new Error('INDEPENDENT_GATE_TEST_FAILED')
+  }
+  if (!result.sourceReadable || !result.sourceWriteDenied || !result.candidateWriteDenied
+    || !result.networkDenied || !result.databaseCredentialAbsent) {
+    throw new Error('INDEPENDENT_GATE_PERMISSION_FAILED')
+  }
+  return { codeHash: input.revision.codeHash, testsPassed: true, permissionsPassed: true }
 }

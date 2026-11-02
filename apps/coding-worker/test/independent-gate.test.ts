@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
-import { freezeIndependentGateInput } from '../src/independent-gate.ts'
+import { freezeIndependentGateInput, verifyFrozenOrderACandidate } from '../src/independent-gate.ts'
 import { freezeCandidateRevision } from '../src/candidate-revision.ts'
+
+const repositoryRoot = fileURLToPath(new URL('../../..', import.meta.url))
+const linux = spawnSync('docker', ['info', '--format', '{{.OSType}}'], { encoding: 'utf8', windowsHide: true }).stdout.trim() === 'linux'
 
 test('freezes the approved revision before an independent gate reads it', () => {
   const root = mkdtempSync(join(tmpdir(), 'dilee-independent-gate-'))
@@ -25,6 +30,22 @@ test('freezes the approved revision before an independent gate reads it', () => 
     assert.match(input.revision.codeHash, /^[a-f0-9]{64}$/)
     assert.equal(input.validation.codeHash, input.revision.codeHash)
     assert.match(readFileSync(join(frozen, 'tool.ts'), 'utf8'), /tool = 1/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('independently reruns the frozen order A candidate in an offline Linux container', { skip: linux ? false : 'Docker Linux engine is not available', timeout: 180_000 }, () => {
+  const root = mkdtempSync(join(tmpdir(), 'dilee-independent-gate-order-a-'))
+  const candidate = join(root, 'candidate')
+  try {
+    mkdirSync(candidate)
+    copyFileSync(join(repositoryRoot, 'apps/coding-worker/candidate/order-a-output/tool.ts'), join(candidate, 'tool.ts'))
+    const preview = freezeCandidateRevision({ capabilityId: 'employee-output', candidateRoot: candidate, frozenRoot: join(root, 'preview') })
+    const input = freezeIndependentGateInput({
+      capabilityId: 'employee-output', candidateRoot: candidate, frozenRoot: join(root, 'frozen'),
+      sourceRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot, encoding: 'utf8' }).trim(), builderRunId: 'builder', builderSessionId: 'builder-session',
+      validation: { capabilityId: 'employee-output', codeHash: preview.codeHash, decision: 'approved', validatorRunId: 'validator', validatorSessionId: 'validator-session', reviewedBuilderRunId: 'builder', reviewedBuilderSessionId: 'builder-session' },
+    })
+    assert.deepEqual(verifyFrozenOrderACandidate(input, { repositoryRoot }), { codeHash: input.revision.codeHash, testsPassed: true, permissionsPassed: true })
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
