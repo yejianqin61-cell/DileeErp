@@ -31,6 +31,8 @@ import {
 } from "../../lib/sales-order-spec";
 import { MaterialThumb } from "../procurement/material-image";
 import { ItemNoInput, type ItemNoSuggestion } from "./item-no-input";
+// Excel 补录（2026-11-02）：解析结果与「待修正项」的判定在 lib 里（纯函数，有 node:test 覆盖）。
+import { importIssueSplit, importOutcome, importSummaryText, type SalesOrderImportResult } from "../../lib/sales-order-import";
 
 type Customer = { id: string; customerCode?: string; name: string; isActive?: boolean; currency?: string | null; contacts?: Array<{ id: string; name: string; phone?: string | null; isDefault?: boolean }> };
 type Unit = { id: string; name: string };
@@ -183,6 +185,75 @@ function CopyBanner({ sourceOrderNo, sourceOrderId, dropped }: { sourceOrderNo: 
 }
 
 /**
+ * Excel 补录的核对横幅（2026-11-02）。
+ *
+ * 这张横幅要回答四个问题，顺序就是用户的心路：
+ *   ① 读的是哪个文件/哪张表（避免传错文件却以为自己传对了）；
+ *   ② 读出多少、漏了多少、还差几项要改（一句话汇总）；
+ *   ③ 哪几项**必须改**（红色：不改就建不了单），哪些只是提醒（黄色）；
+ *   ④ 每一格被认成了什么（折叠起来：默认不占版面，怀疑时才展开逐条对）。
+ *
+ * 为什么把「已认出的清单」放进折叠区而不是直接铺开：37 个细化字段 + 明细行会有四五十条，
+ * 铺开就把下面的表单挤出屏幕；而用户真正的核对对象是表单本身（那里已经是可改的状态）。
+ */
+function ImportBanner({ result }: { result: SalesOrderImportResult }) {
+  const { errors, warnings } = importIssueSplit(result.issues);
+  const ready = importOutcome(result) === "ready";
+  return (
+    <section className="panel panel-body import-banner" data-testid="sales-order-import-banner">
+      <div className="import-banner-head">
+        <span>Excel 补录核对：<strong>{result.file_name || "（未命名文件）"}</strong></span>
+        <span className="panel-note">工作表：{result.sheet_name}</span>
+      </div>
+      <p className={ready ? "status-success" : "status-warning"} data-testid="sales-order-import-summary">{importSummaryText(result)}</p>
+      <p className="panel-note">
+        下面的表单已经按这张表填好（客户、订单号、数量、日期、材料明细、工艺要求、细分明细都在）。请逐项核对、按需修改，
+        改完点右上角「确认建立销售单」才会真正建单 —— 现在还没有写进系统。
+      </p>
+      {result.customer ? (
+        <p className="panel-note" data-testid="sales-order-import-customer">
+          客户按{result.customer.matched_by}对上：<strong>{result.customer.name}</strong>
+          {result.customer_raw && result.customer_raw !== result.customer.name ? `（表里写的是「${result.customer_raw}」）` : ""}
+        </p>
+      ) : null}
+      {errors.length ? (
+        <div className="status-error" data-testid="sales-order-import-errors">
+          <p>必须改掉才能建单：</p>
+          {errors.map((issue) => <p key={issue.message}>· {issue.message}</p>)}
+        </div>
+      ) : null}
+      {warnings.length ? (
+        <div className="status-warning" data-testid="sales-order-import-warnings">
+          <p>请留意：</p>
+          {warnings.map((issue) => <p key={issue.message}>· {issue.message}</p>)}
+        </div>
+      ) : null}
+      {result.warnings.length ? (
+        <div className="panel-note" data-testid="sales-order-import-notes">
+          {result.warnings.map((message) => <p key={message}>· {message}</p>)}
+        </div>
+      ) : null}
+      <details data-testid="sales-order-import-recognized">
+        <summary>读出来的字段（{result.recognized.length} 处，展开逐条核对）</summary>
+        <ul className="import-fact-list">
+          {result.recognized.map((fact, index) => (
+            <li key={`${fact.field}-${index}`}><code>{fact.from || "—"}</code> {fact.label}：{fact.value}</li>
+          ))}
+        </ul>
+      </details>
+      {result.unrecognized.length ? (
+        <details data-testid="sales-order-import-unrecognized">
+          <summary>没认出的格子（{result.unrecognized.length} 处，需要的话请手工补进表单）</summary>
+          <ul className="import-fact-list">
+            {result.unrecognized.map((item, index) => <li key={`${item.where}-${index}`}><code>{item.where}</code> {item.text}</li>)}
+          </ul>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+/**
  * 后端字段名 → 界面中文名，用于把 400 的原因说到具体一格（`lib/api-error-text`）。
  *
  * 直接从上面这几张**已经在用的**清单拼出来，不另抄一份：抄一份的下场是「界面改了名字、
@@ -218,10 +289,18 @@ const FIELD_LABELS: Record<string, string> = {
  */
 const errorOf = (cause: unknown, fallback: string) => apiErrorText(cause, fallback, FIELD_LABELS);
 
-export function SalesOrderEditor({ orderId }: { orderId?: string }) {
+export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: string; imported?: SalesOrderImportResult; onReimport?: () => void }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editing = Boolean(orderId);
+  /**
+   * Excel 补录（2026-11-02）：`/sales/orders/import` 上传解析后把结果作为 prop 传进来，**不经过 URL**。
+   *
+   * 为什么不走 URL 参数：解析结果是一整张单（37 格 + 明细 + 追加行），塞进 URL 会被长度与编码折腾；
+   * 走 sessionStorage 又要处理"标签页过期/刷新"两种语义。prop 最简单：这页刷新就回到上传那一步，
+   * 用户手上还留着原文件，重传一次即可 —— 比"看起来已经读好了、其实数据是空的"安全。
+   */
+  const importMode = !editing && Boolean(imported);
   /**
    * 返单（2026-09-26）：`/sales/orders/new?reorder_from_order_no=DL260001-1`。
    *
@@ -310,13 +389,18 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
    * 同一套请求键**。分两处写，必然有一处先漂移，而漂移的表现是"返单带过来了、复制少带一块"——
    * 这种错没人会当场发现（少的那一格是空的，看起来就是本来没填）。
    */
-  function applyCopiedPayloadInternal(payload: { customer_id?: string | null; contact_id?: string | null; item_no?: string | null; copy?: Record<string, unknown> }) {
+  function applyCopiedPayloadInternal(payload: { customer_id?: string | null; contact_id?: string | null; item_no?: string | null; copy?: Record<string, unknown> }, options: { fillOrderFields?: boolean } = {}) {
     const copy = (payload.copy ?? {}) as Record<string, unknown>;
     const text = (value: unknown) => (value === null || value === undefined ? "" : String(value));
     setBase({
-      // 必须重填的四格**留空**：来源单的订单号/数量/下单日/交期属于上一张单，抄过来就是错的下单数据。
+      // 返单/复制：必须重填的四格**留空** —— 来源单的订单号/数量/下单日/交期属于上一张单，抄过来就是错的下单数据。
       // 页面上它们带「（复制后必填）」/「（返单必填）」提示（见 MUST_FILL_FIELDS）。
-      order_no: "", order_date: "", quantity: "", delivery_date: "",
+      // Excel 补录（`fillOrderFields`）：这四格**就是要按表填好** —— 补录的全部意义就是省掉这些手工打字，
+      // 来源是纸上的这一张单，不是上一张单。
+      order_no: options.fillOrderFields ? text(copy.order_no) : "",
+      order_date: options.fillOrderFields ? text(copy.order_date) : "",
+      quantity: options.fillOrderFields ? text(copy.quantity) : "",
+      delivery_date: options.fillOrderFields ? text(copy.delivery_date) : "",
       customer_id: text(payload.customer_id),
       contact_id: text(payload.contact_id),
       product_name: text(copy.product_name),
@@ -435,17 +519,31 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
           order_id: snapshot.source_order_id,
           dropped: [...(snapshot.dropped?.material_refs ?? []), ...(snapshot.dropped?.material_extras ?? [])],
         });
+      } else if (imported) {
+        /**
+         * Excel 补录（2026-11-02）：服务端已经解析好，这里**一次性**灌进表单（同一个 `applyCopiedPayload`）。
+         *
+         * 与服务端"只读解析"的分工：那边不写库、只把 `copy`（请求键形状）与逐格核对清单摆出来；
+         * 这边把它填进表单让人改，最后仍走 `POST /sales-orders` 建单 —— 看到的就是一会要建的那张单。
+         */
+        applyCopiedPayload({ customer_id: imported.customer_id ?? "", item_no: String(imported.copy.item_no ?? ""), copy: imported.copy }, { fillOrderFields: true });
+        // 对上的客户可能不在「前 200 个客户」那一页里：补进候选清单，否则下拉框显示不出名字（显示空 = 像没对上）。
+        const matched = imported.customer;
+        if (matched) {
+          setCustomers((current) => current.some((item) => item.id === matched.id) ? current : [{ id: matched.id, name: matched.name, customerCode: matched.customer_code, currency: matched.currency }, ...current]);
+        }
       }
     } catch (cause) {
       // 返单预览 / 复制快照失败**必须出错误态**，不能退化成空表单：空表单会让销售以为
       // 「这单本来就没工艺要求」，直接存下去就是一张缺工艺的下单。
       setError(errorOf(cause, reorderMode
         ? "返单来源加载失败：请回到【返单与总结】重试，或新建普通销售单"
-        : copyMode ? "复制来源加载失败：请回到销售单列表重试，或新建普通销售单" : "销售单数据加载失败"));
+        : copyMode ? "复制来源加载失败：请回到销售单列表重试，或新建普通销售单"
+          : importMode ? "补录数据加载失败：请回到补录页重新上传一次文件" : "销售单数据加载失败"));
     } finally {
       setLoading(false);
     }
-  }, [orderId, reorderFromOrderNo, reorderMode, copyFromId, copyMode, applyCopiedPayload]);
+  }, [orderId, reorderFromOrderNo, reorderMode, copyFromId, copyMode, importMode, imported, applyCopiedPayload]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -681,9 +779,11 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
 
   return (
     <div className="page-root" data-testid="sales-order-editor">
-      <PageHeader title={editing ? `编辑销售单 ${base.order_no ?? ""}` : copyMode ? "新建销售单（复制）" : "新建销售单"} breadcrumb={["客户与销售", "销售单"]}>
+      <PageHeader title={editing ? `编辑销售单 ${base.order_no ?? ""}` : copyMode ? "新建销售单（复制）" : importMode ? "新建销售单（Excel 补录核对）" : "新建销售单"} breadcrumb={["客户与销售", "销售单"]}>
+        {importMode && onReimport ? <Button variant="secondary" onClick={onReimport} disabled={saving} data-testid="sales-order-import-reupload">换一个文件重新读取</Button> : null}
         <Button variant="secondary" onClick={() => router.push("/sales/orders")} disabled={saving}>取消</Button>
-        <Button onClick={() => void save()} disabled={saving} data-testid="sales-order-save">{saving ? "保存中…" : "保存"}</Button>
+        {/* 补录这条路的主按钮说的是「建立」而不是「保存」：用户上传 Excel 的语义就是"建一张单"，不是"存一个草稿"。 */}
+        <Button onClick={() => void save()} disabled={saving} data-testid="sales-order-save">{saving ? "保存中…" : importMode ? "确认建立销售单" : "保存"}</Button>
       </PageHeader>
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <ActionDialog open={Boolean(labelDialog)} onOpenChange={(open) => { if (!open) setLabelDialog(null); }} title={labelDialog?.title ?? "细分明细的列名"} fields={labelDialog?.fields ?? []} onSubmit={(values) => { void labelDialog?.submit(values); }} />
@@ -712,6 +812,8 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
         · 编辑态：单子上本来就记着来源（`reorderFromOrderNo`），只读展示 ——
           后端在更新接口上不接受改写它，所以这里不给「换来源」的入口。
       */}
+      {imported ? <ImportBanner result={imported} /> : null}
+
       <ReorderBanner
         sourceOrderNo={reorderSource?.order_no ?? String((audit as Record<string, unknown> | null)?.reorderFromOrderNo ?? "")}
         sourceOrderId={reorderSource?.order_id}
@@ -780,7 +882,9 @@ export function SalesOrderEditor({ orderId }: { orderId?: string }) {
                 ? <span className="reorder-must-fill" data-testid={`reorder-must-fill-${field.key}`}>（返单必填）</span>
                 : copyMode && MUST_FILL_FIELDS.has(field.key)
                   ? <span className="reorder-must-fill" data-testid={`copy-must-fill-${field.key}`}>（复制后必填）</span>
-                  : field.required ? "（必填）" : ""}
+                  : importMode && MUST_FILL_FIELDS.has(field.key)
+                    ? <span className="reorder-must-fill" data-testid={`import-must-fill-${field.key}`}>（按表填好，请核对）</span>
+                    : field.required ? "（必填）" : ""}
               {/* 后果不在本页的字段（目前只有订单号）：提示贴在输入框旁边，不要等保存时才第一次看到。 */}
               {field.hint && <span className="panel-note" data-testid={`sales-base-${field.key}-hint`}>{field.hint}</span>}
               {field.type === "textarea"

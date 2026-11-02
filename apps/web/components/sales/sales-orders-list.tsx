@@ -198,6 +198,8 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
 
   return <div className="page-root" data-testid={testId}>
     <PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} description="销售单列表：确认与回退、删除草稿、导出工艺单、通知仓库出库。">
+      {/* Excel 补录（2026-11-02）：偶发动作，所以是次要按钮，排在新单之后。 */}
+      <Button variant="secondary" asChild><Link href="/sales/orders/import" data-testid="sales-order-import">从 Excel 补录</Link></Button>
       <Button asChild><Link href="/sales/orders/new" data-testid="sales-order-new">新建销售单</Link></Button>
     </PageHeader>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={async (values) => { await dialog?.submit(values); setDialog(null); }} />

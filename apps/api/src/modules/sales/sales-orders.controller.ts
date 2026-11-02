@@ -1,5 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
-import { AnyFilesInterceptor } from "@nestjs/platform-express";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
+import { AnyFilesInterceptor, FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { Type } from "class-transformer";
 import type { Response } from "express";
@@ -14,6 +14,7 @@ import { EmptyStringToNull } from "../../platform/http/empty-string-to-null.deco
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { SalesOrdersService, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT, SPEC_MATERIAL_KEYS } from "./sales-orders.service";
 import { SalesOrderExportService } from "./sales-order-export.service";
+import { SalesOrderImportService } from "./sales-order-import.service";
 import { FinishedGoodsOutboundNoticeService } from "./finished-goods-outbound-notice.service";
 import { ITEM_NO_MAX_LENGTH } from "./item-no";
 
@@ -22,6 +23,14 @@ const NON_NEGATIVE_DECIMAL = /^\d+(?:\.\d+)?$/;
 
 /** 结算方式固定枚举（前端下拉同源展示中文）。 */
 export const SETTLEMENT_METHODS = ["tt", "letter_of_credit", "cash", "monthly", "other"] as const;
+
+/** 与「物料导入 / 盘点导入 / 其他应付导入」同一套白名单：只放行 Excel。 */
+const EXCEL_MIME = new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"]);
+function salesOrderImportFileFilter(_req: Express.Request, file: Express.Multer.File, callback: (error: Error | null, acceptFile: boolean) => void) {
+  const name = (file.originalname ?? "").toLowerCase();
+  const extensionOk = name.endsWith(".xlsx") || name.endsWith(".xls");
+  callback(null, extensionOk || (EXCEL_MIME.has(file.mimetype) && file.mimetype !== "application/octet-stream"));
+}
 
 /** 细分明细行（一张通用表 + 分组名）。 */
 class SpecDetailDto {
@@ -272,9 +281,25 @@ export class OutboundNoticeDto {
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("sales")
 export class SalesOrdersController {
-  constructor(private readonly orders: SalesOrdersService, private readonly outboundNotices: FinishedGoodsOutboundNoticeService, private readonly productionSheetExport: SalesOrderExportService) {}
+  constructor(private readonly orders: SalesOrdersService, private readonly outboundNotices: FinishedGoodsOutboundNoticeService, private readonly productionSheetExport: SalesOrderExportService, private readonly salesOrderImport: SalesOrderImportService) {}
   @Get() async list(@Query() query: SalesOrderQueryDto) { const result = await this.orders.list(query.page, query.page_size, query.search, query.status); return { data: result.data, meta: { page: query.page, page_size: query.page_size, total: result.total } }; }
   @Post() async create(@Body() body: SalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.create(body, user), meta: {} }; }
+  /**
+   * Excel 补录的**第一步：只读解析**（2026-11-02）。
+   *
+   * 用户要的是「上传 → 系统读出字段 → 展示系统表单 → 改完再确认建单」，不是"上传即建单"。
+   * 所以这个端点只把解析结果（请求键形状的预填载荷 + 逐格核对清单 + 待修正项）返回给前端，
+   * **任何情况下都不写库**：编辑器看到的就是一会要提交的那张单，不存在「预览说 3 款、建出来 2 款」。
+   * 建单仍走 `POST /sales-orders`，DTO / 归一 / 快照 / 审计一份都不另起。
+   *
+   * 路径单段（`import-preview`），POST 那边只有 `:id/confirm` 这类两段路由，不会冲突；
+   * 权限沿用类级的 `sales` 模块守卫 —— 录单的人就是补录的人，不额外锁管理员。
+   */
+  @Post("import-preview")
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: salesOrderImportFileFilter }))
+  async importPreview(@UploadedFile() file: Express.Multer.File) {
+    return { data: await this.salesOrderImport.preview(file), meta: {} };
+  }
   // 销售模块的成品出库总览（全部成品数 / 已出库数 / 未出库数，按产品+单位分行）。
   // 必须声明在 @Get(":id") 之前：Nest 按声明顺序匹配，否则 "finished-goods-summary"
   // 会被当成销售单 ID 去查库（与「其他应付导入模板」被 :id 吃掉是同一类问题）。

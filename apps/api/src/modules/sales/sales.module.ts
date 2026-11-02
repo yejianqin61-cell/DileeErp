@@ -5,8 +5,9 @@ import { SalesOrdersController } from "./sales-orders.controller";
 import { SalesOrdersService } from "./sales-orders.service";
 import { FinishedGoodsOutboundNoticeService } from "./finished-goods-outbound-notice.service";
 import { SalesOrderExportService } from "./sales-order-export.service";
+import { SalesOrderImportService } from "./sales-order-import.service";
 import { AuditModule } from "../../platform/audit/audit.module";
 
 // PrismaService / InventoryService 由 @Global 模块提供，这里只需注入即可。
-@Module({ imports: [AuditModule], controllers: [CustomersController, SalesOrdersController], providers: [CustomersService, SalesOrdersService, FinishedGoodsOutboundNoticeService, SalesOrderExportService], exports: [CustomersService, SalesOrdersService, FinishedGoodsOutboundNoticeService, SalesOrderExportService] })
+@Module({ imports: [AuditModule], controllers: [CustomersController, SalesOrdersController], providers: [CustomersService, SalesOrdersService, FinishedGoodsOutboundNoticeService, SalesOrderExportService, SalesOrderImportService], exports: [CustomersService, SalesOrdersService, FinishedGoodsOutboundNoticeService, SalesOrderExportService, SalesOrderImportService] })
 export class SalesModule {}
