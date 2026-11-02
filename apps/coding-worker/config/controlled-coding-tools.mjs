@@ -34,6 +34,7 @@ export function apply(ctx, config = {}) {
   if (!parentSessionId) throw new Error('DILEE_PARENT_SESSION_ID is required')
   const policy = new CodingJobPolicy({ maxReworks: config.maxReworks ?? 1 })
   const activations = new Map()
+  const restarting = new Map()
   let pendingStart
   let lifecycleError
 
@@ -42,13 +43,15 @@ export function apply(ctx, config = {}) {
   }
 
   ctx.on('subagent/start', (info) => {
-    if (!pendingStart) return
+    const restart = restarting.get(String(info.id))
+    if (!pendingStart && !restart) return
     const activation = {
-      ...pendingStart,
+      ...(pendingStart ?? restart),
       childSessionId: String(info.id),
       runId: String(info.runId),
     }
-    pendingStart.observed = activation
+    if (pendingStart) pendingStart.observed = activation
+    restarting.delete(activation.childSessionId)
     activations.set(activation.runId, activation)
     ctx.emit('dilee/activation-meta', activation)
   })
@@ -192,7 +195,7 @@ export function apply(ctx, config = {}) {
       const parent = rootAgent(exec, parentSessionId)
       assertLifecycle()
       const builderSessionId = policy.beginRework(args.capability_id)
-      pendingStart = { capabilityId: args.capability_id, role: 'builder' }
+      restarting.set(builderSessionId, { capabilityId: args.capability_id, role: 'builder' })
       try {
         const messageId = await ctx.subagents.sendMessage(
           parent,
@@ -200,13 +203,9 @@ export function apply(ctx, config = {}) {
           [{ type: 'text', text: args.message }],
           { signal: exec.signal },
         )
-        if (!pendingStart.observed
-          || pendingStart.observed.childSessionId !== builderSessionId) {
-          throw new Error('builder-rework-start-not-observed')
-        }
         return { messageId: String(messageId), subagentId: builderSessionId }
       } finally {
-        pendingStart = undefined
+        // ponytail: resumed child start is asynchronous; its session-keyed entry remains until observed.
       }
     },
   ))
