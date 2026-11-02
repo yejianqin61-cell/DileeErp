@@ -88,17 +88,50 @@ function isQuantity(value: string): boolean {
   return /^\d+(?:\.\d+)?$/.test(value)
 }
 
-function validateResult(result: DataResult, orderNo: string, operationName: string): void {
-  if (result.operation !== 'production.read_employee_output_summary'
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function validDecimal(value: unknown): value is string {
+  return typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value)
+}
+
+function validDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value
+}
+
+function validateResult(result: unknown, orderNo: string, operationName: string): asserts result is DataResult {
+  if (!record(result) || !record(result.scope)
+    || result.operation !== 'production.read_employee_output_summary'
     || result.scope.orderNo !== orderNo
     || result.scope.operationName !== operationName
-    || result.truncated) {
+    || result.accessLevel !== 'operational'
+    || result.truncated !== false
+    || !Array.isArray(result.rows)
+    || !Array.isArray(result.sources)) {
     throw new OutputToolError('DATA_SCOPE_VIOLATION', 'data result does not match the requested scope')
   }
-  if (result.rows.some(row =>
-    !row.employeeId || !row.employeeName || !row.productionOrderNo || !isQuantity(row.quantity)
-    || (row.kind === 'daily' && (!isDate(row.reportDate) || row.reportIds.length === 0))
-    || (row.kind === 'employee_total' && row.reportDate !== null))) {
+  const sourceKeys = new Set<string>()
+  for (const source of result.sources) {
+    if (!record(source) || typeof source.businessType !== 'string' || source.businessType === ''
+      || typeof source.businessNo !== 'string' || source.businessNo === '') {
+      throw new OutputToolError('DATA_SCOPE_VIOLATION', 'data result contains an invalid source')
+    }
+    sourceKeys.add(`${source.businessType}:${source.businessNo}`)
+  }
+  if (result.rows.some(row => !record(row)
+    || (row.kind !== 'daily' && row.kind !== 'employee_total')
+    || typeof row.employeeId !== 'string' || row.employeeId === ''
+    || typeof row.employeeName !== 'string' || row.employeeName === ''
+    || typeof row.productionOrderNo !== 'string' || row.productionOrderNo === ''
+    || !validDecimal(row.quantity)
+    || (row.kind === 'daily' && (!validDate(row.reportDate)
+      || !Array.isArray(row.reportIds) || row.reportIds.length === 0
+      || row.reportIds.some(id => typeof id !== 'string' || !sourceKeys.has(`employee_daily_report:${id}`))))
+    || (row.kind === 'employee_total' && (row.reportDate !== null
+      || !sourceKeys.has(`employee_daily_report:${orderNo}:${operationName}:${row.employeeId}:total`))))) {
     throw new OutputToolError('DATA_SCOPE_VIOLATION', 'data result contains an invalid row')
   }
 }
