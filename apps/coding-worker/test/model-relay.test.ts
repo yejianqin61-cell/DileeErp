@@ -27,3 +27,11 @@ test('rejects wrong token, path, method, and oversized bodies before forwarding'
   assert.equal((await handleModelRelayRequest({ ...request, method: 'POST', path: '/v1/chat/completions', body: new Uint8Array(), authorization: 'Bearer wrong' })).status, 401)
   assert.equal((await handleModelRelayRequest({ ...request, method: 'POST', path: '/v1/chat/completions', body: new Uint8Array(256 * 1024 + 1), authorization: 'Bearer relay' })).status, 413)
 })
+
+test('serves only the fixed model catalog to an authorized SDK client', async () => {
+  const response = await handleModelRelayRequest({
+    method: 'GET', path: '/v1/models', apiKey: 'relay', body: new Uint8Array(),
+    config: { upstreamKey: 'upstream', relayToken: 'relay' }, forward: async () => new Response('{}'),
+  })
+  assert.deepEqual(await response.json(), { object: 'list', data: [{ id: 'deepseek-flash', object: 'model' }] })
+})

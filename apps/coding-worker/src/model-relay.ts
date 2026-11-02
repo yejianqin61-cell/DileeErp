@@ -1,4 +1,5 @@
 export const MODEL_RELAY_PATH = '/v1/chat/completions'
+const MODEL_LIST_PATH = '/v1/models'
 const MAX_BODY_BYTES = 256 * 1024
 
 export interface ModelRelayConfig {
@@ -23,11 +24,15 @@ export async function handleModelRelayRequest(input: {
   config: ModelRelayConfig
   forward(request: { body: Uint8Array; upstreamAuthorization: string }): Promise<Response>
 }): Promise<Response> {
-  if (input.method !== 'POST') return new Response(null, { status: 405 })
-  if (input.path !== MODEL_RELAY_PATH) return new Response(null, { status: 404 })
+  if (input.path !== MODEL_RELAY_PATH && input.path !== MODEL_LIST_PATH) return new Response(null, { status: 404 })
   if (input.authorization !== `Bearer ${input.config.relayToken}` && input.apiKey !== input.config.relayToken) {
     return new Response(null, { status: 401 })
   }
+  if (input.path === MODEL_LIST_PATH) {
+    if (input.method !== 'GET') return new Response(null, { status: 405 })
+    return Response.json({ object: 'list', data: [{ id: 'deepseek-flash', object: 'model' }] })
+  }
+  if (input.method !== 'POST') return new Response(null, { status: 405 })
   if (input.body.byteLength > MAX_BODY_BYTES) return new Response(null, { status: 413 })
   return input.forward({ body: input.body, upstreamAuthorization: `Bearer ${input.config.upstreamKey}` })
 }
