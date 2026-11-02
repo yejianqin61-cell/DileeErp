@@ -10,7 +10,6 @@ import {
 const validRequest = {
   operation: 'production.read_employee_output',
   scope: { orderNo: 'ORDER-A', operationName: '包装' },
-  accessLevel: 'operational',
   limit: 2,
 } as const
 
@@ -37,7 +36,7 @@ test('rejects unknown operations before calling the host adapter', async () => {
   })
 
   await assert.rejects(
-    gateway.read({ ...validRequest, operation: 'sql.query' }),
+    gateway.read({ ...validRequest, operation: 'sql.query' }, { accessLevel: 'operational' }),
     expectCode('DATA_OPERATION_DENIED'),
   )
   assert.equal(calls, 0)
@@ -47,11 +46,11 @@ test('rejects extra request fields that could carry SQL or Prisma input', async 
   const gateway = new RestrictedDataGateway(async () => [])
 
   await assert.rejects(
-    gateway.read({ ...validRequest, sql: 'select * from employee_daily_reports' }),
+    gateway.read({ ...validRequest, sql: 'select * from employee_daily_reports' }, { accessLevel: 'operational' }),
     expectCode('DATA_REQUEST_INVALID'),
   )
   await assert.rejects(
-    gateway.read({ ...validRequest, scope: { ...validRequest.scope, prisma: {} } }),
+    gateway.read({ ...validRequest, scope: { ...validRequest.scope, prisma: {} } }, { accessLevel: 'operational' }),
     expectCode('DATA_REQUEST_INVALID'),
   )
 })
@@ -62,7 +61,7 @@ test('fails closed when the adapter returns a row from another order', async () 
   ])
 
   await assert.rejects(
-    gateway.read(validRequest),
+    gateway.read(validRequest, { accessLevel: 'operational' }),
     expectCode('DATA_SCOPE_VIOLATION'),
   )
 })
@@ -73,7 +72,7 @@ test('fails closed when the adapter returns a row from another operation', async
   ])
 
   await assert.rejects(
-    gateway.read(validRequest),
+    gateway.read(validRequest, { accessLevel: 'operational' }),
     expectCode('DATA_SCOPE_VIOLATION'),
   )
 })
@@ -90,9 +89,12 @@ test('projects, sorts and limits valid rows without leaking extra fields', async
   }
   const gateway = new RestrictedDataGateway(adapter)
 
-  const result = await gateway.read(validRequest)
+  const result = await gateway.read(
+    { operation: validRequest.operation, scope: validRequest.scope, limit: validRequest.limit },
+    { accessLevel: 'operational' },
+  )
 
-  assert.deepEqual(adapterInput, validRequest)
+  assert.deepEqual(adapterInput, { ...validRequest, accessLevel: 'operational' })
   assert.deepEqual(result, {
     operation: 'production.read_employee_output',
     scope: { orderNo: 'ORDER-A', operationName: '包装' },
@@ -121,6 +123,20 @@ test('projects, sorts and limits valid rows without leaking extra fields', async
     ],
     truncated: true,
   })
+})
+
+test('rejects a candidate-supplied access level and uses the host-trusted level', async () => {
+  const seenLevels: string[] = []
+  const gateway = new RestrictedDataGateway(async request => {
+    seenLevels.push(request.accessLevel)
+    return [validRow]
+  })
+
+  await assert.rejects(
+    gateway.read({ ...validRequest, accessLevel: 'full' }, { accessLevel: 'operational' }),
+    expectCode('DATA_REQUEST_INVALID'),
+  )
+  assert.deepEqual(seenLevels, [])
 })
 
 test('returns host-aggregated daily and employee totals without truncating totals', async () => {
@@ -153,9 +169,8 @@ test('returns host-aggregated daily and employee totals without truncating total
   const result = await gateway.read({
     operation: 'production.read_employee_output_summary',
     scope: { orderNo: 'ORDER-A', operationName: '包装' },
-    accessLevel: 'operational',
     limit: 100,
-  })
+    }, { accessLevel: 'operational' })
 
   assert.deepEqual(result.rows, [
     {
@@ -196,8 +211,8 @@ test('rejects more than 100 aggregate rows instead of returning a false total', 
     gateway.read({
       operation: 'production.read_employee_output_summary',
       scope: { orderNo: 'ORDER-A', operationName: '包装' },
-      accessLevel: 'operational', limit: 100,
-    }),
+      limit: 100,
+    }, { accessLevel: 'operational' }),
     expectCode('DATA_RESULT_LIMIT_EXCEEDED'),
   )
 })
@@ -215,8 +230,8 @@ test('rejects aggregate rows from another order or operation', async () => {
       gateway.read({
         operation: 'production.read_employee_output_summary',
         scope: { orderNo: 'ORDER-A', operationName: '包装' },
-        accessLevel: 'operational', limit: 100,
-      }),
+        limit: 100,
+      }, { accessLevel: 'operational' }),
       expectCode('DATA_SCOPE_VIOLATION'),
     )
   }
