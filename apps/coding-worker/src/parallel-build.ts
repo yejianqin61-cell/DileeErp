@@ -27,6 +27,7 @@ export async function runParallelCodingBuilds(
   config: ParallelCodingBuildConfig,
   capabilities: readonly ParallelCapabilityRequest[],
   factory?: CodingRuntimeFactory,
+  signal?: AbortSignal,
 ): Promise<ParallelCodingBuildResult[]> {
   if (capabilities.length === 0) throw new TypeError('at least one capability is required')
   const ids = new Set<string>()
@@ -49,23 +50,47 @@ export async function runParallelCodingBuilds(
     }
   }
 
+  if (signal?.aborted) throw signal.reason
+  const controller = new AbortController()
+  let primaryFailure: unknown
+  const abortFromCaller = (): void => {
+    primaryFailure = signal?.reason ?? new Error('parallel coding batch cancelled')
+    controller.abort(primaryFailure)
+  }
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
   const settled = await Promise.allSettled(capabilities.map(async (capability) => {
-    const batch = await runCodingBatch({
-      ...config,
-      workspace: capability.workspace,
-      batchId: `${capability.capabilityId}:${capability.attemptId}`,
-      parentSessionId: `${capability.capabilityId}:${capability.attemptId}:parent`,
-      prompt: capability.prompt,
-    }, factory)
-    return {
-      ...batch,
-      capabilityId: capability.capabilityId,
-      attemptId: capability.attemptId,
-      round: capability.round ?? 1,
+    try {
+      const batch = await runCodingBatch({
+        ...config,
+        workspace: capability.workspace,
+        batchId: `${capability.capabilityId}:${capability.attemptId}`,
+        parentSessionId: `${capability.capabilityId}:${capability.attemptId}:parent`,
+        prompt: capability.prompt,
+        signal: controller.signal,
+      }, factory)
+      return {
+        ...batch,
+        capabilityId: capability.capabilityId,
+        attemptId: capability.attemptId,
+        round: capability.round ?? 1,
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        primaryFailure = error
+        controller.abort(error)
+      }
+      throw error
     }
   }))
+  signal?.removeEventListener('abort', abortFromCaller)
   const failures = settled.flatMap(item => item.status === 'rejected' ? [item.reason] : [])
-  if (failures.length === 1) throw failures[0]
-  if (failures.length > 1) throw new AggregateError(failures, 'multiple capability builds failed')
+  const independentFailures = failures.filter(error =>
+    !(error instanceof Error && error.name === 'CodingBatchCancelledError' && error.cause === primaryFailure))
+  if (primaryFailure !== undefined && independentFailures.length === 0) throw primaryFailure
+  if (primaryFailure !== undefined && independentFailures.length === 1 && independentFailures[0] === primaryFailure) {
+    throw primaryFailure
+  }
+  if (independentFailures.length === 1) throw independentFailures[0]
+  if (independentFailures.length > 1) throw new AggregateError(independentFailures, 'multiple capability builds failed')
   return settled.map(item => (item as PromiseFulfilledResult<ParallelCodingBuildResult>).value)
 }

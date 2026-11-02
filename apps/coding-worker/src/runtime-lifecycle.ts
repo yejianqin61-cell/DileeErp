@@ -30,6 +30,7 @@ export interface CodingBatchRequest extends CodingRuntimeConfig {
   parentSessionId: string
   prompt: string
   deadlineMs?: number
+  signal?: AbortSignal
 }
 
 export interface CodingBatchResult {
@@ -48,6 +49,17 @@ export class CodingBatchTimeoutError extends Error {
     this.name = 'CodingBatchTimeoutError'
     this.batchId = batchId
     this.deadlineMs = deadlineMs
+  }
+}
+
+export class CodingBatchCancelledError extends Error {
+  readonly code = 'CODING_BATCH_CANCELLED'
+  readonly batchId: string
+
+  constructor(batchId: string, cause?: unknown) {
+    super(`coding batch ${batchId} was cancelled`, { cause })
+    this.name = 'CodingBatchCancelledError'
+    this.batchId = batchId
   }
 }
 
@@ -103,21 +115,34 @@ async function withinBatchDeadline<T>(
   request: CodingBatchRequest,
   operation: () => Promise<T>,
 ): Promise<T> {
-  if (request.deadlineMs === undefined) return operation()
-  if (!Number.isFinite(request.deadlineMs) || request.deadlineMs <= 0) {
+  if (request.deadlineMs !== undefined
+    && (!Number.isFinite(request.deadlineMs) || request.deadlineMs <= 0)) {
     throw new TypeError('deadlineMs must be a positive finite number')
   }
   let timer: NodeJS.Timeout | undefined
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new CodingBatchTimeoutError(request.batchId, request.deadlineMs!)),
-      request.deadlineMs,
-    )
-  })
+  let abortHandler: (() => void) | undefined
+  const interruptions: Promise<never>[] = []
+  if (request.deadlineMs !== undefined) {
+    interruptions.push(new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new CodingBatchTimeoutError(request.batchId, request.deadlineMs!)),
+        request.deadlineMs,
+      )
+    }))
+  }
+  if (request.signal !== undefined) {
+    interruptions.push(new Promise<never>((_resolve, reject) => {
+      abortHandler = () => reject(new CodingBatchCancelledError(request.batchId, request.signal?.reason))
+      if (request.signal?.aborted) abortHandler()
+      else request.signal?.addEventListener('abort', abortHandler, { once: true })
+    }))
+  }
+  if (interruptions.length === 0) return operation()
   try {
-    return await Promise.race([operation(), timeout])
+    return await Promise.race([operation(), ...interruptions])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (abortHandler !== undefined) request.signal?.removeEventListener('abort', abortHandler)
   }
 }
 
