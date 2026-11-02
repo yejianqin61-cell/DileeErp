@@ -6,6 +6,7 @@ interface ActivationTraceBase {
   readonly childSessionId: string
   readonly provider: string
   readonly local: boolean
+  readonly at?: number
 }
 
 export type ActivationTraceRecord =
@@ -26,6 +27,7 @@ function parseRecord(value: unknown, line: number): ActivationTraceRecord {
     && isNonEmptyString(record.childSessionId)
     && isNonEmptyString(record.provider)
     && typeof record.local === 'boolean'
+    && (record.at === undefined || (typeof record.at === 'number' && Number.isFinite(record.at)))
   if (!validBase || (record.event !== 'start' && record.event !== 'end')) {
     throw new Error(`invalid Activation trace record at line ${line}`)
   }

@@ -17,6 +17,7 @@ export function apply(ctx) {
       childSessionId: String(info.id),
       provider: info.provider,
       local: info.local,
+      at: performance.now(),
       ...(event === 'end' ? { stopReason: info.stopReason } : {}),
     }
     appendFileSync(tracePath, `${JSON.stringify(record)}\n`, 'utf8')
