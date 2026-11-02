@@ -13,6 +13,10 @@ export interface RestrictedDataRequest {
   limit: number
 }
 
+export interface RestrictedDataContext {
+  accessLevel: RestrictedAccessLevel
+}
+
 export type RestrictedDataAdapter = (
   request: RestrictedDataRequest,
 ) => Promise<readonly Record<string, unknown>[]>
@@ -81,7 +85,7 @@ function requiredString(
   return result
 }
 
-function parseRequest(input: unknown): RestrictedDataRequest {
+function parseRequest(input: unknown, context: RestrictedDataContext): RestrictedDataRequest {
   if (!isObject(input)) {
     throw new RestrictedDataError('DATA_REQUEST_INVALID', 'request must be an object')
   }
@@ -89,14 +93,14 @@ function parseRequest(input: unknown): RestrictedDataRequest {
     && input.operation !== 'production.read_employee_output_summary') {
     throw new RestrictedDataError('DATA_OPERATION_DENIED', `operation is not allowed: ${String(input.operation)}`)
   }
-  if (!hasExactKeys(input, ['operation', 'scope', 'accessLevel', 'limit']) || !isObject(input.scope)) {
+  if (!hasExactKeys(input, ['operation', 'scope', 'limit']) || !isObject(input.scope)) {
     throw new RestrictedDataError('DATA_REQUEST_INVALID', 'request contains unknown or missing fields')
   }
   if (!hasExactKeys(input.scope, ['orderNo', 'operationName'])) {
     throw new RestrictedDataError('DATA_REQUEST_INVALID', 'scope contains unknown or missing fields')
   }
-  if (input.accessLevel !== 'full' && input.accessLevel !== 'operational') {
-    throw new RestrictedDataError('DATA_REQUEST_INVALID', 'accessLevel is invalid')
+  if (context.accessLevel !== 'full' && context.accessLevel !== 'operational') {
+    throw new RestrictedDataError('DATA_REQUEST_INVALID', 'host accessLevel is invalid')
   }
   if (!Number.isInteger(input.limit) || (input.limit as number) < 1 || (input.limit as number) > 100) {
     throw new RestrictedDataError('DATA_REQUEST_INVALID', 'limit must be an integer from 1 to 100')
@@ -107,7 +111,7 @@ function parseRequest(input: unknown): RestrictedDataRequest {
       orderNo: requiredString(input.scope, 'orderNo', 'DATA_REQUEST_INVALID'),
       operationName: requiredString(input.scope, 'operationName', 'DATA_REQUEST_INVALID'),
     },
-    accessLevel: input.accessLevel,
+    accessLevel: context.accessLevel,
     limit: input.limit as number,
   }
 }
@@ -181,8 +185,8 @@ function projectRow(
 export class RestrictedDataGateway {
   constructor(private readonly adapter: RestrictedDataAdapter) {}
 
-  async read(input: unknown): Promise<RestrictedDataResult> {
-    const request = parseRequest(input)
+  async read(input: unknown, context: RestrictedDataContext): Promise<RestrictedDataResult> {
+    const request = parseRequest(input, context)
     const adapterRows = await this.adapter(request)
     if (request.operation === 'production.read_employee_output_summary') {
       const rows = adapterRows.map(row => projectSummaryRow(row, request.scope))
