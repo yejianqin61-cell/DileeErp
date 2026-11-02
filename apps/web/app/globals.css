@@ -725,13 +725,17 @@ button { cursor: pointer; }
 @media print {
   /* visibility（而不是 display）才能让祖先隐藏、后代重新可见；对话框在打印时改为普通文档流，避免被裁切 */
   body * { visibility: hidden !important; }
-  .voucher-sheet, .voucher-sheet *, .transfer-slip-sheet, .transfer-slip-sheet * { visibility: visible !important; }
-  .voucher-sheet, .transfer-slip-sheet { position: absolute; left: 0; top: 0; width: 100%; border: 0; padding: 0; gap: 8px; }
-  .voucher-print-dialog, .transfer-slip-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+  .voucher-sheet, .voucher-sheet *, .transfer-slip-sheet, .transfer-slip-sheet *,
+  .outbound-slip-sheet, .outbound-slip-sheet *, .material-slip-sheet, .material-slip-sheet * { visibility: visible !important; }
+  .voucher-sheet, .transfer-slip-sheet, .outbound-slip-sheet, .material-slip-sheet { position: absolute; left: 0; top: 0; width: 100%; border: 0; padding: 0; gap: 8px; }
+  .voucher-print-dialog, .transfer-slip-dialog, .outbound-slip-dialog, .material-slip-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
   .ui-dialog-header, .ui-dialog-footer, .ui-dialog-close, .ui-dialog-overlay { display: none !important; }
   /* 跨行转账单：灰底标签要印出来（默认会被浏览器抠掉背景色），输入框去掉聚焦虚线与取值高亮。 */
   .transfer-slip-section td, .transfer-slip-label { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .transfer-slip-input { outline: none !important; }
+  /* 出库单 / 领料单：表头与合计行的灰底同样要印出来（否则标签与表头一片白，纸上分不出哪格是表头）。 */
+  .outbound-slip-head th, .outbound-slip-table th, .outbound-slip-logistics th,
+  .material-slip-head th, .material-slip-table th { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
 }
 
 /* 记账凭证的**分录编辑器**（components/finance/voucher-line-editor.tsx）。
@@ -777,6 +781,38 @@ button { cursor: pointer; }
 .transfer-slip-input { width: 100%; border: 0; background: transparent; font: inherit; color: inherit; padding: 2px 4px; }
 .transfer-slip-input:focus-visible { outline: 1px dashed var(--primary); }
 .transfer-slip-amount .transfer-slip-input { font-weight: bold; text-align: right; }
+
+/* 成品出库单（components/warehouse/finished-goods-outbound-slip-sheet.tsx，2026-11-02）——
+   一张 A4 竖版的交货凭证：宋体、细边框、标签灰底加粗、明细一行 + 合计，下面是发货/签收小格与签字栏。
+   屏幕上就是这张纸；打印时页面上只留它（见下面的 @media print）。 */
+.outbound-slip-dialog { width: min(96vw, 900px); }
+.outbound-slip-sheet { font-family: "SimSun", "宋体", serif; color: #1a1a1a; max-width: 780px; margin: 0 auto; }
+.outbound-slip-company { text-align: center; font-size: 13px; letter-spacing: 2px; margin: 0 0 2px; color: #555555; }
+.outbound-slip-title { text-align: center; font-size: 20px; letter-spacing: 6px; margin: 0 0 10px; font-family: "SimHei", "黑体", sans-serif; }
+.outbound-slip-head, .outbound-slip-table, .outbound-slip-logistics { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 8px; }
+.outbound-slip-head th, .outbound-slip-head td,
+.outbound-slip-table th, .outbound-slip-table td,
+.outbound-slip-logistics th, .outbound-slip-logistics td { border: 1px solid #444444; padding: 5px 6px; vertical-align: middle; font-size: 12px; }
+.outbound-slip-head th, .outbound-slip-table th, .outbound-slip-logistics th { background: #f2f2f2; font-weight: bold; text-align: center; }
+.outbound-slip-head th { width: 10%; }
+.outbound-slip-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.outbound-slip-total td { font-weight: bold; }
+.outbound-slip-logistics th { width: 10%; text-align: center; }
+.outbound-slip-sign { margin: 16px 0 6px; font-size: 13px; }
+.outbound-slip-footer { margin: 0; font-size: 11px; color: #555555; }
+
+/* 领料单 / 补料单的**打印件**（components/production/material-slip-print-sheet.tsx，2026-11-02）——
+   版式照 docs/samples/领料单-样例.xlsx：标题 + 三行表头 + 明细 + 小计 + 备注，与导出的 xlsx 逐行一致。 */
+.material-slip-dialog { width: min(96vw, 1000px); }
+.material-slip-sheet { font-family: "SimSun", "宋体", serif; color: #1a1a1a; max-width: 860px; margin: 0 auto; }
+.material-slip-sheet .material-slip-title { text-align: center; font-size: 20px; letter-spacing: 6px; margin: 0 0 10px; font-family: "SimHei", "黑体", sans-serif; }
+.material-slip-head, .material-slip-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 8px; }
+.material-slip-head th, .material-slip-head td, .material-slip-table th, .material-slip-table td { border: 1px solid #444444; padding: 4px 6px; vertical-align: middle; font-size: 12px; }
+.material-slip-head th, .material-slip-table th { background: #f2f2f2; font-weight: bold; text-align: center; }
+.material-slip-head th { width: 12%; }
+.material-slip-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.material-slip-total td { font-weight: bold; }
+.material-slip-remark { margin: 6px 0 0; font-size: 12px; }
 
 /* 工资台账可编辑表格（components/finance/payroll-sheet.tsx）：
    满页表格 + 单元格编辑。选中格用主色描边，可编辑格给 cell 光标，保存失败标红，

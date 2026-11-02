@@ -10,11 +10,17 @@ import { ActionDialog, type ActionField } from "../../../components/ui/action-di
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
+import { downloadFile } from "../../../lib/download";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
+import { FinishedGoodsOutboundSlipSheet } from "../../../components/warehouse/finished-goods-outbound-slip-sheet";
+import {
+  outboundSlipDocumentPath, outboundSlipExportPath, outboundSlipFileName, type FinishedGoodsOutboundSlip,
+} from "../../../lib/finished-goods-outbound-slip";
 
 type Balance = { category: string; unit_id: string; production_order_id: string | null; order_no: string | null; product_name: string | null; product_specification: string | null; quantity: string };
 type Notice = AuditRow & { id: string; noticeNo: string; orderNo: string; batchNo?: string | null; noticeDate: string; status: string; noticeQuantity: string; submittedQuantity: string; qcQualifiedQuantity: string; inboundDraftQuantity: string; inboundPostedQuantity: string; availableSubmissionQuantity: string; remainingForInbound: string; operationNameSnapshot: string; unitNameSnapshot: string; productNameSnapshot?: string | null };
@@ -153,6 +159,18 @@ export default function FinishedGoodsStoragePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
+  /**
+   * 成品出库单的打印视图（2026-11-02）。
+   *
+   * `slip` 非空 = 打印弹窗已打开；数据来自 `GET /finished-goods/outbounds/:id/slip-document`
+   * （与导出 xlsx 同一份组装结果）。**不把单据数据缓存进列表行**：列表接口不带生产单号/客户全名，
+   * 缓存在行上就得在列表里塞一堆只为打印服务的字段，而这张纸只有点开时才需要。
+   */
+  const [slip, setSlip] = useState<FinishedGoodsOutboundSlip | null>(null);
+  const [slipLoading, setSlipLoading] = useState(false);
+  const [slipError, setSlipError] = useState("");
+  /** 正在导出的出库单 id（按钮防重复点击）。 */
+  const [exportingSlip, setExportingSlip] = useState("");
 
   // options.silent：后台刷新（焦点/可见性变化）时不切整页 loading，避免卸载正在编辑的弹窗、清掉用户刚填的内容。
   async function load(targetOrderNo = appliedOrderNo, options: { silent?: boolean } = {}) {
@@ -247,6 +265,39 @@ export default function FinishedGoodsStoragePage() {
     setDialog({ title: `取消成品出库单：${row.outboundNo}`, fields: [{ name: "reason", label: "取消原因", type: "textarea", required: true, placeholder: "例如：通知数量与库存不一致，需重新通知" }], submit: (values) => void run(`/finished-goods/outbounds/${row.id}/cancel`, { reason: values.reason }, "出库单已取消，来源通知退回待处理") });
   }
 
+  /**
+   * 打开出库单的打印视图（2026-11-02）。
+   *
+   * 打印与导出吃同一份后端组装结果（`slip-document`）：页面上看到的每一个字，导出/打印出来都在；
+   * 反过来也一样。任何一项在页面里"顺手补一下"，纸与 Excel 就开始分叉了。
+   */
+  async function openSlip(row: Outbound) {
+    setSlipLoading(true);
+    setSlipError("");
+    setSlip(null);
+    try {
+      const result = await apiGet<FinishedGoodsOutboundSlip>(outboundSlipDocumentPath(row.id));
+      setSlip(result.data);
+    } catch (cause) {
+      setSlipError(messageOf(cause, "出库单打印数据加载失败"));
+    } finally {
+      setSlipLoading(false);
+    }
+  }
+
+  /** 导出出库单 xlsx（A4 竖版，与打印件同一版式；文件名优先用后端 Content-Disposition 给的）。 */
+  async function exportSlip(row: Outbound) {
+    setExportingSlip(row.id);
+    try {
+      await downloadFile(outboundSlipExportPath(row.id), outboundSlipFileName(row.outboundNo));
+      notifySuccess(`出库单 ${row.outboundNo} 已导出`);
+    } catch (cause) {
+      notifyError(messageOf(cause, "出库单导出失败"));
+    } finally {
+      setExportingSlip("");
+    }
+  }
+
   const balanceColumns = [
     { id: "order", header: "订单号", meta: { width: COLUMN_WIDTH.defectiveOrderNo }, cell: ({ row }: { row: { original: Balance } }) => row.original.order_no ?? "-" },
     { id: "product", header: "成品", meta: { width: COLUMN_WIDTH.defectiveProduct }, cell: ({ row }: { row: { original: Balance } }) => row.original.product_name ?? "-" },
@@ -288,7 +339,7 @@ export default function FinishedGoodsStoragePage() {
     { id: "notice", header: "来源通知", meta: { width: COLUMN_WIDTH.outboundNoticeRef }, cell: ({ row }: { row: { original: Outbound } }) => row.original.outboundNotice?.noticeNo ?? "-" },
     { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.outboundStatus }, cell: ({ row }: { row: { original: Outbound } }) => outboundStatusLabels[row.original.status] ?? row.original.status },
     ...auditColumns<Outbound>(),
-    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.outboundActions }, cell: ({ row }: { row: { original: Outbound } }) => <div className="action-row">{row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/outbounds/${row.original.id}/post`, {}, "成品出库已过账（已生成应收来源，等待财务收款）")}>过账出库</Button> : null}{row.original.status === "draft" ? <Button size="sm" variant="ghost" onClick={() => cancelOutbound(row.original)}>取消出库单</Button> : null}{["posted", "shipped"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => editShipping(row.original)}>维护发货</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => signOutbound(row.original)}>登记签收</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="ghost" onClick={() => reverseOutbound(row.original)}>冲销</Button> : null}</div> },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.outboundActions }, cell: ({ row }: { row: { original: Outbound } }) => <div className="action-row">{/* 出库单（打印）/ 导出（2026-11-02）：任何状态都能出纸 —— 草稿、已冲销也常常要打一张留档，纸面上会写清状态 */}<Button size="sm" variant="secondary" data-testid={`outbound-slip-${row.original.outboundNo}`} onClick={() => void openSlip(row.original)}>出库单</Button><Button size="sm" variant="secondary" disabled={exportingSlip === row.original.id} data-testid={`outbound-export-${row.original.outboundNo}`} onClick={() => void exportSlip(row.original)}>{exportingSlip === row.original.id ? "导出中…" : "导出"}</Button>{row.original.status === "draft" ? <Button size="sm" onClick={() => void run(`/finished-goods/outbounds/${row.original.id}/post`, {}, "成品出库已过账（已生成应收来源，等待财务收款）")}>过账出库</Button> : null}{row.original.status === "draft" ? <Button size="sm" variant="ghost" onClick={() => cancelOutbound(row.original)}>取消出库单</Button> : null}{["posted", "shipped"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => editShipping(row.original)}>维护发货</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="secondary" onClick={() => signOutbound(row.original)}>登记签收</Button> : null}{["posted", "shipped", "signed"].includes(row.original.status) ? <Button size="sm" variant="ghost" onClick={() => reverseOutbound(row.original)}>冲销</Button> : null}</div> },
   ];
   const outboundNoticeColumns = [
     { accessorKey: "noticeNo", header: "出库通知", meta: { width: COLUMN_WIDTH.outboundNoticeNo } },
@@ -413,8 +464,28 @@ export default function FinishedGoodsStoragePage() {
       <div className="panel-body"><DataTable columns={outboundNoticeColumns} data={outboundNotices} empty={<EmptyState title="暂无出库通知" description="成品入库后由销售在【销售 → 打开销售单 → 成品入库与出库】通知仓库出库。" />} /></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>成品出库单</h2><span className="panel-note">支持分批出库（单张数量 ≤ 当前成品可用量）；每次过账自动生成应收来源草稿，财务在「应收来源」确认并核销收款</span></div>
-      <div className="panel-body"><DataTable columns={outboundColumns} data={outbounds} empty={<EmptyState title="暂无成品出库单" description="生成出库单后在这里过账、维护发货与签收。" />} /></div>
+      <div className="panel-heading"><h2>成品出库单</h2><span className="panel-note">支持分批出库（单张数量 ≤ 当前成品可用量）；每次过账自动生成应收来源草稿，财务在「应收来源」确认并核销收款。每行可「出库单」打印（A4 竖版，浏览器打印 / 另存 PDF）或「导出」Excel。</span></div>
+      <div className="panel-body"><DataTable columns={outboundColumns} data={outbounds} empty={<EmptyState title="暂无成品出库单" description="生成出库单后在这里过账、维护发货、签收，也能打印/导出单张出库单。" />} /></div>
     </section>
+    {/*
+      出库单打印视图（2026-11-02）：屏幕上就是这张纸，打印时页面上只留它（globals.css 的 @media print）。
+      数据与导出的 xlsx 同源（`slip-document`）；加载与失败都在弹窗里说明，不弹一个 toast 就把人挡在门外 ——
+      仓库打不出这张单，货就发不出去。
+    */}
+    <Dialog open={slipLoading || Boolean(slip) || Boolean(slipError)} onOpenChange={(open) => { if (!open) { setSlip(null); setSlipError(""); setSlipLoading(false); } }}>
+      <DialogContent className="outbound-slip-dialog" data-testid="outbound-slip-dialog">
+        <DialogHeader><DialogTitle>成品出库单打印</DialogTitle></DialogHeader>
+        <DialogBody>
+          {slipLoading ? <LoadingState label="正在生成出库单" /> : slipError ? <ErrorState message={slipError} /> : slip ? <FinishedGoodsOutboundSlipSheet slip={slip} /> : null}
+        </DialogBody>
+        <DialogFooter>
+          <div className="action-row">
+            <Button variant="secondary" onClick={() => { setSlip(null); setSlipError(""); }}>关闭</Button>
+            {/* 浏览器打印就是出纸方式（与记账凭证纸/跨行转账单同一做法）：@media print 只留 .outbound-slip-sheet。 */}
+            <Button data-testid="outbound-slip-print" disabled={!slip} onClick={() => window.print()}>打印 / 另存 PDF</Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>;
 }

@@ -13,14 +13,18 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { DataTable } from "../data/data-table";
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
-import { EmptyState } from "../feedback/states";
+import { EmptyState, LoadingState } from "../feedback/states";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { RecordDetailDialog, type DetailField } from "../finance/record-detail-dialog";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 // 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按运行宿主时区走。
 import { formatBeijingShort } from "../../lib/audit-time";
 import { isMaterialMovementDocumentType, movementEditorHref } from "../../lib/material-slip-api";
 import { MaterialSlipLinesTable, type SlipDocument } from "./material-slip-lines-table";
+// 打印件（2026-11-02）：与领料单列表页同一个纸面组件、同一份 slip-document。
+import { MaterialSlipPrintSheet } from "./material-slip-print-sheet";
+import type { MaterialSlipPrint } from "../../lib/material-slip-print";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
 type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string } | null; material?: { materialCode?: string; name: string; specificationModel?: string | null } | null };
@@ -88,6 +92,9 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [detailNonce, setDetailNonce] = useState(0);
+  /** 打印视图（2026-11-02）：完整单据来自 `slip-document`（与导出同一份组装结果）。 */
+  const [printSlip, setPrintSlip] = useState<MaterialSlipPrint | null>(null);
+  const [printLoading, setPrintLoading] = useState(false);
 
   const materialOptions = useMemo(() => {
     if (bomItems.length) return bomItems.map((item) => ({ value: item.materialId, label: `${item.materialName}${item.specificationModel || item.model ? ` / ${item.specificationModel ?? item.model}` : ""}（BOM ${item.requiredQuantity} ${item.unit}）` }));
@@ -212,6 +219,22 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     setBusy("");
   }
   function reopen(movement: Movement) { setDialog({ title: `重新打开领料单：${movement.movementNo}`, fields: [{ name: "reason", label: "重新打开原因", type: "textarea", required: true }], submit: (values) => void action(`/production/material-movements/${movement.id}/reopen`, { reason: values.reason }, "领料单已重新打开为草稿") }); }
+  /**
+   * 打开打印视图（2026-11-02）：取 `slip-document` 这份完整单据，屏幕上就是那张纸。
+   * 明细四个数量与导出 xlsx 同源，页面不自己再算一遍。
+   */
+  async function openPrint(movement: Movement) {
+    setPrintLoading(true);
+    setPrintSlip(null);
+    try {
+      const result = await apiGet<MaterialSlipPrint>(`/production/material-movements/${movement.id}/slip-document`);
+      setPrintSlip(result.data);
+    } catch (cause) {
+      notifyError(errorText(cause, "打印数据加载失败"));
+    } finally {
+      setPrintLoading(false);
+    }
+  }
   /** 撤回提交：单据还停在 pending_outbound（尚无库存事实），reopen 只是把状态退回草稿，不产生冲销。 */
   function withdraw(movement: Movement) { setDialog({ title: `撤回提交：${movement.movementNo}`, fields: [{ name: "reason", label: "撤回原因", type: "textarea", required: true }], submit: (values) => void action(`/production/material-movements/${movement.id}/reopen`, { reason: values.reason }, "已撤回提交，单据回到草稿") }); }
   function reverse(movement: Movement) { setDialog({ title: `冲销领料单：${movement.movementNo}`, fields: [{ name: "reason", label: "冲销原因", type: "textarea", required: true }], submit: (values) => void action(`/production/material-movements/${movement.id}/reverse`, { reason: values.reason, idempotency_key: idempotencyKey() }, "领料单已冲销") }); }
@@ -231,10 +254,10 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
     ...auditColumns<Movement>(),
     { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }: { row: { original: Movement } }) => {
       const movement = row.original;
-      if (movement.status === "draft") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busy === movement.id} onClick={() => openEdit(movement)}>编辑</Button><Button size="sm" disabled={busy === movement.id} onClick={() => void submit(movement)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busy === movement.id} onClick={() => void remove(movement)}>删除</Button></div>;
+      if (movement.status === "draft") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={printLoading} data-testid={`material-slip-panel-print-${movement.movementNo}`} onClick={() => void openPrint(movement)}>打印</Button><Button size="sm" variant="secondary" disabled={busy === movement.id} onClick={() => openEdit(movement)}>编辑</Button><Button size="sm" disabled={busy === movement.id} onClick={() => void submit(movement)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busy === movement.id} onClick={() => void remove(movement)}>删除</Button></div>;
       // 待出库阶段不做任何库存动作：这里只提示「已交给仓库」并允许生产自己撤回。
-      if (movement.status === "pending_outbound") return <div className="page-actions"><span className="status-warning">等待仓库出库</span><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(movement)}>撤回提交</Button></div>;
-      if (movement.status === "posted") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(movement)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(movement)}>冲销</Button></div>;
+      if (movement.status === "pending_outbound") return <div className="page-actions"><span className="status-warning">等待仓库出库</span><Button size="sm" variant="secondary" disabled={printLoading} onClick={() => void openPrint(movement)}>打印</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(movement)}>撤回提交</Button></div>;
+      if (movement.status === "posted") return <div className="page-actions"><Button size="sm" variant="secondary" disabled={printLoading} onClick={() => void openPrint(movement)}>打印</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(movement)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(movement)}>冲销</Button></div>;
       return null;
     } },
   ];
@@ -300,6 +323,19 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
         onRetry={() => setDetailNonce((value) => value + 1)}
         testId="material-slip-detail"
       />
+      {/* 打印视图（2026-11-02）：屏幕上是这张纸，打印时只留它（globals.css 的 @media print）。 */}
+      <Dialog open={printLoading || Boolean(printSlip)} onOpenChange={(open) => { if (!open) { setPrintSlip(null); setPrintLoading(false); } }}>
+        <DialogContent className="material-slip-dialog" data-testid="material-slip-panel-print-dialog">
+          <DialogHeader><DialogTitle>领料单 / 补料单打印</DialogTitle></DialogHeader>
+          <DialogBody>{printLoading ? <LoadingState label="正在生成单据" /> : printSlip ? <MaterialSlipPrintSheet slip={printSlip} /> : null}</DialogBody>
+          <DialogFooter>
+            <div className="action-row">
+              <Button variant="secondary" onClick={() => setPrintSlip(null)}>关闭</Button>
+              <Button data-testid="material-slip-panel-print-confirm" disabled={!printSlip} onClick={() => window.print()}>打印 / 另存 PDF</Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   </section>;
 }

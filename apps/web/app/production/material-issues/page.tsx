@@ -25,11 +25,15 @@ import { EmptyState, ErrorState, LoadingState } from "../../../components/feedba
 import { RecordDetailDialog, type DetailField } from "../../../components/finance/record-detail-dialog";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog";
 import { downloadFile } from "../../../lib/download";
 // 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按运行宿主时区走。
 import { formatBeijingShort } from "../../../lib/audit-time";
 import { movementEditorHref, postMovementPath } from "../../../lib/material-slip-api";
 import { MaterialSlipLinesTable, type SlipDocument } from "../../../components/production/material-slip-lines-table";
+// 打印件（2026-11-02）：纸面版式与导出 xlsx 同一份数据（`slip-document`），只在屏幕上渲染。
+import { MaterialSlipPrintSheet } from "../../../components/production/material-slip-print-sheet";
+import type { MaterialSlipPrint } from "../../../lib/material-slip-print";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
 type MovementLine = { id: string; materialId: string; quantity: string; remark?: string | null; unit?: { name: string } | null; material?: { materialCode?: string; name: string; specificationModel?: string | null } | null };
@@ -112,6 +116,13 @@ export default function MaterialIssuesPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [detailNonce, setDetailNonce] = useState(0);
+  /**
+   * 打印视图（2026-11-02）：`GET /production/material-movements/:id/slip-document` 的完整单据。
+   *
+   * 明细四个数量与导出的 xlsx 同源 —— 页面不自己再算一遍（2026-10-29 那次「页面与纸面对不上」的教训）。
+   */
+  const [printSlip, setPrintSlip] = useState<MaterialSlipPrint | null>(null);
+  const [printLoading, setPrintLoading] = useState(false);
 
   // 确认提交：草稿 → 待仓库出库。只改状态不写库存，所以没有幂等键；
   // 需要幂等键的是仓库端的「确认出库」，那一步才会真正扣减原料库存。
@@ -224,6 +235,24 @@ export default function MaterialIssuesPage() {
     catch (cause) { notifyError(messageOf(cause, "批量导出失败")); }
     finally { setBusy(""); }
   }
+  /**
+   * 打开打印视图（2026-11-02）。
+   *
+   * 只取 `slip-document`（导出服务组装的完整单据），屏幕上就是那张纸；`window.print()` 只留它
+   * （见 globals.css 的 @media print）。加载/失败都留在弹窗里说清楚：打不出这张单，车间就领不到料。
+   */
+  async function openPrint(slip: Issue) {
+    setPrintLoading(true);
+    setPrintSlip(null);
+    try {
+      const result = await apiGet<MaterialSlipPrint>(`/production/material-movements/${slip.id}/slip-document`);
+      setPrintSlip(result.data);
+    } catch (cause) {
+      notifyError(messageOf(cause, "打印数据加载失败"));
+    } finally {
+      setPrintLoading(false);
+    }
+  }
 
   const columns: ColumnDef<Issue>[] = [
     { accessorKey: "orderNo", header: "订单号", meta: { width: ISSUE_COLUMN_WIDTH.orderNo } },
@@ -235,7 +264,7 @@ export default function MaterialIssuesPage() {
     { id: "total", header: "数量合计", meta: { width: ISSUE_COLUMN_WIDTH.total }, cell: ({ row }) => row.original.lines.reduce((sum, line) => sum + Number(line.quantity), 0) },
     { accessorKey: "createdAt", header: "登记时间", meta: { width: ISSUE_COLUMN_WIDTH.createdAt }, cell: ({ row }) => formatBeijingShort(row.original.createdAt) || "-" },
     ...auditColumns<Issue>(),
-    { id: "actions", header: "操作", meta: { width: ISSUE_COLUMN_WIDTH.actions }, cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={movementEditorHref(slip.documentType, { movementId: slip.id })}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void submit(slip)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "pending_outbound" && <><Button size="sm" disabled={busyRow} onClick={() => void confirmOutbound(slip)}>确认出库</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(slip)}>撤回提交</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}<Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("issue", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("replenishment", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
+    { id: "actions", header: "操作", meta: { width: ISSUE_COLUMN_WIDTH.actions }, cell: ({ row }) => { const slip = row.original; const busyRow = busy === slip.id; return <div className="page-actions"><Button size="sm" variant="secondary" disabled={busyRow} onClick={() => void exportOne(slip)}>{busyRow ? "导出中..." : "导出"}</Button><Button size="sm" variant="secondary" disabled={printLoading} data-testid={`material-slip-print-${slip.movementNo}`} onClick={() => void openPrint(slip)}>打印</Button>{slip.status === "draft" && <><Button size="sm" asChild variant="secondary"><Link href={movementEditorHref(slip.documentType, { movementId: slip.id })}>编辑</Link></Button><Button size="sm" disabled={busyRow} onClick={() => void submit(slip)}>确认提交</Button><Button size="sm" variant="ghost" disabled={busyRow} onClick={() => void removeDraft(slip)}>删除</Button></>}{slip.status === "pending_outbound" && <><Button size="sm" disabled={busyRow} onClick={() => void confirmOutbound(slip)}>确认出库</Button><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => withdraw(slip)}>撤回提交</Button></>}{slip.status === "posted" && <><Button size="sm" variant="secondary" disabled={busy === "action"} onClick={() => reopen(slip)}>重新打开</Button><Button size="sm" variant="ghost" disabled={busy === "action"} onClick={() => reverse(slip)}>冲销</Button></>}<Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("issue", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张领料单">再建领料单</Link></Button><Button size="sm" asChild variant="ghost"><Link href={movementEditorHref("replenishment", { productionOrderId: slip.productionOrderId })} title="同一生产单可以开多张补料单">再建补料单</Link></Button></div>; } }
   ];
 
   const detailFields: DetailField[] = detail ? [
@@ -254,7 +283,7 @@ export default function MaterialIssuesPage() {
   if (loading) return <><PageHeader title="领料单 / 补料单" /><LoadingState /></>;
 
   return <div className="page-root" data-testid="page-production-material-issues">
-    <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单）。点「新建领料单 / 新建补料单」进入全屏编辑页选择该生产单订单 BOM 里的物料；草稿不再直接出库，改为「确认提交 → 仓库确认出库」两步：提交后进入「待仓库出库」，仓库确认出库才扣减原料库存；待出库可撤回提交，已过账可重新打开或冲销；各自套用对应打印模板。双击任意一行可查看该单的全部领用物料。">
+    <PageHeader title="领料单 / 补料单" description="两者都只绑定生产单（一个生产单可有多张领料单）。点「新建领料单 / 新建补料单」进入全屏编辑页选择该生产单订单 BOM 里的物料；草稿不再直接出库，改为「确认提交 → 仓库确认出库」两步：提交后进入「待仓库出库」，仓库确认出库才扣减原料库存；待出库可撤回提交，已过账可重新打开或冲销。每行可「打印」（A4 纸面单据，浏览器打印 / 另存 PDF）或「导出」Excel，两者是同一份数据。双击任意一行可查看该单的全部领用物料。">
       <Button asChild variant="secondary"><Link href="/production">返回生产单</Link></Button>
       <Button asChild><Link href={movementEditorHref("issue")}>新建领料单</Link></Button>
       <Button asChild variant="secondary"><Link href={movementEditorHref("replenishment")}>新建补料单</Link></Button>
@@ -290,5 +319,20 @@ export default function MaterialIssuesPage() {
       onRetry={() => setDetailNonce((value) => value + 1)}
       testId="material-slip-detail"
     />
+    {/* 打印视图（2026-11-02）：屏幕上是这张纸，打印时只留它。数据与「导出」同一个 slip-document。 */}
+    <Dialog open={printLoading || Boolean(printSlip)} onOpenChange={(open) => { if (!open) { setPrintSlip(null); setPrintLoading(false); } }}>
+      <DialogContent className="material-slip-dialog" data-testid="material-slip-print-dialog">
+        <DialogHeader><DialogTitle>领料单 / 补料单打印</DialogTitle></DialogHeader>
+        <DialogBody>
+          {printLoading ? <LoadingState label="正在生成单据" /> : printSlip ? <MaterialSlipPrintSheet slip={printSlip} /> : null}
+        </DialogBody>
+        <DialogFooter>
+          <div className="action-row">
+            <Button variant="secondary" onClick={() => setPrintSlip(null)}>关闭</Button>
+            <Button data-testid="material-slip-print-confirm" disabled={!printSlip} onClick={() => window.print()}>打印 / 另存 PDF</Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>;
 }

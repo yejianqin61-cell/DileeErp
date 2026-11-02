@@ -1,11 +1,13 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
 import { IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import type { Response } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { FinishedGoodsOutboundService } from "./finished-goods-outbound.service";
+import { FinishedGoodsOutboundExportService } from "./finished-goods-outbound-export.service";
 
 class OutboundDto { @IsUUID() sales_order_id!: string; @IsUUID() production_order_id!: string; @IsString() quantity!: string; @IsOptional() @IsString() @MaxLength(200) idempotency_key?: string; @IsOptional() @IsString() @MaxLength(1000) risk_reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() attachment?: unknown[]; }
 class ShippingDto { @IsOptional() @IsDateString() shipment_date?: string; @IsOptional() @IsString() carrier?: string; @IsOptional() @IsString() tracking_no?: string; @IsOptional() @IsString() packing_list_no?: string; @IsOptional() @IsString() invoice_no?: string; @IsOptional() attachment?: unknown[]; }
@@ -23,11 +25,29 @@ export class NoticeOutboundDto { @IsOptional() @IsString() quantity?: string; @I
 @UseGuards(AuthenticationGuard, ModulePermissionGuard)
 @RequireModules("warehouse")
 export class FinishedGoodsOutboundController {
-  constructor(private readonly outbound: FinishedGoodsOutboundService) {}
+  constructor(private readonly outbound: FinishedGoodsOutboundService, private readonly exports: FinishedGoodsOutboundExportService) {}
   // 出库通知：销售在销售页「通知仓库出库」后，仓库在这里看到，并可按剩余量分批生成出库单。
   @Get("outbound-notices") async listOutboundNotices(@Query("order_no") orderNo?: string, @Query("status") status?: string) { return { data: await this.outbound.listOutboundNotices(orderNo, status), meta: {} }; }
   @Post("outbound-notices/:id/create-outbound") async createOutboundFromNotice(@Param("id") id: string, @Body() body: NoticeOutboundDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutboundFromNotice(id, body, user), meta: {} }; }
   @Get("outbounds") async listOutbounds(@Query("order_no") orderNo?: string) { return { data: await this.outbound.listOutbounds(orderNo), meta: {} }; }
+  /**
+   * 成品出库单的**打印件数据**（用户 2026-11-02：「出库单要支持导出 excel，支持打印」）。
+   *
+   * 与下面的 xlsx 导出共用 `FinishedGoodsOutboundExportService.buildDocument`：
+   * 屏幕上的打印视图与导出的 Excel 必须是同一份数据，否则「纸上有、屏幕上少一行」只有仓库对货时才会发现。
+   *
+   * 路径两段（`outbounds/:id/slip-document`），不会被单段的 `@Get("outbounds/:id")` 吃掉；
+   * 模块权限沿用类级的 `warehouse`——打这张单的人是仓库。
+   */
+  @Get("outbounds/:id/slip-document") async outboundSlipDocument(@Param("id") id: string) { return { data: await this.exports.buildDocument(id), meta: {} }; }
+  /** 成品出库单导出 xlsx：A4 竖版、与打印件逐行同一版式（可直接打印这张 xlsx）。 */
+  @Get("outbounds/:id/export.xlsx") async outboundExport(@Param("id") id: string, @Res() response: Response) {
+    const { buffer, outboundNo } = await this.exports.exportDocument(id);
+    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`迪礼ERP-成品出库单-${outboundNo}.xlsx`)}`);
+    response.setHeader("Cache-Control", "no-store");
+    return response.send(buffer);
+  }
   @Get("outbounds/:id") async getOutbound(@Param("id") id: string) { return { data: await this.outbound.getOutbound(id), meta: {} }; }
   @Post("outbounds") async createOutbound(@Body() body: OutboundDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.createOutbound(body, user), meta: {} }; }
   @Post("outbounds/:id/post") async postOutbound(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.outbound.postOutbound(id, user), meta: {} }; }
