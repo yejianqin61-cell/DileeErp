@@ -25,6 +25,13 @@ export function apply(ctx) {
 
   ctx.on('subagent/start', info => append('start', info))
   ctx.on('subagent/end', info => append('end', info))
+  ctx.on('dilee/activation-meta', info => appendFileSync(tracePath, `${JSON.stringify({
+    seq: ++seq,
+    event: 'meta',
+    runId: String(info.runId),
+    capabilityId: String(info.capabilityId),
+    role: String(info.role),
+  })}\n`, 'utf8'))
   ctx.provide('dileeActivationTrace', {})
 }
 

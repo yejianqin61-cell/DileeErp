@@ -50,6 +50,7 @@ export function apply(ctx, config = {}) {
     }
     pendingStart.observed = activation
     activations.set(activation.runId, activation)
+    ctx.emit('dilee/activation-meta', activation)
   })
 
   ctx.on('subagent/end', (info) => {

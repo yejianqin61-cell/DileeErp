@@ -12,6 +12,7 @@ interface ActivationTraceBase {
 export type ActivationTraceRecord =
   | ActivationTraceBase & { readonly event: 'start' }
   | ActivationTraceBase & { readonly event: 'end'; readonly stopReason: string }
+  | { readonly seq: number; readonly event: 'meta'; readonly runId: string; readonly capabilityId: string; readonly role: 'builder' | 'validator' }
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
@@ -22,6 +23,11 @@ function parseRecord(value: unknown, line: number): ActivationTraceRecord {
     throw new Error(`invalid Activation trace record at line ${line}`)
   }
   const record = value as Record<string, unknown>
+  if (record.event === 'meta') {
+    if (record.seq !== line || !isNonEmptyString(record.runId) || !isNonEmptyString(record.capabilityId)
+      || (record.role !== 'builder' && record.role !== 'validator')) throw new Error(`invalid Activation trace record at line ${line}`)
+    return record as unknown as ActivationTraceRecord
+  }
   const validBase = record.seq === line
     && isNonEmptyString(record.runId)
     && isNonEmptyString(record.childSessionId)
