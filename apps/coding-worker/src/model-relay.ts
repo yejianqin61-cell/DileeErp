@@ -1,4 +1,4 @@
-export const MODEL_RELAY_PATH = '/chat/completions'
+export const MODEL_RELAY_PATH = '/v1/chat/completions'
 const MAX_BODY_BYTES = 256 * 1024
 
 export interface ModelRelayConfig {

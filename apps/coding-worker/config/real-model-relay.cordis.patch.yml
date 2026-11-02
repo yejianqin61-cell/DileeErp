@@ -1,0 +1,4 @@
+- id: llm-deepseek
+  config:
+    baseURL: !!js process.env.DILEE_MODEL_RELAY_URL
+    apiKeyEnv: DILEE_MODEL_RELAY_TOKEN
