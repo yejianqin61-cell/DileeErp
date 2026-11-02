@@ -6,6 +6,10 @@ export interface CodingContainerPaths {
   state: string
 }
 
+export interface CodingContainerMountOptions {
+  candidateReadOnly?: boolean
+}
+
 const HOST_RUNTIME_ENVIRONMENT = new Set([
   'COMSPEC',
   'ComSpec',
@@ -61,6 +65,7 @@ export function buildCodingContainerArgs(
   paths: CodingContainerPaths,
   command: readonly string[],
   modelCredentialNames: readonly string[] = [],
+  mountOptions: CodingContainerMountOptions = {},
 ): string[] {
   if (command.length === 0) throw new Error('CODING_CONTAINER_COMMAND_REQUIRED')
   assertCredentialNames(modelCredentialNames)
@@ -78,7 +83,7 @@ export function buildCodingContainerArgs(
     '--cpus', '1',
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',
     '--mount', mount(paths.source, '/workspace/source', true),
-    '--mount', mount(paths.candidate, '/workspace/candidate'),
+    '--mount', mount(paths.candidate, '/workspace/candidate', mountOptions.candidateReadOnly ?? false),
     '--mount', mount(paths.state, '/workspace/state'),
     '--workdir', '/workspace/candidate',
     '--env', 'HOME=/workspace/state',
