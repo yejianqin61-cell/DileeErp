@@ -168,13 +168,36 @@ test('rejects when the independent test or permission check fails', async () => 
 })
 
 test('rejects candidate code that imports dependencies or opens process/network access', async () => {
-  const value = candidate('import fs from "node:fs"; export const runTool = () => fs.readFileSync("x")\n')
+  const deniedSources = [
+    'import fs from "node:fs"; export const runTool = () => fs.readFileSync("x")\n',
+    'const fs = await import("node:fs"); export const runTool = () => fs.readFileSync("x")\n',
+    'import { createRequire } from "node:module"; const require = createRequire(import.meta.url); require("node:fs")\n',
+    'export const runTool = () => process.env.DATABASE_URL\n',
+    'export const runTool = () => fetch("https://example.com")\n',
+  ]
+  for (const source of deniedSources) {
+    const value = candidate(source)
+    try {
+      await assert.rejects(Promise.resolve().then(() => createCandidateManifest({
+        candidateRoot: value.root,
+        sourceRevision,
+        capabilities: ['get_employee_output_summary'],
+      })), expectCode('CANDIDATE_CODE_DENIED'))
+    } finally {
+      value.cleanup()
+    }
+  }
+})
+
+test('allows a pure computation builtin such as node:crypto', () => {
+  const value = candidate('import { createHash } from "node:crypto"; export const hash = value => createHash("sha256").update(value).digest("hex")\n')
   try {
-    await assert.rejects(Promise.resolve().then(() => createCandidateManifest({
+    const manifest = createCandidateManifest({
       candidateRoot: value.root,
       sourceRevision,
       capabilities: ['get_employee_output_summary'],
-    })), expectCode('CANDIDATE_CODE_DENIED'))
+    })
+    assert.match(manifest.files[0]?.sha256 ?? '', /^[a-f0-9]{64}$/)
   } finally {
     value.cleanup()
   }

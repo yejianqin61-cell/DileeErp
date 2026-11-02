@@ -128,6 +128,27 @@ test('rejects a gateway result for another order or a truncated source set', asy
   }
 })
 
+test('rejects malformed adapter result rows and source records', async () => {
+  const invalidResults = [
+    { ...fixture, rows: [{ ...fixture.rows[0], kind: 'payroll' }] },
+    { ...fixture, rows: [{ ...fixture.rows[0], quantity: 'NaN' }] },
+    { ...fixture, rows: [{ ...fixture.rows[0], reportDate: '2026-02-30' }] },
+    { ...fixture, sources: [{ businessType: '', businessNo: '' }] },
+    { ...fixture, sources: null },
+  ]
+  for (const invalid of invalidResults) {
+    const reader = readerFor(invalid as RestrictedEmployeeOutputSummaryResult)
+    await assert.rejects(
+      runTool(
+        { order_no: 'SO-A-001', operation_name: '包装' },
+        reader,
+        { now: () => new Date(EXPECTED_AS_OF) },
+      ),
+      error => (error as Error & { code?: string }).code === 'DATA_SCOPE_VIOLATION',
+    )
+  }
+})
+
 test('keeps empty production results empty and source-free', async () => {
   const reader = readerFor({ ...fixture, rows: [], sources: [] })
   const fact = await runTool(
