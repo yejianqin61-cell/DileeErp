@@ -51,9 +51,9 @@ export interface CandidateGateOptions {
 
 const ALLOWED_FILES = new Set(['tool.ts'])
 const ALLOWED_CAPABILITIES = ['get_employee_output_summary']
-const SHA256 = /^[a-f0-9]{64}$/
 const GIT_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
-const FORBIDDEN_CODE = /\b(?:import|require|process|fetch|eval|Function|WebSocket)\b|\bchild_process\b|\bnode:(?:fs|net|http|https|tls|child_process)\b/
+const ALLOWED_BUILTINS = new Set(['node:crypto', 'node:util'])
+const FORBIDDEN_CODE = /\b(?:require|createRequire|process|fetch|eval|Function|WebSocket|globalThis|child_process)\b|\bnode:(?:fs|net|http|https|tls|child_process|module|vm|worker_threads)\b/
 
 function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex')
@@ -96,7 +96,20 @@ function readCandidateFiles(candidateRoot: string): Array<{ path: string; conten
 
 function validateCandidateCode(source: string): void {
   if (FORBIDDEN_CODE.test(source)) {
-    throw new CandidateGateError('CANDIDATE_CODE_DENIED', 'candidate may not access imports, process, or network APIs')
+    throw new CandidateGateError('CANDIDATE_CODE_DENIED', 'candidate uses a denied process, filesystem, or network API')
+  }
+  const moduleReferences = [
+    ...source.matchAll(/\b(?:from\s*|import\s*\(\s*)(['"])([^'"]+)\1/g),
+  ]
+  if (moduleReferences.some(match => !ALLOWED_BUILTINS.has(match[2]!))) {
+    throw new CandidateGateError('CANDIDATE_CODE_DENIED', 'candidate imports an unapproved module')
+  }
+  const staticImports = source.match(/\bimport\s+(?!\()/g)?.length ?? 0
+  const matchedStaticImports = source.match(/\bimport\s+(?:[^;\n]*?\s+from\s*)?(['"])[^'"]+\1/g)?.length ?? 0
+  const dynamicImports = source.match(/\bimport\s*\(/g)?.length ?? 0
+  const matchedDynamicImports = source.match(/\bimport\s*\(\s*(['"])[^'"]+\1\s*\)/g)?.length ?? 0
+  if (staticImports !== matchedStaticImports || dynamicImports !== matchedDynamicImports) {
+    throw new CandidateGateError('CANDIDATE_CODE_DENIED', 'candidate uses a non-literal module loader')
   }
 }
 
