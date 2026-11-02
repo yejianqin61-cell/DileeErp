@@ -122,3 +122,102 @@ test('projects, sorts and limits valid rows without leaking extra fields', async
     truncated: true,
   })
 })
+
+test('returns host-aggregated daily and employee totals without truncating totals', async () => {
+  const gateway = new RestrictedDataGateway(async () => [
+    {
+      kind: 'daily', reportId: 'r1', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      operationName: '包装', employeeId: 'e1', employeeName: '员工甲',
+      reportDate: '2026-10-30', quantity: '12', unitPrice: '9.9',
+    },
+    {
+      kind: 'daily', reportId: 'r2', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      operationName: '包装', employeeId: 'e1', employeeName: '员工甲',
+      reportDate: '2026-10-31', quantity: '8', remark: 'private',
+    },
+    {
+      kind: 'daily', reportId: 'r3', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      operationName: '包装', employeeId: 'e2', employeeName: '员工乙',
+      reportDate: '2026-10-31', quantity: '5', calculatedAmount: '200',
+    },
+    {
+      kind: 'employee_total', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      operationName: '包装', employeeId: 'e1', employeeName: '员工甲', quantity: '20',
+    },
+    {
+      kind: 'employee_total', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+      operationName: '包装', employeeId: 'e2', employeeName: '员工乙', quantity: '5',
+    },
+  ])
+
+  const result = await gateway.read({
+    operation: 'production.read_employee_output_summary',
+    scope: { orderNo: 'ORDER-A', operationName: '包装' },
+    accessLevel: 'operational',
+    limit: 100,
+  })
+
+  assert.deepEqual(result.rows, [
+    {
+      kind: 'daily', reportIds: ['r1'], productionOrderNo: 'PO-A',
+      employeeId: 'e1', employeeName: '员工甲', reportDate: '2026-10-30', quantity: '12',
+    },
+    {
+      kind: 'daily', reportIds: ['r2'], productionOrderNo: 'PO-A',
+      employeeId: 'e1', employeeName: '员工甲', reportDate: '2026-10-31', quantity: '8',
+    },
+    {
+      kind: 'daily', reportIds: ['r3'], productionOrderNo: 'PO-A',
+      employeeId: 'e2', employeeName: '员工乙', reportDate: '2026-10-31', quantity: '5',
+    },
+    {
+      kind: 'employee_total', reportIds: [], productionOrderNo: 'PO-A',
+      employeeId: 'e1', employeeName: '员工甲', reportDate: null, quantity: '20',
+    },
+    {
+      kind: 'employee_total', reportIds: [], productionOrderNo: 'PO-A',
+      employeeId: 'e2', employeeName: '员工乙', reportDate: null, quantity: '5',
+    },
+  ])
+  assert.equal(result.truncated, false)
+  assert.ok(!JSON.stringify(result).includes('unitPrice'))
+  assert.ok(!JSON.stringify(result).includes('calculatedAmount'))
+  assert.ok(!JSON.stringify(result).includes('private'))
+})
+
+test('rejects more than 100 aggregate rows instead of returning a false total', async () => {
+  const gateway = new RestrictedDataGateway(async () => Array.from({ length: 101 }, (_, index) => ({
+    kind: 'employee_total', orderNo: 'ORDER-A', productionOrderNo: 'PO-A',
+    operationName: '包装', employeeId: `e${index}`, employeeName: `员工${index}`,
+    quantity: '1',
+  })))
+
+  await assert.rejects(
+    gateway.read({
+      operation: 'production.read_employee_output_summary',
+      scope: { orderNo: 'ORDER-A', operationName: '包装' },
+      accessLevel: 'operational', limit: 100,
+    }),
+    expectCode('DATA_RESULT_LIMIT_EXCEEDED'),
+  )
+})
+
+test('rejects aggregate rows from another order or operation', async () => {
+  for (const escaped of [
+    { orderNo: 'ORDER-B', operationName: '包装' },
+    { orderNo: 'ORDER-A', operationName: '车缝' },
+  ]) {
+    const gateway = new RestrictedDataGateway(async () => [{
+      kind: 'employee_total', ...escaped, productionOrderNo: 'PO-X',
+      employeeId: 'e1', employeeName: '员工甲', quantity: '1',
+    }])
+    await assert.rejects(
+      gateway.read({
+        operation: 'production.read_employee_output_summary',
+        scope: { orderNo: 'ORDER-A', operationName: '包装' },
+        accessLevel: 'operational', limit: 100,
+      }),
+      expectCode('DATA_SCOPE_VIOLATION'),
+    )
+  }
+})
