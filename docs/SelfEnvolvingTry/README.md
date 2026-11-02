@@ -16,10 +16,12 @@
 | [阶段一 R-3 批次总结](phase1-r3-summary-2026-11-01.md) | 原 Builder 返工、Activation 轮次、哈希门禁与全树收口证据 |
 | [阶段一 R-4 批次总结](phase1-r4-summary-2026-11-01.md) | Cordis 动作规则、返工预算、Worker 截止时间与对抗证据 |
 | [阶段一 R-5 批次总结](phase1-r5-summary-2026-11-01.md) | 净化源码、Linux 隔离、受限数据入口与容器对抗证据 |
+| [阶段一 R-6 批次总结](phase1-r6-summary-2026-11-02.md) | 订单 A 产量 QueryFact、独立候选门禁与真实 Linux 纵切 |
 
 执行中的任务批次见 [阶段一 R-1/R-2 任务](tasks/phase1-r1-r2/README.md)。
 `R-3 失败返工可追溯` 的施工批次见 [阶段一 R-3 任务](tasks/phase1-r3/README.md)。
 `R-4 Cordis 与 Worker 强制规则` 的施工批次见 [阶段一 R-4 任务](tasks/phase1-r4/README.md)。
 `R-5 源码与数据只读隔离` 的施工批次见 [阶段一 R-5 任务](tasks/phase1-r5/README.md)。
+`R-6 真实工具与独立门禁` 的施工批次见 [阶段一 R-6 任务](tasks/phase1-r6/README.md)。
 
 上游 DeepSeekHarness 源码固定在提交 `f3803c96974ad4a94195fb97e5c637e9c2a3afe3`，本地克隆位于 `tmp/deepseek-harness`。本目录文档记录设计和验证计划；运行实验结果应追加到对应日期的 `docs/log/`。
