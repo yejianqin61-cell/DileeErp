@@ -22,6 +22,7 @@ const toolSource = 'export const runTool = () => "candidate"\n'
 function candidate(content = toolSource): { root: string; cleanup(): void } {
   const root = mkdtempSync(join(tmpdir(), 'dilee-candidate-'))
   writeFileSync(join(root, 'tool.ts'), content)
+  writeFileSync(join(root, 'tool.test.ts'), 'export {}\n')
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
@@ -50,8 +51,9 @@ test('recomputes candidate hashes and runs independent test and permission check
     assert.equal(report.accepted, true)
     assert.equal(report.sourceRevision, sourceRevision)
     assert.equal(report.capabilities[0], 'get_employee_output_summary')
-    assert.equal(report.files[0]?.path, 'tool.ts')
-    assert.match(report.files[0]?.sha256 ?? '', /^[a-f0-9]{64}$/)
+    assert.equal(report.files.some(file => file.path === 'tool.ts'), true)
+    assert.equal(report.files.some(file => file.path === 'tool.test.ts'), true)
+    assert.match(report.files.find(file => file.path === 'tool.ts')?.sha256 ?? '', /^[a-f0-9]{64}$/)
     assert.match(report.manifestHash, /^[a-f0-9]{64}$/)
     assert.deepEqual(calls, ['tests', 'permissions'])
   } finally {

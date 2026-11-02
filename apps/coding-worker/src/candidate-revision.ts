@@ -30,6 +30,7 @@ function filesAt(root: string): Array<{ path: string; content: Buffer }> {
     return { path, content: readFileSync(absolute) }
   }).sort((a, b) => a.path.localeCompare(b.path, 'en'))
   if (!files.some(file => file.path === 'tool.ts')) throw new Error('CANDIDATE_REVISION_IMPLEMENTATION_REQUIRED')
+  if (!files.some(file => file.path === 'tool.test.ts')) throw new Error('CANDIDATE_REVISION_TEST_REQUIRED')
   return files
 }
 

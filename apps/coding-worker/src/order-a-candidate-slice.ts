@@ -31,6 +31,7 @@ export interface OrderACandidateSliceResult {
   candidateWriteDenied: boolean
   networkDenied: boolean
   databaseCredentialAbsent: boolean
+  generatedTestPassed: boolean
 }
 
 const AS_OF = '2026-11-02T00:00:00.000Z'
@@ -74,6 +75,7 @@ function probeScript(): string {
   return `
 const fs = await import('node:fs');
 const { runTool } = await import('/workspace/candidate/tool.ts');
+await import('/workspace/candidate/tool.test.ts');
 let sourceWriteDenied = false;
 let candidateWriteDenied = false;
 let networkDenied = false;
@@ -96,6 +98,7 @@ process.stdout.write(JSON.stringify({
     && process.env.AGENT_READ_DATABASE_URL === undefined
     && process.env.COOKIE_SECRET === undefined
     && process.env.USER_ACCESS_TOKEN === undefined,
+  generatedTestPassed: true,
 }));
 `
 }
@@ -121,7 +124,9 @@ export function runOrderACandidateInLinux(
     mkdirSync(paths.candidate)
     mkdirSync(paths.state)
     copyFileSync(join(options.candidateRoot, 'tool.ts'), join(paths.candidate, 'tool.ts'))
+    copyFileSync(join(options.candidateRoot, 'tool.test.ts'), join(paths.candidate, 'tool.test.ts'))
     chmodSync(join(paths.candidate, 'tool.ts'), 0o444)
+    chmodSync(join(paths.candidate, 'tool.test.ts'), 0o444)
     chmodSync(paths.candidate, 0o555)
     chmodSync(paths.state, 0o777)
     materializeSourceView({

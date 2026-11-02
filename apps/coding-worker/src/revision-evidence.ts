@@ -13,6 +13,7 @@ export interface ValidationEvidence {
   readonly validatorSessionId: string
   readonly reviewedBuilderRunId: string
   readonly reviewedBuilderSessionId: string
+  readonly reportHash?: string
 }
 
 export type RevisionEvidenceDecision =

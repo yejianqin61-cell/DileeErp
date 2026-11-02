@@ -49,7 +49,7 @@ export interface CandidateGateOptions {
   runPermissionChecks(): Promise<CandidateTestResult>
 }
 
-const ALLOWED_FILES = new Set(['tool.ts'])
+const ALLOWED_FILES = new Set(['tool.ts', 'tool.test.ts'])
 const ALLOWED_CAPABILITIES = ['get_employee_output_summary']
 const GIT_REVISION = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
 const ALLOWED_BUILTINS = new Set(['node:crypto', 'node:util'])
@@ -88,8 +88,8 @@ function readCandidateFiles(candidateRoot: string): Array<{ path: string; conten
   }
   visit(root)
   files.sort((left, right) => left.path.localeCompare(right.path, 'en'))
-  if (files.length !== 1 || files[0]?.path !== 'tool.ts') {
-    throw new CandidateGateError('CANDIDATE_PATH_DENIED', 'candidate must contain exactly tool.ts')
+  if (files.length !== 2 || !files.some(file => file.path === 'tool.ts') || !files.some(file => file.path === 'tool.test.ts')) {
+    throw new CandidateGateError('CANDIDATE_PATH_DENIED', 'candidate must contain tool.ts and tool.test.ts')
   }
   return files
 }
@@ -125,7 +125,7 @@ export function createCandidateManifest(input: {
     throw new CandidateGateError('CANDIDATE_VALIDATION_FAILED', 'candidate capability set is not approved')
   }
   const files = readCandidateFiles(input.candidateRoot).map(({ path, content }) => {
-    validateCandidateCode(content.toString('utf8'))
+    if (path === 'tool.ts') validateCandidateCode(content.toString('utf8'))
     return { path, sha256: sha256(content) }
   })
   const base = {

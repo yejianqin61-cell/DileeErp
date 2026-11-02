@@ -31,6 +31,7 @@ test('runs the approved candidate and independent permission checks in Linux', {
 }, async () => {
   const stagedCandidateRoot = mkdtempSync(join(tmpdir(), 'dilee-order-a-esm-candidate-'))
   copyFileSync(join(candidateRoot, 'tool.ts'), join(stagedCandidateRoot, 'tool.ts'))
+  copyFileSync(join(candidateRoot, 'tool.test.ts'), join(stagedCandidateRoot, 'tool.test.ts'))
   const manifest = createCandidateManifest({
     candidateRoot,
     sourceRevision,
@@ -56,6 +57,7 @@ test('runs the approved candidate and independent permission checks in Linux', {
         assert.equal(result.candidateWriteDenied, true)
         assert.equal(result.networkDenied, true)
         assert.equal(result.databaseCredentialAbsent, true)
+        assert.equal(result.generatedTestPassed, true)
         return { passed: true }
       },
       runPermissionChecks: async () => {
