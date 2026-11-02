@@ -60,6 +60,19 @@ test('uses a fixed non-root, offline and read-only container policy', () => {
   assert.deepEqual(args.slice(-3), [CODING_CONTAINER_IMAGE, 'node', 'probe.mjs'])
 })
 
+test('permits a build container only on an explicitly named model relay network', () => {
+  const args = buildCodingContainerArgs(paths, ['node', 'probe.mjs'], ['DILEE_MODEL_RELAY_TOKEN'], {
+    modelRelayNetwork: 'dilee-model-relay',
+  })
+
+  assert.equal(optionValue(args, '--network'), 'dilee-model-relay')
+  assert.ok(args.includes('DILEE_MODEL_RELAY_TOKEN'))
+  assert.throws(
+    () => buildCodingContainerArgs(paths, ['node'], [], { modelRelayNetwork: 'bad network' }),
+    /CODING_MODEL_RELAY_NETWORK_INVALID/,
+  )
+})
+
 test('does not pass ERP credentials or user tokens into the container host process', () => {
   const selected = selectCodingHostEnvironment({
     PATH: 'runtime-path',

@@ -8,6 +8,7 @@ export interface CodingContainerPaths {
 
 export interface CodingContainerMountOptions {
   candidateReadOnly?: boolean
+  modelRelayNetwork?: string
 }
 
 const HOST_RUNTIME_ENVIRONMENT = new Set([
@@ -31,6 +32,7 @@ const HOST_RUNTIME_ENVIRONMENT = new Set([
 
 const MODEL_CREDENTIALS = new Set([
   'DEEPSEEK_API_KEY',
+  'DILEE_MODEL_RELAY_TOKEN',
 ])
 
 function assertCredentialNames(names: readonly string[]): void {
@@ -46,6 +48,14 @@ function mount(source: string, destination: string, readonly = false): string {
     throw new Error(`CODING_MOUNT_PATH_INVALID: ${source}`)
   }
   return `type=bind,src=${source},dst=${destination}${readonly ? ',readonly' : ''}`
+}
+
+function modelRelayNetwork(value: string | undefined): string {
+  if (value === undefined) return 'none'
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(value)) {
+    throw new Error(`CODING_MODEL_RELAY_NETWORK_INVALID: ${value}`)
+  }
+  return value
 }
 
 export function selectCodingHostEnvironment(
@@ -73,7 +83,7 @@ export function buildCodingContainerArgs(
     'run',
     '--rm',
     '--init',
-    '--network', 'none',
+    '--network', modelRelayNetwork(mountOptions.modelRelayNetwork),
     '--read-only',
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
