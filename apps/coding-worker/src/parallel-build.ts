@@ -1,4 +1,6 @@
-import { join, resolve } from 'node:path'
+import { mkdir } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   runCodingBatch,
@@ -6,6 +8,8 @@ import {
   type CodingRuntimeConfig,
   type CodingRuntimeFactory,
 } from './runtime-lifecycle.ts'
+import { readActivationTrace } from './activation-trace.ts'
+import { normalizeBatchProgressEvents, type BatchProgressEvent } from './batch-progress-events.ts'
 
 export interface ParallelCapabilityRequest {
   readonly capabilityId: string
@@ -19,9 +23,13 @@ export interface ParallelCodingBuildResult extends CodingBatchResult {
   readonly capabilityId: string
   readonly attemptId: string
   readonly round: number
+  readonly progressEvents: BatchProgressEvent[]
 }
 
 export type ParallelCodingBuildConfig = Omit<CodingRuntimeConfig, 'workspace'>
+
+const packageRoot = dirname(fileURLToPath(new URL('../package.json', import.meta.url)))
+const activationTracePatch = resolve(packageRoot, 'config', 'activation-trace.cordis.patch.yml')
 
 function assertPathSegment(value: string, name: string): void {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u.test(value) || value === '.' || value === '..') {
@@ -68,20 +76,42 @@ export async function runParallelCodingBuilds(
   signal?.addEventListener('abort', abortFromCaller, { once: true })
   const settled = await Promise.allSettled(capabilities.map(async (capability) => {
     try {
+      const dshHome = join(resolve(config.dshHome), capability.capabilityId, capability.attemptId)
+      await mkdir(dshHome, { recursive: true })
       const batch = await runCodingBatch({
         ...config,
         workspace: capability.workspace,
-        dshHome: join(resolve(config.dshHome), capability.capabilityId, capability.attemptId),
+        dshHome,
+        patches: config.patches.some(patch => resolve(patch) === activationTracePatch)
+          ? config.patches
+          : [...config.patches, activationTracePatch],
+        environment: {
+          ...config.environment,
+          DILEE_ACTIVATION_LOG_PATH: join(dshHome, 'activations.jsonl'),
+        },
         batchId: `${capability.capabilityId}:${capability.attemptId}`,
         parentSessionId: `${capability.capabilityId}:${capability.attemptId}:parent`,
         prompt: capability.prompt,
         signal: controller.signal,
       }, factory)
+      const tracePath = join(dshHome, 'activations.jsonl')
+      const activations = await readActivationTrace(tracePath)
+      const round = capability.round ?? 1
       return {
         ...batch,
         capabilityId: capability.capabilityId,
         attemptId: capability.attemptId,
-        round: capability.round ?? 1,
+        round,
+        progressEvents: normalizeBatchProgressEvents({
+          batchId: batch.batchId,
+          capabilityId: capability.capabilityId,
+          attemptId: capability.attemptId,
+          round,
+        }, {
+          sdkEvents: batch.run.events,
+          notifications: batch.run.notifications,
+          activations,
+        }),
       }
     } catch (error) {
       if (!controller.signal.aborted) {
