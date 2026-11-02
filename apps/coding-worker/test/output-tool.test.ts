@@ -3,12 +3,11 @@ import test from 'node:test'
 
 import { runTool } from '../candidate/order-a-output/tool.ts'
 import type {
-  RestrictedDataContext,
   RestrictedDataRequest,
-  RestrictedDataResult,
+  RestrictedEmployeeOutputSummaryResult,
 } from '../src/restricted-data-gateway.ts'
 
-const fixture: RestrictedDataResult = {
+const fixture: RestrictedEmployeeOutputSummaryResult = {
   operation: 'production.read_employee_output_summary',
   scope: { orderNo: 'SO-A-001', operationName: '包装' },
   accessLevel: 'operational',
@@ -44,12 +43,12 @@ const fixture: RestrictedDataResult = {
   truncated: false,
 }
 
-function readerFor(result: RestrictedDataResult) {
-  const calls: Array<{ request: RestrictedDataRequest; context: RestrictedDataContext }> = []
+function readerFor(result: RestrictedEmployeeOutputSummaryResult) {
+  const calls: Array<Omit<RestrictedDataRequest, 'accessLevel'>> = []
   return {
     calls,
-    async read(request: RestrictedDataRequest, context: RestrictedDataContext) {
-      calls.push({ request, context })
+    async read(request: Omit<RestrictedDataRequest, 'accessLevel'>) {
+      calls.push(request)
       return result
     },
   }
@@ -89,12 +88,9 @@ test('returns employee daily and cumulative production for sanitized order A', a
     access_level: 'operational',
   })
   assert.deepEqual(reader.calls[0], {
-    request: {
-      operation: 'production.read_employee_output_summary',
-      scope: { orderNo: 'SO-A-001', operationName: '包装' },
-      limit: 100,
-    },
-    context: { accessLevel: 'operational' },
+    operation: 'production.read_employee_output_summary',
+    scope: { orderNo: 'SO-A-001', operationName: '包装' },
+    limit: 100,
   })
 })
 
@@ -120,7 +116,7 @@ test('rejects a gateway result for another order or a truncated source set', asy
     { ...fixture, scope: { ...fixture.scope, orderNo: 'SO-B-002' } },
     { ...fixture, truncated: true },
   ]) {
-    const reader = readerFor(invalid)
+    const reader = readerFor(invalid as RestrictedEmployeeOutputSummaryResult)
     await assert.rejects(
       runTool(
         { order_no: 'SO-A-001', operation_name: '包装' },

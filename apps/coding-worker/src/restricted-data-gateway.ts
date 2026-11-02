@@ -49,6 +49,25 @@ export interface RestrictedDataResult {
   truncated: boolean
 }
 
+export interface RestrictedEmployeeOutputSummaryResult {
+  operation: 'production.read_employee_output_summary'
+  scope: RestrictedDataRequest['scope']
+  accessLevel: RestrictedAccessLevel
+  rows: RestrictedDataSummaryRow[]
+  sources: Array<{ businessType: 'employee_daily_report'; businessNo: string }>
+  truncated: false
+}
+
+export type RestrictedDataSummaryRow = RestrictedEmployeeOutputSummary | {
+  kind: 'employee_total'
+  reportIds: []
+  productionOrderNo: string
+  employeeId: string
+  employeeName: string
+  reportDate: null
+  quantity: string
+}
+
 export class RestrictedDataError extends Error {
   constructor(
     readonly code:
@@ -185,7 +204,7 @@ function projectRow(
 export class RestrictedDataGateway {
   constructor(private readonly adapter: RestrictedDataAdapter) {}
 
-  async read(input: unknown, context: RestrictedDataContext): Promise<RestrictedDataResult> {
+  async read(input: unknown, context: RestrictedDataContext): Promise<RestrictedDataResult | RestrictedEmployeeOutputSummaryResult> {
     const request = parseRequest(input, context)
     const adapterRows = await this.adapter(request)
     if (request.operation === 'production.read_employee_output_summary') {
