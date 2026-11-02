@@ -32,8 +32,8 @@ const BASELINE_COUNTS_SQL = `SELECT count(*) FILTER (WHERE deleted_at IS NULL), 
 export function createPhase1DataBaseline(
   targetDatabase: string,
   command: DatabaseCommand,
-  sourceDatabase = PHASE1_BASELINE_SOURCE,
 ): Phase1DataBaseline {
+  const sourceDatabase = PHASE1_BASELINE_SOURCE
   assertTestDatabase(targetDatabase, sourceDatabase)
   command(['-d', 'postgres', '-c', `DROP DATABASE IF EXISTS ${targetDatabase} WITH (FORCE);`])
   command(['-d', 'postgres', '-c', `CREATE DATABASE ${targetDatabase} TEMPLATE ${sourceDatabase};`])
