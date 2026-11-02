@@ -31,6 +31,19 @@ test('mounts source read-only and keeps only candidate and state writable', () =
   assert.equal(optionValue(args, '--workdir'), '/workspace/candidate')
 })
 
+test('mounts a completed candidate read-only during independent validation', () => {
+  const args = buildCodingContainerArgs(paths, ['node', 'probe.mjs'], [], {
+    candidateReadOnly: true,
+  })
+  const mounts = args.filter((arg, index) => args[index - 1] === '--mount')
+
+  assert.deepEqual(mounts, [
+    'type=bind,src=C:\\sandbox\\source,dst=/workspace/source,readonly',
+    'type=bind,src=C:\\sandbox\\candidate,dst=/workspace/candidate,readonly',
+    'type=bind,src=C:\\sandbox\\state,dst=/workspace/state',
+  ])
+})
+
 test('uses a fixed non-root, offline and read-only container policy', () => {
   const args = buildCodingContainerArgs(paths, ['node', 'probe.mjs'])
 
