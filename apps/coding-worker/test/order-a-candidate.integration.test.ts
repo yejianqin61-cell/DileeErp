@@ -32,6 +32,7 @@ test('runs the approved candidate and independent permission checks in Linux', {
     capabilities: ['get_employee_output_summary'],
   })
   const report = await evaluateCandidate({
+    repositoryRoot,
     candidateRoot,
     manifest,
     expectedSourceRevision: sourceRevision,

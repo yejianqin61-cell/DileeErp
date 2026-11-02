@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
@@ -40,6 +41,7 @@ export interface CandidateGateReport {
 }
 
 export interface CandidateGateOptions {
+  repositoryRoot: string
   candidateRoot: string
   manifest: CandidateManifest
   expectedSourceRevision: string
@@ -126,6 +128,19 @@ export async function evaluateCandidate(options: CandidateGateOptions): Promise<
   if (!GIT_REVISION.test(options.expectedSourceRevision)
     || options.manifest.sourceRevision !== options.expectedSourceRevision) {
     throw new CandidateGateError('SOURCE_BASELINE_MISMATCH')
+  }
+  let resolvedRevision: string
+  try {
+    resolvedRevision = execFileSync(
+      'git',
+      ['rev-parse', '--verify', `${options.expectedSourceRevision}^{commit}`],
+      { cwd: options.repositoryRoot, encoding: 'utf8', windowsHide: true },
+    ).trim()
+  } catch {
+    throw new CandidateGateError('SOURCE_BASELINE_MISMATCH', 'source revision is not present in the ERP repository')
+  }
+  if (resolvedRevision !== options.expectedSourceRevision) {
+    throw new CandidateGateError('SOURCE_BASELINE_MISMATCH', 'source revision did not resolve exactly')
   }
   const actual = createCandidateManifest({
     candidateRoot: options.candidateRoot,

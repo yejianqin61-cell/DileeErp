@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import {
@@ -10,7 +12,11 @@ import {
   evaluateCandidate,
 } from '../src/candidate-gate.ts'
 
-const sourceRevision = 'a'.repeat(40)
+const repositoryRoot = fileURLToPath(new URL('../../..', import.meta.url))
+const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], {
+  cwd: repositoryRoot,
+  encoding: 'utf8',
+}).trim()
 const toolSource = 'export const runTool = () => "candidate"\n'
 
 function candidate(content = toolSource): { root: string; cleanup(): void } {
@@ -33,6 +39,7 @@ test('recomputes candidate hashes and runs independent test and permission check
       capabilities: ['get_employee_output_summary'],
     })
     const report = await evaluateCandidate({
+      repositoryRoot,
       candidateRoot: value.root,
       manifest,
       expectedSourceRevision: sourceRevision,
@@ -63,6 +70,7 @@ test('rejects a candidate file changed after manifest creation', async () => {
     writeFileSync(join(value.root, 'tool.ts'), `${toolSource}// changed\n`)
 
     await assert.rejects(evaluateCandidate({
+      repositoryRoot,
       candidateRoot: value.root,
       manifest,
       expectedSourceRevision: sourceRevision,
@@ -117,6 +125,7 @@ test('rejects a source revision that differs from the validated baseline', async
       capabilities: ['get_employee_output_summary'],
     })
     await assert.rejects(evaluateCandidate({
+      repositoryRoot,
       candidateRoot: value.root,
       manifest,
       expectedSourceRevision: 'b'.repeat(40),
@@ -137,6 +146,7 @@ test('rejects when the independent test or permission check fails', async () => 
       capabilities: ['get_employee_output_summary'],
     })
     await assert.rejects(evaluateCandidate({
+      repositoryRoot,
       candidateRoot: value.root,
       manifest,
       expectedSourceRevision: sourceRevision,
@@ -145,6 +155,7 @@ test('rejects when the independent test or permission check fails', async () => 
     }), expectCode('CANDIDATE_VALIDATION_FAILED'))
 
     await assert.rejects(evaluateCandidate({
+      repositoryRoot,
       candidateRoot: value.root,
       manifest,
       expectedSourceRevision: sourceRevision,
