@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { verifySingleParentActivations } from '../src/single-parent-activation.ts'
+import { timedActivationsFromTrace, verifySingleParentActivations } from '../src/single-parent-activation.ts'
 
 const valid = [
   { capabilityId: 'output', role: 'builder' as const, runId: 'b1', startedAt: 10, endedAt: 30 },
@@ -13,4 +13,13 @@ test('accepts two overlapping Builders and validators after their own builders',
 test('rejects non-overlapping Builders and early validators', () => {
   assert.throws(() => verifySingleParentActivations([{ ...valid[0]!, endedAt: 20 }, ...valid.slice(1)]), /NOT_OVERLAPPED/)
   assert.throws(() => verifySingleParentActivations([{ ...valid[0]! }, { ...valid[1]! }, { ...valid[2]!, startedAt: 29 }, valid[3]!]), /VALIDATOR_ORDER/)
+})
+test('joins trace metadata to the actual Activation intervals', () => {
+  const records = valid.flatMap((item, index) => [
+    { event: 'start', runId: item.runId, at: item.startedAt },
+    { event: 'meta', runId: item.runId, capabilityId: item.capabilityId, role: item.role },
+    { event: 'end', runId: item.runId, at: item.endedAt },
+  ])
+  assert.deepEqual(timedActivationsFromTrace(records), valid)
+  assert.throws(() => timedActivationsFromTrace(records.filter(record => record.runId !== 'b1' || record.event !== 'meta')), /TRACE_INCOMPLETE/)
 })
