@@ -54,9 +54,12 @@ type QueryFact = {
 }
 
 export class OutputToolError extends Error {
-  constructor(readonly code: 'DATA_REQUEST_INVALID' | 'DATA_SCOPE_VIOLATION', message: string) {
+  readonly code: 'DATA_REQUEST_INVALID' | 'DATA_SCOPE_VIOLATION'
+
+  constructor(code: 'DATA_REQUEST_INVALID' | 'DATA_SCOPE_VIOLATION', message: string) {
     super(message)
     this.name = 'OutputToolError'
+    this.code = code
   }
 }
 
