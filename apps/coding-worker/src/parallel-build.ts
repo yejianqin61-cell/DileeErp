@@ -10,11 +10,12 @@ import {
 } from './runtime-lifecycle.ts'
 import { readActivationTrace } from './activation-trace.ts'
 import { normalizeBatchProgressEvents, type BatchProgressEvent } from './batch-progress-events.ts'
+import { createCapabilityAttemptWorkspace } from './attempt-workspace.ts'
 
 export interface ParallelCapabilityRequest {
   readonly capabilityId: string
   readonly attemptId: string
-  readonly workspace: string
+  readonly workspaceRoot: string
   readonly prompt: string
   readonly round?: number
 }
@@ -45,7 +46,6 @@ export async function runParallelCodingBuilds(
 ): Promise<ParallelCodingBuildResult[]> {
   if (capabilities.length === 0) throw new TypeError('at least one capability is required')
   const ids = new Set<string>()
-  const workspaces = new Set<string>()
   for (const capability of capabilities) {
     assertPathSegment(capability.capabilityId, 'capabilityId')
     assertPathSegment(capability.attemptId, 'attemptId')
@@ -53,10 +53,6 @@ export async function runParallelCodingBuilds(
       throw new TypeError(`duplicate capabilityId: ${capability.capabilityId}`)
     }
     ids.add(capability.capabilityId)
-    const resolvedWorkspace = resolve(capability.workspace)
-    const workspace = process.platform === 'win32' ? resolvedWorkspace.toLowerCase() : resolvedWorkspace
-    if (workspaces.has(workspace)) throw new TypeError('each capability must use a unique workspace')
-    workspaces.add(workspace)
     if (!capability.attemptId || !capability.prompt) {
       throw new TypeError('attemptId and prompt are required for every capability')
     }
@@ -76,11 +72,16 @@ export async function runParallelCodingBuilds(
   signal?.addEventListener('abort', abortFromCaller, { once: true })
   const settled = await Promise.allSettled(capabilities.map(async (capability) => {
     try {
+      const workspace = await createCapabilityAttemptWorkspace(
+        capability.workspaceRoot,
+        capability.capabilityId,
+        capability.attemptId,
+      )
       const dshHome = join(resolve(config.dshHome), capability.capabilityId, capability.attemptId)
       await mkdir(dshHome, { recursive: true })
       const batch = await runCodingBatch({
         ...config,
-        workspace: capability.workspace,
+        workspace,
         dshHome,
         patches: config.patches.some(patch => resolve(patch) === activationTracePatch)
           ? config.patches
