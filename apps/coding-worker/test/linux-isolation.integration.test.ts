@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import { runLinuxIsolationProbe } from '../src/linux-isolation-probe.ts'
 
 const repositoryRoot = fileURLToPath(new URL('../../..', import.meta.url))
+const docker = spawnSync('docker', ['info', '--format', '{{.OSType}}'], {
+  encoding: 'utf8',
+  windowsHide: true,
+})
+const linuxEngineAvailable = docker.status === 0 && docker.stdout.trim() === 'linux'
 
 test('enforces the source, candidate, credential and network boundary in Linux', {
   timeout: 180_000,
+  skip: linuxEngineAvailable ? false : 'Docker Linux engine is not available',
 }, () => {
   const result = runLinuxIsolationProbe({
     repositoryRoot,
