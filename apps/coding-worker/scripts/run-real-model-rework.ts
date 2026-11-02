@@ -19,11 +19,16 @@ try {
   assert.ok(files.includes('tool.ts'), 'real model did not create tool.ts')
   assert.ok(files.includes('tool.test.ts'), 'real model did not create tool.test.ts')
   const eventTypes = result.run.events.map(event => event.type)
-  assert.ok(eventTypes.includes('tool'), 'real model did not issue a tool call')
+  const notificationMethods = result.run.notifications.map(notification => notification.method)
+  assert.ok(
+    notificationMethods.includes('subagent.started'),
+    'real model did not start the Builder subagent',
+  )
   console.log(JSON.stringify({
     result: 'passed',
     eventCount: eventTypes.length,
     toolEvents: eventTypes.filter(type => type === 'tool').length,
+    subagentsStarted: notificationMethods.filter(method => method === 'subagent.started').length,
     files: ['tool.ts', 'tool.test.ts'],
   }))
 } finally {
