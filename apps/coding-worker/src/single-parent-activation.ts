@@ -23,15 +23,23 @@ export function timedActivationsFromTrace(records: readonly ({ readonly event: s
 export function verifySingleParentActivations(records: readonly TimedActivation[]): void {
   const builders = records.filter(record => record.role === 'builder')
   const validators = records.filter(record => record.role === 'validator')
-  if (builders.length !== 2 || validators.length !== 2) throw new Error('SINGLE_PARENT_ACTIVATION_COUNT_INVALID')
-  if (new Set(builders.map(record => record.capabilityId)).size !== 2) throw new Error('SINGLE_PARENT_BUILDER_CAPABILITY_INVALID')
+  const builderCapabilities = new Set(builders.map(record => record.capabilityId))
+  const validatorCapabilities = new Set(validators.map(record => record.capabilityId))
+  if (builders.length < 2 || validators.length < 2) throw new Error('SINGLE_PARENT_ACTIVATION_COUNT_INVALID')
+  if (builderCapabilities.size !== 2 || validatorCapabilities.size !== 2
+    || [...validatorCapabilities].some(capabilityId => !builderCapabilities.has(capabilityId))) {
+    throw new Error('SINGLE_PARENT_BUILDER_CAPABILITY_INVALID')
+  }
   for (const record of records) if (record.startedAt >= record.endedAt) throw new Error('SINGLE_PARENT_ACTIVATION_INTERVAL_INVALID')
-  const [left, right] = builders
-  if (!left || !right || Math.max(left.startedAt, right.startedAt) >= Math.min(left.endedAt, right.endedAt)) {
+  const overlappingBuilders = builders.some((left, index) => builders.slice(index + 1).some(right =>
+    left.capabilityId !== right.capabilityId
+      && Math.max(left.startedAt, right.startedAt) < Math.min(left.endedAt, right.endedAt)))
+  if (!overlappingBuilders) {
     throw new Error('SINGLE_PARENT_BUILDERS_NOT_OVERLAPPED')
   }
   for (const validator of validators) {
-    const builder = builders.find(item => item.capabilityId === validator.capabilityId)
-    if (!builder || validator.startedAt < builder.endedAt) throw new Error('SINGLE_PARENT_VALIDATOR_ORDER_INVALID')
+    const completedBuilder = builders.some(builder => builder.capabilityId === validator.capabilityId
+      && builder.endedAt <= validator.startedAt)
+    if (!completedBuilder) throw new Error('SINGLE_PARENT_VALIDATOR_ORDER_INVALID')
   }
 }

@@ -10,6 +10,11 @@ const valid = [
 ]
 
 test('accepts two overlapping Builders and validators after their own builders', () => assert.doesNotThrow(() => verifySingleParentActivations(valid)))
+test('accepts a bounded Builder rework and its follow-up Validator', () => assert.doesNotThrow(() => verifySingleParentActivations([
+  ...valid,
+  { capabilityId: 'inventory', role: 'builder', runId: 'b3', startedAt: 50, endedAt: 60 },
+  { capabilityId: 'inventory', role: 'validator', runId: 'v3', startedAt: 61, endedAt: 65 },
+])))
 test('rejects non-overlapping Builders and early validators', () => {
   assert.throws(() => verifySingleParentActivations([{ ...valid[0]!, endedAt: 20 }, ...valid.slice(1)]), /NOT_OVERLAPPED/)
   assert.throws(() => verifySingleParentActivations([{ ...valid[0]! }, { ...valid[1]! }, { ...valid[2]!, startedAt: 29 }, valid[3]!]), /VALIDATOR_ORDER/)
