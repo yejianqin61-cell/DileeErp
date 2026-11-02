@@ -15,6 +15,8 @@ export interface RestrictedDataRequest {
 
 export interface RestrictedDataContext {
   accessLevel: RestrictedAccessLevel
+  active?: boolean
+  authorizedScopes?: readonly { orderNo: string; operationName: string }[]
 }
 
 export type RestrictedDataAdapter = (
@@ -74,7 +76,8 @@ export class RestrictedDataError extends Error {
       | 'DATA_OPERATION_DENIED'
       | 'DATA_REQUEST_INVALID'
       | 'DATA_RESULT_LIMIT_EXCEEDED'
-      | 'DATA_SCOPE_VIOLATION',
+      | 'DATA_SCOPE_VIOLATION'
+      | 'DATA_AUTHORIZATION_DENIED',
     message: string,
   ) {
     super(message)
@@ -124,7 +127,7 @@ function parseRequest(input: unknown, context: RestrictedDataContext): Restricte
   if (!Number.isInteger(input.limit) || (input.limit as number) < 1 || (input.limit as number) > 100) {
     throw new RestrictedDataError('DATA_REQUEST_INVALID', 'limit must be an integer from 1 to 100')
   }
-  return {
+  const request: RestrictedDataRequest = {
     operation: input.operation,
     scope: {
       orderNo: requiredString(input.scope, 'orderNo', 'DATA_REQUEST_INVALID'),
@@ -133,6 +136,12 @@ function parseRequest(input: unknown, context: RestrictedDataContext): Restricte
     accessLevel: context.accessLevel,
     limit: input.limit as number,
   }
+  if (context.active === false || (context.authorizedScopes !== undefined
+    && !context.authorizedScopes.some(scope => scope.orderNo === request.scope.orderNo
+      && scope.operationName === request.scope.operationName))) {
+    throw new RestrictedDataError('DATA_AUTHORIZATION_DENIED', 'host authorization does not allow this scope')
+  }
+  return request
 }
 
 function projectSummaryRow(

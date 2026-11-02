@@ -139,6 +139,32 @@ test('rejects a candidate-supplied access level and uses the host-trusted level'
   assert.deepEqual(seenLevels, [])
 })
 
+test('rejects inactive and out-of-scope requests before calling the adapter', async () => {
+  let calls = 0
+  const gateway = new RestrictedDataGateway(async () => { calls += 1; return [] })
+  await assert.rejects(
+    gateway.read(validRequest, { accessLevel: 'operational', active: false }),
+    expectCode('DATA_AUTHORIZATION_DENIED'),
+  )
+  await assert.rejects(
+    gateway.read(validRequest, {
+      accessLevel: 'operational',
+      authorizedScopes: [{ orderNo: 'ORDER-B', operationName: '包装' }],
+    }),
+    expectCode('DATA_AUTHORIZATION_DENIED'),
+  )
+  assert.equal(calls, 0)
+})
+
+test('accepts the exact host-authorized order and operation', async () => {
+  const gateway = new RestrictedDataGateway(async () => [validRow])
+  const result = await gateway.read(validRequest, {
+    accessLevel: 'operational', active: true,
+    authorizedScopes: [{ orderNo: 'ORDER-A', operationName: '包装' }],
+  })
+  assert.equal(result.rows.length, 1)
+})
+
 test('returns host-aggregated daily and employee totals without truncating totals', async () => {
   const gateway = new RestrictedDataGateway(async () => [
     {
