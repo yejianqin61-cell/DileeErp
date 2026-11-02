@@ -17,7 +17,7 @@
 | C-4 | Linux 候选纵切 | `order-a-candidate-slice.ts` | 新增 | 完成 | 候选在 Node 24.9 容器中真实执行并受隔离约束 |
 | C-5 | R-6 回归验收 | Coding Worker 与 API | 变更 | 完成 | Worker 68 项中 67 项通过，1 项仅跳过 Windows 符号链接 |
 
-例行项：四份任务简报、红绿测试提交、候选 manifest、来源报告结构和 Harness 配置装载同步完成。
+例行项：2026-11-02 focused 回归为 35 通过、1 项 Windows 条件跳过；Worker/API 类型检查和 Harness 配置装载通过。
 
 ## 2. 变化的含义
 
@@ -44,4 +44,8 @@
 - `runCodingBatch()` 尚未迁移为在该 Linux 容器内启动完整 DSH Harness；本轮只在容器内执行候选纵切。
 - 模型出口、生产容器编排、后代进程树清理和资源耗尽恢复仍需生产同型验证。
 - `R-7 并行批次与可观察失败`、Artifact Registry、热重载、Query Agent 续跑和前端工作态仍未开始。
+
+## 变更记录
+
+- 2026-11-02：以当前源码重跑 R-5/R-6 focused 回归。候选哈希、权限反例和 Linux 纵切仍通过。
 
