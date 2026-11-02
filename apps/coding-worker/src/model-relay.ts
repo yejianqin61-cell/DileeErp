@@ -1,4 +1,4 @@
-export const MODEL_RELAY_PATH = '/v1/chat/completions'
+export const MODEL_RELAY_PATH = '/chat/completions'
 const MAX_BODY_BYTES = 256 * 1024
 
 export interface ModelRelayConfig {
@@ -18,13 +18,16 @@ export async function handleModelRelayRequest(input: {
   method: string
   path: string
   authorization?: string
+  apiKey?: string
   body: Uint8Array
   config: ModelRelayConfig
   forward(request: { body: Uint8Array; upstreamAuthorization: string }): Promise<Response>
 }): Promise<Response> {
   if (input.method !== 'POST') return new Response(null, { status: 405 })
   if (input.path !== MODEL_RELAY_PATH) return new Response(null, { status: 404 })
-  if (input.authorization !== `Bearer ${input.config.relayToken}`) return new Response(null, { status: 401 })
+  if (input.authorization !== `Bearer ${input.config.relayToken}` && input.apiKey !== input.config.relayToken) {
+    return new Response(null, { status: 401 })
+  }
   if (input.body.byteLength > MAX_BODY_BYTES) return new Response(null, { status: 413 })
   return input.forward({ body: input.body, upstreamAuthorization: `Bearer ${input.config.upstreamKey}` })
 }
@@ -37,6 +40,7 @@ export async function startModelRelay(config: ModelRelayConfig): Promise<{ url: 
     for await (const chunk of request) chunks.push(Buffer.from(chunk))
     const result = await handleModelRelayRequest({
       method: request.method ?? '', path: request.url ?? '', authorization: request.headers.authorization,
+      apiKey: typeof request.headers['x-api-key'] === 'string' ? request.headers['x-api-key'] : undefined,
       body: Buffer.concat(chunks), config,
       forward: ({ body, upstreamAuthorization }) => fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST', headers: { authorization: upstreamAuthorization, 'content-type': 'application/json' }, body,
