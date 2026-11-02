@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { RunResult } from '@deepseek-ai/dsh-sdk-client'
 
 import { normalizeBatchProgressEvents } from '../src/batch-progress-events.ts'
 
@@ -12,7 +13,12 @@ const context = {
 
 test('normalizes SDK and Activation records with batch identity and source', () => {
   const events = normalizeBatchProgressEvents(context, {
-    sdkEvents: [{ type: 'assistant.message', text: 'building' }],
+    sdkEvents: [{
+      type: 'assistant/message',
+      seq: 1 as never,
+      time: 1,
+      data: { turn: 1, step: 1, message: {} as never, stream: [] },
+    } as unknown as RunResult['events'][number]],
     notifications: [{ method: 'session/updated', params: { status: 'running' } }],
     activations: [{
       seq: 1,
@@ -55,6 +61,6 @@ test('rejects invalid context and malformed Activation records', () => {
     sdkEvents: [], notifications: [], activations: [],
   }), /round/)
   assert.throws(() => normalizeBatchProgressEvents(context, {
-    sdkEvents: [], notifications: [], activations: [{ seq: 2 }],
+    sdkEvents: [], notifications: [], activations: [{ seq: 2 } as never],
   }), /Activation/)
 })
