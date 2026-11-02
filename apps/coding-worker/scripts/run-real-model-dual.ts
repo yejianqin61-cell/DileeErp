@@ -19,7 +19,7 @@ try {
       { capabilityId: 'employee-output', prompt: 'Create only employee-output/tool.ts and employee-output/tool.test.ts. Implement a pure formatter for daily employee output. Run the focused test.' },
       { capabilityId: 'employee-inventory', prompt: 'Create only employee-inventory/tool.ts and employee-inventory/tool.test.ts. Implement a pure formatter for cumulative employee inventory. Run the focused test.' },
     ],
-    deadlineMs: 5 * 60_000,
+    deadlineMs: 20 * 60_000,
   })
   verifySingleParentActivations(timedActivationsFromTrace(result.trace))
   await Promise.all([
