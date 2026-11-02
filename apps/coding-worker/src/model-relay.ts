@@ -28,3 +28,32 @@ export async function handleModelRelayRequest(input: {
   if (input.body.byteLength > MAX_BODY_BYTES) return new Response(null, { status: 413 })
   return input.forward({ body: input.body, upstreamAuthorization: `Bearer ${input.config.upstreamKey}` })
 }
+import { createServer } from 'node:http'
+
+
+export async function startModelRelay(config: ModelRelayConfig): Promise<{ url: string; close(): Promise<void> }> {
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = []
+    for await (const chunk of request) chunks.push(Buffer.from(chunk))
+    const result = await handleModelRelayRequest({
+      method: request.method ?? '', path: request.url ?? '', authorization: request.headers.authorization,
+      body: Buffer.concat(chunks), config,
+      forward: ({ body, upstreamAuthorization }) => fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST', headers: { authorization: upstreamAuthorization, 'content-type': 'application/json' }, body,
+      }),
+    })
+    const headers = Object.fromEntries([...result.headers.entries()].filter(([name]) =>
+      name !== 'content-encoding' && name !== 'content-length'))
+    response.writeHead(result.status, headers)
+    response.end(Buffer.from(await result.arrayBuffer()))
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject); server.listen(0, '127.0.0.1', resolve)
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('MODEL_RELAY_LISTEN_FAILED')
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+  }
+}
