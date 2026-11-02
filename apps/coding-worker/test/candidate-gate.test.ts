@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -78,7 +78,6 @@ test('rejects secret files, extra dependencies and symlinks', async () => {
   const cases: Array<(root: string) => void> = [
     root => writeFileSync(join(root, '.env'), 'DATABASE_URL=secret'),
     root => writeFileSync(join(root, 'package.json'), '{"scripts":{"postinstall":"node x"}}'),
-    root => symlinkSync(join(root, 'tool.ts'), join(root, 'linked-tool.ts')),
   ]
   for (const addUnsafeFile of cases) {
     const value = candidate()
@@ -92,6 +91,20 @@ test('rejects secret files, extra dependencies and symlinks', async () => {
     } finally {
       value.cleanup()
     }
+  }
+})
+
+test('rejects a candidate symlink on Linux', { skip: process.platform !== 'linux' }, async () => {
+  const value = candidate()
+  try {
+    symlinkSync(join(value.root, 'tool.ts'), join(value.root, 'linked-tool.ts'))
+    await assert.rejects(Promise.resolve().then(() => createCandidateManifest({
+      candidateRoot: value.root,
+      sourceRevision,
+      capabilities: ['get_employee_output_summary'],
+    })), expectCode('CANDIDATE_PATH_DENIED'))
+  } finally {
+    value.cleanup()
   }
 })
 
