@@ -39,7 +39,12 @@ test('rejects gate evidence bound to a different capability or manifest hash', a
     accepted: true,
     capabilityId: item.capabilityId,
     manifestHash: 'stale-hash',
-  })), /manifest hash mismatch/)
+  })), error => {
+    assert.equal((error as Error).name, 'CandidateBatchError')
+    assert.ok('failures' in (error as object))
+    assert.match(JSON.stringify((error as { failures: unknown }).failures), /gate manifest hash mismatch/)
+    return true
+  })
 })
 
 test('rejects empty batches and duplicate capability IDs', async () => {
