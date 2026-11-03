@@ -38,7 +38,13 @@ type FinishedGoodsRow = { production_order_id: string; production_order_no: stri
 // 未出库数 = 全部 − 已出库。按「产品 + 单位」分行：不同单位的数量不做合计。
 type FinishedGoodsTotals = { product_name: string; unit: string; inbound_quantity: string; outbound_quantity: string; unshipped_quantity: string; production_order_count?: number };
 type FinishedGoodsSummary = { sales_order_id: string; order_no: string; customer?: string | null; product_name: string; unit: string; totals?: FinishedGoodsTotals[]; production_orders: FinishedGoodsRow[] };
-type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
+type DialogState = { title: string; fields: ActionField[]; /** 提交按钮文案（删除确认框用「确认删除」，别的操作保持默认「保存」）。 */ submitLabel?: string; submit: (values: Record<string, string>) => void | Promise<void> };
+/**
+ * `GET /sales-orders/:id/delete-preview` 的形状（2026-11-03，契约见设计文档 §3.1）。
+ * `downstream` 只有 `count > 0` 的类型，顺序由后端按 ORPHAN_DOCUMENT_TYPES 固定。
+ */
+type DeletePreviewDocument = { key: string; label: string; count: number };
+type DeletePreview = { sales_order_id: string; order_no: string; status: string; reason_required: boolean; downstream: DeletePreviewDocument[]; downstream_total: number };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 // 结算方式枚举与后端 SETTLEMENT_METHODS 同源（sales-orders.controller.ts）。
@@ -62,6 +68,8 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   const [exportingId, setExportingId] = useState("");
   // 工艺单带图导出的勾选弹窗（用户 2026-09-24）：null = 不显示。
   const [sheetExport, setSheetExport] = useState<{ id: string; orderNo: string; candidates: ExportImageCandidate[] } | null>(null);
+  // 正在读「删除影响面」的那一行：读接口回来之前按钮不能连点（否则会弹两次确认框）。
+  const [deletingId, setDeletingId] = useState("");
 
   async function load() {
     setLoading(true);
@@ -128,11 +136,49 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   function confirmOrder(order: Order) { void run(() => apiPost(`/sales-orders/${order.id}/confirm`), "销售单已确认"); }
   function revertOrder(order: Order) { setDialog({ title: "销售单回退草稿", fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void run(() => apiPost(`/sales-orders/${order.id}/revert-draft`, v), "销售单已回到草稿") }); }
   /**
-   * 删除草稿销售单（2026-10-08）。**不弹确认框、不填原因**（用户 2026-10-08 选定：草稿多是录错或
-   * 重复录入，点一下就该消失，多一次确认只是多一步）——与 `outsource-logistics-panel` 的草稿删除同一形状。
-   * 服务端是软删：只有 draft 能删，且会先盘点下游事实；列表默认视图不再显示它，删错了由审计追。
+   * 删除销售单（2026-11-03 起对所有状态开放）。
+   *
+   * 与 2026-10-08 那版「草稿一键删、连确认框都不要」的区别只有一处，但很关键：
+   * 删除**不再带走下游单据**，采购单 / 生产单 / 成品出库单 / 应收来源…会原样留下、显示为「孤立单据」。
+   * 所以点删除后**先问服务端会留下什么**（`GET /:id/delete-preview`，与真删共用同一张 11 类清单），
+   * 把「会留下哪些类型、各多少张」铺在确认框里，用户看清楚再动手。
+   *
+   * 原因：非草稿（已确认 / 已关闭）必须填 —— 删的是一整条链的父单，比删一张录错的草稿重得多；
+   * 草稿仍不要求原因（用户 2026-10-08 的口径不变）。`reason_required` 由服务端按状态给，
+   * 前端不自己判断状态（预览与执行的后端判定是同一个函数，两边不会分叉）。
    */
-  function deleteOrder(order: Order) { void run(() => apiDelete(`/sales-orders/${order.id}`), `已删除草稿 ${order.orderNo}`); }
+  async function openDeleteDialog(order: Order) {
+    setDeletingId(order.id);
+    try {
+      const preview = (await apiGet<DeletePreview>(`/sales-orders/${order.id}/delete-preview`)).data;
+      const fields: ActionField[] = [{ name: "effect", type: "info", label: "销售单会被删除；它的下游单据一张都不删、也不解绑，删除后显示为「孤立单据」。" }];
+      if (preview.downstream_total > 0) {
+        // 一类一行，而不是拼成一句话：读的人要能一眼数清「2 张采购单 + 1 张生产单」。
+        fields.push({ name: "downstream-summary", type: "info", label: `删除后会留下 ${preview.downstream_total} 张下游单据：` });
+        for (const document of preview.downstream) fields.push({ name: `downstream-${document.key}`, type: "info", label: `${document.label}：${document.count} 张` });
+      } else {
+        fields.push({ name: "downstream-none", type: "info", label: "这张销售单没有下游单据：删除后不会留下孤立单据。" });
+      }
+      if (preview.reason_required) fields.push({ name: "reason", label: "删除原因（必填，会记进审计）", type: "textarea", required: true, placeholder: "例如：客户取消订单 / 重复录入，需整单作废" });
+      setDialog({
+        title: `删除销售单：${preview.order_no}`,
+        submitLabel: "确认删除",
+        fields,
+        // 必须把 Promise 交回 ActionDialog：它靠 onSubmit 抛错决定「保持弹窗 + 显示原因」，
+        // 被 void 吞掉就会关窗，用户填的原因与服务端拒绝理由一起丢（采购单打印信息踩过同一个坑）。
+        submit: async (values) => {
+          const reason = values.reason?.trim() ?? "";
+          await apiDelete(`/sales-orders/${order.id}`, reason ? { reason } : undefined);
+          notifySuccess(preview.downstream_total > 0 ? `已删除销售单 ${order.orderNo}（留下 ${preview.downstream_total} 张孤立单据）` : `已删除销售单 ${order.orderNo}`);
+          await load();
+        },
+      });
+    } catch (cause) {
+      notifyError(messageOf(cause, "读取删除影响失败，请稍后重试"));
+    } finally {
+      setDeletingId("");
+    }
+  }
   async function run(action: () => Promise<unknown>, success: string) {
     setError("");
     try {
@@ -189,7 +235,11 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
       {/* 工艺单：按 example/销售单 的模板版式导出，图片格留空。销售每天要打这张单，所以不锁管理员。 */}
       <Button size="sm" variant="secondary" data-testid={`order-production-sheet-${row.original.orderNo}`} disabled={exportingId === row.original.id} onClick={() => void exportProductionSheet(row.original)}>{exportingId === row.original.id ? "导出中…" : "工艺单"}</Button>
       {row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => confirmOrder(row.original)}>确认</Button>}
-      {row.original.status === "draft" && <Button size="sm" variant="destructive" data-testid={`order-delete-${row.original.orderNo}`} onClick={() => deleteOrder(row.original)}>删除</Button>}
+      {/*
+        删除（2026-11-03）：**所有状态都能删**。下游单据不删、只变「孤立」，所以这里不再是草稿专属；
+        点下去先读影响面再弹确认框（理由见 openDeleteDialog 上方的注释）。
+      */}
+      <Button size="sm" variant="destructive" data-testid={`order-delete-${row.original.orderNo}`} disabled={deletingId === row.original.id} onClick={() => void openDeleteDialog(row.original)}>{deletingId === row.original.id ? "读取影响…" : "删除"}</Button>
       {row.original.status === "confirmed" && <Button size="sm" variant="secondary" onClick={() => revertOrder(row.original)}>回到草稿</Button>}
     </div> },
   ];
@@ -197,12 +247,12 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   if (loading) return <div className="page-root" data-testid={testId}><PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} /><LoadingState /></div>;
 
   return <div className="page-root" data-testid={testId}>
-    <PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} description="销售单列表：确认与回退、删除草稿、导出工艺单、通知仓库出库。">
+    <PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} description="销售单列表：确认与回退、删除（下游单据保留为孤立单据）、导出工艺单、通知仓库出库。">
       {/* Excel 补录（2026-11-02）：偶发动作，所以是次要按钮，排在新单之后。 */}
       <Button variant="secondary" asChild><Link href="/sales/orders/import" data-testid="sales-order-import">从 Excel 补录</Link></Button>
       <Button asChild><Link href="/sales/orders/new" data-testid="sales-order-new">新建销售单</Link></Button>
     </PageHeader>
-    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={async (values) => { await dialog?.submit(values); setDialog(null); }} />
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} submitLabel={dialog?.submitLabel} onSubmit={async (values) => { await dialog?.submit(values); setDialog(null); }} />
     {sheetExport && <ProductionSheetExportDialog orderId={sheetExport.id} orderNo={sheetExport.orderNo} candidates={sheetExport.candidates} open onOpenChange={(open) => { if (!open) setSheetExport(null); }} />}
     {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
     <section className="panel">

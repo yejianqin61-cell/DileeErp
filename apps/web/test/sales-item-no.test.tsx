@@ -234,14 +234,21 @@ async function pickSelect(testid: string, optionText: string) {
   await userEvent.click(await screen.findByRole("option", { name: new RegExp(optionText) }));
 }
 
-// ------------------------------------------------------------------ 删除草稿销售单
+// ------------------------------------------------------------------ 删除销售单（2026-11-03 改口径）
 //
-// 老板 2026-10-01：「销售单部分，draft 状态的销售单支持删除。」选定的是**不弹确认框、不填原因**：
-// 点一下就该消失（草稿多是录错或重复录入）。服务端是软删，且只有 draft 能删。
-describe("销售单列表：删除草稿销售单", () => {
-  async function openWithToaster(orders: unknown[], onDelete?: () => Response) {
+// 2026-10-01 那版是「只有草稿能删、不弹确认框不要原因」；2026-11-03 用户改口径：
+// 「对应的采购单及其后续绑定的单据不删，而是显示孤立单据」——删除对所有状态开放，
+// 删之前先预览会留下哪些下游单据，非草稿必须填原因。
+// 确认框的内容 / 必填原因 / 孤立计数留在 sales-order-delete.test.tsx，这里只钉列表侧：
+// 每个状态都有入口、先预览再删、预览失败不误删。
+describe("销售单列表：删除入口对所有状态开放（2026-11-03）", () => {
+  const previewOf = (overrides: Record<string, unknown> = {}) => ({
+    sales_order_id: "order-1", order_no: "DL260001-1", status: "draft", reason_required: false, downstream: [], downstream_total: 0, ...overrides,
+  });
+  async function openWithToaster(orders: unknown[], preview: () => Response = () => apiOk(previewOf()), onDelete?: () => Response) {
     const calls = stubApi((url, call) => {
       if (url.includes("/sales-orders/finished-goods-summary")) return apiOk({ production_order_count: 0, groups: [] });
+      if (url.includes("/delete-preview")) return preview();
       if (url.includes("/sales-orders?")) return apiOk(orders);
       if (call.method === "DELETE") return onDelete ? onDelete() : apiOk({ id: "order-1" });
       return apiOk([]);
@@ -251,35 +258,39 @@ describe("销售单列表：删除草稿销售单", () => {
     return calls;
   }
 
-  it("只有草稿行出现「删除」，已确认/已关闭行没有", async () => {
-    await openWithToaster([orderRow({ status: "draft" }), orderRow({ id: "order-2", orderNo: "DL260002-1", status: "confirmed" })]);
+  it("草稿、已确认、已关闭的行都有「删除」", async () => {
+    await openWithToaster([orderRow({ status: "draft" }), orderRow({ id: "order-2", orderNo: "DL260002-1", status: "confirmed" }), orderRow({ id: "order-3", orderNo: "DL260003-1", status: "closed" })]);
     await waitFor(() => expect(screen.getByTestId("order-delete-DL260001-1")).toBeTruthy());
-    expect(screen.queryByTestId("order-delete-DL260002-1")).toBeNull();
+    expect(screen.getByTestId("order-delete-DL260002-1")).toBeTruthy();
+    expect(screen.getByTestId("order-delete-DL260003-1")).toBeTruthy();
   });
 
-  it("点一下即发 DELETE（不弹确认框、不要原因），成功后重新拉列表", async () => {
+  it("草稿：先读影响面再弹确认框（不要求原因），确认后发 DELETE 并重新拉列表", async () => {
     const calls = await openWithToaster([orderRow({ status: "draft" })]);
     await waitFor(() => expect(screen.getByTestId("order-delete-DL260001-1")).toBeTruthy());
     await userEvent.click(screen.getByTestId("order-delete-DL260001-1"));
+    // 点删除只是预览，**不会立刻删**：确认框出现之前不该有 DELETE。
+    expect(await screen.findByTestId("action-dialog")).toBeVisible();
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(within(screen.getByTestId("action-dialog")).queryByTestId("action-field-reason")).toBeNull();
+    await userEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(calls.some((call) => call.method === "DELETE")).toBe(true));
     const deleted = calls.find((call) => call.method === "DELETE");
     expect(deleted?.url.endsWith("/sales-orders/order-1")).toBe(true);
-    // 没有确认框：删除请求发出前不该出现任何对话框/原因输入框。
-    expect(screen.queryByRole("dialog")).toBeNull();
-    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已删除草稿 DL260001-1"))).toBe(true));
+    // 草稿不填原因：body 里没有 reason（不是空串，而是整个 body 都不带）。
+    expect(deleted?.body).toBeNull();
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已删除销售单 DL260001-1"))).toBe(true));
     // 删完必须重新取列表：否则被删的单还留在屏幕上，用户会以为没删掉。
     await waitFor(() => expect(calls.filter((call) => call.method === "GET" && call.url.includes("/sales-orders?")).length).toBeGreaterThanOrEqual(2));
   });
 
-  it("服务端拒绝（存在下游事实）时把原因 toast 出来，列表不刷新", async () => {
-    const calls = await openWithToaster([orderRow({ status: "draft" })], () => apiErr(422, "SALES_ORDER_DOWNSTREAM_EXISTS", "销售单已有下游事实（BOM 1 张），不能删除"));
+  it("预览失败时把原因 toast 出来，也不发 DELETE（不能因为问不到就直接删）", async () => {
+    const calls = await openWithToaster([orderRow({ status: "draft" })], () => apiErr(404, "SALES_ORDER_NOT_FOUND", "销售单已删除或不存在，请刷新后重试"));
     await waitFor(() => expect(screen.getByTestId("order-delete-DL260001-1")).toBeTruthy());
-    const listCallsBefore = calls.filter((call) => call.method === "GET" && call.url.includes("/sales-orders?")).length;
     await userEvent.click(screen.getByTestId("order-delete-DL260001-1"));
-    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("不能删除"))).toBe(true));
-    expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已删除草稿"))).toBe(false);
-    // 失败不刷新：行还在（用户得先处理 BOM）
-    expect(calls.filter((call) => call.method === "GET" && call.url.includes("/sales-orders?")).length).toBe(listCallsBefore);
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已删除或不存在"))).toBe(true));
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 
