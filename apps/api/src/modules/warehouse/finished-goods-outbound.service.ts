@@ -15,9 +15,22 @@ type ReturnInput = { sales_order_id: string; production_order_id: string; quanti
 export class FinishedGoodsOutboundService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly inventory: InventoryService) {}
 
-  async listOutbounds(orderNo?: string) { return this.prisma.finishedGoodsOutbound.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { inventoryFacts: true, unit: { select: { name: true } }, salesOrder: { select: { orderNo: true, currency: true, unitPrice: true, settlementUnitPrice: true, receivableAmount: true, customer: { select: { name: true } } } }, outboundNotice: { select: { id: true, noticeNo: true, status: true } } }, orderBy: { createdAt: "desc" } }); }
+  // `salesOrder.deletedAt` 只用来算 `orphaned`（2026-11-03）：销售单被软删后出库单不删，
+  // 仍能打开、仍能过账，只是在列表上标成「孤立」，提醒它已经没有在途的销售单了。
+  async listOutbounds(orderNo?: string) {
+    const rows = await this.prisma.finishedGoodsOutbound.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { inventoryFacts: true, unit: { select: { name: true } }, salesOrder: { select: { orderNo: true, currency: true, unitPrice: true, settlementUnitPrice: true, receivableAmount: true, deletedAt: true, customer: { select: { name: true } } } }, outboundNotice: { select: { id: true, noticeNo: true, status: true } } }, orderBy: { createdAt: "desc" } });
+    return rows.map((row) => {
+      const { deletedAt: salesOrderDeletedAt, ...salesOrder } = row.salesOrder ?? {};
+      return { ...row, salesOrder: row.salesOrder ? salesOrder : null, orphaned: Boolean(salesOrderDeletedAt) };
+    });
+  }
   async listReturns(orderNo?: string) { return this.prisma.customerReturn.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { inventoryFacts: true }, orderBy: { createdAt: "desc" } }); }
-  async getOutbound(id: string) { const row = await this.prisma.finishedGoodsOutbound.findFirst({ where: { id, deletedAt: null }, include: { inventoryFacts: true, unit: { select: { name: true } }, salesOrder: { select: { orderNo: true, currency: true, unitPrice: true, settlementUnitPrice: true, receivableAmount: true, customer: { select: { name: true } } } }, outboundNotice: { select: { id: true, noticeNo: true, status: true, noticeQuantity: true } } } }); if (!row) throw this.notFound("FINISHED_GOODS_OUTBOUND_NOT_FOUND", "成品出库单不存在"); return row; }
+  async getOutbound(id: string) {
+    const row = await this.prisma.finishedGoodsOutbound.findFirst({ where: { id, deletedAt: null }, include: { inventoryFacts: true, unit: { select: { name: true } }, salesOrder: { select: { orderNo: true, currency: true, unitPrice: true, settlementUnitPrice: true, receivableAmount: true, deletedAt: true, customer: { select: { name: true } } } }, outboundNotice: { select: { id: true, noticeNo: true, status: true, noticeQuantity: true } } } });
+    if (!row) throw this.notFound("FINISHED_GOODS_OUTBOUND_NOT_FOUND", "成品出库单不存在");
+    const { deletedAt: salesOrderDeletedAt, ...salesOrder } = row.salesOrder ?? {};
+    return { ...row, salesOrder: row.salesOrder ? salesOrder : null, orphaned: Boolean(salesOrderDeletedAt) };
+  }
   async getReturn(id: string) { const row = await this.prisma.customerReturn.findFirst({ where: { id, deletedAt: null }, include: { inventoryFacts: true } }); if (!row) throw this.notFound("CUSTOMER_RETURN_NOT_FOUND", "客户退货单不存在"); return row; }
 
   async createOutbound(input: OutboundInput, user: CurrentUser) {

@@ -213,7 +213,7 @@ export class PurchasePlansService {
             purchaseOrderItem: { select: { purchaseOrder: { select: { purchaseOrderNo: true } } } },
           },
         },
-        salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true } },
+        salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true, deletedAt: true } },
       },
       orderBy: { updatedAt: "desc" },
     });
@@ -221,7 +221,8 @@ export class PurchasePlansService {
     // 列表要显示"最后更新（人 + 北京时间）"，所以把操作人姓名一并解析出来。
     // 只输出**姓名**、绝不输出 UUID —— 全站治理要消灭的正是「制单：6f3a1c8e-…」那种显示。
     const names = rows.length ? await this.actors.namesOf(rows.flatMap((row) => [row.updatedBy, row.createdBy])) : new Map<string, string>();
-    const withNames = summaries.map((row, index) => ({ ...row, updatedByName: names.get(rows[index].updatedBy) ?? null, createdByName: names.get(rows[index].createdBy) ?? null, lines: planListLines(rows[index].items) }));
+    // `orphaned` = 所属销售单已被软删（2026-11-03）：采购计划不删，显示为孤立单据。
+    const withNames = summaries.map((row, index) => ({ ...row, updatedByName: names.get(rows[index].updatedBy) ?? null, createdByName: names.get(rows[index].createdBy) ?? null, lines: planListLines(rows[index].items), orphaned: Boolean(rows[index].salesOrder?.deletedAt) }));
     const status = query.status?.trim();
     const key = itemNoKey(query.item_no);
     const text = query.q?.trim().toLowerCase();
@@ -425,7 +426,7 @@ export class PurchasePlansService {
     const plan = await this.prisma.purchasePlan.findFirst({
       where: { id, deletedAt: null },
       include: {
-        salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true, deliveryDate: true, status: true } },
+        salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true, deliveryDate: true, status: true, deletedAt: true } },
         bom: { select: { id: true, version: true, status: true, deletedAt: true } },
         items: {
           where: { deletedAt: null },
@@ -470,6 +471,7 @@ export class PurchasePlansService {
     return {
       ...this.summaryOf(plan as unknown as PlanSummarySource),
       deliveryDate: plan.salesOrder?.deliveryDate ?? null,
+      orphaned: Boolean(plan.salesOrder?.deletedAt),
       bomDeleted: Boolean(plan.bom?.deletedAt),
       bomExtraMaterialCount: countBomMaterialsMissingFromPlan(bomItems.map((row) => row.materialId), plan.items.map((row) => row.materialId)),
       /** 可并入的采购单一览（口径 6）：`{id, purchaseOrderNo, supplierId, currency, itemCount, totalAmount}`。 */

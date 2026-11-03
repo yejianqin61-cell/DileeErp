@@ -9,7 +9,9 @@ export class BomsService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService) {}
 
   async list(orderNo?: string) {
-    return this.prisma.bom.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, orderBy: [{ orderNo: "asc" }, { version: "desc" }], include: { salesOrder: { select: { id: true, orderNo: true, status: true, currentVersion: true } }, salesOrderVersion: { select: { id: true, version: true, createdAt: true } } } });
+    // `orphaned` = 所属销售单已被软删（2026-11-03：删销售单不删下游单，只显示成孤立）。
+    const rows = await this.prisma.bom.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, orderBy: [{ orderNo: "asc" }, { version: "desc" }], include: { salesOrder: { select: { id: true, orderNo: true, status: true, currentVersion: true, deletedAt: true } }, salesOrderVersion: { select: { id: true, version: true, createdAt: true } } } });
+    return rows.map((row) => ({ ...row, orphaned: Boolean(row.salesOrder?.deletedAt) }));
   }
 
   async get(id: string) {

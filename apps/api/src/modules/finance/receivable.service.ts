@@ -66,6 +66,9 @@ export class ReceivableService {
         customer: { select: { id: true, name: true, customerCode: true } },
         outbound: { select: { outboundNo: true, status: true, productNameSnapshot: true, productSpecificationSnapshot: true, signedAt: true, shipmentDate: true } },
         allocations: { where: { deletedAt: null }, include: { payment: { select: { id: true, paymentNo: true, status: true, paymentDate: true } } } },
+        // `deletedAt` 只用来算 `orphaned`（2026-11-03）：销售单软删后应收来源不删，
+        // 钱是真的、对账要照做，只是它所属的销售单已经不在了。
+        salesOrder: { select: { deletedAt: true } },
       },
       orderBy: { createdAt: "desc" },
     });
@@ -81,11 +84,13 @@ export class ReceivableService {
         orderBy: { createdAt: "desc" },
       })
       : [];
-    return rows.map((row) => {
+    return rows.map(({ salesOrder, ...row }) => {
       const allocated = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
       const covering = coveringReceivableReconciliation(row, scopes);
       return {
         ...row,
+        // 销售单被软删 = 这条应收来源成了「孤立单据」（2026-11-03）；`salesOrder` 本身不下发。
+        orphaned: Boolean(salesOrder?.deletedAt),
         customer_name: row.customer?.name ?? null,
         customer_code: row.customer?.customerCode ?? null,
         outbound_no: row.outbound?.outboundNo ?? null,

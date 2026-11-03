@@ -267,6 +267,16 @@ class OrderNoImpactQueryDto {
   @IsNotEmpty() @IsString() @MaxLength(100) order_no!: string;
 }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
+/**
+ * 删除销售单的入参（2026-11-03）。
+ *
+ * **草稿可以不传**（保持 2026-10-08 的一键删）；已确认/已关闭必须填原因 ——
+ * 删它带走的是整条链的「父单」，下游采购/生产/应收会变成孤立单据。
+ * 空串与不传在服务层是同一件事（`.trim()` 后判空），所以这里不必另做空串归一。
+ */
+export class DeleteSalesOrderDto {
+  @IsOptional() @IsString() @MaxLength(1000) reason?: string;
+}
 // 销售「通知仓库出库」：不传 production_order_id 时对该订单所有可出库的生产单各建一张整批通知；
 // 传 notice_quantity 时只通知这一部分（分批通知），此时必须同时指定 production_order_id。
 // 导出以便单元测试直接用真实 ValidationPipe 校验（分级通知数量是本轮新增的入口）。
@@ -316,6 +326,13 @@ export class SalesOrdersController {
   @Get("item-nos") async itemNos(@Query("q") q?: string, @Query("limit") limit?: string) {
     return { data: await this.orders.itemNoOptions(q, limit === undefined ? undefined : Number(limit)), meta: {} };
   }
+  /**
+   * 孤立单据汇总（2026-11-03）：销售单被删后留下的下游单据。
+   *
+   * **必须声明在 `@Get(":id")` 之前**：Nest 按声明顺序匹配，否则 "orphans" 会被当成销售单 ID
+   * 去查库（与 `finished-goods-summary` / `item-nos` / `reorder-preview` 是同一类问题）。
+   */
+  @Get("orphans") async orphans() { return { data: await this.orders.orphans(), meta: {} }; }
   /**
    * 返单预览（2026-09-26）：把「会带过来什么 / 必须重填什么」摆给编辑器，**不建单**。
    * 与上面那条同理，**必须声明在 `@Get(":id")` 之前**（"reorder-preview" 不是 UUID）。
@@ -388,21 +405,30 @@ export class SalesOrdersController {
   @Get(":id/finished-goods") async finishedGoods(@Param("id") id: string) { return { data: await this.outboundNotices.summary(id), meta: {} }; }
   @Post(":id/outbound-notices") async notifyOutbound(@Param("id") id: string, @Body() body: OutboundNoticeDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outboundNotices.createNotices(id, body, user), meta: {} }; }
   @Post(":id/outbound-notices/:noticeId/cancel") async cancelOutboundNotice(@Param("id") id: string, @Param("noticeId") noticeId: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.outboundNotices.cancelNotice(id, noticeId, body.reason, user), meta: {} }; }
+  /**
+   * 删除前的**影响面预览**（2026-11-03）：删掉这张销售单会留下哪些下游单据、各几张。
+   *
+   * 只读、不写。与执行共用 `countOrphanDocuments`（同一张 11 类清单），
+   * 所以「弹窗里说的」与「删完真的留下的」不会分叉。
+   * 路径两段（`:id/delete-preview`），不会被单段的 `@Get(":id")` 吃掉。
+   */
+  @Get(":id/delete-preview") async deletePreview(@Param("id") id: string) { return { data: await this.orders.deletePreview(id), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.orders.get(id), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdateSalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.update(id, body, user), meta: {} }; }
   @Post(":id/confirm") async confirm(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.confirm(id, user), meta: {} }; }
   @Post(":id/revert-draft") async revertDraft(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.revertToDraft(id, body.reason, user), meta: {} }; }
   @Post(":id/close") async close(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.close(id, user), meta: {} }; }
   /**
-   * 删除草稿销售单（2026-10-08）。
+   * 删除销售单（2026-11-03 起**所有状态**都能删）。
    *
-   * 不带 body：删除原因不强制（用户 2026-10-08 选定 —— 草稿多是录错或重复录入，多填一格只是多一步；
-   * 「谁删的、删的是哪张单」审计里都有）。守卫全在服务层：只有 draft 可删、锁行复查、下游事实盘点。
+   * body 可选 `{ reason }`：草稿不填（2026-10-08 的一键删不变），已确认/已关闭必须填。
+   * 下游采购/生产/应收**不删**，变成孤立单据（`GET /sales-orders/orphans` 可查）。
+   * 守卫全在服务层：锁行复查、非草稿原因必填、影响面计数进审计。
    *
    * 与另外三个状态流转端点（confirm / revert-draft / close）一样只走模块权限，不额外锁管理员 ——
-   * 销售自己录错的草稿，要能自己删掉。
+   * 用户 2026-11-03 选定「有销售模块权限的人都能删」。
    */
-  @Delete(":id") async remove(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.delete(id, user), meta: {} }; }
+  @Delete(":id") async remove(@Param("id") id: string, @Body() body: DeleteSalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.delete(id, user, body?.reason), meta: {} }; }
 
   /**
    * xlsx 下发的三件事一处写全：`Content-Type` + `filename*=UTF-8''`（中文文件名）+ `no-store`。

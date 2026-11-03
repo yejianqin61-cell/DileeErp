@@ -16,7 +16,8 @@ type CompletionOrder = { id: string; executionMode: string; plannedQuantity: Pri
 @Injectable()
 export class ProductionOrdersService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, private readonly progress?: ProductionProgressService) {}
-  async list(orderNo?: string) { return this.prisma.productionOrder.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { executionLocation: true, unit: true, bom: true, operations: { where: { deletedAt: null }, orderBy: { sequenceNo: "asc" } } }, orderBy: { updatedAt: "desc" } }); }
+  async list(orderNo?: string) { const rows = await this.prisma.productionOrder.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { executionLocation: true, unit: true, bom: true, operations: { where: { deletedAt: null }, orderBy: { sequenceNo: "asc" } }, salesOrder: { select: { deletedAt: true } } }, orderBy: { updatedAt: "desc" } }); // `orphaned` = 所属销售单已被软删（2026-11-03：下游单据不删，显示为孤立）。
+    return rows.map(({ salesOrder, ...row }) => ({ ...row, orphaned: Boolean(salesOrder?.deletedAt) })); }
   async get(id: string) { const item = await this.prisma.productionOrder.findFirst({ where: { id, deletedAt: null }, include: { executionLocation: true, unit: true, bom: true, parent: true, children: true, operations: { where: { deletedAt: null }, include: { operationCatalog: true, unit: true }, orderBy: { sequenceNo: "asc" } } } }); if (!item) throw new NotFoundException({ code: "PRODUCTION_ORDER_NOT_FOUND", message: "生产单不存在", details: [] }); return item; }
   async create(input: Input, user: CurrentUser) {
     const refs = await this.refs(input);

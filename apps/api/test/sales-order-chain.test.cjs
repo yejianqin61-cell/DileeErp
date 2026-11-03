@@ -336,7 +336,9 @@ test("货号候选：路由必须声明在 @Get(\":id\") 之前（否则会被�
   assert.ok(itemNos < byId, "Nest 按声明顺序匹配：item-nos 必须在 :id 之前，否则建议列表永远是空的");
 });
 
-// ------------------------------ 删除草稿销售单（2026-10-08） ------------------------------
+// ------------------------------ 删除销售单（2026-10-08 草稿；2026-11-03 全部状态） ------------------------------
+// 2026-11-03 的口径变化：任何状态都能删、下游单据不删而是变成「孤立单据」、非草稿必须填原因。
+// 旧的三条「有下游事实就不许删 / 只有草稿能删」用例已按新语义改写，不要再按旧行为断言。
 const draftOrder = (status = "draft") => ({ id: "order-1", orderNo: "TEST-SO-DEL", status, customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] });
 
 /** 11 张下游表的计数桩：默认全 0（可删除），用 overrides 让某一类"有事实"。 */
@@ -392,47 +394,78 @@ test("sales.order.delete_soft_deletes_a_draft_and_writes_an_audit_event", async 
   assert.equal(events[0][4].order_no, "TEST-SO-DEL");
 });
 
-test("sales.order.rejects_deleting_a_non_draft_order", async () => {
+test("sales.order.rejects_deleting_a_non_draft_order_without_a_reason", async () => {
+  // 2026-11-03 起非草稿也能删了，但**必须填原因**：删它带走的是整条链的「父单」。
+  // 守卫在读单之后立刻拦下，不该进事务。
   let enteredTransaction = false;
   const prisma = { salesOrder: { findFirst: async () => draftOrder("confirmed") }, $transaction: async () => { enteredTransaction = true; } };
   const service = new SalesOrdersService(prisma, deleteAudit([]));
   await assert.rejects(
     () => service.delete("order-1", user),
-    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_NOT_DELETABLE",
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_DELETE_REASON_REQUIRED",
   );
-  assert.equal(enteredTransaction, false, "非草稿不该进事务（守卫在读单之后立刻拦下）");
+  assert.equal(enteredTransaction, false, "没填原因不该进事务");
 });
 
-test("sales.order.delete_rechecks_status_inside_the_locked_transaction", async () => {
+test("sales.order.deletes_a_confirmed_order_with_a_reason_and_records_the_orphans", async () => {
+  // 用户 2026-11-03：「下游单据不删除，显示孤立单据」—— 所以这里**不再**因为下游事实拒绝，
+  // 而是把它们数出来写进审计（事后要能回答「这张单删掉时留下了什么」）。
+  const events = [];
+  const { tx } = downstreamCounts({ receivableSource: 2, purchaseOrder: 1 });
+  const { prisma, updated } = deletePrisma(draftOrder("confirmed"), { status: "confirmed" }, tx);
+  const service = new SalesOrdersService(prisma, deleteAudit(events));
+  await service.delete("order-1", user, "客户取消整单");
+  assert.ok(updated().deletedAt instanceof Date, "非草稿也必须真的软删");
+  const payload = events[0][4];
+  assert.equal(payload.reason, "客户取消整单");
+  assert.deepEqual(payload.orphan_documents, { purchase_order: 1, receivable_source: 2 });
+  assert.equal(payload.orphan_total, 3);
+});
+
+test("sales.order.delete_rechecks_the_reason_guard_inside_the_locked_transaction", async () => {
+  // 读单时是 draft（不需要原因），锁内已被并发 confirm —— 必须按锁内的状态再判一次，
+  // 否则并发下能用「草稿的身份」删掉一张已确认的单。
   let updateData;
   const prisma = {
-    // 读单时是 draft，锁内已被并发 confirm —— 必须按锁内的状态判，不能用读单时的结论。
     salesOrder: { findFirst: async () => draftOrder("draft") },
     $transaction: async (fn) => fn({ $queryRaw: async () => undefined, salesOrder: { findFirst: async () => ({ status: "confirmed" }), update: async ({ data }) => { updateData = data; } } }),
   };
   const service = new SalesOrdersService(prisma, deleteAudit([]));
   await assert.rejects(
     () => service.delete("order-1", user),
-    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_NOT_DELETABLE" && /状态已变化/.test(error.getResponse().message),
+    (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "SALES_ORDER_DELETE_REASON_REQUIRED",
   );
   assert.equal(updateData, undefined);
 });
 
-test("sales.order.delete_counts_all_eleven_downstream_tables_not_just_bom_purchase_production", async () => {
-  // 这条是本次实现的核心守卫：`revertToDraft` 只数 BOM/采购/生产三类，
-  // 而删除更彻底，必须把成品出库/出库通知/退货/应收/收款这些也数上。
+test("sales.order.delete_counts_all_eleven_downstream_tables_and_never_rejects_for_them", async () => {
+  // 计数清单就是 `revertToDraft` 之外那 8 类也要数到的那 11 张表；数它们的目的从"拦截"改成"报告"。
   const { tx, calls } = downstreamCounts({ receivableSource: 2 });
   const { prisma, updated } = deletePrisma(draftOrder(), { status: "draft" }, tx);
   const service = new SalesOrdersService(prisma, deleteAudit([]));
-  await assert.rejects(
-    () => service.delete("order-1", user),
-    (error) => error instanceof UnprocessableEntityException
-      && error.getResponse().code === "SALES_ORDER_DOWNSTREAM_EXISTS"
-      && /应收来源 2 张/.test(error.getResponse().message)
-      && error.getResponse().details[0].receivable_source_count === 2,
-  );
-  assert.equal(updated(), undefined, "有下游事实就不许软删");
+  await service.delete("order-1", user);
+  assert.ok(updated().deletedAt instanceof Date, "有下游事实也照删（下游变成孤立单据）");
   assert.deepEqual([...calls].sort(), ["bom", "customerPayment", "customerReturn", "finishedGoodsOutbound", "finishedGoodsOutboundNotice", "productionOrder", "purchaseOrder", "purchasePlan", "receivableAdjustment", "receivableReconciliation", "receivableSource"].sort());
+});
+
+test("sales.order.delete_preview_lists_only_the_downstream_types_that_will_be_orphaned", async () => {
+  // 预览与执行共用同一张 11 类清单（`orphan-documents.ts`），所以弹窗里说的就是删完留下的。
+  const { tx } = downstreamCounts({ purchaseOrder: 2, receivableSource: 1 });
+  const service = new SalesOrdersService({ salesOrder: { findFirst: async () => draftOrder("confirmed") }, ...tx }, deleteAudit([]));
+  const preview = await service.deletePreview("order-1");
+  assert.equal(preview.order_no, "TEST-SO-DEL");
+  assert.equal(preview.reason_required, true, "已确认单必须填原因");
+  assert.deepEqual(preview.downstream, [{ key: "purchase_order", label: "采购单", count: 2 }, { key: "receivable_source", label: "应收来源", count: 1 }]);
+  assert.equal(preview.downstream_total, 3);
+});
+
+test("sales.order.delete_preview_does_not_require_a_reason_for_a_draft", async () => {
+  const { tx } = downstreamCounts();
+  const service = new SalesOrdersService({ salesOrder: { findFirst: async () => draftOrder("draft") }, ...tx }, deleteAudit([]));
+  const preview = await service.deletePreview("order-1");
+  assert.equal(preview.reason_required, false, "草稿仍是一键删（2026-10-08 的口径不变）");
+  assert.deepEqual(preview.downstream, []);
+  assert.equal(preview.downstream_total, 0);
 });
 
 test("sales.order.delete_does_not_cascade_into_child_tables", async () => {

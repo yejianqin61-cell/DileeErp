@@ -7,6 +7,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { normalizeItemNo, itemNoKey } from "./item-no";
 // 材料类目名只有一份（导出服务与这里共用）：「同类目再加一款」的类目名由服务端定，不采用请求里的字。
 import { isMaterialCategoryKey, materialCategoryLabel } from "./sales-material-labels";
+import { countOrphanDocuments, summarizeOrphanDocuments } from "./orphan-documents";
 import { countVersionSnapshotsWithOrderNo, normalizeOrderNo, orderNoRenameImpact, renameSalesOrderNo, type OrderNoRenameReport } from "./sales-order-order-no";
 
 /**
@@ -863,61 +864,73 @@ export class SalesOrdersService {
   }
 
   /**
-   * 删除草稿销售单（2026-10-08）。
+   * 删除销售单前的**影响面预览**（2026-11-03）。
    *
-   * 为什么是软删而不是 `salesOrder.delete`：整条销售链上**一个 `ON DELETE CASCADE` 都没有**
-   * —— 14 张子表的外键在迁移里一律落成 `RESTRICT`（唯一的 `SET NULL` 是 `customer_payments`
-   * 的可选引用），何况草稿单本来就带着版本快照、细分明细、物料引用。硬删在有子行时必然被
-   * Postgres 拒绝，所以「删除」只能是软删 + 审计留痕（`audit.softDelete` 的既有口径）。
+   * 用户要的是「删之前先看清楚会留下什么」：下游单据不会被删，而是变成孤立单据。
+   * 与 `delete()` 共用 `countOrphanDocuments`（同一张 11 类清单），预览说的与真删留下的不会分叉。
    *
-   * 为什么把 11 张下游表全数一遍，而不是照抄 `revertToDraft` 只数 BOM/采购/生产：下游事实的
-   * **创建**虽然都卡着 confirmed，但「回退草稿」那条路只复查了那三类 —— 成品出库、出库通知、
-   * 退货、应收/收款在回退时根本没被看过。删除比回退更彻底（列表上直接消失），所以守卫按
-   * 「库里到底有没有下游事实」来数，不按「理论上建不出来」来推。
-   *
-   * 锁行后再复查状态：`confirm` 可能与删除并发，先读到的 draft 在锁内可能已经不是。
-   * 与 `revertToDraft` 用同一把锁、同一个顺序（先锁销售单行，再数下游）。
+   * `reason_required` 由状态决定：草稿仍是一键删（2026-10-08 的口径不变），
+   * 已确认/已关闭的删除要写原因 —— 它带走的是整条链的「父单」，比删草稿重得多。
    */
-  async delete(id: string, user: CurrentUser) {
+  async deletePreview(id: string) {
     const order = await this.get(id);
-    if (order.status !== "draft") throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_DELETABLE", message: "只有草稿销售单可以删除", details: [{ status: order.status }] });
-    const deleted = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${id}::uuid FOR UPDATE`;
-      const locked = await tx.salesOrder.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
-      if (!locked || locked.status !== "draft") throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_DELETABLE", message: "销售单状态已变化，请刷新后重试", details: [] });
-      const facts = await this.countDownstreamFacts(tx, id);
-      if (facts.total) throw new UnprocessableEntityException({ code: "SALES_ORDER_DOWNSTREAM_EXISTS", message: `销售单已有下游事实（${facts.summary}），不能删除；请先处理这些单据`, details: [facts.counts] });
-      return tx.salesOrder.update({ where: { id }, data: this.audit.softDelete(user) });
-    });
-    // 审计只留「谁删的、删的是哪张单」：删除原因不强制（用户 2026-10-08 选定，草稿多是录错/重复录入）。
-    await this.audit.record("sales_order.delete", "sales_order", user.id, id, { order_no: order.orderNo, status: order.status });
-    return deleted;
+    const { items, total } = await countOrphanDocuments(this.prisma, id);
+    return { sales_order_id: order.id, order_no: order.orderNo, status: order.status, reason_required: order.status !== "draft", downstream: items, downstream_total: total };
   }
 
   /**
-   * 删除守卫用的下游事实盘点：只数「单据与账务」，不数版本快照 / 细分明细 / 物料引用 /「其它」行
-   * （那四样是草稿自带的内容，软删父单后随它一起从默认视图里消失）。
+   * 删除销售单（2026-11-03 起对所有状态开放）。
+   *
+   * 为什么软删：整条销售链上**一个 `ON DELETE CASCADE` 都没有** —— 38 张子表的外键在迁移里
+   * 一律落成 `RESTRICT`，硬删在有子行时必然被 Postgres 拒绝；何况单据本身带着版本快照、
+   * 细分明细、物料引用。所以「删除」只能是软删 + 审计留痕（`audit.softDelete` 的既有口径）。
+   *
+   * 为什么不再因为「有下游事实」拒绝：用户 2026-11-03 拍板 —— 下游单据**不删、不解绑**，
+   * 销售单软删后它们仍指向这张单（`sales_order_id` 不变），在列表上显示为「孤立单据」。
+   * 「孤立」是读取时算出来的（见 `orphan-documents.ts`），不是写进下游表的标记；
+   * 删错了把 `deleted_at` 清掉，下游单据自动接回。
+   *
+   * 锁行后再复查：`confirm` / `revertToDraft` 可能与删除并发，先读到的 draft 在锁内可能已经不是，
+   * 而「非草稿必须填原因」这条守卫必须在锁内再判一次，否则并发下会绕过。
+   *
+   * 与 `revertToDraft` 用同一把锁、同一个顺序（先锁销售单行，再数下游）。
    */
-  private async countDownstreamFacts(tx: Prisma.TransactionClient, salesOrderId: string) {
-    const [bom, purchaseOrder, purchasePlan, productionOrder, outbound, outboundNotice, customerReturn, receivableSource, customerPayment, receivableAdjustment, receivableReconciliation] = await Promise.all([
-      tx.bom.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.purchaseOrder.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.purchasePlan.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.productionOrder.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.finishedGoodsOutbound.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.finishedGoodsOutboundNotice.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.customerReturn.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.receivableSource.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.customerPayment.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.receivableAdjustment.count({ where: { salesOrderId, deletedAt: null } }),
-      tx.receivableReconciliation.count({ where: { salesOrderId, deletedAt: null } }),
-    ]);
-    const counts = { bom_count: bom, purchase_order_count: purchaseOrder, purchase_plan_count: purchasePlan, production_order_count: productionOrder, finished_goods_outbound_count: outbound, finished_goods_outbound_notice_count: outboundNotice, customer_return_count: customerReturn, receivable_source_count: receivableSource, customer_payment_count: customerPayment, receivable_adjustment_count: receivableAdjustment, receivable_reconciliation_count: receivableReconciliation };
-    const labels: Array<[number, string]> = [[bom, "BOM"], [purchaseOrder, "采购单"], [purchasePlan, "采购计划"], [productionOrder, "生产单"], [outbound, "成品出库单"], [outboundNotice, "出库通知"], [customerReturn, "客户退货"], [receivableSource, "应收来源"], [customerPayment, "客户收款"], [receivableAdjustment, "应收调整"], [receivableReconciliation, "应收对账"]];
-    const total = labels.reduce((sum, [count]) => sum + count, 0);
-    // 报错文案要能直接告诉用户「卡在哪一类下游」——只说"有下游"会让人去翻遍七个模块。
-    const summary = labels.filter(([count]) => count > 0).map(([count, label]) => `${label} ${count} 张`).join("、");
-    return { total, counts, summary };
+  async delete(id: string, user: CurrentUser, reason?: string) {
+    const order = await this.get(id);
+    const trimmed = (reason ?? "").trim();
+    this.assertDeleteReason(order.status, trimmed);
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM sales_orders WHERE id = ${id}::uuid FOR UPDATE`;
+      const locked = await tx.salesOrder.findFirst({ where: { id, deletedAt: null }, select: { status: true } });
+      if (!locked) throw new UnprocessableEntityException({ code: "SALES_ORDER_NOT_DELETABLE", message: "销售单已删除或不存在，请刷新后重试", details: [] });
+      this.assertDeleteReason(locked.status, trimmed);
+      const orphans = await countOrphanDocuments(tx, id);
+      const row = await tx.salesOrder.update({ where: { id }, data: this.audit.softDelete(user) });
+      return { row, status: locked.status, orphans };
+    });
+    // 审计除了「谁删的、删的是哪张单」，还要记下「留下了哪些单据、各几张」——
+    // 孤立单据是删单后的结果，事后想回答「这张单当初留下些什么」只有审计里有。
+    await this.audit.record("sales_order.delete", "sales_order", user.id, id, {
+      order_no: order.orderNo,
+      status: result.status,
+      ...(trimmed ? { reason: trimmed } : {}),
+      orphan_documents: Object.fromEntries(result.orphans.items.map((item) => [item.key, item.count])),
+      orphan_total: result.orphans.total,
+    });
+    return result.row;
+  }
+
+  /** 「非草稿必须填原因」的唯一判定：预览与执行共用，锁内锁外各判一次。 */
+  private assertDeleteReason(status: string, reason: string) {
+    if (status !== "draft" && !reason) throw new UnprocessableEntityException({ code: "SALES_ORDER_DELETE_REASON_REQUIRED", message: "删除已确认/已关闭的销售单必须填写原因", details: [{ status }] });
+  }
+
+  /**
+   * 孤立单据汇总（2026-11-03）：被删的销售单 + 它们留下的下游单据。
+   * 「孤立」的判定式与清单都收在 `orphan-documents.ts`，这里只负责把库交出去。
+   */
+  async orphans() {
+    return summarizeOrphanDocuments(this.prisma);
   }
 
   /**
