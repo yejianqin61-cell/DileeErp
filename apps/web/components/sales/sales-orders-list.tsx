@@ -248,6 +248,8 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
 
   return <div className="page-root" data-testid={testId}>
     <PageHeader title="销售单" breadcrumb={["客户与销售", "销售单"]} description="销售单列表：确认与回退、删除（下游单据保留为孤立单据）、导出工艺单、通知仓库出库。">
+      {/* 删单不会带走下游单据，它们集中收在「孤立单据」页；入口放在这里，删完就能点过去看留了什么。 */}
+      <Button variant="secondary" asChild><Link href="/sales/orphans" data-testid="sales-orphans-link">孤立单据</Link></Button>
       {/* Excel 补录（2026-11-02）：偶发动作，所以是次要按钮，排在新单之后。 */}
       <Button variant="secondary" asChild><Link href="/sales/orders/import" data-testid="sales-order-import">从 Excel 补录</Link></Button>
       <Button asChild><Link href="/sales/orders/new" data-testid="sales-order-new">新建销售单</Link></Button>

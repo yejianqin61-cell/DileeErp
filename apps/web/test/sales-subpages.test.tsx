@@ -16,19 +16,20 @@ import CustomersPage from "../app/customers/page";
 import { SALES_BOARDS, salesBoardPath } from "../lib/sales-sections";
 import { apiOk, callsTo, stubApi } from "./helpers/api-stub";
 
-describe("销售一级页：三张卡片入口", () => {
-  it("列出三个板块，各自指向自己的二级页地址", async () => {
+describe("销售一级页：四张卡片入口", () => {
+  it("列出四个板块（含 2026-11-03 的「孤立单据」），各自指向自己的二级页地址", async () => {
     const calls = stubApi(() => apiOk([]));
     render(<SalesBoardIndex />);
 
     expect(screen.getByTestId("page-sales")).toBeVisible();
-    expect(SALES_BOARDS.map((board) => board.title)).toEqual(["成品出库总览", "客户池", "销售单"]);
+    expect(SALES_BOARDS.map((board) => board.title)).toEqual(["成品出库总览", "客户池", "销售单", "孤立单据"]);
     for (const board of SALES_BOARDS) {
       const card = screen.getByTestId(`sales-board-${board.key}`);
       expect(card).toHaveTextContent(board.title);
       expect(card.getAttribute("href")).toBe(`/sales/${board.key}`);
     }
     expect(salesBoardPath("orders")).toBe("/sales/orders");
+    expect(salesBoardPath("orphans")).toBe("/sales/orphans");
 
     // 一级页是**纯导航页**：拆页的意义就是它不再替二级页拉数据（拉了就白拆）。
     await waitFor(() => expect(screen.getByTestId("sales-board-grid")).toBeVisible());

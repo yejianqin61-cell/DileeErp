@@ -4,11 +4,11 @@
 // 与二级页（页面标题/面包屑/门禁）都要知道「有哪几个板块、各自叫什么」，
 // 在组件里再抄一份的下场是「卡片上叫一个名字、页面标题叫另一个」。
 //
-// 与财务那套的差别：这里的板块是**三个各自独立的数据页面**（成品总览 / 客户池 / 销售单），
+// 与财务那套的差别：这里的板块是**各自独立的数据页面**（成品总览 / 客户池 / 销售单 / 孤立单据），
 // 没有财务那种「同一页面里再分标签」的第三层，所以只需要一张清单，不需要 TAB 表。
 
 /** 销售二级页的板块键（= 路径最后一段，`/sales/<key>`）。 */
-export type SalesBoardKey = "finished-goods" | "customers" | "orders";
+export type SalesBoardKey = "finished-goods" | "customers" | "orders" | "orphans";
 
 export type SalesBoard = {
   key: SalesBoardKey;
@@ -21,6 +21,9 @@ export const SALES_BOARDS: readonly SalesBoard[] = [
   { key: "finished-goods", title: "成品出库总览", description: "全部成品数 / 已出库数 / 未出库数，按产品与单位分行（不同单位不做合计）。" },
   { key: "customers", title: "客户池", description: "客户主数据与联系人：搜索、新建、编辑、停用、删除。" },
   { key: "orders", title: "销售单", description: "销售单列表：确认与回退、导出工艺单（可勾选带物料图片）、通知仓库出库。" },
+  // 「孤立单据」（2026-11-03）：删除销售单不删下游单据（采购/生产/出库/应收…一张都不动），
+  // 它们按「已删的销售单」分组收在这一页，否则删完就再也找不到那些单据原来属于哪张单了。
+  { key: "orphans", title: "孤立单据", description: "被删除的销售单与它们留下的下游单据：按销售单分组，列明单据类型、张数、单号、状态与金额。" },
 ];
 
 /** 板块 → 二级页路径。`/customers` 是另一个路由壳（客户栏目单独授权），不在这张表里。 */

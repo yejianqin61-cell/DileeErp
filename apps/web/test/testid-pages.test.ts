@@ -27,6 +27,8 @@ const EXPECTED: Record<string, string> = {
   "sales/orders/[id]/edit/page.tsx": "page-sales-orders-edit",
   // Excel 补录（2026-11-02）：上传 → 解析 → 进同一张系统表单核对；解析成功后整页换成编辑器（不再有本页 testid）。
   "sales/orders/import/page.tsx": "page-sales-orders-import",
+  // 孤立单据汇总页（2026-11-03）：删销售单不删下游单据，它们按被删销售单分组收在这里。
+  "sales/orphans/page.tsx": "page-sales-orphans",
   // 返单与总结（2026-09-26）：按**货号**看历次批次与单据，是左侧新 tab 的落地页。
   "reorder/page.tsx": "page-reorder",
   // 业务查询（2026-10-25）：AI 问答页，四类角色都能进。
