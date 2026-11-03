@@ -336,6 +336,15 @@ test("货号候选：路由必须声明在 @Get(\":id\") 之前（否则会被�
   assert.ok(itemNos < byId, "Nest 按声明顺序匹配：item-nos 必须在 :id 之前，否则建议列表永远是空的");
 });
 
+test("孤立单据汇总路由必须声明在 @Get(\":id\") 之前（否则 \"orphans\" 会被当成销售单 id 吃掉）", () => {
+  const source = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "src", "modules", "sales", "sales-orders.controller.ts"), "utf8");
+  const orphans = source.indexOf('@Get("orphans")');
+  const byId = source.indexOf('@Get(":id") async');
+  assert.ok(orphans > 0, "orphans 路由必须存在");
+  assert.ok(byId > 0, "预期控制器里仍有一条 @Get(\":id\") 路由");
+  assert.ok(orphans < byId, "Nest 按声明顺序匹配：orphans 必须在 :id 之前，否则汇总页永远 404");
+});
+
 // ------------------------------ 删除销售单（2026-10-08 草稿；2026-11-03 全部状态） ------------------------------
 // 2026-11-03 的口径变化：任何状态都能删、下游单据不删而是变成「孤立单据」、非草稿必须填原因。
 // 旧的三条「有下游事实就不许删 / 只有草稿能删」用例已按新语义改写，不要再按旧行为断言。

@@ -58,7 +58,7 @@ export class FinishedGoodsOutboundService {
     const rows = await this.prisma.finishedGoodsOutboundNotice.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(status ? { status } : { status: { not: "cancelled" } }) },
       include: {
-        salesOrder: { select: { currency: true, unitPrice: true, settlementUnitPrice: true, receivableAmount: true, customer: { select: { name: true } } } },
+        salesOrder: { select: { currency: true, unitPrice: true, settlementUnitPrice: true, receivableAmount: true, deletedAt: true, customer: { select: { name: true } } } },
         unit: { select: { name: true } },
         // 一张通知可以对应多张出库单（分批出库）。
         outbounds: { where: { deletedAt: null }, select: { id: true, outboundNo: true, status: true, quantity: true }, orderBy: { createdAt: "asc" } },
@@ -69,8 +69,12 @@ export class FinishedGoodsOutboundService {
       const drafts = notice.outbounds.filter((outbound) => outbound.status === "draft");
       const draftQuantity = drafts.reduce((total, outbound) => total.plus(outbound.quantity), new Prisma.Decimal(0));
       const remaining = notice.noticeQuantity.minus(notice.shippedQuantity).minus(draftQuantity);
+      const { deletedAt: salesOrderDeletedAt, ...salesOrder } = notice.salesOrder ?? {};
       return {
         ...notice,
+        salesOrder: notice.salesOrder ? salesOrder : null,
+        // 销售单被软删 = 这条出库通知成了孤立单据（2026-11-03），与出库单列表同一口径。
+        orphaned: Boolean(salesOrderDeletedAt),
         remaining_quantity: (remaining.lt(0) ? new Prisma.Decimal(0) : remaining).toString(),
         draft_quantity: draftQuantity.toString(),
         outbound_summary: notice.outbounds.map((outbound) => `${outbound.outboundNo}（${outbound.status} ${outbound.quantity.toString()}）`).join("、"),

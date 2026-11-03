@@ -52,21 +52,24 @@ export class ReconciliationService {
   async list(orderNo?: string, customerId?: string, status?: string) {
     const rows = await this.prisma.receivableReconciliation.findMany({
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}), ...(customerId ? { customerId } : {}), ...(status ? { status } : {}) },
-      include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } },
+      include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } }, salesOrder: { select: { deletedAt: true } } },
       orderBy: { createdAt: "desc" },
     });
     const flows = await this.flows(rows);
-    return rows.map((row) => ({ ...row, flow: flows.get(row.id) ?? this.emptyFlow() }));
+    // 销售单被软删 = 这条对账成了孤立单据（2026-11-03）；`salesOrder` 对象本身不下发。
+    return rows.map(({ salesOrder, ...row }) => ({ ...row, flow: flows.get(row.id) ?? this.emptyFlow(), orphaned: Boolean(salesOrder?.deletedAt) }));
   }
 
   /** 对账详情：对账快照字段 + 该客户/期间内纳入对账的应收条目（含待确认与已确认）。 */
   async get(id: string) {
-    const row = await this.prisma.receivableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } } } });
+    const row = await this.prisma.receivableReconciliation.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { id: true, name: true, customerCode: true } }, bank: { select: { id: true, bankName: true, accountNumber: true } }, salesOrder: { select: { deletedAt: true } } } });
     if (!row) throw this.notFound("RECONCILIATION_NOT_FOUND", "应收对账不存在");
     const entries = await this.entries(row);
     const draft = entries.filter((entry) => entry.status === "draft");
+    const { salesOrder, ...rest } = row;
     return {
-      ...row,
+      ...rest,
+      orphaned: Boolean(salesOrder?.deletedAt),
       status_label: STATUS_LABELS[row.status] ?? row.status,
       // 详情也带 flow：列表与详情用同一份摘要（订单号 / 产品名称 / 规格型号），
       // 前端不必为「详情里显示什么」再维护一套口径。

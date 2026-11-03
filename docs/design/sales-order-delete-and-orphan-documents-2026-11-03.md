@@ -121,14 +121,16 @@ Body 可选：`{ "reason": "..." }`。
 | 接口 | 服务 |
 | --- | --- |
 | `GET /purchase-orders`、`GET /purchase-orders/:id` | `purchase-orders.service.ts` |
-| `GET /purchase-orders/plans`（采购计划列表） | `purchase-plans.service.ts` |
-| `GET /production-orders`（生产单列表） | `production-orders.service.ts` |
-| `GET /finished-goods-outbounds`、`GET /finished-goods-outbounds/:id` | `finished-goods-outbound.service.ts` |
+| `GET /purchase-plans`、`GET /purchase-plans/:id` | `purchase-plans.service.ts` |
+| `GET /production/orders`、`GET /production/orders/:id` | `production-orders.service.ts` |
+| `GET /finished-goods/outbounds`、`GET /finished-goods/outbounds/:id` | `finished-goods-outbound.service.ts` |
+| `GET /finished-goods/outbound-notices` | `finished-goods-outbound.service.ts` |
 | `GET /finance/receivable-sources` | `receivable.service.ts` |
-| `GET /boms`（BOM 列表） | `boms.service.ts` |
+| `GET /finance/reconciliations`、`GET /finance/reconciliations/:id` | `reconciliation.service.ts` |
+| `GET /boms` | `boms.service.ts` |
 
 判定一律读销售单的 `deletedAt`（`salesOrder: { select: { deletedAt: true } }`），
-不在前端按单号猜。
+不在前端按单号猜；下发时把 `salesOrder` 对象剥掉，只留一个布尔，避免接口形状漂移。
 
 ## 4. 类型清单 `ORPHAN_DOCUMENT_TYPES`
 
