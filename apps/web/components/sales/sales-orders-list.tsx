@@ -136,20 +136,23 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   function confirmOrder(order: Order) { void run(() => apiPost(`/sales-orders/${order.id}/confirm`), "销售单已确认"); }
   function revertOrder(order: Order) { setDialog({ title: "销售单回退草稿", fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void run(() => apiPost(`/sales-orders/${order.id}/revert-draft`, v), "销售单已回到草稿") }); }
   /**
-   * 删除销售单（2026-11-03 起对所有状态开放）。
+   * 删除销售单（2026-11-03 起对所有状态开放），两条路：
    *
-   * 与 2026-10-08 那版「草稿一键删、连确认框都不要」的区别只有一处，但很关键：
-   * 删除**不再带走下游单据**，采购单 / 生产单 / 成品出库单 / 应收来源…会原样留下、显示为「孤立单据」。
-   * 所以点删除后**先问服务端会留下什么**（`GET /:id/delete-preview`，与真删共用同一张 11 类清单），
-   * 把「会留下哪些类型、各多少张」铺在确认框里，用户看清楚再动手。
+   * ① **草稿：一键删**，不弹确认框、不填原因 —— 用户 2026-10-08 拍板「草稿多是录错或重复录入，
+   *    点一下就该消失，多一次确认只是多一步」。这一版只扩大了「哪些状态能删」，没有推翻这条；
+   *    而且草稿不可能有下游单据，弹一个「会留下 0 张单据」的框只是让用户白点一次。
    *
-   * 原因：非草稿（已确认 / 已关闭）必须填 —— 删的是一整条链的父单，比删一张录错的草稿重得多；
-   * 草稿仍不要求原因（用户 2026-10-08 的口径不变）。`reason_required` 由服务端按状态给，
-   * 前端不自己判断状态（预览与执行的后端判定是同一个函数，两边不会分叉）。
+   * ② **非草稿（已确认 / 已关闭）：预览 → 确认框 → 必须填原因**。删除**不再带走下游单据**，
+   *    采购单 / 生产单 / 成品出库单 / 应收来源…会原样留下、显示为「孤立单据」，所以先问服务端
+   *    会留下什么（`GET /:id/delete-preview`，与真删共用同一张 11 类清单），把「哪些类型、各多少张」
+   *    铺在确认框里，看清楚再动手。原因必填：删的是一整条链的父单，比删草稿重得多；
+   *    是否必填仍由服务端的 `reason_required` 给（预览与执行的后端判定是同一个函数，两边不会分叉）。
    */
-  async function openDeleteDialog(order: Order) {
+  async function deleteOrder(order: Order) {
     setDeletingId(order.id);
     try {
+      // 草稿一键删：不调 delete-preview（没有下游可预览），失败照旧把服务端原因 toast 出来。
+      if (order.status === "draft") { await performDelete(order, 0); return; }
       const preview = (await apiGet<DeletePreview>(`/sales-orders/${order.id}/delete-preview`)).data;
       const fields: ActionField[] = [{ name: "effect", type: "info", label: "销售单会被删除；它的下游单据一张都不删、也不解绑，删除后显示为「孤立单据」。" }];
       if (preview.downstream_total > 0) {
@@ -166,18 +169,19 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
         fields,
         // 必须把 Promise 交回 ActionDialog：它靠 onSubmit 抛错决定「保持弹窗 + 显示原因」，
         // 被 void 吞掉就会关窗，用户填的原因与服务端拒绝理由一起丢（采购单打印信息踩过同一个坑）。
-        submit: async (values) => {
-          const reason = values.reason?.trim() ?? "";
-          await apiDelete(`/sales-orders/${order.id}`, reason ? { reason } : undefined);
-          notifySuccess(preview.downstream_total > 0 ? `已删除销售单 ${order.orderNo}（留下 ${preview.downstream_total} 张孤立单据）` : `已删除销售单 ${order.orderNo}`);
-          await load();
-        },
+        submit: async (values) => { await performDelete(order, preview.downstream_total, values.reason?.trim() || undefined); },
       });
     } catch (cause) {
       notifyError(messageOf(cause, "读取删除影响失败，请稍后重试"));
     } finally {
       setDeletingId("");
     }
+  }
+  /** 真正发 DELETE 并统一「toast + 重新拉列表」—— 草稿一键删与确认框共用，成功文案也就只有一处。 */
+  async function performDelete(order: Order, downstreamTotal: number, reason?: string) {
+    await apiDelete(`/sales-orders/${order.id}`, reason ? { reason } : undefined);
+    notifySuccess(downstreamTotal > 0 ? `已删除销售单 ${order.orderNo}（留下 ${downstreamTotal} 张孤立单据）` : `已删除销售单 ${order.orderNo}`);
+    await load();
   }
   async function run(action: () => Promise<unknown>, success: string) {
     setError("");
@@ -236,10 +240,10 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
       <Button size="sm" variant="secondary" data-testid={`order-production-sheet-${row.original.orderNo}`} disabled={exportingId === row.original.id} onClick={() => void exportProductionSheet(row.original)}>{exportingId === row.original.id ? "导出中…" : "工艺单"}</Button>
       {row.original.status === "draft" && <Button size="sm" variant="secondary" onClick={() => confirmOrder(row.original)}>确认</Button>}
       {/*
-        删除（2026-11-03）：**所有状态都能删**。下游单据不删、只变「孤立」，所以这里不再是草稿专属；
-        点下去先读影响面再弹确认框（理由见 openDeleteDialog 上方的注释）。
+        删除（2026-11-03）：**所有状态都能删**。草稿一键删；非草稿先读影响面再弹确认框、必填原因
+        （两条路的理由见 deleteOrder 上方的注释）。
       */}
-      <Button size="sm" variant="destructive" data-testid={`order-delete-${row.original.orderNo}`} disabled={deletingId === row.original.id} onClick={() => void openDeleteDialog(row.original)}>{deletingId === row.original.id ? "读取影响…" : "删除"}</Button>
+      <Button size="sm" variant="destructive" data-testid={`order-delete-${row.original.orderNo}`} disabled={deletingId === row.original.id} onClick={() => void deleteOrder(row.original)}>{deletingId === row.original.id ? "删除中…" : "删除"}</Button>
       {row.original.status === "confirmed" && <Button size="sm" variant="secondary" onClick={() => revertOrder(row.original)}>回到草稿</Button>}
     </div> },
   ];

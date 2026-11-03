@@ -15,6 +15,7 @@ import SalesOrdersList from "../components/sales/sales-orders-list";
 import PurchaseOrdersPage from "../app/procurement/orders/page";
 import PurchaseOrderDetailPage from "../app/procurement/orders/[id]/page";
 import ProductionPage from "../app/production/page";
+import BomsPage from "../app/procurement/boms/page";
 import SalesOrphansPage from "../app/sales/orphans/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, stubApi } from "./helpers/api-stub";
@@ -110,6 +111,24 @@ describe("删除销售单：先预览影响面，非草稿必须填原因", () =
     expect(screen.queryByTestId("action-dialog")).toBeNull();
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
   });
+
+  it("草稿一键删：不调 delete-preview、不弹确认框、body 不带 reason（用户 2026-10-08 口径不变）", async () => {
+    const calls = stubApi((url, call) => {
+      if (url.includes("/delete-preview")) return apiOk(deletePreview);
+      if (url.includes("/sales-orders?")) return apiOk([{ ...confirmedOrder, status: "draft" }]);
+      if (call.method === "DELETE") return apiOk({ id: "order-1" });
+      return apiOk([]);
+    });
+    render(<><SalesOrdersList /><Toaster /></>);
+    await screen.findByTestId("page-sales-orders");
+    await userEvent.click(await screen.findByTestId("order-delete-DL260170"));
+
+    await waitFor(() => expect(calls.some((call) => call.method === "DELETE")).toBe(true));
+    // 草稿没有下游可预览：多打一次预览接口、多给一次确认，都是用户 2026-10-08 明确否掉的。
+    expect(calls.some((call) => call.url.includes("/delete-preview"))).toBe(false);
+    expect(screen.queryByTestId("action-dialog")).toBeNull();
+    expect(calls.find((call) => call.method === "DELETE")?.body).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------- 下游列表 / 详情的「孤立」徽章
@@ -162,6 +181,23 @@ describe("孤立徽章：生产单表", () => {
     await waitFor(() => expect(screen.getByText("MO-2026-001")).toBeVisible());
     expect(within(screen.getByText("MO-2026-001").closest("tr")!).getByTestId("orphan-badge")).toHaveTextContent("孤立");
     expect(within(screen.getByText("MO-2026-002").closest("tr")!).queryByTestId("orphan-badge")).toBeNull();
+  });
+});
+
+describe("孤立徽章：BOM 列表", () => {
+  it("父销售单已删的 BOM 也列出来（否则既看不见也打不开），并在订单号旁显示「孤立」", async () => {
+    stubApi((url) => {
+      if (url.endsWith("/boms")) return apiOk([{ id: "bom-1", salesOrderId: "so-deleted", orderNo: "DL260170", status: "draft", version: 1, orphaned: true }]);
+      return apiOk([]);
+    });
+    render(<BomsPage />);
+
+    await screen.findByTestId("page-procurement-boms");
+    await waitFor(() => expect(screen.getByText("DL260170")).toBeVisible());
+    const row = screen.getByText("DL260170").closest("tr")!;
+    expect(within(row).getByTestId("orphan-badge")).toHaveTextContent("孤立");
+    // 光列出来不够：这一行必须还能打开 BOM 工作区（按钮按 salesOrderId 找回既有 BOM）。
+    expect(within(row).getByRole("button", { name: "编辑BOM表" })).toBeVisible();
   });
 });
 
