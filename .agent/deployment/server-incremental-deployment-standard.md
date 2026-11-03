@@ -1,5 +1,10 @@
 # 迪礼 ERP 服务器增量部署标准
 
+> **2026-11 主机变更**：旧机 `159.75.219.30` 已退服（不再续费、机器已下线，22/80/443 均不可达），其数据无法再从该机导出。
+> 现役生产机为 **`ubuntu@118.178.95.156`**（Ubuntu 24.04 / 2 vCPU / 1.7G 内存 + 4G swap / 40G 盘；PM2 + Docker PostgreSQL 的部署口径不变）。
+> 本文若出现旧机的历史数值（磁盘 50G、旧版本号、旧迁移数等），仅作历史记录；现网以新机实测为准。
+
+
 此文档是生产部署的唯一标准。服务器不作为 Git 工作区；每次发布均从本地已提交的 `HEAD` 打包，再通过 `scp` 上传。生产环境只用 Docker 运行 PostgreSQL，API 和前端由 PM2 运行。
 
 ## 本地打包与上传
@@ -10,7 +15,7 @@ git status --short
 npm run build
 powershell -ExecutionPolicy Bypass -File scripts/create-release-archive.ps1 -Output DileeErp-latest.tar.gz
 tar -tzf .\DileeErp-latest.tar.gz | Select-Object -First 30
-scp .\DileeErp-latest.tar.gz ubuntu@159.75.219.30:/tmp/DileeErp-latest.tar.gz
+scp .\DileeErp-latest.tar.gz ubuntu@118.178.95.156:/tmp/DileeErp-latest.tar.gz
 ```
 
 只允许包内直接出现 `package.json`、`package-lock.json`、`apps/`、`ecosystem.config.cjs`、`scripts/`。出现 `.android`、`.claude`、`AppData`、`Users` 等目录立即停止。`git archive` 无外层目录，解压禁止使用 `--strip-components=1`。
@@ -18,7 +23,7 @@ scp .\DileeErp-latest.tar.gz ubuntu@159.75.219.30:/tmp/DileeErp-latest.tar.gz
 ## 服务器部署
 
 ```bash
-ssh ubuntu@159.75.219.30
+ssh ubuntu@118.178.95.156
 set -euo pipefail
 cd /opt/dilee
 tar -tzf /tmp/DileeErp-latest.tar.gz | head -30

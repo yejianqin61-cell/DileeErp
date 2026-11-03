@@ -20,7 +20,7 @@
 
 [CmdletBinding()]
 param(
-  [string]$DeployHost = $(if ($env:DILEE_DEPLOY_HOST) { $env:DILEE_DEPLOY_HOST } else { "ubuntu@159.75.219.30" }),
+  [string]$DeployHost = $(if ($env:DILEE_DEPLOY_HOST) { $env:DILEE_DEPLOY_HOST } else { "ubuntu@118.178.95.156" }),
   [int]$KeepBackups = 3,          # 0 = 不清理，严格遵循标准
   [switch]$SkipValidation,
   [switch]$SkipTests,
@@ -29,6 +29,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# 2026-11：159.75.219.30 已退服（不再续费，机器已下线、22/80/443 全部不可达）。
+# 指向它的部署只会白等连接超时；更危险的是该 IP 释放后可能被云厂商分配给别的客户，
+# 于是「默认目标」会悄悄指向一台陌生机器。所以这里硬拒绝，而不是靠超时兜底。
+if ($DeployHost -match '159\.75\.219\.30') {
+  throw "拒绝部署到 159.75.219.30：该主机已于 2026-11 退服（不再续费）。请改用 -DeployHost ubuntu@118.178.95.156，或设置环境变量 DILEE_DEPLOY_HOST。"
+}
+
 $repoRoot = (git rev-parse --show-toplevel).Trim()
 Set-Location $repoRoot
 

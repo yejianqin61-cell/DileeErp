@@ -7,7 +7,7 @@ GitHub push 只执行代码检查，不再自动发布镜像或上传镜像。�
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/create-release-archive.ps1 -Output DileeErp-latest.tar.gz
 node scripts/verify-release-archive.mjs DileeErp-latest.tar.gz
-scp .\DileeErp-latest.tar.gz ubuntu@159.75.219.30:/tmp/
+scp .\DileeErp-latest.tar.gz ubuntu@118.178.95.156:/tmp/
 ```
 
 服务器执行，保留生产配置：

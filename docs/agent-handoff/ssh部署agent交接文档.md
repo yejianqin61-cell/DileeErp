@@ -1,5 +1,10 @@
 # SSH 部署 Agent 交接文档
 
+> **2026-11 主机变更**：旧机 `159.75.219.30` 已退服（不再续费、机器已下线，22/80/443 均不可达），其数据无法再从该机导出。
+> 现役生产机为 **`ubuntu@118.178.95.156`**（Ubuntu 24.04 / 2 vCPU / 1.7G 内存 + 4G swap / 40G 盘；PM2 + Docker PostgreSQL 的部署口径不变）。
+> 本文若出现旧机的历史数值（磁盘 50G、旧版本号、旧迁移数等），仅作历史记录；现网以新机实测为准。
+
+
 - 交接时间：2026-09-14
 - 仓库：`C:\Users\USER\Desktop\Dilee`（Windows / PowerShell；`apps/api` = NestJS + Prisma + PostgreSQL，`apps/web` = Next.js 15 + React 19，npm workspaces）
 - 代码基线：本地与线上**代码一致**，线上版本 `d6574d7`；数据库迁移 **65/65**；交接时工作区干净（本文档自身为 docs-only 提交，不影响发布）
@@ -13,7 +18,7 @@
 
 | 项 | 值 |
 |---|---|
-| 主机 | `ubuntu@159.75.219.30`（SSH；凭据在运维方环境，**不在仓库内**，不要写入任何文档/提交） |
+| 主机 | `ubuntu@118.178.95.156`（SSH；凭据在运维方环境，**不在仓库内**，不要写入任何文档/提交） |
 | 线上运行目录 | `/opt/dilee/app`（PM2 `cwd`，内含 `.env`、`RELEASE_VERSION`） |
 | 构建暂存目录 | `/opt/dilee/app.next`（每次全新构建，成功后整体替换 `/opt/dilee/app`） |
 | 备份 | `/opt/dilee/app.backup-<YYYYmmdd-HHMMSS>`，**自动只保留最近 3 份**（切换脚本内 `head -n -3`） |
@@ -35,7 +40,7 @@
 
 1. **对齐基线与范围**
    ```powershell
-   ssh ubuntu@159.75.219.30 "cat /opt/dilee/app/RELEASE_VERSION"   # 线上版本
+   ssh ubuntu@118.178.95.156 "cat /opt/dilee/app/RELEASE_VERSION"   # 线上版本
    git log --oneline <线上版本>..HEAD                               # 待上线提交
    git diff --name-only <线上版本>..HEAD -- apps/api/prisma/migrations   # 待执行迁移
    git status --short                                               # 是否有人在途改动
@@ -138,7 +143,7 @@ sudo docker exec app-postgres-1 psql -U dilee -d dilee_erp -tAc \
 ```powershell
 git log --oneline -1                                          # 应为 d6574d7
 git status --short                                            # 应为空
-ssh ubuntu@159.75.219.30 "cat /opt/dilee/app/RELEASE_VERSION"  # 应与本地 HEAD 相同
-ssh ubuntu@159.75.219.30 "curl -fsS http://127.0.0.1:3001/api/v1/health"
+ssh ubuntu@118.178.95.156 "cat /opt/dilee/app/RELEASE_VERSION"  # 应与本地 HEAD 相同
+ssh ubuntu@118.178.95.156 "curl -fsS http://127.0.0.1:3001/api/v1/health"
 # 迁移数（应为 65）、失败残留（应为 0）、备份数（应为 3）
 ```
