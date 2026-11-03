@@ -55,6 +55,14 @@ button { cursor: pointer; }
 .ui-form-description, .ui-form-message { min-height: 16px; margin: 0; color: var(--text-muted); font-size: 12px; }
 .ui-form-message { color: var(--danger); }
 .ui-badge { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
+/*
+ * 「孤立」标记（2026-11-03）：销售单被删除后，下游单据仍在但父单已没了（见 components/data/orphan-badge.tsx）。
+ * 单号 + 徽章在同一格里横向排：单号可能很长（`.cell-ellipsis` 会给它省略号），
+ * 所以徽章不能跟着被压扁（flex-shrink: 0），否则「孤立」两个字会消失 —— 它是这一行的全部意义。
+ */
+.order-no-with-orphan { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.order-no-with-orphan-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-no-with-orphan .orphan-badge { flex-shrink: 0; }
 .ui-card { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .ui-card-header { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--border); padding: 16px; }
 .ui-card-title { margin: 0; font-size: 14px; font-weight: 700; }
