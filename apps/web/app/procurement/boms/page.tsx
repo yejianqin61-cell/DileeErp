@@ -6,13 +6,14 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
+import { OrderNoWithOrphan } from "../../../components/data/orphan-badge";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
 import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-workbench";
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Reference = AuditRow & { id: string; orderNo?: string; status?: string; salesOrderId?: string; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
+type Reference = AuditRow & { id: string; orderNo?: string; status?: string; salesOrderId?: string; /** 所属销售单已被软删（2026-11-03）：BOM 不删，只标成「孤立」。判定只认后端字段。 */ orphaned?: boolean; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
 // 物料池：规格型号与颜色要一起带上 —— BOM 行选择/新建物料时会引用它们做初始值。
 type Material = { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; materialType?: string; defaultUnitId?: string; isActive?: boolean };
 type Unit = { id: string; name?: string; isActive?: boolean };
@@ -141,20 +142,34 @@ export default function BomsPage() {
   }
 
   /**
-   * 这一页只列**已确认**销售单：BOM 是"要按这张单买料/投产"的清单，草稿单随时会被改，
-   * 拿它建 BOM 等于给一份会变的单子承诺物料。
+   * 这一页的列表由两段拼成，都是「一张销售单 + 它的 BOM」这一行形状：
    *
-   * ⚠️ 过滤已经交给服务端（`?status=confirmed`）—— **不要**在这里再过滤一次：
-   * 那正是 2026-10-13 那个缺陷的形态（前端拿到最近 20 张任意状态的单再过滤 → 整页空）。
-   * 若真出现不该有的状态，页面上的「BOM状态」列会如实显示出来，比静默吞掉强。
+   * ① 在册的**已确认**销售单（`/sales-orders?status=confirmed`）：BOM 是"要按这张单买料/投产"的清单，
+   *    草稿单随时会被改，拿它建 BOM 等于给一份会变的单子承诺物料。
+   *    ⚠️ 过滤已经交给服务端 —— **不要**在这里再过滤一次：那正是 2026-10-13 那个缺陷的形态
+   *    （前端拿到最近 20 张任意状态的单再过滤 → 整页空）。
+   *
+   * ② 孤立的 BOM（2026-11-03）：父销售单被软删后，BOM 行仍在 `/boms` 里（`deleted_at` 为空），
+   *    但那张销售单已经不在 `/sales-orders` 列表里了。不把 `/boms` 里 `orphaned` 的行补进来，
+   *    这些 BOM 就**既看不见也打不开**（它们是删单后留下的单据里排在最前面的一类）。
+   *    `id` 换成 salesOrderId：`createOrOpenBom` 靠它找回既有 BOM，与在册行同一口径；
+   *    同一张销售单可能有多版 BOM，按 salesOrderId 去重、保留 /boms 给出的第一行（version desc）。
    */
-  const confirmedSalesOrders = salesOrders;
+  const bomRows: Reference[] = [...salesOrders];
+  const shownSalesOrderIds = new Set(salesOrders.map((order) => order.id));
+  for (const bom of boms) {
+    const salesOrderId = bom.salesOrderId;
+    if (!bom.orphaned || !salesOrderId || shownSalesOrderIds.has(salesOrderId)) continue;
+    shownSalesOrderIds.add(salesOrderId);
+    bomRows.push({ ...bom, id: salesOrderId, orderNo: bom.orderNo ?? "-" });
+  }
   const bomEmptyHint = draftCount
     ? `还有 ${draftCount} 张销售单是草稿：BOM 只能建在**已确认**的销售单上 —— 请先到【销售】确认，再回这里点「新建BOM表」。`
     : "建立并确认销售单后，即可在这里为其建立 BOM 表。";
 
   const columns: ColumnDef<Reference>[] = [
-    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
+    // 订单号旁可能跟着「孤立」徽章：销售单被删后 BOM 仍在，得让人看出它已经没有在途的销售单了。
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo }, accessorFn: (row) => row.orderNo ?? "-", cell: ({ row }) => <OrderNoWithOrphan orderNo={row.original.orderNo ?? "-"} orphaned={row.original.orphaned} /> },
     { accessorKey: "status", header: "BOM状态", meta: { width: COLUMN_WIDTH.status } },
     ...auditColumns<Reference>(),
     {
@@ -207,7 +222,7 @@ export default function BomsPage() {
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel">
         <div className="panel-body">
-          <DataTable columns={columns} data={confirmedSalesOrders} empty={<EmptyState title="暂无已确认销售单" description={bomEmptyHint} />} />
+          <DataTable columns={columns} data={bomRows} empty={<EmptyState title="暂无已确认销售单" description={bomEmptyHint} />} />
         </div>
       </section>
     </div>

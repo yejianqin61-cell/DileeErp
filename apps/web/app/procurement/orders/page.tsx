@@ -29,6 +29,7 @@ import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-cl
 import { downloadFile } from "../../../lib/download";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
+import { OrderNoWithOrphan } from "../../../components/data/orphan-badge";
 import { paymentTermOptions, printFieldsDefaults, printFieldsPayload } from "../../../lib/purchase-order-print";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
@@ -41,6 +42,8 @@ type PurchaseOrder = AuditRow & {
   /** 打印信息（2026-09-16）：付款方式 / 交期条款 / 交货地址 / 厂家回签意见 / 厂家回签 / 主管签字 */
   paymentTerms?: string | null; deliveryTerms?: string | null; deliveryAddress?: string | null;
   supplierReply?: string | null; supplierSigned?: string | null; supervisorSignature?: string | null; remark?: string | null;
+  /** 所属销售单已被软删（2026-11-03）：这张采购单不删、也不解绑，只显示成「孤立」——判定只认后端字段。 */
+  orphaned?: boolean;
   supplier?: { name: string } | null; items: PurchaseItem[];
 };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
@@ -226,7 +229,8 @@ export default function PurchaseOrdersPage() {
 
   const orderColumns: ColumnDef<PurchaseOrder>[] = [
     { accessorKey: "purchaseOrderNo", header: "采购单号", meta: { width: COLUMN_WIDTH.purchaseOrderNo } },
-    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo }, cell: ({ row }) => <Button variant="link" asChild><Link href={`/procurement/orders/${row.original.id}`}>{row.original.orderNo}</Link></Button> },
+    // 订单号是这张单「属于哪张销售单」的唯一线索；销售单被删后这里会多一个「孤立」徽章。
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo }, cell: ({ row }) => <OrderNoWithOrphan orphaned={row.original.orphaned} orderNo={<Button variant="link" asChild><Link href={`/procurement/orders/${row.original.id}`}>{row.original.orderNo}</Link></Button>} /> },
     { id: "supplier", header: "供应商", meta: { width: COLUMN_WIDTH.supplier }, cell: ({ row }) => row.original.supplier?.name ?? "-" },
     { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.status }, cell: ({ row }) => { const totals = row.original.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 }); return totals.received > totals.planned ? <span className="status-error">超单</span> : totals.received === totals.planned && totals.planned > 0 ? <span className="status-success">到货完成</span> : <span className="status-label">{statusMap[row.original.status] ?? row.original.status}</span>; } },
     { id: "amount", header: "金额", meta: { width: COLUMN_WIDTH.amount }, cell: ({ row }) => `${row.original.totalAmount} ${row.original.currency}` },

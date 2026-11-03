@@ -7,6 +7,7 @@ import { PageHeader } from "../../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../../components/ui/action-dialog";
 import { Button } from "../../../../components/ui/button";
 import { EmptyState, ErrorState, LoadingState } from "../../../../components/feedback/states";
+import { OrphanBadge } from "../../../../components/data/orphan-badge";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../../lib/api-client";
 import { notifyError, notifySuccess } from "../../../../components/ui/toaster";
 
@@ -14,7 +15,7 @@ type InspectionBatch = { id: string; status: string; inspectedQuantity: string; 
 type InboundBatch = { id: string; inboundNo: string; quantity: string; status: string };
 type Receipt = { id: string; receiptNo: string; quantity: string; status?: string; remark?: string | null; receivedDate?: string; batchSequence?: number; inspections?: InspectionBatch[]; rawMaterialInbounds?: InboundBatch[] };
 type PurchaseItem = { id: string; materialId: string; unitId: string; supplierId?: string | null; expectedDate?: string | null; model?: string | null; quantity: string; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; supplier?: { name?: string | null } | null; receipts: Receipt[]; batchWorkflows?: Array<{ receiptId: string; receiptNo: string; batchSequence: number; receivedQuantity: string; inspections: InspectionBatch[]; inbounds: InboundBatch[] }> };
-type PurchaseOrder = { id: string; purchaseOrderNo: string; orderNo: string; status: string; currency: string | null; totalAmount: string; extensionData?: { arrival_closed?: boolean }; supplier?: { name: string } | null; items: PurchaseItem[] };
+type PurchaseOrder = { id: string; purchaseOrderNo: string; orderNo: string; status: string; currency: string | null; totalAmount: string; extensionData?: { arrival_closed?: boolean }; /** 所属销售单已被软删（2026-11-03）：拓扑不变，只标成「孤立」。 */ orphaned?: boolean; supplier?: { name: string } | null; items: PurchaseItem[] };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -83,10 +84,19 @@ export default function PurchaseOrderDetailPage() {
     </PageHeader>
     <ActionDialog open={Boolean(dialog)} onOpenChange={o => { if (!o) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={v => { dialog?.submit(v); setDialog(null); }} />
     {message && <section className="panel panel-body status-success" role="status">{message}</section>}
+    {/*
+      孤立单据提示（2026-11-03）：详情页是「跟这张单」的入口，如果只看顶部的订单号，
+      用户会以为这张采购单还挂在一张在途的销售单上。这里说明两件事：父单没了；
+      但到货 / 质检 / 入库 / 付款这些流程**照旧可以继续办**（下游单据一行都没动）。
+    */}
+    {order.orphaned ? <section className="panel panel-body panel-note" role="status" data-testid="purchase-order-orphan-hint">
+      <p>该采购单所属销售单 <strong>{order.orderNo}</strong> 已被删除，这张采购单原样保留为「孤立单据」。</p>
+      <p>到货跟踪、质检与入库仍然可以继续办理；如需把销售单接回来，请找管理员处理（删除是软删，数据没有丢）。</p>
+    </section> : null}
     <section className="panel">
       <div className="panel-heading"><h2>{order.purchaseOrderNo}</h2></div>
       <div className="panel-body">
-        <div className="order-info-bar"><span className="header-chip">订单号 {order.orderNo}</span><span className="header-chip">供应商 {order.supplier?.name ?? "-"}</span><span className="header-chip">状态 {statusMap[order.status] ?? order.status}</span><span className="header-chip">金额 {order.totalAmount} {order.currency}</span></div>
+        <div className="order-info-bar"><span className="header-chip">订单号 {order.orderNo}</span>{order.orphaned ? <OrphanBadge /> : null}<span className="header-chip">供应商 {order.supplier?.name ?? "-"}</span><span className="header-chip">状态 {statusMap[order.status] ?? order.status}</span><span className="header-chip">金额 {order.totalAmount} {order.currency}</span></div>
         <div className="purchase-item-blocks">{order.items.map(item => {
           const rws = rows(item);
           const ml = `${item.material?.materialCode ?? ""} / ${item.material?.name ?? "物料"}${item.model ? ` / ${item.model}` : ""}`;

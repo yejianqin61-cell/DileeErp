@@ -10,6 +10,7 @@ import { Input } from "../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { DataTable, statusCell } from "../../components/data/data-table";
 import { auditColumns, type AuditRow } from "../../components/data/audit-columns";
+import { OrderNoWithOrphan } from "../../components/data/orphan-badge";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { latestBom, productionCandidateHint, productionCandidates, resolveProductionUnit } from "../../lib/production-candidates";
@@ -22,7 +23,7 @@ type Unit = { id: string; name: string; isActive: boolean };
 type Location = { id: string; name: string; locationType: "workshop" | "outsource_site"; isActive: boolean };
 type Operation = { id: string; operationName: string; defaultUnitId?: string | null; isActive: boolean };
 type Order = { id?: string; orderNo: string; quantity: string; unit?: string; status: string; boms: Array<{ id: string; version: number; status: string }> };
-type ProductionOrder = AuditRow & { id: string; productionOrderNo: string; orderNo: string; executionMode: "in_house" | "outsourced"; status: string; plannedQuantity: string; executionLocation: Location; operations: Array<{ id: string; operationCatalogId?: string; sequenceNo?: number; operationNameSnapshot: string; targetQuantity: string; status: string }> };
+type ProductionOrder = AuditRow & { id: string; productionOrderNo: string; orderNo: string; executionMode: "in_house" | "outsourced"; status: string; plannedQuantity: string; /** 所属销售单已被软删（2026-11-03）：生产单不删，只标成「孤立」。 */ orphaned?: boolean; executionLocation: Location; operations: Array<{ id: string; operationCatalogId?: string; sequenceNo?: number; operationNameSnapshot: string; targetQuantity: string; status: string }> };
 
 /**
  * 「BOM表」列表（本页 179 行的**手写** `<table className="data-table">`）的列宽，总和恰好 100%。
@@ -176,7 +177,8 @@ export default function ProductionPage() {
 
   const columns: ColumnDef<ProductionOrder>[] = [
     { accessorKey: "productionOrderNo", header: "生产单号", meta: { width: ORDER_COLUMN_WIDTH.productionOrderNo }, cell: ({ row }) => <Button variant="link" onClick={() => router.push(`/production/orders/${row.original.id}`)}>{row.original.productionOrderNo}</Button> },
-    { accessorKey: "orderNo", header: "订单号", meta: { width: ORDER_COLUMN_WIDTH.orderNo } },
+    // 订单号旁可能跟着「孤立」徽章：销售单被删后生产单仍在，得让人看出它已经没有在途的销售单了。
+    { accessorKey: "orderNo", header: "订单号", meta: { width: ORDER_COLUMN_WIDTH.orderNo }, cell: ({ row }) => <OrderNoWithOrphan orderNo={row.original.orderNo} orphaned={row.original.orphaned} /> },
     { id: "mode", header: "执行方式", meta: { width: ORDER_COLUMN_WIDTH.mode }, cell: ({ row }) => row.original.executionMode === "in_house" ? "厂内" : "外加工" },
     { id: "location", header: "地点", meta: { width: ORDER_COLUMN_WIDTH.location }, cell: ({ row }) => row.original.executionLocation?.name ?? "-" },
     { accessorKey: "plannedQuantity", header: "计划数", meta: { width: ORDER_COLUMN_WIDTH.plannedQuantity } },

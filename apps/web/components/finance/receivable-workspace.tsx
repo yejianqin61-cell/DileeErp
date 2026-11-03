@@ -33,6 +33,7 @@ import { FinanceTabs } from "./finance-tabs";
 import FinanceSlipEditor from "./finance-slip-editor";
 import { RecordDetailDialog, money, type DetailField } from "./record-detail-dialog";
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
+import { OrderNoWithOrphan } from "../data/orphan-badge";
 import { financeStatus } from "./finance-status";
 import { financeSlipDraftBody, financeSlipDraftPath, type FinanceSlipDraft } from "../../lib/finance-slip";
 
@@ -137,6 +138,8 @@ type SourceAllocation = { id: string; amount: string; status: string; payment?: 
 type ReconciliationRef = { id: string; reconciliation_no: string; status: string; period_start: string; period_end: string };
 type ReceivableSource = AuditRow & {
   id: string; sourceNo: string; orderNo: string; customerId: string; outboundId: string;
+  /** 所属销售单已被软删（2026-11-03）：应收来源不删、钱照收，只标成「孤立」。判定只认后端字段。 */
+  orphaned?: boolean;
   quantity: string; unit: string; unitPrice: string | null; taxRate: string | null; amount: string; currency: string;
   amountReason: string | null; status: string; dueDate: string | null; invoiceNo: string | null; invoiceDate: string | null;
   signedAtSnapshot: string | null; remark: string | null; createdAt: string;
@@ -616,7 +619,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
 
   const sourceColumns: ColumnDef<ReceivableSource>[] = [
     { accessorKey: "sourceNo", header: "应收来源", meta: { width: COLUMN_WIDTH.sourceNo } },
-    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo }, cell: ({ row }) => <OrderNoWithOrphan orderNo={row.original.orderNo} orphaned={row.original.orphaned} /> },
     { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.customer }, cell: ({ row }) => row.original.customer_name ?? row.original.customer_code ?? "-" },
     { id: "outbound", header: "出库单", meta: { width: COLUMN_WIDTH.outbound }, cell: ({ row }) => row.original.outbound_no ?? "-" },
     { id: "product", header: "产品", meta: { width: COLUMN_WIDTH.product }, cell: ({ row }) => { const item = row.original; const spec = item.product_specification ? `（${item.product_specification}）` : ""; return item.product_name ? `${item.product_name}${spec}` : "-"; } },
@@ -634,7 +637,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const ledgerColumns: ColumnDef<ReceivableSource>[] = [
     selectionColumn,
     { accessorKey: "sourceNo", header: "应收来源", meta: { width: COLUMN_WIDTH.ledgerSourceNo } },
-    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.ledgerOrderNo } },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.ledgerOrderNo }, cell: ({ row }) => <OrderNoWithOrphan orderNo={row.original.orderNo} orphaned={row.original.orphaned} /> },
     { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.ledgerCustomer }, cell: ({ row }) => row.original.customer_name ?? row.original.customer_code ?? "-" },
     { id: "amount", header: "应收金额", meta: { width: COLUMN_WIDTH.ledgerAmount }, cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "due", header: "到期日", meta: { width: COLUMN_WIDTH.ledgerDue }, cell: ({ row }) => day(row.original.dueDate) },
@@ -676,7 +679,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.pendingCustomer }, cell: ({ row }) => row.original.customer_name ?? row.original.customer_code ?? row.original.customerId },
     { accessorKey: "sourceNo", header: "应收来源", meta: { width: COLUMN_WIDTH.pendingSourceNo } },
     { id: "month", header: "待对账月份", meta: { width: COLUMN_WIDTH.pendingMonth }, cell: ({ row }) => monthOf(row.original.createdAt) },
-    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.pendingOrderNo } },
+    { id: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.pendingOrderNo }, cell: ({ row }) => <OrderNoWithOrphan orderNo={row.original.orderNo} orphaned={row.original.orphaned} /> },
     { id: "outbound", header: "出库单", meta: { width: COLUMN_WIDTH.pendingOutbound }, cell: ({ row }) => row.original.outbound_no ?? "-" },
     { id: "product", header: "产品", meta: { width: COLUMN_WIDTH.pendingProduct }, cell: ({ row }) => row.original.product_name ?? "-" },
     { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.pendingSpecification }, cell: ({ row }) => row.original.product_specification ?? "-" },

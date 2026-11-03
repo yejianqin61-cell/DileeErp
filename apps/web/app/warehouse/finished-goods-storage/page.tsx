@@ -16,6 +16,7 @@ import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-cl
 import { downloadFile } from "../../../lib/download";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
+import { OrderNoWithOrphan } from "../../../components/data/orphan-badge";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 import { FinishedGoodsOutboundSlipSheet } from "../../../components/warehouse/finished-goods-outbound-slip-sheet";
 import {
@@ -25,7 +26,7 @@ import {
 type Balance = { category: string; unit_id: string; production_order_id: string | null; order_no: string | null; product_name: string | null; product_specification: string | null; quantity: string };
 type Notice = AuditRow & { id: string; noticeNo: string; orderNo: string; batchNo?: string | null; noticeDate: string; status: string; noticeQuantity: string; submittedQuantity: string; qcQualifiedQuantity: string; inboundDraftQuantity: string; inboundPostedQuantity: string; availableSubmissionQuantity: string; remainingForInbound: string; operationNameSnapshot: string; unitNameSnapshot: string; productNameSnapshot?: string | null };
 type Inbound = AuditRow & { id: string; inboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; qcRecord?: { qcNo?: string } | null; createdAt?: string };
-type Outbound = AuditRow & { id: string; outboundNo: string; orderNo: string; quantity: string; status: string; productNameSnapshot?: string | null; shipmentDate?: string | null; carrier?: string | null; trackingNo?: string | null; packingListNo?: string | null; invoiceNo?: string | null; signedAt?: string | null; riskReason?: string | null; remark?: string | null; unit?: { name?: string } | null; salesOrder?: { currency?: string; unitPrice?: string | null; settlementUnitPrice?: string | null; customer?: { name?: string } | null } | null; outboundNotice?: { id: string; noticeNo: string; status: string } | null };
+type Outbound = AuditRow & { id: string; outboundNo: string; orderNo: string; quantity: string; status: string; /** 所属销售单已被软删（2026-11-03）：出库单不删、仍能过账，只标成「孤立」。判定只认后端字段。 */ orphaned?: boolean; productNameSnapshot?: string | null; shipmentDate?: string | null; carrier?: string | null; trackingNo?: string | null; packingListNo?: string | null; invoiceNo?: string | null; signedAt?: string | null; riskReason?: string | null; remark?: string | null; unit?: { name?: string } | null; salesOrder?: { currency?: string; unitPrice?: string | null; settlementUnitPrice?: string | null; customer?: { name?: string } | null } | null; outboundNotice?: { id: string; noticeNo: string; status: string } | null };
 // 销售发起的成品出库通知：仓库据此分批生成出库单（可只出一部分，剩余量继续出）。
 type OutboundNotice = AuditRow & { id: string; noticeNo: string; orderNo: string; productionOrderId: string; productNameSnapshot?: string | null; productSpecificationSnapshot?: string | null; noticeQuantity: string; shippedQuantity?: string; remaining_quantity?: string; draft_quantity?: string; status: string; notifiedAt: string; remark?: string | null; outbound_summary?: string; unit?: { name?: string } | null; salesOrder?: { customer?: { name?: string } | null } | null };
 
@@ -330,7 +331,7 @@ export default function FinishedGoodsStoragePage() {
   ];
   const outboundColumns = [
     { accessorKey: "outboundNo", header: "出库单", meta: { width: COLUMN_WIDTH.outboundNo } },
-    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.outboundOrderNo } },
+    { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.outboundOrderNo }, cell: ({ row }: { row: { original: Outbound } }) => <OrderNoWithOrphan orderNo={row.original.orderNo} orphaned={row.original.orphaned} /> },
     { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.outboundCustomer }, cell: ({ row }: { row: { original: Outbound } }) => row.original.salesOrder?.customer?.name ?? "-" },
     { id: "product", header: "成品", meta: { width: COLUMN_WIDTH.outboundProduct }, cell: ({ row }: { row: { original: Outbound } }) => row.original.productNameSnapshot ?? "-" },
     { id: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.outboundQuantity }, cell: ({ row }: { row: { original: Outbound } }) => `${row.original.quantity}${row.original.unit?.name ? ` ${row.original.unit.name}` : ""}` },

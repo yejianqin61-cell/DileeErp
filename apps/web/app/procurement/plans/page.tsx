@@ -32,6 +32,7 @@ import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { formatBeijingShort } from "../../../lib/audit-time";
 import { amountSummaryText, lineAmountText, type PlanAmount } from "../../../lib/purchase-plan-amount";
+import { OrderNoWithOrphan } from "../../../components/data/orphan-badge";
 import { trimPlanNumber } from "../../../lib/purchase-plan-price-entry";
 import { notifyError } from "../../../components/ui/toaster";
 
@@ -55,6 +56,8 @@ type PlanRow = {
   /** 计划金额：**按币种分列**（后端 `sumPlanAmounts`，金额不跨币种合计）。`unorderedAmounts` 是其中未下单的那部分。 */
   amounts?: PlanAmount[]; unorderedAmounts?: PlanAmount[];
   status: "unordered" | "partial" | "completed"; statusLabel: string; updatedByName: string | null;
+  /** 所属销售单已被软删（2026-11-03）：计划不删，只显示成「孤立」。判定只认后端字段。 */
+  orphaned?: boolean;
   createdAt: string; updatedAt: string;
   /** 展平用的明细行（2026-10-13）。老版本接口没有这一项时按空处理，页面不会炸。 */
   lines?: PlanLine[];
@@ -218,7 +221,8 @@ export default function PurchasePlansPage() {
         </Button>
       ),
     },
-    { id: "orderNo", header: "销售单号", meta: { width: COLUMN_WIDTH.orderNo, ellipsis: true }, accessorFn: (row) => row.plan.orderNo },
+    // 销售单号旁可能跟着「孤立」徽章：销售单被删后采购计划不删，仍要能按计划继续下单/收货。
+    { id: "orderNo", header: "销售单号", meta: { width: COLUMN_WIDTH.orderNo, ellipsis: true }, accessorFn: (row) => row.plan.orderNo, cell: ({ row }) => <OrderNoWithOrphan orderNo={row.original.plan.orderNo} orphaned={row.original.plan.orphaned} /> },
     { id: "itemNo", header: "货号", meta: { width: COLUMN_WIDTH.itemNo, ellipsis: true }, accessorFn: (row) => row.plan.itemNo ?? "-" },
     { id: "customerName", header: "客户", meta: { width: COLUMN_WIDTH.customerName, ellipsis: true }, accessorFn: (row) => row.plan.customerName ?? "-" },
     {
