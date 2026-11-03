@@ -78,6 +78,8 @@ export type PlanDetail = {
   /** 计划合计（按币种分列）与「其中未下单」——服务端口径。表下方那一行以本地即时算的为准（正在编辑）。 */
   amounts?: PlanAmount[]; unorderedAmounts?: PlanAmount[];
   bomDeleted?: boolean; bomExtraMaterialCount?: number; deliveryDate?: string | null;
+  /** 所属销售单已被软删（2026-11-03）：计划不删，只标成「孤立」。判定只认后端字段。 */
+  orphaned?: boolean;
   updatedAt: string; items: PlanItem[];
   /**
    * 这份计划下**还能并入**的采购单（2026-10-13 口径 6）：`{id, purchaseOrderNo, supplierId, currency, itemCount, totalAmount}`。
@@ -547,6 +549,8 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
               <label>BOM 版本<Input readOnly value={String(plan.bomVersion ?? "-")} aria-label="BOM 版本" /></label>
               <label>状态<Input readOnly value={`${plan.statusLabel}（未下单 ${plan.unorderedCount} / 共 ${plan.lineCount}）`} aria-label="计划状态" /></label>
               {plan.bomDeleted ? <p className="panel-note status-warning">这张 BOM 已经被删除：计划仍按当时的需求保留，可以继续买或退回。</p> : null}
+              {/* 孤立（2026-11-03）：销售单被删后采购计划不删，按计划继续下单/收货都还有效（与 BOM 被删是两件事）。 */}
+              {plan.orphaned ? <p className="panel-note status-warning" data-testid="plan-orphan-hint">这张计划所属的销售单已被删除：计划原样保留为「孤立单据」，仍然可以继续下单与收货；如需把销售单接回来，请找管理员处理（删除是软删，数据没有丢）。</p> : null}
               {plan.bomExtraMaterialCount ? (
                 // 口径 12：BOM 后来新增了物料**不自动插行**（计划可能已经部分下单），只提示。
                 <p className="panel-note status-warning" data-testid="plan-bom-extra">

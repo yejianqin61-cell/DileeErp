@@ -164,6 +164,8 @@ type Reconciliation = AuditRow & {
   subject?: SubjectLink | null;
   customer?: CustomerRef | null;
   status_label?: string;
+  /** 所属销售单已被软删（2026-11-03）：对账单不删、收付款照走，只标成「孤立」。判定只认后端字段。 */
+  orphaned?: boolean;
   /** 流转摘要（列表接口就给，与应付对账的 flow 对称）：覆盖多少条、多少条待确认、哪些订单与产品。 */
   flow?: {
     entry_count: number; draft_count: number; draft_amount: string; can_confirm_receivables: boolean;
@@ -648,7 +650,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const reconciliationColumns: ColumnDef<Reconciliation>[] = [
     { accessorKey: "reconciliationNo", header: "对账单号", meta: { width: COLUMN_WIDTH.reconciliationNo } },
     { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.reconciliationCustomer }, cell: ({ row }) => row.original.customer?.name ?? "-" },
-    { id: "order", header: "订单号", meta: { width: COLUMN_WIDTH.reconciliationOrder }, cell: ({ row }) => row.original.orderNo ?? (row.original.flow?.order_nos.length ? row.original.flow.order_nos.join("、") : "全部订单") },
+    { id: "order", header: "订单号", meta: { width: COLUMN_WIDTH.reconciliationOrder }, cell: ({ row }) => <OrderNoWithOrphan orderNo={row.original.orderNo ?? (row.original.flow?.order_nos.length ? row.original.flow.order_nos.join("、") : "全部订单")} orphaned={row.original.orphaned} /> },
     // 用户要求（应付侧同款）：对账要能看出「这批货是什么、什么规格」。
     { id: "product", header: "产品", meta: { width: COLUMN_WIDTH.reconciliationProduct }, cell: ({ row }) => row.original.flow?.product_names?.join("、") || "-" },
     { id: "specification", header: "规格型号", meta: { width: COLUMN_WIDTH.reconciliationSpecification }, cell: ({ row }) => row.original.flow?.product_specifications?.join("、") || "-" },
@@ -717,7 +719,10 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const item = detailData as Reconciliation;
       return [
         { label: "对账单号", value: item.reconciliationNo }, { label: "状态", value: financeStatus(item.status, "reconciliation") },
-        { label: "客户", value: item.customer?.name ?? item.customerId }, { label: "订单号", value: item.orderNo ?? "全部订单" },
+        { label: "客户", value: item.customer?.name ?? item.customerId },
+        // 销售单被删后，对账单仍是有效凭证（收款/核销/差异处理照走）；订单号旁标「孤立」并说明一句。
+        { label: "订单号", value: <OrderNoWithOrphan orderNo={item.orderNo ?? "全部订单"} orphaned={item.orphaned} /> },
+        ...(item.orphaned ? [{ label: "孤立说明", value: "所属销售单已被删除：对账单原样保留为孤立单据，收款、核销与差异处理都不受影响。", wide: true }] : []),
         // 用户要求（应付侧同款）：双击已创建对账单，弹窗里要能直接看到这批货的名称与规格型号。
         { label: "产品", value: item.flow?.product_names?.join("、"), wide: true },
         { label: "规格型号", value: item.flow?.product_specifications?.join("、"), wide: true },

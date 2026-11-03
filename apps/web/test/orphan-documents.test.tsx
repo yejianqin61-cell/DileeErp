@@ -16,6 +16,10 @@ import PurchaseOrdersPage from "../app/procurement/orders/page";
 import PurchaseOrderDetailPage from "../app/procurement/orders/[id]/page";
 import ProductionPage from "../app/production/page";
 import BomsPage from "../app/procurement/boms/page";
+import FinishedGoodsStoragePage from "../app/warehouse/finished-goods-storage/page";
+import { ProductionOrderDetailPage } from "../components/production/production-order-detail-page";
+import { PlanDetailSheet } from "../components/procurement/plan-detail-sheet";
+import ReceivableWorkspace from "../components/finance/receivable-workspace";
 import SalesOrphansPage from "../app/sales/orphans/page";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, stubApi } from "./helpers/api-stub";
@@ -282,5 +286,116 @@ describe("孤立单据汇总页", () => {
     // 组内明细一行都没返回，但统计说这张单留下 2 张 —— 必须说清是「未包含」，不能说「没有单据」。
     expect(screen.getByTestId("orphan-group-so-1")).toHaveTextContent("未包含在本次返回里");
     expect(screen.getByTestId("orphan-group-so-1")).not.toHaveTextContent("没有留下下游单据");
+  });
+});
+
+// ---------------------------------------------------------------- 其余四类下游单据的孤立标记
+//
+// 契约第二轮（2026-11-03）把 orphaned 补到了：出库通知列表、生产单详情、采购计划详情、应收对账列表/详情。
+// 前三处用订单号旁的徽章；没有单号列的详情用与采购单详情同款的顶部/字段提示条，不硬塞徽章。
+// 数据以后端 orphaned 为准 —— 同一份数据里 orphaned=false 的行不能出现任何孤立标记。
+
+const orphanNotice = {
+  id: "n-1", noticeNo: "OGN-1", orderNo: "DL260170", productionOrderId: "po-1", orphaned: true,
+  noticeQuantity: "60", shippedQuantity: "0", remaining_quantity: "60", status: "pending",
+  notifiedAt: "2026-10-02T00:00:00.000Z", salesOrder: { customer: { name: "客户A" } },
+};
+
+describe("孤立徽章：仓库的成品出库通知列表", () => {
+  it("销售单已删的出库通知在订单号旁显示「孤立」", async () => {
+    stubApi((url) => {
+      if (url.includes("/finished-goods/outbound-notices")) return apiOk([orphanNotice]);
+      return apiOk([]);
+    });
+    render(<FinishedGoodsStoragePage />);
+
+    await screen.findByRole("heading", { name: /成品出库通知（销售发起）/ });
+    await waitFor(() => expect(screen.getByText("OGN-1")).toBeVisible());
+    const row = screen.getByText("OGN-1").closest("tr")!;
+    expect(within(row).getByTestId("orphan-badge")).toHaveTextContent("孤立");
+    expect(row).toHaveTextContent("DL260170");
+  });
+});
+
+describe("孤立提示：生产单详情", () => {
+  const productionOrder = {
+    id: "mo-1", productionOrderNo: "MO-2026-001", orderNo: "DL260170", orphaned: true,
+    executionMode: "in_house", status: "in_progress", plannedQuantity: "100", unit: { name: "件" },
+    executionLocation: { name: "一号车间" }, operations: [],
+    createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z",
+  };
+  const finishedGoodsSummary = {
+    production_order_id: "mo-1", production_order_no: "MO-2026-001", order_no: "DL260170", execution_mode: "in_house",
+    status: "in_progress", planned_quantity: "100", unit_name: "件", packaging_operation: null,
+    packaging_reported_quantity: "0", notified_quantity: "0", available_notice_quantity: "0",
+    submitted_quantity: "0", qc_qualified_quantity: "0", inbound_draft_quantity: "0", inbound_posted_quantity: "0",
+    finished_goods_stock: "0", defective_goods_stock: "0", outbound_quantity: "0", customer_return_quantity: "0",
+    notice_count: 0, notices: [],
+  };
+
+  it("顶部说明「销售单已被删除、生产单保留」，销售订单旁有「孤立」徽章", async () => {
+    stubApi((url) => {
+      if (url.endsWith("/production/orders/mo-1")) return apiOk(productionOrder);
+      if (url.endsWith("/production/orders/mo-1/finished-goods-summary")) return apiOk(finishedGoodsSummary);
+      return apiOk([]);
+    });
+    render(<ProductionOrderDetailPage orderId="mo-1" />);
+
+    const hint = await screen.findByTestId("production-order-orphan-hint");
+    expect(hint).toHaveTextContent("已被删除");
+    expect(hint).toHaveTextContent("原样保留为「孤立单据」");
+    expect(screen.getByText(/销售订单：/).closest("p")!).toHaveTextContent("DL260170");
+    expect(screen.getByTestId("orphan-badge")).toHaveTextContent("孤立");
+  });
+});
+
+describe("孤立提示：采购计划详情 Sheet", () => {
+  it("sheet 里说明计划仍是有效凭证（可以继续下单/收货），而不是把计划当成失效", async () => {
+    const plan = {
+      id: "plan-1", planNo: "PP-2026-001", orderNo: "DL260170", itemNo: "27621", customerName: "家百纳",
+      bomId: "bom-1", bomVersion: 1, status: "unordered", statusLabel: "未下单",
+      lineCount: 0, unorderedCount: 0, orderedCount: 0, amounts: [], unorderedAmounts: [],
+      orphaned: true, updatedAt: "2026-10-01T00:00:00.000Z", items: [],
+    };
+    stubApi((url) => (url.endsWith("/purchase-plans/plan-1") ? apiOk(plan) : apiOk([])));
+    render(<PlanDetailSheet planId="plan-1" materials={[]} units={[]} onClose={vi.fn()} onSaved={vi.fn()} onDeleted={vi.fn()} />);
+
+    const hint = await screen.findByTestId("plan-orphan-hint");
+    expect(hint).toHaveTextContent("销售单已被删除");
+    expect(hint).toHaveTextContent("仍然可以继续下单与收货");
+  });
+});
+
+describe("孤立徽章：应收对账（列表 + 详情）", () => {
+  const reconciliation = {
+    id: "rec-1", reconciliationNo: "REC-2026-001", orderNo: "DL260170", customerId: "c-1",
+    periodStart: "2026-10-01T00:00:00.000Z", periodEnd: "2026-10-31T00:00:00.000Z",
+    receivableAmountSnapshot: "1200.0000", paymentAmountSnapshot: "0.0000", adjustmentAmountSnapshot: "0.0000",
+    systemBalance: "1200.0000", externalBalance: "1200.0000", difference: "0.0000",
+    currency: "CNY", status: "matched", resolutionRemark: null, remark: null,
+    createdAt: "2026-11-01T00:00:00.000Z", customer: { id: "c-1", name: "家百纳", customerCode: "C001" },
+    flow: { entry_count: 1, draft_count: 0, draft_amount: "0", can_confirm_receivables: false, order_nos: ["DL260170"], product_names: ["三折伞"], product_specifications: ["58cm"] },
+    orphaned: true,
+  };
+
+  it("列表订单号旁有「孤立」；双击详情的订单号字段同样带徽章并有一句孤立说明", async () => {
+    stubApi((url) => {
+      if (url.endsWith("/finance/reconciliations/rec-1")) return apiOk(reconciliation);
+      if (url.endsWith("/finance/reconciliations")) return apiOk([reconciliation]);
+      return apiOk([]);
+    });
+    render(<ReceivableWorkspace tab="reconciliations" testId="page-finance-receivable" />);
+
+    await screen.findByTestId("page-finance-receivable");
+    await waitFor(() => expect(screen.getByText("REC-2026-001")).toBeVisible());
+    const row = screen.getByText("REC-2026-001").closest("tr")!;
+    expect(within(row).getByTestId("orphan-badge")).toHaveTextContent("孤立");
+
+    // 详情走 /finance/reconciliations/:id（列表接口给不全字段），双击打开。
+    await userEvent.dblClick(screen.getByText("REC-2026-001"));
+    const dialog = await screen.findByTestId("finance-record-detail");
+    await waitFor(() => expect(within(dialog).getByText("孤立说明")).toBeVisible());
+    expect(within(dialog).getByText(/原样保留为孤立单据/)).toBeVisible();
+    expect(within(dialog).getAllByTestId("orphan-badge").length).toBeGreaterThan(0);
   });
 });
