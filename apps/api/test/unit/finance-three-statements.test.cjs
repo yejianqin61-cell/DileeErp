@@ -259,6 +259,30 @@ test("现金流量表：认不出落哪一行的对方科目必须报出来（�
   assert.equal(yuan(cash.lines.find((line) => line.row === 3).value), 0);
 });
 
+/**
+ * 2026-11-04 用户报障：应付确认时选的是「销售费 推广费」，但凭证模块显示「应付账款」。
+ * 根因之一是现金流量表**按凭证业务分录科目落行** —— 已挂账的付款，业务分录就是「应付账款」，
+ * 于是专利费/推广费/房租全被算成「购买商品、接受劳务支付的现金」。
+ * 收支类目（cash_flow_entries.category_subject_id）才是单据上选的那个科目，落行要优先用它。
+ */
+test("现金流量表：已挂账的付款按来源流水的「收支类目」落行，不按分录上的应付账款（2026-11-04）", () => {
+  const accruedPayment = {
+    id: "v1",
+    lines: [debit("负债类/应付账款", "2700"), credit(K.bank, "2700")],
+    categorySubject: { category: "损益类", name: "销售费 推广费" },
+  };
+  const cash = buildCashFlowStatement({ vouchers: [accruedPayment] });
+  const value = (row) => yuan(cash.lines.find((line) => line.row === row).value);
+
+  assert.equal(value(8), 2700, "销售费推广费应落「支付其他与经营活动有关的现金」");
+  assert.equal(value(5), 0, "不能因为分录是应付账款就算成采购付款");
+  assert.deepEqual(cash.unmapped, [], "类目能落行时不算「没归位」");
+
+  // 没有收支类目（手工凭证 / 老数据）时退回分录科目：应付账款仍按「购买商品支付的现金」。
+  const noCategory = buildCashFlowStatement({ vouchers: [voucher("v2", [debit("负债类/应付账款", "100"), credit(K.bank, "100")])] });
+  assert.equal(yuan(noCategory.lines.find((line) => line.row === 5).value), 100);
+});
+
 /* ------------------------------------------------------------ 5. 口径与缺口的呈现 */
 
 test("三大报表：表尾说明覆盖「本系统无对应科目」与两处待确认口径（成本类归属 / 外币折算）", () => {

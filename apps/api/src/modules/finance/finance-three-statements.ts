@@ -314,7 +314,12 @@ export const CASH_FLOW_STATEMENT: readonly StatementRow[] = [
   {
     row: 5, label: "购买商品、接受劳务支付的现金", flow: "out",
     match: anyOf(
-      only("资产类", named(...INVENTORY_ASSET_SUBJECT_NAMES), named("应付账款", "应付票据", "预付账款")),
+      // 存货类与预付账款是资产类；**应付账款/应付票据是负债类**（权责发生制下销账分录的对方科目）。
+      // 以前把这三个名字一起写在「资产类」分支里，负债类的应付账款一条都匹配不上：已挂账的付款
+      // 会整笔落进 `unmapped`（现金流量表里钱凭空消失、期末现金与资产负债表对不上）。
+      // 2026-11-04 排查这笔「销售费推广费被显示成应付账款」时一并修正。
+      only("资产类", named(...INVENTORY_ASSET_SUBJECT_NAMES, "预付账款")),
+      only("负债类", named("应付账款", "应付票据")),
       only("损益类", named("主营业务成本", "其他业务成本")),
       only("成本类", named("加工费", "货拉拉 物流费", "顺丰快递")),
       only("负债类", named("应交税费-进项税", "应交税费-进项税--祥恩线业")),
@@ -385,7 +390,19 @@ export function statementNotes(rows: readonly StatementRow[]): string[] {
 /** 凭证分录（只取报表要用的三列，避免与 Prisma 类型耦合）。 */
 export type StatementVoucherLine = { subjectKey: string; direction: "debit" | "credit" | string; amount: string };
 /** 一张凭证：报表按**凭证**为单位配对资金分录与业务分录，所以必须带凭证分组。 */
-export type StatementVoucher = { id: string; lines: readonly StatementVoucherLine[] };
+export type StatementVoucher = {
+  id: string;
+  lines: readonly StatementVoucherLine[];
+  /**
+   * 来源收支流水的「收支类目」（业务科目，`cash_flow_entries.category_subject_id`）。
+   *
+   * 现金流量表落行**优先用它**（2026-11-04 用户报障）：已挂账的付款，付款凭证的业务分录是
+   * 「应付账款」，照分录科目落行会把专利费/推广费/房租一笔笔算成「购买商品、接受劳务支付的现金」；
+   * 收支类目才是单据上选的那个科目，也是台账/利润表统计的口径。没有类目（手工凭证、老数据）
+   * 才退回凭证自己的业务分录科目。
+   */
+  categorySubject?: { category: string; name: string } | null;
+};
 
 export type SummedAmount = { debit: bigint; credit: bigint };
 
@@ -650,6 +667,11 @@ export function buildCashFlowStatement(input: CashFlowInput): CashFlowResult {
     // 两边都是资金科目（银行存款 → 库存现金）：内部划转，不构成现金流量。
     if (voucher.lines.every((line) => isFundSubject(line.subjectKey))) { internalTransfers += 1; continue; }
     const businessLines = voucher.lines.filter((line) => !isFundSubject(line.subjectKey));
+    /**
+     * 落行用的科目：**优先用来源流水的收支类目**（2026-11-04，见 `StatementVoucher.categorySubject`）。
+     * 没有类目时才退回凭证业务分录自己的科目（手工凭证、历史数据）。
+     */
+    const categorySubject = voucher.categorySubject?.name ? voucher.categorySubject : null;
 
     for (const fund of fundLines) {
       const inflow = fund.direction === "debit";
@@ -657,11 +679,12 @@ export function buildCashFlowStatement(input: CashFlowInput): CashFlowResult {
       const candidates = CASH_FLOW_STATEMENT.filter((candidate) => candidate.match && candidate.flow === (inflow ? "in" : "out"));
       const opposite = businessLines.filter((line) => (inflow ? line.direction === "credit" : line.direction === "debit"));
       for (const line of opposite) {
-        const { category, name } = splitSubjectKey(normalizeSubjectKey(line.subjectKey));
+        const subjectKey = categorySubject ? accountingSubjectKey(categorySubject.category, categorySubject.name) : normalizeSubjectKey(line.subjectKey);
+        const { category, name } = categorySubject ?? splitSubjectKey(subjectKey);
         const row = candidates.find((candidate) => candidate.match?.(category, name));
         const units = toUnits(line.amount);
         if (!row || row.row === null) {
-          unmapped.set(line.subjectKey, (unmapped.get(line.subjectKey) ?? 0n) + units);
+          unmapped.set(subjectKey, (unmapped.get(subjectKey) ?? 0n) + units);
           continue;
         }
         amounts.set(row.row, (amounts.get(row.row) ?? 0n) + units);

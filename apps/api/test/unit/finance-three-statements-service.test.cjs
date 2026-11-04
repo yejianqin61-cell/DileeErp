@@ -181,3 +181,24 @@ test("三大报表取数：银行账户期初余额按币种只取该币种的�
   assert.equal(bankQuery.args.where.currency, "USD");
   assert.equal(bankQuery.args.where.deletedAt, null, "停用账户的钱还在，不能漏");
 });
+
+/**
+ * 2026-11-04 用户报障：已挂账的付款，付款凭证的业务分录是「应付账款」，
+ * 现金流量表照它落行会把销售费/管理费类支出算成「购买商品、接受劳务支付的现金」。
+ * 取数层必须把来源流水的「收支类目」带到 StatementVoucher 上，内核优先按类目落行。
+ */
+test("三大报表取数：现金流量表的凭证带上来来源流水的「收支类目」（2026-11-04）", async () => {
+  const { service } = harness({
+    vouchers: [
+      {
+        ...voucher("v-pay", "2026-09-10", [line("负债类/应付账款", "debit", "2700"), line("银行存款", "credit", "2700")]),
+        sourceType: "cash_flow_entry",
+        sourceId: "entry-1",
+      },
+    ],
+    entries: [{ id: "entry-1", categorySubject: { category: "损益类", name: "销售费 推广费" } }],
+  });
+  const cash = await service.cashFlowStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(yuan(cash.current.lines.find((row) => row.row === 8).value), 2700, "按收支类目落「支付其他与经营活动有关的现金」");
+  assert.equal(yuan(cash.current.lines.find((row) => row.row === 5).value), 0, "不能按应付账款算成采购付款");
+});

@@ -205,6 +205,8 @@ export class FinanceThreeStatementsService {
         id: true,
         voucherDate: true,
         currency: true,
+        sourceType: true,
+        sourceId: true,
         lines: { select: { subjectKey: true, direction: true, amount: true }, orderBy: { lineNo: "asc" } },
       },
       orderBy: [{ voucherDate: "asc" }, { voucherNo: "asc" }],
@@ -212,6 +214,31 @@ export class FinanceThreeStatementsService {
 
     const dateText = (value: Date) => beijingDateTime(value).slice(0, 10);
     const inRange = (date: string, range: { from: string; to: string }) => date >= range.from && date <= range.to;
+
+    /**
+     * 来源收支流水的「收支类目」（业务科目）：现金流量表落行**优先用它**（2026-11-04 用户报障）。
+     *
+     * 为什么必须在这里取：已挂账的付款，付款凭证的业务分录是「应付账款」，
+     * 照分录科目落行会把专利费/推广费/房租全算成「购买商品、接受劳务支付的现金」。
+     * 收支类目（`cash_flow_entries.category_subject_id`）才是单据上选的那个科目，
+     * 与应付台账、利润表同口径；没有类目（手工凭证、老数据）时内核会退回分录科目。
+     *
+     * 只查 `source_type = cash_flow_entry` 的凭证：手工凭证没有来源、挂账凭证没有资金分录，都不进现金流量表。
+     */
+    const cashFlowSourceIds = [...new Set(rows
+      .filter((voucher) => voucher.sourceType === "cash_flow_entry" && voucher.sourceId)
+      .map((voucher) => voucher.sourceId as string))];
+    const categoryByEntryId = new Map<string, { category: string; name: string }>();
+    if (cashFlowSourceIds.length) {
+      const entries = await this.prisma.cashFlowEntry.findMany({
+        where: { id: { in: cashFlowSourceIds }, deletedAt: null },
+        select: { id: true, categorySubject: { select: { category: true, name: true } } },
+      });
+      for (const entry of entries) if (entry.categorySubject) categoryByEntryId.set(entry.id, entry.categorySubject);
+    }
+    const categoryOf = (voucher: (typeof rows)[number]) =>
+      voucher.sourceType === "cash_flow_entry" && voucher.sourceId ? categoryByEntryId.get(voucher.sourceId) ?? null : null;
+
     const faceLines = (voucher: (typeof rows)[number]): StatementVoucherLine[] =>
       voucher.lines.map((line) => ({ subjectKey: line.subjectKey, direction: line.direction, amount: line.amount.toString() }));
 
@@ -301,12 +328,13 @@ export class FinanceThreeStatementsService {
     // 期间切片也按各自的汇率口径折：本期流量用期末月、上期流量用上期期末月（口径写在类注释里）。
     const periodRows = usedRows.filter((voucher) => afterOpening(voucher) && inRange(dateText(voucher.voucherDate), period));
     const previousRows = usedRows.filter((voucher) => afterOpening(voucher) && inRange(dateText(voucher.voucherDate), previousPeriod));
-    const periodVouchers: StatementVoucher[] = periodRows
-      .map((voucher) => ({ id: voucher.id, lines: linesAt(voucher, months.closing) }))
-      .filter((voucher): voucher is { id: string; lines: StatementVoucherLine[] } => voucher.lines !== null);
-    const previousVouchers: StatementVoucher[] = previousRows
-      .map((voucher) => ({ id: voucher.id, lines: linesAt(voucher, months.previous) }))
-      .filter((voucher): voucher is { id: string; lines: StatementVoucherLine[] } => voucher.lines !== null);
+    const statementVouchers = (subset: typeof usedRows, month: string): StatementVoucher[] =>
+      subset.flatMap((voucher) => {
+        const lines = linesAt(voucher, month);
+        return lines ? [{ id: voucher.id, lines, categorySubject: categoryOf(voucher) }] : [];
+      });
+    const periodVouchers = statementVouchers(periodRows, months.closing);
+    const previousVouchers = statementVouchers(previousRows, months.previous);
 
     // 银行账户期初：只在**没有本币科目期初余额表（或那张表里没有货币资金）**时兜底
     // （有的话它已经含在期初里，再加一遍就是重复计算）。
