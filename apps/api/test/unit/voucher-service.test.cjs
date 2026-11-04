@@ -837,3 +837,62 @@ test("accruedSourceIds：只认未红冲的挂账凭证（销账时据此决定�
 
   assert.deepEqual([...(await service.accruedSourceIds("receivable_source", []))], [], "没有来源就不查库");
 });
+
+/**
+ * 2026-11-04 用户报障：财务把挂账凭证的分录手改成现金分录（把「贷应付账款」改成「贷银行存款」）后，
+ * 凭证页没有「重新生成」可用，只能红冲/删草稿 —— 于是越改越乱。
+ * 现在挂账凭证（来源 = 应付/应收确认）也支持按来源单据重建，且与 `createAccrual` 用同一套分录/摘要。
+ */
+test("挂账凭证重新生成：按来源应付单重建「借业务科目 / 贷应付账款」，覆盖手改的分录", async () => {
+  const payable = {
+    id: "payable-1", payableNo: "APO-20261104-AC4E1120", amount: new Prisma.Decimal("2700"), currency: "CNY",
+    sourceType: "other", supplierId: "sup-1", supplier: { name: "厦门纳益联合专利代理事务所有限公司" },
+    subject: { category: "损益类", name: "销售费 推广费" },
+  };
+  const current = {
+    id: "voucher-1", voucherNo: "记-2026-11-0002", summary: "确认应付 APO-20261104-AC4E1120（厦门纳益联合专利代理事务所有限公司） 挂账",
+    currency: "CNY", sourceType: "supplier_payable", sourceId: "payable-1", status: "draft",
+    // 手改后的分录：贷方被改成银行存款（原口径应是应付账款）
+    lines: [{ subjectLabel: "销售费 推广费" }, { subjectLabel: "银行存款 中国银行（人民币）" }],
+  };
+  const lines = [];
+  const updates = [];
+  const events = [];  const tx = {
+    $queryRaw: async () => [],
+    voucher: {
+      findFirst: async () => current,
+      update: async ({ data }) => { updates.push(data); return { id: "voucher-1", ...data }; },
+    },
+    voucherLine: {
+      deleteMany: async () => ({ count: 2 }),
+      createMany: async ({ data }) => { lines.push(...data); return { count: data.length }; },
+    },
+  };
+  const subjects = [
+    { category: "损益类", name: "销售费 推广费" },
+    { category: "负债类", name: "应付账款" },
+  ];
+  const prisma = {
+    voucher: { findFirst: async () => current },
+    supplierPayableEntry: { findFirst: async () => payable },
+    accountingSubject: { findMany: async ({ where }) => subjects.filter((subject) => where.name.in.includes(subject.name)) },
+    $transaction: async (fn) => fn(tx),
+  };
+  const service = new VoucherService(prisma, { ...audit(), record: async (...args) => events.push(args) });
+  service.get = async (id) => ({ id, ...current, lines });
+
+  const row = await service.regenerate("voucher-1", MANUAL_USER);
+
+  assert.equal(row.regenerated, true);
+  assert.equal(lines.length, 2, "原分录先删后建");
+  assert.deepEqual(lines.map((line) => [line.direction, line.subjectLabel, line.amount.toString()]), [
+    ["debit", "销售费 推广费", "2700"],
+    ["credit", "应付账款", "2700"],
+  ], "按来源单据重建：借方业务科目、贷方应付账款");
+  assert.equal(updates[0].summary, "确认应付 APO-20261104-AC4E1120（厦门纳益联合专利代理事务所有限公司） 挂账");
+  assert.equal(updates[0].debitTotal.toString(), "2700");
+  const event = events.find(([action]) => action === "voucher.regenerate");
+  assert.ok(event, "重新生成必须留审计");
+  assert.deepEqual(event[4].before.subjects, ["销售费 推广费", "银行存款 中国银行（人民币）"], "审计要记改前科目");
+  assert.deepEqual(event[4].after.subjects, ["销售费 推广费", "应付账款"], "审计要记改后科目");
+});

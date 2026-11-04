@@ -317,11 +317,24 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
    * 为什么需要：生成是幂等的，之后流水还可能被改（补银行账户、改会计科目、改金额）；
    * 不重新生成，凭证会一直停在旧口径上。**会覆盖手工改过的分录**，所以弹窗里先把这件事说清楚。
    */
+  /**
+   * 哪些草稿凭证支持「重新生成」：收支流水来源，以及应付挂账来源（2026-11-04 补）。
+   *
+   * 为什么挂账凭证也要有：财务手改了「借业务科目 / 贷应付账款」之后，原先只能红冲或删草稿，
+   * 没有把凭证拉回系统口径的入口 —— 结果就是手改越改越乱（用户报障的就是这一笔）。
+   * 应收挂账暂不开：它的对方科目是候选链推的，重算可能把财务当初选的收入科目换掉。
+   */
+  const canRegenerate = (voucher: Voucher) => ["cash_flow_entry", "supplier_payable"].includes(voucher.sourceType);
+
   function regenerateVoucher(voucher: Voucher) {
+    const fromCashFlow = voucher.sourceType === "cash_flow_entry";
+    const label = fromCashFlow
+      ? `按收支流水 ${voucher.source_entry?.entryNo ?? ""} 现在的会计科目、银行账户与金额重算整张凭证（手工改过的分录会被覆盖）`
+      : "按来源应付单重建挂账凭证：借 业务科目 / 贷 应付账款（手工改过的分录会被覆盖）";
     setDialog({
       title: `重新生成凭证：${voucher.voucherNo}`,
-      fields: [{ name: "confirm", label: `按收支流水 ${voucher.source_entry?.entryNo ?? ""} 现在的会计科目、银行账户与金额重算整张凭证（手工改过的分录会被覆盖）`, type: "info" as const }],
-      submit: () => submitDialog(`/finance/vouchers/${voucher.id}/regenerate`, undefined, `凭证 ${voucher.voucherNo} 已按收支流水重新生成`),
+      fields: [{ name: "confirm", label, type: "info" as const }],
+      submit: () => submitDialog(`/finance/vouchers/${voucher.id}/regenerate`, undefined, fromCashFlow ? `凭证 ${voucher.voucherNo} 已按收支流水重新生成` : `凭证 ${voucher.voucherNo} 已按来源单据重新生成`),
     });
   }
 
@@ -414,8 +427,8 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       <Button size="sm" variant="ghost" onClick={() => void openSheet(row.original.id)}>凭证纸</Button>
       {row.original.status === "draft" && <>
         <Button size="sm" variant="ghost" data-testid={`voucher-edit-${row.original.id}`} disabled={busy === row.original.id} onClick={() => editVoucher(row.original)}>编辑分录</Button>
-        {/* 只有「来源是收支流水」的草稿才能重新生成：红冲凭证的内容由被红冲的凭证决定。 */}
-        {row.original.sourceType === "cash_flow_entry"
+        {/* 来源流水/挂账单据改了之后要能把凭证拉回同步；已过账的凭证只能红冲，所以只对草稿给这个按钮。 */}
+        {canRegenerate(row.original)
           ? <Button size="sm" variant="ghost" data-testid={`voucher-regenerate-${row.original.id}`} onClick={() => regenerateVoucher(row.original)}>重新生成</Button>
           : null}
         <Button size="sm" variant="secondary" onClick={() => postVoucher(row.original)}>过账</Button>

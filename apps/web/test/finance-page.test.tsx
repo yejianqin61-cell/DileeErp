@@ -1005,6 +1005,41 @@ describe("凭证管理：从收支流水生成凭证", () => {
     expect(panel("记账凭证").getByRole("button", { name: "红冲" })).toBeInTheDocument();
   });
 
+  /**
+   * 2026-11-04 用户报障：财务把挂账凭证的分录手改成现金分录后，凭证页没有「重新生成」可用，
+   * 只能红冲/删草稿，于是越改越乱。挂账凭证（来源 = 应付/应收确认）也要能按来源单据重建。
+   */
+  it("挂账凭证（来源应付单）也能重新生成：弹窗说明按来源重建「借业务科目/贷应付账款」", async () => {
+    const accrual = voucher({
+      id: "voucher-2",
+      voucherNo: "记-2026-11-0002",
+      sourceType: "supplier_payable",
+      sourceId: "payable-1",
+      source_entry: null,
+      summary: "确认应付 APO-20261104-AC4E1120（厦门纳益） 挂账",
+      currency: "CNY",
+      lines: [
+        { id: "l1", lineNo: 1, direction: "debit", subjectKey: "损益类/销售费 推广费", subjectLabel: "销售费 推广费", summary: "", amount: "2700.0000", currency: "CNY" },
+        { id: "l2", lineNo: 2, direction: "credit", subjectKey: "资产类/银行存款 中国银行", subjectLabel: "银行存款 中国银行（人民币）", summary: "应付 APO-20261104-AC4E1120", amount: "2700.0000", currency: "CNY" },
+      ],
+    });
+    const calls = stubFinance(
+      { cashFlowEntries: [flowEntry()], vouchers: [accrual] },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/vouchers/voucher-2/regenerate")
+        ? apiOk({ ...accrual, regenerated: true })
+        : voucherDetail(url, call)),
+    );
+    await open(<VoucherWorkspace testId="page-finance-voucher" />, "page-finance-voucher");
+
+    fireEvent.click(screen.getByTestId("voucher-regenerate-voucher-2"));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText(/借 业务科目 \/ 贷 应付账款/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/手工改过的分录会被覆盖/)).toBeInTheDocument();
+    submitDialog();
+    await waitFor(() => expect(callsTo(calls, "/finance/vouchers/voucher-2/regenerate")).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已按来源单据重新生成"))).toBe(true));
+  });
+
   it("点「生成凭证」走 POST /finance/vouchers/from-cash-flow/:id，并随即打开凭证纸", async () => {
     const calls = stubFinance(
       { cashFlowEntries: [flowEntry()], vouchers: [] },

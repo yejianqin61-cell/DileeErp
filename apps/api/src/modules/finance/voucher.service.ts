@@ -5,7 +5,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { accountingSubjectKey } from "./accounting-subject-catalog";
+import { accountingSubjectKey, PAYABLE_CONFIRM_SUBJECT_NAMES, paymentSubjectNames } from "./accounting-subject-catalog";
 import { fundLineFor, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
 import { VOUCHER_TEMPLATES, resolveVoucherTemplate, type ResolvedTemplateLine } from "./voucher-template";
 
@@ -298,22 +298,51 @@ export class VoucherService {
     const counterparty = (input.counterparty_name ?? "").trim();
     // 返回值统一带上 `replayed`（false = 这次真的挂的账）：调用方要拿它写审计与界面提示，
     // 两条分支的形状必须一样，否则「幂等命中」那一支会在调用处变成 `undefined`。
+    const draft = this.accrualDraft({
+      sourceType: input.source_type,
+      documentNo: input.document_no,
+      counterparty,
+      amountText: text,
+      accrual,
+      contra,
+    });
     const created = await this.createVoucher({
       voucherDate,
       currency,
-      summary: `${isReceivable ? "确认应收" : "确认应付"} ${input.document_no}${counterparty ? `（${counterparty}）` : ""} 挂账`,
+      summary: draft.summary,
       remark: input.remark ?? `挂账凭证：${input.document_no}（钱未动；收到/付出时在收付款登记里记现金）`,
-      lines: isReceivable
-        ? [
-            { direction: "debit", subject_key: accrual.key, subject_label: accrual.label, amount: text, summary: `应收 ${input.document_no}` },
-            { direction: "credit", subject_key: contra.key, subject_label: contra.label, amount: text },
-          ]
-        : [
-            { direction: "debit", subject_key: contra.key, subject_label: contra.label, amount: text },
-            { direction: "credit", subject_key: accrual.key, subject_label: accrual.label, amount: text, summary: `应付 ${input.document_no}` },
-          ],
+      lines: draft.lines,
     }, { sourceType: input.source_type, sourceId: input.source_id }, user);
     return { ...created, replayed: false };
+  }
+
+  /**
+   * 挂账凭证的分录与摘要（确认应收/应付共用）。
+   *
+   * 抽出来的唯一理由：**「第一次生成」与「重新生成」必须逐字一样** —— 否则财务点一次
+   * 「重新生成」得到的分录和当初自动生成的不一致，又会变成一种新的口径分叉。
+   */
+  private accrualDraft(input: {
+    sourceType: string;
+    documentNo: string;
+    counterparty: string;
+    amountText: string;
+    contra: { key: string; label: string };
+    accrual: { key: string; label: string };
+  }): { summary: string; lines: VoucherLineInput[] } {
+    const isReceivable = input.sourceType === SOURCE_RECEIVABLE;
+    return {
+      summary: `${isReceivable ? "确认应收" : "确认应付"} ${input.documentNo}${input.counterparty ? `（${input.counterparty}）` : ""} 挂账`,
+      lines: isReceivable
+        ? [
+            { direction: "debit", subject_key: input.accrual.key, subject_label: input.accrual.label, amount: input.amountText, summary: `应收 ${input.documentNo}` },
+            { direction: "credit", subject_key: input.contra.key, subject_label: input.contra.label, amount: input.amountText },
+          ]
+        : [
+            { direction: "debit", subject_key: input.contra.key, subject_label: input.contra.label, amount: input.amountText },
+            { direction: "credit", subject_key: input.accrual.key, subject_label: input.accrual.label, amount: input.amountText, summary: `应付 ${input.documentNo}` },
+          ],
+    };
   }
 
   /**
@@ -399,14 +428,19 @@ export class VoucherService {
    *
    * 边界（都是有意的）：
    *   - **只对草稿开放**：已过账的凭证是账务事实，只能红冲（`VOUCHER_NOT_REGENERABLE`）。
-   *   - **只对「来源是收支流水」的凭证开放**：红冲凭证的内容由被红冲的凭证决定，重算没有意义。
+   *   - **来源是收支流水或挂账（确认应收/应付）**：红冲凭证的内容由被红冲的凭证决定，重算没有意义；
+   *     挂账凭证按来源单据重建成「借 业务科目 / 贷 应付账款（应收账款）」（2026-11-04 补）。
    *   - **流水已冲销时拒绝**：钱没真的动过，不能生成/重算凭证（与 `createFromCashFlowEntry` 同一口径）。
-   *   - **覆盖手工改动**：重新生成就是「按流水重来」，所以界面上必须先说清楚（见凭证页的确认弹窗）。
+   *   - **覆盖手工改动**：重新生成就是「按来源重来」，所以界面上必须先说清楚（见凭证页的确认弹窗）。
    */
   async regenerate(id: string, user: CurrentUser) {
     const current = await this.prisma.voucher.findFirst({ where: { id, deletedAt: null }, include: { lines: { orderBy: { lineNo: "asc" } } } });
     if (!current) throw this.notFound("VOUCHER_NOT_FOUND", "凭证不存在");
     if (current.status !== "draft") throw this.invalid("VOUCHER_NOT_REGENERABLE", "只有草稿凭证可以重新生成；已过账的凭证请先红冲");
+    // 挂账凭证：按来源单据重建（2026-11-04）。财务手改挂账凭证的分录后，这是唯一能拉回系统口径的入口。
+    // 只覆盖**应付**挂账：应付条目上存着财务选的科目，能逐字还原；应收挂账的对方科目是候选链推的，
+    // 财务当初若选过别的收入科目，重算会把它换掉（应收侧等有了科目快照再开）。
+    if (current.sourceType === SOURCE_PAYABLE) return this.regenerateAccrual(current, user);
     if (current.sourceType !== SOURCE_CASH_FLOW) throw this.invalid("VOUCHER_NOT_REGENERABLE", "红冲凭证不能重新生成（它的内容由被红冲的凭证决定）");
     // 手工凭证不进这条路（sourceId 为空）；这里显式挡住，顺带把类型收窄成 string。
     if (!current.sourceId) throw this.invalid("VOUCHER_NOT_REGENERABLE", "手工凭证没有来源流水，不能重新生成（直接编辑分录即可）");
@@ -436,6 +470,56 @@ export class VoucherService {
       after: { summary: row.summary, debit_total: row.debitTotal.toString(), subjects: draft.lines.map((line) => line.subject_label) },
     });
     return { ...(await this.get(id)), regenerated: true };
+  }
+
+  /**
+   * 挂账凭证的重新生成（2026-11-04，当前只覆盖**应付**挂账）。
+   *
+   * 用户报障：财务把挂账凭证的分录手改成现金分录（把「贷 应付账款」改成「贷 银行存款」）后，
+   * 凭证页只有「编辑分录」，没有把凭证拉回系统口径的办法 —— 只能红冲或删草稿，于是越改越乱。
+   * 这里按**来源应付单现在的内容**重建凭证，并且与 `createAccrual` 共用 `accrualDraft`，
+   * 保证「重新生成出来的」与「第一次自动生成出来的」逐字一致。
+   *
+   * 边界与收支流水的重算相同：只对草稿开放、覆盖手工改动、审计记改前/改后科目。
+   */
+  private async regenerateAccrual(
+    current: { id: string; voucherNo: string; summary: string; currency: string; sourceType: string; sourceId: string | null; lines: Array<{ subjectLabel: string }> },
+    user: CurrentUser,
+  ) {
+    if (!current.sourceId) throw this.invalid("VOUCHER_NOT_REGENERABLE", "挂账凭证没有来源单据，不能重新生成");
+    const entry = await this.prisma.supplierPayableEntry.findFirst({
+      where: { id: current.sourceId, deletedAt: null },
+      include: { subject: { select: { category: true, name: true } }, supplier: { select: { name: true } } },
+    });
+    if (!entry) throw this.invalid("VOUCHER_SOURCE_MISSING", "来源应付单已不存在，无法重新生成挂账凭证");
+    const amount = new Prisma.Decimal(entry.amount);
+    const currency = entry.currency;
+    const documentNo = entry.payableNo;
+    const counterparty = entry.supplier?.name ?? entry.supplierId;
+    // 与 `SupplierPayableService.accrue` 同一条优先级：条目自己填的科目 > 按来源类型的候选链。
+    const contra = entry.subject
+      ? { key: accountingSubjectKey(entry.subject.category, entry.subject.name), label: entry.subject.name }
+      : await this.subjectByName(entry.sourceType ? paymentSubjectNames(entry.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES, "挂账需要会计科目，请在「收支管理 → 会计科目」里补上");
+    if (isCashFamilySubject(contra.label)) throw this.invalid("VOUCHER_ACCRUAL_NOT_REGENERABLE", "该应付的会计科目是资金科目（资金搬运），本来就不挂账：请删除这张草稿，钱在付款流水里记");
+    const accrual = await this.subjectByName([ACCRUAL_SUBJECT_NAMES[SOURCE_PAYABLE]], "挂账需要会计科目「应付账款」");
+    const draft = this.accrualDraft({ sourceType: current.sourceType, documentNo, counterparty, amountText: amount.toFixed(4), accrual, contra });
+    const row = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM vouchers WHERE id = ${current.id}::uuid FOR UPDATE`;
+      const locked = await tx.voucher.findFirst({ where: { id: current.id, deletedAt: null } });
+      if (!locked || locked.status !== "draft") throw this.invalid("VOUCHER_NOT_REGENERABLE", "凭证已被其他操作处理");
+      await tx.voucherLine.deleteMany({ where: { voucherId: current.id } });
+      const lines = this.normalizeLines(draft.lines, currency);
+      await tx.voucherLine.createMany({ data: lines.map((line) => this.lineData(current.id, line, null, user)) });
+      return tx.voucher.update({ where: { id: current.id }, data: { summary: draft.summary, currency, debitTotal: amount, creditTotal: amount, ...this.audit.update(user) } });
+    });
+    await this.audit.record("voucher.regenerate", "voucher", user.id, current.id, {
+      voucher_no: current.voucherNo,
+      source_type: current.sourceType,
+      source_id: current.sourceId,
+      before: { summary: current.summary, subjects: current.lines.map((line) => line.subjectLabel) },
+      after: { summary: row.summary, subjects: draft.lines.map((line) => line.subject_label) },
+    });
+    return { ...(await this.get(current.id)), regenerated: true };
   }
 
   /**
