@@ -173,8 +173,32 @@ describe("来料质检面板", () => {
     });
   });
 
-  it("未知 receipt_id 明确指出批次不存在（不再静默，用户不会以为页面坏了）", async () => {
-    stubQcModule();
+  // 用户 2026-11-04：采购 1500 码、实收 1600 码 —— 「在来料质检中无法修改」。
+  // 现在实收多于到货时按实收登记，后端把到货数量抬到实收量（见 incoming-inspections.service）。
+  it("供应商超送：登记弹窗说明按实收改到货数量，送检数量大于到货也能提交", async () => {
+    const overReceipt = { ...receipt, quantity: "1500" };
+    const calls = stubQcModule({ purchaseOrders: [{ ...purchaseOrder, items: [{ ...purchaseOrder.items[0], quantity: "1500", receipts: [overReceipt] }] }], inspections: [] });
+
+    render(<><IncomingInspectionsPanel receiptId="r-1" /><Toaster /></>);
+
+    expect(await screen.findByText(/超过到货 1500 的部分会自动把本批到货数量改成实收数量/)).toBeVisible();
+    const quantity = screen.getByTestId("action-field-quantity");
+    await userEvent.clear(quantity);
+    await userEvent.type(quantity, "1600");
+    const accepted = screen.getByTestId("action-field-accepted_quantity");
+    await userEvent.clear(accepted);
+    await userEvent.type(accepted, "1600");
+    await userEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postCalls(calls, "/incoming-inspections")).toHaveLength(1));
+    expect(bodyOf(postCalls(calls, "/incoming-inspections")[0])).toMatchObject({
+      purchase_receipt_id: "r-1",
+      inspected_quantity: "1600",
+      accepted_quantity: "1600",
+    });
+  });
+
+  it("未知 receipt_id 明确指出批次不存在（不再静默，用户不会以为页面坏了）", async () => {    stubQcModule();
 
     render(<IncomingInspectionsPanel receiptId="r-does-not-exist" />);
 

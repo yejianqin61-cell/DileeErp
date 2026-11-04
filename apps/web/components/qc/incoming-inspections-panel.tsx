@@ -151,8 +151,9 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     batchSequence: receipt.batchSequence ?? index + 1,
     inspectedQuantity: inspectedQuantityOf(receipt),
   })))), [orders, inspectedQuantityOf]);
-  // 送检下拉只列还能送的：已撤销的批次后端不接受；已送检完毕的批次点进去只会拿到
-  // 「累计检验数量不能超过到货数量」的 422，不该让用户白填一次。
+  // 送检下拉只列还能送的：已撤销的批次后端不接受；已送检完毕（累计送检 = 到货）的批次
+  // 没有可送的量了，不该让用户白填一次。供应商超送不在这里拦：实收多于到货时，
+  // 后端会把到货批次数量抬到实收量（见 incoming-inspections.service.raiseReceiptToActual）。
   const receiptOptions = useMemo(() => allReceiptOptions.filter((receipt) => receipt.status !== "cancelled" && receipt.inspectedQuantity < Number(receipt.quantity)), [allReceiptOptions]);
 
   /** 该质检条目对应的**到货批次总数量**（用户 2026-09-16：「每个条目都要带上该批物料的总数量」）。
@@ -219,6 +220,9 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     const remaining = Math.max(0, Number(receipt.quantity) - receipt.inspectedQuantity);
     setDialog({ title: `登记来料质检：${receipt.purchaseOrderNo} / 第 ${receipt.batchSequence} 批`, fields: [
       { name: "quantity", label: `本次送检数量（已送检 ${receipt.inspectedQuantity} / 到货 ${receipt.quantity}）`, type: "number", required: true, defaultValue: remaining > 0 ? String(remaining) : "1" },
+      // 供应商超送是常态（用户 2026-11-04：「供应商会多送原料」）：实收多于到货时按实收登记，
+      // 后端会把到货批次数量抬到实收量，入库与应付随之按实数走。
+      { name: "over_receipt_note", label: `供应商多送时直接按实收数量登记：超过到货 ${receipt.quantity} 的部分会自动把本批到货数量改成实收数量，不拦单。`, type: "info" },
       { name: "qc_result", label: "最终 QC 结果", type: "select", required: true, defaultValue: "all_inbound", options: QC_RESULT_OPTIONS },
       { name: "accepted_quantity", label: "本次合格数量", type: "number", required: true, defaultValue: remaining > 0 ? String(remaining) : "0" },
       { name: "conditional_quantity", label: "本次条件接收", type: "number", required: true, defaultValue: "0" },
@@ -237,7 +241,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     setHint("");
     setDialog({ title: "登记来料质检", fields: [
       { name: "receipt_id", label: "到货记录", type: "select", required: true, options: receiptOptions.map((item) => ({ value: item.id, label: `${item.purchaseOrderNo} / 订单号 ${item.orderNo} / 第 ${item.batchSequence} 批 / 到货 ${item.quantity}${item.unitName ? ` ${item.unitName}` : ""}（已送检 ${item.inspectedQuantity}）` })) },
-      { name: "quantity", label: "送检数量", type: "number", required: true, defaultValue: "1" },
+      { name: "quantity", label: "送检数量（可大于到货数量：多送按实收填）", type: "number", required: true, defaultValue: "1" },
       { name: "qc_result", label: "最终 QC 结果", type: "select", required: true, defaultValue: "all_inbound", options: QC_RESULT_OPTIONS },
       { name: "accepted_quantity", label: "合格数量", type: "number", required: true, defaultValue: "1" },
       { name: "conditional_quantity", label: "条件接收", type: "number", required: true, defaultValue: "0" },
@@ -271,6 +275,7 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     setDialog({ title: `编辑来料质检：${item.purchase_order_no ?? item.orderNo}`, fields: [
       // 改数量时要能看到整批总量，否则没法判断「送检数量」上限该是多少。
       { name: "batch_total", label: `本批到货总量：${batchTotalOf(item)}`, type: "info" },
+      { name: "over_receipt_note", label: "实收多于到货时按实收填写：保存后会把本批到货数量改成实收数量（超收），入库与应付按实数走。", type: "info" },
       { name: "inspected_quantity", label: "送检数量", type: "number", required: true, defaultValue: item.inspectedQuantity },
       { name: "accepted_quantity", label: "合格数量", type: "number", required: true, defaultValue: item.acceptedQuantity },
       { name: "conditional_quantity", label: "条件接收", type: "number", required: true, defaultValue: item.conditionalQuantity },

@@ -13,7 +13,7 @@ import { notifyError, notifySuccess } from "../../../../components/ui/toaster";
 
 type InspectionBatch = { id: string; status: string; inspectedQuantity: string; acceptedQuantity: string; conditionalQuantity: string; rejectedQuantity: string };
 type InboundBatch = { id: string; inboundNo: string; quantity: string; status: string };
-type Receipt = { id: string; receiptNo: string; quantity: string; status?: string; remark?: string | null; receivedDate?: string; batchSequence?: number; inspections?: InspectionBatch[]; rawMaterialInbounds?: InboundBatch[] };
+type Receipt = { id: string; receiptNo: string; quantity: string; status?: string; remark?: string | null; receivedDate?: string; batchSequence?: number; extensionData?: { over_receipt?: boolean; over_receipt_reason?: string | null } | null; inspections?: InspectionBatch[]; rawMaterialInbounds?: InboundBatch[] };
 type PurchaseItem = { id: string; materialId: string; unitId: string; supplierId?: string | null; expectedDate?: string | null; model?: string | null; quantity: string; material?: { materialCode?: string; name?: string }; unit?: { name?: string }; supplier?: { name?: string | null } | null; receipts: Receipt[]; batchWorkflows?: Array<{ receiptId: string; receiptNo: string; batchSequence: number; receivedQuantity: string; inspections: InspectionBatch[]; inbounds: InboundBatch[] }> };
 type PurchaseOrder = { id: string; purchaseOrderNo: string; orderNo: string; status: string; currency: string | null; totalAmount: string; extensionData?: { arrival_closed?: boolean }; /** 所属销售单已被软删（2026-11-03）：拓扑不变，只标成「孤立」。 */ orphaned?: boolean; supplier?: { name: string } | null; items: PurchaseItem[] };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
@@ -53,7 +53,9 @@ export default function PurchaseOrderDetailPage() {
     if (!t) return;
     setDialog({ title: `登记到货：${order.purchaseOrderNo} / ${t.material?.name ?? "物料"}（第 ${t.receipts.length + 1} 批）`, fields: [
       { name: "quantity", label: "本批到货数量", type: "number", required: true, defaultValue: "1" },
-      { name: "reference_no", label: "到货参考号" }, { name: "over_receipt_reason", label: "超收原因" },
+      { name: "reference_no", label: "到货参考号" },
+      // 供应商多送是常态：超收不再拦单，原因选填（填了原样保存，批次上会标「超收」）。
+      { name: "over_receipt_reason", label: "超收原因（到货超过采购数量时填写，选填）" },
       { name: "remark", label: "备注", type: "textarea" }
     ], submit: v => void action(`/purchase-orders/${order.id}/items/${t.id}/receipts`, { quantity: v.quantity, received_date: new Date().toISOString(), reference_no: v.reference_no || undefined, over_receipt_reason: v.over_receipt_reason || undefined, idempotency_key: `web-receipt-${Date.now()}-${Math.random().toString(36).slice(2)}`, remark: v.remark || undefined }, "到货记录已登记") });
   }
@@ -61,9 +63,12 @@ export default function PurchaseOrderDetailPage() {
   function editReceipt(r: Receipt) {
     setDialog({ title: `编辑到货批次：${r.receiptNo}`, fields: [
       { name: "quantity", label: "到货数量", type: "number", required: true, defaultValue: r.quantity },
-      { name: "reference_no", label: "到货参考号" }, { name: "remark", label: "备注", type: "textarea", defaultValue: r.remark ?? undefined },
+      { name: "reference_no", label: "到货参考号" },
+      // 到货登记后才发现实收更多时，靠这里把批次改大；后端允许超收，原因选填。
+      { name: "over_receipt_reason", label: "超收原因（到货超过采购数量时填写，选填）", defaultValue: r.extensionData?.over_receipt_reason ?? undefined },
+      { name: "remark", label: "备注", type: "textarea", defaultValue: r.remark ?? undefined },
       { name: "reason", label: "修改原因", type: "textarea", required: true }
-    ], submit: v => void action(`/purchase-orders/receipts/${r.id}`, { quantity: v.quantity, reference_no: v.reference_no || undefined, remark: v.remark || undefined, reason: v.reason }, "到货批次已更新", "PATCH") });
+    ], submit: v => void action(`/purchase-orders/receipts/${r.id}`, { quantity: v.quantity, reference_no: v.reference_no || undefined, over_receipt_reason: v.over_receipt_reason || undefined, remark: v.remark || undefined, reason: v.reason }, "到货批次已更新", "PATCH") });
   }
 
   function cancelReceipt(r: Receipt) {
@@ -105,7 +110,7 @@ export default function PurchaseOrderDetailPage() {
             const insp = rc?.inspections?.[0];
             const canI = Boolean(rc) && rc!.status !== "cancelled" && (!insp || insp.status === "pending" || (insp.status === "partially_accepted" && !rc!.rawMaterialInbounds?.length));
             const canB = Boolean(insp) && ["accepted","conditionally_accepted","partially_accepted","completed"].includes(insp!.status);
-            return <tr key={b.receiptId}><td className="ui-table-cell cell-material cell-ellipsis" title={ml}>{ml}</td><td className="ui-table-cell cell-ellipsis" title={`第 ${b.batchSequence} 批`}>第 {b.batchSequence} 批</td><td className="ui-table-cell cell-ellipsis" title={`${b.receivedQuantity}${rc?.receivedDate ? ` · ${rc.receivedDate.slice(0,10)}` : ""}`}>{rc?.status === "cancelled" ? <span className="status-error">已撤销</span> : <>{b.receivedQuantity}{rc?.receivedDate ? <span className="batch-date"> · {rc.receivedDate.slice(0,10)}</span> : null}</>}</td><td className="ui-table-cell" style={{ whiteSpace: "normal" }}>{insp ? <>{inspectionStatusLabel[insp.status] ?? insp.status}<div className="batch-badges"><span className="batch-badge-pass">{insp.acceptedQuantity} 合格</span><span className="batch-badge-cond">{insp.conditionalQuantity} 条件</span><span className="batch-badge-fail">{insp.rejectedQuantity} 不合格</span></div></> : <span className="batch-empty">待质检</span>}</td><td className="ui-table-cell cell-ellipsis" title={b.inbounds.length ? b.inbounds.map(r => `${r.quantity}（${inboundStatusLabel[r.status] ?? r.status}）`).join("、") : "待入库"}>{b.inbounds.length ? b.inbounds.map(r => `${r.quantity}（${inboundStatusLabel[r.status] ?? r.status}）`).join("、") : <span className="batch-empty">待入库</span>}</td><td className="ui-table-cell"><div className="action-row">{rc && rc.status !== "cancelled" && <><Button size="sm" variant="ghost" onClick={() => editReceipt(rc)}>编辑到货</Button><Button size="sm" variant="ghost" onClick={() => cancelReceipt(rc)}>撤销批次</Button></>}{canI && <Button size="sm" variant="secondary" asChild><Link href={`/qc/incoming?receipt_id=${rc!.id}`}>登记质检</Link></Button>}{canB && <Button size="sm" variant="ghost" asChild><Link href="/qc/inbound">去质检处理入库</Link></Button>}</div></td></tr>;
+            return <tr key={b.receiptId}><td className="ui-table-cell cell-material cell-ellipsis" title={ml}>{ml}</td><td className="ui-table-cell cell-ellipsis" title={`第 ${b.batchSequence} 批`}>第 {b.batchSequence} 批</td><td className="ui-table-cell cell-ellipsis" title={`${b.receivedQuantity}${rc?.extensionData?.over_receipt ? `（超收${rc.extensionData.over_receipt_reason ? `：${rc.extensionData.over_receipt_reason}` : ""}）` : ""}${rc?.receivedDate ? ` · ${rc.receivedDate.slice(0,10)}` : ""}`}>{rc?.status === "cancelled" ? <span className="status-error">已撤销</span> : <>{b.receivedQuantity}{rc?.extensionData?.over_receipt ? <span className="status-warning"> · 超收</span> : null}{rc?.receivedDate ? <span className="batch-date"> · {rc.receivedDate.slice(0,10)}</span> : null}</>}</td><td className="ui-table-cell" style={{ whiteSpace: "normal" }}>{insp ? <>{inspectionStatusLabel[insp.status] ?? insp.status}<div className="batch-badges"><span className="batch-badge-pass">{insp.acceptedQuantity} 合格</span><span className="batch-badge-cond">{insp.conditionalQuantity} 条件</span><span className="batch-badge-fail">{insp.rejectedQuantity} 不合格</span></div></> : <span className="batch-empty">待质检</span>}</td><td className="ui-table-cell cell-ellipsis" title={b.inbounds.length ? b.inbounds.map(r => `${r.quantity}（${inboundStatusLabel[r.status] ?? r.status}）`).join("、") : "待入库"}>{b.inbounds.length ? b.inbounds.map(r => `${r.quantity}（${inboundStatusLabel[r.status] ?? r.status}）`).join("、") : <span className="batch-empty">待入库</span>}</td><td className="ui-table-cell"><div className="action-row">{rc && rc.status !== "cancelled" && <><Button size="sm" variant="ghost" onClick={() => editReceipt(rc)}>编辑到货</Button><Button size="sm" variant="ghost" onClick={() => cancelReceipt(rc)}>撤销批次</Button></>}{canI && <Button size="sm" variant="secondary" asChild><Link href={`/qc/incoming?receipt_id=${rc!.id}`}>登记质检</Link></Button>}{canB && <Button size="sm" variant="ghost" asChild><Link href="/qc/inbound">去质检处理入库</Link></Button>}</div></td></tr>;
           });
           {/* 到货批次小表（手写 `<table>`）：`.table-bounded` 拿到固定布局（见 globals.css），
               列宽总和 100%：物料 24% / 批次 10% / 到货 16% / 质检 20% / 入库 16% / 操作 14%。
