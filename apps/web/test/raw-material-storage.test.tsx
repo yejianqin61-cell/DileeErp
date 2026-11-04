@@ -28,6 +28,53 @@ const materials = [materialA, materialB];
 const units = [{ id: "u-1", name: "米" }, { id: "u-2", name: "条" }];
 const inboundA = { id: "ib-1", inboundNo: "IN-001", materialId: "m-1", unitId: "u-1", orderNo: "SO-1", quantity: "10.0000", status: "draft", purchase_order_no: "PO-1", receipt_no: "GR-1", batch_sequence: 1, inspection_status: "accepted", remark: "上午到货" };
 const inboundB = { id: "ib-2", inboundNo: "IN-002", materialId: "m-2", unitId: "u-2", orderNo: "SO-2", quantity: "200.0000", status: "posted", purchase_order_no: "PO-2", receipt_no: "GR-2", batch_sequence: 2, inspection_status: "accepted", remark: null };
+/**
+ * 双击详情用的两张入库单：列表接口本来就把这些字段一起带回来了
+ * （物料/单位/供应商/质检单、`inventoryFacts` / `payableSources` / 结算金额 / 批次 / 审计姓名）。
+ * 草稿单没有下游事实，过账单才有 —— 与线上一致。
+ */
+const detailInboundA = {
+  ...inboundA,
+  incomingInspectionId: "insp-1",
+  inventoryCategory: "raw_material",
+  material_code: "M-001",
+  material_name: "涤纶布",
+  material_specification: "150D",
+  material_color: "本白",
+  unit_name: "米",
+  supplier_name: "苏州织造一厂",
+  inspection_no: "QCS-1",
+  inspected_quantity: "9.0000",
+  settlementUnitPrice: "12.5000",
+  settlementTotalAmount: "125.0000",
+  payableSources: [],
+  inventoryFacts: [],
+  created_by_name: "张三",
+  updated_by_name: "李四",
+  createdAt: "2026-11-04T06:00:00.000Z",
+  updatedAt: "2026-11-04T06:10:00.000Z",
+};
+const detailInboundB = {
+  ...inboundB,
+  incomingInspectionId: "insp-2",
+  inventoryCategory: "raw_material",
+  material_code: "M-002",
+  material_name: "松紧带",
+  material_specification: "5mm",
+  material_color: "黑",
+  unit_name: "条",
+  supplier_name: "苏州织造一厂",
+  inspection_no: "QCS-2",
+  inspected_quantity: "200.0000",
+  payableSources: [{ id: "ps-2", status: "received", amount: "2500.0000", currency: "CNY", supplierPayableEntry: { id: "pe-2", payableNo: "AP-2026-0001", status: "draft" } }],
+  inventoryFacts: [{ id: "if-2", quantityDelta: "200.0000", sourceType: "raw_material_inbound", createdAt: "2026-11-04T08:30:00.000Z" }],
+  created_by_name: "张三",
+  updated_by_name: "李四",
+  createdAt: "2026-11-04T08:00:00.000Z",
+  updatedAt: "2026-11-04T08:30:00.000Z",
+};
+const inspectionA = { id: "insp-1", orderNo: "QCS-1", inspectedQuantity: "9.0000", status: "accepted" };
+const inspectionB = { id: "insp-2", orderNo: "QCS-2", inspectedQuantity: "200.0000", status: "accepted" };
 const balances = [{ id: "b-1", material_id: "m-1", unit_id: "u-1", unit_name: "米", order_no: null, quantity: "120.0000" }];
 
 function stub(data: { materials?: unknown; units?: unknown; inspections?: unknown; inbounds?: unknown; balances?: unknown } = {}) {
@@ -233,5 +280,86 @@ describe("原料仓储情况：既有动作不受搜索影响", () => {
     await open();
     search("150D");
     expect(screen.getByText("当前原料汇总条目：2（筛选后 1）")).toBeInTheDocument();
+  });
+});
+
+/**
+ * 2026-11-04 用户要求：「原料入库单模块，双击单据条目也要支持查看详情。居中悬浮窗口，复用就行」。
+ *
+ * 这里钉三件事：
+ *   ① 双击入库单行弹出**居中**详情（复用全站那一个 `RecordDetailDialog`，testId 与别处同款命名）；
+ *   ② 详情补上列表十列里**看不到**的字段：结算单价 / 结算总价 / 质检数量 / 备注 / 创建人 / 最后修改人；
+ *   ③ 两张下游事实表：应付来源（这张单进了多少应付、财务接收没有）与库存流水（库存到底加了多少）。
+ *
+ * 数据来源是列表行本身（`GET /raw-material-inbounds` 已 include 下游事实），不打 `:id` 接口 ——
+ * 因此这里也断言「双击不开新请求」，防止以后有人顺手加一个详情请求又把列表/详情做成两份口径。
+ */
+describe("原料仓储情况：双击原料入库单查看详情", () => {
+  const lines = { inspections: [inspectionA, inspectionB], inbounds: [detailInboundA, detailInboundB] };
+
+  async function openDetail(inboundNo: string) {
+    stub(lines);
+    await open();
+    const rows = panel("原料入库单").getAllByTestId("data-table-row");
+    const row = rows.find((candidate) => candidate.textContent?.includes(inboundNo));
+    if (!row) throw new Error(`找不到入库单行：${inboundNo}`);
+    fireEvent.doubleClick(row);
+    return screen.getByTestId("raw-material-inbound-detail");
+  }
+
+  it("双击草稿入库单：弹窗补齐列表看不到的字段、结算金额与操作人", async () => {
+    const calls = stub(lines);
+    await open();
+    const before = calls.length;
+    fireEvent.doubleClick(panel("原料入库单").getAllByTestId("data-table-row")[0]);
+    const dialog = screen.getByTestId("raw-material-inbound-detail");
+
+    // 双击不重新请求：详情就是这一行（列表接口已带全字段）
+    expect(calls).toHaveLength(before);
+
+    expect(dialog).toHaveTextContent("原料入库单详情：IN-001");
+    const fields = within(dialog).getByTestId("raw-material-inbound-detail-fields");
+    for (const text of [
+      "IN-001", "待入库登记", "accepted", "M-001 / 涤纶布", "150D", "本白", "米",
+      "10.0000", "raw_material", "SO-1", "PO-1", "GR-1", "第 1 批", "苏州织造一厂",
+      "QCS-1", "9.0000", "12.5000", "125.0000", "上午到货",
+      "张三", "李四"
+    ]) expect(fields, `详情字段缺少「${text}」`).toHaveTextContent(text);
+  });
+
+  it("过账入库单的详情里能看到应付来源与库存流水", async () => {
+    const dialog = await openDetail("IN-002");
+    expect(within(dialog).getByRole("heading", { name: "应付来源（1 条）" })).toBeInTheDocument();
+    // 金额 + 币种、来源状态、已生成的应付单：三个都在同一行里
+    expect(dialog).toHaveTextContent(/2500\.0000\sCNY/);
+    expect(dialog).toHaveTextContent("已接收");
+    expect(dialog).toHaveTextContent("AP-2026-0001（草稿）");
+    expect(within(dialog).getByRole("heading", { name: "库存流水（1 条）" })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent("200.0000");
+    expect(dialog).toHaveTextContent("原料入库过账");
+  });
+
+  it("草稿单详情里说清「还没过账所以没有应付来源」，不是一句空白", async () => {
+    const dialog = await openDetail("IN-001");
+    expect(within(dialog).getByRole("heading", { name: "应付来源（0 条）" })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent("草稿入库单还没过账");
+  });
+
+  it("详情里的动作与列表同一批回调：草稿给「过账」，点完弹窗关闭且请求打到 /post", async () => {
+    const calls: StubbedCall[] = stub(lines);
+    await open();
+    fireEvent.doubleClick(panel("原料入库单").getAllByTestId("data-table-row")[0]);
+    const dialog = screen.getByTestId("raw-material-inbound-detail");
+    expect(within(dialog).queryByRole("button", { name: "冲销" })).toBeNull();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "过账" }));
+    await waitFor(() => expect(calls.filter((call) => call.method === "POST" && call.url.endsWith("/raw-material-inbounds/ib-1/post"))).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId("raw-material-inbound-detail")).toBeNull());
+  });
+
+  it("已过账单的详情给「冲销」而不是「过账」", async () => {
+    const dialog = await openDetail("IN-002");
+    expect(within(dialog).getByRole("button", { name: "冲销" })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "过账" })).toBeNull();
   });
 });

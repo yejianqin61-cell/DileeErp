@@ -19,10 +19,18 @@ export class RawMaterialInboundsService {
       where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) },
       include: {
         inventoryFacts: true,
-        payableSources: true,
+        // 应付来源带上「已生成的应付单」：入库单详情要能回答「这张单的应付走到哪一步了」，
+        // 只给来源状态不够（received 之后财务那边可能还是草稿）。
+        payableSources: { include: { supplierPayableEntry: { select: { id: true, payableNo: true, status: true } } } },
         purchaseOrder: { select: { purchaseOrderNo: true } },
         purchaseReceipt: { select: { receiptNo: true, extensionData: true } },
-        incomingInspection: { select: { extensionData: true, status: true } },
+        // 物料 / 单位 / 供应商 / 质检单：详情弹窗要显示的是「哪家的什么料、多少米、哪次质检」，
+        // 只下发 id 的话每个调用方都要自己去 join 一遍（仓库页现在就是这么补的），
+        // 采购页更是根本拿不到物料主数据。单据接口自己带齐，详情就不必再打第二个请求。
+        material: { select: { materialCode: true, name: true, specificationModel: true, color: true } },
+        unit: { select: { name: true } },
+        supplier: { select: { name: true, supplierCode: true } },
+        incomingInspection: { select: { orderNo: true, inspectedQuantity: true, extensionData: true, status: true } },
       },
       orderBy: { createdAt: "desc" }
     }).then((rows) => rows.map((row) => ({
@@ -31,6 +39,15 @@ export class RawMaterialInboundsService {
       receipt_no: row.purchaseReceipt.receiptNo,
       batch_sequence: Number((row.purchaseReceipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? (row.incomingInspection.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1),
       inspection_status: row.incomingInspection.status,
+      // 扁平字段（与本接口已有的 purchase_order_no / receipt_no 同风格）：界面直接显示，不用再映射。
+      material_code: row.material?.materialCode ?? null,
+      material_name: row.material?.name ?? null,
+      material_specification: row.material?.specificationModel ?? null,
+      material_color: row.material?.color ?? null,
+      unit_name: row.unit?.name ?? null,
+      supplier_name: row.supplier?.name ?? row.supplier?.supplierCode ?? null,
+      inspection_no: row.incomingInspection?.orderNo ?? null,
+      inspected_quantity: row.incomingInspection?.inspectedQuantity?.toString() ?? null,
     })));
   }
 

@@ -7,13 +7,16 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
-import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
+import { auditColumns } from "../../../components/data/audit-columns";
+import { RawMaterialInboundDetailDialog, type RawMaterialInboundRow } from "../../../components/warehouse/raw-material-inbound-detail-dialog";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiRequest } from "../../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Inbound = AuditRow & { id: string; inboundNo: string; orderNo: string; quantity: string; settlementUnitPrice?: string | null; settlementTotalAmount?: string | null; settlementAmountReason?: string | null; status: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
+// 列表行与仓库「原料仓储情况」页是同一个接口、同一张单：双击详情也复用同一个弹窗组件
+// （`components/warehouse/raw-material-inbound-detail-dialog.tsx`），字段名与口径不会在两个页面分叉。
+type Inbound = RawMaterialInboundRow;
 type PayableSource = { id: string; orderNo: string; amount: string; status: string; rawMaterialInboundId?: string | null; rawMaterialInbound?: { inboundNo?: string } };
 type PayableEntry = { id: string; payableNo: string; payableSourceId?: string | null; status: string; amount: string; currency?: string };
 
@@ -86,6 +89,8 @@ export default function InboundsPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
+  /** 双击入库单弹出的居中详情（复用仓库页同一个组件，见文件头的说明）。 */
+  const [detail, setDetail] = useState<Inbound | null>(null);
 
   async function load(options: { silent?: boolean } = {}) {
     if (!options.silent) setLoading(true);
@@ -175,6 +180,22 @@ export default function InboundsPage() {
     void action("/finance/payable-entries/from-source", { source_type: "raw_material_inbound", source_id: source.id, remark: `采购通知付款：${inbound.inboundNo}` }, "已通知财务付款");
   }
 
+  /**
+   * 详情里的动作与列表行动作是**同一批回调**（编辑 / 冲销 / 通知财务付款），只是先把弹窗关掉：
+   * 编辑与冲销会再弹一个 ActionDialog、通知财务会整页重载，两弹窗叠着只会把焦点抢乱。
+   */
+  function actFromDetail(run: () => void) {
+    setDetail(null);
+    run();
+  }
+
+  /** 详情底部「通知财务付款」的可用性：已过账、有应付来源、且还没有生成应付条目（与列表那一列同一条判断）。 */
+  function sourceToNotify(inbound: Inbound) {
+    const source = payableSourcesOf(inbound);
+    if (!source || inbound.status !== "posted") return null;
+    return payableEntries.some((entry) => entry.payableSourceId === source.id) ? null : source;
+  }
+
   const columns: ColumnDef<Inbound>[] = [
     { accessorKey: "inboundNo", header: "入库单号", meta: { width: COLUMN_WIDTH.inboundNo } },
     { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
@@ -230,11 +251,23 @@ export default function InboundsPage() {
         </div>
       </PageHeader>
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => dialog?.submit(values)} />
+      {/* 双击入库单弹出居中详情：与仓库「原料仓储情况」页共用同一个弹窗组件（字段/分区完全一致），
+          只是底部动作按本页能做的事给（编辑 / 冲销 / 通知财务付款）。 */}
+      <RawMaterialInboundDetailDialog
+        inbound={detail}
+        onOpenChange={(open) => { if (!open) setDetail(null); }}
+        actions={detail ? <div className="action-row">
+          <Button size="sm" variant="secondary" onClick={() => actFromDetail(() => editInbound(detail))}>编辑</Button>
+          {detail.status === "posted" && <Button size="sm" variant="ghost" onClick={() => actFromDetail(() => reverseInbound(detail))}>冲销</Button>}
+          {sourceToNotify(detail) ? <Button size="sm" variant="secondary" onClick={() => actFromDetail(() => notifyFinance(detail, sourceToNotify(detail)!))}>通知财务付款</Button> : null}
+        </div> : undefined}
+      />
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel">
         <div className="panel-body">
-          <DataTable columns={columns} data={inbounds} empty={<EmptyState title="暂无入库记录" />} />
+          <DataTable columns={columns} data={inbounds} empty={<EmptyState title="暂无入库记录" />} onRowDoubleClick={(row) => setDetail(row)} rowTitle="双击查看详情" />
+          <p className="panel-note">双击任意一行可查看这张入库单的详情（全字段 + 应付来源 + 库存流水）。</p>
         </div>
       </section>
     </div>

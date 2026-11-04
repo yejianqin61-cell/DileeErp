@@ -10,19 +10,27 @@ import { Button } from "../../../components/ui/button";
 import { DataTable } from "../../../components/data/data-table";
 import { Input } from "../../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
+import { RawMaterialInboundDetailDialog, type RawMaterialInboundRow } from "../../../components/warehouse/raw-material-inbound-detail-dialog";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
 import { mergeMaterialBalances } from "../../../lib/wms-balances";
 import { shouldAutoOpenDraft } from "../../../lib/auto-open";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { fuzzyMatch } from "../../../lib/fuzzy-search";
-import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
+import { auditColumns } from "../../../components/data/audit-columns";
 
 // specificationModel / color 由 GET /materials 返回（listMaterials 返回物料全字段），
 // 库存汇总的「规格型号」列与搜索都依赖它们。
 type Material = { id: string; materialCode: string; name: string; defaultUnitId: string; specificationModel?: string | null; color?: string | null };
 type Unit = { id: string; name: string };
 type Inspection = { id: string; orderNo: string; inspectedQuantity: string; status: string };
-type Inbound = AuditRow & { id: string; inboundNo: string; inboundNoticeId?: string | null; materialId: string; unitId: string; orderNo: string; quantity: string; status: string; remark?: string; incomingInspectionId?: string; inventoryCategory?: string; purchase_order_no?: string | null; receipt_no?: string | null; batch_sequence?: number | null; inspection_status?: string | null };
+/**
+ * 列表行 = `GET /raw-material-inbounds` 的一行。
+ *
+ * 详情弹窗要用的物料/单位/供应商/质检/应付来源/库存流水全部来自这个接口（见共享组件
+ * `components/warehouse/raw-material-inbound-detail-dialog.tsx`），本页只需要再补两个 id：
+ * 库存汇总与搜索要靠 `materialId` / `unitId` 把物料名与单位名映射出来。
+ */
+type Inbound = RawMaterialInboundRow & { materialId: string; unitId: string; inboundNoticeId?: string | null; incomingInspectionId?: string };
 type Balance = { material_id: string; unit_id: string | null; unit_name: string; order_no: string | null; quantity: string; material?: Material };
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void };
 
@@ -126,6 +134,14 @@ export default function RawMaterialStoragePage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  /**
+   * 双击原料入库单弹出的居中详情（2026-11-04）。
+   *
+   * 为什么用行数据而不是再打一次 `:id`：`GET /raw-material-inbounds` 本来就把这张单的全部字段
+   * （含物料/单位/供应商/质检单、`inventoryFacts`、`payableSources`、批次、结算金额）一次带回，
+   * 列表与详情是同一份数据 —— 再开一个详情接口只会多一个「详情和列表不一致」的分叉。
+   */
+  const [detail, setDetail] = useState<Inbound | null>(null);
   const [query, setQuery] = useState("");
   const [orderQuery, setOrderQuery] = useState("");
   const searchParams = useSearchParams();
@@ -305,6 +321,17 @@ export default function RawMaterialStoragePage() {
     return fuzzyMatch(orderQuery, [row.orderNo, row.purchase_order_no]);
   }), [inbounds, materialMap, query, orderQuery]);
 
+  // ---------------------------------------------------------------- 双击详情
+
+  /**
+   * 详情里的动作与列表行动作是**同一批回调**，只是先把弹窗关掉：
+   * 编辑/冲销会再弹一个 ActionDialog、过账/删除会整页重载，两弹窗叠着只会把焦点抢乱。
+   */
+  function actFromDetail(action: () => void) {
+    setDetail(null);
+    action();
+  }
+
   if (loading) return <><PageHeader title="原料仓储情况"><Button asChild variant="secondary"><Link href="/warehouse">返回仓库</Link></Button></PageHeader><LoadingState /></>;
 
   return (
@@ -315,6 +342,21 @@ export default function RawMaterialStoragePage() {
         <Button onClick={createInbound}>新建入库单</Button>
       </PageHeader>
       <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
+      {/* 双击原料入库单弹出的居中详情（2026-11-04）：版式与「哪张单值得看什么」都收在
+          `components/warehouse/raw-material-inbound-detail-dialog.tsx`，采购「原料入库」页双击同一行
+          打开的是同一个组件 —— 同一条入库单在两个页面上必须是同一个样子。 */}
+      <RawMaterialInboundDetailDialog
+        inbound={detail}
+        onOpenChange={(open) => { if (!open) setDetail(null); }}
+        actions={detail ? <div className="action-row">
+          {detail.status === "draft" && <>
+            <Button size="sm" variant="secondary" onClick={() => actFromDetail(() => editInbound(detail))}>编辑</Button>
+            <Button size="sm" variant="secondary" onClick={() => actFromDetail(() => void run(apiPost("/raw-material-inbounds/" + detail.id + "/post"), "原料入库已过账"))}>过账</Button>
+            <Button size="sm" variant="ghost" onClick={() => actFromDetail(() => void run(apiRequest("/raw-material-inbounds/" + detail.id, { method: "DELETE" }), "原料入库单已删除"))}>删除</Button>
+          </>}
+          {detail.status === "posted" && <Button size="sm" variant="destructive" onClick={() => actFromDetail(() => reverseInbound(detail))}>冲销</Button>}
+        </div> : undefined}
+      />
       {message && <section className="panel panel-body status-success" role="status">{message}</section>}
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel panel-body">
@@ -344,10 +386,13 @@ export default function RawMaterialStoragePage() {
           <DataTable
             columns={inboundColumns}
             data={filteredInbounds}
+            onRowDoubleClick={(row) => setDetail(row)}
+            rowTitle="双击查看详情"
             empty={query
               ? <EmptyState title="没有匹配的原料入库单" description="换个关键词，或点「清除搜索」看全部。" />
               : <EmptyState title="暂无原料入库单" description="在【仓库 → 待入库通知】接收入库通知后，这里会出现对应的草稿入库单；登记实际数量并过账后计入库存。" />}
           />
+          <p className="panel-note">双击任意一行可查看这张入库单的详情（全字段 + 应付来源 + 库存流水）。</p>
           <p className="panel-note">单位：{units.length ? units.map((unit) => unit.name).join("、") : "暂无"}</p>
           <p className="panel-note">质检记录：{inspections.length}</p>
         </div>
