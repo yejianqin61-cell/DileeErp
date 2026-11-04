@@ -1,0 +1,4233 @@
+{
+  "base": "http://127.0.0.1:3111",
+  "generatedAt": "2026-10-26T14:22:49.105Z",
+  "results": [
+    {
+      "name": "desktop-empty",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\desktop-empty.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 900,
+          "scrollingElementClientHeight": 900,
+          "documentElementScrollWidth": 1440,
+          "documentElementClientWidth": 1440,
+          "bodyScrollWidth": 1440,
+          "bodyScrollHeight": 900,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 653,
+          "scrollHeight": 653,
+          "scrollTop": 0,
+          "overflowY": "auto",
+          "rect": {
+            "x": 232,
+            "y": 110,
+            "top": 110,
+            "left": 232,
+            "right": 1440,
+            "bottom": 763,
+            "width": 1208,
+            "height": 653
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 232,
+            "y": 0,
+            "top": 0,
+            "left": 232,
+            "right": 1440,
+            "bottom": 56,
+            "width": 1208,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 232,
+            "bottom": 900,
+            "width": 232,
+            "height": 900
+          },
+          "contentArea": {
+            "x": 232,
+            "y": 56,
+            "top": 56,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 844
+          },
+          "thread": null,
+          "composerWrap": {
+            "x": 232,
+            "y": 763,
+            "top": 763,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 137
+          },
+          "composer": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 884,
+            "width": 800,
+            "height": 111
+          },
+          "inputBox": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 861,
+            "width": 800,
+            "height": 88
+          },
+          "input": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "sendLike": {
+            "x": 1191,
+            "y": 818,
+            "top": 818,
+            "left": 1191,
+            "right": 1225,
+            "bottom": 852,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-submit",
+          "scrollBottom": null
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": true,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 0,
+          "assistantMessages": 0,
+          "suggestions": 4,
+          "tables": 0,
+          "toolSteps": 0,
+          "sources": 0,
+          "copyButtons": 0,
+          "retryButtons": 0,
+          "historyItems": 0
+        },
+        "texts": {
+          "welcomeTitle": "今天有什么可以帮您？",
+          "welcomeSub": "查询订单、追踪生产进度、了解采购与库存情况",
+          "suggestionTexts": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？",
+            "目前有哪些物料库存不足？",
+            "帮我汇总本月采购情况。"
+          ],
+          "userTexts": [],
+          "phaseLabel": null,
+          "inputStatus": "Enter 发送 · Shift + Enter 换行",
+          "toolStepSummaries": [],
+          "sourceLabels": [],
+          "businessError": null,
+          "answerSample": null,
+          "historyItemTitles": [],
+          "historyItemMeta": [],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [],
+          "assistantMessageBackgrounds": [],
+          "userBubbleBackgrounds": [],
+          "userBubbleRects": [],
+          "assistantAnswerRects": [],
+          "assistantMessageRects": [],
+          "assistantAvatarBackgrounds": [],
+          "threadMaxWidth": null,
+          "inputBorderRadius": "16px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [],
+        "historyDialog": {
+          "visible": false,
+          "rect": null
+        },
+        "shell": {
+          "sidebarDisplay": "block",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "toolbarTitle": {
+            "x": 252,
+            "y": 69.5,
+            "top": 69.5,
+            "left": 252,
+            "right": 572.8,
+            "bottom": 95.5,
+            "width": 320.8,
+            "height": 26
+          },
+          "toolbarActions": {
+            "x": 1232,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 1232,
+            "right": 1420,
+            "bottom": 98.5,
+            "width": 188,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": false,
+          "caretRect": null,
+          "lastParagraphRect": null,
+          "caretInLastParagraph": false,
+          "answerRect": null,
+          "pending": false,
+          "cancelButton": false
+        }
+      },
+      "checks": [
+        {
+          "name": "空态标题文案",
+          "ok": true,
+          "detail": "今天有什么可以帮您？",
+          "required": true
+        },
+        {
+          "name": "空态副标题文案",
+          "ok": true,
+          "detail": "查询订单、追踪生产进度、了解采购与库存情况",
+          "required": true
+        },
+        {
+          "name": "空态推荐问题 4 张",
+          "ok": true,
+          "detail": 4,
+          "required": true
+        },
+        {
+          "name": "空态没有消息",
+          "ok": true,
+          "detail": {
+            "userMessages": 0,
+            "assistantMessages": 0,
+            "suggestions": 4,
+            "tables": 0,
+            "toolSteps": 0,
+            "sources": 0,
+            "copyButtons": 0,
+            "retryButtons": 0,
+            "historyItems": 0
+          },
+          "required": true
+        },
+        {
+          "name": "输入框与发送按钮在视口内",
+          "ok": true,
+          "detail": {
+            "input": true,
+            "sendLike": true,
+            "composer": true,
+            "topbar": true,
+            "sidebar": true,
+            "contentArea": true
+          },
+          "required": true
+        },
+        {
+          "name": "桌面空态整页不滚/无横向溢出",
+          "ok": true,
+          "detail": {
+            "scrollingElementScrollHeight": 900,
+            "scrollingElementClientHeight": 900,
+            "documentElementScrollWidth": 1440,
+            "documentElementClientWidth": 1440,
+            "bodyScrollWidth": 1440,
+            "bodyScrollHeight": 900,
+            "verticalOverflow": 0,
+            "horizontalOverflow": 0
+          },
+          "required": true
+        },
+        {
+          "name": "桌面空态：侧栏显示、顶栏可见",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "block",
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 1440,
+            "innerWidth": 1440,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "required": false
+        },
+        {
+          "name": "桌面侧栏未被误伤且顶栏可见",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "block",
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            }
+          },
+          "required": false
+        },
+        {
+          "name": "桌面不显示「回工作台」入口",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1"
+      ],
+      "afterError": null,
+      "elapsedMs": 1658
+    },
+    {
+      "name": "desktop-conversation",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\desktop-conversation.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 900,
+          "scrollingElementClientHeight": 900,
+          "documentElementScrollWidth": 1440,
+          "documentElementClientWidth": 1440,
+          "bodyScrollWidth": 1440,
+          "bodyScrollHeight": 900,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 653,
+          "scrollHeight": 852,
+          "scrollTop": 199,
+          "overflowY": "auto",
+          "rect": {
+            "x": 232,
+            "y": 110,
+            "top": 110,
+            "left": 232,
+            "right": 1440,
+            "bottom": 763,
+            "width": 1208,
+            "height": 653
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 232,
+            "y": 0,
+            "top": 0,
+            "left": 232,
+            "right": 1440,
+            "bottom": 56,
+            "width": 1208,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 232,
+            "bottom": 900,
+            "width": 232,
+            "height": 900
+          },
+          "contentArea": {
+            "x": 232,
+            "y": 56,
+            "top": 56,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 844
+          },
+          "thread": {
+            "x": 436,
+            "y": -63,
+            "top": -63,
+            "left": 436,
+            "right": 1236,
+            "bottom": 756.9,
+            "width": 800,
+            "height": 819.9
+          },
+          "composerWrap": {
+            "x": 232,
+            "y": 763,
+            "top": 763,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 137
+          },
+          "composer": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 884,
+            "width": 800,
+            "height": 111
+          },
+          "inputBox": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 861,
+            "width": 800,
+            "height": 88
+          },
+          "input": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "sendLike": {
+            "x": 1191,
+            "y": 818,
+            "top": 818,
+            "left": 1191,
+            "right": 1225,
+            "bottom": 852,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-submit",
+          "scrollBottom": null
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": true,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 2,
+          "assistantMessages": 2,
+          "suggestions": 0,
+          "tables": 1,
+          "toolSteps": 0,
+          "sources": 7,
+          "copyButtons": 2,
+          "retryButtons": 0,
+          "historyItems": 0
+        },
+        "texts": {
+          "welcomeTitle": null,
+          "welcomeSub": null,
+          "suggestionTexts": [],
+          "userTexts": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？"
+          ],
+          "phaseLabel": "已完成",
+          "inputStatus": "已完成",
+          "toolStepSummaries": [],
+          "sourceLabels": [
+            "销售单 SO-2026-0158",
+            "销售单 SO-2026-0161",
+            "销售单 SO-2026-0173",
+            "生产单 PO-2026-0412",
+            "生产单 PO-2026-0418",
+            "生产单 PO-2026-0421",
+            "采购单 CG-2026-0781"
+          ],
+          "businessError": null,
+          "answerSample": "最近销售订单最近 7 天共有 5 张销售订单处于推进中，其中 2 张已进入组装工序，1 张等待客户确认交期。订单号客户当前状态SO-2026-0158宁波华翔贸易有限公司组装中SO-2026-0161义乌市恒信进出口有限公司待客户确认SO-2026-0164杭州锦程雨具已排产SO-2026-0169绍兴天合户外用品备料中SO-2026-0173台州乐途伞业已发货交期最紧的是 SO-2026-0173，10 月 28 日出货，物流单已生成。SO-2026-0161 的客户确认还",
+          "historyItemTitles": [],
+          "historyItemMeta": [],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "assistantMessageBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "userBubbleBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "userBubbleRects": [
+            {
+              "x": 1068,
+              "y": -63,
+              "top": -63,
+              "left": 1068,
+              "right": 1236,
+              "bottom": -19.2,
+              "width": 168,
+              "height": 43.8
+            },
+            {
+              "x": 1054,
+              "y": 472.9,
+              "top": 472.9,
+              "left": 1054,
+              "right": 1236,
+              "bottom": 516.7,
+              "width": 182,
+              "height": 43.8
+            }
+          ],
+          "assistantAnswerRects": [
+            {
+              "x": 476,
+              "y": -5.2,
+              "top": -5.2,
+              "left": 476,
+              "right": 1236,
+              "bottom": 442.9,
+              "width": 760,
+              "height": 448.1
+            },
+            {
+              "x": 476,
+              "y": 530.7,
+              "top": 530.7,
+              "left": 476,
+              "right": 1236,
+              "bottom": 756.9,
+              "width": 760,
+              "height": 226.2
+            }
+          ],
+          "assistantMessageRects": [
+            {
+              "x": 436,
+              "y": -5.2,
+              "top": -5.2,
+              "left": 436,
+              "right": 1236,
+              "bottom": 442.9,
+              "width": 800,
+              "height": 448.1
+            },
+            {
+              "x": 436,
+              "y": 530.7,
+              "top": 530.7,
+              "left": 436,
+              "right": 1236,
+              "bottom": 756.9,
+              "width": 800,
+              "height": 226.2
+            }
+          ],
+          "assistantAvatarBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "threadMaxWidth": "800px",
+          "inputBorderRadius": "16px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [
+          {
+            "index": 0,
+            "clientWidth": 758,
+            "scrollWidth": 758,
+            "clientHeight": 240,
+            "scrollHeight": 240,
+            "internalHorizontalScroll": false,
+            "rect": {
+              "x": 476,
+              "y": 55.8,
+              "top": 55.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 297.5,
+              "width": 760,
+              "height": 241.8
+            }
+          }
+        ],
+        "historyDialog": {
+          "visible": false,
+          "rect": null
+        },
+        "shell": {
+          "sidebarDisplay": "block",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "toolbarTitle": {
+            "x": 252,
+            "y": 69.5,
+            "top": 69.5,
+            "left": 252,
+            "right": 572.8,
+            "bottom": 95.5,
+            "width": 320.8,
+            "height": 26
+          },
+          "toolbarActions": {
+            "x": 1232,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 1232,
+            "right": 1420,
+            "bottom": 98.5,
+            "width": 188,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": false,
+          "caretRect": null,
+          "lastParagraphRect": {
+            "x": 476,
+            "y": 353.1,
+            "top": 353.1,
+            "left": 476,
+            "right": 1236,
+            "bottom": 378.9,
+            "width": 760,
+            "height": 25.8
+          },
+          "caretInLastParagraph": false,
+          "answerRect": {
+            "x": 476,
+            "y": -5.2,
+            "top": -5.2,
+            "left": 476,
+            "right": 1236,
+            "bottom": 378.9,
+            "width": 760,
+            "height": 384.1
+          },
+          "pending": false,
+          "cancelButton": false
+        }
+      },
+      "checks": [
+        {
+          "name": "2 条用户消息",
+          "ok": true,
+          "detail": 2,
+          "required": true
+        },
+        {
+          "name": "2 条 AI 回复",
+          "ok": true,
+          "detail": 2,
+          "required": true
+        },
+        {
+          "name": "第一条问题文案",
+          "ok": true,
+          "detail": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？"
+          ],
+          "required": true
+        },
+        {
+          "name": "第二条问题文案",
+          "ok": true,
+          "detail": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？"
+          ],
+          "required": true
+        },
+        {
+          "name": "回答里有 Markdown 表格",
+          "ok": true,
+          "detail": 1,
+          "required": true
+        },
+        {
+          "name": "回答下方有来源 chips",
+          "ok": true,
+          "detail": 7,
+          "required": true
+        },
+        {
+          "name": "每条完成回复都有复制按钮",
+          "ok": true,
+          "detail": 2,
+          "required": true
+        },
+        {
+          "name": "已完成回复不显示重试",
+          "ok": true,
+          "detail": 0,
+          "required": true
+        },
+        {
+          "name": "输入区与发送按钮在视口内",
+          "ok": true,
+          "detail": {
+            "input": true,
+            "sendLike": true,
+            "composer": true,
+            "topbar": true,
+            "sidebar": true,
+            "contentArea": true
+          },
+          "required": true
+        },
+        {
+          "name": "顶栏与侧栏可见",
+          "ok": true,
+          "detail": {
+            "inViewport": {
+              "input": true,
+              "sendLike": true,
+              "composer": true,
+              "topbar": true,
+              "sidebar": true,
+              "contentArea": true
+            },
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            },
+            "sidebar": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 232,
+              "bottom": 900,
+              "width": 232,
+              "height": 900
+            },
+            "viewport": {
+              "width": 1440,
+              "height": 900,
+              "devicePixelRatio": 1
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "桌面侧栏仍显示（未被窄屏规则误伤）",
+          "ok": true,
+          "detail": {
+            "display": "block",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 232,
+              "bottom": 900,
+              "width": 232,
+              "height": 900
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "桌面不显示「回工作台」入口",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "diff": 0
+          },
+          "required": true
+        },
+        {
+          "name": "消息区 clientHeight > 0",
+          "ok": true,
+          "detail": {
+            "clientHeight": 653,
+            "scrollHeight": 852,
+            "scrollTop": 199,
+            "overflowY": "auto",
+            "rect": {
+              "x": 232,
+              "y": 110,
+              "top": 110,
+              "left": 232,
+              "right": 1440,
+              "bottom": 763,
+              "width": 1208,
+              "height": 653
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "消息区 scrollHeight > clientHeight（内容在消息区内部滚）",
+          "ok": true,
+          "detail": {
+            "clientHeight": 653,
+            "scrollHeight": 852,
+            "scrollTop": 199,
+            "overflowY": "auto",
+            "rect": {
+              "x": 232,
+              "y": 110,
+              "top": 110,
+              "left": 232,
+              "right": 1440,
+              "bottom": 763,
+              "width": 1208,
+              "height": 653
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "用户气泡右对齐（右边贴 thread 右边）",
+          "ok": true,
+          "detail": {
+            "threadRight": 1236,
+            "bubbleRights": [
+              1236,
+              1236
+            ]
+          },
+          "required": true
+        },
+        {
+          "name": "AI 消息块左对齐 thread 左边",
+          "ok": true,
+          "detail": {
+            "threadLeft": 436,
+            "messageLefts": [
+              436,
+              436
+            ]
+          },
+          "required": true
+        },
+        {
+          "name": "AI 正文左侧不是气泡（正文左 = thread 左 + 40px）",
+          "ok": true,
+          "detail": {
+            "threadLeft": 436,
+            "answerLefts": [
+              476,
+              476
+            ],
+            "offsets": [
+              40,
+              40
+            ]
+          },
+          "required": true
+        },
+        {
+          "name": "AI 正文无气泡背景",
+          "ok": true,
+          "detail": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "required": true
+        },
+        {
+          "name": "用户消息是浅色气泡",
+          "ok": true,
+          "detail": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 1440,
+            "innerWidth": 1440,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "required": false
+        },
+        {
+          "name": "桌面侧栏未被误伤且顶栏可见",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "block",
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            }
+          },
+          "required": false
+        },
+        {
+          "name": "桌面不显示「回工作台」入口",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1"
+      ],
+      "afterError": null,
+      "elapsedMs": 970
+    },
+    {
+      "name": "desktop-scrolled",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\desktop-scrolled.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 900,
+          "scrollingElementClientHeight": 900,
+          "documentElementScrollWidth": 1440,
+          "documentElementClientWidth": 1440,
+          "bodyScrollWidth": 1440,
+          "bodyScrollHeight": 900,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 653,
+          "scrollHeight": 852,
+          "scrollTop": 0,
+          "overflowY": "auto",
+          "rect": {
+            "x": 232,
+            "y": 110,
+            "top": 110,
+            "left": 232,
+            "right": 1440,
+            "bottom": 763,
+            "width": 1208,
+            "height": 653
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 232,
+            "y": 0,
+            "top": 0,
+            "left": 232,
+            "right": 1440,
+            "bottom": 56,
+            "width": 1208,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 232,
+            "bottom": 900,
+            "width": 232,
+            "height": 900
+          },
+          "contentArea": {
+            "x": 232,
+            "y": 56,
+            "top": 56,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 844
+          },
+          "thread": {
+            "x": 436,
+            "y": 136,
+            "top": 136,
+            "left": 436,
+            "right": 1236,
+            "bottom": 955.9,
+            "width": 800,
+            "height": 819.9
+          },
+          "composerWrap": {
+            "x": 232,
+            "y": 763,
+            "top": 763,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 137
+          },
+          "composer": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 884,
+            "width": 800,
+            "height": 111
+          },
+          "inputBox": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 861,
+            "width": 800,
+            "height": 88
+          },
+          "input": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "sendLike": {
+            "x": 1191,
+            "y": 818,
+            "top": 818,
+            "left": 1191,
+            "right": 1225,
+            "bottom": 852,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-submit",
+          "scrollBottom": {
+            "x": 821,
+            "y": 723,
+            "top": 723,
+            "left": 821,
+            "right": 851,
+            "bottom": 753,
+            "width": 30,
+            "height": 30
+          }
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": true,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 2,
+          "assistantMessages": 2,
+          "suggestions": 0,
+          "tables": 1,
+          "toolSteps": 0,
+          "sources": 7,
+          "copyButtons": 2,
+          "retryButtons": 0,
+          "historyItems": 0
+        },
+        "texts": {
+          "welcomeTitle": null,
+          "welcomeSub": null,
+          "suggestionTexts": [],
+          "userTexts": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？"
+          ],
+          "phaseLabel": "已完成",
+          "inputStatus": "已完成",
+          "toolStepSummaries": [],
+          "sourceLabels": [
+            "销售单 SO-2026-0158",
+            "销售单 SO-2026-0161",
+            "销售单 SO-2026-0173",
+            "生产单 PO-2026-0412",
+            "生产单 PO-2026-0418",
+            "生产单 PO-2026-0421",
+            "采购单 CG-2026-0781"
+          ],
+          "businessError": null,
+          "answerSample": "最近销售订单最近 7 天共有 5 张销售订单处于推进中，其中 2 张已进入组装工序，1 张等待客户确认交期。订单号客户当前状态SO-2026-0158宁波华翔贸易有限公司组装中SO-2026-0161义乌市恒信进出口有限公司待客户确认SO-2026-0164杭州锦程雨具已排产SO-2026-0169绍兴天合户外用品备料中SO-2026-0173台州乐途伞业已发货交期最紧的是 SO-2026-0173，10 月 28 日出货，物流单已生成。SO-2026-0161 的客户确认还",
+          "historyItemTitles": [],
+          "historyItemMeta": [],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "assistantMessageBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "userBubbleBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "userBubbleRects": [
+            {
+              "x": 1068,
+              "y": 136,
+              "top": 136,
+              "left": 1068,
+              "right": 1236,
+              "bottom": 179.8,
+              "width": 168,
+              "height": 43.8
+            },
+            {
+              "x": 1054,
+              "y": 671.9,
+              "top": 671.9,
+              "left": 1054,
+              "right": 1236,
+              "bottom": 715.7,
+              "width": 182,
+              "height": 43.8
+            }
+          ],
+          "assistantAnswerRects": [
+            {
+              "x": 476,
+              "y": 193.8,
+              "top": 193.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 641.9,
+              "width": 760,
+              "height": 448.1
+            },
+            {
+              "x": 476,
+              "y": 729.7,
+              "top": 729.7,
+              "left": 476,
+              "right": 1236,
+              "bottom": 955.9,
+              "width": 760,
+              "height": 226.2
+            }
+          ],
+          "assistantMessageRects": [
+            {
+              "x": 436,
+              "y": 193.8,
+              "top": 193.8,
+              "left": 436,
+              "right": 1236,
+              "bottom": 641.9,
+              "width": 800,
+              "height": 448.1
+            },
+            {
+              "x": 436,
+              "y": 729.7,
+              "top": 729.7,
+              "left": 436,
+              "right": 1236,
+              "bottom": 955.9,
+              "width": 800,
+              "height": 226.2
+            }
+          ],
+          "assistantAvatarBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "threadMaxWidth": "800px",
+          "inputBorderRadius": "16px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [
+          {
+            "index": 0,
+            "clientWidth": 758,
+            "scrollWidth": 758,
+            "clientHeight": 240,
+            "scrollHeight": 240,
+            "internalHorizontalScroll": false,
+            "rect": {
+              "x": 476,
+              "y": 254.8,
+              "top": 254.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 496.5,
+              "width": 760,
+              "height": 241.8
+            }
+          }
+        ],
+        "historyDialog": {
+          "visible": false,
+          "rect": null
+        },
+        "shell": {
+          "sidebarDisplay": "block",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "toolbarTitle": {
+            "x": 252,
+            "y": 69.5,
+            "top": 69.5,
+            "left": 252,
+            "right": 572.8,
+            "bottom": 95.5,
+            "width": 320.8,
+            "height": 26
+          },
+          "toolbarActions": {
+            "x": 1232,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 1232,
+            "right": 1420,
+            "bottom": 98.5,
+            "width": 188,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": false,
+          "caretRect": null,
+          "lastParagraphRect": {
+            "x": 476,
+            "y": 552.1,
+            "top": 552.1,
+            "left": 476,
+            "right": 1236,
+            "bottom": 577.9,
+            "width": 760,
+            "height": 25.8
+          },
+          "caretInLastParagraph": false,
+          "answerRect": {
+            "x": 476,
+            "y": 193.8,
+            "top": 193.8,
+            "left": 476,
+            "right": 1236,
+            "bottom": 577.9,
+            "width": 760,
+            "height": 384.1
+          },
+          "pending": false,
+          "cancelButton": false
+        }
+      },
+      "checks": [
+        {
+          "name": "消息区已滚到顶部",
+          "ok": true,
+          "detail": {
+            "clientHeight": 653,
+            "scrollHeight": 852,
+            "scrollTop": 0,
+            "overflowY": "auto",
+            "rect": {
+              "x": 232,
+              "y": 110,
+              "top": 110,
+              "left": 232,
+              "right": 1440,
+              "bottom": 763,
+              "width": 1208,
+              "height": 653
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "内容仍高于可视区",
+          "ok": true,
+          "detail": {
+            "clientHeight": 653,
+            "scrollHeight": 852,
+            "scrollTop": 0,
+            "overflowY": "auto",
+            "rect": {
+              "x": 232,
+              "y": 110,
+              "top": 110,
+              "left": 232,
+              "right": 1440,
+              "bottom": 763,
+              "width": 1208,
+              "height": 653
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "出现「回到底部」按钮",
+          "ok": true,
+          "detail": {
+            "x": 821,
+            "y": 723,
+            "top": 723,
+            "left": 821,
+            "right": 851,
+            "bottom": 753,
+            "width": 30,
+            "height": 30
+          },
+          "required": true
+        },
+        {
+          "name": "「回到底部」在视口内",
+          "ok": true,
+          "detail": {
+            "x": 821,
+            "y": 723,
+            "top": 723,
+            "left": 821,
+            "right": 851,
+            "bottom": 753,
+            "width": 30,
+            "height": 30
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 1440,
+            "innerWidth": 1440,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "required": false
+        },
+        {
+          "name": "桌面侧栏未被误伤且顶栏可见",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "block",
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            }
+          },
+          "required": false
+        },
+        {
+          "name": "桌面不显示「回工作台」入口",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1"
+      ],
+      "afterError": null,
+      "elapsedMs": 938
+    },
+    {
+      "name": "desktop-streaming",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\desktop-streaming.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 900,
+          "scrollingElementClientHeight": 900,
+          "documentElementScrollWidth": 1440,
+          "documentElementClientWidth": 1440,
+          "bodyScrollWidth": 1440,
+          "bodyScrollHeight": 900,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 653,
+          "scrollHeight": 653,
+          "scrollTop": 0,
+          "overflowY": "auto",
+          "rect": {
+            "x": 232,
+            "y": 110,
+            "top": 110,
+            "left": 232,
+            "right": 1440,
+            "bottom": 763,
+            "width": 1208,
+            "height": 653
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 232,
+            "y": 0,
+            "top": 0,
+            "left": 232,
+            "right": 1440,
+            "bottom": 56,
+            "width": 1208,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 232,
+            "bottom": 900,
+            "width": 232,
+            "height": 900
+          },
+          "contentArea": {
+            "x": 232,
+            "y": 56,
+            "top": 56,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 844
+          },
+          "thread": {
+            "x": 436,
+            "y": 136,
+            "top": 136,
+            "left": 436,
+            "right": 1236,
+            "bottom": 322.8,
+            "width": 800,
+            "height": 186.8
+          },
+          "composerWrap": {
+            "x": 232,
+            "y": 763,
+            "top": 763,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 137
+          },
+          "composer": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 884,
+            "width": 800,
+            "height": 111
+          },
+          "inputBox": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 861,
+            "width": 800,
+            "height": 88
+          },
+          "input": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "sendLike": {
+            "x": 1191,
+            "y": 818,
+            "top": 818,
+            "left": 1191,
+            "right": 1225,
+            "bottom": 852,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-cancel",
+          "scrollBottom": null
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": true,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 1,
+          "assistantMessages": 1,
+          "suggestions": 0,
+          "tables": 0,
+          "toolSteps": 1,
+          "sources": 0,
+          "copyButtons": 1,
+          "retryButtons": 0,
+          "historyItems": 0
+        },
+        "texts": {
+          "welcomeTitle": null,
+          "welcomeSub": null,
+          "suggestionTexts": [],
+          "userTexts": [
+            "最近有哪些销售订单？"
+          ],
+          "phaseLabel": "连接中断，正在恢复…",
+          "inputStatus": "连接中断，正在恢复…",
+          "toolStepSummaries": [
+            "正在查询销售订单"
+          ],
+          "sourceLabels": [],
+          "businessError": null,
+          "answerSample": "最近销售订单最近 7 天共有 3 张销售订单处于推进中，其中 SO-2026-0158 已进入组装工序，SO-2026-0173 已完成出货。",
+          "historyItemTitles": [],
+          "historyItemMeta": [],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [
+            "rgba(0, 0, 0, 0)"
+          ],
+          "assistantMessageBackgrounds": [
+            "rgba(0, 0, 0, 0)"
+          ],
+          "userBubbleBackgrounds": [
+            "rgb(232, 242, 245)"
+          ],
+          "userBubbleRects": [
+            {
+              "x": 1068,
+              "y": 136,
+              "top": 136,
+              "left": 1068,
+              "right": 1236,
+              "bottom": 179.8,
+              "width": 168,
+              "height": 43.8
+            }
+          ],
+          "assistantAnswerRects": [
+            {
+              "x": 476,
+              "y": 193.8,
+              "top": 193.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 322.8,
+              "width": 760,
+              "height": 129
+            }
+          ],
+          "assistantMessageRects": [
+            {
+              "x": 436,
+              "y": 193.8,
+              "top": 193.8,
+              "left": 436,
+              "right": 1236,
+              "bottom": 322.8,
+              "width": 800,
+              "height": 129
+            }
+          ],
+          "assistantAvatarBackgrounds": [
+            "rgb(232, 242, 245)"
+          ],
+          "threadMaxWidth": "800px",
+          "inputBorderRadius": "16px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [],
+        "historyDialog": {
+          "visible": false,
+          "rect": null
+        },
+        "shell": {
+          "sidebarDisplay": "block",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "toolbarTitle": {
+            "x": 252,
+            "y": 69.5,
+            "top": 69.5,
+            "left": 252,
+            "right": 572.8,
+            "bottom": 95.5,
+            "width": 320.8,
+            "height": 26
+          },
+          "toolbarActions": {
+            "x": 1232,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 1232,
+            "right": 1420,
+            "bottom": 98.5,
+            "width": 188,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": true,
+          "caretRect": {
+            "x": 1176.6,
+            "y": 268.9,
+            "top": 268.9,
+            "left": 1176.6,
+            "right": 1183.6,
+            "bottom": 284.2,
+            "width": 7,
+            "height": 15.2
+          },
+          "lastParagraphRect": {
+            "x": 476,
+            "y": 265,
+            "top": 265,
+            "left": 476,
+            "right": 1236,
+            "bottom": 290.8,
+            "width": 760,
+            "height": 25.8
+          },
+          "caretInLastParagraph": true,
+          "answerRect": {
+            "x": 476,
+            "y": 239.8,
+            "top": 239.8,
+            "left": 476,
+            "right": 1236,
+            "bottom": 290.8,
+            "width": 760,
+            "height": 51
+          },
+          "pending": false,
+          "cancelButton": true
+        }
+      },
+      "checks": [
+        {
+          "name": "运行中显示停止按钮",
+          "ok": true,
+          "detail": "business-query-cancel",
+          "required": true
+        },
+        {
+          "name": "折叠步骤摘要「正在查询销售订单」",
+          "ok": true,
+          "detail": [
+            "正在查询销售订单"
+          ],
+          "required": true
+        },
+        {
+          "name": "执行步骤卡 1 张（折叠）",
+          "ok": true,
+          "detail": 1,
+          "required": true
+        },
+        {
+          "name": "流式光标可见",
+          "ok": true,
+          "detail": {
+            "caret": true,
+            "caretRect": {
+              "x": 1176.6,
+              "y": 268.9,
+              "top": 268.9,
+              "left": 1176.6,
+              "right": 1183.6,
+              "bottom": 284.2,
+              "width": 7,
+              "height": 15.2
+            },
+            "lastParagraphRect": {
+              "x": 476,
+              "y": 265,
+              "top": 265,
+              "left": 476,
+              "right": 1236,
+              "bottom": 290.8,
+              "width": 760,
+              "height": 25.8
+            },
+            "caretInLastParagraph": true,
+            "answerRect": {
+              "x": 476,
+              "y": 239.8,
+              "top": 239.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 290.8,
+              "width": 760,
+              "height": 51
+            },
+            "pending": false,
+            "cancelButton": true
+          },
+          "required": true
+        },
+        {
+          "name": "流式光标在最后一个段落内（不再单独占一行）",
+          "ok": true,
+          "detail": {
+            "caretRect": {
+              "x": 1176.6,
+              "y": 268.9,
+              "top": 268.9,
+              "left": 1176.6,
+              "right": 1183.6,
+              "bottom": 284.2,
+              "width": 7,
+              "height": 15.2
+            },
+            "lastParagraphRect": {
+              "x": 476,
+              "y": 265,
+              "top": 265,
+              "left": 476,
+              "right": 1236,
+              "bottom": 290.8,
+              "width": 760,
+              "height": 25.8
+            },
+            "caretParent": "last .agent-md-p"
+          },
+          "required": true
+        },
+        {
+          "name": "光标 rect 纵向落在最后段落范围内（与正文同一行）",
+          "ok": true,
+          "detail": {
+            "caretRect": {
+              "x": 1176.6,
+              "y": 268.9,
+              "top": 268.9,
+              "left": 1176.6,
+              "right": 1183.6,
+              "bottom": 284.2,
+              "width": 7,
+              "height": 15.2
+            },
+            "lastParagraphRect": {
+              "x": 476,
+              "y": 265,
+              "top": 265,
+              "left": 476,
+              "right": 1236,
+              "bottom": 290.8,
+              "width": 760,
+              "height": 25.8
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "1 问 1 答",
+          "ok": true,
+          "detail": {
+            "userMessages": 1,
+            "assistantMessages": 1,
+            "suggestions": 0,
+            "tables": 0,
+            "toolSteps": 1,
+            "sources": 0,
+            "copyButtons": 1,
+            "retryButtons": 0,
+            "historyItems": 0
+          },
+          "required": true
+        },
+        {
+          "name": "底部阶段文案是运行中/恢复中",
+          "ok": true,
+          "detail": "连接中断，正在恢复…",
+          "required": true
+        },
+        {
+          "name": "停止按钮在视口内",
+          "ok": true,
+          "detail": {
+            "input": true,
+            "sendLike": true,
+            "composer": true,
+            "topbar": true,
+            "sidebar": true,
+            "contentArea": true
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 1440,
+            "innerWidth": 1440,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "required": false
+        },
+        {
+          "name": "桌面侧栏未被误伤且顶栏可见",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "block",
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            }
+          },
+          "required": false
+        },
+        {
+          "name": "桌面不显示「回工作台」入口",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1",
+        "GET /business-query/runs/r-live/events"
+      ],
+      "afterError": null,
+      "elapsedMs": 888
+    },
+    {
+      "name": "desktop-error",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\desktop-error.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 900,
+          "scrollingElementClientHeight": 900,
+          "documentElementScrollWidth": 1440,
+          "documentElementClientWidth": 1440,
+          "bodyScrollWidth": 1440,
+          "bodyScrollHeight": 900,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 653,
+          "scrollHeight": 653,
+          "scrollTop": 0,
+          "overflowY": "auto",
+          "rect": {
+            "x": 232,
+            "y": 110,
+            "top": 110,
+            "left": 232,
+            "right": 1440,
+            "bottom": 763,
+            "width": 1208,
+            "height": 653
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 232,
+            "y": 0,
+            "top": 0,
+            "left": 232,
+            "right": 1440,
+            "bottom": 56,
+            "width": 1208,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 232,
+            "bottom": 900,
+            "width": 232,
+            "height": 900
+          },
+          "contentArea": {
+            "x": 232,
+            "y": 56,
+            "top": 56,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 844
+          },
+          "thread": {
+            "x": 436,
+            "y": 136,
+            "top": 136,
+            "left": 436,
+            "right": 1236,
+            "bottom": 393.2,
+            "width": 800,
+            "height": 257.2
+          },
+          "composerWrap": {
+            "x": 232,
+            "y": 763,
+            "top": 763,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 137
+          },
+          "composer": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 884,
+            "width": 800,
+            "height": 111
+          },
+          "inputBox": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 861,
+            "width": 800,
+            "height": 88
+          },
+          "input": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "sendLike": {
+            "x": 1191,
+            "y": 818,
+            "top": 818,
+            "left": 1191,
+            "right": 1225,
+            "bottom": 852,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-submit",
+          "scrollBottom": null
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": true,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 1,
+          "assistantMessages": 1,
+          "suggestions": 0,
+          "tables": 0,
+          "toolSteps": 0,
+          "sources": 2,
+          "copyButtons": 1,
+          "retryButtons": 1,
+          "historyItems": 0
+        },
+        "texts": {
+          "welcomeTitle": null,
+          "welcomeSub": null,
+          "suggestionTexts": [],
+          "userTexts": [
+            "哪些生产任务即将延期？"
+          ],
+          "phaseLabel": "未完成",
+          "inputStatus": "未完成",
+          "toolStepSummaries": [],
+          "sourceLabels": [
+            "生产单 PO-2026-0412",
+            "生产单 PO-2026-0418"
+          ],
+          "businessError": "以上内容不完整：本次查询未完成（AGENT_RUN_TIMEOUT）",
+          "answerSample": "即将延期的生产任务按当前工序进度，有 3 个生产任务存在延期风险：PO-2026-0412（沙滩伞骨架，2,000 件）—— 组装工序落后计划 2 天。PO-2026-0418（折叠晴雨伞，1,500 件）—— 缝制工序只完成 62%。",
+          "historyItemTitles": [],
+          "historyItemMeta": [],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [
+            "rgba(0, 0, 0, 0)"
+          ],
+          "assistantMessageBackgrounds": [
+            "rgba(0, 0, 0, 0)"
+          ],
+          "userBubbleBackgrounds": [
+            "rgb(232, 242, 245)"
+          ],
+          "userBubbleRects": [
+            {
+              "x": 1054,
+              "y": 136,
+              "top": 136,
+              "left": 1054,
+              "right": 1236,
+              "bottom": 179.8,
+              "width": 182,
+              "height": 43.8
+            }
+          ],
+          "assistantAnswerRects": [
+            {
+              "x": 476,
+              "y": 193.8,
+              "top": 193.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 393.2,
+              "width": 760,
+              "height": 199.4
+            }
+          ],
+          "assistantMessageRects": [
+            {
+              "x": 436,
+              "y": 193.8,
+              "top": 193.8,
+              "left": 436,
+              "right": 1236,
+              "bottom": 393.2,
+              "width": 800,
+              "height": 199.4
+            }
+          ],
+          "assistantAvatarBackgrounds": [
+            "rgb(232, 242, 245)"
+          ],
+          "threadMaxWidth": "800px",
+          "inputBorderRadius": "16px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [],
+        "historyDialog": {
+          "visible": false,
+          "rect": null
+        },
+        "shell": {
+          "sidebarDisplay": "block",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "toolbarTitle": {
+            "x": 252,
+            "y": 69.5,
+            "top": 69.5,
+            "left": 252,
+            "right": 572.8,
+            "bottom": 95.5,
+            "width": 320.8,
+            "height": 26
+          },
+          "toolbarActions": {
+            "x": 1232,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 1232,
+            "right": 1420,
+            "bottom": 98.5,
+            "width": 188,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": false,
+          "caretRect": null,
+          "lastParagraphRect": {
+            "x": 476,
+            "y": 219,
+            "top": 219,
+            "left": 476,
+            "right": 1236,
+            "bottom": 244.8,
+            "width": 760,
+            "height": 25.8
+          },
+          "caretInLastParagraph": false,
+          "answerRect": {
+            "x": 476,
+            "y": 193.8,
+            "top": 193.8,
+            "left": 476,
+            "right": 1236,
+            "bottom": 300.4,
+            "width": 760,
+            "height": 106.6
+          },
+          "pending": false,
+          "cancelButton": false
+        }
+      },
+      "checks": [
+        {
+          "name": "显示未完成原因（含错误码）",
+          "ok": true,
+          "detail": "以上内容不完整：本次查询未完成（AGENT_RUN_TIMEOUT）",
+          "required": true
+        },
+        {
+          "name": "显示「重试」按钮",
+          "ok": true,
+          "detail": 1,
+          "required": true
+        },
+        {
+          "name": "部分答案仍可复制",
+          "ok": true,
+          "detail": 1,
+          "required": true
+        },
+        {
+          "name": "失败后不再是停止按钮",
+          "ok": true,
+          "detail": {
+            "caret": false,
+            "caretRect": null,
+            "lastParagraphRect": {
+              "x": 476,
+              "y": 219,
+              "top": 219,
+              "left": 476,
+              "right": 1236,
+              "bottom": 244.8,
+              "width": 760,
+              "height": 25.8
+            },
+            "caretInLastParagraph": false,
+            "answerRect": {
+              "x": 476,
+              "y": 193.8,
+              "top": 193.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 300.4,
+              "width": 760,
+              "height": 106.6
+            },
+            "pending": false,
+            "cancelButton": false
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 1440,
+            "innerWidth": 1440,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "required": false
+        },
+        {
+          "name": "桌面侧栏未被误伤且顶栏可见",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "block",
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            }
+          },
+          "required": false
+        },
+        {
+          "name": "桌面不显示「回工作台」入口",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1"
+      ],
+      "afterError": null,
+      "elapsedMs": 889
+    },
+    {
+      "name": "desktop-history",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\desktop-history.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 900,
+          "scrollingElementClientHeight": 900,
+          "documentElementScrollWidth": 1440,
+          "documentElementClientWidth": 1440,
+          "bodyScrollWidth": 1440,
+          "bodyScrollHeight": 900,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 653,
+          "scrollHeight": 852,
+          "scrollTop": 199,
+          "overflowY": "auto",
+          "rect": {
+            "x": 232,
+            "y": 110,
+            "top": 110,
+            "left": 232,
+            "right": 1440,
+            "bottom": 763,
+            "width": 1208,
+            "height": 653
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 232,
+            "y": 0,
+            "top": 0,
+            "left": 232,
+            "right": 1440,
+            "bottom": 56,
+            "width": 1208,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 232,
+            "bottom": 900,
+            "width": 232,
+            "height": 900
+          },
+          "contentArea": {
+            "x": 232,
+            "y": 56,
+            "top": 56,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 844
+          },
+          "thread": {
+            "x": 436,
+            "y": -63,
+            "top": -63,
+            "left": 436,
+            "right": 1236,
+            "bottom": 756.9,
+            "width": 800,
+            "height": 819.9
+          },
+          "composerWrap": {
+            "x": 232,
+            "y": 763,
+            "top": 763,
+            "left": 232,
+            "right": 1440,
+            "bottom": 900,
+            "width": 1208,
+            "height": 137
+          },
+          "composer": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 884,
+            "width": 800,
+            "height": 111
+          },
+          "inputBox": {
+            "x": 436,
+            "y": 773,
+            "top": 773,
+            "left": 436,
+            "right": 1236,
+            "bottom": 861,
+            "width": 800,
+            "height": 88
+          },
+          "input": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "sendLike": {
+            "x": 1191,
+            "y": 818,
+            "top": 818,
+            "left": 1191,
+            "right": 1225,
+            "bottom": 852,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-submit",
+          "scrollBottom": null
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": true,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 2,
+          "assistantMessages": 2,
+          "suggestions": 0,
+          "tables": 1,
+          "toolSteps": 0,
+          "sources": 7,
+          "copyButtons": 2,
+          "retryButtons": 0,
+          "historyItems": 2
+        },
+        "texts": {
+          "welcomeTitle": null,
+          "welcomeSub": null,
+          "suggestionTexts": [],
+          "userTexts": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？"
+          ],
+          "phaseLabel": "已完成",
+          "inputStatus": "已完成",
+          "toolStepSummaries": [],
+          "sourceLabels": [
+            "销售单 SO-2026-0158",
+            "销售单 SO-2026-0161",
+            "销售单 SO-2026-0173",
+            "生产单 PO-2026-0412",
+            "生产单 PO-2026-0418",
+            "生产单 PO-2026-0421",
+            "采购单 CG-2026-0781"
+          ],
+          "businessError": null,
+          "answerSample": "最近销售订单最近 7 天共有 5 张销售订单处于推进中，其中 2 张已进入组装工序，1 张等待客户确认交期。订单号客户当前状态SO-2026-0158宁波华翔贸易有限公司组装中SO-2026-0161义乌市恒信进出口有限公司待客户确认SO-2026-0164杭州锦程雨具已排产SO-2026-0169绍兴天合户外用品备料中SO-2026-0173台州乐途伞业已发货交期最紧的是 SO-2026-0173，10 月 28 日出货，物流单已生成。SO-2026-0161 的客户确认还",
+          "historyItemTitles": [
+            "最近有哪些销售订单？",
+            "帮我汇总本月采购情况。"
+          ],
+          "historyItemMeta": [
+            "10-26 10:00 · 2 轮",
+            "10-25 11:00 · 1 轮"
+          ],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "assistantMessageBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "userBubbleBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "userBubbleRects": [
+            {
+              "x": 1068,
+              "y": -63,
+              "top": -63,
+              "left": 1068,
+              "right": 1236,
+              "bottom": -19.2,
+              "width": 168,
+              "height": 43.8
+            },
+            {
+              "x": 1054,
+              "y": 472.9,
+              "top": 472.9,
+              "left": 1054,
+              "right": 1236,
+              "bottom": 516.7,
+              "width": 182,
+              "height": 43.8
+            }
+          ],
+          "assistantAnswerRects": [
+            {
+              "x": 476,
+              "y": -5.2,
+              "top": -5.2,
+              "left": 476,
+              "right": 1236,
+              "bottom": 442.9,
+              "width": 760,
+              "height": 448.1
+            },
+            {
+              "x": 476,
+              "y": 530.7,
+              "top": 530.7,
+              "left": 476,
+              "right": 1236,
+              "bottom": 756.9,
+              "width": 760,
+              "height": 226.2
+            }
+          ],
+          "assistantMessageRects": [
+            {
+              "x": 436,
+              "y": -5.2,
+              "top": -5.2,
+              "left": 436,
+              "right": 1236,
+              "bottom": 442.9,
+              "width": 800,
+              "height": 448.1
+            },
+            {
+              "x": 436,
+              "y": 530.7,
+              "top": 530.7,
+              "left": 436,
+              "right": 1236,
+              "bottom": 756.9,
+              "width": 800,
+              "height": 226.2
+            }
+          ],
+          "assistantAvatarBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "threadMaxWidth": "800px",
+          "inputBorderRadius": "16px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [
+          {
+            "index": 0,
+            "clientWidth": 758,
+            "scrollWidth": 758,
+            "clientHeight": 240,
+            "scrollHeight": 240,
+            "internalHorizontalScroll": false,
+            "rect": {
+              "x": 476,
+              "y": 55.8,
+              "top": 55.8,
+              "left": 476,
+              "right": 1236,
+              "bottom": 297.5,
+              "width": 760,
+              "height": 241.8
+            }
+          }
+        ],
+        "historyDialog": {
+          "visible": true,
+          "rect": {
+            "x": 144,
+            "y": 334,
+            "top": 334,
+            "left": 144,
+            "right": 1296,
+            "bottom": 566,
+            "width": 1152,
+            "height": 232
+          }
+        },
+        "shell": {
+          "sidebarDisplay": "block",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "toolbarTitle": {
+            "x": 252,
+            "y": 69.5,
+            "top": 69.5,
+            "left": 252,
+            "right": 572.8,
+            "bottom": 95.5,
+            "width": 320.8,
+            "height": 26
+          },
+          "toolbarActions": {
+            "x": 1232,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 1232,
+            "right": 1420,
+            "bottom": 98.5,
+            "width": 188,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": false,
+          "caretRect": null,
+          "lastParagraphRect": {
+            "x": 476,
+            "y": 353.1,
+            "top": 353.1,
+            "left": 476,
+            "right": 1236,
+            "bottom": 378.9,
+            "width": 760,
+            "height": 25.8
+          },
+          "caretInLastParagraph": false,
+          "answerRect": {
+            "x": 476,
+            "y": -5.2,
+            "top": -5.2,
+            "left": 476,
+            "right": 1236,
+            "bottom": 378.9,
+            "width": 760,
+            "height": 384.1
+          },
+          "pending": false,
+          "cancelButton": false
+        }
+      },
+      "checks": [
+        {
+          "name": "历史弹窗 2 条会话",
+          "ok": true,
+          "detail": 2,
+          "required": true
+        },
+        {
+          "name": "第一条标题取首问",
+          "ok": true,
+          "detail": [
+            "最近有哪些销售订单？",
+            "帮我汇总本月采购情况。"
+          ],
+          "required": true
+        },
+        {
+          "name": "第二条标题取首问",
+          "ok": true,
+          "detail": [
+            "最近有哪些销售订单？",
+            "帮我汇总本月采购情况。"
+          ],
+          "required": true
+        },
+        {
+          "name": "历史弹窗可见",
+          "ok": true,
+          "detail": {
+            "visible": true,
+            "rect": {
+              "x": 144,
+              "y": 334,
+              "top": 334,
+              "left": 144,
+              "right": 1296,
+              "bottom": 566,
+              "width": 1152,
+              "height": 232
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "弹窗有实际尺寸",
+          "ok": true,
+          "detail": {
+            "x": 144,
+            "y": 334,
+            "top": 334,
+            "left": 144,
+            "right": 1296,
+            "bottom": 566,
+            "width": 1152,
+            "height": 232
+          },
+          "required": true
+        },
+        {
+          "name": "弹窗在视口内",
+          "ok": true,
+          "detail": {
+            "x": 144,
+            "y": 334,
+            "top": 334,
+            "left": 144,
+            "right": 1296,
+            "bottom": 566,
+            "width": 1152,
+            "height": 232
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 900,
+            "innerHeight": 900,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 1440,
+            "innerWidth": 1440,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 451,
+            "y": 784,
+            "top": 784,
+            "left": 451,
+            "right": 1225,
+            "bottom": 812,
+            "width": 774,
+            "height": 28
+          },
+          "required": false
+        },
+        {
+          "name": "桌面侧栏未被误伤且顶栏可见",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "block",
+            "topbar": {
+              "x": 232,
+              "y": 0,
+              "top": 0,
+              "left": 232,
+              "right": 1440,
+              "bottom": 56,
+              "width": 1208,
+              "height": 56
+            }
+          },
+          "required": false
+        },
+        {
+          "name": "桌面不显示「回工作台」入口",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "visible": false,
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1",
+        "GET /business-query/sessions/s-2"
+      ],
+      "afterError": null,
+      "elapsedMs": 1021
+    },
+    {
+      "name": "mobile-empty",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\mobile-empty.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "facts": {
+        "viewport": {
+          "width": 390,
+          "height": 844,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 844,
+          "scrollingElementClientHeight": 844,
+          "documentElementScrollWidth": 390,
+          "documentElementClientWidth": 390,
+          "bodyScrollWidth": 390,
+          "bodyScrollHeight": 844,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 576,
+          "scrollHeight": 576,
+          "scrollTop": 0,
+          "overflowY": "auto",
+          "rect": {
+            "x": 0,
+            "y": 106,
+            "top": 106,
+            "left": 0,
+            "right": 390,
+            "bottom": 682,
+            "width": 390,
+            "height": 576
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 390,
+            "bottom": 56,
+            "width": 390,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 0,
+            "bottom": 0,
+            "width": 0,
+            "height": 0
+          },
+          "contentArea": {
+            "x": 0,
+            "y": 56,
+            "top": 56,
+            "left": 0,
+            "right": 390,
+            "bottom": 844,
+            "width": 390,
+            "height": 788
+          },
+          "thread": null,
+          "composerWrap": {
+            "x": 0,
+            "y": 682,
+            "top": 682,
+            "left": 0,
+            "right": 390,
+            "bottom": 844,
+            "width": 390,
+            "height": 162
+          },
+          "composer": {
+            "x": 12,
+            "y": 688,
+            "top": 688,
+            "left": 12,
+            "right": 378,
+            "bottom": 834,
+            "width": 366,
+            "height": 146
+          },
+          "inputBox": {
+            "x": 12,
+            "y": 688,
+            "top": 688,
+            "left": 12,
+            "right": 378,
+            "bottom": 796,
+            "width": 366,
+            "height": 108
+          },
+          "input": {
+            "x": 25,
+            "y": 697,
+            "top": 697,
+            "left": 25,
+            "right": 369,
+            "bottom": 749,
+            "width": 344,
+            "height": 52
+          },
+          "sendLike": {
+            "x": 335,
+            "y": 755,
+            "top": 755,
+            "left": 335,
+            "right": 369,
+            "bottom": 789,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-submit",
+          "scrollBottom": null
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": false,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 0,
+          "assistantMessages": 0,
+          "suggestions": 4,
+          "tables": 0,
+          "toolSteps": 0,
+          "sources": 0,
+          "copyButtons": 0,
+          "retryButtons": 0,
+          "historyItems": 0
+        },
+        "texts": {
+          "welcomeTitle": "今天有什么可以帮您？",
+          "welcomeSub": "查询订单、追踪生产进度、了解采购与库存情况",
+          "suggestionTexts": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？",
+            "目前有哪些物料库存不足？",
+            "帮我汇总本月采购情况。"
+          ],
+          "userTexts": [],
+          "phaseLabel": null,
+          "inputStatus": "Enter 发送 · Shift + Enter 换行",
+          "toolStepSummaries": [],
+          "sourceLabels": [],
+          "businessError": null,
+          "answerSample": null,
+          "historyItemTitles": [],
+          "historyItemMeta": [],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [],
+          "assistantMessageBackgrounds": [],
+          "userBubbleBackgrounds": [],
+          "userBubbleRects": [],
+          "assistantAnswerRects": [],
+          "assistantMessageRects": [],
+          "assistantAvatarBackgrounds": [],
+          "threadMaxWidth": null,
+          "inputBorderRadius": "14px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [],
+        "historyDialog": {
+          "visible": false,
+          "rect": null
+        },
+        "shell": {
+          "sidebarDisplay": "none",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "grid",
+            "visible": true,
+            "rect": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 40,
+              "bottom": 94.5,
+              "width": 28,
+              "height": 28
+            }
+          },
+          "toolbarTitle": {
+            "x": 12,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 12,
+            "right": 140.8,
+            "bottom": 94.5,
+            "width": 128.8,
+            "height": 28
+          },
+          "toolbarActions": {
+            "x": 198,
+            "y": 64.5,
+            "top": 64.5,
+            "left": 198,
+            "right": 378,
+            "bottom": 96.5,
+            "width": 180,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": false,
+          "caretRect": null,
+          "lastParagraphRect": null,
+          "caretInLastParagraph": false,
+          "answerRect": null,
+          "pending": false,
+          "cancelButton": false
+        }
+      },
+      "checks": [
+        {
+          "name": "窄屏空态标题",
+          "ok": true,
+          "detail": "今天有什么可以帮您？",
+          "required": true
+        },
+        {
+          "name": "窄屏空态 4 张推荐卡",
+          "ok": true,
+          "detail": 4,
+          "required": true
+        },
+        {
+          "name": "窄屏输入框与发送按钮在视口内",
+          "ok": true,
+          "detail": {
+            "input": true,
+            "sendLike": true,
+            "composer": true,
+            "topbar": true,
+            "sidebar": false,
+            "contentArea": true
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏 ERP 侧栏隐藏（display=none）",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏「回工作台」入口可见",
+          "ok": true,
+          "detail": {
+            "display": "grid",
+            "visible": true,
+            "rect": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 40,
+              "bottom": 94.5,
+              "width": 28,
+              "height": 28
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏工具栏标题与动作不重叠",
+          "ok": true,
+          "detail": {
+            "title": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 140.8,
+              "bottom": 94.5,
+              "width": 128.8,
+              "height": 28
+            },
+            "actions": {
+              "x": 198,
+              "y": 64.5,
+              "top": 64.5,
+              "left": 198,
+              "right": 378,
+              "bottom": 96.5,
+              "width": 180,
+              "height": 32
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏无横向溢出（scrollWidth ≤ 390+1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 390,
+            "innerWidth": 390,
+            "diff": 0
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏整页不滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 844,
+            "innerHeight": 844,
+            "diff": 0
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏输入框底边 ≤ innerHeight（不被裁掉）",
+          "ok": true,
+          "detail": {
+            "x": 25,
+            "y": 697,
+            "top": 697,
+            "left": 25,
+            "right": 369,
+            "bottom": 749,
+            "width": 344,
+            "height": 52
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 844,
+            "innerHeight": 844,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 390,
+            "innerWidth": 390,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 25,
+            "y": 697,
+            "top": 697,
+            "left": 25,
+            "right": 369,
+            "bottom": 749,
+            "width": 344,
+            "height": 52
+          },
+          "required": false
+        },
+        {
+          "name": "窄屏 ERP 侧栏隐藏（display=none）",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "none"
+          },
+          "required": false
+        },
+        {
+          "name": "窄屏「回工作台」入口可见",
+          "ok": true,
+          "detail": {
+            "display": "grid",
+            "visible": true,
+            "rect": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 40,
+              "bottom": 94.5,
+              "width": 28,
+              "height": 28
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1"
+      ],
+      "afterError": null,
+      "elapsedMs": 862
+    },
+    {
+      "name": "mobile-conversation",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\agent-chat-ui\\mobile-conversation.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "facts": {
+        "viewport": {
+          "width": 390,
+          "height": 844,
+          "devicePixelRatio": 1
+        },
+        "document": {
+          "scrollingElementScrollHeight": 844,
+          "scrollingElementClientHeight": 844,
+          "documentElementScrollWidth": 390,
+          "documentElementClientWidth": 390,
+          "bodyScrollWidth": 390,
+          "bodyScrollHeight": 844,
+          "verticalOverflow": 0,
+          "horizontalOverflow": 0
+        },
+        "agentScroll": {
+          "clientHeight": 576,
+          "scrollHeight": 1198,
+          "scrollTop": 622,
+          "overflowY": "auto",
+          "rect": {
+            "x": 0,
+            "y": 106,
+            "top": 106,
+            "left": 0,
+            "right": 390,
+            "bottom": 682,
+            "width": 390,
+            "height": 576
+          }
+        },
+        "layout": {
+          "topbar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 390,
+            "bottom": 56,
+            "width": 390,
+            "height": 56
+          },
+          "sidebar": {
+            "x": 0,
+            "y": 0,
+            "top": 0,
+            "left": 0,
+            "right": 0,
+            "bottom": 0,
+            "width": 0,
+            "height": 0
+          },
+          "contentArea": {
+            "x": 0,
+            "y": 56,
+            "top": 56,
+            "left": 0,
+            "right": 390,
+            "bottom": 844,
+            "width": 390,
+            "height": 788
+          },
+          "thread": {
+            "x": 12,
+            "y": -502,
+            "top": -502,
+            "left": 12,
+            "right": 378,
+            "bottom": 679.7,
+            "width": 366,
+            "height": 1181.7
+          },
+          "composerWrap": {
+            "x": 0,
+            "y": 682,
+            "top": 682,
+            "left": 0,
+            "right": 390,
+            "bottom": 844,
+            "width": 390,
+            "height": 162
+          },
+          "composer": {
+            "x": 12,
+            "y": 688,
+            "top": 688,
+            "left": 12,
+            "right": 378,
+            "bottom": 834,
+            "width": 366,
+            "height": 146
+          },
+          "inputBox": {
+            "x": 12,
+            "y": 688,
+            "top": 688,
+            "left": 12,
+            "right": 378,
+            "bottom": 796,
+            "width": 366,
+            "height": 108
+          },
+          "input": {
+            "x": 25,
+            "y": 697,
+            "top": 697,
+            "left": 25,
+            "right": 369,
+            "bottom": 749,
+            "width": 344,
+            "height": 52
+          },
+          "sendLike": {
+            "x": 335,
+            "y": 755,
+            "top": 755,
+            "left": 335,
+            "right": 369,
+            "bottom": 789,
+            "width": 34,
+            "height": 34
+          },
+          "sendTestId": "business-query-submit",
+          "scrollBottom": null
+        },
+        "inViewport": {
+          "input": true,
+          "sendLike": true,
+          "composer": true,
+          "topbar": true,
+          "sidebar": false,
+          "contentArea": true
+        },
+        "overlap": {
+          "scrollBottomVsComposerTop": 0,
+          "composerBottomVsViewport": 0
+        },
+        "counts": {
+          "userMessages": 2,
+          "assistantMessages": 2,
+          "suggestions": 0,
+          "tables": 1,
+          "toolSteps": 0,
+          "sources": 7,
+          "copyButtons": 2,
+          "retryButtons": 0,
+          "historyItems": 0
+        },
+        "texts": {
+          "welcomeTitle": null,
+          "welcomeSub": null,
+          "suggestionTexts": [],
+          "userTexts": [
+            "最近有哪些销售订单？",
+            "哪些生产任务即将延期？"
+          ],
+          "phaseLabel": "已完成",
+          "inputStatus": "已完成",
+          "toolStepSummaries": [],
+          "sourceLabels": [
+            "销售单 SO-2026-0158",
+            "销售单 SO-2026-0161",
+            "销售单 SO-2026-0173",
+            "生产单 PO-2026-0412",
+            "生产单 PO-2026-0418",
+            "生产单 PO-2026-0421",
+            "采购单 CG-2026-0781"
+          ],
+          "businessError": null,
+          "answerSample": "最近销售订单最近 7 天共有 5 张销售订单处于推进中，其中 2 张已进入组装工序，1 张等待客户确认交期。订单号客户当前状态SO-2026-0158宁波华翔贸易有限公司组装中SO-2026-0161义乌市恒信进出口有限公司待客户确认SO-2026-0164杭州锦程雨具已排产SO-2026-0169绍兴天合户外用品备料中SO-2026-0173台州乐途伞业已发货交期最紧的是 SO-2026-0173，10 月 28 日出货，物流单已生成。SO-2026-0161 的客户确认还",
+          "historyItemTitles": [],
+          "historyItemMeta": [],
+          "displayName": "张张三老板"
+        },
+        "styles": {
+          "assistantAnswerBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "assistantMessageBackgrounds": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "userBubbleBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "userBubbleRects": [
+            {
+              "x": 210,
+              "y": -502,
+              "top": -502,
+              "left": 210,
+              "right": 378,
+              "bottom": -458.2,
+              "width": 168,
+              "height": 43.8
+            },
+            {
+              "x": 196,
+              "y": 159.1,
+              "top": 159.1,
+              "left": 196,
+              "right": 378,
+              "bottom": 202.9,
+              "width": 182,
+              "height": 43.8
+            }
+          ],
+          "assistantAnswerRects": [
+            {
+              "x": 52,
+              "y": -444.2,
+              "top": -444.2,
+              "left": 52,
+              "right": 378,
+              "bottom": 135.1,
+              "width": 326,
+              "height": 579.3
+            },
+            {
+              "x": 52,
+              "y": 216.9,
+              "top": 216.9,
+              "left": 52,
+              "right": 378,
+              "bottom": 679.7,
+              "width": 326,
+              "height": 462.8
+            }
+          ],
+          "assistantMessageRects": [
+            {
+              "x": 12,
+              "y": -444.2,
+              "top": -444.2,
+              "left": 12,
+              "right": 378,
+              "bottom": 135.1,
+              "width": 366,
+              "height": 579.3
+            },
+            {
+              "x": 12,
+              "y": 216.9,
+              "top": 216.9,
+              "left": 12,
+              "right": 378,
+              "bottom": 679.7,
+              "width": 366,
+              "height": 462.8
+            }
+          ],
+          "assistantAvatarBackgrounds": [
+            "rgb(232, 242, 245)",
+            "rgb(232, 242, 245)"
+          ],
+          "threadMaxWidth": "800px",
+          "inputBorderRadius": "14px",
+          "sendBorderRadius": "50%"
+        },
+        "tables": [
+          {
+            "index": 0,
+            "clientWidth": 324,
+            "scrollWidth": 378,
+            "clientHeight": 240,
+            "scrollHeight": 240,
+            "internalHorizontalScroll": true,
+            "rect": {
+              "x": 52,
+              "y": -357.4,
+              "top": -357.4,
+              "left": 52,
+              "right": 378,
+              "bottom": -115.7,
+              "width": 326,
+              "height": 241.8
+            }
+          }
+        ],
+        "historyDialog": {
+          "visible": false,
+          "rect": null
+        },
+        "shell": {
+          "sidebarDisplay": "none",
+          "topbarDisplay": "flex",
+          "toolbarHome": {
+            "display": "grid",
+            "visible": true,
+            "rect": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 40,
+              "bottom": 94.5,
+              "width": 28,
+              "height": 28
+            }
+          },
+          "toolbarTitle": {
+            "x": 12,
+            "y": 66.5,
+            "top": 66.5,
+            "left": 12,
+            "right": 140.8,
+            "bottom": 94.5,
+            "width": 128.8,
+            "height": 28
+          },
+          "toolbarActions": {
+            "x": 198,
+            "y": 64.5,
+            "top": 64.5,
+            "left": 198,
+            "right": 378,
+            "bottom": 96.5,
+            "width": 180,
+            "height": 32
+          }
+        },
+        "streaming": {
+          "caret": false,
+          "caretRect": null,
+          "lastParagraphRect": {
+            "x": 52,
+            "y": -8.5,
+            "top": -8.5,
+            "left": 52,
+            "right": 378,
+            "bottom": 43.1,
+            "width": 326,
+            "height": 51.6
+          },
+          "caretInLastParagraph": false,
+          "answerRect": {
+            "x": 52,
+            "y": -444.2,
+            "top": -444.2,
+            "left": 52,
+            "right": 378,
+            "bottom": 43.1,
+            "width": 326,
+            "height": 487.3
+          },
+          "pending": false,
+          "cancelButton": false
+        }
+      },
+      "checks": [
+        {
+          "name": "窄屏 2 问 2 答",
+          "ok": true,
+          "detail": {
+            "userMessages": 2,
+            "assistantMessages": 2,
+            "suggestions": 0,
+            "tables": 1,
+            "toolSteps": 0,
+            "sources": 7,
+            "copyButtons": 2,
+            "retryButtons": 0,
+            "historyItems": 0
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏回答含表格",
+          "ok": true,
+          "detail": 1,
+          "required": true
+        },
+        {
+          "name": "窄屏输入区在视口内",
+          "ok": true,
+          "detail": {
+            "input": true,
+            "sendLike": true,
+            "composer": true,
+            "topbar": true,
+            "sidebar": false,
+            "contentArea": true
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏 AI 正文不是气泡",
+          "ok": true,
+          "detail": [
+            "rgba(0, 0, 0, 0)",
+            "rgba(0, 0, 0, 0)"
+          ],
+          "required": true
+        },
+        {
+          "name": "窄屏 ERP 侧栏隐藏（display=none）",
+          "ok": true,
+          "detail": {
+            "display": "none",
+            "rect": {
+              "x": 0,
+              "y": 0,
+              "top": 0,
+              "left": 0,
+              "right": 0,
+              "bottom": 0,
+              "width": 0,
+              "height": 0
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏「回工作台」入口可见",
+          "ok": true,
+          "detail": {
+            "display": "grid",
+            "visible": true,
+            "rect": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 40,
+              "bottom": 94.5,
+              "width": 28,
+              "height": 28
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏消息区 clientHeight > 300（不再被 232px 侧栏压成一条）",
+          "ok": true,
+          "detail": {
+            "clientHeight": 576,
+            "scrollHeight": 1198,
+            "scrollTop": 622,
+            "overflowY": "auto",
+            "rect": {
+              "x": 0,
+              "y": 106,
+              "top": 106,
+              "left": 0,
+              "right": 390,
+              "bottom": 682,
+              "width": 390,
+              "height": 576
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏正文宽度 > 250px（不再一字一行）",
+          "ok": true,
+          "detail": [
+            {
+              "x": 52,
+              "y": -444.2,
+              "top": -444.2,
+              "left": 52,
+              "right": 378,
+              "bottom": 135.1,
+              "width": 326,
+              "height": 579.3
+            },
+            {
+              "x": 52,
+              "y": 216.9,
+              "top": 216.9,
+              "left": 52,
+              "right": 378,
+              "bottom": 679.7,
+              "width": 326,
+              "height": 462.8
+            }
+          ],
+          "required": true
+        },
+        {
+          "name": "窄屏工具栏标题与动作不重叠",
+          "ok": true,
+          "detail": {
+            "title": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 140.8,
+              "bottom": 94.5,
+              "width": 128.8,
+              "height": 28
+            },
+            "actions": {
+              "x": 198,
+              "y": 64.5,
+              "top": 64.5,
+              "left": 198,
+              "right": 378,
+              "bottom": 96.5,
+              "width": 180,
+              "height": 32
+            }
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏无横向溢出（scrollWidth ≤ 390+1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 390,
+            "innerWidth": 390,
+            "diff": 0
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏整页不滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 844,
+            "innerHeight": 844,
+            "diff": 0
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏输入框底边 ≤ innerHeight（不被裁掉）",
+          "ok": true,
+          "detail": {
+            "x": 25,
+            "y": 697,
+            "top": 697,
+            "left": 25,
+            "right": 369,
+            "bottom": 749,
+            "width": 344,
+            "height": 52
+          },
+          "required": true
+        },
+        {
+          "name": "窄屏宽表在表格内部横向滚动（不撑破页面）",
+          "ok": true,
+          "detail": [
+            {
+              "index": 0,
+              "clientWidth": 324,
+              "scrollWidth": 378,
+              "clientHeight": 240,
+              "scrollHeight": 240,
+              "internalHorizontalScroll": true,
+              "rect": {
+                "x": 52,
+                "y": -357.4,
+                "top": -357.4,
+                "left": 52,
+                "right": 378,
+                "bottom": -115.7,
+                "width": 326,
+                "height": 241.8
+              }
+            }
+          ],
+          "required": true
+        },
+        {
+          "name": "窄屏 AI 正文左侧不是气泡（正文左 = thread 左 + 40px）",
+          "ok": true,
+          "detail": {
+            "threadLeft": 12,
+            "answerLefts": [
+              52,
+              52
+            ]
+          },
+          "required": true
+        },
+        {
+          "name": "整页不可滚动（scrollHeight - innerHeight ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollHeight": 844,
+            "innerHeight": 844,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 390,
+            "innerWidth": 390,
+            "diff": 0
+          },
+          "required": false
+        },
+        {
+          "name": "输入框底边 ≤ innerHeight",
+          "ok": true,
+          "detail": {
+            "x": 25,
+            "y": 697,
+            "top": 697,
+            "left": 25,
+            "right": 369,
+            "bottom": 749,
+            "width": 344,
+            "height": 52
+          },
+          "required": false
+        },
+        {
+          "name": "窄屏 ERP 侧栏隐藏（display=none）",
+          "ok": true,
+          "detail": {
+            "sidebarDisplay": "none"
+          },
+          "required": false
+        },
+        {
+          "name": "窄屏「回工作台」入口可见",
+          "ok": true,
+          "detail": {
+            "display": "grid",
+            "visible": true,
+            "rect": {
+              "x": 12,
+              "y": 66.5,
+              "top": 66.5,
+              "left": 12,
+              "right": 40,
+              "bottom": 94.5,
+              "width": 28,
+              "height": 28
+            }
+          },
+          "required": false
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        "GET /auth/me",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions",
+        "GET /business-query/sessions/s-1"
+      ],
+      "afterError": null,
+      "elapsedMs": 849
+    }
+  ]
+}

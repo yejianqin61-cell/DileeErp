@@ -1,0 +1,24 @@
+{
+  "note": "plan() 收到的 tool_call arguments（wire）对比与解析结果",
+  "nestedArgumentsWire": "{\"arguments\":\"{\\\"operation\\\":\\\"get_order_overview\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\"}",
+  "normalArgumentsWire": "{\"operation\":\"get_order_overview\",\"order_no\":\"SO-2026-0001\"}",
+  "nestedPlan": {
+    "toolCalls": []
+  },
+  "normalPlan": {
+    "toolCalls": [
+      {
+        "id": "call_mock_1",
+        "tool": "order_query",
+        "operation": "get_order_overview",
+        "args": {
+          "order_no": "SO-2026-0001"
+        }
+      }
+    ]
+  },
+  "verdict": {
+    "nestedDropped": true,
+    "normalAccepted": true
+  }
+}

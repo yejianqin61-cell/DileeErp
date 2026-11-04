@@ -1,0 +1,246 @@
+{
+  "baseURL": "http://127.0.0.1:64787",
+  "generatedAt": "2026-10-26T14:30:42.910Z",
+  "scenarios": {
+    "01-plan-first": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\01-plan-first.json",
+      "error": null
+    },
+    "02-plan-after-tool": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\02-plan-after-tool.json",
+      "error": null
+    },
+    "03-stream-after-tool": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\03-stream-after-tool.json",
+      "error": null
+    },
+    "04-plan-after-tool-fixed": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\04-plan-after-tool-fixed.json",
+      "error": null
+    },
+    "05-sdk-object-input-control": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\05-sdk-object-input-control.json",
+      "error": null
+    }
+  },
+  "wireArguments": {
+    "planFirst": null,
+    "planAfterTool": {
+      "messageIndex": 2,
+      "id": "call_mock_1",
+      "name": "order_query",
+      "arguments": "{\"q\":\"SO-2026-0001\"}"
+    },
+    "streamAfterTool": {
+      "messageIndex": 2,
+      "id": "call_mock_1",
+      "name": "order_query",
+      "arguments": "{\"q\":\"SO-2026-0001\"}"
+    },
+    "planAfterToolFixed": {
+      "messageIndex": 2,
+      "id": "call_mock_1",
+      "name": "order_query",
+      "arguments": "{\"q\":\"SO-2026-0001\"}"
+    },
+    "sdkControl": {
+      "messageIndex": 2,
+      "id": "call_mock_1",
+      "name": "order_query",
+      "arguments": "{\"q\":\"SO-2026-0001\"}"
+    }
+  },
+  "results": {
+    "01-plan-first": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\01-plan-first.json",
+      "error": null,
+      "value": {
+        "toolCalls": [
+          {
+            "id": "call_mock_1",
+            "tool": "order_query",
+            "operation": "search_orders",
+            "args": {
+              "q": "SO-2026"
+            }
+          }
+        ]
+      }
+    },
+    "02-plan-after-tool": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\02-plan-after-tool.json",
+      "error": null,
+      "value": {
+        "toolCalls": [
+          {
+            "id": "call_mock_1",
+            "tool": "order_query",
+            "operation": "search_orders",
+            "args": {
+              "q": "SO-2026"
+            }
+          }
+        ]
+      }
+    },
+    "03-stream-after-tool": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\03-stream-after-tool.json",
+      "error": null,
+      "value": [
+        {
+          "type": "text",
+          "text": "已收到"
+        },
+        {
+          "type": "text",
+          "text": "工具结果。"
+        },
+        {
+          "type": "usage",
+          "usage": {
+            "model": "deepseek-chat",
+            "input_tokens": 120,
+            "output_tokens": 9
+          }
+        }
+      ]
+    },
+    "04-plan-after-tool-fixed": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\04-plan-after-tool-fixed.json",
+      "error": null,
+      "value": {
+        "toolCalls": [
+          {
+            "id": "call_mock_1",
+            "tool": "order_query",
+            "operation": "search_orders",
+            "args": {
+              "q": "SO-2026"
+            }
+          }
+        ]
+      }
+    },
+    "05-sdk-object-input-control": {
+      "file": "docs\\review\\agent-sdk-wire-proof-2026-10-26\\captures\\05-sdk-object-input-control.json",
+      "error": null,
+      "value": {
+        "initialResponseMessages": [],
+        "steps": [
+          {
+            "callId": "call-IDzJcLuyb4xJg8GwALR0fxXE",
+            "stepNumber": 0,
+            "model": {
+              "provider": "deepseek.chat",
+              "modelId": "deepseek-chat"
+            },
+            "runtimeContext": {},
+            "toolsContext": {},
+            "content": [
+              {
+                "type": "tool-call",
+                "toolCallId": "call_mock_1",
+                "toolName": "order_query",
+                "input": {
+                  "operation": "search_orders",
+                  "q": "SO-2026"
+                }
+              }
+            ],
+            "finishReason": "tool-calls",
+            "rawFinishReason": "tool_calls",
+            "usage": {
+              "inputTokens": 100,
+              "inputTokenDetails": {
+                "noCacheTokens": 100,
+                "cacheReadTokens": 0
+              },
+              "outputTokens": 20,
+              "outputTokenDetails": {
+                "textTokens": 20,
+                "reasoningTokens": 0
+              },
+              "totalTokens": 120,
+              "raw": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 100,
+                "total_tokens": 120
+              }
+            },
+            "performance": {
+              "effectiveOutputTokensPerSecond": 11377.211445474672,
+              "effectiveTotalTokensPerSecond": 68263.26867284803,
+              "stepTimeMs": 1.8296000000000276,
+              "responseTimeMs": 1.7579000000000065,
+              "toolExecutionMs": {}
+            },
+            "warnings": [],
+            "request": {},
+            "response": {
+              "id": "chatcmpl-mock",
+              "timestamp": "2023-11-14T22:13:20.000Z",
+              "modelId": "deepseek-chat",
+              "headers": {
+                "connection": "keep-alive",
+                "content-type": "application/json",
+                "date": "Mon, 26 Oct 2026 14:30:42 GMT",
+                "keep-alive": "timeout=5",
+                "transfer-encoding": "chunked"
+              },
+              "messages": [
+                {
+                  "role": "assistant",
+                  "content": [
+                    {
+                      "type": "tool-call",
+                      "toolCallId": "call_mock_1",
+                      "toolName": "order_query",
+                      "input": {
+                        "operation": "search_orders",
+                        "q": "SO-2026"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            "providerMetadata": {
+              "deepseek": {
+                "promptCacheHitTokens": 0,
+                "promptCacheMissTokens": 100,
+                "responseObject": "chat.completion",
+                "choiceIndex": 0,
+                "messageRole": "assistant",
+                "toolCallTypes": [
+                  "function"
+                ]
+              }
+            }
+          }
+        ],
+        "totalUsage": {
+          "inputTokens": 100,
+          "inputTokenDetails": {
+            "noCacheTokens": 100,
+            "cacheReadTokens": 0
+          },
+          "outputTokens": 20,
+          "outputTokenDetails": {
+            "textTokens": 20,
+            "reasoningTokens": 0
+          },
+          "totalTokens": 120,
+          "raw": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 100,
+            "total_tokens": 120
+          }
+        }
+      }
+    }
+  }
+}

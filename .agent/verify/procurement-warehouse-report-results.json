@@ -1,0 +1,3499 @@
+{
+  "base": "http://127.0.0.1:3111",
+  "generatedAt": "2026-11-04T15:04:47.694Z",
+  "script": ".agent\\verify\\procurement-warehouse-report-visual-check.mjs",
+  "mediaBox": {
+    "parsed": {
+      "boxes": [
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        }
+      ],
+      "first": {
+        "raw": "/MediaBox [0 0 841.91998 594.95996]",
+        "width": 841.91998,
+        "height": 594.95996
+      },
+      "pageCount": 1
+    },
+    "bytes": 146016,
+    "options": {
+      "preferCSSPageSize": true,
+      "printBackground": true
+    }
+  },
+  "summary": {
+    "scenarios": 6,
+    "checks": 88,
+    "passed": 88,
+    "failed": 0,
+    "consoleErrors": 4,
+    "pageErrors": 0,
+    "consoleErrorsInErrorInjectionScenarios": 4
+  },
+  "results": [
+    {
+      "name": "desktop-detail",
+      "route": "/reports/procurement-warehouse",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\desktop-detail.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "innerWidth": 1440,
+          "horizontalOverflow": 0,
+          "bodyScrollWidth": 1440
+        },
+        "table": {
+          "present": true,
+          "headers": [
+            "订单号",
+            "物料名称",
+            "颜色",
+            "单位",
+            "采购数量",
+            "采购入库量",
+            "采购未入库数",
+            "生产领用数量",
+            "库存量"
+          ],
+          "headerRects": [
+            {
+              "x": 282,
+              "y": 381,
+              "top": 381,
+              "left": 282,
+              "right": 381.7,
+              "bottom": 421,
+              "width": 99.7,
+              "height": 40
+            },
+            {
+              "x": 381.7,
+              "y": 381,
+              "top": 381,
+              "left": 381.7,
+              "right": 669.8,
+              "bottom": 421,
+              "width": 288.1,
+              "height": 40
+            },
+            {
+              "x": 669.8,
+              "y": 381,
+              "top": 381,
+              "left": 669.8,
+              "right": 758.4,
+              "bottom": 421,
+              "width": 88.6,
+              "height": 40
+            },
+            {
+              "x": 758.4,
+              "y": 381,
+              "top": 381,
+              "left": 758.4,
+              "right": 824.9,
+              "bottom": 421,
+              "width": 66.5,
+              "height": 40
+            },
+            {
+              "x": 824.9,
+              "y": 381,
+              "top": 381,
+              "left": 824.9,
+              "right": 924.6,
+              "bottom": 421,
+              "width": 99.7,
+              "height": 40
+            },
+            {
+              "x": 924.6,
+              "y": 381,
+              "top": 381,
+              "left": 924.6,
+              "right": 1035.4,
+              "bottom": 421,
+              "width": 110.8,
+              "height": 40
+            },
+            {
+              "x": 1035.4,
+              "y": 381,
+              "top": 381,
+              "left": 1035.4,
+              "right": 1157.3,
+              "bottom": 421,
+              "width": 121.9,
+              "height": 40
+            },
+            {
+              "x": 1157.3,
+              "y": 381,
+              "top": 381,
+              "left": 1157.3,
+              "right": 1279.2,
+              "bottom": 421,
+              "width": 121.9,
+              "height": 40
+            },
+            {
+              "x": 1279.2,
+              "y": 381,
+              "top": 381,
+              "left": 1279.2,
+              "right": 1390,
+              "bottom": 421,
+              "width": 110.8,
+              "height": 40
+            }
+          ],
+          "rowCount": 11,
+          "rowLengths": [
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "rows": [
+            [
+              "260119",
+              "58cm*8k自动直骨伞",
+              "黑色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "3050",
+              "1650"
+            ],
+            [
+              "260119",
+              "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+              "灰色",
+              "码",
+              "9800",
+              "9730",
+              "70",
+              "9660",
+              "70"
+            ],
+            [
+              "260119",
+              "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+              "天蓝色",
+              "码",
+              "8495",
+              "8495",
+              "0",
+              "9040",
+              "-545"
+            ],
+            [
+              "260119",
+              "75D 190T粉色自然光黑胶碰击布",
+              "粉色",
+              "码",
+              "6200",
+              "5778",
+              "422",
+              "4800",
+              "978"
+            ],
+            [
+              "260119",
+              "75D 190T卡其色C色号素色黑胶自然光",
+              "卡其色",
+              "码",
+              "8130",
+              "8130",
+              "0",
+              "7850",
+              "280"
+            ],
+            [
+              "260119",
+              "75D 190T白色素色黑胶自然光",
+              "白色",
+              "码",
+              "19405",
+              "19405",
+              "0",
+              "17025",
+              "2380"
+            ],
+            [
+              "260119",
+              "ABS料伞头（TF1076）",
+              "同客户提供的颜色",
+              "打",
+              "4700",
+              "2178",
+              "2522",
+              "2046",
+              "132"
+            ],
+            [
+              "260119",
+              "配8MM金色伞签",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "2700",
+              "2000"
+            ],
+            [
+              "260119",
+              "配3.0金色伞珠",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "1.2金色带LOGO全铜平面扣",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "内标（1*6CM）",
+              "白色",
+              "打",
+              "4700",
+              "0",
+              "4700",
+              "0",
+              "0"
+            ]
+          ],
+          "rowsWithStatusError": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ],
+          "tableWrap": {
+            "clientWidth": 1108,
+            "scrollWidth": 1108
+          }
+        },
+        "numeric": {
+          "texts": [
+            "4700",
+            "4700",
+            "0",
+            "3050",
+            "1650",
+            "9800",
+            "9730",
+            "70",
+            "9660",
+            "70",
+            "8495",
+            "8495",
+            "0",
+            "9040",
+            "-545",
+            "6200",
+            "5778",
+            "422",
+            "4800",
+            "978",
+            "8130",
+            "8130",
+            "0",
+            "7850",
+            "280",
+            "19405",
+            "19405",
+            "0",
+            "17025",
+            "2380",
+            "4700",
+            "2178",
+            "2522",
+            "2046",
+            "132",
+            "4700",
+            "4700",
+            "0",
+            "2700",
+            "2000",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "0"
+          ],
+          "trailingZeroTexts": [],
+          "statusErrorCells": [
+            {
+              "text": "-545",
+              "color": "rgb(180, 35, 24)"
+            }
+          ],
+          "normalNumberColor": "rgb(23, 32, 51)"
+        },
+        "rowCountText": "共 11 行（单次最多 5000 行，超出请按订单号或物料缩小范围）",
+        "scopeNotesText": "口径说明\n这张表能回答什么、不能回答什么\n\n一行 = 一张订单上的一个物料（物料 = 名称 + 规格型号 + 颜色，单位不换算）；五个数量都是同一订单、同一物料、同一单位上的账。\n\n不跨单位相加：同一物料若历史上出现过两个单位，会分成两行；把「米」和「卷」加在一起得到的库存数不可比，不能用于任何判断。\n库存量不按订单拆账：同一物料出现在多张订单时，每行的库存量是同一个数（当前结存），不是「这张订单还剩多少料」。\n本表不设合计行：行是不同单位组成的，跨单位合计没有意义；合计只在单位内部才有意义，而本表不按单位分组展示。\n采购数量：该订单已下单采购明细的订购数量合计；草稿与已取消的采购单不计。\n采购入库量：该订单已过账的原料入库数量合计；草稿与已冲销的入库单不计。\n采购未入库数：采购数量 − 采购入库量。允许为负：多送的按实收入库，负数就是超收量。\n生产领用数量：该订单生产已过账的领料 + 补料 − 退料净额；冲销与撤销过账已抵消，报废不计入领用。\n库存量：该物料 + 单位的当前结存（原料仓 + 报废仓），是物料级静态结存，不按订单拆账。",
+        "empty": {
+          "present": false,
+          "text": ""
+        },
+        "error": {
+          "present": false,
+          "text": "",
+          "hasRetry": false
+        },
+        "dialog": {
+          "present": false,
+          "visible": false,
+          "rect": null
+        },
+        "sheet": {
+          "present": false,
+          "rowCount": 0,
+          "company": "",
+          "title": "",
+          "subtitle": ""
+        },
+        "sheetTable": null,
+        "printCalls": 1,
+        "printMedia": {
+          "sheetVisibility": null,
+          "sheetDisplay": null,
+          "sheetPosition": null,
+          "pageHeaderVisibility": "visible",
+          "pageHeaderDisplay": "flex",
+          "filterPanelVisibility": "visible",
+          "panelVisibility": "visible",
+          "appShellDisplay": "flex",
+          "bodyPage": "auto",
+          "htmlPage": "auto",
+          "sheetRect": null
+        },
+        "toastTexts": [
+          "操作成功\n已导出 11 行采购与仓储报表\n×"
+        ],
+        "pageTestIdPresent": true,
+        "reportsEntry": null
+      },
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "reloadsDueToDevServerChurn": 0
+          }
+        },
+        {
+          "name": "首屏取数请求路径恰为 /api/v1/reports/procurement-warehouse（无查询串）",
+          "ok": true,
+          "detail": [
+            "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+            "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse"
+          ]
+        },
+        {
+          "name": "首屏页面 testid 可见（page-reports-procurement-warehouse）",
+          "ok": true,
+          "detail": true
+        },
+        {
+          "name": "表头九列文字与顺序正确",
+          "ok": true,
+          "detail": [
+            "订单号",
+            "物料名称",
+            "颜色",
+            "单位",
+            "采购数量",
+            "采购入库量",
+            "采购未入库数",
+            "生产领用数量",
+            "库存量"
+          ]
+        },
+        {
+          "name": "表格 11 行",
+          "ok": true,
+          "detail": {
+            "rowCount": 11,
+            "rowLengths": [
+              9,
+              9,
+              9,
+              9,
+              9,
+              9,
+              9,
+              9,
+              9,
+              9,
+              9
+            ]
+          }
+        },
+        {
+          "name": "每行都是 9 个单元格",
+          "ok": true,
+          "detail": [
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9
+          ]
+        },
+        {
+          "name": "11 行逐行九列与 mock（截图原表）完全一致",
+          "ok": true,
+          "detail": []
+        },
+        {
+          "name": "第 1 行全列取值正确",
+          "ok": true,
+          "detail": {
+            "row": 1,
+            "expected": [
+              "260119",
+              "58cm*8k自动直骨伞",
+              "黑色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "3050",
+              "1650"
+            ],
+            "actual": [
+              "260119",
+              "58cm*8k自动直骨伞",
+              "黑色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "3050",
+              "1650"
+            ]
+          }
+        },
+        {
+          "name": "第 3 行全列取值正确",
+          "ok": true,
+          "detail": {
+            "row": 3,
+            "expected": [
+              "260119",
+              "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+              "天蓝色",
+              "码",
+              "8495",
+              "8495",
+              "0",
+              "9040",
+              "-545"
+            ],
+            "actual": [
+              "260119",
+              "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+              "天蓝色",
+              "码",
+              "8495",
+              "8495",
+              "0",
+              "9040",
+              "-545"
+            ]
+          }
+        },
+        {
+          "name": "第 7 行全列取值正确",
+          "ok": true,
+          "detail": {
+            "row": 7,
+            "expected": [
+              "260119",
+              "ABS料伞头（TF1076）",
+              "同客户提供的颜色",
+              "打",
+              "4700",
+              "2178",
+              "2522",
+              "2046",
+              "132"
+            ],
+            "actual": [
+              "260119",
+              "ABS料伞头（TF1076）",
+              "同客户提供的颜色",
+              "打",
+              "4700",
+              "2178",
+              "2522",
+              "2046",
+              "132"
+            ]
+          }
+        },
+        {
+          "name": "第 11 行全列取值正确",
+          "ok": true,
+          "detail": {
+            "row": 11,
+            "expected": [
+              "260119",
+              "内标（1*6CM）",
+              "白色",
+              "打",
+              "4700",
+              "0",
+              "4700",
+              "0",
+              "0"
+            ],
+            "actual": [
+              "260119",
+              "内标（1*6CM）",
+              "白色",
+              "打",
+              "4700",
+              "0",
+              "4700",
+              "0",
+              "0"
+            ]
+          }
+        },
+        {
+          "name": "行数文案「共 11 行」",
+          "ok": true,
+          "detail": "共 11 行（单次最多 5000 行，超出请按订单号或物料缩小范围）"
+        },
+        {
+          "name": "表格里没有 4700.0000 这种尾零数字",
+          "ok": true,
+          "detail": {
+            "trailingZeroTexts": [],
+            "firstNumericTexts": [
+              "4700",
+              "4700",
+              "0",
+              "3050",
+              "1650",
+              "9800",
+              "9730",
+              "70",
+              "9660",
+              "70",
+              "8495",
+              "8495"
+            ]
+          }
+        },
+        {
+          "name": "第 1 行库存量显示 1650（无 .0000）",
+          "ok": true,
+          "detail": [
+            "260119",
+            "58cm*8k自动直骨伞",
+            "黑色",
+            "打",
+            "4700",
+            "4700",
+            "0",
+            "3050",
+            "1650"
+          ]
+        },
+        {
+          "name": "第 3 行库存量显示 -545",
+          "ok": true,
+          "detail": {
+            "stock": "-545"
+          }
+        },
+        {
+          "name": "第 3 行库存量带 status-error（红）",
+          "ok": true,
+          "detail": {
+            "row3StatusError": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            "statusErrorCells": [
+              {
+                "text": "-545",
+                "color": "rgb(180, 35, 24)"
+              }
+            ]
+          }
+        },
+        {
+          "name": "第 2 行「采购未入库数 70」不是红",
+          "ok": true,
+          "detail": {
+            "value": "70",
+            "statusError": false
+          }
+        },
+        {
+          "name": "第 11 行「采购未入库数 4700」正常（非红）",
+          "ok": true,
+          "detail": {
+            "value": "4700",
+            "statusError": false
+          }
+        },
+        {
+          "name": "status-error 的 computed color 与普通数字不同（确实是红色）",
+          "ok": true,
+          "detail": {
+            "redColor": "rgb(180, 35, 24)",
+            "normalNumberColor": "rgb(23, 32, 51)"
+          }
+        },
+        {
+          "name": "1440x900 页面无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 1440,
+            "innerWidth": 1440,
+            "diff": 0
+          }
+        },
+        {
+          "name": "九列都有实际宽度（无列被压成 0 宽）",
+          "ok": true,
+          "detail": [
+            99.7,
+            288.1,
+            88.6,
+            66.5,
+            99.7,
+            110.8,
+            121.9,
+            121.9,
+            110.8
+          ]
+        },
+        {
+          "name": "九列都在视口内（left ≥ 0 且 right ≤ 1440）",
+          "ok": true,
+          "detail": [
+            {
+              "left": 282,
+              "right": 381.7
+            },
+            {
+              "left": 381.7,
+              "right": 669.8
+            },
+            {
+              "left": 669.8,
+              "right": 758.4
+            },
+            {
+              "left": 758.4,
+              "right": 824.9
+            },
+            {
+              "left": 824.9,
+              "right": 924.6
+            },
+            {
+              "left": 924.6,
+              "right": 1035.4
+            },
+            {
+              "left": 1035.4,
+              "right": 1157.3
+            },
+            {
+              "left": 1157.3,
+              "right": 1279.2
+            },
+            {
+              "left": 1279.2,
+              "right": 1390
+            }
+          ]
+        },
+        {
+          "name": "口径说明三条规则都在页面上",
+          "ok": true,
+          "detail": "口径说明\n这张表能回答什么、不能回答什么\n\n一行 = 一张订单上的一个物料（物料 = 名称 + 规格型号 + 颜色，单位不换算）；五个数量都是同一订单、同一物料、同一单位上的账。\n\n不跨单位相加：同一物料若历史上出现过两个单位，会分成两行；把「米」和「卷」加在一起得到的库存数不可比，不能用于任何判断。\n库存量不按订单拆账：同一物料出现在多张订单时，每行的库存量是同一个数（当前结存），不是「这张订单还剩多少料」。\n本表不设合计行：行是不同单位组成的，跨单位合计没有意义；合计只在"
+        },
+        {
+          "name": "点「查询」请求 URL 带 order_no=260119&material=伞（等价编码）",
+          "ok": true,
+          "detail": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse?order_no=260119&material=%E4%BC%9E"
+        },
+        {
+          "name": "查询后表格仍 11 行",
+          "ok": true,
+          "detail": 11
+        },
+        {
+          "name": "导出请求 URL 是 export.xlsx 且带当前已应用筛选参数",
+          "ok": true,
+          "detail": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse/export.xlsx?order_no=260119&material=%E4%BC%9E"
+        },
+        {
+          "name": "导出成功出现 toast「已导出 11 行采购与仓储报表」",
+          "ok": true,
+          "detail": "操作成功\n已导出 11 行采购与仓储报表\n×"
+        },
+        {
+          "name": "点「打印」弹窗出现（report-print-dialog visible）",
+          "ok": true,
+          "detail": {
+            "present": true,
+            "visible": true,
+            "rect": {
+              "x": 100,
+              "y": 90,
+              "top": 90,
+              "left": 100,
+              "right": 1340,
+              "bottom": 810,
+              "width": 1240,
+              "height": 720
+            }
+          }
+        },
+        {
+          "name": "纸面有公司名",
+          "ok": true,
+          "detail": "厦门迪礼伞业有限公司"
+        },
+        {
+          "name": "纸面有标题「采购与仓储报表」",
+          "ok": true,
+          "detail": "采购与仓储报表"
+        },
+        {
+          "name": "纸面表格 11 行",
+          "ok": true,
+          "detail": 11
+        },
+        {
+          "name": "副标题含「订单号：260119」",
+          "ok": true,
+          "detail": "筛选条件：订单号：260119；物料：伞　行数：11 行　打印时间：2026-11-04 23:04:32（北京时间）"
+        },
+        {
+          "name": "副标题含「行数：11 行」",
+          "ok": true,
+          "detail": "筛选条件：订单号：260119；物料：伞　行数：11 行　打印时间：2026-11-04 23:04:32（北京时间）"
+        },
+        {
+          "name": "副标题含「打印时间」",
+          "ok": true,
+          "detail": "筛选条件：订单号：260119；物料：伞　行数：11 行　打印时间：2026-11-04 23:04:32（北京时间）"
+        },
+        {
+          "name": "纸面表格 table-layout = fixed",
+          "ok": true,
+          "detail": "fixed"
+        },
+        {
+          "name": "纸面数据行的 9 个 td 都是 table-cell（不是 block）",
+          "ok": true,
+          "detail": [
+            {
+              "text": "260119",
+              "display": "table-cell",
+              "left": 170.5,
+              "width": 98.9
+            },
+            {
+              "text": "58cm*8k自动直骨伞",
+              "display": "table-cell",
+              "left": 269.4,
+              "width": 285.8
+            },
+            {
+              "text": "黑色",
+              "display": "table-cell",
+              "left": 555.2,
+              "width": 87.9
+            },
+            {
+              "text": "打",
+              "display": "table-cell",
+              "left": 643.1,
+              "width": 65.9
+            },
+            {
+              "text": "4700",
+              "display": "table-cell",
+              "left": 709,
+              "width": 98.9
+            },
+            {
+              "text": "4700",
+              "display": "table-cell",
+              "left": 807.9,
+              "width": 109.9
+            },
+            {
+              "text": "0",
+              "display": "table-cell",
+              "left": 917.8,
+              "width": 120.9
+            },
+            {
+              "text": "3050",
+              "display": "table-cell",
+              "left": 1038.7,
+              "width": 120.9
+            },
+            {
+              "text": "1650",
+              "display": "table-cell",
+              "left": 1159.5,
+              "width": 110
+            }
+          ]
+        },
+        {
+          "name": "纸面一行 9 格在同一行（left 严格递增、纵向有重叠）",
+          "ok": true,
+          "detail": {
+            "firstRow": [
+              {
+                "text": "260119",
+                "display": "table-cell",
+                "left": 170.5,
+                "top": 260.5,
+                "width": 98.9,
+                "height": 23
+              },
+              {
+                "text": "58cm*8k自动直骨伞",
+                "display": "table-cell",
+                "left": 269.4,
+                "top": 260.5,
+                "width": 285.8,
+                "height": 23
+              },
+              {
+                "text": "黑色",
+                "display": "table-cell",
+                "left": 555.2,
+                "top": 260.5,
+                "width": 87.9,
+                "height": 23
+              },
+              {
+                "text": "打",
+                "display": "table-cell",
+                "left": 643.1,
+                "top": 260.5,
+                "width": 65.9,
+                "height": 23
+              },
+              {
+                "text": "4700",
+                "display": "table-cell",
+                "left": 709,
+                "top": 260.5,
+                "width": 98.9,
+                "height": 23
+              },
+              {
+                "text": "4700",
+                "display": "table-cell",
+                "left": 807.9,
+                "top": 260.5,
+                "width": 109.9,
+                "height": 23
+              },
+              {
+                "text": "0",
+                "display": "table-cell",
+                "left": 917.8,
+                "top": 260.5,
+                "width": 120.9,
+                "height": 23
+              },
+              {
+                "text": "3050",
+                "display": "table-cell",
+                "left": 1038.7,
+                "top": 260.5,
+                "width": 120.9,
+                "height": 23
+              },
+              {
+                "text": "1650",
+                "display": "table-cell",
+                "left": 1159.5,
+                "top": 260.5,
+                "width": 110,
+                "height": 23
+              }
+            ],
+            "rowHeights": [
+              23,
+              37,
+              23
+            ]
+          }
+        },
+        {
+          "name": "纸面数据行行高合理（≤ 80px；11 行应能在一张 A4 横向内）",
+          "ok": true,
+          "detail": [
+            23,
+            37,
+            23
+          ]
+        },
+        {
+          "name": "点「打印 / 另存 PDF」时 window.print 被调用（覆盖计数 = 1）",
+          "ok": true,
+          "detail": {
+            "printCalls": 1
+          }
+        },
+        {
+          "name": "打印弹窗不会额外请求取数接口（纸面数据 = 屏幕数据）",
+          "ok": true,
+          "detail": {
+            "before": 3,
+            "after": 3
+          }
+        },
+        {
+          "name": "emulateMedia(print) 后 .procurement-warehouse-sheet visibility = visible",
+          "ok": true,
+          "detail": {
+            "sheetVisibility": "visible",
+            "sheetDisplay": "grid",
+            "sheetPosition": "static",
+            "pageHeaderVisibility": "hidden",
+            "pageHeaderDisplay": "flex",
+            "filterPanelVisibility": "hidden",
+            "panelVisibility": "hidden",
+            "appShellDisplay": "none",
+            "bodyPage": "procurement-warehouse",
+            "htmlPage": "procurement-warehouse",
+            "sheetRect": {
+              "x": 170,
+              "y": 0,
+              "top": 0,
+              "left": 170,
+              "right": 1270,
+              "bottom": 584.5,
+              "width": 1100,
+              "height": 584.5
+            }
+          }
+        },
+        {
+          "name": "emulateMedia(print) 后 .page-header visibility = hidden",
+          "ok": true,
+          "detail": {
+            "sheetVisibility": "visible",
+            "sheetDisplay": "grid",
+            "sheetPosition": "static",
+            "pageHeaderVisibility": "hidden",
+            "pageHeaderDisplay": "flex",
+            "filterPanelVisibility": "hidden",
+            "panelVisibility": "hidden",
+            "appShellDisplay": "none",
+            "bodyPage": "procurement-warehouse",
+            "htmlPage": "procurement-warehouse",
+            "sheetRect": {
+              "x": 170,
+              "y": 0,
+              "top": 0,
+              "left": 170,
+              "right": 1270,
+              "bottom": 584.5,
+              "width": 1100,
+              "height": 584.5
+            }
+          }
+        },
+        {
+          "name": "emulateMedia(print) 后筛选面板 visibility = hidden",
+          "ok": true,
+          "detail": {
+            "sheetVisibility": "visible",
+            "sheetDisplay": "grid",
+            "sheetPosition": "static",
+            "pageHeaderVisibility": "hidden",
+            "pageHeaderDisplay": "flex",
+            "filterPanelVisibility": "hidden",
+            "panelVisibility": "hidden",
+            "appShellDisplay": "none",
+            "bodyPage": "procurement-warehouse",
+            "htmlPage": "procurement-warehouse",
+            "sheetRect": {
+              "x": 170,
+              "y": 0,
+              "top": 0,
+              "left": 170,
+              "right": 1270,
+              "bottom": 584.5,
+              "width": 1100,
+              "height": 584.5
+            }
+          }
+        },
+        {
+          "name": "emulateMedia(print) 后口径说明面板 visibility = hidden（页面上只留纸面）",
+          "ok": true,
+          "detail": {
+            "sheetVisibility": "visible",
+            "sheetDisplay": "grid",
+            "sheetPosition": "static",
+            "pageHeaderVisibility": "hidden",
+            "pageHeaderDisplay": "flex",
+            "filterPanelVisibility": "hidden",
+            "panelVisibility": "hidden",
+            "appShellDisplay": "none",
+            "bodyPage": "procurement-warehouse",
+            "htmlPage": "procurement-warehouse",
+            "sheetRect": {
+              "x": 170,
+              "y": 0,
+              "top": 0,
+              "left": 170,
+              "right": 1270,
+              "bottom": 584.5,
+              "width": 1100,
+              "height": 584.5
+            }
+          }
+        },
+        {
+          "name": "emulateMedia(print) 后 .app-shell display = none（不留布局，避免空白页）",
+          "ok": true,
+          "detail": {
+            "sheetVisibility": "visible",
+            "sheetDisplay": "grid",
+            "sheetPosition": "static",
+            "pageHeaderVisibility": "hidden",
+            "pageHeaderDisplay": "flex",
+            "filterPanelVisibility": "hidden",
+            "panelVisibility": "hidden",
+            "appShellDisplay": "none",
+            "bodyPage": "procurement-warehouse",
+            "htmlPage": "procurement-warehouse",
+            "sheetRect": {
+              "x": 170,
+              "y": 0,
+              "top": 0,
+              "left": 170,
+              "right": 1270,
+              "bottom": 584.5,
+              "width": 1100,
+              "height": 584.5
+            }
+          }
+        },
+        {
+          "name": "打印媒体下命名页挂到了 body/html（body page = procurement-warehouse）",
+          "ok": true,
+          "detail": {
+            "bodyPage": "procurement-warehouse",
+            "htmlPage": "procurement-warehouse"
+          }
+        },
+        {
+          "name": "打印媒体下纸面 position = static（走文档流，命名页才生效）",
+          "ok": true,
+          "detail": "static"
+        },
+        {
+          "name": "打印媒体下纸面 display 不是 none 且有实际宽度",
+          "ok": true,
+          "detail": {
+            "sheetVisibility": "visible",
+            "sheetDisplay": "grid",
+            "sheetPosition": "static",
+            "pageHeaderVisibility": "hidden",
+            "pageHeaderDisplay": "flex",
+            "filterPanelVisibility": "hidden",
+            "panelVisibility": "hidden",
+            "appShellDisplay": "none",
+            "bodyPage": "procurement-warehouse",
+            "htmlPage": "procurement-warehouse",
+            "sheetRect": {
+              "x": 170,
+              "y": 0,
+              "top": 0,
+              "left": 170,
+              "right": 1270,
+              "bottom": 584.5,
+              "width": 1100,
+              "height": 584.5
+            }
+          }
+        },
+        {
+          "name": "打印 PDF 恰好 1 页（11 行 + 口径说明在 A4 横向上放得下）",
+          "ok": true,
+          "detail": {
+            "pageCount": 1,
+            "bytes": 146016
+          }
+        },
+        {
+          "name": "PDF /MediaBox 宽 > 高（A4 横向，不是竖向）",
+          "ok": true,
+          "detail": {
+            "raw": "/MediaBox [0 0 841.91998 594.95996]",
+            "width": 841.91998,
+            "height": 594.95996
+          }
+        },
+        {
+          "name": "PDF /MediaBox ≈ 842 x 595 pt（A4 横向，允许 ±3pt）",
+          "ok": true,
+          "detail": {
+            "width": 841.91998,
+            "height": 594.95996,
+            "raw": "/MediaBox [0 0 841.91998 594.95996]",
+            "allBoxes": [
+              {
+                "raw": "/MediaBox [0 0 841.91998 594.95996]",
+                "width": 841.91998,
+                "height": 594.95996
+              }
+            ]
+          }
+        },
+        {
+          "name": "点「重置」请求无查询串（search 为空）",
+          "ok": true,
+          "detail": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse"
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse?order_no=260119&material=%E4%BC%9E",
+          "path": "/reports/procurement-warehouse",
+          "search": "?order_no=260119&material=%E4%BC%9E"
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse/export.xlsx?order_no=260119&material=%E4%BC%9E",
+          "path": "/reports/procurement-warehouse/export.xlsx",
+          "search": "?order_no=260119&material=%E4%BC%9E"
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        }
+      ],
+      "reloadsDueToDevServerChurn": 0,
+      "elapsedMs": 3583
+    },
+    {
+      "name": "error",
+      "route": "/reports/procurement-warehouse",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\error.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "innerWidth": 1440,
+          "horizontalOverflow": 0,
+          "bodyScrollWidth": 1440
+        },
+        "table": {
+          "present": true,
+          "headers": [],
+          "headerRects": [],
+          "rowCount": 0,
+          "rowLengths": [],
+          "rows": [],
+          "rowsWithStatusError": [],
+          "tableWrap": null
+        },
+        "numeric": {
+          "texts": [],
+          "trailingZeroTexts": [],
+          "statusErrorCells": [],
+          "normalNumberColor": null
+        },
+        "rowCountText": "共 0 行（单次最多 5000 行，超出请按订单号或物料缩小范围）",
+        "scopeNotesText": "口径说明\n这张表能回答什么、不能回答什么\n\n一行 = 一张订单上的一个物料（物料 = 名称 + 规格型号 + 颜色，单位不换算）；五个数量都是同一订单、同一物料、同一单位上的账。\n\n不跨单位相加：同一物料若历史上出现过两个单位，会分成两行；把「米」和「卷」加在一起得到的库存数不可比，不能用于任何判断。\n库存量不按订单拆账：同一物料出现在多张订单时，每行的库存量是同一个数（当前结存），不是「这张订单还剩多少料」。\n本表不设合计行：行是不同单位组成的，跨单位合计没有意义；合计只在单位内部才有意义，而本表不按单位分组展示。\n采购数量：该订单已下单采购明细的订购数量合计；草稿与已取消的采购单不计。\n采购入库量：该订单已过账的原料入库数量合计；草稿与已冲销的入库单不计。\n采购未入库数：采购数量 − 采购入库量。允许为负：多送的按实收入库，负数就是超收量。\n生产领用数量：该订单生产已过账的领料 + 补料 − 退料净额；冲销与撤销过账已抵消，报废不计入领用。\n库存量：该物料 + 单位的当前结存（原料仓 + 报废仓），是物料级静态结存，不按订单拆账。",
+        "empty": {
+          "present": true,
+          "text": "当前筛选条件下没有数据\n\n可留空筛选条件查看全部；只有采购、入库或生产领用过的订单×物料才会出现在这张表里。"
+        },
+        "error": {
+          "present": true,
+          "text": "报表行数超过 5000 行，请按订单号或物料缩小范围\n重新加载",
+          "hasRetry": true
+        },
+        "dialog": {
+          "present": false,
+          "visible": false,
+          "rect": null
+        },
+        "sheet": {
+          "present": false,
+          "rowCount": 0,
+          "company": "",
+          "title": "",
+          "subtitle": ""
+        },
+        "sheetTable": null,
+        "printCalls": 0,
+        "printMedia": {
+          "sheetVisibility": null,
+          "sheetDisplay": null,
+          "sheetPosition": null,
+          "pageHeaderVisibility": "visible",
+          "pageHeaderDisplay": "flex",
+          "filterPanelVisibility": "visible",
+          "panelVisibility": "visible",
+          "appShellDisplay": "flex",
+          "bodyPage": "auto",
+          "htmlPage": "auto",
+          "sheetRect": null
+        },
+        "toastTexts": [],
+        "pageTestIdPresent": true,
+        "reportsEntry": null
+      },
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "reloadsDueToDevServerChurn": 0
+          }
+        },
+        {
+          "name": "422 时页面展示后端原文（含「5000」字样）",
+          "ok": true,
+          "detail": "报表行数超过 5000 行，请按订单号或物料缩小范围\n重新加载"
+        },
+        {
+          "name": "422 时页面仍存活（页面 testid 可见，未整片崩掉）",
+          "ok": true,
+          "detail": true
+        },
+        {
+          "name": "错误态提供重试按钮",
+          "ok": true,
+          "detail": true
+        },
+        {
+          "name": "点「重新加载」会重新请求取数接口（初始 + 重试 = 2 次）",
+          "ok": true,
+          "detail": {
+            "before": 2,
+            "after": 3,
+            "urls": [
+              "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+              "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+              "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse"
+            ]
+          }
+        },
+        {
+          "name": "无预期之外的 console error（故意注入的失败 HTTP 资源日志不计）",
+          "ok": true,
+          "detail": {
+            "unexpected": [],
+            "all": [
+              "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+              "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+              "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
+            ]
+          }
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+        "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+        "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
+      ],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        }
+      ],
+      "reloadsDueToDevServerChurn": 0,
+      "elapsedMs": 1769
+    },
+    {
+      "name": "desktop-export-failure",
+      "route": "/reports/procurement-warehouse",
+      "screenshot": null,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "innerWidth": 1440,
+          "horizontalOverflow": 0,
+          "bodyScrollWidth": 1440
+        },
+        "table": {
+          "present": true,
+          "headers": [
+            "订单号",
+            "物料名称",
+            "颜色",
+            "单位",
+            "采购数量",
+            "采购入库量",
+            "采购未入库数",
+            "生产领用数量",
+            "库存量"
+          ],
+          "headerRects": [
+            {
+              "x": 282,
+              "y": 381,
+              "top": 381,
+              "left": 282,
+              "right": 381.7,
+              "bottom": 421,
+              "width": 99.7,
+              "height": 40
+            },
+            {
+              "x": 381.7,
+              "y": 381,
+              "top": 381,
+              "left": 381.7,
+              "right": 669.8,
+              "bottom": 421,
+              "width": 288.1,
+              "height": 40
+            },
+            {
+              "x": 669.8,
+              "y": 381,
+              "top": 381,
+              "left": 669.8,
+              "right": 758.4,
+              "bottom": 421,
+              "width": 88.6,
+              "height": 40
+            },
+            {
+              "x": 758.4,
+              "y": 381,
+              "top": 381,
+              "left": 758.4,
+              "right": 824.9,
+              "bottom": 421,
+              "width": 66.5,
+              "height": 40
+            },
+            {
+              "x": 824.9,
+              "y": 381,
+              "top": 381,
+              "left": 824.9,
+              "right": 924.6,
+              "bottom": 421,
+              "width": 99.7,
+              "height": 40
+            },
+            {
+              "x": 924.6,
+              "y": 381,
+              "top": 381,
+              "left": 924.6,
+              "right": 1035.4,
+              "bottom": 421,
+              "width": 110.8,
+              "height": 40
+            },
+            {
+              "x": 1035.4,
+              "y": 381,
+              "top": 381,
+              "left": 1035.4,
+              "right": 1157.3,
+              "bottom": 421,
+              "width": 121.9,
+              "height": 40
+            },
+            {
+              "x": 1157.3,
+              "y": 381,
+              "top": 381,
+              "left": 1157.3,
+              "right": 1279.2,
+              "bottom": 421,
+              "width": 121.9,
+              "height": 40
+            },
+            {
+              "x": 1279.2,
+              "y": 381,
+              "top": 381,
+              "left": 1279.2,
+              "right": 1390,
+              "bottom": 421,
+              "width": 110.8,
+              "height": 40
+            }
+          ],
+          "rowCount": 11,
+          "rowLengths": [
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "rows": [
+            [
+              "260119",
+              "58cm*8k自动直骨伞",
+              "黑色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "3050",
+              "1650"
+            ],
+            [
+              "260119",
+              "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+              "灰色",
+              "码",
+              "9800",
+              "9730",
+              "70",
+              "9660",
+              "70"
+            ],
+            [
+              "260119",
+              "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+              "天蓝色",
+              "码",
+              "8495",
+              "8495",
+              "0",
+              "9040",
+              "-545"
+            ],
+            [
+              "260119",
+              "75D 190T粉色自然光黑胶碰击布",
+              "粉色",
+              "码",
+              "6200",
+              "5778",
+              "422",
+              "4800",
+              "978"
+            ],
+            [
+              "260119",
+              "75D 190T卡其色C色号素色黑胶自然光",
+              "卡其色",
+              "码",
+              "8130",
+              "8130",
+              "0",
+              "7850",
+              "280"
+            ],
+            [
+              "260119",
+              "75D 190T白色素色黑胶自然光",
+              "白色",
+              "码",
+              "19405",
+              "19405",
+              "0",
+              "17025",
+              "2380"
+            ],
+            [
+              "260119",
+              "ABS料伞头（TF1076）",
+              "同客户提供的颜色",
+              "打",
+              "4700",
+              "2178",
+              "2522",
+              "2046",
+              "132"
+            ],
+            [
+              "260119",
+              "配8MM金色伞签",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "2700",
+              "2000"
+            ],
+            [
+              "260119",
+              "配3.0金色伞珠",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "1.2金色带LOGO全铜平面扣",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "内标（1*6CM）",
+              "白色",
+              "打",
+              "4700",
+              "0",
+              "4700",
+              "0",
+              "0"
+            ]
+          ],
+          "rowsWithStatusError": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ],
+          "tableWrap": {
+            "clientWidth": 1108,
+            "scrollWidth": 1108
+          }
+        },
+        "numeric": {
+          "texts": [
+            "4700",
+            "4700",
+            "0",
+            "3050",
+            "1650",
+            "9800",
+            "9730",
+            "70",
+            "9660",
+            "70",
+            "8495",
+            "8495",
+            "0",
+            "9040",
+            "-545",
+            "6200",
+            "5778",
+            "422",
+            "4800",
+            "978",
+            "8130",
+            "8130",
+            "0",
+            "7850",
+            "280",
+            "19405",
+            "19405",
+            "0",
+            "17025",
+            "2380",
+            "4700",
+            "2178",
+            "2522",
+            "2046",
+            "132",
+            "4700",
+            "4700",
+            "0",
+            "2700",
+            "2000",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "0"
+          ],
+          "trailingZeroTexts": [],
+          "statusErrorCells": [
+            {
+              "text": "-545",
+              "color": "rgb(180, 35, 24)"
+            }
+          ],
+          "normalNumberColor": "rgb(23, 32, 51)"
+        },
+        "rowCountText": "共 11 行（单次最多 5000 行，超出请按订单号或物料缩小范围）",
+        "scopeNotesText": "口径说明\n这张表能回答什么、不能回答什么\n\n一行 = 一张订单上的一个物料（物料 = 名称 + 规格型号 + 颜色，单位不换算）；五个数量都是同一订单、同一物料、同一单位上的账。\n\n不跨单位相加：同一物料若历史上出现过两个单位，会分成两行；把「米」和「卷」加在一起得到的库存数不可比，不能用于任何判断。\n库存量不按订单拆账：同一物料出现在多张订单时，每行的库存量是同一个数（当前结存），不是「这张订单还剩多少料」。\n本表不设合计行：行是不同单位组成的，跨单位合计没有意义；合计只在单位内部才有意义，而本表不按单位分组展示。\n采购数量：该订单已下单采购明细的订购数量合计；草稿与已取消的采购单不计。\n采购入库量：该订单已过账的原料入库数量合计；草稿与已冲销的入库单不计。\n采购未入库数：采购数量 − 采购入库量。允许为负：多送的按实收入库，负数就是超收量。\n生产领用数量：该订单生产已过账的领料 + 补料 − 退料净额；冲销与撤销过账已抵消，报废不计入领用。\n库存量：该物料 + 单位的当前结存（原料仓 + 报废仓），是物料级静态结存，不按订单拆账。",
+        "empty": {
+          "present": false,
+          "text": ""
+        },
+        "error": {
+          "present": false,
+          "text": "",
+          "hasRetry": false
+        },
+        "dialog": {
+          "present": false,
+          "visible": false,
+          "rect": null
+        },
+        "sheet": {
+          "present": false,
+          "rowCount": 0,
+          "company": "",
+          "title": "",
+          "subtitle": ""
+        },
+        "sheetTable": null,
+        "printCalls": 0,
+        "printMedia": {
+          "sheetVisibility": null,
+          "sheetDisplay": null,
+          "sheetPosition": null,
+          "pageHeaderVisibility": "visible",
+          "pageHeaderDisplay": "flex",
+          "filterPanelVisibility": "visible",
+          "panelVisibility": "visible",
+          "appShellDisplay": "flex",
+          "bodyPage": "auto",
+          "htmlPage": "auto",
+          "sheetRect": null
+        },
+        "toastTexts": [
+          "操作失败\n导出失败：测试注入的 500\n×"
+        ],
+        "pageTestIdPresent": true,
+        "reportsEntry": null
+      },
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "reloadsDueToDevServerChurn": 0
+          }
+        },
+        {
+          "name": "导出接口 500 时出现失败 toast（含后端 message）",
+          "ok": true,
+          "detail": "操作失败\n导出失败：测试注入的 500\n×"
+        },
+        {
+          "name": "导出失败后页面不崩（表格仍 11 行、页面 testid 仍在）",
+          "ok": true,
+          "detail": {
+            "rows": 11,
+            "pagePresent": true
+          }
+        },
+        {
+          "name": "无预期之外的 console error（故意注入的失败 HTTP 资源日志不计）",
+          "ok": true,
+          "detail": {
+            "unexpected": [],
+            "all": [
+              "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+            ]
+          }
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse/export.xlsx",
+          "path": "/reports/procurement-warehouse/export.xlsx",
+          "search": ""
+        }
+      ],
+      "reloadsDueToDevServerChurn": 0,
+      "elapsedMs": 893
+    },
+    {
+      "name": "empty",
+      "route": "/reports/procurement-warehouse",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\empty.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "innerWidth": 1440,
+          "horizontalOverflow": 0,
+          "bodyScrollWidth": 1440
+        },
+        "table": {
+          "present": true,
+          "headers": [],
+          "headerRects": [],
+          "rowCount": 0,
+          "rowLengths": [],
+          "rows": [],
+          "rowsWithStatusError": [],
+          "tableWrap": null
+        },
+        "numeric": {
+          "texts": [],
+          "trailingZeroTexts": [],
+          "statusErrorCells": [],
+          "normalNumberColor": null
+        },
+        "rowCountText": "共 0 行（单次最多 5000 行，超出请按订单号或物料缩小范围）",
+        "scopeNotesText": "口径说明\n这张表能回答什么、不能回答什么\n\n一行 = 一张订单上的一个物料（物料 = 名称 + 规格型号 + 颜色，单位不换算）；五个数量都是同一订单、同一物料、同一单位上的账。\n\n不跨单位相加：同一物料若历史上出现过两个单位，会分成两行；把「米」和「卷」加在一起得到的库存数不可比，不能用于任何判断。\n库存量不按订单拆账：同一物料出现在多张订单时，每行的库存量是同一个数（当前结存），不是「这张订单还剩多少料」。\n本表不设合计行：行是不同单位组成的，跨单位合计没有意义；合计只在单位内部才有意义，而本表不按单位分组展示。\n采购数量：该订单已下单采购明细的订购数量合计；草稿与已取消的采购单不计。\n采购入库量：该订单已过账的原料入库数量合计；草稿与已冲销的入库单不计。\n采购未入库数：采购数量 − 采购入库量。允许为负：多送的按实收入库，负数就是超收量。\n生产领用数量：该订单生产已过账的领料 + 补料 − 退料净额；冲销与撤销过账已抵消，报废不计入领用。\n库存量：该物料 + 单位的当前结存（原料仓 + 报废仓），是物料级静态结存，不按订单拆账。",
+        "empty": {
+          "present": true,
+          "text": "当前筛选条件下没有数据\n\n可留空筛选条件查看全部；只有采购、入库或生产领用过的订单×物料才会出现在这张表里。"
+        },
+        "error": {
+          "present": false,
+          "text": "",
+          "hasRetry": false
+        },
+        "dialog": {
+          "present": false,
+          "visible": false,
+          "rect": null
+        },
+        "sheet": {
+          "present": false,
+          "rowCount": 0,
+          "company": "",
+          "title": "",
+          "subtitle": ""
+        },
+        "sheetTable": null,
+        "printCalls": 0,
+        "printMedia": {
+          "sheetVisibility": null,
+          "sheetDisplay": null,
+          "sheetPosition": null,
+          "pageHeaderVisibility": "visible",
+          "pageHeaderDisplay": "flex",
+          "filterPanelVisibility": "visible",
+          "panelVisibility": "visible",
+          "appShellDisplay": "flex",
+          "bodyPage": "auto",
+          "htmlPage": "auto",
+          "sheetRect": null
+        },
+        "toastTexts": [],
+        "pageTestIdPresent": true,
+        "reportsEntry": null
+      },
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "reloadsDueToDevServerChurn": 0
+          }
+        },
+        {
+          "name": "空数据：表格空态文案「当前筛选条件下没有数据」",
+          "ok": true,
+          "detail": "当前筛选条件下没有数据\n\n可留空筛选条件查看全部；只有采购、入库或生产领用过的订单×物料才会出现在这张表里。"
+        },
+        {
+          "name": "空数据：行数文案「共 0 行」",
+          "ok": true,
+          "detail": "共 0 行（单次最多 5000 行，超出请按订单号或物料缩小范围）"
+        },
+        {
+          "name": "空数据点「打印」不弹窗（无 report-print-dialog）",
+          "ok": true,
+          "detail": {
+            "present": false,
+            "visible": false,
+            "rect": null
+          }
+        },
+        {
+          "name": "空数据点「打印」提示「当前筛选条件下没有可打印的数据」",
+          "ok": true,
+          "detail": "无法打印\n当前筛选条件下没有可打印的数据\n×"
+        },
+        {
+          "name": "空数据点「导出」不发 export 请求",
+          "ok": true,
+          "detail": {
+            "before": 0,
+            "after": 0
+          }
+        },
+        {
+          "name": "空数据点「导出」提示「当前筛选条件下没有可导出的数据」",
+          "ok": true,
+          "detail": "无法导出\n当前筛选条件下没有可导出的数据\n×"
+        },
+        {
+          "name": "空态不额外请求取数接口（打印/导出都不重新拉数据）",
+          "ok": true,
+          "detail": {
+            "before": 2,
+            "after": 2
+          }
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        }
+      ],
+      "reloadsDueToDevServerChurn": 0,
+      "elapsedMs": 7309
+    },
+    {
+      "name": "mobile",
+      "route": "/reports/procurement-warehouse",
+      "screenshot": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\mobile.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "navigationStatus": 200,
+      "facts": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "document": {
+          "scrollWidth": 390,
+          "clientWidth": 390,
+          "innerWidth": 390,
+          "horizontalOverflow": 0,
+          "bodyScrollWidth": 390
+        },
+        "table": {
+          "present": true,
+          "headers": [
+            "订单号",
+            "物料名称",
+            "颜色",
+            "单位",
+            "采购数量",
+            "采购入库量",
+            "采购未入库数",
+            "生产领用数量",
+            "库存量"
+          ],
+          "headerRects": [
+            {
+              "x": 266,
+              "y": 936,
+              "top": 936,
+              "left": 266,
+              "right": 274.1,
+              "bottom": 976,
+              "width": 8.1,
+              "height": 40
+            },
+            {
+              "x": 274.1,
+              "y": 936,
+              "top": 936,
+              "left": 274.1,
+              "right": 297.5,
+              "bottom": 976,
+              "width": 23.4,
+              "height": 40
+            },
+            {
+              "x": 297.5,
+              "y": 936,
+              "top": 936,
+              "left": 297.5,
+              "right": 304.7,
+              "bottom": 976,
+              "width": 7.2,
+              "height": 40
+            },
+            {
+              "x": 304.7,
+              "y": 936,
+              "top": 936,
+              "left": 304.7,
+              "right": 310.1,
+              "bottom": 976,
+              "width": 5.4,
+              "height": 40
+            },
+            {
+              "x": 310.1,
+              "y": 936,
+              "top": 936,
+              "left": 310.1,
+              "right": 318.2,
+              "bottom": 976,
+              "width": 8.1,
+              "height": 40
+            },
+            {
+              "x": 318.2,
+              "y": 936,
+              "top": 936,
+              "left": 318.2,
+              "right": 327.2,
+              "bottom": 976,
+              "width": 9,
+              "height": 40
+            },
+            {
+              "x": 327.2,
+              "y": 936,
+              "top": 936,
+              "left": 327.2,
+              "right": 337.1,
+              "bottom": 976,
+              "width": 9.9,
+              "height": 40
+            },
+            {
+              "x": 337.1,
+              "y": 936,
+              "top": 936,
+              "left": 337.1,
+              "right": 347,
+              "bottom": 976,
+              "width": 9.9,
+              "height": 40
+            },
+            {
+              "x": 347,
+              "y": 936,
+              "top": 936,
+              "left": 347,
+              "right": 356,
+              "bottom": 976,
+              "width": 9,
+              "height": 40
+            }
+          ],
+          "rowCount": 11,
+          "rowLengths": [
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "rows": [
+            [
+              "260119",
+              "58cm*8k自动直骨伞",
+              "黑色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "3050",
+              "1650"
+            ],
+            [
+              "260119",
+              "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+              "灰色",
+              "码",
+              "9800",
+              "9730",
+              "70",
+              "9660",
+              "70"
+            ],
+            [
+              "260119",
+              "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+              "天蓝色",
+              "码",
+              "8495",
+              "8495",
+              "0",
+              "9040",
+              "-545"
+            ],
+            [
+              "260119",
+              "75D 190T粉色自然光黑胶碰击布",
+              "粉色",
+              "码",
+              "6200",
+              "5778",
+              "422",
+              "4800",
+              "978"
+            ],
+            [
+              "260119",
+              "75D 190T卡其色C色号素色黑胶自然光",
+              "卡其色",
+              "码",
+              "8130",
+              "8130",
+              "0",
+              "7850",
+              "280"
+            ],
+            [
+              "260119",
+              "75D 190T白色素色黑胶自然光",
+              "白色",
+              "码",
+              "19405",
+              "19405",
+              "0",
+              "17025",
+              "2380"
+            ],
+            [
+              "260119",
+              "ABS料伞头（TF1076）",
+              "同客户提供的颜色",
+              "打",
+              "4700",
+              "2178",
+              "2522",
+              "2046",
+              "132"
+            ],
+            [
+              "260119",
+              "配8MM金色伞签",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "2700",
+              "2000"
+            ],
+            [
+              "260119",
+              "配3.0金色伞珠",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "1.2金色带LOGO全铜平面扣",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "内标（1*6CM）",
+              "白色",
+              "打",
+              "4700",
+              "0",
+              "4700",
+              "0",
+              "0"
+            ]
+          ],
+          "rowsWithStatusError": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ],
+          "tableWrap": {
+            "clientWidth": 90,
+            "scrollWidth": 90
+          }
+        },
+        "numeric": {
+          "texts": [
+            "4700",
+            "4700",
+            "0",
+            "3050",
+            "1650",
+            "9800",
+            "9730",
+            "70",
+            "9660",
+            "70",
+            "8495",
+            "8495",
+            "0",
+            "9040",
+            "-545",
+            "6200",
+            "5778",
+            "422",
+            "4800",
+            "978",
+            "8130",
+            "8130",
+            "0",
+            "7850",
+            "280",
+            "19405",
+            "19405",
+            "0",
+            "17025",
+            "2380",
+            "4700",
+            "2178",
+            "2522",
+            "2046",
+            "132",
+            "4700",
+            "4700",
+            "0",
+            "2700",
+            "2000",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "0"
+          ],
+          "trailingZeroTexts": [],
+          "statusErrorCells": [
+            {
+              "text": "-545",
+              "color": "rgb(180, 35, 24)"
+            }
+          ],
+          "normalNumberColor": "rgb(23, 32, 51)"
+        },
+        "rowCountText": "共 11 行（单次最多 5000 行，超出请按订单号或物料缩小范围）",
+        "scopeNotesText": "口径说明\n这张表能回答什么、不能回答什么\n\n一行 = 一张订单上的一个物料（物料 = 名称 + 规格型号 + 颜色，单位不换算）；五个数量都是同一订单、同一物料、同一单位上的账。\n\n不跨单位相加：同一物料若历史上出现过两个单位，会分成两行；把「米」和「卷」加在一起得到的库存数不可比，不能用于任何判断。\n库存量不按订单拆账：同一物料出现在多张订单时，每行的库存量是同一个数（当前结存），不是「这张订单还剩多少料」。\n本表不设合计行：行是不同单位组成的，跨单位合计没有意义；合计只在单位内部才有意义，而本表不按单位分组展示。\n采购数量：该订单已下单采购明细的订购数量合计；草稿与已取消的采购单不计。\n采购入库量：该订单已过账的原料入库数量合计；草稿与已冲销的入库单不计。\n采购未入库数：采购数量 − 采购入库量。允许为负：多送的按实收入库，负数就是超收量。\n生产领用数量：该订单生产已过账的领料 + 补料 − 退料净额；冲销与撤销过账已抵消，报废不计入领用。\n库存量：该物料 + 单位的当前结存（原料仓 + 报废仓），是物料级静态结存，不按订单拆账。",
+        "empty": {
+          "present": false,
+          "text": ""
+        },
+        "error": {
+          "present": false,
+          "text": "",
+          "hasRetry": false
+        },
+        "dialog": {
+          "present": false,
+          "visible": false,
+          "rect": null
+        },
+        "sheet": {
+          "present": false,
+          "rowCount": 0,
+          "company": "",
+          "title": "",
+          "subtitle": ""
+        },
+        "sheetTable": null,
+        "printCalls": 0,
+        "printMedia": {
+          "sheetVisibility": null,
+          "sheetDisplay": null,
+          "sheetPosition": null,
+          "pageHeaderVisibility": "visible",
+          "pageHeaderDisplay": "flex",
+          "filterPanelVisibility": "visible",
+          "panelVisibility": "visible",
+          "appShellDisplay": "flex",
+          "bodyPage": "auto",
+          "htmlPage": "auto",
+          "sheetRect": null
+        },
+        "toastTexts": [],
+        "pageTestIdPresent": true,
+        "reportsEntry": null
+      },
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "reloadsDueToDevServerChurn": 0
+          }
+        },
+        {
+          "name": "390x844 页面无横向溢出（scrollWidth - innerWidth ≤ 1）",
+          "ok": true,
+          "detail": {
+            "scrollWidth": 390,
+            "innerWidth": 390,
+            "bodyScrollWidth": 390,
+            "diff": 0
+          }
+        },
+        {
+          "name": "390x844 表格 11 行也在（数据未被裁掉）",
+          "ok": true,
+          "detail": 11
+        },
+        {
+          "name": "390x844 表格有宽度（容器不为 0；宽表靠容器内横滑或省略，不撑破页面）",
+          "ok": true,
+          "detail": {
+            "clientWidth": 90,
+            "scrollWidth": 90
+          }
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        }
+      ],
+      "reloadsDueToDevServerChurn": 0,
+      "elapsedMs": 881
+    },
+    {
+      "name": "reports-entry",
+      "route": "/reports",
+      "screenshot": null,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "facts": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "document": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "innerWidth": 1440,
+          "horizontalOverflow": 0,
+          "bodyScrollWidth": 1440
+        },
+        "table": {
+          "present": true,
+          "headers": [
+            "订单号",
+            "物料名称",
+            "颜色",
+            "单位",
+            "采购数量",
+            "采购入库量",
+            "采购未入库数",
+            "生产领用数量",
+            "库存量"
+          ],
+          "headerRects": [
+            {
+              "x": 282,
+              "y": 381,
+              "top": 381,
+              "left": 282,
+              "right": 381.7,
+              "bottom": 421,
+              "width": 99.7,
+              "height": 40
+            },
+            {
+              "x": 381.7,
+              "y": 381,
+              "top": 381,
+              "left": 381.7,
+              "right": 669.8,
+              "bottom": 421,
+              "width": 288.1,
+              "height": 40
+            },
+            {
+              "x": 669.8,
+              "y": 381,
+              "top": 381,
+              "left": 669.8,
+              "right": 758.4,
+              "bottom": 421,
+              "width": 88.6,
+              "height": 40
+            },
+            {
+              "x": 758.4,
+              "y": 381,
+              "top": 381,
+              "left": 758.4,
+              "right": 824.9,
+              "bottom": 421,
+              "width": 66.5,
+              "height": 40
+            },
+            {
+              "x": 824.9,
+              "y": 381,
+              "top": 381,
+              "left": 824.9,
+              "right": 924.6,
+              "bottom": 421,
+              "width": 99.7,
+              "height": 40
+            },
+            {
+              "x": 924.6,
+              "y": 381,
+              "top": 381,
+              "left": 924.6,
+              "right": 1035.4,
+              "bottom": 421,
+              "width": 110.8,
+              "height": 40
+            },
+            {
+              "x": 1035.4,
+              "y": 381,
+              "top": 381,
+              "left": 1035.4,
+              "right": 1157.3,
+              "bottom": 421,
+              "width": 121.9,
+              "height": 40
+            },
+            {
+              "x": 1157.3,
+              "y": 381,
+              "top": 381,
+              "left": 1157.3,
+              "right": 1279.2,
+              "bottom": 421,
+              "width": 121.9,
+              "height": 40
+            },
+            {
+              "x": 1279.2,
+              "y": 381,
+              "top": 381,
+              "left": 1279.2,
+              "right": 1390,
+              "bottom": 421,
+              "width": 110.8,
+              "height": 40
+            }
+          ],
+          "rowCount": 11,
+          "rowLengths": [
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9,
+            9
+          ],
+          "rows": [
+            [
+              "260119",
+              "58cm*8k自动直骨伞",
+              "黑色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "3050",
+              "1650"
+            ],
+            [
+              "260119",
+              "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+              "灰色",
+              "码",
+              "9800",
+              "9730",
+              "70",
+              "9660",
+              "70"
+            ],
+            [
+              "260119",
+              "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+              "天蓝色",
+              "码",
+              "8495",
+              "8495",
+              "0",
+              "9040",
+              "-545"
+            ],
+            [
+              "260119",
+              "75D 190T粉色自然光黑胶碰击布",
+              "粉色",
+              "码",
+              "6200",
+              "5778",
+              "422",
+              "4800",
+              "978"
+            ],
+            [
+              "260119",
+              "75D 190T卡其色C色号素色黑胶自然光",
+              "卡其色",
+              "码",
+              "8130",
+              "8130",
+              "0",
+              "7850",
+              "280"
+            ],
+            [
+              "260119",
+              "75D 190T白色素色黑胶自然光",
+              "白色",
+              "码",
+              "19405",
+              "19405",
+              "0",
+              "17025",
+              "2380"
+            ],
+            [
+              "260119",
+              "ABS料伞头（TF1076）",
+              "同客户提供的颜色",
+              "打",
+              "4700",
+              "2178",
+              "2522",
+              "2046",
+              "132"
+            ],
+            [
+              "260119",
+              "配8MM金色伞签",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "2700",
+              "2000"
+            ],
+            [
+              "260119",
+              "配3.0金色伞珠",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "1.2金色带LOGO全铜平面扣",
+              "金色",
+              "打",
+              "4700",
+              "4700",
+              "0",
+              "4700",
+              "0"
+            ],
+            [
+              "260119",
+              "内标（1*6CM）",
+              "白色",
+              "打",
+              "4700",
+              "0",
+              "4700",
+              "0",
+              "0"
+            ]
+          ],
+          "rowsWithStatusError": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ],
+          "tableWrap": {
+            "clientWidth": 1108,
+            "scrollWidth": 1108
+          }
+        },
+        "numeric": {
+          "texts": [
+            "4700",
+            "4700",
+            "0",
+            "3050",
+            "1650",
+            "9800",
+            "9730",
+            "70",
+            "9660",
+            "70",
+            "8495",
+            "8495",
+            "0",
+            "9040",
+            "-545",
+            "6200",
+            "5778",
+            "422",
+            "4800",
+            "978",
+            "8130",
+            "8130",
+            "0",
+            "7850",
+            "280",
+            "19405",
+            "19405",
+            "0",
+            "17025",
+            "2380",
+            "4700",
+            "2178",
+            "2522",
+            "2046",
+            "132",
+            "4700",
+            "4700",
+            "0",
+            "2700",
+            "2000",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "4700",
+            "0",
+            "0"
+          ],
+          "trailingZeroTexts": [],
+          "statusErrorCells": [
+            {
+              "text": "-545",
+              "color": "rgb(180, 35, 24)"
+            }
+          ],
+          "normalNumberColor": "rgb(23, 32, 51)"
+        },
+        "rowCountText": "共 11 行（单次最多 5000 行，超出请按订单号或物料缩小范围）",
+        "scopeNotesText": "口径说明\n这张表能回答什么、不能回答什么\n\n一行 = 一张订单上的一个物料（物料 = 名称 + 规格型号 + 颜色，单位不换算）；五个数量都是同一订单、同一物料、同一单位上的账。\n\n不跨单位相加：同一物料若历史上出现过两个单位，会分成两行；把「米」和「卷」加在一起得到的库存数不可比，不能用于任何判断。\n库存量不按订单拆账：同一物料出现在多张订单时，每行的库存量是同一个数（当前结存），不是「这张订单还剩多少料」。\n本表不设合计行：行是不同单位组成的，跨单位合计没有意义；合计只在单位内部才有意义，而本表不按单位分组展示。\n采购数量：该订单已下单采购明细的订购数量合计；草稿与已取消的采购单不计。\n采购入库量：该订单已过账的原料入库数量合计；草稿与已冲销的入库单不计。\n采购未入库数：采购数量 − 采购入库量。允许为负：多送的按实收入库，负数就是超收量。\n生产领用数量：该订单生产已过账的领料 + 补料 − 退料净额；冲销与撤销过账已抵消，报废不计入领用。\n库存量：该物料 + 单位的当前结存（原料仓 + 报废仓），是物料级静态结存，不按订单拆账。",
+        "empty": {
+          "present": false,
+          "text": ""
+        },
+        "error": {
+          "present": false,
+          "text": "",
+          "hasRetry": false
+        },
+        "dialog": {
+          "present": false,
+          "visible": false,
+          "rect": null
+        },
+        "sheet": {
+          "present": false,
+          "rowCount": 0,
+          "company": "",
+          "title": "",
+          "subtitle": ""
+        },
+        "sheetTable": null,
+        "printCalls": 0,
+        "printMedia": {
+          "sheetVisibility": null,
+          "sheetDisplay": null,
+          "sheetPosition": null,
+          "pageHeaderVisibility": "visible",
+          "pageHeaderDisplay": "flex",
+          "filterPanelVisibility": "visible",
+          "panelVisibility": "visible",
+          "appShellDisplay": "flex",
+          "bodyPage": "auto",
+          "htmlPage": "auto",
+          "sheetRect": null
+        },
+        "toastTexts": [],
+        "pageTestIdPresent": true,
+        "reportsEntry": null
+      },
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": {
+            "status": 200,
+            "reloadsDueToDevServerChurn": 0
+          }
+        },
+        {
+          "name": "/reports 页头有「采购与仓储报表」入口（链接文案与 href 正确）",
+          "ok": true,
+          "detail": {
+            "links": [
+              {
+                "text": "采购与仓储报表",
+                "href": "/reports/procurement-warehouse"
+              }
+            ],
+            "buttons": [
+              "刷新",
+              "筛选",
+              "订单推进",
+              "采购与应付",
+              "库存",
+              "生产与质检",
+              "薪资",
+              "告警中心",
+              "导出表格"
+            ]
+          }
+        },
+        {
+          "name": "点入口后 URL 到 /reports/procurement-warehouse 且页面渲染",
+          "ok": true,
+          "detail": {
+            "url": "http://127.0.0.1:3111/reports/procurement-warehouse",
+            "pagePresent": true
+          }
+        },
+        {
+          "name": "进入报表页后取数请求无查询串（路径恰为 /api/v1/reports/procurement-warehouse）",
+          "ok": true,
+          "detail": [
+            "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+            "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+            "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+            "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse"
+          ]
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/orders",
+          "path": "/reports/orders",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/orders",
+          "path": "/reports/orders",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/reports/procurement-warehouse",
+          "path": "/reports/procurement-warehouse",
+          "search": ""
+        }
+      ],
+      "reloadsDueToDevServerChurn": 0,
+      "elapsedMs": 2380
+    }
+  ]
+}

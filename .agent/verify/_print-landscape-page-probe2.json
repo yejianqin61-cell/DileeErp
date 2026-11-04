@@ -1,0 +1,308 @@
+{
+  "generatedAt": "2026-11-04T14:59:23.983Z",
+  "dom": {
+    "sheetAncestorChain": [
+      {
+        "tag": "div",
+        "className": "procurement-warehouse-sheet",
+        "position": "absolute",
+        "display": "grid",
+        "page": "procurement-warehouse",
+        "height": 1624
+      },
+      {
+        "tag": "div",
+        "className": "ui-dialog-body",
+        "position": "static",
+        "display": "grid",
+        "page": "auto",
+        "height": 0
+      },
+      {
+        "tag": "div",
+        "className": "ui-dialog-content procurement-warehouse-dialog",
+        "position": "static",
+        "display": "grid",
+        "page": "auto",
+        "height": 0
+      },
+      {
+        "tag": "body",
+        "className": "",
+        "position": "relative",
+        "display": "block",
+        "page": "auto",
+        "height": 1262
+      }
+    ],
+    "bodyChildren": [
+      {
+        "tag": "span",
+        "className": "",
+        "id": "",
+        "display": "block",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "div",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "div",
+        "className": "app-shell",
+        "id": "",
+        "display": "flex",
+        "height": 1262,
+        "containsSheet": false
+      },
+      {
+        "tag": "div",
+        "className": "",
+        "id": "",
+        "display": "block",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "_R_",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "script",
+        "className": "",
+        "id": "",
+        "display": "block",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "next-route-announcer",
+        "className": "",
+        "id": "",
+        "display": "block",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "div",
+        "className": "ui-dialog-overlay",
+        "id": "",
+        "display": "none",
+        "height": 0,
+        "containsSheet": false
+      },
+      {
+        "tag": "div",
+        "className": "ui-dialog-content procurement-warehouse-dialog",
+        "id": "radix-_r_0_",
+        "display": "grid",
+        "height": 0,
+        "containsSheet": true
+      },
+      {
+        "tag": "span",
+        "className": "",
+        "id": "",
+        "display": "block",
+        "height": 0,
+        "containsSheet": false
+      }
+    ]
+  },
+  "variants": [
+    {
+      "name": "baseline（现状）",
+      "boxes": [
+        {
+          "raw": "/MediaBox [0 0 612 792]",
+          "width": 612,
+          "height": 792
+        },
+        {
+          "raw": "/MediaBox [0 0 612 792]",
+          "width": 612,
+          "height": 792
+        }
+      ]
+    },
+    {
+      "name": "V1 html { page: procurement-warehouse }",
+      "boxes": [
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        }
+      ]
+    },
+    {
+      "name": "V2 + body { page: procurement-warehouse }",
+      "boxes": [
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        }
+      ]
+    },
+    {
+      "name": "V3 + @page { size: A4 landscape }（默认页尺寸）",
+      "boxes": [
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        }
+      ]
+    },
+    {
+      "name": "V4 + 隐藏纸面前的内容（display:none，而非 visibility）",
+      "boxes": [
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        },
+        {
+          "raw": "/MediaBox [0 0 841.91998 594.95996]",
+          "width": 841.91998,
+          "height": 594.95996
+        }
+      ]
+    }
+  ],
+  "conclusion": {
+    "baselineIsLandscape": false,
+    "candidatesThatProduceLandscape": [
+      "V1 html { page: procurement-warehouse }",
+      "V2 + body { page: procurement-warehouse }",
+      "V3 + @page { size: A4 landscape }（默认页尺寸）",
+      "V4 + 隐藏纸面前的内容（display:none，而非 visibility）"
+    ],
+    "note": "能让 page.pdf 打出 A4 横向的修复方向：V1 html { page: procurement-warehouse } / V2 + body { page: procurement-warehouse } / V3 + @page { size: A4 landscape }（默认页尺寸） / V4 + 隐藏纸面前的内容（display:none，而非 visibility）"
+  }
+}

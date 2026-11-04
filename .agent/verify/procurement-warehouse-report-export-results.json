@@ -1,0 +1,771 @@
+{
+  "generatedAt": "2026-11-04T15:05:08.054Z",
+  "script": ".agent\\verify\\procurement-warehouse-report-export-check.mjs",
+  "distModules": [
+    "apps\\api\\dist\\modules\\reports\\procurement-warehouse-report.service.js",
+    "apps\\api\\dist\\modules\\reports\\procurement-warehouse-report-export.service.js"
+  ],
+  "sample": {
+    "xlsx": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\采购与仓储报表-样例.xlsx",
+    "bytes": 8562,
+    "fileName": "迪礼ERP-采购与仓储报表-20261104230501.xlsx"
+  },
+  "render": {
+    "rendered": true,
+    "soffice": "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+    "version": "",
+    "attempts": [
+      {
+        "target": "pdf",
+        "stdout": "convert C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\???????-??.xlsx as a Calc document -> C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\???????-??.pdf using filter : calc_pdf_Export\r\nOverwriting: C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\???????-??.pdf",
+        "stderr": ""
+      },
+      {
+        "target": "png",
+        "stdout": "convert C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\???????-??.xlsx as a Calc document -> C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\???????-??.png using filter : calc_png_Export\r\nOverwriting: C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\???????-??.png",
+        "stderr": ""
+      }
+    ],
+    "outputs": [
+      "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\采购与仓储报表-样例.pdf",
+      "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\procurement-warehouse-report\\采购与仓储报表-样例.png"
+    ]
+  },
+  "checks": [
+    {
+      "name": "生成 xlsx 字节（ZIP 容器 PK\\x03\\x04）",
+      "ok": true,
+      "detail": {
+        "bytes": 8562
+      }
+    },
+    {
+      "name": "导出文件名是「迪礼ERP-采购与仓储报表-<北京时间戳>.xlsx」",
+      "ok": true,
+      "detail": "迪礼ERP-采购与仓储报表-20261104230501.xlsx"
+    },
+    {
+      "name": "导出报告 rowCount = 11",
+      "ok": true,
+      "detail": 11
+    },
+    {
+      "name": "导出过程没有写库",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "只有一个工作表且名字是「采购与仓储报表」",
+      "ok": true,
+      "detail": [
+        "采购与仓储报表"
+      ]
+    },
+    {
+      "name": "第 3 行九列表头同名同序",
+      "ok": true,
+      "detail": [
+        "订单号",
+        "物料名称",
+        "颜色",
+        "单位",
+        "采购数量",
+        "采购入库量",
+        "采购未入库数",
+        "生产领用数量",
+        "库存量"
+      ]
+    },
+    {
+      "name": "标题行含「采购与仓储报表」",
+      "ok": true,
+      "detail": "迪礼ERP　采购与仓储报表"
+    },
+    {
+      "name": "信息行含筛选条件 / 生成时间 / 行数",
+      "ok": true,
+      "detail": "筛选条件：订单号包含「260119」；全部物料　生成时间：2026-11-04 23:05:01　共 11 行（上限 5000 行）"
+    },
+    {
+      "name": "数据行 = 11 行",
+      "ok": true,
+      "detail": {
+        "dataRows": 11
+      }
+    },
+    {
+      "name": "数量列 55 个单元格全部是 number（不是文本）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "数量列数字格式是 0.####",
+      "ok": true,
+      "detail": [
+        "0.####"
+      ]
+    },
+    {
+      "name": "11 行物料名与截图完全一致（集合相等）",
+      "ok": true,
+      "detail": [
+        "1.2金色带LOGO全铜平面扣",
+        "58cm*8k自动直骨伞",
+        "75D 190T卡其色C色号素色黑胶自然光",
+        "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+        "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+        "75D 190T白色素色黑胶自然光",
+        "75D 190T粉色自然光黑胶碰击布",
+        "ABS料伞头（TF1076）",
+        "内标（1*6CM）",
+        "配3.0金色伞珠",
+        "配8MM金色伞签"
+      ]
+    },
+    {
+      "name": "11 行逐列数值全部与截图一致（含负数库存 -545 与超收/未入库）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "第 3 行库存量写入 -545（数值单元格，不是文本/0）",
+      "ok": true,
+      "detail": [
+        "260119",
+        "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+        "天蓝色",
+        "码",
+        8495,
+        8495,
+        0,
+        9040,
+        -545
+      ]
+    },
+    {
+      "name": "第 11 行：采购 4700 / 入库 0 / 未入库 4700 / 领用 0 / 库存 0",
+      "ok": true,
+      "detail": [
+        "260119",
+        "内标（1*6CM）",
+        "白色",
+        "打",
+        4700,
+        0,
+        4700,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "pageSetup.orientation = landscape（A4 横向）",
+      "ok": true,
+      "detail": {
+        "paperSize": 9,
+        "orientation": "landscape",
+        "fitToPage": true,
+        "fitToWidth": 1,
+        "fitToHeight": 0,
+        "horizontalCentered": true,
+        "margins": {
+          "left": 0.3,
+          "right": 0.3,
+          "top": 0.4,
+          "bottom": 0.4,
+          "header": 0.2,
+          "footer": 0.2
+        }
+      }
+    },
+    {
+      "name": "pageSetup.paperSize = 9（A4）",
+      "ok": true,
+      "detail": {
+        "paperSize": 9,
+        "orientation": "landscape",
+        "fitToPage": true,
+        "fitToWidth": 1,
+        "fitToHeight": 0,
+        "horizontalCentered": true,
+        "margins": {
+          "left": 0.3,
+          "right": 0.3,
+          "top": 0.4,
+          "bottom": 0.4,
+          "header": 0.2,
+          "footer": 0.2
+        }
+      }
+    },
+    {
+      "name": "pageSetup.fitToPage = true 且 fitToWidth = 1",
+      "ok": true,
+      "detail": {
+        "paperSize": 9,
+        "orientation": "landscape",
+        "fitToPage": true,
+        "fitToWidth": 1,
+        "fitToHeight": 0,
+        "horizontalCentered": true,
+        "margins": {
+          "left": 0.3,
+          "right": 0.3,
+          "top": 0.4,
+          "bottom": 0.4,
+          "header": 0.2,
+          "footer": 0.2
+        }
+      }
+    },
+    {
+      "name": "表尾口径说明在数据行之后（第 15 行）",
+      "ok": true,
+      "detail": {
+        "noteRowNumber": 15,
+        "noteText": "口径说明：\n① 不跨单位相加：同一物料若历史上出现过两个单位，会分成两行（单位不换算，米和卷相加没有意义）。\n② 库存量不按订单拆账：库存是物料级的当前结存，同"
+      }
+    },
+    {
+      "name": "口径说明含「不跨单位相加」",
+      "ok": true,
+      "detail": "口径说明：\n① 不跨单位相加：同一物料若历史上出现过两个单位，会分成两行（单位不换算，米和卷相加没有意义）。\n② 库存量不按订单拆账：库存是物料级的当前结存，同一物料出现在多张订单时，每行的库存量是同一个数，不是「这张订单还剩多少料」。\n③"
+    },
+    {
+      "name": "口径说明含「不按订单拆账」",
+      "ok": true,
+      "detail": "口径说明：\n① 不跨单位相加：同一物料若历史上出现过两个单位，会分成两行（单位不换算，米和卷相加没有意义）。\n② 库存量不按订单拆账：库存是物料级的当前结存，同一物料出现在多张订单时，每行的库存量是同一个数，不是「这张订单还剩多少料」。\n③"
+    },
+    {
+      "name": "口径说明含「不设合计行」",
+      "ok": true,
+      "detail": "口径说明：\n① 不跨单位相加：同一物料若历史上出现过两个单位，会分成两行（单位不换算，米和卷相加没有意义）。\n② 库存量不按订单拆账：库存是物料级的当前结存，同一物料出现在多张订单时，每行的库存量是同一个数，不是「这张订单还剩多少料」。\n③"
+    },
+    {
+      "name": "口径说明整行合并 A..I",
+      "ok": true,
+      "detail": [
+        "A15:I15"
+      ]
+    },
+    {
+      "name": "屏幕 JSON data 与导出件行数一致（11 行）",
+      "ok": true,
+      "detail": {
+        "screen": 11,
+        "export": 11
+      }
+    },
+    {
+      "name": "屏幕 JSON 每一行与 xlsx 同一行逐列相同（屏幕=导出）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "屏幕 JSON 数量字符串无尾零（无 /\\d\\.\\d*0$/ 形态）",
+      "ok": true,
+      "detail": [
+        "0",
+        "1650",
+        "280",
+        "-545",
+        "70",
+        "2380",
+        "978",
+        "132",
+        "0",
+        "0",
+        "2000"
+      ]
+    },
+    {
+      "name": "屏幕 JSON 生成时间与导出同一次取数（秒级一致）",
+      "ok": true,
+      "detail": {
+        "generated_at": "2026-11-04T15:05:01.181Z",
+        "row_count": 11,
+        "row_limit": 5000,
+        "filters": {
+          "order_no": "260119",
+          "material": null
+        }
+      }
+    }
+  ],
+  "details": {
+    "sheetName": "采购与仓储报表",
+    "headers": [
+      "订单号",
+      "物料名称",
+      "颜色",
+      "单位",
+      "采购数量",
+      "采购入库量",
+      "采购未入库数",
+      "生产领用数量",
+      "库存量"
+    ],
+    "dataRows": [
+      [
+        "260119",
+        "1.2金色带LOGO全铜平面扣",
+        "金色",
+        "打",
+        4700,
+        4700,
+        0,
+        4700,
+        0
+      ],
+      [
+        "260119",
+        "58cm*8k自动直骨伞",
+        "黑色",
+        "打",
+        4700,
+        4700,
+        0,
+        3050,
+        1650
+      ],
+      [
+        "260119",
+        "75D 190T卡其色C色号素色黑胶自然光",
+        "卡其色",
+        "码",
+        8130,
+        8130,
+        0,
+        7850,
+        280
+      ],
+      [
+        "260119",
+        "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+        "天蓝色",
+        "码",
+        8495,
+        8495,
+        0,
+        9040,
+        -545
+      ],
+      [
+        "260119",
+        "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+        "灰色",
+        "码",
+        9800,
+        9730,
+        70,
+        9660,
+        70
+      ],
+      [
+        "260119",
+        "75D 190T白色素色黑胶自然光",
+        "白色",
+        "码",
+        19405,
+        19405,
+        0,
+        17025,
+        2380
+      ],
+      [
+        "260119",
+        "75D 190T粉色自然光黑胶碰击布",
+        "粉色",
+        "码",
+        6200,
+        5778,
+        422,
+        4800,
+        978
+      ],
+      [
+        "260119",
+        "ABS料伞头（TF1076）",
+        "同客户提供的颜色",
+        "打",
+        4700,
+        2178,
+        2522,
+        2046,
+        132
+      ],
+      [
+        "260119",
+        "内标（1*6CM）",
+        "白色",
+        "打",
+        4700,
+        0,
+        4700,
+        0,
+        0
+      ],
+      [
+        "260119",
+        "配3.0金色伞珠",
+        "金色",
+        "打",
+        4700,
+        4700,
+        0,
+        4700,
+        0
+      ],
+      [
+        "260119",
+        "配8MM金色伞签",
+        "金色",
+        "打",
+        4700,
+        4700,
+        0,
+        2700,
+        2000
+      ]
+    ],
+    "expectedRows": [
+      [
+        "260119",
+        "58cm*8k自动直骨伞",
+        "黑色",
+        "打",
+        4700,
+        4700,
+        0,
+        3050,
+        1650
+      ],
+      [
+        "260119",
+        "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+        "灰色",
+        "码",
+        9800,
+        9730,
+        70,
+        9660,
+        70
+      ],
+      [
+        "260119",
+        "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+        "天蓝色",
+        "码",
+        8495,
+        8495,
+        0,
+        9040,
+        -545
+      ],
+      [
+        "260119",
+        "75D 190T粉色自然光黑胶碰击布",
+        "粉色",
+        "码",
+        6200,
+        5778,
+        422,
+        4800,
+        978
+      ],
+      [
+        "260119",
+        "75D 190T卡其色C色号素色黑胶自然光",
+        "卡其色",
+        "码",
+        8130,
+        8130,
+        0,
+        7850,
+        280
+      ],
+      [
+        "260119",
+        "75D 190T白色素色黑胶自然光",
+        "白色",
+        "码",
+        19405,
+        19405,
+        0,
+        17025,
+        2380
+      ],
+      [
+        "260119",
+        "ABS料伞头（TF1076）",
+        "同客户提供的颜色",
+        "打",
+        4700,
+        2178,
+        2522,
+        2046,
+        132
+      ],
+      [
+        "260119",
+        "配8MM金色伞签",
+        "金色",
+        "打",
+        4700,
+        4700,
+        0,
+        2700,
+        2000
+      ],
+      [
+        "260119",
+        "配3.0金色伞珠",
+        "金色",
+        "打",
+        4700,
+        4700,
+        0,
+        4700,
+        0
+      ],
+      [
+        "260119",
+        "1.2金色带LOGO全铜平面扣",
+        "金色",
+        "打",
+        4700,
+        4700,
+        0,
+        4700,
+        0
+      ],
+      [
+        "260119",
+        "内标（1*6CM）",
+        "白色",
+        "打",
+        4700,
+        0,
+        4700,
+        0,
+        0
+      ]
+    ],
+    "numericTypes": [
+      {
+        "row": 1,
+        "column": "E",
+        "value": 4700,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 1,
+        "column": "F",
+        "value": 4700,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 1,
+        "column": "G",
+        "value": 0,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 1,
+        "column": "H",
+        "value": 4700,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 1,
+        "column": "I",
+        "value": 0,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 2,
+        "column": "E",
+        "value": 4700,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 2,
+        "column": "F",
+        "value": 4700,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 2,
+        "column": "G",
+        "value": 0,
+        "type": "number",
+        "numFmt": "0.####"
+      },
+      {
+        "row": 2,
+        "column": "H",
+        "value": 3050,
+        "type": "number",
+        "numFmt": "0.####"
+      }
+    ],
+    "pageSetup": {
+      "paperSize": 9,
+      "orientation": "landscape",
+      "fitToPage": true,
+      "fitToWidth": 1,
+      "fitToHeight": 0,
+      "horizontalCentered": true,
+      "margins": {
+        "left": 0.3,
+        "right": 0.3,
+        "top": 0.4,
+        "bottom": 0.4,
+        "header": 0.2,
+        "footer": 0.2
+      }
+    },
+    "title": "迪礼ERP　采购与仓储报表",
+    "info": "筛选条件：订单号包含「260119」；全部物料　生成时间：2026-11-04 23:05:01　共 11 行（上限 5000 行）",
+    "note": "口径说明：\n① 不跨单位相加：同一物料若历史上出现过两个单位，会分成两行（单位不换算，米和卷相加没有意义）。\n② 库存量不按订单拆账：库存是物料级的当前结存，同一物料出现在多张订单时，每行的库存量是同一个数，不是「这张订单还剩多少料」。\n③ 本表不设合计行：行由不同单位组成，跨单位合计没有意义。\n各列来源：采购数量＝已下单采购明细的订购数量合计（草稿、已取消不计）；采购入库量＝已过账原料入库单合计（草稿、已冲销不计）；采购未入库数＝采购数量−采购入库量（负数为超收）；生产领用数量＝已过账领料＋补料−退料（含冲销/撤销过账后的净额，报废不计入领用）；库存量＝该物料＋单位在原料仓与报废仓的当前结存。",
+    "noteRowNumber": 15,
+    "screenRows": [
+      {
+        "order_no": "260119",
+        "material_name": "1.2金色带LOGO全铜平面扣",
+        "color": "金色",
+        "unit": "打",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "4700",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "4700",
+        "stock_quantity": "0"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "58cm*8k自动直骨伞",
+        "color": "黑色",
+        "unit": "打",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "4700",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "3050",
+        "stock_quantity": "1650"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "75D 190T卡其色C色号素色黑胶自然光",
+        "color": "卡其色",
+        "unit": "码",
+        "purchase_quantity": "8130",
+        "inbound_quantity": "8130",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "7850",
+        "stock_quantity": "280"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+        "color": "天蓝色",
+        "unit": "码",
+        "purchase_quantity": "8495",
+        "inbound_quantity": "8495",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "9040",
+        "stock_quantity": "-545"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+        "color": "灰色",
+        "unit": "码",
+        "purchase_quantity": "9800",
+        "inbound_quantity": "9730",
+        "pending_inbound_quantity": "70",
+        "production_issue_quantity": "9660",
+        "stock_quantity": "70"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "75D 190T白色素色黑胶自然光",
+        "color": "白色",
+        "unit": "码",
+        "purchase_quantity": "19405",
+        "inbound_quantity": "19405",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "17025",
+        "stock_quantity": "2380"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "75D 190T粉色自然光黑胶碰击布",
+        "color": "粉色",
+        "unit": "码",
+        "purchase_quantity": "6200",
+        "inbound_quantity": "5778",
+        "pending_inbound_quantity": "422",
+        "production_issue_quantity": "4800",
+        "stock_quantity": "978"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "ABS料伞头（TF1076）",
+        "color": "同客户提供的颜色",
+        "unit": "打",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "2178",
+        "pending_inbound_quantity": "2522",
+        "production_issue_quantity": "2046",
+        "stock_quantity": "132"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "内标（1*6CM）",
+        "color": "白色",
+        "unit": "打",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "0",
+        "pending_inbound_quantity": "4700",
+        "production_issue_quantity": "0",
+        "stock_quantity": "0"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "配3.0金色伞珠",
+        "color": "金色",
+        "unit": "打",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "4700",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "4700",
+        "stock_quantity": "0"
+      },
+      {
+        "order_no": "260119",
+        "material_name": "配8MM金色伞签",
+        "color": "金色",
+        "unit": "打",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "4700",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "2700",
+        "stock_quantity": "2000"
+      }
+    ],
+    "screenMeta": {
+      "generated_at": "2026-11-04T15:05:01.181Z",
+      "row_count": 11,
+      "row_limit": 5000,
+      "filters": {
+        "order_no": "260119",
+        "material": null
+      }
+    }
+  }
+}

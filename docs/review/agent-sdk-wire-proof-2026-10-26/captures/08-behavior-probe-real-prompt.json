@@ -1,0 +1,189 @@
+{
+  "endpoint": "https://api.deepseek.com/chat/completions",
+  "systemPrompt": "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。",
+  "question": "订单 SO-2026-0001 现在生产到哪一步了？",
+  "temperature": 0,
+  "maxTokens": 200,
+  "runs": [
+    {
+      "variant": "double-encoded-history",
+      "run": 1,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "tool_calls",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"{\\\"operation\\\":\\\"get_order_overview\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "arguments"
+            ],
+            "topLevelOperationValid": false
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"{\\\"operation\\\":\\\"get_order_timeline\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "arguments"
+            ],
+            "topLevelOperationValid": false
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed-object-input-history",
+      "run": 1,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "tool_calls",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_overview\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "operation",
+              "order_no"
+            ],
+            "topLevelOperationValid": true
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_timeline\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "operation",
+              "order_no"
+            ],
+            "topLevelOperationValid": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "double-encoded-history",
+      "run": 2,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "tool_calls",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"{\\\"operation\\\":\\\"get_order_overview\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "arguments"
+            ],
+            "topLevelOperationValid": false
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"{\\\"operation\\\":\\\"get_order_timeline\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "arguments"
+            ],
+            "topLevelOperationValid": false
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed-object-input-history",
+      "run": 2,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "tool_calls",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_overview\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "operation",
+              "order_no"
+            ],
+            "topLevelOperationValid": true
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_timeline\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "operation",
+              "order_no"
+            ],
+            "topLevelOperationValid": true
+          }
+        ]
+      }
+    },
+    {
+      "variant": "double-encoded-history",
+      "run": 3,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "tool_calls",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"{\\\"operation\\\":\\\"get_order_overview\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "arguments"
+            ],
+            "topLevelOperationValid": false
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"{\\\"operation\\\":\\\"get_order_timeline\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "arguments"
+            ],
+            "topLevelOperationValid": false
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed-object-input-history",
+      "run": 3,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "tool_calls",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_overview\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "operation",
+              "order_no"
+            ],
+            "topLevelOperationValid": true
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_timeline\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedKeys": [
+              "operation",
+              "order_no"
+            ],
+            "topLevelOperationValid": true
+          }
+        ]
+      }
+    }
+  ]
+}

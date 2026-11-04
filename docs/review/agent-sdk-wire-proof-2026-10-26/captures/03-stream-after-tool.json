@@ -1,0 +1,45 @@
+{
+  "method": "POST",
+  "url": "/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": "Bearer ***REDACTED***"
+  },
+  "body": {
+    "model": "deepseek-chat",
+    "messages": [
+      {
+        "role": "system",
+        "content": "你是 Dilee ERP 的订单查询助手。只允许通过给定工具查询事实，不得编造。"
+      },
+      {
+        "role": "user",
+        "content": "帮我看一下订单 SO-2026-0001 现在的生产进度。"
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_mock_1",
+            "type": "function",
+            "function": {
+              "name": "order_query",
+              "arguments": "{\"q\":\"SO-2026-0001\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_mock_1",
+        "content": "{\"tool\":\"order_query\",\"operation\":\"get_order_status\",\"ok\":true,\"rows\":[{\"order_no\":\"SO-2026-0001\",\"status\":\"生产中\"}]}"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "rawBody": "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"system\",\"content\":\"你是 Dilee ERP 的订单查询助手。只允许通过给定工具查询事实，不得编造。\"},{\"role\":\"user\",\"content\":\"帮我看一下订单 SO-2026-0001 现在的生产进度。\"},{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"call_mock_1\",\"type\":\"function\",\"function\":{\"name\":\"order_query\",\"arguments\":\"{\\\"q\\\":\\\"SO-2026-0001\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_mock_1\",\"content\":\"{\\\"tool\\\":\\\"order_query\\\",\\\"operation\\\":\\\"get_order_status\\\",\\\"ok\\\":true,\\\"rows\\\":[{\\\"order_no\\\":\\\"SO-2026-0001\\\",\\\"status\\\":\\\"生产中\\\"}]}\"}],\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+}

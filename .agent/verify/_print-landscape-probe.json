@@ -1,0 +1,58 @@
+{
+  "default-a4-landscape": {
+    "mediaBox": {
+      "first": {
+        "raw": "/MediaBox [0 0 841.91998 594.95996]",
+        "width": 841.91998,
+        "height": 594.95996
+      },
+      "count": 1
+    },
+    "media": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "named-page-inflow": {
+    "mediaBox": {
+      "first": {
+        "raw": "/MediaBox [0 0 841.91998 594.95996]",
+        "width": 841.91998,
+        "height": 594.95996
+      },
+      "count": 1
+    },
+    "media": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "named-page-absolute": {
+    "mediaBox": {
+      "first": {
+        "raw": "/MediaBox [0 0 594.95996 841.91998]",
+        "width": 594.95996,
+        "height": 841.91998
+      },
+      "count": 1
+    },
+    "media": {
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "named-page-absolute-only": {
+    "mediaBox": {
+      "first": {
+        "raw": "/MediaBox [0 0 612 792]",
+        "width": 612,
+        "height": 792
+      },
+      "count": 1
+    },
+    "media": {
+      "width": 1280,
+      "height": 720
+    }
+  }
+}

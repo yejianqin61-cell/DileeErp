@@ -1,0 +1,513 @@
+{
+  "generatedAt": "2026-11-04T15:05:10.243Z",
+  "script": ".agent\\verify\\procurement-warehouse-report-caliber-probes.mjs",
+  "checks": [
+    {
+      "name": "11 行：报表返回 11 行",
+      "ok": true,
+      "detail": {
+        "rows": 11
+      }
+    },
+    {
+      "name": "11 行：meta.row_limit = 5000 / row_count = 11 / filters 回显",
+      "ok": true,
+      "detail": {
+        "generated_at": "2026-11-04T15:05:09.990Z",
+        "row_count": 11,
+        "row_limit": 5000,
+        "filters": {
+          "order_no": "260119",
+          "material": null
+        }
+      }
+    },
+    {
+      "name": "11 行逐列（九列）与截图完全一致（含 -545 负数库存、第 11 行未入库 4700）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "同订单内按物料名称码位升序",
+      "ok": true,
+      "detail": {
+        "actual": [
+          "1.2金色带LOGO全铜平面扣",
+          "58cm*8k自动直骨伞",
+          "75D 190T卡其色C色号素色黑胶自然光",
+          "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+          "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+          "75D 190T白色素色黑胶自然光",
+          "75D 190T粉色自然光黑胶碰击布",
+          "ABS料伞头（TF1076）",
+          "内标（1*6CM）",
+          "配3.0金色伞珠",
+          "配8MM金色伞签"
+        ],
+        "expected": [
+          "1.2金色带LOGO全铜平面扣",
+          "58cm*8k自动直骨伞",
+          "75D 190T卡其色C色号素色黑胶自然光",
+          "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+          "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+          "75D 190T白色素色黑胶自然光",
+          "75D 190T粉色自然光黑胶碰击布",
+          "ABS料伞头（TF1076）",
+          "内标（1*6CM）",
+          "配3.0金色伞珠",
+          "配8MM金色伞签"
+        ]
+      }
+    },
+    {
+      "name": "库存量 = 余额接口同口径逐行一致（同一 inventory_facts 求和集合）",
+      "ok": true,
+      "detail": {
+        "balances": [
+          "m-1|u-da=1650",
+          "m-2|u-ma=70",
+          "m-3|u-ma=-545",
+          "m-4|u-ma=978",
+          "m-5|u-ma=280",
+          "m-6|u-ma=2380",
+          "m-7|u-da=132",
+          "m-8|u-da=2000",
+          "m-9|u-da=0",
+          "m-10|u-da=0"
+        ],
+        "mismatches": []
+      }
+    },
+    {
+      "name": "库存量不按订单拆账：库存事实里有 orderNo 也不参与分组（groupBy.by 无 orderNo）",
+      "ok": true,
+      "detail": [
+        [
+          "orderNo",
+          "materialId",
+          "unitId"
+        ],
+        [
+          "materialId",
+          "unitId"
+        ]
+      ]
+    },
+    {
+      "name": "报废仓事实计入库存量、成品类别事实不计入（净变化 0）",
+      "ok": true,
+      "detail": {
+        "order_no": "260119",
+        "material_name": "58cm*8k自动直骨伞",
+        "color": "黑色",
+        "unit": "打",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "4700",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "3050",
+        "stock_quantity": "1650"
+      }
+    },
+    {
+      "name": "只有库存、没有采购/入库/领用事实的物料不出行（软删物料不建行）",
+      "ok": true,
+      "detail": [
+        "1.2金色带LOGO全铜平面扣",
+        "58cm*8k自动直骨伞",
+        "75D 190T卡其色C色号素色黑胶自然光",
+        "75D 190T天蓝色XPG-23637自然光黑胶碰击布A色号",
+        "75D 190T灰色XPG-23535黑胶自然光黑胶碰击布B色号",
+        "75D 190T白色素色黑胶自然光",
+        "75D 190T粉色自然光黑胶碰击布",
+        "ABS料伞头（TF1076）",
+        "内标（1*6CM）",
+        "配3.0金色伞珠",
+        "配8MM金色伞签"
+      ]
+    },
+    {
+      "name": "余额接口同口径也把已删物料/单位排除（报表与余额一致）",
+      "ok": true,
+      "detail": [
+        "m-1|u-da",
+        "m-2|u-ma",
+        "m-3|u-ma",
+        "m-4|u-ma",
+        "m-5|u-ma",
+        "m-6|u-ma",
+        "m-7|u-da",
+        "m-8|u-da",
+        "m-9|u-da",
+        "m-10|u-da"
+      ]
+    },
+    {
+      "name": "xlsx 与屏幕 JSON 逐行逐列相同（同一份取数）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "行为级：采购单 status=draft 时采购数量不计（不出行）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "行为级：采购单 status=cancelled 时采购数量不计（不出行）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "行为级：采购单 status=ordered 时计入（采购数量 100）",
+      "ok": true,
+      "detail": [
+        {
+          "order_no": "260119",
+          "material_name": "伞骨",
+          "color": "银",
+          "unit": "支",
+          "purchase_quantity": "100",
+          "inbound_quantity": "0",
+          "pending_inbound_quantity": "100",
+          "production_issue_quantity": "0",
+          "stock_quantity": "0"
+        }
+      ]
+    },
+    {
+      "name": "行为级：入库只算 posted（4700），草稿/已冲销不计",
+      "ok": true,
+      "detail": {
+        "order_no": "260119",
+        "material_name": "伞骨",
+        "color": "银",
+        "unit": "支",
+        "purchase_quantity": "4700",
+        "inbound_quantity": "4700",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "0",
+        "stock_quantity": "0"
+      }
+    },
+    {
+      "name": "行为级：生产领用 = 领料+补料−退料+冲销/撤销净额 = 3120；报废与无原料移动明细不计",
+      "ok": true,
+      "detail": {
+        "order_no": "260119",
+        "material_name": "伞骨",
+        "color": "银",
+        "unit": "支",
+        "purchase_quantity": "0",
+        "inbound_quantity": "0",
+        "pending_inbound_quantity": "0",
+        "production_issue_quantity": "3120",
+        "stock_quantity": "-4319"
+      }
+    },
+    {
+      "name": "行为级：超收 → 采购未入库数 -20（允许为负）",
+      "ok": true,
+      "detail": {
+        "order_no": "260119",
+        "material_name": "伞骨",
+        "color": "银",
+        "unit": "支",
+        "purchase_quantity": "100",
+        "inbound_quantity": "120",
+        "pending_inbound_quantity": "-20",
+        "production_issue_quantity": "0",
+        "stock_quantity": "0"
+      }
+    },
+    {
+      "name": "行为级：行集 = 三类来源并集（只有入库/只有领用也出行）",
+      "ok": true,
+      "detail": [
+        [
+          "还有库存的料",
+          "0",
+          "0",
+          "500"
+        ],
+        [
+          "只入库的料",
+          "120",
+          "0",
+          "0"
+        ],
+        [
+          "只领用的料",
+          "0",
+          "50",
+          "-50"
+        ]
+      ]
+    },
+    {
+      "name": "行为级：五列全 0 的行被剔除（领用冲销干净且无库存）",
+      "ok": true,
+      "detail": [
+        {
+          "order_no": "260119",
+          "material_name": "还有库存的料",
+          "color": "",
+          "unit": "支",
+          "purchase_quantity": "0",
+          "inbound_quantity": "0",
+          "pending_inbound_quantity": "0",
+          "production_issue_quantity": "0",
+          "stock_quantity": "500"
+        },
+        {
+          "order_no": "260118",
+          "material_name": "只入库的料",
+          "color": "",
+          "unit": "支",
+          "purchase_quantity": "0",
+          "inbound_quantity": "120",
+          "pending_inbound_quantity": "-120",
+          "production_issue_quantity": "0",
+          "stock_quantity": "0"
+        },
+        {
+          "order_no": "260117",
+          "material_name": "只领用的料",
+          "color": "",
+          "unit": "支",
+          "purchase_quantity": "0",
+          "inbound_quantity": "0",
+          "pending_inbound_quantity": "0",
+          "production_issue_quantity": "50",
+          "stock_quantity": "-50"
+        }
+      ]
+    },
+    {
+      "name": "行为级：订单号数字感知倒序 260119 > 26012 > 2602",
+      "ok": true,
+      "detail": [
+        "260119",
+        "26012",
+        "2602"
+      ]
+    },
+    {
+      "name": "行为级：订单号包含匹配且大小写不敏感（po-260119 → PO-260119）",
+      "ok": true,
+      "detail": [
+        {
+          "order_no": "PO-260119",
+          "material_name": "伞骨",
+          "color": "",
+          "unit": "支",
+          "purchase_quantity": "1",
+          "inbound_quantity": "0",
+          "pending_inbound_quantity": "1",
+          "production_issue_quantity": "0",
+          "stock_quantity": "0"
+        }
+      ]
+    },
+    {
+      "name": "行为级：物料名称包含匹配（伞 → 伞骨）",
+      "ok": true,
+      "detail": [
+        {
+          "order_no": "PO-260119",
+          "material_name": "伞骨",
+          "color": "",
+          "unit": "支",
+          "purchase_quantity": "1",
+          "inbound_quantity": "0",
+          "pending_inbound_quantity": "1",
+          "production_issue_quantity": "0",
+          "stock_quantity": "0"
+        }
+      ]
+    },
+    {
+      "name": "行为级：物料编码包含匹配且大小写不敏感（yl-0 → YL-001）",
+      "ok": true,
+      "detail": [
+        {
+          "order_no": "PO-260119",
+          "material_name": "伞骨",
+          "color": "",
+          "unit": "支",
+          "purchase_quantity": "1",
+          "inbound_quantity": "0",
+          "pending_inbound_quantity": "1",
+          "production_issue_quantity": "0",
+          "stock_quantity": "0"
+        }
+      ]
+    },
+    {
+      "name": "行为级：空白串按未筛选（两个条件都不生效，2 行）",
+      "ok": true,
+      "detail": 2
+    },
+    {
+      "name": "行为级：5000 行正常返回（上限不是上限−1）",
+      "ok": true,
+      "detail": {
+        "rows": 5000
+      }
+    },
+    {
+      "name": "行为级：5001 行抛 422 REPORT_ROW_LIMIT_EXCEEDED，且 details 报 5001/5000（不截断）",
+      "ok": true,
+      "detail": {
+        "code": "REPORT_ROW_LIMIT_EXCEEDED",
+        "message": "报表行数超过 5000 行，请按订单号或物料缩小范围",
+        "details": [
+          {
+            "row_count": 5001,
+            "row_limit": 5000
+          }
+        ]
+      }
+    },
+    {
+      "name": "查询预算：固定 7 条查询（1 到 5000 行不增加，禁止按行循环查库）",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "守卫：真实实现的 4 条 groupBy where 全为标量键",
+      "ok": true,
+      "detail": [
+        [
+          "deletedAt",
+          "purchaseOrderId",
+          "materialId"
+        ],
+        [
+          "deletedAt",
+          "status",
+          "orderNo",
+          "materialId"
+        ],
+        [
+          "sourceType",
+          "rawMaterialMovementLineId",
+          "orderNo",
+          "materialId"
+        ],
+        [
+          "materialId",
+          "unitId",
+          "inventoryCategory"
+        ]
+      ]
+    },
+    {
+      "name": "控制器：屏幕路由 GET procurement-warehouse、方法级权限 procurement|warehouse",
+      "ok": true,
+      "detail": {
+        "path": "procurement-warehouse",
+        "modules": [
+          "procurement",
+          "warehouse"
+        ]
+      }
+    },
+    {
+      "name": "控制器：导出路由 GET procurement-warehouse/export.xlsx、方法级权限 procurement|warehouse",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "控制器：两条静态路由都声明在 :report/export 之前（否则被参数路由吃掉）",
+      "ok": true,
+      "detail": {
+        "reportRouteAt": 3426,
+        "exportRouteAt": 3713,
+        "paramRouteAt": 4446
+      }
+    },
+    {
+      "name": "formatQuantity：4700.0000→4700、-0.0000→0、-20.0000→-20、0.0001→0.0001、大数不走指数",
+      "ok": true,
+      "detail": {
+        "a": "4700",
+        "b": "0",
+        "c": "-20"
+      }
+    },
+    {
+      "name": "P1 探针：草稿采购单不计的断言能抓住改坏的状态清单",
+      "ok": true,
+      "detail": {
+        "probe": "P1 草稿采购单不计",
+        "mutated": "EFFECTIVE_PURCHASE_ORDER_STATUSES.push('draft')（内存）",
+        "before": 0,
+        "mutatedRows": 1,
+        "shapeAssertionFails": true,
+        "restoredRows": 0,
+        "caughtByAssertion": true,
+        "note": "单测的 where.status.in deepEqual 断言会失败；行为级桩（本脚本）也会看到 draft 行流出 → 该断言不是空转。"
+      }
+    },
+    {
+      "name": "P2 探针：5001 行 422 的断言能抓住上限失效（不是恒真）",
+      "ok": true,
+      "detail": {
+        "probe": "P2 5001 行 422 不截断",
+        "mutated": "PROCUREMENT_WAREHOUSE_ROW_LIMIT = 6000（内存）",
+        "threwAfterMutation": false,
+        "restoredLimit": 5000,
+        "caughtByAssertion": true,
+        "note": "单测的 assert.rejects(…getStatus()===422) 会因「没有抛错」而失败 → 该断言依赖真实上限检查，不是恒真。"
+      }
+    },
+    {
+      "name": "P3 探针：groupBy 标量守卫能抓住关联过滤",
+      "ok": true,
+      "detail": {
+        "probe": "P3 groupBy 标量守卫",
+        "mutated": "假库把一条 groupBy 的 where 记录成 { material: { deletedAt: null } }（模拟关联过滤实现）",
+        "offenders": [
+          "inventoryFact.material",
+          "inventoryFact.material"
+        ],
+        "caughtByAssertion": true,
+        "note": "守卫对 where 键做白名单，关联过滤会被判为违规 → 守卫能抓住「顺手优化回关联过滤」。"
+      }
+    }
+  ],
+  "probes": [
+    {
+      "probe": "P1 草稿采购单不计",
+      "mutated": "EFFECTIVE_PURCHASE_ORDER_STATUSES.push('draft')（内存）",
+      "before": 0,
+      "mutatedRows": 1,
+      "shapeAssertionFails": true,
+      "restoredRows": 0,
+      "caughtByAssertion": true,
+      "note": "单测的 where.status.in deepEqual 断言会失败；行为级桩（本脚本）也会看到 draft 行流出 → 该断言不是空转。"
+    },
+    {
+      "probe": "P2 5001 行 422 不截断",
+      "mutated": "PROCUREMENT_WAREHOUSE_ROW_LIMIT = 6000（内存）",
+      "threwAfterMutation": false,
+      "restoredLimit": 5000,
+      "caughtByAssertion": true,
+      "note": "单测的 assert.rejects(…getStatus()===422) 会因「没有抛错」而失败 → 该断言依赖真实上限检查，不是恒真。"
+    },
+    {
+      "probe": "P3 groupBy 标量守卫",
+      "mutated": "假库把一条 groupBy 的 where 记录成 { material: { deletedAt: null } }（模拟关联过滤实现）",
+      "offenders": [
+        "inventoryFact.material",
+        "inventoryFact.material"
+      ],
+      "caughtByAssertion": true,
+      "note": "守卫对 where 键做白名单，关联过滤会被判为违规 → 守卫能抓住「顺手优化回关联过滤」。"
+    }
+  ],
+  "summary": {
+    "total": 34,
+    "passed": 34,
+    "failed": 0
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "generatedAt": "2026-11-04T14:58:50.565Z",
+  "page": "http://127.0.0.1:3111/reports/procurement-warehouse",
+  "computedBefore": {
+    "position": "absolute",
+    "page": "procurement-warehouse",
+    "visibility": "visible"
+  },
+  "mediaBoxBefore": {
+    "raw": "/MediaBox [0 0 612 792]",
+    "width": 612,
+    "height": 792
+  },
+  "computedAfter": {
+    "position": "static",
+    "page": "procurement-warehouse",
+    "visibility": "visible"
+  },
+  "mediaBoxAfter": {
+    "raw": "/MediaBox [0 0 612 792]",
+    "width": 612,
+    "height": 792
+  },
+  "rootCause": "打印媒体下 .procurement-warehouse-sheet 被全局 @media print 规则设为 position:absolute；Chromium 不给绝对定位盒子分配命名页 → @page procurement-warehouse 的 A4 landscape 不生效，回落到默认 Letter 竖直。",
+  "fixSuggestion": "把 `.procurement-warehouse-sheet` 从 `position: absolute` 那条全局规则里拆出来（或改成 `position: static`），让命名页生效；其余单据保持原规则。"
+}

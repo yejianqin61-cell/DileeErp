@@ -1,0 +1,253 @@
+{
+  "endpoint": "https://api.deepseek.com/chat/completions",
+  "temperature": 0,
+  "maxTokens": 150,
+  "runs": [
+    {
+      "variant": "double-encoded-history",
+      "run": 1,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "length",
+        "model": "deepseek-flash",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\",\\\\\\\"operation\\\\\\\":\\\\\\\"get_order_overview\\\\\\\"}\\\"\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": false,
+            "decodedOperationValid": false,
+            "decoded": {
+              "arguments": "\"{\\\"order_no\\\":\\\"SO-2026-0001\\\",\\\"operation\\\":\\\"get_order_overview\\\"}\""
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\",\\\\\\\"operation\\\\\\\":\\\\\\\"get_order_timeline\\\\\\\"}\\\"\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": false,
+            "decodedOperationValid": false,
+            "decoded": {
+              "arguments": "\"{\\\"order_no\\\":\\\"SO-2026-0001\\\",\\\"operation\\\":\\\"get_order_timeline\\\"}\""
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\",\\\\\\\"operation\\\\\\\":\\\\\\\"get_order",
+            "decodedKind": "invalid-json",
+            "decodedHasOperation": null,
+            "decodedOperationValid": null,
+            "decoded": null
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed-object-input-history",
+      "run": 1,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "length",
+        "model": "deepseek-flash",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_overview\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": true,
+            "decodedOperationValid": true,
+            "decoded": {
+              "operation": "get_order_overview",
+              "order_no": "SO-2026-0001"
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_timeline\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": true,
+            "decodedOperationValid": true,
+            "decoded": {
+              "operation": "get_order_timeline",
+              "order_no": "SO-2026-0001"
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_alerts\", \"order_no\": ",
+            "decodedKind": "invalid-json",
+            "decodedHasOperation": null,
+            "decodedOperationValid": null,
+            "decoded": null
+          }
+        ]
+      }
+    },
+    {
+      "variant": "double-encoded-history",
+      "run": 2,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "length",
+        "model": "deepseek-flash",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\",\\\\\\\"operation\\\\\\\":\\\\\\\"get_order_overview\\\\\\\"}\\\"\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": false,
+            "decodedOperationValid": false,
+            "decoded": {
+              "arguments": "\"{\\\"order_no\\\":\\\"SO-2026-0001\\\",\\\"operation\\\":\\\"get_order_overview\\\"}\""
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\",\\\\\\\"operation\\\\\\\":\\\\\\\"get_order_timeline\\\\\\\"}\\\"\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": false,
+            "decodedOperationValid": false,
+            "decoded": {
+              "arguments": "\"{\\\"order_no\\\":\\\"SO-2026-0001\\\",\\\"operation\\\":\\\"get_order_timeline\\\"}\""
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\",\\\\\\\"operation\\\\\\\":\\\\\\\"get_order",
+            "decodedKind": "invalid-json",
+            "decodedHasOperation": null,
+            "decodedOperationValid": null,
+            "decoded": null
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed-object-input-history",
+      "run": 2,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "length",
+        "model": "deepseek-flash",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_overview\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": true,
+            "decodedOperationValid": true,
+            "decoded": {
+              "operation": "get_order_overview",
+              "order_no": "SO-2026-0001"
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_timeline\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": true,
+            "decodedOperationValid": true,
+            "decoded": {
+              "operation": "get_order_timeline",
+              "order_no": "SO-2026-0001"
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_alerts\", \"order_no\": ",
+            "decodedKind": "invalid-json",
+            "decodedHasOperation": null,
+            "decodedOperationValid": null,
+            "decoded": null
+          }
+        ]
+      }
+    },
+    {
+      "variant": "double-encoded-history",
+      "run": 3,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "length",
+        "model": "deepseek-flash",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"operation\\\\\\\":\\\\\\\"get_order_overview\\\\\\\",\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\"}\\\"\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": false,
+            "decodedOperationValid": false,
+            "decoded": {
+              "arguments": "\"{\\\"operation\\\":\\\"get_order_overview\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\""
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"operation\\\\\\\":\\\\\\\"get_order_timeline\\\\\\\",\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-0001\\\\\\\"}\\\"\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": false,
+            "decodedOperationValid": false,
+            "decoded": {
+              "arguments": "\"{\\\"operation\\\":\\\"get_order_timeline\\\",\\\"order_no\\\":\\\"SO-2026-0001\\\"}\""
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"arguments\": \"\\\"{\\\\\\\"operation\\\\\\\":\\\\\\\"get_order_alerts\\\\\\\",\\\\\\\"order_no\\\\\\\":\\\\\\\"SO-2026-",
+            "decodedKind": "invalid-json",
+            "decodedHasOperation": null,
+            "decodedOperationValid": null,
+            "decoded": null
+          }
+        ]
+      }
+    },
+    {
+      "variant": "fixed-object-input-history",
+      "run": 3,
+      "result": {
+        "httpStatus": 200,
+        "finishReason": "length",
+        "model": "deepseek-flash",
+        "content": "",
+        "toolCalls": [
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_overview\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": true,
+            "decodedOperationValid": true,
+            "decoded": {
+              "operation": "get_order_overview",
+              "order_no": "SO-2026-0001"
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_timeline\", \"order_no\": \"SO-2026-0001\"}",
+            "decodedKind": "object",
+            "decodedHasOperation": true,
+            "decodedOperationValid": true,
+            "decoded": {
+              "operation": "get_order_timeline",
+              "order_no": "SO-2026-0001"
+            }
+          },
+          {
+            "name": "order_query",
+            "rawArguments": "{\"operation\": \"get_order_alerts\", \"order_no\": ",
+            "decodedKind": "invalid-json",
+            "decodedHasOperation": null,
+            "decodedOperationValid": null,
+            "decoded": null
+          }
+        ]
+      }
+    }
+  ]
+}

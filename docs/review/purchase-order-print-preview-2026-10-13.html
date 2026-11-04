@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>采购订单打印件预览（单位/含税单价/数量/含税总价 合并成一列四行）</title>
+<style>
+  body { background:#f5f5f4; margin:0; padding:24px; font-family:"宋体",SimSun,serif; color:#111; }
+  .sheet { background:#fff; width:794px; margin:0 auto 20px; padding:28px 30px; box-shadow:0 2px 10px rgba(0,0,0,.12); }
+  h1 { text-align:center; font-size:20px; margin:0 0 12px; letter-spacing:2px; }
+  .addr { display:flex; gap:6px; border-bottom:1px solid #999; padding:4px 0 6px; }
+  .addr .lbl { text-align:right; min-width:64px; }
+  table.grid { width:100%; border-collapse:collapse; }
+  table.grid td { padding:3px 2px; font-size:13px; vertical-align:middle; }
+  table.grid td.lbl { text-align:right; white-space:nowrap; width:12%; }
+  table.grid td.val { border-bottom:1px solid #bbb; }
+  table.bill { width:100%; border-collapse:collapse; margin-top:14px; table-layout:fixed; }
+  table.bill th, table.bill td { border:1px solid #333; font-size:12.5px; padding:4px 5px; vertical-align:middle; }
+  table.bill th { text-align:center; font-weight:700; height:22px; }
+  table.bill td.name, table.bill td.spec { text-align:left; white-space:pre-wrap; word-break:break-word; }
+  table.bill td.no { text-align:left; }
+  table.bill td.tally { text-align:left; white-space:pre; font-size:12px; line-height:1.28; }
+  table.bill tr.data td { height:60px; }
+  table.bill tr.sub td { text-align:left; height:20px; }
+  .full { border:1px solid #333; padding:6px; margin-top:10px; font-size:12.5px; min-height:18px; }
+  .note { max-width:794px; margin:0 auto 12px; font-family:system-ui,sans-serif; font-size:13px; color:#444; line-height:1.6; }
+  .note b { color:#111; }
+  .terms p { margin:4px 0; font-size:12.5px; }
+  .sign { display:flex; margin-top:10px; }
+  .sign div { flex:1; border:1px solid #333; min-height:88px; padding:4px; font-weight:700; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="note">
+  <b>预览说明</b>：这是按新口径渲染的采购订单打印件（数据用 4 个产品行的样例，不是真实单据）。
+  变更点只有明细区：<b>单位 / 含税单价 / 数量 / 含税总价 四句话堆在同一个格子里</b>，一个产品仍然只占 1 行；
+  腾出来的宽度全给了<b>产品名称（B 列，30 字符）</b>与<b>规格型号（C 列，24 字符）</b>——上一版是 22 / 16。
+  表头字段、交期条款、备注、交易条款、签署栏都一字未动。
+</div>
+
+<div class="sheet">
+  <h1>【采购订单】</h1>
+  <div class="addr"><span class="lbl">交货地址：</span><span>浙江省绍兴市柯桥区迪礼厂区 1 号仓</span></div>
+  <table class="grid">
+    <tr><td class="lbl">订单号：</td><td class="val">DL260001（货号 27621）</td><td class="lbl">供应商名称：</td><td class="val">某某五金厂</td><td class="lbl">供应商联系人：</td><td class="val">李经理</td></tr>
+    <tr><td class="lbl">采购人：</td><td class="val">王采购</td><td class="lbl">操作人：</td><td class="val">赵主管</td><td class="lbl">下单录入时间：</td><td class="val">2026-09-10 09:20</td></tr>
+    <tr><td class="lbl">操作时间：</td><td class="val">2026-09-10 10:40</td><td class="lbl">总价：</td><td class="val">5485</td><td class="lbl">交货日期：</td><td class="val">2026-09-20</td></tr>
+    <tr><td class="lbl">付款方式：</td><td class="val">月结30天</td><td class="lbl">电话：</td><td class="val">13800000000</td><td></td><td></td></tr>
+  </table>
+  <div class="full"><b style="font-weight:400;color:#666">交期条款：</b>合同签订后 15 天内分批交货，首批不少于 500 根</div>
+
+  <table class="bill">
+    <colgroup><col style="width:6%"><col style="width:34%"><col style="width:27%"><col style="width:33%"></colgroup>
+    <tr><th>序号</th><th>产品名称</th><th>规格型号</th><th>单位 / 含税单价 / 数量 / 含税总价</th></tr>
+    <tr class="data"><td class="no">1</td><td class="name">伞骨</td><td class="spec">58cm</td><td class="tally">单位：　　　根
+含税单价：　1.25
+数量：　　　1200
+含税总价：　1500</td></tr>
+    <tr class="data"><td class="no">2</td><td class="name">伞布</td><td class="spec">主数据规格</td><td class="tally">单位：　　　米
+含税单价：　6.5
+数量：　　　300
+含税总价：　1960</td></tr>
+    <tr class="data"><td class="no">3</td><td class="name">手柄（加长款银色电镀带绳孔）</td><td class="spec">直柄 22cm 银色</td><td class="tally">单位：　　　个
+含税单价：　3.8
+数量：　　　250
+含税总价：　950</td></tr>
+    <tr class="data"><td class="no">4</td><td class="name">中棒</td><td class="spec">8*8K 黑色电着</td><td class="tally">单位：　　　根
+含税单价：　2.15
+数量：　　　500
+含税总价：　1075</td></tr>
+    <tr class="sub"><td>小计</td><td></td><td></td><td>小计：5485</td></tr>
+  </table>
+
+  <div class="full">备注：含税价，逾期按合同处理</div>
+  <div class="terms">
+    <b>交易条款：</b>
+    <p>1：厂商交货、其商品质量必须符合需方提供的样品或明细、标准及协议要求，否则本公司拒绝收货，如在使用过程中发现质量问题，厂商应赔偿因此而造成的经济损失。</p>
+    <p>2：厂商接到需方订单后，应于一天内做好交货日期的回复，逾期将以需方确认的交货日期及单价为准。</p>
+    <p>3：厂商应按时交货，逾期一天，按当天的货款1%扣款。</p>
+    <p>4：要有千分之二的备品和维修配件。</p>
+  </div>
+  <div class="sign"><div>厂家回签意见</div><div>厂家回签</div><div>主管签字</div></div>
+</div>
+
+<div class="note">
+  等价关系（便于核对）：<b>单位</b>=明细单位 · <b>含税单价</b>=系统单价（系统单价即含税价）·
+  <b>数量</b>=明细数量 · <b>含税总价</b>=系统金额（数量×单价+附加费）。
+  小计 = 各行含税总价之和（现在由服务端算成真数字，不再是 SUM 公式，原因见代码注释）。
+</div>
+</body>
+</html>

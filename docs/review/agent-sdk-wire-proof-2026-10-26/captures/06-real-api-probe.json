@@ -1,0 +1,41 @@
+{
+  "endpoint": "https://api.deepseek.com/chat/completions",
+  "sentArguments": {
+    "doubleEncoded": "\"{\\\"q\\\":\\\"SO-2026-0001\\\"}\"",
+    "fixed": "{\"q\":\"SO-2026-0001\"}"
+  },
+  "results": [
+    {
+      "label": "double-encoded-history",
+      "httpStatus": 200,
+      "ok": true,
+      "errorMessage": null,
+      "errorType": null,
+      "errorCode": null,
+      "choiceFinishReason": "length",
+      "choiceMessage": {
+        "role": "assistant",
+        "content": "",
+        "hasToolCalls": true,
+        "toolCallArguments": "{\"arguments\": \"\\\"{\\\\\\\"operation\\\\\\\":\\\\\\\"get_order"
+      },
+      "rawSnippet": "{\"id\":\"85aff9e7-50a8-4825-ab85-b1c9cc5eea6b\",\"object\":\"chat.completion\",\"created\":1793023521,\"model\":\"deepseek-flash\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"index\":0,\"id\":\"call_00_itSqXwOf1J2yPx1z6efz8390\",\"type\":\"function\",\"function\":{\"name\":\"order_query\",\"arguments\":\"{\\\"arguments\\\": \\\"\\\\\\\"{\\\\\\\\\\\\\\\"operation\\\\\\\\\\\\\\\":\\\\\\\\\\\\\\\"get_order\"}}]},\"logprobs\":null,"
+    },
+    {
+      "label": "fixed-object-input-history",
+      "httpStatus": 200,
+      "ok": true,
+      "errorMessage": null,
+      "errorType": null,
+      "errorCode": null,
+      "choiceFinishReason": "length",
+      "choiceMessage": {
+        "role": "assistant",
+        "content": "",
+        "hasToolCalls": true,
+        "toolCallArguments": "{\"operation\": \"get_order_overview\""
+      },
+      "rawSnippet": "{\"id\":\"f93e68b6-bd76-48b1-a45a-52d4a33d49d5\",\"object\":\"chat.completion\",\"created\":1793023521,\"model\":\"deepseek-flash\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"index\":0,\"id\":\"call_00_LOw0FHgFo9bgW6uW4VAI4521\",\"type\":\"function\",\"function\":{\"name\":\"order_query\",\"arguments\":\"{\\\"operation\\\": \\\"get_order_overview\\\"\"}}]},\"logprobs\":null,\"finish_reason\":\"length\"}],\""
+    }
+  ]
+}

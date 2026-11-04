@@ -1,0 +1,141 @@
+{
+  "method": "POST",
+  "url": "/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": "Bearer ***REDACTED***"
+  },
+  "body": {
+    "model": "deepseek-chat",
+    "messages": [
+      {
+        "role": "system",
+        "content": "你是 Dilee ERP 的订单查询助手。只允许通过给定工具查询事实，不得编造。"
+      },
+      {
+        "role": "user",
+        "content": "帮我看一下订单 SO-2026-0001 现在的生产进度。"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "order_query",
+          "description": "先调用 search_orders 搜索用户给出的单号或关键字；后续所有订单根查询只能使用搜索结果返回的精确 order_no（原样复制，包含产品名、后缀与空格），不能猜测或截断。可查询该订单的非财务进展。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "search_orders",
+                  "get_order_overview",
+                  "get_order_status",
+                  "get_order_timeline",
+                  "get_order_alerts",
+                  "get_order_attachments"
+                ],
+                "description": "要执行的内部查询能力：search_orders、get_order_overview、get_order_status、get_order_timeline、get_order_alerts、get_order_attachments"
+              },
+              "order_no": {
+                "type": "string",
+                "description": "当前订单号；订单搜索以外的 operation 必填"
+              },
+              "q": {
+                "type": "string",
+                "description": "搜索关键字；仅 order_query/search_orders 使用"
+              },
+              "page": {
+                "type": "number",
+                "description": "页码，从 1 开始"
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "sales_query",
+          "description": "查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_no 必须是本轮 search_orders 返回的精确值。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "get_sales_order",
+                  "get_customer",
+                  "get_bom",
+                  "get_sales_returns"
+                ],
+                "description": "要执行的内部查询能力：get_sales_order、get_customer、get_bom、get_sales_returns"
+              },
+              "order_no": {
+                "type": "string",
+                "description": "当前订单号；订单搜索以外的 operation 必填"
+              },
+              "q": {
+                "type": "string",
+                "description": "搜索关键字；仅 order_query/search_orders 使用"
+              },
+              "page": {
+                "type": "number",
+                "description": "页码，从 1 开始"
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "procurement_query",
+          "description": "查询某张订单的采购计划、采购单、到货与来料质检。order_no 必须是本轮 search_orders 返回的精确值。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "get_purchase_plans",
+                  "get_purchase_orders",
+                  "get_receipts",
+                  "get_incoming_inspections"
+                ],
+                "description": "要执行的内部查询能力：get_purchase_plans、get_purchase_orders、get_receipts、get_incoming_inspections"
+              },
+              "order_no": {
+                "type": "string",
+                "description": "当前订单号；订单搜索以外的 operation 必填"
+              },
+              "q": {
+                "type": "string",
+                "description": "搜索关键字；仅 order_query/search_orders 使用"
+              },
+              "page": {
+                "type": "number",
+                "description": "页码，从 1 开始"
+              }
+            },
+            "required": [
+              "operation"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto"
+  },
+  "rawBody": "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"system\",\"content\":\"你是 Dilee ERP 的订单查询助手。只允许通过给定工具查询事实，不得编造。\"},{\"role\":\"user\",\"content\":\"帮我看一下订单 SO-2026-0001 现在的生产进度。\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"order_query\",\"description\":\"先调用 search_orders 搜索用户给出的单号或关键字；后续所有订单根查询只能使用搜索结果返回的精确 order_no（原样复制，包含产品名、后缀与空格），不能猜测或截断。可查询该订单的非财务进展。\",\"parameters\":{\"type\":\"object\",\"properties\":{\"operation\":{\"type\":\"string\",\"enum\":[\"search_orders\",\"get_order_overview\",\"get_order_status\",\"get_order_timeline\",\"get_order_alerts\",\"get_order_attachments\"],\"description\":\"要执行的内部查询能力：search_orders、get_order_overview、get_order_status、get_order_timeline、get_order_alerts、get_order_attachments\"},\"order_no\":{\"type\":\"string\",\"description\":\"当前订单号；订单搜索以外的 operation 必填\"},\"q\":{\"type\":\"string\",\"description\":\"搜索关键字；仅 order_query/search_orders 使用\"},\"page\":{\"type\":\"number\",\"description\":\"页码，从 1 开始\"}},\"required\":[\"operation\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"sales_query\",\"description\":\"查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_no 必须是本轮 search_orders 返回的精确值。\",\"parameters\":{\"type\":\"object\",\"properties\":{\"operation\":{\"type\":\"string\",\"enum\":[\"get_sales_order\",\"get_customer\",\"get_bom\",\"get_sales_returns\"],\"description\":\"要执行的内部查询能力：get_sales_order、get_customer、get_bom、get_sales_returns\"},\"order_no\":{\"type\":\"string\",\"description\":\"当前订单号；订单搜索以外的 operation 必填\"},\"q\":{\"type\":\"string\",\"description\":\"搜索关键字；仅 order_query/search_orders 使用\"},\"page\":{\"type\":\"number\",\"description\":\"页码，从 1 开始\"}},\"required\":[\"operation\"],\"additionalProperties\":false}}},{\"type\":\"function\",\"function\":{\"name\":\"procurement_query\",\"description\":\"查询某张订单的采购计划、采购单、到货与来料质检。order_no 必须是本轮 search_orders 返回的精确值。\",\"parameters\":{\"type\":\"object\",\"properties\":{\"operation\":{\"type\":\"string\",\"enum\":[\"get_purchase_plans\",\"get_purchase_orders\",\"get_receipts\",\"get_incoming_inspections\"],\"description\":\"要执行的内部查询能力：get_purchase_plans、get_purchase_orders、get_receipts、get_incoming_inspections\"},\"order_no\":{\"type\":\"string\",\"description\":\"当前订单号；订单搜索以外的 operation 必填\"},\"q\":{\"type\":\"string\",\"description\":\"搜索关键字；仅 order_query/search_orders 使用\"},\"page\":{\"type\":\"number\",\"description\":\"页码，从 1 开始\"}},\"required\":[\"operation\"],\"additionalProperties\":false}}}],\"tool_choice\":\"auto\"}"
+}
