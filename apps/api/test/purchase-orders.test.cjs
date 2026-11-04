@@ -179,6 +179,44 @@ test("arrived-complete orders accept another receipt before close", async () => 
   assert.equal(result.id, "receipt-2");
 });
 
+// 用户 2026-11-04：「供应商会多送原料，但是系统不允许到货的大于订购数量。这点要允许。」
+// 超收不再拦单：不填原因也能登记，批次上留 over_receipt 标记；原因填了就原样保存。
+test("超收不再拦单：不填超收原因也能登记到货，批次带 over_receipt 标记", async () => {
+  let createdData;
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseOrder: { findFirst: async () => ({ id: "purchase-1", orderNo: "SO-1", status: "ordered", extensionData: {}, supplierId: "supplier-1", currency: "CNY", items: [{ id: "item-1", quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("2"), material: { materialType: "raw_material" }, receipts: [{ id: "receipt-1", quantity: new (require("@prisma/client").Prisma.Decimal)("10"), extensionData: {} }] }] }), update: async () => ({}) },
+    purchaseReceipt: { create: async ({ data }) => { createdData = data; return { id: "receipt-2", quantity: data.quantity, extensionData: data.extensionData }; } },
+    incomingInspection: { create: async () => ({ id: "inspection-2" }) },
+    purchaseOrderItem: { findMany: async () => [] },
+  };
+  tx.purchaseOrderItem.findMany = async () => [{ quantity: new (require("@prisma/client").Prisma.Decimal)("10"), receipts: [{ quantity: new (require("@prisma/client").Prisma.Decimal)("10") }, { quantity: new (require("@prisma/client").Prisma.Decimal)("2") }] }];
+  const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { create: () => ({}), update: () => ({}), record: async () => {} });
+  const result = await service.receiptV2("purchase-1", "item-1", { quantity: "2", received_date: "2026-11-04" }, { id: "user-1" });
+  assert.equal(result.id, "receipt-2");
+  assert.equal(createdData.extensionData.over_receipt, true);
+  assert.equal(createdData.extensionData.over_receipt_reason, null);
+});
+
+test("编辑到货批次改大超过采购数量：不再要求原因，写 over_receipt 标记", async () => {
+  const writes = [];
+  const tx = {
+    $queryRaw: async () => [],
+    purchaseReceipt: {
+      findFirst: async () => ({ id: "receipt-1", purchaseOrderId: "purchase-1", orderNo: "SO-1", purchaseOrderItemId: "item-1", extensionData: {}, purchaseOrderItem: { quantity: new (require("@prisma/client").Prisma.Decimal)("10"), unitPrice: new (require("@prisma/client").Prisma.Decimal)("2") }, inspections: [], rawMaterialInbounds: [], payableSources: [] }),
+      aggregate: async () => ({ _sum: { quantity: null } }),
+      update: async ({ data }) => { writes.push(data); return { id: "receipt-1", ...data }; },
+    },
+    purchaseOrder: { findFirst: async () => ({ extensionData: {} }) },
+  };
+  const service = new PurchaseOrdersService({ $transaction: async (fn) => fn(tx) }, { update: () => ({}), record: async () => {} });
+  await service.updateReceipt("receipt-1", { quantity: "12", reason: "供应商多送 200 码" }, { id: "user-1" });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].quantity.toString(), "12");
+  assert.equal(writes[0].extensionData.over_receipt, true);
+  assert.equal(writes[0].extensionData.over_receipt_reason, null);
+});
+
 test("价格待定的明细不许登记到货：0 元应付那条链的门留在这里", async () => {
   // 用户 2026-10-09：「其他辅料是要等客户确认资料了，才有价格出来的，现在客户都没给资料，
   // 也问不来的价格的」—— 计划侧因此允许**显式**带着 0 价下单（`allow_pending_price`）。

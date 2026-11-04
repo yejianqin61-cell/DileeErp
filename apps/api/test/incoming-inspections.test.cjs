@@ -17,11 +17,47 @@ test("passed QC does not create an inbound draft by itself", async () => {
   assert.deepEqual(calls, [], "质检不得自行创建入库草稿，必须等仓库接收通知");
 });
 
-test("incoming QC cannot cumulatively exceed its receipt quantity", async () => {
-  const tx = { $queryRaw: async () => undefined, purchaseReceipt: { findFirst: async () => ({ id: "receipt-1", orderNo: "DL260001", quantity: "10", inspections: [{ inspectedQuantity: "8" }] }) }, incomingInspection: { create: async () => { throw new Error("must not write"); } } };
-  const prisma = { $transaction: async (fn) => fn(tx) };
-  const service = new IncomingInspectionsService(prisma, { create: () => ({ createdBy: user.id, updatedBy: user.id }), record: async () => {} });
-  await assert.rejects(() => service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "3", accepted_quantity: "3", conditional_quantity: "0", rejected_quantity: "0" }, user), (error) => error instanceof UnprocessableEntityException && error.getResponse().code === "INSPECTION_QUANTITY_MISMATCH");
+// 用户 2026-11-04：供应商多送（订购 1500 码、实收 1600 码）时，来料质检必须能按实收登记。
+// 超收不再报「累计检验数量不能超过到货数量」，而是把到货批次数量抬到累计实收量，
+// 入库与应付随之按实数走；采购单上的订购数量不动。
+test("incoming QC over-delivery raises the receipt quantity to the actual inspected total", async () => {
+  const receiptUpdates = [];
+  const audits = [];
+  const { Prisma } = require("@prisma/client");
+  const receipt = { id: "receipt-1", orderNo: "DL260001", quantity: new Prisma.Decimal("10"), extensionData: { batch_sequence: 1 }, inspections: [{ inspectedQuantity: new Prisma.Decimal("8"), acceptedQuantity: new Prisma.Decimal("8"), conditionalQuantity: new Prisma.Decimal("0"), rejectedQuantity: new Prisma.Decimal("0"), extensionData: {} }] };
+  const tx = {
+    $queryRaw: async () => undefined,
+    purchaseReceipt: { findFirst: async () => receipt, update: async ({ data }) => { receiptUpdates.push(data); return { ...receipt, ...data }; } },
+    incomingInspection: { update: async ({ data }) => ({ id: "inspection-1", orderNo: "DL260001", ...data }) },
+  };
+  const service = new IncomingInspectionsService(
+    { $transaction: async (fn) => fn(tx) },
+    { create: () => ({}), update: () => ({}), record: async (...args) => { audits.push(args); } },
+  );
+  const result = await service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "3", accepted_quantity: "3", conditional_quantity: "0", rejected_quantity: "0", remark: "供应商多送 1" }, user);
+  assert.equal(result.inspectedQuantity.toString(), "11");
+  assert.equal(receiptUpdates.length, 1, "超收时必须把到货批次改到实收量");
+  assert.equal(receiptUpdates[0].quantity.toString(), "11");
+  assert.equal(receiptUpdates[0].extensionData.over_receipt, true);
+  assert.equal(receiptUpdates[0].extensionData.over_receipt_corrected_from, "10");
+  assert.equal(receiptUpdates[0].extensionData.over_receipt_reason, "供应商多送 1");
+  const overAudit = audits.find(([event]) => event === "purchase_receipt.over_receipt");
+  assert.ok(overAudit, "超收修正必须留一条审计");
+  assert.equal(overAudit[4].from, "10");
+  assert.equal(overAudit[4].to, "11");
+});
+
+test("incoming QC keeps the receipt quantity untouched when the actual total is within it", async () => {
+  let receiptWrites = 0;
+  const receipt = { id: "receipt-1", orderNo: "DL260001", quantity: "10", extensionData: {}, inspections: [] };
+  const tx = {
+    $queryRaw: async () => undefined,
+    purchaseReceipt: { findFirst: async () => receipt, update: async () => { receiptWrites += 1; return receipt; } },
+    incomingInspection: { create: async ({ data }) => ({ id: "inspection-1", ...data }) },
+  };
+  const service = new IncomingInspectionsService({ $transaction: async (fn) => fn(tx) }, { create: () => ({}), record: async () => {} });
+  await service.create({ purchase_receipt_id: "receipt-1", inspected_quantity: "10", accepted_quantity: "10", conditional_quantity: "0", rejected_quantity: "0" }, user);
+  assert.equal(receiptWrites, 0, "没超收到货数量时不应改到货批次");
 });
 
 test("an empty QC registration remains pending instead of rejected", async () => {

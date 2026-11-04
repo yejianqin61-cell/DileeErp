@@ -5,6 +5,9 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { RawMaterialInboundsService } from "./raw-material-inbounds.service";
 
+/** 供应商超送时，把到货批次数量抬到实收量的一次修正（审计详情与返回值都用它）。 */
+type OverReceiptCorrection = { receiptId: string; orderNo: string; from: string; to: string };
+
 @Injectable()
 export class IncomingInspectionsService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() @Inject(forwardRef(() => RawMaterialInboundsService)) private readonly inbounds?: RawMaterialInboundsService) {}
@@ -14,13 +17,16 @@ export class IncomingInspectionsService {
     if (!input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "质检更正必须填写原因", details: [] });
     const values = [input.inspected_quantity, input.accepted_quantity, input.conditional_quantity, input.rejected_quantity].map((value) => { try { const decimal = new Prisma.Decimal(value); if (decimal.isNegative()) throw new Error(); return decimal; } catch { throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] }); } });
     if (!values[1].plus(values[2]).plus(values[3]).eq(values[0])) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] });
+    const overReceipt: { value: OverReceiptCorrection | null } = { value: null };
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT purchase_receipt_id FROM incoming_inspections WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.incomingInspection.findFirst({ where: { id, deletedAt: null }, include: { purchaseReceipt: { include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } } } }, rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } } } });
       if (!current) throw new NotFoundException({ code: "INCOMING_INSPECTION_NOT_FOUND", message: "来料质检记录不存在", details: [] });
       if (current.status === "cancelled") throw new UnprocessableEntityException({ code: "INSPECTION_RETURNED_NOT_CORRECTABLE", message: "已整批退货的质检批次不可更正", details: [] });
       if (current.rawMaterialInbounds.length || current.purchaseReceipt.rawMaterialInbounds.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可修改", details: [] });
-      if (values[0].gt(current.purchaseReceipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
+      // 供应商超送（用户 2026-11-04）：实收数量可能大于到货数量，而到货数量又守着采购数量。
+      // 质检登记的就是实收事实，所以这里不再按到货数量拦截，而是把到货批次数量抬到实收量。
+      overReceipt.value = await this.raiseReceiptToActual(tx, current.purchaseReceipt, values[0], input.reason, user);
       const status = values[0].isZero() ? current.status : values[3].eq(values[0]) ? "rejected" : values[1].plus(values[2]).eq(values[0]) ? (values[2].gt(0) ? "conditionally_accepted" : "accepted") : "partially_accepted";
         const qcResult = status === "rejected" ? "rejected" : status === "accepted" || status === "conditionally_accepted" ? "all_inbound" : status === "partially_accepted" ? "partial_inbound" : null;
         if (input.qc_result && input.qc_result !== qcResult) throw new UnprocessableEntityException({ code: "QC_RESULT_MISMATCH", message: "QC 最终结果与检验数量分流不一致", details: [{ requested: input.qc_result, derived: qcResult }] });
@@ -29,17 +35,23 @@ export class IncomingInspectionsService {
       return updated;
     });
     await this.audit.record("incoming_inspection.update", "incoming_inspection", user.id, id, { order_no: result.orderNo, reason: input.reason.trim() });
+    if (overReceipt.value) await this.recordOverReceipt(overReceipt.value, "incoming_inspection.update", input.reason, user);
     return result;
   }
   async create(input: { purchase_receipt_id: string; inspected_quantity: string; accepted_quantity: string; conditional_quantity: string; rejected_quantity: string; qc_result?: string; extension_data?: Record<string, unknown>; remark?: string }, user: CurrentUser) {
     const values = [input.inspected_quantity, input.accepted_quantity, input.conditional_quantity, input.rejected_quantity].map((value) => { try { const decimal = new Prisma.Decimal(value); if (decimal.isNegative()) throw new Error(); return decimal; } catch { throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] }); } });
     if (!values[1].plus(values[2]).plus(values[3]).eq(values[0])) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "检验数量分流不合法", details: [] });
+    const overReceipt: { value: OverReceiptCorrection | null } = { value: null };
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM purchase_receipts WHERE id = ${input.purchase_receipt_id}::uuid FOR UPDATE`;
       const receipt = await tx.purchaseReceipt.findFirst({ where: { id: input.purchase_receipt_id, deletedAt: null }, include: { inspections: { where: { deletedAt: null }, include: { rawMaterialInbounds: { where: { deletedAt: null }, select: { id: true } } } } } });
       if (!receipt) throw new NotFoundException({ code: "RECEIPT_NOT_FOUND", message: "到货记录不存在", details: [] });
       const inspectedBefore = receipt.inspections.reduce((sum, inspection) => sum.plus(inspection.inspectedQuantity), new Prisma.Decimal(0));
-      if (values[0].plus(inspectedBefore).gt(receipt.quantity)) throw new UnprocessableEntityException({ code: "INSPECTION_QUANTITY_MISMATCH", message: "累计检验数量不能超过到货数量", details: [] });
+      const inspectedTotal = values[0].plus(inspectedBefore);
+      // 供应商超送（用户 2026-11-04）：实收 1600 而到货只登记了 1500 时，质检不能因为
+      // 「累计检验数量不能超过到货数量」被卡住 —— 到货数量本来就是按订单量估的，实收才是事实。
+      // 这里把到货批次数量抬到累计实收量（只升不降），入库与应付随之按实数走。
+      overReceipt.value = await this.raiseReceiptToActual(tx, receipt, inspectedTotal, input.remark, user);
       const existing = receipt.inspections[0];
       if (existing?.rawMaterialInbounds?.length) throw new UnprocessableEntityException({ code: "INSPECTION_DOWNSTREAM_EXISTS", message: "已有原料入库事实的质检批次不可修改", details: [] });
       const inspected = (existing?.inspectedQuantity ?? new Prisma.Decimal(0)).plus(values[0]);
@@ -57,7 +69,36 @@ export class IncomingInspectionsService {
       return result;
     });
     await this.audit.record("incoming_inspection.create", "incoming_inspection", user.id, result.id, { order_no: result.orderNo, purchase_receipt_id: input.purchase_receipt_id, status: result.status });
+    if (overReceipt.value) await this.recordOverReceipt(overReceipt.value, "incoming_inspection.create", input.remark, user);
     return result;
+  }
+
+  /**
+   * 供应商超送：把到货批次数量抬到累计实收量。
+   *
+   * 为什么在质检里改到货数量：到货登记是采购按订单量填的，实收数量往往要等质检/仓库点过才知道；
+   * 用户 2026-11-04 的原话是「在来料质检中无法修改」。不改到货数量的话，入库与应付会被一个偏小的
+   * 到货数量卡住（入库上限 = 合格 + 条件接收，应付 = 入库数量 × 单价），而实收数量才是事实。
+   *
+   * 只升不降：把数量往下改（例如输错）不属于超收，质检侧的更正不会把已登记的到货改小。
+   * 返回 null 表示没超收、没写库；调用方据此记一条 `purchase_receipt.over_receipt` 审计。
+   */
+  private async raiseReceiptToActual(
+    tx: Prisma.TransactionClient,
+    receipt: { id: string; orderNo: string; quantity: Prisma.Decimal; extensionData: Prisma.JsonValue | null },
+    actual: Prisma.Decimal,
+    reason: string | undefined,
+    user: CurrentUser
+  ): Promise<OverReceiptCorrection | null> {
+    if (!actual.gt(receipt.quantity)) return null;
+    const from = receipt.quantity.toString();
+    const extensionData = { ...((receipt.extensionData ?? {}) as Record<string, unknown>), over_receipt: true, over_receipt_reason: reason?.trim() || null, over_receipt_corrected_from: from };
+    await tx.purchaseReceipt.update({ where: { id: receipt.id }, data: { quantity: actual, extensionData: extensionData as Prisma.InputJsonValue, ...this.audit.update(user) } });
+    return { receiptId: receipt.id, orderNo: receipt.orderNo, from, to: actual.toString() };
+  }
+
+  private async recordOverReceipt(correction: OverReceiptCorrection, source: string, reason: string | undefined, user: CurrentUser) {
+    await this.audit.record("purchase_receipt.over_receipt", "purchase_receipt", user.id, correction.receiptId, { order_no: correction.orderNo, from: correction.from, to: correction.to, source, reason: reason?.trim() || null });
   }
 
   async transition(id: string, target: string, reason: string | undefined, user: CurrentUser) {
