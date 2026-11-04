@@ -68,6 +68,9 @@ const EXEMPT = new Map(Object.entries({
   // 2026-11-02：出库单打印件（成品出库单 / 领料单·补料单）——同样是「对准纸样」的版式件。
   "components/warehouse/finished-goods-outbound-slip-sheet.tsx": "成品出库单打印件：表头 / 明细 / 发货签收三张手写表都是 A4 纸样的固定 8 列（.outbound-slip-* 自带 table-layout:fixed 与列宽），纸上的空格子要留给手写，不套省略号",
   "components/production/material-slip-print-sheet.tsx": "领料单 / 补料单打印件：版式照 docs/samples/领料单-样例.xlsx（.material-slip-* 固定列宽），打印件不能出现 hover 省略号",
+  // 2026-11-04：采购与仓储报表打印件 —— 九列宽来自 REPORT_COLUMNS（合计 100%），纸面用 colgroup +
+  // `table-layout: fixed` 对准 A4 横向纸样；打印件不能出现 hover 省略号，也不需要 .table-bounded。
+  "components/reports/procurement-warehouse-print-sheet.tsx": "采购与仓储报表打印件：九列宽来自 REPORT_COLUMNS（合计 100%），纸面用 colgroup + table-layout:fixed 对准 A4 横向纸样，打印件不出现 hover 省略号",
   // AI 对话答案里的表格：列由模型当场生成，构建时不存在列定义，也不可能预先给每列宽度；
   // 对话阅读的正确做法是「表格自己横向滚」（用户要求「Markdown 表格应支持横向滚动」），
   // 塞进固定列宽 + 省略号会把答案裁成看不懂的样子。样式见 globals.css 的 .agent-md-table-wrap。

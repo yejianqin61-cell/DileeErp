@@ -734,16 +734,36 @@ button { cursor: pointer; }
   /* visibility（而不是 display）才能让祖先隐藏、后代重新可见；对话框在打印时改为普通文档流，避免被裁切 */
   body * { visibility: hidden !important; }
   .voucher-sheet, .voucher-sheet *, .transfer-slip-sheet, .transfer-slip-sheet *,
-  .outbound-slip-sheet, .outbound-slip-sheet *, .material-slip-sheet, .material-slip-sheet * { visibility: visible !important; }
+  .outbound-slip-sheet, .outbound-slip-sheet *, .material-slip-sheet, .material-slip-sheet *,
+  .procurement-warehouse-sheet, .procurement-warehouse-sheet * { visibility: visible !important; }
   .voucher-sheet, .transfer-slip-sheet, .outbound-slip-sheet, .material-slip-sheet { position: absolute; left: 0; top: 0; width: 100%; border: 0; padding: 0; gap: 8px; }
-  .voucher-print-dialog, .transfer-slip-dialog, .outbound-slip-dialog, .material-slip-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+  .voucher-print-dialog, .transfer-slip-dialog, .outbound-slip-dialog, .material-slip-dialog, .procurement-warehouse-dialog { position: static !important; transform: none !important; width: auto !important; max-height: none !important; overflow: visible !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
   .ui-dialog-header, .ui-dialog-footer, .ui-dialog-close, .ui-dialog-overlay { display: none !important; }
+
+  /* 采购与仓储报表的纸面（2026-11-04）：**走文档流**，并且只在这张纸存在时把整份文档切成 A4 横向（命名页）。
+     为什么不能像上面几张单据那样 `position: absolute` 覆盖在页面上 —— 实测证据（真实 Chromium，Playwright）：
+     Chromium **不给绝对定位的盒子分配命名页**，纸面自己写 `page: procurement-warehouse` 无效，
+     `page.pdf()` 的 MediaBox 仍是 612x792（Letter 纵向），@page 的 A4 横向根本没生效
+     （见 `.agent/verify/_print-landscape-page-probe.json`、`_print-landscape-page-probe2.json`）。
+     改成流式 + 把命名页挂在 html/body 上之后，MediaBox = 841.92x594.96（A4 横向）。
+     两条守住别改回去：
+       ① 命名页只在本报表纸面存在时挂（`:has`），否则凭证纸 / 出库单也会被横过来；
+       ② 背后的整页界面用 **display:none** 收掉，不能用 visibility:hidden —— 后者保留布局高度，
+          打印机会把隐藏的整页内容也分页，白纸多出几页。 */
+  html:has(.procurement-warehouse-sheet), body:has(.procurement-warehouse-sheet) { page: procurement-warehouse; }
+  body:has(.procurement-warehouse-sheet) .app-shell { display: none !important; }
+  .procurement-warehouse-sheet { position: static; width: 100%; max-width: none; margin: 0; border: 0; padding: 0; }
+  /* 老浏览器没有 `:has()`：退回原来那张「绝对定位盖在页面上、按默认纸张纵向」的打法 —— 挤一点但不会打出空白页。 */
+  @supports not selector(:has(*)) {
+    .procurement-warehouse-sheet { position: absolute; left: 0; top: 0; }
+  }
   /* 跨行转账单：灰底标签要印出来（默认会被浏览器抠掉背景色），输入框去掉聚焦虚线与取值高亮。 */
   .transfer-slip-section td, .transfer-slip-label { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .transfer-slip-input { outline: none !important; }
   /* 出库单 / 领料单：表头与合计行的灰底同样要印出来（否则标签与表头一片白，纸上分不出哪格是表头）。 */
   .outbound-slip-head th, .outbound-slip-table th, .outbound-slip-logistics th,
-  .material-slip-head th, .material-slip-table th { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .material-slip-head th, .material-slip-table th,
+  .procurement-warehouse-table th { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
 }
 
 /* 记账凭证的**分录编辑器**（components/finance/voucher-line-editor.tsx）。
@@ -1159,3 +1179,44 @@ button { cursor: pointer; }
   .agent-input-box { border-radius: 14px; padding: 8px 8px 6px 12px; }
   .agent-footnote { font-size: 11px; }
 }
+
+/* =====================================================================================
+   采购与仓储报表（app/reports/procurement-warehouse/page.tsx，
+   components/reports/procurement-warehouse-report.tsx / procurement-warehouse-print-sheet.tsx，2026-11-04）——
+
+   一张 A4 **横向**的对照表：订单 × 物料的采购 / 入库 / 未入库 / 领用 / 库存。
+   屏幕上是"表格 + 口径说明"；打印时页面上只留 `.procurement-warehouse-sheet` —— 可见清单在上面那条
+   @media print 里补齐了（与出库单 / 领料单 / 凭证纸同一做法），否则全局的 `body * { visibility: hidden }`
+   会把这张纸打成白纸。
+
+   为什么数字列要自己包一层 `.procurement-warehouse-num`：右对齐是**内容**的对齐，而 DataTable 是
+   全站共用原语（只接收 `meta.width`、不接收逐列单元格 class）；span `display:block + text-align:right`
+   就能在共享组件之外完成对齐，不用改 DataTable。负值复用既有 `.status-error`（`--danger`），不新造颜色。
+
+   列宽只写一次：屏幕 DataTable 的 `meta.width` 与纸面 `<colgroup>` 都来自
+   lib/procurement-warehouse-report.ts 的 REPORT_COLUMNS（九个百分比合计 100%），
+   这里不再抄一遍列宽 —— 抄了就会漂。
+   ===================================================================================== */
+.procurement-warehouse-num { display: block; text-align: right; font-variant-numeric: tabular-nums; }
+/* 页面的口径说明：列表而不是段落，三条规则一眼能数清。 */
+.procurement-warehouse-rule-list { display: grid; gap: 4px; margin: 8px 0 0; padding-left: 18px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.procurement-warehouse-rule-list strong { color: var(--text); font-weight: 600; }
+
+/* 纸面（屏幕上弹窗里就是这张纸）。版式与导出 xlsx 的九列同名同序，不设合计行。
+   打印时的排版（文档流 + A4 横向命名页 + 背后界面 display:none）见上面 @media print 里的那段注释；
+   这里只写**屏幕上**的外观，`page:` 不写在这一行 —— 命名页要挂在 html/body 上才生效（实测）。 */
+.procurement-warehouse-dialog { width: min(97vw, 1240px); }
+.procurement-warehouse-sheet { font-family: "SimSun", "宋体", serif; color: #1a1a1a; max-width: 1100px; margin: 0 auto; }
+.procurement-warehouse-company { margin: 0 0 2px; text-align: center; color: #555555; font-size: 13px; letter-spacing: 2px; }
+.procurement-warehouse-title { margin: 0 0 6px; text-align: center; font-family: "SimHei", "黑体", sans-serif; font-size: 20px; letter-spacing: 6px; }
+.procurement-warehouse-meta { margin: 0 0 8px; text-align: center; color: #444444; font-size: 12px; }
+.procurement-warehouse-table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 10px; }
+.procurement-warehouse-table th, .procurement-warehouse-table td { border: 1px solid #444444; padding: 4px 6px; vertical-align: middle; font-size: 12px; }
+.procurement-warehouse-table th { background: #f2f2f2; font-weight: bold; text-align: center; }
+.procurement-warehouse-table .procurement-warehouse-num { text-align: right; font-variant-numeric: tabular-nums; }
+.procurement-warehouse-notes { margin: 0; color: #333333; font-size: 11px; line-height: 1.6; }
+.procurement-warehouse-notes-title { margin: 0 0 3px; font-size: 12px; font-weight: bold; }
+.procurement-warehouse-notes p { margin: 0; }
+
+/* 命名页：本报表只影响自己（A4 横向），其余单据仍是各自 @page 的版式。 */
+@page procurement-warehouse { size: A4 landscape; margin: 10mm; }
