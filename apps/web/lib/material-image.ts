@@ -62,6 +62,50 @@ export function materialImageUrl(materialId: string, version?: string | number |
   return version === undefined || version === null || version === "" ? base : `${base}?v=${encodeURIComponent(String(version))}`;
 }
 
+// ---------------------------------------------------------------- 销售单行图片（2026-11-04「每种一张图」）
+//
+// 与物料图**同一套字节口径**（浏览器压 WebP、服务端解 RIFF 容器核对、2MB/边长上限），只是归属不同：
+// 图片按销售单隔离（`sales_order_images.sales_order_id`），行/格只存 `image_id` 指针。
+// 所以这里复用压缩管线，只换请求路径与错误码默认值 —— 各写一套压缩逻辑迟早分叉成
+// 「物料图能传、行图传不上去」这种查不出来的错。
+
+/** 销售单图片的接口路径（`apiGet`/`apiPost` 会自己补 `/api/v1`，所以这里不带前缀）。 */
+export function salesOrderImagePath(orderId: string, imageId?: string | null): string {
+  const base = `/sales-orders/${orderId}/images`;
+  const id = (imageId ?? "").trim();
+  return id ? `${base}/${encodeURIComponent(id)}` : base;
+}
+
+/**
+ * 销售单行图片的 `<img src>` 地址。
+ *
+ * 与 `materialImageUrl` 同一条理由：`<img>` 是浏览器直接发的请求，不走 `api-client`，所以必须自带
+ * `/api/v1` 前缀；`version` 用 `sha256` 破缓存（换图之后 sha 变了，地址跟着变，浏览器不会再显示旧图）。
+ */
+export function salesOrderImageUrl(orderId: string, imageId: string, version?: string | number | null): string {
+  const base = `/api/v1${salesOrderImagePath(orderId, imageId)}`;
+  return version === undefined || version === null || version === "" ? base : `${base}?v=${encodeURIComponent(String(version))}`;
+}
+
+/**
+ * 压成 WebP 再上传一张**销售单行图片**。
+ *
+ * 返回形状与 `uploadMaterialImage` 相同（`MaterialImageSummary`）：后端两张表都只回落元数据。
+ * 错误码沿用同族的 `SALES_ORDER_IMAGE_*`，但真正的失败原因（不是 WebP / 太大 / 压缩失败）来自
+ * `compressImageToWebp`，与物料图一致 —— 界面原样显示即可。
+ */
+export async function uploadSalesOrderImage(orderId: string, file: File, pipeline: ImagePipeline = browserImagePipeline()): Promise<MaterialImageSummary> {
+  const compressed = await compressImageToWebp(file, pipeline);
+  const form = new FormData();
+  form.append("file", compressed.blob, webpFileName(file.name));
+  const response = await fetch(`/api/v1${salesOrderImagePath(orderId)}`, { method: "POST", credentials: "include", body: form });
+  const body = await response.json().catch(() => null);
+  if (!response.ok || body?.error) {
+    throw new MaterialImageError(body?.error?.code ?? "SALES_ORDER_IMAGE_UPLOAD_FAILED", body?.error?.message ?? "图片上传失败");
+  }
+  return body.data as MaterialImageSummary;
+}
+
 /** 等比缩放到最长边不超过 `max`（图片本来就更小就原样返回，**不放大**）。 */
 export function fitWithin(width: number, height: number, max = MATERIAL_IMAGE_MAX_EDGE): { width: number; height: number } {
   const longest = Math.max(width, height);

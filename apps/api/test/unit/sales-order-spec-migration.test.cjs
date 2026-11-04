@@ -9,8 +9,17 @@
 //      否则升级后旧单一条都写不进去；
 //   3. 细分明细表的结构：group_name 分组、sort_order 排序索引、外键指向 sales_orders；
 //   4. 不加多余索引：这些字段只有填写、打印与人工查看，没有按它们筛选或去重的场景。
+//
+// ⚠️ 2026-11-04 起：**行图落库**。2026-09-16 的旧契约「图片不落库、导出留空」已被本轮需求
+// （用户：「销售订单要支持每个物料插入图片……一个生产单里有 5 种伞布、11 种伞头，能在每种里插入图片」）
+// 推翻 —— 见 docs/design/sales-order-row-images-2026-11-04.md 与迁移
+// 20261104180000_sales_order_row_images。文件末尾那条旧断言因此换成了**新结构**的断言：
+// 独立的图片库两张表 + 两处可空 `image_id` 指针 + `SET NULL` 外键 + 18 格映射的唯一键。
+// 这是有意的契约更新，不是「改测试迎合错误行为」。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const { readFileSync } = require("node:fs");
+const { join } = require("node:path");
 const { migrationSql } = require("../helpers/migration-guards.cjs");
 
 const sql = migrationSql();
@@ -73,8 +82,50 @@ test("不给细化列加索引（只有填写、打印与人工查看）", () =>
   }
 });
 
-test("图片不落库：迁移里没有任何图片列（用户明确不导出、留空）", () => {
-  for (const word of ["image", "picture", "photo", "图片"]) {
-    assert.equal(new RegExp(`ADD COLUMN [^,;]*${word}`, "i").test(sql), false, `不该有图片列（${word}）`);
+/**
+ * 2026-11-04 行图落库的库级守卫（旧「图片不落库」断言由本轮需求推翻，见文件头注释）。
+ *
+ * 为什么必须钉 SQL 而不是只钉服务层：单测用内存替身，**看不到列、外键与唯一索引**——
+ * 而本轮的行图不落库会表现成「界面上传了、保存后没了」「删一张单把另一张单的图带走」这类
+ * 只在真实库上才炸的错误。所以这里直接读迁移文件，按 schema 声明的可空性算期望的外键动作。
+ *
+ * 断言要抓的是**真实结构**，不是「出现过 image 字样」：
+ *   ① 图片是独立的库行（`sales_order_images.data BYTEA`），不是明细行上的字节列；
+ *   ② 18 格映射表 + 唯一键 `(sales_order_id, spec_key)`（唯一索引不看 deleted_at，替换必须逐格对齐）；
+ *   ③ 明细行 / 「其它」行的 `image_id` 是**可空、无默认值**的 UUID（历史行 = 没有图）；
+ *   ④ 两条 image_id 外键是可空外键的默认口径 `ON DELETE SET NULL`（图片被硬删时那几行只是「没有图」）；
+ *   ⑤ 本迁移不出现 `ON DELETE CASCADE`（销售链一律不 CASCADE，草稿删除是软删）。
+ */
+test("行图落库（2026-11-04）：图片库两张表 + 两处可空 image_id + SET NULL 外键 + 18 格唯一键", () => {
+  const apiRoot = join(__dirname, "..", "..");
+  const rowImagesSql = readFileSync(join(apiRoot, "prisma", "migrations", "20261104180000_sales_order_row_images", "migration.sql"), "utf8");
+
+  // ① 独立图片库（按单隔离：sales_order_id 不可空）
+  assert.match(rowImagesSql, /CREATE TABLE "sales_order_images" \(/i, "必须建 sales_order_images（字节进这张表，不进行表）");
+  assert.match(rowImagesSql, /"data" BYTEA NOT NULL/i, "图片字节是 bytea 列（与 material_images 同一口径）");
+  assert.match(rowImagesSql, /"sales_order_id" UUID NOT NULL/i, "图片按单隔离：sales_order_id 不可空");
+
+  // ② 18 格映射表 + 唯一键（唯一索引不看 deleted_at → 服务层必须逐格 upsert/复活）
+  assert.match(rowImagesSql, /CREATE TABLE "sales_order_slot_images" \(/i, "必须建 sales_order_slot_images（18 个标量格没有行可挂外键）");
+  assert.match(
+    rowImagesSql,
+    /CREATE UNIQUE INDEX "sales_order_slot_images_sales_order_id_spec_key_key" ON "sales_order_slot_images"\("sales_order_id", "spec_key"\)/i,
+    "18 格映射的唯一键必须是 (sales_order_id, spec_key)：删了再建会撞它",
+  );
+
+  // ③ 两处行级指针：可空、无默认值（历史行没有图是正常状态，加列不能变成「必须补填」）
+  for (const table of ["sales_order_spec_details", "sales_order_material_extras"]) {
+    const added = new RegExp(`ALTER TABLE "${table}" ADD COLUMN "image_id" UUID([^;]*)`, "i").exec(rowImagesSql)?.[1];
+    assert.ok(added !== undefined, `${table} 必须加 image_id 列（本轮的行图落点）`);
+    assert.equal(/NOT NULL/i.test(added), false, `${table}.image_id 必须可空（历史行没有图）`);
+    assert.equal(/DEFAULT/i.test(added), false, `${table}.image_id 不该有默认值（空就是空）`);
   }
+
+  // ④ 外键动作：可空外键的 Prisma 默认是 SET NULL（与另一张表的 material_id 踩过的「6 行永久漂移」同一个坑）
+  for (const constraint of ["sales_order_spec_details_image_id_fkey", "sales_order_material_extras_image_id_fkey"]) {
+    const action = new RegExp(`ADD CONSTRAINT "${constraint}"[^;]*?ON DELETE ([A-Z ]+?) ON UPDATE`).exec(rowImagesSql)?.[1] ?? null;
+    assert.equal(action, "SET NULL", `${constraint} 必须是 ON DELETE SET NULL（图片被硬删时那几行只是「没有图」）`);
+  }
+  // ⑤ 销售链一律不 CASCADE：草稿删除是软删，删一张单不许把图片库或行一起带走
+  assert.equal(/ON DELETE CASCADE/i.test(rowImagesSql), false, "销售单图片迁移里不许出现 ON DELETE CASCADE");
 });

@@ -247,8 +247,21 @@ test("图片候选：「其它」行排在 18 项之后，键是 extra:<行 id>�
     materialRefs: [{ specKey: "rib_spec", material: { id: MATERIAL_A, materialCode: "MAT-1", name: "伞骨", specificationModel: "50cm", color: "黑", image: null } }],
   });
   const candidates = await exportService(row).exportImageCandidates(ORDER_ID);
-  assert.deepEqual(candidates.map((item) => item.spec_key), ["rib_spec", materialExtraRefKey(EXTRA_ID_2)], "只列「引用了物料」的行（弹簧那行没引用），顺序照印刷顺序（固定项 → 其它）");
-  assert.deepEqual(candidates[1], { spec_key: materialExtraRefKey(EXTRA_ID_2), label: "胶袋", material_id: MATERIAL_B, material_code: "MAT-9", material_name: "胶袋 200x300", has_image: true, image_version: "sha-9" });
+  // 2026-11-04 起候选只列**有图**的行：弹簧那行没引用也没图，伞骨引用了物料但物料没图 —— 都不进候选。
+  assert.deepEqual(candidates.map((item) => item.spec_key), [materialExtraRefKey(EXTRA_ID_2)], "只列有图的行，顺序照印刷顺序（固定项 → 其它）");
+  assert.deepEqual(candidates[0], {
+    spec_key: materialExtraRefKey(EXTRA_ID_2),
+    label: "胶袋",
+    kind: "extra",
+    material_id: MATERIAL_B,
+    material_code: "MAT-9",
+    material_name: "胶袋 200x300",
+    has_image: true,
+    image_version: "sha-9",
+    image_source: "material",
+    image_id: null,
+    image_url: `/api/v1/materials/${MATERIAL_B}/image?v=sha-9`,
+  });
   assert.equal(materialExtraRefKey(EXTRA_ID), "extra:" + EXTRA_ID, "键里带的是行 id（不是序号）：候选过期时报错，而不是把图配到别的行上");
 });
 
@@ -356,7 +369,7 @@ test("导出正文：本类目那一格空着、只加了款，也要印出来�
 test("图片候选：「再加一款」的行排在所属类目之后（不是全堆到最后）", async () => {
   const image = { width: 400, height: 300, sha256: "sha-x" };
   const row = orderRow({
-    materialRefs: [{ specKey: "canopy_spec", material: { id: MATERIAL_A, materialCode: "MAT-1", name: "伞布", specificationModel: "190T", color: "黑", image: null } }],
+    materialRefs: [{ specKey: "canopy_spec", material: { id: MATERIAL_A, materialCode: "MAT-1", name: "伞布", specificationModel: "190T", color: "黑", image } }],
     materialExtras: [
       { id: EXTRA_ID, label: "伞头", content: "", sortOrder: 0, specKey: "handle_spec", material: { id: MATERIAL_B, materialCode: "MAT-2", name: "伞头", specificationModel: "直柄", color: "银", image } },
       { id: EXTRA_ID_2, label: "弹簧", content: "", sortOrder: 1, specKey: null, material: { id: MATERIAL_A, materialCode: "MAT-3", name: "弹簧", specificationModel: "5cm", color: null, image } },

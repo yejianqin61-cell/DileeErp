@@ -403,6 +403,10 @@ model SalesOrder {
   specDetails               SalesOrderSpecDetail[]
   materialRefs              SalesOrderMaterialRef[]
   materialExtras            SalesOrderMaterialExtra[]
+  /// 销售单行图片（2026-11-04）：材料格与明细行的「每种一张图」都从这张库里挑。
+  images                    SalesOrderImage[]
+  /// 18 个材料类目各自的直接图片（与物料引用无关的一格一图映射）。
+  slotImages                SalesOrderSlotImage[]
 
   purchaseReceipts             PurchaseReceipt[]
   incomingInspections          IncomingInspection[]
@@ -449,7 +453,11 @@ model SalesOrder {
  * 样本2 的「伞头配色」（伞头名 + 配色 + 条码 + 数量/打）与「外层花色搭配」都是同一种形状。
  * 用户拍板「一张通用表 + 分组名」，所以不为每种明细表各建一张（否则出现第三种又要加表）。
  *
- * **不存图片**：模板里的花色「图片」列与【相关图片】大格按用户要求只留空格、不导出。
+ * **每行可以挂一张图**（2026-11-04）：用户要的是「一个生产单里有 5 种伞布、11 种伞头，
+ * 每种里插入图片」——真实生产单样例里就是每行一张图（花色一行 6 张、伞头每行 1 张）。
+ * 图片本身是**独立上传的库行**（`SalesOrderImage`），这里只存 `imageId` 指针：因为本表的替换语义是
+ * 「软删旧的 + 建新的」（行 id 每次保存都会变），把字节挂在这一行上会在每次保存时丢掉/重复。
+ * `image_id` 可空 = 这一行没有图（绝大多数历史行都是）。
  */
 model SalesOrderSpecDetail {
   id           String     @id @default(uuid()) @db.Uuid
@@ -464,6 +472,8 @@ model SalesOrderSpecDetail {
   barcode      String?    @db.VarChar(100)
   quantity     Decimal?   @db.Decimal(18, 4)
   unit         String?    @db.VarChar(30)
+  /** 这一行挂着的那张图（`sales_order_images` 的 id）。空 = 这一行没有图。 */
+  imageId      String?    @map("image_id") @db.Uuid
   sortOrder    Int        @default(0) @map("sort_order")
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
@@ -472,8 +482,10 @@ model SalesOrderSpecDetail {
   deletedAt    DateTime?  @map("deleted_at")
   deletedBy    String?    @map("deleted_by") @db.Uuid
   salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
+  image        SalesOrderImage? @relation(fields: [imageId], references: [id], onDelete: SetNull)
 
   @@index([salesOrderId, sortOrder])
+  @@index([imageId])
   @@map("sales_order_spec_details")
 }
 
@@ -547,6 +559,10 @@ model SalesOrderMaterialExtra {
   content      String?    @db.VarChar(1000)
   /// 引用的物料（可空 = 只填文字）。用途与上面 18 格的引用完全一致：填字 + 带图。
   materialId   String?    @map("material_id") @db.Uuid
+  /// 这一行自己挂的那张图（2026-11-04，`sales_order_images` 的 id）。
+  /// 与 `materialId` 的关系：引用物料时导出优先用**这一行自己的图**（客户临时给的样照），
+  /// 没有自己的图才回退到物料清单里那张。空 = 没挂图。
+  imageId      String?    @map("image_id") @db.Uuid
   sortOrder    Int        @default(0) @map("sort_order")
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
@@ -561,10 +577,88 @@ model SalesOrderMaterialExtra {
   /// 业务上这个值也是对的：`material_id` 可空（只填文字的行），物料被硬删时该行留着文字、只摘引用
   /// —— 与服务层 `usableMaterialExtras` 同一条口径；写死默认值是为了让它可见、不再被"顺手统一"掉。
   material     Material?  @relation(fields: [materialId], references: [id], onDelete: SetNull)
+  image        SalesOrderImage? @relation(fields: [imageId], references: [id], onDelete: SetNull)
 
   @@index([salesOrderId, sortOrder])
   @@index([materialId])
+  @@index([imageId])
   @@map("sales_order_material_extras")
+}
+
+/// 销售单行图片库（2026-11-04）。
+///
+/// 用户原话：「销售订单要支持每个物料插入图片……用户还需要比如说一个生产单里有 5 种伞布、
+/// 11 种伞头，能在每种里插入图片」。
+///
+/// ## 为什么图片是**独立的库行**，而不是挂在材料行/明细行上
+///
+/// `sales_order_material_extras` 与 `sales_order_spec_details` 的替换语义都是「软删旧的 + 建新的」
+/// （整块替换），**每次保存行 id 都会变**。字节挂在这些行上，保存一次要么丢图（新行没有字节），
+/// 要么把整块图重新拷一遍（每次保存都复制几百 KB）。所以：图片先经 `POST /sales-orders/:id/images`
+/// 上传成这一张单的**独立行**，材料行/明细行只存 `image_id` 指针，保存时搬运指针、不动字节；
+/// 保存末尾再把「这一单里没有任何行引用的图片」软删（用户传了又取消的那种）。
+///
+/// ## 为什么按单隔离（`sales_order_id` 不可空）
+///
+/// 同一张图不会被别的销售单直接引用：返单/复制时服务端把字节**复制**成新单自己的行
+/// （见 `sales-orders.service.ts` 的图片绑定逻辑），这样删一张单不会让另一张单的图变成破图，
+/// 也不会出现跨单的 IDOR。
+///
+/// ## 字节口径与 `material_images` 完全一致
+///
+/// 浏览器压成 WebP 再传，服务端用同一个 `validateMaterialImage` 解开 RIFF 容器核对真实尺寸
+/// （≤2MB、边长 ≤2000）；读接口用 `ETag = sha256` + `must-revalidate`。
+model SalesOrderImage {
+  id           String   @id @default(uuid()) @db.Uuid
+  salesOrderId String   @map("sales_order_id") @db.Uuid
+  /// 图片字节（WebP）。PostgreSQL 的 bytea。
+  data         Bytes
+  mimeType     String   @default("image/webp") @map("mime_type") @db.VarChar(50)
+  width        Int
+  height       Int
+  byteSize     Int      @map("byte_size")
+  /// 内容摘要：`ETag` + 「换没换图」的唯一判断依据（与 `material_images.sha256` 同一口径）。
+  sha256       String   @db.VarChar(64)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdBy    String   @map("created_by") @db.Uuid
+  updatedBy    String   @map("updated_by") @db.Uuid
+  deletedAt    DateTime? @map("deleted_at")
+  deletedBy    String?  @map("deleted_by") @db.Uuid
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
+  slotImages     SalesOrderSlotImage[]
+  materialExtras SalesOrderMaterialExtra[]
+  specDetails    SalesOrderSpecDetail[]
+
+  @@index([salesOrderId])
+  @@map("sales_order_images")
+}
+
+/// 「18 个材料类目 → 这一格自己的图」的映射（2026-11-04）。
+///
+/// 为什么需要这张映射表：18 个材料格是 `sales_orders` 上的 18 个标量列（模板印死的栏位），
+/// **没有行**可以挂 `image_id`；而「每格一张图」必须能表达出来（哪怕这一格没引用任何物料）。
+/// 一行 = 一格的一张图，唯一键 `(sales_order_id, spec_key)`；与 `sales_order_material_refs` 同一条
+/// 「删了再建会撞唯一索引」的坑，所以替换也是**逐格对齐**（复活/改 image_id），不是软删+新建。
+model SalesOrderSlotImage {
+  id           String   @id @default(uuid()) @db.Uuid
+  salesOrderId String   @map("sales_order_id") @db.Uuid
+  /// 材料明细的 18 个栏位之一（与 `SPEC_MATERIAL_FIELDS` 的请求键同源：`rib_spec` / `canopy_spec` …）
+  specKey      String   @map("spec_key") @db.VarChar(50)
+  imageId      String   @map("image_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  createdBy    String   @map("created_by") @db.Uuid
+  updatedBy    String   @map("updated_by") @db.Uuid
+  deletedAt    DateTime? @map("deleted_at")
+  deletedBy    String?  @map("deleted_by") @db.Uuid
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
+  image        SalesOrderImage @relation(fields: [imageId], references: [id])
+
+  @@unique([salesOrderId, specKey])
+  @@index([salesOrderId])
+  @@index([imageId])
+  @@map("sales_order_slot_images")
 }
 
 model SalesOrderVersion {

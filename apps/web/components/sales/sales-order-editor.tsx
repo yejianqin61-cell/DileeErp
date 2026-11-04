@@ -7,7 +7,7 @@
 //
 // 字段清单与载荷规则全部来自 `lib/sales-order-spec.ts`（纯函数，有 node:test 覆盖），
 // 这个组件只负责渲染与取数，不再自己拼字段名——否则清单会分叉成「界面有、库里没有」。
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PageHeader } from "../layout/app-shell";
@@ -26,17 +26,18 @@ import { auditDetailFields, type AuditRow } from "../data/audit-columns";
 import {
   SPEC_DETAIL_COLUMNS, SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_MATERIAL_KEYS, SPEC_PROCESS_FIELDS,
   SPEC_SCALAR_KEYS, DEFAULT_SPEC_DETAIL_LABELS, MATERIAL_EXTRA_LIMIT, SPEC_DETAIL_LABEL_MAX_LENGTH, detailLabelsWithDefaults, emptyMaterialExtraRow, emptySpecDetailRow, isBlankSpecDetail,
-  materialExtrasFromOrder, freeMaterialExtras, materialExtrasOfCategory, materialOptionLabel, materialRefsFromOrder, materialSpecText, specDetailLabelsFromOrder, validateMaterialExtras, validateSpecDetailLabels,
-  specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialExtraRow, type MaterialOption, type MaterialRefState, type SpecDetailRow,
+  materialExtrasFromOrder, freeMaterialExtras, materialExtrasOfCategory, materialOptionLabel, materialRefsFromOrder, materialSpecText, rowImageFrom, slotImagesFromOrder, specDetailLabelsFromOrder, validateMaterialExtras, validateSpecDetailLabels,
+  specFromOrder, specPayload, specQuantityNotice, validateSpecDetails, type MaterialExtraRow, type MaterialOption, type MaterialRefState, type RowImageMeta, type SlotImages, type SpecDetailRow,
 } from "../../lib/sales-order-spec";
-import { MaterialThumb } from "../procurement/material-image";
+import { uploadMaterialImage, type MaterialImageSummary } from "../../lib/material-image";
+import { SalesOrderRowImage } from "./sales-order-row-image";
 import { ItemNoInput, type ItemNoSuggestion } from "./item-no-input";
 // Excel 补录（2026-11-02）：解析结果与「待修正项」的判定在 lib 里（纯函数，有 node:test 覆盖）。
 import { importIssueSplit, importOutcome, importSummaryText, type SalesOrderImportResult } from "../../lib/sales-order-import";
 
 type Customer = { id: string; customerCode?: string; name: string; isActive?: boolean; currency?: string | null; contacts?: Array<{ id: string; name: string; phone?: string | null; isDefault?: boolean }> };
 type Unit = { id: string; name: string };
-type DetailResponse = AuditRow & Record<string, unknown> & { id: string; orderNo: string; status: string; customer?: { id: string }; contact?: { id: string } | null; specDetails?: Array<Record<string, unknown>>; materialRefs?: Array<Record<string, unknown>> };
+type DetailResponse = AuditRow & Record<string, unknown> & { id: string; orderNo: string; status: string; customer?: { id: string }; contact?: { id: string } | null; specDetails?: Array<Record<string, unknown>>; materialRefs?: Array<Record<string, unknown>>; /** 18 格各自的图（列名形状，`slotImagesFromOrder` 里两种键名都认）。 */ slotImages?: Array<Record<string, unknown>>; };
 
 /**
  * 改号影响面（`GET /sales-orders/:id/order-no-impact?order_no=新号`）。
@@ -332,6 +333,13 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
   // 材料明细的物料引用（用户 2026-09-24）：键 = 栏位请求键，值 = 引用的物料（null = 只填文字）。
   const [refs, setRefs] = useState<MaterialRefState>(() => Object.fromEntries(SPEC_MATERIAL_KEYS.map((key) => [key, null])));
   /**
+   * 18 格各自的图（用户 2026-11-04「每种一张图」）。
+   *
+   * 与 `refs` **分开**存：引用物料只决定「兜底用哪张图」，这一格完全可以引用物料却没有自己的图，
+   * 也可以不引用物料却传了一张客户样照。保存时整块发 `slot_images`（后端按格逐一对齐）。
+   */
+  const [slotImages, setSlotImages] = useState<SlotImages>(() => Object.fromEntries(SPEC_MATERIAL_KEYS.map((key) => [key, null])));
+  /**
    * 材料明细末尾的「其它」行（用户 2026-10-08：「材料明细最后还需要加一个『其它』，可以自行添加类目。
    * 有时候还需要别的物料。允许用户增删改」）。
    *
@@ -339,6 +347,14 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
    * 一格一个 state —— 增、删、改都只动这个数组，保存时整块发出去（后端也是整块替换语义）。
    */
   const [extras, setExtras] = useState<MaterialExtraRow[]>([]);
+  /**
+   * 「这张行图要不要同时写入物料清单？」的待确认项（2026-11-04）。
+   *
+   * 只有「行上直接传了图 + 这一行引用了物料 + 那个物料在物料清单里还没有图」时才会出现。
+   * 存 `File`（而不是只存图片 id）：确认后要拿**同一张原图**再调一次物料图接口（浏览器重新压一遍 WebP），
+   * 存字节在 state 里不行（可能几 MB），存图片 id 也不行（销售单图片接口不给字节）。
+   */
+  const [materialImageSync, setMaterialImageSync] = useState<{ file: File; material: MaterialOption } | null>(null);
   const [materials, setMaterials] = useState<MaterialOption[]>([]);
   // 货号候选（老板 2026-09-26 的「货号」字段）：来自 GET /sales-orders/item-nos。
   // 拉不到就降级成空列表 —— 输入框仍然能输新货号，**不能**因为建议列表失败把整单卡住。
@@ -419,11 +435,15 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
     });
     // `copy` 用的是**请求键**（与快照同形状），正好是 `specFromOrder` 认的第一种形状。
     setSpec(specFromOrder(copy));
-    const detailRows = Array.isArray(copy.spec_details) ? (copy.spec_details as Array<Record<string, unknown>>).map((row) => ({ group_name: text(row.group_name), name: text(row.name), color: text(row.color), barcode: text(row.barcode), quantity: text(row.quantity), unit: text(row.unit) })) : [];
+    // 明细行：文本 + 这一行自己的图（复制/返单的 `copy` 是请求键形状，`rowImageFrom` 两种键名都认）。
+    const detailRows = Array.isArray(copy.spec_details) ? (copy.spec_details as Array<Record<string, unknown>>).map((row) => ({ group_name: text(row.group_name), name: text(row.name), color: text(row.color), barcode: text(row.barcode), quantity: text(row.quantity), unit: text(row.unit), image: rowImageFrom(row) })) : [];
     setDetails(detailRows.length ? detailRows : [emptySpecDetailRow()]);
     // 引用照抄：快照带了物料摘要（`material_refs[].material`），所以能直接把芯片显示出来，
     // 不依赖物料池那一次请求成不成功。
     setRefs(materialRefsFromOrder({ material_refs: copy.material_refs }));
+    // 18 格各自的图（2026-11-04）：复制/返单的 `copy` 带 `slot_images`（请求键），缩略图靠
+    // 「来源单 id + image_id + sha」显示；保存时把 image_id 交回后端，服务端会把字节复制成新单的图。
+    setSlotImages(slotImagesFromOrder(copy));
     // 「其它」行跟着来源单（复制就是把上一批的完整材料口径带过来）。
     setExtras(materialExtrasFromOrder(copy));
     // 明细列名跟着来源单（列名属于工艺口径的一部分）。
@@ -487,6 +507,8 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
         // 而表单按**请求键**（`rib_spec`）取值。直接 `order[key]` 会全部读成空 —— 见该函数的注释。
         setSpec(specFromOrder(order));
         setRefs(materialRefsFromOrder(order));
+        // 18 格各自的图（接口给的是列名形状 `slotImages`，函数里两种键名都认）。
+        setSlotImages(slotImagesFromOrder(order));
         // 「其它」行（接口给的是列名形状 `materialExtras`，函数里两种键名都认）。
         setExtras(materialExtrasFromOrder(order));
         // 明细列名的自定义覆盖（接口给的是**列名**形状 `specDetailLabels`，函数里两种都认）。
@@ -494,6 +516,8 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
         const rows = (order.specDetails ?? []).map((row) => ({
           group_name: String(row.groupName ?? ""), name: String(row.name ?? ""), color: String(row.color ?? ""),
           barcode: String(row.barcode ?? ""), quantity: asText(row.quantity), unit: String(row.unit ?? ""),
+          // 这一行自己的图：详情给 `imageId` + `image` 摘要（`rowImageFrom` 也认请求键形状）。
+          image: rowImageFrom(row),
         }));
         setDetails(rows.length ? rows : [emptySpecDetailRow()]);
         setAudit(order);
@@ -558,6 +582,21 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
   const materialOptions = useMemo(() => materials.map((material) => ({ value: material.id, label: materialOptionLabel(material) })), [materials]);
   const selectedCustomer = customers.find((item) => item.id === base.customer_id);
   const contacts = selectedCustomer?.contacts ?? [];
+  /**
+   * 缩略图该去**哪张单**读图。
+   *
+   * 编辑态 = 本单；返单/复制 = 来源单（图还挂在来源单上，保存时后端才把字节复制成新单自己的图）。
+   * Excel 补录没有来源单 → `null`（图片控件禁用）。这是整页一个值而不是行上各存一份：
+   * 一页里的图要么全属于本单、要么全属于来源单，行级再存归属只会多一处会漂移的字段。
+   */
+  const imageOwnerOrderId = orderId ?? reorderSource?.order_id ?? copySource?.order_id ?? null;
+  /**
+   * 能不能上传行图：只有**编辑既有单**时才有归属。
+   *
+   * 返单/复制虽然知道来源单 id，但那是别人的单 —— 把图传到来源单上会把上一批的图改掉。
+   * 新建单还没有 id，图片接口按单隔离（设计文档 §7.1）。所以这两条路都先禁用，保存后再补图。
+   */
+  const canUploadRowImages = Boolean(orderId);
 
   const setBaseField = (key: string, value: string) => setBase((current) => ({ ...current, [key]: value }));
   const setDetailField = (index: number, key: string, value: string) => setDetails((current) => current.map((row, at) => (at === index ? { ...row, [key]: value } : row)));
@@ -637,6 +676,74 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
     setExtras((current) => current.map((row, at) => (at === index ? { ...row, material: null } : row)));
   }
 
+  /** 上传回执 → 行上存的小摘要（**不含字节**：详情接口每次打开都拉，不能把图塞进去）。 */
+  function rowImageOfSummary(summary: MaterialImageSummary): RowImageMeta {
+    return { id: summary.id, width: summary.width, height: summary.height, sha256: summary.sha256, byteSize: summary.byteSize };
+  }
+
+  /**
+   * 行图上传成功后的共同一步（用户 2026-11-04 拍板）：图挂上行以后，如果这一行引用了
+   * **物料清单里还没有图**的物料，就问一句「要不要同时写入物料清单（下次引用直接带图）」。
+   *
+   * 有图、没引用物料、引用的是有图的物料 —— 三种情况都不问：前两种问不着，第三种再问就是重复劳动。
+   */
+  function askWriteMaterialImage(file: File, material: MaterialOption | null) {
+    if (!material || material.image) return;
+    setMaterialImageSync({ file, material });
+  }
+
+  function setSlotImage(key: string, image: RowImageMeta | null) {
+    setSlotImages((current) => ({ ...current, [key]: image }));
+  }
+
+  function setExtraImage(index: number, image: RowImageMeta | null) {
+    setExtras((current) => current.map((row, at) => (at === index ? { ...row, image } : row)));
+  }
+
+  function setDetailImage(index: number, image: RowImageMeta | null) {
+    setDetails((current) => current.map((row, at) => (at === index ? { ...row, image } : row)));
+  }
+
+  /** 删行图只清客户端状态：后端没有 DELETE 端点，保存时由服务端把无引用的图软删（设计文档 §2.1）。 */
+  function removeRowImage(apply: () => void) {
+    apply();
+    notifySuccess("已从这一行移除图片（保存后生效）");
+  }
+
+  /** 物料有了图之后刷新本地物料池与所有引用：兜底缩略图、芯片文字用的是同一份摘要。 */
+  function refreshMaterialImage(materialId: string, image: { sha256: string; updatedAt: string }) {
+    setMaterials((current) => current.map((item) => (item.id === materialId ? { ...item, image } : item)));
+    setRefs((current) => {
+      const next: MaterialRefState = { ...current };
+      for (const key of SPEC_MATERIAL_KEYS) {
+        const ref = next[key];
+        if (ref?.id === materialId) next[key] = { ...ref, image };
+      }
+      return next;
+    });
+    setExtras((current) => current.map((row) => (row.material?.id === materialId ? { ...row, material: { ...row.material, image } } : row)));
+  }
+
+  /**
+   * 「是否同时写入物料清单？」确认后的动作。
+   *
+   * 失败**不回滚行图**：行图已经上传成功、也已经挂在这一行上了，物料清单那次失败只是"下次不能直接带图"，
+   * 把行图一起撤掉会让用户白传一次（设计文档 §4.1 明确这么要求）。错误只提示原因（例如没有 procurement 权限）。
+   */
+  async function writeMaterialImageSync() {
+    const pending = materialImageSync;
+    if (!pending) return;
+    try {
+      const summary = await uploadMaterialImage(pending.material.id, pending.file);
+      refreshMaterialImage(pending.material.id, { sha256: summary.sha256, updatedAt: summary.updatedAt });
+      notifySuccess(`这张图已同时写入物料清单：${materialOptionLabel(pending.material)}`);
+    } catch (cause) {
+      notifyError(`图片已用在本单这一行；写入物料清单失败：${cause instanceof Error ? cause.message : "未知原因"}`);
+    } finally {
+      setMaterialImageSync(null);
+    }
+  }
+
   /**
    * 保存前的最后一道分流：**改了订单号就先弹影响面确认**，其余情况直接落库。
    *
@@ -687,7 +794,7 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
   async function persist(orderNo?: string, submitReason?: string, options: { rethrow?: boolean } = {}) {
     setSaving(true);
     setError("");
-    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs, detailLabelOverrides, extras) };
+    const payload: Record<string, unknown> = { ...base, ...specPayload(spec, details, refs, detailLabelOverrides, extras, slotImages) };
     // 基础字段的空串当「没填」删掉：可选字段的 @IsDecimal/@IsDateString 会因为空串报 400。
     // 细化字段相反——空串 = 清除这一格，必须原样发出去（`specPayload` 已经把 37 个键都带上了）。
     for (const key of Object.keys(base)) if (base[key] === "" && !SPEC_SCALAR_KEYS.includes(key)) delete payload[key];
@@ -749,6 +856,21 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
     { name: "reason", label: "改号原因", type: "textarea", required: true, placeholder: "为什么改（写进审计，事后按旧号也能查到这次改动）" },
   ] : [], [renameDialog]);
 
+  /**
+   * 「是否同时写入物料清单？」的字段清单。
+   *
+   * 与 `renameFields` 同一条理由必须 `useMemo`：`ActionDialog` 的 effect 依赖 `fields`，
+   * 每次渲染现拼一个新数组会触发 setValues → 重渲染 → 新数组的无限循环。
+   * 这个弹窗只有一个只读说明格，两个动作分别是「取消 = 只用于本单」与「同时写入物料清单」。
+   */
+  const materialImageSyncFields = useMemo<ActionField[]>(() => materialImageSync ? [
+    {
+      name: "note",
+      type: "info",
+      label: `这一行引用了物料「${materialOptionLabel(materialImageSync.material)}」，但它在物料清单里还没有图片。是否把刚上传的这张图同时写入物料清单（下次引用它就直接带图）？点「取消」= 只用于本单这一行，物料清单不动。`,
+    },
+  ] : [], [materialImageSync]);
+
   if (loading) return <div className="page-root" data-testid="sales-order-editor"><PageHeader title={editing ? "编辑销售单" : "新建销售单"} breadcrumb={["客户与销售", "销售单"]} /><LoadingState /></div>;
 
   /**
@@ -804,6 +926,20 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
           setReason(values.reason ?? "");
           await persist(nextOrderNo, values.reason, { rethrow: true });
         }}
+      />
+
+      {/*
+        行图上传后的「是否同时写入物料清单？」确认（2026-11-04）。
+        为什么用 ActionDialog 而不是 window.confirm：这里是两个**都合法**的选择（只用于本单 / 写进物料清单），
+        不是"确定要删除吗"那种破坏性确认；而且取消按钮的语义要能写成一句话（见 info 格末尾）。
+      */}
+      <ActionDialog
+        open={Boolean(materialImageSync)}
+        onOpenChange={(open) => { if (!open) setMaterialImageSync(null); }}
+        title="这张图也要写进物料清单吗？"
+        submitLabel="同时写入物料清单"
+        fields={materialImageSyncFields}
+        onSubmit={async () => { await writeMaterialImageSync(); }}
       />
 
       {/*
@@ -911,8 +1047,10 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
       <section className="panel">
         <div className="panel-heading">
           <h2>材料明细</h2>
-          <span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行。每一格<strong>既可以手打文字，也可以从物料清单里引用一个物料</strong>（选中会把名称/规格/颜色填进格子，并带上它的图片）。<strong>一个类目要填好几款</strong>（比如这一单有 3 款伞头、2 款伞布）时，点该类目下面的「再加一款」——导出时同一类目的几款会连在一起印。模板以外的物料写在下面的「其它」里。</span>
+          <span className="panel-note">两张样本的并集共 18 项；留空的项导出时不印该行。每一格<strong>既可以手打文字，也可以从物料清单里引用一个物料</strong>（选中会把名称/规格/颜色填进格子，并带上它的图片）；<strong>每一格还可以单独传一张图</strong>（有物料引用时物料图作兜底，行上的图优先）。<strong>一个类目要填好几款</strong>（比如这一单有 3 款伞头、2 款伞布）时，点该类目下面的「再加一款」——导出时同一类目的几款会连在一起印。模板以外的物料写在下面的「其它」里。</span>
         </div>
+        {/* 新建单还没有 id：图片按销售单隔离，所以图片控件先禁用（一句话说清，避免 18 格各重复一段灰字）。 */}
+        {!canUploadRowImages ? <p className="panel-note" data-testid="sales-material-images-unsaved-hint">图片要挂在销售单上：<strong>先保存销售单，再上传图片</strong>（保存后回到编辑页即可补图）。</p> : null}
         {extraErrors.length > 0 && <div className="status-error material-extra-errors" data-testid="sales-material-extra-errors">{extraErrors.map((item) => <p key={`${item.row}-${item.reason}`}>第 {item.row} 行：{item.reason}</p>)}</div>}
         <div className="panel-body form-grid">
           {SPEC_MATERIAL_FIELDS.map(([key, label]) => {
@@ -942,7 +1080,6 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
                     searchPlaceholder="输入物料编码 / 名称 / 规格 / 颜色搜索"
                     noResultsText="没有匹配的物料（可到【采购 → 物料清单】新建）"
                   />
-                  {ref && <MaterialThumb materialId={ref.id} version={ref.image?.sha256} alt={materialOptionLabel(ref)} size={36} />}
                   {ref && <Button size="sm" variant="ghost" data-testid={`sales-material-ref-clear-${key}`} onClick={() => clearMaterialRef(key)}>清除引用</Button>}
                   <Button
                     size="sm"
@@ -952,9 +1089,27 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
                     disabled={extras.length >= MATERIAL_EXTRA_LIMIT}
                     onClick={() => addExtraForCategory(key)}
                   >再加一款</Button>
+                  {/*
+                    这一格自己的图（用户 2026-11-04「每种一张图」）：行图优先，没有才回退引用的物料图。
+                    没有单 id（新建/返单/复制）时控件禁用 —— 缩略图用「来源单 id + image_id + sha」显示，
+                    那是**来源单**的图，保存时后端把字节复制成新单的图（设计文档 §2.5）。
+                  */}
+                  <SalesOrderRowImage
+                    testId={`sales-material-image-${key}`}
+                    orderId={imageOwnerOrderId}
+                    canUpload={canUploadRowImages}
+                    image={slotImages[key] ?? null}
+                    fallbackMaterial={ref}
+                    alt={`${label}的图片`}
+                    onUploaded={(summary, file) => {
+                      setSlotImage(key, rowImageOfSummary(summary));
+                      askWriteMaterialImage(file, refs[key] ?? null);
+                    }}
+                    onRemove={() => removeRowImage(() => setSlotImage(key, null))}
+                  />
                 </div>
-                {/* 引用了但那个物料还没有图 —— 导出时这一格没有图可带。说出来，别让用户以为是导出坏了。 */}
-                {ref && !ref.image && <span className="panel-note" data-testid={`sales-material-ref-no-image-${key}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+                {/* 引用了但那个物料没有图、这一格也没有自己的图 —— 导出时这一格没有图可带。说清楚，别让用户以为是导出坏了。 */}
+                {ref && !ref.image && !slotImages[key] && <span className="panel-note" data-testid={`sales-material-ref-no-image-${key}`}>该物料还没有图片（可到【采购 → 物料清单】上传，也可以在右边直接给这一格传一张）</span>}
                 {categoryRows.map(({ row, index }, position) => (
                   <div key={index} className="material-extra-row" data-testid={`sales-material-category-row-${key}-${position}`}>
                     <label>{label} · 第 {position + 2} 款
@@ -971,11 +1126,24 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
                         searchPlaceholder="输入物料编码 / 名称 / 规格 / 颜色搜索"
                         noResultsText="没有匹配的物料（可到【采购 → 物料清单】新建）"
                       />
-                      {row.material && <MaterialThumb materialId={row.material.id} version={row.material.image?.sha256} alt={materialOptionLabel(row.material)} size={36} />}
                       {row.material && <Button size="sm" variant="ghost" data-testid={`sales-material-category-ref-clear-${key}-${position}`} onClick={() => clearExtraRef(index)}>清除引用</Button>}
                       <Button size="sm" variant="ghost" data-testid={`sales-material-category-remove-${key}-${position}`} onClick={() => removeExtra(index)}>删除这一款</Button>
+                      {/* 「再加一款」行自己也可以挂图（2026-11-04）：行图优先，没有才回退它引用的物料图。 */}
+                      <SalesOrderRowImage
+                        testId={`sales-material-category-image-${key}-${position}`}
+                        orderId={imageOwnerOrderId}
+                        canUpload={canUploadRowImages}
+                        image={row.image}
+                        fallbackMaterial={row.material}
+                        alt={`${label}第 ${position + 2} 款的图片`}
+                        onUploaded={(summary, file) => {
+                          setExtraImage(index, rowImageOfSummary(summary));
+                          askWriteMaterialImage(file, row.material);
+                        }}
+                        onRemove={() => removeRowImage(() => setExtraImage(index, null))}
+                      />
                     </div>
-                    {row.material && !row.material.image && <span className="panel-note" data-testid={`sales-material-category-no-image-${key}-${position}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+                    {row.material && !row.material.image && !row.image && <span className="panel-note" data-testid={`sales-material-category-no-image-${key}-${position}`}>该物料还没有图片（可到【采购 → 物料清单】上传，也可以给这一款单独传一张）</span>}
                   </div>
                 ))}
               </div>
@@ -1024,12 +1192,25 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
                     searchPlaceholder="输入物料编码 / 名称 / 规格 / 颜色搜索"
                     noResultsText="没有匹配的物料（可到【采购 → 物料清单】新建）"
                   />
-                  {material && <MaterialThumb materialId={material.id} version={material.image?.sha256} alt={materialOptionLabel(material)} size={36} />}
                   {material && <Button size="sm" variant="ghost" data-testid={`sales-material-extra-ref-clear-${position}`} onClick={() => clearExtraRef(index)}>清除引用</Button>}
                   <Button size="sm" variant="ghost" data-testid={`sales-material-extra-remove-${position}`} onClick={() => removeExtra(index)}>删除这一行</Button>
+                  {/* 「其它」行也可以挂自己的图（2026-11-04）：模板上没有的自由类目同样能"每种一张图"。 */}
+                  <SalesOrderRowImage
+                    testId={`sales-material-extra-image-${position}`}
+                    orderId={imageOwnerOrderId}
+                    canUpload={canUploadRowImages}
+                    image={row.image}
+                    fallbackMaterial={material}
+                    alt={`${row.label || "其它"}的图片`}
+                    onUploaded={(summary, file) => {
+                      setExtraImage(index, rowImageOfSummary(summary));
+                      askWriteMaterialImage(file, row.material);
+                    }}
+                    onRemove={() => removeRowImage(() => setExtraImage(index, null))}
+                  />
                 </div>
-                {/* 与 18 格同一条提示：引用了但那个物料没有图，导出时这一行没有图可带。 */}
-                {material && !material.image && <span className="panel-note" data-testid={`sales-material-extra-no-image-${position}`}>该物料还没有图片（可到【采购 → 物料清单】上传）</span>}
+                {/* 与 18 格同一条提示：引用了但那个物料没有图、这一行也没有自己的图，导出时这一行没有图可带。 */}
+                {material && !material.image && !row.image && <span className="panel-note" data-testid={`sales-material-extra-no-image-${position}`}>该物料还没有图片（可到【采购 → 物料清单】上传，也可以给这一行单独传一张）</span>}
               </div>
             );
           })}
@@ -1062,23 +1243,47 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
       <section className="panel">
         <div className="panel-heading">
           <h2>细分明细</h2>
-          <span className="panel-note">一张通用表：用「分组名」区分（伞布明细 / 伞头配色 / 外层花色搭配…）；图片不录入、导出留空。列名可以改成你们的叫法，导出件跟着这张单印。</span>
+          <span className="panel-note">一张通用表：用「分组名」区分（伞布明细 / 伞头配色 / 外层花色搭配…）。<strong>每一行可以传一张图</strong>（在「品番/品名」右边的「图片」列），导出时印在该行的「图片」列。列名可以改成你们的叫法，导出件跟着这张单印；「图片」列是固定列，不参与改列名。</span>
           <Button size="sm" variant="secondary" data-testid="sales-detail-labels" onClick={openDetailLabels}>修改列名</Button>
           <Button size="sm" variant="secondary" data-testid="sales-detail-add" onClick={() => setDetails((current) => [...current, emptySpecDetailRow()])}>加一行</Button>
         </div>
+        {/* 新建单没有 id：与材料明细同一条说明（图片按单隔离，先保存再补图）。 */}
+        {!canUploadRowImages ? <p className="panel-note" data-testid="sales-detail-images-unsaved-hint">图片要挂在销售单上：<strong>先保存销售单，再上传图片</strong>（保存后回到编辑页即可补图）。</p> : null}
         <div className="panel-body">
           {quantityNotice && <p className="status-warning" data-testid="sales-quantity-notice">{quantityNotice}</p>}
           {detailErrors.length > 0 && <div className="status-error" data-testid="sales-detail-errors">{detailErrors.map((item) => <p key={`${item.row}-${item.reason}`}>第 {item.row} 行：{item.reason}</p>)}</div>}
           <div className="table-wrap">
             <table className="ui-table">
-              <thead><tr>{SPEC_DETAIL_COLUMNS.map(([key]) => <th key={key} data-testid={`sales-detail-head-${key}`}>{detailLabels[key]}</th>)}<th>操作</th></tr></thead>
+              <thead><tr>{SPEC_DETAIL_COLUMNS.map(([key]) => (
+                // 「图片」列固定插在「品番/品名」之后（设计文档 §4.2），不参与 detailLabels（那是用户可改名的 6 列）。
+                <Fragment key={key}>
+                  <th data-testid={`sales-detail-head-${key}`}>{detailLabels[key]}</th>
+                  {key === "name" ? <th data-testid="sales-detail-head-image">图片</th> : null}
+                </Fragment>
+              ))}<th>操作</th></tr></thead>
               <tbody>
                 {details.map((row, index) => (
                   <tr key={index} data-testid={`sales-detail-row-${index}`}>
                     {SPEC_DETAIL_COLUMNS.map(([key]) => (
-                      <td key={key}>
-                        <Input aria-label={detailLabels[key]} data-testid={`sales-detail-${index}-${key}`} value={row[key as keyof SpecDetailRow]} onChange={(event) => setDetailField(index, key, event.target.value)} />
-                      </td>
+                      <Fragment key={key}>
+                        <td>
+                          <Input aria-label={detailLabels[key]} data-testid={`sales-detail-${index}-${key}`} value={String(row[key as keyof SpecDetailRow] ?? "")} onChange={(event) => setDetailField(index, key, event.target.value)} />
+                        </td>
+                        {key === "name" ? (
+                          <td>
+                            {/* 明细行自己的图（2026-11-04）：明细行不引用物料，所以没有兜底图。 */}
+                            <SalesOrderRowImage
+                              testId={`sales-detail-image-${index}`}
+                              orderId={imageOwnerOrderId}
+                              canUpload={canUploadRowImages}
+                              image={row.image}
+                              alt={`第 ${index + 1} 行的图片`}
+                              onUploaded={(summary) => setDetailImage(index, rowImageOfSummary(summary))}
+                              onRemove={() => removeRowImage(() => setDetailImage(index, null))}
+                            />
+                          </td>
+                        ) : null}
+                      </Fragment>
                     ))}
                     <td>
                       <Button size="sm" variant="ghost" data-testid={`sales-detail-remove-${index}`} disabled={details.length === 1 && isBlankSpecDetail(row)} onClick={() => setDetails((current) => (current.length === 1 ? [emptySpecDetailRow()] : current.filter((_, at) => at !== index)))}>删除</Button>

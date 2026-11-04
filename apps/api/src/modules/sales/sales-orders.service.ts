@@ -1,10 +1,14 @@
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException, Optional } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { normalizeItemNo, itemNoKey } from "./item-no";
+// 销售单行图片与物料图片用**同一个**校验器（2026-11-04）：字节口径必须一致（WebP / ≤2MB / 边长 ≤2000），
+// 否则同一张图在物料清单能传、在销售单行上被拒，用户会以为是两个功能。
+import { validateMaterialImage } from "../procurement/material-image";
 // 材料类目名只有一份（导出服务与这里共用）：「同类目再加一款」的类目名由服务端定，不采用请求里的字。
 import { isMaterialCategoryKey, materialCategoryLabel } from "./sales-material-labels";
 import { countOrphanDocuments, summarizeOrphanDocuments } from "./orphan-documents";
@@ -162,7 +166,7 @@ export function specDetailLabelsWithDefaults(overrides: Record<string, unknown> 
  */
 export type SpecScalarFields = Partial<Record<SpecScalarKey, string | null>>;
 /** 细分明细行（一张通用表 + 分组名）。 */
-export type SpecDetailInput = { group_name: string; name: string; color?: string; barcode?: string; quantity?: string; unit?: string; sort_order?: number };
+export type SpecDetailInput = { group_name: string; name: string; color?: string; barcode?: string; quantity?: string; unit?: string; sort_order?: number; /** 这一行自己的图（`sales_order_images.id`）；省略 = 这一行没有图（2026-11-04）。 */ image_id?: string };
 /**
  * 材料明细里「这一格引用的是哪个物料」（用户 2026-09-24）。
  *
@@ -213,7 +217,19 @@ export const MATERIAL_EXTRA_CONTENT_MAX_LENGTH = 1000;
  * 空/省略 = 原有「其它」自由类目行。两套语义共用一个数组、一张表：
  * 「谁先印」这件事本来就只能有一处定义（见导出服务的 `MATERIAL_LABELS` 顺序）。
  */
-export type MaterialExtraInput = { label?: string; content?: string | null; material_id?: string | null; sort_order?: number; spec_key?: string | null };
+export type MaterialExtraInput = { label?: string; content?: string | null; material_id?: string | null; sort_order?: number; spec_key?: string | null; /** 这一行自己挂的图（`sales_order_images.id`）；引用物料时优先用它，没有才回退物料图（2026-11-04）。 */ image_id?: string | null };
+
+/**
+ * 销售单行图片的公开形状（**没有 `data`**，2026-11-04）。
+ *
+ * 五个字段就是界面需要的全部：`id`（指针目标）、`width`/`height`（占位，图没到之前不要跳版）、
+ * `byteSize`（弹窗里显示大小）、`sha256`（`<img src="...?v=sha">` 破缓存 + 「换没换图」的唯一依据）。
+ * **不带 `updatedAt`**：sha 已经能回答「换没换」，多一个键只会让每处 deepEqual 跟着变。
+ *
+ * 与 `MATERIAL_IMAGE_SUMMARY` 同一口径：编辑页每次打开都要拉详情，带上字节就是几百 KB × 每行一张图。
+ * 页面靠 `image !== null` 判断有没有图，字节走 `GET /sales-orders/:id/images/:imageId`（可缓存、可 304）。
+ */
+export const SALES_ORDER_IMAGE_SUMMARY = { id: true, width: true, height: true, byteSize: true, sha256: true } as const;
 
 /**
  * 「其它」行的读侧形状：行 + 引用物料的摘要（含 `image.sha256` 用于破缓存、`updatedAt` 用于缩略图，
@@ -221,6 +237,9 @@ export type MaterialExtraInput = { label?: string; content?: string | null; mate
  *
  * `orderBy` 必须有：这些行是**有序**的（用户排的先后就是工艺单上的先后），
  * 而 `material_refs` 是一格一行的映射、不靠顺序，所以那边没有 orderBy。
+ *
+ * `image`（2026-11-04）：这一行自己挂的图（客户临时样照），与物料图同时返回、由前端决定显示哪张
+ * （行图优先）。同样只取摘要不取字节。
  */
 export const MATERIAL_EXTRA_INCLUDE = {
   where: { deletedAt: null },
@@ -236,8 +255,53 @@ export const MATERIAL_EXTRA_INCLUDE = {
         image: { select: { sha256: true, updatedAt: true } },
       },
     },
+    image: { select: SALES_ORDER_IMAGE_SUMMARY },
   },
 } as const;
+
+/**
+ * 「返单预览 / 复制快照」里行图的字段：只有真的挂了图才带 `image_id` 与摘要（2026-11-04）。
+ *
+ * 为什么不是无条件写 `image_id: null`：`copy` 的既有形状被既有单测逐字钉着（「其它」行那条 deepEqual），
+ * 凭空多一个 `null` 键会让它们变红；而前端对「没有这个键」与 `null` 的处理本来就是同一件事。
+ */
+export type SalesOrderImageSummary = { id: string; width: number; height: number; byteSize: number; sha256: string };
+
+export function imageCopyFields(imageId: string | null | undefined, image: SalesOrderImageSummary | null | undefined): { image_id?: string; image?: SalesOrderImageSummary } {
+  if (!imageId) return {};
+  return { image_id: imageId, ...(image ? { image } : {}) };
+}
+
+/**
+ * 「18 个材料格 → 这一格自己的图」（2026-11-04）。
+ *
+ * 那 18 格是 `sales_orders` 上的标量列，**没有行**可以挂 `image_id`，所以单独一张
+ * `sales_order_slot_images`（一行 = 一格的一张图，唯一键 `(sales_order_id, spec_key)`）。
+ * 语义与 `material_refs` 完全一致：**整块替换**（请求带了这个键就按它对齐全部格子，
+ * 没提到的格子 = 取消这一格的图，空数组 = 全部取消；没带 = 整块不动）。
+ */
+export type SlotImageInput = { spec_key: string; image_id: string };
+
+/**
+ * `slot_images` 的归一与校验：只留 18 个材料栏位、同一个栏位**后写覆盖先写**。
+ *
+ * 为什么「不认识的键要报错」而不是静默忽略：静默忽略的表现是「界面上传了图、保存后没了」，
+ * 而请求里明明带着那个键 —— 一次点名说出是哪个键，比让人猜强（与 `MATERIAL_REF_KEY_UNSUPPORTED`
+ * 同一条纪律：接口是公开的，前端键名写错不该变成一个查不出来的问题）。
+ */
+export function normalizeSlotImages(input: SlotImageInput[] | null | undefined): SlotImageInput[] {
+  const wanted = new Map<string, string>();
+  for (const row of input ?? []) {
+    const specKey = String(row?.spec_key ?? "").trim();
+    const imageId = String(row?.image_id ?? "").trim();
+    if (!specKey) throw new UnprocessableEntityException({ code: "SLOT_IMAGE_KEY_UNSUPPORTED", message: "材料格图片缺少 spec_key：图片要挂在材料明细的那一格上", details: [{ spec_key: specKey }] });
+    if (!(SPEC_MATERIAL_KEYS as readonly string[]).includes(specKey)) throw new UnprocessableEntityException({ code: "SLOT_IMAGE_KEY_UNSUPPORTED", message: `「${specKey}」不是材料明细的栏位，不能挂图片`, details: [{ spec_key: specKey }] });
+    if (!imageId) throw new UnprocessableEntityException({ code: "SALES_ORDER_IMAGE_NOT_FOUND", message: `材料格「${specKey}」没有给出图片 id`, details: [{ spec_key: specKey }] });
+    // 后写覆盖先写（前端不可能这么发，但接口是公开的）：报错要求调用方先去重只会多一种看不懂的 400。
+    wanted.set(specKey, imageId);
+  }
+  return [...wanted.entries()].map(([spec_key, image_id]) => ({ spec_key, image_id }));
+}
 
 /**
  * 「其它」行的归一与校验：去空格、丢整行空、类目必填、内容与引用至少有一个、条数封顶。
@@ -245,15 +309,19 @@ export const MATERIAL_EXTRA_INCLUDE = {
  * 为什么「内容与引用至少有一个」在这里挡，而不是让导出侧印一个空格子：工艺单是给工厂照做的，
  * 一行只有类目、右边一格空着，工人只会来问「这个类目到底要什么」。同理**整行空**（类目与内容都空、
  * 也没有引用）的新增行是「加了行还没填」，提交前丢掉 —— 与 `isBlankSpecDetail` 同一条口径。
+ *
+ * `imageId`（2026-11-04）**只在真的有图时才放进结果**：它不属于「这一行说了什么」，
+ * 而既有调用方（返单/复制、导出候选、单测）拿到的形状里没有这个键时不该凭空多一个 `null`。
  */
-export function normalizeMaterialExtras(input: MaterialExtraInput[] | null | undefined): Array<{ label: string; content: string | null; materialId: string | null; specKey: string | null; sort_order: number }> {
-  const rows: Array<{ label: string; content: string | null; materialId: string | null; specKey: string | null; sort_order: number }> = [];
+export function normalizeMaterialExtras(input: MaterialExtraInput[] | null | undefined): Array<{ label: string; content: string | null; materialId: string | null; specKey: string | null; imageId?: string; sort_order: number }> {
+  const rows: Array<{ label: string; content: string | null; materialId: string | null; specKey: string | null; imageId?: string; sort_order: number }> = [];
   for (const [index, row] of (input ?? []).entries()) {
     // 注意顺序：`spec_key` 先解析，因为它决定「类目名」从哪里来。
     const specKey = row?.spec_key ? String(row.spec_key).trim() : null;
     const givenLabel = String(row?.label ?? "").trim();
     const content = String(row?.content ?? "").trim();
     const materialId = row?.material_id ? String(row.material_id) : null;
+    const imageId = row?.image_id ? String(row.image_id) : null;
     if (!givenLabel && !content && !materialId) continue;
     if (specKey && !isMaterialCategoryKey(specKey)) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_SPEC_KEY_UNSUPPORTED", message: `「其它」第 ${index + 1} 行指定的固定类目「${specKey}」不存在：类目只能是材料明细那 18 项之一`, details: [{ row: index + 1, spec_key: specKey }] });
     // 「再加一款」的行：类目名是**系统常量**，不采用请求里的 label —— 否则纸上可能印着「伞布」，
@@ -263,7 +331,7 @@ export function normalizeMaterialExtras(input: MaterialExtraInput[] | null | und
     if (!specKey && label.length > MATERIAL_EXTRA_LABEL_MAX_LENGTH) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LABEL_TOO_LONG", message: `「其它」第 ${index + 1} 行的类目名「${label}」超过 ${MATERIAL_EXTRA_LABEL_MAX_LENGTH} 字（材料那一列只有一格）`, details: [{ row: index + 1, max: MATERIAL_EXTRA_LABEL_MAX_LENGTH }] });
     if (content.length > MATERIAL_EXTRA_CONTENT_MAX_LENGTH) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_CONTENT_TOO_LONG", message: `「其它」第 ${index + 1} 行的内容超过 ${MATERIAL_EXTRA_CONTENT_MAX_LENGTH} 字`, details: [{ row: index + 1, max: MATERIAL_EXTRA_CONTENT_MAX_LENGTH }] });
     if (!content && !materialId) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_CONTENT_REQUIRED", message: `「其它」第 ${index + 1} 行（${label}）既没有内容也没有引用物料：请至少填一样`, details: [{ row: index + 1 }] });
-    rows.push({ label, content: content || null, materialId, specKey, sort_order: row.sort_order ?? rows.length });
+    rows.push({ label, content: content || null, materialId, specKey, ...(imageId ? { imageId } : {}), sort_order: row.sort_order ?? rows.length });
   }
   if (rows.length > MATERIAL_EXTRA_LIMIT) throw new UnprocessableEntityException({ code: "MATERIAL_EXTRA_LIMIT_EXCEEDED", message: `「其它」最多 ${MATERIAL_EXTRA_LIMIT} 行（工艺单是一张 A4 纸，再多就印不下了）`, details: [{ max: MATERIAL_EXTRA_LIMIT, count: rows.length }] });
   return rows;
@@ -314,7 +382,7 @@ export function normalizeSpecUnit(unit: string | null | undefined): string | nul
 }
 
 type SalesOrderBaseInput = { order_no: string; customer_id: string; contact_id?: string; customer_po_no?: string; external_contract_no?: string; order_date: string; product_name: string; product_spec?: string; quantity: string; unit: string; delivery_date?: string; currency: string; unit_price?: string; total_amount?: string; tax_rate?: string; settlement_unit_price?: string; receivable_amount?: string; settlement_method?: string; local_currency_amount?: string; extension_data?: Record<string, unknown>; /** 货号：空串 = 清除（落 NULL），与 37 个细化标量同一语义。 */ item_no?: string | null; /** 返单来源销售单号：只在「返单建单」时写入，见 T05 的复制语义。 */ reorder_from_order_no?: string | null };
-type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[]; material_refs?: MaterialRefInput[]; /** 「材料明细 → 其它」的自定义类目行（2026-10-08）：整块替换，见 `normalizeMaterialExtras`。 */ material_extras?: MaterialExtraInput[]; /** 细分明细的自定义列名（2026-09-30）：`{ 列键: 列名 }`，空串/空对象 = 用默认列名。 */ spec_detail_labels?: Record<string, string> };
+type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?: SpecDetailInput[]; material_refs?: MaterialRefInput[]; /** 「材料明细 → 其它」的自定义类目行（2026-10-08）：整块替换，见 `normalizeMaterialExtras`。 */ material_extras?: MaterialExtraInput[]; /** 18 个材料格各自的图（2026-11-04）：整块替换，见 `normalizeSlotImages`。 */ slot_images?: SlotImageInput[]; /** 细分明细的自定义列名（2026-09-30）：`{ 列键: 列名 }`，空串/空对象 = 用默认列名。 */ spec_detail_labels?: Record<string, string> };
 /**
  * 更新载荷**排除** `reorder_from_order_no`：返单来源是既成事实，改它就是篡改返单链的出处
  * （「这张单是从哪张返来的」必须永远回答得出来）。控制器侧的 `UpdateSalesOrderDto` 也没有这个键，
@@ -329,6 +397,12 @@ type SalesOrderInput = SalesOrderBaseInput & SpecScalarFields & { spec_details?:
  * `customer_id` 仍不可改（既有口径：客户快照一旦下给工厂就不能换头）。
  */
 type SalesOrderUpdate = Partial<Omit<SalesOrderInput, "customer_id" | "reorder_from_order_no">> & { reason?: string };
+
+/**
+ * 一次保存里可能带图片的三处载荷（2026-11-04）：18 格映射、明细行、「其它」行。
+ * 图片 id 的集合只从这三处取（见 `imageIdsOf`），所以「有没有图片」只有一个判定口径。
+ */
+type SalesOrderImagePayload = { slot_images?: SlotImageInput[]; spec_details?: SpecDetailInput[]; material_extras?: MaterialExtraInput[] };
 
 @Injectable()
 export class SalesOrdersService {
@@ -363,12 +437,63 @@ export class SalesOrdersService {
   }
 
   async get(id: string) {
-    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, include: { customer: true, contact: true, versions: { orderBy: { version: "desc" } }, boms: { where: { deletedAt: null }, orderBy: { version: "desc" } }, specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } }, materialRefs: MATERIAL_REF_INCLUDE, materialExtras: MATERIAL_EXTRA_INCLUDE } });
+    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, include: { customer: true, contact: true, versions: { orderBy: { version: "desc" } }, boms: { where: { deletedAt: null }, orderBy: { version: "desc" } }, specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } } }, materialRefs: MATERIAL_REF_INCLUDE, materialExtras: MATERIAL_EXTRA_INCLUDE,
+      // 18 格各自的图 + 行上的图摘要（2026-11-04）：只取摘要、绝不取 `data`（编辑页每次打开都拉这个接口）。
+      // 关系名用 Prisma 列名 `slotImages`（与 `specDetails` 同一个口径，不另起 snake_case 别名）。
+      slotImages: { where: { deletedAt: null }, orderBy: { specKey: "asc" }, include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } } } } });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
     // 引用走 `materialRefs`（列名，与 `specDetails` 同一个形状），**不另起一个 snake_case 别名**：
     // 37 个细化标量当年就是因为「读侧有两套键名」而丢过数据（见 specScalarRow 的注释），
     // 这里是嵌套关系不是标量，一种键名就够，多一份只会让下一个读的人再犯一次同样的错。
     return { ...order, spec_quantity_notice: this.specQuantityNotice(order) };
+  }
+
+  // ------------------------------------------------------------------
+  // 行图片：上传 / 读取（2026-11-04，设计文档 §2.1–§2.2）
+  // ------------------------------------------------------------------
+
+  /**
+   * 上传一张「这一单的行图片」（`POST /sales-orders/:id/images`，multipart 字段名 `file`）。
+   *
+   * 图片是**独立的库行**而不是挂在材料行/明细行上：那两处的替换语义是「软删旧的 + 建新的」，
+   * 行 id 每次保存都会变（理由见 schema 的 `SalesOrderImage` 注释）。所以上传一次、保存只搬指针。
+   *
+   * 校验复用 `validateMaterialImage`：**不信 Content-Type / 扩展名**，解开 RIFF 容器读真实尺寸
+   * （≤2MB、边长 ≤2000）。错误码沿用 `MATERIAL_IMAGE_*` —— 与物料清单上传同一套文案，用户不用学两套。
+   *
+   * 回执按设计文档给 **snake_case**（`byte_size` / `updated_at`）：它是「上传结果」而不是 Prisma 行，
+   * 与前端 `uploadMaterialImage` 拿到的形状保持同一套读法。
+   */
+  async setImage(id: string, file: { buffer?: Buffer; originalname?: string; mimetype?: string } | undefined, user: CurrentUser) {
+    // 前置：销售单存在且未删除。图片按单隔离，没有单就没有归属（新建单保存前不能传图，§4.1）。
+    const order = await this.prisma.salesOrder.findFirst({ where: { id, deletedAt: null }, select: { id: true, orderNo: true } });
+    if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
+    const checked = validateMaterialImage(file?.buffer);
+    if (!checked.ok) throw new UnprocessableEntityException({ code: checked.code, message: checked.message, details: [] });
+    // 自己分配 `ArrayBuffer` 再 `set`：Prisma 的 `Bytes` 列要 `Uint8Array<ArrayBuffer>`，
+    // 而 multer 给的 `Buffer` 是宽类型（与 procurement 的 setMaterialImage 同一条写法）。
+    const source = file!.buffer!;
+    const data = new Uint8Array(source.byteLength);
+    data.set(source);
+    const sha256 = createHash("sha256").update(data).digest("hex");
+    // 上传回执要带 `updated_at`（§2.1），所以这里在共享摘要上多取一个 `updatedAt`；
+    // 读侧（详情/返单/复制）仍然只用五个字段的摘要（少一个键就少一处 deepEqual 跟着变）。
+    const saved = await this.prisma.salesOrderImage.create({ data: { salesOrderId: id, data, mimeType: "image/webp", width: checked.width, height: checked.height, byteSize: data.length, sha256, ...this.audit.create(user) }, select: { ...SALES_ORDER_IMAGE_SUMMARY, updatedAt: true } });
+    // 审计只记元数据（宽高 / 字节数 / sha），**不记字节**：图片内容属于行数据，不是审计事件要存的东西。
+    await this.audit.record("sales_order.image_uploaded", "sales_order", user.id, id, { order_no: order.orderNo, image_id: saved.id, width: checked.width, height: checked.height, byte_size: data.length, sha256: saved.sha256 });
+    return { id: saved.id, width: saved.width, height: saved.height, byte_size: saved.byteSize, sha256: saved.sha256, updated_at: saved.updatedAt };
+  }
+
+  /**
+   * 读一张行图片的字节（`GET /sales-orders/:id/images/:imageId`）。
+   *
+   * 归属校验在 SQL 里一起做（`salesOrderId` 是 where 的一部分）：不属于这张单的 image id
+   * 与不存在的 id 得到**同一个 404** —— 不给「这个 id 存在、只是不是你的」这种可枚举信息。
+   */
+  async image(id: string, imageId: string) {
+    const row = await this.prisma.salesOrderImage.findFirst({ where: { id: imageId, salesOrderId: id, deletedAt: null }, select: { data: true, sha256: true, mimeType: true } });
+    if (!row) throw new NotFoundException({ code: "SALES_ORDER_IMAGE_NOT_FOUND", message: "图片不存在或不属于这张销售单", details: [{ sales_order_id: id, image_id: imageId }] });
+    return { data: Buffer.from(row.data), sha256: row.sha256, mimeType: row.mimeType };
   }
 
   /**
@@ -404,13 +529,17 @@ export class SalesOrdersService {
     const source = await this.prisma.salesOrder.findFirst({
       where: { orderNo, deletedAt: null },
       include: {
-        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } },
+        // 行上的图摘要（2026-11-04）：返单预览要能在界面上显示「上一批这一行挂的是哪张图」；
+        // 建单时按这些 id 把字节**复制**成新单自己的图（见 `bindOrderImages`），所以这里只要摘要不要字节。
+        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } } },
         // 引用带上物料摘要：返单预填要能在界面上把「引用的是哪个物料」显示出来（芯片/图片），
         // 只给一个 UUID 的话前端还得再查一次物料池，而物料池可能拉不到。
         materialRefs: { where: { deletedAt: null }, include: { material: { select: { id: true, materialCode: true, name: true, specificationModel: true, color: true, image: { select: { sha256: true, updatedAt: true } } } } } },
         // 「其它」行（2026-10-08）与引用带上同样的物料摘要：返单预填要能在界面上把「引用的哪个物料」
         // 直接显示出来（芯片/缩略图），不依赖物料池那一次请求成不成功。
         materialExtras: MATERIAL_EXTRA_INCLUDE,
+        // 18 格各自的图（2026-11-04）：同一句话，预览带摘要、建单按 id 克隆字节。
+        slotImages: { where: { deletedAt: null }, orderBy: { specKey: "asc" }, include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } } },
       },
     });
     if (!source) throw new NotFoundException({ code: "REORDER_SOURCE_NOT_FOUND", message: `返单来源销售单不存在：${orderNo}`, details: [{ order_no: orderNo }] });
@@ -450,10 +579,12 @@ export class SalesOrdersService {
         tax_rate: source.taxRate?.toString() ?? null,
         settlement_method: source.settlementMethod,
         ...spec,
-        spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder })),
+        spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder, ...imageCopyFields(row.imageId, row.image) })),
         material_refs: source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId, material: row.material })),
         // 「其它」行照抄（含引用的物料摘要）：返单就是沿用上一批的完整材料口径。
-        material_extras: source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder, material: row.material })),
+        material_extras: source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder, material: row.material, ...imageCopyFields(row.imageId, row.image) })),
+        // 18 格各自的图（2026-11-04）：预览给摘要（界面显示），建单时服务端把字节复制成新单的图。
+        slot_images: (source.slotImages ?? []).map((row) => ({ spec_key: row.specKey, image_id: row.imageId, image: row.image ?? null })),
       },
       must_fill: ["order_no", "order_date", "quantity", "delivery_date"],
       warnings,
@@ -485,11 +616,15 @@ export class SalesOrdersService {
     const source = await this.prisma.salesOrder.findFirst({
       where: { id, deletedAt: null },
       include: {
-        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } },
+        // 行上的图摘要（2026-11-04）：复制快照要能显示「上一批这一行挂的是哪张图」；
+        // 新单保存时按这些 id 把字节**复制**成新单自己的图，所以这里只要摘要不要字节。
+        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } } },
         // 引用带物料摘要（芯片 / 缩略图）：预填时要能在界面上把「引的是哪个物料」显示出来，
         // 只给 UUID 的话前端还得再查一次物料池，而物料池可能拉不到。与 `resolveReorderSource` 同一取舍。
         materialRefs: { where: { deletedAt: null }, include: { material: { select: { id: true, materialCode: true, name: true, specificationModel: true, color: true, image: { select: { sha256: true, updatedAt: true } } } } } },
         materialExtras: MATERIAL_EXTRA_INCLUDE,
+        // 18 格各自的图（2026-11-04）：同一句话，快照带摘要、建单按 id 克隆字节。
+        slotImages: { where: { deletedAt: null }, orderBy: { specKey: "asc" }, include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } } },
       },
     });
     // 文案带 id：这张单是用户从列表点进来的，说不清"哪一张"就无从排查（返单那边带的是单号）。
@@ -500,7 +635,7 @@ export class SalesOrdersService {
     // 而那一刻前端还以为"这一格本来就没引用物料"。
     const refs = await this.usableMaterialRefs(source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })));
     const refMaterials = new Map(source.materialRefs.map((row) => [row.materialId, row.material]));
-    const extras = await this.usableMaterialExtras(source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder })));
+    const extras = await this.usableMaterialExtras(source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder, ...imageCopyFields(row.imageId, row.image) })));
     const extraMaterials = new Map(source.materialExtras.filter((row) => row.materialId).map((row) => [row.materialId as string, row.material]));
     const warnings: string[] = [];
     // 与返单同一句警告：单价属于"这一单卖的是什么"照抄，但新一批的成本口径可能已经变了，必须复核。
@@ -533,10 +668,13 @@ export class SalesOrdersService {
         settlement_method: source.settlementMethod,
         extension_data: source.extensionData,
         ...spec,
-        spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder })),
+        spec_details: source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color, barcode: row.barcode, quantity: row.quantity?.toString() ?? null, unit: row.unit, sort_order: row.sortOrder, ...imageCopyFields(row.imageId, row.image) })),
         material_refs: refs.refs.map((row) => ({ ...row, material: refMaterials.get(row.material_id) ?? null })),
         // 「其它」行照抄；失效引用只摘引用、**保留那一行**（用户自己写的规格说明不该因为物料被删就丢掉）。
+        // 行图（`image_id`/`image`）跟着行一起走：`usableMaterialExtras` 只摘 `material_id`，不动图。
         material_extras: extras.extras.map((row) => ({ ...row, material: row.material_id ? extraMaterials.get(row.material_id) ?? null : null })),
+        // 18 格各自的图（2026-11-04）：快照给摘要，新单保存时按 id 把字节复制成新单自己的图。
+        slot_images: (source.slotImages ?? []).map((row) => ({ spec_key: row.specKey, image_id: row.imageId, image: row.image ?? null })),
         // 明细列名属于工艺口径的一部分，跟着来源单（与返单同一条）。
         spec_detail_labels: source.specDetailLabels ?? {},
       },
@@ -582,10 +720,14 @@ export class SalesOrdersService {
       extension_data: input.extension_data ?? (source.extensionData as Record<string, unknown>),
       item_no: input.item_no ?? source.itemNo,
       reorder_from_order_no: source.orderNo,
-      spec_details: input.spec_details ?? source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color ?? undefined, barcode: row.barcode ?? undefined, quantity: row.quantity?.toString(), unit: row.unit ?? undefined, sort_order: row.sortOrder })),
+      spec_details: input.spec_details ?? source.specDetails.map((row) => ({ group_name: row.groupName, name: row.name, color: row.color ?? undefined, barcode: row.barcode ?? undefined, quantity: row.quantity?.toString(), unit: row.unit ?? undefined, sort_order: row.sortOrder, ...imageCopyFields(row.imageId, row.image) })),
       material_refs: input.material_refs ?? source.materialRefs.map((row) => ({ spec_key: row.specKey, material_id: row.materialId })),
       // 「其它」行同一条复制语义（请求给了就用请求的，没给就沿用来源单）。
-      material_extras: input.material_extras ?? source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder })),
+      material_extras: input.material_extras ?? source.materialExtras.map((row) => ({ label: row.label, content: row.content, material_id: row.materialId, ...(row.specKey ? { spec_key: row.specKey } : {}), sort_order: row.sortOrder, ...imageCopyFields(row.imageId, row.image) })),
+      // 18 格各自的图（2026-11-04）：请求没带就照抄来源单的图 id。
+      // 注意这里只带 **id**：字节由 `create()` 里的 `bindOrderImages` 复制成新单自己的图（不许跨单引用）。
+      // `?.` 是给单测里的旧夹具留的（它们没有这个关系字段）—— 真实 Prisma 查询一定带数组。
+      slot_images: input.slot_images ?? source.slotImages?.map((row) => ({ spec_key: row.specKey, image_id: row.imageId })),
       // 返单沿用来源单的明细列名（返单就是把上一批的工艺口径带过来，列名属于这个口径的一部分）。
       spec_detail_labels: input.spec_detail_labels ?? (source.specDetailLabels as Record<string, string> | undefined),
       ...(copied as Record<string, never>),
@@ -653,6 +795,12 @@ export class SalesOrdersService {
     }
     await this.currencies?.assertSupported(effective.currency, "销售单币种");
     const refs = await this.resolveReferences(effective, user);
+    /**
+     * 图片载荷先归一（**在任何写之前**）：`spec_key` 不是材料明细那 18 栏之一时当场 422，
+     * 不能出现「单已经建了、图没挂上」。`undefined` 与 `[]` 的区别照旧（不动 / 清空）。
+     */
+    const slotImages = effective.slot_images === undefined ? undefined : normalizeSlotImages(effective.slot_images);
+    const imagePayload = { slot_images: slotImages, spec_details: effective.spec_details, material_extras: effective.material_extras };
     // 快照要能回答「v1 时下给工厂的是什么」：所以细化标量**每个键都进快照**（没填的记 null），
     // 而不是只记这次请求里出现的键。
     const snapshot = this.snapshot({ ...effective, ...this.specSnapshotSource({}, effective) }, refs.customer, refs.contact);
@@ -660,9 +808,15 @@ export class SalesOrdersService {
       const order = await this.prisma.$transaction(async (tx) => {
         const created = await tx.salesOrder.create({ data: { orderNo: effective.order_no, customerId: effective.customer_id, contactId: effective.contact_id, customerSnapshot: refs.customer as Prisma.InputJsonValue, contactSnapshot: refs.contact as Prisma.InputJsonValue, customerPoNo: effective.customer_po_no, externalContractNo: effective.external_contract_no, orderDate: new Date(effective.order_date), productName: effective.product_name, productSpec: effective.product_spec, quantity: effective.quantity, unit: effective.unit, deliveryDate: effective.delivery_date ? new Date(effective.delivery_date) : undefined, currency: effective.currency, unitPrice: effective.unit_price, totalAmount: effective.total_amount, taxRate: effective.tax_rate, settlementUnitPrice: effective.settlement_unit_price, receivableAmount: effective.receivable_amount, settlementMethod: effective.settlement_method, localCurrencyAmount: effective.local_currency_amount, extensionData: (effective.extension_data ?? {}) as Prisma.InputJsonValue, itemNo: normalizeItemNo(effective.item_no), reorderFromOrderNo: effective.reorder_from_order_no?.trim() || null, specDetailLabels: normalizeSpecDetailLabels(effective.spec_detail_labels) as Prisma.InputJsonValue, ...this.specScalars(effective), ...this.audit.create(user) } });
         await tx.salesOrderVersion.create({ data: { salesOrderId: created.id, version: 1, snapshot, ...this.audit.create(user) } });
-        await this.replaceSpecDetails(tx, created.id, effective.spec_details, user);
+        // 图片（2026-11-04）：属于本单的图片 id 直接复用；属于另一张单（返单/复制来源）的**克隆字节**
+        // 成新单自己的行再指向它 —— 删一张单不会让另一张单变破图，也不存在跨单引用（见 `bindOrderImages`）。
+        const bound = await this.bindOrderImages(tx, created.id, imagePayload, user);
+        await this.replaceSpecDetails(tx, created.id, bound.spec_details, user);
         await this.replaceMaterialRefs(tx, created.id, effective.material_refs, user);
-        await this.replaceMaterialExtras(tx, created.id, effective.material_extras, user);
+        await this.replaceMaterialExtras(tx, created.id, bound.material_extras, user);
+        await this.replaceSlotImages(tx, created.id, bound.slot_images, user);
+        // 建单**不做** `cleanupOrphanImages`：新单的图只有两种来源（本次请求自己传的、刚克隆的），
+        // 在本次请求里都已被某个行引用 —— 孤儿清理只对「传了又取消」的更新路径有意义。
         return created;
       });
       // 返单来源进审计：这是唯一能回答「这张单是从哪张返来的」的业务事实（另一处是列本身）。
@@ -742,11 +896,22 @@ export class SalesOrdersService {
       if (taken) throw new ConflictException({ code: "ORDER_NO_CONFLICT", message: `订单号 ${nextOrderNo} 已被另一张销售单占用`, details: [{ order_id: taken.id, status: taken.status, deleted: false }] });
     }
     const refs = await this.resolveReferences({ customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined }, user);
+    /**
+     * 图片（2026-11-04）：`slot_images` 先归一（键域校验在任何写之前）；
+     * `undefined` = 整块不动、`[]` = 清空，与其它整块替换的键同一语义。
+     */
+    const slotImages = input.slot_images === undefined ? undefined : normalizeSlotImages(input.slot_images);
     const nextInput = { ...input, customer_id: current.customerId, contact_id: input.contact_id ?? current.contactId ?? undefined, order_no: renaming ? (nextOrderNo as string) : current.orderNo, order_date: input.order_date ?? current.orderDate.toISOString(), product_name: input.product_name ?? current.productName, quantity: input.quantity ?? current.quantity.toString(), unit: input.unit ?? current.unit, currency: input.currency ?? current.currency, extension_data: input.extension_data ?? (current.extensionData as Record<string, unknown>), item_no: input.item_no === undefined ? current.itemNo : input.item_no, // 返单来源不可改：快照里始终记当前值
       reorder_from_order_no: current.reorderFromOrderNo, ...this.specSnapshotSource(current as unknown as Record<string, unknown>, input) };
     const nextVersion = current.currentVersion + 1;
     const snapshot = this.snapshot(nextInput, refs.customer, refs.contact);
     const { updated, renameReport } = await this.prisma.$transaction(async (tx) => {
+      /**
+       * 图片（2026-11-04）：更新只接受**本单**的图片 id（不存在/已删/不属于本单 → 422）。
+       * 校验放在所有写之前：一张图不合法时一个字节都不写（与 assertMaterialsExist 同一口径）。
+       * 只有请求真的带了图片时才查库 —— 否则每次保存都多三条查询，且既有单测的 Prisma 替身要跟着长。
+       */
+      await this.assertOrderImages(tx, id, { slot_images: slotImages, spec_details: input.spec_details, material_extras: input.material_extras });
       /**
        * 改号：**先锁本单行**，再扫全链。
        *
@@ -768,6 +933,10 @@ export class SalesOrdersService {
       await this.replaceSpecDetails(tx, id, input.spec_details, user);
       await this.replaceMaterialRefs(tx, id, input.material_refs, user);
       await this.replaceMaterialExtras(tx, id, input.material_extras, user);
+      await this.replaceSlotImages(tx, id, slotImages, user);
+      // 保存末尾清掉「这一单没有任何活行引用」的图（用户传了又取消/删了行的那种）。
+      // 只在请求真的碰了图片时才扫 —— 见 `touchesImages` 的注释。
+      if (this.touchesImages({ slot_images: slotImages, spec_details: input.spec_details, material_extras: input.material_extras })) await this.cleanupOrphanImages(tx, id, user);
       return { updated: result, renameReport: report };
     }).catch((error: unknown) => {
       /**
@@ -955,6 +1124,8 @@ export class SalesOrdersService {
     // 引用也进快照：回看某个版本时要能回答「当时这一格引用的是哪个物料」——
     // 物料主数据会被改名/换图，光看当前值答不了这个问题（与 spec_details 同一条理由）。
     if (input.material_refs !== undefined) merged.material_refs = input.material_refs;
+    // 18 格各自的图（2026-11-04）同一条规矩：只记 `image_id` 指针、不存字节（§2.3 最后一条）。
+    if (input.slot_images !== undefined) merged.slot_images = input.slot_images;
     return merged;
   }
 
@@ -976,12 +1147,15 @@ export class SalesOrdersService {
   /**
    * 细分明细的替换语义：与采购单明细一致——老的软删 + 新的批量建，同一个事务。
    * `details === undefined` 表示这次请求没提到明细（整块不动）；传空数组才是「清空全部」。
+   *
+   * 行图（2026-11-04）跟着这一行走：`image_id` 是**指向 `sales_order_images` 的指针**，
+   * 所以这里可以直接「软删 + 新建」而不丢字节（字节从来不在这一行上）。
    */
   private async replaceSpecDetails(tx: Prisma.TransactionClient, salesOrderId: string, details: SpecDetailInput[] | undefined, user: CurrentUser) {
     if (details === undefined) return;
     await tx.salesOrderSpecDetail.updateMany({ where: { salesOrderId, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
     if (!details.length) return;
-    await tx.salesOrderSpecDetail.createMany({ data: details.map((detail, index) => ({ salesOrderId, groupName: detail.group_name, name: detail.name, color: detail.color, barcode: detail.barcode, quantity: detail.quantity, unit: detail.unit, sortOrder: detail.sort_order ?? index, ...this.audit.create(user) })) });
+    await tx.salesOrderSpecDetail.createMany({ data: details.map((detail, index) => ({ salesOrderId, groupName: detail.group_name, name: detail.name, color: detail.color, barcode: detail.barcode, quantity: detail.quantity, unit: detail.unit, imageId: detail.image_id ?? null, sortOrder: detail.sort_order ?? index, ...this.audit.create(user) })) });
   }
 
   /**
@@ -1057,7 +1231,140 @@ export class SalesOrdersService {
     await this.assertMaterialsExist(rows.map((row) => row.materialId).filter((id): id is string => Boolean(id)));
     await tx.salesOrderMaterialExtra.updateMany({ where: { salesOrderId, deletedAt: null }, data: { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id } });
     if (!rows.length) return;
-    await tx.salesOrderMaterialExtra.createMany({ data: rows.map((row) => ({ salesOrderId, label: row.label, content: row.content, materialId: row.materialId, specKey: row.specKey, sortOrder: row.sort_order, ...this.audit.create(user) })) });
+    await tx.salesOrderMaterialExtra.createMany({ data: rows.map((row) => ({ salesOrderId, label: row.label, content: row.content, materialId: row.materialId, specKey: row.specKey, imageId: row.imageId ?? null, sortOrder: row.sort_order, ...this.audit.create(user) })) });
+  }
+
+  // ------------------------------------------------------------------
+  // 行图片（2026-11-04）：独立图片库 + 三处指针（18 格映射 / 明细行 / 「其它」行）
+  // ------------------------------------------------------------------
+
+  /**
+   * 请求里出现的图片 id（三处合起来）。
+   *
+   * 它是「要不要查库/做校验」的唯一开关：没带图片的保存**一次 `sales_order_images` 都不查** ——
+   * 既省往返，也让既有单测的 Prisma 替身不必跟着长（它们只 mock 了走到的表）。
+   */
+  private imageIdsOf(input: SalesOrderImagePayload): string[] {
+    const ids = new Set<string>();
+    for (const row of input.slot_images ?? []) if (row?.image_id) ids.add(row.image_id);
+    for (const row of input.spec_details ?? []) if (row?.image_id) ids.add(row.image_id);
+    for (const row of input.material_extras ?? []) if (row?.image_id) ids.add(row.image_id);
+    return [...ids];
+  }
+
+  /**
+   * 这次保存是否碰了图片 = 要不要做归属校验与孤儿清理。
+   *
+   * `slot_images` 只要**出现**就算（`[]` = 清空 18 格的图，必须清掉因此变成孤儿的图）；
+   * 行上的图则要真的有 id 才算 —— 行里没有 image_id 的普通保存不该触发整单扫描。
+   *
+   * ⚠️ 已知边界（设计文档 §7.1）：把**最后一张**图从行上删掉、而且请求里不带 `slot_images` 时，
+   * 这张图会留到下一次碰图片的保存才被软删。宁可晚删一次，也不给每次保存加三条查询。
+   */
+  private touchesImages(input: SalesOrderImagePayload): boolean {
+    return input.slot_images !== undefined || this.imageIdsOf(input).length > 0;
+  }
+
+  /**
+   * 更新时的图片归属校验：图片必须**存在、未删除、属于本单**，否则 422 `SALES_ORDER_IMAGE_NOT_FOUND`。
+   *
+   * 为什么更新不允许指向别的单（返单/复制可以，见 `bindOrderImages`）：更新是在一张既有单上挂图，
+   * 跨单引用会让「删掉 A 单」把 B 单的图带走 —— 那正是按单隔离要防的事。
+   */
+  private async assertOrderImages(tx: Prisma.TransactionClient, salesOrderId: string, input: SalesOrderImagePayload) {
+    const ids = this.imageIdsOf(input);
+    if (!ids.length) return;
+    const found = await tx.salesOrderImage.findMany({ where: { id: { in: ids }, salesOrderId, deletedAt: null }, select: { id: true } });
+    const known = new Set(found.map((row) => row.id));
+    const missing = ids.filter((id) => !known.has(id));
+    if (missing.length) throw new UnprocessableEntityException({ code: "SALES_ORDER_IMAGE_NOT_FOUND", message: `引用的图片不存在、已删除或不属于这张销售单（${missing.length} 张）：请重新上传后再保存`, details: missing.map((id) => ({ image_id: id, sales_order_id: salesOrderId })) });
+  }
+
+  /**
+   * 建单时的图片绑定：本单的 id 直接复用；属于**另一张单**（返单/复制来源）的，把字节
+   * **复制**成新单自己的 `sales_order_images` 行再指向它（设计文档 §2.5）。
+   *
+   * 为什么必须复制而不是直接引用来源单的 id：图片是按单隔离的，跨单引用会让「删掉来源单」
+   * 把新单的图一起带走（`ON DELETE RESTRICT` 还会让删来源单直接失败），而且等于给了一条
+   * 用别人的 image id 读字节的口子。同字节/宽高/sha 复制之后，两张单各自完整。
+   *
+   * 返回**重映射后的载荷**：`image_id` 全部换成新单自己的图片 id；没有任何图片时原样返回（零查询）。
+   */
+  private async bindOrderImages(tx: Prisma.TransactionClient, salesOrderId: string, input: SalesOrderImagePayload, user: CurrentUser): Promise<SalesOrderImagePayload> {
+    const ids = this.imageIdsOf(input);
+    if (!ids.length) return input;
+    const rows = await tx.salesOrderImage.findMany({ where: { id: { in: ids }, deletedAt: null }, select: { id: true, salesOrderId: true, data: true, mimeType: true, width: true, height: true, byteSize: true, sha256: true } });
+    const found = new Map(rows.map((row) => [row.id, row]));
+    const missing = ids.filter((id) => !found.has(id));
+    if (missing.length) throw new UnprocessableEntityException({ code: "SALES_ORDER_IMAGE_NOT_FOUND", message: `引用的图片不存在或已删除（${missing.length} 张）：请重新上传后再保存`, details: missing.map((id) => ({ image_id: id })) });
+    const remapped = new Map<string, string>();
+    for (const row of rows) {
+      if (row.salesOrderId === salesOrderId) {
+        remapped.set(row.id, row.id);
+        continue;
+      }
+      // 自己分配 `ArrayBuffer` 再 `set`：Prisma 的 `Bytes` 列要 `Uint8Array<ArrayBuffer>`，
+      // 而 Prisma 读回来的字节是宽类型（与 procurement 的 setMaterialImage 同一条写法）。
+      const source = row.data;
+      const data = new Uint8Array(source.byteLength);
+      data.set(source);
+      const cloned = await tx.salesOrderImage.create({ data: { salesOrderId, data, mimeType: row.mimeType, width: row.width, height: row.height, byteSize: row.byteSize, sha256: row.sha256, ...this.audit.create(user) }, select: { id: true } });
+      remapped.set(row.id, cloned.id);
+    }
+    const mapId = (imageId: string | null | undefined): string | null | undefined => (imageId ? remapped.get(imageId) ?? imageId : imageId);
+    return {
+      slot_images: input.slot_images?.map((row) => ({ spec_key: row.spec_key, image_id: mapId(row.image_id) as string })),
+      spec_details: input.spec_details?.map((row) => ({ ...row, image_id: mapId(row.image_id) as string | undefined })),
+      material_extras: input.material_extras?.map((row) => ({ ...row, image_id: mapId(row.image_id) as string | null | undefined })),
+    };
+  }
+
+  /**
+   * 18 格图片的替换语义：**逐格对齐**（`undefined` = 不动，`[]` = 全部取消）。
+   *
+   * ⚠️ 为什么不是「软删旧的 + 建新的」（`replaceMaterialExtras` 那种写法）：唯一键是
+   * `(salesOrderId, specKey)` 而**唯一索引不看 `deletedAt`** —— 删了再建必撞 P2002。
+   * 所以值变了改这一行（顺手清 `deletedAt` 复活）、请求没提到的软删、新出现的才插入
+   * （与 `replaceMaterialRefs` 同一条理由，见那里的注释）。
+   */
+  private async replaceSlotImages(tx: Prisma.TransactionClient, salesOrderId: string, slotImages: SlotImageInput[] | undefined, user: CurrentUser) {
+    if (slotImages === undefined) return;
+    const wanted = new Map<string, string>();
+    for (const row of slotImages) wanted.set(row.spec_key, row.image_id);
+    const existing = await tx.salesOrderSlotImage.findMany({ where: { salesOrderId } });
+    for (const row of existing) {
+      const imageId = wanted.get(row.specKey);
+      wanted.delete(row.specKey);
+      if (!imageId) {
+        if (row.deletedAt === null) await tx.salesOrderSlotImage.update({ where: { id: row.id }, data: this.audit.softDelete(user) });
+        continue;
+      }
+      if (row.imageId === imageId && row.deletedAt === null) continue;
+      await tx.salesOrderSlotImage.update({ where: { id: row.id }, data: { imageId, deletedAt: null, deletedBy: null, ...this.audit.update(user) } });
+    }
+    if (wanted.size) await tx.salesOrderSlotImage.createMany({ data: [...wanted.entries()].map(([specKey, imageId]) => ({ salesOrderId, specKey, imageId, ...this.audit.create(user) })) });
+  }
+
+  /**
+   * 保存末尾的孤儿清理：本单里**没有任何活行引用**的图片软删（设计文档 §2.5 最后一条）。
+   *
+   * 只软删、不硬删：图片行还可能被版本快照里的 `image_id` 提到（快照只记 id 不记字节），
+   * 硬删会让回看某个版本时对上一个不存在的 id；软删还留着「这里曾经有一张图」的事实。
+   *
+   * 三条引用来源一次查完：18 格映射、明细行、「其它」行。引用集合里只可能是本单的 id
+   * （上传/克隆都写本单，更新只接受本单的 id），所以不必再按单过滤引用行。
+   */
+  private async cleanupOrphanImages(tx: Prisma.TransactionClient, salesOrderId: string, user: CurrentUser) {
+    const images = await tx.salesOrderImage.findMany({ where: { salesOrderId, deletedAt: null }, select: { id: true } });
+    if (!images.length) return;
+    const ids = images.map((row) => row.id);
+    const slots = await tx.salesOrderSlotImage.findMany({ where: { salesOrderId, deletedAt: null, imageId: { in: ids } }, select: { imageId: true } });
+    const details = await tx.salesOrderSpecDetail.findMany({ where: { salesOrderId, deletedAt: null, imageId: { in: ids } }, select: { imageId: true } });
+    const extras = await tx.salesOrderMaterialExtra.findMany({ where: { salesOrderId, deletedAt: null, imageId: { in: ids } }, select: { imageId: true } });
+    const referenced = new Set<string>();
+    for (const row of [...slots, ...details, ...extras]) if (row.imageId) referenced.add(row.imageId);
+    const orphans = ids.filter((id) => !referenced.has(id));
+    if (orphans.length) await tx.salesOrderImage.updateMany({ where: { id: { in: orphans } }, data: this.audit.softDelete(user) });
   }
 
   private async resolveReferences(input: { customer_id: string; contact_id?: string }, _user: CurrentUser) {
@@ -1085,6 +1392,8 @@ export class SalesOrdersService {
     if (input.spec_details !== undefined) fields.spec_details = input.spec_details;
     if (input.material_extras !== undefined) fields.material_extras = input.material_extras;
     if (input.material_refs !== undefined) fields.material_refs = input.material_refs;
+    // 18 格各自的图（2026-11-04）：快照只记指针（`image_id`），不存字节。
+    if (input.slot_images !== undefined) fields.slot_images = input.slot_images;
     return fields;
   }
   private compact(value: object) { return JSON.parse(JSON.stringify(value, (_key, item) => item === undefined ? undefined : item)); }

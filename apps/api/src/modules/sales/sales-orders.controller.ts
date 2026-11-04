@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, Res, UploadedFile, UploadedFiles, UseGuards, UseInterceptors } from "@nestjs/common";
 import { AnyFilesInterceptor, FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { Type } from "class-transformer";
@@ -13,6 +13,8 @@ import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { EmptyStringToNull } from "../../platform/http/empty-string-to-null.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { SalesOrdersService, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT, SPEC_MATERIAL_KEYS } from "./sales-orders.service";
+// 行图片与物料图片共用同一个字节上限与同一个校验器（2026-11-04）：multer 层先按它拦，服务层再解容器核对。
+import { MAX_MATERIAL_IMAGE_BYTES } from "../procurement/material-image";
 import { SalesOrderExportService } from "./sales-order-export.service";
 import { SalesOrderImportService } from "./sales-order-import.service";
 import { FinishedGoodsOutboundNoticeService } from "./finished-goods-outbound-notice.service";
@@ -20,6 +22,45 @@ import { ITEM_NO_MAX_LENGTH } from "./item-no";
 
 /** 金额类字段的非负校验：class-validator 的 @Min 对字符串不生效（会直接判不通过），这里用十进制正则。 */
 const NON_NEGATIVE_DECIMAL = /^\d+(?:\.\d+)?$/;
+
+/**
+ * 工艺单导出 multipart 的 `files` 上限：18 个固定栏位 + 「其它」行上限 + **明细行图片 200**（2026-11-04）。
+ *
+ * 明细行（5 种伞布 / 11 种伞头那种）现在也能在图里出图，所以「能勾的格子数」不再只是 18 + 20。
+ * 200 是一个**防呆上限**而不是业务上限（工艺单是一张 A4 纸，明细行再多也印不下）：
+ * 真正的闸门仍是下游的单张 2MB + 合计 12MB；这里只是别让 multer 用 `LIMIT_FILE_COUNT`
+ * 报一个用户看不懂的错误。
+ */
+const PRODUCTION_SHEET_IMAGE_FILE_LIMIT = SPEC_MATERIAL_KEYS.length + MATERIAL_EXTRA_LIMIT + 200;
+
+/**
+ * 行图片的外圈白名单（与 `procurement` 的物料图片同一条）：只放行 `.webp` / `image/webp`。
+ *
+ * 前端 canvas 一定产出 `image/webp`，所以这两种写法就够了。真正的判据是服务层的
+ * `validateMaterialImage`（解开 RIFF 容器读真实尺寸）—— 名字与 Content-Type 都是客户端说了算的，
+ * 这一层只负责把「明显不是图片的 PDF/Excel」挡在解析之前。
+ */
+function salesOrderImageFileFilter(_req: Express.Request, file: Express.Multer.File, callback: (error: Error | null, acceptFile: boolean) => void) {
+  const name = (file.originalname ?? "").toLowerCase();
+  callback(null, name.endsWith(".webp") || file.mimetype === "image/webp");
+}
+
+/**
+ * `If-None-Match` 的弱比较：`*`、`W/"sha"`、逗号分隔的列表都认。
+ *
+ * 不引第三方包：这里只比一个我们自己发的 ETag（`"<sha256>"`），多一条依赖不值得；
+ * `*` 与弱标签这两种写法是 HTTP 规范里客户端真的会发的（浏览器刷新、代理各有一种）。
+ */
+function ifNoneMatchHit(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  for (const raw of header.split(",")) {
+    const candidate = raw.trim();
+    if (!candidate) continue;
+    if (candidate === "*") return true;
+    if (candidate.replace(/^W\//, "") === etag) return true;
+  }
+  return false;
+}
 
 /** 结算方式固定枚举（前端下拉同源展示中文）。 */
 export const SETTLEMENT_METHODS = ["tt", "letter_of_credit", "cash", "monthly", "other"] as const;
@@ -42,6 +83,11 @@ class SpecDetailDto {
   @IsOptional() @EmptyStringToUndefined() @Matches(NON_NEGATIVE_DECIMAL, { message: "明细数量必须是不小于 0 的十进制数" }) @IsDecimal() quantity?: string;
   @IsOptional() @IsString() @MaxLength(30) unit?: string;
   @IsOptional() @IsInt() sort_order?: number;
+  /**
+   * 这一行自己的图（2026-11-04，`sales_order_images.id`）：伞布明细 / 伞头配色每行一张。
+   * 可省略 = 这一行没有图（绝大多数历史行都是）。
+   */
+  @IsOptional() @IsUUID() image_id?: string;
 }
 
 /**
@@ -85,6 +131,23 @@ export class MaterialExtraDto {
    */
   @IsOptional() @IsString() @IsIn([...SPEC_MATERIAL_KEYS]) spec_key?: string;
   @IsOptional() @IsInt() sort_order?: number;
+  /**
+   * 这一行自己挂的图（2026-11-04，`sales_order_images.id`）：「再加一款」/「其它」行自己的图；
+   * 有引用物料时**优先用这张**，没有才回退物料清单那张。
+   */
+  @IsOptional() @IsUUID() image_id?: string;
+}
+
+/**
+ * 「18 个材料格各自的图」的一条映射（2026-11-04，`sales_order_slot_images`）。
+ *
+ * 那 18 格是 `sales_orders` 上的标量列、没有行可挂外键，所以单独一张映射表按格存图。
+ * 这里只做形状校验；「哪 18 个栏位能挂图」由服务层 `normalizeSlotImages` 判
+ * （与 `MaterialRefDto` 的 `spec_key` 同一条理由：业务清单不抄进 DTO）。
+ */
+export class SlotImageDto {
+  @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(50) spec_key!: string;
+  @IsUUID() image_id!: string;
 }
 
 /**
@@ -157,6 +220,11 @@ export class SalesOrderSpecDto {
    * 传了就整块替换（空数组 = 全部删掉），没传 = 不动 —— 与 `spec_details` / `material_refs` 同一语义。
    */
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => MaterialExtraDto) material_extras?: MaterialExtraDto[];
+  /**
+   * 18 个材料格各自的图（2026-11-04）：传了就整块替换（`[]` = 把 18 格的图全清掉），没传 = 不动。
+   * 与 `material_refs` / `material_extras` 同一语义；`spec_key` 的键域校验在服务层。
+   */
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => SlotImageDto) slot_images?: SlotImageDto[];
   /**
    * 细分明细的自定义列名（用户 2026-09-30：「细分明细那边，可以改成自定义字段名称」）：
    * `{ 列键: 列名 }`，键只能是 6 个明细列（`SPEC_DETAIL_LABELS`），空串 = 这一列用默认名。
@@ -363,12 +431,12 @@ export class SalesOrdersController {
    * 没勾任何图片时不带文件即可（等于普通工艺单），所以界面只有这一条导出路径 —— 少一条路，
    * 就少一处「带图/不带图两份版式会慢慢分叉」的机会。
    *
-   * ⚠️ `files` 上限从写死的 20 改成「18 个固定栏位 + 「其它」行上限」（2026-10-08）：上限不跟着
-   * 「能勾的格子数」走的话，「其它」行也勾了图时会撞 multer 的 LIMIT_FILE_COUNT 报一个用户看不懂的错。
-   * 真正的体积闸门仍在下游（单张 2MB + 合计 12MB，见 `sales-order-export.service.ts`）。
+   * ⚠️ `files` 上限 = 「18 个固定栏位 + 「其它」行上限 + 明细行图片」（2026-10-08 / 2026-11-04）：
+   * 上限不跟着「能勾的格子数」走的话，钉住一个过小的数字会让 multer 用 `LIMIT_FILE_COUNT`
+   * 报一个用户看不懂的错。真正的体积闸门仍在下游（单张 2MB + 合计 12MB，见 `sales-order-export.service.ts`）。
    */
   @Post(":id/production-sheet.xlsx")
-  @UseInterceptors(AnyFilesInterceptor({ storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: SPEC_MATERIAL_KEYS.length + MATERIAL_EXTRA_LIMIT } }))
+  @UseInterceptors(AnyFilesInterceptor({ storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024, files: PRODUCTION_SHEET_IMAGE_FILE_LIMIT } }))
   async productionSheetWithImages(@Param("id") id: string, @UploadedFiles() files: Express.Multer.File[], @Res() response: Response) {
     const selected = (files ?? []).map((file) => ({ spec_key: file.fieldname, buffer: file.buffer }));
     const { buffer, orderNo } = await this.productionSheetExport.exportOrderWithImages(id, selected);
@@ -413,6 +481,42 @@ export class SalesOrdersController {
    * 路径两段（`:id/delete-preview`），不会被单段的 `@Get(":id")` 吃掉。
    */
   @Get(":id/delete-preview") async deletePreview(@Param("id") id: string) { return { data: await this.orders.deletePreview(id), meta: {} }; }
+  /**
+   * 上传一张「这一单的行图片」（2026-11-04，用户：「销售订单要支持每个物料插入图片」）。
+   *
+   * multipart 字段名 `file`；浏览器压成 WebP 再传，服务端用与物料图片**同一个**
+   * `validateMaterialImage` 解容器核对（不信 Content-Type）。multer 的 `fileSize` 与
+   * `MAX_MATERIAL_IMAGE_BYTES` 对齐：超限的文件在 multer 层就拦下，不先读进内存再判。
+   *
+   * 路径两段（`:id/images`），不会被单段的 `@Get(":id")` 吃掉；但和下面那条 GET 一样
+   * **声明在 `@Get(":id")` 之前**，省得下一个加路由的人去猜顺序有没有影响。
+   */
+  @Post(":id/images")
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: MAX_MATERIAL_IMAGE_BYTES }, fileFilter: salesOrderImageFileFilter }))
+  async uploadSalesOrderImage(@Param("id") id: string, @UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) {
+    return { data: await this.orders.setImage(id, file, user), meta: {} };
+  }
+  /**
+   * 读一张行图片的字节（2026-11-04）：`ETag = sha256` + `private, max-age=0, must-revalidate`，
+   * `If-None-Match` 命中回 **304 且无 body**（编辑页每次打开都会把这些图重新挂一遍，304 省的是下载）。
+   *
+   * **必须声明在 `@Get(":id")` 之前**（与 `:id/copy-snapshot` 等所有多段 GET 同一个约定）：
+   * Nest 按声明顺序匹配。两段路由本来不会被单段吃掉，但顺序约定写在同处，不必下次再想一遍。
+   *
+   * 归属校验在服务层：不属于这张单 / 已软删 → 404 `SALES_ORDER_IMAGE_NOT_FOUND`（与不存在的 id 同一个响应，
+   * 不给「这个 id 存在、只是不是你的」这种可枚举信息）。
+   */
+  @Get(":id/images/:imageId")
+  async salesOrderImage(@Param("id") id: string, @Param("imageId") imageId: string, @Headers("if-none-match") ifNoneMatch: string | undefined, @Res() response: Response) {
+    const image = await this.orders.image(id, imageId);
+    const etag = `"${image.sha256}"`;
+    // 缓存头与物料图片接口同一口径：私有（销售单图不该进共享缓存）+ 每次都要回源确认（图会被清理/重传）。
+    response.setHeader("Content-Type", image.mimeType || "image/webp");
+    response.setHeader("ETag", etag);
+    response.setHeader("Cache-Control", "private, max-age=0, must-revalidate");
+    if (ifNoneMatchHit(ifNoneMatch, etag)) return response.status(304).end();
+    return response.send(image.data);
+  }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.orders.get(id), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: UpdateSalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.update(id, body, user), meta: {} }; }
   @Post(":id/confirm") async confirm(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.confirm(id, user), meta: {} }; }

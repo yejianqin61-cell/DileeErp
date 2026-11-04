@@ -305,3 +305,49 @@ test("「其它」行：坏形状在 DTO 就挡下（非 UUID 物料 / 未知类
   const shapeOnly = await validateBody(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧" }] });
   assert.equal(shapeOnly.material_extras.length, 1);
 });
+
+// 行图片（2026-11-04）：18 格各自的图 + 行上的 `image_id`。
+//
+// 用户原话：「销售订单要支持每个物料插入图片……一个生产单里有 5 种伞布、11 种伞头，能在每种里插入图片」。
+// 契约三个键都是**整块替换**（`undefined` = 不动、`[]` = 清空），所以「空数组」必须能过 DTO 且保持 `[]`；
+// `image_id` 一律是 UUID（不是自己随便编的字符串），坏形状在 DTO 就挡下。
+const IMAGE_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+test("行图片：slot_images 形状对就通过（空数组 = 清空 18 格的图，不能当成「没传」）", async () => {
+  const slotImages = [{ spec_key: "canopy_spec", image_id: IMAGE_ID }];
+  const created = await validateBody(SalesOrderDto, { ...minimalBody(), slot_images: slotImages });
+  assert.deepEqual(created.slot_images.map((row) => ({ ...row })), slotImages, "整组透传给服务层（键域校验在服务层 SPEC_MATERIAL_KEYS）");
+  const cleared = await validateBody(UpdateSalesOrderDto, { slot_images: [] });
+  assert.deepEqual(cleared.slot_images, [], "空数组是合法值（= 18 格的图全清），不能被当成「没传」");
+  const untouched = await validateBody(UpdateSalesOrderDto, {});
+  assert.equal(untouched.slot_images, undefined, "没传 = 整块不动");
+});
+
+test("行图片：slot_images 坏形状在 DTO 就挡下（非 UUID / 缺 spec_key / 未声明字段）", async () => {
+  const base = minimalBody();
+  await assertRejected(SalesOrderDto, { ...base, slot_images: [{ spec_key: "canopy_spec", image_id: "not-a-uuid" }] }, "image_id 必须是 UUID");
+  await assertRejected(SalesOrderDto, { ...base, slot_images: [{ image_id: IMAGE_ID }] }, "spec_key 必填");
+  await assertRejected(SalesOrderDto, { ...base, slot_images: [{ spec_key: "  ", image_id: IMAGE_ID }] }, "spec_key 不能是空白");
+  await assertRejected(SalesOrderDto, { ...base, slot_images: [{ spec_key: "canopy_spec", image_id: IMAGE_ID, width: 1 }] }, "未声明的字段必须 400");
+  // 键域在服务层判（`normalizeSlotImages` → SLOT_IMAGE_KEY_UNSUPPORTED）：DTO 只认形状。
+  const shapeOnly = await validateBody(SalesOrderDto, { ...base, slot_images: [{ spec_key: "qc_requirement", image_id: IMAGE_ID }] });
+  assert.equal(shapeOnly.slot_images.length, 1);
+});
+
+test("行图片：spec_details / material_extras 的 image_id 是可省略的 UUID（坏值 400，省略 = 这一行没图）", async () => {
+  const base = minimalBody();
+  const created = await validateBody(SalesOrderDto, {
+    ...base,
+    spec_details: [{ group_name: "伞布明细", name: "DL260134", image_id: IMAGE_ID }],
+    material_extras: [{ label: "弹簧", content: "5cm", image_id: IMAGE_ID }],
+  });
+  assert.equal(created.spec_details[0].image_id, IMAGE_ID);
+  assert.equal(created.material_extras[0].image_id, IMAGE_ID);
+
+  const withoutImage = await validateBody(UpdateSalesOrderDto, { spec_details: [{ group_name: "伞布明细", name: "DL260135" }], material_extras: [{ label: "弹簧", content: "5cm" }] });
+  assert.equal(withoutImage.spec_details[0].image_id, undefined, "省略 image_id = 这一行没有图（不是「清空别人的图」）");
+  assert.equal(withoutImage.material_extras[0].image_id, undefined);
+
+  await assertRejected(SalesOrderDto, { ...base, spec_details: [{ group_name: "伞布明细", name: "x", image_id: "not-a-uuid" }] }, "明细行 image_id 必须是 UUID");
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", image_id: "not-a-uuid" }] }, "「其它」行 image_id 必须是 UUID");
+});

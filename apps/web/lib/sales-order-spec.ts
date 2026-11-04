@@ -142,6 +142,108 @@ export function materialRefsPayload(refs: MaterialRefState): Array<{ spec_key: s
 /** 每张销售单能引用的图片上限 = 材料明细栏位数（后端也是按栏位收的）。 */
 export const MATERIAL_REF_LIMIT = SPEC_MATERIAL_KEYS.length;
 
+// ------------------------------------------------------------------ 行级图片（2026-11-04「每种一张图」）
+//
+// 用户原话：「销售订单要支持每个物料插入图片……比如说一个生产单里有 5 种伞布，11 种伞头，
+// 能在每种里插入图片」。图片是**独立库行**（`sales_order_images`，按销售单隔离），18 格与行上
+// 只存 `image_id` 指针 —— 所以界面上的「一张图」= 摘要 + id，字节永远不进详情接口（详情每次打开都拉）。
+
+/**
+ * 行/格上挂的图（摘要，**不含字节**）。
+ *
+ * `id` 是 `sales_order_images.id`（不是行 id、也不是 `sales_order_slot_images.id`）：
+ * 保存时交给后端的就是它。`sha256` 用来拼 `<img src>` 的 `?v=` 破缓存。
+ */
+export type RowImageMeta = {
+  id: string;
+  width: number;
+  height: number;
+  sha256: string;
+  byteSize?: number;
+};
+
+/** 18 格各自的图：键 = 材料栏位请求键（`SPEC_MATERIAL_KEYS`），值 = 这一格自己的图。 */
+export type SlotImages = Record<string, RowImageMeta | null>;
+
+/** 接口里能是 null/undefined/各种标量的值 → 去掉首尾空白的文本。 */
+function imageText(value: unknown): string {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+/** 宽高/字节数这类数值字段：读不出数字就给 0（摘要永远不参与布局计算崩溃）。 */
+function imageNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 0;
+}
+
+/**
+ * `image: { id, width, height, byteSize, sha256 }` 这种**嵌套摘要** → `RowImageMeta`。
+ *
+ * 形状不对 / 没有 id 时返回 null（宁可当成「这一行没有图」，也不要拿半个对象去拼地址）。
+ */
+export function imageSummaryFrom(value: unknown): RowImageMeta | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Record<string, unknown>;
+  const id = imageText(raw.id);
+  if (!id) return null;
+  const byteSize = imageNumber(raw.byteSize ?? raw.byte_size);
+  return {
+    id,
+    width: imageNumber(raw.width),
+    height: imageNumber(raw.height),
+    sha256: imageText(raw.sha256 ?? raw.sha),
+    ...(byteSize ? { byteSize } : {}),
+  };
+}
+
+/**
+ * 从**一行**（明细行 / 「其它」行 / 18 格图行）取它自己的图。
+ *
+ * 优先认嵌套摘要（详情接口与返单/复制的 `copy` 都带摘要，界面要拿它拼缩略图地址）；
+ * 只有 `imageId` / `image_id` 而没有摘要时**也保留这个 id** —— 返单/复制保存时要把这个 id
+ * 原样交回后端去克隆字节，丢了它就等于静默丢图。两种键名形状都认，与 37 个标量同一条纪律。
+ */
+export function rowImageFrom(value: unknown): RowImageMeta | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  const summary = imageSummaryFrom(row.image);
+  if (summary) return summary;
+  const id = imageText(row.imageId ?? row.image_id);
+  return id ? { id, width: 0, height: 0, sha256: "" } : null;
+}
+
+/**
+ * 从销售单里取 18 格各自的图。
+ *
+ * ⚠️ **两种键名形状都认**（与 37 个细化标量、明细行、明细列名同一条纪律）：
+ * 详情接口给的是列名 `slotImages`（行里是 `specKey` / `imageId`），返单预览与复制快照给的是
+ * 请求键 `slot_images`（行里是 `spec_key` / `image_id`）。只认一种的话，那条回填路就静默少图。
+ */
+export function slotImagesFromOrder(order: Record<string, unknown>): SlotImages {
+  const images: SlotImages = {};
+  for (const key of SPEC_MATERIAL_KEYS) images[key] = null;
+  const raw = order.slotImages ?? order.slot_images;
+  if (!Array.isArray(raw)) return images;
+  for (const item of raw as Array<Record<string, unknown>>) {
+    const row = (item ?? {}) as Record<string, unknown>;
+    const specKey = imageText(row.specKey ?? row.spec_key);
+    // 只认 18 个材料栏位：多出来的键没有格子可挂（后端也会 422），静默丢掉而不是造出一个野键。
+    if (!specKey || !(specKey in images)) continue;
+    images[specKey] = rowImageFrom(row);
+  }
+  return images;
+}
+
+/**
+ * 18 格图 → 提交载荷：`[{ spec_key, image_id }]`，整块替换语义。
+ *
+ * 没图的格子不发（`undefined` = 不动 / `[]` = 清空，是后端约定好的两种语义；整块发才表达得出「删掉某一格的图」）。
+ */
+export function slotImagesPayload(slotImages: SlotImages | null | undefined): Array<{ spec_key: string; image_id: string }> {
+  if (!slotImages) return [];
+  return SPEC_MATERIAL_KEYS.filter((key) => slotImages[key]?.id).map((key) => ({ spec_key: key, image_id: slotImages[key]!.id }));
+}
+
 // ------------------------------------------------------------------ 「其它」自定义类目行（2026-10-08）
 //
 // 用户原话：「材料明细最后还需要加一个『其它』，可以自行添加类目。有时候还需要别的物料。
@@ -171,19 +273,22 @@ export const materialCategoryLabel = (key: string): string => MATERIAL_LABEL_BY_
  * 类目名由类目键推出来，不让用户重复打字；空 = 原有「其它」自由类目行（类目名用户自己起）。
  * 两种行共用一个数组：保存时整块替换，导出时按类目归位。
  */
-export type MaterialExtraRow = { label: string; content: string; material: MaterialOption | null; specKey: string | null };
+export type MaterialExtraRow = { label: string; content: string; material: MaterialOption | null; specKey: string | null; /** 这一行自己的图（有引用物料时**优先用这张**，没有才回退物料图）。 */ image: RowImageMeta | null };
 
-export const emptyMaterialExtraRow = (specKey: string | null = null): MaterialExtraRow => ({ label: specKey ? materialCategoryLabel(specKey) : "", content: "", material: null, specKey });
+export const emptyMaterialExtraRow = (specKey: string | null = null): MaterialExtraRow => ({ label: specKey ? materialCategoryLabel(specKey) : "", content: "", material: null, specKey, image: null });
 
 /**
  * 整行空：用户加了行还没填，提交前丢掉（与明细行同一条口径）。
  *
  * 「再加一款」的行类目名是系统给的，所以判空只看**内容与引用** —— 否则空行永远不算空，
  * 界面上会留下一排「伞头」空行，保存时还会被后端按「内容与引用至少要有一个」拒掉。
+ *
+ * **有图的行不算空**（2026-11-04）：用户往往是先传图再填字，判空把整行丢掉的话那张图就静默没了；
+ * 至于「只有图、没有内容也没有引用」这种半成品，逐行校验会拦住（内容/引用仍是必填之一）。
  */
 export const isBlankMaterialExtra = (row: MaterialExtraRow): boolean => row.specKey
-  ? !row.content.trim() && !row.material
-  : !row.label.trim() && !row.content.trim() && !row.material;
+  ? !row.content.trim() && !row.material && !row.image
+  : !row.label.trim() && !row.content.trim() && !row.material && !row.image;
 
 /**
  * 逐行校验（行号从 1 起，与后端 `normalizeMaterialExtras` 同一套口径）。
@@ -235,7 +340,8 @@ export function materialExtrasFromOrder(order: Record<string, unknown>): Materia
       const specKeyText = text(row.specKey ?? row.spec_key).trim();
       const specKey = specKeyText || null;
       const label = text(row.label).trim() || (specKey ? materialCategoryLabel(specKey) : "");
-      return { label, content: text(row.content), material: (row.material ?? null) as MaterialOption | null, specKey };
+      // 行自己的图（2026-11-04）：详情给 `image` 摘要，返单/复制的 copy 可能只给 `image_id` —— `rowImageFrom` 两种都认。
+      return { label, content: text(row.content), material: (row.material ?? null) as MaterialOption | null, specKey, image: rowImageFrom(row) };
     })
     .filter((row) => !isBlankMaterialExtra(row));
 }
@@ -255,6 +361,8 @@ export function materialExtrasPayload(rows: MaterialExtraRow[]): Array<Record<st
       label: row.specKey ? materialCategoryLabel(row.specKey) : row.label.trim(),
       content: row.content.trim(),
       ...(row.material ? { material_id: row.material.id } : {}),
+      // 行自己的图（2026-11-04）：没图**不带这个键**（整块替换语义下「没带」就是「这一行没有自己的图」）。
+      ...(row.image ? { image_id: row.image.id } : {}),
       sort_order: index,
     }));
 }
@@ -381,13 +489,17 @@ export function validateSpecDetailLabels(overrides: Readonly<Record<string, stri
   return null;
 }
 
-export type SpecDetailRow = { group_name: string; name: string; color: string; barcode: string; quantity: string; unit: string };
+export type SpecDetailRow = { group_name: string; name: string; color: string; barcode: string; quantity: string; unit: string; /** 这一行自己的图（明细行不引用物料，所以没有兜底图）。 */ image: RowImageMeta | null };
 
-export const emptySpecDetailRow = (): SpecDetailRow => ({ group_name: "", name: "", color: "", barcode: "", quantity: "", unit: "" });
+export const emptySpecDetailRow = (): SpecDetailRow => ({ group_name: "", name: "", color: "", barcode: "", quantity: "", unit: "", image: null });
 
-/** 明细行是不是完全空的行（整行空 = 用户加了行又没填，提交前丢掉，不要写进库）。 */
+/**
+ * 明细行是不是完全空的行（整行空 = 用户加了行又没填，提交前丢掉，不要写进库）。
+ *
+ * **有图的行不算空**（2026-11-04）：用户先传图再填字是常见顺序，判空把行丢掉的话那张图就静默没了。
+ */
 export const isBlankSpecDetail = (row: SpecDetailRow): boolean =>
-  !row.group_name.trim() && !row.name.trim() && !row.color.trim() && !row.barcode.trim() && !row.quantity.trim() && !row.unit.trim();
+  !row.group_name.trim() && !row.name.trim() && !row.color.trim() && !row.barcode.trim() && !row.quantity.trim() && !row.unit.trim() && !row.image;
 
 /**
  * 校验明细行：分组名与品番/品名是必填（后端 DTO 也是这么要求的），数量必须是数字。
@@ -420,8 +532,12 @@ export function validateSpecDetails(rows: SpecDetailRow[]): Array<{ row: number;
  *
  * `extras` 是材料明细末尾的「其它」行（用户 2026-10-08），同一条整块替换语义：
  * 不传 = 不动这一块，传 `[]` = 全部删掉。
+ *
+ * `slotImages` 是 18 格各自的图（用户 2026-11-04「每种一张图」），同样是整块替换语义：
+ * 不传 = 不动这一块，传 `{}`/全空 = 清空所有格的图。行上的图（明细行 / 「其它」行）跟在行里
+ * 作为 `image_id` 发出 —— 没图的行不带那个键。
  */
-export function specPayload(values: Record<string, string>, details: SpecDetailRow[], refs?: MaterialRefState, detailLabels?: Readonly<Record<string, string>>, extras?: MaterialExtraRow[]): Record<string, unknown> {
+export function specPayload(values: Record<string, string>, details: SpecDetailRow[], refs?: MaterialRefState, detailLabels?: Readonly<Record<string, string>>, extras?: MaterialExtraRow[], slotImages?: SlotImages): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   for (const key of SPEC_SCALAR_KEYS) payload[key] = (values[key] ?? "").trim();
   const rows = details.filter((row) => !isBlankSpecDetail(row));
@@ -432,11 +548,13 @@ export function specPayload(values: Record<string, string>, details: SpecDetailR
     barcode: row.barcode.trim(),
     quantity: row.quantity.trim(),
     unit: row.unit.trim(),
+    ...(row.image ? { image_id: row.image.id } : {}),
     sort_order: index,
   }));
   if (refs) payload.material_refs = materialRefsPayload(refs);
   if (detailLabels) payload.spec_detail_labels = specDetailLabelsPayload(detailLabels);
   if (extras) payload.material_extras = materialExtrasPayload(extras);
+  if (slotImages) payload.slot_images = slotImagesPayload(slotImages);
   return payload;
 }
 

@@ -17,7 +17,10 @@ import {
   materialImagePath,
   materialImageProblem,
   materialImageUrl,
+  salesOrderImagePath,
+  salesOrderImageUrl,
   uploadMaterialImage,
+  uploadSalesOrderImage,
   webpFileName,
 } from "./material-image.ts";
 
@@ -147,6 +150,68 @@ test("material-image：删除走 DELETE，失败同样带出后端原因", async
   globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "MATERIAL_IMAGE_NOT_FOUND", message: "该物料没有图片", details: [] } }), { status: 404, headers: { "content-type": "application/json" } });
   try {
     await assert.rejects(() => deleteMaterialImage("m-1"), (error) => error.code === "MATERIAL_IMAGE_NOT_FOUND");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+// ---------------------------------------------------------------- 销售单行图片（2026-11-04「每种一张图」）
+//
+// 与物料图**同一套压缩与错误口径**，只是归属不同：接口是 `POST /sales-orders/:id/images`
+//（multipart 字段名 `file`），读图是 `GET /sales-orders/:id/images/:imageId`，按单隔离。
+// 这里钉住路径/地址/上传三件事 —— 前端所有行图控件都依赖它们，写错一处就是「图传上去了但显示不出来」。
+
+test("material-image：销售单图片的路径与 <img src>（/api/v1 前缀 + ?v=sha 破缓存）", () => {
+  assert.equal(salesOrderImagePath("so-1"), "/sales-orders/so-1/images", "不带 imageId 时是上传用的集合路径");
+  assert.equal(salesOrderImagePath("so-1", "img-1"), "/sales-orders/so-1/images/img-1");
+  assert.equal(salesOrderImagePath("so-1", ""), "/sales-orders/so-1/images", "空 imageId 不拼尾巴");
+  assert.equal(salesOrderImageUrl("so-1", "img-1"), "/api/v1/sales-orders/so-1/images/img-1");
+  assert.equal(salesOrderImageUrl("so-1", "img-1", "abc123"), "/api/v1/sales-orders/so-1/images/img-1?v=abc123");
+  assert.equal(salesOrderImageUrl("so-1", "img-1", ""), "/api/v1/sales-orders/so-1/images/img-1", "版本号为空时不拼多余的 ?v=");
+  assert.equal(salesOrderImageUrl("so-1", "img-1", null), "/api/v1/sales-orders/so-1/images/img-1");
+});
+
+test("material-image：销售单图上传是 multipart（字段名 file）、走本单的图片接口", async () => {
+  const calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ data: { id: "img-1", width: 1600, height: 1200, byteSize: 900, sha256: "x", updatedAt: "2026-11-04T00:00:00.000Z" }, meta: {} }), { status: 201, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const saved = await uploadSalesOrderImage("so-1", file(), pipeline({ blob: webp() }));
+    assert.equal(calls[0].url, "/api/v1/sales-orders/so-1/images", "不能写成物料图接口（那是另一个归属）");
+    assert.equal(calls[0].init.method, "POST");
+    assert.equal(calls[0].init.credentials, "include");
+    const body = calls[0].init.body;
+    assert.equal(body instanceof FormData, true, "必须是 FormData —— 走 apiPost 会被 JSON 化");
+    assert.equal(body.get("file").type, "image/webp");
+    assert.equal(body.get("file").name, "伞布.webp", "文件名换成 .webp（后端 multer 按扩展名放行）");
+    assert.equal(saved.id, "img-1");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("material-image：销售单图上传沿用同一个压缩管线（不是图片时一次都不发请求）", async () => {
+  const original = globalThis.fetch;
+  let called = 0;
+  globalThis.fetch = async () => { called += 1; return new Response("{}", { status: 200 }); };
+  try {
+    const fake = pipeline();
+    await assert.rejects(() => uploadSalesOrderImage("so-1", { name: "a.pdf", type: "application/pdf", size: 10 }, fake), /只能上传图片/);
+    assert.equal(called, 0, "不是图片就不该发请求");
+    assert.deepEqual(fake.seen, { measure: 0, encode: [] });
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("material-image：销售单图上传失败把后端原因原样抛出（可据此区分没有权限等情形）", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: { code: "SALES_ORDER_IMAGE_NOT_FOUND", message: "销售单不存在", details: [] } }), { status: 404, headers: { "content-type": "application/json" } });
+  try {
+    await assert.rejects(() => uploadSalesOrderImage("so-1", file(), pipeline()), (error) => error.code === "SALES_ORDER_IMAGE_NOT_FOUND" && error.message === "销售单不存在");
   } finally {
     globalThis.fetch = original;
   }

@@ -13,7 +13,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
-const { SalesOrdersService, SPEC_SCALAR_FIELDS, normalizeSpecUnit, specScalarRow } = require("../../dist/modules/sales/sales-orders.service.js");
+const { SalesOrdersService, SALES_ORDER_IMAGE_SUMMARY, SPEC_SCALAR_FIELDS, normalizeSpecUnit, specScalarRow } = require("../../dist/modules/sales/sales-orders.service.js");
 
 const user = { id: "1f7d261d-0089-4d32-9aa1-19942c41cb1d", username: "sales", display_name: "销售测试" };
 const audit = { create: () => ({ createdBy: user.id, updatedBy: user.id }), update: () => ({ updatedBy: user.id }), record: async () => undefined };
@@ -187,10 +187,16 @@ test("没有明细或明细都没填数量时不提示", async () => {
   assert.equal((await service(blank).get("order-1")).spec_quantity_notice, null);
 });
 
-test("get 会带上未被删除的明细行并按 sortOrder 取", async () => {
+test("get 会带上未被删除的明细行并按 sortOrder 取（2026-11-04 起还带行图摘要，不含字节）", async () => {
   const prisma = fakePrisma();
   await service(prisma).get("order-1");
-  assert.deepEqual(prisma.calls.findFirst[0].include.specDetails, { where: { deletedAt: null }, orderBy: { sortOrder: "asc" } });
+  assert.deepEqual(prisma.calls.findFirst[0].include.specDetails, {
+    where: { deletedAt: null },
+    orderBy: { sortOrder: "asc" },
+    // 细分明细每行可以挂一张图（2026-11-04）：详情接口给 `imageId` + 摘要，编辑器才能显示缩略图。
+    // 摘要用与服务层同一份常量，别在这里抄字段名（抄一份就会与真实 select 慢慢分叉）。
+    include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } },
+  });
 });
 
 // ------------------------------------------------------------ 单位归一

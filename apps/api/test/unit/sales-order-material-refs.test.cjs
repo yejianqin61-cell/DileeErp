@@ -173,14 +173,27 @@ const orderRow = (extra = {}) => ({
 
 const exportService = (row) => new SalesOrderExportService({ salesOrder: { findFirst: async () => row } }, { namesOf: async () => new Map([[user.id, "张三"]]) });
 
-test("导出候选：只列这一单引用过的物料，按材料明细的印刷顺序排", async () => {
+test("导出候选：只列这一单引用过**且有图**的物料，按材料明细的印刷顺序排", async () => {
   const candidates = await exportService(orderRow()).exportImageCandidates(ORDER_ID);
-  assert.deepEqual(candidates.map((item) => item.spec_key), ["rib_spec", "canopy_spec", "handle_spec"], "顺序照 SPEC_MATERIAL_KEYS，不照数据库返回顺序");
-  assert.deepEqual(candidates[0], { spec_key: "rib_spec", label: "伞骨（孔对孔）", material_id: MATERIAL_A, material_code: "MAT-1", material_name: "伞骨 50cm 黑", has_image: false, image_version: null });
-  assert.equal(candidates[1].has_image, true);
-  assert.equal(candidates[1].image_version, "sha-b");
-  assert.equal(candidates[1].label, "伞布规格");
-  assert.equal(candidates[2].material_name, "伞头", "规格/颜色为空时不留多余空格");
+  // 2026-11-04 起候选**只列有图的**（设计 §2.4）：没有图的列出来只会让人以为勾了就有图，
+  // 而勾了之后导出那一步必然报「这一格没有可导出的图片」——所以 rib_spec（物料没图）不进候选。
+  assert.deepEqual(candidates.map((item) => item.spec_key), ["canopy_spec", "handle_spec"], "顺序照 SPEC_MATERIAL_KEYS，不照数据库返回顺序");
+  assert.deepEqual(candidates[0], {
+    spec_key: "canopy_spec",
+    label: "伞布规格",
+    kind: "material",
+    material_id: MATERIAL_B,
+    material_code: "MAT-2",
+    material_name: "伞布 190T 藏青",
+    has_image: true,
+    image_version: "sha-b",
+    image_source: "material",
+    image_id: null,
+    image_url: `/api/v1/materials/${MATERIAL_B}/image?v=sha-b`,
+  });
+  assert.equal(candidates[0].label, "伞布规格");
+  assert.equal(candidates[1].material_name, "伞头", "规格/颜色为空时不留多余空格");
+  assert.equal(candidates[1].image_source, "material", "没有行图时回退物料清单那张");
 });
 
 test("带图导出：图片排进表尾图片区，每张一行标签，勾了几张就有几张", async () => {
