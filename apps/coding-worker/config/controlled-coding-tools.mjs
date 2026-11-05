@@ -35,6 +35,7 @@ export function apply(ctx, config = {}) {
   const policy = new CodingJobPolicy({ maxReworks: config.maxReworks ?? 1 })
   const activations = new Map()
   const restarting = new Map()
+  const sessionRoles = new Map()
   let pendingStart
   let lifecycleError
 
@@ -44,14 +45,20 @@ export function apply(ctx, config = {}) {
 
   ctx.on('subagent/start', (info) => {
     const restart = restarting.get(String(info.id))
-    if (!pendingStart && !restart) return
+    const known = sessionRoles.get(String(info.id))
+    if (!pendingStart && !restart && !known) return
     const activation = {
-      ...(pendingStart ?? restart),
+      ...(pendingStart ?? restart ?? known),
       childSessionId: String(info.id),
       runId: String(info.runId),
+      managed: Boolean(pendingStart ?? restart),
     }
     if (pendingStart) pendingStart.observed = activation
     restarting.delete(activation.childSessionId)
+    sessionRoles.set(activation.childSessionId, {
+      capabilityId: activation.capabilityId,
+      role: activation.role,
+    })
     activations.set(activation.runId, activation)
     ctx.emit('dilee/activation-meta', activation)
   })
@@ -60,6 +67,7 @@ export function apply(ctx, config = {}) {
     const activation = activations.get(String(info.runId))
     if (!activation) return
     activations.delete(activation.runId)
+    if (!activation.managed) return
     const stopReason = info.stopReason === 'completed'
       ? 'completed'
       : info.stopReason === 'aborted' ? 'aborted' : 'error'
