@@ -217,7 +217,9 @@ export function apply(ctx, config = {}) {
     async (_args, exec) => {
       rootAgent(exec, parentSessionId)
       assertLifecycle()
-      return policy.submitCandidate()
+      const submission = policy.submitCandidate()
+      ctx.emit('dilee/candidate-submitted', submission)
+      return submission
     },
   ))
 

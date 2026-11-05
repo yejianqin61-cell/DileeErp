@@ -46,13 +46,16 @@ test('records paired Activation start and end events', { timeout: 30_000 }, asyn
   const starts = records.filter(record => record.event === 'start')
   const ends = records.filter(record => record.event === 'end')
   const metadata = records.filter(record => record.event === 'meta')
+  const submissions = records.filter(record => record.event === 'submission')
   assert.equal(starts.length, 2)
   assert.equal(ends.length, 2)
   assert.deepEqual(ends.map(record => record.runId).sort(), starts.map(record => record.runId).sort())
   assert.equal(new Set(starts.map(record => record.runId)).size, 2)
   assert.equal(metadata.length, 2)
   assert.deepEqual(metadata.map(record => record.role).sort(), ['builder', 'validator'])
-  assert.deepEqual(records.map(record => record.seq), [1, 2, 3, 4, 5, 6])
+  assert.equal(submissions.length, 1)
+  assert.deepEqual(submissions[0]?.capabilities, [{ capabilityId: 'packaging-output', codeHash: '1'.repeat(64) }])
+  assert.deepEqual(records.map(record => record.seq), [1, 2, 3, 4, 5, 6, 7])
 })
 
 test('rejects a truncated Activation trace line', async (context) => {

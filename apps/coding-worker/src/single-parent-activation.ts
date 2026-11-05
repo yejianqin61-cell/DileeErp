@@ -6,9 +6,11 @@ export interface TimedActivation {
   readonly endedAt: number
 }
 
-export function timedActivationsFromTrace(records: readonly ({ readonly event: string; readonly runId: string; readonly at?: number; readonly capabilityId?: string; readonly role?: string })[]): TimedActivation[] {
+export function timedActivationsFromTrace(records: readonly ({ readonly event: string; readonly runId?: string; readonly at?: number; readonly capabilityId?: string; readonly role?: string })[]): TimedActivation[] {
   const values = new Map<string, { capabilityId?: string; role?: 'builder' | 'validator'; startedAt?: number; endedAt?: number }>()
   for (const record of records) {
+    if (record.event === 'submission') continue
+    if (!record.runId) throw new Error('SINGLE_PARENT_TRACE_INCOMPLETE')
     const value = values.get(record.runId) ?? {}; values.set(record.runId, value)
     if (record.event === 'meta') { value.capabilityId = record.capabilityId; value.role = record.role === 'builder' || record.role === 'validator' ? record.role : undefined }
     if (record.event === 'start') value.startedAt = record.at

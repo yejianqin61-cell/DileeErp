@@ -32,6 +32,11 @@ export function apply(ctx) {
     capabilityId: String(info.capabilityId),
     role: String(info.role),
   })}\n`, 'utf8'))
+  ctx.on('dilee/candidate-submitted', submission => appendFileSync(tracePath, `${JSON.stringify({
+    seq: ++seq,
+    event: 'submission',
+    capabilities: submission.capabilities,
+  })}\n`, 'utf8'))
   ctx.provide('dileeActivationTrace', {})
 }
 
