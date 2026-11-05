@@ -541,6 +541,69 @@ type SalesOrderUpdate = Partial<Omit<SalesOrderInput, "customer_id" | "reorder_f
  */
 type SalesOrderImagePayload = { slot_images?: SlotImageInput[]; spec_details?: SpecDetailInput[]; material_extras?: MaterialExtraInput[] };
 
+// ------------------------------------------------------------------ 「核心字段锁」按实际改动判定（2026-11-05 第二轮）
+//
+// 用户原话：「建立了 BOM 表之后，还能编辑销售单中的图片」。
+//
+// 背景：编辑器每次保存都会把整份表单发上来（37 个细化标量 + 下面这 11 个核心字段），因为
+// 「空串 = 清除这一格」必须表达得出来。而旧守卫只问「请求里带没带这个键」——
+// 于是**只改了图片的保存也会被当成改核心字段**，被 BOM 挡住：换图/删图怎么点都存不上。
+//
+// 修法：比**值**，不比**键**。核心字段的真实值没变，就没有任何下游事实需要重算，
+// BOM/采购/生产的锁不该被「整份回传」触发。反向也成立：真改了数量/单价，锁照旧生效。
+
+/** 动了就要重算下游的核心字段（与控制器 DTO 无关；已关闭单的货号/订单号是例外，见 `update`）。 */
+export const CORE_LOCK_FIELDS = ["product_name", "product_spec", "quantity", "unit", "currency", "unit_price", "total_amount", "tax_rate", "settlement_unit_price", "receivable_amount", "local_currency_amount"] as const;
+export type CoreLockField = (typeof CORE_LOCK_FIELDS)[number];
+
+/** 请求键 → `this.get()` 返回的 Prisma 列名。 */
+const CORE_FIELD_COLUMN: Record<CoreLockField, string> = {
+  product_name: "productName",
+  product_spec: "productSpec",
+  quantity: "quantity",
+  unit: "unit",
+  currency: "currency",
+  unit_price: "unitPrice",
+  total_amount: "totalAmount",
+  tax_rate: "taxRate",
+  settlement_unit_price: "settlementUnitPrice",
+  receivable_amount: "receivableAmount",
+  local_currency_amount: "localCurrencyAmount",
+};
+
+/** 这些核心字段是 Decimal 列：`"100"` 与 `"100.0000"` 是同一个数，不能因为写法不同就算改动。 */
+const CORE_DECIMAL_FIELDS: ReadonlySet<CoreLockField> = new Set(["quantity", "unit_price", "total_amount", "tax_rate", "settlement_unit_price", "receivable_amount", "local_currency_amount"]);
+
+/** 文本类核心字段的比较口径：null / undefined / 空串都等于「没有值」，首尾空白不算改动。 */
+function coreText(value: unknown): string {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+/** Decimal 的规范写法；空 = null；解析不了就退化成原文（不比出「相等」而漏拦，宁可当改动）。 */
+function coreDecimal(value: unknown): string | null {
+  const text = coreText(value);
+  if (!text) return null;
+  try {
+    return new Prisma.Decimal(text).toString();
+  } catch {
+    return `invalid:${text}`;
+  }
+}
+
+/**
+ * 这次保存有没有**真的**改动核心字段（值变了，而不是请求里带了键）。
+ *
+ * 纯函数、单独导出：便于单测直接钉住两种数/空值的比较口径。
+ */
+export function coreFieldsActuallyChanged(current: Record<string, unknown>, input: Record<string, unknown>): boolean {
+  return CORE_LOCK_FIELDS.some((field) => {
+    const next = input[field];
+    if (next === undefined) return false;
+    const previous = current[CORE_FIELD_COLUMN[field]];
+    return CORE_DECIMAL_FIELDS.has(field) ? coreDecimal(next) !== coreDecimal(previous) : coreText(next) !== coreText(previous);
+  });
+}
+
 @Injectable()
 export class SalesOrdersService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
@@ -1026,16 +1089,20 @@ export class SalesOrdersService {
     // （改号那条守卫在上面已经拦过，这里只剩货号这一路。）
     if (current.status === "closed" && onlyTagFields && !input.reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "已关闭销售单补货号必须填写原因", details: [] });
     // 结算金额类字段同样属于「动了就要重算下游」的核心字段；结算方式只是说明信息，允许后补。
-    const coreFields = ["product_name", "product_spec", "quantity", "unit", "currency", "unit_price", "total_amount", "tax_rate", "settlement_unit_price", "receivable_amount", "local_currency_amount"] as const;
     /**
      * 已确认单改核心字段的守卫（2026-11-05 重构，设计文档 `bom-delete-and-empty-shell-release` D6/D8）。
      *
      * 判定本身挪进事务（见事务里的 `releaseEmptyShellBoms`），这里只算「这次保存要不要过那道守卫」。
      * 为什么不能留在事务外：守卫现在不只是「挡」，还可能**写**（把空壳 BOM 软删掉放行）；
      * 判完是空壳、写之前有人补了采购单，就会把一张已经在下游用着的 BOM 清掉。
-     * 草稿单与「只改非核心字段」直接为假 —— 一次多的查询都不发（既有行为不变）。
+     * 草稿单与「核心字段实际没变」直接为假 —— 一次多的查询都不发（既有行为不变）。
+     *
+     * ⚠️ 必须按**实际值**判定，不能按「请求里有没有这个键」（2026-11-05 第二轮修的就是这个）：
+     * 编辑器每次保存都会整份回传 11 个核心字段，按「键出现」判定会把**只改了图片**的保存
+     * 也当成改核心字段 → 建了 BOM 之后换图/删图永远存不上。用户原话：
+     * 「希望在建立 BOM 表之后，还能编辑销售单中的图片」。
      */
-    const coreFieldsChanged = current.status === "confirmed" && coreFields.some((field) => input[field] !== undefined);
+    const coreFieldsChanged = current.status === "confirmed" && coreFieldsActuallyChanged(current as unknown as Record<string, unknown>, input as unknown as Record<string, unknown>);
     /**
      * 新号的占用预检，**只查未删除的行**：订单号的唯一性是「未删除行上唯一」的部分唯一索引
      * （`sales_orders_order_no_active_key ... WHERE deleted_at IS NULL`，见

@@ -747,10 +747,15 @@ export function SalesOrderEditor({ orderId, imported, onReimport }: { orderId?: 
     setDetails((current) => current.map((row, at) => (at === index ? { ...row, images: update(row.images ?? []) } : row)));
   }
 
-  /** 删行图只清客户端状态：后端没有 DELETE 端点，保存时由服务端把无引用的图软删（设计文档 §2.1）。 */
+  /**
+   * 删行图只清客户端状态：后端没有 DELETE 端点，保存时由服务端把无引用的图软删（设计文档 §2.1）。
+   *
+   * 提示里补一句「若仍显示图片，那是物料清单图」：删掉行图后，引用的物料那张图会作为兜底**立刻**
+   * 出现在同一格 —— 用户很容易以为「删了没反应」，这也是 2026-11-05 被报成「删除图片不能实现」的原因之一。
+   */
   function removeRowImage(apply: () => void) {
     apply();
-    notifySuccess("已从这一行移除图片（保存后生效）");
+    notifySuccess("已移除这一行自己的图片（保存后生效；若仍显示图片，那是引用的物料清单图）");
   }
 
   /** 物料有了图之后刷新本地物料池与所有引用：兜底缩略图、芯片文字用的是同一份摘要。 */

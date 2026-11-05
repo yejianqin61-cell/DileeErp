@@ -155,13 +155,21 @@
     导出：候选**每张一条**（第 2/3 张键 `#2`/`#3`、label 带「（第 n 张）」）、默认全选、逐张可勾；底部图片区
     每张各占一格，明细行 3 张在该行「图片」列**竖排**（行高随图数变高）。
     见 [一条物料最多 3 张图设计](../design/sales-order-row-images-x3-2026-11-05.md)。
+  - **建立 BOM 之后仍能改图**（2026-11-05 第二轮，用户：「建立了 BOM 表之后，还能编辑销售单中的图片」）：
+    核心字段锁改为按**实际值**判定（`coreFieldsActuallyChanged`）—— 编辑器每次保存整份回传 11 个核心字段，
+    旧实现按「键出现」判定，导致有 BOM 的已确认单连**只改图片**的保存都被
+    `SALES_ORDER_CORE_FIELDS_LOCKED` 挡住（换图/删图"点了没反应"）。现在核心字段值没变就不触发锁，
+    真改数量/单价/金额仍照旧挡住（0.01 也会识别）；顺带修掉「改号被这道锁误挡」。
+    图片仍要**保存后生效**；上传/换图/删除都会提示，删图后兜底的物料图会标明「不是这一行的图」。
+    见 [BOM 后编辑图片设计](../design/sales-order-image-edit-after-bom-2026-11-05.md)。
 
   见 [销售单工艺单导出设计](../design/sales-order-spec-refinement-and-production-sheet-export-2026-09-16.md)、
   [物料图片与销售单材料引用设计](../design/material-images-and-sales-order-material-refs-2026-09-24.md)、
   [销售板块二级页与明细列名设计](../design/sales-order-subpages-and-detail-labels-2026-09-30.md)、
   [材料明细「其它」设计](../design/sales-order-material-extras-2026-10-08.md)、
-  [销售单每种一张图设计](../design/sales-order-row-images-2026-11-04.md) 与
-  [一条物料最多 3 张图设计](../design/sales-order-row-images-x3-2026-11-05.md)
+  [销售单每种一张图设计](../design/sales-order-row-images-2026-11-04.md)、
+  [一条物料最多 3 张图设计](../design/sales-order-row-images-x3-2026-11-05.md) 与
+  [BOM 后编辑图片设计](../design/sales-order-image-edit-after-bom-2026-11-05.md)
 - 询盘、报价、样品单、英文合同、接单转化：**V1.0 不支持**
 - **本模块的完成度与联动度评估**（2026-09-30，含方向图、能力状态表、结构性问题与风险）：
   [sales-module-completeness-2026-09-30.html](sales-module-completeness-2026-09-30.html)（单文件报告，可直接打开或打印）

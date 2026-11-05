@@ -23,7 +23,7 @@
 // （物料清单本身只有一张图，3 张都问会变成打扰）。
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
-import { notifyError } from "../ui/toaster";
+import { notifyError, notifySuccess } from "../ui/toaster";
 import { MaterialThumb } from "../procurement/material-image";
 import { MATERIAL_IMAGE_ACCEPT, materialImageProblem, salesOrderImageUrl, uploadSalesOrderImage, type MaterialImageSummary } from "../../lib/material-image";
 import { ROW_IMAGE_LIMIT, type RowImages } from "../../lib/sales-order-spec";
@@ -101,8 +101,15 @@ export function SalesOrderRowImage({
     setError("");
     try {
       const summary = await uploadSalesOrderImage(orderId, file);
-      if (index === null) onUploaded(summary, file, { first });
-      else onReplaced(index, summary);
+      if (index === null) {
+        onUploaded(summary, file, { first });
+        // 明确说「保存后生效」：图片上传是即时写库的，但**挂到哪一行/哪一格**是保存时整块提交的 ——
+        // 不说这一句，用户刷新后看到图没挂上会以为"换了没反应"。
+        notifySuccess(`第 ${images.length + 1} 张图片已上传（保存销售单后生效）`);
+      } else {
+        onReplaced(index, summary);
+        notifySuccess(`第 ${index + 1} 张图片已换（保存销售单后生效）`);
+      }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "图片上传失败";
       setError(message);
@@ -153,7 +160,10 @@ export function SalesOrderRowImage({
             </span>
           );
         })}
-        {fallback ? <MaterialThumb materialId={fallback.id} version={fallback.image?.sha256} alt={alt} size={size} /> : null}
+        {/* 兜底缩略图：删掉这一行自己的图之后，这里会露出「引用的物料清单」那张图。
+            title 必须说清它不是这一行的图 —— 否则用户会以为「删了怎么还在」，
+            而旧的单张控件当年就是这么被误报成「删除图片不能实现」的。 */}
+        {fallback ? <span title="引用的物料清单图片（不是这一行自己的图）" data-testid={`${testId}-fallback`}><MaterialThumb materialId={fallback.id} version={fallback.image?.sha256} alt={alt} size={size} /></span> : null}
         {/* 原生 input 藏起来（`.material-image-input`），用按钮/缩略图去点它 —— 与物料清单页的做法一致。 */}
         <input
           ref={input}
