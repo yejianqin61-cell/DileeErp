@@ -183,3 +183,13 @@ test("部署默认目标必须是现役生产机，已退服的 159.75.219.30 �
   assert.ok(!driver.includes("ubuntu@159.75.219.30"), "脚本里不应再把旧机当作可部署目标");
   assert.ok(driver.includes("拒绝部署到 159.75.219.30"), "必须有针对已退服主机的硬拒绝分支（不是靠连接超时兜底）");
 });
+
+test("脏工作区判定必须静音 git 的 CRLF 提示，否则 EAP=Stop 会把警告当失败中断打包", () => {
+  // 2026-11-05 实际事故：core.autocrlf=true 时 git 在 stderr 打「LF will be replaced by CRLF」，
+  // Continue="Stop" 把它当 NativeCommandError，发布包在第 3/6 步直接终止
+  // （驱动脚本已过、服务器未被触碰）。实测 2>$null 与 2>&1 都挡不住，只有 -c core.safecrlf=false 有效。
+  assert.match(packer, /git -c core\.safecrlf=false diff --quiet/, "打包脚本的未提交改动检查必须关掉 safecrlf 提示");
+  assert.match(packer, /git -c core\.safecrlf=false diff --cached --quiet/, "打包脚本的暂存区检查同样要关掉提示");
+  assert.match(driver, /git -c core\.safecrlf=false diff --quiet/, "驱动脚本的脏工作区检查同样要关掉提示");
+  assert.doesNotMatch(packer, /^\s*git diff --quiet\s*$/m, "不得退回裸 git diff --quiet（警告会重新变成终止错误）");
+});

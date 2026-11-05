@@ -111,8 +111,11 @@ $liveVersion = (Invoke-Remote "读取线上版本" "cat /opt/dilee/app/RELEASE_V
 Write-Host "  本地 HEAD : $localHead"
 Write-Host "  线上版本  : $liveVersion"
 
-git diff --quiet; $dirtyWorktree = $LASTEXITCODE -ne 0
-git diff --cached --quiet; $dirtyIndex = $LASTEXITCODE -ne 0
+# 脏工作区判定：同样必须 `-c core.safecrlf=false`。core.autocrlf=true 时 git 会把
+# 「LF will be replaced by CRLF」写到 stderr，而 $ErrorActionPreference="Stop" 会把它
+# 当成 NativeCommandError 直接中断部署；`2>$null` / `2>&1` 都挡不住（实测），只能从源头静音。
+git -c core.safecrlf=false diff --quiet; $dirtyWorktree = $LASTEXITCODE -ne 0
+git -c core.safecrlf=false diff --cached --quiet; $dirtyIndex = $LASTEXITCODE -ne 0
 # 注意 `-like '??*'` 是**错的**：PowerShell 的 `?` 是单字符通配符，'??*' 等价于「任意 3 个及以上字符」——
 # 所有状态行都满足，于是"未跟踪文件数"会把已修改文件一起算进去、脏文件清单反而是空的。
 # 实测被它误导过两次（每次都说"有 N 个未跟踪文件"，而 N 其实是全部条目）。判断状态码前缀只能用正则。

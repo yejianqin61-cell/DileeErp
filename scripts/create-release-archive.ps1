@@ -15,9 +15,14 @@ $outputPath = [System.IO.Path]::GetFullPath($outputPath)
 Push-Location $repoRoot
 try {
   $version = (git rev-parse HEAD).Trim()
-  git diff --quiet
+  # `-c core.safecrlf=false` 不是装饰：仓库 core.autocrlf=true，git 会在 **stderr** 打
+  # 「warning: LF will be replaced by CRLF the next time Git touches it」。而本脚本
+  # $ErrorActionPreference="Stop"，Windows PowerShell 会把 native stderr 当成
+  # NativeCommandError **直接终止打包**（2026-11-05 实际炸过一次，发布包卡在第 3/6 步）。
+  # 实测：`2>$null` 和 `2>&1` 都挡不住这个终止，只有从源头关掉 safecrlf 提示才有效。
+  git -c core.safecrlf=false diff --quiet
   $workingTreeDirty = $LASTEXITCODE -ne 0
-  git diff --cached --quiet
+  git -c core.safecrlf=false diff --cached --quiet
   $indexDirty = $LASTEXITCODE -ne 0
   if ($workingTreeDirty -or $indexDirty) { throw "工作区存在已跟踪的未提交改动，请先提交后再生成发布包" }
 
