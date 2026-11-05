@@ -42,6 +42,7 @@ export async function runRealModelDual(input: {
         DILEE_MODEL_RELAY_URL: relay.url,
         DILEE_MODEL_RELAY_TOKEN: relayToken,
         DILEE_ACTIVATION_LOG_PATH: input.tracePath,
+        DILEE_VERIFY_CANDIDATE_HASHES: 'true',
         DSH_TELEMETRY_MODE: 'OFF',
       },
       initializeTimeoutMs: 30_000,

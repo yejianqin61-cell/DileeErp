@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runRealModelDual } from '../src/real-model-dual.ts'
+import { freezeIndependentGateInput, verifyFrozenGeneratedCandidate } from '../src/independent-gate.ts'
 import { verifySingleParentActivations, timedActivationsFromTrace } from '../src/single-parent-activation.ts'
+import { validateCandidateBatch } from '../src/candidate-batch.ts'
 
 const workspace = await mkdtemp(join(tmpdir(), 'dilee-real-model-dual-'))
 let completed: Awaited<ReturnType<typeof runRealModelDual>> | undefined
@@ -28,6 +32,29 @@ try {
   assert.deepEqual(submission?.capabilities.map(capability => capability.capabilityId).sort(), [
     'employee-inventory', 'employee-output',
   ])
+  const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '..', '..', '..'), encoding: 'utf8' }).trim()
+  const activations = timedActivationsFromTrace(result.trace)
+  const candidates = submission.capabilities.map(submitted => {
+    const builder = activations.find(item => item.capabilityId === submitted.capabilityId && item.role === 'builder')
+    const validator = activations.find(item => item.capabilityId === submitted.capabilityId && item.role === 'validator')
+    const builderStart = result.trace.find(item => item.event === 'start' && item.runId === builder?.runId)
+    const validatorStart = result.trace.find(item => item.event === 'start' && item.runId === validator?.runId)
+    const validation = result.trace.find(item => item.event === 'validation' && item.capabilityId === submitted.capabilityId && item.codeHash === submitted.codeHash && item.decision === 'approved')
+    assert.ok(builder && validator && builderStart && validatorStart && validation, `R5 evidence missing for ${submitted.capabilityId}`)
+    const reportHash = createHash('sha256').update(validation.report).digest('hex')
+    const gate = freezeIndependentGateInput({
+      capabilityId: submitted.capabilityId, candidateRoot: join(workspace, submitted.capabilityId), frozenRoot: join(workspace, 'frozen', submitted.capabilityId), sourceRevision,
+      builderRunId: builder.runId, builderSessionId: builderStart.childSessionId,
+      validatorReport: validation.report,
+      validation: { capabilityId: submitted.capabilityId, codeHash: submitted.codeHash, decision: 'approved', validatorRunId: validator.runId, validatorSessionId: validatorStart.childSessionId, reviewedBuilderRunId: builder.runId, reviewedBuilderSessionId: builderStart.childSessionId, reportHash },
+    })
+    assert.equal(gate.revision.codeHash, submitted.codeHash, `submission hash mismatch for ${submitted.capabilityId}`)
+    return { capabilityId: submitted.capabilityId, candidate: gate, manifestHash: gate.revision.codeHash }
+  })
+  await validateCandidateBatch(candidates, async candidate => {
+    verifyFrozenGeneratedCandidate(candidate.candidate, { repositoryRoot: resolve(import.meta.dirname, '..', '..', '..') })
+    return { accepted: true, capabilityId: candidate.capabilityId, manifestHash: candidate.manifestHash }
+  })
   await Promise.all([
     access(join(workspace, 'employee-output', 'tool.ts')),
     access(join(workspace, 'employee-output', 'tool.test.ts')),
@@ -37,7 +64,7 @@ try {
   assert.equal(result.batch.parentSessionId, 'phase1-real-model-dual')
   console.log(JSON.stringify({
     result: 'passed',
-    activations: timedActivationsFromTrace(result.trace).map(item => ({ capabilityId: item.capabilityId, role: item.role })),
+    activations: activations.map(item => ({ capabilityId: item.capabilityId, role: item.role })),
     submittedCapabilities: submission.capabilities.map(capability => capability.capabilityId).sort(),
     files: ['employee-output/tool.ts', 'employee-output/tool.test.ts', 'employee-inventory/tool.ts', 'employee-inventory/tool.test.ts'],
   }))

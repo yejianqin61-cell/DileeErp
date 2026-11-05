@@ -37,6 +37,14 @@ export function apply(ctx) {
     event: 'submission',
     capabilities: submission.capabilities,
   })}\n`, 'utf8'))
+  ctx.on('dilee/validation-recorded', validation => appendFileSync(tracePath, `${JSON.stringify({
+    seq: ++seq,
+    event: 'validation',
+    capabilityId: String(validation.capabilityId),
+    codeHash: String(validation.codeHash),
+    decision: String(validation.decision),
+    report: String(validation.report),
+  })}\n`, 'utf8'))
   ctx.provide('dileeActivationTrace', {})
 }
 

@@ -1,4 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { createHash } from 'node:crypto'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { CodingJobPolicy } from '../src/job-policy.ts'
 
@@ -6,6 +9,18 @@ export const inject = ['tools', 'subagents']
 
 const builderPreset = 'tool-builder'
 const validatorPreset = 'tool-validator'
+
+function candidateHash(capabilityId) {
+  const root = join(process.cwd(), capabilityId)
+  const files = ['tool.ts', 'tool.test.ts'].map(path => {
+    const file = join(root, path)
+    if (!existsSync(file) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) {
+      throw new Error(`candidate-revision-file-required:${capabilityId}/${path}`)
+    }
+    return { path, sha256: createHash('sha256').update(readFileSync(file)).digest('hex') }
+  })
+  return createHash('sha256').update(JSON.stringify(files.sort((a, b) => a.path.localeCompare(b.path, 'en')))).digest('hex')
+}
 
 function rootAgent(exec, parentSessionId) {
   if (!exec.agent || String(exec.agent.id) !== parentSessionId) {
@@ -160,6 +175,9 @@ export function apply(ctx, config = {}) {
     async (args, exec) => {
       const parent = rootAgent(exec, parentSessionId)
       assertLifecycle()
+      if (process.env.DILEE_VERIFY_CANDIDATE_HASHES === 'true' && args.code_hash !== candidateHash(args.capability_id)) {
+        throw new Error('CANDIDATE_REVISION_HASH_DENIED')
+      }
       policy.beginValidation(args.capability_id, args.code_hash)
       return startChild(
         parent,
@@ -179,11 +197,15 @@ export function apply(ctx, config = {}) {
       capability_id: { type: 'string', required: true },
       code_hash: { type: 'string', required: true },
       decision: { type: 'string', required: true, enum: ['approved', 'rejected'] },
+      report: { type: 'string' },
     },
     async (args, exec) => {
       rootAgent(exec, parentSessionId)
       assertLifecycle()
       policy.recordValidation(args.capability_id, args.code_hash, args.decision)
+      if (typeof args.report === 'string' && args.report.length > 0) {
+        ctx.emit('dilee/validation-recorded', { capabilityId: args.capability_id, codeHash: args.code_hash, decision: args.decision, report: args.report })
+      }
       return {
         capabilityId: args.capability_id,
         codeHash: args.code_hash,

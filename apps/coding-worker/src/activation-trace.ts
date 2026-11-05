@@ -14,6 +14,7 @@ export type ActivationTraceRecord =
   | ActivationTraceBase & { readonly event: 'end'; readonly stopReason: string }
   | { readonly seq: number; readonly event: 'meta'; readonly runId: string; readonly capabilityId: string; readonly role: 'builder' | 'validator' }
   | { readonly seq: number; readonly event: 'submission'; readonly capabilities: readonly { readonly capabilityId: string; readonly codeHash: string }[] }
+  | { readonly seq: number; readonly event: 'validation'; readonly capabilityId: string; readonly codeHash: string; readonly decision: 'approved' | 'rejected'; readonly report: string }
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
@@ -29,6 +30,13 @@ function parseRecord(value: unknown, line: number): ActivationTraceRecord {
       || record.capabilities.some(capability => typeof capability !== 'object' || capability === null
         || !isNonEmptyString((capability as Record<string, unknown>).capabilityId)
         || !/^[a-f0-9]{64}$/u.test(String((capability as Record<string, unknown>).codeHash)))) {
+      throw new Error(`invalid Activation trace record at line ${line}`)
+    }
+    return record as unknown as ActivationTraceRecord
+  }
+  if (record.event === 'validation') {
+    if (record.seq !== line || !isNonEmptyString(record.capabilityId) || !/^[a-f0-9]{64}$/u.test(String(record.codeHash))
+      || (record.decision !== 'approved' && record.decision !== 'rejected') || !isNonEmptyString(record.report)) {
       throw new Error(`invalid Activation trace record at line ${line}`)
     }
     return record as unknown as ActivationTraceRecord
