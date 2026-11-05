@@ -37,6 +37,12 @@ type CashFlowEntry = AuditRow & {
   amount: string; currency: string; status: string; settlementMethod: string | null; remark: string | null;
   /** 会计科目（分类 = 科目类别，项目 = 科目名称）：凭证的业务分录科目取自它。 */
   subject?: { id: string; category: string; name: string } | null;
+  /**
+   * 收支类目（业务科目，2026-11-05）：自动写入的流水才有值。
+   * 这张表显示的是**财务认的会计科目**（`categorySubject ?? subject`）——与「收支管理 → 收支流水」
+   * 同一口径；`subject`（现金分录的对方科目）只在悬停里提示，生成凭证仍用它。
+   */
+  categorySubject?: { id: string; category: string; name: string } | null;
   settlementAccount?: { id: string; key: string; label: string } | null;
 };
 type VoucherLine = {
@@ -191,7 +197,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       if (generated === "pending" && has) return false;
       if (generated === "done" && !has) return false;
       if (!text) return true;
-      return [entry.entryNo, entry.counterpartyName, entry.subject?.name, entry.settlementMethod, entry.settlementAccount?.label]
+      return [entry.entryNo, entry.counterpartyName, entry.categorySubject?.name, entry.subject?.name, entry.settlementMethod, entry.settlementAccount?.label]
         .some((value) => (value ?? "").toLowerCase().includes(text));
     });
   }, [entries, filter, generated, voucherByEntry]);
@@ -389,7 +395,12 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   const entryColumns: ColumnDef<CashFlowEntry>[] = [
     { id: "date", header: "日期", meta: { width: ENTRY_COLUMN_WIDTHS.date }, cell: ({ row }) => day(row.original.entryDate) },
     { accessorKey: "entryNo", header: "流水号", meta: { width: ENTRY_COLUMN_WIDTHS.no } },
-    { id: "subject", header: "会计科目", meta: { width: ENTRY_COLUMN_WIDTHS.subject, ellipsis: true }, cell: ({ row }) => (row.original.subject ? `${row.original.subject.category} / ${row.original.subject.name}` : "-") },
+    { id: "subject", header: "会计科目", meta: { width: ENTRY_COLUMN_WIDTHS.subject, ellipsis: true }, cell: ({ row }) => {
+      // 显示业务科目（收支类目优先，手工流水退回主科目）—— 与「收支管理 → 收支流水」同一口径。
+      const business = row.original.categorySubject ?? row.original.subject ?? null;
+      const contra = row.original.categorySubject && row.original.subject && row.original.categorySubject.id !== row.original.subject.id ? row.original.subject : null;
+      return <span title={contra ? `记账对方科目：${contra.category} / ${contra.name}` : undefined}>{business ? `${business.category} / ${business.name}` : "-"}</span>;
+    } },
     { accessorKey: "counterpartyName", header: "对方名称", meta: { width: ENTRY_COLUMN_WIDTHS.counterparty, ellipsis: true } },
     { id: "direction", header: "收支", meta: { width: ENTRY_COLUMN_WIDTHS.direction }, cell: ({ row }) => directionText(row.original.direction) },
     { id: "amount", header: "金额", meta: { width: ENTRY_COLUMN_WIDTHS.amount }, cell: ({ row }) => money(row.original.amount, row.original.currency) },

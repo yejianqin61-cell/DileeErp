@@ -194,12 +194,20 @@ test("finance-report.cash-flow：列表默认只给生效流水，并支持期�
   await cashFlow.list({});
   assert.equal(calls.findMany[0].where.status, "posted");
   assert.equal(calls.findMany[0].where.deletedAt, null);
+  assert.deepEqual(
+    calls.findMany[0].include.categorySubject,
+    { select: { id: true, category: true, name: true, balanceDirection: true } },
+    "列表必须返回收支类目：财务说的「会计科目」是它（2026-11-05 报障：确认应付选的科目到流水里变成应付账款）",
+  );
 
   await cashFlow.list({ from: "2026-09-01", to: "2026-09-30", subjectId: "subject-1", category: "损益类", currency: "USD", direction: "income", includeReversed: true });
   const where = calls.findMany[1].where;
   assert.equal(where.status, undefined, "include_reversed=true 时不再限制状态");
-  assert.equal(where.subjectId, "subject-1");
-  assert.deepEqual(where.subject, { category: "损益类" }, "分类筛选走科目表的科目类别，与报表同一口径");
+  // 科目/分类筛的是**业务科目**（收支类目优先；手工流水没有类目才退回主科目），与列表显示同一口径。
+  assert.deepEqual(where.AND, [
+    { OR: [{ categorySubjectId: "subject-1" }, { categorySubjectId: null, subjectId: "subject-1" }] },
+    { OR: [{ categorySubject: { category: "损益类" } }, { categorySubjectId: null, subject: { category: "损益类" } }] },
+  ], "按「管理费用」筛不能一条都筛不出来：已挂账付款的主科目是应付账款");
   assert.equal(where.currency, "USD");
   assert.equal(where.direction, "income");
   assert.equal(where.entryDate.gte.toISOString(), "2026-09-01T00:00:00.000Z");
@@ -263,6 +271,82 @@ test("finance-report.cash-flow：更正时不传 bank_id 就不动已有的银�
   const cashFlow = new CashFlowService(prisma, audit);
   await cashFlow.update("cf-1", { amount: "100" }, USER);
   assert.equal(calls.update[0].data.bankId, "bank-1", "不传 = 不改（与收付款草稿的编辑同一约定）");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-05 用户报障：确认应付里选的会计科目（损益类/管理费用）到了收支流水里变成「应付账款」。
+//   根因：流水上有两个科目落点 —— 主科目（现金分录的对方科目，生成凭证用）与收支类目（业务科目）。
+//   列表/报表从此显示**业务科目**；更正时也是改它，不连带改主科目。
+// 线上实例：CF-20261105-9CFB412B（确认应付 APO-20261027-CE78BFBC 的付款）。
+// ---------------------------------------------------------------------------
+
+function subjectStub({ stored }) {
+  const SUBJECTS = {
+    "subject-ap": { id: "subject-ap", category: "负债类", name: "应付账款" },
+    "subject-old": { id: "subject-old", category: "损益类", name: "管理费用" },
+    "subject-new": { id: "subject-new", category: "损益类", name: "销售费 推广费" },
+  };
+  const calls = { update: [] };
+  const prisma = {
+    accountingSubject: {
+      // `requireSubject` 按 id 查（存在 + 启用）。
+      findFirst: async (args) => SUBJECTS[args?.where?.id] ?? null,
+      // 候选链按名称批量查。
+      findMany: async (args) => {
+        const names = args?.where?.name?.in ?? [];
+        return Object.values(SUBJECTS).filter((subject) => names.includes(subject.name));
+      },
+    },
+    cashFlowEntry: {
+      findFirst: async () => stored,
+      update: async (args) => {
+        calls.update.push(args);
+        return { ...stored, ...args.data, id: args.where.id };
+      },
+    },
+    dictionaryItem: { findFirst: async () => ({ id: "acct-1" }) },
+    bank: { findFirst: async () => null },
+  };
+  return { service: new CashFlowService(prisma, audit), calls };
+}
+
+/** 已挂账付款自动生成的流水：主科目应付账款、收支类目管理费用。 */
+const confirmedEntry = (overrides = {}) =>
+  entryRow({
+    subjectId: "subject-ap",
+    subject: { id: "subject-ap", category: "负债类", name: "应付账款" },
+    categorySubjectId: "subject-old",
+    categorySubject: { id: "subject-old", category: "损益类", name: "管理费用" },
+    ...overrides,
+  });
+
+test("finance-report.cash-flow：更正自动流水改的是收支类目，主科目（记账对方科目）保持不动", async () => {
+  const { service: cashFlow, calls } = subjectStub({ stored: confirmedEntry() });
+  await cashFlow.update("cf-1", { category_subject_id: "subject-new" }, USER);
+  assert.equal(calls.update[0].data.categorySubjectId, "subject-new", "列表上显示的科目就是它，改了必须落库");
+  assert.equal(calls.update[0].data.subjectId, "subject-ap", "主科目是现金分录的对方科目，不能被类目更正连带改掉（生成凭证会用错）");
+});
+
+test("finance-report.cash-flow：更正时收支类目传 null / 空串表示清空（退回按主科目显示）", async () => {
+  for (const value of [null, ""]) {
+    const { service: cashFlow, calls } = subjectStub({ stored: confirmedEntry() });
+    await cashFlow.update("cf-1", { category_subject_id: value }, USER);
+    assert.equal(calls.update[0].data.categorySubjectId, null, `传 ${JSON.stringify(value)} 要清空类目`);
+  }
+});
+
+test("finance-report.cash-flow：更正时不传收支类目就不动它（改个金额不该把类目清掉）", async () => {
+  const { service: cashFlow, calls } = subjectStub({ stored: confirmedEntry() });
+  await cashFlow.update("cf-1", { amount: "30" }, USER);
+  assert.equal("categorySubjectId" in calls.update[0].data, false, "不传 = 不改（与银行账户/款项性质同一约定）");
+});
+
+test("finance-report.cash-flow：收支类目选了不存在/停用的科目 → 显式 422，不静默清空", async () => {
+  const { service: cashFlow } = subjectStub({ stored: confirmedEntry() });
+  await assert.rejects(
+    () => cashFlow.update("cf-1", { category_subject_id: "subject-dead" }, USER),
+    (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND" && error.getResponse().message.includes("收支类目"),
+  );
 });
 
 // ---------------------------------------------------------------------------

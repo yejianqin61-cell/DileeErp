@@ -7,7 +7,7 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "./cash-flow-catalog";
 import { requireActiveBank } from "./bank-selection";
-import { cashFlowDirection } from "./cash-flow.domain";
+import { cashFlowDirection, cashFlowSubjectWhere } from "./cash-flow.domain";
 import { financeDayRange } from "./finance-period";
 import { isPaymentNature } from "./payment-nature";
 
@@ -35,6 +35,16 @@ export type CashFlowEntryInput = {
   currency: string;
   /** 会计科目（分类 = 科目类别，项目 = 科目名称）。 */
   subject_id: string;
+  /**
+   * **收支类目**（业务科目，2026-10-13 起）。
+   *
+   * 自动流水（收付款/确认应收应付写入的）才有值：它来自来源单据上财务选的那个科目，
+   * 回答"这笔钱算什么"。手工录入的流水没有这一格 —— 录的时候只选一个科目，那个科目就是类目。
+   *
+   * 更正时传它改的才是财务看到的「会计科目」；`subject_id` 是现金分录的对方科目（生成凭证用），
+   * 两列各改各的、不互相覆盖。都是可选的：不传 = 不改。
+   */
+  category_subject_id?: string;
   settlement_method?: string;
   settlement_account_id?: string;
   /** 资金实际所在的银行账户（银行账户池 banks）；填了才算进该账户的余额。 */
@@ -72,6 +82,12 @@ export type CashFlowListFilter = {
 
 const ENTRY_INCLUDE = {
   subject: { select: { id: true, category: true, name: true, balanceDirection: true } },
+  /**
+   * 收支类目（业务科目）：2026-11-05 起列表也返回它 —— 财务在流水里要看的「会计科目」是它，
+   * 不是 `subject`（后者是销账那条现金分录的对方科目，生成凭证才用它）。
+   * 前端按「有类目显示类目、没有类目显示主科目」的同一规则渲染（见 `cashFlowBusinessSubject`）。
+   */
+  categorySubject: { select: { id: true, category: true, name: true, balanceDirection: true } },
   settlementAccount: { select: { id: true, key: true, label: true } },
   bank: { select: { id: true, bankCode: true, bankName: true, accountNumber: true, currency: true } },
 } as const;
@@ -91,8 +107,8 @@ export class CashFlowService {
       where: {
         deletedAt: null,
         ...(filter.includeReversed ? {} : { status: "posted" }),
-        ...(filter.subjectId ? { subjectId: filter.subjectId } : {}),
-        ...(filter.category ? { subject: { category: filter.category } } : {}),
+        // 会计科目 / 分类按**业务科目**筛（收支类目优先，手工流水退回主科目）：与列表显示同一口径。
+        ...cashFlowSubjectWhere({ subjectId: filter.subjectId, category: filter.category }),
         ...(filter.currency ? { currency: filter.currency } : {}),
         ...(filter.direction ? { direction: filter.direction } : {}),
         ...(filter.bankId ? { bankId: filter.bankId } : {}),
@@ -134,6 +150,11 @@ export class CashFlowService {
       amount: input.amount ?? current.amount.toString(),
       currency: input.currency ?? current.currency,
       subject_id: input.subject_id ?? current.subjectId,
+      // 收支类目：`undefined` = 不改；空串 = 清空（退回按主科目显示）；有值 = 改成它。
+      category_subject_id:
+        input.category_subject_id === undefined
+          ? (current.categorySubjectId ?? undefined)
+          : (input.category_subject_id || undefined),
       settlement_method: input.settlement_method ?? current.settlementMethod ?? undefined,
       settlement_account_id: input.settlement_account_id === undefined ? (current.settlementAccountId ?? undefined) : (input.settlement_account_id || undefined),
       bank_id: input.bank_id === undefined ? (current.bankId ?? undefined) : (input.bank_id || undefined),
@@ -142,6 +163,16 @@ export class CashFlowService {
       remark: input.remark ?? current.remark ?? undefined,
     };
     const data = await this.prepare(merged);
+    /**
+     * 收支类目（业务科目）单独处理：它可空、且**只在显式提交这一列时**才动 ——
+     * 进不了 `prepare()` 的必填主科目校验，也不能因为一次无关的更正就被重算/清掉。
+     */
+    if (input.category_subject_id !== undefined) {
+      const category = input.category_subject_id
+        ? await this.requireSubject(input.category_subject_id, "收支类目不存在或已停用，请在「收支管理 → 会计科目」里确认")
+        : null;
+      (data as { categorySubjectId?: string | null }).categorySubjectId = category?.id ?? null;
+    }
     // 清空语义：`bank_id` / `settlement_account_id` / `payment_nature` / `order_no` 传 null 或空串
     // 表示**去掉**（填错了要能改掉），传 undefined 表示不改 —— 与收付款草稿的编辑同一约定。
     // `prepare()` 返回的是「选中的东西」，表达不了「清空」，所以这里显式补上。

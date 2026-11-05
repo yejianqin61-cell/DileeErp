@@ -34,6 +34,9 @@ const SUBJECTS = [
   { id: "sub-1", category: "资产类", name: "库存现金（备用金）", balanceDirection: "借", sortOrder: 10, isActive: true },
   { id: "sub-2", category: "损益类", name: "主营业务收入", balanceDirection: "借", sortOrder: 770, isActive: true },
   { id: "sub-3", category: "损益类", name: "旧科目", balanceDirection: "借", sortOrder: 1220, isActive: false },
+  // 2026-11-05 报障那条链上的两个科目：主科目（对方科目）与业务科目（收支类目）。
+  { id: "sub-ap", category: "负债类", name: "应付账款", balanceDirection: "贷", sortOrder: 560, isActive: true },
+  { id: "sub-mgmt", category: "损益类", name: "管理费用", balanceDirection: "借", sortOrder: 800, isActive: true },
 ];
 
 const REVENUE = { id: "sub-2", category: "损益类", name: "主营业务收入", balanceDirection: "借" };
@@ -414,5 +417,89 @@ describe("收支管理 · 冲销", () => {
     const reversed = calls.find((call) => call.url.includes("/reverse"))!;
     expect(reversed.url).toContain(`${EP.entries}/cf-1/reverse`);
     expect(JSON.parse(String(reversed.body)).reason).toBe("对方名称填错，重新录入");
+  });
+});
+
+/**
+ * 2026-11-05 用户报障：确认应付里选的会计科目（损益类/管理费用）到了收支流水里变成「应付账款」。
+ *
+ * 线上实例 CF-20261105-9CFB412B（确认应付 APO-20261027-CE78BFBC 的付款）：
+ * 主科目 `subject` = 负债类/应付账款（现金分录的对方科目，生成凭证用），
+ * 收支类目 `categorySubject` = 损益类/管理费用（财务在确认应付时选的那个）。
+ * 列表的「分类 / 项目」必须显示后者；前者只在悬停里作为「记账对方科目」出现，不丢信息。
+ */
+const AUTO_ENTRY = {
+  id: "cf-9",
+  entryNo: "CF-20261105-9CFB412B",
+  entryDate: "2026-11-05T00:00:00.000Z",
+  counterpartyName: "拼多多",
+  direction: "expense",
+  amount: "27.2000",
+  currency: "CNY",
+  subject: { id: "sub-ap", category: "负债类", name: "应付账款", balanceDirection: "贷" },
+  categorySubject: { id: "sub-mgmt", category: "损益类", name: "管理费用", balanceDirection: "借" },
+  settlementMethod: "转账",
+  settlementAccount: { id: "acct-1", label: "农业银行5706" },
+  bank: { id: "bank-1", bankCode: "ABC-5706", bankName: "农业银行", accountNumber: "5706", currency: "CNY" },
+  status: "posted",
+  paymentNature: null,
+  orderNo: null,
+  remark: null,
+};
+
+async function openEntries(entries: unknown[]) {
+  stubCashFlow((url) => (url.includes(EP.entries) ? apiOk(entries) : undefined));
+  render(<><CashFlowWorkspace /><Toaster /></>);
+  await screen.findByTestId("page-finance-cash-flow");
+  await screen.findByText("拼多多");
+}
+
+describe("收支管理 · 会计科目口径（确认应付选的科目不能在流水里变成应付账款）", () => {
+  it("「分类 / 项目」显示业务科目（收支类目），记账对方科目只挂在悬停提示上", async () => {
+    await openEntries([AUTO_ENTRY]);
+    const table = screen.getByTestId("data-table");
+    const row = within(table).getAllByTestId("data-table-row")[0];
+    expect(within(row).getByText("损益类")).toBeInTheDocument();
+    expect(within(row).getByText("损益类 / 管理费用")).toBeInTheDocument();
+    // 负债类/应付账款不再占据「分类 / 项目」两列，但也没有消失：项目格的 title 写着它是记账对方科目。
+    expect(within(row).queryByText("负债类")).toBeNull();
+    expect(within(row).queryByText("负债类 / 应付账款")).toBeNull();
+    expect(within(row).getByTitle("记账对方科目：负债类 / 应付账款")).toHaveTextContent("损益类 / 管理费用");
+  });
+
+  it("更正自动写入的流水：改的是收支类目（category_subject_id），不是记账对方科目", async () => {
+    const { calls } = stubCashFlow((url) => (url.includes(EP.entries) ? apiOk([AUTO_ENTRY]) : undefined));
+    render(<><CashFlowWorkspace /><Toaster /></>);
+    await screen.findByTestId("page-finance-cash-flow");
+    await screen.findByText("拼多多");
+
+    fireEvent.click(screen.getByTestId("cash-flow-edit-cf-9"));
+    await screen.findByTestId("action-dialog");
+    // 弹窗里预填的是财务看到的「会计科目」（收支类目），并说明对方科目由来源单据决定。
+    expect(screen.getByTestId("action-field-category_subject_id")).toHaveTextContent("损益类 / 管理费用");
+    expect(screen.getByText(/记账对方科目：负债类 \/ 应付账款/)).toBeInTheDocument();
+
+    await pickOption("category_subject_id", "损益类 / 主营业务收入");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(calls.filter((call) => call.method === "PATCH").length).toBe(1));
+    const body = JSON.parse(String(calls.find((call) => call.method === "PATCH")!.body));
+    expect(body.category_subject_id).toBe("sub-2");
+    expect(body.subject_id).toBeUndefined();
+  });
+
+  it("手工录入的流水没有收支类目：显示与更正仍然走主科目（同一套规则的兜底）", async () => {
+    const { calls } = stubCashFlow();
+    await open();
+    fireEvent.click(screen.getByTestId("cash-flow-edit-cf-1"));
+    await screen.findByTestId("action-dialog");
+    expect(screen.getByTestId("action-field-subject_id")).toHaveTextContent("资产类 / 库存现金（备用金）");
+    expect(screen.queryByTestId("action-field-category_subject_id")).toBeNull();
+    await pickOption("subject_id", "损益类 / 主营业务收入");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(calls.filter((call) => call.method === "PATCH").length).toBe(1));
+    const body = JSON.parse(String(calls.find((call) => call.method === "PATCH")!.body));
+    expect(body.subject_id).toBe("sub-2");
+    expect(body.category_subject_id).toBeUndefined();
   });
 });

@@ -57,9 +57,9 @@ function detailRows() {
       direction: "expense",
       amount: dec("2900"),
       category: "损益类",
-      subjectName: "主营业务成本",
-      // 收支类目（2026-10-13）：这笔钱算什么 —— 与其他应付条目/对账单上写的一致。
-      categorySubjectName: "房租费",
+      subjectName: "房租费",
+      // 记账对方科目（2026-11-05）：现金分录的另一头 —— 已挂账的付款是应付账款。
+      contraSubjectName: "应付账款",
       bankLabel: "农业银行5706",
       settlementMethod: "转账",
       settlementAccountLabel: "农业银行5706",
@@ -82,31 +82,31 @@ function detailRows() {
 // 2026-09-17（用户交付科目表）：明细表要能看出「这笔钱算什么科目、走的哪个账户」。
 // 所以列从老表的 6 列扩到 9 列（新增「分类」「项目」「银行账户」）——这是**有意偏离**老表版式，
 // 不是抄错：只按老表 6 列，汇总表里「主营业务收入 5000」在明细里根本对不上号。
-// 2026-10-13 再加一列「收支类目」（用户：「也要显示收支类目……导出的 excel 也要显示相应的 column」）：
-// 「分类 / 项目」是**现金分录的对方科目**（已挂账的付款一律是「应付账款」），回答不了"这笔钱花在什么上"。
-test("finance-report.cash-flow：收支明细表 10 列（老表 6 列 + 分类 + 项目 + 收支类目 + 银行账户）", async () => {
+// 2026-10-13 加第 10 列；2026-11-05 用户报障后（「确认应付选的会计科目到收支流水里全是应付账款」）
+// 把角色摆正：「分类 / 项目」= 业务科目（这笔钱算什么），第 10 列改名「记账对方科目」= 现金分录的另一头。
+test("finance-report.cash-flow：收支明细表 10 列（老表 6 列 + 分类 + 项目 + 记账对方科目 + 银行账户）", async () => {
   const table = buildCashFlowDetailTable(detailRows(), { currencyLabels: LABELS });
   const { name, rows } = readSheet(await renderReportWorkbook([table]));
   assert.equal(name, "收支明细");
-  assert.deepEqual(rows[0], ["日期", "对方名称", "币种", "分类", "项目", "收支类目", "收入", "支出", "银行账户", "结算方式"]);
+  assert.deepEqual(rows[0], ["日期", "对方名称", "币种", "分类", "项目", "记账对方科目", "收入", "支出", "银行账户", "结算方式"]);
   assert.equal(CASH_FLOW_DETAIL_COLUMNS.length, 10);
-  assert.deepEqual(CASH_FLOW_DETAIL_COLUMNS.map((column) => column.header), ["日期", "对方名称", "币种", "分类", "项目", "收支类目", "收入", "支出", "银行账户", "结算方式"], "分类在项目之前，收支类目紧跟项目");
+  assert.deepEqual(CASH_FLOW_DETAIL_COLUMNS.map((column) => column.header), ["日期", "对方名称", "币种", "分类", "项目", "记账对方科目", "收入", "支出", "银行账户", "结算方式"], "分类在项目之前，记账对方科目紧跟项目");
 });
 
-test("finance-report.cash-flow：收入/支出分列，没有的那一边写 0；分类、科目、收支类目与银行账户逐行带出", async () => {
+test("finance-report.cash-flow：收入/支出分列，没有的那一边写 0；分类、科目、记账对方科目与银行账户逐行带出", async () => {
   const table = buildCashFlowDetailTable(detailRows(), { currencyLabels: LABELS });
   const { rows } = readSheet(await renderReportWorkbook([table]));
-  assert.deepEqual(rows[1], ["2026-09-14", "兴田", "人民币", "损益类", "主营业务成本", "房租费", 0, 2900, "农业银行5706", "转账--农业银行5706"], "支出行：收入写 0");
-  assert.deepEqual(rows[2], ["2026-09-14", "中谷ZG", "美元", "损益类", "主营业务收入", "", 1000, 0, "中国银行7624", "转账--中国银行（美元）7624"], "收入行：支出写 0；没有类目就留空单元格");
+  assert.deepEqual(rows[1], ["2026-09-14", "兴田", "人民币", "损益类", "房租费", "应付账款", 0, 2900, "农业银行5706", "转账--农业银行5706"], "支出行：收入写 0；业务科目是房租费，对方科目是应付账款");
+  assert.deepEqual(rows[2], ["2026-09-14", "中谷ZG", "美元", "损益类", "主营业务收入", "", 1000, 0, "中国银行7624", "转账--中国银行（美元）7624"], "收入行：支出写 0；业务科目与对方科目相同就留空，不重复写");
 });
 
-test("finance-report.cash-flow：分类/科目/收支类目缺失的历史流水都留空（不写横杠，否则会混进数值列）", async () => {
+test("finance-report.cash-flow：分类/科目/记账对方科目缺失的历史流水都留空（不写横杠，否则会混进数值列）", async () => {
   const table = buildCashFlowDetailTable([{ date: new Date("2026-09-14T00:00:00.000Z"), counterpartyName: "兴田", currency: "CNY", direction: "expense", amount: dec("100"), category: null, subjectName: null, bankLabel: null, settlementMethod: null, settlementAccountLabel: null }], { currencyLabels: LABELS });
   const { rows } = readSheet(await renderReportWorkbook([table]));
   assert.ok(!rows[1][3], "缺失的分类是空单元格（不是横杠，横杠会被当成文本混进数值列）");
   assert.ok(!rows[1][4], "缺失的项目是空单元格");
-  // 手工录入的流水没有这一格（录的时候只选一个科目，那个科目就是它的类目）——空着，不是横杠。
-  assert.ok(!rows[1][5], "缺失的收支类目是空单元格");
+  // 手工录入的流水业务科目 = 主科目，两者相同 → 「记账对方科目」留空，不是横杠。
+  assert.ok(!rows[1][5], "缺失的记账对方科目是空单元格");
   assert.ok(!rows[1][8], "缺失的银行账户是空单元格");
 });
 
@@ -114,7 +114,7 @@ test("finance-report.cash-flow：收入/支出是数值类型，且全表没有�
   const table = buildCashFlowDetailTable(detailRows(), { currencyLabels: LABELS });
   const { sheet } = readSheet(await renderReportWorkbook([table]));
   assertNoTextNumbers(sheet, "收支明细");
-  assert.equal(sheet.F2.t, "s", "收支类目（第 6 列）是文本列");
+  assert.equal(sheet.F2.t, "s", "记账对方科目（第 6 列）是文本列");
   assert.equal(sheet.G2.t, "n", "收入列（第 7 列）是数值列");
   assert.equal(sheet.H2.t, "n", "支出列（第 8 列）是数值列");
   assert.equal(sheet.G2.v, 0, "0 要落成数值 0，而不是空单元格（这里 0 是「确实为零」的事实）");

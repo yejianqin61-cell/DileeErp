@@ -524,8 +524,11 @@ test("finance-report.query：收支明细只取生效流水，并按期间/科�
   const where = calls.cashFlowEntry[0].where;
   assert.equal(where.status, "posted", "已冲销的流水不进报表");
   assert.equal(where.deletedAt, null);
-  assert.equal(where.subjectId, "subject-2");
-  assert.deepEqual(where.subject, { category: "损益类" }, "分类筛选走科目表的科目类别");
+  // 2026-11-05：科目/分类筛选按**业务科目**（收支类目优先，手工流水退回主科目），与列表显示同一口径。
+  assert.deepEqual(where.AND, [
+    { OR: [{ categorySubjectId: "subject-2" }, { categorySubjectId: null, subjectId: "subject-2" }] },
+    { OR: [{ categorySubject: { category: "损益类" } }, { categorySubjectId: null, subject: { category: "损益类" } }] },
+  ], "筛「管理费用」不能一条都筛不出来：已挂账付款的主科目是应付账款，业务科目在收支类目里");
   assert.equal(where.currency, "CNY");
   assert.equal(where.direction, "expense");
   assert.equal(where.entryDate.lte.toISOString(), "2026-09-30T23:59:59.999Z");
@@ -539,8 +542,28 @@ test("finance-report.query：收支明细行映射（分类 + 科目名称 + 结
   assert.equal(rows[0].amount.toString(), "2900");
   assert.equal(rows[0].category, "损益类", "分类 = 科目类别");
   assert.equal(rows[0].subjectName, "主营业务成本", "项目 = 科目名称");
+  assert.equal(rows[0].contraSubjectName, null, "手工/同科目流水不重复写「记账对方科目」");
   assert.equal(rows[0].settlementMethod, "转账");
   assert.equal(rows[0].settlementAccountLabel, "农业银行5706");
+});
+
+test("finance-report.query：已挂账付款的分类/项目取收支类目（业务科目），主科目退为「记账对方科目」", async () => {
+  // 线上实例：CF-20261105-9CFB412B（确认应付 APO-20261027-CE78BFBC 的付款）——
+  // 主科目是负债类/应付账款，收支类目才是财务选的损益类/管理费用。
+  const { service } = stubPhase3({
+    entries: [
+      cashRow({
+        subjectId: "subject-ap",
+        subject: { id: "subject-ap", category: "负债类", name: "应付账款" },
+        categorySubjectId: "subject-expense",
+        categorySubject: { id: "subject-expense", category: "损益类", name: "管理费用" },
+      }),
+    ],
+  });
+  const rows = await service.cashFlowDetail({});
+  assert.equal(rows[0].category, "损益类", "分类 = 业务科目（确认应付里选的那个）的类别");
+  assert.equal(rows[0].subjectName, "管理费用", "项目 = 业务科目名称，不再是应付账款");
+  assert.equal(rows[0].contraSubjectName, "应付账款", "记账对方科目单独一列，信息不丢");
 });
 
 test("finance-report.query：收支汇总按「科目 × 币种」聚合，收入与支出分别累计", async () => {
@@ -560,6 +583,24 @@ test("finance-report.query：收支汇总按「科目 × 币种」聚合，收�
   assert.equal(usd.income.toString(), "5428", "同科目同币种的收入要累加");
   assert.equal(usd.expense.toString(), "0");
   assert.equal(cny.expense.toString(), "2900");
+});
+
+test("finance-report.query：收支汇总按**业务科目**聚合（已挂账付款归到管理费用，不归应付账款）", async () => {
+  const { service } = stubPhase3({
+    items: [
+      { id: "subject-expense", category: "损益类", name: "管理费用", sortOrder: 800 },
+      { id: "subject-ap", category: "负债类", name: "应付账款", sortOrder: 900 },
+    ],
+    entries: [
+      // 2026-11-05 用户报障的那条链：付款流水的对方科目是应付账款，业务科目是确认应付时选的管理费用。
+      cashRow({ subjectId: "subject-ap", subject: { id: "subject-ap", category: "负债类", name: "应付账款" }, categorySubjectId: "subject-expense", categorySubject: { id: "subject-expense", category: "损益类", name: "管理费用" }, amount: dec("27.2") }),
+      cashRow({ subjectId: "subject-ap", subject: { id: "subject-ap", category: "负债类", name: "应付账款" }, categorySubjectId: "subject-expense", categorySubject: { id: "subject-expense", category: "损益类", name: "管理费用" }, amount: dec("17") }),
+    ],
+  });
+  const { amounts } = await service.cashFlowSummary({});
+  assert.equal(amounts.length, 1, "同一业务科目聚成一行");
+  assert.equal(amounts[0].subjectId, "subject-expense", "聚合键是业务科目（收支类目），不是主科目「应付账款」");
+  assert.equal(amounts[0].expense.toString(), "44.2", "两笔付款累加：这个月管理费用多少，在这张表上一眼能读出来");
 });
 
 test("finance-report.query：收支汇总的科目清单 = 启用科目 ∪ 本期出现过的停用科目，并按「分类 → sortOrder → 名称」合并排序", async () => {

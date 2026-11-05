@@ -128,14 +128,14 @@ function cashDetailTable() {
       { header: "币种", num_fmt: null, align: null },
       { header: "分类", num_fmt: null, align: null },
       { header: "项目", num_fmt: null, align: null },
-      // 收支类目（2026-10-13）：这笔钱算什么（来源单据上的科目）。
-      { header: "收支类目", num_fmt: null, align: null },
+      // 记账对方科目（2026-11-05）：现金分录的另一头（已挂账的付款是应付账款）。
+      { header: "记账对方科目", num_fmt: null, align: null },
       { header: "收入", num_fmt: "0.####", align: null },
       { header: "支出", num_fmt: "0.####", align: null },
       { header: "结算方式", num_fmt: null, align: null },
     ],
     rows: [
-      ["2026-09-14", "兴田", "人民币", "负债类", "应付账款", "房租费", 0, 2900, "转账--农业银行5706"],
+      ["2026-09-14", "兴田", "人民币", "损益类", "房租费", "应付账款", 0, 2900, "转账--农业银行5706"],
       ["2026-09-14", "中谷ZG", "美元", "损益类", "主营业务收入", "", 1000, 0, "转账--中国银行（美元）7624"],
     ],
     total_columns: [],
@@ -666,20 +666,23 @@ describe("财务报表 · 三期：收支明细表与收支汇总表", () => {
     expect(screen.getByRole("columnheader", { name: "结算方式" })).toBeInTheDocument();
   });
 
-  it("收支明细表：「收支类目」列由后端下发、前端照渲染（列名不是前端写死的）", async () => {
-    // 用户 2026-10-13：「也要显示收支类目……导出的 excel 也要显示相应的 column」。
+  it("收支明细表：「记账对方科目」列由后端下发、前端照渲染（列名不是前端写死的）", async () => {
+    // 用户 2026-10-13：「也要显示收支类目……导出的 excel 也要显示相应的 column」；
+    // 2026-11-05 用户报障后口径摆正：「分类 / 项目」= 业务科目（这笔钱算什么），
+    // 对方科目改成独立的「记账对方科目」列 —— 信息不丢，只是角色分开。
     // 这一页的列**由后端 `ReportTable.columns` 决定**（见 finance-report-workspace 的 columns useMemo），
-    // 所以后端插一列、页面自动跟着有；这里钉住"下发了就渲染得出来"。
+    // 所以后端改一列、页面自动跟着有；这里钉住"下发了就渲染得出来"。
     captureDownloads();
     stubReports();
     await open(<FinanceReportWorkspace tab="cash-flow-detail" />, "page-finance-reports");
     const table = await screen.findByTestId("data-table");
 
-    expect(screen.getByRole("columnheader", { name: "收支类目" })).toBeInTheDocument();
-    // 第一行：现金分录的对方科目（应付账款）与「这笔钱算什么」（房租费）各占一列，不互相顶替
+    expect(screen.getByRole("columnheader", { name: "记账对方科目" })).toBeInTheDocument();
+    // 第一行：业务科目（房租费）排在「项目」，现金分录的对方科目（应付账款）单独一列，不互相顶替。
     const first = within(table).getAllByTestId("data-table-row")[0];
     expect(within(first).getByText("应付账款")).toBeInTheDocument();
     expect(within(first).getByText("房租费")).toBeInTheDocument();
+    expect(within(first).queryByText("负债类")).toBeNull();
   });
 
   it("收支汇总表：按币种分行渲染，并显示「不跨币种相加」的说明；不出现跨币种合计", async () => {

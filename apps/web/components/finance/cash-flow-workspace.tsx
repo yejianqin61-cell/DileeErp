@@ -48,6 +48,14 @@ type CashFlowEntry = AuditRow & {
   amount: string;
   currency: string;
   subject: SubjectLink | null;
+  /**
+   * 收支类目（业务科目）：自动写入的流水（付款/收款/确认应收应付）才有值。
+   *
+   * 2026-11-05 用户报障：确认应付时选的「管理费用」到收支流水里变成了「应付账款」——
+   * 因为列表取的是 `subject`（现金分录的对方科目）。现在列表显示 `categorySubject ?? subject`，
+   * 与后端 `cashFlowBusinessSubject` 同一条规则。
+   */
+  categorySubject?: SubjectLink | null;
   settlementMethod: string | null;
   settlementAccount: { id: string; label: string } | null;
   /** 这笔钱实际落在哪个银行账户上（算余额的那一个）；未指定时为 null。 */
@@ -224,12 +232,41 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
     const fallback = id ? subjectById.get(id) : undefined;
     return fallback ? subjectOptionLabel(fallback) : "-";
   };
+  /**
+   * 列表上显示的「会计科目」= **业务科目**：有收支类目用类目（确认应付/付款单上财务选的那个），
+   * 手工录入的流水没有类目 → 用它自己的科目（录的时候只选了一个科目）。
+   *
+   * 与后端 `cashFlowBusinessSubject()` 是同一条规则；这里不 import 后端代码（web 不依赖 api 源码），
+   * 所以两边用注释互相指认，改一处必须改另一处。
+   */
+  const businessSubject = (entry: CashFlowEntry): SubjectLink | null => entry.categorySubject ?? entry.subject ?? null;
   // 银行账户只能从银行池里选（停用的不出现）；账户在「财务 → 银行账户」维护。
   const bankOptions = useMemo(() => banks.filter((bank) => bank.isActive).map((bank) => ({ value: bank.id, label: `${bank.bankName} / ${bank.accountNumber}（${bank.currency}）` })), [banks]);
   /** 哨兵值 → 提交值：清空要显式送 null（后端按「清空」处理），未改动则送 undefined。 */
   const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : value || undefined);
 
   function entryFields(entry?: CashFlowEntry): ActionField[] {
+    /**
+     * 更正时「会计科目」改的是**列表上显示的那一个**（业务科目）：
+     *   - 自动写入的流水：改收支类目 `category_subject_id`（主科目/对方科目由系统按销账规则定）；
+     *   - 手工录入的流水：改主科目 `subject_id`（它本身就是这笔钱的类目）。
+     * 否则财务在弹窗里把「管理费用」改成「销售费」，列表上纹丝不动 —— 那是下一个报障。
+     */
+    const editsCategory = Boolean(entry?.categorySubject);
+    const business = entry ? businessSubject(entry) : null;
+    /**
+     * 更正一条挂者**已停用科目**的旧流水时，要把那个科目也放进下拉。
+     *
+     * 下拉平时只列启用科目（停用的不能再选），但表单提交时会把当前值原样带上；当前值不在选项里
+     * 就会被后端按「科目不存在或已停用」422 —— 财务只是想改个备注，却撞上一个改不动的弹窗。
+     * 所以补一条「（已停用）」选项：不改它就能保存，真去点了别的才换科目。
+     */
+    const businessOption = business?.id && !activeSubjects.some((subject) => subject.id === business.id)
+      ? subjectById.get(business.id)
+      : undefined;
+    const subjectFieldOptions = businessOption
+      ? [{ value: businessOption.id, label: `${subjectOptionLabel(businessOption)}（已停用）` }, ...subjectOptions]
+      : subjectOptions;
     return [
       { name: "entry_date", label: "日期", type: "date", required: true, defaultValue: entry ? entry.entryDate.slice(0, 10) : today() },
       { name: "counterparty_name", label: "对方名称", type: "text", required: true, defaultValue: entry?.counterpartyName },
@@ -239,7 +276,12 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
       // 会计科目：下拉里带上分类前缀（`损益类 / 主营业务收入`），否则同名科目分不清；
       // 并且用带搜索框的 `searchable-select`（用户 2026-09-20 第 1 条）——
       // 科目表 120+ 条，普通下拉只能靠滚动找。
-      { name: "subject_id", label: "会计科目", type: "searchable-select", required: true, defaultValue: entry?.subject?.id, options: subjectOptions },
+      { name: editsCategory ? "category_subject_id" : "subject_id", label: "会计科目", type: "searchable-select", required: true, defaultValue: business?.id, options: subjectFieldOptions },
+      // 自动写入的流水：对方科目是来源单据决定的，弹窗里说清楚它是什么、为什么不能在这里改，
+      // 免得财务以为「列表写管理费用、凭证写应付账款」是又一处不一致。
+      ...(editsCategory
+        ? [{ name: "contra_subject", label: `记账对方科目：${subjectLabel(entry?.subject ?? null, entry?.subject?.id)}（由来源单据决定，生成凭证用它，不在这里改）`, type: "info" as const }]
+        : []),
       { name: "settlement_method", label: "结算方式", type: "text", defaultValue: entry?.settlementMethod ?? undefined, placeholder: "如：转账 / 现金" },
       // 两个「账户」不是一回事，别合并：
       //   结算账户 = 老表「结算方式」字典项（给人看的文本，如「农业银行5706」），不参与任何计算；
@@ -331,8 +373,20 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
     { id: "direction", header: "收支", meta: { width: COLUMN_WIDTH.direction }, cell: ({ row }) => (row.original.direction === "income" ? "收入" : "支出") },
     { accessorKey: "amount", header: "金额", meta: { width: COLUMN_WIDTH.amount } },
     { accessorKey: "currency", header: "币种", meta: { width: COLUMN_WIDTH.currency } },
-    { id: "category", header: "分类", meta: { width: COLUMN_WIDTH.category }, cell: ({ row }) => row.original.subject?.category ?? "-" },
-    { id: "subject", header: "项目", meta: { width: COLUMN_WIDTH.subject }, cell: ({ row }) => subjectLabel(row.original.subject, row.original.subject?.id) },
+    // 分类 / 项目 = 业务科目（这笔钱算什么），不是现金分录的对方科目 —— 见 `businessSubject`。
+    // 对方科目（生成凭证时的另一头）只在自动写入、且与业务科目不同时挂在项目格的 title 上：
+    // 它是核对用的细节，不该抢占「这笔钱花在什么上」这一列。
+    { id: "category", header: "分类", meta: { width: COLUMN_WIDTH.category }, cell: ({ row }) => businessSubject(row.original)?.category ?? "-" },
+    {
+      id: "subject",
+      header: "项目",
+      meta: { width: COLUMN_WIDTH.subject },
+      cell: ({ row }) => {
+        const business = businessSubject(row.original);
+        const contra = row.original.subject && business && row.original.subject.id !== business.id ? row.original.subject : null;
+        return <span title={contra ? `记账对方科目：${subjectLabel(contra, contra.id)}` : undefined}>{subjectLabel(business, business?.id)}</span>;
+      },
+    },
     { id: "settlement", header: "结算方式", meta: { width: COLUMN_WIDTH.settlement }, cell: ({ row }) => [row.original.settlementMethod, row.original.settlementAccount?.label].filter(Boolean).join("--") || "-" },
     { id: "bank", header: "银行账户", meta: { width: COLUMN_WIDTH.bank }, cell: ({ row }) => (row.original.bank ? `${row.original.bank.bankName} / ${row.original.bank.accountNumber}` : "-") },
     // 款项性质与订单号：老表「外汇一览表」按这两列把收款按客户/订单/期间收束起来。

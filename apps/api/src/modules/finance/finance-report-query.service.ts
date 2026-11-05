@@ -2,6 +2,7 @@ import { Injectable, UnprocessableEntityException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { accountingSubjectLabel, compareAccountingSubjects } from "./accounting-subject-catalog";
+import { cashFlowBusinessSubject, cashFlowSubjectWhere } from "./cash-flow.domain";
 import { BomMaterialCostService } from "./finance-report-cost.service";
 import { LOCAL_CURRENCY, localRevenueOf, receivableOutstanding, salesAmountOf, toDecimal } from "./finance-report.domain";
 import { financeDayRange } from "./finance-period";
@@ -907,28 +908,43 @@ export class FinanceReportQueryService {
   async cashFlowDetail(filter: FinanceReportFilter): Promise<CashFlowDetailSource[]> {
     const rows = await this.cashFlowRows(filter);
     this.assertWithinLimit(rows.length);
-    return rows.map((row) => ({
-      date: row.entryDate,
-      counterpartyName: row.counterpartyName,
-      currency: row.currency,
-      direction: row.direction,
-      amount: row.amount,
-      // 分类 = 科目类别，项目 = 科目名称（用户 2026-09-17 口径）。科目是必填外键，
-      // 所以这两列一定有值；仍然写成 `?? null` 是为了兼容「科目被硬删」这种库层不该发生的情形。
-      category: row.subject?.category ?? null,
-      subjectName: row.subject?.name ?? null,
-      // 收支类目（2026-10-13）：来源单据上写的科目（其他应付的条目 / 覆盖它的对账单），
-      // 或按来源的归类（采购 → 原材料）。手工流水没有这一格 → 空单元格（见列定义注释）。
-      categorySubjectName: row.categorySubject?.name ?? null,
-      // 银行账户（银行账户池）优先；历史流水没落 bank_id 时回落到老表结算账户字典的标签。
-      bankLabel: row.bank ? `${row.bank.bankName}${row.bank.accountNumber}` : null,
-      settlementMethod: row.settlementMethod,
-      settlementAccountLabel: row.settlementAccount?.label ?? null,
-    }));
+    return rows.map((row) => {
+      /**
+       * 「分类 / 项目」= **业务科目**（`cashFlowBusinessSubject`：有收支类目用类目，手工流水退回主科目）。
+       *
+       * 2026-11-05 用户报障：「每一笔确认应付中选择的会计科目，到了收支流水中都是错的，凭证里又是对的」。
+       * 已挂账的付款主科目一律是「应付账款」（现金分录的对方科目），按它归类的话这张明细表回答不了
+       * 「这笔钱花在什么上」。所以分类/项目改按业务科目，对方科目退到「记账对方科目」列（仍可导出、
+       * 生成凭证仍用它）。不是删除信息，是把两列的角色摆正。
+       */
+      const business = cashFlowBusinessSubject(row);
+      // 收支类目与主科目是**同一个科目**时（手工流水、确认即记账的流水）不重复写一遍。
+      const contra = row.categorySubject && row.subject && row.categorySubject.id !== row.subject.id ? row.subject.name : null;
+      return {
+        date: row.entryDate,
+        counterpartyName: row.counterpartyName,
+        currency: row.currency,
+        direction: row.direction,
+        amount: row.amount,
+        // 科目是必填外键，这两列一定有值；写成 `?? null` 是为了兼容「科目被硬删」这种库层不该发生的情形。
+        category: business?.category ?? null,
+        subjectName: business?.name ?? null,
+        // 收支类目与主科目是同一个科目时（手工流水、确认即记账的流水）不重复写一遍。
+        contraSubjectName: contra,
+        // 银行账户（银行账户池）优先；历史流水没落 bank_id 时回落到老表结算账户字典的标签。
+        bankLabel: row.bank ? `${row.bank.bankName}${row.bank.accountNumber}` : null,
+        settlementMethod: row.settlementMethod,
+        settlementAccountLabel: row.settlementAccount?.label ?? null,
+      };
+    });
   }
 
   /**
-   * 收支汇总表取数：按「分类 × 科目 × 币种」聚合。
+   * 收支汇总表取数：按**业务科目**（分类 × 科目 × 币种）聚合。
+   *
+   * 2026-11-05 起与明细表同一个口径：科目 = `cashFlowBusinessSubject`（收支类目优先，手工流水退回主科目）。
+   * 改之前按 `subject_id`（现金分录的对方科目）聚合，于是「这个月管理费用多少」在汇总表里
+   * 只会看到一行「应付账款」—— 与用户「很多报表都要根据这个来统计」的要求直接冲突。
    *
    * 科目清单 = **启用的科目 ∪ 本期数据里出现过的科目**：
    * 只用启用科目会让「已停用科目的旧流水」在汇总表里凭空消失（明细表里有、汇总表里没有），
@@ -947,7 +963,10 @@ export class FinanceReportQueryService {
       select: { id: true, category: true, name: true, sortOrder: true },
     });
     const known = new Set(enabled.map((row) => row.id));
-    const retiredIds = [...new Set(rows.map((row) => row.subjectId).filter((id) => !known.has(id)))];
+    // 业务科目的 id：有收支类目直接用类目 id，没有（手工流水/历史流水）才退回主科目 id。
+    // 不用内嵌对象上的 id —— 报表取数只 select 了分类与名称，id 是可选的补充字段。
+    const businessIds = rows.map((row) => row.categorySubjectId ?? row.subjectId).filter((id): id is string => Boolean(id));
+    const retiredIds = [...new Set(businessIds.filter((id) => !known.has(id)))];
     const retired = retiredIds.length
       ? await this.prisma.accountingSubject.findMany({ where: { id: { in: retiredIds } }, select: { id: true, category: true, name: true, sortOrder: true } })
       : [];
@@ -961,8 +980,10 @@ export class FinanceReportQueryService {
 
     const grouped = new Map<string, CashFlowSummaryAmount>();
     for (const row of rows) {
-      const key = `${row.subjectId}|${row.currency}`;
-      const current = grouped.get(key) ?? { subjectId: row.subjectId, currency: row.currency, income: new Prisma.Decimal(0), expense: new Prisma.Decimal(0) };
+      const businessId = row.categorySubjectId ?? row.subjectId;
+      if (!businessId) continue;
+      const key = `${businessId}|${row.currency}`;
+      const current = grouped.get(key) ?? { subjectId: businessId, currency: row.currency, income: new Prisma.Decimal(0), expense: new Prisma.Decimal(0) };
       if (row.direction === "income") current.income = current.income.plus(row.amount);
       else current.expense = current.expense.plus(row.amount);
       grouped.set(key, current);
@@ -984,16 +1005,20 @@ export class FinanceReportQueryService {
       where: {
         deletedAt: null,
         status: "posted",
-        ...(filter.subjectId ? { subjectId: filter.subjectId } : {}),
-        // 分类筛选走科目表的科目类别（用户 2026-09-17 口径：「很多报表都要根据这个来统计」）。
-        ...(filter.category ? { subject: { category: filter.category } } : {}),
+        ...(filter.subjectId || filter.category ? cashFlowSubjectWhere({ subjectId: filter.subjectId, category: filter.category }) : {}),
         ...(filter.currency ? { currency: filter.currency } : {}),
         ...(filter.direction ? { direction: filter.direction } : {}),
         ...(period ? { entryDate: period } : {}),
       },
       // 科目（分类 + 名称）与结算账户标签一次带上：汇总表只读科目，但只为一个 select 分两条查询路径不值得
       // （两条路径的筛选条件一旦分叉，就是「明细与汇总对不上」的来源）。
-      include: { settlementAccount: { select: { label: true } }, subject: { select: { category: true, name: true } }, categorySubject: { select: { name: true } }, bank: { select: { bankName: true, accountNumber: true } } },
+      // `categorySubject` = 业务科目（收支类目）：列表/报表显示、汇总分组都用它，主科目退为「记账对方科目」。
+      include: {
+        settlementAccount: { select: { label: true } },
+        subject: { select: { id: true, category: true, name: true } },
+        categorySubject: { select: { id: true, category: true, name: true } },
+        bank: { select: { bankName: true, accountNumber: true } },
+      },
       orderBy: [{ entryDate: "asc" }, { createdAt: "asc" }],
     });
   }

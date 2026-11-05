@@ -169,9 +169,9 @@ function stubReports(overrides = {}) {
           direction: "expense",
           amount: dec("2900"),
           category: "损益类",
-          subjectName: "主营业务成本",
-          // 收支类目（2026-10-13）：这笔钱算什么（来源单据上的科目）。
-          categorySubjectName: "房租费",
+          subjectName: "房租费",
+          // 记账对方科目（2026-11-05）：现金分录的另一头（已挂账的付款是应付账款）。
+          contraSubjectName: "应付账款",
           bankLabel: "农业银行5706",
           settlementMethod: "转账",
           settlementAccountLabel: "农业银行5706",
@@ -449,14 +449,14 @@ test("finance-report.api：利润表的筛选条件与其它报表一致地映�
 
 /* ------------------------------------------------------------ 三期：收支两张表 */
 
-test("finance-report.api：收支明细表预览与导出（10 列：老表 6 列 + 分类 + 项目 + 收支类目 + 银行账户）", async () => {
+test("finance-report.api：收支明细表预览与导出（10 列：老表 6 列 + 分类 + 项目 + 记账对方科目 + 银行账户）", async () => {
   const { service } = stubReports();
   const controller = new FinanceReportController(service, statementsStub().statements);
   const preview = await controller.cashFlowDetail({});
   assert.equal(preview.data.sheet_name, "收支明细");
   assert.equal(preview.data.columns.length, 10);
-  assert.deepEqual(preview.data.columns.map((column) => column.header), ["日期", "对方名称", "币种", "分类", "项目", "收支类目", "收入", "支出", "银行账户", "结算方式"]);
-  assert.deepEqual(preview.data.rows[0], ["2026-09-14", "兴田", "人民币", "损益类", "主营业务成本", "房租费", 0, 2900, "农业银行5706", "转账--农业银行5706"]);
+  assert.deepEqual(preview.data.columns.map((column) => column.header), ["日期", "对方名称", "币种", "分类", "项目", "记账对方科目", "收入", "支出", "银行账户", "结算方式"]);
+  assert.deepEqual(preview.data.rows[0], ["2026-09-14", "兴田", "人民币", "损益类", "房租费", "应付账款", 0, 2900, "农业银行5706", "转账--农业银行5706"]);
   assert.equal(preview.data.totals, null, "收支明细表不给合计（一行一个币种）");
 
   const response = stubResponse();
@@ -467,7 +467,7 @@ test("finance-report.api：收支明细表预览与导出（10 列：老表 6 �
   assert.deepEqual(workbook.SheetNames, ["收支明细"]);
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const header = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null })[0];
-  assert.deepEqual(header, ["日期", "对方名称", "币种", "分类", "项目", "收支类目", "收入", "支出", "银行账户", "结算方式"], "导出的表头与预览同源");
+  assert.deepEqual(header, ["日期", "对方名称", "币种", "分类", "项目", "记账对方科目", "收入", "支出", "银行账户", "结算方式"], "导出的表头与预览同源");
 });
 
 test("finance-report.api：收支汇总表预览与导出（分类 × 项目 × 币种，分类段末小计 + 币种段末合计）", async () => {

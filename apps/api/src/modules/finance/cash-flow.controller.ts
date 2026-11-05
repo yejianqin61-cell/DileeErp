@@ -50,6 +50,14 @@ class CashFlowEntryUpdateDto {
   @IsOptional() @IsString() amount?: string;
   @IsOptional() @IsString() @MaxLength(10) currency?: string;
   @IsOptional() @IsUUID() subject_id?: string;
+  /**
+   * 收支类目（业务科目）：**列表上显示的「会计科目」就是它**（有类目用类目，没有才用主科目）。
+   *
+   * 自动写入的流水（付款/收款/确认应收应付）才有值；更正时改它改的是「这笔钱算什么」，
+   * 改 `subject_id` 改的是现金分录的对方科目（生成凭证用）。传 `null` 表示清空（退回按主科目显示），
+   * 不传表示不改 —— 与银行账户/款项性质的清空约定一致。
+   */
+  @IsOptional() @IsUUID() category_subject_id?: string;
   @IsOptional() @IsString() @MaxLength(50) settlement_method?: string;
   @IsOptional() @IsUUID() settlement_account_id?: string;
   @IsOptional() @IsUUID() bank_id?: string;
