@@ -7,6 +7,7 @@ import { runRealModelDual } from '../src/real-model-dual.ts'
 import { verifySingleParentActivations, timedActivationsFromTrace } from '../src/single-parent-activation.ts'
 
 const workspace = await mkdtemp(join(tmpdir(), 'dilee-real-model-dual-'))
+let completed: Awaited<ReturnType<typeof runRealModelDual>> | undefined
 try {
   const result = await runRealModelDual({
     workspace,
@@ -21,6 +22,7 @@ try {
     ],
     deadlineMs: 20 * 60_000,
   })
+  completed = result
   verifySingleParentActivations(timedActivationsFromTrace(result.trace))
   const submission = result.trace.find(record => record.event === 'submission')
   assert.deepEqual(submission?.capabilities.map(capability => capability.capabilityId).sort(), [
@@ -49,6 +51,8 @@ try {
   console.error(JSON.stringify({
     result: 'failed',
     trace: records.map(record => ({ event: record.event, capabilityId: record.capabilityId, role: record.role, stopReason: record.stopReason })),
+    finalResponse: completed?.batch.run.finalResponse.slice(0, 1000),
+    rootEventTypes: completed?.batch.run.events.map(event => event.type),
   }))
   throw error
 } finally {
