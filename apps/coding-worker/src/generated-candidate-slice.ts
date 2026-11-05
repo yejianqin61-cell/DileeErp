@@ -17,7 +17,7 @@ export interface GeneratedCandidateSliceResult {
 
 function probeScript(): string {
   return `
-const fs = await import('node:fs');
+import('node:fs').then(async fs => {
 let sourceWriteDenied = false;
 let candidateWriteDenied = false;
 let networkDenied = false;
@@ -35,6 +35,7 @@ process.stdout.write(JSON.stringify({
     && process.env.USER_ACCESS_TOKEN === undefined,
   generatedTestPassed: true,
 }));
+});
 `
 }
 
@@ -60,7 +61,8 @@ export function runGeneratedCandidateInLinux(input: {
     }
     chmodSync(paths.candidate, 0o555); chmodSync(paths.state, 0o777)
     materializeSourceView({ repositoryRoot: input.repositoryRoot, destination: paths.source, revision: input.sourceRevision })
-    const command = `node --experimental-strip-types --test /workspace/candidate/tool.test.ts >/tmp/generated-test.log 2>&1; node --experimental-strip-types --input-type=module -e ${JSON.stringify(probeScript())}`
+    const encodedProbe = Buffer.from(probeScript(), 'utf8').toString('base64')
+    const command = `node --experimental-strip-types --test /workspace/candidate/tool.test.ts >/tmp/generated-test.log 2>&1; node --experimental-strip-types --input-type=module -e "eval(Buffer.from('${encodedProbe}', 'base64').toString())"`
     const stdout = execFileSync(docker, buildCodingContainerArgs(paths, ['sh', '-ec', command], [], { candidateReadOnly: true }), {
       encoding: 'utf8', env: selectCodingHostEnvironment(process.env), windowsHide: true, timeout: 180_000, maxBuffer: 1024 * 1024,
     })
