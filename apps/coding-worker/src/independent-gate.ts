@@ -1,6 +1,7 @@
 import { freezeCandidateRevision, type FrozenCandidateRevision } from './candidate-revision.ts'
 import { evaluateRevisionEvidence, type ValidationEvidence } from './revision-evidence.ts'
 import { runOrderACandidateInLinux } from './order-a-candidate-slice.ts'
+import { runGeneratedCandidateInLinux } from './generated-candidate-slice.ts'
 import { createHash } from 'node:crypto'
 
 export interface IndependentGateInput {
@@ -50,6 +51,23 @@ export function verifyFrozenOrderACandidate(input: IndependentGateInput, options
   }
   if (!result.sourceReadable || !result.sourceWriteDenied || !result.candidateWriteDenied
     || !result.networkDenied || !result.databaseCredentialAbsent || !result.generatedTestPassed) {
+    throw new Error('INDEPENDENT_GATE_PERMISSION_FAILED')
+  }
+  return { codeHash: input.revision.codeHash, testsPassed: true, permissionsPassed: true }
+}
+
+export function verifyFrozenGeneratedCandidate(input: IndependentGateInput, options: {
+  repositoryRoot: string
+  dockerExecutable?: string
+}): { readonly codeHash: string; readonly testsPassed: true; readonly permissionsPassed: true } {
+  const result = runGeneratedCandidateInLinux({
+    repositoryRoot: options.repositoryRoot,
+    candidateRoot: input.revision.root,
+    sourceRevision: input.sourceRevision,
+    dockerExecutable: options.dockerExecutable,
+  })
+  if (!result.generatedTestPassed || !result.sourceReadable || !result.sourceWriteDenied
+    || !result.candidateWriteDenied || !result.networkDenied || !result.databaseCredentialAbsent) {
     throw new Error('INDEPENDENT_GATE_PERMISSION_FAILED')
   }
   return { codeHash: input.revision.codeHash, testsPassed: true, permissionsPassed: true }
