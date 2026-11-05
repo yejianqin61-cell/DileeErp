@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -39,6 +39,18 @@ try {
     submittedCapabilities: submission.capabilities.map(capability => capability.capabilityId).sort(),
     files: ['employee-output/tool.ts', 'employee-output/tool.test.ts', 'employee-inventory/tool.ts', 'employee-inventory/tool.test.ts'],
   }))
+} catch (error) {
+  const tracePath = join(workspace, 'activations.jsonl')
+  const trace = await readFile(tracePath, 'utf8').catch(() => '')
+  const records = trace.split(/\r?\n/u).filter(Boolean).flatMap(line => {
+    try { return [JSON.parse(line) as { event?: unknown; capabilityId?: unknown; role?: unknown; stopReason?: unknown }] }
+    catch { return [] }
+  })
+  console.error(JSON.stringify({
+    result: 'failed',
+    trace: records.map(record => ({ event: record.event, capabilityId: record.capabilityId, role: record.role, stopReason: record.stopReason })),
+  }))
+  throw error
 } finally {
   await rm(workspace, { recursive: true, force: true })
 }
