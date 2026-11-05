@@ -150,3 +150,133 @@ describe("采购 → BOM表：已确认销售单列全（2026-10-13）", () => {
     expect(screen.getByText(/请先到【销售】确认/)).toBeVisible();
   });
 });
+
+/**
+ * 删除 BOM 表（2026-11-05）。
+ *
+ * 用户原话：「想修改销售单，但是销售单显示 bom 表已经建立，但是 bom 其实也没有填入内容，
+ * 这时候怎么办？可不可以增加一个 Bom 表的删除键？」—— 空 BOM 被当成下游事实、BOM 又不可删，
+ * 是一条死路。契约见 `docs/design/bom-delete-and-empty-shell-release-2026-11-05.md` §4：
+ *   - `GET /boms/:id/delete-preview` 给 `deletable` / `blocked_reason` / `reason_required`；
+ *   - 空壳一键删（不填原因）；有明细/有计划必填原因；被采购单/生产单引用则拒绝并说明下一步。
+ *
+ * 这里钉的是**交互**：不静默删、不拿 salesOrderId 当删除目标、需要时原因真的发出去。
+ */
+const deletePreview = (overrides: Record<string, unknown> = {}) => ({
+  bom_id: "bom-1", order_no: "SO-1", version: 1, status: "draft",
+  item_count: 0, purchase_plan: null, purchase_order_count: 0, production_order_count: 0,
+  deletable: true, blocked_reason: null, reason_required: false,
+  ...overrides,
+});
+
+describe("采购 → BOM表：删除 BOM（2026-11-05）", () => {
+  it("空 BOM 一键删：弹窗里没有原因框，确认后发 DELETE（不带 body）并刷新列表", async () => {
+    let deletedBom = false;
+    const calls = stubApi((url, call) => {
+      if (url.startsWith(EP.salesOrders)) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
+      if (url === EP.boms && call.method === "GET") return apiOk(deletedBom ? [] : [{ id: "bom-1", salesOrderId: "so-1", orderNo: "SO-1", status: "draft" }]);
+      if (url === `${EP.boms}/bom-1/delete-preview` && call.method === "GET") return apiOk(deletePreview());
+      if (url === `${EP.boms}/bom-1` && call.method === "DELETE") {
+        deletedBom = true;
+        return apiOk({ id: "bom-1", order_no: "SO-1", version: 1, deleted: true, item_count: 0 });
+      }
+      return apiOk([]);
+    });
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+
+    // 这一行已有 BOM：两个入口都要在（编辑 + 删除）
+    expect(await screen.findByRole("button", { name: "编辑BOM表" })).toBeVisible();
+    await userEvent.click(await screen.findByTestId("bom-delete-SO-1"));
+
+    // 影响面写清楚（明细 / 采购单 / 生产单），且**没有**原因框：空壳没有内容需要解释
+    const dlg = await screen.findByTestId("action-dialog");
+    expect(within(dlg).getByText(/明细 0 行；采购单 0 张；生产单 0 张/)).toBeVisible();
+    expect(within(dlg).getByText(/销售单不再被它挡住，可以继续修改/)).toBeVisible();
+    expect(within(dlg).queryByLabelText(/删除原因/)).toBeNull();
+
+    await userEvent.click(within(dlg).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/boms/bom-1").filter((call) => call.method === "DELETE")).toHaveLength(1));
+    // 不需要原因 → DELETE 不带 body（服务端按 reason_required=false 校验）
+    expect(callsTo(calls, "/boms/bom-1").find((call) => call.method === "DELETE")!.body).toBeNull();
+
+    expect(await screen.findByText("BOM 表已删除，销售单现在可以修改了")).toBeVisible();
+    // 删除后重新拉列表（GET /boms 第二次）：那一行回到「新建BOM表」、删除入口消失
+    await waitFor(() => expect(callsTo(calls, "/boms").filter((call) => call.method === "GET")).toHaveLength(2));
+    expect(await screen.findByRole("button", { name: "新建BOM表" })).toBeVisible();
+    expect(screen.queryByTestId("bom-delete-SO-1")).toBeNull();
+  });
+
+  it("有明细的 BOM 必须填原因：不填被拦且不发 DELETE，填了才把 reason 发出去", async () => {
+    const calls = stubApi((url, call) => {
+      if (url.startsWith(EP.salesOrders)) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
+      if (url === EP.boms && call.method === "GET") return apiOk([{ id: "bom-1", salesOrderId: "so-1", orderNo: "SO-1", status: "draft" }]);
+      if (url === `${EP.boms}/bom-1/delete-preview` && call.method === "GET") return apiOk(deletePreview({ item_count: 2, reason_required: true }));
+      if (url === `${EP.boms}/bom-1` && call.method === "DELETE") return apiOk({ id: "bom-1", order_no: "SO-1", version: 1, deleted: true, item_count: 2 });
+      return apiOk([]);
+    });
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+    await userEvent.click(await screen.findByTestId("bom-delete-SO-1"));
+
+    const dlg = await screen.findByTestId("action-dialog");
+    expect(within(dlg).getByText(/明细 2 行/)).toBeVisible();
+    const reason = within(dlg).getByLabelText(/删除原因/);
+
+    // 不填就提交：ActionDialog 自己的必填校验拦住（连服务端都不打），弹窗不关
+    await userEvent.click(within(dlg).getByTestId("action-dialog-submit"));
+    expect(await within(dlg).findByTestId("action-dialog-error")).toHaveTextContent("请填写删除原因");
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(screen.getByTestId("action-dialog")).toBeVisible();
+
+    await userEvent.type(reason, "BOM 建错单，需重新建一张");
+    await userEvent.click(within(dlg).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(calls.some((call) => call.method === "DELETE")).toBe(true));
+    const del = calls.find((call) => call.method === "DELETE")!;
+    expect(del.url).toBe(`${EP.boms}/bom-1`);
+    expect(bodyOf(del)).toEqual({ reason: "BOM 建错单，需重新建一张" });
+  });
+
+  it("预览 deletable=false 时直接显示 blocked_reason：不弹确认框，也不发 DELETE", async () => {
+    const blockedReason = "这张 BOM 已被 2 张采购单引用：请先在采购计划里「退回采购计划」或取消这些采购单，再删 BOM";
+    const calls = stubApi((url, call) => {
+      if (url.startsWith(EP.salesOrders)) return apiOk([{ id: "so-1", orderNo: "SO-1", status: "confirmed" }]);
+      if (url === EP.boms && call.method === "GET") return apiOk([{ id: "bom-1", salesOrderId: "so-1", orderNo: "SO-1", status: "draft" }]);
+      if (url === `${EP.boms}/bom-1/delete-preview` && call.method === "GET") return apiOk(deletePreview({ purchase_order_count: 2, deletable: false, blocked_reason: blockedReason, reason_required: true }));
+      return apiOk([]);
+    });
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+    await userEvent.click(await screen.findByTestId("bom-delete-SO-1"));
+
+    // 服务端的「为什么不能删、下一步去哪」要原样出现（不是一句笼统的「删除失败」）
+    expect(await screen.findByText(blockedReason)).toBeVisible();
+    expect(screen.queryByTestId("action-dialog")).toBeNull();
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+  });
+
+  it("孤立 BOM 行用真实 bom_id 删除，不能把行 id（salesOrderId）当 BOM id", async () => {
+    const calls = stubApi((url, call) => {
+      if (url.startsWith(`${EP.salesOrders}?status=draft`)) return apiOk([]);
+      // 父销售单已被软删：`/sales-orders` 列表里没有它，BOM 只从 `/boms` 的 orphaned 行补进来
+      if (url.startsWith(EP.salesOrders)) return apiOk([]);
+      if (url === EP.boms && call.method === "GET") return apiOk([{ id: "bom-orphan", salesOrderId: "so-gone", orderNo: "SO-GONE", status: "draft", orphaned: true }]);
+      if (url === `${EP.boms}/bom-orphan/delete-preview` && call.method === "GET") return apiOk(deletePreview({ bom_id: "bom-orphan", order_no: "SO-GONE" }));
+      if (url === `${EP.boms}/bom-orphan` && call.method === "DELETE") return apiOk({ id: "bom-orphan", order_no: "SO-GONE", version: 1, deleted: true, item_count: 0 });
+      return apiOk([]);
+    });
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+
+    expect(await screen.findByText("SO-GONE")).toBeVisible();
+    await userEvent.click(await screen.findByTestId("bom-delete-SO-GONE"));
+    await screen.findByTestId("action-dialog");
+    await userEvent.click(within(screen.getByTestId("action-dialog")).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(calls.some((call) => call.method === "DELETE")).toBe(true));
+    const del = calls.find((call) => call.method === "DELETE")!;
+    expect(del.url).toBe(`${EP.boms}/bom-orphan`);
+    // 行 id 是 salesOrderId（so-gone）—— 拿它当删除目标会 404，绝不能出现在 URL 里
+    expect(del.url).not.toContain("so-gone");
+  });
+});

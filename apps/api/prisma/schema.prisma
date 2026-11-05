@@ -453,11 +453,11 @@ model SalesOrder {
  * 样本2 的「伞头配色」（伞头名 + 配色 + 条码 + 数量/打）与「外层花色搭配」都是同一种形状。
  * 用户拍板「一张通用表 + 分组名」，所以不为每种明细表各建一张（否则出现第三种又要加表）。
  *
- * **每行可以挂一张图**（2026-11-04）：用户要的是「一个生产单里有 5 种伞布、11 种伞头，
- * 每种里插入图片」——真实生产单样例里就是每行一张图（花色一行 6 张、伞头每行 1 张）。
+ * **每行最多挂 3 张图**（2026-11-04 首版每行 1 张；2026-11-05 用户：「销售单那边，一条物料支持导入
+ * 3 张图片，现在只有 1 张」→ 三个位置：`image_id` 第 1 张、`image_id_2` 第 2 张、`image_id_3` 第 3 张，
+ * 空 = 没有那一张，允许只填前两张）。
  * 图片本身是**独立上传的库行**（`SalesOrderImage`），这里只存 `imageId` 指针：因为本表的替换语义是
  * 「软删旧的 + 建新的」（行 id 每次保存都会变），把字节挂在这一行上会在每次保存时丢掉/重复。
- * `image_id` 可空 = 这一行没有图（绝大多数历史行都是）。
  */
 model SalesOrderSpecDetail {
   id           String     @id @default(uuid()) @db.Uuid
@@ -472,8 +472,12 @@ model SalesOrderSpecDetail {
   barcode      String?    @db.VarChar(100)
   quantity     Decimal?   @db.Decimal(18, 4)
   unit         String?    @db.VarChar(30)
-  /** 这一行挂着的那张图（`sales_order_images` 的 id）。空 = 这一行没有图。 */
+  /** 这一行挂的第 1 张图（`sales_order_images` 的 id）。空 = 这一行没有图。 */
   imageId      String?    @map("image_id") @db.Uuid
+  /** 第 2 张图（2026-11-05「一条物料最多 3 张」）。空 = 只挂了 1 张（或 0 张）。 */
+  imageId2     String?    @map("image_id_2") @db.Uuid
+  /** 第 3 张图。空 = 没挂满 3 张。 */
+  imageId3     String?    @map("image_id_3") @db.Uuid
   sortOrder    Int        @default(0) @map("sort_order")
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
@@ -482,10 +486,14 @@ model SalesOrderSpecDetail {
   deletedAt    DateTime?  @map("deleted_at")
   deletedBy    String?    @map("deleted_by") @db.Uuid
   salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
-  image        SalesOrderImage? @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  image        SalesOrderImage? @relation("sales_order_spec_detail_image_1", fields: [imageId], references: [id], onDelete: SetNull)
+  image2       SalesOrderImage? @relation("sales_order_spec_detail_image_2", fields: [imageId2], references: [id], onDelete: SetNull)
+  image3       SalesOrderImage? @relation("sales_order_spec_detail_image_3", fields: [imageId3], references: [id], onDelete: SetNull)
 
   @@index([salesOrderId, sortOrder])
   @@index([imageId])
+  @@index([imageId2])
+  @@index([imageId3])
   @@map("sales_order_spec_details")
 }
 
@@ -559,10 +567,13 @@ model SalesOrderMaterialExtra {
   content      String?    @db.VarChar(1000)
   /// 引用的物料（可空 = 只填文字）。用途与上面 18 格的引用完全一致：填字 + 带图。
   materialId   String?    @map("material_id") @db.Uuid
-  /// 这一行自己挂的那张图（2026-11-04，`sales_order_images` 的 id）。
+  /// 这一行自己挂的第 1 张图（2026-11-04，`sales_order_images` 的 id；2026-11-05 起最多 3 张）。
   /// 与 `materialId` 的关系：引用物料时导出优先用**这一行自己的图**（客户临时给的样照），
   /// 没有自己的图才回退到物料清单里那张。空 = 没挂图。
   imageId      String?    @map("image_id") @db.Uuid
+  /// 第 2 张 / 第 3 张（2026-11-05「一条物料支持导入 3 张图片」）。空 = 没挂满 3 张。
+  imageId2     String?    @map("image_id_2") @db.Uuid
+  imageId3     String?    @map("image_id_3") @db.Uuid
   sortOrder    Int        @default(0) @map("sort_order")
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
@@ -577,11 +588,15 @@ model SalesOrderMaterialExtra {
   /// 业务上这个值也是对的：`material_id` 可空（只填文字的行），物料被硬删时该行留着文字、只摘引用
   /// —— 与服务层 `usableMaterialExtras` 同一条口径；写死默认值是为了让它可见、不再被"顺手统一"掉。
   material     Material?  @relation(fields: [materialId], references: [id], onDelete: SetNull)
-  image        SalesOrderImage? @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  image        SalesOrderImage? @relation("sales_order_material_extra_image_1", fields: [imageId], references: [id], onDelete: SetNull)
+  image2       SalesOrderImage? @relation("sales_order_material_extra_image_2", fields: [imageId2], references: [id], onDelete: SetNull)
+  image3       SalesOrderImage? @relation("sales_order_material_extra_image_3", fields: [imageId3], references: [id], onDelete: SetNull)
 
   @@index([salesOrderId, sortOrder])
   @@index([materialId])
   @@index([imageId])
+  @@index([imageId2])
+  @@index([imageId3])
   @@map("sales_order_material_extras")
 }
 
@@ -627,24 +642,32 @@ model SalesOrderImage {
   deletedBy    String?  @map("deleted_by") @db.Uuid
   salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
   slotImages     SalesOrderSlotImage[]
-  materialExtras SalesOrderMaterialExtra[]
-  specDetails    SalesOrderSpecDetail[]
+  // 行图最多 3 张（2026-11-05）：同两张表之间有多条关系，Prisma 要求每条关系在两侧同名标注。
+  materialExtras  SalesOrderMaterialExtra[] @relation("sales_order_material_extra_image_1")
+  materialExtras2 SalesOrderMaterialExtra[] @relation("sales_order_material_extra_image_2")
+  materialExtras3 SalesOrderMaterialExtra[] @relation("sales_order_material_extra_image_3")
+  specDetails    SalesOrderSpecDetail[] @relation("sales_order_spec_detail_image_1")
+  specDetails2   SalesOrderSpecDetail[] @relation("sales_order_spec_detail_image_2")
+  specDetails3   SalesOrderSpecDetail[] @relation("sales_order_spec_detail_image_3")
 
   @@index([salesOrderId])
   @@map("sales_order_images")
 }
 
-/// 「18 个材料类目 → 这一格自己的图」的映射（2026-11-04）。
+/// 「18 个材料类目 → 这一格自己的图」的映射（2026-11-04；2026-11-05 起一格最多 3 张）。
 ///
 /// 为什么需要这张映射表：18 个材料格是 `sales_orders` 上的 18 个标量列（模板印死的栏位），
-/// **没有行**可以挂 `image_id`；而「每格一张图」必须能表达出来（哪怕这一格没引用任何物料）。
-/// 一行 = 一格的一张图，唯一键 `(sales_order_id, spec_key)`；与 `sales_order_material_refs` 同一条
-/// 「删了再建会撞唯一索引」的坑，所以替换也是**逐格对齐**（复活/改 image_id），不是软删+新建。
+/// **没有行**可以挂 `image_id`；而「每格最多 3 张图」必须能表达出来（哪怕这一格没引用任何物料）。
+/// 一行 = 一格的一张图；`slot_index` 是这一格里的第几张（0/1/2，按用户看到的顺序）。
+/// 唯一键 `(sales_order_id, spec_key, slot_index)`；与 `sales_order_material_refs` 同一条
+/// 「删了再建会撞唯一索引」的坑，所以替换也是**逐格逐张对齐**（复活/改 image_id），不是软删+新建。
 model SalesOrderSlotImage {
   id           String   @id @default(uuid()) @db.Uuid
   salesOrderId String   @map("sales_order_id") @db.Uuid
   /// 材料明细的 18 个栏位之一（与 `SPEC_MATERIAL_FIELDS` 的请求键同源：`rib_spec` / `canopy_spec` …）
   specKey      String   @map("spec_key") @db.VarChar(50)
+  /// 这一格里的第几张图（0 = 第 1 张，1 = 第 2 张，2 = 第 3 张）。2026-11-04 的单张数据全是 0。
+  slotIndex    Int      @default(0) @map("slot_index")
   imageId      String   @map("image_id") @db.Uuid
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -655,7 +678,7 @@ model SalesOrderSlotImage {
   salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id])
   image        SalesOrderImage @relation(fields: [imageId], references: [id])
 
-  @@unique([salesOrderId, specKey])
+  @@unique([salesOrderId, specKey, slotIndex])
   @@index([salesOrderId])
   @@index([imageId])
   @@map("sales_order_slot_images")

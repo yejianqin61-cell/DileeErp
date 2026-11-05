@@ -281,7 +281,17 @@ describe("销售单编辑器：材料明细「其它」", () => {
     fireEvent.change(field(`${testId}-input`), { target: { files: [new File([new Uint8Array([1, 2, 3])], "row.png", { type: "image/png" })] } });
   }
 
-  it("「其它」行上传自己的图：缩略图走销售单图片接口，载荷带 image_id；删掉后载荷不再带", async () => {
+  /** 让连续几次上传依次回 img-1 / img-2 / img-3（同一行要能凑出 3 张不同的图）。 */
+  function queueUploads() {
+    let sequence = 0;
+    uploadSalesOrderImageMock.mockImplementation(async () => {
+      sequence += 1;
+      return { id: `img-${sequence}`, width: 1600, height: 1200, byteSize: 9000, sha256: `sha-img-${sequence}`, updatedAt: "2026-11-05T00:00:00.000Z" };
+    });
+  }
+
+  it("「其它」行可传 3 张：载荷带 image_ids 数组；逐张删掉后不再带", async () => {
+    queueUploads();
     const calls = stubApi([["/sales-orders/order-1", () => ({ data: editOrder({
       materialExtras: [{ id: "e-1", label: "弹簧", content: "5cm 不锈钢", sortOrder: 0, specKey: null, material: null }],
     }), meta: {} })]]);
@@ -289,18 +299,27 @@ describe("销售单编辑器：材料明细「其它」", () => {
     await waitFor(() => expect((field("sales-material-extra-label-0") as HTMLInputElement).value).toBe("弹簧"));
 
     uploadRowImage("sales-material-extra-image-0");
-    await waitFor(() => expect(uploadSalesOrderImageMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(field("sales-material-extra-image-0-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
+    uploadRowImage("sales-material-extra-image-0");
+    await waitFor(() => expect(field("sales-material-extra-image-0-thumb-1")).toBeTruthy());
+    uploadRowImage("sales-material-extra-image-0");
+    await waitFor(() => expect(field("sales-material-extra-image-0-thumb-2")).toBeTruthy());
+    expect(uploadSalesOrderImageMock).toHaveBeenCalledTimes(3);
     expect(uploadSalesOrderImageMock.mock.calls[0][0]).toBe("order-1");
-    await waitFor(() => expect(field("sales-material-extra-image-0-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
+    // 满 3 张：按钮禁用并说清原因
+    expect(field("sales-material-extra-image-0-pick")).toBeDisabled();
+    expect(field("sales-material-extra-image-0-pick")).toHaveAttribute("title", "已满 3 张");
 
     await userEvent.click(field("sales-order-save"));
     await waitFor(() => expect(savedCall(calls, "PATCH", "/sales-orders/order-1")).toBeTruthy());
     expect(savedCall(calls, "PATCH", "/sales-orders/order-1")!.body.material_extras).toEqual([
-      { label: "弹簧", content: "5cm 不锈钢", image_id: "img-1", sort_order: 0 },
+      { label: "弹簧", content: "5cm 不锈钢", image_ids: ["img-1", "img-2", "img-3"], sort_order: 0 },
     ]);
 
-    // 删图 = 只清客户端状态；保存载荷里这一行不再带 image_id（字节由后端保存末尾的清理软删）
-    await userEvent.click(field("sales-material-extra-image-0-remove"));
+    // 删光这一行的图 = 只清客户端状态；保存载荷里这一行不再带 image_ids（字节由后端保存末尾的清理软删）
+    await userEvent.click(field("sales-material-extra-image-0-remove-0"));
+    await userEvent.click(field("sales-material-extra-image-0-remove-0"));
+    await userEvent.click(field("sales-material-extra-image-0-remove-0"));
     expect(field("sales-material-extra-image-0-pick")).toHaveTextContent("上传图片");
     await userEvent.click(field("sales-order-save"));
     await waitFor(() => expect(calls.filter((call) => call.method === "PATCH").length).toBe(2));
@@ -309,7 +328,8 @@ describe("销售单编辑器：材料明细「其它」", () => {
     ]);
   });
 
-  it("「再加一款」行也能挂图：载荷带 spec_key 与 image_id，导出按类目归位", async () => {
+  it("「再加一款」行也能挂 3 张图：载荷带 spec_key 与 image_ids，导出按类目归位", async () => {
+    queueUploads();
     const calls = stubApi([["/sales-orders/order-1", () => ({ data: editOrder({
       materialExtras: [{ id: "e-1", label: "伞头", content: "弯柄黑色", sortOrder: 0, specKey: "handle_spec", material: null }],
     }), meta: {} })]]);
@@ -317,29 +337,36 @@ describe("销售单编辑器：材料明细「其它」", () => {
     await waitFor(() => expect((field("sales-material-category-content-handle_spec-0") as HTMLTextAreaElement).value).toBe("弯柄黑色"));
 
     uploadRowImage("sales-material-category-image-handle_spec-0");
-    await waitFor(() => expect(field("sales-material-category-image-handle_spec-0-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
+    await waitFor(() => expect(field("sales-material-category-image-handle_spec-0-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
+    uploadRowImage("sales-material-category-image-handle_spec-0");
+    await waitFor(() => expect(field("sales-material-category-image-handle_spec-0-thumb-1")).toBeTruthy());
 
     await userEvent.click(field("sales-order-save"));
     await waitFor(() => expect(savedCall(calls, "PATCH", "/sales-orders/order-1")).toBeTruthy());
     expect(savedCall(calls, "PATCH", "/sales-orders/order-1")!.body.material_extras).toEqual([
-      { spec_key: "handle_spec", label: "伞头", content: "弯柄黑色", image_id: "img-1", sort_order: 0 },
+      { spec_key: "handle_spec", label: "伞头", content: "弯柄黑色", image_ids: ["img-1", "img-2"], sort_order: 0 },
     ]);
   });
 
-  it("回填：既有单「其它」行的图（列名形状 imageId + image 摘要）能显示，保存时原样发回", async () => {
+  it("回填：既有单「其它」行的 3 张图（三关系列名形状）能显示，保存时原样发回", async () => {
     const calls = stubApi([["/sales-orders/order-1", () => ({ data: editOrder({
       materialExtras: [{
         id: "e-1", label: "弹簧", content: "5cm 不锈钢", sortOrder: 0, specKey: null, material: null,
         imageId: "img-5", image: { id: "img-5", width: 400, height: 300, byteSize: 900, sha256: "sha-5" },
+        imageId2: "img-6", image2: { id: "img-6", width: 400, height: 300, byteSize: 900, sha256: "sha-6" },
+        imageId3: "img-7", image3: { id: "img-7", width: 400, height: 300, byteSize: 900, sha256: "sha-7" },
       }],
     }), meta: {} })]]);
     render(<SalesOrderEditor orderId="order-1" />);
 
-    await waitFor(() => expect(field("sales-material-extra-image-0-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-5?v=sha-5"));
+    await waitFor(() => expect(field("sales-material-extra-image-0-thumb-2")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-7?v=sha-7"));
+    expect(field("sales-material-extra-image-0-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-5?v=sha-5");
+    expect(field("sales-material-extra-image-0-thumb-1")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-6?v=sha-6");
+
     await userEvent.click(field("sales-order-save"));
     await waitFor(() => expect(savedCall(calls, "PATCH", "/sales-orders/order-1")).toBeTruthy());
     expect(savedCall(calls, "PATCH", "/sales-orders/order-1")!.body.material_extras).toEqual([
-      { label: "弹簧", content: "5cm 不锈钢", image_id: "img-5", sort_order: 0 },
+      { label: "弹簧", content: "5cm 不锈钢", image_ids: ["img-5", "img-6", "img-7"], sort_order: 0 },
     ]);
   });
 });

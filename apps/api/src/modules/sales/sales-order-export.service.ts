@@ -228,45 +228,48 @@ export class SalesOrderExportService {
   }
 
   /**
-   * 导出弹窗要列出来的候选：这一单**有图**的材料行与明细行（2026-11-04 起含行级图）。
+   * 导出弹窗要列出来的候选：这一单**有图**的材料行与明细行，**每张图一条**（2026-11-05 起每位置最多 3 张）。
    *
-   * 顺序照**印刷顺序**（设计 §2.4）：18 个材料类目按类目序，每类先自己那一格
+   * 顺序照**印刷顺序**（设计 §2.4 / §3.5）：18 个材料类目按类目序，每类先自己那一格
    * （行图优先，没有行图才用物料图）、再紧跟它自己的「再加一款」行；然后自由类目的「其它」行；
-   * 最后是细分明细行（按分组与行序，与导出件上的先后一致）。弹窗里的勾选顺序与工艺单上的
-   * 位置一致，用户才能对着纸核对「哪张图是哪一格」。
+   * 最后是细分明细行（按分组与行序）。同一位置内按第 1→3 张。
+   * 弹窗里的勾选顺序与工艺单上的位置一致，用户才能对着纸核对「哪张图是哪一格」。
    *
-   * **有图才列**（`has_image=true` 才进候选）：没有图的列出来只会让人以为勾了就有图，
-   * 而勾了之后导出的那一步必然报「这一格没有可导出的图片」。
+   * **有图才列**：没有图的列出来只会让人以为勾了就有图，而勾了之后导出的那一步必然报
+   * 「这一格没有可导出的图片」。
    */
   async exportImageCandidates(id: string): Promise<ExportImageCandidate[]> {
     const order = await this.loadOrder(id);
-    return this.imageRows(order)
-      .filter((row) => row.image)
-      .map((row) => this.toCandidate(row, id));
+    return this.imageRows(order).map((row) => this.toCandidate(row, id));
   }
 
   /**
-   * 把「这一单所有可能带图的位置」摊成一张**有序**表 —— 候选弹窗与实际嵌图共用这一份。
+   * 把这一单「所有可能带图的位置」摊成一张**有序**表（每位置一条，内部带最多 3 张行图）——
+   * 候选弹窗（逐张展开，见 `imageRows`）与实际嵌图（`resolveImages`）共用这一份。
    *
-   * 为什么必须共用：候选（弹窗里列出来的）与嵌图时的校验（`resolveImages`）如果各建一份映射，
-   * 分叉的表现是「弹窗里勾得到、导出时报这一格没有图」，或者更糟 —— 图配到别的行上。
+   * 为什么必须共用：候选与嵌图时的校验如果各建一份映射，分叉的表现是「弹窗里勾得到、导出时报
+   * 这一格没有图」，或者更糟 —— 图配到别的行上。
    *
-   * 行图优先（§2.4）：18 格看 `sales_order_slot_images` 那一格自己的图，没有才用引用物料的图；
-   * 「再加一款」/「其它」行看自己那一行的 `imageId`，没有才回退物料图；
-   * 明细行只认行自己的图（明细行没有「引用物料」这个概念）。
+   * 行图优先（§2.4 / §3.5）：18 格看 `sales_order_slot_images` 那一格自己的图（按 `slotIndex`）；
+   * 「再加一款」/「其它」/ 明细行看自己那一行的 `imageId` / `imageId2` / `imageId3`。
+   * **有行图时只出行图**（不掺物料图）；一张行图都没有时，第 1 条候选才是物料清单那张，
+   * 也不会有第 2/3 条 —— 物料清单本身只有一张图（2026-11-05 用户拍板）。
+   *
+   * 没有图的位置**也留在表里**（不进候选，但 `resolveImages` 报错时要拿它的 label/kind 说清是
+   * 哪一格没有图）。
    */
-  private imageRows(order: ExportOrder): ExportImageRow[] {
-    const rows: ExportImageRow[] = [];
+  private imagePositions(order: ExportOrder): ExportImagePosition[] {
+    const positions: ExportImagePosition[] = [];
     const spec = specScalarRow(order as unknown as Record<string, unknown>);
     const specText = (key: string): string => (spec[key as SpecKey] ?? "").trim();
     const materialByKey = new Map<string, ExportMaterial>((order.materialRefs ?? []).map((ref) => [ref.specKey, ref.material]));
 
-    // 18 格各自的图（2026-11-04）：一格最多一行（唯一键 `(sales_order_id, spec_key)`）。
-    const slotImageByKey = new Map<string, ExportImageAsset>();
+    // 18 格各自的图（2026-11-05 起一格最多 3 张）：按 `slotIndex` 排，空位压缩成「显示顺序」。
+    const slotRowsByKey = new Map<string, Array<{ slotIndex: number; image: ExportOrderImageSummary | null }>>();
     for (const slot of order.slotImages ?? []) {
-      const image = liveRowImage(slot.image);
-      if (image) slotImageByKey.set(slot.specKey, image);
+      slotRowsByKey.set(slot.specKey, [...(slotRowsByKey.get(slot.specKey) ?? []), { slotIndex: slot.slotIndex ?? 0, image: slot.image }]);
     }
+    const ownSlotImages = (specKey: string): ExportImageAsset[] => liveRowImages((slotRowsByKey.get(specKey) ?? []).sort((left, right) => left.slotIndex - right.slotIndex).map((row) => row.image));
 
     // 「再加一款」按所属类目归位；自由「其它」行仍排在 18 项之后（与材料区印刷顺序一致）。
     const extrasByCategory = new Map<string, ExportMaterialExtraRow[]>();
@@ -281,14 +284,13 @@ export class SalesOrderExportService {
     }
 
     /**
-     * 一行「可能带图的位置」→ 统一形状。
+     * 一个位置 → 统一形状（`images` 已经按「有行图只用行图、没有行图才用物料图」算好）。
      *
      * 底部图片区的标签沿用 2026-09-24 的「栏位名：物料编码 名称 规格 颜色」（图拖走之后还认得出
-     * 它是哪一格）；行图没有物料时用该行填的内容摘要，内容也没有就只剩类目名（18 格一格只有一行，
-     * 不会认混）。
+     * 它是哪一格）；行图没有物料时用该行填的内容摘要，内容也没有就只剩类目名。
+     * 第 2/3 张的「（第 n 张）」由 `imageRowOf` 追加，这里只算基标签。
      */
-    const makeRow = (input: { spec_key: string; label: string; kind: ExportImageKind; material: ExportMaterial | null; own: ExportImageAsset | null; content: string; groupIndex?: number; lineIndex?: number }): ExportImageRow => {
-      const materialImage: ExportImageAsset | null = input.material?.image ? { id: null, width: input.material.image.width, height: input.material.image.height, sha256: input.material.image.sha256 } : null;
+    const makePosition = (input: { base_key: string; label: string; kind: ExportImageKind; material: ExportMaterial | null; ownImages: ExportImageAsset[]; materialImage: ExportImageAsset | null; content: string; groupIndex?: number; lineIndex?: number }): ExportImagePosition => {
       const detail = input.material ? materialNameOf(input.material) : "";
       const content = input.content.trim();
       const sheetLabel = input.material
@@ -296,27 +298,39 @@ export class SalesOrderExportService {
         : content
           ? `${input.label}：${content}`
           : input.label;
-      return {
-        spec_key: input.spec_key,
-        label: input.label,
-        kind: input.kind,
-        material: input.material,
-        image: input.own ?? materialImage,
-        image_source: input.own ? "row" : "material",
-        sheetLabel,
-        groupIndex: input.groupIndex,
-        lineIndex: input.lineIndex,
-      };
+      const images: ExportImageEntry[] = input.ownImages.length
+        ? input.ownImages.map((image) => ({ image, source: "row" as const }))
+        : input.materialImage
+          ? [{ image: input.materialImage, source: "material" as const }]
+          : [];
+      return { base_key: input.base_key, label: input.label, kind: input.kind, material: input.material, sheetLabel, images, groupIndex: input.groupIndex, lineIndex: input.lineIndex };
     };
 
     for (const [key, label] of SalesOrderExportService.MATERIAL_LABELS as ReadonlyArray<readonly [string, string]>) {
-      rows.push(makeRow({ spec_key: key, label, kind: "material", material: materialByKey.get(key) ?? null, own: slotImageByKey.get(key) ?? null, content: specText(key) }));
+      const material = materialByKey.get(key) ?? null;
+      positions.push(makePosition({ base_key: key, label, kind: "material", material, ownImages: ownSlotImages(key), materialImage: materialImageOf(material), content: specText(key) }));
       for (const [index, extra] of (extrasByCategory.get(key) ?? []).entries()) {
-        rows.push(makeRow({ spec_key: materialExtraRefKey(extra.id), label: (extra.label ?? "").trim() || label, kind: "extra", material: extra.material ?? null, own: liveRowImage(extra.image), content: extraContent(extra, index) }));
+        positions.push(makePosition({
+          base_key: materialExtraRefKey(extra.id),
+          label: (extra.label ?? "").trim() || label,
+          kind: "extra",
+          material: extra.material ?? null,
+          ownImages: liveRowImages([extra.image, extra.image2, extra.image3]),
+          materialImage: materialImageOf(extra.material ?? null),
+          content: extraContent(extra, index),
+        }));
       }
     }
     for (const [index, extra] of freeExtras.entries()) {
-      rows.push(makeRow({ spec_key: materialExtraRefKey(extra.id), label: (extra.label ?? "").trim() || "其它", kind: "extra", material: extra.material ?? null, own: liveRowImage(extra.image), content: extraContent(extra, index) }));
+      positions.push(makePosition({
+        base_key: materialExtraRefKey(extra.id),
+        label: (extra.label ?? "").trim() || "其它",
+        kind: "extra",
+        material: extra.material ?? null,
+        ownImages: liveRowImages([extra.image, extra.image2, extra.image3]),
+        materialImage: materialImageOf(extra.material ?? null),
+        content: extraContent(extra, index),
+      }));
     }
 
     // 细分明细：按**导出件上的分组/行序**（不是 `specDetails` 的原始顺序）——
@@ -330,35 +344,65 @@ export class SalesOrderExportService {
         const id = detailPath.lineIds[groupIndex]?.[lineIndex] ?? null;
         // 没有行 id 的行（历史数据/夹具）定位不到「哪一行」：不列候选、也不许嵌图。
         if (!id) continue;
-        rows.push(makeRow({
-          spec_key: detailImageRefKey(id),
+        const line = detailById.get(id);
+        positions.push(makePosition({
+          base_key: detailImageRefKey(id),
           label: `${group.groupName}：${group.lines[lineIndex].name}`,
           kind: "detail",
           material: null,
-          own: liveRowImage(detailById.get(id)?.image),
+          ownImages: liveRowImages([line?.image, line?.image2, line?.image3]),
+          materialImage: null,
           content: "",
           groupIndex,
           lineIndex,
         }));
       }
     }
+    return positions;
+  }
+
+  /** 位置表逐张展开：一个位置有 N 张图就出 N 条（第 2/3 张的键与标签加后缀）。 */
+  private imageRows(order: ExportOrder): ExportImageRow[] {
+    const rows: ExportImageRow[] = [];
+    for (const position of this.imagePositions(order)) {
+      position.images.forEach((entry, imageSlot) => rows.push(this.imageRowOf(position, entry, imageSlot, rows.length)));
+    }
     return rows;
   }
 
+  private imageRowOf(position: ExportImagePosition, entry: ExportImageEntry, imageSlot: number, rank: number): ExportImageRow {
+    const imageNumber = imageSlot + 1;
+    return {
+      base_key: position.base_key,
+      spec_key: imageSlot === 0 ? position.base_key : `${position.base_key}#${imageNumber}`,
+      image_slot: imageSlot,
+      rank,
+      label: imageSlot === 0 ? position.label : `${position.label}（第 ${imageNumber} 张）`,
+      kind: position.kind,
+      material: position.material,
+      image: entry.image,
+      image_source: entry.source,
+      sheetLabel: imageSlot === 0 ? position.sheetLabel : `${position.sheetLabel}（第 ${imageNumber} 张）`,
+      groupIndex: position.groupIndex,
+      lineIndex: position.lineIndex,
+    };
+  }
+
   private toCandidate(row: ExportImageRow, orderId: string): ExportImageCandidate {
-    const image = row.image as ExportImageAsset;
     return {
       spec_key: row.spec_key,
+      base_key: row.base_key,
+      image_slot: row.image_slot,
       label: row.label,
       kind: row.kind,
       material_id: row.material?.id ?? null,
       material_code: row.material?.materialCode ?? null,
       material_name: row.material ? materialNameOf(row.material) : null,
       has_image: true,
-      image_version: image.sha256,
+      image_version: row.image.sha256,
       image_source: row.image_source,
-      image_id: row.image_source === "row" ? image.id : null,
-      image_url: exportImageUrl(row, image, orderId),
+      image_id: row.image_source === "row" ? row.image.id : null,
+      image_url: exportImageUrl(row, orderId),
     };
   }
 
@@ -375,36 +419,42 @@ export class SalesOrderExportService {
    *   - `detailImages`：细分明细行图 → 该行 C 列（带分组/行序号，落格时按位置对上）。
    *
    * 三道闸门（缺一不可）：
-   *   1. `spec_key` 必须是**这一单真实存在、而且确实有图**的位置 ——
-   *      18 格 / `extra:<行 id>` / `detail:<行 id>` 都按这一单查出来的行校验；
-   *      `detail:` 只认本单未删明细行且该行 `imageId` 非空。否则一个构造出来的请求就能把
-   *      任意字节塞进导出件（字节本身没法在服务端解码校验，见 `checkSelectedImage`，
-   *      所以「这一格该不该有图」必须由服务端说了算）；
+   *   1. `spec_key` 必须是**这一单真实存在、而且那一格确实有第 n 张图**的位置 ——
+   *      18 格 / `extra:<行 id>` / `detail:<行 id>` 都按这一单查出来的行校验，`#2`/`#3` 后缀
+   *      定位「同一位置的第二/三张」。否则一个构造出来的请求就能把任意字节塞进导出件
+   *      （字节本身没法在服务端解码校验，见 `checkSelectedImage`，所以「这一格该不该有图」
+   *      必须由服务端说了算）；
    *   2. 字节必须是 **JPEG**（ExcelJS 只认 png/jpeg/gif，WebP 写进去 Excel 打不开）；
    *   3. 单张与总量都有上限（一张工艺单塞几十张图会变成一个几百 MB 的文件）。
    */
   private resolveImages(order: ExportOrder, selected: ReadonlyArray<SelectedImageInput>): { sheetImages: ProductionSheetImage[]; detailImages: ProductionSheetDetailImage[] } {
+    const positions = new Map(this.imagePositions(order).map((position) => [position.base_key, position]));
     const rows = new Map(this.imageRows(order).map((row) => [row.spec_key, row]));
     const sheetImages: ProductionSheetImage[] = [];
     const detailImages: ProductionSheetDetailImage[] = [];
     let total = 0;
     for (const item of selected) {
       const row = rows.get(item.spec_key);
-      const image = row?.image ?? null;
-      if (!row || !image) throw unsupportedImage(row, item.spec_key);
+      if (!row) {
+        // 键不存在：是伪造/过期的键，还是「这一格确实没有第 n 张」？用 base 键找回那一位，
+        // 才能报出「「伞头」这一格…」而不是一串 UUID。
+        throw unsupportedImage(positions.get(parseImageRefKey(item.spec_key).base_key), item.spec_key);
+      }
       const buffer = checkSelectedImage(item.buffer, item.spec_key);
       total += buffer.length;
       if (total > MAX_SELECTED_IMAGE_TOTAL) throw invalidImage(item.spec_key, `本次勾选的图片合计超过 ${MAX_SELECTED_IMAGE_TOTAL / 1024 / 1024}MB：请少勾几张，或换更小的图`);
       // 用**库里存的**宽高算比例，而不是去解上传上来的 JPEG 头：比例是同一张图的比例，
       // 而库里那份尺寸是服务端自己解出来的、可信的（上传的字节只信任到「是 JPEG」为止）。
-      const aspect = { width: image.width, height: image.height };
+      const aspect = { width: row.image.width, height: row.image.height };
       if (row.kind === "detail" && row.groupIndex !== undefined && row.lineIndex !== undefined) {
-        detailImages.push({ groupIndex: row.groupIndex, lineIndex: row.lineIndex, label: row.sheetLabel, buffer, aspect });
+        detailImages.push({ groupIndex: row.groupIndex, lineIndex: row.lineIndex, image_slot: row.image_slot, rank: row.rank, label: row.label, buffer, aspect });
         continue;
       }
-      sheetImages.push({ label: row.sheetLabel, buffer, aspect });
+      sheetImages.push({ label: row.sheetLabel, image_slot: row.image_slot, rank: row.rank, buffer, aspect });
     }
-    return { sheetImages, detailImages };
+    // 按**印刷顺序**排（不是 multipart 的到达顺序）：底部图片区与明细行竖排都要第 1→3 张、按行先后。
+    const byRank = (left: { rank: number }, right: { rank: number }) => left.rank - right.rank;
+    return { sheetImages: sheetImages.sort(byRank), detailImages: detailImages.sort(byRank) };
   }
 
   private async loadOrder(id: string): Promise<ExportOrder> {
@@ -412,18 +462,19 @@ export class SalesOrderExportService {
       where: { id, deletedAt: null },
       include: {
         customer: true,
-        // 细分明细（2026-11-04）：每行可以挂一张图（`imageId` → `sales_order_images`），
-        // 导出时印在该行「图片」列。`image` 只取摘要（**不取 `data`**）。
-        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { image: { select: EXPORT_ROW_IMAGE_SELECT } } },
+        // 细分明细（2026-11-04；2026-11-05 起每行最多 3 张）：第 1/2/3 张分别是 `image` / `image2` /
+        // `image3`，导出时印在该行「图片」列。摘要只取元数据（**不取 `data`**）。
+        specDetails: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { image: { select: EXPORT_ROW_IMAGE_SELECT }, image2: { select: EXPORT_ROW_IMAGE_SELECT }, image3: { select: EXPORT_ROW_IMAGE_SELECT } } },
         // 物料引用（用户 2026-09-24）：导出图片要按它把「哪一格的图」与「哪个物料」对上。
         // `image` 只取尺寸与 sha（**不取字节**）：拉一次订单详情不该把图片一起读回来。
         materialRefs: { where: { deletedAt: null }, include: { material: { select: EXPORT_MATERIAL_SELECT } } },
         // 「其它」行（2026-10-08）：既是「材料区要印的行」，也是图片导出的候选，所以这里必须带上。
-        // 2026-11-04 起每行还能挂自己的图（`imageId`）：引用物料时**优先用这张**，没有才回退物料图。
-        materialExtras: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { material: { select: EXPORT_MATERIAL_SELECT }, image: { select: EXPORT_ROW_IMAGE_SELECT } } },
-        // 18 格各自的图（2026-11-04）：18 个材料格是 `sales_orders` 上的标量列、没有行可挂 `imageId`，
-        // 所以「一格一张图」存在这张映射表里（唯一键 `(sales_order_id, spec_key)`）。
-        slotImages: { where: { deletedAt: null }, include: { image: { select: EXPORT_ROW_IMAGE_SELECT } } },
+        // 2026-11-04 起每行能挂自己的图（2026-11-05 起最多 3 张）：引用物料时**优先用行图**，没有才回退物料图。
+        materialExtras: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { material: { select: EXPORT_MATERIAL_SELECT }, image: { select: EXPORT_ROW_IMAGE_SELECT }, image2: { select: EXPORT_ROW_IMAGE_SELECT }, image3: { select: EXPORT_ROW_IMAGE_SELECT } } },
+        // 18 格各自的图（2026-11-04；2026-11-05 起一格最多 3 行，`slot_index` 0/1/2）：
+        // 18 个材料格是 `sales_orders` 上的标量列、没有行可挂 `imageId`，所以存在这张映射表里。
+        // 排序按 (specKey, slotIndex)：同一格的第 1→3 张是**纸上的先后**，不能让数据库返回顺序决定。
+        slotImages: { where: { deletedAt: null }, orderBy: [{ specKey: "asc" }, { slotIndex: "asc" }], include: { image: { select: EXPORT_ROW_IMAGE_SELECT } } },
       }
     });
     if (!order) throw new NotFoundException({ code: "SALES_ORDER_NOT_FOUND", message: "销售单不存在", details: [] });
@@ -487,18 +538,24 @@ export class SalesOrderExportService {
       row += 1;
     }
 
-    // 细分明细：每个分组一块；图片印在**该行的「图片」列（C 列）**（2026-11-04）。
+    // 细分明细：每个分组一块；图片印在**该行的「图片」列（C 列）**（2026-11-04；
+    // 2026-11-05 起同一行最多 3 张，在 C 列里**竖排**）。
     //
-    // 位置怎么对上：`detailImages` 带的是「分组序号 + 行序号」，而 `doc.detailGroups` 就是
-    // 同一套分组/行序（`groupDetails` 与 `imageRows` 共用 `groupDetailsWithPositions`）——
+    // 位置怎么对上：`detailImages` 带的是「分组序号 + 行序号 + 第几张」，而 `doc.detailGroups` 就是
+    // 同一套分组/行序（`groupDetails` 与 `imagePositions` 共用 `groupDetailsWithPositions`）——
     // 用序号对而不是往 `detailGroups.lines` 上挂图片字段，是为了**不改 `ProductionSheetDocument`
     // 的类型形状**：既有导出测试会把整份 document 深比较，加字段就是无谓地改契约。
-    const detailImageAt = new Map<string, ProductionSheetDetailImage>();
-    for (const image of detailImages) detailImageAt.set(`${image.groupIndex}:${image.lineIndex}`, image);
+    const detailImageAt = new Map<string, ProductionSheetDetailImage[]>();
+    for (const image of detailImages) {
+      const key = `${image.groupIndex}:${image.lineIndex}`;
+      detailImageAt.set(key, [...(detailImageAt.get(key) ?? []), image]);
+    }
+    for (const images of detailImageAt.values()) images.sort((left, right) => left.image_slot - right.image_slot);
 
     for (let groupIndex = 0; groupIndex < doc.detailGroups.length; groupIndex += 1) {
       const group = doc.detailGroups[groupIndex];
-      const groupImageCount = group.lines.reduce((count, _line, lineIndex) => count + (detailImageAt.has(`${groupIndex}:${lineIndex}`) ? 1 : 0), 0);
+      // 横幅「共 N 张图」按**张数**数（2026-11-05）：一行 3 张就是这个组多了 3 张，不是「3 行」。
+      const groupImageCount = group.lines.reduce((count, _line, lineIndex) => count + (detailImageAt.get(`${groupIndex}:${lineIndex}`)?.length ?? 0), 0);
       // 分组横幅（2026-11-04）：原来写「图片见客户原稿，本表不导出图片」——现在行图真的印出来了，
       // 有图时报张数（让人知道下面那列不是空的），没图时这一段**整段不写**（不印一句废话）。
       const banner = groupImageCount ? `${doc.orderNo} ${group.groupName}（共 ${groupImageCount} 张图，印在下方「图片」列）` : `${doc.orderNo} ${group.groupName}`;
@@ -525,17 +582,24 @@ export class SalesOrderExportService {
         // 顺带给它开自动换行 —— 不开的话算出来的高度没有意义，文字照样被截断。
         sheet.getCell(`A${row}`).alignment = { vertical: "middle", wrapText: true };
         this.autoHeight(sheet, row, [{ text: line.name, width: columnSpanWidth(COLUMN_WIDTHS, 1, 2) }]);
-        const image = detailImageAt.get(`${groupIndex}:${lineIndex}`);
-        if (image) {
-          // 行高**至少** DETAIL_IMAGE_ROW_HEIGHT（44 磅 ≈ 58.6px > 56px 的图）：不然图会压到下一行上。
-          // 放在 `autoHeight` 之后取 max：文字本来就把行撑高时不要再压回去。
-          const box = detailImageBoxFor(image.aspect);
-          const imageId = workbook.addImage({ buffer: image.buffer as unknown as ExcelJS.Buffer, extension: "jpeg" });
-          sheet.addImage(imageId, {
-            tl: { col: DETAIL_IMAGE_COLUMN + 0.05, row: row - 1 + 0.05 },
-            ext: { width: box.width, height: box.height },
-          });
-          sheet.getRow(row).height = Math.max(sheet.getRow(row).height ?? 0, DETAIL_IMAGE_ROW_HEIGHT);
+        const images = detailImageAt.get(`${groupIndex}:${lineIndex}`) ?? [];
+        if (images.length) {
+          // 竖排（2026-11-05）：每张按 `detailImageBoxFor` 缩到 ≤56px，x 固定 C 列，y = 上一张底 + 2px。
+          // 行高 = max(文字行高, 竖排总高换算成磅, 44 磅)：**先定行高再放图**，因为 ExcelJS 的
+          // `tl` 偏移是按「行高的比例」换算的（见 `detailImageStackOffset` 的注释）。
+          const boxes = images.map((image) => detailImageBoxFor(image.aspect));
+          const rowHeight = Math.max(sheet.getRow(row).height ?? 0, detailImageStackRowHeight(boxes.map((box) => box.height)));
+          sheet.getRow(row).height = rowHeight;
+          let topPx = 0;
+          for (const [index, image] of images.entries()) {
+            const box = boxes[index];
+            const imageId = workbook.addImage({ buffer: image.buffer as unknown as ExcelJS.Buffer, extension: "jpeg" });
+            sheet.addImage(imageId, {
+              tl: { col: DETAIL_IMAGE_COLUMN + 0.05, row: row - 1 + detailImageStackOffset(topPx, rowHeight) },
+              ext: { width: box.width, height: box.height },
+            });
+            topPx += box.height + DETAIL_IMAGE_STACK_GAP;
+          }
         }
         row += 1;
       }
@@ -693,6 +757,16 @@ export const DETAIL_IMAGE_BOX = 56;
 export const DETAIL_IMAGE_ROW_HEIGHT = 44;
 /** 「图片」在明细表头里的列：A=0（合并 A:B）、B=1、**C=2**、D=3（颜色）…（0 起，ExcelJS 的 `tl.col` 口径）。 */
 const DETAIL_IMAGE_COLUMN = 2;
+/** 明细行 C 列里竖排多张图时，两张之间的间隙（像素）。 */
+export const DETAIL_IMAGE_STACK_GAP = 2;
+
+/**
+ * 一个位置（18 格 / 「再加一款」/ 「其它」/ 明细行）最多几张图（2026-11-05）。
+ *
+ * 候选键的后缀（第 2/3 张 = `#2`/`#3`）、`image_slot` 的取值范围（0/1/2）、保存时上限
+ * （服务层 `SALES_ORDER_IMAGE_LIMIT`）都以它为准 —— 三处写死四个数字就是必然漂移。
+ */
+export const IMAGE_SLOT_LIMIT = 3;
 
 /** 导出请求里挑中的一张图：栏位 + **浏览器转好的 JPEG 字节**（走 multipart 上传，不套 base64）。 */
 export type SelectedImageInput = { spec_key: string; buffer: Buffer };
@@ -704,13 +778,20 @@ export type ExportImageSource = "row" | "material";
 export type ExportImageKind = "material" | "extra" | "detail";
 
 /**
- * 导出弹窗的候选项（`GET /sales-orders/:id/export-images`，契约见设计 §2.4）。
+ * 导出弹窗的候选项（`GET /sales-orders/:id/export-images`，契约见设计 §2.4 与 §3.5）。
+ *
+ * **每张图一条**（2026-11-05 起一个位置最多 3 张）：`spec_key` 是唯一种类键 ——
+ * 第 1 张就是原键（`rib_spec` / `extra:<行 id>` / `detail:<行 id>`），第 2/3 张是 `原键#2` / `原键#3`。
+ * `base_key` 是不带后缀的那个键（三类键的实际归属），`image_slot` 是这一格的 0/1/2。
+ * `label` 第 2/3 张追加「（第 2 张）」「（第 3 张）」，否则弹窗里三条文字一模一样。
  *
  * `image_url` 是**可以直接 `<img src>` 的地址**：自带 `/api/v1` 前缀（`<img>` 与浏览器 fetch 都不走
  * 前端的 `api-client`，没有那层 baseURL 拼接），并带 `?v=<sha>` 破缓存 —— 换图后 sha 变了 URL 才变。
  */
 export type ExportImageCandidate = {
   spec_key: string;
+  base_key: string;
+  image_slot: number;
   label: string;
   kind: ExportImageKind;
   material_id: string | null;
@@ -723,13 +804,21 @@ export type ExportImageCandidate = {
   image_url: string;
 };
 
-/** 落格时用的一张图：标签 + 字节 + 原始比例。 */
-export type ProductionSheetImage = { label: string; buffer: Buffer; aspect: { width: number; height: number } };
+/**
+ * 落格时用的一张图：标签 + 字节 + 原始比例 + 它是这一格的第几张（0/1/2）。
+ *
+ * `rank` 是**印刷顺序**（18 类目 → 类目追加款 → 自由其它行 → 明细行；同一位置第 1→3 张）。
+ * 浏览器传上来的 multipart 字段顺序不保证就是印刷顺序（表单顺序、并发都可能变），所以
+ * `resolveImages` 按 `rank` 再排一次，底部图片区才是纸上的顺序。
+ */
+export type ProductionSheetImage = { label: string; buffer: Buffer; aspect: { width: number; height: number }; image_slot: number; rank: number };
 
 /** 明细行的行图：按「分组序号 + 行序号」定位到 `doc.detailGroups` 里的那一行（不改 document 形状）。 */
 export type ProductionSheetDetailImage = {
   groupIndex: number;
   lineIndex: number;
+  image_slot: number;
+  rank: number;
   label: string;
   buffer: Buffer;
   aspect: { width: number; height: number };
@@ -815,6 +904,81 @@ export function detailImageBoxFor(aspect: { width: number; height: number }): { 
 }
 
 /**
+ * 候选/表单字段名的后缀规则（2026-11-05）：第 1 张 = 原键，第 2/3 张 = `原键#2` / `原键#3`。
+ *
+ * 为什么第 1 张不带后缀（而不是统一 `#1`）：multipart 的字段名就是候选的 `spec_key`，
+ * 而 2026-11-04 那一版前端/候选用的就是不带后缀的原键 —— 第 1 张保持原键，旧前端与旧数据不用改，
+ * 新增的第 2/3 张才需要新键。
+ */
+export function imageRefKey(baseKey: string, imageSlot: number): string {
+  return imageSlot === 0 ? baseKey : `${baseKey}#${imageSlot + 1}`;
+}
+
+/**
+ * `imageRefKey` 的反向：`detail:<行 id>#2` → `{ base_key: "detail:<行 id>", image_slot: 1 }`。
+ *
+ * 只认 `#2`/`#3`：`#1`（第 1 张不带后缀）、`#4`（超过 3 张）都原样当 base 键返回 ——
+ * 交给 `resolveImages` 报 422（「这一格没有可导出的图片」），而不是静默截断成第 1 张。
+ */
+export function parseImageRefKey(specKey: string): { base_key: string; image_slot: number } {
+  const match = /^(.*)#([23])$/.exec(specKey);
+  if (!match) return { base_key: specKey, image_slot: 0 };
+  return { base_key: match[1], image_slot: Number(match[2]) - 1 };
+}
+
+/**
+ * 明细行 C 列竖排 N 张图的**总像素高**：各图高度之和 + 每两张之间 {@link DETAIL_IMAGE_STACK_GAP} 的间隙。
+ *
+ * 纯函数、单独导出：行高就是拿它换算成磅的（见 `detailImageStackRowHeight`），
+ * 算错的表现是「第 3 张压到下一行去了」或「行被撑得老高」—— 两种都在纸上，所以单测直接钉它。
+ */
+export function detailImageStackHeight(heights: readonly number[]): number {
+  if (!heights.length) return 0;
+  return heights.reduce((sum, height) => sum + height, 0) + DETAIL_IMAGE_STACK_GAP * (heights.length - 1);
+}
+
+/**
+ * 竖排 N 张图需要的行高（磅）：总像素高 × 3/4 向上取整，且不低于 {@link DETAIL_IMAGE_ROW_HEIGHT}
+ * （单张 56px 的图 ≈ 42 磅 < 44 磅，所以 1~3 张时下限仍起作用）。
+ */
+export function detailImageStackRowHeight(heights: readonly number[]): number {
+  const pixels = detailImageStackHeight(heights);
+  return Math.max(DETAIL_IMAGE_ROW_HEIGHT, Math.ceil((pixels * 3) / 4));
+}
+
+/**
+ * 第 n 张图放到行内某个纵向像素位置时，ExcelJS `oneCellAnchor.tl.row` 该给的小数偏移。
+ *
+ * ⚠️ 这里必须做 EMU 补偿，否则 Excel 里三张图会**互相压住**：
+ * `xdr:rowOff` 的单位是 EMU（1px = 9525），而 ExcelJS 的 `tl.row` 小数是按
+ * 「行高（磅）× 10000」换算成 rowOff 的 —— 两者差 12700/10000 = 1.27 倍（1 磅 = 12700 EMU）。
+ * 直接用 `topPx / 行高px` 的话，Excel 画出来的纵向偏移只有预期的 78.7%，上一张与下一张会叠在一起。
+ *
+ * 纯函数、单独导出，单测直接钉「三张图的偏移严格递增且与像素位置一致」。
+ */
+export function detailImageStackOffset(topPx: number, rowHeightPoints: number): number {
+  if (!Number.isFinite(rowHeightPoints) || rowHeightPoints <= 0) return 0;
+  return (topPx * 9525) / (rowHeightPoints * 10000);
+}
+
+/** 物料清单里那张图 → 落格用的图（没有图就是 null）。 */
+function materialImageOf(material: ExportMaterial | null): ExportImageAsset | null {
+  if (!material?.image) return null;
+  return { id: null, width: material.image.width, height: material.image.height, sha256: material.image.sha256 };
+}
+
+/** 一行/一格自己的图（`image` / `image2` / `image3`）→ 按顺序、跳过空位、最多 `IMAGE_SLOT_LIMIT` 张。 */
+function liveRowImages(images: ReadonlyArray<ExportOrderImageSummary | null | undefined>): ExportImageAsset[] {
+  const assets: ExportImageAsset[] = [];
+  for (const image of images) {
+    const asset = liveRowImage(image);
+    if (asset) assets.push(asset);
+    if (assets.length >= IMAGE_SLOT_LIMIT) break;
+  }
+  return assets;
+}
+
+/**
  * 行图（`sales_order_images` 摘要）→ 落格用的图。
  *
  * 这里只做字段收窄（摘要里 `byteSize` 导出用不到）。软删的图不在考虑范围：活行上的图不会成为
@@ -826,9 +990,9 @@ function liveRowImage(image: ExportOrderImageSummary | null | undefined): Export
 }
 
 /** 候选的 `image_url`：行图走本单的图片读接口，物料图走物料清单的读接口（都自带 `/api/v1`）。 */
-function exportImageUrl(row: ExportImageRow, image: ExportImageAsset, orderId: string): string {
-  if (row.image_source === "row" && image.id) return `/api/v1/sales-orders/${orderId}/images/${image.id}?v=${encodeURIComponent(image.sha256)}`;
-  return `/api/v1/materials/${row.material?.id ?? ""}/image?v=${encodeURIComponent(image.sha256)}`;
+function exportImageUrl(row: ExportImageRow, orderId: string): string {
+  if (row.image_source === "row" && row.image.id) return `/api/v1/sales-orders/${orderId}/images/${row.image.id}?v=${encodeURIComponent(row.image.sha256)}`;
+  return `/api/v1/materials/${row.material?.id ?? ""}/image?v=${encodeURIComponent(row.image.sha256)}`;
 }
 
 /**
@@ -836,12 +1000,13 @@ function exportImageUrl(row: ExportImageRow, image: ExportImageAsset, orderId: s
  *
  * 三类位置各给一句能照着做的话（照着界面上的位置说，而不是说「资源不存在」）：
  * 明细行去销售单编辑页补图，材料行去物料清单补图（或者给该行自己传一张）。
+ * `#2`/`#3` 指向不存在的第 n 张时走的也是这里（「确实没有那张」与「伪造键」同一条口径）。
  */
-function unsupportedImage(row: ExportImageRow | undefined, specKey: string): UnprocessableEntityException {
-  const label = row?.label ?? specKey;
-  const message = row?.kind === "detail"
+function unsupportedImage(position: Pick<ExportImagePosition, "label" | "kind"> | undefined, specKey: string): UnprocessableEntityException {
+  const label = position?.label ?? specKey;
+  const message = position?.kind === "detail"
     ? `「${label}」这一行没有可导出的图片：请先在销售单编辑页给该明细行上传图片`
-    : row?.kind === "extra"
+    : position?.kind === "extra"
       ? `「${label}」这一行没有可导出的图片：请先在销售单编辑页给该行上传图片，或给它引用的物料上传图片`
       : `「${label}」这一格没有可导出的物料图片：请先在【采购 → 物料清单】给它引用的物料上传图片`;
   return new UnprocessableEntityException({ code: "PRODUCTION_SHEET_IMAGE_UNSUPPORTED", message, details: [{ spec_key: specKey }] });
@@ -966,8 +1131,8 @@ export type ExportOrder = {
   createdBy: string;
   customer: { name: string; countryRegion: string | null } | null;
   /**
-   * 细分明细行。`id` 是行图导出的键（`detail:<行 id>`，见 `detailImageRefKey`）；`image` 是这一行
-   * 自己挂的那张图（可空 = 这一行没有图；`deletedAt` 非空 = 已被清理，按没有图处理）。
+   * 细分明细行。`id` 是行图导出的键（`detail:<行 id>`，见 `detailImageRefKey`）；这一行最多挂 3 张图
+   * （2026-11-05）：`image` / `image2` / `image3`（都可空，允许只填前两张）。
    */
   specDetails: Array<{
     id?: string;
@@ -978,6 +1143,8 @@ export type ExportOrder = {
     quantity: Prisma.Decimal | null;
     unit: string | null;
     image?: ExportOrderImageSummary | null;
+    image2?: ExportOrderImageSummary | null;
+    image3?: ExportOrderImageSummary | null;
   }>;
   /**
    * 材料明细里对物料的引用（2026-09-24）。可空：历史销售单没有引用，
@@ -1012,8 +1179,10 @@ export type ExportOrder = {
      * 可空是既有事实：改动之前落库的行都没有这一列。
      */
     specKey?: string | null;
-    /** 这一行自己挂的那张图（2026-11-04）：引用物料时**优先用这张**，没有才回退物料图。 */
+    /** 这一行自己挂的图（2026-11-04；2026-11-05 起最多 3 张）：引用物料时**优先用这些**，没有才回退物料图。 */
     image?: ExportOrderImageSummary | null;
+    image2?: ExportOrderImageSummary | null;
+    image3?: ExportOrderImageSummary | null;
     material: {
       id: string;
       materialCode: string;
@@ -1024,11 +1193,12 @@ export type ExportOrder = {
     } | null;
   }>;
   /**
-   * 18 个材料格各自的图（2026-11-04）。可空：历史销售单没有这些行。
-   * 一格最多一行（唯一键 `(sales_order_id, spec_key)`）；`image` 理论上非空（库列 NOT NULL），
-   * 但保持可空类型，读侧一律走 `liveRowImage`（软删 = 没有图）。
+   * 18 个材料格各自的图（2026-11-04；2026-11-05 起一格最多 3 行 = 3 张）。可空：历史销售单没有这些行。
+   * 一行 = 一格的一张图：`slotIndex` 是这一格里的第几张（0/1/2），唯一键
+   * `(sales_order_id, spec_key, slot_index)`。`image` 理论上非空（库列 NOT NULL），但保持可空类型，
+   * 读侧一律走 `liveRowImage`。
    */
-  slotImages?: Array<{ specKey: string; image: ExportOrderImageSummary | null }>;
+  slotImages?: Array<{ specKey: string; slotIndex?: number; image: ExportOrderImageSummary | null }>;
   /**
    * 37 个细化标量**不在这里逐条列**：它们由 `specScalarRow` 从行上按请求键/列名取（见 `document`）。
    * 以前这里留了个 `[specKey: string]: unknown` 索引签名，等于告诉编译器「随便按什么名字取都行」——
@@ -1046,20 +1216,50 @@ type ExportMaterialExtraRow = NonNullable<ExportOrder["materialExtras"]>[number]
 type ExportOrderDetailRow = ExportOrder["specDetails"][number];
 
 /**
- * `imageRows` 摊出来的一行：这一单**可能带图的一个位置**（18 格 / 「再加一款」/「其它」/ 明细行）。
+ * 一个「可插图的位置」（2026-11-05）：18 格 / 「再加一款」/ 「其它」/ 明细行。
  *
- * `image` 已经按「行图优先、物料图兜底」定好了；候选弹窗与实际嵌图都从这一份里取，
- * 所以两处永远说的是同一张图（`image_source` 也由这里定，见 §2.4「行图优先」）。
+ * 它自己最多有 {@link IMAGE_SLOT_LIMIT} 张**行图**；一张行图都没有时才有物料清单那张当第 1 张。
+ * `images` 已经把「行图优先、物料图兜底」算好（见 `imagePositions`）。
  */
-type ExportImageRow = {
-  spec_key: string;
-  /** 候选里的 `label`：栏位名 / 类目名 / 「分组名：明细行名」。 */
+type ExportImagePosition = {
+  base_key: string;
+  /** 候选里的 `label` 基：栏位名 / 类目名 / 「分组名：明细行名」（第 2/3 张在 `imageRowOf` 里加后缀）。 */
   label: string;
   kind: ExportImageKind;
   material: ExportMaterial | null;
-  image: ExportImageAsset | null;
+  /** 底部图片区里印的标签基（「栏位名：物料编码 名称」等）；第 2/3 张再加「（第 n 张）」。 */
+  sheetLabel: string;
+  /** 这一位置实际可导出的图（0~3 条，见上面的兜底规则）。 */
+  images: ExportImageEntry[];
+  /** 明细行在导出件里的位置（只有 `kind === "detail"` 有）。 */
+  groupIndex?: number;
+  lineIndex?: number;
+};
+
+/** 位置里的一张图 + 它的来源（`row` = 行自己挂的，`material` = 物料清单里那张）。 */
+type ExportImageEntry = { image: ExportImageAsset; source: ExportImageSource };
+
+/**
+ * 位置表逐张展开后的一行 = **一张图**（2026-11-05 起一个位置最多 3 行）。
+ *
+ * 候选弹窗与实际嵌图都从这一份里取，所以两处永远说的是同一张图（`image_source` 也由这里定）。
+ */
+type ExportImageRow = {
+  /** 不带后缀的键（`rib_spec` / `extra:<行 id>` / `detail:<行 id>`）。 */
+  base_key: string;
+  /** 唯一种类键：第 1 张 = `base_key`，第 2/3 张 = `base_key#2` / `base_key#3`。 */
+  spec_key: string;
+  /** 这是这一格的第几张（0/1/2）。 */
+  image_slot: number;
+  /** 印刷顺序（位置序 × 张序）：`resolveImages` 用它把 multipart 的到达顺序排回纸上的顺序。 */
+  rank: number;
+  /** 候选里的 `label`（第 2/3 张带「（第 n 张）」）。 */
+  label: string;
+  kind: ExportImageKind;
+  material: ExportMaterial | null;
+  image: ExportImageAsset;
   image_source: ExportImageSource;
-  /** 底部图片区里印的标签（「栏位名：物料编码 名称」等）；候选不用它。 */
+  /** 底部图片区里印的标签（第 2/3 张带「（第 n 张）」）；候选不用它。 */
   sheetLabel: string;
   /** 明细行在导出件里的位置（只有 `kind === "detail"` 有）。 */
   groupIndex?: number;

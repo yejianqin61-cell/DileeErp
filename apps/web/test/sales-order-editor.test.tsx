@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SalesOrderEditor, orderNoImpactText } from "../components/sales/sales-order-editor";
+import { SalesOrderEditor, orderNoImpactText, savedOrderMessage } from "../components/sales/sales-order-editor";
 import { SPEC_MATERIAL_FIELDS, SPEC_SCALAR_KEYS } from "../lib/sales-order-spec";
 
 const routerPush = vi.fn();
@@ -596,6 +596,28 @@ describe("改号影响面文案", () => {
   });
 });
 
+describe("保存成功提示文案", () => {
+  // 2026-11-05：保存核心字段时后端可能顺手清掉「空壳 BOM」（0 明细、无计划/采购/生产）。
+  // 这件事必须出现在提示里 —— 用户点的是「保存」，却少了一张 BOM 表，静默处理会让人以为表凭空消失。
+  it("普通保存只报保存成功", () => {
+    expect(savedOrderMessage({ id: "so-1", orderNo: "SO-1" }, true)).toBe("销售单已保存");
+    expect(savedOrderMessage({ id: "so-1", orderNo: "SO-1" }, false)).toBe("销售单已创建（SO-1）");
+  });
+
+  it("改了订单号：报告改号，不再报清理 BOM（两件事同时发生时改号更重要）", () => {
+    const message = savedOrderMessage({ id: "so-1", orderNo: "SO-2", order_no_changed: true, released_empty_boms: [{ bom_id: "bom-1", version: 1 }] }, true);
+    expect(message).toContain("订单号已改为 SO-2");
+    expect(message).not.toContain("空 BOM");
+  });
+
+  it("自动清理了空壳 BOM：说清「几张、为什么它们可以直接清」", () => {
+    const message = savedOrderMessage({ id: "so-1", orderNo: "SO-1", released_empty_boms: [{ bom_id: "bom-1", version: 1 }] }, true);
+    expect(message).toContain("销售单已保存");
+    expect(message).toContain("已自动清理 1 张未填内容的空 BOM");
+    expect(message).toContain("没有明细");
+  });
+});
+
 /** Radix Select 的选择动作：点开触发器，再点选项。 */
 async function pickSelect(testid: string, optionText: string) {
   const trigger = screen.getByTestId(testid);
@@ -625,23 +647,23 @@ async function pickMaterialRef(key: string, query: string) {
 // within 在本文件里没用到，但保留导入会被 lint 判为未使用——这里显式引用一次避免误解。
 void within;
 
-/* ------------------------------------------------ 行级图片（2026-11-04「每种一张图」） */
+/* ------------------------------------------------ 行级图片：一条物料最多 3 张（2026-11-05） */
 
 /**
- * 用户原话：「销售订单要支持每个物料插入图片……一个生产单里有 5 种伞布，11 种伞头，能在每种里插入图片」。
+ * 上一轮（2026-11-04）交付的是「每个位置 1 张」；用户 2026-11-05：「一条物料支持导入 3 张图片，现在只有 1 张」。
  *
  * 这一组钉住编辑器这一半：
- *   ① 材料格 / 细分明细行能上传、能换、能删，缩略图走**销售单图片接口**（`/api/v1/sales-orders/:id/images/:imageId?v=sha`）；
- *   ② 保存载荷带上 `slot_images` 与行上的 `image_id`（整块替换语义）；
- *   ③ 没有单 id（新建/返单/复制）时控件禁用并说明「先保存销售单，再上传图片」；
- *   ④ 行上直接传图且引用的物料在物料清单里**没有图**时，问一句要不要同时写入物料清单；
- *      确认/取消两条路都要对，写物料清单失败**不回滚**行图；
- *   ⑤ 编辑既有单（列名形状）与复制（请求键形状）两条回填路都要认出图，缩略图用**来源单 id**。
+ *   ① 18 格 / 细分明细等位置都能**逐张**上传、换图、删除，最多 3 张；满 3 张禁用并说明原因；
+ *   ② 缩略图走**销售单图片接口**（`/api/v1/sales-orders/:id/images/:imageId?v=sha`）；
+ *   ③ 保存载荷：`slot_images[].image_ids` / `spec_details[].image_ids` / `material_extras[].image_ids`；
+ *   ④ 没有单 id（新建/返单/复制）时控件禁用并说明「先保存销售单，再上传图片」；
+ *   ⑤ 「是否同时写入物料清单」只在**这一行第 1 张**、且引用的物料在物料清单里没有图时问一次；
+ *   ⑥ 编辑既有单（三关系列名）与复制（images/image_ids 请求键）两条回填路都认，缩略图用**来源单 id**。
  *
  * 压缩与网络在 `lib/material-image.test.mjs` 里测（注入假管线）；这里 mock 掉那两个上传函数，
  * 测的是界面行为与载荷。
  */
-describe("销售单编辑器：行级图片", () => {
+describe("销售单编辑器：行级图片（每条物料最多 3 张）", () => {
   const rowImageFile = (name = "row.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
 
   /** 编辑态的一张单（保存校验需要的必填项都齐）。 */
@@ -652,12 +674,37 @@ describe("销售单编辑器：行级图片", () => {
     ...extra,
   });
 
+  /** 详情形状的一格多张图：**一行 = 一张**，`slotIndex` 决定是第几张（后端 orderBy [specKey, slotIndex]）。 */
+  const detailSlotImages = (specKey: string, ids: string[]) => ids.map((id, slotIndex) => ({
+    specKey, slotIndex, imageId: id, image: { id, width: 800, height: 600, byteSize: 51234, sha256: `sha-${id}` },
+  }));
+
+  /** 详情形状的一行多张图：三个关系（image/image2/image3）+ 三个标量（imageId/imageId2/imageId3）。 */
+  const detailRowImages = (ids: string[]) => {
+    const [first, second, third] = ids;
+    return {
+      ...(first ? { imageId: first, image: { id: first, width: 400, height: 300, byteSize: 900, sha256: `sha-${first}` } } : {}),
+      ...(second ? { imageId2: second, image2: { id: second, width: 400, height: 300, byteSize: 900, sha256: `sha-${second}` } } : {}),
+      ...(third ? { imageId3: third, image3: { id: third, width: 400, height: 300, byteSize: 900, sha256: `sha-${third}` } } : {}),
+    };
+  };
+
+  /** 让连续几次上传依次回 img-1 / img-2 / img-3（同一行要能凑出 3 张不同的图）。 */
+  function queueUploads() {
+    let sequence = 0;
+    uploadSalesOrderImageMock.mockImplementation(async () => {
+      sequence += 1;
+      return imageSummary(`img-${sequence}`, `sha-img-${sequence}`);
+    });
+  }
+
   /** 把文件塞进那个藏起来的 `<input type=file>`（与物料图片面板测试同一手法）。 */
   function uploadVia(testId: string, file = rowImageFile()) {
     fireEvent.change(field(`${testId}-input`), { target: { files: [file] } });
   }
 
-  it("材料格上传：缩略图走销售单图片接口（带 ?v=sha），保存载荷带上 slot_images", async () => {
+  it("18 格传 3 张：缩略图并排、满 3 张禁用，保存载荷 slot_images[].image_ids 三项", async () => {
+    queueUploads();
     const calls = stubApi([["/sales-orders/order-1", () => ({ data: editOrder(), meta: {} })]]);
     render(<SalesOrderEditor orderId="order-1" />);
     await screen.findByText("材料明细");
@@ -665,39 +712,73 @@ describe("销售单编辑器：行级图片", () => {
     // 编辑既有单：有单 id，控件可用
     expect(field("sales-material-image-canopy_spec-pick")).not.toBeDisabled();
     uploadVia("sales-material-image-canopy_spec");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
+    expect(field("sales-material-image-canopy_spec-pick")).toHaveTextContent("再加一张");
 
-    await waitFor(() => expect(uploadSalesOrderImageMock).toHaveBeenCalledTimes(1));
-    expect(uploadSalesOrderImageMock.mock.calls[0][0]).toBe("order-1");
-    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
-    // 有图之后按钮变成「换图」，并出现删除入口
-    expect(field("sales-material-image-canopy_spec-pick")).toHaveTextContent("换图");
-    expect(field("sales-material-image-canopy_spec-remove")).toHaveTextContent("删除图片");
+    uploadVia("sales-material-image-canopy_spec");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-1")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-2?v=sha-img-2"));
+
+    uploadVia("sales-material-image-canopy_spec");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-2")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-3?v=sha-img-3"));
+    expect(uploadSalesOrderImageMock).toHaveBeenCalledTimes(3);
+
+    // 满 3 张：按钮禁用并说清原因（不是静默没反应）
+    expect(field("sales-material-image-canopy_spec-pick")).toBeDisabled();
+    expect(field("sales-material-image-canopy_spec-pick")).toHaveAttribute("title", "已满 3 张");
+    expect(field("sales-material-image-canopy_spec-full")).toHaveTextContent("已满 3 张");
 
     fireEvent.change(field("sales-spec-canopy_spec"), { target: { value: "190T 黑" } });
     await userEvent.click(field("sales-order-save"));
     await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
     const body = calls.find((call) => call.method === "PATCH")!.body as Record<string, unknown>;
-    expect(body.slot_images).toEqual([{ spec_key: "canopy_spec", image_id: "img-1" }]);
+    expect(body.slot_images).toEqual([{ spec_key: "canopy_spec", image_ids: ["img-1", "img-2", "img-3"] }]);
   });
 
-  it("行图优先于物料图：删掉行图退回物料兜底图（按钮叫「恢复用物料图」），保存后这一格不再有图", async () => {
+  it("第 2 张可换图、任意一张可删：换图不改位置，删掉后后面的顶上", async () => {
+    queueUploads();
+    const calls = stubApi([["/sales-orders/order-1", () => ({ data: editOrder(), meta: {} })]]);
+    render(<SalesOrderEditor orderId="order-1" />);
+    await screen.findByText("材料明细");
+
+    uploadVia("sales-material-image-canopy_spec");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-0")).toBeTruthy());
+    uploadVia("sales-material-image-canopy_spec");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-1")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-2?v=sha-img-2"));
+
+    // 点第 2 张缩略图 = 换这一张（上传回执 img-3 替换 img-2，位置仍是第 2 张）
+    await userEvent.click(field("sales-material-image-canopy_spec-thumb-1"));
+    uploadVia("sales-material-image-canopy_spec");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-1")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-3?v=sha-img-3"));
+    expect(field("sales-material-image-canopy_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1");
+
+    // 删第 1 张：原来的第 2 张（现在是 img-3）顶上成为第 1 张
+    await userEvent.click(field("sales-material-image-canopy_spec-remove-0"));
+    expect(screen.queryByTestId("sales-material-image-canopy_spec-thumb-1")).toBeNull();
+    expect(field("sales-material-image-canopy_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-3?v=sha-img-3");
+
+    await userEvent.click(field("sales-order-save"));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    const body = calls.find((call) => call.method === "PATCH")!.body as Record<string, unknown>;
+    expect(body.slot_images).toEqual([{ spec_key: "canopy_spec", image_ids: ["img-3"] }]);
+  });
+
+  it("行图优先于物料图：删光这一格的行图就退回物料兜底图", async () => {
     const material = { id: "m-1", materialCode: "MAT-1", name: "伞布", specificationModel: "190T", color: "黑", image: { sha256: "sha-mat-1" } };
     const calls = stubApi([[
       "/sales-orders/order-1",
       () => ({ data: editOrder({
         materialRefs: [{ specKey: "canopy_spec", material }],
-        slotImages: [{ specKey: "canopy_spec", imageId: "img-1", image: { id: "img-1", width: 800, height: 600, byteSize: 51234, sha256: "sha-1" } }],
+        slotImages: detailSlotImages("canopy_spec", ["img-1"]),
       }), meta: {} }),
     ], ["/materials", () => ({ data: [material], meta: {} })]]);
     render(<SalesOrderEditor orderId="order-1" />);
 
     // 行图优先：显示行图，不显示物料图
-    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-1"));
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
     expect(screen.queryByTestId("material-image-thumb-m-1")).toBeNull();
-    expect(field("sales-material-image-canopy_spec-remove")).toHaveTextContent("恢复用物料图");
 
-    await userEvent.click(field("sales-material-image-canopy_spec-remove"));
-    // 删的是行图：物料图作为兜底回来
+    await userEvent.click(field("sales-material-image-canopy_spec-remove-0"));
+    // 删光行图：物料图作为兜底回来，按钮回到「上传图片」
     expect(field("material-image-thumb-m-1")).toHaveAttribute("src", "/api/v1/materials/m-1/image?v=sha-mat-1");
     expect(field("sales-material-image-canopy_spec-pick")).toHaveTextContent("上传图片");
 
@@ -719,7 +800,7 @@ describe("销售单编辑器：行级图片", () => {
     expect(field("sales-detail-images-unsaved-hint")).toHaveTextContent("先保存销售单，再上传图片");
   });
 
-  it("行上直接传图且引用的物料没有图：弹确认；选「同时写入物料清单」把同一张图写进物料清单", async () => {
+  it("第 1 张且引用的物料没有图：弹确认；选「同时写入物料清单」把同一张图写进物料清单", async () => {
     const material = { id: "m-1", materialCode: "MAT-1", name: "伞骨", specificationModel: "50cm", color: "黑", image: null };
     stubApi([
       ["/sales-orders/order-1", () => ({ data: editOrder({ materialRefs: [{ specKey: "rib_spec", material }] }), meta: {} })],
@@ -740,16 +821,17 @@ describe("销售单编辑器：行级图片", () => {
     await userEvent.click(field("action-dialog-submit"));
     await waitFor(() => expect(uploadMaterialImageMock).toHaveBeenCalledTimes(1));
     expect(uploadMaterialImageMock.mock.calls[0][0]).toBe("m-1");
-    // 同一张原图（不是重新选一次），像素/文件名都不变
+    // 同一张原图（不是重新选一次），文件名不变
     expect((uploadMaterialImageMock.mock.calls[0][1] as File).name).toBe("伞骨.png");
     // 行图留着（写物料清单是额外的好处，不是交换）
-    expect(field("sales-material-image-rib_spec-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1");
+    expect(field("sales-material-image-rib_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1");
     // 物料池里那个物料现在有图了：删掉行图就该退回这张物料图（不必刷新页面）
-    await userEvent.click(field("sales-material-image-rib_spec-remove"));
+    await userEvent.click(field("sales-material-image-rib_spec-remove-0"));
     await waitFor(() => expect(field("material-image-thumb-m-1")).toHaveAttribute("src", "/api/v1/materials/m-1/image?v=sha-mat-1"));
   });
 
-  it("确认弹窗选「取消」= 只用于本单：不调物料图接口，行图照留", async () => {
+  it("确认弹窗选「取消」= 只用于本单；之后再传第 2、3 张**不再**弹（只问第 1 张）", async () => {
+    queueUploads();
     const material = { id: "m-1", materialCode: "MAT-1", name: "伞骨", specificationModel: "50cm", color: "黑", image: null };
     stubApi([
       ["/sales-orders/order-1", () => ({ data: editOrder({ materialRefs: [{ specKey: "rib_spec", material }] }), meta: {} })],
@@ -761,10 +843,16 @@ describe("销售单编辑器：行级图片", () => {
     uploadVia("sales-material-image-rib_spec");
     await screen.findByTestId("action-dialog");
     await userEvent.click(field("action-dialog-cancel"));
-
     expect(uploadMaterialImageMock).not.toHaveBeenCalled();
     expect(screen.queryByTestId("action-dialog")).toBeNull();
-    expect(field("sales-material-image-rib_spec-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1");
+    expect(field("sales-material-image-rib_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1");
+
+    // 第 2 张：不再问（物料清单本身只有一张图，3 张都问会变成打扰）
+    uploadVia("sales-material-image-rib_spec");
+    await waitFor(() => expect(field("sales-material-image-rib_spec-thumb-1")).toBeTruthy());
+    expect(screen.queryByTestId("action-dialog")).toBeNull();
+    await waitFor(() => expect(uploadSalesOrderImageMock).toHaveBeenCalledTimes(2));
+    expect(uploadMaterialImageMock).not.toHaveBeenCalled();
   });
 
   it("写物料清单失败：只提示原因，不回滚已经挂上的行图", async () => {
@@ -784,12 +872,13 @@ describe("销售单编辑器：行级图片", () => {
     await waitFor(() => expect(uploadMaterialImageMock).toHaveBeenCalledTimes(1));
     // 弹窗关掉、行图还在 —— 失败的只是"下次引用能直接带图"，不该让用户白传一次
     await waitFor(() => expect(screen.queryByTestId("action-dialog")).toBeNull());
-    expect(field("sales-material-image-rib_spec-thumb")).toBeTruthy();
+    expect(field("sales-material-image-rib_spec-thumb-0")).toBeTruthy();
     // 物料池里那个物料**仍然**没有图（失败不伪造成功：它没有图片兜底，所以界面上不该冒出物料缩略图）
     expect(screen.queryByTestId("material-image-thumb-m-1")).toBeNull();
   });
 
-  it("细分明细：「图片」列固定插在品番/品名之后，上传后保存进 spec_details[].image_id", async () => {
+  it("细分明细：每行也能传 3 张，「图片」列固定插在品番/品名之后，保存进 spec_details[].image_ids", async () => {
+    queueUploads();
     const calls = stubApi([[
       "/sales-orders/order-1",
       () => ({ data: editOrder({
@@ -803,39 +892,49 @@ describe("销售单编辑器：行级图片", () => {
     expect(field("sales-detail-head-image")).toHaveTextContent("图片");
 
     uploadVia("sales-detail-image-0");
-    await waitFor(() => expect(field("sales-detail-image-0-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
+    await waitFor(() => expect(field("sales-detail-image-0-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1"));
+    uploadVia("sales-detail-image-0");
+    await waitFor(() => expect(field("sales-detail-image-0-thumb-1")).toBeTruthy());
+    uploadVia("sales-detail-image-0");
+    await waitFor(() => expect(field("sales-detail-image-0-thumb-2")).toBeTruthy());
+    expect(field("sales-detail-image-0-pick")).toBeDisabled();
+    expect(field("sales-detail-image-0-pick")).toHaveAttribute("title", "已满 3 张");
 
     await userEvent.click(field("sales-order-save"));
     await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
     const body = calls.find((call) => call.method === "PATCH")!.body as Record<string, unknown>;
-    expect((body.spec_details as Array<Record<string, unknown>>)[0].image_id).toBe("img-1");
+    expect((body.spec_details as Array<Record<string, unknown>>)[0].image_ids).toEqual(["img-1", "img-2", "img-3"]);
     expect((body.spec_details as Array<Record<string, unknown>>)[0].name).toBe("27621 流水花扇PKGY");
   });
 
-  it("编辑既有单回填：18 格图与行图（列名形状）都能显示，保存时原样发回去", async () => {
+  it("编辑既有单回填：18 格按 slotIndex 聚合、行按三关系回填（各 3 张），保存时原样发回", async () => {
     const calls = stubApi([[
       "/sales-orders/order-1",
       () => ({ data: editOrder({
-        slotImages: [{ specKey: "canopy_spec", imageId: "img-1", image: { id: "img-1", width: 800, height: 600, byteSize: 51234, sha256: "sha-1" } }],
-        specDetails: [{ groupName: "伞布明细", name: "花色A", color: null, barcode: null, quantity: "10", unit: "pcs", sortOrder: 0, imageId: "img-2", image: { id: "img-2", width: 400, height: 300, byteSize: 900, sha256: "sha-2" } }],
-        materialExtras: [{ id: "e-1", label: "弹簧", content: "5cm", sortOrder: 0, specKey: null, material: null, imageId: "img-3", image: { id: "img-3", width: 300, height: 200, byteSize: 800, sha256: "sha-3" } }],
+        slotImages: detailSlotImages("canopy_spec", ["img-1", "img-2", "img-3"]),
+        specDetails: [{ groupName: "伞布明细", name: "花色A", color: null, barcode: null, quantity: "10", unit: "pcs", sortOrder: 0, ...detailRowImages(["img-4", "img-5", "img-6"]) }],
+        materialExtras: [{ id: "e-1", label: "弹簧", content: "5cm", sortOrder: 0, specKey: null, material: null, ...detailRowImages(["img-7", "img-8", "img-9"]) }],
       }), meta: {} }),
     ]]);
     render(<SalesOrderEditor orderId="order-1" />);
 
-    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-1"));
-    expect(field("sales-detail-image-0-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-2?v=sha-2");
-    expect(field("sales-material-extra-image-0-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-3?v=sha-3");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-2")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-3?v=sha-img-3"));
+    expect(field("sales-material-image-canopy_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-1?v=sha-img-1");
+    expect(field("sales-material-image-canopy_spec-thumb-1")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-2?v=sha-img-2");
+    expect(field("sales-detail-image-0-thumb-2")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-6?v=sha-img-6");
+    expect(field("sales-material-extra-image-0-thumb-2")).toHaveAttribute("src", "/api/v1/sales-orders/order-1/images/img-9?v=sha-img-9");
+    // 满 3 张的格/行按钮禁用
+    expect(field("sales-material-image-canopy_spec-pick")).toHaveAttribute("title", "已满 3 张");
 
     await userEvent.click(field("sales-order-save"));
     await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
     const body = calls.find((call) => call.method === "PATCH")!.body as Record<string, unknown>;
-    expect(body.slot_images).toEqual([{ spec_key: "canopy_spec", image_id: "img-1" }]);
-    expect((body.spec_details as Array<Record<string, unknown>>)[0].image_id).toBe("img-2");
-    expect((body.material_extras as Array<Record<string, unknown>>)[0].image_id).toBe("img-3");
+    expect(body.slot_images).toEqual([{ spec_key: "canopy_spec", image_ids: ["img-1", "img-2", "img-3"] }]);
+    expect((body.spec_details as Array<Record<string, unknown>>)[0].image_ids).toEqual(["img-4", "img-5", "img-6"]);
+    expect((body.material_extras as Array<Record<string, unknown>>)[0].image_ids).toEqual(["img-7", "img-8", "img-9"]);
   });
 
-  it("复制回填（请求键形状）：缩略图用**来源单 id**，保存时把 image_id 交回后端克隆", async () => {
+  it("复制回填（images/image_ids 请求键形状）：缩略图用**来源单 id**，保存时把 image_ids 交回后端逐张克隆", async () => {
     searchParamsState.current = new URLSearchParams({ copy_from_id: "source-1" });
     const calls = stubApi([[
       "/copy-snapshot",
@@ -843,8 +942,11 @@ describe("销售单编辑器：行级图片", () => {
         source_order_no: "DL260001-1", source_order_id: "source-1", customer_id: "customer-1", contact_id: null,
         copy: {
           product_name: "折叠伞", unit: "支", currency: "USD",
-          slot_images: [{ spec_key: "canopy_spec", image_id: "img-7", image: { id: "img-7", width: 800, height: 600, byteSize: 1000, sha256: "sha-7" } }],
-          spec_details: [{ group_name: "伞布明细", name: "花色A", quantity: "10", unit: "pcs", image_id: "img-8", image: { id: "img-8", width: 400, height: 300, byteSize: 900, sha256: "sha-8" } }],
+          slot_images: [{ spec_key: "canopy_spec", image_ids: ["img-7", "img-8"], images: [
+            { id: "img-7", width: 800, height: 600, byteSize: 1000, sha256: "sha-7" },
+            { id: "img-8", width: 800, height: 600, byteSize: 1000, sha256: "sha-8" },
+          ] }],
+          spec_details: [{ group_name: "伞布明细", name: "花色A", quantity: "10", unit: "pcs", image_ids: ["img-9"], images: [{ id: "img-9", width: 400, height: 300, byteSize: 900, sha256: "sha-9" }] }],
         },
         must_fill: ["order_no", "order_date", "quantity", "delivery_date"],
       }, meta: {} }),
@@ -853,19 +955,20 @@ describe("销售单编辑器：行级图片", () => {
     await screen.findByText("材料明细");
 
     // 图还挂在来源单上：缩略图必须用来源单 id 去读（用新单的 id 会 404 / 显示裂图）
-    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/source-1/images/img-7?v=sha-7"));
-    expect(field("sales-detail-image-0-thumb")).toHaveAttribute("src", "/api/v1/sales-orders/source-1/images/img-8?v=sha-8");
+    await waitFor(() => expect(field("sales-material-image-canopy_spec-thumb-1")).toHaveAttribute("src", "/api/v1/sales-orders/source-1/images/img-8?v=sha-8"));
+    expect(field("sales-material-image-canopy_spec-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/source-1/images/img-7?v=sha-7");
+    expect(field("sales-detail-image-0-thumb-0")).toHaveAttribute("src", "/api/v1/sales-orders/source-1/images/img-9?v=sha-9");
     // 新单还没保存：不能往来源单上直接传图（那是别人的单）
     expect(field("sales-material-image-canopy_spec-pick")).toBeDisabled();
 
     fireEvent.change(field("sales-base-order_no"), { target: { value: "DL260300-2" } });
-    fireEvent.change(field("sales-base-order_date"), { target: { value: "2026-11-04" } });
+    fireEvent.change(field("sales-base-order_date"), { target: { value: "2026-11-05" } });
     fireEvent.change(field("sales-base-quantity"), { target: { value: "2500" } });
     await userEvent.click(field("sales-order-save"));
 
     await waitFor(() => expect(calls.some((call) => call.method === "POST")).toBe(true));
     const body = calls.find((call) => call.method === "POST")!.body as Record<string, unknown>;
-    expect(body.slot_images).toEqual([{ spec_key: "canopy_spec", image_id: "img-7" }]);
-    expect((body.spec_details as Array<Record<string, unknown>>)[0].image_id).toBe("img-8");
+    expect(body.slot_images).toEqual([{ spec_key: "canopy_spec", image_ids: ["img-7", "img-8"] }]);
+    expect((body.spec_details as Array<Record<string, unknown>>)[0].image_ids).toEqual(["img-9"]);
   });
 });

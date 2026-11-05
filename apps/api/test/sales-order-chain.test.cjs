@@ -126,10 +126,14 @@ test("sales.order.update writes settlement fields only when provided", async () 
 
 test("销售单有下游事实时，改结算金额（核心字段）必须先回退下游", async () => {
   const order = { id: "order-1", orderNo: "TEST-SO-001", status: "confirmed", customerId: "customer-1", currentVersion: 1, extensionData: {}, orderDate: new Date(), productName: "雨伞", quantity: "10", unit: "个", currency: "USD", contactId: null, boms: [], versions: [], specDetails: [] };
+  // 2026-11-05：核心字段守卫挪进了事务（空壳 BOM 的判定与软删必须在同一个事务里），
+  // 因此这条既有用例的替身要多一个 `$transaction` 与事务内的两张计数表；业务断言（错误码）不变。
+  const tx = { purchaseOrder: { count: async () => 1 }, productionOrder: { count: async () => 0 } };
   const prisma = {
     salesOrder: { findFirst: async () => order },
-    purchaseOrder: { count: async () => 1 },
-    productionOrder: { count: async () => 0 },
+    customer: { findFirst: async () => ({ id: "customer-1", customerCode: "CUS-1", name: "海外客户", isActive: true }) },
+    customerContact: { findFirst: async () => null },
+    $transaction: async (fn) => fn(tx),
   };
   const service = new SalesOrdersService(prisma, audit);
   await assert.rejects(

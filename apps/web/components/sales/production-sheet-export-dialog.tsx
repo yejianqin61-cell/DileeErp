@@ -9,11 +9,14 @@
 // 它们各自的 `image_url` 由后端给（行图走销售单图片接口、物料图走物料图片接口），
 // 所以缩略图直接 `<img src={candidate.image_url}>`，**不再**用 `MaterialThumb` 拼物料接口
 // —— 行图根本没有物料 id，硬拼出来只会是破图。
+// 2026-11-05（x3 §3.5 / §4）：同一格/同一行最多 3 张图，后端**每张图给一条候选**
+// （第 2/3 张 `spec_key` 带 `#2`/`#3`、`label` 带「（第 n 张）」），这里就是**一行一张、逐张勾选**，
+// 默认全选；字段名仍用候选的 `spec_key`，不解析 `#n`。
 //
 // 三条界面上的决定：
 //   1. **只在「这一单真的有可导出的图片」时才弹这个窗**（由父组件决定，见 sales-orders-list.tsx）：
 //      没图的时候多一步勾选纯属添乱，直接出单；
-//   2. 默认**全勾**：点「工艺单」多半就是想要全带上，取消比一个个勾省事；
+//   2. 默认**全勾**（含同一格的第 2/3 张）：点「工艺单」多半就是想要全带上，取消比一个个勾省事；
 //   3. 每一行都带缩略图 —— 「每个有图片的物料允许用户勾选」这句话要成立，用户得先看见是哪张图
 //      （只有文字的话，他没法判断该不该带上）。
 //
@@ -118,7 +121,7 @@ export default function ProductionSheetExportDialog({ orderId, orderNo, candidat
       </DialogHeader>
       <DialogBody>
         <p className="panel-note" data-testid="production-sheet-image-hint">
-          这一单有 {selectable.length} 处<strong>可导出的图片</strong>：材料行的图排在表尾的<strong>图片区</strong>
+          这一单有 {selectable.length} 张<strong>可导出的图片</strong>（同一位置最多 3 张，逐张勾选）：材料行的图排在表尾的<strong>图片区</strong>
           （一排几张，导出后可在 Excel 里自行拖拽到材料行旁边），细分明细行的图印在它那一行的<strong>「图片」列</strong>。
           不勾任何一张就是普通工艺单。
         </p>

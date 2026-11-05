@@ -10,7 +10,7 @@ import {
   SPEC_DETAIL_COLUMNS, SPEC_DETAIL_LABEL_KEYS, SPEC_DETAIL_LABEL_MAX_LENGTH,
   SPEC_FABRIC_FIELDS, SPEC_HEADER_FIELDS, SPEC_MATERIAL_FIELDS, SPEC_PROCESS_FIELDS, SPEC_SCALAR_KEYS,
   detailLabelsWithDefaults, emptyMaterialExtraRow, emptySpecDetailRow, isBlankMaterialExtra, isBlankSpecDetail, imageSummaryFrom, materialExtrasFromOrder,
-  materialExtrasPayload, normalizeSpecUnit, rowImageFrom, slotImagesFromOrder, slotImagesPayload, snakeToCamel, specDetailLabelsFromOrder, specFromOrder, specPayload, specQuantityNotice,
+  materialExtrasPayload, normalizeSpecUnit, ROW_IMAGE_LIMIT, rowImagesFrom, slotImagesFromOrder, slotImagesPayload, snakeToCamel, specDetailLabelsFromOrder, specFromOrder, specPayload, specQuantityNotice,
   validateMaterialExtras, validateSpecDetailLabels, validateSpecDetails,
 } from "./sales-order-spec.ts";
 
@@ -313,29 +313,35 @@ test("「再加一款」校验：没有类目必填这一条（类目名是系�
   assert.deepEqual(validateMaterialExtras([{ label: "", content: "  ", material: null, specKey: "handle_spec" }]), [], "只有空格 = 空行");
 });
 
-// ------------------------------------------------------------------ 行级图片（2026-11-04「每种一张图」）
+// ------------------------------------------------------------- 行级图片：一条物料最多 3 张（2026-11-05）
 //
-// 用户原话：「销售订单要支持每个物料插入图片……一个生产单里有 5 种伞布，11 种伞头，能在每种里插入图片」。
-// 这一组钉住四件事：① 18 格图的载荷形状（`slot_images`，整块替换）；② 行上的 `image_id` 载荷
-// （明细行 / 「其它」行，没图不带键）；③ 回填认接口列名与返单/复制请求键**两种形状**；
-// ④ 判空口径：有图的行不算空行（用户先传图再填字是常见顺序，丢掉整行就是把图静默丢了）。
+// 上一轮（2026-11-04）每个位置只能挂 1 张；用户 2026-11-05：「一条物料支持导入 3 张图片，现在只有 1 张」。
+// 这一组钉住：
+//   ① 18 格图的载荷形状（`slot_images[].image_ids` 数组，整块替换）；
+//   ② 行上的 `image_ids` 载荷（明细行 / 「其它」行，空数组不带键）；
+//   ③ 回填认三种形状：详情三关系（image/image2/image3 + imageId…）、返单/复制数组（images/image_ids）、
+//      以及上一轮的单张旧形状（旧单/旧快照仍可读）；
+//   ④ 18 格按 `slotIndex` 聚成数组（详情一行 = 一格的一张图）；
+//   ⑤ 判空口径：有**任意一张**图的行不算空行（用户先传图再填字，丢掉整行就是把图静默丢了）。
 
 const rowImage = (extra = {}) => ({ id: "img-1", width: 1600, height: 1200, byteSize: 51234, sha256: "sha-img-1", ...extra });
+const rowImages3 = () => [rowImage({ id: "img-1", sha256: "sha-1" }), rowImage({ id: "img-2", sha256: "sha-2" }), rowImage({ id: "img-3", sha256: "sha-3" })];
 
-test("18 格图载荷：`slot_images` 是整块替换，只发有图的格、顺序照材料明细清单", () => {
-  const slotImages = Object.fromEntries(SPEC_MATERIAL_FIELDS.map(([key]) => [key, null]));
-  slotImages.canopy_spec = rowImage();
-  slotImages.rib_spec = rowImage({ id: "img-2", sha256: "sha-img-2" });
+test("18 格图载荷：`slot_images[].image_ids` 是数组（最多 3 张、整块替换），只发有图的格、顺序照材料明细清单", () => {
+  assert.equal(ROW_IMAGE_LIMIT, 3, "与后端同一个上限");
+  const slotImages = Object.fromEntries(SPEC_MATERIAL_FIELDS.map(([key]) => [key, []]));
+  slotImages.canopy_spec = rowImages3();
+  slotImages.rib_spec = [rowImage({ id: "img-9", sha256: "sha-9" })];
 
   assert.deepEqual(slotImagesPayload(slotImages), [
-    { spec_key: "rib_spec", image_id: "img-2" },
-    { spec_key: "canopy_spec", image_id: "img-1" },
-  ], "顺序照 18 项清单，而不是用户传图的先后");
+    { spec_key: "rib_spec", image_ids: ["img-9"] },
+    { spec_key: "canopy_spec", image_ids: ["img-1", "img-2", "img-3"] },
+  ], "顺序照 18 项清单（不是用户传图的先后），格内顺序 = 上传顺序");
 
   const payload = specPayload({}, [emptySpecDetailRow()], undefined, undefined, undefined, slotImages);
   assert.deepEqual(payload.slot_images, [
-    { spec_key: "rib_spec", image_id: "img-2" },
-    { spec_key: "canopy_spec", image_id: "img-1" },
+    { spec_key: "rib_spec", image_ids: ["img-9"] },
+    { spec_key: "canopy_spec", image_ids: ["img-1", "img-2", "img-3"] },
   ]);
   for (const key of SPEC_SCALAR_KEYS) assert.ok(key in payload, `载荷缺 ${key}`);
 
@@ -344,93 +350,154 @@ test("18 格图载荷：`slot_images` 是整块替换，只发有图的格、顺
   assert.deepEqual(specPayload({}, [emptySpecDetailRow()], undefined, undefined, undefined, {}).slot_images, []);
   assert.deepEqual(slotImagesPayload(null), []);
   assert.deepEqual(slotImagesPayload({}), []);
+  // 只有空数组的格不算有图，不发。
+  assert.deepEqual(slotImagesPayload(Object.fromEntries(SPEC_MATERIAL_FIELDS.map(([key]) => [key, []]))), []);
 });
 
-test("行上的图载荷：明细行与「其它」行带 image_id，没图的行不带这个键", () => {
-  const withImage = { ...emptySpecDetailRow(), group_name: "伞布明细", name: "27621 流水花扇PKGY", image: rowImage() };
-  const payload = specPayload({}, [withImage]);
+
+test("行上的图载荷：明细行与「其它」行带 `image_ids` 数组，没图的行不带这个键", () => {
+  const withImages = { ...emptySpecDetailRow(), group_name: "伞布明细", name: "27621 流水花扇PKGY", images: rowImages3() };
+  const payload = specPayload({}, [withImages]);
   assert.deepEqual(payload.spec_details[0], {
-    group_name: "伞布明细", name: "27621 流水花扇PKGY", color: "", barcode: "", quantity: "", unit: "", image_id: "img-1", sort_order: 0,
+    group_name: "伞布明细", name: "27621 流水花扇PKGY", color: "", barcode: "", quantity: "", unit: "", image_ids: ["img-1", "img-2", "img-3"], sort_order: 0,
   });
 
   // 没图的行：连键都不出现（整块替换语义下「没带」= 这一行没有自己的图）。
   const plain = specPayload({}, [{ ...emptySpecDetailRow(), group_name: "伞布明细", name: "x" }]);
-  assert.equal("image_id" in plain.spec_details[0], false);
+  assert.equal("image_ids" in plain.spec_details[0], false);
 
   const extras = materialExtrasPayload([
-    { label: "弹簧", content: "5cm", material: null, specKey: null, image: rowImage({ id: "img-9" }) },
-    { label: "胶袋", content: "200x300", material: null, specKey: null, image: null },
+    { label: "弹簧", content: "5cm", material: null, specKey: null, images: [rowImage({ id: "img-9" }), rowImage({ id: "img-8" })] },
+    { label: "胶袋", content: "200x300", material: null, specKey: null, images: [] },
   ]);
   assert.deepEqual(extras, [
-    { label: "弹簧", content: "5cm", image_id: "img-9", sort_order: 0 },
+    { label: "弹簧", content: "5cm", image_ids: ["img-9", "img-8"], sort_order: 0 },
     { label: "胶袋", content: "200x300", sort_order: 1 },
   ]);
 });
 
-test("18 格图回填：详情列名（slotImages/specKey/imageId）与返单复制请求键（slot_images/spec_key/image_id）都要认", () => {
+test("18 格图回填：详情按 `slotIndex` 聚成数组（一行 = 一格的一张图），返单/复制认 `image_ids`/`images` 数组", () => {
+  // 详情接口：`slotImages` 一行 = 一格的一张图，按 [specKey asc, slotIndex asc] 排序。
   const fromApi = {
     slotImages: [
-      // 详情接口的行：摘要嵌在 `image` 里（camelCase + byteSize）
-      { id: "slot-1", specKey: "canopy_spec", imageId: "img-1", image: { id: "img-1", width: 800, height: 600, byteSize: 51234, sha256: "sha-1" } },
+      { id: "slot-0", specKey: "canopy_spec", slotIndex: 0, imageId: "img-1", image: { id: "img-1", width: 800, height: 600, byteSize: 51234, sha256: "sha-1" } },
+      { id: "slot-1", specKey: "canopy_spec", slotIndex: 1, imageId: "img-2", image: { id: "img-2", width: 400, height: 300, sha256: "sha-2" } },
+      { id: "slot-2", specKey: "canopy_spec", slotIndex: 2, imageId: "img-3", image: { id: "img-3", width: 400, height: 300, sha256: "sha-3" } },
       // 认不出的键：没有格子可挂，静默丢掉（后端也会 422）
-      { specKey: "not_a_material_key", imageId: "img-9" },
+      { specKey: "not_a_material_key", slotIndex: 0, imageId: "img-9" },
     ],
   };
   const api = slotImagesFromOrder(fromApi);
-  assert.deepEqual(api.canopy_spec, { id: "img-1", width: 800, height: 600, sha256: "sha-1", byteSize: 51234 });
+  assert.deepEqual(api.canopy_spec.map((image) => image.id), ["img-1", "img-2", "img-3"], "按 slotIndex 聚合，顺序不能乱");
+  assert.deepEqual(api.canopy_spec[0], { id: "img-1", width: 800, height: 600, sha256: "sha-1", byteSize: 51234 });
   assert.equal(api.not_a_material_key, undefined, "不认识的栏位键不该造出一个野键");
-  assert.equal(api.rib_spec, null, "没有图的格是 null（渲染侧直接取）");
+  assert.deepEqual(api.rib_spec, [], "没有图的格是空数组（渲染侧直接取）");
   assert.equal(Object.keys(api).length, SPEC_MATERIAL_FIELDS.length, "18 个格键一个不少");
 
+  // 中间那张被删掉（脏数据/稀疏槽位）：不能把它压掉导致第 3 张错位成第 2 张。
+  const sparse = slotImagesFromOrder({ slotImages: [
+    { specKey: "rib_spec", slotIndex: 0, imageId: "img-1", image: { id: "img-1", width: 1, height: 1, sha256: "s1" } },
+    { specKey: "rib_spec", slotIndex: 2, imageId: "img-3", image: { id: "img-3", width: 1, height: 1, sha256: "s3" } },
+  ] });
+  assert.deepEqual(sparse.rib_spec.map((image) => image.id), ["img-1", "img-3"], "空槽丢掉但顺序保持");
+
+  // 返单/复制：一行 = 一格，行里已经是 `image_ids` / `images` 数组（请求键形状，没有 slotIndex）。
   const fromCopy = {
     slot_images: [
-      // 返单/复制的 `copy` 是请求键形状：`image_id` 在行上、摘要可能只带 id/sha（也可能连摘要都没有）
-      { spec_key: "rib_spec", image_id: "img-2", image: { id: "img-2", width: 400, height: 300, sha256: "sha-2" } },
-      { spec_key: "handle_spec", image_id: "img-3" },
+      { spec_key: "canopy_spec", image_ids: ["img-1", "img-2"], images: [
+        { id: "img-1", width: 400, height: 300, sha256: "sha-1" },
+        { id: "img-2", width: 400, height: 300, sha256: "sha-2" },
+      ] },
+      // 上一轮的单张旧形状（旧快照/老前端）：`image_id` + `image`
+      { spec_key: "rib_spec", image_id: "img-3", image: { id: "img-3", width: 400, height: 300, sha256: "sha-3" } },
+      // 只有 id 数组、没有摘要：id 必须保留（保存时后端要靠它克隆字节）
+      { spec_key: "handle_spec", image_ids: ["img-4"] },
     ],
   };
   const copied = slotImagesFromOrder(fromCopy);
-  assert.deepEqual(copied.rib_spec, { id: "img-2", width: 400, height: 300, sha256: "sha-2" }, "没有 byteSize 也要能回填");
-  // 只有 image_id、没有摘要时**必须保留这个 id**：保存时后端要拿它去克隆字节，丢了就等于静默丢图。
-  assert.deepEqual(copied.handle_spec, { id: "img-3", width: 0, height: 0, sha256: "" });
+  assert.deepEqual(copied.canopy_spec.map((image) => image.id), ["img-1", "img-2"]);
+  assert.deepEqual(copied.canopy_spec[1], { id: "img-2", width: 400, height: 300, sha256: "sha-2" }, "`images` 摘要要认");
+  assert.deepEqual(copied.rib_spec, [{ id: "img-3", width: 400, height: 300, sha256: "sha-3" }], "旧单张形状也要能回填");
+  assert.deepEqual(copied.handle_spec, [{ id: "img-4", width: 0, height: 0, sha256: "" }], "只有 id 的也保留 id");
 
-  // 没有这一块时是 18 个 null，而不是 undefined（渲染侧直接取键）
-  const empty = Object.fromEntries(SPEC_MATERIAL_FIELDS.map(([key]) => [key, null]));
+  // 没有这一块时是 18 个空数组，而不是 undefined（渲染侧直接取键）
+  const empty = Object.fromEntries(SPEC_MATERIAL_FIELDS.map(([key]) => [key, []]));
   assert.deepEqual(slotImagesFromOrder({}), empty);
   assert.deepEqual(slotImagesFromOrder({ slotImages: { unexpected: true } }), empty);
 });
 
-test("行图回填：「其它」/「再加一款」行认 `image` 摘要与 `image_id` 两种形状", () => {
+test("行图回填：「其它」/「再加一款」行认详情三关系、复制数组与旧单张三种形状", () => {
   const rows = materialExtrasFromOrder({ material_extras: [
-    { label: "弹簧", content: "5cm", image_id: "img-1", image: { id: "img-1", width: 400, height: 300, byte_size: 999, sha256: "sha-1" } },
-    { label: "胶袋", content: "200x300", image_id: "img-2" },
-    { label: "螺丝", content: "M4" },
+    // 详情：三关系 + 三标量
+    { label: "弹簧", content: "5cm", imageId: "img-1", image: { id: "img-1", width: 400, height: 300, sha256: "sha-1" },
+      imageId2: "img-2", image2: { id: "img-2", width: 400, height: 300, sha256: "sha-2" },
+      imageId3: "img-3", image3: { id: "img-3", width: 400, height: 300, sha256: "sha-3" } },
+    // 复制/返单：数组形状
+    { label: "胶袋", content: "200x300", image_ids: ["img-4", "img-5"], images: [{ id: "img-4", width: 10, height: 10, sha256: "s4" }] },
+    // 旧单张形状
+    { label: "螺丝", content: "M4", image_id: "img-6" },
+    // 没有图
+    { label: "扣子", content: "15mm" },
   ] });
-  assert.deepEqual(rows.map((row) => row.image?.id), ["img-1", "img-2", undefined], "有摘要用摘要，只有 image_id 也保留 id，没有就是 null");
-  assert.equal(rows[0].image.byteSize, 999, "对方用 snake_case 的 byte_size 也要认");
+  assert.deepEqual(rows.map((row) => row.images.map((image) => image.id)), [
+    ["img-1", "img-2", "img-3"],
+    ["img-4", "img-5"],
+    ["img-6"],
+    [],
+  ]);
+  assert.equal(rows[1].images[1].sha256, "", "`images` 里没给摘要的那张（只在 image_ids 里）保留 id");
+
+  // 「再加一款」行同一条口径（请求键形状也认）
+  const category = materialExtrasFromOrder({ materialExtras: [
+    { label: "伞头", content: "直柄银色", specKey: "handle_spec", images: [{ id: "img-7", width: 1, height: 1, sha256: "s7" }] },
+  ] });
+  assert.deepEqual(category[0].images.map((image) => image.id), ["img-7"]);
+});
+
+test("rowImagesFrom：详情三关系按槽位取（中间空了不挤位）、复制数组优先、去重且最多 3 张", () => {
+  // 详情：第 1、3 槽有图，第 2 槽空 —— 顺序必须还是 [1,3]，不能把 3 挤到第 2 位。
+  assert.deepEqual(rowImagesFrom({
+    imageId: "img-1", image: { id: "img-1", width: 2, height: 1, sha256: "s1" },
+    imageId2: null, image2: null,
+    imageId3: "img-3", image3: { id: "img-3", width: 2, height: 1, sha256: "s3" },
+  }).map((image) => image.id), ["img-1", "img-3"]);
+
+  // 复制/返单：`images` 摘要 + `image_ids` 合在一起，摘要优先（同一个 id 不重复）。
+  const copied = rowImagesFrom({
+    images: [{ id: "img-1", width: 800, height: 600, sha256: "s1" }],
+    image_ids: ["img-1", "img-2", "img-3"],
+  });
+  assert.deepEqual(copied.map((image) => image.id), ["img-1", "img-2", "img-3"]);
+  assert.deepEqual(copied[0], { id: "img-1", width: 800, height: 600, sha256: "s1" }, "有摘要就用摘要");
+
+  // 超过 3 个（脏数据/旧接口）：只留前 3 张。
+  assert.equal(rowImagesFrom({ image_ids: ["a", "b", "c", "d"] }).length, ROW_IMAGE_LIMIT);
+  // 三种空形状都是 []，而不是 null（渲染侧直接 map）。
+  assert.deepEqual(rowImagesFrom({}), []);
+  assert.deepEqual(rowImagesFrom(null), []);
+  assert.deepEqual(rowImagesFrom({ image: null, imageId: null }), []);
 });
 
 test("行图摘要解析：形状不对时给 null（不许拿半个对象去拼图片地址）", () => {
   assert.deepEqual(imageSummaryFrom({ id: "img-1", width: "800", height: "600", sha256: "s" }), { id: "img-1", width: 800, height: 600, sha256: "s" });
   assert.equal(imageSummaryFrom(null), null);
   assert.equal(imageSummaryFrom({ width: 800 }), null, "没有 id 就不是一张图");
-  assert.equal(rowImageFrom({}), null);
-  assert.equal(rowImageFrom(null), null);
-  assert.equal(rowImageFrom({ image: { width: 1 } }), null);
-  assert.deepEqual(rowImageFrom({ image_id: "img-7" }), { id: "img-7", width: 0, height: 0, sha256: "" });
+  assert.equal(imageSummaryFrom({ id: "img-1", width: 1, height: 1, byte_size: 999, sha256: "s" }).byteSize, 999, "对方用 snake_case 的 byte_size 也要认");
+  // 只有 id、没有摘要时也保留 id（返单/复制保存要拿它克隆字节）
+  assert.deepEqual(rowImagesFrom({ image_id: "img-7" }), [{ id: "img-7", width: 0, height: 0, sha256: "" }]);
 });
 
-test("判空口径：有图的行不算空行（否则用户先传图再填字，保存时整行被丢掉）", () => {
-  assert.equal(isBlankSpecDetail({ ...emptySpecDetailRow(), image: rowImage() }), false);
-  assert.equal(isBlankMaterialExtra({ ...emptyMaterialExtraRow(), image: rowImage() }), false);
-  assert.equal(isBlankMaterialExtra({ ...emptyMaterialExtraRow("handle_spec"), image: rowImage() }), false, "「再加一款」行同一条口径");
+test("判空口径：有任意一张图的行不算空行（否则用户先传图再填字，保存时整行被丢掉）", () => {
+  assert.equal(isBlankSpecDetail({ ...emptySpecDetailRow(), images: rowImages3() }), false);
+  assert.equal(isBlankMaterialExtra({ ...emptyMaterialExtraRow(), images: rowImages3() }), false);
+  assert.equal(isBlankMaterialExtra({ ...emptyMaterialExtraRow("handle_spec"), images: [rowImage()] }), false, "「再加一款」行同一条口径");
 
   // 有图的「其它」行不会被判空丢掉 —— 载荷里能看到它（内容/引用仍是必填之一，由 validateMaterialExtras 拦）。
-  const payload = materialExtrasPayload([{ label: "", content: "", material: null, specKey: null, image: rowImage({ id: "img-5" }) }]);
-  assert.deepEqual(payload, [{ label: "", content: "", image_id: "img-5", sort_order: 0 }]);
+  const payload = materialExtrasPayload([{ label: "", content: "", material: null, specKey: null, images: rowImages3() }]);
+  assert.deepEqual(payload, [{ label: "", content: "", image_ids: ["img-1", "img-2", "img-3"], sort_order: 0 }]);
 
   // 只有图、没有内容也没有引用的行仍会被逐行校验拦下（图不能单独印在工艺单上）。
-  assert.deepEqual(validateMaterialExtras([{ label: "弹簧", content: "", material: null, specKey: null, image: rowImage() }]), [
+  assert.deepEqual(validateMaterialExtras([{ label: "弹簧", content: "", material: null, images: [rowImage()] }]), [
     { row: 1, reason: "内容与引用的物料至少要有一个" },
   ]);
 });

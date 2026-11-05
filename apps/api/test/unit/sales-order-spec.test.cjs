@@ -187,15 +187,16 @@ test("没有明细或明细都没填数量时不提示", async () => {
   assert.equal((await service(blank).get("order-1")).spec_quantity_notice, null);
 });
 
-test("get 会带上未被删除的明细行并按 sortOrder 取（2026-11-04 起还带行图摘要，不含字节）", async () => {
+test("get 会带上未被删除的明细行并按 sortOrder 取（2026-11-04 起还带行图摘要，2026-11-05 起 image/image2/image3 三张）", async () => {
   const prisma = fakePrisma();
   await service(prisma).get("order-1");
   assert.deepEqual(prisma.calls.findFirst[0].include.specDetails, {
     where: { deletedAt: null },
     orderBy: { sortOrder: "asc" },
-    // 细分明细每行可以挂一张图（2026-11-04）：详情接口给 `imageId` + 摘要，编辑器才能显示缩略图。
+    // 细分明细每行最多 3 张图（2026-11-04 首版每行 1 张，2026-11-05 起 3 张）：详情接口给
+    // `imageId`/`imageId2`/`imageId3` + 三份摘要，编辑器才能按顺序显示 3 个缩略图。
     // 摘要用与服务层同一份常量，别在这里抄字段名（抄一份就会与真实 select 慢慢分叉）。
-    include: { image: { select: SALES_ORDER_IMAGE_SUMMARY } },
+    include: { image: { select: SALES_ORDER_IMAGE_SUMMARY }, image2: { select: SALES_ORDER_IMAGE_SUMMARY }, image3: { select: SALES_ORDER_IMAGE_SUMMARY } },
   });
 });
 

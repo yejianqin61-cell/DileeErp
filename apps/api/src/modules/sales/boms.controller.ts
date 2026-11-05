@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, UseGuards } from "@nestjs/common";
 import { IsArray, IsDateString, IsObject, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
@@ -42,6 +42,18 @@ class BomItemDto {
 class BomItemsDto { @IsArray() items!: BomItemDto[]; @IsOptional() @IsDateString() expected_updated_at?: string; }
 
 /**
+ * 删除 BOM 的 body（2026-11-05）。
+ *
+ * `reason` **可空**：空壳 BOM（0 明细、无采购计划、无下游单据）是谁都没用过的壳，一键删即可；
+ * 有明细或有采购计划时必须填。这里不用 `@IsNotEmpty` 去猜「该不该必填」——
+ * 该不该填取决于**服务端此刻的事实**（`delete-preview` 的 `reason_required`），
+ * 用户可能拿着过期的预览来删，最终判定统一放在 `BomsService.delete` 的行锁之后。
+ */
+class BomDeleteDto {
+  @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}
+
+/**
  * BOM 表由**采购**和**生产**两个模块共同操作：
  * 采购按 BOM 下单、生产按 BOM 建生产单并领料，两边都需要根据现场情况维护用量与明细。
  * 因此这里用 ANY(procurement, production)，而不是只锁 procurement。
@@ -55,6 +67,9 @@ export class BomsController {
   constructor(private readonly boms: BomsService) {}
   @Get() async list(@Query("order_no") orderNo?: string) { return { data: await this.boms.list(orderNo), meta: {} }; }
   @Get(":id") async get(@Param("id") id: string) { return { data: await this.boms.get(id), meta: {} }; }
+  // 删除预览与删除沿用类上的 @RequireAnyModules("procurement", "production")：不新增模块守卫。
+  @Get(":id/delete-preview") async deletePreview(@Param("id") id: string) { return { data: await this.boms.deletePreview(id), meta: {} }; }
+  @Delete(":id") async remove(@Param("id") id: string, @Body() body: BomDeleteDto, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.delete(id, body?.reason, user), meta: {} }; }
   @Post("from-sales-order/:salesOrderId") async create(@Param("salesOrderId") salesOrderId: string, @Body() body: BomDto, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.createFromSalesOrder(salesOrderId, body, user), meta: {} }; }
   @Patch(":id") async update(@Param("id") id: string, @Body() body: BomDto, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.update(id, body.extension_data ?? {}, user, body.expected_updated_at), meta: {} }; }
   @Put(":id/items") async replaceItems(@Param("id") id: string, @Body() body: BomItemsDto, @CurrentUser() user: CurrentUserType) { return { data: await this.boms.replaceItems(id, body.items, user, body.expected_updated_at), meta: {} }; }

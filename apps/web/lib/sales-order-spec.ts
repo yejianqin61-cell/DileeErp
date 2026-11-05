@@ -142,11 +142,13 @@ export function materialRefsPayload(refs: MaterialRefState): Array<{ spec_key: s
 /** 每张销售单能引用的图片上限 = 材料明细栏位数（后端也是按栏位收的）。 */
 export const MATERIAL_REF_LIMIT = SPEC_MATERIAL_KEYS.length;
 
-// ------------------------------------------------------------------ 行级图片（2026-11-04「每种一张图」）
+// ------------------------------------------------------------------ 行级图片（2026-11-04「每种一张图」→ 2026-11-05「一条物料最多 3 张」）
 //
-// 用户原话：「销售订单要支持每个物料插入图片……比如说一个生产单里有 5 种伞布，11 种伞头，
-// 能在每种里插入图片」。图片是**独立库行**（`sales_order_images`，按销售单隔离），18 格与行上
-// 只存 `image_id` 指针 —— 所以界面上的「一张图」= 摘要 + id，字节永远不进详情接口（详情每次打开都拉）。
+// 用户原话（2026-11-04）：「销售订单要支持每个物料插入图片……比如说一个生产单里有 5 种伞布，
+// 11 种伞头，能在每种里插入图片」；2026-11-05：「一条物料支持导入 3 张图片，现在只有 1 张」。
+// 图片是**独立库行**（`sales_order_images`，按销售单隔离），18 格与行上只存 id 指针 ——
+// 所以界面上的「一张图」= 摘要 + id，字节永远不进详情接口（详情每次打开都拉）。
+// 每个位置存**一组**（0–3 张，顺序 = 用户看到的顺序），读侧要认「详情三关系」与「复制数组」两种形状。
 
 /**
  * 行/格上挂的图（摘要，**不含字节**）。
@@ -162,8 +164,19 @@ export type RowImageMeta = {
   byteSize?: number;
 };
 
-/** 18 格各自的图：键 = 材料栏位请求键（`SPEC_MATERIAL_KEYS`），值 = 这一格自己的图。 */
-export type SlotImages = Record<string, RowImageMeta | null>;
+/**
+ * 一行/一格最多能挂几张图（用户 2026-11-05：「一条物料支持导入 3 张图片，现在只有 1 张」）。
+ *
+ * 与后端 `SALES_ORDER_ROW_IMAGE_LIMIT` 同一个数：超过 3 张后端 422 `SALES_ORDER_IMAGE_LIMIT`，
+ * 界面也按这个数禁用「再加一张」—— 只靠一边拦，另一边就会出一个用户看不懂的错。
+ */
+export const ROW_IMAGE_LIMIT = 3;
+
+/** 行/格上挂着的一组图，顺序 = 用户看到（上传）的顺序，最多 `ROW_IMAGE_LIMIT` 张。 */
+export type RowImages = RowImageMeta[];
+
+/** 18 格各自的图：键 = 材料栏位请求键（`SPEC_MATERIAL_KEYS`），值 = 这一格自己的图（0–3 张）。 */
+export type SlotImages = Record<string, RowImages>;
 
 /** 接口里能是 null/undefined/各种标量的值 → 去掉首尾空白的文本。 */
 function imageText(value: unknown): string {
@@ -197,51 +210,115 @@ export function imageSummaryFrom(value: unknown): RowImageMeta | null {
 }
 
 /**
- * 从**一行**（明细行 / 「其它」行 / 18 格图行）取它自己的图。
+ * 一组候选图（可能含 null / 重复 id）→ 干净的 `RowImages`：去重（保序）、丢掉空槽、最多 3 张。
  *
- * 优先认嵌套摘要（详情接口与返单/复制的 `copy` 都带摘要，界面要拿它拼缩略图地址）；
- * 只有 `imageId` / `image_id` 而没有摘要时**也保留这个 id** —— 返单/复制保存时要把这个 id
- * 原样交回后端去克隆字节，丢了它就等于静默丢图。两种键名形状都认，与 37 个标量同一条纪律。
+ * 去哪里重：详情三个关系可能指向同一张图（旧单张数据被两次写进第 1/2 槽的那种脏数据）；
+ * 不去重的话界面上会并排两张一模一样的图，保存时后端也会把同一个 id 存两遍。
  */
-export function rowImageFrom(value: unknown): RowImageMeta | null {
-  if (!value || typeof value !== "object") return null;
+function normalizeRowImages(candidates: Array<RowImageMeta | null>): RowImages {
+  const seen = new Set<string>();
+  const images: RowImages = [];
+  for (const image of candidates) {
+    if (!image || seen.has(image.id)) continue;
+    seen.add(image.id);
+    images.push(image);
+    if (images.length >= ROW_IMAGE_LIMIT) break;
+  }
+  return images;
+}
+
+/** 详情里三张图的**关系名**（`image` / `image2` / `image3`）与对应的**标量列名**。 */
+const DETAIL_IMAGE_SUMMARY_KEYS = ["image", "image2", "image3"] as const;
+const DETAIL_IMAGE_ID_KEYS = ["imageId", "imageId2", "imageId3"] as const;
+/** 返单/复制里第 1 张镜像到旧键（`image_id`）—— 旧快照与老前端仍能读。 */
+const REQUEST_IMAGE_ID_KEYS = ["image_id", "image_id_2", "image_id_3"] as const;
+
+/**
+ * 从**一行**（明细行 / 「其它」行 / 18 格图行）取它自己的图（0–3 张）。
+ *
+ * 两种形状都认（与 37 个标量、明细列名同一条纪律：读侧只认一种，那条路就断一次）：
+ *   - **详情**：`image` / `image2` / `image3` 三个摘要关系 + `imageId` / `imageId2` / `imageId3` 标量。
+ *     小心「中间那张被删掉了」：槽位是固定的，不能把 null 压掉导致第 3 张错位成第 2 张。
+ *   - **返单/复制**：`images`（摘要数组）/ `image_ids`（id 数组），第 1 张同时镜像到 `image` / `image_id`。
+ *
+ * 只有 id 没有摘要时也保留这个 id（摘要给 0/空串）—— 保存时要把 id 交回后端克隆字节，丢了就等于静默丢图。
+ */
+export function rowImagesFrom(value: unknown): RowImages {
+  // 直接给一个摘要数组也认（调用方手上只有数组时不必先包一层对象）。
+  if (Array.isArray(value)) return normalizeRowImages(value.map(imageSummaryFrom));
+  if (!value || typeof value !== "object") return [];
   const row = value as Record<string, unknown>;
-  const summary = imageSummaryFrom(row.image);
-  if (summary) return summary;
-  const id = imageText(row.imageId ?? row.image_id);
-  return id ? { id, width: 0, height: 0, sha256: "" } : null;
+
+  // ① 返单/复制形状：数组优先。`images` 带摘要（界面拼缩略图用），`image_ids` 只带 id（克隆字节用）。
+  if (Array.isArray(row.images) || Array.isArray(row.image_ids)) {
+    const fromSummaries = Array.isArray(row.images) ? (row.images as unknown[]).map(imageSummaryFrom) : [];
+    const fromIds = Array.isArray(row.image_ids) ? (row.image_ids as unknown[]).map((id) => imageText(id)) : [];
+    return normalizeRowImages([
+      ...fromSummaries,
+      ...fromIds.map((id) => (id ? { id, width: 0, height: 0, sha256: "" } : null)),
+    ]);
+  }
+
+  // ② 详情形状：三个槽位逐个取（先摘要、再标量），保持槽位顺序而不是把空槽压掉。
+  const slots: Array<RowImageMeta | null> = [];
+  for (let index = 0; index < ROW_IMAGE_LIMIT; index += 1) {
+    const summary = imageSummaryFrom(row[DETAIL_IMAGE_SUMMARY_KEYS[index]]);
+    if (summary) { slots.push(summary); continue; }
+    const id = imageText(row[DETAIL_IMAGE_ID_KEYS[index]] ?? row[REQUEST_IMAGE_ID_KEYS[index]]);
+    slots.push(id ? { id, width: 0, height: 0, sha256: "" } : null);
+  }
+  return normalizeRowImages(slots);
 }
 
 /**
- * 从销售单里取 18 格各自的图。
+ * 从销售单里取 18 格各自的图（每格 0–3 张）。
  *
  * ⚠️ **两种键名形状都认**（与 37 个细化标量、明细行、明细列名同一条纪律）：
- * 详情接口给的是列名 `slotImages`（行里是 `specKey` / `imageId`），返单预览与复制快照给的是
- * 请求键 `slot_images`（行里是 `spec_key` / `image_id`）。只认一种的话，那条回填路就静默少图。
+ *   - 详情接口给的是列名 `slotImages`：**一行 = 一格的一张图**，`specKey` + `slotIndex` + `image` 摘要，
+ *     要按 `slotIndex` 把同一格的三行聚成数组；
+ *   - 返单预览与复制快照给的是请求键 `slot_images`：**一行 = 一格**，行里已经是 `image_ids` / `images` 数组。
+ * 只认一种的话，那条回填路就静默少图/错序。
  */
 export function slotImagesFromOrder(order: Record<string, unknown>): SlotImages {
   const images: SlotImages = {};
-  for (const key of SPEC_MATERIAL_KEYS) images[key] = null;
+  for (const key of SPEC_MATERIAL_KEYS) images[key] = [];
   const raw = order.slotImages ?? order.slot_images;
   if (!Array.isArray(raw)) return images;
+  const buckets = new Map<string, Array<{ slotIndex: number; images: RowImages }>>();
   for (const item of raw as Array<Record<string, unknown>>) {
     const row = (item ?? {}) as Record<string, unknown>;
     const specKey = imageText(row.specKey ?? row.spec_key);
     // 只认 18 个材料栏位：多出来的键没有格子可挂（后端也会 422），静默丢掉而不是造出一个野键。
     if (!specKey || !(specKey in images)) continue;
-    images[specKey] = rowImageFrom(row);
+    const rowImages = rowImagesFrom(row);
+    if (!rowImages.length) continue;
+    const rawSlotIndex = row.slotIndex ?? row.slot_index;
+    // 复制/返单的行没有 slotIndex（一行就是整组），排到已有槽位后面。
+    const slotIndex = rawSlotIndex === undefined || rawSlotIndex === null || String(rawSlotIndex).trim() === ""
+      ? Number.POSITIVE_INFINITY
+      : imageNumber(rawSlotIndex);
+    const bucket = buckets.get(specKey) ?? [];
+    bucket.push({ slotIndex, images: rowImages });
+    buckets.set(specKey, bucket);
+  }
+  for (const [specKey, bucket] of buckets) {
+    bucket.sort((a, b) => (a.slotIndex === b.slotIndex ? 0 : a.slotIndex < b.slotIndex ? -1 : 1));
+    images[specKey] = normalizeRowImages(bucket.flatMap((item) => item.images));
   }
   return images;
 }
 
 /**
- * 18 格图 → 提交载荷：`[{ spec_key, image_id }]`，整块替换语义。
+ * 18 格图 → 提交载荷：`[{ spec_key, image_ids }]`，整块替换语义。
  *
- * 没图的格子不发（`undefined` = 不动 / `[]` = 清空，是后端约定好的两种语义；整块发才表达得出「删掉某一格的图」）。
+ * 没图的格子不发（`undefined` = 不动 / `[]` = 清空，是后端约定好的两种语义；整块发才表达得出
+ * 「删掉某一格的第 2 张」—— 只发变化的格表达不出「这一格现在只有一张」）。
  */
-export function slotImagesPayload(slotImages: SlotImages | null | undefined): Array<{ spec_key: string; image_id: string }> {
+export function slotImagesPayload(slotImages: SlotImages | null | undefined): Array<{ spec_key: string; image_ids: string[] }> {
   if (!slotImages) return [];
-  return SPEC_MATERIAL_KEYS.filter((key) => slotImages[key]?.id).map((key) => ({ spec_key: key, image_id: slotImages[key]!.id }));
+  return SPEC_MATERIAL_KEYS
+    .filter((key) => (slotImages[key]?.length ?? 0) > 0)
+    .map((key) => ({ spec_key: key, image_ids: slotImages[key].map((image) => image.id) }));
 }
 
 // ------------------------------------------------------------------ 「其它」自定义类目行（2026-10-08）
@@ -273,9 +350,12 @@ export const materialCategoryLabel = (key: string): string => MATERIAL_LABEL_BY_
  * 类目名由类目键推出来，不让用户重复打字；空 = 原有「其它」自由类目行（类目名用户自己起）。
  * 两种行共用一个数组：保存时整块替换，导出时按类目归位。
  */
-export type MaterialExtraRow = { label: string; content: string; material: MaterialOption | null; specKey: string | null; /** 这一行自己的图（有引用物料时**优先用这张**，没有才回退物料图）。 */ image: RowImageMeta | null };
+export type MaterialExtraRow = { label: string; content: string; material: MaterialOption | null; specKey: string | null; /** 这一行自己的图（最多 3 张；有引用物料时**优先用这些**，一张都没有才回退物料图）。 */ images: RowImages };
 
-export const emptyMaterialExtraRow = (specKey: string | null = null): MaterialExtraRow => ({ label: specKey ? materialCategoryLabel(specKey) : "", content: "", material: null, specKey, image: null });
+export const emptyMaterialExtraRow = (specKey: string | null = null): MaterialExtraRow => ({ label: specKey ? materialCategoryLabel(specKey) : "", content: "", material: null, specKey, images: [] });
+
+/** 这一行/这一格有没有自己的图（`images` 可能来自手工构造的行对象，防一手 undefined）。 */
+const hasRowImages = (row: { images?: RowImages | null }): boolean => (row.images?.length ?? 0) > 0;
 
 /**
  * 整行空：用户加了行还没填，提交前丢掉（与明细行同一条口径）。
@@ -283,12 +363,13 @@ export const emptyMaterialExtraRow = (specKey: string | null = null): MaterialEx
  * 「再加一款」的行类目名是系统给的，所以判空只看**内容与引用** —— 否则空行永远不算空，
  * 界面上会留下一排「伞头」空行，保存时还会被后端按「内容与引用至少要有一个」拒掉。
  *
- * **有图的行不算空**（2026-11-04）：用户往往是先传图再填字，判空把整行丢掉的话那张图就静默没了；
- * 至于「只有图、没有内容也没有引用」这种半成品，逐行校验会拦住（内容/引用仍是必填之一）。
+ * **有图（任意一张）的行不算空**（2026-11-04，2026-11-05 从单张改成数组）：用户往往是先传图再填字，
+ * 判空把整行丢掉的话那些图就静默没了；至于「只有图、没有内容也没有引用」这种半成品，
+ * 逐行校验会拦住（内容/引用仍是必填之一）。
  */
 export const isBlankMaterialExtra = (row: MaterialExtraRow): boolean => row.specKey
-  ? !row.content.trim() && !row.material && !row.image
-  : !row.label.trim() && !row.content.trim() && !row.material && !row.image;
+  ? !row.content.trim() && !row.material && !hasRowImages(row)
+  : !row.label.trim() && !row.content.trim() && !row.material && !hasRowImages(row);
 
 /**
  * 逐行校验（行号从 1 起，与后端 `normalizeMaterialExtras` 同一套口径）。
@@ -340,8 +421,9 @@ export function materialExtrasFromOrder(order: Record<string, unknown>): Materia
       const specKeyText = text(row.specKey ?? row.spec_key).trim();
       const specKey = specKeyText || null;
       const label = text(row.label).trim() || (specKey ? materialCategoryLabel(specKey) : "");
-      // 行自己的图（2026-11-04）：详情给 `image` 摘要，返单/复制的 copy 可能只给 `image_id` —— `rowImageFrom` 两种都认。
-      return { label, content: text(row.content), material: (row.material ?? null) as MaterialOption | null, specKey, image: rowImageFrom(row) };
+      // 行自己的图（2026-11-04 单张 → 2026-11-05 最多 3 张）：详情给 `image`/`image2`/`image3`
+      // 三个关系，返单/复制的 copy 给 `images` / `image_ids` 数组 —— `rowImagesFrom` 两种都认。
+      return { label, content: text(row.content), material: (row.material ?? null) as MaterialOption | null, specKey, images: rowImagesFrom(row) };
     })
     .filter((row) => !isBlankMaterialExtra(row));
 }
@@ -361,8 +443,9 @@ export function materialExtrasPayload(rows: MaterialExtraRow[]): Array<Record<st
       label: row.specKey ? materialCategoryLabel(row.specKey) : row.label.trim(),
       content: row.content.trim(),
       ...(row.material ? { material_id: row.material.id } : {}),
-      // 行自己的图（2026-11-04）：没图**不带这个键**（整块替换语义下「没带」就是「这一行没有自己的图」）。
-      ...(row.image ? { image_id: row.image.id } : {}),
+      // 行自己的图（2026-11-04 单张 → 2026-11-05 数组）：一张都没有就**不带这个键**
+      // （整块替换语义下「没带」就是「这一行没有自己的图」）。
+      ...(row.images?.length ? { image_ids: row.images.map((image) => image.id) } : {}),
       sort_order: index,
     }));
 }
@@ -489,17 +572,18 @@ export function validateSpecDetailLabels(overrides: Readonly<Record<string, stri
   return null;
 }
 
-export type SpecDetailRow = { group_name: string; name: string; color: string; barcode: string; quantity: string; unit: string; /** 这一行自己的图（明细行不引用物料，所以没有兜底图）。 */ image: RowImageMeta | null };
+export type SpecDetailRow = { group_name: string; name: string; color: string; barcode: string; quantity: string; unit: string; /** 这一行自己的图（最多 3 张；明细行不引用物料，所以没有兜底图）。 */ images: RowImages };
 
-export const emptySpecDetailRow = (): SpecDetailRow => ({ group_name: "", name: "", color: "", barcode: "", quantity: "", unit: "", image: null });
+export const emptySpecDetailRow = (): SpecDetailRow => ({ group_name: "", name: "", color: "", barcode: "", quantity: "", unit: "", images: [] });
 
 /**
  * 明细行是不是完全空的行（整行空 = 用户加了行又没填，提交前丢掉，不要写进库）。
  *
- * **有图的行不算空**（2026-11-04）：用户先传图再填字是常见顺序，判空把行丢掉的话那张图就静默没了。
+ * **有图（任意一张）的行不算空**（2026-11-04，2026-11-05 改成数组）：用户先传图再填字是常见顺序，
+ * 判空把行丢掉的话那些图就静默没了。
  */
 export const isBlankSpecDetail = (row: SpecDetailRow): boolean =>
-  !row.group_name.trim() && !row.name.trim() && !row.color.trim() && !row.barcode.trim() && !row.quantity.trim() && !row.unit.trim() && !row.image;
+  !row.group_name.trim() && !row.name.trim() && !row.color.trim() && !row.barcode.trim() && !row.quantity.trim() && !row.unit.trim() && !hasRowImages(row);
 
 /**
  * 校验明细行：分组名与品番/品名是必填（后端 DTO 也是这么要求的），数量必须是数字。
@@ -533,9 +617,9 @@ export function validateSpecDetails(rows: SpecDetailRow[]): Array<{ row: number;
  * `extras` 是材料明细末尾的「其它」行（用户 2026-10-08），同一条整块替换语义：
  * 不传 = 不动这一块，传 `[]` = 全部删掉。
  *
- * `slotImages` 是 18 格各自的图（用户 2026-11-04「每种一张图」），同样是整块替换语义：
- * 不传 = 不动这一块，传 `{}`/全空 = 清空所有格的图。行上的图（明细行 / 「其它」行）跟在行里
- * 作为 `image_id` 发出 —— 没图的行不带那个键。
+ * `slotImages` 是 18 格各自的图（用户 2026-11-04「每种一张图」，2026-11-05 扩到每格最多 3 张），
+ * 同样是整块替换语义：不传 = 不动这一块，传 `{}`/全空 = 清空所有格的图。行上的图（明细行 / 「其它」行）
+ * 跟在行里作为 `image_ids` 数组发出 —— 一张都没有的行不带那个键。
  */
 export function specPayload(values: Record<string, string>, details: SpecDetailRow[], refs?: MaterialRefState, detailLabels?: Readonly<Record<string, string>>, extras?: MaterialExtraRow[], slotImages?: SlotImages): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
@@ -548,7 +632,7 @@ export function specPayload(values: Record<string, string>, details: SpecDetailR
     barcode: row.barcode.trim(),
     quantity: row.quantity.trim(),
     unit: row.unit.trim(),
-    ...(row.image ? { image_id: row.image.id } : {}),
+    ...(row.images?.length ? { image_ids: row.images.map((image) => image.id) } : {}),
     sort_order: index,
   }));
   if (refs) payload.material_refs = materialRefsPayload(refs);

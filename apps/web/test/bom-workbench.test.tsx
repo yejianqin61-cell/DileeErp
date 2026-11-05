@@ -378,3 +378,17 @@ describe("BOM 表：物料名称列支持搜索（2026-10-13）", () => {
     expect(await screen.findByText(/到【采购 → 物料清单】维护物料池/)).toBeVisible();
   });
 });
+
+// 2026-11-05（用户）：「想修改销售单，但销售单显示 BOM 表已经建立，其实 bom 也没填内容，可不可以加个删除键」。
+// 工作区里**不放**删除按钮（设计文档 §6：删除是销毁一张表，只在列表面板上有确认框），
+// 但空表必须指路：建错了去哪清掉这张空壳、以及销售单改核心字段时系统会自动清理 —— 用户不用自己猜。
+describe("BOM 工作区：空表提示指路删除空壳（2026-11-05）", () => {
+  it("没有明细行时说明可到【采购 → BOM表】删除这张空壳，并提示销售单修改核心字段会自动清理", async () => {
+    const emptyBom = { id: "bom-1", orderNo: "SO-1", status: "draft", version: 1, updatedAt: OPENED_AT, items: [] };
+    stubApi((url, call) => (url.endsWith("/boms/bom-1") && call.method === "GET" ? apiOk(emptyBom) : apiOk({})));
+    renderWorkbench();
+
+    expect(await screen.findByText(/建错了可到【采购 → BOM表】点「删除」清掉这张空壳/)).toBeVisible();
+    expect(screen.getByText(/销售单修改核心字段时系统也会自动清理这样的空 BOM/)).toBeVisible();
+  });
+});

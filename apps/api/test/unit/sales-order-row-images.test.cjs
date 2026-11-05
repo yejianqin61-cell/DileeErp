@@ -173,7 +173,7 @@ test("读图：只按 (本单, imageId, 未删除) 取字节；不属于本单�
 
 // ================================================================== get() 读侧
 
-test("详情读侧：slotImages 与行上的 image 只取摘要（5 个字段、没有 data），绝不把字节塞进 JSON", async () => {
+test("详情读侧：slotImages 与行上的 image/image2/image3 只取摘要（5 个字段、没有 data），绝不把字节塞进 JSON", async () => {
   assert.deepEqual(Object.keys(SALES_ORDER_IMAGE_SUMMARY).sort(), ["byteSize", "height", "id", "sha256", "width"], "摘要就是这五个字段（sha 已是换没换图的唯一依据，不带 updatedAt）");
   let captured = null;
   const row = { id: ORDER_ID, orderNo: "SO-1", quantity: "10", unit: "支", specDetails: [], currentVersion: 1, customer: { id: "customer-1" }, contact: null, versions: [], boms: [], materialRefs: [], materialExtras: [], slotImages: [] };
@@ -186,6 +186,13 @@ test("详情读侧：slotImages 与行上的 image 只取摘要（5 个字段、
   assert.equal("data" in captured.include.specDetails.include.image.select, false, "明细行的图只取摘要");
   assert.equal("data" in captured.include.materialExtras.include.image.select, false, "「其它」行的图只取摘要");
   assert.equal(captured.include.slotImages.where.deletedAt, null, "软删的格图不返回");
+  // 2026-11-05「一条物料最多 3 张」：第 2/3 张同样只取摘要（详情接口返回 image2/image3 关系给前端排缩略图）。
+  for (const relation of ["image2", "image3"]) {
+    assert.deepEqual(captured.include.specDetails.include[relation].select, SALES_ORDER_IMAGE_SUMMARY, `明细行 ${relation} 只取摘要`);
+    assert.deepEqual(captured.include.materialExtras.include[relation].select, SALES_ORDER_IMAGE_SUMMARY, `「其它」行 ${relation} 只取摘要`);
+  }
+  // 一格多张图时界面顺序由 `slotIndex` 决定，所以排序必须带上它（只按 specKey 排 = 同一格三张的顺序随机）。
+  assert.deepEqual(captured.include.slotImages.orderBy, [{ specKey: "asc" }, { slotIndex: "asc" }], "slotImages 按 (specKey, slotIndex) 排序");
 });
 
 // ================================================================== ③ 18 格图片：逐格对齐
@@ -239,11 +246,11 @@ function updateHarness({ current = {}, orderImages = [], liveImages = [], slotEx
   return { service: new SalesOrdersService(prisma, auditColumns), calls };
 }
 
-test("18 格图片：逐格对齐 —— 变了改这一行（复活）、没提到的软删、新出现的才插入", async () => {
+test("18 格图片：逐张对齐 —— 变了改这一行（复活）、没提到的软删、新出现的才插入", async () => {
   const existing = [
-    { id: "slot-1", specKey: "rib_spec", imageId: IMAGE_A, deletedAt: null },
-    { id: "slot-2", specKey: "canopy_spec", imageId: IMAGE_A, deletedAt: new Date("2026-01-01T00:00:00.000Z") }, // 曾经删过 → 要复活
-    { id: "slot-3", specKey: "handle_spec", imageId: IMAGE_A, deletedAt: null }, // 请求没提到 → 软删
+    { id: "slot-1", specKey: "rib_spec", slotIndex: 0, imageId: IMAGE_A, deletedAt: null },
+    { id: "slot-2", specKey: "canopy_spec", slotIndex: 0, imageId: IMAGE_A, deletedAt: new Date("2026-01-01T00:00:00.000Z") }, // 曾经删过 → 要复活
+    { id: "slot-3", specKey: "handle_spec", slotIndex: 0, imageId: IMAGE_A, deletedAt: null }, // 请求没提到 → 软删
   ];
   const { service, calls } = updateHarness({
     slotExisting: existing,
@@ -252,9 +259,9 @@ test("18 格图片：逐格对齐 —— 变了改这一行（复活）、没提
     slotRefRows: [{ imageId: IMAGE_A }],
   });
   await service.update(ORDER_ID, { slot_images: [
-    { spec_key: "rib_spec", image_id: IMAGE_A },      // 没变 → 一个字都不写
-    { spec_key: "canopy_spec", image_id: IMAGE_B },   // 换图 + 复活
-    { spec_key: "tail_spec", image_id: IMAGE_B },     // 新增 → 插入
+    { spec_key: "rib_spec", image_ids: [IMAGE_A] },      // 没变 → 一个字都不写
+    { spec_key: "canopy_spec", image_ids: [IMAGE_B] },   // 换图 + 复活
+    { spec_key: "tail_spec", image_ids: [IMAGE_B] },     // 新增 → 插入
   ] }, user);
 
   // 归属校验一次查完（不是每格一次往返）
@@ -268,15 +275,26 @@ test("18 格图片：逐格对齐 —— 变了改这一行（复活）、没提
   assert.equal(revived.deletedBy, null);
   assert.ok(updated.find(([id]) => id === "slot-3")[1].deletedAt instanceof Date, "请求没提到的格子 = 取消这一格的图（软删）");
 
-  assert.deepEqual(calls.slotCreateMany[0].data.map((row) => [row.specKey, row.imageId, row.salesOrderId]), [["tail_spec", IMAGE_B, ORDER_ID]]);
+  assert.deepEqual(calls.slotCreateMany[0].data.map((row) => [row.specKey, row.slotIndex, row.imageId, row.salesOrderId]), [["tail_spec", 0, IMAGE_B, ORDER_ID]]);
   // 替换读一次现有格；另一次是保存末尾的孤儿清理（按 `imageId.in` 数引用）—— 新出现的走 createMany。
   assert.equal(calls.slotFindMany.filter((args) => !args.where.imageId).length, 1);
   assert.equal(calls.slotCreateMany[0].data[0].createdBy, user.id);
 });
 
+test("18 格图片：一格从 3 张删到 1 张 —— 只软删 slotIndex 1/2 两行，第 1 张留着", async () => {
+  const existing = [0, 1, 2].map((slotIndex) => ({ id: `slot-${slotIndex}`, specKey: "rib_spec", slotIndex, imageId: IMAGE_A, deletedAt: null }));
+  const { service, calls } = updateHarness({ slotExisting: existing, orderImages: [{ id: IMAGE_A }], liveImages: [{ id: IMAGE_A }], slotRefRows: [{ imageId: IMAGE_A }] });
+  await service.update(ORDER_ID, { slot_images: [{ spec_key: "rib_spec", image_ids: [IMAGE_A] }] }, user);
+
+  // 不能只软删整格：0 那行还挂着第 1 张，软删它等于"把这一格的图全清了"。
+  assert.deepEqual(calls.slotUpdate.map((call) => call.where.id), ["slot-1", "slot-2"], "只软删超出的第 2/3 张");
+  assert.ok(calls.slotUpdate.every((call) => call.data.deletedAt instanceof Date));
+  assert.deepEqual(calls.slotCreateMany, [], "没有新位置要插入");
+});
+
 test("18 格图片：空数组 = 全部取消（不是「不动」）；没传 = 连图片表都不查", async () => {
   const cleared = updateHarness({
-    slotExisting: [{ id: "slot-1", specKey: "rib_spec", imageId: IMAGE_A, deletedAt: null }],
+    slotExisting: [{ id: "slot-1", specKey: "rib_spec", slotIndex: 0, imageId: IMAGE_A, deletedAt: null }],
     liveImages: [],
   });
   await cleared.service.update(ORDER_ID, { slot_images: [] }, user);
@@ -298,26 +316,46 @@ test("18 格图片：空数组 = 全部取消（不是「不动」）；没传 =
 test("18 格图片：spec_key 必须是材料明细那 18 栏之一，否则 422 SLOT_IMAGE_KEY_UNSUPPORTED 且不写库", async () => {
   const { service, calls } = updateHarness();
   await assert.rejects(
-    () => service.update(ORDER_ID, { slot_images: [{ spec_key: "qc_requirement", image_id: IMAGE_A }] }, user),
+    () => service.update(ORDER_ID, { slot_images: [{ spec_key: "qc_requirement", image_ids: [IMAGE_A] }] }, user),
     (error) => error.getResponse().code === "SLOT_IMAGE_KEY_UNSUPPORTED" && error.getResponse().details[0].spec_key === "qc_requirement",
   );
   assert.deepEqual(calls.slotFindMany, [], "键域校验在事务之前，连查都不查");
   assert.deepEqual(calls.salesOrderUpdate, [], "一个字节都不写");
 });
 
-test("normalizeSlotImages：同一个格后写覆盖先写（接口是公开的，前端自己发重了不该变成看不懂的 400）", () => {
-  assert.deepEqual(normalizeSlotImages([
-    { spec_key: "rib_spec", image_id: IMAGE_A },
-    { spec_key: " rib_spec ", image_id: IMAGE_B },
-  ]), [{ spec_key: "rib_spec", image_id: IMAGE_B }]);
+test("normalizeSlotImages：输出数组形状、同一个格后写覆盖先写、旧 image_id 仍认、空格 = 没有图", () => {
+  // 2026-11-05 起输出**一律是数组形状**（`[{ spec_key, image_ids }]`）：落库方按 (spec_key, slot_index) 逐张对齐。
+  assert.deepEqual(normalizeSlotImages([{ spec_key: "rib_spec", image_ids: [IMAGE_A] }]), [{ spec_key: "rib_spec", image_ids: [IMAGE_A] }]);
+  // 后写覆盖先写（接口是公开的，前端自己发重了不该变成看不懂的 400）
+  assert.deepEqual(
+    normalizeSlotImages([
+      { spec_key: "rib_spec", image_ids: [IMAGE_A] },
+      { spec_key: " rib_spec ", image_ids: [IMAGE_B, IMAGE_A] },
+    ]),
+    [{ spec_key: "rib_spec", image_ids: [IMAGE_B, IMAGE_A] }],
+    "去重保序；后写的那条整格覆盖先写的",
+  );
+  // 旧的单张形状（2026-11-04 的请求）等同 image_ids: [id]，老前端不改也能存
+  assert.deepEqual(normalizeSlotImages([{ spec_key: "handle_spec", image_id: IMAGE_B }]), [{ spec_key: "handle_spec", image_ids: [IMAGE_B] }]);
+  // 两者同时出现时 image_ids 优先
+  assert.deepEqual(normalizeSlotImages([{ spec_key: "tail_spec", image_id: IMAGE_A, image_ids: [IMAGE_B] }]), [{ spec_key: "tail_spec", image_ids: [IMAGE_B] }]);
+  // [] = 这一格没有图（清空这一格），不再报「没有给出图片 id」：整块替换语义下"清空"必须表达得出来
+  assert.deepEqual(normalizeSlotImages([{ spec_key: "rib_spec", image_ids: [] }]), [{ spec_key: "rib_spec", image_ids: [] }]);
   assert.deepEqual(normalizeSlotImages([]), []);
   assert.throws(
-    () => normalizeSlotImages([{ spec_key: "sample_requirement", image_id: IMAGE_A }]),
+    () => normalizeSlotImages([{ spec_key: "sample_requirement", image_ids: [IMAGE_A] }]),
     (error) => error.getResponse().code === "SLOT_IMAGE_KEY_UNSUPPORTED",
   );
+  // 超过 3 张 → 422 SALES_ORDER_IMAGE_LIMIT，details 指到哪一格、几张
   assert.throws(
-    () => normalizeSlotImages([{ spec_key: "rib_spec", image_id: "" }]),
-    (error) => error.getResponse().code === "SALES_ORDER_IMAGE_NOT_FOUND",
+    () => normalizeSlotImages([{ spec_key: "rib_spec", image_ids: [IMAGE_A, IMAGE_B, CLONE_A, CLONE_B] }]),
+    (error) => {
+      const response = error.getResponse();
+      assert.equal(response.code, "SALES_ORDER_IMAGE_LIMIT");
+      assert.match(response.message, /一行\/一格最多 3 张图片/);
+      assert.deepEqual(response.details, [{ scope: "slot_images", key: "rib_spec", count: 4 }]);
+      return true;
+    },
   );
 });
 
@@ -443,10 +481,11 @@ test("返单/复制：来源单的图画进新单 —— 字节/宽高/sha 原�
     assert.notEqual(row.imageId, IMAGE_B);
   }
 
-  // 快照跟请求载荷走（只记 image_id，不存字节）：回看某一版能回答「当时挂的是哪条图」
-  assert.deepEqual(calls.versionData.snapshot.slot_images, [{ spec_key: "canopy_spec", image_id: IMAGE_A }]);
-  assert.equal(calls.versionData.snapshot.spec_details[0].image_id, IMAGE_A);
-  assert.equal(calls.versionData.snapshot.material_extras[0].image_id, IMAGE_B);
+  // 快照跟请求载荷走（只记图片 id 指针，不存字节）：回看某一版能回答「当时挂的是哪几张图」。
+  // 2026-11-05 起一律是**数组**（§3.4）：返单来源的一行/一格都收成 `image_ids`（顺序 = 用户看到的顺序）。
+  assert.deepEqual(calls.versionData.snapshot.slot_images, [{ spec_key: "canopy_spec", image_ids: [IMAGE_A] }]);
+  assert.deepEqual(calls.versionData.snapshot.spec_details[0].image_ids, [IMAGE_A]);
+  assert.deepEqual(calls.versionData.snapshot.material_extras[0].image_ids, [IMAGE_B]);
 });
 
 test("返单/复制：来源单引用的图片已不存在 → 422 SALES_ORDER_IMAGE_NOT_FOUND（不静默丢图）", async () => {
@@ -518,9 +557,11 @@ test("路由：GET :id/images/:imageId 必须声明在 @Get(\":id\") 之前", ()
   assert.ok(source.indexOf('@Post(":id/images")') < byId);
 });
 
-test("导出：工艺单 multipart 的 files 上限 = 18 + 「其它」上限 + 明细行图片 200（常量 + 注释）", () => {
+test("导出：工艺单 multipart 的 files 上限跟着「每个位置 3 张」走（★3 + 明细行图片 200）", () => {
   const source = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "..", "src", "modules", "sales", "sales-orders.controller.ts"), "utf8");
-  assert.match(source, /const PRODUCTION_SHEET_IMAGE_FILE_LIMIT = SPEC_MATERIAL_KEYS\.length \+ MATERIAL_EXTRA_LIMIT \+ 200;/);
+  // 2026-11-05：导出的候选是**每张图一条**（`spec_key#2`/`#3`），所以 18 格与「其它」行那两段要各 × 3 ——
+  // 不加的话「18 格全填满 3 张」这种正常请求会先被 multer 用 LIMIT_FILE_COUNT 挡下。
+  assert.match(source, /const PRODUCTION_SHEET_IMAGE_FILE_LIMIT = \(SPEC_MATERIAL_KEYS\.length \+ MATERIAL_EXTRA_LIMIT\) \* MAX_ROW_IMAGES \+ 200;/);
   assert.match(source, /files: PRODUCTION_SHEET_IMAGE_FILE_LIMIT/);
   assert.equal(/files: SPEC_MATERIAL_KEYS\.length \+ MATERIAL_EXTRA_LIMIT\s*\}/.test(source), false, "旧的「18 + 20」上限必须换掉");
 });

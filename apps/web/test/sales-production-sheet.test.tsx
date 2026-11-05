@@ -1,18 +1,23 @@
-// 销售页「工艺单导出 + 图片勾选」的行为测试（用户 2026-09-24，2026-11-04 扩到行级图片）。
+// 销售页「工艺单导出 + 图片勾选」的行为测试（用户 2026-09-24，2026-11-04 扩到行级图片，
+// 2026-11-05 扩到每个位置最多 3 张）。
 //
 // 用户原话：「导出销售单的时候，每个有图片的物料允许用户勾选是否 excel 中一并导出这个图片。
 // excel 中图片我们就单独排成一排放在底下的一个图片区。然后让用户自行拖拽就好了」。
 // 2026-11-04（docs/design/sales-order-row-images-2026-11-04.md §4.3）：候选里还有材料行自己的图、
 // 「再加一款 / 其它」行的图与细分明细行的图，缩略图与取图都改走候选给的 `image_url`。
+// 2026-11-05（x3 §3.5 / §4）：同一格最多 3 张 → 后端**每张图一条候选**（第 2/3 张 `spec_key`
+// 带 `#2`/`#3`、label 带「（第 n 张）」），弹窗一行一张、默认全选、可逐张取消。
 //
-// 这里覆盖用户能看见的六件事：
+// 这里覆盖用户能看见的七件事：
 //   1. 这一单**没有**可导出的图片 → 点「工艺单」直接出文件（与改造前一样，不多一次点击）；
 //   2. 有图 → 打开勾选弹窗，**默认全勾**，每行带缩略图与物料编码/名称；
 //   3. 勾选状态决定发出去的文件：勾两张就只发两个文件，字段名是**候选键**（后端按 fieldname 认行）；
 //   4. 材料行图与明细行图同时在场：缩略图各走自己的 image_url、字段名原样（含 `detail:<行 id>` /
 //      `extra:<行 id>`）、成功提示张数正确；
-//   5. 「不带图片导出」走 GET（普通工艺单）；
-//   6. 取图失败时把原因写在弹窗里（toast 会消失，这句话不能只飘一下）。
+//   5. **同一格 3 张图 → 弹窗列 3 条、默认全勾、字段名 `rib_spec` / `rib_spec#2` / `rib_spec#3`、
+//      成功提示 3 张；也可以只勾其中 2 张（逐张可勾）**；
+//   6. 「不带图片导出」走 GET（普通工艺单）；
+//   7. 取图失败时把原因写在弹窗里（toast 会消失，这句话不能只飘一下）。
 //
 // 图片转码（canvas / createImageBitmap）在 jsdom 里不存在，所以**只**替换
 // `browserSheetImageDeps` 这一个工厂，其余（selectableImages / candidateLabel /
@@ -34,16 +39,34 @@ import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api
 const order = { id: "order-1", orderNo: "DL260134", status: "draft", productName: "雨伞", quantity: "10", unit: "支", customer: { id: "c-1", name: "家百纳", isActive: true, contacts: [] }, boms: [] };
 
 // 2026-11-04 的候选契约（§2.4）：spec_key / label / kind / material_* / has_image /
-// image_version / image_source / image_id / image_url。行图（明细行 / 其它行）没有物料。
-const withImage = { spec_key: "rib_spec", label: "伞骨（孔对孔）", kind: "material", material_id: "m-1", material_code: "MAT-1", material_name: "伞骨 50cm 黑", has_image: true, image_version: "sha-1", image_source: "material", image_id: null, image_url: "/api/v1/materials/m-1/image?v=sha-1" };
-const alsoWithImage = { spec_key: "canopy_spec", label: "伞布规格", kind: "material", material_id: "m-2", material_code: "MAT-2", material_name: "伞布 190T", has_image: true, image_version: "sha-2", image_source: "material", image_id: null, image_url: "/api/v1/materials/m-2/image?v=sha-2" };
-const noImage = { spec_key: "handle_spec", label: "伞头", kind: "material", material_id: "m-3", material_code: "MAT-3", material_name: "伞头", has_image: false, image_version: null, image_source: null, image_id: null, image_url: "" };
+// image_version / image_source / image_id / image_url；2026-11-05（x3 §3.5）再加
+// base_key（不带 #n 的键）与 image_slot（0/1/2）。行图（明细行 / 其它行）没有物料。
+const withImage = { spec_key: "rib_spec", base_key: "rib_spec", image_slot: 0, label: "伞骨（孔对孔）", kind: "material", material_id: "m-1", material_code: "MAT-1", material_name: "伞骨 50cm 黑", has_image: true, image_version: "sha-1", image_source: "material", image_id: null, image_url: "/api/v1/materials/m-1/image?v=sha-1" };
+const alsoWithImage = { spec_key: "canopy_spec", base_key: "canopy_spec", image_slot: 0, label: "伞布规格", kind: "material", material_id: "m-2", material_code: "MAT-2", material_name: "伞布 190T", has_image: true, image_version: "sha-2", image_source: "material", image_id: null, image_url: "/api/v1/materials/m-2/image?v=sha-2" };
+const noImage = { spec_key: "handle_spec", base_key: "handle_spec", image_slot: 0, label: "伞头", kind: "material", material_id: "m-3", material_code: "MAT-3", material_name: "伞头", has_image: false, image_version: null, image_source: null, image_id: null, image_url: "" };
 // 细分明细行自己的图（键是 `detail:<行 id>`，图走销售单图片接口）。
 const detailKey = "detail:11111111-1111-1111-1111-111111111111";
-const detailWithImage = { spec_key: detailKey, label: "伞头配色 / Hawái", kind: "detail", material_id: null, material_code: null, material_name: null, has_image: true, image_version: "sha-detail", image_source: "row", image_id: "img-detail", image_url: "/api/v1/sales-orders/order-1/images/img-detail?v=sha-detail" };
+const detailWithImage = { spec_key: detailKey, base_key: detailKey, image_slot: 0, label: "伞头配色 / Hawái", kind: "detail", material_id: null, material_code: null, material_name: null, has_image: true, image_version: "sha-detail", image_source: "row", image_id: "img-detail", image_url: "/api/v1/sales-orders/order-1/images/img-detail?v=sha-detail" };
 // 「再加一款 / 其它」行自己的图（键是 `extra:<行 id>`）。
 const extraKey = "extra:22222222-2222-2222-2222-222222222222";
-const extraWithImage = { spec_key: extraKey, label: "弹簧", kind: "extra", material_id: null, material_code: null, material_name: null, has_image: true, image_version: "sha-extra", image_source: "row", image_id: "img-extra", image_url: "/api/v1/sales-orders/order-1/images/img-extra?v=sha-extra" };
+const extraWithImage = { spec_key: extraKey, base_key: extraKey, image_slot: 0, label: "弹簧", kind: "extra", material_id: null, material_code: null, material_name: null, has_image: true, image_version: "sha-extra", image_source: "row", image_id: "img-extra", image_url: "/api/v1/sales-orders/order-1/images/img-extra?v=sha-extra" };
+// 同一格（rib_spec）的 3 张行图（2026-11-05）：每张一条候选，第 2/3 张 spec_key 带 #2/#3、
+// label 由后端带「（第 n 张）」，各自有 image_url；行图可以不引用任何物料。
+const ribThree = [0, 1, 2].map((slot) => ({
+  spec_key: slot === 0 ? "rib_spec" : `rib_spec#${slot + 1}`,
+  base_key: "rib_spec",
+  image_slot: slot,
+  label: slot === 0 ? "伞骨（孔对孔）" : `伞骨（孔对孔）（第 ${slot + 1} 张）`,
+  kind: "material",
+  material_id: null,
+  material_code: null,
+  material_name: null,
+  has_image: true,
+  image_version: `sha-r${slot + 1}`,
+  image_source: "row",
+  image_id: `img-rib-${slot + 1}`,
+  image_url: `/api/v1/sales-orders/order-1/images/img-rib-${slot + 1}?v=sha-r${slot + 1}`,
+}));
 
 const EP = { export: "/api/v1/sales-orders/order-1/production-sheet.xlsx", candidates: "/sales-orders/order-1/export-images" } as const;
 
@@ -148,6 +171,62 @@ describe("销售页：工艺单导出（含行级图片勾选）", () => {
     await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已导出 DL260134 的工艺单（含 3 张图片）"))).toBe(true));
     // 弹窗导出成功后自己关掉
     await waitFor(() => expect(screen.queryByTestId("production-sheet-image-dialog")).toBeNull());
+  });
+
+  it("同一格 3 张候选：弹窗列 3 条、默认全勾、字段名带 #2/#3、成功提示张数 = 3", async () => {
+    const calls = stub(ribThree);
+    await open();
+    await userEvent.click(screen.getByTestId("order-production-sheet-DL260134"));
+    const dialog = await screen.findByTestId("production-sheet-image-dialog");
+
+    // 每张图一条候选：同一格出现 3 行，第 2/3 张的 label 由后端带「（第 n 张）」。
+    for (const key of ["rib_spec", "rib_spec#2", "rib_spec#3"]) {
+      expect(within(dialog).getByTestId(`production-sheet-image-row-${key}`)).toBeVisible();
+      expect(within(dialog).getByTestId(`production-sheet-image-check-${key}`)).toBeChecked();
+      expect(within(dialog).getByTestId(`production-sheet-image-thumb-${key}`)).toBeVisible();
+    }
+    expect(within(dialog).getByText("伞骨（孔对孔）（第 2 张）")).toBeVisible();
+    expect(within(dialog).getByText("伞骨（孔对孔）（第 3 张）")).toBeVisible();
+    // 文案按张数算（同一格 3 张 = 3 张，不是「1 处」）。
+    expect(within(dialog).getByTestId("production-sheet-image-hint")).toHaveTextContent("3 张可导出的图片");
+    expect(within(dialog).getByTestId("production-sheet-image-export")).toHaveTextContent("导出（含 3 张图片）");
+
+    await userEvent.click(within(dialog).getByTestId("production-sheet-image-export"));
+
+    await waitFor(() => expect(callsTo(calls, EP.export)).toHaveLength(1));
+    const body = callsTo(calls, EP.export)[0].body as FormData;
+    // 字段名 = 候选 spec_key：第 2/3 张带 #2/#3（后端靠后缀区分「同一格第几张」，前端不解析）。
+    expect([...body.keys()]).toEqual(["rib_spec", "rib_spec#2", "rib_spec#3"]);
+    expect((body.get("rib_spec#2") as File).type).toBe("image/jpeg");
+    expect((body.get("rib_spec#3") as File).name).toBe("rib_spec#3.jpg");
+    // 取图各用各的 image_url（不是把第 1 张发 3 遍）。
+    expect(imageDeps.fetchImage.mock.calls.map(([item]) => item.image_url)).toEqual(ribThree.map((item) => item.image_url));
+    // 成功提示里的张数 = 真发出去的文件数。
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已导出 DL260134 的工艺单（含 3 张图片）"))).toBe(true));
+    await waitFor(() => expect(screen.queryByTestId("production-sheet-image-dialog")).toBeNull());
+  });
+
+  it("同一格 3 张可以只勾其中 2 张（逐张可勾，按钮数字与字段名都跟着变）", async () => {
+    const calls = stub(ribThree);
+    await open();
+    await userEvent.click(screen.getByTestId("order-production-sheet-DL260134"));
+    const dialog = await screen.findByTestId("production-sheet-image-dialog");
+
+    // 取消第 2 张：第 1、3 张保持勾选。
+    await userEvent.click(within(dialog).getByTestId("production-sheet-image-check-rib_spec#2"));
+    expect(within(dialog).getByTestId("production-sheet-image-check-rib_spec")).toBeChecked();
+    expect(within(dialog).getByTestId("production-sheet-image-check-rib_spec#2")).not.toBeChecked();
+    expect(within(dialog).getByTestId("production-sheet-image-check-rib_spec#3")).toBeChecked();
+    expect(within(dialog).getByTestId("production-sheet-image-export")).toHaveTextContent("导出（含 2 张图片）");
+
+    await userEvent.click(within(dialog).getByTestId("production-sheet-image-export"));
+
+    await waitFor(() => expect(callsTo(calls, EP.export)).toHaveLength(1));
+    const body = callsTo(calls, EP.export)[0].body as FormData;
+    // 只发勾上的那两张
+    expect([...body.keys()]).toEqual(["rib_spec", "rib_spec#3"]);
+    expect(imageDeps.fetchImage.mock.calls.map(([item]) => item.image_url)).toEqual([ribThree[0].image_url, ribThree[2].image_url]);
+    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("含 2 张图片"))).toBe(true));
   });
 
   it("取消勾选一张：按钮数字跟着变，且只发没被取消的那些（字段名 = 栏位键）", async () => {

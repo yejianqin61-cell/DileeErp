@@ -180,6 +180,9 @@ test("导出候选：只列这一单引用过**且有图**的物料，按材料�
   assert.deepEqual(candidates.map((item) => item.spec_key), ["canopy_spec", "handle_spec"], "顺序照 SPEC_MATERIAL_KEYS，不照数据库返回顺序");
   assert.deepEqual(candidates[0], {
     spec_key: "canopy_spec",
+    // 2026-11-05 起候选**每张图一条**：第 1 张 = 原键（`image_slot: 0`，`base_key` 就是它自己）。
+    base_key: "canopy_spec",
+    image_slot: 0,
     label: "伞布规格",
     kind: "material",
     material_id: MATERIAL_B,
@@ -218,8 +221,10 @@ test("带图导出：图片排进表尾图片区，每张一行标签，勾了�
   sheet.eachRow((row) => rows.push(row.values.join(" ")));
   const areaHeader = rows.findIndex((text) => text.includes("图片区"));
   assert.ok(areaHeader >= 0, "要有图片区标题");
-  assert.ok(rows.some((text) => text.includes("1. 伞头：MAT-3 伞头")), "序号 + 栏位名 + 物料编码/名称，拖走之后还认得出来是哪一格");
-  assert.ok(rows.some((text) => text.includes("2. 伞布规格：MAT-2 伞布 190T 藏青")));
+  // 2026-11-05 起底部图片区按**印刷顺序**排（§3.5：按行顺序、再按第 1→3 张），
+  // 不再是 multipart 的到达顺序：canopy_spec 在材料明细里排在 handle_spec 之前。
+  assert.ok(rows.some((text) => text.includes("1. 伞布规格：MAT-2 伞布 190T 藏青")), "序号 + 栏位名 + 物料编码/名称，拖走之后还认得出来是哪一格");
+  assert.ok(rows.some((text) => text.includes("2. 伞头：MAT-3 伞头")));
   // 图片锚在图片区**下方**（标题行是 0 起的话，第一张图的 row 必须 ≥ 标题行）
   for (const image of images) assert.ok(image.range.tl.row >= areaHeader, "图片必须落在表尾图片区里，不能盖到正文上");
 });

@@ -251,6 +251,9 @@ test("图片候选：「其它」行排在 18 项之后，键是 extra:<行 id>�
   assert.deepEqual(candidates.map((item) => item.spec_key), [materialExtraRefKey(EXTRA_ID_2)], "只列有图的行，顺序照印刷顺序（固定项 → 其它）");
   assert.deepEqual(candidates[0], {
     spec_key: materialExtraRefKey(EXTRA_ID_2),
+    // 2026-11-05 起候选**每张图一条**：第 1 张 = 原键（`image_slot: 0`，`base_key` 就是它自己）。
+    base_key: materialExtraRefKey(EXTRA_ID_2),
+    image_slot: 0,
     label: "胶袋",
     kind: "extra",
     material_id: MATERIAL_B,

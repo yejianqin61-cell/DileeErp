@@ -316,11 +316,35 @@ const IMAGE_ID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 test("行图片：slot_images 形状对就通过（空数组 = 清空 18 格的图，不能当成「没传」）", async () => {
   const slotImages = [{ spec_key: "canopy_spec", image_id: IMAGE_ID }];
   const created = await validateBody(SalesOrderDto, { ...minimalBody(), slot_images: slotImages });
-  assert.deepEqual(created.slot_images.map((row) => ({ ...row })), slotImages, "整组透传给服务层（键域校验在服务层 SPEC_MATERIAL_KEYS）");
+  // class-transformer 给出的是 DTO 实例（每个声明过的键都在，没传的是 undefined），所以按"有值的那几个"比。
+  assert.deepEqual(created.slot_images.map((row) => ({ spec_key: row.spec_key, image_id: row.image_id })), slotImages, "整组透传给服务层（键域校验在服务层 SPEC_MATERIAL_KEYS）");
   const cleared = await validateBody(UpdateSalesOrderDto, { slot_images: [] });
   assert.deepEqual(cleared.slot_images, [], "空数组是合法值（= 18 格的图全清），不能被当成「没传」");
   const untouched = await validateBody(UpdateSalesOrderDto, {});
   assert.equal(untouched.slot_images, undefined, "没传 = 整块不动");
+});
+
+test("行图片（2026-11-05 一条物料最多 3 张）：image_ids 数组形状在三处都通过，超过 3 张在 DTO 不拦（422 归服务层）", async () => {
+  const base = minimalBody();
+  const three = [IMAGE_ID, "3f2504e0-4f89-41d3-9a0c-0305e82c3302", "3f2504e0-4f89-41d3-9a0c-0305e82c3303"];
+  const created = await validateBody(SalesOrderDto, {
+    ...base,
+    slot_images: [{ spec_key: "canopy_spec", image_ids: three }],
+    spec_details: [{ group_name: "伞布明细", name: "DL260134", image_ids: three }],
+    material_extras: [{ label: "弹簧", content: "5cm", image_ids: three }],
+  });
+  assert.deepEqual(created.slot_images[0].image_ids, three, "数组原样透传（顺序 = 用户看到的顺序）");
+  assert.deepEqual(created.spec_details[0].image_ids, three);
+  assert.deepEqual(created.material_extras[0].image_ids, three);
+  // 上限**故意不在 DTO 判**：DTO 拦下来是一句看不出哪一行的 400，而契约要的是 422 SALES_ORDER_IMAGE_LIMIT
+  // + details[{ scope, key, count }]（那条断言在 sales-order-row-images-x3.test.cjs）。
+  const four = [...three, "3f2504e0-4f89-41d3-9a0c-0305e82c3304"];
+  const over = await validateBody(SalesOrderDto, { ...base, slot_images: [{ spec_key: "rib_spec", image_ids: four }] });
+  assert.equal(over.slot_images[0].image_ids.length, 4);
+  // 形状错仍要 400：数组里不是 UUID 就是错请求，与服务层无关。
+  await assertRejected(SalesOrderDto, { ...base, slot_images: [{ spec_key: "rib_spec", image_ids: ["not-a-uuid"] }] }, "image_ids 里必须是 UUID");
+  await assertRejected(SalesOrderDto, { ...base, spec_details: [{ group_name: "伞布明细", name: "x", image_ids: "not-an-array" }] }, "image_ids 必须是数组");
+  await assertRejected(SalesOrderDto, { ...base, material_extras: [{ label: "弹簧", content: "x", image_ids: [1] }] }, "image_ids 里不能是数字");
 });
 
 test("行图片：slot_images 坏形状在 DTO 就挡下（非 UUID / 缺 spec_key / 未声明字段）", async () => {

@@ -321,7 +321,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
         </td>}
         <td className="bom-col-action"><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setItems((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={16} /></Button></td>
       </tr>)}</tbody></table></div>
-      {!items.length && <p className="panel-note">这张 BOM 还没有明细行：点「添加行」或「新建物料」开始录入。</p>}
+      {!items.length && <p className="panel-note">这张 BOM 还没有明细行：点「添加行」或「新建物料」开始录入。建错了可到【采购 → BOM表】点「删除」清掉这张空壳；销售单修改核心字段时系统也会自动清理这样的空 BOM。</p>}
       <p className="panel-note">状态：{bom ? String(displayText(bom.status)) : "-"}　版本：{bom?.version ?? "-"}　最后更新：{bom?.updatedAt ? String(bom.updatedAt).slice(0, 19).replace("T", " ") : "-"}</p>
     </>}</SheetContent></Sheet>;
 }

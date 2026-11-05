@@ -12,7 +12,7 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { EmptyStringToNull } from "../../platform/http/empty-string-to-null.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
-import { SalesOrdersService, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT, SPEC_MATERIAL_KEYS } from "./sales-orders.service";
+import { SalesOrdersService, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT, MAX_ROW_IMAGES, SPEC_MATERIAL_KEYS } from "./sales-orders.service";
 // 行图片与物料图片共用同一个字节上限与同一个校验器（2026-11-04）：multer 层先按它拦，服务层再解容器核对。
 import { MAX_MATERIAL_IMAGE_BYTES } from "../procurement/material-image";
 import { SalesOrderExportService } from "./sales-order-export.service";
@@ -30,8 +30,12 @@ const NON_NEGATIVE_DECIMAL = /^\d+(?:\.\d+)?$/;
  * 200 是一个**防呆上限**而不是业务上限（工艺单是一张 A4 纸，明细行再多也印不下）：
  * 真正的闸门仍是下游的单张 2MB + 合计 12MB；这里只是别让 multer 用 `LIMIT_FILE_COUNT`
  * 报一个用户看不懂的错误。
+ *
+ * 2026-11-05 起每个位置最多 3 张（导出的候选是**每张图一条**，字段名 `spec_key#2`/`#3`），
+ * 所以 18 格与「其它」行那两段要各 × 3：不加的话「18 格全填满 3 张」这种正常请求会先被
+ * multer 挡下，用户看到的是一个与图片大小无关的「文件数量太多」。
  */
-const PRODUCTION_SHEET_IMAGE_FILE_LIMIT = SPEC_MATERIAL_KEYS.length + MATERIAL_EXTRA_LIMIT + 200;
+const PRODUCTION_SHEET_IMAGE_FILE_LIMIT = (SPEC_MATERIAL_KEYS.length + MATERIAL_EXTRA_LIMIT) * MAX_ROW_IMAGES + 200;
 
 /**
  * 行图片的外圈白名单（与 `procurement` 的物料图片同一条）：只放行 `.webp` / `image/webp`。
@@ -84,9 +88,16 @@ class SpecDetailDto {
   @IsOptional() @IsString() @MaxLength(30) unit?: string;
   @IsOptional() @IsInt() sort_order?: number;
   /**
-   * 这一行自己的图（2026-11-04，`sales_order_images.id`）：伞布明细 / 伞头配色每行一张。
-   * 可省略 = 这一行没有图（绝大多数历史行都是）。
+   * 这一行自己的图（2026-11-04 每行一张 → 2026-11-05 每行最多 3 张，`sales_order_images.id`）：
+   * 伞布明细 / 伞头配色每行最多 3 张，顺序 = 用户看到的顺序。
+   * 可省略 = 这一行没有图（绝大多数历史行都是）；`[]` 与省略同义。
+   *
+   * 上限**故意不在这里判**（`@ArrayMaxSize`）：「超过 3 张」要回 422 `SALES_ORDER_IMAGE_LIMIT`
+   * 并说清是哪一行，DTO 拦下来只会变成一句看不出哪行的 400（见服务层 `normalizeRowImageIds`）。
+   * 这里只做形状校验：必须是 UUID 数组，否则一个乱写的 id 会拖到落库时才以外键错误出现。
    */
+  @IsOptional() @IsArray() @IsUUID(undefined, { each: true }) image_ids?: string[];
+  /** 旧形状（2026-11-04，一行一张）：等同 `image_ids: [id]`；两者同时出现时 `image_ids` 优先。 */
   @IsOptional() @IsUUID() image_id?: string;
 }
 
@@ -132,9 +143,12 @@ export class MaterialExtraDto {
   @IsOptional() @IsString() @IsIn([...SPEC_MATERIAL_KEYS]) spec_key?: string;
   @IsOptional() @IsInt() sort_order?: number;
   /**
-   * 这一行自己挂的图（2026-11-04，`sales_order_images.id`）：「再加一款」/「其它」行自己的图；
-   * 有引用物料时**优先用这张**，没有才回退物料清单那张。
+   * 这一行自己挂的图（2026-11-04 一张 → 2026-11-05 最多 3 张，`sales_order_images.id`）：
+   * 「再加一款」/「其它」行自己的图；有引用物料时**优先用这几张**，没有才回退物料清单那张。
+   * 上限同样在服务层判（422 `SALES_ORDER_IMAGE_LIMIT`），DTO 只保证形状。
    */
+  @IsOptional() @IsArray() @IsUUID(undefined, { each: true }) image_ids?: string[];
+  /** 旧形状（2026-11-04，一行一张）：等同 `image_ids: [id]`；两者同时出现时 `image_ids` 优先。 */
   @IsOptional() @IsUUID() image_id?: string;
 }
 
@@ -142,12 +156,17 @@ export class MaterialExtraDto {
  * 「18 个材料格各自的图」的一条映射（2026-11-04，`sales_order_slot_images`）。
  *
  * 那 18 格是 `sales_orders` 上的标量列、没有行可挂外键，所以单独一张映射表按格存图。
+ * 2026-11-05 起**一格最多 3 张**：`image_ids` 是按用户看到顺序排的数组，落库按
+ * `(spec_key, slot_index)` 逐张对齐。`image_id` 是旧形状（一格一张）。
  * 这里只做形状校验；「哪 18 个栏位能挂图」由服务层 `normalizeSlotImages` 判
  * （与 `MaterialRefDto` 的 `spec_key` 同一条理由：业务清单不抄进 DTO）。
  */
 export class SlotImageDto {
   @IsNotEmpty() @EmptyStringToUndefined() @IsString() @MaxLength(50) spec_key!: string;
-  @IsUUID() image_id!: string;
+  /** 这一格最多 3 张图（上限与 `details` 在服务层，理由见 `normalizeRowImageIds`）。 */
+  @IsOptional() @IsArray() @IsUUID(undefined, { each: true }) image_ids?: string[];
+  /** 旧形状（一格一张）：等同 `image_ids: [id]`；两者同时出现时 `image_ids` 优先。 */
+  @IsOptional() @IsUUID() image_id?: string;
 }
 
 /**

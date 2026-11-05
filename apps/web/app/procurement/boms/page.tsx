@@ -8,15 +8,35 @@ import { DataTable } from "../../../components/data/data-table";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { OrderNoWithOrphan } from "../../../components/data/orphan-badge";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
-import { ApiClientError, apiGet, apiPost } from "../../../lib/api-client";
+import { ApiClientError, apiDelete, apiGet, apiPost } from "../../../lib/api-client";
 import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-workbench";
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
+import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
 
-type Reference = AuditRow & { id: string; orderNo?: string; status?: string; salesOrderId?: string; /** 所属销售单已被软删（2026-11-03）：BOM 不删，只标成「孤立」。判定只认后端字段。 */ orphaned?: boolean; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
+type Reference = AuditRow & { id: string; orderNo?: string; status?: string; salesOrderId?: string; /** 所属销售单已被软删（2026-11-03）：BOM 不删，只标成「孤立」。判定只认后端字段。 */ orphaned?: boolean; /** 孤立 BOM 行（2026-11-05）：行 id 被换成 salesOrderId，真实 BOM id 留在这里 —— 删除入口只能拿它当目标。 */ bom_id?: string; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
 // 物料池：规格型号与颜色要一起带上 —— BOM 行选择/新建物料时会引用它们做初始值。
 type Material = { id: string; materialCode?: string; code?: string; name?: string; specificationModel?: string | null; color?: string | null; materialType?: string; defaultUnitId?: string; isActive?: boolean };
 type Unit = { id: string; name?: string; isActive?: boolean };
+
+/**
+ * `GET /boms/:id/delete-preview` 的形状（契约见 docs/design/bom-delete-and-empty-shell-release-2026-11-05.md §4.1）。
+ * 可删性、要不要填原因都由服务端给（真删时用同一份「下游事实」重算），前端**不自己再数一遍** ——
+ * 两边口径一旦分叉，就会出现「弹窗说能删、DELETE 却被拒」或者绕过审计原因。
+ */
+type BomDeletePreview = {
+  bom_id: string; order_no: string; version?: number; status?: string;
+  item_count: number;
+  purchase_plan: { id: string; plan_no: string; ordered_line_count?: number } | null;
+  purchase_order_count: number;
+  production_order_count: number;
+  deletable: boolean;
+  blocked_reason: string | null;
+  reason_required: boolean;
+};
+
+/** 删除确认框：与销售单列表同一套 `ActionDialog` 用法（onSubmit 抛错 → 留在弹窗里显示服务端原因）。 */
+type BomDeleteDialog = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
@@ -44,12 +64,11 @@ const COLUMN_WIDTH = {
   // 6% 是规则上限，但这里没有别处更需要空间（订单号与按钮列都已按内容给足），
   // 多出来的量留在状态列不会撑坏版式，只让这一格更宽松。
   status: "12%",
-  // BOM表：一个固定宽度的按钮（`编辑BOM表 / 新建BOM表`，5 汉字）。
-  // `.ui-button-sm`（padding 0 10px、font-size 12px）下 5 汉字按钮 ≈ 80px，加本格 24px 内边距 = 104px
-  // → 10.1%，规则下限 8% 已满足；剩下的预算给到 42%（= 434px）。
-  // 为什么按钮列给这么宽：本列直接渲染一个 `<Button>`（不是 `.action-row` 那种会换行的 flex 行），
-  // 宽出来的空间不会撑坏版式，而 84% 必须**精确**分完 —— 余下的每一分要么落在这里，
-  // 要么让前两列各空一大段。
+  // BOM表：`编辑BOM表 / 新建BOM表`（5 汉字）+ 有 BOM 时多一个「删除」（2 汉字，2026-11-05）。
+  // `.ui-button-sm`（padding 0 10px、font-size 12px）下 5 汉字按钮 ≈ 80px、2 汉字 ≈ 44px，
+  // 加间距与本格 24px 内边距 = 152px → 14.7%，规则下限 8% 已满足；剩下的预算给到 42%（= 434px）。
+  // 两个按钮交给 `.action-row`（`globals.css:134`，`flex-wrap: wrap`）：42% 足够并排；
+  // 万一文案变长也不会被裁，只会折到第二行（本表行数少，折行不影响阅读）。
   bom: "42%",
 } as const;
 
@@ -66,6 +85,9 @@ export default function BomsPage() {
   // BOM 工作区请求开的「新建物料」弹窗：存下它给的回填函数，物料建好就填回当前行。
   // （2026-09-16 之前这里是空函数：按钮在，点了没反应 —— 用户反馈「新建物料按钮怎么不见了」。）
   const [materialApply, setMaterialApply] = useState<((material: BomMaterialRef) => void) | null>(null);
+  /** 正在读「删除影响面」的那一行：读接口回来之前按钮不能连点（否则会弹两次确认框）。 */
+  const [deletingId, setDeletingId] = useState("");
+  const [deleteDialog, setDeleteDialog] = useState<BomDeleteDialog | null>(null);
 
   async function load() {
     setLoading(true);
@@ -142,6 +164,70 @@ export default function BomsPage() {
   }
 
   /**
+   * 这一行**真实**的 BOM id。
+   *
+   * ⚠️ 不能拿行的 `id` 当删除目标：孤立 BOM 行的行 id 被换成了 `salesOrderId`（见下方 bomRows 注释），
+   * 拿它去 `/boms/:id` 会打到一个不存在的 BOM 上。孤立行把真实 id 存在 `bom_id` 里；
+   * 在册行用 salesOrderId 从 `/boms` 结果里找回（与 `createOrOpenBom` 找回既有 BOM 同一口径）。
+   */
+  function bomIdOf(row: Reference): string | undefined {
+    if (row.bom_id) return row.bom_id;
+    return boms.find((bom) => bom.salesOrderId === row.id)?.id;
+  }
+
+  /**
+   * 删除 BOM 表（2026-11-05，用户：「想修改销售单，但销售单显示 BOM 表已经建立、其实里面没填内容，
+   * 可不可以增加一个 BOM 表的删除键」）。
+   *
+   * 删除是销毁一张表，**必须先读影响面再弹确认框**（`GET /boms/:id/delete-preview`）：
+   *   - 空壳 BOM（0 明细、无采购计划、无采购单/生产单）：预览说 `reason_required=false`，
+   *     确认框里**不出现原因框**，点「确认删除」就完事 —— 用户要解决的正是这一种；
+   *   - 有明细 / 有采购计划：`reason_required=true`，必须填原因（删掉的是有人录过的内容，要进审计）；
+   *   - 被未取消采购单 / 未删除生产单引用：`deletable=false`，**不弹窗**，直接把服务端给的
+   *     `blocked_reason`（「先回退下游」）作为错误提示 —— 已经采购/投产的事实不能靠删源撤销。
+   *
+   * 预览失败（网络/权限）不弹窗、只 toast：连影响面都读不到时不该让用户按下「确认删除」。
+   */
+  async function deleteBom(row: Reference) {
+    const bomId = bomIdOf(row);
+    if (!bomId) return;
+    setDeletingId(row.id);
+    try {
+      const preview = (await apiGet<BomDeletePreview>(`/boms/${bomId}/delete-preview`)).data;
+      if (!preview.deletable) {
+        notifyError(preview.blocked_reason ?? "这张 BOM 不能删除");
+        return;
+      }
+      const fields: ActionField[] = [
+        { name: "effect", type: "info", label: "删除后这张 BOM 表和它的明细会一起消失（软删除，审计可追溯）；销售单不再被它挡住，可以继续修改。" },
+        { name: "facts", type: "info", label: `明细 ${preview.item_count} 行；采购单 ${preview.purchase_order_count} 张；生产单 ${preview.production_order_count} 张。` },
+        preview.purchase_plan
+          ? { name: "plan", type: "info", label: `采购计划 ${preview.purchase_plan.plan_no} 会独立保留（不随 BOM 删除），其中已下单 ${preview.purchase_plan.ordered_line_count ?? 0} 行。` }
+          : { name: "plan", type: "info", label: "这张 BOM 没有采购计划。" },
+      ];
+      if (preview.reason_required) fields.push({ name: "reason", label: "删除原因（必填，会记进审计）", type: "textarea", required: true, placeholder: "例如：BOM 建错单 / 选错销售单，需重新建一张" });
+      setDeleteDialog({
+        title: `删除 BOM 表：${preview.order_no}`,
+        fields,
+        // 必须把 Promise 交回 ActionDialog：它靠 onSubmit 抛错决定「保持弹窗 + 显示服务端原因」，
+        // 被 void 吞掉就会关窗，用户填的原因与服务端拒绝理由一起丢（销售单删除踩过同一个坑）。
+        submit: async (values) => { await performDeleteBom(bomId, values.reason?.trim() || undefined); },
+      });
+    } catch (cause) {
+      notifyError(messageOf(cause, "读取删除影响失败，请稍后重试"));
+    } finally {
+      setDeletingId("");
+    }
+  }
+
+  /** 真正发 DELETE 并统一「toast + 重新拉列表」；成功文案说清用户最关心的一句：销售单现在能改了。 */
+  async function performDeleteBom(bomId: string, reason?: string) {
+    await apiDelete(`/boms/${bomId}`, reason ? { reason } : undefined);
+    notifySuccess("BOM 表已删除，销售单现在可以修改了");
+    await load();
+  }
+
+  /**
    * 这一页的列表由两段拼成，都是「一张销售单 + 它的 BOM」这一行形状：
    *
    * ① 在册的**已确认**销售单（`/sales-orders?status=confirmed`）：BOM 是"要按这张单买料/投产"的清单，
@@ -161,7 +247,8 @@ export default function BomsPage() {
     const salesOrderId = bom.salesOrderId;
     if (!bom.orphaned || !salesOrderId || shownSalesOrderIds.has(salesOrderId)) continue;
     shownSalesOrderIds.add(salesOrderId);
-    bomRows.push({ ...bom, id: salesOrderId, orderNo: bom.orderNo ?? "-" });
+    // 额外保留真实 BOM id（`bom_id`）：行 id 被换成了 salesOrderId，删除入口只能认这一份（2026-11-05）。
+    bomRows.push({ ...bom, bom_id: bom.id, id: salesOrderId, orderNo: bom.orderNo ?? "-" });
   }
   const bomEmptyHint = draftCount
     ? `还有 ${draftCount} 张销售单是草稿：BOM 只能建在**已确认**的销售单上 —— 请先到【销售】确认，再回这里点「新建BOM表」。`
@@ -175,8 +262,15 @@ export default function BomsPage() {
     {
       id: "bom", header: "BOM表", meta: { width: COLUMN_WIDTH.bom },
       cell: ({ row }) => {
-        const bom = boms.find((b) => b.salesOrderId === row.original.id);
-        return <Button size="sm" variant="secondary" onClick={() => void createOrOpenBom(row.original)}>{bom ? "编辑BOM表" : "新建BOM表"}</Button>;
+        const bomId = bomIdOf(row.original);
+        const busy = deletingId === row.original.id;
+        return (
+          <div className="action-row">
+            <Button size="sm" variant="secondary" disabled={busy} onClick={() => void createOrOpenBom(row.original)}>{bomId ? "编辑BOM表" : "新建BOM表"}</Button>
+            {/* 删除入口只在这行**已有 BOM** 时出现（没有 BOM 就没什么可删），且是「先在确认框里看清影响面再删」。 */}
+            {bomId && <Button size="sm" variant="destructive" data-testid={`bom-delete-${row.original.orderNo ?? row.original.id}`} disabled={busy} onClick={() => void deleteBom(row.original)}>{busy ? "读取影响…" : "删除"}</Button>}
+          </div>
+        );
       },
     },
   ];
@@ -225,6 +319,19 @@ export default function BomsPage() {
           <DataTable columns={columns} data={bomRows} empty={<EmptyState title="暂无已确认销售单" description={bomEmptyHint} />} />
         </div>
       </section>
+      {/*
+        删除确认框（2026-11-05）：信息行 + 需要时的必填原因。放在页面级、不放进表格单元格 ——
+        Radix Dialog 的 portal 与行重渲染都不该影响它；`submit` 抛错时 ActionDialog 会留在弹窗里
+        显示服务端原因（422 BOM_HAS_DOWNSTREAM / BOM_DELETE_REASON_REQUIRED），用户填的原因不丢。
+      */}
+      <ActionDialog
+        open={Boolean(deleteDialog)}
+        onOpenChange={(open) => { if (!open) setDeleteDialog(null); }}
+        title={deleteDialog?.title ?? "删除 BOM 表"}
+        fields={deleteDialog?.fields ?? []}
+        submitLabel="确认删除"
+        onSubmit={async (values) => { await deleteDialog?.submit(values); setDeleteDialog(null); }}
+      />
     </div>
   );
 }
