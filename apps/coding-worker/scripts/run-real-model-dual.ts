@@ -22,6 +22,10 @@ try {
     deadlineMs: 20 * 60_000,
   })
   verifySingleParentActivations(timedActivationsFromTrace(result.trace))
+  const submission = result.trace.find(record => record.event === 'submission')
+  assert.deepEqual(submission?.capabilities.map(capability => capability.capabilityId).sort(), [
+    'employee-inventory', 'employee-output',
+  ])
   await Promise.all([
     access(join(workspace, 'employee-output', 'tool.ts')),
     access(join(workspace, 'employee-output', 'tool.test.ts')),
@@ -32,6 +36,7 @@ try {
   console.log(JSON.stringify({
     result: 'passed',
     activations: timedActivationsFromTrace(result.trace).map(item => ({ capabilityId: item.capabilityId, role: item.role })),
+    submittedCapabilities: submission.capabilities.map(capability => capability.capabilityId).sort(),
     files: ['employee-output/tool.ts', 'employee-output/tool.test.ts', 'employee-inventory/tool.ts', 'employee-inventory/tool.test.ts'],
   }))
 } finally {
