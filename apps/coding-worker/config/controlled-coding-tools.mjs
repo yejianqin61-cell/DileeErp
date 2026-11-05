@@ -11,7 +11,7 @@ const builderPreset = 'tool-builder'
 const validatorPreset = 'tool-validator'
 
 function candidateHash(capabilityId) {
-  const root = join(process.cwd(), capabilityId)
+  const root = join(process.env.DILEE_CANDIDATE_WORKSPACE ?? process.cwd(), capabilityId)
   const files = ['tool.ts', 'tool.test.ts'].map(path => {
     const file = join(root, path)
     if (!existsSync(file) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) {
@@ -175,10 +175,10 @@ export function apply(ctx, config = {}) {
     async (args, exec) => {
       const parent = rootAgent(exec, parentSessionId)
       assertLifecycle()
-      if (process.env.DILEE_VERIFY_CANDIDATE_HASHES === 'true' && args.code_hash !== candidateHash(args.capability_id)) {
-        throw new Error('CANDIDATE_REVISION_HASH_DENIED')
-      }
-      policy.beginValidation(args.capability_id, args.code_hash)
+      const codeHash = process.env.DILEE_VERIFY_CANDIDATE_HASHES === 'true'
+        ? candidateHash(args.capability_id)
+        : args.code_hash
+      policy.beginValidation(args.capability_id, codeHash)
       return startChild(
         parent,
         args.capability_id,
@@ -202,13 +202,16 @@ export function apply(ctx, config = {}) {
     async (args, exec) => {
       rootAgent(exec, parentSessionId)
       assertLifecycle()
-      policy.recordValidation(args.capability_id, args.code_hash, args.decision)
+      const codeHash = process.env.DILEE_VERIFY_CANDIDATE_HASHES === 'true'
+        ? candidateHash(args.capability_id)
+        : args.code_hash
+      policy.recordValidation(args.capability_id, codeHash, args.decision)
       if (typeof args.report === 'string' && args.report.length > 0) {
-        ctx.emit('dilee/validation-recorded', { capabilityId: args.capability_id, codeHash: args.code_hash, decision: args.decision, report: args.report })
+        ctx.emit('dilee/validation-recorded', { capabilityId: args.capability_id, codeHash, decision: args.decision, report: args.report })
       }
       return {
         capabilityId: args.capability_id,
-        codeHash: args.code_hash,
+        codeHash,
         decision: args.decision,
       }
     },
