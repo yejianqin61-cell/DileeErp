@@ -46,7 +46,7 @@ export async function runRealModelDual(input: {
       },
       initializeTimeoutMs: 30_000,
       provider: 'phase1-deepseek',
-      model: 'deepseek-flash',
+      model: 'deepseek-chat',
     }, {
       batchId: `real-model-dual-${randomUUID()}`,
       parentSessionId: input.parentSessionId,

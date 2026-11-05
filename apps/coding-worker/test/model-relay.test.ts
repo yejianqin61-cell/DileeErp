@@ -33,5 +33,5 @@ test('serves only the fixed model catalog to an authorized SDK client', async ()
     method: 'GET', path: '/v1/models', apiKey: 'relay', body: new Uint8Array(),
     config: { upstreamKey: 'upstream', relayToken: 'relay' }, forward: async () => new Response('{}'),
   })
-  assert.deepEqual(await response.json(), { object: 'list', data: [{ id: 'deepseek-flash', object: 'model' }] })
+  assert.deepEqual(await response.json(), { object: 'list', data: [{ id: 'deepseek-chat', object: 'model' }] })
 })

@@ -30,7 +30,7 @@ export async function handleModelRelayRequest(input: {
   }
   if (input.path === MODEL_LIST_PATH) {
     if (input.method !== 'GET') return new Response(null, { status: 405 })
-    return Response.json({ object: 'list', data: [{ id: 'deepseek-flash', object: 'model' }] })
+    return Response.json({ object: 'list', data: [{ id: 'deepseek-chat', object: 'model' }] })
   }
   if (input.method !== 'POST') return new Response(null, { status: 405 })
   if (input.body.byteLength > MAX_BODY_BYTES) return new Response(null, { status: 413 })

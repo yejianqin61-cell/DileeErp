@@ -43,7 +43,7 @@ export async function runRealModelRework(input: {
       },
       initializeTimeoutMs: 30_000,
       provider: 'phase1-deepseek',
-      model: 'deepseek-flash',
+      model: 'deepseek-chat',
       deadlineMs: input.deadlineMs ?? 20 * 60_000,
     })
   } finally {

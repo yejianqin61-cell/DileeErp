@@ -9,6 +9,6 @@
         api: openai-completions
         baseURL: !!js process.env.DILEE_MODEL_RELAY_URL + '/v1'
         models:
-          - id: deepseek-flash
+          - id: deepseek-chat
             # Phase-one coding turns are intentionally small and bounded.
             maxTokens: 1200
