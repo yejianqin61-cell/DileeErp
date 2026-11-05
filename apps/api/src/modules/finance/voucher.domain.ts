@@ -103,11 +103,21 @@ export function isBankFamilySubject(name?: string | null): boolean {
  *
  * 科目名（`subject_key`）保持「银行存款」不变 —— 它才是会计科目；账户是明细/辅助核算引用
  * （`bank_id` + 科目名快照），这样「银行存款」仍然能汇总，同时能按账户出明细账。
+ *
+ * 2026-11-05 用户口径（「贷方的会计科目填写结算账户+银行账户」→ 追问后选定**只用结算账户名**）：
+ * 科目名快照里的账户名**优先取结算账户**（收支流水上的 `settlement_account_id` 字典项，如「农业银行5706」）——
+ * 那是财务账套里的账户叫法（老表「结算方式」的原文）；没有结算账户才退回银行账户池的
+ * 「银行名+账号」（如「招商银行6214851811022925」）。两样都没有就只写「银行存款」，
+ * 绝不写半截的「银行存款—」。`bank_id` 引用照旧保留（余额与明细账要用它）。
  */
 export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "bankId" | "bankLabel" | "settlementMethod" | "settlementAccountLabel" | "subjectLabel">): { subject_key: string; subject_label: string; bank_id: string | null } {
-  /** 银行存款那一行：有账户名快照就带上（宁可不写账户，也不要写一个空的「银行存款—」）。 */
+  /** 银行存款那一行：科目名快照里的账户名按「结算账户 > 银行账户」取，见上面的注释。 */
   const bankLine = () => {
-    const account = entry.bankLabel?.trim();
+    const settlement = entry.settlementAccountLabel?.trim();
+    // 结算账户名里写着「现金」的（`结算方式` 的旧文本）不能当成银行账户名用，
+    // 否则会出现「银行存款—现金日记账」这种不存在的账户。判定与 `fundSubjectFor` 同一口径。
+    const cashLike = Boolean(settlement) && fundSubjectFor(settlement) === FUND_SUBJECT_CASH;
+    const account = settlement && !cashLike ? settlement : entry.bankLabel?.trim() || null;
     return { subject_key: FUND_SUBJECT_BANK, subject_label: account ? `${FUND_SUBJECT_BANK}—${account}` : FUND_SUBJECT_BANK, bank_id: entry.bankId ?? null };
   };
   // 见上面第 0 条：业务科目已经是现金科目时，资金侧一律银行存款（取现的对方就是银行）。

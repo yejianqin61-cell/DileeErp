@@ -26,8 +26,9 @@ const entry = (extra = {}) => ({
 test("收入：借资金科目、贷业务科目（科目名取自会计科目，资金科目默认银行存款）", () => {
   const lines = voucherLinesFor(entry());
   assert.equal(lines.length, 2);
+  // 2026-11-05：资金侧的科目名带上账户（结算账户优先），见下面「贷方科目名」那组用例。
   assert.deepEqual(lines.map((line) => [line.line_no, line.direction, line.subject_label]), [
-    [1, "debit", FUND_SUBJECT_BANK],
+    [1, "debit", "银行存款—农业银行5706"],
     [2, "credit", "主营业务收入"],
   ]);
   assert.equal(lines[1].subject_key, "损益类/主营业务收入", "科目编码 = 分类/项目（科目表没有唯一编码）");
@@ -39,7 +40,7 @@ test("支出：借业务科目、贷资金科目（方向与收入相反）", ()
   const lines = voucherLinesFor(entry({ direction: "expense", subjectKey: "损益类/主营业务成本", subjectLabel: "主营业务成本", amount: "5200.0000" }));
   assert.deepEqual(lines.map((line) => [line.direction, line.subject_label]), [
     ["debit", "主营业务成本"],
-    ["credit", FUND_SUBJECT_BANK],
+    ["credit", "银行存款—农业银行5706"],
   ]);
   assert.equal(lines[1].amount, "5200.0000");
 });
@@ -106,7 +107,9 @@ test("资金类分录引用具体银行账户：科目名照旧，科目名快�
 
 test("历史数据（没有银行账户、只有结算方式文本）按「现金」判断，且不写 bank_id", () => {
   const [bank] = voucherLinesFor(entry({ settlementAccountLabel: "农业银行5706" }));
-  assert.equal(bank.subject_label, FUND_SUBJECT_BANK);
+  // 2026-11-05：有结算账户就把它写成科目名的一部分（它是财务账套里的账户叫法），
+  // 但**没有** bank_id 引用 —— 没有账户事实就不编一个。
+  assert.equal(bank.subject_label, "银行存款—农业银行5706");
   assert.equal(bank.bank_id, null, "没有账户引用就是 null，不能编一个");
   const [cash] = voucherLinesFor(entry({ settlementAccountLabel: "现金日记账" }));
   assert.equal(cash.subject_label, FUND_SUBJECT_CASH);
@@ -130,6 +133,31 @@ test("红字凭证的分录照旧带银行账户引用（否则银行存款明�
   assert.equal(lines[0].direction, "credit");
   assert.equal(lines[0].bank_id, "bank-1");
   assert.equal(lines[0].subject_label, "银行存款—农业银行5706");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-05（用户）：「凭证里面，贷方的会计科目填写结算账户+银行账户」——
+//   追问后选定**只用结算账户名**：资金行的账户名快照优先级 = 结算账户 > 银行账户。
+//   结算账户是财务账套里的账户叫法（老表「结算方式」的原文，如「农业银行5706」）；
+//   银行账户是银行池里的那张卡（如「招商银行6214851811022925」）。两者都有时写结算账户，
+//   银行账户仍作为 `bank_id` 引用（余额、明细账用它）。
+// ---------------------------------------------------------------------------
+
+test("贷方资金科目名优先用「结算账户」（两样都有时不再写银行池的账号）", () => {
+  const line = fundLineFor({ bankId: "bank-1", bankLabel: "招商银行6214851811022925", settlementAccountLabel: "农业银行5706", settlementMethod: "银行转账" });
+  assert.equal(line.subject_key, FUND_SUBJECT_BANK, "会计科目仍是「银行存款」，账户只是名称快照");
+  assert.equal(line.subject_label, "银行存款—农业银行5706");
+  assert.equal(line.bank_id, "bank-1", "账户引用照旧保留：余额与明细账要用它");
+});
+
+test("没有结算账户时才退回银行账户名（2026-09-16 的口径不能被这次改坏）", () => {
+  const line = fundLineFor({ bankId: "bank-1", bankLabel: "招商银行6214851811022925", settlementAccountLabel: null });
+  assert.equal(line.subject_label, "银行存款—招商银行6214851811022925");
+});
+
+test("结算账户名里写着「现金」时不当银行账户名用（不写出「银行存款—现金日记账」这种假账户）", () => {
+  const line = fundLineFor({ bankId: "bank-1", bankLabel: "招商银行6214851811022925", settlementAccountLabel: "现金日记账", settlementMethod: "现金" });
+  assert.equal(line.subject_label, "银行存款—招商银行6214851811022925");
 });
 
 // ---------------------------------------------------------------------------

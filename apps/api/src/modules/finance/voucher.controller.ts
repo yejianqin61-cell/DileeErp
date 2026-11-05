@@ -122,6 +122,23 @@ export class VoucherController {
   }
 
   /**
+   * 贷方资金科目的账户名口径变更（2026-11-05：结算账户优先）。
+   *
+   * 只管**草稿**凭证的资金行科目名 —— 已过账的内容不能因为一次口径调整而改（那是红冲的事）。
+   * 与上面的 `cash-transfer-repair` 同一套做法：GET 预览、POST 执行；
+   * 同样必须声明在 `@Get(":id")` **之前**，否则 `fund-label-refresh` 会被当成凭证 id。
+   */
+  @Get("fund-label-refresh")
+  async fundLabelRefreshPreview() {
+    return { data: await this.vouchers.fundLabelRefreshPreview(), meta: {} };
+  }
+
+  @Post("fund-label-refresh")
+  async refreshFundLabels(@CurrentUser() user: CurrentUserType) {
+    return { data: await this.vouchers.refreshDraftFundLabels(user), meta: {} };
+  }
+
+  /**
    * 记账凭证模板（工资计提 / 原材料采购）。财务 2026-09-20：「我完整的一个工资是这样的，
    * 但是现在都不能改」「原材料的也是要加上应交税费」。
    *

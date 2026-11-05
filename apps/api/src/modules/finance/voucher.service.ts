@@ -6,7 +6,7 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { accountingSubjectKey, PAYABLE_CONFIRM_SUBJECT_NAMES, paymentSubjectNames } from "./accounting-subject-catalog";
-import { fundLineFor, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
+import { FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, fundLineFor, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
 import { VOUCHER_TEMPLATES, resolveVoucherTemplate, type ResolvedTemplateLine } from "./voucher-template";
 
 /** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」；**手工凭证没有来源**。 */
@@ -879,6 +879,77 @@ export class VoucherService {
     }
     await this.audit.record("voucher.repair_cash_transfer", "voucher", user.id, undefined, { ...before, rebuilt, reopened, without_voucher: withoutVoucher, reason });
     return { ...before, rebuilt, reopened, without_voucher: withoutVoucher };
+  }
+
+  /**
+   * 2026-11-05：贷方资金科目的账户名改成「**结算账户优先**」（见 `fundLineFor`）后，
+   * **已经生成出来的草稿凭证不会自己变**。这两个方法按来源流水重算草稿凭证**资金行**的科目名：
+   * `GET` 预览（不写库）、`POST` 执行。
+   *
+   * 只动科目名（`subject_key` / `subject_label`），金额、业务分录、财务手工调整过的行一律不动 ——
+   * 草稿是财务还没过账的东西，不能像「重新生成」那样整张覆盖。与「重新生成」的分工就在这里：
+   * 那个按来源整张重算（会覆盖手改），这个只把资金行的账户名对齐到新口径。
+   */
+  async fundLabelRefreshPreview() {
+    const targets = await this.buildFundLabelRefresh();
+    const changed = targets.filter((target) => target.changed);
+    return {
+      checked: targets.length,
+      changed: changed.length,
+      targets: targets.map((target) => ({ voucher_no: target.voucherNo, entry_no: target.entryNo, line_no: target.lineNo, before: target.before, after: target.after, changed: target.changed })),
+    };
+  }
+
+  async refreshDraftFundLabels(user: CurrentUser) {
+    const targets = (await this.buildFundLabelRefresh()).filter((target) => target.changed);
+    for (const target of targets) {
+      await this.prisma.voucherLine.update({
+        where: { id: target.lineId },
+        data: { subjectKey: target.afterKey, subjectLabel: target.after, ...this.audit.update(user) },
+      });
+      await this.audit.record("voucher.refresh_fund_label", "voucher", user.id, target.voucherId, {
+        voucher_no: target.voucherNo, entry_no: target.entryNo, line_no: target.lineNo, before: target.before, after: target.after,
+      });
+    }
+    return { changed: targets.length, vouchers: [...new Set(targets.map((target) => target.voucherNo))] };
+  }
+
+  /** 预览与执行共用：草稿凭证（来源=收支流水）的资金行，按来源流水现在的结算账户/银行账户重算科目名。 */
+  private async buildFundLabelRefresh() {
+    const drafts = await this.prisma.voucher.findMany({
+      where: { deletedAt: null, status: "draft", sourceType: SOURCE_CASH_FLOW, sourceId: { not: null } },
+      select: {
+        id: true,
+        voucherNo: true,
+        sourceId: true,
+        lines: { orderBy: { lineNo: "asc" }, select: { id: true, lineNo: true, subjectKey: true, subjectLabel: true, bankId: true } },
+      },
+    });
+    const sourceIds = [...new Set(drafts.map((draft) => draft.sourceId).filter((id): id is string => Boolean(id)))];
+    if (!sourceIds.length) return [];
+    const entries = await this.prisma.cashFlowEntry.findMany({ where: { id: { in: sourceIds }, deletedAt: null }, include: ENTRY_INCLUDE });
+    const entryById = new Map(entries.map((entry) => [entry.id, entry]));
+    const targets: Array<{
+      voucherId: string; voucherNo: string; entryNo: string; lineId: string; lineNo: number;
+      before: string; after: string; afterKey: string; changed: boolean;
+    }> = [];
+    for (const draft of drafts) {
+      const entry = draft.sourceId ? entryById.get(draft.sourceId) : undefined;
+      // 来源流水被删/冲销：没有可重算的事实，留给财务点「重新生成」或人工处理，不在这里猜。
+      if (!entry) continue;
+      const next = this.draftForEntry(entry).lines.find((line) => line.subject_key === FUND_SUBJECT_BANK || line.subject_key === FUND_SUBJECT_CASH);
+      if (!next) continue;
+      // 现凭证里的资金行：先认银行账户引用，再退回科目名前缀（历史凭证可能没有账户引用）。
+      const current = draft.lines.find((line) => line.bankId !== null)
+        ?? draft.lines.find((line) => line.subjectLabel.startsWith(FUND_SUBJECT_BANK) || line.subjectLabel.startsWith(FUND_SUBJECT_CASH));
+      if (!current) continue;
+      targets.push({
+        voucherId: draft.id, voucherNo: draft.voucherNo, entryNo: entry.entryNo, lineId: current.id, lineNo: current.lineNo,
+        before: current.subjectLabel, after: next.subject_label, afterKey: next.subject_key,
+        changed: current.subjectLabel !== next.subject_label || current.subjectKey !== next.subject_key,
+      });
+    }
+    return targets;
   }
 
   /**

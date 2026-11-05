@@ -66,7 +66,7 @@ test("由收支流水生成凭证：凭证号按期间顺延，两条分录金�
   assert.equal(row.voucherNo, "记-2026-09-0004");
   assert.equal(lines.length, 2);
   assert.deepEqual(lines.map((line) => [line.lineNo, line.direction, line.subjectLabel]), [
-    [1, "debit", "银行存款"],
+    [1, "debit", "银行存款—农业银行5706"],
     [2, "credit", "主营业务收入"],
   ]);
   assert.equal(lines[1].subjectKey, "损益类/主营业务收入", "业务科目的科目编码 = 分类/项目");
@@ -103,7 +103,7 @@ test("删掉草稿凭证后重新生成：原地复活那一行（不新建、�
   assert.equal(update.voucherNo, "记-2026-09-0002", "凭证号沿用原号：换号会让被删掉的那张在审计里对不上");
   assert.deepEqual(revivals.find((item) => item.deletedLinesOf), { deletedLinesOf: "voucher-deleted" }, "旧分录先清掉");
   assert.equal(lines.length, 2, "再按现在的内容写两条分录");
-  assert.deepEqual(lines.map((line) => [line.direction, line.subjectLabel]), [["debit", "银行存款"], ["credit", "主营业务收入"]]);
+  assert.deepEqual(lines.map((line) => [line.direction, line.subjectLabel]), [["debit", "银行存款—农业银行5706"], ["credit", "主营业务收入"]]);
 });
 
 test("已冲销的收支流水不能生成凭证（钱没真的动过）", async () => {
@@ -895,4 +895,95 @@ test("挂账凭证重新生成：按来源应付单重建「借业务科目 / �
   assert.ok(event, "重新生成必须留审计");
   assert.deepEqual(event[4].before.subjects, ["销售费 推广费", "银行存款 中国银行（人民币）"], "审计要记改前科目");
   assert.deepEqual(event[4].after.subjects, ["销售费 推广费", "应付账款"], "审计要记改后科目");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-05：贷方资金科目名改用「结算账户优先」后，**已经生成出来的草稿凭证不会自己变**。
+// `fundLabelRefreshPreview` / `refreshDraftFundLabels` 按来源流水把草稿凭证的**资金行**科目名
+// 对齐到新口径：只改名字，不动金额、业务分录与手工调整过的行（草稿还没过账，不能整张覆盖）。
+// ---------------------------------------------------------------------------
+
+function fundLabelHarness({ drafts = [], entries = [] } = {}) {
+  const updates = [];
+  const audits = [];
+  const prisma = {
+    voucher: { findMany: async () => drafts },
+    cashFlowEntry: { findMany: async ({ where }) => entries.filter((entry) => where.id.in.includes(entry.id)) },
+    voucherLine: { update: async ({ where, data }) => { updates.push({ where, data }); return { id: where.id, ...data }; } },
+  };
+  const service = new VoucherService(prisma, { ...audit(), record: async (...args) => { audits.push(args); } });
+  return { service, updates, audits };
+}
+
+const draftWithFundLine = (overrides = {}) => ({
+  id: "voucher-1",
+  voucherNo: "记-2026-11-0003",
+  sourceId: "cf-1",
+  lines: [
+    { id: "line-1", lineNo: 1, subjectKey: "负债类/应付账款", subjectLabel: "应付账款", bankId: null },
+    { id: "line-2", lineNo: 2, subjectKey: "银行存款", subjectLabel: "银行存款—招商银行6214851811022925", bankId: "bank-9" },
+  ],
+  ...overrides,
+});
+
+/** 来源流水现在补上了结算账户（农业银行5706），银行账户是招商卡 —— 新口径要写结算账户名。 */
+const entryWithSettlement = (extra = {}) => cashFlowEntry({
+  direction: "expense",
+  amount: new Prisma.Decimal("27.2"),
+  subject: { id: "subject-ap", category: "负债类", name: "应付账款" },
+  settlementAccount: { id: "acc-1", key: "农业银行5706", label: "农业银行5706" },
+  bank: { id: "bank-9", bankName: "招商银行", accountNumber: "6214851811022925" },
+  ...extra,
+});
+
+test("草稿凭证资金行按新口径重算：贷方科目名从银行账户名换成结算账户名（只改那一行）", async () => {
+  const harness = fundLabelHarness({ drafts: [draftWithFundLine()], entries: [entryWithSettlement()] });
+  const preview = await harness.service.fundLabelRefreshPreview();
+  assert.equal(preview.checked, 1);
+  assert.equal(preview.changed, 1);
+  assert.deepEqual(preview.targets[0], {
+    voucher_no: "记-2026-11-0003", entry_no: "CF-20260915-0001", line_no: 2,
+    before: "银行存款—招商银行6214851811022925", after: "银行存款—农业银行5706", changed: true,
+  });
+  assert.equal(harness.updates.length, 0, "预览不写库");
+
+  const result = await harness.service.refreshDraftFundLabels({ id: "user-1" });
+  assert.equal(result.changed, 1);
+  assert.deepEqual(result.vouchers, ["记-2026-11-0003"]);
+  assert.equal(harness.updates.length, 1, "只更新资金行，业务行不动");
+  assert.equal(harness.updates[0].where.id, "line-2");
+  assert.equal(harness.updates[0].data.subjectLabel, "银行存款—农业银行5706");
+  assert.equal(harness.updates[0].data.subjectKey, "银行存款", "会计科目仍是银行存款（要能汇总）");
+  assert.equal(harness.audits.length, 1);
+  assert.equal(harness.audits[0][0], "voucher.refresh_fund_label");
+});
+
+test("资金行已经是新写法时预览 0 条要改、执行不写库（幂等，可反复跑）", async () => {
+  const draft = draftWithFundLine({
+    lines: [
+      { id: "line-1", lineNo: 1, subjectKey: "负债类/应付账款", subjectLabel: "应付账款", bankId: null },
+      { id: "line-2", lineNo: 2, subjectKey: "银行存款", subjectLabel: "银行存款—农业银行5706", bankId: "bank-9" },
+    ],
+  });
+  const harness = fundLabelHarness({ drafts: [draft], entries: [entryWithSettlement()] });
+  const preview = await harness.service.fundLabelRefreshPreview();
+  assert.equal(preview.checked, 1);
+  assert.equal(preview.changed, 0);
+  const result = await harness.service.refreshDraftFundLabels({ id: "user-1" });
+  assert.equal(result.changed, 0);
+  assert.equal(harness.updates.length, 0);
+});
+
+test("结算账户为空时退回银行账户名（与旧写法一致 → 不需要改）", async () => {
+  const harness = fundLabelHarness({ drafts: [draftWithFundLine()], entries: [entryWithSettlement({ settlementAccount: null })] });
+  const preview = await harness.service.fundLabelRefreshPreview();
+  assert.equal(preview.changed, 0, "没有结算账户的流水，科目名保持银行名 + 账号");
+});
+
+test("来源流水被删/冲销时跳过那张草稿（没有可重算的事实，不猜）", async () => {
+  const harness = fundLabelHarness({ drafts: [draftWithFundLine()], entries: [] });
+  const preview = await harness.service.fundLabelRefreshPreview();
+  assert.equal(preview.checked, 0);
+  assert.equal(preview.changed, 0);
+  assert.equal(harness.updates.length, 0);
 });
