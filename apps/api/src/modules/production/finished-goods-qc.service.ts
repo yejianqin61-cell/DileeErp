@@ -63,8 +63,30 @@ export class FinishedGoodsQcService {
     return result;
   }
 
+  /**
+   * 成品送检单列表（跨订单「待质检」队列的数据源）。
+   *
+   * 2026-11-07 起每行**新增两个字段**（只加不改，既有调用方不受影响）：
+   *   - `inspectedQuantity`：该送检单下 `status = active` 的 QC 记录 `inspectedQuantity` 合计；
+   *   - `pendingQuantity`：`max(送检量 − 已检, 0)`，字符串十进制。
+   *
+   * 为什么在服务端算、不让前端拿 `qcRecords` 自己求和：累计口径只允许有一份实现 ——
+   * `createQcRecord` / `correctQc` 的上限校验都是「active 合计」（更正时原记录被标 corrected、
+   * 新记录才是有效值）。前端再算一遍就会出现「列表说还能检 2、点进去服务端说超量」的分叉。
+   * 这里直接复用 include 里已有的 `qcRecords`，不额外查库；`corrected` 记录**不能计入**，
+   * 否则更正一次就把同一批数量记成两份。
+   */
   async listSubmissions(orderNo?: string) {
-    return this.prisma.finishedGoodsInspectionSubmission.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { qcRecords: { where: { deletedAt: null }, orderBy: { inspectionDate: "asc" } }, unit: true }, orderBy: { updatedAt: "desc" } });
+    const rows = await this.prisma.finishedGoodsInspectionSubmission.findMany({ where: { deletedAt: null, ...(orderNo ? { orderNo } : {}) }, include: { qcRecords: { where: { deletedAt: null }, orderBy: { inspectionDate: "asc" } }, unit: true }, orderBy: { updatedAt: "desc" } });
+    return rows.map((row) => {
+      const inspectedQuantity = row.qcRecords
+        .filter((record) => record.status === "active")
+        .reduce((sum, record) => sum.plus(record.inspectedQuantity), new Prisma.Decimal(0));
+      // 钳 0：历史数据里可能存在「已检 > 送检」（更正前的旧口径留下的数），
+      // 待检量显示负数会让人以为还剩负数量可检，而 createQcRecord 会直接拒绝 —— 列表要和服务端判断一致。
+      const pendingQuantity = Prisma.Decimal.max(row.submittedQuantity.minus(inspectedQuantity), new Prisma.Decimal(0));
+      return { ...row, inspectedQuantity: inspectedQuantity.toString(), pendingQuantity: pendingQuantity.toString() };
+    });
   }
 
   async getSubmission(id: string) {

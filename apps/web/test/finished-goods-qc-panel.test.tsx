@@ -116,6 +116,18 @@ function stubQcApi(options: StubOptions = {}) {
 
 const detailUrl = (path: string, orderNo = "SO-1001") => `/api/v1${path}?order_no=${orderNo}`;
 
+/** 「待质检（全部订单）」块（2026-11-07 起恒在页面顶部，是第一个数据表）。 */
+const pendingBlock = () => within(screen.getByTestId("finished-goods-qc-pending"));
+/** 订单详情块：三张明细表都在它里面；按块取表，避免顶部待质检表把 `getAllByTestId("data-table")` 的索引顶歪。 */
+const detailBlock = () => within(screen.getByTestId("finished-goods-qc-order-detail"));
+
+/** 取待质检表里包含某送检单号的那一行。 */
+function pendingRow(submissionNo: string) {
+  const row = within(screen.getByTestId("finished-goods-qc-pending")).getByText(submissionNo).closest('[data-testid="data-table-row"]');
+  if (!row) throw new Error(`待质检列表里没有 ${submissionNo}`);
+  return within(row as HTMLElement);
+}
+
 /** 点订单号入口，等三张表出现（详情三个请求都已返回）。 */
 async function openOrder(orderNo = "SO-1001") {
   await userEvent.click(await screen.findByRole("button", { name: orderNo }));
@@ -211,7 +223,7 @@ describe("成品送检与质检面板", () => {
       detailUrl("/finished-goods/qc-records/available-inbound-sources"),
     ]);
 
-    const tables = screen.getAllByTestId("data-table");
+    const tables = detailBlock().getAllByTestId("data-table");
     expect(tables).toHaveLength(3);
 
     // 来源表：来源要能看出是「成品入库通知」，并显示入库通知/批次与包装工序（继承遗留断言意图）
@@ -259,7 +271,8 @@ describe("成品送检与质检面板", () => {
 
     // 悬挂中：必须给出加载态，否则用户看到的是"空订单"
     expect(screen.getByText("正在加载订单质检详情…")).toBeVisible();
-    expect(screen.queryByTestId("data-table")).toBeNull();
+    // 页面顶部另有「待质检（全部订单）」表恒在，所以加载态断言必须限定在订单详情块内（这里三张表都还没渲染）。
+    expect(detailBlock().queryByTestId("data-table")).toBeNull();
 
     gate.resolve(apiOk([sourceFixture()]));
 
@@ -282,8 +295,8 @@ describe("成品送检与质检面板", () => {
     expect(screen.getByText("暂无成品来源")).toBeVisible();
     expect(screen.getByText("暂无送检记录")).toBeVisible();
     expect(screen.getByText("暂无质检记录")).toBeVisible();
-    expect(screen.getAllByTestId("empty-state")).toHaveLength(3);
-    expect(screen.queryByTestId("data-table")).toBeNull();
+    expect(detailBlock().getAllByTestId("empty-state")).toHaveLength(3);
+    expect(detailBlock().queryByTestId("data-table")).toBeNull();
   });
 
   it("点「创建送检」按该来源的可送检数量下单，并提示成功后刷新数据", async () => {
@@ -298,7 +311,7 @@ describe("成品送检与质检面板", () => {
     render(<FinishedGoodsQcPanel />);
     await openOrder("SO-1001");
 
-    const sourceTable = within(screen.getAllByTestId("data-table")[0]);
+    const sourceTable = within(detailBlock().getAllByTestId("data-table")[0]);
     await userEvent.click(sourceTable.getByRole("button", { name: "创建送检" }));
 
     await waitFor(() => expect(postCalls(calls)).toHaveLength(1));
@@ -332,7 +345,7 @@ describe("成品送检与质检面板", () => {
     render(<FinishedGoodsQcPanel />);
     await openOrder("SO-1001");
 
-    const sourceTable = within(screen.getAllByTestId("data-table")[0]);
+    const sourceTable = within(detailBlock().getAllByTestId("data-table")[0]);
     await userEvent.click(sourceTable.getByRole("button", { name: "创建送检" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("可送检数量不足");
@@ -542,7 +555,7 @@ describe("成品送检与质检面板", () => {
 
     render(<FinishedGoodsQcPanel />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "录入质检" }));
+    await userEvent.click(await screen.findByTestId("finished-goods-qc-choose-order"));
     const picker = await screen.findByTestId("action-dialog");
     await userEvent.click(within(picker).getByRole("combobox"));
     await userEvent.click(await within(picker).findByRole("option", { name: "SO-1001" }));
@@ -575,5 +588,112 @@ describe("成品送检与质检面板", () => {
     expect(await screen.findByRole("heading", { name: "订单详情：SO-2002" })).toBeVisible();
     expect(calls.some((call) => call.url === detailUrl("/finished-goods/qc/sources", "SO-2002"))).toBe(true);
     expect(calls.some((call) => call.url.includes("order_no=SO-1001"))).toBe(false);
+  });
+});
+
+// 「待质检（全部订单）」跨订单工作队列（2026-11-07，用户：「成品提交质检入库，成品质检页面要显示所有待质检列表」）。
+// 它替代了页面底部原来那句「全部订单概览：请选择订单号」的占位说明：质检员不必先知道订单号才能看到要检什么。
+// 数据来自同一个 load() 的 submissions，本批用例只断言渲染与交互，不新增请求口径。
+describe("成品质检：待质检（全部订单）", () => {
+  it("跨订单列出全部待质检送检单：只含 submitted / inspecting，排除草稿、已检完、已作废", async () => {
+    stubQcApi({
+      sources: [],
+      submissions: [
+        submissionFixture({ id: "sub-1", submissionNo: "FGIS-001", orderNo: "SO-1001", status: "submitted", submissionDate: "2024-05-01", inspectedQuantity: "0", pendingQuantity: "100" }),
+        submissionFixture({ id: "sub-2", submissionNo: "FGIS-002", orderNo: "SO-2002", status: "inspecting", submissionDate: "2024-05-02", inspectedQuantity: "40", pendingQuantity: "60" }),
+        submissionFixture({ id: "sub-3", submissionNo: "FGIS-003", orderNo: "SO-3003", status: "draft" }),
+        submissionFixture({ id: "sub-4", submissionNo: "FGIS-004", orderNo: "SO-4004", status: "qc_completed" }),
+        submissionFixture({ id: "sub-5", submissionNo: "FGIS-005", orderNo: "SO-5005", status: "cancelled" }),
+      ],
+    });
+
+    render(<FinishedGoodsQcPanel />);
+
+    const pending = pendingBlock();
+    expect(await pending.findByText("FGIS-001")).toBeVisible();
+    expect(pending.getByText("FGIS-002")).toBeVisible();
+    expect(pending.queryByText("FGIS-003")).toBeNull();
+    expect(pending.queryByText("FGIS-004")).toBeNull();
+    expect(pending.queryByText("FGIS-005")).toBeNull();
+    expect(screen.getByTestId("finished-goods-qc-pending-count")).toHaveTextContent("共 2 张");
+
+    // 状态用中文队列词；已检 / 待检直接显示服务端字段（前端不从 qcRecords 求和）。
+    const inspecting = pendingRow("FGIS-002");
+    expect(inspecting.getByText("质检中")).toBeVisible();
+    expect(inspecting.getByText("40")).toBeVisible();
+    expect(inspecting.getByText("60")).toBeVisible();
+    expect(pendingRow("FGIS-001").getByText("待质检")).toBeVisible();
+  });
+
+  it("行内「录入质检」打开该订单的质检表单，并预选这一行送检批次", async () => {
+    stubQcApi({
+      sources: [],
+      submissions: [
+        submissionFixture({ id: "sub-1", submissionNo: "FGIS-001", orderNo: "SO-1001", status: "submitted" }),
+        submissionFixture({ id: "sub-2", submissionNo: "FGIS-002", orderNo: "SO-2002", status: "inspecting" }),
+      ],
+    });
+
+    render(<FinishedGoodsQcPanel />);
+    await screen.findByText("FGIS-002");
+
+    await userEvent.click(pendingRow("FGIS-002").getByRole("button", { name: "录入质检" }));
+
+    // 与顶部「录入质检」（先选订单号）是同一套 ActionDialog；这里必须直接落到该行订单的批次上。
+    expect(await screen.findByRole("heading", { name: "录入成品质检：SO-2002" })).toBeVisible();
+    expect(screen.getByTestId("action-field-submission_id")).toHaveTextContent("FGIS-002");
+  });
+
+  it("双击待质检行进入该订单的质检详情（按 order_no 拉三个列表）", async () => {
+    const calls = stubQcApi({
+      sources: [],
+      submissions: [submissionFixture({ status: "submitted" })],
+      detailSources: [sourceFixture()],
+      detailSubmissions: [submissionFixture({ status: "submitted" })],
+      detailQc: [qcFixture()],
+    });
+
+    render(<FinishedGoodsQcPanel />);
+    await screen.findByText("FGIS-001");
+
+    await userEvent.dblClick(pendingBlock().getByText("FGIS-001"));
+
+    expect(await screen.findByRole("heading", { name: "订单详情：SO-1001" })).toBeVisible();
+    const scoped = calls.filter((call) => call.url.includes("order_no=SO-1001")).map((call) => call.url);
+    expect(scoped).toEqual([
+      detailUrl("/finished-goods/qc/sources"),
+      detailUrl("/finished-goods/inspection-submissions"),
+      detailUrl("/finished-goods/qc-records/available-inbound-sources"),
+    ]);
+  });
+
+  it("没有待质检送检单时显示空态与提交指引", async () => {
+    stubQcApi({ sources: [], submissions: [] });
+
+    render(<FinishedGoodsQcPanel />);
+
+    const pending = pendingBlock();
+    expect(await pending.findByText("暂无待质检的成品送检单")).toBeVisible();
+    // 说明要告诉用户为什么这里是空的、去哪儿提交（不是一句「暂无数据」）。
+    expect(pending.getByText(/草稿送检单在下方按订单号查询的订单详情里编辑提交/)).toBeVisible();
+    expect(screen.getByTestId("finished-goods-qc-pending-count")).toHaveTextContent("共 0 张");
+  });
+
+  it("待质检按送检日期升序、同日按送检单号升序（先到先检，不按最后修改）", async () => {
+    stubQcApi({
+      sources: [],
+      submissions: [
+        submissionFixture({ id: "sub-4", submissionNo: "FGIS-004", orderNo: "SO-1004", submissionDate: "2024-05-03" }),
+        submissionFixture({ id: "sub-2", submissionNo: "FGIS-002", orderNo: "SO-1002", submissionDate: "2024-05-01" }),
+        submissionFixture({ id: "sub-3", submissionNo: "FGIS-003", orderNo: "SO-1003", submissionDate: "2024-05-02" }),
+        submissionFixture({ id: "sub-1", submissionNo: "FGIS-001", orderNo: "SO-1001", submissionDate: "2024-05-01" }),
+      ],
+    });
+
+    render(<FinishedGoodsQcPanel />);
+    await screen.findByText("FGIS-001");
+
+    const order = pendingBlock().getAllByTestId("data-table-row").map((row) => within(row).getAllByRole("cell")[0].textContent);
+    expect(order).toEqual(["FGIS-001", "FGIS-002", "FGIS-003", "FGIS-004"]);
   });
 });
