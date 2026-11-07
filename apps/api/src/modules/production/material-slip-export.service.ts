@@ -306,7 +306,7 @@ export class MaterialSlipExportService {
     };
   }
 
-  /** 补料单版式：8 列（含预留「图片」列），表头第 2 行顺序为 颜色/领料单号/领料单位/领料工序，第 3 行第 4 格放补料原因。 */
+  /** 补料单版式：8 列（含预留「图片」列），表头第 2 行顺序为 颜色/领料单号/领料单位/领料工序，第 3 行第 3 格放订单号、第 4 格放补料原因。 */
   private addReplenishmentSheet(workbook: ExcelJS.Workbook, document: MaterialReplenishmentDocument) {
     const base = (document.movementNo || "补料单").slice(0, 28);
     let name = base;
@@ -330,7 +330,9 @@ export class MaterialSlipExportService {
       [["生产单号：", document.productionOrderNo], ["成品名称：", document.productName], ["成品代码：", document.productCode], ["规格型号：", document.productSpecification]],
       // 注意：补料单模板第 2 行是「单位」在前、「工序」在后，与领料单相反，按模板原样保留。
       [["颜色：", document.productColor], ["领料单号：", document.movementNo], ["领料单位：", document.issueUnit], ["领料工序：", document.operationName]],
-      [["操作人：", document.operatorName], ["操作时间：", document.operatedAt], null, ["补料原因：", document.reason]]
+      // 2026-11-07：模板第 3 行第 3 格原是空格，填入「订单号：」（E7 标签 / F7 值），
+      // 「补料原因」仍在第 4 格（G7/H7）不挪位置 —— 补料单要能单独看出是哪张销售订单的料。
+      [["操作人：", document.operatorName], ["操作时间：", document.operatedAt], ["订单号：", document.orderNo], ["补料原因：", document.reason]]
     ];
     const labelColumns = ["A", "C", "E", "G"] as const;
     headerRows.forEach((fields, rowIndex) => {
@@ -430,11 +432,12 @@ export class MaterialSlipExportService {
     titleCell.alignment = { horizontal: "center", vertical: "middle" };
     sheet.getRow(1).height = 30;
 
-    // 表头区：3 行 × 4 组「标签 + 填写格」，第 3 行第 4 组按模板留空。
+    // 表头区：3 行 × 4 组「标签 + 填写格」。2026-11-07 起第 3 行第 4 组不再留空：
+    // 模板预留的 G5:J5 正好放「订单号：」（G5 标签 / H5:J5 合并写销售订单号），已有字段位置一个不动。
     const headerRows: Array<Array<[string, string] | null>> = [
       [["生产单号：", document.productionOrderNo], ["成品名称：", document.productName], ["成品代码：", document.productCode], ["规格型号：", document.productSpecification]],
       [["颜色：", document.productColor], ["领料单号：", document.movementNo], ["领料工序：", document.operationName], ["领料单位：", document.issueUnit]],
-      [["生产数量：", `${document.plannedQuantity}${document.unitName ? ` ${document.unitName}` : ""}`], ["操作人：", document.operatorName], ["操作时间：", document.operatedAt], null]
+      [["生产数量：", `${document.plannedQuantity}${document.unitName ? ` ${document.unitName}` : ""}`], ["操作人：", document.operatorName], ["操作时间：", document.operatedAt], ["订单号：", document.orderNo]]
     ];
     const labelColumns = ["A", "C", "E", "G"] as const;
     headerRows.forEach((fields, rowIndex) => {

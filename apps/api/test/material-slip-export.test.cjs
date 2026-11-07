@@ -92,6 +92,11 @@ test("领料单导出包含模板要求的表头字段与明细列", async () =>
   assert.equal(sheet.getCell("H4").value, "一车间", "领料单位取执行地点");
   assert.equal(sheet.getCell("B5").value, "100 把");
   assert.equal(sheet.getCell("D5").value, "张三");
+  // 2026-11-07：模板预留的第 3 行第 4 组填「订单号」（G5 标签 / H5:J5 合并写值），不动已有字段位置。
+  assert.equal(sheet.getCell("G5").value, "订单号：");
+  assert.equal(sheet.getCell("H5").value, "DL260001", "订单号取生产单所属的销售订单号");
+  assert.equal(sheet.getCell("H5").isMerged, true, "值格延续模板写法合并到最后一列");
+  assert.equal(sheet.getCell("J5").master.address, "H5", "H5:J5 合并区的主格是 H5");
   // 明细表头
   assert.deepEqual(sheet.getRow(6).values.slice(1), ["序号", "产品名称", "产品代码", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量"]);
 });
@@ -144,6 +149,9 @@ test("批量导出：每张领料单一个工作表，并打印设置为一页�
   assert.equal(sheet.pageSetup.orientation, "portrait");
   assert.equal(sheet.pageSetup.fitToWidth, 1);
   assert.match(sheet.headerFooter.oddFooter, /&P/, "页脚应带页码");
+  // 批量导出与单张导出共用 addSheet：订单号同样要印出来（两个入口不能有一个漏）。
+  assert.equal(sheet.getCell("G5").value, "订单号：");
+  assert.equal(sheet.getCell("H5").value, "DL260001");
 });
 
 // ── 补料单（坏片/生产失误的补充领料）：版式与领料单不同，单独验证 ──
@@ -203,11 +211,13 @@ test("补料单导出：标题、表头字段顺序、补料原因与 8 列明�
   assert.equal(sheet.getCell("F6").value, "一车间");
   assert.equal(sheet.getCell("G6").value, "领料工序：");
   assert.equal(sheet.getCell("H6").value, "", "单据不再绑定工序，该栏按模板保留但为空");
-  // 表头第 3 行：操作人/操作时间 + 补料原因（模板空出的第 4 格）
+  // 表头第 3 行：操作人/操作时间 + 订单号（2026-11-07 新填的第 3 格）+ 补料原因（模板空出的第 4 格）
   assert.equal(sheet.getCell("A7").value, "操作人：");
   assert.equal(sheet.getCell("B7").value, "张三");
   assert.equal(sheet.getCell("C7").value, "操作时间：");
-  assert.equal(sheet.getCell("G7").value, "补料原因：");
+  assert.equal(sheet.getCell("E7").value, "订单号：");
+  assert.equal(sheet.getCell("F7").value, "DL260001", "补料单也要能单独看出是哪张销售订单的料");
+  assert.equal(sheet.getCell("G7").value, "补料原因：", "订单号只占模板空出的第 3 格，补料原因不挪位置");
   assert.equal(sheet.getCell("H7").value, "伞布原始坏片");
   // 明细表：8 列，第 2 列为图片（预留空列），末列为补领数量
   const headers = [];
@@ -232,6 +242,9 @@ test("补料单导出：标题、表头字段顺序、补料原因与 8 列明�
 test("补料单草稿在标题标注草稿；批量导出按类型套用各自版式", async () => {
   const draft = (await open(await replenishmentHarness({ status: "draft" }).exportSlip("replenishment-1"))).getWorksheet("MC-20260910-5B7C9D01");
   assert.equal(draft.getCell("A2").value, "【补料单】（草稿）");
+  // 草稿单同样要印订单号：仓库拿着草稿对料时也要知道是哪张订单的料。
+  assert.equal(draft.getCell("E7").value, "订单号：");
+  assert.equal(draft.getCell("F7").value, "DL260001");
 
   // 同一批筛选里混有领料单与补料单时，每张单据用自己的模板版式
   const issue = issueFixture();
@@ -246,9 +259,14 @@ test("补料单草稿在标题标注草稿；批量导出按类型套用各自�
   const issueSheet = workbook.getWorksheet("MI-20260910-ABCD1234");
   assert.ok(issueSheet, "领料单按其版式生成");
   assert.equal(issueSheet.getRow(6).getCell(2).value, "产品名称", "领料单表头第 2 列是产品名称");
+  assert.equal(issueSheet.getCell("G5").value, "订单号：", "批量导出里的领料单也要有订单号");
+  assert.equal(issueSheet.getCell("H5").value, "DL260001");
   const replenishmentSheet = workbook.getWorksheet("MC-20260910-5B7C9D01");
   assert.ok(replenishmentSheet, "补料单按其版式生成");
   assert.equal(replenishmentSheet.getRow(8).getCell(2).value, "图片", "补料单表头第 2 列是图片");
+  assert.equal(replenishmentSheet.getCell("E7").value, "订单号：", "批量导出里的补料单也要有订单号");
+  assert.equal(replenishmentSheet.getCell("F7").value, "DL260001");
+  assert.equal(replenishmentSheet.getCell("G7").value, "补料原因：", "补料原因位置不变");
 });
 
 // 绑定关系验证：导出是按 movement_id 从系统领料单读取的，换一张单必须整表跟随变化，

@@ -72,7 +72,15 @@ export function materialSlipPrintSubtotal(kind: "issue" | "replenishment", lines
   return lines.reduce((sum, line) => sum + Number((kind === "replenishment" ? line.replenishQuantity : line.currentQuantity) ?? 0), 0);
 }
 
-/** 表头三行 ×（标签 / 值）：顺序照样例 xlsx（补料单第 2 行是「领料单位」在前、「领料工序」在后）。 */
+/**
+ * 表头三行 ×（标签 / 值）：顺序照样例 xlsx（补料单第 2 行是「领料单位」在前、「领料工序」在后）。
+ *
+ * 2026-11-07：纸头第 3 行补「订单号」（用户：「采购板块，领料单的导出件也要有订单号」）。
+ * 位置与导出 xlsx 严格一致（模板第 3 行第 4 组本来就是预留空格）：
+ *   - 领料单：生产数量 / 操作人 / 操作时间 / **订单号**；
+ *   - 补料单：操作人 / 操作时间 / **订单号** / 补料原因（补料原因不挪位置）。
+ * 打印件与导出件是同一份单据，两边格子对不上，仓库与车间对料时就会各说各话。
+ */
 export function materialSlipHeadRows(slip: MaterialSlipPrint): Array<Array<[string, string]>> {
   const doc = slip.document;
   const first: Array<[string, string]> = [["生产单号：", doc.productionOrderNo], ["成品名称：", doc.productName], ["成品代码：", doc.productCode], ["规格型号：", doc.productSpecification]];
@@ -80,12 +88,12 @@ export function materialSlipHeadRows(slip: MaterialSlipPrint): Array<Array<[stri
     return [
       first,
       [["颜色：", doc.productColor], ["领料单号：", doc.movementNo], ["领料单位：", doc.issueUnit], ["领料工序：", doc.operationName]],
-      [["操作人：", doc.operatorName], ["操作时间：", doc.operatedAt], ["补料原因：", doc.reason ?? ""]],
+      [["操作人：", doc.operatorName], ["操作时间：", doc.operatedAt], ["订单号：", doc.orderNo], ["补料原因：", doc.reason ?? ""]],
     ];
   }
   return [
     first,
     [["颜色：", doc.productColor], ["领料单号：", doc.movementNo], ["领料工序：", doc.operationName], ["领料单位：", doc.issueUnit]],
-    [["生产数量：", `${doc.plannedQuantity}${doc.unitName ? ` ${doc.unitName}` : ""}`], ["操作人：", doc.operatorName], ["操作时间：", doc.operatedAt]],
+    [["生产数量：", `${doc.plannedQuantity}${doc.unitName ? ` ${doc.unitName}` : ""}`], ["操作人：", doc.operatorName], ["操作时间：", doc.operatedAt], ["订单号：", doc.orderNo]],
   ];
 }

@@ -62,5 +62,21 @@ test("表头三行：补料单第 2 行是「领料单位」在前、「领料�
   assert.equal(issueRows[2][0][1], "500 把", "生产数量要带单位");
   const replenishmentRows = materialSlipHeadRows(replenishmentSlip);
   assert.deepEqual(replenishmentRows[1].map(([label]) => label), ["颜色：", "领料单号：", "领料单位：", "领料工序："]);
-  assert.deepEqual(replenishmentRows[2][2], ["补料原因：", "伞布坏片 12 米"]);
+  assert.deepEqual(replenishmentRows[2][3], ["补料原因：", "伞布坏片 12 米"]);
+});
+
+test("订单号：与导出 xlsx 同位置印在纸头第 3 行（领料单第 4 组 / 补料单第 3 组，补料原因不挪）", () => {
+  // 领料单第 3 行 = 生产数量 / 操作人 / 操作时间 / **订单号**
+  const issueRows = materialSlipHeadRows(issueSlip);
+  assert.equal(issueRows[2].length, 4, "领料单第 3 行补完订单号后是 4 组");
+  assert.deepEqual(issueRows[2].map(([label]) => label), ["生产数量：", "操作人：", "操作时间：", "订单号："]);
+  assert.deepEqual(issueRows[2][3], ["订单号：", "SO-1"]);
+
+  // 补料单第 3 行 = 操作人 / 操作时间 / **订单号** / 补料原因（第 4 组仍是补料原因）
+  const replenishmentRows = materialSlipHeadRows(replenishmentSlip);
+  assert.equal(replenishmentRows[2].length, 4, "补料单第 3 行仍是 4 组（订单号插在第 3 组）");
+  assert.deepEqual(replenishmentRows[2].map(([label]) => label), ["操作人：", "操作时间：", "订单号：", "补料原因："]);
+  assert.deepEqual(replenishmentRows[2][2], ["订单号：", "SO-1"]);
+  // 订单号为空时也留出这一组（纸面格子不能整格消失，导出件里那格是空的）。
+  assert.deepEqual(materialSlipHeadRows({ document_type: "issue", document: { ...issueDocument, orderNo: "" } })[2][3], ["订单号：", ""]);
 });

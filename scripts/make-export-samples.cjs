@@ -68,6 +68,17 @@ const slipPrisma = (movement) => ({
   inventoryFact: { aggregate: async ({ where }) => ({ _sum: { quantityDelta: facts[where.materialId] ?? new Prisma.Decimal(0) } }) }
 });
 
+/**
+ * MaterialSlipExportService 的第二个构造参数（AuditActorService）：导出件要印「操作人」姓名。
+ *
+ * 2026-11-07 修复：这里曾经只传了 prisma，`this.actors.namesOf(...)` 直接抛
+ * `TypeError: Cannot read properties of undefined (reading 'namesOf')`，
+ * 领料单/补料单两张样例静默不写（生成脚本把错误吞进 failed 列表，只写日志），
+ * 样例就永远停在旧版 —— 所以构造两个 slip 服务时必须把这个桩一起传进去。
+ * 固定返回「张三」：与导出测试里的 fakeActors 同一行为，样例里的操作人一直是这个名字。
+ */
+const sampleActors = { namesOf: async (ids) => new Map(ids.filter(Boolean).map((id) => [id, "张三"])) };
+
 // ── 采购订单 ──
 // 样例要尽量像一张真单据：字段该填的都填上（地址 / 付款方式 / 交期条款 / 总价），
 // 产品名称与规格型号各留一条长的 —— 用户 2026-10-19 要的正是「名称/规格两列够不够宽」，
@@ -105,11 +116,12 @@ const purchasePrisma = {
  * 领料单报 `TypeError: Cannot read properties of undefined (reading 'namesOf')`，
  * 于是采购订单样例根本没被写出来，而命令看起来"跑了"。
  * 失败如实打出来（谁失败、为什么），成功的一个也不少。
+ * 2026-11-07：上面那个 actors 缺失已修（见 sampleActors），两个 slip 样例都要传第二个参数。
  */
 (async () => {
   const samples = [
-    ["领料单-样例.xlsx", () => new MaterialSlipExportService(slipPrisma(issue)).exportSlip("issue-1")],
-    ["补料单-样例.xlsx", () => new MaterialSlipExportService(slipPrisma(replenishment)).exportSlip("replenishment-1")],
+    ["领料单-样例.xlsx", () => new MaterialSlipExportService(slipPrisma(issue), sampleActors).exportSlip("issue-1")],
+    ["补料单-样例.xlsx", () => new MaterialSlipExportService(slipPrisma(replenishment), sampleActors).exportSlip("replenishment-1")],
     ["采购订单-样例.xlsx", () => new PurchaseOrderExportService(purchasePrisma).exportOrder("po-1")],
   ];
   const failed = [];
