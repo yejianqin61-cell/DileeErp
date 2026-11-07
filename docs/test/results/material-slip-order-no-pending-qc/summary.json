@@ -1,0 +1,1633 @@
+{
+  "base": "http://127.0.0.1:3111",
+  "generatedAt": "2026-11-07T03:12:13.123Z",
+  "script": ".agent\\verify\\material-slip-order-no-pending-qc-visual-check.mjs",
+  "summary": {
+    "scenarios": 4,
+    "checks": 51,
+    "passed": 51,
+    "failed": 0,
+    "consoleErrors": 0,
+    "pageErrors": 0
+  },
+  "results": [
+    {
+      "name": "qc-pending-list",
+      "route": "/qc/finished-goods",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": 200
+        },
+        {
+          "name": "首屏列表请求不带 order_no（跨订单列表，无需先选订单）",
+          "ok": true,
+          "detail": [
+            "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+            "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions",
+            "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+            "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions"
+          ]
+        },
+        {
+          "name": "首屏没有发起任何带 order_no 的订单详情请求",
+          "ok": true,
+          "detail": []
+        },
+        {
+          "name": "无需选择订单，首屏即出现「待质检（全部订单）」块",
+          "ok": true,
+          "detail": true
+        },
+        {
+          "name": "待质检表 3 行（submitted×2 + inspecting×1）",
+          "ok": true,
+          "detail": {
+            "rowCount": 3,
+            "rows": [
+              "FGIS-20261101-0001",
+              "FGIS-20261101-0003",
+              "FGIS-20261102-0002"
+            ]
+          }
+        },
+        {
+          "name": "「共 3 张」正确",
+          "ok": true,
+          "detail": "共 3 张"
+        },
+        {
+          "name": "行集不含 draft / qc_completed / cancelled 的送检单号",
+          "ok": true,
+          "detail": []
+        },
+        {
+          "name": "待质检表前 9 列表头正确（业务列）",
+          "ok": true,
+          "detail": [
+            "送检单",
+            "订单号",
+            "生产单",
+            "成品",
+            "来源",
+            "送检数量",
+            "已检数量",
+            "待检数量",
+            "状态",
+            "创建人",
+            "最后修改人",
+            "操作"
+          ]
+        },
+        {
+          "name": "待质检表 12 列：创建人/最后修改人 + 最后的操作列",
+          "ok": true,
+          "detail": [
+            "送检单",
+            "订单号",
+            "生产单",
+            "成品",
+            "来源",
+            "送检数量",
+            "已检数量",
+            "待检数量",
+            "状态",
+            "创建人",
+            "最后修改人",
+            "操作"
+          ]
+        },
+        {
+          "name": "排序 = 送检日期升序、同日送检单号升序（0001 → 0003 → 0002）",
+          "ok": true,
+          "detail": [
+            "FGIS-20261101-0001",
+            "FGIS-20261101-0003",
+            "FGIS-20261102-0002"
+          ]
+        },
+        {
+          "name": "行 1 九列内容正确（含已检 0 / 待检 100 / 状态「待质检」）",
+          "ok": true,
+          "detail": [
+            "FGIS-20261101-0001",
+            "SO-1001",
+            "MO-SO-1001",
+            "自动雨伞 / 22寸×8K",
+            "成品入库通知",
+            "100 把",
+            "0",
+            "100",
+            "待质检",
+            "张三11-01 09:00",
+            "李四11-01 10:00",
+            "录入质检"
+          ]
+        },
+        {
+          "name": "行 1 操作列是「录入质检」按钮（最后一列）",
+          "ok": true,
+          "detail": {
+            "text": "录入质检",
+            "button": "录入质检"
+          }
+        },
+        {
+          "name": "行 2（outsource）：来源显示中文「外加工回厂」、状态「待质检」",
+          "ok": true,
+          "detail": [
+            "FGIS-20261101-0003",
+            "SO-3003",
+            "MO-SO-3003",
+            "自动雨伞 / 22寸×8K",
+            "外加工回厂",
+            "50 把",
+            "0",
+            "50",
+            "待质检",
+            "张三11-01 09:00",
+            "李四11-01 10:00",
+            "录入质检"
+          ]
+        },
+        {
+          "name": "行 3（inspecting）：已检 80、待检 120、状态「质检中」",
+          "ok": true,
+          "detail": [
+            "FGIS-20261102-0002",
+            "SO-2002",
+            "MO-SO-2002",
+            "自动雨伞 / 22寸×8K",
+            "成品入库通知",
+            "200 把",
+            "80",
+            "120",
+            "质检中",
+            "张三11-02 09:00",
+            "李四11-02 10:00",
+            "录入质检"
+          ]
+        },
+        {
+          "name": "T24 有 10 列写了声明宽度、合计 = 84%（另 16% 留给 auditColumns 两列）",
+          "ok": true,
+          "detail": [
+            9,
+            8,
+            9,
+            11,
+            8,
+            7,
+            8,
+            8,
+            6,
+            10
+          ]
+        },
+        {
+          "name": "T24 声明宽度 = 9/8/9/11/8/7/8/8/6/10（已检/待检各 8%）",
+          "ok": true,
+          "detail": [
+            9,
+            8,
+            9,
+            11,
+            8,
+            7,
+            8,
+            8,
+            6,
+            10
+          ]
+        },
+        {
+          "name": "渲染后「声明了宽度的 10 列」实际占表宽 ≈ 84%（±2%）",
+          "ok": true,
+          "detail": {
+            "renderedDeclared": 930.5,
+            "tableWidth": 1110,
+            "ratio": 0.8382882882882883
+          }
+        },
+        {
+          "name": "「已检数量」表头文本完整且未省略（scrollWidth ≤ clientWidth）",
+          "ok": true,
+          "detail": {
+            "text": "已检数量",
+            "styleWidth": "width: 8%;",
+            "width": 88.6,
+            "clientWidth": 89,
+            "scrollWidth": 89,
+            "truncated": false,
+            "title": "已检数量"
+          }
+        },
+        {
+          "name": "「已检数量」表头宽度 ≥ 80px（1440px 下放得下四个汉字）",
+          "ok": true,
+          "detail": {
+            "width": 88.6
+          }
+        },
+        {
+          "name": "「待检数量」表头文本完整且未省略（scrollWidth ≤ clientWidth）",
+          "ok": true,
+          "detail": {
+            "text": "待检数量",
+            "styleWidth": "width: 8%;",
+            "width": 88.6,
+            "clientWidth": 89,
+            "scrollWidth": 89,
+            "truncated": false,
+            "title": "待检数量"
+          }
+        },
+        {
+          "name": "「待检数量」表头宽度 ≥ 80px（1440px 下放得下四个汉字）",
+          "ok": true,
+          "detail": {
+            "width": 88.6
+          }
+        },
+        {
+          "name": "其余表头文本完整（送检单/订单号/生产单/成品/来源/送检数量/状态/创建人/最后修改人/操作）",
+          "ok": true,
+          "detail": [
+            "送检单",
+            "订单号",
+            "生产单",
+            "成品",
+            "来源",
+            "送检数量",
+            "已检数量",
+            "待检数量",
+            "状态",
+            "创建人",
+            "最后修改人",
+            "操作"
+          ]
+        },
+        {
+          "name": "行内「录入质检」打开「录入成品质检：SO-2002」弹窗",
+          "ok": true,
+          "detail": "录入成品质检：SO-2002"
+        },
+        {
+          "name": "「订单内送检批次」预选为该行的送检单（FGIS-20261102-0002）",
+          "ok": true,
+          "detail": "FGIS-20261102-0002 / 200 把 / inspecting"
+        },
+        {
+          "name": "打开下拉后该送检批次是选中项（aria-selected / data-state=checked）",
+          "ok": true,
+          "detail": [
+            {
+              "text": "FGIS-20261102-0002 / 200 把 / inspecting",
+              "ariaSelected": "true",
+              "dataState": "checked"
+            }
+          ]
+        },
+        {
+          "name": "双击行出现「订单详情：SO-1001」",
+          "ok": true,
+          "detail": true
+        },
+        {
+          "name": "双击行按 order_no=SO-1001 拉三张明细列表",
+          "ok": true,
+          "detail": {
+            "scopedPaths": [
+              "/finished-goods/inspection-submissions",
+              "/finished-goods/qc-records/available-inbound-sources",
+              "/finished-goods/qc/sources"
+            ],
+            "urls": [
+              "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources?order_no=SO-1001",
+              "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions?order_no=SO-1001",
+              "http://127.0.0.1:3111/api/v1/finished-goods/qc-records/available-inbound-sources?order_no=SO-1001"
+            ]
+          }
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+          "path": "/finished-goods/qc/sources",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions",
+          "path": "/finished-goods/inspection-submissions",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+          "path": "/finished-goods/qc/sources",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions",
+          "path": "/finished-goods/inspection-submissions",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources?order_no=SO-1001",
+          "path": "/finished-goods/qc/sources",
+          "search": "?order_no=SO-1001"
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions?order_no=SO-1001",
+          "path": "/finished-goods/inspection-submissions",
+          "search": "?order_no=SO-1001"
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc-records/available-inbound-sources?order_no=SO-1001",
+          "path": "/finished-goods/qc-records/available-inbound-sources",
+          "search": "?order_no=SO-1001"
+        }
+      ],
+      "facts": {
+        "pending": {
+          "blockPresent": true,
+          "blockText": "待质检（全部订单）\n共 3 张\n\n所有订单里已提交送检、尚未检完的成品送检单，按「先送检先检」排序。成品入库通知送检后，要在订单详情的送检记录里点「提交送检」，才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑。双击一行进入该订单的质检详情，行内「录入质检」直接打开这一批次的质检表单。\n\n送检单\t订单号\t生产单\t成品\t来源\t送检数量\t已检数量\t待检数量\t状态\t创建人\t最后修改人\t操作\nFGIS-20261101-0001\tSO-1001\tMO-SO-1001\t自动雨伞 / 22寸×8K\t成品入库通知\t100 把\t0\t100\t待质检\t\n张三11-01 09:00\n\t\n李四11-01 10:00\n\t录入质检\nFGIS-20261101-0003\tSO-3003\tMO-SO-3003\t自动雨伞 / 22寸×8K\t外加工回厂\t50 把\t0\t50\t待质检\t\n张三11-01 09:00\n\t\n李四11-01 10:00\n\t录入质检\nFGIS-20261102-0002\tSO-2002\tMO-SO-2002\t自动雨伞 / 22寸×8K\t成品入库通知\t200 把\t80\t120\t质检中\t\n张三11-02 09:00\n\t\n李四11-02 10:00\n\t录入质检",
+          "tablePresent": true,
+          "tableWidth": 1110,
+          "headers": [
+            {
+              "text": "送检单",
+              "styleWidth": "width: 9%;",
+              "width": 99.7,
+              "clientWidth": 100,
+              "scrollWidth": 100,
+              "truncated": false,
+              "title": "送检单"
+            },
+            {
+              "text": "订单号",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "订单号"
+            },
+            {
+              "text": "生产单",
+              "styleWidth": "width: 9%;",
+              "width": 99.7,
+              "clientWidth": 100,
+              "scrollWidth": 100,
+              "truncated": false,
+              "title": "生产单"
+            },
+            {
+              "text": "成品",
+              "styleWidth": "width: 11%;",
+              "width": 121.9,
+              "clientWidth": 122,
+              "scrollWidth": 122,
+              "truncated": false,
+              "title": "成品"
+            },
+            {
+              "text": "来源",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "来源"
+            },
+            {
+              "text": "送检数量",
+              "styleWidth": "width: 7%;",
+              "width": 77.5,
+              "clientWidth": 78,
+              "scrollWidth": 78,
+              "truncated": false,
+              "title": "送检数量"
+            },
+            {
+              "text": "已检数量",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "已检数量"
+            },
+            {
+              "text": "待检数量",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "待检数量"
+            },
+            {
+              "text": "状态",
+              "styleWidth": "width: 6%;",
+              "width": 66.5,
+              "clientWidth": 66,
+              "scrollWidth": 66,
+              "truncated": false,
+              "title": "状态"
+            },
+            {
+              "text": "创建人",
+              "styleWidth": "",
+              "width": 88.7,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "创建人"
+            },
+            {
+              "text": "最后修改人",
+              "styleWidth": "",
+              "width": 88.7,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "最后修改人"
+            },
+            {
+              "text": "操作",
+              "styleWidth": "width: 10%;",
+              "width": 110.8,
+              "clientWidth": 111,
+              "scrollWidth": 111,
+              "truncated": false,
+              "title": "操作"
+            }
+          ],
+          "rows": [
+            [
+              {
+                "text": "FGIS-20261101-0001",
+                "button": null
+              },
+              {
+                "text": "SO-1001",
+                "button": null
+              },
+              {
+                "text": "MO-SO-1001",
+                "button": null
+              },
+              {
+                "text": "自动雨伞 / 22寸×8K",
+                "button": null
+              },
+              {
+                "text": "成品入库通知",
+                "button": null
+              },
+              {
+                "text": "100 把",
+                "button": null
+              },
+              {
+                "text": "0",
+                "button": null
+              },
+              {
+                "text": "100",
+                "button": null
+              },
+              {
+                "text": "待质检",
+                "button": null
+              },
+              {
+                "text": "张三11-01 09:00",
+                "button": null
+              },
+              {
+                "text": "李四11-01 10:00",
+                "button": null
+              },
+              {
+                "text": "录入质检",
+                "button": "录入质检"
+              }
+            ],
+            [
+              {
+                "text": "FGIS-20261101-0003",
+                "button": null
+              },
+              {
+                "text": "SO-3003",
+                "button": null
+              },
+              {
+                "text": "MO-SO-3003",
+                "button": null
+              },
+              {
+                "text": "自动雨伞 / 22寸×8K",
+                "button": null
+              },
+              {
+                "text": "外加工回厂",
+                "button": null
+              },
+              {
+                "text": "50 把",
+                "button": null
+              },
+              {
+                "text": "0",
+                "button": null
+              },
+              {
+                "text": "50",
+                "button": null
+              },
+              {
+                "text": "待质检",
+                "button": null
+              },
+              {
+                "text": "张三11-01 09:00",
+                "button": null
+              },
+              {
+                "text": "李四11-01 10:00",
+                "button": null
+              },
+              {
+                "text": "录入质检",
+                "button": "录入质检"
+              }
+            ],
+            [
+              {
+                "text": "FGIS-20261102-0002",
+                "button": null
+              },
+              {
+                "text": "SO-2002",
+                "button": null
+              },
+              {
+                "text": "MO-SO-2002",
+                "button": null
+              },
+              {
+                "text": "自动雨伞 / 22寸×8K",
+                "button": null
+              },
+              {
+                "text": "成品入库通知",
+                "button": null
+              },
+              {
+                "text": "200 把",
+                "button": null
+              },
+              {
+                "text": "80",
+                "button": null
+              },
+              {
+                "text": "120",
+                "button": null
+              },
+              {
+                "text": "质检中",
+                "button": null
+              },
+              {
+                "text": "张三11-02 09:00",
+                "button": null
+              },
+              {
+                "text": "李四11-02 10:00",
+                "button": null
+              },
+              {
+                "text": "录入质检",
+                "button": "录入质检"
+              }
+            ]
+          ],
+          "rowCount": 3,
+          "countText": "共 3 张",
+          "orderDetailPresent": false,
+          "dataTableCount": 1
+        },
+        "dialogTitle": "录入成品质检：SO-2002",
+        "selectText": "FGIS-20261102-0002 / 200 把 / inspecting",
+        "options": [
+          {
+            "text": "FGIS-20261102-0002 / 200 把 / inspecting",
+            "ariaSelected": "true",
+            "dataState": "checked"
+          }
+        ],
+        "details": {
+          "blockPresent": true,
+          "blockText": "待质检（全部订单）\n共 3 张\n\n所有订单里已提交送检、尚未检完的成品送检单，按「先送检先检」排序。成品入库通知送检后，要在订单详情的送检记录里点「提交送检」，才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑。双击一行进入该订单的质检详情，行内「录入质检」直接打开这一批次的质检表单。\n\n送检单\t订单号\t生产单\t成品\t来源\t送检数量\t已检数量\t待检数量\t状态\t创建人\t最后修改人\t操作\nFGIS-20261101-0001\tSO-1001\tMO-SO-1001\t自动雨伞 / 22寸×8K\t成品入库通知\t100 把\t0\t100\t待质检\t\n张三11-01 09:00\n\t\n李四11-01 10:00\n\t录入质检\nFGIS-20261101-0003\tSO-3003\tMO-SO-3003\t自动雨伞 / 22寸×8K\t外加工回厂\t50 把\t0\t50\t待质检\t\n张三11-01 09:00\n\t\n李四11-01 10:00\n\t录入质检\nFGIS-20261102-0002\tSO-2002\tMO-SO-2002\t自动雨伞 / 22寸×8K\t成品入库通知\t200 把\t80\t120\t质检中\t\n张三11-02 09:00\n\t\n李四11-02 10:00\n\t录入质检",
+          "tablePresent": true,
+          "tableWidth": 1110,
+          "headers": [
+            {
+              "text": "送检单",
+              "styleWidth": "width: 9%;",
+              "width": 99.7,
+              "clientWidth": 100,
+              "scrollWidth": 100,
+              "truncated": false,
+              "title": "送检单"
+            },
+            {
+              "text": "订单号",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "订单号"
+            },
+            {
+              "text": "生产单",
+              "styleWidth": "width: 9%;",
+              "width": 99.7,
+              "clientWidth": 100,
+              "scrollWidth": 100,
+              "truncated": false,
+              "title": "生产单"
+            },
+            {
+              "text": "成品",
+              "styleWidth": "width: 11%;",
+              "width": 121.9,
+              "clientWidth": 122,
+              "scrollWidth": 122,
+              "truncated": false,
+              "title": "成品"
+            },
+            {
+              "text": "来源",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "来源"
+            },
+            {
+              "text": "送检数量",
+              "styleWidth": "width: 7%;",
+              "width": 77.5,
+              "clientWidth": 78,
+              "scrollWidth": 78,
+              "truncated": false,
+              "title": "送检数量"
+            },
+            {
+              "text": "已检数量",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "已检数量"
+            },
+            {
+              "text": "待检数量",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "待检数量"
+            },
+            {
+              "text": "状态",
+              "styleWidth": "width: 6%;",
+              "width": 66.5,
+              "clientWidth": 66,
+              "scrollWidth": 66,
+              "truncated": false,
+              "title": "状态"
+            },
+            {
+              "text": "创建人",
+              "styleWidth": "",
+              "width": 88.7,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "创建人"
+            },
+            {
+              "text": "最后修改人",
+              "styleWidth": "",
+              "width": 88.7,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "最后修改人"
+            },
+            {
+              "text": "操作",
+              "styleWidth": "width: 10%;",
+              "width": 110.8,
+              "clientWidth": 111,
+              "scrollWidth": 111,
+              "truncated": false,
+              "title": "操作"
+            }
+          ],
+          "rows": [
+            [
+              {
+                "text": "FGIS-20261101-0001",
+                "button": null
+              },
+              {
+                "text": "SO-1001",
+                "button": null
+              },
+              {
+                "text": "MO-SO-1001",
+                "button": null
+              },
+              {
+                "text": "自动雨伞 / 22寸×8K",
+                "button": null
+              },
+              {
+                "text": "成品入库通知",
+                "button": null
+              },
+              {
+                "text": "100 把",
+                "button": null
+              },
+              {
+                "text": "0",
+                "button": null
+              },
+              {
+                "text": "100",
+                "button": null
+              },
+              {
+                "text": "待质检",
+                "button": null
+              },
+              {
+                "text": "张三11-01 09:00",
+                "button": null
+              },
+              {
+                "text": "李四11-01 10:00",
+                "button": null
+              },
+              {
+                "text": "录入质检",
+                "button": "录入质检"
+              }
+            ],
+            [
+              {
+                "text": "FGIS-20261101-0003",
+                "button": null
+              },
+              {
+                "text": "SO-3003",
+                "button": null
+              },
+              {
+                "text": "MO-SO-3003",
+                "button": null
+              },
+              {
+                "text": "自动雨伞 / 22寸×8K",
+                "button": null
+              },
+              {
+                "text": "外加工回厂",
+                "button": null
+              },
+              {
+                "text": "50 把",
+                "button": null
+              },
+              {
+                "text": "0",
+                "button": null
+              },
+              {
+                "text": "50",
+                "button": null
+              },
+              {
+                "text": "待质检",
+                "button": null
+              },
+              {
+                "text": "张三11-01 09:00",
+                "button": null
+              },
+              {
+                "text": "李四11-01 10:00",
+                "button": null
+              },
+              {
+                "text": "录入质检",
+                "button": "录入质检"
+              }
+            ],
+            [
+              {
+                "text": "FGIS-20261102-0002",
+                "button": null
+              },
+              {
+                "text": "SO-2002",
+                "button": null
+              },
+              {
+                "text": "MO-SO-2002",
+                "button": null
+              },
+              {
+                "text": "自动雨伞 / 22寸×8K",
+                "button": null
+              },
+              {
+                "text": "成品入库通知",
+                "button": null
+              },
+              {
+                "text": "200 把",
+                "button": null
+              },
+              {
+                "text": "80",
+                "button": null
+              },
+              {
+                "text": "120",
+                "button": null
+              },
+              {
+                "text": "质检中",
+                "button": null
+              },
+              {
+                "text": "张三11-02 09:00",
+                "button": null
+              },
+              {
+                "text": "李四11-02 10:00",
+                "button": null
+              },
+              {
+                "text": "录入质检",
+                "button": "录入质检"
+              }
+            ]
+          ],
+          "rowCount": 3,
+          "countText": "共 3 张",
+          "orderDetailPresent": true,
+          "dataTableCount": 4
+        },
+        "scopedPaths": [
+          "/finished-goods/inspection-submissions",
+          "/finished-goods/qc-records/available-inbound-sources",
+          "/finished-goods/qc/sources"
+        ]
+      },
+      "elapsedMs": 8204
+    },
+    {
+      "name": "qc-server-fields-wiring",
+      "route": "/qc/finished-goods",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": 200
+        },
+        {
+          "name": "已检数量直接渲染服务端 inspectedQuantity（66，不是前端重算的 0）",
+          "ok": true,
+          "detail": [
+            "FGIS-20261107-9999",
+            "SO-7007",
+            "MO-SO-7007",
+            "自动雨伞 / 22寸×8K",
+            "成品入库通知",
+            "200 把",
+            "66",
+            "42",
+            "待质检",
+            "张三11-07 09:00",
+            "李四11-07 10:00",
+            "录入质检"
+          ]
+        },
+        {
+          "name": "待检数量直接渲染服务端 pendingQuantity（42，不是 200−66=134 也不是送检量 200）",
+          "ok": true,
+          "detail": [
+            "FGIS-20261107-9999",
+            "SO-7007",
+            "MO-SO-7007",
+            "自动雨伞 / 22寸×8K",
+            "成品入库通知",
+            "200 把",
+            "66",
+            "42",
+            "待质检",
+            "张三11-07 09:00",
+            "李四11-07 10:00",
+            "录入质检"
+          ]
+        },
+        {
+          "name": "送检数量仍是服务端 submittedQuantity（200 把）",
+          "ok": true,
+          "detail": [
+            "FGIS-20261107-9999",
+            "SO-7007",
+            "MO-SO-7007",
+            "自动雨伞 / 22寸×8K",
+            "成品入库通知",
+            "200 把",
+            "66",
+            "42",
+            "待质检",
+            "张三11-07 09:00",
+            "李四11-07 10:00",
+            "录入质检"
+          ]
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+          "path": "/finished-goods/qc/sources",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions",
+          "path": "/finished-goods/inspection-submissions",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+          "path": "/finished-goods/qc/sources",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions",
+          "path": "/finished-goods/inspection-submissions",
+          "search": ""
+        }
+      ],
+      "facts": {
+        "pending": {
+          "blockPresent": true,
+          "blockText": "待质检（全部订单）\n共 1 张\n\n所有订单里已提交送检、尚未检完的成品送检单，按「先送检先检」排序。成品入库通知送检后，要在订单详情的送检记录里点「提交送检」，才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑。双击一行进入该订单的质检详情，行内「录入质检」直接打开这一批次的质检表单。\n\n送检单\t订单号\t生产单\t成品\t来源\t送检数量\t已检数量\t待检数量\t状态\t创建人\t最后修改人\t操作\nFGIS-20261107-9999\tSO-7007\tMO-SO-7007\t自动雨伞 / 22寸×8K\t成品入库通知\t200 把\t66\t42\t待质检\t\n张三11-07 09:00\n\t\n李四11-07 10:00\n\t录入质检",
+          "tablePresent": true,
+          "tableWidth": 1110,
+          "headers": [
+            {
+              "text": "送检单",
+              "styleWidth": "width: 9%;",
+              "width": 99.7,
+              "clientWidth": 100,
+              "scrollWidth": 100,
+              "truncated": false,
+              "title": "送检单"
+            },
+            {
+              "text": "订单号",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "订单号"
+            },
+            {
+              "text": "生产单",
+              "styleWidth": "width: 9%;",
+              "width": 99.7,
+              "clientWidth": 100,
+              "scrollWidth": 100,
+              "truncated": false,
+              "title": "生产单"
+            },
+            {
+              "text": "成品",
+              "styleWidth": "width: 11%;",
+              "width": 121.9,
+              "clientWidth": 122,
+              "scrollWidth": 122,
+              "truncated": false,
+              "title": "成品"
+            },
+            {
+              "text": "来源",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "来源"
+            },
+            {
+              "text": "送检数量",
+              "styleWidth": "width: 7%;",
+              "width": 77.5,
+              "clientWidth": 78,
+              "scrollWidth": 78,
+              "truncated": false,
+              "title": "送检数量"
+            },
+            {
+              "text": "已检数量",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "已检数量"
+            },
+            {
+              "text": "待检数量",
+              "styleWidth": "width: 8%;",
+              "width": 88.6,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "待检数量"
+            },
+            {
+              "text": "状态",
+              "styleWidth": "width: 6%;",
+              "width": 66.5,
+              "clientWidth": 66,
+              "scrollWidth": 66,
+              "truncated": false,
+              "title": "状态"
+            },
+            {
+              "text": "创建人",
+              "styleWidth": "",
+              "width": 88.7,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "创建人"
+            },
+            {
+              "text": "最后修改人",
+              "styleWidth": "",
+              "width": 88.7,
+              "clientWidth": 89,
+              "scrollWidth": 89,
+              "truncated": false,
+              "title": "最后修改人"
+            },
+            {
+              "text": "操作",
+              "styleWidth": "width: 10%;",
+              "width": 110.8,
+              "clientWidth": 111,
+              "scrollWidth": 111,
+              "truncated": false,
+              "title": "操作"
+            }
+          ],
+          "rows": [
+            [
+              {
+                "text": "FGIS-20261107-9999",
+                "button": null
+              },
+              {
+                "text": "SO-7007",
+                "button": null
+              },
+              {
+                "text": "MO-SO-7007",
+                "button": null
+              },
+              {
+                "text": "自动雨伞 / 22寸×8K",
+                "button": null
+              },
+              {
+                "text": "成品入库通知",
+                "button": null
+              },
+              {
+                "text": "200 把",
+                "button": null
+              },
+              {
+                "text": "66",
+                "button": null
+              },
+              {
+                "text": "42",
+                "button": null
+              },
+              {
+                "text": "待质检",
+                "button": null
+              },
+              {
+                "text": "张三11-07 09:00",
+                "button": null
+              },
+              {
+                "text": "李四11-07 10:00",
+                "button": null
+              },
+              {
+                "text": "录入质检",
+                "button": "录入质检"
+              }
+            ]
+          ],
+          "rowCount": 1,
+          "countText": "共 1 张",
+          "orderDetailPresent": false,
+          "dataTableCount": 1
+        },
+        "cells": [
+          "FGIS-20261107-9999",
+          "SO-7007",
+          "MO-SO-7007",
+          "自动雨伞 / 22寸×8K",
+          "成品入库通知",
+          "200 把",
+          "66",
+          "42",
+          "待质检",
+          "张三11-07 09:00",
+          "李四11-07 10:00",
+          "录入质检"
+        ]
+      },
+      "elapsedMs": 1546
+    },
+    {
+      "name": "qc-pending-empty",
+      "route": "/qc/finished-goods",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": 200
+        },
+        {
+          "name": "全部 draft/qc_completed/cancelled 时显示空态「暂无待质检的成品送检单」",
+          "ok": true,
+          "detail": "待质检（全部订单）\n共 0 张\n\n所有订单里已提交送检、尚未检完的成品送检单，按「先送检先检」排序。成品入库通知送检后，要在订单详情的送检记录里点「提交送检」，才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑。双击一行进入该订单的质检详情，行内「录入质检」直接打开这一批次的质检表单。\n\n暂无待质检的成品送检单\n\n成品入库通知送检后，要在送检记录里点「提交送检」才会进入这里；草稿送检单在下"
+        },
+        {
+          "name": "空态说明含提交指引（草稿送检单在下方订单详情里编辑提交）",
+          "ok": true,
+          "detail": "待质检（全部订单）\n共 0 张\n\n所有订单里已提交送检、尚未检完的成品送检单，按「先送检先检」排序。成品入库通知送检后，要在订单详情的送检记录里点「提交送检」，才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑。双击一行进入该订单的质检详情，行内「录入质检」直接打开这一批次的质检表单。\n\n暂无待质检的成品送检单\n\n成品入库通知送检后，要在送检记录里点「提交送检」才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑提交。"
+        },
+        {
+          "name": "空态「共 0 张」且 0 行",
+          "ok": true,
+          "detail": {
+            "countText": "共 0 张",
+            "rowCount": 0
+          }
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+          "path": "/finished-goods/qc/sources",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions",
+          "path": "/finished-goods/inspection-submissions",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/qc/sources",
+          "path": "/finished-goods/qc/sources",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/finished-goods/inspection-submissions",
+          "path": "/finished-goods/inspection-submissions",
+          "search": ""
+        }
+      ],
+      "facts": {
+        "pending": {
+          "blockPresent": true,
+          "blockText": "待质检（全部订单）\n共 0 张\n\n所有订单里已提交送检、尚未检完的成品送检单，按「先送检先检」排序。成品入库通知送检后，要在订单详情的送检记录里点「提交送检」，才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑。双击一行进入该订单的质检详情，行内「录入质检」直接打开这一批次的质检表单。\n\n暂无待质检的成品送检单\n\n成品入库通知送检后，要在送检记录里点「提交送检」才会进入这里；草稿送检单在下方按订单号查询的订单详情里编辑提交。",
+          "tablePresent": false,
+          "tableWidth": null,
+          "headers": [],
+          "rows": [],
+          "rowCount": 0,
+          "countText": "共 0 张",
+          "orderDetailPresent": false,
+          "dataTableCount": 0
+        }
+      },
+      "elapsedMs": 1651
+    },
+    {
+      "name": "material-slip-print",
+      "route": "/production/material-issues",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "navigationStatus": 200,
+      "checks": [
+        {
+          "name": "页面导航 HTTP 200",
+          "ok": true,
+          "detail": 200
+        },
+        {
+          "name": "领料单打印弹窗出现、纸面标题【领料单】",
+          "ok": true,
+          "detail": {
+            "dialog": true,
+            "title": "【领料单】"
+          }
+        },
+        {
+          "name": "领料单纸头第 3 行第 4 组 = 订单号：SO-1001",
+          "ok": true,
+          "detail": [
+            "生产数量：",
+            "500 把",
+            "操作人：",
+            "张三",
+            "操作时间：",
+            "2026-11-07 10:30",
+            "订单号：",
+            "SO-1001"
+          ]
+        },
+        {
+          "name": "领料单纸头前两组仍是 生产数量 / 操作人（订单号没有顶掉既有字段）",
+          "ok": true,
+          "detail": [
+            "生产数量：",
+            "500 把",
+            "操作人：",
+            "张三",
+            "操作时间：",
+            "2026-11-07 10:30",
+            "订单号：",
+            "SO-1001"
+          ]
+        },
+        {
+          "name": "领料单明细表头 10 列原样",
+          "ok": true,
+          "detail": [
+            "序号",
+            "产品名称",
+            "产品代码",
+            "规格型号",
+            "颜色",
+            "单位",
+            "配料数量",
+            "已领数量",
+            "本次领料量",
+            "余下数量"
+          ]
+        },
+        {
+          "name": "补料单打印弹窗出现、纸面标题【补料单】",
+          "ok": true,
+          "detail": {
+            "dialog": true,
+            "title": "【补料单】"
+          }
+        },
+        {
+          "name": "补料单纸头第 3 行第 3 组 = 订单号：SO-2002、第 4 组 = 补料原因（位置不挪）",
+          "ok": true,
+          "detail": [
+            "操作人：",
+            "张三",
+            "操作时间：",
+            "2026-11-07 11:10",
+            "订单号：",
+            "SO-2002",
+            "补料原因：",
+            "伞布原始坏片 12 米"
+          ]
+        },
+        {
+          "name": "补料单明细表头 8 列原样（图片列仍在第 2 列）",
+          "ok": true,
+          "detail": [
+            "序号",
+            "图片",
+            "产品名称",
+            "产品代码",
+            "规格型号",
+            "颜色",
+            "单位",
+            "补领数量"
+          ]
+        },
+        {
+          "name": "console error = 0",
+          "ok": true,
+          "detail": null
+        },
+        {
+          "name": "pageerror = 0",
+          "ok": true,
+          "detail": null
+        }
+      ],
+      "consoleErrors": [],
+      "pageErrors": [],
+      "requestLog": [
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/auth/me",
+          "path": "/auth/me",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/production/material-movements",
+          "path": "/production/material-movements",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/production/orders",
+          "path": "/production/orders",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/production/material-movements",
+          "path": "/production/material-movements",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/production/orders",
+          "path": "/production/orders",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/production/material-movements/issue-1/slip-document",
+          "path": "/production/material-movements/issue-1/slip-document",
+          "search": ""
+        },
+        {
+          "method": "GET",
+          "url": "http://127.0.0.1:3111/api/v1/production/material-movements/replenishment-1/slip-document",
+          "path": "/production/material-movements/replenishment-1/slip-document",
+          "search": ""
+        }
+      ],
+      "facts": {
+        "issue": {
+          "dialogPresent": true,
+          "sheetPresent": true,
+          "title": "【领料单】",
+          "headRows": [
+            [
+              "生产单号：",
+              "MO-20261107-0001",
+              "成品名称：",
+              "自动雨伞",
+              "成品代码：",
+              "",
+              "规格型号：",
+              "22寸×8K"
+            ],
+            [
+              "颜色：",
+              "",
+              "领料单号：",
+              "MI-20261107-AAAA1111",
+              "领料工序：",
+              "裁剪",
+              "领料单位：",
+              "一车间"
+            ],
+            [
+              "生产数量：",
+              "500 把",
+              "操作人：",
+              "张三",
+              "操作时间：",
+              "2026-11-07 10:30",
+              "订单号：",
+              "SO-1001"
+            ]
+          ],
+          "detailHeaders": [
+            "序号",
+            "产品名称",
+            "产品代码",
+            "规格型号",
+            "颜色",
+            "单位",
+            "配料数量",
+            "已领数量",
+            "本次领料量",
+            "余下数量"
+          ],
+          "remark": "备注：第一批领料，裁剪工序",
+          "sheetText": "【领料单】\n生产单号：\tMO-20261107-0001\t成品名称：\t自动雨伞\t成品代码：\t \t规格型号：\t22寸×8K\n颜色：\t \t领料单号：\tMI-20261107-AAAA1111\t领料工序：\t裁剪\t领料单位：\t一车间\n生产数量：\t500 把\t操作人：\t张三\t操作时间：\t2026-11-07 10:30\t订单号：\tSO-1001\n序号\t产品名称\t产品代码\t规格型号\t颜色\t单位\t配料数量\t已领数量\t本次领料量\t余下数量\n1\t伞骨\tM-001\t58cm\t黑色\t根\t2500\t300\t1200\t1000\n小计\t \t \t \t \t \t \t \t1200\t \n\n备注：第一批领料，裁剪工序"
+        },
+        "replenishment": {
+          "dialogPresent": true,
+          "sheetPresent": true,
+          "title": "【补料单】",
+          "headRows": [
+            [
+              "生产单号：",
+              "MO-20261107-0001",
+              "成品名称：",
+              "自动雨伞",
+              "成品代码：",
+              "",
+              "规格型号：",
+              "22寸×8K"
+            ],
+            [
+              "颜色：",
+              "",
+              "领料单号：",
+              "MC-20261107-BBBB2222",
+              "领料单位：",
+              "一车间",
+              "领料工序：",
+              ""
+            ],
+            [
+              "操作人：",
+              "张三",
+              "操作时间：",
+              "2026-11-07 11:10",
+              "订单号：",
+              "SO-2002",
+              "补料原因：",
+              "伞布原始坏片 12 米"
+            ]
+          ],
+          "detailHeaders": [
+            "序号",
+            "图片",
+            "产品名称",
+            "产品代码",
+            "规格型号",
+            "颜色",
+            "单位",
+            "补领数量"
+          ],
+          "remark": "",
+          "sheetText": "【补料单】\n生产单号：\tMO-20261107-0001\t成品名称：\t自动雨伞\t成品代码：\t \t规格型号：\t22寸×8K\n颜色：\t \t领料单号：\tMC-20261107-BBBB2222\t领料单位：\t一车间\t领料工序：\t \n操作人：\t张三\t操作时间：\t2026-11-07 11:10\t订单号：\tSO-2002\t补料原因：\t伞布原始坏片 12 米\n序号\t图片\t产品名称\t产品代码\t规格型号\t颜色\t单位\t补领数量\n1\t \t伞布\tM-002\tEVA\t透明\t米\t12\n小计\t \t \t \t \t \t \t12"
+        }
+      },
+      "elapsedMs": 3885
+    }
+  ],
+  "verificationNotes": {
+    "reVerifiedAt": "2026-11-07T03:12:40.343Z",
+    "scope": "2026-11-07 收尾复核：仅重跑 C（真实 Chromium）待质检/空态/预选/双击/打印件场景；未重跑全量门禁（实现者已跑）。",
+    "t24DeclaredWidthsPct": [
+      9,
+      8,
+      9,
+      11,
+      8,
+      7,
+      8,
+      8,
+      6,
+      10
+    ],
+    "t24DeclaredWidthSumPct": 84,
+    "headerCompleteness": {
+      "已检数量": "完整可见（scrollWidth ≤ clientWidth，实测宽 88.6px）",
+      "待检数量": "完整可见（scrollWidth ≤ clientWidth，实测宽 88.6px）"
+    },
+    "screenshotsNote": "pending-list.png / pending-empty.png / qc-dialog-preselected.png 已按当前 CSS（新列宽）重拍。",
+    "checks": {
+      "scenarios": 4,
+      "checks": 51,
+      "passed": 51,
+      "failed": 0,
+      "consoleErrors": 0,
+      "pageErrors": 0
+    }
+  }
+}

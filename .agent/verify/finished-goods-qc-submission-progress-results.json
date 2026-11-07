@@ -1,0 +1,162 @@
+{
+  "generatedAt": "2026-11-07T03:05:45.720Z",
+  "script": ".agent\\verify\\finished-goods-qc-submission-progress-probe.mjs",
+  "summary": {
+    "total": 20,
+    "passed": 20,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "name": "active 合计：一处 active 40 + 一处 corrected 60 → inspectedQuantity = 40（corrected 不计）",
+      "ok": true,
+      "detail": "40"
+    },
+    {
+      "name": "pendingQuantity = 送检 100 − 已检 40 = 60",
+      "ok": true,
+      "detail": "60"
+    },
+    {
+      "name": "已检/待检都是字符串十进制",
+      "ok": true,
+      "detail": {
+        "inspected": "string",
+        "pending": "string"
+      }
+    },
+    {
+      "name": "查询形状：只查未删除、带 qcRecords(未删除、inspectionDate asc) 与 unit，按 updatedAt desc",
+      "ok": true,
+      "detail": {
+        "where": {
+          "deletedAt": null
+        },
+        "include": {
+          "qcRecords": {
+            "where": {
+              "deletedAt": null
+            },
+            "orderBy": {
+              "inspectionDate": "asc"
+            }
+          },
+          "unit": true
+        },
+        "orderBy": {
+          "updatedAt": "desc"
+        }
+      }
+    },
+    {
+      "name": "没有写库操作",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "只有 corrected 记录时 inspectedQuantity = 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "name": "只有 corrected 记录时 pendingQuantity = 送检量 100",
+      "ok": true,
+      "detail": "100"
+    },
+    {
+      "name": "已检 150 > 送检 100：inspectedQuantity 原样 150",
+      "ok": true,
+      "detail": "150"
+    },
+    {
+      "name": "pendingQuantity 钳到 0（不是 -50）",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "name": "空 qcRecords：inspectedQuantity = 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "name": "空 qcRecords：pendingQuantity = 送检量 100",
+      "ok": true,
+      "detail": "100"
+    },
+    {
+      "name": "active 0.1 + 0.2 = 0.3（不是 0.30000000000000004）",
+      "ok": true,
+      "detail": "0.3"
+    },
+    {
+      "name": "待检 = 99.7（Decimal 减法不带浮点尾差）",
+      "ok": true,
+      "detail": "99.7"
+    },
+    {
+      "name": "原字段逐字段不变（orderNo/status/submittedQuantity/submissionDate/qcRecords/unit/... 一个都没改）",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "qcRecords 原样带出（corrected 记录仍在，顺序未变，没有被前端/服务层过滤掉）",
+      "ok": true,
+      "detail": [
+        "active",
+        "corrected"
+      ]
+    },
+    {
+      "name": "只新增了 inspectedQuantity / pendingQuantity 两个键（相对原行）",
+      "ok": true,
+      "detail": {
+        "before": 22,
+        "after": 24
+      }
+    },
+    {
+      "name": "入参行对象没有被就地修改（原 qcRecords 仍是 2 条、原字段值未变）",
+      "ok": true,
+      "detail": "mutation detected"
+    },
+    {
+      "name": "多行各自独立计算（4/6、10/10、0/30）",
+      "ok": true,
+      "detail": [
+        [
+          "4",
+          "6"
+        ],
+        [
+          "10",
+          "10"
+        ],
+        [
+          "0",
+          "30"
+        ]
+      ]
+    },
+    {
+      "name": "orderNo 过滤：查询 where 带 orderNo、结果只含该订单两行",
+      "ok": true,
+      "detail": {
+        "where": {
+          "deletedAt": null,
+          "orderNo": "SO-2001"
+        },
+        "orders": [
+          "SO-2001",
+          "SO-2001"
+        ]
+      }
+    },
+    {
+      "name": "软删的送检单不出现在列表（where.deletedAt = null）",
+      "ok": true,
+      "detail": [
+        "FGIS-ALIVE"
+      ]
+    }
+  ]
+}
