@@ -2368,6 +2368,32 @@ model AccountingSubject {
   @@map("accounting_subjects")
 }
 
+/// 会计科目类目（2026-11-07 起类目成为一等实体）。
+///
+/// 为什么要这张表：`accounting_subjects.category` 仍是字符串（三大报表/凭证按类目名硬编码匹配，
+/// 改成外键反而要把名字在运行时翻译一遍，见设计文档 §2），但「类目清单」必须可增删改：
+/// 改名要在一个事务里级联改全部科目行、删除要能判断「这个类目下还有没有科目」、
+/// 新增要留下可审计的记录 —— 派生清单（`SELECT DISTINCT category`）给不了这些。
+///
+/// 不设 `deleted_at`：类目行不承载任何业务事实，删除是**物理删除**；只有「还有科目」时才拒绝删除
+/// （见 `AccountingSubjectCategoryService.remove`）。软删 + 唯一索引会让「删掉写错的类目 → 用同名重建」
+/// 永远做不到。
+model AccountingSubjectCategory {
+  id        String   @id @default(uuid()) @db.Uuid
+  /// 类目名，全表唯一（目录名就是业务键；改名是服务层的事务级联操作）。
+  name      String   @unique @db.VarChar(30)
+  /// 排序权重：5 个内置类目 = 10/20/30/40/50（会计制度顺序），自建类目接在最大值之后 +10。
+  sortOrder Int      @default(0) @map("sort_order")
+  /// 内置类目（会计制度五类）：**不许改名、不许删除** —— 三大报表与凭证按这五个名字匹配科目。
+  isSystem  Boolean  @default(false) @map("is_system")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy String   @map("created_by") @db.Uuid
+  updatedBy String   @map("updated_by") @db.Uuid
+
+  @@index([sortOrder])
+  @@map("accounting_subject_categories")
+}
 
 /// 记账凭证。
 ///

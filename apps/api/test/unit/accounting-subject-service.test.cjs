@@ -13,6 +13,12 @@ const { ACCOUNTING_SUBJECT_CATEGORIES } = require("../../dist/modules/finance/ac
 
 const USER = { id: "user-1" };
 
+/**
+ * 类目表默认只含 5 个内置类目（与迁移 20261107200000 / seed.ts 一致）。
+ * 2026-11-07 起科目写入口会校验「分类在类目表里存在」，替身必须提供这张表。
+ */
+const BUILTIN_CATEGORY_ROWS = ACCOUNTING_SUBJECT_CATEGORIES.map((name, index) => ({ id: `category-${index + 1}`, name, sortOrder: (index + 1) * 10, isSystem: true }));
+
 const subjectRow = (overrides = {}) => ({
   id: "subject-1",
   category: "损益类",
@@ -33,10 +39,21 @@ const subjectRow = (overrides = {}) => ({
  *   - 带字符串 `id`：`get(id)`；
  *   - 其余：`nextSortOrder` 的「取本分类最大 sortOrder」（分类下没有科目时还有一次全局查询）。
  */
-function harness({ subjects = [], duplicate = undefined, maxSortOrder = null, usage = {} } = {}) {
-  const calls = { findMany: [], findFirst: [], create: [], update: [], count: [] };
+function harness({ subjects = [], duplicate = undefined, maxSortOrder = null, usage = {}, categories = BUILTIN_CATEGORY_ROWS } = {}) {
+  const calls = { findMany: [], findFirst: [], create: [], update: [], count: [], categoryFindMany: [], categoryFindUnique: [] };
   const events = [];
   const prisma = {
+    // 类目表（2026-11-07 起）：科目写入口的 assertCategoryExists 查它，categories() 也读它。
+    accountingSubjectCategory: {
+      findMany: async (args) => {
+        calls.categoryFindMany.push(args);
+        return categories;
+      },
+      findUnique: async (args) => {
+        calls.categoryFindUnique.push(args);
+        return categories.find((row) => row.name === args?.where?.name) ?? null;
+      },
+    },
     accountingSubject: {
       // 替身照做 `distinct`：`categories()` 靠库层去重，替身不去重就会把「未分类」数出两行。
       findMany: async (args) => {
@@ -130,15 +147,20 @@ test("list({category})：分类筛选下推到库，且与 includeInactive 可�
   assert.deepEqual(calls.findMany[1].where, { deletedAt: null, category: "未分类" }, "「未分类」是迁移兜底出来的真实分类，必须能筛");
 });
 
-test("categories：5 类科目类别在前（按科目表顺序），库里多出来的分类去重后排在后面", async () => {
-  // 迁移会把对照表覆盖不到的自定义旧项目并入「未分类」，只有这 5 类会让那些科目在筛选里选不出来。
+test("categories：类目表按制度顺序在前（内置五类），科目表里出现但类目表没有的历史取值去重后附在最后", async () => {
+  // 2026-11-07 起类目是一等实体：清单 = 类目表名称 ∪ 科目表历史取值（旧备份恢复 / 绕过接口直写才会出现）。
+  // 只有这 5 类 + 历史取值都返回，那些科目才能在筛选里选出来。
   const { service, calls } = harness({
+    categories: [
+      { id: "c5", name: "损益类", sortOrder: 50, isSystem: true },
+      { id: "c1", name: "资产类", sortOrder: 10, isSystem: true },
+      { id: "c-custom", name: "共同类", sortOrder: 60, isSystem: false },
+    ],
     subjects: [{ category: "未分类" }, { category: "损益类" }, { category: "未分类" }, { category: "资产类" }],
   });
   const categories = await service.categories();
-  assert.deepEqual(categories.slice(0, 5), [...ACCOUNTING_SUBJECT_CATEGORIES], "固定的 5 类必须排在前面且顺序稳定");
-  assert.deepEqual(categories.slice(5), ["未分类"], "库里的额外分类去重后附在后面");
-  assert.equal(categories.length, 6, "「未分类」出现两次也只有一个");
+  assert.deepEqual(categories, ["资产类", "损益类", "共同类", "未分类"], "类目表按制度顺序（资产类在前）→ 自建按 sortOrder → 历史取值最后");
+  assert.deepEqual(calls.categoryFindMany[0], { select: { name: true, sortOrder: true, isSystem: true } }, "类目清单来自类目表");
   assert.deepEqual(calls.findMany[0].where, { deletedAt: null }, "软删科目的分类不该出现在筛选里");
   assert.deepEqual(calls.findMany[0].select, { category: true });
   assert.deepEqual(calls.findMany[0].distinct, ["category"]);
@@ -224,7 +246,12 @@ test("create：撞上「已软删」的同名科目也拦下，并说明名称�
 });
 
 test("create：本分类还没有科目时，排序号退到全局最后（靠分类权重把新分类排到末尾）", async () => {
-  const { service, calls } = harness({ subjects: [subjectRow({ id: "subject-last", category: "损益类", sortOrder: 1210 })], maxSortOrder: 1210 });
+  const { service, calls } = harness({
+    subjects: [subjectRow({ id: "subject-last", category: "损益类", sortOrder: 1210 })],
+    maxSortOrder: 1210,
+    // 2026-11-07 起「分类」必须在类目表里存在：自建的「新分类」要先有类目行。
+    categories: [...BUILTIN_CATEGORY_ROWS, { id: "category-custom", name: "新分类", sortOrder: 60, isSystem: false }],
+  });
   await service.create({ category: "新分类", name: "展会物料费" }, USER);
   assert.deepEqual(calls.findFirst.map((args) => args.where), [
     { category: "新分类", name: "展会物料费" },
@@ -232,6 +259,44 @@ test("create：本分类还没有科目时，排序号退到全局最后（靠�
     { deletedAt: null },
   ], "先按本分类查（空），再退到全局查");
   assert.equal(calls.create[0].sortOrder, 1220);
+});
+
+test("create：分类不在类目表里 → 422 ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND，不落库", async () => {
+  // 2026-11-07 设计文档 §3.6：「类目是唯一清单」的守门。没有它，任何客户端都能写进一个
+  // 没人看得见的分类字符串，类目清单与筛选下拉就不再可信。
+  const { service, calls } = harness();
+  await assert.rejects(
+    () => service.create({ category: "未分类", name: "展会物料费" }, USER),
+    (error) => {
+      assert.equal(error.getStatus?.(), 422);
+      assert.equal(error.getResponse().code, "ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND");
+      assert.match(error.getResponse().message, /未分类/, "消息要说是哪个分类不存在");
+      assert.match(error.getResponse().message, /科目类目/, "并告诉财务去哪里新增类目");
+      return true;
+    },
+  );
+  assert.deepEqual(calls.create, [], "分类不存在时不得落库");
+  assert.deepEqual(calls.categoryFindUnique[0], { where: { name: "未分类" }, select: { name: true } }, "按类目名查类目表");
+});
+
+test("update：换到一个不存在的分类 → 422，且不写库", async () => {
+  const { service, calls } = harness({ subjects: [subjectRow()] });
+  await assert.rejects(
+    () => service.update("subject-1", { category: "历史类" }, USER),
+    (error) => error.getStatus?.() === 422 && error.getResponse().code === "ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND" && /历史类/.test(error.getResponse().message),
+  );
+  assert.equal(calls.update.length, 0);
+});
+
+test("update：历史类目上的科目仍可改名字/停用（不被迫先迁分类，设计文档 §4.5）", async () => {
+  // 历史类目 = 科目行上的取值不在类目表里（旧备份恢复才会出现）。编辑这类科目时分类没变，
+  // 就不该被「类目必须存在」挡住 —— 否则财务连标本都不想改。
+  const current = subjectRow({ category: "历史类" });
+  const { service, calls } = harness({ subjects: [current] });
+  await service.update("subject-1", { name: "主营业务收入（新）" }, USER);
+  assert.equal(calls.categoryFindUnique.length, 0, "分类没变就不查类目表");
+  assert.equal(calls.update.length, 1);
+  assert.equal(calls.update[0].data.name, "主营业务收入（新）");
 });
 
 /* ------------------------------------------------------------------ get / update */

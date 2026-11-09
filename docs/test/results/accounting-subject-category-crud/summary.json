@@ -1,0 +1,389 @@
+{
+  "base": "http://127.0.0.1:3107",
+  "generatedAt": "2026-11-07T12:29:26.917Z",
+  "script": ".agent\\verify\\accounting-subject-category-visual.mjs",
+  "page": "http://127.0.0.1:3107/finance/cash-flow?tab=subjects",
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1920,
+      "height": 1080
+    }
+  ],
+  "summary": {
+    "total": 28,
+    "passed": 28,
+    "failed": 0,
+    "consoleErrors": 0,
+    "consoleErrorsRaw": 1,
+    "pageErrors": 0,
+    "screenshots": 8
+  },
+  "notes": [
+    "consoleErrorsRaw=1 是本次**故意注入**的 DELETE 422（验证删除守卫的 toast 文案）导致的资源级日志；unexpectedConsoleErrors=0。",
+    "无真实缺陷：类目面板、内置只读、自建/历史行按钮、CRUD 请求体、删除 422 toast、新增/编辑科目分类下拉的历史类目差异全部符合设计文档。"
+  ],
+  "failedChecks": [],
+  "screenshots": [
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\desktop-1440-full.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "kind": "full"
+    },
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\desktop-1440-category-panel.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "kind": "category-panel-closeup"
+    },
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\desktop-1920-full.png",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "kind": "full"
+    },
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\desktop-1920-category-panel.png",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "kind": "category-panel-closeup"
+    },
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\category-create-dialog.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "kind": "create-dialog"
+    },
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\category-delete-toast.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "kind": "delete-422-toast"
+    },
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\subject-create-category-options.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "kind": "subject-create-category-options"
+    },
+    {
+      "path": "C:\\Users\\USER\\Desktop\\Dilee\\docs\\test\\results\\accounting-subject-category-crud\\history-subject-edit.png",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "kind": "history-subject-edit"
+    }
+  ],
+  "requestBodies": {
+    "create": {
+      "url": "http://127.0.0.1:3107/api/v1/finance/accounting-subject-categories",
+      "method": "POST",
+      "body": {
+        "name": "测试类目"
+      }
+    },
+    "rename": {
+      "url": "http://127.0.0.1:3107/api/v1/finance/accounting-subject-categories/cat-custom",
+      "method": "PATCH",
+      "body": {
+        "name": "共同类（改名）"
+      }
+    },
+    "delete": {
+      "url": "http://127.0.0.1:3107/api/v1/finance/accounting-subject-categories/cat-custom",
+      "method": "DELETE"
+    }
+  },
+  "checks": [
+    {
+      "name": "页面导航 HTTP 200",
+      "ok": true,
+      "detail": 200
+    },
+    {
+      "name": "「科目类目」面板可见且位于会计科目表上方",
+      "ok": true,
+      "detail": {
+        "panelTop": 206,
+        "subjectTableTop": 861
+      }
+    },
+    {
+      "name": "类目面板计数「共 7 个类目」",
+      "ok": true,
+      "detail": "共 7 个类目"
+    },
+    {
+      "name": "类目行顺序：内置五类 → 自建 共同类 → 历史 未分类",
+      "ok": true,
+      "detail": [
+        "资产类",
+        "负债类",
+        "成本类",
+        "所有者权益类",
+        "损益类",
+        "共同类",
+        "未分类"
+      ]
+    },
+    {
+      "name": "内置 5 行各有「内置类目…不可改」标签",
+      "ok": true,
+      "detail": [
+        {
+          "testid": "accounting-subject-category-system-资产类",
+          "text": "内置类目（会计制度口径，不可改）"
+        },
+        {
+          "testid": "accounting-subject-category-system-负债类",
+          "text": "内置类目（会计制度口径，不可改）"
+        },
+        {
+          "testid": "accounting-subject-category-system-成本类",
+          "text": "内置类目（会计制度口径，不可改）"
+        },
+        {
+          "testid": "accounting-subject-category-system-所有者权益类",
+          "text": "内置类目（会计制度口径，不可改）"
+        },
+        {
+          "testid": "accounting-subject-category-system-损益类",
+          "text": "内置类目（会计制度口径，不可改）"
+        }
+      ]
+    },
+    {
+      "name": "自建「共同类」行有改名/删除按钮",
+      "ok": true,
+      "detail": {
+        "rename": [
+          "accounting-subject-category-rename-cat-custom"
+        ],
+        "delete": [
+          "accounting-subject-category-delete-cat-custom"
+        ]
+      }
+    },
+    {
+      "name": "内置 5 行没有改名/删除按钮",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "历史「未分类」行有「历史类目」标签、没有改名/删除按钮",
+      "ok": true,
+      "detail": [
+        {
+          "testid": "accounting-subject-category-history-未分类",
+          "text": "历史类目（仅存在于历史科目）"
+        }
+      ]
+    },
+    {
+      "name": "类目行「科目数」显示「启用 x / 共 y」",
+      "ok": true,
+      "detail": {
+        "asset": "启用 58 / 共 60",
+        "custom": "启用 2 / 共 2"
+      }
+    },
+    {
+      "name": "类目行「类型」列显示 内置 / 自建 / 历史",
+      "ok": true,
+      "detail": [
+        "内置",
+        "内置",
+        "内置",
+        "内置",
+        "内置",
+        "自建",
+        "历史"
+      ]
+    },
+    {
+      "name": "1440px 页面无横向溢出",
+      "ok": true,
+      "detail": {
+        "scrollWidth": 1440,
+        "innerWidth": 1440,
+        "horizontalOverflow": 0,
+        "scrollHeight": 1892
+      }
+    },
+    {
+      "name": "历史类目上的科目存在编辑按钮（用于验证编辑下拉含历史类目）",
+      "ok": true,
+      "detail": [
+        "accounting-subject-edit-sub-asset-1",
+        "accounting-subject-edit-sub-asset-2",
+        "accounting-subject-edit-sub-custom-1",
+        "accounting-subject-edit-sub-custom-2",
+        "accounting-subject-edit-sub-history"
+      ]
+    },
+    {
+      "name": "点「新增类目」打开弹窗、标题「新增科目类目」",
+      "ok": true,
+      "detail": "新增科目类目"
+    },
+    {
+      "name": "新增类目请求 = POST /api/v1/finance/accounting-subject-categories，body 恰为 {name:'测试类目'}",
+      "ok": true,
+      "detail": {
+        "url": "http://127.0.0.1:3107/api/v1/finance/accounting-subject-categories",
+        "method": "POST",
+        "body": {
+          "name": "测试类目"
+        }
+      }
+    },
+    {
+      "name": "新增类目成功 toast「已新增科目类目「测试类目」」",
+      "ok": true,
+      "detail": [
+        "操作成功\n已新增科目类目「测试类目」\n×"
+      ]
+    },
+    {
+      "name": "点「改名」弹窗标题「改名科目类目：共同类」且预填当前名称",
+      "ok": true,
+      "detail": {
+        "title": "改名科目类目：共同类",
+        "value": "共同类"
+      }
+    },
+    {
+      "name": "改名请求 = PATCH /api/v1/finance/accounting-subject-categories/cat-custom，body 恰为 {name:'共同类（改名）'}",
+      "ok": true,
+      "detail": {
+        "url": "http://127.0.0.1:3107/api/v1/finance/accounting-subject-categories/cat-custom",
+        "method": "PATCH",
+        "body": {
+          "name": "共同类（改名）"
+        }
+      }
+    },
+    {
+      "name": "改名成功 toast「已将类目「共同类」改名为「共同类（改名）」」",
+      "ok": true,
+      "detail": [
+        "操作成功\n已新增科目类目「测试类目」\n×",
+        "操作成功\n已将类目「共同类」改名为「共同类（改名）」\n×"
+      ]
+    },
+    {
+      "name": "点「删除」弹窗标题「删除科目类目：共同类」并给出删除说明",
+      "ok": true,
+      "detail": "删除科目类目：共同类\n\n只在类目下没有科目时可删；如果还有科目，请先把这些科目改到其它类目。删除后不可恢复。\n\n取消\n删除\n关闭"
+    },
+    {
+      "name": "删除请求 = DELETE /api/v1/finance/accounting-subject-categories/cat-custom",
+      "ok": true,
+      "detail": {
+        "url": "http://127.0.0.1:3107/api/v1/finance/accounting-subject-categories/cat-custom",
+        "method": "DELETE"
+      }
+    },
+    {
+      "name": "删除 422 的 message 以 toast 原样显示（含「还有 2 个科目…请先把这些科目改到其它类目」）",
+      "ok": true,
+      "detail": [
+        "操作成功\n已新增科目类目「测试类目」\n×",
+        "操作成功\n已将类目「共同类」改名为「共同类（改名）」\n×",
+        "操作失败\n该类目下还有 2 个科目，请先把这些科目改到其它类目后再删除\n×"
+      ]
+    },
+    {
+      "name": "新增科目：分类下拉含内置类目与自建类目（资产类/共同类）",
+      "ok": true,
+      "detail": [
+        "资产类",
+        "负债类",
+        "成本类",
+        "所有者权益类",
+        "损益类",
+        "共同类"
+      ]
+    },
+    {
+      "name": "新增科目：分类下拉**不含**历史类目「未分类」",
+      "ok": true,
+      "detail": [
+        "资产类",
+        "负债类",
+        "成本类",
+        "所有者权益类",
+        "损益类",
+        "共同类"
+      ]
+    },
+    {
+      "name": "编辑历史类目上的科目：分类默认值为「未分类」",
+      "ok": true,
+      "detail": "未分类"
+    },
+    {
+      "name": "编辑历史类目上的科目：分类下拉**含**历史类目「未分类」",
+      "ok": true,
+      "detail": [
+        "资产类",
+        "负债类",
+        "成本类",
+        "所有者权益类",
+        "损益类",
+        "共同类",
+        "未分类"
+      ]
+    },
+    {
+      "name": "1920px 页面无横向溢出",
+      "ok": true,
+      "detail": {
+        "scrollWidth": 1920,
+        "innerWidth": 1920,
+        "horizontalOverflow": 0,
+        "scrollHeight": 1876
+      }
+    },
+    {
+      "name": "1920px 类目面板仍可见",
+      "ok": true,
+      "detail": "共 7 个类目"
+    },
+    {
+      "name": "非注入路径 console error = 0 且 pageerror = 0",
+      "ok": true,
+      "detail": {
+        "unexpectedConsoleErrors": [],
+        "pageErrors": [],
+        "rawConsoleErrors": [
+          "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
+        ]
+      }
+    }
+  ],
+  "consoleErrors": [
+    "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"
+  ],
+  "unexpectedConsoleErrors": [],
+  "pageErrors": []
+}

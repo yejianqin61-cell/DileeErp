@@ -1,0 +1,957 @@
+{
+  "generatedAt": "2026-11-07T12:26:54.548Z",
+  "script": ".agent\\verify\\accounting-subject-category-probe.mjs",
+  "distModules": [
+    "apps/api/dist/modules/finance/accounting-subject-category.service.js",
+    "apps/api/dist/modules/finance/accounting-subject.service.js"
+  ],
+  "summary": {
+    "api": {
+      "total": 63,
+      "passed": 63,
+      "failed": 0
+    },
+    "migration": {
+      "total": 30,
+      "passed": 30,
+      "failed": 0
+    },
+    "total": {
+      "total": 93,
+      "passed": 93,
+      "failed": 0
+    }
+  },
+  "api": [
+    {
+      "name": "list 排序：内置五类按会计制度顺序 → 自建按 sortOrder → 历史类目最后",
+      "ok": true,
+      "detail": [
+        [
+          "资产类",
+          50,
+          true,
+          "cat-asset"
+        ],
+        [
+          "负债类",
+          30,
+          true,
+          "cat-liability"
+        ],
+        [
+          "成本类",
+          20,
+          true,
+          "cat-cost"
+        ],
+        [
+          "所有者权益类",
+          10,
+          true,
+          "cat-equity"
+        ],
+        [
+          "损益类",
+          50,
+          true,
+          "cat-profit"
+        ],
+        [
+          "共同类",
+          60,
+          false,
+          "cat-custom"
+        ],
+        [
+          "其他类",
+          70,
+          false,
+          "cat-custom2"
+        ],
+        [
+          "未分类",
+          80,
+          false,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "list 内置五类即使 sortOrder 打乱也按会计制度顺序（不按权重）",
+      "ok": true,
+      "detail": [
+        [
+          "资产类",
+          50
+        ],
+        [
+          "负债类",
+          30
+        ],
+        [
+          "成本类",
+          20
+        ],
+        [
+          "所有者权益类",
+          10
+        ],
+        [
+          "损益类",
+          50
+        ]
+      ]
+    },
+    {
+      "name": "list 自建类目按 sortOrder 升序（共同类 60 < 其他类 70）",
+      "ok": true,
+      "detail": [
+        60,
+        70
+      ]
+    },
+    {
+      "name": "list subjectCount = 未软删科目数（含停用）：资产类 2 / 共同类 2 / 未分类 2",
+      "ok": true,
+      "detail": {
+        "asset": {
+          "id": "cat-asset",
+          "name": "资产类",
+          "sortOrder": 50,
+          "isSystem": true,
+          "subjectCount": 2,
+          "activeSubjectCount": 1,
+          "createdBy": "u1",
+          "updatedBy": "u1",
+          "createdAt": "2026-11-07T00:00:00.000Z",
+          "updatedAt": "2026-11-07T00:00:00.000Z"
+        },
+        "custom": {
+          "id": "cat-custom",
+          "name": "共同类",
+          "sortOrder": 60,
+          "isSystem": false,
+          "subjectCount": 2,
+          "activeSubjectCount": 2,
+          "createdBy": "u1",
+          "updatedBy": "u1",
+          "createdAt": "2026-11-07T01:00:00.000Z",
+          "updatedAt": "2026-11-07T01:00:00.000Z"
+        },
+        "history": {
+          "id": null,
+          "name": "未分类",
+          "sortOrder": 80,
+          "isSystem": false,
+          "subjectCount": 2,
+          "activeSubjectCount": 1,
+          "createdBy": null,
+          "updatedBy": null,
+          "createdAt": null,
+          "updatedAt": null
+        }
+      }
+    },
+    {
+      "name": "list activeSubjectCount = 其中启用：资产类 1 / 共同类 2 / 未分类 1",
+      "ok": true,
+      "detail": {
+        "asset": 1,
+        "custom": 2,
+        "history": 1
+      }
+    },
+    {
+      "name": "list 空类目计数为 0（负债类/成本类/所有者权益类/损益类/其他类）",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "list 软删科目不计入 subjectCount（共同类 3 个科目里软删 1 → 共 2）",
+      "ok": true,
+      "detail": {
+        "id": "cat-custom",
+        "name": "共同类",
+        "sortOrder": 60,
+        "isSystem": false,
+        "subjectCount": 2,
+        "activeSubjectCount": 2,
+        "createdBy": "u1",
+        "updatedBy": "u1",
+        "createdAt": "2026-11-07T01:00:00.000Z",
+        "updatedAt": "2026-11-07T01:00:00.000Z"
+      }
+    },
+    {
+      "name": "list 历史类目 id = null、isSystem = false、审计列为 null",
+      "ok": true,
+      "detail": {
+        "id": null,
+        "name": "未分类",
+        "sortOrder": 80,
+        "isSystem": false,
+        "subjectCount": 2,
+        "activeSubjectCount": 1,
+        "createdBy": null,
+        "updatedBy": null,
+        "createdAt": null,
+        "updatedAt": null
+      }
+    },
+    {
+      "name": "list 历史类目排在最后（第 8 行）",
+      "ok": true,
+      "detail": {
+        "id": null,
+        "name": "未分类",
+        "sortOrder": 80,
+        "isSystem": false,
+        "subjectCount": 2,
+        "activeSubjectCount": 1,
+        "createdBy": null,
+        "updatedBy": null,
+        "createdAt": null,
+        "updatedAt": null
+      }
+    },
+    {
+      "name": "list 内置类目带出 id / createdBy / createdAt（供响应出口补姓名）",
+      "ok": true,
+      "detail": {
+        "id": "cat-asset",
+        "name": "资产类",
+        "sortOrder": 50,
+        "isSystem": true,
+        "subjectCount": 2,
+        "activeSubjectCount": 1,
+        "createdBy": "u1",
+        "updatedBy": "u1",
+        "createdAt": "2026-11-07T00:00:00.000Z",
+        "updatedAt": "2026-11-07T00:00:00.000Z"
+      }
+    },
+    {
+      "name": "list 三个查询都是计数聚合（1 次类目 findMany + 2 次科目 groupBy）",
+      "ok": true,
+      "detail": [
+        "accountingSubjectCategory.findMany",
+        "accountingSubject.groupBy",
+        "accountingSubject.groupBy"
+      ]
+    },
+    {
+      "name": "list 计数查询口径：未软删（deletedAt=null）与其中启用（isActive=true）",
+      "ok": true,
+      "detail": [
+        {
+          "by": [
+            "category"
+          ],
+          "where": {
+            "deletedAt": null
+          },
+          "_count": {
+            "_all": true
+          }
+        },
+        {
+          "by": [
+            "category"
+          ],
+          "where": {
+            "deletedAt": null,
+            "isActive": true
+          },
+          "_count": {
+            "_all": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "create 默认 sortOrder = 当前最大值 + 10（70 → 80）",
+      "ok": true,
+      "detail": {
+        "name": "新类目",
+        "sortOrder": 80,
+        "isSystem": false,
+        "createdBy": "user-1",
+        "updatedBy": "user-1"
+      }
+    },
+    {
+      "name": "create 落库 isSystem=false、name 已 trim、审计人 = 当前用户",
+      "ok": true,
+      "detail": {
+        "name": "新类目",
+        "sortOrder": 80,
+        "isSystem": false,
+        "createdBy": "user-1",
+        "updatedBy": "user-1"
+      }
+    },
+    {
+      "name": "create 返回新建行且写审计 accounting_subject_category.create（含 name/sort_order）",
+      "ok": true,
+      "detail": [
+        {
+          "action": "accounting_subject_category.create",
+          "entityType": "accounting_subject_category",
+          "actorId": "user-1",
+          "entityId": "cat-new-1",
+          "details": {
+            "name": "新类目",
+            "sort_order": 80
+          }
+        }
+      ]
+    },
+    {
+      "name": "create 显式 sort_order 原样使用（99），不被默认值覆盖",
+      "ok": true,
+      "detail": {
+        "name": "显式排序",
+        "sortOrder": 99,
+        "isSystem": false,
+        "createdBy": "user-1",
+        "updatedBy": "user-1"
+      }
+    },
+    {
+      "name": "create 重名 → 422 ACCOUNTING_SUBJECT_CATEGORY_DUPLICATED",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "create 重名时不写库",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "create 空名 → 422 ACCOUNTING_SUBJECT_CATEGORY_FIELD_REQUIRED",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "create 空名 时不写库",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "create 超长 → 422 ACCOUNTING_SUBJECT_CATEGORY_FIELD_REQUIRED",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "create 超长 时不写库",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "rename：类目行与科目行在同一 $transaction 里更新",
+      "ok": true,
+      "detail": [
+        {
+          "model": "accountingSubjectCategory",
+          "op": "findUnique",
+          "args": {
+            "where": {
+              "id": "cat-custom"
+            }
+          },
+          "inTransaction": false,
+          "transactionId": 0
+        },
+        {
+          "model": "accountingSubjectCategory",
+          "op": "findUnique",
+          "args": {
+            "where": {
+              "name": "共同类（新）"
+            }
+          },
+          "inTransaction": false,
+          "transactionId": 0
+        },
+        {
+          "model": "$transaction",
+          "op": "begin",
+          "args": {
+            "transactionId": 1
+          },
+          "inTransaction": true,
+          "transactionId": 1
+        },
+        {
+          "model": "accountingSubjectCategory",
+          "op": "update",
+          "args": {
+            "where": {
+              "id": "cat-custom"
+            },
+            "data": {
+              "name": "共同类（新）",
+              "updatedBy": "user-1"
+            }
+          },
+          "inTransaction": true,
+          "transactionId": 1
+        },
+        {
+          "model": "accountingSubject",
+          "op": "updateMany",
+          "args": {
+            "where": {
+              "category": "共同类"
+            },
+            "data": {
+              "category": "共同类（新）",
+              "updatedBy": "user-1"
+            }
+          },
+          "inTransaction": true,
+          "transactionId": 1
+        },
+        {
+          "model": "$transaction",
+          "op": "end",
+          "args": {
+            "transactionId": 1
+          },
+          "inTransaction": true,
+          "transactionId": 1
+        }
+      ]
+    },
+    {
+      "name": "rename：级联 updateMany 的 where 只有旧类目名（**没有 deletedAt 过滤**）",
+      "ok": true,
+      "detail": {
+        "category": "共同类"
+      }
+    },
+    {
+      "name": "rename：级联 data = 新类目名 + updatedBy",
+      "ok": true,
+      "detail": {
+        "category": "共同类（新）",
+        "updatedBy": "user-1"
+      }
+    },
+    {
+      "name": "rename：级联覆盖全部科目（含软删）——3 行都改成新名，affectedSubjects = 3",
+      "ok": true,
+      "detail": [
+        [
+          "s3",
+          "共同类（新）",
+          null
+        ],
+        [
+          "s4",
+          "共同类（新）",
+          null
+        ],
+        [
+          "s5",
+          "共同类（新）",
+          "2026-11-01T00:00:00.000Z"
+        ]
+      ]
+    },
+    {
+      "name": "rename 审计：action=.rename、带 before/after 与 affected_subjects=3",
+      "ok": true,
+      "detail": {
+        "action": "accounting_subject_category.rename",
+        "entityType": "accounting_subject_category",
+        "actorId": "user-1",
+        "entityId": "cat-custom",
+        "details": {
+          "before": {
+            "name": "共同类",
+            "sort_order": 60
+          },
+          "after": {
+            "name": "共同类（新）",
+            "sort_order": 60
+          },
+          "affected_subjects": 3
+        }
+      }
+    },
+    {
+      "name": "只改排序：不级联科目（updateMany 0 次），审计 action=.update 且不带 affected_subjects",
+      "ok": true,
+      "detail": [
+        {
+          "action": "accounting_subject_category.update",
+          "entityType": "accounting_subject_category",
+          "actorId": "user-1",
+          "entityId": "cat-custom",
+          "details": {
+            "before": {
+              "name": "共同类",
+              "sort_order": 60
+            },
+            "after": {
+              "name": "共同类",
+              "sort_order": 75
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "只改排序：before/after 的 sort_order 正确",
+      "ok": true,
+      "detail": {
+        "before": {
+          "name": "共同类",
+          "sort_order": 60
+        },
+        "after": {
+          "name": "共同类",
+          "sort_order": 75
+        }
+      }
+    },
+    {
+      "name": "no-op（名称与排序都没变）：不写库、不进事务、不记审计（只做一次 get 查询）",
+      "ok": true,
+      "detail": {
+        "writeCalls": [],
+        "auditEvents": 0,
+        "calls": [
+          "accountingSubjectCategory.findUnique"
+        ]
+      }
+    },
+    {
+      "name": "内置类目改名 → 422 ACCOUNTING_SUBJECT_CATEGORY_SYSTEM",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "内置类目改名被拒时不进事务、不写库",
+      "ok": true,
+      "detail": [
+        "accountingSubjectCategory.findUnique"
+      ]
+    },
+    {
+      "name": "内置类目改排序 → 422 ACCOUNTING_SUBJECT_CATEGORY_SYSTEM",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "内置类目改排序被拒时不进事务、不写库",
+      "ok": true,
+      "detail": [
+        "accountingSubjectCategory.findUnique"
+      ]
+    },
+    {
+      "name": "rename 撞已有类目名 → 422 ACCOUNTING_SUBJECT_CATEGORY_DUPLICATED",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "rename 重名时不进事务",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "rename 到自己当前名字不算重名（no-op 放行）",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "update 不存在的 id → 404 ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "rename 名称 trim 后落库",
+      "ok": true,
+      "detail": {
+        "name": "带空格类目",
+        "updatedBy": "user-1"
+      }
+    },
+    {
+      "name": "delete 内置类目 → 422 ACCOUNTING_SUBJECT_CATEGORY_SYSTEM",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "delete 内置类目被拒时不下发 delete",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "delete 有科目的类目 → 422 ACCOUNTING_SUBJECT_CATEGORY_IN_USE 且 message 含条数 2",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "delete 有科目时不下发 delete（条数按未软删科目算）",
+      "ok": true,
+      "detail": [
+        {
+          "model": "accountingSubject",
+          "op": "count",
+          "args": {
+            "where": {
+              "category": "共同类",
+              "deletedAt": null
+            }
+          },
+          "inTransaction": false,
+          "transactionId": 0
+        }
+      ]
+    },
+    {
+      "name": "delete 有科目时也不记审计",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "delete 空类目：物理删除（delete where id），返回被删行",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "delete 审计：action=.delete 带类目名与操作人",
+      "ok": true,
+      "detail": {
+        "action": "accounting_subject_category.delete",
+        "entityType": "accounting_subject_category",
+        "actorId": "user-1",
+        "entityId": "cat-custom2",
+        "details": {
+          "name": "其他类"
+        }
+      }
+    },
+    {
+      "name": "delete 不存在的 id → 404 ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "科目 create：不存在的类目 → 422 ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "科目 create：类目校验失败时不写科目",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "科目 create：类目校验查的是类目表 name（唯一清单口径）",
+      "ok": true,
+      "detail": {
+        "where": {
+          "name": "不存在类"
+        },
+        "select": {
+          "name": true
+        }
+      }
+    },
+    {
+      "name": "科目 create：类目存在 → 正常落库（sortOrder 接在同分类最后一个之后 +10 = 30）",
+      "ok": true,
+      "detail": {
+        "created": {
+          "id": "sub-new-1",
+          "category": "资产类",
+          "name": "新科目",
+          "balanceDirection": null,
+          "sortOrder": 30,
+          "createdBy": "user-1",
+          "updatedBy": "user-1"
+        },
+        "create": {
+          "category": "资产类",
+          "name": "新科目",
+          "balanceDirection": null,
+          "sortOrder": 30,
+          "createdBy": "user-1",
+          "updatedBy": "user-1"
+        }
+      }
+    },
+    {
+      "name": "编辑历史类目上的科目（不改分类）→ 放行，且不查类目表",
+      "ok": true,
+      "detail": {
+        "updated": {
+          "id": "s6",
+          "category": "未分类",
+          "name": "历史科目（改名）",
+          "isActive": true,
+          "sortOrder": 10,
+          "deletedAt": null,
+          "updatedBy": "user-1"
+        },
+        "categoryQueries": 0
+      }
+    },
+    {
+      "name": "科目 update：把分类改到不存在的类目 → 422 ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "科目 update：改到不存在类目时不写科目",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "科目 update：改到已存在类目 → 放行并写新分类",
+      "ok": true,
+      "detail": {
+        "category": "资产类",
+        "name": "历史科目",
+        "updatedBy": "user-1"
+      }
+    },
+    {
+      "name": "控制器：类目路由前缀 = finance/accounting-subject-categories",
+      "ok": true,
+      "detail": "finance/accounting-subject-categories"
+    },
+    {
+      "name": "控制器：类级权限走 finance 模块",
+      "ok": true,
+      "detail": [
+        "finance"
+      ]
+    },
+    {
+      "name": "控制器：list = GET /",
+      "ok": true,
+      "detail": {
+        "handler": "list",
+        "actualPath": "",
+        "actualMethod": 0
+      }
+    },
+    {
+      "name": "控制器：create = POST /",
+      "ok": true,
+      "detail": {
+        "handler": "create",
+        "actualPath": "",
+        "actualMethod": 1
+      }
+    },
+    {
+      "name": "控制器：update = PATCH /:id",
+      "ok": true,
+      "detail": {
+        "handler": "update",
+        "actualPath": ":id",
+        "actualMethod": 4
+      }
+    },
+    {
+      "name": "控制器：remove = DELETE /:id",
+      "ok": true,
+      "detail": {
+        "handler": "remove",
+        "actualPath": ":id",
+        "actualMethod": 3
+      }
+    },
+    {
+      "name": "控制器：写操作（POST/PATCH/DELETE）仅管理员",
+      "ok": true,
+      "detail": {
+        "create": true,
+        "update": true,
+        "remove": true
+      }
+    },
+    {
+      "name": "控制器：读列表不要求管理员",
+      "ok": true,
+      "detail": null
+    }
+  ],
+  "migration": [
+    {
+      "name": "迁移文件存在（目录名带 14 位时间戳）",
+      "ok": true,
+      "detail": "C:\\Users\\USER\\Desktop\\Dilee\\apps\\api\\prisma\\migrations\\20261107200000_accounting_subject_categories\\migration.sql"
+    },
+    {
+      "name": "迁移：建表列 \"id\" UUID NOT NULL",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 \"name\" VARCHAR(30) NOT NULL",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 \"sort_order\" INTEGER NOT NULL DEFAULT 0",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 \"is_system\" BOOLEAN NOT NULL DEFAULT false",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 \"updated_at\" TIMESTAMP(3) NOT NULL",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 \"created_by\" UUID NOT NULL",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 \"updated_by\" UUID NOT NULL",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：建表列 PRIMARY KEY (\"id\")",
+      "ok": true,
+      "detail": "\n  \"id\" UUID NOT NULL,\n  \"name\" VARCHAR(30) NOT NULL,\n  \"sort_order\" INTEGER NOT NULL DEFAULT 0,\n  \"is_system\" BOOLEAN NOT NULL DEFAULT false,\n  \"created_at\" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,\n  \"updated_at\" TIMESTAMP(3) NOT NULL,\n  \"created_by\" UUID NOT NULL,\n  \"updated_by\" UUID NOT NULL,\n  CONSTRAINT \"accounting_subject_categories_pkey\" PRIMARY KEY (\"id\")\n"
+    },
+    {
+      "name": "迁移：name 唯一索引 accounting_subject_categories_name_key",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：sort_order 索引 accounting_subject_categories_sort_order_idx",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：5 个内置类目名与顺序 = ACCOUNTING_SUBJECT_CATEGORIES 逐字一致",
+      "ok": true,
+      "detail": {
+        "sqlSystemNames": [
+          "资产类",
+          "负债类",
+          "成本类",
+          "所有者权益类",
+          "损益类"
+        ],
+        "catalog": [
+          "资产类",
+          "负债类",
+          "成本类",
+          "所有者权益类",
+          "损益类"
+        ]
+      }
+    },
+    {
+      "name": "迁移：内置类目排序 10/20/30/40/50",
+      "ok": true,
+      "detail": "10, 20, 30, 40, 50"
+    },
+    {
+      "name": "迁移：回填取 SELECT DISTINCT category FROM accounting_subjects",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：回填 sort_order 从 60 起、按名称每行 +10",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：回填只插类目表里还没有的名字（NOT EXISTS）且 ON CONFLICT DO NOTHING",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：内置五类先于回填插入",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：空库（无 users）时 RETURN 跳过种入/回填（建表仍执行）",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：插入的人使用最早创建的 user（与既有迁移同口径）",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "迁移：不加 deleted_at（类目是物理删除）",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "schema：model AccountingSubjectCategory 存在且 @@map 正确",
+      "ok": true,
+      "detail": "\r\n  id        String   @id @default(uuid()) @db.Uuid\r\n  /// 类目名，全表唯一（目录名就是业务键；改名是服务层的事务级联操作）。\r\n  name      String   @unique @db.VarChar(30)\r\n  /// 排序权重：5 个内置类目 = 10/20/30/40/50（会计制度顺序），自建类目接在最大值之后 +10"
+    },
+    {
+      "name": "schema：name @unique @db.VarChar(30)",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "schema：sortOrder @default(0) @map(\"sort_order\")",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "schema：isSystem @default(false) @map(\"is_system\")",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "schema：createdBy/updatedBy 为 UUID、@@index([sortOrder])",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "schema：不设 deletedAt（物理删除）",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "seed：类目种入循环在科目种入循环之前",
+      "ok": true,
+      "detail": {
+        "categoryLoopAt": 5195,
+        "subjectLoopAt": 5922
+      }
+    },
+    {
+      "name": "seed：按 name upsert 5 个内置类目、isSystem=true、sortOrder=(index+1)*10",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "seed：导入了 ACCOUNTING_SUBJECT_CATEGORIES 常量（与迁移/目录同一份）",
+      "ok": true,
+      "detail": null
+    }
+  ]
+}

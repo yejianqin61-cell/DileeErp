@@ -3,7 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { CURRENCY_DICTIONARY_KEY, DEFAULT_CURRENCIES } from "../src/platform/currency/currency-catalog";
 import { DEFAULT_SETTLEMENT_ACCOUNTS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "../src/modules/finance/cash-flow-catalog";
-import { ACCOUNTING_SUBJECT_SEEDS } from "../src/modules/finance/accounting-subject-catalog";
+import { ACCOUNTING_SUBJECT_CATEGORIES, ACCOUNTING_SUBJECT_SEEDS } from "../src/modules/finance/accounting-subject-catalog";
 
 const prisma = new PrismaClient();
 
@@ -53,6 +53,18 @@ async function main() {
       for (const item of dictionary.items) {
         await tx.dictionaryItem.upsert({ where: { typeId_key: { typeId: type.id, key: item.key } }, update: { label: item.label, isActive: true, updatedBy: id }, create: { id: randomUUID(), typeId: type.id, key: item.key, label: item.label, ...("sortOrder" in item ? { sortOrder: item.sortOrder as number } : {}), createdBy: id, updatedBy: id } });
       }
+    }
+    // 会计科目类目（2026-11-07）：**必须种在科目之前**。
+    // 迁移 20261107200000_accounting_subject_categories 在空库（无 users）时整段跳过，
+    // 由这里先建好 5 个内置类目；而科目写入口会校验「category 在类目表里存在」，
+    // 顺序反了就会让新库连科目都种不进去。顺序/排序与迁移、accounting-subject-catalog.ts 三方一致
+    // （sortOrder = (下标 + 1) * 10 → 10/20/30/40/50），upsert by name 保证重复执行安全。
+    for (const [index, name] of ACCOUNTING_SUBJECT_CATEGORIES.entries()) {
+      await tx.accountingSubjectCategory.upsert({
+        where: { name },
+        update: { sortOrder: (index + 1) * 10, isSystem: true, updatedBy: id },
+        create: { id: randomUUID(), name, sortOrder: (index + 1) * 10, isSystem: true, createdBy: id, updatedBy: id },
+      });
     }
     // 会计科目：用户 2026-09-17 交付的科目表（分类 = 科目类别，项目 = 科目名称）。
     // 与迁移 20260917120000_accounting_subjects 用同一份清单（accounting-subject-catalog.ts）。

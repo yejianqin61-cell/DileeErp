@@ -246,6 +246,42 @@ export function compareAccountingSubjects(
   );
 }
 
+/* ------------------------------------------------------------------ 类目顺序（2026-11-07） */
+
+/**
+ * 科目**类目**（`accounting_subject_categories`）的排序权重。
+ *
+ * 与 {@link subjectCategoryRank} 的区别：那个是「科目按分类排」，未知分类一律排到最后；
+ * 这里是「类目自己按什么顺序列」—— 内置五类按会计制度顺序（`ACCOUNTING_SUBJECT_CATEGORIES`
+ * 的下标 0..4），自建类目接在后面按 `sortOrder`。自建类目的基准从 6 起（不是 5）是为了让
+ * `sort_order = 0` 的自建类目也一定排在五类之后，不会与内置类的权重撞车。
+ *
+ * 历史类目（只存在于科目行、类目表里没有的取值，见设计文档 §4.5）不参与本函数：
+ * 它们是合成行（`id: null`），由调用方排在最后。
+ */
+export function accountingSubjectCategoryRank(row: { name: string; sortOrder: number; isSystem: boolean }): number {
+  if (row.isSystem) {
+    const index = (ACCOUNTING_SUBJECT_CATEGORIES as readonly string[]).indexOf(row.name);
+    if (index >= 0) return index;
+  }
+  return ACCOUNTING_SUBJECT_CATEGORIES.length + 1 + row.sortOrder;
+}
+
+/**
+ * 类目行的规范顺序：**内置五类（会计制度顺序）→ 自建类目（sortOrder）→ 名称**。
+ *
+ * 必须是全站同一个比较器：类目列表、科目弹窗的分类下拉、`GET /finance/accounting-subjects/categories`
+ * 三处都要按同一顺序读，否则「界面上看是第三个、下拉里排最后」这种不一致会让财务怀疑数据错。
+ * 内置类目的顺序**不能**靠库层 `orderBy: sortOrder` 保证 —— 那是权重，不是会计制度顺序；
+ * 一旦自建类目也落在 10..50 区间就会插进五类中间。
+ */
+export function compareAccountingSubjectCategories(
+  left: { name: string; sortOrder: number; isSystem: boolean },
+  right: { name: string; sortOrder: number; isSystem: boolean },
+): number {
+  return accountingSubjectCategoryRank(left) - accountingSubjectCategoryRank(right) || left.name.localeCompare(right.name);
+}
+
 /* ------------------------------------------------------------------ 旧「收支项目」并入 */
 
 /** 旧收支项目字典的类型 key（`dictionary_types.key`）。合并后整张字典停用，键本身只在迁移里用得到。 */

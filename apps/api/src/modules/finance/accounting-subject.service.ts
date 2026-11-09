@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, UnprocessableEntityException } from "@ne
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { ACCOUNTING_SUBJECT_CATEGORIES, compareAccountingSubjects } from "./accounting-subject-catalog";
+import { compareAccountingSubjectCategories, compareAccountingSubjects } from "./accounting-subject-catalog";
 
 /**
  * 会计科目（全站财务口径的唯一来源，`/finance/accounting-subjects`）。
@@ -45,16 +45,25 @@ export class AccountingSubjectService {
   }
 
   /**
-   * 分类清单 = 科目表固定的 5 类 ∪ 库里实际出现过的取值（含「未分类」）。
+   * 分类清单（兼容接口 `GET /finance/accounting-subjects/categories`，返回 `string[]`）。
    *
-   * 为什么不是直接返回常量：迁移可能把无法归类的旧项目放进了「未分类」，
-   * 只给 5 类会让那些科目在筛选下拉里选不出来，等于看不见。
+   * 2026-11-07 起类目是一等实体：清单 = **类目表的名称** ∪ 科目表里出现但类目表没有的历史取值。
+   * 顺序与类目列表同一口径：内置五类按会计制度顺序 → 自建按 sortOrder/名称 → 历史类目最后。
+   *
+   * 为什么还要并上「科目表里出现过的取值」：旧库升级 / 旧备份整库恢复时，科目行的 category
+   * 可能指向一个类目表里没有的名字（设计文档 §4.5）。只给类目表会让那些科目在筛选下拉里选不出来，
+   * 等于看不见 —— 兼容接口的消费者（老前端、第三方脚本）会以为它们消失了。
    */
   async categories(): Promise<string[]> {
-    const rows = await this.prisma.accountingSubject.findMany({ where: { deletedAt: null }, select: { category: true }, distinct: ["category"] });
-    const present = rows.map((row) => row.category);
-    const known: string[] = [...ACCOUNTING_SUBJECT_CATEGORIES];
-    return [...known, ...present.filter((category) => !known.includes(category)).sort()];
+    const [categoryRows, subjectRows] = await Promise.all([
+      this.prisma.accountingSubjectCategory.findMany({ select: { name: true, sortOrder: true, isSystem: true } }),
+      this.prisma.accountingSubject.findMany({ where: { deletedAt: null }, select: { category: true }, distinct: ["category"] })
+    ]);
+    const ordered = [...categoryRows].sort(compareAccountingSubjectCategories).map((category) => category.name);
+    const known = new Set(ordered);
+    // 历史取值沿用旧实现的口径：去重后按名称（码位）升序附在最后。
+    const historical = subjectRows.map((row) => row.category).filter((category) => !known.has(category)).sort();
+    return [...ordered, ...historical];
   }
 
   async get(id: string) {
@@ -69,6 +78,8 @@ export class AccountingSubjectService {
     const category = this.required(input.category, "分类");
     const name = this.required(input.name, "项目名称");
     const balanceDirection = this.direction(input.balance_direction);
+    // 2026-11-07：类目是唯一清单，写科目之前必须先有类目（设计文档 §3.6）。
+    await this.assertCategoryExists(category);
     await this.assertUnique(category, name);
     const sortOrder = input.sort_order ?? (await this.nextSortOrder(category));
     const row = await this.prisma.accountingSubject.create({
@@ -88,6 +99,9 @@ export class AccountingSubjectService {
     const current = await this.get(id);
     const category = input.category === undefined ? current.category : this.required(input.category, "分类");
     const name = input.name === undefined ? current.name : this.required(input.name, "项目名称");
+    // 只有「真的换到另一个分类」才校验类目存在：历史类目（科目行上的取值不在类目表里，
+    // 设计文档 §4.5）上的科目仍要能改名字/余额方向/排序 —— 编辑时不该被迫先迁分类。
+    if (input.category !== undefined && category !== current.category) await this.assertCategoryExists(category);
     if (category !== current.category || name !== current.name) await this.assertUnique(category, name, id);
     const row = await this.prisma.accountingSubject.update({
       where: { id },
@@ -169,6 +183,18 @@ export class AccountingSubjectService {
       throw this.invalid("ACCOUNTING_SUBJECT_DUPLICATED", `「${category}」下曾有一个叫「${name}」的科目（已删除），名称仍被占用，请换一个名字`);
     }
     throw this.invalid("ACCOUNTING_SUBJECT_DUPLICATED", `「${category}」下已经有「${name}」这个科目`);
+  }
+
+  /**
+   * 「类目是唯一清单」的守门（设计文档 §3.6）：写科目之前 category 必须已在类目表里。
+   *
+   * 没有它，任何客户端都能再写进一个没人看得见的类目字符串，类目清单与筛选下拉就不可信了。
+   * 调用点在 create（总是校验）与 update（只在分类真的变了时校验，见那里的说明）。
+   */
+  private async assertCategoryExists(category: string) {
+    const existing = await this.prisma.accountingSubjectCategory.findUnique({ where: { name: category }, select: { name: true } });
+    if (existing) return;
+    throw this.invalid("ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND", `分类「${category}」不存在，请先到「科目类目」里新增`);
   }
 
   private required(value: string | undefined, label: string): string {
