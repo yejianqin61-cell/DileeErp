@@ -697,3 +697,111 @@ describe("成品质检：待质检（全部订单）", () => {
     expect(order).toEqual(["FGIS-001", "FGIS-002", "FGIS-003", "FGIS-004"]);
   });
 });
+
+// 「待送检（成品入库通知）」（2026-11-09，用户：「生产包装工序完成后提交成品入库通知，进入到成品质检，
+// 成品质检页面没有显示这条记录」）。原因不是显示 bug：入库通知不是送检单，旧流程要先在订单详情里
+// 「创建送检」再「提交送检」，两步没做完时待质检队列里什么都没有（线上 3 张 pending 通知都是这样）。
+// 新块用同一个 load() 的 sources（backend 只给还有可送检量的通知），行内「送检」= 建单 + 提交一个事务。
+describe("成品质检：待送检（成品入库通知）", () => {
+  /** 待送检块（2026-11-09 新增，恒在页面上部、待质检队列之前）。 */
+  const noticeBlock = () => within(screen.getByTestId("finished-goods-qc-pending-notices"));
+  /** 一条「还有可送检量」的成品入库通知来源（listSources 的形状）。 */
+  const noticeSource = (overrides: Record<string, unknown> = {}) => sourceFixture({
+    notice_date: "2026-11-09",
+    notice_quantity: "300",
+    available_quantity: "120",
+    source_status: "pending",
+    ...overrides,
+  });
+
+  it("把还没送检的成品入库通知列成待办：通知号 / 订单号 / 生产单 / 成品 / 通知量 / 待送检量 / 中文状态", async () => {
+    stubQcApi({
+      sources: [
+        noticeSource(),
+        noticeSource({ source_id: "src-2", notice_id: "notice-2", notice_no: "FGIN-002", order_no: "SO-2002", production_order_no: "MO-2002", notice_date: "2026-11-08", notice_quantity: "50", available_quantity: "50", source_status: "partially_inbound" }),
+        // 外加工回厂来源不进这个队列：它走成品回厂交接，不属于「成品入库通知」
+        sourceFixture({ source_id: "src-out", source_type: "outsource_finished_goods_return", notice_no: undefined }),
+      ],
+      submissions: [],
+    });
+
+    render(<FinishedGoodsQcPanel />);
+
+    expect(await noticeBlock().findByText("FGIN-001")).toBeVisible();
+    expect(screen.getByTestId("finished-goods-qc-pending-notice-count")).toHaveTextContent("共 2 张");
+    const row = noticeBlock().getByText("FGIN-001").closest('[data-testid="data-table-row"]') as HTMLElement;
+    expect(within(row).getByText("SO-1001")).toBeVisible();
+    expect(within(row).getByText("MO-1001")).toBeVisible();
+    expect(within(row).getByText("连衣裙 / M")).toBeVisible();
+    expect(within(row).getByText("300 件")).toBeVisible();
+    expect(within(row).getByText("120 件")).toBeVisible();
+    expect(within(row).getByText("2026-11-09")).toBeVisible();
+    expect(within(row).getByText("待送检")).toBeVisible();
+    // 外加工回厂来源不进这个队列（它走成品回厂交接，不属于「成品入库通知」）：只渲染 2 行
+    expect(noticeBlock().getAllByTestId("data-table-row")).toHaveLength(2);
+    // 部分送检过的通知用「部分送检」而不是「待送检」
+    expect(within(noticeBlock().getByText("FGIN-002").closest('[data-testid="data-table-row"]') as HTMLElement).getByText("部分送检")).toBeVisible();
+  });
+
+  it("行内「送检」按剩余可送检量建单并直接提交（submit: true），随后打开该批次的质检表单", async () => {
+    const calls = stubQcApi({
+      sources: [noticeSource()],
+      submissions: [submissionFixture({ id: "sub-1", submissionNo: "FGIS-001", orderNo: "SO-1001", status: "submitted" })],
+    });
+
+    render(<FinishedGoodsQcPanel />);
+    await noticeBlock().findByText("FGIN-001");
+    await userEvent.click(noticeBlock().getByRole("button", { name: "送检" }));
+
+    await waitFor(() => expect(postCalls(calls)).toHaveLength(1));
+    // 一个请求完成「建单 + 提交」：submit: true，数量取该通知的剩余可送检量
+    expect(postCalls(calls)[0].url).toBe("/api/v1/finished-goods/inspection-submissions");
+    expect(JSON.parse(String(postCalls(calls)[0].body))).toEqual({
+      production_order_id: "po-1",
+      source_type: "finished_goods_inbound_notice",
+      source_id: "src-1",
+      submitted_quantity: "120",
+      submission_date: today(),
+      submit: true,
+    });
+    // 送检成功后的页面级提示在 DOM 里（用文本查而不是 role：质检弹窗打开后 Radix 会把页面其余部分
+    // 标成 aria-hidden，`findByRole("status")` 会查不到这个明明还在的元素）。
+    expect(await screen.findByText(/已送检：FGIN-001（120 件）/)).toBeVisible();
+    // 送检成功后直接进入质检录入：弹窗落在该订单、并预选这一批送检单
+    expect(await screen.findByRole("heading", { name: "录入成品质检：SO-1001" })).toBeVisible();
+    expect(screen.getByTestId("action-field-submission_id")).toHaveTextContent("FGIS-001");
+  });
+
+  it("送检失败时给错误 toast，且不打开质检表单、不刷新", async () => {
+    const calls = stubQcApi({
+      sources: [noticeSource()],
+      submissions: [],
+      onCreate: () => apiErr(422, "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED", "送检数量超过来源可送检数量"),
+    });
+
+    render(
+      <>
+        <FinishedGoodsQcPanel />
+        <Toaster />
+      </>
+    );
+    await noticeBlock().findByText("FGIN-001");
+    const loadsBefore = callsTo(calls, "/finished-goods/qc/sources").length;
+
+    await userEvent.click(noticeBlock().getByRole("button", { name: "送检" }));
+
+    expect(await screen.findByTestId("toast-item")).toHaveTextContent("送检数量超过来源可送检数量");
+    expect(screen.queryByRole("heading", { name: /录入成品质检/ })).toBeNull();
+    expect(callsTo(calls, "/finished-goods/qc/sources")).toHaveLength(loadsBefore);
+  });
+
+  it("没有待送检通知时给空态，并说明去哪儿发通知", async () => {
+    stubQcApi({ sources: [], submissions: [] });
+
+    render(<FinishedGoodsQcPanel />);
+
+    expect(await noticeBlock().findByText("暂无待送检的成品入库通知")).toBeVisible();
+    expect(noticeBlock().getByText(/生产发「成品入库通知」后这里会出现待送检批次/)).toBeVisible();
+    expect(screen.getByTestId("finished-goods-qc-pending-notice-count")).toHaveTextContent("共 0 张");
+  });
+});

@@ -10,7 +10,17 @@ import { syncFinishedGoodsInboundNoticeStatus } from "./finished-goods-inbound-n
 // 厂内成品送检来源已改为「成品入库通知」（按包装工序累计报工量分批通知）；
 // in_house_completion 仅保留给历史送检单读取，不再接受新建。
 type SourceType = "finished_goods_inbound_notice" | "outsource_finished_goods_return" | "in_house_completion";
-type SubmissionInput = { production_order_id: string; source_type: SourceType; source_id: string; submitted_quantity: string; submission_date: string; remark?: string };
+/**
+ * 送检单入参。
+ *
+ * `submit`（2026-11-09）：建单的同时直接提交。成品质检页的「待送检（成品入库通知）」队列用它做
+ * **一键送检** —— 用户 2026-11-09 反馈「生产包装工序完成后提交成品入库通知，进入到成品质检，
+ * 成品质检页面没有显示这条记录」：通知本身不是送检单，旧流程要先在订单详情里「创建送检」再
+ * 「提交送检」，两步没做完质检队列里就什么都没有。让建单和提交在一个事务里完成，队列点一次就到位，
+ * 也避免「建了草稿、提交失败」留下一条半成品（草稿仍不进待质检队列）。
+ * 不传时保持原行为（草稿），订单详情里「创建送检 → 提交送检」的路照旧可用。
+ */
+type SubmissionInput = { production_order_id: string; source_type: SourceType; source_id: string; submitted_quantity: string; submission_date: string; remark?: string; submit?: boolean };
 type QcInput = { submission_id: string; inspection_date: string; inspected_quantity: string; qualified_quantity: string; conditional_accept_quantity: string; rejected_quantity: string; rejection_reason?: string; remark?: string };
 
 @Injectable()
@@ -106,11 +116,16 @@ export class FinishedGoodsQcService {
       if (input.source_type === "in_house_completion" && !["in_progress", "completed"].includes(lockedOrder.status)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_QC_SOURCE_NOT_READY", message: "厂内成品送检要求生产单处于生产中或已完成，当前状态不允许送检", details: [{ production_order_status: lockedOrder.status }] });
       const available = await this.sourceAvailable(tx, source.productionOrder.id, input.source_type, input.source_id);
       if (quantity.gt(available)) throw new UnprocessableEntityException({ code: "FINISHED_GOODS_SUBMISSION_QUANTITY_EXCEEDED", message: "送检数量超过来源可送检数量", details: [{ available_quantity: available.toString() }] });
-      const row = await tx.finishedGoodsInspectionSubmission.create({ data: { submissionNo: `FGI-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: source.productionOrder.orderNo, productionOrderId: source.productionOrder.id, sourceType: input.source_type, sourceId: input.source_id, productionOrderNoSnapshot: source.productionOrder.productionOrderNo, productNameSnapshot: source.productName, productSpecificationSnapshot: source.productionOrder.productSpecification, unitId: source.unitId, unitNameSnapshot: source.unitName, submittedQuantity: quantity, submissionDate: date, remark: input.remark, ...this.audit.create(user) } });
+      // 一键送检（2026-11-09）：建单与「提交送检」在同一个事务里完成，状态直接落 submitted；
+      // 通知状态同步也在这个事务里算，所以「通知 → 送检单 → 待质检队列」不会出现中间态。
+      const status = input.submit ? "submitted" : "draft";
+      const row = await tx.finishedGoodsInspectionSubmission.create({ data: { submissionNo: `FGI-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, orderNo: source.productionOrder.orderNo, productionOrderId: source.productionOrder.id, sourceType: input.source_type, sourceId: input.source_id, productionOrderNoSnapshot: source.productionOrder.productionOrderNo, productNameSnapshot: source.productName, productSpecificationSnapshot: source.productionOrder.productSpecification, unitId: source.unitId, unitNameSnapshot: source.unitName, submittedQuantity: quantity, submissionDate: date, remark: input.remark, status, ...this.audit.create(user) } });
       await syncFinishedGoodsInboundNoticeStatus(tx, source.noticeId, user);
       return row;
     });
-    await this.audit.record("finished_goods_inspection_submission.create", "finished_goods_inspection_submission", user.id, created.id, { order_no: created.orderNo, source_type: created.sourceType, source_id: created.sourceId, submitted_quantity: created.submittedQuantity.toString() });
+    // 审计只写一条，但把落库后的状态带上：一键送检与「先建草稿再提交」在审计里都查得到结果，
+    // 不必让人去比对另一条 .submit 事件才知道这张单到底送检了没有。
+    await this.audit.record("finished_goods_inspection_submission.create", "finished_goods_inspection_submission", user.id, created.id, { order_no: created.orderNo, source_type: created.sourceType, source_id: created.sourceId, submitted_quantity: created.submittedQuantity.toString(), status: created.status });
     return this.getSubmission(created.id);
   }
 

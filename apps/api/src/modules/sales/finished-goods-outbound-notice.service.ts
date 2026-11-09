@@ -78,14 +78,20 @@ export class FinishedGoodsOutboundNoticeService {
    * 为什么不给一个跨产品的总计：系统里不同销售单的单位并不统一（把 / kg / 套），
    * 把它们相加得到的是一个没有业务含义的数，还会让「未出库」看起来像能一起发货。
    * 所有非取消销售单下的非取消生产单都算在内（含尚未入库/尚未出库的）。
+   *
+   * 2026-11-09（用户：「成品出库总览明细表单那边要有订单号」）：除按「产品+单位」折起来的
+   * `groups` 外，另给一份**按生产单逐行的 `details`**——每行带 `order_no` / `production_order_no`。
+   * 为什么不在 `groups` 上直接加一列订单号：「产品+单位」一行可能由同一产品的多张销售单折成，
+   * 一格里塞多个订单号既读不出是哪个订单的量，也没法按订单排序；明细是一行一张生产单，
+   * 订单号与数量一一对应。两份数据同源、同一次 groupBy，不会出现汇总与明细对不上的情况。
    */
   async overview() {
     const productionOrders = await this.prisma.productionOrder.findMany({
       where: { deletedAt: null, NOT: { status: "cancelled" }, salesOrder: { deletedAt: null, NOT: { status: "cancelled" } } },
-      select: { id: true, unit: { select: { name: true } }, salesOrder: { select: { productName: true, unit: true } } },
+      select: { id: true, orderNo: true, productionOrderNo: true, unit: { select: { name: true } }, salesOrder: { select: { productName: true, unit: true } } },
       orderBy: { createdAt: "asc" },
     });
-    if (!productionOrders.length) return { production_order_count: 0, groups: [] };
+    if (!productionOrders.length) return { production_order_count: 0, groups: [], details: [] };
     const ids = productionOrders.map((production) => production.id);
     // 两条 groupBy 拿到全部生产单的入库/出库合计，避免按生产单逐条聚合（生产单一多就是 N+1）。
     const [inbound, outbound] = await Promise.all([
@@ -95,18 +101,32 @@ export class FinishedGoodsOutboundNoticeService {
     const inboundBy = new Map(inbound.map((row) => [row.productionOrderId, new Prisma.Decimal(row._sum.quantity ?? 0)]));
     const outboundBy = new Map(outbound.map((row) => [row.productionOrderId, new Prisma.Decimal(row._sum.quantity ?? 0)]));
     const groups = new Map<string, { product_name: string; unit: string; inbound: Prisma.Decimal; outbound: Prisma.Decimal; productionOrders: number }>();
+    const details: Array<{ order_no: string; production_order_no: string; product_name: string; unit: string; inbound_quantity: string; outbound_quantity: string; unshipped_quantity: string }> = [];
     for (const production of productionOrders) {
       const productName = production.salesOrder?.productName ?? "";
       const unit = production.unit?.name ?? production.salesOrder?.unit ?? "";
+      const productionInbound = inboundBy.get(production.id) ?? new Prisma.Decimal(0);
+      const productionOutbound = outboundBy.get(production.id) ?? new Prisma.Decimal(0);
+      details.push({
+        order_no: production.orderNo,
+        production_order_no: production.productionOrderNo,
+        product_name: productName,
+        unit,
+        inbound_quantity: productionInbound.toString(),
+        outbound_quantity: productionOutbound.toString(),
+        unshipped_quantity: this.unshippedQuantity(productionInbound, productionOutbound).toString(),
+      });
       // 分组键用 NUL 连接：产品名里出现空格/斜杠时不会和单位名串到一起。
       const key = `${productName}\u0000${unit}`;
       const group = groups.get(key) ?? { product_name: productName, unit, inbound: new Prisma.Decimal(0), outbound: new Prisma.Decimal(0), productionOrders: 0 };
-      group.inbound = group.inbound.plus(inboundBy.get(production.id) ?? 0);
-      group.outbound = group.outbound.plus(outboundBy.get(production.id) ?? 0);
+      group.inbound = group.inbound.plus(productionInbound);
+      group.outbound = group.outbound.plus(productionOutbound);
       group.productionOrders += 1;
       groups.set(key, group);
     }
-    return { production_order_count: productionOrders.length, groups: [...groups.values()].map((group) => this.totalsRow(group.product_name, group.unit, group.inbound, group.outbound, group.productionOrders)) };
+    // 明细按「订单号 → 生产单号」排：同一张销售单的多个生产单相邻，便于按订单对账。
+    details.sort((left, right) => left.order_no.localeCompare(right.order_no) || left.production_order_no.localeCompare(right.production_order_no));
+    return { production_order_count: productionOrders.length, groups: [...groups.values()].map((group) => this.totalsRow(group.product_name, group.unit, group.inbound, group.outbound, group.productionOrders)), details };
   }
 
   /** 通知仓库出库：不传 production_order_id 时对「所有可出库的生产单」各建一张整批通知。 */

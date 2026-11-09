@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { IsDateString, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { IsBoolean, IsDateString, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
 import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.service";
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
@@ -8,7 +8,9 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { FinishedGoodsQcService } from "./finished-goods-qc.service";
 import { FinishedGoodsInventoryService } from "../warehouse/finished-goods-inventory.service";
 
-class SubmissionDto { @IsUUID() production_order_id!: string; @IsString() source_type!: "finished_goods_inbound_notice" | "outsource_finished_goods_return" | "in_house_completion"; @IsUUID() source_id!: string; @IsString() submitted_quantity!: string; @IsDateString() submission_date!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+// `submit`（2026-11-09）：一键送检 = 建单 + 提交在同一个事务里完成，供成品质检页的「待送检」队列使用。
+// 不传 / false 仍是草稿（订单详情里「创建送检 → 提交送检」的老路）。
+class SubmissionDto { @IsUUID() production_order_id!: string; @IsString() source_type!: "finished_goods_inbound_notice" | "outsource_finished_goods_return" | "in_house_completion"; @IsUUID() source_id!: string; @IsString() submitted_quantity!: string; @IsDateString() submission_date!: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsOptional() @IsBoolean() submit?: boolean; }
 class UpdateSubmissionDto { @IsOptional() @IsString() submitted_quantity?: string; @IsOptional() @IsDateString() submission_date?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsString() reason!: string; @IsOptional() expected_version?: number; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 class QcDto { @IsUUID() submission_id!: string; @IsDateString() inspection_date!: string; @IsString() inspected_quantity!: string; @IsString() qualified_quantity!: string; @IsString() conditional_accept_quantity!: string; @IsString() rejected_quantity!: string; @IsOptional() @IsString() @MaxLength(1000) rejection_reason?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }

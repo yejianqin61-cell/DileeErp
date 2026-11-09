@@ -12,7 +12,7 @@ import { EmptyState } from "../feedback/states";
 import { emitQcDataChanged, subscribeQcDataChanged } from "./qc-refresh";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
-type Source = AuditRow & { source_id: string; source_type: string; order_no: string; production_order_no: string; production_order_id: string; unit: string; available_quantity: string; source_status: string; product_name?: string; product_specification?: string; notice_id?: string; notice_no?: string; batch_no?: string | null; packaging_operation_name?: string };
+type Source = AuditRow & { source_id: string; source_type: string; order_no: string; production_order_no: string; production_order_id: string; unit: string; available_quantity: string; source_status: string; product_name?: string; product_specification?: string; notice_id?: string; notice_no?: string; notice_date?: string; notice_quantity?: string; batch_no?: string | null; packaging_operation_name?: string };
 type QcRecord = AuditRow & { qc_id: string; qc_no: string; order_no: string; submission_id: string; status?: string; source_type: string; source_id: string; unit?: string; qualified_quantity: string; conditional_accept_quantity: string; rejected_quantity?: string; available_for_inbound_quantity: string; conditionally_accepted: boolean; inspected_quantity?: string; inspection_date?: string; rejection_reason?: string | null; available_for_correction?: boolean };
 type SubmissionQcRecord = { id: string; conclusion: string; inspectedQuantity: string };
 // 2026-11-07：listSubmissions 新增两个只读字段（累计已检 / 待检），供「待质检（全部订单）」列表直接展示。
@@ -24,8 +24,16 @@ const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClie
 const sourceLabel = (value: string) => value === "finished_goods_inbound_notice" ? "成品入库通知" : value === "in_house_completion" ? "厂内完工（历史）" : "外加工回厂";
 // 「待质检（全部订单）」的行集（设计 2026-11-07 §2.1）：已提交待检 / 部分已检。草稿、已检完、已作废都不进队列。
 const PENDING_QC_STATUSES = ["submitted", "inspecting"];
+// 「待送检（成品入库通知）」的行集（2026-11-09）：按包装工序累计报工发出、还没被送检的通知，
+// 用通知的 availableSubmissionQuantity（= 通知量 − 已送检量）作为待送检量；数量为 0 的天然不在列表里。
+// 为什么不把通知也算进待质检队列：通知不是送检单、还没有「本次检验数量」可比，
+// 两列数字（已检/待检）会变成一半有值一半是「—」；分成两段，送检后立刻从上段搬到下段。
+const PENDING_NOTICE_SOURCE_TYPE = "finished_goods_inbound_notice";
 // 队列里的状态词与订单详情不同：这里给质检员看的是「这张单现在该不该我去检」，所以用中文状态词。
 const pendingStatusLabel = (status: string) => status === "submitted" ? "待质检" : status === "inspecting" ? "质检中" : status;
+// 入库通知的状态词（与成品仓储页 noticeStatusLabels 同一口径）：这里只会出现前两种，
+// 已取消的通知后端不给来源、已全部送检的 available 为 0 也不会进来。
+const pendingNoticeStatusLabel = (status: string) => status === "pending" ? "待送检" : status === "partially_inbound" ? "部分送检" : status === "completed" ? "已完成" : status;
 
 /**
  * 成品质检「订单详情」里三张表的声明列宽（T21 成品来源 10 列 / T22 送检记录 8 列 / T23 质检记录 13 列，
@@ -112,6 +120,18 @@ const pendingStatusLabel = (status: string) => status === "submitted" ? "待质�
  *     与 T21 的「创建送检」同一个按钮宽度，取 10% 而不是 T21 的 12%：这张表的操作列后面没有「取消送检」这类第二按钮。
  *   合计：9+8+9+11+8+7+8+8+6+10 = 84%，另 16% 给 `auditColumns()` 的创建人/最后修改人 = 100%，
  *   与上面三张表同一套列边界。
+ *
+ * T25 待送检（成品入库通知）（2026-11-09 新增，9 列写宽度，总和 84%，另 16% 给 `auditColumns()`）
+ *
+ *  用户 2026-11-09：「生产包装工序完成后提交成品入库通知，进入到成品质检，成品质检页面没有显示这条记录」。
+ *  原因不是显示 bug：入库通知不是送检单，旧流程要在订单详情里先「创建送检」再「提交送检」，
+ *  两步没做完，「待质检（全部订单）」队列里就什么都没有（线上 3 张 pending 通知都是这个状态）。
+ *  这张表把「还没送检的通知」直接列出来，行内「送检」即按剩余可送检量建单并提交（一个事务），
+ *  列宽与 T24 同一档估算基准（1440 屏可用 1108px）：
+ *   - 入库通知 10% / 订单号 8% / 生产单 9% / 成品 18% / 通知数量与待送检各 7% / 通知日期 8% /
+ *     状态 7% / 操作 10%：每个数字的来历见 `COLUMN_WIDTH.pendingNotice*` 上面的逐条说明；
+ *   - 与 T24 的差别只有一处：这张表没有「已检 / 待检」两列（还没送检，没有已检量），
+ *     多出的宽度给了「成品」与「通知数量」，所以两段列表上下叠在同一页时列边界不必对齐。
  */
 const COLUMN_WIDTH = {
   // T21 成品来源
@@ -153,6 +173,27 @@ const COLUMN_WIDTH = {
   pendingPendingQuantity: "8%",
   pendingStatus: "6%",
   pendingActions: "10%",
+  // T25 待送检（成品入库通知）（2026-11-09 新增，9 列写宽度，总和 84%，另 16% 给 `auditColumns()`）。
+  // 与 T24 同一档估算基准（1440 屏可用 1108px，1% ≈ 11px，单元格左右内边距 24px）：
+  //   - 入库通知 10%（111px / 可用 87px）：`FGN-20261109-0766EB38` 这类编号，省略 + hover 看全；
+  //   - 订单号 8%（89px / 65px）：识别一行的第一眼信息，与 T24 同宽；
+  //   - 生产单 9%（100px / 76px）：编号型文本，省略 + hover；
+  //   - 成品 18%（199px / 175px）：`产品名 / 规格` 两个快照拼接，长度不可控 —— 余量集中给它；
+  //   - 通知数量 / 待送检 各 7%（78px / 54px）：`88 件` 这种带单位写法（与 T22/T24 同口径）；
+  //   - 通知日期 8%（89px / 65px）：`2026-11-09` 定长 10 字符会被省略，hover 看全文（与 T24 订单号同宽）；
+  //   - 状态 7%（78px / 54px）：「待送检 / 部分送检」最多 4 个汉字 ≈52px，刚好；
+  //   - 操作 10%（111px / 87px）：只有 1 个「送检」按钮（2 字 ≈26px + 内边距 ≈20px = 46px），
+  //     与 T24 操作列同宽，按钮不贴省略边界。
+  //   合计：10+8+9+18+7+7+8+7+10 = 84%。
+  pendingNoticeNo: "10%",
+  pendingNoticeOrderNo: "8%",
+  pendingNoticeProductionOrderNo: "9%",
+  pendingNoticeProduct: "18%",
+  pendingNoticeQuantity: "7%",
+  pendingNoticeAvailable: "7%",
+  pendingNoticeDate: "8%",
+  pendingNoticeStatus: "7%",
+  pendingNoticeActions: "10%",
 } as const;
 
 export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: string } = {}) {
@@ -169,6 +210,14 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [categoryDialog, setCategoryDialog] = useState<DialogState | null>(null);
   const [pendingQcValues, setPendingQcValues] = useState<Record<string, string> | null>(null);
+  /** 正在送检的来源（行内按钮防重复点击；键用 source_id，一行一条通知）。 */
+  const [sendingSourceId, setSendingSourceId] = useState("");
+  /**
+   * 一键送检成功后要打开的质检表单。**不在 `await load()` 之后立刻 `openQc()`**：那时
+   * `submissions` 还是旧闭包（新送检单不在里面），表单的「订单内送检批次」下拉会缺这一项。
+   * 改由下面的 effect 等新送检单真的进了列表再开弹窗。
+   */
+  const [pendingQcOpen, setPendingQcOpen] = useState<{ orderNo: string; submissionId: string } | null>(null);
 
   async function load() {
     setError("");
@@ -186,6 +235,19 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
   useEffect(() => { if (initialOrderNo) void loadOrder(initialOrderNo); }, [initialOrderNo]);
   // 同页其它面板（来料质检 / 质检合格待入库）写入后，订单详情里的净值与可入库量也要刷新。
   useEffect(() => subscribeQcDataChanged("finished-goods-qc", () => { void load(); if (selectedOrderNo) void loadOrder(selectedOrderNo); }), [selectedOrderNo]);
+  /**
+   * 一键送检 → 等新送检单进入 `submissions` 后再打开「录入质检」。
+   * 依赖 `[pendingQcOpen, submissions]`：第一次渲染时列表还没刷新，effect 直接返回；
+   * `load()` 把新单写进 state 后 effect 再跑一遍，此时 `openQc` 的闭包里能看到它，
+   * 弹窗的「订单内送检批次」下拉才会有刚建的那一批（历史缺陷：选完订单号什么都没有，同一类时序问题）。
+   */
+  useEffect(() => {
+    if (!pendingQcOpen) return;
+    const created = submissions.find((item) => item.id === pendingQcOpen.submissionId);
+    if (!created) return;
+    setPendingQcOpen(null);
+    openQc(pendingQcOpen.orderNo, { submission_id: created.id });
+  }, [pendingQcOpen, submissions]);
 
   async function loadOrder(orderNo: string) {
     const normalized = orderNo.trim();
@@ -215,6 +277,33 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
       await apiPost<Submission>("/finished-goods/inspection-submissions", { production_order_id: source.production_order_id, source_type: source.source_type, source_id: source.source_id, submitted_quantity: source.available_quantity, submission_date: new Date().toISOString().slice(0, 10) });
       setMessage("成品送检单已创建"); await load(); await loadOrder(source.order_no); emitQcDataChanged("finished-goods-qc");
     } catch (cause) { setError(messageOf(cause, "成品送检单创建失败")); }
+  }
+  /**
+   * 一键送检：把「待送检（成品入库通知）」一行变成送检单并**直接提交**（`submit: true`）。
+   *
+   * 2026-11-09 用户反馈「生产包装工序完成后提交成品入库通知，进入到成品质检，成品质检页面没有显示
+   * 这条记录」：通知发出后不会自动变成送检单，旧流程要在订单详情里「创建送检 → 提交送检」两步，
+   * 没做完之前质检页看不见它。这里一次点击完成两步（服务端一个事务），刷新列表后直接打开质检表单。
+   * 送检数量取该通知的**剩余可送检量** `available_quantity`（= 通知量 − 已送检量，服务端算好的）：
+   * 已经送过一部分的通知再点一次就是补送剩余量，不会重复占用额度（服务端仍会做超量校验）。
+   */
+  async function submitInspection(source: Source) {
+    setSendingSourceId(source.source_id);
+    try {
+      const created = (await apiPost<Submission>("/finished-goods/inspection-submissions", {
+        production_order_id: source.production_order_id,
+        source_type: source.source_type,
+        source_id: source.source_id,
+        submitted_quantity: source.available_quantity,
+        submission_date: new Date().toISOString().slice(0, 10),
+        submit: true,
+      })).data;
+      setMessage(`已送检：${source.notice_no ?? source.source_id}（${source.available_quantity} ${source.unit}），送检单 ${created.submissionNo}`);
+      notifySuccess(`送检单 ${created.submissionNo} 已提交，接着录入质检`);
+      await load();
+      setPendingQcOpen({ orderNo: source.order_no, submissionId: created.id });
+    } catch (cause) { notifyError(messageOf(cause, "送检失败")); }
+    finally { setSendingSourceId(""); }
   }
   function submit(id: string) { void run(() => apiPost(`/finished-goods/inspection-submissions/${id}/submit`), "送检单已提交"); }
   function editSubmission(item: Submission) {
@@ -331,6 +420,20 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
       if (leftDate !== rightDate) return leftDate < rightDate ? -1 : 1;
       return left.submissionNo.localeCompare(right.submissionNo);
     }), [submissions]);
+  /**
+   * 「待送检（成品入库通知）」的行集（2026-11-09）：`GET /finished-goods/qc/sources` 里
+   * `source_type = finished_goods_inbound_notice` 的行 —— 后端只给「还有可送检量」的通知
+   * （`available_quantity > 0`），所以不用前端再筛数量。按「先通知先送」排：通知日期升序、同日按通知单号。
+   * 数据来自同一个 `load()`，不新增请求。
+   */
+  const pendingNoticeSources = useMemo(() => sources
+    .filter((item) => item.source_type === PENDING_NOTICE_SOURCE_TYPE)
+    .sort((left, right) => {
+      const leftDate = (left.notice_date ?? "").slice(0, 10);
+      const rightDate = (right.notice_date ?? "").slice(0, 10);
+      if (leftDate !== rightDate) return leftDate < rightDate ? -1 : 1;
+      return (left.notice_no ?? "").localeCompare(right.notice_no ?? "");
+    }), [sources]);
   const sourceColumns: ColumnDef<Source>[] = [{ accessorKey: "production_order_no", header: "生产单", meta: { width: COLUMN_WIDTH.sourceProductionOrderNo } }, { id: "source", header: "来源", accessorFn: (row) => sourceLabel(row.source_type), meta: { width: COLUMN_WIDTH.sourceOrigin } }, { id: "notice", header: "入库通知/批次", accessorFn: (row) => row.notice_no ? `${row.notice_no}${row.batch_no ? ` / ${row.batch_no}` : ""}` : "-", meta: { width: COLUMN_WIDTH.sourceNotice } }, { id: "packaging", header: "包装工序", accessorFn: (row) => row.packaging_operation_name ?? "-", meta: { width: COLUMN_WIDTH.sourcePackaging } }, { accessorKey: "available_quantity", header: "可送检数量", meta: { width: COLUMN_WIDTH.sourceAvailableQuantity } }, { accessorKey: "unit", header: "单位", meta: { width: COLUMN_WIDTH.sourceUnit } }, { accessorKey: "source_status", header: "状态", meta: { width: COLUMN_WIDTH.sourceStatus } }, ...auditColumns<Source>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.sourceActions }, cell: ({ row }) => <Button size="sm" onClick={() => void createSubmission(row.original)}>创建送检</Button> }];
   const submissionColumns: ColumnDef<Submission>[] = [{ accessorKey: "submissionNo", header: "送检单", meta: { width: COLUMN_WIDTH.submissionNo } }, { id: "source", header: "来源", accessorFn: (row) => `${sourceLabel(row.sourceType)} / ${row.sourceId}`, meta: { width: COLUMN_WIDTH.submissionOrigin } }, { id: "product", header: "成品", accessorFn: (row) => `${row.productNameSnapshot ?? "-"} / ${row.productSpecificationSnapshot ?? "-"}`, meta: { width: COLUMN_WIDTH.submissionProduct } }, { id: "quantity", header: "送检数量", accessorFn: (row) => `${row.submittedQuantity} ${row.unitNameSnapshot}`, meta: { width: COLUMN_WIDTH.submissionQuantity } }, { accessorKey: "status", header: "状态", meta: { width: COLUMN_WIDTH.submissionStatus } }, ...auditColumns<Submission>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.submissionActions }, cell: ({ row }) => <div className="action-row">{row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => editSubmission(row.original)}>编辑</Button><Button size="sm" variant="secondary" onClick={() => submit(row.original.id)}>提交送检</Button></>}{["draft", "submitted"].includes(row.original.status) && !row.original.qcRecords.length ? <Button size="sm" variant="ghost" onClick={() => cancelSubmission(row.original)}>取消送检</Button> : null}</div> }];
   const qcColumns: ColumnDef<QcRecord>[] = [{ accessorKey: "qc_no", header: "质检单", meta: { width: COLUMN_WIDTH.qcNo } }, { accessorKey: "order_no", header: "订单号", meta: { width: COLUMN_WIDTH.qcOrderNo } }, { accessorKey: "submission_id", header: "送检记录", meta: { width: COLUMN_WIDTH.qcSubmission } }, { id: "source_type", header: "来源类型", accessorFn: (row) => sourceLabel(row.source_type), meta: { width: COLUMN_WIDTH.qcOriginType } }, { id: "date", header: "检验日期", accessorFn: (row) => (row.inspection_date ?? "").slice(0, 10) || "-", meta: { width: COLUMN_WIDTH.qcDate } }, { accessorKey: "qualified_quantity", header: "合格数量", meta: { width: COLUMN_WIDTH.qcQualified } }, { accessorKey: "conditional_accept_quantity", header: "条件接收", meta: { width: COLUMN_WIDTH.qcConditional } }, { id: "rejected", header: "不合格", accessorFn: (row) => row.rejected_quantity ?? "-", meta: { width: COLUMN_WIDTH.qcRejected } }, { accessorKey: "available_for_inbound_quantity", header: "可入库数量（净值）", meta: { width: COLUMN_WIDTH.qcAvailableForInbound } }, { id: "unit", header: "单位", accessorFn: (row) => row.unit ?? "-", meta: { width: COLUMN_WIDTH.qcUnit } }, ...auditColumns<QcRecord>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.qcActions }, cell: ({ row }) => row.original.available_for_correction === false ? <span className="panel-note">已有入库/次品事实，不可更正</span> : <Button size="sm" variant="ghost" onClick={() => correctQc(row.original)}>更正</Button> }];
@@ -352,12 +455,37 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
     ...auditColumns<Submission>(),
     { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.pendingActions }, cell: ({ row }) => <Button size="sm" onClick={() => openQc(row.original.orderNo, { submission_id: row.original.id })}>录入质检</Button> },
   ];
+  /**
+   * 「待送检（成品入库通知）」的列（T25，9 列 + 审计两列）。长文本列一律 `accessorFn` 返回屏幕上那串字
+   * 本身，DataTable 才能把完整内容挂到 `title`（省略号 hover 看全文）；数量列按「数字 + 单位」拼，
+   * 与 T24 的送检数量同口径。
+   */
+  const pendingNoticeColumns: ColumnDef<Source>[] = [
+    { id: "noticeNo", header: "入库通知", accessorFn: (row) => row.notice_no ?? "-", meta: { width: COLUMN_WIDTH.pendingNoticeNo } },
+    { accessorKey: "order_no", header: "订单号", meta: { width: COLUMN_WIDTH.pendingNoticeOrderNo } },
+    { accessorKey: "production_order_no", header: "生产单", meta: { width: COLUMN_WIDTH.pendingNoticeProductionOrderNo } },
+    { id: "product", header: "成品", accessorFn: (row) => `${row.product_name ?? "-"} / ${row.product_specification ?? "-"}`, meta: { width: COLUMN_WIDTH.pendingNoticeProduct } },
+    { id: "noticeQuantity", header: "通知数量", accessorFn: (row) => `${row.notice_quantity ?? "-"} ${row.unit}`, meta: { width: COLUMN_WIDTH.pendingNoticeQuantity } },
+    { id: "available", header: "待送检", accessorFn: (row) => `${row.available_quantity} ${row.unit}`, meta: { width: COLUMN_WIDTH.pendingNoticeAvailable } },
+    { id: "noticeDate", header: "通知日期", accessorFn: (row) => (row.notice_date ?? "").slice(0, 10) || "-", meta: { width: COLUMN_WIDTH.pendingNoticeDate } },
+    { id: "status", header: "状态", accessorFn: (row) => pendingNoticeStatusLabel(row.source_status), meta: { width: COLUMN_WIDTH.pendingNoticeStatus } },
+    ...auditColumns<Source>(),
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.pendingNoticeActions }, cell: ({ row }) => <Button size="sm" disabled={sendingSourceId === row.original.source_id} onClick={() => void submitInspection(row.original)}>{sendingSourceId === row.original.source_id ? "送检中…" : "送检"}</Button> },
+  ];
 
   return <section className="panel" style={{ gridColumn: "1 / -1" }}>
     <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field, values) => field.name === "submission_id" ? openSubmission(values) : setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => dialog?.submit(values)} />
     <ActionDialog open={Boolean(categoryDialog)} onOpenChange={(open) => { if (!open) setCategoryDialog(null); }} title={categoryDialog?.title ?? "新建类目"} fields={categoryDialog?.fields ?? []} onSubmit={(values) => { const current = categoryDialog; void current?.submit(values); }} />
     <div className="panel-heading"><h2>成品质检</h2><div className="page-actions"><Button variant="secondary" data-testid="finished-goods-qc-choose-order" onClick={chooseQcOrder}>录入质检</Button><Button variant="ghost" onClick={() => void load()}>刷新</Button></div></div>
     {message && <p className="status-success panel-body" role="status">{message}</p>}{error && <p className="status-error panel-body" role="alert">{error}</p>}
+    {/* 待送检（成品入库通知）（2026-11-09，用户：「生产包装工序完成后提交成品入库通知，进入到成品质检，
+        成品质检页面没有显示这条记录」）。旧页面上通知不是送检单、不进任何列表，只有先到订单详情里
+        建送检 + 提交才看得见；这里把「还没送检的通知」直接列为工作队列，点一次「送检」就建单并提交。 */}
+    <div className="panel-body" data-testid="finished-goods-qc-pending-notices">
+      <div className="panel-heading"><h3>待送检（成品入库通知）</h3><span className="panel-note" data-testid="finished-goods-qc-pending-notice-count">共 {pendingNoticeSources.length} 张</span></div>
+      <p className="panel-note">生产在生产单包装工序累计报工后「发成品入库通知」，通知一发出就会出现在这里。点「送检」按该通知剩余可送检量生成成品送检单并直接提交，随即打开质检表单；送检后这张通知会移到下面的「待质检（全部订单）」。想先只送一部分，可到下方订单详情的「成品来源」里创建送检单后再手动提交。</p>
+      <DataTable columns={pendingNoticeColumns} data={pendingNoticeSources} empty={<EmptyState title="暂无待送检的成品入库通知" description="生产发「成品入库通知」后这里会出现待送检批次；仓库送检后进入下方待质检队列。" />} />
+    </div>
     {/* 待质检（全部订单）（2026-11-07，用户：「成品提交质检入库，成品质检页面要显示所有待质检列表」）：
         跨订单的质检工作队列，一行一个待检批次，替代原来页面底部那句「请选择订单号」的占位说明。
         数据来自同一个 load() 的 submissions，不新增请求。 */}

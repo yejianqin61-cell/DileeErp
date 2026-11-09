@@ -210,8 +210,7 @@ test("全链路：员工日报报工 → 分批通知 → 送检/QC → 分批�
 });
 
 // 回归：过账时若不排除自己，「可用量 = 合格量 − (草稿+已过账，含自己)」会让任何入库单都过不了账。
-test("多批次入库：每批都能过账，但累计不得超过 QC 合格量", async () => {
-  const state = store();
+test("多批次入库：每批都能过账，但累计不得超过 QC 合格量", async () => {  const state = store();
   const { stock } = services(state);
   const user = { id: "user-1" };
   state.submissions.push({ id: "sub-1", sourceType: "finished_goods_inbound_notice", sourceId: "notice-x", submittedQuantity: new Prisma.Decimal("20"), status: "qc_completed", deletedAt: null });
@@ -230,4 +229,39 @@ test("多批次入库：每批都能过账，但累计不得超过 QC 合格量"
   await assert.rejects(() => stock.createInbound({ qc_record_id: "qc-1", quantity: "1" }, user), (error) => error.getResponse().code === "FINISHED_GOODS_INBOUND_QUANTITY_EXCEEDED");
   const third = await stock.createInbound({ qc_record_id: "qc-1", quantity: "0.5" }, user).catch(() => null);
   assert.equal(third, null);
+});
+
+// 一键送检（2026-11-09，用户：「生产包装工序完成后提交成品入库通知，进入到成品质检，成品质检页面
+// 没有显示这条记录」）：入库通知不是送检单，旧流程要先「创建送检」再「提交送检」两步，没做完时
+// 成品质检页的待质检队列里什么都没有（线上 3 张 pending 通知就是这种状态）。
+// 新增 submit: true —— 建单与提交在同一个事务里完成，通知一送检就进待质检队列。
+test("一键送检：submit: true 时直接落 submitted，通知进入待质检队列、剩余量按通知口径递减", async () => {
+  const state = store();
+  const { notices, qc } = services(state);
+  const user = { id: "user-1" };
+  const notice = await notices.create({ production_order_id: "order-1", notice_quantity: "60", notice_date: "2026-11-09" }, user);
+
+  // 通知刚发出：成品质检页的「待送检（成品入库通知）」就有它（`GET /finished-goods/qc/sources` 同一份数据）
+  const before = await qc.listSources();
+  assert.equal(before.length, 1);
+  assert.equal(before[0].notice_no, notice.noticeNo);
+  assert.equal(before[0].available_quantity, "60");
+
+  // 先送一部分：直接提交，通知按既有口径推到「部分送检」，队列里只剩剩余 40 可送
+  const part = await qc.createSubmission({ production_order_id: "order-1", source_type: "finished_goods_inbound_notice", source_id: notice.id, submitted_quantity: "40", submission_date: "2026-11-09", submit: true }, user);
+  assert.equal(part.status, "submitted", "submit: true 不再落草稿");
+  assert.equal(state.submissions[0].status, "submitted");
+  assert.equal(state.notices[0].status, "partially_inbound", "部分送检 → 部分送检状态（草稿才只占额度）");
+  const middle = await qc.listSources();
+  assert.equal(middle.length, 1, "还剩 20 可送检，仍在待送检队列");
+  assert.equal(middle[0].available_quantity, "20");
+
+  // 一键送检后不需要再调 submit：可以直接录入 QC（这就是队列「送检 → 录入质检」的下一步）
+  await qc.createQcRecord({ submission_id: part.id, inspection_date: "2026-11-09", inspected_quantity: "20", qualified_quantity: "20", conditional_accept_quantity: "0", rejected_quantity: "0" }, user);
+  assert.equal(state.submissions[0].status, "inspecting", "部分检验 → 质检中");
+
+  // 补送剩余 20：全部送检且无在途入库 → 通知按既有口径变「已完成」，可送检队列清空
+  await qc.createSubmission({ production_order_id: "order-1", source_type: "finished_goods_inbound_notice", source_id: notice.id, submitted_quantity: "20", submission_date: "2026-11-09", submit: true }, user);
+  assert.equal(state.notices[0].status, "completed");
+  assert.deepEqual(await qc.listSources(), [], "通知量已全部送检 → 不再出现在待送检队列");
 });

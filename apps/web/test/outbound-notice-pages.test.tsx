@@ -114,6 +114,11 @@ const summaryAfterPartialNotify: Summary = {
 const finishedGoodsOverview = {
   production_order_count: 2,
   groups: [{ product_name: "连衣裙", unit: "件", inbound_quantity: "90", outbound_quantity: "10", unshipped_quantity: "80", production_order_count: 2 }],
+  // 2026-11-09 用户：「成品出库总览明细表单那边要有订单号」——明细一行一张生产单，带订单号。
+  details: [
+    { order_no: "DL260001", production_order_no: "MO-20260101-AAAA1111", product_name: "连衣裙", unit: "件", inbound_quantity: "60", outbound_quantity: "10", unshipped_quantity: "50" },
+    { order_no: "DL260002", production_order_no: "MO-20260102-BBBB2222", product_name: "连衣裙", unit: "件", inbound_quantity: "30", outbound_quantity: "0", unshipped_quantity: "30" },
+  ],
 };
 
 function salesApi(routes: { summary?: (callIndex: number) => Response; notify?: () => Response | Promise<Response>; overview?: (callIndex: number) => Response } = {}) {
@@ -174,16 +179,54 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
     expect(callsTo(calls, "/api/v1/sales-orders/finished-goods-summary")).toHaveLength(1);
     expect(overviewCalls()).toBe(1);
     // 三个数字的表头必须与用户口径同名，且说清「按产品与单位分行、不做跨单位合计」
-    expect(panel.getByText("全部成品数")).toBeVisible();
-    expect(panel.getByText("已出库数")).toBeVisible();
-    expect(panel.getByText("未出库数")).toBeVisible();
+    // （表头在明细表里会重复出现一次，所以断言限定在汇总表容器内 —— 见组件里的两个 testid 容器）
+    const summary = within(panel.getByTestId("finished-goods-overview-summary"));
+    expect(summary.getByText("全部成品数")).toBeVisible();
+    expect(summary.getByText("已出库数")).toBeVisible();
+    expect(summary.getByText("未出库数")).toBeVisible();
     expect(panel.getByText(/不同单位的数量不做合计/)).toBeVisible();
 
-    const row = panel.getByText("连衣裙").closest('[data-testid="data-table-row"]') as HTMLElement;
+    const row = summary.getByText("连衣裙").closest('[data-testid="data-table-row"]') as HTMLElement;
     expect(within(row).getByText("件")).toBeVisible();
     expect(within(row).getByText("90")).toBeVisible();
     expect(within(row).getByText("10")).toBeVisible();
     expect(within(row).getByText("80")).toBeVisible();
+  });
+
+  it("成品出库总览二级页：明细表带订单号与生产单号，一行一张生产单（2026-11-09）", async () => {
+    salesApi();
+    renderOverview();
+    const panel = within(await screen.findByTestId("finished-goods-overview"));
+
+    // 汇总表下方是「按订单号明细」：表头必须是用户点名的「订单号」，并带生产单号区分分批投产
+    expect(panel.getByRole("heading", { name: "按订单号明细" })).toBeVisible();
+    expect(panel.getByText(/一行一张生产单：订单号 → 生产单号/)).toBeVisible();
+    const detailTable = panel.getByTestId("finished-goods-overview-detail");
+    expect(within(detailTable).getByText("订单号")).toBeVisible();
+    expect(within(detailTable).getByText("生产单号")).toBeVisible();
+
+    // 两行分别是两张销售单：订单号、生产单号、该批的三个数量都在同一行
+    const first = within(detailTable).getByText("DL260001").closest('[data-testid="data-table-row"]') as HTMLElement;
+    expect(within(first).getByText("MO-20260101-AAAA1111")).toBeVisible();
+    expect(within(first).getByText("60")).toBeVisible();
+    expect(within(first).getByText("10")).toBeVisible();
+    expect(within(first).getByText("50")).toBeVisible();
+    const second = within(detailTable).getByText("DL260002").closest('[data-testid="data-table-row"]') as HTMLElement;
+    expect(within(second).getByText("MO-20260102-BBBB2222")).toBeVisible();
+    // 这一行入库 30、出库 0、未出库 30：两个 30 都在同一行（用 getAllByText 而不是 getByText，否则会撞重名）
+    expect(within(second).getAllByText("30")).toHaveLength(2);
+    expect(within(second).getByText("0")).toBeVisible();
+  });
+
+  it("成品出库总览二级页：旧后端不返回 details 时明细给空态，不影响汇总表（兼容）", async () => {
+    salesApi({ overview: () => apiOk({ ...finishedGoodsOverview, details: undefined }) });
+    renderOverview();
+    const panel = within(await screen.findByTestId("finished-goods-overview"));
+
+    expect(await panel.findByText("暂无按订单号的成品明细")).toBeVisible();
+    // 汇总表照常渲染：缺字段只影响明细，不能把整页变成错误态
+    expect(panel.getByText("连衣裙")).toBeVisible();
+    expect(panel.getByText("90")).toBeVisible();
   });
 
   it("成品出库总览二级页：失败只影响这一页（自己给错误态与重试），且它只拉总览这一个接口", async () => {
@@ -202,7 +245,8 @@ describe("销售页：出库通知明细（成品入库与出库）", () => {
     failing = false;
     await userEvent.click(panel.getByTestId("error-state-retry"));
 
-    expect(await panel.findByText("全部成品数")).toBeVisible();
+    expect(await panel.findByTestId("finished-goods-overview-summary")).toBeVisible();
+    expect(within(panel.getByTestId("finished-goods-overview-summary")).getByText("全部成品数")).toBeVisible();
     expect(callsTo(calls, "/api/v1/sales-orders/finished-goods-summary")).toHaveLength(2);
   });
 

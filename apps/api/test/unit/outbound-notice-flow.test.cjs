@@ -82,9 +82,9 @@ test("通知全部出库后不再占用额度；退货回仓后可出库量随�
 test("成品总览：按「产品+单位」分行给出三个数字，不做跨单位合计", async () => {
   const service = salesService({
     productionOrders: [
-      { id: "po-1", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } },
-      { id: "po-2", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } },
-      { id: "po-3", unitId: "u-2", unit: { name: "kg" }, salesOrder: { productName: "面料", unit: "kg" } },
+      { id: "po-1", orderNo: "SO-A", productionOrderNo: "MO-1", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } },
+      { id: "po-2", orderNo: "SO-B", productionOrderNo: "MO-2", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } },
+      { id: "po-3", orderNo: "SO-C", productionOrderNo: "MO-3", unitId: "u-2", unit: { name: "kg" }, salesOrder: { productName: "面料", unit: "kg" } },
     ],
     inboundGroups: [
       { productionOrderId: "po-1", _sum: { quantity: decimal(70) } },
@@ -103,16 +103,23 @@ test("成品总览：按「产品+单位」分行给出三个数字，不做跨�
     { product_name: "连衣裙", unit: "件", inbound_quantity: "90", outbound_quantity: "30", unshipped_quantity: "60", production_order_count: 2 },
     { product_name: "面料", unit: "kg", inbound_quantity: "12.5", outbound_quantity: "0", unshipped_quantity: "12.5", production_order_count: 1 },
   ]);
+  // 2026-11-09 用户：「成品出库总览明细表单那边要有订单号」——明细一行一张生产单，带订单号与生产单号，
+  // 数量口径与汇总同源（同一份 groupBy），按订单号 → 生产单号排序。
+  assert.deepEqual(overview.details, [
+    { order_no: "SO-A", production_order_no: "MO-1", product_name: "连衣裙", unit: "件", inbound_quantity: "70", outbound_quantity: "30", unshipped_quantity: "40" },
+    { order_no: "SO-B", production_order_no: "MO-2", product_name: "连衣裙", unit: "件", inbound_quantity: "20", outbound_quantity: "0", unshipped_quantity: "20" },
+    { order_no: "SO-C", production_order_no: "MO-3", product_name: "面料", unit: "kg", inbound_quantity: "12.5", outbound_quantity: "0", unshipped_quantity: "12.5" },
+  ]);
 });
 
 test("成品总览：没有生产单时返回空分组（而不是抛错）", async () => {
   const overview = await salesService({ productionOrders: [] }).overview();
-  assert.deepEqual(overview, { production_order_count: 0, groups: [] });
+  assert.deepEqual(overview, { production_order_count: 0, groups: [], details: [] });
 });
 
 test("成品总览：未出库数做下限保护（退货回仓导致出库超过入库时显示 0，不显示负数）", async () => {
   const service = salesService({
-    productionOrders: [{ id: "po-1", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } }],
+    productionOrders: [{ id: "po-1", orderNo: "SO-A", productionOrderNo: "MO-1", unitId: "u-1", unit: { name: "件" }, salesOrder: { productName: "连衣裙", unit: "件" } }],
     inboundGroups: [{ productionOrderId: "po-1", _sum: { quantity: decimal(10) } }],
     outboundGroups: [{ productionOrderId: "po-1", _sum: { quantity: decimal(15) } }],
   });
@@ -120,6 +127,10 @@ test("成品总览：未出库数做下限保护（退货回仓导致出库超�
   assert.equal(group.inbound_quantity, "10");
   assert.equal(group.outbound_quantity, "15");
   assert.equal(group.unshipped_quantity, "0");
+
+  // 明细行做同一套下限保护：否则汇总显示 0、明细显示 -5，用户会以为明细算错了。
+  const [detail] = (await service.overview()).details;
+  assert.equal(detail.unshipped_quantity, "0");
 });
 
 test("销售单合计：明细行折成「产品+单位」合计，未出库 = 全部成品 − 已出库", async () => {
