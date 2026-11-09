@@ -13,6 +13,8 @@ class PayableEntryDto {
   @IsOptional() @IsString() amount?: string;
   @IsOptional() @IsString() @MaxLength(1000) amount_reason?: string;
   @IsOptional() @IsDateString() confirmation_date?: string;
+  /** 2026-11-09 R2-3（D5）：接收应付时可一并录发票类型（可空；税率按来源与 R2-3 规则在确认/重算时归一）。 */
+  @IsOptional() @IsIn(["special", "general", "none"]) invoice_type?: "special" | "general" | "none" | null;
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }

@@ -1,0 +1,361 @@
+{
+  "generatedAt": "2026-11-09T06:01:18.760Z",
+  "summary": {
+    "total": 26,
+    "passed": 26,
+    "failed": 0,
+    "counterExamples": 2
+  },
+  "results": [
+    {
+      "id": "D4-01",
+      "group": "D4-强制核销额",
+      "title": "应付：核销额 ≠ 未核销余额 → 422 ALLOCATION_MUST_SETTLE_PAYABLE（不允许部分核销）",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "ALLOCATION_MUST_SETTLE_PAYABLE",
+        "message": "核销金额必须等于该应付的未核销余额（只允许整单结清，不允许部分核销）",
+        "details": [
+          {
+            "payable_amount": "100",
+            "available_amount": "100",
+            "requested_amount": "60"
+          }
+        ]
+      }
+    },
+    {
+      "id": "D4-02",
+      "group": "D4-强制核销额",
+      "title": "应付：核销额=余额但付款金额 ≠ 核销合计 → 422 PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION",
+        "message": "付款金额必须等于核销合计（不允许部分付款，也不允许把多付的差额留在付款单上）",
+        "details": [
+          {
+            "payment_amount": "110",
+            "allocated_amount": "100"
+          }
+        ]
+      }
+    },
+    {
+      "id": "D4-03",
+      "group": "D4-强制核销额",
+      "title": "应收：核销额 ≠ 未收余额 → 422 ALLOCATION_MUST_SETTLE_RECEIVABLE",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "ALLOCATION_MUST_SETTLE_RECEIVABLE",
+        "message": "核销金额必须等于该应收的未核销余额（只允许整单结清，不允许部分核销）",
+        "details": [
+          {
+            "receivable_amount": "100",
+            "available_amount": "100",
+            "requested_amount": "60"
+          }
+        ]
+      }
+    },
+    {
+      "id": "D4-04",
+      "group": "D4-强制核销额",
+      "title": "应收：核销额=余额但收款金额 ≠ 核销合计 → 422 PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION",
+        "message": "收款金额必须等于核销合计（不允许部分收款，也不允许把多收的差额留在收款单上）",
+        "details": [
+          {
+            "payment_amount": "110",
+            "allocated_amount": "100"
+          }
+        ]
+      }
+    },
+    {
+      "id": "D4-05",
+      "group": "D4-强制核销额",
+      "title": "历史 partially_paid：只结余款（available=60）→ 付款 60 核销 60 成功，单据转 paid",
+      "status": "PASS",
+      "detail": {
+        "entryStatus": "paid",
+        "activeAllocations": [
+          "40",
+          "60"
+        ]
+      }
+    },
+    {
+      "id": "D5-01",
+      "group": "D5-进项税",
+      "title": "专票 11300 / 13% → 借 原材料 10000 + 借 进项税 1300 / 贷 应付账款 11300，借贷严格相等",
+      "status": "PASS",
+      "detail": {
+        "lines": [
+          "debit:原材料:10000.0000",
+          "debit:应交税费-进项税:1300.0000",
+          "credit:应付账款:11300.0000"
+        ],
+        "debitTotal": "11300.0000"
+      }
+    },
+    {
+      "id": "D5-02",
+      "group": "D5-进项税",
+      "title": "普票（general）不拆：两行、全额进业务科目（即使传了税率也忽略）",
+      "status": "PASS",
+      "detail": {
+        "lines": 2,
+        "debit": "11300.0000"
+      }
+    },
+    {
+      "id": "D5-03",
+      "group": "D5-进项税",
+      "title": "专票缺税率 → 422 INVOICE_TAX_RATE_REQUIRED（不猜 13%）",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "INVOICE_TAX_RATE_REQUIRED",
+        "message": "专票挂账必须填写大于 0 的税率（单号 AP-TAX-1）：不含税与进项税不能靠猜，请补税率后重新确认",
+        "details": []
+      }
+    },
+    {
+      "id": "D5-04",
+      "group": "D5-进项税",
+      "title": "税率 r≥1（百分数写法 13）→ 422 INVALID_TAX_RATE（防「看起来有净额有税额、实际全错」）",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "INVALID_TAX_RATE",
+        "message": "税率 13 不是有效的价内税率（要求 0 < r < 1，如 13% 填 0.13；百分数写法请在应付侧归一）：单号 AP-TAX-1",
+        "details": [
+          {
+            "tax_rate": "13"
+          }
+        ]
+      }
+    },
+    {
+      "id": "D5-05",
+      "group": "D5-进项税",
+      "title": "专票但科目表没有进项税科目 → 422 INPUT_TAX_SUBJECT_MISSING（不静默换科目）",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "INPUT_TAX_SUBJECT_MISSING",
+        "message": "专票挂账需要进项税科目（候选：应交税费-进项税 / 应交税费-应交增值税（进项税额） / 应交税费），请在「收支管理 → 会计科目」里补上后重新确认",
+        "details": [
+          {
+            "candidates": [
+              "应交税费-进项税",
+              "应交税费-应交增值税（进项税额）",
+              "应交税费"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "SID-01",
+      "group": "R3-1-科目id",
+      "title": "挂账凭证全部行落 subject_id；业务科目维度落 business_subject_id / label",
+      "status": "PASS",
+      "detail": {
+        "debit": {
+          "subjectId": "sub-raw",
+          "businessSubjectId": "sub-cost"
+        },
+        "credit": {
+          "subjectId": "sub-ap"
+        }
+      }
+    },
+    {
+      "id": "SID-02",
+      "group": "R3-1-科目id",
+      "title": "同名跨类目 → subject_id 留空（不猜分类），subject_label 快照照旧保留",
+      "status": "PASS",
+      "detail": {
+        "ambiguous": {
+          "label": "其他应收款",
+          "subjectId": null
+        },
+        "unique": "sub-bank"
+      }
+    },
+    {
+      "id": "SID-03",
+      "group": "R3-1-科目id",
+      "title": "红冲沿用原行的 subject_id / business_subject_id（不按名称重新解析）",
+      "status": "PASS",
+      "detail": {
+        "redId": "voucher-18",
+        "redLines": [
+          {
+            "subjectId": "sub-raw",
+            "businessSubjectId": "sub-cost"
+          },
+          {
+            "subjectId": "sub-ap",
+            "businessSubjectId": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "IDX-01",
+      "group": "R3-4-部分索引",
+      "title": "迁移 DDL：部分唯一索引只约束「未删 + 未红冲 + 有来源」，旧全局唯一键被替换",
+      "status": "PASS",
+      "detail": {
+        "condition": "\"deleted_at\" IS NULL AND \"status\" <> 'reversed' AND \"source_id\" IS NOT NULL;"
+      }
+    },
+    {
+      "id": "IDX-02",
+      "group": "R3-4-部分索引",
+      "title": "红冲后可再建：来源只有 reversed 行时 createAccrual(post) 新建 posted（部分索引不把红冲行算占位）",
+      "status": "PASS",
+      "detail": {
+        "voucherCount": 2,
+        "newStatus": "posted",
+        "activeCount": 1
+      }
+    },
+    {
+      "id": "IDX-03",
+      "group": "R3-4-部分索引",
+      "title": "双 active 被拦：同一来源已有 posted 时再确认 → 幂等复用（replayed=true），不新建第二张",
+      "status": "PASS",
+      "detail": {
+        "replayed": true,
+        "vouchers": 1,
+        "constraint": "P2002"
+      }
+    },
+    {
+      "id": "LINK-01",
+      "group": "R3-5-冲销联动",
+      "title": "付款冲销 → 回冲流水 + 红冲该流水凭证（红字凭证 posted、来源 = 被红冲凭证）",
+      "status": "PASS",
+      "detail": {
+        "payment": "reversed",
+        "flow": "reversed",
+        "originalVoucher": "reversed",
+        "redVoucher": "记-2026-11-0101"
+      }
+    },
+    {
+      "id": "LINK-02",
+      "group": "R3-5-冲销联动",
+      "title": "流水冲销 → 红冲其已过账凭证；重复冲销幂等（不产生第二张红字）",
+      "status": "PASS",
+      "detail": {
+        "original": "reversed",
+        "reds": 1,
+        "idempotent": true
+      }
+    },
+    {
+      "id": "LINK-03",
+      "group": "R3-5-冲销联动",
+      "title": "流水冲销且凭证还是草稿 → 软删草稿（不生成红字，草稿不是账务事实）",
+      "status": "PASS",
+      "detail": {
+        "action": "draft_discarded",
+        "deletedAt": true
+      }
+    },
+    {
+      "id": "AUTO-01",
+      "group": "R3-7-自动过账",
+      "title": "由流水自动生成的凭证 = posted（留 voucher.post auto 审计），业务科目维度取收支类目",
+      "status": "PASS",
+      "detail": {
+        "status": "posted",
+        "businessSubjectId": "sub-cost"
+      }
+    },
+    {
+      "id": "AUTO-02",
+      "group": "R3-7-自动过账",
+      "title": "已过账凭证的流水不可直接改 → 422 CASH_FLOW_HAS_POSTED_VOUCHER；无凭证的流水仍可改",
+      "status": "PASS",
+      "detail": {
+        "blocked": "CASH_FLOW_HAS_POSTED_VOUCHER",
+        "updated": "更正备注"
+      }
+    },
+    {
+      "id": "RE-01",
+      "group": "R3-6-重算与状态",
+      "title": "挂账凭证被红冲后 reaccrue → 新建 posted 凭证；accrual_status 变为 posted",
+      "status": "PASS",
+      "detail": {
+        "result": {
+          "id": "voucher-33",
+          "voucherNo": "记-2026-11-0002",
+          "status": "posted",
+          "replayed": false
+        },
+        "vouchers": [
+          "reversed",
+          "posted"
+        ],
+        "accrualStatus": "posted"
+      }
+    },
+    {
+      "id": "RE-02",
+      "group": "R3-6-重算与状态",
+      "title": "已有 posted 挂账凭证时 reaccrue → 422 ACCRUAL_ALREADY_POSTED（绝不静默挂第二笔）",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "ACCRUAL_ALREADY_POSTED",
+        "message": "挂账凭证 记-2026-11-0001 已过账，不能再按来源重算；要改请先在凭证页红冲该凭证",
+        "details": []
+      }
+    },
+    {
+      "id": "RE-03",
+      "group": "R3-6-重算与状态",
+      "title": "accrual_status 四态：posted / draft / reversed / none（posted > draft > reversed）",
+      "status": "PASS",
+      "detail": {
+        "ap-posted": "posted",
+        "ap-draft": "draft",
+        "ap-reversed": "reversed",
+        "ap-none": "none",
+        "ap-both": "posted"
+      }
+    },
+    {
+      "id": "CX-01",
+      "group": "CX-反证",
+      "title": "反证 1：去掉部分唯一索引条件（恢复全局唯一）→ 红冲后重算必须失败（证明 IDX-02 不是假通过）",
+      "status": "PASS",
+      "detail": {
+        "partialIndex": "允许重算",
+        "globalUnique": "失败：P2002"
+      }
+    },
+    {
+      "id": "CX-02",
+      "group": "CX-反证",
+      "title": "反证 2：去掉进项税行 → 借贷不相等（证明 D5 拆税行分录是平衡的必要条件）",
+      "status": "PASS",
+      "detail": {
+        "code": "VOUCHER_NOT_BALANCED",
+        "message": "借贷不平衡：借方 10000 / 贷方 11300"
+      }
+    }
+  ]
+}

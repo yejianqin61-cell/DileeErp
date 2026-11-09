@@ -10,6 +10,19 @@ const { settlementRemark } = require("../../dist/modules/warehouse/finished-good
  */
 const cashFlowStub = (extra = {}) => ({ requireSubject: async () => null, recordConfirmation: async () => null, ...extra });
 
+/**
+ * VoucherService 替身（2026-11-09「确认即过账」起，回退 / 取消都要先问挂账凭证）：
+ * 默认「这个来源没有已过账的挂账凭证、也没有草稿要作废」，即历史数据的常态。
+ * 需要覆盖护栏时用 `{ postedAccrualOf: async () => ({ id, voucherNo }) }` 把已过账的账摆出来。
+ */
+const vouchersStub = (extra = {}) => ({
+  createAccrual: async () => null,
+  accruedSourceIds: async () => new Set(),
+  postedAccrualOf: async () => null,
+  discardDraftAccrual: async () => null,
+  ...extra,
+});
+
 test("分批出库的应收备注写明折算口径（逐单尾差 ≤ 0.0001），整单出库不加这句", () => {
   const sales = { quantity: new Prisma.Decimal(3), unitPrice: new Prisma.Decimal(10), settlementUnitPrice: new Prisma.Decimal("33.3333"), receivableAmount: new Prisma.Decimal(100), settlementMethod: "tt", localCurrencyAmount: new Prisma.Decimal(720) };
 
@@ -50,6 +63,8 @@ function confirmHarness({ row, drafts = [] } = {}) {
   // 「不该被调用」的护栏 —— 留着它才守得住「哪天有人把 recordConfirmation 加回来」。
   const cashFlowCalls = [];
   const accrualCalls = [];
+  /** 第三参（`{ client, post }`）：2026-11-09「确认即过账」—— 挂账在确认事务内、生成即 posted。 */
+  const accrualOptions = [];
   const prisma = {
     bank: { findFirst: async ({ where }) => (where.id === "bank-dead" ? null : { id: where.id, bankName: "农业银行", accountNumber: "5706" }) },
     receivableSource: {
@@ -63,10 +78,16 @@ function confirmHarness({ row, drafts = [] } = {}) {
   const audit = { update: () => ({ updatedBy: "user-1" }), record: async () => {} };
   const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
   const vouchers = {
-    createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
+    createAccrual: async (input, _user, options) => {
+      accrualCalls.push(input);
+      accrualOptions.push(options);
+      return { id: `voucher-${accrualCalls.length}`, voucherNo: `记-2026-11-${String(accrualCalls.length).padStart(4, "0")}`, status: "posted", replayed: false };
+    },
     accruedSourceIds: async () => new Set(),
+    postedAccrualOf: async () => null,
+    discardDraftAccrual: async () => null,
   };
-  return { service: new ReceivableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls };
+  return { service: new ReceivableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls, accrualOptions };
 }
 
 const draftRow = (extra = {}) => ({
@@ -75,7 +96,7 @@ const draftRow = (extra = {}) => ({
 });
 
 test("逐条确认应收：挂一张账（借应收账款 / 贷收入），**不写收支流水、不动任何银行**", async () => {
-  const { service, cashFlowCalls, accrualCalls } = confirmHarness({ row: draftRow() });
+  const { service, cashFlowCalls, accrualCalls, accrualOptions } = confirmHarness({ row: draftRow() });
   const result = await service.confirm("source-1", { id: "user-1" }, { bank_id: "bank-1" });
   assert.deepEqual(cashFlowCalls, [], "确认那一刻钱还没到：写收支流水就等于「钱还没到先记了收款」");
   assert.equal(accrualCalls.length, 1);
@@ -87,6 +108,9 @@ test("逐条确认应收：挂一张账（借应收账款 / 贷收入），**不
   assert.equal(input.document_no, "AR-1");
   assert.equal(input.counterparty_name, "香港迪礼", "对方名称取客户名，不能退化成 UUID");
   assert.deepEqual(input.contra_subject_names, ["主营业务收入", "营业外收入"], "挂账的对方科目候选链（借应收账款 / 贷收入）");
+  // D2（2026-11-09「确认即过账」）：挂账在确认的**同一个事务**里创建，且生成即 posted。
+  assert.equal(accrualOptions[0].post, true, "确认生成的挂账凭证必须直接过账（草稿挂账在报表上等于没记）");
+  assert.ok(accrualOptions[0].client, "createAccrual 必须拿到确认事务的 client（两者同生共死）");
   assert.equal(result.accrual_voucher_id, "voucher-1");
   assert.equal(result.cash_flow_entry_id, null, "挂账不产生现金流");
   assert.equal(result.bank_missing, false, "挂账与银行无关，界面不该再提示「没选银行」");
@@ -109,7 +133,7 @@ test("逐条确认应收：银行非法时先拒绝，不确认任何应收（�
 });
 
 test("按订单批量确认应收：每条应收各挂一张账（批量没有单张单据可挂）", async () => {
-  const { service, cashFlowCalls, accrualCalls } = confirmHarness({ row: draftRow(), drafts: [
+  const { service, cashFlowCalls, accrualCalls, accrualOptions } = confirmHarness({ row: draftRow(), drafts: [
     { id: "s1", sourceNo: "AR-1", amount: new Prisma.Decimal("10"), currency: "USD", customerId: "customer-1", customer: { name: "香港迪礼" } },
     { id: "s2", sourceNo: "AR-2", amount: new Prisma.Decimal("32.5"), currency: "USD", customerId: "customer-1", customer: { name: "香港迪礼" } },
   ] });
@@ -122,6 +146,9 @@ test("按订单批量确认应收：每条应收各挂一张账（批量没有�
   assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
   assert.equal(result.bank_missing, false);
   assert.deepEqual(result.cash_flow_entry_ids, [], "挂账口径下不再有流水 id");
+  // D2（2026-11-09）：按订单批量确认的逐条挂账也在同一个事务里、生成即过账。
+  assert.equal(accrualOptions.every((options) => options.post === true), true, "批量挂账也必须直接过账");
+  assert.equal(accrualOptions.every((options) => Boolean(options.client)), true, "逐条挂账共用确认事务的 client");
 });
 
 // ---------------------------------------------------------------------------
@@ -140,6 +167,8 @@ const batchDraft = (id, extra = {}) => ({
 function batchHarness(rows, options = {}) {
   const cashFlowCalls = [];
   const accrualCalls = [];
+  /** 第三参（`{ client, post }`）：勾选批量确认同样「同一事务 + 生成即过账」。 */
+  const accrualOptions = [];
   const writes = [];
   let locks = 0;
   const sourceTable = {
@@ -160,10 +189,16 @@ function batchHarness(rows, options = {}) {
   const audit = { update: () => ({ updatedBy: "user-1" }), record: async () => {} };
   const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: `cf-${cashFlowCalls.length}` }; } });
   const vouchers = {
-    createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
+    createAccrual: async (input, _user, options) => {
+      accrualCalls.push(input);
+      accrualOptions.push(options);
+      return { id: `voucher-${accrualCalls.length}`, voucherNo: `记-2026-11-${String(accrualCalls.length).padStart(4, "0")}`, status: "posted", replayed: false };
+    },
     accruedSourceIds: async () => new Set(),
+    postedAccrualOf: async () => null,
+    discardDraftAccrual: async () => null,
   };
-  return { service: new ReceivableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls, writes, locks: () => locks };
+  return { service: new ReceivableService(prisma, audit, cashFlow, undefined, vouchers), cashFlowCalls, accrualCalls, accrualOptions, writes, locks: () => locks };
 }
 
 test("勾选批量确认应收：每条各挂一张账，并按币种给合计", async () => {
@@ -181,6 +216,9 @@ test("勾选批量确认应收：每条各挂一张账，并按币种给合计",
   assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
   assert.equal(result.bank_missing, false);
   assert.deepEqual(harness.writes[0].ids, ["r1", "r2"], "已确认/已取消的那两条不能被写成已确认");
+  // D2（2026-11-09）：勾选批量确认的逐条挂账也在同一个事务里、生成即过账。
+  assert.equal(harness.accrualOptions.every((options) => options.post === true), true, "批量挂账也必须直接过账");
+  assert.equal(harness.accrualOptions.every((options) => Boolean(options.client)), true, "逐条挂账共用确认事务的 client");
 });
 
 test("勾选批量确认应收：勾的全是不可确认的条目时拒绝，一张账都不挂", async () => {
@@ -248,7 +286,7 @@ test("应收台账按收款情况筛选：未收含草稿 + 已确认（挂账�
     { ...base, id: "r-paid", sourceNo: "AR-005", status: "paid", createdAt: new Date("2026-09-11T00:00:00.000Z") },
     { ...base, id: "r-cancelled", sourceNo: "AR-003", status: "cancelled", createdAt: new Date("2026-09-09T00:00:00.000Z") },
   ];
-  const prisma = { receivableSource: { findMany: async () => rows }, receivableReconciliation: { findMany: async () => [] } };
+  const prisma = { receivableSource: { findMany: async () => rows }, receivableReconciliation: { findMany: async () => [] }, voucher: { findMany: async () => [] } };
   const service = new ReceivableService(prisma, {}, cashFlowStub());
   const ids = (filter) => service.list(undefined, undefined, undefined, filter).then((result) => result.map((row) => row.id));
 
@@ -265,7 +303,7 @@ test("应收台账按创建日期区间与关键字筛选（区间含两端，�
     { ...base, id: "r-2", sourceNo: "AR-002", orderNo: "SO-2", createdAt: new Date("2026-09-30T00:00:00.000Z") },
     { ...base, id: "r-3", sourceNo: "AR-003", orderNo: "SO-3", createdAt: new Date("2026-10-01T00:00:00.000Z") },
   ];
-  const prisma = { receivableSource: { findMany: async () => rows }, receivableReconciliation: { findMany: async () => [] } };
+  const prisma = { receivableSource: { findMany: async () => rows }, receivableReconciliation: { findMany: async () => [] }, voucher: { findMany: async () => [] } };
   const service = new ReceivableService(prisma, {}, cashFlowStub());
   const ids = (filter) => service.list(undefined, undefined, undefined, filter).then((result) => result.map((row) => row.id));
 
@@ -311,6 +349,7 @@ test("应收草稿可编辑币种：只接受字典里的币种，并写回来�
 
 test("confirmed receivable can be reopened to draft with a reason", async () => {
   let updated;
+  const discarded = [];
   const row = { id: "source-1", status: "confirmed", orderNo: "SO-1", remark: null, allocations: [] };
   const prisma = {
     receivableSource: {
@@ -322,10 +361,73 @@ test("confirmed receivable can be reopened to draft with a reason", async () => 
       receivableSource: prisma.receivableSource,
     }),
   };
-  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} }, cashFlowStub());
+  // 历史数据（没有已过账的挂账凭证）：回退照旧；只剩草稿挂账时顺手作废（2026-11-09）。
+  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} }, cashFlowStub(), undefined, vouchersStub({
+    discardDraftAccrual: async (...args) => { discarded.push(args); return "记-2026-10-0001"; },
+  }));
   const result = await service.reopen("source-1", "修正应收金额", { id: "user-1" });
   assert.equal(result.status, "draft");
   assert.equal(updated.status, "draft");
+  assert.equal(discarded.length, 1, "回退时要顺手作废历史遗留的草稿挂账凭证");
+  assert.equal(discarded[0][0], "receivable_source");
+  assert.equal(discarded[0][1], "source-1");
+  assert.match(discarded[0][2], /回退草稿：修正应收金额/);
+});
+
+test("应收回退：挂账凭证已过账 → 422 要求先在凭证页红冲（否则凭证失去来源）", async () => {
+  let updated;
+  const row = { id: "source-1", status: "confirmed", orderNo: "SO-1", remark: null, allocations: [] };
+  const prisma = {
+    receivableSource: {
+      findFirst: async () => row,
+      update: async ({ data }) => { updated = data; return { ...row, ...data }; },
+    },
+    $transaction: async (fn) => fn({ $queryRaw: async () => [], receivableSource: prisma.receivableSource }),
+  };
+  const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} }, cashFlowStub(), undefined, vouchersStub({
+    postedAccrualOf: async () => ({ id: "voucher-9", voucherNo: "记-2026-11-0009" }),
+  }));
+  await assert.rejects(
+    () => service.reopen("source-1", "改错了", { id: "user-1" }),
+    (error) => error.getResponse().code === "RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL"
+      && error.getResponse().message.includes("记-2026-11-0009")
+      && error.getResponse().message.includes("红冲"),
+  );
+  assert.equal(updated, undefined, "被拦下时不写任何字段");
+});
+
+test("应收取消：挂账凭证已过账 → 422（先红冲再取消），草稿挂账则自动作废后继续", async () => {
+  const makeHarness = (vouchers) => {
+    let updated;
+    const discarded = [];
+    const row = { id: "source-1", status: "confirmed", orderNo: "SO-1", remark: null, allocations: [] };
+    const prisma = {
+      receivableSource: {
+        findFirst: async () => row,
+        update: async ({ data }) => { updated = data; return { ...row, ...data }; },
+      },
+      $transaction: async (fn) => fn({ $queryRaw: async () => [], receivableSource: prisma.receivableSource }),
+    };
+    const service = new ReceivableService(prisma, { update: () => ({}), record: async () => {} }, cashFlowStub(), undefined, vouchersStub({
+      discardDraftAccrual: async (...args) => { discarded.push(args); return "记-2026-10-0002"; },
+      ...vouchers,
+    }));
+    return { service, getUpdated: () => updated, discarded };
+  };
+
+  const posted = makeHarness({ postedAccrualOf: async () => ({ id: "voucher-9", voucherNo: "记-2026-11-0009" }) });
+  await assert.rejects(
+    () => posted.service.cancel("source-1", "客户退单", { id: "user-1" }),
+    (error) => error.getResponse().code === "RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL" && error.getResponse().message.includes("记-2026-11-0009"),
+  );
+  assert.equal(posted.getUpdated(), undefined, "被拦下时不写状态");
+  assert.equal(posted.discarded.length, 0, "被拦下时也不能去作废任何挂账凭证");
+
+  const legacy = makeHarness({});
+  const row = await legacy.service.cancel("source-1", "客户退单", { id: "user-1" });
+  assert.equal(row.status, "cancelled");
+  assert.equal(legacy.discarded.length, 1, "取消时顺手作废草稿挂账凭证，避免孤儿草稿");
+  assert.equal(legacy.discarded[0][0], "receivable_source");
 });
 
 test("receivable cancellation locks and blocks active posted allocations", async () => {
@@ -400,7 +502,7 @@ test("receivable impact preview traces outbound qc and finished-goods inbound", 
       },
     },
   };
-  const prisma = { receivableSource: { findFirst: async () => row } };
+  const prisma = { receivableSource: { findFirst: async () => row }, voucher: { findMany: async () => [] } };
   const service = new ReceivableService(prisma, {}, cashFlowStub());
   const preview = await service.impactPreview("source-1");
   assert.equal(preview.source_trace.outbound.outbound_no, "FGO-1");
@@ -471,6 +573,7 @@ test("应收列表标出每条应收被哪张对账单覆盖（订单号（填�
         ];
       },
     },
+    voucher: { findMany: async () => [] },
   };
   const result = await new ReceivableService(prisma, {}, cashFlowStub()).list();
   const byId = Object.fromEntries(result.map((row) => [row.id, row]));
@@ -482,5 +585,137 @@ test("应收列表标出每条应收被哪张对账单覆盖（订单号（填�
   // 列表本身的既有字段不能被覆盖标记挤掉
   assert.equal(byId["by-order"].customer_name, "香港迪礼");
   assert.equal(byId["by-order"].outstanding_amount, "100.0000");
+});
+
+/* ============================================================
+ * 2026-11-09 R3-6：应收侧挂账状态（accrual_status）+ 按来源重算（reaccrue）
+ * 契约：brief §R3-6 / 契约 D。应收来源没有 subjectId → 业务科目按「覆盖它的对账单科目」。
+ * ============================================================ */
+
+test("应收台账（R3-6）：accrual_status 按 posted > draft > reversed > none 归类", async () => {
+  const base = { amount: new Prisma.Decimal("100"), currency: "USD", status: "confirmed", orderNo: "SO-1", customerId: "c-1", customer: null, outbound: null, allocations: [], dueDate: null, createdAt: new Date("2026-11-01T00:00:00.000Z") };
+  const rows = [
+    { ...base, id: "r-posted", sourceNo: "AR-1" },
+    { ...base, id: "r-draft", sourceNo: "AR-2" },
+    { ...base, id: "r-reversed", sourceNo: "AR-3" },
+    { ...base, id: "r-reaccrued", sourceNo: "AR-4" },
+  ];
+  const prisma = {
+    receivableSource: { findMany: async () => rows },
+    receivableReconciliation: { findMany: async () => [] },
+    voucher: { findMany: async () => [
+      { sourceId: "r-posted", status: "posted" },
+      { sourceId: "r-draft", status: "draft" },
+      { sourceId: "r-reversed", status: "reversed" },
+      { sourceId: "r-reaccrued", status: "reversed" },
+      { sourceId: "r-reaccrued", status: "posted" },
+    ] },
+  };
+  const byId = new Map((await new ReceivableService(prisma, {}, cashFlowStub()).list()).map((row) => [row.id, row]));
+  assert.equal(byId.get("r-posted").accrual_status, "posted");
+  assert.equal(byId.get("r-draft").accrual_status, "draft");
+  assert.equal(byId.get("r-reversed").accrual_status, "reversed");
+  assert.equal(byId.get("r-reaccrued").accrual_status, "posted", "posted 优先于红冲历史行");
+});
+
+/** 应收 reaccrue 替身：同一事务内读来源 + createAccrual；`state.posted` 模拟是否已有 posted 挂账。 */
+function receivableReaccrueHarness(source, { posted = null, coverages = [] } = {}) {
+  const audits = [];
+  const accrualCalls = [];
+  const accrualOptions = [];
+  const state = { posted };
+  const sourceRow = { allocations: [], ...source };
+  const client = {
+    $queryRaw: async () => [],
+    receivableSource: { findFirst: async () => sourceRow, update: async ({ data }) => ({ ...sourceRow, ...data }) },
+    receivableReconciliation: { findMany: async () => coverages },
+  };
+  const prisma = {
+    $transaction: async (fn) => fn(client),
+    receivableSource: client.receivableSource,
+    voucher: { findMany: async () => (state.posted ? [{ sourceId: source.id, status: "posted" }] : []) },
+  };
+  const audit = { update: () => ({ updatedBy: "user-1" }), record: async (...args) => audits.push(args) };
+  const vouchers = {
+    postedAccrualOf: async () => state.posted,
+    discardDraftAccrual: async () => null,
+    createAccrual: async (input, _user, options) => {
+      accrualCalls.push(input);
+      accrualOptions.push(options);
+      const voucher = { id: "v-new", voucherNo: "记-2026-11-9002", status: "posted", replayed: false };
+      state.posted = { id: voucher.id, voucherNo: voucher.voucherNo };
+      return voucher;
+    },
+  };
+  return { service: new ReceivableService(prisma, audit, cashFlowStub(), undefined, vouchers), audits, accrualCalls, accrualOptions, state };
+}
+
+const reaccruableSource = (extra = {}) => ({
+  id: "source-1", sourceNo: "AR-1", orderNo: "SO-1", customerId: "customer-1", customer: { name: "香港迪礼" },
+  status: "confirmed", amount: new Prisma.Decimal("1200"), currency: "CNY", createdAt: new Date("2026-11-01T00:00:00.000Z"),
+  allocations: [], ...extra,
+});
+
+test("应收按来源重算（R3-6）：红冲后 reaccrue 新建 posted 凭证；业务科目取覆盖它的对账单科目", async () => {
+  const coverage = { id: "recon-1", reconciliationNo: "ARR-1", status: "resolved", customerId: "customer-1", orderNo: null, currency: "CNY", periodStart: new Date("2026-11-01T00:00:00.000Z"), periodEnd: new Date("2026-11-30T00:00:00.000Z"), subjectId: "subj-other-receivable" };
+  const harness = receivableReaccrueHarness(reaccruableSource(), { posted: null, coverages: [coverage] });
+  const result = await harness.service.reaccrue("source-1", { id: "user-1" }, "红冲后重算");
+
+  assert.deepEqual(result, { id: "v-new", voucherNo: "记-2026-11-9002", status: "posted", replayed: false });
+  const input = harness.accrualCalls[0];
+  assert.equal(input.source_type, "receivable_source");
+  assert.equal(input.source_id, "source-1");
+  assert.equal(input.document_no, "AR-1");
+  assert.equal(input.amount.toString(), "1200");
+  assert.equal(input.contra_subject_id, "subj-other-receivable", "应收没有业务科目列 → 取对账单科目");
+  assert.equal(harness.accrualOptions[0].post, true, "重算必须生成即过账");
+  assert.ok(harness.accrualOptions[0].client, "读来源与建凭证同一事务");
+  assert.equal(harness.audits[0][0], "receivable.reaccrue");
+  assert.equal(harness.audits[0][4].voucher_no, "记-2026-11-9002");
+});
+
+test("应收按来源重算（R3-6）：已 posted → 422 ACCRUAL_ALREADY_POSTED；草稿/已回退/已取消/已删除 → 422 RECEIVABLE_NOT_RECALCULABLE", async () => {
+  const posted = receivableReaccrueHarness(reaccruableSource(), { posted: { id: "v-old", voucherNo: "记-2026-11-0001" } });
+  await assert.rejects(
+    () => posted.service.reaccrue("source-1", { id: "user-1" }),
+    (error) => error.getResponse().code === "ACCRUAL_ALREADY_POSTED",
+  );
+  assert.deepEqual(posted.accrualCalls, []);
+
+  for (const status of ["draft", "reversed", "cancelled", "paid"]) {
+    const harness = receivableReaccrueHarness(reaccruableSource({ status }));
+    await assert.rejects(
+      () => harness.service.reaccrue("source-1", { id: "user-1" }),
+      (error) => error.getResponse().code === "RECEIVABLE_NOT_RECALCULABLE",
+      `status=${status} 不得重算`,
+    );
+    assert.deepEqual(harness.accrualCalls, []);
+  }
+  const deleted = receivableReaccrueHarness(reaccruableSource({ deletedAt: new Date() }));
+  await assert.rejects(
+    () => deleted.service.reaccrue("source-1", { id: "user-1" }),
+    (error) => error.getResponse().code === "RECEIVABLE_NOT_RECALCULABLE",
+    "软删除的应收不得重算",
+  );
+  assert.deepEqual(deleted.accrualCalls, []);
+});
+
+test("应收按来源重算（R3-6）闭环：reaccrue → accrual_status 回 posted → 再 cancel 仍被 posted 护栏挡住", async () => {
+  const harness = receivableReaccrueHarness(reaccruableSource(), { posted: null });
+  await harness.service.reaccrue("source-1", { id: "user-1" });
+
+  const listPrisma = {
+    receivableSource: { findMany: async () => [{ ...reaccruableSource(), allocations: [], customer: null, outbound: null }] },
+    receivableReconciliation: { findMany: async () => [] },
+    voucher: { findMany: async () => (harness.state.posted ? [{ sourceId: "source-1", status: "posted" }] : []) },
+  };
+  const [row] = await new ReceivableService(listPrisma, {}, cashFlowStub()).list();
+  assert.equal(row.accrual_status, "posted", "重算后台账回到 posted");
+
+  await assert.rejects(
+    () => harness.service.cancel("source-1", "想取消", { id: "user-1" }),
+    (error) => error.getResponse().code === "RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL",
+    "重算产生的 posted 挂账同样挡住取消（护栏不放松）",
+  );
 });
 

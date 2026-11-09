@@ -102,11 +102,12 @@ function confirmHarness(reconciliation, drafts) {
   const audit = { create: () => ({}), update: () => ({ updatedBy: "user-1" }), record: async (...args) => audits.push(args), recordWithOrderNo: async (...args) => audits.push(args) };
   const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
   // 2026-09-24 起「确认应收」= 挂账（逐条一张凭证），不再写收支流水：cashFlowCalls 现在是反向护栏。
+  const accrualOptions = [];
   const vouchers = {
-    createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
+    createAccrual: async (input, _user, options) => { accrualCalls.push(input); accrualOptions.push(options); return { id: `voucher-${accrualCalls.length}`, voucherNo: `记-${accrualCalls.length}`, status: options?.post ? "posted" : "draft", replayed: false }; },
     accruedSourceIds: async () => new Set(),
   };
-  return { service: new ReconciliationService(prisma, audit, {}, cashFlow, undefined, vouchers), locks, updates, audits, cashFlowCalls, accrualCalls, reconciliationUpdates };
+  return { service: new ReconciliationService(prisma, audit, {}, cashFlow, undefined, vouchers), locks, updates, audits, cashFlowCalls, accrualCalls, accrualOptions, reconciliationUpdates };
 }
 
 const draftSource = (id, amount) => ({ id, sourceNo: `AR-${id}`, orderNo: "SO-1", amount: new Prisma.Decimal(amount), currency: "CNY" });
@@ -135,6 +136,9 @@ test("对账对平后批量确认范围内的草稿应收，逐条行锁、逐�
   assert.deepEqual(harness.cashFlowCalls, [], "确认不再写收支流水：钱还没到");
   assert.deepEqual(harness.accrualCalls.map((call) => call.source_id), ["s1", "s2"]);
   assert.deepEqual(harness.accrualCalls.map((call) => call.amount.toString()), ["10", "32.5"]);
+  // 2026-11-09「确认即过账」：挂账在调用方事务内创建（client）且直接 posted（post=true）。
+  assert.deepEqual(harness.accrualOptions.map((options) => options?.post), [true, true], "确认即过账：挂账凭证直接 posted");
+  assert.ok(harness.accrualOptions.every((options) => options?.client), "确认与挂账同一事务：必须把事务客户端传下去");
   assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
   assert.equal(result.bank_missing, false);
 });

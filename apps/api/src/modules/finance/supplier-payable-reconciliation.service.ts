@@ -6,6 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { CurrencyService } from "../../platform/currency/currency.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { payableInReconciliationScope } from "./supplier-payable.domain";
+import { resolvePayableInvoice, type ResolvedPayableInvoice } from "./supplier-payable.service";
 import { requireActiveBank } from "./bank-selection";
 import { CashFlowService } from "./cash-flow.service";
 import { SOURCE_PAYABLE, VoucherService } from "./voucher.service";
@@ -175,7 +176,7 @@ export class SupplierPayableReconciliationService {
    * 而对账单上的科目是**一个**值 —— 拿它盖住所有条目，备用金就会被记成「管理费用」。
    * 对账单上的科目仍然是「这批应付整体算什么」的缺省值（历史对账单只有它）。
    */
-  async confirmPayables(id: string, user: CurrentUser, override: { bank_id?: string | null; subject_id?: string | null } = {}) {
+  async confirmPayables(id: string, user: CurrentUser, override: { bank_id?: string | null; subject_id?: string | null; invoice_type?: string | null; tax_rate?: string | null } = {}) {
     // **先进校验、后进事务**：等事务提交完才发现银行非法，应付已被确认、流水却没写，
     // 账面上凭空少一笔支出（确认与记账必须同生共死）。
     if (override.bank_id) await requireActiveBank(this.prisma, override.bank_id, "支付银行不存在或已停用");
@@ -187,18 +188,31 @@ export class SupplierPayableReconciliationService {
       if (!this.canConfirmPayables(current.status)) throw this.invalid("RECONCILIATION_NOT_COMPLETED", `对账尚未完成（当前：${STATUS_LABELS[current.status] ?? current.status}），请先处理差异`);
       const drafts = await tx.supplierPayableEntry.findMany({
         where: { ...this.entryScope(current), status: "draft" },
-        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, subjectId: true, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
+        // 2026-11-09 R2-3（D5）：发票类型/税率与条目一起取出来，整批只给「尚未录」的条目补值。
+        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, subjectId: true, invoiceType: true, taxRate: true, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
         orderBy: { createdAt: "asc" },
       });
       const confirmed: typeof drafts = [];
       const skipped: Array<{ id: string; payable_no: string; reason: string }> = [];
+      /** 每条应付本次采用的发票口径（审计与挂账共用；专票税率无效时整批回滚）。 */
+      const invoices = new Map<string, ResolvedPayableInvoice>();
       for (const draft of drafts) {
         if (draft.payableSource?.status === "voided" || draft.outsourcePayableSource?.status === "voided") {
           skipped.push({ id: draft.id, payable_no: draft.payableNo, reason: "来源已作废" });
           continue;
         }
         await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${draft.id}::uuid FOR UPDATE`;
-        await tx.supplierPayableEntry.update({ where: { id: draft.id }, data: { status: "confirmed", ...this.audit.update(user) } });
+        const invoice = resolvePayableInvoice({
+          invoiceType: override.invoice_type,
+          taxRate: override.tax_rate,
+          entryInvoiceType: draft.invoiceType,
+          entryTaxRate: draft.taxRate,
+        });
+        invoices.set(draft.id, invoice);
+        const data: Prisma.SupplierPayableEntryUpdateInput = { status: "confirmed", ...(invoice.persist ?? {}), ...this.audit.update(user) };
+        await tx.supplierPayableEntry.update({ where: { id: draft.id }, data });
+        draft.invoiceType = invoice.invoiceType;
+        draft.taxRate = invoice.taxRate;
         confirmed.push(draft);
       }
       const bankId = override.bank_id === undefined ? current.bankId : (override.bank_id || null);
@@ -206,32 +220,42 @@ export class SupplierPayableReconciliationService {
       if (bankId !== current.bankId || subjectId !== current.subjectId) {
         await tx.supplierPayableReconciliation.update({ where: { id }, data: { bankId, subjectId, ...this.audit.update(user) } });
       }
-      return { current, confirmed, skipped, bankId, subjectId };
+      /**
+       * **挂账与确认同一事务、挂账直接过账**（2026-11-09 用户拍板「确认即过账」）。
+       *
+       * 对账单只是「一次确认多条」的入口，仍然逐条挂账（合并成一张会让「这条应付有没有挂过账」
+       * 查不出来，销账时要按来源判定）；任一条失败整批回滚。
+       */
+      const accruals: Array<{ id: string; replayed: boolean } | null> = [];
+      for (const entry of confirmed) {
+        accruals.push(await this.accruals.createAccrual({
+          source_type: SOURCE_PAYABLE,
+          source_id: entry.id,
+          document_no: entry.payableNo,
+          voucher_date: this.today(),
+          currency: entry.currency,
+          amount: entry.amount,
+          counterparty_name: current.supplier?.name ?? current.supplierId,
+          // 项目归类与供应商付款过账同一套口径：按来源类型选候选链。
+          contra_subject_names: entry.sourceType ? paymentSubjectNames(entry.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
+          // 条目上填过科目就以它为准（见方法注释的优先级）：只有条目自己知道这一笔是备用金还是房租。
+          contra_subject_id: entry.subjectId ?? subjectId,
+          // 2026-11-09 D5：专票带已归一税率拆进项税；普票/无票/未录一律 null（不拆）。
+          invoice_type: entry.invoiceType ?? null,
+          tax_rate: entry.invoiceType === "special" ? (entry.taxRate ?? null) : null,
+          // R3-1 辅助维度（2026-11-09 task-28 收尾）：业务科目 = 条目手选 > 对账单科目（与单条确认同一条链），
+          // 缺了它，按对账单确认出来的挂账凭证分录就没有 business_subject_id/label。
+          business_subject_id: entry.subjectId ?? subjectId,
+          remark: `应付对账确认（${current.reconciliationNo}）`,
+        }, user, { client: tx, post: true }));
+      }
+      return { current, confirmed, skipped, bankId, subjectId, accruals, invoices };
     });
     const confirmedAmount = result.confirmed.reduce((sum, entry) => sum.plus(entry.amount), new Prisma.Decimal(0));
     // **挂账**（确认应付那一步）：每条应付各挂一张，借 成本/存货类科目 / 贷 `应付账款`。
-    // 对账单只是「一次确认多条」的入口，所以仍然逐条 —— 合并成一张会让「这条应付有没有挂过账」
-    // 变得查不出来（销账时要按来源判定，见 VoucherService.accruedSourceIds）。
+    // 2026-11-09 起与确认同事务、生成即已过账；上面的循环已把凭证建好，这里只汇总 id。
     const accrualVoucherIds: string[] = [];
-    for (const entry of result.confirmed) {
-      const accrual = await this.accruals.createAccrual({
-        source_type: SOURCE_PAYABLE,
-        source_id: entry.id,
-        document_no: entry.payableNo,
-        voucher_date: this.today(),
-        currency: entry.currency,
-        amount: entry.amount,
-        counterparty_name: result.current.supplier?.name ?? result.current.supplierId,
-        // 项目归类与供应商付款过账同一套口径：按来源类型选候选链，
-        // 这样「原料入库」确认出来是「原材料 成本」、「外加工签收」确认出来是「成品外加工费」。
-        contra_subject_names: entry.sourceType ? paymentSubjectNames(entry.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
-        // 条目上填过科目就以它为准（见方法注释的优先级）：其他应付的四类支出共用 `other` 这个来源类型，
-        // 只有条目自己知道这一笔是备用金还是房租。
-        contra_subject_id: entry.subjectId ?? result.subjectId,
-        remark: `应付对账确认（${result.current.reconciliationNo}）`,
-      }, user);
-      if (accrual) accrualVoucherIds.push(accrual.id);
-    }
+    result.accruals.forEach((accrual) => { if (accrual) accrualVoucherIds.push(accrual.id); });
     await this.audit.record("supplier_payable_reconciliation.confirm_payables", "supplier_payable_reconciliation", user.id, id, {
       reconciliation_no: result.current.reconciliationNo,
       supplier_id: result.current.supplierId,
@@ -240,6 +264,10 @@ export class SupplierPayableReconciliationService {
       bank_id: result.bankId,
       cash_flow_entry_id: null,
       accrual_voucher_ids: accrualVoucherIds,
+      // 2026-11-09 R2-3：税率归一与「被忽略的 tax_rate」都要可追溯。
+      invoice_types: result.confirmed.map((entry) => result.invoices.get(entry.id)?.invoiceType ?? null),
+      tax_rate_raws: result.confirmed.map((entry) => result.invoices.get(entry.id)?.taxRateRaw ?? null),
+      ignored_tax_rates: result.confirmed.map((entry) => result.invoices.get(entry.id)?.ignoredTaxRate ?? null),
       skipped: result.skipped,
     });
     return {
@@ -256,7 +284,11 @@ export class SupplierPayableReconciliationService {
       bank_missing: false,
       skipped_count: result.skipped.length,
       skipped: result.skipped,
-      entries: result.confirmed.map((entry) => ({ id: entry.id, payable_no: entry.payableNo, order_no: entry.orderNo, amount: entry.amount.toFixed(4), currency: entry.currency, status: "confirmed" })),
+      entries: result.confirmed.map((entry) => ({
+        id: entry.id, payable_no: entry.payableNo, order_no: entry.orderNo, amount: entry.amount.toFixed(4), currency: entry.currency, status: "confirmed",
+        invoice_type: result.invoices.get(entry.id)?.invoiceType ?? null,
+        tax_rate: result.invoices.get(entry.id)?.taxRate?.toFixed(4) ?? null,
+      })),
     };
   }
 

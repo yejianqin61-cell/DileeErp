@@ -15,6 +15,20 @@ const { ACCOUNTING_SUBJECT_SEEDS, PAYMENT_SUBJECT_NAMES, DEFAULT_PAYMENT_SUBJECT
 
 const payment = { paymentNo: "SPAY-1", paymentDate: new Date("2026-09-15T00:00:00.000Z"), amount: new Prisma.Decimal("300"), currency: "CNY", counterpartyName: "晋江大田", direction: "expense", settlementMethod: "转账--农业银行5706", sourceType: "supplier_payment", sourceId: "payment-1", subjectNames: ["主营业务成本", "原材料"] };
 
+/**
+ * R3-5（契约 E）：`VoucherService.reverseBySource` 的替身。
+ * 只关心「冲销链路有没有按来源调用一次、参数对不对」；真实红冲在 voucher-service.test.cjs 里测。
+ */
+function voucherRecorder(result = null) {
+  const calls = [];
+  return {
+    calls,
+    reverseBySource: async (...args) => { calls.push(args); return result; },
+  };
+}
+
+const USER = { id: "user-1" };
+
 /** 会计科目替身：只有 existingNames 里的科目存在；`subjectsById` 模拟「人工选定的科目 id → 是否存在且启用」。 */
 function cashFlowHarness(existingNames, subjectsById = {}) {
   const created = [];
@@ -155,6 +169,28 @@ test("冲销收付款时回冲对应流水；没有对应流水时返回 null �
   assert.equal(await service.autoReverseFromPayment("supplier_payment", "payment-other", "x", { id: "user-1" }), null);
 });
 
+test("R3-5 用例3：付款/收款冲销回冲流水后，按来源红冲该流水的凭证（一次、不重复）", async () => {
+  const row = { id: "cf-1", status: "posted", remark: null, entryNo: "CF-1", amount: new Prisma.Decimal("300") };
+  const prisma = {
+    cashFlowEntry: {
+      findMany: async () => [row],
+      update: async ({ data }) => ({ ...row, ...data }),
+    },
+  };
+  const vouchers = voucherRecorder({ id: "voucher-1", voucherNo: "记-2026-11-0001", redVoucherNo: "记-2026-11-0002", action: "reversed" });
+  const service = new CashFlowService(prisma, { update: () => ({}), record: async () => {} }, undefined, vouchers);
+
+  await service.autoReverseFromPayment("supplier_payment", "payment-1", "供应商付款冲销：银行退回", USER);
+  assert.deepEqual(vouchers.calls, [
+    ["cash_flow_entry", "cf-1", "供应商付款冲销：银行退回", USER],
+  ], "契约 E：回冲流水后红冲它的凭证（按流水 id，一条一次）");
+
+  // 同一付款再冲一次：流水已经是 reversed，findMany 口径只捞 posted → 不会再红冲第二张
+  prisma.cashFlowEntry.findMany = async () => [];
+  await service.autoReverseFromPayment("supplier_payment", "payment-1", "重复冲销", USER);
+  assert.equal(vouchers.calls.length, 1, "重复冲销不重复红冲");
+});
+
 test("结算账户按账号匹配到字典项；匹配不上就留空（不造假的关联）", async () => {
   const accounts = [
     { id: "acc-1", label: "农业银行5706" },
@@ -202,7 +238,9 @@ test("会计科目候选覆盖每一种资金动账来源，且候选名称都�
   assert.ok(subjectNames.has("加工费"));
   assert.ok(subjectNames.has("管理费用"));
   assert.ok(subjectNames.has("基本生产成本"));
-  assert.deepEqual(paymentSubjectNames("raw_material_inbound"), ["主营业务成本", "原材料"]);
+  // D1（2026-11-09）：原料入库先记资产类「原材料」（存货），「主营业务成本」退为兜底。
+  assert.deepEqual(paymentSubjectNames("raw_material_inbound"), ["原材料", "主营业务成本"]);
+  assert.deepEqual(paymentSubjectNames("purchase_receipt"), ["原材料", "主营业务成本"], "到货单来源同口径");
   assert.deepEqual(paymentSubjectNames("outsource_receipt"), ["加工费"]);
   assert.deepEqual(paymentSubjectNames("other"), ["管理费用", "其他管理费用"]);
   assert.deepEqual(paymentSubjectNames("customer_payment"), ["主营业务收入"]);
@@ -211,4 +249,103 @@ test("会计科目候选覆盖每一种资金动账来源，且候选名称都�
   assert.deepEqual(paymentSubjectNames("salary_payment"), ["工资支付", "临时工资", "基本生产成本"]);
   assert.ok(subjectNames.has("工资支付"), "候选指向的科目必须真的在种入清单里");
   assert.deepEqual(paymentSubjectNames("unknown_source"), DEFAULT_PAYMENT_SUBJECT_NAMES, "未知来源走兜底候选，而不是空数组");
+});
+
+/* --------------------------------------------------------- R3-5 契约 E：流水冲销 → 红冲其凭证 */
+
+test("R3-5 用例1：冲销流水 → 按来源红冲它已过账的凭证（一次调用，原因去空白）", async () => {
+  const row = { id: "cf-1", status: "posted", remark: null, entryNo: "CF-1", amount: new Prisma.Decimal("100") };
+  const prisma = {
+    cashFlowEntry: {
+      findFirst: async () => row,
+      update: async ({ data }) => ({ ...row, ...data }),
+    },
+  };
+  const vouchers = voucherRecorder({ id: "voucher-1", voucherNo: "记-2026-11-0001", redVoucherNo: "记-2026-11-0002", action: "reversed" });
+  const service = new CashFlowService(prisma, { update: () => ({}), record: async () => {} }, undefined, vouchers);
+
+  const out = await service.reverse("cf-1", "  银行退回  ", USER);
+  assert.equal(out.status, "reversed");
+  assert.deepEqual(vouchers.calls, [
+    ["cash_flow_entry", "cf-1", "银行退回", USER],
+  ], "流水冲销后红冲它的凭证；原因 trim 后透传");
+});
+
+test("R3-5 用例4：流水没有凭证时冲销不报错（VoucherService 幂等返回 null，无红字）", async () => {
+  const row = { id: "cf-1", status: "posted", remark: null, entryNo: "CF-1", amount: new Prisma.Decimal("100") };
+  const prisma = {
+    cashFlowEntry: {
+      findFirst: async () => row,
+      update: async ({ data }) => ({ ...row, ...data }),
+    },
+  };
+  const vouchers = voucherRecorder(null); // 无有效凭证 = 幂等返回 null
+  const service = new CashFlowService(prisma, { update: () => ({}), record: async () => {} }, undefined, vouchers);
+
+  const out = await service.reverse("cf-1", "无凭证流水冲销", USER);
+  assert.equal(out.status, "reversed", "流水照常冲销，不因没有凭证而报错");
+  assert.equal(vouchers.calls.length, 1, "仍然查一次（幂等判断在 VoucherService 内部统一做）");
+});
+
+/* --------------------------------------------------------- R3-7 契约 F：流水编辑护栏 */
+
+/** R3-7：`VoucherService` 在 update 路径上用到的两个方法的替身（posted 查询 + 草稿作废）。 */
+function voucherGuardRecorder({ posted = null, discardResult = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    postedVoucherOf: async (...args) => { calls.push(["postedVoucherOf", ...args]); return posted; },
+    discardDraftVoucherOfSource: async (...args) => { calls.push(["discardDraftVoucherOfSource", ...args]); return discardResult; },
+  };
+}
+
+const editableFlow = (extra = {}) => ({
+  id: "cf-1", entryNo: "CF-20261109-0001", entryDate: new Date("2026-11-09T00:00:00.000Z"),
+  counterpartyName: "晋江大田", direction: "expense", amount: new Prisma.Decimal("300"), currency: "CNY",
+  subjectId: "subject-1", subject: { id: "subject-1", category: "损益类", name: "主营业务成本" },
+  settlementMethod: null, settlementAccountId: null, bankId: null, categorySubjectId: null,
+  paymentNature: null, orderNo: null, remark: null, status: "posted",
+  ...extra,
+});
+
+/** 更正路径的替身：`prepare()` 只查会计科目；流水读写都记录。 */
+function updateHarness({ posted = null, discardResult = null, row = editableFlow() } = {}) {
+  const writes = [];
+  const prisma = {
+    cashFlowEntry: {
+      findFirst: async () => ({ ...row }),
+      update: async ({ data }) => { writes.push(data); return { ...row, ...data }; },
+    },
+    accountingSubject: { findFirst: async () => ({ id: "subject-1", category: "损益类", name: "主营业务成本" }) },
+  };
+  const vouchers = voucherGuardRecorder({ posted, discardResult });
+  const service = new CashFlowService(prisma, { update: () => ({}), record: async () => {} }, undefined, vouchers);
+  return { service, writes, vouchers };
+}
+
+test("R3-7 用例3：改有已过账凭证的流水 → 422 CASH_FLOW_HAS_POSTED_VOUCHER（details 带凭证 id/号）", async () => {
+  const harness = updateHarness({ posted: { id: "voucher-1", voucherNo: "记-2026-11-0001" } });
+  await assert.rejects(
+    () => harness.service.update("cf-1", { remark: "改备注" }, USER),
+    (error) =>
+      error.getResponse().code === "CASH_FLOW_HAS_POSTED_VOUCHER"
+      && error.getResponse().details[0].voucher_id === "voucher-1"
+      && error.getResponse().details[0].voucher_no === "记-2026-11-0001",
+  );
+  assert.deepEqual(harness.writes, [], "被挡下时一个字都不写流水（先冲销才能改）");
+});
+
+test("R3-7 用例4：改无凭证的流水成功；有草稿凭证时一并作废（不生成红字、不留孤儿）", async () => {
+  const noVoucher = updateHarness();
+  const updated = await noVoucher.service.update("cf-1", { remark: "改备注" }, USER);
+  assert.equal(updated.remark, "改备注");
+  assert.ok(noVoucher.vouchers.calls.some((call) => call[0] === "postedVoucherOf"), "先查已过账凭证");
+  assert.ok(noVoucher.vouchers.calls.some((call) => call[0] === "discardDraftVoucherOfSource"), "草稿凭证一律作废（无则幂等返回 null）");
+
+  const withDraft = updateHarness({ discardResult: "记-2026-11-0002" });
+  await withDraft.service.update("cf-1", { amount: "350" }, USER);
+  const discard = withDraft.vouchers.calls.find((call) => call[0] === "discardDraftVoucherOfSource");
+  assert.equal(discard[1], "cash_flow_entry");
+  assert.equal(discard[2], "cf-1");
+  assert.match(discard[3], /流水更正 CF-20261109-0001/, "作废原因带流水号，审计可追溯");
 });

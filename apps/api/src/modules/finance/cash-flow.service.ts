@@ -10,6 +10,7 @@ import { requireActiveBank } from "./bank-selection";
 import { cashFlowDirection, cashFlowSubjectWhere } from "./cash-flow.domain";
 import { financeDayRange } from "./finance-period";
 import { isPaymentNature } from "./payment-nature";
+import { SOURCE_CASH_FLOW, VoucherService } from "./voucher.service";
 
 /**
  * 收支流水（「收支管理」板块的录入对象）。
@@ -98,6 +99,14 @@ export class CashFlowService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     @Optional() private readonly currencies?: CurrencyService,
+    /**
+     * 凭证服务：冲销流水时联动红冲它生成的凭证（契约 E，2026-11-09 R3-5）。
+     *
+     * 为什么可选：历史单测（`cash-flow-service.test.cjs` 等）直接 `new CashFlowService(prisma, audit)`，
+     * 那些用例不涉及凭证；生产由 `finance.module.ts` 的 providers 注入。找不到凭证的联动在
+     * `reverseVoucherOfFlow()` 里是「没有凭证就跳过」的幂等语义，不会因缺注入而改变流水冲销本身。
+     */
+    @Optional() private readonly vouchers?: VoucherService,
   ) {}
 
   /** 流水列表（默认只给生效的；已冲销的要显式要）。 */
@@ -139,10 +148,25 @@ export class CashFlowService {
     return row;
   }
 
-  /** 更正：流水没有下游事实，允许直接改；但只有生效中的流水能改，且要留审计。 */
+  /**
+   * 更正：流水没有下游事实，允许直接改；但只有生效中的流水能改，且要留审计。
+   *
+   * **契约 F（2026-11-09 R3-7）**：由流水自动生成的凭证生成即 `posted`，因此
+   * 「已生成有效已过账凭证」的流水**不能再直接改**——已过账凭证是账务事实，改流水不复算凭证
+   * 会让银行余额/报表两边永久不一致。要改必须先冲销流水（契约 E 会红冲凭证）后重开。
+   * 草稿凭证不阻改：改完在下面作废它（草稿不是账务事实，留着就是与来源分叉的孤儿）。
+   */
   async update(id: string, input: Partial<CashFlowEntryInput>, user: CurrentUser) {
     const current = await this.get(id);
     if (current.status !== "posted") throw this.invalid("CASH_FLOW_ENTRY_NOT_EDITABLE", "已冲销的收支流水不可编辑");
+    const postedVoucher = await this.postedVoucherOfFlow(id);
+    if (postedVoucher) {
+      throw this.invalid(
+        "CASH_FLOW_HAS_POSTED_VOUCHER",
+        `该流水已生成已过账凭证 ${postedVoucher.voucherNo}，不能直接更正；请先冲销该流水（会红冲凭证）后再改`,
+        [{ voucher_id: postedVoucher.id, voucher_no: postedVoucher.voucherNo }],
+      );
+    }
     const merged: CashFlowEntryInput = {
       entry_date: input.entry_date ?? this.dateText(current.entryDate),
       counterparty_name: input.counterparty_name ?? current.counterpartyName,
@@ -187,12 +211,21 @@ export class CashFlowService {
       amount: row.amount.toString(),
       direction: row.direction,
     });
+    // 契约 F：草稿凭证已与更正后的流水不一致 → 作废（软删 + 审计 `auto:true`）。
+    // 之后财务点「生成凭证」会原地复活那一行并按 R3-7 直接建成 posted（不会留下孤儿草稿）。
+    // 已过账凭证在方法开头就被 422 挡下，不会走到这里。
+    await this.discardDraftVoucherOfFlow(id, `流水更正 ${current.entryNo}：草稿凭证已过期`, user);
     return row;
   }
 
   /**
    * 冲销：置为 `reversed` 并保留整行 —— 已报过表的数字不能凭空消失，
    * 报表默认不计入已冲销的流水，需要时可以用 `include_reversed=true` 查出来。
+   *
+   * **契约 E（2026-11-09 R3-5）**：流水冲销后，若它生成过凭证，同一动作要红冲那张凭证
+   * （不这么做，报表按 posted 凭证仍会把这笔钱算进去，而银行余额已经扣回，两套账对不上）。
+   * 流水来自收/付款单时也一致：先冲流水再红冲凭证；业务单据状态由付款冲销那条链负责，
+   * 这里不写业务表、也不重复红冲（付款冲销链回冲流水时同样按「有效凭证」幂等）。
    */
   async reverse(id: string, reason: string, user: CurrentUser) {
     if (!reason?.trim()) throw this.invalid("REVERSAL_REASON_REQUIRED", "冲销必须填写原因");
@@ -207,6 +240,9 @@ export class CashFlowService {
       reason: reason.trim(),
       amount: row.amount.toString(),
     });
+    // 契约 E：联动红冲该流水的凭证（没有/已红冲则幂等跳过；草稿作废，不生成红字）。
+    // 审计由 voucher.reverse / voucher.delete 自己记，与本方法的流水审计分开。
+    await this.reverseVoucherOfFlow(id, reason.trim(), user);
     return row;
   }
 
@@ -625,6 +661,10 @@ export class CashFlowService {
    *
    * 2026-09-20 起这条路径也供「删除其他应付」复用（`reverseSourceFlowInTransaction`）：
    * 「怎么算冲销」只有一处实现，不再各写一份。
+   *
+   * **契约 E（2026-11-09 R3-5）**：回冲流水后还要红冲这些流水各自的凭证。
+   * 每条流水只按「当前有效凭证」红冲一次，因此「先手工冲流水、再冲付款单」不会重复红冲；
+   * 也不在此写回业务单据状态（付款冲销链自己已处理）。
    */
   async autoReverseFromPayment(sourceType: string, sourceId: string, reason: string, user: CurrentUser) {
     const entries = await this.reverseSourceFlowInTransaction(this.prisma, sourceType, sourceId, reason, user);
@@ -635,7 +675,46 @@ export class CashFlowService {
         amount: entry.amount.toString(),
       });
     }
+    // 契约 E：逐条红冲流水凭证（幂等：无有效凭证/已红冲直接跳过）。
+    for (const entry of entries) {
+      await this.reverseVoucherOfFlow(entry.id, reason.trim(), user);
+    }
     return entries[0] ?? null;
+  }
+
+  /**
+   * 冲销流水后红冲它的凭证（契约 E，2026-11-09 R3-5）。
+   *
+   * 生产由 `finance.module.ts` 注入 `VoucherService`；历史单测直接 `new CashFlowService(prisma, audit)`
+   * 时没有它，保持「只回冲流水」的旧行为（这些单测不生成凭证，不存在漏红冲）。
+   * 真正的「找有效凭证 → 红冲 / 作废草稿」在 `VoucherService.reverseBySource` 一处实现：
+   * cash-flow 侧不自己查 `vouchers` 表，避免两处口径（是否排除已红冲）漂移。
+   */
+  private async reverseVoucherOfFlow(flowId: string, reason: string, user: CurrentUser) {
+    if (!this.vouchers) return null;
+    return this.vouchers.reverseBySource(SOURCE_CASH_FLOW, flowId, reason, user);
+  }
+
+  /**
+   * 该流水当前**有效的已过账**凭证（契约 F，R3-7：改流水前的护栏）。
+   *
+   * 只认 `posted`：草稿不阻改（改完 `discardDraftVoucherOfFlow` 会作废它）。
+   * 与 `reverseVoucherOfFlow` 同一「VoucherService 是唯一口径实现」的原则：cash-flow 侧不自己查 vouchers。
+   */
+  private async postedVoucherOfFlow(flowId: string) {
+    if (!this.vouchers) return null;
+    return this.vouchers.postedVoucherOf(SOURCE_CASH_FLOW, flowId);
+  }
+
+  /**
+   * 作废该流水当前的**有效草稿**凭证（契约 F，R3-7：流水更正后草稿内容已过期）。
+   *
+   * 返回被作废的凭证号（没有草稿/已过账则 null）；不抛错——更正本身已经成功，
+   * 草稿作废失败不应把用户挡在「改不了」上（审计里能追查）。
+   */
+  private async discardDraftVoucherOfFlow(flowId: string, reason: string, user: CurrentUser) {
+    if (!this.vouchers) return null;
+    return this.vouchers.discardDraftVoucherOfSource(SOURCE_CASH_FLOW, flowId, reason, user);
   }
 
   private dateText(value: Date): string {
@@ -658,7 +737,7 @@ export class CashFlowService {
     return new NotFoundException({ code, message, details: [] });
   }
 
-  private invalid(code: string, message: string) {
-    return new UnprocessableEntityException({ code, message, details: [] });
+  private invalid(code: string, message: string, details: Array<Record<string, unknown>> = []) {
+    return new UnprocessableEntityException({ code, message, details });
   }
 }

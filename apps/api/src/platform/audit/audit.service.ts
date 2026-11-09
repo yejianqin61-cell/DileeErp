@@ -15,9 +15,17 @@ export class AuditService {
   update(user: CurrentUser) { return { updatedBy: user.id }; }
   softDelete(user: CurrentUser) { return { deletedAt: new Date(), deletedBy: user.id, updatedBy: user.id }; }
   activeWhere<T extends object>(where: T = {} as T) { return { ...where, deletedAt: null }; }
-  async record(action: string, entityType: string, actorId?: string, entityId?: string, details: Record<string, unknown> = {}) {
+  /**
+   * 记一条审计事件。
+   *
+   * `client` 可选：调用方要求「业务写入与审计同生共死」时（例如确认与挂账同事务），
+   * 把事务客户端传进来，审计行随事务一起提交/回滚 —— 否则会出现「业务回滚了、审计却留下了
+   * 一条什么都没发生的记录」，事后无法据审计还原真实操作。
+   */
+  async record(action: string, entityType: string, actorId?: string, entityId?: string, details: Record<string, unknown> = {}, client?: Prisma.TransactionClient) {
     const safe = this.normalizeEntityId(action, entityId, details);
-    await this.prisma.auditEvent.create({ data: { action, entityType, actorId, entityId: safe.entityId, details: safe.details as Prisma.InputJsonValue } });
+    const db = client ?? this.prisma;
+    await db.auditEvent.create({ data: { action, entityType, actorId, entityId: safe.entityId, details: safe.details as Prisma.InputJsonValue } });
   }
   async recordWithOrderNo(action: string, entityType: string, orderNo: string, actorId?: string, entityId?: string, details: Record<string, unknown> = {}) {
     const safe = this.normalizeEntityId(action, entityId, details);

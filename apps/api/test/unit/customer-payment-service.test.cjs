@@ -2,6 +2,8 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { CustomerPaymentService } = require("../../dist/modules/finance/customer-payment.service.js");
+// 应收侧的真实现：整单结清后「应收变 paid」用真 `refreshStatus` 判定，测试里不重抄状态口径。
+const { ReceivableService } = require("../../dist/modules/finance/receivable.service.js");
 
 test("customer payment draft update locks and rechecks current status", async () => {
   let lockCount = 0;
@@ -165,7 +167,7 @@ test("收款过账：到账银行带给收支流水，且结算方式按老表�
       receivableReconciliation: { findMany: async () => [] },
     }),
   };
-  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("100") }), refreshStatus: async () => {} };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } };
   // 这条应收**先挂过账**（借应收账款 / 贷收入）→ 销账这条现金分录必须贷「应收账款」，
   // 再贷一次收入就是收入翻倍（两步口径见 docs/design/finance-accrual-two-step-2026-09-24.md）。
@@ -197,7 +199,7 @@ test("收款过账：没挂过账的应收（历史数据）仍按老口径贷�
       receivableReconciliation: { findMany: async () => [] },
     }),
   };
-  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("100") }), refreshStatus: async () => {} };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } };
   // 一条都没挂账：贷应收账款会让「应收账款」凭空出现贷方余额（历史那笔钱从没进过应收）。
   const vouchers = { accruedSourceIds: async () => new Set() };
@@ -206,10 +208,18 @@ test("收款过账：没挂过账的应收（历史数据）仍按老口径贷�
   assert.deepEqual(cashFlowCalls[0].subjectNames, ["主营业务收入"], "老口径：直接贷收入（历史不动）");
 
   // 一半挂过账、一半没有 → 也退回老口径：混着两种口径的收款说不清贷方是谁，不猜。
+  // 2026-11-09 D4：每条来源的核销额必须等于它自己的未核销余额（source-1 剩 60、source-2 剩 40）。
   const mixed = [];
   const cashFlowMixed = { autoCreateFromPayment: async (input) => { mixed.push(input); return { id: "cf-2" }; } };
   const vouchersMixed = { accruedSourceIds: async () => new Set(["source-1"]) };
-  const serviceMixed = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlowMixed, undefined, vouchersMixed);
+  const receivableMixed = {
+    allocationBalance: async (id) => ({
+      source: { id, customerId: "customer-1", orderNo: "SO-1", currency: "CNY", status: "confirmed", createdAt: new Date("2026-10-01T00:00:00.000Z") },
+      available: new Prisma.Decimal(id === "source-1" ? "60" : "40"),
+    }),
+    refreshStatus: async () => {},
+  };
+  const serviceMixed = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivableMixed, cashFlowMixed, undefined, vouchersMixed);
   await serviceMixed.post("payment-1", [{ receivable_source_id: "source-1", amount: "60" }, { receivable_source_id: "source-2", amount: "40" }], { id: "user-1" });
   assert.deepEqual(mixed[0].subjectNames, ["主营业务收入"], "有一条没挂账就整笔按老口径");
 });
@@ -227,7 +237,7 @@ test("收款过账：过账时选的科目优先，其次用建单时存在收�
       receivableReconciliation: { findMany: async () => [] },
     }),
   };
-  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", currency: "CNY", status: "confirmed" }, available: new Prisma.Decimal("100") }), refreshStatus: async () => {} };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } };
   const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, cashFlow, undefined, { accruedSourceIds: async () => new Set() });
   await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" });
@@ -252,7 +262,7 @@ test("收支类目：收款过账把覆盖这条应收的应收对账科目带�
       receivableReconciliation: { findMany: async () => [coverage] },
     }),
   };
-  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", orderNo: "SO-1", currency: "CNY", status: "confirmed", createdAt: new Date("2026-10-01T00:00:00.000Z") }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  const receivable = { allocationBalance: async () => ({ source: { id: "source-1", customerId: "customer-1", orderNo: "SO-1", currency: "CNY", status: "confirmed", createdAt: new Date("2026-10-01T00:00:00.000Z") }, available: new Prisma.Decimal("100") }), refreshStatus: async () => {} };
   const service = new CustomerPaymentService(prisma, { create: () => ({}), update: () => ({}), record: async () => {} }, receivable, { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } }, undefined, { accruedSourceIds: async () => new Set(["source-1"]) });
 
   await service.post("payment-1", [{ receivable_source_id: "source-1", amount: "100" }], { id: "user-1" });
@@ -260,4 +270,107 @@ test("收支类目：收款过账把覆盖这条应收的应收对账科目带�
   assert.equal(cashFlowCalls[0].categorySubjectId, "subject-其他应收款", "覆盖它的对账单上填的科目");
   assert.deepEqual(cashFlowCalls[0].categorySubjectNames, ["主营业务收入", "营业外收入"], "没有对账单时按收款候选链兜底");
   assert.deepEqual(cashFlowCalls[0].subjectNames, ["应收账款"], "主科目不受影响（挂过账 → 贷应收账款）");
+});
+
+/* ============================================================
+ * 2026-11-09 D4：强制核销额=单据额（应收侧）
+ * 契约：docs/design/finance-governance-r2-r3-briefs-2026-11-09.md §1-A / §R2-1（brief 表 4~5）
+ * 旧口径（部分收款、收款金额可大于核销合计）自本日起作废。
+ * ============================================================ */
+
+/**
+ * 应收 D4 夹具：核销台账在内存里累计，状态用真 `ReceivableService.refreshStatus` 判定。
+ * `available` 可小于 `sourceAmount`，用来模拟「历史 partially_paid、还剩一笔」。
+ */
+function receivableD4Fixture({ sourceAmount = "80", available = sourceAmount, paymentAmount = sourceAmount, status = "confirmed" } = {}) {
+  const allocations = [];
+  const sources = new Map([["source-1", { id: "source-1", sourceNo: "AR-1", customerId: "customer-1", orderNo: "SO-1", currency: "CNY", status, amount: new Prisma.Decimal(sourceAmount), createdAt: new Date("2026-10-01T00:00:00.000Z") }]]);
+  // 历史 partially_paid：把「之前已经核销的那部分」预置进台账，只暴露剩余 `available` 给本次收款。
+  const alreadyAllocated = new Prisma.Decimal(sourceAmount).minus(new Prisma.Decimal(available));
+  if (alreadyAllocated.gt(0)) allocations.push({ paymentId: "payment-historical", receivableSourceId: "source-1", amount: alreadyAllocated, currency: "CNY" });
+  const payment = { id: "payment-1", paymentNo: "PAY-1", status: "draft", orderNo: "SO-1", amount: new Prisma.Decimal(paymentAmount), currency: "CNY", paymentDate: new Date("2026-11-09T00:00:00.000Z"), paymentMethod: "转账", payerName: null, customerId: "customer-1", bankId: "bank-1", subjectId: null, remark: null, customer: { name: "晋江大田" }, bank };
+  const client = {
+    $queryRaw: async () => [],
+    customerPayment: { findFirst: async () => payment, update: async ({ data }) => ({ ...payment, ...data }) },
+    receivableAllocation: {
+      count: async () => 0,
+      create: async ({ data }) => { allocations.push(data); return { id: `alloc-${allocations.length}`, ...data }; },
+      aggregate: async ({ where }) => ({
+        _sum: { amount: allocations.filter((row) => row.receivableSourceId === where.receivableSourceId).reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)) },
+      }),
+    },
+    receivableSource: {
+      findFirst: async ({ where }) => sources.get(where.id) ?? null,
+      update: async ({ where, data }) => { Object.assign(sources.get(where.id), data); return sources.get(where.id); },
+    },
+    receivableReconciliation: { findMany: async () => [] },
+  };
+  // 与真库一致：事务抛错时内存里的核销行回滚，这样「被拒时一行都不落库」才是真的在验事务。
+  const prisma = {
+    customerPayment: { findFirst: async () => payment },
+    $transaction: async (fn) => {
+      const before = [...allocations];
+      try {
+        return await fn(client);
+      } catch (error) {
+        allocations.length = 0;
+        allocations.push(...before);
+        throw error;
+      }
+    },
+  };
+  const receivable = new ReceivableService(client, { update: () => ({}), record: async () => {} });
+  const cashFlowCalls = [];
+  const service = new CustomerPaymentService(
+    prisma,
+    { create: () => ({}), update: () => ({}), record: async () => {} },
+    receivable,
+    { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; } },
+    undefined,
+    { accruedSourceIds: async () => new Set(["source-1"]) },
+  );
+  return { service, allocations, cashFlowCalls, sources };
+}
+
+test("2026-11-09 D4：应收 80 全额核销 + 收款单 80 → 过账成功，应收 paid、流水/核销各 1 条", async () => {
+  const fixture = receivableD4Fixture();
+  const posted = await fixture.service.post("payment-1", [{ receivable_source_id: "source-1", amount: "80" }], { id: "user-1" });
+  assert.equal(posted.status, "posted");
+  assert.equal(fixture.sources.get("source-1").status, "paid", "整单结清后应收是已收款");
+  assert.equal(fixture.allocations.length, 1, "核销 1 条");
+  assert.equal(fixture.cashFlowCalls.length, 1, "流水 1 条");
+  assert.equal(fixture.cashFlowCalls[0].amount.toString(), "80");
+});
+
+test("2026-11-09 D4：应收 80 只核销 50 → 422 ALLOCATION_MUST_SETTLE_RECEIVABLE（details 带三个金额）", async () => {
+  const fixture = receivableD4Fixture({ paymentAmount: "50" });
+  await assert.rejects(
+    () => fixture.service.post("payment-1", [{ receivable_source_id: "source-1", amount: "50" }], { id: "user-1" }),
+    (error) => {
+      assert.equal(error.getResponse().code, "ALLOCATION_MUST_SETTLE_RECEIVABLE");
+      assert.deepEqual(error.getResponse().details, [{ receivable_amount: "80", available_amount: "80", requested_amount: "50" }]);
+      return true;
+    },
+  );
+  assert.equal(fixture.allocations.length, 0, "被拒时核销行必须随事务回滚");
+});
+
+test("2026-11-09 D4：历史 partially_paid 应收只能按剩余 available 结清（结清后 paid）", async () => {
+  // 应收 100、之前已收 40、剩 60：本次收款只能核销 60；按剩余余额结清后应收变 paid。
+  const fixture = receivableD4Fixture({ sourceAmount: "100", available: "60", paymentAmount: "60", status: "partially_paid" });
+  await fixture.service.post("payment-1", [{ receivable_source_id: "source-1", amount: "60" }], { id: "user-1" });
+  assert.equal(fixture.sources.get("source-1").status, "paid", "历史部分收款按剩余余额结清后是已收款");
+});
+
+test("2026-11-09 D4：应收 80 全额核销但收款单 100 → 422 PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION", async () => {
+  const fixture = receivableD4Fixture({ paymentAmount: "100" });
+  await assert.rejects(
+    () => fixture.service.post("payment-1", [{ receivable_source_id: "source-1", amount: "80" }], { id: "user-1" }),
+    (error) => {
+      assert.equal(error.getResponse().code, "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION");
+      assert.deepEqual(error.getResponse().details, [{ payment_amount: "100", allocated_amount: "80" }]);
+      return true;
+    },
+  );
+  assert.equal(fixture.allocations.length, 0);
 });

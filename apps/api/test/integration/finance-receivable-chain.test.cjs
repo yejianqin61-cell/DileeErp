@@ -171,7 +171,8 @@ test("receivable.allocation_guards_reject_currency_mismatch_and_over_allocation"
     assert.equal(stillDraft.status, "draft", "被拒后收款仍是草稿");
     assert.equal(await prisma.receivableAllocation.count({ where: { paymentId: mismatched.id } }), 0, "被拒时不得留下半条核销");
 
-    // 核销额超过未收 → 422（用正确币种的收款来验余额护栏）
+    // 核销额不等于未收余额 → 422（2026-11-09 D4「强制核销额=单据额」：只允许整单结清，
+    // 历史错误码 RECEIVABLE_ALLOCATION_EXCEEDED 已被 ALLOCATION_MUST_SETTLE_RECEIVABLE 取代）。
     const payment = fx.track("customerPayment", await payments.create({
       customer_id: chain.salesOrder.customerId,
       order_no: fx.run.orderNo,
@@ -182,27 +183,45 @@ test("receivable.allocation_guards_reject_currency_mismatch_and_over_allocation"
     }, user));
     await assert.rejects(
       () => payments.post(payment.id, [{ receivable_source_id: source.id, amount: "101" }], user),
-      (error) => error.getResponse().code === "RECEIVABLE_ALLOCATION_EXCEEDED",
-      "核销额不得超过应收未收余额",
+      (error) => error.getResponse().code === "ALLOCATION_MUST_SETTLE_RECEIVABLE",
+      "核销金额必须等于应收未收余额（不允许部分核销 / 超额核销）",
     );
     assert.equal(await prisma.receivableAllocation.count({ where: { paymentId: payment.id } }), 0, "被拒时不得留下核销行");
 
-    // 部分核销可以正常通过，来源转为 partially_paid，未收相应减少
-    const partialPayment = fx.track("customerPayment", await payments.create({
+    // 收款金额 ≠ 核销合计 → 422 PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION（D4 另一条：不允许把差额留在收款单上）
+    const mismatchedAmount = fx.track("customerPayment", await payments.create({
       customer_id: chain.salesOrder.customerId,
       order_no: fx.run.orderNo,
-      payment_date: "2026-09-19",
-      amount: "60",
+      payment_date: "2026-09-18",
+      amount: "110",
       currency: sourceCurrency,
       payment_method: "银行转账",
     }, user));
-    await payments.post(partialPayment.id, [{ receivable_source_id: source.id, amount: "60" }], user);
-    const partial = await prisma.receivableSource.findUnique({ where: { id: source.id } });
-    assert.equal(partial.status, "partially_paid");
+    await assert.rejects(
+      () => payments.post(mismatchedAmount.id, [{ receivable_source_id: source.id, amount: "100" }], user),
+      (error) => error.getResponse().code === "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION",
+      "收款金额必须等于核销合计",
+    );
+    assert.equal(await prisma.receivableAllocation.count({ where: { paymentId: mismatchedAmount.id } }), 0, "被拒时不得留下核销行");
+
+    // 整单结清（D4 唯一允许的核销）：核销额 = 未收余额 → 来源转为 paid、未收归零。
+    const settledPayment = fx.track("customerPayment", await payments.create({
+      customer_id: chain.salesOrder.customerId,
+      order_no: fx.run.orderNo,
+      payment_date: "2026-09-19",
+      amount: "100",
+      currency: sourceCurrency,
+      payment_method: "银行转账",
+    }, user));
+    await payments.post(settledPayment.id, [{ receivable_source_id: source.id, amount: "100" }], user);
+    const settled = await prisma.receivableSource.findUnique({ where: { id: source.id } });
+    assert.equal(settled.status, "paid", "整单结清后应收来源应变为已收款");
     const balance = await receivables.allocationBalance(source.id);
-    assertDecimalEquals("部分核销后未收余额", balance.available, "40");
-    const allocationRows = await prisma.receivableAllocation.findMany({ where: { paymentId: partialPayment.id, deletedAt: null } });
+    assertDecimalEquals("核销后未收余额", balance.available, "0");
+    const allocationRows = await prisma.receivableAllocation.findMany({ where: { paymentId: settledPayment.id, deletedAt: null } });
     for (const row of allocationRows) fx.track("receivableAllocation", row);
+    assert.equal(allocationRows.length, 1, "整单结清只产生一条核销行");
+    assertDecimalEquals("核销金额等于未收余额", allocationRows[0].amount, "100");
   } finally {
     await fx.cleanup();
     await prisma.$disconnect();

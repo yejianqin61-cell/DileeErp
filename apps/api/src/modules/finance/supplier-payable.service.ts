@@ -23,7 +23,7 @@ type SourceType = "raw_material_inbound" | "purchase_receipt" | "outsource_recei
  * 200 条远大于"一次录错了一整批"的规模（其他应付导入单次上限也是几百行）。
  */
 export const OTHER_PAYABLE_BATCH_DELETE_MAX = 200;
-export type PayableEntryInput = { source_type: SourceType; source_id: string; amount?: string; amount_reason?: string; confirmation_date?: string; attachment?: unknown[]; remark?: string };
+export type PayableEntryInput = { source_type: SourceType; source_id: string; amount?: string; amount_reason?: string; confirmation_date?: string; attachment?: unknown[]; remark?: string; invoice_type?: string | null };
 /** 上传的文件（只用到这两个字段，避免为了一个导入去依赖 multer 的类型声明）。 */
 type UploadedWorkbook = { buffer?: Buffer; originalname?: string };
 
@@ -61,6 +61,151 @@ function ledgerSubjectName(entrySubject: SubjectRef | null | undefined, coverage
   return catalogSubjectLabel((sourceType ? paymentSubjectNames(sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES)[0]);
 }
 
+/* ------------------------------------------------------------------ 发票类型与税率（2026-11-09 R2-3，D5） */
+
+/** 发票类型白名单（与 `VoucherService.createAccrual` 的入参同一组取值）。 */
+export type PayableInvoiceType = "special" | "general" | "none";
+export const PAYABLE_INVOICE_TYPES: readonly PayableInvoiceType[] = ["special", "general", "none"];
+
+function invoiceInvalid(code: string, message: string, details: Array<Record<string, unknown>> = []) {
+  return new UnprocessableEntityException({ code, message, details });
+}
+
+/** 发票类型归一：空 → null；不认识 → 422（DTO 已挡一道，服务层再挡是不信任入口）。 */
+export function normalizePayableInvoiceType(value: string | null | undefined): PayableInvoiceType | null {
+  const text = (value ?? "").trim().toLowerCase();
+  if (!text) return null;
+  if (!(PAYABLE_INVOICE_TYPES as readonly string[]).includes(text)) {
+    throw invoiceInvalid("INVALID_INVOICE_TYPE", `发票类型只能是 special（专票）/ general（普票）/ none（无票），收到「${value}」`);
+  }
+  return text as PayableInvoiceType;
+}
+
+/**
+ * 税率**边界归一**（2026-11-09 R2-3，用户要求「所有进入挂账的税率在 R2-3 边界归一」）。
+ *
+ * 生产实查：`supplier_payable_entries.tax_rate` 历史 183 行全是 0.0000、
+ * `purchase_order_items.tax_rate` 无数据，但列是自由的 `Decimal(8,4)` —— 财务手工可能写 13
+ * （百分数）也可能写 0.13（小数）。口径：
+ *   - 空 / 0 / 负数 → 视为「未录」（value=null，invalid=false）；0 是生产历史数据的常态；
+ *   - > 1 视为百分数（13 → 0.13）；
+ *   - 归一后必须 0 < rate < 1，否则 invalid（由调用方按「专票必须有税率」报 422 INVALID_TAX_RATE）。
+ *
+ * **只写这一处**：逐条确认 / 批量确认 / 对账确认三条入口共用，`entry.taxRate` 也落归一后的值。
+ */
+export function parsePayableTaxRate(raw: string | number | Prisma.Decimal | null | undefined): { raw: string | null; value: Prisma.Decimal | null; invalid: boolean } {
+  const rawText = raw === null || raw === undefined ? "" : String(raw).trim();
+  if (!rawText) return { raw: null, value: null, invalid: false };
+  let parsed: Prisma.Decimal;
+  try {
+    parsed = new Prisma.Decimal(rawText);
+  } catch {
+    return { raw: rawText, value: null, invalid: true };
+  }
+  if (parsed.lte(0)) return { raw: rawText, value: null, invalid: false };
+  const value = parsed.gt(1) ? parsed.div(100) : parsed;
+  if (value.gte(1) || value.lte(0)) return { raw: rawText, value: null, invalid: true };
+  return { raw: rawText, value, invalid: false };
+}
+
+export type ResolvedPayableInvoice = {
+  /** 本次挂账生效的发票类型（条目已有值优先，见下）。 */
+  invoiceType: PayableInvoiceType | null;
+  /** 本次挂账生效的**价内税率**（已归一，0 < rate < 1）；非专票为 null。 */
+  taxRate: Prisma.Decimal | null;
+  /** 本次实际采用的原始税率文本（审计 `tax_rate_raw` 用）。 */
+  taxRateRaw: string | null;
+  /** 传了但被忽略的税率原文（审计 `ignored_tax_rate` 用）。 */
+  ignoredTaxRate: string | null;
+  /** 需要在本次确认事务里回写条目的字段（已有值不覆盖；税率归一后与库里不同也回写）。 */
+  persist: { invoiceType?: PayableInvoiceType; taxRate?: Prisma.Decimal } | null;
+};
+
+/**
+ * 确认 / 批量确认 / 对账确认**三条入口共用**的发票口径（不要在别处再写一份）。
+ *
+ * - 条目已有 `invoice_type` 优先：批量/对账只给「尚未录」的条目补值，已有值不覆盖（brief R2-3）；
+ * - 专票：条目已有税率 > 0 时优先（本次传的一律忽略并审计）；条目没有税率才用本次传的，
+ *   归一后回写 `entry.taxRate`；
+ * - 普票 / 无票 / 未录：不拆税、不要求税率；本次传的 `tax_rate` 忽略（审计 `ignored_tax_rate`）；
+ * - 专票但最终没有有效税率 → 422 `INVALID_TAX_RATE`（details 带原值/归一值）。
+ */
+export function resolvePayableInvoice(input: {
+  invoiceType?: string | null;
+  taxRate?: string | number | Prisma.Decimal | null;
+  entryInvoiceType?: string | null;
+  entryTaxRate?: string | number | Prisma.Decimal | null;
+}): ResolvedPayableInvoice {
+  const persistOf = (fields: { invoiceType?: PayableInvoiceType; taxRate?: Prisma.Decimal }): ResolvedPayableInvoice["persist"] =>
+    Object.keys(fields).length ? fields : null;
+  const callerType = normalizePayableInvoiceType(input.invoiceType);
+  const entryType = normalizePayableInvoiceType(input.entryInvoiceType);
+  const invoiceType = entryType ?? callerType;
+  const provided = parsePayableTaxRate(input.taxRate);
+  const persistType: { invoiceType?: PayableInvoiceType } = !entryType && callerType ? { invoiceType: callerType } : {};
+  if (invoiceType !== "special") {
+    return {
+      invoiceType,
+      taxRate: null,
+      taxRateRaw: null,
+      ignoredTaxRate: provided.raw,
+      persist: persistOf(persistType),
+    };
+  }
+  const existing = parsePayableTaxRate(input.entryTaxRate);
+  if (existing.invalid) {
+    throw invoiceInvalid("INVALID_TAX_RATE", "该应付已录入的税率无效（专票税率归一后必须落在 0~1 之间），请先在草稿上更正税率", [
+      { tax_rate_raw: existing.raw, tax_rate_normalized: null },
+    ]);
+  }
+  if (existing.value) {
+    const stored = input.entryTaxRate === null || input.entryTaxRate === undefined ? null : new Prisma.Decimal(String(input.entryTaxRate));
+    const needsNormalize = !stored || !stored.eq(existing.value);
+    return {
+      invoiceType,
+      taxRate: existing.value,
+      taxRateRaw: existing.raw,
+      ignoredTaxRate: provided.raw,
+      persist: persistOf({ ...persistType, ...(needsNormalize ? { taxRate: existing.value } : {}) }),
+    };
+  }
+  if (provided.invalid || !provided.value) {
+    throw invoiceInvalid("INVALID_TAX_RATE", "专票税率缺失或无效：税率必须是 0~1 的小数（或 >1 的百分数，如 13），不能为空", [
+      { tax_rate_raw: provided.raw, tax_rate_normalized: provided.value?.toString() ?? null },
+    ]);
+  }
+  return { invoiceType, taxRate: provided.value, taxRateRaw: provided.raw, ignoredTaxRate: null, persist: persistOf({ ...persistType, taxRate: provided.value }) };
+}
+
+/**
+ * 台账/详情的「挂账状态」（2026-11-09 R3-6）：同一来源可能同时有一张红冲行 + 一张新建 posted，
+ * 所以按 **posted > draft > reversed > none** 取优先级，而不是「找到哪张算哪张」。
+ */
+export type AccrualStatus = "posted" | "draft" | "reversed" | "none";
+
+function accrualStatusOf(statuses: readonly string[]): AccrualStatus {
+  if (statuses.includes("posted")) return "posted";
+  if (statuses.includes("draft")) return "draft";
+  if (statuses.includes("reversed")) return "reversed";
+  return "none";
+}
+
+/**
+ * 台账/详情的「不含税金额 / 税额」：只对「专票 + 有税率」计算，其余一律 null（brief R2-3）。
+ *
+ * 与凭证侧 `resolveAccrualTaxSplit` 同一算法：`net = round(amount ÷ (1+r), 4, HALF_UP)`、
+ * `tax = amount − net`（税额由含税额减出来，保证净额+税额严格等于含税额）。
+ */
+function payableInvoiceAmounts(amount: Prisma.Decimal | string | number, invoiceType: string | null | undefined, taxRate: Prisma.Decimal | string | null | undefined) {
+  const type = (invoiceType ?? "").trim().toLowerCase();
+  const rate = parsePayableTaxRate(taxRate).value;
+  if (type !== "special" || !rate) return { amount_net: null as string | null, tax_amount: null as string | null };
+  const total = new Prisma.Decimal(amount);
+  const net = total.div(new Prisma.Decimal(1).plus(rate)).toDecimalPlaces(4, Prisma.Decimal.ROUND_HALF_UP);
+  return { amount_net: net.toFixed(4), tax_amount: total.minus(net).toFixed(4) };
+}
+
+
 
 @Injectable()
 export class SupplierPayableService {
@@ -88,6 +233,8 @@ export class SupplierPayableService {
      * 用途：财务页面「待创建对账」只列**没被覆盖**的草稿；已被覆盖的要显式说明在哪张对账单里，
      * 否则用户会以为这条应付「没流转过去」（历史反馈）。
      */
+    // 2026-11-09 R3-6：整页一次查回挂账凭证状态（按 posted > draft > reversed 归类），避免逐行 N+1。
+    const accrualStatuses = await this.accrualStatusBySource(rows.map((row) => row.id));
     const supplierIds = [...new Set(rows.map((row) => row.supplierId))];
     const scopes = supplierIds.length
       ? await this.prisma.supplierPayableReconciliation.findMany({
@@ -143,6 +290,12 @@ export class SupplierPayableService {
         supplier_code: row.supplier?.supplierCode ?? null,
         paid_amount: paid.toFixed(4),
         outstanding_amount: outstanding.toFixed(4),
+        // 2026-11-09 R2-3（D5）：发票类型/税率/不含税/税额。非专票的 net/tax 一律 null，前端显示「—」。
+        invoice_type: row.invoiceType ?? null,
+        tax_rate: parsePayableTaxRate(row.taxRate).value?.toFixed(4) ?? null,
+        ...payableInvoiceAmounts(row.amount, row.invoiceType, row.taxRate),
+        // 2026-11-09 R3-6：挂账凭证状态（posted/draft/reversed/none），红冲后前端据此给「按来源重算」入口。
+        accrual_status: accrualStatuses.get(row.id) ?? "none",
         reconciliation: covering ? { id: covering.id, reconciliation_no: covering.reconciliationNo, status: covering.status, period_start: covering.periodStart, period_end: covering.periodEnd } : null,
       };
     });
@@ -157,7 +310,15 @@ export class SupplierPayableService {
   async get(id: string) {
     const row = await this.prisma.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { allocations: { where: { deletedAt: null }, include: { payment: true } }, payableSource: true, outsourcePayableSource: true } });
     if (!row) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
-    return row;
+    const accrualStatuses = await this.accrualStatusBySource([id]);
+    // 2026-11-09 R2-3：详情与台账同一套字段（非专票 amount_net/tax_amount 为 null）；R3-6 带挂账状态。
+    return {
+      ...row,
+      invoice_type: row.invoiceType ?? null,
+      tax_rate: parsePayableTaxRate(row.taxRate).value?.toFixed(4) ?? null,
+      ...payableInvoiceAmounts(row.amount, row.invoiceType, row.taxRate),
+      accrual_status: accrualStatuses.get(id) ?? "none",
+    };
   }
 
   async createFromSource(input: PayableEntryInput, user: CurrentUser) {
@@ -193,6 +354,8 @@ export class SupplierPayableService {
       // 这三个字段为空会让"按采购单对账"的系统余额恒为 0（历史缺陷，见 docs/log）。
       purchaseOrderId: refs.purchaseOrderId, purchaseOrderItemId: refs.purchaseOrderItemId, outsourceLogisticsBatchId: refs.outsourceLogisticsBatchId,
       sourceNoSnapshot: refs.sourceNo, quantity: refs.quantity, unitPrice: refs.unitPrice, taxRate: refs.taxRate,
+      // 2026-11-09 R2-3（D5）：建单时可带发票类型（可空）；税率暂取来源原值，确认挂账时统一归一并回写。
+      invoiceType: normalizePayableInvoiceType(input.invoice_type),
       amount, currency: refs.currency, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
       attachment: (input.attachment ?? []) as Prisma.InputJsonValue, remark: input.remark, ...this.audit.create(user),
     } });
@@ -228,24 +391,57 @@ export class SupplierPayableService {
    * 会计科目候选链按**来源类型**选定（原料入库 → 原材料 成本；外加工签收 → 成品外加工费），
    * 与供应商付款过账同一套归类口径；人工选了就以人工为准。
    */
-  async confirm(id: string, user: CurrentUser, options: { bank_id?: string | null; subject_id?: string | null } = {}) {
-    // 先进校验、后进事务：等事务提交完才发现银行非法，应付已经确认、流水却没写。
+  async confirm(id: string, user: CurrentUser, options: { bank_id?: string | null; subject_id?: string | null; invoice_type?: string | null; tax_rate?: string | null } = {}) {
+    // 先进校验、后进事务：等事务提交完才发现银行/科目非法，代价更大。
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "支付银行不存在或已停用");
     if (options.subject_id) await this.cashFlow.requireSubject(options.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
+    /**
+     * **确认与挂账同一事务、挂账直接过账**（2026-11-09 用户拍板「确认即过账」）。
+     *
+     * 历史实现把状态提交与 `createAccrual` 分成两个事务：挂账失败会留下「已确认、无凭证」，
+     * 且再确认会被「只有草稿可确认」挡住（诊断 P0-4）；挂账只落草稿又导致报表看不到应付账款
+     * （诊断 P0-1/P0-3）。现在两者同生共死，且凭证生成即 posted。
+     *
+     * 发票类型/税率（2026-11-09 R2-3，D5）与状态**同事务定稿**：专票税率无效时整笔确认回滚，
+     * 不会留下「已确认、挂账按普票记」的半条账。
+     */
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null }, include: { payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } }, supplier: { select: { name: true } } } });
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
       if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_CONFIRMABLE", "只有草稿应付可以确认");
       if (current.payableSource?.status === "voided" || current.outsourcePayableSource?.status === "voided") throw this.invalid("PAYABLE_SOURCE_VOIDED", "应付来源已作废，不能确认");
-      const updated = await tx.supplierPayableEntry.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
+      const invoice = resolvePayableInvoice({
+        invoiceType: options.invoice_type,
+        taxRate: options.tax_rate,
+        entryInvoiceType: current.invoiceType,
+        entryTaxRate: current.taxRate,
+      });
+      const data: Prisma.SupplierPayableEntryUpdateInput = { status: "confirmed", ...this.audit.update(user) };
+      if (invoice.persist?.invoiceType !== undefined) data.invoiceType = invoice.persist.invoiceType;
+      if (invoice.persist?.taxRate !== undefined) data.taxRate = invoice.persist.taxRate;
+      const updated = await tx.supplierPayableEntry.update({ where: { id }, data });
       // 供应商名要从 current 拿：update 的返回值只有标量列，没有关联，用 row 会退化成供应商 UUID。
-      return { updated, supplierName: current.supplier?.name ?? current.supplierId };
+      const accrual = await this.accrue(updated, current.supplier?.name ?? current.supplierId, user, {
+        subject_id: options.subject_id,
+        invoiceType: invoice.invoiceType,
+        taxRate: invoice.taxRate,
+        // R3-1：业务科目 = 条目手选科目（对账单覆盖科目的回填在「按来源重算」里补，见 reaccrue）。
+        businessSubjectId: current.subjectId ?? null,
+      }, tx);
+      return { updated, accrual, invoice };
     });
     const row = result.updated;
-    await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { payable_no: row.payableNo });
-    const accrual = await this.accrue(row, result.supplierName, user, options);
-    return { ...row, cash_flow_entry_id: null, accrual_voucher_id: accrual?.id ?? null, accrual_replayed: accrual?.replayed ?? false, bank_missing: false };
+    await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", row.orderNo ?? "", user.id, id, {
+      payable_no: row.payableNo,
+      accrual_voucher_id: result.accrual?.id ?? null,
+      auto_posted: Boolean(result.accrual),
+      invoice_type: result.invoice.invoiceType,
+      tax_rate: result.invoice.taxRate?.toFixed(4) ?? null,
+      tax_rate_raw: result.invoice.taxRateRaw,
+      ignored_tax_rate: result.invoice.ignoredTaxRate,
+    });
+    return { ...row, cash_flow_entry_id: null, accrual_voucher_id: result.accrual?.id ?? null, accrual_replayed: result.accrual?.replayed ?? false, bank_missing: false };
   }
 
   /**
@@ -268,7 +464,8 @@ export class SupplierPayableService {
     row: { id: string; payableNo: string; amount: Prisma.Decimal; currency: string; sourceType?: string | null; subjectId?: string | null },
     counterpartyName: string,
     user: CurrentUser,
-    options: { bank_id?: string | null; subject_id?: string | null },
+    options: { bank_id?: string | null; subject_id?: string | null; invoiceType?: string | null; taxRate?: Prisma.Decimal | null; businessSubjectId?: string | null },
+    client?: Prisma.TransactionClient,
   ) {
     return this.accruals.createAccrual({
       source_type: SOURCE_PAYABLE,
@@ -280,7 +477,12 @@ export class SupplierPayableService {
       counterparty_name: counterpartyName,
       contra_subject_names: row.sourceType ? paymentSubjectNames(row.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
       contra_subject_id: row.subjectId ?? options.subject_id,
-    }, user);
+      // 2026-11-09 D5：只有专票带着已归一的税率进凭证侧；普票/无票/未录一律 null（不拆税）。
+      invoice_type: options.invoiceType ?? null,
+      tax_rate: options.invoiceType === "special" ? (options.taxRate ?? null) : null,
+      // 2026-11-09 R3-1：业务科目（辅助维度）只落业务分录行；应付侧取「条目手选科目」。
+      business_subject_id: options.businessSubjectId ?? null,
+    }, user, { client, post: true });
   }
 
   /** 挂账用的凭证服务；DI 漏了必须炸出来（静默跳过＝这笔应付没进账，谁也不会发现）。 */
@@ -300,7 +502,7 @@ export class SupplierPayableService {
    * 幂等：只确认 `status = draft` 的条目。被另一个入口先确认掉的、来源已作废的计入 `skipped_count`，
    * 既不报错也不重复记账（重复记账＝同一个账户被扣两次）。
    */
-  async batchConfirm(ids: string[], user: CurrentUser, options: { bank_id?: string | null; subject_id?: string | null } = {}) {
+  async batchConfirm(ids: string[], user: CurrentUser, options: { bank_id?: string | null; subject_id?: string | null; invoice_type?: string | null; tax_rate?: string | null } = {}) {
     if (!ids.length) throw this.invalid("PAYABLE_IDS_REQUIRED", "请先勾选要确认的应付条目");
     // 银行与项目整批只有一个，先校验一次即可（逐条确认里那句「先校验后进事务」在这里同样成立）。
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "支付银行不存在或已停用");
@@ -313,24 +515,63 @@ export class SupplierPayableService {
         where: { id: { in: ids }, deletedAt: null, status: "draft" },
         // `subjectId`：条目上填过的科目（2026-10-12 起「其他应付」可填）—— 挂账时优先用它，
         // 否则批量确认会把备用金记成损益类「管理费用」（见 `accrue` 的优先级注释）。
-        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, subjectId: true, supplierId: true, supplier: { select: { name: true } }, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
+        // `invoiceType`/`taxRate`：2026-11-09 R2-3（D5）—— 条目已录的发票类型/税率优先，整批只给没录的补。
+        select: { id: true, payableNo: true, orderNo: true, amount: true, currency: true, sourceType: true, subjectId: true, invoiceType: true, taxRate: true, supplierId: true, supplier: { select: { name: true } }, payableSource: { select: { status: true } }, outsourcePayableSource: { select: { status: true } } },
       });
       // 来源已作废的不能确认（与逐条确认同一条校验）；但它不该让整批失败 —— 跳过并如实回报条数。
       const confirmable = drafts.filter((draft) => draft.payableSource?.status !== "voided" && draft.outsourcePayableSource?.status !== "voided");
       if (!confirmable.length) throw this.invalid("NO_DRAFT_PAYABLES", "勾选的条目里没有可确认的草稿应付");
+      // 2026-11-09 R2-3：发票类型/税率在确认事务里定稿；专票税率无效时整批回滚（不留半条账）。
+      const invoices = new Map<string, ResolvedPayableInvoice>();
+      for (const draft of confirmable) {
+        const invoice = resolvePayableInvoice({
+          invoiceType: options.invoice_type,
+          taxRate: options.tax_rate,
+          entryInvoiceType: draft.invoiceType,
+          entryTaxRate: draft.taxRate,
+        });
+        invoices.set(draft.id, invoice);
+        if (invoice.persist && (invoice.persist.invoiceType !== undefined || invoice.persist.taxRate !== undefined)) {
+          await tx.supplierPayableEntry.update({ where: { id: draft.id }, data: { ...invoice.persist, ...this.audit.update(user) } });
+        }
+        // 让本批的挂账与落库取同一份口径（库里可能历史存的是百分数，已在上一步归一后回写）。
+        draft.invoiceType = invoice.invoiceType;
+        draft.taxRate = invoice.taxRate;
+      }
       const updated = await tx.supplierPayableEntry.updateMany({
         where: { id: { in: confirmable.map((draft) => draft.id) }, deletedAt: null, status: "draft" },
         data: { status: "confirmed", ...this.audit.update(user) },
       });
       // 行锁之下不可能少改：真少了说明有人绕过锁改了状态，宁可整批回滚也不要「界面说确认了、库里没确认」。
       if (updated.count !== confirmable.length) throw this.invalid("PAYABLE_CONFIRM_CONFLICT", "勾选的应付已被其他操作改动，请刷新后重试");
-      return { confirmable, skipped: ids.length - confirmable.length };
+      // **逐条挂账也在同一个事务里**（2026-11-09）：任一条挂账失败整批回滚，
+      // 不会出现「一半已确认有凭证、一半已确认没凭证」。
+      const accruals: Array<{ id: string; replayed: boolean } | null> = [];
+      for (const draft of confirmable) {
+        const invoice = invoices.get(draft.id);
+        accruals.push(await this.accrue(draft, draft.supplier?.name ?? draft.supplierId, user, {
+          subject_id: options.subject_id,
+          invoiceType: invoice?.invoiceType ?? null,
+          taxRate: invoice?.taxRate ?? null,
+          // R3-1：条目手选科目作为业务科目（辅助维度）。
+          businessSubjectId: draft.subjectId ?? null,
+        }, tx));
+      }
+      return { confirmable, skipped: ids.length - confirmable.length, accruals, invoices };
     });
     const accrualVoucherIds: string[] = [];
     const totals = new Map<string, Prisma.Decimal>();
-    for (const draft of result.confirmable) {
-      await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", draft.orderNo ?? "", user.id, draft.id, { payable_no: draft.payableNo, batch: true });
-      const accrual = await this.accrue(draft, draft.supplier?.name ?? draft.supplierId, user, options);
+    for (let index = 0; index < result.confirmable.length; index += 1) {
+      const draft = result.confirmable[index];
+      const accrual = result.accruals[index];
+      const invoice = result.invoices.get(draft.id);
+      await this.audit.recordWithOrderNo("supplier_payable.confirm", "supplier_payable_entry", draft.orderNo ?? "", user.id, draft.id, {
+        payable_no: draft.payableNo, batch: true, accrual_voucher_id: accrual?.id ?? null,
+        invoice_type: invoice?.invoiceType ?? null,
+        tax_rate: invoice?.taxRate?.toFixed(4) ?? null,
+        tax_rate_raw: invoice?.taxRateRaw ?? null,
+        ignored_tax_rate: invoice?.ignoredTaxRate ?? null,
+      });
       if (accrual) accrualVoucherIds.push(accrual.id);
       totals.set(draft.currency, (totals.get(draft.currency) ?? new Prisma.Decimal(0)).plus(draft.amount));
     }
@@ -352,17 +593,43 @@ export class SupplierPayableService {
    * 与应收侧同样的道理：草稿还没核销任何付款，此时改币种是安全的；
    * 过账时 SupplierPaymentService.post 仍会校验 `entry.currency === payment.currency`。
    */
-  async updateDraft(id: string, input: { amount?: string; confirmation_date?: string; currency?: string; remark?: string }, user: CurrentUser) {
+  async updateDraft(id: string, input: { amount?: string; confirmation_date?: string; currency?: string; remark?: string; invoice_type?: string | null; tax_rate?: string | null }, user: CurrentUser) {
     if (input.currency !== undefined) await this.currencies?.assertSupported(input.currency, "应付币种");
+    let invoiceAudit: { invoice_type: string | null; tax_rate: string | null; tax_rate_raw: string | null; ignored_tax_rate: string | null } | null = null;
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.supplierPayableEntry.findFirst({ where: { id, deletedAt: null } });
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
+      const touchingInvoice = input.invoice_type !== undefined || input.tax_rate !== undefined;
+      // 2026-11-09 R2-3：发票类型/税率只在草稿可改；已确认的改法只有「红冲挂账凭证 → 回退草稿」。
+      if (touchingInvoice && current.status !== "draft") throw this.invalid("INVOICE_TYPE_LOCKED", "发票类型/税率只能在草稿上改；已确认的应付请先红冲挂账凭证，再回退草稿");
       if (current.status !== "draft") throw this.invalid("SUPPLIER_PAYABLE_NOT_EDITABLE", "只有草稿应付可以编辑");
       const amount = input.amount === undefined ? current.amount : this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
-      return tx.supplierPayableEntry.update({ where: { id }, data: { amount, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : current.confirmationDate, currency: input.currency ?? current.currency, remark: input.remark ?? current.remark, ...this.audit.update(user) } });
+      const data: Prisma.SupplierPayableEntryUpdateInput = { amount, confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : current.confirmationDate, currency: input.currency ?? current.currency, remark: input.remark ?? current.remark, ...this.audit.update(user) };
+      if (touchingInvoice) {
+        const nextType = input.invoice_type === undefined ? normalizePayableInvoiceType(current.invoiceType) : normalizePayableInvoiceType(input.invoice_type);
+        let nextTaxRate: Prisma.Decimal | null = current.taxRate ?? null;
+        let taxRateRaw: string | null = null;
+        let ignoredTaxRate: string | null = null;
+        if (nextType === "special") {
+          const parsed = parsePayableTaxRate(input.tax_rate !== undefined ? input.tax_rate : current.taxRate);
+          if (parsed.invalid || !parsed.value) {
+            throw invoiceInvalid("INVALID_TAX_RATE", "专票税率必须是 0~1 的小数（或 >1 的百分数，如 13），不能为空", [
+              { tax_rate_raw: parsed.raw, tax_rate_normalized: parsed.value?.toString() ?? null },
+            ]);
+          }
+          nextTaxRate = parsed.value;
+          taxRateRaw = parsed.raw;
+        } else if (input.tax_rate !== undefined) {
+          ignoredTaxRate = parsePayableTaxRate(input.tax_rate).raw;
+        }
+        data.invoiceType = nextType;
+        if (nextType === "special") data.taxRate = nextTaxRate;
+        invoiceAudit = { invoice_type: nextType, tax_rate: nextType === "special" ? nextTaxRate?.toFixed(4) ?? null : null, tax_rate_raw: taxRateRaw, ignored_tax_rate: ignoredTaxRate };
+      }
+      return tx.supplierPayableEntry.update({ where: { id }, data });
     });
-    await this.audit.recordWithOrderNo("supplier_payable.update", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { amount: row.amount.toString() });
+    await this.audit.recordWithOrderNo("supplier_payable.update", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { amount: row.amount.toString(), ...(invoiceAudit ?? {}) });
     return row;
   }
 
@@ -374,6 +641,11 @@ export class SupplierPayableService {
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
       if (current.status !== "confirmed") throw this.invalid("SUPPLIER_PAYABLE_NOT_REOPENABLE", "只有未发生付款的已确认应付可以回退草稿");
       if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "应付存在有效付款核销，必须先冲销付款");
+      // 挂账凭证还生效时不允许回退：2026-11-09 起确认即过账，凭证已经进总账，回退会让它失去来源。
+      const postedAccrual = await this.accruals.postedAccrualOf(SOURCE_PAYABLE, id, tx);
+      if (postedAccrual) throw this.invalid("SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL", `该应付的挂账凭证 ${postedAccrual.voucherNo} 已过账：请先在「凭证」页红冲该凭证，再回退草稿`);
+      // 历史遗留的草稿挂账凭证顺手作废，避免回退后留下孤儿草稿。
+      await this.accruals.discardDraftAccrual(SOURCE_PAYABLE, id, `回退草稿：${reason.trim()}`, user, tx);
       return tx.supplierPayableEntry.update({ where: { id }, data: { status: "draft", remark: `${current.remark ?? ""}\n回退草稿：${reason.trim()}`, ...this.audit.update(user) } });
     });
     await this.audit.recordWithOrderNo("supplier_payable.reopen", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { reason: reason.trim(), from: "confirmed", to: "draft" });
@@ -388,10 +660,77 @@ export class SupplierPayableService {
       if (!current) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
       if (!["confirmed", "partially_paid", "paid"].includes(current.status)) throw this.invalid("SUPPLIER_PAYABLE_NOT_REVERSIBLE", "当前应付不可冲销");
       if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("SUPPLIER_PAYABLE_HAS_ALLOCATIONS", "应付存在有效付款核销，必须先冲销付款");
+      // 挂账凭证已过账 → 拒绝冲销，要求先红冲（否则总账留一笔无主应付账款）。
+      const postedAccrual = await this.accruals.postedAccrualOf(SOURCE_PAYABLE, id, tx);
+      if (postedAccrual) throw this.invalid("SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL", `该应付的挂账凭证 ${postedAccrual.voucherNo} 已过账：请先在「凭证」页红冲该凭证，再冲销应付`);
+      await this.accruals.discardDraftAccrual(SOURCE_PAYABLE, id, `冲销应付：${reason.trim()}`, user, tx);
       return tx.supplierPayableEntry.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason.trim()}`, ...this.audit.update(user) } });
     });
     await this.audit.recordWithOrderNo("supplier_payable.reverse", "supplier_payable_entry", row.orderNo ?? "", user.id, id, { reason: reason.trim() });
     return row;
+  }
+
+  /**
+   * **按来源重算挂账**（2026-11-09 R3-6，契约 D）：挂账凭证被红冲后，用当前单据数据重建一张 posted。
+   *
+   * 为什么必须有：红冲是账务纠错的唯一手段，但红冲之后旧实现会把「这个来源」永久卡死
+   * （`VOUCHER_ACCRUAL_REVERSED`）。R3-4 已允许 `createAccrual(post=true)` 在只剩红冲行时新建；
+   * 这里补业务侧入口与护栏：
+   *   - 只有 `confirmed` / `partially_paid`（草稿/已回退/已取消不重算，先确认再说）；
+   *   - 已有 posted 挂账 → 422 `ACCRUAL_ALREADY_POSTED`（重算会挂第二笔账，绝不静默覆盖）；
+   *   - 同一事务里读单据 + 建凭证，失败一起回滚。
+   *
+   * 业务科目（R3-1 辅助维度）：条目手选 > 覆盖它的对账单科目，与确认时同一条链。
+   * 发票类型/税率（R2-3）从条目**当前值**读取（不覆盖已有值），专票税率缺失时按 R2-3 的 422 处理。
+   */
+  async reaccrue(id: string, user: CurrentUser, reason?: string) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM supplier_payable_entries WHERE id = ${id}::uuid FOR UPDATE`;
+      const entry = await tx.supplierPayableEntry.findFirst({ where: { id }, include: { supplier: { select: { name: true } } } });
+      if (!entry) throw this.notFound("SUPPLIER_PAYABLE_NOT_FOUND", "应付确认不存在");
+      // 已删除（软删）与草稿/已回退一样不可重算：给 422 而不是「找不到」，语义是「这张单不能重算」。
+      if (entry.deletedAt) throw this.invalid("PAYABLE_NOT_RECALCULABLE", "已删除的应付不能按来源重算挂账");
+      if (!["confirmed", "partially_paid"].includes(entry.status)) throw this.invalid("PAYABLE_NOT_RECALCULABLE", "只有已确认（未回退、未取消）的应付可以按来源重算挂账");
+      const posted = await this.accruals.postedAccrualOf(SOURCE_PAYABLE, id, tx);
+      if (posted) throw this.invalid("ACCRUAL_ALREADY_POSTED", `挂账凭证 ${posted.voucherNo} 已过账，不能再按来源重算；要改请先在凭证页红冲该凭证`);
+      const invoice = resolvePayableInvoice({ entryInvoiceType: entry.invoiceType, entryTaxRate: entry.taxRate });
+      // 业务科目与确认口径一致：条目手选 > 覆盖它的对账单科目（R3-6 Unknowns 明确「不要新造口径」）。
+      const scopes = await tx.supplierPayableReconciliation.findMany({
+        where: { deletedAt: null, supplierId: entry.supplierId },
+        select: { id: true, reconciliationNo: true, status: true, supplierId: true, currency: true, orderNo: true, purchaseOrderId: true, periodStart: true, periodEnd: true, subjectId: true },
+        orderBy: { createdAt: "desc" },
+      });
+      const coverageSubjectId = coveringPayableReconciliation(entry, scopes)?.subjectId ?? null;
+      const businessSubjectId = entry.subjectId ?? coverageSubjectId;
+      const accrual = await this.accruals.createAccrual({
+        source_type: SOURCE_PAYABLE,
+        source_id: id,
+        document_no: entry.payableNo,
+        voucher_date: this.today(),
+        currency: entry.currency,
+        amount: entry.amount,
+        counterparty_name: entry.supplier?.name ?? entry.supplierId,
+        contra_subject_names: entry.sourceType ? paymentSubjectNames(entry.sourceType) : PAYABLE_CONFIRM_SUBJECT_NAMES,
+        contra_subject_id: businessSubjectId,
+        invoice_type: invoice.invoiceType,
+        tax_rate: invoice.invoiceType === "special" ? invoice.taxRate : null,
+        business_subject_id: businessSubjectId,
+        remark: `按来源重算挂账${reason?.trim() ? `：${reason.trim()}` : ""}`,
+      }, user, { client: tx, post: true });
+      if (!accrual) throw this.invalid("PAYABLE_NOT_RECALCULABLE", "该应付没有可重算的挂账（资金搬运 / 0 元应付本来就不挂账）");
+      return { entry, accrual, invoice, businessSubjectId };
+    });
+    await this.audit.recordWithOrderNo("supplier_payable.reaccrue", "supplier_payable_entry", result.entry.orderNo ?? "", user.id, id, {
+      payable_no: result.entry.payableNo,
+      voucher_no: result.accrual.voucherNo,
+      replayed: result.accrual.replayed,
+      invoice_type: result.invoice.invoiceType,
+      tax_rate: result.invoice.taxRate?.toFixed(4) ?? null,
+      tax_rate_raw: result.invoice.taxRateRaw,
+      business_subject_id: result.businessSubjectId,
+      reason: reason?.trim() || null,
+    });
+    return { id: result.accrual.id, voucherNo: result.accrual.voucherNo, status: result.accrual.status, replayed: result.accrual.replayed };
   }
 
   /**
@@ -436,9 +775,17 @@ export class SupplierPayableService {
       });
       const covering = coveringPayableReconciliation(current, scopes);
       if (covering) throw this.invalid("SUPPLIER_PAYABLE_IN_RECONCILIATION", `该应付已纳入对账单 ${covering.reconciliationNo}，请先在「应付对账」里删除那张对账单，再删除这条应付`);
-      // 已确认的应付在确认那一刻写过一条支出流水（确认即记账）。删条目必须同时把钱回冲 ——
-      // 放在**同一个事务**里：软删除提交了、回冲却失败的话，这条应付已经从列表上消失，
-      // 用户再也点不到它去补救，而钱一直挂在支出里。
+      /**
+       * 2026-11-09（确认即过账）：已确认的条目必然挂过账。
+       *   - 挂账凭证已过账 → 拒绝删除，要求先红冲（删除不能把一张已进总账的凭证变成无主负债）；
+       *   - 挂账凭证还是草稿（历史数据）→ 同一事务里作废它，避免留下孤儿草稿。
+       * 历史「确认时写过一笔支出流水」的回冲仍然保留：那是旧口径的数据，删除时一并回冲才对得上。
+       */
+      const postedAccrual = current.status === "confirmed" ? await this.accruals.postedAccrualOf(SOURCE_PAYABLE, id, tx) : null;
+      if (postedAccrual) throw this.invalid("SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL", `该应付的挂账凭证 ${postedAccrual.voucherNo} 已过账：请先在「凭证」页红冲该凭证，再删除`);
+      const discardedAccrualNo = current.status === "confirmed"
+        ? await this.accruals.discardDraftAccrual(SOURCE_PAYABLE, id, `删除其他应付 ${current.payableNo}：${note}`, user, tx)
+        : null;
       const reversedFlows = current.status === "confirmed"
         ? await this.cashFlow.reverseSourceFlowInTransaction(tx, "supplier_payable_entry", id, `删除其他应付 ${current.payableNo}：${note}`, user)
         : [];
@@ -447,7 +794,7 @@ export class SupplierPayableService {
         // 备注是 VARCHAR(1000)，原因可能很长：截断而不是让数据库抛错（原因全文在审计里，不会丢）。
         data: { remark: `${current.remark ?? ""}\n删除原因：${note}`.trim().slice(0, 1000), ...this.audit.softDelete(user) },
       });
-      return { row, reversedFlows };
+      return { row, reversedFlows, discardedAccrualNo };
     });
     for (const flow of result.reversedFlows) {
       await this.audit.record("cash_flow_entry.reverse", "cash_flow_entry", user.id, flow.id, {
@@ -459,6 +806,7 @@ export class SupplierPayableService {
       // 删的时候是什么状态：草稿（没记过账）与已确认（回冲了一笔支出）在事后审计里是完全不同的两件事。
       status_when_deleted: result.row.status,
       reversed_cash_flow_entry_nos: result.reversedFlows.map((flow) => flow.entryNo),
+      discarded_accrual_voucher_no: result.discardedAccrualNo,
       reason: note,
     });
     return result.row;
@@ -537,19 +885,46 @@ export class SupplierPayableService {
    * 于是财务在报表上看到的是「管理费用」，而钱其实还是自己的现金。
    * 留空 = 不指定，确认应付时仍按来源类型自动归类（历史行为不变）。
    */
-  async createOther(input: { supplier_id: string; amount: string; currency: string; description: string; confirmation_date?: string; subject_id?: string; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+  async createOther(input: { supplier_id: string; amount: string; currency: string; description: string; confirmation_date?: string; subject_id?: string; invoice_type?: string | null; tax_rate?: string | null; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     const supplier = await this.prisma.supplier.findFirst({ where: { id: input.supplier_id, deletedAt: null }, select: { id: true, name: true } });
     if (!supplier) throw this.notFound("SUPPLIER_NOT_FOUND", "供应商不存在");
     const amount = this.decimal(input.amount, "INVALID_PAYABLE_AMOUNT");
     // 建单时就校验科目（与客户收款/供应商付款同一条纪律）：表单里填过的东西不能在确认前丢掉，
     // 也不能等到对账确认那天才发现「科目已停用」——那时财务已经照着这张单对完账了。
     const subject = await this.cashFlow.requireSubject(input.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
+    /**
+     * 2026-11-09 R2-3（D5）：其他应付也能录发票类型（房租通常要求专票）。
+     *
+     * 其他应付的 `taxRate` 历史恒为 0（`otherEntryData` 写死），所以「专票」必须**建单时**给税率：
+     * 确认时补税率虽然也支持（`resolvePayableInvoice` 的 provided 分支），但草稿台账会有一段时间
+     * 只显示「专票、税率空」——录单的人本来就知道房租是 9%，没理由留到确认那一步再猜。
+     * 非专票即使传了 tax_rate 也忽略（审计 `ignored_tax_rate`），与三条确认入口同一口径。
+     */
+    const invoiceType = normalizePayableInvoiceType(input.invoice_type);
+    const parsedRate = parsePayableTaxRate(input.tax_rate);
+    let taxRate: Prisma.Decimal | null = new Prisma.Decimal(0);
+    let ignoredTaxRate: string | null = null;
+    if (invoiceType === "special") {
+      if (parsedRate.invalid || !parsedRate.value) {
+        throw invoiceInvalid("INVALID_TAX_RATE", "其他应付选专票时必须填写税率（0~1 的小数，或 >1 的百分数，如房租 9）", [
+          { tax_rate_raw: parsedRate.raw, tax_rate_normalized: parsedRate.value?.toString() ?? null },
+        ]);
+      }
+      taxRate = parsedRate.value;
+    } else {
+      ignoredTaxRate = parsedRate.raw;
+    }
     const row = await this.prisma.supplierPayableEntry.create({ data: this.otherEntryData({
       supplierId: supplier.id, amount, currency: input.currency, description: input.description,
       confirmationDate: input.confirmation_date ? this.date(input.confirmation_date) : new Date(),
       attachment: input.attachment, remark: input.remark, subjectId: subject?.id ?? null,
+      invoiceType, taxRate,
     }, user) });
-    await this.audit.record("supplier_payable.create_other", "supplier_payable_entry", user.id, row.id, { payable_no: row.payableNo, description: input.description, amount: row.amount.toString(), supplier_name: supplier.name, subject_id: subject?.id ?? null });
+    await this.audit.record("supplier_payable.create_other", "supplier_payable_entry", user.id, row.id, {
+      payable_no: row.payableNo, description: input.description, amount: row.amount.toString(), supplier_name: supplier.name, subject_id: subject?.id ?? null,
+      invoice_type: invoiceType, tax_rate: invoiceType === "special" ? taxRate?.toFixed(4) ?? null : null,
+      tax_rate_raw: invoiceType === "special" ? parsedRate.raw : null, ignored_tax_rate: ignoredTaxRate,
+    });
     return row;
   }
 
@@ -570,13 +945,14 @@ export class SupplierPayableService {
    * 其他应付条目的**唯一**建单口径：单条新建（`createOther`）与批量导入都走这里，
    * 否则「页面上新建的」与「导入进来的」会在来源快照、数量/单价、税率这些字段上慢慢分叉。
    */
-  private otherEntryData(input: { supplierId: string; amount: Prisma.Decimal; currency: string; description: string; confirmationDate: Date; subjectId: string | null; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
+  private otherEntryData(input: { supplierId: string; amount: Prisma.Decimal; currency: string; description: string; confirmationDate: Date; subjectId: string | null; invoiceType?: string | null; taxRate?: Prisma.Decimal | null; attachment?: unknown[]; remark?: string }, user: CurrentUser) {
     return {
       payableNo: this.number("APO"), orderNo: null, supplierId: input.supplierId,
       sourceType: "other", payableSourceId: null, outsourcePayableSourceId: null,
       purchaseOrderId: null, purchaseOrderItemId: null, outsourceLogisticsBatchId: null,
       sourceNoSnapshot: `其他应付-${input.description.slice(0, 30)}`, quantity: new Prisma.Decimal(1),
-      unitPrice: input.amount, taxRate: new Prisma.Decimal(0), amount: input.amount, currency: input.currency,
+      unitPrice: input.amount, taxRate: input.taxRate ?? new Prisma.Decimal(0), amount: input.amount, currency: input.currency,
+      invoiceType: input.invoiceType ?? null,
       confirmationDate: input.confirmationDate,
       subjectId: input.subjectId,
       attachment: (input.attachment ?? []) as Prisma.InputJsonValue,
@@ -732,6 +1108,23 @@ export class SupplierPayableService {
       if (error instanceof UnprocessableEntityException) throw error;
       throw this.invalid("PAYABLE_IMPORT_INVALID_FILE", "Excel文件无法解析，请使用「下载模板」得到的模板填写");
     }
+  }
+
+  /** 一次查回一组来源的挂账状态（posted > draft > reversed > none，R3-6）。 */
+  private async accrualStatusBySource(ids: readonly string[]): Promise<Map<string, AccrualStatus>> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    const status = new Map<string, AccrualStatus>();
+    if (!unique.length) return status;
+    const rows = await this.prisma.voucher.findMany({ where: { sourceType: SOURCE_PAYABLE, sourceId: { in: unique }, deletedAt: null }, select: { sourceId: true, status: true } });
+    const statuses = new Map<string, string[]>();
+    for (const row of rows) {
+      if (!row.sourceId) continue;
+      const list = statuses.get(row.sourceId) ?? [];
+      list.push(row.status);
+      statuses.set(row.sourceId, list);
+    }
+    for (const id of unique) status.set(id, accrualStatusOf(statuses.get(id) ?? []));
+    return status;
   }
 
   private async source(type: SourceType, id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) {

@@ -109,7 +109,19 @@ export class SupplierPaymentService {
         const balance = await this.payable.allocationBalance(item.payable_entry_id, tx);
         if (balance.entry.supplierId !== lockedPayment.supplierId || balance.entry.currency !== lockedPayment.currency || (lockedPayment.orderNo && balance.entry.orderNo !== lockedPayment.orderNo)) throw this.invalid("ALLOCATION_REFERENCE_MISMATCH", "供应商、币种或订单与应付不一致");
         if (!["confirmed", "partially_paid"].includes(balance.entry.status)) throw this.invalid("SUPPLIER_PAYABLE_NOT_ALLOCATABLE", "应付尚未确认或已关闭");
-        if (amount.gt(balance.available)) throw new UnprocessableEntityException({ code: "PAYABLE_ALLOCATION_EXCEEDED", message: "核销金额超过应付未核销余额", details: [{ available_amount: balance.available.toString() }] });
+        // 2026-11-09 D4（用户拍板「强制核销额=单据额」）：核销只允许**整单结清**，
+        // 不接受部分核销、也不接受多付留作预付 —— 所以这里不是「≤余额」而是「=未核销余额」。
+        // 历史 `partially_paid` 单据的 `available` 只是「还剩多少」；按它全额结清即可，
+        // 不要求核销额等于单据原金额（旧数据不迁移，见 brief 契约 A）。
+        if (!amount.eq(balance.available)) throw new UnprocessableEntityException({
+          code: "ALLOCATION_MUST_SETTLE_PAYABLE",
+          message: "核销金额必须等于该应付的未核销余额（只允许整单结清，不允许部分核销）",
+          details: [{
+            payable_amount: balance.entry.amount.toString(),
+            available_amount: balance.available.toString(),
+            requested_amount: amount.toString(),
+          }],
+        });
         total = total.plus(amount);
         sourceAmounts.set(balance.entry.sourceType, (sourceAmounts.get(balance.entry.sourceType) ?? new Prisma.Decimal(0)).plus(amount));
         settledDocuments.push({
@@ -118,7 +130,14 @@ export class SupplierPaymentService {
         });
         await tx.supplierPaymentAllocation.create({ data: { paymentId: id, payableEntryId: balance.entry.id, orderNo: balance.entry.orderNo, amount, currency: lockedPayment.currency, remark: item.remark, ...this.audit.create(user) } });
       }
-      if (total.gt(lockedPayment.amount)) throw new UnprocessableEntityException({ code: "PAYMENT_ALLOCATION_EXCEEDED", message: "核销金额超过付款金额", details: [{ available_amount: lockedPayment.amount.minus(total).toString() }] });
+      // 2026-11-09 D4：付款金额必须=核销合计（这条同时封死「一张付款只核销半张应付」和
+      // 「付多了把差额留在付款单上当预付」两种旧口径）。放在循环之后、状态落库之前，
+      // 抛错时本次已写入的核销行随事务回滚。
+      if (!total.eq(lockedPayment.amount)) throw new UnprocessableEntityException({
+        code: "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION",
+        message: "付款金额必须等于核销合计（不允许部分付款，也不允许把多付的差额留在付款单上）",
+        details: [{ payment_amount: lockedPayment.amount.toString(), allocated_amount: total.toString() }],
+      });
       const payment = await tx.supplierPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const item of items) await this.payable.refreshStatus(tx, item.payable_entry_id, user);
       return { payment, sourceAmounts, settledDocuments, supplierName: lockedPayment.supplier?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };

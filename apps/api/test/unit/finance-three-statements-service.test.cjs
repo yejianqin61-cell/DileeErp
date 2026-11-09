@@ -1,21 +1,24 @@
 // 三大报表**取数**的测试（只读口径：取哪些凭证、怎么按期间切片、缺口怎么报）。
 //
 // 内核（映射与公式）在 `finance-three-statements.test.cjs`，版式在 `finance-three-statements-tables.test.cjs`。
-// 这里钉四件事：
-//   ① 只取 `status = posted`（草稿不是账；已红冲的原凭证由红冲件抵消，两者都取会算两遍）；
+// 这里钉五件事：
+//   ① 只取 `status = posted` 且 `source_type <> voucher`（草稿不是账；红字凭证与原凭证都不进表，
+//      否则红冲链会单边虚增——2026-11-09 A5）；
 //   ② 一次取「到期末为止」的凭证，再切四个切片（期末 / 年初 / 本期 / 上期）—— 四次查库迟早口径分叉；
 //   ③ 折算：外币按期末/期初各自的汇率折成人民币，折不了的币种进表尾缺口；
-//   ④ 银行账户期初余额进货币资金；本期已生效但**没生成凭证**的流水条数必须报出来。
+//   ④ 银行账户期初余额进货币资金；本期已生效但**没生成凭证**的流水条数必须报出来；
+//   ⑤ 科目归集（2026-11-09 R3-2）：`voucher_lines.subject_id` 优先、为空回退 `subject_label`，
+//      一条分录只算一个键（不双计）；期初余额表的 `subject_key` 与凭证 id 键按唯一同名合并。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { FinanceThreeStatementsService, previousPeriodOf, utcDate } = require("../../dist/modules/finance/finance-three-statements.service.js");
 
 const dec = (text) => ({ toString: () => text });
-const line = (subjectKey, direction, amount) => ({ subjectKey, direction, amount: dec(amount) });
+const line = (subjectKey, direction, amount, subjectId = null) => ({ subjectKey, subjectId, direction, amount: dec(amount) });
 const voucher = (id, date, lines, currency = "CNY") => ({ id, voucherDate: utcDate(date), currency, lines });
 
-/** 内存桩：凭证清单 / 银行期初 / 已生效流水 / 已生成凭证 / 草稿张数 / 科目期初余额表 / 期末汇率。 */
-function harness({ vouchers = [], banks = [], entries = [], generated = [], draftCount = 0, opening = null, openingGroups = null, rates = [] } = {}) {
+/** 内存桩：凭证清单 / 银行期初 / 已生效流水 / 已生成凭证 / 草稿张数 / 科目期初余额表 / 期末汇率 / 会计科目。 */
+function harness({ vouchers = [], banks = [], entries = [], generated = [], draftCount = 0, opening = null, openingGroups = null, rates = [], subjects = [] } = {}) {
   const queries = [];
   const prisma = {
     voucher: {
@@ -27,6 +30,7 @@ function harness({ vouchers = [], banks = [], entries = [], generated = [], draf
     },
     bank: { findMany: async (args) => { queries.push({ model: "bank.findMany", args }); return banks; } },
     cashFlowEntry: { findMany: async (args) => { queries.push({ model: "cashFlowEntry.findMany", args }); return entries; } },
+    accountingSubject: { findMany: async (args) => { queries.push({ model: "accountingSubject.findMany", args }); return subjects; } },
   };
   const groups = openingGroups ?? (opening ? [{ ...opening, currency: "CNY" }] : []);
   const openings = { effectiveFor: async () => opening, effectiveForAll: async () => groups };
@@ -47,13 +51,18 @@ test("三大报表取数：只取已过账凭证，且一次取到期末（四�
   const { service, queries } = harness({ vouchers: [voucher("v1", "2026-09-10", [line("银行存款", "debit", "100"), line("损益类/主营业务收入", "credit", "100")])] });
   await service.balanceSheet({ from: "2026-09-01", to: "2026-09-30" });
 
-  const listQuery = queries.find((query) => query.model === "voucher.findMany" && query.args.where.sourceType === undefined);
+  const listQuery = queries.find((query) => query.model === "voucher.findMany" && query.args.where.status === "posted");
   assert.equal(listQuery.args.where.status, "posted");
   assert.equal(listQuery.args.where.deletedAt, null);
+  // A5（2026-11-09）：红字凭证（source_type=voucher）不进报表 —— 原凭证已作废，
+  // 红字只作废红冲链留痕；两者都不取，任何长度的红冲链在报表上净为 0。
+  assert.deepEqual(listQuery.args.where.sourceType, { not: "voucher" }, "红字凭证绝不能单边进报表");
   assert.equal(listQuery.args.where.voucherDate.lte.toISOString(), "2026-09-30T00:00:00.000Z", "取到期末为止的全部凭证，再在内存里切片");
   // 「其它币种」也靠这一批数据算出来，所以不按币种过滤（过滤了就报不出未折算的外币凭证）。
   assert.equal(listQuery.args.where.currency, undefined);
   assert.equal(listQuery.args.select.lines.select.amount, true);
+  // R3-2：取数必须带出 `subject_id`（否则永远走不到 id 归集分支，只剩 label 兜底）。
+  assert.equal(listQuery.args.select.lines.select.subjectId, true, "分录必须 select subjectId");
 });
 
 test("三大报表取数：期末 / 年初 / 本期 / 上期四个切片各取各的（上期是紧邻的等长期间）", async () => {
@@ -201,4 +210,90 @@ test("三大报表取数：现金流量表的凭证带上来来源流水的「�
   const cash = await service.cashFlowStatement({ from: "2026-09-01", to: "2026-09-30" });
   assert.equal(yuan(cash.current.lines.find((row) => row.row === 8).value), 2700, "按收支类目落「支付其他与经营活动有关的现金」");
   assert.equal(yuan(cash.current.lines.find((row) => row.row === 5).value), 0, "不能按应付账款算成采购付款");
+});
+
+/* ------------------------------------------------------------ R3-2：科目 id 优先 / label 兜底 */
+
+const MGMT = { id: "sub-mgmt-r3", category: "损益类", name: "管理费用" };
+
+test("R3-2 用例1：id=管理费用 与历史 label=管理费用 两行都归「管理费用」，合计只算一次", async () => {
+  const { service } = harness({
+    subjects: [MGMT],
+    vouchers: [
+      voucher("v-id", "2026-09-10", [line("损益类/管理费用", "debit", "100", MGMT.id), line("银行存款", "credit", "100")]),
+      voucher("v-old", "2026-09-11", [line("损益类/管理费用", "debit", "100"), line("银行存款", "credit", "100")]),
+    ],
+  });
+  const sheet = await service.balanceSheet({ from: "2026-09-01", to: "2026-09-30" });
+
+  // id 行与历史 label 行各 100：既要都算进来（不是 −100），也不能把同一行算两遍（不是 −300）。
+  assert.equal(yuan(sheet.current.retainedFromProfit), -200, "未结转损益 = −200");
+  assert.equal(yuan(sheet.current.totalAssets), -200, "货币资金 = −200（两笔各 100）");
+  assert.deepEqual(sheet.current.unmapped, [], "两行都必须被识别，不能掉进未归位");
+});
+
+const AR_R3 = { id: "sub-ar-r3", category: "资产类", name: "应收账款" };
+const AP_R3 = { id: "sub-ap-r3", category: "负债类", name: "应付账款" };
+
+test("R3-2 用例2：label 同为「其他」但 id 分属资产/负债 → 分属两行，不串", async () => {
+  const { service } = harness({
+    subjects: [AR_R3, AP_R3],
+    vouchers: [
+      voucher("v-ar", "2026-09-10", [line("其他", "debit", "100", AR_R3.id), line("损益类/主营业务收入", "credit", "100")]),
+      voucher("v-ap", "2026-09-11", [line("损益类/主营业务成本", "debit", "100"), line("其他", "credit", "100", AP_R3.id)]),
+    ],
+  });
+  const sheet = await service.balanceSheet({ from: "2026-09-01", to: "2026-09-30" });
+
+  // label 是「其他」——只有 id 能把它归行；归错行/串行都会让下面两行合计变 200 或掉进 unmapped。
+  assert.equal(yuan(sheet.current.assets.find((row) => row.row === 5).value), 100, "资产侧「应收账款」只收资产类那个 id");
+  assert.equal(yuan(sheet.current.equities.find((row) => row.row === 5).value), 100, "负债侧「应付账款」只收负债类那个 id");
+  assert.deepEqual(sheet.current.unmapped, [], "两行都必须按 id 归到各自的行");
+});
+
+const PROMO = { id: "sub-promo-r3", category: "损益类", name: "销售费 推广费" };
+
+test("R3-2 用例3：label 改名后与 id 不一致 → 三表都按 id 归集，金额不错行", async () => {
+  const { service } = harness({
+    subjects: [PROMO],
+    // 历史分录的 label 停留在旧名「管理费用」，但 id 已经是「销售费 推广费」。
+    vouchers: [voucher("v-rename", "2026-09-10", [line("损益类/管理费用", "debit", "100", PROMO.id), line("银行存款", "credit", "100")])],
+  });
+
+  const income = await service.incomeStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(yuan(income.current.lines.find((row) => row.row === 4).value), 100, "利润表按 id 落「销售费用」");
+  assert.equal(yuan(income.current.lines.find((row) => row.row === 5).value), 0, "不能按旧 label 落「管理费用」");
+  assert.deepEqual(income.current.unmapped, [], "按 id 一定要归到行，不能掉进未归位");
+
+  const cash = await service.cashFlowStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(yuan(cash.current.lines.find((row) => row.row === 8).value), 100, "现金流量表按 id 落「支付其他与经营活动有关的现金」");
+  assert.equal(yuan(cash.current.lines.find((row) => row.row === 5).value), 0, "不能按旧 label 落采购付款");
+
+  const sheet = await service.balanceSheet({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(yuan(sheet.current.retainedFromProfit), -100, "资产负债表按 id 计入未结转损益");
+});
+
+test("R3-2 期初合并：期初 subject_key 解析成 id 键后与凭证 id 行相加一次（不翻倍、不漏）", async () => {
+  const BANK_R3 = { id: "sub-bank-r3", category: "资产类", name: "银行存款" };
+  const CAPITAL_R3 = { id: "sub-capital-r3", category: "所有者权益类", name: "实收资本" };
+  const { service } = harness({
+    subjects: [BANK_R3, CAPITAL_R3],
+    opening: {
+      asOfDate: "2026-09-01",
+      rows: [
+        { subjectKey: "资产类/银行存款", direction: "debit", amount: "1000" },
+        { subjectKey: "所有者权益类/实收资本", direction: "credit", amount: "1000" },
+      ],
+    },
+    vouchers: [voucher("v-bank", "2026-09-10", [line("银行存款", "debit", "200", BANK_R3.id), line("损益类/主营业务收入", "credit", "200")])],
+  });
+
+  const sheet = await service.balanceSheet({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(yuan(sheet.current.totalAssets), 1200, "期初 1000 + 凭证 200（同一桶相加：既不翻倍成 2200，也不漏成 200）");
+  assert.equal(yuan(sheet.current.equities.find((row) => row.row === 25).value), 1000, "期初实收资本按 id 键归集");
+  assert.equal(sheet.current.balanced, true, "期初与凭证同口径后勾稽仍为 0");
+
+  const cash = await service.cashFlowStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(yuan(cash.cashOpening), 1000, "期初现金要认出期初银行存款（id 键也算资金科目）");
+  assert.equal(yuan(cash.current.closing), 1200, "期末现金 = 期初 1000 + 本期 200");
 });

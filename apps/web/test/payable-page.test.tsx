@@ -13,7 +13,7 @@
 //   GET  /api/v1/finance/supplier-payable-reconciliations                 应付对账单（含 flow 摘要）
 //   GET  /api/v1/suppliers | /api/v1/sales-orders | /api/v1/finance/banks  下拉主数据
 //   POST /api/v1/finance/payable-entries/from-source                     接收应付来源 → 应付草稿
-//   POST /api/v1/finance/payable-entries/batch-confirm                   勾选多条草稿一次确认（确认即记账）
+//   POST /api/v1/finance/payable-entries/batch-confirm                   勾选多条草稿一次确认（确认 = 挂账，不写流水）
 //   POST /api/v1/finance/supplier-payable-reconciliations                 创建应付对账
 //   POST /api/v1/finance/supplier-payable-reconciliations/:id/confirm-payables  对账后批量确认应付
 //   POST /api/v1/finance/supplier-payments                               合并付款第一步：建一张草稿付款单
@@ -27,10 +27,19 @@
 // 2026-10-08（用户确认）：确认应付已改回**挂账**（钱没出去），第二步因此回来了 —— 「合并付款」
 // 勾选多条已确认应付（同一供应商 + 同一币种，**可跨订单**）后真的建付款单 + 过账核销。
 // 本文件钉住它的两条请求体（建单与过账）、跨订单时**故意省略 order_no**、以及混币种/混供应商被锁。
+//
+// 2026-11-09（「确认 = 挂账」口径复核）：三个确认弹窗**不再询问「支付银行」**（后端对 bank_id 只做
+// 存在性校验后丢弃），只保留「会计科目」；成功提示统一为「已生成挂账凭证…钱未支付」，
+// `bank_missing` 只作为旧响应的中性兜底。钉住「弹窗没有银行字段 + 请求体没有 bank_id + 文案不提收支流水」。
+//
+// 2026-11-09 D4（强制核销额=单据额）：「合并付款」改为**整单结清** —— 逐行核销金额只读=该行未核销余额、
+// 付款金额=Σ（只读派生值），旧口径「逐行改小做部分付款」的用例已按下述改写；付款金额≠核销合计的
+// 防御校验用纯函数 `settleAmountMismatch` 直接喂不相等入参（组件里两者恒等，没有可手改的入口）。
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PayableWorkspace from "../components/finance/payable-workspace";
+import { SETTLE_AMOUNT_MISMATCH, settleAmountMismatch } from "../components/finance/payable-merge-payment-dialog";
 import { Toaster } from "../components/ui/toaster";
 import { formatBeijingDate } from "../lib/audit-time";
 import { apiErr, apiOk, callsTo, stubApi, type StubbedCall } from "./helpers/api-stub";
@@ -231,20 +240,24 @@ describe("应付管理：应付对账", () => {
     expect(within(dialog).getAllByText("150D").length).toBeGreaterThan(0);
   });
 
-  it("对平且有草稿时行内「确认 N 条应付」→ 弹窗问清支付银行/会计科目后 POST confirm-payables 并提示实际条数", async () => {
+  it("对平且有草稿时行内「确认 N 条应付」→ 弹窗只问会计科目（不问支付银行）→ POST confirm-payables 并提示挂账", async () => {
     const calls = stubPayable({ reconciliations: [matchedReconciliation] });
     await openPayable("reconciliations");
     await userEvent.click(screen.getByTestId("reconciliation-confirm-recon-1"));
-    // 确认应付现在会同时把钱记进账，所以先弹「确认应付：<对账单号>」问清账户与会计科目。
+    // 确认 = 挂账（钱未支付），所以弹窗先说明「生成挂账凭证」，只收集挂账凭证的借方科目。
     const dialog = await screen.findByTestId("action-dialog");
     expect(within(dialog).getByText("确认应付：APREC-001")).toBeVisible();
-    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    // 「支付银行」是旧口径的无效字段：确认接口只做存在性校验后丢弃，弹窗里不许再出现。
+    expect(screen.queryByTestId("action-field-bank_id")).toBeNull();
+    expect(within(dialog).queryByText(/支付银行/)).toBeNull();
     expect(screen.getByTestId("action-field-subject_id")).toBeInTheDocument();
+    expect(within(dialog).getByText("确认后生成挂账凭证：借 成本/费用科目、贷 应付账款；钱未支付，付款请用「合并付款」")).toBeVisible();
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, "/finance/supplier-payable-reconciliations/recon-1/confirm-payables")).toHaveLength(1));
-    // 未指定银行时显式送 null（后端按「不指定」处理），而不是不带 body
-    expect(bodyOf(postsTo(calls, "/finance/supplier-payable-reconciliations/recon-1/confirm-payables")[0])).toEqual({ bank_id: null });
-    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("APREC-001 已确认 2 条应付"))).toBe(true));
+    // 请求体只剩会计科目（没选 → undefined，JSON 里就没有这个键）；bank_id 已从协议里拿掉
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payable-reconciliations/recon-1/confirm-payables")[0])).toEqual({});
+    await expectToast("APREC-001 已确认 2 条应付");
+    await expectToast("已生成挂账凭证（借 成本/费用，贷 应付账款）；钱未支付");
   });
 
   it("有差异时只给「处理差异」，不给批量确认（金额没核对清楚不能记成负债）", async () => {
@@ -275,15 +288,15 @@ describe("应付管理：应付对账", () => {
 });
 
 /**
- * 2026-09（应付侧与应收侧镜像的新能力）：会计科目建单即持久化 + 确认应付要真的记账。
+ * 应付侧的「会计科目 + 确认应付」：确认 = **挂账**（借 成本/费用、贷 应付账款），钱未支付。
  *
  * 钉住**请求体**的理由与应收侧相同：建单时选的科目必须发出去，否则单据上只有后端猜的那个；
- * 确认应付不再是无 body 直接打 —— 它现在同时写一笔支出流水，必须先问清支付银行与会计科目，
- * 且后端回 `bank_missing` 时要给「钱记进流水了、但没进任何账户」的警告，而不是一句成功。
+ * 确认应付只发 `subject_id`（挂账凭证借方科目）—— **不再发 bank_id**，因为后端对 bank_id 只做
+ * 存在性校验后丢弃，确认既不写收支流水也不扣银行。成功提示统一为「已生成挂账凭证…钱未支付」，
+ * 不再出现「未指定支付银行 / 已记入收支流水 / 不会体现在任何银行账户余额里」这类旧口径文案。
  */
 describe("应付管理：会计科目与确认应付入账", () => {
   const travelSubject = { id: "subject-travel", category: "损益类", name: "主营业务收入", balanceDirection: "贷", sortOrder: 1, isActive: true };
-  const bank = { id: "bank-1", bankCode: "B001", bankName: "农业银行", accountName: "迪礼公司", accountNumber: "5706", currency: "CNY", isActive: true, swiftCode: null, remark: null };
   const confirmPath = "/finance/supplier-payable-reconciliations/recon-1/confirm-payables";
 
   it("创建对账把选中的会计科目随 POST 发出去", async () => {
@@ -298,12 +311,12 @@ describe("应付管理：会计科目与确认应付入账", () => {
   });
 
   // 2026-09-16（用户要求「不要又是登记付款又是确认应付，直接就是支持勾选，批量确认」）：
-  //   确认应付这边只保留一条路 —— 勾选若干草稿 → 一次确认。整批共用一个账户与一个科目，
-  //   请求体里带 ids 列表（后端仍逐条写流水）。
-  it("勾选两条草稿 → 批量确认把 ids + 银行 + 会计科目一次发出去，并在确认前显示条数与合计", async () => {
+  //   确认应付这边只保留一条路 —— 勾选若干草稿 → 一次确认。整批共用一个会计科目，
+  //   请求体里带 ids 列表（后端逐条挂账，每条应付一张挂账凭证）。
+  it("勾选两条草稿 → 批量确认把 ids + 会计科目发出去（不再发 bank_id），并在确认前显示条数与合计", async () => {
     const second = { ...draftEntry, id: "entry-2", payableNo: "AP-002", amount: "300.0000" };
     const calls = stubPayable(
-      { entries: [draftEntry, second], banks: [bank], subjects: [travelSubject] },
+      { entries: [draftEntry, second], subjects: [travelSubject] },
       (url, call) => (call.method === "POST" && url.startsWith(EP.batchConfirm)
         ? apiOk({ confirmed_count: 2, skipped_count: 0, amounts: [{ currency: "CNY", amount: "800.0000" }], bank_missing: false })
         : undefined),
@@ -317,12 +330,15 @@ describe("应付管理：会计科目与确认应付入账", () => {
     const dialog = await screen.findByTestId("action-dialog");
     // 确认前先看得见「几条、合计多少」（是数据，不是说明文）
     expect(within(dialog).getByText("确认 2 条草稿应付（合计 800.0000 CNY）")).toBeVisible();
-    await pickOption("action-field-bank_id", /农业银行/);
+    // 确认 = 挂账：只问挂账凭证的借方科目，不再问支付银行。
+    expect(screen.queryByTestId("action-field-bank_id")).toBeNull();
+    expect(within(dialog).getByText(/确认后生成挂账凭证：借 成本\/费用科目、贷 应付账款；钱未支付/)).toBeVisible();
     await pickOption("action-field-subject_id", /损益类 \/ 主营业务收入/);
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, EP.batchConfirm)).toHaveLength(1));
-    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toEqual({ ids: ["entry-1", "entry-2"], bank_id: "bank-1", subject_id: "subject-travel" });
+    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toEqual({ ids: ["entry-1", "entry-2"], subject_id: "subject-travel" });
     await expectToast("已确认 2 条应付（800.0000 CNY）");
+    await expectToast("已生成挂账凭证（借 成本/费用，贷 应付账款）；钱未支付");
   });
 
   it("未核销余额为 0（已付清）的条目没有勾选框：可勾的是草稿与「已确认且还有未核销余额」的应付", async () => {
@@ -339,7 +355,7 @@ describe("应付管理：会计科目与确认应付入账", () => {
     expect(screen.getByTestId("payable-batch-confirm")).toBeEnabled();
   });
 
-  it("批量确认：没指定银行时给警告并点名跳过的条数，而不是一句成功", async () => {
+  it("批量确认：旧响应带 bank_missing 时只给中性兜底提示，不再提「支付银行 / 收支流水」", async () => {
     const calls = stubPayable(
       { entries: [draftEntry] },
       (url, call) => (call.method === "POST" && url.startsWith(EP.batchConfirm)
@@ -352,75 +368,87 @@ describe("应付管理：会计科目与确认应付入账", () => {
     await screen.findByTestId("action-dialog");
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, EP.batchConfirm)).toHaveLength(1));
-    // 未指定银行时显式送 null（后端按「不指定」处理），而不是不带这个字段
-    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toEqual({ ids: ["entry-1"], bank_id: null });
+    // bank_id 已不在确认协议里：请求体只有 ids
+    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toEqual({ ids: ["entry-1"] });
 
-    await expectToast("未指定支付银行");
-    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("未指定支付银行")) as HTMLElement;
+    // 后端恒 false，这个字段只是历史/异常响应的兜底：中性提示，不能再说「钱记进流水了 / 没进任何账户」
+    await expectToast("请刷新核对");
+    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("请刷新核对")) as HTMLElement;
     expect(warning).toHaveClass("ui-toast-error");
+    expect(warning).not.toHaveTextContent("未指定支付银行");
+    expect(warning).not.toHaveTextContent("已记入收支流水");
+    expect(warning).not.toHaveTextContent("不会体现在任何银行账户余额里");
   });
 
   /**
    * 逐条确认应付（行内按钮）：与「勾选批量确认」「确认 N 条应付」（对账级）是同一件事的三条入口，
-   * 用户要求「一旦确认应付，金额就要转出对应的账户」——所以同样要收集支付银行 + 会计科目，
-   * 并在 `bank_missing` 时给出警告。
+   * 都是**挂账**（钱没动）——所以弹窗只收集「会计科目」（挂账凭证借方），不再问支付银行。
    */
-  it("逐条确认应付：行内按钮打开弹窗，提交 { bank_id, subject_id }", async () => {
+  it("逐条确认应付：行内按钮打开弹窗，只提交 { subject_id }（不再有支付银行）", async () => {
     const calls = stubPayable(
-      { entries: [draftEntry], banks: [bank], subjects: [travelSubject] },
-      (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/entry-1/confirm") ? apiOk({ ...draftEntry, cash_flow_entry_id: "cf-2", bank_missing: false }) : undefined),
+      { entries: [draftEntry], subjects: [travelSubject] },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/entry-1/confirm") ? apiOk({ ...draftEntry, accrual_voucher_id: "v-1", bank_missing: false }) : undefined),
     );
     await openPayable("confirmed");
     await userEvent.click(screen.getByRole("button", { name: "确认应付" }));
     const dialog = await screen.findByTestId("action-dialog");
     expect(within(dialog).getByText("确认应付：AP-001")).toBeVisible();
     expect(within(dialog).getByText("确认应付 AP-001：500.0000 CNY")).toBeVisible();
-    await pickOption("action-field-bank_id", /农业银行/);
+    // 确认 = 挂账：没有支付银行字段，只有挂账凭证借方科目 + 只读说明
+    expect(screen.queryByTestId("action-field-bank_id")).toBeNull();
+    expect(within(dialog).queryByText(/支付银行/)).toBeNull();
+    expect(within(dialog).getByText("确认后生成挂账凭证：借 成本/费用科目、贷 应付账款；钱未支付，付款请用「合并付款」")).toBeVisible();
     await pickOption("action-field-subject_id", /损益类 \/ 主营业务收入/);
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/entry-1/confirm")).toHaveLength(1));
-    expect(bodyOf(postsTo(calls, "/finance/payable-entries/entry-1/confirm")[0])).toEqual({ bank_id: "bank-1", subject_id: "subject-travel" });
+    expect(bodyOf(postsTo(calls, "/finance/payable-entries/entry-1/confirm")[0])).toEqual({ subject_id: "subject-travel" });
+    await expectToast("已生成挂账凭证（借 成本/费用，贷 应付账款）；钱未支付");
   });
 
-  it("逐条确认应付没指定银行时同样给出警告，而不是一句成功", async () => {
+  it("逐条确认应付：旧响应带 bank_missing 时走中性兜底，不再提「支付银行 / 收支流水」", async () => {
     const calls = stubPayable(
       { entries: [draftEntry] },
-      (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/entry-1/confirm") ? apiOk({ ...draftEntry, cash_flow_entry_id: "cf-2", bank_missing: true }) : undefined),
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/entry-1/confirm") ? apiOk({ ...draftEntry, bank_missing: true }) : undefined),
     );
     await openPayable("confirmed");
     await userEvent.click(screen.getByRole("button", { name: "确认应付" }));
     await screen.findByTestId("action-dialog");
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/entry-1/confirm")).toHaveLength(1));
-    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("未指定支付银行"))).toBe(true));
-    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("未指定支付银行")) as HTMLElement;
+    expect(bodyOf(postsTo(calls, "/finance/payable-entries/entry-1/confirm")[0])).toEqual({});
+    await expectToast("请刷新核对");
+    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("请刷新核对")) as HTMLElement;
     expect(warning).toHaveClass("ui-toast-error");
+    expect(warning).not.toHaveTextContent("未指定支付银行");
+    expect(warning).not.toHaveTextContent("已记入收支流水");
     expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("金额已记入所选银行账户"))).toBe(false);
   });
 
-  it("确认应付先弹窗问清支付银行与会计科目，提交后按选定值记账", async () => {
-    const calls = stubPayable({ reconciliations: [matchedReconciliation], banks: [bank], subjects: [travelSubject] });
+  it("确认应付先弹窗说明挂账，只问会计科目（不再问支付银行），提交后按选定科目挂账", async () => {
+    const calls = stubPayable({ reconciliations: [matchedReconciliation], subjects: [travelSubject] });
     await openPayable("reconciliations");
     await userEvent.click(screen.getByTestId("reconciliation-confirm-recon-1"));
 
     const dialog = await screen.findByTestId("action-dialog");
     expect(within(dialog).getByText("确认应付：APREC-001")).toBeVisible();
-    // 将要确认的条数与金额写在 info 行里（金额要进账，点之前必须看得见）
+    // 将要确认的条数与金额写在 info 行里（点之前必须看得见）
     expect(within(dialog).getByText(/2 条草稿应付（合计 800\.0000 CNY）/)).toBeVisible();
+    expect(screen.queryByTestId("action-field-bank_id")).toBeNull();
+    expect(within(dialog).getByText(/确认后生成挂账凭证：借 成本\/费用科目、贷 应付账款；钱未支付/)).toBeVisible();
 
-    await pickOption("action-field-bank_id", /农业银行/);
     await pickOption("action-field-subject_id", /损益类 \/ 主营业务收入/);
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, confirmPath)).toHaveLength(1));
-    // 请求体就是支付银行 + 会计科目这两项（确认金额由后端按范围内的草稿算）
-    expect(bodyOf(postsTo(calls, confirmPath)[0])).toEqual({ bank_id: "bank-1", subject_id: "subject-travel" });
+    // 请求体只有会计科目（挂账凭证借方）；确认金额由后端按范围内的草稿算，bank_id 已不在协议里
+    expect(bodyOf(postsTo(calls, confirmPath)[0])).toEqual({ subject_id: "subject-travel" });
+    await expectToast("已生成挂账凭证（借 成本/费用，贷 应付账款）；钱未支付");
   });
 
-  it("确认应付没指定银行时给出「钱记了但没进任何账户」的警告，而不是一句成功", async () => {
+  it("确认应付：旧响应带 bank_missing 时走中性兜底，不再报「钱记了但没进任何账户」", async () => {
     const calls = stubPayable(
       { reconciliations: [matchedReconciliation] },
       (url, call) => (call.method === "POST" && url.includes("/confirm-payables")
-        ? apiOk({ reconciliation_id: "recon-1", status: "matched", confirmed_count: 2, confirmed_amount: "800.0000", currency: "CNY", bank_id: null, subject_id: null, cash_flow_entry_id: "cf-7", bank_missing: true, skipped_count: 0 })
+        ? apiOk({ reconciliation_id: "recon-1", status: "matched", confirmed_count: 2, confirmed_amount: "800.0000", currency: "CNY", bank_id: null, subject_id: null, cash_flow_entry_id: null, bank_missing: true, skipped_count: 0 })
         : undefined),
     );
     await openPayable("reconciliations");
@@ -429,15 +457,17 @@ describe("应付管理：会计科目与确认应付入账", () => {
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
     await waitFor(() => expect(postsTo(calls, confirmPath)).toHaveLength(1));
 
-    await waitFor(() => expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("未指定支付银行"))).toBe(true));
-    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("未指定支付银行")) as HTMLElement;
-    expect(warning).toHaveTextContent("已记入收支流水，但不会体现在任何银行账户余额里");
-    // 警告必须与「成功」区分得开（错误态样式），并且**不能**同时出现「金额已入账」的成功文案
+    await expectToast("请刷新核对");
+    const warning = screen.getAllByTestId("toast-item").find((item) => item.textContent?.includes("请刷新核对")) as HTMLElement;
+    // 警告必须与「成功」区分得开（错误态样式），并且**不能**再说钱进了流水 / 没进任何账户
     expect(warning).toHaveClass("ui-toast-error");
+    expect(warning).not.toHaveTextContent("未指定支付银行");
+    expect(warning).not.toHaveTextContent("已记入收支流水");
+    expect(warning).not.toHaveTextContent("不会体现在任何银行账户余额里");
     expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("金额已记入所选银行账户"))).toBe(false);
   });
 
-  it("对账单详情里的「确认应付」打开同一个确认弹窗", async () => {
+  it("对账单详情里的「确认应付」打开同一个确认弹窗（无支付银行、有挂账说明）", async () => {
     const detail = { ...matchedReconciliation, details: { payable_entries: [], draft_entries: [], entry_count: 2, draft_count: 2, draft_amount: "800.0000", can_confirm_payables: true, pending_sources: [] } };
     stubPayable({ reconciliations: [matchedReconciliation] }, (url) => (url.endsWith("/api/v1/finance/supplier-payable-reconciliations/recon-1") ? apiOk(detail) : undefined));
     await openPayable("reconciliations");
@@ -447,8 +477,9 @@ describe("应付管理：会计科目与确认应付入账", () => {
 
     const dialog = await screen.findByTestId("action-dialog");
     expect(within(dialog).getByText("确认应付：APREC-001")).toBeVisible();
-    expect(screen.getByTestId("action-field-bank_id")).toBeInTheDocument();
+    expect(screen.queryByTestId("action-field-bank_id")).toBeNull();
     expect(screen.getByTestId("action-field-subject_id")).toBeInTheDocument();
+    expect(within(dialog).getByText(/确认后生成挂账凭证：借 成本\/费用科目、贷 应付账款；钱未支付/)).toBeVisible();
   });
 });
 
@@ -912,7 +943,8 @@ describe("应付管理：其他应付的逻辑删除", () => {
    * 用户 2026-09-20 第 2 条：「应付管理中，其他应付这种类型的，允许进行逻辑删除。因为有时候录错了」，
    * 随后追问：「包括删除确认应付和应付对账」。
    *
-   * 按钮只出现在「其他应付」上，且**草稿与已确认都给**（已确认的由后端在同一事务里冲回那笔支出）；
+   * 按钮只出现在「其他应付」上，且**草稿与已确认都给**（已确认的删除前后端会先校验挂账凭证，
+   * 已过账的要先在凭证页红冲）；确认 = 挂账、钱未支付，删除不涉及收支流水。
    * 原料入库 / 外加工签收是到货事实的账，什么状态都不给删除（要纠正走冲销）。
    */
   it("删除按钮只给「其他应付」（草稿与已确认各一条）；原料入库草稿与已确认都不给", async () => {
@@ -948,15 +980,20 @@ describe("应付管理：其他应付的逻辑删除", () => {
     await expectToast("其他应付 APO-001 已删除");
   });
 
-  it("已确认的其他应付也能删：弹窗里先说清「会同时冲回那笔支出」，再发同一条 DELETE", async () => {
+  it("已确认的其他应付也能删：弹窗先说清「先校验/红冲挂账凭证，确认不涉及收支流水」，再发同一条 DELETE", async () => {
     const calls = stubPayable({ entries: [otherConfirmed] });
     await openPayable("confirmed");
     // 已确认 = 挂账（钱还没付），所以它就在默认的「未付」清单里，不用切档
     expect(screen.getByTestId("payable-delete-entry-other-2")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("payable-delete-entry-other-2"));
     const dialog = await screen.findByTestId("action-dialog");
-    // 删除已确认的条目会动到钱，弹窗必须写出来（否则财务以为只是列表上少一行）
-    expect(within(dialog).getByText(/删除时会同时冲回那笔支出/)).toBeVisible();
+    // 删除已确认的条目要动挂账凭证，弹窗必须写出来（否则财务以为只是列表上少一行）；
+    // 但它**不是**动钱：确认不写收支流水，所以不能出现「冲回那笔支出 / 钱回到账上」。
+    expect(within(dialog).getByText(/删除前会先校验挂账凭证/)).toBeVisible();
+    expect(within(dialog).getByText(/已过账的需先在「凭证管理」红冲那张凭证，再删除/)).toBeVisible();
+    expect(within(dialog).getByText(/确认不涉及收支流水，钱未支付/)).toBeVisible();
+    expect(within(dialog).queryByText(/冲回那笔支出/)).toBeNull();
+    expect(within(dialog).queryByText(/钱回到账上/)).toBeNull();
 
     setValue("action-field-reason", "整条录错，供应商也不对");
     fireEvent.click(screen.getByTestId("action-dialog-submit"));
@@ -1250,8 +1287,9 @@ describe("应付管理：集中付款（付款单队列，可编辑）", () => {
  * 两个关键约定：
  *  ① **跨订单时建单不带 `order_no`**：后端只在付款单自带订单号时才校验订单一致
  *     （`supplier-payment.service.ts:96`），省略它正是「一次付款核销多个订单」的开关；带错了会 422；
- *  ② **金额只有一个真源**：表头「本次付款金额」= 各行「本次核销金额」之和（派生、随行变），
- *     不做成两个可以各说各话的输入框。
+ *  ② **金额只有一个真源**：表头「本次付款金额」= 各行「本次核销金额」之和；
+ *     2026-11-09 D4 起逐行核销金额**只读**=该行未核销余额（整单结清），付款金额=Σ 且只读派生，
+ *     不存在「改行 / 改合计」的输入框；旧口径「逐行改小做部分付款」的用例已改写。
  */
 describe("应付管理：合并付款（多笔应付一次核销）", () => {
   const bank = { id: "bank-1", bankCode: "B001", bankName: "农业银行", accountName: "迪礼公司", accountNumber: "5706", currency: "CNY", isActive: true, swiftCode: null, remark: null };
@@ -1304,13 +1342,16 @@ describe("应付管理：合并付款（多笔应付一次核销）", () => {
     await userEvent.click(merge);
 
     const dialog = await screen.findByTestId("payable-merge-dialog");
-    // 逐行列出要核销的应付，默认按该行**全额未核销余额**核销
+    // 逐行列出要核销的应付：D4 起核销金额**只读**，恒等于该行**全额未核销余额**（没有可改小的输入框）
     expect(within(dialog).getByTestId("payable-merge-row-entry-a")).toHaveTextContent("SO-1");
     expect(within(dialog).getByTestId("payable-merge-row-entry-b")).toHaveTextContent("SO-2");
-    expect((within(dialog).getByTestId("payable-merge-amount-entry-a") as HTMLInputElement).value).toBe("500.0000");
-    expect((within(dialog).getByTestId("payable-merge-amount-entry-b") as HTMLInputElement).value).toBe("300.0000");
-    // 合计是派生值（唯一真源 = 各行）：初始等于两条未核销余额之和
+    expect(within(dialog).getByTestId("payable-merge-amount-entry-a")).toHaveTextContent("500.0000");
+    expect(within(dialog).getByTestId("payable-merge-amount-entry-a").querySelector("input")).toBeNull();
+    expect(within(dialog).getByTestId("payable-merge-amount-entry-b")).toHaveTextContent("300.0000");
+    expect(within(dialog).getByTestId("payable-merge-amount-entry-b").querySelector("input")).toBeNull();
+    // 付款金额是只读派生值：= Σ 各行未核销余额
     expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 800 CNY");
+    expect(within(dialog).getByTestId("payable-merge-total").querySelector("input")).toBeNull();
     expect(within(dialog).queryByTestId("payable-merge-blockers")).toBeNull();
 
     fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
@@ -1352,7 +1393,7 @@ describe("应付管理：合并付款（多笔应付一次核销）", () => {
     expect(bodyOf(postsTo(calls, "/finance/supplier-payments")[0])).toMatchObject({ order_no: "SO-1", amount: "700" });
   });
 
-  it("逐行改小做部分付款：合计随行变，提交的就是改过的数（改回全额可用「按未核销余额重填」）", async () => {
+  it("D4 整单结清：核销金额只读=各行未核销余额、不可改小，提交全额并同步建单金额", async () => {
     const calls = mergeStub([payableA, payableB]);
     await openLedger();
     await userEvent.click(screen.getByTestId("payable-select-entry-a"));
@@ -1360,35 +1401,94 @@ describe("应付管理：合并付款（多笔应付一次核销）", () => {
     await userEvent.click(screen.getByTestId("payable-merge-pay"));
     const dialog = await screen.findByTestId("payable-merge-dialog");
 
-    setValue("payable-merge-amount-entry-b", "100");
-    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 600 CNY");
+    // 旧口径「逐行改小做部分付款」已作废：单元格里没有输入框，金额恒为该行未核销余额
+    for (const [id, amount] of [["entry-a", "500.0000"], ["entry-b", "300.0000"]] as const) {
+      const cell = within(dialog).getByTestId(`payable-merge-amount-${id}`);
+      expect(cell.querySelector("input")).toBeNull();
+      expect(cell).toHaveTextContent(amount);
+    }
+    expect(within(dialog).queryByTestId("payable-merge-reset")).toBeNull();
+    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 800 CNY");
+
     fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
     await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(1));
-    expect(bodyOf(postsTo(calls, "/finance/supplier-payments")[0])).toMatchObject({ amount: "600" });
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments")[0])).toMatchObject({ amount: "800" });
     await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments/spay-1/post")).toHaveLength(1));
     expect(bodyOf(postsTo(calls, "/finance/supplier-payments/spay-1/post")[0])).toEqual({ allocations: [
       { payable_entry_id: "entry-a", amount: "500" },
-      { payable_entry_id: "entry-b", amount: "100" },
+      { payable_entry_id: "entry-b", amount: "300" },
     ] });
   });
 
-  it("核销金额超过未核销余额：按钮点不动并把原因写在界面上，一个请求都不发", async () => {
-    const calls = mergeStub([payableA]);
+  /**
+   * Brief Case 3：手改付款金额为 150 后提交 → 前端阻断「核销合计必须等于付款金额」。
+   *
+   * D4 定稿口径下付款金额是**只读派生值**（没有可手改的输入框），所以用例拆成两半：
+   *  ① 纯函数 `settleAmountMismatch` 对不相等入参返回合同文案（组件里唯一的防御校验入口）；
+   *  ② 界面上付款金额与核销金额都不是 input（没有「手改」入口），不提交时一个请求都不发。
+   */
+  it("D4 Case 3：付款金额与核销合计不相等时阻断，文案对齐 PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION", async () => {
+    expect(SETTLE_AMOUNT_MISMATCH).toContain("核销合计必须等于付款金额");
+    expect(SETTLE_AMOUNT_MISMATCH).toContain("PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION");
+    // 150 ≠ 180 → 阻断；相等（含尾零差异）→ 放行
+    expect(settleAmountMismatch("150", "180")).toBe(SETTLE_AMOUNT_MISMATCH);
+    expect(settleAmountMismatch("180.0000", "180")).toBeNull();
+
+    const calls = mergeStub([payableA, payableB]);
     await openLedger();
     await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    await userEvent.click(screen.getByTestId("payable-select-entry-b"));
     await userEvent.click(screen.getByTestId("payable-merge-pay"));
     const dialog = await screen.findByTestId("payable-merge-dialog");
-    expect(within(dialog).getByTestId("payable-merge-submit")).toBeEnabled();
-
-    setValue("payable-merge-amount-entry-a", "600");
-    expect(within(dialog).getByTestId("payable-merge-blockers")).toHaveTextContent("AP-A 的本次核销金额不能超过未核销余额 500.0000");
-    expect(within(dialog).getByTestId("payable-merge-submit")).toBeDisabled();
-
-    // 「按未核销余额重填」一键还原 → 又可以提交了
-    await userEvent.click(within(dialog).getByTestId("payable-merge-reset"));
-    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 500 CNY");
-    expect(within(dialog).queryByTestId("payable-merge-blockers")).toBeNull();
+    // 付款金额不可编辑（不是 input），也没有「改核销行 / 重填」的入口
+    expect(within(dialog).getByTestId("payable-merge-total").querySelector("input")).toBeNull();
+    expect(within(dialog).queryByTestId("payable-merge-reset")).toBeNull();
+    expect(within(dialog).getByTestId("payable-merge-amount-entry-a").querySelector("input")).toBeNull();
     expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(0);
+  });
+
+  it("D4 Case 1：单条应付 100 → 核销金额显示 100 且不可编辑，付款金额自动 100", async () => {
+    const one = { ...payableA, id: "entry-100", payableNo: "AP-100", amount: "100.0000", outstanding_amount: "100.0000" };
+    const calls = mergeStub([one]);
+    await openLedger();
+    await userEvent.click(screen.getByTestId("payable-select-entry-100"));
+    await userEvent.click(screen.getByTestId("payable-merge-pay"));
+    const dialog = await screen.findByTestId("payable-merge-dialog");
+    const cell = within(dialog).getByTestId("payable-merge-amount-entry-100");
+    expect(cell).toHaveTextContent("100.0000");
+    expect(cell.querySelector("input")).toBeNull();
+    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 100 CNY");
+
+    fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments")[0])).toMatchObject({ amount: "100" });
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments/spay-1/post")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments/spay-1/post")[0])).toEqual({ allocations: [{ payable_entry_id: "entry-100", amount: "100" }] });
+  });
+
+  it("D4 Case 4：取消勾选一张后重开弹窗，核销合计与付款金额同步扣减", async () => {
+    const calls = mergeStub([payableA, payableB]);
+    await openLedger();
+    await userEvent.click(screen.getByTestId("payable-select-entry-a"));
+    await userEvent.click(screen.getByTestId("payable-select-entry-b"));
+    await userEvent.click(screen.getByTestId("payable-merge-pay"));
+    let dialog = await screen.findByTestId("payable-merge-dialog");
+    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 800 CNY");
+
+    // 关掉弹窗、取消勾选 B（勾选是台账行上的事），再开一次：这一批只剩 A
+    fireEvent.click(within(dialog).getByTestId("payable-merge-cancel"));
+    await userEvent.click(screen.getByTestId("payable-select-entry-b"));
+    expect(screen.getByTestId("payable-merge-hint")).toHaveTextContent("未核销余额合计 500");
+    await userEvent.click(screen.getByTestId("payable-merge-pay"));
+    dialog = await screen.findByTestId("payable-merge-dialog");
+    expect(within(dialog).queryByTestId("payable-merge-row-entry-b")).toBeNull();
+    expect(within(dialog).getByTestId("payable-merge-total")).toHaveTextContent("本次付款金额 500 CNY");
+
+    fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments")[0])).toMatchObject({ amount: "500" });
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments/spay-1/post")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/supplier-payments/spay-1/post")[0])).toEqual({ allocations: [{ payable_entry_id: "entry-a", amount: "500" }] });
   });
 
   it("币种是不变量：选了 CNY 之后，USD 的行勾选框锁住并写明原因", async () => {
@@ -1430,8 +1530,7 @@ describe("应付管理：合并付款（多笔应付一次核销）", () => {
     await userEvent.click(screen.getByTestId("payable-select-entry-a"));
     await userEvent.click(screen.getByTestId("payable-merge-pay"));
     const dialog = await screen.findByTestId("payable-merge-dialog");
-    // 先部分付款（100）：草稿金额就是 100，重试的核销合计因此不能超过它
-    setValue("payable-merge-amount-entry-a", "100");
+    // D4：核销金额只读=全额 500，付款金额也是 500；没有任何可改的入口
     fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
 
     await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments/spay-1/post")).toHaveLength(1));
@@ -1443,17 +1542,12 @@ describe("应付管理：合并付款（多笔应付一次核销）", () => {
     expect(screen.getByTestId("payable-merge-dialog")).toBeInTheDocument();
     expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已创建草稿付款单 SPAY-1"))).toBe(true);
 
-    // 重试时把金额改大到超过草稿金额：拦下来（复用同一张草稿，改大只会一直失败），不发请求
-    setValue("payable-merge-amount-entry-a", "500");
-    expect(within(dialog).getByTestId("payable-merge-blockers")).toHaveTextContent("本次核销合计不能超过已创建的草稿付款单金额 100 CNY");
-    expect(within(dialog).getByTestId("payable-merge-submit")).toBeDisabled();
-
-    // 改回草稿金额再重试：仍然只用这一个幂等键，不会建出第二张草稿，也不会撞上「重复草稿」守卫
-    setValue("payable-merge-amount-entry-a", "100");
+    // 重试：核销金额仍只读=全额，草稿金额不会变；仍用同一个幂等键，不会建出第二张草稿
     fireEvent.click(within(dialog).getByTestId("payable-merge-submit"));
     await waitFor(() => expect(postsTo(calls, "/finance/supplier-payments")).toHaveLength(2));
     const [first, second] = postsTo(calls, "/finance/supplier-payments");
     expect(bodyOf(second).idempotency_key).toBe(bodyOf(first).idempotency_key);
+    expect(bodyOf(second)).toMatchObject({ amount: "500" });
   });
 });
 
@@ -1579,6 +1673,23 @@ describe("应付管理：确认应付自己的搜索框与批量删除", () => {
     await expectToast("已删除 1 条其他应付");
   });
 
+  it("批量删除里含已确认条目时：弹窗说明「先校验/红冲挂账凭证」，不再说「冲回支出 / 钱回到账上」", async () => {
+    stubPayable({ entries: [otherEntry({ status: "confirmed", paid_amount: "0.0000", outstanding_amount: "500.0000" })] });
+    await openPayable("reconciliations");
+
+    fireEvent.click(ledger().getAllByRole("checkbox")[0]);
+    await waitFor(() => expect(screen.getByTestId("payable-batch-delete").textContent).toContain("（1 条）"));
+    fireEvent.click(screen.getByTestId("payable-batch-delete"));
+
+    const dialog = await screen.findByTestId("action-dialog");
+    // 确认 = 挂账、钱未支付：删已确认条目只涉及挂账凭证（已过账的先红冲），不涉及收支流水
+    expect(dialog.textContent).toContain("会先校验挂账凭证");
+    expect(dialog.textContent).toContain("已过账的需先在「凭证管理」红冲，再删除");
+    expect(dialog.textContent).toContain("确认不涉及收支流水");
+    expect(dialog.textContent).not.toContain("冲回它们的支出流水");
+    expect(dialog.textContent).not.toContain("钱回到账上");
+  });
+
   it("批量删除：后端逐条结果里没删掉的那几条，前端点名到单号与原因", async () => {
     const calls = stubPayable({ entries: [otherEntry()] }, (url, call) => (call.method === "POST" && url.endsWith("/finance/payable-entries/batch-delete")
       ? apiOk({ deleted: [], failed: [{ id: "entry-o1", payable_no: "APO-001", code: "SUPPLIER_PAYABLE_IN_RECONCILIATION", message: "该应付已纳入对账单 APREC-009，请先在「应付对账」里删除那张对账单，再删除这条应付" }], deleted_count: 0, failed_count: 1 })
@@ -1603,5 +1714,339 @@ describe("应付管理：确认应付自己的搜索框与批量删除", () => {
     fireEvent.click(ledger().getAllByRole("checkbox")[0]);
 
     await waitFor(() => expect((screen.getByTestId("payable-batch-delete") as HTMLButtonElement).disabled).toBe(true));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 发票类型与税额（2026-11-09 R2-5 / D5）
+//
+// 用户口径：含税/未税按**发票类型**拆进项税 —— 专票挂账时拆（借 业务科目不含税 + 借 应交税费-进项税 /
+// 贷 应付账款含税），普票 / 无票 / 未录不拆。前端负责：确认三个弹窗（逐条 / 批量 / 对账）收集
+// 「发票类型 + 税率」、专票缺税率先拦（后端同 422 INVALID_TAX_RATE），并把台账/详情展示出来。
+// ---------------------------------------------------------------------------
+describe("应付管理：发票类型与税额（R2-5 / D5）", () => {
+  /** 专票 11300 / 13%：不含税 10000、税额 1300（后端台账接口原样给出这 4 个字段）。 */
+  const specialEntry = {
+    ...draftEntry, id: "entry-special", payableNo: "AP-SPECIAL", amount: "11300.0000", outstanding_amount: "11300.0000",
+    invoice_type: "special", tax_rate: "0.1300", amount_net: "10000.0000", tax_amount: "1300.0000",
+  };
+  /** 普票：后端不给 amount_net / tax_amount（null），界面显示「—」。 */
+  const generalEntry = {
+    ...draftEntry, id: "entry-general", payableNo: "AP-GENERAL",
+    invoice_type: "general", tax_rate: null, amount_net: null, tax_amount: null,
+  };
+  const suppliers = [{ id: "supplier-1", name: "周金红", supplierCode: "S-001" }];
+
+  it("D5 Case 1：逐条确认选专票 + 税率 13% → 请求体带 invoice_type/tax_rate", async () => {
+    const calls = stubPayable({ entries: [draftEntry] }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/payable-entries/entry-1/confirm") ? apiOk({ ...draftEntry, accrual_voucher_id: "v-1" }) : undefined
+    ));
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByRole("button", { name: "确认应付" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    // 默认「未录」（不逼财务先选），选专票后税率由人填；请求里传百分数，后端会归一成 0.13
+    expect(within(dialog).getByTestId("action-field-invoice_type")).toBeInTheDocument();
+    await pickOption("action-field-invoice_type", "专票");
+    setValue("action-field-tax_rate", "13");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/entry-1/confirm")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/payable-entries/entry-1/confirm")[0])).toMatchObject({ invoice_type: "special", tax_rate: "13" });
+  });
+
+  it("D5 Case 2：选专票但税率留空 → 前端阻断（INVALID_TAX_RATE），不发请求", async () => {
+    const calls = stubPayable({ entries: [draftEntry] });
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByRole("button", { name: "确认应付" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    await pickOption("action-field-invoice_type", "专票");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    // 弹窗不关、原因写在弹窗里，文案与后端错误码对齐；一个请求都不发
+    await waitFor(() => expect(within(dialog).getByTestId("action-dialog-error")).toHaveTextContent("INVALID_TAX_RATE"));
+    expect(within(dialog).getByTestId("action-dialog-error")).toHaveTextContent("专票必须填写有效税率");
+    expect(postsTo(calls, "/finance/payable-entries/entry-1/confirm")).toHaveLength(0);
+    expect(screen.getByTestId("action-dialog")).toBeInTheDocument();
+  });
+
+  it("批量确认弹窗同样收集发票类型/税率（整批共用一个值）", async () => {
+    const calls = stubPayable({ entries: [draftEntry] }, (url, call) => (
+      call.method === "POST" && url.startsWith(EP.batchConfirm)
+        ? apiOk({ confirmed_count: 1, skipped_count: 0, amounts: [{ currency: "CNY", amount: "500.0000" }], bank_missing: false })
+        : undefined
+    ));
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByTestId("payable-select-entry-1"));
+    await userEvent.click(screen.getByTestId("payable-batch-confirm"));
+    const dialog = await screen.findByTestId("action-dialog");
+    await pickOption("action-field-invoice_type", "专票");
+    setValue("action-field-tax_rate", "13");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, EP.batchConfirm)).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, EP.batchConfirm)[0])).toMatchObject({ ids: ["entry-1"], invoice_type: "special", tax_rate: "13" });
+  });
+
+  it("按对账单确认弹窗同样收集发票类型（普票不传税率）", async () => {
+    const calls = stubPayable({ reconciliations: [matchedReconciliation] }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/supplier-payable-reconciliations/recon-1/confirm-payables")
+        ? apiOk({ confirmed_count: 2, confirmed_amount: "800.0000", skipped_count: 0, bank_missing: false })
+        : undefined
+    ));
+    await openPayable("reconciliations");
+    await userEvent.click(screen.getByTestId("reconciliation-confirm-recon-1"));
+    const dialog = await screen.findByTestId("action-dialog");
+    await pickOption("action-field-invoice_type", "普票");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/supplier-payable-reconciliations/recon-1/confirm-payables")).toHaveLength(1));
+    const body = bodyOf(postsTo(calls, "/finance/supplier-payable-reconciliations/recon-1/confirm-payables")[0]);
+    expect(body).toMatchObject({ invoice_type: "general" });
+    expect(body).not.toHaveProperty("tax_rate");
+  });
+
+  it("D5 Case 3：台账显示发票类型；详情显示税率/不含税/税额（专票 13%）", async () => {
+    const calls = stubPayable({ entries: [specialEntry] }, (url) => (
+      url.endsWith("/finance/payable-entries/entry-special") ? apiOk(specialEntry) : undefined
+    ));
+    await openPayable("confirmed");
+    const ledger = within(screen.getByTestId("payable-entries"));
+    expect(ledger.getByText("AP-SPECIAL")).toBeVisible();
+    // 列表只加「发票类型」一列（列已经很挤）；税率/不含税/税额进详情
+    expect(ledger.getByText("专票")).toBeVisible();
+    expect(screen.getByTestId("payable-entries")).toHaveTextContent("发票类型");
+
+    fireEvent.doubleClick(ledger.getAllByTestId("data-table-row")[0]);
+    const detail = await screen.findByTestId("finance-record-detail");
+    await waitFor(() => expect(callsTo(calls, "/api/v1/finance/payable-entries/entry-special")).toHaveLength(1));
+    await waitFor(() => expect(within(detail).getByText("不含税金额")).toBeVisible());
+    expect(detail).toHaveTextContent("专票");
+    expect(detail).toHaveTextContent("13%");
+    expect(detail).toHaveTextContent("10000.0000");
+    expect(detail).toHaveTextContent("1300.0000");
+  });
+
+  it("D5 Case 4：普票的不含税金额/税额显示「—」，台账显示「普票」", async () => {
+    stubPayable({ entries: [generalEntry] }, (url) => (
+      url.endsWith("/finance/payable-entries/entry-general") ? apiOk(generalEntry) : undefined
+    ));
+    await openPayable("confirmed");
+    const ledger = within(screen.getByTestId("payable-entries"));
+    expect(ledger.getByText("普票")).toBeVisible();
+
+    fireEvent.doubleClick(ledger.getAllByTestId("data-table-row")[0]);
+    const detail = await screen.findByTestId("finance-record-detail");
+    await waitFor(() => expect(within(detail).getByText("不含税金额")).toBeVisible());
+    const itemOf = (label: string) => within(detail).getByText(label).closest(".detail-item") as HTMLElement;
+    expect(itemOf("发票类型")).toHaveTextContent("普票");
+    expect(itemOf("税率")).toHaveTextContent("—");
+    expect(itemOf("不含税金额")).toHaveTextContent("—");
+    expect(itemOf("税额")).toHaveTextContent("—");
+  });
+
+  it("已录发票类型的条目：确认弹窗只显示只读事实（弹窗不会覆盖条目已录类型）", async () => {
+    stubPayable({ entries: [specialEntry] });
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByRole("button", { name: "确认应付" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).queryByTestId("action-field-invoice_type")).toBeNull();
+    expect(within(dialog).getByText(/已录，确认时不会被覆盖/)).toBeVisible();
+  });
+
+  it("其他应付新建：选专票必须填税率；填了就把 invoice_type/tax_rate 发出去", async () => {
+    const calls = stubPayable({ entries: [draftEntry], suppliers }, (url, call) => (
+      call.method === "POST" && url.endsWith("/finance/payable-entries/other") ? apiOk({ id: "entry-other", payableNo: "APO-001" }) : undefined
+    ));
+    await openPayable("confirmed");
+    await userEvent.click(screen.getByRole("button", { name: "新建其他应付" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    await pickOption("action-field-supplier_id", /周金红/);
+    setValue("action-field-amount", "2260");
+    setValue("action-field-description", "房租");
+    await pickOption("action-field-invoice_type", "专票");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+
+    // 专票缺税率：前端先拦（后端同 422 INVALID_TAX_RATE），不发请求
+    await waitFor(() => expect(within(dialog).getByTestId("action-dialog-error")).toHaveTextContent("INVALID_TAX_RATE"));
+    expect(postsTo(calls, "/finance/payable-entries/other")).toHaveLength(0);
+
+    setValue("action-field-tax_rate", "9");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/payable-entries/other")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/payable-entries/other")[0])).toMatchObject({ invoice_type: "special", tax_rate: "9" });
+  });
+
+  // 2026-11-09 R2-7：草稿编辑补「发票类型/税率」入口 —— 后端 `PATCH /finance/payable-entries/:id`
+  // （DraftFinanceUpdateDto）已支持，前端原先没有入口，录错只能删除重建。
+  it("草稿编辑：默认未录；选专票缺税率前端阻断；补税率后 PATCH 并刷新台账", async () => {
+    const calls = stubPayable({ entries: [draftEntry] }, (url, call) => (
+      call.method === "PATCH" && url.endsWith("/finance/payable-entries/entry-1")
+        ? apiOk({ ...draftEntry, invoice_type: "special", tax_rate: "0.1300" })
+        : undefined
+    ));
+    await openPayable("confirmed");
+    const ledger = within(screen.getByTestId("payable-entries"));
+    const entriesGetBefore = callsTo(calls, EP.entries).filter((call) => call.method === "GET").length;
+
+    await userEvent.click(ledger.getByRole("button", { name: "编辑" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    // 条目未录时默认「未录」、税率空
+    expect(within(dialog).getByTestId("action-field-invoice_type")).toBeInTheDocument();
+    expect((within(dialog).getByTestId("action-field-tax_rate") as HTMLInputElement).value).toBe("");
+
+    await pickOption("action-field-invoice_type", "专票");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(within(dialog).getByTestId("action-dialog-error")).toHaveTextContent("INVALID_TAX_RATE"));
+    expect(calls.filter((call) => call.method === "PATCH")).toHaveLength(0);
+
+    setValue("action-field-tax_rate", "13");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/finance/payable-entries/entry-1").filter((call) => call.method === "PATCH")).toHaveLength(1));
+    const patch = callsTo(calls, "/finance/payable-entries/entry-1").filter((call) => call.method === "PATCH")[0];
+    expect(bodyOf(patch)).toMatchObject({ invoice_type: "special", tax_rate: "13" });
+    // 保存后刷新台账（重新 GET 应付列表）
+    await waitFor(() => expect(callsTo(calls, EP.entries).filter((call) => call.method === "GET").length).toBeGreaterThan(entriesGetBefore));
+  });
+
+  it("草稿编辑：已录专票默认带出「专票 + 13%」；改成普票时只 PATCH invoice_type", async () => {
+    const calls = stubPayable({ entries: [specialEntry] }, (url, call) => (
+      call.method === "PATCH" && url.endsWith("/finance/payable-entries/entry-special")
+        ? apiOk({ ...specialEntry, invoice_type: "general", tax_rate: null })
+        : undefined
+    ));
+    await openPayable("confirmed");
+    await userEvent.click(within(screen.getByTestId("payable-entries")).getByRole("button", { name: "编辑" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByTestId("action-field-invoice_type")).toHaveTextContent("专票");
+    expect((within(dialog).getByTestId("action-field-tax_rate") as HTMLInputElement).value).toBe("13");
+
+    await pickOption("action-field-invoice_type", "普票");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/finance/payable-entries/entry-special").filter((call) => call.method === "PATCH")).toHaveLength(1));
+    const body = bodyOf(callsTo(calls, "/finance/payable-entries/entry-special").filter((call) => call.method === "PATCH")[0]);
+    expect(body).toMatchObject({ invoice_type: "general" });
+    expect(body).not.toHaveProperty("tax_rate");
+  });
+
+  it("草稿编辑：发票类型选「未录」→ PATCH 显式 null（清空），不是「不改」", async () => {
+    const calls = stubPayable({ entries: [specialEntry] }, (url, call) => (
+      call.method === "PATCH" && url.endsWith("/finance/payable-entries/entry-special") ? apiOk({ ...specialEntry, invoice_type: null, tax_rate: null }) : undefined
+    ));
+    await openPayable("confirmed");
+    await userEvent.click(within(screen.getByTestId("payable-entries")).getByRole("button", { name: "编辑" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    await pickOption("action-field-invoice_type", "（未录）");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/finance/payable-entries/entry-special").filter((call) => call.method === "PATCH")).toHaveLength(1));
+    const body = bodyOf(callsTo(calls, "/finance/payable-entries/entry-special").filter((call) => call.method === "PATCH")[0]);
+    expect(body).toHaveProperty("invoice_type", null);
+  });
+
+  it("草稿编辑：只改金额时不携带发票字段（不动发票口径、不产生多余审计）", async () => {
+    const calls = stubPayable({ entries: [specialEntry] }, (url, call) => (
+      call.method === "PATCH" && url.endsWith("/finance/payable-entries/entry-special") ? apiOk(specialEntry) : undefined
+    ));
+    await openPayable("confirmed");
+    await userEvent.click(within(screen.getByTestId("payable-entries")).getByRole("button", { name: "编辑" }));
+    const dialog = await screen.findByTestId("action-dialog");
+    setValue("action-field-amount", "11350");
+    fireEvent.click(within(dialog).getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(callsTo(calls, "/finance/payable-entries/entry-special").filter((call) => call.method === "PATCH")).toHaveLength(1));
+    const body = bodyOf(callsTo(calls, "/finance/payable-entries/entry-special").filter((call) => call.method === "PATCH")[0]);
+    expect(body).toMatchObject({ amount: "11350" });
+    expect(body).not.toHaveProperty("invoice_type");
+    expect(body).not.toHaveProperty("tax_rate");
+  });
+});
+
+/**
+ * 2026-11-09 R3-13：挂账状态展示 + 按来源重算。
+ *
+ * 后端 list/get 返回 `accrual_status`（posted/draft/reversed/none）；只有 **reversed（挂账已红冲）**
+ * 才是需要处理的异常：行内给「按来源重算」（POST /finance/payables/:id/reaccrue），成功后刷新列表并
+ * 把新凭证号进 toast；422 的 code/message 原样展示；replayed=true 时如实说「未重复生成」。
+ */
+describe("应付管理：挂账状态与按来源重算", () => {
+  /** 一条「已确认、未付款、挂了账」的应付，按用例改 accrual_status。 */
+  const confirmedOpen = (over: Record<string, unknown> = {}) => ({ ...draftEntry, status: "confirmed", outstanding_amount: "500.0000", ...over });
+
+  it("已挂账/草稿挂账/未挂账各自显示，且都没有重算按钮；无 accrual_status 的历史行按「未挂账」处理", async () => {
+    stubPayable({ entries: [
+      confirmedOpen({ accrual_status: "posted" }),
+      confirmedOpen({ id: "entry-draft-accrual", payableNo: "AP-DRAFT-ACCRUAL", accrual_status: "draft" }),
+      confirmedOpen({ id: "entry-legacy", payableNo: "AP-LEGACY" }),
+    ] });
+    await openPayable("confirmed");
+
+    const table = within(screen.getByTestId("payable-entries"));
+    expect(table.getByTestId("payable-accrual-entry-1")).toHaveTextContent("已挂账");
+    expect(table.getByTestId("payable-accrual-entry-draft-accrual")).toHaveTextContent("草稿挂账");
+    // 旧响应没有 accrual_status → none（未挂账），而不是 undefined
+    expect(table.getByTestId("payable-accrual-entry-legacy")).toHaveTextContent("未挂账");
+    for (const id of ["entry-1", "entry-draft-accrual", "entry-legacy"]) expect(screen.queryByTestId(`payable-reaccrue-${id}`)).toBeNull();
+  });
+
+  it("挂账已红冲：警示色 + 点「按来源重算」填可选原因 → POST reaccrue、toast 新凭证号并刷新列表", async () => {
+    const calls = stubPayable(
+      { entries: [confirmedOpen({ accrual_status: "reversed" })] },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/payables/entry-1/reaccrue")
+        ? apiOk({ id: "voucher-9", voucherNo: "记-2026-11-0099", status: "posted", replayed: false })
+        : undefined),
+    );
+    await openPayable("confirmed");
+
+    const badge = screen.getByTestId("payable-accrual-entry-1");
+    expect(badge).toHaveTextContent("挂账已红冲");
+    // 警示色：需要财务处理（挂账凭证被红冲，总账上没有这笔往来）
+    expect(badge).toHaveClass("status-error");
+
+    fireEvent.click(screen.getByTestId("payable-reaccrue-entry-1"));
+    const dialog = await screen.findByTestId("action-dialog");
+    expect(within(dialog).getByText(/挂账凭证已红冲/)).toBeInTheDocument();
+    setValue("action-field-reason", "凭证误红冲");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/payables/entry-1/reaccrue")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/payables/entry-1/reaccrue")[0])).toEqual({ reason: "凭证误红冲" });
+    await expectToast("记-2026-11-0099");
+    // 成功后刷新列表（GET 应付条目至少两次：初次加载 + 重算后）
+    await waitFor(() => expect(callsTo(calls, EP.entries).filter((call) => call.method === "GET").length).toBeGreaterThanOrEqual(2));
+  });
+
+  it("replayed=true：如实提示「已有有效挂账凭证，未重复生成」，且不显成功重算", async () => {
+    const calls = stubPayable(
+      { entries: [confirmedOpen({ accrual_status: "reversed" })] },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/payables/entry-1/reaccrue")
+        ? apiOk({ id: "voucher-1", voucherNo: "记-2026-11-0100", status: "posted", replayed: true })
+        : undefined),
+    );
+    await openPayable("confirmed");
+    fireEvent.click(screen.getByTestId("payable-reaccrue-entry-1"));
+    await screen.findByTestId("action-dialog");
+    // 原因可选：不填也提交，请求体里就不该出现 reason
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+    await waitFor(() => expect(postsTo(calls, "/finance/payables/entry-1/reaccrue")).toHaveLength(1));
+    expect(bodyOf(postsTo(calls, "/finance/payables/entry-1/reaccrue")[0])).toEqual({});
+    await expectToast("已有有效挂账凭证 记-2026-11-0100，未重复生成");
+    expect(screen.getAllByTestId("toast-item").some((item) => item.textContent?.includes("已按来源重算挂账"))).toBe(false);
+  });
+
+  it("422 原样展示后端 code 的 message（ACCRUAL_ALREADY_POSTED），弹窗留在原地", async () => {
+    const message = "挂账凭证 记-2026-11-0001 已过账，不能再按来源重算；要改请先在凭证页红冲该凭证";
+    const calls = stubPayable(
+      { entries: [confirmedOpen({ accrual_status: "reversed" })] },
+      (url, call) => (call.method === "POST" && url.endsWith("/finance/payables/entry-1/reaccrue")
+        ? apiErr(422, "ACCRUAL_ALREADY_POSTED", message)
+        : undefined),
+    );
+    await openPayable("confirmed");
+    fireEvent.click(screen.getByTestId("payable-reaccrue-entry-1"));
+    await screen.findByTestId("action-dialog");
+    fireEvent.click(screen.getByTestId("action-dialog-submit"));
+
+    await waitFor(() => expect(postsTo(calls, "/finance/payables/entry-1/reaccrue")).toHaveLength(1));
+    await expectToast(message);
+    // 失败不能静默关弹窗：原因留在可重试的位置
+    expect(screen.getByTestId("action-dialog")).toBeInTheDocument();
   });
 });

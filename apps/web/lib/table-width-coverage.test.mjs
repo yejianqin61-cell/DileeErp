@@ -36,6 +36,7 @@ const BOUNDED = {
   "app/warehouse/finished-goods-storage/page.tsx": "成品存量页的「按订单号收束」展开表（5 列）",
   "components/account/account-center.tsx": "账号管理表（6 列，用共享 Table 原语手写）",
   "components/finance/payable-merge-payment-dialog.tsx": "合并付款的逐行金额表（6 列）",
+  "components/finance/receivable-workspace.tsx": "合并收款的逐行核销金额表（6 列；核销金额只读=未收余额）",
   "components/production/production-order-detail-page.tsx": "生产单详情的进度测量表（5 列）",
   "components/reorder/document-groups.tsx": "返单单据分组表（5 列）",
   "components/reorder/unassigned-panel.tsx": "待补录清单表（8 列）",

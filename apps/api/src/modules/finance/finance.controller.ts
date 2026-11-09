@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
-import { ArrayNotEmpty, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
+import { ArrayNotEmpty, IsArray, IsDateString, IsIn, IsOptional, IsString, IsUUID, Matches, MaxLength } from "class-validator";
 import type { Response } from "express";
 import type { Express } from "express";
 import { CurrentUser } from "../../platform/audit/current-user.decorator";
@@ -35,6 +35,8 @@ class AllocationDto { @IsUUID() receivable_source_id!: string; @IsString() amoun
  */
 class PostPaymentDto { @IsArray() allocations!: AllocationDto[]; @IsOptional() @IsUUID() subject_id?: string; @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
+/** 按来源重算挂账（2026-11-09 R3-6）：原因可选，只用于审计。 */
+class ReaccrueDto { @IsOptional() @IsString() @MaxLength(1000) reason?: string; }
 
 /**
  * 其他应付导入的文件白名单（与花名册导入同一套）：扩展名或声明的 MIME 必须是 Excel。
@@ -103,8 +105,10 @@ class SupplierPostPaymentDto { @IsArray() allocations!: SupplierAllocationDto[];
  *
  * `currency` 允许改：草稿还没发生核销，改币种是安全的业务动作（「都要支持选择币种、编辑币种」）。
  * `bank_id` 允许传 null / 空串表示**清空**银行，传 undefined 表示不改（银行是可选字段，选错了要能去掉）。
+ * `invoice_type` / `tax_rate`（2026-11-09 R2-3）：只对「应付草稿」生效；税率是数字字符串（13 / 0.13 都可，
+ * 服务层归一到 0~1），已确认的条目改这两格会被 422 `INVOICE_TYPE_LOCKED` 挡住。
  */
-class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() subject_id?: string | null; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
+class DraftFinanceUpdateDto { @IsOptional() @IsString() amount?: string; @IsOptional() @IsDateString() payment_date?: string; @IsOptional() @IsDateString() confirmation_date?: string; @IsOptional() @IsString() payment_method?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() subject_id?: string | null; @IsOptional() @IsIn(["special", "general", "none"]) invoice_type?: "special" | "general" | "none" | null; @IsOptional() @Matches(/^\d+(?:\.\d+)?$/) tax_rate?: string | null; @IsOptional() @IsString() @MaxLength(1000) remark?: string; }
 class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() @IsString() order_no?: string; @IsOptional() @IsUUID() purchase_order_id?: string; @IsDateString() period_start!: string; @IsDateString() period_end!: string; @IsString() external_balance!: string; @IsString() currency!: string; @IsOptional() @IsUUID() bank_id?: string; @IsOptional() @IsUUID() subject_id?: string; @IsOptional() @IsArray() attachment?: unknown[]; @IsOptional() @IsString() remark?: string; }
 
 /**
@@ -115,7 +119,7 @@ class SupplierReconciliationDto { @IsUUID() supplier_id!: string; @IsOptional() 
  * 没给就用单子上已有的。两者都缺时仍然确认成功，只是这笔流水不进任何账户余额 —— 不静默，
  * 响应里带 `bank_missing` 让界面明确提示。
  */
-class ConfirmReconciliationDto { @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() subject_id?: string | null; @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string | null; }
+class ConfirmReconciliationDto { @IsOptional() @IsUUID() bank_id?: string | null; @IsOptional() @IsUUID() subject_id?: string | null; @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string | null; /** 2026-11-09 R2-3（D5）：整批下发给「尚未录」的条目；已有值不覆盖。 */ @IsOptional() @IsIn(["special", "general", "none"]) invoice_type?: "special" | "general" | "none" | null; @IsOptional() @Matches(/^\d+(?:\.\d+)?$/) tax_rate?: string | null; }
 
 /**
  * 逐条确认应收 / 应付的入参。
@@ -131,6 +135,10 @@ class ConfirmSourceDto {
   @IsOptional() @IsUUID() subject_id?: string | null;
   /** 款项性质（定金/货款/尾款/其他）。确认即记账，钱的性质要在这唯一一次录入口里问清。 */
   @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string | null;
+  /** 2026-11-09 R2-3（D5）：发票类型（`special` 专票 / `general` 普票 / `none` 无票 / 空 = 未录；应收侧忽略）。 */
+  @IsOptional() @IsIn(["special", "general", "none"]) invoice_type?: "special" | "general" | "none" | null;
+  /** 价内税率：数字字符串（`13` 与 `0.13` 都认，服务层归一到 0~1）；只有专票且条目未录税率时才生效。 */
+  @IsOptional() @Matches(/^\d+(?:\.\d+)?$/) tax_rate?: string | null;
 }
 
 /**
@@ -145,6 +153,9 @@ class BatchConfirmDto {
   @IsOptional() @IsUUID() subject_id?: string | null;
   /** 款项性质（定金/货款/尾款/其他）：整批共用一个，与银行、科目同一口径。 */
   @IsOptional() @IsIn(PAYMENT_NATURE_FORM_KEYS) payment_nature?: string | null;
+  /** 2026-11-09 R2-3（D5）：整批下发给「尚未录发票类型」的条目；已有值不覆盖。 */
+  @IsOptional() @IsIn(["special", "general", "none"]) invoice_type?: "special" | "general" | "none" | null;
+  @IsOptional() @Matches(/^\d+(?:\.\d+)?$/) tax_rate?: string | null;
 }
 
 /**
@@ -190,6 +201,13 @@ class SupplierOtherPayableDto {
    * 留空 = 不指定，行为与以前完全一致（确认应付时按来源自动归类）。
    */
   @IsOptional() @IsUUID() subject_id?: string;
+  /**
+   * 发票类型 + 税率（2026-11-09 R2-3，D5）：其他应付的 `taxRate` 历史恒为 0，
+   * 所以选「专票」时必须在这里一并给税率（房租通常 9%），否则 422 `INVALID_TAX_RATE`；
+   * 普票 / 无票 / 未录不需要税率（传了会被忽略并记审计 `ignored_tax_rate`）。
+   */
+  @IsOptional() @IsIn(["special", "general", "none"]) invoice_type?: "special" | "general" | "none" | null;
+  @IsOptional() @Matches(/^\d+(?:\.\d+)?$/) tax_rate?: string | null;
   @IsOptional() @IsArray() attachment?: unknown[];
   @IsOptional() @IsString() @MaxLength(1000) remark?: string;
 }
@@ -211,6 +229,11 @@ export class FinanceController {
   @Patch("receivable-sources/:id") async updateReceivableSource(@Param("id") id: string, @Body() body: ReceivableDraftUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.updateDraft(id, body, user), meta: {} }; }
   @Post("receivable-sources/:id/reopen") async reopenReceivableSource(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.reopen(id, body.reason, user), meta: {} }; }
   @Post("receivable-sources/:id/cancel") async cancelSource(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.cancel(id, body.reason, user), meta: {} }; }
+  /**
+   * 按来源重算挂账（2026-11-09 R3-6，应收侧）：挂账凭证被红冲后，用当前应收数据重建一张 posted。
+   * 已 posted 时 422 `ACCRUAL_ALREADY_POSTED`；草稿/已回退/已取消 422 `RECEIVABLE_NOT_RECALCULABLE`。
+   */
+  @Post("receivables/:id/reaccrue") async reaccrueReceivable(@Param("id") id: string, @Body() body: ReaccrueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.receivable.reaccrue(id, user, body?.reason), meta: {} }; }
   @Get("receivable-sources/:id/impact-preview") async impact(@Param("id") id: string) { return { data: await this.receivable.impactPreview(id), meta: {} }; }
   @Get("customer-payments") async listPayments(@Query("order_no") orderNo?: string, @Query("customer_id") customerId?: string) { return { data: await this.payments.list(orderNo, customerId), meta: {} }; }
   @Get("customer-payments/:id") async getPayment(@Param("id") id: string) { return { data: await this.payments.get(id), meta: {} }; }
@@ -300,6 +323,11 @@ export class FinanceController {
   @Patch("payable-entries/:id") async updatePayableEntry(@Param("id") id: string, @Body() body: DraftFinanceUpdateDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.updateDraft(id, body, user), meta: {} }; }
   @Post("payable-entries/:id/reopen") async reopenPayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reopen(id, body.reason, user), meta: {} }; }
   @Post("payable-entries/:id/reverse") async reversePayableEntry(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reverse(id, body.reason, user), meta: {} }; }
+  /**
+   * 按来源重算挂账（2026-11-09 R3-6）：挂账凭证被红冲后，用当前应付数据重建一张 posted。
+   * 已 posted 时 422 `ACCRUAL_ALREADY_POSTED`；草稿/已回退 422 `PAYABLE_NOT_RECALCULABLE`。
+   */
+  @Post("payables/:id/reaccrue") async reaccruePayable(@Param("id") id: string, @Body() body: ReaccrueDto, @CurrentUser() user: CurrentUserType) { return { data: await this.payable.reaccrue(id, user, body?.reason), meta: {} }; }
 
   /**
    * 逻辑删除「其他应付」条目（用户 2026-09-20）。

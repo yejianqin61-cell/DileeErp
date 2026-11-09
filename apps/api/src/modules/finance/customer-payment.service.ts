@@ -101,7 +101,17 @@ export class CustomerPaymentService {
         const { source, available } = await this.receivable.allocationBalance(allocation.receivable_source_id, tx);
         if (source.customerId !== lockedPayment.customerId || source.currency !== lockedPayment.currency) throw this.invalid("ALLOCATION_REFERENCE_MISMATCH", "客户或币种与应收来源不一致");
         if (!["confirmed", "partially_paid"].includes(source.status)) throw this.invalid("RECEIVABLE_SOURCE_NOT_ALLOCATABLE", "应收来源尚未确认或已关闭");
-        if (amount.gt(available)) throw this.exceeded("RECEIVABLE_ALLOCATION_EXCEEDED", available);
+        // 2026-11-09 D4（用户拍板「强制核销额=单据额」）：应收侧与应付同构，只允许**整单结清**。
+        // 历史 `partially_paid` 来源按剩余 `available` 全额结清即可，不要求等于原单据金额。
+        if (!amount.eq(available)) throw new UnprocessableEntityException({
+          code: "ALLOCATION_MUST_SETTLE_RECEIVABLE",
+          message: "核销金额必须等于该应收的未核销余额（只允许整单结清，不允许部分核销）",
+          details: [{
+            receivable_amount: source.amount.toString(),
+            available_amount: available.toString(),
+            requested_amount: amount.toString(),
+          }],
+        });
         total = total.plus(amount);
         settledDocuments.push({ amount, subjectId: null, scope: { customerId: source.customerId, orderNo: source.orderNo, currency: source.currency, createdAt: source.createdAt } });
         await tx.receivableAllocation.create({ data: { paymentId: id, receivableSourceId: source.id, amount, currency: current.currency, ...this.audit.create(user) } });
@@ -114,7 +124,13 @@ export class CustomerPaymentService {
         orderBy: { createdAt: "desc" },
       });
       for (const row of settledDocuments) row.subjectId = coveringReceivableReconciliation(row.scope, coverages)?.subjectId ?? null;
-      if (total.gt(lockedPayment.amount)) throw this.exceeded("PAYMENT_ALLOCATION_EXCEEDED", lockedPayment.amount);
+      // 2026-11-09 D4：收款金额必须=核销合计（不允许部分收款，也不允许把多收的差额留在收款单上）。
+      // 放在循环之后、状态落库之前；抛错时本次已写入的核销行随事务回滚。
+      if (!total.eq(lockedPayment.amount)) throw new UnprocessableEntityException({
+        code: "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION",
+        message: "收款金额必须等于核销合计（不允许部分收款，也不允许把多收的差额留在收款单上）",
+        details: [{ payment_amount: lockedPayment.amount.toString(), allocated_amount: total.toString() }],
+      });
       const payment = await tx.customerPayment.update({ where: { id }, data: { status: "posted", ...this.audit.update(user) } });
       for (const allocation of allocations ?? []) await this.receivable.refreshStatus(tx, allocation.receivable_source_id, user);
       return { payment, settledDocuments, customerName: lockedPayment.customer?.name ?? null, bankLabel: lockedPayment.bank ? `${lockedPayment.bank.bankName}${lockedPayment.bank.accountNumber}` : null, bank: lockedPayment.bank ?? null };
@@ -192,5 +208,4 @@ export class CustomerPaymentService {
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
   private notFound(code: string, message: string) { return new NotFoundException({ code, message, details: [] }); }
   private invalid(code: string, message: string) { return new UnprocessableEntityException({ code, message, details: [] }); }
-  private exceeded(code: string, available: Prisma.Decimal) { return new UnprocessableEntityException({ code, message: "核销金额超过可用余额", details: [{ available_amount: available.toString() }] }); }
 }

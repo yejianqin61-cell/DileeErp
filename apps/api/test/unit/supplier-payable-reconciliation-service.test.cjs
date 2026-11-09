@@ -39,7 +39,7 @@ function confirmHarness(reconciliation, drafts) {
     },
     supplierPayableEntry: {
       findMany: async (args) => { lastQuery = args; return drafts; },
-      update: async ({ where, data }) => { updates.push({ id: where.id, status: data.status }); return { ...where, status: data.status }; },
+      update: async ({ where, data }) => { updates.push({ id: where.id, ...data }); return { ...where, ...data }; },
     },
     bank: { findFirst: async ({ where }) => (where.id === "bank-dead" ? null : { id: where.id, bankName: "农业银行", accountNumber: "5706" }) },
   };
@@ -52,11 +52,19 @@ function confirmHarness(reconciliation, drafts) {
   const cashFlow = cashFlowStub({ recordConfirmation: async (input) => { cashFlowCalls.push(input); return { id: "cf-1", created: true, amount: input.amount }; } });
   // 2026-09-24 起确认应付 = 挂账（逐条一张凭证）：cashFlowCalls 变成反向护栏。
   const accrualCalls = [];
+  /** 第三参（`{ client, post }`）：2026-11-09「确认即过账」—— 挂账在确认事务内、生成即 posted。 */
+  const accrualOptions = [];
   const vouchers = {
-    createAccrual: async (input) => { accrualCalls.push(input); return { id: `voucher-${accrualCalls.length}`, replayed: false }; },
+    createAccrual: async (input, _user, options) => {
+      accrualCalls.push(input);
+      accrualOptions.push(options);
+      return { id: `voucher-${accrualCalls.length}`, voucherNo: `记-2026-11-${String(accrualCalls.length).padStart(4, "0")}`, status: "posted", replayed: false };
+    },
     accruedSourceIds: async () => new Set(),
+    postedAccrualOf: async () => null,
+    discardDraftAccrual: async () => null,
   };
-  return { service: new SupplierPayableReconciliationService(prisma, audit, cashFlow, undefined, vouchers), locks, updates, audits, cashFlowCalls, accrualCalls, reconciliationUpdates, query: () => lastQuery };
+  return { service: new SupplierPayableReconciliationService(prisma, audit, cashFlow, undefined, vouchers), locks, updates, audits, cashFlowCalls, accrualCalls, accrualOptions, reconciliationUpdates, query: () => lastQuery };
 }
 
 const draftEntry = (id, amount, sourceStatus, sourceType = "raw_material_inbound") => ({ id, payableNo: `AP-${id}`, orderNo: "SO-1", amount: new Prisma.Decimal(amount), currency: "CNY", sourceType, payableSource: { status: sourceStatus ?? "pending_finance" }, outsourcePayableSource: null });
@@ -99,8 +107,9 @@ test("批量确认只取对账范围内的草稿应付，可选收窄到订单�
 });
 
 // ---------------------------------------------------------------------------
-// 2026-09-24（两步口径）：确认应付 = **挂账**（每条应付一张凭证，借成本 / 贷应付账款），
+// 2026-09-24（两步口径）：确认应付 = **挂账**（每条应付一张凭证，借存货/成本 / 贷应付账款），
 //   不再写「钱已转出」的支出流水 —— 钱还没付，现金那条留给「登记付款」。
+// 2026-11-09（确认即过账）：挂账与确认同一事务、凭证状态直接 posted，借方首选资产类「原材料」。
 // ---------------------------------------------------------------------------
 
 test("确认应付走挂账：每条应付一张凭证，不写支出流水、不动银行", async () => {
@@ -111,10 +120,13 @@ test("确认应付走挂账：每条应付一张凭证，不写支出流水、�
   assert.deepEqual(harness.accrualCalls.map((call) => call.source_id), ["e1", "e2"]);
   assert.deepEqual(harness.accrualCalls.map((call) => call.amount.toString()), ["10", "32.5"]);
   assert.equal(harness.accrualCalls[0].counterparty_name, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
-  assert.deepEqual(harness.accrualCalls[0].contra_subject_names, ["主营业务成本", "原材料"], "原料入库来源 → 主营业务成本（与付款过账同一套归类口径）");
+  assert.deepEqual(harness.accrualCalls[0].contra_subject_names, ["原材料", "主营业务成本"], "D1（2026-11-09）：原料入库来源 → 原材料（存货），与付款过账同一套归类口径");
   assert.equal(result.bank_missing, false);
   assert.equal(result.cash_flow_entry_id, null);
   assert.deepEqual(result.accrual_voucher_ids, ["voucher-1", "voucher-2"]);
+  // D2（2026-11-09）：按对账单确认的逐条挂账也在同一个事务里、生成即过账。
+  assert.equal(harness.accrualOptions.every((options) => options.post === true), true, "对账确认生成的挂账凭证必须直接过账");
+  assert.equal(harness.accrualOptions.every((options) => Boolean(options.client)), true, "逐条挂账共用确认事务的 client");
 });
 
 test("确认应付：外加工来源归到「加工费」，且确认时补的银行/科目回写对账单", async () => {
@@ -125,9 +137,19 @@ test("确认应付：外加工来源归到「加工费」，且确认时补的�
   const result = await harness.service.confirmPayables("recon-1", { id: "user-1" }, { bank_id: "bank-1", subject_id: "subject-9" });
   assert.deepEqual(harness.accrualCalls[0].contra_subject_names, ["加工费"], "来源类型决定科目候选链");
   assert.equal(harness.accrualCalls[0].contra_subject_id, "subject-9", "人工选的科目优先于候选链");
+  // R3-1 收尾（2026-11-09 task-28）：业务科目（辅助维度）也要跟着落，不能只有记账科目。
+  assert.equal(harness.accrualCalls[0].business_subject_id, "subject-9", "business_subject_id = entry.subjectId ?? 对账单科目");
   assert.equal(harness.reconciliationUpdates[0].bankId, "bank-1");
   assert.equal(harness.reconciliationUpdates[0].subjectId, "subject-9");
   assert.equal(result.bank_missing, false);
+});
+
+test("确认应付：条目自己填过科目时，业务科目（辅助维度）以条目为准（对账单科目只兜底）", async () => {
+  const entry = { ...draftEntry("e1", "10"), subjectId: "subject-entry" };
+  const harness = confirmHarness(scopeRow("matched"), [entry]);
+  await harness.service.confirmPayables("recon-1", { id: "user-1" }, { subject_id: "subject-reconciliation" });
+  assert.equal(harness.accrualCalls[0].contra_subject_id, "subject-entry", "记账科目：条目优先于弹窗/对账单");
+  assert.equal(harness.accrualCalls[0].business_subject_id, "subject-entry", "业务科目同样条目优先（与单条确认同口径）");
 });
 
 test("应付对账单没有银行账户时：照样挂账，也没有 bank_missing 警告", async () => {
@@ -302,4 +324,54 @@ test("应付对账删除：对账单不存在时 404（不静默成功）", asyn
   const { service, updates } = removeReconciliationHarness({ row: null });
   await assert.rejects(() => service.remove("recon-x", "录错了", { id: "user-1" }), (error) => error.getResponse().code === "RECONCILIATION_NOT_FOUND");
   assert.equal(updates.length, 0);
+});
+
+/* ============================================================
+ * 2026-11-09 R2-3（D5）：对账确认也走同一条发票口径
+ *   - 整批下发只补「尚未录」的条目；条目已有 invoice_type/税率优先；
+ *   - 专票税率在边界归一（13 → 0.13），无效/缺失 422 INVALID_TAX_RATE（整批回滚）。
+ * ============================================================ */
+
+const invoiceDraft = (id, amount, extra = {}) => ({ ...draftEntry(id, amount), invoiceType: null, taxRate: new Prisma.Decimal(0), ...extra });
+
+test("对账确认（D5）：整批选专票 13% → 条目落 special + 0.13，挂账收到 special + 0.13，审计留原值", async () => {
+  const harness = confirmHarness(scopeRow("matched"), [invoiceDraft("e1", "113")]);
+  await harness.service.confirmPayables("recon-1", { id: "user-1" }, { invoice_type: "special", tax_rate: "13" });
+
+  assert.equal(harness.query().select.invoiceType, true, "select 必须带 invoiceType");
+  assert.equal(harness.query().select.taxRate, true);
+  assert.equal(harness.updates[0].invoiceType, "special");
+  assert.equal(harness.updates[0].taxRate.toString(), "0.13");
+  assert.equal(harness.accrualCalls[0].invoice_type, "special");
+  assert.equal(harness.accrualCalls[0].tax_rate.toString(), "0.13");
+  const details = harness.audits[0][4];
+  assert.deepEqual(details.invoice_types, ["special"]);
+  assert.deepEqual(details.tax_rate_raws, ["13"]);
+  assert.deepEqual(details.ignored_tax_rates, [null]);
+});
+
+test("对账确认（D5）：条目已有发票类型/税率不覆盖；本次整批税率被忽略并审计", async () => {
+  const harness = confirmHarness(scopeRow("matched"), [invoiceDraft("e1", "100", { invoiceType: "general", taxRate: new Prisma.Decimal(0) })]);
+  await harness.service.confirmPayables("recon-1", { id: "user-1" }, { invoice_type: "special", tax_rate: "13" });
+  assert.equal(harness.updates[0].invoiceType, undefined, "已有 invoice_type 不覆盖");
+  assert.equal(harness.accrualCalls[0].invoice_type, "general");
+  assert.equal(harness.accrualCalls[0].tax_rate, null);
+  assert.deepEqual(harness.audits[0][4].ignored_tax_rates, ["13"]);
+});
+
+test("对账确认（D5）：专票缺税率 / 税率非法 → 422 INVALID_TAX_RATE，整批不确认、不挂账", async () => {
+  const missing = confirmHarness(scopeRow("matched"), [invoiceDraft("e1", "113")]);
+  await assert.rejects(
+    () => missing.service.confirmPayables("recon-1", { id: "user-1" }, { invoice_type: "special" }),
+    (error) => error.getResponse().code === "INVALID_TAX_RATE" && error.getResponse().details[0].tax_rate_raw === null,
+  );
+  assert.deepEqual(missing.updates, []);
+  assert.deepEqual(missing.accrualCalls, []);
+
+  const invalid = confirmHarness(scopeRow("matched"), [invoiceDraft("e1", "100")]);
+  await assert.rejects(
+    () => invalid.service.confirmPayables("recon-1", { id: "user-1" }, { invoice_type: "special", tax_rate: "130" }),
+    (error) => error.getResponse().code === "INVALID_TAX_RATE" && error.getResponse().details[0].tax_rate_raw === "130",
+  );
+  assert.deepEqual(invalid.accrualCalls, []);
 });

@@ -17,6 +17,7 @@ const {
   DEFAULT_PAYMENT_SUBJECT_NAMES,
   RECEIVABLE_CONFIRM_SUBJECT_NAMES,
   PAYABLE_CONFIRM_SUBJECT_NAMES,
+  INPUT_TAX_SUBJECT_NAMES,
   accountingSubjectKey,
   compareAccountingSubjects,
   subjectCategoryRank,
@@ -153,10 +154,29 @@ test("补充科目「工资支付」：成本类、借方、名称与排序号�
 });
 
 test("未知来源走兜底候选，不返回空数组", () => {
-  assert.deepEqual(paymentSubjectNames("raw_material_inbound"), ["主营业务成本", "原材料"]);
+  // D1（2026-11-09 用户拍板「原材料作为存货吧」）：采购入库先记资产类「原材料」，
+  // 「主营业务成本」退为兜底 —— 入库即费用化会同时错列资产负债表的存货与利润表的成本。
+  assert.deepEqual(paymentSubjectNames("raw_material_inbound"), ["原材料", "主营业务成本"], "原料入库首位必须是「原材料」");
+  assert.deepEqual(paymentSubjectNames("purchase_receipt"), ["原材料", "主营业务成本"], "到货单来源同口径");
+  assert.deepEqual(DEFAULT_PAYMENT_SUBJECT_NAMES, ["原材料", "主营业务成本"], "未挂账付款的借方兜底同口径");
+  assert.deepEqual(PAYABLE_CONFIRM_SUBJECT_NAMES, ["原材料", "主营业务成本"], "识别不出来源时的确认兜底同口径");
   assert.deepEqual(paymentSubjectNames("outsource_receipt"), ["加工费"]);
   assert.deepEqual(paymentSubjectNames("customer_payment"), ["主营业务收入"]);
   assert.deepEqual(paymentSubjectNames("unknown_source"), DEFAULT_PAYMENT_SUBJECT_NAMES);
+});
+
+test("进项税科目候选（D5）：顺序固定、干净库上必须能命中，专票拆分不会因缺目录而必然 422", () => {
+  // 2026-11-09 用户拍板 D5：专票挂账拆「借 业务科目（不含税）+ 借 应交税费-进项税（税额）」。
+  // 候选顺序就是「科目表实际存在的明细 → 外账口头叫法 → 科目表本体兜底」，顺序变了会挂错明细科目。
+  assert.deepEqual([...INPUT_TAX_SUBJECT_NAMES], ["应交税费-进项税", "应交税费-应交增值税（进项税额）", "应交税费"]);
+  assert.equal(new Set(INPUT_TAX_SUBJECT_NAMES).size, INPUT_TAX_SUBJECT_NAMES.length, "候选不能重复（重复会让解析顺序失去意义）");
+  const seeded = new Set(ACCOUNTING_SUBJECT_SEEDS.map((subject) => subject.name));
+  assert.equal(seeded.has(INPUT_TAX_SUBJECT_NAMES[0]), true, "首位候选「应交税费-进项税」必须在种入科目表里，否则干净库上每一张专票都会 422");
+  assert.equal(seeded.has(INPUT_TAX_SUBJECT_NAMES[INPUT_TAX_SUBJECT_NAMES.length - 1]), true, "末位兜底「应交税费」也必须在（明细被停用/改名时退到它）");
+  // 中间那个是财务/外账的口头叫法，财务那张科目表里没有 —— 它只在「别的科目表版本」才可能命中，
+  // 所以不能要求它必须存在；解析按顺序取第一个存在的。
+  assert.equal(seeded.has("应交税费-应交增值税（进项税额）"), false);
+  assert.equal(INPUT_TAX_SUBJECT_NAMES.find((name) => seeded.has(name)), "应交税费-进项税", "干净库上应落到「应交税费-进项税」");
 });
 
 test("accountingSubjectKey 拼出唯一的科目标识", () => {

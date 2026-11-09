@@ -85,7 +85,9 @@ test("schema 与迁移一一对应（改了 schema 就必须有对应的列/表�
   for (const column of ["openingBalance", "subjectId"]) assert.ok(schema.includes(column), `schema 必须有 ${column}`);
   assert.equal(schema.includes("cashFlowItemId"), false, "cashFlowItemId 已被 subjectId 取代，schema 里不该再留着旧名");
   assert.match(schema, /model BankTransfer \{/);
-  assert.match(schema, /openingBalance Decimal\s+@default\(0\) @map\("opening_balance"\) @db\.Decimal\(18, 4\)/);
+  // `prisma format` 会按列对齐整个 schema（字段名与类型之间可能有多个空格），所以用 \s+；
+  // 断言内容不变：字段名 / @default / @map / @db.Decimal(18, 4)。
+  assert.match(schema, /openingBalance\s+Decimal\s+@default\(0\)\s+@map\("opening_balance"\)\s+@db\.Decimal\(18, 4\)/);
   assert.match(schema, /bankId\s+String\?\s+@map\("bank_id"\) @db\.Uuid/, "收支流水要能挂到具体银行账户上");
   assert.match(schema, /subjectId\s+String\?\s+@map\("subject_id"\) @db\.Uuid/, "单据上的收支项目列已改名为 subject_id（可空）");
 });

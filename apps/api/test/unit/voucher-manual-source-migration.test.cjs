@@ -5,8 +5,10 @@
 // 等行永远填不上。这次迁移只做一件事：**让 source_id 可为空**。
 //
 // 三条不变量（都是「改坏了看不出来」的那种）：
-//   1) 唯一索引 (source_type, source_id) 必须留着 —— 生成接口的幂等靠它（一条来源一张凭证）；
-//      PostgreSQL 的唯一索引不约束 NULL，所以多张手工凭证 (manual, NULL) 可以共存；
+//   1) 「一条来源一张有效凭证」的幂等根必须留着 —— 生成接口靠它；PostgreSQL 的唯一索引不约束 NULL，
+//      所以多张手工凭证 (manual, NULL) 可以共存。
+//      ⚠️ 2026-11-09 R3-4 起这条由**部分唯一索引**表达（`vouchers_source_active_key`，排除已红冲行），
+//      schema 里只剩普通 @@index；本文件末尾的断言已按新口径更新（见该用例注释）；
 //   2) 只放宽 NOT NULL，**不动任何历史数据**（宪法：保留历史事实）；
 //   3) schema.prisma 必须与迁移一致（`sourceId String?`），否则生成出来的客户端类型与库对不上。
 const assert = require("node:assert/strict");
@@ -33,13 +35,22 @@ test("迁移只放宽 source_id 的 NOT NULL，不改写数据、不删列删表
   assert.equal(/ALTER COLUMN "source_id" SET NOT NULL/.test(sql), false, "反向操作绝不能出现");
 });
 
-test("唯一索引仍在（幂等根）：一条来源一张凭证，而 NULL 不受唯一约束", () => {
-  // 索引在最初建表的迁移里；这里证明这次迁移没有把它删掉，并且 schema 里仍然声明着。
+test("幂等根仍是「一条来源一张有效凭证」：全局唯一键已换成部分唯一索引，NULL 仍不受约束", () => {
+  // 索引在最初建表的迁移里；这里证明这次迁移没有把它删掉。
   const original = readFileSync(join(migrationsRoot, "20260915170000_accounting_vouchers", "migration.sql"), "utf8");
   assert.match(original, /CREATE UNIQUE INDEX "vouchers_source_type_source_id_key" ON "vouchers"\("source_type", "source_id"\);/);
-  // 只允许在注释里提到它（说明为什么不用改），DDL 里一个字都不许碰。
+  // 只允许在注释里提到它（说明为什么不用改），本次迁移的 DDL 里一个字都不许碰。
   assert.doesNotMatch(sql, /(DROP|CREATE|ALTER)\s[^;]*vouchers_source_type_source_id_key/i, "本次迁移不应触碰这个索引");
-  assert.match(schema, /@@unique\(\[sourceType, sourceId\]\)/, "schema 里必须仍然声明这条唯一约束");
+  // 2026-11-09 R3-4：全局唯一键**已被部分唯一索引取代**（红冲行不再占键，重算才能建第二张）。
+  // Prisma schema 表达不了部分索引，所以 schema 里只能声明普通 @@index，唯一性由迁移 DDL 保证。
+  assert.match(schema, /@@index\(\[sourceType, sourceId\]\)/, "schema 里必须声明按来源查凭证的普通索引");
+  assert.doesNotMatch(schema, /@@unique\(\[sourceType, sourceId\]\)/, "全局唯一键已不成立：它会让「红冲后按来源重算」永远建不出第二张");
+  const r3 = readFileSync(join(migrationsRoot, "20261109130000_finance_governance_r3", "migration.sql"), "utf8");
+  assert.match(r3, /DROP INDEX IF EXISTS "vouchers_source_type_source_id_key"/, "旧全局唯一键必须被显式替换（库里那个索引会挡住重算）");
+  const partialIndex = r3.match(/CREATE UNIQUE INDEX "vouchers_source_active_key"[\s\S]*?;/)?.[0] ?? "";
+  assert.match(partialIndex, /WHERE "deleted_at" IS NULL/, "部分唯一索引必须排除软删行");
+  assert.match(partialIndex, /"status" <> 'reversed'/, "部分唯一索引必须排除已红冲行（红冲后要能重建）");
+  assert.match(partialIndex, /"source_id" IS NOT NULL/, "手工凭证 source_id 为空，不进唯一约束");
 });
 
 test("schema.prisma 与迁移一致：sourceId 可空，且来源类型注释写明 manual", () => {

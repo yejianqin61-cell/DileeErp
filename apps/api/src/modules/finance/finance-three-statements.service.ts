@@ -5,19 +5,26 @@ import { beijingDateTime } from "../../platform/time/beijing-time";
 import { ExchangeRateService, monthOf, previousMonth, resolveRateOf, resolvedPeriodOf, type RateBook } from "./exchange-rate.service";
 import { convertUnits, formatUnits, LOCAL_RATE_UNITS, toUnits } from "./money";
 import { OpeningBalanceService, hasFundOpening, mergeBalances, openingBalancesToMap } from "./opening-balance.service";
+import { accountingSubjectKey } from "./accounting-subject-catalog";
 import {
   buildBalanceSheet,
   buildCashFlowStatement,
   buildIncomeStatement,
   debitBalance,
   isFundSubject,
+  isSubjectIdKey,
   normalizeSubjectKey,
+  splitSubjectKey,
+  subjectIdKeyOf,
+  subjectKeyOfLine,
   sumVoucherLines,
   type BalanceSheetResult,
   type CashFlowResult,
   type IncomeStatementResult,
   type StatementVoucher,
   type StatementVoucherLine,
+  type SubjectRef,
+  type SubjectRefs,
   type SummedAmount,
   type UnmappedSubject,
 } from "./finance-three-statements";
@@ -83,6 +90,13 @@ type VoucherSlice = {
   /** 本期、本期之前（用于算期初现金）的分录。 */
   periodLines: StatementVoucherLine[];
   beforeFromLines: StatementVoucherLine[];
+  /**
+   * 科目 id 归集索引（2026-11-09 R3-2）：`@id:<uuid>` → 分类/名称。
+   *
+   * 期初余额表只存 `subject_key`（`分类/名称`），凭证行优先用 `subject_id`；取数时就地
+   * 把期初行的 label 键解析成 id 键（唯一同名才解析），两套键在 `mergeBalances` 里才加得到一起。
+   */
+  subjectRefs: SubjectRefs;
   /** 银行账户档案的期初余额合计（按报表币种）；有科目期初余额表时只算「期初里没含货币资金」的兜底。 */
   moneyOpening: bigint;
   /** 期初现金（建账期初 + 建账日到本期期初之间的资金类净额）。 */
@@ -141,9 +155,9 @@ export class FinanceThreeStatementsService {
       currency: this.currencyOf(filter),
       period: { to: slice.period.to, yearStart: slice.yearStart },
       openingAsOfDate: slice.openingAsOfDate,
-      current: buildBalanceSheet({ balances: slice.balancesTo, opening: { money: slice.moneyOpening } }),
+      current: buildBalanceSheet({ balances: slice.balancesTo, opening: { money: slice.moneyOpening }, subjectRefs: slice.subjectRefs }),
       // 年初余额：同一批凭证切到上年 12-31；期初余额对两个时点都成立（它发生在建账日之前）。
-      yearStartResult: buildBalanceSheet({ balances: slice.balancesYearStart, opening: { money: slice.moneyOpening } }),
+      yearStartResult: buildBalanceSheet({ balances: slice.balancesYearStart, opening: { money: slice.moneyOpening }, subjectRefs: slice.subjectRefs }),
       gap: slice.gap,
     };
   }
@@ -154,8 +168,8 @@ export class FinanceThreeStatementsService {
       currency: this.currencyOf(filter),
       period: slice.period,
       previousPeriod: slice.previousPeriod,
-      current: buildIncomeStatement(sumVoucherLines(slice.periodLines)),
-      previous: buildIncomeStatement(sumVoucherLines(slice.previousVouchers.flatMap((voucher) => voucher.lines))),
+      current: buildIncomeStatement(sumVoucherLines(slice.periodLines), slice.subjectRefs),
+      previous: buildIncomeStatement(sumVoucherLines(slice.previousVouchers.flatMap((voucher) => voucher.lines)), slice.subjectRefs),
       gap: slice.gap,
     };
   }
@@ -167,8 +181,8 @@ export class FinanceThreeStatementsService {
       currency: this.currencyOf(filter),
       period: slice.period,
       previousPeriod: slice.previousPeriod,
-      current: buildCashFlowStatement({ vouchers: slice.periodVouchers, cashOpening: slice.cashOpening, exchangeEffect: slice.exchangeEffect }),
-      previous: buildCashFlowStatement({ vouchers: slice.previousVouchers, cashOpening: 0n }),
+      current: buildCashFlowStatement({ vouchers: slice.periodVouchers, cashOpening: slice.cashOpening, exchangeEffect: slice.exchangeEffect, subjectRefs: slice.subjectRefs }),
+      previous: buildCashFlowStatement({ vouchers: slice.previousVouchers, cashOpening: 0n, subjectRefs: slice.subjectRefs }),
       cashOpening: slice.cashOpening,
       gap: slice.gap,
     };
@@ -200,20 +214,90 @@ export class FinanceThreeStatementsService {
     const yearStart = `${Number(period.to.slice(0, 4)) - 1}-12-31`;
 
     const rows = await this.prisma.voucher.findMany({
-      where: { status: "posted", deletedAt: null, voucherDate: { lte: utcDate(period.to) } },
+      /**
+       * **红字凭证不进报表**（2026-11-09）。
+       *
+       * 红冲的实现是「原凭证置 reversed + 另开一张 posted 红字凭证」；报表只取 posted 时，
+       * 原凭证被排除、红字被计入，于是每次红冲都让相关科目留下**单边反向余额**
+       * （诊断 P1-1；生产库 3 张 posted 红字凭证合计反向虚增 12,061.20）。
+       *
+       * 口径：红冲对 = 原凭证作废 + 红字作废，两者都不进报表（红字只在凭证清单里留痕）。
+       * 这样原凭证与红字同时被排除，任何长度的红冲链都净为 0；未被红冲的 posted 凭证照常计入。
+       */
+      where: { status: "posted", deletedAt: null, sourceType: { not: "voucher" }, voucherDate: { lte: utcDate(period.to) } },
       select: {
         id: true,
         voucherDate: true,
         currency: true,
         sourceType: true,
         sourceId: true,
-        lines: { select: { subjectKey: true, direction: true, amount: true }, orderBy: { lineNo: "asc" } },
+        lines: { select: { subjectKey: true, subjectId: true, direction: true, amount: true }, orderBy: { lineNo: "asc" } },
       },
       orderBy: [{ voucherDate: "asc" }, { voucherNo: "asc" }],
     });
 
     const dateText = (value: Date) => beijingDateTime(value).slice(0, 10);
     const inRange = (date: string, range: { from: string; to: string }) => date >= range.from && date <= range.to;
+
+    /**
+     * 期初余额：**全币种**一次读回（建账日 ≤ 期末的最近一次/每币种）—— 折算要把外币期初一起折进来，
+     * 只读本币那一组会让「美元银行账户的期初」凭空消失，而报表两侧都少，勾稽照样平。
+     */
+    const openingGroups = await this.openings?.effectiveForAll(period.to) ?? [];
+    const localGroup = openingGroups.find((group) => group.currency === currency) ?? null;
+    // 有科目期初时，凭证只取**建账日之后**的：建账日之前的余额已经包含在期初里，再取一遍就是算两遍。
+    // 按**币种**各自的建账日判断：不同币种的期初表可以是不同的建账日（各录各的），
+    // 用一个日期去卡所有币种，会把「美元期初已经含了 1–3 月」的凭证又算一遍。
+    const asOfByCurrency = new Map(openingGroups.map((group) => [group.currency, group.asOfDate]));
+    const afterOpening = (voucher: (typeof rows)[number]) => dateText(voucher.voucherDate) > (asOfByCurrency.get(voucher.currency) ?? "");
+
+    /**
+     * 科目 id 归集索引（2026-11-09 R3-2，契约 C）：凭证行有 `subject_id` 就按 id 归集，
+     * 为空（历史回填没命中的行）才回退 `subject_label` 文本。
+     *
+     * 索引只装**查得到的 id**：`subject_id` 指向已被硬删的科目时，一律回退 label（不猜、不丢）。
+     * 期初余额表只存 `subject_key`，这里同时按 `(分类,名称)` 唯一同名把它解析成 id 键，
+     * 否则「期初是 label 键、凭证是 id 键」会变成两个桶 —— 报表不会翻倍，但期初那一截会漏。
+     */
+    const lineSubjectIds = [...new Set(rows
+      .flatMap((voucher) => voucher.lines.map((line) => line.subjectId))
+      .filter((subjectId): subjectId is string => Boolean(subjectId)))];
+    const openingLabelRefs = new Map<string, SubjectRef>();
+    for (const group of openingGroups) {
+      for (const row of group.rows) {
+        const normalized = normalizeSubjectKey(row.subjectKey);
+        if (isSubjectIdKey(normalized)) continue;
+        const ref = splitSubjectKey(normalized);
+        // 裸名且不是资金科目（分类为空）的期初行判不出分类：保留原 label 键，不做解析。
+        if (!ref.category) continue;
+        openingLabelRefs.set(normalized, ref);
+      }
+    }
+    const openingNames = [...new Set([...openingLabelRefs.values()].map((ref) => ref.name))];
+    const needSubjectLookup = lineSubjectIds.length > 0 || openingNames.length > 0;
+    const subjectRows = needSubjectLookup
+      ? await this.prisma.accountingSubject.findMany({
+        where: {
+          deletedAt: null,
+          OR: [
+            ...(lineSubjectIds.length ? [{ id: { in: lineSubjectIds } }] : []),
+            ...(openingNames.length ? [{ name: { in: openingNames } }] : []),
+          ],
+        },
+        select: { id: true, category: true, name: true },
+      })
+      : [];
+    const subjectIdByLabel = new Map(subjectRows.map((subject) => [accountingSubjectKey(subject.category, subject.name), subject.id]));
+    const subjectRefs: Map<string, SubjectRef> = new Map(subjectRows.map((subject) => [subjectIdKeyOf(subject.id), { category: subject.category, name: subject.name }]));
+    /** 期初行的 `分类/名称` 键 → 归集键（唯一同名命中的才用 id 键；否则保留 label 键）。 */
+    const canonicalOpeningKey = (rawKey: string): string => {
+      const normalized = normalizeSubjectKey(rawKey);
+      if (isSubjectIdKey(normalized)) return normalized;
+      const ref = splitSubjectKey(normalized);
+      if (!ref.category) return normalized;
+      const subjectId = subjectIdByLabel.get(accountingSubjectKey(ref.category, ref.name));
+      return subjectId ? subjectIdKeyOf(subjectId) : normalized;
+    };
 
     /**
      * 来源收支流水的「收支类目」（业务科目）：现金流量表落行**优先用它**（2026-11-04 用户报障）。
@@ -240,17 +324,13 @@ export class FinanceThreeStatementsService {
       voucher.sourceType === "cash_flow_entry" && voucher.sourceId ? categoryByEntryId.get(voucher.sourceId) ?? null : null;
 
     const faceLines = (voucher: (typeof rows)[number]): StatementVoucherLine[] =>
-      voucher.lines.map((line) => ({ subjectKey: line.subjectKey, direction: line.direction, amount: line.amount.toString() }));
-
-    // 期初余额：**全币种**一次读回（建账日 ≤ 期末的最近一次/每币种）—— 折算要把外币期初一起折进来，
-    // 只读本币那一组会让「美元银行账户的期初」凭空消失，而报表两侧都少，勾稽照样平。
-    const openingGroups = await this.openings?.effectiveForAll(period.to) ?? [];
-    const localGroup = openingGroups.find((group) => group.currency === currency) ?? null;
-    // 有科目期初时，凭证只取**建账日之后**的：建账日之前的余额已经包含在期初里，再取一遍就是算两遍。
-    // 按**币种**各自的建账日判断：不同币种的期初表可以是不同的建账日（各录各的），
-    // 用一个日期去卡所有币种，会把「美元期初已经含了 1–3 月」的凭证又算一遍。
-    const asOfByCurrency = new Map(openingGroups.map((group) => [group.currency, group.asOfDate]));
-    const afterOpening = (voucher: (typeof rows)[number]) => dateText(voucher.voucherDate) > (asOfByCurrency.get(voucher.currency) ?? "");
+      voucher.lines.map((line) => ({
+        subjectKey: line.subjectKey,
+        // 只有索引里查得到的 id 才交给内核（否则会变成一个永远解析不到分类/名称的孤儿键）。
+        subjectId: line.subjectId && subjectRefs.has(subjectIdKeyOf(line.subjectId)) ? line.subjectId : null,
+        direction: line.direction,
+        amount: line.amount.toString(),
+      }));
 
     // 汇率：只对**本币报表**折算（见类注释最后一段）。
     const book: RateBook = currency === LOCAL_CURRENCY && this.exchangeRates ? await this.exchangeRates.rateBook() : new Map();
@@ -285,13 +365,19 @@ export class FinanceThreeStatementsService {
       return computed;
     };
 
-    /** 期初余额表在某个汇率口径下的人民币余额（本币那一组原样，外币那一组逐行折）。 */
+    /**
+     * 期初余额表在某个汇率口径下的人民币余额（本币那一组原样，外币那一组逐行折）。
+     *
+     * 每一行的 label 键先经 `canonicalOpeningKey` 解析成与凭证一致的归集键（唯一同名 → id 键），
+     * 这样「期初 1000 + 凭证 200」是**相加**而不是两个互不认识的桶（不翻倍、不漏）。
+     */
     const openingMapAt = (month: string): Map<string, SummedAmount> => {
       let merged = new Map<string, SummedAmount>();
       const foreignLines: StatementVoucherLine[] = [];
       for (const group of openingGroups) {
+        const canonicalRows = group.rows.map((row) => ({ ...row, subjectKey: canonicalOpeningKey(row.subjectKey) }));
         if (group.currency === currency) {
-          merged = mergeBalances(merged, openingBalancesToMap(group.rows));
+          merged = mergeBalances(merged, openingBalancesToMap(canonicalRows));
           continue;
         }
         // 非本币报表不折算（汇率方向反了）：只取本币那一组 —— 与折算前的老口径一致。
@@ -301,7 +387,7 @@ export class FinanceThreeStatementsService {
           unconvertedOpening.add(group.currency);
           continue;
         }
-        for (const row of group.rows) {
+        for (const row of canonicalRows) {
           foreignLines.push({ subjectKey: row.subjectKey, direction: row.direction, amount: formatUnits(convertUnits(toUnits(row.amount), rate)) });
         }
       }
@@ -352,14 +438,14 @@ export class FinanceThreeStatementsService {
 
     const fundPart = (balances: ReadonlyMap<string, SummedAmount>) => {
       let total = 0n;
-      for (const [subjectKey, summed] of balances) if (isFundSubject(subjectKey)) total += debitBalance(summed);
+      for (const [subjectKey, summed] of balances) if (isFundSubject(subjectKey, subjectRefs)) total += debitBalance(summed);
       return total;
     };
     const fundMovement = (subset: typeof usedRows, month: string) => {
       let total = 0n;
       for (const voucher of subset) {
         for (const line of linesAt(voucher, month) ?? []) {
-          if (!isFundSubject(line.subjectKey)) continue;
+          if (!isFundSubject(subjectKeyOfLine(line), subjectRefs)) continue;
           const units = toUnits(line.amount);
           total += line.direction === "debit" ? units : -units;
         }
@@ -387,6 +473,7 @@ export class FinanceThreeStatementsService {
       previousVouchers,
       periodLines: periodVouchers.flatMap((voucher) => voucher.lines),
       beforeFromLines,
+      subjectRefs,
       moneyOpening,
       cashOpening,
       exchangeEffect,

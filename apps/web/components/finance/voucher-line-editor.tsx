@@ -185,8 +185,9 @@ export default function VoucherLineEditor({ open, onOpenChange, voucher, subject
               </span>
             </label>}
           </div>
-          {/* 模板说明只在编辑态出现（新建态没有模板栏）。 */}
-          {!creating && <p className="panel-note">套用模板会覆盖下面现有分录；金额留空由你填写（系统不按税率自动拆进项税：取得普票不抵扣、优惠税率时会被自动填错）。</p>}
+          {/* 模板说明只在编辑态出现（新建态没有模板栏）。2026-11-09 D5：自动拆进项税只发生在
+              专票的**挂账凭证**路径；模板是手工凭证的骨架，金额仍留空由财务填。 */}
+          {!creating && <p className="panel-note">套用模板会覆盖下面现有分录；金额留空由你填写。取得专票时，挂账路径会按应付条目的发票类型/税率自动拆进项税；本模板只给手工凭证用，不替你填金额。</p>}
 
           <div className="voucher-editor-row voucher-editor-row-head">
             <span>方向</span><span>会计科目</span><span>摘要</span><span>金额</span><span />

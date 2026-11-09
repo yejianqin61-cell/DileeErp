@@ -63,8 +63,11 @@ export function splitSubjectKey(subjectKey: string): { category: string; name: s
  */
 export const FUND_SUBJECT_NAMES = ["银行存款", "库存现金"] as const;
 
-export function isFundSubject(subjectKey: string): boolean {
-  const { category, name } = splitSubjectKey(subjectKey);
+export function isFundSubject(subjectKey: string, refs?: SubjectRefs): boolean {
+  // id 键（R3-2）必须靠 refs 解析出分类/名称；label 键直接拆（资金分录历史上是裸名，先归一）。
+  const ref = subjectRefOfKey(normalizeSubjectKey(subjectKey), refs);
+  if (!ref) return false;
+  const { category, name } = ref;
   if (category !== "资产类" && category !== "") return false;
   // 「库存现金（备用金）」这类**现金明细**也是钱本身（2026-10-16 补）：财务口径里「备用金付款」
   // 就是「从银行取现到备用金」，凭证是「借 库存现金（备用金）/贷 银行存款」——两边都是资金科目，
@@ -82,6 +85,59 @@ export function normalizeSubjectKey(subjectKey: string): string {
   const { category, name } = splitSubjectKey(subjectKey);
   if (category === "" && (FUND_SUBJECT_NAMES as readonly string[]).includes(name)) return accountingSubjectKey("资产类", name);
   return subjectKey;
+}
+
+/* --------------------------------------------------------------------------- 科目 id 归集（2026-11-09 R3-2） */
+
+/**
+ * 归集键的 id 前缀：`@id:<uuid>`。分类名是中文、不会以 `@` 开头，所以与「分类/名称」键永不碰撞。
+ *
+ * 为什么要两套键而不是统一成 id：迁移只对**唯一同名**的历史行回填了 `subject_id`，未命中/歧义行
+ * 仍是空（见迁移 `20261109130000_finance_governance_r3`）。因此报表必须两种都能收：
+ *   - 有 `subject_id` → 按 id 归集（改名/换分类不影响金额落行，这是 R3-2 的目的）；
+ *   - `subject_id` 为空（历史行）→ 回退按 `subject_label`（`subjectKey`）文本匹配。
+ * 一条分录只会算出**一个**键，所以不存在「同一行既按 id 又按 label 被计两次」。
+ */
+export const SUBJECT_ID_KEY_PREFIX = "@id:";
+
+/** 科目键 → 分类/名称（id 键靠 `SubjectRefs` 解析；label 键直接拆）。 */
+export type SubjectRef = { category: string; name: string };
+/** 报表取数时由上层查库得到的「归集键 → 分类/名称」索引（只装 id 键与需要兜底的 label 键）。 */
+export type SubjectRefs = ReadonlyMap<string, SubjectRef>;
+
+/** 科目 id → 归集键。 */
+export function subjectIdKeyOf(subjectId: string): string {
+  return `${SUBJECT_ID_KEY_PREFIX}${subjectId}`;
+}
+
+/** 归集键是不是 id 键（id 键无法靠字符串拆出分类/名称）。 */
+export function isSubjectIdKey(subjectKey: string): boolean {
+  return subjectKey.startsWith(SUBJECT_ID_KEY_PREFIX);
+}
+
+/**
+ * 一条分录 → 归集键：**`subject_id` 优先，空才回退 label**。
+ *
+ * 调用方负责保证「传进来的 subjectId 一定能被 `SubjectRefs` 解析」—— 解析不到时（科目被硬删等）
+ * 由上层把 subjectId 置空走 label 兜底，内核不做猜测（猜错会把金额落到别的行）。
+ */
+export function subjectKeyOfLine(line: { subjectKey: string; subjectId?: string | null }): string {
+  const subjectId = line.subjectId?.trim();
+  return subjectId ? subjectIdKeyOf(subjectId) : normalizeSubjectKey(line.subjectKey);
+}
+
+/** 归集键 → (分类,名称)；id 键在索引里找不到时返回 null（宁可不归行，也不猜一个科目）。 */
+export function subjectRefOfKey(subjectKey: string, refs?: SubjectRefs): SubjectRef | null {
+  const known = refs?.get(subjectKey);
+  if (known) return known;
+  if (isSubjectIdKey(subjectKey)) return null;
+  return splitSubjectKey(subjectKey);
+}
+
+/** 归集键的展示文案：能解析就写成「分类/名称」，解析不到（缺索引的 id 键）就原样返回。 */
+export function subjectLabelOfKey(subjectKey: string, refs?: SubjectRefs): string {
+  const ref = subjectRefOfKey(subjectKey, refs);
+  return ref ? accountingSubjectKey(ref.category, ref.name) : subjectKey;
 }
 
 /** 科目匹配器：报表行的 `match` 用它声明「这一行收哪些科目」。 */
@@ -387,8 +443,18 @@ export function statementNotes(rows: readonly StatementRow[]): string[] {
 
 /* --------------------------------------------------------------------------- 取数（聚合） */
 
-/** 凭证分录（只取报表要用的三列，避免与 Prisma 类型耦合）。 */
-export type StatementVoucherLine = { subjectKey: string; direction: "debit" | "credit" | string; amount: string };
+/** 凭证分录（只取报表要用的列，避免与 Prisma 类型耦合）。 */
+export type StatementVoucherLine = {
+  subjectKey: string;
+  /**
+   * 记账科目 id（2026-11-09 迁移新增 `voucher_lines.subject_id`）。
+   *
+   * 有 id 就按 id 归集（R3-2）；历史行/解析不到唯一科目的新行为空，回退 `subjectKey` 文本匹配。
+   */
+  subjectId?: string | null;
+  direction: "debit" | "credit" | string;
+  amount: string;
+};
 /** 一张凭证：报表按**凭证**为单位配对资金分录与业务分录，所以必须带凭证分组。 */
 export type StatementVoucher = {
   id: string;
@@ -421,11 +487,14 @@ export function creditBalance(summed: SummedAmount | undefined): bigint {
  *
  * 为什么借贷分开而不是直接算余额：利润表要**发生额**（本月收入多少 / 费用多少），
  * 资产负债表要**余额**（累计到期末）。同一份取数同时喂两张表，两处口径就不会分叉。
+ *
+ * 归集键（2026-11-09 R3-2）：`subject_id` 优先（`@id:<uuid>`），为空才回退 label 键。
+ * 一条分录只算出一个键 → 不会被计两次。
  */
 export function sumVoucherLines(lines: readonly StatementVoucherLine[]): Map<string, SummedAmount> {
   const summed = new Map<string, SummedAmount>();
   for (const line of lines) {
-    const key = normalizeSubjectKey(line.subjectKey);
+    const key = subjectKeyOfLine(line);
     const bucket = summed.get(key) ?? { debit: 0n, credit: 0n };
     const units = toUnits(line.amount);
     if (line.direction === "debit") bucket.debit += units;
@@ -453,8 +522,11 @@ export type UnmappedSubject = { subjectKey: string; balance: bigint };
  *
  * 一个科目被同一张表的两行同时匹配是**映射表写错了**，这里直接抛错而不是让金额算两遍 ——
  * 算重了比算漏了更难发现（勾稽照样平）。
+ *
+ * 归集键按 `SubjectRefs` 解析分类/名称：id 键必须能解析（解析不到就不是任何一行的金额，
+ * 会由 `unmappedOf` 报出来）；label 键直接拆。
  */
-function directValues(rows: readonly StatementRow[], balances: ReadonlyMap<string, SummedAmount>, defaultSide: "debit" | "credit") {
+function directValues(rows: readonly StatementRow[], balances: ReadonlyMap<string, SummedAmount>, defaultSide: "debit" | "credit", subjectRefs?: SubjectRefs) {
   const values = new Map<number, bigint>();
   const claimed = new Set<string>();
   for (const row of rows) {
@@ -462,7 +534,9 @@ function directValues(rows: readonly StatementRow[], balances: ReadonlyMap<strin
     const side = row.side ?? defaultSide;
     let total = 0n;
     for (const [subjectKey, summed] of balances) {
-      const { category, name } = splitSubjectKey(subjectKey);
+      const ref = subjectRefOfKey(subjectKey, subjectRefs);
+      if (!ref) continue;
+      const { category, name } = ref;
       if (!row.match?.(category, name)) continue;
       total += side === "credit" ? creditBalance(summed) : debitBalance(summed);
       claimed.add(subjectKey);
@@ -497,12 +571,13 @@ function toLineValues(rows: readonly StatementRow[], values: ReadonlyMap<number,
 }
 
 /** 有发生额但没有任何一行认领的科目（零余额/零发生的科目不算缺口，那是噪音）。 */
-function unmappedOf(balances: ReadonlyMap<string, SummedAmount>, claimed: ReadonlySet<string>, absorbed: ReadonlySet<string>): UnmappedSubject[] {
+function unmappedOf(balances: ReadonlyMap<string, SummedAmount>, claimed: ReadonlySet<string>, absorbed: ReadonlySet<string>, subjectRefs?: SubjectRefs): UnmappedSubject[] {
   const unmapped: UnmappedSubject[] = [];
   for (const [subjectKey, summed] of balances) {
     if (claimed.has(subjectKey) || absorbed.has(subjectKey)) continue;
     if (summed.debit === 0n && summed.credit === 0n) continue;
-    unmapped.push({ subjectKey, balance: debitBalance(summed) });
+    // 展示用「分类/名称」：id 键解析得到就写科目名，解析不到才退回原始键（不然表尾会出现一串 uuid）。
+    unmapped.push({ subjectKey: subjectLabelOfKey(subjectKey, subjectRefs), balance: debitBalance(summed) });
   }
   return unmapped.sort((left, right) => left.subjectKey.localeCompare(right.subjectKey));
 }
@@ -522,6 +597,14 @@ export type StatementOpening = { money?: bigint; retained?: bigint };
 export type BalanceSheetInput = {
   balances: ReadonlyMap<string, SummedAmount>;
   opening?: StatementOpening;
+  /**
+   * 归集键 → 分类/名称索引（2026-11-09 R3-2）。
+   *
+   * 期初余额表只存 `subject_key`（`分类/名称`），凭证行优先用 `subject_id`；两套键能不能相加，
+   * 取决于上层有没有把期初行也解析成 id 键（`FinanceThreeStatementsService` 负责）。这里只管
+   * 按索引把 id 键还原成分类/名称 —— 解析不到的 id 键**不会**被归到任何行（宁可进 unmapped）。
+   */
+  subjectRefs?: SubjectRefs;
 };
 
 export type BalanceSheetResult = {
@@ -554,17 +637,19 @@ export type BalanceSheetResult = {
  */
 export function buildBalanceSheet(input: BalanceSheetInput): BalanceSheetResult {
   const opening = input.opening ?? {};
-  const assets = directValues(BALANCE_SHEET_ASSETS, input.balances, "debit");
+  const assets = directValues(BALANCE_SHEET_ASSETS, input.balances, "debit", input.subjectRefs);
   if (opening.money) assets.values.set(1, (assets.values.get(1) ?? 0n) + opening.money);
   const assetValues = evaluateRows(BALANCE_SHEET_ASSETS, assets.values);
 
-  const equities = directValues(BALANCE_SHEET_EQUITIES, input.balances, "credit");
+  const equities = directValues(BALANCE_SHEET_EQUITIES, input.balances, "credit", input.subjectRefs);
 
   // 未结转的损益：损益类全部科目 + 当期费用性质的成本类科目（贷方余额 = 正贡献）。
   const absorbed = new Set<string>([...assets.claimed, ...equities.claimed]);
   let retainedFromProfit = 0n;
   for (const [subjectKey, summed] of input.balances) {
-    const { category, name } = splitSubjectKey(subjectKey);
+    const ref = subjectRefOfKey(subjectKey, input.subjectRefs);
+    if (!ref) continue;
+    const { category, name } = ref;
     const isProfit = category === "损益类" || (category === "成本类" && PERIOD_COST_SUBJECT_NAMES.includes(name));
     if (!isProfit) continue;
     absorbed.add(subjectKey);
@@ -593,7 +678,7 @@ export function buildBalanceSheet(input: BalanceSheetInput): BalanceSheetResult 
     retainedEarnings,
     retainedFromProfit,
     openingDifference,
-    unmapped: unmappedOf(input.balances, absorbed, new Set()),
+    unmapped: unmappedOf(input.balances, absorbed, new Set(), input.subjectRefs),
     notes,
   };
 }
@@ -609,18 +694,18 @@ export type IncomeStatementResult = {
   notes: string[];
 };
 
-/** 利润表（入参是**期间发生额**：`sumVoucherLines(期间分录)`）。 */
-export function buildIncomeStatement(movements: ReadonlyMap<string, SummedAmount>): IncomeStatementResult {
-  const income = directValues(INCOME_STATEMENT, movements, "debit");
+/** 利润表（入参是**期间发生额**：`sumVoucherLines(期间分录)`）；`subjectRefs` 用于解析 id 归集键。 */
+export function buildIncomeStatement(movements: ReadonlyMap<string, SummedAmount>, subjectRefs?: SubjectRefs): IncomeStatementResult {
+  const income = directValues(INCOME_STATEMENT, movements, "debit", subjectRefs);
   const values = evaluateRows(INCOME_STATEMENT, income.values);
   // 资金类科目不进利润表（它们是资金动作，不是损益），所以不算「没归位」。
-  const fundKeys = new Set([...movements.keys()].filter((key) => isFundSubject(key)));
+  const fundKeys = new Set([...movements.keys()].filter((key) => isFundSubject(key, subjectRefs)));
   return {
     lines: toLineValues(INCOME_STATEMENT, values),
     operatingProfit: values.get(14) ?? 0n,
     totalProfit: values.get(17) ?? 0n,
     netProfit: values.get(19) ?? 0n,
-    unmapped: unmappedOf(movements, income.claimed, fundKeys),
+    unmapped: unmappedOf(movements, income.claimed, fundKeys, subjectRefs),
     notes: statementNotes(INCOME_STATEMENT),
   };
 }
@@ -639,6 +724,8 @@ export type CashFlowInput = {
    * 内核只看凭证，看不到「资金余额折算成多少」，硬算会算错。默认 0 = 本币业务或无外币。
    */
   exchangeEffect?: bigint;
+  /** 归集键 → 分类/名称索引（2026-11-09 R3-2）：资金/业务分录按 `subject_id` 识别与落行。 */
+  subjectRefs?: SubjectRefs;
 };
 
 export type CashFlowResult = {
@@ -662,14 +749,17 @@ export function buildCashFlowStatement(input: CashFlowInput): CashFlowResult {
   let internalTransfers = 0;
 
   for (const voucher of input.vouchers) {
-    const fundLines = voucher.lines.filter((line) => isFundSubject(line.subjectKey));
+    const refs = input.subjectRefs;
+    const isFundLine = (line: StatementVoucherLine) => isFundSubject(subjectKeyOfLine(line), refs);
+    const fundLines = voucher.lines.filter(isFundLine);
     if (fundLines.length === 0) { nonCashVouchers += 1; continue; }
     // 两边都是资金科目（银行存款 → 库存现金）：内部划转，不构成现金流量。
-    if (voucher.lines.every((line) => isFundSubject(line.subjectKey))) { internalTransfers += 1; continue; }
-    const businessLines = voucher.lines.filter((line) => !isFundSubject(line.subjectKey));
+    if (voucher.lines.every(isFundLine)) { internalTransfers += 1; continue; }
+    const businessLines = voucher.lines.filter((line) => !isFundLine(line));
     /**
      * 落行用的科目：**优先用来源流水的收支类目**（2026-11-04，见 `StatementVoucher.categorySubject`）。
-     * 没有类目时才退回凭证业务分录自己的科目（手工凭证、历史数据）。
+     * 没有类目时才退回凭证业务分录自己的科目（手工凭证、历史数据）——
+     * 2026-11-09 R3-2 起，业务分录优先按 `subject_id` 解析分类/名称，label 只兜底。
      */
     const categorySubject = voucher.categorySubject?.name ? voucher.categorySubject : null;
 
@@ -679,10 +769,17 @@ export function buildCashFlowStatement(input: CashFlowInput): CashFlowResult {
       const candidates = CASH_FLOW_STATEMENT.filter((candidate) => candidate.match && candidate.flow === (inflow ? "in" : "out"));
       const opposite = businessLines.filter((line) => (inflow ? line.direction === "credit" : line.direction === "debit"));
       for (const line of opposite) {
-        const subjectKey = categorySubject ? accountingSubjectKey(categorySubject.category, categorySubject.name) : normalizeSubjectKey(line.subjectKey);
-        const { category, name } = categorySubject ?? splitSubjectKey(subjectKey);
-        const row = candidates.find((candidate) => candidate.match?.(category, name));
+        const lineKey = subjectKeyOfLine(line);
+        const ref = categorySubject ?? subjectRefOfKey(lineKey, refs);
         const units = toUnits(line.amount);
+        if (!ref) {
+          // 有 id 但索引里查不到（科目被硬删等）：如实点名，不猜一个科目把它归行。
+          const orphanKey = subjectLabelOfKey(lineKey, refs);
+          unmapped.set(orphanKey, (unmapped.get(orphanKey) ?? 0n) + units);
+          continue;
+        }
+        const subjectKey = categorySubject ? accountingSubjectKey(categorySubject.category, categorySubject.name) : subjectLabelOfKey(lineKey, refs);
+        const row = candidates.find((candidate) => candidate.match?.(ref.category, ref.name));
         if (!row || row.row === null) {
           unmapped.set(subjectKey, (unmapped.get(subjectKey) ?? 0n) + units);
           continue;

@@ -53,7 +53,9 @@ test("建表语句与 schema 的列、唯一键、索引名逐项一致", () => 
   assert.match(schema, /@@unique\(\[category, name\]\)/, "schema 的唯一键必须与迁移一致");
   assert.match(schema, /@@map\("accounting_subjects"\)/);
   assert.match(schema, /model AccountingSubject \{/);
-  assert.match(schema, /balanceDirection String\?\s+@map\("balance_direction"\) @db\.VarChar\(4\)/);
+  // `prisma format` 会按列对齐整个 schema（字段名与类型之间可能有多个空格），
+  // 所以用 \s+ 而不是单个空格；断言内容不变：字段名 / @map / @db.VarChar(4)。
+  assert.match(schema, /balanceDirection\s+String\?\s+@map\("balance_direction"\)\s+@db\.VarChar\(4\)/);
 });
 
 test("121 条科目全部写进迁移（漏一条就是老库升级后少一个科目）", () => {

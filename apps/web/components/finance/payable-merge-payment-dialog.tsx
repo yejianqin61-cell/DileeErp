@@ -19,6 +19,11 @@
 // 两者不可能各说各话（反过来的话，用户改了合计却没改行，后端会以 PAYMENT_ALLOCATION_EXCEEDED 拒绝）。
 // 相加走「整数分」（`parseSlipAmount` / `formatSlipAmount`，与付款单同一套，见 `lib/finance-slip.ts`）：
 // 浮点求和会出现 `0.1 + 0.2 = 0.30000000000000004`，而这里的合计直接决定发出去的付款金额。
+//
+// 2026-11-09 D4（强制核销额=单据额）：**整单结清** —— 逐行「本次核销金额」恒等于该行未核销余额且
+// **不可编辑**，付款金额是只读派生值（Σ 各行余额），两者不允许出现差额；原先「逐行改小做部分付款」
+// 已按用户口径作废（少付/多付被禁止，手续费这类差额另记其他应付或手工流水）。提交前仍保留一道
+// `settleAmountMismatch` 防御校验，文案与后端 `PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION` 对齐。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../ui/button";
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -99,6 +104,20 @@ export function settleOutstandingTotal(rows: readonly MergePayable[]): string {
   return formatSlipAmount(units);
 }
 
+/** D4 契约文案：与后端 `PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION` 一致，前端提前拦时用同一句话。 */
+export const SETTLE_AMOUNT_MISMATCH = "核销合计必须等于付款金额（PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION）";
+
+/**
+ * D4 提交前防御校验：付款金额必须等于核销合计。
+ *
+ * 正常情况下两者是同一组数（付款金额=Σ 各行未核销余额，核销金额也只读取同一个余额），
+ * 这条永远返回 null；它挡的是「渲染/勾选状态不同步」这类本不该发生的路径 ——
+ * 与其让后端 422，不如在点击处先拦下来。导出成纯函数是为了单测能直接喂不相等的一对入参。
+ */
+export function settleAmountMismatch(paymentAmount: string, allocatedAmount: string): string | null {
+  return parseSlipAmount(paymentAmount) === parseSlipAmount(allocatedAmount) ? null : SETTLE_AMOUNT_MISMATCH;
+}
+
 type Option = { value: string; label: string };
 
 type Props = {
@@ -124,17 +143,10 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
   const [bankId, setBankId] = useState("");
   const [subjectId, setSubjectId] = useState("");
   const [remark, setRemark] = useState("");
-  const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   /** 过账失败时留下的那句话：草稿单号 + 怎么继续。必须留在界面上，不能只闪一条 toast。 */
   const [draftNotice, setDraftNotice] = useState("");
-  /**
-   * 过账失败后**已经建出来的那张草稿**的金额。草稿金额不会因为重试而改变（幂等键固定，
-   * 重试只会复用同一张），所以重试时核销合计一旦超过它就会一直失败 —— 这个上限要显式拦一次，
-   * 否则用户会陷在「改了金额 → 一直报核销超过付款金额」的死循环里。
-   */
-  const [draftTotal, setDraftTotal] = useState<string | null>(null);
   const idempotencyKey = useRef("");
 
   const orderNos = useMemo(() => [...new Set(rows.map((row) => row.orderNo).filter((value): value is string => Boolean(value)))], [rows]);
@@ -143,9 +155,17 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
   const sharedOrderNo = orderNos.length === 1 ? orderNos[0] : null;
   const currency = rows[0]?.currency ?? "";
   const supplier = rows[0]?.supplierName ?? "";
-  const total = settleTotal(rows, amounts);
+  /**
+   * D4 整单结清：逐行「本次核销金额」**就是该行未核销余额**，用户不可改、也不存在改小的输入框。
+   * 用 `Object.fromEntries` 只是为了 submit 时与 `settleTotal` 共用同一份逐行数据形状。
+   */
+  const amounts = useMemo(() => Object.fromEntries(rows.map((row) => [row.id, row.outstanding])), [rows]);
+  /** 付款金额（只读派生）= 各行未核销余额合计；建单 amount 与界面显示都用它。 */
+  const paymentAmount = settleOutstandingTotal(rows);
+  /** 核销合计（对逐行金额再求一次和，供 D4 防御校验；按 D4 口径它必须恒等于 paymentAmount）。 */
+  const allocatedTotal = settleTotal(rows, amounts);
 
-  // 每次打开都是**新的一次付款**：日期回今天（北京时间）、银行回第一个启用账户、金额回各行全额、
+  // 每次打开都是**新的一次付款**：日期回今天（北京时间）、银行回第一个启用账户、
   // 幂等键换一个。跟着 rows/banks 一起监听是刻意的：勾选变了，这张单子本来就不再是同一张。
   useEffect(() => {
     if (!open) return;
@@ -156,18 +176,16 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
     setRemark("");
     setError("");
     setDraftNotice("");
-    setDraftTotal(null);
     setBusy(false);
-    setAmounts(Object.fromEntries(rows.map((row) => [row.id, row.outstanding])));
     idempotencyKey.current = newIdempotencyKey();
   }, [open, rows, banks]);
 
   /**
    * 点不动提交的那些原因（**全部**列出来，不是第一个）。
    *
-   * 禁用的按钮点不动，所以原因必须事先写在界面上（与付款单编辑器同一条教训）：
-   * 「金额超过未核销余额」这种事在后端是 422 PAYABLE_ALLOCATION_EXCEEDED，
-   * 让财务先看见比让她点了才知道好。
+   * D4 之后逐行核销金额是只读的（= 该行未核销余额），因此不再有「输入超额/非法」这类阻断；
+   * 剩下的两类是：① 数据本身不完整（余额不可解析）；② 防御校验——付款金额必须等于核销合计，
+   * 文案对齐后端 `PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION`（正常恒等，见 `settleAmountMismatch`）。
    */
   const blockers = useMemo(() => {
     const problems: string[] = [];
@@ -180,34 +198,27 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
     // （`supplier-payment.service.ts:127-129`），财务对不出账。
     if (!bankId) problems.push("请选择支付银行账户（没有账户的付款不会体现在任何银行余额里）");
     for (const row of rows) {
-      const units = parseSlipAmount(amounts[row.id] ?? "");
-      if (units === null) { problems.push(`${row.payableNo} 的本次核销金额必须是大于零的数字（最多 4 位小数）`); continue; }
-      const outstanding = parseSlipAmount(row.outstanding);
-      if (outstanding !== null && units > outstanding) problems.push(`${row.payableNo} 的本次核销金额不能超过未核销余额 ${row.outstanding}`);
+      if (parseSlipAmount(row.outstanding) === null) problems.push(`${row.payableNo} 的未核销余额非法（必须大于零、最多 4 位小数），无法整单结清`);
     }
-    const totalUnits = parseSlipAmount(total);
-    if (totalUnits === null) problems.push("本次付款金额必须大于零");
-    // 已经有草稿（上一次过账失败）时，合计不能再超过草稿金额：重试复用同一张草稿，改大只会一直失败。
-    const draftUnits = draftTotal ? parseSlipAmount(draftTotal) : null;
-    if (totalUnits !== null && draftUnits !== null && totalUnits > draftUnits) problems.push(`本次核销合计不能超过已创建的草稿付款单金额 ${draftTotal} ${currency}（重试复用同一张草稿，只能改小）`);
+    if (parseSlipAmount(paymentAmount) === null) problems.push("本次付款金额必须大于零");
+    // D4 防御：正常 payments 与 allocations 是同一组数，这里恒为 null；状态不同步时提前拦住。
+    const mismatch = settleAmountMismatch(paymentAmount, allocatedTotal);
+    if (mismatch) problems.push(mismatch);
     return problems;
-  }, [rows, amounts, paymentDate, paymentMethod, bankId, total, draftTotal, currency]);
-
-  /** 把每一行改回「该行全额未核销余额」（改坏了几行之后一键还原，不必逐格回忆原值）。 */
-  function resetAmounts() { setAmounts(Object.fromEntries(rows.map((row) => [row.id, row.outstanding]))); }
+  }, [rows, allocatedTotal, paymentAmount, paymentDate, paymentMethod, bankId]);
 
   async function submit() {
     if (blockers.length || busy) return;
     setBusy(true);
     setError("");
     setDraftNotice("");
-    // 发出去的行金额一律归一化成十进制字符串（与合计同一套解析/格式化，避免空格与多余尾零）。
+    // D4：每条应付按**该行未核销余额**整笔核销（不可部分）。金额归一化成十进制字符串。
     const allocations = rows.map((row) => ({ payable_entry_id: row.id, amount: formatSlipAmount(parseSlipAmount(amounts[row.id] ?? "") ?? 0n) }));
-    // 建单：金额就是各行之和的合计（唯一真源），币种/供应商来自这一批本身。
+    // 建单：金额就是各行未核销余额之和（只读派生值），币种/供应商来自这一批本身。
     const createBody: Record<string, unknown> = {
       supplier_id: rows[0].supplierId,
       payment_date: paymentDate,
-      amount: total,
+      amount: paymentAmount,
       currency,
       payment_method: paymentMethod.trim(),
       bank_id: bankId,
@@ -239,16 +250,15 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
       // 而库里躺着一张她不知道的草稿付款单。幂等键是这次弹窗固定的，所以再点一次提交会
       // 命中同一张草稿（create 的 idempotency_key 重放，见 `supplier-payment.service.ts:56-61`），
       // 不会撞上「重复草稿」守卫、也不会多建一张。
-      const message = `已创建草稿付款单 ${created.paymentNo}（合计 ${total} ${currency}），但核销未完成：${messageOf(cause, "核销失败")}。草稿不动任何金额与状态；在本弹窗再次提交会复用这张草稿继续核销（不会重复建单，核销合计也不能超过草稿金额）。若台账上这些应付已经显示核销完成，说明上一次提交其实成功了，刷新即可。`;
+      const message = `已创建草稿付款单 ${created.paymentNo}（合计 ${paymentAmount} ${currency}），但核销未完成：${messageOf(cause, "核销失败")}。草稿不动任何金额与状态；在本弹窗再次提交会复用这张草稿继续核销（不会重复建单）。若台账上这些应付已经显示核销完成，说明上一次提交其实成功了，刷新即可。`;
       setDraftNotice(message);
-      setDraftTotal(total);
       notifyError(message);
       setBusy(false);
       return;
     }
-    notifySuccess(`已付款并核销 ${rows.length} 条应付（${total} ${currency}）`);
+    notifySuccess(`已付款并核销 ${rows.length} 条应付（${paymentAmount} ${currency}）`);
     onOpenChange(false);
-    await onSettled({ count: rows.length, amount: total, currency, orderNo: sharedOrderNo });
+    await onSettled({ count: rows.length, amount: paymentAmount, currency, orderNo: sharedOrderNo });
   }
 
   return <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
@@ -257,9 +267,9 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
       <DialogBody>
         {/* 一句话说清这次要发生什么（数据，不是说明文）：涉及哪几个订单、为什么行与合计只有一个真源。 */}
         <p className="panel-note" data-testid="payable-merge-scope">
-          本次付款 {total} {currency}，一次核销 {rows.length} 条已确认应付；涉及订单 {orderNos.length ? orderNos.join("、") : "无"}{sharedOrderNo ? "" : "（跨订单：付款单不写订单号，逐条按应付自己的订单号核销）"}
+          本次付款 {paymentAmount} {currency}，一次核销 {rows.length} 条已确认应付；涉及订单 {orderNos.length ? orderNos.join("、") : "无"}{sharedOrderNo ? "" : "（跨订单：付款单不写订单号，逐条按应付自己的订单号核销）"}
         </p>
-        <p className="panel-note">合并付款只对同一供应商 + 同一币种开放；本次核销金额默认该行未核销余额，可改小做部分付款，合计随各行自动变。</p>
+        <p className="panel-note">合并付款只对同一供应商 + 同一币种开放；按当前口径整单结清：每条应付按未核销余额整笔核销，核销金额不可改，不支持部分付款。</p>
         <div className="filter-bar">
           <label>付款日期<Input type="date" data-testid="payable-merge-date" value={paymentDate} disabled={busy} onChange={(event) => setPaymentDate(event.target.value)} /></label>
           <label>付款方式<Input data-testid="payable-merge-method" value={paymentMethod} disabled={busy} placeholder="银行转账" onChange={(event) => setPaymentMethod(event.target.value)} /></label>
@@ -281,8 +291,7 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
                  （订单号 18% / 供应商 26% / 币种 8% / 应付金额 16% / 未核销余额 16% / 本次核销金额 16%）；
                  供应商是最长的自由文本，金额三列等宽保证「应付 / 未核销 / 本次」上下对得齐；
               ③ 长文本格补 `cell-ellipsis` + `title`（手写表没有 DataTable 那套自动 title）。
-              最后一列装的是受控 `<Input>`：给它固定宽度而不是省略 —— 输入框被裁掉就没法填了，
-              所以这一格只加 `.ui-table-cell`，不加 `cell-ellipsis`。 */}
+              最后一列 2026-11-09 D4 起是**只读金额**（= 未核销余额），不再有输入框，所以也按长文本格的规则配。 */}
           <div className="table-wrap">
             <table className="data-table table-bounded">
               <thead><tr>
@@ -300,16 +309,15 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
                   <td className="cell-ellipsis" title={row.currency}>{row.currency}</td>
                   <td className="cell-ellipsis" title={money(row.amount, row.currency)}>{money(row.amount, row.currency)}</td>
                   <td className="cell-ellipsis" title={money(row.outstanding, row.currency)}>{money(row.outstanding, row.currency)}</td>
-                  <td><Input inputMode="decimal" aria-label={`${row.payableNo} 本次核销金额`} data-testid={`payable-merge-amount-${row.id}`} value={amounts[row.id] ?? ""} disabled={busy} onChange={(event) => setAmounts((current) => ({ ...current, [row.id]: event.target.value }))} /></td>
+                  <td className="cell-ellipsis" title={money(row.outstanding, row.currency)}><span data-testid={`payable-merge-amount-${row.id}`}>{money(row.outstanding, row.currency)}</span></td>
                 </tr>)}
               </tbody>
             </table>
           </div>
         </div>
         <div className="action-row">
-          {/* 合计是**派生值**（只读）：它是各行相加的结果，改任何一行这里跟着变 —— 两者不会各说各话。 */}
-          <span className="panel-note" data-testid="payable-merge-total">本次付款金额 {total} {currency}（= 各行「本次核销金额」合计，改某一行这里跟着变）</span>
-          <Button size="sm" variant="ghost" data-testid="payable-merge-reset" disabled={busy} onClick={resetAmounts}>按未核销余额重填</Button>
+          {/* D4：付款金额是只读派生值（Σ 各行未核销余额），与核销合计恒等；没有可改的合计输入框。 */}
+          <span className="panel-note" data-testid="payable-merge-total">本次付款金额 {paymentAmount} {currency}（= 各行未核销余额合计；只读，核销合计必须等于它）</span>
         </div>
         {blockers.length ? <ul className="panel-note status-error" data-testid="payable-merge-blockers">{blockers.map((item) => <li key={item}>{item}</li>)}</ul> : null}
         {error ? <p className="status-error" data-testid="payable-merge-error">{error}</p> : null}

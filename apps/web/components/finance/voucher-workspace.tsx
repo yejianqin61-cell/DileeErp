@@ -6,6 +6,8 @@
 //   1. 收支流水列表：每条流水都能生成一张记账凭证；已有凭证的流水直接显示凭证号与「查看凭证」；
 //   2. 记账凭证列表：草稿可编辑/删除/过账，已过账只能红冲（另开一张红字凭证，原凭证标为已红冲）；
 //   3. 凭证纸视图：把结构化分录排版成记账凭证，用「打印 / 另存 PDF」出纸质件或 PDF。
+//   4. 分录行的「业务科目（辅助）」（2026-11-09 R3-9）：凭证纸（屏幕/打印）在记账科目下面显示
+//      `business_subject_label` —— 只在有值且与记账科目**不同**时显示，相同不重复、没有就整行不出现。
 //
 // 为什么**不返回一张图片**（用户问「做一个图片返回来？」）：
 //   凭证是账务事实，必须可查、可核、可追溯、可重打。图片不可搜索、不可复制（财务要复制凭证号、
@@ -49,6 +51,14 @@ type VoucherLine = {
   id: string; lineNo: number; direction: string; subjectKey: string; subjectLabel: string; summary: string; amount: string; currency: string;
   /** 资金类分录引用的具体银行账户（用户要求「银行存款要引用具体的银行账户」）。 */
   bank?: { id: string; bankName: string; accountNumber: string } | null;
+  /** 记账科目 id（2026-11-09 R3-1）：历史行 / 找不到唯一同名科目的行为空。 */
+  subjectId?: string | null;
+  /**
+   * 业务科目（辅助核算维度，2026-11-09 R3-1）：单据上写的科目（应付条目科目 / 流水「收支类目」）。
+   * 只用于展示与辅助核算，**不决定借贷方向**；`businessSubjectLabel` 是名称快照。
+   */
+  businessSubjectId?: string | null;
+  businessSubjectLabel?: string | null;
 };
 type Voucher = AuditRow & {
   id: string; voucherNo: string; voucherDate: string; period: string; sourceType: string; sourceId: string;
@@ -210,11 +220,16 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
     setBusy(entry.id);
     try {
       const result = await apiPost<Voucher & { replayed?: boolean }>(`/finance/vouchers/from-cash-flow/${entry.id}`);
-      notifySuccess(result.data.replayed
-        ? `流水 ${entry.entryNo} 已有凭证 ${result.data.voucherNo}（重复生成不会重复建单）`
-        : `已生成凭证 ${result.data.voucherNo}（草稿，确认无误后过账）`);
+      const data = result.data;
+      // R3-7（2026-11-09）：流水/收付款**自动**生成的凭证生成即 posted，所以成功提示不能再无条件写「草稿」——
+      // 只有接口真的返回 status=draft（存量草稿口径）才提示人工过账；判断依据是响应字段，不硬编码。
+      notifySuccess(data.replayed
+        ? `流水 ${entry.entryNo} 已有凭证 ${data.voucherNo}（重复生成不会重复建单）`
+        : data.status === "draft"
+          ? `已生成凭证 ${data.voucherNo}（草稿，需人工过账）`
+          : `已生成并过账：${data.voucherNo}`);
       await load();
-      await openSheet(result.data.id);
+      await openSheet(data.id);
     } catch (cause) {
       notifyError(messageOf(cause, "生成凭证失败"));
     } finally {
@@ -549,6 +564,20 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
   </div>;
 }
 
+/**
+ * 分录行上「业务科目（辅助）」的展示值（R3-9）。
+ *
+ * 只在 `business_subject_label` **有值**、且与**记账科目名**（`subject_label`）**不同**时返回：
+ *   - 没有业务科目（历史行、手工凭证）→ null，界面不出现这一行；
+ *   - 业务科目与记账科目相同 → null，不重复写两遍（同一件事写两次只会让凭证纸更挤）。
+ * 比较用 trim 后的全等：两个 label 都是科目名快照，口径一致才不会把「管理费用」误判成不同。
+ */
+const businessSubjectText = (line: VoucherLine): string | null => {
+  const business = line.businessSubjectLabel?.trim();
+  if (!business) return null;
+  return business === (line.subjectLabel ?? "").trim() ? null : business;
+};
+
 /** 记账凭证纸：屏幕上是一张仿凭证纸，打印时页面上只留它（见 globals.css 的 @media print）。 */
 function VoucherSheet({ voucher }: { voucher: Voucher }) {
   return <div className="voucher-sheet" data-testid="voucher-sheet">
@@ -563,12 +592,19 @@ function VoucherSheet({ voucher }: { voucher: Voucher }) {
     <table className="voucher-sheet-table">
       <thead><tr><th>摘要</th><th>会计科目</th><th className="num">借方金额</th><th className="num">贷方金额</th></tr></thead>
       <tbody>
-        {voucher.lines.map((line) => <tr key={line.id ?? line.lineNo} data-testid={`voucher-line-${line.lineNo}`}>
-          <td>{line.summary || voucher.summary}</td>
-          <td>{line.subjectLabel}</td>
-          <td className="num">{line.direction === "debit" ? money(line.amount, voucher.currency) : ""}</td>
-          <td className="num">{line.direction === "credit" ? money(line.amount, voucher.currency) : ""}</td>
-        </tr>)}
+        {voucher.lines.map((line) => {
+          const business = businessSubjectText(line);
+          return <tr key={line.id ?? line.lineNo} data-testid={`voucher-line-${line.lineNo}`}>
+            <td>{line.summary || voucher.summary}</td>
+            <td>
+              {line.subjectLabel}
+              {/* 业务科目（辅助）：只有「有值且与记账科目不同」才出现（R3-9）；换行显示在记账科目下面，不改台账列数/版式。 */}
+              {business ? <span style={{ display: "block", fontSize: "0.85em", opacity: 0.8 }} data-testid={`voucher-line-business-${line.lineNo}`}>业务科目（辅助）：{business}</span> : null}
+            </td>
+            <td className="num">{line.direction === "debit" ? money(line.amount, voucher.currency) : ""}</td>
+            <td className="num">{line.direction === "credit" ? money(line.amount, voucher.currency) : ""}</td>
+          </tr>;
+        })}
         <tr className="voucher-sheet-total"><td colSpan={2}>合计</td><td className="num">{money(voucher.debitTotal, voucher.currency)}</td><td className="num">{money(voucher.creditTotal, voucher.currency)}</td></tr>
       </tbody>
     </table>

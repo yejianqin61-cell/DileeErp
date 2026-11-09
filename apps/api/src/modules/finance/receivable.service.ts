@@ -23,6 +23,20 @@ import { RECEIVABLE_CONFIRM_SUBJECT_NAMES } from "./accounting-subject-catalog";
  */
 type ConfirmReceivableOptions = { bank_id?: string | null; subject_id?: string | null; payment_nature?: string | null };
 
+/**
+ * 台账/详情的「挂账状态」（2026-11-09 R3-6）：
+ * 同一来源可能同时有红冲行 + 新建 posted（R3-4 允许红冲后按来源重建），所以按
+ * **posted > draft > reversed > none** 取优先级，而不是「找到哪张算哪张」。
+ */
+type AccrualStatus = "posted" | "draft" | "reversed" | "none";
+
+function accrualStatusOf(statuses: readonly string[]): AccrualStatus {
+  if (statuses.includes("posted")) return "posted";
+  if (statuses.includes("draft")) return "draft";
+  if (statuses.includes("reversed")) return "reversed";
+  return "none";
+}
+
 @Injectable()
 export class ReceivableService {
   constructor(
@@ -72,6 +86,8 @@ export class ReceivableService {
       },
       orderBy: { createdAt: "desc" },
     });
+    // 2026-11-09 R3-6：整页一次查回挂账凭证状态（posted > draft > reversed），避免逐行 N+1。
+    const accrualStatuses = await this.accrualStatusBySource(rows.map((row) => row.id));
     const customerIds = [...new Set(rows.map((row) => row.customerId))];
     // 两种对账都要找出来：按客户建的（customerId 命中）与按订单建的（orderNo 命中）。
     // 只按 customerId 查会漏掉「对账的客户 ≠ 条目上带的客户」这种数据不一致的历史行，
@@ -98,6 +114,8 @@ export class ReceivableService {
         product_specification: row.outbound?.productSpecificationSnapshot ?? null,
         allocated_amount: allocated.toFixed(4),
         outstanding_amount: row.amount.minus(allocated).toFixed(4),
+        // 2026-11-09 R3-6：挂账凭证状态；红冲后前端据此给「按来源重算」入口。
+        accrual_status: accrualStatuses.get(row.id) ?? "none",
         reconciliation: covering ? { id: covering.id, reconciliation_no: covering.reconciliationNo, status: covering.status, period_start: covering.periodStart, period_end: covering.periodEnd } : null,
       };
     }).filter((row) => matchesLedgerFilter({
@@ -127,8 +145,9 @@ export class ReceivableService {
       },
     });
     if (!row) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
+    const accrualStatuses = await this.accrualStatusBySource([id]);
     const allocated = row.allocations.filter((item) => item.status === "active" && item.payment?.status === "posted").reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
-    return { ...row, allocated_amount: allocated.toFixed(4), outstanding_amount: row.amount.minus(allocated).toFixed(4) };
+    return { ...row, allocated_amount: allocated.toFixed(4), outstanding_amount: row.amount.minus(allocated).toFixed(4), accrual_status: accrualStatuses.get(id) ?? "none" };
   }
 
   async createFromOutbound(outboundId: string, input: { amount?: string; amount_reason?: string; due_date?: string; remark?: string }, user: CurrentUser) {
@@ -168,9 +187,10 @@ export class ReceivableService {
    * 保留它是为了兼容既有调用方的入参形状。
    */
   async confirm(id: string, user: CurrentUser, options: ConfirmReceivableOptions = {}) {
-    // 先进校验、后进事务：等事务提交完才发现银行非法，应收已经确认、流水却没写。
+    // 先进校验、后进事务：等事务提交完才发现银行/科目非法，代价更大。
     if (options.bank_id) await requireActiveBank(this.prisma, options.bank_id, "入账银行不存在或已停用");
     if (options.subject_id) await this.cashFlow.requireSubject(options.subject_id, "会计科目不存在或已停用，请在「收支管理 → 会计科目」里确认");
+    // 确认与挂账同一事务、挂账直接过账（2026-11-09 用户拍板「确认即过账」）。
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
       const current = await tx.receivableSource.findFirst({ where: { id, deletedAt: null }, include: { customer: { select: { name: true } } } });
@@ -178,12 +198,12 @@ export class ReceivableService {
       if (current.status !== "draft") throw this.invalid("RECEIVABLE_SOURCE_NOT_CONFIRMABLE", "只有草稿应收来源可以确认");
       const updated = await tx.receivableSource.update({ where: { id }, data: { status: "confirmed", ...this.audit.update(user) } });
       // 客户名要从 current 拿：update 的返回值只有标量列，没有关联，用 row 会退化成客户 UUID。
-      return { updated, customerName: current.customer?.name ?? current.customerId };
+      const accrual = await this.accrue(updated, current.customer?.name ?? current.customerId, user, options, tx);
+      return { updated, accrual };
     });
     const row = result.updated;
-    await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo });
-    const accrual = await this.accrue(row, result.customerName, user, options);
-    return { ...row, cash_flow_entry_id: null, accrual_voucher_id: accrual?.id ?? null, accrual_replayed: accrual?.replayed ?? false, bank_missing: false };
+    await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: row.orderNo, accrual_voucher_id: result.accrual?.id ?? null, auto_posted: Boolean(result.accrual) });
+    return { ...row, cash_flow_entry_id: null, accrual_voucher_id: result.accrual?.id ?? null, accrual_replayed: result.accrual?.replayed ?? false, bank_missing: false };
   }
 
   /**
@@ -202,6 +222,7 @@ export class ReceivableService {
     counterpartyName: string,
     user: CurrentUser,
     options: ConfirmReceivableOptions,
+    client?: Prisma.TransactionClient,
   ) {
     return this.accruals.createAccrual({
       source_type: SOURCE_RECEIVABLE,
@@ -216,7 +237,7 @@ export class ReceivableService {
       // 款项性质（定金/货款/尾款）在挂账这一步只留个痕：它是**现金**的属性，
       // 现在归「登记收款」那条流水（外汇一览表按它的口径没变，只是数据来源跟着钱走）。
       remark: options.payment_nature ? `确认应收 ${row.sourceNo}（款项性质：${options.payment_nature}）` : undefined,
-    }, user);
+    }, user, { client, post: true });
   }
 
   /**
@@ -250,13 +271,19 @@ export class ReceivableService {
       });
       // 行锁之下不可能少改：真少了说明有人绕过锁改了状态，宁可整批回滚也不要「界面说确认了、库里没确认」。
       if (updated.count !== drafts.length) throw this.invalid("RECEIVABLE_CONFIRM_CONFLICT", "勾选的应收已被其他操作改动，请刷新后重试");
-      return { drafts, skipped: ids.length - drafts.length };
+      // **逐条挂账也在同一个事务里**（2026-11-09）：任一条失败整批回滚。
+      const accruals: Array<{ id: string; replayed: boolean } | null> = [];
+      for (const draft of drafts) {
+        accruals.push(await this.accrue(draft, draft.customer?.name ?? draft.customerId, user, options, tx));
+      }
+      return { drafts, skipped: ids.length - drafts.length, accruals };
     });
     const accrualVoucherIds: string[] = [];
     const totals = new Map<string, Prisma.Decimal>();
-    for (const draft of result.drafts) {
-      await this.audit.record("receivable_source.confirm", "receivable_source", user.id, draft.id, { order_no: draft.orderNo, batch: true });
-      const accrual = await this.accrue(draft, draft.customer?.name ?? draft.customerId, user, options);
+    for (let index = 0; index < result.drafts.length; index += 1) {
+      const draft = result.drafts[index];
+      const accrual = result.accruals[index];
+      await this.audit.record("receivable_source.confirm", "receivable_source", user.id, draft.id, { order_no: draft.orderNo, batch: true, accrual_voucher_id: accrual?.id ?? null });
       if (accrual) accrualVoucherIds.push(accrual.id);
       totals.set(draft.currency, (totals.get(draft.currency) ?? new Prisma.Decimal(0)).plus(draft.amount));
     }
@@ -297,14 +324,18 @@ export class ReceivableService {
         where: { id: { in: ids }, deletedAt: null, status: "draft" },
         data: { status: "confirmed", ...this.audit.update(user) },
       });
-      return { orderNo, count: drafts.length, ids, drafts };
+      // 挂账同一事务（2026-11-09「确认即过账」）。
+      const accruals: Array<{ id: string; replayed: boolean } | null> = [];
+      for (const draft of drafts) {
+        accruals.push(await this.accrue(draft, draft.customer?.name ?? draft.customerId, user, options, tx));
+      }
+      return { orderNo, count: drafts.length, ids, drafts, accruals };
     });
     for (const id of result.ids) {
       await this.audit.record("receivable_source.confirm", "receivable_source", user.id, id, { order_no: result.orderNo, batch: true });
     }
     const accrualVoucherIds: string[] = [];
-    for (const draft of result.drafts) {
-      const accrual = await this.accrue(draft, draft.customer?.name ?? draft.customerId, user, options);
+    for (const accrual of result.accruals) {
       if (accrual) accrualVoucherIds.push(accrual.id);
     }
     return { orderNo: result.orderNo, count: result.count, ids: result.ids, cash_flow_entry_ids: [], accrual_voucher_ids: accrualVoucherIds, bank_missing: false };
@@ -340,6 +371,10 @@ export class ReceivableService {
       if (!current) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
       if (current.status !== "confirmed") throw this.invalid("RECEIVABLE_SOURCE_NOT_REOPENABLE", "只有未发生收款的已确认应收来源可以回退草稿");
       if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("RECEIVABLE_SOURCE_HAS_ALLOCATIONS", "应收来源存在有效收款核销，必须先冲销收款");
+      // 挂账凭证已过账 → 先红冲（2026-11-09 确认即过账；否则回退会让凭证失去来源）。
+      const postedAccrual = await this.accruals.postedAccrualOf(SOURCE_RECEIVABLE, id, tx);
+      if (postedAccrual) throw this.invalid("RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL", `该应收的挂账凭证 ${postedAccrual.voucherNo} 已过账：请先在「凭证」页红冲该凭证，再回退草稿`);
+      await this.accruals.discardDraftAccrual(SOURCE_RECEIVABLE, id, `回退草稿：${reason.trim()}`, user, tx);
       return tx.receivableSource.update({ where: { id }, data: { status: "draft", remark: `${current.remark ?? ""}\n回退草稿：${reason.trim()}`, ...this.audit.update(user) } });
     });
     await this.audit.record("receivable_source.reopen", "receivable_source", user.id, id, { order_no: row.orderNo, reason: reason.trim(), from: "confirmed", to: "draft" });
@@ -353,6 +388,10 @@ export class ReceivableService {
       if (!current) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
       if (["paid", "closed"].includes(current.status)) throw this.invalid("RECEIVABLE_SOURCE_NOT_CANCELLABLE", "已收清应收来源不可取消");
       if (current.allocations.some((allocation) => allocation.payment.status === "posted")) throw this.invalid("RECEIVABLE_SOURCE_HAS_ALLOCATIONS", "应收来源存在有效收款核销，必须先冲销收款");
+      // 挂账凭证已过账 → 先红冲（2026-11-09 确认即过账）。
+      const postedAccrual = await this.accruals.postedAccrualOf(SOURCE_RECEIVABLE, id, tx);
+      if (postedAccrual) throw this.invalid("RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL", `该应收的挂账凭证 ${postedAccrual.voucherNo} 已过账：请先在「凭证」页红冲该凭证，再取消应收`);
+      await this.accruals.discardDraftAccrual(SOURCE_RECEIVABLE, id, `取消应收：${reason.trim()}`, user, tx);
       return tx.receivableSource.update({ where: { id }, data: { status: "cancelled", remark: `${current.remark ?? ""}\n取消：${reason.trim()}`, ...this.audit.update(user) } });
     });
     await this.audit.record("receivable_source.cancel", "receivable_source", user.id, id, { order_no: row.orderNo, reason });
@@ -380,6 +419,71 @@ export class ReceivableService {
   async orderSummary(orderNo: string) { const rows = await this.prisma.receivableSource.findMany({ where: { orderNo, deletedAt: null }, include: { allocations: { where: { deletedAt: null, status: "active" }, include: { payment: true } } } }); const amount = rows.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)); const allocated = rows.reduce((sum, row) => sum.plus(row.allocations.filter((item) => item.payment.status === "posted").reduce((inner, item) => inner.plus(item.amount), new Prisma.Decimal(0))), new Prisma.Decimal(0)); return { order_no: orderNo, source_count: rows.length, receivable_amount: amount.toString(), allocated_amount: allocated.toString(), outstanding_amount: amount.minus(allocated).toString() }; }
   async allocationBalance(id: string, client: PrismaService | Prisma.TransactionClient = this.prisma) { const source = await client.receivableSource.findFirst({ where: { id, deletedAt: null } }); if (!source) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在"); const result = await client.receivableAllocation.aggregate({ where: { receivableSourceId: id, deletedAt: null, status: "active", payment: { status: "posted" } }, _sum: { amount: true } }); return { source, allocated: new Prisma.Decimal(result._sum.amount ?? 0), available: source.amount.minus(result._sum.amount ?? 0) }; }
   async refreshStatus(client: Prisma.TransactionClient, id: string, user: CurrentUser) { const { source, available } = await this.allocationBalance(id, client); const next = available.eq(0) ? "paid" : available.lt(source.amount) ? "partially_paid" : "confirmed"; return client.receivableSource.update({ where: { id }, data: { status: next, ...this.audit.update(user) } }); }
+  /**
+   * **按来源重算挂账**（2026-11-09 R3-6，契约 D）：应收挂账凭证被红冲后，用当前来源数据重建一张 posted。
+   *
+   * 护栏与应付侧同构：只有 `confirmed` / `partially_paid`；已有 posted 挂账 → 422 `ACCRUAL_ALREADY_POSTED`；
+   * 同一事务里读来源 + 建凭证。业务科目按 R3-6 Unknowns：覆盖它的对账单科目，再退回候选链（与确认同一条链）。
+   */
+  async reaccrue(id: string, user: CurrentUser, reason?: string) {
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM receivable_sources WHERE id = ${id}::uuid FOR UPDATE`;
+      const source = await tx.receivableSource.findFirst({ where: { id }, include: { customer: { select: { name: true } } } });
+      if (!source) throw this.notFound("RECEIVABLE_SOURCE_NOT_FOUND", "应收来源不存在");
+      // 已删除（软删）与草稿/已回退一样不可重算：给 422 而不是「找不到」，语义是「这张单不能重算」。
+      if (source.deletedAt) throw this.invalid("RECEIVABLE_NOT_RECALCULABLE", "已删除的应收不能按来源重算挂账");
+      if (!["confirmed", "partially_paid"].includes(source.status)) throw this.invalid("RECEIVABLE_NOT_RECALCULABLE", "只有已确认（未回退、未取消）的应收可以按来源重算挂账");
+      const posted = await this.accruals.postedAccrualOf(SOURCE_RECEIVABLE, id, tx);
+      if (posted) throw this.invalid("ACCRUAL_ALREADY_POSTED", `挂账凭证 ${posted.voucherNo} 已过账，不能再按来源重算；要改请先在凭证页红冲该凭证`);
+      const scopes = await tx.receivableReconciliation.findMany({
+        where: { deletedAt: null, OR: [{ customerId: source.customerId }, ...(source.orderNo ? [{ orderNo: source.orderNo }] : [])] },
+        select: { id: true, reconciliationNo: true, status: true, customerId: true, orderNo: true, currency: true, periodStart: true, periodEnd: true, subjectId: true },
+        orderBy: { createdAt: "desc" },
+      });
+      const coverageSubjectId = coveringReceivableReconciliation({ customerId: source.customerId, orderNo: source.orderNo, currency: source.currency, createdAt: source.createdAt }, scopes)?.subjectId ?? null;
+      const accrual = await this.accruals.createAccrual({
+        source_type: SOURCE_RECEIVABLE,
+        source_id: id,
+        document_no: source.sourceNo,
+        voucher_date: this.today(),
+        currency: source.currency,
+        amount: source.amount,
+        counterparty_name: source.customer?.name ?? source.customerId,
+        contra_subject_names: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
+        contra_subject_id: coverageSubjectId,
+        remark: `按来源重算挂账${reason?.trim() ? `：${reason.trim()}` : ""}`,
+      }, user, { client: tx, post: true });
+      if (!accrual) throw this.invalid("RECEIVABLE_NOT_RECALCULABLE", "该应收没有可重算的挂账（0 元应收本来就不挂账）");
+      return { source, accrual, coverageSubjectId };
+    });
+    await this.audit.record("receivable.reaccrue", "receivable_source", user.id, id, {
+      order_no: result.source.orderNo,
+      source_no: result.source.sourceNo,
+      voucher_no: result.accrual.voucherNo,
+      replayed: result.accrual.replayed,
+      business_subject_id: result.coverageSubjectId,
+      reason: reason?.trim() || null,
+    });
+    return { id: result.accrual.id, voucherNo: result.accrual.voucherNo, status: result.accrual.status, replayed: result.accrual.replayed };
+  }
+
+  /** 一次查回一组应收来源的挂账状态（posted > draft > reversed > none，R3-6）。 */
+  private async accrualStatusBySource(ids: readonly string[]): Promise<Map<string, AccrualStatus>> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    const status = new Map<string, AccrualStatus>();
+    if (!unique.length) return status;
+    const rows = await this.prisma.voucher.findMany({ where: { sourceType: SOURCE_RECEIVABLE, sourceId: { in: unique }, deletedAt: null }, select: { sourceId: true, status: true } });
+    const statuses = new Map<string, string[]>();
+    for (const row of rows) {
+      if (!row.sourceId) continue;
+      const list = statuses.get(row.sourceId) ?? [];
+      list.push(row.status);
+      statuses.set(row.sourceId, list);
+    }
+    for (const id of unique) status.set(id, accrualStatusOf(statuses.get(id) ?? []));
+    return status;
+  }
+
   private number(prefix: string) { return `${prefix}-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`; }
   private date(value: string) { const date = new Date(`${value}T00:00:00.000Z`); if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.valueOf())) throw new UnprocessableEntityException({ code: "INVALID_DUE_DATE", message: "到期日无效", details: [] }); return date; }
   /** 确认发生的日期（记账日）：取当天的 UTC 零点，让流水日期与「今天」在库里可比较、可复现。 */

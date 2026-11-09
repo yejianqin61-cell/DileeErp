@@ -1,0 +1,302 @@
+{
+  "generatedAt": "2026-11-09T04:32:14.513Z",
+  "summary": {
+    "total": 22,
+    "passed": 22,
+    "failed": 0
+  },
+  "results": [
+    {
+      "id": "D1-01",
+      "group": "R1-D1",
+      "title": "raw_material_inbound 候选链首位 = 原材料（资产类），第二 = 主营业务成本",
+      "status": "PASS",
+      "detail": {
+        "names": [
+          "原材料",
+          "主营业务成本"
+        ],
+        "category": "资产类"
+      }
+    },
+    {
+      "id": "D1-02",
+      "group": "R1-D1",
+      "title": "DEFAULT / PAYABLE_CONFIRM / purchase_receipt 首位均为原材料，其它来源不受影响",
+      "status": "PASS",
+      "detail": {
+        "DEFAULT": [
+          "原材料",
+          "主营业务成本"
+        ],
+        "PAYABLE_CONFIRM": [
+          "原材料",
+          "主营业务成本"
+        ],
+        "purchase_receipt": [
+          "原材料",
+          "主营业务成本"
+        ],
+        "outsource_receipt": [
+          "加工费"
+        ],
+        "other": [
+          "管理费用",
+          "其他管理费用"
+        ]
+      }
+    },
+    {
+      "id": "D2-01",
+      "group": "R2-D2",
+      "title": "post:true（事务外）→ 凭证 status=posted，且只开 1 个事务",
+      "status": "PASS",
+      "detail": {
+        "status": "posted",
+        "transactions": 1,
+        "lineCount": 2
+      }
+    },
+    {
+      "id": "D2-02",
+      "group": "R2-D2",
+      "title": "传入 client 时不再调用 root.$transaction，且读写全走 client",
+      "status": "PASS",
+      "detail": {
+        "rootTransactionCalls": 0,
+        "clientCalls": 7,
+        "voucherCount": 1
+      }
+    },
+    {
+      "id": "D2-03",
+      "group": "R2-D2",
+      "title": "幂等：已 posted 且金额/币种一致 → replayed=true，不重建",
+      "status": "PASS",
+      "detail": {
+        "result": {
+          "id": "v-posted",
+          "voucherNo": "记-2026-11-0001",
+          "status": "posted",
+          "replayed": true
+        }
+      }
+    },
+    {
+      "id": "D2-04",
+      "group": "R2-D2",
+      "title": "幂等：已 posted 但金额不一致 → 422 VOUCHER_ACCRUAL_AMOUNT_MISMATCH",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "VOUCHER_ACCRUAL_AMOUNT_MISMATCH",
+        "message": "挂账凭证 记-2026-11-0001 已过账，但与本次确认的金额/币种不一致：请先在凭证页红冲该凭证，再重新确认"
+      }
+    },
+    {
+      "id": "D2-05",
+      "group": "R2-D2",
+      "title": "幂等：已 reversed → 422 VOUCHER_ACCRUAL_REVERSED",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "VOUCHER_ACCRUAL_REVERSED",
+        "message": "挂账凭证 记-2026-11-0001 已红冲：请先在凭证页处理，再重新确认"
+      }
+    },
+    {
+      "id": "D2-06",
+      "group": "R2-D2",
+      "title": "附加（契约 §3）：已存在 draft 挂账凭证 + post:true → 按入参重建后过账",
+      "status": "PASS",
+      "detail": {
+        "result": {
+          "id": "v-draft",
+          "voucherNo": "记-2026-11-0007",
+          "status": "posted",
+          "replayed": true
+        },
+        "lines": [
+          "debit:原材料:100",
+          "credit:应付账款:100"
+        ]
+      }
+    },
+    {
+      "id": "D2-07",
+      "group": "R3-D2-TX",
+      "title": "正例：confirm 成功时 entry=confirmed 且挂账凭证=posted（同事务提交）",
+      "status": "PASS",
+      "detail": {
+        "entryStatus": "confirmed",
+        "voucherStatus": "posted",
+        "debit": "原材料",
+        "transactions": 1
+      }
+    },
+    {
+      "id": "D2-08",
+      "group": "R3-D2-TX",
+      "title": "回滚：挂账步骤抛错 → entry 仍为 draft、无凭证、无 confirm 审计",
+      "status": "PASS",
+      "detail": {
+        "error": {
+          "status": 422,
+          "code": "ACCOUNTING_SUBJECT_NOT_FOUND",
+          "message": "挂账需要会计科目「应付账款」，请在「收支管理 → 会计科目」里补上"
+        },
+        "entryStatus": "draft",
+        "vouchers": 0
+      }
+    },
+    {
+      "id": "A1-01",
+      "group": "R4-A1",
+      "title": "accruedSourceIds 查询条件 status='posted'（不再把 draft 当已挂账）",
+      "status": "PASS",
+      "detail": {
+        "whereStatus": "posted",
+        "draftOnly": [],
+        "posted": [
+          "p-posted"
+        ]
+      }
+    },
+    {
+      "id": "A3a-01",
+      "group": "R5-A3a",
+      "title": "红字凭证（source_type='voucher'）不能再红冲 → 422 VOUCHER_RED_NOT_REVERSIBLE",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "VOUCHER_RED_NOT_REVERSIBLE",
+        "message": "红字凭证不能再次红冲：如需更正，请调整业务单据后重新生成凭证"
+      }
+    },
+    {
+      "id": "A3a-02",
+      "group": "R5-A3a",
+      "title": "应付 reopen：存在 posted 挂账凭证 → 422 SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL",
+        "message": "该应付的挂账凭证 记-2026-11-0001 已过账：请先在「凭证」页红冲该凭证，再回退草稿"
+      }
+    },
+    {
+      "id": "A3a-03",
+      "group": "R5-A3a",
+      "title": "应付 reverse：存在 posted 挂账凭证 → 422 SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL",
+        "message": "该应付的挂账凭证 记-2026-11-0001 已过账：请先在「凭证」页红冲该凭证，再冲销应付"
+      }
+    },
+    {
+      "id": "A3a-04",
+      "group": "R5-A3a",
+      "title": "应付 removeOther：存在 posted 挂账凭证 → 422 SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "SUPPLIER_PAYABLE_HAS_POSTED_ACCRUAL",
+        "message": "该应付的挂账凭证 记-2026-11-0001 已过账：请先在「凭证」页红冲该凭证，再删除"
+      }
+    },
+    {
+      "id": "A3a-05",
+      "group": "R5-A3a",
+      "title": "应收 reopen：存在 posted 挂账凭证 → 422 RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL",
+        "message": "该应收的挂账凭证 记-2026-11-0001 已过账：请先在「凭证」页红冲该凭证，再回退草稿"
+      }
+    },
+    {
+      "id": "A3a-06",
+      "group": "R5-A3a",
+      "title": "应收 cancel：存在 posted 挂账凭证 → 422 RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL",
+      "status": "PASS",
+      "detail": {
+        "status": 422,
+        "code": "RECEIVABLE_SOURCE_HAS_POSTED_ACCRUAL",
+        "message": "该应收的挂账凭证 记-2026-11-0001 已过账：请先在「凭证」页红冲该凭证，再取消应收"
+      }
+    },
+    {
+      "id": "A3a-07",
+      "group": "R5-A3a",
+      "title": "只有 draft 挂账凭证时：应付 reopen 会软删草稿凭证（voucher.update 收到 deletedAt）",
+      "status": "PASS",
+      "detail": {
+        "entryStatus": "draft",
+        "draftDeleted": true,
+        "deletedBy": "probe-user-1"
+      }
+    },
+    {
+      "id": "A3a-08",
+      "group": "R5-A3a",
+      "title": "只有 draft 挂账凭证时：应收 cancel 会软删草稿凭证",
+      "status": "PASS",
+      "detail": {
+        "sourceStatus": "cancelled",
+        "draftDeleted": true
+      }
+    },
+    {
+      "id": "A5-01",
+      "group": "R6-A5",
+      "title": "报表取数 where 含 sourceType:{not:'voucher'}（红字凭证不参与）",
+      "status": "PASS",
+      "detail": {
+        "where": {
+          "status": "posted",
+          "deletedAt": null,
+          "sourceType": {
+            "not": "voucher"
+          }
+        }
+      }
+    },
+    {
+      "id": "A5-02",
+      "group": "R6-A5",
+      "title": "端到端：posted 红字凭证不进三大报表（BS/IS/CF 全额等于正常凭证）",
+      "status": "PASS",
+      "detail": {
+        "balanceSheet": {
+          "money": 100,
+          "totalAssets": 100,
+          "difference": 0
+        },
+        "incomeStatement": {
+          "revenue": 100,
+          "unmapped": 0
+        },
+        "cashFlow": {
+          "row1": 100,
+          "netIncrease": 100,
+          "closing": 100,
+          "unmapped": 0
+        }
+      }
+    },
+    {
+      "id": "A5-03",
+      "group": "R6-A5",
+      "title": "灵敏度反证：若去掉 sourceType 过滤，同一数据会把红字算进表（证明 A5-02 不是假通过）",
+      "status": "PASS",
+      "detail": {
+        "totalAssets": 0,
+        "revenue": 0,
+        "cfUnmapped": 1
+      }
+    }
+  ]
+}

@@ -6,16 +6,22 @@
 //   1. 原料入库条目：原料入库过账生成的**待接收**应付来源；
 //   2. 外加工签收：外加工实际签收生成的**待接收**应付来源；
 //   3. 应付对账：对账创建 + 对账单列表合并在同一视图；
-//   4. 确认应付：应付台账，**勾选多条一次确认**（2026-09-24 起确认 = **挂账**：借成本/存货、贷应付账款，付款时再登记）。
+//   4. 确认应付：应付台账，**勾选多条一次确认**（2026-09-24 起确认 = **挂账**：借成本/存货、贷应付账款，钱未支付；付款走「合并付款」）。
 // 双击任意行弹出居中详情（展示全部字段与当前可执行操作）。
+//
+// 2026-11-09（按「确认 = 挂账」口径复核）：三个确认弹窗（逐条 / 勾选批量 / 按对账单）**不再询问「支付银行」** ——
+//   后端确认接口对 `bank_id` 只做存在性校验后丢弃，确认只生成挂账凭证、**不写收支流水、不扣银行**。
+//   弹窗保留「会计科目」（挂账凭证的借方科目），并补一行只读说明；成功文案统一为「已生成挂账凭证…钱未支付」。
+//   本轮只改文案与字段，不动记账逻辑（见 docs/design/finance-accrual-policy-2026-11-09.md 的 R1-8）。
 //
 // 2026-09-16（用户要求，三条）：
 //   ① 说明性语句全部去掉，界面只留数据；
 //   ② **已接收**的来源不再出现在两个「待接收」列表里（它已经是应付草稿了，看草稿就行）；
 //   ③ 「登记付款 → 过账核销」这第二遍流程当时被拿掉了：那时确认应付**同时记账**（钱直接从账户出去），
 //      再登记一次付款等于同一笔钱扣两次；所以确认这边只保留「勾选 + 批量确认」。
+//      （该口径已作废：现在确认只挂账，第二步是真的「合并付款」核销。）
 //
-// 2026-10-08（用户确认）：确认应付已经是**挂账**（借成本/存货、贷应付账款，钱还没出去），
+// 2026-10-08（用户确认）：确认应付是**挂账**（借成本/存货、贷应付账款，钱还没出去），
 //   第二步因此回来了，而且是**真的核销**：勾选多条已确认应付 → 「合并付款」建一张付款单
 //   （同一供应商 + 同一币种，**可跨多个订单**）→ 过账逐条写核销行、刷应付状态、写收支流水（含银行）。
 //   行内「付款单」与「集中付款单」队列仍是**打印件**（不改任何数据），两条路各有各的用途。
@@ -40,6 +46,7 @@ import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type 
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { PAYABLE_TABS, PAYABLE_TAB_ALIASES, resolveFinanceTab, type PayableTabParam } from "../../lib/finance-sections";
 import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, toSubjectOptions, type AccountingSubject } from "../../lib/accounting-subjects";
+import { accrualStatusLabel, isAccrualReversed, type AccrualReaccrueResult } from "../../lib/accrual-status";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
 import FinanceSlipEditor from "./finance-slip-editor";
@@ -49,10 +56,8 @@ import { financeStatus } from "./finance-status";
 import { financeSlipDraftBody, financeSlipDraftPath, type FinanceSlipDraft } from "../../lib/finance-slip";
 import PayableMergePaymentDialog, { isSettleable, settleAnchorOf, settleLockReasons, settleOutstandingTotal, type MergePayable } from "./payable-merge-payment-dialog";
 
-/** 银行下拉的「清空」哨兵值（见 bankField / bankValue）：Radix Select 不接受空串 value。 */
-const BANK_CLEAR = "__no_bank__";
 /**
- * 会计科目下拉的「清空」哨兵值（同银行的理由）：已有单据上的科目要能去掉 PATCH 送 null，
+ * 会计科目下拉的「清空」哨兵值（Radix Select 不接受空串 value）：已有单据上的科目要能去掉 PATCH 送 null，
  * 但未改动时必须送 undefined，否则每次编辑都会把单据上已有的科目一并抹掉。
  */
 const SUBJECT_CLEAR = "__no_subject__";
@@ -98,6 +103,18 @@ type PayableEntry = AuditRow & {
    * `subject_name` 是后端算好的 `分类 / 名称`（没有手选时 = 按来源类型自动归类到哪个科目）。
    */
   subjectId?: string | null; subject?: SubjectLink | null; subject_name?: string | null;
+  /**
+   * 发票类型 / 税率（2026-11-09 R2-3 / D5）：
+   * `invoice_type` = special（专票）/ general（普票）/ none（无票）/ null（未录）；
+   * `tax_rate` 是后端**归一后的 4 位小数字符串**（如 "0.1300"），界面按百分数展示（13%）；
+   * `amount_net` / `tax_amount` 仅在「专票且税率 > 0」时非空，其余为 null（显示「—」）。
+   */
+  invoice_type?: string | null; tax_rate?: string | null; amount_net?: string | null; tax_amount?: string | null;
+  /**
+   * 挂账状态（2026-11-09 R3-6 / R3-13）：`posted` 已挂账 / `draft` 草稿挂账 / `reversed` 挂账已红冲 / `none` 未挂账。
+   * **可选**：旧响应没有这个字段，按 `none` 处理（见 `lib/accrual-status.ts`）；`reversed` 才是需要处理的异常。
+   */
+  accrual_status?: string | null;
   paid_amount?: string; outstanding_amount?: string;
   reconciliation?: ReconciliationRef | null;
   supplier?: SupplierRef | null;
@@ -111,7 +128,7 @@ type SupplierReconciliation = AuditRow & {
   externalBalance: string; difference: string; currency: string; status: string; resolutionRemark: string | null; remark: string | null; createdAt: string;
   supplier?: SupplierRef | null; purchaseOrder?: { purchaseOrderNo: string } | null;
   bank?: BankRef | null;
-  /** 建单/确认时人工选定的会计科目（确认应付记流水时用它，除非确认接口再覆盖）。 */
+  /** 建单/确认时人工选定的会计科目（挂账凭证的借方科目；确认接口仍然接受它作为覆盖值）。 */
   subjectId?: string | null;
   /** 列表/详情接口内嵌的会计科目对象（`{ id, category, name }`）。 */
   subject?: SubjectLink | null;
@@ -130,7 +147,8 @@ type SupplierReconciliation = AuditRow & {
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 /**
  * 「确认应付」三个入口（逐条 / 勾选批量 / 按对账单）共用的响应字段（见 submitConfirm）。
- * `bank_missing` 表示钱记进了收支流水、但不属于任何银行账户（不进任何银行余额）。
+ * `bank_missing` 是**旧口径**的字段（钱记进收支流水、但不属于任何银行账户）：2026-09-24 起确认 =
+ * **挂账**，确认不再写收支流水、也不扣银行，后端对该字段恒返回 false，界面只保留中性兜底。
  */
 type ConfirmResult = {
   bank_missing?: boolean; amount?: string; currency?: string;
@@ -175,6 +193,86 @@ const materialText = (item: { material_name?: string | null; material_code?: str
   return spec ? `${name}（${spec}）` : name;
 };
 const SOURCE_TYPE_LABELS: Record<string, string> = { raw_material_inbound: "原料入库", purchase_receipt: "采购到货", outsource_receipt: "外加工签收", other: "其他应付" };
+/**
+ * 三个确认弹窗共用的只读说明（`ActionField.type: "info"`）。
+ *
+ * 为什么必须写在弹窗里：确认 = **挂账**，钱没动 —— 用户点「保存」前要能看见这次只生成一张挂账凭证
+ * （借 成本/费用、贷 应付账款），付款是另一条路（「合并付款」）。不写清楚，很容易把确认当成付款。
+ */
+const CONFIRM_ACCRUAL_INFO = "确认后生成挂账凭证：借 成本/费用科目、贷 应付账款；钱未支付，付款请用「合并付款」";
+
+/**
+ * 发票类型与税率（2026-11-09 R2-3 / D5）：`invoice_type` 决定挂账时**要不要拆进项税**。
+ *
+ * - 接口值：special（专票）/ general（普票）/ none（无票）/ null（未录）；普票、无票、未录都不拆。
+ * - `tax_rate` 是后端归一后的 4 位小数（"0.1300"），界面输入与展示都按**百分数**（13 / 13%）；
+ *   后端 `parsePayableTaxRate` 会把 >1 的数当百分数 /100，所以请求里直接传百分数也能归一。
+ * - 专票缺有效税率时前端先拦（文案对齐后端 `INVALID_TAX_RATE`），不把必然 422 的请求发出去。
+ */
+const INVOICE_TYPE_LABELS: Record<string, string> = { special: "专票", general: "普票", none: "无票" };
+/** Radix Select 不接受空串 value：用哨兵表示「未录」，提交时翻译成「不传这个字段」。 */
+const INVOICE_TYPE_UNSET = "__invoice_unset__";
+const INVOICE_TYPE_OPTIONS = [
+  { value: INVOICE_TYPE_UNSET, label: "（未录）" },
+  { value: "special", label: "专票" },
+  { value: "general", label: "普票" },
+  { value: "none", label: "无票" },
+];
+const invoiceTypeLabel = (value?: string | null) => (value ? (INVOICE_TYPE_LABELS[value] ?? value) : "—");
+/** 归一后的税率小数 → 百分数文本（去掉无意义尾零）；空值 / 0 返回空串。 */
+const taxRatePercent = (rate?: string | null): string => {
+  if (!rate) return "";
+  const decimal = Number(rate);
+  if (!Number.isFinite(decimal) || decimal <= 0) return "";
+  return String(Number((decimal * 100).toFixed(4)));
+};
+const taxRateText = (rate?: string | null) => { const percent = taxRatePercent(rate); return percent ? `${percent}%` : "—"; };
+/** 批量/对账确认的默认值：整批**同值**才带出（混批留空 = 未录，避免把第一条的类型套给全批）。 */
+const commonInvoiceType = (drafts: readonly PayableEntry[]): string | null => {
+  const types = [...new Set(drafts.map((draft) => draft.invoice_type ?? null))];
+  return types.length === 1 ? types[0] : null;
+};
+const commonInvoiceTaxRate = (drafts: readonly PayableEntry[]): string | null => {
+  const rates = [...new Set(drafts.map((draft) => draft.tax_rate ?? null))];
+  return rates.length === 1 ? rates[0] : null;
+};
+/** 专票缺有效税率的阻断文案：与后端 `INVALID_TAX_RATE` 对齐（前端先拦一次）。 */
+const INVALID_TAX_RATE_HINT = "专票必须填写有效税率（0~1 的小数，或 >1 的百分数，如 13）——INVALID_TAX_RATE";
+/** 发票类型 + 税率 → 请求体字段；专票缺有效税率时返回 { error }（弹窗内显示、请求不发）。 */
+function invoicePayloadOf(values: Record<string, string>): { error: string } | { invoice_type?: string; tax_rate?: string } {
+  const raw = (values.invoice_type ?? "").trim();
+  const invoiceType = raw === INVOICE_TYPE_UNSET || raw === "" ? null : raw;
+  const rate = (values.tax_rate ?? "").trim();
+  if (invoiceType === "special") {
+    if (!rate || !/^\d+(?:\.\d+)?$/.test(rate) || Number(rate) <= 0) return { error: INVALID_TAX_RATE_HINT };
+    // 传百分数即可：后端把 >1 的值当百分数归一成 0.13（与 DTO 的 `^\d+(\.\d+)?$` 一致）。
+    return { invoice_type: invoiceType, tax_rate: rate };
+  }
+  return invoiceType ? { invoice_type: invoiceType } : {};
+}
+/**
+ * 草稿编辑用：`未录` 要显式送 `null`（清空），与确认/新建的「不传 = 保持 / 不拆」区分 ——
+ * 后端 `updateDraft` 以 `invoice_type !== undefined` 判「这次动了发票字段」，不传就等于没改。
+ */
+function invoiceEditPayloadOf(values: Record<string, string>): { error: string } | { invoice_type: string | null; tax_rate?: string } {
+  const raw = (values.invoice_type ?? "").trim();
+  const invoiceType = raw === INVOICE_TYPE_UNSET || raw === "" ? null : raw;
+  const rate = (values.tax_rate ?? "").trim();
+  if (invoiceType === "special") {
+    if (!rate || !/^\d+(?:\.\d+)?$/.test(rate) || Number(rate) <= 0) return { error: INVALID_TAX_RATE_HINT };
+    return { invoice_type: invoiceType, tax_rate: rate };
+  }
+  return { invoice_type: invoiceType };
+}
+/** 三个确认弹窗 + 其他应付新建 + 草稿编辑共用的「发票类型 / 税率」字段。 */
+function invoiceFields({ type, rate, note }: { type?: string | null; rate?: string | null; note?: string }): ActionField[] {
+  const fields: ActionField[] = [
+    { name: "invoice_type", label: "发票类型（未录 = 不拆进项税）", type: "select", options: INVOICE_TYPE_OPTIONS, defaultValue: type ?? INVOICE_TYPE_UNSET },
+    { name: "tax_rate", label: "税率（%，专票必填）", type: "text", defaultValue: taxRatePercent(rate), placeholder: "如 13；普票 / 无票可留空" },
+  ];
+  if (note) fields.push({ name: "invoice_note", label: note, type: "info" });
+  return fields;
+}
 
 /**
  * 这一条**能不能**被批量删除；能就返回空串，不能就返回一句人话（摆到界面上）。
@@ -252,18 +350,20 @@ const COLUMN_WIDTH = {
   reconMaterial: "7%", reconSpecification: "6%", reconPeriod: "7%", reconDraftEntries: "7%",
   reconPayable: "8%", reconPaid: "8%", reconSystem: "6%", reconExternal: "6%", reconDifference: "6%",
   reconBank: "7%", reconSubject: "6%", reconStatus: "7%", reconActions: "8%",
-  // ---- 页面：确认应付台账（entryColumns，12 个业务列 + 审计两列 = 18 列，总和 84%）----
+  // ---- 页面：确认应付台账（entryColumns，13 个业务列 + 审计两列 = 19 列，总和 84%）----
   // 老实说这一张和下面的对账明细都**装不下**口径的理想值，见文件末尾那段说明：
-  // 18 列要把 84% 分完，平均 4.7%/列，所以 8% 只能留给真正不能省的列：
+  // 19 列要把 84% 分完，平均 4.4%/列，所以 8% 只能留给真正不能省的列：
   // 「应付单号」（截断就认不出是哪一单）、「供应商」「原料 / 说明」、
   // 「应付金额」与「未核销余额」（勾选合并付款看的就是后者）；
-  // 「来源批次 / 来源 / 订单号 / 确认日期 / 状态」压到 6%~7%（页面里靠换行显示全，
-  // 类型词「原料入库 / 外加工签收 / 采购到货 / 其他应付」四个字在 7% ≈ 72px 里放得下）；
+  // 「来源批次 / 来源 / 订单号 / 确认日期 / 状态」压到 5%~7%（页面里靠换行显示全，
+  // 类型词「原料入库 / 外加工签收 / 采购到货 / 其他应付」四个字在 6% ≈ 62px 里放得下）；
+  // 2026-11-09 R2-5 新增「发票类型」（专票 / 普票 / 无票，2 字）6%：从来源批次/来源/订单号/供应商/
+  // 原料各让出 1~2%，不动金额列（金额与未核销余额保持 8%）；
   // 勾选框 3%（28px 的框 + 状态原因会换行）；「操作」8%：这一页按钮数随状态变，
   // 最少 1 个（已付清只有「付款单」），8% ≈ 83px 放得下一个按钮、多个按钮交给 `.action-row` 折行。
-  ledgerSelect: "3%", ledgerPayableNo: "8%", ledgerSourceNo: "7%", ledgerSourceType: "7%",
-  ledgerOrderNo: "7%", ledgerSupplier: "8%", ledgerMaterial: "8%", ledgerAmount: "8%",
-  ledgerOutstanding: "8%", ledgerConfirmationDate: "6%", ledgerStatus: "6%", ledgerActions: "8%",
+  ledgerSelect: "3%", ledgerPayableNo: "8%", ledgerSourceNo: "5%", ledgerSourceType: "6%",
+  ledgerOrderNo: "6%", ledgerSupplier: "7%", ledgerMaterial: "7%", ledgerAmount: "8%",
+  ledgerOutstanding: "8%", ledgerConfirmationDate: "6%", ledgerStatus: "6%", ledgerInvoiceType: "6%", ledgerActions: "8%",
   // ---- 弹窗：应付详情的三张子表 + 导入错误表（没有审计列，各自总和 100%）----
   // 付款核销记录（4 列）：单号/日期/状态/金额，金额最宽，四个 25%。
   allocationPaymentNo: "25%", allocationDate: "25%", allocationStatus: "25%", allocationAmount: "25%",
@@ -322,6 +422,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  /** 「按来源重算」正在提交的条目 id（按钮 loading/禁用防双击）。 */
+  const [reaccruing, setReaccruing] = useState("");
   const [detail, setDetail] = useState<{ kind: DetailKind; id: string; row?: unknown } | null>(null);
   const [detailData, setDetailData] = useState<unknown>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -441,15 +543,16 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   /**
    * 「确认应付」三个入口（逐条 / 勾选批量 / 按对账单）共用的提交与提示。
    *
-   * 三条路径都是**挂账**（借成本 / 贷应付账款）：钱还没付，所以这里不能再报「金额已记入所选银行账户」。
-   * 所以不能再用 submitAction 一句「已确认」了事：响应里的 `bank_missing` 表示钱已经记进收支流水、
-   * 但不属于任何银行账户 —— 这时报成功会让财务以为账户里已经少了这笔钱，必须改成警告。
+   * 三条路径都是**挂账**（借 成本/费用、贷 应付账款）：钱还没付，所以这里只能报「已生成挂账凭证、
+   * 钱未支付」，**不能**再报「已记入收支流水」或「已记到所选银行账户」—— 确认这一步根本不动银行。
+   * `bank_missing` 是旧口径的字段（后端现已恒为 false）；保留分支只是给历史/异常响应一个中性兜底，
+   * 不再当作主路径，更不能拿它提示用户「钱进了流水但没进账户」。
    */
   async function submitConfirm(path: string, body: Record<string, unknown>, describe: (data: ConfirmResult) => { success: string; warning: string }, failure: string) {
     try {
       const result = await apiPost<ConfirmResult>(path, body);
       const text = describe(result.data);
-      if (result.data.bank_missing) notifyError(text.warning, "确认完成，但未入账银行");
+      if (result.data.bank_missing) notifyError(text.warning, "确认完成，请核对资金归属");
       else notifySuccess(text.success);
       setDialog(null);
       setDetail(null);
@@ -461,10 +564,49 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     }
   }
 
+  /**
+   * 按来源重算挂账（2026-11-09 R3-6 / R3-13）：挂账凭证被**红冲**后，用这张应付单现在的数据
+   * 重建一张 `posted` 挂账凭证（借 成本/费用、贷 应付账款；钱未支付）。
+   *
+   * 只有 `accrual_status === "reversed"` 的行给入口；原因可选、只进审计。
+   * 后端的 422（`ACCRUAL_ALREADY_POSTED` / `PAYABLE_NOT_RECALCULABLE`）一律原样展示 ——
+   * 前端不重写「能不能重算」的判断，只把失败留在弹窗里（throw 回去）并 toast。
+   * 成功提示必须带上新凭证号；`replayed=true` 表示已有有效凭证被复用，要如实说「未重复生成」。
+   */
+  function reaccruePayable(entry: PayableEntry) {
+    setDialog({
+      title: `按来源重算挂账：${entry.payableNo}`,
+      fields: [
+        { name: "info", label: `挂账凭证已红冲：将按这张应付单现在的金额 / 科目 / 发票信息重建一张已过账的挂账凭证（借 成本/费用、贷 应付账款）；钱未支付。`, type: "info" as const },
+        { name: "reason", label: "重算原因（可选，记入审计）", type: "textarea" },
+      ],
+      submit: async (values) => {
+        setReaccruing(entry.id);
+        try {
+          const reason = values.reason?.trim();
+          const result = await apiPost<AccrualReaccrueResult>(`/finance/payables/${entry.id}/reaccrue`, reason ? { reason } : {});
+          const data = result.data;
+          notifySuccess(data.replayed
+            ? `已有有效挂账凭证 ${data.voucherNo}，未重复生成`
+            : `已按来源重算挂账：${data.voucherNo}`);
+          setDialog(null);
+          setDetail(null);
+          await load();
+        } catch (cause) {
+          // 422 的 code/message 原样显示（不翻译成前端自己的判断），并留在弹窗里。
+          const message = messageOf(cause, "按来源重算失败");
+          notifyError(message);
+          throw new Error(message);
+        } finally {
+          setReaccruing("");
+        }
+      },
+    });
+  }
+
   const detailKind = detail?.kind;
   const detailId = detail?.id;
-  const detailRow = detail?.row;
-  useEffect(() => {
+  const detailRow = detail?.row;  useEffect(() => {
     if (!detailKind) { setDetailData(null); return; }
     if (detailKind === "source") { setDetailData(detailRow ?? null); setDetailLoading(false); setDetailError(""); return; }
     if (!detailId) { setDetailData(null); return; }
@@ -511,14 +653,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const supplierOptions = suppliers.map((item) => ({ value: item.id, label: `${item.supplierCode ?? ""} / ${item.name}` }));
   const orderOptions = orders.map((item) => ({ value: item.orderNo ?? item.id, label: item.orderNo ?? item.name }));
   const bankOptions = useMemo(() => banks.filter((b) => b.isActive).map((b) => ({ value: b.id, label: `${b.bankName} / ${b.accountNumber}（${b.accountName}）` })), [banks]);
-  // 银行是可选字段且选错要能去掉；Radix Select 不接受空串 value，所以用哨兵值表示「不指定银行」，
-  // 提交时翻译成 null（后端 DTO 的 @IsOptional 放过 null，Service 按「清空」处理）。
-  const bankField = (label: string, current?: string | null): ActionField => ({
-    name: "bank_id", label: `${label}（可选）`, type: "select",
-    options: [{ value: BANK_CLEAR, label: "（不指定银行）" }, ...bankOptions],
-    defaultValue: current || BANK_CLEAR,
-  });
-  const bankValue = (value: string | undefined) => (value === BANK_CLEAR ? null : (value || undefined));
+  // 银行账户只在**付款**那一步选（「合并付款」弹窗）；确认 = 挂账，钱没动，确认弹窗里不再有银行字段。
   const currencyDefault = (preferred: string) => { const options = currencyOptions(currencyCatalogue); return options.some((option) => option.value === preferred) ? preferred : (options[0]?.value ?? preferred); };
   /**
    * 可人工指定的会计科目：只给启用项，不传 include_inactive（停用科目不许再被选中）。
@@ -587,13 +722,41 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       // 的形式**传回弹窗（否则它会当作保存成功直接关闭，用户只看到「点了没反应」）。
     ], submit: (v) => submitAction<PayableEntry>("/finance/payable-entries/from-source", { source_type: kind, source_id: source.id, amount: v.amount, amount_reason: v.amount_reason || undefined, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, receiveMessage).then(() => undefined) });
   }
+  /**
+   * 编辑草稿应付（2026-11-09 R2-7 补发票类型/税率入口）。
+   *
+   * 后端 `updateDraft` 只在草稿上接受 `invoice_type`/`tax_rate`（已确认会 422 INVOICE_TYPE_LOCKED）；
+   * 所以这里是「录错发票类型/税率」的唯一修正入口 —— 选专票必须填税率（前端先拦，后端同 422）。
+   * `未录` 会显式送 `null`（清空），与新建/确认的「不传 = 保持」区分。
+   */
   function editEntry(item: PayableEntry) {
     setDialog({ title: `编辑应付草稿：${item.payableNo}`, fields: [
       { name: "amount", label: "应付金额", type: "number", required: true, defaultValue: item.amount },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptionsWithCurrent(currencyCatalogue, item.currency), defaultValue: item.currency },
       { name: "confirmation_date", label: "确认日期", type: "date", required: true, defaultValue: item.confirmationDate.slice(0, 10) },
+      // 发票类型 / 税率：默认取条目当前值（专票的税率为 0 时才给百分数，其余留空）。
+      ...invoiceFields({
+        type: item.invoice_type,
+        rate: item.invoice_type === "special" ? item.tax_rate : null,
+        note: "发票类型/税率只在草稿可改（已确认需先红冲挂账凭证再回退）；专票必须填税率",
+      }),
       { name: "remark", label: "备注", type: "textarea", defaultValue: item.remark ?? "" },
-    ], submit: (v) => submitAction(`/finance/payable-entries/${item.id}`, { amount: v.amount, currency: v.currency, confirmation_date: v.confirmation_date, remark: v.remark || undefined }, "应付草稿已更新", "patch") });
+    ], submit: (v) => {
+      // 只有真的动了发票类型/税率才把它塞进 PATCH：
+      // ① 只改金额/币种时不受「历史特殊数据（专票但无税率）」影响，也不产生审计噪声；
+      // ② `未录` 属于「改成了未录」，会显式送 null，后端据此清空。
+      const typeSelected = (v.invoice_type ?? "").trim() || INVOICE_TYPE_UNSET;
+      const typeCurrent = item.invoice_type ?? INVOICE_TYPE_UNSET;
+      const rateCurrent = item.invoice_type === "special" ? taxRatePercent(item.tax_rate) : "";
+      const invoiceTouched = typeSelected !== typeCurrent || (v.tax_rate ?? "").trim() !== rateCurrent;
+      let invoice: { invoice_type: string | null; tax_rate?: string } | Record<string, never> = {};
+      if (invoiceTouched) {
+        const parsed = invoiceEditPayloadOf(v);
+        if ("error" in parsed) return Promise.reject(new Error(parsed.error));
+        invoice = parsed;
+      }
+      return submitAction(`/finance/payable-entries/${item.id}`, { amount: v.amount, currency: v.currency, confirmation_date: v.confirmation_date, ...invoice, remark: v.remark || undefined }, "应付草稿已更新", "patch");
+    } });
   }
   function reopenEntry(item: PayableEntry) {
     setDialog({ title: `应付回退草稿：${item.payableNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => submitAction(`/finance/payable-entries/${item.id}/reopen`, { reason: v.reason }, "应付已回退草稿") });
@@ -609,13 +772,13 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
    * 为什么删的。前端必填 + 后端必填（`DELETION_REASON_REQUIRED`）两道，原因同时写进备注与审计。
    *
    * 按钮出现在「其他应付」的**草稿与已确认**行上（界面上与后端的三条边界一致 —— 摆一个点了必然报错的
-   * 按钮比不摆更糟）：草稿删了就是没发生过；已确认的删的时候后端会在同一个事务里**冲回那笔支出**
-   * （钱回到账上），所以文案里把这件事说清楚，避免财务以为只是「列表上少一行」。已被对账单覆盖时
-   * 后端会回一句可执行的说明（先去删那张对账单）。
+   * 按钮比不摆更糟）：草稿删了就是没发生过；已确认的条目删之前后端会**先校验挂账凭证**（已过账的必须
+   * 先在凭证页红冲），确认这一步本来就不写收支流水、钱未支付，所以文案里不能再说「冲回支出/钱回到账上」。
+   * 已被对账单覆盖、或挂账凭证未处理时，后端会回一句可执行的说明（先删对账单 / 先红冲凭证），界面原样显示。
    */
   function deleteOtherPayable(item: PayableEntry) {
     setDialog({ title: `删除其他应付：${item.payableNo}`, fields: [
-      { name: "info", label: `将从台账删除「${item.sourceNoSnapshot}」${money(item.amount, item.currency)}${item.status === "confirmed" ? "；这条已确认并记过账，删除时会同时冲回那笔支出（钱回到账上）" : ""}。记录与删除原因保留在审计里，不会真的从数据库消失`, type: "info" as const },
+      { name: "info", label: `将从台账删除「${item.sourceNoSnapshot}」${money(item.amount, item.currency)}${item.status === "confirmed" ? "；这条已确认，删除前会先校验挂账凭证：已过账的需先在「凭证管理」红冲那张凭证，再删除（确认不涉及收支流水，钱未支付）" : ""}。记录与删除原因保留在审计里，不会真的从数据库消失`, type: "info" as const },
       { name: "reason", label: "删除原因（录错了请写清错在哪）", type: "textarea", required: true },
     ], submit: (v) => submitAction(`/finance/payable-entries/${item.id}`, { reason: v.reason }, `其他应付 ${item.payableNo} 已删除`, "delete") });
   }
@@ -624,7 +787,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
    *
    * 这条入口是那句错误提示的「下一步」：删一条误录的其他应付时会被「该应付已纳入对账单 XXX，
    * 请先删除那张对账单」挡住，而对账单原先根本没有删除入口。
-   * 已经用于确认应付并记账的对账单会被后端拒删（那笔支出会失去来源单号），界面原样显示原因。
+   * 已经用于确认应付的对账单会被后端拒删（它覆盖的应付已挂账），界面原样显示后端原因
+   * （去红冲挂账凭证还是先冲销付款，以后端错误码为准，前端不重写判断）。
    */
   function deleteReconciliation(item: SupplierReconciliation) {
     setDialog({ title: `删除应付对账：${item.reconciliationNo}`, fields: [
@@ -639,13 +803,16 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
    * 结果**逐条**给（后端返回 `deleted` / `failed`）：能删的删了，不能删的**点名**说原因 ——
    * 只报「删了 N 条」会让财务以为整批都删干净了。与逐条删除同一条边界，原因同样必填
    * （删除是唯一一个「记录会从台账上消失」的动作）。
+   *
+   * 已确认的条目后端会先校验挂账凭证（已过账的拒删并给出「先红冲」的 message）：确认不写收支流水、
+   * 钱未支付，所以这里**不预判**能不能删，也没删掉的那几条直接把后端 message 原样点名。
    */
   function batchDeleteOtherPayables() {
     const targets = deletableOtherEntries;
     const blocked = blockedOtherEntries;
     const summary = [
       `将删除 ${targets.length} 条其他应付：${targets.slice(0, 12).map((entry) => `${entry.payableNo}（${entry.sourceNoSnapshot}）`).join("、")}${targets.length > 12 ? ` 等 ${targets.length} 条` : ""}。`,
-      targets.some((entry) => entry.status === "confirmed") ? "其中已确认的那些会同时冲回它们的支出流水（钱回到账上）。" : "",
+      targets.some((entry) => entry.status === "confirmed") ? "其中已确认的那些会先校验挂账凭证：已过账的需先在「凭证管理」红冲，再删除（确认不涉及收支流水）。" : "",
       blocked.length ? `另外 ${blocked.length} 条**本次不会删**：${blocked.slice(0, 6).map((entry) => `${entry.payableNo}——${deleteLockReason(entry)}`).join("；")}${blocked.length > 6 ? " 等" : ""}。` : "",
       "记录与删除原因保留在审计里，不会真的从数据库消失。",
     ].filter(Boolean).join(" ");
@@ -657,7 +824,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
         const result = await apiPost<BatchDeleteResult>("/finance/payable-entries/batch-delete", { ids: targets.map((entry) => entry.id), reason: v.reason });
         const data = result.data;
         const reversed = data.deleted.filter((row) => row.was_confirmed).length;
-        notifySuccess(`已删除 ${data.deleted_count} 条其他应付${reversed ? `（其中 ${reversed} 条已确认，已回冲支出流水）` : ""}`);
+        // 已确认的条目删掉时不提「回冲支出/钱回到账上」：确认 = 挂账，钱没动过；挂账凭证按后端口径处理。
+        notifySuccess(`已删除 ${data.deleted_count} 条其他应付${reversed ? `（其中 ${reversed} 条已确认；确认不涉及收支流水）` : ""}`);
         // 没删掉的那几条必须点名（后端给的原因就是它拒的那句话），否则等于静默少删。
         if (data.failed.length) notifyError(`${data.failed.length} 条没删掉：${data.failed.slice(0, 6).map((row) => `${row.payable_no ?? "（单号未知）"}——${row.message}`).join("；")}${data.failed.length > 6 ? " 等" : ""}`);
         setDialog(null);
@@ -675,9 +843,14 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   /**
    * 打开付款单队列：先按勾选的应付条目向后端要一份预填（可能是一队多张）。
    *
-   * 一行一条应付（金额全额，**不自动拆进项税** —— 系统里的单价是含税价，按税率拆在取得普票、
-   * 优惠税率或部分抵扣时会被填错），贷方一行银行存款等于合计；财务要拆进项税就自己加行、
-   * 要少付就自己改金额（用户原话：「我要付款 100，我可以自己填加行」）。
+   * 一行一条应付（金额全额），贷方一行银行存款等于合计；财务要加行/改金额都在弹窗里现改
+   * （用户原话：「我要付款 100，我可以自己填加行」）。
+   *
+   * 进项税口径（2026-11-09 D5 取代 2026-09-20）：**专票的进项税在挂账时自动拆**
+   * （借 业务科目不含税 + 借 应交税费-进项税 / 贷 应付账款含税），付款单/模板这条打印件路径
+   * 仍按含税全额出单、**金额留空由财务填**。保留 2026-09-20 的历史理由备查：当时一律不拆，
+   * 是因为系统里单价是含税价、无发票类型时按税率硬拆会在普票/优惠税率下填错 ——
+   * D5 用「发票类型」先判定该不该拆，旧顾虑不再成立，所以这里不需要改单据逻辑，只改注释。
    *
    * 后端按「收款单位 + 币种」拆张（用户 2026-09-24：「还是不能实现一起付款，只能算是一起确认了，
    * 然后还是一个个的改付款单」）：一次勾选多家供应商不再报错，而是一队单子——她在队列里逐张核对，
@@ -700,33 +873,44 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     return ids.filter((id) => entries.some((entry) => entry.id === id && isDraft(entry)));
   }
   /**
-   * 逐条确认应付 —— 与「勾选批量确认」「按对账单确认」是同一件事的三条入口，都**挂账**（借成本 / 贷应付账款）。
+   * 逐条确认应付 —— 与「勾选批量确认」「按对账单确认」是同一件事的三条入口，都**挂账**
+   * （借 成本/费用、贷 应付账款），钱未支付。
    *
-   * 应付条目本身不挂银行账户（它来自入库 / 签收来源），所以这里必须问清「钱从哪个账户出」：
-   * 不指定就只能在收支流水里留一笔无归属的钱（后端回 bank_missing，上面会警告）。
+   * 确认这一步**不动银行**（后端也没把 bank_id 用去记账），所以弹窗只问「会计科目」：
+   * 它是挂账凭证的借方科目。银行账户在「合并付款」付款时才选。
    */
   function confirmEntry(item: PayableEntry) {
     setDialog({ title: `确认应付：${item.payableNo}`, fields: [
       { name: "confirm", label: `确认应付 ${item.payableNo}：${item.amount} ${item.currency}`, type: "info" as const },
-      bankField("支付银行"),
+      { name: "info", label: CONFIRM_ACCRUAL_INFO, type: "info" as const },
       // 默认带出**条目自己填过的**科目（备用金 = 资产类「库存现金（备用金）」）：
       // 不带出来的话，财务在这里直接提交就会把备用金挂成损益类「管理费用」——
       // 后端优先级是「条目 > 弹窗」（见 supplier-payable.service.ts 的 accrue），
       // 但界面必须让她**看见**这次会挂到哪个科目，否则她无从复核。
       subjectEditField("会计科目", item.subjectId),
-    ], submit: (v) => submitConfirm(`/finance/payable-entries/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => ({
-      success: isCashTransfer(data)
-        // 资金搬运（备用金这类）：确认不挂账，凭证在付款那一步一次记完（2026-10-16）。
-        ? `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）：这笔是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生「贷 应付账款」的凭证；付款后按 借 ${item.subject_name ?? "该科目"} / 贷 银行账户 记一张凭证`
-        : `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）并挂账（借成本 / 贷应付账款）；付款后在「登记付款」里记现金`,
-      warning: `未指定支付银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
-    }), "确认应付失败") });
+      // 发票类型（2026-11-09 R2-3 / D5）：条目已录时后端以条目为准（弹窗不会覆盖），
+      // 所以这里只显示只读事实；未录时才给下拉 + 税率（默认取条目的 tax_rate）。
+      ...(item.invoice_type
+        ? [{ name: "invoice_locked", label: `发票类型：${invoiceTypeLabel(item.invoice_type)}${item.invoice_type === "special" && item.tax_rate ? ` / 税率 ${taxRateText(item.tax_rate)}` : ""}（已录，确认时不会被覆盖）`, type: "info" as const }]
+        : invoiceFields({ rate: item.tax_rate })),
+    ], submit: (v) => {
+      const invoice = invoicePayloadOf(v);
+      if ("error" in invoice) return Promise.reject(new Error(invoice.error));
+      return submitConfirm(`/finance/payable-entries/${item.id}/confirm`, { subject_id: subjectValue(v.subject_id), ...invoice }, (data) => ({
+        success: isCashTransfer(data)
+          // 资金搬运（备用金这类）：确认不挂账，凭证在付款那一步一次记完（2026-10-16）。
+          ? `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）：这笔是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生「贷 应付账款」的凭证；付款后按 借 ${item.subject_name ?? "该科目"} / 贷 银行账户 记一张凭证`
+          : `应付 ${item.payableNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}），已生成挂账凭证（借 成本/费用，贷 应付账款）；钱未支付`,
+        warning: `确认已完成，但接口报告资金归属异常（bank_missing）：本次确认只生成挂账凭证、不写收支流水，请刷新核对`,
+      }), "确认应付失败");
+    } });
   }
   /**
    * 勾选批量确认 —— 用户要求「不要又是登记付款又是确认应付，直接就是支持勾选，批量确认」。
    *
-   * 整批共用一个支付银行与一个会计科目（后端仍是**每条应付写一条流水**，所以每条都追得回来源单号）；
-   * 合计**按币种分组**显示，跨币种不相加。勾选里混进已被别人确认掉的条目时，后端会跳过并回报条数。
+   * 整批共用**一个会计科目**（挂账凭证的借方科目；后端逐条挂账，每条应付各生成一张凭证，
+   * 所以每条都追得回来源单号）；合计**按币种分组**显示，跨币种不相加。这里不问银行卡
+   * —— 确认不动钱，付款在「合并付款」里选账户。勾选里混进已被别人确认掉的条目时，后端会跳过并回报条数。
    *
    * `ids` 默认取当前勾选；付款单队列底部那条「确认这 N 条」会把**那一批**的 id 传进来
    * （队列可能是从行内单条打开的，那时它不在勾选里 —— 传勾选会让「确认」按到别的条目上）。
@@ -737,22 +921,29 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     for (const draft of drafts) totals.set(draft.currency, (totals.get(draft.currency) ?? 0) + Number(draft.amount));
     setDialog({ title: `批量确认应付（${drafts.length} 条）`, fields: [
       { name: "confirm", label: `确认 ${drafts.length} 条草稿应付（合计 ${[...totals.entries()].map(([currency, amount]) => `${amount.toFixed(4)} ${currency}`).join("、")}）`, type: "info" as const },
-      bankField("支付银行"),
+      { name: "info", label: CONFIRM_ACCRUAL_INFO, type: "info" as const },
       // 整批共用一个科目：只在**这一批填的是同一个科目**时带出来，否则留空。
       // 随手拿第一条的值当整批的默认值，会把「备用金 + 房租」这种混批全部挂到第一条的科目上
       // （备用金挂成管理费用就是这么来的）。留空时后端仍按每条自己的科目走（条目优先）。
       subjectEditField("会计科目", commonDraftSubjectId(drafts)),
-    ], submit: (v) => submitConfirm("/finance/payable-entries/batch-confirm", { ids: drafts.map((draft) => draft.id), bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => {
-      const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
-      const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
-      const confirmed = data.confirmed_count ?? drafts.length;
-      // 整批里混着资金搬运（备用金这类）时，挂账凭证的条数会少于确认条数：如实说清楚哪一部分没挂账。
-      const transfer = confirmed - (data.accrual_voucher_ids?.length ?? confirmed);
-      return {
-        success: `已确认 ${confirmed} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）${transfer > 0 ? `；其中 ${transfer} 条是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生应付账款，付款时按 借 该科目 / 贷 银行账户 记` : ""}；付款后在「登记付款」里记现金`,
-        warning: `未指定支付银行：${amount} 已记入收支流水，但不会体现在任何银行账户余额里`,
-      };
-    }, "批量确认应付失败") });
+      // 发票类型/税率（2026-11-09 R2-3 / D5）：整批同值才带默认；后端只给「尚未录」的条目补值，
+      // 已有值不覆盖。选专票必须填税率（前端先拦，文案对齐 INVALID_TAX_RATE）。
+      ...invoiceFields({ type: commonInvoiceType(drafts), rate: commonInvoiceTaxRate(drafts), note: "已有发票类型的条目不会被覆盖：本批只给「未录」的条目补发票类型/税率" }),
+    ], submit: (v) => {
+      const invoice = invoicePayloadOf(v);
+      if ("error" in invoice) return Promise.reject(new Error(invoice.error));
+      return submitConfirm("/finance/payable-entries/batch-confirm", { ids: drafts.map((draft) => draft.id), subject_id: subjectValue(v.subject_id), ...invoice }, (data) => {
+        const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
+        const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
+        const confirmed = data.confirmed_count ?? drafts.length;
+        // 整批里混着资金搬运（备用金这类）时，挂账凭证的条数会少于确认条数：如实说清楚哪一部分没挂账。
+        const transfer = confirmed - (data.accrual_voucher_ids?.length ?? confirmed);
+        return {
+          success: `已确认 ${confirmed} 条应付（${amount}）${skipped}，已生成挂账凭证（借 成本/费用，贷 应付账款）；钱未支付${transfer > 0 ? `；其中 ${transfer} 条是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生应付账款，付款时按 借 该科目 / 贷 银行账户 记` : ""}`,
+          warning: `确认已完成，但接口报告资金归属异常（bank_missing）：本次确认只生成挂账凭证、不写收支流水，请刷新核对`,
+        };
+      }, "批量确认应付失败");
+    } });
   }
 
   /**
@@ -834,13 +1025,22 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       // 不填就一律按来源归类成损益类「管理费用」—— 备用金实际是资产类「库存现金（备用金）」。
       // 留空仍然可用（老习惯不变），所以不加 required。
       subjectCreateField("会计科目（留空按来源自动归类）"),
+      // 发票类型/税率（2026-11-09 R2-3 / D5）：其他应付的 taxRate 历史恒为 0，
+      // 所以选「专票」时必须在这里一并给税率（如房租 9%），否则前端先拦（后端同样 422 INVALID_TAX_RATE）；
+      // 普票/无票/未录不拆进项税，税率留空即可。
+      ...invoiceFields({ note: "选专票必须同时填税率（如房租 9%）；普票 / 无票 / 未录不拆进项税" }),
       { name: "confirmation_date", label: "确认日期", type: "date", defaultValue: new Date().toISOString().slice(0, 10) },
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => submitAction("/finance/payable-entries/other", { supplier_id: v.supplier_id, amount: v.amount, currency: v.currency, description: v.description, subject_id: v.subject_id || undefined, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "其他应付已创建") });
+    ], submit: (v) => {
+      const invoice = invoicePayloadOf(v);
+      if ("error" in invoice) return Promise.reject(new Error(invoice.error));
+      return submitAction("/finance/payable-entries/other", { supplier_id: v.supplier_id, amount: v.amount, currency: v.currency, description: v.description, subject_id: v.subject_id || undefined, ...invoice, confirmation_date: v.confirmation_date || undefined, remark: v.remark || undefined }, "其他应付已创建");
+    } });
   }
 
   function createReconciliation(preset?: { supplierId: string; month: string }) {
     const range = preset ? monthRange(preset.month) : undefined;
+    // 这里不选「支付银行」：对账/确认都不动钱（确认只挂账），付款时在「合并付款」里选账户。
     setDialog({ title: "创建应付对账", fields: [
       { name: "supplier_id", label: "供应商", type: "select", required: true, canAddCategory: true, options: supplierOptions, defaultValue: preset?.supplierId },
       { name: "order_no", label: "订单号（可选）", type: "select", options: orderOptions },
@@ -848,10 +1048,9 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       { name: "period_end", label: "期间结束", type: "date", required: true, defaultValue: range?.end },
       { name: "external_balance", label: "外部应付余额", type: "number", required: true },
       { name: "currency", label: "币种", type: "select", required: true, options: currencyOptions(currencyCatalogue), defaultValue: currencyDefault("CNY") },
-      bankField("支付银行"),
       subjectCreateField("会计科目"),
       { name: "remark", label: "备注", type: "textarea" },
-    ], submit: (v) => submitAction("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, bank_id: bankValue(v.bank_id), subject_id: v.subject_id || undefined, remark: v.remark || undefined }, "应付对账单已创建") });
+    ], submit: (v) => submitAction("/finance/supplier-payable-reconciliations", { supplier_id: v.supplier_id, order_no: v.order_no || undefined, period_start: v.period_start, period_end: v.period_end, external_balance: v.external_balance, currency: v.currency, subject_id: v.subject_id || undefined, remark: v.remark || undefined }, "应付对账单已创建") });
   }
   function resolveReconciliation(item: SupplierReconciliation) {
     setDialog({ title: `处理应付对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => submitAction(`/finance/supplier-payable-reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "应付对账差异已处理") });
@@ -859,31 +1058,35 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   /**
    * 对账完成后一键确认范围内的草稿应付。
    *
-   * 确认应付现在**同时记账** —— 确认金额作为一笔支出写进收支流水，落到对账单的银行账户上。
-   * 所以不能无 body 直接打：历史对账单常常既没银行也没会计科目，必须先把「记到哪个账户、归哪个会计科目」
-   * 问清楚（与应收侧同一套弹窗）。
+   * 确认 = **挂账**（借 成本/费用、贷 应付账款）：**不写收支流水、不动银行**，钱在「合并付款」里才付。
+   * 所以弹窗只问「会计科目」（挂账凭证的借方科目）——历史对账单常常没填科目，必须让它能补上。
+   * 支付银行不在这里问：确认接口对 bank_id 只做存在性校验后丢弃。
    */
   function confirmReconciliationPayables(item: SupplierReconciliation) {
     const count = item.details?.draft_count ?? item.flow?.draft_count ?? 0;
     const amount = item.details?.draft_amount ?? item.flow?.draft_amount;
     setDialog({ title: `确认应付：${item.reconciliationNo}`, fields: [
       { name: "confirm", label: `确认 ${count} 条草稿应付${amount ? `（合计 ${amount} ${item.currency}）` : ""}`, type: "info" as const },
-      bankField("支付银行", item.bank?.id),
+      { name: "info", label: CONFIRM_ACCRUAL_INFO, type: "info" as const },
       subjectEditField("会计科目", item.subjectId),
+      // 发票类型/税率（2026-11-09 R2-3 / D5）：对账单列表没有逐条发票字段，默认「未录」；
+      // 后端只给尚未录类型的草稿补值，已有值不覆盖。
+      ...invoiceFields({ note: "只给「尚未录发票类型」的草稿应付补值；已有发票类型的条目不会被覆盖" }),
     ], submit: (v) => submitConfirmPayables(item, v) });
   }
-  /** 确认应付的提交：与逐条 / 勾选批量共用 submitConfirm（三条路径都会记账，都要处理 bank_missing）。 */
+  /** 确认应付的提交：与逐条 / 勾选批量共用 submitConfirm（三条路径都是挂账；bank_missing 只做中性兜底）。 */
   async function submitConfirmPayables(item: SupplierReconciliation, v: Record<string, string>) {
-    return submitConfirm(`/finance/supplier-payable-reconciliations/${item.id}/confirm-payables`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id) }, (data) => {
+    const invoice = invoicePayloadOf(v);
+    if ("error" in invoice) throw new Error(invoice.error);
+    return submitConfirm(`/finance/supplier-payable-reconciliations/${item.id}/confirm-payables`, { subject_id: subjectValue(v.subject_id), ...invoice }, (data) => {
       const amount = data.confirmed_amount ?? data.amount ?? "-";
-      const currency = data.currency ?? item.currency;
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
       const confirmed = data.confirmed_count ?? 0;
       // 与「勾选批量确认」同一条口径：没有挂账凭证的那些是资金搬运（备用金这类），如实说清楚。
       const transfer = confirmed - (data.accrual_voucher_ids?.length ?? confirmed);
       return {
-        success: `${item.reconciliationNo} 已确认 ${confirmed} 条应付（${amount}）${skipped}，并逐条挂账（借成本 / 贷应付账款）${transfer > 0 ? `；其中 ${transfer} 条是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生应付账款，付款时按 借 该科目 / 贷 银行账户 记` : ""}；付款后在「登记付款」里记现金`,
-        warning: `未指定支付银行：${amount} ${currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
+        success: `${item.reconciliationNo} 已确认 ${confirmed} 条应付（${amount}）${skipped}，已生成挂账凭证（借 成本/费用，贷 应付账款）；钱未支付${transfer > 0 ? `；其中 ${transfer} 条是资金搬运（会计科目是资金科目，如「库存现金（备用金）」），不挂账、不会产生应付账款，付款时按 借 该科目 / 贷 银行账户 记` : ""}`,
+        warning: `确认已完成，但接口报告资金归属异常（bank_missing）：本次确认只生成挂账凭证、不写收支流水，请刷新核对`,
       };
     }, "批量确认应付失败");
   }
@@ -1039,8 +1242,15 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     { id: "material", header: "原料 / 说明", meta: { width: COLUMN_WIDTH.ledgerMaterial }, accessorFn: (row) => row.sourceType === "other" ? row.sourceNoSnapshot : materialText(row), cell: ({ row }) => row.original.sourceType === "other" ? row.original.sourceNoSnapshot : materialText(row.original) },
     { id: "amount", header: "应付金额", meta: { width: COLUMN_WIDTH.ledgerAmount }, accessorFn: (row) => money(row.amount, row.currency), cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "outstanding", header: "未核销余额", meta: { width: COLUMN_WIDTH.ledgerOutstanding }, accessorFn: (row) => money(row.outstanding_amount, row.currency), cell: ({ row }) => money(row.original.outstanding_amount, row.original.currency) },
+    // 发票类型（2026-11-09 R2-5 / D5）：列表只放这一列（列已经很挤），税率/不含税/税额在详情里。
+    { id: "invoiceType", header: "发票类型", meta: { width: COLUMN_WIDTH.ledgerInvoiceType }, accessorFn: (row) => invoiceTypeLabel(row.invoice_type), cell: ({ row }) => invoiceTypeLabel(row.original.invoice_type) },
     { id: "confirmationDate", header: "确认日期", meta: { width: COLUMN_WIDTH.ledgerConfirmationDate }, accessorFn: (row) => day(row.confirmationDate), cell: ({ row }) => day(row.original.confirmationDate) },
-    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.ledgerStatus }, accessorFn: (row) => financeStatus(row.status, "payable"), cell: ({ row }) => financeStatus(row.original.status, "payable") },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.ledgerStatus }, accessorFn: (row) => financeStatus(row.status, "payable"), cell: ({ row }) => <span>
+      {financeStatus(row.original.status, "payable")}
+      {/* 挂账状态（R3-13）：始终有确定值（旧响应/无挂账概念的历史行按「未挂账」）；reversed 用警示色 ——
+          挂账凭证被红冲后总账上就没有这笔往来的对应分录了，是需要财务处理的状态。 */}
+      <span className={isAccrualReversed(row.original.accrual_status) ? "status-error" : "panel-note"} style={{ display: "block" }} data-testid={`payable-accrual-${row.original.id}`}>{accrualStatusLabel(row.original.accrual_status)}</span>
+    </span> },
     /**
      * 会计科目（2026-10-12 加）：这条应付挂在哪。
      * 优先用后端算好的 `subject_name`（没有手选科目的行也会给出「按来源类型自动归类到哪个科目」，
@@ -1049,6 +1259,8 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
     { id: "subject", header: "会计科目", meta: { width: COLUMN_WIDTH.reconSubject }, accessorFn: (row) => row.subject_name ?? subjectLabel(row.subject, row.subjectId), cell: ({ row }) => row.original.subject_name ?? subjectLabel(row.original.subject, row.original.subjectId) },
     ...auditColumns<PayableEntry>(),
     { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.ledgerActions }, cell: ({ row }) => <div className="action-row">
+      {/* 挂账已红冲才给「按来源重算」：重建一张 posted 挂账凭证（R3-6 / R3-13）。 */}
+      {isAccrualReversed(row.original.accrual_status) && <Button size="sm" variant="secondary" data-testid={`payable-reaccrue-${row.original.id}`} disabled={reaccruing === row.original.id} onClick={() => reaccruePayable(row.original)}>{reaccruing === row.original.id ? "重算中…" : "按来源重算"}</Button>}
       {row.original.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmEntry(row.original)}>确认应付</Button><Button size="sm" variant="ghost" onClick={() => editEntry(row.original)}>编辑</Button></>}
       {row.original.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenEntry(row.original)}>回退</Button>}
       {/* 付款单：草稿与已确认（挂账，钱还没付）都能出单 —— 它是一张打印件，不改任何数据。 */}
@@ -1158,7 +1370,13 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
         { label: "订单号", value: item.orderNo }, { label: "供应商", value: item.supplier?.name ?? item.supplier_name ?? item.supplierId },
         { label: "采购单号", value: item.purchase_order_no }, { label: "原料", value: materialText(item) },
         { label: "数量", value: `${item.quantity}${item.unit_name ? ` ${item.unit_name}` : ""}` },
-        { label: "单价", value: item.unitPrice }, { label: "税率", value: item.taxRate },
+        { label: "单价", value: item.unitPrice },
+        // 发票类型 / 税率 / 不含税 / 税额（2026-11-09 R2-5 / D5）：非专票（普票/无票/未录）
+        // 后端不给 amount_net / tax_amount，界面统一显示「—」。
+        { label: "发票类型", value: invoiceTypeLabel(item.invoice_type) },
+        { label: "税率", value: item.invoice_type === "special" ? taxRateText(item.tax_rate) : "—" },
+        { label: "不含税金额", value: item.amount_net ? money(item.amount_net, item.currency) : "—" },
+        { label: "税额", value: item.tax_amount ? money(item.tax_amount, item.currency) : "—" },
         { label: "应付金额", value: money(item.amount, item.currency) },
         { label: "已付金额", value: money(item.paid_amount, item.currency) }, { label: "未付金额", value: money(item.outstanding_amount, item.currency) },
         { label: "确认日期", value: day(item.confirmationDate) },
@@ -1226,7 +1444,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
       const item = detailData as PayableEntry;
       return <>
         {item.status === "draft" && <><Button onClick={() => confirmEntry(item)}>确认应付</Button><Button variant="secondary" onClick={() => editEntry(item)}>编辑草稿</Button></>}
-        {/* 删除对「草稿 + 已确认」都开放（与行内按钮同一套边界）：已确认的删的时候会冲回那笔支出。 */}
+        {/* 删除对「草稿 + 已确认」都开放（与行内按钮同一套边界）：已确认的删之前会先校验挂账凭证（已过账的需先红冲）。 */}
         {["draft", "confirmed"].includes(item.status) && item.sourceType === "other" && <Button variant="destructive" onClick={() => deleteOtherPayable(item)}>删除（录错了）</Button>}
         {item.status === "confirmed" && <Button variant="secondary" onClick={() => reopenEntry(item)}>回退草稿</Button>}
         {["confirmed", "partially_paid", "paid"].includes(item.status) && <Button variant="destructive" onClick={() => reverseEntry(item)}>冲销应付</Button>}
@@ -1408,9 +1626,10 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
           {blockedOtherEntries.length ? <span className="panel-note" data-testid="payable-batch-delete-blocked">另有 {blockedOtherEntries.length} 条其他应付本次不能删（已对账 / 已付款核销），弹窗里会逐条说明</span> : null}
           {/* 合并付款（2026-10-08，用户确认）：与上面两条**不是一回事** —— 它真的建付款单并过账核销，
               动应付状态、未核销余额与银行流水。只对同一供应商 + 同一币种开放（不同供应商/币种的行会被
-              上面的勾选框锁掉并写明原因，后端 :96 也会拒）。 */}
+              上面的勾选框锁掉并写明原因，后端 :96 也会拒）。
+              2026-11-09 D4：整单结清 —— 弹窗里逐行核销金额只读=该行未核销余额，付款金额=Σ，不可部分付款。 */}
           <Button size="sm" data-testid="payable-merge-pay" disabled={!mergeRows.length} onClick={() => setMergeOpen(true)}>合并付款（{mergeRows.length} 条）</Button>
-          {mergeRows.length ? <span className="panel-note" data-testid="payable-merge-hint">合并付款：{mergeRows[0].supplierName} / {mergeRows[0].currency}，未核销余额合计 {settleOutstandingTotal(mergeRows)}（同一供应商 + 同一币种才能合并；金额可在弹窗里逐行改小）</span> : null}
+          {mergeRows.length ? <span className="panel-note" data-testid="payable-merge-hint">合并付款：{mergeRows[0].supplierName} / {mergeRows[0].currency}，未核销余额合计 {settleOutstandingTotal(mergeRows)}（同一供应商 + 同一币种才能合并；整单结清：每条按未核销余额整笔核销，不可部分付款）</span> : null}
         </div>
         {/* 包一层带 testid 的容器（与「待创建对账」「应付对账」两张表对称）：合并之后这一页同时有三张表，
             测试与脚本要能按表定位，而不是在全页范围内碰运气。 */}

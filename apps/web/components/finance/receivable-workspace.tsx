@@ -5,28 +5,33 @@
 // 三个子栏目按业务顺序排列，对应「先有出库、再对账、最后确认应收」：
 //   1. 成品出库条目：成品出库过账自动生成的应收来源（一个订单分批出库 = 多条），草稿可编辑/确认/取消；
 //   2. 应收对账：按客户 + 期间创建对账单（自动汇总该期间的出库条目为明细），对平后可一键确认一批；
-//   3. 确认应收：应收台账，**勾选多条一次确认**（2026-09-24 起确认 = **挂账**：借应收账款/贷收入，钱到账再登记收款）。
+//   3. 确认应收：应收台账，**勾选多条一次确认**（2026-09-24 起确认 = **挂账**：借应收账款/贷收入，钱未到账；
+//      收款走「合并收款」整单结清 —— 2026-11-09 D4：核销金额 = 该应收未收余额，收款金额 = Σ核销金额）。
 // 双击任意行都会弹出居中详情页（展示全部字段与可用操作），详情数据来自对应的 :id 接口。
 //
-// 2026-09-16（用户要求「应收侧也改成勾选 + 批量确认」）：确认应收本身就会记一笔收入，
-// 而「登记收款 → 过账核销」会**再记一笔**收入 —— 同一笔货款进两次账户。所以收款子表与
-// 行内「登记收款」下线，确认这边只保留「勾选 + 批量确认」（与应付侧完全对称）。
+// 2026-09-16（用户要求「应收侧也改成勾选 + 批量确认」）：当时的理由「确认应收本身就会记一笔收入」
+// **已被 2026-09-24 挂账口径取代**（确认只挂账、钱没到；收款另走「合并收款」，见下方）。
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../layout/app-shell";
 import { DataTable } from "../data/data-table";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
+import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { Input } from "../ui/input";
+import { SearchableSelect } from "../ui/searchable-select";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { Textarea } from "../ui/textarea";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
 import { downloadFile } from "../../lib/download";
+import { formatBeijingDate } from "../../lib/audit-time";
 import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { RECEIVABLE_TABS, RECEIVABLE_TAB_ALIASES, resolveFinanceTab, type ReceivableTabParam } from "../../lib/finance-sections";
 import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, toSubjectOptions, type AccountingSubject } from "../../lib/accounting-subjects";
+import { accrualStatusLabel, isAccrualReversed, type AccrualReaccrueResult } from "../../lib/accrual-status";
 import { paymentNatureOptions } from "../../lib/payment-natures";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { FinanceTabs } from "./finance-tabs";
@@ -35,7 +40,7 @@ import { RecordDetailDialog, money, type DetailField } from "./record-detail-dia
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { OrderNoWithOrphan } from "../data/orphan-badge";
 import { financeStatus } from "./finance-status";
-import { financeSlipDraftBody, financeSlipDraftPath, type FinanceSlipDraft } from "../../lib/finance-slip";
+import { financeSlipDraftBody, financeSlipDraftPath, formatSlipAmount, parseSlipAmount, type FinanceSlipDraft } from "../../lib/finance-slip";
 
 /**
  * 本页四张表的列宽（百分比）。
@@ -146,6 +151,11 @@ type ReceivableSource = AuditRow & {
   customer_name: string | null; customer_code: string | null; outbound_no: string | null;
   product_name: string | null; product_specification: string | null;
   allocated_amount: string; outstanding_amount: string;
+  /**
+   * 挂账状态（2026-11-09 R3-6 / R3-13）：`posted` 已挂账 / `draft` 草稿挂账 / `reversed` 挂账已红冲 / `none` 未挂账。
+   * **可选**：旧响应没有这个字段，按 `none` 处理（见 `lib/accrual-status.ts`）；`reversed` 才是需要处理的异常。
+   */
+  accrual_status?: string | null;
   reconciliation?: ReconciliationRef | null;
   customer?: CustomerRef | null;
   outbound?: { outboundNo: string; status: string; productNameSnapshot: string | null; productSpecificationSnapshot: string | null; signedAt: string | null; shipmentDate: string | null } | null;
@@ -158,7 +168,7 @@ type Reconciliation = AuditRow & {
   adjustmentAmountSnapshot: string; systemBalance: string; externalBalance: string; difference: string;
   currency: string; status: string; resolutionRemark: string | null; remark: string | null; createdAt: string;
   bankId?: string | null; bank?: BankLink;
-  /** 建单/确认时人工选定的会计科目（确认应收时用它，除非确认接口再覆盖）。 */
+  /** 建单/确认时人工选定的会计科目（挂账凭证贷方收入科目；确认接口仍接受它作为覆盖值）。 */
   subjectId?: string | null;
   /** 列表/详情接口内嵌的会计科目对象（`{ id, category, name }`）。 */
   subject?: SubjectLink | null;
@@ -176,7 +186,8 @@ type Reconciliation = AuditRow & {
 type DialogState = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 /**
  * 「确认应收」三个入口（逐条 / 勾选批量 / 按对账单）共用的响应字段（见 submitConfirm）。
- * 逐条与按对账单回金额，批量回条数与按币种合计；`bank_missing` 表示钱记了但没落到任何银行账户。
+ * 逐条与按对账单回金额，批量回条数与按币种合计。`bank_missing` 是**旧口径**字段（钱记了但没落到银行）：
+ * 2026-09-24 起确认 = **挂账**、不动现金，后端对该字段恒返回 false，界面只保留中性兜底。
  */
 type ConfirmResult = {
   bank_missing?: boolean; amount?: string; currency?: string; count?: number;
@@ -184,6 +195,55 @@ type ConfirmResult = {
   /** 勾选批量确认的按币种合计（跨币种不相加）。 */
   amounts?: Array<{ currency: string; amount: string }>;
 };
+/**
+ * 三个确认弹窗共用的只读说明（`ActionField.type: "info"`）。
+ *
+ * 确认 = **挂账**：只生成「借 应收账款 / 贷 收入」的凭证，钱没到账；收款是另一条路（「合并收款」）。
+ * 不写清楚，很容易把确认当成收款。
+ */
+const CONFIRM_ACCRUAL_INFO = "确认后生成挂账凭证：借 应收账款、贷 收入；钱未到账，收款请用「合并收款」";
+
+/** 收款单的资源路径（`api-client` 会自己补 `/api/v1`），建单与过账都用它拼。 */
+const CUSTOMER_PAYMENTS_PATH = "/finance/customer-payments";
+/** 可核销的应收状态：与后端 `customer-payment.service.ts` 的 `["confirmed","partially_paid"]` 一字不差。 */
+const SETTLEABLE_STATUSES = ["confirmed", "partially_paid"] as const;
+/**
+ * 一条应收能不能进「合并收款」：状态已确认 / 部分收款，且**未收余额 > 0**。
+ *
+ * 余额用 `parseSlipAmount` 判定而不是 `Number(...) > 0`：它同时拦掉 "0.0000"、负数、空值与
+ * 超过 4 位小数的脏数据（与后端 DECIMAL(18,4) 同一套口径）。余额为 0（已收清）的条目勾了也只会 422。
+ */
+const settleableSource = (source: Pick<ReceivableSource, "status" | "outstanding_amount">): boolean =>
+  (SETTLEABLE_STATUSES as readonly string[]).includes(source.status) && parseSlipAmount(source.outstanding_amount ?? "") !== null;
+/** 一条应收在「合并收款」里需要的全部字段（都来自台账列表接口，不必再逐条查详情）。 */
+type MergeReceivable = {
+  id: string; sourceNo: string; orderNo: string | null;
+  customerId: string; customerName: string; currency: string; amount: string; outstanding: string;
+};
+const mergeReceivableOf = (source: ReceivableSource): MergeReceivable => ({
+  id: source.id, sourceNo: source.sourceNo, orderNo: source.orderNo,
+  customerId: source.customerId, customerName: source.customer_name ?? source.customer_code ?? source.customerId,
+  currency: source.currency, amount: source.amount, outstanding: source.outstanding_amount,
+});
+/** 合并收款的锚点：这批的客户 + 币种（一张收款单只对一个客户、一个币种，后端同样会拒）。 */
+type ReceiptAnchor = { customerId: string; customerName: string; currency: string };
+const receiptAnchorOf = (rows: readonly MergeReceivable[]): ReceiptAnchor | null =>
+  rows[0] ? { customerId: rows[0].customerId, customerName: rows[0].customerName, currency: rows[0].currency } : null;
+/** 为什么某条应收不能跟着已选的那批一起收款（返回全部原因，界面按条显示）。 */
+const receiptLockReasons = (anchor: ReceiptAnchor, row: Pick<MergeReceivable, "customerId" | "currency">): string[] => {
+  const reasons: string[] = [];
+  if (row.currency !== anchor.currency) reasons.push(`不能与已选的 ${anchor.currency} 应收合并在一次收款里（金额不跨币种合计）`);
+  if (row.customerId !== anchor.customerId) reasons.push(`不能与「${anchor.customerName}」的应收合并在一次收款里（一张收款单只对一个客户）`);
+  return reasons;
+};
+/** 核销合计（整数分求和，唯一真源；非法行按 0 计，合计只用于显示与提交前校验）。 */
+const receiptAllocationTotal = (rows: readonly MergeReceivable[]): string => {
+  let units = 0n;
+  for (const row of rows) units += parseSlipAmount(row.outstanding) ?? 0n;
+  return formatSlipAmount(units);
+};
+/** 幂等键：一次弹窗**一个**（与付款/工资那些批量入口同一约定），重试命中同一张草稿。 */
+const newReceiptIdempotencyKey = () => `web-customer-payment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 type DetailKind = "source" | "reconciliation";
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
@@ -201,6 +261,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  /** 「按来源重算」正在提交的应收 id（按钮 loading/禁用防双击）。 */
+  const [reaccruing, setReaccruing] = useState("");
   const [detail, setDetail] = useState<{ kind: DetailKind; id: string } | null>(null);
   const [detailData, setDetailData] = useState<unknown>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -232,6 +294,11 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
    * 收款单**不落库**（它是一张打印件）。
    */
   const [slip, setSlip] = useState<{ open: boolean; loading: boolean; error: string; drafts: FinanceSlipDraft[] | null; pendingIds: string[] }>({ open: false, loading: false, error: "", drafts: null, pendingIds: [] });
+  /**
+   * 「合并收款」弹窗（真的建收款单 + 过账逐条核销，与上面那张打印件队列不是一回事）。
+   * 2026-11-09 D4：整单结清 —— 每条核销金额 = 该应收未收余额（只读），收款金额 = Σ核销金额。
+   */
+  const [mergeOpen, setMergeOpen] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -251,9 +318,9 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
         apiGet<AccountingSubject[]>(`${ACCOUNTING_SUBJECTS_PATH}?include_inactive=true`).catch(() => ({ data: [] as AccountingSubject[], meta: {} })),
       ]);
       setSources(s.data); setReconciliations(r.data); setCustomers(c.data); setOrders(o.data); setBanks(b.data); setSubjects(i.data);
-      // 勾选状态跟着数据走：已被确认/取消的条目自动退出勾选（界面上再也点不到它们，
-      // 留着 id 会让「批量确认 N 条」里的 N 与实际能确认的条数对不上）。
-      setSelected((ids) => ids.filter((id) => s.data.some((source) => source.id === id && source.status === "draft")));
+      // 勾选状态跟着数据走：已经不能确认、也不能收款（已收清/已取消）的条目自动退出勾选
+      // （界面上再也点不到它们，留着 id 会让「批量确认 N 条 / 合并收款 N 条」里的 N 与实际能操作的条数对不上）。
+      setSelected((ids) => ids.filter((id) => s.data.some((source) => source.id === id && (source.status === "draft" || settleableSource(source)))));
     } catch (cause) {
       setError(messageOf(cause, "应收数据加载失败"));
     } finally {
@@ -279,12 +346,11 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   /**
    * 「确认应收」三个入口（逐条 / 勾选批量 / 按对账单）共用的提交与提示。
    *
-   * 2026-09-24 起这三条路径是**挂账**（借应收账款 / 贷收入），不是「确认即记账」：
-   * 钱还没到，所以这里不能再报「金额已记入所选银行账户」——那会让财务以为银行里已经多了这笔钱。
-   * 收到钱时在「登记收款」里记现金（借银行存款 / 贷应收账款）。
-   * （历史数据仍然按老口径：那些应收没有挂账凭证，收款时按老口径贷收入 —— 见后端 `accruedSourceIds`。）
-   *
-   * 响应里的 `bank_missing` 现在恒为 false（挂账不动现金），保留这条判断只为兼容老服务端。
+   * 2026-09-24 起三条路径都是**挂账**（借 应收账款 / 贷 收入）：钱还没到，所以这里只能报
+   * 「已生成挂账凭证、钱未到账」，**不能**再报「已记入收支流水」或「已记到所选银行账户」——
+   * 确认这一步根本不动银行。收款走「合并收款」（逐条全额核销）。
+   * `bank_missing` 是旧口径的字段（后端现已恒为 false）；保留分支只是给历史/异常响应一个中性兜底，
+   * 不再当作主路径，更不能拿它提示用户「钱进了流水但没进账户」。
    *
    * 失败时把错误**抛回** ActionDialog（它靠 onSubmit 是否 reject 决定关不关弹窗），
    * 与应付页 submitAction 同一理由：失败不能静默关闭。
@@ -293,7 +359,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     try {
       const result = await apiPost<ConfirmResult>(path, body);
       const text = describe(result.data);
-      if (result.data.bank_missing) notifyError(text.warning, "确认完成，但未入账银行");
+      if (result.data.bank_missing) notifyError(text.warning, "确认完成，请核对资金归属");
       else notifySuccess(text.success);
       setDialog(null);
       setDetail(null);
@@ -423,27 +489,29 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `应收回退草稿：${item.sourceNo}`, fields: [{ name: "reason", label: "回退原因", type: "textarea", required: true }], submit: (v) => void action(`/finance/receivable-sources/${item.id}/reopen`, { reason: v.reason }, "应收已回退草稿") });
   }
   /**
-   * 逐条确认应收 —— 与「勾选批量确认」「一键确认应收」（按对账单）是同一件事的三条入口，都**挂账**（借应收账款 / 贷收入）。
+   * 逐条确认应收 —— 与「勾选批量确认」「一键确认应收」（按对账单）是同一件事的三条入口，都**挂账**
+   * （借 应收账款 / 贷 收入），钱未到账。
    *
-   * 应收来源本身不挂银行账户（它来自出库单），所以这里必须问清「钱进哪个账户」：
-   * 不指定就只能在收支流水里留一笔无归属的钱（后端回 bank_missing，上面会警告）。
+   * 确认这一步**不动银行**（后端也没把 bank_id 用去记账），所以弹窗只问「会计科目」（挂账贷方收入科目）
+   * 与「款项性质」。到账银行在「合并收款」收款时才选。
    */
   function confirmSource(item: ReceivableSource) {
     setDialog({ title: `确认应收：${item.sourceNo}`, fields: [
       { name: "confirm", label: `确认应收 ${item.sourceNo}：${item.amount} ${item.currency}`, type: "info" as const },
-      bankField("入账银行"),
+      { name: "info", label: CONFIRM_ACCRUAL_INFO, type: "info" as const },
       subjectEditField("会计科目"),
       paymentNatureField(),
-    ], submit: (v) => submitConfirm(`/finance/receivable-sources/${item.id}/confirm`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => ({
-      success: `应收 ${item.sourceNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}）并挂账（借应收账款 / 贷收入）；收到钱后在「登记收款」里记现金`,
-      warning: `未指定入账银行：${data.amount ?? item.amount} ${data.currency ?? item.currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
+    ], submit: (v) => submitConfirm(`/finance/receivable-sources/${item.id}/confirm`, { subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => ({
+      success: `应收 ${item.sourceNo} 已确认（${data.amount ?? item.amount} ${data.currency ?? item.currency}），已生成挂账凭证（借 应收账款，贷 收入）；钱未到账`,
+      warning: `确认已完成，但接口报告资金归属异常（bank_missing）：本次确认只生成挂账凭证、不写收支流水，请刷新核对`,
     }), "确认应收失败") });
   }
   /**
    * 勾选批量确认 —— 用户要求「应收侧也改成勾选 + 批量确认」（与应付侧完全对称）。
    *
-   * 整批共用一个入账银行与一个会计科目（后端仍是**每条应收写一条流水**，所以每条都追得回来源编号）；
-   * 合计**按币种分组**显示，跨币种不相加。勾选里混进已被别人确认掉的条目时，后端会跳过并回报条数。
+   * 整批共用**一个会计科目**（挂账贷方收入科目；后端逐条挂账，每条应收各生成一张凭证）；
+   * 合计**按币种分组**显示，跨币种不相加。这里不问银行卡 —— 确认不动钱，收款在「合并收款」里选账户。
+   * 勾选里混进已被别人确认掉的条目时，后端会跳过并回报条数。
    */
   function batchConfirm(ids: string[] = selectedDrafts.map((draft) => draft.id)) {
     const drafts = sources.filter((source) => source.status === "draft" && ids.includes(source.id));
@@ -451,15 +519,15 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     for (const draft of drafts) totals.set(draft.currency, (totals.get(draft.currency) ?? 0) + Number(draft.amount));
     setDialog({ title: `批量确认应收（${drafts.length} 条）`, fields: [
       { name: "confirm", label: `确认 ${drafts.length} 条草稿应收（合计 ${[...totals.entries()].map(([currency, amount]) => `${amount.toFixed(4)} ${currency}`).join("、")}）`, type: "info" as const },
-      bankField("入账银行"),
+      { name: "info", label: CONFIRM_ACCRUAL_INFO, type: "info" as const },
       subjectEditField("会计科目"),
       paymentNatureField(),
-    ], submit: (v) => submitConfirm("/finance/receivable-sources/batch-confirm", { ids: drafts.map((draft) => draft.id), bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => {
+    ], submit: (v) => submitConfirm("/finance/receivable-sources/batch-confirm", { ids: drafts.map((draft) => draft.id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => {
       const amount = data.amounts?.length ? data.amounts.map((item) => `${item.amount} ${item.currency}`).join("、") : "-";
       const skipped = data.skipped_count ? `；跳过 ${data.skipped_count} 条` : "";
       return {
-        success: `已确认 ${data.confirmed_count ?? drafts.length} 条应收（${amount}）${skipped}，并逐条挂账（借应收账款 / 贷收入）；收到钱后在「登记收款」里记现金`,
-        warning: `未指定入账银行：${amount} 已记入收支流水，但不会体现在任何银行账户余额里`,
+        success: `已确认 ${data.confirmed_count ?? drafts.length} 条应收（${amount}）${skipped}，已生成挂账凭证（借 应收账款，贷 收入）；钱未到账`,
+        warning: `确认已完成，但接口报告资金归属异常（bank_missing）：本次确认只生成挂账凭证、不写收支流水，请刷新核对`,
       };
     }, "批量确认应收失败") });
   }
@@ -518,35 +586,72 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     setDialog({ title: `处理对账差异：${item.reconciliationNo}`, fields: [{ name: "remark", label: "处理说明", type: "textarea", required: true, defaultValue: "已核对" }], submit: (v) => void action(`/finance/reconciliations/${item.id}/resolve`, { resolution_remark: v.remark }, "对账差异已处理") });
   }
   /**
-   * 确认应收 —— 先问清入账信息。
+   * 确认应收（按对账单）—— 一键确认范围内的草稿应收，同样是**挂账**（借 应收账款 / 贷 收入），钱未到账。
    *
-   * 这个接口不只是改状态：确认的金额会作为一笔收入写进收支流水，并落到对账单的银行账户上。
-   * 历史对账单（尤其是这次改动之前建的）常常既没有银行也没有会计科目，直接打过去就是「钱记了、
-   * 但哪个账户都没有」，事后对账根本查不出这笔钱去哪了；所以把「记到哪个银行、归哪个会计科目」摆到台面上。
+   * 所以弹窗只问「会计科目」与「款项性质」；到账银行在「合并收款」里选。
+   * 历史对账单常常没填科目，必须让它能补上。
    */
   function confirmReconciliation(item: Reconciliation) {
     const count = item.details?.draft_count ?? item.flow?.draft_count ?? 0;
     const amount = item.details?.draft_amount ?? item.flow?.draft_amount;
     setDialog({ title: `确认应收：${item.reconciliationNo}`, fields: [
       { name: "confirm", label: `确认 ${count} 条草稿应收${amount ? `（合计 ${amount} ${item.currency}）` : ""}`, type: "info" as const },
-      bankField("入账银行", item.bankId),
+      { name: "info", label: CONFIRM_ACCRUAL_INFO, type: "info" as const },
       subjectEditField("会计科目", item.subjectId),
       paymentNatureField(),
     ], submit: (v) => submitConfirmReconciliation(item, v) });
   }
-  /**
-   * 确认应收的提交：与逐条 / 批量确认共用 submitConfirm（三条路径都会记账，都要处理 bank_missing）。
-   */
+  /** 确认应收的提交：与逐条 / 批量确认共用 submitConfirm（三条路径都是挂账；bank_missing 只做中性兜底）。 */
   async function submitConfirmReconciliation(item: Reconciliation, v: Record<string, string>) {
-    return submitConfirm(`/finance/reconciliations/${item.id}/confirm-receivables`, { bank_id: bankValue(v.bank_id), subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => {
+    return submitConfirm(`/finance/reconciliations/${item.id}/confirm-receivables`, { subject_id: subjectValue(v.subject_id), payment_nature: paymentNatureValue(v.payment_nature) }, (data) => {
       const count = data.confirmed_count ?? data.count ?? 0;
       const amount = data.confirmed_amount ?? data.amount ?? "-";
       const currency = data.currency ?? item.currency;
       return {
-        success: `${item.reconciliationNo} 已确认 ${count} 条应收（${amount} ${currency}），并逐条挂账（借应收账款 / 贷收入）；收到钱后在「登记收款」里记现金`,
-        warning: `未指定入账银行：${amount} ${currency} 已记入收支流水，但不会体现在任何银行账户余额里`,
+        success: `${item.reconciliationNo} 已确认 ${count} 条应收（${amount} ${currency}），已生成挂账凭证（借 应收账款，贷 收入）；钱未到账`,
+        warning: `确认已完成，但接口报告资金归属异常（bank_missing）：本次确认只生成挂账凭证、不写收支流水，请刷新核对`,
       };
     }, "批量确认应收失败");
+  }
+
+  /**
+   * 按来源重算挂账（2026-11-09 R3-6 / R3-13）：挂账凭证被**红冲**后，用这条应收现在的数据
+   * 重建一张 `posted` 挂账凭证（借 应收账款、贷 收入；钱未到账）。
+   *
+   * 只有 `accrual_status === "reversed"` 的行给入口；原因可选、只进审计。
+   * 后端 422（`ACCRUAL_ALREADY_POSTED` / `RECEIVABLE_NOT_RECALCULABLE`）原样展示：
+   * 前端不重写「能不能重算」的判断，失败 throw 回弹窗并 toast。
+   * 成功提示带新凭证号；`replayed=true` 表示复用已有有效凭证、这次没有新生成。
+   */
+  function reaccrueReceivable(source: ReceivableSource) {
+    setDialog({
+      title: `按来源重算挂账：${source.sourceNo}`,
+      fields: [
+        { name: "info", label: "挂账凭证已红冲：将按这条应收现在的金额 / 科目重建一张已过账的挂账凭证（借 应收账款、贷 收入）；钱未到账。", type: "info" as const },
+        { name: "reason", label: "重算原因（可选，记入审计）", type: "textarea" },
+      ],
+      submit: async (values) => {
+        setReaccruing(source.id);
+        try {
+          const reason = values.reason?.trim();
+          const result = await apiPost<AccrualReaccrueResult>(`/finance/receivables/${source.id}/reaccrue`, reason ? { reason } : {});
+          const data = result.data;
+          notifySuccess(data.replayed
+            ? `已有有效挂账凭证 ${data.voucherNo}，未重复生成`
+            : `已按来源重算挂账：${data.voucherNo}`);
+          setDialog(null);
+          setDetail(null);
+          await load();
+        } catch (cause) {
+          // 422 的 code/message 原样显示（不翻译成前端自己的判断），并留在弹窗里。
+          const message = messageOf(cause, "按来源重算失败");
+          notifyError(message);
+          throw new Error(message);
+        } finally {
+          setReaccruing("");
+        }
+      },
+    });
   }
 
   // ---------------------------------------------------------------- 待创建对账
@@ -593,19 +698,36 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     [scopedSources, payment],
   );
   // 应收来源行的操作：成品出库条目与确认应收两张表共用同一套动作，避免两边行为漂移。
-  // 没有「登记收款」：确认应收已经把钱记进账户，再登记一次收款就是把同一笔款进两次。
+  // 行内不放「登记收款」：收款是**整单结清**的批量动作（勾选 → 「合并收款」，同一客户 + 同一币种），
+  // 且它能跨多条应收合并到一张收款单里；逐条按钮会诱导出一条应收一张单。
   // `withSlip`：只有「确认应收」那张台账给「收款单」入口（与应付侧对称 —— 出库条目那张表是
   // 来源视图，在这里出单容易对着还没确认的条目开票）。
-  const sourceActions = (item: ReceivableSource, withSlip = false) => <div className="action-row">
+  // `withReaccrue`：同理只给台账 —— 挂账已红冲的行才出现「按来源重算」（R3-13）。
+  const sourceActions = (item: ReceivableSource, withSlip = false, withReaccrue = false) => <div className="action-row">
+    {withReaccrue && isAccrualReversed(item.accrual_status) && <Button size="sm" variant="secondary" data-testid={`receivable-reaccrue-${item.id}`} disabled={reaccruing === item.id} onClick={() => reaccrueReceivable(item)}>{reaccruing === item.id ? "重算中…" : "按来源重算"}</Button>}
     {item.status === "draft" && <><Button size="sm" variant="secondary" onClick={() => confirmSource(item)}>确认应收</Button><Button size="sm" variant="ghost" onClick={() => editSource(item)}>编辑</Button><Button size="sm" variant="ghost" onClick={() => cancelSource(item)}>取消</Button></>}
     {item.status === "confirmed" && <Button size="sm" variant="ghost" onClick={() => reopenSource(item)}>回退草稿</Button>}
-    {/* 收款单：草稿（准备收款）与已确认（钱已经进来）都能出单 —— 它是一张打印件，不改任何数据。 */}
+    {/* 收款单：草稿（钱还没到）与已确认（挂账、钱未到账）都能出单 —— 它是一张打印件，不改任何数据；
+        真正到账走「合并收款」（真的建收款单 + 过账核销）。 */}
     {withSlip && <Button size="sm" variant="ghost" data-testid={`receivable-slip-${item.id}`} onClick={() => void openReceiptSlip([item.id])}>收款单</Button>}
   </div>;
 
-  // 勾选只对草稿开放：已确认/取消的条目没有「再确认一次」这回事。
-  const selectableIds = useMemo(() => ledgerSources.filter((item) => item.status === "draft").map((item) => item.id), [ledgerSources]);
+  // 勾选对**两条流程**开放（与应付侧对称，2026-11-09）：
+  //   - 草稿行 → 「批量确认」（挂账）；
+  //   - 已确认 / 部分收款、且未收余额 > 0 的行 → 「合并收款」（真的建收款单 + 过账核销）。
+  // 已收清（余额 0）与已取消的行没有可做的事，勾选框都不给。
+  const selectableIds = useMemo(() => ledgerSources.filter((item) => item.status === "draft" || settleableSource(item)).map((item) => item.id), [ledgerSources]);
   const selectedDrafts = useMemo(() => ledgerSources.filter((item) => item.status === "draft" && selected.includes(item.id)), [ledgerSources, selected]);
+  const selectedSettleable = useMemo(() => ledgerSources.filter((item) => settleableSource(item) && selected.includes(item.id)), [ledgerSources, selected]);
+  const mergeRows = useMemo(() => selectedSettleable.map(mergeReceivableOf), [selectedSettleable]);
+  /**
+   * 「合并收款」这一批的锚点（第一条被选中的可收款应收）：它决定整批的客户与币种 ——
+   * 一张收款单只能对一个客户、一个币种（后端 `customer-payment.service.ts` 会以
+   * ALLOCATION_REFERENCE_MISMATCH 拒绝混在一起的），所以其余不同客户/币种的行在界面上直接
+   * 锁掉并写明原因，而不是让她勾完再吃一个 422。
+   */
+  const receiptAnchor = useMemo(() => receiptAnchorOf(mergeRows), [mergeRows]);
+  const receiptLock = (source: ReceivableSource) => receiptAnchor ? receiptLockReasons(receiptAnchor, { customerId: source.customerId, currency: source.currency }) : [];
   const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.includes(id));
   const toggleOne = (id: string) => setSelected((ids) => ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]);
   const toggleAll = () => setSelected((ids) => allSelected ? ids.filter((id) => !selectableIds.includes(id)) : [...new Set([...ids, ...selectableIds])]);
@@ -613,10 +735,18 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     id: "select",
     // 勾选框列：固定布局下不给宽度会跟别的列一样宽（列多时反而挤掉金额），4% 足够放一个复选框。
     meta: { width: COLUMN_WIDTH.selection },
-    header: () => <input type="checkbox" aria-label="全选待确认应收" data-testid="receivable-select-all" checked={allSelected} disabled={!selectableIds.length} onChange={toggleAll} />,
-    cell: ({ row }) => row.original.status === "draft"
-      ? <input type="checkbox" aria-label={`选择 ${row.original.sourceNo}`} data-testid={`receivable-select-${row.original.id}`} checked={selected.includes(row.original.id)} onChange={() => toggleOne(row.original.id)} />
-      : null,
+    // 表头全选覆盖「可确认的草稿 + 可收款的已确认应收」两类（见 selectableIds 的注释）。
+    header: () => <input type="checkbox" aria-label="全选可确认/可收款应收" data-testid="receivable-select-all" checked={allSelected} disabled={!selectableIds.length} onChange={toggleAll} />,
+    cell: ({ row }) => {
+      const settleable = settleableSource(row.original);
+      if (row.original.status !== "draft" && !settleable) return null;
+      // 锁只对可收款的行生效；锁住的原因就写在勾选框旁边（禁用的控件点不动，原因不能只在 title 里）。
+      const locks = settleable ? receiptLock(row.original) : [];
+      return <>
+        <input type="checkbox" aria-label={`选择 ${row.original.sourceNo}`} data-testid={`receivable-select-${row.original.id}`} title={locks.join("；") || undefined} disabled={locks.length > 0} checked={selected.includes(row.original.id)} onChange={() => toggleOne(row.original.id)} />
+        {locks.length ? <span className="panel-note status-error" data-testid={`receivable-select-lock-${row.original.id}`}>{locks.join("；")}</span> : null}
+      </>;
+    },
   };
 
   const sourceColumns: ColumnDef<ReceivableSource>[] = [
@@ -633,9 +763,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.sourceActions }, cell: ({ row }) => sourceActions(row.original) },
   ];
   // 「确认应收」用台账视角的列：带勾选框、到期日与状态。
-  // 不再列「已收 / 未收」：这两列来自**收款单核销**，而本轮已经把「登记收款 → 过账核销」从确认流程去掉
-  // （确认应收本身就把钱记进了账户）。留着只会让每条已确认的应收显示「未收 = 全额」，与事实相反。
-  // 核销明细仍在双击后的详情里。
+  // 「已收 / 未收」两列不在台账上展开（列已经很满）；未收余额是「合并收款」核销金额的唯一依据，
+  // 在那张弹窗里逐条只读显示，核销明细仍在双击后的详情里。
   const ledgerColumns: ColumnDef<ReceivableSource>[] = [
     selectionColumn,
     { accessorKey: "sourceNo", header: "应收来源", meta: { width: COLUMN_WIDTH.ledgerSourceNo } },
@@ -643,9 +772,14 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "customer", header: "客户", meta: { width: COLUMN_WIDTH.ledgerCustomer }, cell: ({ row }) => row.original.customer_name ?? row.original.customer_code ?? "-" },
     { id: "amount", header: "应收金额", meta: { width: COLUMN_WIDTH.ledgerAmount }, cell: ({ row }) => money(row.original.amount, row.original.currency) },
     { id: "due", header: "到期日", meta: { width: COLUMN_WIDTH.ledgerDue }, cell: ({ row }) => day(row.original.dueDate) },
-    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.ledgerStatus }, cell: ({ row }) => financeStatus(row.original.status, "receivable") },
+    { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.ledgerStatus }, cell: ({ row }) => <span>
+      {financeStatus(row.original.status, "receivable")}
+      {/* 挂账状态（R3-13）：始终有确定值（旧响应/无挂账概念的历史行按「未挂账」）；reversed 用警示色 ——
+          挂账凭证被红冲后总账上就没有这笔往来的对应分录了，是需要财务处理的状态。 */}
+      <span className={isAccrualReversed(row.original.accrual_status) ? "status-error" : "panel-note"} style={{ display: "block" }} data-testid={`receivable-accrual-${row.original.id}`}>{accrualStatusLabel(row.original.accrual_status)}</span>
+    </span> },
     ...auditColumns<ReceivableSource>(),
-    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.ledgerActions }, cell: ({ row }) => sourceActions(row.original, true) },
+    { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.ledgerActions }, cell: ({ row }) => sourceActions(row.original, true, true) },
   ];
   const reconciliationColumns: ColumnDef<Reconciliation>[] = [
     { accessorKey: "reconciliationNo", header: "对账单号", meta: { width: COLUMN_WIDTH.reconciliationNo } },
@@ -662,7 +796,7 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
     { id: "external", header: "外部余额", meta: { width: COLUMN_WIDTH.external }, cell: ({ row }) => money(row.original.externalBalance, row.original.currency) },
     { id: "difference", header: "差异", meta: { width: COLUMN_WIDTH.difference }, cell: ({ row }) => money(row.original.difference, row.original.currency) },
     { id: "bank", header: "回款银行", meta: { width: COLUMN_WIDTH.bank }, cell: ({ row }) => row.original.bank ? `${row.original.bank.bankName}（${row.original.bank.accountNumber}）` : "-" },
-    // 建单时人工选的会计科目（确认应收记流水时用它）；接口没内嵌 `subject` 时只拿到 id，标签在前端用科目表还原。
+    // 建单时人工选的会计科目（挂账凭证贷方收入科目）；接口没内嵌 `subject` 时只拿到 id，标签在前端用科目表还原。
     { id: "subject", header: "会计科目", meta: { width: COLUMN_WIDTH.subject }, cell: ({ row }) => subjectLabel(row.original.subject, row.original.subjectId) },
     { id: "status", header: "状态", meta: { width: COLUMN_WIDTH.reconciliationStatus }, cell: ({ row }) => financeStatus(row.original.status, "reconciliation") },
     ...auditColumns<Reconciliation>(),
@@ -773,7 +907,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       const item = detailData as Reconciliation;
       return <>
         {item.status === "difference" && <Button onClick={() => resolveReconciliation(item)}>处理差异</Button>}
-        {/* 与列表同一口径：范围内确实还有草稿才给一键确认；点开的是「确认应收」弹窗（问清入账银行与会计科目） */}
+        {/* 与列表同一口径：范围内确实还有草稿才给一键确认；点开的是「确认应收」弹窗（只问会计科目与款项性质，
+            确认只挂账、不写现金） */}
         {item.details?.can_confirm_receivables ? <Button onClick={() => confirmReconciliation(item)}>一键确认应收（{item.details.draft_count} 条）</Button> : null}
       </>;
     }
@@ -820,6 +955,16 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
       /* 「收束收款」的另一半：队列里还有没确认的条目 → 关掉队列、按同一批 id 打开确认弹窗。 */
       pendingCount={slip.pendingIds.length}
       onConfirmPending={() => { const ids = slip.pendingIds; setSlip((current) => ({ ...current, open: false })); batchConfirm(ids); }}
+    />
+    {/* 合并收款：真的建收款单并过账核销（与上面那张**打印件**队列不是一回事）。
+        核销金额=各条未收余额（只读），收款金额=Σ核销金额；页面只负责刷新台账。 */}
+    <ReceivableMergeReceiptDialog
+      open={mergeOpen}
+      rows={mergeRows}
+      banks={bankOptions}
+      subjects={subjectOptions}
+      onOpenChange={setMergeOpen}
+      onSettled={async () => { await load(); }}
     />
     <RecordDetailDialog
       open={Boolean(detail)}
@@ -898,14 +1043,250 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
           <Button variant="secondary" data-testid="receivable-export" disabled={exporting} onClick={() => void exportLedger()}>{exporting ? "导出中…" : "导出 Excel"}</Button>
         </div>
         <div style={{ marginBottom: "0.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }} data-testid="receivable-batch-bar">
-          <span className="panel-note" data-testid="receivable-selected-count">已选 {selectedDrafts.length} 条</span>
+          <span className="panel-note" data-testid="receivable-selected-count">已选 {selected.length} 条（可确认 {selectedDrafts.length} / 可收款 {mergeRows.length}）</span>
           {/* 导出收款单（用户 2026-09-20）：勾选几条 → 一队收款单（按客户 + 币种拆张，一行一条应收）。
               走预填接口，不改任何数据；金额、分录行、收款备注都在弹窗里现改。与应付侧的付款单完全对称。 */}
           <Button size="sm" variant="secondary" data-testid="receivable-slip-batch" disabled={!selectedDrafts.length} onClick={() => void openReceiptSlip(selectedDrafts.map((draft) => draft.id))}>集中收款单（{selectedDrafts.length} 条）</Button>
           <Button size="sm" data-testid="receivable-batch-confirm" disabled={!selectedDrafts.length} onClick={() => batchConfirm()}>批量确认（{selectedDrafts.length} 条）</Button>
+          {/* 合并收款（2026-11-09 D4）：真的建收款单并过账核销，与上面两条**不是一回事** ——
+              它按每条应收的未收余额整单结清（核销金额只读、合计=收款金额），只对同一客户 + 同一币种开放
+              （不同客户/币种的行会被上面的勾选框锁掉并写明原因，后端也会拒）。 */}
+          <Button size="sm" data-testid="receivable-merge-receipt" disabled={!mergeRows.length} onClick={() => setMergeOpen(true)}>合并收款（{mergeRows.length} 条）</Button>
+          {mergeRows.length ? <span className="panel-note" data-testid="receivable-merge-hint">合并收款：{mergeRows[0].customerName} / {mergeRows[0].currency}，未收余额合计 {receiptAllocationTotal(mergeRows)}（同一客户 + 同一币种才能合并；核销金额=各条未收余额）</span> : null}
         </div>
         <DataTable columns={ledgerColumns} data={ledgerSources} empty={<EmptyState title="没有符合条件的应收条目" />} onRowDoubleClick={(row) => setDetail({ kind: "source", id: row.id })} rowTitle="双击查看详情" />
       </div>
     </section>}
   </div>;
+}
+
+/**
+ * 「合并收款」弹窗：一次收款核销同一客户的若干条已确认应收（可跨订单，同一币种）。
+ *
+ * 与应付侧的「合并付款」完全对称，走的是真单据：
+ *   POST /finance/customer-payments            建一张草稿收款单（头：客户 / 币种 / 金额 / 银行 / 科目）
+ *   POST /finance/customer-payments/:id/post   过账并逐条核销（每条应收一行 allocation）
+ * 第二步才是钱进来的地方：后端在同一个事务里写完核销行、刷新每条应收状态，事务外写收支流水（含 bankId）。
+ *
+ * 2026-11-09 D4（整单结清）：
+ *   - 每条「本次核销金额」**只读** = 该应收的未收余额，不允许改成部分核销；
+ *   - 「收款金额」也**只读派生** = Σ 核销金额（同一真源，不摆第二个可编辑输入去和它互相校验）；
+ *     提交前仍做一次防御校验，不等就按后端 `PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION` 的同一口径阻断。
+ *
+ * 金额求和走整数分（`parseSlipAmount` / `formatSlipAmount`）：浮点相加会出现 0.1+0.2 的尾巴，
+ * 而这里的合计就是发出去的收款金额。
+ */
+function ReceivableMergeReceiptDialog({ open, rows, banks, subjects, onOpenChange, onSettled }: {
+  open: boolean;
+  /** 已选的可收款应收（同一客户 + 同一币种由页面保证：冲突的勾选框会被锁掉）。 */
+  rows: MergeReceivable[];
+  /** 可选的到账银行账户（页面已加载的启用账户）。 */
+  banks: Array<{ value: string; label: string }>;
+  /** 可选的会计科目（留空 = 后端按来源自动归类）。 */
+  subjects: Array<{ value: string; label: string }>;
+  onOpenChange: (open: boolean) => void;
+  /** 核销成功后的收尾：页面负责刷新台账与汇总提示（弹窗只管这张收款单本身）。 */
+  onSettled: (summary: { count: number; amount: string; currency: string }) => void | Promise<void>;
+}) {
+  const [receiptDate, setReceiptDate] = useState("");
+  const [method, setMethod] = useState("银行转账");
+  const [bankId, setBankId] = useState("");
+  const [subjectId, setSubjectId] = useState("");
+  const [nature, setNature] = useState("balance");
+  const [remark, setRemark] = useState("");
+  /**
+   * 收款金额：**只读派生** = Σ 各条未收余额。
+   *
+   * 2026-11-09 D4 整单结清：核销金额是每条应收的未收余额（只读），所以收款金额也只有一个真源 ——
+   * 不就是同一个合计。留一个可编辑输入框再校验相等，等于把「同一件事」摆成两个可以互相矛盾的输入；
+   * 这里只显示派生值，提交时仍做一次防御校验（见 `blockers` / `submit`，文案对齐后端
+   * `PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION`）。
+   */
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  /** 过账失败时留下的那句话：草稿单号 + 怎么继续。必须留在界面上，不能只闪一条 toast。 */
+  const [draftNotice, setDraftNotice] = useState("");
+  const idempotencyKey = useRef("");
+
+  const customer = rows[0]?.customerName ?? "";
+  const currency = rows[0]?.currency ?? "";
+  const total = receiptAllocationTotal(rows);
+  const orderNos = useMemo(() => [...new Set(rows.map((row) => row.orderNo).filter((value): value is string => Boolean(value)))], [rows]);
+  // 只有**恰好一个**订单号时才把它写进收款单；跨订单（0 个或多个）一律不写，后端因此按每条应收
+  // 自己的订单号核销（与合并付款同一条理由：后端只校验收款单自带的那个订单号）。
+  const sharedOrderNo = orderNos.length === 1 ? orderNos[0] : null;
+
+  // 每次打开都是**新的一次收款**：日期回今天（北京时间）、银行回第一个启用账户、金额回 Σ核销金额、
+  // 幂等键换一个。跟着 rows/banks 一起监听是刻意的：勾选变了，这张单子本来就不再是同一张。
+  useEffect(() => {
+    if (!open) return;
+    setReceiptDate(formatBeijingDate(new Date()));
+    setMethod("银行转账");
+    setBankId(banks[0]?.value ?? "");
+    setSubjectId("");
+    setNature("balance");
+    setRemark("");
+    setError("");
+    setDraftNotice("");
+    setBusy(false);
+    idempotencyKey.current = newReceiptIdempotencyKey();
+  }, [open, rows, banks]);
+
+  /**
+   * 点不动提交的那些原因（**全部**列出来，不是第一个）。
+   *
+   * 禁用的按钮点不动，所以原因必须事先写在界面上。收款金额是派生只读值，正常不会和核销合计不等；
+   * 这里仍保留 D4 的防御校验：任一行未收余额解析不出、或合计非法时，按后端同一口径阻断
+   * （`PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION`），避免带着一个算出 NA 的金额去建单。
+   */
+  const blockers = useMemo(() => {
+    const problems: string[] = [];
+    if (!rows.length) problems.push("没有已选的可收款应收");
+    if (new Set(rows.map((row) => row.currency)).size > 1) problems.push("勾选的应收跨币种：一笔收款只能一个币种，请分开收");
+    if (new Set(rows.map((row) => row.customerId)).size > 1) problems.push("勾选的应收跨客户：一笔收款只能一个客户，请分开收");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate)) problems.push("请选择收款日期");
+    if (!method.trim()) problems.push("请填写收款方式");
+    if (!bankId) problems.push("请选择到账银行账户（没有账户的收款不会体现在任何银行余额里）");
+    const totalUnits = parseSlipAmount(total);
+    const allRowsParsed = rows.every((row) => parseSlipAmount(row.outstanding) !== null);
+    // D4 防御校验：核销合计必须是有效金额、且等于收款金额（收款金额 = 同一合计的派生值，
+    // 所以这里实际拦的是「有行的未收余额解析失败、合计被少算」这种数据异常）。
+    if (!allRowsParsed || totalUnits === null) problems.push("核销合计必须等于收款金额（PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION）");
+    return problems;
+  }, [rows, receiptDate, method, bankId, total, currency]);
+
+  async function submit() {
+    if (blockers.length || busy) return;
+    setBusy(true);
+    setError("");
+    setDraftNotice("");
+    // D4 防御校验（提交前再算一次，与显示用的 `total` 走独立的求和路径）：
+    // 收款金额 = Σ 核销金额，不等就按后端同一 code 阻断，不带一个对不上的金额去建单。
+    let allocatedUnits = 0n;
+    for (const row of rows) {
+      const units = parseSlipAmount(row.outstanding);
+      if (units === null) allocatedUnits = -1n;
+      else if (allocatedUnits >= 0n) allocatedUnits += units;
+    }
+    const totalUnits = parseSlipAmount(total);
+    if (totalUnits === null || allocatedUnits < 0n || allocatedUnits !== totalUnits) {
+      const message = "核销合计必须等于收款金额（PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION）";
+      setError(message);
+      notifyError(message);
+      setBusy(false);
+      return;
+    }
+    const createBody: Record<string, unknown> = {
+      customer_id: rows[0].customerId,
+      payment_date: receiptDate,
+      amount: total,
+      currency,
+      payment_method: method.trim(),
+      bank_id: bankId,
+      idempotency_key: idempotencyKey.current,
+    };
+    if (sharedOrderNo) createBody.order_no = sharedOrderNo;
+    if (subjectId) createBody.subject_id = subjectId;
+    if (remark.trim()) createBody.remark = remark.trim();
+
+    let created: { id: string; paymentNo: string };
+    try {
+      created = (await apiPost<{ id: string; paymentNo: string }>(CUSTOMER_PAYMENTS_PATH, createBody)).data;
+    } catch (cause) {
+      // 建单失败（含「已存在同样草稿」）时**什么都没发生**：留在弹窗里说清原因，不发第二步。
+      const message = messageOf(cause, "收款单创建失败");
+      setError(message);
+      notifyError(message);
+      setBusy(false);
+      return;
+    }
+    try {
+      await apiPost(`${CUSTOMER_PAYMENTS_PATH}/${created.id}/post`, {
+        allocations: rows.map((row) => ({ receivable_source_id: row.id, amount: row.outstanding })),
+        payment_nature: nature,
+      });
+    } catch (cause) {
+      // 过账失败但**草稿已经建出来了**：必须点名它是哪张、怎么继续，否则财务以为这笔没发生过，
+      // 而库里躺着一张她不知道的草稿收款单。幂等键是这次弹窗固定的，所以再点一次提交会
+      // 命中同一张草稿（create 的 idempotency_key 重放），不会多建一张。
+      const message = `已创建草稿收款单 ${created.paymentNo}（合计 ${total} ${currency}），但核销未完成：${messageOf(cause, "核销失败")}。草稿不动任何金额与状态；在本弹窗再次提交会复用这张草稿继续核销（不会重复建单）。若台账上这些应收已经显示核销完成，说明上一次提交其实成功了，刷新即可。`;
+      setDraftNotice(message);
+      notifyError(message);
+      setBusy(false);
+      return;
+    }
+    notifySuccess(`已收款并核销 ${rows.length} 条应收（${total} ${currency}）`);
+    onOpenChange(false);
+    await onSettled({ count: rows.length, amount: total, currency });
+  }
+
+  return <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
+    <DialogContent data-testid="receivable-merge-dialog">
+      <DialogHeader><DialogTitle>合并收款：{customer} / {currency}，{rows.length} 条应收</DialogTitle></DialogHeader>
+      <DialogBody>
+        {/* 一句话说清这次要发生什么（数据，不是说明文）：涉及哪几个订单、为什么行与合计只有一个真源。 */}
+        <p className="panel-note" data-testid="receivable-merge-scope">
+          本次收款 {total} {currency}，一次核销 {rows.length} 条已确认应收；涉及订单 {orderNos.length ? orderNos.join("、") : "无"}{sharedOrderNo ? "" : "（跨订单：收款单不写订单号，逐条按应收自己的订单号核销）"}
+        </p>
+        <p className="panel-note">整单结清：核销金额 = 每条应收的未收余额（只读，不可改成部分核销），收款金额 = 核销合计（只读派生）；只对同一客户 + 同一币种开放。</p>
+        <div className="filter-bar">
+          <label>收款日期<Input type="date" data-testid="receivable-merge-date" value={receiptDate} disabled={busy} onChange={(event) => setReceiptDate(event.target.value)} /></label>
+          <label>收款方式<Input data-testid="receivable-merge-method" value={method} disabled={busy} placeholder="银行转账" onChange={(event) => setMethod(event.target.value)} /></label>
+          <label>到账银行账户
+            <Select value={bankId} onValueChange={setBankId} disabled={busy}>
+              <SelectTrigger data-testid="receivable-merge-bank"><SelectValue placeholder={banks.length ? "请选择到账银行账户" : "先在【财务 → 银行账户】建一个账户"} /></SelectTrigger>
+              <SelectContent>{banks.map((bank) => <SelectItem key={bank.value} value={bank.value}>{bank.label}</SelectItem>)}</SelectContent>
+            </Select>
+          </label>
+          <label>款项性质
+            <Select value={nature} onValueChange={setNature} disabled={busy}>
+              <SelectTrigger data-testid="receivable-merge-nature"><SelectValue /></SelectTrigger>
+              <SelectContent>{paymentNatureOptions().map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent>
+            </Select>
+          </label>
+          <label>会计科目（可选）
+            <SearchableSelect testId="receivable-merge-subject" value={subjectId} options={[{ value: "", label: "（不指定：按来源自动归类）" }, ...subjects]} label="会计科目" disabled={busy} onChange={setSubjectId} />
+          </label>
+        </div>
+        <label className="ui-form-item">备注<Textarea data-testid="receivable-merge-remark" value={remark} disabled={busy} onChange={(event) => setRemark(event.target.value)} /></label>
+        <div data-testid="receivable-merge-rows">
+          <div className="table-wrap">
+            <table className="data-table table-bounded">
+              <thead><tr>
+                <th className="cell-ellipsis" style={{ width: "16%" }} title="应收单号">应收单号</th>
+                <th className="cell-ellipsis" style={{ width: "18%" }} title="订单号">订单号</th>
+                <th className="cell-ellipsis" style={{ width: "20%" }} title="客户">客户</th>
+                <th className="cell-ellipsis" style={{ width: "15%" }} title="应收金额">应收金额</th>
+                <th className="cell-ellipsis" style={{ width: "15%" }} title="未收余额">未收余额</th>
+                <th className="cell-ellipsis" style={{ width: "16%" }} title="本次核销金额">本次核销金额</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((row) => <tr key={row.id} data-testid={`receivable-merge-row-${row.id}`}>
+                  <td className="cell-ellipsis" title={row.sourceNo}>{row.sourceNo}</td>
+                  <td className="cell-ellipsis" title={row.orderNo ?? "无"}>{row.orderNo ?? "无"}</td>
+                  <td className="cell-ellipsis" title={row.customerName}>{row.customerName}</td>
+                  <td className="cell-ellipsis" title={money(row.amount, row.currency)}>{money(row.amount, row.currency)}</td>
+                  <td className="cell-ellipsis" title={money(row.outstanding, row.currency)}>{money(row.outstanding, row.currency)}</td>
+                  {/* 只读：D4 整单结清，核销金额就是该条未收余额，不给输入框（改了也只能被后端拒）。 */}
+                  <td data-testid={`receivable-merge-amount-${row.id}`}>{money(row.outstanding, row.currency)}</td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="action-row">
+          <span className="panel-note" data-testid="receivable-merge-total">核销合计 {total} {currency}（= 各条未收余额之和，只读）</span>
+          {/* 收款金额是派生只读值：唯一真源就是上面的核销合计，不给输入框（两个输入会互相矛盾）。 */}
+          <span className="panel-note" data-testid="receivable-merge-receipt-amount">收款金额 {total} {currency}（只读派生 = 核销合计）</span>
+        </div>
+        {blockers.length ? <ul className="panel-note status-error" data-testid="receivable-merge-blockers">{blockers.map((item) => <li key={item}>{item}</li>)}</ul> : null}
+        {error ? <p className="status-error" data-testid="receivable-merge-error">{error}</p> : null}
+        {draftNotice ? <p className="status-error" data-testid="receivable-merge-draft-notice">{draftNotice}</p> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="secondary" data-testid="receivable-merge-cancel" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
+        <Button data-testid="receivable-merge-submit" disabled={busy || blockers.length > 0} onClick={() => void submit()}>{busy ? "提交中…" : "收款并核销"}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }

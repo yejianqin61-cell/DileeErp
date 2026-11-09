@@ -282,7 +282,7 @@ export const LEGACY_CASH_FLOW_ITEM_SUBJECTS: readonly LegacyCashFlowItemSubject[
   { legacyKey: "备用金", category: "资产类", name: "库存现金（备用金）" },
   { legacyKey: "货款", category: "损益类", name: "主营业务收入" },
   { legacyKey: "美金转入", category: "资产类", name: "银行存款 中国银行（美元）" },
-  { legacyKey: "原材料 成本", category: "损益类", name: "主营业务成本", note: "材料成本按损益口径归主营业务成本，而非资产类「原材料」" },
+  { legacyKey: "原材料 成本", category: "损益类", name: "主营业务成本", note: "**历史映射**：老表把材料成本归损益口径；2026-11-09 起新单据改记资产类「原材料」，此映射只用于老流水" },
   { legacyKey: "外加工费 晋江大田工资", category: "成本类", name: "临时工资", note: "老名含「工资」，归成本类「临时工资」" },
   { legacyKey: "成品外加工费", category: "成本类", name: "加工费" },
   { legacyKey: "房租支出", category: "成本类", name: "房租费", note: "老表同时有成本类「房租费」与损益类「管理费用」，按成本类归" },
@@ -349,24 +349,46 @@ export const PAYMENT_SUBJECT_NAMES = {
    * 资金动账写不进流水（`CashFlowService` 会抛 ACCOUNTING_SUBJECT_NOT_FOUND，而不是静默跳过）。
    */
   salary_payment: ["工资支付", "临时工资", "基本生产成本"],
-  /** 原料入库形成的应付付款（支）。 */
-  raw_material_inbound: ["主营业务成本", "原材料"],
+  /**
+   * 原料入库形成的应付确认 / 付款（支）。
+   *
+   * **2026-11-09 用户拍板**：「原材料作为存货吧」—— 采购入库先记存货类「原材料」，
+   * 领用/销售时才结转成本。历史口径是「主营业务成本」优先（入库即费用化），
+   * 会同时错列资产负债表「存货」与利润表「成本」，已改。
+   */
+  raw_material_inbound: ["原材料", "主营业务成本"],
   /** 到货单来源（已禁用，仅兼容历史数据）。 */
-  purchase_receipt: ["主营业务成本", "原材料"],
+  purchase_receipt: ["原材料", "主营业务成本"],
   /** 外加工签收形成的应付付款（支）。 */
   outsource_receipt: ["加工费"],
   /** 其他应付（支）。 */
   other: ["管理费用", "其他管理费用"],
 } as const;
 
-/** 一次付款核销了多种来源时的兜底候选（最常见的是采购付款）。 */
-export const DEFAULT_PAYMENT_SUBJECT_NAMES: readonly string[] = ["主营业务成本", "原材料"];
+/** 一次付款核销了多种来源时的兜底候选（最常见的是采购付款，同 D1：存货优先）。 */
+export const DEFAULT_PAYMENT_SUBJECT_NAMES: readonly string[] = ["原材料", "主营业务成本"];
 
 /** 「确认应收」自动写入流水时的科目候选（收）：出库形成的应收绝大多数就是主营收入。 */
 export const RECEIVABLE_CONFIRM_SUBJECT_NAMES: readonly string[] = ["主营业务收入", "营业外收入"];
 
-/** 「确认应付」在来源类型都识别不出时的兜底候选（支）。 */
-export const PAYABLE_CONFIRM_SUBJECT_NAMES: readonly string[] = ["主营业务成本", "原材料"];
+/** 「确认应付」在来源类型都识别不出时的兜底候选（支，同 D1：存货优先）。 */
+export const PAYABLE_CONFIRM_SUBJECT_NAMES: readonly string[] = ["原材料", "主营业务成本"];
+
+/**
+ * 「专票可抵扣进项税」的科目候选（2026-11-09 用户拍板 D5：含税/未税按专票/普票拆进项税）。
+ *
+ * 口径：应付条目 `amount` 是**含税总额**、`taxRate` 是价内税率；专票（`invoice_type = "special"`）
+ * 且税率 > 0 时，挂账凭证拆成「借 业务科目（不含税）+ 借 应交税费-进项税（税额）/ 贷 应付账款（含税）」。
+ * 普票 / 无票 / 未录发票类型**不拆**，全额进业务科目 —— 该不该拆由发票类型决定，不靠猜税率。
+ *
+ * 候选顺序 = 从财务科目表的原话到最宽的兜底：
+ *   1. `应交税费-进项税` —— 科目表里实际存在的明细科目（负债类，sortOrder 520），正常都命中它；
+ *   2. `应交税费-应交增值税（进项税额）` —— 财务/外账的口头叫法，科目表里没有，留给「别的科目表版本」；
+ *   3. `应交税费` —— 科目表里的本体（负债类）；明细被停用/改名时退到这里，至少凭证能落一个真实科目。
+ * 候选一个都不存在时调用方必须 422（`INPUT_TAX_SUBJECT_MISSING`），**不得静默换成别的科目** ——
+ * 进项税挂错科目会让「应交税费」的明细与申报表对不上，而凭证上完全看不出来。
+ */
+export const INPUT_TAX_SUBJECT_NAMES: readonly string[] = ["应交税费-进项税", "应交税费-应交增值税（进项税额）", "应交税费"];
 
 /** 来源类型 → 科目候选；未知来源用兜底链。 */
 export function paymentSubjectNames(sourceType: string): readonly string[] {

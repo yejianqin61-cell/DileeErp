@@ -77,9 +77,9 @@ const createDeps = (prisma) => new SupplierPaymentService(prisma, { create: () =
 // 历史缺陷：写死的收支项目 key「外加工费」在字典里不存在（字典里是「外加工费 晋江大田工资」），
 // CashFlowService 当时遇到缺项直接 return null，于是**每一笔供应商付款都被静默丢掉**。
 // 2026-09-17 起候选链给的是会计科目**名称**，缺项仍然显式 422（见 cash-flow-autocreate 测试）。
-function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", subjectId = null, accrued = [], entries = null, coverages = [] } = {}) {
+function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋江大田", bank = { bankName: "农业银行", accountNumber: "5706" }, bankId = "bank-1", subjectId = null, accrued = [], entries = null, coverages = [], paymentAmount = "300", balances = {} } = {}) {
   const cashFlowCalls = [];
-  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal("300"), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId, subjectId, remark: null };
+  const payment = { id: "payment-1", paymentNo: "SPAY-1", status: "posted", orderNo: "SO-1", amount: new Prisma.Decimal(paymentAmount), currency: "CNY", paymentDate: new Date("2026-09-15T00:00:00.000Z"), paymentMethod: "转账", payeeName: null, supplierId: "supplier-1", bankId, subjectId, remark: null };
   const prisma = {
     supplierPayment: { findFirst: async () => ({ ...payment, status: "draft" }) },
     $transaction: async (fn) => fn({
@@ -90,7 +90,19 @@ function postFixture({ sourceType = "raw_material_inbound", supplierName = "晋�
       supplierPayableReconciliation: { findMany: async () => coverages },
     }),
   };
-  const payable = { allocationBalance: async (id) => ({ entry: entries?.get(id) ?? { id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType }, available: new Prisma.Decimal("1000") }), refreshStatus: async () => {} };
+  /**
+   * 2026-11-09 D4：核销金额必须等于该应付的未核销余额。
+   * 夹具默认让「未核销余额 = 条目金额」（`entries` 里没给 amount 时用 300，与付款单默认金额一致），
+   * 这样同一份夹具既能覆盖正常整单结清，也能通过 `balances` 显式构造「余额 ≠ 请求金额」的拒绝用例。
+   */
+  const payable = {
+    allocationBalance: async (id) => {
+      const entry = entries?.get(id) ?? { id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType, amount: new Prisma.Decimal("300") };
+      const available = new Prisma.Decimal(balances[id] ?? entry.amount ?? "300");
+      return { entry, available };
+    },
+    refreshStatus: async () => {},
+  };
   const cashFlow = { autoCreateFromPayment: async (input) => { cashFlowCalls.push(input); return { id: "cf-1" }; }, autoReverseFromPayment: async () => null };
   // 销账科目取决于「这批应付有没有先挂过账」：`accrued` 给出已挂账的 entry id（默认空 = 历史数据，走老口径）。
   const vouchers = { accruedSourceIds: async () => new Set(accrued) };
@@ -103,7 +115,8 @@ test("供应商付款过账后自动写收支流水：科目按应付来源选�
   await service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
   assert.equal(cashFlowCalls.length, 1);
   const input = cashFlowCalls[0];
-  assert.deepEqual(input.subjectNames, ["主营业务成本", "原材料"], "原料入库来源 → 主营业务成本（科目名称候选链，第一个存在的生效）");
+  // D1（2026-11-09）：采购入库先记资产类「原材料」（存货），「主营业务成本」退为兜底。
+  assert.deepEqual(input.subjectNames, ["原材料", "主营业务成本"], "原料入库来源 → 原材料（科目名称候选链，第一个存在的生效）");
   assert.equal(input.direction, "expense");
   assert.equal(input.counterpartyName, "晋江大田", "对方名称取供应商名，不能退化成 UUID");
   assert.equal(input.settlementMethod, "转账--农业银行5706", "结算方式按老表格式带出银行账户");
@@ -142,7 +155,7 @@ test("供应商付款过账：挂过账的应付销账借「应付账款」（�
   // 没挂过账（当年「确认即记账」的历史单据）：仍按老口径借成本/存货，历史不动。
   const legacy = postFixture({ accrued: [] });
   await legacy.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
-  assert.deepEqual(legacy.cashFlowCalls[0].subjectNames, ["主营业务成本", "原材料"], "没挂过账 → 老口径");
+  assert.deepEqual(legacy.cashFlowCalls[0].subjectNames, ["原材料", "主营业务成本"], "没挂过账 → 老口径（D1 起首位是原材料）");
 });
 
 /* ------------------------------------------- 收支类目（2026-10-13，用户要的「这笔钱算什么」） */
@@ -179,11 +192,11 @@ test("收支类目：一笔付款核销多条时取**金额最大**的那条条�
   const fixture = postFixture({
     sourceType: "other",
     entries: new Map([
-      ["entry-1", settledEntry({ id: "entry-1", subjectId: "subject-备用金" })],
-      ["entry-2", settledEntry({ id: "entry-2", subjectId: "subject-房租费" })],
+      ["entry-1", settledEntry({ id: "entry-1", subjectId: "subject-备用金", amount: new Prisma.Decimal("100") })],
+      ["entry-2", settledEntry({ id: "entry-2", subjectId: "subject-房租费", amount: new Prisma.Decimal("200") })],
     ]),
   });
-  // allocationBalance 的替身按 id 返回对应的条目：`payable` 用 entries.get(id)。
+  // 2026-11-09 D4 下每条都要按自己的未核销余额整单结清：100 + 200 = 付款单 300。
   await fixture.service.post("payment-1", [
     { payable_entry_id: "entry-1", amount: "100" },
     { payable_entry_id: "entry-2", amount: "200" },
@@ -198,7 +211,7 @@ test("收支类目：都没填科目时留空，让候选链兜底（不在这�
   await fixture.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "300" }], { id: "user-1" });
 
   assert.equal(fixture.cashFlowCalls[0].categorySubjectId, null, "采购应付没有条目科目 → 交给 categorySubjectNames（原材料/主营业务成本）");
-  assert.deepEqual(fixture.cashFlowCalls[0].categorySubjectNames, ["主营业务成本", "原材料"]);
+  assert.deepEqual(fixture.cashFlowCalls[0].categorySubjectNames, ["原材料", "主营业务成本"]);
 });
 
 /**
@@ -457,7 +470,8 @@ test("合并付款过账：一次核销多张订单的应付（付款单不写�
 
 test("合并付款过账：付款单写了订单号 → 同订单的应付能核销，另一张订单的被拒（ALLOCATION_REFERENCE_MISMATCH）", async () => {
   // 同订单：界面把 order_no 写上，后端校验通过（付款单与订单对得上）。
-  const sameOrder = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "500" }], payment: { orderNo: "SO-1" } });
+  // 2026-11-09 D4：付款单金额也要等于核销合计，所以此处给 500（= 该应付未核销余额）。
+  const sameOrder = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "500" }], payment: { orderNo: "SO-1", amount: new Prisma.Decimal("500") } });
   await sameOrder.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "500" }], { id: "user-1" });
   assert.equal(sameOrder.allocationRows.length, 1);
 
@@ -487,16 +501,20 @@ test("合并付款过账：供应商不一致、币种不一致都被拒（ALLOC
   assert.equal(otherCurrency.allocationRows.length, 0);
 });
 
-test("合并付款过账：单条超过未核销余额、合计超过付款金额都被拒，且一行都不落库", async () => {
-  // 单条超余额：未核销余额 300，却要核销 400。
+test("合并付款过账（2026-11-09 D4）：单条不等于未核销余额、合计不等于付款金额都被拒，且一行都不落库", async () => {
+  // 单条不等于余额：未核销余额 300，却要核销 400 —— 旧口径是「超过才拒」，D4 起「不等于就拒」。
   const overBalance = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800", available: "300" }] });
   await assert.rejects(
     () => overBalance.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "400" }], { id: "user-1" }),
-    (error) => error.getResponse().code === "PAYABLE_ALLOCATION_EXCEEDED" && error.getResponse().details[0].available_amount === "300",
+    (error) => {
+      assert.equal(error.getResponse().code, "ALLOCATION_MUST_SETTLE_PAYABLE");
+      assert.deepEqual(error.getResponse().details, [{ payable_amount: "800", available_amount: "300", requested_amount: "400" }]);
+      return true;
+    },
   );
   assert.equal(overBalance.allocationRows.length, 0);
 
-  // 合计超付款金额：两条各 500（余额充足），付款单只有 800。
+  // 合计不等于付款金额：两条各 500（余额都够、单条都整单结清），付款单只有 800。
   const overTotal = mergeFixture({ payables: [
     { id: "entry-a", orderNo: "SO-1", amount: "500" },
     { id: "entry-b", orderNo: "SO-2", amount: "500" },
@@ -506,22 +524,69 @@ test("合并付款过账：单条超过未核销余额、合计超过付款金�
       { payable_entry_id: "entry-a", amount: "500" },
       { payable_entry_id: "entry-b", amount: "500" },
     ], { id: "user-1" }),
-    (error) => error.getResponse().code === "PAYMENT_ALLOCATION_EXCEEDED",
+    (error) => {
+      assert.equal(error.getResponse().code, "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION");
+      assert.deepEqual(error.getResponse().details, [{ payment_amount: "800", allocated_amount: "1000" }]);
+      return true;
+    },
   );
-  assert.equal(overTotal.allocationRows.length, 0, "超过付款金额时先前写入的核销行也必须回滚");
+  assert.equal(overTotal.allocationRows.length, 0, "付款金额不等于核销合计时先前写入的核销行也必须回滚");
 });
 
-test("合并付款：部分核销 → 应付是 partially_paid，第二笔付款结清后变 paid（真 refreshStatus + 累计核销）", async () => {
-  // 应付 800，先付 300（部分），再付 500（结清）。状态由 `SupplierPayableService.refreshStatus`
-  // 按「应付金额 - 已过账核销累计」判定，这里用真实现，避免在测试里再抄一遍状态口径。
-  const first = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800" }], payment: { amount: new Prisma.Decimal("300") }, realStatus: true });
-  await first.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "300" }], { id: "user-1" });
-  assert.equal(first.entries.get("entry-a").status, "partially_paid", "部分核销后是部分付款");
+/* ============================================================
+ * 2026-11-09 D4：强制核销额=单据额（用户拍板）
+ * 契约：docs/design/finance-governance-r2-r3-briefs-2026-11-09.md §1-A / §R2-1
+ * 旧口径（部分核销可通过、付款金额可大于核销合计）自本日起作废；
+ * 下面覆盖 brief 表 1~3，外加「历史 partially_paid 按剩余余额结清」。
+ * ============================================================ */
 
-  // 第二笔付款接着核销余额（同一张应付、累计核销额相加）—— 用一个共享台账的夹具模拟同一张应付。
-  const second = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800" }], payment: { amount: new Prisma.Decimal("500") }, realStatus: true });
-  // 把第一笔的核销搬进第二笔的台账（真库里它们本来就是同一张应付上的两行核销）。
-  second.ledger.push({ payableEntryId: "entry-a", amount: new Prisma.Decimal("300") });
-  await second.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "500" }], { id: "user-1" });
-  assert.equal(second.entries.get("entry-a").status, "paid", "核销额累计到应付金额后是已付款");
+const payableEntryOf = (amount) => ({ id: "entry-1", supplierId: "supplier-1", currency: "CNY", orderNo: "SO-1", status: "confirmed", sourceType: "raw_material_inbound", amount: new Prisma.Decimal(amount) });
+
+test("2026-11-09 D4：应付 100 只核销 60 → 422 ALLOCATION_MUST_SETTLE_PAYABLE（details 带三个金额）", async () => {
+  const fixture = postFixture({ paymentAmount: "60", entries: new Map([["entry-1", payableEntryOf("100")]]) });
+  await assert.rejects(
+    () => fixture.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "60" }], { id: "user-1" }),
+    (error) => {
+      assert.equal(error.getResponse().code, "ALLOCATION_MUST_SETTLE_PAYABLE");
+      assert.deepEqual(error.getResponse().details, [{ payable_amount: "100", available_amount: "100", requested_amount: "60" }]);
+      return true;
+    },
+  );
+});
+
+test("2026-11-09 D4：应付 100 全额核销但付款单 120 → 422 PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION", async () => {
+  const fixture = postFixture({ paymentAmount: "120", entries: new Map([["entry-1", payableEntryOf("100")]]) });
+  await assert.rejects(
+    () => fixture.service.post("payment-1", [{ payable_entry_id: "entry-1", amount: "100" }], { id: "user-1" }),
+    (error) => {
+      assert.equal(error.getResponse().code, "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION");
+      assert.deepEqual(error.getResponse().details, [{ payment_amount: "120", allocated_amount: "100" }]);
+      return true;
+    },
+  );
+});
+
+test("2026-11-09 D4：应付 100 全额核销 + 付款单 100 → 过账成功，应付 paid、流水/核销各 1 条", async () => {
+  const fixture = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "100" }], payment: { amount: new Prisma.Decimal("100") }, realStatus: true });
+  const posted = await fixture.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "100" }], { id: "user-1" });
+  assert.equal(posted.status, "posted");
+  assert.equal(fixture.entries.get("entry-a").status, "paid", "整单结清后应付是已付款");
+  assert.equal(fixture.allocationRows.length, 1, "核销 1 条");
+  assert.equal(fixture.cashFlowCalls.length, 1, "流水 1 条");
+  assert.equal(fixture.cashFlowCalls[0].amount.toString(), "100");
+});
+
+test("2026-11-09 D4：800 的应付只核销 300 被拒；历史 partially_paid 只能按剩余 available 结清", async () => {
+  // 旧口径「先付 300、以后再付 500」自 2026-11-09 起不再允许：新付款必须一次结清。
+  const partial = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800" }], payment: { amount: new Prisma.Decimal("300") } });
+  await assert.rejects(
+    () => partial.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "300" }], { id: "user-1" }),
+    (error) => error.getResponse().code === "ALLOCATION_MUST_SETTLE_PAYABLE" && error.getResponse().details[0].available_amount === "800",
+  );
+
+  // 历史 partially_paid（已核销 300，剩 500）：按剩余余额整单结清 → paid。
+  const historical = mergeFixture({ payables: [{ id: "entry-a", orderNo: "SO-1", amount: "800", available: "500", status: "partially_paid" }], payment: { amount: new Prisma.Decimal("500") }, realStatus: true });
+  historical.ledger.push({ payableEntryId: "entry-a", amount: new Prisma.Decimal("300") });
+  await historical.service.post("payment-1", [{ payable_entry_id: "entry-a", amount: "500" }], { id: "user-1" });
+  assert.equal(historical.entries.get("entry-a").status, "paid", "历史部分核销按剩余余额结清后是已付款");
 });

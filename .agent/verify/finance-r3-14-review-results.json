@@ -1,0 +1,237 @@
+{
+  "generatedAt": "2026-11-09T05:46:08.369Z",
+  "summary": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0
+  },
+  "results": [
+    {
+      "id": "A1",
+      "group": "A-科目id归集",
+      "title": "A1 内核：一条分录同时有 subjectId 与 subjectKey 只产出一个 id 键（不进两个桶）",
+      "status": "PASS",
+      "detail": {
+        "keys": [
+          "@id:sub-mgmt"
+        ],
+        "debit": 150
+      }
+    },
+    {
+      "id": "A2",
+      "group": "A-科目id归集",
+      "title": "A2 写入端：createAccrual 落库分录只写一个 subject_id（按名称解析），label 保留快照",
+      "status": "PASS",
+      "detail": {
+        "voucherId": "voucher-1",
+        "lines": [
+          {
+            "direction": "debit",
+            "subjectId": "sub-raw",
+            "label": "原材料"
+          },
+          {
+            "direction": "credit",
+            "subjectId": "sub-ap",
+            "label": "应付账款"
+          }
+        ]
+      }
+    },
+    {
+      "id": "A3",
+      "group": "A-科目id归集",
+      "title": "A3 读取端：整链路（挂账 + 付款）三表各归集一次、金额不翻倍",
+      "status": "PASS",
+      "detail": {
+        "lines": [
+          "debit:原材料:sub-raw",
+          "credit:应付账款:sub-ap",
+          "debit:应付账款:sub-ap",
+          "credit:银行存款:sub-bank"
+        ],
+        "totalAssets": 0
+      }
+    },
+    {
+      "id": "A4",
+      "group": "A-科目id归集",
+      "title": "A4 读取端：label 被改错时仍按 subject_id 归行（证明读 id 不是读文本）",
+      "status": "PASS",
+      "detail": {
+        "stock": 100,
+        "mgmt": 0
+      }
+    },
+    {
+      "id": "A5",
+      "group": "A-科目id归集",
+      "title": "A5 读取端只读：生成三表期间不对 voucher / voucher_line 做任何写操作",
+      "status": "PASS",
+      "detail": {
+        "queryCount": 15,
+        "writes": 0
+      }
+    },
+    {
+      "id": "A6",
+      "group": "A-科目id归集",
+      "title": "A6 期初合并只归一次：期初 subject_key 解析成 id 键后与凭证 id 行相加（不翻倍）",
+      "status": "PASS",
+      "detail": {
+        "money": 1200,
+        "cashOpening": 1000
+      }
+    },
+    {
+      "id": "B1",
+      "group": "B-进项税归行",
+      "title": "B1 写入端：专票挂账三行（net 100 / 进项税 13 / 应付 113），进项税行落负债类科目 id",
+      "status": "PASS",
+      "detail": {
+        "lines": [
+          {
+            "dir": "debit",
+            "subjectId": "sub-mgmt",
+            "label": "管理费用",
+            "amount": 100,
+            "business": "sub-mgmt"
+          },
+          {
+            "dir": "debit",
+            "subjectId": "sub-tax",
+            "label": "应交税费-进项税",
+            "amount": 13,
+            "business": null
+          },
+          {
+            "dir": "credit",
+            "subjectId": "sub-ap",
+            "label": "应付账款",
+            "amount": 113,
+            "business": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "B2",
+      "group": "B-进项税归行",
+      "title": "B2 资产负债表：进项税借方余额进「应交税费」负债行（−13），不翻成资产/费用，勾稽仍平",
+      "status": "PASS",
+      "detail": {
+        "taxRow": -13,
+        "apRow": 113,
+        "retained": -100,
+        "balanced": true
+      }
+    },
+    {
+      "id": "B3",
+      "group": "B-进项税归行",
+      "title": "B3 利润表：只吃净额 100，税额不进损益（净利 −100）",
+      "status": "PASS",
+      "detail": {
+        "mgmt": 100,
+        "netProfit": -100
+      }
+    },
+    {
+      "id": "B4",
+      "group": "B-进项税归行",
+      "title": "B4 已知噪音（非 FAIL 判定，记录）：利润表 unmapped 会把负债类分录（应付/进项税）列为「未归位」",
+      "status": "PASS",
+      "detail": {
+        "taxedUnmapped": [
+          "负债类/应交税费-进项税",
+          "负债类/应付账款"
+        ],
+        "plainUnmapped": [
+          "负债类/应付账款"
+        ]
+      }
+    },
+    {
+      "id": "B5",
+      "group": "B-进项税归行",
+      "title": "B5 方向来源：报表按行 side（负债行=贷−借）而非 balanceDirection；负债类借方余额 → 负值不翻号",
+      "status": "PASS",
+      "detail": {
+        "taxRow": -13
+      }
+    },
+    {
+      "id": "B6",
+      "group": "B-进项税归行",
+      "title": "B6 现金流量表：挂账凭证无资金分录 → 不计入（nonCash=1），不因三行而多计",
+      "status": "PASS",
+      "detail": {
+        "nonCash": 1,
+        "net": 0
+      }
+    },
+    {
+      "id": "C1",
+      "group": "C-D4口径",
+      "title": "C1 D4 门禁：应付/应收核销额必须=未核销余额、付款额必须=核销合计",
+      "status": "PASS",
+      "detail": {
+        "payable": [
+          "ALLOCATION_MUST_SETTLE_PAYABLE",
+          "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION"
+        ],
+        "receivable": [
+          "ALLOCATION_MUST_SETTLE_RECEIVABLE",
+          "PAYMENT_AMOUNT_MUST_EQUAL_ALLOCATION"
+        ]
+      }
+    },
+    {
+      "id": "C2",
+      "group": "C-D4口径",
+      "title": "C2 台账口径：paid=有效已过账核销合计，outstanding=amount−paid，结清后 status=paid",
+      "status": "PASS",
+      "detail": {
+        "status": "paid",
+        "allocated": 100,
+        "available": 0
+      }
+    },
+    {
+      "id": "C3",
+      "group": "C-D4口径",
+      "title": "C3 历史 partially_paid：按剩余 70 全额结清 → 100/0/paid（不要求等于原单据金额）",
+      "status": "PASS",
+      "detail": {
+        "availableBefore": 70,
+        "availableAfter": 0,
+        "statusAfter": "paid"
+      }
+    },
+    {
+      "id": "C4",
+      "group": "C-D4口径",
+      "title": "C4 报表口径（凭证余额，非台账）：挂账 113 + 付款 113 → 应付账款余额 0，勾稽平",
+      "status": "PASS",
+      "detail": {
+        "ap": 0,
+        "tax": -13,
+        "bank": -113,
+        "retained": -100,
+        "balanced": true
+      }
+    },
+    {
+      "id": "C5",
+      "group": "C-D4口径",
+      "title": "C5 报表与台账自洽性：报表 AP 余额 ≡ 台账 outstanding 的前提（总额法 + 凭证已过账）",
+      "status": "PASS",
+      "detail": {
+        "before": 100,
+        "after": 0,
+        "caveat": "历史付款缺 posted 凭证时两侧会分叉（R4 数据盘点）"
+      }
+    }
+  ]
+}

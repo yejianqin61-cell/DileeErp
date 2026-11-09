@@ -173,28 +173,34 @@ export class ReconciliationService {
       if (bankId !== current.bankId || subjectId !== current.subjectId) {
         await tx.receivableReconciliation.update({ where: { id }, data: { bankId, subjectId, ...this.audit.update(user) } });
       }
-      return { current, drafts, bankId, subjectId };
+      /**
+       * **挂账与确认同一事务、挂账直接过账**（2026-11-09 用户拍板「确认即过账」）。
+       *
+       * 对账单只是「一次确认多条」的入口，仍然逐条挂账（合并成一张会让「这条应收有没有挂过账」
+       * 查不出来，销账时要按来源判定）；任一条失败整批回滚。
+       */
+      const accruals: Array<{ id: string; replayed: boolean } | null> = [];
+      for (const draft of drafts) {
+        accruals.push(await this.accruals.createAccrual({
+          source_type: SOURCE_RECEIVABLE,
+          source_id: draft.id,
+          document_no: draft.sourceNo,
+          voucher_date: this.today(),
+          currency: draft.currency,
+          amount: draft.amount,
+          counterparty_name: current.customer?.name ?? current.customerId,
+          contra_subject_names: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
+          contra_subject_id: subjectId,
+          remark: `应收对账确认（${current.reconciliationNo}）`,
+        }, user, { client: tx, post: true }));
+      }
+      return { current, drafts, bankId, subjectId, accruals };
     });
     const confirmedAmount = result.drafts.reduce((sum, draft) => sum.plus(draft.amount), new Prisma.Decimal(0));
     // **挂账**（确认应收那一步）：每条应收各挂一张，借应收账款 / 贷收入类科目。
-    // 对账单在这里只是「一次确认多条」的入口，所以仍然**逐条**挂账 —— 合并成一张会让
-    // 「这条应收有没有挂过账」变得查不出来（销账时要按来源判定，见 VoucherService.accruedSourceIds）。
+    // 2026-11-09 起与确认同事务、生成即已过账；上面的循环已把凭证建好，这里只汇总 id。
     const accrualVoucherIds: string[] = [];
-    for (const draft of result.drafts) {
-      const accrual = await this.accruals.createAccrual({
-        source_type: SOURCE_RECEIVABLE,
-        source_id: draft.id,
-        document_no: draft.sourceNo,
-        voucher_date: this.today(),
-        currency: draft.currency,
-        amount: draft.amount,
-        counterparty_name: result.current.customer?.name ?? result.current.customerId,
-        contra_subject_names: RECEIVABLE_CONFIRM_SUBJECT_NAMES,
-        contra_subject_id: result.subjectId,
-        remark: `应收对账确认（${result.current.reconciliationNo}）`,
-      }, user);
-      if (accrual) accrualVoucherIds.push(accrual.id);
-    }
+    result.accruals.forEach((accrual) => { if (accrual) accrualVoucherIds.push(accrual.id); });
     await this.audit.record("receivable_reconciliation.confirm_receivables", "receivable_reconciliation", user.id, id, {
       reconciliation_no: result.current.reconciliationNo,
       customer_id: result.current.customerId,
