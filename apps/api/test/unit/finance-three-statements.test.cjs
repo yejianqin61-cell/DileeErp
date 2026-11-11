@@ -30,6 +30,7 @@ const {
   normalizeSubjectKey,
   splitSubjectKey,
   statementNotes,
+  subjectIdKeyOf,
   sumVoucherLines,
 } = require("../../dist/modules/finance/finance-three-statements.js");
 const { ACCOUNTING_SUBJECT_SEEDS } = require("../../dist/modules/finance/accounting-subject-catalog.js");
@@ -332,4 +333,70 @@ test("三大报表：段落行没有金额、手填行留空（导出层据此�
   const income = buildIncomeStatement(sumVoucherLines([]));
   assert.equal(income.lines.find((line) => line.row === 23).manual, true);
   assert.equal(income.lines.find((line) => line.row === 14).value, 0n, "没有任何发生额时公式行是 0，不是 null");
+});
+
+/* ------------------------------------------------- 改名回归（2026-11-11 R-1 / T5） */
+
+// 为什么需要这一组：本期的 4 个 P0 全都通向同一句话——**改一个科目名，某张报表的某一格悄悄变小，
+// 而报表依然平、勾稽依然通过**。在给科目加上不可变主键之前，这句话没有任何测试拦得住。
+//
+// 这组用例断言的就是那个承诺：只要分录带着科目主键，改名不影响任何一张报表的数字。
+// 同时配一组对照（没有主键时文本说了算），否则这组用例可能只是「反正都不变」的空断言。
+
+/** 报表取数时上层查库得到的「归集键 → 分类/名称」索引（与服务层同形）。 */
+const refsOf = (...rows) => new Map(rows.map((row) => [subjectIdKeyOf(row.id), { category: row.category, name: row.name }]));
+
+test("改名回归：同一科目主键、文本一新一旧，利润表金额是两行之和（不拆桶、不丢失）", () => {
+  // 真实场景：科目改名之前写的凭证留着旧文本，改名之后写的带新文本，两批都指向同一个科目主键。
+  const refs = refsOf({ id: "sub-mgmt", category: "损益类", name: "管理费用" });
+  const balances = sumVoucherLines([
+    { subjectKey: "损益类/管理费用", subjectId: "sub-mgmt", direction: "debit", amount: "100" },
+    { subjectKey: "损益类/管理费用（旧名）", subjectId: "sub-mgmt", direction: "debit", amount: "50" },
+  ]);
+  const income = buildIncomeStatement(balances, refs);
+  assert.equal(yuan(income.lines.find((line) => line.row === 5).value), 150, "管理费用行必须是 150：改名不该把金额拆成两截");
+  assert.deepEqual(income.unmapped, [], "两个桶都被认领，不该有未归位科目");
+});
+
+test("改名回归：同一科目主键、文本一新一旧，资产负债表金额也是两行之和", () => {
+  const refs = refsOf({ id: "sub-mat", category: "资产类", name: "原材料" });
+  const balances = sumVoucherLines([
+    { subjectKey: "资产类/原材料", subjectId: "sub-mat", direction: "debit", amount: "100" },
+    { subjectKey: "资产类/原材料（旧名）", subjectId: "sub-mat", direction: "debit", amount: "50" },
+  ]);
+  const sheet = buildBalanceSheet({ balances, subjectRefs: refs });
+  assert.equal(yuan(sheet.assets.find((line) => line.row === 9).value), 150, "存货行必须含两笔");
+  assert.deepEqual(sheet.unmapped, []);
+});
+
+test("改名回归的对照组：没有科目主键时文本说了算——改个名字金额就落空（这正是本期的病）", () => {
+  // 没有这一条，上面两条可能只是「反正都不变」。这一条证明差别来自主键，不来自巧合。
+  const refs = refsOf({ id: "sub-mat", category: "资产类", name: "原材料" });
+
+  const before = sumVoucherLines([{ subjectKey: "资产类/原材料", direction: "debit", amount: "100" }]);
+  assert.equal(yuan(buildBalanceSheet({ balances: before, subjectRefs: refs }).assets.find((line) => line.row === 9).value), 100);
+
+  const after = sumVoucherLines([{ subjectKey: "资产类/原材料（旧名）", direction: "debit", amount: "100" }]);
+  const sheet = buildBalanceSheet({ balances: after, subjectRefs: refs });
+  assert.equal(yuan(sheet.assets.find((line) => line.row === 9).value), 0, "只有文本时，名字一改就落空");
+  assert.equal(sheet.unmapped.length, 1, "落空不等于消失：必须出现在未归位清单里");
+});
+
+test("改名回归：主键为空的历史行仍按文本归位（回填没覆盖到的行不能整笔丢掉）", () => {
+  const refs = refsOf({ id: "sub-rev", category: "损益类", name: "主营业务收入" });
+  const balances = sumVoucherLines([{ subjectKey: "损益类/主营业务收入", subjectId: null, direction: "credit", amount: "100" }]);
+  const income = buildIncomeStatement(balances, refs);
+  assert.equal(yuan(income.lines.find((line) => line.row === 1).value), 100, "营业收入行要认得裸文本键");
+  assert.deepEqual(income.unmapped, []);
+});
+
+test("改名回归：主键在索引里时，即使文本已不匹配任何行，金额仍按主键归集", () => {
+  // 停用/改名的真实形态：科目行还在（服务层的 SubjectRefs 只按 deletedAt 过滤，**不按 isActive**，
+  // 停用只是「不再新选」），但分录上的旧文本已经匹配不上任何 `named(...)`。
+  // 这时金额必须靠主键落行 —— 这是不可变编码存在的全部意义。
+  const refs = refsOf({ id: "sub-old", category: "损益类", name: "管理费用" });
+  const balances = sumVoucherLines([{ subjectKey: "损益类/一个早就不存在的名字", subjectId: "sub-old", direction: "debit", amount: "80" }]);
+  const income = buildIncomeStatement(balances, refs);
+  assert.equal(yuan(income.lines.find((line) => line.row === 5).value), 80, "主键说了算，文本多离谱都不影响");
+  assert.deepEqual(income.unmapped, []);
 });
