@@ -21,6 +21,9 @@ const BUILTIN_CATEGORY_ROWS = ACCOUNTING_SUBJECT_CATEGORIES.map((name, index) =>
 
 const subjectRow = (overrides = {}) => ({
   id: "subject-1",
+  // 不可变编码（2026-11-11 R-1）：`S` + sortOrder 补零 4 位。替身也要有它，
+  // 否则「列表把编码带出去」这条无从断言。
+  code: "S0770",
   category: "损益类",
   name: "主营业务收入",
   balanceDirection: "借",
@@ -65,6 +68,10 @@ function harness({ subjects = [], duplicate = undefined, maxSortOrder = null, us
       findFirst: async (args) => {
         calls.findFirst.push(args);
         const where = args?.where ?? {};
+        // 编码守卫（2026-11-11 R-1）：按 `code` 查。必须放在最后那条兜底分支**之前** ——
+        // 否则 `assertCodeAvailable` 会落到 nextSortOrder 的兜底分支、拿到一个 { sortOrder } 的
+        // 真值对象，于是每一笔新建都被判成「编码被占用」。
+        if (where.code !== undefined) return subjects.find((row) => row.code === where.code) ?? null;
         if (where.name !== undefined) return duplicate ?? null;
         if (typeof where.id === "string") return subjects.find((row) => row.id === where.id) ?? null;
         // nextSortOrder：先按分类查（该分类下没有科目时返回 null），再退到全局查。替身如实照做 ——
@@ -182,14 +189,17 @@ test("create：分类与项目名去空白后落库，余额方向照存，并�
   assert.deepEqual(events[0][0], "accounting_subject.create");
   assert.deepEqual(events[0].slice(1, 5), ["accounting_subject", "user-1", "subject-new", { category: "损益类", name: "主营业务收入" }], "审计事件记录动作/实体/人/新 id/前后值");
   // 排序号必须是**本分类内**的最大值：取全局最大值会让新科目排到别的分类后面（见 list 的注释）。
-  assert.deepEqual(calls.findFirst.at(-1), { where: { category: "损益类", deletedAt: null }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } }, "排序号取的是本分类未删除科目的最大值");
+  // `.at(-2)` 而不是 `.at(-1)`：最后一次查询是编码守卫（2026-11-11 R-1），它不带 orderBy。
+  assert.deepEqual(calls.findFirst.at(-2), { where: { category: "损益类", deletedAt: null }, orderBy: { sortOrder: "desc" }, select: { sortOrder: true } }, "排序号取的是本分类未删除科目的最大值");
+  assert.deepEqual(calls.findFirst.at(-1), { where: { code: "S0130" }, select: { id: true, name: true, category: true } }, "最后再确认这个编码没人占用");
 });
 
 test("create：显式给 sort_order 时不再查最大排序号", async () => {
   const { service, calls } = harness({ maxSortOrder: 120 });
   await service.create({ category: "成本类", name: "加工费", sort_order: 5 }, USER);
   assert.equal(calls.create[0].sortOrder, 5);
-  assert.equal(calls.findFirst.filter((args) => args?.where?.name === undefined).length, 0, "给了排序号就不该再发「取最大 sortOrder」的查询");
+  // 编码守卫那一查要排除掉：它查的是 code，不是排序号。
+  assert.equal(calls.findFirst.filter((args) => args?.where?.name === undefined && args?.where?.code === undefined).length, 0, "给了排序号就不该再发「取最大 sortOrder」的查询");
 });
 
 test("create：不填余额方向存 null（不是空串，也不是瞎猜一个方向）", async () => {
@@ -257,8 +267,11 @@ test("create：本分类还没有科目时，排序号退到全局最后（靠�
     { category: "新分类", name: "展会物料费" },
     { category: "新分类", deletedAt: null },
     { deletedAt: null },
-  ], "先按本分类查（空），再退到全局查");
+    // 第四查是编码守卫（2026-11-11 R-1）：排序号定下来之后要确认它对应的编码没人占。
+    { code: "S1220" },
+  ], "先按本分类查（空），再退到全局查，最后确认编码未被占用");
   assert.equal(calls.create[0].sortOrder, 1220);
+  assert.equal(calls.create[0].code, "S1220");
 });
 
 test("create：分类不在类目表里 → 422 ACCOUNTING_SUBJECT_CATEGORY_NOT_FOUND，不落库", async () => {
@@ -396,4 +409,74 @@ test("remove：科目不存在时 404（不静默当成「删成功」）", asyn
   await assert.rejects(() => service.remove("subject-missing", USER), (error) => error.getResponse().code === "ACCOUNTING_SUBJECT_NOT_FOUND");
   assert.deepEqual(calls.count, [], "都找不到科目就不必再去数引用");
   assert.deepEqual(calls.update, []);
+});
+
+/* ------------------------------------------------------------------ 不可变编码（2026-11-11 R-1） */
+
+// 为什么这组必须在服务层钉：编码是科目的身份。一旦客户端的请求体能写它，
+// 「改名即换身份」就会变成「有人改一下就得换身份」——比原来更容易出事。
+// 编码只由创建时的 sortOrder 推出，之后任何修改路径都不碰它。
+
+test("create：服务端按 sortOrder 算出编码，请求体里的 code 一律不采纳", async () => {
+  const { service, calls } = harness({ subjects: [] });
+  const row = await service.create({ category: "资产类", name: "包装物", sort_order: 1450, code: "HACKED" }, USER);
+  assert.equal(calls.create[0].code, "S1450", "编码必须由 sortOrder 推出，不能用调用方传进来的值");
+  assert.equal(row.code, "S1450");
+  assert.equal(calls.create[0].sortOrder, 1450);
+});
+
+test("create：没给 sortOrder 时用本分类的下一个排序号，编码与它一致", async () => {
+  const { service, calls } = harness({ subjects: [subjectRow({ id: "a", category: "资产类", sortOrder: 30, code: "S0030" })] });
+  await service.create({ category: "资产类", name: "备用金二" }, USER);
+  assert.equal(calls.create[0].sortOrder, 40, "接在本分类最后一个之后");
+  assert.equal(calls.create[0].code, "S0040", "编码跟着排序号走");
+});
+
+test("create：排序号对应的编码已被占用时 422，并说清被谁占用", async () => {
+  // 编码由排序号推出，所以「排序号撞车」就是「身份撞车」。库层唯一索引会兜住，
+  // 但那报的是数据库约束错（财务看不懂）；服务层要提前给出可读的话。
+  const occupied = subjectRow({ id: "b", name: "银行存款", category: "资产类", sortOrder: 20, code: "S0020" });
+  const { service, calls } = harness({ subjects: [occupied] });
+  await assert.rejects(
+    () => service.create({ category: "资产类", name: "另一个科目", sort_order: 20 }, USER),
+    (error) => {
+      const payload = error.getResponse();
+      assert.equal(payload.code, "ACCOUNTING_SUBJECT_CODE_TAKEN");
+      assert.match(payload.message, /S0020/);
+      assert.match(payload.message, /银行存款/, "要说清是哪个科目占着，财务才知道去改哪一行");
+      return true;
+    },
+  );
+  assert.deepEqual(calls.create, [], "被占用就不该落库");
+});
+
+test("update：改名不改编码", async () => {
+  const { service, calls } = harness({ subjects: [subjectRow({ code: "S0770" })] });
+  const row = await service.update("subject-1", { name: "主营业务收入（新）" }, USER);
+  assert.equal(calls.update[0].data.name, "主营业务收入（新）");
+  assert.equal("code" in calls.update[0].data, false, "编码不在可改字段里");
+  assert.equal(row.code, "S0770", "编码原样留在行上");
+});
+
+test("update：改 sortOrder 不改编码（编码与排序号从此各自独立）", async () => {
+  // 编码在创建时由 sortOrder 推出，之后两者分道扬镳：排序号可以为了阅读顺序调整，
+  // 编码不能动 —— 一动就等于换了身份。
+  const { service, calls } = harness({ subjects: [subjectRow({ code: "S0770" })] });
+  await service.update("subject-1", { sort_order: 9999 }, USER);
+  assert.equal(calls.update[0].data.sortOrder, 9999);
+  assert.equal("code" in calls.update[0].data, false, "绝不重算编码");
+});
+
+test("update：请求体里带 code 时忽略它，不报错也不写库", async () => {
+  const { service, calls } = harness({ subjects: [subjectRow({ code: "S0770" })] });
+  const row = await service.update("subject-1", { name: "改名", code: "HACKED" }, USER);
+  assert.equal("code" in calls.update[0].data, false, "写库字段里没有编码");
+  assert.equal(row.code, "S0770", "编码保持原值");
+});
+
+test("list / get：编码随科目一起带出去（前端要能显示与筛选）", async () => {
+  const row = subjectRow({ code: "S0770" });
+  const { service } = harness({ subjects: [row] });
+  assert.equal((await service.list())[0].code, "S0770");
+  assert.equal((await service.get("subject-1")).code, "S0770");
 });

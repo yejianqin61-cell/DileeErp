@@ -94,10 +94,16 @@ export class AccountingSubjectService {
   }
 
   /**
-   * 改名 / 换分类 / 改余额方向 / 停用启用。
+   * 改名 / 换分类 / 改余额方向 / 改排序号 / 停用启用。
    *
-   * 改分类或改名都不影响历史：流水存的是 `subject_id`，展示时按主键取当前名字。
-   * 这正是「科目可配置」的含义 —— 改口径不该让历史单据跟着改分类。
+   * **编码不在这里**（2026-11-11 R-1）：`code` 是科目的身份，终身不变，所以它既不在入参的
+   * 字段表里，也不在下面那条 update 的 data 里。客户端的请求体根本进不来这个字段
+   * （控制器 DTO 是白名单，见 main.ts 的 `forbidNonWhitelisted`）；即使调用方在对象上多带一个
+   * `code`，这里也只是不读它 —— 编码只由创建时算出的那一个值决定。
+   *
+   * 改分类或改名对**引用主键的地方**不影响：流水/凭证存的是 `subject_id`，展示时按主键取当前名字。
+   * ⚠️ 但对只存了文本快照的历史行（`voucher_lines.subject_key`、`accounting_opening_balances.subject_key`）
+   * 改名仍会让它们与主数据脱节 —— 那条由回填与报表口径另外处理，不在本方法里。
    */
   async update(id: string, input: { category?: string; name?: string; balance_direction?: string | null; sort_order?: number; is_active?: boolean }, user: CurrentUser) {
     const current = await this.get(id);
