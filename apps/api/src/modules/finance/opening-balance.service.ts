@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { isFundSubject, normalizeSubjectKey, type SummedAmount } from "./finance-three-statements";
+import { isFundSubject, isSubjectIdKey, normalizeSubjectKey, splitSubjectKey, type SummedAmount } from "./finance-three-statements";
 import { formatUnits, toUnits } from "./money";
 
 /**
@@ -35,6 +35,56 @@ export type OpeningBalanceInput = {
   currency?: string;
   rows: OpeningBalanceRow[];
 };
+
+/**
+ * 报表取数要的期初行。
+ *
+ * `subjectId` 是科目主键（2026-11-11 R-1 / T3）：有它报表就按主键归集，科目改名不影响落行；
+ * 为空（历史行归不上）时报表回退 `subjectKey` 文本匹配 —— 那条路在改名后会失配，但至少不丢行。
+ */
+export type OpeningBalanceEffectiveRow = {
+  subjectKey: string;
+  subjectId: string | null;
+  direction: string;
+  amount: string;
+};
+
+/**
+ * 期初行的科目键 → 科目主键（2026-11-11 R-1 / T3）。
+ *
+ * 期初原本只有文本键 `subject_key`，是**唯一一张连科目外键都没有**的业务表：科目一改名，
+ * 这一行就与主数据脱节，报表按名字匹配不上，金额静默消失（诊断 P0-2）。
+ *
+ * 判据与全站一致：**只有唯一同名才算解析成功**。
+ *   - 键带分类（`资产类/银行存款`）→ 必须「同分类 + 同名称」，库层 `@@unique([category,name])`
+ *     保证最多命中一个；查不到就是科目被改过名；
+ *   - 键是裸名（`银行存款`，资金科目的老写法）→ 全表同名唯一才认，同名跨分类一律不猜。
+ *
+ * 解析不到**不猜测**：留空让报表回退文本匹配，并由调用方把清单回给财务。
+ * 猜错等于把期初余额记到别的账上，而报表上看不出来。
+ */
+export function resolveOpeningSubjectIds(
+  rows: ReadonlyArray<{ subjectKey: string }>,
+  subjects: ReadonlyArray<{ id: string; category: string; name: string }>,
+): Map<string, string> {
+  const byName = new Map<string, Array<{ id: string; category: string; name: string }>>();
+  for (const subject of subjects) byName.set(subject.name, [...(byName.get(subject.name) ?? []), subject]);
+  const resolved = new Map<string, string>();
+  for (const row of rows) {
+    const key = normalizeSubjectKey(row.subjectKey);
+    // 已经是 id 键的期初行（理论上不该出现，报表侧才用 id 键）原样跳过，不重复解析。
+    if (isSubjectIdKey(key)) continue;
+    const { category, name } = splitSubjectKey(key);
+    const candidates = byName.get(name) ?? [];
+    if (category) {
+      const hit = candidates.find((subject) => subject.category === category);
+      if (hit) resolved.set(key, hit.id);
+      continue;
+    }
+    if (candidates.length === 1) resolved.set(key, candidates[0].id);
+  }
+  return resolved;
+}
 
 /** 期初余额行 → 报表要的「借贷累计」形状（与 `sumVoucherLines` 的返回值同型，可直接相加）。 */
 export function openingBalancesToMap(rows: ReadonlyArray<{ subjectKey: string; direction: string; amount: { toString(): string } | string }>): Map<string, SummedAmount> {
@@ -118,6 +168,16 @@ export class OpeningBalanceService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
+      // 先把这一批科目键解析成科目主键（2026-11-11 R-1 / T3）。一次查库、按名称取候选，
+      // 判据交给纯函数 `resolveOpeningSubjectIds`（唯一同名才认）。
+      // 查不到**不报错**：历史科目可能被改过名，拦住录入只会让财务没法修账；
+      // 留空让报表回退文本匹配，同时把清单回给界面提示。
+      const names = [...new Set(rows.map((row) => splitSubjectKey(normalizeSubjectKey(row.subjectKey)).name))];
+      const subjectRows = names.length
+        ? await tx.accountingSubject.findMany({ where: { deletedAt: null, name: { in: names } }, select: { id: true, category: true, name: true } })
+        : [];
+      const subjectIdByKey = resolveOpeningSubjectIds(rows, subjectRows);
+
       const existing = await tx.accountingOpeningBalance.findMany({ where: { asOfDate, currency } });
       const keep = new Set(rows.map((row) => row.subjectKey));
       const removed = existing.filter((row) => !row.deletedAt && !keep.has(row.subjectKey));
@@ -126,13 +186,14 @@ export class OpeningBalanceService {
         await tx.accountingOpeningBalance.update({ where: { id: row.id }, data: { ...this.audit.softDelete(user) } });
       }
       for (const row of rows) {
+        const subjectId = subjectIdByKey.get(normalizeSubjectKey(row.subjectKey)) ?? null;
         const current = existing.find((item) => item.subjectKey === row.subjectKey);
         if (current) {
           // 恢复 + 覆盖：唯一索引不区分软删，所以「删了再加同一科目」必须走这条更新而不是新插入。
           await tx.accountingOpeningBalance.update({
             where: { id: current.id },
             data: {
-              subjectLabel: row.subjectLabel, direction: row.direction,
+              subjectId, subjectLabel: row.subjectLabel, direction: row.direction,
               amount: new Prisma.Decimal(row.amount), remark: row.remark ?? null,
               deletedAt: null, deletedBy: null,
               ...this.audit.update(user),
@@ -141,27 +202,27 @@ export class OpeningBalanceService {
         } else {
           await tx.accountingOpeningBalance.create({
             data: {
-              asOfDate, currency, subjectKey: row.subjectKey, subjectLabel: row.subjectLabel,
+              asOfDate, currency, subjectId, subjectKey: row.subjectKey, subjectLabel: row.subjectLabel,
               direction: row.direction, amount: new Prisma.Decimal(row.amount), remark: row.remark ?? null,
               ...this.audit.create(user),
             },
           });
         }
       }
-      return { removed: removed.length, saved: rows.length };
+      return { removed: removed.length, saved: rows.length, unassigned: rows.map((row) => row.subjectKey).filter((key) => !subjectIdByKey.has(normalizeSubjectKey(key))) };
     });
 
     const totals = openingBalanceTotals(rows);
     await this.audit.record("opening_balance.replace", "opening_balance", user.id, undefined, {
       as_of_date: input.as_of_date.slice(0, 10), currency,
-      saved: result.saved, removed: result.removed,
+      saved: result.saved, removed: result.removed, unassigned: result.unassigned,
       debit: totals.debit.toString(), credit: totals.credit.toString(), balanced: totals.balanced,
     });
-    return { as_of_date: input.as_of_date.slice(0, 10), currency, saved: result.saved, removed: result.removed, totals };
+    return { as_of_date: input.as_of_date.slice(0, 10), currency, saved: result.saved, removed: result.removed, unassigned: result.unassigned, totals };
   }
 
   /** 报表取数用：某一币种**不晚于**期末的最近一次建账期初（没有就返回空）。 */
-  async effectiveFor(currency: string, toDate: string): Promise<{ asOfDate: string; rows: Array<{ subjectKey: string; direction: string; amount: string }> } | null> {
+  async effectiveFor(currency: string, toDate: string): Promise<{ asOfDate: string; rows: OpeningBalanceEffectiveRow[] } | null> {
     const row = await this.prisma.accountingOpeningBalance.findFirst({
       where: { currency, deletedAt: null, asOfDate: { lte: utcDate(toDate) } },
       orderBy: { asOfDate: "desc" },
@@ -170,7 +231,7 @@ export class OpeningBalanceService {
     if (!row) return null;
     const rows = await this.prisma.accountingOpeningBalance.findMany({
       where: { currency, deletedAt: null, asOfDate: row.asOfDate },
-      select: { subjectKey: true, direction: true, amount: true },
+      select: { subjectKey: true, subjectId: true, direction: true, amount: true },
     });
     return { asOfDate: row.asOfDate.toISOString().slice(0, 10), rows: rows.map((item) => ({ ...item, amount: item.amount.toString() })) };
   }
@@ -185,10 +246,10 @@ export class OpeningBalanceService {
    * 一次读回整张表（很小：币种数个建账日 × 科目数）而不是每币种一次查询：报表一个请求要问三个时点，
    * 逐币种逐时点查库既慢，又给了「几个时点用了不同口径」的机会。
    */
-  async effectiveForAll(toDate: string): Promise<Array<{ currency: string; asOfDate: string; rows: Array<{ subjectKey: string; direction: string; amount: string }> }>> {
+  async effectiveForAll(toDate: string): Promise<Array<{ currency: string; asOfDate: string; rows: OpeningBalanceEffectiveRow[] }>> {
     const all = await this.prisma.accountingOpeningBalance.findMany({
       where: { deletedAt: null, asOfDate: { lte: utcDate(toDate) } },
-      select: { currency: true, asOfDate: true, subjectKey: true, direction: true, amount: true },
+      select: { currency: true, asOfDate: true, subjectKey: true, subjectId: true, direction: true, amount: true },
     });
     const latest = new Map<string, string>();
     for (const row of all) {
@@ -203,7 +264,7 @@ export class OpeningBalanceService {
         asOfDate,
         rows: all
           .filter((row) => row.currency === currency && row.asOfDate.toISOString().slice(0, 10) === asOfDate)
-          .map((row) => ({ subjectKey: row.subjectKey, direction: row.direction, amount: row.amount.toString() })),
+          .map((row) => ({ subjectKey: row.subjectKey, subjectId: row.subjectId, direction: row.direction, amount: row.amount.toString() })),
       }));
   }
 

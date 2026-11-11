@@ -16,6 +16,7 @@ const {
   mergeBalances,
   openingBalanceTotals,
   openingBalancesToMap,
+  resolveOpeningSubjectIds,
 } = require("../../dist/modules/finance/opening-balance.service.js");
 
 const audit = () => ({
@@ -28,11 +29,20 @@ const audit = () => ({
 const USER = { id: "user-1", username: "caiwu", display_name: "小叶" };
 
 /** 期初余额服务替身：记录写入与软删的行。 */
-function harness({ existing = [], latest = null } = {}) {
+function harness({ existing = [], latest = null, subjects = [] } = {}) {
   const created = [];
   const updated = [];
   const calls = [];
   const tx = {
+    // 科目表（2026-11-11 R-1 / T3）：`replaceAll` 写入前先把科目键解析成科目主键。
+    // 替身按 `name: { in: [...] }` 过滤，与真实查询同形；`deletedAt: null` 也照做。
+    accountingSubject: {
+      findMany: async (args) => {
+        calls.push({ tx: true, table: "accountingSubject", args });
+        const names = args?.where?.name?.in ?? null;
+        return names ? subjects.filter((row) => names.includes(row.name)) : subjects;
+      },
+    },
     accountingOpeningBalance: {
       findMany: async (args) => { calls.push({ tx: true, args }); return existing; },
       create: async ({ data }) => { created.push(data); return { id: `ob-${created.length}`, ...data }; },
@@ -212,4 +222,81 @@ test("list() 的出参必须能被 JSON.stringify（BigInt 会让整个 GET 接�
   const empty = await service.list({ currency: "USD" });
   assert.equal(typeof empty.totals.debit, "string");
   assert.doesNotThrow(() => JSON.stringify(empty));
+});
+
+/* ------------------------------------------------- 期初落科目主键（2026-11-11 R-1 / T3） */
+
+// 为什么这组必须钉：期初原本只有文本键，是**唯一一张连科目外键都没有**的业务表。
+// 科目一改名，期初就与主数据脱节，报表按名字匹配不上、金额静默消失（诊断 P0-2）。
+// 判据是全站同一条：**唯一同名才认**，歧义与查不到一律留空，绝不猜一个科目。
+
+const SUBJECTS = [
+  { id: "sub-bank", category: "资产类", name: "银行存款" },
+  { id: "sub-material", category: "资产类", name: "原材料" },
+  { id: "sub-cost", category: "成本类", name: "原材料" },
+  { id: "sub-manage", category: "损益类", name: "管理费用" },
+];
+
+test("期初落主键：带分类的键按「同分类 + 同名称」命中", async () => {
+  const { service, created } = harness({ subjects: SUBJECTS });
+  await service.replaceAll({
+    as_of_date: "2026-09-01",
+    rows: [{ subject_key: "资产类/银行存款", direction: "debit", amount: "100" }],
+  }, USER);
+  assert.equal(created[0].subjectId, "sub-bank");
+});
+
+test("期初落主键：裸名（资金科目老写法）按唯一同名命中", async () => {
+  // 历史期初行写的是「银行存款」而不是「资产类/银行存款」：`normalizeSubjectKey` 会先补成
+  // 资产类/银行存款，再按同分类命中。裸名与带分类两种写法必须落到同一个科目。
+  const { service, created } = harness({ subjects: SUBJECTS });
+  await service.replaceAll({
+    as_of_date: "2026-09-01",
+    rows: [{ subject_key: "银行存款", direction: "debit", amount: "100" }],
+  }, USER);
+  assert.equal(created[0].subjectId, "sub-bank");
+});
+
+test("期初落主键：同名跨分类且没写分类 → 留空并回一条未归位提示（绝不猜）", async () => {
+  // 「原材料」在资产类与成本类下各有一个。期初行只写裸名「原材料」时，猜哪条都可能把
+  // 一笔资产期初记成成本期初 —— 报表上看不出来。所以留空。
+  const { service, created } = harness({ subjects: SUBJECTS });
+  const result = await service.replaceAll({
+    as_of_date: "2026-09-01",
+    rows: [{ subject_key: "原材料", direction: "debit", amount: "100" }],
+  }, USER);
+  assert.equal(created[0].subjectId, null, "同名跨分类不能猜");
+  // 清单里回的是**归一后的键**：`normalizeSubjectKey` 只给「银行存款 / 库存现金」两个资金裸名补分类，
+  // 「原材料」保持裸名。财务按这个键能认出自己填的是哪一行。
+  assert.deepEqual(result.unassigned, ["原材料"], "要把归不上的键回给界面，财务才知道去补分类");
+});
+
+test("期初落主键：写了分类就按分类认，同名跨分类不再是歧义", async () => {
+  const { service, created } = harness({ subjects: SUBJECTS });
+  const result = await service.replaceAll({
+    as_of_date: "2026-09-01",
+    rows: [{ subject_key: "成本类/原材料", direction: "debit", amount: "100" }],
+  }, USER);
+  assert.equal(created[0].subjectId, "sub-cost");
+  assert.deepEqual(result.unassigned, []);
+});
+
+test("期初落主键：科目被改过名（查不到）→ 留空、不阻断录入、进未归位清单", async () => {
+  // 拦住录入只会让财务没法修账；留空让报表回退文本匹配，同时点名提示。
+  const { service, created } = harness({ subjects: SUBJECTS });
+  const result = await service.replaceAll({
+    as_of_date: "2026-09-01",
+    rows: [{ subject_key: "损益类/老名字", direction: "debit", amount: "100" }],
+  }, USER);
+  assert.equal(created[0].subjectId, null);
+  assert.deepEqual(result.unassigned, ["损益类/老名字"]);
+});
+
+test("纯解析：id 键原样跳过，不重复解析", () => {
+  const resolved = resolveOpeningSubjectIds(
+    [{ subjectKey: "@id:sub-bank" }, { subjectKey: "损益类/管理费用" }],
+    SUBJECTS,
+  );
+  assert.equal(resolved.has("@id:sub-bank"), false, "已经是 id 键的行不该被再解析一次");
+  assert.equal(resolved.get("损益类/管理费用"), "sub-manage");
 });

@@ -289,14 +289,25 @@ export class FinanceThreeStatementsService {
       : [];
     const subjectIdByLabel = new Map(subjectRows.map((subject) => [accountingSubjectKey(subject.category, subject.name), subject.id]));
     const subjectRefs: Map<string, SubjectRef> = new Map(subjectRows.map((subject) => [subjectIdKeyOf(subject.id), { category: subject.category, name: subject.name }]));
-    /** 期初行的 `分类/名称` 键 → 归集键（唯一同名命中的才用 id 键；否则保留 label 键）。 */
-    const canonicalOpeningKey = (rawKey: string): string => {
+    /**
+     * 期初行的归集键。**有科目主键就按主键**（2026-11-11 R-1 / T3），没有才退回文本匹配。
+     *
+     * 为什么主键优先：文本键是 `分类/名称`，科目一改名就与主数据脱节，报表按名字匹配不上、
+     * 金额静默消失（诊断 P0-2）。主键不受改名影响。
+     * 文本兜底只服务两类行：T3 之前写入的历史行、以及按「唯一同名」归不上的行。
+     */
+    const canonicalOpeningKey = (rawKey: string, subjectId: string | null | undefined): string => {
+      const id = subjectId?.trim();
+      if (id) {
+        // 索引里查得到的 id 才用：查不到说明科目被物理删了，退回文本键，不制造解析不到的孤儿键。
+        return subjectRefs.has(subjectIdKeyOf(id)) ? subjectIdKeyOf(id) : normalizeSubjectKey(rawKey);
+      }
       const normalized = normalizeSubjectKey(rawKey);
       if (isSubjectIdKey(normalized)) return normalized;
       const ref = splitSubjectKey(normalized);
       if (!ref.category) return normalized;
-      const subjectId = subjectIdByLabel.get(accountingSubjectKey(ref.category, ref.name));
-      return subjectId ? subjectIdKeyOf(subjectId) : normalized;
+      const resolvedId = subjectIdByLabel.get(accountingSubjectKey(ref.category, ref.name));
+      return resolvedId ? subjectIdKeyOf(resolvedId) : normalized;
     };
 
     /**
@@ -375,7 +386,7 @@ export class FinanceThreeStatementsService {
       let merged = new Map<string, SummedAmount>();
       const foreignLines: StatementVoucherLine[] = [];
       for (const group of openingGroups) {
-        const canonicalRows = group.rows.map((row) => ({ ...row, subjectKey: canonicalOpeningKey(row.subjectKey) }));
+        const canonicalRows = group.rows.map((row) => ({ ...row, subjectKey: canonicalOpeningKey(row.subjectKey, row.subjectId) }));
         if (group.currency === currency) {
           merged = mergeBalances(merged, openingBalancesToMap(canonicalRows));
           continue;

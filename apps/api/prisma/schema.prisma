@@ -2368,6 +2368,8 @@ model AccountingSubject {
   voucherLines                VoucherLine[]                   @relation("VoucherLineSubject")
   /// 凭证分录上的业务科目（辅助核算维度，见 `VoucherLine.businessSubjectId`）。
   voucherLineBusinessSubjects VoucherLine[]                   @relation("VoucherLineBusinessSubject")
+  /// 建账期初余额（2026-11-11 R-1，见 `AccountingOpeningBalance.subjectId`）。
+  openingBalances             AccountingOpeningBalance[]      @relation("OpeningBalanceSubject")
 
   /// 同类别内科目名唯一：迁移与 seed 靠它做幂等种入。
   /// 不设全局唯一是有意的 —— 将来财务要在两个类别下各建一个同名明细科目时不必再迁移一次。
@@ -2468,6 +2470,14 @@ model AccountingOpeningBalance {
   asOfDate     DateTime  @map("as_of_date") @db.Date
   subjectKey   String    @map("subject_key") @db.VarChar(200)
   subjectLabel String    @map("subject_label") @db.VarChar(200)
+  /// 科目主键（2026-11-11 R-1）。期初原本只有文本键 `subject_key`，是**唯一一张连科目外键都没有**
+  /// 的业务表：科目一改名，这一行的键就与主数据脱节，报表按名字匹配不上，金额静默消失
+  /// （诊断 P0-2）。有它之后，改名不影响期初归位。
+  ///
+  /// 可空：历史行可能按「唯一同名」归不上（同名跨分类、或科目被改过名），
+  /// 那种情况留空并由迁移输出清单，绝不猜一个科目塞进去 —— 猜错等于把期初记到别的账上。
+  /// SetNull：科目行正常只停用不物理删除；万一物理清理，期初仍靠 `subject_key` 快照可读。
+  subjectId    String?   @map("subject_id") @db.Uuid
   currency     String    @db.VarChar(10)
   /// debit / credit（借/贷余额，与凭证分录同一套方向词）
   direction    String    @db.VarChar(10)
@@ -2480,11 +2490,17 @@ model AccountingOpeningBalance {
   deletedAt    DateTime? @map("deleted_at")
   deletedBy    String?   @map("deleted_by") @db.Uuid
 
+  subject      AccountingSubject? @relation("OpeningBalanceSubject", fields: [subjectId], references: [id], onDelete: SetNull)
+
   /// 同一建账日 + 同一科目 + 同一币种只有一行。**软删除后仍占着这个键**（与月度管理费分摊同一处理）：
   /// 服务层「整批替换」时按这个三元组 upsert（把软删的那条恢复回来），所以唯一索引成立，也不会出现
   /// 「同一科目两条期初，报表用哪条」的歧义。
+  ///
+  /// ⚠️ 刻意**不**改成 (as_of_date, subject_id, currency)：软删占位依赖现有三列，
+  /// 换成主键后「删掉一行再用同名科目加回来」会因为可空的 subject_id 产生两条占位行。
   @@unique([asOfDate, subjectKey, currency])
   @@index([asOfDate, currency])
+  @@index([subjectId])
   @@map("accounting_opening_balances")
 }
 
