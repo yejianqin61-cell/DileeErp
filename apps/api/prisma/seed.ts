@@ -3,7 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { CURRENCY_DICTIONARY_KEY, DEFAULT_CURRENCIES } from "../src/platform/currency/currency-catalog";
 import { DEFAULT_SETTLEMENT_ACCOUNTS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY } from "../src/modules/finance/cash-flow-catalog";
-import { ACCOUNTING_SUBJECT_CATEGORIES, ACCOUNTING_SUBJECT_SEEDS } from "../src/modules/finance/accounting-subject-catalog";
+import { ACCOUNTING_SUBJECT_CATEGORIES, ACCOUNTING_SUBJECT_SEEDS, accountingSubjectCodeFor } from "../src/modules/finance/accounting-subject-catalog";
 
 const prisma = new PrismaClient();
 
@@ -76,8 +76,11 @@ async function main() {
     for (const subject of ACCOUNTING_SUBJECT_SEEDS) {
       await tx.accountingSubject.upsert({
         where: { category_name: { category: subject.category, name: subject.name } },
+        // 编码**只写在 create 里**（2026-11-11 R-1）：它是身份，一旦落库终身不变。
+        // 写进 update 就等于「重跑种子即重算身份」，那正是这次要消灭的毛病；
+        // 财务改过 sortOrder 之后重跑，编码也不会跟着漂。
         update: { balanceDirection: subject.balanceDirection, sortOrder: subject.sortOrder, isActive: true, updatedBy: id },
-        create: { id: randomUUID(), category: subject.category, name: subject.name, balanceDirection: subject.balanceDirection, sortOrder: subject.sortOrder, createdBy: id, updatedBy: id },
+        create: { id: randomUUID(), code: accountingSubjectCodeFor(subject.sortOrder), category: subject.category, name: subject.name, balanceDirection: subject.balanceDirection, sortOrder: subject.sortOrder, createdBy: id, updatedBy: id },
       });
     }
   });

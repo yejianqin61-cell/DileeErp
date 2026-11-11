@@ -24,6 +24,7 @@ const {
   UNKNOWN_SUBJECT_CATEGORY_RANK,
   legacySubjectOf,
   paymentSubjectNames,
+  accountingSubjectCodeFor,
 } = require("../../dist/modules/finance/accounting-subject-catalog.js");
 
 const subjectKeys = new Set(ACCOUNTING_SUBJECTS.map((subject) => accountingSubjectKey(subject.category, subject.name)));
@@ -217,3 +218,35 @@ test("科目表按科目表顺序排列时，每个分类恰好是一段（比�
   const sorted = [...ACCOUNTING_SUBJECTS].sort(compareAccountingSubjects).map((subject) => subject.category);
   assert.deepEqual(sorted, ACCOUNTING_SUBJECTS.map((subject) => subject.category), "常量本身已经是规范顺序，排序后不应变化");
 });
+
+/* ------------------------------------------------- 不可变编码（2026-11-11 R-1） */
+
+// 为什么需要这组守卫：编码是科目的**身份**，`分类/名称` 只是显示名。身份一旦不唯一或不稳，
+// 凭证、期初、报表就只能退回按名字认科目 —— 那正是本期诊断的 P0-1 / P0-3。
+// 编码由 sortOrder 推出，所以「编码唯一」等价于「sortOrder 唯一」，两者一起钉。
+
+test("编码格式：`S` + sortOrder 补零到 4 位", () => {
+  assert.equal(accountingSubjectCodeFor(10), "S0010");
+  assert.equal(accountingSubjectCodeFor(715), "S0715", "补充科目「工资支付」的排序号是 715");
+  assert.equal(accountingSubjectCodeFor(1210), "S1210", "最大排序号仍是 4 位");
+  assert.equal(accountingSubjectCodeFor(12345), "S12345", "超过 4 位不截断 —— 截断会让两个科目撞同一个编码");
+});
+
+test("122 条科目的编码两两不同，且都等于由各自 sortOrder 算出的值", () => {
+  const codes = ACCOUNTING_SUBJECT_SEEDS.map((subject) => accountingSubjectCodeFor(subject.sortOrder));
+  assert.equal(codes.length, 122);
+  for (let index = 0; index < codes.length; index += 1) {
+    const subject = ACCOUNTING_SUBJECT_SEEDS[index];
+    assert.equal(codes[index], accountingSubjectCodeFor(subject.sortOrder), `「${subject.name}」的编码与它的排序号对不上`);
+  }
+  assert.equal(new Set(codes).size, codes.length, "编码重复 = 两个科目共用一个身份，改名后金额会记到别人头上");
+});
+
+test("编码只含大写字母与数字，长度不超过库列宽 20", () => {
+  for (const subject of ACCOUNTING_SUBJECT_SEEDS) {
+    const code = accountingSubjectCodeFor(subject.sortOrder);
+    assert.match(code, /^S\d{4,}$/, `「${subject.name}」的编码「${code}」不符合 S+数字 的形状`);
+    assert.ok(code.length <= 20, `「${subject.name}」的编码超过 VarChar(20)`);
+  }
+});
+

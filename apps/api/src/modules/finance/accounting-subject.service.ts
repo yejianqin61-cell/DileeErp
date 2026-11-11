@@ -2,7 +2,7 @@ import { Injectable, NotFoundException, UnprocessableEntityException } from "@ne
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
-import { compareAccountingSubjectCategories, compareAccountingSubjects } from "./accounting-subject-catalog";
+import { accountingSubjectCodeFor, compareAccountingSubjectCategories, compareAccountingSubjects } from "./accounting-subject-catalog";
 
 /**
  * 会计科目（全站财务口径的唯一来源，`/finance/accounting-subjects`）。
@@ -82,8 +82,12 @@ export class AccountingSubjectService {
     await this.assertCategoryExists(category);
     await this.assertUnique(category, name);
     const sortOrder = input.sort_order ?? (await this.nextSortOrder(category));
+    // 编码由排序号推出，因此「排序号撞车」等于「身份撞车」。库层的唯一索引会兜住，
+    // 但那时报的是数据库约束错（财务看不懂），所以这里先拦住并说清是哪个排序号被占了。
+    const code = accountingSubjectCodeFor(sortOrder);
+    await this.assertCodeAvailable(code);
     const row = await this.prisma.accountingSubject.create({
-      data: { category, name, balanceDirection, sortOrder, ...this.audit.create(user) },
+      data: { code, category, name, balanceDirection, sortOrder, ...this.audit.create(user) },
     });
     await this.audit.record("accounting_subject.create", "accounting_subject", user.id, row.id, { category, name });
     return row;
@@ -183,6 +187,22 @@ export class AccountingSubjectService {
       throw this.invalid("ACCOUNTING_SUBJECT_DUPLICATED", `「${category}」下曾有一个叫「${name}」的科目（已删除），名称仍被占用，请换一个名字`);
     }
     throw this.invalid("ACCOUNTING_SUBJECT_DUPLICATED", `「${category}」下已经有「${name}」这个科目`);
+  }
+
+  /**
+   * 编码唯一性守卫（2026-11-11 R-1）。
+   *
+   * 编码是科目的**身份**，终身不变；它由 `sortOrder` 推出，所以两个科目拿到同一个排序号
+   * 就会拿到同一个身份。库层有唯一索引，但撞上去报的是数据库约束错，财务看不懂；
+   * 这里提前拦住，并告诉她「排序号 X 已经被别的科目占了，换一个」。
+   */
+  private async assertCodeAvailable(code: string) {
+    const existing = await this.prisma.accountingSubject.findFirst({ where: { code }, select: { id: true, name: true, category: true } });
+    if (!existing) return;
+    throw this.invalid(
+      "ACCOUNTING_SUBJECT_CODE_TAKEN",
+      `排序号对应的编码「${code}」已经被「${existing.category} / ${existing.name}」占用，请换一个排序号`,
+    );
   }
 
   /**

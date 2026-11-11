@@ -2331,6 +2331,14 @@ model CashFlowEntry {
 /// 现在丢掉，以后要再问一次财务。
 model AccountingSubject {
   id                          String                          @id @default(uuid()) @db.Uuid
+  /// **不可变编码**（2026-11-11）：`S` + sortOrder 补零 4 位，如 `S0010`。终身不变。
+  ///
+  /// 这一列是科目的**身份**，`(category, name)` 只是它的显示名。加它的原因：改名一直是
+  /// 「换身份」，于是凭证/期初/报表只能按名字与名字前缀认科目，财务改一个名就让金额静默少计
+  /// （见 `docs/audit/accounting-subject-diagnosis-2026-11-11.md` P0-1 / P0-3）。
+  /// 生成规则与迁移 SQL 必须算出同一个字符串：`accountingSubjectCodeFor`（catalog）。
+  /// 改 sortOrder / 名称 / 分类都**不重算**编码 —— 重算就等于又回到「改名即换身份」。
+  code                        String                          @unique @db.VarChar(20)
   /// 分类 = 科目类别（资产类 / 负债类 / 成本类 / 所有者权益类 / 损益类）。
   category                    String                          @db.VarChar(30)
   /// 项目 = 科目名称（老表 B 列原文，含「销售- 办产地证」这类原表手误空格，照抄不改）。

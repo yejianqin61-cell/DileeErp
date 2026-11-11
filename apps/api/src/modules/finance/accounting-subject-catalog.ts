@@ -191,9 +191,30 @@ export const ACCOUNTING_SUBJECT_SEEDS: readonly AccountingSubjectSeed[] = [
   ...SUPPLEMENTARY_SUBJECTS,
 ].sort((left, right) => left.sortOrder - right.sortOrder);
 
-/** 科目在代码里的稳定标识：`分类/名称`（老表没有唯一编码，两段拼起来才是唯一的）。 */
+/** 科目在代码里的文本标识：`分类/名称`（**不是身份**，改名就会变；身份见 `accountingSubjectCodeFor`）。 */
 export function accountingSubjectKey(category: string, name: string): string {
   return `${category}/${name}`;
+}
+
+/**
+ * 科目的**不可变编码**：`S` + `sortOrder` 左侧补零到 4 位，例 `S0010`、`S0715`、`S1210`。
+ *
+ * 为什么需要它（2026-11-11）：科目表的唯一标识一直是 `分类/名称` 这段**人可读文本**，
+ * 而财务随时能改名 —— 改名即换键。于是凭证、期初余额、报表行匹配只能靠名字/前缀判断，
+ * 一次改名就让金额静默少计（`docs/audit/accounting-subject-diagnosis-2026-11-11.md` 的 P0-1、P0-3）。
+ * 编码把「身份」与「显示名」拆开：改名不动编码，快照与报表认编码。
+ *
+ * 为什么由 `sortOrder` 推出而不是另起一个自增序列：`sortOrder` 在科目表里本就全局唯一
+ * （`apps/api/test/unit/accounting-subject-catalog.test.cjs` 钉着），编码唯一性因此直接继承它；
+ * 更关键的是 TS 与迁移 SQL 能算出**同一个字符串**，不依赖排序规则 ——
+ * 数据库 collation 与 JS `localeCompare` 的排序不同，靠 `ROW_NUMBER()` 两边永远对不齐。
+ *
+ * ⚠️ 编码一旦落库**终身不变**：改 `sortOrder`、改名称、改分类都不重算编码。
+ * `S` 前缀是刻意的 —— 老表的「科目代码」（1001 / 100201 / 222101001）已被用户明确弃用，
+ * 编码不能长得像它，否则财务会以为这就是那套三层科目代码。
+ */
+export function accountingSubjectCodeFor(sortOrder: number): string {
+  return `S${String(sortOrder).padStart(4, "0")}`;
 }
 
 /**
