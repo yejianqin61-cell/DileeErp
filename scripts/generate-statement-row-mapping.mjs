@@ -29,23 +29,38 @@ const distOf = (relative) => new URL(`../apps/api/dist/modules/finance/${relativ
 const statements = await import(distOf("finance-three-statements.js"));
 const catalog = await import(distOf("accounting-subject-catalog.js"));
 
-const { STATEMENT_ROWS } = statements;
+const { BALANCE_SHEET_ASSETS, BALANCE_SHEET_EQUITIES, INCOME_STATEMENT, CASH_FLOW_STATEMENT } = statements;
 const { ACCOUNTING_SUBJECT_SEEDS } = catalog;
 
 /**
+ * 认领域的清单。
+ *
+ * ⚠️ 资产负债表必须**拆成两侧**：它是两栏对照表，行次在左右两侧各自从 1 开始 ——
+ * 资产侧行次 1 是「货币资金」，权益侧行次 1 是「短期借款」。
+ * 混成一个 `balance-sheet` 键会让映射里的 `row_no` 有歧义（同一行次指两个不同报表行），
+ * 而这个歧义在报表上表现为「金额落到了另一侧」——所以这里按侧拆开。
+ */
+const SCOPES = [
+  { statement: "balance-sheet-assets", rows: BALANCE_SHEET_ASSETS },
+  { statement: "balance-sheet-equities", rows: BALANCE_SHEET_EQUITIES },
+  { statement: "income-statement", rows: INCOME_STATEMENT },
+  { statement: "cash-flow-statement", rows: CASH_FLOW_STATEMENT },
+];
+
+/**
  * 一张表里每个 `flow` 分组是独立的认领域：现金流量表同一科目可以同时出现在流入与流出两组，
- * 靠方向区分（见 `StatementRow.flow` 的注释）。资产负债表/利润表没有 flow，视为一组。
+ * 靠方向区分（见 `StatementRow.flow` 的注释）。其余三张表没有 flow，视为一组。
  */
 const groupKeyOf = (row) => row.flow ?? "";
 
-/** 逐条科目 → 每条表每个 flow 组里被哪一行认领。 */
+/** 逐条科目 → 每个认领域里被哪一行认领。 */
 function buildMapping() {
-  const claims = [];   // 每条「科目 × 表 × 方向」的唯一归属
+  const claims = [];   // 每条「科目 × 认领域 × 方向」的唯一归属
   const doubles = [];  // 同一格被多行认领
-  /** `${分类}/${名称}` → 被几张表的行认领过。用来判「一条行都没命中」。 */
+  /** `${分类}/${名称}` → 是否被任何认领域的行认领过。用来判「一条行都没命中」。 */
   const covered = new Map();
 
-  for (const [statement, rows] of Object.entries(STATEMENT_ROWS)) {
+  for (const { statement, rows } of SCOPES) {
     const groups = new Map();
     for (const row of rows) {
       if (!row.match || row.row === null) continue;
