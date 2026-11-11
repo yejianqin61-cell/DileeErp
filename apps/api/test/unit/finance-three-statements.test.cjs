@@ -400,3 +400,45 @@ test("改名回归：主键在索引里时，即使文本已不匹配任何行�
   assert.equal(yuan(income.lines.find((line) => line.row === 5).value), 80, "主键说了算，文本多离谱都不影响");
   assert.deepEqual(income.unmapped, []);
 });
+
+/* ------------------------------------- 现金流量表补成本类缺口（2026-11-11 R-3 / T7） */
+
+// 为什么需要这一组：现金流量表按科目名逐条硬编码，18 个成本类科目只覆盖了 12 个。
+// 落空的六条（生产成本 / 劳务成本 / 制造费用 / 工程施工 / 机械作业 / 辅助生产成本）
+// 每一笔现金支出都会整笔落进 unmapped —— 钱在现金流量表里凭空少一块，而勾稽照样平。
+// 其中「制造费用」最扎眼：车间间接费用是最典型的经营现金流出。
+
+test("现金流量表：制造费用是经营现金流出，不能落进未归位", () => {
+  const vouchers = [voucher("v1", [debit("成本类/制造费用", "120"), credit(K.bank, "120")])];
+  const cash = buildCashFlowStatement({ vouchers });
+  assert.equal(yuan(cash.lines.find((line) => line.row === 8).value), 120, "与机台维修费/水电费同族 → 支付其他与经营活动有关的现金");
+  assert.deepEqual(cash.unmapped, [], "不能静默丢掉这笔支出");
+});
+
+test("现金流量表：生产成本与辅助生产成本跟「基本生产成本」同一行（生产人工）", () => {
+  const vouchers = [
+    voucher("v1", [debit("成本类/生产成本", "100"), credit(K.bank, "100")]),
+    voucher("v2", [debit("成本类/辅助生产成本", "50"), credit(K.bank, "50")]),
+  ];
+  const cash = buildCashFlowStatement({ vouchers });
+  assert.equal(yuan(cash.lines.find((line) => line.row === 6).value), 150, "支付给职工以及为职工支付的现金");
+  assert.deepEqual(cash.unmapped, []);
+});
+
+test("现金流量表：六条缺口科目全部能落行，一条都不落进未归位", () => {
+  const missing = ["生产成本", "劳务成本", "制造费用", "工程施工", "机械作业", "辅助生产成本"];
+  const vouchers = missing.map((name, index) => voucher(`v${index}`, [debit(`成本类/${name}`, "10"), credit(K.bank, "10")]));
+  const cash = buildCashFlowStatement({ vouchers });
+  assert.deepEqual(cash.unmapped, [], `这些科目必须都有归属：${missing.join("、")}`);
+  const outflow = [5, 6, 7, 8].reduce((sum, row) => sum + yuan(cash.lines.find((line) => line.row === row).value), 0);
+  assert.equal(outflow, 60, "六笔各 10 元，全部落在经营活动流出里");
+});
+
+test("现金流量表：补齐后覆盖度守卫仍然干净（无未认领、无两行同时认领）", () => {
+  // 补名字最容易犯的错是顺手抄进两行（金额算两遍）或抄错一个字（那一行静默为 0），
+  // 这条守卫就是拦这个的。
+  const coverage = checkStatementCoverage();
+  assert.deepEqual(coverage.unclaimed, []);
+  assert.deepEqual(coverage.doubleClaimed, []);
+  assert.deepEqual(coverage.emptyRows, []);
+});
