@@ -140,3 +140,47 @@ test("三大报表版式：缺口的表尾文案（未生成凭证 / 草稿 / �
   assert.equal(lost.length, 1);
   assert.ok(lost[0].includes("2 张 HKD 凭证") && lost[0].includes("建账期初") && lost[0].includes("没有维护 HKD 的期末汇率"));
 });
+
+/* ------------------------------------- 资产负债表也要报「未归位科目」（2026-11-11 R-3 / T6） */
+
+// 为什么这条必须有：利润表与现金流量表都会在表尾点名未归位的科目，**资产负债表什么都不说**。
+// 于是「财务新增了一个科目、它的金额没进任何一行」这件事，在资产负债表上是彻底静默的 ——
+// 而资产负债表恰恰是财务最先看的那张。诊断把它列为 P0-2 的另一半。
+
+test("资产负债表：有未归位科目时表尾必须点名（与利润表同口径）", () => {
+  const report = balanceSheetReport();
+  report.current.unmapped = [{ subjectKey: "损益类/运费", balance: 1000000n }];
+  const table = buildBalanceSheetTable(report);
+  const text = table.footnotes.join("\n");
+  assert.ok(text.includes("未归入任何报表行的科目"), "必须出现这句提示");
+  assert.ok(text.includes("损益类/运费"), "必须点名是哪个科目，否则财务不知道该去改什么");
+  assert.ok(text.includes("100"), "金额要按元显示（1000000 是万分之一单位），而不是印出原始整数");
+});
+
+test("资产负债表：没有未归位科目时不写这句（不制造噪音）", () => {
+  const table = buildBalanceSheetTable(balanceSheetReport());
+  assert.equal(table.footnotes.some((note) => note.includes("未归入任何报表行的科目")), false);
+});
+
+test("资产负债表：勾稽不平时，先说是未归位科目，再说期初（现在的顺序把一切差额都归因于期初）", () => {
+  const report = balanceSheetReport();
+  report.current.unmapped = [{ subjectKey: "损益类/运费", balance: 1000000n }];
+  report.current.balanced = false;
+  report.current.difference = 1000000n;
+  const notes = buildBalanceSheetTable(report).footnotes;
+  const unmappedAt = notes.findIndex((note) => note.includes("未归入任何报表行的科目"));
+  const differenceAt = notes.findIndex((note) => note.includes("相差"));
+  assert.ok(unmappedAt >= 0 && differenceAt >= 0, "两句都要在");
+  assert.ok(unmappedAt < differenceAt, "未归位那句必须排在差额说明之前");
+  assert.ok(notes[differenceAt].includes("未归位"), "差额说明要把读者指向未归位科目，而不是只指向期初");
+});
+
+test("资产负债表：勾稽不平但科目都归位时，差额说明仍如期初口径", () => {
+  const report = balanceSheetReport();
+  report.current.balanced = false;
+  report.current.difference = 500000n;
+  const notes = buildBalanceSheetTable(report).footnotes;
+  const difference = notes.find((note) => note.includes("相差"));
+  assert.ok(difference.includes("期初"), "没有未归位科目时，差额只能来自期初，说明要如实这么写");
+  assert.equal(difference.includes("未归位"), false, "不能凭空指到不存在的未归位科目上");
+});

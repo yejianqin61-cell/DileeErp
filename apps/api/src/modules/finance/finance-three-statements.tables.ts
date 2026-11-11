@@ -95,9 +95,23 @@ export function buildBalanceSheetTable(report: BalanceSheetReport): ReportTable 
     ...report.yearStartResult.notes.filter((note) => !report.current.notes.includes(note)),
     ...statementFootnotes(report.gap),
   ];
+  /**
+   * 未归位科目（2026-11-11 R-3 / T6）。
+   *
+   * 为什么必须写：利润表与现金流量表都会点名，只有资产负债表什么都不说 ——
+   * 而它恰恰是财务最先看的那张。「新增了一个科目、金额没进任何一行」在资产负债表上
+   * 原本是彻底静默的（诊断 P0-2 的另一半）。
+   */
+  const unmapped = report.current.unmapped;
+  if (unmapped.length) {
+    notes.push(`未归入任何报表行的科目（本期有发生额）：${unmapped.map((item) => `${item.subjectKey}（${formatStatementValue(item.balance)}）`).join("、")}`);
+  }
   if (!report.current.balanced) {
+    // 差额的归因顺序很重要：科目没归位时差额就是它们造成的，先看期初会把人引到错的方向。
     notes.push(`资产总计与负债和所有者权益总计相差 ${formatStatementValue(report.current.difference)}：`
-      + "先看上面那条期初余额说明 —— 只录了银行账户期初、还没有「科目期初余额表」时，这个差额是已知的");
+      + (unmapped.length
+        ? "先看上面那条未归位科目的说明 —— 它们没有进任何一行，差额很可能就是它们；确认之后再看期初余额那条。"
+        : "先看上面那条期初余额说明 —— 只录了银行账户期初、还没有「科目期初余额表」时，这个差额是已知的"));
   }
   return {
     sheetName: "资产负债表",
@@ -124,7 +138,9 @@ export function buildIncomeStatementTable(report: IncomeStatementReport): Report
     ...statementFootnotes(report.gap),
   ];
   if (report.current.unmapped.length) {
-    notes.push(`未归入任何报表行的科目（本期有发生额）：${report.current.unmapped.map((item) => `${item.subjectKey}（${item.balance}）`).join("、")}`);
+    // 金额走 `formatStatementValue`：unmapped 里的 balance 是「万分之一元」的整数，
+    // 直接印出来会变成 1000000 而不是 100（与现金流量表那句同口径，三张表统一）。
+    notes.push(`未归入任何报表行的科目（本期有发生额）：${report.current.unmapped.map((item) => `${item.subjectKey}（${formatStatementValue(item.balance)}）`).join("、")}`);
   }
   return { ...twoPeriodTable("利润表", report.current.lines, report.previous.lines), footnotes: notes };
 }
