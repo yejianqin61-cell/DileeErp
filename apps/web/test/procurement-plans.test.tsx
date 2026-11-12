@@ -731,7 +731,7 @@ describe("采购计划列表：新建弹窗说清「为什么选不到这张 BOM
 
     await userEvent.click(screen.getByTestId("plan-create"));
 
-    await screen.findByText(/已有采购计划/);
+    await screen.findAllByText(/已有采购计划/);
     expect(screen.getAllByText(/已有采购计划/)).toHaveLength(3);
   });
 
