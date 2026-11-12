@@ -34,6 +34,7 @@ import { formatBeijingShort } from "../../../lib/audit-time";
 import { amountSummaryText, lineAmountText, type PlanAmount } from "../../../lib/purchase-plan-amount";
 import { OrderNoWithOrphan } from "../../../components/data/orphan-badge";
 import { trimPlanNumber } from "../../../lib/purchase-plan-price-entry";
+import { blockedCandidateLabel, blockedCandidateNotes, blockedCandidatesFromMeta, candidatePlaceholder, type BlockedCandidate } from "../../../lib/purchase-plan-candidates";
 import { notifyError } from "../../../components/ui/toaster";
 
 /**
@@ -128,6 +129,13 @@ export default function PurchasePlansPage() {
    */
   const [rows, setRows] = useState<PlanRow[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  /**
+   * 被拦下的 BOM（`meta.blocked`，2026-11-12）。
+   *
+   * 用户原话：「采购计划有时候无法选中需要建立采购计划的BOM表」。审计指出候选接口把
+   * 不可建的 BOM 静默滤掉，界面上只剩空下拉 —— 这一格就是"为什么"。
+   */
+  const [blockedCandidates, setBlockedCandidates] = useState<BlockedCandidate[]>([]);
   const [materials, setMaterials] = useState<PlanMaterialRef[]>([]);
   const [units, setUnits] = useState<PlanUnitRef[]>([]);
   const [openPlanId, setOpenPlanId] = useState(searchParams.get("plan_id") ?? "");
@@ -154,6 +162,7 @@ export default function PurchasePlansPage() {
       ]);
       setRows(plans.data ?? []);
       setCandidates(cands.data ?? []);
+      setBlockedCandidates(blockedCandidatesFromMeta(cands.meta));
       setMaterials(ms.data ?? []);
       setUnits(us.data ?? []);
     } catch (cause) {
@@ -293,12 +302,27 @@ export default function PurchasePlansPage() {
     label: "销售单 / BOM",
     type: "searchable-select",
     required: true,
-    placeholder: candidates.length ? "选一张还没有计划的 BOM" : "没有可建计划的 BOM",
+    placeholder: candidatePlaceholder(candidates.length, blockedCandidates.length),
     options: candidates.map((candidate) => ({
       value: candidate.bomId,
       label: `${candidate.orderNo}${candidate.itemNo ? ` / ${candidate.itemNo}` : ""}${candidate.customerName ? ` / ${candidate.customerName}` : ""}（${candidate.itemCount} 行）`,
     })),
   };
+
+  /**
+   * 把被拦下的 BOM 摆进新建弹窗（2026-11-12）。
+   *
+   * 为什么不另做一个"要建计划的 BOM 清单"页面：用户卡的这一刻就在这个弹窗里，
+   * 答案必须出现在同一个地方。字段类型 `info` 是 `ActionDialog` 已有的只读行，不新增控件。
+   *
+   * 每条一行、最多三条；超出时补一句"还有 N 条"——否则用户会以为被拦的就这三张。
+   */
+  const blockedReasonFields: ActionField[] = useMemo(() => {
+    const { notes, shown, total } = blockedCandidateNotes(blockedCandidates);
+    const fields: ActionField[] = notes.map((note, index) => ({ name: `blocked_${index}`, label: note, type: "info" as const }));
+    if (total > shown) fields.push({ name: "blocked_more", label: `还有 ${total - shown} 张 BOM 不能建计划（原因同上几类）`, type: "info" as const });
+    return fields;
+  }, [blockedCandidates]);
 
   return (
     <div className="page-root purchase-plan-list" data-testid="page-procurement-plans">
@@ -340,7 +364,7 @@ export default function PurchasePlansPage() {
           open
           title="新建采购计划"
           submitLabel="创建并打开"
-          fields={[candidateField]}
+          fields={[candidateField, ...blockedReasonFields]}
           onOpenChange={(open) => { if (!open) setCreateOpen(false); }}
           onSubmit={async (values) => {
             try {
