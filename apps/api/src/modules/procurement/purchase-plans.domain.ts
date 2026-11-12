@@ -89,3 +89,62 @@ export function countBomMaterialsMissingFromPlan(bomMaterialIds: readonly string
   const missing = new Set(bomMaterialIds.filter((id) => !planned.has(id)));
   return missing.size;
 }
+
+/**
+ * 可以建采购计划的销售单状态（2026-11-12）。
+ *
+ * `closed` 一并放行，理由见 `docs/audit/procurement-audit-2026-11-12.md` §1.3：
+ * 关闭是**销售侧**的动作（`sales-orders.service.ts` 里关单只要求当前是 confirmed），
+ * 它不表示料已经买齐；客户加量、上批损耗补货都可能在关单之后才发生。
+ * 而 BOM 本来就只可能建在**已确认**的销售单上（`boms.service.ts` 的 `createFromSalesOrder`），
+ * 所以放开 closed 不会把"草稿期还没有 BOM"的噪音放进来。
+ */
+export const PLAN_ELIGIBLE_SALES_STATUSES: readonly string[] = ["confirmed", "closed"];
+
+/** 候选被拦下的原因码（契约；中文文案可以改，码不能改）。 */
+export type PlanCandidateBlockCode = "SALES_ORDER_DELETED" | "PLAN_ALREADY_EXISTS" | "SALES_ORDER_NOT_CONFIRMED";
+
+export type PlanCandidateBlock = { code: PlanCandidateBlockCode; message: string };
+
+/** 卖单状态的可读名（原因文案要给采购员看，不给他看枚举值）。 */
+const SALES_ORDER_STATUS_LABELS: Record<string, string> = { draft: "草稿", confirmed: "已确认", closed: "已关闭" };
+
+/**
+ * 这张 BOM 为什么**不能**建采购计划？返回空数组 = 可以建。
+ *
+ * 纯函数、只吃已读好的行（不查库），因为它要在两个地方得到同一个答案：
+ * 候选列表（告诉用户为什么选不到）与建计划的前置校验（真的拦住）。
+ * 两处各写一遍条件，就等于给自己留一次"候选里有、保存时报 404"的事故。
+ */
+export function planCandidateReasons(input: {
+  salesOrderDeleted: boolean;
+  salesOrderStatus: string;
+  existingPlan: { planNo: string; status?: PurchasePlanStatus } | null;
+}): PlanCandidateBlock[] {
+  // 销售单没了优先说：这时候"状态"已经不是采购员该关心的事了。
+  if (input.salesOrderDeleted) {
+    return [{ code: "SALES_ORDER_DELETED", message: "所属销售单已被删除（孤立单据）：要补购请先找管理员把销售单接回来" }];
+  }
+  if (input.existingPlan) {
+    const status = input.existingPlan.status ? PURCHASE_PLAN_STATUS_LABELS[input.existingPlan.status] : "已有";
+    return [{
+      code: "PLAN_ALREADY_EXISTS",
+      message: `该 BOM 已有采购计划 ${input.existingPlan.planNo}（${status}）：补料请打开这份计划、加一行，不要另建一份`,
+    }];
+  }
+  if (!PLAN_ELIGIBLE_SALES_STATUSES.includes(input.salesOrderStatus)) {
+    const label = SALES_ORDER_STATUS_LABELS[input.salesOrderStatus] ?? input.salesOrderStatus;
+    return [{ code: "SALES_ORDER_NOT_CONFIRMED", message: `所属销售单还是${label}：请先在销售模块确认销售单，再回来建采购计划` }];
+  }
+  return [];
+}
+
+/**
+ * 计划状态从**行链接**派生（口径 4.1：状态不落列，落列就一定和行状态漂移）。
+ *
+ * 抽出来是给候选列表用的：它要在一屏里说清"那份计划是还没下单、还是已经买完了"，
+ * 而它手里只有行的 `purchaseOrderItemId`。
+ */
+export function planStatusFromItems(items: ReadonlyArray<{ purchaseOrderItemId: string | null }>): PurchasePlanStatus {
+  return planStatusOf(items.length, items.filter((item) => !item.purchaseOrderItemId).length);
+}
