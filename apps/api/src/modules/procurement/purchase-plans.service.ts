@@ -6,7 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { itemNoKey } from "../sales/item-no";
 import { PurchaseOrdersService, type PurchaseOrderItemInput, type SplitGroup, type SplitInput } from "./purchase-orders.service";
-import { countBomMaterialsMissingFromPlan, DEFAULT_PLAN_CURRENCY, planLineAmount, planStatusOf, purchasePlanNo, PURCHASE_PLAN_STATUS_LABELS, sumPlanAmounts, type PurchasePlanStatus } from "./purchase-plans.domain";
+import { countBomMaterialsMissingFromPlan, DEFAULT_PLAN_CURRENCY, planCandidateReasons, planLineAmount, planStatusFromItems, planStatusOf, purchasePlanNo, PURCHASE_PLAN_STATUS_LABELS, sumPlanAmounts, type PurchasePlanStatus } from "./purchase-plans.domain";
 
 /**
  * 采购计划：老板要求「采购模块多一个采购计划栏目，承接原来的采购单草稿」。
@@ -235,29 +235,73 @@ export class PurchasePlansService {
   }
 
   /**
-   * 可以建计划的 BOM：已确认销售单 + 未删 BOM + **还没有未删计划**。
+   * 可以建计划的 BOM：**只返回能建的那一半**（老调用方的形状，一行都不用改）。
    *
-   * 这张清单就是"该建计划还没建"的待办，所以不返回已经有计划的 BOM ——
-   * 否则下拉里一堆点了会 409 的选项。
+   * 分类规则本身在 `candidateReport()` 里；这里只是取它的 `eligible` 半边，
+   * 免得"哪些能建"出现第二份实现。
    */
   async candidates() {
+    return (await this.candidateReport()).eligible;
+  }
+
+  /**
+   * 候选清单的**两半**：能建的与被拦下的（2026-11-12）。
+   *
+   * 为什么要把被拦下的也返回：这张清单既是"该建计划还没建"的待办，也是新建弹窗的**选择器**，
+   * 而选择器必须回答"为什么没有我要的那张 BOM"。原来三层条件全写在 `where` 里，
+   * 不可建的 BOM 直接从结果里消失 —— 界面上只剩一个空下拉（用户原话：
+   * 「采购计划有时候无法选中需要建立采购计划的BOM表」）。审计见
+   * `docs/audit/procurement-audit-2026-11-12.md` §1。
+   *
+   * 过滤口径**不再写在 `where` 里**，而是取回该看的 BOM 后在内存里分类：
+   * 这样"为什么不行"才有地方放（`reasons`），而不是被 SQL 吃掉。
+   * 量级与销售单同阶（几百），且 `orderNo` 上有索引。
+   *
+   * 被拦下的上限 50 条：这是给下拉旁边的一句解释，不是报表。
+   */
+  async candidateReport() {
     const boms = await this.prisma.bom.findMany({
-      where: { deletedAt: null, salesOrder: { status: "confirmed", deletedAt: null }, purchasePlans: { none: { deletedAt: null } } },
+      where: { deletedAt: null },
       include: {
-        salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true, deliveryDate: true } },
+        salesOrder: { select: { orderNo: true, itemNo: true, customerSnapshot: true, deliveryDate: true, status: true, deletedAt: true } },
         items: { where: { deletedAt: null }, select: { id: true } },
+        // 一份 BOM 最多一份未删计划（部分唯一索引），所以这里取 `[0]` 是安全的；
+        // 行链接要读回来算派生状态（口径 4.1：状态不落列）。
+        purchasePlans: { where: { deletedAt: null }, select: { id: true, planNo: true, items: { where: { deletedAt: null }, select: { purchaseOrderItemId: true } } } },
       },
       orderBy: [{ orderNo: "asc" }, { version: "desc" }],
     });
-    return boms.map((bom) => ({
-      bomId: bom.id,
-      orderNo: bom.orderNo,
-      bomVersion: bom.version,
-      itemNo: bom.salesOrder?.itemNo ?? null,
-      customerName: snapshotName(bom.salesOrder?.customerSnapshot),
-      deliveryDate: bom.salesOrder?.deliveryDate ?? null,
-      itemCount: bom.items.length,
-    }));
+    const eligible: Array<{ bomId: string; orderNo: string; bomVersion: number; itemNo: string | null; customerName: string | null; deliveryDate: Date | null; itemCount: number }> = [];
+    const blocked: Array<{
+      bomId: string; orderNo: string; bomVersion: number; itemNo: string | null; customerName: string | null; itemCount: number;
+      reasons: ReturnType<typeof planCandidateReasons>;
+      existingPlan: { id: string; planNo: string; status: PurchasePlanStatus; statusLabel: string } | null;
+    }> = [];
+    for (const bom of boms) {
+      const plan = bom.purchasePlans?.[0] ?? null;
+      const existingPlan = plan
+        ? { id: plan.id, planNo: plan.planNo, status: planStatusFromItems(plan.items ?? []), statusLabel: PURCHASE_PLAN_STATUS_LABELS[planStatusFromItems(plan.items ?? [])] }
+        : null;
+      const reasons = planCandidateReasons({
+        salesOrderDeleted: Boolean(bom.salesOrder?.deletedAt),
+        salesOrderStatus: bom.salesOrder?.status ?? "",
+        existingPlan,
+      });
+      const shape = {
+        bomId: bom.id,
+        orderNo: bom.orderNo,
+        bomVersion: bom.version,
+        itemNo: bom.salesOrder?.itemNo ?? null,
+        customerName: snapshotName(bom.salesOrder?.customerSnapshot),
+        itemCount: bom.items?.length ?? 0,
+      };
+      if (!reasons.length) {
+        eligible.push({ ...shape, deliveryDate: bom.salesOrder?.deliveryDate ?? null });
+        continue;
+      }
+      if (blocked.length < 50) blocked.push({ ...shape, reasons, existingPlan });
+    }
+    return { eligible, blocked };
   }
 
   /**

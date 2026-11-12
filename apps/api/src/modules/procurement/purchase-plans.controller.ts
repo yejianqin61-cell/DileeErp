@@ -96,8 +96,12 @@ export class PurchasePlansController {
 
   // 必须声明在 `@Get(":id")` **之前**：否则 "candidates" 会被当成一个计划 id 吃掉
   // （Nest 按声明顺序匹配；`purchase-orders.controller.ts` 的 `bom-item-status` 有同样的注释）。
+  //
+  // `data` 仍是"能建计划的 BOM"数组（老调用方不用改）；被拦下的那半边进 `meta.blocked`，
+  // 带原因码与「去哪儿办」（2026-11-12，见 `docs/audit/procurement-audit-2026-11-12.md` §5 P1）。
   @Get("candidates") async candidates() {
-    return { data: await this.plans.candidates(), meta: {} };
+    const report = await this.plans.candidateReport();
+    return { data: report.eligible, meta: { blocked: report.blocked } };
   }
 
   @Post() async create(@Body() body: CreatePlanDto, @CurrentUser() user: CurrentUserType) {
