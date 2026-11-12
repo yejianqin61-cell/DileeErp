@@ -1759,7 +1759,7 @@ test("行级退回：单头合计按剩余明细重算", async () => {
 
   await s.service.revertPurchaseOrderItem("po-1", "poi-2", "客户减量", user);
 
-  assert.equal(order.totalAmount.toString(), "17.5", "21.5 - 4 = 17.5；与建单同一口径（Σ 剩余明细 amount）");
+  assert.equal(order.totalAmount.toString(), "17.5000", "21.5 - 4 = 17.5；与建单同一口径（Σ 剩余明细 amount），列是 Decimal(18,4)");
 });
 
 test("行级退回：这一行已经有到货事实 → 422，且什么都没写", async () => {
