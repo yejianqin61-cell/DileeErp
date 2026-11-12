@@ -103,9 +103,21 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
         if (missingBom) return null;
         // 按 where 真的过滤：`deletedAt: null` 只有调用方要求时才生效 ——
         // 「退回采购计划」读 BOM 时**不看软删**（那条路不该被堵死）。
+        //
+        // 2026-11-12：销售单状态这一格现在由领域常量给出，服务传的是 `{ in: [...] }`
+        // （`confirmed` 与 `closed` 都算可建）。这里两种写法都要认，否则假 Prisma 会把
+        // 「状态可建」的 BOM 一律判成不存在，而失败会伪装成"新建计划全都坏了"。
+        const statusMatches = (bom) => {
+          const wanted = where.salesOrder?.status;
+          if (!wanted) return true;
+          const actual = bom.salesOrder?.status;
+          if (typeof wanted === "string") return actual === wanted;
+          if (Array.isArray(wanted?.in)) return wanted.in.includes(actual);
+          return true;
+        };
         const match = (bom) => bom.id === where.id
           && (where.deletedAt === null ? bom.deletedAt === null : true)
-          && (where.salesOrder?.status ? bom.salesOrder?.status === where.salesOrder.status : true);
+          && statusMatches(bom);
         if (where.id) return boms.find(match) ?? null;
         return boms.find((bom) => bom.deletedAt === null) ?? null;
       },
@@ -392,6 +404,41 @@ test("新建：一个 BOM 只能有一份计划（409），并发由数据库部
 test("新建：BOM 不存在或所属销售单未确认 → 404", async () => {
   await assert.rejects(
     () => makeService({ missingBom: true }).service.create({ bom_id: "bom-404" }, user),
+    (error) => error.getResponse().code === "BOM_NOT_FOUND",
+  );
+});
+
+// ---------------------------------------------------------------------------------------------
+// 可建计划的销售单状态（2026-11-12）：候选与建计划**必须同一个答案**。
+// 原来 loadBom() 把 `status === "confirmed"` 又写了一遍 —— 两处口径迟早漂移，
+// 而漂移的表现就是"候选里选得到、保存时报 404"。
+
+test("新建：销售单已关闭（closed）的 BOM 也能建计划", async () => {
+  const closedBom = { ...bomFixture, salesOrder: { status: "closed", deletedAt: null } };
+  const { service, plans } = makeService({ boms: [closedBom], bomItems: [bomRow("bi-1")], plans: [] });
+
+  const created = await service.create({ bom_id: "bom-1" }, user);
+
+  assert.ok(created.planNo, "关闭销售单不该把补料这条路堵死");
+  assert.equal(plans.length, 1);
+});
+
+test("新建：草稿销售单的 BOM 仍然 404（确认是买料的前提）", async () => {
+  const draftBom = { ...bomFixture, salesOrder: { status: "draft", deletedAt: null } };
+  const { service } = makeService({ boms: [draftBom], bomItems: [bomRow("bi-1")], plans: [] });
+
+  await assert.rejects(
+    () => service.create({ bom_id: "bom-1" }, user),
+    (error) => error.getResponse().code === "BOM_NOT_FOUND",
+  );
+});
+
+test("新建：软删的 BOM 仍然 404", async () => {
+  const deletedBom = { ...bomFixture, deletedAt: new Date("2026-11-01T00:00:00Z") };
+  const { service } = makeService({ boms: [deletedBom], bomItems: [bomRow("bi-1")], plans: [] });
+
+  await assert.rejects(
+    () => service.create({ bom_id: "bom-1" }, user),
     (error) => error.getResponse().code === "BOM_NOT_FOUND",
   );
 });
