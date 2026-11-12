@@ -759,3 +759,70 @@ describe("采购计划列表：新建弹窗说清「为什么选不到这张 BOM
   });
 });
 
+/**
+ * 完成态计划的补料出路（2026-11-12）。
+ *
+ * 审计 §1.2 的死锁：一份计划只要有已下单行就**删不掉**（`remove()` 422），
+ * 而 `bom_id` 上的部分唯一索引一直占着，于是 candidateReport() 永远不返回这张 BOM ——
+ * 想"再建一份计划买下一批"是走不通的。唯一的出路是**在这份计划里加一行**。
+ *
+ * 那条出路必须写在这份计划自己身上，否则用户看到"已完成"只会以为它结束了。
+ */
+describe("采购计划列表：完成态计划要说明「还能在这里加行」", () => {
+  const planLine = (overrides: Record<string, unknown> = {}) => ({
+    id: "l-1", materialId: "m-1", materialCode: "M-001", materialName: "面料A", model: "A-1",
+    unitName: "米", quantity: "5.0000", unitPrice: "3.5000", amount: "17.5000", currency: "CNY",
+    supplierId: "s-1", supplierName: "宁波辅料厂", expectedDate: null, ordered: true, purchaseOrderNo: "PO-1",
+    ...overrides,
+  });
+  const planSummary = (overrides: Record<string, unknown> = {}) => ({
+    id: "plan-1", planNo: "PP-COMPLETED", orderNo: "DL260001-1", itemNo: "27621", customerName: "流水花扇客户",
+    bomId: "bom-1", bomVersion: 3, lineCount: 1, unorderedCount: 0, orderedCount: 1,
+    amounts: [{ currency: "CNY", amount: "17.5000" }], unorderedAmounts: [],
+    status: "completed", statusLabel: "已完成", updatedByName: "张三",
+    createdAt: "2026-09-27T01:00:00Z", updatedAt: "2026-09-27T02:00:00Z",
+    lines: [planLine()],
+    ...overrides,
+  });
+  const stubPlans = (plans: Array<Record<string, unknown>>) => stubApi((url) => {
+    if (url.includes("/purchase-plans/candidates")) return apiOk([], { blocked: [] });
+    if (url.includes("/purchase-plans")) return apiOk(plans);
+    if (url.endsWith("/materials")) return apiOk([]);
+    if (url.endsWith("/units")) return apiOk([]);
+    return apiOk({});
+  });
+  const titleOf = (planNo: string) => screen.getAllByText(planNo)[0].getAttribute("title") ?? "";
+
+  it("完成态计划的 title 里给出补料的动作（不是一句「已完成」就完了）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubPlans([planSummary()]);
+    render(<PurchasePlansPage />);
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(1));
+
+    const title = titleOf("PP-COMPLETED");
+    expect(title).toContain("补料");
+    expect(title).toContain("加一行");
+  });
+
+  it("部分下单的计划不加那句（它本来就还有未下单行，没有死锁）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubPlans([planSummary({ status: "partial", statusLabel: "部分下单", unorderedCount: 1, orderedCount: 0, lines: [planLine({ ordered: false, purchaseOrderNo: null })] })]);
+    render(<PurchasePlansPage />);
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(1));
+
+    expect(titleOf("PP-COMPLETED")).not.toContain("补料");
+  });
+
+  it("原来那三段计划级汇总仍在（加提示不等于重写文案）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubPlans([planSummary()]);
+    render(<PurchasePlansPage />);
+    await waitFor(() => expect(screen.getAllByTestId("data-table-row").length).toBe(1));
+
+    const title = titleOf("PP-COMPLETED");
+    expect(title).toContain("未下单 0 / 共 1 行");
+    expect(title).toContain("计划金额 CNY 17.50");
+    expect(title).toContain("最后更新 张三");
+  });
+});
+
