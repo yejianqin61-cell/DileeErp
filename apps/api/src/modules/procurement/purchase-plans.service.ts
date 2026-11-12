@@ -538,8 +538,18 @@ export class PurchasePlansService {
       // 单头合计按**剩余未删明细**重算，口径与建单一致（Σ amount = 数量×单价 + extra_fee）。
       const remaining = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId, deletedAt: null }, select: { amount: true } });
       const total = remaining.reduce((sum, row) => sum.plus(new Prisma.Decimal(row.amount ?? 0)), new Prisma.Decimal(0));
-      await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { totalAmount: total.toFixed(4), ...this.audit.update(user) } });
-      return { remainingCount: remaining.length, total };
+      /**
+       * 退到一行不剩 → 整单作废，与整单退回**同结果**（`revertPurchaseOrder()` 的尾段）。
+       *
+       * 为什么不能留着一张"没有明细但仍是已下单"的单：它在采购单列表里是一张正常的单，
+       * 却没有任何一行可收到货、金额也是 0 —— 谁也说不清它是什么，而它还会一直占着采购单号。
+       */
+      if (remaining.length === 0) {
+        await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { status: "cancelled", totalAmount: "0", ...this.audit.softDelete(user) } });
+      } else {
+        await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { totalAmount: total.toFixed(4), ...this.audit.update(user) } });
+      }
+      return { remainingCount: remaining.length, total, orderCancelled: remaining.length === 0 };
     });
     await this.audit.record("purchase_order_item.revert_to_plan", "purchase_order_item", user.id, itemId, {
       order_no: order.orderNo,
@@ -550,7 +560,7 @@ export class PurchasePlansService {
       plan_no: plan.planNo,
       reason: reason.trim(),
       remaining_line_count: written.remainingCount,
-      order_cancelled: false,
+      order_cancelled: written.orderCancelled,
     });
     return {
       purchaseOrderId,
@@ -560,7 +570,7 @@ export class PurchasePlansService {
       revertedItemId: itemId,
       remainingLineCount: written.remainingCount,
       totalAmount: written.total.toFixed(4),
-      orderCancelled: false,
+      orderCancelled: written.orderCancelled,
     };
   }
 
