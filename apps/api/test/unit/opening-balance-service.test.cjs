@@ -1,12 +1,14 @@
 // 建账期初余额服务的测试（用户 2026-09-24「1,3,4 都要」的第 ③ 件）。
 //
 // 无可用 PostgreSQL，用手写 Prisma 替身验证服务层规则（谁被写、谁被拦），不验证 SQL。
-// 这里钉四件事：
+// 这里钉五件事：
 //   ① **整批替换**：这次没出现的旧行要软删、出现的行要 upsert（含把软删的行**恢复**回来 ——
 //      唯一索引不区分软删，删了再加同一科目必须走更新）；
 //   ② 校验：方向只能是借/贷、金额必须是**正数**（方向决定符号，不写负数）、科目必填；
 //   ③ 试算平衡（借/贷合计与差额）随响应回话，但**不强制**（财务可能分批录）；
-//   ④ 纯函数：期初行 → 借贷累计（与凭证同型，可直接相加）、两表相加。
+//   ④ 纯函数：期初行 → 借贷累计（与凭证同型，可直接相加）、两表相加；
+//   ⑤ **写入校验科目必须存在**（2026-11-12 R-4 / T10）：不存在 → 422 一行不落库；
+//      同名跨分类 → 放行进未归位；已停用 → 放行落主键 + 计数提示。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
@@ -35,12 +37,19 @@ function harness({ existing = [], latest = null, subjects = [] } = {}) {
   const calls = [];
   const tx = {
     // 科目表（2026-11-11 R-1 / T3）：`replaceAll` 写入前先把科目键解析成科目主键。
-    // 替身按 `name: { in: [...] }` 过滤，与真实查询同形；`deletedAt: null` 也照做。
+    // 替身按真实查询同形过滤 —— `name: { in }`、`deletedAt: null`、`isActive` 都照做：
+    // 「已删除」必须当成不存在（否则 422 校验会被替身悄悄放过），
+    // 「已停用」必须查得出来（否则计数提示永远是 0）。
     accountingSubject: {
       findMany: async (args) => {
         calls.push({ tx: true, table: "accountingSubject", args });
-        const names = args?.where?.name?.in ?? null;
-        return names ? subjects.filter((row) => names.includes(row.name)) : subjects;
+        const where = args?.where ?? {};
+        const names = where.name?.in ?? null;
+        return subjects.filter((row) =>
+          (!names || names.includes(row.name))
+          && (where.deletedAt === null ? (row.deletedAt ?? null) === null : true)
+          // 库层 `is_active` 默认 true；替身里没写 isActive 的科目就是启用科目。
+          && (where.isActive === undefined ? true : (row.isActive ?? true) === where.isActive));
       },
     },
     accountingOpeningBalance: {
@@ -61,6 +70,11 @@ function harness({ existing = [], latest = null, subjects = [] } = {}) {
 
 test("期初余额：整批替换 —— 新行建、旧行软删、软删过的同一科目被恢复（而不是再插一条）", async () => {
   const { service, created, updated } = harness({
+    // T10 起写入前要校验科目存在，这一批两行都得先在科目表里。
+    subjects: [
+      { id: "sub-bank", category: "资产类", name: "银行存款" },
+      { id: "sub-payable", category: "负债类", name: "应付账款" },
+    ],
     existing: [
       { id: "ob-old", subjectKey: "资产类/应收账款", deletedAt: null },
       { id: "ob-gone", subjectKey: "资产类/原材料", deletedAt: null },
@@ -91,7 +105,12 @@ test("期初余额：整批替换 —— 新行建、旧行软删、软删过的
 });
 
 test("期初余额：借贷不平**不拦**，但把差额回话（财务可能分批录；报表那边会因为这个数不平）", async () => {
-  const { service } = harness();
+  const { service } = harness({
+    subjects: [
+      { id: "sub-bank", category: "资产类", name: "银行存款" },
+      { id: "sub-capital", category: "所有者权益类", name: "实收资本" },
+    ],
+  });
   const result = await service.replaceAll({
     as_of_date: "2026-09-01",
     rows: [
@@ -228,7 +247,9 @@ test("list() 的出参必须能被 JSON.stringify（BigInt 会让整个 GET 接�
 
 // 为什么这组必须钉：期初原本只有文本键，是**唯一一张连科目外键都没有**的业务表。
 // 科目一改名，期初就与主数据脱节，报表按名字匹配不上、金额静默消失（诊断 P0-2）。
-// 判据是全站同一条：**唯一同名才认**，歧义与查不到一律留空，绝不猜一个科目。
+// 判据是全站同一条：**唯一同名才认**，绝不猜一个科目。
+// T10（2026-11-12 R-4）把「查不到」拆成两档：科目不存在 → 422 拦掉，同名跨分类（歧义）→ 留空放行。
+// 前者在下面「写入校验」那一组钉住，后者仍是本节这条用例。
 
 const SUBJECTS = [
   { id: "sub-bank", category: "资产类", name: "银行存款" },
@@ -281,17 +302,6 @@ test("期初落主键：写了分类就按分类认，同名跨分类不再是�
   assert.deepEqual(result.unassigned, []);
 });
 
-test("期初落主键：科目被改过名（查不到）→ 留空、不阻断录入、进未归位清单", async () => {
-  // 拦住录入只会让财务没法修账；留空让报表回退文本匹配，同时点名提示。
-  const { service, created } = harness({ subjects: SUBJECTS });
-  const result = await service.replaceAll({
-    as_of_date: "2026-09-01",
-    rows: [{ subject_key: "损益类/老名字", direction: "debit", amount: "100" }],
-  }, USER);
-  assert.equal(created[0].subjectId, null);
-  assert.deepEqual(result.unassigned, ["损益类/老名字"]);
-});
-
 test("纯解析：id 键原样跳过，不重复解析", () => {
   const resolved = resolveOpeningSubjectIds(
     [{ subjectKey: "@id:sub-bank" }, { subjectKey: "损益类/管理费用" }],
@@ -299,4 +309,102 @@ test("纯解析：id 键原样跳过，不重复解析", () => {
   );
   assert.equal(resolved.has("@id:sub-bank"), false, "已经是 id 键的行不该被再解析一次");
   assert.equal(resolved.get("损益类/管理费用"), "sub-manage");
+});
+
+/* ------------------------------ 写入校验：科目必须存在（2026-11-12 Phase 2 R-4 / T10） */
+
+// 为什么这组必须钉：期初余额是**建账的起点**。写进一个不存在的科目，报表取数时就归不了行，
+// 这笔金额直接从报表上消失，而且不报错 —— 与诊断 P0-2 是同一条失败形态。
+// 三档判据（任务书 10 §2「已定」）：
+//   ① 科目不存在 → **422 拦掉、一行都不落库**（「写错了」）；
+//   ② 同名跨分类且没写分类 → 放行 + 未归位清单（「写得不够」，见上面 T3 那组）；
+//   ③ 科目存在但已停用 → 放行、照常落主键，但计数提示（历史账上的科目不能拦）。
+// T3 当初把「查不到」留空放行；T10 改成 422 —— 留空正是「金额静默消失」那条路。
+
+const DISABLED_SUBJECT = { id: "sub-old", category: "损益类", name: "老科目", isActive: false };
+
+test("写入校验：科目不存在 → 422 拒绝，且一行都不落库、旧行也不动", async () => {
+  const { service, created, updated } = harness({
+    subjects: SUBJECTS,
+    existing: [{ id: "ob-old", subjectKey: "资产类/银行存款", deletedAt: null }],
+  });
+  await assert.rejects(
+    () => service.replaceAll({
+      as_of_date: "2026-09-01",
+      rows: [
+        { subject_key: "资产类/银行存款", direction: "debit", amount: "100" },
+        { subject_key: "损益类/老名字", direction: "debit", amount: "50" },
+      ],
+    }, USER),
+    (error) => {
+      const response = error.getResponse();
+      assert.equal(response.code, "OPENING_SUBJECT_NOT_FOUND");
+      assert.match(response.message, /损益类\/老名字/, "要点名是哪个科目对不上");
+      assert.match(response.message, /不存在/, "要说清为什么拦：期初是建账起点，收下就从报表消失");
+      assert.deepEqual(response.details[0].missing.map((item) => item.subject_key), ["损益类/老名字"], "只报对不上的那一行，能对上的不牵连");
+      // 「给出可选科目」（改进计划 R-4 验收）：科目表里现在真能选的科目要一起回话。
+      assert.ok(response.details[0].available_subjects.includes("资产类/银行存款"));
+      return true;
+    },
+  );
+  assert.equal(created.length, 0, "422 时一行都不能落库");
+  assert.equal(updated.length, 0, "旧行也不能动（校验在软删之前，改完再存不会丢已有期初）");
+});
+
+test("写入校验：分类写错（同名在别的分类）→ 422，并把同名科目作为可选项回话", async () => {
+  const { service } = harness({ subjects: SUBJECTS });
+  await assert.rejects(
+    () => service.replaceAll({
+      as_of_date: "2026-09-01",
+      rows: [{ subject_key: "负债类/银行存款", direction: "debit", amount: "100" }],
+    }, USER),
+    (error) => {
+      assert.equal(error.getResponse().code, "OPENING_SUBJECT_NOT_FOUND");
+      const miss = error.getResponse().details[0].missing[0];
+      assert.deepEqual(miss.candidates.map((item) => `${item.category}/${item.name}`), ["资产类/银行存款"], "同名科目要当可选项给出，财务才知道是漏了分类还是分类写错");
+      return true;
+    },
+  );
+});
+
+test("写入校验：科目已停用 → 放行、照常落主键，但提示里带出计数", async () => {
+  const { service, created } = harness({ subjects: [...SUBJECTS, DISABLED_SUBJECT] });
+  const result = await service.replaceAll({
+    as_of_date: "2026-09-01",
+    rows: [{ subject_key: "损益类/老科目", direction: "debit", amount: "100" }],
+  }, USER);
+  assert.equal(created[0].subjectId, "sub-old", "停用科目可能正是历史账上的科目，必须照常落主键");
+  assert.deepEqual(result.disabled_subjects, ["损益类/老科目"]);
+  assert.deepEqual(result.unassigned, [], "「已停用」不是「归不上」，两件事不能混进同一个清单");
+  assert.match(result.warnings.join("；"), /1 个科目已停用/, "提示里要带出计数");
+});
+
+test("写入校验：已删除的科目按「不存在」处理（删除与停用是两回事）", async () => {
+  const { service, created } = harness({
+    subjects: [...SUBJECTS, { id: "sub-gone", category: "损益类", name: "已删科目", deletedAt: new Date("2026-10-01") }],
+  });
+  await assert.rejects(
+    () => service.replaceAll({
+      as_of_date: "2026-09-01",
+      rows: [{ subject_key: "损益类/已删科目", direction: "debit", amount: "100" }],
+    }, USER),
+    (error) => error.getResponse().code === "OPENING_SUBJECT_NOT_FOUND",
+  );
+  assert.equal(created.length, 0, "已删除的科目不能再收进期初");
+});
+
+test("写入校验：全部科目都存在且唯一 → 未归位清单为空、也没有停用提示", async () => {
+  const { service } = harness({ subjects: SUBJECTS });
+  const result = await service.replaceAll({
+    as_of_date: "2026-09-01",
+    rows: [
+      { subject_key: "资产类/银行存款", direction: "debit", amount: "100" },
+      { subject_key: "成本类/原材料", direction: "debit", amount: "20" },
+      { subject_key: "损益类/管理费用", direction: "debit", amount: "30" },
+    ],
+  }, USER);
+  assert.equal(result.saved, 3);
+  assert.deepEqual(result.unassigned, []);
+  assert.deepEqual(result.disabled_subjects, []);
+  assert.deepEqual(result.warnings, []);
 });

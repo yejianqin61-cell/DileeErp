@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
+import { accountingSubjectKey } from "./accounting-subject-catalog";
 import { isFundSubject, isSubjectIdKey, normalizeSubjectKey, splitSubjectKey, type SummedAmount } from "./finance-three-statements";
 import { formatUnits, toUnits } from "./money";
 
@@ -14,13 +15,16 @@ import { formatUnits, toUnits } from "./money";
  * （内核会把差额显式返回并写进表尾，但那是「说明」不是「解决」）。财务录一次全科目的期初，
  * 勾稽才真正为 0。
  *
- * 三条口径：
+ * 四条口径：
  *   1. **整批替换**：界面按「建账日 + 币种」一张表录入，保存时整批替换这一组 ——
  *      逐行 upsert 会让「删掉一行」变成一个额外的删除动作，而财务的心智是「这张表就是我现在的期初」；
  *   2. **软删除后唯一键仍占位**（同月度管理费分摊）：替换时按 (as_of_date, subject_key, currency)
  *      upsert（把软删的那条**恢复**回来），既不会撞唯一索引，也不会出现「同一科目两条期初」；
  *   3. **不强制试算平衡**：财务可能分批录。借贷不平衡时接口照收，但响应把差额带回去，
- *      界面显著显示（报表那边也会因为差这个数而不平）—— 挡住录入只会让她以为系统坏了。
+ *      界面显著显示（报表那边也会因为差这个数而不平）—— 挡住录入只会让她以为系统坏了；
+ *   4. **写入校验科目必须存在**（2026-11-12 R-4）：期初是建账的起点，收下一笔不存在的科目，
+ *      报表取数归不了行，这笔金额就静默消失 —— 所以整批 422，一行都不落库。同名跨分类只算
+ *      「写得不够」，放行并进未归位清单；已停用的科目放行（历史账要用），只计数提示。
  */
 export type OpeningBalanceRow = {
   subject_key: string;
@@ -49,27 +53,49 @@ export type OpeningBalanceEffectiveRow = {
   amount: string;
 };
 
+/** 期初行能对上的一个科目候选（422 时作为「可选科目」回给界面）。 */
+export type OpeningSubjectOption = { id: string; category: string; name: string; isActive: boolean };
+
+/** 一个对不上的期初科目：归一后的键 + 拆出的分类/名称 + 全表同名候选。 */
+export type OpeningSubjectMiss = { subjectKey: string; category: string; name: string; candidates: OpeningSubjectOption[] };
+
 /**
- * 期初行的科目键 → 科目主键（2026-11-11 R-1 / T3）。
+ * 期初行的科目键 → 科目主键（2026-11-11 R-1 / T3），并按写入校验分三档（2026-11-12 R-4 / T10）。
  *
  * 期初原本只有文本键 `subject_key`，是**唯一一张连科目外键都没有**的业务表：科目一改名，
  * 这一行就与主数据脱节，报表按名字匹配不上，金额静默消失（诊断 P0-2）。
  *
  * 判据与全站一致：**只有唯一同名才算解析成功**。
  *   - 键带分类（`资产类/银行存款`）→ 必须「同分类 + 同名称」，库层 `@@unique([category,name])`
- *     保证最多命中一个；查不到就是科目被改过名；
+ *     保证最多命中一个；
  *   - 键是裸名（`银行存款`，资金科目的老写法）→ 全表同名唯一才认，同名跨分类一律不猜。
  *
- * 解析不到**不猜测**：留空让报表回退文本匹配，并由调用方把清单回给财务。
- * 猜错等于把期初余额记到别的账上，而报表上看不出来。
+ * 但「解析不到」有两种，处理必须分开（R-4）——把它们合成一档就会拦错人或放过人：
+ *   - **不存在**（带分类查不到同分类同名，或裸名全表无同名）→ 这是「写错了」。期初是建账的起点，
+ *     收下一笔不存在的科目，报表取数时就归不了行，这笔金额会从报表上消失且不报错。
+ *     调用方要 **422 拒绝**，并把可选科目回给财务；
+ *   - **同名跨分类且没写分类** → 这是「写得不够」。留空让报表回退文本匹配，并进未归位清单
+ *     （拦住「写得不够」等于让财务没法分批录历史账）。
+ *
+ * 已停用（`isActive: false`）是**第三种**，既不拦也不进未归位：它可能正是历史账上的科目，
+ * 所以照常解析出主键（放行），只把清单回给调用方计数提示 —— 「停用」表示不再新用，
+ * 不表示这笔历史期初不算数。
+ *
+ * 已删除（`deletedAt` 不为空）的科目由调用方查库时排除，因此在这里与「不存在」同档。
  */
-export function resolveOpeningSubjectIds(
+export function resolveOpeningSubjects(
   rows: ReadonlyArray<{ subjectKey: string }>,
-  subjects: ReadonlyArray<{ id: string; category: string; name: string }>,
-): Map<string, string> {
-  const byName = new Map<string, Array<{ id: string; category: string; name: string }>>();
-  for (const subject of subjects) byName.set(subject.name, [...(byName.get(subject.name) ?? []), subject]);
-  const resolved = new Map<string, string>();
+  subjects: ReadonlyArray<{ id: string; category: string; name: string; isActive?: boolean }>,
+): { subjectIdByKey: Map<string, string>; unassigned: string[]; missing: OpeningSubjectMiss[]; disabled: string[] } {
+  const byName = new Map<string, OpeningSubjectOption[]>();
+  for (const subject of subjects) {
+    const option: OpeningSubjectOption = { id: subject.id, category: subject.category, name: subject.name, isActive: subject.isActive !== false };
+    byName.set(subject.name, [...(byName.get(subject.name) ?? []), option]);
+  }
+  const subjectIdByKey = new Map<string, string>();
+  const unassigned: string[] = [];
+  const missing: OpeningSubjectMiss[] = [];
+  const disabled: string[] = [];
   for (const row of rows) {
     const key = normalizeSubjectKey(row.subjectKey);
     // 已经是 id 键的期初行（理论上不该出现，报表侧才用 id 键）原样跳过，不重复解析。
@@ -78,12 +104,28 @@ export function resolveOpeningSubjectIds(
     const candidates = byName.get(name) ?? [];
     if (category) {
       const hit = candidates.find((subject) => subject.category === category);
-      if (hit) resolved.set(key, hit.id);
+      if (!hit) { missing.push({ subjectKey: key, category, name, candidates }); continue; }
+      subjectIdByKey.set(key, hit.id);
+      if (!hit.isActive) disabled.push(key);
       continue;
     }
-    if (candidates.length === 1) resolved.set(key, candidates[0].id);
+    if (candidates.length === 0) { missing.push({ subjectKey: key, category: "", name, candidates }); continue; }
+    if (candidates.length === 1) {
+      subjectIdByKey.set(key, candidates[0].id);
+      if (!candidates[0].isActive) disabled.push(key);
+      continue;
+    }
+    unassigned.push(key);
   }
-  return resolved;
+  return { subjectIdByKey, unassigned, missing, disabled };
+}
+
+/** 只取「键 → 主键」这条腿（T3 的入口；三档判据见 `resolveOpeningSubjects`）。 */
+export function resolveOpeningSubjectIds(
+  rows: ReadonlyArray<{ subjectKey: string }>,
+  subjects: ReadonlyArray<{ id: string; category: string; name: string }>,
+): Map<string, string> {
+  return resolveOpeningSubjects(rows, subjects).subjectIdByKey;
 }
 
 /** 期初余额行 → 报表要的「借贷累计」形状（与 `sumVoucherLines` 的返回值同型，可直接相加）。 */
@@ -153,8 +195,13 @@ export class OpeningBalanceService {
   /**
    * 整批替换一组期初余额（建账日 + 币种）。
    *
-   * **事务内**完成三件事：软删掉这次没出现的旧行、把出现的行 upsert（含恢复软删行）、记审计。
-   * 之所以要一起做：中途失败会让财务看到「一半是新的、一半是旧的」期初，而报表正好在那个时刻不平。
+   * **事务内**完成三件事：校验科目、软删掉这次没出现的旧行、把出现的行 upsert（含恢复软删行），
+   * 再记审计。之所以要一起做：中途失败会让财务看到「一半是新的、一半是旧的」期初，
+   * 而报表正好在那个时刻不平。
+   *
+   * 校验排在**任何写入之前**（2026-11-12 R-4 / T10）：写了不存在的科目就整批 422，
+   * 这一组期初原样不动 —— 财务改完再存，不会因为一次笔误丢掉已经录好的旧行。
+   * 判据见 `resolveOpeningSubjects`：不存在 → 拦；同名跨分类 → 放行进未归位；已停用 → 放行并计数。
    */
   async replaceAll(input: OpeningBalanceInput, user: CurrentUser) {
     const asOfDate = utcDate(input.as_of_date);
@@ -168,15 +215,29 @@ export class OpeningBalanceService {
     }
 
     const result = await this.prisma.$transaction(async (tx) => {
-      // 先把这一批科目键解析成科目主键（2026-11-11 R-1 / T3）。一次查库、按名称取候选，
-      // 判据交给纯函数 `resolveOpeningSubjectIds`（唯一同名才认）。
-      // 查不到**不报错**：历史科目可能被改过名，拦住录入只会让财务没法修账；
-      // 留空让报表回退文本匹配，同时把清单回给界面提示。
+      // 先把这一批科目键解析成科目主键（2026-11-11 R-1 / T3），判据交给纯函数
+      // `resolveOpeningSubjects`（唯一同名才认）。查询只按这批行的名称取候选，科目表再大也只读几行。
+      //
+      // 解析不到**分两种**（2026-11-12 R-4 / T10）：科目不存在是「写错了」，这里 422 拦掉；
+      // 同名跨分类没写分类是「写得不够」，留空放行、进未归位清单。
+      // 拦住前者是必须的：期初是建账的起点，收下一笔不存在的科目，报表取数归不了行，
+      // 这笔金额就从报表上消失且不报错（诊断 P0-2 的同一条失败形态）。
+      // 查库过滤掉软删科目：已删除的科目与「不存在」同档；已停用的仍要查出来（放行但计数）。
       const names = [...new Set(rows.map((row) => splitSubjectKey(normalizeSubjectKey(row.subjectKey)).name))];
       const subjectRows = names.length
-        ? await tx.accountingSubject.findMany({ where: { deletedAt: null, name: { in: names } }, select: { id: true, category: true, name: true } })
+        ? await tx.accountingSubject.findMany({ where: { deletedAt: null, name: { in: names } }, select: { id: true, category: true, name: true, isActive: true } })
         : [];
-      const subjectIdByKey = resolveOpeningSubjectIds(rows, subjectRows);
+      const subjects = resolveOpeningSubjects(rows, subjectRows);
+      if (subjects.missing.length) {
+        // 「可选科目」只列启用且未删除的：把停用/已删科目当可选项，等于把财务推回同一个坑。
+        const available = await tx.accountingSubject.findMany({
+          where: { deletedAt: null, isActive: true },
+          select: { category: true, name: true },
+          orderBy: [{ category: "asc" }, { name: "asc" }],
+        });
+        throw this.subjectNotFound(subjects.missing, available.map((subject) => accountingSubjectKey(subject.category, subject.name)));
+      }
+      const subjectIdByKey = subjects.subjectIdByKey;
 
       const existing = await tx.accountingOpeningBalance.findMany({ where: { asOfDate, currency } });
       const keep = new Set(rows.map((row) => row.subjectKey));
@@ -209,16 +270,21 @@ export class OpeningBalanceService {
           });
         }
       }
-      return { removed: removed.length, saved: rows.length, unassigned: rows.map((row) => row.subjectKey).filter((key) => !subjectIdByKey.has(normalizeSubjectKey(key))) };
+      return { removed: removed.length, saved: rows.length, unassigned: subjects.unassigned, disabled: subjects.disabled };
     });
 
     const totals = openingBalanceTotals(rows);
+    // 已停用的科目放行（它可能正是历史账上的科目），但提示里带出计数 ——
+    // 财务才知道这一组期初里有科目已经不能在新单据上用了。
+    const warnings = result.disabled.length
+      ? [`${result.disabled.length} 个科目已停用（历史期初可能正挂在这些科目上，本次照常落库并保留科目主键）：${result.disabled.join("、")}`]
+      : [];
     await this.audit.record("opening_balance.replace", "opening_balance", user.id, undefined, {
       as_of_date: input.as_of_date.slice(0, 10), currency,
-      saved: result.saved, removed: result.removed, unassigned: result.unassigned,
+      saved: result.saved, removed: result.removed, unassigned: result.unassigned, disabled_subjects: result.disabled,
       debit: totals.debit.toString(), credit: totals.credit.toString(), balanced: totals.balanced,
     });
-    return { as_of_date: input.as_of_date.slice(0, 10), currency, saved: result.saved, removed: result.removed, unassigned: result.unassigned, totals };
+    return { as_of_date: input.as_of_date.slice(0, 10), currency, saved: result.saved, removed: result.removed, unassigned: result.unassigned, disabled_subjects: result.disabled, warnings, totals };
   }
 
   /** 报表取数用：某一币种**不晚于**期末的最近一次建账期初（没有就返回空）。 */
@@ -291,8 +357,37 @@ export class OpeningBalanceService {
     return { subjectKey, subjectLabel: label, direction: row.direction, amount: amount.toFixed(4), remark: row.remark?.trim() ?? null, currency };
   }
 
-  private invalid(code: string, message: string) {
-    return new UnprocessableEntityException({ code, message, details: [] });
+  /**
+   * 422：期初里写了会计科目表里没有的科目。
+   *
+   * 文案与 `details` 各管一头：文案让人一眼看到是哪个科目对不上、以及为什么必须拦；
+   * `details` 给界面/导入脚本用 —— 对不上的键（连同名候选）与「现在能选的科目」，
+   * 这就是改进计划 R-4 说的「给出可选项」。不存在的科目**不落库**：收下它，这笔金额
+   * 会从报表上消失且不报错，而期初正是建账的起点。
+   */
+  private subjectNotFound(missing: OpeningSubjectMiss[], available: string[]) {
+    const described = missing.map((item) => item.candidates.length
+      ? `「${item.subjectKey}」（同名的是：${item.candidates.map((option) => accountingSubjectKey(option.category, option.name)).join("、")}）`
+      : `「${item.subjectKey}」（科目表里没有同名科目）`);
+    return this.invalid(
+      "OPENING_SUBJECT_NOT_FOUND",
+      `期初余额里有 ${missing.length} 个科目在会计科目表里不存在：${described.join("；")}。`
+      + "期初是建账的起点 —— 收下一笔不存在的科目，报表取数时就归不了行，这笔金额会从报表上消失且不报错。"
+      + "请先在「会计科目」里建好它，或改填系统里已有的科目再保存。",
+      [{
+        missing: missing.map((item) => ({
+          subject_key: item.subjectKey,
+          category: item.category || null,
+          name: item.name,
+          candidates: item.candidates.map((option) => ({ id: option.id, category: option.category, name: option.name, is_active: option.isActive })),
+        })),
+        available_subjects: available,
+      }],
+    );
+  }
+
+  private invalid(code: string, message: string, details: unknown[] = []) {
+    return new UnprocessableEntityException({ code, message, details });
   }
 }
 
