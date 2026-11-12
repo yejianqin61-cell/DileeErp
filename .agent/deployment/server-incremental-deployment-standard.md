@@ -102,8 +102,17 @@ npm run deploy -- -Force       # HEAD 与线上版本相同也强制重发
 | `scripts/deploy/remote-migrate.sh` | `prisma migrate deploy` + 迁移数达标校验 + 失败残留必须为 0 |
 | `scripts/deploy/remote-switch.sh` | `pm2 delete` → 备份改名 → 提升候选目录 → 启动 → 成功判定 |
 | `scripts/deploy/remote-verify.sh` | 只读核验：版本/迁移/健康/页面/PM2/日志/备份/磁盘 |
+| `scripts/deploy/remote-nginx.sh` | 安装仓库里的边缘站点配置（`scripts/deploy/nginx-dilee.conf`）+ `nginx -t` + 平滑重载 + **真发 2MB 上传包过边缘，413 即失败** |
 | `scripts/deploy/remote-rollback.sh` | 回滚到最近（或指定）`app.backup-*`，失败目录留 `app.failed-*` |
-| `scripts/deploy-scripts.test.mjs` | 守卫测试：构建门禁、迁移门禁、备份只清 `app.backup-*`、`.ps1` 必须带 BOM 等 |
+| `scripts/deploy-scripts.test.mjs` | 守卫测试：构建门禁、迁移门禁、备份只清 `app.backup-*`、边缘体限不许回落到 1m、`.ps1` 必须带 BOM 等 |
+
+### 边缘（nginx）也是部署的一部分（2026-11-12 补）
+
+站点配置从这一版起进仓库：`scripts/deploy/nginx-dilee.conf`，来源是旧机 `/etc/nginx/sites-available/dilee`（那份只存在于已 gitignore 的 `.deploy-run-118/` 里）。
+
+**为什么必须管**：nginx 的 `client_max_body_size` 默认 **1m**。以前配置里没写，于是任何超过 1MB 的上传（销售单 Excel 补录、物料导入、盘点导入、附件）都在**转发之前**被 nginx 413 掉 —— API 日志里一条记录都没有，浏览器只显示一句「读取失败」。这种「部署成功但功能不可用」只有真发一次大包才能发现，所以 `remote-nginx.sh` 的判据是**实测**而不是看配置文本。
+
+口径：**边缘只能比应用宽，不能比应用窄**。应用侧上限是 Multer `limits.fileSize = 10MB`（前端 `SALES_ORDER_IMPORT_MAX_BYTES` 同一个数），边缘给 `20m`。改任一侧都要同步另一侧。
 
 三道闸门（任一不过即终止，旧版本继续运行）：
 

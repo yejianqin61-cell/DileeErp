@@ -206,6 +206,12 @@ Ok "已切换到 $localHead"
 # ---------------------------------------------------------------- 6. 核验与清理
 Step "6/6 部署后核验"
 Invoke-Remote "状态核验" "EXPECTED_MIGRATIONS=$expectedMigrations bash $remoteDir/remote-verify.sh" | Out-Null
+# 边缘（nginx）体积上限：以前这一层不在仓库里、也没人测，结果是 nginx 默认的 1m
+# 在**转发之前**就把 1.5MB 的销售单 Excel 挡成 413 —— API 一条日志都没有，界面只说「读取失败」。
+# 这一步既安装仓库里的站点配置（配置漂移会被拉回），也**真发一个 2MB 的上传包过边缘**，
+# 413 就终止部署（见 scripts/deploy/remote-nginx.sh 头部）。
+Invoke-Remote "边缘上传体积核验（413 即失败）" "CONF_SRC=/opt/dilee/app/scripts/deploy/nginx-dilee.conf bash $remoteDir/remote-nginx.sh" | Out-Null
+Ok "边缘放行大文件上传"
 if ($KeepRemoteArtifacts) {
   Warn "已保留远端临时文件（$remoteDir、/tmp/$archive）"
 } else {

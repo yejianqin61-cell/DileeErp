@@ -193,3 +193,48 @@ test("脏工作区判定必须静音 git 的 CRLF 提示，否则 EAP=Stop 会�
   assert.match(driver, /git -c core\.safecrlf=false diff --quiet/, "驱动脚本的脏工作区检查同样要关掉提示");
   assert.doesNotMatch(packer, /^\s*git diff --quiet\s*$/m, "不得退回裸 git diff --quiet（警告会重新变成终止错误）");
 });
+
+// ---------------------------------------------------------------- 边缘（nginx）上传体积
+//
+// 2026-11-12 真实故障：销售单 Excel 补录传 1.5MB 的 .xls「读取失败」。查到最后是
+// nginx 的 client_max_body_size **默认 1m**（站点配置里从没写过），请求在**转发之前**就被
+// 413 掉，API 日志里一条记录都没有 —— 「部署成功」与「这个功能能用」是两件事。
+// 下面几条钉住：站点配置必须在仓库里、上限必须比应用宽、且部署时必须**实测**而不是只看文本。
+
+const nginxConf = read("scripts/deploy/nginx-dilee.conf");
+const remoteNginx = read("scripts/deploy/remote-nginx.sh");
+
+test("边缘站点配置必须进仓库，且 client_max_body_size 不许缺省（缺省 = 1m = 谁都传不上来）", () => {
+  const match = /client_max_body_size\s+(\d+)([kKmM])/.exec(nginxConf);
+  assert.ok(match, "nginx-dilee.conf 必须显式写 client_max_body_size（不写就是 nginx 默认的 1m）");
+  const bytes = Number(match[1]) * (match[2].toLowerCase() === "m" ? 1024 * 1024 : 1024);
+  // 应用侧上限：api 的 Multer limits.fileSize = 10MB，web 的 SALES_ORDER_IMPORT_MAX_BYTES 同一个数。
+  // 边缘比应用窄，用户就会看到一句看不出原因的失败（正是这次的故障形态）。
+  assert.ok(bytes >= 10 * 1024 * 1024, `边缘上限 ${match[0]} 小于应用侧 10MB：边缘不能比应用更窄`);
+});
+
+test("边缘配置由部署脚本安装并经 nginx -t，不许只改服务器不落仓库", () => {
+  assert.match(remoteNginx, /sites-available/, "必须安装到 nginx 的站点目录");
+  assert.match(remoteNginx, /ln -sfn/, "必须启用站点（幂等符号链接）");
+  assert.match(remoteNginx, /nginx -t/, "改完必须做语法检查");
+  assert.match(remoteNginx, /systemctl reload nginx/, "必须平滑重载才生效");
+  assert.match(remoteNginx, /nginx-dilee\.conf/, "源文件必须是仓库里的 scripts/deploy/nginx-dilee.conf");
+});
+
+test("部署必须**实测**大文件上传过边缘，413 即终止（只看配置文本发现不了这个故障）", () => {
+  assert.match(remoteNginx, /-F\s+"file=@\$\{probe\}"/, "必须真发一个 multipart 上传包过边缘（探针文件本身）");
+  // 平滑重载后旧 worker 仍会接连接（实测：重载后立刻探测仍可能拿到 1m 时代的 413），
+  // 所以探针必须重试，否则会把一次成功的修复判成失败。
+  assert.match(remoteNginx, /PROBE_ATTEMPTS/, "413 必须可重试（smooth reload 期间旧 worker 还没退场）");
+  assert.match(remoteNginx, /for attempt in/, "必须有重试循环");
+  assert.match(remoteNginx, /PROBE_BYTES/, "探针体积必须可配置");
+  // 探针要证明的是「单文件 10MB 这条承诺成立」，不是「比 1m 大就行」：
+  // 取 2MB 的话，把边缘悄悄调回 5m 也照样绿 —— 那正是这次故障的形态。
+  const probeBytes = /PROBE_BYTES:-\s*(\d+)/.exec(remoteNginx);
+  assert.ok(probeBytes, "探针体积必须有默认值");
+  assert.ok(Number(probeBytes[1]) >= 10 * 1024 * 1024, `探针默认体积 ${probeBytes[1]} 没有顶到产品上限 10MB`);
+  assert.match(remoteNginx, /413/, "必须专门判定 413");
+  assert.match(remoteNginx, /401/, "401 = 请求确实穿过边缘到达 API，这是探针该看到的正常结果");
+  assert.match(driver, /remote-nginx\.sh/, "部署驱动必须调用这个脚本（否则漂移无人拉回）");
+  assert.match(driver, /边缘上传体积核验/, "驱动脚本必须为这一步给出可读的说明");
+});
