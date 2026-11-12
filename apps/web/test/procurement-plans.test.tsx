@@ -687,3 +687,75 @@ describe("采购计划列表：一行 = 一条明细（2026-10-13 展平）", ()
   });
 });
 
+/**
+ * 「为什么选不到这张 BOM」（2026-11-12）。
+ *
+ * 用户原话：「采购计划有时候无法选中需要建立采购计划的BOM表」。
+ * 审计（`docs/audit/procurement-audit-2026-11-12.md` §1.1 A7）指出：候选接口把不可建的 BOM
+ * 静默滤掉，界面上只剩一个**空下拉**，用户看不到任何原因 —— 这就是"业务规则不明确"的典型形态。
+ *
+ * 现在接口把被拦下的那半边放在 `meta.blocked`，新建弹窗必须把它说出来，
+ * 并且在「已有计划」时给出计划编号与出口（去那份计划里加一行）。
+ */
+describe("采购计划列表：新建弹窗说清「为什么选不到这张 BOM」", () => {
+  const blockedEntry = (overrides: Record<string, unknown> = {}) => ({
+    bomId: "bom-b1", orderNo: "DL260011-1", bomVersion: 1, itemNo: "27621", customerName: "客户乙", itemCount: 6,
+    reasons: [{ code: "PLAN_ALREADY_EXISTS", message: "该 BOM 已有采购计划 PP-20260927-ZZZZ9999（已完成）：补料请打开这份计划、加一行，不要另建一份" }],
+    existingPlan: { id: "plan-7", planNo: "PP-20260927-ZZZZ9999", status: "completed", statusLabel: "已完成" },
+    ...overrides,
+  });
+  const stubCandidates = (candidates: Array<Record<string, unknown>>, blocked: Array<Record<string, unknown>>) => stubApi((url) => {
+    if (url.includes("/purchase-plans/candidates")) return apiOk(candidates, { blocked });
+    if (url.endsWith("/materials")) return apiOk(materials);
+    if (url.endsWith("/units")) return apiOk(units);
+    return apiOk([]);
+  });
+
+  it("已有计划被拦时，弹窗里看得到计划编号与「去那份计划加一行」这个出口", async () => {
+    route.searchParams = new URLSearchParams();
+    stubCandidates([], [blockedEntry()]);
+    render(<PurchasePlansPage />);
+    await screen.findByTestId("plan-create");
+
+    await userEvent.click(screen.getByTestId("plan-create"));
+
+    const shown = await screen.findByText(/已有采购计划 PP-20260927-ZZZZ9999/);
+    expect(shown.textContent).toContain("加一行");
+  });
+
+  it("被拦下的 BOM 太多时只摆前三条（弹窗不是报表）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubCandidates([], [1, 2, 3, 4].map((index) => blockedEntry({ bomId: `bom-b${index}`, orderNo: `DL26001${index}-1` })));
+    render(<PurchasePlansPage />);
+    await screen.findByTestId("plan-create");
+
+    await userEvent.click(screen.getByTestId("plan-create"));
+
+    await screen.findByText(/已有采购计划/);
+    expect(screen.getAllByText(/已有采购计划/)).toHaveLength(3);
+  });
+
+  it("一张都没被拦时不摆原因（没有噪音）", async () => {
+    route.searchParams = new URLSearchParams();
+    stubCandidates([{ bomId: "bom-ok", orderNo: "DL260001-1", bomVersion: 1, itemNo: null, customerName: null, deliveryDate: null, itemCount: 2 }], []);
+    render(<PurchasePlansPage />);
+    await screen.findByTestId("plan-create");
+
+    await userEvent.click(screen.getByTestId("plan-create"));
+
+    expect(screen.queryByText(/已有采购计划/)).toBeNull();
+    expect(screen.queryByText(/不能建计划/)).toBeNull();
+  });
+
+  it("能建的和不能建的都没有时，下拉占位符说清是「真的没有」", async () => {
+    route.searchParams = new URLSearchParams();
+    stubCandidates([], []);
+    render(<PurchasePlansPage />);
+    await screen.findByTestId("plan-create");
+
+    await userEvent.click(screen.getByTestId("plan-create"));
+
+    expect(await screen.findByText("没有可建计划的 BOM")).toBeTruthy();
+  });
+});
+
