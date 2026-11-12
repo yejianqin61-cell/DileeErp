@@ -20,7 +20,7 @@ import { FileInput } from "../../../../components/ui/file-input";
 import { ErrorState, LoadingState } from "../../../../components/feedback/states";
 import { SalesOrderEditor } from "../../../../components/sales/sales-order-editor";
 import { ApiClientError } from "../../../../lib/api-client";
-import { SALES_ORDER_IMPORT_ACCEPT, SALES_ORDER_IMPORT_PATH, importFileProblem, type SalesOrderImportResult } from "../../../../lib/sales-order-import";
+import { SALES_ORDER_IMPORT_ACCEPT, SALES_ORDER_IMPORT_PATH, importFailureMessage, importFileProblem, type SalesOrderImportResult } from "../../../../lib/sales-order-import";
 
 /** 后端错误信封（multipart 走原生 fetch，所以这里自己解一层）。 */
 type ImportFailure = { error?: { code?: string; message?: string; details?: unknown[] } };
@@ -41,14 +41,23 @@ export default function SalesOrderImportPage() {
       const form = new FormData();
       form.append("file", file as File);
       const response = await fetch(SALES_ORDER_IMPORT_PATH, { method: "POST", credentials: "include", body: form });
-      const body = await response.json().catch(() => null) as ({ data?: SalesOrderImportResult } & ImportFailure) | null;
+      // 网关（nginx）拒绝时回的是 HTML 错误页，不是业务信封：`json()` 会失败、`body` 是 null。
+      // 所以这里必须同时拿到**状态码**与**原文**，交给 `importFailureMessage` 说清是哪种失败 ——
+      // 只说一句「读取失败」会让 413（文件太大/网关上限）看起来像文件损坏（2026-11-12 的真实事故）。
+      const raw = await response.text().catch(() => "");
+      let body: ({ data?: SalesOrderImportResult } & ImportFailure) | null = null;
+      try { body = raw ? JSON.parse(raw) as { data?: SalesOrderImportResult } & ImportFailure : null; } catch { body = null; }
       if (!response.ok || !body?.data || body.error) {
-        throw new ApiClientError(body?.error?.code ?? "SALES_ORDER_IMPORT_FAILED", body?.error?.message ?? "读取失败", body?.error?.details ?? []);
+        const message = importFailureMessage({ status: response.status, serverMessage: body?.error?.message, fileSize: file?.size });
+        throw new ApiClientError(body?.error?.code ?? "SALES_ORDER_IMPORT_FAILED", message, body?.error?.details ?? []);
       }
       setResult(body.data);
     } catch (cause) {
       // 错误整条留在页面上（不做成 toast）：用户要能照着「没认出任何销售单字段」这类话去换文件/改表。
-      setError(cause instanceof ApiClientError ? cause.message : "读取失败：请确认文件没有损坏、且是 .xlsx / .xls");
+      // 兜底也必须带原因：网络断了（fetch 抛 TypeError）与网关拒绝是两件事。
+      setError(cause instanceof ApiClientError
+        ? cause.message
+        : `读取失败：连不上服务器或请求被中途打断（${cause instanceof Error ? cause.message : "未知原因"}）。请检查网络后重试`);
     } finally {
       setReading(false);
     }

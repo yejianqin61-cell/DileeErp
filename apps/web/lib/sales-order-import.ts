@@ -81,3 +81,40 @@ export function importFileProblem(file: { name?: string; size?: number } | null 
   if ((file.size ?? 0) > SALES_ORDER_IMPORT_MAX_BYTES) return `文件超过 ${Math.round(SALES_ORDER_IMPORT_MAX_BYTES / 1024 / 1024)}MB，请精简后再传`;
   return "";
 }
+
+/** 人读的体积：`1.5MB` / `820KB`（用来把「多大」写进错误里，用户才知道要不要换个文件）。 */
+export function readableSize(bytes: number | undefined): string {
+  if (!bytes || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+
+/**
+ * 上传失败时页面该说哪句话（2026-11-12）。
+ *
+ * 为什么单独成函数：原来这里只有一句兜底的「读取失败」，而它把**五种完全不同的原因**
+ * 说成了同一句话 —— 用户唯一的线索就是「失败」，运维唯一的线索也是「失败」。
+ * 真实案例：一份 1.5MB 的销售单 .xls 被 nginx 的 `client_max_body_size` 默认值（1m）
+ * 在**转发之前**回了一个 413 的 HTML 错误页，请求根本没到 API；页面 `response.json()` 解析失败，
+ * 就退化成「读取失败：请确认文件没有损坏、且是 .xlsx / .xls」—— 文件既没坏、格式也对，
+ * 于是这条提示把排查方向指错了方向，病灶在网关。
+ *
+ * 判据顺序：先看**网关状态码**（它最具体、且一定没有业务信封），再看服务端那句业务话，
+ * 最后才是兜底（兜底里必须带上状态码，下次至少能从界面上看出是 403 还是 500）。
+ */
+export function importFailureMessage(input: { status: number; serverMessage?: string; fileSize?: number }): string {
+  const { status, serverMessage } = input;
+  const size = readableSize(input.fileSize);
+  const withSize = size ? `（这份文件 ${size}）` : "";
+  // 413 只会来自网关/反代：应用侧的体积上限走的是 Multer，回的是 422 业务错误。
+  if (status === 413) {
+    return `文件太大，被服务器网关挡在门外${withSize}：当前网关允许的上传体积比这份文件小（应用本身支持 ${Math.round(SALES_ORDER_IMPORT_MAX_BYTES / 1024 / 1024)}MB）。请先压缩或拆成两份再传；如果确认这份文件应该能传，请管理员检查边缘 nginx 的 client_max_body_size`;
+  }
+  if (status === 401) return "登录已失效，请重新登录后再传这份文件";
+  if (status === 403) return serverMessage ? `没有补录权限：${serverMessage}` : "没有补录权限（当前账号看不到销售模块的上传入口），请联系管理员分配权限";
+  if (status === 502 || status === 503 || status === 504) return `服务器暂时不可用（HTTP ${status}），请稍后重试；连续出现请把这句话发给管理员`;
+  if (serverMessage) return serverMessage;
+  // 没有业务信封：多半是网关/框架回的 HTML（404 页面、502 页面、代理错误页）。
+  return `读取失败（HTTP ${status}）：服务器没有返回可识别的错误内容${withSize}。请把这句里的状态码发给管理员，它能直接指向是网关还是应用`;
+}
