@@ -75,6 +75,40 @@ export default function PurchaseOrderDetailPage() {
     setDialog({ title: `撤销到货批次：${r.receiptNo}`, fields: [{ name: "reason", label: "撤销原因", type: "textarea", required: true }], submit: v => void action(`/purchase-orders/receipts/${r.id}/cancel`, { reason: v.reason }, "到货批次已撤销") });
   }
 
+  /**
+   * 行级退回（2026-11-12）：只把这一行退回采购计划，其余行与采购单号都不动。
+   *
+   * 用户原话：「下了采购单之后，如果需要临时修改BOM表的一些信息，需要整批采购单全部回退再修改，
+   * 再下单。说明我们系统的拆分性，回溯性不够灵活。」
+   *
+   * 与列表页的「退回采购计划」是两个粒度、两个名字：那个退整张单（单号会变），
+   * 这个只退一行（单号不变，重新收束时会并回同一张单）。
+   *
+   * 只在该行**零到货**时给入口（判据与服务端同一条线）：有到货的行按下去必然被拒，
+   * 让用户点一次撞一次墙是最差的可发现性。
+   */
+  function revertLine(targetItem: PurchaseItem) {
+    if (!order) return;
+    setDialog({
+      title: `退回这一行到采购计划：${targetItem.material?.name ?? "物料"}`,
+      fields: [
+        { name: "info", type: "info", label: "只退这一行：其余明细与采购单号都不动。退回去之后在这一批的计划里改数量/供应商，再收束下单会并回同一张采购单。" },
+        { name: "reason", label: "退回原因", type: "textarea", required: true },
+      ],
+      submit: v => void action(`/purchase-orders/${order.id}/items/${targetItem.id}/revert-to-plan`, { reason: v.reason }, "这一行已退回采购计划"),
+    });
+  }
+
+  /**
+   * 这一行现在能不能退：零到货 + 单状态在「已下单/部分到货」。
+   * 到货批次被撤销（`status === "cancelled"`）的不算到货事实 —— 与服务端按 `deleted_at IS NULL` 取到货的口径对齐。
+   */
+  function revertibleLine(targetItem: PurchaseItem) {
+    if (!order) return false;
+    if (!["ordered", "partially_arrived"].includes(order.status)) return false;
+    return targetItem.receipts.filter(r => r.status !== "cancelled").length === 0;
+  }
+
   function rows(item: PurchaseItem) {
     return item.batchWorkflows ?? item.receipts.map((r, i) => ({ receiptId: r.id, receiptNo: r.receiptNo, batchSequence: r.batchSequence ?? i + 1, receivedQuantity: r.quantity, inspections: r.inspections ?? [], inbounds: r.rawMaterialInbounds ?? [] }));
   }
@@ -117,7 +151,7 @@ export default function PurchaseOrderDetailPage() {
               「物料」与「入库」是两串长度无界的中文（物料 = 编码/名称/型号；入库 = 多条「数量（状态）」拼接），
               它们拿大头并带省略号 + title；「质检」格里是三行徽章，用 `whiteSpace: normal` 让它换行而不是被裁。
               这些 <td> 原来大多没有 className，连 `.ui-table-cell` 的内边距都没有，同一次治理一并补上。 */}
-          return <div key={item.id} className="purchase-item-block"><div className="purchase-item-block-header"><span className="header-chip header-chip-material" title={ml}>{ml}</span><span className="header-chip">采购数量 {item.quantity}{item.unit?.name ? ` ${item.unit.name}` : ""}</span><span className="header-chip">供应商 {item.supplier?.name ?? "-"}</span><span className="header-chip">预计到货 {item.expectedDate ? item.expectedDate.slice(0,10) : "-"}</span><Button size="sm" variant="secondary" onClick={() => receive(item)}>登记下一批到货</Button></div><div className="table-wrap"><table className="ui-table batch-table table-bounded"><thead><tr><th className="ui-table-head cell-ellipsis" style={{ width: "24%" }} title="物料">物料</th><th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="批次">批次</th><th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="到货">到货</th><th className="ui-table-head cell-ellipsis" style={{ width: "20%" }} title="质检">质检</th><th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="入库">入库</th><th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="操作">操作</th></tr></thead><tbody>{batches.length ? batches : <tr><td className="ui-table-cell cell-material cell-ellipsis" title={ml}>{ml}</td><td className="ui-table-cell cell-ellipsis" title="-">-</td><td className="ui-table-cell"><span className="batch-empty">尚未登记</span></td><td className="ui-table-cell"><span className="batch-empty">-</span></td><td className="ui-table-cell"><span className="batch-empty">-</span></td><td className="ui-table-cell"><Button size="sm" variant="secondary" onClick={() => receive(item)}>登记到货</Button></td></tr>}</tbody></table></div></div>;
+          return <div key={item.id} className="purchase-item-block"><div className="purchase-item-block-header"><span className="header-chip header-chip-material" title={ml}>{ml}</span><span className="header-chip">采购数量 {item.quantity}{item.unit?.name ? ` ${item.unit.name}` : ""}</span><span className="header-chip">供应商 {item.supplier?.name ?? "-"}</span><span className="header-chip">预计到货 {item.expectedDate ? item.expectedDate.slice(0,10) : "-"}</span><Button size="sm" variant="secondary" onClick={() => receive(item)}>登记下一批到货</Button>{revertibleLine(item) ? <Button size="sm" variant="ghost" onClick={() => revertLine(item)}>退回这一行</Button> : null}</div><div className="table-wrap"><table className="ui-table batch-table table-bounded"><thead><tr><th className="ui-table-head cell-ellipsis" style={{ width: "24%" }} title="物料">物料</th><th className="ui-table-head cell-ellipsis" style={{ width: "10%" }} title="批次">批次</th><th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="到货">到货</th><th className="ui-table-head cell-ellipsis" style={{ width: "20%" }} title="质检">质检</th><th className="ui-table-head cell-ellipsis" style={{ width: "16%" }} title="入库">入库</th><th className="ui-table-head cell-ellipsis" style={{ width: "14%" }} title="操作">操作</th></tr></thead><tbody>{batches.length ? batches : <tr><td className="ui-table-cell cell-material cell-ellipsis" title={ml}>{ml}</td><td className="ui-table-cell cell-ellipsis" title="-">-</td><td className="ui-table-cell"><span className="batch-empty">尚未登记</span></td><td className="ui-table-cell"><span className="batch-empty">-</span></td><td className="ui-table-cell"><span className="batch-empty">-</span></td><td className="ui-table-cell"><Button size="sm" variant="secondary" onClick={() => receive(item)}>登记到货</Button></td></tr>}</tbody></table></div></div>;
         })}</div>
       </div>
     </section>
