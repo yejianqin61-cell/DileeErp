@@ -110,6 +110,17 @@ function planSummaryTitle(plan: PlanRow) {
     `未下单 ${plan.unorderedCount} / 共 ${plan.lineCount} 行 · ${plan.statusLabel}`,
     `计划金额 ${total}（其中未下单 ${unordered}）`,
     `最后更新 ${plan.updatedByName ?? "—"}${updatedAt ? ` ${updatedAt}` : ""}`,
+    /**
+     * 完成态追加一句「补料还能在这里加行」（2026-11-12）。
+     *
+     * 审计 §1.2 的死锁：计划一旦有已下单行就**删不掉**（`remove()` 422），而 `bom_id` 上的
+     * 部分唯一索引一直占着 —— 于是这张 BOM 永远不会再出现在"可建计划"的候选里，
+     * 「想再买一批」的唯一出路就是**在这份计划里加一行**。
+     *
+     * 那句提示必须挂在这份计划自己身上：用户看到"已完成"只会以为它结束了。
+     * 走 `title` 而不是新增一列 —— 13 列的宽度预算已经用完（口径 7）。
+     */
+    ...(plan.status === "completed" ? ["这张 BOM 的料已经买齐；补料请在这份计划里加一行（不必也不能另建一份计划）"] : []),
   ].join("\n");
 }
 
