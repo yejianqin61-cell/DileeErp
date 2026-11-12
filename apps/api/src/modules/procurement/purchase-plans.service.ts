@@ -545,9 +545,11 @@ export class PurchasePlansService {
        * 却没有任何一行可收到货、金额也是 0 —— 谁也说不清它是什么，而它还会一直占着采购单号。
        */
       if (remaining.length === 0) {
-        await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { status: "cancelled", totalAmount: "0", ...this.audit.softDelete(user) } });
+        await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { status: "cancelled", totalAmount: new Prisma.Decimal(0), ...this.audit.softDelete(user) } });
       } else {
-        await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { totalAmount: total.toFixed(4), ...this.audit.update(user) } });
+        // 写回 **Decimal**（不是 `toFixed(4)` 的字符串）：这一列是 Decimal(18,4)，
+        // 而同一张单的 `total_amount` 随后还要被 `appendItems()` 读出来做累加 —— 字符串会在那里炸。
+        await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { totalAmount: total, ...this.audit.update(user) } });
       }
       return { remainingCount: remaining.length, total, orderCancelled: remaining.length === 0 };
     });
