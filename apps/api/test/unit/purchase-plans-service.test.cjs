@@ -665,6 +665,42 @@ test("候选接口：一张 BOM 都没有时两边都是空数组", async () => 
   assert.deepEqual(report.blocked, []);
 });
 
+/**
+ * Phase 1 的证明（2026-11-12）：一条端到端走完「选得到 → 建得出来」。
+ *
+ * 前半段（候选分类）与后半段（建计划前置校验）各自有用例，但**分别绿不等于接得上** ——
+ * 口径 2 现场真正怕的正是"候选里有、点了却 404"。这条用例把两半串起来断言，
+ * 而且用**关闭的销售单**当样本（R-2 的那条验收项）。
+ */
+test("端到端：关闭销售单的 BOM —— 候选里出现、建计划成功、计划真的落库", async () => {
+  const closedBom = { ...bomFixture, salesOrder: { orderNo: "SO-1", itemNo: "27621", customerSnapshot: { name: "流水花扇客户" }, deliveryDate: null, status: "closed", deletedAt: null } };
+  const { service, plans, planItems } = makeService({ boms: [closedBom], bomItems: [bomRow("bi-1"), bomRow("bi-2")], plans: [] });
+
+  const report = await service.candidateReport();
+  assert.deepEqual(report.eligible.map((row) => row.bomId), ["bom-1"], "第一半：候选里选得到");
+  assert.deepEqual(report.blocked, []);
+
+  const created = await service.create({ bom_id: "bom-1" }, user);
+  assert.equal(plans.length, 1, "第二半：真的建出来了一份计划");
+  assert.equal(created.items.length, 2, "行按 BOM 全部带出来（漏买部件的唯一防法）");
+  assert.equal(planItems.filter((row) => row.deletedAt === null).length, 2);
+});
+
+test("端到端：草稿销售单的 BOM —— 候选里被拦、硬建也建不出来（两处同一个答案）", async () => {
+  const draftBom = { ...bomFixture, salesOrder: { orderNo: "SO-1", itemNo: "27621", customerSnapshot: { name: "客户" }, deliveryDate: null, status: "draft", deletedAt: null } };
+  const { service, plans } = makeService({ boms: [draftBom], bomItems: [bomRow("bi-1")], plans: [] });
+
+  const report = await service.candidateReport();
+  assert.equal(report.blocked[0].reasons[0].code, "SALES_ORDER_NOT_CONFIRMED");
+
+  await assert.rejects(
+    () => service.create({ bom_id: "bom-1" }, user),
+    (error) => error.getResponse().code === "BOM_NOT_FOUND",
+    "候选说不能建，硬建也必须不能建 —— 否则用户拿到的是「选了也没用」",
+  );
+  assert.equal(plans.length, 0);
+});
+
 // ---------------------------------------------------------------------------------------------
 // 保存（整体替换 + 已下单行保护 + 乐观锁）与软删。
 
