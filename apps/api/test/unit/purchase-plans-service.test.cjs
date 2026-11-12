@@ -19,7 +19,7 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { Prisma } = require("@prisma/client");
 const { PurchasePlansService } = require("../../dist/modules/procurement/purchase-plans.service.js");
-const { planStatusOf, purchasePlanNo, countBomMaterialsMissingFromPlan, planLineAmount, sumPlanAmounts, DEFAULT_PLAN_CURRENCY } = require("../../dist/modules/procurement/purchase-plans.domain.js");
+const { planStatusOf, purchasePlanNo, countBomMaterialsMissingFromPlan, planLineAmount, sumPlanAmounts, DEFAULT_PLAN_CURRENCY, planCandidateReasons, planStatusFromItems, PLAN_ELIGIBLE_SALES_STATUSES } = require("../../dist/modules/procurement/purchase-plans.domain.js");
 
 const audit = {
   create: () => ({ createdBy: "user-1", updatedBy: "user-1" }),
@@ -1474,4 +1474,58 @@ test("列表：没有明细的计划也照常出现在列表里（前端要给�
   assert.equal(list.length, 1);
   assert.deepEqual(list[0].lines, [], "空计划下发空数组，由前端补一行「（这份计划一行都没有）」");
   assert.equal(list[0].lineCount, 0);
+});
+
+// ---------------------------------------------------------------------------------------------
+// 候选可解释（2026-11-12）：用户原话「采购计划有时候无法选中需要建立采购计划的 BOM 表」。
+//
+// 审计结论（`docs/audit/procurement-audit-2026-11-12.md` §1）：候选接口把不可建的 BOM **静默过滤掉**，
+// 界面上只剩一个空下拉。这一组钉的是**分类规则本身**（纯函数），接口只负责把结果摆出去。
+//
+// 期望值来自审计 §5 P1 的原因码表与 R-2 的验收项，不是把函数的输出抄一遍。
+
+const candidateInput = (overrides = {}) => ({ salesOrderDeleted: false, salesOrderStatus: "confirmed", existingPlan: null, ...overrides });
+
+test("domain：候选分类 —— 已确认、没有计划 = 可建（原因表为空）", () => {
+  assert.deepEqual(planCandidateReasons(candidateInput()), []);
+});
+
+test("domain：候选分类 —— 销售单已关闭（closed）也照样可建（补料/返修仍要买料）", () => {
+  // 依据：审计 §1.3。`close` 是销售侧的动作（`sales-orders.service.ts:1354` 只要求当前是 confirmed），
+  // 而 BOM 本来就只可能建在已确认的销售单上，所以放开 closed 不会把草稿期的噪音放进来。
+  assert.deepEqual(planCandidateReasons(candidateInput({ salesOrderStatus: "closed" })), []);
+  assert.deepEqual([...PLAN_ELIGIBLE_SALES_STATUSES].sort(), ["closed", "confirmed"]);
+});
+
+test("domain：候选分类 —— 销售单还是草稿 = 被拦，且原因码是 SALES_ORDER_NOT_CONFIRMED", () => {
+  const reasons = planCandidateReasons(candidateInput({ salesOrderStatus: "draft" }));
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].code, "SALES_ORDER_NOT_CONFIRMED");
+  assert.match(reasons[0].message, /确认/, "文案要说得清下一步做什么");
+});
+
+test("domain：候选分类 —— 已有计划 = 被拦，原因里必须带出计划编号（否则用户不知道去哪儿补料）", () => {
+  const reasons = planCandidateReasons(candidateInput({ existingPlan: { planNo: "PP-20260927-AB12CD34", status: "completed" } }));
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].code, "PLAN_ALREADY_EXISTS");
+  assert.match(reasons[0].message, /PP-20260927-AB12CD34/);
+  assert.match(reasons[0].message, /加一行/, "给的是「去那份计划里加行」这个出口");
+});
+
+test("domain：候选分类 —— 销售单被软删时 SALES_ORDER_DELETED 优先于状态原因", () => {
+  const reasons = planCandidateReasons(candidateInput({ salesOrderDeleted: true, salesOrderStatus: "draft" }));
+  assert.equal(reasons.length, 1);
+  assert.equal(reasons[0].code, "SALES_ORDER_DELETED");
+});
+
+test("domain：候选分类 —— 计划状态由行链接派生（不落列），交给 planStatusOf", () => {
+  assert.equal(planStatusFromItems([]), "unordered", "空计划算未下单，不算已完成");
+  assert.equal(planStatusFromItems([{ purchaseOrderItemId: null }, { purchaseOrderItemId: null }]), "unordered");
+  assert.equal(planStatusFromItems([{ purchaseOrderItemId: "poi-1" }, { purchaseOrderItemId: null }]), "partial");
+  assert.equal(planStatusFromItems([{ purchaseOrderItemId: "poi-1" }]), "completed");
+});
+
+test("domain：候选分类 —— 已完成的计划在原因里被说成「已完成」", () => {
+  const reasons = planCandidateReasons(candidateInput({ existingPlan: { planNo: "PP-1", status: "completed" } }));
+  assert.match(reasons[0].message, /已完成/);
 });
