@@ -60,3 +60,26 @@ test("退回采购计划复用既有的 PURCHASE_ORDER_NOT_REVERTIBLE（不新�
   assert.match(planService, /code: "PURCHASE_ORDER_NOT_REVERTIBLE"/);
   assert.match(planService, /code: "PURCHASE_ORDER_WITHOUT_BOM_NOT_REVERTIBLE"/);
 });
+
+// ---------------------------------------------------------------------------------------------
+// 行级退回的入口（2026-11-12）。
+
+test("行级退回：路径挂在 purchase-orders 控制器下，实现在采购计划服务上", () => {
+  // 分工与整单退回完全一致：用户手里的对象是那张采购单（路径在 orders），
+  // 而落点是计划行（实现必须在 plans 服务里，否则两条服务互相依赖）。
+  assert.match(orders, /@Post\(":id\/items\/:itemId\/revert-to-plan"\)/, "行级退回的路径必须存在");
+  const planService = fs.readFileSync(path.join(SRC, "purchase-plans.service.ts"), "utf8");
+  assert.match(planService, /async revertPurchaseOrderItem\(/);
+  // 原因必填：复用既有码，不新造同义词。
+  assert.match(planService, /code: "CORRECTION_REASON_REQUIRED"/);
+  // 到货是硬边界，必须有它自己的码（与整单的 PURCHASE_ORDER_NOT_REVERTIBLE 区分开，
+  // 否则运维看到"不能退回"时分不清是整单不能退还是这一行有到货）。
+  assert.match(planService, /code: "PURCHASE_ORDER_ITEM_NOT_REVERTIBLE"/);
+});
+
+test("行级退回：审计动作名带 item 前缀，便于按单/按行两种方式追", () => {
+  const planService = fs.readFileSync(path.join(SRC, "purchase-plans.service.ts"), "utf8");
+  assert.match(planService, /"purchase_order_item\.revert_to_plan"/);
+  assert.match(planService, /remaining_line_count/);
+  assert.match(planService, /order_cancelled/);
+});
