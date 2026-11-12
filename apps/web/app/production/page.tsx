@@ -14,6 +14,10 @@ import { OrderNoWithOrphan } from "../../components/data/orphan-badge";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { latestBom, productionCandidateHint, productionCandidates, resolveProductionUnit } from "../../lib/production-candidates";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
+// 状态列经 DataTable 落成中文标签，过滤也必须认这份标签，否则用户照着界面输入「草稿」搜不到。
+import { displayText } from "../../lib/display-text";
 import { BomWorkbench, type BomMaterialRef } from "../../components/bom/bom-workbench";
 import { MaterialCreateDialog } from "../../components/bom/material-create-dialog";
 import { PayrollExportPanel } from "../../components/production/payroll-export-panel";
@@ -79,6 +83,21 @@ export default function ProductionPage() {
   const [materialApply, setMaterialApply] = useState<((material: BomMaterialRef) => void) | null>(null);
   const [records, setRecords] = useState<ProductionOrder[]>([]);
   const [query, setQuery] = useState(searchParams.get("order_no") ?? "");
+  /**
+   * 【BOM表】面板自己的搜索词（2026-11-11，用户：「需要在生产和采购模块的BOM表页面加上搜索功能」）。
+   *
+   * 为什么不复用上面的 `query`：那个是「生产单查找」的搜索，还被 `?order_no=` 深链预填 ——
+   * 两个框各管一张表，共用一个状态就会出现「点了一个深链，BOM 表也只剩一张单」。
+   */
+  const [bomQuery, setBomQuery] = useState("");
+  /**
+   * 「新建生产单」对话框里的候选单（`null` = 没搜过，就是全量 `orders`）。
+   *
+   * 为什么要单独存（2026-11-11 缺陷 A）：以前对话框的搜索把结果写进了 `orders`，
+   * 而 `orders` 同时是【BOM表】的数据源 —— 用户在对话框里搜了个单号，关掉后 BOM 表就只剩搜到的那几张。
+   * 现在对话框的搜索结果只落在这里，页面主列表保持全量。
+   */
+  const [dialogCandidates, setDialogCandidates] = useState<Order[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -113,13 +132,42 @@ export default function ProductionPage() {
     try { const result = await apiPost<unknown>(path, body); notifySuccess(success); setMessage(""); await load(); return result.data; }
     catch (cause) { notifyError(cause instanceof ApiClientError ? cause.message : "操作失败"); return undefined; }
   }
-  const visible = useMemo(() => records.filter((item) => !query || `${item.productionOrderNo} ${item.orderNo} ${item.status}`.toLowerCase().includes(query.toLowerCase())), [records, query]);
+  /**
+   * 「生产单查找」的过滤（2026-11-11 缺陷 B 修复）。
+   *
+   * 以前这里是「生产单号 + 订单号 + 状态」三段拼串再 `toLowerCase().includes(...)`：状态取的是
+   * **后端英文原值** `draft`，而界面上经 `DataTable` 的 `displayText` 显示成「草稿」——
+   * 用户照着屏幕输入「草稿」什么都搜不到，会以为生产单不存在。
+   * 现在同时喂入原值与中文标签（`displayText`），英文与中文都能命中；匹配语义换成全站统一的
+   * `fuzzyMatch`（空格分词 AND、忽略大小写与空白）。
+   * 字段范围仍只有这三列（输入框文案写的就是「生产单、订单号或状态」），不扩张到地点/工序。
+   */
+  const visible = useMemo(() => records.filter((item) => fuzzyMatch(query, [item.productionOrderNo, item.orderNo, item.status, String(displayText(item.status))])), [records, query]);
+  /**
+   * 【BOM表】的过滤：只匹配这张表**看得见**的三样东西 —— 订单号、数量、单位。
+   * 不匹配 `boms` 之类看不见的字段：搜到了却看不出为什么命中，只会让人以为搜索坏了。
+   */
+  const bomVisible = useMemo(() => orders.filter((order) => fuzzyMatch(bomQuery, [order.orderNo, order.quantity, order.unit])), [orders, bomQuery]);
   const activeLocations = locations.filter((item) => item.isActive);
   // 候选与提示都从“全部销售单”推导：缺 BOM 的已确认订单必须被解释，而不是从下拉框静默消失。
-  const candidates = useMemo(() => productionCandidates(orders), [orders]);
+  //
+  // 2026-11-11 缺陷 A 之后两者分开口径：
+  //   - `candidateHint`（页面上那句「有 N 张已确认销售单尚未建立 BOM」）**只认全量 `orders`**：
+  //     它是页面级的解释，不该跟着对话框里的一次搜索变；
+  //   - `candidates` 只喂「新建生产单」的下拉，所以优先用对话框自己那份搜索结果
+  //     （`dialogCandidates`，null = 没搜过 → 回落到全量 `orders`）。
+  const candidates = useMemo(() => productionCandidates(dialogCandidates ?? orders), [dialogCandidates, orders]);
   const candidateHint = useMemo(() => productionCandidateHint(orders), [orders]);
   const orderOptions = candidates.map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}${item.unit ? ` ${item.unit}` : ""}` }));
 
+  /**
+   * 「新建生产单」对话框里订单下拉的服务端搜索（250ms 防抖）。
+   *
+   * ⚠️ 结果只写进 `dialogCandidates`（对话框自己那份候选）+ `ordersRef`（提交时靠它找 source），
+   * **绝不写 `orders`**（2026-11-11 缺陷 A）：`orders` 同时是【BOM表】的数据源，
+   * 以前在这里 `setOrders(result.data)`，用户只是在对话框里搜了个单号，
+   * 关掉对话框后 BOM 表就只剩被搜到的那几张单。
+   */
   function searchSalesOrders(search: string) {
     if (orderSearchTimer.current) clearTimeout(orderSearchTimer.current);
     const requestId = ++orderSearchRequest.current;
@@ -127,7 +175,7 @@ export default function ProductionPage() {
       void apiGet<Order[]>(`/sales-orders?status=confirmed&page=1&page_size=200&search=${encodeURIComponent(search)}`).then((result) => {
         if (requestId === orderSearchRequest.current) {
           ordersRef.current = result.data;
-          setOrders(result.data);
+          setDialogCandidates(result.data);
           setDialog((current) => current ? { ...current, fields: current.fields.map((field) => field.name === "order_no" ? { ...field, options: productionCandidates(result.data).map((item) => ({ value: item.orderNo, label: `${item.orderNo} / ${item.quantity}${item.unit ? ` ${item.unit}` : ""}` })) } : field) } : current);
         }
       }).catch((cause) => { if (requestId === orderSearchRequest.current) notifyError(cause instanceof ApiClientError ? cause.message : "订单搜索失败"); });
@@ -140,7 +188,9 @@ export default function ProductionPage() {
       const fresh = await apiGet<Order[]>("/sales-orders?status=confirmed&page=1&page_size=200");
       candidateOrders = fresh.data;
       ordersRef.current = candidateOrders;
-      setOrders(candidateOrders);
+      // 打开对话框时重新拉到的「最新候选」也只交给对话框（缺陷 A）：页面主列表与 BOM 表用挂载时那份，
+      // 两处各自刷新，谁也不该因为对面拉了一次数据而变小。
+      setDialogCandidates(candidateOrders);
     } catch (cause) {
       notifyError(cause instanceof ApiClientError ? cause.message : "订单候选加载失败");
     }
@@ -195,7 +245,9 @@ export default function ProductionPage() {
   // （见 docs/test/results/2026-09-13-e2e-rewrite-and-platform-unit-expansion.md §7.3）。
   return <div className="page-root" data-testid="page-production">
     <PageHeader title="生产"><Button onClick={() => void openProductionOrder()} disabled={loading} data-testid="production-create-order">新建生产单</Button></PageHeader>
-    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
+    {/* 关窗时把对话框那份候选一起清掉（2026-11-11 缺陷 A）：下次打开由 openProductionOrder()
+        重新拉最新候选，留着上一次的搜索结果只会让人以为「候选变少了」。 */}
+    <ActionDialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) { setDialog(null); setDialogCandidates(null); } }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} />
     {/* BOM 工作区放在加载分支之外：保存后刷新列表时它不会被卸载，用户的编辑不会被吞掉。 */}
     {/* 生产侧**不显示**「默认供应商」列（2026-09-27，用户：「生产模块里面的 BOM 表里面不用填写供应商」）：
         那一列是采购的知识（这个部件通常找哪家做）。数据没有被清掉 —— 保存时行上的值照旧回传，
@@ -216,10 +268,29 @@ export default function ProductionPage() {
     {message && <section className="panel panel-body status-success">{message}</section>}
     {!loading && candidateHint && <section className="panel panel-body panel-note" role="status">{candidateHint}</section>}
     {error ? <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section> : loading ? <LoadingState /> : <>
-      <section className="panel" data-testid="production-bom-panel"><div className="panel-heading"><h2>BOM表</h2></div><div className="panel-body">
-        <p className="panel-note">BOM 由采购与生产共同维护，两个入口改的是同一张表。保存时会校验版本：若采购已先改过，会提示你重新加载，而不是把对方的修改覆盖掉。</p>
-        {!orders.length ? <EmptyState title="暂无已确认销售单" description="建立并确认销售单后，即可在这里为其建立 BOM 表。" /> : <div className="table-wrap"><table className="data-table table-bounded"><thead><tr><th style={{ width: BOM_COLUMN_WIDTH.orderNo }}>订单号</th><th style={{ width: BOM_COLUMN_WIDTH.quantity }}>数量</th><th style={{ width: BOM_COLUMN_WIDTH.bom }}>BOM表</th></tr></thead><tbody>{orders.map((order) => { const bom = latestBom(order.boms); return <tr key={order.orderNo}><td className="cell-ellipsis" title={order.orderNo}>{order.orderNo}</td><td className="cell-ellipsis" title={`${order.quantity}${order.unit ? ` ${order.unit}` : ""}`}>{order.quantity}{order.unit ? ` ${order.unit}` : ""}</td><td><Button size="sm" variant="secondary" data-testid={`production-bom-${order.orderNo}`} onClick={() => void createOrOpenBom(order)}>{bom ? "编辑BOM表" : "新建BOM表"}</Button></td></tr>; })}</tbody></table></div>}
-      </div></section>
+      <section className="panel" data-testid="production-bom-panel">
+        <div className="panel-heading">
+          <h2>BOM表</h2>
+          {/* 计数只在有数据时出现（2026-11-11）：空态本身就是一句解释，再挂一个「共 0 张」只是噪音。 */}
+          {orders.length > 0 && <span className="panel-note" data-testid="production-bom-count">共 {orders.length} 张确认单，当前列出 {bomVisible.length} 张</span>}
+        </div>
+        <div className="panel-body">
+          <p className="panel-note">BOM 由采购与生产共同维护，两个入口改的是同一张表。保存时会校验版本：若采购已先改过，会提示你重新加载，而不是把对方的修改覆盖掉。</p>
+          {!orders.length ? <EmptyState title="暂无已确认销售单" description="建立并确认销售单后，即可在这里为其建立 BOM 表。" /> : <>
+            {/*
+              本面板自己的搜索框（2026-11-11）。两个细节是刻意的：
+              · 状态与「生产单查找」那个 `query` 完全分开（那个被 `?order_no=` 深链预填）；
+              · placeholder 也刻意不同名（那边是「输入关键词」）—— 撞名会让用户分不清在搜哪张表，
+                渲染测试里 `getByPlaceholderText` 也会因为匹配到 2 个直接报错。
+            */}
+            <div className="filter-bar"><label>搜索订单号或数量<Input data-testid="production-bom-search" value={bomQuery} onChange={(event) => setBomQuery(event.target.value)} placeholder="输入订单号或数量" /></label></div>
+            {!bomVisible.length
+              // 有数据但搜不到：说清「是没匹配上，不是没有单」，并把总数留在眼前。
+              ? <EmptyState title={`没有匹配“${bomQuery.trim()}”的订单`} description={`共 ${orders.length} 张确认单，换个关键词或清空搜索框。`} />
+              : <div className="table-wrap"><table className="data-table table-bounded"><thead><tr><th style={{ width: BOM_COLUMN_WIDTH.orderNo }}>订单号</th><th style={{ width: BOM_COLUMN_WIDTH.quantity }}>数量</th><th style={{ width: BOM_COLUMN_WIDTH.bom }}>BOM表</th></tr></thead><tbody>{bomVisible.map((order) => { const bom = latestBom(order.boms); return <tr key={order.orderNo}><td className="cell-ellipsis" title={order.orderNo}>{order.orderNo}</td><td className="cell-ellipsis" title={`${order.quantity}${order.unit ? ` ${order.unit}` : ""}`}>{order.quantity}{order.unit ? ` ${order.unit}` : ""}</td><td><Button size="sm" variant="secondary" data-testid={`production-bom-${order.orderNo}`} onClick={() => void createOrOpenBom(order)}>{bom ? "编辑BOM表" : "新建BOM表"}</Button></td></tr>; })}</tbody></table></div>}
+          </>}
+        </div>
+      </section>
       <section className="panel"><div className="panel-heading"><h2>生产单查找</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索生产单、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label></div><div data-testid="production-order-table"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无生产单" />} /></div></div></section>
       <section className="panel"><div className="panel-heading"><h2>生产基础资料</h2></div><div className="panel-body"><div className="page-actions"><Button asChild variant="secondary"><Link href="/production/operations" data-testid="production-add-operation">工序池（{operations.filter((item) => item.isActive).length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/locations" data-testid="production-add-location">加工地点池（{activeLocations.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/units">单位池（{units.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/material-issues">领料/补料单（按工序）</Link></Button></div></div></section>
       <PayrollExportPanel orders={records} operations={operations} />

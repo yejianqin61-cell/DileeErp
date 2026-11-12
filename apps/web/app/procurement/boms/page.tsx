@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
 import { OrderNoWithOrphan } from "../../../components/data/orphan-badge";
@@ -13,6 +14,8 @@ import { BomWorkbench, type BomMaterialRef } from "../../../components/bom/bom-w
 import { MaterialCreateDialog } from "../../../components/bom/material-create-dialog";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
+import { displayText } from "../../../lib/display-text";
 
 type Reference = AuditRow & { id: string; orderNo?: string; status?: string; salesOrderId?: string; /** 所属销售单已被软删（2026-11-03）：BOM 不删，只标成「孤立」。判定只认后端字段。 */ orphaned?: boolean; /** 孤立 BOM 行（2026-11-05）：行 id 被换成 salesOrderId，真实 BOM id 留在这里 —— 删除入口只能拿它当目标。 */ bom_id?: string; name?: string; materialCode?: string; supplierCode?: string; code?: string; isActive?: boolean; defaultUnitId?: string };
 // 物料池：规格型号与颜色要一起带上 —— BOM 行选择/新建物料时会引用它们做初始值。
@@ -39,6 +42,25 @@ type BomDeletePreview = {
 type BomDeleteDialog = { title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
+
+/**
+ * 一行**能搜到什么**（2026-11-11，用户：「需要在生产和采购模块的BOM表页面加上搜索功能」）。
+ *
+ * 口径：只搜这张表**看得见的字** —— 订单号、BOM 状态、以及孤立行上那个「孤立」徽章。
+ * 为什么不到后面几列去捞（客户名、版本号、创建人 UUID）：搜出来一行，屏幕上却看不见是哪一段
+ * 命中的，用户会以为搜索坏了（此处踩过的相邻坑：2026-10-13 那张「只有 20 张单」的空页）。
+ *
+ * 状态为什么给两份：单元格里 `DataTable` 会用 `displayText` 把 `draft` 显示成「草稿」
+ * （`components/data/data-table.tsx` 的 `text()`），用户是照着「草稿」去搜的 ——
+ * 只认后端原值，就等于让人搜不到自己刚看见的那两个字（生产页「生产单查找」的 KNOWN_DEFECT 就是这个形态，
+ * 同一天一并修掉）。原值也留着：接口文档、导出件里写的是 `draft`。
+ */
+const searchableFieldsOf = (row: Reference): Array<string | undefined> => [
+  row.orderNo,
+  row.status,
+  row.status ? String(displayText(row.status)) : undefined,
+  row.orphaned ? "孤立" : undefined,
+];
 
 /**
  * BOM 表列表的列宽（2026-10-09：`DataTable` 一律 `table-layout: fixed`，没写宽度的列由浏览器**均分**，
@@ -88,6 +110,14 @@ export default function BomsPage() {
   /** 正在读「删除影响面」的那一行：读接口回来之前按钮不能连点（否则会弹两次确认框）。 */
   const [deletingId, setDeletingId] = useState("");
   const [deleteDialog, setDeleteDialog] = useState<BomDeleteDialog | null>(null);
+  /**
+   * 搜索框（2026-11-11）。**客户端过滤**、不等服务端：这一页一次就把已确认销售单全取回来了
+   * （`page_size=200`，生产实况：未删销售单 55 张，其中已确认 54 张），逐字过滤才是用户要的即时感；
+   * 多打一个 `?search=` 请求还会在「输入一个字符」和「列表内容」之间引入竞态。
+   * 代价写在当天的设计文档里：超过 200 张已确认单时，第 201 张往后的单本来就取不回来 ——
+   * 那是这一页**既有的**取数上限，不是搜索带来的，计数条已经把「加载了多少条」摆在用户眼前。
+   */
+  const [query, setQuery] = useState("");
 
   async function load() {
     setLoading(true);
@@ -253,6 +283,11 @@ export default function BomsPage() {
   const bomEmptyHint = draftCount
     ? `还有 ${draftCount} 张销售单是草稿：BOM 只能建在**已确认**的销售单上 —— 请先到【销售】确认，再回这里点「新建BOM表」。`
     : "建立并确认销售单后，即可在这里为其建立 BOM 表。";
+  /**
+   * 搜索命中的行（2026-11-11）。空查询（或只有空白）时直接返回原数组：
+   * 一是不必逐行跑一遍匹配，二是「清空搜索框 = 回到全量」这件事只靠一行 `if` 就成立。
+   */
+  const filteredBomRows = query.trim() ? bomRows.filter((row) => fuzzyMatch(query, searchableFieldsOf(row))) : bomRows;
 
   const columns: ColumnDef<Reference>[] = [
     // 订单号旁可能跟着「孤立」徽章：销售单被删后 BOM 仍在，得让人看出它已经没有在途的销售单了。
@@ -315,8 +350,32 @@ export default function BomsPage() {
       </PageHeader>
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel">
+        {/*
+          BOM 表列表（2026-11-11 加搜索，用户：「需要在生产和采购模块的BOM表页面加上搜索功能」）。
+          搜索框放在 `.filter-bar` 里、并配一条「共 N 条，当前列出 M 条」的计数 ——
+          全站搜索框都是这个形状（物料清单 / 供应商池 / 客户池…），用户不必为同一件事学两种布局；
+          计数则是**过滤掉了多少**的唯一可见证据（表里只剩两行时，用户得知道是筛掉了、不是数据没了）。
+        */}
+        <div className="panel-heading">
+          <h2>BOM表</h2>
+          {/* 有行才显示计数（与生产页【BOM表】同一口径）：一行都没有时，空态本身已经把原因说完了。 */}
+          {bomRows.length > 0 && <span className="panel-note" data-testid="bom-count">共 {bomRows.length} 条，当前列出 {filteredBomRows.length} 条</span>}
+        </div>
         <div className="panel-body">
-          <DataTable columns={columns} data={bomRows} empty={<EmptyState title="暂无已确认销售单" description={bomEmptyHint} />} />
+          {/* 一行数据都没有时不渲染搜索框（与生产页【BOM表】同一口径）：没有东西可筛，
+              这时该看的是下面那句「为什么一页是空的」（还有 N 张草稿 / 先确认销售单）。 */}
+          {bomRows.length > 0 && <div className="filter-bar">
+            <label>搜索订单号或 BOM 状态<Input data-testid="bom-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" /></label>
+          </div>}
+          <DataTable
+            columns={columns}
+            data={filteredBomRows}
+            empty={query.trim()
+              // 搜索无匹配和「真的没有数据」是两件事：前者要让人知道是关键词的问题（并给出总数），
+              // 后者原来那句「暂无已确认销售单 + 还有 N 张草稿」仍然最有用，不能被子句顶掉。
+              ? <EmptyState title={`没有匹配“${query.trim()}”的 BOM 表`} description={`共 ${bomRows.length} 条，换个关键词或清空搜索框。`} />
+              : <EmptyState title="暂无已确认销售单" description={bomEmptyHint} />}
+          />
         </div>
       </section>
       {/*

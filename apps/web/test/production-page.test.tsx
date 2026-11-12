@@ -3,7 +3,8 @@
 // 纪律：不 readFileSync、不正则匹配源码、不断言 className；只断言**渲染出的文本 + 可见性/禁用态 + 网络调用**。
 // 每条断言都对着"能被真实回归打红"的事实：
 //   - 5 个列表接口的完整 URL（少一个 / 路径写错 → 红）；
-//   - 可见行的过滤字段（订单号 / 生产单号 / 状态原值）与计数（去掉任一字段 → 红）；
+//   - 可见行的过滤字段（订单号 / 生产单号 / 状态原值 + 界面上的中文标签）与计数（去掉任一字段 → 红）；
+//   - 【BOM表】面板的搜索（订单号 / 数量 / 单位 + 空格分词 AND）与「共 N 张 / 当前列出 M 张」计数；
 //   - 建单 POST 的完整 body（字段改名、BOM 取旧版本、单位解析退化 → 红）；
 //   - 行内「启动」的 method + /:id/transition 路径 + body（改成集合根或 PATCH → 红）。
 //
@@ -158,6 +159,23 @@ const getsTo = (calls: StubbedCall[], url: string) => callsTo(calls, url).filter
 const postsTo = (calls: StubbedCall[], url: string) => callsTo(calls, url).filter((call) => call.method === "POST");
 const searchInput = () => screen.getByPlaceholderText("输入关键词");
 
+// ---------------------------------------------------------------- BOM 表（本页手写的那张 3 列表）
+
+/** 【BOM表】面板。它的搜索框与「生产单查找」的那个**不是同一个**，断言时必须限定在这个面板里。 */
+function bomPanel() {
+  return within(screen.getByTestId("production-bom-panel"));
+}
+/** BOM 表自己的搜索框（placeholder「输入订单号或数量」）。 */
+function bomSearch() {
+  return screen.getByTestId("production-bom-search") as HTMLInputElement;
+}
+/** BOM 表的**数据行**（表头行不算）：用它断言「只剩几行」比数单元格更贴近用户看到的东西。 */
+function bomRows() {
+  return bomPanel().queryAllByRole("row").filter((row) => within(row).queryAllByRole("columnheader").length === 0);
+}
+/** 面板标题右侧的计数：「共 N 张确认单，当前列出 M 张」。 */
+const bomCount = () => screen.getByTestId("production-bom-count");
+
 /** 打开「新建生产单」对话框（打开时页面会再拉一次 /sales-orders 作为最新候选）。 */
 async function openCreateDialog() {
   await openProduction();
@@ -307,21 +325,37 @@ describe("生产单列表页：行渲染、计数与搜索过滤", () => {
     expect(screen.getByText("暂无生产单")).toBeVisible();
   });
 
-  it("KNOWN_DEFECT：按界面上显示的中文状态搜索返回空结果（过滤用的是后端英文枚举）", async () => {
+  // 2026-11-11 修复（这里原本是一条 KNOWN_DEFECT：按界面上显示的中文状态搜索返回空结果）。
+  // 原因：过滤串当时是 `${productionOrderNo} ${orderNo} ${status}`，status 是后端原值 "draft"，
+  // 而状态列经 DataTable 的 displayText 显示成「草稿」—— 用户照着屏幕输入什么都搜不到。
+  // 现在过滤串同时喂原值与中文标签，英文与中文都能命中（匹配语义换成了全站统一的 fuzzyMatch）。
+  it("中文状态也能命中（2026-11-11 修复）：输入「草稿」与「draft」都命中 MO-2026-001，清空恢复全量", async () => {
     stubProduction({ records: [inHouseDraft, outsourcedInProgress] });
     await openProduction();
 
     // 前提：状态列对用户显示的就是中文「草稿」（displayText 映射，见上一条用例）
     expect(rowFor("MO-2026-001")).toHaveTextContent("草稿");
 
-    await userEvent.type(searchInput(), "草稿");
-
     // 期望：标签写的是「搜索生产单、订单号或状态」，用户输入界面上看到的状态「草稿」应命中该行。
-    // 实际：visible 的过滤串是 `${productionOrderNo} ${orderNo} ${status}`，status 为后端原值 "draft"，
-    //      中文「草稿」匹配不到任何一行 → 表格回落到空态「暂无生产单」，用户会以为生产单不存在。
-    // 责任文件：app/production/page.tsx:64（过滤器直接拼接 item.status，未用显示值 displayText）。
-    expect(rows()).toHaveLength(0);
-    expect(screen.getByText("暂无生产单")).toBeVisible();
+    await userEvent.type(searchInput(), "草稿");
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("MO-2026-001")).toBeVisible();
+    expect(screen.queryByText("暂无生产单")).toBeNull();
+
+    // 另一个中文状态同样命中（in_progress → 进行中）
+    await userEvent.clear(searchInput());
+    await userEvent.type(searchInput(), "进行中");
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("MO-2026-002")).toBeVisible();
+
+    // 后端原值也不能退化：原来按 "draft" 搜得到，现在照样搜得到
+    await userEvent.clear(searchInput());
+    await userEvent.type(searchInput(), "draft");
+    expect(rows()).toHaveLength(1);
+    expect(rowFor("MO-2026-001")).toBeVisible();
+
+    await userEvent.clear(searchInput());
+    expect(rows()).toHaveLength(2);
   });
 
   it("深链 ?order_no= 预填搜索框并立即过滤列表", async () => {
@@ -673,5 +707,135 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
 
     await waitFor(() => expect(callsTo(calls, "/boms/from-sales-order/so-SO-2026-002").filter((call) => call.method === "POST")).toHaveLength(1));
     expect(await screen.findByText(/这张 BOM 还没有明细行/)).toBeVisible();
+  });
+});
+
+// 用户 2026-11-11：「需要在生产和采购模块的BOM表页面加上搜索功能」（本文件只管生产页；采购页由 Lead 负责）。
+//
+// 这张表是**手写**的 3 列表（订单号 / 数量 / BOM表），数据来自 `/sales-orders?status=confirmed`。
+// 搜索只认屏幕上看得见的三样东西 —— 订单号、数量、单位；匹配走全站统一的 fuzzyMatch
+// （空格分词按 AND、忽略大小写与空白），不自己写 includes。
+describe("生产单列表页：BOM 表搜索（2026-11-11）", () => {
+  /** 两张已确认、都已建 BOM 的销售单：数量/单位都不同，方便分别按单号与数量收窄。 */
+  const twoOrders = () => [candidate("SO-2026-001", "120", "打"), candidate("SO-2026-002", "80", "个")];
+  /** 两张生产单各挂一张销售单：用来反向证明 BOM 表的搜索没有顺手动到「生产单查找」。 */
+  const twoRecords = () => [inHouseDraft, outsourcedInProgress];
+
+  it("按订单号过滤：BOM 表只剩那一行，且「生产单查找」表完全不受影响", async () => {
+    stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
+    await openProduction();
+
+    expect(bomRows()).toHaveLength(2);
+    expect(bomCount()).toHaveTextContent("当前列出 2 张");
+
+    await userEvent.type(bomSearch(), "SO-2026-001");
+
+    expect(bomRows()).toHaveLength(1);
+    expect(bomPanel().getByTestId("production-bom-SO-2026-001")).toBeVisible();
+    expect(bomPanel().queryByTestId("production-bom-SO-2026-002")).toBeNull();
+    expect(bomCount()).toHaveTextContent("当前列出 1 张");
+
+    // 反向断言：BOM 表的框只管 BOM 表。另一张单的生产单行还在，且「生产单查找」的输入框没被写入。
+    expect(rows()).toHaveLength(2);
+    expect(rowFor("MO-2026-002")).toBeVisible();
+    expect((searchInput() as HTMLInputElement).value).toBe("");
+  });
+
+  it("按数量过滤，空格分词按 AND 收窄：「80」只剩数量 80 的那张，「SO-2026 001」只命中 SO-2026-001", async () => {
+    stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
+    await openProduction();
+
+    await userEvent.type(bomSearch(), "80");
+    expect(bomRows()).toHaveLength(1);
+    expect(bomPanel().getByTestId("production-bom-SO-2026-002")).toBeVisible();
+
+    await userEvent.clear(bomSearch());
+    // 「SO-2026」两张都含、「001」只有一张含 —— 只有 AND 语义才收窄成 1 行（改成 OR 或整串 includes 都会红）
+    await userEvent.type(bomSearch(), "SO-2026 001");
+    expect(bomRows()).toHaveLength(1);
+    expect(bomPanel().getByTestId("production-bom-SO-2026-001")).toBeVisible();
+
+    await userEvent.clear(bomSearch());
+    await userEvent.type(bomSearch(), "SO-2026");
+    expect(bomRows()).toHaveLength(2);
+  });
+
+  it("无匹配：给出「没有匹配…的订单」，并说明总数；计数显示当前列出 0 张", async () => {
+    stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
+    await openProduction();
+
+    await userEvent.type(bomSearch(), "不存在的单号");
+
+    expect(bomPanel().getByText("没有匹配“不存在的单号”的订单")).toBeVisible();
+    expect(bomPanel().getByText("共 2 张确认单，换个关键词或清空搜索框。")).toBeVisible();
+    expect(bomCount()).toHaveTextContent("当前列出 0 张");
+    // 表格整个让位给空态，不留一个 0 行的空表壳
+    expect(bomRows()).toHaveLength(0);
+  });
+
+  it("清空搜索框后恢复全量行，计数一并恢复", async () => {
+    stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
+    await openProduction();
+
+    await userEvent.type(bomSearch(), "SO-2026-002");
+    expect(bomRows()).toHaveLength(1);
+    expect(bomCount()).toHaveTextContent("当前列出 1 张");
+
+    await userEvent.clear(bomSearch());
+    expect(bomRows()).toHaveLength(2);
+    expect(bomPanel().getByTestId("production-bom-SO-2026-001")).toBeVisible();
+    expect(bomPanel().getByTestId("production-bom-SO-2026-002")).toBeVisible();
+    expect(bomCount()).toHaveTextContent("当前列出 2 张");
+  });
+
+  // 缺陷 A（2026-11-11 修）：对话框里的订单搜索以前把结果写进页面主列表 `orders`，
+  // 而 `orders` 同时是【BOM表】的数据源 —— 用户只是在「新建生产单」里搜了个单号，
+  // 关掉对话框后 BOM 表就只剩搜到的那几张。现在搜索只写对话框自己那份候选。
+  it("回归（缺陷 A）：在「新建生产单」对话框里搜订单，关窗后 BOM 表仍是全量", async () => {
+    const calls = stubProduction({ salesOrders: twoOrders(), records: twoRecords(), locations: [workshopLocation] }, (url) =>
+      url.includes("search=") ? apiOk([candidate("SO-9", "5")]) : undefined
+    );
+    await openCreateDialog();
+
+    // 订单下拉的搜索走真实端点（手法同「订单下拉的搜索走真实端点」用例）
+    const trigger = screen.getByTestId("action-field-order_no").querySelector("button") as HTMLElement;
+    await userEvent.click(trigger);
+    await userEvent.type(screen.getByTestId("searchable-select-search"), "SO-9");
+    expect(await screen.findByRole("option", { name: "SO-9 / 5" })).toBeVisible();
+    expect(calls.filter((call) => call.url.includes("search="))).toHaveLength(1);
+
+    // 点「取消」关窗（走 ActionDialog 的 onOpenChange(false)，那里会把对话框候选复位为 null）
+    await userEvent.click(within(screen.getByTestId("action-dialog")).getByRole("button", { name: "取消" }));
+    expect(screen.queryByTestId("action-dialog")).toBeNull();
+
+    // 缺陷的形态：修之前这里只剩 SO-9 一张（BOM 表跟着对话框的搜索一起缩小了）
+    expect(bomRows()).toHaveLength(2);
+    expect(bomPanel().getByTestId("production-bom-SO-2026-001")).toBeVisible();
+    expect(bomPanel().getByTestId("production-bom-SO-2026-002")).toBeVisible();
+    expect(bomPanel().queryByTestId("production-bom-SO-9")).toBeNull();
+    expect(bomCount()).toHaveTextContent("当前列出 2 张");
+  });
+
+  it("搜索框长在 BOM 表面板里，placeholder 与「生产单查找」的搜索框不同名", async () => {
+    stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
+    await openProduction();
+
+    const panel = within(screen.getByTestId("production-bom-panel"));
+    expect(panel.getByTestId("production-bom-search")).toHaveAttribute("placeholder", "输入订单号或数量");
+    expect(panel.getByPlaceholderText("输入订单号或数量")).toBeVisible();
+    // 两个框必须分得开：既有用例用 getByPlaceholderText("输入关键词") 定位「生产单查找」，
+    // BOM 表一旦用同名 placeholder，那条用例会因「匹配到 2 个」直接报错。
+    expect(screen.getAllByPlaceholderText("输入关键词")).toHaveLength(1);
+    expect(panel.getByText("搜索订单号或数量")).toBeVisible();
+  });
+
+  it("没有任何已确认销售单时保持原空态：不渲染搜索框、也不渲染计数", async () => {
+    stubProduction({ salesOrders: [], records: twoRecords() });
+    await openProduction();
+
+    expect(bomPanel().getByText("暂无已确认销售单")).toBeVisible();
+    expect(bomPanel().getByText("建立并确认销售单后，即可在这里为其建立 BOM 表。")).toBeVisible();
+    expect(bomPanel().queryByTestId("production-bom-search")).toBeNull();
+    expect(screen.queryByTestId("production-bom-count")).toBeNull();
   });
 });

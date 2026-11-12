@@ -280,3 +280,122 @@ describe("采购 → BOM表：删除 BOM（2026-11-05）", () => {
     expect(del.url).not.toContain("so-gone");
   });
 });
+
+/**
+ * 搜索（2026-11-11，用户：「需要在生产和采购模块的BOM表页面加上搜索功能」）。
+ *
+ * 这一页的行由两段拼成（已确认销售单 + 孤立 BOM），所以搜索也必须**同时**作用在两段上：
+ * 只筛 `/sales-orders` 那一段的话，孤立 BOM 会在任何查询下都留在表里，看着像搜索坏了。
+ *
+ * 断言的是用户能看见的三件事：命中几行、计数条怎么说、没有命中时说的是不是「换个关键词」
+ * 而不是「暂无已确认销售单」（后者会让用户以为单子没了）。
+ */
+describe("采购 → BOM表：搜索（2026-11-11）", () => {
+  function stubSearchable() {
+    return stubApi((url) => {
+      if (url.startsWith(`${EP.salesOrders}?status=draft`)) return apiOk([]);
+      if (url.startsWith(EP.salesOrders)) return apiOk([
+        { id: "so-1", orderNo: "SO-2026-001", status: "confirmed" },
+        { id: "so-2", orderNo: "SO-2026-002", status: "confirmed" },
+        { id: "so-3", orderNo: "SO-2026-003", status: "confirmed" },
+      ]);
+      // 孤立 BOM：父销售单已被软删，只从 /boms 的 orphaned 行补进列表（状态是**BOM** 的 draft）
+      if (url === EP.boms) return apiOk([
+        { id: "bom-1", salesOrderId: "so-1", orderNo: "SO-2026-001", status: "draft" },
+        { id: "bom-gone", salesOrderId: "so-gone", orderNo: "SO-GONE", status: "draft", orphaned: true },
+      ]);
+      if (url === EP.materials) return apiOk([]);
+      if (url === EP.units) return apiOk([]);
+      return apiOk([]);
+    });
+  }
+
+  const search = () => screen.getByTestId("bom-search");
+  const count = () => screen.getByTestId("bom-count");
+  // 空态时 DataTable 整个不渲染（连 data-testid="data-table" 都没有），只能按行节点数数。
+  const rowCount = () => screen.queryAllByTestId("data-table-row").length;
+
+  async function openBoms() {
+    render(<><BomsPage /><Toaster /></>);
+    await screen.findByTestId("page-procurement-boms");
+    // 等到两段数据都到位：在册 3 行 + 孤立 1 行
+    await waitFor(() => expect(rowCount()).toBe(4));
+  }
+
+  it("按订单号过滤，并同步计数「共 N 条，当前列出 M 条」", async () => {
+    stubSearchable();
+    await openBoms();
+
+    expect(count()).toHaveTextContent("共 4 条，当前列出 4 条");
+
+    await userEvent.type(search(), "SO-2026-002");
+    expect(rowCount()).toBe(1);
+    expect(screen.getByText("SO-2026-002")).toBeVisible();
+    expect(count()).toHaveTextContent("共 4 条，当前列出 1 条");
+  });
+
+  it("空格分词取交集（AND）：两个词分别落在同一行的不同片段上也能命中", async () => {
+    stubSearchable();
+    await openBoms();
+
+    // "SO" 命中全部 4 行，"002" 只命中 SO-2026-002 —— 交集必须是 1 行，而不是 4 行（OR）
+    await userEvent.type(search(), "SO 002");
+    expect(rowCount()).toBe(1);
+    expect(screen.getByText("SO-2026-002")).toBeVisible();
+  });
+
+  it("状态既能用后端原值搜，也能用界面上显示的中文搜", async () => {
+    stubSearchable();
+    await openBoms();
+
+    // 在册行来自 /sales-orders，状态是**销售单**状态 confirmed，单元格经 displayText 显示「已确认」；
+    // 孤立行来自 /boms，状态是 BOM 的 draft，显示「草稿」。
+    await userEvent.type(search(), "已确认");
+    expect(rowCount()).toBe(3);
+    expect(screen.queryByText("SO-GONE")).toBeNull();
+
+    await userEvent.clear(search());
+    await userEvent.type(search(), "草稿");
+    expect(rowCount()).toBe(1);
+    expect(screen.getByText("SO-GONE")).toBeVisible();
+
+    // 原值同样可搜（导出件、接口文档里写的是 draft / confirmed）
+    await userEvent.clear(search());
+    await userEvent.type(search(), "confirmed");
+    expect(rowCount()).toBe(3);
+  });
+
+  it("孤立行能被「孤立」二字搜出来（它是那一行上唯一能看见的额外提示）", async () => {
+    stubSearchable();
+    await openBoms();
+
+    await userEvent.type(search(), "孤立");
+    expect(rowCount()).toBe(1);
+    expect(screen.getByText("SO-GONE")).toBeVisible();
+  });
+
+  it("无匹配时说清是「没有匹配…」并给出总数，而不是「暂无已确认销售单」", async () => {
+    stubSearchable();
+    await openBoms();
+
+    await userEvent.type(search(), "不存在的订单");
+
+    expect(screen.queryAllByTestId("data-table-row")).toHaveLength(0);
+    expect(screen.getByText(/没有匹配“不存在的订单”的 BOM 表/)).toBeVisible();
+    expect(screen.getByText(/共 4 条，换个关键词或清空搜索框/)).toBeVisible();
+    expect(screen.queryByText(/暂无已确认销售单/)).toBeNull();
+    expect(count()).toHaveTextContent("共 4 条，当前列出 0 条");
+  });
+
+  it("清空搜索框后回到全量（不是「再点一次搜索」才回来）", async () => {
+    stubSearchable();
+    await openBoms();
+
+    await userEvent.type(search(), "SO-2026-003");
+    expect(rowCount()).toBe(1);
+
+    await userEvent.clear(search());
+    expect(rowCount()).toBe(4);
+    expect(count()).toHaveTextContent("共 4 条，当前列出 4 条");
+  });
+});
