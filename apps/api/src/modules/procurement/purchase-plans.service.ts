@@ -461,6 +461,110 @@ export class PurchasePlansService {
   }
 
   /**
+   * **行级退回**：把一行已下单明细退回采购计划（2026-11-12）。
+   *
+   * 用户原话：「下了采购单之后，如果需要临时修改BOM表的一些信息，需要整批采购单全部回退再修改，
+   * 再下单。说明我们系统的拆分性，回溯性不够灵活。」
+   *
+   * 审计（`docs/audit/procurement-audit-2026-11-12.md` §2.1 B3·B4）指出两处刚性：
+   *   · 退回只有**整张单**一个粒度 —— 改一行要把 N 行一起退回、重新分组、重新填；
+   *   · 已有到货的单**连整单退都退不了** —— "这 100 个只要 80"在系统里说不出口。
+   *
+   * 这个方法是整单退回的**按行版本**，落点仍然是计划行（口径 7 不改：数量/单价的唯一编辑点是计划）：
+   * 断开这一行的 1:1 链接 → 计划行回到未下单（数量/单价/供应商原样留着）→ 采购员改完重新收束。
+   *
+   * 为什么"退完能并回同一张单"：`order()` 会问 `findMergeTarget()`，判据里有「这张单上还有本计划的
+   * 认领行」—— 其余行还在，认据就还在，于是新的一波是 **append** 而不是新建，**采购单号不变**。
+   * 这也正是行级退回相对于整单退回的价值：整单退会把单标 cancelled，重下必然换号。
+   *
+   * 到货事实是硬边界：`receipts.length > 0` 一律拒绝。到货之上才有质检/入库/应付，
+   * 零 receipt 即零下游 —— 这条边界不动，行级退回就不会碰到钱的链路。
+   */
+  async revertPurchaseOrderItem(purchaseOrderId: string, itemId: string, reason: string, user: CurrentUser) {
+    if (!reason?.trim()) throw new UnprocessableEntityException({ code: "CORRECTION_REASON_REQUIRED", message: "退回这一行必须填写原因", details: [] });
+    const order = await this.prisma.purchaseOrder.findFirst({
+      where: { id: purchaseOrderId, deletedAt: null },
+      include: { items: { where: { deletedAt: null }, include: { receipts: { where: { deletedAt: null }, select: { id: true } } } } },
+    });
+    if (!order) throw new NotFoundException({ code: "PURCHASE_ORDER_NOT_FOUND", message: "采购单不存在", details: [] });
+    type RevertibleItem = (typeof order.items)[number];
+    const item = order.items.find((row) => row.id === itemId) as RevertibleItem | undefined;
+    if (!item) throw new NotFoundException({ code: "PURCHASE_ORDER_ITEM_NOT_FOUND", message: "这一行不属于这张采购单（或已被删除）", details: [{ purchase_order_id: purchaseOrderId, purchase_order_item_id: itemId }] });
+    if (item.receipts.length) {
+      throw new UnprocessableEntityException({
+        code: "PURCHASE_ORDER_ITEM_NOT_REVERTIBLE",
+        message: "这一行已经有到货事实，不能退回采购计划：到货之后的数量变更要走质检 / 退货，金额变更走财务的应付调整",
+        details: [{ purchase_order_id: purchaseOrderId, purchase_order_item_id: itemId, receipt_count: item.receipts.length }],
+      });
+    }
+    if (!["ordered", "partially_arrived"].includes(order.status)) {
+      throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_NOT_REVERTIBLE", message: "当前状态的采购单不能退回采购计划", details: [{ status: order.status }] });
+    }
+    if (!order.bomId) throw new UnprocessableEntityException({ code: "PURCHASE_ORDER_WITHOUT_BOM_NOT_REVERTIBLE", message: "这张采购单没有 BOM 表，没有可退回的采购计划", details: [] });
+    const plan = await this.ensurePlanForBom(order.bomId, user);
+    const linked = await this.prisma.purchasePlanItem.findMany({ where: { purchaseOrderItemId: { in: [itemId] }, deletedAt: null }, select: { id: true } });
+    // 镜像行的序号接在这份计划现有行之后（不重排已有的行 —— 序号是展示顺序，不是业务内容）。
+    const sequenceRows = linked.length ? [] : await this.prisma.purchasePlanItem.findMany({ where: { planId: plan.id, deletedAt: null }, select: { sequence: true } });
+    const nextSequence = sequenceRows.reduce((max, row) => Math.max(max, row.sequence ?? 0), 0) + 1;
+    const written = await this.prisma.$transaction(async (tx) => {
+      if (linked.length) {
+        // 有认领行：只断链接，**不删行** —— 数量/单价/供应商/币种/预计到货都留在计划上（可逆，不重录）。
+        await tx.purchasePlanItem.updateMany({ where: { id: { in: linked.map((row) => row.id) } }, data: { purchaseOrderItemId: null, ...this.audit.update(user) } });
+      } else {
+        // 历史单（2026-09-27 之前建的）：没有计划行认领它，按原值镜像一条，否则这一行就真丢了。
+        await tx.purchasePlanItem.create({
+          data: {
+            planId: plan.id,
+            materialId: item.materialId,
+            materialSnapshot: item.materialSnapshot as Prisma.InputJsonValue,
+            unitId: item.unitId,
+            unitSnapshot: item.unitSnapshot as Prisma.InputJsonValue,
+            bomItemId: item.bomItemId,
+            supplierId: item.supplierId,
+            supplierSnapshot: (item.supplierSnapshot ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
+            model: item.model,
+            quantity: item.quantity.toFixed(4),
+            unitPrice: item.unitPrice.toFixed(4),
+            // 钱是那张单谈的：数量/单价都照搬了，币种也一样。
+            currency: order.currency,
+            expectedDate: item.expectedDate,
+            sequence: nextSequence,
+            extensionData: { ...((item.extensionData ?? {}) as Record<string, unknown>), restored_from_reverted_order: order.purchaseOrderNo },
+            ...this.audit.create(user),
+          },
+        });
+      }
+      await tx.purchaseOrderItem.update({ where: { id: itemId }, data: { ...this.audit.softDelete(user) } });
+      // 单头合计按**剩余未删明细**重算，口径与建单一致（Σ amount = 数量×单价 + extra_fee）。
+      const remaining = await tx.purchaseOrderItem.findMany({ where: { purchaseOrderId, deletedAt: null }, select: { amount: true } });
+      const total = remaining.reduce((sum, row) => sum.plus(new Prisma.Decimal(row.amount ?? 0)), new Prisma.Decimal(0));
+      await tx.purchaseOrder.update({ where: { id: purchaseOrderId }, data: { totalAmount: total.toFixed(4), ...this.audit.update(user) } });
+      return { remainingCount: remaining.length, total };
+    });
+    await this.audit.record("purchase_order_item.revert_to_plan", "purchase_order_item", user.id, itemId, {
+      order_no: order.orderNo,
+      purchase_order_no: order.purchaseOrderNo,
+      material_id: item.materialId,
+      quantity: item.quantity.toFixed(4),
+      plan_id: plan.id,
+      plan_no: plan.planNo,
+      reason: reason.trim(),
+      remaining_line_count: written.remainingCount,
+      order_cancelled: false,
+    });
+    return {
+      purchaseOrderId,
+      purchaseOrderNo: order.purchaseOrderNo,
+      planId: plan.id,
+      planNo: plan.planNo,
+      revertedItemId: itemId,
+      remainingLineCount: written.remainingCount,
+      totalAmount: written.total.toFixed(4),
+      orderCancelled: false,
+    };
+  }
+
+  /**
    * 计划详情。
    *
    * 供应商的**地址与联系人实时联查主数据**（口径 4）：它们是主数据的事实、不是采购员的决策，
