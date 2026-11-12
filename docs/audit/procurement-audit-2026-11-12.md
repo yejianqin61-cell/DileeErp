@@ -238,10 +238,46 @@ B4 不是"操作麻烦"，而是**业务上说不出口**：
 
 ## 7. 实施结果
 
-见文末更新（本轮补丁 P1/P2/P4 + 用例）。基线（改动前）：
+本轮按 `docs/task/1112-procurement-governance/plan.md` 四个阶段落地，逐阶段收口见同目录的
+`phase1-summary.md` / `phase2-summary.md` / `phase3-summary.md`。
+
+### 7.1 落地了什么
+
+| 补丁 | 状态 | 落点 |
+| --- | --- | --- |
+| **P1** 候选可解释（`meta.blocked` + 原因码 + 已有计划编号） | 已落地 | `purchase-plans.domain.ts` 的 `planCandidateReasons()` / `candidateReport()` |
+| **P1** 销售单 `closed` 纳入可建范围，两处口径合一 | 已落地 | `PLAN_ELIGIBLE_SALES_STATUSES`，`loadBom()` 与候选共用 |
+| **P2** 行级退回（零到货、单号不变、退空整单作废） | 已落地 | `revertPurchaseOrderItem()` + `POST /purchase-orders/:id/items/:itemId/revert-to-plan` |
+| **P3** 补料出路显式化 | 已落地 | 新建弹窗的原因行 + 完成态计划 title 的「加一行」提示 |
+| **P4** 界面入口 | 已落地 | 采购单详情页每行的「退回这一行」 |
+
+### 7.2 检查数字
 
 | 检查 | 结果 |
 | --- | --- |
-| `npm run typecheck` | 绿（api / coding-worker / web 三个 workspace 全过） |
-| `npm run test:unit:api` | 见 §7.1 |
-| `npm run test:unit:web` | 见 §7.1 |
+| `npm run typecheck`（api / coding-worker / web） | 绿 |
+| `npm run test:unit:api`（全量） | 3050 / 3050 |
+| 其中采购相关 9 个文件 | 246 / 246 |
+| `apps/api/test/unit/purchase-plans-service.test.cjs` | 102 / 102 |
+| web `npx vitest run`（全量） | 76 文件 / 1322 条，全绿 |
+
+基线说明：本轮开始时 `npm run typecheck` 全绿、采购相关 API 单测 218/218 全绿。
+中途曾观察到 `src/modules/finance/finance-three-statements.ts` 有 3 处 TS2554（**另一个并行会话的
+未提交改动**），半小时后其自行恢复，与本轮补丁无关；本轮未触碰 finance 任何文件。
+
+### 7.3 与审计初稿的偏离（都是往小改）
+
+1. **§5 P2 步骤 1 写的 `FOR UPDATE` 没做**：整单退回本来就没有行锁，行级退回先与它对齐，
+   不为一个新入口单独引入锁协议。并发只靠"读到已软删即视为退过"的自然幂等。已记进 `phase2-summary.md`。
+2. **§5 P1 原因码从 4 个减到 3 个**：`BOM_DELETED` 无法出现 —— 候选查询只取未删 BOM，
+   软删的 BOM 根本不在结果集里，给它一个原因码只会是死代码。
+3. **§5 P3 的「计划列表加一句说明性提示」改成挂在 `title` 上**：13 列的宽度预算已用完（口径 7），
+   新增一列会挤爆 1366px。
+
+### 7.4 仍然开着的
+
+- 行级退回无行锁（见 7.3 第 1 条）。
+- 部分到货的单重新下单会新建一张（`findMergeTarget` 要求整单零到货），单号会变。
+- 计划页被拦原因最多摆三条，无「查看全部」。
+- BOM 工作台改 BOM 对已下单明细的影响仍只有摊回逻辑兜底，界面无提示。
+- 真实 PostgreSQL 上的迁移与 e2e 未跑（本地无库）。
