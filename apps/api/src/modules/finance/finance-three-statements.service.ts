@@ -28,6 +28,7 @@ import {
   type SummedAmount,
   type UnmappedSubject,
 } from "./finance-three-statements";
+import { buildStatementRowIndex, toStatementRowMappings, type StatementRowIndex } from "./finance-statement-rows";
 
 /**
  * 三大报表的**取数**（只读，不改任何数据）。
@@ -97,6 +98,13 @@ type VoucherSlice = {
    * 把期初行的 label 键解析成 id 键（唯一同名才解析），两套键在 `mergeBalances` 里才加得到一起。
    */
   subjectRefs: SubjectRefs;
+  /**
+   * 「科目主键 → 报表行」的映射索引（2026-11-11 R-2 / T8），取自 `accounting_subject_statement_rows`。
+   *
+   * 报表落行**先看映射**：名字是财务随时能改的显示文案，改个名字就让某一格静默变 0 是诊断 P0-1
+   * 的原始病灶。没有映射的科目（历史行、文本键、财务还没指定落行的）仍然回退按名字认领。
+   */
+  statementRows: StatementRowIndex;
   /** 银行账户档案的期初余额合计（按报表币种）；有科目期初余额表时只算「期初里没含货币资金」的兜底。 */
   moneyOpening: bigint;
   /** 期初现金（建账期初 + 建账日到本期期初之间的资金类净额）。 */
@@ -155,9 +163,9 @@ export class FinanceThreeStatementsService {
       currency: this.currencyOf(filter),
       period: { to: slice.period.to, yearStart: slice.yearStart },
       openingAsOfDate: slice.openingAsOfDate,
-      current: buildBalanceSheet({ balances: slice.balancesTo, opening: { money: slice.moneyOpening }, subjectRefs: slice.subjectRefs }),
+      current: buildBalanceSheet({ balances: slice.balancesTo, opening: { money: slice.moneyOpening }, subjectRefs: slice.subjectRefs, statementRows: slice.statementRows }),
       // 年初余额：同一批凭证切到上年 12-31；期初余额对两个时点都成立（它发生在建账日之前）。
-      yearStartResult: buildBalanceSheet({ balances: slice.balancesYearStart, opening: { money: slice.moneyOpening }, subjectRefs: slice.subjectRefs }),
+      yearStartResult: buildBalanceSheet({ balances: slice.balancesYearStart, opening: { money: slice.moneyOpening }, subjectRefs: slice.subjectRefs, statementRows: slice.statementRows }),
       gap: slice.gap,
     };
   }
@@ -168,8 +176,8 @@ export class FinanceThreeStatementsService {
       currency: this.currencyOf(filter),
       period: slice.period,
       previousPeriod: slice.previousPeriod,
-      current: buildIncomeStatement(sumVoucherLines(slice.periodLines), slice.subjectRefs),
-      previous: buildIncomeStatement(sumVoucherLines(slice.previousVouchers.flatMap((voucher) => voucher.lines)), slice.subjectRefs),
+      current: buildIncomeStatement(sumVoucherLines(slice.periodLines), slice.subjectRefs, slice.statementRows),
+      previous: buildIncomeStatement(sumVoucherLines(slice.previousVouchers.flatMap((voucher) => voucher.lines)), slice.subjectRefs, slice.statementRows),
       gap: slice.gap,
     };
   }
@@ -181,8 +189,8 @@ export class FinanceThreeStatementsService {
       currency: this.currencyOf(filter),
       period: slice.period,
       previousPeriod: slice.previousPeriod,
-      current: buildCashFlowStatement({ vouchers: slice.periodVouchers, cashOpening: slice.cashOpening, exchangeEffect: slice.exchangeEffect, subjectRefs: slice.subjectRefs }),
-      previous: buildCashFlowStatement({ vouchers: slice.previousVouchers, cashOpening: 0n, subjectRefs: slice.subjectRefs }),
+      current: buildCashFlowStatement({ vouchers: slice.periodVouchers, cashOpening: slice.cashOpening, exchangeEffect: slice.exchangeEffect, subjectRefs: slice.subjectRefs, statementRows: slice.statementRows }),
+      previous: buildCashFlowStatement({ vouchers: slice.previousVouchers, cashOpening: 0n, subjectRefs: slice.subjectRefs, statementRows: slice.statementRows }),
       cashOpening: slice.cashOpening,
       gap: slice.gap,
     };
@@ -290,6 +298,15 @@ export class FinanceThreeStatementsService {
     const subjectIdByLabel = new Map(subjectRows.map((subject) => [accountingSubjectKey(subject.category, subject.name), subject.id]));
     const subjectRefs: Map<string, SubjectRef> = new Map(subjectRows.map((subject) => [subjectIdKeyOf(subject.id), { category: subject.category, name: subject.name }]));
     /**
+     * 报表行映射（2026-11-11 R-2 / T8）：整表取回（当前 234 行）。
+     *
+     * **故意不包 try/catch**：迁移没跑就该在这里炸。降级成「只有名字匹配」等于把这一轮修好的病
+     * 悄悄放回去 —— 而且报表照样平、勾稽照样过，没有任何信号能让人发现（诊断 P0-1 就是这么来的）。
+     */
+    const statementRows = buildStatementRowIndex(toStatementRowMappings(await this.prisma.accountingSubjectStatementRow.findMany({
+      select: { subjectId: true, statement: true, flow: true, rowNo: true },
+    })));
+    /**
      * 期初行的归集键。**有科目主键就按主键**（2026-11-11 R-1 / T3），没有才退回文本匹配。
      *
      * 为什么主键优先：文本键是 `分类/名称`，科目一改名就与主数据脱节，报表按名字匹配不上、
@@ -323,13 +340,20 @@ export class FinanceThreeStatementsService {
     const cashFlowSourceIds = [...new Set(rows
       .filter((voucher) => voucher.sourceType === "cash_flow_entry" && voucher.sourceId)
       .map((voucher) => voucher.sourceId as string))];
-    const categoryByEntryId = new Map<string, { category: string; name: string }>();
+    const categoryByEntryId = new Map<string, { subjectId: string; category: string; name: string }>();
     if (cashFlowSourceIds.length) {
       const entries = await this.prisma.cashFlowEntry.findMany({
         where: { id: { in: cashFlowSourceIds }, deletedAt: null },
-        select: { id: true, categorySubject: { select: { category: true, name: true } } },
+        select: { id: true, categorySubject: { select: { id: true, category: true, name: true } } },
       });
-      for (const entry of entries) if (entry.categorySubject) categoryByEntryId.set(entry.id, entry.categorySubject);
+      /**
+       * **连主键一起存**（2026-11-11 R-2 / T8）：现金流量表落行要按「科目主键 + 流向」查映射，
+       * 只有分类/名称就还是回到按名字认领 —— 类目一改名，那一行又静默变 0。
+       */
+      for (const entry of entries) {
+        const subject = entry.categorySubject;
+        if (subject) categoryByEntryId.set(entry.id, { subjectId: subject.id, category: subject.category, name: subject.name });
+      }
     }
     const categoryOf = (voucher: (typeof rows)[number]) =>
       voucher.sourceType === "cash_flow_entry" && voucher.sourceId ? categoryByEntryId.get(voucher.sourceId) ?? null : null;
@@ -485,6 +509,7 @@ export class FinanceThreeStatementsService {
       periodLines: periodVouchers.flatMap((voucher) => voucher.lines),
       beforeFromLines,
       subjectRefs,
+      statementRows,
       moneyOpening,
       cashOpening,
       exchangeEffect,

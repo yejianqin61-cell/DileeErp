@@ -2370,12 +2370,48 @@ model AccountingSubject {
   voucherLineBusinessSubjects VoucherLine[]                   @relation("VoucherLineBusinessSubject")
   /// 建账期初余额（2026-11-11 R-1，见 `AccountingOpeningBalance.subjectId`）。
   openingBalances             AccountingOpeningBalance[]      @relation("OpeningBalanceSubject")
+  /// 「这个科目进哪张报表的哪一行」（2026-11-11 R-2 / T8，见 `AccountingSubjectStatementRow`）。
+  statementRows               AccountingSubjectStatementRow[] @relation("StatementRowSubject")
 
   /// 同类别内科目名唯一：迁移与 seed 靠它做幂等种入。
   /// 不设全局唯一是有意的 —— 将来财务要在两个类别下各建一个同名明细科目时不必再迁移一次。
   @@unique([category, name])
   @@index([category, sortOrder])
   @@map("accounting_subjects")
+}
+
+/// 「这个科目进哪张报表的哪一行」（2026-11-11 R-2 / T8）。
+///
+/// 为什么要有这张表：三大报表原本靠 `finance-three-statements.ts` 里 63 处 `named()` / `prefixed()`
+/// 按**科目名字**认领科目。名字是财务随时能改的显示文案，所以改名 = 该行静默变 0
+/// （诊断 P0-1）。映射落成数据之后，改名不影响落行，新增科目也能明确指定落哪一行。
+///
+/// 为什么是独立表而不是 `accounting_subjects` 上的列：**一个科目可以出现在多张表里**，
+/// 最多跨 3 个 (statement, flow) 槽位（例如「制造费用」既进资产负债表的存货行、
+/// 又进现金流量表的第 8 行）。列装不下，所以用 (subject_id, statement, flow) 的独立行。
+///
+/// 为什么 `statement` 有四个取值而不是三个：资产负债表是**两栏对照表**，行次在左右两侧
+/// 各自从 1 开始 —— 资产侧行次 1 是「货币资金」，权益侧行次 1 是「短期借款」。
+/// 混成一个值会让 `row_no` 有歧义（同一行次指两个报表行），在报表上表现为「金额落到另一侧」。
+///
+/// 初始数据由 `scripts/generate-statement-row-mapping.mjs` 从现有规则生成（234 条），
+/// 生成逻辑与内核判定逐条等价，所以落库当天三张报表的数字一格都不动。
+model AccountingSubjectStatementRow {
+  id        String   @id @default(uuid()) @db.Uuid
+  subjectId String   @map("subject_id") @db.Uuid
+  /// 认领域：balance-sheet-assets / balance-sheet-equities / income-statement / cash-flow-statement。
+  statement String   @db.VarChar(40)
+  /// 现金流量表专用方向：in / out；其余三张表为空串（不是 NULL —— 唯一键要能包含它）。
+  flow      String   @default("") @db.VarChar(10)
+  /// 该认领域内的**行次**（模板行号，不是 Excel 行号，见 `StatementRow.row`）。
+  rowNo     Int      @map("row_no")
+
+  subject   AccountingSubject @relation("StatementRowSubject", fields: [subjectId], references: [id], onDelete: Cascade)
+
+  /// 一个科目在一个认领域里只能落一行；同一认领域内两行认领同一科目 = 金额算两遍。
+  @@unique([subjectId, statement, flow])
+  @@index([statement, flow, rowNo])
+  @@map("accounting_subject_statement_rows")
 }
 
 /// 会计科目类目（2026-11-07 起类目成为一等实体）。

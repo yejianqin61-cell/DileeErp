@@ -17,8 +17,8 @@ const dec = (text) => ({ toString: () => text });
 const line = (subjectKey, direction, amount, subjectId = null) => ({ subjectKey, subjectId, direction, amount: dec(amount) });
 const voucher = (id, date, lines, currency = "CNY") => ({ id, voucherDate: utcDate(date), currency, lines });
 
-/** 内存桩：凭证清单 / 银行期初 / 已生效流水 / 已生成凭证 / 草稿张数 / 科目期初余额表 / 期末汇率 / 会计科目。 */
-function harness({ vouchers = [], banks = [], entries = [], generated = [], draftCount = 0, opening = null, openingGroups = null, rates = [], subjects = [] } = {}) {
+/** 内存桩：凭证清单 / 银行期初 / 已生效流水 / 已生成凭证 / 草稿张数 / 科目期初余额表 / 期末汇率 / 会计科目 / 报表行映射。 */
+function harness({ vouchers = [], banks = [], entries = [], generated = [], draftCount = 0, opening = null, openingGroups = null, rates = [], subjects = [], statementRows = [] } = {}) {
   const queries = [];
   const prisma = {
     voucher: {
@@ -31,6 +31,8 @@ function harness({ vouchers = [], banks = [], entries = [], generated = [], draf
     bank: { findMany: async (args) => { queries.push({ model: "bank.findMany", args }); return banks; } },
     cashFlowEntry: { findMany: async (args) => { queries.push({ model: "cashFlowEntry.findMany", args }); return entries; } },
     accountingSubject: { findMany: async (args) => { queries.push({ model: "accountingSubject.findMany", args }); return subjects; } },
+    // 报表行映射（2026-11-11 R-2 / T8）：`accounting_subject_statement_rows` 的原样形状。
+    accountingSubjectStatementRow: { findMany: async (args) => { queries.push({ model: "accountingSubjectStatementRow.findMany", args }); return statementRows; } },
   };
   const groups = openingGroups ?? (opening ? [{ ...opening, currency: "CNY" }] : []);
   const openings = { effectiveFor: async () => opening, effectiveForAll: async () => groups };
@@ -296,4 +298,35 @@ test("R3-2 期初合并：期初 subject_key 解析成 id 键后与凭证 id 行
   const cash = await service.cashFlowStatement({ from: "2026-09-01", to: "2026-09-30" });
   assert.equal(yuan(cash.cashOpening), 1000, "期初现金要认出期初银行存款（id 键也算资金科目）");
   assert.equal(yuan(cash.current.closing), 1200, "期末现金 = 期初 1000 + 本期 200");
+});
+
+/* ------------------------------------------ 报表行映射（2026-11-11 R-2 / T8） */
+
+// 为什么放在取数层测：映射是**库里的数据**，只有走到 `slice()` 才看得出「服务有没有真的去查它、
+// 查出来有没有交给内核」。内核自己的映射行为在 `finance-three-statements.test.cjs` 里已经钉过。
+
+const RENAMED_MGMT_T8 = { id: "sub-mgmt-t8", category: "损益类", name: "行政办公开支" };
+// 「行政办公开支」是「管理费用」改名后的样子：匹配不上任何一行（没有 `prefixed("行政")`），
+// 所以只有映射能把它落到利润表第 5 行。
+const RENAMED_T8_VOUCHERS = [voucher("v-renamed-t8", "2026-09-10", [line("损益类/行政办公开支", "debit", "100", RENAMED_MGMT_T8.id), line("银行存款", "credit", "100")])];
+
+test("报表行映射（T8）：映射落库后科目改名不影响落行（取数时真的查了映射表）", async () => {
+  const { service, queries } = harness({
+    subjects: [RENAMED_MGMT_T8],
+    vouchers: RENAMED_T8_VOUCHERS,
+    statementRows: [{ subjectId: RENAMED_MGMT_T8.id, statement: "income-statement", flow: "", rowNo: 5 }],
+  });
+
+  const income = await service.incomeStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.ok(queries.some((query) => query.model === "accountingSubjectStatementRow.findMany"), "报表取数必须查映射表，否则改名又会让金额静默落空");
+  assert.equal(yuan(income.current.lines.find((row) => row.row === 5).value), 100, "映射把「管理费用-办公」落到管理费用行");
+  assert.deepEqual(income.current.unmapped, [], "有映射就不该掉进未归位");
+});
+
+test("报表行映射（T8）的对照组：库里没有这条映射时，同一个改名科目会落空（差别来自映射，不来自巧合）", async () => {
+  const { service } = harness({ subjects: [RENAMED_MGMT_T8], vouchers: RENAMED_T8_VOUCHERS });
+
+  const income = await service.incomeStatement({ from: "2026-09-01", to: "2026-09-30" });
+  assert.equal(yuan(income.current.lines.find((row) => row.row === 5).value), 0, "没有映射时名字说了算，一改名就落空");
+  assert.equal(income.current.unmapped.length, 1, "落空不等于消失：必须出现在未归位清单里");
 });

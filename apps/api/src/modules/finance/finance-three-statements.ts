@@ -32,6 +32,14 @@
  */
 
 import { ACCOUNTING_SUBJECT_SEEDS, accountingSubjectKey } from "./accounting-subject-catalog";
+import {
+  type ScopeClaimSource,
+  type StatementFlow,
+  type StatementRowIndex,
+  type StatementScope,
+  initialStatementRowClaims,
+  mappedRowOf,
+} from "./finance-statement-rows";
 import { formatUnits, toUnits } from "./money";
 import { FUND_SUBJECT_CASH } from "./voucher.domain";
 
@@ -445,6 +453,31 @@ export const STATEMENT_ROWS: Record<string, readonly StatementRow[]> = {
 
 export type StatementId = keyof typeof STATEMENT_ROWS;
 
+/* --------------------------------------------------------------------------- 科目 → 报表行 的映射 */
+
+/**
+ * 四个认领域与它们各自的行定义（2026-11-11 R-2 / T8）。
+ *
+ * 为什么把资产负债表拆成两侧：它是两栏对照表，行次在左右两侧各自从 1 开始。
+ * 混成一个认领域会让「行次 1」同时指「货币资金」与「短期借款」—— 映射落错侧而报表照样平。
+ */
+export const STATEMENT_SCOPE_ROWS: readonly ScopeClaimSource[] = [
+  { scope: "balance-sheet-assets", rows: BALANCE_SHEET_ASSETS },
+  { scope: "balance-sheet-equities", rows: BALANCE_SHEET_EQUITIES },
+  { scope: "income-statement", rows: INCOME_STATEMENT },
+  { scope: "cash-flow-statement", rows: CASH_FLOW_STATEMENT },
+];
+
+/**
+ * 按今天的 `named()/prefixed()` 规则算出初始映射（迁移 SQL 就是它生成的）。
+ *
+ * 生成器（`scripts/generate-statement-row-mapping.mjs`）与守卫测试都调这个函数：
+ * 规则只有一份，迁移文件与规则之间的漂移由测试盯住。
+ */
+export function initialStatementRowClaimsOf(seeds: readonly { category: string; name: string }[] = ACCOUNTING_SUBJECT_SEEDS) {
+  return initialStatementRowClaims(STATEMENT_SCOPE_ROWS, seeds);
+}
+
 /** 表尾要写的口径与缺口（行定义上带 `note` 的行）。 */
 export function statementNotes(rows: readonly StatementRow[]): string[] {
   return rows.filter((row) => row.note).map((row) => `${row.row === null ? row.label : `行次 ${row.row} ${row.label}`}：${row.note}`);
@@ -475,8 +508,11 @@ export type StatementVoucher = {
    * 「应付账款」，照分录科目落行会把专利费/推广费/房租一笔笔算成「购买商品、接受劳务支付的现金」；
    * 收支类目才是单据上选的那个科目，也是台账/利润表统计的口径。没有类目（手工凭证、老数据）
    * 才退回凭证自己的业务分录科目。
+   *
+   * `subjectId`（2026-11-11 R-2 / T8）：落行改按**科目身份**查映射；只有查不到映射时才退回
+   * 「按分类/名称在行定义里找」。类目没有 id（老数据/手工录入）时映射查不到，自然走回退。
    */
-  categorySubject?: { category: string; name: string } | null;
+  categorySubject?: { subjectId?: string | null; category: string; name: string } | null;
 };
 
 export type SummedAmount = { debit: bigint; credit: bigint };
@@ -526,6 +562,11 @@ export type StatementLineValue = {
 /** 没有归到任何报表行的科目及其余额（上层必须写进表尾，不能静默丢掉）。 */
 export type UnmappedSubject = { subjectKey: string; balance: bigint };
 
+/** 归集键里的科目主键；文本键返回 `null`（文本键没有身份，只能走名字回退）。 */
+export function subjectIdOfKey(subjectKey: string): string | null {
+  return isSubjectIdKey(subjectKey) ? subjectKey.slice(SUBJECT_ID_KEY_PREFIX.length) : null;
+}
+
 /**
  * 把余额按行分配。
  *
@@ -534,19 +575,38 @@ export type UnmappedSubject = { subjectKey: string; balance: bigint };
  *
  * 归集键按 `SubjectRefs` 解析分类/名称：id 键必须能解析（解析不到就不是任何一行的金额，
  * 会由 `unmappedOf` 报出来）；label 键直接拆。
+ *
+ * ## 落行顺序（2026-11-11 R-2 / T8）
+ *
+ * 1. **有映射就照映射**（`statementRows` 里查得到这个科目主键的 (认领域, 方向) → 行次）；
+ * 2. 没有映射才回退 `row.match(分类, 名称)` —— 兼容历史文本行与还没指定落行的科目。
+ *
+ * 回退必须留着：回填没覆盖到的历史行只有文本，删掉它会让那些金额整笔丢钱。
+ * 反过来，有映射时**不再看名字**：名字是文案，映射才是身份 —— 这正是「改名不影响数字」的实现点。
  */
-function directValues(rows: readonly StatementRow[], balances: ReadonlyMap<string, SummedAmount>, defaultSide: "debit" | "credit", subjectRefs?: SubjectRefs) {
+function directValues(
+  rows: readonly StatementRow[],
+  balances: ReadonlyMap<string, SummedAmount>,
+  defaultSide: "debit" | "credit",
+  subjectRefs: SubjectRefs | undefined,
+  scope: StatementScope,
+  statementRows: StatementRowIndex | undefined,
+) {
   const values = new Map<number, bigint>();
   const claimed = new Set<string>();
   for (const row of rows) {
     if (row.row === null || row.sumOf || row.minusRows) continue;
     const side = row.side ?? defaultSide;
+    const flow: StatementFlow = row.flow ?? "";
     let total = 0n;
     for (const [subjectKey, summed] of balances) {
       const ref = subjectRefOfKey(subjectKey, subjectRefs);
       if (!ref) continue;
       const { category, name } = ref;
-      if (!row.match?.(category, name)) continue;
+      const mapped = mappedRowOf(statementRows, scope, flow, subjectIdOfKey(subjectKey));
+      // 有映射时以映射为准（不再看名字）；没有映射才按名字认领。
+      const belongs = mapped === null ? Boolean(row.match?.(category, name)) : mapped === row.row;
+      if (!belongs) continue;
       total += side === "credit" ? creditBalance(summed) : debitBalance(summed);
       claimed.add(subjectKey);
     }
@@ -614,6 +674,13 @@ export type BalanceSheetInput = {
    * 按索引把 id 键还原成分类/名称 —— 解析不到的 id 键**不会**被归到任何行（宁可进 unmapped）。
    */
   subjectRefs?: SubjectRefs;
+  /**
+   * 「科目主键 → 报表行」的映射索引（2026-11-11 R-2 / T8）。
+   *
+   * 传进来就**照映射落行**（改名不再动数字）；没传、或某个科目没有映射，回退按名字认领。
+   * 上层（`FinanceThreeStatementsService`）负责从 `accounting_subject_statement_rows` 建索引。
+   */
+  statementRows?: StatementRowIndex;
 };
 
 export type BalanceSheetResult = {
@@ -646,11 +713,12 @@ export type BalanceSheetResult = {
  */
 export function buildBalanceSheet(input: BalanceSheetInput): BalanceSheetResult {
   const opening = input.opening ?? {};
-  const assets = directValues(BALANCE_SHEET_ASSETS, input.balances, "debit", input.subjectRefs);
+  // 资产负债表是两栏对照表，两栏行次各自从 1 开始，所以两个「认领域」分开查映射（见 StatementScope）。
+  const assets = directValues(BALANCE_SHEET_ASSETS, input.balances, "debit", input.subjectRefs, "balance-sheet-assets", input.statementRows);
   if (opening.money) assets.values.set(1, (assets.values.get(1) ?? 0n) + opening.money);
   const assetValues = evaluateRows(BALANCE_SHEET_ASSETS, assets.values);
 
-  const equities = directValues(BALANCE_SHEET_EQUITIES, input.balances, "credit", input.subjectRefs);
+  const equities = directValues(BALANCE_SHEET_EQUITIES, input.balances, "credit", input.subjectRefs, "balance-sheet-equities", input.statementRows);
 
   // 未结转的损益：损益类全部科目 + 当期费用性质的成本类科目（贷方余额 = 正贡献）。
   const absorbed = new Set<string>([...assets.claimed, ...equities.claimed]);
@@ -703,9 +771,16 @@ export type IncomeStatementResult = {
   notes: string[];
 };
 
-/** 利润表（入参是**期间发生额**：`sumVoucherLines(期间分录)`）；`subjectRefs` 用于解析 id 归集键。 */
-export function buildIncomeStatement(movements: ReadonlyMap<string, SummedAmount>, subjectRefs?: SubjectRefs): IncomeStatementResult {
-  const income = directValues(INCOME_STATEMENT, movements, "debit", subjectRefs);
+/**
+ * 利润表（入参是**期间发生额**：`sumVoucherLines(期间分录)`）；`subjectRefs` 用于解析 id 归集键。
+ * `statementRows` 是「科目主键 → 利润表行次」的映射（2026-11-11 R-2 / T8），缺省则按名字认领。
+ */
+export function buildIncomeStatement(
+  movements: ReadonlyMap<string, SummedAmount>,
+  subjectRefs?: SubjectRefs,
+  statementRows?: StatementRowIndex,
+): IncomeStatementResult {
+  const income = directValues(INCOME_STATEMENT, movements, "debit", subjectRefs, "income-statement", statementRows);
   const values = evaluateRows(INCOME_STATEMENT, income.values);
   // 资金类科目不进利润表（它们是资金动作，不是损益），所以不算「没归位」。
   const fundKeys = new Set([...movements.keys()].filter((key) => isFundSubject(key, subjectRefs)));
@@ -735,6 +810,8 @@ export type CashFlowInput = {
   exchangeEffect?: bigint;
   /** 归集键 → 分类/名称索引（2026-11-09 R3-2）：资金/业务分录按 `subject_id` 识别与落行。 */
   subjectRefs?: SubjectRefs;
+  /** 「科目主键 → 现金流量表行次」的映射索引（2026-11-11 R-2 / T8），按流向分两组。 */
+  statementRows?: StatementRowIndex;
 };
 
 export type CashFlowResult = {
@@ -788,12 +865,21 @@ export function buildCashFlowStatement(input: CashFlowInput): CashFlowResult {
           continue;
         }
         const subjectKey = categorySubject ? accountingSubjectKey(categorySubject.category, categorySubject.name) : subjectLabelOfKey(lineKey, refs);
-        const row = candidates.find((candidate) => candidate.match?.(ref.category, ref.name));
-        if (!row || row.row === null) {
+        /**
+         * 落行顺序与 `directValues` 一致：**有映射照映射**（按科目主键 + 流向），没有映射才按名字在
+         * 方向对应的那一组里找。名字是文案，映射才是身份 —— 这正是「改名不影响数字」的实现点。
+         *
+         * 现金流量表尤其需要它：同一个科目在两组的名字可以一模一样（借了又还），
+         * 只有映射能把「借方出现」与「贷方出现」分开落行。
+         */
+        const lineSubjectId = categorySubject?.subjectId ?? subjectIdOfKey(lineKey);
+        const mapped = mappedRowOf(input.statementRows, "cash-flow-statement", inflow ? "in" : "out", lineSubjectId);
+        const row = mapped ?? candidates.find((candidate) => candidate.match?.(ref.category, ref.name))?.row ?? null;
+        if (row === null) {
           unmapped.set(subjectKey, (unmapped.get(subjectKey) ?? 0n) + units);
           continue;
         }
-        amounts.set(row.row, (amounts.get(row.row) ?? 0n) + units);
+        amounts.set(row, (amounts.get(row) ?? 0n) + units);
       }
     }
   }

@@ -442,3 +442,118 @@ test("现金流量表：补齐后覆盖度守卫仍然干净（无未认领、�
   assert.deepEqual(coverage.doubleClaimed, []);
   assert.deepEqual(coverage.emptyRows, []);
 });
+
+/* --------------------------------------- 报表行映射（2026-11-11 R-2 / T8） */
+
+// 为什么需要这一组：上面「改名回归」那组解决的是**归集**（一条分录带主键，两批旧新文本并成一个桶）；
+// 但「这个科目落到报表哪一行」仍然由代码里的 63 处 `named()` / `prefixed()` 按**名字**判定 ——
+// 财务把「管理费用」改成「管理费用-办公」，桶是对的，行却匹配不上：金额落空（报表平、勾稽过、无人发现）。
+//
+// 这一组断言的是映射落地之后的新契约：
+//   ① 有映射 → 名字不再参与判定（改名不动数字），这是本期真正要的那句话；
+//   ② 没有映射 → 仍然回退按名字认领（历史行/文本键不能整笔丢钱）；
+//   ③ 映射与名字冲突 → 映射说了算；
+//   ④ 现金流量表按「科目 + 流向」查映射（同一个科目借/贷两侧各落一行）；
+//   ⑤ 迁移文件里的回填值必须等于内核算出来的认领 —— 防漂移。
+
+const { buildStatementRowIndex, toStatementRowMappings } = require("../../dist/modules/finance/finance-statement-rows.js");
+const { initialStatementRowClaimsOf } = require("../../dist/modules/finance/finance-three-statements.js");
+
+/** 一条映射（`accounting_subject_statement_rows` 落库后的形状）。 */
+const mapping = (subjectId, scope, row, flow = "") => ({ subjectId, scope, flow, row });
+
+test("报表行映射：有映射时名字不再参与判定——改名之后金额照样落在原行", () => {
+  // 「行政办公开支」是「管理费用」改名后的样子：它匹配不上任何一行（没有 `prefixed("行政")`），
+  // 所以只有映射能把它落到管理费用行 —— 这正是「改名不影响数字」要证明的那一步。
+  const refs = refsOf({ id: "sub-mgmt-t8", category: "损益类", name: "行政办公开支" });
+  const balances = sumVoucherLines([{ subjectKey: "损益类/行政办公开支", subjectId: "sub-mgmt-t8", direction: "debit", amount: "100" }]);
+
+  // 对照组：没有映射时，这个名字匹配不上任何行 —— 金额落空（但仍在未归位清单里，不静默）。
+  const without = buildIncomeStatement(balances, refs);
+  assert.equal(yuan(without.lines.find((line) => line.row === 5).value), 0, "没有映射时新名字匹配不上");
+  assert.equal(without.unmapped.length, 1, "落空不等于消失：必须点名");
+
+  // 有映射：落在「管理费用」行（行次 5）。
+  const mapped = buildIncomeStatement(balances, refs, buildStatementRowIndex([mapping("sub-mgmt-t8", "income-statement", 5)]));
+  assert.equal(yuan(mapped.lines.find((line) => line.row === 5).value), 100, "映射说了算，名字改了也不动");
+  assert.deepEqual(mapped.unmapped, [], "有映射就不该有未归位科目");
+});
+
+test("报表行映射：映射与名字冲突时以映射为准（名字是文案，映射是口径）", () => {
+  // 「原材料」按名字本该进「存货」（行次 9），映射把它指到「固定资产」（行次 22）。
+  const refs = refsOf({ id: "sub-mat-t8", category: "资产类", name: "原材料" });
+  const balances = sumVoucherLines([{ subjectKey: "资产类/原材料", subjectId: "sub-mat-t8", direction: "debit", amount: "100" }]);
+  const sheet = buildBalanceSheet({ balances, subjectRefs: refs, statementRows: buildStatementRowIndex([mapping("sub-mat-t8", "balance-sheet-assets", 22)]) });
+
+  assert.equal(yuan(sheet.assets.find((line) => line.row === 22).value), 100, "落映射指定的行");
+  assert.equal(yuan(sheet.assets.find((line) => line.row === 9).value), 0, "不能同时按名字再算一遍");
+});
+
+test("报表行映射：没有映射的科目仍回退按名字认领（历史文本键不能整笔丢钱）", () => {
+  const refs = refsOf(
+    { id: "sub-mat-t8b", category: "资产类", name: "原材料" },
+    { id: "sub-cash-t8", category: "资产类", name: "库存现金" },
+  );
+  const balances = sumVoucherLines([
+    { subjectKey: "资产类/原材料", subjectId: "sub-mat-t8b", direction: "debit", amount: "100" },
+    { subjectKey: "资产类/库存现金", subjectId: "sub-cash-t8", direction: "debit", amount: "30" },
+  ]);
+  // 只有「库存现金」有映射，原材料没有 → 前者照映射、后者照名字，两笔都要在表上。
+  const sheet = buildBalanceSheet({ balances, subjectRefs: refs, statementRows: buildStatementRowIndex([mapping("sub-cash-t8", "balance-sheet-assets", 1)]) });
+  assert.equal(yuan(sheet.assets.find((line) => line.row === 9).value), 100, "没映射的科目回退按名字落「存货」");
+  assert.equal(yuan(sheet.assets.find((line) => line.row === 1).value), 30, "有映射的科目照映射落「货币资金」");
+  assert.deepEqual(sheet.unmapped, [], "两笔都有着落");
+});
+
+test("报表行映射：现金流量表按「科目 + 流向」查映射——同一科目借/贷各落一行", () => {
+  const refs = refsOf({ id: "sub-loan-t8", category: "负债类", name: "祥恩拆借" });
+  // 借到钱（资金借方）：业务分录在贷方；还钱（资金贷方）：业务分录在借方。科目是同一个。
+  const loan = (direction, amount) => ({ subjectKey: "负债类/祥恩拆借", subjectId: "sub-loan-t8", direction, amount });
+  const vouchers = [
+    voucher("v-in-t8", [debit(K.bank, "1000"), loan("credit", "1000")]),
+    voucher("v-out-t8", [loan("debit", "400"), credit(K.bank, "400")]),
+  ];
+  const statementRows = buildStatementRowIndex([
+    mapping("sub-loan-t8", "cash-flow-statement", 24, "in"),   // 取得借款收到的现金
+    mapping("sub-loan-t8", "cash-flow-statement", 27, "out"),  // 偿还债务支付的现金
+  ]);
+  const cash = buildCashFlowStatement({ vouchers, subjectRefs: refs, statementRows });
+
+  assert.equal(yuan(cash.lines.find((line) => line.row === 24).value), 1000, "借到的 1000 进「取得借款收到的现金」");
+  assert.equal(yuan(cash.lines.find((line) => line.row === 27).value), 400, "还掉的 400 进「偿还债务支付的现金」，不能算成借款");
+  assert.deepEqual(cash.unmapped, [], "两笔都按映射落行");
+});
+
+test("报表行映射：迁移文件里的回填值与内核算出的认领逐条一致（防漂移）", () => {
+  // 落库那天三张报表的数字不许动，所以迁移里的 234 条必须与 `initialStatementRowClaimsOf()` 逐条相等；
+  // 反过来，以后改规则忘了重跑生成器，这条就会红 —— 那是「代码改了但库没改」的唯一信号。
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const file = path.join(__dirname, "../../prisma/migrations/20261112090000_accounting_subject_statement_rows/migration.sql");
+  const sql = fs.readFileSync(file, "utf8");
+  const inFile = [...sql.matchAll(/^\s*\('([^']+)', '([^']*)', '([^']+)', '([^']+)', (\d+)\),?$/gmu)]
+    .map((m) => `${m[1]}|${m[2]}|${m[3]}/${m[4]}|${m[5]}`)
+    .sort();
+
+  const { claims, uncovered, doubles } = initialStatementRowClaimsOf();
+  const expected = claims.map((claim) => `${claim.scope}|${claim.flow}|${claim.category}/${claim.name}|${claim.row}`).sort();
+
+  assert.deepEqual(uncovered, [], "有科目一条映射都没有 → 它的金额只能靠名字兜，改名就丢");
+  assert.deepEqual(doubles, [], "同一「认领域 + 方向」里被两行同时认领 → 金额算两遍");
+  assert.deepEqual(inFile, expected, "迁移文件与内核规则不一致：请重跑 node scripts/generate-statement-row-mapping.mjs --migration");
+  assert.equal(inFile.length, 234, "映射条数变了要重看一眼（这条断言就是提醒）");
+});
+
+test("报表行映射：认领域/方向写坏时**抛错**，不静默跳过（跳过等于让这个科目退回按名字认领）", () => {
+  assert.throws(
+    () => toStatementRowMappings([{ subjectId: "sub-x", statement: "balance-sheet", flow: "", rowNo: 1 }]),
+    /认领域不认识/,
+    "三表合一的写法没有唯一行次，必须拒绝",
+  );
+  assert.throws(
+    () => toStatementRowMappings([{ subjectId: "sub-x", statement: "cash-flow-statement", flow: "inflow", rowNo: 1 }]),
+    /方向不认识/,
+    "方向只认 in / out / 空串",
+  );
+  assert.deepEqual(toStatementRowMappings([{ subjectId: "sub-x", statement: "income-statement", flow: "", rowNo: 5 }]), [mapping("sub-x", "income-statement", 5)]);
+});
