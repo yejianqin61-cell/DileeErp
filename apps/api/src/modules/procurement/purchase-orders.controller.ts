@@ -92,6 +92,18 @@ export class PurchaseOrdersController {
    * 用户手里的对象是那张采购单。
    */
   @Post(":id/revert-to-plan") async revertToPlan(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.plans.revertPurchaseOrder(id, body.reason, user), meta: {} }; }
+  /**
+   * **行级退回**：只把这一行退回采购计划（2026-11-12）。
+   *
+   * 分工与整单退回完全一致：用户手里的对象是那张采购单（所以路径在这里），
+   * 落点是计划行（所以实现在 `PurchasePlansService`）。
+   *
+   * 为什么要有它：审计 `docs/audit/procurement-audit-2026-11-12.md` §2.1 B3·B4 ——
+   * 改一行以前必须整张单退回（N 行一起回到未下单、重新分组、换单号），
+   * 而"已有到货的单"连整单退都退不了。行级退回把粒度降到一行，
+   * 退完改完重新收束会**并回同一张单**（采购单号不变）。
+   */
+  @Post(":id/items/:itemId/revert-to-plan") async revertItemToPlan(@Param("id", new ParseUUIDPipe()) id: string, @Param("itemId", new ParseUUIDPipe()) itemId: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.plans.revertPurchaseOrderItem(id, itemId, body.reason, user), meta: {} }; }
   @Post(":id/revert-arrivals") async revertArrivals(@Param("id") id: string, @Body() body: ReasonDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.revertArrivals(id, body.reason, user), meta: {} }; }
   @Post(":id/close-arrivals") async closeArrivals(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.closeArrivalsV2(id, user), meta: {} }; }
   @Post(":id/items/:itemId/receipts") async receipt(@Param("id") id: string, @Param("itemId") itemId: string, @Body() body: ReceiptDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.receiptV2(id, itemId, body, user), meta: {} }; }
