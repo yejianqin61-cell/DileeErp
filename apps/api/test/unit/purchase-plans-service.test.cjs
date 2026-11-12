@@ -1759,7 +1759,7 @@ test("行级退回：单头合计按剩余明细重算", async () => {
 
   await s.service.revertPurchaseOrderItem("po-1", "poi-2", "客户减量", user);
 
-  assert.equal(order.totalAmount.toString(), "17.5000", "21.5 - 4 = 17.5；与建单同一口径（Σ 剩余明细 amount），列是 Decimal(18,4)");
+  assert.equal(order.totalAmount.toString(), "17.5", "21.5 - 4 = 17.5；与建单同一口径（Σ 剩余明细 amount）");
 });
 
 test("行级退回：这一行已经有到货事实 → 422，且什么都没写", async () => {
@@ -1840,4 +1840,46 @@ test("行级退回：退空之后计划行的链接断干净（不留指向取�
   await s.service.revertPurchaseOrderItem("po-1", "poi-2", "第二条也不要了", user);
 
   assert.deepEqual(planItems.filter((row) => row.purchaseOrderItemId !== null).map((row) => row.id), [], "计划里不该还写着某行已下单");
+});
+
+/**
+ * **Phase 2 的证明（2026-11-12）：退一行、改完、重新下单 —— 并回同一张单，单号不变。**
+ *
+ * 这是行级退回相对整单退回的**全部价值所在**（审计 §2.3）：整单退回会把单标 cancelled，
+ * 重下必然换号，供应商手里那张纸就对不上了。行级退回不动别的行，
+ * 于是 `findMergeTarget()` 的「这张单上还有本计划的认领行」这条判据仍然成立 →
+ * 新一波是 append，而不是新建。
+ *
+ * 断言落在**采购单号**上：退之前的号与重新下单之后的号必须是同一串。
+ */
+test("Phase 2 证明：退一行 → 改数量 → 重新下单并回同一张单（单号不变）", async () => {
+  const items = [
+    { id: "poi-old", purchaseOrderId: "po-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: null, expectedDate: null, bomItemId: "bi-1", materialSnapshot: { id: "mat-1", name: "物料 1" }, unitSnapshot: { id: "unit-pcs", name: "个" }, supplierSnapshot: { id: "sup-1", name: "五金厂" }, extensionData: {}, deletedAt: null, amount: "17.5000", receipts: [] },
+    { id: "poi-second", purchaseOrderId: "po-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("2.0000"), model: null, expectedDate: null, bomItemId: "bi-2", materialSnapshot: { id: "mat-2", name: "物料 2" }, unitSnapshot: { id: "unit-pcs", name: "个" }, supplierSnapshot: { id: "sup-1", name: "五金厂" }, extensionData: {}, deletedAt: null, amount: "4.0000", receipts: [] },
+  ];
+  // 同一张单同时是「可退回的采购单」与「可并入的目标单」：字段合在一起，两个桩都能用。
+  const target = {
+    id: "po-1", purchaseOrderNo: "PO-EXISTING", orderNo: "SO-1", bomId: "bom-1", status: "ordered", deletedAt: null,
+    supplierId: "sup-1", currency: "CNY", totalAmount: new Prisma.Decimal("21.5000"), createdAt: new Date("2026-10-01T00:00:00Z"), items,
+  };
+  const planItems = [
+    { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: null, expectedDate: null, purchaseOrderItemId: "poi-old", bomItemId: "bi-1", deletedAt: null, sequence: 1, currency: "CNY", extensionData: {} },
+    { id: "i-2", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("2.0000"), model: null, expectedDate: null, purchaseOrderItemId: "poi-second", bomItemId: "bi-2", deletedAt: null, sequence: 2, currency: "CNY", extensionData: {} },
+  ];
+  const s = makeService({ plans: [{ ...thePlan }], planItems, purchaseOrderItems: items, purchaseOrders: [target], mergeTargets: [target], bomItems: bomRows() });
+
+  const before = target.purchaseOrderNo;
+  await s.service.revertPurchaseOrderItem("po-1", "poi-second", "客户减量到 3", user);
+
+  // 采购员改数量（保存计划那条路已有独立用例；这里只把"改完之后"的状态摆出来）
+  planItems[1].quantity = new Prisma.Decimal("3.0000");
+
+  const result = await s.service.order("plan-1", { groups: [{ supplier_id: "sup-1", currency: "CNY", items: ["i-2"] }] }, user);
+
+  assert.equal(result.orders.length, 1, "只落成一张单");
+  assert.equal(result.orders[0].merged, true, "是并进已有那张，不是新建");
+  assert.equal(result.orders[0].purchaseOrderNo, before, "**单号不变** —— 供应商手里那张纸仍然对得上");
+  assert.equal(s.createdOrders.length, 0, "一张新单都不该建出来");
+  assert.equal(s.split().input.groups[0].items[0].quantity, "3.0000", "并回去的是**改之后**的数量");
+  assert.deepEqual(s.mergeQueries[0].linkedOrderItemIds, ["poi-old"], "认据还在：另一行仍认领着这张单");
 });
