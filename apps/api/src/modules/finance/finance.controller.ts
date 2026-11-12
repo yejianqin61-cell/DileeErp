@@ -10,6 +10,7 @@ import type { CurrentUser as CurrentUserType } from "../../platform/auth/auth.se
 import { AuthenticationGuard } from "../../platform/authorization/authentication.guard";
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
+import { MULTER_DOCUMENT_FILE_SIZE_LIMIT } from "../../platform/http/upload-limits";
 import { CustomerPaymentService } from "./customer-payment.service";
 import { ReceivableAdjustmentService } from "./receivable-adjustment.service";
 import { ReconciliationService } from "./reconciliation.service";
@@ -277,7 +278,7 @@ export class FinanceController {
    * 文件类型白名单与花名册导入一致：只放行 .xlsx/.xls。
    */
   @Post("payable-entries/import")
-  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: payableImportFileFilter }))
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: MULTER_DOCUMENT_FILE_SIZE_LIMIT }, fileFilter: payableImportFileFilter }))
   async importOtherPayables(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) {
     return { data: await this.payable.importOther(file, user), meta: {} };
   }

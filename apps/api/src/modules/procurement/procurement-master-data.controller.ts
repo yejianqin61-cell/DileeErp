@@ -9,6 +9,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
+import { MULTER_DOCUMENT_FILE_SIZE_LIMIT } from "../../platform/http/upload-limits";
 import { MAX_MATERIAL_IMAGE_BYTES } from "./material-image";
 import { ProcurementMasterDataService } from "./procurement-master-data.service";
 
@@ -77,7 +78,7 @@ export class ProcurementMasterDataController {
     return response.send(body);
   }
   @Post("materials/import")
-  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: materialImportFileFilter }))
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: MULTER_DOCUMENT_FILE_SIZE_LIMIT }, fileFilter: materialImportFileFilter }))
   async importMaterials(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) {
     return { data: await this.data.importMaterials(file, user), meta: {} };
   }

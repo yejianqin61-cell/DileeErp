@@ -9,6 +9,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
+import { MULTER_DOCUMENT_FILE_SIZE_LIMIT } from "../../platform/http/upload-limits";
 import { StocktakeService } from "./stocktake.service";
 
 const NON_NEGATIVE_DECIMAL = /^\d+(?:\.\d+)?$/;
@@ -70,7 +71,7 @@ export class StocktakeController {
    * （批量只是同一件事的批量入口，不该变成另一档权限）。
    */
   @Post("import")
-  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: stocktakeImportFileFilter }))
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: MULTER_DOCUMENT_FILE_SIZE_LIMIT }, fileFilter: stocktakeImportFileFilter }))
   async import(@UploadedFile() file: Express.Multer.File, @Body() body: StocktakeImportDto, @CurrentUser() user: CurrentUserType) {
     return { data: await this.stocktakes.import(file, body, user), meta: {} };
   }

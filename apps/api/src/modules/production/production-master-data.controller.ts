@@ -10,6 +10,7 @@ import { AuthenticationGuard } from "../../platform/authorization/authentication
 import { ModulePermissionGuard } from "../../platform/authorization/module-permission.guard";
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { RequireAdministrator } from "../../platform/authorization/require-administrator.decorator";
+import { MULTER_DOCUMENT_FILE_SIZE_LIMIT } from "../../platform/http/upload-limits";
 import { ProductionMasterDataService } from "./production-master-data.service";
 import type { Response } from "express";
 import type { Express } from "express";
@@ -72,7 +73,7 @@ export class ProductionMasterDataController {
   @Post("production/positions/:id/restore") @RequireAdministrator() restorePosition(@Param("id") id: string, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.restorePosition(id, user)); }
   @Get("production/employees/export.xlsx") @RequireAdministrator() async exportEmployees(@Query() query: EmployeeQueryDto, @Res() response: Response) { const body = await this.service.exportEmployees(query); const fileName = `DileeERP-employees-${beijingStamp()}.xlsx`; response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
   @Get("production/employees/import-template.xlsx") @RequireAdministrator() async employeeImportTemplate(@Res() response: Response) { const body = this.service.employeeImportTemplate(); response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent("迪礼ERP-员工导入模板.xlsx")}`); response.setHeader("Cache-Control", "no-store"); return response.send(body); }
-  @Post("production/employees/import") @RequireAdministrator() @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: employeeImportFileFilter })) async importEmployees(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) { return this.ok(await this.service.importEmployees(file, user)); }
+  @Post("production/employees/import") @RequireAdministrator() @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: MULTER_DOCUMENT_FILE_SIZE_LIMIT }, fileFilter: employeeImportFileFilter })) async importEmployees(@UploadedFile() file: Express.Multer.File, @CurrentUser() user: CurrentUserType) { return this.ok(await this.service.importEmployees(file, user)); }
   @Get("production/employees") employees(@Query() query: EmployeeQueryDto) { return this.ok(this.service.listEmployees(query)); }
   @Post("production/employees") @RequireAdministrator() createEmployee(@Body() body: EmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.createEmployee(body, user)); }
   @Patch("production/employees/:id") @RequireAdministrator() updateEmployee(@Param("id") id: string, @Body() body: UpdateEmployeeDto, @CurrentUser() user: CurrentUserType) { return this.ok(this.service.updateEmployee(id, body, user)); }

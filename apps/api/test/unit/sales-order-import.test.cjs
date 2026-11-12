@@ -14,6 +14,10 @@
 //   ⑥ 日期与数量的归一（`2026.7.30进仓`、`1960支`、`2505打`、Excel 序列号）；
 //   ⑦ 预填载荷 = 建单载荷的形状：填上客户与币种后能过**真实 SalesOrderDto 校验**（否则"能填不能存"）；
 //   ⑧ 源级守卫：路由/文件白名单/10MB 限制/模块注册 + 客户匹配只做唯一命中。
+//
+// 2026-11-12 补进第三份真实样本（`DL260003ZG-424038.xls`，「D生产单模板」B级单）：`区域：日本`、
+// `伞头（螺丝配色）`、「其它」行别把工艺栏吞进来、`8：` 这种冒号式工艺编号、追加行的核对地址——
+// 五处读错各有一条断言，见下面「④ 真实样本」与「材料类目」两处。
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const fs = require("node:fs");
@@ -283,6 +287,7 @@ test("导出 → 解析：同类目多款（3 款伞头）读回来是「再加�
 const SAMPLES = path.join(ROOT, "..", "..", "example", "销售单");
 const sampleOne = path.join(SAMPLES, "DL260134 JBN生产单(1).xls");
 const sampleTwo = path.join(SAMPLES, "DL260001-1 花色生产单-IS(FLOWER1 PO#32366-1).xlsx");
+const sampleThree = path.join(SAMPLES, "DL260003ZG-424038.xls");
 
 test("真实样本1（.xls）：表头/数量/18 项材料/9 条工艺/12 行伞布明细", { skip: fs.existsSync(sampleOne) ? false : "仓库里没有这份样本" }, () => {
   const parsed = parseSalesOrderWorkbook(fs.readFileSync(sampleOne));
@@ -321,6 +326,74 @@ test("真实样本2（.xlsx）：尾部 15 行伞头明细 + 数量/打 + 正侧
   assert.equal(parsed.details.reduce((sum, row) => sum + Number(row.quantity), 0), 2505);
   assert.equal(parsed.details[0].group_name, "伞头明细");
   assert.equal(parsed.unrecognized.length, 0, "这份表认不出来的是 0 处（认识的都已认走）");
+});
+
+/**
+ * 第三份真实样本：`DL260003ZG-424038.xls`（「D生产单模板」，B级单）。
+ *
+ * 五处读错都出在这一份上，每一条都是「纸上有、解析器读歪了」（2026-11-12）：
+ *   ① `区域：日本`（A3）不在地区别名表里 → 整格掉进 unrecognized，表单上看不到这条核对客户的线索；
+ *   ② `伞头` + 换行 + `（螺丝配色）`（A9）：类目名后面那句括号备注让整格对不上「伞头」→ 落成「其它」行，
+ *      真正的伞头规格（B9）反而没进 handle_spec；
+ *   ③ `贴纸`（A18/B18）把右边工艺栏的 `贴纸位置`（H18）与 `无`（I18）一起并进 content → 「无 贴纸位置 无」；
+ *   ④ 工艺编号写成 `8：缝伞要求：三步手缝，打蜡线`（H14）：冒号式编号没剥，值里带着「缝伞要求：」前缀，
+ *      而同一栏的其它项（`10针`）都是干净的值；
+ *   ⑤ 追加行的核对地址写死 `{row:0,col:0}` → 全部显示 A1（公司名那一格），回查不到纸上的行。
+ */
+test("真实样本3（D生产单模板 .xls）：区域 / 带括号备注的伞头 / 其它行不跨栏 / 冒号式编号 / 核对地址", { skip: fs.existsSync(sampleThree) ? false : "仓库里没有这份样本" }, () => {
+  const parsed = parseSalesOrderWorkbook(fs.readFileSync(sampleThree));
+  // 这一份本身要能读成一张单（后面的断言才有意义）
+  assert.equal(parsed.fields.order_no, "DL260003ZG-424038");
+  assert.equal(parsed.fields.quantity, "300");
+  assert.equal(parsed.fields.unit, "打");
+  assert.equal(parsed.fields.delivery_date, "2026-04-17");
+
+  // ① 区域：日本（A3）
+  assert.equal(parsed.fields.region, "日本");
+  const region = parsed.recognized.find((item) => item.field === "region");
+  assert.deepEqual({ value: region.value, from: region.from }, { value: "日本", from: "A3" });
+  assert.equal(parsed.unrecognized.some((item) => item.where === "A3"), false, "认出来了就不该再进 unrecognized");
+
+  // ② `伞头 （螺丝配色）`（A9）仍是「伞头」类目；「伞头带」不能被它顺带吞掉
+  assert.equal(parsed.fields.handle_spec, "ABS料+PU棉，按钮开模");
+  assert.equal(parsed.fields.handle_strap_spec, "黑色编织带伞头带，长10cm，宽0.8cm", "「伞头带」是另一个类目（长名字先认）");
+  assert.deepEqual(parsed.extras.filter((row) => row.label.includes("伞头")), [], "括号备注不能让伞头变成「其它」行");
+
+  // ③ 「贴纸」的内容只到 B18 为止，不跨进工艺栏（H18「贴纸位置」+ I18「无」）
+  assert.deepEqual(parsed.extras.map((row) => [row.label, row.content]), [["贴纸", "无"], ["其他", "大货样1支，产前样1支"]]);
+
+  // ④ `8：` 是编号不是标签：缝伞要求的值与其它项一样不带标签前缀
+  assert.equal(parsed.fields.sewing_requirement, "三步手缝，打蜡线");
+  assert.equal(parsed.fields.edge_requirement, "10针", "同一栏的其它项是干净的值，缝伞要求要对齐它");
+
+  // ⑤ 追加行的 from 是纸上的真实地址（A18 / A22），不是 A1
+  assert.deepEqual(
+    parsed.recognized.filter((item) => item.field === "material_extra").map((item) => [item.label, item.from]),
+    [["其它：贴纸", "A18"], ["其它：其他", "A22"]],
+  );
+  assert.equal(parsed.recognized.some((item) => item.from === "A1"), false, "A1 是公司名那一格，谁都不该从那里来");
+  assert.equal(parsed.recognized.every((item) => /^[A-Z]{1,2}\d+$/.test(item.from)), true, "核对清单的每一行都要指得回纸上的格子");
+
+  // 认不出的仍要如实上报（这一份有几条工艺栏里的自由条目没有对应栏位）
+  const unknownTexts = parsed.unrecognized.map((item) => item.text);
+  for (const text of ["贴纸位置", "质检报告", "织标位置", "2.大裁开布要求："]) {
+    assert.ok(unknownTexts.includes(text), `「${text}」认不出就要上报，不能静默丢`);
+  }
+});
+
+test("材料类目：末尾括号是备注，不是新类目；一句话（非备注）仍不按前缀认", () => {
+  // 与「D生产单模板」同构的最小表：类目名 + 换行 + 括号备注，右边是「工艺要求」那一栏。
+  const layout = workbook("模板", [
+    ["材料", "明       细", "", "", "", "", "工艺要求"],
+    ["伞头 （螺丝配色）", "ABS料+PU棉，按钮开模", "", "", "", "", ""],
+    ["伞头带 （黑色）", "黑色编织带", "", "", "", "", ""],
+    ["伞头需印 LOGO", "每款印在伞头顶部", "", "", "", "", ""],
+  ], [[0, 1, 0, 5]]);
+  const parsed = parseSalesOrderWorkbook(layout);
+  assert.equal(parsed.fields.handle_spec, "ABS料+PU棉，按钮开模", "「伞头 （螺丝配色）」还是伞头");
+  assert.equal(parsed.fields.handle_strap_spec, "黑色编织带", "「伞头带 （黑色）」剥完是「伞头带」，不能剥成「伞头」");
+  assert.deepEqual(parsed.extras.filter((row) => row.spec_key === "handle_spec"), [], "不能被读成第二款伞头");
+  assert.deepEqual(parsed.extras.map((row) => [row.label, row.content]), [["伞头需印 LOGO", "每款印在伞头顶部"]], "「伞头需印 LOGO」是一句话，不是类目名");
 });
 
 // ------------------------------------------------------------------ ⑤ 日期 / 数量归一
@@ -481,12 +554,23 @@ test("服务层：两份真实样本都能走到 status=ok（真实数据下的�
 const controllerSource = fs.readFileSync(path.join(ROOT, "src", "modules", "sales", "sales-orders.controller.ts"), "utf8");
 const moduleSource = fs.readFileSync(path.join(ROOT, "src", "modules", "sales", "sales.module.ts"), "utf8");
 const parserSource = fs.readFileSync(path.join(ROOT, "src", "modules", "sales", "sales-order-import.ts"), "utf8");
+const uploadLimits = require("../../dist/platform/http/upload-limits.js");
 
 test("控制器：补录端点走 multipart + 10MB 上限 + 只放行 Excel", () => {
   assert.match(controllerSource, /@Post\("import-preview"\)/);
-  assert.match(controllerSource, /FileInterceptor\("file", \{ storage: memoryStorage\(\), limits: \{ fileSize: 10 \* 1024 \* 1024 \}, fileFilter: salesOrderImportFileFilter \}\)/);
+  // 上限不再写死在这个控制器里：全站文档导入共用一个数（platform/http/upload-limits），
+  // 因为「同一个 10MB 在 5 处各写一遍」正是 2026-11-12 那次「应用 10MB、网关 1MB」的土壤。
+  assert.match(controllerSource, /FileInterceptor\("file", \{ storage: memoryStorage\(\), limits: \{ fileSize: MULTER_DOCUMENT_FILE_SIZE_LIMIT \}, fileFilter: salesOrderImportFileFilter \}\)/);
+  assert.match(controllerSource, /from "\.\.\/\.\.\/platform\/http\/upload-limits"/, "上限必须来自共享常量，不许再写一个裸数字");
   assert.match(controllerSource, /endsWith\("\.xlsx"\) \|\| name\.endsWith\("\.xls"\)/);
   assert.match(controllerSource, /salesOrderImport\.preview\(file\)/, "预览只调解析服务（不传 user，也就没有写库动作）");
+});
+
+test("上传体积口径：单文件 10MB 且「含 10MB」（Multer 到 >= 上限就拒，所以给它的数要 +1）", () => {
+  // 实测（本地 API）：limit=10*1024*1024 时，正好 10,485,760 字节的文件被拒、10,485,759 能过。
+  // 「单文件上限 10MB」若按字面理解必须成立，给 Multer 的数就得比承诺大 1 字节。
+  assert.equal(uploadLimits.MAX_DOCUMENT_UPLOAD_BYTES, 10 * 1024 * 1024, "产品口径就是 10MB，不要偷偷改成别的数");
+  assert.equal(uploadLimits.MULTER_DOCUMENT_FILE_SIZE_LIMIT, uploadLimits.MAX_DOCUMENT_UPLOAD_BYTES + 1, "给 Multer 的数必须是 上限+1（本来就是为了让「正好 10MB」能过）");
 });
 
 test("模块：SalesOrderImportService 已注册并导出", () => {

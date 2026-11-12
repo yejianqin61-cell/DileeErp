@@ -12,6 +12,7 @@ import { RequireModules } from "../../platform/authorization/require-modules.dec
 import { PaginationQueryDto } from "../../platform/http/pagination-query.dto";
 import { EmptyStringToNull } from "../../platform/http/empty-string-to-null.decorator";
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
+import { MULTER_DOCUMENT_FILE_SIZE_LIMIT } from "../../platform/http/upload-limits";
 import { SalesOrdersService, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT, MAX_ROW_IMAGES, SPEC_MATERIAL_KEYS } from "./sales-orders.service";
 // 行图片与物料图片共用同一个字节上限与同一个校验器（2026-11-04）：multer 层先按它拦，服务层再解容器核对。
 import { MAX_MATERIAL_IMAGE_BYTES } from "../procurement/material-image";
@@ -393,7 +394,7 @@ export class SalesOrdersController {
    * 权限沿用类级的 `sales` 模块守卫 —— 录单的人就是补录的人，不额外锁管理员。
    */
   @Post("import-preview")
-  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 }, fileFilter: salesOrderImportFileFilter }))
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: MULTER_DOCUMENT_FILE_SIZE_LIMIT }, fileFilter: salesOrderImportFileFilter }))
   async importPreview(@UploadedFile() file: Express.Multer.File) {
     return { data: await this.salesOrderImport.preview(file), meta: {} };
   }
