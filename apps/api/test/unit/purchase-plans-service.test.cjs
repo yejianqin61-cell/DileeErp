@@ -1810,3 +1810,34 @@ test("行级退回：原因必填", async () => {
     (error) => error.getResponse().code === "CORRECTION_REASON_REQUIRED",
   );
 });
+
+/**
+ * 退到一行不剩（2026-11-12）：结果必须与整单退回**一样**。
+ *
+ * 否则会出现一张"没有明细但仍是已下单"的单 —— 它在采购单列表里显示成一张正常的单，
+ * 却没有任何一行可收到货、也没有金额，谁也说不清它是什么。
+ */
+test("行级退回：退到一行不剩 → 整单作废（与整单退回同结果）", async () => {
+  const { order, items } = twoLineOrder();
+  const s = makeService({ plans: [{ ...thePlan }], planItems: twoLinePlanItems(), purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  await s.service.revertPurchaseOrderItem("po-1", "poi-1", "第一条不要了", user);
+  const result = await s.service.revertPurchaseOrderItem("po-1", "poi-2", "第二条也不要了", user);
+
+  assert.equal(result.orderCancelled, true);
+  assert.equal(order.status, "cancelled", "作废之后不进采购单列表（只在审计里可查）");
+  assert.ok(order.deletedAt, "单软删，不是硬删");
+  assert.equal(result.remainingLineCount, 0);
+  assert.equal(result.totalAmount, "0.0000", "没有明细的单不能留着一个旧金额");
+});
+
+test("行级退回：退空之后计划行的链接断干净（不留指向取消单的「已下单」）", async () => {
+  const { order, items } = twoLineOrder();
+  const planItems = twoLinePlanItems();
+  const s = makeService({ plans: [{ ...thePlan }], planItems, purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  await s.service.revertPurchaseOrderItem("po-1", "poi-1", "第一条不要了", user);
+  await s.service.revertPurchaseOrderItem("po-1", "poi-2", "第二条也不要了", user);
+
+  assert.deepEqual(planItems.filter((row) => row.purchaseOrderItemId !== null).map((row) => row.id), [], "计划里不该还写着某行已下单");
+});
