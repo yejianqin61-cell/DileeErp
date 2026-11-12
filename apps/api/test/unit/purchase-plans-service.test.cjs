@@ -1013,8 +1013,7 @@ test("退回采购计划：断开链接、单作废、数据全留（可逆，�
   assert.ok(order.items[0].deletedAt, "明细软删，不是硬删");
   assert.equal(result.planNo, "PP-1");
   assert.equal(result.returnedLineCount, 1);
-  assert.equal(result.restoredLineCount, 0);
-  assert.equal(s.planItems.length, 2, "没有多出计划行");
+  assert.equal(result.restoredLineCount, 0);  assert.equal(s.planItems.length, 2, "没有多出计划行");
   const record = audit.events.find((args) => args[0] === "purchase_order.revert_to_plan");
   assert.ok(record, "留一条审计");
   assert.equal(record[4].reason, "供应商说做不了");
@@ -1697,4 +1696,117 @@ test("domain：候选分类 —— 计划状态由行链接派生（不落列）
 test("domain：候选分类 —— 已完成的计划在原因里被说成「已完成」", () => {
   const reasons = planCandidateReasons(candidateInput({ existingPlan: { planNo: "PP-1", status: "completed" } }));
   assert.match(reasons[0].message, /已完成/);
+});
+
+// ---------------------------------------------------------------------------------------------
+// 行级退回（2026-11-12）：用户原话「下了采购单之后，如果需要临时修改BOM表的一些信息，
+// 需要整批采购单全部回退再修改，再下单。说明我们系统的拆分性，回溯性不够灵活。」
+//
+// 审计（`docs/audit/procurement-audit-2026-11-12.md` §2.1 B3·B4）：退回只有**整张单**一个粒度，
+// 而"已有到货的单"连整单退都退不了 —— 于是"这张只买 80，剩下 20 不要了"在系统里说不出口。
+//
+// 行级退回的落点仍然是**计划行**（口径 7 不改：数量/单价的唯一编辑点是计划）：
+// 只是把"退"的粒度降到一行，退完改完再收束，能并回同一张单。
+
+/** 两行的已下单采购单；明细对象同时放进 `purchaseOrderItems`，让假 Prisma 的 update 找得到。 */
+function twoLineOrder({ firstReceipts = [], secondReceipts = [], status = "ordered" } = {}) {
+  const shape = (overrides) => ({
+    purchaseOrderId: "po-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1",
+    quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: "M-9", expectedDate: null,
+    bomItemId: "bi-1", materialSnapshot: { id: "mat-1", name: "物料 1" }, unitSnapshot: { id: "unit-pcs", name: "个" },
+    supplierSnapshot: { id: "sup-1", name: "五金厂" }, extensionData: {}, deletedAt: null, receipts: [],
+    ...overrides,
+  });
+  const first = shape({ id: "poi-1", amount: "17.5000", receipts: firstReceipts });
+  const second = shape({ id: "poi-2", materialId: "mat-2", bomItemId: "bi-2", quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("2.0000"), model: null, amount: "4.0000", receipts: secondReceipts });
+  const order = {
+    id: "po-1", purchaseOrderNo: "PO-1", orderNo: "SO-1", bomId: "bom-1", status, deletedAt: null,
+    currency: "CNY", totalAmount: new Prisma.Decimal("21.5000"), items: [first, second],
+  };
+  return { order, items: [first, second], first, second };
+}
+
+/** 计划三行：i-1/i-2 已经下单（各自认领着 poi-1/poi-2），i-3 还没下。 */
+const twoLinePlanItems = () => [
+  { id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("5.0000"), unitPrice: new Prisma.Decimal("3.5000"), model: "M-9", expectedDate: null, purchaseOrderItemId: "poi-1", bomItemId: "bi-1", deletedAt: null, sequence: 1, currency: "CNY", extensionData: {} },
+  { id: "i-2", planId: "plan-1", materialId: "mat-2", unitId: "unit-pcs", supplierId: "sup-1", quantity: new Prisma.Decimal("2.0000"), unitPrice: new Prisma.Decimal("2.0000"), model: null, expectedDate: null, purchaseOrderItemId: "poi-2", bomItemId: "bi-2", deletedAt: null, sequence: 2, currency: "CNY", extensionData: {} },
+  { id: "i-3", planId: "plan-1", materialId: "mat-3", unitId: "unit-pcs", supplierId: null, quantity: new Prisma.Decimal("1.0000"), unitPrice: new Prisma.Decimal("0.0000"), model: null, expectedDate: null, purchaseOrderItemId: null, bomItemId: "bi-3", deletedAt: null, sequence: 3, currency: "CNY", extensionData: {} },
+];
+
+test("行级退回：只退那一行，其余行与单头都还在（不必整批回退）", async () => {
+  const { order, items, first, second } = twoLineOrder();
+  const planItems = twoLinePlanItems();
+  const s = makeService({ plans: [{ ...thePlan }], planItems, purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  const result = await s.service.revertPurchaseOrderItem("po-1", "poi-2", "客户减量，这一行先不买", user);
+
+  assert.ok(second.deletedAt, "退掉的那一行软删（不硬删，审计可追）");
+  assert.equal(first.deletedAt, null, "另一行一根不动 —— 这正是行级退回的意义");
+  assert.equal(order.status, "ordered", "单还有别的行，单不该作废");
+  assert.equal(result.orderCancelled, false);
+  // 计划行回到未下单，数量/单价/供应商原样保留
+  const line = planItems.find((row) => row.id === "i-2");
+  assert.equal(line.purchaseOrderItemId, null);
+  assert.equal(line.quantity.toString(), "2");
+  assert.equal(line.unitPrice.toString(), "2");
+  assert.equal(line.supplierId, "sup-1");
+  assert.equal(result.planNo, "PP-1");
+});
+
+test("行级退回：单头合计按剩余明细重算", async () => {
+  const { order, items } = twoLineOrder();
+  const s = makeService({ plans: [{ ...thePlan }], planItems: twoLinePlanItems(), purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  await s.service.revertPurchaseOrderItem("po-1", "poi-2", "客户减量", user);
+
+  assert.equal(order.totalAmount.toString(), "17.5", "21.5 - 4 = 17.5；与建单同一口径（Σ 剩余明细 amount）");
+});
+
+test("行级退回：这一行已经有到货事实 → 422，且什么都没写", async () => {
+  const { order, items, second } = twoLineOrder({ secondReceipts: [{ id: "gr-1" }] });
+  const planItems = twoLinePlanItems();
+  const s = makeService({ plans: [{ ...thePlan }], planItems, purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  await assert.rejects(
+    () => s.service.revertPurchaseOrderItem("po-1", "poi-2", "客户减量", user),
+    (error) => error.getResponse().code === "PURCHASE_ORDER_ITEM_NOT_REVERTIBLE",
+    "到货是既成事实：它之上才有质检/入库/应付",
+  );
+  assert.equal(second.deletedAt, null, "被拒时一个字都没写");
+  assert.equal(planItems.find((row) => row.id === "i-2").purchaseOrderItemId, "poi-2");
+});
+
+test("行级退回：明细不属于这张单 → 404", async () => {
+  const { order, items } = twoLineOrder();
+  const s = makeService({ plans: [{ ...thePlan }], planItems: twoLinePlanItems(), purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  await assert.rejects(
+    () => s.service.revertPurchaseOrderItem("po-1", "poi-unknown", "退错了", user),
+    (error) => error.getResponse().code === "PURCHASE_ORDER_ITEM_NOT_FOUND",
+  );
+});
+
+test("行级退回：历史单没有计划行认领它 → 镜像出一条计划行（不丢采购员填过的数据）", async () => {
+  const { order, items } = twoLineOrder();
+  const planItems = [];
+  const s = makeService({ plans: [{ ...thePlan }], planItems, purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  await s.service.revertPurchaseOrderItem("po-1", "poi-2", "历史单退回", user);
+
+  assert.equal(planItems.length, 1, "补出一条计划行，而不是把这一行丢掉");
+  assert.equal(planItems[0].materialId, "mat-2");
+  assert.equal(planItems[0].quantity.toString(), "2");
+  assert.equal(planItems[0].unitPrice.toString(), "2");
+  assert.equal(planItems[0].supplierId, "sup-1");
+  assert.equal(planItems[0].currency, "CNY", "镜像行沿用那张单的币种");
+});
+
+test("行级退回：原因必填", async () => {
+  const { order, items } = twoLineOrder();
+  const s = makeService({ plans: [{ ...thePlan }], planItems: twoLinePlanItems(), purchaseOrderItems: items, purchaseOrders: [order], bomItems: bomRows() });
+
+  await assert.rejects(
+    () => s.service.revertPurchaseOrderItem("po-1", "poi-2", "   ", user),
+    (error) => error.getResponse().code === "CORRECTION_REASON_REQUIRED",
+  );
 });
