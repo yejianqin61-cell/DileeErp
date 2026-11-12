@@ -12,6 +12,9 @@
  *     右栏「工艺要求 G–J 列」；**细分明细表嵌在材料区中间**；布量区在正唛/侧唛之下。
  *   - `DL260001-1 花色生产单-IS(FLOWER1 PO#32366-1).xlsx`：表头「标签」「值」分格；材料与工艺两栏；
  *     尾部还有一张「伞头」明细表（英文名 / 配色 / 条码 / 数量打）。
+ *   - `DL260003ZG-424038.xls`（「D生产单模板」，B级单）：表头多一格「区域：日本」；工艺编号写成
+ *     「8：缝伞要求：…」（编号用冒号）；材料类目后面带一句备注（`伞头` + 换行 + `（螺丝配色）`）；
+ *     工艺栏第一列还有「贴纸位置」这类没有栏位的自由条目。
  *
  * 三条纪律（都是「纸上的字决定车间做什么」换来的）：
  *   1. **不猜**：认得出的才填，认不出的**如实上报**（`unrecognized`），由人在系统表单里补/改。
@@ -95,7 +98,9 @@ const HEADER_FIELDS: ReadonlyArray<readonly [HeaderFieldKey, string, readonly st
   ["quantity", "数量", ["数量", "订单数量", "总数量", "合计数量"]],
   ["product_name", "品名规格", ["品名规格", "品名", "产品名称", "产品规格"]],
   ["item_no", "货号", ["货号", "货号/型号"]],
-  ["region", "地区", ["地区", "销往地区", "国家"]],
+  // 「区域」是「D生产单模板」的写法（`区域：日本`）：它只是核对客户的线索、不是销售单字段，
+  // 但不认就会整格掉进 unrecognized —— 表单上连这条线索都看不到。
+  ["region", "地区", ["地区", "销往地区", "国家", "区域"]],
   ["attention_note", "注意事项", ["注意事项", "注意", "备注"]],
   ["unit", "单位", ["单位", "计量单位"]],
   ["currency", "币种", ["币种", "货币"]],
@@ -708,7 +713,8 @@ function buildMaterialLabelIndex(): Map<string, { key: MaterialCategoryKey; labe
 
 /**
  * 一格文本是什么标签？布量靠 `Y/DZ` 与材料区的同名标签区分（「伞带」在两边都有）；
- * 材料类目要求**整格相等**（「包装要求」不是「包装明细」），否则一句「伞头需印 LOGO」就会被当成类目名。
+ * 材料类目要求**整格相等**（「包装要求」不是「包装明细」），否则一句「伞头需印 LOGO」就会被当成类目名 ——
+ * 唯一放宽的是**末尾那句括号备注**，见 `materialByText`。
  */
 function classifyLabel(text: string): Segment | null {
   const key = labelKey(text);
@@ -718,8 +724,38 @@ function classifyLabel(text: string): Segment | null {
   if (fabric && markedFabric) return { kind: "fabric", key: fabric[0], label: fabric[1], col: 0 };
   const mark = MARK_LABELS.find(([, , aliases]) => aliases.some((alias) => key === labelKey(alias)));
   if (mark) return { kind: "mark", key: mark[0], label: mark[1], col: 0 };
-  const material = materialLabelIndex.get(key);
+  const material = materialByText(text);
   if (material) return { kind: "material", key: material.key, label: material.label, col: 0 };
+  return null;
+}
+
+/** 纸上的类目名尾巴上那句括号备注：`伞头 （螺丝配色）` 里的 `（螺丝配色）`。 */
+const TRAILING_NOTE = /[（(][^（）()]*[）)]\s*$/;
+
+/**
+ * 材料类目按**整格**认；末尾的括号备注可以剥掉再比一次。
+ *
+ * 为什么只剥末尾括号、剥完还要**整格相等**：「D生产单模板」把备注缩进写在类目名下面（`伞头` + 换行 +
+ * `（螺丝配色）`），读成一格是「伞头 （螺丝配色）」，整格对不上「伞头」就落成「其它」行，真正的伞头规格
+ * 反而空着；可一旦改成按前缀认，「伞头需印 LOGO」这种一句话也会变成新类目（第一版就是这么错的）。
+ * 折中是：只剥**末尾**的括号，剥完必须整格命中（含同义词），中间的括号一概不动。
+ * 为什么不担心把「伞头带（黑色）」吞成「伞头」：`伞头` / `伞头带` 在别名表里是两个整格键，剥完是
+ * 「伞头带」，命中的就是 `handle_strap_spec`。
+ * 代价：括号里那句备注（「螺丝配色」）**不进任何字段** —— 它说的是配色，不是伞头规格；替它挑一个去处
+ * 就是猜，而这一格的真实地址会出现在核对清单里，人看得到原文。
+ */
+function materialByText(text: string): { key: MaterialCategoryKey; label: string } | null {
+  const direct = materialLabelIndex.get(labelKey(text));
+  if (direct) return direct;
+  let base = collapse(text);
+  // 备注可能不止一层（`伞头（螺丝配色）（B级单）`）：剥一层比一次，剥空或剥不动就停。
+  for (let guard = 0; guard < 3; guard += 1) {
+    const stripped = base.replace(TRAILING_NOTE, "").trim();
+    if (!stripped || stripped === base) break;
+    base = stripped;
+    const found = materialLabelIndex.get(labelKey(base));
+    if (found) return found;
+  }
   return null;
 }
 
@@ -756,7 +792,12 @@ function readBody(state: ParserState, layout: Layout): void {
     }
     // 一行里只有「自己起名的小标题 + 一串值」（样本2「搭配内层颜色」+ 6 个颜色）：右栏的值也属于它 ——
     // 那些值不是工艺条目，不并进来就只剩一半，还会在核对清单里变成几条「认不出」。
-    if (segments.length === 1 && segments[0].segment.kind === "unknown") {
+    //
+    // 但工艺区**第一列**（「工艺要求」自己印的那一列）有字时不能并：写在那一列的是这一条工艺的**标签**
+    // （`贴纸位置 | 无`），右边那格是它的值，不属于左栏这个自起名的小标题。不卡这一条，「贴纸」的内容
+    // 会被读成「无 贴纸位置 无」—— 跨栏之后在核对清单上看不出来，车间照着做就少了一句位置要求。
+    // 这些格子仍留在原地，由工艺那一遍如实上报（认不出就是不猜）。
+    if (segments.length === 1 && segments[0].segment.kind === "unknown" && isBlank(textAt(state, row, layout.materialEnd))) {
       const extraValues: string[] = [];
       for (let col = layout.materialEnd; col < state.grid.width; col += 1) {
         if (state.consumed.has(consumedKey(row, col))) continue;
@@ -784,12 +825,12 @@ function readBody(state: ParserState, layout: Layout): void {
         if (!text) continue;
         if (!state.fields[segment.key]) assignField(state, segment.key, segment.label, text, target, 1000);
         // 同一类目第二行起 = 「同类目再加一款」（2026-10-29 的口径：3 款伞头就是 3 行伞头）。
-        else addExtra(state, segment.label, text, segment.key);
+        else addExtra(state, segment.label, text, segment.key, target);
         lastMaterial = { key: segment.key, label: segment.label, row };
         continue;
       }
       // 不认识的类目：收成「其它」行（多一行可以删，少一行没人发现）。
-      if (value) addExtra(state, truncateLabel(segment.label), value, null);
+      if (value) addExtra(state, truncateLabel(segment.label), value, null, target);
     }
   }
   readProcessLines(state, layout);
@@ -981,8 +1022,13 @@ function appendField(state: ParserState, field: string, value: string, target: C
   state.fields[field] = `${existing} ${value}`.trim().slice(0, 1000);
 }
 
-/** 追加一行材料明细（`sort_order` = 纸上的先后顺序，与手工加的「再加一款」同一套口径）。 */
-function addExtra(state: ParserState, label: string, content: string, specKey: MaterialCategoryKey | null): void {
+/**
+ * 追加一行材料明细（`sort_order` = 纸上的先后顺序，与手工加的「再加一款」同一套口径）。
+ *
+ * `target` 是这一行的标签格：核对清单的 `from` 要指得回纸上的位置，人才核得动。以前这里写死
+ * `{ row: 0, col: 0 }`，所有追加行都显示「A1」—— 那一格是公司名，等于告诉人「去看标题」。
+ */
+function addExtra(state: ParserState, label: string, content: string, specKey: MaterialCategoryKey | null, target: CellRange): void {
   if (state.extras.length >= MATERIAL_EXTRA_LIMIT) {
     state.warnings.push(`材料明细超过 ${MATERIAL_EXTRA_LIMIT} 行，多出的行没带过来（请在表单里手工补）`);
     return;
@@ -995,14 +1041,14 @@ function addExtra(state: ParserState, label: string, content: string, specKey: M
   }
   const finalLabel = specKey ? materialCategoryLabel(specKey) : label;
   state.extras.push({ label: finalLabel, content: text, spec_key: specKey, sort_order: state.extras.length });
-  recordFact(state, specKey ?? "material_extra", specKey ? `${finalLabel}（再加一款）` : `其它：${label}`, text, { row: 0, col: 0 });
+  recordFact(state, specKey ?? "material_extra", specKey ? `${finalLabel}（再加一款）` : `其它：${label}`, text, target);
 }
 
 /**
  * 工艺要求逐条读：`1.大货样：每个设计各1支` / `吊牌图稿发客人确认` / `质检报告 | 所有材料和成品都要质检报告`。
  *
  * 三条口径：
- *   1. 编号只是前缀，**按词认**（两张样本的编号是断的）；
+ *   1. 编号只是前缀，**按词认**（样本的编号是断的，而且点、冒号两种写法都有）；
  *   2. 有冒号 → 左标签右内容；没冒号但开头就是标签 → 标签后面那截是内容；整句里含标签 → 整句都是内容；
  *   3. 认不出的一律上报 —— 工艺要求是最容易被「看起来像」填错的一块：把「吊牌位置」写进「伞带要求」，
  *      在纸上只差一行，车间就会照着错的那行做。
@@ -1015,7 +1061,9 @@ function readProcessLines(state: ParserState, layout: Layout): void {
       const text = textAt(state, row, col);
       if (isBlank(text) || classifyLabel(text) || isFooterText(text)) continue;
       const target = { row, col };
-      const numbered = /^\s*\d+\s*[.、．)）]\s*/.test(text) ? text.replace(/^\s*\d+\s*[.、．)）]\s*/, "") : text;
+      // 编号只是前缀，后面跟的点或冒号都是编号的一部分：纸上有 `1.`，也有 `8：缝伞要求：…`
+      // （D生产单模板）。冒号式的编号不剥，后面就会把「8：」当标签、把「缝伞要求：」当内容读进字段。
+      const numbered = /^\s*\d+\s*[.、．)）：:]\s*/.test(text) ? text.replace(/^\s*\d+\s*[.、．)）：:]\s*/, "") : text;
       const split = /^([^：:]{1,20})[：:]\s*(.*)$/.exec(numbered);
       const labelPart = split ? split[1] : numbered;
       const matched = matchProcessLabel(labelPart) ?? matchProcessLabel(numbered);
