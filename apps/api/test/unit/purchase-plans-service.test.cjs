@@ -109,7 +109,27 @@ function makeService({ boms = [], bomItems = [], plans = [], planItems = [], pur
         if (where.id) return boms.find(match) ?? null;
         return boms.find((bom) => bom.deletedAt === null) ?? null;
       },
-      findMany: async () => boms.filter((bom) => bom.deletedAt === null && (bom.salesOrder?.status === "confirmed") && !plans.some((plan) => plan.bomId === bom.id && plan.deletedAt === null)).map((bom) => ({ ...bom, items: bomItems.filter((item) => item.bomId === bom.id && item.deletedAt === null) })),
+      /**
+       * 2026-11-12：候选的分类**搬进服务层**了（`candidateReport()` 要在结果里说明原因），
+       * 所以这里不能再替服务把「已确认 + 没有计划」滤掉 —— 那会让断言变成永真。
+       * 现在按真实的 where 只滤 `deletedAt`，并把 `items` / `purchasePlans` 两个关系补齐，
+       * 让服务自己去分类。
+       */
+      findMany: async ({ where } = {}) => boms
+        .filter((bom) => (where?.deletedAt === null ? bom.deletedAt === null : true))
+        .map((bom) => ({
+          ...bom,
+          items: bomItems.filter((item) => item.bomId === bom.id && item.deletedAt === null),
+          purchasePlans: plans
+            .filter((plan) => plan.bomId === bom.id && plan.deletedAt === null)
+            .map((plan) => ({
+              id: plan.id,
+              planNo: plan.planNo,
+              items: planItems
+                .filter((row) => row.planId === plan.id && row.deletedAt === null)
+                .map((row) => ({ purchaseOrderItemId: row.purchaseOrderItemId ?? null })),
+            })),
+        })),
     },
     bomItem: { findMany: async ({ where }) => bomItems.filter((item) => item.bomId === where.bomId && item.deletedAt === null) },
     unit: { findMany: async () => units },
@@ -530,6 +550,72 @@ test("候选：只有「已确认销售单 + 未删 BOM + 还没有计划」的 
   assert.deepEqual(candidates.map((row) => row.bomId), ["bom-1"], "已经有计划的（bom-2）与未确认销售单的（bom-3）都不该出现在下拉里");
   assert.equal(candidates[0].itemNo, "27621");
   assert.equal(candidates[0].customerName, "客户甲");
+});
+
+// ---------------------------------------------------------------------------------------------
+// 候选可解释（2026-11-12）之接口这一侧：`data` 仍是可建的那半边（老调用方一行都不用改），
+// 被拦下的那半边进 `meta.blocked`，带原因码与「去哪儿办」。
+
+const candidateBom = (id, status, overrides = {}) => ({
+  id, orderNo: `SO-${id}`, salesOrderId: `so-${id}`, version: 1, deletedAt: null,
+  salesOrder: { orderNo: `SO-${id}`, itemNo: null, customerSnapshot: { name: `客户 ${id}` }, deliveryDate: null, status, deletedAt: null },
+  ...overrides,
+});
+
+test("候选接口：销售单已关闭（closed）的 BOM 出现在可建那一侧", async () => {
+  const { service } = makeService({ boms: [candidateBom("bom-c", "closed")], bomItems: [bomRow("bi-1")] });
+
+  const report = await service.candidateReport();
+
+  assert.deepEqual(report.eligible.map((row) => row.bomId), ["bom-c"]);
+  assert.deepEqual(report.blocked, []);
+});
+
+test("候选接口：已有计划的 BOM 进 blocked，并带出计划编号", async () => {
+  const { service } = makeService({
+    boms: [candidateBom("bom-p", "confirmed")],
+    plans: [{ id: "plan-9", planNo: "PP-20260927-AB12CD34", orderNo: "SO-bom-p", bomId: "bom-p", bomVersion: 1, deletedAt: null, createdAt: new Date(), updatedAt: new Date(), createdBy: "u", updatedBy: "u" }],
+  });
+
+  const report = await service.candidateReport();
+
+  assert.deepEqual(report.eligible, []);
+  assert.equal(report.blocked.length, 1);
+  assert.equal(report.blocked[0].bomId, "bom-p");
+  assert.equal(report.blocked[0].reasons[0].code, "PLAN_ALREADY_EXISTS");
+  assert.equal(report.blocked[0].existingPlan.planNo, "PP-20260927-AB12CD34");
+  assert.match(report.blocked[0].reasons[0].message, /PP-20260927-AB12CD34/, "编号要在文案里，用户才知道去哪儿补料");
+});
+
+test("候选接口：草稿销售单的 BOM 进 blocked，原因码 SALES_ORDER_NOT_CONFIRMED", async () => {
+  const { service } = makeService({ boms: [candidateBom("bom-d", "draft")] });
+
+  const report = await service.candidateReport();
+
+  assert.deepEqual(report.eligible, []);
+  assert.equal(report.blocked[0].reasons[0].code, "SALES_ORDER_NOT_CONFIRMED");
+});
+
+test("候选接口：计划的派生状态一路传到 blocked（所有行都下过单 = 已完成）", async () => {
+  const { service } = makeService({
+    boms: [candidateBom("bom-x", "confirmed")],
+    plans: [{ id: "plan-1", planNo: "PP-1", orderNo: "SO-bom-x", bomId: "bom-x", bomVersion: 1, deletedAt: null, createdAt: new Date(), updatedAt: new Date(), createdBy: "u", updatedBy: "u" }],
+    planItems: [{ id: "i-1", planId: "plan-1", materialId: "mat-1", unitId: "unit-pcs", quantity: new Prisma.Decimal("1"), unitPrice: new Prisma.Decimal("1"), currency: "CNY", purchaseOrderItemId: "poi-1", deletedAt: null, sequence: 1 }],
+  });
+
+  const report = await service.candidateReport();
+
+  assert.equal(report.blocked[0].existingPlan.status, "completed");
+  assert.equal(report.blocked[0].existingPlan.statusLabel, "已完成");
+});
+
+test("候选接口：一张 BOM 都没有时两边都是空数组", async () => {
+  const { service } = makeService({ boms: [] });
+
+  const report = await service.candidateReport();
+
+  assert.deepEqual(report.eligible, []);
+  assert.deepEqual(report.blocked, []);
 });
 
 // ---------------------------------------------------------------------------------------------
