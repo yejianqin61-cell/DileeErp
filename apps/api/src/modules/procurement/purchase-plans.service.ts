@@ -6,7 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { itemNoKey } from "../sales/item-no";
 import { PurchaseOrdersService, type PurchaseOrderItemInput, type SplitGroup, type SplitInput } from "./purchase-orders.service";
-import { countBomMaterialsMissingFromPlan, DEFAULT_PLAN_CURRENCY, planCandidateReasons, planLineAmount, planStatusFromItems, planStatusOf, purchasePlanNo, PURCHASE_PLAN_STATUS_LABELS, sumPlanAmounts, type PurchasePlanStatus } from "./purchase-plans.domain";
+import { countBomMaterialsMissingFromPlan, DEFAULT_PLAN_CURRENCY, PLAN_ELIGIBLE_SALES_STATUSES, planCandidateReasons, planLineAmount, planStatusFromItems, planStatusOf, purchasePlanNo, PURCHASE_PLAN_STATUS_LABELS, sumPlanAmounts, type PurchasePlanStatus } from "./purchase-plans.domain";
 
 /**
  * 采购计划：老板要求「采购模块多一个采购计划栏目，承接原来的采购单草稿」。
@@ -1038,11 +1038,18 @@ export class PurchasePlansService {
     };
   }
 
-  /** 计划只能建在**已确认销售单**的**未删 BOM** 上（与采购单建单的前置条件一致）。 */
+  /**
+   * 计划只能建在**可建状态的销售单**的**未删 BOM** 上。
+   *
+   * 2026-11-12：销售单状态这一格改由 `PLAN_ELIGIBLE_SALES_STATUSES` 决定，
+   * 与候选列表（`candidateReport()`）**共用同一份口径**。原来两边各写一遍
+   * `status: "confirmed"`，于是 close 掉销售单之后候选里没有了、保存时又报 404 ——
+   * 用户看到的是"选了也没用"。口径见 `docs/audit/procurement-audit-2026-11-12.md` §1.3。
+   */
   private async loadBom(bomId: string | undefined) {
     if (!bomId?.trim()) throw new UnprocessableEntityException({ code: "PURCHASE_PLAN_BOM_REQUIRED", message: "请选择 BOM 表", details: [] });
-    const bom = await this.prisma.bom.findFirst({ where: { id: bomId, deletedAt: null, salesOrder: { status: "confirmed", deletedAt: null } } });
-    if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在或所属销售单未确认", details: [] });
+    const bom = await this.prisma.bom.findFirst({ where: { id: bomId, deletedAt: null, salesOrder: { status: { in: [...PLAN_ELIGIBLE_SALES_STATUSES] }, deletedAt: null } } });
+    if (!bom) throw new NotFoundException({ code: "BOM_NOT_FOUND", message: "BOM 不存在、已删除，或所属销售单还没确认", details: [] });
     return bom;
   }
 
