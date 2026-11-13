@@ -61,6 +61,9 @@ const LIST_SCREENS_WITH_SEARCH = [
   ["components/account/account-center.tsx", "账号管理"],
   ["app/warehouse/page.tsx", "仓库首页（待入库/待出库队列）"],
   ["app/workbench.tsx", "工作台（订单全链路 / 生产计量）"],
+  ["components/qc/incoming-inspections-panel.tsx", "来料质检"],
+  ["components/qc/qc-inbound-panel.tsx", "质检合格待入库 / 次品"],
+  ["components/reports/procurement-warehouse-report.tsx", "采购与仓储报表（表内搜索）"],
 ];
 
 test("清单里的每个列表页都有搜索框、走统一语义的 fuzzyMatch、且无命中提示与「本来就空」分开", () => {
