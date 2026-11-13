@@ -16,6 +16,7 @@ import { countOrphanDocuments, summarizeOrphanDocuments } from "./orphan-documen
 // 两条路径共用它，否则迟早出现「销售单说这张 BOM 是空的、删 BOM 却说被引用」的自相矛盾。
 import { AUTO_RELEASE_EMPTY_BOM_REASON, bomBlockedReason, isEmptyShellBom, salesOrderBomFacts, type BomFacts } from "./bom-facts";
 import { countVersionSnapshotsWithOrderNo, normalizeOrderNo, orderNoRenameImpact, renameSalesOrderNo, type OrderNoRenameReport } from "./sales-order-order-no";
+import { salesOrderListOrderBy } from "./sales-order-list-sort";
 
 /**
  * 下单口径细化的固定字段映射：请求键（snake_case）→ Prisma 列（camelCase）。
@@ -608,9 +609,18 @@ export function coreFieldsActuallyChanged(current: Record<string, unknown>, inpu
 export class SalesOrdersService {
   constructor(private readonly prisma: PrismaService, private readonly audit: AuditService, @Optional() private readonly currencies?: CurrencyService) {}
 
-  async list(page = 1, pageSize = 20, search?: string, status?: string) {
+  /**
+   * 销售单列表（分页）。
+   *
+   * 排序在**服务端**做（2026-11-13，用户：「需要给销售单排序，支持按照销售单号字典序排序，
+   * 创建时间排序」）：接口是分页的，前端手上只有当前一页，在前端排只会在翻页时前后矛盾。
+   * 口径（合法值、`id` 第二排序键、回落规则）都在 `sales-order-list-sort.ts`，只此一处。
+   *
+   * `sort` / `direction` 不传 = `updated_at desc`，与本次改造前逐字一致，老调用方零变化。
+   */
+  async list(page = 1, pageSize = 20, search?: string, status?: string, sort?: string, direction?: string) {
     const where = { deletedAt: null, ...(status ? { status } : {}), ...(search ? { OR: [{ orderNo: { contains: search, mode: "insensitive" as const } }, { productName: { contains: search, mode: "insensitive" as const } }, { itemNo: { contains: search, mode: "insensitive" as const } }] } : {}) };
-    const [data, total] = await this.prisma.$transaction([this.prisma.salesOrder.findMany({ where, orderBy: { updatedAt: "desc" }, skip: (page - 1) * pageSize, take: pageSize, include: { customer: true, contact: true, boms: { where: { deletedAt: null }, select: { id: true, version: true, status: true } } } }), this.prisma.salesOrder.count({ where })]);
+    const [data, total] = await this.prisma.$transaction([this.prisma.salesOrder.findMany({ where, orderBy: salesOrderListOrderBy(sort, direction), skip: (page - 1) * pageSize, take: pageSize, include: { customer: true, contact: true, boms: { where: { deletedAt: null }, select: { id: true, version: true, status: true } } } }), this.prisma.salesOrder.count({ where })]);
     return { data, total };
   }
 

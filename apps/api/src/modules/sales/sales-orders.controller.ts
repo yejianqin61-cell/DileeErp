@@ -14,6 +14,8 @@ import { EmptyStringToNull } from "../../platform/http/empty-string-to-null.deco
 import { EmptyStringToUndefined } from "../../platform/http/empty-string-to-undefined.decorator";
 import { MULTER_DOCUMENT_FILE_SIZE_LIMIT } from "../../platform/http/upload-limits";
 import { SalesOrdersService, MATERIAL_EXTRA_CONTENT_MAX_LENGTH, MATERIAL_EXTRA_LABEL_MAX_LENGTH, MATERIAL_EXTRA_LIMIT, MAX_ROW_IMAGES, SPEC_MATERIAL_KEYS } from "./sales-orders.service";
+// 排序口径与校准共用同一份常量：DTO 的白名单与 service 的 orderBy 映射不能各写一遍字符串。
+import { DEFAULT_SALES_ORDER_LIST_DIRECTION, DEFAULT_SALES_ORDER_LIST_SORT, SALES_ORDER_LIST_DIRECTIONS, SALES_ORDER_LIST_SORTS } from "./sales-order-list-sort";
 // 行图片与物料图片共用同一个字节上限与同一个校验器（2026-11-04）：multer 层先按它拦，服务层再解容器核对。
 import { MAX_MATERIAL_IMAGE_BYTES } from "../procurement/material-image";
 import { SalesOrderExportService } from "./sales-order-export.service";
@@ -341,6 +343,17 @@ export class UpdateSalesOrderDto extends SalesOrderSpecDto {
 }
 class SalesOrderQueryDto extends PaginationQueryDto {
   @IsOptional() @IsString() status?: string;
+  /**
+   * 排序键与方向（2026-11-13）。用户原话：「需要给销售单排序，支持按照销售单号字典序排序，
+   * 创建时间排序。」
+   *
+   * `sort` **是基类 `PaginationQueryDto` 已有的字段**（那里是自由字符串、全仓没有别的消费者）。
+   * 这里把它收窄成白名单：错值当场给 400，而不是让用户对着"排序好像没生效"猜。
+   * 显式写 `= undefined` 是 TypeScript 的要求（覆盖基类属性必须有初始化器），不是业务默认值。
+   * 真正的默认值在 `sales-order-list-sort.ts`，与 service 的 orderBy 映射共用同一份常量。
+   */
+  @IsOptional() @IsIn([...SALES_ORDER_LIST_SORTS]) sort?: string = undefined;
+  @IsOptional() @IsIn([...SALES_ORDER_LIST_DIRECTIONS]) direction?: string;
 }
 /** 返单预览的入参：来源**销售单号**（不是 id）——界面手上有的就是单号。 */
 class ReorderPreviewQueryDto {
@@ -380,7 +393,7 @@ export class OutboundNoticeDto {
 @RequireModules("sales")
 export class SalesOrdersController {
   constructor(private readonly orders: SalesOrdersService, private readonly outboundNotices: FinishedGoodsOutboundNoticeService, private readonly productionSheetExport: SalesOrderExportService, private readonly salesOrderImport: SalesOrderImportService) {}
-  @Get() async list(@Query() query: SalesOrderQueryDto) { const result = await this.orders.list(query.page, query.page_size, query.search, query.status); return { data: result.data, meta: { page: query.page, page_size: query.page_size, total: result.total } }; }
+  @Get() async list(@Query() query: SalesOrderQueryDto) { const result = await this.orders.list(query.page, query.page_size, query.search, query.status, query.sort, query.direction); return { data: result.data, meta: { page: query.page, page_size: query.page_size, total: result.total, sort: query.sort ?? DEFAULT_SALES_ORDER_LIST_SORT, direction: query.direction ?? DEFAULT_SALES_ORDER_LIST_DIRECTION } }; }
   @Post() async create(@Body() body: SalesOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.create(body, user), meta: {} }; }
   /**
    * Excel 补录的**第一步：只读解析**（2026-11-02）。
