@@ -19,6 +19,7 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
@@ -302,13 +303,22 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
           <label>起始日期<Input data-testid="bank-transfer-from" type="date" value={fromFilter} onChange={(event) => setFromFilter(event.target.value)} /></label>
           <label>截止日期<Input data-testid="bank-transfer-to" type="date" value={toFilter} onChange={(event) => setToFilter(event.target.value)} /></label>
           <label>账户
-            <Select value={bankFilter || ALL} onValueChange={(value) => setBankFilter(value === ALL ? "" : value)}>
-              <SelectTrigger data-testid="bank-transfer-bank-filter"><SelectValue placeholder="全部账户" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>全部账户</SelectItem>
-                {banks.map((bank) => <SelectItem key={bank.id} value={bank.id}>{bank.bankName} / {bank.accountNumber}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            {/*
+              账户筛选带搜索（2026-11-13）。账户清单会随开户增加而变长，而这一格显示的是
+              「开户行 / 账号」两段拼起来的标签 —— 财务通常只记得其中一段，所以要把两段都放进可搜文本
+              （SearchableSelect 同时匹配 label 与 value）。原来的 Radix 下拉只能滚。
+            */}
+            <SearchableSelect
+              id="bank-transfer-bank-filter"
+              testId="bank-transfer-bank-filter"
+              value={bankFilter || ALL}
+              options={[{ value: ALL, label: "全部账户" }, ...banks.map((bank) => ({ value: bank.id, label: `${bank.bankName} / ${bank.accountNumber}` }))]}
+              placeholder="全部账户"
+              label="结算账户"
+              searchPlaceholder="搜索开户行或账号"
+              noResultsText="没有匹配的账户"
+              onChange={(value) => setBankFilter(value === ALL ? "" : value)}
+            />
           </label>
         </div>
       </section>

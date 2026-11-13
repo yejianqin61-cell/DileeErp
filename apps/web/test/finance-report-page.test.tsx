@@ -638,10 +638,17 @@ describe("财务报表 · 三期：收支明细表与收支汇总表", () => {
     await waitFor(() => expect(previews(calls, EP.cashDetail).length).toBe(1));
 
     // 分类来自会计科目表的 category，会计科目的选项文案是「分类 / 科目名称」。
-    fireEvent.click(screen.getByTestId("finance-report-category"));
+    // 2026-11-13 起**分类也换成了 SearchableSelect**（分类会随科目表变长，用户要求数据型下拉都能搜）：
+    // testid 在根 div 上，点它不会展开，要点里面的 button（与下面「会计科目」同一形状）。
+    fireEvent.click(screen.getByTestId("finance-report-category").querySelector("button") as HTMLElement);
     fireEvent.click(await screen.findByRole("option", { name: "损益类" }));
+    // 两个下拉现在都是 SearchableSelect：上一个弹层关闭时会 `requestAnimationFrame` 把焦点还给自己的
+    // 触发器，紧跟着打开的下一层会被这一下"焦点归还"判成失焦而立刻关掉（选不中）。
+    // rAF 在 jsdom 里约 16ms 才跑，所以这里要等 20ms —— 用 0ms 的 tick 挡不住（实测仍然选中失败）。
+    // 真实用户两次点击之间隔几百毫秒，碰不到这件事。
+    await new Promise((resolve) => setTimeout(resolve, 20));
     // 会计科目是 SearchableSelect（带搜索框，用户 2026-09-20 第 1 条）：testid 在根 div 上。
-    // 先等一拍让 Radix Select 关闭时的「焦点归还」结算完 —— 否则它会把搜索框的焦点抢走、
+    // 先等一拍让上一个弹层关闭时的「焦点归还」结算完 —— 否则它会把搜索框的焦点抢走、
     // 让刚打开的弹层自己关掉（真实用户两次点击之间隔几百毫秒，碰不到这件事，见 cash-flow-page 的同名注释）。
     await new Promise((resolve) => setTimeout(resolve, 0));
     fireEvent.click(screen.getByTestId("finance-report-subject").querySelector("button") as HTMLElement);

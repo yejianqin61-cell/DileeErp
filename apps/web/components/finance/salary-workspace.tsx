@@ -29,6 +29,7 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { DataTable } from "../data/data-table";
 import { ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
@@ -853,16 +854,31 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
       <div className="filter-bar floating-window-filters">
         <label>月份<Input data-testid="salary-month-filter" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></label>
         <label>部门
-          <Select value={departmentId || "__all"} onValueChange={(value) => { setDepartmentId(value === "__all" ? "" : value); setPositionId(""); }}>
-            <SelectTrigger data-testid="salary-department-filter"><SelectValue placeholder="全部部门" /></SelectTrigger>
-            <SelectContent><SelectItem value="__all">全部部门</SelectItem>{departments.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-          </Select>
+          {/* 部门/岗位来自组织架构（会随开部门增长），筛选器带搜索；选部门时清空岗位的行为保持不变。 */}
+          <SearchableSelect
+            id="salary-department-filter"
+            testId="salary-department-filter"
+            value={departmentId || "__all"}
+            options={[{ value: "__all", label: "全部部门" }, ...departments.map((item) => ({ value: item.id, label: item.name ?? item.id }))]}
+            placeholder="全部部门"
+            label="部门"
+            searchPlaceholder="搜索部门"
+            noResultsText="没有匹配的部门"
+            onChange={(value) => { setDepartmentId(value === "__all" ? "" : value); setPositionId(""); }}
+          />
         </label>
         <label>岗位
-          <Select value={positionId || "__all"} onValueChange={(value) => setPositionId(value === "__all" ? "" : value)}>
-            <SelectTrigger data-testid="salary-position-filter"><SelectValue placeholder="全部岗位" /></SelectTrigger>
-            <SelectContent><SelectItem value="__all">全部岗位</SelectItem>{positions.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent>
-          </Select>
+          <SearchableSelect
+            id="salary-position-filter"
+            testId="salary-position-filter"
+            value={positionId || "__all"}
+            options={[{ value: "__all", label: "全部岗位" }, ...positions.map((item) => ({ value: item.id, label: item.name ?? item.id }))]}
+            placeholder="全部岗位"
+            label="岗位"
+            searchPlaceholder="搜索岗位"
+            noResultsText="没有匹配的岗位"
+            onChange={(value) => setPositionId(value === "__all" ? "" : value)}
+          />
         </label>
         <label>员工姓名/工号<Input data-testid="salary-employee-filter" value={employeeQuery} onChange={(event) => setEmployeeQuery(event.target.value)} placeholder="本地过滤" /></label>
         {/* 付款日期与付款方式对整页生效（行内只填金额），省掉每行一个弹窗 */}

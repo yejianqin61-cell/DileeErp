@@ -308,13 +308,18 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
         </label>
         {scope === "cash" && <>
           <label>分类
-            <Select value={draft.category || ALL} onValueChange={(value) => setDraft({ ...draft, category: value === ALL ? "" : value })}>
-              <SelectTrigger data-testid="finance-report-category"><SelectValue placeholder="全部分类" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>全部分类</SelectItem>
-                {[...new Set(subjects.map((subject) => subject.category))].map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            {/* 分类来自会计科目表（会变长），带搜索。币种与收支方向是固定枚举，保持紧凑。 */}
+            <SearchableSelect
+              id="finance-report-category"
+              testId="finance-report-category"
+              value={draft.category || ALL}
+              options={[{ value: ALL, label: "全部分类" }, ...[...new Set(subjects.map((subject) => subject.category))].map((category) => ({ value: category, label: category }))]}
+              placeholder="全部分类"
+              label="分类"
+              searchPlaceholder="搜索分类"
+              noResultsText="没有匹配的分类"
+              onChange={(value) => setDraft({ ...draft, category: value === ALL ? "" : value })}
+            />
           </label>
           <label>会计科目
             {/* 带搜索框的下拉（用户 2026-09-20 第 1 条）：这张筛选器列的是**全量**科目
@@ -342,25 +347,36 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
         {scope === "customer" && <>
           <label>订单号<Input data-testid="finance-report-order-no" value={draft.orderNo} onChange={(event) => setDraft({ ...draft, orderNo: event.target.value })} placeholder="可选" /></label>
           <label>客户
-            <Select value={draft.customerId || ALL} onValueChange={(value) => setDraft({ ...draft, customerId: value === ALL ? "" : value })}>
-              <SelectTrigger data-testid="finance-report-customer"><SelectValue placeholder="全部客户" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>全部客户</SelectItem>
-                {customers.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            {/* 客户清单会长长（用户 2026-11-13：「所有下拉列表、所有表单……都要有搜索功能」）：用带搜索的下拉，
+                财务记得的是客户名，不是它排在第几行。 */}
+            <SearchableSelect
+              id="finance-report-customer"
+              testId="finance-report-customer"
+              value={draft.customerId || ALL}
+              options={[{ value: ALL, label: "全部客户" }, ...customers.map((item) => ({ value: item.id, label: item.name }))]}
+              placeholder="全部客户"
+              label="客户"
+              searchPlaceholder="搜索客户名称"
+              noResultsText="没有匹配的客户"
+              onChange={(value) => setDraft({ ...draft, customerId: value === ALL ? "" : value })}
+            />
           </label>
         </>}
         {scope === "supplier" && <>
           <label>订单号<Input data-testid="finance-report-order-no" value={draft.orderNo} onChange={(event) => setDraft({ ...draft, orderNo: event.target.value })} placeholder="可选" /></label>
           <label>供应商
-            <Select value={draft.supplierId || ALL} onValueChange={(value) => setDraft({ ...draft, supplierId: value === ALL ? "" : value })}>
-              <SelectTrigger data-testid="finance-report-supplier"><SelectValue placeholder="全部供应商" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>全部供应商</SelectItem>
-                {suppliers.map((item) => <SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            {/* 同客户：供应商清单也会长，筛选器带搜索。 */}
+            <SearchableSelect
+              id="finance-report-supplier"
+              testId="finance-report-supplier"
+              value={draft.supplierId || ALL}
+              options={[{ value: ALL, label: "全部供应商" }, ...suppliers.map((item) => ({ value: item.id, label: item.name }))]}
+              placeholder="全部供应商"
+              label="供应商"
+              searchPlaceholder="搜索供应商名称"
+              noResultsText="没有匹配的供应商"
+              onChange={(value) => setDraft({ ...draft, supplierId: value === ALL ? "" : value })}
+            />
           </label>
         </>}
         {/* 三大报表（scope: "period"）不吃「草稿」这一项：它们取的是**已过账凭证**，

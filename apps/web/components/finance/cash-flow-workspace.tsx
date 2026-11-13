@@ -437,13 +437,22 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
             <label>起始日期<Input data-testid="cash-flow-from" type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
             <label>截止日期<Input data-testid="cash-flow-to" type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
             <label>分类
-              <Select value={categoryFilter || ALL} onValueChange={(value) => setCategoryFilter(value === ALL ? "" : value)}>
-                <SelectTrigger data-testid="cash-flow-category-filter"><SelectValue placeholder="全部分类" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL}>全部分类</SelectItem>
-                  {categories.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}
-                </SelectContent>
-              </Select>
+              {/*
+                分类筛选也用带搜索的下拉（2026-11-13，用户：「所有下拉列表、所有表单……都要有搜索功能」）。
+                分类是**会计科目分类**，随科目表一起变长；财务筛流水时记得的是分类名，不是它排在第几行。
+                与下面「会计科目」那一格同一个原语，语义只此一处。下面的「币种」「收支方向」是 2~5 项固定枚举，保持紧凑。
+              */}
+              <SearchableSelect
+                id="cash-flow-category-filter"
+                testId="cash-flow-category-filter"
+                value={categoryFilter || ALL}
+                options={[{ value: ALL, label: "全部分类" }, ...categories.map((category) => ({ value: category, label: category }))]}
+                placeholder="全部分类"
+                label="分类"
+                searchPlaceholder="搜索分类"
+                noResultsText="没有匹配的分类"
+                onChange={(value) => setCategoryFilter(value === ALL ? "" : value)}
+              />
             </label>
             <label>会计科目
               {/* 筛选器也用带搜索框的下拉：财务要按科目筛流水时，记住的是科目名而不是它排在第几行。 */}

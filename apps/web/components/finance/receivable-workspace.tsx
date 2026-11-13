@@ -1233,10 +1233,20 @@ function ReceivableMergeReceiptDialog({ open, rows, banks, subjects, onOpenChang
           <label>收款日期<Input type="date" data-testid="receivable-merge-date" value={receiptDate} disabled={busy} onChange={(event) => setReceiptDate(event.target.value)} /></label>
           <label>收款方式<Input data-testid="receivable-merge-method" value={method} disabled={busy} placeholder="银行转账" onChange={(event) => setMethod(event.target.value)} /></label>
           <label>到账银行账户
-            <Select value={bankId} onValueChange={setBankId} disabled={busy}>
-              <SelectTrigger data-testid="receivable-merge-bank"><SelectValue placeholder={banks.length ? "请选择到账银行账户" : "先在【财务 → 银行账户】建一个账户"} /></SelectTrigger>
-              <SelectContent>{banks.map((bank) => <SelectItem key={bank.value} value={bank.value}>{bank.label}</SelectItem>)}</SelectContent>
-            </Select>
+            {/* 银行账户会随开户增加（用户 2026-11-13：「所有下拉列表……都要有搜索功能」）：带搜索，
+                财务记得的是开户行或账号，不是它排第几行。 */}
+            <SearchableSelect
+              id="receivable-merge-bank"
+              testId="receivable-merge-bank"
+              value={bankId}
+              options={banks.map((bank) => ({ value: bank.value, label: bank.label }))}
+              placeholder={banks.length ? "请选择到账银行账户" : "先在【财务 → 银行账户】建一个账户"}
+              label="到账银行账户"
+              searchPlaceholder="搜索开户行或账号"
+              noResultsText="没有匹配的银行账户"
+              disabled={busy}
+              onChange={setBankId}
+            />
           </label>
           <label>款项性质
             <Select value={nature} onValueChange={setNature} disabled={busy}>

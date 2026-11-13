@@ -21,6 +21,7 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
 import { ACCOUNTING_SUBJECT_CATEGORIES_PATH, ACCOUNTING_SUBJECTS_PATH, type AccountingSubject, type AccountingSubjectCategory } from "../../lib/accounting-subjects";
@@ -344,13 +345,18 @@ export default function AccountingSubjectWorkspace({ testId = "page-finance-acco
     <section className="panel">
       <div className="panel-body filter-bar">
         <label>分类
-          <Select value={categoryFilter || ALL} onValueChange={(value) => setCategoryFilter(value === ALL ? "" : value)}>
-            <SelectTrigger data-testid="accounting-subject-filter-category"><SelectValue placeholder="全部分类" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>全部分类</SelectItem>
-              {categoryNames.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          {/* 分类清单随科目表增长（用户 2026-11-13：「所有下拉列表……都要有搜索功能」），筛选器带搜索。 */}
+          <SearchableSelect
+            id="accounting-subject-filter-category"
+            testId="accounting-subject-filter-category"
+            value={categoryFilter || ALL}
+            options={[{ value: ALL, label: "全部分类" }, ...categoryNames.map((category) => ({ value: category, label: category }))]}
+            placeholder="全部分类"
+            label="分类"
+            searchPlaceholder="搜索分类"
+            noResultsText="没有匹配的分类"
+            onChange={(value) => setCategoryFilter(value === ALL ? "" : value)}
+          />
         </label>
         <label>搜索<Input data-testid="accounting-subject-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="科目名称 / 分类" /></label>
         {/* 新增必须走弹窗而不是「输个名字点新增」：分类是科目表的必填维度，

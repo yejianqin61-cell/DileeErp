@@ -274,10 +274,19 @@ export default function PayableMergePaymentDialog({ open, rows, banks, subjects,
           <label>付款日期<Input type="date" data-testid="payable-merge-date" value={paymentDate} disabled={busy} onChange={(event) => setPaymentDate(event.target.value)} /></label>
           <label>付款方式<Input data-testid="payable-merge-method" value={paymentMethod} disabled={busy} placeholder="银行转账" onChange={(event) => setPaymentMethod(event.target.value)} /></label>
           <label>支付银行账户
-            <Select value={bankId} onValueChange={setBankId} disabled={busy}>
-              <SelectTrigger data-testid="payable-merge-bank"><SelectValue placeholder={banks.length ? "请选择支付银行账户" : "先在【财务 → 银行账户】建一个账户"} /></SelectTrigger>
-              <SelectContent>{banks.map((bank) => <SelectItem key={bank.value} value={bank.value}>{bank.label}</SelectItem>)}</SelectContent>
-            </Select>
+            {/* 同应收：账户清单会长，带搜索。 */}
+            <SearchableSelect
+              id="payable-merge-bank"
+              testId="payable-merge-bank"
+              value={bankId}
+              options={banks.map((bank) => ({ value: bank.value, label: bank.label }))}
+              placeholder={banks.length ? "请选择支付银行账户" : "先在【财务 → 银行账户】建一个账户"}
+              label="支付银行账户"
+              searchPlaceholder="搜索开户行或账号"
+              noResultsText="没有匹配的银行账户"
+              disabled={busy}
+              onChange={setBankId}
+            />
           </label>
           <label>会计科目（可选）
             <SearchableSelect testId="payable-merge-subject" value={subjectId} options={[{ value: "", label: "（不指定：按金额最大的应付来源自动归类）" }, ...subjects]} label="会计科目" disabled={busy} onChange={setSubjectId} />
