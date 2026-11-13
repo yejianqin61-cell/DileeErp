@@ -26,6 +26,7 @@ import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
 import { downloadFile } from "../../../lib/download";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { auditColumns, type AuditRow } from "../../../components/data/audit-columns";
@@ -136,7 +137,8 @@ export default function PurchaseOrdersPage() {
   }, []);
 
   const visible = useMemo(() => orders.filter((item) => {
-    if (query && !`${item.purchaseOrderNo} ${item.orderNo} ${item.status}`.toLowerCase().includes(query.toLowerCase())) return false;
+    // 搜索语义全站统一（空格分词 AND、忽略大小写与空白）：改用 fuzzyMatch，多词查询才成立。
+    if (query && !fuzzyMatch(query, [item.purchaseOrderNo, item.orderNo, item.status, item.supplier?.name])) return false;
     if (statusFilter === "all") return true;
     const totals = item.items.reduce((s, i) => { s.planned += Number(i.quantity); s.received += i.receipts.reduce((sum, r) => sum + Number(r.quantity), 0); return s; }, { planned: 0, received: 0 });
     if (statusFilter === "over") return totals.received > totals.planned;

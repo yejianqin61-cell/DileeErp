@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { apiGet, apiPatch, apiPost, ApiClientError } from "../../lib/api-client";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -404,7 +405,8 @@ export function FinishedGoodsQcPanel({ initialOrderNo }: { initialOrderNo?: stri
   }
 
   const orderNumbers = useMemo(() => Array.from(new Set([...sources.map((item) => item.order_no), ...submissions.map((item) => item.orderNo)])).sort(), [sources, submissions]);
-  const visibleOrders = useMemo(() => orderNumbers.filter((orderNo) => !query.trim() || orderNo.toLowerCase().includes(query.trim().toLowerCase())), [orderNumbers, query]);
+  // 搜索语义全站统一（空格分词 AND、忽略大小写与空白）：改用 fuzzyMatch。
+  const visibleOrders = useMemo(() => (query.trim() ? orderNumbers.filter((orderNo) => fuzzyMatch(query, [orderNo])) : orderNumbers), [orderNumbers, query]);
   /**
    * 跨订单待质检队列（设计 2026-11-07 §2.1）：只留 submitted / inspecting，按「先送检先检」排。
    *

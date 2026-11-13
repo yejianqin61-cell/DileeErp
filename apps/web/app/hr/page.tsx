@@ -33,6 +33,7 @@ import {
   apiPost,
   apiRequest,
 } from "../../lib/api-client";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { displayStatus } from "../../lib/display-text";
 import { auditColumns, type AuditRow } from "../../components/data/audit-columns";
 import { deriveEmployeeFieldsFromIdCard } from "../../lib/id-card";
@@ -867,7 +868,9 @@ export default function HrPage() {
         const state = employeeState(item);
         return (
           (!query ||
-            `${item.employeeNo} ${item.name}`.toLowerCase().includes(query)) &&
+            // 搜索语义全站统一（空格分词 AND、忽略大小写与空白）：改用 fuzzyMatch；
+            // 部门/岗位/性别/学历/电话这些也显示在员工目录里，一并参与匹配。
+            fuzzyMatch(query, [item.employeeNo, item.name, item.department?.name, item.position?.name, item.gender, item.education, item.phone])) &&
           (employeeStatus ? state === employeeStatus : state !== "deleted") &&
           (!employeeDepartment || item.department?.id === employeeDepartment) &&
           (!employeePosition || item.position?.id === employeePosition) &&
