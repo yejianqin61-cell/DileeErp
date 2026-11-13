@@ -15,6 +15,16 @@ type SearchableSelectProps = {
   /** { value, label } options; may be updated dynamically while open. */
   options: SearchableSelectOption[];
   onChange: (value: string) => void;
+  /**
+   * 这些 value 仍然**显示**，但选不中（点击 / Enter 都不生效，且标 aria-disabled）。
+   *
+   * 为什么要它（2026-11-13）：采购计划明细的物料下拉里有一条「这一行自己那个值」——
+   * 物料被停用/软删之后就不再出现在物料池里，可计划上明明记着它，那一格不能显示成空的。
+   * 做法是把它补进选项（名字才显示得出来）并**禁掉**：能看见，但不能被选到别的行上
+   * （真选了服务端会以「物料不存在或已停用」拒绝整份计划）。
+   * 与 `MultiCheckboxSelect` 的 `disabledValues` 同一套语义，两个原语不要各写一份。
+   */
+  disabledValues?: string[];
   onSearch?: (query: string) => void;
   disabled?: boolean;
   /** Text shown by the collapsed trigger when nothing is selected. */
@@ -91,6 +101,7 @@ export function SearchableSelect({
   onChange,
   onSearch,
   disabled = false,
+  disabledValues,
   placeholder = "请选择",
   label,
   searchPlaceholder,
@@ -137,12 +148,17 @@ export function SearchableSelect({
     setOpen(true);
   }, []);
 
+  /** 逐项禁用集合（见 `disabledValues` 的注释）：显示得出来，但点不中。 */
+  const disabledSet = useMemo(() => new Set(disabledValues ?? []), [disabledValues]);
+
   const selectOption = useCallback(
     (nextValue: string) => {
+      // 禁用项点了不生效：不静默选中，也不关弹层 —— 关掉会让人以为"选中了但没显示"。
+      if (disabledSet.has(nextValue)) return;
       onChange(nextValue);
       close(true);
     },
-    [onChange, close]
+    [onChange, close, disabledSet]
   );
 
   // On open: focus the search box, pre-select the current value, and flip the
@@ -243,7 +259,9 @@ export function SearchableSelect({
       setActiveIndex((current) => (current <= 0 ? (filtered.length ? filtered.length - 1 : -1) : current - 1));
     } else if (event.key === "Enter") {
       event.preventDefault();
-      const target = activeIndex >= 0 ? filtered[activeIndex] : filtered.length === 1 ? filtered[0] : undefined;
+      const candidate = activeIndex >= 0 ? filtered[activeIndex] : filtered.length === 1 ? filtered[0] : undefined;
+      // 禁用项 Enter 也不选中（与点击同一口径，见 `disabledValues`）。
+      const target = candidate && !disabledSet.has(candidate.value) ? candidate : undefined;
       if (target) selectOption(target.value);
     } else if (event.key === "Tab") {
       close(false);
@@ -306,16 +324,19 @@ export function SearchableSelect({
                 {filtered.map((option, index) => {
                   const selected = option.value === value;
                   const active = activeIndex === index;
+                  const optionDisabled = disabledSet.has(option.value);
                   return (
                     <div
                       key={option.value}
                       id={`${optionIdPrefix}-${index}`}
                       role="option"
                       aria-selected={selected}
+                      aria-disabled={optionDisabled ? true : undefined}
                       data-option-index={index}
                       data-active={active ? "true" : undefined}
+                      data-disabled={optionDisabled ? "true" : undefined}
                       data-testid="searchable-select-option"
-                      className={cn("ui-select-item", "ui-searchable-select-option")}
+                      className={cn("ui-select-item", "ui-searchable-select-option", optionDisabled && "ui-searchable-select-option-disabled")}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => selectOption(option.value)}
                       onMouseEnter={() => setActiveIndex(index)}

@@ -586,3 +586,60 @@ describe("MultiCheckboxSelect · disabledValues、整体禁用与过滤", () => 
     expect(search).toHaveAttribute("placeholder", "搜索工序");
   });
 });
+
+/**
+ * 逐项禁用（`disabledValues`，2026-11-13）。采购计划明细的物料下拉要用它：
+ * 那一行自己的物料被停用/软删之后不在物料池里，名字仍要显示，但不能被选到别的行上。
+ */
+describe("SearchableSelect · 逐项禁用（disabledValues）", () => {
+  const mixed: SearchableSelectOption[] = [
+    { value: "m-1", label: "伞骨（在用）" },
+    { value: "m-2", label: "停用部件（不在物料池）" },
+    { value: "m-3", label: "伞布（在用）" },
+  ];
+
+  it("禁用的那一项仍然显示，但标成 aria-disabled", async () => {
+    render(<SearchableSelect value="" options={mixed} disabledValues={["m-2"]} onChange={vi.fn()} label="物料" />);
+    await userEvent.click(screen.getByRole("combobox", { name: "物料" }));
+
+    expect(visibleOptions()).toEqual(["伞骨（在用）", "停用部件（不在物料池）", "伞布（在用）"]);
+    const disabled = screen.getByRole("option", { name: "停用部件（不在物料池）" });
+    expect(disabled).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("option", { name: "伞骨（在用）" })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("点禁用项不会被选中、弹层也不关（关掉会让人以为选上了）", async () => {
+    const onChange = vi.fn();
+    render(<ControlledSearchableSelect options={mixed} onChange={onChange} disabledValues={["m-2"]} />);
+
+    await userEvent.click(screen.getByRole("combobox", { name: "订单号" }));
+    await userEvent.click(screen.getByRole("option", { name: "停用部件（不在物料池）" }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    // 弹层还开着：搜索框仍在
+    expect(screen.getByTestId("searchable-select-search")).toBeTruthy();
+  });
+
+  it("键盘 Enter 同样跳过禁用项", async () => {
+    const onChange = vi.fn();
+    render(<ControlledSearchableSelect options={mixed} onChange={onChange} disabledValues={["m-2"]} />);
+
+    await userEvent.click(screen.getByRole("combobox", { name: "订单号" }));
+    const input = searchInput();
+    await userEvent.type(input, "停用");
+    await userEvent.keyboard("{Enter}");
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("不禁用时行为不变：点一项就选中并收起", async () => {
+    const onChange = vi.fn();
+    render(<ControlledSearchableSelect options={mixed} onChange={onChange} />);
+
+    await userEvent.click(screen.getByRole("combobox", { name: "订单号" }));
+    await userEvent.click(screen.getByRole("option", { name: "伞布（在用）" }));
+
+    expect(onChange).toHaveBeenCalledWith("m-3");
+    expect(screen.queryByTestId("searchable-select-search")).toBeNull();
+  });
+});

@@ -22,6 +22,7 @@ import { ActionDialog } from "../ui/action-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
 import { SupplierSelect, type BomSupplierRef } from "../bom/supplier-select";
 import { notifyError, notifySuccess } from "../ui/toaster";
@@ -627,10 +628,25 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                   <tr key={row.id ?? `new-${index}`} data-testid={`plan-row-${index}`}>
                     <td className="plan-col-select"><input type="checkbox" aria-label={`选择第 ${index + 1} 行`} disabled={row.ordered} checked={selected.includes(index)} onChange={() => toggleRow(index)} /></td>
                     <td className="plan-col-material">
-                      <Select value={row.materialId || undefined} onValueChange={(value) => changeMaterial(index, value)} disabled={row.ordered}>
-                        <SelectTrigger title={row.ordered ? lockedHint : undefined}><SelectValue placeholder="请选择物料" /></SelectTrigger>
-                        <SelectContent>{materialOptionsOf(row).map((option) => <SelectItem key={option.value} value={option.value} disabled={option.disabled}>{option.label}</SelectItem>)}</SelectContent>
-                      </Select>
+                      {/*
+                        物料池会随物料清单一起长（用户 2026-11-13：「所有下拉列表……都要有搜索功能」），
+                        所以换成带搜索的下拉。原来那条「这一行自己的物料已不在池里」的**逐项 disabled**
+                        语义不能丢（见 `materialOptionsOf` 的注释）：改为把禁用值传给 `disabledValues` ——
+                        名字照旧显示得出来，但选不中，避免把停用物料选到别的行上。
+                        `title` 与 `disabled` 原样透传：已下单的行仍然锁住整格。
+                      */}
+                      <SearchableSelect
+                        value={row.materialId}
+                        options={materialOptionsOf(row)}
+                        disabledValues={materialOptionsOf(row).filter((option) => option.disabled).map((option) => option.value)}
+                        disabled={row.ordered}
+                        title={row.ordered ? lockedHint : undefined}
+                        placeholder="请选择物料"
+                        label="物料"
+                        searchPlaceholder="搜索物料编码、名称、规格或颜色"
+                        noResultsText="没有匹配的物料（到【采购 → 物料清单】维护物料池）"
+                        onChange={(value) => changeMaterial(index, value)}
+                      />
                     </td>
                     <td className="plan-col-model"><Input value={row.model} disabled={row.ordered} title={row.ordered ? lockedHint : undefined} onChange={(event) => updateRow(index, { model: event.target.value })} /></td>
                     <td className="plan-col-order">

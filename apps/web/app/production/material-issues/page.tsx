@@ -19,6 +19,7 @@ import { PageHeader } from "../../../components/layout/app-shell";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../../components/ui/select";
+import { SearchableSelect } from "../../../components/ui/searchable-select";
 import { DataTable } from "../../../components/data/data-table";
 import { auditColumns, auditDetailFields, type AuditRow } from "../../../components/data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
@@ -309,7 +310,7 @@ export default function MaterialIssuesPage() {
       <div className="panel-heading"><h2>筛选</h2></div>
       <div className="panel-body"><div className="filter-bar">
         <label>订单号<Input value={orderNo} onChange={(event) => setOrderNo(event.target.value)} placeholder="输入订单号" /></label>
-        <label>生产单<Select value={productionOrderId} onValueChange={setProductionOrderId}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部生产单</SelectItem>{orders.map((order) => <SelectItem key={order.id} value={order.id}>{order.productionOrderNo} / {order.orderNo}</SelectItem>)}</SelectContent></Select></label>
+        <label>生产单<SearchableSelect value={productionOrderId} options={[{ value: "all", label: "全部生产单" }, ...orders.map((order) => ({ value: order.id, label: `${order.productionOrderNo} / ${order.orderNo}` }))]} placeholder="全部生产单" label="生产单" searchPlaceholder="搜索生产单号或订单号" noResultsText="没有匹配的生产单" onChange={setProductionOrderId} /></label>
         <label>类型<Select value={documentType} onValueChange={setDocumentType}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem><SelectItem value="issue">领料单</SelectItem><SelectItem value="replenishment">补料单</SelectItem></SelectContent></Select></label>
         <label>状态<Select value={status} onValueChange={setStatus}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="pending_outbound">待仓库出库</SelectItem><SelectItem value="posted">已过账</SelectItem></SelectContent></Select></label>
         <label>起始日期<Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
