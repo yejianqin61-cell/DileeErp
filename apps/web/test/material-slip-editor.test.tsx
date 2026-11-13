@@ -154,7 +154,15 @@ function columnValues(headerName: string): string[] {
 
 const quantityInput = (index: number) => screen.getByTestId(`material-slip-line-quantity-${index}`);
 const deleteButtons = () => screen.getAllByRole("button", { name: "删除行" });
+/**
+ * SearchableSelect 的 testid 落在**根 div** 上（见 components/ui/searchable-select.tsx 的注释），
+ * 点根 div 不会展开 —— 要展开得点里面的触发器 button。2026-11-13 生产单与原料两个下拉
+ * 从 Radix Select 换成 SearchableSelect（用户要求数据型下拉都能搜），用例的点击方式随之调整。
+ */
 const orderSelect = () => screen.getByTestId("material-slip-order-select");
+const orderTrigger = () => orderSelect().querySelector("button") as HTMLElement;
+const lineMaterialSelect = (index: number) => screen.getByTestId(`material-slip-line-material-${index}`);
+const lineMaterialTrigger = (index: number) => lineMaterialSelect(index).querySelector("button") as HTMLElement;
 
 /** 可手动控制的 Promise：把组件稳定停在 busy 状态上做断言。 */
 function deferred<T>() {
@@ -236,7 +244,7 @@ describe("MaterialSlipEditor 领料单：加载与 BOM 数据流", () => {
     stub();
     await renderSlip();
 
-    await userEvent.click(orderSelect());
+    await userEvent.click(orderTrigger());
 
     const options = await screen.findAllByRole("option");
     expect(options.map((option) => (option.textContent ?? "").trim())).toEqual(["MO-001 / SO-001", "MO-002 / SO-002"]);
@@ -246,7 +254,7 @@ describe("MaterialSlipEditor 领料单：加载与 BOM 数据流", () => {
     const calls = stub();
     await renderSlip();
 
-    await userEvent.click(orderSelect());
+    await userEvent.click(orderTrigger());
     await userEvent.click(await screen.findByRole("option", { name: /MO-002/ }));
 
     await waitFor(() => expect(callsTo(calls, "/boms/bom-2")).toHaveLength(1));
@@ -320,7 +328,7 @@ describe("MaterialSlipEditor 领料单：行增删与数量输入", () => {
     const calls = stub();
     await renderSlip();
 
-    await userEvent.click(screen.getByTestId("material-slip-line-material-0"));
+    await userEvent.click(lineMaterialTrigger(0));
 
     const options = await screen.findAllByRole("option");
     expect(options.map((option) => (option.textContent ?? "").trim())).toEqual(["面料A / A-1 / 需 10米", "面料B / B-2 / 需 4张"]);
@@ -394,7 +402,7 @@ describe("MaterialSlipEditor 领料单：行增删与数量输入", () => {
     await renderSlip();
 
     await userEvent.click(screen.getByTestId("material-slip-add-line"));
-    await userEvent.click(screen.getByTestId("material-slip-line-material-1"));
+    await userEvent.click(lineMaterialTrigger(1));
     await userEvent.click(await screen.findByRole("option", { name: /面料A/ }));
 
     // KNOWN_GAP（非崩溃性缺陷）：行内下拉**没有**把已用物料禁用/去掉，
@@ -539,7 +547,7 @@ describe("MaterialSlipEditor 领料单：深链与草稿编辑", () => {
     });
 
     // 编辑态锁定生产单（PATCH 不支持换单，继承自遗留用例③）
-    expect(orderSelect()).toBeDisabled();
+    expect(orderTrigger()).toBeDisabled();
     expect(screen.getByText(/该草稿已绑定当前生产单/)).toBeVisible();
   });
 

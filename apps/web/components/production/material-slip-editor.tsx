@@ -12,6 +12,7 @@ import { PageHeader } from "../layout/app-shell";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
@@ -229,10 +230,21 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
         <label>生产单
           {/* 已经存在的单据不能在编辑页换生产单：PATCH 不接受换单（明细会变成新单的 BOM，单据仍挂在旧单），
               所以编辑态直接锁住，需要换单请新建一张。 */}
-          <Select value={productionOrderId || undefined} onValueChange={(value) => void changeOrder(value)} disabled={Boolean(editingId)}>
-            <SelectTrigger data-testid="material-slip-order-select"><SelectValue placeholder="请选择生产单（仅厂内生产中）" /></SelectTrigger>
-            <SelectContent>{orders.map((order) => <SelectItem key={order.id} value={order.id}>{order.productionOrderNo} / {order.orderNo}</SelectItem>)}</SelectContent>
-          </Select>
+          {/* 生产单清单会随下单越来越多（用户 2026-11-13：「所有下拉列表……都要有搜索功能」）：
+              带搜索的下拉，按「生产单号 / 订单号」两段都能搜。原来只能滚。
+              编辑态照旧锁住（PATCH 不接受换单），disabled 原样透传。 */}
+          <SearchableSelect
+            id="material-slip-order-select"
+            testId="material-slip-order-select"
+            value={productionOrderId}
+            options={orders.map((order) => ({ value: order.id, label: `${order.productionOrderNo} / ${order.orderNo}` }))}
+            placeholder="请选择生产单（仅厂内生产中）"
+            label="生产单"
+            searchPlaceholder="搜索生产单号或订单号"
+            noResultsText="没有匹配的生产单（只列厂内「生产中」的单）"
+            disabled={Boolean(editingId)}
+            onChange={(value) => void changeOrder(value)}
+          />
         </label>
         {editingId && <p className="panel-note">该草稿已绑定当前生产单，不能在这里换单；如需给别的生产单领料，请新建一张。</p>}
         {isReplenishment && <label>补料原因<Input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="例如：伞布原始坏片" /></label>}
@@ -279,10 +291,21 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                 const remainingText = remainingQuantity === null || remainingQuantity === undefined ? "-" : String(remainingQuantity);
                 return <TableRow key={`${line.materialId || "new"}-${index}`}>
                   <TableCell className="slip-col-material" title={materialLabel(line.materialId)}>
-                    <Select value={line.materialId || undefined} onValueChange={(value) => update({ materialId: value })}>
-                      <SelectTrigger data-testid={`material-slip-line-material-${index}`}><SelectValue placeholder="选择原料" /></SelectTrigger>
-                      <SelectContent>{bomMaterialOptions.length ? bomMaterialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>) : <SelectItem value="__none__" disabled>该生产单订单的 BOM 表没有明细</SelectItem>}</SelectContent>
-                    </Select>
+                    {/* 原料来自该订单的 BOM 明细，几十个部件时靠滚找同样费劲（用户 2026-11-13：
+                        「所有下拉列表……都要有搜索功能」）。BOM 为空时给一条说明原因的占位项，
+                        与原来那条 disabled 占位同一目的：不能静默变成一个空下拉。 */}
+                    <SearchableSelect
+                      testId={`material-slip-line-material-${index}`}
+                      value={line.materialId}
+                      options={bomMaterialOptions.length
+                        ? bomMaterialOptions.map((option) => ({ value: option.value, label: option.label }))
+                        : [{ value: "__none__", label: "该生产单订单的 BOM 表没有明细" }]}
+                      placeholder="选择原料"
+                      label="原料"
+                      searchPlaceholder="搜索物料编码、名称、规格或颜色"
+                      noResultsText="没有匹配的原料（只列该订单 BOM 里的部件）"
+                      onChange={(value) => update({ materialId: value })}
+                    />
                   </TableCell>
                   <TableCell title={info?.material_code ?? "-"}>{info?.material_code ?? "-"}</TableCell>
                   <TableCell title={info?.model ?? "-"}>{info?.model ?? "-"}</TableCell>
