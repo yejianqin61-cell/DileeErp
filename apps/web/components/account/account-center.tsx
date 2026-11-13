@@ -6,6 +6,8 @@ import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client"
 import { fetchSessionProfile, type ManagedUser, type SessionProfile } from "../../lib/session";
 import { canManageAccounts, describeSurfaceScope, hasAllModules, MODULE_LABELS, SECTION_LABELS, SURFACE_ROLES, surfaceRoleName, type SurfaceSection } from "../../lib/surface-permission";
 import { formatBeijingShort } from "../../lib/audit-time";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -29,6 +31,27 @@ const PASSWORD_HINT = "至少 10 位，且同时包含字母和数字";
 export function AccountCenter() {
   const [profile, setProfile] = useState<SessionProfile | null>(null);
   const [users, setUsers] = useState<ManagedUser[]>([]);
+  /**
+   * 账号列表的关键字（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，
+   * 查找比较麻烦」）。可搜：用户名 / 姓名 / 角色名 / 状态 / 创建时间 —— 都是这张表看得见的列。
+   * 角色搜的是**界面上那串中文**（`surfaceRoleName`），不是 `role_keys` 里的英文键：
+   * 搜到了却看不出为什么命中，只会让人以为搜索坏了。
+   */
+  const [keyword, setKeyword] = useState("");
+
+  /**
+   * 关键字过滤后的账号（只按这张表**看得见**的列匹配：用户名 / 姓名 / 角色中文名 / 状态 / 创建时间）。
+   * 用普通常量而不是 useMemo：这张表最多几十行，多算一次的代价远小于多一个依赖数组要维护。
+   */
+  const visibleUsers = keyword.trim()
+    ? users.filter((user) => fuzzyMatch(keyword, [
+        user.username,
+        user.display_name,
+        user.surface_roles.length ? user.surface_roles.map(surfaceRoleName).join("、") : user.role_keys.join("、"),
+        user.is_active ? "启用" : "已停用",
+        formatBeijingShort(user.created_at),
+      ]))
+    : users;
   const [loadError, setLoadError] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [savingName, setSavingName] = useState(false);
@@ -141,7 +164,20 @@ export function AccountCenter() {
           角色列要装「角色名、角色名、…」的拼串（最长的自由文本），操作列要同时放三个按钮（改角色 / 重置密码 / 停用），
           两者拿大头；状态与时间定长，给得最少。用户名是登录名、定长短串，12~14% 够。
         */}
+        {/*
+          关键字搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，
+          查找比较麻烦」）。账号会越开越多，管理员找「那个账号」时只能一行行看。
+          只过滤这张表，不动上方的个人资料与改密码区。
+        */}
+        <div className="filter-bar">
+          <label>搜索用户名、姓名、角色、状态或创建时间
+            <Input data-testid="account-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+          </label>
+          {keyword.trim() ? <span className="panel-note" data-testid="account-search-count">筛选后 {visibleUsers.length} / {users.length} 个账号</span> : null}
+          {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+        </div>
         <Table className="table-bounded">
+
           <TableHeader><TableRow>
             <TableHead className="cell-ellipsis" style={{ width: "14%" }} title="用户名">用户名</TableHead>
             <TableHead className="cell-ellipsis" style={{ width: "12%" }} title="姓名">姓名</TableHead>
@@ -151,7 +187,7 @@ export function AccountCenter() {
             <TableHead className="cell-ellipsis" style={{ width: "30%" }} title="操作">操作</TableHead>
           </TableRow></TableHeader>
           <TableBody>
-            {users.map((user) => <TableRow key={user.id} data-testid={`account-row-${user.username}`}>
+            {visibleUsers.map((user) => <TableRow key={user.id} data-testid={`account-row-${user.username}`}>
               <TableCell className="cell-ellipsis" title={user.username}>{user.username}</TableCell>
               <TableCell className="cell-ellipsis" title={user.display_name}>{user.display_name}</TableCell>
               <TableCell className="cell-ellipsis" data-testid={`account-role-${user.username}`} title={user.surface_roles.length ? user.surface_roles.map(surfaceRoleName).join("、") : (user.role_keys.join("、") || "未分配")}>{user.surface_roles.length ? user.surface_roles.map(surfaceRoleName).join("、") : (user.role_keys.join("、") || "未分配")}</TableCell>
@@ -166,6 +202,7 @@ export function AccountCenter() {
               </TableCell>
             </TableRow>)}
             {!users.length && <TableRow><TableCell colSpan={6}>暂无账号</TableCell></TableRow>}
+            {users.length > 0 && !visibleUsers.length && <TableRow><TableCell colSpan={6} data-testid="account-search-empty">没有匹配“{keyword.trim()}”的账号（共 {users.length} 个，换个关键词或清空搜索框）</TableCell></TableRow>}
           </TableBody>
         </Table>
       </div>

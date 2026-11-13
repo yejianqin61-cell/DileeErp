@@ -211,3 +211,41 @@ describe("账号管理中心 · 管理部分（仅老板/财务）", () => {
     expect(await within(dialog).findByText(/系统必须保留至少一个启用中的「老板」账号/)).toBeVisible();
   });
 });
+
+  describe("账号管理中心 · 关键字搜索（2026-11-13）", () => {
+    it("按用户名 / 姓名收窄账号列表，并给「筛选后 N / M」计数", async () => {
+      stubBackend();
+      render(<AccountCenter />);
+      const panel = await screen.findByTestId("account-admin-panel");
+
+      await userEvent.type(within(panel).getByTestId("account-search"), "人事");
+
+      expect(within(panel).queryByTestId("account-row-laoban1")).toBeNull();
+      expect(within(panel).getByTestId("account-row-renshi")).toBeVisible();
+      expect(within(panel).getByTestId("account-search-count")).toHaveTextContent("筛选后 1 / 2 个账号");
+    });
+
+    it("不匹配时给出「没有匹配」而不是「暂无账号」", async () => {
+      stubBackend();
+      render(<AccountCenter />);
+      const panel = await screen.findByTestId("account-admin-panel");
+
+      await userEvent.type(within(panel).getByTestId("account-search"), "查无此人");
+
+      expect(within(panel).getByTestId("account-search-empty")).toHaveTextContent("没有匹配");
+      // 「暂无账号」只在真的一个账号都没有时出现
+      expect(within(panel).queryByText("暂无账号")).toBeNull();
+    });
+
+    it("清除搜索后恢复全量", async () => {
+      stubBackend();
+      render(<AccountCenter />);
+      const panel = await screen.findByTestId("account-admin-panel");
+
+      await userEvent.type(within(panel).getByTestId("account-search"), "人事");
+      await userEvent.click(within(panel).getByRole("button", { name: "清除搜索" }));
+
+      expect(within(panel).getByTestId("account-row-laoban1")).toBeVisible();
+      expect(within(panel).getByTestId("account-row-renshi")).toBeVisible();
+    });
+  });
