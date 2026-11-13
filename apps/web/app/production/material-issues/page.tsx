@@ -24,6 +24,8 @@ import { auditColumns, auditDetailFields, type AuditRow } from "../../../compone
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { RecordDetailDialog, type DetailField } from "../../../components/finance/record-detail-dialog";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
 import { ActionDialog, type ActionField } from "../../../components/ui/action-dialog";
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog";
 import { downloadFile } from "../../../lib/download";
@@ -197,17 +199,29 @@ export default function MaterialIssuesPage() {
     if (target) setProductionOrderId(target);
   }, []);
 
+  /**
+   * 关键字搜索（2026-11-13，用户：「统计所有下拉列表，所有表单是否都有搜索功能搜索框，如果没有，
+   * 都需要加上搜索功能。因为现在单子多了，查找比较麻烦」）。
+   *
+   * 上面那排是**条件**筛选（订单号精确包含/生产单/状态/类型/日期区间）；这一格是「我记得是领料单、
+   * 单号里有这个尾巴」这种模糊查找。可搜：订单号 / 生产单号 / 类型 / 单据号 / 状态 / 业务日期 ——
+   * 都是这张表看得见的列。**不动导出**：导出的仍是上面那排条件，避免「看到的」与「导出的」不是同一批
+   * 这件事又多一种解释（本页顶部那条注释就是为这件事写的）。
+   */
+  const [keyword, setKeyword] = useState("");
   const visible = useMemo(() => issues.filter((item) => {
-    if (orderNo && !item.orderNo.toLowerCase().includes(orderNo.toLowerCase())) return false;
-    if (productionOrderId !== "all" && item.productionOrderId !== productionOrderId) return false;
+    if (orderNo && !item.orderNo.toLowerCase().includes(orderNo.toLowerCase())) return false;    if (productionOrderId !== "all" && item.productionOrderId !== productionOrderId) return false;
     if (status !== "all" && item.status !== status) return false;
     if (documentType !== "all" && item.documentType !== documentType) return false;
     const businessDate = (item.businessDate ?? item.createdAt ?? "").slice(0, 10);
     if (from && businessDate < from) return false;
     if (to && businessDate > to) return false;
-    return true;
+    return fuzzyMatch(keyword, [
+      item.orderNo, item.productionOrder?.productionOrderNo, typeLabels[item.documentType] ?? item.documentType,
+      item.movementNo, statusLabels[item.status] ?? item.status, businessDate,
+    ]);
   }).sort((left, right) => `${left.orderNo}|${left.productionOrder?.productionOrderNo ?? ""}|${left.createdAt}`
-    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, status, documentType, from, to]);
+    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, status, documentType, from, to, keyword]);
 
   // 导出参数与页面筛选完全一致，避免"看到的"和"导出的"不是同一批。
   function exportQuery() {
@@ -300,11 +314,16 @@ export default function MaterialIssuesPage() {
         <label>状态<Select value={status} onValueChange={setStatus}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="draft">草稿</SelectItem><SelectItem value="pending_outbound">待仓库出库</SelectItem><SelectItem value="posted">已过账</SelectItem></SelectContent></Select></label>
         <label>起始日期<Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
         <label>结束日期<Input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+        {/* 关键字（2026-11-13）：上面的条件是精确筛选，这一格才是「记得单号里有这个尾巴」的查找。 */}
+        <label>搜索单号、订单号、生产单号或状态
+          <Input data-testid="material-issue-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+        </label>
+        {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
       </div></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张（同一生产单可开多张领料单与补料单，行内「再建领料单/再建补料单」可直接续开）</span></div>
-      <div className="panel-body"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无单据" description="点右上角「新建领料单 / 新建补料单」进入全屏编辑页创建；两者都只需要选择生产单，物料从该订单 BOM 明细中选。" />} onRowDoubleClick={(slip) => setDetailId(slip.id)} rowTitle="双击查看领用物料" /></div>
+      <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张{keyword.trim() ? `（关键字筛选后）` : ""}（同一生产单可开多张领料单与补料单，行内「再建领料单/再建补料单」可直接续开）</span></div>
+      <div className="panel-body"><DataTable columns={columns} data={visible} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的单据`} description={`当前条件下共 ${visible.length} 张，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无单据" description="点右上角「新建领料单 / 新建补料单」进入全屏编辑页创建；两者都只需要选择生产单，物料从该订单 BOM 明细中选。" />} onRowDoubleClick={(slip) => setDetailId(slip.id)} rowTitle="双击查看领用物料" /></div>
     </section>
     {/* 双击弹出的详情：把这一条单据的全部领用物料列出来，而不是只给「N 项」的合计。 */}
     <RecordDetailDialog
