@@ -54,6 +54,10 @@ const LIST_SCREENS_WITH_SEARCH = [
   ["components/finance/cash-flow-workspace.tsx", "收支明细"],
   ["components/sales/finished-goods-overview.tsx", "成品出库总览"],
   ["app/sales/orphans/page.tsx", "孤立单据"],
+  ["app/procurement/inbounds/page.tsx", "采购入库记录"],
+  ["app/production/material-issues/page.tsx", "领料单 / 补料单"],
+  ["components/finance/finance-report-workspace.tsx", "财务报表（表内搜索）"],
+  ["components/finance/bank-transfer-workspace.tsx", "银行互转记录"],
 ];
 
 test("清单里的每个列表页都有搜索框、走统一语义的 fuzzyMatch、且无命中提示与「本来就空」分开", () => {
