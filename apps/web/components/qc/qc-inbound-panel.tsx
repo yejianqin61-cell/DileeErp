@@ -16,6 +16,8 @@ import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
 import { displayStatus } from "../../lib/display-text";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { emitQcDataChanged, subscribeQcDataChanged } from "./qc-refresh";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
@@ -60,9 +62,21 @@ export function QcInboundPanel() {
       .catch((cause) => { const text = messageOf(cause, "操作失败"); setError(text); notifyError(text); });
   }
 
-  // 按订单号收束：订单一多，全量列表就没法用了。
-  const visibleQc = useMemo(() => qcAvailable.filter((row) => !query.trim() || row.order_no.toLowerCase().includes(query.trim().toLowerCase())), [qcAvailable, query]);
-  const visibleDefectives = useMemo(() => defectives.filter((row) => !query.trim() || row.orderNo.toLowerCase().includes(query.trim().toLowerCase())), [defectives, query]);
+  /**
+   * 关键字收束（2026-11-13）。原来只按订单号匹配；用户找「那张质检单 / 那个成品」时手上往往不是订单号。
+   * 改走全站统一的 `fuzzyMatch`（空格分词 AND、忽略大小写与空白），并按**屏幕上看得见**的列匹配：
+   * 质检单 / 订单号 / 合格·条件合格·不合格 / 单位 / 可入库额度 / 可登记次品额度；
+   * 次品表：次品单 / 订单号 / 成品 / 数量 / 状态。
+   */
+  const visibleQc = useMemo(() => (query.trim() ? qcAvailable.filter((row) => fuzzyMatch(query, [
+    row.qc_no, row.order_no,
+    `${row.qualified_quantity} / ${row.conditional_accept_quantity}`,
+    row.rejected_quantity, row.unit,
+    row.available_for_inbound_quantity, row.available_for_defective_quantity,
+  ])) : qcAvailable), [qcAvailable, query]);
+  const visibleDefectives = useMemo(() => (query.trim() ? defectives.filter((row) => fuzzyMatch(query, [
+    row.defectiveNo, row.orderNo, row.productNameSnapshot, row.quantity, displayStatus(row.status),
+  ])) : defectives), [defectives, query]);
 
   function registerInbound(row: QcAvailable) {
     setDialog({ title: `成品入库登记：${row.qc_no}`, fields: [
@@ -114,7 +128,9 @@ export function QcInboundPanel() {
     <div className="panel-body">
       <p className="panel-note">按 QC 合格量分批登记成品入库、按不合格量登记次品；过账后才计入库存。成品入库单的过账/冲销在【仓库 → 成品仓储情况】完成。</p>
       <div className="action-row">
-        <Input value={query} placeholder="按订单号筛选" onChange={(event) => setQuery(event.target.value)} />
+        <Input data-testid="qc-inbound-search" value={query} placeholder="搜索质检单 / 订单号 / 成品 / 数量 / 状态" onChange={(event) => setQuery(event.target.value)} />
+        {query.trim() ? <span className="panel-note" data-testid="qc-inbound-search-count">待入库 {visibleQc.length} / {qcAvailable.length} · 次品 {visibleDefectives.length} / {defectives.length}</span> : null}
+        {query.trim() ? <Button size="sm" variant="secondary" onClick={() => setQuery("")}>清除搜索</Button> : null}
         <Button size="sm" variant="secondary" asChild><Link href="/warehouse/finished-goods-storage">去成品仓储情况过账入库</Link></Button>
       </div>
     </div>
@@ -123,9 +139,9 @@ export function QcInboundPanel() {
     <div className="panel-body">
       {loading ? <LoadingState /> : <>
         <h3>质检合格待入库</h3>
-        <DataTable columns={qcColumns} data={visibleQc} empty={<EmptyState title={query.trim() ? "该订单号没有可入库/可登记次品的质检单" : "暂无可入库/可登记次品的质检单"} description="成品质检录入合格或不合格数量后，这里会出现可入库 / 可登记次品额度。" />} />
+        <DataTable columns={qcColumns} data={visibleQc} empty={<EmptyState title={query.trim() ? "没有匹配的质检单（可入库 / 可登记次品）" : "暂无可入库/可登记次品的质检单"} description="成品质检录入合格或不合格数量后，这里会出现可入库 / 可登记次品额度。" />} />
         <h3>次品记录</h3>
-        <DataTable columns={defectiveColumns} data={visibleDefectives} empty={<EmptyState title={query.trim() ? "该订单号没有次品记录" : "暂无次品记录"} description="质检不合格数量在上方「登记次品」后在这里过账。" />} />
+        <DataTable columns={defectiveColumns} data={visibleDefectives} empty={<EmptyState title={query.trim() ? "没有匹配的次品记录" : "暂无次品记录"} description="质检不合格数量在上方「登记次品」后在这里过账。" />} />
       </>}
     </div>
   </section>;
