@@ -264,3 +264,37 @@ describe("采购与仓储报表：错误态", () => {
     expect(screen.queryByTestId("error-state")).toBeNull();
   });
 });
+
+describe("采购与仓储报表 · 表内关键字搜索（2026-11-13）", () => {
+  it("按物料名收窄表格，并给「筛选后 N / M 行」计数（不打接口）", async () => {
+    const calls = await renderPage();
+    const before = calls.length;
+
+    await userEvent.type(screen.getByTestId("report-keyword"), "伞布");
+
+    const table = screen.getByTestId("report-table");
+    expect(within(table).getByText("伞布")).toBeVisible();
+    expect(within(table).queryByText("面料")).toBeNull();
+    expect(screen.getByTestId("report-keyword-count")).toHaveTextContent("筛选后 1 / 2 行");
+    // 表内搜索是纯客户端过滤：不得因此再打接口
+    expect(calls.length).toBe(before);
+  });
+
+  it("不匹配时说「没有匹配」，而不是「当前筛选条件下没有数据」", async () => {
+    await renderPage();
+
+    await userEvent.type(screen.getByTestId("report-keyword"), "查无此料");
+
+    expect(screen.getByTestId("empty-state")).toHaveTextContent("没有匹配“查无此料”的行");
+  });
+
+  it("清除搜索后恢复全量", async () => {
+    await renderPage();
+
+    await userEvent.type(screen.getByTestId("report-keyword"), "伞布");
+    await userEvent.click(screen.getByRole("button", { name: "清除搜索" }));
+
+    expect(screen.getByTestId("report-row-count")).toHaveTextContent("共 2 行");
+    expect(screen.queryByTestId("report-keyword-count")).toBeNull();
+  });
+});

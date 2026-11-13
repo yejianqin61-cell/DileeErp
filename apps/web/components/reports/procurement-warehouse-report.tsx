@@ -8,10 +8,13 @@
 //
 // 列定义不在这里另写一遍：`REPORT_COLUMNS`（lib/procurement-warehouse-report.ts）是屏幕 / 纸面 /
 // 导出件的唯一来源，组件只把它翻译成 TanStack 的列。九个宽度合计 100% 的守卫也钉在那份 lib 测试里。
+import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Search } from "lucide-react";
 import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState } from "../feedback/states";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import {
@@ -57,6 +60,25 @@ export function ProcurementWarehouseReport({ rows, meta, loading, error, filters
   // 行数以接口 meta 为准，缺了就退回本次返回的行数：两者只在「后端漏填 meta」时不同，
   // 但用户看到的「共 N 行」必须与表格里能数出来的行一致，所以以实际渲染的数组为最终兜底。
   const rowCount = typeof meta?.row_count === "number" ? meta.row_count : rows.length;
+  /**
+   * 表内关键字（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   *
+   * 与上面那两个**服务端**筛选框分工不同：订单号/物料是点了「查询」才回服务端重新取数的条件，
+   * 这里是在**已经取回来的这一批**里按关键字找一行（用户手上常常只有一个模糊的印象，
+   * 比如「记得是 150D 的黑布」）。只按九列**看得见**的值匹配，不碰内部字段。
+   * 单次最多 REPORT_ROW_LIMIT 行，客户端过滤足够；超出范围仍要先用服务端条件缩小。
+   */
+  const [keyword, setKeyword] = useState("");
+  const visibleRows = useMemo(
+    () => (keyword.trim()
+      ? rows.filter((row) => fuzzyMatch(keyword, [
+          row.order_no, row.material_name, displayReportColor(row.color), displayReportText(row.unit),
+          row.purchase_quantity, row.inbound_quantity, row.pending_inbound_quantity,
+          row.production_issue_quantity, row.stock_quantity,
+        ]))
+      : rows),
+    [rows, keyword],
+  );
   return (
     <>
       <section className="panel" data-testid="report-filters">
@@ -79,12 +101,19 @@ export function ProcurementWarehouseReport({ rows, meta, loading, error, filters
           </span>
         </div>
         <div className="panel-body" data-testid="report-table">
+          <div className="filter-bar">
+            <label>表内搜索订单号、物料、颜色、单位或数量
+              <Input data-testid="report-keyword" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+            </label>
+            {keyword.trim() ? <span className="panel-note" data-testid="report-keyword-count">筛选后 {visibleRows.length} / {rows.length} 行</span> : null}
+            {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+          </div>
           <DataTable
             columns={COLUMNS}
-            data={rows}
+            data={visibleRows}
             loading={loading}
             pageSize={50}
-            empty={<EmptyState title="当前筛选条件下没有数据" description="可留空筛选条件查看全部；只有采购、入库或生产领用过的订单×物料才会出现在这张表里。" />}
+            empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的行`} description={`当前条件下共 ${rows.length} 行，换个关键词或清空搜索框。`} /> : <EmptyState title="当前筛选条件下没有数据" description="可留空筛选条件查看全部；只有采购、入库或生产领用过的订单×物料才会出现在这张表里。" />}
           />
         </div>
       </section>
