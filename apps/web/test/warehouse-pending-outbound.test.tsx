@@ -160,3 +160,37 @@ describe("仓库首页：待出库通知面板", () => {
     expect(links.map((link) => link.getAttribute("href"))).toContain("/production/material-issues");
   });
 });
+
+  describe("仓库首页 · 关键字搜索（2026-11-13）", () => {
+    it("一个搜索词同时过滤「待入库」与「待出库」两张表，并给各自的计数", async () => {
+      await renderWarehouse();
+      await screen.findByText("MI-001");
+
+      await userEvent.type(screen.getByTestId("warehouse-search"), "面料A");
+
+      // 待出库那张表按「物料明细」命中（面料A 在 MI-001 的明细里）
+      expect(screen.getByText("MI-001")).toBeInTheDocument();
+      expect(screen.getByTestId("warehouse-search-count")).toHaveTextContent(/待入库 0 \/ 1 · 待出库 1 \/ 1/);
+    });
+
+    it("不匹配时两张表都给「没有匹配」，与「暂无」分开", async () => {
+      await renderWarehouse();
+      await screen.findByText("MI-001");
+
+      await userEvent.type(screen.getByTestId("warehouse-search"), "查无此单");
+
+      expect(screen.queryByText("MI-001")).toBeNull();
+      expect(screen.getAllByText(/没有匹配“查无此单”/).length).toBe(2);
+    });
+
+    it("清除搜索后两张表恢复全量", async () => {
+      await renderWarehouse();
+      await screen.findByText("MI-001");
+
+      await userEvent.type(screen.getByTestId("warehouse-search"), "面料A");
+      await userEvent.click(screen.getByRole("button", { name: "清除搜索" }));
+
+      expect(screen.getByText("MI-001")).toBeInTheDocument();
+      expect(screen.getByText("IN-001")).toBeInTheDocument();
+    });
+  });

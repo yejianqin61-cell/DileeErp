@@ -1,16 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../components/layout/app-shell";
 import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
 import { DataTable } from "../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../components/feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
 // 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按**运行宿主**时区走，
 // 导出在容器里跑、界面在浏览器里跑，两边会不一致。
 import { formatBeijingShort } from "../../lib/audit-time";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { postMovementPath } from "../../lib/material-slip-api";
 import { auditColumns, type AuditRow } from "../../components/data/audit-columns";
 import { notifyError, notifySuccess } from "../../components/ui/toaster";
@@ -97,6 +100,12 @@ export default function WarehousePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  /**
+   * 关键字（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   * 这一页两张表都是「队列」（待入库 / 待出库），队列一长就得靠肉眼扫；一个搜索词同时过滤两张表 ——
+   * 仓库找的是「这一单/这个物料到哪一步了」，分成两个框会让他搜两遍。
+   */
+  const [keyword, setKeyword] = useState("");
 
   async function load() {
     setLoading(true);
@@ -170,6 +179,29 @@ export default function WarehousePage() {
     { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.actions }, cell: ({ row }) => <Button size="sm" variant="secondary" onClick={() => void repairNotice(row.original)}>补建入库草稿</Button> },
   ];
 
+  /** 待入库通知的过滤结果（只按这张表看得见的列匹配）。 */
+  const visibleInboundNotices = useMemo(
+    () => (keyword.trim() ? inboundNotices.filter((row) => fuzzyMatch(keyword, [
+      row.noticeNo, formatBeijingShort(row.notifiedAt),
+      row.purchaseOrder?.purchaseOrderNo, row.purchaseReceipt?.receiptNo, row.orderNo,
+      row.purchaseOrderItem?.material?.materialCode, row.purchaseOrderItem?.material?.name,
+      `${row.notifiedQuantity} ${row.purchaseOrderItem?.unit?.name ?? ""}`,
+      noticeStatusLabels[row.status] ?? row.status,
+    ])) : inboundNotices),
+    [inboundNotices, keyword],
+  );
+  /** 待出库通知的过滤结果（物料明细那一列也参与匹配：仓库常常按料名找单）。 */
+  const visiblePendingOutbounds = useMemo(
+    () => (keyword.trim() ? pendingOutbounds.filter((row) => fuzzyMatch(keyword, [
+      row.movementNo, typeLabels[row.documentType] ?? row.documentType,
+      row.productionOrder?.productionOrderNo, row.orderNo ?? row.productionOrder?.orderNo,
+      (row.businessDate ?? row.createdAt ?? "").slice(0, 10),
+      row.lines.map((line) => `${line.material?.name ?? line.materialId} × ${line.quantity}${line.unit?.name ?? ""}`).join("、"),
+      formatBeijingShort(row.submittedAt),
+    ])) : pendingOutbounds),
+    [pendingOutbounds, keyword],
+  );
+
   const noticeColumns: ColumnDef<InboundNotice>[] = [
     { accessorKey: "noticeNo", header: "通知单号", meta: { width: COLUMN_WIDTH.noticeNo } },
     { id: "notifiedAt", header: "通知时间", meta: { width: COLUMN_WIDTH.notifiedAt }, cell: ({ row }) => formatBeijingShort(row.original.notifiedAt) || "-" },
@@ -224,6 +256,20 @@ export default function WarehousePage() {
         </div>
       </PageHeader>
 
+      {/*
+        关键字搜索（2026-11-13）：两张队列表共用一个搜索词 —— 仓库找的是「这一单 / 这个物料到哪一步了」，
+        分成两个框会让他搜两遍。只改显示，不影响任何动作按钮与取数。
+      */}
+      <section className="panel panel-body">
+        <div className="filter-bar">
+          <label>搜索通知单号、采购/到货单号、订单号、生产单号、物料或状态
+            <Input data-testid="warehouse-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+          </label>
+          {keyword.trim() ? <span className="panel-note" data-testid="warehouse-search-count">待入库 {visibleInboundNotices.length} / {inboundNotices.length} · 待出库 {visiblePendingOutbounds.length} / {pendingOutbounds.length}</span> : null}
+          {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+        </div>
+      </section>
+
       {error && (
         <section className="panel">
           <ErrorState message={error} onRetry={() => void load()} />
@@ -237,8 +283,8 @@ export default function WarehousePage() {
         <div className="panel-body">
           <DataTable
             columns={noticeColumns}
-            data={inboundNotices}
-            empty={<EmptyState title="暂无待入库通知" description="触发条件：采购在【采购 → 登记到货】后，由【质检 → 来料质检】对已完成且未拒收的批次点击「通知入库」。这里只显示状态为待接收（pending）的通知；已接收的通知请到「原料仓储情况」继续登记入库。" />}
+            data={visibleInboundNotices}
+            empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的待入库通知`} description={`共 ${inboundNotices.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无待入库通知" description="触发条件：采购在【采购 → 登记到货】后，由【质检 → 来料质检】对已完成且未拒收的批次点击「通知入库」。这里只显示状态为待接收（pending）的通知；已接收的通知请到「原料仓储情况」继续登记入库。" />}
           />
         </div>
       </section>
@@ -250,8 +296,8 @@ export default function WarehousePage() {
         <div className="panel-body">
           <DataTable
             columns={pendingOutboundColumns}
-            data={pendingOutbounds}
-            empty={<EmptyState title="暂无待出库通知" description="触发条件：生产在领料单上点「确认提交」后，这里会出现待出库通知；确认出库才会真正扣减原料库存。生产提交前不会扣料，撤回提交后通知也会消失。" />}
+            data={visiblePendingOutbounds}
+            empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的待出库通知`} description={`共 ${pendingOutbounds.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无待出库通知" description="触发条件：生产在领料单上点「确认提交」后，这里会出现待出库通知；确认出库才会真正扣减原料库存。生产提交前不会扣料，撤回提交后通知也会消失。" />}
           />
         </div>
       </section>
