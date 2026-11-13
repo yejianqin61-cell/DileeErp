@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import Link from "next/link";
 import { PageHeader } from "../../../components/layout/app-shell";
@@ -10,6 +10,9 @@ import { DataTable } from "../../../components/data/data-table";
 import { auditColumns } from "../../../components/data/audit-columns";
 import { RawMaterialInboundDetailDialog, type RawMaterialInboundRow } from "../../../components/warehouse/raw-material-inbound-detail-dialog";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
+import { Input } from "../../../components/ui/input";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
 import { ApiClientError, apiGet, apiRequest } from "../../../lib/api-client";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../../../components/ui/toaster";
@@ -91,6 +94,15 @@ export default function InboundsPage() {
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void } | null>(null);
   /** 双击入库单弹出的居中详情（复用仓库页同一个组件，见文件头的说明）。 */
   const [detail, setDetail] = useState<Inbound | null>(null);
+  /**
+   * 关键字搜索（2026-11-13，用户：「统计所有下拉列表，所有表单是否都有搜索功能搜索框，如果没有，都需要
+   * 加上搜索功能。因为现在单子多了，查找比较麻烦」）。
+   *
+   * 入库记录只会越来越多，而这一页一行里同时有入库单号/订单号/采购单号/到货记录四串号码 ——
+   * 用户手上拿到的往往是其中任意一串。可搜：单号类四列 + 到货批次 + 数量 + 质检状态 + 入库状态 +
+   * 应付来源 + 财务付款（都是这张表**看得见**的列）。只改显示，不影响这一页的取数与动作。
+   */
+  const [keyword, setKeyword] = useState("");
 
   async function load(options: { silent?: boolean } = {}) {
     if (!options.silent) setLoading(true);
@@ -196,6 +208,18 @@ export default function InboundsPage() {
     return payableEntries.some((entry) => entry.payableSourceId === source.id) ? null : source;
   }
 
+  /** 关键字过滤后的入库记录（只按这张表看得见的列匹配，见 `keyword` 的注释）。 */
+  const visibleInbounds = useMemo(() => {
+    if (!keyword.trim()) return inbounds;
+    return inbounds.filter((row) => fuzzyMatch(keyword, [
+      row.inboundNo, row.orderNo, row.purchase_order_no, row.receipt_no,
+      `第 ${row.batch_sequence ?? "-"} 批`, row.quantity, row.inspection_status,
+      inboundStatusText(row.status), payableSourcesOf(row)?.amount,
+      payableStatusLabels[(payableSourcesOf(row)?.status ?? "") as keyof typeof payableStatusLabels],
+      financeTextOf(row),
+    ]));
+  }, [inbounds, keyword, payableEntries, payables]);
+
   const columns: ColumnDef<Inbound>[] = [
     { accessorKey: "inboundNo", header: "入库单号", meta: { width: COLUMN_WIDTH.inboundNo } },
     { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
@@ -266,7 +290,14 @@ export default function InboundsPage() {
       {error && <section className="panel"><ErrorState message={error} onRetry={() => void load()} /></section>}
       <section className="panel">
         <div className="panel-body">
-          <DataTable columns={columns} data={inbounds} empty={<EmptyState title="暂无入库记录" />} onRowDoubleClick={(row) => setDetail(row)} rowTitle="双击查看详情" />
+          <div className="filter-bar">
+            <label>搜索入库单号、订单号、采购单号、到货记录、状态或应付金额
+              <Input data-testid="inbound-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+            </label>
+            {keyword.trim() ? <span className="panel-note" data-testid="inbound-search-count">筛选后 {visibleInbounds.length} / {inbounds.length} 条</span> : null}
+            {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+          </div>
+          <DataTable columns={columns} data={visibleInbounds} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的入库记录`} description={`共 ${inbounds.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无入库记录" />} onRowDoubleClick={(row) => setDetail(row)} rowTitle="双击查看详情" />
           <p className="panel-note">双击任意一行可查看这张入库单的详情（全字段 + 应付来源 + 库存流水）。</p>
         </div>
       </section>
