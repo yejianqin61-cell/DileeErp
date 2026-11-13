@@ -66,6 +66,8 @@ function ControlledSearchableSelect({
   onChange?: (value: string) => void;
   onSearch?: (query: string) => void;
   disabled?: boolean;
+  /** 逐项禁用（2026-11-13）：显示得出来但选不中，见 components/ui/searchable-select.tsx。 */
+  disabledValues?: string[];
   noResultsText?: string;
   placeholder?: string;
   searchPlaceholder?: string;
