@@ -11,7 +11,7 @@
 //   服务端在事务里取行锁后比对，不一致返回 422 BOM_UPDATE_CONFLICT。
 //   前端不重试、不覆盖，而是明确告诉操作者「别人先改了」并给一个重新加载的入口——
 //   按宪法「Reversible Business Changes」，不允许静默丢弃别人的现场修正。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../ui/sheet";
 import { Button } from "../ui/button";
@@ -21,6 +21,8 @@ import { SearchableSelect } from "../ui/searchable-select";
 import { LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiRequest } from "../../lib/api-client";
 import { currencyOptionsWithCurrent, type CurrencyOption } from "../../lib/currency-options";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { fetchCurrencyOptions } from "../../lib/currency-catalogue";
 import { displayText } from "../../lib/display-text";
 import { notifyError, notifySuccess } from "../ui/toaster";
@@ -138,6 +140,16 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
   const [error, setError] = useState("");
   const [conflict, setConflict] = useState("");
   const [saving, setSaving] = useState(false);
+  /**
+   * 明细行的关键字搜索（2026-11-13，用户：「统计所有下拉列表、所有表单是否都有搜索功能……因为现在单子多了，
+   * 查找比较麻烦」）。
+   *
+   * 这一格是**编辑中的草稿表**，所以有一条别的列表页没有的约束：**过滤只改显示，不改行号**。
+   * 每一行的 testid（`bom-material-N` / `bom-price-N` / `bom-supplier-select-N`）与 `updateItem(index)`
+   * 都按**原始下标**走 —— 过滤后重新编号会让「改第 3 行的数量」落到另一行上（静默改错数据，
+   * 而且保存之后才发现）。因此过滤结果里始终带着原始 `index` 一起渲染，见下面的 `visibleRows`。
+   */
+  const [query, setQuery] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true); setError(""); setConflict("");
@@ -172,6 +184,25 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
    */
   const materialLabelOf = (materialId: string) => materialOptions.find((option) => option.value === materialId)?.label ?? "";
   const unitOptions = units.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: item.name ?? item.id }));
+  const unitLabelOf = (unitId?: string | null) => unitOptions.find((option) => option.value === unitId)?.label ?? "";
+  /** 这一行在屏幕上显示的供应商名（停用/已删的落在快照上，与那一格的呈现同源）。 */
+  const supplierNameOfRow = (row: BomRow) => suppliers.find((item) => item.id === row.supplierId)?.name ?? (row.supplierSnapshot?.name as string | undefined) ?? "";
+  /**
+   * 过滤后的明细行（带**原始下标**，见 `query` 的注释）。
+   *
+   * 只匹配这张表**看得见**的东西：物料名称/编码、型号、规格型号、颜色、单位、供应商。
+   * 不匹配 materialId / materialSnapshot 之类的字段：搜到了却看不出为什么命中，只会让人以为搜索坏了。
+   */
+  const visibleRows = useMemo(
+    () => items
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => fuzzyMatch(query, [
+        row.materialName, materialLabelOf(row.materialId), row.model, row.specificationModel, row.color,
+        unitLabelOf(row.unitId) || row.unit, supplierNameOfRow(row),
+      ])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- materialLabelOf / unitLabelOf / supplierNameOfRow 只读 materials、units、suppliers，三者已列为依赖
+    [items, materials, units, suppliers, query],
+  );
   const updateItem = (index: number, patch: Partial<BomRow>) => setItems((rows) => rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)));
   function changeMaterial(index: number, materialId: string) {
     const material = materials.find((item) => item.id === materialId);
@@ -256,7 +287,22 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
           · 物料名称列的 `title`（下面每行的 SelectTrigger）——省略号把字吃掉之后，hover 要有地方看全文。
             文案取 `materialOptions` 的 label，与触发器里显示的**同一份字符串**，不会两处不一致。
       */}
-      <div className="table-wrap"><table className="data-table bom-table"><thead><tr><th className="bom-col-index">序号</th><th className="bom-col-material">物料名称</th><th className="bom-col-model">型号</th><th className="bom-col-spec">规格型号</th><th className="bom-col-color">颜色</th><th className="bom-col-quantity">数量</th><th className="bom-col-unit">单位</th>{showSupplier && <th className="bom-col-supplier">供应商</th>}{showReferencePrice && <th className="bom-col-price">参考单价</th>}<th className="bom-col-action"><span className="sr-only">操作</span></th></tr></thead><tbody>{items.map((row, index) => <tr key={row.id ?? `${row.materialId}-${index}`}>
+      <div className="filter-bar">
+        {/*
+          明细行搜索（2026-11-13，用户：「统计所有下拉列表、所有表单是否都有搜索功能……因为现在单子多了，
+          查找比较麻烦」）。BOM 是逐个部件录的，一张表几十行时靠滚动找「伞骨」同样是肉眼活。
+
+          只过滤**显示**，不动行号（见上面 `query` 的注释）：过滤后仍按原始下标渲染，
+          `bom-material-N` / `bom-price-N` / `updateItem(index)` 指的还是同一行，
+          否则「在第 3 行改数量」会落到另一行上 —— 那是保存之后才会发现的静默改错。
+        */}
+        <label>搜索明细行（物料名称、编码、型号、规格型号、颜色、单位或供应商）
+          <Input data-testid="bom-row-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+        </label>
+        {query.trim() ? <span className="panel-note" data-testid="bom-row-count">筛选后 {visibleRows.length} / {items.length} 行</span> : null}
+        {query.trim() ? <Button variant="secondary" onClick={() => setQuery("")}>清除搜索</Button> : null}
+      </div>
+      <div className="table-wrap"><table className="data-table bom-table"><thead><tr><th className="bom-col-index">序号</th><th className="bom-col-material">物料名称</th><th className="bom-col-model">型号</th><th className="bom-col-spec">规格型号</th><th className="bom-col-color">颜色</th><th className="bom-col-quantity">数量</th><th className="bom-col-unit">单位</th>{showSupplier && <th className="bom-col-supplier">供应商</th>}{showReferencePrice && <th className="bom-col-price">参考单价</th>}<th className="bom-col-action"><span className="sr-only">操作</span></th></tr></thead><tbody>{visibleRows.map(({ row, index }) => <tr key={row.id ?? `${row.materialId}-${index}`}>
         <td className="bom-col-index">{index + 1}</td>
         {/*
           物料名称（2026-10-13，用户）：「建立BOM表的页面，生产和采购都是，在添加行，选择物料的时候，
@@ -321,6 +367,7 @@ export function BomWorkbench({ bomId, title, materials, units, onCreateMaterial,
         </td>}
         <td className="bom-col-action"><Button size="icon" variant="ghost" title="删除行" aria-label="删除行" onClick={() => setItems((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}><Trash2 size={16} /></Button></td>
       </tr>)}</tbody></table></div>
+      {query.trim() && !visibleRows.length ? <p className="panel-note" data-testid="bom-row-search-empty">没有匹配「{query.trim()}」的明细行（这张 BOM 共 {items.length} 行）—— 换个关键词，或点「清除搜索」看全部。</p> : null}
       {!items.length && <p className="panel-note">这张 BOM 还没有明细行：点「添加行」或「新建物料」开始录入。建错了可到【采购 → BOM表】点「删除」清掉这张空壳；销售单修改核心字段时系统也会自动清理这样的空 BOM。</p>}
       <p className="panel-note">状态：{bom ? String(displayText(bom.status)) : "-"}　版本：{bom?.version ?? "-"}　最后更新：{bom?.updatedAt ? String(bom.updatedAt).slice(0, 19).replace("T", " ") : "-"}</p>
     </>}</SheetContent></Sheet>;

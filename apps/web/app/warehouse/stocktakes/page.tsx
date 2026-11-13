@@ -517,7 +517,7 @@ export default function StocktakesPage() {
             data={filteredStocktakes}
             onRowDoubleClick={(row) => void openStocktake(row)}
             rowTitle="双击查看明细"
-            empty={<EmptyState title="暂无盘点单" description="选择盘点月份、下载模板、填写实盘数后上传，系统会生成一张盘点草稿单。" />}
+            empty={query.trim() ? <EmptyState title={`没有匹配“${query.trim()}”的盘点单`} description={`共 ${stocktakes.length} 张盘点单，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无盘点单" description="选择盘点月份、下载模板、填写实盘数后上传，系统会生成一张盘点草稿单。" />}
           />
         </div>
       </section>
