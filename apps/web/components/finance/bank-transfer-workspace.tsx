@@ -23,6 +23,8 @@ import { SearchableSelect } from "../ui/searchable-select";
 import { DataTable } from "../data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { currencyOptions, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
@@ -62,6 +64,8 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
   const [banks, setBanks] = useState<BankRef[]>([]);
   const [balances, setBalances] = useState<Record<string, BankBalance>>({});
   const [transfers, setTransfers] = useState<BankTransfer[]>([]);
+  /** 互转记录的关键字（2026-11-13）：只过滤下面那张表，不改余额与筛选条件。 */
+  const [keyword, setKeyword] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -245,9 +249,16 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
     { id: "balance", header: "当前余额", cell: ({ row }) => <span data-testid={`bank-transfer-balance-${row.original.id}`}>{balanceText(row.original)}</span> },
   ];
 
+  /** 关键字过滤后的互转记录（按这张表看得见的列匹配）。 */
+  const visibleTransfers = useMemo(() => (keyword.trim() ? transfers.filter((transfer) => fuzzyMatch(keyword, [
+    transfer.transferNo, String(transfer.transferDate).slice(0, 10),
+    accountText(transfer.fromBank), transfer.fromCurrency, transfer.fromAmount,
+    accountText(transfer.toBank), transfer.toCurrency, transfer.toAmount, transfer.exchangeRate,
+    transfer.status === "posted" ? "生效" : "已冲销", transfer.reversalReason, transfer.remark,
+  ])) : transfers), [transfers, keyword]);
+
   const columns: ColumnDef<BankTransfer>[] = [
-    { accessorKey: "transferNo", header: "互转单号" },
-    { id: "date", header: "日期", cell: ({ row }) => String(row.original.transferDate).slice(0, 10) },
+    { accessorKey: "transferNo", header: "互转单号" },    { id: "date", header: "日期", cell: ({ row }) => String(row.original.transferDate).slice(0, 10) },
     { id: "fromBank", header: "本方账户", cell: ({ row }) => accountText(row.original.fromBank) },
     { accessorKey: "fromCurrency", header: "本方币种" },
     { accessorKey: "fromAmount", header: "本方金额" },
@@ -331,9 +342,18 @@ export default function BankTransferWorkspace({ testId = "page-finance-bank-tran
       </section>
 
       <section className="panel" data-testid="bank-transfer-list">
-        <div className="panel-heading"><h2>互转记录</h2><span className="panel-note" data-testid="bank-transfer-count">共 {transfers.length} 条</span></div>
+        <div className="panel-heading"><h2>互转记录</h2><span className="panel-note" data-testid="bank-transfer-count">共 {transfers.length} 条{keyword.trim() ? `（筛选后 ${visibleTransfers.length} 条）` : ""}</span></div>
         <div className="panel-body">
-          <DataTable columns={columns} data={transfers} pageSize={50} empty={<EmptyState title="还没有互转记录" />} />
+          {/* 关键字搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+              互转记录按月累积，找「上个月那笔归集」只能靠翻页。可搜：单号 / 日期 / 本方与对方账户 / 币种 /
+              金额 / 汇率 / 状态 / 备注 —— 都是这张表**看得见**的列。只改显示，不动上面的余额。 */}
+          <div className="filter-bar">
+            <label>搜索互转单号、账户、币种、金额或备注
+              <Input data-testid="bank-transfer-keyword" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+            </label>
+            {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+          </div>
+          <DataTable columns={columns} data={visibleTransfers} pageSize={50} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的互转记录`} description={`共 ${transfers.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="还没有互转记录" />} />
         </div>
       </section>
     </>}
