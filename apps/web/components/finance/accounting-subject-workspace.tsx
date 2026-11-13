@@ -24,6 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { SearchableSelect } from "../ui/searchable-select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { ACCOUNTING_SUBJECT_CATEGORIES_PATH, ACCOUNTING_SUBJECTS_PATH, type AccountingSubject, type AccountingSubjectCategory } from "../../lib/accounting-subjects";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
@@ -109,7 +110,8 @@ export default function AccountingSubjectWorkspace({ testId = "page-finance-acco
     return subjects.filter((subject) => {
       if (categoryFilter && subject.category !== categoryFilter) return false;
       if (!text) return true;
-      return subject.name.toLowerCase().includes(text) || subject.category.toLowerCase().includes(text);
+      // 搜索语义全站统一（空格分词 AND、忽略大小写与空白）：改用 fuzzyMatch，多词查询才成立。
+      return fuzzyMatch(text, [subject.name, subject.category]);
     });
   }, [subjects, categoryFilter, keyword]);
 

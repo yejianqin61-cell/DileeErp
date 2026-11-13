@@ -33,6 +33,7 @@ import { SearchableSelect } from "../ui/searchable-select";
 import { DataTable } from "../data/data-table";
 import { ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { ACCOUNTING_SUBJECTS_PATH, toSubjectOptions, type AccountingSubject } from "../../lib/accounting-subjects";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { downloadFile } from "../../lib/download";
@@ -648,7 +649,9 @@ export default function SalaryWorkspace({ mode, testId = mode === "payments" ? "
   const visibleLedgers = useMemo(() => {
     const text = employeeQuery.trim().toLowerCase();
     if (!text) return ledgers;
-    return ledgers.filter((item) => `${item.employee.name} ${item.employee.employeeNo}`.toLowerCase().includes(text));
+    // 搜索语义全站统一（空格分词 AND、忽略大小写与空白）：改用 fuzzyMatch，多词查询才成立。
+    // 除了姓名与工号，部门/岗位/状态也在这一页的行里显示，一并参与匹配。
+    return ledgers.filter((item) => fuzzyMatch(text, [item.employee.name, item.employee.employeeNo, item.employee.department?.name, item.employee.position?.name]));
   }, [employeeQuery, ledgers]);
 
   /* ------------------------------------------------------------------ 批量付款（勾选 + 一次提交） */

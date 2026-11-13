@@ -25,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Textarea } from "../ui/textarea";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { downloadFile } from "../../lib/download";
 import { formatBeijingDate } from "../../lib/audit-time";
 import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
@@ -667,7 +668,8 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const matchedSources = useMemo(() => {
     const text = sourceFilter.trim().toLowerCase();
     if (!text) return sources;
-    return sources.filter((item) => [item.sourceNo, item.orderNo, item.customer_name, item.outbound_no, item.product_name, item.product_specification].some((value) => (value ?? "").toLowerCase().includes(text)));
+    // 搜索语义全站统一（空格分词 AND、忽略大小写与空白）：改用 fuzzyMatch，多词查询才成立。
+    return sources.filter((item) => fuzzyMatch(text, [item.sourceNo, item.orderNo, item.customer_name, item.outbound_no, item.product_name, item.product_specification]));
   }, [sourceFilter, sources]);
   // 「待创建对账」「应收对账单」两张表也吃同一个关键字（见 pendingReconcile 的注释）。
   const pendingReconcile = useMemo(() => matchedSources.filter((source) => source.status === "draft" && !source.reconciliation), [matchedSources]);
@@ -682,10 +684,10 @@ export default function ReceivableWorkspace({ tab, testId }: { tab: ReceivableTa
   const filteredReconciliations = useMemo(() => {
     const text = sourceFilter.trim().toLowerCase();
     if (!text) return reconciliations;
-    return reconciliations.filter((item) => [
+    return reconciliations.filter((item) => fuzzyMatch(text, [
       item.reconciliationNo, item.customer?.name, item.orderNo,
       item.flow?.order_nos.join("、"), item.flow?.product_names?.join("、"), item.flow?.product_specifications?.join("、"),
-    ].some((value) => (value ?? "").toLowerCase().includes(text)));
+    ]));
   }, [reconciliations, sourceFilter]);
   // 计数用「日期与关键字已筛、收款情况还没筛」的那一批：筛选器上的「未收（3）/ 已收（5）」才是当前条件下的真实条数。
   const scopedSources = useMemo(
