@@ -19,6 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../../components/ui/select";
+import { SearchableSelect } from "../../components/ui/searchable-select";
 import { DataTable } from "../../components/data/data-table";
 import {
   EmptyState,
@@ -1264,46 +1265,29 @@ export default function HrPage() {
                 <SelectItem value="deleted">已删除</SelectItem>
               </SelectContent>
             </Select>
-            <Select
+            {/*
+              部门/岗位来自组织架构，会随开部门、开岗位越来越多（用户 2026-11-13：「所有下拉列表……
+              都要有搜索功能」）：换成带搜索的下拉，按名称搜。「全部部门 / 全部岗位」仍是第一项。
+              上面的「员工状态」是 5 项固定枚举，按口径保持紧凑不动。
+            */}
+            <SearchableSelect
               value={employeeDepartment || "all"}
-              onValueChange={(value) =>
-                setEmployeeDepartment(value === "all" ? "" : value)
-              }
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="部门" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部部门</SelectItem>
-                {departments
-                  .filter((item) => item.isActive)
-                  .map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      {item.name}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-            <Select
+              options={[{ value: "all", label: "全部部门" }, ...departments.filter((item) => item.isActive).map((item) => ({ value: item.id, label: item.name ?? item.id }))]}
+              placeholder="部门"
+              label="部门"
+              searchPlaceholder="搜索部门名称"
+              noResultsText="没有匹配的部门"
+              onChange={(value) => setEmployeeDepartment(value === "all" ? "" : value)}
+            />
+                        <SearchableSelect
               value={employeePosition || "all"}
-              onValueChange={(value) =>
-                setEmployeePosition(value === "all" ? "" : value)
-              }
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="岗位" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部岗位</SelectItem>
-                {positions
-                  .filter((item) => item.isActive)
-                  .map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      {item.name}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
+              options={[{ value: "all", label: "全部岗位" }, ...positions.filter((item) => item.isActive).map((item) => ({ value: item.id, label: item.name ?? item.id }))]}
+              placeholder="岗位"
+              label="岗位"
+              searchPlaceholder="搜索岗位名称"
+              noResultsText="没有匹配的岗位"
+              onChange={(value) => setEmployeePosition(value === "all" ? "" : value)}
+            />
             <Select
               value={employeeType || "all"}
               onValueChange={(value) =>

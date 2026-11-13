@@ -726,8 +726,9 @@ describe("人事页 · 失败态与权限", () => {
 
     // 选项池也是空的（没有留下任何可用的下拉项）
     await userEvent.click(filterAt(1));
-    expect(screen.queryByRole("option", { name: "生产部" })).toBeNull();
-    expect(await screen.findByRole("option", { name: "全部部门" })).toBeVisible();
+    // 部门下拉换成 SearchableSelect 后（2026-11-13），选项池用 testid 断言更直接：
+    // 接口 403 → 没有部门可选，下拉里只剩「全部部门」这一条重置项。
+    expect(screen.getAllByTestId("searchable-select-option").map((element) => element.textContent ?? "")).toEqual(["全部部门"]);
   });
 });
 
