@@ -13,6 +13,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../layout/app-shell";
 import { DataTable } from "../data/data-table";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -193,6 +195,16 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
   // 否则每敲一个字符都会打一次对账查询。
   const [draft, setDraft] = useState<Filters>(emptyFilters);
   const [applied, setApplied] = useState<Filters>(emptyFilters);
+  /**
+   * 表内关键字搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   *
+   * 与上面那个「查询」按钮**分工不同**：查询是把筛选条件发给服务端重新取数（日期/币种/客户…），
+   * 这里是在**已经取回来的这张表里**按关键字找一行（「我记得这单是 DL2600…」「供应商名字里有这个字」）。
+   * 11 张报表共用这一个 DataTable，列由后端下发、前端不知道每列是什么，所以按**整行所有单元格**匹配 ——
+   * 这与「只搜看得见的列」并不冲突：整行的每一格本来就都显示在表里。
+   * 合计不参与过滤：它是单独一段（`finance-report-totals`），永远跟着表走。
+   */
+  const [keyword, setKeyword] = useState("");
   const [table, setTable] = useState<ReportTable | null>(null);
   const [rowCount, setRowCount] = useState(0);
   const [customers, setCustomers] = useState<Reference[]>([]);
@@ -261,6 +273,12 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
   );
 
   const data = useMemo<ReportRow[]>(() => (table?.rows ?? []).map((cells, index) => ({ id: index, cells })), [table]);
+
+  /** 关键字过滤后的行（空查询 = 全量；只改显示，不动合计与导出）。 */
+  const visibleData = useMemo(
+    () => (keyword.trim() ? data.filter((row) => fuzzyMatch(keyword, row.cells)) : data),
+    [data, keyword],
+  );
 
   async function exportXlsx() {
     setExporting(true);
@@ -391,6 +409,12 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
           </Select>
         </label>}
         <Button variant="secondary" data-testid="finance-report-search" onClick={() => setApplied({ ...draft })}>查询</Button>
+        {/* 表内关键字（不等服务端）：取回来的这一批里找一行。与「查询」按钮分开，两个动作互不改写对方。 */}
+        <label>表内搜索任意列
+          <Input data-testid="finance-report-keyword" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+        </label>
+        {keyword.trim() ? <span className="panel-note" data-testid="finance-report-keyword-count">筛选后 {visibleData.length} / {data.length} 行</span> : null}
+        {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
       </div>
     </section>
 
@@ -408,7 +432,7 @@ export default function FinanceReportWorkspace({ tab, testId = "page-finance-rep
       {!error && loading && <LoadingState />}
       {!error && !loading && table && <>
         <div className="panel-body">
-          <DataTable columns={columns} data={data} empty={<EmptyState title="当前筛选没有数据" />} />
+          <DataTable columns={columns} data={visibleData} empty={keyword.trim() ? <EmptyState title={`表里没有匹配“${keyword.trim()}”的行`} description={`当前筛选共 ${data.length} 行，换个关键词或清空搜索框。`} /> : <EmptyState title="当前筛选没有数据" />} />
         </div>
         {/* 导出文件里还有别的表时必须说清楚：外汇一览表的「客户汇总」不在页面上渲染，
             不提示的话财务会把导出的文件当成只有明细一张表。 */}
