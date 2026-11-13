@@ -58,6 +58,7 @@ const LIST_SCREENS_WITH_SEARCH = [
   ["app/production/material-issues/page.tsx", "领料单 / 补料单"],
   ["components/finance/finance-report-workspace.tsx", "财务报表（表内搜索）"],
   ["components/finance/bank-transfer-workspace.tsx", "银行互转记录"],
+  ["components/account/account-center.tsx", "账号管理"],
 ];
 
 test("清单里的每个列表页都有搜索框、走统一语义的 fuzzyMatch、且无命中提示与「本来就空」分开", () => {
