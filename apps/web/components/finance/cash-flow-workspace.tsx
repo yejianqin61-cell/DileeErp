@@ -23,6 +23,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { SearchableSelect } from "../ui/searchable-select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { ACCOUNTING_SUBJECTS_PATH, subjectOptionLabel, type AccountingSubject } from "../../lib/accounting-subjects";
 import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
 import { CASH_FLOW_TABS, SETTLEMENT_ACCOUNT_DICTIONARY_KEY, type CashFlowTabKey } from "../../lib/finance-sections";
@@ -367,9 +369,29 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
     });
   }
 
+  /**
+   * 关键字搜索（2026-11-13，用户：「统计所有下拉列表，所有表单是否都有搜索功能搜索框，如果没有，
+   * 都需要加上搜索功能。因为现在单子多了，查找比较麻烦」）。
+   *
+   * 这一页已经有日期/科目/分类/币种/方向五个**条件**筛选，但「我记得对方叫××」或「备注里有句话」
+   * 这类查找只能靠肉眼扫表 —— 补的正是这个。只搜这张表**看得见**的列（对方名称 / 金额 / 币种 /
+   * 分类 / 项目 / 结算方式 / 银行账户 / 款项性质 / 订单号 / 来源 / 状态 / 日期），
+   * 不搜备注等看不见的字段：搜到了却看不出为什么命中，会让人以为搜索坏了。
+   * 过滤只改显示，不动合计（合计由后端按筛选条件算）。
+   */
+  const [query, setQuery] = useState("");
+  const visibleEntries = useMemo(() => entries.filter((entry) => fuzzyMatch(query, [
+    String(entry.entryDate).slice(0, 10), entry.counterpartyName, entry.amount, entry.currency,
+    businessSubject(entry)?.category, subjectLabel(businessSubject(entry), businessSubject(entry)?.id),
+    [entry.settlementMethod, entry.settlementAccount?.label].filter(Boolean).join("--"),
+    entry.bank ? `${entry.bank.bankName} / ${entry.bank.accountNumber}` : "",
+    entry.direction === "income" ? paymentNatureLabel(entry.paymentNature) : "", entry.orderNo,
+    entry.sourceType ? (SOURCE_LABELS[entry.sourceType] ?? entry.sourceType) : "手工录入",
+    entry.status === "posted" ? "生效" : "已冲销", entry.direction === "income" ? "收入" : "支出",
+  ])), [entries, query]);
+
   const columns: ColumnDef<CashFlowEntry>[] = [
-    { accessorKey: "entryDate", header: "日期", meta: { width: COLUMN_WIDTH.date }, cell: ({ row }) => String(row.original.entryDate).slice(0, 10) },
-    { accessorKey: "counterpartyName", header: "对方名称", meta: { width: COLUMN_WIDTH.counterparty } },
+    { accessorKey: "entryDate", header: "日期", meta: { width: COLUMN_WIDTH.date }, cell: ({ row }) => String(row.original.entryDate).slice(0, 10) },    { accessorKey: "counterpartyName", header: "对方名称", meta: { width: COLUMN_WIDTH.counterparty } },
     { id: "direction", header: "收支", meta: { width: COLUMN_WIDTH.direction }, cell: ({ row }) => (row.original.direction === "income" ? "收入" : "支出") },
     { accessorKey: "amount", header: "金额", meta: { width: COLUMN_WIDTH.amount } },
     { accessorKey: "currency", header: "币种", meta: { width: COLUMN_WIDTH.currency } },
@@ -493,6 +515,12 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
                 </SelectContent>
               </Select>
             </label>
+            {/* 关键字搜索（2026-11-13）：上面五个是**条件**筛选，这一格才是「我记得对方叫××」的查找。 */}
+            <label>搜索对方名称、金额、分类、项目、订单号或备注
+              <Input data-testid="cash-flow-keyword" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+            </label>
+            {query.trim() ? <span className="panel-note" data-testid="cash-flow-keyword-count">筛选后 {visibleEntries.length} / {entries.length} 条</span> : null}
+            {query.trim() ? <Button variant="secondary" onClick={() => setQuery("")}>清除搜索</Button> : null}
             <Button variant="secondary" data-testid="cash-flow-refresh" onClick={() => void load()}>刷新</Button>
           </div>
         </section>
@@ -506,7 +534,7 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
           {!error && loading && <LoadingState />}
           {!error && !loading && <>
             <div className="panel-body">
-              <DataTable columns={columns} data={entries} empty={<EmptyState title="本期没有收支流水" />} />
+              <DataTable columns={columns} data={visibleEntries} empty={query.trim() ? <EmptyState title={`没有匹配“${query.trim()}”的收支流水`} description={`当前条件下共 ${entries.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="本期没有收支流水" />} />
             </div>
           </>}
         </section>
