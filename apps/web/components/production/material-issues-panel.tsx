@@ -11,6 +11,7 @@ import Link from "next/link";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
+import { SearchableSelect } from "../ui/searchable-select";
 import { DataTable } from "../data/data-table";
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
 import { EmptyState, LoadingState } from "../feedback/states";
@@ -293,7 +294,9 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
             // 这四列与领料单打印件同名同值（后端 material-slip-quantity 统一口径）：
             // 已领数量**不含**本次、余下数量**已减**本次，车间拿纸核对系统才能对上。
             return <tr key={`${line.materialId}-${index}`}>
-            <td><Select value={line.materialId || undefined} onValueChange={(value) => updateLine(index, { materialId: value })}><SelectTrigger><SelectValue placeholder="选择原料" /></SelectTrigger><SelectContent>{materialOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></td>
+            {/* 原料清单来自该订单 BOM + 原料主数据，会随物料池变长（用户 2026-11-13：
+                「所有下拉列表……都要有搜索功能」）：带搜索的下拉，按编码/名称/规格/颜色都能搜。 */}
+            <td><SearchableSelect value={line.materialId} options={materialOptions} placeholder="选择原料" label="原料" searchPlaceholder="搜索物料编码、名称、规格或颜色" noResultsText="没有匹配的原料" onChange={(value) => updateLine(index, { materialId: value })} /></td>
             <td>{info?.material_quantity ?? info?.bom_reference_quantity ?? "-"}</td>
             <td>{info?.issued_quantity ?? "-"}</td>
             <td><Input type="number" min="0" step="0.0001" value={line.quantity} onChange={(event) => updateLine(index, { quantity: event.target.value })} /></td>
