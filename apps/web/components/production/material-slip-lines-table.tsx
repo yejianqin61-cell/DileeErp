@@ -7,9 +7,14 @@
 // 为什么单独成组件：领料单列表页与生产单面板都要这张表，列名、列宽、数量口径只能有一份 ——
 // 2026-10-29 之前页面自己有「生产领用数量/生产未领用数量」一套算法，与纸面差一个本次领料量，
 // 车间拿打印件核对系统就对不上。要再算一遍数量，请回后端加字段，不要在这里补公式。
+import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "../data/data-table";
 import { EmptyState } from "../feedback/states";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 
 /** 单据明细行：字段名与 `MaterialSlipExportService` 的组装结果一一对应。 */
 export type SlipDocumentLine = {
@@ -76,9 +81,43 @@ const REPLENISHMENT_COLUMNS: ColumnDef<SlipDocumentLine>[] = [
   { id: "remark", header: "备注", meta: { width: REPLENISHMENT_WIDTH.remark }, accessorFn: (line) => text(line.remark) },
 ];
 
-/** 详情弹窗的明细表：按单据类型自动选领料/补料版式（列名与打印件一致）。 */
+/**
+ * 详情弹窗的明细表：按单据类型自动选领料/补料版式（列名与打印件一致）。
+ *
+ * 关键字搜索（2026-11-13，用户：「通览整个项目，统计所有下拉列表，所有表单是否都有搜索功能搜索框，
+ * 如果没有，都需要加上搜索功能。因为现在单子多了，查找比较麻烦」）：一张领料单领十几种料时，
+ * 核对「这批到底领没领伞骨」同样是肉眼在一串名字里找。
+ *
+ * 这张表**只读**（没有行内编辑，也没有按行下标绑定的 testid / onChange），所以过滤后的行可以直接
+ * 交给 DataTable —— 与 BOM 那种可编辑表不同：那里必须带着**原始 index** 一起渲染（见
+ * components/bom/bom-workbench.tsx 的 `visibleRows`），否则「改第 3 行」会改到别的行上。
+ * 另一条不能忘的：`sequence`（打印件的行号）是**数据里带的**值，不是渲染下标，过滤不会让它错位。
+ */
 export function MaterialSlipLinesTable({ slip }: { slip: SlipDocument | null }) {
   const lines = slip?.document.lines ?? [];
   const columns = (slip?.document_type ?? "issue") === "replenishment" ? REPLENISHMENT_COLUMNS : ISSUE_COLUMNS;
-  return <DataTable pageSize={50} columns={columns} data={lines} empty={<EmptyState title="该单据没有物料明细" />} />;
+  const [keyword, setKeyword] = useState("");
+  /**
+   * 过滤后的明细行：只匹配**文字**列（物料编码 / 名称 / 规格型号 / 颜色 / 单位 / 备注）。
+   *
+   * 刻意不把数量拼进可搜索文本：配料 5、已领 5、余下 5 会让「5」命中几乎每一行，
+   * 「搜什么都能搜到」比搜不到更让人不信任这个框。要按数量核对，看的是这几个数字列本身。
+   */
+  const visibleLines = useMemo(() => (slip?.document.lines ?? []).filter((line) => fuzzyMatch(keyword, [
+    line.materialCode, line.materialName, line.specificationModel, line.color, line.unit, line.remark,
+  ])), [slip, keyword]);
+  return <>
+    {/* 版式与其它列表页一致：filter-bar + 「筛选后 N / M」+ 清除搜索（用户在这种框里学到的操作要一致）。 */}
+    <div className="filter-bar">
+      <label>搜索物料编码、名称、规格型号、颜色或备注
+        <Input data-testid="material-slip-lines-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+      </label>
+      {keyword.trim() ? <span className="panel-note" data-testid="material-slip-lines-count">筛选后 {visibleLines.length} / {lines.length} 行</span> : null}
+      {keyword.trim() ? <Button variant="secondary" size="sm" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+    </div>
+    <DataTable pageSize={50} columns={columns} data={visibleLines} empty={keyword.trim()
+      // 「搜不到」与「本来就没有」分开说：前者是关键词打偏了（给总行数），后者是这张单真的没明细。
+      ? <EmptyState title={`没有匹配“${keyword.trim()}”的物料行`} description={`本单共 ${lines.length} 行明细，换个关键词或清空搜索框。`} />
+      : <EmptyState title="该单据没有物料明细" />} />
+  </>;
 }

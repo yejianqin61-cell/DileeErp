@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { ActionDialog } from "../ui/action-dialog";
 import { Button } from "../ui/button";
+import { EmptyState } from "../feedback/states";
 import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { SearchableSelect } from "../ui/searchable-select";
@@ -28,6 +29,8 @@ import { SupplierSelect, type BomSupplierRef } from "../bom/supplier-select";
 import { notifyError, notifySuccess } from "../ui/toaster";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
 import { fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { amountSummaryText, lineAmountText, sumPlanAmounts, DEFAULT_PLAN_CURRENCY, type PlanAmount } from "../../lib/purchase-plan-amount";
 import { importBomPrices, mergeBomReferences, pendingPriceIndexes, priceImportSummary, trimPlanNumber, type PriceImportOutcome } from "../../lib/purchase-plan-price-entry";
 import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
@@ -157,6 +160,18 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
    * 2026-10-11 起 0 价的行不再是"确认后可以一起下"，而是**排除在本次下单之外**。
    */
   const [holdBackConfirm, setHoldBackConfirm] = useState<number[] | null>(null);
+  /**
+   * 明细行的关键字过滤（2026-11-13，用户：「通览整个项目，统计所有下拉列表，所有表单是否都有搜索功能搜索框，
+   * 如果没有，都需要加上搜索功能。因为现在单子多了，查找比较麻烦。」）。
+   *
+   * ⚠️ 这张表比别的列表页多一条硬约束：它是**可编辑的草稿表**，每一行都由**原始下标**认领 ——
+   * `updateRow(index)` / `toggleRow(index)` / 删除行，以及 `plan-row-${index}`、`plan-price-${index}`、
+   * `plan-supplier-select-${index}`、`plan-amount-${index}` 这些 testid 全按下标走。
+   * 所以过滤只改「渲染哪几行」，**绝不能重新编号**：过滤结果里必须带着原始 `index` 一起渲染
+   * （写法照 `components/bom/bom-workbench.tsx` 的 `visibleRows`，那边的注释是同一件事）。
+   * 错了会怎样：过滤状态下改「第 3 行」的单价会落进另一行 —— 这是点「保存计划」之后才会发现的静默改错数据。
+   */
+  const [keyword, setKeyword] = useState("");
 
   const materialOptions = useMemo<PlanOption[]>(() => materials.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: `${item.materialCode ?? item.code ?? ""} / ${item.name ?? "物料"}` })), [materials]);
   const unitOptions = useMemo<PlanOption[]>(() => units.filter((item) => item.isActive !== false).map((item) => ({ value: item.id, label: item.name ?? item.id })), [units]);
@@ -297,6 +312,32 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
       .map(([key, quantity]) => `${quantity} ${units.find((item) => item.id === key.slice(prefix.length))?.name ?? "其它单位"}`)
       .join("、");
   }
+
+  /**
+   * 过滤后的明细行 —— **带着原始下标**（见上面 `keyword` 的注释，过滤绝不能重新编号）。
+   *
+   * 只匹配这张表**看得见**的值：物料名/编码、型号、单位、供应商名/地址/联系人、采购单号、
+   * 数量、单价、行总价、当前库存、预计到货。不匹配 materialId / bomItemId / extensionData
+   * 这类内部字段 —— 搜到了却看不出为什么命中，只会让人以为搜索坏了（与 bom-workbench 同一条口径）。
+   *
+   * 供应商名刻意不走 `supplierNameOf`：那个函数取不到名字时返回「供应商」兜底，
+   * 拿它做匹配的话，搜「供应商」会把所有还没选供应商的空行一起命中。
+   */
+  const visibleRows = useMemo(
+    () => rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => fuzzyMatch(keyword, [
+        row.materialName, row.materialCode, row.model,
+        units.find((unit) => unit.id === row.unitId)?.name ?? row.unitName,
+        suppliers.find((item) => item.id === row.supplierId)?.name,
+        row.supplierAddress, row.supplierContact, row.purchaseOrderNo,
+        row.quantity, row.unitPrice, lineAmountText(row.quantity, row.unitPrice),
+        stockFor(row.materialId, row.unitId), row.expectedDate,
+        row.ordered ? "已下单" : "未下单",
+      ])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stockFor 只读 stock，下面已把 stock 列为依赖
+    [rows, units, suppliers, stock, keyword],
+  );
 
   function updateRow(index: number, patch: Partial<PlanDraftRow>) { setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row))); }
   /**
@@ -600,6 +641,24 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
             </p>
           ) : null}
 
+          {/*
+            明细行搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+            一张计划几十行时，"哪一行是伞骨"原来只能靠肉眼滚表。
+
+            放在表上方、与上面那两条动作条分开：它是**这一张表**的过滤器，不是"对计划做什么"的动作。
+            过滤只改显示，勾选、计划合计、收束下单仍按**全部行**算 —— 那句括注就是为此而写：
+            否则看到「筛选后 1 / 40 行」的人会以为这次只会下 1 行的单。
+          */}
+          <div className="filter-bar">
+            <label>搜索明细行（物料、型号、单位、供应商、地址、联系人、采购单号或数量/价格）
+              <Input data-testid="plan-detail-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+            </label>
+            {keyword.trim() ? (
+              <span className="panel-note" data-testid="plan-detail-count">筛选后 {visibleRows.length} / {rows.length} 行（只改显示：勾选、合计与收束下单仍按全部 {rows.length} 行算）</span>
+            ) : null}
+            {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+          </div>
+
           {/* 14 列：列宽全部由 `.plan-col-*` 显式指定（和 = 100%，`table-layout: fixed`），
               所以**不会有横向滚动条**。只读文本列加 `plan-cell-ellipsis`，hover 用原生 title 看全文；
               编辑格不加（对输入框做省略没有意义）。 */}
@@ -624,7 +683,9 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row, index) => (
+                {/* 过滤后渲染的是 `visibleRows`（带原始下标的 {row, index}）—— 见 `keyword` 的注释：
+                    `updateRow(index)` 与各格 testid 必须指回**同一行**，重新编号就是静默改错数据。 */}
+                {visibleRows.map(({ row, index }) => (
                   <tr key={row.id ?? `new-${index}`} data-testid={`plan-row-${index}`}>
                     <td className="plan-col-select"><input type="checkbox" aria-label={`选择第 ${index + 1} 行`} disabled={row.ordered} checked={selected.includes(index)} onChange={() => toggleRow(index)} /></td>
                     <td className="plan-col-material">
@@ -713,6 +774,20 @@ export function PlanDetailSheet({ planId, materials, units, onClose, onSaved, on
                     </td>
                   </tr>
                 ))}
+                {/*
+                  两种"表里没行"必须分开说（口径照物料清单页）：**搜空了**与**计划本来就是空的**是两件事。
+                  合并成一句「暂无数据」，用户会以为这份计划的明细丢了 —— 而它只是被自己的关键词挡住了。
+                  用一整行 `<td colSpan={14}>` 装空态：表头与 14 列的宽度都还在，看起来就是"这张表被筛空了"。
+                */}
+                {!visibleRows.length ? (
+                  <tr>
+                    <td colSpan={14} data-testid={keyword.trim() ? "plan-detail-search-empty" : "plan-detail-blank"}>
+                      {keyword.trim()
+                        ? <EmptyState title={`没有匹配“${keyword.trim()}”的明细行`} description={`这份计划共 ${rows.length} 行，换个关键词或点上面的「清除搜索」看全部。`} />
+                        : <EmptyState title="这份计划还没有明细行" description="到 BOM 表里补明细，或点上面的「添加行」。" />}
+                    </td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </div>

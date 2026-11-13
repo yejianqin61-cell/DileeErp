@@ -22,10 +22,13 @@
 // 用 `DataTable` 而不是手写 `<table>`：它已经是全站表格的唯一入口（默认带固定布局 + 超长省略 + 悬停看全文），
 // 手写一张等于自己再维护一套列宽规则，而 `lib/table-width-coverage.test.mjs` 也会要求它单独归一次类。
 import type { ColumnDef } from "@tanstack/react-table";
+import { useState } from "react";
 import { Button } from "../ui/button";
 import { DataTable } from "../data/data-table";
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
+import { EmptyState } from "../feedback/states";
 import { Input } from "../ui/input";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { DEFAULT_PLAN_CURRENCY, lineAmountText } from "../../lib/purchase-plan-amount";
 import { priceImportSummary, type PriceImportOutcome } from "../../lib/purchase-plan-price-entry";
 import type { PlanDraftRow } from "./plan-order-preview";
@@ -59,8 +62,31 @@ export function PlanPriceDialog({ planNo, rows, importOutcome, importing = false
   onChange: (index: number, patch: Partial<PlanDraftRow>) => void;
   onClose: () => void;
 }) {
+  /**
+   * 表内关键字过滤（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   *
+   * 只过滤**显示**：`PriceDialogRow` 已经带着原始 `index`（`plan-price-input-${index}` 与
+   * `onChange(index, …)` 都按它认行），过滤后**不能重新编号**，否则「给第 3 行填价」会落进另一行 ——
+   * 与 plan-detail-sheet.tsx 的明细表是同一条约束。
+   *
+   * 不包 `useMemo`：`data` 每次渲染都是新数组，memo 不会命中，反而多一层"以为它被缓存了"的错觉；
+   * 一个计划最多几百行，逐次重算没有可感知的成本。
+   */
+  const [keyword, setKeyword] = useState("");
   const data: PriceDialogRow[] = rows.map((row, index) => ({ index, row }));
+  /**
+   * 「还有 N 行没填」按**全部行**算，不跟着关键字过滤走：
+   * 它回答的是"这份计划还有多少钱没定价"，与"用户此刻在找哪一行"无关。
+   */
   const pending = rows.filter(unfilled).length;
+  /** 只匹配这张表看得见的值（含「状态」那一列的中文，见 `statusOf`）：搜到了就要能在表里找到。 */
+  const visibleData = keyword.trim()
+    ? data.filter(({ index, row }) => fuzzyMatch(keyword, [
+        index + 1, row.materialCode, row.materialName, row.model,
+        row.quantity, row.unitName, row.unitPrice, row.currency ?? DEFAULT_PLAN_CURRENCY,
+        lineAmountText(row.quantity, row.unitPrice), statusOf(row),
+      ]))
+    : data;
   const columns: ColumnDef<PriceDialogRow>[] = [
     { id: "no", header: "行", meta: { width: "5%" }, cell: ({ row }) => String(row.original.index + 1) },
     {
@@ -105,9 +131,29 @@ export function PlanPriceDialog({ planNo, rows, importOutcome, importing = false
               {importOutcome ? priceImportSummary(importOutcome) : `只填空的未下单行（还有 ${pending} 行没填）；手填过的价与已下单的行一律不动`}
             </span>
           </div>
+          {/*
+            表内搜索（2026-11-13）。行号（「行」那一列）显示的是**原始行号**，不是过滤后的序号 ——
+            它与计划明细表、与「第 N 行还没填单价」那些提示是同一个编号，换算术会让人对不上号。
+            计数里那个「/ 共 N 行」同样按全部行算（见 `pending` 的注释：不填的行数不能被搜索改变）。
+          */}
+          <div className="filter-bar">
+            <label>搜索明细行（物料、型号、数量、单价、行总价或状态）
+              <Input data-testid="plan-price-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+            </label>
+            {keyword.trim() ? <span className="panel-note" data-testid="plan-price-count">筛选后 {visibleData.length} / {rows.length} 行</span> : null}
+            {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+          </div>
           {/* 行数多的计划一屏放不下：`pageSize` 给大值，宁可滚动也不要在浮层里分页
               （分页会把"还有几行没填"藏到下一页）。 */}
-          <DataTable columns={columns} data={data} pageSize={500} tableClassName="plan-price-table" />
+          <DataTable
+            columns={columns}
+            data={visibleData}
+            pageSize={500}
+            tableClassName="plan-price-table"
+            empty={keyword.trim()
+              ? <EmptyState title={`没有匹配“${keyword.trim()}”的行`} description={`这份计划共 ${rows.length} 行，换个关键词或点「清除搜索」看全部。`} />
+              : <EmptyState title="这份计划还没有明细行" description="到 BOM 表里补明细，或回到计划里点「添加行」。" />}
+          />
         </DialogBody>
         <DialogFooter>
           <Button size="sm" data-testid="plan-price-dialog-done" onClick={onClose}>完成</Button>

@@ -26,6 +26,8 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiRequest, apiPost } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { ACCOUNTING_SUBJECTS_PATH, type AccountingSubject } from "../../lib/accounting-subjects";
 import { downloadFile } from "../../lib/download";
 import { exportVoucherPng } from "../../lib/voucher-image";
@@ -207,8 +209,7 @@ export default function VoucherWorkspace({ testId = "page-finance-voucher" }: { 
       if (generated === "pending" && has) return false;
       if (generated === "done" && !has) return false;
       if (!text) return true;
-      return [entry.entryNo, entry.counterpartyName, entry.categorySubject?.name, entry.subject?.name, entry.settlementMethod, entry.settlementAccount?.label]
-        .some((value) => (value ?? "").toLowerCase().includes(text));
+      return fuzzyMatch(filter, [entry.entryNo, entry.counterpartyName, entry.categorySubject?.name, entry.subject?.name, entry.settlementMethod, entry.settlementAccount?.label]);
     });
   }, [entries, filter, generated, voucherByEntry]);
 

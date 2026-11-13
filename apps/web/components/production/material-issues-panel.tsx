@@ -19,6 +19,8 @@ import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../ui/dialog";
 import { RecordDetailDialog, type DetailField } from "../finance/record-detail-dialog";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 // 时间统一走 lib/audit-time（固定北京时间）：toLocaleString 按运行宿主时区走。
 import { formatBeijingShort } from "../../lib/audit-time";
 import { isMaterialMovementDocumentType, movementEditorHref } from "../../lib/material-slip-api";
@@ -96,6 +98,28 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   /** 打印视图（2026-11-02）：完整单据来自 `slip-document`（与导出同一份组装结果）。 */
   const [printSlip, setPrintSlip] = useState<MaterialSlipPrint | null>(null);
   const [printLoading, setPrintLoading] = useState(false);
+  /**
+   * 单据列表的关键字搜索（2026-11-13，用户：「通览整个项目，统计所有下拉列表，所有表单是否都有搜索
+   * 功能搜索框，如果没有，都需要加上搜索功能。因为现在单子多了，查找比较麻烦」）。
+   *
+   * ⚠️ 这一格只过滤**下面那张单据列表**（DataTable），**不过滤上面那张草稿网格**：草稿网格是
+   * **可编辑表单**，`updateLine(index)` 与 `preview.lines[index]` 都按**原始下标**对齐 —— 过滤后重新算
+   * 下标，会让「改第 3 行的数量」写到另一行、预估数字也跟着串行（静默改错，保存之后才发现）。
+   * 一个生产单的 BOM 物料通常只有几行，录入时本来也不需要搜索。
+   */
+  const [keyword, setKeyword] = useState("");
+  /**
+   * 过滤后的单据行。只匹配列表里**看得见**的列：单据号 / 类型 / 业务日期 / 状态。
+   *
+   * 不匹配物料名称与编码：「明细」这一列只显示「N 项 / 合计 X」，按物料命中的行看不出为什么命中，
+   * 用户会以为搜索坏了。要找「这张单领了哪些料」，双击行打开详情 —— 那张明细表自己带搜索框
+   * （见 material-slip-lines-table 的 material-slip-lines-search）。
+   */
+  const visibleMovements = useMemo(() => movements.filter((movement) => fuzzyMatch(keyword, [
+    movement.movementNo, typeLabels[movement.documentType] ?? movement.documentType,
+    (movement.businessDate ?? movement.createdAt ?? "").slice(0, 10),
+    statusLabels[movement.status] ?? movement.status,
+  ])), [movements, keyword]);
 
   const materialOptions = useMemo(() => {
     if (bomItems.length) return bomItems.map((item) => ({ value: item.materialId, label: `${item.materialName}${item.specificationModel || item.model ? ` / ${item.specificationModel ?? item.model}` : ""}（BOM ${item.requiredQuantity} ${item.unit}）` }));
@@ -277,7 +301,9 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
   ] : [];
 
   return <section className="panel">
-    <div className="panel-heading"><h2>生产领料单</h2><div className="page-actions">
+    {/* 张数一直显示（列表为空时是「共 0 张」）；有关键字时换成「筛选后 N / M 张」，否则用户分不清
+        是「这个生产单就这么多」还是「被自己刚打的字筛掉了」。 */}
+    <div className="panel-heading"><h2>生产领料单</h2><span className="panel-note" data-testid="material-issues-panel-count">{keyword.trim() ? `筛选后 ${visibleMovements.length} / ${movements.length} 张` : `共 ${movements.length} 张`}</span><div className="page-actions">
       <Button variant="secondary" onClick={() => void load()}>刷新</Button>
       <Button onClick={openCreate} disabled={!issuable || Boolean(draft) || !materialOptions.length}>{draft ? "正在编辑草稿" : "新建领料单"}</Button>
       {/* 补料单必须填原因，走全屏编辑页；同一生产单可开多张。 */}
@@ -312,7 +338,19 @@ export function MaterialIssuesPanel({ productionOrderId, bomId, issuable, onChan
           <Button variant="ghost" size="sm" onClick={() => { setDraft(null); setPreview(null); setError(""); }}>取消</Button>
         </div>
       </div>}
-      <DataTable columns={columns} data={movements} empty={<EmptyState title="该生产单暂无领料单" description="点击右上角「新建领料单」按 BOM 领料。" />} onRowDoubleClick={(movement) => setDetailId(movement.id)} rowTitle="双击查看领用物料" />
+      {/* 单据列表的关键字搜索（2026-11-13）：与仓库的「领料单 / 补料单」列表页同一套语义
+          （lib/fuzzy-search 的空格分词 AND），两张页面看同一张单据时，搜同一个词的结果必须一致。 */}
+      <div className="filter-bar">
+        <label>搜索单据号、类型、业务日期或状态
+          <Input data-testid="material-issues-panel-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+        </label>
+        {keyword.trim() ? <Button variant="secondary" size="sm" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+      </div>
+      <DataTable columns={columns} data={visibleMovements} empty={keyword.trim()
+        // 「搜不到」与「本来就没有」必须分开说：前者是关键词打偏了（给总数 + 清空提示），
+        // 后者要告诉用户下一步怎么做（新建领料单）。
+        ? <EmptyState title={`没有匹配“${keyword.trim()}”的单据`} description={`该生产单共 ${movements.length} 张单据，换个关键词或清空搜索框。`} />
+        : <EmptyState title="该生产单暂无领料单" description="点击右上角「新建领料单」按 BOM 领料。" />} onRowDoubleClick={(movement) => setDetailId(movement.id)} rowTitle="双击查看领用物料" />
       {/* 双击弹出的详情：把这一条领料单的**全部**领用物料列出来，避免用户只能看到列表里的「N 项」。 */}
       <RecordDetailDialog
         open={Boolean(detailId)}

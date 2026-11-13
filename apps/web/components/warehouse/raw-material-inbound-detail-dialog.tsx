@@ -11,13 +11,17 @@
 //
 // 字段数据全部来自列表行：`GET /raw-material-inbounds` 已经把物料/单位/供应商/质检单/应付来源/
 // 库存流水一起带回来了（见 `raw-material-inbounds.service.ts` 的 `list()`），所以双击**不再发请求**。
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "../data/data-table";
 import { EmptyState } from "../feedback/states";
 import { RecordDetailDialog, money, type DetailField } from "../finance/record-detail-dialog";
 import { auditDetailFields, type AuditRow } from "../data/audit-columns";
+import { Input } from "../ui/input";
+import { Button } from "../ui/button";
 import { formatBeijingShort } from "../../lib/audit-time";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 
 /** 入库单过账留下的库存流水（`inventory_facts`，后端整行透传）。 */
 export type RawMaterialInboundFact = { id: string; quantityDelta: string; sourceType: string; createdAt?: string | null };
@@ -98,6 +102,22 @@ const DETAIL_WIDTH = {
 
 const text = (value: string | null | undefined) => (value && String(value).trim() ? value : null);
 
+/**
+ * 「屏幕上那一格的字」与「搜索匹配的字」必须是同一份（与 finished-goods-storage 页同一口径）。
+ *
+ * 这两张小表有四格是**拼出来**的：金额 + 币种、应付单号 + （状态）、来源类型中文化、
+ * 时间格式化。拼法原先只写在 `accessorFn` 里；搜索若照抄一遍，改了一边忘了另一边就会变成
+ * 「屏幕上写着 1250.0000 CNY，搜 1250 搜不到」—— 没有任何报错，只有用户会撞上。
+ * 抽成函数后 `accessorFn` 与过滤集调同一份拼法。
+ */
+const payableAmountText = (row: RawMaterialInboundPayableSource) => money(row.amount, row.currency);
+const payableStatusText = (row: RawMaterialInboundPayableSource) => PAYABLE_SOURCE_STATUS_LABELS[row.status] ?? row.status;
+const payableEntryText = (row: RawMaterialInboundPayableSource) => row.supplierPayableEntry
+  ? `${row.supplierPayableEntry.payableNo}（${PAYABLE_ENTRY_STATUS_LABELS[row.supplierPayableEntry.status] ?? row.supplierPayableEntry.status}）`
+  : "尚未接收";
+const factSourceText = (row: RawMaterialInboundFact) => FACT_SOURCE_LABELS[row.sourceType] ?? row.sourceType;
+const factTimeText = (row: RawMaterialInboundFact) => formatBeijingShort(row.createdAt) || "-";
+
 /** 字段：列表十列里看不到的那些（结算金额、供应商、质检单号/数量、备注、操作人）都在这里补齐。 */
 function detailFields(inbound: RawMaterialInboundRow): DetailField[] {
   const material = text(inbound.material_code) && text(inbound.material_name)
@@ -134,32 +154,46 @@ function detailFields(inbound: RawMaterialInboundRow): DetailField[] {
  *
  * 入库过账会同时生成「应付来源」（财务的应付由此而来）与「库存流水」，
  * 而用户点开一张入库单最常问的就是「钱进应付了吗」「库存到底加了没有」——这两件事都不在列表的十列里。
+ *
+ * `query` 是弹窗里那一个小搜索框的关键词（已 trim）：它**同时**过滤这两张表、
+ * 且只匹配屏幕上看得见的列（金额 / 币种 / 来源状态 / 已生成的应付单；数量变动 / 来源类型 / 发生时间）。
+ * 两张表的空态因此有两种说法：
+ *   - 本来就没有（未过账的草稿）：一句解释原因的 `panel-note`，**不**说「没有匹配」；
+ *   - 有数据但被关键词筛掉了：`DataTable` 的 `empty` 说「没有匹配“xx”」并给出总数。
+ * 两种混用的话，草稿单会显示「没有匹配」——用户会以为是自己搜错了。
  */
-function detailSections(inbound: RawMaterialInboundRow) {
+function detailSections(inbound: RawMaterialInboundRow, query: string) {
   const payables = inbound.payableSources ?? [];
   const facts = inbound.inventoryFacts ?? [];
+  const visiblePayables = query ? payables.filter((row) => fuzzyMatch(query, [
+    payableAmountText(row), row.currency, payableStatusText(row), payableEntryText(row),
+  ])) : payables;
+  const visibleFacts = query ? facts.filter((row) => fuzzyMatch(query, [
+    row.quantityDelta, factSourceText(row), factTimeText(row),
+  ])) : facts;
   return [
     {
-      title: `应付来源（${payables.length} 条）`,
+      // 标题里的条数跟着筛选走：否则「应付来源（3 条）」下面只显示 1 行，看起来像丢数据。
+      title: query ? `应付来源（筛选后 ${visiblePayables.length} / ${payables.length} 条）` : `应付来源（${payables.length} 条）`,
       note: "入库过账时自动生成，是财务「应付账款」的来源；仓库不参与结算，接收/付款在财务模块。",
       content: payables.length
         ? <DataTable pageSize={10} columns={[
-            { id: "amount", header: "应付金额", meta: { width: DETAIL_WIDTH.payableAmount }, accessorFn: (row: RawMaterialInboundPayableSource) => money(row.amount, row.currency) },
+            { id: "amount", header: "应付金额", meta: { width: DETAIL_WIDTH.payableAmount }, accessorFn: payableAmountText },
             { id: "currency", header: "币种", meta: { width: DETAIL_WIDTH.payableCurrency }, accessorFn: (row: RawMaterialInboundPayableSource) => row.currency },
-            { id: "status", header: "来源状态", meta: { width: DETAIL_WIDTH.payableStatus }, accessorFn: (row: RawMaterialInboundPayableSource) => PAYABLE_SOURCE_STATUS_LABELS[row.status] ?? row.status },
-            { id: "entry", header: "已生成的应付单", meta: { width: DETAIL_WIDTH.payableEntry }, accessorFn: (row: RawMaterialInboundPayableSource) => row.supplierPayableEntry ? `${row.supplierPayableEntry.payableNo}（${PAYABLE_ENTRY_STATUS_LABELS[row.supplierPayableEntry.status] ?? row.supplierPayableEntry.status}）` : "尚未接收" }
-          ] as ColumnDef<RawMaterialInboundPayableSource>[]} data={payables} empty={<EmptyState title="暂无应付来源" />} />
+            { id: "status", header: "来源状态", meta: { width: DETAIL_WIDTH.payableStatus }, accessorFn: payableStatusText },
+            { id: "entry", header: "已生成的应付单", meta: { width: DETAIL_WIDTH.payableEntry }, accessorFn: payableEntryText }
+          ] as ColumnDef<RawMaterialInboundPayableSource>[]} data={visiblePayables} empty={<EmptyState title={`没有匹配“${query}”的应付来源`} description={`这张入库单共 ${payables.length} 条，换个关键词或清除搜索。`} />} />
         : <p className="panel-note">{inbound.status === "draft" ? "草稿入库单还没过账，过账后才会生成应付来源。" : "这张入库单没有关联的应付来源。"}</p>
     },
     {
-      title: `库存流水（${facts.length} 条）`,
+      title: query ? `库存流水（筛选后 ${visibleFacts.length} / ${facts.length} 条）` : `库存流水（${facts.length} 条）`,
       note: "过账 +数量、冲销 −数量；库存汇总的「已过账库存」就是这些流水按物料累加的结果。",
       content: facts.length
         ? <DataTable pageSize={10} columns={[
             { id: "quantityDelta", header: "数量变动", meta: { width: DETAIL_WIDTH.factDelta }, accessorFn: (row: RawMaterialInboundFact) => row.quantityDelta },
-            { id: "sourceType", header: "来源类型", meta: { width: DETAIL_WIDTH.factSource }, accessorFn: (row: RawMaterialInboundFact) => FACT_SOURCE_LABELS[row.sourceType] ?? row.sourceType },
-            { id: "createdAt", header: "发生时间", meta: { width: DETAIL_WIDTH.factTime }, accessorFn: (row: RawMaterialInboundFact) => formatBeijingShort(row.createdAt) || "-" }
-          ] as ColumnDef<RawMaterialInboundFact>[]} data={facts} empty={<EmptyState title="暂无库存流水" />} />
+            { id: "sourceType", header: "来源类型", meta: { width: DETAIL_WIDTH.factSource }, accessorFn: factSourceText },
+            { id: "createdAt", header: "发生时间", meta: { width: DETAIL_WIDTH.factTime }, accessorFn: factTimeText }
+          ] as ColumnDef<RawMaterialInboundFact>[]} data={visibleFacts} empty={<EmptyState title={`没有匹配“${query}”的库存流水`} description={`这张入库单共 ${facts.length} 条，换个关键词或清除搜索。`} />} />
         : <p className="panel-note">这张入库单还没有库存流水（未过账，或已过账但流水缺失）。</p>
     }
   ];
@@ -172,13 +206,47 @@ export function RawMaterialInboundDetailDialog({ inbound, onOpenChange, actions,
   actions?: ReactNode;
   testId?: string;
 }) {
+  /**
+   * 弹窗内的明细搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   *
+   * 一张入库单通常只带 1 条应付来源 + 1 条流水，看起来没什么可搜 —— 但这个弹窗被**两个**列表页共用
+   * （仓库「原料仓储情况」/ 采购「原料入库」），列表一长，用户是连着点开好几张单核对
+   * 「哪张单的流水不对、哪笔应付还没接收」的，每次都得用眼睛在两张小表里扫。
+   * 一个词同时过滤两张表就够了：他要找的是「这张单的应付和流水」，不该分两个框搜两遍。
+   */
+  const [query, setQuery] = useState("");
+  /**
+   * 换一张单必须清空搜索词。
+   *
+   * 不清的后果：上一张单的关键词（比如「冲销」）带到下一张单，而下一张单没有被冲销的流水，
+   * 两张表就都显示「没有匹配“冲销”」—— 看起来像这张单根本没有应付来源、没有库存流水，
+   * 比没有搜索框更误导。依赖写 `inbound?.id` 而不是 `inbound` 对象：列表刷新（焦点 / 可见性）
+   * 会换一个新的行对象引用，按引用重置会在用户正打字时把关键词清掉。
+   */
+  useEffect(() => { setQuery(""); }, [inbound?.id]);
+  const keyword = query.trim();
+  const sections = inbound ? [
+    {
+      // 搜索框单独占一节：两张表的 content 在「本来就没有数据」时是一句 panel-note，
+      // 搜索框若挂在某一节的 content 里，那张表一空输入框就跟着消失（正在打字时会丢焦点）。
+      title: "明细搜索",
+      note: "一个关键词同时过滤下面「应付来源」与「库存流水」两张表，只匹配这两张表显示出来的列；空格分隔多个词，所有词都要命中。",
+      content: <div className="filter-bar">
+        <label>搜索金额、币种、状态、来源类型或时间
+          <Input data-testid="raw-material-inbound-detail-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+        </label>
+        {keyword ? <Button size="sm" variant="secondary" onClick={() => setQuery("")}>清除搜索</Button> : null}
+      </div>
+    },
+    ...detailSections(inbound, keyword)
+  ] : [];
   return <RecordDetailDialog
     open={Boolean(inbound)}
     onOpenChange={onOpenChange}
     title={`原料入库单详情：${inbound?.inboundNo ?? ""}`}
     description="双击单据行打开的详情：登记信息、结算金额、应付来源与库存流水都在这里。"
     fields={inbound ? detailFields(inbound) : []}
-    sections={inbound ? detailSections(inbound) : []}
+    sections={sections}
     actions={actions}
     testId={testId}
   />;

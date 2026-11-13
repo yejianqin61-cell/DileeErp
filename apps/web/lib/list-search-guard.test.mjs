@@ -64,6 +64,15 @@ const LIST_SCREENS_WITH_SEARCH = [
   ["components/qc/incoming-inspections-panel.tsx", "来料质检"],
   ["components/qc/qc-inbound-panel.tsx", "质检合格待入库 / 次品"],
   ["components/reports/procurement-warehouse-report.tsx", "采购与仓储报表（表内搜索）"],
+  ["app/warehouse/finished-goods-storage/page.tsx", "成品仓储情况（六张表共用一个搜索词）"],
+  ["components/warehouse/raw-material-inbound-detail-dialog.tsx", "原料入库明细对话框"],
+  ["components/production/finished-goods-panel.tsx", "成品面板"],
+  ["components/production/material-issues-panel.tsx", "领料面板"],
+  ["components/production/material-slip-lines-table.tsx", "领料单行表"],
+  ["components/production/production-order-detail-page.tsx", "生产单详情"],
+  ["components/procurement/plan-detail-sheet.tsx", "采购计划明细行"],
+  ["components/procurement/plan-price-dialog.tsx", "计划调价对话框"],
+  ["app/reports/page.tsx", "报表中心"],
 ];
 
 test("清单里的每个列表页都有搜索框、走统一语义的 fuzzyMatch、且无命中提示与「本来就空」分开", () => {

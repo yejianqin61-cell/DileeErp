@@ -6,14 +6,17 @@
 // - 包装工序（工序名称含「包装」）是每个生产单的收尾工序，默认要有；
 // - 包装累计报工量就是「可通知入库」的数量，可以边生产边分批通知，不必等包装全部完成；
 // - 仓库按通知送检/QC，QC 合格量再入库；本面板只负责生产侧的报工量→通知→进度展示。
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { DataTable } from "../data/data-table";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
 import { notifyError, notifySuccess } from "../ui/toaster";
 
@@ -82,6 +85,29 @@ export function FinishedGoodsPanel({ productionOrderId, executionMode, orderStat
   const [error, setError] = useState("");
   const [dialog, setDialog] = useState<{ title: string; fields: ActionField[]; submit: (values: Record<string, string>) => void | Promise<void> } | null>(null);
   const loadedOnce = useRef(false);
+  /**
+   * 入库通知表的关键字搜索（2026-11-13，用户：「通览整个项目，统计所有下拉列表，所有表单是否都有搜索
+   * 功能搜索框，如果没有，都需要加上搜索功能。因为现在单子多了，查找比较麻烦」）。
+   *
+   * 这一格只做**客户端显示过滤**：取数、发通知、取消通知一概不动。行内「取消」按钮拿的是这一行的
+   * notice 对象本身（不是下标），所以过滤后点「取消」取消的仍是那一行，不会取消错单。
+   *
+   * 上面那排 `daily-report-summary` 数字是**整单汇总**（包装累计 / 已通知 / 可通知 / 成品存量…），
+   * 不是这张表的合计，因此**不随关键字变化** —— 让它跟着变，「可通知入库 40」会突然变成某个关键词下的
+   * 小计，用户会以为库存变了。
+   */
+  const [keyword, setKeyword] = useState("");
+  /**
+   * 过滤后的通知行：只匹配这张表**看得见**的列（通知单 / 批次 / 通知日期 / 各数量与单位 / 状态）。
+   * 不匹配 id、UUID、审计人等隐藏字段 —— 搜到了却看不出为什么命中，只会让人以为搜索坏了。
+   */
+  const visibleNotices = useMemo(() => (summary?.notices ?? []).filter((notice) => fuzzyMatch(keyword, [
+    notice.noticeNo, notice.batchNo, notice.noticeDate.slice(0, 10),
+    `${notice.noticeQuantity} ${notice.unitNameSnapshot}`,
+    notice.submittedQuantity, notice.availableSubmissionQuantity, notice.qcQualifiedQuantity,
+    notice.inboundDraftQuantity, notice.inboundPostedQuantity,
+    noticeStatusLabels[notice.status] ?? notice.status,
+  ])), [summary, keyword]);
 
   async function load() {
     try {
@@ -207,7 +233,21 @@ export function FinishedGoodsPanel({ productionOrderId, executionMode, orderStat
         </div>
         <div className="panel-body">
           <h3>入库通知（分批）</h3>
-          <DataTable columns={noticeColumns} data={summary.notices} empty={<EmptyState title="暂无入库通知" description="包装工序累计报工后，点「发成品入库通知」按批次通知仓库送检/入库。" />} />
+          {/*
+            关键字搜索（2026-11-13）。通知单是分批发出来的，一张生产单跑上几个月就有几十条：
+            靠滚动找「9 月那批 B3」是肉眼活。条件是精确的（没有状态筛选），这一格才是模糊查找。
+          */}
+          <div className="filter-bar">
+            <label>搜索通知单、批次、通知日期或状态
+              <Input data-testid="finished-goods-panel-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+            </label>
+            {keyword.trim() ? <span className="panel-note" data-testid="finished-goods-panel-count">筛选后 {visibleNotices.length} / {summary.notices.length} 条</span> : null}
+            {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+          </div>
+          <DataTable columns={noticeColumns} data={visibleNotices} empty={keyword.trim()
+            // 「搜不到」与「本来就没有」是两件事：前者要让人知道关键词打偏了，后者要告诉人下一步做什么。
+            ? <EmptyState title={`没有匹配“${keyword.trim()}”的入库通知`} description={`本生产单共 ${summary.notices.length} 条通知，换个关键词或清空搜索框。`} />
+            : <EmptyState title="暂无入库通知" description="包装工序累计报工后，点「发成品入库通知」按批次通知仓库送检/入库。" />} />
         </div>
       </>}
     </section>

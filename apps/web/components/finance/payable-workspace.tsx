@@ -41,6 +41,8 @@ import { Input } from "../ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiDelete, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { downloadFile } from "../../lib/download";
 import { ledgerExportQuery, paymentBucket, paymentCounts, withinDateRange, type LedgerPaymentFilter } from "../../lib/finance-ledger-filter";
 import { currencyOptions, currencyOptionsWithCurrent, fetchCurrencyOptions, type CurrencyOption } from "../../lib/currency-catalogue";
@@ -1102,7 +1104,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const match = useCallback((values: Array<string | null | undefined>) => {
     const text = filter.trim().toLowerCase();
     if (!text) return true;
-    return values.some((value) => (value ?? "").toLowerCase().includes(text));
+    return fuzzyMatch(filter, values);
   }, [filter]);
   const filteredInbound = useMemo(() => pendingInbound.filter((item) => match([item.rawMaterialInbound?.inboundNo, item.orderNo, item.purchase_order_no, item.supplier?.name, item.material_name])), [pendingInbound, match]);
   const filteredOutsource = useMemo(() => pendingOutsource.filter((item) => match([item.logisticsBatch?.batchNo, item.orderNo, item.supplier?.name, item.material_name])), [pendingOutsource, match]);
@@ -1126,8 +1128,7 @@ export default function PayableWorkspace({ tab, testId }: { tab: PayableTabParam
   const ledgerMatch = useCallback((entry: PayableEntry) => {
     const text = ledgerFilter.trim().toLowerCase();
     if (!text) return true;
-    return [entry.payableNo, entry.orderNo, entry.purchase_order_no, entry.supplier_name, entry.material_name, entry.sourceNoSnapshot, entry.subject_name, entry.subject?.name]
-      .some((value) => (value ?? "").toLowerCase().includes(text));
+    return fuzzyMatch(ledgerFilter, [entry.payableNo, entry.orderNo, entry.purchase_order_no, entry.supplier_name, entry.material_name, entry.sourceNoSnapshot, entry.subject_name, entry.subject?.name]);
   }, [ledgerFilter]);
   const scopedEntries = useMemo(
     () => filteredEntries.filter((item) => withinDateRange(item.confirmationDate, dateFrom, dateTo) && ledgerMatch(item)),

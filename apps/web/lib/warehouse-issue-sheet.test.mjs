@@ -21,7 +21,12 @@ const css = read("app", "globals.css");
 test("物料下拉引用生产单订单的 BOM 明细（不能再列出全部物料）", () => {
   assert.equal(/materials\.map\(/.test(editor), false, "编辑页里不得再直接用全部物料作为下拉选项");
   assert.match(editor, /apiGet<\{ items: BomItem\[\] \}>\(`\/boms\/\$\{bomId\}`\)/, "必须按 bomId 拉取 BOM 明细");
-  assert.match(editor, /bomMaterialOptions\.length \? bomMaterialOptions\.map\(/, "下拉选项必须来自 BOM 明细");
+  // 2026-11-13：物料下拉从 Radix `Select` 换成 `SearchableSelect`（用户要求数据型下拉都能搜），
+  // 选项来源的写法从「JSX 里 map 出 SelectItem」变成「构造 options 数组」，中间会断行。
+  // 断言的本意不变：**选项必须来自 bomMaterialOptions（BOM 明细），不能是全量物料**。
+  assert.match(editor, /options=\{bomMaterialOptions\.length\s*\n?\s*\?\s*bomMaterialOptions\.map\(/, "下拉选项必须来自 BOM 明细");
+  assert.match(editor, /<SearchableSelect[\s\S]{0,400}options=\{bomMaterialOptions/, "物料下拉必须是带搜索的下拉（SearchableSelect），且选项来自 BOM 明细");
+  assert.doesNotMatch(editor, /options=\{materialOptions|options=\{materials\.map\(/, "不得把全量物料当选项");
   assert.match(editor, /async function changeOrder/, "切换生产单时必须重新加载该订单的 BOM");
 });
 
