@@ -612,7 +612,10 @@ describe("生产工序导出面板 · 下拉数据为空时", () => {
     expect(inDialog().getAllByRole("combobox")).toHaveLength(2);
     await openSelect(0);
     expect(screen.queryAllByRole("option")).toHaveLength(0);
-    await userEvent.keyboard("{Escape}");
+    // 关闭弹层用「点外部」而不是 Escape：SearchableSelect 自己的用例已经钉住
+    // 「Escape 只关弹层、不冒泡给宿主对话框」这条契约（test/searchable-select-interaction.test.tsx），
+    // 这里再按一次 Escape 会与 Radix Dialog 的 Escape 处理抢同一个事件，测的就不是本用例关心的事了。
+    await userEvent.click(panelDialog().querySelector(".ui-dialog-title") as HTMLElement);
     expect(panelDialog()).toBeVisible();
 
     await clickExport();
@@ -631,7 +634,10 @@ describe("生产工序导出面板 · 下拉数据为空时", () => {
     expect(inDialog().getAllByRole("combobox")).toHaveLength(1);
     await openSelect(0);
     expect(screen.queryAllByRole("option")).toHaveLength(0);
-    await userEvent.keyboard("{Escape}");
+    // 关闭弹层用「点外部」而不是 Escape：SearchableSelect 自己的用例已经钉住
+    // 「Escape 只关弹层、不冒泡给宿主对话框」这条契约（test/searchable-select-interaction.test.tsx），
+    // 这里再按一次 Escape 会与 Radix Dialog 的 Escape 处理抢同一个事件，测的就不是本用例关心的事了。
+    await userEvent.click(panelDialog().querySelector(".ui-dialog-title") as HTMLElement);
 
     await clickExport();
 
