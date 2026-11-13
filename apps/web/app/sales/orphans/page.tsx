@@ -16,11 +16,13 @@ import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../../../components/layout/app-shell";
 import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import { DataTable } from "../../../components/data/data-table";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { ApiClientError, apiGet } from "../../../lib/api-client";
 import { displayStatus } from "../../../lib/display-text";
 import { formatBeijing } from "../../../lib/audit-time";
+import { fuzzyMatch } from "../../../lib/fuzzy-search";
 
 /** 一类下游单据的张数（删除预览与汇总页共用同一张 11 类清单）。 */
 type OrphanDocumentCount = { key: string; label: string; count: number };
@@ -61,6 +63,15 @@ export default function SalesOrphansPage() {
   const [summary, setSummary] = useState<OrphanSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  /**
+   * 关键字搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   *
+   * 这一页是「按被删销售单分组」的版式，搜索要落在**文档行**上（单号 / 类型 / 状态 / 金额 / 时间），
+   * 而不是把整组藏起来：用户找的是「那张 PO / 那笔金额」，命中一行就该看见它在哪张被删的单下面，
+   * 连组一起隐藏会让他以为那张单没留下东西。所以过滤后仍按原分组渲染，只把不匹配的行去掉；
+   * 一组里一行都不剩时，明确说「没有匹配的单据」而不是「没有留下单据」。
+   */
+  const [query, setQuery] = useState("");
 
   async function load() {
     setLoading(true);
@@ -84,6 +95,18 @@ export default function SalesOrphansPage() {
     return (summary?.orders ?? []).map((order) => ({ order, documents: byOrder.get(order.sales_order_id) ?? [] }));
   }, [summary]);
 
+  /** 按关键字收窄到命中的文档行（只匹配这张表看得见的列：类型 / 单号 / 状态 / 金额 / 发生时间）。 */
+  const visibleGroups = useMemo(() => groups.map(({ order, documents }) => ({
+    order,
+    documents: documents.filter((document) => fuzzyMatch(query, [
+      document.label, document.document_no, displayStatus(document.status),
+      moneyText(document.amount, document.currency), formatBeijing(document.occurred_at),
+    ])),
+  })), [groups, query]);
+
+  /** 命中总数（用于「筛选后 N / M 张单据」，与顶部合计口径不同：这里只数明细行）。 */
+  const visibleDocumentCount = visibleGroups.reduce((total, group) => total + group.documents.length, 0);
+
   if (loading) return <div className="page-root" data-testid="page-sales-orphans"><PageHeader title="孤立单据" breadcrumb={["客户与销售", "孤立单据"]} /><LoadingState /></div>;
 
   return <div className="page-root" data-testid="page-sales-orphans">
@@ -102,9 +125,17 @@ export default function SalesOrphansPage() {
               被删销售单 <strong>{summary.totals.orders}</strong> 张，遗留孤立单据 <strong>{summary.totals.documents}</strong> 张：{documentCountText(summary.by_type)}
             </p>
             {summary.truncated ? <p className="panel-note" data-testid="orphans-truncated">单据明细最多显示 1000 行，其余只计入上面的统计数；每一类单据仍可在自己的模块里查到全部记录。</p> : null}
+            <div className="filter-bar">
+              <label>搜索单号、单据类型、状态、金额或发生时间
+                <Input data-testid="orphans-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+              </label>
+              {query.trim() ? <span className="panel-note" data-testid="orphans-search-count">筛选后 {visibleDocumentCount} / {summary.documents.length} 张单据</span> : null}
+              {query.trim() ? <Button variant="secondary" onClick={() => setQuery("")}>清除搜索</Button> : null}
+            </div>
           </div>
         </section>
-        {groups.map(({ order, documents }) => <section className="panel" key={order.sales_order_id} data-testid={`orphan-group-${order.sales_order_id}`}>
+        {query.trim() && !visibleDocumentCount ? <section className="panel"><EmptyState title={`没有匹配“${query.trim()}”的孤立单据`} description={`共 ${summary.documents.length} 张孤立单据，换个关键词或清空搜索框。`} /></section> : null}
+        {visibleGroups.map(({ order, documents }) => <section className="panel" key={order.sales_order_id} data-testid={`orphan-group-${order.sales_order_id}`}>
           <div className="panel-heading">
             <h2>{order.order_no}</h2>
             <span className="panel-note">
@@ -115,9 +146,10 @@ export default function SalesOrphansPage() {
             <p className="panel-note">
               这张销售单已被删除（原状态 {displayStatus(order.status)}），留下 {order.document_total} 张单据：{documentCountText(order.documents)}
             </p>
+            {/* 搜索命不中时不能说成「没有留下单据」：那张单确实留了东西，只是这一组没有匹配行。 */}
             {documents.length ? <DataTable columns={DOCUMENT_COLUMNS} data={documents} empty={<EmptyState title="没有可显示的单据明细" />} /> : (
               // 明细被 1000 行上限截断时，可能这张单的明细一行都没进列表；不能说成「没有单据」。
-              <p className="panel-note">{order.document_total > 0 ? "这张销售单的单据明细未包含在本次返回里（受明细行数上限影响），张数见上一行。" : "这张销售单没有留下下游单据。"}</p>
+              <p className="panel-note">{query.trim() && order.document_total > 0 ? `这一组的 ${order.document_total} 张单据里没有匹配“${query.trim()}”的。` : order.document_total > 0 ? "这张销售单的单据明细未包含在本次返回里（受明细行数上限影响），张数见上一行。" : "这张销售单没有留下下游单据。"}</p>
             )}
           </div>
         </section>)}

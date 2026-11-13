@@ -14,11 +14,13 @@
 // 多个订单号既看不出哪个量属于哪张单，也排不了序；明细是一行一张生产单，订单号与数量一一对应。
 // 两份数据来自同一个接口（`GET /sales-orders/finished-goods-summary` 的 `groups` 与 `details`），
 // 同一次 groupBy 算出来，汇总与明细永远对得上 —— 前端不做任何加减。
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { PageHeader } from "../layout/app-shell";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { DataTable } from "../data/data-table";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { EmptyState, ErrorState } from "../feedback/states";
 import { ApiClientError, apiGet } from "../../lib/api-client";
 
@@ -78,6 +80,13 @@ const COLUMN_WIDTH = {
 
 export default function FinishedGoodsOverview({ testId = "page-sales-finished-goods" }: { testId?: string }) {
   const [overview, setOverview] = useState<FinishedGoodsOverviewData | null>(null);
+  /**
+   * 关键字搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   *
+   * 两张表共用**一个**搜索词：用户找的是「这一单 / 这个产品的成品」，在汇总表看到一行就想看它对应的
+   * 明细行；两个框会让他搜两遍。过滤只改显示，不动任何数字 —— 数量仍来自后端那一次 groupBy。
+   */
+  const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -94,6 +103,17 @@ export default function FinishedGoodsOverview({ testId = "page-sales-finished-go
     }
   }
   useEffect(() => { void load(); }, []);
+
+  // 过滤只按**屏幕上看得见**的列匹配（汇总表是产品 / 单位；明细表多出订单号与生产单号）。
+  // 不匹配 product_name 之外的内部字段：搜到了却看不出为什么命中，只会让人以为搜索坏了。
+  const visibleGroups = useMemo(
+    () => (overview?.groups ?? []).filter((row) => fuzzyMatch(query, [row.product_name, row.unit])),
+    [overview, query],
+  );
+  const visibleDetails = useMemo(
+    () => (overview?.details ?? []).filter((row) => fuzzyMatch(query, [row.order_no, row.production_order_no, row.product_name, row.unit])),
+    [overview, query],
+  );
 
   const columns: ColumnDef<FinishedGoodsTotals>[] = [
     { accessorKey: "product_name", header: "产品", meta: { width: COLUMN_WIDTH.overviewProduct } },
@@ -127,12 +147,19 @@ export default function FinishedGoodsOverview({ testId = "page-sales-finished-go
         <span className="panel-note" data-testid="finished-goods-overview-note">全部成品数 = 累计成品入库；已出库数 = 已过账/已发出/已签收出库；未出库数 = 全部 − 已出库（仍在成品仓）。按产品与单位分行：不同单位的数量不做合计。下方的「按订单号明细」是同一份数据的逐生产单展开，两处数字相加相等。</span>
       </div>
       <div className="panel-body">
+        <div className="filter-bar">
+          <label>搜索产品、单位、订单号或生产单号
+            <Input data-testid="finished-goods-overview-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+          </label>
+          {query.trim() ? <span className="panel-note" data-testid="finished-goods-overview-search-count">汇总 {visibleGroups.length} / {overview?.groups?.length ?? 0} 行 · 明细 {visibleDetails.length} / {overview?.details?.length ?? 0} 行</span> : null}
+          {query.trim() ? <Button variant="secondary" onClick={() => setQuery("")}>清除搜索</Button> : null}
+        </div>
         <div className="page-actions"><Button size="sm" variant="secondary" data-testid="finished-goods-overview-refresh" disabled={busy} onClick={() => void load()}>刷新</Button></div>
         {error ? <ErrorState message={error} onRetry={() => void load()} /> : !overview ? <p>正在加载成品总览…</p> : <>
           {/* 两张表的表头有重名（全部成品数 / 已出库数 / 未出库数），各自套一层带 testid 的容器：
               测试与验收脚本按容器取表，不靠「表头是不是唯一」猜。 */}
           <div data-testid="finished-goods-overview-summary">
-            <DataTable columns={columns} data={overview.groups ?? []} empty={<EmptyState title="暂无成品数据" description="销售单确认后生成生产单，成品入库后这里会按产品与单位汇总。" />} />
+            <DataTable columns={columns} data={visibleGroups} empty={query.trim() ? <EmptyState title={`没有匹配“${query.trim()}”的成品`} description={`共 ${overview.groups?.length ?? 0} 行，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无成品数据" description="销售单确认后生成生产单，成品入库后这里会按产品与单位汇总。" />} />
           </div>
           {/* 明细表：用户 2026-11-09「成品出库总览明细表单那边要有订单号」。
               空态与汇总表分开写 —— 汇总有行而明细为空只可能是后端没返回 details（旧版本/替身），
@@ -140,7 +167,7 @@ export default function FinishedGoodsOverview({ testId = "page-sales-finished-go
           <h3 style={{ marginTop: 20 }}>按订单号明细</h3>
           <p className="panel-note" data-testid="finished-goods-overview-detail-note">一行一张生产单：订单号 → 生产单号 → 该批的全部成品 / 已出库 / 未出库。同一张销售单分批投产时会出现多行。</p>
           <div data-testid="finished-goods-overview-detail">
-            <DataTable columns={detailColumns} data={overview.details ?? []} empty={<EmptyState title="暂无按订单号的成品明细" description="有成品入库的生产单确认后，会在这里按订单号逐行列出。" />} />
+            <DataTable columns={detailColumns} data={visibleDetails} empty={query.trim() ? <EmptyState title={`没有匹配“${query.trim()}”的成品明细`} description={`共 ${overview.details?.length ?? 0} 行，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无按订单号的成品明细" description="有成品入库的生产单确认后，会在这里按订单号逐行列出。" />} />
           </div>
         </>}
       </div>
