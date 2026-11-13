@@ -257,7 +257,9 @@ describe("工作台：订单全链路加载与渲染", () => {
 
     await userEvent.type(screen.getByLabelText("筛选订单"), "不存在的订单");
 
-    expect(screen.getByTestId("empty-state")).toHaveTextContent("暂无订单");
+    // 2026-11-13：无命中与「本来就没有订单」要说两句不同的话 ——
+    // 把「筛不到」说成「暂无订单」会让人以为数据没了（搜索口径见 lib/fuzzy-search.ts）。
+    expect(screen.getByTestId("empty-state")).toHaveTextContent("没有匹配“不存在的订单”的订单");
     expect(callsTo(calls, ORDERS_PATH)).toHaveLength(1);
   });
 });
@@ -573,5 +575,38 @@ describe("工作台：刷新、错误态与已知缺陷", () => {
 
     release();
     await screen.findByText("SO-A");
+  });
+});
+
+describe("工作台 · 生产计量表关键字搜索（2026-11-13）", () => {
+  it("按工序名收窄该订单的计量行，并给「筛选后 N」计数", async () => {
+    await mount({
+      orders: [makeOrder({ order_no: "SO-A" })],
+      measurements: [
+        makeMeasurement({ order_no: "SO-A", operation_name: "缝制", operation_id: "op-1" }),
+        makeMeasurement({ order_no: "SO-A", operation_name: "包装", operation_id: "op-2" }),
+      ],
+      detail: (orderNo) => apiOk(makeOrder({ order_no: orderNo })),
+    });
+    await openDetail("SO-A");
+
+    await userEvent.type(screen.getByTestId("workbench-measurement-filter"), "包装");
+
+    expect(screen.getByText("包装")).toBeVisible();
+    expect(screen.queryByText("缝制")).toBeNull();
+    expect(screen.getByTestId("workbench-measurement-count")).toHaveTextContent("筛选后 1 条");
+  });
+
+  it("不匹配时显示「没有匹配」而不是「暂无计量来源」", async () => {
+    await mount({
+      orders: [makeOrder({ order_no: "SO-A" })],
+      measurements: [makeMeasurement({ order_no: "SO-A", operation_name: "缝制" })],
+      detail: (orderNo) => apiOk(makeOrder({ order_no: orderNo })),
+    });
+    await openDetail("SO-A");
+
+    await userEvent.type(screen.getByTestId("workbench-measurement-filter"), "查无此工序");
+
+    expect(screen.getByTestId("empty-state")).toHaveTextContent("没有匹配“查无此工序”的计量来源");
   });
 });
