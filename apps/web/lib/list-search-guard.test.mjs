@@ -50,6 +50,10 @@ const LIST_SCREENS_WITH_SEARCH = [
   ["app/warehouse/raw-material-storage/page.tsx", "原料仓储情况"],
   ["components/sales/customer-pool.tsx", "客户池"],
   ["components/bom/bom-workbench.tsx", "BOM 工作区明细行"],
+  // 2026-11-13 这一轮补上的三处
+  ["components/finance/cash-flow-workspace.tsx", "收支明细"],
+  ["components/sales/finished-goods-overview.tsx", "成品出库总览"],
+  ["app/sales/orphans/page.tsx", "孤立单据"],
 ];
 
 test("清单里的每个列表页都有搜索框、走统一语义的 fuzzyMatch、且无命中提示与「本来就空」分开", () => {
