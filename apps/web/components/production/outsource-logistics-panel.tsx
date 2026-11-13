@@ -1,12 +1,15 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { DataTable } from "../data/data-table";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { notifyError, notifySuccess } from "../ui/toaster";
 type Batch = AuditRow & { id: string; batchNo: string; orderNo: string; status: string; plannedQuantity: string; dispatchedQuantity: string; receipts: Array<{ quantity: string; status: string }> };
 type Transfer = AuditRow & { id: string; transferNo?: string; shipmentNo?: string; transferType: string; orderNo: string; quantity: string; status: string };
@@ -80,7 +83,21 @@ export function OutsourceLogisticsPanel({ scope }: { scope?: { orderNo: string; 
     }
     return apiPost(path, { production_order_id: v.production_order_id, unit_id: v.unit_id, product_description: v.product_description, quantity: v.quantity, shipment_date: v.shipment_date, logistics_reference: v.logistics_reference, remark: undefined });
   }); }
+  /**
+   * 关键字搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   * 外发批次与回厂/直装柜两张表共用一个搜索词：用户找的是「这批货到哪一步了」，
+   * 分成两个框会让他搜两遍。只按屏幕上看得见的列匹配。
+   */
+  const [keyword, setKeyword] = useState("");
+  const visibleBatches = useMemo(() => (keyword.trim() ? batches.filter((row) => fuzzyMatch(keyword, [
+    row.batchNo, row.orderNo, row.status,
+    `${row.plannedQuantity} / ${row.dispatchedQuantity}`,
+  ])) : batches), [batches, keyword]);
+  const visibleTransfers = useMemo(() => (keyword.trim() ? transfers.filter((row) => fuzzyMatch(keyword, [
+    row.transferNo ?? row.shipmentNo, row.orderNo, row.transferType, row.quantity, row.status,
+  ])) : transfers), [transfers, keyword]);
+
   const batchColumns: ColumnDef<Batch>[] = [{ accessorKey: "batchNo", header: "批次", meta: { width: COLUMN_WIDTH.batchNo } }, { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.batchOrderNo } }, { accessorKey: "status", header: "状态", meta: { width: COLUMN_WIDTH.batchStatus } }, { id: "quantity", header: "计划/直发", meta: { width: COLUMN_WIDTH.batchQuantity }, cell: ({ row }) => `${row.original.plannedQuantity} / ${row.original.dispatchedQuantity}` }, ...auditColumns<Batch>(), { id: "actions", header: "操作", meta: { width: COLUMN_WIDTH.batchActions }, cell: ({ row }) => <><Button size="sm" variant="secondary" onClick={() => dispatch(row.original)}>直发</Button><Button size="sm" variant="secondary" onClick={() => receipt(row.original)}>签收</Button>{row.original.status === "draft" && <Button size="sm" variant="destructive" onClick={() => void run(() => apiRequest(`/production/outsource-logistics-batches/${row.original.id}`, { method: "DELETE" }), "草稿已删除")}>删除</Button>}</> }];
   const transferColumns: ColumnDef<Transfer>[] = [{ id: "transferNo", header: "编号", meta: { width: COLUMN_WIDTH.transferNo }, cell: ({ row }) => row.original.transferNo ?? row.original.shipmentNo ?? "-" }, { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.transferOrderNo } }, { accessorKey: "transferType", header: "类型", meta: { width: COLUMN_WIDTH.transferType } }, { accessorKey: "quantity", header: "数量", meta: { width: COLUMN_WIDTH.transferQuantity } }, { accessorKey: "status", header: "状态", meta: { width: COLUMN_WIDTH.transferStatus } }, ...auditColumns<Transfer>()];
-  return <section className="panel outsource-panel"><ActionDialog open={Boolean(dialog)} onOpenChange={(openState) => { if (!openState) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field) => setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} /><div className="panel-heading"><h2>外加工交接</h2><div className="page-actions"><Button onClick={createBatch}>新建直发批次</Button><Button variant="secondary" onClick={() => transfer("余料回厂", "/production/outsource-logistics-batches/returns/material")}>余料回厂</Button><Button variant="secondary" onClick={() => transfer("成品回厂", "/production/outsource-logistics-batches/returns/finished-goods")}>成品回厂</Button><Button variant="secondary" onClick={() => transfer("直装柜", "/production/outsource-logistics-batches/direct-shipments")}>直装柜</Button></div></div>{error && <p className="status-error panel-body">{error}</p>}<div className="panel-body"><DataTable columns={batchColumns} data={batches} empty={<EmptyState title="暂无外加工批次" />} /><h3>回厂与直装柜</h3><DataTable columns={transferColumns} data={transfers} empty={<EmptyState title="暂无回厂或直装柜记录" />} /></div></section>;
+  return <section className="panel outsource-panel"><ActionDialog open={Boolean(dialog)} onOpenChange={(openState) => { if (!openState) setDialog(null); }} title={dialog?.title ?? "操作"} fields={dialog?.fields ?? []} onAddCategory={(field) => setError(`${field.label}为业务记录，请在对应模块建立`)} onSubmit={(values) => { dialog?.submit(values); setDialog(null); }} /><div className="panel-heading"><h2>外加工交接</h2><div className="page-actions"><Button onClick={createBatch}>新建直发批次</Button><Button variant="secondary" onClick={() => transfer("余料回厂", "/production/outsource-logistics-batches/returns/material")}>余料回厂</Button><Button variant="secondary" onClick={() => transfer("成品回厂", "/production/outsource-logistics-batches/returns/finished-goods")}>成品回厂</Button><Button variant="secondary" onClick={() => transfer("直装柜", "/production/outsource-logistics-batches/direct-shipments")}>直装柜</Button></div></div>{error && <p className="status-error panel-body">{error}</p>}<div className="panel-body"><div className="filter-bar"><label>搜索批次、订单号、类型、数量或状态<Input data-testid="outsource-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" /></label>{keyword.trim() ? <span className="panel-note" data-testid="outsource-search-count">批次 {visibleBatches.length} / {batches.length} · 回厂与直装柜 {visibleTransfers.length} / {transfers.length}</span> : null}{keyword.trim() ? <Button size="sm" variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}</div><DataTable columns={batchColumns} data={visibleBatches} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的外加工批次`} description={`共 ${batches.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无外加工批次" />} /><h3>回厂与直装柜</h3><DataTable columns={transferColumns} data={visibleTransfers} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的回厂/直装柜记录`} description={`共 ${transfers.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无回厂或直装柜记录" />} /></div></section>;
 }
