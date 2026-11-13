@@ -11,10 +11,13 @@ import type { ColumnDef } from "@tanstack/react-table";
 import Link from "next/link";
 import { ActionDialog, type ActionField } from "../ui/action-dialog";
 import { Button } from "../ui/button";
+import { Input } from "../../components/ui/input";
 import { DataTable } from "../data/data-table";
 import { auditColumns, type AuditRow } from "../data/audit-columns";
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiGet, apiPost, apiRequest } from "../../lib/api-client";
+// 搜索语义全站统一（空格分词的 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。
+import { fuzzyMatch } from "../../lib/fuzzy-search";
 import { shouldRefreshOnVisibility } from "../../lib/refresh-policy";
 import { emitQcDataChanged, subscribeQcDataChanged } from "./qc-refresh";
 import { notifyError, notifySuccess } from "../ui/toaster";
@@ -321,6 +324,20 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     setDialog({ title: `整批退货：${item.purchase_order_no ?? item.orderNo} / 第 ${item.batchSequence ?? "-"} 批`, fields: [{ name: "reason", label: "退货原因", required: true, type: "textarea" }], submit: (v) => void run(() => apiPost(`/incoming-inspections/${item.id}/return`, { reason: v.reason }), "质检批次已退货") });
   }
 
+  /**
+   * 关键字搜索（2026-11-13，用户：「所有表单是否都有搜索功能搜索框……因为现在单子多了，查找比较麻烦」）。
+   * 来料质检记录只会累积，16 列里用户记得住的通常是一两个特征（订单号、物料名、批次号、结果）。
+   * 只按**屏幕上看得见**的列匹配；「入库情况」那一格的已建单/剩余量也参与（仓库常按数字找单）。
+   */
+  const [keyword, setKeyword] = useState("");
+  const visibleInspections = useMemo(() => (keyword.trim() ? inspections.filter((row) => fuzzyMatch(keyword, [
+    row.orderNo, row.purchase_order_no, row.material_name,
+    `第 ${row.batchSequence ?? row.purchaseReceipt?.batchSequence ?? "-"} 批`,
+    batchTotalOf(row), qcResultLabel(row.qcResult), inspectionStatusLabel[row.status] ?? row.status,
+    row.inspectedQuantity, row.acceptedQuantity, row.conditionalQuantity, row.rejectedQuantity,
+    `已建单 ${inboundUsedByInspection(row.id)}`, `剩余可入 ${inboundRemainingFor(row)}`,
+  ])) : inspections), [inspections, keyword, inbounds, notices]);
+
   const columns: ColumnDef<Inspection>[] = [
     { accessorKey: "orderNo", header: "订单号", meta: { width: COLUMN_WIDTH.orderNo } },
     { accessorKey: "purchase_order_no", header: "采购单号", meta: { width: COLUMN_WIDTH.purchaseOrderNo }, cell: ({ row }) => row.original.purchase_order_no ?? "-" },
@@ -375,6 +392,18 @@ export function IncomingInspectionsPanel({ receiptId }: { receiptId?: string }) 
     {message && <p className="status-success panel-body" role="status">{message}</p>}
     {hint && <p className="panel-note panel-body" role="status" data-testid="qc-hint">{hint}</p>}
     {error && <div className="panel-body" role="alert"><ErrorState message={error} onRetry={() => void load()} /></div>}
-    <div className="panel-body">{loading ? <LoadingState /> : <DataTable columns={columns} data={inspections} empty={<EmptyState title="暂无来料质检记录" description="采购登记到货后，在这里点「登记来料质检」送检。" />} />}</div>
+    <div className="panel-body">
+      {/*
+        关键字搜索（2026-11-13）：只过滤这张表，不影响上面的动作按钮与取数。
+      */}
+      <div className="filter-bar">
+        <label>搜索订单号、采购单号、物料、批次、质检结果或状态
+          <Input data-testid="incoming-inspection-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
+        </label>
+        {keyword.trim() ? <span className="panel-note" data-testid="incoming-inspection-search-count">筛选后 {visibleInspections.length} / {inspections.length} 条</span> : null}
+        {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+      </div>
+      {loading ? <LoadingState /> : <DataTable columns={columns} data={visibleInspections} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的来料质检记录`} description={`共 ${inspections.length} 条，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无来料质检记录" description="采购登记到货后，在这里点「登记来料质检」送检。" />} />}
+    </div>
   </section>;
 }
