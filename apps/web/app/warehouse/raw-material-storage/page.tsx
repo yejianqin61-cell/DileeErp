@@ -12,7 +12,7 @@ import { Input } from "../../../components/ui/input";
 import { EmptyState, ErrorState, LoadingState } from "../../../components/feedback/states";
 import { RawMaterialInboundDetailDialog, type RawMaterialInboundRow } from "../../../components/warehouse/raw-material-inbound-detail-dialog";
 import { ApiClientError, apiGet, apiPatch, apiPost, apiRequest } from "../../../lib/api-client";
-import { mergeMaterialBalances } from "../../../lib/wms-balances";
+import { currentOnHandQuantity, mergeMaterialBalances } from "../../../lib/wms-balances";
 import { shouldAutoOpenDraft } from "../../../lib/auto-open";
 import { shouldRefreshOnVisibility } from "../../../lib/refresh-policy";
 import { fuzzyMatch } from "../../../lib/fuzzy-search";
@@ -65,7 +65,7 @@ const RAW_MATERIAL_BALANCES_PATH = "/inventory/raw-material-balances";
  *
  * `DataTable` 2026-10-09 起**一律**给 `<table>` 加 `data-table-fixed`（`table-layout: fixed`）：
  * 没写 `meta.width` 的列由浏览器**均分**容器宽度，与内容长短无关 ——「物料」这种长文本
- * 会和「合计」一样宽，然后被省略成一串「M-00…」。这里把每一列的宽度显式写出来，
+ * 会和「现存原料数量」一样宽，然后被省略成一串「M-00…」。这里把每一列的宽度显式写出来，
  * 把「均分」改成「按内容需要分配」。
  *
  * 两条预算（1366 屏的表内容宽约 1034px 是下面估值的分母）：
@@ -82,7 +82,7 @@ const RAW_MATERIAL_BALANCES_PATH = "/inventory/raw-material-balances";
  *     （hover 看全文），所以**不写 `ellipsis: true`** —— 2026-10-09 起它已是默认值。
  *   - 单位 6%：短文本，够放「米 / 条 / 千克」这类单位名。
  *   - 待入库（未过账）14%：这一列宽的是**表头**（8 个汉字约 96px + 24px 内边距 ≈ 120px），
- *     里面的数字很短；已过账库存 13% / 合计 13%：5 字表头 + 「120.0000」这类数字。
+ *     里面的数字很短；已过账库存 13% / 现存原料数量 13%：数字列，5~6 字表头 + 「120.0000」这类数字。
  *   - 入库单号 10%：行身份，单号常带日期前缀；订单号 / 采购单号 / 到货记录各 8%：
  *     单号属长文本列（规则下限 ≥8%），超出的省略号 + hover 看全文。
  *   - 到货批次 7%：「第 12 批」约 45px + 内边距 = 69px；数量 5%：数字列取规则区间（4%~6%）的中值；
@@ -253,7 +253,12 @@ export default function RawMaterialStoragePage() {
     // 补一个与格子同值的 `accessorFn`，非 0 的那几格才拿得到 `cell-ellipsis` + 原生 title。
     { id: "pending", header: "待入库（未过账）", meta: { width: COLUMN_WIDTH.pending }, accessorFn: (row) => pendingByKey.get(`${row.material_id}|${row.unit_id}`) ?? 0, cell: ({ row }) => { const quantity = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return quantity ? <span className="status-warning">{quantity}</span> : "0"; } },
     { accessorKey: "quantity", header: "已过账库存", meta: { width: COLUMN_WIDTH.postedQuantity } },
-    { id: "total", header: "合计", meta: { width: COLUMN_WIDTH.totalQuantity }, cell: ({ row }) => { const pending = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return (Number(row.original.quantity) + pending).toString(); } }
+    // 「现存原料数量」= 已过账库存 + 待入库（未过账）。这一列以前叫「合计」：数字一直是对的，
+    // 但「合计」读起来像「两列相加」这种算术名，看不出它表达的是**物理上已在库的量**，
+    // 用户 2026-11-13 要求正名，口径不变。
+    // 表头用 `<span title>` 写口径：`DataTable` 只给**字符串表头**自动配 hover title，
+    // 而自动 title 只会重复列名，说明不了口径。
+    { id: "total", header: () => <span title="现存 = 已过账库存 + 待入库（未过账），即物理上已在库的量">现存原料数量</span>, meta: { width: COLUMN_WIDTH.totalQuantity }, cell: ({ row }) => { const pending = pendingByKey.get(`${row.original.material_id}|${row.original.unit_id}`) ?? 0; return currentOnHandQuantity(row.original.quantity, pending).toString(); } }
   ];
 
   const inboundColumns: ColumnDef<Inbound>[] = [
@@ -370,7 +375,7 @@ export default function RawMaterialStoragePage() {
       <section className="panel">
         <div className="panel-heading"><h2>库存汇总</h2>{query ? <span className="panel-note">筛选后 {filteredBalances.length} / {balances.length} 条</span> : null}</div>
         <div className="panel-body">
-          <p className="panel-note">「待入库（未过账）」是已接收通知生成的草稿数量，登记实际数量并过账后才会计入「已过账库存」。</p>
+          <p className="panel-note">「待入库（未过账）」是已接收通知生成的草稿数量，登记实际数量并过账后才会计入「已过账库存」。「现存原料数量」= 已过账库存 + 待入库（未过账），即物理上已在库的量（含未过账草稿）。</p>
           {/*
             取数失败 ≠ 没有库存。失败时**不渲染这张表**（表在、数据 0 行，读起来就是「库存是空的」），
             改成把原因摆在这里 + 一个重试入口；下面那张原料入库单照旧可用。

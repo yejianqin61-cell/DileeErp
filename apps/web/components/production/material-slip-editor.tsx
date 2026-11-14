@@ -22,13 +22,17 @@ import { notifyError, notifySuccess } from "../ui/toaster";
 type ProductionOrder = { id: string; productionOrderNo: string; orderNo: string; executionMode?: string; status?: string; bom?: { id: string } | null; bomId?: string | null };
 type Material = { id: string; materialCode?: string; name: string; isActive?: boolean };
 type RawBalance = { material_id: string; unit_name: string; quantity: string };
-type BomItem = { materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; requiredQuantity: string; unit: string; unitId?: string | null };
-type SlipLine = { materialId: string; quantity: string; remark: string };
+type BomItem = { materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; requiredQuantity: string; unit: string; unitId?: string | null; supplierId?: string | null; supplierName?: string | null };
+type SlipLine = { materialId: string; quantity: string; supplier_id?: string | null; remark: string };
 type PreviewLine = { material_id: string; material_code?: string; material_name?: string; model?: string | null; unit?: string | null; color?: string | null; approved_usage?: string | null; bom_reference_quantity?: string | null; inventory_quantity?: string | null; available_before?: string | null; purchase_received_quantity?: string | null; purchase_outstanding_quantity?: string | null; cumulative_issued_before?: string | number | null; cumulative_issued_after?: string | null; production_outstanding_quantity?: string | null; requested_replenishment_quantity?: string | null;
   /** 与领料单打印件同名的四个数量：后端按同一口径算好（material-slip-quantity），页面只显示、不自己换算。 */
-  material_quantity?: number | null; issued_quantity?: number | null; current_quantity?: number | null; remaining_quantity?: number | null; risks?: Array<{ type?: string; message?: string }> };
+  material_quantity?: number | null; issued_quantity?: number | null; current_quantity?: number | null; remaining_quantity?: number | null; risks?: Array<{ type?: string; message?: string }>;
+  /** 同一物料同供应商下的档位结存，供「当前库存量」列 hover 展示各档。 */
+  available_by_supplier?: Array<{ supplier_id: string | null; supplier_name: string | null; quantity: string }>;
+  supplier_id?: string | null;
+  supplier_name?: string | null };
 type Preview = { lines: PreviewLine[]; warnings?: string[] };
-type Movement = { id: string; movementNo: string; documentType: string; status: string; productionOrderId: string; reason?: string | null; lines: Array<{ materialId: string; quantity: string; remark?: string | null }> };
+type Movement = { id: string; movementNo: string; documentType: string; status: string; productionOrderId: string; reason?: string | null; lines: Array<{ materialId: string; quantity: string; remark?: string | null; supplier_id?: string | null; supplier_name?: string | null }> };
 
 const messageOf = (cause: unknown, fallback: string) => cause instanceof ApiClientError ? cause.message : fallback;
 
@@ -60,12 +64,25 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     const seen = new Set<string>();
     return bomItems
       .filter((item) => { if (seen.has(item.materialId)) return false; seen.add(item.materialId); return true; })
-      .map((item) => ({ value: item.materialId, label: `${item.materialName} / ${item.model ?? item.specificationModel ?? "无型号"} / 需 ${item.requiredQuantity}${item.unit}` }));
+      .map((item) => ({
+        value: item.materialId,
+        label: `${item.materialName} / ${item.model ?? item.specificationModel ?? "无型号"} / 需 ${item.requiredQuantity}${item.unit}${
+          item.supplierName ? ` / ${item.supplierName}` : ""
+        }`,
+        supplier_id: item.supplierId ?? null,
+      }));
   }, [bomItems]);
   const materialLabel = (materialId: string) => bomMaterialOptions.find((option) => option.value === materialId)?.label ?? materialId;
   /** 单位：下拉文案里有 BOM 明细的单位，明细行本身没有；取不到就显示「-」。 */
   const unitOf = (materialId: string) => bomItems.find((item) => item.materialId === materialId)?.unit || "-";
   const balanceOf = (materialId: string) => rawBalances.filter((balance) => balance.material_id === materialId).map((balance) => `${balance.quantity} ${balance.unit_name}`).join("、") || "0";
+  /** 同一物料 + 同一单位下的供应商档位结存（来自 preview 的 available_by_supplier），供「当前库存量」 hover 展示。 */
+  const supplierStockOf = (materialId: string): string => {
+    if (!preview?.lines.length) return "";
+    const line = preview.lines.find((l) => l.material_id === materialId);
+    if (!line?.available_by_supplier?.length) return "";
+    return line.available_by_supplier.map((b) => `${b.supplier_name ?? "未指定"}: ${b.quantity}`).join("、");
+  };
 
   /** 切换/加载生产单时只取该生产单订单的 BOM 明细，避免误选别的订单物料。 */
   async function loadBomFor(orderId: string, orderList = orders): Promise<BomItem[]> {
@@ -85,7 +102,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
   async function refreshPreview(nextOrderId: string, nextLines: SlipLine[]) {
     if (isReplenishment || !nextOrderId || !nextLines.length) { setPreview(null); return; }
     try {
-      const result = await apiPost<Preview>("/production/material-movements/issue-preview", { production_order_id: nextOrderId, lines: nextLines.map((line) => ({ material_id: line.materialId, quantity: line.quantity, remark: line.remark || undefined })) });
+      const result = await apiPost<Preview>("/production/material-movements/issue-preview", { production_order_id: nextOrderId, lines: nextLines.map((line) => ({ material_id: line.materialId, quantity: line.quantity, supplier_id: line.supplier_id ?? undefined, remark: line.remark || undefined })) });
       setPreview(result.data);
     } catch { setPreview(null); }
   }
@@ -113,7 +130,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
           setProductionOrderId(movement.productionOrderId);
           if (isReplenishment) setReason(movement.reason ?? "");
           const items = await loadBomFor(movement.productionOrderId, orderResult.data);
-          const editLines = movement.lines.map((line) => ({ materialId: line.materialId, quantity: line.quantity, remark: line.remark ?? "" }));
+          const editLines = movement.lines.map((line) => ({ materialId: line.materialId, quantity: line.quantity, supplier_id: line.supplier_id ?? null, remark: line.remark ?? "" }));
           setLines(editLines.length ? editLines : [{ materialId: items[0]?.materialId ?? "", quantity: "1", remark: "" }]);
           void refreshPreview(movement.productionOrderId, editLines);
           return;
@@ -154,11 +171,11 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
 
   /** 添加行：默认选还没有用过的物料；BOM 里的物料都用过了就返回空（强迫用户显式选择，避免重复行）。 */
   function firstUnusedMaterial(current: SlipLine[]) {
-    const used = new Set(current.map((line) => line.materialId));
-    return bomMaterialOptions.find((option) => !used.has(option.value))?.value ?? "";
+    const used = new Set(current.map((line) => `${line.materialId}|${line.supplier_id ?? "__none__"}`));
+    return bomMaterialOptions.find((option) => !used.has(`${option.value}|${option.supplier_id ?? "__none__"}`))?.value ?? "";
   }
-  /** BOM 里的物料是否都已经有行了：都用完就不能再「添加行」（同一物料只能一行）。 */
-  const allMaterialsUsed = bomMaterialOptions.length > 0 && bomMaterialOptions.every((option) => lines.some((line) => line.materialId === option.value));
+  /** BOM 里的物料是否都已经有行了：都用完就不能再「添加行」（同一物料 + 同一供应商只能有一行）。 */
+  const allMaterialsUsed = bomMaterialOptions.length > 0 && bomMaterialOptions.every((option) => lines.some((line) => line.materialId === option.value && (line.supplier_id ?? "__none__") === (option.supplier_id ?? "__none__")));
 
   function validate(): string {
     if (!productionOrderId) return "请先选择生产单";
@@ -166,8 +183,8 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     if (isReplenishment && !reason.trim()) return "补料必须填写补料原因（坏片/生产失误等）";
     const invalid = lines.find((line) => !line.materialId || !line.quantity || Number(line.quantity) <= 0);
     if (invalid) return "每一行都必须选择物料并填写大于 0 的数量";
-    const materialIds = lines.map((line) => line.materialId);
-    if (new Set(materialIds).size !== materialIds.length) return "同一物料只能有一行：请合并数量后再保存";
+    const keys = lines.map((line) => `${line.materialId}|${line.supplier_id ?? "__none__"}`);
+    if (new Set(keys).size !== keys.length) return "同一物料 + 同一供应商只能有一行：请合并数量后再保存";
     return "";
   }
 
@@ -175,7 +192,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
     return {
       production_order_id: productionOrderId,
       ...(isReplenishment ? { reason: reason.trim() } : {}),
-      lines: lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity, remark: line.remark || undefined })),
+      lines: lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity, supplier_id: line.supplier_id ?? undefined, remark: line.remark || undefined })),
     };
   }
 
@@ -262,6 +279,7 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
               <TableHead>型号</TableHead>
               <TableHead>颜色</TableHead>
               <TableHead>单位</TableHead>
+              <TableHead>供应商</TableHead>
               {/* 「配料数量 / 已领数量 / 本次领料量 / 余下数量」与领料单打印件的列一一对应、
                   同名同值（口径由后端 material-slip-quantity 统一算，页面只显示）：
                   车间拿打印件核对系统时，两边是同一组数字，不再一边含本单、一边不含本单。 */}
@@ -289,7 +307,10 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                 const issuedQuantity = info?.issued_quantity ?? info?.cumulative_issued_before ?? "-";
                 const remainingQuantity = info?.remaining_quantity;
                 const remainingText = remainingQuantity === null || remainingQuantity === undefined ? "-" : String(remainingQuantity);
-                return <TableRow key={`${line.materialId || "new"}-${index}`}>
+                const supplierOption = line.supplier_id ? bomItems.find((b) => b.supplierId === line.supplier_id && b.materialId === line.materialId) : null;
+                const supplierLabel = line.supplier_id ? (supplierOption?.supplierName ?? "未指定") : "未指定";
+                const availableStock = info?.available_before ?? "-";
+                return <TableRow key={`${line.materialId || "new"}-${line.supplier_id ?? "__none__"}-${index}`}>
                   <TableCell className="slip-col-material" title={materialLabel(line.materialId)}>
                     {/* 原料来自该订单的 BOM 明细，几十个部件时靠滚找同样费劲（用户 2026-11-13：
                         「所有下拉列表……都要有搜索功能」）。BOM 为空时给一条说明原因的占位项，
@@ -311,17 +332,18 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                   <TableCell title={info?.model ?? "-"}>{info?.model ?? "-"}</TableCell>
                   <TableCell title={info?.color ?? "-"}>{info?.color ?? "-"}</TableCell>
                   <TableCell>{unitOf(line.materialId)}</TableCell>
+                  <TableCell title={supplierLabel}>{supplierLabel}</TableCell>
                   <TableCell>{materialQuantity}</TableCell>
                   {!isReplenishment && <TableCell>{issuedQuantity}</TableCell>}
                   <TableCell className="slip-col-qty"><Input type="number" min="0" step="0.0001" data-testid={`material-slip-line-quantity-${index}`} value={line.quantity} onChange={(event) => update({ quantity: event.target.value })} /></TableCell>
                   {/* 余下数量为负 = 超领：跟打印件一样显示负数，并标红提示，不抹成 0。 */}
                   {!isReplenishment && <TableCell className={typeof remainingQuantity === "number" && remainingQuantity < 0 ? "status-danger" : undefined}>{remainingText}</TableCell>}
-                  <TableCell className={short ? "status-danger" : "status-success"} title={isReplenishment ? balanceOf(line.materialId) : info?.inventory_quantity ?? info?.available_before ?? "-"}>{isReplenishment ? balanceOf(line.materialId) : info?.inventory_quantity ?? info?.available_before ?? "-"}</TableCell>
+                  <TableCell className={short ? "status-danger" : "status-success"} title={supplierStockOf(line.materialId) || (isReplenishment ? balanceOf(line.materialId) : availableStock)}>{isReplenishment ? balanceOf(line.materialId) : availableStock}</TableCell>
                   {!isReplenishment && <><TableCell>{info?.purchase_received_quantity ?? "-"}</TableCell><TableCell>{info?.purchase_outstanding_quantity ?? "-"}</TableCell></>}
                   <TableCell className="slip-col-remark"><Input value={line.remark} placeholder="可选" onChange={(event) => update({ remark: event.target.value })} /></TableCell>
                   <TableCell className="slip-col-action"><Button size="sm" variant="ghost" title="删除行" aria-label="删除行" onClick={() => applyLines(lines.filter((_, itemIndex) => itemIndex !== index))}>删除</Button></TableCell>
                 </TableRow>;
-              }) : <TableRow><TableCell colSpan={isReplenishment ? 10 : 14}><EmptyState title="还没有明细" description="点右上角「添加行」开始登记物料。" /></TableCell></TableRow>}
+              }) : <TableRow><TableCell colSpan={isReplenishment ? 11 : 15}><EmptyState title="还没有明细" description="点右上角「添加行」开始登记物料。" /></TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>

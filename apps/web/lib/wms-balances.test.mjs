@@ -2,7 +2,7 @@
 // 覆盖缺陷：没有库存记录的物料行单位名为空（单位名取自尚未计算的渲染期 memo，而不是本次请求的单位数据）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeMaterialBalances } from "./wms-balances.ts";
+import { currentOnHandQuantity, mergeMaterialBalances } from "./wms-balances.ts";
 
 const materials = [
   { id: "mat-1", defaultUnitId: "u-da" },
@@ -41,4 +41,20 @@ test("余额里出现未知物料时丢弃，不产生无主行", () => {
 test("单位表里查不到的单位名保持空串而不是 undefined", () => {
   const rows = mergeMaterialBalances([{ id: "mat-3", defaultUnitId: "u-none" }], units, [], attach);
   assert.equal(rows[0].unit_name, "");
+});
+
+// 现存原料数量 = 已过账库存 + 待入库（未过账），即物理上已在库的量（2026-11-13 用户定口径）。
+test("现存原料数量：字符串输入（接口的 Decimal 序列化结果）直接相加", () => {
+  assert.equal(currentOnHandQuantity("120.0000", "10"), 130);
+});
+
+test("现存原料数量：数字输入与 0 都算", () => {
+  assert.equal(currentOnHandQuantity(120, 10), 130);
+  assert.equal(currentOnHandQuantity("0", 0), 0);
+  assert.equal(currentOnHandQuantity(0, "7.5"), 7.5);
+});
+
+test("现存原料数量：小数相加不失真到整数", () => {
+  assert.equal(currentOnHandQuantity("1.5", "2.25"), 3.75);
+  assert.equal(currentOnHandQuantity("0.1", "0.2"), 0.1 + 0.2);
 });

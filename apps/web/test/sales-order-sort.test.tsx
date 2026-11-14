@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import SalesOrdersList from "../components/sales/sales-orders-list";
+import { DEFAULT_SALES_ORDER_SORT_VALUE, SALES_ORDER_SORT_OPTIONS } from "../lib/sales-order-sort";
 import { apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
 
 vi.mock("next/navigation", () => ({
@@ -91,5 +92,37 @@ describe("销售单列表：排序（服务端排序，前端如实传参）", (
     expect(options.some((text) => text.includes("订单号（字典序"))).toBe(true);
     expect(options.some((text) => text.includes("创建时间"))).toBe(true);
     expect(new Set(options).size).toBe(6);
+  });
+});
+
+/**
+ * 防漂移守卫：前端这份选项是**照抄**后端口径的（两个独立 workspace，没有共享包），
+ * 所以这里直接读后端那个文件逐项比对。
+ *
+ * 抄一份能让下拉立刻可用；而这条守卫让"两边漂移"变成一条会红的用例，
+ * 而不是一个用户报上来的 bug（"下拉里选了订单号排序，服务端说 400"）。
+ */
+describe("销售单排序：前端选项与后端口径逐项一致（防漂移守卫）", () => {
+  it("键、方向、文案三样都与 sales-order-list-sort.ts 相同", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const source = fs.readFileSync(path.resolve(__dirname, "../../api/src/modules/sales/sales-order-list-sort.ts"), "utf8");
+
+    // 后端把六条文案写在一张表里：`"键:方向": "文案"`。
+    const pairs = [...source.matchAll(/"([a-z_]+):(asc|desc)":\s*"([^"]+)"/g)].map((match) => ({ value: `${match[1]}:${match[2]}`, label: match[3] }));
+    expect(pairs.length).toBe(6);
+
+    const normalize = (rows: Array<{ value: string; label: string }>) => [...rows].sort((left, right) => left.value.localeCompare(right.value));
+    expect(normalize(SALES_ORDER_SORT_OPTIONS.map((option) => ({ ...option })))).toEqual(normalize(pairs));
+  });
+
+  it("默认值两边一致（前端的默认项 = 后端不传参数时的行为）", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const source = fs.readFileSync(path.resolve(__dirname, "../../api/src/modules/sales/sales-order-list-sort.ts"), "utf8");
+
+    const sort = source.match(/DEFAULT_SALES_ORDER_LIST_SORT[^=]*=\s*"([a-z_]+)"/)?.[1];
+    const direction = source.match(/DEFAULT_SALES_ORDER_LIST_DIRECTION[^=]*=\s*"([a-z]+)"/)?.[1];
+    expect(`${sort}:${direction}`).toBe(DEFAULT_SALES_ORDER_SORT_VALUE);
   });
 });

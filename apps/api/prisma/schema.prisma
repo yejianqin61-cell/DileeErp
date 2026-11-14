@@ -980,6 +980,9 @@ model Supplier {
   supplierPayableEntries         SupplierPayableEntry[]
   supplierPayments               SupplierPayment[]
   supplierPayableReconciliations SupplierPayableReconciliation[]
+  /// 库存事实与领料明细都按供应商分档（2026-11-13）：同一物料可能来自不同供应商，余额必须分得开。
+  inventoryFacts                 InventoryFact[]
+  rawMaterialMovementLines       RawMaterialMovementLine[]
 
   @@map("suppliers")
 }
@@ -1368,7 +1371,11 @@ model InventoryFact {
   unit                         Unit                     @relation(fields: [unitId], references: [id])
   unitId                       String                   @map("unit_id") @db.Uuid
 
+  supplierId           String?   @map("supplier_id") @db.Uuid
+  supplier             Supplier? @relation(fields: [supplierId], references: [id])
+
   @@index([materialId, inventoryCategory, unitId])
+  @@index([materialId, inventoryCategory, unitId, supplierId])
   @@index([sourceType, sourceId])
   @@index([orderNo])
   @@index([productionOrderId])
@@ -2735,12 +2742,18 @@ model RawMaterialMovementLine {
   material             Material                  @relation(fields: [materialId], references: [id])
   unit                 Unit                      @relation(fields: [unitId], references: [id])
   sourceIssueLine      RawMaterialMovementLine?  @relation("raw_material_movement_source_issue", fields: [sourceIssueLineId], references: [id])
+  /// 领用指定的供应商（2026-11-13）。可空：历史领料明细与「未指定」档位都为 NULL。
+  /// 同一物料在同一订单里可能来自不同供应商（BOM 行按供应商分开），出库必须能说清扣的是谁家的料。
+  supplierId           String?                   @map("supplier_id") @db.Uuid
+  supplier             Supplier?                 @relation(fields: [supplierId], references: [id])
   derivedLines         RawMaterialMovementLine[] @relation("raw_material_movement_source_issue")
   inventoryFacts       InventoryFact[]
   risks                RawMaterialMovementRisk[]
 
   @@index([movementId])
   @@index([materialId, unitId])
+  /// 「同一物料 + 同一供应商只能一行」的查重与按供应商取余额都走它。
+  @@index([movementId, materialId, supplierId])
   @@map("raw_material_movement_lines")
 }
 

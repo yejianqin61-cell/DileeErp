@@ -36,6 +36,8 @@ export type SlipDocumentLine = {
   remainingQuantity?: number | null;
   /** 补料单：补领数量（补料单纸面只有这一个数量）。 */
   replenishQuantity?: number;
+  /** 供应商（空串表示「未指定」）。同一物料同供应商只能一行，这里展示该行所属供应商。 */
+  supplierName?: string | null;
 };
 
 export type SlipDocument = { document_type: "issue" | "replenishment"; document: { lines: SlipDocumentLine[] } };
@@ -47,16 +49,17 @@ const amount = (value: number | null | undefined) => (value === null || value ==
  * 两张表的列宽，各自合计**恰好 100%**：这张表没有审计列，缺的百分比会被浏览器摊给别的列，
  * 于是「本来只想收窄一列」会变成整张表都变。数字取舍见 docs/design/material-slip-form-quantities-2026-10-29.md。
  */
-const ISSUE_WIDTH = { materialCode: "12%", materialName: "17%", specification: "13%", color: "7%", unit: "5%", bomQuantity: "10%", issuedQuantity: "9%", currentQuantity: "10%", remainingQuantity: "9%", remark: "8%" } as const;
-const REPLENISHMENT_WIDTH = { materialCode: "16%", materialName: "24%", specification: "20%", color: "10%", unit: "8%", replenishQuantity: "12%", remark: "10%" } as const;
+const ISSUE_WIDTH = { materialCode: "12%", materialName: "17%", specification: "13%", color: "7%", unit: "5%", supplier: "8%", bomQuantity: "10%", issuedQuantity: "9%", currentQuantity: "10%", remainingQuantity: "9%", remark: "7%" } as const;
+const REPLENISHMENT_WIDTH = { materialCode: "16%", materialName: "24%", specification: "20%", color: "10%", unit: "8%", supplier: "10%", replenishQuantity: "12%", remark: "10%" } as const;
 
 /** 两张表共用的前 5 列（物料资料）：两张表列宽不同，所以宽度由各自传入。 */
-const baseColumns = (widths: { materialCode: string; materialName: string; specification: string; color: string; unit: string }): ColumnDef<SlipDocumentLine>[] => [
+const baseColumns = (widths: { materialCode: string; materialName: string; specification: string; color: string; unit: string; supplier: string }): ColumnDef<SlipDocumentLine>[] => [
   { id: "materialCode", header: "物料编码", meta: { width: widths.materialCode }, accessorFn: (line) => text(line.materialCode) },
   { id: "materialName", header: "物料名称", meta: { width: widths.materialName }, accessorFn: (line) => text(line.materialName) },
   { id: "specification", header: "规格型号", meta: { width: widths.specification }, accessorFn: (line) => text(line.specificationModel) },
   { id: "color", header: "颜色", meta: { width: widths.color }, accessorFn: (line) => text(line.color) },
   { id: "unit", header: "单位", meta: { width: widths.unit }, accessorFn: (line) => text(line.unit) },
+  { id: "supplier", header: "供应商", meta: { width: widths.supplier }, accessorFn: (line) => text(line.supplierName ?? null) },
 ];
 
 /** 领料单：列名与打印件一致，四个数量连续排在一起。 */
@@ -104,7 +107,7 @@ export function MaterialSlipLinesTable({ slip }: { slip: SlipDocument | null }) 
    * 「搜什么都能搜到」比搜不到更让人不信任这个框。要按数量核对，看的是这几个数字列本身。
    */
   const visibleLines = useMemo(() => (slip?.document.lines ?? []).filter((line) => fuzzyMatch(keyword, [
-    line.materialCode, line.materialName, line.specificationModel, line.color, line.unit, line.remark,
+    line.materialCode, line.materialName, line.specificationModel, line.color, line.unit, line.supplierName, line.remark,
   ])), [slip, keyword]);
   return <>
     {/* 版式与其它列表页一致：filter-bar + 「筛选后 N / M」+ 清除搜索（用户在这种框里学到的操作要一致）。 */}

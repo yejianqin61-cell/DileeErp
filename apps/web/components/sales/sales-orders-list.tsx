@@ -24,6 +24,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { EmptyState, ErrorState, LoadingState } from "../feedback/states";
 import { ApiClientError, apiDelete, apiGet, apiPost } from "../../lib/api-client";
 import { downloadFile } from "../../lib/download";
+import { fuzzyMatch } from "../../lib/fuzzy-search";
+import { DEFAULT_SALES_ORDER_SORT_VALUE, SALES_ORDER_SORT_OPTIONS, salesOrderListPath } from "../../lib/sales-order-sort";
 import { exportImagesPath, productionSheetExportPath, productionSheetFileName, selectableImages, type ExportImageCandidate } from "../../lib/production-sheet-image";
 import ProductionSheetExportDialog from "./production-sheet-export-dialog";
 import { auditColumns, auditDetailFields, type AuditRow } from "../data/audit-columns";
@@ -58,6 +60,14 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   const [orders, setOrders] = useState<Order[]>([]);
   const [query, setQuery] = useState("");
   const [itemNoFilter, setItemNoFilter] = useState<"all" | "with" | "without">("all");
+  /**
+   * 排序（2026-11-13，用户：「需要给销售单排序，支持按照销售单号字典序排序，创建时间排序」）。
+   *
+   * 值形如 `order_no:asc`，选项与文案在 `lib/sales-order-sort.ts`（与后端口径有静态守卫比对）。
+   * **排序在服务端做**：这个接口是分页的，前端手上只有 `page_size=200` 那一页，
+   * 在前端排只会在翻页时前后矛盾。这里只负责如实把选中的那一项发出去。
+   */
+  const [sortValue, setSortValue] = useState<string>(DEFAULT_SALES_ORDER_SORT_VALUE);
   const [selected, setSelected] = useState<Order | null>(null);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -76,14 +86,15 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
     setLoading(true);
     setError("");
     try {
-      setOrders((await apiGet<Order[]>("/sales-orders?page_size=200")).data);
+      setOrders((await apiGet<Order[]>(salesOrderListPath(sortValue))).data);
     } catch (cause) {
       setError(messageOf(cause, "销售数据加载失败"));
     } finally {
       setLoading(false);
     }
   }
-  useEffect(() => { void load(); }, []);
+  // 排序变了要**重新拉**（排序是服务端做的，不重拉就只是换了个下拉的文字）。
+  useEffect(() => { void load(); }, [sortValue]);
 
   async function loadFinishedGoods(salesOrderId: string) { try { setFinishedGoods((await apiGet<FinishedGoodsSummary>(`/sales-orders/${salesOrderId}/finished-goods`)).data); } catch { setFinishedGoods(null); } }
   useEffect(() => {
@@ -131,7 +142,8 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   const visibleOrders = useMemo(() => orders.filter((order) => {
     if (itemNoFilter === "with" && !order.itemNo) return false;
     if (itemNoFilter === "without" && order.itemNo) return false;
-    return !query || `${order.orderNo} ${order.itemNo ?? ""} ${order.customer.name} ${order.productName} ${order.status}`.toLowerCase().includes(query.toLowerCase());
+    // 搜索语义全站统一（空格分词 AND、忽略大小写与空白、空查询不过滤），见 lib/fuzzy-search.ts。只搜这张表**看得见**的列。
+    return fuzzyMatch(query, [order.orderNo, order.itemNo, order.customer.name, order.productName, order.quantity, order.unit, order.status]);
   }), [orders, query, itemNoFilter]);
 
   function confirmOrder(order: Order) { void run(() => apiPost(`/sales-orders/${order.id}/confirm`), "销售单已确认"); }
@@ -267,15 +279,31 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
       <div className="panel-heading"><h2>销售单</h2></div>
       <div className="panel-body">
         <div className="filter-bar">
-          <label>搜索订单、货号、客户或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label>
+          <label>搜索订单号、货号、客户、产品或状态<Input data-testid="sales-order-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词，空格分隔多个词" /></label>
+          {query.trim() ? <span className="panel-note" data-testid="sales-order-search-count">筛选后 {visibleOrders.length} / {orders.length} 张</span> : null}
+          {query.trim() ? <Button variant="secondary" onClick={() => setQuery("")}>清除搜索</Button> : null}
           <label>货号
             <Select value={itemNoFilter} onValueChange={(value) => setItemNoFilter(value as "all" | "with" | "without")}>
               <SelectTrigger data-testid="sales-item-no-filter"><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="all">全部</SelectItem><SelectItem value="with">仅填了货号</SelectItem><SelectItem value="without">未填货号（待补录）</SelectItem></SelectContent>
             </Select>
           </label>
+          {/*
+            排序（2026-11-13）：用户要「按销售单号字典序」与「按创建时间」两种。
+            放在筛选栏里而不是做成表头点击排序 —— `DataTable` 是全站共用的（96 张表），
+            给表头加排序要动那个共用组件；而后端排序需要一个显式的参数来源，
+            一个下拉比"哪几列可点"更好解释（也更好测）。
+          */}
+          <label>排序
+            <Select value={sortValue} onValueChange={setSortValue}>
+              <SelectTrigger data-testid="sales-order-sort"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {SALES_ORDER_SORT_OPTIONS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </label>
         </div>
-        <DataTable columns={orderColumns} data={visibleOrders} empty={<EmptyState title="暂无销售单" />} />
+        <DataTable columns={orderColumns} data={visibleOrders} empty={query.trim() ? <EmptyState title={`没有匹配“${query.trim()}”的销售单`} description={`共 ${orders.length} 张销售单，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无销售单" />} />
       </div>
     </section>
     <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) setSelected(null); }}>

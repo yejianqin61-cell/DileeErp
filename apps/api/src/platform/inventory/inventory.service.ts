@@ -25,6 +25,56 @@ export class InventoryService {
     return [...balances.values()].map((row) => ({ material_id: row.material_id, material_code: row.material_code, material_name: row.material_name, unit_id: row.unit_id, unit_name: row.unit_name, order_no: row.order_nos.size === 1 ? [...row.order_nos][0] : null, order_nos: [...row.order_nos].sort(), quantity: row.quantity.toString() })).filter((row) => row.quantity !== "0");
   }
 
+  /**
+   * 按「物料 + 单位 + 供应商」取原料余额。
+   *
+   * supplierId 传 null 时，查「未指定供应商」这一档位（历史领料/盘点调整等事实的 supplier_id 都为 NULL，
+   * 不算进任何一个具体供应商，也不被具体供应商消耗）。
+   *
+   * 为什么单独一条方法而不是在 rawMaterialBalance 里加参数：口径不同（default-unit vs 显式单位+供应商），
+   * 调用站点必须显式选，避免「默认走 defaultUnitId」的隐式行为把张/个搞混。
+   */
+  async rawMaterialBalanceBySupplier(client: InventoryClient, materialId: string, unitId: string, supplierId: string | null) {
+    const material = await client.material.findFirst({ where: { id: materialId, materialType: "raw_material", deletedAt: null } });
+    if (!material) return new Prisma.Decimal(0);
+    const result = await client.inventoryFact.aggregate({
+      where: { materialId: material.id, unitId, inventoryCategory: { in: ["raw_material", "scrap"] }, ...(supplierId ? { supplierId } : { supplierId: null }) },
+      _sum: { quantityDelta: true }
+    });
+    return result._sum.quantityDelta ?? new Prisma.Decimal(0);
+  }
+
+  /**
+   * 同一物料 + 同一单位下，按供应商拆分的余额桶（含 supplierId=null 的「未指定」档）。
+   * 供给前端「当前库存量」列的 hover title 与供应商下拉里的档位结存显示。
+   */
+  async rawMaterialSupplierBuckets(client: InventoryClient, materialId: string, unitId: string): Promise<Array<{ supplier_id: string | null; supplier_code: string | null; supplier_name: string | null; quantity: Prisma.Decimal }>> {
+    const facts = await client.inventoryFact.findMany({ where: { materialId, unitId, inventoryCategory: { in: ["raw_material", "scrap"] } }, select: { supplierId: true, quantityDelta: true, supplier: { select: { supplierCode: true, name: true } } } });
+    const buckets = new Map<string | null, { supplier_id: string | null; supplier_code: string | null; supplier_name: string | null; quantity: Prisma.Decimal }>();
+    for (const fact of facts) {
+      const key = fact.supplierId;
+      const current = buckets.get(key);
+      if (current) current.quantity = current.quantity.plus(fact.quantityDelta);
+      else buckets.set(key, { supplier_id: fact.supplierId, supplier_code: fact.supplier?.supplierCode ?? null, supplier_name: fact.supplier?.name ?? null, quantity: fact.quantityDelta });
+    }
+    return [...buckets.values()].filter((row) => !row.quantity.isZero()).sort((a, b) => {
+      if (a.supplier_id === null && b.supplier_id !== null) return 1;
+      if (a.supplier_id !== null && b.supplier_id === null) return -1;
+      if (a.supplier_name && b.supplier_name) return a.supplier_name.localeCompare(b.supplier_name);
+      return 0;
+    });
+  }
+
+  /**
+   * 取物料的默认单位（供 group_by=supplier 路径里用，避免前端再查一次物料）。
+   * 找不到或不是原料时返回 null。
+   */
+  async defaultUnitOf(client: InventoryClient, materialId: string): Promise<{ unit_id: string; unit_name: string } | null> {
+    const material = await client.material.findFirst({ where: { id: materialId, materialType: "raw_material", deletedAt: null }, select: { id: true, defaultUnitId: true, defaultUnit: { select: { name: true } } } });
+    if (!material) return null;
+    return { unit_id: material.defaultUnitId, unit_name: material.defaultUnit?.name ?? "" };
+  }
+
   async finishedGoodsBalance(client: InventoryClient, productionOrderId: string, unitId: string, category: "finished_goods" | "defective_goods") {
     const result = await client.inventoryFact.aggregate({ where: { productionOrderId, unitId, inventoryCategory: category }, _sum: { quantityDelta: true } });
     return result._sum.quantityDelta ?? new Prisma.Decimal(0);

@@ -118,13 +118,42 @@ describe("原料仓储情况：规格型号列", () => {
     stub();
     await open();
     const table = panel("库存汇总");
-    // m-2 没有余额记录，由 mergeMaterialBalances 补 0 行（待入库 0 / 已过账库存 0 / 合计 0）；
-    // m-1 有 1 张草稿入库单 10 与已过账库存 120.0000，因此待入库 10、合计 130。
+    // m-2 没有余额记录，由 mergeMaterialBalances 补 0 行（待入库 0 / 已过账库存 0 / 现存原料数量 0）；
+    // m-1 有 1 张草稿入库单 10 与已过账库存 120.0000，因此待入库 10、现存原料数量 130。
     const rows = table.getAllByTestId("data-table-row");
     expect(rows.map((row) => row.textContent)).toEqual([
       "M-001 / 涤纶布150D米10120.0000130",
       "M-002 / 松紧带5mm条000",
     ]);
+  });
+});
+
+describe("原料仓储情况：现存原料数量列", () => {
+  // 用户 2026-11-13：「仓库模块，原料存储页面，还需要一个 column，表示现存原料数量。」
+  // 口径已选定：现存 = 已过账库存 + 待入库（未过账），即物理上已在库的量。
+  // 这一列原来的名字是「合计」：数值本来就对，改的只是名字与口径说明。
+  it("库存汇总表最后一列叫「现存原料数量」，不再有「合计」列头", async () => {
+    stub();
+    await open();
+    const table = panel("库存汇总");
+    const headers = table.getAllByRole("columnheader").map((header) => header.textContent);
+    expect(headers[headers.length - 1]).toBe("现存原料数量");
+    expect(table.queryByRole("columnheader", { name: "合计" })).toBeNull();
+  });
+
+  it("该列数值 = 已过账库存 + 待入库（m-1：120.0000 + 草稿 10 = 130）", async () => {
+    stub();
+    await open();
+    const table = panel("库存汇总");
+    // 首行是 m-1：物料 / 规格 / 单位 / 待入库 10 / 已过账库存 120.0000 / 现存 130
+    const cells = within(table.getAllByTestId("data-table-row")[0]).getAllByRole("cell");
+    expect(cells[cells.length - 1]).toHaveTextContent("130");
+  });
+
+  it("表下方说明写清口径：现存 = 已过账库存 + 待入库（未过账）", async () => {
+    stub();
+    await open();
+    expect(panel("库存汇总").getByText(/现存原料数量」= 已过账库存 \+ 待入库（未过账）/)).toBeInTheDocument();
   });
 });
 

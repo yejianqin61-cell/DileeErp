@@ -72,7 +72,7 @@ const rawBalances = [
 const previewData = {
   lines: [
     // 配料 12、已领 2、本次 1 → 余下 9
-    { material_id: "m-1", material_code: "RM-001", model: "A-1", color: "米白", unit: "米", approved_usage: "12", bom_reference_quantity: "10", material_quantity: 12, issued_quantity: 2, current_quantity: 1, remaining_quantity: 9, inventory_quantity: "30", available_before: "28", purchase_received_quantity: "50", purchase_outstanding_quantity: "6", cumulative_issued_before: "2", cumulative_issued_after: "3", production_outstanding_quantity: "10" },
+    { material_id: "m-1", material_code: "RM-001", model: "A-1", color: "米白", unit: "米", approved_usage: "12", bom_reference_quantity: "10", material_quantity: 12, issued_quantity: 2, current_quantity: 1, remaining_quantity: 9, inventory_quantity: "30", available_before: "30", purchase_received_quantity: "50", purchase_outstanding_quantity: "6", cumulative_issued_before: "2", cumulative_issued_after: "3", production_outstanding_quantity: "10" },
     { material_id: "m-2", material_code: "RM-002", model: "B-2", color: "藏青", unit: "张", approved_usage: "4", bom_reference_quantity: "4", material_quantity: 4, issued_quantity: 0, current_quantity: 1, remaining_quantity: 3, inventory_quantity: "5", available_before: "5", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "4" },
     { material_id: "m-9", material_code: "RM-009", model: "C-9", color: "灰", unit: "米", approved_usage: "2", bom_reference_quantity: "2", material_quantity: 2, issued_quantity: 0, current_quantity: 1, remaining_quantity: 1, inventory_quantity: "9", available_before: "9", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "2" },
   ],
@@ -418,7 +418,7 @@ describe("MaterialSlipEditor 领料单：行增删与数量输入", () => {
     // 但保存前必须被拦下（遗留用例②的行为契约）
     await userEvent.click(screen.getByTestId("material-slip-save-draft"));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("同一物料只能有一行：请合并数量后再保存");
+    expect(await screen.findByRole("alert")).toHaveTextContent("同一物料 + 同一供应商只能有一行：请合并数量后再保存");
     expect(creates(calls)).toHaveLength(0);
   });
 });

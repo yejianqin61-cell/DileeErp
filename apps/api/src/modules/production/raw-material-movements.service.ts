@@ -8,7 +8,7 @@ import { InventoryService } from "../../platform/inventory/inventory.service";
 // 预估列要与领取单打印件同名同值，口径与导出服务共用一份实现（material-slip-quantity.ts）。
 import { issuedBeforeQuantity, remainingQuantity as remainingQuantityOf } from "./material-slip-quantity";
 
-type IssueLineInput = { material_id: string; quantity: string; remark?: string };
+type IssueLineInput = { material_id: string; quantity: string; supplier_id?: string | null; remark?: string };
 // 领料单与补料单都只绑定生产单，不再绑定工序。
 // 领料单：一个生产单可有多张（按需分批领料）。
 // 补料单：坏片/生产失误等的补充领料，同样参与原料出库。
@@ -71,7 +71,7 @@ export class RawMaterialMovementsService {
         reason: input.reason,
         remark: input.remark,
         idempotencyKey: `draft:${randomUUID()}`,
-        lines: { create: preview.lines.map((line) => ({ materialId: line.material_id, unitId: line.unit_id, quantity: line.quantity, bomReferenceQuantity: line.bom_reference_quantity, remark: line.remark, ...this.audit.create(user) })) },
+        lines: { create: preview.lines.map((line) => ({ materialId: line.material_id, unitId: line.unit_id, supplierId: line.supplier_id ?? null, quantity: line.quantity, bomReferenceQuantity: line.bom_reference_quantity, remark: line.remark, ...this.audit.create(user) })) },
         ...this.audit.create(user)
       },
       include: { lines: true }
@@ -101,7 +101,7 @@ export class RawMaterialMovementsService {
         reason: input.reason.trim(),
         remark: input.remark,
         idempotencyKey: `draft:${randomUUID()}`,
-        lines: { create: preview.lines.map((line) => ({ materialId: line.material_id, unitId: line.unit_id, quantity: line.quantity, bomReferenceQuantity: line.bom_reference_quantity, remark: line.remark, ...this.audit.create(user) })) },
+        lines: { create: preview.lines.map((line) => ({ materialId: line.material_id, unitId: line.unit_id, supplierId: line.supplier_id ?? null, quantity: line.quantity, bomReferenceQuantity: line.bom_reference_quantity, remark: line.remark, ...this.audit.create(user) })) },
         ...this.audit.create(user)
       },
       include: { lines: true }
@@ -128,7 +128,7 @@ export class RawMaterialMovementsService {
           ...(input.business_date === undefined ? {} : { businessDate: new Date(input.business_date) }),
           ...(input.reason === undefined ? {} : { reason: input.reason }),
           ...(input.remark === undefined ? {} : { remark: input.remark }),
-          ...(preview ? { lines: { create: preview.lines.map((line) => ({ materialId: line.material_id, unitId: line.unit_id, quantity: line.quantity, bomReferenceQuantity: line.bom_reference_quantity, remark: line.remark, ...this.audit.create(user) })) } } : {}),
+          ...(preview ? { lines: { create: preview.lines.map((line) => ({ materialId: line.material_id, unitId: line.unit_id, supplierId: line.supplier_id ?? null, quantity: line.quantity, bomReferenceQuantity: line.bom_reference_quantity, remark: line.remark, ...this.audit.create(user) })) } } : {}),
           ...this.audit.update(user)
         }
       });
@@ -152,7 +152,7 @@ export class RawMaterialMovementsService {
 
   async impactPreview(id: string) {
     const movement = await this.get(id);
-    const preview = await this.previewLines(movement.productionOrder, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })));
+    const preview = await this.previewLines(movement.productionOrder, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), supplier_id: line.supplierId ?? undefined, remark: line.remark ?? undefined })));
     return { movement_no: movement.movementNo, order_no: movement.orderNo, production_order_no: movement.productionOrder.productionOrderNo, status: movement.status, ...preview };
   }
 
@@ -187,7 +187,7 @@ export class RawMaterialMovementsService {
     if (!["issue", "replenishment"].includes(movement.documentType)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_TYPE", message: "只有领料单或补料单需要仓库确认出库", details: [] });
     if (movement.status !== "draft") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: `只有草稿单据可以提交仓库（当前：${movement.status}）`, details: [] });
     const order = await this.requireInHouseOrder(movement.productionOrderId);
-    const preview = await this.previewLines(order, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })));
+    const preview = await this.previewLines(order, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), supplier_id: line.supplierId ?? undefined, remark: line.remark ?? undefined })));
     if (preview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "提交后原料库存不足，请先补货或减少领用数量", details: preview.lines.filter((line) => line.available_after.isNegative()).map((line) => ({ material_id: line.material_id, available_quantity: line.available_before.toString() })) });
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM raw_material_movements WHERE id = ${id}::uuid FOR UPDATE`;
@@ -219,7 +219,7 @@ export class RawMaterialMovementsService {
     if (movement.status === "posted" && movement.idempotencyKey === idempotencyKey) return movement;
     if (movement.status !== "pending_outbound") throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_STATE", message: `只有已确认待出库的${label}单可以出库；草稿请先由生产「确认提交」，当前状态：${movement.status}`, details: [] });
     const order = await this.requireInHouseOrder(movement.productionOrderId);
-    const preview = await this.previewLines(order, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })));
+    const preview = await this.previewLines(order, movement.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), supplier_id: line.supplierId ?? undefined, remark: line.remark ?? undefined })));
     // 超领/非 BOM 物料不再阻塞过账（业务确认该门禁没有必要）；风险仍在事务内照常记录，仅作审计留痕。
     if (preview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: `${label}会造成原料库存不足`, details: preview.lines.filter((line) => line.available_after.isNegative()).map((line) => ({ material_id: line.material_id, available_quantity: line.available_before.toString() })) });
 
@@ -229,21 +229,22 @@ export class RawMaterialMovementsService {
         if (!current || current.status !== "pending_outbound") throw new ConflictException({ code: "MATERIAL_MOVEMENT_ALREADY_POSTED", message: `${label}单已被其他操作处理`, details: [] });
         const lockedOrder = await this.requireInHouseOrder(current.productionOrderId, tx);
         // 先收集全部物料 advisory lock key 并排序后再加锁，避免并发多物料单据以相反顺序加锁造成死锁
-        const materialKeys = current.lines.map((line) => `${line.materialId}|${line.unitId}`).sort();
+        // lock key 带上 supplier_id，使同一物料不同供应商的两张单据不互相阻塞。
+        const materialKeys = current.lines.map((line) => `${line.materialId}|${line.unitId}|${line.supplierId ?? "__none__"}`).sort();
         // pg_advisory_xact_lock 返回 void：必须用 $executeRaw（不反序列化结果列）。
         // 用 $queryRaw 会抛 "Failed to deserialize column of type 'void'"，导致过账必然 500。
         for (const key of materialKeys) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
-        const lockedPreview = await this.previewLines(lockedOrder, current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), remark: line.remark ?? undefined })), tx);
+        const lockedPreview = await this.previewLines(lockedOrder, current.lines.map((line) => ({ material_id: line.materialId, quantity: line.quantity.toString(), supplier_id: line.supplierId ?? undefined, remark: line.remark ?? undefined })), tx);
         if (lockedPreview.lines.some((line) => line.available_after.isNegative())) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: `${label}会造成原料库存不足`, details: [] });
-        // 风险 line_id 必须指向数据库真实明细行（preview 行 id 为 undefined），按 material_id 关联 current.lines
-        const dbLineByMaterial = new Map(current.lines.map((dbLine) => [dbLine.materialId, dbLine]));
+        // 风险 line_id 必须指向数据库真实明细行（preview 行 id 为 undefined），按 material_id + supplier_id 关联 current.lines
+        const dbLineByMaterial = new Map(current.lines.map((dbLine) => [`${dbLine.materialId}|${dbLine.supplierId ?? "__none__"}`, dbLine]));
         const lockedRisks = lockedPreview.lines.flatMap((line) => line.risks.map((risk) => {
-          const dbLine = dbLineByMaterial.get(line.material_id);
+          const dbLine = dbLineByMaterial.get(`${line.material_id}|${line.supplier_id ?? "__none__"}`);
           return { line_id: dbLine?.id ?? null, risk_type: risk.type, context: risk.context };
         }));
         const updated = await tx.rawMaterialMovement.update({ where: { id }, data: { status: "posted", idempotencyKey, ...this.audit.update(user) } });
         for (const line of current.lines) {
-          await tx.inventoryFact.create({ data: { materialId: line.materialId, unitId: line.unitId, inventoryCategory: "raw_material", quantityDelta: `-${line.quantity}`, sourceType, sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: line.id, createdBy: user.id } });
+          await tx.inventoryFact.create({ data: { materialId: line.materialId, unitId: line.unitId, supplierId: line.supplierId ?? null, inventoryCategory: "raw_material", quantityDelta: `-${line.quantity}`, sourceType, sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: line.id, createdBy: user.id } });
         }
         for (const risk of lockedRisks) {
           await tx.rawMaterialMovementRisk.create({ data: { movementId: current.id, lineId: risk.line_id, riskType: risk.risk_type, context: risk.context, reason: current.reason?.trim() || RISK_REASON_NOT_REQUIRED, confirmedBy: user.id, ...this.audit.create(user) } });
@@ -305,7 +306,7 @@ export class RawMaterialMovementsService {
       const facts = await tx.inventoryFact.findMany({ where: { sourceId: current.id } });
       for (const fact of facts) {
         if (!fact.materialId) continue;
-        await tx.inventoryFact.create({ data: { materialId: fact.materialId, unitId: fact.unitId, inventoryCategory: fact.inventoryCategory, quantityDelta: fact.quantityDelta.negated(), sourceType: "material_movement_reopen", sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: fact.rawMaterialMovementLineId, createdBy: user.id } });
+        await tx.inventoryFact.create({ data: { materialId: fact.materialId, unitId: fact.unitId, supplierId: fact.supplierId ?? null, inventoryCategory: fact.inventoryCategory, quantityDelta: fact.quantityDelta.negated(), sourceType: "material_movement_reopen", sourceId: current.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: fact.rawMaterialMovementLineId, createdBy: user.id } });
       }
       return tx.rawMaterialMovement.update({ where: { id }, data: { status: "draft", idempotencyKey: `draft:${randomUUID()}`, remark: `${current.remark ?? ""}\n回退过账：${reason}`, ...this.audit.update(user) } });
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
@@ -331,26 +332,26 @@ export class RawMaterialMovementsService {
       const facts = await tx.inventoryFact.findMany({ where: { sourceId: current.id } });
       // 按「物料+单位+库存类别」取净额再取反：单据可能经历“过账 → 回退草稿 → 再过账”，
       // 逐行取反会把回退时写入的冲抵事实也算一遍，导致库存多加/多减。
-      const netByKey = new Map<string, { materialId: string; unitId: string; inventoryCategory: string; delta: Prisma.Decimal }>();
+      const netByKey = new Map<string, { materialId: string; unitId: string; inventoryCategory: string; supplierId: string | null; delta: Prisma.Decimal }>();
       for (const fact of facts) {
         if (!fact.materialId) continue;
-        const key = `${fact.materialId}|${fact.unitId}|${fact.inventoryCategory}`;
+        const key = `${fact.materialId}|${fact.unitId}|${fact.inventoryCategory}|${fact.supplierId ?? "__none__"}`;
         const current_ = netByKey.get(key);
         if (current_) current_.delta = current_.delta.plus(fact.quantityDelta);
-        else netByKey.set(key, { materialId: fact.materialId, unitId: fact.unitId, inventoryCategory: fact.inventoryCategory, delta: fact.quantityDelta });
+        else netByKey.set(key, { materialId: fact.materialId, unitId: fact.unitId, inventoryCategory: fact.inventoryCategory, supplierId: fact.supplierId ?? null, delta: fact.quantityDelta });
       }
       const netGroups = [...netByKey.values()].filter((group) => !group.delta.isZero());
       for (const group of netGroups) {
         // 净额为正（如退料回补）时冲销会扣减库存，必须先确认库存足够。
         if (group.inventoryCategory === "raw_material" && group.delta.isPositive()) {
-          const balance = await this.inventory.rawMaterialBalance(tx, group.materialId, group.unitId);
+          const balance = await this.inventory.rawMaterialBalanceBySupplier(tx, group.materialId, group.unitId, group.supplierId);
           if (balance.minus(group.delta).isNegative()) throw new UnprocessableEntityException({ code: "INSUFFICIENT_INVENTORY", message: "冲销会造成原料库存不足", details: [{ material_id: group.materialId }] });
         }
       }
-      const created = await tx.rawMaterialMovement.create({ data: { movementNo: `RV-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, documentType: "reversal", status: "posted", productionOrderId: current.productionOrderId, productionOrderOperationId: current.productionOrderOperationId, orderNo: current.orderNo, businessDate: new Date(), reason, remark: `冲销 ${current.movementNo}`, idempotencyKey, lines: { create: current.lines.map((line) => ({ materialId: line.materialId, unitId: line.unitId, quantity: line.quantity, bomReferenceQuantity: line.bomReferenceQuantity, sourceIssueLineId: line.id, remark: `冲销 ${current.movementNo}`, ...this.audit.create(user) })) }, ...this.audit.create(user) }, include: { lines: true } });
-      const reversalLineByMaterial = new Map(created.lines.map((line) => [line.materialId, line.id]));
+      const created = await tx.rawMaterialMovement.create({ data: { movementNo: `RV-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 8).toUpperCase()}`, documentType: "reversal", status: "posted", productionOrderId: current.productionOrderId, productionOrderOperationId: current.productionOrderOperationId, orderNo: current.orderNo, businessDate: new Date(), reason, remark: `冲销 ${current.movementNo}`, idempotencyKey, lines: { create: current.lines.map((line) => ({ materialId: line.materialId, unitId: line.unitId, supplierId: line.supplierId ?? null, quantity: line.quantity, bomReferenceQuantity: line.bomReferenceQuantity, sourceIssueLineId: line.id, remark: `冲销 ${current.movementNo}`, ...this.audit.create(user) })) }, ...this.audit.create(user) }, include: { lines: true } });
+      const reversalLineByMaterial = new Map(created.lines.map((line) => [`${line.materialId}|${line.supplierId ?? "__none__"}`, line.id]));
       for (const group of netGroups) {
-        await tx.inventoryFact.create({ data: { materialId: group.materialId, unitId: group.unitId, inventoryCategory: group.inventoryCategory, quantityDelta: group.delta.negated(), sourceType: "material_movement_reversal", sourceId: created.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: reversalLineByMaterial.get(group.materialId), createdBy: user.id } });
+        await tx.inventoryFact.create({ data: { materialId: group.materialId, unitId: group.unitId, supplierId: group.supplierId, inventoryCategory: group.inventoryCategory, quantityDelta: group.delta.negated(), sourceType: "material_movement_reversal", sourceId: created.id, orderNo: current.orderNo, productionOrderId: current.productionOrderId, rawMaterialMovementLineId: reversalLineByMaterial.get(`${group.materialId}|${group.supplierId ?? "__none__"}`), createdBy: user.id } });
       }
       await tx.rawMaterialMovement.update({ where: { id }, data: { status: "reversed", remark: `${current.remark ?? ""}\n冲销：${reason}`, ...this.audit.update(user) } });
       return created;
@@ -434,7 +435,7 @@ export class RawMaterialMovementsService {
       if (available.lessThan(line.quantity)) {
         throw new UnprocessableEntityException({ code: "DERIVED_QUANTITY_EXCEEDED", message: "退料或报废数量超过来源领料可处分数量", details: [{ source_issue_line_id: source.id, available_quantity: available.toString() }] });
       }
-      result.push({ materialId: source.materialId, unitId: source.unitId, quantity: line.quantity, bomReferenceQuantity: source.bomReferenceQuantity, sourceIssueLineId: source.id, remark: line.remark });
+      result.push({ materialId: source.materialId, unitId: source.unitId, supplierId: source.supplierId ?? null, quantity: line.quantity, bomReferenceQuantity: source.bomReferenceQuantity, sourceIssueLineId: source.id, remark: line.remark });
     }
     return result;
   }
@@ -467,15 +468,33 @@ export class RawMaterialMovementsService {
     if (!Array.isArray(lines) || lines.length === 0) throw new UnprocessableEntityException({ code: "MATERIAL_MOVEMENT_LINES_REQUIRED", message: "领料单至少需要一条物料明细", details: [] });
     const seen = new Set<string>();
     const previewLines = [];
+    // 同一物料 + 同一单位下，按供应商拆分的结存，供前端 hover title / 下拉里显示各档位结存。
+    const bucketsByKey = new Map<string, Promise<Array<{ supplier_id: string | null; supplier_name: string | null; quantity: Prisma.Decimal }>>>();
+    const getBuckets = async (materialId: string, unitId: string) => {
+      const key = `${materialId}|${unitId}`;
+      if (!bucketsByKey.has(key)) bucketsByKey.set(key, this.inventory.rawMaterialSupplierBuckets(client, materialId, unitId));
+      return bucketsByKey.get(key)!;
+    };
     for (const line of lines) {
-      if (!line?.material_id || seen.has(line.material_id) || !this.isPositiveDecimal(line.quantity)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "领料物料和数量必须有效且不可重复", details: [] });
-      seen.add(line.material_id);
+      if (!line?.material_id || !this.isPositiveDecimal(line.quantity)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "领料物料和数量必须有效且不可重复", details: [] });
       const material = await client.material.findFirst({ where: { id: line.material_id, isActive: true, deletedAt: null } });
       if (!material) throw new NotFoundException({ code: "MATERIAL_NOT_FOUND", message: "物料不存在或已停用", details: [] });
       if (material.materialType !== "raw_material") throw new UnprocessableEntityException({ code: "MATERIAL_NOT_RAW", message: "生产领料只能使用原料物料", details: [{ material_id: material.id }] });
+      // 单位优先取 BOM 行单位（贴纸的坑：defaultUnit=个、BOM 行=张、库存记在张；按 defaultUnit 取余额会恒为 0）。
       const bomItem = order.bomId ? await client.bomItem.findFirst({ where: { bomId: order.bomId, materialId: material.id, deletedAt: null } }) : null;
-      const availableBefore = await this.inventory.rawMaterialBalance(client, material.id, material.defaultUnitId);
-      const issued = await client.inventoryFact.aggregate({ where: { productionOrderId: order.id, materialId: material.id, unitId: material.defaultUnitId, inventoryCategory: "raw_material" }, _sum: { quantityDelta: true } });
+      const resolvedUnitId = bomItem?.unitId ?? material.defaultUnitId;
+      const resolvedUnitName = bomItem?.unit ?? null;
+      // 唯一性从 material_id 改为 material_id + unit_id + supplier_id：
+      // 同一物料、不同供应商必须能并行存在；同一物料、同一供应商才算重复。
+      const dedupKey = `${material.id}|${resolvedUnitId}|${line.supplier_id ?? "__none__"}`;
+      if (seen.has(dedupKey)) throw new UnprocessableEntityException({ code: "INVALID_MATERIAL_MOVEMENT_LINE", message: "同一物料 + 同一单位 + 同一供应商只能有一行：请合并数量后再保存", details: [] });
+      seen.add(dedupKey);
+      // 只看该档位的余额：传了 supplier_id 只算该供应商自己的量（含 NULL 档位独立计算），
+      // 未传 supplier_id 时按 material + unit 全档位合计（历史宽松口径，避免误伤旧草稿）。
+      const availableBefore = line.supplier_id
+        ? await this.inventory.rawMaterialBalanceBySupplier(client, material.id, resolvedUnitId, line.supplier_id)
+        : await this.inventory.rawMaterialBalance(client, material.id, resolvedUnitId);
+      const issued = await client.inventoryFact.aggregate({ where: { productionOrderId: order.id, materialId: material.id, unitId: resolvedUnitId, inventoryCategory: "raw_material" }, _sum: { quantityDelta: true } });
       const cumulativeIssued = (issued._sum.quantityDelta ?? new Prisma.Decimal(0)).negated();
       const quantity = new Prisma.Decimal(line.quantity);
       const cumulativeAfter = cumulativeIssued.plus(quantity);
@@ -499,6 +518,7 @@ export class RawMaterialMovementsService {
       const risks = [] as { type: string; context: Prisma.InputJsonValue }[];
       if (!bomItem) risks.push({ type: "MATERIAL_NOT_IN_BOM_WARNING", context: { material_id: material.id, quantity: line.quantity } });
       if (bomItem && cumulativeAfter.greaterThan(bomItem.requiredQuantity)) risks.push({ type: "OVER_ISSUE_WARNING", context: { material_id: material.id, bom_reference_quantity: bomItem.requiredQuantity.toString(), cumulative_issue_quantity: cumulativeAfter.toString() } });
+      const buckets = await getBuckets(material.id, resolvedUnitId);
       previewLines.push({
         id: undefined as string | undefined,
         material_id: material.id,
@@ -506,8 +526,10 @@ export class RawMaterialMovementsService {
         material_code: material.materialCode,
         model: bomItem?.specificationModel ?? bomItem?.model ?? null,
         color: bomItem?.color ?? null,
-        unit_id: material.defaultUnitId,
-        unit: bomItem?.unit ?? null,
+        unit_id: resolvedUnitId,
+        unit: resolvedUnitName,
+        supplier_id: line.supplier_id ?? null,
+        supplier_name: buckets.find((b) => b.supplier_id === line.supplier_id)?.supplier_name ?? (line.supplier_id ? null : null),
         quantity: line.quantity,
         remark: line.remark,
         bom_reference_quantity: bomItem?.requiredQuantity?.toString() ?? null,
@@ -520,6 +542,7 @@ export class RawMaterialMovementsService {
         cumulative_issued_before: cumulativeIssued,
         cumulative_issued_after: cumulativeAfter,
         production_outstanding_quantity: productionOutstanding?.toString() ?? null,
+        available_by_supplier: buckets.map((b) => ({ supplier_id: b.supplier_id, supplier_name: b.supplier_name ?? null, quantity: b.quantity.toString() })),
         // 打印件上的四列：配料数量 / 已领数量 / 本次领料量 / 余下数量（同名同值，前端照抄即可）。
         material_quantity: materialQuantity,
         issued_quantity: issuedQuantity,

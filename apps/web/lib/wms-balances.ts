@@ -9,6 +9,19 @@ export type MaterialRef = { id: string; defaultUnitId: string };
 export type BalanceRef = { material_id: string; unit_id: string | null; unit_name: string; order_no: string | null; quantity: string };
 
 /**
+ * 现存原料数量 = 已过账库存 + 待入库（未过账草稿）。
+ *
+ * 用户 2026-11-13 定的口径是「物理上已经在库的量」：已经收进仓库、只是还没走完过账流程的草稿
+ * 同样是实物，必须算进来。这一列以前叫「合计」——数字没错，但名字读起来像两列的算术合计，
+ * 对实物时容易被误读成「待入库还没到货」，所以页面上的名字改成正名后的「现存原料数量」。
+ *
+ * 接口给的是字符串（Decimal 的序列化结果），页面里的待入库是本地求和的 number，两者都要能进。
+ */
+export function currentOnHandQuantity(postedQuantity: string | number, pendingQuantity: string | number): number {
+  return Number(postedQuantity) + Number(pendingQuantity);
+}
+
+/**
  * 合并接口返回的库存余额与物料主数据：没有余额记录的物料补一行 0 库存，
  * 且单位名一律由本次传入的单位数据解析。
  */
