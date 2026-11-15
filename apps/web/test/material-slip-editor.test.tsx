@@ -288,6 +288,16 @@ describe("MaterialSlipEditor 领料单：加载与 BOM 数据流", () => {
 
     expect(screen.getByText("该生产单订单的 BOM 没有明细，无法选择物料：请先在订单 BOM 里维护用料。")).toBeVisible();
 
+    // 占位项必须与原 Radix 版本一样「只能看、不能选」：选中它会得到不存在的物料。
+    await userEvent.click(lineMaterialTrigger(0));
+    const placeholder = await screen.findByRole("option", { name: "该生产单订单的 BOM 表没有明细" });
+    expect(placeholder).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(placeholder);
+    // 禁用项不会让弹层关闭，也不会改写当前值。
+    expect(screen.getByTestId("searchable-select-search")).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+    expect(lineMaterialTrigger(0)).toHaveTextContent("选择原料");
+
     await userEvent.click(screen.getByTestId("material-slip-save-draft"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("每一行都必须选择物料并填写大于 0 的数量");
@@ -338,6 +348,24 @@ describe("MaterialSlipEditor 领料单：行增删与数量输入", () => {
     await waitFor(() => {
       expect(lastBody(calls, "/issue-preview")).toEqual({ production_order_id: "po-1", lines: [{ material_id: "m-2", quantity: "1" }] });
     });
+  });
+
+  it("行内物料下拉的弹层挂到 body：表格单元格的 overflow:hidden / 横向滚动容器不会把它裁掉", async () => {
+    stub();
+    await renderSlip();
+
+    await userEvent.click(lineMaterialTrigger(0));
+
+    const popover = document.querySelector(".ui-searchable-select-popover") as HTMLElement | null;
+    expect(popover).not.toBeNull();
+    // 关键：弹层不再是表格单元格的子节点，且用 fixed 脱离所有 overflow 裁切盒。
+    expect(popover?.parentElement).toBe(document.body);
+    expect(popover?.closest("table")).toBeNull();
+    expect(popover?.style.position).toBe("fixed");
+
+    // portal 之后选项仍可正常点击并回填到行里。
+    await userEvent.click(await screen.findByRole("option", { name: /面料B/ }));
+    expect(lineMaterialTrigger(0)).toHaveTextContent("面料B");
   });
 
   it("删除行：行从表格消失；删掉最后一行回到空态且不再请求预览", async () => {

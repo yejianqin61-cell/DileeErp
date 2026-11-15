@@ -321,9 +321,17 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                       options={bomMaterialOptions.length
                         ? bomMaterialOptions.map((option) => ({ value: option.value, label: option.label }))
                         : [{ value: "__none__", label: "该生产单订单的 BOM 表没有明细" }]}
+                      // BOM 为空时的占位项只能看、不能选：选中它会得到不存在的物料，
+                      // 以前 Radix 版本是 disabled，换成 SearchableSelect 后要用 disabledValues 补回来。
+                      disabledValues={bomMaterialOptions.length ? undefined : ["__none__"]}
+                      // 表格单元格 overflow:hidden、外层 table-wrap 横向滚动，贴着渲染的弹层会被裁掉
+                      // （用户 2026-11-13：下拉打不开 / 看不到选项 / 选不中）；portal 到 body 后不受裁切。
+                      popoverPortal
                       placeholder="选择原料"
                       label="原料"
-                      searchPlaceholder="搜索物料编码、名称、规格或颜色"
+                      // 选项文案实际只有「名称 / 型号或规格 / BOM 用量」，不包含编码与颜色：
+                      // 文案照实写，避免用户搜编码搜不到时以为下拉坏了。
+                      searchPlaceholder="搜索物料名称、型号或用量"
                       noResultsText="没有匹配的原料（只列该订单 BOM 里的部件）"
                       onChange={(value) => update({ materialId: value })}
                     />

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { cn } from "../../lib/utils";
 
@@ -35,6 +36,15 @@ type SearchableSelectProps = {
   searchPlaceholder?: string;
   noResultsText?: string;
   className?: string;
+  /**
+   * 把弹层 portal 到 `document.body` 并用 `position: fixed` 定位。
+   *
+   * 默认 false：弹层贴着触发器渲染，行为与以前完全一致。表格单元格里必须传 true ——
+   * `.material-slip-editor` 的 `td` 有 `overflow: hidden`，外层 `.table-wrap` 又是横向滚动容器，
+   * 贴着的弹层会被裁在单元格/表格边界内：用户能看到搜索框，却看不到（也点不到）任何选项。
+   * portal 后弹层不受任何祖先 overflow 裁切，坐标仍按触发器实时测量。
+   */
+  popoverPortal?: boolean;
   /**
    * 收起态控件的 `title`（鼠标悬停时显示的全文）。
    *
@@ -107,6 +117,7 @@ export function SearchableSelect({
   searchPlaceholder,
   noResultsText = "无匹配项",
   className,
+  popoverPortal = false,
   testId = "searchable-select",
   title,
 }: SearchableSelectProps) {
@@ -115,6 +126,7 @@ export function SearchableSelect({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -122,6 +134,8 @@ export function SearchableSelect({
   const [placement, setPlacement] = useState<"down" | "up">("down");
   // 打开时按裁切盒内该侧的可用高度收敛，保证弹层不被裁掉（见 choosePopoverPlacement）。
   const [popoverMaxHeight, setPopoverMaxHeight] = useState(SEARCHABLE_POPOVER_MAX_HEIGHT);
+  // portal 模式下弹层的 fixed 坐标；当前没有测量结果时先隐藏，避免在错误位置闪一下。
+  const [portalStyle, setPortalStyle] = useState<CSSProperties | null>(null);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = useMemo(
@@ -145,6 +159,7 @@ export function SearchableSelect({
   const openWith = useCallback((initialQuery = "") => {
     setQuery(initialQuery);
     setActiveIndex(-1);
+    setPortalStyle(null);
     setOpen(true);
   }, []);
 
@@ -178,21 +193,45 @@ export function SearchableSelect({
     const rootEl = rootRef.current;
     if (rootEl) {
       const rect = rootEl.getBoundingClientRect();
-      let scrollParent: HTMLElement | null = null;
-      for (let node = rootEl.parentElement; node && node !== document.documentElement; node = node.parentElement) {
-        if (node.scrollHeight > node.clientHeight && /(auto|scroll|overlay)/.test(getComputedStyle(node).overflowY)) {
-          scrollParent = node;
-          break;
+      if (popoverPortal) {
+        // portal 到 body 后不再受祖先 overflow 裁切，按视口四边决定朝向即可。
+        const chosen = choosePopoverPlacement({
+          spaceAbove: rect.top - POPOVER_GAP,
+          spaceBelow: window.innerHeight - rect.bottom - POPOVER_GAP,
+        });
+        setPlacement(chosen.placement);
+        setPopoverMaxHeight(chosen.maxHeight);
+        const viewportWidth = window.innerWidth;
+        // jsdom / 首帧测不到宽度时给一个可用下限；真实表格里 rect.width 来自物料列（≥260px）。
+        const width = Math.min(rect.width > 0 ? rect.width : 240, Math.max(180, viewportWidth - 16));
+        setPortalStyle({
+          position: "fixed",
+          left: Math.max(8, Math.min(rect.left, viewportWidth - width - 8)),
+          width,
+          // 用视口坐标而不是百分比：弹层已脱离触发器所在单元格。
+          top: chosen.placement === "down" ? rect.bottom + POPOVER_GAP : "auto",
+          bottom: chosen.placement === "up" ? window.innerHeight - rect.top + POPOVER_GAP : "auto",
+          right: "auto",
+          maxHeight: chosen.maxHeight,
+        });
+      } else {
+        setPortalStyle(null);
+        let scrollParent: HTMLElement | null = null;
+        for (let node = rootEl.parentElement; node && node !== document.documentElement; node = node.parentElement) {
+          if (node.scrollHeight > node.clientHeight && /(auto|scroll|overlay)/.test(getComputedStyle(node).overflowY)) {
+            scrollParent = node;
+            break;
+          }
         }
+        const bottomLimit = scrollParent ? scrollParent.getBoundingClientRect().bottom : window.innerHeight;
+        const topLimit = scrollParent ? scrollParent.getBoundingClientRect().top : 0;
+        const chosen = choosePopoverPlacement({
+          spaceAbove: rect.top - topLimit - POPOVER_GAP,
+          spaceBelow: bottomLimit - rect.bottom - POPOVER_GAP,
+        });
+        setPlacement(chosen.placement);
+        setPopoverMaxHeight(chosen.maxHeight);
       }
-      const bottomLimit = scrollParent ? scrollParent.getBoundingClientRect().bottom : window.innerHeight;
-      const topLimit = scrollParent ? scrollParent.getBoundingClientRect().top : 0;
-      const chosen = choosePopoverPlacement({
-        spaceAbove: rect.top - topLimit - POPOVER_GAP,
-        spaceBelow: bottomLimit - rect.bottom - POPOVER_GAP,
-      });
-      setPlacement(chosen.placement);
-      setPopoverMaxHeight(chosen.maxHeight);
     }
     // Run only when the panel opens; values above are read from that render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -215,11 +254,16 @@ export function SearchableSelect({
   // without letting Escape reach the host dialog (kept open until 2nd press).
   useEffect(() => {
     if (!open) return;
+    /** 触发器与弹层都算「内部」：portal 模式下弹层已经不在 rootRef 的 DOM 子树里。 */
+    function containsTarget(target: EventTarget | null) {
+      if (!(target instanceof Node)) return false;
+      return Boolean(rootRef.current?.contains(target) || popoverRef.current?.contains(target));
+    }
     function onPointerDown(event: globalThis.PointerEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) close(false);
+      if (!containsTarget(event.target)) close(false);
     }
     function onScroll(event: globalThis.Event) {
-      if (rootRef.current && rootRef.current.contains(event.target as Node)) return; // internal list scroll
+      if (containsTarget(event.target)) return; // internal list scroll
       close(false);
     }
     function onKeyDown(event: globalThis.KeyboardEvent) {
@@ -268,6 +312,63 @@ export function SearchableSelect({
     }
   }
 
+  /** 弹层本身：列表与「无匹配项」共用同一套定位。 */
+  const popover = filtered.length === 0 ? (
+    <div
+      ref={popoverRef}
+      className={cn("ui-searchable-select-popover", "ui-searchable-select-popover-down", popoverPortal && "ui-searchable-select-popover-portal")}
+      // portal 坐标还没测出来时先隐藏，避免在单元格里闪一下再跳走。
+      style={popoverPortal ? portalStyle ?? { display: "none" } : { maxHeight: popoverMaxHeight }}
+      role="status"
+    >
+      {noResultsText}
+    </div>
+  ) : (
+    <div
+      ref={popoverRef}
+      className={cn(
+        "ui-searchable-select-popover",
+        placement === "up" ? "ui-searchable-select-popover-up" : "ui-searchable-select-popover-down",
+        popoverPortal && "ui-searchable-select-popover-portal"
+      )}
+      style={popoverPortal ? portalStyle ?? { display: "none" } : { maxHeight: popoverMaxHeight }}
+    >
+      <div
+        ref={listRef}
+        id={listboxId}
+        role="listbox"
+        aria-label={label ?? placeholder}
+        className="ui-searchable-select-list"
+      >
+        {filtered.map((option, index) => {
+          const selected = option.value === value;
+          const active = activeIndex === index;
+          const optionDisabled = disabledSet.has(option.value);
+          return (
+            <div
+              key={option.value}
+              id={`${optionIdPrefix}-${index}`}
+              role="option"
+              aria-selected={selected}
+              aria-disabled={optionDisabled ? true : undefined}
+              data-option-index={index}
+              data-active={active ? "true" : undefined}
+              data-disabled={optionDisabled ? "true" : undefined}
+              data-testid="searchable-select-option"
+              className={cn("ui-select-item", "ui-searchable-select-option", optionDisabled && "ui-searchable-select-option-disabled")}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => selectOption(option.value)}
+              onMouseEnter={() => setActiveIndex(index)}
+            >
+              <span className="ui-select-item-indicator">{selected && <Check size={14} aria-hidden="true" />}</span>
+              <span className="ui-searchable-select-option-text">{option.label}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
     <div ref={rootRef} className={cn("ui-searchable-select", className)} data-testid={testId}>
       {open ? (
@@ -292,63 +393,19 @@ export function SearchableSelect({
               autoComplete="off"
               onChange={(event) => {
                 setQuery(event.target.value);
-                 onSearch?.(event.target.value);
+                onSearch?.(event.target.value);
                 setActiveIndex(-1);
               }}
               onKeyDown={handleInputKeyDown}
               onBlur={(event) => {
-                if (!rootRef.current?.contains(event.relatedTarget as Node | null)) close(false);
+                // portal 弹层不在 rootRef 子树里，必须一并检查，否则点选项会先被当成「失焦」关掉。
+                const next = event.relatedTarget as Node | null;
+                if (!rootRef.current?.contains(next) && !popoverRef.current?.contains(next)) close(false);
               }}
             />
             <Search size={14} aria-hidden="true" className="ui-searchable-select-search-icon" />
           </div>
-          {filtered.length === 0 ? (
-            <div className="ui-searchable-select-popover ui-searchable-select-popover-down" role="status">
-              {noResultsText}
-            </div>
-          ) : (
-            <div
-              className={cn(
-                "ui-searchable-select-popover",
-                placement === "up" ? "ui-searchable-select-popover-up" : "ui-searchable-select-popover-down"
-              )}
-              style={{ maxHeight: popoverMaxHeight }}
-            >
-              <div
-                ref={listRef}
-                id={listboxId}
-                role="listbox"
-                aria-label={label ?? placeholder}
-                className="ui-searchable-select-list"
-              >
-                {filtered.map((option, index) => {
-                  const selected = option.value === value;
-                  const active = activeIndex === index;
-                  const optionDisabled = disabledSet.has(option.value);
-                  return (
-                    <div
-                      key={option.value}
-                      id={`${optionIdPrefix}-${index}`}
-                      role="option"
-                      aria-selected={selected}
-                      aria-disabled={optionDisabled ? true : undefined}
-                      data-option-index={index}
-                      data-active={active ? "true" : undefined}
-                      data-disabled={optionDisabled ? "true" : undefined}
-                      data-testid="searchable-select-option"
-                      className={cn("ui-select-item", "ui-searchable-select-option", optionDisabled && "ui-searchable-select-option-disabled")}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => selectOption(option.value)}
-                      onMouseEnter={() => setActiveIndex(index)}
-                    >
-                      <span className="ui-select-item-indicator">{selected && <Check size={14} aria-hidden="true" />}</span>
-                      <span className="ui-searchable-select-option-text">{option.label}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          {popoverPortal && typeof document !== "undefined" ? createPortal(popover, document.body) : popover}
         </>
       ) : (
         <button
