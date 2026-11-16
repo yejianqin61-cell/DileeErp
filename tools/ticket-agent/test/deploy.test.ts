@@ -233,6 +233,14 @@ test('成功路径：推送、构建、测试、迁移、切换、核验、边�
     assert.ok(called(harness, 'remote-nginx.sh'))
     assert.ok(existsSync(harness.config.recordsDir))
     assert.ok(readdirSync(harness.config.recordsDir).length >= 1)
+    // git 只读探测必须带仓库 cwd：漏掉时 `merge-base ... HEAD` 会在进程 cwd 里跑，
+    // 线上实测直接误判「基线落后于线上」。
+    const mergeBaseCall = harness.calls.find((call) => call.command === 'git' && call.args[0] === 'merge-base')
+    assert.equal(mergeBaseCall?.cwd, harness.config.repoPath)
+    const remoteRevParse = harness.calls.find(
+      (call) => call.command === 'git' && call.args[0] === 'rev-parse' && call.args[1] === 'origin/main',
+    )
+    assert.equal(remoteRevParse?.cwd, harness.config.repoPath)
   } finally {
     harness.cleanup()
   }

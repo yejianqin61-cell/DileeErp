@@ -365,10 +365,12 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
     command: string,
     args: readonly string[],
     timeoutMs = 60_000,
+    cwd?: string,
   ): Promise<CommandResult> => {
     return await runner({
       command,
       args,
+      ...(cwd === undefined ? {} : { cwd }),
       env: { PATH: path, DILEE_ROOT: config.rootDir },
       timeoutMs,
     })
@@ -498,7 +500,12 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
     state.previousVersion = live
 
     if (live !== state.release) {
-      const ancestor = await probe('git', ['merge-base', '--is-ancestor', live, 'HEAD'], config.timeouts.gitMs)
+      const ancestor = await probe(
+        'git',
+        ['merge-base', '--is-ancestor', live, 'HEAD'],
+        config.timeouts.gitMs,
+        config.repoPath,
+      )
       if (ancestor.code !== 0) {
         throw new DeployFailure(
           'preflight',
@@ -564,12 +571,17 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
         throw new DeployFailure('push', `git fetch ${config.gitRemote} 失败（检查网络/远端地址）：${tail(fetch)}`)
       }
       const remoteRef = `${config.gitRemote}/${config.gitBranch}`
-      const remoteHeadResult = await probe('git', ['rev-parse', remoteRef], config.timeouts.gitMs)
+      const remoteHeadResult = await probe('git', ['rev-parse', remoteRef], config.timeouts.gitMs, config.repoPath)
       if (remoteHeadResult.code !== 0) {
         throw new DeployFailure('push', `读不到远端分支 ${remoteRef}`)
       }
       const remoteHead = remoteHeadResult.stdout.trim()
-      const fastForward = await probe('git', ['merge-base', '--is-ancestor', remoteHead, 'HEAD'], config.timeouts.gitMs)
+      const fastForward = await probe(
+        'git',
+        ['merge-base', '--is-ancestor', remoteHead, 'HEAD'],
+        config.timeouts.gitMs,
+        config.repoPath,
+      )
       if (fastForward.code !== 0) {
         throw new DeployFailure(
           'push',
