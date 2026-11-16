@@ -1,6 +1,6 @@
 # Agent 应用层架构：飞书 → Coordinator → DSH
 
-日期：2026-11-14｜版本：1.2｜状态：**已实施并端到端验证通过**｜类型：架构设计
+日期：2026-11-14｜版本：1.3｜状态：**已实施并端到端验证通过**｜类型：架构设计
 
 **实施状态（2026-11-14 18:58）**：§10 施工顺序的 6 步全部完成，
 两次端到端实测通过（冒烟 4/4、追加 6/6）。实施中发现的三个真实缺陷见 §12。
@@ -8,6 +8,10 @@
 **v1.2（2026-11-16）**：新增意图层（需求 / 进度 / 提问 / 闲聊 / 操作指令）、
 主动进度同步与持久化、带工单上下文的问答。设计见
 [进度同步与问答](ticket-bot-progress-and-qa-2026-11-16.md)，实施记录见 §12.6。
+
+**v1.3（2026-11-16）**：接上部署腿 —— 推送 GitHub、构建、测试门禁、切换、核验、
+失败自动回滚。设计见 [自主部署与 GitHub 推送](autonomous-deploy-and-github-push-2026-11-16.md)，
+实施记录见 §12.7。
 
 上游：[生产常驻 Agent 自动修 ERP](production-resident-agent-erp-maintenance-2026-11-13.md)、
 [Phase 2 进度](phase2-feishu-ticket-bot-2026-11-14.md)。
@@ -68,6 +72,7 @@ coordinator
   ├─ harness-runner      DSH 子进程 + --json + 进程外超时
   ├─ progress            事件流 → 阶段 / 卡片 / 群内播报（2026-11-16 加）
   ├─ answerer            带工单上下文的问答（2026-11-16 加，不占改代码车道）
+  ├─ deploy              推 GitHub → 构建 → 测试 → 迁移检查 → 切换 → 核验 → 自动回滚（2026-11-16 加）
   └─ run-monitor         事件流 → 状态 → 卡片
   │
   ▼
@@ -190,6 +195,21 @@ dsh --profile headless --json --session-id <sessionId> "<prompt>"
 
 同时只跑一个 harness run。其余工单停在 `queued`。
 理由：Phase 1 实测构建期可用内存最低 152 MB，并行必然打满 swap。
+
+### 6.5 部署（v1.3）
+
+run 成功后的终点不再是 `gated` 停住，而是接上部署：
+`gated → deploying → done`（失败回 `gated`，回滚则 `rolled_back`）。
+
+部署复用生产标准脚本 `scripts/deploy/remote-*.sh`，顺序：
+预检 → 推 GitHub → 打包 → 服务器构建 → 测试门禁 → 迁移检查 → 切换 → 核验 → 边缘探针。
+预检硬门禁：工作区干净、线上版本是 HEAD 祖先（防降级）、无未应用迁移（不准动生产库）、
+失败迁移=0、磁盘≥5GB、快进推送（拒绝 force push）。
+切换或核验失败自动回滚；构建/测试/迁移失败不切换，旧版本继续跑。
+
+部署与 run 共用同一条串行队列：构建期间不能再有 run 改工作区。
+触发方式：群里说「部署/上线/发布」，或 run 成功后 `AUTO_DEPLOY=1` 自动排队
+（用户 2026-11-13 拍板「全自动上线、失败自动回滚」）。
 
 ## 7. 事件流 → 飞书卡片
 
@@ -362,6 +382,77 @@ dsh --profile headless --json --session-id <sessionId> "<prompt>"
 **新增风险**：问答答案来自模型 + 本地工单事实，看不到生产库业务数据；
 涉及订单/库存的具体数字会明确说查不了，而不是编一个。
 
+### 12.7 v1.3：接上部署腿（2026-11-16）
+
+**触发**：14:47 用户 @ 机器人「部署，并把最新代码推送到github，能做到吗」，
+机器人回「部署做不到 / 推 GitHub 也做不到」。用户随即明确：**这一步，我需要 Agent 能自主实现。**
+
+**三个卡点**：
+
+1. **基线不对**：agent 工作区基于 `1607b9c1`，线上是 `3e0a8ccb`，且工单修复与线上
+   「供应商分档」改到同一批文件。直接部署会降级。→ 把 `2ede7e51`、`f3a4f097`
+   两笔工单修复 cherry-pick 到当前 main，逐个解决语义冲突（两套逻辑都保留）。
+2. **没有 GitHub 凭据**：agent 仓库 origin 是 Phase 1 离线 bundle。→ 服务器生成 SSH deploy key，
+   fetch 走 HTTPS（公开仓库）、push 走 SSH；公钥需用户在 GitHub 加一次（唯一人工步骤）。
+3. **没有部署执行器**：→ 新增 `deploy.ts`，按生产标准调用 `scripts/deploy/remote-*.sh`。
+
+**部署门禁**（任一不过即中止，生产不受影响）：
+
+| 门禁 | 判据 |
+|---|---|
+| 工作区干净 | `git status --porcelain` 为空 |
+| 基线不倒挂 | 线上 `RELEASE_VERSION` 是 HEAD 祖先 |
+| 不自动迁移 | 仓库迁移目录数 ≤ 已应用迁移数，失败残留 = 0 |
+| 磁盘充足 | `/` 可用 ≥ 5 GB |
+| 快进推送 | `origin/main` 必须是 HEAD 祖先，拒绝 force push |
+| 测试门禁 | 候选目录跑 `npm test`，通过才切换 |
+| 单车道 | 与 harness run 共用串行队列 |
+
+**失败处理**：预检/推送/打包/构建/测试/迁移失败 → 不切换，工单回 `gated`；
+切换或核验失败 → 自动 `remote-rollback.sh`，工单 `rolled_back`；
+回滚失败 → 如实报出（不假装成功）。边缘探针失败只记警告（回滚修不了 nginx）。
+
+**实战发现的两个问题**（都是门禁自己抓出来的）：
+
+1. **git 探测漏 cwd**：预检误报「线上版本不是 HEAD 祖先」。根因是 `probe()` 没传 `cwd`，
+   `git merge-base` 跑在机器人进程目录（不是仓库）；修法：git 探测统一传 `repoPath`。
+2. **main 自带 3 条红用例**：`raw-material-movement-post-lock` 的两条过账用例
+   在 `3e0a8ccb`（供应商分档）后缺 `rawMaterialSupplierBuckets` 桩，直接 TypeError；
+   `sales-item-no` 的搜索用例还在用 `getByPlaceholderText("输入关键词")`，
+   而 `3e0a8ccb` 已把列表 placeholder 统一成「输入关键词，空格分隔多个词」。
+   之前部署没被测试门禁拦住，这次机器人门禁在切换前拦住了。修法：补桩 + 按 data-testid 定位。
+
+**2 核上的门禁调参**：Web 组件测试默认 4 worker 会把 CPU 打满，出现一片
+`Test timed out in 10000ms` 的假红（实测 12 条）。改为
+`--maxWorkers=2 --testTimeout=60000 --retry=1`：确定性失败仍会红，load 敏感用例重试后能过。
+本地全量 Web 套件 86 文件 / 1410 用例已全绿验证。
+
+**验收**：见 §12.7.1。
+
+#### 12.7.1 部署验收（2026-11-16 17:57）
+
+**已上线**：`3e0a8ccb → 14e3bf66`。线上 `RELEASE_VERSION=14e3bf66…`，health 的 `build`
+与之一致，`/login` `/manifest` `/production` `/sales` 全 200，PM2 两进程 online 且重启 0 次，
+备份 `/opt/dilee/app.backup-20261116-175642`，总耗时 39 分 10 秒
+（构建 12 分 55 秒 + 测试门禁 25 分 53 秒 + 切换/核验 1 分钟）。
+两笔真实修复（物料下拉、领料余下数量）随之上线；工单 T-0004/5/7/12 → `done`。
+
+**门禁拦住了四次，每次都是真问题**（生产全程未动）：
+
+| # | 失败点 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 预检误报基线倒挂 | `probe()` 漏传 cwd，git 跑在进程目录 | 统一传 `repoPath` |
+| 2 | 2 条 API 红 | main 自带：缺 `rawMaterialSupplierBuckets` 测试桩 | 补桩 |
+| 3 | 12 条 timeout 假红 + 1 条真红 | 2 核跑 4 worker vitest；placeholder 文案改名 | 门禁限 2 worker + retry；测试改 data-testid |
+| 4 | finance-slips 导出必红 | Node 22 undici 不接受 jsdom Blob 作 Response body | 夹具改字符串 body |
+
+**已知缺陷（已修，待下次部署验证）**：边缘探针在切换后运行，`CONF_SRC` 指向已改名的
+staging 目录 → 记 warning 而非失败。修法：配置复制进 workDir 再探。
+人工 `--verify-only` 复核：10 MB 上传经边缘返回 401（请求到达 API），边缘本身正常。
+
+**未验证**：服务器侧 `git push`（deploy key 公钥待用户加一次）。本次由开发机推送，
+线上版本与 GitHub `main` 一致，可追溯性成立。
+
 ## 变更记录
 
 - 2026-11-14：建立。依据本次三条实测（会话续接、`--session-id` 语义、headless 子 agent 能力）
@@ -369,4 +460,7 @@ dsh --profile headless --json --session-id <sessionId> "<prompt>"
 - 2026-11-14：补 §12。完成后实施并两次端到端验证；记录三个实测缺陷与修法。
 - 2026-11-16：v1.2。补意图层、主动进度同步、问答路由；依据真实事故（问进度被当成需求）
   与用户两条要求。新增文档 [进度同步与问答](ticket-bot-progress-and-qa-2026-11-16.md)。
+- 2026-11-16：v1.3。接上部署腿（推 GitHub → 构建 → 测试门禁 → 切换 → 核验 → 自动回滚）；
+  依据用户要求「部署与推送 GitHub 必须自主」。新增文档
+  [自主部署与 GitHub 推送](autonomous-deploy-and-github-push-2026-11-16.md)。
 

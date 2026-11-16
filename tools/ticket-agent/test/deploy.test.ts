@@ -83,6 +83,7 @@ function setup(options: FakeOptions = {}): Harness {
   ]) {
     writeFileSync(join(repo, 'scripts/deploy', name), '#!/usr/bin/env bash\n', 'utf8')
   }
+  writeFileSync(join(repo, 'scripts/deploy', 'nginx-dilee.conf'), 'client_max_body_size 20m;\n', 'utf8')
   const appDir = join(root, 'app')
   mkdirSync(appDir, { recursive: true })
   const releaseFile = join(appDir, 'RELEASE_VERSION')
@@ -242,6 +243,11 @@ test('成功路径：推送、构建、测试、迁移、切换、核验、边�
     assert.ok(called(harness, 'git push origin HEAD:refs/heads/main'))
     assert.ok(called(harness, 'vitest run'))
     assert.ok(called(harness, 'remote-nginx.sh'))
+    // 边缘探针在切换之后跑：staging 已改名为 app，CONF_SRC 必须指向 workDir 里的副本。
+    const edgeCall = harness.calls.find((call) =>
+      call.args.some((arg) => String(arg).endsWith('remote-nginx.sh')),
+    )
+    assert.equal(edgeCall?.env?.CONF_SRC, join(harness.config.workDir, 'nginx-dilee.conf'))
     assert.ok(existsSync(harness.config.recordsDir))
     assert.ok(readdirSync(harness.config.recordsDir).length >= 1)
     // git 只读探测必须带仓库 cwd：漏掉时 `merge-base ... HEAD` 会在进程 cwd 里跑，

@@ -1,6 +1,6 @@
 # 自主部署与 GitHub 推送
 
-日期：2026-11-16｜版本：1.0｜状态：**实施中**｜类型：设计
+日期：2026-11-16｜版本：1.1｜状态：**已实施，线上验证通过**｜类型：设计
 
 上游：[Agent 应用层架构](agent-application-layer-architecture-2026-11-14.md)、
 [生产常驻 Agent 自动修 ERP](production-resident-agent-erp-maintenance-2026-11-13.md)。
@@ -134,6 +134,33 @@ export async function runDeploy(input: {
 | 5 | 成功路径：GitHub 有提交、线上 `RELEASE_VERSION` = 部署提交、健康与页面正常 |
 | 6 | 飞书群里能看到每个阶段与最终结果 |
 
+## 6. 实施结果（2026-11-16 17:57）
+
+**已上线**：`3e0a8ccb → 14e3bf66`，线上 `RELEASE_VERSION=14e3bf66…`，
+health 的 `build` 与之一致，`/login` `/manifest` `/production` `/sales` 全 200；
+备份 `/opt/dilee/app.backup-20261116-175642`；总耗时 39 分 10 秒
+（构建 12 分 55 秒 + 测试门禁 25 分 53 秒 + 迁移/切换/核验 1 分钟）。
+
+**门禁拦住了四次，每次都是真问题**（生产全程未动）：
+
+1. `probe()` 漏 cwd → 预检误报基线倒挂；
+2. main 自带 2 条 API 红（缺供应商分档测试桩）；
+3. 2 核上 vitest 4 worker 打出 12 条 timeout 假红 + 1 条 placeholder 真红；
+4. Node 22 undici 不接受 jsdom Blob 作为 Response body，导致 finance-slips 导出用例必红。
+
+**测试门禁最终形态**：typecheck → 部署脚本守卫 → API 单测 → Web lib → Web 组件
+（`--maxWorkers=2 --testTimeout=60000 --retry=1`，1410 条）。
+
+**已知缺陷（已修，待下次部署验证）**：边缘探针在切换后运行，`CONF_SRC` 还指向已改名的
+staging 目录 → 记录 warning 而非失败（应用已上线，不自动回滚）。
+修法：打包阶段把 `nginx-dilee.conf` 复制进 workDir，探针用副本。
+人工 `--verify-only` 复核：10 MB 上传经边缘返回 401，请求确实到达 API。
+
+**未验证**：服务器侧 `git push`（deploy key 公钥需要用户加一次 GitHub Deploy key）。
+本次代码由开发机推送，线上版本与 GitHub `main` 一致，可追溯性成立。
+
 ## 变更记录
 
 - 2026-11-16：建立。依据用户要求与现有部署标准；机器人将具备推送 GitHub 与部署上线能力。
+- 2026-11-16：实施并线上验证通过（v1.0 → 已实施）。补 §6 实施结果与四次门禁拦截的根因。
+

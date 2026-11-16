@@ -618,7 +618,11 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
     rmSync(config.workDir, { recursive: true, force: true })
     mkdirSync(config.workDir, { recursive: true })
     for (const name of readdirSync(deployScripts)) {
-      if (name.endsWith('.sh')) cpSync(join(deployScripts, name), join(config.workDir, name))
+      // `.conf` 也要带走：边缘探针在**切换之后**跑，那时 staging 目录已经被提升成 app，
+      // 原路径不存在；固定用 workDir 里的副本，别依赖 staging 还在原地。
+      if (name.endsWith('.sh') || name.endsWith('.conf')) {
+        cpSync(join(deployScripts, name), join(config.workDir, name))
+      }
     }
 
     let staging: string
@@ -786,7 +790,8 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
       env: {
         PATH: path,
         DILEE_ROOT: config.rootDir,
-        CONF_SRC: join(staging, 'scripts/deploy/nginx-dilee.conf'),
+        // 用 workDir 里的配置副本：切换后 staging 已改名为 app，原路径不再存在。
+        CONF_SRC: join(config.workDir, 'nginx-dilee.conf'),
       },
       timeoutMs: config.timeouts.edgeMs,
       onLine: (line) => hooks.onLine?.('edge', line),
