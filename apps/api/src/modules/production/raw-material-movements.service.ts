@@ -6,7 +6,7 @@ import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { InventoryService } from "../../platform/inventory/inventory.service";
 // 预估列要与领取单打印件同名同值，口径与导出服务共用一份实现（material-slip-quantity.ts）。
-import { issuedBeforeQuantity, remainingQuantity as remainingQuantityOf } from "./material-slip-quantity";
+import { issueReferenceQuantity as issueReferenceQuantityOf, issuedBeforeQuantity, remainingQuantity as remainingQuantityOf } from "./material-slip-quantity";
 
 type IssueLineInput = { material_id: string; quantity: string; supplier_id?: string | null; remark?: string };
 // 领料单与补料单都只绑定生产单，不再绑定工序。
@@ -506,18 +506,26 @@ export class RawMaterialMovementsService {
       const purchaseReceived = new Prisma.Decimal(received._sum.quantity ?? 0);
       const approvedQuantity = bomItem?.approvedUsage ?? bomItem?.requiredQuantity ?? null;
       const purchaseOutstanding = purchaseOrdered.minus(purchaseReceived);
-      const productionOutstanding = approvedQuantity ? approvedQuantity.minus(cumulativeIssued) : null;
-      // —— 与领取单打印件同名的四个数量（页面预估列直接显示，前端不再自己换算）——
+      // 领料基数按**实际已过账入库量**：用户反馈 260136 卡其伞布 BOM 配料 5950 码、实际入库 6470 码，
+      // 生产领料必须按 6470 扣已领，不能按采购/配料时预定的 5950。没有入库记录时才回落到 BOM。
+      const bomQuantity = approvedQuantity === null ? null : approvedQuantity.toNumber();
+      const actualInboundQuantity = purchaseReceived.toNumber();
+      const issueReferenceQuantity = issueReferenceQuantityOf(actualInboundQuantity, bomQuantity);
+      const issueReferenceDecimal = issueReferenceQuantity === null ? null : new Prisma.Decimal(issueReferenceQuantity);
+      const productionOutstanding = issueReferenceDecimal ? issueReferenceDecimal.minus(cumulativeIssued) : null;
+      // —— 与领取单打印件同名的数量（页面预估列直接显示，前端不再自己换算）——
       // 预估只针对**草稿**：草稿不写库存事实，所以净领料就是「本单之前」的已领数量，
       // 因此这里按「本单自身未过账」换算。已过账单据请以导出件为准（过账校验/退料影响预览
-      // 也走本函数，但它们只读库存与风险字段，不读这四个）。
-      const materialQuantity = approvedQuantity === null ? null : approvedQuantity.toNumber();
+      // 也走本函数，但它们只读库存与风险字段，不读这几个）。
       const issuedQuantity = issuedBeforeQuantity(cumulativeIssued.toNumber(), 0, false);
       const currentQuantity = quantity.toNumber();
-      const remainingQuantity = remainingQuantityOf(materialQuantity, issuedQuantity, currentQuantity);
+      const remainingQuantity = remainingQuantityOf(issueReferenceQuantity, issuedQuantity, currentQuantity);
       const risks = [] as { type: string; context: Prisma.InputJsonValue }[];
       if (!bomItem) risks.push({ type: "MATERIAL_NOT_IN_BOM_WARNING", context: { material_id: material.id, quantity: line.quantity } });
-      if (bomItem && cumulativeAfter.greaterThan(bomItem.requiredQuantity)) risks.push({ type: "OVER_ISSUE_WARNING", context: { material_id: material.id, bom_reference_quantity: bomItem.requiredQuantity.toString(), cumulative_issue_quantity: cumulativeAfter.toString() } });
+      // 超领按「领料基准数量」判断（实际入库优先、BOM 兜底）：实际到货 6470 时领 6470 不应再误报「超出 BOM 用量」。
+      // context 同时保留 BOM 参考量与实际入库量，前端/日志都能看出是按哪个基准判的。
+      if (bomItem && issueReferenceDecimal && cumulativeAfter.greaterThan(issueReferenceDecimal)) risks.push({ type: "OVER_ISSUE_WARNING", context: { material_id: material.id, bom_reference_quantity: bomItem.requiredQuantity.toString(), actual_inbound_quantity: purchaseReceived.toString(), issue_reference_quantity: issueReferenceDecimal.toString(), cumulative_issue_quantity: cumulativeAfter.toString() } });
+      // 供应商分档结存：同一物料可能来自多个供应商，前端「当前库存量」hover 要展示各档。
       const buckets = await getBuckets(material.id, resolvedUnitId);
       previewLines.push({
         id: undefined as string | undefined,
@@ -538,13 +546,17 @@ export class RawMaterialMovementsService {
         available_after: availableBefore.minus(quantity),
         inventory_quantity: availableBefore.toString(),
         purchase_received_quantity: purchaseReceived.toString(),
+        // 实际入库数量 = 该订单该物料已过账的原料入库合计；领料基数优先用它。
+        actual_inbound_quantity: purchaseReceived.toString(),
+        issue_reference_quantity: issueReferenceQuantity,
         purchase_outstanding_quantity: purchaseOutstanding.toString(),
         cumulative_issued_before: cumulativeIssued,
         cumulative_issued_after: cumulativeAfter,
         production_outstanding_quantity: productionOutstanding?.toString() ?? null,
         available_by_supplier: buckets.map((b) => ({ supplier_id: b.supplier_id, supplier_name: b.supplier_name ?? null, quantity: b.quantity.toString() })),
-        // 打印件上的四列：配料数量 / 已领数量 / 本次领料量 / 余下数量（同名同值，前端照抄即可）。
-        material_quantity: materialQuantity,
+        // 打印件上的数量列：配料数量 / 实际入库数量 / 已领数量 / 本次领料量 / 余下数量
+        //（同名同值，前端照抄即可；余下按实际入库算，不再按配料算）。
+        material_quantity: bomQuantity,
         issued_quantity: issuedQuantity,
         current_quantity: currentQuantity,
         remaining_quantity: remainingQuantity,

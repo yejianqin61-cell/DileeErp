@@ -44,6 +44,10 @@ function issueFixture(overrides = {}) {
     user: { findFirst: async () => ({ displayName: "张三" }) },
     inventoryFact: {
       aggregate: async ({ where }) => ({ _sum: { quantityDelta: facts.filter((fact) => fact.materialId === where.materialId).reduce((sum, fact) => sum.plus(fact.quantityDelta), new Prisma.Decimal(0)) } })
+    },
+    // 实际入库：material-1 到货 5（与配料一致，余下仍是 5−4−2=−1）；material-2 没有入库记录。
+    rawMaterialInbound: {
+      aggregate: async ({ where }) => ({ _sum: { quantity: where.materialId === "material-1" ? new Prisma.Decimal("5") : null } })
     }
   };
   return { movement, prisma };
@@ -98,10 +102,10 @@ test("领料单导出包含模板要求的表头字段与明细列", async () =>
   assert.equal(sheet.getCell("H5").isMerged, true, "值格延续模板写法合并到最后一列");
   assert.equal(sheet.getCell("J5").master.address, "H5", "H5:J5 合并区的主格是 H5");
   // 明细表头
-  assert.deepEqual(sheet.getRow(6).values.slice(1), ["序号", "产品名称", "产品代码", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量"]);
+  assert.deepEqual(sheet.getRow(6).values.slice(1), ["序号", "产品名称", "产品代码", "规格型号", "颜色", "单位", "配料数量", "实际入库数量", "已领数量", "本次领料量", "余下数量"]);
 });
 
-test("明细行的数量口径：配料=BOM核定用量、已领=不含本单的已过账净领料、余下=配料−已领−本次", async () => {
+test("明细行的数量口径：配料=BOM核定用量、实际入库=已过账入库、已领=不含本单的已过账净领料、余下=实际入库−已领−本次", async () => {
   const service = harness();
   const sheet = (await open(await service.exportSlip("movement-1"))).getWorksheet("MI-20260910-ABCD1234");
   const first = sheet.getRow(7);
@@ -111,16 +115,18 @@ test("明细行的数量口径：配料=BOM核定用量、已领=不含本单的
   assert.equal(first.getCell(5).value, "黑色");
   assert.equal(first.getCell(6).value, "根");
   assert.equal(first.getCell(7).value, 5, "配料数量取核定用量 5（而非 BOM 需求量 6）");
-  assert.equal(first.getCell(8).value, 4, "已领数量 = 净领料 6 − 本单 2");
-  assert.equal(first.getCell(9).value, 2);
-  assert.equal(first.getCell(10).value, -1, "余下数量 = 5 − 4 − 2，负数表示超领");
-  // 非 BOM 物料：配料与余下留空，已领仍按库存事实给出
+  assert.equal(first.getCell(8).value, 5, "实际入库数量取已过账入库合计 5");
+  assert.equal(first.getCell(9).value, 4, "已领数量 = 净领料 6 − 本单 2");
+  assert.equal(first.getCell(10).value, 2);
+  assert.equal(first.getCell(11).value, -1, "余下数量 = 实际入库 5 − 已领 4 − 本次 2，负数表示超领");
+  // 非 BOM 物料：配料与余下留空，实际入库为 0，已领仍按库存事实给出
   const second = sheet.getRow(8);
   assert.equal(second.getCell(2).value, "手柄");
   assert.equal(second.getCell(7).value, null);
-  assert.equal(second.getCell(8).value, 0, "非 BOM 物料仍有 3 个已领，扣本单 3 后为 0");
-  assert.equal(second.getCell(9).value, 3);
-  assert.equal(second.getCell(10).value, null);
+  assert.equal(second.getCell(8).value, 0, "没有入库记录时实际入库为 0，余下回落到空");
+  assert.equal(second.getCell(9).value, 0, "非 BOM 物料仍有 3 个已领，扣本单 3 后为 0");
+  assert.equal(second.getCell(10).value, 3);
+  assert.equal(second.getCell(11).value, null);
 });
 
 test("小计行对四个数量列求和，其余列留空", async () => {
@@ -129,7 +135,7 @@ test("小计行对四个数量列求和，其余列留空", async () => {
   const subtotal = sheet.getRow(9);
   assert.equal(subtotal.getCell(1).value, "小计");
   assert.equal(subtotal.getCell(2).value, null);
-  for (const column of [7, 8, 9, 10]) assert.match(String(subtotal.getCell(column).value.formula), /^SUM\(/, `第 ${column} 列应有求和公式`);
+  for (const column of [7, 8, 9, 10, 11]) assert.match(String(subtotal.getCell(column).value.formula), /^SUM\(/, `第 ${column} 列应有求和公式`);
 });
 
 test("草稿领料单在标题上标注草稿", async () => {
@@ -251,7 +257,8 @@ test("补料单草稿在标题标注草稿；批量导出按类型套用各自�
   const replenishment = replenishmentFixture();
   const mixed = new MaterialSlipExportService({
     rawMaterialMovement: { findFirst: async () => null, findMany: async () => [issue.movement, replenishment.movement] },
-    inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal(0) } }) }
+    inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal(0) } }) },
+    rawMaterialInbound: { aggregate: async () => ({ _sum: { quantity: null } }) }
   }, fakeActors());
   const result = await mixed.exportSlips({});
   assert.equal(result.count, 2);
@@ -281,7 +288,9 @@ function multiHarness(movements) {
       aggregate: async ({ where }) => ({
         _sum: { quantityDelta: movements.filter((item) => item.status === "posted").flatMap((item) => item.lines).filter((line) => line.materialId === where.materialId).reduce((sum, line) => sum.minus(line.quantity), new Prisma.Decimal(0)) }
       })
-    }
+    },
+    // 这些用例聚焦 BOM/单据事实的联动，没有实际入库记录 → 余下回落到 BOM，保持原断言不变。
+    rawMaterialInbound: { aggregate: async () => ({ _sum: { quantity: null } }) }
   };
   return new MaterialSlipExportService(prisma, fakeActors());
 }
@@ -320,10 +329,10 @@ test("导出绑定系统领料单：换一张 movement_id 就整表变化（单�
 
   assert.equal(sheetA.getCell("D4").value, "MI-AAAA", "领料单号必须是该单据的单号");
   assert.equal(sheetA.getRow(7).getCell(2).value, "伞骨");
-  assert.equal(sheetA.getRow(7).getCell(9).value, 2);
+  assert.equal(sheetA.getRow(7).getCell(10).value, 2);
   assert.equal(sheetB.getCell("D4").value, "MI-BBBB");
   assert.equal(sheetB.getRow(7).getCell(2).value, "手柄");
-  assert.equal(sheetB.getRow(7).getCell(9).value, 7);
+  assert.equal(sheetB.getRow(7).getCell(10).value, 7);
   assert.notEqual(sheetA.getRow(7).getCell(2).value, sheetB.getRow(7).getCell(2).value, "两张单的明细不得互相串");
 });
 
@@ -337,27 +346,27 @@ test("口径差异实证：配料数量随 BOM 变化（活数据），本次领
   movement.productionOrder.bom.items[0].approvedUsage = new Prisma.Decimal("12");
   const afterBom = (await open(await service.exportSlip("movement-A"))).getWorksheet("MI-AAAA");
   assert.equal(afterBom.getRow(7).getCell(7).value, 12, "配料数量取自 BOM，属活数据");
-  assert.equal(afterBom.getRow(7).getCell(9).value, 2, "本次领料量来自单据，不受 BOM 影响");
+  assert.equal(afterBom.getRow(7).getCell(10).value, 2, "本次领料量来自单据，不受 BOM 影响");
 
   // 只改单据明细数量，本次领料量与已领数量随之变化。
   movement.lines[0].quantity = new Prisma.Decimal("5");
   const afterLine = (await open(await service.exportSlip("movement-A"))).getWorksheet("MI-AAAA");
-  assert.equal(afterLine.getRow(7).getCell(9).value, 5, "本次领料量取自单据明细");
-  assert.equal(afterLine.getRow(7).getCell(8).value, 0, "已领数量 = 净领料 5 − 本单 5");
+  assert.equal(afterLine.getRow(7).getCell(10).value, 5, "本次领料量取自单据明细");
+  assert.equal(afterLine.getRow(7).getCell(9).value, 0, "已领数量 = 净领料 5 − 本单 5");
 });
 
 // ── 页面详情弹窗：直接复用导出服务的组装结果 ──
 // 2026-10-29 用户要求「系统里的领料单要和导出件保持一致」：详情弹窗若另查 BOM 与库存事实，
 // 就会再造一套数量口径（之前页面与纸面对不上就是这么来的）。
-test("详情弹窗数据：领料单版式，四个数量与导出件是同一组数字", async () => {
+test("详情弹窗数据：领料单版式，实际入库与四个数量与导出件是同一组数字", async () => {
   const service = harness();
   const slip = await service.buildSlipDocument("movement-1");
   assert.equal(slip.document_type, "issue");
   const line = slip.document.lines[0];
-  assert.deepEqual([line.bomQuantity, line.issuedQuantity, line.currentQuantity, line.remainingQuantity], [5, 4, 2, -1], "配料 5、已领 4（不含本单）、本次 2、余下 -1");
-  // 同一张单的 Excel：第 7 行第 7~10 列就是这四个数，必须逐项相等。
+  assert.deepEqual([line.bomQuantity, line.actualInboundQuantity, line.issuedQuantity, line.currentQuantity, line.remainingQuantity], [5, 5, 4, 2, -1], "配料 5、实际入库 5、已领 4（不含本单）、本次 2、余下 -1");
+  // 同一张单的 Excel：第 7 行第 7~11 列就是这五个数，必须逐项相等。
   const sheet = (await open(await service.exportSlip("movement-1"))).getWorksheet("MI-20260910-ABCD1234");
-  assert.deepEqual([sheet.getRow(7).getCell(7).value, sheet.getRow(7).getCell(8).value, sheet.getRow(7).getCell(9).value, sheet.getRow(7).getCell(10).value], [5, 4, 2, -1]);
+  assert.deepEqual([sheet.getRow(7).getCell(7).value, sheet.getRow(7).getCell(8).value, sheet.getRow(7).getCell(9).value, sheet.getRow(7).getCell(10).value, sheet.getRow(7).getCell(11).value], [5, 5, 4, 2, -1]);
   assert.equal(line.remark, null, "行备注为空时页面显示「-」");
 });
 

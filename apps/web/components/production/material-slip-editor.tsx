@@ -25,8 +25,8 @@ type RawBalance = { material_id: string; unit_name: string; quantity: string };
 type BomItem = { materialId: string; materialName: string; model?: string | null; specificationModel?: string | null; requiredQuantity: string; unit: string; unitId?: string | null; supplierId?: string | null; supplierName?: string | null };
 type SlipLine = { materialId: string; quantity: string; supplier_id?: string | null; remark: string };
 type PreviewLine = { material_id: string; material_code?: string; material_name?: string; model?: string | null; unit?: string | null; color?: string | null; approved_usage?: string | null; bom_reference_quantity?: string | null; inventory_quantity?: string | null; available_before?: string | null; purchase_received_quantity?: string | null; purchase_outstanding_quantity?: string | null; cumulative_issued_before?: string | number | null; cumulative_issued_after?: string | null; production_outstanding_quantity?: string | null; requested_replenishment_quantity?: string | null;
-  /** 与领料单打印件同名的四个数量：后端按同一口径算好（material-slip-quantity），页面只显示、不自己换算。 */
-  material_quantity?: number | null; issued_quantity?: number | null; current_quantity?: number | null; remaining_quantity?: number | null; risks?: Array<{ type?: string; message?: string }>;
+  /** 与领料单打印件同名的数量：配料 / 实际入库 / 已领 / 本次 / 余下，后端按同一口径算好（material-slip-quantity），页面只显示、不自己换算。 */
+  material_quantity?: number | null; actual_inbound_quantity?: string | null; issue_reference_quantity?: number | null; issued_quantity?: number | null; current_quantity?: number | null; remaining_quantity?: number | null; risks?: Array<{ type?: string; message?: string }>;
   /** 同一物料同供应商下的档位结存，供「当前库存量」列 hover 展示各档。 */
   available_by_supplier?: Array<{ supplier_id: string | null; supplier_name: string | null; quantity: string }>;
   supplier_id?: string | null;
@@ -280,15 +280,16 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
               <TableHead>颜色</TableHead>
               <TableHead>单位</TableHead>
               <TableHead>供应商</TableHead>
-              {/* 「配料数量 / 已领数量 / 本次领料量 / 余下数量」与领料单打印件的列一一对应、
+              {/* 「配料数量 / 实际入库数量 / 已领数量 / 本次领料量 / 余下数量」与领料单打印件的列一一对应、
                   同名同值（口径由后端 material-slip-quantity 统一算，页面只显示）：
-                  车间拿打印件核对系统时，两边是同一组数字，不再一边含本单、一边不含本单。 */}
+                  车间拿打印件核对系统时，两边是同一组数字，不再一边含本单、一边不含本单。
+                  余下数量按实际入库数量扣减，不再用配料/采购预定量。 */}
               <TableHead>配料数量</TableHead>
               {!isReplenishment && <TableHead>已领数量</TableHead>}
               <TableHead className="slip-col-qty">{isReplenishment ? "补领数量" : "本次领料量"}</TableHead>
               {!isReplenishment && <TableHead>余下数量</TableHead>}
               <TableHead>当前库存量</TableHead>
-              {!isReplenishment && <><TableHead>采购入库数量</TableHead><TableHead>采购未入库数量</TableHead></>}
+              {!isReplenishment && <><TableHead>实际入库数量</TableHead><TableHead>采购未入库数量</TableHead></>}
               <TableHead className="slip-col-remark">备注</TableHead>
               <TableHead className="slip-col-action">操作</TableHead>
             </TableRow></TableHeader>
@@ -302,14 +303,16 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                   ? rawBalances.length > 0 && stock < Number(line.quantity || 0)
                   : Boolean(info) && Number(info?.available_before ?? info?.inventory_quantity ?? 0) < Number(line.quantity || 0);
                 const update = (patch: Partial<SlipLine>) => applyLines(lines.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
-                // 四个数量直接取后端算好的值（与打印件同一口径）；接口没返回时回落到旧字段，避免整列空白。
+                // 五个数量直接取后端算好的值（与打印件同一口径）；接口没返回时回落到旧字段，避免整列空白。
                 const materialQuantity = info?.material_quantity ?? info?.approved_usage ?? info?.bom_reference_quantity ?? "-";
+                const actualInboundQuantity = info?.actual_inbound_quantity ?? info?.purchase_received_quantity ?? "-";
                 const issuedQuantity = info?.issued_quantity ?? info?.cumulative_issued_before ?? "-";
                 const remainingQuantity = info?.remaining_quantity;
                 const remainingText = remainingQuantity === null || remainingQuantity === undefined ? "-" : String(remainingQuantity);
                 const supplierOption = line.supplier_id ? bomItems.find((b) => b.supplierId === line.supplier_id && b.materialId === line.materialId) : null;
                 const supplierLabel = line.supplier_id ? (supplierOption?.supplierName ?? "未指定") : "未指定";
-                const availableStock = info?.available_before ?? "-";
+                // 「当前库存量」优先显示该物料+单位的档位合计（inventory_quantity），旧接口没有时回落 available_before。
+                const availableStock = info?.inventory_quantity ?? info?.available_before ?? "-";
                 return <TableRow key={`${line.materialId || "new"}-${line.supplier_id ?? "__none__"}-${index}`}>
                   <TableCell className="slip-col-material" title={materialLabel(line.materialId)}>
                     {/* 原料来自该订单的 BOM 明细，几十个部件时靠滚找同样费劲（用户 2026-11-13：
@@ -345,9 +348,9 @@ export function MaterialSlipEditor({ documentType }: { documentType: "issue" | "
                   {!isReplenishment && <TableCell>{issuedQuantity}</TableCell>}
                   <TableCell className="slip-col-qty"><Input type="number" min="0" step="0.0001" data-testid={`material-slip-line-quantity-${index}`} value={line.quantity} onChange={(event) => update({ quantity: event.target.value })} /></TableCell>
                   {/* 余下数量为负 = 超领：跟打印件一样显示负数，并标红提示，不抹成 0。 */}
-                  {!isReplenishment && <TableCell className={typeof remainingQuantity === "number" && remainingQuantity < 0 ? "status-danger" : undefined}>{remainingText}</TableCell>}
+                  {!isReplenishment && <TableCell className={typeof remainingQuantity === "number" && remainingQuantity < 0 ? "status-danger" : undefined} title="余下数量 = 实际入库数量 − 已领数量 − 本次领料量">{remainingText}</TableCell>}
                   <TableCell className={short ? "status-danger" : "status-success"} title={supplierStockOf(line.materialId) || (isReplenishment ? balanceOf(line.materialId) : availableStock)}>{isReplenishment ? balanceOf(line.materialId) : availableStock}</TableCell>
-                  {!isReplenishment && <><TableCell>{info?.purchase_received_quantity ?? "-"}</TableCell><TableCell>{info?.purchase_outstanding_quantity ?? "-"}</TableCell></>}
+                  {!isReplenishment && <><TableCell title="该订单该物料已过账的实际入库数量合计">{actualInboundQuantity}</TableCell><TableCell>{info?.purchase_outstanding_quantity ?? "-"}</TableCell></>}
                   <TableCell className="slip-col-remark"><Input value={line.remark} placeholder="可选" onChange={(event) => update({ remark: event.target.value })} /></TableCell>
                   <TableCell className="slip-col-action"><Button size="sm" variant="ghost" title="删除行" aria-label="删除行" onClick={() => applyLines(lines.filter((_, itemIndex) => itemIndex !== index))}>删除</Button></TableCell>
                 </TableRow>;

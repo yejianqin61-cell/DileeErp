@@ -35,7 +35,7 @@ const issue = (over: Issue = {}): Issue => ({
   ...over,
 });
 
-/** slip-document：与后端 `buildSlipDocument` 同形（表头字段 + 明细四个数量）。 */
+/** slip-document：与后端 `buildSlipDocument` 同形（表头字段 + 明细数量列）。 */
 const slipDocument = (kind: "issue" | "replenishment" = "issue") => ({
   document_type: kind,
   document: {
@@ -56,7 +56,7 @@ const slipDocument = (kind: "issue" | "replenishment" = "issue") => ({
     remark: "第一批领料",
     reason: kind === "replenishment" ? "伞布坏片" : "",
     lines: kind === "issue"
-      ? [{ sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "黑", unit: "米", bomQuantity: 5, issuedQuantity: 2, currentQuantity: 1, remainingQuantity: 2 }]
+      ? [{ sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "黑", unit: "米", bomQuantity: 5, actualInboundQuantity: 5, issuedQuantity: 2, currentQuantity: 1, remainingQuantity: 2 }]
       : [{ sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "黑", unit: "米", replenishQuantity: 1 }],
   },
 });
@@ -101,7 +101,7 @@ describe("领料单 / 补料单打印", () => {
     expect(sheet).toHaveTextContent("MI-001");
     expect(sheet).toHaveTextContent("一车间");
     // 四个数量列与打印件同名（已领不含本次、余下已减本次）
-    for (const label of ["配料数量", "已领数量", "本次领料量", "余下数量"]) expect(within(sheet).getByRole("columnheader", { name: label })).toBeVisible();
+    for (const label of ["配料数量", "实际入库数量", "已领数量", "本次领料量", "余下数量"]) expect(within(sheet).getByRole("columnheader", { name: label })).toBeVisible();
     expect(sheet).toHaveTextContent("小计");
 
     await userEvent.click(within(dialog).getByTestId("material-slip-print-confirm"));

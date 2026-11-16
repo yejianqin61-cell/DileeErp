@@ -88,6 +88,8 @@ function defaultPreview(call: StubbedCall) {
       material_code: index === 0 ? "RM-1" : "RM-2",
       bom_reference_quantity: "5",
       material_quantity: 5,
+      actual_inbound_quantity: "5",
+      issue_reference_quantity: 5,
       issued_quantity: 2,
       current_quantity: 1,
       remaining_quantity: 2,
@@ -248,7 +250,7 @@ describe("MaterialIssuesPanel：新建草稿与 BOM 预估", () => {
 
     await openCreate();
 
-    const preview = await screen.findByText("超出 BOM 用量");
+    const preview = await screen.findByText("超出实际入库数量");
     expect(preview).toBeVisible();
     const previewCall = lastTo(calls, "/issue-preview");
     expect(previewCall.method).toBe("POST");
@@ -262,6 +264,7 @@ describe("MaterialIssuesPanel：新建草稿与 BOM 预估", () => {
     const row = draftRows()[0];
     expect(row).toHaveTextContent("面料A");
     expect(draftColumn("配料数量")).toEqual(["5"]);
+    expect(draftColumn("实际入库数量")).toEqual(["5"]);
     expect(draftColumn("已领数量")).toEqual(["2"]);
     expect(draftColumn("余下数量")).toEqual(["2"]);
     expect(draftColumn("当前库存")).toEqual(["12"]);
@@ -733,8 +736,8 @@ describe("MaterialIssuesPanel：列表行操作", () => {
     });
     // 明细行由「与打印件同源」的 slip-document 提供：配料 / 已领（不含本次）/ 本次 / 余下（已减本次）。
     const slipDocument = { document_type: "issue", document: { lines: [
-      { sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "米白", unit: "米", bomQuantity: 10, issuedQuantity: 2, currentQuantity: 3, remainingQuantity: 5, remark: null },
-      { sequence: 2, materialName: "拉链B", materialCode: "RM-2", specificationModel: "3号", color: "藏青", unit: "条", bomQuantity: 10, issuedQuantity: 8, currentQuantity: 8, remainingQuantity: -6, remark: "备损" },
+      { sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "米白", unit: "米", bomQuantity: 10, actualInboundQuantity: 10, issuedQuantity: 2, currentQuantity: 3, remainingQuantity: 5, remark: null },
+      { sequence: 2, materialName: "拉链B", materialCode: "RM-2", specificationModel: "3号", color: "藏青", unit: "条", bomQuantity: 10, actualInboundQuantity: 10, issuedQuantity: 8, currentQuantity: 8, remainingQuantity: -6, remark: "备损" },
     ] } };
     const calls = stubPanelApi({
       // 列表行只有 materialId；物料编码/名称/规格必须由详情接口补上
@@ -754,7 +757,7 @@ describe("MaterialIssuesPanel：列表行操作", () => {
     // 全部领用物料都要出现（而不是只给「2 项」的合计）
     expect(within(dialog).getByText("领用物料（2 项）")).toBeVisible();
     // 列名与领料单打印件一致
-    for (const header of ["物料编码", "物料名称", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量", "备注"]) {
+    for (const header of ["物料编码", "物料名称", "规格型号", "颜色", "单位", "配料数量", "实际入库数量", "已领数量", "本次领料量", "余下数量", "备注"]) {
       expect(within(dialog).getByRole("columnheader", { name: header })).toBeVisible();
     }
     const detailRows = within(dialog).getAllByTestId("data-table-row");

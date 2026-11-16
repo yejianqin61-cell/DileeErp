@@ -28,11 +28,13 @@ export type SlipDocumentLine = {
   remark?: string | null;
   /** 领料单：配料数量（BOM 核定用量；非 BOM 物料留空）。 */
   bomQuantity?: number | null;
+  /** 领料单：实际入库数量（该订单该物料已过账的原料入库合计）。 */
+  actualInboundQuantity?: number | null;
   /** 领料单：已领数量（本单之前，**不含本次**）。 */
   issuedQuantity?: number;
   /** 领料单：本次领料量。 */
   currentQuantity?: number;
-  /** 领料单：余下数量（配料 − 已领 − 本次，可为负 = 超领）。 */
+  /** 领料单：余下数量（实际入库 − 已领 − 本次，没有入库记录时回落到配料；可为负 = 超领）。 */
   remainingQuantity?: number | null;
   /** 补料单：补领数量（补料单纸面只有这一个数量）。 */
   replenishQuantity?: number;
@@ -48,9 +50,12 @@ const amount = (value: number | null | undefined) => (value === null || value ==
 /**
  * 两张表的列宽，各自合计**恰好 100%**：这张表没有审计列，缺的百分比会被浏览器摊给别的列，
  * 于是「本来只想收窄一列」会变成整张表都变。数字取舍见 docs/design/material-slip-form-quantities-2026-10-29.md。
+ *
+ * 领料单 12 列 = 基础 6 列（含 2026-11 供应商分档新增的「供应商」）+ 配料 / 实际入库 / 已领 / 本次 / 余下 + 备注；
+ * 两边功能合流时（供应商分档 × 实际入库口径）重新分配过一次，仍是 100%。
  */
-const ISSUE_WIDTH = { materialCode: "12%", materialName: "17%", specification: "13%", color: "7%", unit: "5%", supplier: "8%", bomQuantity: "10%", issuedQuantity: "9%", currentQuantity: "10%", remainingQuantity: "9%", remark: "7%" } as const;
-const REPLENISHMENT_WIDTH = { materialCode: "16%", materialName: "24%", specification: "20%", color: "10%", unit: "8%", supplier: "10%", replenishQuantity: "12%", remark: "10%" } as const;
+const ISSUE_WIDTH = { materialCode: "10%", materialName: "14%", specification: "11%", color: "6%", unit: "4%", supplier: "7%", bomQuantity: "8%", actualInboundQuantity: "9%", issuedQuantity: "8%", currentQuantity: "9%", remainingQuantity: "8%", remark: "6%" } as const;
+const REPLENISHMENT_WIDTH = { materialCode: "15%", materialName: "23%", specification: "18%", color: "9%", unit: "7%", supplier: "8%", replenishQuantity: "11%", remark: "9%" } as const;
 
 /** 两张表共用的前 5 列（物料资料）：两张表列宽不同，所以宽度由各自传入。 */
 const baseColumns = (widths: { materialCode: string; materialName: string; specification: string; color: string; unit: string; supplier: string }): ColumnDef<SlipDocumentLine>[] => [
@@ -62,10 +67,11 @@ const baseColumns = (widths: { materialCode: string; materialName: string; speci
   { id: "supplier", header: "供应商", meta: { width: widths.supplier }, accessorFn: (line) => text(line.supplierName ?? null) },
 ];
 
-/** 领料单：列名与打印件一致，四个数量连续排在一起。 */
+/** 领料单：列名与打印件一致，数量列连续排在一起（余下按实际入库算）。 */
 const ISSUE_COLUMNS: ColumnDef<SlipDocumentLine>[] = [
   ...baseColumns(ISSUE_WIDTH),
   { id: "bomQuantity", header: "配料数量", meta: { width: ISSUE_WIDTH.bomQuantity }, accessorFn: (line) => amount(line.bomQuantity) },
+  { id: "actualInboundQuantity", header: "实际入库数量", meta: { width: ISSUE_WIDTH.actualInboundQuantity }, accessorFn: (line) => amount(line.actualInboundQuantity) },
   { id: "issuedQuantity", header: "已领数量", meta: { width: ISSUE_WIDTH.issuedQuantity }, accessorFn: (line) => amount(line.issuedQuantity) },
   { id: "currentQuantity", header: "本次领料量", meta: { width: ISSUE_WIDTH.currentQuantity }, accessorFn: (line) => amount(line.currentQuantity) },
   {

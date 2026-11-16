@@ -162,7 +162,7 @@ describe("领料单列表页：确认提交（草稿 → 待仓库出库）", ()
 });
 
 describe("领料单列表页：双击查看全部领用物料", () => {
-  it("双击单据行：弹窗逐行列出该单全部领用物料，列名与打印件一致（含四个数量）", async () => {
+  it("双击单据行：弹窗逐行列出该单全部领用物料，列名与打印件一致（含实际入库与四个数量）", async () => {
     const detail = issue({
       id: "mi-9",
       movementNo: "MI-009",
@@ -176,8 +176,8 @@ describe("领料单列表页：双击查看全部领用物料", () => {
     });
     // 明细行来自「与打印件同源」的 slip-document：已领不含本次、余下已减本次。
     const slipDocument = { document_type: "issue", document: { lines: [
-      { sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "米白", unit: "米", bomQuantity: 10, issuedQuantity: 2, currentQuantity: 3, remainingQuantity: 5, remark: null },
-      { sequence: 2, materialName: "拉链B", materialCode: "RM-2", specificationModel: "3号", color: "藏青", unit: "条", bomQuantity: 10, issuedQuantity: 8, currentQuantity: 8, remainingQuantity: -6, remark: "备损" },
+      { sequence: 1, materialName: "面料A", materialCode: "RM-1", specificationModel: "150D", color: "米白", unit: "米", bomQuantity: 10, actualInboundQuantity: 10, issuedQuantity: 2, currentQuantity: 3, remainingQuantity: 5, remark: null },
+      { sequence: 2, materialName: "拉链B", materialCode: "RM-2", specificationModel: "3号", color: "藏青", unit: "条", bomQuantity: 10, actualInboundQuantity: 10, issuedQuantity: 8, currentQuantity: 8, remainingQuantity: -6, remark: "备损" },
     ] } };
     const calls = await renderPage({
       // 列表行只有 materialId，物料编码/名称/规格必须由详情接口补上
@@ -193,7 +193,7 @@ describe("领料单列表页：双击查看全部领用物料", () => {
     expect(callsTo(calls, "/production/material-movements/mi-9")).toHaveLength(1);
     expect(callsTo(calls, "/production/material-movements/mi-9/slip-document")).toHaveLength(1);
     expect(within(dialog).getByText("领用物料（2 项）")).toBeVisible();
-    for (const header of ["物料编码", "物料名称", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量", "备注"]) {
+    for (const header of ["物料编码", "物料名称", "规格型号", "颜色", "单位", "配料数量", "实际入库数量", "已领数量", "本次领料量", "余下数量", "备注"]) {
       expect(within(dialog).getByRole("columnheader", { name: header })).toBeVisible();
     }
     const rows = within(dialog).getAllByTestId("data-table-row");

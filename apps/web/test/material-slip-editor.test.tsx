@@ -71,10 +71,10 @@ const rawBalances = [
  */
 const previewData = {
   lines: [
-    // 配料 12、已领 2、本次 1 → 余下 9
-    { material_id: "m-1", material_code: "RM-001", model: "A-1", color: "米白", unit: "米", approved_usage: "12", bom_reference_quantity: "10", material_quantity: 12, issued_quantity: 2, current_quantity: 1, remaining_quantity: 9, inventory_quantity: "30", available_before: "30", purchase_received_quantity: "50", purchase_outstanding_quantity: "6", cumulative_issued_before: "2", cumulative_issued_after: "3", production_outstanding_quantity: "10" },
-    { material_id: "m-2", material_code: "RM-002", model: "B-2", color: "藏青", unit: "张", approved_usage: "4", bom_reference_quantity: "4", material_quantity: 4, issued_quantity: 0, current_quantity: 1, remaining_quantity: 3, inventory_quantity: "5", available_before: "5", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "4" },
-    { material_id: "m-9", material_code: "RM-009", model: "C-9", color: "灰", unit: "米", approved_usage: "2", bom_reference_quantity: "2", material_quantity: 2, issued_quantity: 0, current_quantity: 1, remaining_quantity: 1, inventory_quantity: "9", available_before: "9", purchase_received_quantity: "0", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "2" },
+    // 配料 12、实际入库 12、已领 2、本次 1 → 余下 9；供应商档位结存来自 2026-11 的供应商分档功能
+    { material_id: "m-1", material_code: "RM-001", model: "A-1", color: "米白", unit: "米", approved_usage: "12", bom_reference_quantity: "10", material_quantity: 12, actual_inbound_quantity: "12", issue_reference_quantity: 12, issued_quantity: 2, current_quantity: 1, remaining_quantity: 9, inventory_quantity: "30", available_before: "28", available_by_supplier: [{ supplier_id: null, supplier_name: null, quantity: "30" }], purchase_received_quantity: "12", purchase_outstanding_quantity: "6", cumulative_issued_before: "2", cumulative_issued_after: "3", production_outstanding_quantity: "10" },
+    { material_id: "m-2", material_code: "RM-002", model: "B-2", color: "藏青", unit: "张", approved_usage: "4", bom_reference_quantity: "4", material_quantity: 4, actual_inbound_quantity: "4", issue_reference_quantity: 4, issued_quantity: 0, current_quantity: 1, remaining_quantity: 3, inventory_quantity: "5", available_before: "5", purchase_received_quantity: "4", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "4" },
+    { material_id: "m-9", material_code: "RM-009", model: "C-9", color: "灰", unit: "米", approved_usage: "2", bom_reference_quantity: "2", material_quantity: 2, actual_inbound_quantity: "2", issue_reference_quantity: 2, issued_quantity: 0, current_quantity: 1, remaining_quantity: 1, inventory_quantity: "9", available_before: "9", purchase_received_quantity: "2", purchase_outstanding_quantity: "0", cumulative_issued_before: "0", cumulative_issued_after: "1", production_outstanding_quantity: "2" },
   ],
   warnings: [] as string[],
 };
@@ -207,7 +207,7 @@ describe("MaterialSlipEditor 领料单：加载与 BOM 数据流", () => {
     expect(deleteButtons()).toHaveLength(1);
   });
 
-  it("预估列渲染与领料单打印件同名的配料/已领/本次/余下四个数量", async () => {
+  it("预估列渲染与领料单打印件同名的配料/实际入库/已领/本次/余下数量，且供应商列仍在", async () => {
     stub();
     await renderSlip();
 
@@ -216,11 +216,13 @@ describe("MaterialSlipEditor 领料单：加载与 BOM 数据流", () => {
     expect(columnValues("型号")).toEqual(["A-1"]);
     expect(columnValues("颜色")).toEqual(["米白"]);
     expect(columnValues("单位")).toEqual(["米"]);
+    // 供应商分档（2026-11 main）与「实际入库数量」口径（f3a4f09）合并后必须在同一张表里同时可见。
+    expect(columnValues("供应商")).toEqual(["未指定"]);
     // 已领数量不含本单、余下数量已减本单：12 − 2 − 1 = 9
     expect(columnValues("已领数量")).toEqual(["2"]);
     expect(columnValues("余下数量")).toEqual(["9"]);
     expect(columnValues("当前库存量")).toEqual(["30"]);
-    expect(columnValues("采购入库数量")).toEqual(["50"]);
+    expect(columnValues("实际入库数量")).toEqual(["12"]);
     expect(columnValues("采购未入库数量")).toEqual(["6"]);
   });
 
@@ -624,7 +626,7 @@ describe("MaterialSlipEditor 补料单", () => {
     expect(callsTo(calls, "/issue-preview")).toHaveLength(0);
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("新建补料单");
     expect(screen.getByRole("columnheader", { name: "补领数量" })).toBeVisible();
-    expect(screen.queryByRole("columnheader", { name: "采购入库数量" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "实际入库数量" })).toBeNull();
     // 补料单打印件只有「补领数量」：已领 / 余下（以及采购两列）都不该出现。
     expect(screen.queryByRole("columnheader", { name: "已领数量" })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "余下数量" })).toBeNull();

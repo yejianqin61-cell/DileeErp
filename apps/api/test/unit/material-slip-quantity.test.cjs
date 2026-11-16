@@ -35,7 +35,7 @@ test("余下数量 = 配料 − 已领 − 本次；超领原样返回负数，�
 
 /** 导出件侧：已过账的单据，净领料 6、本单 2 → 已领 4、余下 5−4−2 = −1。 */
 async function exportLine(overrides = {}) {
-  const { status = "posted", fact = "-6", ownQuantity = "2" } = overrides;
+  const { status = "posted", fact = "-6", ownQuantity = "2", actualInbound = "5" } = overrides;
   const movement = {
     id: "movement-1",
     movementNo: "MI-20261029-0001",
@@ -61,7 +61,8 @@ async function exportLine(overrides = {}) {
   };
   const prisma = {
     rawMaterialMovement: { findFirst: async () => movement },
-    inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal(fact) } }) }
+    inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal(fact) } }) },
+    rawMaterialInbound: { aggregate: async () => ({ _sum: { quantity: new Prisma.Decimal(actualInbound) } }) }
   };
   const service = new MaterialSlipExportService(prisma, { namesOf: async () => new Map([["user-1", "张三"]]) });
   return (await service.buildDocument("movement-1")).lines[0];
@@ -69,27 +70,51 @@ async function exportLine(overrides = {}) {
 
 /** 预估侧：草稿状态（本单还没写库存事实），净领料 4 → 已领 4、余下 5−4−2 = −1。 */
 async function previewLine(overrides = {}) {
-  const { fact = "-4", ownQuantity = "2", approved = "5", required = "6" } = overrides;
+  const { fact = "-4", ownQuantity = "2", approved = "5", required = "6", actualInbound = "5" } = overrides;
   const prisma = {
     material: { findFirst: async () => ({ id: "material-1", name: "伞骨", materialCode: "M-001", materialType: "raw_material", defaultUnitId: "unit-1" }) },
     bomItem: { findFirst: async () => ({ approvedUsage: new Prisma.Decimal(approved), requiredQuantity: new Prisma.Decimal(required), unit: "根", specificationModel: "58cm", model: null, color: "黑色" }) },
     inventoryFact: { aggregate: async () => ({ _sum: { quantityDelta: new Prisma.Decimal(fact) } }) },
     purchaseOrderItem: { aggregate: async () => ({ _sum: { quantity: null } }) },
-    rawMaterialInbound: { aggregate: async () => ({ _sum: { quantity: null } }) }
+    rawMaterialInbound: { aggregate: async () => ({ _sum: { quantity: new Prisma.Decimal(actualInbound) } }) }
   };
-  const inventory = { rawMaterialBalance: async () => new Prisma.Decimal("100") };
+  // 供应商分档结存（2026-11 main 的供应商功能）：本用例只关心数量口径，档位返回空数组即可。
+  const inventory = { rawMaterialBalance: async () => new Prisma.Decimal("100"), rawMaterialSupplierBuckets: async () => [] };
   const service = new RawMaterialMovementsService(prisma, {}, inventory);
   const result = await service.previewLines({ id: "order-1", orderNo: "DL260001", bomId: "bom-1" }, [{ material_id: "material-1", quantity: ownQuantity }]);
   return result.lines[0];
 }
 
-test("同一个业务状态：系统页面预估与导出件的四个数量完全一致", async () => {
+test("同一个业务状态：系统页面预估与导出件的数量列完全一致", async () => {
   const exported = await exportLine();
   const previewed = await previewLine();
-  const printed = [exported.bomQuantity, exported.issuedQuantity, exported.currentQuantity, exported.remainingQuantity];
-  const shown = [previewed.material_quantity, previewed.issued_quantity, previewed.current_quantity, previewed.remaining_quantity];
-  assert.deepEqual(printed, [5, 4, 2, -1], "导出件：配料 5、已领 4（不含本单）、本次 2、余下 -1");
+  const printed = [exported.bomQuantity, exported.actualInboundQuantity, exported.issuedQuantity, exported.currentQuantity, exported.remainingQuantity];
+  const shown = [previewed.material_quantity, Number(previewed.actual_inbound_quantity), previewed.issued_quantity, previewed.current_quantity, previewed.remaining_quantity];
+  assert.deepEqual(printed, [5, 5, 4, 2, -1], "导出件：配料 5、实际入库 5、已领 4（不含本单）、本次 2、余下 -1");
   assert.deepEqual(shown, printed, "页面预估列必须与打印件逐项相等（此前差一个本次领料量）");
+});
+
+// 用户工单 T-0012：260136 卡其伞布 BOM 配料 5950，实际到货入库 6470。
+// 生产领料必须按实际入库 6470 扣减，不能再按采购/配料预定的 5950。
+test("实际入库 6470 > BOM 配料 5950：余下数量按实际入库扣减，且不算超领", async () => {
+  const previewed = await previewLine({ approved: "5950", required: "5950", actualInbound: "6470", fact: "0", ownQuantity: "6470" });
+  assert.equal(previewed.material_quantity, 5950, "配料数量仍按 BOM 显示");
+  assert.equal(previewed.actual_inbound_quantity, "6470");
+  assert.equal(previewed.issue_reference_quantity, 6470, "领料基数取实际入库 6470");
+  assert.equal(previewed.remaining_quantity, 0, "6470 − 已领 0 − 本次 6470 = 0，不能按 5950 算成 −520");
+  assert.equal(previewed.risks.some((risk) => risk.type === "OVER_ISSUE_WARNING"), false, "6470 未超过实际入库 6470，不应误报超领");
+
+  // 已过账单据：库存事实里含本单自己的 6470，已领数量扣掉本单后为 0。
+  const exported = await exportLine({ actualInbound: "6470", fact: "-6470", ownQuantity: "6470" });
+  assert.equal(exported.actualInboundQuantity, 6470);
+  assert.equal(exported.remainingQuantity, 0, "打印件与页面同口径：按 6470 扣减");
+});
+
+test("实际入库小于 BOM 时也要按实际入库算（分批到货尚未到齐）", async () => {
+  const previewed = await previewLine({ approved: "5950", required: "5950", actualInbound: "3000", fact: "0", ownQuantity: "3500" });
+  assert.equal(previewed.issue_reference_quantity, 3000);
+  assert.equal(previewed.remaining_quantity, -500, "实际只入库 3000，领 3500 应显示超领 −500");
+  assert.equal(previewed.risks.some((risk) => risk.type === "OVER_ISSUE_WARNING"), true);
 });
 
 test("草稿与已过账的单据：页面显示「已领数量」都不含本单", async () => {

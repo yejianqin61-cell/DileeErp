@@ -25,8 +25,8 @@ const issueDocument = {
   operatedAt: "2026/9/10 10:30:00",
   remark: "第一批领料，裁剪工序",
   lines: [
-    { sequence: 1, materialName: "伞骨", materialCode: "M-001", specificationModel: "58cm", color: "黑色", unit: "根", bomQuantity: 2500, issuedQuantity: 300, currentQuantity: 1200, remainingQuantity: 1000 },
-    { sequence: 2, materialName: "伞布", materialCode: "M-002", specificationModel: "EVA", color: "透明", unit: "米", bomQuantity: 500, issuedQuantity: 120, currentQuantity: 200, remainingQuantity: 180 },
+    { sequence: 1, materialName: "伞骨", materialCode: "M-001", specificationModel: "58cm", color: "黑色", unit: "根", bomQuantity: 2500, actualInboundQuantity: 2500, issuedQuantity: 300, currentQuantity: 1200, remainingQuantity: 1000 },
+    { sequence: 2, materialName: "伞布", materialCode: "M-002", specificationModel: "EVA", color: "透明", unit: "米", bomQuantity: 500, actualInboundQuantity: 500, issuedQuantity: 120, currentQuantity: 200, remainingQuantity: 180 },
   ],
 };
 
@@ -43,8 +43,8 @@ test("标题：草稿 / 待仓库出库 / 已冲销写进纸头（与导出 xlsx
   assert.equal(materialSlipPrintHeading({ document_type: "replenishment", document: { ...issueDocument, status: "reversed" } }), "【补料单】（已冲销）");
 });
 
-test("明细列：领料单四个数量；补料单只有补领数量 + 一个图片列（与样例 xlsx 同序）", () => {
-  assert.deepEqual(materialSlipPrintColumns("issue").map((column) => column.label), ["序号", "产品名称", "产品代码", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量"]);
+test("明细列：领料单配料/实际入库/已领/本次/余下；补料单只有补领数量 + 一个图片列（与样例 xlsx 同序）", () => {
+  assert.deepEqual(materialSlipPrintColumns("issue").map((column) => column.label), ["序号", "产品名称", "产品代码", "规格型号", "颜色", "单位", "配料数量", "实际入库数量", "已领数量", "本次领料量", "余下数量"]);
   assert.deepEqual(materialSlipPrintColumns("replenishment").map((column) => column.label), ["序号", "图片", "产品名称", "产品代码", "规格型号", "颜色", "单位", "补领数量"]);
 });
 

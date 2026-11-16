@@ -62,6 +62,7 @@ export function materialSlipPrintColumns(kind: "issue" | "replenishment"): Mater
   }
   return [...base,
     { key: "bomQuantity", label: "配料数量", numeric: true },
+    { key: "actualInboundQuantity", label: "实际入库数量", numeric: true },
     { key: "issuedQuantity", label: "已领数量", numeric: true },
     { key: "currentQuantity", label: "本次领料量", numeric: true },
     { key: "remainingQuantity", label: "余下数量", numeric: true }];

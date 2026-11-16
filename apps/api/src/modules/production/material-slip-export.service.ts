@@ -5,7 +5,7 @@ import { PrismaService } from "../../platform/database/prisma.service";
 import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import { beijingDateTime } from "../../platform/time/beijing-time";
 // 已领 / 余下的口径与系统页面的预估列共用一份实现（见 material-slip-quantity.ts 的说明）。
-import { issuedBeforeQuantity, remainingQuantity as remainingQuantityOf } from "./material-slip-quantity";
+import { issueReferenceQuantity as issueReferenceQuantityOf, issuedBeforeQuantity, remainingQuantity as remainingQuantityOf } from "./material-slip-quantity";
 
 /** 领料单（打印表）明细行。 */
 export type MaterialIssueDocumentLine = {
@@ -17,11 +17,13 @@ export type MaterialIssueDocumentLine = {
   unit: string;
   /** 配料数量 = BOM 核定用量（无则退回需求量）；非 BOM 物料退回领料时的快照值，仍为空则留空。 */
   bomQuantity: number | null;
+  /** 实际入库数量 = 该订单该物料已过账的原料入库合计；没有入库记录时为 0。 */
+  actualInboundQuantity: number;
   /** 已领数量 = 本单之前该生产单+物料已过账的净领料（不含本单）。 */
   issuedQuantity: number;
   /** 本次领料量。 */
   currentQuantity: number;
-  /** 余下数量 = 配料数量 − 已领数量 − 本次领料量（可为负，表示超领）。 */
+  /** 余下数量 = 实际入库数量 − 已领数量 − 本次领料量（没有入库记录时回落到 BOM；可为负，表示超领）。 */
   remainingQuantity: number | null;
   /** 行备注：打印件不印，但页面详情弹窗要看（与旧版详情一致，不能因为走打印数据就丢掉）。 */
   remark: string | null;
@@ -92,7 +94,7 @@ const EMPTY_REPLENISHMENT: MaterialReplenishmentDocument = { movementNo: "", sta
 
 const EMPTY: MaterialIssueDocument = { movementNo: "", status: "draft", productionOrderNo: "", orderNo: "", productName: "", productCode: "", productSpecification: "", productColor: "", operationName: "", issueUnit: "", plannedQuantity: 0, unitName: "", operatorName: "", operatedAt: "", remark: "", lines: [] };
 
-const COLUMN_WIDTHS = [6, 24, 16, 18, 10, 8, 12, 12, 12, 12];
+const COLUMN_WIDTHS = [6, 24, 16, 18, 10, 8, 11, 12, 12, 11, 12];
 const BODY_FONT = { name: "宋体", size: 11 } as const;
 const HEADER_FONT = { name: "宋体", size: 11, bold: true } as const;
 const THIN_BORDER: Partial<ExcelJS.Borders> = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
@@ -238,6 +240,10 @@ export class MaterialSlipExportService {
       const facts = await this.prisma.inventoryFact.aggregate({ where: { productionOrderId: movement.productionOrderId, materialId: line.materialId, unitId: line.unitId, inventoryCategory: "raw_material" }, _sum: { quantityDelta: true } });
       const netIssued = toNumber(new Prisma.Decimal(facts._sum.quantityDelta ?? 0).negated()) ?? 0;
       const issued = issuedBeforeQuantity(netIssued, current, movement.status === "posted");
+      // 余下数量按实际到货入库量扣减（不是配料/采购预定量）；没有入库记录时才回落到 BOM。
+      const inbound = await this.prisma.rawMaterialInbound.aggregate({ where: { materialId: line.materialId, orderNo: order.orderNo, deletedAt: null, status: "posted" }, _sum: { quantity: true } });
+      const actualInbound = toNumber(inbound._sum.quantity) ?? 0;
+      const reference = issueReferenceQuantityOf(actualInbound, bomQuantity);
       lines.push({
         sequence: index + 1,
         materialName: line.material.name,
@@ -246,9 +252,10 @@ export class MaterialSlipExportService {
         color: bomItem?.color ?? line.material.color ?? "",
         unit: line.unit.name,
         bomQuantity,
+        actualInboundQuantity: actualInbound,
         issuedQuantity: issued,
         currentQuantity: current,
-        remainingQuantity: remainingQuantityOf(bomQuantity, issued, current),
+        remainingQuantity: remainingQuantityOf(reference, issued, current),
         remark: line.remark ?? null
       });
     }
@@ -425,7 +432,7 @@ export class MaterialSlipExportService {
     sheet.headerFooter = { oddFooter: "&C第 &P 页 / 共 &N 页" };
 
     // 标题：草稿单据直接在标题标注，避免把未过账数量当成正式领料。
-    sheet.mergeCells("A1:J1");
+    sheet.mergeCells("A1:K1");
     const titleCell = sheet.getCell("A1");
     titleCell.value = document.status === "posted" ? "【领料单】" : "【领料单】（草稿）";
     titleCell.font = { name: "宋体", size: 16, bold: true };
@@ -433,7 +440,7 @@ export class MaterialSlipExportService {
     sheet.getRow(1).height = 30;
 
     // 表头区：3 行 × 4 组「标签 + 填写格」。2026-11-07 起第 3 行第 4 组不再留空：
-    // 模板预留的 G5:J5 正好放「订单号：」（G5 标签 / H5:J5 合并写销售订单号），已有字段位置一个不动。
+    // 模板预留的 G5:K5 正好放「订单号：」（G5 标签 / H5:K5 合并写销售订单号），已有字段位置一个不动。
     const headerRows: Array<Array<[string, string] | null>> = [
       [["生产单号：", document.productionOrderNo], ["成品名称：", document.productName], ["成品代码：", document.productCode], ["规格型号：", document.productSpecification]],
       [["颜色：", document.productColor], ["领料单号：", document.movementNo], ["领料工序：", document.operationName], ["领料单位：", document.issueUnit]],
@@ -450,7 +457,7 @@ export class MaterialSlipExportService {
         labelCell.font = BODY_FONT;
         labelCell.alignment = { horizontal: "right", vertical: "middle" };
         const valueColumn = String.fromCharCode(labelColumns[fieldIndex].charCodeAt(0) + 1);
-        const lastValueColumn = fieldIndex === 3 ? "J" : valueColumn;
+        const lastValueColumn = fieldIndex === 3 ? "K" : valueColumn;
         if (valueColumn !== lastValueColumn) sheet.mergeCells(`${valueColumn}${rowNumber}:${lastValueColumn}${rowNumber}`);
         const valueCell = sheet.getCell(`${valueColumn}${rowNumber}`);
         valueCell.value = field[1];
@@ -462,7 +469,7 @@ export class MaterialSlipExportService {
     });
 
     const tableHeaderRow = 6;
-    const headers = ["序号", "产品名称", "产品代码", "规格型号", "颜色", "单位", "配料数量", "已领数量", "本次领料量", "余下数量"];
+    const headers = ["序号", "产品名称", "产品代码", "规格型号", "颜色", "单位", "配料数量", "实际入库数量", "已领数量", "本次领料量", "余下数量"];
     const headerRow = sheet.getRow(tableHeaderRow);
     headers.forEach((label, index) => {
       const cell = headerRow.getCell(index + 1);
@@ -475,7 +482,7 @@ export class MaterialSlipExportService {
 
     document.lines.forEach((line, index) => {
       const row = sheet.getRow(tableHeaderRow + 1 + index);
-      const values: Array<string | number | null> = [line.sequence, line.materialName, line.materialCode, line.specificationModel, line.color, line.unit, line.bomQuantity, line.issuedQuantity, line.currentQuantity, line.remainingQuantity];
+      const values: Array<string | number | null> = [line.sequence, line.materialName, line.materialCode, line.specificationModel, line.color, line.unit, line.bomQuantity, line.actualInboundQuantity, line.issuedQuantity, line.currentQuantity, line.remainingQuantity];
       values.forEach((value, columnIndex) => {
         const cell = row.getCell(columnIndex + 1);
         cell.value = value;
@@ -494,7 +501,7 @@ export class MaterialSlipExportService {
     subtotalCell.font = HEADER_FONT;
     subtotalCell.alignment = { horizontal: "center", vertical: "middle" };
     subtotalCell.border = THIN_BORDER;
-    for (let column = 2; column <= 10; column += 1) {
+    for (let column = 2; column <= 11; column += 1) {
       const cell = subtotalRow.getCell(column);
       cell.border = THIN_BORDER;
       cell.font = BODY_FONT;
@@ -507,7 +514,7 @@ export class MaterialSlipExportService {
     subtotalRow.height = 20;
     if (document.remark) {
       const remarkRowNumber = lastDataRow + 2;
-      sheet.mergeCells(`A${remarkRowNumber}:J${remarkRowNumber}`);
+      sheet.mergeCells(`A${remarkRowNumber}:K${remarkRowNumber}`);
       const remarkCell = sheet.getCell(`A${remarkRowNumber}`);
       remarkCell.value = `备注：${document.remark}`;
       remarkCell.font = BODY_FONT;

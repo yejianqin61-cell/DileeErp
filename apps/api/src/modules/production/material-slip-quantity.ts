@@ -27,12 +27,30 @@ export function issuedBeforeQuantity(netIssued: number, ownQuantity: number, own
 }
 
 /**
- * 余下数量 = 配料数量 − 已领数量 − 本次领料量。
+ * 领料基准数量：**实际入库数量优先，BOM 配料数量兜底**。
  *
- * 负数表示超领（本次领料超出 BOM 核定用量的余额）：打印件上原样打负数，页面也不要把它抹成 0。
- * 配料数量为空（非 BOM 物料、且领料时也没有快照）时留空 —— 没有分母就没有「余下」，
+ * 业务口径（2026-11 用户反馈）：领料要按实际到货入库的数量扣减，不能按采购/配料时预定的数量。
+ * 例：BOM 配料 5950 码、实际入库 6470 码，生产领料就应以 6470 为基数扣已领，而不是 5950。
+ *
+ * 还没有入库记录时（非本订单采购、直接从库存领用等）才回落到 BOM 配料数量：
+ * 否则这些物料会没有「余下」基准，页面反而比以前更不可用。
+ * 两者都为空时返回 null（打印件与页面显示「-」）。
+ */
+export function issueReferenceQuantity(actualInboundQuantity: number | null | undefined, bomQuantity: number | null): number | null {
+  if (actualInboundQuantity !== null && actualInboundQuantity !== undefined && Number.isFinite(actualInboundQuantity) && actualInboundQuantity > 0) {
+    return round4(actualInboundQuantity);
+  }
+  return bomQuantity === null ? null : round4(bomQuantity);
+}
+
+/**
+ * 余下数量 = 领料基准数量 − 已领数量 − 本次领料量。
+ *
+ * 领料基准数量由 `issueReferenceQuantity()` 统一给出（实际入库优先，BOM 兜底）。
+ * 负数表示超领（本次领料超出实际入库可用量的余额）：打印件上原样打负数，页面也不要把它抹成 0。
+ * 基准为空（既没有入库记录、也没有 BOM 配料/快照）时留空 —— 没有分母就没有「余下」，
  * 假装成 0 会让人以为「一点都不能领」。
  */
-export function remainingQuantity(bomQuantity: number | null, issuedBefore: number, currentQuantity: number): number | null {
-  return bomQuantity === null ? null : round4(bomQuantity - issuedBefore - currentQuantity);
+export function remainingQuantity(referenceQuantity: number | null, issuedBefore: number, currentQuantity: number): number | null {
+  return referenceQuantity === null ? null : round4(referenceQuantity - issuedBefore - currentQuantity);
 }
