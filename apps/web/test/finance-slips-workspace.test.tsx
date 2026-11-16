@@ -1,4 +1,4 @@
-﻿// 收付款单存档页（/finance/slips → components/finance/finance-slips-workspace.tsx）的**行为**测试。
+// 收付款单存档页（/finance/slips → components/finance/finance-slips-workspace.tsx）的**行为**测试。
 //
 // 为什么补这一页：用户 2026-09-26 只说了六个字——「付款单要有填写汇率的地方，**保存键**」。
 // 保存这个动作在界面上必须回答「存下来的单子去哪了」，否则保存只是往库里丢一条没人再看到的记录。
@@ -75,7 +75,7 @@ function stubSlips(rows: unknown[] = [], extra?: Handler) {
   return stubApi(async (url, call) => {
     const injected = await extra?.(url, call);
     if (injected) return injected;
-    if (url.startsWith(EP.exportXlsx)) return new Response(new Blob(["xlsx"]), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
+    if (url.startsWith(EP.exportXlsx)) return new Response("xlsx", { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
     if (url.startsWith(EP.slips)) {
       if (call.method === "GET") return apiOk(rows, { page: 1, page_size: 20, total: rows.length });
       return apiOk({ slip: record() });
