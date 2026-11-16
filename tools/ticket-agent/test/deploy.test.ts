@@ -46,6 +46,7 @@ interface FakeOptions {
   rollbackCode?: number
   requirePush?: boolean
   skipTests?: boolean
+  reuseStaging?: boolean
 }
 
 interface Harness {
@@ -93,6 +94,12 @@ function setup(options: FakeOptions = {}): Harness {
   const recordsDir = join(root, 'deploys')
   const stagingEnvPath = join(root, 'staging.env')
   const archivePath = join(root, 'release.tar.gz')
+  const reuseDir = join(root, 'reuse')
+  if (options.reuseStaging === true) {
+    mkdirSync(reuseDir, { recursive: true })
+    writeFileSync(join(reuseDir, 'RELEASE_VERSION'), `${HEAD}\n`, 'utf8')
+    writeFileSync(join(reuseDir, 'package.json'), '{"name":"reuse"}\n', 'utf8')
+  }
   const calls: CommandInput[] = []
   const phases: string[] = []
 
@@ -139,8 +146,11 @@ function setup(options: FakeOptions = {}): Harness {
         stderr: '',
       }
     }
-    if (input.command === 'npm' && args[0] === 'test') {
+    if (input.command === 'npm' && args[0] === 'run') {
       return { code: options.testCode ?? 0, stdout: options.testOut ?? '# pass 275\n# fail 0\n', stderr: '' }
+    }
+    if (input.command === 'npx' && args[0] === 'vitest') {
+      return { code: options.testCode ?? 0, stdout: `Test Files  86 passed\n${options.testOut ?? ''}`, stderr: '' }
     }
     if (input.command === 'bash' && (args[0] ?? '').endsWith('remote-migrate.sh')) {
       return { code: options.migrateCode ?? 0, stdout: 'MIGRATE_OK applied=119\n', stderr: '' }
@@ -185,6 +195,7 @@ function setup(options: FakeOptions = {}): Harness {
     keepBackups: 3,
     requirePush: options.requirePush ?? true,
     skipTests: options.skipTests ?? false,
+    reuseStaging: options.reuseStaging === true ? reuseDir : null,
     minFreeGb: 1,
     timeouts: defaultDeployTimeouts(),
     now: () => new Date('2026-11-16T06:00:00.000Z'),
@@ -229,7 +240,7 @@ test('成功路径：推送、构建、测试、迁移、切换、核验、边�
     assert.ok(harness.phases.includes('switch'))
     assert.ok(harness.phases.includes('done'))
     assert.ok(called(harness, 'git push origin HEAD:refs/heads/main'))
-    assert.ok(called(harness, 'npm test'))
+    assert.ok(called(harness, 'vitest run'))
     assert.ok(called(harness, 'remote-nginx.sh'))
     assert.ok(existsSync(harness.config.recordsDir))
     assert.ok(readdirSync(harness.config.recordsDir).length >= 1)
@@ -351,12 +362,13 @@ test('测试门禁失败：不切换', async () => {
   }
 })
 
-test('skipTests 时不跑 npm test', async () => {
+test('skipTests 时不跑测试门禁', async () => {
   const harness = setup({ skipTests: true })
   try {
     const result = await run(harness)
     assert.equal(result.ok, true, result.failure ?? '')
-    assert.equal(called(harness, 'npm test'), false)
+    assert.equal(called(harness, 'vitest'), false)
+    assert.equal(called(harness, 'run typecheck'), false)
   } finally {
     harness.cleanup()
   }
@@ -436,6 +448,33 @@ test('requirePush=false：跳过推送但仍部署', async () => {
     assert.equal(result.pushed, false)
     assert.equal(called(harness, 'git push'), false)
     assert.ok(called(harness, 'remote-switch.sh'))
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('reuseStaging：跳过打包与构建，只重跑门禁与切换', async () => {
+  const harness = setup({ reuseStaging: true })
+  try {
+    const result = await run(harness)
+    assert.equal(result.ok, true, result.failure ?? '')
+    assert.equal(called(harness, 'agent-pack.sh'), false)
+    assert.equal(called(harness, 'remote-build.sh'), false)
+    assert.ok(called(harness, 'vitest run'))
+    assert.ok(called(harness, 'remote-switch.sh'))
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('reuseStaging 版本不符：拒绝复用', async () => {
+  const harness = setup({ reuseStaging: true })
+  try {
+    writeFileSync(join(harness.config.reuseStaging ?? '', 'RELEASE_VERSION'), `${'f'.repeat(40)}\n`, 'utf8')
+    const result = await run(harness)
+    assert.equal(result.ok, false)
+    assert.match(result.failure ?? '', /版本不符/)
+    assert.equal(called(harness, 'remote-switch.sh'), false)
   } finally {
     harness.cleanup()
   }

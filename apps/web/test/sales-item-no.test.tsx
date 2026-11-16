@@ -209,7 +209,9 @@ describe("销售单列表：货号列、搜索与筛选", () => {
   it("搜索框能按货号命中（现场常常只记得货号）", async () => {
     await openSales([orderRow({}), orderRow({ id: "order-2", orderNo: "DL260002-1", itemNo: "88001" })]);
     await waitFor(() => expect(screen.getByText("DL260001-1")).toBeTruthy());
-    const search = screen.getByPlaceholderText("输入关键词");
+    // 2026-11-16：列表搜索框的 placeholder 在 3e0a8ccb 统一成「输入关键词，空格分隔多个词」，
+    // 这里按 data-testid 定位，不再依赖会变的文案。
+    const search = screen.getByTestId("sales-order-search") as HTMLInputElement;
     await userEvent.type(search, "88001");
     await waitFor(() => expect(screen.queryByText("DL260001-1")).toBeNull());
     expect(screen.getByText("DL260002-1")).toBeTruthy();

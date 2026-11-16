@@ -95,6 +95,12 @@ export interface DeployConfig {
   recordsDir: string
   /** remote-build 写出暂存目录的 env 文件，默认 /tmp/dilee-staging.env。测试可覆盖。 */
   stagingEnvPath?: string
+  /**
+   * 复用已构建好的候选目录（只重跑测试门禁/切换）。默认 null。
+   * 用途：测试门禁因环境问题失败、修完后不想再花十几分钟重建。
+   * 会校验目录里的 RELEASE_VERSION 与 HEAD 一致，不一致直接拒绝。
+   */
+  reuseStaging?: string | null
   gitRemote: string
   gitBranch: string
   keepBackups: number
@@ -608,79 +614,117 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
     }
 
     // ───────────────────────── 3. 打包 ─────────────────────────
-    emit('pack', '打包发布包')
+    emit('pack', '准备部署工作目录')
     rmSync(config.workDir, { recursive: true, force: true })
     mkdirSync(config.workDir, { recursive: true })
     for (const name of readdirSync(deployScripts)) {
       if (name.endsWith('.sh')) cpSync(join(deployScripts, name), join(config.workDir, name))
     }
-    const pack = await must(
-      'pack',
-      'bash',
-      [packScript, config.repoPath, 'HEAD', config.archivePath],
-      { timeoutMs: config.timeouts.packMs },
-    )
-    if (!pack.stdout.includes('PACK_OK')) {
-      throw new DeployFailure('pack', '打包未输出 PACK_OK')
-    }
-    let archiveSize = 0
-    try {
-      archiveSize = statSync(config.archivePath).size
-    } catch {
-      archiveSize = 0
-    }
-    if (archiveSize < 1024 * 1024) {
-      throw new DeployFailure('pack', `发布包异常小（${archiveSize} 字节）`)
-    }
-    log(`[deploy] archive=${Math.round(archiveSize / 1024 / 1024)}MB`)
 
-    // ───────────────────────── 4. 构建 ─────────────────────────
-    emit('build', '服务器构建（npm ci + prisma generate + api/web build）')
-    const build = await must('build', 'bash', [join(config.workDir, 'remote-build.sh')], {
-      cwd: config.workDir,
-      env: { ARCHIVE: config.archivePath },
-      timeoutMs: config.timeouts.buildMs,
-      onLine: (line) => hooks.onLine?.('build', line),
-    })
-    if (!build.stdout.includes('BUILD_OK')) {
-      throw new DeployFailure('build', '构建完成但未输出 BUILD_OK')
+    let staging: string
+    if (config.reuseStaging !== undefined && config.reuseStaging !== null && config.reuseStaging.length > 0) {
+      // 复用已构建好的候选目录：只重跑门禁，不再花十几分钟重建。
+      emit('build', `复用候选目录（跳过打包与构建）：${config.reuseStaging}`)
+      const versionInStaging = readTrim(join(config.reuseStaging, 'RELEASE_VERSION'))
+      if (versionInStaging !== state.release) {
+        throw new DeployFailure(
+          'build',
+          `复用目录版本不符：${config.reuseStaging} 是 ${shortVersion(versionInStaging)}，HEAD 是 ${shortVersion(state.release)}`,
+        )
+      }
+      if (!existsSync(join(config.reuseStaging, 'package.json'))) {
+        throw new DeployFailure('build', `复用目录缺少 package.json：${config.reuseStaging}`)
+      }
+      staging = config.reuseStaging
+    } else {
+      const pack = await must(
+        'pack',
+        'bash',
+        [packScript, config.repoPath, 'HEAD', config.archivePath],
+        { timeoutMs: config.timeouts.packMs },
+      )
+      if (!pack.stdout.includes('PACK_OK')) {
+        throw new DeployFailure('pack', '打包未输出 PACK_OK')
+      }
+      let archiveSize = 0
+      try {
+        archiveSize = statSync(config.archivePath).size
+      } catch {
+        archiveSize = 0
+      }
+      if (archiveSize < 1024 * 1024) {
+        throw new DeployFailure('pack', `发布包异常小（${archiveSize} 字节）`)
+      }
+      log(`[deploy] archive=${Math.round(archiveSize / 1024 / 1024)}MB`)
+
+      // ───────────────────────── 4. 构建 ─────────────────────────
+      emit('build', '服务器构建（npm ci + prisma generate + api/web build）')
+      const build = await must('build', 'bash', [join(config.workDir, 'remote-build.sh')], {
+        cwd: config.workDir,
+        env: { ARCHIVE: config.archivePath },
+        timeoutMs: config.timeouts.buildMs,
+        onLine: (line) => hooks.onLine?.('build', line),
+      })
+      if (!build.stdout.includes('BUILD_OK')) {
+        throw new DeployFailure('build', '构建完成但未输出 BUILD_OK')
+      }
+      const built = stagingDir()
+      if (built === null) throw new DeployFailure('build', '构建完成但读不到暂存目录（/tmp/dilee-staging.env）')
+      staging = built
     }
-    const staging = stagingDir()
-    if (staging === null) throw new DeployFailure('build', '构建完成但读不到暂存目录（/tmp/dilee-staging.env）')
     log(`[deploy] staging=${staging}`)
 
     // ───────────────────────── 5. 测试门禁 ─────────────────────────
     if (!config.skipTests) {
-      emit('test', '测试门禁（npm test：typecheck + 部署守卫 + API 单测 + Web 单测）')
-      const test = await runner({
-        command: 'npm',
-        args: ['test'],
-        cwd: staging,
-        env: {
-          // 2 核机器，别让 tsc/vitest 按默认堆把内存打满（实测踩过 OOM）。
-          NODE_OPTIONS: '--max-old-space-size=1536',
-        },
-        timeoutMs: config.timeouts.testMs,
-        onLine: (line) => {
-          if (/^# (fail|pass|tests)/.test(line.trim()) || line.includes('FAIL')) {
-            hooks.onLine?.('test', line)
+      emit('test', '测试门禁（typecheck + 部署守卫 + API 单测 + Web 单测）')
+      const gateLog: string[] = []
+      const runGateStep = async (
+        label: string,
+        command: string,
+        args: readonly string[],
+        cwd: string,
+      ): Promise<void> => {
+        const result = await runner({
+          command,
+          args,
+          cwd,
+          env: {
+            // 2 核机器，别让 tsc/vitest 按默认堆把内存打满（实测踩过 OOM）。
+            PATH: path,
+            NODE_OPTIONS: '--max-old-space-size=1536',
+          },
+          timeoutMs: config.timeouts.testMs,
+          onLine: (line) => hooks.onLine?.('test', line),
+        })
+        gateLog.push(`===== ${label} (exit ${result.code}) =====\n${result.stdout}\n${result.stderr}`)
+        if (result.code !== 0) {
+          // 测试输出可能几千行，失败时必须落盘：只回 8 行根本看不出哪条红了。
+          const logPath = join(config.workDir, 'test-gate.log')
+          try {
+            writeFileSync(logPath, gateLog.join('\n\n'), 'utf8')
+          } catch {
+            // 落盘失败不改变失败结论
           }
-        },
-      })
-      if (test.code !== 0) {
-        // 测试输出可能几千行，失败时必须落盘：只回 8 行根本看不出哪条红了。
-        const logPath = join(config.workDir, 'test-gate.log')
-        try {
-          writeFileSync(logPath, `${test.stdout}\n\n--- stderr ---\n${test.stderr}\n`, 'utf8')
-        } catch {
-          // 落盘失败不改变失败结论
+          throw new DeployFailure(
+            'test',
+            `测试门禁失败：${label}（退出码 ${result.code}）：${tail(result, 20)}\n完整日志：${logPath}`,
+          )
         }
-        throw new DeployFailure(
-          'test',
-          `测试门禁失败（退出码 ${test.code}）：${tail(test, 20)}\n完整日志：${logPath}`,
-        )
       }
-      log(`[deploy] tests passed: ${tail(test, 3)}`)
+      await runGateStep('typecheck', 'npm', ['run', 'typecheck'], staging)
+      await runGateStep('部署脚本守卫', 'npm', ['run', 'test:deploy'], staging)
+      await runGateStep('API 单测', 'npm', ['run', 'test:unit:api'], staging)
+      await runGateStep('Web lib 单测', 'npm', ['run', 'test:lib', '--workspace=@dilee/web'], staging)
+      // 2 核机器上 vitest 默认 4 worker 会把 CPU 打满，实测出现一片
+      // "Test timed out in 10000ms" 的假红；限到 2 worker、放宽单测超时，
+      // 并对 load 敏感的用例重试一次（--retry=1）：确定性失败仍会红。
+      await runGateStep(
+        'Web 组件测试（maxWorkers=2，60s 超时，失败重试 1 次）',
+        'npx',
+        ['vitest', 'run', '--maxWorkers=2', '--testTimeout=60000', '--retry=1'],
+        join(staging, 'apps/web'),
+      )
+      log('[deploy] tests passed: typecheck / 部署守卫 / API / Web lib / Web 组件')
     } else {
       log('[deploy] skipTests=true，跳过测试门禁')
     }
@@ -803,6 +847,7 @@ export function deployConfigFromEnv(input: {
     archivePath: env.DEPLOY_ARCHIVE?.trim() || '/tmp/dilee-agent-release.tar.gz',
     recordsDir: env.DEPLOY_RECORDS_DIR?.trim() || `${rootDir}/deploys`,
     stagingEnvPath: env.DEPLOY_STAGING_ENV?.trim() || '/tmp/dilee-staging.env',
+    reuseStaging: env.DEPLOY_REUSE_STAGING?.trim() || null,
     gitRemote: env.DEPLOY_GIT_REMOTE?.trim() || 'origin',
     gitBranch: env.DEPLOY_GIT_BRANCH?.trim() || 'main',
     keepBackups: Math.max(0, Math.round(number(env.DEPLOY_KEEP_BACKUPS, 3))),
