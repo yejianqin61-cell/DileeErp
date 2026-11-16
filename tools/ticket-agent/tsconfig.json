@@ -1,0 +1,17 @@
+{
+  "//": "自包含配置，不继承 ../../tsconfig.base.json。原因：本目录会被整体复制到服务器 /opt/dilee/agent/ticket-agent 独立运行，那里没有仓库根的共享配置。继承会让 tsc 在服务器上读不到 base 而退回默认值，产生一串假错。",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2024"],
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+}

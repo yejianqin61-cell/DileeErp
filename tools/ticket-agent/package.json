@@ -1,0 +1,24 @@
+{
+  "name": "@dilee/ticket-agent",
+  "private": true,
+  "version": "0.1.0",
+  "description": "飞书群工单机器人：接收 @ 消息，分诊，回卡片。独立于 apps/* workspace，避免影响生产 npm ci。",
+  "type": "module",
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "bot:info": "node --import tsx scripts/bot-info.ts",
+    "start": "node --import tsx src/main.ts"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.76.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.5",
+    "typescript": "^5.8.0",
+    "@types/node": "^22.15.0"
+  }
+}
