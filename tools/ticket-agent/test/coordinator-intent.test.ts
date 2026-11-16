@@ -192,15 +192,14 @@ test('招呼与情绪话：回人话，不建单', async () => {
   }
 })
 
-test('「部署」：如实说通道未接通，并给待部署清单', async () => {
+test('「部署」：没配置部署能力时如实说，不建单', async () => {
   const { dir, store, transport, coordinator } = setup()
   try {
     store.create({ messageId: 'om_1', chatId: 'oc_1', text: '加导出按钮', at: 'x', state: 'gated' })
     await coordinator.handle(message({ text: '部署' }))
     await coordinator.drain()
     const reply = transport.ofKind('reply').at(-1)?.payload ?? ''
-    assert.match(reply, /部署通道还没接通/)
-    assert.match(reply, /T-0001/)
+    assert.match(reply, /没有配置部署能力/)
     assert.equal(store.all().length, 1, '部署指令不建单')
   } finally {
     cleanup(dir)

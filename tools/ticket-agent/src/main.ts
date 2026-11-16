@@ -17,6 +17,7 @@ import { parseIncoming, type RawFeishuEvent } from './feishu-event.ts'
 import { Coordinator } from './coordinator.ts'
 import { sweepStaleRuns } from './run-janitor.ts'
 import { TicketStore } from './ticket-store.ts'
+import { deployConfigFromEnv } from './deploy.ts'
 
 interface Config {
   appId: string
@@ -26,6 +27,8 @@ interface Config {
   dshBin: string
   nodePath: string
   repoPath: string
+  /** 生产根目录（/opt/dilee）。 */
+  rootDir: string
   ticketsDir: string
   timeoutMs: number
   deepseekKey: string
@@ -35,12 +38,17 @@ interface Config {
   progressNoticeMs: number
   /** 卡片原地更新间隔。 */
   cardUpdateMs: number
+  /** run 成功后自动部署（用户 2026-11-13 拍板「全自动上线」）。 */
+  autoDeploy: boolean
+  /** 是否启用部署能力。 */
+  deployEnabled: boolean
 }
 
 const DEFAULTS = {
   dshBin: '/opt/dilee/app/node_modules/@deepseek-ai/dsh/lib/bin.js',
   nodePath: '/opt/node24/bin/node',
   repoPath: '/opt/dilee/agent/repo',
+  rootDir: '/opt/dilee',
   ticketsDir: '/opt/dilee/agent/tickets',
   baseUrl: 'https://open.feishu.cn',
   timeoutMs: 45 * 60 * 1000,
@@ -55,6 +63,11 @@ function positiveInteger(raw: string | undefined, fallback: number): number | nu
   const value = Number(raw)
   if (!Number.isFinite(value) || value < 0) return null
   return Math.round(value)
+}
+
+function envFlag(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || raw.trim() === '') return fallback
+  return !['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase())
 }
 
 function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
@@ -90,12 +103,15 @@ function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
     dshBin: env.DSH_BIN?.trim() || DEFAULTS.dshBin,
     nodePath: env.DSH_NODE?.trim() || DEFAULTS.nodePath,
     repoPath: env.DSH_REPO?.trim() || DEFAULTS.repoPath,
+    rootDir: env.DILEE_ROOT?.trim() || DEFAULTS.rootDir,
     ticketsDir: env.TICKETS_DIR?.trim() || DEFAULTS.ticketsDir,
     timeoutMs,
     answererBaseUrl: env.DEEPSEEK_BASE_URL?.trim() || DEFAULTS.answererBaseUrl,
     answererModel: env.DEEPSEEK_MODEL?.trim() || DEFAULTS.answererModel,
     progressNoticeMs,
     cardUpdateMs,
+    autoDeploy: envFlag(env.AUTO_DEPLOY, true),
+    deployEnabled: envFlag(env.DEPLOY_ENABLED, true),
   }
 }
 
@@ -119,6 +135,15 @@ async function main(): Promise<void> {
   log(`[main] 单次 run 超时：${Math.round(config.timeoutMs / 60000)} 分钟`)
   log(`[main] 问答模型：${config.answererModel} @ ${config.answererBaseUrl}`)
   log(`[main] 进度播报：${config.progressNoticeMs === 0 ? '关闭' : `${Math.round(config.progressNoticeMs / 1000)} 秒`}；卡片更新：${Math.round(config.cardUpdateMs / 1000)} 秒`)
+  log(
+    `[main] 部署：${
+      config.deployEnabled
+        ? config.autoDeploy
+          ? '启用（run 成功后自动推送 GitHub 并上线，失败自动回滚）'
+          : '启用（需在群里说「部署」）'
+        : '关闭'
+    }`,
+  )
 
   const store = new TicketStore(config.ticketsDir)
 
@@ -154,6 +179,15 @@ async function main(): Promise<void> {
     answererModel: config.answererModel,
     progressNoticeMs: config.progressNoticeMs,
     cardUpdateMs: config.cardUpdateMs,
+    deployConfig: config.deployEnabled
+      ? deployConfigFromEnv({
+          env: process.env,
+          repoPath: config.repoPath,
+          rootDir: config.rootDir,
+          log,
+        })
+      : null,
+    autoDeploy: config.autoDeploy,
     log,
   })
 

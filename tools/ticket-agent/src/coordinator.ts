@@ -53,6 +53,12 @@ import {
   type ProgressView,
 } from './progress.ts'
 import { answerQuestion } from './answerer.ts'
+import {
+  runDeploy,
+  type DeployConfig,
+  type DeployPhase,
+  type DeployResult,
+} from './deploy.ts'
 
 /** 分诊不通过时的追问话术（沿用 Phase 2 的口径）。 */
 import { askForMissing } from './triage.ts'
@@ -80,6 +86,12 @@ export interface CoordinatorOptions {
   progressNoticeMs?: number
   /** 卡片原地更新间隔，默认 20 秒；负数表示不更新（测试用）。 */
   cardUpdateMs?: number
+  /** 部署配置。为空表示这台机器没配部署能力（只提示，不执行）。 */
+  deployConfig?: DeployConfig | null
+  /** 注入用：测试时替换真实部署执行。 */
+  deployImpl?: typeof runDeploy
+  /** run 成功后是否自动部署（用户 2026-11-13 拍板「全自动上线」）。 */
+  autoDeploy?: boolean
 }
 
 export type RouteDecision =
@@ -98,6 +110,28 @@ export interface HandleOutcome {
   readonly ticketNo?: string
   readonly state?: string
   readonly note?: string
+}
+
+/** 部署触发方式：群里说「部署」，或 run 成功后自动部署。 */
+type DeployTrigger =
+  | { kind: 'command'; messageId: string }
+  | { kind: 'auto'; chatId: string; ticketNo: string; messageId: string | null }
+
+/** 部署阶段的中文标签。 */
+const DEPLOY_PHASE_LABELS: Record<DeployPhase, string> = {
+  preflight: '预检',
+  push: '推送 GitHub',
+  pack: '打包',
+  build: '构建',
+  test: '测试门禁',
+  migrate: '迁移检查',
+  switch: '切换',
+  verify: '核验',
+  edge: '边缘探针',
+  done: '完成',
+  rollback: '回滚',
+  'rolled-back': '已回滚',
+  failed: '失败',
 }
 
 /** 进度落盘间隔：比卡片更新慢，减少文件写；阶段变化时立即写。 */
@@ -208,6 +242,9 @@ interface ResolvedOptions {
   answererImpl: typeof answerQuestion
   progressNoticeMs: number
   cardUpdateMs: number
+  deployConfig: DeployConfig | null
+  deployImpl: typeof runDeploy
+  autoDeploy: boolean
 }
 
 export class Coordinator {
@@ -237,6 +274,9 @@ export class Coordinator {
       answererImpl: options.answererImpl ?? answerQuestion,
       progressNoticeMs: options.progressNoticeMs ?? 5 * 60 * 1000,
       cardUpdateMs: options.cardUpdateMs ?? 20 * 1000,
+      deployConfig: options.deployConfig ?? null,
+      deployImpl: options.deployImpl ?? runDeploy,
+      autoDeploy: options.autoDeploy ?? false,
     }
   }
 
@@ -269,6 +309,12 @@ export class Coordinator {
     const at = this.stamp()
     const intent = classifyIntent(message.text)
 
+    if (intent.intent === 'command' && this.isDeployCommand(message.text)) {
+      this.enqueueDeploy({ kind: 'command', messageId: message.messageId })
+      this.opts.log('[coord] intent=command deploy')
+      return { outcome: 'answered', note: 'deploy:command' }
+    }
+
     if (intent.intent !== 'requirement') {
       this.enqueueAnswer(() => this.replyIntent(message, intent))
       this.opts.log(`[coord] intent=${intent.intent} reason=${intent.reason}`)
@@ -280,6 +326,10 @@ export class Coordinator {
     }
 
     return this.handleRequirement(message, at)
+  }
+
+  private isDeployCommand(text: string): boolean {
+    return /部署|上线|发布/.test(normalizeText(text))
   }
 
   // ───────────────────────────── 非需求路径 ─────────────────────────────
@@ -370,20 +420,20 @@ export class Coordinator {
   }
 
   /**
-   * 「部署」这类操作指令的回答。
+   * 「回滚 / 重启」这类非部署操作指令的回答。
    *
-   * 部署通道确实还没接通（架构文档 §12.5），这里不装：如实说，并给出待部署清单。
-   * 编一句「正在部署」是最坏的做法 —— 用户会以为上线了。
+   * 部署指令在 handle() 里已经被拦截并执行，这里只处理还没接通的其它操作。
+   * 不装：如实说没接通，并告诉用户部署该怎么说。
    */
   private commandAnswer(): string {
     const gated = this.opts.store.all().filter((ticket) => ticket.state === 'gated')
     if (gated.length === 0) {
-      return '部署通道还没接通，目前也没有待部署的改动。等接上之后我会在这里同步。'
+      return '回滚/重启这类操作还没接通；要部署的话直接发「部署」就行。'
     }
     return [
-      '部署通道还没接通，现在只能人工上线。',
-      `待部署：${gated.map((ticket) => ticket.no).join('、')}。`,
-      '要上线的话我可以在改完后把改动清单贴出来。',
+      '回滚/重启这类操作还没接通。',
+      `要部署直接发「部署」：我会先推 GitHub，再构建、测试、切换，失败自动回滚。`,
+      `当前待部署：${gated.map((ticket) => ticket.no).join('、')}。`,
     ].join('\n')
   }
 
@@ -404,6 +454,192 @@ export class Coordinator {
       '2. 问进度 —— @我说「T-0007 进度」；',
       '3. 问使用 —— 直接问这个系统怎么用。',
     ].join('\n')
+  }
+
+  // ───────────────────────────── 部署路径 ─────────────────────────────
+
+  /** 部署入队。与工单 run 共用一条串行队列：构建期不能有 run 同时改工作区。 */
+  private enqueueDeploy(trigger: DeployTrigger): void {
+    this.queue = this.queue
+      .then(() => this.deployAll(trigger))
+      .catch((error: unknown) => {
+        this.opts.log(`[coord] deploy error: ${error instanceof Error ? error.message : String(error)}`)
+      })
+  }
+
+  /**
+   * 部署一次。
+   *
+   * 覆盖所有 `gated` 工单：一次部署带上去的是 HEAD 上的全部改动，
+   * 逐张单部署既慢又没有意义。失败时按结果把工单放回 `gated`（未切换）、
+   * 标 `rolled_back`（已回滚）或 `failed`。
+   */
+  private async deployAll(trigger: DeployTrigger): Promise<void> {
+    const config = this.opts.deployConfig
+    if (config === null) {
+      await this.deployNotice(trigger, '这台机器没有配置部署能力（缺 deployConfig），部署没有执行。')
+      return
+    }
+    const gated = this.opts.store.all().filter((ticket) => ticket.state === 'gated')
+    if (gated.length === 0) {
+      await this.deployNotice(trigger, '现在没有待部署的改动：要么已经上线，要么工单还没跑完。')
+      return
+    }
+
+    const at = this.stamp()
+    for (const ticket of gated) this.opts.store.setState(ticket.id, 'deploying', at)
+    this.opts.log(
+      `[coord] deploy start tickets=${gated.map((ticket) => ticket.no).join(',')} trigger=${trigger.kind}`,
+    )
+    await this.deployNotice(trigger, this.deployStartText(gated))
+
+    let phase: DeployPhase = 'preflight'
+    let phaseMessage = '预检'
+    const startedAt = this.nowMs()
+    const paint = (): void => {
+      const nowMs = this.nowMs()
+      for (const ticket of gated) {
+        this.scheduleCard(ticket.id, (current) => ({
+          title: `部署中｜${current.no}`,
+          template: 'blue',
+          lines: [
+            `**阶段**：${DEPLOY_PHASE_LABELS[phase]}（${phaseMessage}）`,
+            `**已用**：${formatDuration(Math.max(0, nowMs - startedAt))}`,
+          ],
+          footer: `${current.no}｜正在部署，失败会自动回滚`,
+        }))
+      }
+    }
+    paint()
+
+    const heartbeat =
+      this.opts.progressNoticeMs > 0
+        ? setInterval(() => {
+            paint()
+            void this.deployNotice(
+              trigger,
+              `部署进行中（${formatDuration(Math.max(0, this.nowMs() - startedAt))}）：${DEPLOY_PHASE_LABELS[phase]} — ${phaseMessage}`,
+            )
+          }, this.opts.progressNoticeMs)
+        : null
+    heartbeat?.unref()
+
+    let result: DeployResult
+    try {
+      result = await this.opts.deployImpl({
+        config,
+        hooks: {
+          onPhase: (nextPhase, message) => {
+            phase = nextPhase
+            phaseMessage = message
+            paint()
+            this.opts.log(`[coord] deploy phase=${nextPhase} ${message}`)
+          },
+        },
+      })
+    } finally {
+      if (heartbeat !== null) clearInterval(heartbeat)
+    }
+
+    const outcomeState = result.ok ? 'done' : result.rolledBack ? 'rolled_back' : 'gated'
+    const finishedAt = this.stamp()
+    for (const ticket of gated) {
+      this.opts.store.setState(ticket.id, outcomeState, finishedAt)
+      this.scheduleCard(ticket.id, (current) => this.deployResultCard(current, result))
+    }
+    await this.cardChain
+    await this.deployNotice(trigger, this.deployResultText(gated, result, config))
+    this.opts.log(
+      `[coord] deploy done ok=${String(result.ok)} rolledBack=${String(result.rolledBack)} phase=${result.phase} release=${result.release.slice(0, 8)}`,
+    )
+  }
+
+  private deployStartText(gated: readonly StoredTicket[]): string {
+    return [
+      '开始部署：推送 GitHub → 构建 → 测试门禁 → 迁移检查 → 切换 → 核验，失败自动回滚。',
+      `涉及工单：${gated.map((ticket) => ticket.no).join('、')}。`,
+      '预计 20–35 分钟（这台机器 2 核），过程中我会同步进度。',
+    ].join('\n')
+  }
+
+  private deployResultCard(ticket: StoredTicket, result: DeployResult): FeishuCard {
+    if (result.ok) {
+      const lines = [
+        `**版本**：${result.release.slice(0, 8)}（上一版 ${result.previousVersion.slice(0, 8)}）`,
+        `**用时**：${formatDuration(result.durationMs)}`,
+        `**GitHub**：${result.pushed ? '已推送' : '未推送（配置关闭）'}`,
+      ]
+      if (result.backupDir !== null) lines.push(`**备份**：${result.backupDir}`)
+      if (result.warning !== null) lines.push(`**注意**：${result.warning}`)
+      return {
+        title: `已上线｜${ticket.no}`,
+        template: 'green',
+        lines,
+        footer: `${ticket.no}｜已上线，回复这张卡片可继续提改进`,
+      }
+    }
+    const lines = [
+      `**版本**：${result.release.slice(0, 8)}（线上仍是 ${result.previousVersion.slice(0, 8)}）`,
+      `**阶段**：${DEPLOY_PHASE_LABELS[result.phase]}`,
+    ]
+    if (result.failure !== null) lines.push(`**原因**：${truncate(result.failure, 240)}`)
+    lines.push(`**线上**：${result.rolledBack ? '已回滚到上一版' : '未切换，保持旧版本'}`)
+    return {
+      title: result.rolledBack ? `已回滚｜${ticket.no}` : `部署失败｜${ticket.no}`,
+      template: result.rolledBack ? 'purple' : 'red',
+      lines,
+      footer: `${ticket.no}｜部署记录：/opt/dilee/agent/deploys/`,
+    }
+  }
+
+  private deployResultText(
+    gated: readonly StoredTicket[],
+    result: DeployResult,
+    config: DeployConfig,
+  ): string {
+    const tickets = gated.map((ticket) => ticket.no).join('、')
+    if (result.ok) {
+      const lines = [
+        `${tickets} 已上线：${result.release.slice(0, 8)}（上一版 ${result.previousVersion.slice(0, 8)}）`,
+        `用时 ${formatDuration(result.durationMs)}；GitHub ${result.pushed ? '已推送' : '未推送'}` +
+          (result.backupDir === null ? '' : `；备份 ${result.backupDir}`) +
+          '。',
+      ]
+      if (result.warning !== null) lines.push(`注意：${result.warning}`)
+      return lines.join('\n')
+    }
+    if (result.rolledBack) {
+      return [
+        `部署失败，已自动回滚（阶段：${DEPLOY_PHASE_LABELS[result.phase]}）。`,
+        `线上已恢复 ${result.previousVersion.slice(0, 8)}。`,
+        ...(result.failure === null ? [] : [`原因：${truncate(result.failure, 300)}`]),
+        `部署记录：${config.recordsDir}`,
+      ].join('\n')
+    }
+    return [
+      `部署失败（阶段：${DEPLOY_PHASE_LABELS[result.phase]}），线上未切换，仍是 ${result.previousVersion.slice(0, 8)}。`,
+      ...(result.failure === null ? [] : [`原因：${truncate(result.failure, 300)}`]),
+      '修好后再发「部署」即可重试。',
+    ].join('\n')
+  }
+
+  /** 部署进度/结果发到群里：命令触发回原消息；自动部署回到工单原消息。 */
+  private async deployNotice(trigger: DeployTrigger, text: string): Promise<void> {
+    try {
+      if (trigger.kind === 'command') {
+        await this.opts.transport.replyText(trigger.messageId, text)
+        return
+      }
+      if (trigger.messageId !== null) {
+        await this.opts.transport.replyText(trigger.messageId, text)
+        return
+      }
+      await this.opts.transport.sendText(trigger.chatId, text)
+    } catch (error) {
+      this.opts.log(
+        `[coord] deployNotice failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
   }
 
   // ───────────────────────────── 需求路径 ─────────────────────────────
@@ -477,11 +713,21 @@ export class Coordinator {
     })
   }
 
-  /** 等所有队列排空。测试与优雅关闭用。 */
+  /**
+   * 等所有队列排空。测试与优雅关闭用。
+   *
+   * 必须循环到队列不再变化：run 成功会自动部署，部署是在 run 执行过程中
+   * **追加**到队尾的。只 await 一次会在「run 刚结束、部署刚入队」的瞬间返回。
+   */
   async drain(): Promise<void> {
-    await this.queue
-    await this.answerQueue
-    await this.cardChain
+    for (;;) {
+      const runQueue = this.queue
+      const answers = this.answerQueue
+      await runQueue
+      await answers
+      await this.cardChain
+      if (runQueue === this.queue && answers === this.answerQueue) return
+    }
   }
 
   /**
@@ -626,6 +872,16 @@ export class Coordinator {
     await this.cardChain
     await this.transportSendResult(refreshed, result, latest.turns[latest.turns.length - 1].text)
 
+    // 全自动上线：run 成功且有产出 → 排队部署（与 run 共用串行队列，不会并发）。
+    if (this.opts.autoDeploy && result.outcome === 'completed') {
+      this.enqueueDeploy({
+        kind: 'auto',
+        chatId: latest.chatId,
+        ticketNo: latest.no,
+        messageId: latest.turns[0]?.messageId ?? null,
+      })
+    }
+
     this.opts.log(
       `[coord] done ${latest.no} outcome=${result.outcome} state=${nextState} duration=${result.durationMs}ms tools=${result.counts.toolCalls} subagents=${result.counts.subagentCalls}`,
     )
@@ -648,6 +904,25 @@ export class Coordinator {
             ticket.cardMessageId,
             progressCard({ ticketNo: ticket.no, view, nowMs, queueAhead: 0 }),
           )
+        } catch (error) {
+          this.opts.log(
+            `[coord] updateCard failed ${ticket.no}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      })
+      .catch((error: unknown) => {
+        this.opts.log(`[coord] cardChain error: ${String(error)}`)
+      })
+  }
+
+  /** 通用卡片更新：用当前工单状态构建内容。同样串行化。 */
+  private scheduleCard(ticketId: string, build: (ticket: StoredTicket) => FeishuCard): void {
+    this.cardChain = this.cardChain
+      .then(async () => {
+        const ticket = this.opts.store.get(ticketId)
+        if (ticket === null || ticket.cardMessageId === null) return
+        try {
+          await this.opts.transport.updateCard(ticket.cardMessageId, build(ticket))
         } catch (error) {
           this.opts.log(
             `[coord] updateCard failed ${ticket.no}: ${error instanceof Error ? error.message : String(error)}`,
