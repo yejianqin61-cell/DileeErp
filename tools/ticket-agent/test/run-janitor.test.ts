@@ -60,6 +60,21 @@ test('空的标记值不算（避免误杀只是定义了空变量的进程）',
   assert.deepEqual(findAnyTagged(entries), [])
 })
 
+test('PM2 托管的进程永远不杀：即使它带着 DILEE_RUN_ID', () => {
+  // 2026-11-16 真实事故：部署脚本的 pm2 start 从命令行继承了 DILEE_RUN_ID，
+  // 于是 dilee-api / dilee-web 也带上了标记，机器人重启清场时把它们 SIGKILL 了。
+  const entries = table(
+    [600, env(`${RUN_TAG_ENV}=leaked`, 'pm_id=4', 'name=dilee-api', 'PM2_HOME=/home/ubuntu/.pm2')],
+    [601, env(`${RUN_TAG_ENV}=leaked`, 'PM2_HOME=/home/ubuntu/.pm2')],
+    [602, env(`${RUN_TAG_ENV}=leaked`)],
+  )
+  assert.deepEqual(findAnyTagged(entries), [602], '只杀非 PM2 托管的残留')
+  assert.deepEqual(findTagged(entries, 'leaked'), [602])
+  const killed: number[] = []
+  sweepStaleRuns({ table: entries, kill: (pid) => killed.push(pid) })
+  assert.deepEqual(killed, [602])
+})
+
 test('sweepRun 用注入的 kill 记录目标，不碰真实进程', () => {
   const entries = table(
     [300, env(`${RUN_TAG_ENV}=run-x`)],

@@ -248,6 +248,12 @@ test('成功路径：推送、构建、测试、迁移、切换、核验、边�
       call.args.some((arg) => String(arg).endsWith('remote-nginx.sh')),
     )
     assert.equal(edgeCall?.env?.CONF_SRC, join(harness.config.workDir, 'nginx-dilee.conf'))
+    // 切换脚本会 pm2 start：绝不能带 DILEE_RUN_ID 标记，否则生产应用继承标记后
+    // 会被机器人下次启动的清场杀掉（2026-11-16 真实事故）。
+    const switchCall = harness.calls.find((call) =>
+      call.args.some((arg) => String(arg).endsWith('remote-switch.sh')),
+    )
+    assert.equal(switchCall?.keepRunTag, false)
     assert.ok(existsSync(harness.config.recordsDir))
     assert.ok(readdirSync(harness.config.recordsDir).length >= 1)
     // git 只读探测必须带仓库 cwd：漏掉时 `merge-base ... HEAD` 会在进程 cwd 里跑，

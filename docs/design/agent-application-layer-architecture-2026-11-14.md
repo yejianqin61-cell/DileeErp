@@ -453,6 +453,26 @@ staging 目录 → 记 warning 而非失败。修法：配置复制进 workDir �
 **未验证**：服务器侧 `git push`（deploy key 公钥待用户加一次）。本次由开发机推送，
 线上版本与 GitHub `main` 一致，可追溯性成立。
 
+#### 12.7.2 事故：清场逻辑误杀生产进程（2026-11-16，已修复）
+
+部署成功后 1 小时，机器人因边缘修复重启，启动清场把 `dilee-api` / `dilee-web`
+当成「残留 run 进程」SIGKILL（PM2 自动拉起，数秒恢复，无数据损失）。
+
+根因链：部署执行器给命令注入 `DILEE_RUN_ID` 标记 → `remote-switch.sh` 的 `pm2 start`
+继承该变量 → PM2 把环境复制给两个生产应用 → 机器人启动 `sweepStaleRuns()`
+见标记就杀，不区分宿主。
+
+修法两层：
+1. **源头**：会 `pm2 start` 的切换命令传 `keepRunTag: false`，不注入标记；
+2. **兜底**：`run-janitor` 永远跳过 PM2 托管进程（environ 含 `pm_id=` / `PM2_HOME=`），
+   并加测试钉住「PM2 进程即使带标记也不杀」。
+
+现场用 `env -u DILEE_RUN_ID pm2 delete/start/save` 重建，已确认
+`/proc/<pid>/environ` 与 `dump.pm2` 都不再含标记。
+
+教训：清理逻辑的杀伤面必须用「不该是谁」兜底，不能只靠「带着我的标记」——
+标记会经子进程、进程管理器、部署脚本一路泄漏。
+
 ## 变更记录
 
 - 2026-11-14：建立。依据本次三条实测（会话续接、`--session-id` 语义、headless 子 agent 能力）

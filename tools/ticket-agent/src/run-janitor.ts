@@ -23,6 +23,20 @@ import { readdirSync, readFileSync } from 'node:fs'
 /** 标记变量名。改这里要同步 harness-runner 的 spawn 环境。 */
 export const RUN_TAG_ENV = 'DILEE_RUN_ID'
 
+/**
+ * PM2 托管进程的环境标记。
+ *
+ * 2026-11-16 线上事故：部署脚本的 `pm2 start` 从命令行继承了 `DILEE_RUN_ID`，
+ * 于是两个生产应用（dilee-api / dilee-web）也带上了这个标记；
+ * 机器人一重启，清场逻辑把它们当成「残留 run 进程」SIGKILL 掉了。
+ * 所以清场必须**永远跳过 PM2 托管的进程**：它们的生命周期归 PM2，不归我们。
+ */
+const PM2_MARKERS = ['pm_id=', 'PM2_HOME=']
+
+function isPm2Managed(vars: readonly string[]): boolean {
+  return vars.some((item) => PM2_MARKERS.some((marker) => item.startsWith(marker)))
+}
+
 export interface ProcEntry {
   readonly pid: number
   /** /proc/<pid>/environ 的原始内容（NUL 分隔）。 */
@@ -63,6 +77,7 @@ export function findTagged(entries: readonly ProcEntry[], runId: string, exclude
     if (excludePid !== undefined && entry.pid === excludePid) continue
     // environ 是 NUL 分隔的 KEY=VALUE 列表，精确匹配一项
     const vars = entry.environ.split('\0')
+    if (isPm2Managed(vars)) continue
     if (vars.includes(needle)) hits.push(entry.pid)
   }
   return hits
@@ -85,6 +100,7 @@ export function findAnyTagged(entries: readonly ProcEntry[], excludePid?: number
   for (const entry of entries) {
     if (excludePid !== undefined && entry.pid === excludePid) continue
     const vars = entry.environ.split('\0')
+    if (isPm2Managed(vars)) continue
     if (vars.some((item) => item.startsWith(prefix) && item.length > prefix.length)) {
       hits.push(entry.pid)
     }

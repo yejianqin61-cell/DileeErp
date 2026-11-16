@@ -58,6 +58,13 @@ export interface CommandInput {
   readonly timeoutMs?: number
   /** 每收到一行 stdout 回调一次，用于把构建/测试进度透出去。 */
   readonly onLine?: (line: string) => void
+  /**
+   * 是否注入 DILEE_RUN_ID 清理标记。默认 true。
+   *
+   * 调 `pm2 start` 的命令必须传 false：PM2 启动的进程会继承这个标记，
+   * 机器人下次启动清场时会把生产应用当成残留进程杀掉（2026-11-16 真实事故）。
+   */
+  readonly keepRunTag?: boolean
 }
 
 export interface CommandResult {
@@ -201,7 +208,9 @@ export function createCommandRunner(options: { tag?: string; baseEnv?: NodeJS.Pr
           ...process.env,
           ...options.baseEnv,
           PATH: DEFAULT_DEPLOY_PATH,
-          [RUN_TAG_ENV]: tag,
+          // 调 pm2 start 的命令不能带标记：否则 PM2 托管的 api/web 会继承它，
+          // 机器人下次启动清场时把它们当残留杀掉（2026-11-16 真实事故）。
+          ...(input.keepRunTag === false ? {} : { [RUN_TAG_ENV]: tag }),
           ...input.env,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -219,6 +228,8 @@ export function createCommandRunner(options: { tag?: string; baseEnv?: NodeJS.Pr
             // 已经退出
           }
         }
+        // keepRunTag=false 的命令没有标记，扫不到东西；跳过即可。
+        if (input.keepRunTag === false) return
         try {
           sweepRun(tag)
         } catch {
@@ -756,6 +767,9 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
         ERRLOG_BASELINE: String(errlogBaseline),
       },
       timeoutMs: config.timeouts.switchMs,
+      // 这个脚本会 `pm2 start`：绝不能带 DILEE_RUN_ID，否则生产应用会继承标记，
+      // 机器人下次重启的清场逻辑会把它们 SIGKILL（2026-11-16 真实事故）。
+      keepRunTag: false,
       onLine: (line) => hooks.onLine?.('switch', line),
     })
     // 目录被提升后，app/RELEASE_VERSION 就是新版本 —— 这是「是否已切换」的唯一可信判据。
