@@ -344,6 +344,8 @@ test('测试门禁失败：不切换', async () => {
     assert.equal(result.ok, false)
     assert.equal(result.phase, 'test')
     assert.equal(called(harness, 'remote-switch.sh'), false)
+    // 失败输出必须落盘：只回 8 行看不出哪条红了。
+    assert.ok(existsSync(join(harness.config.workDir, 'test-gate.log')))
   } finally {
     harness.cleanup()
   }

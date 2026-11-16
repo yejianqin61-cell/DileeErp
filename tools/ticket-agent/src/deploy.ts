@@ -652,7 +652,9 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
     // ───────────────────────── 5. 测试门禁 ─────────────────────────
     if (!config.skipTests) {
       emit('test', '测试门禁（npm test：typecheck + 部署守卫 + API 单测 + Web 单测）')
-      const test = await must('test', 'npm', ['test'], {
+      const test = await runner({
+        command: 'npm',
+        args: ['test'],
         cwd: staging,
         env: {
           // 2 核机器，别让 tsc/vitest 按默认堆把内存打满（实测踩过 OOM）。
@@ -665,6 +667,19 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
           }
         },
       })
+      if (test.code !== 0) {
+        // 测试输出可能几千行，失败时必须落盘：只回 8 行根本看不出哪条红了。
+        const logPath = join(config.workDir, 'test-gate.log')
+        try {
+          writeFileSync(logPath, `${test.stdout}\n\n--- stderr ---\n${test.stderr}\n`, 'utf8')
+        } catch {
+          // 落盘失败不改变失败结论
+        }
+        throw new DeployFailure(
+          'test',
+          `测试门禁失败（退出码 ${test.code}）：${tail(test, 20)}\n完整日志：${logPath}`,
+        )
+      }
       log(`[deploy] tests passed: ${tail(test, 3)}`)
     } else {
       log('[deploy] skipTests=true，跳过测试门禁')

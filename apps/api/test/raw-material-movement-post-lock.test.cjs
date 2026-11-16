@@ -53,7 +53,13 @@ function harness({ status = "pending_outbound", documentType = "issue" } = {}) {
     rawMaterialInbound: tx.rawMaterialInbound,
     inventoryFact: tx.inventoryFact,
   };
-  const service = new RawMaterialMovementsService(prisma, audit, { rawMaterialBalance: async () => new Prisma.Decimal("100") });
+  const service = new RawMaterialMovementsService(prisma, audit, {
+    rawMaterialBalance: async () => new Prisma.Decimal("100"),
+    // 2026-11-16：领料预估会查「按供应商分档结存」（previewLines → getBuckets）。
+    // 这个桩原本只给 rawMaterialBalance，导致 main 上这两条过账用例直接 TypeError；
+    // 这里补一个空分档，测的是 advisory lock，不是分档本身。
+    rawMaterialSupplierBuckets: async () => [],
+  });
   return { service, executeRawCalls, createdFacts };
 }
 

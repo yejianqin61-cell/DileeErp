@@ -86,6 +86,7 @@ function setup(options: {
   deployEnabled?: boolean
   result?: DeployResult
   runResult?: HarnessResult
+  deployThrows?: boolean
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dilee-coord-deploy-'))
   const store = new TicketStore(dir)
@@ -107,6 +108,7 @@ function setup(options: {
     deployConfig: options.deployEnabled === false ? null : deployConfig(),
     deployImpl: async (input) => {
       deployCalls.push(input)
+      if (options.deployThrows === true) throw new Error('spawn ENOENT')
       return options.result ?? deployResult()
     },
     autoDeploy: options.autoDeploy ?? false,
@@ -245,6 +247,21 @@ test('自动部署：run 成功后自动排队部署，工单直接上线', asyn
     const replies = transport.ofKind('reply').map((record) => record.payload)
     assert.ok(replies.some((text) => text.includes('开始部署')))
     assert.ok(replies.some((text) => text.includes('已上线')))
+  } finally {
+    cleanup(dir)
+  }
+})
+
+test('部署器自己抛异常：工单回到 gated，不永远卡在 deploying', async () => {
+  const { dir, store, transport, coordinator } = setup({ deployThrows: true })
+  try {
+    gatedTicket(store)
+    await coordinator.handle(message())
+    await coordinator.drain()
+    assert.equal(store.all()[0].state, 'gated')
+    const lastUpdate = transport.ofKind('update').at(-1)
+    assert.equal(lastUpdate?.card?.template, 'red')
+    assert.match(transport.ofKind('reply').at(-1)?.payload ?? '', /部署失败/)
   } finally {
     cleanup(dir)
   }

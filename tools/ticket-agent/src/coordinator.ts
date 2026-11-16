@@ -537,6 +537,24 @@ export class Coordinator {
           },
         },
       })
+    } catch (error) {
+      // 部署器本身抛异常（不该发生，但发生了不能让工单永远卡在 deploying）。
+      const reason = error instanceof Error ? error.message : String(error)
+      this.opts.log(`[coord] deployImpl threw: ${reason}`)
+      result = {
+        ok: false,
+        pushed: false,
+        rolledBack: false,
+        release: '(unknown)',
+        previousVersion: '(unknown)',
+        backupDir: null,
+        phase: 'failed',
+        failure: `部署器异常：${reason}`,
+        warning: null,
+        startedAt: new Date(startedAt).toISOString(),
+        finishedAt: this.stamp(),
+        durationMs: Math.max(0, this.nowMs() - startedAt),
+      }
     } finally {
       if (heartbeat !== null) clearInterval(heartbeat)
     }
