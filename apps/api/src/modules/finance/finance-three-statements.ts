@@ -226,7 +226,9 @@ export const BALANCE_SHEET_ASSETS: readonly StatementRow[] = [
   { row: 5, label: "应收账款", match: only("资产类", named("应收账款")) },
   { row: 6, label: "应收款项融资", note: "本系统无对应科目" },
   { row: 7, label: "预付款项", match: only("资产类", named("预付账款")) },
-  { row: 8, label: "其他应收款", match: only("资产类", named("应收股利", "应收利息", "其他应收款")) },
+  // 「其他应收款-备用金」是明细科目（2026-11-17 备用金报销的贷方），按前缀并进本行；
+  // 只认名字相等的旧写法会让这笔资产从资产负债表里静默消失。
+  { row: 8, label: "其他应收款", match: only("资产类", named("应收股利", "应收利息"), prefixed("其他应收款")) },
   {
     row: 9, label: "存货",
     match: anyOf(only("资产类", named(...INVENTORY_ASSET_SUBJECT_NAMES)), only("成本类", named(...INVENTORY_COST_SUBJECT_NAMES))),
@@ -370,7 +372,8 @@ export const CASH_FLOW_STATEMENT: readonly StatementRow[] = [
   {
     row: 3, label: "收到其他与经营活动有关的现金", flow: "in",
     match: anyOf(
-      only("资产类", named("应收股利", "应收利息", "其他应收款")),
+      // 其他应收款含「其他应收款-备用金」这类明细（与资产负债表第 8 行同一口径）。
+      only("资产类", named("应收股利", "应收利息"), prefixed("其他应收款")),
       only("负债类", named("其他应付款", "应付利息", "应付利润")),
     ),
   },

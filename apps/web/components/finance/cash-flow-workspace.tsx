@@ -284,7 +284,9 @@ export default function CashFlowWorkspace({ tab = "entries", testId = "page-fina
       ...(editsCategory
         ? [{ name: "contra_subject", label: `记账对方科目：${subjectLabel(entry?.subject ?? null, entry?.subject?.id)}（由来源单据决定，生成凭证用它，不在这里改）`, type: "info" as const }]
         : []),
-      { name: "settlement_method", label: "结算方式", type: "text", defaultValue: entry?.settlementMethod ?? undefined, placeholder: "如：转账 / 现金" },
+      // 这一格同时承载「业务类型」标记（2026-11-17）：填「备用金报销」或从银行账户池选到
+      // `bankCode = 备用金` 的卡时，凭证贷方自动走「其他应收款-备用金」，不再自动带出银行存款。
+      { name: "settlement_method", label: "结算方式 / 业务类型", type: "text", defaultValue: entry?.settlementMethod ?? undefined, placeholder: "如：转账 / 现金 / 备用金报销" },
       // 两个「账户」不是一回事，别合并：
       //   结算账户 = 老表「结算方式」字典项（给人看的文本，如「农业银行5706」），不参与任何计算；
       //   银行账户 = 银行账户池（算余额的账），指定后这笔收支才会加减该账户的余额。

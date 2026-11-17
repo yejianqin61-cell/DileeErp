@@ -96,6 +96,17 @@ test("三大报表：报表行定义与模板的行次一一对应（段落行�
   assert.deepEqual(currentAssets.sumOf, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
 });
 
+test("资产负债表/现金流量表：其他应收款的明细科目（其他应收款-备用金）按前缀归入「其他应收款」", () => {
+  // 2026-11-17：备用金报销的贷方是「其他应收款-备用金」。报表若只认名字相等，
+  // 这笔资产会在资产负债表里静默消失。
+  const otherReceivable = BALANCE_SHEET_ASSETS.find((row) => row.row === 8);
+  assert.equal(otherReceivable.match("资产类", "其他应收款"), true);
+  assert.equal(otherReceivable.match("资产类", "其他应收款-备用金"), true);
+  assert.equal(otherReceivable.match("资产类", "应收账款"), false, "应收账款是货款往来，不能并进其他应收款");
+  const cashIn = CASH_FLOW_STATEMENT.find((row) => row.row === 3);
+  assert.equal(cashIn.match("资产类", "其他应收款-备用金"), true, "现金流入侧同一口径");
+});
+
 test("三大报表：科目键的两种写法都认（资金分录是裸名「银行存款」，业务分录是「分类/名称」）", () => {
   assert.deepEqual(splitSubjectKey("资产类/银行存款 农业银行"), { category: "资产类", name: "银行存款 农业银行" });
   assert.deepEqual(splitSubjectKey("银行存款"), { category: "", name: "银行存款" });

@@ -24,6 +24,20 @@
 export const FUND_SUBJECT_BANK = "银行存款";
 /** 资金类科目：结算方式/账户里出现「现金」时用库存现金。 */
 export const FUND_SUBJECT_CASH = "库存现金";
+/**
+ * 备用金报销的贷方科目（2026-11-17 用户口径）。
+ *
+ * 「公司从招行拨付备用金」与「员工拿备用金报销」是两笔不同的业务：
+ *   - 拨付：借 其他应收款—备用金 / 贷 银行存款（钱真的从公司账户出去了）；
+ *   - 报销：借 费用 / 贷 其他应收款—备用金（冲减已拨出的备用金，不再动银行存款）。
+ *
+ * 生产账套里这个明细科目叫「其他应收款-备用金」（连字符），与用户口述的破折号是同一含义；
+ * 这里按账套里的实际名字写，`withLineSubjects` 才能解析到科目 id。
+ */
+export const PETTY_CASH_RECEIVABLE_SUBJECT_KEY = "资产类/其他应收款-备用金";
+export const PETTY_CASH_RECEIVABLE_SUBJECT = "其他应收款-备用金";
+/** 摘要里显式写出的业务类型；财务在凭证上要能一眼认出这是一笔备用金报销。 */
+export const PETTY_CASH_REIMBURSEMENT_LABEL = "备用金报销";
 
 export type VoucherDirection = "debit" | "credit";
 
@@ -53,6 +67,13 @@ export type CashFlowEntryForVoucher = {
   subjectKey: string;
   /** 会计科目名称快照。 */
   subjectLabel: string;
+  /**
+   * 收支类目（业务科目）名称：这笔钱**算什么**（管理费用 / 其他应收款-备用金 …）。
+   *
+   * 只用于摘要与业务辅助维度，不参与记账；凭证借方仍取 `subjectLabel`。
+   * 备用金报销时摘要优先用它，财务看到的才是「报销了什么」，而不是「冲了哪笔应付」。
+   */
+  categorySubjectLabel?: string | null;
   settlementMethod?: string | null;
   settlementAccountLabel?: string | null;
   remark?: string | null;
@@ -64,6 +85,16 @@ export type CashFlowEntryForVoucher = {
    */
   bankId?: string | null;
   bankLabel?: string | null;
+  /**
+   * 银行账户元数据（银行账户池 `banks`）。
+   *
+   * 为什么不能只看 `bankName`：生产账套里「招商银行」既可能是公司对公户，也可能是个人备用金卡
+   * （账户池里 `bankCode = 备用金`）。用户 2026-11-17 明确「招行 ≠ 对公直接支付」，
+   * 所以识别备用金只能看账户编码/户名/结算文本里的「备用金」，绝不能拿银行名当判据。
+   */
+  bankCode?: string | null;
+  bankName?: string | null;
+  accountName?: string | null;
 };
 
 /** 资金科目：结算方式或结算账户名里含「现金」→ 库存现金，否则银行存款。 */
@@ -91,6 +122,42 @@ export function isBankFamilySubject(name?: string | null): boolean {
 }
 
 /**
+ * 其他应收款族：`其他应收款`、`其他应收款-备用金`。
+ *
+ * 业务科目落在这个族里，说明这笔支出本身就是「把钱拨/借出去」，钱是从公司银行账户出去的；
+ * 它属于**拨付备用金**（借 其他应收款-备用金 / 贷 银行存款），不是报销。
+ */
+export function isReceivableFamilySubject(name?: string | null): boolean {
+  return Boolean(name && name.startsWith("其他应收款"));
+}
+
+/** 资金来源文本里是否写着备用金/其他应收款（结算方式、结算账户、账户编码/户名都可能承载这个标记）。 */
+function hasPettyCashHint(entry: Pick<CashFlowEntryForVoucher, "bankCode" | "bankName" | "accountName" | "bankLabel" | "settlementMethod" | "settlementAccountLabel">): boolean {
+  const hints = [entry.bankCode, entry.bankName, entry.accountName, entry.bankLabel, entry.settlementMethod, entry.settlementAccountLabel];
+  return hints.some((hint) => Boolean(hint && (hint.includes("备用金") || hint.includes("其他应收款"))));
+}
+
+/**
+ * 这笔支出是不是**备用金报销**（2026-11-17 用户口径）。
+ *
+ * 判定必须同时满足：
+ *   1. 方向是支出（收入不可能「报销」）；
+ *   2. 业务科目不是资金/银行/其他应收款族 —— 否则它是「取现/拨付/还款」，资金侧仍是银行存款；
+ *   3. 资金来源带备用金标记（账户编码 `备用金`、户名、结算方式或结算账户文本里含「备用金」/「其他应收款」）。
+ *
+ * **刻意不看 `bankName` 是不是「招商银行」**：招行既有公司对公户、也有个人备用金卡，
+ * 拿银行名判断会把对公直接支付误认成备用金报销。生产账套用 `bankCode = 备用金` 区分那张卡。
+ */
+export function isPettyCashReimbursement(
+  entry: Pick<CashFlowEntryForVoucher, "direction" | "subjectLabel" | "bankCode" | "bankName" | "accountName" | "bankLabel" | "settlementMethod" | "settlementAccountLabel">,
+): boolean {
+  if (entry.direction !== "expense") return false;
+  const subject = entry.subjectLabel?.trim() ?? "";
+  if (!subject || isCashFamilySubject(subject) || isBankFamilySubject(subject) || isReceivableFamilySubject(subject)) return false;
+  return hasPettyCashHint(entry);
+}
+
+/**
  * 资金类分录：科目名 + **具体银行账户**。
  *
  * 判定顺序（显式引用优先于文本猜测）：
@@ -98,6 +165,8 @@ export function isBankFamilySubject(name?: string | null): boolean {
  *      财务口径里的「备用金付款」就是「从银行取现到备用金」（用户 2026-10-16 选定）。
  *      原来的规则只看结算方式里有没有「现金」二字，于是「提现--备用金现金」这种文本会把两边都判成
  *      现金，凭证上出现「借 库存现金（备用金）/贷 库存现金」——同一个钱柜自己跟自己转，科目等于没显示对；
+ *   0b. **备用金报销** → 其他应收款-备用金（不引用银行账户，见 `isPettyCashReimbursement`）；
+ *      拨付备用金（业务科目本身是其他应收款）不在此列，仍按第 1 条贷银行存款；
  *   1. 流水上挂了 `bank_id`（财务在收付款/确认时从银行池里选的账户）→ 银行存款 + 该账户；
  *   2. 否则按结算方式/结算账户名里有没有「现金」猜 库存现金 / 银行存款（历史数据只有文本）。
  *
@@ -110,7 +179,7 @@ export function isBankFamilySubject(name?: string | null): boolean {
  * 「银行名+账号」（如「招商银行6214851811022925」）。两样都没有就只写「银行存款」，
  * 绝不写半截的「银行存款—」。`bank_id` 引用照旧保留（余额与明细账要用它）。
  */
-export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "bankId" | "bankLabel" | "settlementMethod" | "settlementAccountLabel" | "subjectLabel">): { subject_key: string; subject_label: string; bank_id: string | null } {
+export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "direction" | "bankId" | "bankCode" | "bankName" | "accountName" | "bankLabel" | "settlementMethod" | "settlementAccountLabel" | "subjectLabel">): { subject_key: string; subject_label: string; bank_id: string | null } {
   /** 银行存款那一行：科目名快照里的账户名按「结算账户 > 银行账户」取，见上面的注释。 */
   const bankLine = () => {
     const settlement = entry.settlementAccountLabel?.trim();
@@ -122,14 +191,22 @@ export function fundLineFor(entry: Pick<CashFlowEntryForVoucher, "bankId" | "ban
   };
   // 见上面第 0 条：业务科目已经是现金科目时，资金侧一律银行存款（取现的对方就是银行）。
   if (isCashFamilySubject(entry.subjectLabel)) return bankLine();
+  /**
+   * 备用金报销（2026-11-17 用户口径）：报销冲的是**已经拨出去的备用金**，不是公司银行存款。
+   * 即使这笔流水挂在招商银行那张备用金卡上，贷方也只能是「其他应收款-备用金」；
+   * 分录不引用银行账户 —— 它不再是一笔银行存款动账，引用账户会让银行明细账凭空多出一笔。
+   */
+  if (isPettyCashReimbursement(entry)) {
+    return { subject_key: PETTY_CASH_RECEIVABLE_SUBJECT_KEY, subject_label: PETTY_CASH_RECEIVABLE_SUBJECT, bank_id: null };
+  }
   const subject = entry.bankId ? FUND_SUBJECT_BANK : fundSubjectFor(entry.settlementAccountLabel ?? entry.settlementMethod);
   if (subject !== FUND_SUBJECT_BANK) return { subject_key: subject, subject_label: subject, bank_id: null };
   return bankLine();
 }
 
-/** 摘要：对方 + 会计科目（+ 备注），并裁剪到 500 字以内（列宽 VARCHAR(500)）。 */
-export function voucherSummaryFor(parts: { counterpartyName: string; subjectLabel: string; remark?: string | null }): string {
-  const head = [parts.counterpartyName, parts.subjectLabel].filter((text) => Boolean(text && text.trim()));
+/** 摘要：对方 + 业务类型 + 会计科目（+ 备注），并裁剪到 500 字以内（列宽 VARCHAR(500)）。 */
+export function voucherSummaryFor(parts: { counterpartyName: string; subjectLabel: string; remark?: string | null; businessType?: string | null }): string {
+  const head = [parts.counterpartyName, parts.businessType, parts.subjectLabel].filter((text) => Boolean(text && text.trim()));
   const base = head.join(" · ");
   const remark = parts.remark?.trim();
   const text = remark ? `${base}（${remark}）` : base;
@@ -137,15 +214,32 @@ export function voucherSummaryFor(parts: { counterpartyName: string; subjectLabe
 }
 
 /**
+ * 收支流水凭证的自动摘要（凭证头与两条分录共用这一份，保证三处逐字一致）。
+ *
+ * 备用金报销时额外写业务类型「备用金报销」，业务科目优先取**收支类目**（这笔钱算什么）：
+ * 财务在凭证上看到的是「拼多多 · 备用金报销 · 管理费用」，而不是「拼多多 · 应付账款」。
+ */
+export function voucherSummaryForEntry(entry: CashFlowEntryForVoucher): string {
+  const pettyCash = isPettyCashReimbursement(entry);
+  return voucherSummaryFor({
+    counterpartyName: entry.counterpartyName,
+    subjectLabel: pettyCash ? (entry.categorySubjectLabel?.trim() || entry.subjectLabel) : entry.subjectLabel,
+    remark: entry.remark,
+    businessType: pettyCash ? PETTY_CASH_REIMBURSEMENT_LABEL : null,
+  });
+}
+
+/**
  * 收支流水 → 一借一贷分录。
  *
  * - 收入：借 银行存款/库存现金，贷 会计科目（钱进来了，科目是收入侧）
  * - 支出：借 会计科目，贷 银行存款/库存现金（钱出去了）
+ * - 支出且是备用金报销：借 会计科目，贷 其他应收款-备用金（冲减已拨出的备用金）
  */
 export function voucherLinesFor(entry: CashFlowEntryForVoucher): VoucherLineDraft[] {
   const amount = typeof entry.amount === "string" ? entry.amount : entry.amount.toString();
   const income = entry.direction === "income";
-  const summary = voucherSummaryFor(entry);
+  const summary = voucherSummaryForEntry(entry);
   const businessLine = { subject_key: entry.subjectKey, subject_label: entry.subjectLabel };
   const fundLine = fundLineFor(entry);
   const debit = income ? fundLine : businessLine;

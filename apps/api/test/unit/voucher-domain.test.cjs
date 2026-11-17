@@ -5,7 +5,9 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const {
-  FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, fundLineFor, fundSubjectFor, isBankFamilySubject, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor,
+  FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, PETTY_CASH_RECEIVABLE_SUBJECT, PETTY_CASH_REIMBURSEMENT_LABEL,
+  fundLineFor, fundSubjectFor, isBankFamilySubject, isCashFamilySubject, isPettyCashReimbursement, isReceivableFamilySubject,
+  reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, voucherSummaryForEntry,
 } = require("../../dist/modules/finance/voucher.domain.js");
 
 const entry = (extra = {}) => ({
@@ -211,4 +213,93 @@ test("业务科目是库存现金（备用金）且单据上选了银行账户�
   // 反向守卫：**普通**业务科目仍然按「现金」二字猜资金侧（原来那条口径不变）。
   const expense = fundLineFor({ bankId: null, bankLabel: null, settlementMethod: "现金报销", settlementAccountLabel: null, subjectLabel: "管理费用" });
   assert.equal(expense.subject_label, FUND_SUBJECT_CASH);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-11-17（用户）：「招行」≠「对公直接支付」；备用金报销的贷方不能自动带出银行存款，
+//   要走「其他应收款—备用金」。
+//
+//   生产账套用银行账户池里的 `bankCode = 备用金` 区分那张招行个人备用金卡；
+//   公司对公招行户的 bankCode 不是「备用金」。识别只认这个标记/结算文本，不认银行名。
+// ---------------------------------------------------------------------------
+
+test("备用金报销：招行备用金卡 + 费用科目 → 贷 其他应收款-备用金，不再贷银行存款", () => {
+  const lines = voucherLinesFor(entry({
+    direction: "expense",
+    counterpartyName: "拼多多",
+    subjectKey: "负债类/应付账款",
+    subjectLabel: "应付账款",
+    categorySubjectLabel: "管理费用",
+    bankId: "bank-petty",
+    bankCode: "备用金",
+    bankName: "招商银行",
+    accountName: "周金红",
+    bankLabel: "招商银行6214851811022925",
+    settlementMethod: "库存现金-备用金--招商银行6214851811022925",
+    settlementAccountLabel: null,
+    amount: "78.7400",
+  }));
+  assert.deepEqual(lines.map((line) => [line.direction, line.subject_label, line.bank_id]), [
+    ["debit", "应付账款", undefined],
+    ["credit", PETTY_CASH_RECEIVABLE_SUBJECT, null],
+  ], "贷方是其他应收款-备用金；备用金报销不是银行存款动账，不能挂 bank_id");
+  assert.equal(lines[1].subject_key, "资产类/其他应收款-备用金");
+  assert.equal(lines[0].summary, `拼多多 · ${PETTY_CASH_REIMBURSEMENT_LABEL} · 管理费用`, "自动摘要带业务类型，业务科目取收支类目");
+  assert.equal(lines[1].summary, lines[0].summary, "凭证头与两条分录共用同一份摘要");
+  assert.equal(voucherSummaryForEntry({ ...entry({ direction: "expense", subjectLabel: "应付账款", categorySubjectLabel: "管理费用" }), bankCode: "备用金" }), `香港迪礼 · ${PETTY_CASH_REIMBURSEMENT_LABEL} · 管理费用`);
+});
+
+test("招行对公户的普通支出仍贷银行存款：不能因为银行名是「招商银行」就判成备用金报销", () => {
+  const lines = voucherLinesFor(entry({
+    direction: "expense",
+    subjectKey: "损益类/管理费用",
+    subjectLabel: "管理费用",
+    bankId: "bank-cmb-corporate",
+    bankCode: "招行",
+    bankName: "招商银行",
+    accountName: "厦门迪礼进出口有限公司",
+    bankLabel: "招商银行5920",
+    settlementMethod: "转账--招商银行5920",
+    settlementAccountLabel: null,
+    amount: "100.0000",
+  }));
+  assert.deepEqual(lines.map((line) => [line.direction, line.subject_label]), [
+    ["debit", "管理费用"],
+    ["credit", "银行存款—招商银行5920"],
+  ]);
+  assert.equal(lines[1].bank_id, "bank-cmb-corporate", "对公户仍是银行存款并引用账户");
+  assert.equal(isPettyCashReimbursement({ direction: "expense", subjectLabel: "管理费用", bankCode: "招行", bankName: "招商银行", accountName: "厦门迪礼进出口有限公司" }), false);
+});
+
+test("拨付备用金（业务科目就是其他应收款）仍借其他应收款 / 贷银行存款", () => {
+  const lines = voucherLinesFor(entry({
+    direction: "expense",
+    subjectKey: "资产类/其他应收款-备用金",
+    subjectLabel: "其他应收款-备用金",
+    bankId: "bank-cmb-corporate",
+    bankCode: "招行",
+    bankName: "招商银行",
+    accountName: "厦门迪礼进出口有限公司",
+    bankLabel: "招商银行5920",
+    settlementMethod: "拨付备用金--招商银行5920",
+    settlementAccountLabel: null,
+    amount: "3000.0000",
+  }));
+  assert.deepEqual(lines.map((line) => [line.direction, line.subject_label]), [
+    ["debit", "其他应收款-备用金"],
+    ["credit", "银行存款—招商银行5920"],
+  ]);
+  assert.equal(lines[1].bank_id, "bank-cmb-corporate");
+  assert.equal(isReceivableFamilySubject("其他应收款-备用金"), true);
+  assert.equal(isReceivableFamilySubject("应收账款"), false, "应收账款是货款往来，不是备用金");
+});
+
+test("只写结算方式「备用金报销」、没选银行账户时也能识别（历史/手工流水）", () => {
+  const line = fundLineFor({ direction: "expense", bankId: null, bankLabel: null, settlementMethod: "备用金报销", settlementAccountLabel: null, subjectLabel: "管理费用" });
+  assert.equal(line.subject_key, "资产类/其他应收款-备用金");
+  assert.equal(line.subject_label, PETTY_CASH_RECEIVABLE_SUBJECT);
+  assert.equal(line.bank_id, null);
+  // 反向守卫：收入方向不按报销处理；业务科目是「库存现金（备用金）」的取现也保持老口径。
+  assert.equal(isPettyCashReimbursement({ direction: "income", subjectLabel: "管理费用", bankCode: "备用金" }), false);
+  assert.equal(isPettyCashReimbursement({ direction: "expense", subjectLabel: "库存现金（备用金）", bankCode: "备用金" }), false);
 });

@@ -124,6 +124,33 @@ test("由收支流水生成凭证（R3-7：自动生成即已过账）：凭证�
   assert.equal(lines[0].cashFlowEntryId, "cf-1", "分录回指来源流水");
 });
 
+test("备用金报销：服务层把银行编码传给凭证逻辑，贷其他应收款-备用金、摘要带业务类型", async () => {
+  const entry = cashFlowEntry({
+    direction: "expense",
+    counterpartyName: "拼多多",
+    amount: new Prisma.Decimal("78.7400"),
+    subject: { id: "sub-ap", category: "负债类", name: "应付账款" },
+    categorySubject: { id: "sub-management", category: "损益类", name: "管理费用" },
+    settlementMethod: "库存现金-备用金--招商银行6214851811022925",
+    settlementAccount: null,
+    // 生产账套的招行个人备用金卡：bankCode 才是区分对公户的关键，bankName 两本账都叫「招商银行」。
+    bank: { id: "bank-petty", bankCode: "备用金", bankName: "招商银行", accountNumber: "6214851811022925", accountName: "周金红" },
+  });
+  const { service, vouchers, lines } = createHarness({
+    entry,
+    subjects: [...SUBJECT_ROWS, { id: "sub-petty", category: "资产类", name: "其他应收款-备用金" }],
+  });
+  await service.createFromCashFlowEntry("cf-1", { id: "user-1" });
+
+  assert.deepEqual(lines.map((line) => [line.direction, line.subjectLabel, line.subjectId]), [
+    ["debit", "应付账款", "sub-ap"],
+    ["credit", "其他应收款-备用金", "sub-petty"],
+  ], "贷方走其他应收款-备用金，并按名称解析到科目 id");
+  assert.equal(lines[1].bankId, null, "备用金报销不引用银行账户（不是银行存款动账）");
+  assert.equal(vouchers[0].summary, "拼多多 · 备用金报销 · 管理费用", "凭证头摘要带业务类型与收支类目");
+  assert.equal(lines[0].summary, vouchers[0].summary, "凭证头与分录行摘要逐字一致");
+});
+
 test("生成是幂等的：该流水已有有效凭证就返回原凭证（R3-7：存量草稿不自动过账）", async () => {
   const existing = { id: "voucher-9", voucherNo: "记-202609-0009", status: "draft", sourceType: "cash_flow_entry", sourceId: "cf-1", lines: [] };
   const { service, vouchers, lines } = createHarness({ existing });

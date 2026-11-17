@@ -6,7 +6,7 @@ import { CurrencyService } from "../../platform/currency/currency.service";
 import { nextSequenceCode } from "../../platform/database/daily-sequence-code";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { accountingSubjectKey, INPUT_TAX_SUBJECT_NAMES, PAYABLE_CONFIRM_SUBJECT_NAMES, paymentSubjectNames } from "./accounting-subject-catalog";
-import { FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, fundLineFor, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryFor, type VoucherLineDraft } from "./voucher.domain";
+import { FUND_SUBJECT_BANK, FUND_SUBJECT_CASH, isCashFamilySubject, reverseLines, voucherBalance, voucherLinesFor, voucherPeriodFor, voucherSummaryForEntry, type VoucherLineDraft } from "./voucher.domain";
 import { VOUCHER_TEMPLATES, resolveVoucherTemplate, type ResolvedTemplateLine } from "./voucher-template";
 
 /** 来源类型：收支流水；红冲凭证的来源是「被红冲的那张凭证」；**手工凭证没有来源**。 */
@@ -50,7 +50,9 @@ const ENTRY_INCLUDE = {
   categorySubject: { select: { id: true, category: true, name: true } },
   settlementAccount: { select: { id: true, key: true, label: true } },
   // 银行账户：资金类分录要引用具体账户（见 voucher.domain.ts 的 fundLineFor）。
-  bank: { select: { id: true, bankName: true, accountNumber: true, accountName: true } },
+  // `bankCode` 必须带上：生产账套用「备用金」这个内部编码区分个人备用金卡与公司对公户，
+  // 光看 `bankName`（招行）分不开两者（2026-11-17 用户口径：「招行」≠「对公直接支付」）。
+  bank: { select: { id: true, bankCode: true, bankName: true, accountNumber: true, accountName: true } },
 } as const;
 
 /** 银行账户的显示名：与全站一致（银行名 + 账号），凭证纸上要能据此对上银行对账单。 */
@@ -78,7 +80,7 @@ type CashFlowEntryForDraft = {
   /** 收支类目（业务科目）：只作凭证的 `business_subject_id` 辅助维度，不参与记账（R3-1）。 */
   categorySubject?: { id: string; category: string; name: string } | null;
   settlementAccount: { label: string } | null;
-  bank: { id: string; bankName: string; accountNumber: string } | null;
+  bank: { id: string; bankCode: string; bankName: string; accountNumber: string; accountName: string } | null;
 };
 
 /** 「资金搬运凭证纠正」的取数结果（预览与执行读的是同一份）。 */
@@ -241,7 +243,7 @@ export class VoucherService {
       return this.createOrReviveVoucher(tx, { sourceType: SOURCE_CASH_FLOW, sourceId: entry.id }, {
         // R3-7：自动凭证生成即过账（显式传 posted；不改 createVoucher 的默认值，手工凭证仍是 draft）。
         voucherNo, voucherDate: entry.entryDate, period, status: "posted",
-        summary: voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark }),
+        summary: draft.summary,
         currency: entry.currency, debitTotal: amount, creditTotal: amount,
       }, draft.lines, entry.id, user);
     });
@@ -931,7 +933,7 @@ export class VoucherService {
     const draft = await this.draftForEntry(entry);
     const amount = new Prisma.Decimal(entry.amount);
     const period = voucherPeriodFor(entry.entryDate);
-    const summary = voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark });
+    const summary = draft.summary;
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM vouchers WHERE id = ${id}::uuid FOR UPDATE`;
       const locked = await tx.voucher.findFirst({ where: { id, deletedAt: null } });
@@ -1066,7 +1068,7 @@ export class VoucherService {
     const db = options.db ?? this.prisma;
     const resolveIds = options.resolveIds ?? true;
     const bankLabel = bankAccountLabel(entry.bank);
-    const lines = voucherLinesFor({
+    const voucherEntry = {
       entryNo: entry.entryNo,
       entryDate: entry.entryDate,
       counterpartyName: entry.counterpartyName,
@@ -1077,13 +1079,19 @@ export class VoucherService {
       // 科目名快照用科目名称本身，打印出来的凭证与财务那张科目表逐字对得上。
       subjectKey: entry.subject ? accountingSubjectKey(entry.subject.category, entry.subject.name) : "未分类",
       subjectLabel: entry.subject?.name ?? "未分类",
+      // 收支类目只用于摘要与业务辅助维度；备用金报销时摘要写「报销了什么」。
+      categorySubjectLabel: entry.categorySubject?.name ?? null,
       settlementMethod: entry.settlementMethod,
       settlementAccountLabel: entry.settlementAccount?.label ?? null,
       remark: entry.remark,
       bankId: entry.bank?.id ?? null,
       bankLabel,
-    });
-    const fund = fundLineFor({ bankId: entry.bank?.id ?? null, bankLabel, settlementMethod: entry.settlementMethod, settlementAccountLabel: entry.settlementAccount?.label ?? null, subjectLabel: entry.subject?.name ?? "" });
+      // 备用金识别只认账户编码/户名/结算文本，不看银行名（招行对公户与备用金卡都叫招行）。
+      bankCode: entry.bank?.bankCode ?? null,
+      bankName: entry.bank?.bankName ?? null,
+      accountName: entry.bank?.accountName ?? null,
+    };
+    const lines = voucherLinesFor(voucherEntry);
     // 业务分录行 = 不是资金行的那个方向：收入 → 贷方是业务科目；支出 → 借方是业务科目。
     // （`voucherLinesFor` 恒返回 [借方 line 1, 贷方 line 2]，所以按方向就能定位，不用比对科目名。）
     const businessLineIndex = entry.direction === "income" ? 1 : 0;
@@ -1091,7 +1099,13 @@ export class VoucherService {
       ? lines.map((line, index) => (index === businessLineIndex ? { ...line, business_subject_id: entry.categorySubject!.id } : line))
       : lines;
     // `resolveIds: false` 只给「只看科目名、不落库」的调用方（资金行科目名回填预览）用，省一次查库。
-    return { lines: resolveIds ? await this.withLineSubjects(withBusiness, db) : withBusiness, bankId: fund.bank_id };
+    return {
+      lines: resolveIds ? await this.withLineSubjects(withBusiness, db) : withBusiness,
+      // 资金行上的账户引用（备用金报销没有账户引用，这里自然是 null）。
+      bankId: lines.find((line) => line.bank_id)?.bank_id ?? null,
+      // 凭证头与分录共用同一份摘要：新建 / 重新生成 / 历史纠正三处都从这里取。
+      summary: voucherSummaryForEntry(voucherEntry),
+    };
   }
 
   /**
@@ -1450,7 +1464,7 @@ export class VoucherService {
       await this.dropReversalsOf(flow.voucher.id, reason, user);
       const draft = await this.draftForEntry(entry);
       const amount = new Prisma.Decimal(entry.amount);
-      const summary = voucherSummaryFor({ counterpartyName: entry.counterpartyName, subjectLabel: entry.subject?.name ?? "未分类", remark: entry.remark });
+      const summary = draft.summary;
       const period = voucherPeriodFor(entry.entryDate);
       await this.prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM vouchers WHERE id = ${flow.voucher!.id}::uuid FOR UPDATE`;
