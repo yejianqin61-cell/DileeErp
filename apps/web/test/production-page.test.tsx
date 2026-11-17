@@ -175,6 +175,10 @@ function bomRows() {
 }
 /** 面板标题右侧的计数：「共 N 张确认单，当前列出 M 张」。 */
 const bomCount = () => screen.getByTestId("production-bom-count");
+/** 展开 BOM 订单号列表（T-0014 起默认折叠，数据行要展开后才渲染）。 */
+async function expandBom() {
+  await userEvent.click(screen.getByTestId("production-bom-toggle"));
+}
 
 /** 打开「新建生产单」对话框（打开时页面会再拉一次 /sales-orders 作为最新候选）。 */
 async function openCreateDialog() {
@@ -636,6 +640,7 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
   it("已建 BOM 的订单显示「编辑BOM表」，缺 BOM 的显示「新建BOM表」", async () => {
     stubProduction({ salesOrders: [candidate("SO-2026-001", "120", "打"), awaitingBom("SO-2026-002")] });
     await openProduction();
+    await expandBom();
 
     const panel = within(screen.getByTestId("production-bom-panel"));
     expect(panel.getByTestId("production-bom-SO-2026-001")).toHaveTextContent("编辑BOM表");
@@ -651,6 +656,7 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
       boms: { "bom-SO-2026-001": { id: "bom-SO-2026-001", orderNo: "SO-2026-001", status: "draft", version: 1, updatedAt: "2026-09-14T02:00:00.000Z", items: [{ id: "bi-1", materialId: "mat-1", materialName: "面料A", model: "", requiredQuantity: "3", unit: "米", unitId: "u-1", materialSnapshot: {} }] } },
     });
     await openProduction();
+    await expandBom();
 
     await userEvent.click(within(screen.getByTestId("production-bom-panel")).getByTestId("production-bom-SO-2026-001"));
 
@@ -670,6 +676,7 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
       ? apiOk({ id: "mat-9", materialCode: "M-009", name: "伞骨", specificationModel: "60cm", color: "银色", defaultUnitId: "u-1", materialType: "raw_material", isActive: true })
       : undefined));
     await openProduction();
+    await expandBom();
 
     await userEvent.click(within(screen.getByTestId("production-bom-panel")).getByTestId("production-bom-SO-2026-001"));
     await screen.findByDisplayValue("3");
@@ -702,11 +709,61 @@ describe("生产单列表页：BOM 表入口（与采购共用同一套编辑工
         : undefined,
     );
     await openProduction();
+    await expandBom();
 
     await userEvent.click(within(screen.getByTestId("production-bom-panel")).getByTestId("production-bom-SO-2026-002"));
 
     await waitFor(() => expect(callsTo(calls, "/boms/from-sales-order/so-SO-2026-002").filter((call) => call.method === "POST")).toHaveLength(1));
     expect(await screen.findByText(/这张 BOM 还没有明细行/)).toBeVisible();
+  });
+});
+
+// T-0014：BOM 表的订单号列表默认折叠，只显示计数；展开后才渲染全部订单行，可再次收起。
+describe("生产单列表页：BOM 表订单号列表折叠（T-0014）", () => {
+  const threeOrders = () => [
+    candidate("SO-2026-001", "120", "打"),
+    candidate("SO-2026-002", "80", "个"),
+    candidate("SO-2026-003", "60", "码"),
+  ];
+
+  it("默认折叠：只显示计数与展开开关，搜索框与表格都不进入 DOM", async () => {
+    stubProduction({ salesOrders: threeOrders(), records: [inHouseDraft] });
+    await openProduction();
+
+    expect(bomCount()).toHaveTextContent("共 3 张确认单");
+    const toggle = screen.getByTestId("production-bom-toggle");
+    expect(toggle).toHaveTextContent("展开");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // 「避免一次性渲染大量条目」：收起时不是 CSS 隐藏，而是搜索框、表头、数据行都没有进 DOM。
+    expect(bomPanel().queryByTestId("production-bom-search")).toBeNull();
+    expect(bomPanel().queryByRole("table")).toBeNull();
+    expect(bomRows()).toHaveLength(0);
+    expect(bomPanel().queryByText("SO-2026-001")).toBeNull();
+  });
+
+  it("点「展开」渲染全部订单行，再点「收起」卸载回退到只显示计数", async () => {
+    stubProduction({ salesOrders: threeOrders(), records: [inHouseDraft] });
+    await openProduction();
+
+    await expandBom();
+
+    const expandedToggle = screen.getByTestId("production-bom-toggle");
+    expect(expandedToggle).toHaveTextContent("收起");
+    expect(expandedToggle).toHaveAttribute("aria-expanded", "true");
+    expect(bomPanel().getByTestId("production-bom-search")).toBeVisible();
+    expect(bomRows()).toHaveLength(3);
+    for (const orderNo of ["SO-2026-001", "SO-2026-002", "SO-2026-003"]) {
+      expect(bomPanel().getByText(orderNo)).toBeVisible();
+    }
+
+    await userEvent.click(expandedToggle);
+
+    expect(screen.getByTestId("production-bom-toggle")).toHaveTextContent("展开");
+    expect(screen.getByTestId("production-bom-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(bomPanel().queryByTestId("production-bom-search")).toBeNull();
+    expect(bomRows()).toHaveLength(0);
+    expect(bomPanel().queryByText("SO-2026-001")).toBeNull();
+    expect(bomCount()).toHaveTextContent("共 3 张确认单");
   });
 });
 
@@ -724,6 +781,7 @@ describe("生产单列表页：BOM 表搜索（2026-11-11）", () => {
   it("按订单号过滤：BOM 表只剩那一行，且「生产单查找」表完全不受影响", async () => {
     stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
     await openProduction();
+    await expandBom();
 
     expect(bomRows()).toHaveLength(2);
     expect(bomCount()).toHaveTextContent("当前列出 2 张");
@@ -744,6 +802,7 @@ describe("生产单列表页：BOM 表搜索（2026-11-11）", () => {
   it("按数量过滤，空格分词按 AND 收窄：「80」只剩数量 80 的那张，「SO-2026 001」只命中 SO-2026-001", async () => {
     stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
     await openProduction();
+    await expandBom();
 
     await userEvent.type(bomSearch(), "80");
     expect(bomRows()).toHaveLength(1);
@@ -763,6 +822,7 @@ describe("生产单列表页：BOM 表搜索（2026-11-11）", () => {
   it("无匹配：给出「没有匹配…的订单」，并说明总数；计数显示当前列出 0 张", async () => {
     stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
     await openProduction();
+    await expandBom();
 
     await userEvent.type(bomSearch(), "不存在的单号");
 
@@ -776,6 +836,7 @@ describe("生产单列表页：BOM 表搜索（2026-11-11）", () => {
   it("清空搜索框后恢复全量行，计数一并恢复", async () => {
     stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
     await openProduction();
+    await expandBom();
 
     await userEvent.type(bomSearch(), "SO-2026-002");
     expect(bomRows()).toHaveLength(1);
@@ -795,7 +856,11 @@ describe("生产单列表页：BOM 表搜索（2026-11-11）", () => {
     const calls = stubProduction({ salesOrders: twoOrders(), records: twoRecords(), locations: [workshopLocation] }, (url) =>
       url.includes("search=") ? apiOk([candidate("SO-9", "5")]) : undefined
     );
-    await openCreateDialog();
+    await openProduction();
+    // 先在无模态遮罩时展开；对话框打开后外部内容带 pointer-events: none，点不动折叠开关。
+    await expandBom();
+    await userEvent.click(screen.getByTestId("production-create-order"));
+    await screen.findByTestId("action-dialog");
 
     // 订单下拉的搜索走真实端点（手法同「订单下拉的搜索走真实端点」用例）
     const trigger = screen.getByTestId("action-field-order_no").querySelector("button") as HTMLElement;
@@ -819,6 +884,7 @@ describe("生产单列表页：BOM 表搜索（2026-11-11）", () => {
   it("搜索框长在 BOM 表面板里，placeholder 与「生产单查找」的搜索框不同名", async () => {
     stubProduction({ salesOrders: twoOrders(), records: twoRecords() });
     await openProduction();
+    await expandBom();
 
     const panel = within(screen.getByTestId("production-bom-panel"));
     expect(panel.getByTestId("production-bom-search")).toHaveAttribute("placeholder", "输入订单号或数量");

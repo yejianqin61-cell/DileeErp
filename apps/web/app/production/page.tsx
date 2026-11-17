@@ -91,6 +91,14 @@ export default function ProductionPage() {
    */
   const [bomQuery, setBomQuery] = useState("");
   /**
+   * 【BOM表】订单号列表的展开状态（T-0014）。
+   *
+   * 默认收起，面板标题栏只留计数与开关；收起时搜索框与整张表**不进入 DOM** ——
+   * 已确认销售单多时一次性渲染全部行会拖慢页面，展开后才渲染，再点收起即卸载回退。
+   * 不复用 `useCollapsiblePanel`：那个默认展开且会记住上次状态，与「每次进页面默认折叠」相反。
+   */
+  const [bomOpen, setBomOpen] = useState(false);
+  /**
    * 「新建生产单」对话框里的候选单（`null` = 没搜过，就是全量 `orders`）。
    *
    * 为什么要单独存（2026-11-11 缺陷 A）：以前对话框的搜索把结果写进了 `orders`，
@@ -271,12 +279,17 @@ export default function ProductionPage() {
       <section className="panel" data-testid="production-bom-panel">
         <div className="panel-heading">
           <h2>BOM表</h2>
-          {/* 计数只在有数据时出现（2026-11-11）：空态本身就是一句解释，再挂一个「共 0 张」只是噪音。 */}
-          {orders.length > 0 && <span className="panel-note" data-testid="production-bom-count">共 {orders.length} 张确认单，当前列出 {bomVisible.length} 张</span>}
+          <div className="page-actions">
+            {/* 计数只在有数据时出现（2026-11-11）：空态本身就是一句解释，再挂一个「共 0 张」只是噪音。 */}
+            {orders.length > 0 && <span className="panel-note" data-testid="production-bom-count">共 {orders.length} 张确认单，当前列出 {bomVisible.length} 张</span>}
+            {/* T-0014：默认折叠时只留计数；这个开关是唯一的展开入口，文案与 aria-expanded 同步。 */}
+            {orders.length > 0 && <Button variant="secondary" size="sm" aria-expanded={bomOpen} aria-controls="production-bom-order-list" title={bomOpen ? "收起订单列表" : "展开订单列表"} data-testid="production-bom-toggle" onClick={() => setBomOpen((open) => !open)}>{bomOpen ? "收起" : "展开"}</Button>}
+          </div>
         </div>
-        <div className="panel-body">
-          <p className="panel-note">BOM 由采购与生产共同维护，两个入口改的是同一张表。保存时会校验版本：若采购已先改过，会提示你重新加载，而不是把对方的修改覆盖掉。</p>
-          {!orders.length ? <EmptyState title="暂无已确认销售单" description="建立并确认销售单后，即可在这里为其建立 BOM 表。" /> : <>
+        {!orders.length
+          ? <div className="panel-body"><EmptyState title="暂无已确认销售单" description="建立并确认销售单后，即可在这里为其建立 BOM 表。" /></div>
+          : bomOpen && <div className="panel-body" id="production-bom-order-list">
+            <p className="panel-note">BOM 由采购与生产共同维护，两个入口改的是同一张表。保存时会校验版本：若采购已先改过，会提示你重新加载，而不是把对方的修改覆盖掉。</p>
             {/*
               本面板自己的搜索框（2026-11-11）。两个细节是刻意的：
               · 状态与「生产单查找」那个 `query` 完全分开（那个被 `?order_no=` 深链预填）；
@@ -288,8 +301,7 @@ export default function ProductionPage() {
               // 有数据但搜不到：说清「是没匹配上，不是没有单」，并把总数留在眼前。
               ? <EmptyState title={`没有匹配“${bomQuery.trim()}”的订单`} description={`共 ${orders.length} 张确认单，换个关键词或清空搜索框。`} />
               : <div className="table-wrap"><table className="data-table table-bounded"><thead><tr><th style={{ width: BOM_COLUMN_WIDTH.orderNo }}>订单号</th><th style={{ width: BOM_COLUMN_WIDTH.quantity }}>数量</th><th style={{ width: BOM_COLUMN_WIDTH.bom }}>BOM表</th></tr></thead><tbody>{bomVisible.map((order) => { const bom = latestBom(order.boms); return <tr key={order.orderNo}><td className="cell-ellipsis" title={order.orderNo}>{order.orderNo}</td><td className="cell-ellipsis" title={`${order.quantity}${order.unit ? ` ${order.unit}` : ""}`}>{order.quantity}{order.unit ? ` ${order.unit}` : ""}</td><td><Button size="sm" variant="secondary" data-testid={`production-bom-${order.orderNo}`} onClick={() => void createOrOpenBom(order)}>{bom ? "编辑BOM表" : "新建BOM表"}</Button></td></tr>; })}</tbody></table></div>}
-          </>}
-        </div>
+          </div>}
       </section>
       <section className="panel"><div className="panel-heading"><h2>生产单查找</h2></div><div className="panel-body"><div className="filter-bar"><label>搜索生产单、订单号或状态<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入关键词" /></label></div><div data-testid="production-order-table"><DataTable columns={columns} data={visible} empty={<EmptyState title="暂无生产单" />} /></div></div></section>
       <section className="panel"><div className="panel-heading"><h2>生产基础资料</h2></div><div className="panel-body"><div className="page-actions"><Button asChild variant="secondary"><Link href="/production/operations" data-testid="production-add-operation">工序池（{operations.filter((item) => item.isActive).length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/locations" data-testid="production-add-location">加工地点池（{activeLocations.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/units">单位池（{units.length} 个启用）</Link></Button><Button asChild variant="secondary"><Link href="/production/material-issues">领料/补料单（按工序）</Link></Button></div></div></section>
