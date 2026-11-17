@@ -593,17 +593,69 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
         throw new DeployFailure('push', `读不到远端分支 ${remoteRef}`)
       }
       const remoteHead = remoteHeadResult.stdout.trim()
-      const fastForward = await probe(
-        'git',
-        ['merge-base', '--is-ancestor', remoteHead, 'HEAD'],
-        config.timeouts.gitMs,
-        config.repoPath,
-      )
-      if (fastForward.code !== 0) {
-        throw new DeployFailure(
-          'push',
-          `GitHub ${config.gitBranch} 上有本地没有的提交（远端 ${shortVersion(remoteHead)}），拒绝强推。先同步仓库再部署。`,
+      const isAncestor = async (sha: string): Promise<boolean> => {
+        const result = await probe(
+          'git',
+          ['merge-base', '--is-ancestor', sha, 'HEAD'],
+          config.timeouts.gitMs,
+          config.repoPath,
         )
+        return result.code === 0
+      }
+      if (remoteHead.length > 0 && !(await isAncestor(remoteHead))) {
+        // 远端有本地没有的提交（典型：文档提交从别的机器直接推了 main），
+        // 本地 HEAD 推到 main 不是快进。
+        //
+        // 旧行为是直接拒绝并回一句「先同步仓库再部署」——人到场当然会 `git pull`，
+        // 但机器人没有这个动作，只能卡死等人（2026-11-17 真实卡住一次）。
+        // 现在自己同步：本地只落后就快进；本地有提交就 rebase 到远端之上（失败可原子回退）。
+        const behindOnly = await probe(
+          'git',
+          ['merge-base', '--is-ancestor', 'HEAD', remoteHead],
+          config.timeouts.gitMs,
+          config.repoPath,
+        )
+        const syncArgs = behindOnly.code === 0 ? ['merge', '--ff-only', remoteRef] : ['rebase', remoteRef]
+        emit('push', '推送 GitHub（先同步远端）')
+        log(
+          `[deploy] 远端 ${remoteRef}=${shortVersion(remoteHead)} 不在 HEAD 历史里，` +
+            `执行 git ${syncArgs.join(' ')}`,
+        )
+        const sync = await runner({
+          command: 'git',
+          args: syncArgs,
+          cwd: config.repoPath,
+          env: { PATH: path },
+          timeoutMs: config.timeouts.gitMs,
+        })
+        if (sync.code !== 0) {
+          if (syncArgs[0] === 'rebase') {
+            const abort = await runner({
+              command: 'git',
+              args: ['rebase', '--abort'],
+              cwd: config.repoPath,
+              env: { PATH: path },
+              timeoutMs: config.timeouts.gitMs,
+            })
+            log(`[deploy] 同步失败，已回退 rebase（exit ${abort.code}）`)
+          }
+          throw new DeployFailure(
+            'push',
+            `同步 ${remoteRef} 失败（本地提交与远端 ${config.gitBranch} 冲突，需人工解决后再部署）：${tail(sync)}`,
+          )
+        }
+        const headAfterSync = await probe('git', ['rev-parse', 'HEAD'], config.timeouts.gitMs, config.repoPath)
+        const syncedRelease = headAfterSync.stdout.trim()
+        if (/^[0-9a-f]{40}$/.test(syncedRelease)) {
+          log(`[deploy] 仓库已同步，release ${shortVersion(state.release)} -> ${shortVersion(syncedRelease)}`)
+          state.release = syncedRelease
+        }
+        if (!(await isAncestor(remoteHead))) {
+          throw new DeployFailure(
+            'push',
+            `同步后远端 ${config.gitBranch} 仍不是 HEAD 的祖先（远端 ${shortVersion(remoteHead)}），拒绝强推。`,
+          )
+        }
       }
       const push = await runner({
         command: 'git',

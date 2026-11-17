@@ -30,7 +30,16 @@ interface FakeOptions {
   repoMigrations?: number
   diskKb?: number
   ancestorCode?: number
-  ffCode?: number
+  /** 远端 main 上有本地没有的提交：远端不是 HEAD 的祖先。 */
+  remoteAhead?: boolean
+  /** 本地只是落后（HEAD 是远端祖先）：应该快进，不该 rebase。 */
+  behindRemote?: boolean
+  /** 远端 main 的 sha，默认与 HEAD 相同。 */
+  remoteHead?: string
+  /** 同步成功后 HEAD 变成什么（rebase 会换 sha）。 */
+  headAfterSync?: string
+  /** git rebase / git merge --ff-only 的返回码（非 0 = 冲突）。 */
+  syncCode?: number
   fetchCode?: number
   pushCode?: number
   pushOut?: string
@@ -104,6 +113,11 @@ function setup(options: FakeOptions = {}): Harness {
   const calls: CommandInput[] = []
   const phases: string[] = []
 
+  // 同步远端会换 HEAD（rebase）或只是前移（快进）；模拟时要跟着变，
+  // 否则「切换后线上版本 == 发布版本」这条判据永远对不上。
+  let synced = false
+  const currentHead = (): string => (synced ? (options.headAfterSync ?? options.head ?? HEAD) : (options.head ?? HEAD))
+
   const writeLive = (version: string): void => writeFileSync(releaseFile, `${version}\n`, 'utf8')
 
   const runner: CommandRunner = async (input) => {
@@ -112,14 +126,27 @@ function setup(options: FakeOptions = {}): Harness {
     const joined = `${input.command} ${args.join(' ')}`
 
     if (joined.startsWith('git status --porcelain')) return ok(options.status ?? '')
-    if (joined.startsWith('git rev-parse HEAD')) return ok(options.head ?? HEAD)
-    if (joined.startsWith('git rev-parse origin/main')) return ok(REMOTE)
+    if (joined.startsWith('git rev-parse HEAD')) return ok(currentHead())
+    if (joined.startsWith('git rev-parse origin/main')) return ok(options.remoteHead ?? REMOTE)
     if (joined.startsWith('git merge-base --is-ancestor')) {
       const target = args[2]
-      if (target === (options.prev ?? PREV)) {
-        return { code: options.ancestorCode ?? 0, stdout: '', stderr: '' }
+      const descendant = args[3]
+      if (target === (options.prev ?? PREV)) return { code: options.ancestorCode ?? 0, stdout: '', stderr: '' }
+      if (descendant === 'HEAD') {
+        // 「远端是不是当前 HEAD 的祖先」：同步之后才成立。
+        if (options.behindRemote === true || options.remoteAhead === true) {
+          return { code: synced ? 0 : 1, stdout: '', stderr: '' }
+        }
+        return ok('')
       }
-      return { code: options.ffCode ?? 0, stdout: '', stderr: '' }
+      // 「当前 HEAD 是不是远端的祖先」：只有本地落后时才成立。
+      return { code: options.behindRemote === true ? 0 : 1, stdout: '', stderr: '' }
+    }
+    if (joined.startsWith('git rebase') || joined.startsWith('git merge --ff-only')) {
+      if (args[1] === '--abort') return ok('')
+      const code = options.syncCode ?? 0
+      if (code === 0) synced = true
+      return { code, stdout: '', stderr: code === 0 ? '' : 'CONFLICT (content): apps/web/app/production/page.tsx' }
     }
     if (input.command === 'sudo') {
       const sql = args[args.length - 1] ?? ''
@@ -159,19 +186,19 @@ function setup(options: FakeOptions = {}): Harness {
     if (input.command === 'bash' && (args[0] ?? '').endsWith('remote-switch.sh')) {
       const switchCode = options.switchCode ?? 0
       if (options.switchWritesRelease ?? (switchCode === 0)) {
-        writeLive(options.liveAfterSwitch ?? HEAD)
+        writeLive(options.liveAfterSwitch ?? currentHead())
       }
       return {
         code: switchCode,
         stdout:
           switchCode === 0
-            ? `SWITCH_OK from=${PREV} to=${HEAD} backup=/opt/dilee/app.backup-test\n`
+            ? `SWITCH_OK from=${PREV} to=${currentHead()} backup=/opt/dilee/app.backup-test\n`
             : '',
         stderr: switchCode === 0 ? '' : 'health 探测失败',
       }
     }
     if (input.command === 'bash' && (args[0] ?? '').endsWith('remote-verify.sh')) {
-      return { code: options.verifyCode ?? 0, stdout: `release:            ${HEAD}\n`, stderr: '' }
+      return { code: options.verifyCode ?? 0, stdout: `release:            ${currentHead()}\n`, stderr: '' }
     }
     if (input.command === 'bash' && (args[0] ?? '').endsWith('remote-nginx.sh')) {
       return { code: options.edgeCode ?? 0, stdout: 'OK：边缘放行\n', stderr: '' }
@@ -319,15 +346,48 @@ test('失败迁移残留：拒绝部署', async () => {
   }
 })
 
-test('GitHub 远端有本地没有的提交：拒绝强推', async () => {
-  const harness = setup({ ffCode: 1 })
+const REMOTE_AHEAD = 'c'.repeat(40)
+const REBASED = 'd'.repeat(40)
+
+test('远端有本地没有的提交：自动 rebase 到远端之上再推，不卡住等人', async () => {
+  const harness = setup({ remoteAhead: true, remoteHead: REMOTE_AHEAD, headAfterSync: REBASED })
+  try {
+    const result = await run(harness)
+    assert.equal(result.ok, true, result.failure ?? '')
+    assert.ok(called(harness, 'git rebase origin/main'))
+    assert.ok(called(harness, 'git push origin HEAD:refs/heads/main'))
+    // 同步会换 sha：发布版本必须跟着新 HEAD，否则核验比的是个已经不存在的提交。
+    assert.equal(result.release, REBASED)
+    assert.equal(result.phase, 'done')
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('本地只是落后远端：走快进，不动历史', async () => {
+  const harness = setup({ behindRemote: true, remoteHead: REMOTE_AHEAD, headAfterSync: REMOTE_AHEAD })
+  try {
+    const result = await run(harness)
+    assert.equal(result.ok, true, result.failure ?? '')
+    assert.ok(called(harness, 'git merge --ff-only origin/main'))
+    assert.equal(called(harness, 'git rebase'), false)
+    assert.equal(result.release, REMOTE_AHEAD)
+  } finally {
+    harness.cleanup()
+  }
+})
+
+test('同步冲突：回退 rebase 并中止部署，不构建不切换', async () => {
+  const harness = setup({ remoteAhead: true, remoteHead: REMOTE_AHEAD, syncCode: 1 })
   try {
     const result = await run(harness)
     assert.equal(result.ok, false)
     assert.equal(result.phase, 'push')
-    assert.match(result.failure ?? '', /拒绝强推/)
+    assert.match(result.failure ?? '', /冲突，需人工解决/)
+    assert.ok(called(harness, 'git rebase --abort'))
     assert.equal(called(harness, 'git push origin HEAD'), false)
     assert.equal(called(harness, 'remote-build.sh'), false)
+    assert.equal(readFileSync(harness.releaseFile, 'utf8').trim(), PREV)
   } finally {
     harness.cleanup()
   }
