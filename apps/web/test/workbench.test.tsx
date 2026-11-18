@@ -130,9 +130,13 @@ type StubOptions = {
 
 const ORDERS_PATH = "/order-workbench/orders?page_size=200";
 const MEASUREMENTS_PATH = "/production-progress/measurements?page_size=200";
+// 首页任务提醒默认收起：挂载时只拉 summary，不拉完整列表（完整列表在点【展开】后才有）。
+const TASK_SUMMARY_PATH = "/task-reminders/summary";
+const EMPTY_TASK_COUNTS = { total: 0, urgent_count: 0, normal_count: 0, overdue_count: 0, due_soon_count: 0 };
 
 function stubWorkbench({ orders, measurements = [], detail }: StubOptions) {
   return stubApi((url) => {
+    if (url.includes(TASK_SUMMARY_PATH)) return apiOk(EMPTY_TASK_COUNTS);
     if (url.includes("/order-workbench/orders/")) {
       const orderNo = decodeURIComponent(url.slice(url.indexOf("/order-workbench/orders/") + "/order-workbench/orders/".length));
       return detail ? detail(orderNo) : apiErr(404, "NOT_FOUND", "详情未打桩");
@@ -172,6 +176,7 @@ describe("工作台：订单全链路加载与渲染", () => {
     let release!: () => void;
     const waiting = new Promise<void>((resolve) => { release = resolve; });
     const calls = stubApi(async (url) => {
+      if (url.includes(TASK_SUMMARY_PATH)) return apiOk(EMPTY_TASK_COUNTS);
       if (url.includes("/order-workbench/orders?")) { await waiting; return apiOk([makeOrder()]); }
       return apiOk([makeMeasurement()]);
     });
@@ -182,11 +187,13 @@ describe("工作台：订单全链路加载与渲染", () => {
     expect(screen.getByTestId("loading-state")).toHaveTextContent("正在加载订单推进状态");
     expect(screen.queryByText("SO-2026-001")).toBeNull();
 
-    // 两个端点必须在同一轮并发发出（Promise.all）：否则页面会出现二次跳变
-    await waitFor(() => expect(calls).toHaveLength(2));
+    // 订单与计量两个端点在同一轮并发发出（Promise.all）；任务提醒面板只额外拉 summary 计数。
+    await waitFor(() => expect(calls).toHaveLength(3));
 
     expect(callsTo(calls, ORDERS_PATH).map((call) => [call.method, call.url])).toEqual([["GET", `/api/v1${ORDERS_PATH}`]]);
     expect(callsTo(calls, MEASUREMENTS_PATH)).toHaveLength(1);
+    expect(callsTo(calls, TASK_SUMMARY_PATH)).toHaveLength(1);
+    expect(callsTo(calls, "/task-reminders")).toHaveLength(0);
 
     release();
     expect(await screen.findByText("SO-2026-001")).toBeVisible();

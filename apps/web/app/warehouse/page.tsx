@@ -106,6 +106,8 @@ export default function WarehousePage() {
    * 仓库找的是「这一单/这个物料到哪一步了」，分成两个框会让他搜两遍。
    */
   const [keyword, setKeyword] = useState("");
+  // 首页任务提醒的深链：`?notice_id=` 只留这一条待入库通知，避免在队列里再找一遍。
+  const [focusedNoticeId, setFocusedNoticeId] = useState("");
 
   async function load() {
     setLoading(true);
@@ -127,6 +129,10 @@ export default function WarehousePage() {
   }
 
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    const notice = new URLSearchParams(window.location.search).get("notice_id");
+    if (notice) setFocusedNoticeId(notice);
+  }, []);
 
   async function acknowledgeNotice(notice: InboundNotice) {
     setError("");
@@ -180,16 +186,17 @@ export default function WarehousePage() {
   ];
 
   /** 待入库通知的过滤结果（只按这张表看得见的列匹配）。 */
-  const visibleInboundNotices = useMemo(
-    () => (keyword.trim() ? inboundNotices.filter((row) => fuzzyMatch(keyword, [
+  const visibleInboundNotices = useMemo(() => {
+    const scoped = focusedNoticeId ? inboundNotices.filter((row) => row.id === focusedNoticeId) : inboundNotices;
+    if (!keyword.trim()) return scoped;
+    return scoped.filter((row) => fuzzyMatch(keyword, [
       row.noticeNo, formatBeijingShort(row.notifiedAt),
       row.purchaseOrder?.purchaseOrderNo, row.purchaseReceipt?.receiptNo, row.orderNo,
       row.purchaseOrderItem?.material?.materialCode, row.purchaseOrderItem?.material?.name,
       `${row.notifiedQuantity} ${row.purchaseOrderItem?.unit?.name ?? ""}`,
       noticeStatusLabels[row.status] ?? row.status,
-    ])) : inboundNotices),
-    [inboundNotices, keyword],
-  );
+    ]));
+  }, [inboundNotices, keyword, focusedNoticeId]);
   /** 待出库通知的过滤结果（物料明细那一列也参与匹配：仓库常常按料名找单）。 */
   const visiblePendingOutbounds = useMemo(
     () => (keyword.trim() ? pendingOutbounds.filter((row) => fuzzyMatch(keyword, [
@@ -267,6 +274,7 @@ export default function WarehousePage() {
           </label>
           {keyword.trim() ? <span className="panel-note" data-testid="warehouse-search-count">待入库 {visibleInboundNotices.length} / {inboundNotices.length} · 待出库 {visiblePendingOutbounds.length} / {pendingOutbounds.length}</span> : null}
           {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+          {focusedNoticeId ? <Button variant="secondary" onClick={() => setFocusedNoticeId("")}>显示全部待入库通知</Button> : null}
         </div>
       </section>
 
@@ -279,6 +287,7 @@ export default function WarehousePage() {
       <section className="panel">
         <div className="panel-heading">
           <h2>待入库通知 <span className="status-warning">{inboundNotices.length}</span></h2>
+          {focusedNoticeId ? <span className="panel-note">已定位到任务提醒中的通知</span> : null}
         </div>
         <div className="panel-body">
           <DataTable

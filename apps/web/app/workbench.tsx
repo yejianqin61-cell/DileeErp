@@ -5,6 +5,7 @@ import { createColumnHelper } from "@tanstack/react-table";
 import { RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { PageHeader } from "../components/layout/app-shell";
+import { TaskRemindersPanel } from "../components/dashboard/task-reminders-panel";
 import { EmptyState, LoadingState } from "../components/feedback/states";
 import { DataTable } from "../components/data/data-table";
 import { StatusBadge } from "../components/data/status-badge";
@@ -75,6 +76,7 @@ export default function WorkbenchPage() {
   const permittedCards = moduleCards.filter(([, href]) => canVisitPath(sections, href));
   return <>
     <PageHeader title="工作台" description="按订单号查看采购、库存、生产、质检、发货和财务推进状态"><Button variant="secondary" onClick={() => { void load(); }} title="刷新工作台"><RefreshCw size={15} />刷新</Button></PageHeader>
+    <TaskRemindersPanel />
     {error && <section className="panel panel-body status-danger" role="alert">{error}</section>}
     {loading ? <LoadingState label="正在加载订单推进状态" /> : <>
       <section className="panel table-panel"><div className="panel-heading"><h2>订单全链路</h2><span className="panel-note">按订单号汇总，只读</span></div><div className="panel-body"><div className="filter-bar"><label htmlFor="workbench-order-filter">筛选订单<Input id="workbench-order-filter" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="订单号、状态或阻塞原因" /></label>{filter.trim() ? <span className="panel-note" data-testid="workbench-order-count">筛选后 {visibleOrders.length} / {orders.length} 张</span> : null}{filter.trim() ? <Button variant="secondary" onClick={() => setFilter("")}>清除搜索</Button> : null}</div><DataTable columns={[orderColumns.accessor("order_no", { header: "订单号" }), orderColumns.accessor("overall_status_label", { header: "总体状态", cell: (info) => <StatusBadge label={info.getValue()} tone={statusTone(info.row.original.overall_status)} /> }), orderColumns.accessor("sales_status", { header: "销售" }), orderColumns.display({ id: "blockers", header: "阻塞原因", cell: (info) => info.row.original.blockers.length ? <div className="workbench-blockers">{info.row.original.blockers.map((item) => <span className="workbench-blocker" title={item.suggestion} key={item.code}>{item.label}</span>)}</div> : <span className="panel-note">无</span> }), orderColumns.accessor("updated_at", { header: "更新时间", cell: (info) => formatBeijingShort(info.getValue() as string) }), orderColumns.display({ id: "actions", header: "操作", cell: (info) => <Button variant="ghost" onClick={() => { void selectOrder(info.row.original.order_no); }}>查看详情</Button> })]} data={visibleOrders} empty={filter.trim() ? <EmptyState title={`没有匹配“${filter.trim()}”的订单`} description={`共 ${orders.length} 张订单，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无订单" description="建立销售单后，这里会显示订单全链路状态。" />} /></div></section>

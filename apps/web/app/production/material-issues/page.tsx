@@ -103,6 +103,8 @@ export default function MaterialIssuesPage() {
   const [orders, setOrders] = useState<ProductionOrder[]>([]);
   const [orderNo, setOrderNo] = useState("");
   const [productionOrderId, setProductionOrderId] = useState("all");
+  // 首页任务提醒的深链：`?movement_id=` 只定位这一张单据，避免用户在整张列表里再找一遍。
+  const [focusedMovementId, setFocusedMovementId] = useState("");
   const [status, setStatus] = useState("all");
   const [documentType, setDocumentType] = useState("all");
   const [from, setFrom] = useState("");
@@ -196,8 +198,12 @@ export default function MaterialIssuesPage() {
   }, [detailId, detailNonce]);
   useEffect(() => {
     // 深链：生产单详情点「查看领料/补料单」带着 production_order_id 过来时直接按该生产单过滤。
-    const target = new URLSearchParams(window.location.search).get("production_order_id");
+    // 首页任务提醒带 movement_id 过来时只留这一张单据（待仓库出库那条任务）。
+    const params = new URLSearchParams(window.location.search);
+    const target = params.get("production_order_id");
     if (target) setProductionOrderId(target);
+    const movement = params.get("movement_id");
+    if (movement) setFocusedMovementId(movement);
   }, []);
 
   /**
@@ -211,6 +217,7 @@ export default function MaterialIssuesPage() {
    */
   const [keyword, setKeyword] = useState("");
   const visible = useMemo(() => issues.filter((item) => {
+    if (focusedMovementId && item.id !== focusedMovementId) return false;
     if (orderNo && !item.orderNo.toLowerCase().includes(orderNo.toLowerCase())) return false;    if (productionOrderId !== "all" && item.productionOrderId !== productionOrderId) return false;
     if (status !== "all" && item.status !== status) return false;
     if (documentType !== "all" && item.documentType !== documentType) return false;
@@ -222,7 +229,7 @@ export default function MaterialIssuesPage() {
       item.movementNo, statusLabels[item.status] ?? item.status, businessDate,
     ]);
   }).sort((left, right) => `${left.orderNo}|${left.productionOrder?.productionOrderNo ?? ""}|${left.createdAt}`
-    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, status, documentType, from, to, keyword]);
+    .localeCompare(`${right.orderNo}|${right.productionOrder?.productionOrderNo ?? ""}|${right.createdAt}`)), [issues, orderNo, productionOrderId, status, documentType, from, to, keyword, focusedMovementId]);
 
   // 导出参数与页面筛选完全一致，避免"看到的"和"导出的"不是同一批。
   function exportQuery() {
@@ -320,10 +327,11 @@ export default function MaterialIssuesPage() {
           <Input data-testid="material-issue-search" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
         </label>
         {keyword.trim() ? <Button variant="secondary" onClick={() => setKeyword("")}>清除搜索</Button> : null}
+        {focusedMovementId ? <Button variant="secondary" onClick={() => setFocusedMovementId("")}>显示全部单据</Button> : null}
       </div></div>
     </section>
     <section className="panel">
-      <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张{keyword.trim() ? `（关键字筛选后）` : ""}（同一生产单可开多张领料单与补料单，行内「再建领料单/再建补料单」可直接续开）</span></div>
+      <div className="panel-heading"><h2>领料单 / 补料单</h2><span className="panel-note">共 {visible.length} 张{keyword.trim() ? `（关键字筛选后）` : ""}{focusedMovementId ? "（已定位到任务提醒中的单据）" : ""}（同一生产单可开多张领料单与补料单，行内「再建领料单/再建补料单」可直接续开）</span></div>
       <div className="panel-body"><DataTable columns={columns} data={visible} empty={keyword.trim() ? <EmptyState title={`没有匹配“${keyword.trim()}”的单据`} description={`当前条件下共 ${visible.length} 张，换个关键词或清空搜索框。`} /> : <EmptyState title="暂无单据" description="点右上角「新建领料单 / 新建补料单」进入全屏编辑页创建；两者都只需要选择生产单，物料从该订单 BOM 明细中选。" />} onRowDoubleClick={(slip) => setDetailId(slip.id)} rowTitle="双击查看领用物料" /></div>
     </section>
     {/* 双击弹出的详情：把这一条单据的全部领用物料列出来，而不是只给「N 项」的合计。 */}
