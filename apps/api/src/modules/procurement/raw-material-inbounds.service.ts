@@ -5,6 +5,7 @@ import { AuditService } from "../../platform/audit/audit.service";
 import type { CurrentUser } from "../../platform/auth/auth.service";
 import { PrismaService } from "../../platform/database/prisma.service";
 import { InventoryService } from "../../platform/inventory/inventory.service";
+import { warehouseOf } from "./warehouse-catalog";
 
 @Injectable()
 export class RawMaterialInboundsService {
@@ -37,6 +38,9 @@ export class RawMaterialInboundsService {
       ...row,
       purchase_order_no: row.purchaseOrder.purchaseOrderNo,
       receipt_no: row.purchaseReceipt.receiptNo,
+      // 入库地点来自到货批次：入库单不重复存一份，避免两处口径漂移。
+      warehouse_code: warehouseOf(row.purchaseReceipt.extensionData).code,
+      warehouse_name: warehouseOf(row.purchaseReceipt.extensionData).name,
       batch_sequence: Number((row.purchaseReceipt.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? (row.incomingInspection.extensionData as { batch_sequence?: number } | null)?.batch_sequence ?? 1),
       inspection_status: row.incomingInspection.status,
       // 扁平字段（与本接口已有的 purchase_order_no / receipt_no 同风格）：界面直接显示，不用再映射。

@@ -8,10 +8,11 @@ import { ModulePermissionGuard } from "../../platform/authorization/module-permi
 import { RequireModules } from "../../platform/authorization/require-modules.decorator";
 import { PurchaseOrdersService } from "./purchase-orders.service";
 import { PurchasePlansService } from "./purchase-plans.service";
+import { WAREHOUSE_CATALOG } from "./warehouse-catalog";
 
 class ItemDto { @IsUUID() material_id!: string; @IsUUID() unit_id!: string; @IsOptional() @IsUUID() bom_item_id?: string; @IsOptional() @IsUUID() supplier_id?: string; @IsOptional() @IsDateString() expected_date?: string; @IsOptional() @IsString() model?: string; @IsString() quantity!: string; @IsString() unit_price!: string; @IsOptional() @IsString() tax_rate?: string; @IsOptional() @IsString() extra_fee?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; }
 class PurchaseOrderDto { @IsString() order_no!: string; @IsOptional() @IsUUID() bom_id?: string; @IsOptional() bom_version?: number; @IsOptional() @IsUUID() supplier_id?: string; @IsOptional() @IsDateString() purchase_date?: string; @IsOptional() @IsDateString() expected_date?: string; @IsOptional() @IsString() currency?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsObject() extension_data?: Record<string, unknown>; @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => ItemDto) items?: ItemDto[]; }
-class ReceiptDto { @IsString() quantity!: string; @IsDateString() received_date!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() over_receipt_reason?: string; }
+class ReceiptDto { @IsString() quantity!: string; @IsDateString() received_date!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() idempotency_key?: string; @IsOptional() @IsString() over_receipt_reason?: string; /** 入库地点：同安仓 / 晋江仓 / 大田仓；不传按历史口径回落同安仓。 */ @IsOptional() @IsString() @MaxLength(30) warehouse_code?: string; }
 // 按供应商收束：groups 里每一组生成一张采购单（同供应商的物料合在一张单上）。
 // `supplier_id` 可空 = 这一组是「刚导入、还没定供应商」的行；保存草稿允许，下单时会被 service 拒掉。
 class SplitGroupDto { @IsOptional() @IsUUID() supplier_id?: string; @IsOptional() @IsString() @MaxLength(10) currency?: string; @IsOptional() @IsDateString() expected_date?: string; @IsOptional() @IsString() @MaxLength(1000) remark?: string; @IsArray() @ValidateNested({ each: true }) @Type(() => ItemDto) items!: ItemDto[]; }
@@ -20,7 +21,7 @@ class PurchaseOrderSplitDto { @IsString() order_no!: string; @IsOptional() @IsUU
 class PurchaseOrderSplitExistingDto extends PurchaseOrderSplitDto { @IsOptional() @IsString() @MaxLength(1000) reason?: string; }
 /** BOM 行下单情况的查询入参（新建采购单时给采购员看哪几行已经买过）。 */
 class BomItemOrderStatusQueryDto { @IsUUID() bom_id!: string; }
-class ReceiptUpdateDto { @IsString() quantity!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() over_receipt_reason?: string; @IsString() reason!: string; }
+class ReceiptUpdateDto { @IsString() quantity!: string; @IsOptional() @IsString() reference_no?: string; @IsOptional() @IsString() remark?: string; @IsOptional() @IsString() over_receipt_reason?: string; @IsString() reason!: string; /** 修改入库地点；不传保持原值。 */ @IsOptional() @IsString() @MaxLength(30) warehouse_code?: string; }
 class ReasonDto { @IsString() @MaxLength(1000) reason!: string; }
 
 /**
@@ -68,6 +69,8 @@ export class PurchaseOrdersController {
   @Get() async list(@Query("order_no") orderNo?: string) { return { data: await this.orders.list(orderNo), meta: {} }; }
   // 必须声明在 @Get(":id") **之前**：否则 "bom-item-status" 会被当成一个采购单 id 吃掉（Nest 按声明顺序匹配）。
   @Get("bom-item-status") async bomItemStatus(@Query() query: BomItemOrderStatusQueryDto) { return { data: await this.orders.bomItemOrderStatus(query.bom_id), meta: {} }; }
+  /** 收货仓库档案：登记到货的「入库地点」下拉；静态档案不查库，避免未迁移的库选不到值。 */
+  @Get("warehouses") async warehouses() { return { data: WAREHOUSE_CATALOG, meta: {} }; }
   @Post() async create(@Body() body: PurchaseOrderDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.create(body, user), meta: {} }; }
   // 必须声明在 @Post(":id/...") 之前语义上更清晰；本例路径为单段 "split"，与 ":id" 的 POST 不冲突。
   @Post("split") async split(@Body() body: PurchaseOrderSplitDto, @CurrentUser() user: CurrentUserType) { return { data: await this.orders.createSplit(body, user), meta: {} }; }

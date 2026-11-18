@@ -51,6 +51,9 @@ export type RawMaterialInboundRow = AuditRow & {
   remark?: string | null;
   purchase_order_no?: string | null;
   receipt_no?: string | null;
+  /** 入库地点（由到货批次的仓库档案派生；历史单缺省同安仓）。 */
+  warehouse_code?: string | null;
+  warehouse_name?: string | null;
   batch_sequence?: number | null;
   inspection_status?: string | null;
   material_code?: string | null;
@@ -136,6 +139,7 @@ function detailFields(inbound: RawMaterialInboundRow): DetailField[] {
     { label: "订单号", value: inbound.orderNo },
     { label: "采购单号", value: inbound.purchase_order_no },
     { label: "到货记录", value: inbound.receipt_no },
+    { label: "入库地点", value: inbound.warehouse_name ?? inbound.warehouse_code },
     { label: "到货批次", value: `第 ${inbound.batch_sequence ?? "-"} 批` },
     { label: "供应商", value: inbound.supplier_name },
     { label: "质检记录", value: inbound.inspection_no },
