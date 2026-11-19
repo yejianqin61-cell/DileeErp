@@ -34,18 +34,31 @@ test("sales.order.revert_rechecks_downstream_facts inside the locked transaction
 });
 
 test("sales.order.list_uses_default_pagination_when_query_parameters_are_absent", async () => {
-  let findManyArguments;
+  // 默认排序是订单号升序（T-0022）：数值全序无法交给数据库 orderBy，service 先取全量
+  // id+orderNo 排好序，再切第一页。所以这里断言的是**分页结果**，不是 findMany 的 skip/take：
+  // 键查询不能带 skip/take（否则会先截断再去排，翻页必然错），回取整行时按页内 id 取 20 条。
+  const rows = Array.from({ length: 25 }, (_, index) => ({ id: `id-${String(index + 1).padStart(2, "0")}`, orderNo: String(index + 1) }));
+  let keysArguments;
+  let pageArguments;
   const prisma = {
     salesOrder: {
-      findMany: (arguments_) => { findManyArguments = arguments_; return Promise.resolve([]); },
-      count: () => Promise.resolve(0),
+      findMany: (arguments_) => {
+        if (arguments_.select) { keysArguments = arguments_; return Promise.resolve(rows.map(({ id, orderNo }) => ({ id, orderNo }))); }
+        pageArguments = arguments_;
+        return Promise.resolve(arguments_.where.id.in.map((id) => rows.find((row) => row.id === id)));
+      },
+      count: () => Promise.resolve(rows.length),
     },
     $transaction: async (operations) => Promise.all(operations),
   };
-  const service = new SalesOrdersService(prisma, audit);
-  await service.list();
-  assert.equal(findManyArguments.skip, 0);
-  assert.equal(findManyArguments.take, 20);
+  const result = await new SalesOrdersService(prisma, audit).list();
+
+  assert.equal(result.data.length, 20, "默认 page_size = 20");
+  assert.equal(result.total, 25);
+  assert.deepEqual(result.data.map((row) => row.orderNo), rows.slice(0, 20).map((row) => row.orderNo), "第一页是 1..20，不是 1..10 后跳 21");
+  assert.equal(keysArguments.skip, undefined, "订单号排序必须先拿全量键做数值全序，不能只取第一页");
+  assert.equal(keysArguments.take, undefined);
+  assert.equal(pageArguments.where.id.in.length, 20);
 });
 
 test("sales.bom.created_from_confirmed_order_keeps_order_no_and_source_version", async () => {

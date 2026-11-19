@@ -344,13 +344,15 @@ export class UpdateSalesOrderDto extends SalesOrderSpecDto {
 class SalesOrderQueryDto extends PaginationQueryDto {
   @IsOptional() @IsString() status?: string;
   /**
-   * 排序键与方向（2026-11-13）。用户原话：「需要给销售单排序，支持按照销售单号字典序排序，
-   * 创建时间排序。」
+   * 排序键与方向（2026-11-13；默认口径 2026-11-19 T-0022 改为订单号升序）。
+   * 用户原话：「需要给销售单排序，支持按照销售单号字典序排序，创建时间排序。」
+   * T-0022：「订单列表默认按订单号升序（从小到大）；纯数字订单号按数值比较；
+   * 分页后整体顺序保持一致；空值排在最后。」
    *
    * `sort` **是基类 `PaginationQueryDto` 已有的字段**（那里是自由字符串、全仓没有别的消费者）。
    * 这里把它收窄成白名单：错值当场给 400，而不是让用户对着"排序好像没生效"猜。
    * 显式写 `= undefined` 是 TypeScript 的要求（覆盖基类属性必须有初始化器），不是业务默认值。
-   * 真正的默认值在 `sales-order-list-sort.ts`，与 service 的 orderBy 映射共用同一份常量。
+   * 真正的默认值在 `sales-order-list-sort.ts`，与 service 的排序共用同一份常量。
    */
   @IsOptional() @IsIn([...SALES_ORDER_LIST_SORTS]) sort?: string = undefined;
   @IsOptional() @IsIn([...SALES_ORDER_LIST_DIRECTIONS]) direction?: string;

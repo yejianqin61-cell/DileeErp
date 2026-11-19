@@ -61,7 +61,8 @@ export default function SalesOrdersList({ testId = "page-sales-orders" }: { test
   const [query, setQuery] = useState("");
   const [itemNoFilter, setItemNoFilter] = useState<"all" | "with" | "without">("all");
   /**
-   * 排序（2026-11-13，用户：「需要给销售单排序，支持按照销售单号字典序排序，创建时间排序」）。
+   * 排序（2026-11-13；默认口径 2026-11-19 T-0022 改为订单号升序）。
+   * 默认按订单号从小到大，纯数字按数值比较（9 在 10 之前），空值最后。
    *
    * 值形如 `order_no:asc`，选项与文案在 `lib/sales-order-sort.ts`（与后端口径有静态守卫比对）。
    * **排序在服务端做**：这个接口是分页的，前端手上只有 `page_size=200` 那一页，

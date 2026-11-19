@@ -16,7 +16,7 @@ import { countOrphanDocuments, summarizeOrphanDocuments } from "./orphan-documen
 // 两条路径共用它，否则迟早出现「销售单说这张 BOM 是空的、删 BOM 却说被引用」的自相矛盾。
 import { AUTO_RELEASE_EMPTY_BOM_REASON, bomBlockedReason, isEmptyShellBom, salesOrderBomFacts, type BomFacts } from "./bom-facts";
 import { countVersionSnapshotsWithOrderNo, normalizeOrderNo, orderNoRenameImpact, renameSalesOrderNo, type OrderNoRenameReport } from "./sales-order-order-no";
-import { salesOrderListOrderBy } from "./sales-order-list-sort";
+import { salesOrderListDirection, salesOrderListOrderBy, salesOrderListSortKey, sortSalesOrderRowsByOrderNo } from "./sales-order-list-sort";
 
 /**
  * 下单口径细化的固定字段映射：请求键（snake_case）→ Prisma 列（camelCase）。
@@ -616,11 +616,34 @@ export class SalesOrdersService {
    * 创建时间排序」）：接口是分页的，前端手上只有当前一页，在前端排只会在翻页时前后矛盾。
    * 口径（合法值、`id` 第二排序键、回落规则）都在 `sales-order-list-sort.ts`，只此一处。
    *
-   * `sort` / `direction` 不传 = `updated_at desc`，与本次改造前逐字一致，老调用方零变化。
+   * `sort` / `direction` 不传 = 订单号升序（T-0022，用户 2026-11-19）。
+   *
+   * **订单号为什么不能直接用 Prisma `orderBy`**：数据库的字符串序会把 `10` 排在 `9` 前面，
+   * 而用户要求纯数字订单号按数值比较。`order_no` 走下面的两条查询：先取全部匹配行的
+   * `id + orderNo`，用与单测同一份比较器排成**全序**，再切当前页；最后按页内 id 顺序回取
+   * 完整行。这样每页都是同一份全序的切片，翻页不会重复或漏行。
+   * 只取两列做排序，代价与单号数量线性相关；销售单量级（当前 55 张）远小于把完整行
+   * 连关系一起搬进内存，所以没有为此引入原生 SQL 或改表结构。
    */
   async list(page = 1, pageSize = 20, search?: string, status?: string, sort?: string, direction?: string) {
-    const where = { deletedAt: null, ...(status ? { status } : {}), ...(search ? { OR: [{ orderNo: { contains: search, mode: "insensitive" as const } }, { productName: { contains: search, mode: "insensitive" as const } }, { itemNo: { contains: search, mode: "insensitive" as const } }] } : {}) };
-    const [data, total] = await this.prisma.$transaction([this.prisma.salesOrder.findMany({ where, orderBy: salesOrderListOrderBy(sort, direction), skip: (page - 1) * pageSize, take: pageSize, include: { customer: true, contact: true, boms: { where: { deletedAt: null }, select: { id: true, version: true, status: true } } } }), this.prisma.salesOrder.count({ where })]);
+    const where: Prisma.SalesOrderWhereInput = { deletedAt: null, ...(status ? { status } : {}), ...(search ? { OR: [{ orderNo: { contains: search, mode: "insensitive" as const } }, { productName: { contains: search, mode: "insensitive" as const } }, { itemNo: { contains: search, mode: "insensitive" as const } }] } : {}) };
+    const sortKey = salesOrderListSortKey(sort);
+    const sortDirection = salesOrderListDirection(direction);
+
+    if (sortKey === "order_no") {
+      const keys = await this.prisma.salesOrder.findMany({ where, select: { id: true, orderNo: true } });
+      const orderedIds = sortSalesOrderRowsByOrderNo(keys, sortDirection).map((row) => row.id);
+      const total = orderedIds.length;
+      const pageIds = orderedIds.slice((page - 1) * pageSize, page * pageSize);
+      if (pageIds.length === 0) return { data: [], total };
+      const rows = await this.prisma.salesOrder.findMany({ where: { id: { in: pageIds } }, include: { customer: true, contact: true, boms: { where: { deletedAt: null }, select: { id: true, version: true, status: true } } } });
+      const byId = new Map(rows.map((row) => [row.id, row] as const));
+      // 用 `flatMap` 而不是 `map(...)!`：查询与回取之间若有一行被并发软删，这里会自然少一行，
+      // 而不是把 `undefined` 塞进响应里让前端渲染崩掉。
+      return { data: pageIds.flatMap((id) => { const row = byId.get(id); return row ? [row] : []; }), total };
+    }
+
+    const [data, total] = await this.prisma.$transaction([this.prisma.salesOrder.findMany({ where, orderBy: salesOrderListOrderBy(sortKey, sortDirection), skip: (page - 1) * pageSize, take: pageSize, include: { customer: true, contact: true, boms: { where: { deletedAt: null }, select: { id: true, version: true, status: true } } } }), this.prisma.salesOrder.count({ where })]);
     return { data, total };
   }
 

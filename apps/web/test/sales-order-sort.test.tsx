@@ -1,10 +1,12 @@
-// 销售单列表排序（2026-11-13）。
+// 销售单列表排序（2026-11-13；默认口径 2026-11-19 T-0022）。
 //
 // 用户原话：「针对销售模块，用户需要给销售单排序，支持按照销售单号字典序排序，创建时间排序。」
+// T-0022：「订单列表默认按订单号升序（从小到大）；纯数字订单号按数值比较（9 排在 10 之前）；
+// 分页后整体顺序保持一致；空值排在最后。」
 //
 // 排序**做在服务端**（接口是分页的，前端只有当前一页），所以本文件钉的是**前端有没有把
-// 用户选的那一项如实发出去**：默认不带参数（保持老行为）、选了就带 sort/direction、
-// 六个选项一个不少。
+// 用户选的那一项如实发出去**：默认不带参数（服务端默认订单号升序）、选了就带 sort/direction、
+// 六个选项一个不少、默认项文案与后端一致。
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -52,25 +54,27 @@ async function openSales() {
 }
 
 describe("销售单列表：排序（服务端排序，前端如实传参）", () => {
-  it("默认不传 sort/direction（= 服务端的最后修改倒序，老行为一字不改）", async () => {
+  it("默认项是「订单号（从小到大）」且不传 sort/direction（服务端默认就是订单号升序）", async () => {
     const calls = await openSales();
 
-    expect(screen.getByTestId("sales-order-sort").textContent).toContain("最后修改");
+    expect(screen.getByTestId("sales-order-sort").textContent).toContain("订单号（从小到大）");
+    expect(SALES_ORDER_SORT_OPTIONS[0].value).toBe("order_no:asc");
+    expect(SALES_ORDER_SORT_OPTIONS[0].value).toBe(DEFAULT_SALES_ORDER_SORT_VALUE);
     const first = listCalls(calls)[0];
     expect(first.url).not.toContain("sort=");
     expect(first.url).not.toContain("direction=");
   });
 
-  it("选「订单号（字典序 A→Z）」→ 重新拉列表，带上 sort=order_no&direction=asc", async () => {
+  it("选「订单号（从大到小）」→ 重新拉列表，带上 sort=order_no&direction=desc", async () => {
     const calls = await openSales();
     const before = listCalls(calls).length;
 
-    await pickSelect("sales-order-sort", "订单号（字典序 A→Z）");
+    await pickSelect("sales-order-sort", "订单号（从大到小）");
 
     await waitFor(() => expect(listCalls(calls).length).toBeGreaterThan(before));
     const latest = listCalls(calls).at(-1);
     expect(latest?.url).toContain("sort=order_no");
-    expect(latest?.url).toContain("direction=asc");
+    expect(latest?.url).toContain("direction=desc");
   });
 
   it("选「创建时间（旧→新）」→ 带上 sort=created_at&direction=asc", async () => {
@@ -82,15 +86,16 @@ describe("销售单列表：排序（服务端排序，前端如实传参）", (
     expect(listCalls(calls).at(-1)?.url).toContain("direction=asc");
   });
 
-  it("下拉里有六种排法（两个键 × 两个方向，外加默认键的两个方向）", async () => {
+  it("下拉里有六种排法（订单号 / 创建时间 / 最后修改 × 两个方向）", async () => {
     await openSales();
 
     await userEvent.click(screen.getByTestId("sales-order-sort"));
     const options = (await screen.findAllByRole("option")).map((option) => option.textContent ?? "");
 
     expect(options).toHaveLength(6);
-    expect(options.some((text) => text.includes("订单号（字典序"))).toBe(true);
+    expect(options.some((text) => text.includes("订单号（从"))).toBe(true);
     expect(options.some((text) => text.includes("创建时间"))).toBe(true);
+    expect(options.some((text) => text.includes("最后修改"))).toBe(true);
     expect(new Set(options).size).toBe(6);
   });
 });
