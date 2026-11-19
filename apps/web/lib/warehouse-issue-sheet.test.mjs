@@ -99,6 +99,16 @@ test("一个生产单可以开多张领料单/补料单：三处界面都要有�
   // 仓库页：同样两个入口
   assert.match(warehouse, /<Link href="\/production\/material-issues\/new">新建领料单<\/Link>/);
   assert.match(warehouse, /<Link href="\/production\/material-issues\/new\?type=replenishment">新建补料单<\/Link>/);
-  // 深链过滤：列表页要按 URL 里的 production_order_id 预筛选
-  assert.match(listPage, /new URLSearchParams\(window\.location\.search\)\.get\("production_order_id"\)/, "列表页要支持按生产单深链筛选");
+  // 深链过滤：列表页要按 URL 里的 production_order_id 预筛选。
+  //
+  // 断言的是**行为**，不是排版。2026-11-19 的事故：`d18e6bdc` 在这个页面加 movement_id 深链时，
+  // 把同一段代码提取成中间变量 `const params = new URLSearchParams(window.location.search)`，
+  // 功能一模一样，但这里原本逐字匹配 `…search).get("production_order_id")`，于是断言失效，
+  // 测试门禁连续两次拦住部署，四条已完工需求停摆两天。
+  // 现在只要求：读 location.search → 取 production_order_id → 真的作用到筛选状态。
+  assert.notEqual(
+    /new URLSearchParams\(\s*window\.location\.search\s*\)[\s\S]{0,400}?\.get\("production_order_id"\)[\s\S]{0,200}?setProductionOrderId\(/.exec(listPage),
+    null,
+    "列表页要支持按生产单深链筛选，并把参数作用到筛选状态",
+  );
 });
