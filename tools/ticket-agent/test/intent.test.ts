@@ -23,6 +23,14 @@ const CASES: readonly Case[] = [
   { text: '卧槽你特么是傻逼吗', intent: 'chitchat' },
   { text: '部署', intent: 'command' },
   { text: '部署吧', intent: 'command' },
+  // —— 2026-11-19 真实漏判：命令词不在句首 ——
+  { text: '再次尝试部署', intent: 'command' },
+  { text: '重新部署', intent: 'command' },
+  { text: '麻烦部署一下', intent: 'command' },
+  { text: '帮我上线', intent: 'command' },
+  { text: '麻烦再次尝试部署一下', intent: 'command' },
+  // 以疑问语气结尾的是提问，不是命令
+  { text: '需要部署吗', intent: 'question' },
   // —— 进度询问的各种说法 ——
   { text: 'T-0007 进度', intent: 'status', ticketNo: 'T-0007' },
   { text: 'T-0007', intent: 'status', ticketNo: 'T-0007' },
@@ -35,6 +43,8 @@ const CASES: readonly Case[] = [
   // —— 仍然是需求：不能被意图层抢走 ——
   { text: '进度条改成蓝色', intent: 'requirement' },
   { text: '把部署脚本改成幂等', intent: 'requirement' },
+  // 命令词开头但整句在说改动：仍然是需求（isCommand 不能只看句首）
+  { text: '部署脚本要改', intent: 'requirement' },
   { text: '新建领料单页面，物料明细表单，物料选择的下拉列表打不开', intent: 'requirement' },
   { text: '采购单列表页的搜索框，希望能按供应商名称搜', intent: 'requirement' },
   { text: '能不能支持按供应商名称搜', intent: 'requirement' },

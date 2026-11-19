@@ -76,6 +76,28 @@ const COMMAND_PHRASES: readonly string[] = [
   'deploy', 'rollback', 'restart',
 ]
 
+/**
+ * 命令词前面允许的客气/重复前缀。
+ *
+ * 2026-11-19 真实漏判：用户在群里发「再次尝试部署」「再次尝试」，前者被判成需求、
+ * 回了一句「你希望它变成什么样」，用户以为已经触发部署。原因就是旧的 `isCommand()`
+ * 只认**句首**命令词。人说话不会把动词放第一位，机器人必须能剥掉这些前缀。
+ */
+const COMMAND_LEAD_FILLERS: readonly string[] = [
+  '请', '麻烦', '帮我', '帮忙', '现在', '立刻', '马上', '直接', '再', '再次', '重新',
+  '尝试', '试一下', '试', '可以', '能否', '能不能', '就',
+]
+
+/** 命令词后面允许的语气尾巴（剥掉后剩下的才是实质内容）。 */
+const COMMAND_TAIL_PARTICLES: readonly string[] = ['一下', '下', '吧', '试试', '一次', '看看']
+
+/** 以疑问语气结尾：那是「部署吗？」，不是命令。 */
+const COMMAND_QUESTION_TAILS: readonly string[] = ['吗', '么', '嘛']
+
+/** 剥前缀/尾巴必须长词优先，否则 `再次` 会被 `再` 吃掉一半，剩下「次尝试部署」。 */
+const LEAD_FILLERS_SORTED: readonly string[] = [...COMMAND_LEAD_FILLERS].sort((a, b) => b.length - a.length)
+const TAIL_PARTICLES_SORTED: readonly string[] = [...COMMAND_TAIL_PARTICLES].sort((a, b) => b.length - a.length)
+
 const GREETING_PHRASES: readonly string[] = [
   '你好', '您好', '在吗', '在不在', '在么', '早上好', '中午好', '下午好', '晚上好',
   '早安', '晚安', '哈喽', 'hello', 'hi', 'hey', '嗨',
@@ -138,10 +160,50 @@ function startsWithAny(text: string, phrases: readonly string[]): string | null 
   return null
 }
 
-/** 整句就是个命令：足够短且以命令词开头，避免把「部署脚本要改」当部署指令。 */
+function endsWithAny(text: string, phrases: readonly string[]): string | null {
+  for (const phrase of phrases) {
+    if (text.endsWith(phrase)) return phrase
+  }
+  return null
+}
+
+/**
+ * 整句就是个命令：剥掉客气前缀与语气尾巴后，剩下的主体必须是命令词本身。
+ *
+ * 判据（2026-11-19 重写，见 COMMAND_LEAD_FILLERS 的注释）：
+ * 1. `「部署」「部署吧」「麻烦再次尝试部署一下」「帮我上线」「重新部署」` → 命令；
+ * 2. `「部署脚本要改」「把部署脚本改成幂等」` → **不是**命令（那是需求），
+ *    所以不以「以命令词开头」为判据，而是要求剥完主体**就是**命令词，
+ *    或只在命令词前有极短修饰（≤2 字，例如「把它部署」）；
+ * 3. `「部署吗」` → 不是命令，那是提问。
+ */
 function isCommand(text: string): boolean {
-  if (text.length > 12) return false
-  return startsWithAny(text.toLowerCase(), COMMAND_PHRASES) !== null
+  if (text.length > 16) return false
+  let core = text.toLowerCase().replace(/[\s。！!，,、？?~…：:]/g, '')
+  // 反复剥：`麻烦再次尝试部署一下` → `部署`
+  for (let round = 0; round < 4; round += 1) {
+    const before = core
+    for (const filler of LEAD_FILLERS_SORTED) {
+      if (core.startsWith(filler) && core.length > filler.length) {
+        core = core.slice(filler.length)
+        break
+      }
+    }
+    for (const tail of TAIL_PARTICLES_SORTED) {
+      if (core.endsWith(tail) && core.length > tail.length) {
+        core = core.slice(0, -tail.length)
+        break
+      }
+    }
+    if (core === before) break
+  }
+  if (core.length === 0) return false
+  if (endsWithAny(core, COMMAND_QUESTION_TAILS) !== null) return false
+  if (COMMAND_PHRASES.includes(core)) return true
+  const tailHit = endsWithAny(core, COMMAND_PHRASES)
+  if (tailHit !== null && core.length - tailHit.length <= 2) return true
+  const headHit = startsWithAny(core, COMMAND_PHRASES)
+  return headHit !== null && core.length - headHit.length <= 2
 }
 
 /**
