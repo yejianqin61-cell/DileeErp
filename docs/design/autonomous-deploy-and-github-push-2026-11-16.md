@@ -76,6 +76,29 @@ PM2 切换、健康判定）仍然只有一份实现，漂移风险最小。
 （typecheck + 部署脚本守卫 + API 单测 + Web 单测）。失败则保持旧版本运行，
 工单回到 `gated`。切换后再做健康/页面/边缘实测。
 
+#### 2.4.1 门禁守卫必须测行为，不测排版（2026-11-19 事故）
+
+门禁是拦住坏代码的闸门，也是**卡住好需求**的闸门。2026-11-19 真实代价：一条守卫断言
+失效 → 四次部署失败 → 四条已完工需求（T-0018/0020/0021/0022）停摆两天。
+
+事故复盘：
+
+| 项 | 内容 |
+|---|---|
+| 断言 | `assert.match(listPage, /new URLSearchParams\(window\.location\.search\)\.get\("production_order_id"\)/)` |
+| 触发它的提交 | `d18e6bdc`（首页任务提醒）在同一页面加 `movement_id` 深链，把这段提取成中间变量 |
+| 实际功能 | **完全没变**：仍读 `production_order_id` 并作用到筛选状态 |
+| 失败表现 | `not ok 445 列表页要支持按生产单深链筛选`，两次部署都卡在这里 |
+
+规则（写守卫测试时照此执行）：
+
+1. **断言行为链，不断言排版**：要覆盖「读 URL → 取参数 → 作用到状态」三步，
+   允许中间变量、重命名、抽函数；
+2. **每条守卫都要有负例**：改动被真删掉时必须失败。本次修改后验证过
+   「删掉取参」→ 失败、「删掉 `setProductionOrderId` 应用」→ 失败；
+3. **门禁失败信息要给到文件:行 + 断言话术**，否则群里只看到「测试失败」，
+   没人知道是一条正则过期（本次失败信息已带 `apps/web/lib/...test.mjs:85` 与断言描述）。
+
 ### 2.5 失败自动回滚
 
 | 失败位置 | 处理 |
@@ -92,6 +115,12 @@ PM2 切换、健康判定）仍然只有一份实现，漂移风险最小。
 服务器生成专用 SSH deploy key（只给这一个仓库、写权限），
 `origin` 的 fetch 用 HTTPS（公开仓库，无需凭据），push 用 SSH。
 用户只需在 GitHub 仓库 Settings → Deploy keys 里加一次公钥 —— 这是唯一的人工步骤。
+
+**2026-11-19 修正：fetch 也改走 SSH。** 11-18 两次自动部署都死在
+`fatal: unable to access 'https://github.com/…': GnuTLS recv error (-110): The TLS connection
+was non-properly terminated.`——这台机器经 HTTPS 拉 GitHub 不稳定，push 阶段首步 `git fetch`
+就挂，部署根本没进构建。现在 `origin` 的 fetch/push 都是 `git@github.com:`，实测
+`git fetch` 与 `git push --dry-run` 均通过。
 
 ### 2.7 触发方式
 
