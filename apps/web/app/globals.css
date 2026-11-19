@@ -1224,7 +1224,7 @@ button { cursor: pointer; }
    就能在共享组件之外完成对齐，不用改 DataTable。负值复用既有 `.status-error`（`--danger`），不新造颜色。
 
    列宽只写一次：屏幕 DataTable 的 `meta.width` 与纸面 `<colgroup>` 都来自
-   lib/procurement-warehouse-report.ts 的 REPORT_COLUMNS（九个百分比合计 100%），
+   lib/procurement-warehouse-report.ts 的 REPORT_COLUMNS（十一个百分比合计 100%），
    这里不再抄一遍列宽 —— 抄了就会漂。
    ===================================================================================== */
 .procurement-warehouse-num { display: block; text-align: right; font-variant-numeric: tabular-nums; }
@@ -1232,7 +1232,7 @@ button { cursor: pointer; }
 .procurement-warehouse-rule-list { display: grid; gap: 4px; margin: 8px 0 0; padding-left: 18px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
 .procurement-warehouse-rule-list strong { color: var(--text); font-weight: 600; }
 
-/* 纸面（屏幕上弹窗里就是这张纸）。版式与导出 xlsx 的九列同名同序，不设合计行。
+/* 纸面（屏幕上弹窗里就是这张纸）。版式与导出 xlsx 的十一列同名同序，不设合计行。
    打印时的排版（文档流 + A4 横向命名页 + 背后界面 display:none）见上面 @media print 里的那段注释；
    这里只写**屏幕上**的外观，`page:` 不写在这一行 —— 命名页要挂在 html/body 上才生效（实测）。 */
 .procurement-warehouse-dialog { width: min(97vw, 1240px); }

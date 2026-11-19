@@ -61,6 +61,8 @@ export function ProcurementWarehousePrintSheet({ rows, filters, printedAt }: {
               {(["purchase_quantity", "inbound_quantity", "pending_inbound_quantity", "production_issue_quantity", "stock_quantity"] as const).map((key) => (
                 <td key={key}><span className={quantityClass(key, row[key])}>{formatReportQuantity(row[key])}</span></td>
               ))}
+              <td>{displayReportText(row.supplier_name)}</td>
+              <td>{displayReportText(row.delivery_date)}</td>
             </tr>
           ))}
         </tbody>

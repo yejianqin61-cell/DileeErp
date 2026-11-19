@@ -10,6 +10,7 @@ import {
   type AggregatedQuantity,
   type ProcurementWarehouseFilter,
   type ProcurementWarehouseRow,
+  type PurchaseQuantity,
   type StockQuantity
 } from "./procurement-warehouse-report.domain";
 
@@ -45,10 +46,32 @@ type UnitMasterRow = { id: string; name: string; deletedAt: Date | null };
 const MATERIAL_SELECT = { id: true, name: true, color: true, materialType: true, deletedAt: true } as const;
 const UNIT_SELECT = { id: true, name: true, deletedAt: true } as const;
 
+/**
+ * 采购单上要带到报表的展示字段：单号（拆单时的确定性排序）、供应商、计划交货日期。
+ *
+ * 供应商名优先取主数据现值、取不到再退回下单时的快照 —— 与采购计划列表同一口径：
+ * 供应商改名后报表要显示新名字，而停用/软删的老供应商仍要显示当时记的是哪一家。
+ */
+const PURCHASE_ORDER_SELECT = {
+  id: true,
+  orderNo: true,
+  purchaseOrderNo: true,
+  supplierSnapshot: true,
+  expectedDate: true,
+  supplier: { select: { name: true } }
+} as const;
+
 /** 筛选值规范化：空白串等于没给（既有报表接口同样把空串当「未筛选」）。 */
 const trimmedOrUndefined = (value: string | undefined | null): string | undefined => {
   const text = value?.trim();
   return text ? text : undefined;
+};
+
+/** 从 `supplierSnapshot`（建单时整条供应商记录的 JSON）里取名称；没有或形状不对时给空串。 */
+const snapshotSupplierName = (snapshot: unknown): string => {
+  if (!snapshot || typeof snapshot !== "object") return "";
+  const name = (snapshot as { name?: unknown }).name;
+  return typeof name === "string" ? name.trim() : "";
 };
 
 /** 大小写不敏感的「包含」——PostgreSQL 侧 `ILIKE`，不前导模糊在内存里做。 */
@@ -138,7 +161,7 @@ export class ProcurementWarehouseReportService {
         status: { in: [...EFFECTIVE_PURCHASE_ORDER_STATUSES] },
         ...(orderNo ? { orderNo: containsInsensitive(orderNo) } : {})
       },
-      select: { id: true, orderNo: true }
+      select: PURCHASE_ORDER_SELECT
     });
     // ② 物料模糊筛选：名称或编码包含。查出来既当筛选 id 集合、也当展示列（名称/颜色）。
     const filterMaterialsQuery: Promise<MaterialMasterRow[]> = material
@@ -243,14 +266,29 @@ export class ProcurementWarehouseReportService {
       : [];
 
     // ---------------------------------------------------------------- 组装（纯函数）
-    const orderNoById = new Map(effectiveOrders.map((order) => [order.id, order.orderNo]));
-    const purchase: AggregatedQuantity[] = [];
+    // 采购单的展示字段与订单号放在同一张 Map 里：采购 groupBy 只有 purchaseOrderId，
+    // 这里一次回表把它翻译成「订单号 + 供应商 + 计划交货日期」。
+    const orderMetaById = new Map(effectiveOrders.map((order) => [order.id, {
+      orderNo: order.orderNo,
+      purchaseOrderNo: order.purchaseOrderNo,
+      supplierName: order.supplier?.name?.trim() || snapshotSupplierName(order.supplierSnapshot),
+      deliveryDate: order.expectedDate
+    }]));
+    const purchase: PurchaseQuantity[] = [];
     for (const group of purchaseGroups) {
-      const rowOrderNo = orderNoById.get(group.purchaseOrderId);
+      const orderMeta = orderMetaById.get(group.purchaseOrderId);
       // 采购单在两次查询之间被硬删（正常走软删，不会发生）时没有订单号可归行；
       // 丢掉这一组而不是编一个空订单号：空订单号会把不同单据的物料串成一行。
-      if (!rowOrderNo) continue;
-      purchase.push({ orderNo: rowOrderNo, materialId: group.materialId, unitId: group.unitId, quantity: group._sum.quantity ?? new Prisma.Decimal(0) });
+      if (!orderMeta) continue;
+      purchase.push({
+        orderNo: orderMeta.orderNo,
+        materialId: group.materialId,
+        unitId: group.unitId,
+        quantity: group._sum.quantity ?? new Prisma.Decimal(0),
+        purchaseOrderNo: orderMeta.purchaseOrderNo,
+        supplierName: orderMeta.supplierName,
+        deliveryDate: orderMeta.deliveryDate
+      });
     }
     const inbound: AggregatedQuantity[] = inboundGroups.map((group) => ({
       orderNo: group.orderNo,

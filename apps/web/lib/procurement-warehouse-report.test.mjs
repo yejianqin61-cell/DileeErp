@@ -1,7 +1,7 @@
-// 采购与仓储报表「九列 / 数字 / 文案」口径的纯函数测试（node --test）。
+// 采购与仓储报表「十一列 / 数字 / 文案」口径的纯函数测试（node --test）。
 //
 // 设计：docs/design/procurement-warehouse-report-2026-11-04.md。这一份钉住四件事：
-//   ① 九列的列名、顺序、宽度（合计必须 100%）—— 屏幕、打印、导出共用这一组，抄第二遍就会漂；
+//   ① 十一列的列名、顺序、宽度（合计必须 100%）—— 屏幕、打印、导出共用这一组，抄第二遍就会漂；
 //   ② 两个筛选参数拼出来的查询串（空条件不拼一个光秃秃的 `?`）；
 //   ③ 数量显示：去无意义尾零、`-0` 归一成 `0`、空颜色显示 `-`；
 //   ④ 口径说明三条规则与打印副标题的固定文案（用户会拿打印件核对，文案不能各写一套）。
@@ -17,20 +17,22 @@ import {
 const CONTRACT_FIELDS = [
   "order_no", "material_name", "color", "unit",
   "purchase_quantity", "inbound_quantity", "pending_inbound_quantity", "production_issue_quantity", "stock_quantity",
+  "supplier_name", "delivery_date",
 ];
 
-test("九列：列名与顺序与设计文档 §4 一致，字段名与接口契约 §3.1 逐一对应", () => {
+test("十一列：原有九列顺序不变，末尾追加供应商/交货日期，字段名与接口契约 §3.1 逐一对应", () => {
   assert.deepEqual(REPORT_COLUMNS.map((column) => column.label), [
     "订单号", "物料名称", "颜色", "单位", "采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量",
+    "供应商", "交货日期",
   ]);
   assert.deepEqual(REPORT_COLUMNS.map((column) => column.key), CONTRACT_FIELDS);
 });
 
-test("九列宽度合计正好 100%（DataTable 是 table-layout: fixed，缺一列都会被均分）", () => {
+test("十一列宽度合计正好 100%（DataTable 是 table-layout: fixed，缺一列都会被均分）", () => {
   const widths = REPORT_COLUMNS.map((column) => Number(column.width.replace("%", "")));
-  assert.deepEqual(widths, [9, 26, 8, 6, 9, 10, 11, 11, 10]);
+  assert.deepEqual(widths, [8, 20, 6, 5, 8, 8, 9, 8, 6, 12, 10]);
   const total = widths.reduce((sum, width) => sum + width, 0);
-  assert.equal(total, 100, `九列宽度合计应为 100%，实际 ${total}%`);
+  assert.equal(total, 100, `十一列宽度合计应为 100%，实际 ${total}%`);
   for (const column of REPORT_COLUMNS) assert.match(column.width, /^\d+(\.\d+)?%$/, `${column.label} 的宽度必须是百分比`);
 });
 
@@ -39,7 +41,7 @@ test("数字列：五个数量列右对齐；只有「采购未入库数」「�
   assert.deepEqual(numeric, ["采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量"]);
   const alert = REPORT_COLUMNS.filter((column) => column.negativeIsAlert).map((column) => column.label);
   assert.deepEqual(alert, ["采购未入库数", "库存量"], "只有超收（未入库为负）与负库存要标红");
-  for (const label of ["订单号", "物料名称", "颜色", "单位"]) {
+  for (const label of ["订单号", "物料名称", "颜色", "单位", "供应商", "交货日期"]) {
     const column = REPORT_COLUMNS.find((item) => item.label === label);
     assert.equal(column?.numeric, false, `${label} 不是数字列`);
   }

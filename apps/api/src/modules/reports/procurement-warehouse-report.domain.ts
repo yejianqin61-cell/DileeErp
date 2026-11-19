@@ -75,6 +75,10 @@ export type ProcurementWarehouseRow = {
   pending_inbound_quantity: string;
   production_issue_quantity: string;
   stock_quantity: string;
+  /** 采购单对应的供应商名称（现值优先、下单时的快照兜底）；没有采购来源时为空串。 */
+  supplier_name: string;
+  /** 采购单上的计划交货日期（`YYYY-MM-DD`）；没有采购来源或未填日期时为空串。 */
+  delivery_date: string;
 };
 
 /** 行键：订单号 × 物料 × 单位（单位不换算，同一物料两个单位就是两行，见设计文档 §1 规则 1）。 */
@@ -83,13 +87,26 @@ export type ReportRowKey = { orderNo: string; materialId: string; unitId: string
 /** 已经按行键在数据库侧聚合好的一笔数量（`groupBy` 的 `_sum` 结果 + 行键）。 */
 export type AggregatedQuantity = ReportRowKey & { quantity: Prisma.Decimal };
 
+/**
+ * 采购来源的一笔数量：除了数量，还要带上「这笔采购对应的单据」上的展示字段。
+ *
+ * 为什么供应商/交货日期跟着采购行而不是跟着行键走：它们是**采购单**的属性，
+ * 而一笔领用/入库事实本身没有供应商；只有采购行能把这两个字段带进报表。
+ */
+export type PurchaseQuantity = AggregatedQuantity & {
+  /** 采购单号：同一订单同一物料来自多张采购单（拆单）时，用它做确定性的兜底排序。 */
+  purchaseOrderNo?: string;
+  supplierName?: string;
+  deliveryDate?: Date | null;
+};
+
 /** 库存量：**物料 + 单位**级的当前结存，不带订单号（库存是物料级静态结存，不按订单拆账）。 */
 export type StockQuantity = { materialId: string; unitId: string; quantity: Prisma.Decimal };
 
 /** 组装报表行需要的全部来源（由取数服务提供，本模块不做任何查询）。 */
 export type ReportSources = {
-  /** 已下单采购明细的 `quantity` 合计。 */
-  purchase: readonly AggregatedQuantity[];
+  /** 已下单采购明细的 `quantity` 合计（附带采购单上的供应商与计划交货日期）。 */
+  purchase: readonly PurchaseQuantity[];
   /** 已过账原料入库单的 `quantity` 合计。 */
   inbound: readonly AggregatedQuantity[];
   /**
@@ -193,7 +210,33 @@ type RowCell = {
   inbound: Prisma.Decimal;
   /** 生产领用来源事实的 `quantity_delta` 合计（原样，负数为领用）。 */
   issueDelta: Prisma.Decimal;
+  /** 采购单上的供应商名称（同一行来自多张采购单时取采购单号最小的一张）。 */
+  supplierName: string;
+  /** 上面那个供应商来自哪张采购单；空串表示还没有任何采购行。 */
+  supplierOrderNo: string;
+  /** 采购单上的计划交货日期（同一行来自多张采购单时取最早的一张，同日按单号升序）。 */
+  deliveryDate: Date | null;
+  /** 上面那个日期来自哪张采购单。 */
+  deliveryOrderNo: string;
 };
+
+/** 采购单号比较：空串排最后（没有单号的历史数据不能压过有单号的）。 */
+function comparePurchaseOrderNo(left: string, right: string): number {
+  if (left === right) return 0;
+  if (!right) return -1;
+  if (!left) return 1;
+  return left < right ? -1 : 1;
+}
+
+/**
+ * 计划交货日期 → `YYYY-MM-DD`。
+ *
+ * 与采购单导出（`purchase-order-export.service.ts` 的 `toDateText`）同一口径：
+ * 用 ISO 日期切片而不是 `toLocaleDateString`，容器与浏览器时区不同也不会把日期挪一天。
+ */
+function formatDeliveryDate(value: Date | null | undefined): string {
+  return value ? value.toISOString().slice(0, 10) : "";
+}
 
 /**
  * 行集合 = 三类来源（已下单采购明细 / 已过账原料入库 / 生产领用事实）的并集，
@@ -223,7 +266,11 @@ export function buildProcurementWarehouseRows(sources: ReportSources): Procureme
       unitName: sources.units.get(unitId) ?? "",
       purchase: new Prisma.Decimal(0),
       inbound: new Prisma.Decimal(0),
-      issueDelta: new Prisma.Decimal(0)
+      issueDelta: new Prisma.Decimal(0),
+      supplierName: "",
+      supplierOrderNo: "",
+      deliveryDate: null,
+      deliveryOrderNo: ""
     };
     cells.set(key, cell);
     return cell;
@@ -232,6 +279,27 @@ export function buildProcurementWarehouseRows(sources: ReportSources): Procureme
   for (const row of sources.purchase) {
     const cell = cellOf(row.orderNo, row.materialId, row.unitId);
     cell.purchase = cell.purchase.plus(row.quantity);
+
+    // 供应商 / 交货日期是**采购单**的属性：同一订单同一物料可能来自多张采购单（拆单），
+    // 但报表的粒度仍是一行（不按供应商拆行，见设计文档 §8 与本次需求「保持原有布局」）。
+    // 因此这里必须给一个确定性的取法，不能依赖数据库返回顺序：
+    //   · 供应商取采购单号最小的那张（空名跳过，避免一张老单把名字盖成空）；
+    //   · 交货日期取最早的计划日期，同一天再按采购单号升序。
+    const purchaseOrderNo = row.purchaseOrderNo ?? "";
+    const supplierName = (row.supplierName ?? "").trim();
+    if (supplierName && (!cell.supplierName || comparePurchaseOrderNo(purchaseOrderNo, cell.supplierOrderNo) < 0)) {
+      cell.supplierName = supplierName;
+      cell.supplierOrderNo = purchaseOrderNo;
+    }
+    const deliveryDate = row.deliveryDate ?? null;
+    if (deliveryDate && (
+      !cell.deliveryDate
+      || deliveryDate.getTime() < cell.deliveryDate.getTime()
+      || (deliveryDate.getTime() === cell.deliveryDate.getTime() && comparePurchaseOrderNo(purchaseOrderNo, cell.deliveryOrderNo) < 0)
+    )) {
+      cell.deliveryDate = deliveryDate;
+      cell.deliveryOrderNo = purchaseOrderNo;
+    }
   }
   for (const row of sources.inbound) {
     const cell = cellOf(row.orderNo, row.materialId, row.unitId);
@@ -286,7 +354,9 @@ export function buildProcurementWarehouseRows(sources: ReportSources): Procureme
       inbound_quantity: formatQuantity(cell.inbound),
       pending_inbound_quantity: formatQuantity(pending),
       production_issue_quantity: formatQuantity(productionIssue),
-      stock_quantity: formatQuantity(stock)
+      stock_quantity: formatQuantity(stock),
+      supplier_name: cell.supplierName,
+      delivery_date: formatDeliveryDate(cell.deliveryDate)
     }));
 
   return rows;

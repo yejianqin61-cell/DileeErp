@@ -2,7 +2,7 @@
  * 采购与仓储报表（`/reports/procurement-warehouse`）的前端口径（纯函数，无 React / 无网络依赖）。
  *
  * 设计：`docs/design/procurement-warehouse-report-2026-11-04.md`。这一份只放「能写错的那些字」：
- *   1. 九列的**列名 / 顺序 / 宽度 / 数字列** —— 屏幕、打印纸、导出 xlsx 必须是同一组，
+ *   1. 十一列的**列名 / 顺序 / 宽度 / 数字列** —— 屏幕、打印纸、导出 xlsx 必须是同一组，
  *      分成三处各写一遍，迟早出现「纸上有、屏幕上少一列」；
  *   2. 数量的显示规则：接口给的是**去掉无意义尾零的十进制字符串**（`4700` 而不是 `4700.0000`），
  *      但历史数据/手工造的数据仍可能出现 `-0.00`、`4700.0000`，显示前统一收口；
@@ -28,6 +28,10 @@ export type ProcurementWarehouseRow = {
   pending_inbound_quantity: string;
   production_issue_quantity: string;
   stock_quantity: string;
+  /** 采购单对应的供应商名称（接口保证空值是空串，展示时显示 `-`）。 */
+  supplier_name: string;
+  /** 采购单上的计划交货日期（`YYYY-MM-DD`，空值是空串）。 */
+  delivery_date: string;
 };
 
 /** 契约 §3.1 的 meta（字段缺失时页面按宽松口径兜底）。 */
@@ -56,9 +60,10 @@ export const REPORT_DATA_PATH = "/reports/procurement-warehouse";
 export const REPORT_EXPORT_PATH = "/api/v1/reports/procurement-warehouse/export.xlsx";
 
 /**
- * 九列定义：屏幕 `DataTable`、打印纸、导出件共用同一份。
+ * 十一列定义：屏幕 `DataTable`、打印纸、导出件共用同一份。
  *
- * 九个百分比必须合计 **100%**：`DataTable` 一律 `table-layout: fixed`（data-table.tsx:117），
+ * 原有九列的顺序与含义不变；2026-11-17（T-0021）按用户要求在末尾追加「供应商」「交货日期」。
+ * 十一个百分比必须合计 **100%**：`DataTable` 一律 `table-layout: fixed`（data-table.tsx:117），
  * 固定布局下没写宽度的列由浏览器均分剩余空间 —— 少写一个就会让那列变成"别人写多少它剩多少"，
  * 表宽与截图里那张 Excel 就再也对不上。守卫见 `procurement-warehouse-report.test.mjs`。
  *
@@ -75,15 +80,17 @@ export type ProcurementWarehouseColumn = {
 };
 
 export const REPORT_COLUMNS: ProcurementWarehouseColumn[] = [
-  { key: "order_no", label: "订单号", width: "9%", numeric: false },
-  { key: "material_name", label: "物料名称", width: "26%", numeric: false },
-  { key: "color", label: "颜色", width: "8%", numeric: false },
-  { key: "unit", label: "单位", width: "6%", numeric: false },
-  { key: "purchase_quantity", label: "采购数量", width: "9%", numeric: true },
-  { key: "inbound_quantity", label: "采购入库量", width: "10%", numeric: true },
-  { key: "pending_inbound_quantity", label: "采购未入库数", width: "11%", numeric: true, negativeIsAlert: true },
-  { key: "production_issue_quantity", label: "生产领用数量", width: "11%", numeric: true },
-  { key: "stock_quantity", label: "库存量", width: "10%", numeric: true, negativeIsAlert: true },
+  { key: "order_no", label: "订单号", width: "8%", numeric: false },
+  { key: "material_name", label: "物料名称", width: "20%", numeric: false },
+  { key: "color", label: "颜色", width: "6%", numeric: false },
+  { key: "unit", label: "单位", width: "5%", numeric: false },
+  { key: "purchase_quantity", label: "采购数量", width: "8%", numeric: true },
+  { key: "inbound_quantity", label: "采购入库量", width: "8%", numeric: true },
+  { key: "pending_inbound_quantity", label: "采购未入库数", width: "9%", numeric: true, negativeIsAlert: true },
+  { key: "production_issue_quantity", label: "生产领用数量", width: "8%", numeric: true },
+  { key: "stock_quantity", label: "库存量", width: "6%", numeric: true, negativeIsAlert: true },
+  { key: "supplier_name", label: "供应商", width: "12%", numeric: false },
+  { key: "delivery_date", label: "交货日期", width: "10%", numeric: false },
 ];
 
 /**

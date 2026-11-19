@@ -3,10 +3,10 @@
 // 需求原话：「用户需要一份采购与仓储报表…设计这份报表并支持导出与打印」。
 // 本文件钉住七件事：
 //   ① 首屏取数只打一次 `GET /api/v1/reports/procurement-warehouse`，查询时带上两个筛选参数；
-//   ② 九列都在，数量列右对齐 class 齐全，颜色空值显示 `-`；
+//   ② 十一列都在（原有九列 + 供应商/交货日期），数量列右对齐 class 齐全，颜色空值显示 `-`；
 //   ③ 负的「采购未入库数 / 库存量」标红（超收 / 负库存），正数不标；
 //   ④ 导出打 `export.xlsx` 且带**已应用到屏幕**的筛选参数，成功有 toast；
-//   ⑤ 打印弹窗里是纸面（公司名/标题/筛选/行数/打印时间/九列/口径说明/无合计行），点打印调 window.print；
+//   ⑤ 打印弹窗里是纸面（公司名/标题/筛选/行数/打印时间/十一列/口径说明/无合计行），点打印调 window.print；
 //   ⑥ 屏幕 DataTable 每页 50 行，但纸面渲染全部行（纸上少一行就是漏账）；
 //   ⑦ 空数据不打开打印弹窗；接口失败（含 422 行数超限）显示后端原话并可重试。
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,13 +37,15 @@ const row = (over: Row = {}): Row => ({
   pending_inbound_quantity: "0",
   production_issue_quantity: "3050",
   stock_quantity: "1650",
+  supplier_name: "厦门伞骨厂",
+  delivery_date: "2026-11-10",
   ...over,
 });
 
 const rows = () => [
   row(),
   // 第二行专门装"要标红"的两列 + 空颜色：超收（未入库为负）与负库存。
-  row({ material_name: "伞布", color: "", pending_inbound_quantity: "-50", stock_quantity: "-10", purchase_quantity: "100" }),
+  row({ material_name: "伞布", color: "", pending_inbound_quantity: "-50", stock_quantity: "-10", purchase_quantity: "100", supplier_name: "晋江伞布厂", delivery_date: "2026-11-12" }),
 ];
 
 const meta = (rowCount = 2) => ({ generated_at: "2026-11-04T14:30:00.000Z", row_count: rowCount, row_limit: 5000, filters: { order_no: null, material: null } });
@@ -110,12 +112,16 @@ describe("采购与仓储报表：取数与表格", () => {
     expect(reportCall(calls)).toHaveLength(2);
   });
 
-  it("九列与设计文档同名同序；五个数量列右对齐；空颜色显示 `-`", async () => {
+  it("十一列同名同序；五个数量列右对齐；空颜色显示 `-`；供应商/交货日期渲染", async () => {
     await renderPage();
     await screen.findByText("58cm*8k自动直骨伞");
 
     const headers = screen.getAllByRole("columnheader").map((header) => header.textContent);
-    expect(headers).toEqual(["订单号", "物料名称", "颜色", "单位", "采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量"]);
+    expect(headers).toEqual(["订单号", "物料名称", "颜色", "单位", "采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量", "供应商", "交货日期"]);
+
+    const firstCells = within(rowElement("58cm*8k自动直骨伞")).getAllByRole("cell");
+    expect(firstCells[9]).toHaveTextContent("厦门伞骨厂");
+    expect(firstCells[10]).toHaveTextContent("2026-11-10");
 
     expect(numericTexts(rowElement("58cm*8k自动直骨伞"))).toEqual(["4700", "4700", "0", "3050", "1650"]);
     // 数量格是 span.procurement-warehouse-num（globals.css 里才右对齐 + tabular-nums）；
@@ -167,7 +173,7 @@ describe("采购与仓储报表：导出", () => {
 });
 
 describe("采购与仓储报表：打印", () => {
-  it("「打印」打开纸面：公司名/标题/筛选+行数+打印时间/九列/口径说明；点打印调 window.print", async () => {
+  it("「打印」打开纸面：公司名/标题/筛选+行数+打印时间/十一列/口径说明；点打印调 window.print", async () => {
     await renderPage();
     await screen.findByText("58cm*8k自动直骨伞");
 
@@ -181,9 +187,9 @@ describe("采购与仓储报表：打印", () => {
     expect(subtitle).toHaveTextContent("筛选条件：订单号：全部；物料：全部");
     expect(subtitle).toHaveTextContent("行数：2 行");
     expect(subtitle).toHaveTextContent("（北京时间）");
-    // 九列表头在纸上也必须是同一组（表头每页重复靠 <thead>）。
+    // 十一列表头在纸上也必须是同一组（表头每页重复靠 <thead>）。
     expect(within(sheet).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(
-      ["订单号", "物料名称", "颜色", "单位", "采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量"],
+      ["订单号", "物料名称", "颜色", "单位", "采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量", "供应商", "交货日期"],
     );
     // 口径说明三条 + 五个数量列的来源说明都在纸上。
     expect(sheet).toHaveTextContent("不跨单位相加");
@@ -200,10 +206,13 @@ describe("采购与仓储报表：打印", () => {
     //  docs/test/results/procurement-warehouse-report/print-media-before-fix.png）。
     const paperRows = sheet.querySelectorAll('[data-testid="procurement-warehouse-sheet-row"]');
     expect(paperRows).toHaveLength(2);
-    for (const paperRow of paperRows) {
+    for (const [paperRowIndex, paperRow] of paperRows.entries()) {
       expect(paperRow.querySelectorAll("td.procurement-warehouse-num")).toHaveLength(0);
-      const quantityCells = [...paperRow.querySelectorAll("td")].slice(4);
+      const allCells = [...paperRow.querySelectorAll("td")];
+      const quantityCells = allCells.slice(4, 9);
       expect(quantityCells).toHaveLength(5);
+      expect(allCells[9]).toHaveTextContent(paperRowIndex === 0 ? "厦门伞骨厂" : "晋江伞布厂");
+      expect(allCells[10]).toHaveTextContent(paperRowIndex === 0 ? "2026-11-10" : "2026-11-12");
       for (const cell of quantityCells) {
         expect(cell.children).toHaveLength(1);
         expect(cell.firstElementChild).toHaveProperty("tagName", "SPAN");
@@ -266,7 +275,7 @@ describe("采购与仓储报表：错误态", () => {
 });
 
 describe("采购与仓储报表 · 表内关键字搜索（2026-11-13）", () => {
-  it("按物料名收窄表格，并给「筛选后 N / M 行」计数（不打接口）", async () => {
+  it("按物料名或供应商收窄表格，并给「筛选后 N / M 行」计数（不打接口）", async () => {
     const calls = await renderPage();
     const before = calls.length;
 
@@ -276,6 +285,13 @@ describe("采购与仓储报表 · 表内关键字搜索（2026-11-13）", () =>
     expect(within(table).getByText("伞布")).toBeVisible();
     expect(within(table).queryByText("面料")).toBeNull();
     expect(screen.getByTestId("report-keyword-count")).toHaveTextContent("筛选后 1 / 2 行");
+
+    await userEvent.clear(screen.getByTestId("report-keyword"));
+    await userEvent.type(screen.getByTestId("report-keyword"), "厦门伞骨厂");
+    expect(within(table).getByText("58cm*8k自动直骨伞")).toBeVisible();
+    expect(within(table).queryByText("伞布")).toBeNull();
+    expect(screen.getByTestId("report-keyword-count")).toHaveTextContent("筛选后 1 / 2 行");
+
     // 表内搜索是纯客户端过滤：不得因此再打接口
     expect(calls.length).toBe(before);
   });

@@ -7,7 +7,7 @@
 //   · 两个模糊筛选（order_no / material）走数据库且不区分大小写；
 //   · 5000 行上限 → 422 REPORT_ROW_LIMIT_EXCEEDED（不截断）；
 //   · 数量字符串去尾零与 "-0" → "0"；
-//   · xlsx：工作表名、九列表头、数量是数值单元格、A4 横向、文件名、空数据也导出表头但行数为 0；
+//   · xlsx：工作表名、十一列表头、数量是数值单元格、A4 横向、文件名、空数据也导出表头但行数为 0；
 //   · 控制器：两条路由、DTO、权限元数据、Content-Disposition。
 //
 // 风格照 `reports-service.test.cjs`：假 Prisma 手写，只记录调用形状、任何写操作直接抛错；
@@ -93,7 +93,7 @@ const purchaseGroup = (purchaseOrderId, materialId, unitId, quantity) => ({ purc
 const inboundGroup = (orderNo, materialId, unitId, quantity) => ({ orderNo, materialId, unitId, _sum: { quantity: dec(quantity) } });
 const issueGroup = (orderNo, materialId, unitId, quantityDelta) => ({ orderNo, materialId, unitId, _sum: { quantityDelta: dec(quantityDelta) } });
 const stockGroup = (materialId, unitId, quantityDelta) => ({ materialId, unitId, _sum: { quantityDelta: dec(quantityDelta) } });
-const orderRow = (id, orderNo) => ({ id, orderNo });
+const orderRow = (id, orderNo, over = {}) => ({ id, orderNo, ...over });
 // 主数据行带 materialType / deletedAt：展示列不过滤软删，但库存量口径要用这两个字段筛「未删的原料物料」。
 const materialRow = (id, name, color = "") => ({ id, name, color, materialType: "raw_material", deletedAt: null });
 const unitRow = (id, name) => ({ id, name, deletedAt: null });
@@ -108,7 +108,12 @@ function designExample() {
     inboundGroups: [inboundGroup("260119", "m-1", "u-1", "4700.0000")],
     issueGroups: [issueGroup("260119", "m-1", "u-1", "-3050.0000")],
     stockGroups: [stockGroup("m-1", "u-1", "1650.0000")],
-    orders: [orderRow("po-1", "260119")],
+    orders: [orderRow("po-1", "260119", {
+      purchaseOrderNo: "PO-260119-1",
+      supplierSnapshot: { name: "厦门伞骨厂" },
+      expectedDate: new Date("2026-11-10T00:00:00.000Z"),
+      supplier: { name: "厦门伞骨厂（现名）" }
+    })],
     materials: [materialRow("m-1", "58cm*8k自动直骨伞", "黑色")],
     units: [unitRow("u-1", "打")]
   };
@@ -130,13 +135,78 @@ test("五列口径：设计文档的示例行逐字段相同，且 screen 与 ex
     inbound_quantity: "4700",
     pending_inbound_quantity: "0",
     production_issue_quantity: "3050",
-    stock_quantity: "1650"
+    stock_quantity: "1650",
+    supplier_name: "厦门伞骨厂（现名）",
+    delivery_date: "2026-11-10"
   }]);
   assert.equal(result.meta.row_count, 1);
   assert.equal(result.meta.row_limit, PROCUREMENT_WAREHOUSE_ROW_LIMIT);
   assert.match(result.meta.generated_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   assert.deepEqual(result.meta.filters, { order_no: "260119", material: null }, "筛选条件原样回给前端（用于提示「当前看的是什么范围」）");
   noWrites(prisma);
+});
+
+test("供应商与交货日期：供应商现值优先、快照兜底；交货日期取采购单的计划交货日期", async () => {
+  const { prisma, report } = harness({
+    purchaseItemGroups: [purchaseGroup("po-1", "m-1", "u-1", "10.0000")],
+    orders: [orderRow("po-1", "260119", {
+      purchaseOrderNo: "PO-260119-1",
+      supplierSnapshot: { name: "快照里的供应商" },
+      expectedDate: new Date("2026-12-01T00:00:00.000Z")
+    })],
+    materials: [materialRow("m-1", "伞骨", "银")],
+    units: [unitRow("u-1", "支")]
+  });
+
+  const result = await report.build({});
+
+  assert.equal(result.rows[0].supplier_name, "快照里的供应商", "主数据取不到名称时退回下单时的快照");
+  assert.equal(result.rows[0].delivery_date, "2026-12-01", "交货日期是采购单上的计划交货日期（YYYY-MM-DD）");
+  noWrites(prisma);
+});
+
+test("供应商与交货日期：同一订单同一物料来自多张采购单时不拆行，按单号/最早日期确定性取值", async () => {
+  const { prisma, report } = harness({
+    purchaseItemGroups: [
+      purchaseGroup("po-b", "m-1", "u-1", "10.0000"),
+      purchaseGroup("po-a", "m-1", "u-1", "20.0000")
+    ],
+    orders: [
+      orderRow("po-b", "260119", {
+        purchaseOrderNo: "PO-B",
+        supplierSnapshot: { name: "B 供应商" },
+        expectedDate: new Date("2026-12-01T00:00:00.000Z")
+      }),
+      orderRow("po-a", "260119", {
+        purchaseOrderNo: "PO-A",
+        supplierSnapshot: { name: "A 供应商" },
+        expectedDate: new Date("2026-12-10T00:00:00.000Z")
+      })
+    ],
+    materials: [materialRow("m-1", "伞骨", "银")],
+    units: [unitRow("u-1", "支")]
+  });
+
+  const result = await report.build({});
+
+  assert.equal(result.rows.length, 1, "供应商维度不拆行：仍是一张订单上的一个物料一行");
+  assert.equal(result.rows[0].purchase_quantity, "30", "两张采购单的数量仍然合计");
+  assert.equal(result.rows[0].supplier_name, "A 供应商", "多张采购单时供应商取采购单号最小的一张");
+  assert.equal(result.rows[0].delivery_date, "2026-12-01", "交货日期取最早的计划交货日期");
+  noWrites(prisma);
+});
+
+test("供应商与交货日期：没有采购来源（只有入库/领用）时给空串，前端显示 `-`", async () => {
+  const { report } = harness({
+    inboundGroups: [inboundGroup("260118", "m-1", "u-1", "5.0000")],
+    materials: [materialRow("m-1", "只入库的料")],
+    units: [unitRow("u-1", "件")]
+  });
+
+  const result = await report.build({});
+
+  assert.equal(result.rows[0].supplier_name, "");
+  assert.equal(result.rows[0].delivery_date, "");
 });
 
 test("采购数量：只算「已下单」的采购明细；草稿与已取消不计（两张表都要求未删除）", async () => {
@@ -148,7 +218,7 @@ test("采购数量：只算「已下单」的采购明细；草稿与已取消�
   const ordersArgs = callsOf(prisma, "purchaseOrder", "findMany")[0].args;
   assert.equal(ordersArgs.where.deletedAt, null, "采购单被删除时它的明细也不该出现在报表里");
   assert.deepEqual(ordersArgs.where.status.in, ["ordered", "partially_arrived", "arrived_complete"], "草稿（draft）与已取消（cancelled）不是下单承诺，不计入采购数量");
-  assert.deepEqual(Object.keys(ordersArgs.select).sort(), ["id", "orderNo"], "只取 id + 单号两列");
+  assert.deepEqual(Object.keys(ordersArgs.select).sort(), ["expectedDate", "id", "orderNo", "purchaseOrderNo", "supplier", "supplierSnapshot"], "除 id + 单号外，还要带出供应商与计划交货日期（展示列）");
   assert.equal("orderNo" in ordersArgs.where, false, "未筛选时不带单号条件");
 
   const args = callsOf(prisma, "purchaseOrderItem")[0].args;
@@ -601,7 +671,9 @@ test("组装纯函数：五列由 sources 直接算出，颜色为空给空串�
     inbound_quantity: "4",
     pending_inbound_quantity: "6",
     production_issue_quantity: "2",
-    stock_quantity: "8"
+    stock_quantity: "8",
+    supplier_name: "",
+    delivery_date: ""
   }]);
 });
 
@@ -629,6 +701,8 @@ const sampleRow = (over = {}) => ({
   pending_inbound_quantity: "0",
   production_issue_quantity: "3050",
   stock_quantity: "1650",
+  supplier_name: "厦门伞骨厂（现名）",
+  delivery_date: "2026-11-10",
   ...over
 });
 
@@ -645,13 +719,13 @@ async function exportAndRead(service, filter = {}) {
   return { exported, workbook, sheet: workbook.worksheets[0] };
 }
 
-test("xlsx：一个工作表「采购与仓储报表」，A4 横向 + fitToPage，标题/筛选行/九列表头都在", async () => {
+test("xlsx：一个工作表「采购与仓储报表」，A4 横向 + fitToPage，标题/筛选行/十一列表头都在", async () => {
   const service = new ProcurementWarehouseReportExportService(stubReportService(sampleResult()));
   const { exported, workbook, sheet } = await exportAndRead(service);
 
   assert.deepEqual(workbook.worksheets.map((worksheet) => worksheet.name), ["采购与仓储报表"]);
   assert.equal(sheet.pageSetup.paperSize, 9, "A4");
-  assert.equal(sheet.pageSetup.orientation, "landscape", "九列在 A4 纵向会被压成半页宽");
+  assert.equal(sheet.pageSetup.orientation, "landscape", "十一列在 A4 纵向会被压成半页宽");
   assert.equal(sheet.pageSetup.fitToPage, true);
   assert.equal(sheet.pageSetup.fitToWidth, 1, "一页宽印下");
   assert.equal(sheet.pageSetup.horizontalCentered, true);
@@ -664,15 +738,15 @@ test("xlsx：一个工作表「采购与仓储报表」，A4 横向 + fitToPage�
   assert.match(infoText, /共 1 行/);
 
   assert.deepEqual(
-    ["A3", "B3", "C3", "D3", "E3", "F3", "G3", "H3", "I3"].map((address) => sheet.getCell(address).value),
-    ["订单号", "物料名称", "颜色", "单位", "采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量"],
+    ["A3", "B3", "C3", "D3", "E3", "F3", "G3", "H3", "I3", "J3", "K3"].map((address) => sheet.getCell(address).value),
+    ["订单号", "物料名称", "颜色", "单位", "采购数量", "采购入库量", "采购未入库数", "生产领用数量", "库存量", "供应商", "交货日期"],
     "表头与屏幕同序同名"
   );
   assert.match(exported.fileName, /^迪礼ERP-采购与仓储报表-\d{14}\.xlsx$/, "文件名 = 报表名 + 北京时间戳");
   assert.deepEqual([...exported.buffer.subarray(0, 4)], [0x50, 0x4b, 0x03, 0x04], "xlsx 是 zip 容器");
 });
 
-test("xlsx：数量写数值单元格（用户在 Excel 里能直接求和），不是文本", async () => {
+test("xlsx：数量写数值单元格（用户在 Excel 里能直接求和），供应商/交货日期是文本", async () => {
   const service = new ProcurementWarehouseReportExportService(stubReportService(sampleResult()));
   const { sheet } = await exportAndRead(service);
 
@@ -685,6 +759,8 @@ test("xlsx：数量写数值单元格（用户在 Excel 里能直接求和），
     assert.equal(typeof sheet.getCell(address).value, "number");
     assert.equal(sheet.getCell(address).numFmt, "0.####");
   }
+  assert.equal(sheet.getCell("J4").value, "厦门伞骨厂（现名）", "供应商跟随列表导出");
+  assert.equal(sheet.getCell("K4").value, "2026-11-10", "交货日期按 YYYY-MM-DD 原样导出");
 });
 
 test("xlsx：负数照样是数值单元格（超收/负库存），末尾一行是整行合并的口径说明", async () => {

@@ -18,7 +18,7 @@ import { ProcurementWarehouseReportService } from "./procurement-warehouse-repor
 const SHEET_NAME = "采购与仓储报表";
 
 /**
- * 九列：与屏幕表头同序同名（设计文档 §3.1/§4），数量列在 xlsx 里写**数值**而不是文本。
+ * 十一列：与屏幕表头同序同名（设计文档 §3.1/§4；2026-11-17 追加供应商/交货日期），数量列在 xlsx 里写**数值**而不是文本。
  *
  * 宽度按 `platform/excel/row-height.ts` 的 CJK 口径（一个汉字 ≈ 2 个列宽单位）估：
  * 「物料名称」给 34 个单位才能容下「58cm*8k自动直骨伞」这类名字，数量列给 12~14 个单位
@@ -41,7 +41,11 @@ const COLUMNS: ReadonlyArray<{
   { header: "采购入库量", width: 12, align: "right", numeric: true },
   { header: "采购未入库数", width: 14, align: "right", numeric: true },
   { header: "生产领用数量", width: 14, align: "right", numeric: true },
-  { header: "库存量", width: 12, align: "right", numeric: true }
+  { header: "库存量", width: 12, align: "right", numeric: true },
+  // 2026-11-17（T-0021）：列表新增字段跟随导出。两列都写文本：供应商是名称，
+  // 交货日期按 `YYYY-MM-DD` 原样给出，不让 Excel 按本机区域设置改成另一种日期格式。
+  { header: "供应商", width: 20, align: "left", wrap: true },
+  { header: "交货日期", width: 12, align: "center" }
 ];
 
 const SHEET_WIDTHS: readonly number[] = COLUMNS.map((column) => column.width);
@@ -107,7 +111,7 @@ export class ProcurementWarehouseReportExportService {
 
   private addSheet(workbook: ExcelJS.Workbook, rows: ProcurementWarehouseRow[], filters: { order_no: string | null; material: string | null }, generatedAt: Date): ExcelJS.Worksheet {
     const sheet = workbook.addWorksheet(SHEET_NAME, {
-      // A4 横向（设计文档 §3.2）：九列在纵向 A4 上会被压成半页宽，横向 + fitToWidth 才是一页宽。
+      // A4 横向（设计文档 §3.2）：十一列在纵向 A4 上会被压成半页宽，横向 + fitToWidth 才是一页宽。
       pageSetup: {
         paperSize: 9,
         orientation: "landscape",
@@ -156,7 +160,9 @@ export class ProcurementWarehouseReportExportService {
         toCellNumber(row.inbound_quantity),
         toCellNumber(row.pending_inbound_quantity),
         toCellNumber(row.production_issue_quantity),
-        toCellNumber(row.stock_quantity)
+        toCellNumber(row.stock_quantity),
+        row.supplier_name,
+        row.delivery_date
       ];
       cells.forEach((value, columnIndex) => {
         const column = COLUMNS[columnIndex];
@@ -167,9 +173,10 @@ export class ProcurementWarehouseReportExportService {
         cell.border = THIN_BORDER;
         if (column.numeric) cell.numFmt = "0.####";
       });
-      // 行高按**文字列**的折行数算：物料名称给 34 个单位，长名字是折行显示而不是被截掉
-      // （截掉的行在纸面上看起来是另一个物料）。数值列不参与折行计算。
-      const blocks: RowHeightBlock[] = [0, 1, 2, 3].map((columnIndex) => ({
+      // 行高按**文字列**（订单号/物料名/颜色/单位/供应商/交货日期）的折行数算：
+      // 物料名称给 34 个单位，长名字是折行显示而不是被截掉（截掉的行在纸面上看起来是另一个物料）。
+      // 数值列不参与折行计算。
+      const blocks: RowHeightBlock[] = [0, 1, 2, 3, 9, 10].map((columnIndex) => ({
         text: String(cells[columnIndex] ?? ""),
         width: SHEET_WIDTHS[columnIndex]
       }));

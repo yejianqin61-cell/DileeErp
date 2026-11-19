@@ -1,6 +1,6 @@
 "use client";
 
-// 采购与仓储报表的**屏幕主体**（2026-11-04）：筛选条 + 九列表格 + 口径说明。
+// 采购与仓储报表的**屏幕主体**（2026-11-04）：筛选条 + 十一列表格 + 口径说明。
 //
 // 设计见 `docs/design/procurement-warehouse-report-2026-11-04.md` §4。组件只负责"长什么样"，
 // 取数 / 导出 / 打印弹窗的状态都留在路由页（`app/reports/procurement-warehouse/page.tsx`）——
@@ -24,7 +24,7 @@ import {
 } from "../../lib/procurement-warehouse-report";
 
 /**
- * 九列 → TanStack 列定义。
+ * 十一列 → TanStack 列定义。
  *
  * 数字列的内容包一层 `<span className="procurement-warehouse-num">`：右对齐是**内容**的对齐，
  * 而 `DataTable` 的 `<td>` 是全站共用原语（它只接收 `meta.width`，不接收逐列的单元格 class），
@@ -65,7 +65,7 @@ export function ProcurementWarehouseReport({ rows, meta, loading, error, filters
    *
    * 与上面那两个**服务端**筛选框分工不同：订单号/物料是点了「查询」才回服务端重新取数的条件，
    * 这里是在**已经取回来的这一批**里按关键字找一行（用户手上常常只有一个模糊的印象，
-   * 比如「记得是 150D 的黑布」）。只按九列**看得见**的值匹配，不碰内部字段。
+   * 比如「记得是 150D 的黑布」）。只按十一列**看得见**的值匹配，不碰内部字段。
    * 单次最多 REPORT_ROW_LIMIT 行，客户端过滤足够；超出范围仍要先用服务端条件缩小。
    */
   const [keyword, setKeyword] = useState("");
@@ -75,6 +75,7 @@ export function ProcurementWarehouseReport({ rows, meta, loading, error, filters
           row.order_no, row.material_name, displayReportColor(row.color), displayReportText(row.unit),
           row.purchase_quantity, row.inbound_quantity, row.pending_inbound_quantity,
           row.production_issue_quantity, row.stock_quantity,
+          row.supplier_name, row.delivery_date,
         ]))
       : rows),
     [rows, keyword],
@@ -102,7 +103,7 @@ export function ProcurementWarehouseReport({ rows, meta, loading, error, filters
         </div>
         <div className="panel-body" data-testid="report-table">
           <div className="filter-bar">
-            <label>表内搜索订单号、物料、颜色、单位或数量
+            <label>表内搜索订单号、物料、颜色、单位、数量、供应商或交货日期
               <Input data-testid="report-keyword" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词，空格分隔多个词" />
             </label>
             {keyword.trim() ? <span className="panel-note" data-testid="report-keyword-count">筛选后 {visibleRows.length} / {rows.length} 行</span> : null}
