@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import MaterialIssuesPage from "../app/production/material-issues/page";
+import { MaterialSlipPrintSheet } from "../components/production/material-slip-print-sheet";
 import { Toaster } from "../components/ui/toaster";
 import { apiErr, apiOk, stubApi, type StubbedCall } from "./helpers/api-stub";
 
@@ -131,5 +132,18 @@ describe("领料单 / 补料单打印", () => {
     await userEvent.click(rowOf("MI-001").getByRole("button", { name: "打印" }));
     expect(await screen.findByText("该单据类型没有领料单/补料单版式")).toBeVisible();
     await waitFor(() => expect(screen.queryByTestId("material-slip-sheet")).toBeNull());
+  });
+
+  it("规格型号：只印简要内容，备注不出现、超长截断，单元格是单行省略样式（T-0023）", () => {
+    const slip = slipDocument("issue");
+    slip.document.lines[0].specificationModel = "规格型号：58cm×8K 黑色电着 加厚款 双面 防紫外线 客户指定（备注：客户要求加厚，不要印在纸上）";
+    render(<MaterialSlipPrintSheet slip={slip as any} />);
+    const cell = screen.getByText((content) => content.startsWith("58cm×8K") && content.endsWith("…"));
+    expect(cell).toHaveClass("material-slip-spec");
+    expect(cell).not.toHaveTextContent("备注");
+    expect(cell).not.toHaveTextContent("规格型号：");
+    expect(Array.from(cell.textContent ?? "").length).toBeLessThanOrEqual(18);
+    // 备注里的字一个都不该出现（整段在截断前就删掉了）。
+    expect(screen.queryByText(/客户要求加厚/)).toBeNull();
   });
 });

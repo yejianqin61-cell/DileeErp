@@ -11,7 +11,7 @@
 // 页面不再自己算一遍四个数量 —— 2026-10-29 那次「页面与纸面对不上」就是各算一遍来的。
 import { Fragment } from "react";
 import {
-  materialSlipHeadRows, materialSlipPrintColumns, materialSlipPrintHeading, materialSlipPrintSubtotal,
+  materialSlipHeadRows, materialSlipPrintColumns, materialSlipPrintHeading, materialSlipPrintSubtotal, materialSlipSpecification,
   type MaterialSlipPrint,
 } from "../../lib/material-slip-print";
 
@@ -54,8 +54,13 @@ export function MaterialSlipPrintSheet({ slip }: { slip: MaterialSlipPrint }) {
           {lines.map((line) => (
             <tr key={line.sequence}>
               {columns.map((column) => (
-                <td key={column.label} className={column.numeric ? "num" : undefined}>
-                  {column.key === "image" ? "\u00a0" : blank((line as unknown as Record<string, unknown>)[column.key])}
+                <td key={column.label} className={column.numeric ? "num" : column.key === "specificationModel" ? "material-slip-spec" : undefined}>
+                  {column.key === "image"
+                    ? "\u00a0"
+                    : column.key === "specificationModel"
+                      // 规格型号纸面只留简要内容：去备注/冗余参数并截断，由 .material-slip-spec 保证单行。
+                      ? blank(materialSlipSpecification((line as unknown as Record<string, unknown>).specificationModel as string | null | undefined))
+                      : blank((line as unknown as Record<string, unknown>)[column.key])}
                 </td>
               ))}
             </tr>

@@ -382,4 +382,24 @@ test("详情弹窗数据：领料与补料以外的单据类型（退料/报废/
   await assert.rejects(() => service.buildSlipDocument("movement-1"), (error) => error.getStatus?.() === 404 || /没有领料单\/补料单版式/.test(error.message));
 });
 
+test("规格型号列：备注/重复参数不导出，超长截断且单元格不换行（T-0023）", async () => {
+  // 领料单：4 列是规格型号。
+  const issue = issueFixture();
+  issue.movement.productionOrder.bom.items[0].specificationModel = "规格型号：58cm×8K 黑色电着 加厚款 双面 防紫外线 客户指定（备注：客户要求加厚，不要印在纸上）";
+  const issueSheet = (await open(await new MaterialSlipExportService(issue.prisma, fakeActors()).exportSlip("movement-1"))).getWorksheet("MI-20260910-ABCD1234");
+  const issueSpec = issueSheet.getRow(7).getCell(4);
+  assert.equal(issueSpec.value, "58cm×8K 黑色电着 加厚款…", "列头前缀、备注与超长部分都不进 xlsx");
+  assert.equal(String(issueSpec.value).includes("备注"), false);
+  assert.equal(String(issueSpec.value).includes("\n"), false);
+  assert.notEqual(issueSpec.alignment.wrapText, true, "规格型号不换行（xlsx 默认不换行，回读时通常省略该属性）");
+  assert.equal(issueSpec.alignment.shrinkToFit, true, "截短后仍超列宽时缩字号，不撑高行");
 
+  // 补料单：5 列是规格型号；重复参数只留一份。
+  const replenishment = replenishmentFixture();
+  replenishment.movement.productionOrder.bom.items[0].specificationModel = "EVA；EVA；透明（备注：不要印）";
+  const replenishmentSheet = (await open(await new MaterialSlipExportService(replenishment.prisma, fakeActors()).exportSlip("replenishment-1"))).getWorksheet("MC-20260910-5B7C9D01");
+  const replenishmentSpec = replenishmentSheet.getRow(9).getCell(5);
+  assert.equal(replenishmentSpec.value, "EVA；透明");
+  assert.notEqual(replenishmentSpec.alignment.wrapText, true, "补料单规格型号同样不换行");
+  assert.equal(replenishmentSpec.alignment.shrinkToFit, true);
+});

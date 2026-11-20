@@ -6,6 +6,8 @@ import { AuditActorService } from "../../platform/audit/audit-actor.service";
 import { beijingDateTime } from "../../platform/time/beijing-time";
 // 已领 / 余下的口径与系统页面的预估列共用一份实现（见 material-slip-quantity.ts 的说明）。
 import { issueReferenceQuantity as issueReferenceQuantityOf, issuedBeforeQuantity, remainingQuantity as remainingQuantityOf } from "./material-slip-quantity";
+// 规格型号的纸面口径与前端打印件共用同一套规则（T-0023）。
+import { materialSlipSpecification } from "./material-slip-spec";
 
 /** 领料单（打印表）明细行。 */
 export type MaterialIssueDocumentLine = {
@@ -377,12 +379,19 @@ export class MaterialSlipExportService {
 
     document.lines.forEach((line, index) => {
       const row = sheet.getRow(tableHeaderRow + 1 + index);
-      const values: Array<string | number> = [line.sequence, line.imageUrl, line.materialName, line.materialCode, line.specificationModel, line.color, line.unit, line.replenishQuantity];
+      const values: Array<string | number> = [line.sequence, line.imageUrl, line.materialName, line.materialCode, materialSlipSpecification(line.specificationModel), line.color, line.unit, line.replenishQuantity];
       values.forEach((value, columnIndex) => {
         const cell = row.getCell(columnIndex + 1);
         cell.value = value;
         cell.font = BODY_FONT;
-        cell.alignment = { horizontal: columnIndex === 2 || columnIndex === 4 ? "left" : "center", vertical: "middle" };
+        // 规格型号（第 5 列）已由 materialSlipSpecification 截短：单元格不换行，仍超出列宽时缩字号，
+        // 保证 xlsx 里也是一行，行高不被撑开。
+        cell.alignment = {
+          horizontal: columnIndex === 2 || columnIndex === 4 ? "left" : "center",
+          vertical: "middle",
+          wrapText: false,
+          ...(columnIndex === 4 ? { shrinkToFit: true } : {})
+        };
         cell.border = THIN_BORDER;
         if (columnIndex === 7) cell.numFmt = "0.####";
       });
@@ -482,12 +491,18 @@ export class MaterialSlipExportService {
 
     document.lines.forEach((line, index) => {
       const row = sheet.getRow(tableHeaderRow + 1 + index);
-      const values: Array<string | number | null> = [line.sequence, line.materialName, line.materialCode, line.specificationModel, line.color, line.unit, line.bomQuantity, line.actualInboundQuantity, line.issuedQuantity, line.currentQuantity, line.remainingQuantity];
+      const values: Array<string | number | null> = [line.sequence, line.materialName, line.materialCode, materialSlipSpecification(line.specificationModel), line.color, line.unit, line.bomQuantity, line.actualInboundQuantity, line.issuedQuantity, line.currentQuantity, line.remainingQuantity];
       values.forEach((value, columnIndex) => {
         const cell = row.getCell(columnIndex + 1);
         cell.value = value;
         cell.font = BODY_FONT;
-        cell.alignment = { horizontal: columnIndex === 1 || columnIndex === 3 ? "left" : "center", vertical: "middle" };
+        // 规格型号（第 4 列）与打印件同口径：不换行；截短后仍超出列宽时缩字号，不把行高撑开。
+        cell.alignment = {
+          horizontal: columnIndex === 1 || columnIndex === 3 ? "left" : "center",
+          vertical: "middle",
+          wrapText: false,
+          ...(columnIndex === 3 ? { shrinkToFit: true } : {})
+        };
         cell.border = THIN_BORDER;
         if (columnIndex >= 6) cell.numFmt = "0.####";
       });

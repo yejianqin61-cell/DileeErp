@@ -32,6 +32,54 @@ export type MaterialSlipPrintDocument = {
 
 export type MaterialSlipPrint = { document_type: "issue" | "replenishment"; document: MaterialSlipPrintDocument };
 
+/** 纸面「规格型号」列最多保留的字数（含末尾省略号）。列宽按样例 xlsx 的 18 号字宽给。 */
+export const MATERIAL_SLIP_SPECIFICATION_MAX_LENGTH = 18;
+
+// 列头已经写着「规格型号」，值里再写一遍就是冗余参数；备注/说明/附注属于物料主数据里的补充说明，
+// 仓库对料只看规格本身，纸上不印。括号里带备注的整段一起删，避免留下「（含」这种半截文字。
+const SPECIFICATION_LABEL_PREFIX = /^\s*(?:规格型号|规格|型号)\s*[:：]\s*/u;
+const SPECIFICATION_REMARK_BRACKET = /[（(【\[][^）)】\]]*(?:备注|说明|附注)\s*(?:[:：]\s*|\s+|(?=[）)】\]]))[^）)】\]]*[）)】\]]/gu;
+const SPECIFICATION_REMARK_SUFFIX = /[（(【\[]?\s*(?:备注|说明|附注)(?:\s*[:：]\s*|\s+|(?=[）)】\]])|$)[\s\S]*$/u;
+const SPECIFICATION_SEGMENT_SEPARATOR = /\s*[;；|]\s*/u;
+const SPECIFICATION_TRAILING_SEPARATOR = /[\s，,、;；:：/|（(【\[]+$/u;
+
+/**
+ * 打印件 / 导出件「规格型号」列的展示口径（纯函数）。
+ *
+ * 用户需求（T-0023）：规格型号只显示简要内容，多余的备注、冗余参数不打印，超长自动截断、不换行。
+ * 规范顺序：压平换行与连续空白 → 去掉重复的列头前缀 → 去掉备注段 → 去重重复参数 → 截断。
+ * 截断用单个 `…`，结果总长度不超过 `maxLength`，因此纸面表格可以放心 `nowrap + ellipsis`。
+ *
+ * 注意：这里只改**纸面呈现**。`buildDocument` 返回的原始规格型号仍保留完整值，
+ * 详情弹窗要能看到全部内容（与「页面详情复用导出服务」的口径不冲突）。
+ */
+export function materialSlipSpecification(value: string | null | undefined, maxLength = MATERIAL_SLIP_SPECIFICATION_MAX_LENGTH): string {
+  let text = String(value ?? "").replace(/[\r\n\t]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (!text) return "";
+  text = text.replace(SPECIFICATION_LABEL_PREFIX, "");
+  text = text.replace(SPECIFICATION_REMARK_BRACKET, " ");
+  text = text.replace(SPECIFICATION_REMARK_SUFFIX, "");
+  // 同一段参数用分号/竖线重复写两遍时只留第一遍（例如「58cm；58cm；黑色」）。
+  const seen = new Set<string>();
+  const segments = text.split(SPECIFICATION_SEGMENT_SEPARATOR)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .filter((segment) => {
+      const key = segment.toLocaleLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  text = segments.join("；").replace(SPECIFICATION_TRAILING_SEPARATOR, "").trim();
+  if (!text) return "";
+  const characters = Array.from(text);
+  if (characters.length <= maxLength) return text;
+  const keep = Math.max(1, maxLength - 1);
+  // 截断点可能正好落在一个空格/分隔符上：先清掉再补省略号，避免纸上出现「加厚款 …」。
+  const truncated = characters.slice(0, keep).join("").replace(SPECIFICATION_TRAILING_SEPARATOR, "").trim();
+  return `${truncated || characters.slice(0, keep).join("")}…`;
+}
+
 const STATUS_SUFFIX: Record<string, string> = { draft: "（草稿）", pending_outbound: "（待仓库出库）", reversed: "（已冲销）" };
 
 /**

@@ -3,9 +3,10 @@
 // 纸面版式必须与 `docs/samples/领料单-样例.xlsx` / `补料单-样例.xlsx` 以及服务端导出的 xlsx 逐行一致：
 // 标题（含状态）、三行表头、明细列、小计。仓库拿纸跟车间对料，纸与 Excel 对不上就白做了。
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  materialSlipHeadRows, materialSlipPrintColumns, materialSlipPrintHeading, materialSlipPrintSubtotal,
+  materialSlipHeadRows, materialSlipPrintColumns, materialSlipPrintHeading, materialSlipPrintSubtotal, materialSlipSpecification,
 } from "./material-slip-print.ts";
 
 const issueDocument = {
@@ -79,4 +80,33 @@ test("订单号：与导出 xlsx 同位置印在纸头第 3 行（领料单第 4
   assert.deepEqual(replenishmentRows[2][2], ["订单号：", "SO-1"]);
   // 订单号为空时也留出这一组（纸面格子不能整格消失，导出件里那格是空的）。
   assert.deepEqual(materialSlipHeadRows({ document_type: "issue", document: { ...issueDocument, orderNo: "" } })[2][3], ["订单号：", ""]);
+});
+
+test("规格型号：去掉重复列头与备注/附注，压平换行，不打印冗余参数（T-0023）", () => {
+  assert.equal(materialSlipSpecification("58cm"), "58cm");
+  assert.equal(materialSlipSpecification(" 58cm\r\n×8K\t黑色电着 "), "58cm ×8K 黑色电着", "换行/制表符压成空格，不能带进纸面");
+  assert.equal(materialSlipSpecification("规格型号：58cm×8K"), "58cm×8K", "列头已经写着规格型号，值里不再重复");
+  assert.equal(materialSlipSpecification("58cm×8K（备注：客户指定加厚）"), "58cm×8K", "括号里的备注整段不打印");
+  assert.equal(materialSlipSpecification("58cm×8K（备注）"), "58cm×8K", "括号里只有「备注」也要整段剔除");
+  assert.equal(materialSlipSpecification("58cm×8K (说明: 加厚)"), "58cm×8K", "半角括号/说明同样剔除");
+  assert.equal(materialSlipSpecification("58cm；58cm；黑色"), "58cm；黑色", "重复参数只留一份");
+  assert.equal(materialSlipSpecification("58cm/备注：加厚"), "58cm", "斜杠后的备注不打印");
+  assert.equal(materialSlipSpecification("说明书 210×140"), "说明书 210×140", "「说明书」是规格本身，不能当成「说明」备注误删");
+  assert.equal(materialSlipSpecification("备注：只有备注"), "", "整格都是备注时留空，不印无意义内容");
+  assert.equal(materialSlipSpecification(null), "");
+  assert.equal(materialSlipSpecification("   "), "");
+});
+
+test("规格型号：超过列宽自动截断加省略号，长度不超过上限（T-0023）", () => {
+  const long = "58cm×8K 黑色电着 加厚款 双面 防紫外线 客户指定";
+  const brief = materialSlipSpecification(long);
+  assert.ok(Array.from(brief).length <= 18, "截断后总字数（含省略号）不超过 18");
+  assert.ok(brief.endsWith("…"), "截断必须有省略号");
+  assert.equal(brief.includes("\n"), false, "纸面不允许换行");
+  assert.equal(materialSlipSpecification(long, 6), "58cm×…", "上限可传参，便于其它列复用");
+});
+
+test("规格型号：打印件单元格保证单行省略，不能换成多行（T-0023）", () => {
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(css, /\.material-slip-table td\.material-slip-spec \{[^}]*white-space: nowrap;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;[^}]*\}/, "规格型号格必须 nowrap + 省略号，否则长规格会把行撑高/折行");
 });

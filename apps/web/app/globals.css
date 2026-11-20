@@ -869,6 +869,10 @@ button { cursor: pointer; }
 .material-slip-head th, .material-slip-table th { background: #f2f2f2; font-weight: bold; text-align: center; }
 .material-slip-head th { width: 12%; }
 .material-slip-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+/* 规格型号（T-0023）：纸面只印简要内容，超长不换行、按列宽截断。
+   内容本身先由 lib/material-slip-print.ts 的 materialSlipSpecification 去备注/截断，
+   这一条负责兜住字体估算之外的溢出（中文全角比 xlsx 列宽估算更宽）。 */
+.material-slip-table td.material-slip-spec { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .material-slip-total td { font-weight: bold; }
 .material-slip-remark { margin: 6px 0 0; font-size: 12px; }
 
