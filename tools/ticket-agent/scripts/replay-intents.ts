@@ -1,12 +1,9 @@
 /**
- * 用**真实工单目录**回放一组 @ 消息，检查意图路由与进度回答。
+ * 用**真实工单目录的副本**回放一组 @ 消息，检查 Coordinator 的动作执行。
  *
- * 为什么不连真飞书：我们要验证的是「收到这句话之后会怎么答」，
- * 飞书只负责把消息送到（已单独验证）。用假传输能稳定看到每条回复全文，也敢在
- * 生产工单目录的副本上跑。
- *
- * 为什么要跑真模型：提问路径就是模型调用，假模型只能证明代码通，不能证明答案像人话。
- * 没有 DEEPSEEK_API_KEY 时会走兜底话术，脚本照常通过但会标注。
+ * 为什么用假调度器：这里要验证的是「模型给出某个动作后，Coordinator 做对了吗」——
+ * 建单、追加、查进度、回复、部署各走各的路径。模型本身选什么动作由调度器单测与
+ * 真机端到端覆盖，脚本里再调一次真模型只会让结果不可复现。
  *
  * 用法：
  *   node --import tsx scripts/replay-intents.ts /opt/dilee/agent/tickets
@@ -18,11 +15,12 @@ import { join } from 'node:path'
 
 import { Coordinator } from '../src/coordinator.ts'
 import { FakeFeishuTransport } from '../src/feishu-fake.ts'
+import type { DispatchAction, DispatchInput, DispatchOptions } from '../src/dispatcher.ts'
+import type { DispatchResult } from '../src/dispatcher.ts'
 import type { HarnessEvent, HarnessResult } from '../src/harness-runner.ts'
 import { TicketStore } from '../src/ticket-store.ts'
 
 const sourceDir = process.argv[2] ?? '/opt/dilee/agent/tickets'
-const apiKey = process.env.DEEPSEEK_API_KEY?.trim() ?? ''
 
 const workDir = mkdtempSync(join(tmpdir(), 'dilee-replay-'))
 cpSync(sourceDir, workDir, { recursive: true })
@@ -50,6 +48,39 @@ function fakeRun(input: { onEvent?: (event: HarnessEvent) => void }): Promise<Ha
   })
 }
 
+/** 假调度器：按原话匹配返回模型「本会选」的动作，模拟一次 LLM 调度。 */
+function makeFakeDispatch(): (input: DispatchInput, options: DispatchOptions) => Promise<DispatchResult> {
+  return async (input) => {
+    const text = input.text.trim()
+    const action = pickAction(text, input)
+    return { action, source: 'model' }
+  }
+}
+
+function pickAction(text: string, input: DispatchInput): DispatchAction {
+  const statusMatch = /(?:汇报|查|看)?\s*(?:工单)?\s*(T-\d{3,4})\s*(?:的)?(?:进度|状态|情况|怎么样|如何)/.exec(text)
+  if (statusMatch !== null) return { kind: 'status', ticketNo: statusMatch[1] }
+  if (/^T-\d{3,4}$/.test(text)) return { kind: 'status', ticketNo: text }
+
+  if (/部署|上线|发布/.test(text) && text.length <= 16) return { kind: 'deploy' }
+
+  // 回复卡片：模拟「模型被告知上下文后选追加」
+  if (input.replyingToTicketNo !== null) {
+    return { kind: 'append_ticket', ticketNo: input.replyingToTicketNo }
+  }
+
+  // 明确的改动诉求
+  if (/(能不能|支持|希望|加|改成|修|实现)/.test(text) && text.length >= 10) {
+    return {
+      kind: 'create_ticket',
+      hint: { module: 'procurement', expected: '搜索框支持按供应商名称搜索', entry: null },
+    }
+  }
+
+  // 其余一律当闲聊回复
+  return { kind: 'reply', text: '我是迪礼顾问，迪礼 ERP 的维护助手。有要改的随时 @我。' }
+}
+
 const coordinator = new Coordinator({
   store,
   transport,
@@ -57,7 +88,7 @@ const coordinator = new Coordinator({
   nodePath: '/fake/node',
   repoPath: '/fake/repo',
   log: (line) => console.log(`  · ${line}`),
-  answererKey: apiKey,
+  dispatchImpl: makeFakeDispatch(),
   runHarnessImpl: async (input) => fakeRun(input),
   progressNoticeMs: 0,
   cardUpdateMs: 1,
@@ -123,7 +154,7 @@ function printSince(from: number): void {
 
 async function main(): Promise<void> {
   console.log(`回放目录：${workDir}（真实目录的副本，不改生产工单）`)
-  console.log(apiKey.length > 0 ? '问答模型：真调用 DeepSeek' : '问答模型：未配置密钥，将走兜底话术')
+  console.log('调度器：假实现（模拟模型选动作），验证 Coordinator 的动作执行')
   console.log('')
 
   const buildingNo = seedBuildingTicket()
@@ -152,7 +183,7 @@ async function main(): Promise<void> {
     const grew = countAfter > countBefore
 
     console.log(`[${index + 1}] @我：${scenario.text}`)
-    console.log(`    意图：${outcome.outcome} ${outcome.note ?? ''}`)
+    console.log(`    动作：${outcome.outcome} ${outcome.note ?? ''}`)
     printSince(before)
     if (grew !== !scenario.expectNoNewTicket) {
       failures += 1

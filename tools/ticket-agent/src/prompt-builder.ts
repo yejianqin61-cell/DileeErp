@@ -10,7 +10,20 @@
  * 真正的保护在 DSH 侧的沙箱与黑名单；prompt 只是第一层，不能只靠它。
  */
 
-import type { TriageResult } from './ticket-state.ts'
+/**
+ * 结构化提示：由调度器（模型）抽取，可选。
+ *
+ * 2026-11-20 之前这里是 `triage.ts` 用关键词正则抽出来的，字段名沿用了 `TriageResult`。
+ * 现在抽取交给模型，但**它只是提示**：prompt 里明确写了「与原话冲突时以原话为准」。
+ */
+export interface RequestHint {
+  /** 涉及模块，如 sales / procurement。 */
+  readonly module: string | null
+  /** 用户期望的结果。 */
+  readonly expected: string | null
+  /** 复现入口，如页面路径。 */
+  readonly entry: string | null
+}
 
 /** 运行环境事实。与 Phase 1/2 实测一致，改这里要同步改文档。 */
 export interface PromptEnvironment {
@@ -97,13 +110,13 @@ function userDataSection(text: string): string {
   ].join('\n')
 }
 
-function triageSection(triage: TriageResult | undefined): string {
-  if (triage === undefined) return ''
+function hintSection(hint: RequestHint | undefined): string {
+  if (hint === undefined) return ''
   const lines = ['# 已识别的结构化信息']
-  if (triage.module !== null) lines.push(`- 模块：${triage.module}`)
-  if (triage.expected !== null) lines.push(`- 期望：${triage.expected}`)
-  if (triage.entry !== null) lines.push(`- 入口：${triage.entry}`)
-  lines.push('- 以上由规则从原话提取，可能有偏差；与原话冲突时以原话为准。')
+  if (hint.module !== null) lines.push(`- 模块：${hint.module}`)
+  if (hint.expected !== null) lines.push(`- 期望：${hint.expected}`)
+  if (hint.entry !== null) lines.push(`- 入口：${hint.entry}`)
+  lines.push('- 以上由调度模型从原话推断，可能有偏差；与原话冲突时以原话为准。')
   return lines.join('\n')
 }
 
@@ -144,7 +157,7 @@ const ROLE = [
 export function buildCreatePrompt(input: {
   env: PromptEnvironment
   userText: string
-  triage?: TriageResult
+  hint?: RequestHint
 }): string {
   return [
     ROLE,
@@ -155,8 +168,8 @@ export function buildCreatePrompt(input: {
     '',
     userDataSection(input.userText),
     '',
-    triageSection(input.triage),
-    triageSection(input.triage) === '' ? '' : '',
+    hintSection(input.hint),
+    hintSection(input.hint) === '' ? '' : '',
     deliverySection(false),
   ]
     .filter((block, index, all) => !(block === '' && all[index - 1] === ''))
@@ -173,7 +186,7 @@ export function buildCreatePrompt(input: {
 export function buildAppendPrompt(input: {
   env: PromptEnvironment
   userText: string
-  triage?: TriageResult
+  hint?: RequestHint
   previousTurns: number
 }): string {
   return [
@@ -189,7 +202,7 @@ export function buildAppendPrompt(input: {
     '',
     userDataSection(input.userText),
     '',
-    triageSection(input.triage),
+    hintSection(input.hint),
     deliverySection(true),
   ]
     .join('\n')

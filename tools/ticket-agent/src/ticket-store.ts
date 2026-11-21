@@ -16,6 +16,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type { RequestHint } from './prompt-builder.ts'
+
 export interface StoredTicket {
   /** 内部 uuid，文件名用。 */
   readonly id: string
@@ -26,7 +28,7 @@ export interface StoredTicket {
   cardMessageId: string | null
   /** DSH 会话 id。首轮跑完才有值。 */
   sessionId: string | null
-  /** 九态之一。字符串而非枚举，避免与 ticket-state 循环依赖。 */
+  /** 九态之一。字符串而非枚举：状态标签只在 progress.ts 一处维护。 */
   state: string
   /** 用户原话，按轮次累积。每轮一条，不覆盖。 */
   readonly turns: Array<{
@@ -36,6 +38,13 @@ export interface StoredTicket {
     at: string
     /** 这一轮是新建还是追加。 */
     kind: 'create' | 'append'
+    /**
+     * 调度模型从这一轮原话里推断的结构化提示。
+     *
+     * 挂在**轮次**上而不是工单上：追加轮的提示只对那一轮有效，
+     * 挂工单会把上一轮的期望带到下一轮的 prompt 里。为空表示模型没抽到。
+     */
+    hint?: RequestHint | null
   }>
   /** 施工进度。run 期间覆盖更新；旧工单没有这个字段。 */
   progress?: TicketProgress | null
@@ -170,6 +179,7 @@ export class TicketStore {
     text: string
     at: string
     state: string
+    hint?: RequestHint | null
   }): StoredTicket {
     const id = `tk_${createHash('sha256').update(input.messageId).digest('hex').slice(0, 24)}`
     const existing = this.get(id)
@@ -182,7 +192,15 @@ export class TicketStore {
       cardMessageId: null,
       sessionId: null,
       state: input.state,
-      turns: [{ messageId: input.messageId, text: input.text, at: input.at, kind: 'create' }],
+      turns: [
+        {
+          messageId: input.messageId,
+          text: input.text,
+          at: input.at,
+          kind: 'create',
+          hint: input.hint ?? null,
+        },
+      ],
       createdAt: input.at,
       updatedAt: input.at,
     }
@@ -258,12 +276,24 @@ export class TicketStore {
    * 追加一轮。用于「回复卡片提出改进」。
    * 不改 state，由调用方决定推进到哪一态。
    */
-  appendTurn(id: string, input: { messageId: string; text: string; at: string }): StoredTicket {
+  appendTurn(
+    id: string,
+    input: { messageId: string; text: string; at: string; hint?: RequestHint | null },
+  ): StoredTicket {
     const ticket = this.get(id)
     if (ticket === null) throw new TicketStoreError('ticket-not-found', id)
     const next: StoredTicket = {
       ...ticket,
-      turns: [...ticket.turns, { messageId: input.messageId, text: input.text, at: input.at, kind: 'append' }],
+      turns: [
+        ...ticket.turns,
+        {
+          messageId: input.messageId,
+          text: input.text,
+          at: input.at,
+          kind: 'append',
+          hint: input.hint ?? null,
+        },
+      ],
       updatedAt: input.at,
     }
     writeJsonAtomic(this.ticketPath(id), next)

@@ -63,6 +63,9 @@ function setup(runResult: HarnessResult = harnessOk()) {
     repoPath: '/fake/repo',
     now: () => FIXED,
     log: (line) => logs.push(line),
+    // 这个文件测的是 run/会话/卡片路径：调度器一律给 create_ticket。
+    // 动作选择本身在 coordinator-intent.test.ts 里测。
+    dispatchImpl: async () => ({ action: { kind: 'create_ticket' }, source: 'model' }),
     runHarnessImpl: async (options) => {
       prompts.push(options.prompt)
       runnerCalls.push({ sessionId: options.sessionId })
@@ -121,21 +124,6 @@ test('首轮不带 sessionId，次轮带上次捕获的 id', async () => {
     assert.equal(runnerCalls[0].sessionId, undefined, '首轮不应带 session-id')
     // 第二轮带上首轮捕获的会话
     assert.equal(runnerCalls[1].sessionId, 'session-1')
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('含糊需求：只追问，不跑 run、不发主卡', async () => {
-  const { dir, transport, coordinator, runnerCalls } = setup()
-  try {
-    const outcome = await coordinator.handle(message({ text: '这个不对' }))
-    await coordinator.drain()
-
-    assert.equal(outcome.outcome, 'needs-info')
-    assert.equal(runnerCalls.length, 0, '不该跑 run')
-    assert.equal(transport.ofKind('card').length, 0, '不该发主卡')
-    assert.equal(transport.ofKind('reply').length, 1, '应引用原消息追问')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -270,6 +258,7 @@ test('并发两条消息：串行执行，不并行', async () => {
     repoPath: '/x',
     now: () => FIXED,
     log: () => {},
+    dispatchImpl: async () => ({ action: { kind: 'create_ticket' }, source: 'model' }),
     runHarnessImpl: async () => {
       running += 1
       peak = Math.max(peak, running)

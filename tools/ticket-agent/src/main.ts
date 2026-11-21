@@ -32,8 +32,9 @@ interface Config {
   ticketsDir: string
   timeoutMs: number
   deepseekKey: string
-  answererBaseUrl: string
-  answererModel: string
+  /** 调度模型（判断「这条消息要做什么」）。 */
+  dispatchBaseUrl: string
+  dispatchModel: string
   /** 群内进度播报间隔。0 表示不播报。 */
   progressNoticeMs: number
   /** 卡片原地更新间隔。 */
@@ -52,9 +53,15 @@ const DEFAULTS = {
   ticketsDir: '/opt/dilee/agent/tickets',
   baseUrl: 'https://open.feishu.cn',
   timeoutMs: 45 * 60 * 1000,
-  answererBaseUrl: 'https://api.deepseek.com',
-  answererModel: 'deepseek-chat',
-  progressNoticeMs: 5 * 60 * 1000,
+  dispatchBaseUrl: 'https://api.deepseek.com',
+  dispatchModel: 'deepseek-chat',
+  /**
+   * 默认关闭周期播报（2026-11-20 用户要求「播报太多啰嗦，要精简」）。
+   *
+   * 群里只留开工、收尾、结束三条；卡片原地更新不新增消息，仍然保留。
+   * 想临时看心跳就设 PROGRESS_NOTICE_MS=900000（15 分钟）—— 但不建议常态化开。
+   */
+  progressNoticeMs: 0,
   cardUpdateMs: 20 * 1000,
 }
 
@@ -106,8 +113,8 @@ function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
     rootDir: env.DILEE_ROOT?.trim() || DEFAULTS.rootDir,
     ticketsDir: env.TICKETS_DIR?.trim() || DEFAULTS.ticketsDir,
     timeoutMs,
-    answererBaseUrl: env.DEEPSEEK_BASE_URL?.trim() || DEFAULTS.answererBaseUrl,
-    answererModel: env.DEEPSEEK_MODEL?.trim() || DEFAULTS.answererModel,
+    dispatchBaseUrl: env.DEEPSEEK_BASE_URL?.trim() || DEFAULTS.dispatchBaseUrl,
+    dispatchModel: env.DEEPSEEK_MODEL?.trim() || DEFAULTS.dispatchModel,
     progressNoticeMs,
     cardUpdateMs,
     autoDeploy: envFlag(env.AUTO_DEPLOY, true),
@@ -133,8 +140,9 @@ async function main(): Promise<void> {
   log(`[main] DSH：${config.dshBin}`)
   log(`[main] 工单目录：${config.ticketsDir}`)
   log(`[main] 单次 run 超时：${Math.round(config.timeoutMs / 60000)} 分钟`)
-  log(`[main] 问答模型：${config.answererModel} @ ${config.answererBaseUrl}`)
-  log(`[main] 进度播报：${config.progressNoticeMs === 0 ? '关闭' : `${Math.round(config.progressNoticeMs / 1000)} 秒`}；卡片更新：${Math.round(config.cardUpdateMs / 1000)} 秒`)
+  log(`[main] 问答模型：${config.dispatchModel} @ ${config.dispatchBaseUrl}`)
+  log(`[main] 调度：模型 + 工具（create_ticket / append_ticket / start_run / status / reply / deploy）`)
+  log(`[main] 进度播报：${config.progressNoticeMs === 0 ? '关闭（只发开工/收尾/结束三条）' : `${Math.round(config.progressNoticeMs / 1000)} 秒`}；卡片更新：${Math.round(config.cardUpdateMs / 1000)} 秒`)
   log(
     `[main] 部署：${
       config.deployEnabled
@@ -174,9 +182,9 @@ async function main(): Promise<void> {
     repoPath: config.repoPath,
     timeoutMs: config.timeoutMs,
     childEnv: { DEEPSEEK_API_KEY: config.deepseekKey },
-    answererKey: config.deepseekKey,
-    answererBaseUrl: config.answererBaseUrl,
-    answererModel: config.answererModel,
+    dispatchKey: config.deepseekKey,
+    dispatchBaseUrl: config.dispatchBaseUrl,
+    dispatchModel: config.dispatchModel,
     progressNoticeMs: config.progressNoticeMs,
     cardUpdateMs: config.cardUpdateMs,
     deployConfig: config.deployEnabled

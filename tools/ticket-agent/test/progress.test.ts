@@ -7,7 +7,6 @@ import {
   applyEvent,
   formatDuration,
   fromStored,
-  heartbeatLine,
   overviewText,
   phaseForTool,
   phaseFromString,
@@ -235,19 +234,22 @@ test('进度卡片：蓝色、标题带票号、脚注说明可追加', () => {
   assert.match(card.footer ?? '', /回复这张卡片可追加需求/)
 })
 
-test('群内播报：一行内说清阶段、时长、工具数', () => {
-  const line = heartbeatLine({
-    ticketNo: 'T-0007',
-    view: toView(
-      { ...INITIAL_PROGRESS, phase: 'editing', toolCalls: 31, subagentCalls: 1, files: ['a', 'b', 'c'] },
-      START,
-    ),
-    nowMs: START + 492_000,
-  })
-  assert.match(line, /^T-0007 在改代码 8 分 12 秒/)
-  assert.match(line, /工具调用 31 次/)
-  assert.match(line, /已触及 3 个文件/)
-  assert.match(line, /子 Agent 1 次/)
+test('进度卡片只有三行：已用 / 当前 / 改动，不再塞自述原文', () => {
+  const view = toView(
+    {
+      ...INITIAL_PROGRESS,
+      phase: 'editing',
+      toolCalls: 31,
+      subagentCalls: 1,
+      files: ['a', 'b', 'c'],
+      lastText: '我把下拉层改成 SearchableSelect 了，正在补测试',
+    },
+    START,
+  )
+  const card = progressCard({ ticketNo: 'T-0007', view, nowMs: START + 492_000, queueAhead: 0 })
+  assert.equal(card.lines.length, 3, `实际 ${card.lines.length} 行：${card.lines.join(' / ')}`)
+  assert.ok(!card.lines.some((line) => line.includes('我把下拉层')), '自述原文不该进卡片')
+  assert.ok(!card.lines.some((line) => line.includes('工具调用')), '工具调用数不该进卡片')
 })
 
 test('九态中文标签覆盖全部状态', () => {

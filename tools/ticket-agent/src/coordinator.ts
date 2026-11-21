@@ -1,29 +1,27 @@
 /**
  * Coordinator：飞书消息与 DSH 之间的唯一编排者。
  *
- * 它做五件事，每件都尽量薄：
- *   1. 判定这条消息的**意图**（需求 / 问进度 / 提问 / 闲聊 / 操作指令）；
- *   2. 需求判定**新工单**还是**追加到已有工单**；
- *   3. 把口语需求交给 prompt-builder 转成专业 prompt；
- *   4. 起一次 harness run（首轮取会话 id，后续续接），并在跑的过程中主动同步进度；
- *   5. 把结果写回飞书卡片。
+ * 它做四件事，每件都尽量薄：
+ *   1. 把「这条消息要做什么」交给**调度器**（模型 + 工具），不再用正则猜（2026-11-20 改）；
+ *   2. 用**结构判定**决定「追加到已有工单」还是「新单」——这条永远不由模型决定；
+ *   3. 把口语需求交给 prompt-builder 转成专业 prompt，起一次 harness run；
+ *   4. 把结果写回飞书卡片，成功则排队部署。
  *
- * 为什么要有意图层（2026-11-16 加）：用户问「汇报T-0007进度」时，旧实现把它当需求，
- * 分诊只能回「这条我还不够开工」。用户等了 14 分钟，问了两次，两次都被挡回来，
- * 最后骂了一句。缺的不是话术，是「这条消息是不是需求」这个判断。
+ * 为什么换成 LLM 调度（2026-11-19 用户要求「不要再用正则去匹配用户说的话，自由度太低」）：
+ * 关键词表覆盖不了人的说话方式。「再次尝试部署」被判成需求、回了一句「你希望它变成什么样」
+ * 只是最近一次；每补一个词就多一份误判面，而且永远补不完没见过的说法。
  *
- * 为什么判定只认「回复卡片」为追加：
- * 用户 2026-11-14 拍板。语义相似度会误归单，而误归单比漏归单代价高得多 ——
- * 一条需求被塞进错误的工单，Agent 会拿着不相关上下文改代码。
+ * 为什么「追加还是新单」仍由代码判定（用户 2026-11-14 拍板，2026-11-19 再次确认）：
+ * 语义相似度会误归单，而误归单比漏归单代价高得多 —— 一条需求被塞进错误的工单，
+ * Agent 会拿着不相关上下文改代码。所以模型说「建新单」也不算，Coordinator 强制纠偏。
  *
  * 为什么单车道：Phase 1 实测构建期可用内存最低 152 MB，并行必然打满 swap。
  * 所以这里用一条串行队列，后来的工单排队而不是抢资源。
- * 问答不走这条车道：它不改代码，走它会白白占住改代码的位置。
+ * 非改代码的动作（回复、查进度）走另一条队列，不占改代码的位置。
  */
 
 import type { FeishuCard, FeishuTransport } from './feishu-transport.ts'
 import type { IncomingMessage } from './feishu-event.ts'
-import { triage } from './triage.ts'
 import {
   DEFAULT_TIMEOUT_MS,
   runHarness,
@@ -37,12 +35,16 @@ import {
   type PromptEnvironment,
 } from './prompt-builder.ts'
 import { TicketStore, parseTicketNo, type StoredTicket, type TicketResult } from './ticket-store.ts'
-import { classifyIntent, normalizeText, type IntentResult } from './intent.ts'
+import {
+  dispatch,
+  summarizeTickets,
+  type DispatchAction,
+  type DispatchInput,
+} from './dispatcher.ts'
 import {
   INITIAL_PROGRESS,
   applyEvent,
   formatDuration,
-  heartbeatLine,
   overviewText,
   progressCard,
   stateLabel,
@@ -52,16 +54,12 @@ import {
   type ProgressState,
   type ProgressView,
 } from './progress.ts'
-import { answerQuestion } from './answerer.ts'
 import {
   runDeploy,
   type DeployConfig,
   type DeployPhase,
   type DeployResult,
 } from './deploy.ts'
-
-/** 分诊不通过时的追问话术（沿用 Phase 2 的口径）。 */
-import { askForMissing } from './triage.ts'
 
 export interface CoordinatorOptions {
   store: TicketStore
@@ -76,13 +74,20 @@ export interface CoordinatorOptions {
   now?: () => Date
   /** 注入用：测试时替换真实 harness。 */
   runHarnessImpl?: typeof runHarness
-  /** 问答模型密钥（DEEPSEEK_API_KEY）。空字符串时问答走兜底话术。 */
-  answererKey?: string
-  answererBaseUrl?: string
-  answererModel?: string
-  /** 注入用：测试时替换真实模型调用。 */
-  answererImpl?: typeof answerQuestion
-  /** 群内进度播报间隔，默认 5 分钟；0 表示不播报（测试用）。 */
+  /** 注入用：测试时替换真实调度器，不真调模型。 */
+  dispatchImpl?: typeof dispatch
+  /** 调度模型密钥。空字符串时所有消息走兜底话术。 */
+  dispatchKey?: string
+  dispatchBaseUrl?: string
+  dispatchModel?: string
+  /** 注入用：替换模型请求。 */
+  dispatchFetchImpl?: typeof fetch
+  /**
+   * 群内进度播报间隔，默认 0（关闭）。
+   *
+   * 2026-11-20 用户要求「播报太多啰嗦，信息刷屏，要精简」：群里只留开工、收尾、结束三条，
+   * 周期心跳默认关掉。需要时用环境变量重开。
+   */
   progressNoticeMs?: number
   /** 卡片原地更新间隔，默认 20 秒；负数表示不更新（测试用）。 */
   cardUpdateMs?: number
@@ -137,8 +142,8 @@ const DEPLOY_PHASE_LABELS: Record<DeployPhase, string> = {
 /** 进度落盘间隔：比卡片更新慢，减少文件写；阶段变化时立即写。 */
 const PROGRESS_PERSIST_MS = 5_000
 
-/** 卡片更新间隔下限：防止事件流很密时把飞书打爆。 */
-const MIN_CARD_UPDATE_MS = 5_000
+/** 可以重跑的工单状态。done / deploying 重跑没有意义。 */
+const RERUNNABLE_STATES = new Set(['needs_info', 'failed'])
 
 /**
  * 判定路由。纯函数，可单测。
@@ -146,6 +151,8 @@ const MIN_CARD_UPDATE_MS = 5_000
  * 判定顺序固定，只有一条规则：
  *   消息的 parentId 或 rootId 命中某工单的 cardMessageId → 追加。
  * 其余一律新单。
+ *
+ * 这条规则**不看用户说了什么**，只看消息挂在谁下面 —— 这正是它不会被模型误判的原因。
  */
 export function decideRoute(
   store: TicketStore,
@@ -236,10 +243,11 @@ interface ResolvedOptions {
   timeoutMs: number
   log: (line: string) => void
   runHarnessImpl: typeof runHarness
-  answererKey: string
-  answererBaseUrl: string
-  answererModel: string
-  answererImpl: typeof answerQuestion
+  dispatchImpl: typeof dispatch
+  dispatchKey: string
+  dispatchBaseUrl: string
+  dispatchModel: string
+  dispatchFetchImpl: typeof fetch | undefined
   progressNoticeMs: number
   cardUpdateMs: number
   deployConfig: DeployConfig | null
@@ -251,7 +259,7 @@ export class Coordinator {
   private readonly opts: ResolvedOptions
   /** 串行队列：单车道，防止两单同时吃满 2 核。 */
   private queue: Promise<unknown> = Promise.resolve()
-  /** 问答队列：轻活，不占改代码的车道，但 drain 时要等到。 */
+  /** 轻活队列：回复、查进度。不占改代码的车道，但 drain 时要等到。 */
   private answerQueue: Promise<unknown> = Promise.resolve()
   /** 卡片更新串行化，避免乱序覆盖。 */
   private cardChain: Promise<void> = Promise.resolve()
@@ -268,11 +276,12 @@ export class Coordinator {
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       log: options.log ?? ((line) => console.log(line)),
       runHarnessImpl: options.runHarnessImpl ?? runHarness,
-      answererKey: options.answererKey ?? '',
-      answererBaseUrl: options.answererBaseUrl ?? 'https://api.deepseek.com',
-      answererModel: options.answererModel ?? 'deepseek-chat',
-      answererImpl: options.answererImpl ?? answerQuestion,
-      progressNoticeMs: options.progressNoticeMs ?? 5 * 60 * 1000,
+      dispatchImpl: options.dispatchImpl ?? dispatch,
+      dispatchKey: options.dispatchKey ?? '',
+      dispatchBaseUrl: options.dispatchBaseUrl ?? 'https://api.deepseek.com',
+      dispatchModel: options.dispatchModel ?? 'deepseek-chat',
+      dispatchFetchImpl: options.dispatchFetchImpl,
+      progressNoticeMs: options.progressNoticeMs ?? 0,
       cardUpdateMs: options.cardUpdateMs ?? 20 * 1000,
       deployConfig: options.deployConfig ?? null,
       deployImpl: options.deployImpl ?? runDeploy,
@@ -303,86 +312,141 @@ export class Coordinator {
    *
    * 注意：需求入队本身就意味着「稍后执行」。这里返回的是**入队完成**，
    * 真正的执行结果通过卡片反馈，不会在这个函数的返回值里。
-   * 非需求问答在后台队列里回，返回的是「已受理这个意图」。
    */
   async handle(message: IncomingMessage): Promise<HandleOutcome> {
     const at = this.stamp()
-    const intent = classifyIntent(message.text)
+    const route = decideRoute(this.opts.store, message)
+    const tickets = this.opts.store.all()
 
-    if (intent.intent === 'command' && this.isDeployCommand(message.text)) {
-      this.enqueueDeploy({ kind: 'command', messageId: message.messageId })
-      this.opts.log('[coord] intent=command deploy')
-      return { outcome: 'answered', note: 'deploy:command' }
+    const input: DispatchInput = {
+      text: message.text,
+      tickets: summarizeTickets(tickets, this.nowMs()),
+      activeCount: tickets.filter(
+        (ticket) => ticket.state === 'queued' || ticket.state === 'building',
+      ).length,
+      gated: tickets.filter((ticket) => ticket.state === 'gated').map((ticket) => ticket.no),
+      deployEnabled: this.opts.deployConfig !== null,
+      replyingToTicketNo: route.kind === 'append' ? route.ticket.no : null,
     }
 
-    if (intent.intent !== 'requirement') {
-      this.enqueueAnswer(() => this.replyIntent(message, intent))
-      this.opts.log(`[coord] intent=${intent.intent} reason=${intent.reason}`)
-      return {
-        outcome: 'answered',
-        note: `${intent.intent}:${intent.reason}`,
-        ...(intent.ticketNo === null ? {} : { ticketNo: intent.ticketNo }),
-      }
-    }
+    const dispatched = await this.opts.dispatchImpl(input, {
+      apiKey: this.opts.dispatchKey,
+      baseUrl: this.opts.dispatchBaseUrl,
+      model: this.opts.dispatchModel,
+      log: this.opts.log,
+      ...(this.opts.dispatchFetchImpl === undefined ? {} : { fetchImpl: this.opts.dispatchFetchImpl }),
+    })
+    this.opts.log(
+      `[coord] dispatch=${dispatched.action.kind} source=${dispatched.source}` +
+        (dispatched.error === undefined ? '' : ` error=${dispatched.error}`),
+    )
 
-    return this.handleRequirement(message, at)
+    const action = this.coerceAction(route, dispatched.action)
+    return await this.execute(action, message, route, at)
   }
-
-  private isDeployCommand(text: string): boolean {
-    return /部署|上线|发布/.test(normalizeText(text))
-  }
-
-  // ───────────────────────────── 非需求路径 ─────────────────────────────
 
   /**
-   * 答非需求消息。任何分支都不建单、不占用改代码车道。
+   * 硬规则纠偏。模型只负责「想做什么」，能不能这么做由这里定。
    *
-   * 问答失败也必须回一句人话：群里最怕的是 @ 了机器人却没有任何反应。
+   * 1. 回复工单卡片 → 一律追加。模型说建新单也不算。
+   * 2. 追加但没给票号（模型对卡片回复用了 ask_more_info）→ 补上结构判定给的票号。
    */
-  private async replyIntent(message: IncomingMessage, intent: IntentResult): Promise<void> {
-    try {
-      if (intent.intent === 'status') {
-        await this.opts.transport.replyText(message.messageId, this.statusAnswer(intent.ticketNo))
-        return
-      }
-      if (intent.intent === 'command') {
-        await this.opts.transport.replyText(message.messageId, this.commandAnswer())
-        return
-      }
-      if (intent.intent === 'chitchat') {
-        await this.opts.transport.replyText(message.messageId, this.chitchatAnswer(message.text))
-        return
-      }
-      // question
-      const answer = await this.opts.answererImpl({
-        question: message.text,
-        context: this.qaContext(),
-        apiKey: this.opts.answererKey,
-        baseUrl: this.opts.answererBaseUrl,
-        model: this.opts.answererModel,
-      })
+  private coerceAction(route: RouteDecision, action: DispatchAction): DispatchAction {
+    if (route.kind !== 'append') return action
+
+    if (action.kind === 'create_ticket') {
       this.opts.log(
-        `[coord] answer source=${answer.source}${answer.error === undefined ? '' : ` error=${answer.error}`}`,
+        `[coord] 纠偏：模型要给卡片回复建新单，按结构判定改成追加 ${route.ticket.no}`,
       )
-      await this.opts.transport.replyText(message.messageId, answer.text)
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      this.opts.log(`[coord] replyIntent failed intent=${intent.intent}: ${reason}`)
-      try {
-        await this.opts.transport.replyText(message.messageId, '我这边处理出错了一下，麻烦再发一次。')
-      } catch {
-        // 连错误提示都发不出去时，只能留日志
+      return {
+        kind: 'append_ticket',
+        ticketNo: route.ticket.no,
+        ...(action.title === undefined ? {} : { title: action.title }),
+        ...(action.hint === undefined ? {} : { hint: action.hint }),
       }
+    }
+    if (action.kind === 'ask_more_info' && action.ticketNo === null) {
+      return { ...action, ticketNo: route.ticket.no }
+    }
+    return action
+  }
+
+  private async execute(
+    action: DispatchAction,
+    message: IncomingMessage,
+    route: RouteDecision,
+    at: string,
+  ): Promise<HandleOutcome> {
+    if (action.kind === 'deploy') {
+      this.enqueueDeploy({ kind: 'command', messageId: message.messageId })
+      return { outcome: 'answered', note: 'deploy:command' }
+    }
+    if (action.kind === 'status') {
+      const answer = this.statusAnswer(action.ticketNo)
+      this.enqueueAnswer(() => this.reply(message.messageId, answer))
+      return {
+        outcome: 'answered',
+        note: 'status',
+        ...(action.ticketNo === null ? {} : { ticketNo: action.ticketNo }),
+      }
+    }
+    if (action.kind === 'reply') {
+      this.enqueueAnswer(() => this.reply(message.messageId, action.text))
+      return { outcome: 'answered', note: 'reply' }
+    }
+    if (action.kind === 'ask_more_info') {
+      // 追问不该占用改代码车道：它不跑 run，只回一句话。
+      return await this.askMoreInfo(action.question, action.ticketNo, message, at)
+    }
+    if (action.kind === 'start_run') {
+      return await this.startRun(action.ticketNo, message, at)
+    }
+    if (action.kind === 'append_ticket') {
+      return await this.appendTicket(action, message, route, at)
+    }
+    return await this.createTicket(action, message, at)
+  }
+
+  // ───────────────────────────── 轻活：回复与追问 ─────────────────────────────
+
+  /**
+   * 回一条消息。失败只记日志：回话失败不该影响别的动作。
+   * 群里最怕的是 @ 了机器人却没有任何反应，所以失败时尽力再补一句。
+   */
+  private async reply(messageId: string, text: string): Promise<void> {
+    try {
+      await this.opts.transport.replyText(messageId, text)
+    } catch (error) {
+      this.opts.log(`[coord] reply failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
-  /** 问答用的上下文：全部来自本地工单文件，不碰生产库。 */
-  private qaContext(): { tickets: readonly StoredTicket[]; activeCount: number } {
-    const tickets = this.opts.store.all()
-    const activeCount = tickets.filter(
-      (ticket) => ticket.state === 'queued' || ticket.state === 'building',
-    ).length
-    return { tickets, activeCount }
+  /** 需求不够时追问。带票号的只回话，不建新单、不追加轮次。 */
+  private async askMoreInfo(
+    question: string,
+    ticketNo: string | null,
+    message: IncomingMessage,
+    at: string,
+  ): Promise<HandleOutcome> {
+    if (ticketNo !== null) {
+      const existing = this.opts.store.getByNo(ticketNo)
+      if (existing !== null) {
+        await this.reply(message.messageId, question)
+        this.opts.log(`[coord] ask-more-info ${existing.no}`)
+        return { outcome: 'answered', ticketNo: existing.no, note: 'ask-more-info', state: existing.state }
+      }
+    }
+    // 留一张 needs_info 的工单：用户补充的消息要能接回去，也得能追溯「他到底说过什么」。
+    const ticket = this.opts.store.create({
+      messageId: message.messageId,
+      chatId: message.chatId,
+      text: message.text,
+      at,
+      state: 'needs_info',
+    })
+    await this.reply(message.messageId, question)
+    this.opts.log(`[coord] needs-info ${ticket.no}`)
+    return { outcome: 'needs-info', ticketNo: ticket.no, state: ticket.state }
   }
 
   /** 「T-0007 进度」的答案。全部是本地事实，不调模型。 */
@@ -419,41 +483,264 @@ export class Coordinator {
     ).length
   }
 
-  /**
-   * 「回滚 / 重启」这类非部署操作指令的回答。
-   *
-   * 部署指令在 handle() 里已经被拦截并执行，这里只处理还没接通的其它操作。
-   * 不装：如实说没接通，并告诉用户部署该怎么说。
-   */
-  private commandAnswer(): string {
-    const gated = this.opts.store.all().filter((ticket) => ticket.state === 'gated')
-    if (gated.length === 0) {
-      return '回滚/重启这类操作还没接通；要部署的话直接发「部署」就行。'
-    }
-    return [
-      '回滚/重启这类操作还没接通。',
-      `要部署直接发「部署」：我会先推 GitHub，再构建、测试、切换，失败自动回滚。`,
-      `当前待部署：${gated.map((ticket) => ticket.no).join('、')}。`,
-    ].join('\n')
+  // ───────────────────────────── 改代码路径 ─────────────────────────────
+
+  private async createTicket(
+    action: Extract<DispatchAction, { kind: 'create_ticket' }>,
+    message: IncomingMessage,
+    at: string,
+  ): Promise<HandleOutcome> {
+    const ticket = this.opts.store.create({
+      messageId: message.messageId,
+      chatId: message.chatId,
+      text: message.text,
+      at,
+      state: 'received',
+      hint: action.hint ?? null,
+    })
+    const ahead = this.pendingAhead()
+    const lines: string[] = []
+    if (ahead > 0) lines.push(`**排队**：前面还有 ${ahead} 张单`)
+    if (action.title !== undefined) lines.push(`**摘要**：${truncate(action.title, 60)}`)
+    lines.push(`**原话**：${truncate(message.text, 200)}`)
+
+    // 主卡片的 message_id 是「回复卡片 = 追加」的锚点，必须先发再入队。
+    const sent = await this.opts.transport.sendCard(ticket.chatId, {
+      title: `已受理，排队中｜${ticket.no}`,
+      template: 'blue',
+      lines,
+      footer: `${ticket.no}｜回复这张卡片可追加需求`,
+    })
+    this.opts.store.bindCard(ticket.id, sent.messageId, at)
+    this.opts.store.setState(ticket.id, 'queued', at)
+
+    this.opts.log(`[coord] created ${ticket.no} card=${sent.messageId} ahead=${ahead}`)
+    this.enqueue({ ...ticket, cardMessageId: sent.messageId, state: 'queued' })
+    return { outcome: 'created', ticketNo: ticket.no, state: 'queued' }
   }
 
-  private chitchatAnswer(text: string): string {
-    const normalized = normalizeText(text)
-    if (/傻逼|傻比|废物|垃圾|滚|操你|草你|卧槽|他妈的|妈的|气死|烦死|无语|坑爹|什么玩意|没用|有病/.test(normalized)) {
-      return [
-        '收到。如果是系统哪里让你火大，把页面和现象发我，我直接查、直接改。',
-        '骂我没关系，我更想帮你把问题解决掉。问某张单的进度就 @我 说「T-0007 进度」。',
-      ].join('\n')
+  private async appendTicket(
+    action: Extract<DispatchAction, { kind: 'append_ticket' }>,
+    message: IncomingMessage,
+    route: RouteDecision,
+    at: string,
+  ): Promise<HandleOutcome> {
+    const target = route.kind === 'append' ? route.ticket : this.opts.store.getByNo(action.ticketNo)
+    if (target === null) {
+      await this.reply(
+        message.messageId,
+        `没找到 ${action.ticketNo}。如果这是新需求，直接说要改哪里就行，我另开一张单。`,
+      )
+      return { outcome: 'answered', note: 'append-missing' }
     }
-    if (/谢谢|多谢|感谢|辛苦/.test(normalized)) {
-      return '不客气。还有要改的随时 @我，说清页面和期望就行。'
+
+    const ticket = this.opts.store.appendTurn(target.id, {
+      messageId: message.messageId,
+      text: message.text,
+      at,
+      hint: action.hint ?? null,
+    })
+    this.opts.log(`[coord] append ${ticket.no} reason=${route.kind === 'append' ? route.reason : '模型指名'}`)
+    await this.reply(ticket.cardMessageId ?? message.messageId, `已收到 ${ticket.no} 的追加需求，排队中。`)
+    this.enqueue(ticket)
+    return { outcome: 'appended', ticketNo: ticket.no, state: ticket.state }
+  }
+
+  /**
+   * 让已有工单重跑一轮。
+   *
+   * 只有 `needs_info`（用户补了信息）与 `failed`（重试）有意义：
+   * `done` 的成果已经上线，重跑会拿旧需求再改一遍；`deploying` 正在切生产。
+   */
+  private async startRun(ticketNo: string, message: IncomingMessage, at: string): Promise<HandleOutcome> {
+    const ticket = this.opts.store.getByNo(ticketNo)
+    if (ticket === null) {
+      await this.reply(message.messageId, `没找到 ${ticketNo}。`)
+      return { outcome: 'answered', note: 'start-run-missing' }
     }
-    return [
-      '我是迪礼顾问，迪礼 ERP 的维护助手。你可以：',
-      '1. 提需求 —— 说清哪个页面、哪里不对、希望变成什么样，我建单改代码，通常 5–20 分钟；',
-      '2. 问进度 —— @我说「T-0007 进度」；',
-      '3. 问使用 —— 直接问这个系统怎么用。',
-    ].join('\n')
+    if (!RERUNNABLE_STATES.has(ticket.state)) {
+      await this.reply(
+        message.messageId,
+        `${ticket.no} 现在是「${stateLabel(ticket.state)}」，重跑不会带来新结果。要有新改动，直接说改哪里。`,
+      )
+      return { outcome: 'answered', ticketNo: ticket.no, state: ticket.state, note: 'start-run-skip' }
+    }
+    const queued = this.opts.store.setState(ticket.id, 'queued', at)
+    await this.reply(ticket.cardMessageId ?? message.messageId, `${ticket.no} 重新排队开工。`)
+    this.enqueue(queued)
+    return { outcome: 'ran', ticketNo: ticket.no, state: 'queued' }
+  }
+
+  /** 入队。同一时刻只跑一个 run。 */
+  private enqueue(ticket: StoredTicket): void {
+    this.queue = this.queue
+      .then(() => this.runTicket(ticket))
+      .catch((error: unknown) => {
+        this.opts.log(`[coord] queue error ${ticket.no}: ${error instanceof Error ? error.message : String(error)}`)
+      })
+  }
+
+  /** 轻活入队。与改代码车道分开，避免一句提问等 15 分钟。 */
+  private enqueueAnswer(task: () => Promise<void>): void {
+    this.answerQueue = this.answerQueue.then(task).catch((error: unknown) => {
+      this.opts.log(`[coord] answer error: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /**
+   * 等所有队列排空。测试与优雅关闭用。
+   *
+   * 必须循环到队列不再变化：run 成功会自动部署，部署是在 run 执行过程中
+   * **追加**到队尾的。只 await 一次会在「run 刚结束、部署刚入队」的瞬间返回。
+   */
+  async drain(): Promise<void> {
+    for (;;) {
+      const runQueue = this.queue
+      const answers = this.answerQueue
+      await runQueue
+      await answers
+      await this.cardChain
+      if (runQueue === this.queue && answers === this.answerQueue) return
+    }
+  }
+
+  /**
+   * 跑一张工单。
+   *
+   * 群里只留三条播报（2026-11-20 用户要求精简）：开工、收尾、结果。
+   * 卡片原地更新不新增消息，所以保留，但只写三行。
+   * 进度落盘与播报解耦：重启后仍答得出「T-0007 进度」。
+   */
+  private async runTicket(ticket: StoredTicket): Promise<void> {
+    const latest = this.opts.store.get(ticket.id)
+    if (latest === null) return
+
+    const startedAtMs = this.nowMs()
+    const startedAt = new Date(startedAtMs).toISOString()
+    const at = this.stamp()
+    this.opts.store.setState(latest.id, 'building', at)
+
+    let progress: ProgressState = INITIAL_PROGRESS
+    let view: ProgressView = toView(progress, startedAtMs)
+    const firstMessageId = latest.turns[0]?.messageId
+
+    this.scheduleCardUpdate(latest.id, view, startedAtMs, startedAtMs)
+    await this.notify(firstMessageId, `${latest.no} 已开工，预计 10–20 分钟。`)
+
+    let lastCardAt = startedAtMs
+    let lastPersistAt = startedAtMs
+    let lastPhase = progress.phase
+    /** 收尾播报只发一次：阶段可能来回跳，播报不能跟着来回。 */
+    let closingNotified = false
+
+    const persist = (force: boolean): void => {
+      const nowMs = this.nowMs()
+      if (!force && nowMs - lastPersistAt < PROGRESS_PERSIST_MS) return
+      lastPersistAt = nowMs
+      const updatedAt = new Date(nowMs).toISOString()
+      try {
+        this.opts.store.setProgress(latest.id, toStoredProgress({ view, startedAt, updatedAt }), updatedAt)
+      } catch (error) {
+        this.opts.log(
+          `[coord] persist progress failed ${latest.no}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+
+    const onEvent = (event: HarnessEvent): void => {
+      progress = applyEvent(progress, event)
+      view = toView(progress, startedAtMs)
+      const nowMs = this.nowMs()
+      const phaseChanged = progress.phase !== lastPhase
+      if (phaseChanged) lastPhase = progress.phase
+
+      persist(phaseChanged)
+
+      if (phaseChanged || nowMs - lastCardAt >= this.opts.cardUpdateMs) {
+        lastCardAt = nowMs
+        this.scheduleCardUpdate(latest.id, view, startedAtMs, nowMs)
+      }
+
+      if (phaseChanged && progress.phase === 'finishing' && !closingNotified) {
+        closingNotified = true
+        void this.notify(firstMessageId, `${latest.no} 在收尾，马上出结果。`)
+      }
+    }
+
+    let result: HarnessResult
+    try {
+      const isAppend = latest.turns.length > 1
+      const currentTurn = latest.turns[latest.turns.length - 1]
+      const hint = currentTurn?.hint ?? undefined
+      const env = this.envFor(latest.no)
+      const prompt = isAppend
+        ? buildAppendPrompt({
+            env,
+            userText: currentTurn.text,
+            ...(hint === undefined || hint === null ? {} : { hint }),
+            previousTurns: latest.turns.length - 1,
+          })
+        : buildCreatePrompt({
+            env,
+            userText: currentTurn.text,
+            ...(hint === undefined || hint === null ? {} : { hint }),
+          })
+
+      this.opts.log(`[coord] run ${latest.no} append=${String(isAppend)} session=${latest.sessionId ?? '(new)'}`)
+      result = await this.opts.runHarnessImpl({
+        dshBin: this.opts.dshBin,
+        nodePath: this.opts.nodePath,
+        cwd: this.opts.repoPath,
+        prompt,
+        ...(latest.sessionId === null ? {} : { sessionId: latest.sessionId }),
+        timeoutMs: this.opts.timeoutMs,
+        ...(this.opts.childEnv === undefined ? {} : { env: this.opts.childEnv }),
+        onEvent,
+      })
+    } finally {
+      // 没有周期心跳，所以这里没有定时器要清。
+    }
+
+    // 首轮把会话 id 落库；续接轮若返回同一个就不用重复写。
+    if (result.sessionId !== null && result.sessionId !== latest.sessionId) {
+      this.opts.store.bindSession(latest.id, result.sessionId, this.stamp())
+    }
+
+    // 状态映射：run 成功 → gated（有产出待部署）；失败/超时 → failed。
+    const nextState = result.outcome === 'completed' ? 'gated' : 'failed'
+    const summary = summarize(result, 400) || (result.error ?? '')
+    const outcome: TicketResult['outcome'] =
+      result.outcome === 'completed' ? 'completed' : result.outcome === 'timeout' ? 'timeout' : 'failed'
+    try {
+      this.opts.store.setResult(
+        latest.id,
+        { outcome, summary, durationMs: result.durationMs, at: this.stamp() },
+        this.stamp(),
+      )
+    } catch (error) {
+      this.opts.log(`[coord] persist result failed ${latest.no}: ${String(error)}`)
+    }
+    this.opts.store.setState(latest.id, nextState, this.stamp())
+
+    const refreshed = this.opts.store.get(latest.id)
+    if (refreshed === null) return
+    // 先冲掉排队中的进度卡片更新，否则最后一张「施工中」蓝卡可能盖掉结果卡。
+    await this.cardChain
+    await this.transportSendResult(refreshed, result, latest.turns[latest.turns.length - 1].text)
+
+    // 全自动上线：run 成功且有产出 → 排队部署（与 run 共用串行队列，不会并发）。
+    if (this.opts.autoDeploy && result.outcome === 'completed') {
+      this.enqueueDeploy({
+        kind: 'auto',
+        chatId: latest.chatId,
+        ticketNo: latest.no,
+        messageId: firstMessageId ?? null,
+      })
+    }
+
+    this.opts.log(
+      `[coord] done ${latest.no} outcome=${result.outcome} state=${nextState} duration=${result.durationMs}ms tools=${result.counts.toolCalls} subagents=${result.counts.subagentCalls}`,
+    )
   }
 
   // ───────────────────────────── 部署路径 ─────────────────────────────
@@ -512,18 +799,7 @@ export class Coordinator {
     }
     paint()
 
-    const heartbeat =
-      this.opts.progressNoticeMs > 0
-        ? setInterval(() => {
-            paint()
-            void this.deployNotice(
-              trigger,
-              `部署进行中（${formatDuration(Math.max(0, this.nowMs() - startedAt))}）：${DEPLOY_PHASE_LABELS[phase]} — ${phaseMessage}`,
-            )
-          }, this.opts.progressNoticeMs)
-        : null
-    heartbeat?.unref()
-
+    // 部署不发周期心跳：开始一条、结束一条，中间靠卡片原地更新。
     let result: DeployResult
     try {
       result = await this.opts.deployImpl({
@@ -555,8 +831,6 @@ export class Coordinator {
         finishedAt: this.stamp(),
         durationMs: Math.max(0, this.nowMs() - startedAt),
       }
-    } finally {
-      if (heartbeat !== null) clearInterval(heartbeat)
     }
 
     const outcomeState = result.ok ? 'done' : result.rolledBack ? 'rolled_back' : 'gated'
@@ -576,7 +850,7 @@ export class Coordinator {
     return [
       '开始部署：推送 GitHub → 构建 → 测试门禁 → 迁移检查 → 切换 → 核验，失败自动回滚。',
       `涉及工单：${gated.map((ticket) => ticket.no).join('、')}。`,
-      '预计 20–35 分钟（这台机器 2 核），过程中我会同步进度。',
+      '预计 20–35 分钟（这台机器 2 核），完成后我回一条结果。',
     ].join('\n')
   }
 
@@ -606,7 +880,7 @@ export class Coordinator {
       title: result.rolledBack ? `已回滚｜${ticket.no}` : `部署失败｜${ticket.no}`,
       template: result.rolledBack ? 'purple' : 'red',
       lines,
-      footer: `${ticket.no}｜部署记录：/opt/dilee/agent/deploys/`,
+      footer: `${ticket.no}｜部署记录：/opt/dilee/deploys/`,
     }
   }
 
@@ -660,250 +934,7 @@ export class Coordinator {
     }
   }
 
-  // ───────────────────────────── 需求路径 ─────────────────────────────
-
-  private async handleRequirement(message: IncomingMessage, at: string): Promise<HandleOutcome> {
-    const route = decideRoute(this.opts.store, message)
-
-    if (route.kind === 'append') {
-      const ticket = this.opts.store.appendTurn(route.ticket.id, {
-        messageId: message.messageId,
-        text: message.text,
-        at,
-      })
-      this.opts.log(`[coord] append ${ticket.no} reason=${route.reason}`)
-      await this.opts.transport.replyText(
-        ticket.cardMessageId ?? message.messageId,
-        `已收到 ${ticket.no} 的追加需求，排队中。`,
-      )
-      this.enqueue(ticket)
-      return { outcome: 'appended', ticketNo: ticket.no, state: ticket.state }
-    }
-
-    // 新单：先分诊。分诊不过就追问，不进队列。
-    const triageResult = triage(message.text)
-    const ticket = this.opts.store.create({
-      messageId: message.messageId,
-      chatId: message.chatId,
-      text: message.text,
-      at,
-      state: triageResult.missing.length > 0 ? 'needs_info' : 'received',
-    })
-
-    if (triageResult.missing.length > 0) {
-      this.opts.log(`[coord] needs-info ${ticket.no} missing=${triageResult.missing.join(',')}`)
-      await this.opts.transport.replyText(message.messageId, askForMissing(triageResult.missing))
-      return { outcome: 'needs-info', ticketNo: ticket.no, state: ticket.state }
-    }
-
-    // 发主卡片，并把它的 message_id 绑进工单 —— 这是「回复卡片 = 追加」的锚点。
-    const ahead = this.pendingAhead()
-    const lines: string[] = []
-    if (ahead > 0) lines.push(`**排队**：前面还有 ${ahead} 张单`)
-    lines.push(`**原话**：${truncate(ticket.turns[0].text, 200)}`)
-    const sent = await this.opts.transport.sendCard(ticket.chatId, {
-      title: `已受理，排队中｜${ticket.no}`,
-      template: 'blue',
-      lines,
-      footer: `${ticket.no}｜回复这张卡片可追加需求`,
-    })
-    this.opts.store.bindCard(ticket.id, sent.messageId, at)
-    this.opts.store.setState(ticket.id, 'queued', at)
-
-    this.opts.log(`[coord] created ${ticket.no} card=${sent.messageId} ahead=${ahead}`)
-    this.enqueue({ ...ticket, cardMessageId: sent.messageId, state: 'queued' })
-    return { outcome: 'created', ticketNo: ticket.no, state: 'queued' }
-  }
-
-  /** 入队。同一时刻只跑一个 run。 */
-  private enqueue(ticket: StoredTicket): void {
-    this.queue = this.queue
-      .then(() => this.runTicket(ticket))
-      .catch((error: unknown) => {
-        this.opts.log(`[coord] queue error ${ticket.no}: ${error instanceof Error ? error.message : String(error)}`)
-      })
-  }
-
-  /** 问答入队。与改代码车道分开，避免一句提问等 15 分钟。 */
-  private enqueueAnswer(task: () => Promise<void>): void {
-    this.answerQueue = this.answerQueue.then(task).catch((error: unknown) => {
-      this.opts.log(`[coord] answer error: ${error instanceof Error ? error.message : String(error)}`)
-    })
-  }
-
-  /**
-   * 等所有队列排空。测试与优雅关闭用。
-   *
-   * 必须循环到队列不再变化：run 成功会自动部署，部署是在 run 执行过程中
-   * **追加**到队尾的。只 await 一次会在「run 刚结束、部署刚入队」的瞬间返回。
-   */
-  async drain(): Promise<void> {
-    for (;;) {
-      const runQueue = this.queue
-      const answers = this.answerQueue
-      await runQueue
-      await answers
-      await this.cardChain
-      if (runQueue === this.queue && answers === this.answerQueue) return
-    }
-  }
-
-  /**
-   * 跑一张工单。
-   *
-   * 进度同步有三条频率不同的通道（设计文档 §3.4）：
-   *   - 卡片：阶段变化立即更新，其余按 cardUpdateMs 节流；
-   *   - 群内播报：开工一次 + 进入验证/收尾各一次 + 每 progressNoticeMs 一次心跳；
-   *   - 进度落盘：阶段变化立即写，其余按 PROGRESS_PERSIST_MS 节流（重启后可答进度）。
-   */
-  private async runTicket(ticket: StoredTicket): Promise<void> {
-    const latest = this.opts.store.get(ticket.id)
-    if (latest === null) return
-
-    const startedAtMs = this.nowMs()
-    const startedAt = new Date(startedAtMs).toISOString()
-    const at = this.stamp()
-    this.opts.store.setState(latest.id, 'building', at)
-
-    let progress: ProgressState = INITIAL_PROGRESS
-    let view: ProgressView = toView(progress, startedAtMs)
-
-    // 先把卡片转「施工中」，再播报开工：用户刷新时先看到卡片，再看到消息。
-    this.scheduleCardUpdate(latest.id, view, startedAtMs, startedAtMs)
-    await this.notify(
-      latest.turns[0]?.messageId,
-      `${latest.no} 已开工，预计 10–20 分钟。过程中我会主动同步进度；你也可以随时 @我 问「${latest.no} 进度」。`,
-    )
-
-    let lastCardAt = startedAtMs
-    let lastPersistAt = startedAtMs
-    let lastNoticeAt = startedAtMs
-    let lastPhase = progress.phase
-
-    const persist = (force: boolean): void => {
-      const nowMs = this.nowMs()
-      if (!force && nowMs - lastPersistAt < PROGRESS_PERSIST_MS) return
-      lastPersistAt = nowMs
-      const updatedAt = new Date(nowMs).toISOString()
-      try {
-        this.opts.store.setProgress(latest.id, toStoredProgress({ view, startedAt, updatedAt }), updatedAt)
-      } catch (error) {
-        this.opts.log(
-          `[coord] persist progress failed ${latest.no}: ${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
-    }
-
-    const onEvent = (event: HarnessEvent): void => {
-      progress = applyEvent(progress, event)
-      view = toView(progress, startedAtMs)
-      const nowMs = this.nowMs()
-      const phaseChanged = progress.phase !== lastPhase
-      if (phaseChanged) lastPhase = progress.phase
-
-      persist(phaseChanged)
-
-      if (phaseChanged || nowMs - lastCardAt >= this.opts.cardUpdateMs) {
-        lastCardAt = nowMs
-        this.scheduleCardUpdate(latest.id, view, startedAtMs, nowMs)
-      }
-
-      // 阶段播报：只在「开始验证」与「收尾」各一次，避免每换个工具就播一条。
-      if (phaseChanged && (progress.phase === 'verifying' || progress.phase === 'finishing')) {
-        if (nowMs - lastNoticeAt >= MIN_CARD_UPDATE_MS) {
-          lastNoticeAt = nowMs
-          void this.notify(latest.turns[0]?.messageId, heartbeatLine({ ticketNo: latest.no, view, nowMs }))
-        }
-      } else if (this.opts.progressNoticeMs > 0 && nowMs - lastNoticeAt >= this.opts.progressNoticeMs) {
-        lastNoticeAt = nowMs
-        void this.notify(latest.turns[0]?.messageId, heartbeatLine({ ticketNo: latest.no, view, nowMs }))
-      }
-    }
-
-    // 长时间不产事件（例如一个慢命令）时也要有心跳，否则群里会以为它死了。
-    const heartbeat =
-      this.opts.progressNoticeMs > 0
-        ? setInterval(() => {
-            const nowMs = this.nowMs()
-            if (nowMs - lastNoticeAt < this.opts.progressNoticeMs) return
-            lastNoticeAt = nowMs
-            void this.notify(latest.turns[0]?.messageId, heartbeatLine({ ticketNo: latest.no, view, nowMs }))
-            this.scheduleCardUpdate(latest.id, view, startedAtMs, nowMs)
-          }, Math.min(this.opts.progressNoticeMs, 30_000))
-        : null
-    heartbeat?.unref()
-
-    let result: HarnessResult
-    try {
-      const isAppend = latest.turns.length > 1
-      const currentText = latest.turns[latest.turns.length - 1].text
-      const triageResult = triage(currentText)
-      const env = this.envFor(latest.no)
-      const prompt = isAppend
-        ? buildAppendPrompt({
-            env,
-            userText: currentText,
-            triage: triageResult,
-            previousTurns: latest.turns.length - 1,
-          })
-        : buildCreatePrompt({ env, userText: currentText, triage: triageResult })
-
-      this.opts.log(`[coord] run ${latest.no} append=${String(isAppend)} session=${latest.sessionId ?? '(new)'}`)
-      result = await this.opts.runHarnessImpl({
-        dshBin: this.opts.dshBin,
-        nodePath: this.opts.nodePath,
-        cwd: this.opts.repoPath,
-        prompt,
-        ...(latest.sessionId === null ? {} : { sessionId: latest.sessionId }),
-        timeoutMs: this.opts.timeoutMs,
-        ...(this.opts.childEnv === undefined ? {} : { env: this.opts.childEnv }),
-        onEvent,
-      })
-    } finally {
-      if (heartbeat !== null) clearInterval(heartbeat)
-    }
-
-    // 首轮把会话 id 落库；续接轮若返回同一个就不用重复写。
-    if (result.sessionId !== null && result.sessionId !== latest.sessionId) {
-      this.opts.store.bindSession(latest.id, result.sessionId, this.stamp())
-    }
-
-    // 状态映射：run 成功 → gated（有产出待部署）；失败/超时 → failed。
-    const nextState = result.outcome === 'completed' ? 'gated' : 'failed'
-    const summary = summarize(result, 400) || (result.error ?? '')
-    const outcome: TicketResult['outcome'] =
-      result.outcome === 'completed' ? 'completed' : result.outcome === 'timeout' ? 'timeout' : 'failed'
-    try {
-      this.opts.store.setResult(
-        latest.id,
-        { outcome, summary, durationMs: result.durationMs, at: this.stamp() },
-        this.stamp(),
-      )
-    } catch (error) {
-      this.opts.log(`[coord] persist result failed ${latest.no}: ${String(error)}`)
-    }
-    this.opts.store.setState(latest.id, nextState, this.stamp())
-
-    const refreshed = this.opts.store.get(latest.id)
-    if (refreshed === null) return
-    // 先冲掉排队中的进度卡片更新，否则最后一张「施工中」蓝卡可能盖掉结果卡。
-    await this.cardChain
-    await this.transportSendResult(refreshed, result, latest.turns[latest.turns.length - 1].text)
-
-    // 全自动上线：run 成功且有产出 → 排队部署（与 run 共用串行队列，不会并发）。
-    if (this.opts.autoDeploy && result.outcome === 'completed') {
-      this.enqueueDeploy({
-        kind: 'auto',
-        chatId: latest.chatId,
-        ticketNo: latest.no,
-        messageId: latest.turns[0]?.messageId ?? null,
-      })
-    }
-
-    this.opts.log(
-      `[coord] done ${latest.no} outcome=${result.outcome} state=${nextState} duration=${result.durationMs}ms tools=${result.counts.toolCalls} subagents=${result.counts.subagentCalls}`,
-    )
-  }
+  // ───────────────────────────── 卡片 ─────────────────────────────
 
   /** 卡片原地更新。串行化，避免多个事件同时更新导致旧内容覆盖新内容。 */
   private scheduleCardUpdate(
@@ -955,13 +986,7 @@ export class Coordinator {
   /** 回复一条消息。失败只记日志：进度播报失败不该影响 run。 */
   private async notify(messageId: string | undefined, text: string): Promise<void> {
     if (messageId === undefined || messageId.length === 0) return
-    try {
-      await this.opts.transport.replyText(messageId, text)
-    } catch (error) {
-      this.opts.log(
-        `[coord] notify failed: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
+    await this.reply(messageId, text)
   }
 
   private async transportSendResult(

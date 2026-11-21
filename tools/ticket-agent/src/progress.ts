@@ -226,7 +226,7 @@ export function formatDuration(ms: number): string {
   return restMinutes === 0 ? `${hours} 小时` : `${hours} 小时 ${restMinutes} 分`
 }
 
-/** 九态 → 中文标签。与 ticket-state 的九态一一对应。 */
+/** 状态 → 中文标签。九态固定，新增状态意味着有新分支没人测过。 */
 export function stateLabel(state: string): string {
   const labels: Record<string, string> = {
     received: '已受理',
@@ -243,15 +243,17 @@ export function stateLabel(state: string): string {
   return labels[state] ?? state
 }
 
+/**
+ * 施工中卡片的行。刻意只有三行（2026-11-20 用户要求「精简，别刷屏」）：
+ * 已用多久、在干什么、动了几处。最后一段「最新原文」是纯噪音，已去掉 ——
+ * 用户要看结论时卡片结尾就有，过程中读一句模型自述没有决策价值。
+ */
 function progressLines(view: ProgressView, nowMs: number): string[] {
   const lines: string[] = []
   lines.push(`**已用**：${formatDuration(Math.max(0, nowMs - view.startedAtMs))}`)
   const action = view.lastAction === null ? '' : `（${view.lastAction}）`
   lines.push(`**当前**：${phaseLabel(view.phase)}${action}`)
-  const subagent = view.subagentCalls > 0 ? `，其中派发子 Agent ${view.subagentCalls} 次` : ''
-  lines.push(`**过程**：工具调用 ${view.toolCalls} 次${subagent}`)
   if (view.filesChanged > 0) lines.push(`**改动**：已触及 ${view.filesChanged} 个文件`)
-  if (view.lastText !== null) lines.push(`**最新**：${view.lastText}`)
   return lines
 }
 
@@ -270,14 +272,6 @@ export function progressCard(input: {
   }
 }
 
-/** 群内进度播报的一行。刻意短：群里刷屏比没进度更烦。 */
-export function heartbeatLine(input: { ticketNo: string; view: ProgressView; nowMs: number }): string {
-  const elapsed = formatDuration(Math.max(0, input.nowMs - input.view.startedAtMs))
-  const subagent = input.view.subagentCalls > 0 ? `，子 Agent ${input.view.subagentCalls} 次` : ''
-  const files = input.view.filesChanged > 0 ? `，已触及 ${input.view.filesChanged} 个文件` : ''
-  return `${input.ticketNo} ${phaseLabel(input.view.phase)} ${elapsed}：工具调用 ${input.view.toolCalls} 次${files}${subagent}`
-}
-
 function firstLine(text: string, limit: number): string {
   return oneLine(text, limit)
 }
@@ -287,6 +281,9 @@ function firstLine(text: string, limit: number): string {
  *
  * 不同状态答不同的事：排队中给位次，施工中给细节，已完成给结论。
  * 用户问进度时真正想知道的是「还要等多久 / 结果怎么样」。
+ *
+ * 注意这一层**不精简**：这是用户主动发起的查询通道，信息量要足。
+ * 精简的是群里的主动播报（开工/收尾/结束三条），两者不是一回事。
  */
 export function statusText(input: { ticket: StoredTicket; nowMs: number; queueAhead: number }): string {
   const { ticket, nowMs, queueAhead } = input

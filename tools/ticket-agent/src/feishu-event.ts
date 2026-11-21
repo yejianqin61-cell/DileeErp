@@ -2,7 +2,7 @@
  * 飞书消息事件解析。
  *
  * 只做一件事：把 `im.message.receive_v1` 的事件体变成本系统关心的最小结构。
- * 不在这里判断「要不要开工」，那是 ticket-flow 的事。
+ * 不在这里判断「要不要开工」，那是 coordinator 的事。
  *
  * 口径来源：docs/design/feishu-bot-integration-facts-2026-11-13.md §3。
  * 关键事实：

@@ -17,6 +17,8 @@ export interface SentRecord {
   readonly target: string
   readonly payload: string
   readonly card?: FeishuCard
+  /** 飞书侧返回的 message_id，测试用它拼 parentId 模拟回复。 */
+  readonly messageId?: string
 }
 
 export class FakeFeishuTransport implements FeishuTransport {
@@ -39,25 +41,28 @@ export class FakeFeishuTransport implements FeishuTransport {
 
   async sendText(chatId: string, text: string): Promise<FeishuMessageRef> {
     this.guard()
-    this.sent.push({ kind: 'text', target: chatId, payload: text })
-    return { messageId: this.nextId('text') }
+    const messageId = this.nextId('text')
+    this.sent.push({ kind: 'text', target: chatId, payload: text, messageId })
+    return { messageId }
   }
 
   async sendCard(chatId: string, card: FeishuCard): Promise<FeishuMessageRef> {
     this.guard()
-    this.sent.push({ kind: 'card', target: chatId, payload: card.title, card })
-    return { messageId: this.nextId('card') }
+    const messageId = this.nextId('card')
+    this.sent.push({ kind: 'card', target: chatId, payload: card.title, card, messageId })
+    return { messageId }
   }
 
   async updateCard(messageId: string, card: FeishuCard): Promise<void> {
     this.guard()
-    this.sent.push({ kind: 'update', target: messageId, payload: card.title, card })
+    this.sent.push({ kind: 'update', target: messageId, payload: card.title, card, messageId })
   }
 
   async replyText(messageId: string, text: string): Promise<FeishuMessageRef> {
     this.guard()
-    this.sent.push({ kind: 'reply', target: messageId, payload: text })
-    return { messageId: this.nextId('reply') }
+    const repliedId = this.nextId('reply')
+    this.sent.push({ kind: 'reply', target: messageId, payload: text, messageId: repliedId })
+    return { messageId: repliedId }
   }
 
   /** 最近一条发出的记录，测试断言用。 */

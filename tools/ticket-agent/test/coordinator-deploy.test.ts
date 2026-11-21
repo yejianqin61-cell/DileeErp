@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { Coordinator } from '../src/coordinator.ts'
+import type { DispatchAction } from '../src/dispatcher.ts'
 import { FakeFeishuTransport } from '../src/feishu-fake.ts'
 import type { IncomingMessage } from '../src/feishu-event.ts'
 import type { HarnessResult } from '../src/harness-runner.ts'
@@ -87,6 +88,8 @@ function setup(options: {
   result?: DeployResult
   runResult?: HarnessResult
   deployThrows?: boolean
+  /** 假调度器返回的动作。默认 deploy —— 这个文件只测部署路径。 */
+  action?: DispatchAction
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'dilee-coord-deploy-'))
   const store = new TicketStore(dir)
@@ -101,8 +104,7 @@ function setup(options: {
     now: () => FIXED,
     log: () => {},
     runHarnessImpl: async () => options.runResult ?? harnessOk(),
-    answererKey: '',
-    answererImpl: async () => ({ text: 'x', source: 'model' }),
+    dispatchImpl: async () => ({ action: options.action ?? { kind: 'deploy' }, source: 'model' }),
     progressNoticeMs: 0,
     cardUpdateMs: -1,
     deployConfig: options.deployEnabled === false ? null : deployConfig(),
@@ -235,7 +237,10 @@ test('部署失败但已自动回滚：工单 rolled_back，紫卡', async () =>
 })
 
 test('自动部署：run 成功后自动排队部署，工单直接上线', async () => {
-  const { dir, store, transport, deployCalls, coordinator } = setup({ autoDeploy: true })
+  const { dir, store, transport, deployCalls, coordinator } = setup({
+    autoDeploy: true,
+    action: { kind: 'create_ticket' },
+  })
   try {
     await coordinator.handle(
       message({ messageId: 'om_req', text: '采购单列表页的搜索框，希望能按供应商名称搜' }),
@@ -268,7 +273,10 @@ test('部署器自己抛异常：工单回到 gated，不永远卡在 deploying'
 })
 
 test('autoDeploy=false：run 成功后不自动部署，停在 gated', async () => {
-  const { dir, store, deployCalls, coordinator } = setup({ autoDeploy: false })
+  const { dir, store, deployCalls, coordinator } = setup({
+    autoDeploy: false,
+    action: { kind: 'create_ticket' },
+  })
   try {
     await coordinator.handle(
       message({ messageId: 'om_req', text: '采购单列表页的搜索框，希望能按供应商名称搜' }),
