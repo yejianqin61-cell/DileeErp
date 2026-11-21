@@ -1,6 +1,6 @@
 # LLM 调度器与进度播报精简
 
-日期：2026-11-20｜版本：1.0｜状态：**已设计，待实施**｜类型：设计
+日期：2026-11-20（2026-11-21 实施）｜版本：1.1｜状态：**已实施，线上验证通过**｜类型：设计
 
 上游：[Agent 应用层架构](agent-application-layer-architecture-2026-11-14.md)、
 [自主部署与 GitHub 推送](autonomous-deploy-and-github-push-2026-11-16.md)。
@@ -53,8 +53,8 @@
 
 | 工具 | 参数 | 语义 |
 |---|---|---|
-| `create_ticket` | `text`、`title?`、`module?`、`expected?`、`entry?` | 建新单并排队改代码 |
-| `append_ticket` | `ticketNo`、`text`、`module?`、`expected?`、`entry?` | 追加到已有工单 |
+| `create_ticket` | `title?`、`module?`、`expected?`、`entry?` | 建新单并排队改代码 |
+| `append_ticket` | `ticketNo`、`title?`、`module?`、`expected?`、`entry?` | 追加到已有工单 |
 | `start_run` | `ticketNo` | 为某张单开会话（重跑/续跑） |
 | `status` | `ticketNo?` | 查进度（**不调模型**，本地事实） |
 | `ask_more_info` | `question`、`ticketNo?` | 需求不够，追问 |
@@ -71,6 +71,8 @@
   system prompt。
 - **`module/expected/entry` 由模型抽取**：`prompt-builder` 的结构化提示段保留，
   但字段来源从正则变成模型。模型没抽到就留空，提示段自动省略。
+- **工具不带「用户原话」参数**（实施时明确）：建单与追加一律存 Coordinator 收到的原话。
+  这样模型不可能改写、概括或漏掉用户说的话，也消掉了一整类「转述失真」故障。
 
 ### 2.3 卡片规则：代码硬判定，不由模型决定
 
@@ -100,9 +102,11 @@ Coordinator 做**强制纠偏**：
 | `intent.ts` | 删除 | 正则意图分类，被调度器取代 |
 | `triage.ts` | 删除 | 正则分诊，字段抽取改由模型完成 |
 | `ticket-flow.ts` | 删除 | Phase 2 遗留，只被 `triage` 使用，不在 Coordinator 路径上 |
+| `ticket-state.ts` | 删除 | 只被 `ticket-flow` 用到的九态状态机；生产路径一直用 `ticket-store` 的字符串状态 |
+| `answerer.ts` | 删除 | 问答并入调度器的 `reply`，不再单独发一次模型请求 |
 
 `normalizeText` / `extractTicketNo` 这类纯文本工具若仍被别处使用则保留；不再作为
-「判断用户意图」的依据。
+「判断用户意图」的依据。实施后确认无人使用，随模块一并删除。
 
 ## 3. 设计：进度播报精简
 
@@ -189,3 +193,72 @@ export async function dispatch(input: DispatchInput, options: DispatchOptions): 
 | 每条消息多一次模型调用 | 单次调用、短 prompt、`status` 走本地事实不调模型 |
 | 提示注入 | 用户原话进数据区块；调度器只有工具能触发动作，自由文本只作回复 |
 | 模型抽不到结构化字段 | 字段可选，缺了就省略提示段，原话始终是权威输入 |
+
+## 7. 实施与验证（2026-11-21）
+
+实施范围：新增 `dispatcher.ts`，重写 `coordinator.ts` 的判断层与播报，删除 5 个旧模块，
+`ticket-store` 按轮次存 `hint`，`main.ts` 换配置与默认值。
+
+### 7.1 单测与本地验证
+
+| 项 | 结果 |
+|---|---|
+| `tsc --noEmit` | 干净 |
+| `npm test` | 159 条，158 过 + 1 条 Linux-only 跳过 |
+| 新增 `dispatcher.test.ts` | 17 条：7 个工具归一化 + 6 种兜底路径 + 提示词与摘要 |
+| `replay-intents.ts`（假调度器） | `REPLAY_OK`，建单数符合预期 |
+
+### 7.2 真机验证：DeepSeek 的函数调用可用
+
+改造前唯一的未知项是「deepseek-chat 认不认 `tool_choice: required`」。实测 **14/14 全部
+`source=model`，没有一条落兜底**，单次延迟 **420–1500 ms**（远低于问答原先 25 秒的超时）。
+
+`scripts/probe-dispatch.ts` 用真实模型逐条打印动作与耗时，作为后续回归基线。
+
+### 7.3 真机暴露的问题：宁可建单，不要追问
+
+首轮 14 条里有两条被判成 `ask_more_info`：
+
+| 原话 | 首轮结果 |
+|---|---|
+| 部署脚本要改，别每次都失败 | 追问「具体哪里失败、想改成什么样？」 |
+| 首页任务提醒面板的任务点进去跳转错了 | 追问「点哪一类任务跳错了？」 |
+
+这是**策略错误，不是代码错误**：原话已经点出具体页面/功能点，而 Coding Agent 读代码后
+补全「期望」的能力远强于群里追问。为「你没说清期望」而拦下来，正是用户反复抱怨的
+「问一句被挡回来」的翻版。
+
+修法：system prompt 增加「拿不准时怎么办」一节 —— **只要点出具体页面/模块/功能点就直接
+`create_ticket`**；只有整句没有任何具体位置（「这个不对」「有问题」）才追问，且必须问
+**一个**能让下一条消息直接开工的问题。
+
+复测：上述两条 → `create_ticket`；「这个不对」「有问题」仍 → `ask_more_info`；
+15 条全部符合预期，`DISPATCH_PROBE_OK`。
+
+### 7.4 另一个观察：模型会自己认出重复需求
+
+「领料单打印出来的规格型号带了个备注，太长了」被判成 `append_ticket T-0023` ——
+T-0023 正是同一件事，它没有重复开单。这条不在设计预期内，但行为是对的：
+提示词给了最近 12 张工单的事实，模型据此避免了重复单。
+
+「回复卡片 = 追加」仍然是代码硬判定，两者不冲突：结构判定优先，模型的语义归并只在
+结构判定为「新单」时才可能发生。
+
+### 7.5 播报精简的实测
+
+`replay-intents.ts` 回放一次完整 run，群里只出现三条：
+
+```
+[reply]   T-0002 已开工，预计 10–20 分钟。
+[reply]   T-0002 在收尾，马上出结果。
+[card]    有产出待部署｜T-0002（结果卡，原地更新）
+```
+
+改造前同类 run 会产生 5–7 条群消息（开工 + 验证阶段播报 + 每 5 分钟心跳 + 结果）。
+施工中卡片只剩三行：已用 / 当前 / 改动。
+
+### 7.6 部署
+
+`12a2c08` 推上 GitHub main，服务器 `update-ticket-agent.sh` 更新并重启：
+typecheck OK、**159/159 测试通过**（Node 24 下无跳过）、WS `client ready`；
+启动日志确认「调度：模型 + 工具」「进度播报：关闭（只发开工/收尾/结束三条）」。
