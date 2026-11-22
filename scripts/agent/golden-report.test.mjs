@@ -67,3 +67,28 @@ test("报告含数据基线、未覆盖、附录三节", () => {
   assert.match(text, /## 6\. 未覆盖/);
   assert.match(text, /## 7\. 附录/);
 });
+
+test("过程失败率：出现过失败码的用例占全量，自纠单独计数", () => {
+  const summary = summarize([
+    row("a", "entry", "pass", { failureCodes: ["ORDER_REF_INVALID"] }),
+    row("b", "entry", "pass"),
+    row("c", "entry", "pass", { failureCodes: ["AGENT_TOOL_ARGUMENT_INVALID"] }),
+    row("d", "entry", "baseline_missing"),
+  ]);
+  assert.equal(summary.processSignal.casesWithFailureCodes, 2);
+  assert.equal(summary.processSignal.selfHealedCases, 2);
+  assert.equal(summary.processSignal.toolCallFailureRate, 0.5);
+  assert.deepEqual(summary.processSignal.selfHealedCaseIds, ["a", "c"]);
+});
+
+test("过程出现失败码但终局 fail 时不算自纠", () => {
+  const summary = summarize([row("a", "entry", "fail", { failureCodes: ["ORDER_NOT_FOUND"] })]);
+  assert.equal(summary.processSignal.casesWithFailureCodes, 1);
+  assert.equal(summary.processSignal.selfHealedCases, 0);
+});
+
+test("渲染出 3.1 小节并同时报出过程失败率与自纠数", () => {
+  const text = renderMarkdown(summarize([row("a", "entry", "pass", { failureCodes: ["ORDER_REF_INVALID"] })]), {});
+  assert.match(text, /### 3\.1 工具调用失败率/);
+  assert.match(text, /1 \/ 1 条用例（100\.0%）/);
+});

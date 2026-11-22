@@ -38,7 +38,16 @@ export function summarize(judged) {
     .map(([code, count]) => ({ code, count }))
     .sort((left, right) => (right.count - left.count) || left.code.localeCompare(right.code));
 
-  return { total, pass, fail, baselineMissing, passRate, byGroup, failureCodes, rows };
+  const withFailureCodes = rows.filter((row) => row.failureCodes.length > 0);
+  const selfHealed = withFailureCodes.filter((row) => row.verdict === "pass");
+  const processSignal = {
+    casesWithFailureCodes: withFailureCodes.length,
+    selfHealedCases: selfHealed.length,
+    selfHealedCaseIds: selfHealed.map((row) => row.id).sort(),
+    toolCallFailureRate: total > 0 ? withFailureCodes.length / total : null,
+  };
+
+  return { total, pass, fail, baselineMissing, passRate, byGroup, failureCodes, processSignal, rows };
 }
 
 function percent(rate) {
@@ -59,6 +68,12 @@ export function renderMarkdown(summary, meta = {}) {
   lines.push("");
   lines.push(`**${summary.total} 条用例，通过 ${summary.pass} 条，未通过 ${summary.fail} 条，基线缺失 ${summary.baselineMissing} 条，通过率 ${percent(summary.passRate)}。**`);
   lines.push("");
+  if (summary.processSignal.casesWithFailureCodes > 0) {
+    lines.push(
+      `另一条独立的数：**${summary.processSignal.casesWithFailureCodes} 条用例过程中出现过工具失败（${percent(summary.processSignal.toolCallFailureRate)}），其中 ${summary.processSignal.selfHealedCases} 条靠模型自纠拿到结论。**`,
+    );
+    lines.push("");
+  }
   lines.push("通过率的分母是「总数 − 基线缺失」：缺数据的用例不算工具失败，但要单独计数。");
   lines.push("");
   lines.push("## 2. 分组");
@@ -79,6 +94,19 @@ export function renderMarkdown(summary, meta = {}) {
     for (const item of summary.failureCodes) lines.push(`| ${item.code} | ${item.count} |`);
   }
   lines.push("");
+  const signal = summary.processSignal;
+  lines.push("### 3.1 工具调用失败率（过程信号）");
+  lines.push("");
+  lines.push(
+    `**${signal.casesWithFailureCodes} / ${summary.total} 条用例（${percent(signal.toolCallFailureRate)}）在过程中出现过至少一次工具失败；其中 ${signal.selfHealedCases} 条被模型自行纠正后仍拿到终态 completed。**`,
+  );
+  lines.push("");
+  lines.push("这条才是「工具调用失败率高」的直接度量：结论对了，不等于调用过程是干净的。每次失败都在消耗模型的失败预算（上限 3 次），也在拉长时延。");
+  lines.push("");
+  if (signal.selfHealedCaseIds.length > 0) {
+    lines.push(`自纠成功的用例：${signal.selfHealedCaseIds.join("、")}`);
+    lines.push("");
+  }
   lines.push("## 4. 未通过清单");
   lines.push("");
   const failed = summary.rows.filter((row) => row.verdict !== "pass");
