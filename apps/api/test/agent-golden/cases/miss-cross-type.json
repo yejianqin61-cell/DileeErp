@@ -1,0 +1,68 @@
+[
+  {
+    "id": "miss-cross-purchase-as-sales",
+    "group": "miss",
+    "question": "MOCK-PO-001 这张销售单的金额是多少",
+    "baselineDocs": ["MOCK-PO-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "miss-cross-production-as-sales",
+    "group": "miss",
+    "question": "MOCK-PROD-001 这张销售单的应收是多少",
+    "baselineDocs": ["MOCK-PROD-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "miss-cross-forged-ref",
+    "group": "miss",
+    "question": "用句柄 o_99 查一下这张单的概览",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "miss-cross-product-only",
+    "group": "miss",
+    "question": "蓝色折叠伞现在生产到哪一步了",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "miss-cross-customer-only",
+    "group": "miss",
+    "question": "海风家居（模拟）还欠我们多少钱",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "miss-cross-date-as-number",
+    "group": "miss",
+    "question": "2026-09-20 这张单什么状态",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  }
+]

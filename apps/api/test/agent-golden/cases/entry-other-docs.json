@@ -1,0 +1,89 @@
+[
+  {
+    "id": "entry-purchase-receipt",
+    "group": "entry",
+    "question": "MOCK-PO-001 这张采购单到货了吗",
+    "baselineDocs": ["MOCK-PO-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-purchase-status",
+    "group": "entry",
+    "question": "MOCK-PO-001 现在是什么状态",
+    "baselineDocs": ["MOCK-PO-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-purchase-items",
+    "group": "entry",
+    "question": "MOCK-PO-001 收了哪些物料，各收了多少",
+    "baselineDocs": ["MOCK-PO-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-production-progress",
+    "group": "entry",
+    "question": "MOCK-PROD-001 的生产进度如何",
+    "baselineDocs": ["MOCK-PROD-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-production-reports",
+    "group": "entry",
+    "question": "MOCK-PROD-001 的报工记录有多少条",
+    "baselineDocs": ["MOCK-PROD-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-production-status",
+    "group": "entry",
+    "question": "MOCK-PROD-001 现在是什么状态",
+    "baselineDocs": ["MOCK-PROD-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-mixed-documents",
+    "group": "entry",
+    "question": "MOCK-ORD-001 和 MOCK-PO-001 分别是什么状态",
+    "baselineDocs": ["MOCK-ORD-001", "MOCK-PO-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001", "MOCK-PO-001"],
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  }
+]

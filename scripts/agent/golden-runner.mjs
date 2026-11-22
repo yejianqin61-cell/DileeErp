@@ -236,8 +236,18 @@ export function missingBaseline(caseDef, present) {
 async function main() {
   const argv = process.argv.slice(2);
   const groups = [];
+  const validateOnly = argv.includes("--validate");
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--group") groups.push(argv[index + 1]);
+  }
+  const casesDir = fileURLToPath(new URL("../../apps/api/test/agent-golden/cases/", import.meta.url));
+  const cases = selectCases(loadCases(casesDir), groups);
+  if (validateOnly) {
+    const byGroup = new Map();
+    for (const caseDef of cases) byGroup.set(caseDef.group, (byGroup.get(caseDef.group) ?? 0) + 1);
+    for (const [group, count] of [...byGroup.entries()].sort()) console.log(`${group}\t${count}`);
+    console.log(`total\t${cases.length}`);
+    return;
   }
   const apiBase = process.env.GOLDEN_API_BASE ?? "http://127.0.0.1:3111/api/v1";
   const username = process.env.GOLDEN_USERNAME ?? "admin";
@@ -246,8 +256,6 @@ async function main() {
     console.error("缺少 GOLDEN_PASSWORD");
     process.exit(2);
   }
-  const casesDir = fileURLToPath(new URL("../../apps/api/test/agent-golden/cases/", import.meta.url));
-  const cases = selectCases(loadCases(casesDir), groups);
   const cookie = await login({ fetchImpl: fetch, apiBase, username, password });
   const present = await fetchBaselineDocs({ fetchImpl: fetch, apiBase, cookie });
   const results = [];

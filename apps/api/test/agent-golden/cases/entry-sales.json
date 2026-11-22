@@ -1,0 +1,101 @@
+[
+  {
+    "id": "entry-sales-exact",
+    "group": "entry",
+    "question": "MOCK-ORD-001 这张销售单现在什么状态",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-sales-lowercase",
+    "group": "entry",
+    "question": "mock-ord-001 这张单现在什么状态",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-sales-padded",
+    "group": "entry",
+    "question": "  MOCK-ORD-001   这张单现在什么状态  ",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-sales-fullwidth",
+    "group": "entry",
+    "question": "ＭＯＣＫ－ＯＲＤ－００１ 这张单现在什么状态",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-sales-suffix-only",
+    "group": "entry",
+    "question": "ORD-001 这张单现在什么状态",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-sales-in-sentence",
+    "group": "entry",
+    "question": "客户的蓝色折叠伞，单号 MOCK-ORD-001，这张单现在什么状态",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-sales-ask-status",
+    "group": "entry",
+    "question": "MOCK-ORD-001 已经确认了吗",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "entry-sales-ask-progress",
+    "group": "entry",
+    "question": "MOCK-ORD-001 现在做到哪一步了，有没有卡住的地方",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  }
+]

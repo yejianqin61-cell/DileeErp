@@ -1,0 +1,68 @@
+[
+  {
+    "id": "miss-unknown-prefix",
+    "group": "miss",
+    "question": "MOCK-ORD-999 这张单什么状态",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "miss-unknown-extra-digit",
+    "group": "miss",
+    "question": "MOCK-ORD-0011 这张单什么状态",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "miss-unknown-mixed-valid-invalid",
+    "group": "miss",
+    "question": "MOCK-PO-001 和 MOCK-PO-999 分别什么状态",
+    "baselineDocs": ["MOCK-PO-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "miss-unknown-no-doc",
+    "group": "miss",
+    "question": "查一个不存在的单号 MOCK-XXX-000",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "miss-unknown-vague",
+    "group": "miss",
+    "question": "请问",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "miss-unknown-long-garbage",
+    "group": "miss",
+    "question": "MOCK-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 这张单什么状态",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  }
+]

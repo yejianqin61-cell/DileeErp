@@ -1,0 +1,82 @@
+[
+  {
+    "id": "entry-batch-two-orders",
+    "group": "entry",
+    "question": "MOCK-ORD-001 和 MOCK-ORD-002 分别什么状态",
+    "baselineDocs": ["MOCK-ORD-001", "MOCK-ORD-002"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001", "MOCK-ORD-002"],
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "entry-batch-prefix",
+    "group": "entry",
+    "question": "MOCK-ORD-00 开头的订单有哪些",
+    "baselineDocs": ["MOCK-ORD-001", "MOCK-ORD-002"],
+    "expect": {
+      "terminal": "completed",
+      "opsInclude": ["search_documents"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "entry-batch-recent",
+    "group": "entry",
+    "question": "最近有哪些订单",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "entry-batch-no-argument",
+    "group": "entry",
+    "question": "帮我看看订单情况",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "entry-batch-customer-name",
+    "group": "entry",
+    "question": "海风家居（模拟）有哪些订单",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "entry-batch-product-name",
+    "group": "entry",
+    "question": "蓝色折叠伞的订单有哪些",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "entry-batch-status-filter",
+    "group": "entry",
+    "question": "有哪些订单已经确认了",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  }
+]
