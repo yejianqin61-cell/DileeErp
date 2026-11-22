@@ -1,0 +1,46 @@
+[
+  {
+    "id": "relation-cross-overdue-arrivals",
+    "group": "relation",
+    "question": "这个月有哪些采购到货超期了",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-cross-low-stock",
+    "group": "relation",
+    "question": "哪些物料库存不足",
+    "baselineDocs": [],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-cross-customer-orders",
+    "group": "relation",
+    "question": "海风家居（模拟）名下所有订单的执行情况",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-cross-product-orders",
+    "group": "relation",
+    "question": "蓝色折叠伞这个产品一共有多少订单，进度如何",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  }
+]

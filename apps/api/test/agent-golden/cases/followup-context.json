@@ -1,0 +1,93 @@
+[
+  {
+    "id": "followup-status-then-supplier",
+    "group": "followup",
+    "turns": [
+      "MOCK-ORD-001 现在什么状态",
+      "那这张单的供应商是谁，什么时候到货的"
+    ],
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "followup-production-then-reports",
+    "group": "followup",
+    "turns": [
+      "MOCK-ORD-001 的生产进度怎么样",
+      "那工序报工量是多少"
+    ],
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "followup-chain-three-rounds",
+    "group": "followup",
+    "turns": [
+      "MOCK-ORD-001 到货了吗",
+      "那来料质检结果怎么样",
+      "入库数量是多少"
+    ],
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 24
+    }
+  },
+  {
+    "id": "followup-switch-document",
+    "group": "followup",
+    "turns": [
+      "MOCK-ORD-001 什么状态",
+      "换成 MOCK-ORD-002 呢"
+    ],
+    "baselineDocs": ["MOCK-ORD-001", "MOCK-ORD-002"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-002"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "followup-purchase-then-inspection",
+    "group": "followup",
+    "turns": [
+      "MOCK-PO-001 到货了吗",
+      "那一次有几个不合格的"
+    ],
+    "baselineDocs": ["MOCK-PO-001", "MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "followup-three-rounds-same-order",
+    "group": "followup",
+    "turns": [
+      "MOCK-ORD-001 客户是谁",
+      "交期是哪天",
+      "金额多少"
+    ],
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 24
+    }
+  }
+]

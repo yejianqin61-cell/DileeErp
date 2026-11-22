@@ -1,0 +1,74 @@
+[
+  {
+    "id": "relation-order-overview",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的整体概览",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-order-status",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的订单状态",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-order-timeline",
+    "group": "relation",
+    "question": "MOCK-ORD-001 从下单到现在经历了哪些节点",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-order-alerts",
+    "group": "relation",
+    "question": "MOCK-ORD-001 有哪些告警",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-order-attachments",
+    "group": "relation",
+    "question": "MOCK-ORD-001 有哪些附件",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-order-two-questions",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的状态和交期分别是什么",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  }
+]

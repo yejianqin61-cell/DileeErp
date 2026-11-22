@@ -1,0 +1,74 @@
+[
+  {
+    "id": "relation-chain-receipt",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的采购到货情况",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-chain-inspection",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的来料质检结果",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-chain-production",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的生产进度",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-chain-daily-reports",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的工序报工量",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-chain-stock",
+    "group": "relation",
+    "question": "MOCK-ORD-001 用到的原料现在还有多少库存",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  },
+  {
+    "id": "relation-chain-finished-goods",
+    "group": "relation",
+    "question": "MOCK-ORD-001 的成品入库情况",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  }
+]
