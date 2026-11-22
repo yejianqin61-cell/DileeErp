@@ -117,11 +117,11 @@ test("mergeOutcomes 汇总多轮的工具次数与失败码", () => {
   assert.equal(merged.answer, "二");
 });
 
-test("collectDocNumbers 收三类单号", () => {
+test("collectDocNumbers 兼容 snake_case 与接口返回的 camelCase", () => {
   const docs = collectDocNumbers([
     { rows: [{ order_no: "MOCK-ORD-001" }] },
-    [{ purchase_order_no: "MOCK-PO-001", order_no: "MOCK-ORD-001" }],
-    [{ production_order_no: "MOCK-PROD-001" }],
+    [{ purchaseOrderNo: "MOCK-PO-001", orderNo: "MOCK-ORD-001" }],
+    [{ productionOrderNo: "MOCK-PROD-001" }],
   ]);
   assert.deepEqual([...docs].sort(), ["MOCK-ORD-001", "MOCK-PO-001", "MOCK-PROD-001"]);
 });

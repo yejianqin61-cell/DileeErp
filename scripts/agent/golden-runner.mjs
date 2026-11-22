@@ -36,11 +36,13 @@ export async function login({ fetchImpl, apiBase, username, password }) {
   return session;
 }
 
+const DOC_KEYS = ["order_no", "purchase_order_no", "production_order_no", "orderNo", "purchaseOrderNo", "productionOrderNo"];
+
 export function collectDocNumbers(sources) {
   const docs = new Set();
   for (const rows of sources) {
     for (const row of Array.isArray(rows) ? rows : []) {
-      for (const key of ["order_no", "purchase_order_no", "production_order_no"]) {
+      for (const key of DOC_KEYS) {
         if (typeof row?.[key] === "string") docs.add(row[key]);
       }
     }
