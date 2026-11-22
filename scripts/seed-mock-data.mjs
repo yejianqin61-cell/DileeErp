@@ -70,16 +70,16 @@ async function main() {
   const bomA = id(401), bomB = id(402), bomItemA1 = id(403), bomItemA2 = id(404), bomItemA3 = id(405), bomItemB1 = id(406);
   await put("bom", bomA, { orderNo: "MOCK-ORD-001", salesOrderId: orderA, salesOrderVersionId: versionA, version: 1, status: "published", extensionData: json({ product_spec: "24骨/晴雨两用", mock: true }), ...a });
   await put("bom", bomB, { orderNo: "MOCK-ORD-002", salesOrderId: orderB, salesOrderVersionId: versionB, version: 1, status: "draft", extensionData: json({ product_spec: "16骨/自动开收", mock: true }), ...a });
-  await put("bomItem", bomItemA1, { bomId: bomA, materialId: materialA, unitId: u.码, materialSnapshot: json({ code: "MOCK-M-001", name: "伞布-蓝色（模拟）" }), requiredQuantity: "1.2", unit: "码", lossQuantity: "0.05", lossRate: "0.04", extensionData: json({}), ...a });
-  await put("bomItem", bomItemA2, { bomId: bomA, materialId: materialB, unitId: u.个, materialSnapshot: json({ code: "MOCK-M-002", name: "伞骨-铝合金（模拟）" }), requiredQuantity: "1", unit: "个", lossQuantity: "0", lossRate: "0", extensionData: json({}), ...a });
-  await put("bomItem", bomItemA3, { bomId: bomA, materialId: materialC, unitId: u.个, materialSnapshot: json({ code: "MOCK-M-003", name: "包装袋（模拟）" }), requiredQuantity: "1", unit: "个", extensionData: json({}), ...a });
-  await put("bomItem", bomItemB1, { bomId: bomB, materialId: materialA, unitId: u.码, materialSnapshot: json({ code: "MOCK-M-001", name: "伞布-蓝色（模拟）" }), requiredQuantity: "1.1", unit: "码", lossRate: "0.03", extensionData: json({}), ...a });
+  await put("bomItem", bomItemA1, { bomId: bomA, materialId: materialA, materialName: "伞布-蓝色（模拟）", unitId: u.码, materialSnapshot: json({ code: "MOCK-M-001", name: "伞布-蓝色（模拟）" }), requiredQuantity: "1.2", unit: "码", lossQuantity: "0.05", lossRate: "0.04", extensionData: json({}), ...a });
+  await put("bomItem", bomItemA2, { bomId: bomA, materialId: materialB, materialName: "伞骨-铝合金（模拟）", unitId: u.个, materialSnapshot: json({ code: "MOCK-M-002", name: "伞骨-铝合金（模拟）" }), requiredQuantity: "1", unit: "个", lossQuantity: "0", lossRate: "0", extensionData: json({}), ...a });
+  await put("bomItem", bomItemA3, { bomId: bomA, materialId: materialC, materialName: "包装袋（模拟）", unitId: u.个, materialSnapshot: json({ code: "MOCK-M-003", name: "包装袋（模拟）" }), requiredQuantity: "1", unit: "个", extensionData: json({}), ...a });
+  await put("bomItem", bomItemB1, { bomId: bomB, materialId: materialA, materialName: "伞布-蓝色（模拟）", unitId: u.码, materialSnapshot: json({ code: "MOCK-M-001", name: "伞布-蓝色（模拟）" }), requiredQuantity: "1.1", unit: "码", lossRate: "0.03", extensionData: json({}), ...a });
 
   const dept = id(501), position = id(502), employeeA = id(503), employeeB = id(504), locationIn = id(505), locationOut = id(506), opCut = id(507), opSew = id(508), opPack = id(509);
   await put("department", dept, { code: "MOCK-PROD", name: "模拟生产车间", isActive: true, remark: "全链路夹具", ...a });
   await put("position", position, { departmentId: dept, code: "MOCK-OP", name: "模拟操作员", isActive: true, remark: "全链路夹具", ...a });
-  await put("employee", employeeA, { employeeNo: "MOCK-E-001", name: "陈师傅", departmentId: dept, positionId: position, employeeType: "worker", employmentStatus: "active", hiredOn: day("2025-01-10"), remark: "计件员工", ...a });
-  await put("employee", employeeB, { employeeNo: "MOCK-E-002", name: "王师傅", departmentId: dept, positionId: position, employeeType: "worker", employmentStatus: "active", hiredOn: day("2025-02-10"), remark: "计时员工", ...a });
+  await put("employee", employeeA, { employeeNo: "MOCK-E-001", name: "陈师傅", departmentId: dept, positionId: position, employeeType: "workshop", employmentStatus: "active", hiredOn: day("2025-01-10"), remark: "计件员工", ...a });
+  await put("employee", employeeB, { employeeNo: "MOCK-E-002", name: "王师傅", departmentId: dept, positionId: position, employeeType: "workshop", employmentStatus: "active", hiredOn: day("2025-02-10"), remark: "计时员工", ...a });
   await put("productionLocation", locationIn, { name: "模拟一车间", locationType: "workshop", contactName: "陈主管", contactPhone: "13700000001", address: "厂内A区", isActive: true, remark: "厂内生产", ...a });
   await put("productionLocation", locationOut, { name: "模拟外加工点", locationType: "outsource_site", contactName: "钱师傅", contactPhone: "13700000002", address: "江苏昆山", isActive: true, remark: "外加工交接", ...a });
   await put("operationCatalog", opCut, { operationCode: "MOCK-CUT", operationName: "裁剪（模拟）", defaultUnitId: u.个, isActive: true, remark: "工序池", ...a });
