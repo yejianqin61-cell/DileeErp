@@ -136,5 +136,11 @@ export function renderMarkdown(summary, meta = {}) {
     for (const item of observations) lines.push(`- ${item}`);
   }
   lines.push("");
+  if (typeof meta.analysis === "string" && meta.analysis.trim().length > 0) {
+    lines.push("## 8. 缺陷分析（人工撰写，不由脚本生成）");
+    lines.push("");
+    lines.push(meta.analysis.trim());
+    lines.push("");
+  }
   return `${lines.join("\n")}`;
 }

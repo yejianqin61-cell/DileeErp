@@ -92,3 +92,10 @@ test("渲染出 3.1 小节并同时报出过程失败率与自纠数", () => {
   assert.match(text, /### 3\.1 工具调用失败率/);
   assert.match(text, /1 \/ 1 条用例（100\.0%）/);
 });
+
+test("meta.analysis 非空时渲染第 8 节，空或空白时不出该节", () => {
+  const summary = summarize([row("a", "entry", "pass")]);
+  assert.match(renderMarkdown(summary, { analysis: "**根因**：工具面缺口。" }), /## 8\. 缺陷分析/);
+  assert.doesNotMatch(renderMarkdown(summary, {}), /## 8\. 缺陷分析/);
+  assert.doesNotMatch(renderMarkdown(summary, { analysis: "   \n" }), /## 8\. 缺陷分析/);
+});
