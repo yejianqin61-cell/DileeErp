@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { AGENT_CONNECTION_LIMIT, resolvePoolConfig, transactionOptions, withConnectionPoolParams } from "../../platform/database/prisma-pool";
 
 /**
  * Agent 自有状态表（agent_sessions / agent_runs / agent_run_events）的独立连接。
@@ -15,5 +16,10 @@ export function createAgentStateClient(env: { agentStateDatabaseUrl?: string; da
   }
   const url = env.agentStateDatabaseUrl ?? env.databaseUrl;
   if (!url) throw new Error("缺少数据库连接串：需要 AGENT_STATE_DATABASE_URL 或 DATABASE_URL");
-  return new PrismaClient({ datasources: { db: { url } } });
+  // 与主应用同一套池参数口径（池更小，见 prisma-pool.ts 的 AGENT_CONNECTION_LIMIT）。
+  const config = resolvePoolConfig(process.env);
+  return new PrismaClient({
+    datasources: { db: { url: withConnectionPoolParams(url, { connectionLimit: AGENT_CONNECTION_LIMIT, poolTimeoutSeconds: config.poolTimeoutSeconds }) } },
+    transactionOptions: transactionOptions(config),
+  });
 }

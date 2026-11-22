@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
+import { describePoolConfig, resolvePoolConfig, transactionOptions, withConnectionPoolParams } from "./prisma-pool";
 
 /**
  * 启动自检：数据库会话时区是不是 UTC。
@@ -21,6 +22,28 @@ import { PrismaClient } from "@prisma/client";
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+
+  /**
+   * 连接池与事务超时在这里一次设定（口径与理由见 `prisma-pool.ts`）。
+   *
+   * 两件事必须一起做，否则只是把瓶颈从一个地方挪到另一个地方：
+   *   · 连接池 3 → 15：解决「取不到连接」导致的 500（工作台、领料预览、计量列表）；
+   *   · 事务默认超时 5s → 25s：解决「事务已关闭」导致的开单/日报登记失败。
+   *
+   * 只调池不调超时：并发排队排到了，事务又因为 5 秒不够而失败；
+   * 只调超时不调池：事务还没排到就报「取不到连接」。
+   */
+  constructor() {
+    const config = resolvePoolConfig(process.env);
+    const url = process.env.DATABASE_URL;
+    super({
+      // 连接串里已显式写了 connection_limit / pool_timeout 时保持原样（见 withConnectionPoolParams）。
+      ...(url ? { datasources: { db: { url: withConnectionPoolParams(url, config) } } } : {}),
+      transactionOptions: transactionOptions(config),
+    });
+    // 启动日志：部署后凭这一行确认配置真的生效，不必去猜「代码改了但环境没生效」。
+    this.logger.log(describePoolConfig(config));
+  }
 
   async onModuleInit() {
     await this.reportTimeZone();
