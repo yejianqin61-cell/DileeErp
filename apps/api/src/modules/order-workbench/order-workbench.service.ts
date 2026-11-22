@@ -5,19 +5,55 @@ import { decimalString, overallStatus, reconciliationBlockers, WORKBENCH_STATUS_
 
 type Filter = { order_no?: string; customer_id?: string; status?: string; has_blockers?: string; from?: string; to?: string; page?: number; page_size?: number };
 
+/**
+ * 一次查询取回的「一个订单的全链路事实」，按订单号分好组（每单一份）。
+ *
+ * 类型**从 `queryBundle` 的返回值推导**，而不是手写或用 `findMany` 的宽泛返回：
+ * 后者不含 `include`/`select` 出来的关联字段（`lines`、`submission`），会逼出一堆断言。
+ * 推导出来的类型与真实查询逐字对齐，select 改了这里自动跟随。
+ */
+type Bundle = Awaited<ReturnType<typeof queryBundle>>;
+
+/** 批量查询的订单号过滤条件。 */
+type OrderNoFilter = Prisma.StringFilter;
+
+/** 单个订单一次 summary 需要的事实字段数量（保持与 queryBundle 一致，供测试断言）。 */
+export const SUMMARY_QUERY_COUNT = 22;
+
+/**
+ * 列表分页上限。
+ *
+ * 工作台前端一次要 200 条（它没有分页控件，靠一次拉全量再在前端按关键字过滤）。
+ * 这里给一个硬上限，防止某个调用方写 `page_size=100000` 把数据库拖死。
+ */
+export const MAX_PAGE_SIZE = 500;
+
 @Injectable()
 export class OrderWorkbenchService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(filter: Filter) {
     const where: Prisma.SalesOrderWhereInput = { deletedAt: null, ...(filter.order_no ? { orderNo: { contains: filter.order_no } } : {}), ...(filter.customer_id ? { customerId: filter.customer_id } : {}), ...(filter.status ? { status: filter.status } : {}), ...(filter.from || filter.to ? { updatedAt: { ...(filter.from ? { gte: new Date(filter.from) } : {}), ...(filter.to ? { lte: new Date(filter.to) } : {}) } } : {}) };
-    const [orders, total] = await Promise.all([this.prisma.salesOrder.findMany({ where, orderBy: { updatedAt: "desc" }, skip: ((filter.page ?? 1) - 1) * (filter.page_size ?? 20), take: filter.page_size ?? 20 }), this.prisma.salesOrder.count({ where })]);
-    const rows = await Promise.all(orders.map((order) => this.summary(order.orderNo, order)));
+    const pageSize = Math.min(filter.page_size ?? 20, MAX_PAGE_SIZE);
+    const [orders, total] = await Promise.all([
+      this.prisma.salesOrder.findMany({ where, orderBy: { updatedAt: "desc" }, skip: ((filter.page ?? 1) - 1) * pageSize, take: pageSize }),
+      this.prisma.salesOrder.count({ where }),
+    ]);
+
+    // ── 2026-11-22：一次批量取全链路事实，不再「每个订单发 22 个查询」──────────────
+    // 改前：list() 对每个订单调 summary()，每个 summary() 内含 22 个并发查询，
+    //       于是 page_size=200 → 200 × 22 = 4400 个查询打向只有 15 个连接的池，
+    //       单个用户打开工作台就能把池打满（实测报 "Timed out fetching a new connection"）。
+    // 改后：整批订单只用 22 个查询（每个查询带 `orderNo IN (...)`），在内存里按订单分组。
+    //       代价是内存里多放一份本页数据（200 单约几 MB），换来查询数与订单数无关。
+    const bundles = await this.fetchBundles(orders.map((order) => order.orderNo));
+    const rows = orders.map((order) => this.buildSummary(order.orderNo, order, bundles.get(order.orderNo) ?? emptyBundle()));
+
     const data = filter.has_blockers === undefined ? rows : rows.filter((row) => (filter.has_blockers === "true") === (row.blockers.length > 0));
     return { data, total: filter.has_blockers === undefined ? total : data.length };
   }
 
-  async detail(orderNo: string) { const order = await this.prisma.salesOrder.findFirst({ where: { orderNo, deletedAt: null } }); if (!order) throw new NotFoundException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] }); return this.summary(orderNo, order); }
+  async detail(orderNo: string) { return await this.summary(orderNo); }
 
   async timeline(orderNo: string) {
     const exists = await this.prisma.salesOrder.findFirst({ where: { orderNo, deletedAt: null }, select: { id: true } });
@@ -25,34 +61,31 @@ export class OrderWorkbenchService {
     return this.prisma.auditEvent.findMany({ where: { orderNo }, orderBy: { createdAt: "desc" }, take: 200 });
   }
 
+  /** 单个订单的汇总：取一个订单的事实再算，与列表走**同一套**计算（口径不可能分叉）。 */
   async summary(orderNo: string, order?: Awaited<ReturnType<PrismaService["salesOrder"]["findFirst"]>>) {
     const root = order ?? await this.prisma.salesOrder.findFirst({ where: { orderNo, deletedAt: null } });
     if (!root) throw new NotFoundException({ code: "ORDER_NOT_FOUND", message: "订单不存在", details: [] });
-    const [boms, bomItems, purchases, purchaseItems, receipts, inspections, production, operationReports, movements, inbounds, inventory, qc, finishedInbounds, outbounds, inboundNotices, receivables, receivablePayments, receivableAllocations, payableSources, payables, supplierPayments, supplierPaymentAllocations] = await Promise.all([
-      this.prisma.bom.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, version: true, status: true } }),
-      this.prisma.bomItem.findMany({ where: { bom: { orderNo, deletedAt: null }, deletedAt: null }, select: { requiredQuantity: true, unit: true } }),
-      this.prisma.purchaseOrder.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, purchaseOrderNo: true, status: true, totalAmount: true, currency: true } }),
-      this.prisma.purchaseOrderItem.findMany({ where: { purchaseOrder: { orderNo, deletedAt: null }, deletedAt: null }, select: { quantity: true, amount: true, unitId: true } }),
-      this.prisma.purchaseReceipt.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, receiptNo: true, status: true, quantity: true, extensionData: true } }),
-      this.prisma.incomingInspection.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, status: true, inspectedQuantity: true, acceptedQuantity: true, conditionalQuantity: true, rejectedQuantity: true } }),
-      this.prisma.productionOrder.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, productionOrderNo: true, status: true, executionMode: true, plannedQuantity: true, updatedAt: true } }),
-      this.prisma.operationDailyReport.findMany({ where: { orderNo, deletedAt: null }, select: { completedQuantity: true } }),
-      this.prisma.rawMaterialMovement.findMany({ where: { orderNo, deletedAt: null }, select: { documentType: true, status: true, lines: { where: { deletedAt: null }, select: { quantity: true } } } }),
-      this.prisma.rawMaterialInbound.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, inboundNo: true, status: true, quantity: true } }),
-      this.prisma.inventoryFact.findMany({ where: { orderNo }, select: { id: true, inventoryCategory: true, quantityDelta: true, sourceId: true } }),
-      this.prisma.finishedGoodsQcRecord.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, qcNo: true, conclusion: true, status: true, inspectedQuantity: true, qualifiedQuantity: true, conditionalAcceptQuantity: true, rejectedQuantity: true } }),
-      this.prisma.finishedGoodsInbound.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, inboundNo: true, status: true, quantity: true, submission: { select: { sourceType: true } } } }),
-      this.prisma.finishedGoodsOutbound.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, outboundNo: true, status: true, quantity: true } }),
-      // 成品入库通知（包装工序分批通知入库）——工作台要展示待入库/在途数量。
-      this.prisma.finishedGoodsInboundNotice.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, noticeNo: true, status: true, noticeQuantity: true, noticeDate: true, operationNameSnapshot: true } }),
-      this.prisma.receivableSource.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, sourceNo: true, status: true, amount: true, currency: true } }),
-      this.prisma.customerPayment.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, paymentNo: true, status: true, amount: true, currency: true } }),
-      this.prisma.receivableAllocation.findMany({ where: { receivableSource: { orderNo, deletedAt: null }, status: "active", deletedAt: null }, select: { amount: true } }),
-      this.prisma.payableSource.findMany({ where: { orderNo, status: "pending_finance" }, select: { id: true, amount: true, currency: true } }),
-      this.prisma.supplierPayableEntry.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, payableNo: true, status: true, amount: true, currency: true } }),
-      this.prisma.supplierPayment.findMany({ where: { orderNo, deletedAt: null }, select: { id: true, paymentNo: true, status: true, amount: true, currency: true } }),
-      this.prisma.supplierPaymentAllocation.findMany({ where: { orderNo, status: "active", deletedAt: null }, select: { amount: true } }),
-    ]);
+    const bundles = await this.fetchBundles([orderNo]);
+    return this.buildSummary(orderNo, root, bundles.get(orderNo) ?? emptyBundle());
+  }
+
+  /**
+   * 批量取事实：整批订单共用 22 个查询，按订单号分组成 Map。
+   *
+   * 空批次直接返回空 Map：`orderNo: { in: [] }` 虽然合法，但没必要发 22 个空查询。
+   */
+  private async fetchBundles(orderNos: string[]): Promise<Map<string, Bundle>> {
+    if (orderNos.length === 0) return new Map();
+    const raw = await queryBundle(this.prisma, { in: orderNos });
+    return groupBundle(orderNos, raw);
+  }
+
+  /**
+   * 一个订单的汇总计算。**纯函数**（除了 Decimal 求和无副作用），
+   * 列表与详情都走它，所以「列表里的数字」与「点进去看到的数字」不可能不一致。
+   */
+  private buildSummary(orderNo: string, root: NonNullable<Awaited<ReturnType<PrismaService["salesOrder"]["findFirst"]>>>, bundle: Bundle) {
+    const { boms, bomItems, purchases, purchaseItems, receipts, inspections, production, operationReports, movements, inbounds, inventory, qc, finishedInbounds, outbounds, inboundNotices, receivables, receivablePayments, receivableAllocations, payableSources, payables, supplierPayments, supplierPaymentAllocations } = bundle;
     const sum = (values: Array<Prisma.Decimal | null | undefined>): Prisma.Decimal => values.reduce<Prisma.Decimal>((total, value) => total.plus(value ?? 0), new Prisma.Decimal(0));
     const bomRequired = sum(bomItems.map((row) => row.requiredQuantity));
     const orderedQuantity = sum(purchaseItems.map((row) => row.quantity));
@@ -100,4 +133,75 @@ export class OrderWorkbenchService {
     const amount = (rows: Array<{ amount: Prisma.Decimal; currency: string }>) => ({ amount: rows.reduce((sum, row) => sum.plus(row.amount), new Prisma.Decimal(0)).toString(), currency: rows[0]?.currency ?? root.currency });
     return { order_no: orderNo, customer: root.customerSnapshot, sales_status: root.status, bom_status: boms.length ? "completed" : "not_started", procurement_summary: module(purchases.length ? "in_progress" : "not_started", purchases, purchases.map((row) => row.purchaseOrderNo), { amounts: amount(purchases.map((row) => ({ amount: row.totalAmount, currency: row.currency }))), bom_required_quantity: bomRequired.toString(), ordered_quantity: orderedQuantity.toString(), receipt_count: receipts.length, received_quantity: receivedQuantity.toString(), inspection_count: inspections.length, inspected_quantity: inspectedQuantity.toString(), accepted_quantity: acceptedQuantity.toString(), conditional_quantity: conditionalQuantity.toString(), inbound_quantity: inboundQuantity.toString() }), raw_material_inventory_summary: module(inbounds.length ? "in_progress" : "not_started", inbounds, inbounds.map((row) => row.inboundNo), { quantity_delta: decimalString(inventory.filter((row) => row.inventoryCategory === "raw_material").reduce((total, row) => total.plus(row.quantityDelta), new Prisma.Decimal(0))), inbound_quantity: inboundQuantity.toString(), issued_quantity: issuedQuantity.toString(), returned_quantity: returnedQuantity.toString(), scrapped_quantity: scrappedQuantity.toString() }), production_summary: module(production.length ? "in_progress" : "not_started", production, production.map((row) => row.productionOrderNo), { planned_quantity: plannedQuantity.toString(), operation_completed_quantity: operationQuantity.toString() }), finished_goods_qc_summary: module(qc.length ? "completed" : "not_started", qc, qc.map((row) => row.qcNo), { inspected_quantity: sum(qc.map((row) => row.inspectedQuantity)).toString(), qualified_quantity: qualifiedQuantity.toString(), conditional_accept_quantity: conditionalFinishedQuantity.toString(), rejected_quantity: sum(qc.map((row) => row.rejectedQuantity)).toString(), finished_inbound_quantity: finishedInboundQuantity.toString() }), finished_goods_inventory_summary: module(finishedInbounds.length || activeNotices.length ? "completed" : "not_started", [...finishedInbounds, ...activeNotices], [...finishedInbounds.map((row) => row.inboundNo), ...activeNotices.map((row) => row.noticeNo)], { quantity: finishedInboundQuantity.toString(), posted_quantity: postedFinishedQuantity.toString(), noticed_posted_quantity: noticedPostedQuantity.toString(), draft_quantity: draftFinishedQuantity.toString(), notice_count: activeNotices.length, notified_quantity: notifiedQuantity.toString(), pending_inbound_quantity: pendingInboundQuantity.toString(), stock_quantity: finishedStockQuantity.toString(), defective_stock_quantity: defectiveStockQuantity.toString(), outbound_quantity: outboundQuantity.toString() }), shipping_summary: module(shippedOutbounds.length ? "completed" : "not_started", shippedOutbounds, shippedOutbounds.map((row) => row.outboundNo), { quantity: outboundQuantity.toString(), draft_count: outbounds.filter((row) => row.status === "draft").length, cancelled_count: outbounds.filter((row) => row.status === "cancelled").length }), receivable_summary: module(receivables.length ? "in_progress" : "not_started", receivables, receivables.map((row) => row.sourceNo), { amounts: amount(receivables), payment_count: receivablePayments.length, paid_amount: paidReceivableAmount.toString(), outstanding_amount: sum(receivables.map((row) => row.amount)).minus(paidReceivableAmount).toString() }), payable_summary: module(payables.length || payableSources.length ? "in_progress" : "not_started", [...payables, ...payableSources], [...payables.map((row) => row.payableNo), ...payableSources.map((row) => row.id)], { amounts: amount(payables), pending_source_count: payableSources.length, pending_source_amount: sum(payableSources.map((row) => row.amount)).toString(), payment_count: supplierPayments.length, paid_amount: paidPayableAmount.toString(), outstanding_amount: sum(payables.map((row) => row.amount)).minus(paidPayableAmount).toString() }), overall_status: status, overall_status_label: WORKBENCH_STATUS_LABELS[status], blockers, updated_at: root.updatedAt };
   }
+}
+
+/**
+ * 整批订单共用的一次批量查询（22 个查询，每个带 `orderNo IN (...)`）。
+ *
+ * 三个查询是「经过父表找到订单号」的（BOM 明细、采购明细、应收核销），
+ * 所以额外 select 父表的 orderNo 并摊平到行上，后面统一按 orderNo 分组；其余表本身就有 orderNo。
+ *
+ * 独立成模块级函数（而不是类方法）有两个好处：
+ *   ① `Bundle` 类型可以从它的返回值推导，不必手写一遍、也就不会与真实 select 脱节；
+ *   ② 可以直接被单测注入替身 prisma 调用，不用起 Nest 容器。
+ */
+export async function queryBundle(prisma: PrismaService, orderNo: OrderNoFilter) {
+  const [boms, bomItemsRaw, purchases, purchaseItemsRaw, receipts, inspections, production, operationReports, movements, inbounds, inventory, qc, finishedInbounds, outbounds, inboundNotices, receivables, receivablePayments, receivableAllocationsRaw, payableSources, payables, supplierPayments, supplierPaymentAllocations] = await Promise.all([
+    prisma.bom.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, version: true, status: true } }),
+    prisma.bomItem.findMany({ where: { bom: { orderNo, deletedAt: null }, deletedAt: null }, select: { requiredQuantity: true, unit: true, bom: { select: { orderNo: true } } } }),
+    prisma.purchaseOrder.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, purchaseOrderNo: true, status: true, totalAmount: true, currency: true } }),
+    prisma.purchaseOrderItem.findMany({ where: { purchaseOrder: { orderNo, deletedAt: null }, deletedAt: null }, select: { quantity: true, amount: true, unitId: true, purchaseOrder: { select: { orderNo: true } } } }),
+    prisma.purchaseReceipt.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, receiptNo: true, status: true, quantity: true, extensionData: true } }),
+    prisma.incomingInspection.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, status: true, inspectedQuantity: true, acceptedQuantity: true, conditionalQuantity: true, rejectedQuantity: true } }),
+    prisma.productionOrder.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, productionOrderNo: true, status: true, executionMode: true, plannedQuantity: true, updatedAt: true } }),
+    prisma.operationDailyReport.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, completedQuantity: true } }),
+    prisma.rawMaterialMovement.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, documentType: true, status: true, lines: { where: { deletedAt: null }, select: { quantity: true } } } }),
+    prisma.rawMaterialInbound.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, inboundNo: true, status: true, quantity: true } }),
+    prisma.inventoryFact.findMany({ where: { orderNo }, select: { orderNo: true, id: true, inventoryCategory: true, quantityDelta: true, sourceId: true } }),
+    prisma.finishedGoodsQcRecord.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, qcNo: true, conclusion: true, status: true, inspectedQuantity: true, qualifiedQuantity: true, conditionalAcceptQuantity: true, rejectedQuantity: true } }),
+    prisma.finishedGoodsInbound.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, inboundNo: true, status: true, quantity: true, submission: { select: { sourceType: true } } } }),
+    prisma.finishedGoodsOutbound.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, outboundNo: true, status: true, quantity: true } }),
+    // 成品入库通知（包装工序分批通知入库）——工作台要展示待入库/在途数量。
+    prisma.finishedGoodsInboundNotice.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, noticeNo: true, status: true, noticeQuantity: true, noticeDate: true, operationNameSnapshot: true } }),
+    prisma.receivableSource.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, sourceNo: true, status: true, amount: true, currency: true } }),
+    prisma.customerPayment.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, paymentNo: true, status: true, amount: true, currency: true } }),
+    prisma.receivableAllocation.findMany({ where: { receivableSource: { orderNo, deletedAt: null }, status: "active", deletedAt: null }, select: { amount: true, receivableSource: { select: { orderNo: true } } } }),
+    prisma.payableSource.findMany({ where: { orderNo, status: "pending_finance" }, select: { orderNo: true, id: true, amount: true, currency: true } }),
+    prisma.supplierPayableEntry.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, payableNo: true, status: true, amount: true, currency: true } }),
+    prisma.supplierPayment.findMany({ where: { orderNo, deletedAt: null }, select: { orderNo: true, id: true, paymentNo: true, status: true, amount: true, currency: true } }),
+    prisma.supplierPaymentAllocation.findMany({ where: { orderNo, status: "active", deletedAt: null }, select: { orderNo: true, amount: true } }),
+  ]);
+  const bomItems = bomItemsRaw.map((row) => ({ ...row, orderNo: row.bom.orderNo }));
+  const purchaseItems = purchaseItemsRaw.map((row) => ({ ...row, orderNo: row.purchaseOrder.orderNo }));
+  const receivableAllocations = receivableAllocationsRaw.map((row) => ({ ...row, orderNo: row.receivableSource.orderNo }));
+  return { boms, bomItems, purchases, purchaseItems, receipts, inspections, production, operationReports, movements, inbounds, inventory, qc, finishedInbounds, outbounds, inboundNotices, receivables, receivablePayments, receivableAllocations, payableSources, payables, supplierPayments, supplierPaymentAllocations };
+}
+/** 空事实：订单在页里但一条关联数据都没有时用（等价于「全部查询都没查到」）。 */
+function emptyBundle(): Bundle {
+  return { boms: [], bomItems: [], purchases: [], purchaseItems: [], receipts: [], inspections: [], production: [], operationReports: [], movements: [], inbounds: [], inventory: [], qc: [], finishedInbounds: [], outbounds: [], inboundNotices: [], receivables: [], receivablePayments: [], receivableAllocations: [], payableSources: [], payables: [], supplierPayments: [], supplierPaymentAllocations: [] };
+}
+
+/** 把整批查询结果按 orderNo 分组成「每单一份事实」；没有关联数据的订单一律给空事实。 */
+export function groupBundle(orderNos: readonly string[], raw: Record<keyof Bundle, Array<{ orderNo?: string | null }>>): Map<string, Bundle> {
+  const maps = new Map<string, Map<string, unknown[]>>();
+  for (const key of Object.keys(raw) as Array<keyof Bundle>) {
+    const perOrder = new Map<string, unknown[]>();
+    for (const row of raw[key]) {
+      const orderNo = (row as { orderNo?: string | null }).orderNo;
+      if (typeof orderNo !== "string" || orderNo.length === 0) continue;
+      const list = perOrder.get(orderNo);
+      if (list === undefined) perOrder.set(orderNo, [row]);
+      else list.push(row);
+    }
+    maps.set(key, perOrder);
+  }
+  const result = new Map<string, Bundle>();
+  for (const orderNo of orderNos) {
+    const bundle = emptyBundle() as unknown as Record<string, unknown[]>;
+    for (const key of maps.keys() as Iterable<keyof Bundle>) {
+      bundle[key] = maps.get(key)?.get(orderNo) ?? [];
+    }
+    result.set(orderNo, bundle as unknown as Bundle);
+  }
+  return result;
 }

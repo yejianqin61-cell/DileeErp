@@ -26,13 +26,13 @@ function build(overrides = {}) {
 test("工作台成品库存：通知量按「通知来源」的过账量扣减，不会出现负数待入库", async () => {
   const { service } = build({
     // 历史厂内完工入库（没有通知来源）100：不能拿它去抵通知量。
-    finishedGoodsInbound: { findMany: async () => [{ id: "in-legacy", inboundNo: "FGI-LEGACY", status: "posted", quantity: new Prisma.Decimal("100"), submission: { sourceType: "in_house_completion" } }] },
-    finishedGoodsInboundNotice: { findMany: async () => [{ id: "notice-1", noticeNo: "FGN-1", status: "partially_inbound", noticeQuantity: new Prisma.Decimal("40"), noticeDate: new Date("2026-09-10T00:00:00.000Z"), operationNameSnapshot: "包装" }] },
+    finishedGoodsInbound: { findMany: async () => [{ orderNo: "SO-1", id: "in-legacy", inboundNo: "FGI-LEGACY", status: "posted", quantity: new Prisma.Decimal("100"), submission: { sourceType: "in_house_completion" } }] },
+    finishedGoodsInboundNotice: { findMany: async () => [{ orderNo: "SO-1", id: "notice-1", noticeNo: "FGN-1", status: "partially_inbound", noticeQuantity: new Prisma.Decimal("40"), noticeDate: new Date("2026-09-10T00:00:00.000Z"), operationNameSnapshot: "包装" }] },
     inventoryFact: { findMany: async () => [
-      { id: "f1", inventoryCategory: "finished_goods", quantityDelta: new Prisma.Decimal("100"), sourceId: "in-legacy" },
-      { id: "f2", inventoryCategory: "defective_goods", quantityDelta: new Prisma.Decimal("5"), sourceId: "d-1" },
+      { orderNo: "SO-1", id: "f1", inventoryCategory: "finished_goods", quantityDelta: new Prisma.Decimal("100"), sourceId: "in-legacy" },
+      { orderNo: "SO-1", id: "f2", inventoryCategory: "defective_goods", quantityDelta: new Prisma.Decimal("5"), sourceId: "d-1" },
     ] },
-    finishedGoodsOutbound: { findMany: async () => [{ id: "out-1", outboundNo: "FGO-1", status: "posted", quantity: new Prisma.Decimal("30") }] },
+    finishedGoodsOutbound: { findMany: async () => [{ orderNo: "SO-1", id: "out-1", outboundNo: "FGO-1", status: "posted", quantity: new Prisma.Decimal("30") }] },
   });
   const summary = await service.summary("SO-1");
   const card = summary.finished_goods_inventory_summary;
@@ -47,11 +47,11 @@ test("工作台成品库存：通知量按「通知来源」的过账量扣减�
 test("工作台成品库存：通知来源的过账入库会扣减待入库", async () => {
   const { service } = build({
     finishedGoodsInbound: { findMany: async () => [
-      { id: "in-1", inboundNo: "FGI-1", status: "posted", quantity: new Prisma.Decimal("25"), submission: { sourceType: "finished_goods_inbound_notice" } },
-      { id: "in-2", inboundNo: "FGI-2", status: "draft", quantity: new Prisma.Decimal("5"), submission: { sourceType: "finished_goods_inbound_notice" } },
-      { id: "in-3", inboundNo: "FGI-3", status: "posted", quantity: new Prisma.Decimal("10"), submission: { sourceType: "in_house_completion" } },
+      { orderNo: "SO-1", id: "in-1", inboundNo: "FGI-1", status: "posted", quantity: new Prisma.Decimal("25"), submission: { sourceType: "finished_goods_inbound_notice" } },
+      { orderNo: "SO-1", id: "in-2", inboundNo: "FGI-2", status: "draft", quantity: new Prisma.Decimal("5"), submission: { sourceType: "finished_goods_inbound_notice" } },
+      { orderNo: "SO-1", id: "in-3", inboundNo: "FGI-3", status: "posted", quantity: new Prisma.Decimal("10"), submission: { sourceType: "in_house_completion" } },
     ] },
-    finishedGoodsInboundNotice: { findMany: async () => [{ id: "notice-1", noticeNo: "FGN-1", status: "partially_inbound", noticeQuantity: new Prisma.Decimal("40"), noticeDate: new Date("2026-09-10T00:00:00.000Z"), operationNameSnapshot: "包装" }] },
+    finishedGoodsInboundNotice: { findMany: async () => [{ orderNo: "SO-1", id: "notice-1", noticeNo: "FGN-1", status: "partially_inbound", noticeQuantity: new Prisma.Decimal("40"), noticeDate: new Date("2026-09-10T00:00:00.000Z"), operationNameSnapshot: "包装" }] },
   });
   const summary = await service.summary("SO-1");
   const card = summary.finished_goods_inventory_summary;

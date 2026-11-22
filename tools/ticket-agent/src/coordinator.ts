@@ -23,6 +23,7 @@
 import type { FeishuCard, FeishuTransport } from './feishu-transport.ts'
 import type { IncomingMessage } from './feishu-event.ts'
 import {
+  DEFAULT_GRACE_MS,
   DEFAULT_TIMEOUT_MS,
   runHarness,
   type HarnessEvent,
@@ -70,6 +71,8 @@ export interface CoordinatorOptions {
   /** 子进程环境，通常含 DEEPSEEK_API_KEY。 */
   childEnv?: NodeJS.ProcessEnv
   timeoutMs?: number
+  /** 软截止提前量（毫秒）。到 timeoutMs - graceMs 时先发 SIGTERM 让 Agent 收口。 */
+  graceMs?: number
   log?: (line: string) => void
   now?: () => Date
   /** 注入用：测试时替换真实 harness。 */
@@ -186,7 +189,11 @@ export function resultCard(input: {
   if (result.outcome === 'completed') {
     lines.push(`**结果**：已完成，改动在工作区等待部署`)
   } else if (result.outcome === 'timeout') {
-    lines.push(`**结果**：超时终止（${Math.round(result.durationMs / 1000)} 秒）`)
+    // 2026-11-22：不再只写「超时终止」。用户的原话是「45 分钟没收口强制截断」——
+    // 现在先发 SIGTERM 让 Agent 收口，并把「做到哪了」写进卡片，
+    // 否则群里只看到一个 timeout，等于这 45 分钟的信息全丢。
+    const closed = result.error?.includes('SIGTERM') === true
+    lines.push(`**结果**：${closed ? '已尽量收口后超时终止' : '超时终止（强制截断）'}（${Math.round(result.durationMs / 1000)} 秒）`)
   } else {
     lines.push(`**结果**：失败`)
   }
@@ -241,6 +248,7 @@ interface ResolvedOptions {
   now: () => Date
   childEnv: NodeJS.ProcessEnv | undefined
   timeoutMs: number
+  graceMs: number
   log: (line: string) => void
   runHarnessImpl: typeof runHarness
   dispatchImpl: typeof dispatch
@@ -274,6 +282,7 @@ export class Coordinator {
       now: options.now ?? (() => new Date()),
       childEnv: options.childEnv,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      graceMs: options.graceMs ?? DEFAULT_GRACE_MS,
       log: options.log ?? ((line) => console.log(line)),
       runHarnessImpl: options.runHarnessImpl ?? runHarness,
       dispatchImpl: options.dispatchImpl ?? dispatch,
@@ -694,6 +703,7 @@ export class Coordinator {
         prompt,
         ...(latest.sessionId === null ? {} : { sessionId: latest.sessionId }),
         timeoutMs: this.opts.timeoutMs,
+        graceMs: this.opts.graceMs,
         ...(this.opts.childEnv === undefined ? {} : { env: this.opts.childEnv }),
         onEvent,
       })

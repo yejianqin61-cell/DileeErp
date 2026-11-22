@@ -26,8 +26,13 @@ export interface HarnessRunOptions {
   prompt: string
   /** 续接的会话 id。首轮必须不传。 */
   sessionId?: string
-  /** 硬超时，默认 45 分钟。 */
+  /** 硬超时，默认 45 分钟。到点 SIGKILL。 */
   timeoutMs?: number
+  /**
+   * 「软截止」提前量：在硬超时前这么多毫秒先发 SIGTERM，给 Agent 一个收口的机会。
+   * 默认 2 分钟。设为 0 则完全不打招呼、到点直接 SIGKILL（旧行为）。
+   */
+  graceMs?: number
   /** 额外环境变量（例如 DEEPSEEK_API_KEY）。会合并进 process.env。 */
   env?: NodeJS.ProcessEnv
   /** 每收到一个事件回调一次，用于实时推进卡片。 */
@@ -75,6 +80,45 @@ export interface HarnessResult {
 }
 
 export const DEFAULT_TIMEOUT_MS = 45 * 60 * 1000
+
+/**
+ * 默认「软截止」提前量：硬超时前 2 分钟先发 SIGTERM。
+ *
+ * 用户 2026-11-22 的原话：「3的那个tickbot现在是45分钟没收口强制截断」——
+ * 意思是到 45 分钟**直接 SIGKILL**，Agent 连一句「我做到哪了」都来不及说，
+ * 卡片上只有 `outcome=timeout`，等于白跑 45 分钟且没有任何可交接的信息。
+ *
+ * 现在的两段式：
+ *   1. 第 43 分钟：SIGTERM —— Agent 可以收口、写出当前结论/半成品；
+ *   2. 第 45 分钟：若仍未退出，SIGKILL（保留硬上限，防止真的挂死）。
+ *
+ * 为什么不是「只延长超时」：那是把 45 分钟的浪费变成 60 分钟的浪费，
+ * 没有解决「超时就什么都拿不到」这个根本问题。
+ */
+export const DEFAULT_GRACE_MS = 2 * 60 * 1000
+
+/**
+ * 从一堆事件里尽力拼一份「截止时做到了哪」的交接摘要。
+ *
+ * 超时时这条摘要会写进卡片和失败原因里 —— 否则运维只看到一个 `timeout`，
+ * 无法判断「Agent 是卡在第一步、还是快要完成了」。取最后几段 text 事件，
+ * 没有 text 就退回工具调用统计（至少能看出它跑到哪一步）。
+ */
+export function buildTimeoutHandover(events: readonly HarnessEvent[], limit = 400): string {
+  const texts: string[] = []
+  for (const event of events) {
+    if (event.type === 'text' && typeof event.text === 'string' && event.text.trim().length > 0) {
+      texts.push(event.text.trim())
+    }
+  }
+  const counts = countEvents(events)
+  const progress = `已调用工具 ${counts.toolCalls} 次（含子 Agent ${counts.subagentCalls} 次）`
+  if (texts.length === 0) return progress
+  // 取最后 2 段，足够看出「在做什么/做到哪」，又不至于把卡片刷爆
+  const tail = texts.slice(-2).join(' ')
+  const text = tail.length <= limit ? tail : `…${tail.slice(-limit)}`
+  return `${progress}；最后进展：${text}`
+}
 
 /**
  * 解析一行 NDJSON。解析失败返回 null 而不是抛错：
@@ -151,6 +195,7 @@ export function buildArgs(options: Pick<HarnessRunOptions, 'prompt' | 'sessionId
 
 export async function runHarness(options: HarnessRunOptions): Promise<HarnessResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const graceMs = options.graceMs ?? DEFAULT_GRACE_MS
   const startedAt = Date.now()
   // 唯一标记：注入子进程环境，所有子孙都会继承（环境是 fork 时复制的）。
   // 超时时按这个标记扫 /proc 清理，不依赖进程组 —— 实测进程组杀不到被 setsid 的孙进程。
@@ -160,6 +205,7 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRes
     const events: HarnessEvent[] = []
     let settled = false
     let timedOut = false
+    let softStopped = false
     let buffer = ''
     let stderrTail = ''
 
@@ -169,6 +215,7 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRes
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (graceTimer !== undefined) clearTimeout(graceTimer)
       resolve({
         outcome: result.outcome,
         sessionId: result.sessionIdOverride ?? extractSessionId(events),
@@ -188,6 +235,28 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRes
       // 独立进程组：先试进程组杀，覆盖常规情况
       detached: true,
     })
+
+    /**
+     * 软截止：先 SIGTERM 让 Agent 收口（写出它当前做到哪），
+     * 真正的硬超时再用 SIGKILL 兜底。graceMs<=0 时跳过这一级（=旧行为：到点直接杀）。
+     */
+    const graceTimer: ReturnType<typeof setTimeout> | undefined =
+      graceMs > 0 && timeoutMs > graceMs
+        ? setTimeout(() => {
+            if (settled) return
+            softStopped = true
+            try {
+              if (child.pid !== undefined) process.kill(-child.pid, 'SIGTERM')
+            } catch {
+              try {
+                child.kill('SIGTERM')
+              } catch {
+                // 进程可能已经退出
+              }
+            }
+          }, timeoutMs - graceMs)
+        : undefined
+    if (graceTimer !== undefined && typeof graceTimer.unref === 'function') graceTimer.unref()
 
     const timer = setTimeout(() => {
       timedOut = true
@@ -256,8 +325,25 @@ export async function runHarness(options: HarnessRunOptions): Promise<HarnessRes
         }
       }
 
-      if (timedOut) {
-        finish({ outcome: 'timeout', exitCode: code, error: `超过 ${timeoutMs}ms 未结束` })
+      if (timedOut || softStopped) {
+        // 到了软截止/硬超时。**必须先判「是否真的收口成功」**：
+        // 软截止发出的 SIGTERM 会让子进程在硬超时之前就退出，此时 timedOut 仍是 false。
+        // 早期版本只判 timedOut，导致「已收口退出」被误判成 failed（测试抓到的真实缺陷）。
+        //
+        // 三种收尾：
+        //   · 退出码 0 → Agent 收到 SIGTERM 后写出了结论并正常退出 = **收口成功**，算 completed；
+        //   · 退出码非 0 → 被切断，算 timeout，并把「做到哪了」带进 error（用户要的就是这个）。
+        if (code === 0) {
+          finish({
+            outcome: 'completed',
+            exitCode: code,
+            error: `已到截止时间（${Math.round(timeoutMs / 1000)} 秒），Agent 收口后正常退出；${buildTimeoutHandover(events)}`,
+          })
+          return
+        }
+        const handover = buildTimeoutHandover(events)
+        const how = softStopped ? '已先送 SIGTERM 请它收口，仍未正常退出后强制终止' : '强制终止（未设软截止）'
+        finish({ outcome: 'timeout', exitCode: code, error: `超过 ${timeoutMs}ms 未结束（${how}）；${handover}` })
         return
       }
       if (code === 0) {

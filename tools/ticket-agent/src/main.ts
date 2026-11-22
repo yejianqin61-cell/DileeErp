@@ -31,6 +31,8 @@ interface Config {
   rootDir: string
   ticketsDir: string
   timeoutMs: number
+  /** 软截止提前量：到 timeoutMs - graceMs 时先发 SIGTERM 让 Agent 收口。0 = 不打招呼直接杀。 */
+  graceMs: number
   deepseekKey: string
   /** 调度模型（判断「这条消息要做什么」）。 */
   dispatchBaseUrl: string
@@ -53,6 +55,7 @@ const DEFAULTS = {
   ticketsDir: '/opt/dilee/agent/tickets',
   baseUrl: 'https://open.feishu.cn',
   timeoutMs: 45 * 60 * 1000,
+  graceMs: 2 * 60 * 1000,
   dispatchBaseUrl: 'https://api.deepseek.com',
   dispatchModel: 'deepseek-chat',
   /**
@@ -100,6 +103,11 @@ function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
   if (progressNoticeMs === null) return { missing: ['PROGRESS_NOTICE_MS（必须是非负数）'] }
   const cardUpdateMs = positiveInteger(env.PROGRESS_CARD_UPDATE_MS, DEFAULTS.cardUpdateMs)
   if (cardUpdateMs === null) return { missing: ['PROGRESS_CARD_UPDATE_MS（必须是非负数）'] }
+  const graceRaw = env.HARNESS_GRACE_MS?.trim()
+  const graceMs = graceRaw === undefined || graceRaw === '' ? DEFAULTS.graceMs : Number(graceRaw)
+  if (!Number.isFinite(graceMs) || graceMs < 0) return { missing: ['HARNESS_GRACE_MS（必须是非负数，0 = 不设软截止）'] }
+  // 软截止必须早于硬超时，否则等于没设：这里直接夹到「不超过超时的一半」。
+  const effectiveGraceMs = Math.min(graceMs, Math.floor(timeoutMs / 2))
 
   return {
     appId: appId!,
@@ -113,6 +121,7 @@ function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
     rootDir: env.DILEE_ROOT?.trim() || DEFAULTS.rootDir,
     ticketsDir: env.TICKETS_DIR?.trim() || DEFAULTS.ticketsDir,
     timeoutMs,
+    graceMs: effectiveGraceMs,
     dispatchBaseUrl: env.DEEPSEEK_BASE_URL?.trim() || DEFAULTS.dispatchBaseUrl,
     dispatchModel: env.DEEPSEEK_MODEL?.trim() || DEFAULTS.dispatchModel,
     progressNoticeMs,
@@ -139,7 +148,7 @@ async function main(): Promise<void> {
   log(`[main] Node：${config.nodePath}`)
   log(`[main] DSH：${config.dshBin}`)
   log(`[main] 工单目录：${config.ticketsDir}`)
-  log(`[main] 单次 run 超时：${Math.round(config.timeoutMs / 60000)} 分钟`)
+  log(`[main] 单次 run 超时：${Math.round(config.timeoutMs / 60000)} 分钟（提前 ${Math.round(config.graceMs / 1000)} 秒发 SIGTERM 收口）`)
   log(`[main] 问答模型：${config.dispatchModel} @ ${config.dispatchBaseUrl}`)
   log(`[main] 调度：模型 + 工具（create_ticket / append_ticket / start_run / status / reply / deploy）`)
   log(`[main] 进度播报：${config.progressNoticeMs === 0 ? '关闭（只发开工/收尾/结束三条）' : `${Math.round(config.progressNoticeMs / 1000)} 秒`}；卡片更新：${Math.round(config.cardUpdateMs / 1000)} 秒`)
@@ -181,6 +190,7 @@ async function main(): Promise<void> {
     nodePath: config.nodePath,
     repoPath: config.repoPath,
     timeoutMs: config.timeoutMs,
+    graceMs: config.graceMs,
     childEnv: { DEEPSEEK_API_KEY: config.deepseekKey },
     dispatchKey: config.deepseekKey,
     dispatchBaseUrl: config.dispatchBaseUrl,

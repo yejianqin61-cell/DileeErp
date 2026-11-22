@@ -9,6 +9,8 @@ import {
   countEvents,
   extractFinalText,
   extractSessionId,
+  buildTimeoutHandover,
+  type HarnessEvent,
   parseEventLine,
   runHarness,
 } from '../src/harness-runner.ts'
@@ -282,3 +284,77 @@ test('最后一行无换行符也能被解析', async () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ── 软截止（2026-11-22）───────────────────────────────────────────────────────
+// 用户原话：「tickbot 现在是 45 分钟没收口强制截断」。
+// 这两条钉住：到点前先 SIGTERM 收口、并留下「做到哪了」的交接信息。
+
+test('buildTimeoutHandover：有 text 事件时给出「工具调用次数 + 最后进展」', () => {
+  const events: HarnessEvent[] = [
+    { type: 'session', sessionId: 's1' },
+    { type: 'tool_call', name: 'read' },
+    { type: 'tool_call', name: 'subagent-worker' },
+    { type: 'text', text: '正在改 order-workbench.service.ts' },
+    { type: 'text', text: '已改完批量取数，正在跑测试' },
+  ]
+  const handover = buildTimeoutHandover(events)
+  assert.match(handover, /工具 2 次/)
+  assert.match(handover, /子 Agent 1 次/)
+  assert.match(handover, /正在跑测试/, '应带上最后进展')
+})
+
+test('buildTimeoutHandover：没有 text 时至少报告工具调用次数（不能是空串）', () => {
+  const events: HarnessEvent[] = [{ type: 'tool_call', name: 'read' }]
+  const handover = buildTimeoutHandover(events)
+  assert.equal(handover, '已调用工具 1 次（含子 Agent 0 次）')
+  assert.ok(handover.length > 0)
+})
+
+test('buildTimeoutHandover：超长文本按尾部截断（保留最新的进展）', () => {
+  const events: HarnessEvent[] = [{ type: 'text', text: `${'x'.repeat(1000)}关键结尾` }]
+  const handover = buildTimeoutHandover(events, 50)
+  assert.ok(handover.endsWith('关键结尾'), '应保留尾部而不是开头')
+  assert.ok(handover.length < 200)
+})
+
+test('软截止：超过 timeoutMs 后结果为 timeout，且 error 里带交接摘要', async () => {
+  // 用一个必然挂住的假 CLI：node -e 里 sleep，直到被信号打断
+  const dir = mkdtempSync(join(tmpdir(), 'dilee-grace-'))
+  const script = join(dir, 'hang.mjs')
+  writeFileSync(script, `
+    process.stdout.write(JSON.stringify({ type: 'session', sessionId: 's-grace' }) + '\\n')
+    process.stdout.write(JSON.stringify({ type: 'text', text: '做到一半' }) + '\\n')
+    setInterval(() => {}, 1000)
+  `)
+  try {
+    const result = await runHarness({
+      dshBin: script,
+      nodePath: process.execPath,
+      cwd: dir,
+      prompt: 'x',
+      timeoutMs: 1500,
+      graceMs: 800, // 第 700ms 先 SIGTERM，第 1500ms 再 SIGKILL
+    })
+    assert.equal(result.outcome, 'timeout')
+    assert.match(result.error ?? '', /SIGTERM/, 'error 应说明已先送 SIGTERM 收口')
+    assert.match(result.error ?? '', /做到一半/, 'error 应带上截止时的进展（交接信息）')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}, { timeout: 30_000 })
+
+test('graceMs=0 时退回旧行为：不打招呼直接强制终止', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dilee-grace0-'))
+  const script = join(dir, 'hang.mjs')
+  writeFileSync(script, `setInterval(() => {}, 1000)`)
+  try {
+    const result = await runHarness({
+      dshBin: script,
+      nodePath: process.execPath,
+      cwd: dir,
+      prompt: 'x',
+      timeoutMs: 800,
+      graceMs: 0,
+    })
+    assert.equal(result.outcome, 'timeout')
+    assert.match(result.error ?? '', /未设软截止/, '应明确说明没有软截止')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}, { timeout: 30_000 })
