@@ -247,30 +247,57 @@ stashRef?: string | null      // 残留 stash 的 ref
 - 结果卡与工单结论带上 `branch` / `mergedSha` / `stashRef`；
 - 启动时先 `recover()`。
 
-### 6.4 看门狗（下一步实施）
+### 6.4 看门狗（已实施，以下为实施后的真实签名）
 
-新增 `src/watchdog.ts`，接口：
+> 本节初稿曾写 `WatchdogSample { lastEventAtMs; events; cpuTicks }`。实施时按「采样与判定分家」
+> 拆成了两个模块，真实签名以 [`src/watchdog.ts`](../../tools/ticket-agent/src/watchdog.ts) 为准。
 
 ```ts
-export interface WatchdogSample { lastEventAtMs: number; events: number; cpuTicks: number }
-export type WatchdogVerdict = 'alive' | 'suspect' | 'ceiling'
-export function judge(samples: readonly WatchdogSample[], nowMs: number): WatchdogVerdict
+// src/watchdog.ts —— 纯判定，零副作用（不读时钟、不采样、不杀进程）
+export type WatchVerdict = 'alive' | 'suspect' | 'ceiling'
+export interface ProgressSample {
+  at: number; lastEventAgeMs: number; cpuPercent: number
+  maxChildCpuPercent: number; toolCalls: number
+}
+export function judge(
+  samples: readonly ProgressSample[], nowMs: number, runStartedAtMs: number, opts?: WatchdogOptions,
+): WatchVerdict
+export function needCeilingWarning(nowMs: number, runStartedAtMs: number, opts?: WatchdogOptions): boolean
+export function describeVerdict(verdict, samples, nowMs, runStartedAtMs, opts?): string   // 一句中文，群里用
 ```
 
-`coordinator` 持有当前 run 的 `pending_kill` 状态；`dispatcher` 新增两个工具
-`kill_run(ticketNo)` / `continue_run(ticketNo)`，把用户的「截断 / 继续」翻译成动作。
+```ts
+// src/run-sampler.ts —— /proc 采样，复用 run-janitor 的进程发现（DILEE_RUN_ID 标记）
+export class RunSampler {
+  constructor(options: { runId: string; mainPid: number; procRoot?: string; clockSeconds?: number })
+  sample(): { atMs: number; totalPercent: number; busiestChildPercent: number; processCount: number }
+  reset(): void
+}
+```
+
+两条实施中定下、原设计没写清的约定：
+
+- **`processCount === 0` 表示「这一轮没观测到」，不是「CPU 0%」。** 上层必须跳过这一轮判定。
+  用 `-1` 当未知尤其危险：判据是 `cpuPercent < 3`，`-1` 会直接满足「没在干活」，
+  再凑上事件静止就是一次误报。
+- **`busiestChildPercent` 按「逐 pid」算并排除主进程。** 一个 60% 的 tsc 和十个 6% 的进程
+  聚合值相同，但「有没有子孙在真干活」只有单进程粒度能回答。
+
+`coordinator` 侧：`ActiveRun` 持有 `AbortController`（用户截断走 `abortSignal`）、采样器、
+以及「有没有问过」的记账；`TicketStore.watch` 落盘防重启后复读。`dispatcher` 新增
+`kill_run(ticketNo?)` / `continue_run(ticketNo?)`，把用户的「截断 / 继续」翻译成动作。
 
 ## 7. 验收
 
-| 项 | 判据 |
-|---|---|
-| 分支隔离 | 开工后 `git branch --show-current` = `ticket/T-00XX`；main 不动 |
-| 成功合并 | 工单 gated 时 main 多一个 `--no-ff` 合并节点，`git log --graph` 可见 |
-| 失败抛弃 | run 失败后该分支不存在，main 的 HEAD 与开工前一致 |
-| 残留 stash | 失败后 `git stash list` 多一条，工单结论里写明 `stash@{n}` |
-| 启动恢复 | 人工把工作区切到工单分支并留脏文件，重启后自动 stash + 回 main + 删分支 |
-| 部署闸门 | 在工单分支上执行部署被拒绝，理由可见 |
-| 看门狗 | 单元测试覆盖 alive / suspect / ceiling 三种判定；真机验证一次「发问 → 回继续 → 继续跑」 |
+| 项 | 判据 | 结果（2026-11-23） |
+|---|---|---|
+| 分支隔离 | 开工后 `git branch --show-current` = `ticket/T-00XX`；main 不动 | ✅ 上线后首次真机 run 已验证 |
+| 成功合并 | 工单 gated 时 main 多一个 `--no-ff` 合并节点 | ✅ 但修了口径：零提交不 merge（见 §9.1） |
+| 失败抛弃 | run 失败后该分支不存在，main 的 HEAD 与开工前一致 | ✅ 已提交的改动会打 `abandoned/*` tag 留证再删 |
+| 残留 stash | 失败后 `git stash list` 多一条，工单结论写明 `stash@{n}` | ✅ |
+| 启动恢复 | 重启后自动 stash + 回 main + 删分支 | ✅ |
+| 部署闸门 | 在工单分支上执行部署被拒绝 | ✅ |
+| 看门狗 | 单测覆盖三态；真机验证一次「发问 → 回继续」 | ✅ 单测 20 条；采样在真机探针验证（§9.3）；群里问答待用户回话时验证 |
 
 ## 8. 风险
 
@@ -281,3 +308,56 @@ export function judge(samples: readonly WatchdogSample[], nowMs: number): Watchd
 | 分支泄漏（收尾失败） | `recover()` 每次启动清一遍；分支名可 grep 对照工单 |
 | 6 小时上限仍可能误杀 | 到点前 30 分钟在群里预告，给用户提前叫停的机会 |
 | 看门狗误报 | 只报不杀，误报成本 = 群里多一条消息 |
+| 看门狗漏报（读不到 CPU） | `processCount === 0` 时跳过判定；宁可漏报不可误报 |
+| 空转进程让地板失效 | 地板取 3% 而不是 1%（真机实测空转 node ≈1.6%，见 §9.3） |
+
+## 9. 实施记录（2026-11-23 晚间）
+
+### 9.1 T-0027：一次真实的「语义篡改」，改了三处口径
+
+T-0027（结算方式加两个账户）跑满 43 分钟被软截止，随后被标成 `gated`（可部署）。
+查下来是三层口径同时错了：
+
+1. **切断被当成完成。** `harness-runner` 里「收到 SIGTERM 后退出码 0 → `completed`」。
+   退出得干净只说明它来得及写交接，不说明任务做完了。改为 `truncated`，并用纯函数
+   `outcomeForStop` 固化这条规则（跨平台可断言）。
+2. **空合并被当成「已合入主干」。** 分支还停在基线时 `git merge --no-ff` 只回
+   `Already up to date`，旧代码据此报 `merged: true` / 「已合入主干」。而真相是主干
+   一个字节没变，43 分钟的产出全在一个 stash 里。改为：零提交不调 merge、
+   `merged` 只在 HEAD 真的前进时为 true，卡片另起一句「未合入主干」。
+3. **成功收尾先把产出 stash 掉再合并。** 顺序反了：工单成功的定义是「需求已实现」，
+   此时工作区里的改动**就是**产出。改为先在工单分支上自动提交，再 `--no-ff` 合入。
+
+配套改的还有：状态映射从「`outcome === 'completed'` → gated」改成
+「`completed` **且主干真的进了改动** → gated」，否则 failed。没有产出就不该可部署。
+
+### 9.2 续跑（本次新增，原设计没有）
+
+既然允许跑很久，就得允许「接着上次的现场跑」，否则每次截断都从零开始，
+复杂度高的需求永远做不完。`begin(no, { resume: true })` 保留同名工单分支与它上面的提交、
+切过去接着干；`TicketStore.resume` 是一次性开关，跑完自动清。
+
+T-0027 的抢救实证了这条的价值：它的 9 个文件（4 个改动 + 5 个新增，含设计文档、
+页面、组件、lib、测试）被恢复成 `ce75b2e0` 提交留在 `ticket/T-0027` 上，
+不必重跑那 43 分钟。
+
+> 记一笔自己的误判：起初只看 `git stash show --stat`（只列已跟踪文件），
+> 得出「网页那半没做」的结论，实际未跟踪的 5 个文件才是主体。
+> 看 stash 内容必须 `stash show --include-untracked` 或直接 `stash branch` 展开。
+
+### 9.3 真机探针：/proc 到底读不读得到（`scripts/probe-sampler.ts`）
+
+看门狗的全部输入来自进程树 CPU。读不到的话它永远不报，而且安静得让人以为一切正常。
+在 2 vCPU 服务器上实测三组：
+
+| 场景 | 稳定读数 | 结论 |
+|---|---|---|
+| 父进程自己烧 CPU | total=99.8% | 总百分比可信 |
+| 父闲子忙（真 fork，`& wait`） | total=99.6%，**busiestChild=99.6%**，n=2 | 第三条判据有效 |
+| 父子都闲 | total 在 **1.6%** 与 0.0% 之间抖动 | 1% 地板会让死锁帧判成「还在干活」 |
+
+由此把 `cpuFloorPercent` 从 1 改成 3。漏报等于没上线，这个参数不能贴着噪声取。
+
+两个踩坑记在这里：`bash -c '单条命令'` 会被 bash **exec** 掉，父子合成一个进程，
+探针第一版因此测不出 `busiestChild`（必须 `& wait`）；本窗口才出现的子进程没有基线、
+当帧不给百分比，所以要看第二帧以后。
