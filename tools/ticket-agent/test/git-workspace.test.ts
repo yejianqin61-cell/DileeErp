@@ -354,3 +354,31 @@ test('同名残留分支：开工时先删掉，从主干重新拉', async () =>
     repo.cleanup()
   }
 })
+
+test('续跑：保留同名分支与它上面的提交，接着干而不是从零开始', async () => {
+  const repo = makeRepo()
+  try {
+    // 上一轮被截断时留下的产出（T-0027 就是这个形状）
+    git(repo.dir, 'checkout', '-b', 'ticket/T-0027')
+    writeAndCommit(repo.dir, 'half.ts', '做了一半\n', 'wip: 结算账户加两项')
+    git(repo.dir, 'checkout', 'main')
+
+    const ws = makeWorkspace(repo.dir)
+    const begun = await ws.begin('T-0027', { resume: true })
+
+    assert.equal(begun.branch, 'ticket/T-0027')
+    assert.equal(git(repo.dir, 'rev-parse', '--abbrev-ref', 'HEAD'), 'ticket/T-0027', '应切到已有分支')
+    // 关键：上一轮的产出还在树里，Agent 能接着改
+    const content = readFileSync(join(repo.dir, 'half.ts'), 'utf8')
+    assert.match(content, /做了一半/)
+
+    // 续跑后成功收尾：这次的提交和上次的提交一起合入
+    writeAndCommit(repo.dir, 'half.ts', '做完了\n', 'feat: 补完结算账户')
+    const finish = await ws.finishSuccess('T-0027')
+    assert.equal(finish.merged, true)
+    assert.ok(finish.mergedCommits >= 2, `两次提交都该进主干，实际 ${finish.mergedCommits}`)
+    assert.match(readFileSync(join(repo.dir, 'half.ts'), 'utf8'), /做完了/)
+  } finally {
+    repo.cleanup()
+  }
+})

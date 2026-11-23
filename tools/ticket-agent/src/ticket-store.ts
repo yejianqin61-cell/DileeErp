@@ -63,6 +63,13 @@ export interface StoredTicket {
    * 否则重启一次就问一次，群里就成了复读机。
    */
   watch?: TicketWatch | null
+  /**
+   * 下一轮 run 是否「接着上一轮的工单分支继续」（2026-11-23）。
+   *
+   * 只对「被截断/中断但产出还在」的单有意义：默认 `begin()` 会删掉同名残留分支
+   * （内容不可信），续跑则保留它并切过去。跑完一轮就自动清除，不会一直继承。
+   */
+  resume?: boolean | null
   readonly createdAt: string
   updatedAt: string
 }
@@ -364,6 +371,20 @@ export class TicketStore {
     const ticket = this.get(id)
     if (ticket === null) throw new TicketStoreError('ticket-not-found', id)
     const next: StoredTicket = { ...ticket, watch, updatedAt: at }
+    writeJsonAtomic(this.ticketPath(id), next)
+    return next
+  }
+
+  /**
+   * 标记「下一轮接着上一轮的分支继续」。传 false 清除。
+   *
+   * 为什么是显式开关而不是自动判断：分支上到底有没有值得续跑的产出，
+   * 机器判断不了（「有提交」不代表「改对了」）。由收尾时的人或结论决定。
+   */
+  setResume(id: string, resume: boolean, at: string): StoredTicket {
+    const ticket = this.get(id)
+    if (ticket === null) throw new TicketStoreError('ticket-not-found', id)
+    const next: StoredTicket = { ...ticket, resume, updatedAt: at }
     writeJsonAtomic(this.ticketPath(id), next)
     return next
   }

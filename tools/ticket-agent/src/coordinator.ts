@@ -773,8 +773,10 @@ export class Coordinator {
     let workspaceBegun: WorkspaceBegin | null = null
     if (this.opts.workspace !== null) {
       try {
-        workspaceBegun = await this.opts.workspace.begin(latest.no)
+        workspaceBegun = await this.opts.workspace.begin(latest.no, { resume: latest.resume === true })
         this.opts.store.setBranch(latest.id, workspaceBegun.branch, workspaceBegun.baseSha, this.stamp())
+        // 续跑是一次性的：用过就清掉，免得以后每次跑都去捡一条旧分支。
+        if (latest.resume === true) this.opts.store.setResume(latest.id, false, this.stamp())
       } catch (error) {
         this.opts.log(
           `[coord] workspace begin failed ${latest.no}: ${error instanceof Error ? error.message : String(error)}`,

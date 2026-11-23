@@ -216,8 +216,14 @@ export class GitWorkspace {
    *
    * 若当前停在别的工单分支上（上次进程被强杀），先按恢复流程收走，
    * 否则 `checkout -b` 会在旧分支上叠分支，改动来源就说不清了。
+   *
+   * `resume: true` 是「接着上一轮接着干」：保留同名分支与它上面的提交，
+   * 直接切过去，而不是删掉重建。为什么需要它（2026-11-23 T-0027）：
+   * 那张单被 45 分钟截断时已经改对了 4 个文件，如果续跑等于从零开始，
+   * 43 分钟的活就白干了。这也是「不强制截断」这条决定的自然配套 ——
+   * 既然允许跑很久，就得允许「接着上次的现场跑」。
    */
-  async begin(ticketNo: string): Promise<WorkspaceBegin> {
+  async begin(ticketNo: string, options: { resume?: boolean } = {}): Promise<WorkspaceBegin> {
     const recovered = await this.leaveTicketBranch('stale-on-begin')
     const stashedBefore = recovered.stashed ?? (await this.stashResidue(`residue-before-${ticketNo}`))
 
@@ -228,8 +234,19 @@ export class GitWorkspace {
     }
 
     const branch = branchFor(ticketNo)
-    // 同名残留分支先删掉：它属于上一次没正常收尾的同号工单，内容不可信。
     if (await this.branchExists(branch)) {
+      if (options.resume === true) {
+        // 续跑：切到已有分支，保留上面的提交。`baseSha` 仍取当前主干 ——
+        // 收尾时 `rev-list --count main..branch` 数出来的正是「本单自己的提交」。
+        const co = await this.git(['checkout', branch])
+        if (co.code === 0) {
+          const ahead = await this.countCommits(this.mainBranch, branch)
+          this.log(`[ws] 续跑 ${ticketNo} → ${branch}（已有 ${ahead ?? '?'} 个提交，主干 ${shortSha(baseSha)}）`)
+          return { branch, baseSha, stashedBefore }
+        }
+        this.log(`[ws] 续跑切分支失败，退回重建：${co.stderr.trim().slice(0, 200)}`)
+      }
+      // 同名残留分支先删掉：它属于上一次没正常收尾的同号工单，内容不可信。
       this.log(`[ws] 删除同名残留分支 ${branch}`)
       await this.git(['branch', '-D', branch])
     }
