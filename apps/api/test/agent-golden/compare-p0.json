@@ -1,0 +1,20 @@
+{
+  "label": "P0 基线（2026-11-22，61 条用例，docs/review/agent-golden-baseline-2026-11-22.md）",
+  "before": {
+    "total": 61,
+    "passRate": 1,
+    "toolCallFailureRate": 0.1148,
+    "failureCodeCount": 7
+  },
+  "unresolved": [
+    { "item": "未解项 1：列表与按条件筛选没有工具入口（D-1）", "status": "已修：新增 order_query/list_documents（status 白名单 / customer_q / product_q / from-to / 分页 20）" },
+    { "item": "未解项 2：跨单聚合被根守卫挡掉（D-2）", "status": "已修：新增 list_low_stock_materials、list_overdue_arrivals 两个无根 operation，并加一支无根执行分支" },
+    { "item": "未解项 3：根缺失的报错把模型带偏", "status": "已修：ORDER_SEARCH_REQUIRED 文案改为点名三个无根替代入口（错误码不变，既有断言不受影响）" },
+    { "item": "未解项 4：句柄按轮失效，第二轮必重复检索（D-3）", "status": "已修：句柄作用域从单轮扩到会话；下发时落一条内部 order_ref 事件，下一轮从本会话历史还原；伪造句柄仍拒、跨会话仍拿不到" },
+    { "item": "未解项 5：服务端单号归一空白，全角与零宽靠模型代劳", "status": "已修：normalizeKeyword 折叠全角数字/字母/连字符等六类码点与零宽字符，中文全角括号等业务字符不动" },
+    { "item": "盲区 1：正向财务路径未验证", "status": "已验证：bootstrap 建 laoban/caiwu 账号，新增 finance_positive 组 4 条用 laoban1 跑，全部无 AGENT_TOOL_FORBIDDEN" },
+    { "item": "盲区 2：答案数值正确性未断言", "status": "已验证：新增 known_answer 组 5 条，判据 answerIncludesDigits（先剥单号再带数字边界匹配）；4 条数量/交期/双单全过" },
+    { "item": "盲区 3：model_steps 未采集", "status": "已验证：usage 补 model_steps 随 completed 事件下发；顺带修出它从未计数过的 bug（写在 observability?.record 参数里，可选链短路导致 ++ 永不执行）" },
+    { "item": "遗留：跨轮句柄的安全边界", "status": "本轮定案：会话内有效即可，凭据是「本会话下发过的 order_ref 事件」；跨会话与伪造句柄各有测试钉住" }
+  ]
+}

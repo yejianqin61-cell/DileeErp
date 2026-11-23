@@ -35,7 +35,7 @@ function readGroups(argv) {
   return groups;
 }
 
-function buildReport({ judged, entries, docCount, apiBase, runAt, analysis }) {
+function buildReport({ judged, entries, docCount, apiBase, runAt, analysis, comparison }) {
   const summary = summarize(judged);
   const markdown = renderMarkdown(summary, {
     runAt,
@@ -51,6 +51,7 @@ function buildReport({ judged, entries, docCount, apiBase, runAt, analysis }) {
       "逐条终态、来源、失败码与答案全文见同名 JSON 快照。",
     ],
     ...(analysis ? { analysis } : {}),
+    ...(comparison ? { comparison } : {}),
   });
   return { summary, markdown };
 }
@@ -70,6 +71,8 @@ async function main() {
   const outPath = readFlag(argv, "--out");
   const analysisPath = readFlag(argv, "--analysis");
   const analysis = analysisPath && existsSync(analysisPath) ? readFileSync(analysisPath, "utf8") : undefined;
+  const comparePath = readFlag(argv, "--compare");
+  const comparison = comparePath && existsSync(comparePath) ? JSON.parse(readFileSync(comparePath, "utf8")) : undefined;
 
   const fromJson = readFlag(argv, "--from-json");
   if (fromJson) {
@@ -82,6 +85,7 @@ async function main() {
       apiBase: snapshot.apiBase,
       runAt: `${snapshot.runAt}（由快照重渲染）`,
       analysis,
+      comparison,
     });
     writeReport(outPath, markdown, summary);
     return;
