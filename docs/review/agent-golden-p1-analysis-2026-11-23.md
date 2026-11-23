@@ -16,7 +16,9 @@
 
 | 盲区 | 结论 | 证据 |
 |---|---|---|
-| 正向财务路径 | `laoban1`（full 档）能读到财务事实，无 `AGENT_TOOL_FORBIDDEN` | `finance_positive` 4/4 通过；账号由 `bootstrap-permission-accounts.mjs --keep-legacy` 建 |
+| 正面财务路径 | `laoban1`（full 档）能读到财务事实，无 `AGENT_TOOL_FORBIDDEN` | `finance_positive` 4/4 通过；账号由 `bootstrap-permission-accounts.mjs --keep-legacy` 建 |
+
+正向财务那 4 条**不止断言「没被拒」**：每条都额外断言 `opsInclude` 到对应的财务 operation（`get_receivables` / `get_payables` / `get_order_cost_profit` / `get_reconciliations`）。否则模型一句「我查不了财务」也能让「无 `AGENT_TOOL_FORBIDDEN`」通过 —— 那种断言是恒真的，验不出任何东西。
 | 答案数值 | 数量、交期、状态都能对上种子数据的字面量 | `known_answer` 5/5 通过（1000 / 600 / 2026-09-20 / 非草稿 / 双单并列） |
 | `model_steps` | 已随 `completed` 事件下发，中位数 3 | `agent-model-steps.test.cjs` 2 条；本轮报告 §3.1 已报出中位数 |
 

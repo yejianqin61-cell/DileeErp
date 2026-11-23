@@ -77,10 +77,21 @@ async function main() {
   const fromJson = readFlag(argv, "--from-json");
   if (fromJson) {
     const snapshot = JSON.parse(readFileSync(fromJson, "utf8"));
-    const judged = snapshot.judged.map((row) => ({ ...row, failureCodes: row.failureCodes ?? [] }));
+    const casesDir = fileURLToPath(new URL("../../apps/api/test/agent-golden/cases/", import.meta.url));
+    const currentById = new Map(loadCases(casesDir).map((caseDef) => [caseDef.id, caseDef]));
+    const entries = (snapshot.entries ?? []).map((entry) => ({
+      ...entry,
+      caseDef: currentById.get(entry.caseDef.id) ?? entry.caseDef,
+    }));
+    const judged = entries.length > 0
+      ? entries.map((entry) => ({ ...judgeAll([entry])[0], failureCodes: entry.outcome.failureCodes, modelSteps: entry.outcome.modelSteps ?? 0 }))
+      : snapshot.judged.map((row) => ({ ...row, failureCodes: row.failureCodes ?? [] }));
+    if (entries.length > 0 && snapshot.judged.some((row, index) => row.verdict !== judged[index]?.verdict)) {
+      process.stderr.write("注意：快照里存的判定与当前用例期望不一致，已按当前期望重判（用例期望改过、模型输出没变）\n");
+    }
     const { summary, markdown } = buildReport({
       judged,
-      entries: snapshot.entries ?? [],
+      entries,
       docCount: snapshot.docCount ?? 0,
       apiBase: snapshot.apiBase,
       runAt: `${snapshot.runAt}（由快照重渲染）`,

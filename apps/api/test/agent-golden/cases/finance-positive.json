@@ -6,7 +6,7 @@
     "baselineDocs": ["MOCK-ORD-001"],
     "expect": {
       "terminal": "completed",
-      "sourcesInclude": ["MOCK-ORD-001"],
+      "opsInclude": ["get_receivables"],
       "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED", "AGENT_TOOL_FORBIDDEN"],
       "maxToolCalls": 16
     }
@@ -18,6 +18,7 @@
     "baselineDocs": ["MOCK-ORD-001"],
     "expect": {
       "terminal": "completed",
+      "opsInclude": ["get_payables"],
       "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED", "AGENT_TOOL_FORBIDDEN"],
       "maxToolCalls": 16
     }
@@ -29,7 +30,7 @@
     "baselineDocs": ["MOCK-ORD-001"],
     "expect": {
       "terminal": "completed",
-      "sourcesInclude": ["MOCK-ORD-001"],
+      "opsInclude": ["get_order_cost_profit"],
       "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED", "AGENT_TOOL_FORBIDDEN"],
       "maxToolCalls": 16
     }
@@ -41,6 +42,7 @@
     "baselineDocs": ["MOCK-ORD-001"],
     "expect": {
       "terminal": "completed",
+      "opsInclude": ["get_reconciliations"],
       "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED", "AGENT_TOOL_FORBIDDEN"],
       "maxToolCalls": 16
     }
