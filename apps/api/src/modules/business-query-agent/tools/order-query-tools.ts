@@ -2,7 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { deduplicateAlerts } from "../../alerts/alerts.domain";
 import { orderPage } from "./order-root";
-import { normalizeKeyword } from "./normalize";
+import { MAX_SEARCH_KEYWORD_LENGTH, normalizeKeyword } from "./normalize";
 
 /**
  * 订单领域的只读查询。Phase 1 只有 `search_orders`；第二个查询落地时才继续往这里加
@@ -29,7 +29,7 @@ export function parseSearchOrdersInput(raw: unknown): SearchOrdersInput {
   const unknownKeys = Object.keys(raw as Record<string, unknown>).filter((key) => !allowedKeys.includes(key));
   if (unknownKeys.length > 0) throw badRequest(`不接受参数字段：${unknownKeys.join(", ")}`);
   if (typeof q !== "string" || q.trim().length === 0) throw badRequest("搜索词 q 不能为空");
-  if (q.length > 100) throw badRequest("搜索词 q 不能超过 100 个字符");
+  if (q.length > MAX_SEARCH_KEYWORD_LENGTH) throw badRequest(`搜索词 q 不能超过 ${MAX_SEARCH_KEYWORD_LENGTH} 个字符`);
   if (page !== undefined && (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > 1000)) throw badRequest("page 必须是 1 到 1000 的整数");
   return { q: normalizeKeyword(q), page: page ?? 1 };
 }

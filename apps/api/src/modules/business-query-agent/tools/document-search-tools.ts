@@ -1,6 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import type { PrismaClient } from "@prisma/client";
-import { normalizeKeyword } from "./normalize";
+import { MAX_SEARCH_KEYWORD_LENGTH, normalizeKeyword } from "./normalize";
 
 /**
  * 按号检索任意单据（R-1）：销售单号、采购单号、生产单号都能作为入口。
@@ -30,7 +30,7 @@ export function parseSearchDocumentsInput(raw: unknown): DocumentSearchInput {
   const unknownKeys = Object.keys(raw as Record<string, unknown>).filter((key) => !["q", "page"].includes(key));
   if (unknownKeys.length > 0) throw badRequest(`不接受参数字段：${unknownKeys.join(", ")}`);
   if (typeof q !== "string" || q.trim().length === 0) throw badRequest("搜索词 q 不能为空");
-  if (q.length > 100) throw badRequest("搜索词 q 不能超过 100 个字符");
+  if (q.length > MAX_SEARCH_KEYWORD_LENGTH) throw badRequest(`搜索词 q 不能超过 ${MAX_SEARCH_KEYWORD_LENGTH} 个字符`);
   if (page !== undefined && (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > 1000)) throw badRequest("page 必须是 1 到 1000 的整数");
   return { q: normalizeKeyword(q), page: page ?? 1 };
 }

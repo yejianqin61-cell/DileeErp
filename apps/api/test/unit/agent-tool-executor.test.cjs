@@ -82,11 +82,11 @@ test("未注册 / 未实现的 operation 一律拒绝，不触达数据库", asy
   assert.equal(client.calls.findMany, 0);
 });
 
-test("参数校验：q 为空串/超长/缺失 → 400，不触达数据库", async () => {
+test("参数校验：q 为空串/超护栏长度/缺失 → 400，不触达数据库", async () => {
   const client = fakeReadClient({ rows: [wideRow("SO-001")] });
   const executor = new ToolExecutor(client, fakeRoleReader(["qita"]));
 
-  for (const args of [{}, { q: "" }, { q: "  " }, { q: "x".repeat(101) }, { q: "SO", page: 0 }, { q: "SO", extra: "nope" }]) {
+  for (const args of [{}, { q: "" }, { q: "  " }, { q: "x".repeat(201) }, { q: "SO", page: 0 }, { q: "SO", extra: "nope" }]) {
     await assert.rejects(executor.execute({ tool: "order_query", operation: "search_orders", args }, USER_OPS), (error) => error.getStatus() === 400, `args=${JSON.stringify(args)} 应被拒`);
   }
   assert.equal(client.calls.findMany, 0);

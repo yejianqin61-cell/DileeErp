@@ -12,6 +12,15 @@ const ZERO_WIDTH = /[\u200b-\u200d\ufeff]/g;
 const FULL_WIDTH_ASCII = /[\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\uff0d\uff3f\uff0f\uff0e]/g;
 const IDEOGRAPHIC_SPACE = /\u3000/g;
 
+/**
+ * 检索词长度上限。
+ *
+ * 单号列是 `VarChar(100)`，超过 100 字符的检索词在库里不可能命中 —— 它是「查无结果」，不是「参数非法」。
+ * 所以这里只留一个防提示词整段灌入的护栏（200），长度在 100 到 200 之间的检索词照常走查询、返回 0 行，
+ * 由空结果说明告诉模型检索词与命中数，不必白占它一个失败预算。
+ */
+export const MAX_SEARCH_KEYWORD_LENGTH = 200;
+
 export function normalizeKeyword(value: string): string {
   return value
     .replace(ZERO_WIDTH, "")
