@@ -48,7 +48,7 @@ function buildReport({ judged, entries, docCount, apiBase, runAt, analysis, comp
       `基线单号池：${Number.isFinite(docCount) && docCount > 0 ? `${docCount} 个可识别单号（销售 / 采购 / 生产三源合并）` : "未记录（快照里没有该字段）"}`,
       `未调用模型即判定的用例：${summary.baselineMissing} 条（基线缺单号）`,
       ...OBSERVATIONS,
-      "逐条终态、来源、失败码与答案全文见同名 JSON 快照。",
+      "逐条终态、来源、失败码与答案全文见同名 .snapshot.json；可用 npm run test:agent-golden -- --from-json 加该文件路径免模型重渲染。",
     ],
     ...(analysis ? { analysis } : {}),
     ...(comparison ? { comparison } : {}),

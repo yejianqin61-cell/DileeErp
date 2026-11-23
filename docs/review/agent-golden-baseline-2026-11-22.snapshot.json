@@ -1,0 +1,4358 @@
+{
+  "runAt": "2026-11-22T16:51:15.638Z",
+  "apiBase": "http://127.0.0.1:3111/api/v1",
+  "judged": [
+    {
+      "id": "entry-batch-customer-name",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-batch-no-argument",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-batch-prefix",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-batch-product-name",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-batch-recent",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "AGENT_TOOL_ARGUMENT_INVALID"
+      ]
+    },
+    {
+      "id": "entry-batch-status-filter",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "AGENT_TOOL_ARGUMENT_INVALID"
+      ]
+    },
+    {
+      "id": "entry-batch-two-orders",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-mixed-documents",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-production-progress",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-production-reports",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-production-status",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-purchase-items",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-purchase-receipt",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-purchase-status",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-ask-progress",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-ask-status",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-exact",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-fullwidth",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-in-sentence",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-lowercase",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-padded",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "entry-sales-suffix-only",
+      "group": "entry",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "followup-chain-three-rounds",
+      "group": "followup",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "followup-production-then-reports",
+      "group": "followup",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "ORDER_REF_INVALID"
+      ]
+    },
+    {
+      "id": "followup-purchase-then-inspection",
+      "group": "followup",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "ORDER_REF_INVALID"
+      ]
+    },
+    {
+      "id": "followup-status-then-supplier",
+      "group": "followup",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "followup-switch-document",
+      "group": "followup",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "followup-three-rounds-same-order",
+      "group": "followup",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-cross-customer-only",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-cross-date-as-number",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-cross-forged-ref",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "ORDER_REF_INVALID"
+      ]
+    },
+    {
+      "id": "miss-cross-product-only",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-cross-production-as-sales",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-cross-purchase-as-sales",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-unknown-extra-digit",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-unknown-long-garbage",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "AGENT_TOOL_ARGUMENT_INVALID"
+      ]
+    },
+    {
+      "id": "miss-unknown-mixed-valid-invalid",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-unknown-no-doc",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-unknown-prefix",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "miss-unknown-vague",
+      "group": "miss",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "permission-cost-profit",
+      "group": "permission",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "permission-payables",
+      "group": "permission",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "permission-payroll",
+      "group": "permission",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "permission-receivables",
+      "group": "permission",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "permission-reconciliation",
+      "group": "permission",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-chain-daily-reports",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-chain-finished-goods",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-chain-inspection",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-chain-production",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-chain-receipt",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-chain-stock",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-cross-customer-orders",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-cross-low-stock",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": [
+        "ORDER_SEARCH_REQUIRED"
+      ]
+    },
+    {
+      "id": "relation-cross-overdue-arrivals",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-cross-product-orders",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-order-alerts",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-order-attachments",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-order-overview",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-order-status",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-order-timeline",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    },
+    {
+      "id": "relation-order-two-questions",
+      "group": "relation",
+      "verdict": "pass",
+      "reasons": [],
+      "failureCodes": []
+    }
+  ],
+  "entries": [
+    {
+      "caseDef": {
+        "id": "entry-batch-customer-name",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "海风家居（模拟）有哪些订单"
+      },
+      "outcome": {
+        "id": "entry-batch-customer-name",
+        "group": "entry",
+        "turns": [
+          "海风家居（模拟）有哪些订单"
+        ],
+        "sessionId": "a404b15b-5544-40cf-813e-670d5884e485",
+        "durationMs": 6487,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "search_orders"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我用「海风家居」在单据检索（search_documents）和订单检索中各检索了一次，两次都是 0 条结果，没有查到任何销售单、采购单或生产单。\n\n请核对以下几点：\n\n- 名称是否为「海风家居」的准确写法，是否存在简称、别名或后缀差异，如全称、带“有限公司”；\n- 是否应改用客户编号或单号检索；\n- 该客户是否在其他系统或尚未建档。\n\n请提供准确的客户全称或任一相关单号，我再帮你查询。",
+        "toolCalls": 2,
+        "answerChunks": 114
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-batch-no-argument",
+        "group": "entry",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "帮我看看订单情况"
+      },
+      "outcome": {
+        "id": "entry-batch-no-argument",
+        "group": "entry",
+        "turns": [
+          "帮我看看订单情况"
+        ],
+        "sessionId": "ce0e8b40-8b4f-4916-bb92-5e7ab653abc0",
+        "durationMs": 5023,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我用「订单」作为检索词在 order_query 的 search_documents 里查了一次，返回 0 条结果，没有任何单据命中。\n\n可能的原因：\n- 检索词太宽泛，系统按单号或单据关键词匹配时没有命中任何记录；\n- 你要查的单号可能不在当前账号的数据范围内。\n\n麻烦你核对一下单号，把完整的销售单、采购单或生产单号发给我，我会用原单号再检索一次，然后再基于命中的单据做后续查询。目前我没有查到任何订单数据，因此无法给出订单情况结论。",
+        "toolCalls": 1,
+        "answerChunks": 122
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-batch-prefix",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001",
+          "MOCK-ORD-002"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-00 开头的订单有哪些"
+      },
+      "outcome": {
+        "id": "entry-batch-prefix",
+        "group": "entry",
+        "turns": [
+          "MOCK-ORD-00 开头的订单有哪些"
+        ],
+        "sessionId": "e96c9b57-d835-46c6-ae21-7470d625a5e4",
+        "durationMs": 5509,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          }
+        ],
+        "answer": "以 MOCK-ORD-00 开头的订单共 2 条，均为销售单：\n\n| 单号 | 产品 | 数量 | 状态 | 交期 | 关联单据 |\n|---|---|---|---|---|---|\n| MOCK-ORD-001 | 蓝色折叠伞 | 1000 个 | confirmed | 2026-09-20 | 采购 MOCK-PO-001、生产 MOCK-PROD-001 |\n| MOCK-ORD-002 | 黑色直柄伞 | 600 个 | draft | 2026-09-30 | 采购 MOCK-PO-002、生产 MOCK-PROD-002 |\n\n以上信息来自 search_documents 检索结果（数据截至 2026-11-22 16:43:25）。如需查看某张订单的明细，我可以继续查询。",
+        "toolCalls": 1,
+        "answerChunks": 179
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-batch-product-name",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "蓝色折叠伞的订单有哪些"
+      },
+      "outcome": {
+        "id": "entry-batch-product-name",
+        "group": "entry",
+        "turns": [
+          "蓝色折叠伞的订单有哪些"
+        ],
+        "sessionId": "8233d2c9-6ad9-4d70-9ae8-186e5c224de0",
+        "durationMs": 5082,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我用以下三个检索词在 order_query 的 search_documents 中检索，结果均为 0 条：\n\n- 「蓝色折叠伞」：0 条\n- 「折叠伞」：0 条\n- 「蓝色」：0 条\n\n因此，目前查不到与“蓝色折叠伞”相关的订单记录，无法列出具体订单。请你核对一下订单号，或提供更准确的品名、规格或单号；我再帮你检索。",
+        "toolCalls": 3,
+        "answerChunks": 96
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-batch-recent",
+        "group": "entry",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "最近有哪些订单"
+      },
+      "outcome": {
+        "id": "entry-batch-recent",
+        "group": "entry",
+        "turns": [
+          "最近有哪些订单"
+        ],
+        "sessionId": "2b5fef49-32a7-4e6a-8186-db15b517266e",
+        "durationMs": 7246,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_orders",
+          "search_documents"
+        ],
+        "failureCodes": [
+          "AGENT_TOOL_ARGUMENT_INVALID"
+        ],
+        "sources": [],
+        "answer": "本轮我无法查到任何订单，具体检索情况如下：\n\n- 检索词「订单」（search_documents）：返回 0 条结果\n- 检索词「SO」（search_orders）：返回 0 条结果\n- 检索词「SO」（search_documents）：返回 0 条结果\n\n所有检索均未命中记录，因此目前没有可列出的订单内容，也无法据此判断“最近有哪些订单”。\n\n建议你核对以下几点：\n1. 单号是否输入正确（例如是否缺少前缀、数字或后缀，是否存在空格或全半角差异）；\n2. 需要查询的是销售单、采购单还是生产单，这三类分别使用不同的单号规则；\n3. 如果方便，你可以提供完整的单号或大致日期范围，我再用原样单号重新检索一次确认。",
+        "toolCalls": 3,
+        "answerChunks": 172
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-batch-status-filter",
+        "group": "entry",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "有哪些订单已经确认了"
+      },
+      "outcome": {
+        "id": "entry-batch-status-filter",
+        "group": "entry",
+        "turns": [
+          "有哪些订单已经确认了"
+        ],
+        "sessionId": "ead30689-e620-4e09-afd7-d454dcee963c",
+        "durationMs": 6786,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "search_orders"
+        ],
+        "failureCodes": [
+          "AGENT_TOOL_ARGUMENT_INVALID"
+        ],
+        "sources": [],
+        "answer": "本轮我用 `order_query` 的 `search_documents` 检索了两次：\n\n- 检索词「已确认」：命中 **0 条**\n- 检索词「订单」：命中 **0 条**\n\n两次检索均无结果（数据时间：2026-11-22T16:43，权限级别 operational），因此目前无法列出任何已确认的订单，也不能据此判断有哪些订单已确认。\n\n可能的原因是检索词过于宽泛或与系统内的单据内容不匹配。请核对：\n1. 具体的单号（销售单、采购单或生产单）；\n2. 或客户、产品等更具体的关键词。\n\n提供后我再检索。",
+        "toolCalls": 2,
+        "answerChunks": 142
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-batch-two-orders",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001",
+          "MOCK-ORD-002"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001",
+            "MOCK-ORD-002"
+          ],
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 和 MOCK-ORD-002 分别什么状态"
+      },
+      "outcome": {
+        "id": "entry-batch-two-orders",
+        "group": "entry",
+        "turns": [
+          "MOCK-ORD-001 和 MOCK-ORD-002 分别什么状态"
+        ],
+        "sessionId": "47efa5e2-a5c8-4883-9fcc-6e9814b9c322",
+        "durationMs": 4744,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          }
+        ],
+        "answer": "两张销售单的状态如下（数据来自销售订单单据检索结果）：\n\n| 单号 | 产品 | 数量 | 状态 | 交期 |\n|---|---|---|---|---|\n| MOCK-ORD-001 | 蓝色折叠伞 | 1000 个 | confirmed（已确认） | 2026-09-20 |\n| MOCK-ORD-002 | 黑色直柄伞 | 600 个 | draft（草稿） | 2026-09-30 |\n\n补充：两张单都各自关联了采购单（MOCK-PO-001、MOCK-PO-002）和生产单（MOCK-PROD-001、MOCK-PROD-002），如果需要查这些关联单据的状态，可以再告诉我。",
+        "toolCalls": 2,
+        "answerChunks": 157
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-mixed-documents",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001",
+          "MOCK-PO-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001",
+            "MOCK-PO-001"
+          ],
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-ORD-001 和 MOCK-PO-001 分别是什么状态"
+      },
+      "outcome": {
+        "id": "entry-mixed-documents",
+        "group": "entry",
+        "turns": [
+          "MOCK-ORD-001 和 MOCK-PO-001 分别是什么状态"
+        ],
+        "sessionId": "f01a0a32-10e7-44f5-826c-d0facec61320",
+        "durationMs": 5067,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          }
+        ],
+        "answer": "根据 search_documents 的检索结果：\n\n- **MOCK-ORD-001**（销售单，商品为蓝色折叠伞，数量 1000 个）：状态为 **confirmed（已确认）**，交货日期为 2026-09-20。\n- **MOCK-PO-001**（采购单，关联销售单 MOCK-ORD-001）：状态为 **partially_arrived（部分到货）**，采购日期为 2026-08-21，预计到货日期为 2026-08-28。\n\n以上状态均来自这两张单据的搜索记录，查询时间为 2026-11-22。",
+        "toolCalls": 2,
+        "answerChunks": 138
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-production-progress",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-PROD-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-PROD-001"
+          ],
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-PROD-001 的生产进度如何"
+      },
+      "outcome": {
+        "id": "entry-production-progress",
+        "group": "entry",
+        "turns": [
+          "MOCK-PROD-001 的生产进度如何"
+        ],
+        "sessionId": "de502be7-10a6-4a30-afea-d0461d4adb2c",
+        "durationMs": 9464,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_production_orders",
+          "get_operation_progress",
+          "get_order_alerts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          }
+        ],
+        "answer": "**MOCK-PROD-001 生产进度**（数据来源：生产单 MOCK-PROD-001，查询时间 2026-11-22）\n\n**基本信息**\n- 状态：in_progress（生产中）\n- 计划数量：1000\n- 产品规格：24骨/晴雨两用\n- 开工日期：2026-08-22\n- 交付期限：2026-09-15\n- 完工日期：无（尚未完工）\n- 对应销售单：MOCK-ORD-001\n\n**工序进度**（来源：工序进度查询）\n\n| 工序 | 计划数 | 实际数 | 完成率 | 状态 |\n|---|---|---|---|---|\n| 裁剪（模拟） | 1000 | 420 | 42% | in_progress |\n| 缝制（模拟） | 1000 | 400 | 40% | in_progress |\n| 包装（模拟） | 1000 | 420 | 42% | in_progress |\n\n**需要注意的告警**\n- 存在一条高严重度告警：“生产日报差异”（类型：employee_operation_discrepancy），状态仍为 pending（待处理），建议核对日报与生产单累计数量。\n\n**说明**：按工具返回数据，该单交付期限为 2026-09-15，而查询时间为 2026-11-22，已超过交付日期且未完工；具体是否已延期交货或已另外安排，工具数据中没有相关信息，我无法判断。",
+        "toolCalls": 4,
+        "answerChunks": 324
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-production-reports",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-PROD-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-PROD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-PROD-001 的报工记录有多少条"
+      },
+      "outcome": {
+        "id": "entry-production-reports",
+        "group": "entry",
+        "turns": [
+          "MOCK-PROD-001 的报工记录有多少条"
+        ],
+        "sessionId": "b1349f18-00e4-4ff0-8e8b-b015837dc19c",
+        "durationMs": 6213,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_operation_reports"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          }
+        ],
+        "answer": "MOCK-PROD-001（内部引用 o_1，状态 in_progress，计划数量 1000）共有 **3 条报工记录**，均报工日期为 2026-08-25：\n\n| 工序 | 完成数量 | 单位 |\n|---|---|---|\n| 包装（模拟） | 420 | 个 |\n| 缝制（模拟） | 400 | 个 |\n| 裁剪（模拟） | 420 | 个 |\n\n数据来源：MOCK-PROD-001 的工序日报记录（operation_daily_report）。",
+        "toolCalls": 2,
+        "answerChunks": 123
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-production-status",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-PROD-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-PROD-001 现在是什么状态"
+      },
+      "outcome": {
+        "id": "entry-production-status",
+        "group": "entry",
+        "turns": [
+          "MOCK-PROD-001 现在是什么状态"
+        ],
+        "sessionId": "93a5d6f7-9539-442f-a7db-0d905a4346cb",
+        "durationMs": 7804,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_status",
+          "get_production_orders"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          }
+        ],
+        "answer": "生产单 MOCK-PROD-001（对应销售单 MOCK-ORD-001）当前状态如下：\n\n**生产单本身：状态为 in_progress（进行中）**\n- 计划数量：1000（来自生产单 MOCK-PROD-001）\n- 产品规格：24骨/晴雨两用；生产备注：正常生产\n- 计划开始：2026-08-22，实际开始：2026-08-22，交期：2026-09-15\n- 尚未完工，completed_on 为空\n- 三道工序（裁剪、缝制、包装，均为模拟）均处于 active 状态，目标数量各为 1000\n\n**关联销售单 MOCK-ORD-001 的整体状态：blocked（存在阻塞）**\n- 销售状态：confirmed；BOM 状态：completed\n- 阻塞原因：PRODUCTION_OVER_PLAN — 工序完成量超过生产计划\n- 系统建议：核对工序员工日报和超单确认\n\n也就是说，这张生产单仍在进行中，但因为它对应的销售单存在「工序完成量超过生产计划」这一阻塞，整体上被标记为存在阻塞。建议按系统提示核对工序日报与超单情况。",
+        "toolCalls": 3,
+        "answerChunks": 264
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-purchase-items",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-PO-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-PO-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-PO-001 收了哪些物料，各收了多少"
+      },
+      "outcome": {
+        "id": "entry-purchase-items",
+        "group": "entry",
+        "turns": [
+          "MOCK-PO-001 收了哪些物料，各收了多少"
+        ],
+        "sessionId": "8b879345-609c-4b97-bb9f-5298975a7b9c",
+        "durationMs": 5253,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_receipts",
+          "get_purchase_orders"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          }
+        ],
+        "answer": "\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"procurement_query\">\n<｜｜DSML｜｜ parameter name=\"operation\" string=\"true\">get_purchase_order_items</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name=\"order_ref\" string=\"true\">o_1</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+        "toolCalls": 3,
+        "answerChunks": 61
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-purchase-receipt",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-PO-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-PO-001"
+          ],
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-PO-001 这张采购单到货了吗"
+      },
+      "outcome": {
+        "id": "entry-purchase-receipt",
+        "group": "entry",
+        "turns": [
+          "MOCK-PO-001 这张采购单到货了吗"
+        ],
+        "sessionId": "47e6117e-0d7e-4c37-924c-93d60c5d1029",
+        "durationMs": 7231,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_receipts",
+          "get_purchase_orders"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          }
+        ],
+        "answer": "**MOCK-PO-001 目前是“部分到货”（partially_arrived），还没全部到齐。**\n\n依据（系统数据）：\n\n- **采购单**（来自采购单 MOCK-PO-001）：状态 `partially_arrived`，向宁波伞布供应商（模拟）采购，下单日期 2026-08-21，预计到货 2026-08-28，**订购数量 1200**。\n- **到货记录**（来自采购收货单）：\n  - MOCK-REC-001：**700**，状态 received，到货日 2026-08-25\n  - MOCK-REC-002：**500**，状态 received，到货日 2026-08-27\n\n两笔收货合计 **1200**，与订购数量 1200 一致；但采购单状态仍显示为“部分到货”，更新时间停在 2026-08-25 08:00，没有随 8 月 27 日那笔收货更新。因此有两种可能，需要进一步核实才能定论：一是数量其实已收满、单据状态未同步；二是存在收货数量的口径差异（如计量单位、批次）。建议核对这两张收货单的数量与单位是否与采购单一致，或请仓储/采购确认是否还有未登记的到货。",
+        "toolCalls": 3,
+        "answerChunks": 283
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-purchase-status",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-PO-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-PO-001 现在是什么状态"
+      },
+      "outcome": {
+        "id": "entry-purchase-status",
+        "group": "entry",
+        "turns": [
+          "MOCK-PO-001 现在是什么状态"
+        ],
+        "sessionId": "33ea8bcb-5644-4ebc-acdd-b8a989d531c1",
+        "durationMs": 7829,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_purchase_orders",
+          "get_receipts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "**MOCK-PO-001（采购单）当前状态：partially_arrived（部分到货）** — 来自采购单 MOCK-PO-001 的记录（通过 order_query 的 search_documents 检索到，用结果中的 order_ref 做后续查询）。\n\n补充信息（均来自采购单 MOCK-PO-001 及关联收货单）：\n\n- 供应商：宁波伞布供应商（模拟）\n- 采购日期：2026-08-21；预计到货日期：2026-08-28；最后更新：2026-08-25 08:00\n- 订购数量：1200（1 个品项）\n- 收货记录：\n  - MOCK-REC-001：700，状态 received，收货日期 2026-08-25\n  - MOCK-REC-002：500，状态 received，收货日期 2026-08-27\n- 两张收货单合计 1200，与订购数量 1200 一致\n\n需要说明：按系统里的收货记录，数量已全部收齐；但采购单自身的状态字段仍显示为 partially_arrived。这是单据状态与收货记录不一致的情况，我无法据此判断业务上应以哪个为准，建议由仓库或采购人员核实后更新单据状态。",
+        "toolCalls": 3,
+        "answerChunks": 273
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-ask-progress",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-ORD-001 现在做到哪一步了，有没有卡住的地方"
+      },
+      "outcome": {
+        "id": "entry-sales-ask-progress",
+        "group": "entry",
+        "turns": [
+          "MOCK-ORD-001 现在做到哪一步了，有没有卡住的地方"
+        ],
+        "sessionId": "bc23370c-6017-4ce4-8a25-da4d82f323d7",
+        "durationMs": 14373,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status",
+          "get_order_alerts",
+          "get_order_timeline",
+          "get_operation_progress"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，1000 个，销售单状态 confirmed，交期 2026-09-20）目前整体状态是**「存在阻塞」**，确有卡住的地方。\n\n## 阻塞点\n\n1. **工序完成量超过生产计划**（单据：销售单 MOCK-ORD-001 概览；生产单 MOCK-PROD-001）\n   - 生产计划量 1000，工序累计完成量 1240，超出计划；系统建议核对工序员工日报和超单确认。\n2. **一条高风险生产日报差异告警，仍处于待处理状态**（告警单号 00000000-0000-4000-8000-000000000905，创建于 2026-11-22 16:13）\n   - 类型：员工工序数量差异；建议核对日报与生产单累计数量。\n\n⚠️ 注意这里有一处数据不一致：按工序查询（生产单 MOCK-PROD-001）显示，裁剪 420/1000、缝制 400/1000、包装 420/1000，三道工序合计 1240，单道工序都没有超过 1000；但系统概览给出的「工序完成量」是 1240，并据此判为超计划。也就是说，阻塞很可能是由跨工序汇总口径或日报数据造成的，需要人工核对日报后确认，不能直接认定为生产超产。\n\n## 各环节进展\n\n| 环节 | 状态 | 关键数据 |\n|---|---|---|\n| BOM | 已完成 | — |\n| 采购（采购单 MOCK-PO-001） | 进行中 | 订购 1200，收货 1200，检验 1200；合格 1180，让步接收 10，入库 1180 |\n| 生产（生产单 MOCK-PROD-001） | 进行中 | 计划 1000，工序完成累计 1240（见上方口径问题） |\n| 成品检验（MOCK-FG-QC-REC-001） | 已完成 | 检验 1200，合格 410，让步 5，不合格 10 |\n| 成品库存（MOCK-FG-IN-001、MOCK-FGN-001） | 已完成 | 入库 410，在库 210，不良品 5，已出库 200 |\n| 发货（MOCK-FG-OUT-001） | 已完成 | 出库 200 |\n\n另外，原材料库存汇总这一项没有查到记录（missing=true），入库 1180、领用 300、退料 20，缺口 900；这条只能提示“数据缺失”，无法给出确切库存结论。\n\n**建议下一步**：先处理那条待核对的日报差异告警，确认实际工序产出后，再决定是否做超单确认；同时补齐原材料库存记录。",
+        "toolCalls": 6,
+        "answerChunks": 612
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-ask-status",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-ORD-001 已经确认了吗"
+      },
+      "outcome": {
+        "id": "entry-sales-ask-status",
+        "group": "entry",
+        "turns": [
+          "MOCK-ORD-001 已经确认了吗"
+        ],
+        "sessionId": "81713f18-9a9b-4cd9-ab1e-b316d4d90c7d",
+        "durationMs": 6251,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_status"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "是的，MOCK-ORD-001 已确认。\n\n- **销售单 MOCK-ORD-001**：状态为 confirmed（已确认），产品为蓝色折叠伞，数量 1000 个，交期 2026-09-20，最后更新于 2026-08-25 08:00。\n- 关联单据：采购单 MOCK-PO-001、生产单 MOCK-PROD-001。\n\n不过需要提醒：订单状态查询显示该单**整体状态为「存在阻塞」**，销售状态虽已确认、BOM 也已完成，但存在一条阻塞项「工序完成量超过生产计划」，建议核对工序员工日报和超单确认。\n\n（以上数字分别来自销售单 MOCK-ORD-001 的检索结果和其状态查询结果。）",
+        "toolCalls": 2,
+        "answerChunks": 171
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-exact",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-ORD-001 这张销售单现在什么状态"
+      },
+      "outcome": {
+        "id": "entry-sales-exact",
+        "group": "entry",
+        "turns": [
+          "MOCK-ORD-001 这张销售单现在什么状态"
+        ],
+        "sessionId": "470844bb-30a4-4f0a-80c3-0d03d2045172",
+        "durationMs": 8712,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "**MOCK-ORD-001 销售单（蓝色折叠伞 1000 个）**\n\n- **销售单状态：已确认（confirmed）** —— 来源：销售单 MOCK-ORD-001\n- **整体状态：存在阻塞（blocked）** —— 存在一个阻塞项 `PRODUCTION_OVER_PLAN`（工序完成量超过生产计划），建议核对工序员工日报和超单确认。\n\n各环节概览（来自 MOCK-ORD-001 订单总览，截至 2026-11-22）：\n- BOM：已完成\n- 采购（MOCK-PO-001）：进行中，已收 1200、验收合格 1180、让步 10、入库 1180\n- 生产（MOCK-PROD-001）：进行中，计划 1000，工序完成量 1240（超出计划 240，即阻塞来源）\n- 成品检验（MOCK-FG-QC-REC-001）：已完成，检验 1200，合格 410、让步 5、不合格 10，成品入库 410\n- 成品库存：在库 210、次品 5、出库 200\n- 发货（MOCK-FG-OUT-001）：已完成，数量 200\n\n另外，原料库存汇总在总览中标记为缺失（无明细记录），该部分数据暂无。",
+        "toolCalls": 3,
+        "answerChunks": 296
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-fullwidth",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "ＭＯＣＫ－ＯＲＤ－００１ 这张单现在什么状态"
+      },
+      "outcome": {
+        "id": "entry-sales-fullwidth",
+        "group": "entry",
+        "turns": [
+          "ＭＯＣＫ－ＯＲＤ－００１ 这张单现在什么状态"
+        ],
+        "sessionId": "401d72a5-f3a6-4e71-adaf-046fdea89a8a",
+        "durationMs": 12393,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_timeline",
+          "get_order_alerts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          }
+        ],
+        "answer": "**MOCK-ORD-001（销售单，蓝色折叠伞，1000 个）现状：整体“存在阻塞”（blocked）**\n\n按单据分别说明：\n\n**销售单**：状态为 confirmed（已确认），交期为 2026-09-20，最后更新时间为 2026-08-25。关联单据中有采购单 MOCK-PO-001、生产单 MOCK-PROD-001。\n\n**采购（MOCK-PO-001）**：进行中。BOM 需求量为 3.2，下单量为 1200；收货 2 次，共 1200；检验 2 次，共 1200，其中合格 1180、让步接收 10；入库 1180。\n\n**生产（MOCK-PROD-001）**：进行中。计划量为 1000，工序完成量为 1240。\n\n**成品检验（MOCK-FG-QC-REC-001）**：已完成。检验 1200，合格 410、让步接收 5、不合格 10，成品入库 410。\n\n**成品库存（MOCK-FG-IN-001、MOCK-FGN-001）**：已完成。成品 410，通知数量 420，已出库 200，当前库存 210，不良库存 5。\n\n**出货（MOCK-FG-OUT-001）**：已完成，出库 200。\n\n**阻塞原因**：\n1. 系统概览将该阻塞标记为 PRODUCTION_OVER_PLAN：工序完成量 1240 大于生产计划 1000，建议核对工序员工日报和超单确认。\n2. 另外有一条待处理的**高等级**警告“生产日报差异”（employee_operation_discrepancy，创建于 2026-11-22），建议核对日报与生产单累计数量。它与上述超产问题指向同一件事，即日报与生产单数量对不上。\n\n另外需要提醒一点：原材料库存这块，数据缺失（missing），记录数为 0，无法据此判断原料库存是否充足；只能看到入库 1180、发出 300、退回 20、报废 0、数量差 900。\n\n**一句话结论**：这张单销售已确认、采购和成品流转基本走完，但因为生产工序完成量超出计划、日报存在差异，被标为“存在阻塞”，需要先核对并确认日报数量。",
+        "toolCalls": 5,
+        "answerChunks": 505
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-in-sentence",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "客户的蓝色折叠伞，单号 MOCK-ORD-001，这张单现在什么状态"
+      },
+      "outcome": {
+        "id": "entry-sales-in-sentence",
+        "group": "entry",
+        "turns": [
+          "客户的蓝色折叠伞，单号 MOCK-ORD-001，这张单现在什么状态"
+        ],
+        "sessionId": "010721c3-b200-47e3-82dc-370df84b7495",
+        "durationMs": 11730,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status",
+          "get_order_alerts",
+          "get_order_timeline"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "**MOCK-ORD-001（蓝色折叠伞）当前状态：存在阻塞（blocked）**\n\n以下事实来自检索到的销售单 MOCK-ORD-001 及其关联单据：\n\n**销售单本身**\n- 销售状态：confirmed（已确认）\n- 产品：蓝色折叠伞，数量 1000 个，交期 2026-09-20\n- 关联单据：采购单 MOCK-PO-001、生产单 MOCK-PROD-001\n\n**阻塞原因**\n- 系统标注的阻塞项为 `PRODUCTION_OVER_PLAN`，即“工序完成量超过生产计划”；建议核对工序员工日报和超单确认。\n- 另有一条待处理的高等级告警：生产日报差异（employee_operation_discrepancy），建议核对日报与生产单的累计数量。\n\n**各环节进展**\n- BOM：已完成\n- 采购（MOCK-PO-001）：进行中；订购 1200，收货 1200，检验 1200，合格 1180，让步接收 10，入库 1180\n- 生产（MOCK-PROD-001）：进行中；计划 1000，工序完成量 1240（即超出计划量，与上述阻塞项对应）\n- 成品检验（MOCK-FG-QC-REC-001）：已完成；检验 1200，合格 410，让步接收 5，不合格 10，成品入库 410\n- 成品库存：入库 410，出库 200，现库存 210，次品库存 5\n- 发货（MOCK-FG-OUT-001）：已完成，发货 200\n\n**结论**：销售单已确认，且已有部分发货（200 个），但整单因“工序完成量超过生产计划”被系统标记为存在阻塞，并有一条生产日报差异告警待处理。需要核对生产单 MOCK-PROD-001 的工序日报和超单情况。\n\n（以上数字均取自 MOCK-ORD-001 的订单概览及各关联单据；更细的工序日报明细我尚未查询，如需可进一步展开。）",
+        "toolCalls": 5,
+        "answerChunks": 457
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-lowercase",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "opsInclude": [
+            "search_documents"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "mock-ord-001 这张单现在什么状态"
+      },
+      "outcome": {
+        "id": "entry-sales-lowercase",
+        "group": "entry",
+        "turns": [
+          "mock-ord-001 这张单现在什么状态"
+        ],
+        "sessionId": "71093dd6-3459-45b3-bf11-fe13e9138112",
+        "durationMs": 8641,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "**MOCK-ORD-001（销售订单，蓝色折叠伞 1000 个）目前状态：整体“存在阻塞”（overall_status = blocked），销售单本身为“已确认”（confirmed）。**\n\n阻塞原因（来自订单概览/状态查询）：\n- 阻塞项：**PRODUCTION_OVER_PLAN — 工序完成量超过生产计划**\n- 工序完成量 1240，生产计划数量 1000（生产单 MOCK-PROD-001），超出 240\n- 系统建议：核对该工序的员工日报和超单确认\n\n各环节进展（均来自 MOCK-ORD-001 订单概览）：\n- **BOM**：已完成\n- **采购**（采购单 MOCK-PO-001）：进行中；订购 1200，收货 1200，检验 1200，合格 1180、让步接收 10，入库 1180\n- **原材料库存**：进行中，该环节无明细记录（missing）\n- **生产**（生产单 MOCK-PROD-001）：进行中，计划 1000，工序完成 1240\n- **成品检验**（MOCK-FG-QC-REC-001）：已完成，检验 1200，合格 410、让步接收 5、不合格 10，成品入库 410\n- **成品库存**（MOCK-FG-IN-001、MOCK-FGN-001）：已完成，库存 410（已过账 410），现存 210，不良品 5，已出库 200\n- **发货**（MOCK-FG-OUT-001）：已完成，数量 200\n- 交货日期：2026-09-20（已过），最后更新：2026-08-25\n\n如需进一步定位超产原因，可以查生产单 MOCK-PROD-001 的工序日报明细，需要的话我继续查。",
+        "toolCalls": 3,
+        "answerChunks": 408
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-padded",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-ORD-001   这张单现在什么状态"
+      },
+      "outcome": {
+        "id": "entry-sales-padded",
+        "group": "entry",
+        "turns": [
+          "MOCK-ORD-001   这张单现在什么状态"
+        ],
+        "sessionId": "08e91420-704e-42b8-bf2d-06e350df6152",
+        "durationMs": 8790,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status",
+          "get_order_alerts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          }
+        ],
+        "answer": "**MOCK-ORD-001（蓝色折叠伞，1000 个）目前整体状态是「存在阻塞」。**\n\n主要情况（以下数据均来自该销售单的订单概览）：\n\n- 销售单状态：confirmed（已确认）\n- BOM 状态：completed（已完成）\n- 阻塞项：`PRODUCTION_OVER_PLAN`，表示工序完成量超过生产计划；建议核对工序员工日报和超单确认。\n\n各环节进度：\n\n- 采购：进行中。采购单 MOCK-PO-001 订购 1200，到货 1200，验收 1200，其中合格 1180、条件接收 10，入库 1180。\n- 生产：进行中。生产单 MOCK-PROD-001 计划量 1000，工序完成量 1240，超出计划 240。\n- 成品检验：已完成。检验 1200，合格 410，条件接收 5，不合格 10，成品入库 410。\n- 成品库存：已完成。库存 410（已过账 410），现有库存 210，不良库存 5，出库 200。\n- 出货：已完成，数量 200，涉及单据 MOCK-FG-OUT-001。\n\n另外还有一条待处理预警：「生产日报差异」（严重程度高，状态 pending），提示核对日报与生产单累计数量，与上面提到的阻塞项指向同一个问题。\n\n需要我进一步查看生产单 MOCK-PROD-001 的明细，核对超产的具体环节吗？",
+        "toolCalls": 4,
+        "answerChunks": 325
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "entry-sales-suffix-only",
+        "group": "entry",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "ORD-001 这张单现在什么状态"
+      },
+      "outcome": {
+        "id": "entry-sales-suffix-only",
+        "group": "entry",
+        "turns": [
+          "ORD-001 这张单现在什么状态"
+        ],
+        "sessionId": "01c1dc0a-5315-4814-86de-2a98ebad6291",
+        "durationMs": 10250,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status",
+          "get_order_alerts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          }
+        ],
+        "answer": "你这张单检索到的实际单号是 **MOCK-ORD-001**（销售单，产品：蓝色折叠伞，数量 1000 个，交期 2026-09-20）。\n\n## 当前状态：存在阻塞（blocked）\n- 销售状态：confirmed（已确认）\n- BOM：completed（已完成）\n- 综合状态：**blocked / 存在阻塞**\n- 阻塞原因：`PRODUCTION_OVER_PLAN` —— 工序完成量超过生产计划，建议核对工序员工日报和超单确认\n  - 生产单 MOCK-PROD-001：计划数量 1000，工序完成量 **1240**（超出计划）\n- 另有一条待处理告警：生产日报差异（employee_operation_discrepancy，严重度 high，状态 pending），建议核对日报与生产单累计数量\n\n## 各环节进展（来自该单的订单总览）\n| 环节 | 状态 | 关键数字 |\n|---|---|---|\n| 采购（MOCK-PO-001） | 进行中 | 下单 1200，收货 1200，验收 1200（合格 1180、让步接收 10），入库 1180 |\n| 原材料库存 | 进行中（数据缺失） | 入库 1180、发出 300、退回 20，源单据记录 0 |\n| 生产（MOCK-PROD-001） | 进行中 | 计划 1000，工序完成 1240 |\n| 成品检验（MOCK-FG-QC-REC-001） | 已完成 | 检验 1200，合格 410、让步接收 5、不合格 10，成品入库 410 |\n| 成品库存（MOCK-FG-IN-001、MOCK-FGN-001） | 已完成 | 库存数量 410，现存量 210、次品 5、已出库 200，待入库 10 |\n| 出货（MOCK-FG-OUT-001） | 已完成 | 出货 200 |\n\n注：原材料库存这一项标记为数据缺失（missing），该环节的数量无法完整核对。",
+        "toolCalls": 4,
+        "answerChunks": 459
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "followup-chain-three-rounds",
+        "group": "followup",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 24
+        },
+        "turns": [
+          "MOCK-ORD-001 到货了吗",
+          "那来料质检结果怎么样",
+          "入库数量是多少"
+        ]
+      },
+      "outcome": {
+        "id": "followup-chain-three-rounds",
+        "group": "followup",
+        "turns": [
+          "MOCK-ORD-001 到货了吗",
+          "那来料质检结果怎么样",
+          "入库数量是多少"
+        ],
+        "sessionId": "d0c57fc6-30f4-4f73-ba62-d32964fcbf5b",
+        "durationMs": 20333,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_receipts",
+          "get_purchase_orders",
+          "get_incoming_inspections"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "入库数量如下（来自采购收货单的入库信息）：\n\n**MOCK-REC-001**：到货 700，入库 **680**，差额 20\n**MOCK-REC-002**：到货 500，入库 **500**，差额 0\n\n两批合计入库 **1180**。\n\n这个和上一轮质检数据能对上：MOCK-REC-001 中 10 个让步接收 + 10 个不合格，共 20 个未入库，正好是到货 700 与入库 680 的差额。MOCK-REC-002 全部 500 个入库。\n\n需要提示的是：采购单 MOCK-PO-001 订购量为 1200，实际入库 1180，差额 20；这 20 个是否有补货或另行处理，系统里查不到相关单据，无法给出结论。",
+        "toolCalls": 5,
+        "answerChunks": 652
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "followup-production-then-reports",
+        "group": "followup",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "turns": [
+          "MOCK-ORD-001 的生产进度怎么样",
+          "那工序报工量是多少"
+        ]
+      },
+      "outcome": {
+        "id": "followup-production-then-reports",
+        "group": "followup",
+        "turns": [
+          "MOCK-ORD-001 的生产进度怎么样",
+          "那工序报工量是多少"
+        ],
+        "sessionId": "a8bdb2ce-f4a8-4bcc-bc74-4f0d3509f0e2",
+        "durationMs": 19337,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_production_orders",
+          "get_operation_progress",
+          "get_operation_reports",
+          "get_order_alerts"
+        ],
+        "failureCodes": [
+          "ORDER_REF_INVALID"
+        ],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          }
+        ],
+        "answer": "工序报工量（来自工序日报，生产单 MOCK-PROD-001，报工日期均为 2026-08-25）：\n\n| 工序 | 报工日期 | 报工完成量 |\n|---|---|---|\n| 包装（模拟） | 2026-08-25 | 420 个 |\n| 缝制（模拟） | 2026-08-25 | 400 个 |\n| 裁剪（模拟） | 2026-08-25 | 420 个 |\n\n需要说明两点：\n1. 目前能查到的**只有 2026-08-25 这一天的日报记录**，每个工序各一条，没有其他日期的报工数据。因此，上面三条报工量与生产单的累计完成数完全一致（420/400/420）；也就是说，后续没有新增报工记录。\n2. 该生产单上仍有一条待处理的高等级预警“生产日报差异”，建议找生产部门核对这组数字是否准确。",
+        "toolCalls": 7,
+        "answerChunks": 652
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "followup-purchase-then-inspection",
+        "group": "followup",
+        "baselineDocs": [
+          "MOCK-PO-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "turns": [
+          "MOCK-PO-001 到货了吗",
+          "那一次有几个不合格的"
+        ]
+      },
+      "outcome": {
+        "id": "followup-purchase-then-inspection",
+        "group": "followup",
+        "turns": [
+          "MOCK-PO-001 到货了吗",
+          "那一次有几个不合格的"
+        ],
+        "sessionId": "416ef9f5-72da-4ea2-a94e-f0f0097459f9",
+        "durationMs": 14875,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_receipts",
+          "get_purchase_orders",
+          "get_incoming_inspections"
+        ],
+        "failureCodes": [
+          "ORDER_REF_INVALID"
+        ],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "**从检验记录来看，只有一次到货出现了不合格品。**\n\n采购单 MOCK-PO-001 的来料检验记录如下：\n\n| 收货单 | 检验数量 | 合格 | 让步接收 | 不合格 | 状态 |\n|---|---|---|---|---|---|\n| MOCK-REC-001 | 700 | 680 | 10 | **10** | passed |\n| MOCK-REC-002 | 500 | 500 | 0 | **0** | passed |\n| 合计 | 1200 | 1180 | 10 | **10** | — |\n\n也就是说，在两次到货中，只有 **MOCK-REC-001 这一次**有不合格品，数量为 **10**；另有 10 属于让步接收。**MOCK-REC-002 这一次**没有不合格品。\n\n需要说明的是：这两笔检验记录的 qc_result 字段均为空，判定状态都显示为 passed，所以无法从系统记录中看出这 10 件不合格品最终如何处理，比如退回还是补货。如需确认，建议联系质检或采购跟进。",
+        "toolCalls": 5,
+        "answerChunks": 468
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "followup-status-then-supplier",
+        "group": "followup",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "turns": [
+          "MOCK-ORD-001 现在什么状态",
+          "那这张单的供应商是谁，什么时候到货的"
+        ]
+      },
+      "outcome": {
+        "id": "followup-status-then-supplier",
+        "group": "followup",
+        "turns": [
+          "MOCK-ORD-001 现在什么状态",
+          "那这张单的供应商是谁，什么时候到货的"
+        ],
+        "sessionId": "4cf9b165-cf3d-4d2c-ac6a-7bda3e9f71d3",
+        "durationMs": 17216,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status",
+          "get_order_alerts",
+          "get_purchase_orders",
+          "get_receipts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "这张单对应的采购单（MOCK-PO-001，来源：采购单查询）信息如下：\n\n**供应商**\n- 宁波伞布供应商（模拟）\n\n**到货情况**\n采购单状态为 partially_arrived（部分到货），下单 1200 个，采购日期 2026-08-21，预计到货 2026-08-28。实际有两条收货记录（来源：收货单查询）：\n- MOCK-REC-001：700 个，收货日期 **2026-08-25**\n- MOCK-REC-002：500 个，收货日期 **2026-08-27**\n\n两次合计 1200 个，与下单数量一致；其中 1180 个合格入库、10 个让步接收（来源：订单总览的采购数据）。\n\n需要注意：收货记录合计已达到下单量 1200，但采购单状态仍显示“部分到货”，两者是否一致，我无法从现有单据判断。",
+        "toolCalls": 7,
+        "answerChunks": 582
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "followup-switch-document",
+        "group": "followup",
+        "baselineDocs": [
+          "MOCK-ORD-001",
+          "MOCK-ORD-002"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-002"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "turns": [
+          "MOCK-ORD-001 什么状态",
+          "换成 MOCK-ORD-002 呢"
+        ]
+      },
+      "outcome": {
+        "id": "followup-switch-document",
+        "group": "followup",
+        "turns": [
+          "MOCK-ORD-001 什么状态",
+          "换成 MOCK-ORD-002 呢"
+        ],
+        "sessionId": "bb423d44-900d-4447-9ece-22893f4c01ed",
+        "durationMs": 17908,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_order_status",
+          "get_order_alerts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          }
+        ],
+        "answer": "**MOCK-ORD-002 状态：整体「进行中」（in_progress），无阻塞项。**（查询时间 2026-11-22）\n\n销售单与各环节明细如下，均来自单据 MOCK-ORD-002 及关联单据查询结果：\n\n- **销售单**：状态「草稿」（draft），产品为黑色直柄伞，数量 600 个，交货日期 2026-09-30，更新时间 2026-08-25。\n- **物料清单（BOM）**：已完成。\n- **采购**：进行中；采购单 MOCK-PO-002，BOM 需求量为 1.1，已下单 660，收货 0，检验 0，合格 0，入库 0。\n- **原料库存**：未建立（无记录）。\n- **生产**：进行中；生产单 MOCK-PROD-002，计划量 600，工序完成量 0。\n- **成品检验**：未建立。\n- **成品库存**：未建立，库存 0，出库 0。\n- **出货**：未建立。\n\n**提醒**：销售单仍为「草稿」状态，交货日期为 2026-09-30，现已过去；采购已下单 660，但收货、检验和入库均为 0；生产计划量 600，工序完成量为 0。此外，系统未返回任何警告或阻塞项。\n\n如果你需要，我也可以按与 MOCK-ORD-001 相同的方式，进一步查看采购单 MOCK-PO-002 或生产单 MOCK-PROD-002 的明细。",
+        "toolCalls": 7,
+        "answerChunks": 679
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "followup-three-rounds-same-order",
+        "group": "followup",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 24
+        },
+        "turns": [
+          "MOCK-ORD-001 客户是谁",
+          "交期是哪天",
+          "金额多少"
+        ]
+      },
+      "outcome": {
+        "id": "followup-three-rounds-same-order",
+        "group": "followup",
+        "turns": [
+          "MOCK-ORD-001 客户是谁",
+          "交期是哪天",
+          "金额多少"
+        ],
+        "sessionId": "41ed7525-ebe1-42c7-8711-4e013b13b0c3",
+        "durationMs": 10003,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_customer"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "customer",
+            "business_no": "MOCK-C-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001 的金额是 **18,000**（销售单 MOCK-ORD-001 的金额字段，币种未在返回结果中体现，需另行确认）。",
+        "toolCalls": 3,
+        "answerChunks": 186
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-cross-customer-only",
+        "group": "miss",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "海风家居（模拟）还欠我们多少钱"
+      },
+      "outcome": {
+        "id": "miss-cross-customer-only",
+        "group": "miss",
+        "turns": [
+          "海风家居（模拟）还欠我们多少钱"
+        ],
+        "sessionId": "8d8f099c-0561-4ce5-892e-45664892d760",
+        "durationMs": 4391,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我以「海风家居」为检索词查询了单据，**返回 0 条结果**，因此查不到这家客户的任何单据，无法给出欠款金额，也不能据此判断是否存在欠款。\n\n请核对单号或客户名称后重试，例如确认名称是否为「海风家居」，以及是否有对应的销售单号，然后我再按单号查询。",
+        "toolCalls": 1,
+        "answerChunks": 78
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-cross-date-as-number",
+        "group": "miss",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "2026-09-20 这张单什么状态"
+      },
+      "outcome": {
+        "id": "miss-cross-date-as-number",
+        "group": "miss",
+        "turns": [
+          "2026-09-20 这张单什么状态"
+        ],
+        "sessionId": "163fd9b0-74cd-45e3-a691-d7f2a290a192",
+        "durationMs": 3648,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "以「2026-09-20」为检索词在单据检索中查询，命中 0 条，因此我查不到这张单，也无法说明它当前是什么状态。\n\n这看起来像是把日期当成了单号来查询。请您核对单号：销售单、采购单、生产单的单号请提供完整原文，我会用 search_documents 检索，再按结果里的 order_ref 查询状态。",
+        "toolCalls": 1,
+        "answerChunks": 88
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-cross-forged-ref",
+        "group": "miss",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "用句柄 o_99 查一下这张单的概览"
+      },
+      "outcome": {
+        "id": "miss-cross-forged-ref",
+        "group": "miss",
+        "turns": [
+          "用句柄 o_99 查一下这张单的概览"
+        ],
+        "sessionId": "a509d7e2-e89d-4d0a-a36b-7ebcb1c818d5",
+        "durationMs": 5363,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "get_order_overview"
+        ],
+        "failureCodes": [
+          "ORDER_REF_INVALID"
+        ],
+        "sources": [],
+        "answer": "你给的 `o_99` 不是本轮检索发出的句柄，系统拒绝直接查询（错误码 ORDER_REF_INVALID），提示需要先用检索工具拿到有效的 order_ref。\n\n按流程，我需要先用 search_documents 检索这张单，再拿结果里的 order_ref 查概览。所以请补充一点可检索的信息，比如：\n\n- 客户/供应商名称\n- 单据类型（销售单 / 采购单 / 生产单）\n- 日期范围、金额、或单据上的任意关键词\n\n或者如果你手上只有一个内部句柄 `o_99`，那它在本轮对话里无法直接使用，麻烦从单据列表里确认对应的单号或业务信息给我，我再检索。",
+        "toolCalls": 0,
+        "answerChunks": 148
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-cross-product-only",
+        "group": "miss",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "蓝色折叠伞现在生产到哪一步了"
+      },
+      "outcome": {
+        "id": "miss-cross-product-only",
+        "group": "miss",
+        "turns": [
+          "蓝色折叠伞现在生产到哪一步了"
+        ],
+        "sessionId": "59568cb4-dc10-4266-a595-c3bdffc432fd",
+        "durationMs": 5976,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "search_orders"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我用「蓝色折叠伞」「折叠伞」「蓝色折叠伞」在单据检索中查询，结果均为 0 条，因此查不到对应的销售单、采购单或生产单，也就无法说明该产品目前的生产进度。\n\n请核对一下单号或名称是否准确（比如确切的销售单号、生产单号，或者系统中登记的产品名称、规格型号），我再帮你查。\n\n在检索到对应单据之前，我不会对生产进度做任何推测。",
+        "toolCalls": 3,
+        "answerChunks": 97
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-cross-production-as-sales",
+        "group": "miss",
+        "baselineDocs": [
+          "MOCK-PROD-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-PROD-001 这张销售单的应收是多少"
+      },
+      "outcome": {
+        "id": "miss-cross-production-as-sales",
+        "group": "miss",
+        "turns": [
+          "MOCK-PROD-001 这张销售单的应收是多少"
+        ],
+        "sessionId": "9c231d8d-452d-484a-b724-a19f9d050826",
+        "durationMs": 4451,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          }
+        ],
+        "answer": "MOCK-PROD-001 不是销售单，而是一张**生产单**。检索结果显示：单据类型为 production_order，状态为 in_progress，计划数量为 1000，关联的销售单号是 MOCK-ORD-001（order_ref: o_1）。来源：order_query 检索结果。\n\n应收金额要查销售单，所以不能用生产单号来查。如果你指的是它关联的那张销售单 MOCK-ORD-001，需要我按销售单再查一次吗？",
+        "toolCalls": 1,
+        "answerChunks": 110
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-cross-purchase-as-sales",
+        "group": "miss",
+        "baselineDocs": [
+          "MOCK-PO-001",
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-PO-001 这张销售单的金额是多少"
+      },
+      "outcome": {
+        "id": "miss-cross-purchase-as-sales",
+        "group": "miss",
+        "turns": [
+          "MOCK-PO-001 这张销售单的金额是多少"
+        ],
+        "sessionId": "b2d67495-00df-4642-b169-0800b89216cb",
+        "durationMs": 4443,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          }
+        ],
+        "answer": "检索结果里，MOCK-PO-001 是**采购单**（purchase_order），不是销售单；它关联的销售单是 MOCK-ORD-001（order_ref: o_1），状态为部分到货。\n\n因此，你问的这张单据本身就不存在销售单金额。工具返回的检索结果里没有金额字段，我目前也无法给出 MOCK-PO-001 的采购金额。如果你要查的是它关联的销售单 MOCK-ORD-001 的金额，我可以继续用 order_ref o_1 查询；需要我查吗？",
+        "toolCalls": 1,
+        "answerChunks": 125
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-unknown-extra-digit",
+        "group": "miss",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-ORD-0011 这张单什么状态"
+      },
+      "outcome": {
+        "id": "miss-unknown-extra-digit",
+        "group": "miss",
+        "turns": [
+          "MOCK-ORD-0011 这张单什么状态"
+        ],
+        "sessionId": "bad6abb5-5a3c-4541-88b3-b287c6522772",
+        "durationMs": 6040,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "search_orders"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "我分别用“MOCK-ORD-0011”检索了两次：\n\n- search_documents 检索词「MOCK-ORD-0011」→ 返回 0 条结果\n- 补充用 search_orders 检索词「MOCK-ORD-0011」→ 同样返回 0 条结果\n\n因为系统里没有检索到这张单据，我无法确认它的状态，也不能给出任何业务结论。\n\n请核对一下单号：是否有多/少字符、前缀是否完整（例如是否为 MOCK-ORD-0011 还是类似 ORD-0011 的写法）。确认后把准确单号发给我，我再按原样单号重新检索。",
+        "toolCalls": 2,
+        "answerChunks": 146
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-unknown-long-garbage",
+        "group": "miss",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 这张单什么状态"
+      },
+      "outcome": {
+        "id": "miss-unknown-long-garbage",
+        "group": "miss",
+        "turns": [
+          "MOCK-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 这张单什么状态"
+        ],
+        "sessionId": "8a10f706-d90a-40e9-921c-c3b4768a7e32",
+        "durationMs": 6397,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [
+          "AGENT_TOOL_ARGUMENT_INVALID"
+        ],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-002"
+          }
+        ],
+        "answer": "查不到这张单。\n\n原因是：你给的号码超长（超过 100 个字符），系统直接拒绝检索，提示“搜索词 q 不能超过 100 个字符”。我改用关键词 `MOCK` 检索后，结果里只有两张销售单：\n\n- **MOCK-ORD-001**：蓝色折叠伞 1000 个，状态为 `confirmed`（已确认），交期 2026-09-20（来自该销售单）\n- **MOCK-ORD-002**：黑色直柄伞 600 个，状态为 `draft`（草稿），交期 2026-09-30（来自该销售单）\n\n没有与你给出的长号码相匹配的单据。如果确实是某张真实单据，请提供 100 字符以内的准确单号（含前缀和数字部分），我再查它的状态。",
+        "toolCalls": 2,
+        "answerChunks": 182
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-unknown-mixed-valid-invalid",
+        "group": "miss",
+        "baselineDocs": [
+          "MOCK-PO-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-PO-001 和 MOCK-PO-999 分别什么状态"
+      },
+      "outcome": {
+        "id": "miss-unknown-mixed-valid-invalid",
+        "group": "miss",
+        "turns": [
+          "MOCK-PO-001 和 MOCK-PO-999 分别什么状态"
+        ],
+        "sessionId": "b0ccde7b-eb62-4ff5-b488-81230531212a",
+        "durationMs": 5027,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          }
+        ],
+        "answer": "查询结果如下：\n\n- **MOCK-PO-001**：状态为 **partially_arrived（部分到货）**，属于采购订单；采购日期为 2026-08-21，预计到货日期为 2026-08-28，关联销售单为 MOCK-ORD-001，最后更新时间为 2026-08-25。来源：采购单 MOCK-PO-001 的检索结果。\n- **MOCK-PO-999**：用 `search_documents` 检索后没有返回任何单据记录，因此**查不到该单号的状态**；这可能是因为该单号不存在，或者没有权限、没有记录。",
+        "toolCalls": 2,
+        "answerChunks": 142
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-unknown-no-doc",
+        "group": "miss",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "查一个不存在的单号 MOCK-XXX-000"
+      },
+      "outcome": {
+        "id": "miss-unknown-no-doc",
+        "group": "miss",
+        "turns": [
+          "查一个不存在的单号 MOCK-XXX-000"
+        ],
+        "sessionId": "bb82f884-f8b6-400a-8c81-197121d88e5c",
+        "durationMs": 4265,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "已用检索词「MOCK-XXX-000」在单据检索中查询，命中 0 条结果，没有找到任何对应的销售单、采购单或生产单。系统无法据此给出任何业务信息。\n\n建议您核对单号：确认是否有多余的前缀或后缀（比如「MOCK-XXX-000」这类占位格式）、是否漏字或大小写、连字符位置是否正确。确认后把准确单号发我，我再检索一次。",
+        "toolCalls": 1,
+        "answerChunks": 100
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-unknown-prefix",
+        "group": "miss",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "MOCK-ORD-999 这张单什么状态"
+      },
+      "outcome": {
+        "id": "miss-unknown-prefix",
+        "group": "miss",
+        "turns": [
+          "MOCK-ORD-999 这张单什么状态"
+        ],
+        "sessionId": "70d7dad5-b1d6-4625-9bcc-5bdf794558cc",
+        "durationMs": 4154,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "用检索词「MOCK-ORD-999」在 order_query 的 search_documents 中查询，命中 **0 条**结果，没有对应的单据记录，因此无法给出这张单的状态。\n\n请核对单号是否输入有误（例如是否漏输或错输了字符、是否用了其他系统的编号格式），确认后我再帮你查询。",
+        "toolCalls": 1,
+        "answerChunks": 74
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "miss-unknown-vague",
+        "group": "miss",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 10
+        },
+        "question": "请问"
+      },
+      "outcome": {
+        "id": "miss-unknown-vague",
+        "group": "miss",
+        "turns": [
+          "请问"
+        ],
+        "sessionId": "25d6e611-728d-4840-b9ce-5f6159e39d51",
+        "durationMs": 2213,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "您好！请问您想查询什么？可以告诉我销售单、采购单、生产单的单号，或者具体想了解的业务信息（比如某张单据的状态、明细等），我来帮您查询。",
+        "toolCalls": 0,
+        "answerChunks": 42
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "permission-cost-profit",
+        "group": "permission",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesExcludeTypes": [
+            "receivable_source",
+            "supplier_payable_entry",
+            "customer_payment",
+            "supplier_payment"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 这张单的成本和利润是多少"
+      },
+      "outcome": {
+        "id": "permission-cost-profit",
+        "group": "permission",
+        "turns": [
+          "MOCK-ORD-001 这张单的成本和利润是多少"
+        ],
+        "sessionId": "71959f29-fb6b-46d4-a9b4-3ea715edee63",
+        "durationMs": 8959,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview",
+          "get_sales_order"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "我已按 MOCK-ORD-001 检索到销售单（order_ref: o_1），并查询了订单概览和销售单详情，但**这些工具返回的数据中没有任何成本或利润字段**。\n\n现有可用事实（均来自销售单 MOCK-ORD-001）：\n- 产品：蓝色折叠伞，24骨/晴雨两用，数量 1000 个\n- 订单状态：confirmed；交货日期 2026-09-20\n- 订单整体状态：存在阻塞（工序完成量 1240 超过生产计划 1000）\n- 关联单据：采购单 MOCK-PO-001、生产单 MOCK-PROD-001\n\n关于成本与利润：没有查到单价、销售额、材料或加工成本、毛利等数据，因此我无法给出成本与利润的数值。如需核算，可能需要从采购单 MOCK-PO-001 的采购价、生产单 MOCK-PROD-001 的工时或加工费用，以及销售单的成交价汇总得出；但当前工具返回的字段里都没有这些金额信息，建议核实这些单据是否维护了价格字段，或改用财务/成本核算模块查询。",
+        "toolCalls": 3,
+        "answerChunks": 253
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "permission-payables",
+        "group": "permission",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesExcludeTypes": [
+            "supplier_payable_entry",
+            "supplier_payment",
+            "supplier_payable_reconciliation"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的应付账款有多少"
+      },
+      "outcome": {
+        "id": "permission-payables",
+        "group": "permission",
+        "turns": [
+          "MOCK-ORD-001 的应付账款有多少"
+        ],
+        "sessionId": "1172a7d4-a250-4bf6-a21d-97ab9daa9713",
+        "durationMs": 5162,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_purchase_orders"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          }
+        ],
+        "answer": "\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"finance_query\">\n<｜｜DSML｜｜ parameter name=\"operation\" string=\"true\">get_payables</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name=\"order_ref\" string=\"true\">o_1</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+        "toolCalls": 2,
+        "answerChunks": 59
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "permission-payroll",
+        "group": "permission",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 这张单的人工成本是多少"
+      },
+      "outcome": {
+        "id": "permission-payroll",
+        "group": "permission",
+        "turns": [
+          "MOCK-ORD-001 这张单的人工成本是多少"
+        ],
+        "sessionId": "1cebfdb0-143c-4e59-bbbb-4af7093d48f4",
+        "durationMs": 3661,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"order_query\">\n<｜｜DSML｜｜ parameter name=\"operation\" string=\"true\">query_document</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name=\"order_ref\" string=\"true\">o_1</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+        "toolCalls": 1,
+        "answerChunks": 58
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "permission-receivables",
+        "group": "permission",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesExcludeTypes": [
+            "receivable_source",
+            "customer_payment",
+            "receivable_reconciliation"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的应收账款有多少"
+      },
+      "outcome": {
+        "id": "permission-receivables",
+        "group": "permission",
+        "turns": [
+          "MOCK-ORD-001 的应收账款有多少"
+        ],
+        "sessionId": "c4ee44c4-893c-42f7-a6ef-20a090d5b862",
+        "durationMs": 5348,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_sales_order"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"finance_query\">\n<｜｜DSML｜｜ parameter name=\"operation\" string=\"true\">get_receivable</｜｜DSML｜｜ parameter>\n<｜｜DSML｜｜ parameter name=\"order_ref\" string=\"true\">o_1</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>",
+        "toolCalls": 2,
+        "answerChunks": 59
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "permission-reconciliation",
+        "group": "permission",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesExcludeTypes": [
+            "receivable_reconciliation",
+            "supplier_payable_reconciliation"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的对账情况怎么样"
+      },
+      "outcome": {
+        "id": "permission-reconciliation",
+        "group": "permission",
+        "turns": [
+          "MOCK-ORD-001 的对账情况怎么样"
+        ],
+        "sessionId": "ba8ed01a-86ca-4adf-ba22-8f907946be58",
+        "durationMs": 9678,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "关于 MOCK-ORD-001 的对账情况，我先说明一点：**当前工具返回的数据里没有“对账”这一项，也没有应收、应付、结算或账单类记录**，因此我无法给出对账结论。下面列出的是能查到的与该销售单相关的事实。\n\n**单据检索结果**（来自 search_documents）\n- 销售单 MOCK-ORD-001（蓝色折叠伞，1000 个，状态 confirmed，交期 2026-09-20）\n- 关联单据：采购单 MOCK-PO-001、生产单 MOCK-PROD-001\n\n**该销售单的整体概览**（来自 get_order_overview，as_of 2026-11-22）\n- 整体状态：**存在阻塞**，阻塞原因：工序完成量超过生产计划（PRODUCTION_OVER_PLAN），建议核对工序员工日报和超单确认。\n- 采购（MOCK-PO-001）：订购 1200，收货 2 次，收 1200；检验 2 次，检验 1200，合格 1180，让步接收 10，入库 1180。\n- 生产（MOCK-PROD-001）：计划 1000，工序完成 1240，超过计划，这是当前的阻塞点。\n- 成品检验（MOCK-FG-QC-REC-001）：检验 1200，合格 410，让步接收 5，不合格 10，成品入库 410。\n- 成品库存（MOCK-FG-IN-001、MOCK-FGN-001）：入库 410，待入库 10，库存 210，次品库存 5，出库 200。\n- 发货（MOCK-FG-OUT-001）：发货 200。\n\n**关于对账**：我查不到任何对账单据或对账状态数据，所以不能判断该单是否已对账、金额和差异是多少。如果需要，可以告诉我对账系统的单据编号或模块名称，我再按照实际能查到的范围检索。",
+        "toolCalls": 2,
+        "answerChunks": 433
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-chain-daily-reports",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的工序报工量"
+      },
+      "outcome": {
+        "id": "relation-chain-daily-reports",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的工序报工量"
+        ],
+        "sessionId": "4dea2202-99d5-4f24-b521-d1b95ecf2db7",
+        "durationMs": 5757,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_operation_reports"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:包装（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:缝制（模拟）:2026-08-25"
+          },
+          {
+            "business_type": "operation_daily_report",
+            "business_no": "MOCK-PROD-001:裁剪（模拟）:2026-08-25"
+          }
+        ],
+        "answer": "MOCK-ORD-001（销售订单，产品：蓝色折叠伞，数量 1000 个）对应生产单 **MOCK-PROD-001**，其工序报工量如下（来源：工序日报记录，报工日期 2026-08-25）：\n\n| 工序 | 报工完成量 | 单位 |\n|---|---|---|\n| 裁剪（模拟） | 420 | 个 |\n| 缝制（模拟） | 400 | 个 |\n| 包装（模拟） | 420 | 个 |\n\n说明：以上数字直接取自生产单 MOCK-PROD-001 的工序报工记录。",
+        "toolCalls": 2,
+        "answerChunks": 138
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-chain-finished-goods",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的成品入库情况"
+      },
+      "outcome": {
+        "id": "relation-chain-finished-goods",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的成品入库情况"
+        ],
+        "sessionId": "b9cee191-38ce-416c-9b89-9524ef1f91c9",
+        "durationMs": 8656,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_finished_goods_inbounds",
+          "get_finished_goods_qc"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          },
+          {
+            "business_type": "finished_goods_qc",
+            "business_no": "MOCK-FG-QC-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "finished_goods_inbound_notice",
+            "business_no": "MOCK-FGN-001"
+          },
+          {
+            "business_type": "finished_goods_inbound",
+            "business_no": "MOCK-FG-IN-001"
+          },
+          {
+            "business_type": "finished_goods_qc",
+            "business_no": "MOCK-FG-QC-REC-001"
+          }
+        ],
+        "answer": "**MOCK-ORD-001（蓝色折叠伞，1000 个，销售单状态 confirmed）的成品入库情况如下：**\n\n**1. 成品入库通知 MOCK-FGN-001**\n- 状态：partially_inbound（部分入库）\n- 通知数量：420 个，批次 MOCK-B1，日期 2026-08-25\n\n**2. 成品入库单 MOCK-FG-IN-001**\n- 状态：posted（已过账），实际入库数量 **410 个**\n- 关联检验单 MOCK-FG-QC-REC-001，日期 2026-11-22\n\n**3. 成品检验 MOCK-FG-QC-REC-001**\n- 结论：conditional_pass（有条件通过），检验完成\n- 检验数量 420 个；其中合格 410 个、让步接收 5 个、不合格 5 个；检验日期 2026-08-25\n\n**小结：** 销售单数量为 1000 个，目前通知入库 420 个，实际过账入库 410 个；其中合格 410 个、让步接收 5 个、不合格 5 个。入库通知状态仍为“部分入库”，剩余数量尚未入库。以上数字分别来自上述单据；本次查询未涉及后续入库记录，因此我无法确认剩余部分是否在其他单据中有所体现。",
+        "toolCalls": 3,
+        "answerChunks": 300
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-chain-inspection",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的来料质检结果"
+      },
+      "outcome": {
+        "id": "relation-chain-inspection",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的来料质检结果"
+        ],
+        "sessionId": "b10db497-2856-4fa6-80dd-7c119ee6dbe4",
+        "durationMs": 6227,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_incoming_inspections"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（销售单，产品：蓝色折叠伞，数量 1000 个）关联到两笔来料质检记录：\n\n**MOCK-REC-001**\n- 检验数量：700\n- 合格：680\n- 让步接收（conditional）：10\n- 不合格：10\n- 状态：passed\n\n**MOCK-REC-002**\n- 检验数量：500\n- 合格：500\n- 让步接收：0\n- 不合格：0\n- 状态：passed\n\n数据来源：来料质检记录 MOCK-REC-001、MOCK-REC-002（查询时间 2026-11-22）。两条记录的 `qc_result` 字段均为空，因此我无法给出质检结论文字，只有上述状态与数量事实。",
+        "toolCalls": 2,
+        "answerChunks": 171
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-chain-production",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的生产进度"
+      },
+      "outcome": {
+        "id": "relation-chain-production",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的生产进度"
+        ],
+        "sessionId": "8a1f21bc-b34a-454b-b14f-d7eaa35ab136",
+        "durationMs": 8719,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_production_orders",
+          "get_operation_progress"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          },
+          {
+            "business_type": "production_order",
+            "business_no": "MOCK-PROD-001"
+          }
+        ],
+        "answer": "以下是根据本轮工具返回结果的实际情况，查询时间为 2026-11-22：\n\n**销售单据 MOCK-ORD-001**\n- 产品：蓝色折叠伞，数量 1000 个，状态为 confirmed，交期 2026-09-20（来自销售单 MOCK-ORD-001）\n- 关联单据：采购单 MOCK-PO-001、生产单 MOCK-PROD-001\n\n**生产单 MOCK-PROD-001 的进度**\n- 状态：in_progress（生产中）；执行方式：in_house（自产）\n- 计划数量 1000，规格 24骨/晴雨两用\n- 计划开工日 2026-08-22，实际开工日 2026-08-22；生产交期 2026-09-15；完工日期为空，尚未完工\n- 工序进度（计划 1000，来自工序进度记录）：\n  - 裁剪：已完成 420，完成率 42%，进行中\n  - 缝制：已完成 400，完成率 40%，进行中\n  - 包装：已完成 420，完成率 42%，进行中\n\n需要注意：该生产单的生产交期 2026-09-15 与销售单交期 2026-09-20，均早于本次查询时间 2026-11-22，而完工日期为空，各工序完成率仍在 40% 左右。至于是否已判定为逾期、是否存在异常原因，本轮查到的数据中没有相关说明，我无法判断。",
+        "toolCalls": 3,
+        "answerChunks": 335
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-chain-receipt",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的采购到货情况"
+      },
+      "outcome": {
+        "id": "relation-chain-receipt",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的采购到货情况"
+        ],
+        "sessionId": "08f7f7c8-536b-4055-baec-3a153d57ae11",
+        "durationMs": 9686,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_receipts",
+          "get_purchase_orders",
+          "get_incoming_inspections"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "purchase_receipt",
+            "business_no": "MOCK-REC-001"
+          },
+          {
+            "business_type": "purchase_order",
+            "business_no": "MOCK-PO-001"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-002"
+          },
+          {
+            "business_type": "incoming_inspection",
+            "business_no": "MOCK-REC-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001（蓝色折叠伞，1000 个）的采购到货情况如下：\n\n**采购单 MOCK-PO-001**（供应商：宁波伞布供应商（模拟））\n- 采购数量：1200（来源：采购单 MOCK-PO-001）\n- 状态：**partially_arrived（部分到货）**\n- 采购日期 2026-08-21，预计到货日 2026-08-28（来源：采购单 MOCK-PO-001）\n\n**到货记录（来源：采购收货单）**\n| 收货单 | 数量 | 状态 | 到货日期 |\n|---|---|---|---|\n| MOCK-REC-001 | 700 | received | 2026-08-25 |\n| MOCK-REC-002 | 500 | received | 2026-08-27 |\n\n合计到货 1200，与采购单的 1200 数量相符；该采购单的状态仍显示为“部分到货”，这里只按单据记录转述，不对状态原因做推断。\n\n**来料检验（来源：来料检验单，按收货单号）**\n- MOCK-REC-001：检验 700，合格 680，让步接收 10，不合格 10，判定 passed\n- MOCK-REC-002：检验 500，合格 500，让步接收 0，不合格 0，判定 passed\n\n合计检验 1200，合格 1180，让步接收 10，不合格 10。若按可用量计（合格+让步接收），约 1190。另外，两张检验单的 qc_result 字段均为空，判定状态为 passed。",
+        "toolCalls": 4,
+        "answerChunks": 359
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-chain-stock",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 用到的原料现在还有多少库存"
+      },
+      "outcome": {
+        "id": "relation-chain-stock",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 用到的原料现在还有多少库存"
+        ],
+        "sessionId": "0df66a59-c8b7-4c4c-890a-cce24556841c",
+        "durationMs": 8075,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_bom",
+          "get_raw_material_balance"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "查询结果如下（数据截止 2026-11-22 16:49）：\n\n**订单核对**：MOCK-ORD-001 是销售订单，产品为“蓝色折叠伞”，数量 1000 个，状态为 confirmed。\n\n**该订单 BOM 包含 3 种原料**（来自 BOM 查询，版本 v1，已发布）：\n| 原料 | 单件用量 | 单位 |\n|---|---|---|\n| 伞布-蓝色（模拟） | 1.2 | 码 |\n| 伞骨-铝合金（模拟） | 1 | 个 |\n| 包装袋（模拟） | 1 | 个 |\n\n**库存查询结果**：在原料库存查询中，只查到 1 条记录：\n- **伞布-蓝色（模拟）**（物料编码 MOCK-M-001）：现有 **900 码**。注意，这个库存是“全局实存量，非订单专属”，并不代表为该订单预留的库存。\n\n**查不到的部分**：伞骨-铝合金（模拟）和包装袋（模拟）的库存，这次原料库存查询都没有返回记录，因此我无法回答这两种原料还有多少库存；也不能判断当前库存是否足够支撑这 1000 个的订单。如需确认，建议按物料编码再次核实这两项库存。",
+        "toolCalls": 3,
+        "answerChunks": 280
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-cross-customer-orders",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "海风家居（模拟）名下所有订单的执行情况"
+      },
+      "outcome": {
+        "id": "relation-cross-customer-orders",
+        "group": "relation",
+        "turns": [
+          "海风家居（模拟）名下所有订单的执行情况"
+        ],
+        "sessionId": "66094b7a-6316-43c7-966f-cb269df08784",
+        "durationMs": 6840,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "search_orders"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "**查不到结果：检索词「海风家居」命中 0 条。**\n\n- 我使用 `search_documents` 检索「海风家居」，返回 0 条单据。\n- 我使用 `search_orders` 检索「海风家居」，同样返回 0 条订单。\n\n因此，目前无法列出该名称下的任何订单，也无法说明这些订单的执行情况，包括销售单、采购单和生产单。这不代表该客户没有订单，只说明按「海风家居」这个检索词查不到记录。\n\n请核对：\n1. **单号本身**：如果你手上有具体销售单号、采购单号或生产单号，请提供，我会先检索再原样引用查询。\n2. **名称写法**：客户在系统里的登记全称是否与「海风家居」一致，例如是否带有地区前缀、后缀或简称不同。\n\n拿到准确单号或登记全称后，我再为你查询执行情况。",
+        "toolCalls": 2,
+        "answerChunks": 203
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-cross-low-stock",
+        "group": "relation",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "哪些物料库存不足"
+      },
+      "outcome": {
+        "id": "relation-cross-low-stock",
+        "group": "relation",
+        "turns": [
+          "哪些物料库存不足"
+        ],
+        "sessionId": "2505c6c4-1728-47ed-9cd3-00db58404e85",
+        "durationMs": 5418,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "get_raw_material_balance",
+          "search_documents"
+        ],
+        "failureCodes": [
+          "ORDER_SEARCH_REQUIRED"
+        ],
+        "sources": [],
+        "answer": "我用检索词「库存不足」在 order_query 的 search_documents 中查询，命中 0 条，没有返回任何单据或物料记录。\n\n因此，本轮无法根据工具返回的事实列出哪些物料库存不足，也无法给出任何业务结论。\n\n建议你：\n1. 核对单号或关键词是否准确，例如确认是销售单、采购单还是生产单，并提供完整单号；我会用 search_documents 重新检索，并原样使用结果中的 order_ref 继续查询。\n2. 如果你要查的是库存数量、缺料明细，而不是某张单据，也请说明具体物料或仓库。",
+        "toolCalls": 1,
+        "answerChunks": 132
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-cross-overdue-arrivals",
+        "group": "relation",
+        "baselineDocs": [],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "这个月有哪些采购到货超期了"
+      },
+      "outcome": {
+        "id": "relation-cross-overdue-arrivals",
+        "group": "relation",
+        "turns": [
+          "这个月有哪些采购到货超期了"
+        ],
+        "sessionId": "f0f66ec8-fb12-40e5-81ff-68038f0f7ae0",
+        "durationMs": 7147,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "search_orders"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "本轮用「采购」「到货」「采购」进行了检索，分别调用 order_query 的 search_documents 两次（检索词为「采购」「到货」）和 search_orders 一次（检索词为「采购」），三次检索结果均为 **0 条**，没有返回任何单据或来源。\n\n因此，本月采购到货超期的单据我查不到，也就无法给出业务结论。\n\n请核对一下单号或检索条件，例如：\n- 采购单号 / 到货单号是否完整、是否包含前缀（若有，请原样提供）；\n- 是否用其他关键词更合适，如「采购单」「入库」「收货」「逾期」；\n- 时间范围是否确为本月（系统查询时点为 2026-11-22）。\n\n确认后我再重新检索。",
+        "toolCalls": 3,
+        "answerChunks": 169
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-cross-product-orders",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "蓝色折叠伞这个产品一共有多少订单，进度如何"
+      },
+      "outcome": {
+        "id": "relation-cross-product-orders",
+        "group": "relation",
+        "turns": [
+          "蓝色折叠伞这个产品一共有多少订单，进度如何"
+        ],
+        "sessionId": "764fb379-19de-463d-b08f-4236b86de150",
+        "durationMs": 6607,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "search_orders"
+        ],
+        "failureCodes": [],
+        "sources": [],
+        "answer": "本轮我用以下检索词进行了查询：\n\n- search_documents：「蓝色折叠伞」→ 0 条\n- search_documents：「折叠伞」→ 0 条\n- search_orders：「蓝色折叠伞」→ 0 条\n- search_orders：「折叠伞」→ 0 条\n\n也就是说，按产品名称检索没有命中任何单据，因此我无法回答“蓝色折叠伞一共有多少订单、进度如何”，也查不到对应的订单数量和生产进度。\n\n建议您核对一下单号（销售单、采购单或生产单）后再提供给我，我会用原始单号重新检索。",
+        "toolCalls": 4,
+        "answerChunks": 129
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-order-alerts",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 有哪些告警"
+      },
+      "outcome": {
+        "id": "relation-order-alerts",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 有哪些告警"
+        ],
+        "sessionId": "4a85c5e8-c8d5-4189-bcb3-13d951d2a803",
+        "durationMs": 6536,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_alerts"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "production_daily_alert",
+            "business_no": "00000000-0000-4000-8000-000000000905"
+          }
+        ],
+        "answer": "MOCK-ORD-001（销售单，产品：蓝色折叠伞，数量 1000 个，状态 confirmed）目前查询到 **1 条告警**：\n\n| 项目 | 内容 |\n|---|---|\n| 来源 | 生产日报告警 |\n| 告警类型 | employee_operation_discrepancy（员工操作差异） |\n| 标题 | 生产日报差异 |\n| 严重程度 | high（高） |\n| 状态 | pending（待处理） |\n| 创建时间 | 2026-11-22 16:13:38 |\n| 处理建议 | 请核对日报与生产单累计数量 |\n\n该销售单关联的采购单为 MOCK-PO-001，关联的生产单为 MOCK-PROD-001（依据单据检索结果）。\n\n需要我进一步查询关联的生产单 MOCK-PROD-001 的明细，并据此核对差异吗？",
+        "toolCalls": 2,
+        "answerChunks": 193
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-order-attachments",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 有哪些附件"
+      },
+      "outcome": {
+        "id": "relation-order-attachments",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 有哪些附件"
+        ],
+        "sessionId": "8d91879a-ba8f-46af-be21-1ddb89340499",
+        "durationMs": 5297,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_attachments"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "我查到 MOCK-ORD-001 是一张销售订单，对应产品为蓝色折叠伞，数量为 1000 个，状态是 confirmed，交期为 2026-09-20。不过，这张单据目前**没有任何附件**：附件查询返回为空列表。\n\n补充说明：从检索结果看，这张销售订单关联了两张单据：采购单 MOCK-PO-001 和生产单 MOCK-PROD-001；但附件查询只针对订单本身，因此我没有查这两张关联单据的附件。如果你需要，我可以接着查。",
+        "toolCalls": 2,
+        "answerChunks": 119
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-order-overview",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的整体概览"
+      },
+      "outcome": {
+        "id": "relation-order-overview",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的整体概览"
+        ],
+        "sessionId": "ffe83ec2-7af4-47e5-93d4-50e897e56e38",
+        "durationMs": 10628,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_overview"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "# MOCK-ORD-001 整体概览\n\n**基本信息（销售单 MOCK-ORD-001）**\n- 产品：蓝色折叠伞，数量 1000 个，单位：个\n- 销售状态：confirmed（已确认）\n- 交期：2026-09-20\n- 关联单据：采购单 MOCK-PO-001、生产单 MOCK-PROD-001\n- 更新时间：2026-08-25\n\n**整体状态：存在阻塞（blocked）**\n- 阻塞原因：`PRODUCTION_OVER_PLAN` — 工序完成量超过生产计划\n- 建议：核对工序员工日报和超单确认\n\n**各环节要点**\n- **采购**：进行中，1 条记录（MOCK-PO-001）。BOM 需求 3.2，已下单 1200；收货 2 次合计 1200，检验 2 次合计 1200，合格 1180，让步接收 10，入库 1180。\n- **原材料库存**：进行中，暂无库存记录（missing=true）。入库 1180、发出 300、退料 20、报废 0，数量差异 900。\n- **生产**：进行中，1 条记录（MOCK-PROD-001）。计划数量 1000，**工序完成量 1240**（即上述超计划阻塞的由来）。\n- **成品检验**：已完成，1 条记录（MOCK-FG-QC-REC-001）。检验 1200，合格 410，让步接收 5，不合格 10，成品入库 410。\n- **成品库存**：已完成，2 条记录（MOCK-FG-IN-001、MOCK-FGN-001）。数量 410，已过账 410，草稿 0；通知 1 条、通知数量 420，待入库 10；现存量 210，次品库存 5，出库 200。\n- **发货**：已完成，1 条记录（MOCK-FG-OUT-001），数量 200，无草稿、无取消。\n\n**需要注意的数字不一致**（均引自上述各单据汇总，非推算结论）\n- 销售单数量 1000，而生产计划 1000、工序完成 1240，存在超产。\n- 成品检验合格入库 410，但发货出库 200、现存量 210，与采购侧入库 1180 的规模差距较大。\n- 原材料库存汇总缺少记录（missing=true），数量差异 900 需要进一步核对。\n\n如需深入某个环节（如采购单 MOCK-PO-001 或生产单 MOCK-PROD-001 的明细），可以继续查询。",
+        "toolCalls": 2,
+        "answerChunks": 590
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-order-status",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的订单状态"
+      },
+      "outcome": {
+        "id": "relation-order-status",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的订单状态"
+        ],
+        "sessionId": "9886eda7-2a70-4fc3-95e4-bd9e89ec1b0f",
+        "durationMs": 6006,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_status"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001 的订单状态如下（数据来源：销售单 MOCK-ORD-001）：\n\n- **销售状态**：confirmed（已确认）\n- **BOM 状态**：completed（已完成）\n- **整体状态**：blocked（存在阻塞）\n- **阻塞原因**：PRODUCTION_OVER_PLAN —— 工序完成量超过生产计划\n- **系统建议**：请核对工序员工日报，并处理超单确认。\n\n补充信息：该销售单的产品为蓝色折叠伞，数量为 1000 个，交期为 2026-09-20；关联单据有采购单 MOCK-PO-001 和生产单 MOCK-PROD-001。\n\n如需进一步核查超产的具体工序或日报明细，可以继续告诉我。",
+        "toolCalls": 2,
+        "answerChunks": 166
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-order-timeline",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 从下单到现在经历了哪些节点"
+      },
+      "outcome": {
+        "id": "relation-order-timeline",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 从下单到现在经历了哪些节点"
+        ],
+        "sessionId": "8f42aba5-20b5-4533-b03a-65bd7b2be7cd",
+        "durationMs": 12556,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_timeline",
+          "get_order_overview"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "audit_event",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "# MOCK-ORD-001 节点流转情况\n\n**单据基础信息（销售单 MOCK-ORD-001）**：产品「蓝色折叠伞」，数量 1000 个，状态 confirmed（已确认），交期 2026-09-20，最后更新 2026-08-25 08:00。\n\n## 一、审计时间线节点（全部发生在 2026-08-25 08:00）\n| 时间 | 节点 |\n|---|---|\n| 2026-08-25 08:00 | 销售订单确认（sales_order.confirm） |\n| 2026-08-25 08:00 | 采购订单收货（purchase_order.receive） |\n| 2026-08-25 08:00 | 成品出库签字（finished_goods_outbound.sign） |\n| 2026-08-25 08:00 | 生产日报预警生成（production_daily_alert.create） |\n\n需要注意：这四个节点的**时间戳完全相同**，因此时间线未能反映真实的先后次序；上面按返回的顺序列出，不代表实际发生顺序。\n\n## 二、各环节进展（来自 get_order_overview 汇总）\n- **BOM**：已完成\n- **采购（MOCK-PO-001）**：进行中；下单 1200，收货 1200，检验 1200，合格 1180，条件接收 10，入库 1180（BOM 需求量为 3.2）\n- **原材料库存**：进行中，但**记录缺失**（counts.records=0，missing=true）；入库 1180，领用 300，退料 20，报废 0\n- **生产（MOCK-PROD-001）**：进行中；计划 1000，工序完成 1240\n- **成品检验（MOCK-FG-QC-REC-001）**：已完成；检验 1200，合格 410，条件接受 5，不合格 10，成品入库 410\n- **成品库存（MOCK-FG-IN-001、MOCK-FGN-001）**：已完成；库存 410，已过账 410，草稿 0，通知 1 张共 420，待入库 10，现存 210，次品 5，出库 200\n- **发运（MOCK-FG-OUT-001）**：已完成；发货 200\n\n## 三、整体状态：存在阻塞\n- 阻塞项：**PRODUCTION_OVER_PLAN —— 工序完成量（1240）超过生产计划（1000）**，建议核对工序员工日报与超单确认。\n\n## 局限说明\n- 上述「节点」来自审计事件表，只记录了 4 条动作，且时间戳被压平在同一时刻，无法给出各节点真实的先后间隔。\n- 原材料库存侧记录缺失（missing=true），该环节的明细节点无法从系统查到。\n- 若需要采购、生产、出库各自的细节点，可以按 MOCK-PO-001、MOCK-PROD-001、MOCK-FG-OUT-001 分别展开查询。",
+        "toolCalls": 3,
+        "answerChunks": 677
+      },
+      "missing": []
+    },
+    {
+      "caseDef": {
+        "id": "relation-order-two-questions",
+        "group": "relation",
+        "baselineDocs": [
+          "MOCK-ORD-001"
+        ],
+        "expect": {
+          "terminal": "completed",
+          "sourcesInclude": [
+            "MOCK-ORD-001"
+          ],
+          "failureCodesExclude": [
+            "AGENT_INTERNAL_ERROR",
+            "AGENT_RUN_TIMEOUT",
+            "AGENT_TOOL_RETRIES_EXHAUSTED"
+          ],
+          "maxToolCalls": 16
+        },
+        "question": "MOCK-ORD-001 的状态和交期分别是什么"
+      },
+      "outcome": {
+        "id": "relation-order-two-questions",
+        "group": "relation",
+        "turns": [
+          "MOCK-ORD-001 的状态和交期分别是什么"
+        ],
+        "sessionId": "fc6f4f58-1620-4249-b49c-2ead2553d75e",
+        "durationMs": 8105,
+        "terminal": "completed",
+        "errorCode": null,
+        "ops": [
+          "search_documents",
+          "get_order_status",
+          "get_order_overview"
+        ],
+        "failureCodes": [],
+        "sources": [
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          },
+          {
+            "business_type": "sales_order",
+            "business_no": "MOCK-ORD-001"
+          }
+        ],
+        "answer": "MOCK-ORD-001 的查询结果如下（均来自销售单 MOCK-ORD-001 及该单据的状态、总览查询）：\n\n**状态**\n- 销售状态：`confirmed`（已确认）；BOM 状态：`completed`（已完成）。\n- 整体状态：**blocked（存在阻塞）**。\n- 阻塞原因：`PRODUCTION_OVER_PLAN` — 工序完成量超过生产计划。总览显示生产计划数量为 1000，工序完成量为 1240（来自生产单 MOCK-PROD-001）；建议核对工序员工日报和超单确认。\n- 其他环节：采购进行中（采购单 MOCK-PO-001，已收 1200、验收合格 1180 + 让步 10）；成品检验已完成（检验 1200，合格 410，让步接收 5，不合格 10）；成品入库 410；出货已完成 200（出货单 MOCK-FG-OUT-001）。\n\n**交期**\n- 销售单上的交货日期为 **2026-09-20**（来源：销售单 MOCK-ORD-001）。\n\n注：该交期已早于本次查询时间（2026-11-22），而整体状态仍为阻塞、成品入库仅 410（计划 1000），请据此关注交付风险。",
+        "toolCalls": 3,
+        "answerChunks": 287
+      },
+      "missing": []
+    }
+  ],
+  "docCount": 9
+}
