@@ -57,6 +57,8 @@ function setup(options: { commit: boolean; outcome: 'completed' | 'failed' }) {
   const repo = mkdtempSync(join(tmpdir(), 'dilee-ws-e2e-'))
   git(repo, 'init', '-b', 'main')
   git(repo, 'config', 'core.autocrlf', 'false')
+  git(repo, 'config', 'user.name', 'test')
+  git(repo, 'config', 'user.email', 'test@example.com')
   writeFileSync(join(repo, 'README.md'), 'base\n')
   git(repo, 'add', '.')
   git(repo, 'commit', '-m', 'init')
@@ -168,6 +170,8 @@ test('失败且留下未提交文件：stash 起来并写进工单结论，树�
   try {
     git(repo, 'init', '-b', 'main')
     git(repo, 'config', 'core.autocrlf', 'false')
+  git(repo, 'config', 'user.name', 'test')
+  git(repo, 'config', 'user.email', 'test@example.com')
     writeFileSync(join(repo, 'README.md'), 'base\n')
     git(repo, 'add', '.')
     git(repo, 'commit', '-m', 'init')

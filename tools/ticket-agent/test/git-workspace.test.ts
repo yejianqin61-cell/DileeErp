@@ -33,6 +33,8 @@ function makeRepo(): { dir: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'dilee-ws-'))
   git(dir, 'init', '-b', 'main')
   git(dir, 'config', 'core.autocrlf', 'false')
+  git(dir, 'config', 'user.name', 'test')
+  git(dir, 'config', 'user.email', 'test@example.com')
   writeFileSync(join(dir, 'README.md'), 'base\n')
   git(dir, 'add', '.')
   git(dir, 'commit', '-m', 'init')
