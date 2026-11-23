@@ -8,6 +8,15 @@
  * 不做拼音、同音字、模糊纠错：那会把「查不到」变成「查到一张看起来像的单」，
  * 对财务与对账场景比对查不到更危险。
  */
+const ZERO_WIDTH = /[\u200b-\u200d\ufeff]/g;
+const FULL_WIDTH_ASCII = /[\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\uff0d\uff3f\uff0f\uff0e]/g;
+const IDEOGRAPHIC_SPACE = /\u3000/g;
+
 export function normalizeKeyword(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
+  return value
+    .replace(ZERO_WIDTH, "")
+    .replace(FULL_WIDTH_ASCII, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(IDEOGRAPHIC_SPACE, " ")
+    .trim()
+    .replace(/\s+/g, " ");
 }
