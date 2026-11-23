@@ -20,12 +20,12 @@ test("visibleTools：full 见全部 6 个领域工具", () => {
   assert.ok(names.includes("finance_query"));
 });
 
-test("能力目录共 32 个 operation：工程布局的 31 项 + 三类单号的统一检索入口", () => {
-  assert.equal(TOOL_CAPABILITIES.length, 32);
+test("能力目录共 33 个 operation：工程布局的 31 项 + 三类单号检索入口 + 列表筛选入口", () => {
+  assert.equal(TOOL_CAPABILITIES.length, 33);
   const counts = {};
   for (const capability of TOOL_CAPABILITIES) counts[capability.tool] = (counts[capability.tool] ?? 0) + 1;
-  assert.deepEqual(counts, { order_query: 7, sales_query: 4, procurement_query: 4, production_query: 4, warehouse_query: 6, finance_query: 7 });
-  assert.deepEqual(TOOL_CAPABILITIES.filter((capability) => capability.implemented).map((capability) => capability.operation).sort(), TOOL_CAPABILITIES.map((capability) => capability.operation).sort(), "32 个 operation 均有显式只读实现");
+  assert.deepEqual(counts, { order_query: 8, sales_query: 4, procurement_query: 4, production_query: 4, warehouse_query: 6, finance_query: 7 });
+  assert.deepEqual(TOOL_CAPABILITIES.filter((capability) => capability.implemented).map((capability) => capability.operation).sort(), TOOL_CAPABILITIES.map((capability) => capability.operation).sort(), "33 个 operation 均有显式只读实现");
 });
 
 test("capability：已注册的取得到；未注册的 name/operation 抛业务错误", () => {

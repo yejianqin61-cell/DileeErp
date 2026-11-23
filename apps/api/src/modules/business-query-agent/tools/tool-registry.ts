@@ -35,6 +35,7 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   // order_query（7）—— P3-T1 起订单领域全部实现；search_documents 是三类单号的统一入口
   row("order_query", "search_documents", { implemented: true }),
   row("order_query", "search_orders", { implemented: true }),
+  row("order_query", "list_documents", { implemented: true }),
   row("order_query", "get_order_overview", { implemented: true }),
   row("order_query", "get_order_status", { implemented: true }),
   row("order_query", "get_order_timeline", { implemented: true }),

@@ -55,6 +55,12 @@ const TOOL_ARG_DIGEST_MAX_CHARS = 100;
 /** 检索类 operation：不进根验证，结果会登记句柄。 */
 const SEARCH_OPERATIONS = new Set(["search_orders", "search_documents"]);
 
+/**
+ * 无根 operation：不需要单据根也能执行，且结果里的单号同样发放句柄 —— 否则「先列表再追问」会在第二轮被根守卫挡掉。
+ * 与 SEARCH_OPERATIONS 分开：那个集合还兼管「把检索词写进空结果说明」，列表操作没有检索词。
+ */
+const ROOTLESS_OPERATIONS = new Set([...SEARCH_OPERATIONS, "list_documents"]);
+
 /** 检索行里「真正作为根」的单号：search_orders 是 order_no，search_documents 是所属销售单号。 */
 function searchRowRootOrderNo(operation: string, row: Record<string, unknown>): string | null {
   const value = operation === "search_documents" ? row.sales_order_no : row.order_no;
@@ -248,7 +254,7 @@ export class AgentOrchestrator {
    * 句柄在进入执行器前被剥掉——执行器只认固定 schema，多一个字段就会 400。
    */
   private resolveRootCall(call: AgentLlmToolCall, refs: Map<string, string>, orderNos: Set<string>): { call?: AgentLlmToolCall; error?: { code: string; message: string } } {
-    if (SEARCH_OPERATIONS.has(call.operation)) return { call };
+    if (ROOTLESS_OPERATIONS.has(call.operation)) return { call };
     const args = { ...(call.args ?? {}) } as Record<string, unknown>;
     const rawRef = args.order_ref;
     delete args.order_ref;
@@ -276,7 +282,7 @@ export class AgentOrchestrator {
    * 模型只复制 `o_1` 这种短标识；还原在主键层面完成。
    */
   private registerSearchResults(refs: Map<string, string>, orderNos: Set<string>, fact: QueryFact, counter: { value: number }): void {
-    if (!SEARCH_OPERATIONS.has(fact.operation)) return;
+    if (!ROOTLESS_OPERATIONS.has(fact.operation)) return;
     const rows = Array.isArray(fact.data) ? fact.data : [];
     for (const row of rows) {
       if (row === null || typeof row !== "object") continue;

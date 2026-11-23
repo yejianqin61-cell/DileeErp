@@ -3,6 +3,7 @@ import { lowerAccessLevel, resolveAccessLevel, type AgentAccessLevel } from "../
 import type { AgentPrincipal, AgentRoleReader } from "../query-permission.guard";
 import { parseSearchOrdersInput, searchOrders, type AgentReadStore } from "./order-query-tools";
 import { parseSearchDocumentsInput, searchDocuments } from "./document-search-tools";
+import { listDocuments, parseListDocumentsInput } from "./list-documents-tools";
 import type { QueryFact, QuerySource } from "./query-fact";
 import { assertOperationAllowed } from "./tool-permission";
 import { toolRegistry, type ToolCapability } from "./tool-registry";
@@ -80,6 +81,23 @@ export class ToolExecutor {
           as_of: asOf,
           data,
           sources: data.map((row) => ({ business_type: String(row.document_type), business_no: String(row.document_no), queried_at: asOf })),
+          access_level: effective,
+        },
+      };
+    }
+
+    if (capability.operation === "list_documents") {
+      const input = parseListDocumentsInput(call.args);
+      const rows = await listDocuments(this.prisma, input);
+      signal?.throwIfAborted();
+      const data = this.truncateData(rows, capability.maxRows) as Record<string, unknown>[];
+      return {
+        fact: {
+          operation: capability.operation,
+          order_no: null,
+          as_of: asOf,
+          data,
+          sources: data.map((row) => ({ business_type: "sales_order", business_no: String(row.order_no), queried_at: asOf })),
           access_level: effective,
         },
       };

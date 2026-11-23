@@ -18,7 +18,7 @@ import { AGENT_TOOLS, TOOL_CAPABILITIES, type AgentToolName } from "./tools/tool
 export type DeepSeekProviderConfig = { apiKey: string; baseURL?: string; model?: string; timeoutMs?: number };
 
 const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
-  order_query: "先调用 search_documents 按单号或关键字检索（销售单号、采购单号、生产单号都可以）。根查询用检索结果里的 order_ref 句柄，不要复制单号原文。可查询该订单的非财务进展。",
+  order_query: "先调用 search_documents 按单号或关键字检索（销售单号、采购单号、生产单号都可以）。根查询用检索结果里的 order_ref 句柄，不要复制单号原文。可查询该订单的非财务进展。没有具体单号、只是问「最近有哪些单」「已确认的有哪些」时，用 list_documents 按状态/客户/产品/日期筛选。",
   sales_query: "查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_ref 取本轮 search_documents 的结果。",
   procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检。order_ref 取本轮 search_documents 的结果。",
   production_query: "查询某张订单的生产单、工序进度、报工与外加工流转。order_ref 取本轮 search_documents 的结果。",
@@ -29,14 +29,19 @@ const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
 /** 每个领域工具只公布其在注册表中登记的 operation，执行器仍会二次校验。 */
 function domainInputSchema(tool: AgentToolName) {
   const operations = TOOL_CAPABILITIES.filter((capability) => capability.tool === tool).map((capability) => capability.operation);
-  return jsonSchema<{ operation: string; order_ref?: string; order_no?: string; q?: string; page?: number }>({
+  return jsonSchema<{ operation: string; order_ref?: string; order_no?: string; q?: string; page?: number; status?: string; customer_q?: string; product_q?: string; from?: string; to?: string }>({
     type: "object",
     properties: {
       operation: { type: "string", enum: operations, description: `要执行的内部查询能力：${operations.join("、")}` },
       order_ref: { type: "string", description: "检索结果返回的订单句柄（如 o_1）；根查询优先用它，不要复制单号原文" },
       order_no: { type: "string", description: "当前订单号；兼容用，根查询优先用 order_ref" },
-      q: { type: "string", description: "搜索关键字；仅 order_query 的检索 operation 使用" },
+      q: { type: "string", description: "搜索关键字；仅检索 operation 使用" },
       page: { type: "number", description: "页码，从 1 开始" },
+      status: { type: "string", enum: ["draft", "confirmed", "closed"], description: "仅 list_documents：按销售单状态筛选" },
+      customer_q: { type: "string", description: "仅 list_documents：按客户名称片段筛选" },
+      product_q: { type: "string", description: "仅 list_documents：按产品名称片段筛选" },
+      from: { type: "string", description: "仅 list_documents：更新日期下限，格式 YYYY-MM-DD" },
+      to: { type: "string", description: "仅 list_documents：更新日期上限，格式 YYYY-MM-DD" },
     },
     required: ["operation"],
     additionalProperties: false,
