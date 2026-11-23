@@ -20,9 +20,9 @@ export type DeepSeekProviderConfig = { apiKey: string; baseURL?: string; model?:
 const TOOL_DESCRIPTIONS: Record<AgentToolName, string> = {
   order_query: "先调用 search_documents 按单号或关键字检索（销售单号、采购单号、生产单号都可以）。根查询用检索结果里的 order_ref 句柄，不要复制单号原文。可查询该订单的非财务进展。没有具体单号、只是问「最近有哪些单」「已确认的有哪些」时，用 list_documents 按状态/客户/产品/日期筛选。",
   sales_query: "查询某张订单的销售单、客户、BOM 与退货（非财务字段）。order_ref 取本轮 search_documents 的结果。",
-  procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检。order_ref 取本轮 search_documents 的结果。",
+  procurement_query: "查询某张订单的采购计划、采购单、到货与来料质检。order_ref 取本轮 search_documents 的结果。问「哪些采购到货超期」这类不针对某张单的问题，用 list_overdue_arrivals，它不需要 order_ref。",
   production_query: "查询某张订单的生产单、工序进度、报工与外加工流转。order_ref 取本轮 search_documents 的结果。",
-  warehouse_query: "查询原料库存余额、库存流水、领退报废与成品出入库质检。order_ref 取本轮 search_documents 的结果。",
+  warehouse_query: "查询原料库存余额、库存流水、领退报废与成品出入库质检。order_ref 取本轮 search_documents 的结果。问「哪些物料库存不足」这类不针对某张单的问题，用 list_low_stock_materials，它不需要 order_ref。",
   finance_query: "查询某张订单的应收、应付、收付款、对账、成本利润与人工（仅财务档）。order_ref 取本轮 search_documents 的结果。",
 };
 

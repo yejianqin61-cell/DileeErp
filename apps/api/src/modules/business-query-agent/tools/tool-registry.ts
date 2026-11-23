@@ -48,6 +48,7 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   row("sales_query", "get_sales_returns", { implemented: true }),
   // procurement_query（4）—— P3-T3 起采购领域全部实现
   row("procurement_query", "get_purchase_plans", { implemented: true }),
+  row("procurement_query", "list_overdue_arrivals", { implemented: true }),
   row("procurement_query", "get_purchase_orders", { implemented: true }),
   row("procurement_query", "get_receipts", { implemented: true }),
   row("procurement_query", "get_incoming_inspections", { implemented: true }),
@@ -58,6 +59,7 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   row("production_query", "get_outsource_flow", { implemented: true }),
   // warehouse_query（6）—— P3-T5 起仓库领域全部实现
   row("warehouse_query", "get_raw_material_balance", { implemented: true }),
+  row("warehouse_query", "list_low_stock_materials", { implemented: true }),
   row("warehouse_query", "get_inventory_facts", { implemented: true }),
   row("warehouse_query", "get_material_movements", { implemented: true }),
   row("warehouse_query", "get_finished_goods_qc", { implemented: true }),

@@ -24,7 +24,7 @@ import type { AgentObservability } from "./observability";
  *   - 致命失败（撤权、取消、超时、非业务异常）：仍直接收进 failed 终态。
  */
 
-const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。任何单号（销售单、采购单、生产单）都先用 order_query 的 search_documents 检索，再原样使用结果里的 order_ref 做后续查询，不要复制或改写单号。";
+const SYSTEM_PROMPT = "你是工厂业务系统的查询助手。只根据本轮工具返回的事实回答；引用数字时说明来自哪张单据；查不到就明确说查不到，不得编造业务结论。任何单号（销售单、采购单、生产单）都先用 order_query 的 search_documents 检索，再原样使用结果里的 order_ref 做后续查询，不要复制或改写单号。没有具体单号、问的是列表或跨单汇总时，用 list_documents（按状态/客户/产品/日期）、list_low_stock_materials（哪些物料库存不足）、list_overdue_arrivals（哪些采购到货超期），这三个都不需要 order_ref。";
 export const AGENT_MAX_TOOL_STEPS = 16;
 export const AGENT_MAX_PLAN_STEPS = 4;
 export const AGENT_MAX_RECOVERABLE_TOOL_FAILURES = 3;
@@ -56,10 +56,13 @@ const TOOL_ARG_DIGEST_MAX_CHARS = 100;
 const SEARCH_OPERATIONS = new Set(["search_orders", "search_documents"]);
 
 /**
- * 无根 operation：不需要单据根也能执行，且结果里的单号同样发放句柄 —— 否则「先列表再追问」会在第二轮被根守卫挡掉。
- * 与 SEARCH_OPERATIONS 分开：那个集合还兼管「把检索词写进空结果说明」，列表操作没有检索词。
+ * 不需要单据根就能执行的 operation，两档：
+ *   - GRANTS_HANDLES：结果里有单号，要发放句柄 —— 否则「先列表再追问」会在第二轮被根守卫挡掉；
+ *   - SKIP_ROOT：连句柄都没有（物料、采购单号），只跳过根验证。
+ * 与 SEARCH_OPERATIONS 分开：那个集合还兼管「把检索词写进空结果说明」，列表与聚合没有检索词。
  */
-const ROOTLESS_OPERATIONS = new Set([...SEARCH_OPERATIONS, "list_documents"]);
+const GRANTS_HANDLES = new Set([...SEARCH_OPERATIONS, "list_documents"]);
+const SKIP_ROOT_OPERATIONS = new Set([...GRANTS_HANDLES, "list_low_stock_materials", "list_overdue_arrivals"]);
 
 /** 检索行里「真正作为根」的单号：search_orders 是 order_no，search_documents 是所属销售单号。 */
 function searchRowRootOrderNo(operation: string, row: Record<string, unknown>): string | null {
@@ -254,7 +257,7 @@ export class AgentOrchestrator {
    * 句柄在进入执行器前被剥掉——执行器只认固定 schema，多一个字段就会 400。
    */
   private resolveRootCall(call: AgentLlmToolCall, refs: Map<string, string>, orderNos: Set<string>): { call?: AgentLlmToolCall; error?: { code: string; message: string } } {
-    if (ROOTLESS_OPERATIONS.has(call.operation)) return { call };
+    if (SKIP_ROOT_OPERATIONS.has(call.operation)) return { call };
     const args = { ...(call.args ?? {}) } as Record<string, unknown>;
     const rawRef = args.order_ref;
     delete args.order_ref;
@@ -269,8 +272,8 @@ export class AgentOrchestrator {
       if (candidates.size === 1) orderNo = [...candidates][0];
       else if (candidates.size > 1) return { error: { code: "ORDER_REF_REQUIRED", message: "本轮检索到多张订单，请带上其中一张的 order_ref" } };
     }
-    if (!orderNo) return { error: { code: "ORDER_SEARCH_REQUIRED", message: "缺少 order_ref。请先调用 order_query 的 search_orders 取得句柄" } };
-    if (!orderNos.has(orderNo)) return { error: { code: "ORDER_SEARCH_REQUIRED", message: "order_no 不是本轮 search_orders 返回的精确值。请改用检索返回的 order_ref" } };
+    if (!orderNo) return { error: { code: "ORDER_SEARCH_REQUIRED", message: "这个 operation 只查某一单据的明细，需要单据根。请先用 search_documents 按单号取得 order_ref；如果问题本身是列表或跨单汇总（例如「最近有哪些单」「哪些物料库存不足」「哪些采购到货超期」），改用 list_documents / list_low_stock_materials / list_overdue_arrivals，它们不需要单据根" } };
+    if (!orderNos.has(orderNo)) return { error: { code: "ORDER_SEARCH_REQUIRED", message: "order_no 不是本轮检索返回的精确值，服务端不做猜测。请改用检索结果里的 order_ref；若你要的其实是列表或跨单汇总，用 list_documents / list_low_stock_materials / list_overdue_arrivals" } };
     return { call: { ...call, args: { ...args, order_no: orderNo } } };
   }
 
@@ -282,7 +285,7 @@ export class AgentOrchestrator {
    * 模型只复制 `o_1` 这种短标识；还原在主键层面完成。
    */
   private registerSearchResults(refs: Map<string, string>, orderNos: Set<string>, fact: QueryFact, counter: { value: number }): void {
-    if (!ROOTLESS_OPERATIONS.has(fact.operation)) return;
+    if (!GRANTS_HANDLES.has(fact.operation)) return;
     const rows = Array.isArray(fact.data) ? fact.data : [];
     for (const row of rows) {
       if (row === null || typeof row !== "object") continue;

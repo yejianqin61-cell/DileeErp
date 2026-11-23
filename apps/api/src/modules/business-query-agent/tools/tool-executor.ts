@@ -4,6 +4,7 @@ import type { AgentPrincipal, AgentRoleReader } from "../query-permission.guard"
 import { parseSearchOrdersInput, searchOrders, type AgentReadStore } from "./order-query-tools";
 import { parseSearchDocumentsInput, searchDocuments } from "./document-search-tools";
 import { listDocuments, parseListDocumentsInput } from "./list-documents-tools";
+import { UNROOTED_OPERATIONS } from "./unrooted-operations";
 import type { QueryFact, QuerySource } from "./query-fact";
 import { assertOperationAllowed } from "./tool-permission";
 import { toolRegistry, type ToolCapability } from "./tool-registry";
@@ -98,6 +99,25 @@ export class ToolExecutor {
           as_of: asOf,
           data,
           sources: data.map((row) => ({ business_type: "sales_order", business_no: String(row.order_no), queried_at: asOf })),
+          access_level: effective,
+        },
+      };
+    }
+
+    // 无根 operation：不需要单据根也能执行。没有这条支线时，模型问「哪些物料库存不足」会先撞根守卫。
+    const unrooted = UNROOTED_OPERATIONS[capability.operation];
+    if (unrooted) {
+      const input = unrooted.parse(call.args);
+      const result = await unrooted.run(this.prisma, input, new Date());
+      signal?.throwIfAborted();
+      const data = this.truncateData(result.data, capability.maxRows) as Record<string, unknown>[];
+      return {
+        fact: {
+          operation: capability.operation,
+          order_no: null,
+          as_of: asOf,
+          data,
+          sources: result.sources.map((source) => ({ ...source, queried_at: asOf })),
           access_level: effective,
         },
       };
