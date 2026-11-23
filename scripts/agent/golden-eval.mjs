@@ -126,7 +126,7 @@ async function main() {
     process.stderr.write(`[${index + 1}/${cases.length}] ${caseDef.id} -> ${outcome.terminal}${missing.length > 0 ? " (baseline_missing)" : ""}\n`);
   }
 
-  const judged = entries.map((entry) => ({ ...judgeAll([entry])[0], failureCodes: entry.outcome.failureCodes }));
+  const judged = entries.map((entry) => ({ ...judgeAll([entry])[0], failureCodes: entry.outcome.failureCodes, modelSteps: entry.outcome.modelSteps ?? 0 }));
   const jsonOut = readFlag(argv, "--json-out");
   if (jsonOut) {
     writeFileSync(

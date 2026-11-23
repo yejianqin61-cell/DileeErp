@@ -99,3 +99,33 @@ test("meta.analysis 非空时渲染第 8 节，空或空白时不出该节", () 
   assert.doesNotMatch(renderMarkdown(summary, {}), /## 8\. 缺陷分析/);
   assert.doesNotMatch(renderMarkdown(summary, { analysis: "   \n" }), /## 8\. 缺陷分析/);
 });
+
+test("meta.comparison 非空时渲染第 9 节，含两列与变化", () => {
+  const summary = summarize([row("a", "entry", "pass", { failureCodes: ["X"] })]);
+  const text = renderMarkdown(summary, {
+    comparison: { label: "P0 基线", before: { total: 61, passRate: 1, toolCallFailureRate: 0.115, failureCodeCount: 7 } },
+  });
+  assert.match(text, /## 9\. P0 → P1 对比/);
+  assert.match(text, /工具调用失败率/);
+  assert.match(text, /11\.5%/);
+  assert.doesNotMatch(renderMarkdown(summary, {}), /## 9\./);
+});
+
+test("对比节列出上一轮未解项的对账", () => {
+  const summary = summarize([row("a", "entry", "pass")]);
+  const text = renderMarkdown(summary, {
+    comparison: { label: "P0", before: {}, unresolved: [{ item: "列表无入口", status: "已修" }] },
+  });
+  assert.match(text, /### 9\.1 上一轮未解项的对账/);
+  assert.match(text, /列表无入口/);
+});
+
+test("模型步数中位数：奇数个取中间，全缺时为 null", () => {
+  const withSteps = summarize([
+    row("a", "entry", "pass", { modelSteps: 1 }),
+    row("b", "entry", "pass", { modelSteps: 3 }),
+    row("c", "entry", "pass", { modelSteps: 2 }),
+  ]);
+  assert.equal(withSteps.medianModelSteps, 2);
+  assert.equal(summarize([row("a", "entry", "pass")]).medianModelSteps, null);
+});

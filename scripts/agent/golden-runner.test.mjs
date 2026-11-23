@@ -126,6 +126,20 @@ test("collectDocNumbers 兼容 snake_case 与接口返回的 camelCase", () => {
   assert.deepEqual([...docs].sort(), ["MOCK-ORD-001", "MOCK-PO-001", "MOCK-PROD-001"]);
 });
 
+test("completed 事件的 model_steps 被采集", () => {
+  const outcome = applyEvent(emptyRunOutcome("run"), { seq: 1, type: "completed", data: { answer: "", sources: [], usage: { tool_calls: 2, answer_chunks: 5, model_steps: 2 } } });
+  assert.equal(outcome.modelSteps, 2);
+  assert.equal(outcome.toolCalls, 2);
+});
+
+test("mergeOutcomes 汇总模型步数", () => {
+  const merged = mergeOutcomes([
+    { terminal: "completed", errorCode: null, ops: [], failureCodes: [], sources: [], answer: "一", toolCalls: 1, answerChunks: 1, modelSteps: 2 },
+    { terminal: "completed", errorCode: null, ops: [], failureCodes: [], sources: [], answer: "二", toolCalls: 1, answerChunks: 1, modelSteps: 1 },
+  ]);
+  assert.equal(merged.modelSteps, 3);
+});
+
 test("run 404 时抛错而不是静默空结果", async () => {
   const fetchImpl = async () => ({ ok: false, status: 404 });
   await assert.rejects(

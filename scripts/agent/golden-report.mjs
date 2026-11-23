@@ -5,6 +5,7 @@ export function summarize(judged) {
     verdict: entry.verdict,
     reasons: Array.isArray(entry.reasons) ? entry.reasons : [],
     failureCodes: Array.isArray(entry.failureCodes) ? entry.failureCodes : [],
+    modelSteps: entry.modelSteps,
   }));
 
   const total = rows.length;
@@ -47,11 +48,22 @@ export function summarize(judged) {
     toolCallFailureRate: total > 0 ? withFailureCodes.length / total : null,
   };
 
-  return { total, pass, fail, baselineMissing, passRate, byGroup, failureCodes, processSignal, rows };
+  const steps = rows.map((row) => row.modelSteps).filter((value) => Number.isInteger(value) && value > 0).sort((left, right) => left - right);
+  const medianModelSteps = steps.length === 0 ? null : steps[Math.floor(steps.length / 2)];
+
+  return { total, pass, fail, baselineMissing, passRate, byGroup, failureCodes, processSignal, medianModelSteps, rows };
 }
 
 function percent(rate) {
-  return rate === null ? "—" : `${(rate * 100).toFixed(1)}%`;
+  return rate === null || rate === undefined ? "—" : `${(rate * 100).toFixed(1)}%`;
+}
+
+function delta(before, after, unit = "count") {
+  if (before === null || before === undefined || after === null || after === undefined) return "—";
+  const change = after - before;
+  if (change === 0) return "持平";
+  const sign = change > 0 ? "+" : "";
+  return unit === "pct" ? `${sign}${(change * 100).toFixed(1)} 个百分点` : `${sign}${change}`;
 }
 
 function reasonsOf(row) {
@@ -103,6 +115,8 @@ export function renderMarkdown(summary, meta = {}) {
   lines.push("");
   lines.push("这条才是「工具调用失败率高」的直接度量：结论对了，不等于调用过程是干净的。每次失败都在消耗模型的失败预算（上限 3 次），也在拉长时延。");
   lines.push("");
+  lines.push(`模型步数中位数：${summary.medianModelSteps === null ? "未记录" : summary.medianModelSteps}（每多一轮规划就多一次模型往返）。`);
+  lines.push("");
   if (signal.selfHealedCaseIds.length > 0) {
     lines.push(`自纠成功的用例：${signal.selfHealedCaseIds.join("、")}`);
     lines.push("");
@@ -141,6 +155,31 @@ export function renderMarkdown(summary, meta = {}) {
     lines.push("");
     lines.push(meta.analysis.trim());
     lines.push("");
+  }
+  if (meta.comparison && typeof meta.comparison === "object") {
+    const before = meta.comparison.before ?? {};
+    const after = { total: summary.total, byGroup: summary.byGroup, failureCodes: summary.failureCodes, rows: summary.rows, ...summary, ...(meta.comparison.after ?? {}) };
+    lines.push("## 9. P0 → P1 对比");
+    lines.push("");
+    lines.push(`对照基线：${meta.comparison.label ?? "上一轮基线"}`);
+    lines.push("");
+    lines.push("| 指标 | 上一轮 | 本轮 | 变化 |");
+    lines.push("| --- | --- | --- | --- |");
+    lines.push(`| 用例总数 | ${before.total ?? "—"} | ${after.total ?? "—"} | ${delta(before.total, after.total)} |`);
+    lines.push(`| 通过率 | ${percent(before.passRate ?? null)} | ${percent(after.passRate ?? null)} | ${delta(before.passRate, after.passRate, "pct")} |`);
+    lines.push(`| 工具调用失败率 | ${percent(before.toolCallFailureRate ?? null)} | ${percent(after.processSignal?.toolCallFailureRate ?? null)} | ${delta(before.toolCallFailureRate, after.processSignal?.toolCallFailureRate, "pct")} |`);
+    lines.push(`| 失败码总数 | ${before.failureCodeCount ?? "—"} | ${summary.failureCodes.reduce((sum, item) => sum + item.count, 0)} | — |`);
+    lines.push("");
+    lines.push("改进了什么、没改进什么，看的是「工具调用失败率」这一行：通过率在上一轮已经 100%，它不可能再涨，也不能证明任何改动有效。");
+    lines.push("");
+    if (Array.isArray(meta.comparison.unresolved) && meta.comparison.unresolved.length > 0) {
+      lines.push("### 9.1 上一轮未解项的对账");
+      lines.push("");
+      lines.push("| 未解项 | 本轮状态 |");
+      lines.push("| --- | --- |");
+      for (const item of meta.comparison.unresolved) lines.push(`| ${item.item} | ${item.status} |`);
+      lines.push("");
+    }
   }
   return `${lines.join("\n")}`;
 }

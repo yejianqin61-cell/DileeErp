@@ -110,7 +110,7 @@ test("编排正常完成：planning → querying → responding → completed，
   assert.equal(saved.answer, "根据本轮查询，找到 1 张订单：SO-001（手机壳）。来源：SO-001。");
   const events = db.store.events.filter((event) => event.runId === run.id);
   assert.deepEqual(events.map((event) => event.seq), events.map((_, index) => index + 1), "seq 必须从 1 起单调");
-  assert.deepEqual(events.map((event) => event.type), ["state", "state", "tool_args", "tool_status", "tool_status", "source", "state", "answer_delta", "answer_delta", "answer_delta", "state", "completed"], "状态迁移自动补 state 事件；每次调用先留一条入参事件，completed 前也有");
+  assert.deepEqual(events.map((event) => event.type), ["state", "state", "tool_args", "tool_status", "tool_status", "source", "order_ref", "state", "answer_delta", "answer_delta", "answer_delta", "state", "completed"], "状态迁移自动补 state 事件；每次调用先留一条入参事件、检索成功后留一条句柄事件，completed 前也有");
   const completed = events.at(-1).payload;
   assert.equal(completed.answer, saved.answer);
   assert.deepEqual(completed.sources.map((source) => source.business_no), ["SO-001"]);

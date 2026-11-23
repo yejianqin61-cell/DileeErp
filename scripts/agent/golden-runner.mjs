@@ -81,6 +81,7 @@ export function emptyRunOutcome(runId) {
     answer: "",
     toolCalls: 0,
     answerChunks: 0,
+    modelSteps: 0,
   };
 }
 
@@ -116,6 +117,7 @@ export function applyEvent(outcome, event) {
     const usage = payload.usage && typeof payload.usage === "object" ? payload.usage : {};
     if (Number.isInteger(usage.tool_calls)) outcome.toolCalls = usage.tool_calls;
     if (Number.isInteger(usage.answer_chunks)) outcome.answerChunks = usage.answer_chunks;
+    if (Number.isInteger(usage.model_steps)) outcome.modelSteps = usage.model_steps;
     if (Array.isArray(payload.sources)) outcome.sources.push(...payload.sources.map(normalizeSource));
   }
   return outcome;
@@ -204,6 +206,7 @@ export function mergeOutcomes(parts) {
     answer: parts.at(-1)?.answer ?? "",
     toolCalls: parts.reduce((sum, part) => sum + part.toolCalls, 0),
     answerChunks: parts.reduce((sum, part) => sum + part.answerChunks, 0),
+    modelSteps: parts.reduce((sum, part) => sum + (part.modelSteps ?? 0), 0),
   };
 }
 

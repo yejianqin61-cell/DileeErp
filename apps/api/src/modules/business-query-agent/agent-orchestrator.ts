@@ -70,6 +70,16 @@ function searchRowRootOrderNo(operation: string, row: Record<string, unknown>): 
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+/** 已发出的句柄里最大的序号：新句柄从它往后编，避免与历史 ref 撞号。 */
+function maxRefIndex(refs: Map<string, string>): number {
+  let max = 0;
+  for (const ref of refs.keys()) {
+    const match = /^o_(\d+)$/.exec(ref);
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return max;
+}
+
 type ToolOutcome = { ok: true; fact: QueryFact } | { ok: false; code: string; message: string };
 
 function httpErrorCode(error: unknown): string | null {
@@ -139,11 +149,16 @@ export class AgentOrchestrator {
     const facts: QueryFact[] = [];
     /** 本轮已经执行过的检索词：空结果时要把它们写进回答上下文（R-6）。 */
     const searchQueries: string[] = [];
-    /** 本轮 search_orders 返回过的精确 order_no：根查询只允许使用这里的值。 */
-    const searchedOrderNos = new Set<string>();
-    /** 本轮句柄表 `o_1 → DL260170-4H 伞头`：只活在这一轮，跨轮清空（防止旧句柄被复用）。 */
-    const searchRefs = new Map<string, string>();
-    const refCounter = { value: 0 };
+    /**
+     * 句柄表 `o_1 → DL260170-4H 伞头`。
+     *
+     * 作用域是**会话**而不是单轮：第二轮追问「那它的采购单到货了吗」时模型会复用上一轮的 o_1，
+     * 只在单轮有效的话这里必判 ORDER_REF_INVALID，模型只能重新检索一遍（P0 基线 D-3 的两条 followup 就是这样）。
+     * 会话内有效不等于无凭据可查 —— 句柄必须能在本会话的历史 order_ref 事件里找到，伪造的 o_99 照样拒。
+     */
+    const searchRefs = await this.loadSessionRefs(principal.user.id, run.sessionId);
+    const searchedOrderNos = new Set<string>([...searchRefs.values()]);
+    const refCounter = { value: maxRefIndex(searchRefs) };
     let attempted = 0;
     let modelSteps = 0;
     let recoverableFailures = 0;
@@ -152,7 +167,8 @@ export class AgentOrchestrator {
     const planOnce = async (): Promise<AgentLlmPlan> => {
       const planStartedAt = Date.now();
       const plan = await this.provider.plan(messages, tools, signal);
-      this.observability?.record(runId, { kind: "model_step", user_id: principal.user.id, access_level: run.accessLevel, model: this.provider.name ?? "unknown", step: ++modelSteps, duration_ms: Date.now() - planStartedAt, tool_calls: plan.toolCalls.length });
+      modelSteps += 1;
+      this.observability?.record(runId, { kind: "model_step", user_id: principal.user.id, access_level: run.accessLevel, model: this.provider.name ?? "unknown", step: modelSteps, duration_ms: Date.now() - planStartedAt, tool_calls: plan.toolCalls.length });
       return plan;
     };
 
@@ -175,7 +191,8 @@ export class AgentOrchestrator {
             : await this.executeTool(runId, principal, resolved.call ?? call, signal);
           if (outcome.ok) {
             facts.push(outcome.fact);
-            this.registerSearchResults(searchRefs, searchedOrderNos, outcome.fact, refCounter);
+            const issued = this.registerSearchResults(searchRefs, searchedOrderNos, outcome.fact, refCounter);
+            if (issued.length > 0) await this.persistRefs(runId, issued);
             if (SEARCH_OPERATIONS.has(call.operation)) {
               const query = call.args?.q;
               if (typeof query === "string" && query.trim().length > 0) searchQueries.push(query.trim());
@@ -229,7 +246,7 @@ export class AgentOrchestrator {
       await this.state.transitionAndAppend(runId, { from: "responding", events: [{ type: "answer_delta", payload: { text: chunk.text } }] });
     }
 
-    const usage = { ...providerUsage, tool_calls: facts.length, answer_chunks: chunks };
+    const usage = { ...providerUsage, tool_calls: facts.length, answer_chunks: chunks, model_steps: modelSteps };
     await this.state.transitionAndAppend(runId, {
       from: "responding",
       to: "completed",
@@ -284,16 +301,57 @@ export class AgentOrchestrator {
    * 让模型逐字复制它等于把「复制保真度」当成契约。句柄由服务端发放、本轮有效，
    * 模型只复制 `o_1` 这种短标识；还原在主键层面完成。
    */
-  private registerSearchResults(refs: Map<string, string>, orderNos: Set<string>, fact: QueryFact, counter: { value: number }): void {
-    if (!GRANTS_HANDLES.has(fact.operation)) return;
+  private registerSearchResults(refs: Map<string, string>, orderNos: Set<string>, fact: QueryFact, counter: { value: number }): Array<{ ref: string; orderNo: string }> {
+    if (!GRANTS_HANDLES.has(fact.operation)) return [];
     const rows = Array.isArray(fact.data) ? fact.data : [];
+    const issued: Array<{ ref: string; orderNo: string }> = [];
     for (const row of rows) {
       if (row === null || typeof row !== "object") continue;
       const value = searchRowRootOrderNo(fact.operation, row as Record<string, unknown>);
       if (!value) continue;
       orderNos.add(value);
-      (row as Record<string, unknown>).order_ref = this.refForOrder(refs, value, counter);
+      const before = refs.size;
+      const ref = this.refForOrder(refs, value, counter);
+      (row as Record<string, unknown>).order_ref = ref;
+      if (refs.size > before) issued.push({ ref, orderNo: value });
     }
+    return issued;
+  }
+
+  /**
+   * 句柄落库：写一条内部 order_ref 事件，不推送浏览器。
+   *
+   * 为什么落库而不是放内存：进程重启后第二轮追问仍要能解析上一轮发出的句柄；
+   * 事件表本来就是「这个 run 发生过什么」的唯一记录，句柄属于其中一部分。
+   */
+  private async persistRefs(runId: string, issued: Array<{ ref: string; orderNo: string }>): Promise<void> {
+    await this.state
+      .transitionAndAppend(runId, { from: "querying", events: [{ type: "order_ref", payload: { refs: issued } }] })
+      .catch(() => {});
+  }
+
+  /**
+   * 载入本会话已发出的句柄（跨 run 累积），并按档位过滤：降权后旧 full 轮的句柄不得再被用来取数。
+   * 取不到历史就当空表 —— 退化成单轮句柄，不会比改动前更差。
+   */
+  private async loadSessionRefs(userId: string, sessionId: string): Promise<Map<string, string>> {
+    const refs = new Map<string, string>();
+    const runs = await this.state.listRuns(sessionId, userId).catch(() => []);
+    for (const prior of runs) {
+      const events = await this.state.eventsAfter(prior.id, 0).catch(() => []);
+      for (const event of events) {
+        if (event.type !== "order_ref") continue;
+        const entries = (event.payload as { refs?: unknown }).refs;
+        if (!Array.isArray(entries)) continue;
+        for (const entry of entries) {
+          if (entry === null || typeof entry !== "object") continue;
+          const ref = (entry as { ref?: unknown }).ref;
+          const orderNo = (entry as { orderNo?: unknown }).orderNo;
+          if (typeof ref === "string" && typeof orderNo === "string" && ref.length > 0 && orderNo.length > 0) refs.set(ref, orderNo);
+        }
+      }
+    }
+    return refs;
   }
 
   /** 同一张单复用同一个句柄；新单按发放顺序取下一个编号。 */
