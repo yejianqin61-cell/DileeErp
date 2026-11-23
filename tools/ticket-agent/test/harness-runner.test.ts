@@ -317,7 +317,7 @@ test('buildTimeoutHandover：超长文本按尾部截断（保留最新的进展
   assert.ok(handover.length < 200)
 })
 
-test('软截止：超过 timeoutMs 后结果为 timeout，且 error 里带交接摘要', async () => {
+test('软截止：超过 timeoutMs 后结果为 timeout，且 error 里带交接摘要', { timeout: 30_000 }, async () => {
   // 用一个必然挂住的假 CLI：node -e 里 sleep，直到被信号打断
   const dir = mkdtempSync(join(tmpdir(), 'dilee-grace-'))
   const script = join(dir, 'hang.mjs')
@@ -339,9 +339,9 @@ test('软截止：超过 timeoutMs 后结果为 timeout，且 error 里带交接
     assert.match(result.error ?? '', /SIGTERM/, 'error 应说明已先送 SIGTERM 收口')
     assert.match(result.error ?? '', /做到一半/, 'error 应带上截止时的进展（交接信息）')
   } finally { rmSync(dir, { recursive: true, force: true }) }
-}, { timeout: 30_000 })
+})
 
-test('graceMs=0 时退回旧行为：不打招呼直接强制终止', async () => {
+test('graceMs=0 时退回旧行为：不打招呼直接强制终止', { timeout: 30_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dilee-grace0-'))
   const script = join(dir, 'hang.mjs')
   writeFileSync(script, `setInterval(() => {}, 1000)`)
@@ -357,4 +357,4 @@ test('graceMs=0 时退回旧行为：不打招呼直接强制终止', async () =
     assert.equal(result.outcome, 'timeout')
     assert.match(result.error ?? '', /未设软截止/, '应明确说明没有软截止')
   } finally { rmSync(dir, { recursive: true, force: true }) }
-}, { timeout: 30_000 })
+})

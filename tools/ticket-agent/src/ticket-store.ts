@@ -50,6 +50,12 @@ export interface StoredTicket {
   progress?: TicketProgress | null
   /** 最近一次 run 的结论。状态回答与卡片用。 */
   result?: TicketResult | null
+  /** 本单的工单分支（`ticket/T-00XX`）。2026-11-23 起每单一条。 */
+  branch?: string | null
+  /** 开工瞬间的主干 HEAD，用于追溯「这单从哪开始改的」。 */
+  baseSha?: string | null
+  /** 收尾时未提交残留的 stash ref（取证材料，不是候选代码）。 */
+  stashRef?: string | null
   readonly createdAt: string
   updatedAt: string
 }
@@ -296,6 +302,24 @@ export class TicketStore {
       ],
       updatedAt: input.at,
     }
+    writeJsonAtomic(this.ticketPath(id), next)
+    return next
+  }
+
+  /** 记录本单的工单分支与基线。开工时写一次。 */
+  setBranch(id: string, branch: string, baseSha: string, at: string): StoredTicket {
+    const ticket = this.get(id)
+    if (ticket === null) throw new TicketStoreError('ticket-not-found', id)
+    const next: StoredTicket = { ...ticket, branch, baseSha, updatedAt: at }
+    writeJsonAtomic(this.ticketPath(id), next)
+    return next
+  }
+
+  /** 记录收尾 stash 的 ref。没有残留时不调用。 */
+  setStash(id: string, stashRef: string, at: string): StoredTicket {
+    const ticket = this.get(id)
+    if (ticket === null) throw new TicketStoreError('ticket-not-found', id)
+    const next: StoredTicket = { ...ticket, stashRef, updatedAt: at }
     writeJsonAtomic(this.ticketPath(id), next)
     return next
   }

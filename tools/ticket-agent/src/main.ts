@@ -16,6 +16,7 @@ import { startLongConnection, type LongConnectionHandle } from './feishu-ws.ts'
 import { parseIncoming, type RawFeishuEvent } from './feishu-event.ts'
 import { Coordinator } from './coordinator.ts'
 import { sweepStaleRuns } from './run-janitor.ts'
+import { GitWorkspace } from './git-workspace.ts'
 import { TicketStore } from './ticket-store.ts'
 import { deployConfigFromEnv } from './deploy.ts'
 
@@ -45,6 +46,13 @@ interface Config {
   autoDeploy: boolean
   /** 是否启用部署能力。 */
   deployEnabled: boolean
+  /**
+   * 本地主干分支名。**不是 GitHub 上的 `main`**：部署仓本地分支是 `agent/main`，
+   * 部署时推的是 `HEAD:refs/heads/main`。工单分支从这个分支拉出、成功后合回它。
+   */
+  mainBranch: string
+  /** 是否启用每单一条工单分支（2026-11-23 用户决定）。 */
+  branchIsolation: boolean
 }
 
 const DEFAULTS = {
@@ -58,6 +66,11 @@ const DEFAULTS = {
   graceMs: 2 * 60 * 1000,
   dispatchBaseUrl: 'https://api.deepseek.com',
   dispatchModel: 'deepseek-chat',
+  /**
+   * 部署仓的本地主干分支。服务器上是 `agent/main`（部署时推 `HEAD:refs/heads/main`）；
+   * 开发机克隆默认是 `main`，用 WORKSPACE_MAIN_BRANCH 覆盖。
+   */
+  mainBranch: 'agent/main',
   /**
    * 默认关闭周期播报（2026-11-20 用户要求「播报太多啰嗦，要精简」）。
    *
@@ -128,6 +141,8 @@ function readConfig(env: NodeJS.ProcessEnv): Config | { missing: string[] } {
     cardUpdateMs,
     autoDeploy: envFlag(env.AUTO_DEPLOY, true),
     deployEnabled: envFlag(env.DEPLOY_ENABLED, true),
+    mainBranch: env.WORKSPACE_MAIN_BRANCH?.trim() || DEFAULTS.mainBranch,
+    branchIsolation: envFlag(env.BRANCH_ISOLATION, true),
   }
 }
 
@@ -152,6 +167,9 @@ async function main(): Promise<void> {
   log(`[main] 问答模型：${config.dispatchModel} @ ${config.dispatchBaseUrl}`)
   log(`[main] 调度：模型 + 工具（create_ticket / append_ticket / start_run / status / reply / deploy）`)
   log(`[main] 进度播报：${config.progressNoticeMs === 0 ? '关闭（只发开工/收尾/结束三条）' : `${Math.round(config.progressNoticeMs / 1000)} 秒`}；卡片更新：${Math.round(config.cardUpdateMs / 1000)} 秒`)
+  log(
+    `[main] 工作区分支：${config.branchIsolation ? `启用（每单 ticket/<票号>，成功后 --no-ff 合入 ${config.mainBranch}，失败丢弃）` : '关闭（所有单直接在主干上改）'}`,
+  )
   log(
     `[main] 部署：${
       config.deployEnabled
@@ -183,6 +201,33 @@ async function main(): Promise<void> {
     baseUrl: config.baseUrl,
   })
 
+  /**
+   * 工单工作区（2026-11-23）：每单一条分支，成功才合入主干，失败丢弃。
+   *
+   * 启动时先做一次恢复：若上次进程被强杀、工作区停在工单分支上，这里会 stash 残留、
+   * 切回主干、删掉那条中断的分支 —— 否则残留会污染下一单（2026-11-21 真实事故）。
+   */
+  let workspace: GitWorkspace | null = null
+  if (config.branchIsolation) {
+    workspace = new GitWorkspace({
+      repoPath: config.repoPath,
+      mainBranch: config.mainBranch,
+      log,
+    })
+    try {
+      const recovered = await workspace.recover()
+      if (recovered.recoveredBranch !== null) {
+        log(`[main] 恢复中断的工单分支：${recovered.recoveredBranch}（残留已 ${recovered.stashed ?? '无残留'}）`)
+      }
+      if (recovered.leftoverBranches.length > 0) {
+        log(`[main] 仍有未合并的工单分支（待人工）：${recovered.leftoverBranches.join('、')}`)
+      }
+    } catch (error) {
+      log(`[main] 工作区恢复失败（继续启动）：${error instanceof Error ? error.message : String(error)}`)
+      workspace = null
+    }
+  }
+
   const coordinator = new Coordinator({
     store,
     transport,
@@ -206,6 +251,7 @@ async function main(): Promise<void> {
         })
       : null,
     autoDeploy: config.autoDeploy,
+    workspace,
     log,
   })
 

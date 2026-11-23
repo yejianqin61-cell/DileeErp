@@ -61,6 +61,7 @@ import {
   type DeployPhase,
   type DeployResult,
 } from './deploy.ts'
+import type { GitWorkspace, WorkspaceBegin } from './git-workspace.ts'
 
 export interface CoordinatorOptions {
   store: TicketStore
@@ -100,6 +101,11 @@ export interface CoordinatorOptions {
   deployImpl?: typeof runDeploy
   /** run 成功后是否自动部署（用户 2026-11-13 拍板「全自动上线」）。 */
   autoDeploy?: boolean
+  /**
+   * 工单工作区（2026-11-23 用户决定：每会话一条分支，成功才合入，失败丢弃）。
+   * 为 null 时退回旧行为（所有单都在主干上改），测试里可显式关掉。
+   */
+  workspace?: GitWorkspace | null
 }
 
 export type RouteDecision =
@@ -182,6 +188,8 @@ export function resultCard(input: {
   state: string
   result: HarnessResult
   userText: string
+  /** 分支收尾结论（合入 / 丢弃 / stash ref）。 */
+  workspaceNote?: string
 }): FeishuCard {
   const { result } = input
   const lines: string[] = []
@@ -206,6 +214,9 @@ export function resultCard(input: {
 
   const summary = summarize(result)
   if (summary.length > 0) lines.push(`**结论**：${summary}`)
+  if (input.workspaceNote !== undefined && input.workspaceNote.length > 0) {
+    lines.push(`**工作区**：${input.workspaceNote}`)
+  }
   if (result.error !== undefined) lines.push(`**错误**：${result.error}`)
 
   const template: FeishuCard['template'] =
@@ -261,6 +272,7 @@ interface ResolvedOptions {
   deployConfig: DeployConfig | null
   deployImpl: typeof runDeploy
   autoDeploy: boolean
+  workspace: GitWorkspace | null
 }
 
 export class Coordinator {
@@ -295,6 +307,7 @@ export class Coordinator {
       deployConfig: options.deployConfig ?? null,
       deployImpl: options.deployImpl ?? runDeploy,
       autoDeploy: options.autoDeploy ?? false,
+      workspace: options.workspace ?? null,
     }
   }
 
@@ -677,6 +690,23 @@ export class Coordinator {
     }
 
     let result: HarnessResult
+    /**
+     * 工单工作区（2026-11-23）：每单一条分支，成功才合入主干，失败一律丢弃。
+     * begin 失败不阻断 run —— 宁可跑在主干上（旧行为），也不能因为分支拉不出来就完全不干活；
+     * 但会写进结论，让人知道这单没有隔离保护。
+     */
+    let workspaceBegun: WorkspaceBegin | null = null
+    if (this.opts.workspace !== null) {
+      try {
+        workspaceBegun = await this.opts.workspace.begin(latest.no)
+        this.opts.store.setBranch(latest.id, workspaceBegun.branch, workspaceBegun.baseSha, this.stamp())
+      } catch (error) {
+        this.opts.log(
+          `[coord] workspace begin failed ${latest.no}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+
     try {
       const isAppend = latest.turns.length > 1
       const currentTurn = latest.turns[latest.turns.length - 1]
@@ -716,9 +746,37 @@ export class Coordinator {
       this.opts.store.bindSession(latest.id, result.sessionId, this.stamp())
     }
 
+    // ── 工作区收尾（2026-11-23）：成功才合入主干，失败一律丢弃 ──
+    //
+    // 失败单已提交的改动 → 删分支（主干绝不被污染）；
+    // 未提交的残留 → stash（现场绝不销毁，ref 写进结论）。
+    let workspaceNote = ''
+    if (this.opts.workspace !== null && workspaceBegun !== null) {
+      try {
+        const finish =
+          result.outcome === 'completed'
+            ? await this.opts.workspace.finishSuccess(latest.no)
+            : await this.opts.workspace.finishFailure(latest.no)
+        if (finish.stashed !== null) {
+          this.opts.store.setStash(latest.id, finish.stashed, this.stamp())
+        }
+        const parts: string[] = []
+        if (finish.merged) parts.push(`已合入主干 ${finish.mergedSha === null ? '' : finish.mergedSha.slice(0, 8)}`)
+        else if (finish.conflict) parts.push('与主干冲突，未合入（分支已保留，需人工决定）')
+        else parts.push('未合入主干')
+        if (finish.stashed !== null) parts.push(`残留已暂存为 ${finish.stashed}`)
+        workspaceNote = `分支 ${workspaceBegun.branch}：${parts.join('；')}`
+        this.opts.log(`[coord] workspace ${latest.no} ${workspaceNote}`)
+      } catch (error) {
+        workspaceNote = `分支收尾失败：${error instanceof Error ? error.message : String(error)}`
+        this.opts.log(`[coord] workspace finish failed ${latest.no}: ${workspaceNote}`)
+      }
+    }
+
     // 状态映射：run 成功 → gated（有产出待部署）；失败/超时 → failed。
     const nextState = result.outcome === 'completed' ? 'gated' : 'failed'
-    const summary = summarize(result, 400) || (result.error ?? '')
+    const summaryBase = summarize(result, 400) || (result.error ?? '')
+    const summary = workspaceNote.length === 0 ? summaryBase : `${summaryBase}\n${workspaceNote}`
     const outcome: TicketResult['outcome'] =
       result.outcome === 'completed' ? 'completed' : result.outcome === 'timeout' ? 'timeout' : 'failed'
     try {
@@ -736,7 +794,12 @@ export class Coordinator {
     if (refreshed === null) return
     // 先冲掉排队中的进度卡片更新，否则最后一张「施工中」蓝卡可能盖掉结果卡。
     await this.cardChain
-    await this.transportSendResult(refreshed, result, latest.turns[latest.turns.length - 1].text)
+    await this.transportSendResult(
+      refreshed,
+      result,
+      latest.turns[latest.turns.length - 1].text,
+      workspaceNote,
+    )
 
     // 全自动上线：run 成功且有产出 → 排队部署（与 run 共用串行队列，不会并发）。
     if (this.opts.autoDeploy && result.outcome === 'completed') {
@@ -1003,8 +1066,15 @@ export class Coordinator {
     ticket: StoredTicket,
     result: HarnessResult,
     userText: string,
+    workspaceNote = '',
   ): Promise<void> {
-    const card = resultCard({ ticketNo: ticket.no, state: ticket.state, result, userText })
+    const card = resultCard({
+      ticketNo: ticket.no,
+      state: ticket.state,
+      result,
+      userText,
+      ...(workspaceNote.length === 0 ? {} : { workspaceNote }),
+    })
     try {
       if (ticket.cardMessageId !== null) {
         await this.opts.transport.updateCard(ticket.cardMessageId, card)

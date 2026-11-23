@@ -87,6 +87,10 @@ function envSection(env: PromptEnvironment): string {
     `- 工作区：${env.repoPath}（这是一个 git 仓库，在这里改代码）`,
     `- Node 解释器：${env.nodePath}。系统默认 node 是 22，不满足要求，务必用上面这个绝对路径。`,
     '- 先用 `git status` 确认工作区干净，再动手。',
+    // 2026-11-23：每单一条分支。不写清这条，Agent 可能自己切分支、推 GitHub 或合主干，
+    // 把「成功才合入、失败就丢弃」的收尾逻辑架空。
+    `- 当前分支是 \`ticket/${env.ticketNo}\`。**只在这个分支上提交**：`,
+    '  不要切换分支、不要 push、不要合入主干 —— 收尾（合入或丢弃）由系统在 run 结束后统一处理。',
     '',
     '# 允许改动',
     ...ALLOWED.map((item) => `- ${item}`),

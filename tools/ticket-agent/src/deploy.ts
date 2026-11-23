@@ -114,6 +114,14 @@ export interface DeployConfig {
   requirePush: boolean
   skipTests: boolean
   minFreeGb: number
+  /**
+   * 部署必须是「站在主干上」的。为空表示不校验（测试与本地用）。
+   *
+   * 2026-11-23 加了工单分支：正常流程是「run 成功 → 合入主干 → 再部署」。
+   * 若此时 HEAD 还停在 `ticket/T-00XX` 上，说明该单没收尾成功，
+   * 部署上去的就是半成品 —— 宁可拒绝。
+   */
+  mainBranch?: string
   timeouts: DeployTimeouts
   /** 子进程 PATH 覆盖，测试用。 */
   path?: string
@@ -503,6 +511,18 @@ export async function runDeploy(input: DeployInput): Promise<DeployResult> {
         'preflight',
         `工作区有未提交改动，拒绝部署：${status.stdout.trim().split('\n').slice(0, 5).join(' / ')}`,
       )
+    }
+
+    // 必须站在主干上：停在工单分支等于该单没收尾成功，部署上去就是半成品。
+    if (config.mainBranch !== undefined) {
+      const branch = await probe('git', ['rev-parse', '--abbrev-ref', 'HEAD'], config.timeouts.gitMs, config.repoPath)
+      const current = branch.stdout.trim()
+      if (branch.code === 0 && current.length > 0 && current !== config.mainBranch) {
+        throw new DeployFailure(
+          'preflight',
+          `当前在分支 ${current} 上，不是主干 ${config.mainBranch}。工单分支未合入，拒绝部署半成品。`,
+        )
+      }
     }
 
     state.release = (
@@ -924,6 +944,7 @@ export function deployConfigFromEnv(input: {
     keepBackups: Math.max(0, Math.round(number(env.DEPLOY_KEEP_BACKUPS, 3))),
     requirePush: flag(env.DEPLOY_REQUIRE_PUSH, true),
     skipTests: flag(env.DEPLOY_SKIP_TESTS, false),
+    mainBranch: env.WORKSPACE_MAIN_BRANCH?.trim() || undefined,
     minFreeGb: Math.max(1, number(env.DEPLOY_MIN_FREE_GB, 5)),
     timeouts: defaultDeployTimeouts(),
     ...(input.now === undefined ? {} : { now: input.now }),
