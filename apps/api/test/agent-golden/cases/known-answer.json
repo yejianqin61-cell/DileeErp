@@ -1,0 +1,67 @@
+[
+  {
+    "id": "known-answer-quantity-001",
+    "group": "known_answer",
+    "question": "MOCK-ORD-001 这张单的数量是多少",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "answerIncludesDigits": ["1000"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "known-answer-quantity-002",
+    "group": "known_answer",
+    "question": "MOCK-ORD-002 的数量是多少",
+    "baselineDocs": ["MOCK-ORD-002"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-002"],
+      "answerIncludesDigits": ["600"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "known-answer-delivery-date",
+    "group": "known_answer",
+    "question": "MOCK-ORD-001 的交期是哪天",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "answerIncludesDigits": ["2026", "09", "20"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "known-answer-status",
+    "group": "known_answer",
+    "question": "MOCK-ORD-001 的订单状态是什么",
+    "baselineDocs": ["MOCK-ORD-001"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001"],
+      "answerExclude": ["草稿"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 10
+    }
+  },
+  {
+    "id": "known-answer-two-orders",
+    "group": "known_answer",
+    "question": "MOCK-ORD-001 和 MOCK-ORD-002 的数量分别是多少",
+    "baselineDocs": ["MOCK-ORD-001", "MOCK-ORD-002"],
+    "expect": {
+      "terminal": "completed",
+      "sourcesInclude": ["MOCK-ORD-001", "MOCK-ORD-002"],
+      "answerIncludesDigits": ["1000", "600"],
+      "failureCodesExclude": ["AGENT_INTERNAL_ERROR", "AGENT_RUN_TIMEOUT", "AGENT_TOOL_RETRIES_EXHAUSTED"],
+      "maxToolCalls": 16
+    }
+  }
+]

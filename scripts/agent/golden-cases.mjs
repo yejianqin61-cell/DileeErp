@@ -1,7 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const GROUPS = ["entry", "miss", "relation", "followup", "permission"];
+export const GROUPS = ["entry", "miss", "relation", "followup", "permission", "finance_positive", "known_answer"];
+
+export const FULL_ACCOUNT_GROUPS = ["finance_positive"];
 
 export const EXPECT_KEYS = [
   "terminal",
@@ -11,6 +13,7 @@ export const EXPECT_KEYS = [
   "failureCodesExclude",
   "maxToolCalls",
   "answerExclude",
+  "answerIncludesDigits",
 ];
 
 const TERMINALS = ["completed", "failed", "cancelled"];
@@ -59,6 +62,17 @@ function parseExpect(raw) {
       const value = raw.maxToolCalls;
       if (!Number.isInteger(value) || value < 1) fail("expect.maxToolCalls 必须是正整数");
       expect.maxToolCalls = value;
+      continue;
+    }
+    if (key === "answerIncludesDigits") {
+      const value = raw.answerIncludesDigits;
+      if (!Array.isArray(value) || value.length === 0) fail("expect.answerIncludesDigits 必须是非空数组");
+      const digits = value.map((item) => {
+        const text = typeof item === "number" ? String(item) : item;
+        if (typeof text !== "string" || !/^\d+(\.\d+)?$/.test(text.trim())) fail(`expect.answerIncludesDigits 含非法数字：${String(item)}`);
+        return text.trim();
+      });
+      expect.answerIncludesDigits = digits;
       continue;
     }
     expect[key] = requireArrayOfStrings(raw[key], `expect.${key}`);

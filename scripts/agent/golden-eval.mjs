@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { loadCases, selectCases } from "./golden-cases.mjs";
+import { FULL_ACCOUNT_GROUPS, loadCases, selectCases } from "./golden-cases.mjs";
 import { judgeAll } from "./golden-judge.mjs";
 import { renderMarkdown, summarize } from "./golden-report.mjs";
 import { fetchBaselineDocs, login, missingBaseline, runCase } from "./golden-runner.mjs";
@@ -98,8 +98,22 @@ async function main() {
 
   const casesDir = fileURLToPath(new URL("../../apps/api/test/agent-golden/cases/", import.meta.url));
   const cases = selectCases(loadCases(casesDir), groups);
-  const cookie = await login({ fetchImpl: fetch, apiBase, username, password });
-  const present = await fetchBaselineDocs({ fetchImpl: fetch, apiBase, cookie });
+
+  const needsFullAccount = cases.some((caseDef) => FULL_ACCOUNT_GROUPS.includes(caseDef.group));
+  const defaultCookie = await login({ fetchImpl: fetch, apiBase, username, password });
+  let fullCookie = defaultCookie;
+  if (needsFullAccount) {
+    const fullUsername = process.env.GOLDEN_FULL_USERNAME;
+    const fullPassword = process.env.GOLDEN_FULL_PASSWORD;
+    if (!fullUsername || !fullPassword) {
+      console.error(`这些用例需要 full 数据档位账号：${FULL_ACCOUNT_GROUPS.join(", ")}。请设置 GOLDEN_FULL_USERNAME / GOLDEN_FULL_PASSWORD（laoban 或 caiwu 角色）`);
+      process.exit(2);
+    }
+    fullCookie = await login({ fetchImpl: fetch, apiBase, username: fullUsername, password: fullPassword });
+    process.stderr.write(`已用 full 档位账号 ${fullUsername} 登录 ${FULL_ACCOUNT_GROUPS.join(", ")} 组\n`);
+  }
+  const cookieFor = (caseDef) => (FULL_ACCOUNT_GROUPS.includes(caseDef.group) ? fullCookie : defaultCookie);
+  const present = await fetchBaselineDocs({ fetchImpl: fetch, apiBase, cookie: defaultCookie });
 
   const runAt = new Date().toISOString();
   const entries = [];
@@ -107,7 +121,7 @@ async function main() {
     const missing = missingBaseline(caseDef, present);
     const outcome = missing.length > 0
       ? { terminal: "unknown", errorCode: null, ops: [], failureCodes: [], sources: [], answer: "", toolCalls: 0, answerChunks: 0, durationMs: 0 }
-      : await runCase({ fetchImpl: fetch, apiBase, cookie, caseDef, signal: AbortSignal.timeout(600_000) });
+      : await runCase({ fetchImpl: fetch, apiBase, cookie: cookieFor(caseDef), caseDef, signal: AbortSignal.timeout(600_000) });
     entries.push({ caseDef, outcome, missing });
     process.stderr.write(`[${index + 1}/${cases.length}] ${caseDef.id} -> ${outcome.terminal}${missing.length > 0 ? " (baseline_missing)" : ""}\n`);
   }
